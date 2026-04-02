@@ -27,6 +27,12 @@
 - `user/shell/`
 - `user/lib/`
 
+### Control-plane responsibilities
+
+- `user/init/` performs the earliest trusted userspace bootstrap
+- `user/servicemgr/` owns long-lived supervision, dependency ordering, and restart policy
+- `user/devmgr/` owns device discovery, policy, and driver host orchestration
+
 ## Boundary rules
 
 - kernel core exposes versioned internal interfaces, not ad hoc cross-module coupling

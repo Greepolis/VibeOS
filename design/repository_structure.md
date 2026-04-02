@@ -22,12 +22,17 @@
 |-- boot/
 |-- user/
 |   |-- compat/
+|   |   |-- linux/
+|   |   |-- macos/
+|   |   |-- windows/
+|   |-- devmgr/
 |   |-- drivers/
 |   |-- fs/
 |   |-- init/
 |   |-- lib/
 |   |-- net/
 |   |-- sec/
+|   |-- servicemgr/
 |   |-- shell/
 |-- tools/
 |-- tests/
@@ -47,4 +52,4 @@
 
 ## Phase 1 note
 
-Only the documentation-oriented directories are required immediately. Implementation directories are listed now to stabilize the future repository shape before code lands.
+Phase 1 already materializes the main implementation roots with placeholder files so the intended structure is tracked in Git before substantive code lands.
