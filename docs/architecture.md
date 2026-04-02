@@ -103,6 +103,17 @@ Allowed only for measured performance or boot-critical reasons:
 - compatibility subsystems
 - service manager and session manager
 
+## Placement policy
+
+To prevent the hybrid design from collapsing into an undisciplined monolith, a subsystem may run in kernel space only if it satisfies at least one of the following:
+
+- it is required before the first trusted user-space service can start
+- it sits directly on an interrupt-latency-critical path
+- it would impose unacceptable context-switch or copying overhead if moved out of kernel space
+- it enforces a protection boundary that cannot safely be delegated
+
+Everything else defaults to user space. Any exception should be justified by measurement, not convenience.
+
 ## Core abstractions
 
 ### Execution model
@@ -132,8 +143,8 @@ Allowed only for measured performance or boot-critical reasons:
 
 The codebase is split into:
 
-- `arch/` architecture-specific code
-- `platform/` board and firmware integration
+- `kernel/arch/` architecture-specific code
+- `kernel/platform/` firmware and board integration
 - `kernel/` architecture-independent core
 - `user/` user-space services and applications
 
@@ -155,3 +166,12 @@ Compatibility is not implemented inside the core kernel ABI. Instead, VibeOS exp
 - lightweight virtual machines for unmodified workloads where translation is not viable
 
 This reduces kernel ABI bloat and keeps policy and emulation logic outside ring 0.
+
+## Architectural constraints
+
+The design deliberately avoids:
+
+- exposing foreign kernel ABIs as first-class native kernel interfaces
+- allowing user-space subsystems to depend on unstable private kernel structures
+- placing full filesystem parsers or broad driver stacks in ring 0 without demonstrated need
+- promising complete foreign application parity before subsystem maturity and legal review

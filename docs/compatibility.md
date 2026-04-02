@@ -13,6 +13,17 @@ The compatibility approach is layered:
 - containers and personalities for compatible environments
 - lightweight virtualization for workloads requiring stronger fidelity
 
+## Support tiers
+
+Compatibility promises are intentionally tiered:
+
+- Tier 0: native VibeOS applications using the native ABI
+- Tier 1: Linux command-line and service workloads through translation
+- Tier 2: Linux containerized workloads with stronger environment fidelity
+- Tier 3: Windows console and service-style workloads through subsystem services
+- Tier 4: selected Windows GUI workloads once graphics and input stacks mature
+- Tier 5: selective Darwin-oriented and macOS-adjacent runtime experiments, not broad parity
+
 ## Linux compatibility
 
 ### Priority
@@ -63,6 +74,10 @@ macOS compatibility is the most constrained and should be phased carefully:
 
 Early phases should not promise broad unmodified macOS binary support. The architecture should remain open to targeted support without overcommitting the kernel.
 
+### Legal and ecosystem constraint
+
+macOS compatibility must be evaluated not only as a technical problem but also as an ecosystem and legal one. The project should treat guest-backed execution, POSIX compatibility, and developer-tool portability as the realistic early focus rather than broad claims of native macOS application support.
+
 ## Shared enabling technologies
 
 - unified object and handle translation layer
@@ -79,4 +94,4 @@ Early phases should not promise broad unmodified macOS binary support. The archi
 3. Linux container runtime
 4. Windows basic console and service-process compatibility
 5. Windows GUI-oriented expansion
-6. Selective macOS-compatible runtime experiments
+6. Selective Darwin and macOS-adjacent runtime experiments

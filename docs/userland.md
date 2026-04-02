@@ -15,6 +15,8 @@
 - restarts supervised services
 - exposes health and status APIs
 
+Early phases should keep `init` and the long-lived service manager separate so that bootstrap concerns do not hard-code later supervision policy into the first process.
+
 ### System services
 
 - device manager

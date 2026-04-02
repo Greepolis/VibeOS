@@ -26,6 +26,12 @@ The project will eventually provide a custom bootloader with the following respo
 
 During bring-up, a simpler standards-compliant boot path may be used temporarily if it does not compromise the from-scratch kernel requirement.
 
+Recommended staging:
+
+- early bring-up may target a well-defined external boot protocol to shorten time-to-first-kernel
+- the long-term architecture still assumes a project-owned bootloader and boot information contract
+- no existing kernel code is reused; only the boot handoff convention may be borrowed temporarily
+
 ### Phase 2: kernel early init
 
 - establish early serial and framebuffer logging

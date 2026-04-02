@@ -12,6 +12,7 @@
 - build scripts
 - image packaging
 - emulator launch flow
+- first automated boot smoke test
 
 ## M2: boot to kernel banner
 
@@ -36,6 +37,7 @@
 - init process starts
 - IPC path usable
 - service restart path proven
+- service manager and device manager boundaries validated
 
 ## M6: storage and shell
 
@@ -60,4 +62,5 @@
 
 - reassess kernel and service boundaries
 - validate security posture
+- review risk register and compatibility scope
 - decide ARM64 and GUI next steps

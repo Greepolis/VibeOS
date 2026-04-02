@@ -57,6 +57,8 @@ A thread owns:
 
 IPC is central to the system design.
 
+See also: `docs/ipc.md` for the dedicated transport and contract strategy.
+
 ### Requirements
 
 - low overhead for local RPC-style service calls

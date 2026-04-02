@@ -12,6 +12,7 @@ This repository currently contains Phase 1 project design artifacts:
 - product vision and engineering goals
 - kernel and platform architecture
 - subsystem specifications
+- build, toolchain, and testing strategy
 - compatibility strategy for Linux, Windows, and macOS applications
 - repository layout and module boundaries
 - phased roadmap and milestone plan
@@ -24,6 +25,7 @@ Phase 1 intentionally prioritizes design clarity over implementation. The first 
 - `design/` diagrams, module maps, and repository structure
 - `roadmap/` development plan and milestones
 - `research/` comparative analysis and rationale
+- `boot/`, `kernel/`, `user/` reserved implementation roots for the next phase
 
 ## Architectural direction
 
@@ -43,5 +45,9 @@ See:
 
 - `docs/vision.md`
 - `docs/architecture.md`
+- `docs/ipc.md`
+- `docs/toolchain.md`
+- `docs/testing_strategy.md`
 - `roadmap/development_phases.md`
 - `roadmap/milestones.md`
+- `roadmap/risk_register.md`

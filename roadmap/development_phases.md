@@ -7,6 +7,7 @@ Deliverables:
 - system vision
 - architectural decisions
 - subsystem specifications
+- toolchain and test strategy
 - repository structure
 - development roadmap and milestones
 
@@ -15,6 +16,7 @@ Exit criteria:
 - design documents reviewed for internal consistency
 - initial implementation order agreed
 - module boundaries documented
+- top architectural risks identified with mitigation paths
 
 ## Phase 2: bring-up infrastructure
 
