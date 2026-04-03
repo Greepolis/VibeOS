@@ -733,6 +733,55 @@ static int test_ipc_handle_transfer(void) {
     return 0;
 }
 
+static int test_cross_process_handle_dup_policy(void) {
+    vibeos_process_table_t pt;
+    vibeos_handle_table_t *p1_handles = 0;
+    uint32_t p1 = 0;
+    uint32_t p2 = 0;
+    uint32_t p3 = 0;
+    uint32_t src_manage_handle = 0;
+    uint32_t src_nomgr_handle = 0;
+    uint32_t dup_handle = 0;
+    uint32_t rights = 0;
+    if (vibeos_proc_init(&pt) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_spawn(&pt, 0, &p1) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_spawn(&pt, p1, &p2) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_spawn(&pt, 0, &p3) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_handles(&pt, p1, &p1_handles) != 0) {
+        return -1;
+    }
+    if (vibeos_handle_alloc(p1_handles, VIBEOS_HANDLE_RIGHT_SIGNAL | VIBEOS_HANDLE_RIGHT_MANAGE, &src_manage_handle) != 0) {
+        return -1;
+    }
+    if (vibeos_handle_alloc(p1_handles, VIBEOS_HANDLE_RIGHT_SIGNAL, &src_nomgr_handle) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_duplicate_handle(&pt, p1, p2, src_manage_handle, VIBEOS_HANDLE_RIGHT_SIGNAL, &dup_handle) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_handles(&pt, p2, &p1_handles) != 0) {
+        return -1;
+    }
+    if (vibeos_handle_rights(p1_handles, dup_handle, &rights) != 0 || rights != VIBEOS_HANDLE_RIGHT_SIGNAL) {
+        return -1;
+    }
+    if (vibeos_proc_duplicate_handle(&pt, p1, p3, src_manage_handle, VIBEOS_HANDLE_RIGHT_SIGNAL, &dup_handle) == 0) {
+        return -1;
+    }
+    if (vibeos_proc_duplicate_handle(&pt, p1, p2, src_nomgr_handle, VIBEOS_HANDLE_RIGHT_SIGNAL, &dup_handle) == 0) {
+        return -1;
+    }
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
 #define RUN_TEST(fn) do { if ((fn)() != 0) { failures++; printf("FAIL:%s\n", #fn); } } while (0)
@@ -758,6 +807,7 @@ int main(void) {
     RUN_TEST(test_service_ipc_contract);
     RUN_TEST(test_trap_dispatch);
     RUN_TEST(test_ipc_handle_transfer);
+    RUN_TEST(test_cross_process_handle_dup_policy);
 #undef RUN_TEST
 
     if (failures == 0) {
