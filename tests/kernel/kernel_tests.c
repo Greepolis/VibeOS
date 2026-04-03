@@ -188,12 +188,18 @@ static int test_interrupts(void) {
 static int test_syscalls(void) {
     vibeos_kernel_t kernel;
     vibeos_syscall_frame_t frame;
+    uint32_t pid1 = 0;
+    uint32_t pid2 = 0;
+    uint32_t p1_handle = 0;
     uint32_t signal_handle = 0;
     memset(&kernel, 0, sizeof(kernel));
+    memset(&frame, 0, sizeof(frame));
     vibeos_event_init(&kernel.boot_event);
 
     frame.id = VIBEOS_SYSCALL_HANDLE_ALLOC;
     frame.arg0 = VIBEOS_HANDLE_RIGHT_SIGNAL | VIBEOS_HANDLE_RIGHT_MANAGE;
+    frame.arg1 = 0;
+    frame.arg2 = 0;
     if (vibeos_handle_table_init(&kernel.handles) != 0) {
         return -1;
     }
@@ -203,6 +209,8 @@ static int test_syscalls(void) {
     signal_handle = (uint32_t)frame.result;
     frame.id = VIBEOS_SYSCALL_EVENT_SIGNAL;
     frame.arg0 = 0;
+    frame.arg1 = 0;
+    frame.arg2 = 0;
     if (vibeos_syscall_dispatch(&kernel, &frame) == 0) {
         return -1;
     }
@@ -219,24 +227,49 @@ static int test_syscalls(void) {
     }
     frame.id = VIBEOS_SYSCALL_PROCESS_SPAWN;
     frame.arg0 = 0;
+    frame.arg1 = 0;
+    frame.arg2 = 0;
     if (vibeos_proc_init(&kernel.proc_table) != 0) {
         return -1;
     }
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 1) {
         return -1;
     }
+    pid1 = (uint32_t)frame.result;
+    frame.id = VIBEOS_SYSCALL_PROCESS_SPAWN;
+    frame.arg0 = pid1;
+    frame.arg1 = 0;
+    frame.arg2 = 0;
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 2) {
+        return -1;
+    }
+    pid2 = (uint32_t)frame.result;
     frame.id = VIBEOS_SYSCALL_THREAD_CREATE;
-    frame.arg0 = 1;
+    frame.arg0 = pid1;
+    frame.arg1 = 0;
+    frame.arg2 = 0;
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 1) {
         return -1;
     }
     frame.id = VIBEOS_SYSCALL_HANDLE_ALLOC;
     frame.arg0 = VIBEOS_HANDLE_RIGHT_SIGNAL | VIBEOS_HANDLE_RIGHT_MANAGE;
+    frame.arg1 = 0;
+    frame.arg2 = pid1;
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result <= 0) {
         return -1;
     }
+    p1_handle = (uint32_t)frame.result;
     frame.id = VIBEOS_SYSCALL_HANDLE_CLOSE;
-    frame.arg0 = (uint64_t)frame.result;
+    frame.arg0 = (uint64_t)p1_handle;
+    frame.arg1 = 0;
+    frame.arg2 = pid2;
+    if (vibeos_syscall_dispatch(&kernel, &frame) == 0) {
+        return -1;
+    }
+    frame.id = VIBEOS_SYSCALL_HANDLE_CLOSE;
+    frame.arg0 = (uint64_t)p1_handle;
+    frame.arg1 = 0;
+    frame.arg2 = pid1;
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
         return -1;
     }
@@ -266,20 +299,22 @@ static int test_syscalls(void) {
     }
     frame.id = VIBEOS_SYSCALL_HANDLE_ALLOC;
     frame.arg0 = VIBEOS_HANDLE_RIGHT_SIGNAL;
+    frame.arg1 = 0;
+    frame.arg2 = pid1;
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result <= 0) {
         return -1;
     }
     frame.id = VIBEOS_SYSCALL_WAITSET_ADD_EVENT;
     frame.arg0 = (uint64_t)frame.result;
     frame.arg1 = 100;
-    frame.arg2 = 0;
+    frame.arg2 = pid1;
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
         return -1;
     }
     frame.id = VIBEOS_SYSCALL_WAITSET_ADD_EVENT;
     frame.arg0 = (uint64_t)frame.result;
     frame.arg1 = 200;
-    frame.arg2 = 0;
+    frame.arg2 = pid1;
     if (vibeos_syscall_dispatch(&kernel, &frame) == 0) {
         return -1;
     }

@@ -21,9 +21,17 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
     }
 
     {
+        uint32_t caller_pid = (uint32_t)frame->arg2;
+        vibeos_handle_table_t *caller_handles = &kernel->handles;
         vibeos_syscall_policy_t policy = vibeos_syscall_policy_for((vibeos_syscall_id_t)frame->id);
         if (policy.requires_handle) {
-            if (!vibeos_handle_has_rights(&kernel->handles, (uint32_t)frame->arg0, policy.required_rights)) {
+            if (caller_pid != 0) {
+                if (vibeos_proc_handles(&kernel->proc_table, caller_pid, &caller_handles) != 0) {
+                    frame->result = -1;
+                    return -1;
+                }
+            }
+            if (!vibeos_handle_has_rights(caller_handles, (uint32_t)frame->arg0, policy.required_rights)) {
                 frame->result = -1;
                 return -1;
             }
@@ -44,8 +52,14 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             return 0;
         case VIBEOS_SYSCALL_HANDLE_ALLOC:
         {
+            uint32_t caller_pid = (uint32_t)frame->arg2;
+            vibeos_handle_table_t *caller_handles = &kernel->handles;
             uint32_t handle;
-            if (vibeos_handle_alloc(&kernel->handles, (uint32_t)frame->arg0, &handle) != 0) {
+            if (caller_pid != 0 && vibeos_proc_handles(&kernel->proc_table, caller_pid, &caller_handles) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            if (vibeos_handle_alloc(caller_handles, (uint32_t)frame->arg0, &handle) != 0) {
                 frame->result = -1;
                 return -1;
             }
@@ -53,12 +67,20 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             return 0;
         }
         case VIBEOS_SYSCALL_HANDLE_CLOSE:
-            if (vibeos_handle_close(&kernel->handles, (uint32_t)frame->arg0) != 0) {
+        {
+            uint32_t caller_pid = (uint32_t)frame->arg2;
+            vibeos_handle_table_t *caller_handles = &kernel->handles;
+            if (caller_pid != 0 && vibeos_proc_handles(&kernel->proc_table, caller_pid, &caller_handles) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            if (vibeos_handle_close(caller_handles, (uint32_t)frame->arg0) != 0) {
                 frame->result = -1;
                 return -1;
             }
             frame->result = 0;
             return 0;
+        }
         case VIBEOS_SYSCALL_WAITSET_ADD_EVENT:
             if (kernel_waitset_owner_pid == 0) {
                 kernel_waitset_owner_pid = (uint32_t)frame->arg1;
