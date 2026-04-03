@@ -78,7 +78,7 @@
 
 ### System Call Interface
 - Responsibilities: user-kernel boundary ABI
-- Main files: `kernel/core/syscall.c`, `kernel/core/syscall_policy.c`, `include/vibeos/syscall.h`, `include/vibeos/syscall_policy.h`
+- Main files: `kernel/core/syscall.c`, `kernel/core/syscall_policy.c`, `include/vibeos/syscall.h`, `include/vibeos/syscall_abi.h`, `include/vibeos/syscall_policy.h`
 - Public interfaces: `vibeos_syscall_dispatch`
 - Dependencies: kernel object model, IPC, VM
 
@@ -166,6 +166,7 @@ include/vibeos/
   services.h
   service_ipc.h
   syscall.h
+  syscall_abi.h
   syscall_policy.h
   timer.h
   trap.h
@@ -347,9 +348,11 @@ Implemented:
 - waitset add-event syscall stub
 - handle-rights enforcement for sensitive syscall operations
 - centralized syscall policy lookup for required handle rights
+- ABI v0 argument mapping formalized through shared helpers (`syscall_abi.h`)
 Files Created/Modified:
 - `kernel/core/syscall.c`
 - `include/vibeos/syscall.h`
+- `include/vibeos/syscall_abi.h`
 - `kernel/core/syscall_policy.c`
 - `include/vibeos/syscall_policy.h`
 Pending:
