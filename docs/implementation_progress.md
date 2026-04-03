@@ -66,20 +66,20 @@
 
 ### Virtual Memory
 - Responsibilities: address space and mapping policy
-- Main files: pending (`kernel/mm/` future `vm.c`)
-- Public interfaces: pending
+- Main files: `kernel/mm/vm.c`, `include/vibeos/vm.h`
+- Public interfaces: `vibeos_vm_init`, `vibeos_vm_map`, `vibeos_vm_unmap`, `vibeos_vm_protect`, `vibeos_vm_lookup`
 - Dependencies: memory manager, interrupt handling
 
 ### Interrupt Handling
 - Responsibilities: trap/interrupt entry and dispatch
-- Main files: pending (`kernel/arch/x86_64/` future interrupt code)
-- Public interfaces: pending
+- Main files: `kernel/core/interrupts.c`, `include/vibeos/interrupts.h`
+- Public interfaces: `vibeos_intc_init`, `vibeos_intc_register`, `vibeos_intc_dispatch`
 - Dependencies: HAL, scheduler, timer
 
 ### System Call Interface
 - Responsibilities: user-kernel boundary ABI
-- Main files: pending
-- Public interfaces: pending
+- Main files: `kernel/core/syscall.c`, `include/vibeos/syscall.h`
+- Public interfaces: `vibeos_syscall_dispatch`
 - Dependencies: kernel object model, IPC, VM
 
 ### IPC Subsystem
@@ -96,14 +96,14 @@
 
 ### Filesystem Layer
 - Responsibilities: VFS contract and filesystem service boundaries
-- Main files: pending under `user/fs/`
-- Public interfaces: pending
+- Main files: `user/fs/vfs_service.c`, `include/vibeos/services.h`
+- Public interfaces: `vibeos_vfs_start`
 - Dependencies: IPC, memory objects, driver framework
 
 ### Networking Stack
 - Responsibilities: socket and protocol layers
-- Main files: pending under `user/net/`
-- Public interfaces: pending
+- Main files: `user/net/network_service.c`, `include/vibeos/services.h`
+- Public interfaces: `vibeos_net_start`
 - Dependencies: scheduler, memory manager, drivers
 
 ### User Space Interface
@@ -114,8 +114,8 @@
 
 ### Init System
 - Responsibilities: first user-space task and service orchestration
-- Main files: pending under `user/init/` and `user/servicemgr/`
-- Public interfaces: pending
+- Main files: `user/init/init_system.c`, `include/vibeos/services.h`
+- Public interfaces: `vibeos_init_start`
 - Dependencies: process model, IPC, VM
 
 ## Directory Structure (implemented modules)
@@ -130,11 +130,20 @@ include/vibeos/
 
 kernel/
   core/kmain.c
+  core/interrupts.c
+  core/syscall.c
   mm/pmm.c
+  mm/vm.c
   sched/scheduler.c
   ipc/event.c
   ipc/channel.c
   arch/x86_64/boot_stub.c
+
+user/
+  init/init_system.c
+  devmgr/device_manager.c
+  fs/vfs_service.c
+  net/network_service.c
 
 tests/kernel/
   kernel_tests.c
@@ -225,6 +234,59 @@ Pending:
 - handle transfer semantics
 - wait sets and timeout policies
 
+Module: Virtual Memory
+Status: Partial
+Implemented:
+- address-space object initialization
+- map, unmap, protect, and lookup primitives
+Files Created/Modified:
+- `kernel/mm/vm.c`
+- `include/vibeos/vm.h`
+Pending:
+- page-table backend integration
+- copy-on-write fault path
+
+Module: Interrupt Handling
+Status: Partial
+Implemented:
+- interrupt controller registration and dispatch primitives
+- per-IRQ counters for diagnostics
+Files Created/Modified:
+- `kernel/core/interrupts.c`
+- `include/vibeos/interrupts.h`
+Pending:
+- architecture-specific trap/IDT integration
+- timer IRQ source wiring
+
+Module: System Call Interface
+Status: Partial
+Implemented:
+- syscall frame model
+- dispatcher with initial syscall IDs
+Files Created/Modified:
+- `kernel/core/syscall.c`
+- `include/vibeos/syscall.h`
+Pending:
+- process/thread syscall groups
+- handle-based object syscall surface
+
+Module: User Space Services
+Status: Partial
+Implemented:
+- init service stub
+- device manager stub
+- filesystem service stub
+- networking service stub
+Files Created/Modified:
+- `user/init/init_system.c`
+- `user/devmgr/device_manager.c`
+- `user/fs/vfs_service.c`
+- `user/net/network_service.c`
+- `include/vibeos/services.h`
+Pending:
+- service manager process supervision
+- real IPC contracts between services
+
 ## System Implementation Status
 
 | Component | Status | Notes |
@@ -233,12 +295,12 @@ Pending:
 | Kernel Core | In Progress | `kmain` bootstrap logic implemented |
 | Process Scheduler | In Progress | queue primitives ready, no timer preemption yet |
 | Memory Manager | In Progress | bump allocator implemented |
-| Virtual Memory | Pending | address-space manager not implemented yet |
-| Interrupt Handling | Pending | trap and IDT layer not implemented yet |
-| System Call Interface | Pending | syscall ABI stubs not implemented yet |
+| Virtual Memory | In Progress | address-space mapping primitives implemented |
+| Interrupt Handling | In Progress | interrupt controller dispatch primitives implemented |
+| System Call Interface | In Progress | minimal syscall dispatcher implemented |
 | IPC Subsystem | In Progress | event + channel primitives implemented |
 | Driver Framework | Pending | user-space driver host not implemented yet |
-| Filesystem Layer | Pending | VFS/service code not implemented yet |
-| Networking Stack | Pending | socket/protocol stack not implemented yet |
+| Filesystem Layer | In Progress | VFS service stub implemented |
+| Networking Stack | In Progress | network service stub implemented |
 | User Space Interface | Pending | native runtime API layer not implemented yet |
-| Init System | Pending | first user-space launch path not implemented yet |
+| Init System | In Progress | init service stub implemented |
