@@ -1,0 +1,136 @@
+#ifndef VIBEOS_SYSCALL_ABI_H
+#define VIBEOS_SYSCALL_ABI_H
+
+#include <stdint.h>
+
+#include "vibeos/syscall.h"
+
+/*
+ * Syscall ABI v0 mapping.
+ *
+ * Notes:
+ * - The frame layout remains fixed (id, arg0, arg1, arg2, result).
+ * - Argument semantics are syscall-group-specific and are centralized here.
+ */
+
+static inline void vibeos_syscall_frame_reset(vibeos_syscall_frame_t *f) {
+    if (!f) {
+        return;
+    }
+    f->id = 0;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = 0;
+    f->result = 0;
+}
+
+/* Common */
+static inline uint32_t vibeos_syscall_handle_arg(const vibeos_syscall_frame_t *f) {
+    return f ? (uint32_t)f->arg0 : 0;
+}
+
+/* Caller identity lane for handle-scoped operations in ABI v0. */
+static inline uint32_t vibeos_syscall_caller_pid(const vibeos_syscall_frame_t *f) {
+    return f ? (uint32_t)f->arg2 : 0;
+}
+
+/* Handle API */
+static inline void vibeos_syscall_make_handle_alloc(vibeos_syscall_frame_t *f, uint32_t rights, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_HANDLE_ALLOC;
+    f->arg0 = rights;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
+static inline void vibeos_syscall_make_handle_close(vibeos_syscall_frame_t *f, uint32_t handle, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_HANDLE_CLOSE;
+    f->arg0 = handle;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
+/* Event API */
+static inline void vibeos_syscall_make_event_signal(vibeos_syscall_frame_t *f, uint32_t handle) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_EVENT_SIGNAL;
+    f->arg0 = handle;
+    f->arg1 = 0;
+    f->arg2 = 0;
+}
+
+/* Process API */
+static inline void vibeos_syscall_make_process_spawn(vibeos_syscall_frame_t *f, uint32_t parent_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_PROCESS_SPAWN;
+    f->arg0 = parent_pid;
+    f->arg1 = 0;
+    f->arg2 = 0;
+}
+
+static inline void vibeos_syscall_make_thread_create(vibeos_syscall_frame_t *f, uint32_t pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_THREAD_CREATE;
+    f->arg0 = pid;
+    f->arg1 = 0;
+    f->arg2 = 0;
+}
+
+/* VM API */
+static inline void vibeos_syscall_make_vm_map(vibeos_syscall_frame_t *f, uint64_t va, uint64_t pa, uint64_t len) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_VM_MAP;
+    f->arg0 = va;
+    f->arg1 = pa;
+    f->arg2 = len;
+}
+
+static inline void vibeos_syscall_make_vm_unmap(vibeos_syscall_frame_t *f, uint64_t va, uint64_t len) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_VM_UNMAP;
+    f->arg0 = va;
+    f->arg1 = len;
+    f->arg2 = 0;
+}
+
+static inline void vibeos_syscall_make_vm_protect(vibeos_syscall_frame_t *f, uint64_t va, uint64_t len, uint32_t perms) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_VM_PROTECT;
+    f->arg0 = va;
+    f->arg1 = len;
+    f->arg2 = perms;
+}
+
+/* Waitset API */
+static inline uint32_t vibeos_syscall_waitset_owner_pid(const vibeos_syscall_frame_t *f) {
+    return f ? (uint32_t)f->arg1 : 0;
+}
+
+static inline void vibeos_syscall_make_waitset_add_event(vibeos_syscall_frame_t *f, uint32_t event_handle, uint32_t owner_pid, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_WAITSET_ADD_EVENT;
+    f->arg0 = event_handle;
+    f->arg1 = owner_pid;
+    f->arg2 = caller_pid;
+}
+
+#endif

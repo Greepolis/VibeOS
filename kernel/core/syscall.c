@@ -1,5 +1,6 @@
 #include "vibeos/kernel.h"
 #include "vibeos/syscall.h"
+#include "vibeos/syscall_abi.h"
 #include "vibeos/syscall_policy.h"
 #include "vibeos/waitset.h"
 
@@ -21,7 +22,7 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
     }
 
     {
-        uint32_t caller_pid = (uint32_t)frame->arg2;
+        uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
         vibeos_handle_table_t *caller_handles = &kernel->handles;
         vibeos_syscall_policy_t policy = vibeos_syscall_policy_for((vibeos_syscall_id_t)frame->id);
         if (policy.requires_handle) {
@@ -31,7 +32,7 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
                     return -1;
                 }
             }
-            if (!vibeos_handle_has_rights(caller_handles, (uint32_t)frame->arg0, policy.required_rights)) {
+            if (!vibeos_handle_has_rights(caller_handles, vibeos_syscall_handle_arg(frame), policy.required_rights)) {
                 frame->result = -1;
                 return -1;
             }
@@ -52,7 +53,7 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             return 0;
         case VIBEOS_SYSCALL_HANDLE_ALLOC:
         {
-            uint32_t caller_pid = (uint32_t)frame->arg2;
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
             vibeos_handle_table_t *caller_handles = &kernel->handles;
             uint32_t handle;
             if (caller_pid != 0 && vibeos_proc_handles(&kernel->proc_table, caller_pid, &caller_handles) != 0) {
@@ -68,7 +69,7 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
         }
         case VIBEOS_SYSCALL_HANDLE_CLOSE:
         {
-            uint32_t caller_pid = (uint32_t)frame->arg2;
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
             vibeos_handle_table_t *caller_handles = &kernel->handles;
             if (caller_pid != 0 && vibeos_proc_handles(&kernel->proc_table, caller_pid, &caller_handles) != 0) {
                 frame->result = -1;
@@ -83,13 +84,13 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
         }
         case VIBEOS_SYSCALL_WAITSET_ADD_EVENT:
             if (kernel_waitset_owner_pid == 0) {
-                kernel_waitset_owner_pid = (uint32_t)frame->arg1;
+                kernel_waitset_owner_pid = vibeos_syscall_waitset_owner_pid(frame);
                 if (kernel_waitset_owner_pid == 0 || vibeos_waitset_init_owned(&kernel_waitset, kernel_waitset_owner_pid) != 0) {
                     frame->result = -1;
                     return -1;
                 }
             }
-            if (vibeos_waitset_add_owned(&kernel_waitset, &kernel->boot_event, (uint32_t)frame->arg1) != 0) {
+            if (vibeos_waitset_add_owned(&kernel_waitset, &kernel->boot_event, vibeos_syscall_waitset_owner_pid(frame)) != 0) {
                 frame->result = -1;
                 return -1;
             }

@@ -28,6 +28,26 @@ Compatibility layers translate foreign application behavior into this native mod
 - structured error codes with deterministic semantics
 - capability negotiation for optional features
 
+## ABI v0 argument mapping (frozen baseline)
+
+`vibeos_syscall_frame_t` keeps the fixed layout `(id, arg0, arg1, arg2, result)`.
+
+Argument semantics for current syscall groups:
+
+| Syscall | arg0 | arg1 | arg2 |
+| --- | --- | --- | --- |
+| `HANDLE_ALLOC` | rights mask | reserved (`0`) | caller pid (`0` = kernel context) |
+| `HANDLE_CLOSE` | handle id | reserved (`0`) | caller pid (`0` = kernel context) |
+| `EVENT_SIGNAL` | event handle | reserved (`0`) | reserved (`0`) |
+| `WAITSET_ADD_EVENT` | event handle | waitset owner pid | caller pid |
+| `PROCESS_SPAWN` | parent pid | reserved (`0`) | reserved (`0`) |
+| `THREAD_CREATE` | pid | reserved (`0`) | reserved (`0`) |
+| `VM_MAP` | va | pa | len |
+| `VM_UNMAP` | va | len | reserved (`0`) |
+| `VM_PROTECT` | va | len | perms |
+
+Implementation helpers for ABI v0 are centralized in `include/vibeos/syscall_abi.h` and should be preferred over direct field writes in kernel tests and user-space glue.
+
 ## ABI stability strategy
 
 - native ABI is versioned

@@ -11,6 +11,7 @@
 #include "vibeos/service_ipc.h"
 #include "vibeos/policy.h"
 #include "vibeos/syscall.h"
+#include "vibeos/syscall_abi.h"
 #include "vibeos/timer.h"
 #include "vibeos/net.h"
 #include "vibeos/trap.h"
@@ -196,10 +197,7 @@ static int test_syscalls(void) {
     memset(&frame, 0, sizeof(frame));
     vibeos_event_init(&kernel.boot_event);
 
-    frame.id = VIBEOS_SYSCALL_HANDLE_ALLOC;
-    frame.arg0 = VIBEOS_HANDLE_RIGHT_SIGNAL | VIBEOS_HANDLE_RIGHT_MANAGE;
-    frame.arg1 = 0;
-    frame.arg2 = 0;
+    vibeos_syscall_make_handle_alloc(&frame, VIBEOS_HANDLE_RIGHT_SIGNAL | VIBEOS_HANDLE_RIGHT_MANAGE, 0);
     if (vibeos_handle_table_init(&kernel.handles) != 0) {
         return -1;
     }
@@ -207,17 +205,11 @@ static int test_syscalls(void) {
         return -1;
     }
     signal_handle = (uint32_t)frame.result;
-    frame.id = VIBEOS_SYSCALL_EVENT_SIGNAL;
-    frame.arg0 = 0;
-    frame.arg1 = 0;
-    frame.arg2 = 0;
+    vibeos_syscall_make_event_signal(&frame, 0);
     if (vibeos_syscall_dispatch(&kernel, &frame) == 0) {
         return -1;
     }
-    frame.id = VIBEOS_SYSCALL_EVENT_SIGNAL;
-    frame.arg0 = (uint64_t)signal_handle;
-    frame.arg1 = 0;
-    frame.arg2 = 0;
+    vibeos_syscall_make_event_signal(&frame, signal_handle);
     frame.result = -1;
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
         return -1;
@@ -225,10 +217,7 @@ static int test_syscalls(void) {
     if (!vibeos_event_is_signaled(&kernel.boot_event)) {
         return -1;
     }
-    frame.id = VIBEOS_SYSCALL_PROCESS_SPAWN;
-    frame.arg0 = 0;
-    frame.arg1 = 0;
-    frame.arg2 = 0;
+    vibeos_syscall_make_process_spawn(&frame, 0);
     if (vibeos_proc_init(&kernel.proc_table) != 0) {
         return -1;
     }
@@ -236,85 +225,52 @@ static int test_syscalls(void) {
         return -1;
     }
     pid1 = (uint32_t)frame.result;
-    frame.id = VIBEOS_SYSCALL_PROCESS_SPAWN;
-    frame.arg0 = pid1;
-    frame.arg1 = 0;
-    frame.arg2 = 0;
+    vibeos_syscall_make_process_spawn(&frame, pid1);
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 2) {
         return -1;
     }
     pid2 = (uint32_t)frame.result;
-    frame.id = VIBEOS_SYSCALL_THREAD_CREATE;
-    frame.arg0 = pid1;
-    frame.arg1 = 0;
-    frame.arg2 = 0;
+    vibeos_syscall_make_thread_create(&frame, pid1);
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 1) {
         return -1;
     }
-    frame.id = VIBEOS_SYSCALL_HANDLE_ALLOC;
-    frame.arg0 = VIBEOS_HANDLE_RIGHT_SIGNAL | VIBEOS_HANDLE_RIGHT_MANAGE;
-    frame.arg1 = 0;
-    frame.arg2 = pid1;
+    vibeos_syscall_make_handle_alloc(&frame, VIBEOS_HANDLE_RIGHT_SIGNAL | VIBEOS_HANDLE_RIGHT_MANAGE, pid1);
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result <= 0) {
         return -1;
     }
     p1_handle = (uint32_t)frame.result;
-    frame.id = VIBEOS_SYSCALL_HANDLE_CLOSE;
-    frame.arg0 = (uint64_t)p1_handle;
-    frame.arg1 = 0;
-    frame.arg2 = pid2;
+    vibeos_syscall_make_handle_close(&frame, p1_handle, pid2);
     if (vibeos_syscall_dispatch(&kernel, &frame) == 0) {
         return -1;
     }
-    frame.id = VIBEOS_SYSCALL_HANDLE_CLOSE;
-    frame.arg0 = (uint64_t)p1_handle;
-    frame.arg1 = 0;
-    frame.arg2 = pid1;
+    vibeos_syscall_make_handle_close(&frame, p1_handle, pid1);
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
         return -1;
     }
-    frame.id = VIBEOS_SYSCALL_VM_MAP;
-    frame.arg0 = 0x800000;
-    frame.arg1 = 0x300000;
-    frame.arg2 = 0x1000;
+    vibeos_syscall_make_vm_map(&frame, 0x800000, 0x300000, 0x1000);
     if (vibeos_vm_init(&kernel.kernel_aspace) != 0) {
         return -1;
     }
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
         return -1;
     }
-    frame.id = VIBEOS_SYSCALL_VM_PROTECT;
-    frame.arg0 = 0x800000;
-    frame.arg1 = 0x1000;
-    frame.arg2 = VIBEOS_VM_PERM_READ;
+    vibeos_syscall_make_vm_protect(&frame, 0x800000, 0x1000, VIBEOS_VM_PERM_READ);
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
         return -1;
     }
-    frame.id = VIBEOS_SYSCALL_VM_UNMAP;
-    frame.arg0 = 0x800000;
-    frame.arg1 = 0x1000;
-    frame.arg2 = 0;
+    vibeos_syscall_make_vm_unmap(&frame, 0x800000, 0x1000);
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
         return -1;
     }
-    frame.id = VIBEOS_SYSCALL_HANDLE_ALLOC;
-    frame.arg0 = VIBEOS_HANDLE_RIGHT_SIGNAL;
-    frame.arg1 = 0;
-    frame.arg2 = pid1;
+    vibeos_syscall_make_handle_alloc(&frame, VIBEOS_HANDLE_RIGHT_SIGNAL, pid1);
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result <= 0) {
         return -1;
     }
-    frame.id = VIBEOS_SYSCALL_WAITSET_ADD_EVENT;
-    frame.arg0 = (uint64_t)frame.result;
-    frame.arg1 = 100;
-    frame.arg2 = pid1;
+    vibeos_syscall_make_waitset_add_event(&frame, (uint32_t)frame.result, 100, pid1);
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
         return -1;
     }
-    frame.id = VIBEOS_SYSCALL_WAITSET_ADD_EVENT;
-    frame.arg0 = (uint64_t)frame.result;
-    frame.arg1 = 200;
-    frame.arg2 = pid1;
+    vibeos_syscall_make_waitset_add_event(&frame, (uint32_t)frame.result, 200, pid1);
     if (vibeos_syscall_dispatch(&kernel, &frame) == 0) {
         return -1;
     }
