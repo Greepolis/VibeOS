@@ -11,9 +11,11 @@ add_library(vibeos_kernel_core STATIC
     kernel/core/kmain.c
     kernel/mm/pmm.c
     kernel/mm/vm.c
+    kernel/proc/process.c
     kernel/sched/scheduler.c
     kernel/ipc/event.c
     kernel/ipc/channel.c
+    kernel/ipc/waitset.c
     kernel/core/interrupts.c
     kernel/core/syscall.c
     kernel/time/timer.c

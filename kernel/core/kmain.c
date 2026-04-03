@@ -56,6 +56,10 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
         kernel->boot_state.last_error_code = 1002;
         return -1;
     }
+    if (vibeos_proc_init(&kernel->proc_table) != 0) {
+        kernel->boot_state.last_error_code = 1007;
+        return -1;
+    }
     if (vibeos_timer_init(&kernel->timer, 1000) != 0) {
         kernel->boot_state.last_error_code = 1004;
         return -1;

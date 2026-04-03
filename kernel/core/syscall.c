@@ -19,11 +19,25 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             frame->result = 0;
             return 0;
         case VIBEOS_SYSCALL_PROCESS_SPAWN:
-            frame->result = (int64_t)(frame->arg0 + 1u);
+        {
+            uint32_t pid;
+            if (vibeos_proc_spawn(&kernel->proc_table, (uint32_t)frame->arg0, &pid) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = (int64_t)pid;
             return 0;
+        }
         case VIBEOS_SYSCALL_THREAD_CREATE:
-            frame->result = (int64_t)(frame->arg0 + 1u);
+        {
+            uint32_t tid;
+            if (vibeos_thread_create(&kernel->proc_table, (uint32_t)frame->arg0, &tid) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = (int64_t)tid;
             return 0;
+        }
         default:
             frame->result = -1;
             return -1;

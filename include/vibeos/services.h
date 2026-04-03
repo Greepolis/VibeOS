@@ -28,10 +28,15 @@ typedef struct vibeos_net_state {
     uint32_t interfaces_online;
 } vibeos_net_state_t;
 
+typedef struct vibeos_servicemgr_state {
+    vibeos_service_state_t state;
+    uint32_t supervised_count;
+} vibeos_servicemgr_state_t;
+
 int vibeos_init_start(vibeos_init_state_t *state);
 int vibeos_devmgr_start(vibeos_devmgr_state_t *state);
 int vibeos_vfs_start(vibeos_vfs_state_t *state);
 int vibeos_net_start(vibeos_net_state_t *state);
-int vibeos_servicemgr_start(vibeos_init_state_t *init_state, vibeos_devmgr_state_t *devmgr_state, vibeos_vfs_state_t *vfs_state, vibeos_net_state_t *net_state);
+int vibeos_servicemgr_start(vibeos_servicemgr_state_t *mgr, vibeos_init_state_t *init_state, vibeos_devmgr_state_t *devmgr_state, vibeos_vfs_state_t *vfs_state, vibeos_net_state_t *net_state);
 
 #endif

@@ -9,6 +9,7 @@
 #include "vibeos/timer.h"
 #include "vibeos/user_api.h"
 #include "vibeos/vm.h"
+#include "vibeos/waitset.h"
 
 static void irq_handler(uint32_t irq, void *ctx) {
     uint32_t *acc = (uint32_t *)ctx;
@@ -183,13 +184,16 @@ static int test_syscalls(void) {
         return -1;
     }
     frame.id = VIBEOS_SYSCALL_PROCESS_SPAWN;
-    frame.arg0 = 41;
-    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 42) {
+    frame.arg0 = 0;
+    if (vibeos_proc_init(&kernel.proc_table) != 0) {
+        return -1;
+    }
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 1) {
         return -1;
     }
     frame.id = VIBEOS_SYSCALL_THREAD_CREATE;
-    frame.arg0 = 7;
-    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 8) {
+    frame.arg0 = 1;
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 1) {
         return -1;
     }
     return 0;
@@ -230,15 +234,19 @@ static int test_services(void) {
 }
 
 static int test_servicemgr_and_drivers(void) {
+    vibeos_servicemgr_state_t mgr;
     vibeos_init_state_t init_state;
     vibeos_devmgr_state_t devmgr_state;
     vibeos_vfs_state_t vfs_state;
     vibeos_net_state_t net_state;
     vibeos_driver_framework_t fw;
-    if (vibeos_servicemgr_start(&init_state, &devmgr_state, &vfs_state, &net_state) != 0) {
+    if (vibeos_servicemgr_start(&mgr, &init_state, &devmgr_state, &vfs_state, &net_state) != 0) {
         return -1;
     }
     if (init_state.started_services != 4) {
+        return -1;
+    }
+    if (mgr.supervised_count != 4 || mgr.state != VIBEOS_SERVICE_RUNNING) {
         return -1;
     }
     if (vibeos_driver_framework_init(&fw) != 0) {
@@ -307,6 +315,23 @@ static int test_timer_and_idt(void) {
     return 0;
 }
 
+static int test_waitset(void) {
+    vibeos_waitset_t waitset;
+    vibeos_event_t ev;
+    size_t count = 0;
+    vibeos_event_init(&ev);
+    if (vibeos_waitset_init(&waitset) != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_add(&waitset, &ev) != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_count(&waitset, &count) != 0 || count != 1) {
+        return -1;
+    }
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
     failures += test_pmm() != 0;
@@ -320,6 +345,7 @@ int main(void) {
     failures += test_servicemgr_and_drivers() != 0;
     failures += test_user_api_and_bootloader() != 0;
     failures += test_timer_and_idt() != 0;
+    failures += test_waitset() != 0;
 
     if (failures == 0) {
         puts("ALL_TESTS_PASS");
