@@ -55,7 +55,7 @@
 ### Process Scheduler
 - Responsibilities: runqueue management and dispatch primitive
 - Main files: `kernel/sched/scheduler.c`, `include/vibeos/scheduler.h`
-- Public interfaces: `vibeos_sched_init`, `vibeos_sched_enqueue`, `vibeos_sched_next`
+- Public interfaces: `vibeos_sched_init`, `vibeos_sched_enqueue`, `vibeos_sched_next`, `vibeos_sched_tick`
 - Dependencies: thread model and CPU topology info
 
 ### Memory Manager
@@ -72,8 +72,8 @@
 
 ### Interrupt Handling
 - Responsibilities: trap/interrupt entry and dispatch
-- Main files: `kernel/core/interrupts.c`, `include/vibeos/interrupts.h`
-- Public interfaces: `vibeos_intc_init`, `vibeos_intc_register`, `vibeos_intc_dispatch`
+- Main files: `kernel/core/interrupts.c`, `kernel/arch/x86_64/idt.c`, `include/vibeos/interrupts.h`, `include/vibeos/arch_x86_64.h`
+- Public interfaces: `vibeos_intc_init`, `vibeos_intc_register`, `vibeos_intc_dispatch`, `vibeos_x86_64_idt_*`
 - Dependencies: HAL, scheduler, timer
 
 ### System Call Interface
@@ -125,12 +125,14 @@ include/vibeos/
   boot.h
   bootloader.h
   drivers.h
+  arch_x86_64.h
   kernel.h
   mm.h
   scheduler.h
   ipc.h
   services.h
   syscall.h
+  timer.h
   user_api.h
   vm.h
 
@@ -141,8 +143,10 @@ kernel/
   mm/pmm.c
   mm/vm.c
   sched/scheduler.c
+  time/timer.c
   ipc/event.c
   ipc/channel.c
+  arch/x86_64/idt.c
   arch/x86_64/boot_stub.c
 
 user/
@@ -223,11 +227,12 @@ Status: Partial
 Implemented:
 - per-CPU-ready runqueue structure
 - enqueue and dequeue primitives
+- tick-based preemption primitives
 Files Created/Modified:
 - `kernel/sched/scheduler.c`
 - `include/vibeos/scheduler.h`
 Pending:
-- preemption timers
+- full timeslice policy integration with runtime thread lifecycle
 - priority aging and balancing policies
 
 Module: IPC Subsystem
@@ -260,9 +265,12 @@ Status: Partial
 Implemented:
 - interrupt controller registration and dispatch primitives
 - per-IRQ counters for diagnostics
+- x86_64 IDT presence table stub and timer vector setup
 Files Created/Modified:
 - `kernel/core/interrupts.c`
 - `include/vibeos/interrupts.h`
+- `kernel/arch/x86_64/idt.c`
+- `include/vibeos/arch_x86_64.h`
 Pending:
 - architecture-specific trap/IDT integration
 - timer IRQ source wiring
@@ -272,12 +280,23 @@ Status: Partial
 Implemented:
 - syscall frame model
 - dispatcher with initial syscall IDs
+- process/thread syscall group stubs
 Files Created/Modified:
 - `kernel/core/syscall.c`
 - `include/vibeos/syscall.h`
 Pending:
-- process/thread syscall groups
 - handle-based object syscall surface
+
+Module: Timer Subsystem
+Status: Partial
+Implemented:
+- timer tick counter and frequency state
+Files Created/Modified:
+- `kernel/time/timer.c`
+- `include/vibeos/timer.h`
+Pending:
+- hardware timer backend wiring
+- periodic interrupt source integration
 
 Module: User Space Services
 Status: Partial
@@ -319,11 +338,11 @@ Pending:
 | --- | --- | --- |
 | Bootloader | In Progress | boot info builder stub implemented |
 | Kernel Core | In Progress | `kmain` bootstrap logic implemented |
-| Process Scheduler | In Progress | queue primitives ready, no timer preemption yet |
+| Process Scheduler | In Progress | queue + tick preemption primitives implemented |
 | Memory Manager | In Progress | bump allocator implemented |
 | Virtual Memory | In Progress | address-space mapping primitives implemented |
-| Interrupt Handling | In Progress | interrupt controller dispatch primitives implemented |
-| System Call Interface | In Progress | minimal syscall dispatcher implemented |
+| Interrupt Handling | In Progress | controller + x86_64 IDT stub implemented |
+| System Call Interface | In Progress | dispatcher + process/thread syscall stubs |
 | IPC Subsystem | In Progress | event + channel primitives implemented |
 | Driver Framework | In Progress | driver framework registration stubs implemented |
 | Filesystem Layer | In Progress | VFS service stub implemented |
