@@ -39,13 +39,15 @@ This balances performance, fault isolation, portability, and long-term compatibi
 
 ## Current phase
 
-Phase 1: architecture definition and project scaffolding
+Phase 2: implementation bootstrap (build, kernel core primitives, automated feedback harness)
 
 See:
 
 - `docs/software_architecture_specification.md`
+- `docs/implementation_progress.md`
 - `docs/adrs/README.md`
 - `docs/test_automation_spec.md`
+- `docs/test_feedback_profiles.md`
 - `docs/vision.md`
 - `docs/architecture.md`
 - `docs/ipc.md`

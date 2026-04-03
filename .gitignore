@@ -39,3 +39,9 @@
 
 # debug information files
 *.dwo
+
+# Build and test artifacts
+build/
+artifacts/*.log
+artifacts/*.json
+artifacts/*.txt

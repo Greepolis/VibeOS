@@ -1,0 +1,36 @@
+cmake_minimum_required(VERSION 3.21)
+project(VibeOS C)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+
+option(VIBEOS_BUILD_TESTS "Build VibeOS host-side tests" ON)
+
+add_library(vibeos_kernel_core STATIC
+    kernel/core/kmain.c
+    kernel/mm/pmm.c
+    kernel/sched/scheduler.c
+    kernel/ipc/event.c
+    kernel/ipc/channel.c
+    kernel/arch/x86_64/boot_stub.c
+)
+
+target_include_directories(vibeos_kernel_core
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_compile_options(vibeos_kernel_core PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+)
+
+if(VIBEOS_BUILD_TESTS)
+    add_executable(vibeos_kernel_tests
+        tests/kernel/kernel_tests.c
+    )
+    target_link_libraries(vibeos_kernel_tests PRIVATE vibeos_kernel_core)
+    target_include_directories(vibeos_kernel_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+endif()
