@@ -7,6 +7,11 @@
 - measure compatibility progress with repeatable suites
 - keep bring-up fast enough for daily development
 
+See also:
+
+- `docs/test_automation_spec.md`
+- `docs/test_feedback_profiles.md`
+
 ## Test layers
 
 ### Unit tests

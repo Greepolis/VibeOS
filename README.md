@@ -44,11 +44,14 @@ Phase 1: architecture definition and project scaffolding
 See:
 
 - `docs/software_architecture_specification.md`
+- `docs/adrs/README.md`
+- `docs/test_automation_spec.md`
 - `docs/vision.md`
 - `docs/architecture.md`
 - `docs/ipc.md`
 - `docs/toolchain.md`
 - `docs/testing_strategy.md`
 - `roadmap/development_phases.md`
+- `roadmap/phase2_technical_backlog.md`
 - `roadmap/milestones.md`
 - `roadmap/risk_register.md`
