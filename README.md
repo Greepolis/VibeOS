@@ -43,6 +43,7 @@ Phase 1: architecture definition and project scaffolding
 
 See:
 
+- `docs/software_architecture_specification.md`
 - `docs/vision.md`
 - `docs/architecture.md`
 - `docs/ipc.md`
