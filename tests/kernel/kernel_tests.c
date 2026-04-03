@@ -779,6 +779,55 @@ static int test_process_lifecycle(void) {
     return 0;
 }
 
+static int test_process_thread_object_handles(void) {
+    vibeos_process_table_t pt;
+    vibeos_object_type_t type = VIBEOS_OBJECT_NONE;
+    uint32_t object_id = 0;
+    uint32_t p1 = 0;
+    uint32_t p2 = 0;
+    uint32_t p3 = 0;
+    uint32_t tid2 = 0;
+    uint32_t h_proc = 0;
+    uint32_t h_thread = 0;
+    if (vibeos_proc_init(&pt) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_spawn(&pt, 0, &p1) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_spawn(&pt, p1, &p2) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_spawn(&pt, 0, &p3) != 0) {
+        return -1;
+    }
+    if (vibeos_thread_create(&pt, p2, &tid2) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_bind_process_handle(&pt, p1, p2, VIBEOS_HANDLE_RIGHT_READ, &h_proc) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_resolve_object_handle(&pt, p1, h_proc, &type, &object_id) != 0) {
+        return -1;
+    }
+    if (type != VIBEOS_OBJECT_PROCESS || object_id != p2) {
+        return -1;
+    }
+    if (vibeos_proc_bind_thread_handle(&pt, p1, tid2, VIBEOS_HANDLE_RIGHT_READ, &h_thread) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_resolve_object_handle(&pt, p1, h_thread, &type, &object_id) != 0) {
+        return -1;
+    }
+    if (type != VIBEOS_OBJECT_THREAD || object_id != tid2) {
+        return -1;
+    }
+    if (vibeos_proc_bind_process_handle(&pt, p1, p3, VIBEOS_HANDLE_RIGHT_READ, &h_proc) == 0) {
+        return -1;
+    }
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
 #define RUN_TEST(fn) do { if ((fn)() != 0) { failures++; printf("FAIL:%s\n", #fn); } } while (0)
@@ -806,6 +855,7 @@ int main(void) {
     RUN_TEST(test_ipc_handle_transfer);
     RUN_TEST(test_cross_process_handle_dup_policy);
     RUN_TEST(test_process_lifecycle);
+    RUN_TEST(test_process_thread_object_handles);
 #undef RUN_TEST
 
     if (failures == 0) {
