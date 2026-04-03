@@ -6,6 +6,18 @@ int vibeos_waitset_init(vibeos_waitset_t *waitset) {
         return -1;
     }
     waitset->count = 0;
+    waitset->owner_pid = 0;
+    waitset->ownership_enforced = 0;
+    return 0;
+}
+
+int vibeos_waitset_init_owned(vibeos_waitset_t *waitset, uint32_t owner_pid) {
+    if (!waitset || owner_pid == 0) {
+        return -1;
+    }
+    waitset->count = 0;
+    waitset->owner_pid = owner_pid;
+    waitset->ownership_enforced = 1;
     return 0;
 }
 
@@ -17,11 +29,31 @@ int vibeos_waitset_add(vibeos_waitset_t *waitset, void *event_ptr) {
     return 0;
 }
 
+int vibeos_waitset_add_owned(vibeos_waitset_t *waitset, void *event_ptr, uint32_t caller_pid) {
+    if (!waitset || !event_ptr || waitset->count >= VIBEOS_WAITSET_MAX_EVENTS || caller_pid == 0) {
+        return -1;
+    }
+    if (waitset->ownership_enforced && waitset->owner_pid != caller_pid) {
+        return -1;
+    }
+    waitset->events[waitset->count++] = event_ptr;
+    return 0;
+}
+
 int vibeos_waitset_count(const vibeos_waitset_t *waitset, size_t *out_count) {
     if (!waitset || !out_count) {
         return -1;
     }
     *out_count = waitset->count;
+    return 0;
+}
+
+int vibeos_waitset_owner(const vibeos_waitset_t *waitset, uint32_t *out_owner_pid, uint32_t *out_enforced) {
+    if (!waitset || !out_owner_pid || !out_enforced) {
+        return -1;
+    }
+    *out_owner_pid = waitset->owner_pid;
+    *out_enforced = waitset->ownership_enforced;
     return 0;
 }
 

@@ -271,9 +271,16 @@ static int test_syscalls(void) {
     }
     frame.id = VIBEOS_SYSCALL_WAITSET_ADD_EVENT;
     frame.arg0 = (uint64_t)frame.result;
-    frame.arg1 = 0;
+    frame.arg1 = 100;
     frame.arg2 = 0;
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
+    frame.id = VIBEOS_SYSCALL_WAITSET_ADD_EVENT;
+    frame.arg0 = (uint64_t)frame.result;
+    frame.arg1 = 200;
+    frame.arg2 = 0;
+    if (vibeos_syscall_dispatch(&kernel, &frame) == 0) {
         return -1;
     }
     return 0;
@@ -471,6 +478,30 @@ static int test_waitset_timed(void) {
     return 0;
 }
 
+static int test_waitset_ownership(void) {
+    vibeos_waitset_t waitset;
+    vibeos_event_t ev;
+    uint32_t owner = 0;
+    uint32_t enforced = 0;
+    vibeos_event_init(&ev);
+    if (vibeos_waitset_init_owned(&waitset, 42) != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_owner(&waitset, &owner, &enforced) != 0) {
+        return -1;
+    }
+    if (owner != 42 || enforced != 1) {
+        return -1;
+    }
+    if (vibeos_waitset_add_owned(&waitset, &ev, 7) == 0) {
+        return -1;
+    }
+    if (vibeos_waitset_add_owned(&waitset, &ev, 42) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 static int test_filesystem_runtime(void) {
     vibeos_vfs_runtime_t rt;
     vibeos_policy_state_t policy;
@@ -640,6 +671,7 @@ int main(void) {
     RUN_TEST(test_timer_and_idt);
     RUN_TEST(test_waitset);
     RUN_TEST(test_waitset_timed);
+    RUN_TEST(test_waitset_ownership);
     RUN_TEST(test_filesystem_runtime);
     RUN_TEST(test_network_runtime);
     RUN_TEST(test_security_token);

@@ -5,6 +5,7 @@
 
 int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_frame_t *frame) {
     static vibeos_waitset_t kernel_waitset;
+    static uint32_t kernel_waitset_owner_pid = 0;
     static int waitset_initialized = 0;
 
     if (!kernel || !frame) {
@@ -59,7 +60,14 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             frame->result = 0;
             return 0;
         case VIBEOS_SYSCALL_WAITSET_ADD_EVENT:
-            if (vibeos_waitset_add(&kernel_waitset, &kernel->boot_event) != 0) {
+            if (kernel_waitset_owner_pid == 0) {
+                kernel_waitset_owner_pid = (uint32_t)frame->arg1;
+                if (kernel_waitset_owner_pid == 0 || vibeos_waitset_init_owned(&kernel_waitset, kernel_waitset_owner_pid) != 0) {
+                    frame->result = -1;
+                    return -1;
+                }
+            }
+            if (vibeos_waitset_add_owned(&kernel_waitset, &kernel->boot_event, (uint32_t)frame->arg1) != 0) {
                 frame->result = -1;
                 return -1;
             }
