@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "vibeos/scheduler.h"
+#include "vibeos/timer.h"
 
 #define VIBEOS_WAITSET_MAX_EVENTS 32u
 
@@ -18,5 +19,6 @@ int vibeos_waitset_add(vibeos_waitset_t *waitset, void *event_ptr);
 int vibeos_waitset_count(const vibeos_waitset_t *waitset, size_t *out_count);
 int vibeos_waitset_wait(vibeos_waitset_t *waitset, uint64_t timeout_ticks, size_t *out_index);
 int vibeos_waitset_wait_ex(vibeos_waitset_t *waitset, uint64_t timeout_ticks, size_t *out_index, vibeos_scheduler_t *sched, uint32_t cpu_id);
+int vibeos_waitset_wait_timed(vibeos_waitset_t *waitset, vibeos_timer_t *timer, uint64_t timeout_ticks, size_t *out_index, vibeos_scheduler_t *sched, uint32_t cpu_id);
 
 #endif

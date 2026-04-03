@@ -436,6 +436,41 @@ static int test_waitset(void) {
     return 0;
 }
 
+static int test_waitset_timed(void) {
+    vibeos_waitset_t waitset;
+    vibeos_scheduler_t sched;
+    vibeos_timer_t timer;
+    vibeos_event_t ev;
+    size_t idx = 0;
+    if (vibeos_sched_init(&sched, 1) != 0) {
+        return -1;
+    }
+    if (vibeos_timer_init(&timer, 1000) != 0) {
+        return -1;
+    }
+    vibeos_event_init(&ev);
+    if (vibeos_waitset_init(&waitset) != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_add(&waitset, &ev) != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_wait_timed(&waitset, &timer, 3, &idx, &sched, 0) == 0) {
+        return -1;
+    }
+    if (vibeos_timer_ticks(&timer) != 3 || vibeos_sched_wait_timeouts(&sched, 0) != 1) {
+        return -1;
+    }
+    vibeos_event_signal(&ev);
+    if (vibeos_waitset_wait_timed(&waitset, &timer, 3, &idx, &sched, 0) != 0) {
+        return -1;
+    }
+    if (idx != 0 || vibeos_sched_wait_wakes(&sched, 0) != 1) {
+        return -1;
+    }
+    return 0;
+}
+
 static int test_filesystem_runtime(void) {
     vibeos_vfs_runtime_t rt;
     vibeos_policy_state_t policy;
@@ -604,6 +639,7 @@ int main(void) {
     RUN_TEST(test_user_api_and_bootloader);
     RUN_TEST(test_timer_and_idt);
     RUN_TEST(test_waitset);
+    RUN_TEST(test_waitset_timed);
     RUN_TEST(test_filesystem_runtime);
     RUN_TEST(test_network_runtime);
     RUN_TEST(test_security_token);
