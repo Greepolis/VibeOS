@@ -82,9 +82,15 @@
 - Public interfaces: `vibeos_syscall_dispatch`
 - Dependencies: kernel object model, IPC, VM
 
+### Process Management
+- Responsibilities: process and thread identity lifecycle primitives
+- Main files: `kernel/proc/process.c`, `include/vibeos/proc.h`
+- Public interfaces: `vibeos_proc_init`, `vibeos_proc_spawn`, `vibeos_thread_create`
+- Dependencies: syscall interface, scheduler
+
 ### IPC Subsystem
 - Responsibilities: event signaling and channel messaging
-- Main files: `kernel/ipc/event.c`, `kernel/ipc/channel.c`, `include/vibeos/ipc.h`
+- Main files: `kernel/ipc/event.c`, `kernel/ipc/channel.c`, `kernel/ipc/waitset.c`, `include/vibeos/ipc.h`, `include/vibeos/waitset.h`
 - Public interfaces: `vibeos_event_*`, `vibeos_channel_*`
 - Dependencies: scheduler, handle model (future)
 
@@ -128,8 +134,10 @@ include/vibeos/
   arch_x86_64.h
   kernel.h
   mm.h
+  proc.h
   scheduler.h
   ipc.h
+  waitset.h
   services.h
   syscall.h
   timer.h
@@ -142,10 +150,12 @@ kernel/
   core/syscall.c
   mm/pmm.c
   mm/vm.c
+  proc/process.c
   sched/scheduler.c
   time/timer.c
   ipc/event.c
   ipc/channel.c
+  ipc/waitset.c
   arch/x86_64/idt.c
   arch/x86_64/boot_stub.c
 
@@ -203,6 +213,7 @@ Status: Partial
 Implemented:
 - `vibeos_kmain` entry sequence with boot contract checks
 - boot-stage state transitions and initialization event signaling
+- process table, timer, and IDT bootstrap hooks
 Files Created/Modified:
 - `kernel/core/kmain.c`
 - `include/vibeos/kernel.h`
@@ -240,10 +251,13 @@ Status: Partial
 Implemented:
 - event primitive
 - bounded message channel primitive
+- waitset registration primitive
 Files Created/Modified:
 - `kernel/ipc/event.c`
 - `kernel/ipc/channel.c`
+- `kernel/ipc/waitset.c`
 - `include/vibeos/ipc.h`
+- `include/vibeos/waitset.h`
 Pending:
 - handle transfer semantics
 - wait sets and timeout policies
@@ -287,6 +301,19 @@ Files Created/Modified:
 Pending:
 - handle-based object syscall surface
 
+Module: Process Management
+Status: Partial
+Implemented:
+- process table
+- process spawn primitive
+- thread create primitive
+Files Created/Modified:
+- `kernel/proc/process.c`
+- `include/vibeos/proc.h`
+Pending:
+- process lifecycle states
+- handle-based process and thread object integration
+
 Module: Timer Subsystem
 Status: Partial
 Implemented:
@@ -318,7 +345,7 @@ Files Created/Modified:
 - `include/vibeos/drivers.h`
 - `include/vibeos/user_api.h`
 Pending:
-- service manager process supervision
+- richer service supervision policies
 - real IPC contracts between services
 
 Module: Bootloader Interface
