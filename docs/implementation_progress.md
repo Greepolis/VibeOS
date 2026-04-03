@@ -361,6 +361,8 @@ Implemented:
 - process table
 - process spawn primitive
 - thread create primitive
+- per-process entry table with owned handle tables
+- process handle-table lookup helper (`vibeos_proc_handles`)
 Files Created/Modified:
 - `kernel/proc/process.c`
 - `include/vibeos/proc.h`
@@ -375,13 +377,14 @@ Implemented:
 - handle allocation, close, and rights lookup primitives
 - handle required-rights check helper
 - IPC handle transfer primitive with rights reduction into receiver handle table
+- syscall handle isolation via caller PID-scoped process handle tables
 Files Created/Modified:
 - `kernel/object/handle_table.c`
 - `include/vibeos/object.h`
 - `kernel/ipc/handle_transfer.c`
 - `include/vibeos/ipc_transfer.h`
 Pending:
-- per-process handle table isolation
+- cross-process handle duplication policy
 
 Module: Timer Subsystem
 Status: Partial
@@ -468,7 +471,7 @@ Pending:
 | Memory Manager | In Progress | bump allocator implemented |
 | Virtual Memory | In Progress | address-space mapping primitives implemented |
 | Interrupt Handling | In Progress | controller + x86_64 IDT stub implemented |
-| System Call Interface | In Progress | dispatcher + centralized syscall rights policy |
+| System Call Interface | In Progress | dispatcher + centralized rights policy + PID-scoped handle enforcement |
 | IPC Subsystem | In Progress | event/channel/waitset primitives with handle transfer and timer-driven waits |
 | Driver Framework | In Progress | driver framework registration stubs implemented |
 | Filesystem Layer | In Progress | VFS runtime mount/open/close primitives implemented |
