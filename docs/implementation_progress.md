@@ -72,8 +72,8 @@
 
 ### Interrupt Handling
 - Responsibilities: trap/interrupt entry and dispatch
-- Main files: `kernel/core/interrupts.c`, `kernel/arch/x86_64/idt.c`, `include/vibeos/interrupts.h`, `include/vibeos/arch_x86_64.h`
-- Public interfaces: `vibeos_intc_init`, `vibeos_intc_register`, `vibeos_intc_dispatch`, `vibeos_x86_64_idt_*`
+- Main files: `kernel/core/interrupts.c`, `kernel/arch/x86_64/idt.c`, `kernel/arch/x86_64/trap.c`, `include/vibeos/interrupts.h`, `include/vibeos/arch_x86_64.h`, `include/vibeos/trap.h`
+- Public interfaces: `vibeos_intc_init`, `vibeos_intc_register`, `vibeos_intc_dispatch`, `vibeos_x86_64_idt_*`, `vibeos_trap_*`
 - Dependencies: HAL, scheduler, timer
 
 ### System Call Interface
@@ -124,6 +124,12 @@
 - Public interfaces: `vibeos_user_context_init`, `vibeos_user_signal_boot_event`
 - Dependencies: syscall interface
 
+### Service IPC Contracts
+- Responsibilities: versioned message format between system services
+- Main files: `user/servicemgr/service_ipc.c`, `include/vibeos/service_ipc.h`
+- Public interfaces: `vibeos_service_msg_build`, `vibeos_service_msg_validate`
+- Dependencies: IPC subsystem, service manager
+
 ### Init System
 - Responsibilities: first user-space task and service orchestration
 - Main files: `user/init/init_system.c`, `include/vibeos/services.h`
@@ -150,8 +156,10 @@ include/vibeos/
   ipc.h
   waitset.h
   services.h
+  service_ipc.h
   syscall.h
   timer.h
+  trap.h
   user_api.h
   vm.h
 
@@ -169,11 +177,13 @@ kernel/
   ipc/channel.c
   ipc/waitset.c
   arch/x86_64/idt.c
+  arch/x86_64/trap.c
   arch/x86_64/boot_stub.c
 
 user/
   init/init_system.c
   servicemgr/service_manager.c
+  servicemgr/service_ipc.c
   devmgr/device_manager.c
   devmgr/driver_host.c
   drivers/driver_framework.c
@@ -228,7 +238,7 @@ Status: Partial
 Implemented:
 - `vibeos_kmain` entry sequence with boot contract checks
 - boot-stage state transitions and initialization event signaling
-- process table, timer, and IDT bootstrap hooks
+- process table, timer, IDT, and trap bootstrap hooks
 Files Created/Modified:
 - `kernel/core/kmain.c`
 - `include/vibeos/kernel.h`
@@ -295,11 +305,14 @@ Implemented:
 - interrupt controller registration and dispatch primitives
 - per-IRQ counters for diagnostics
 - x86_64 IDT presence table stub and timer vector setup
+- x86_64 trap frame dispatch state
 Files Created/Modified:
 - `kernel/core/interrupts.c`
 - `include/vibeos/interrupts.h`
 - `kernel/arch/x86_64/idt.c`
 - `include/vibeos/arch_x86_64.h`
+- `kernel/arch/x86_64/trap.c`
+- `include/vibeos/trap.h`
 Pending:
 - architecture-specific trap/IDT integration
 - timer IRQ source wiring
@@ -311,6 +324,8 @@ Implemented:
 - dispatcher with initial syscall IDs
 - process/thread syscall group stubs
 - handle alloc/close syscall group stubs
+- vm map/unmap/protect syscall group stubs
+- waitset add-event syscall stub
 Files Created/Modified:
 - `kernel/core/syscall.c`
 - `include/vibeos/syscall.h`
@@ -364,9 +379,11 @@ Implemented:
 - VFS mount/open/close runtime primitives
 - networking service stub
 - socket create/bind/send/close runtime primitives
+- service IPC message contract build/validate
 Files Created/Modified:
 - `user/init/init_system.c`
 - `user/servicemgr/service_manager.c`
+- `user/servicemgr/service_ipc.c`
 - `user/devmgr/device_manager.c`
 - `user/devmgr/driver_host.c`
 - `user/drivers/driver_framework.c`
@@ -376,6 +393,7 @@ Files Created/Modified:
 - `user/net/network_service.c`
 - `user/net/socket.c`
 - `include/vibeos/services.h`
+- `include/vibeos/service_ipc.h`
 - `include/vibeos/drivers.h`
 - `include/vibeos/driver_host.h`
 - `include/vibeos/fs.h`
@@ -419,7 +437,7 @@ Pending:
 | Memory Manager | In Progress | bump allocator implemented |
 | Virtual Memory | In Progress | address-space mapping primitives implemented |
 | Interrupt Handling | In Progress | controller + x86_64 IDT stub implemented |
-| System Call Interface | In Progress | dispatcher + process/thread/handle syscall stubs |
+| System Call Interface | In Progress | dispatcher + process/thread/handle/vm/ipc syscall stubs |
 | IPC Subsystem | In Progress | event + channel primitives implemented |
 | Driver Framework | In Progress | driver framework registration stubs implemented |
 | Filesystem Layer | In Progress | VFS runtime mount/open/close primitives implemented |
