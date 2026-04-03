@@ -1,0 +1,73 @@
+#include "vibeos/net.h"
+
+static vibeos_socket_entry_t *find_socket(vibeos_net_runtime_t *rt, uint32_t socket_id) {
+    uint32_t i;
+    if (!rt || socket_id == 0) {
+        return 0;
+    }
+    for (i = 0; i < VIBEOS_MAX_SOCKETS; i++) {
+        if (rt->sockets[i].in_use && rt->sockets[i].id == socket_id) {
+            return &rt->sockets[i];
+        }
+    }
+    return 0;
+}
+
+int vibeos_net_runtime_init(vibeos_net_runtime_t *rt) {
+    uint32_t i;
+    if (!rt) {
+        return -1;
+    }
+    rt->next_socket_id = 1;
+    for (i = 0; i < VIBEOS_MAX_SOCKETS; i++) {
+        rt->sockets[i].id = 0;
+        rt->sockets[i].in_use = 0;
+        rt->sockets[i].port = 0;
+    }
+    return 0;
+}
+
+int vibeos_socket_create(vibeos_net_runtime_t *rt, uint32_t *out_socket_id) {
+    uint32_t i;
+    if (!rt || !out_socket_id) {
+        return -1;
+    }
+    for (i = 0; i < VIBEOS_MAX_SOCKETS; i++) {
+        if (!rt->sockets[i].in_use) {
+            rt->sockets[i].in_use = 1;
+            rt->sockets[i].id = rt->next_socket_id++;
+            rt->sockets[i].port = 0;
+            *out_socket_id = rt->sockets[i].id;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+int vibeos_socket_bind(vibeos_net_runtime_t *rt, uint32_t socket_id, uint16_t port) {
+    vibeos_socket_entry_t *entry = find_socket(rt, socket_id);
+    if (!entry || port == 0) {
+        return -1;
+    }
+    entry->port = port;
+    return 0;
+}
+
+int vibeos_socket_send(vibeos_net_runtime_t *rt, uint32_t socket_id, const void *buf, size_t len) {
+    vibeos_socket_entry_t *entry = find_socket(rt, socket_id);
+    if (!entry || !buf || len == 0 || entry->port == 0) {
+        return -1;
+    }
+    return 0;
+}
+
+int vibeos_socket_close(vibeos_net_runtime_t *rt, uint32_t socket_id) {
+    vibeos_socket_entry_t *entry = find_socket(rt, socket_id);
+    if (!entry) {
+        return -1;
+    }
+    entry->in_use = 0;
+    entry->id = 0;
+    entry->port = 0;
+    return 0;
+}

@@ -3,10 +3,14 @@
 
 #include "vibeos/kernel.h"
 #include "vibeos/bootloader.h"
+#include "vibeos/driver_host.h"
 #include "vibeos/drivers.h"
+#include "vibeos/fs.h"
 #include "vibeos/services.h"
+#include "vibeos/security_model.h"
 #include "vibeos/syscall.h"
 #include "vibeos/timer.h"
+#include "vibeos/net.h"
 #include "vibeos/user_api.h"
 #include "vibeos/vm.h"
 #include "vibeos/waitset.h"
@@ -345,6 +349,76 @@ static int test_waitset(void) {
     return 0;
 }
 
+static int test_filesystem_runtime(void) {
+    vibeos_vfs_runtime_t rt;
+    uint32_t mount_id;
+    uint32_t fd;
+    if (vibeos_vfs_runtime_init(&rt) != 0) {
+        return -1;
+    }
+    if (vibeos_vfs_mount(&rt, &mount_id) != 0 || mount_id == 0) {
+        return -1;
+    }
+    if (vibeos_vfs_open(&rt, mount_id, &fd) != 0 || fd < 3) {
+        return -1;
+    }
+    if (vibeos_vfs_close(&rt, fd) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_network_runtime(void) {
+    vibeos_net_runtime_t rt;
+    uint32_t sock;
+    const char payload[] = "ping";
+    if (vibeos_net_runtime_init(&rt) != 0) {
+        return -1;
+    }
+    if (vibeos_socket_create(&rt, &sock) != 0 || sock == 0) {
+        return -1;
+    }
+    if (vibeos_socket_bind(&rt, sock, 1234) != 0) {
+        return -1;
+    }
+    if (vibeos_socket_send(&rt, sock, payload, sizeof(payload)) != 0) {
+        return -1;
+    }
+    if (vibeos_socket_close(&rt, sock) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_security_token(void) {
+    vibeos_security_token_t token;
+    if (vibeos_sec_token_init(&token, 1000, 1000, (1u << 1) | (1u << 3)) != 0) {
+        return -1;
+    }
+    if (!vibeos_sec_token_can(&token, 1) || vibeos_sec_token_can(&token, 2)) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_driver_host(void) {
+    vibeos_driver_framework_t fw;
+    vibeos_devmgr_state_t devmgr;
+    if (vibeos_driver_framework_init(&fw) != 0) {
+        return -1;
+    }
+    if (vibeos_devmgr_start(&devmgr) != 0) {
+        return -1;
+    }
+    if (vibeos_driver_host_probe(&fw, &devmgr, 55) != 0) {
+        return -1;
+    }
+    if (fw.count != 1 || devmgr.discovered_devices != 1) {
+        return -1;
+    }
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
     failures += test_pmm() != 0;
@@ -359,6 +433,10 @@ int main(void) {
     failures += test_user_api_and_bootloader() != 0;
     failures += test_timer_and_idt() != 0;
     failures += test_waitset() != 0;
+    failures += test_filesystem_runtime() != 0;
+    failures += test_network_runtime() != 0;
+    failures += test_security_token() != 0;
+    failures += test_driver_host() != 0;
 
     if (failures == 0) {
         puts("ALL_TESTS_PASS");
