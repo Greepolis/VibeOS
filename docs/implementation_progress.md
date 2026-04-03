@@ -102,7 +102,7 @@
 
 ### IPC Subsystem
 - Responsibilities: event signaling and channel messaging
-- Main files: `kernel/ipc/event.c`, `kernel/ipc/channel.c`, `kernel/ipc/waitset.c`, `include/vibeos/ipc.h`, `include/vibeos/waitset.h`
+- Main files: `kernel/ipc/event.c`, `kernel/ipc/channel.c`, `kernel/ipc/handle_transfer.c`, `kernel/ipc/waitset.c`, `include/vibeos/ipc.h`, `include/vibeos/ipc_transfer.h`, `include/vibeos/waitset.h`
 - Public interfaces: `vibeos_event_*`, `vibeos_channel_*`, `vibeos_waitset_wait`, `vibeos_waitset_wait_ex`
 - Dependencies: scheduler, handle model (future)
 
@@ -161,6 +161,7 @@ include/vibeos/
   proc.h
   scheduler.h
   ipc.h
+  ipc_transfer.h
   waitset.h
   services.h
   service_ipc.h
@@ -185,6 +186,7 @@ kernel/
   time/timer.c
   ipc/event.c
   ipc/channel.c
+  ipc/handle_transfer.c
   ipc/waitset.c
   arch/x86_64/idt.c
   arch/x86_64/trap.c
@@ -370,11 +372,13 @@ Implemented:
 - handle table initialization
 - handle allocation, close, and rights lookup primitives
 - handle required-rights check helper
+- IPC handle transfer primitive with rights reduction into receiver handle table
 Files Created/Modified:
 - `kernel/object/handle_table.c`
 - `include/vibeos/object.h`
+- `kernel/ipc/handle_transfer.c`
+- `include/vibeos/ipc_transfer.h`
 Pending:
-- capability propagation in IPC transfers
 - per-process handle table isolation
 
 Module: Timer Subsystem
