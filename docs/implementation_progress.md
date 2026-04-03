@@ -73,7 +73,7 @@
 ### Interrupt Handling
 - Responsibilities: trap/interrupt entry and dispatch
 - Main files: `kernel/core/interrupts.c`, `kernel/arch/x86_64/idt.c`, `kernel/arch/x86_64/trap.c`, `include/vibeos/interrupts.h`, `include/vibeos/arch_x86_64.h`, `include/vibeos/trap.h`
-- Public interfaces: `vibeos_intc_init`, `vibeos_intc_register`, `vibeos_intc_dispatch`, `vibeos_x86_64_idt_*`, `vibeos_trap_*`
+- Public interfaces: `vibeos_intc_init`, `vibeos_intc_register`, `vibeos_intc_dispatch`, `vibeos_x86_64_idt_*`, `vibeos_trap_*`, `vibeos_trap_classify`
 - Dependencies: HAL, scheduler, timer
 
 ### System Call Interface
@@ -91,7 +91,7 @@
 ### Object and Handle Model
 - Responsibilities: kernel object access mediation through handle IDs and rights
 - Main files: `kernel/object/handle_table.c`, `include/vibeos/object.h`
-- Public interfaces: `vibeos_handle_alloc`, `vibeos_handle_close`, `vibeos_handle_rights`
+- Public interfaces: `vibeos_handle_alloc`, `vibeos_handle_close`, `vibeos_handle_rights`, `vibeos_handle_has_rights`
 - Dependencies: syscall interface, security model
 
 ### Security Policy Engine
@@ -103,7 +103,7 @@
 ### IPC Subsystem
 - Responsibilities: event signaling and channel messaging
 - Main files: `kernel/ipc/event.c`, `kernel/ipc/channel.c`, `kernel/ipc/waitset.c`, `include/vibeos/ipc.h`, `include/vibeos/waitset.h`
-- Public interfaces: `vibeos_event_*`, `vibeos_channel_*`
+- Public interfaces: `vibeos_event_*`, `vibeos_channel_*`, `vibeos_waitset_wait`
 - Dependencies: scheduler, handle model (future)
 
 ### Driver Framework
@@ -285,6 +285,7 @@ Implemented:
 - event primitive
 - bounded message channel primitive
 - waitset registration primitive
+- waitset timeout wait primitive
 Files Created/Modified:
 - `kernel/ipc/event.c`
 - `kernel/ipc/channel.c`
@@ -314,6 +315,7 @@ Implemented:
 - per-IRQ counters for diagnostics
 - x86_64 IDT presence table stub and timer vector setup
 - x86_64 trap frame dispatch state
+- trap taxonomy classification (fault/interrupt/syscall/spurious)
 Files Created/Modified:
 - `kernel/core/interrupts.c`
 - `include/vibeos/interrupts.h`
@@ -334,11 +336,12 @@ Implemented:
 - handle alloc/close syscall group stubs
 - vm map/unmap/protect syscall group stubs
 - waitset add-event syscall stub
+- handle-rights enforcement for sensitive syscall operations
 Files Created/Modified:
 - `kernel/core/syscall.c`
 - `include/vibeos/syscall.h`
 Pending:
-- richer handle rights enforcement across subsystem APIs
+- capability-to-policy integration for syscall authorization
 
 Module: Process Management
 Status: Partial
@@ -358,6 +361,7 @@ Status: Partial
 Implemented:
 - handle table initialization
 - handle allocation, close, and rights lookup primitives
+- handle required-rights check helper
 Files Created/Modified:
 - `kernel/object/handle_table.c`
 - `include/vibeos/object.h`
