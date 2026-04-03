@@ -364,11 +364,12 @@ Implemented:
 - per-process entry table with owned handle tables
 - process handle-table lookup helper (`vibeos_proc_handles`)
 - process handle duplication policy helper (`vibeos_proc_duplicate_handle`)
+- process lifecycle states (`NEW/RUNNING/BLOCKED/TERMINATED`)
+- lifecycle APIs (`vibeos_proc_state`, `vibeos_proc_set_state`, `vibeos_proc_terminate`)
 Files Created/Modified:
 - `kernel/proc/process.c`
 - `include/vibeos/proc.h`
 Pending:
-- process lifecycle states
 - handle-based process and thread object integration
 
 Module: Object and Handle Model
