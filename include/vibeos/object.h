@@ -21,6 +21,8 @@ typedef struct vibeos_handle_entry {
     uint32_t in_use;
     uint32_t object_type;
     uint32_t object_id;
+    uint32_t origin_pid;
+    uint32_t origin_handle;
 } vibeos_handle_entry_t;
 
 typedef struct vibeos_handle_table {
@@ -34,6 +36,8 @@ int vibeos_handle_alloc_object(vibeos_handle_table_t *table, uint32_t rights, vi
 int vibeos_handle_close(vibeos_handle_table_t *table, uint32_t handle);
 int vibeos_handle_rights(const vibeos_handle_table_t *table, uint32_t handle, uint32_t *out_rights);
 int vibeos_handle_object(const vibeos_handle_table_t *table, uint32_t handle, vibeos_object_type_t *out_object_type, uint32_t *out_object_id);
+int vibeos_handle_set_provenance(vibeos_handle_table_t *table, uint32_t handle, uint32_t origin_pid, uint32_t origin_handle);
+int vibeos_handle_provenance(const vibeos_handle_table_t *table, uint32_t handle, uint32_t *out_origin_pid, uint32_t *out_origin_handle);
 int vibeos_handle_has_rights(const vibeos_handle_table_t *table, uint32_t handle, uint32_t required_rights);
 
 #endif

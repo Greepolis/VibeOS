@@ -8,6 +8,8 @@ int vibeos_ipc_transfer_handle(
     uint32_t *out_receiver_handle) {
     uint32_t sender_rights = 0;
     uint32_t effective_rights;
+    vibeos_object_type_t object_type = VIBEOS_OBJECT_NONE;
+    uint32_t object_id = 0;
 
     if (!sender || !receiver || !out_receiver_handle || src_handle == 0 || requested_rights == 0) {
         return -1;
@@ -19,5 +21,8 @@ int vibeos_ipc_transfer_handle(
         return -1;
     }
     effective_rights = sender_rights & requested_rights;
+    if (vibeos_handle_object(sender, src_handle, &object_type, &object_id) == 0 && object_type != VIBEOS_OBJECT_NONE && object_id != 0) {
+        return vibeos_handle_alloc_object(receiver, effective_rights, object_type, object_id, out_receiver_handle);
+    }
     return vibeos_handle_alloc(receiver, effective_rights, out_receiver_handle);
 }

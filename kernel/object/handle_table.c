@@ -12,6 +12,8 @@ static int handle_alloc_internal(vibeos_handle_table_t *table, uint32_t rights, 
             table->entries[i].rights = rights;
             table->entries[i].object_type = (uint32_t)object_type;
             table->entries[i].object_id = object_id;
+            table->entries[i].origin_pid = 0;
+            table->entries[i].origin_handle = 0;
             *out_handle = table->entries[i].id;
             return 0;
         }
@@ -31,6 +33,8 @@ int vibeos_handle_table_init(vibeos_handle_table_t *table) {
         table->entries[i].in_use = 0;
         table->entries[i].object_type = VIBEOS_OBJECT_NONE;
         table->entries[i].object_id = 0;
+        table->entries[i].origin_pid = 0;
+        table->entries[i].origin_handle = 0;
     }
     return 0;
 }
@@ -58,6 +62,8 @@ int vibeos_handle_close(vibeos_handle_table_t *table, uint32_t handle) {
             table->entries[i].rights = 0;
             table->entries[i].object_type = VIBEOS_OBJECT_NONE;
             table->entries[i].object_id = 0;
+            table->entries[i].origin_pid = 0;
+            table->entries[i].origin_handle = 0;
             return 0;
         }
     }
@@ -95,6 +101,36 @@ int vibeos_handle_object(const vibeos_handle_table_t *table, uint32_t handle, vi
         if (table->entries[i].in_use && table->entries[i].id == handle) {
             *out_object_type = (vibeos_object_type_t)table->entries[i].object_type;
             *out_object_id = table->entries[i].object_id;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+int vibeos_handle_set_provenance(vibeos_handle_table_t *table, uint32_t handle, uint32_t origin_pid, uint32_t origin_handle) {
+    uint32_t i;
+    if (!table || handle == 0 || origin_pid == 0 || origin_handle == 0) {
+        return -1;
+    }
+    for (i = 0; i < VIBEOS_MAX_HANDLES; i++) {
+        if (table->entries[i].in_use && table->entries[i].id == handle) {
+            table->entries[i].origin_pid = origin_pid;
+            table->entries[i].origin_handle = origin_handle;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+int vibeos_handle_provenance(const vibeos_handle_table_t *table, uint32_t handle, uint32_t *out_origin_pid, uint32_t *out_origin_handle) {
+    uint32_t i;
+    if (!table || !out_origin_pid || !out_origin_handle || handle == 0) {
+        return -1;
+    }
+    for (i = 0; i < VIBEOS_MAX_HANDLES; i++) {
+        if (table->entries[i].in_use && table->entries[i].id == handle) {
+            *out_origin_pid = table->entries[i].origin_pid;
+            *out_origin_handle = table->entries[i].origin_handle;
             return 0;
         }
     }
