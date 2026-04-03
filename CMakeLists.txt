@@ -32,9 +32,13 @@ target_compile_options(vibeos_kernel_core PRIVATE
 
 add_library(vibeos_user_core STATIC
     user/init/init_system.c
+    user/servicemgr/service_manager.c
     user/devmgr/device_manager.c
+    user/drivers/driver_framework.c
     user/fs/vfs_service.c
     user/net/network_service.c
+    user/lib/user_api.c
+    boot/bootloader_stub.c
 )
 
 target_include_directories(vibeos_user_core

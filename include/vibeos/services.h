@@ -32,5 +32,6 @@ int vibeos_init_start(vibeos_init_state_t *state);
 int vibeos_devmgr_start(vibeos_devmgr_state_t *state);
 int vibeos_vfs_start(vibeos_vfs_state_t *state);
 int vibeos_net_start(vibeos_net_state_t *state);
+int vibeos_servicemgr_start(vibeos_init_state_t *init_state, vibeos_devmgr_state_t *devmgr_state, vibeos_vfs_state_t *vfs_state, vibeos_net_state_t *net_state);
 
 #endif

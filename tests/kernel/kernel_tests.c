@@ -2,8 +2,11 @@
 #include <string.h>
 
 #include "vibeos/kernel.h"
+#include "vibeos/bootloader.h"
+#include "vibeos/drivers.h"
 #include "vibeos/services.h"
 #include "vibeos/syscall.h"
+#include "vibeos/user_api.h"
 #include "vibeos/vm.h"
 
 static void irq_handler(uint32_t irq, void *ctx) {
@@ -207,6 +210,59 @@ static int test_services(void) {
     return 0;
 }
 
+static int test_servicemgr_and_drivers(void) {
+    vibeos_init_state_t init_state;
+    vibeos_devmgr_state_t devmgr_state;
+    vibeos_vfs_state_t vfs_state;
+    vibeos_net_state_t net_state;
+    vibeos_driver_framework_t fw;
+    if (vibeos_servicemgr_start(&init_state, &devmgr_state, &vfs_state, &net_state) != 0) {
+        return -1;
+    }
+    if (init_state.started_services != 4) {
+        return -1;
+    }
+    if (vibeos_driver_framework_init(&fw) != 0) {
+        return -1;
+    }
+    if (vibeos_driver_register(&fw, 100) != 0 || fw.count != 1) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_user_api_and_bootloader(void) {
+    vibeos_kernel_t kernel;
+    vibeos_user_context_t user_ctx;
+    vibeos_memory_region_t regions[1];
+    vibeos_boot_info_t boot_info;
+    memset(&kernel, 0, sizeof(kernel));
+    regions[0].base = 0x200000;
+    regions[0].length = 0x100000;
+    regions[0].type = 1;
+    regions[0].reserved = 0;
+
+    if (vibeos_user_context_init(&user_ctx, 10, 1) != 0) {
+        return -1;
+    }
+    if (user_ctx.pid != 10 || user_ctx.tid != 1) {
+        return -1;
+    }
+    if (vibeos_bootloader_build_boot_info(&boot_info, regions, 1) != 0) {
+        return -1;
+    }
+    if (boot_info.version != VIBEOS_BOOTINFO_VERSION || boot_info.memory_map_entries != 1) {
+        return -1;
+    }
+    if (vibeos_user_signal_boot_event(&kernel) != 0) {
+        return -1;
+    }
+    if (!vibeos_event_is_signaled(&kernel.boot_event)) {
+        return -1;
+    }
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
     failures += test_pmm() != 0;
@@ -217,6 +273,8 @@ int main(void) {
     failures += test_interrupts() != 0;
     failures += test_syscalls() != 0;
     failures += test_services() != 0;
+    failures += test_servicemgr_and_drivers() != 0;
+    failures += test_user_api_and_bootloader() != 0;
 
     if (failures == 0) {
         puts("ALL_TESTS_PASS");
