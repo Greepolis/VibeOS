@@ -2,6 +2,16 @@
 #include <string.h>
 
 #include "vibeos/kernel.h"
+#include "vibeos/services.h"
+#include "vibeos/syscall.h"
+#include "vibeos/vm.h"
+
+static void irq_handler(uint32_t irq, void *ctx) {
+    uint32_t *acc = (uint32_t *)ctx;
+    if (acc) {
+        *acc += irq;
+    }
+}
 
 static int test_pmm(void) {
     vibeos_pmm_t pmm;
@@ -101,12 +111,112 @@ static int test_kmain(void) {
     return 0;
 }
 
+static int test_vm(void) {
+    vibeos_address_space_t aspace;
+    const vibeos_vm_map_t *found;
+    if (vibeos_vm_init(&aspace) != 0) {
+        return -1;
+    }
+    if (vibeos_vm_map(&aspace, 0x400000, 0x100000, 0x2000, VIBEOS_VM_PERM_READ | VIBEOS_VM_PERM_WRITE) != 0) {
+        return -1;
+    }
+    found = vibeos_vm_lookup(&aspace, 0x400010);
+    if (!found || found->pa != 0x100000) {
+        return -1;
+    }
+    if (vibeos_vm_protect(&aspace, 0x400000, 0x2000, VIBEOS_VM_PERM_READ) != 0) {
+        return -1;
+    }
+    found = vibeos_vm_lookup(&aspace, 0x400010);
+    if (!found || found->perms != VIBEOS_VM_PERM_READ) {
+        return -1;
+    }
+    if (vibeos_vm_unmap(&aspace, 0x400000, 0x2000) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_interrupts(void) {
+    vibeos_interrupt_controller_t intc;
+    uint32_t acc = 0;
+    vibeos_intc_init(&intc);
+    if (vibeos_intc_register(&intc, 32, irq_handler, &acc) != 0) {
+        return -1;
+    }
+    if (vibeos_intc_dispatch(&intc, 32) != 0) {
+        return -1;
+    }
+    if (acc != 32 || vibeos_intc_counter(&intc, 32) != 1) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_syscalls(void) {
+    vibeos_kernel_t kernel;
+    vibeos_syscall_frame_t frame;
+    memset(&kernel, 0, sizeof(kernel));
+    vibeos_event_init(&kernel.boot_event);
+
+    frame.id = VIBEOS_SYSCALL_EVENT_SIGNAL;
+    frame.arg0 = 0;
+    frame.arg1 = 0;
+    frame.arg2 = 0;
+    frame.result = -1;
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
+    if (!vibeos_event_is_signaled(&kernel.boot_event)) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_services(void) {
+    vibeos_init_state_t init_state;
+    vibeos_devmgr_state_t devmgr_state;
+    vibeos_vfs_state_t vfs_state;
+    vibeos_net_state_t net_state;
+
+    if (vibeos_init_start(&init_state) != 0) {
+        return -1;
+    }
+    if (vibeos_devmgr_start(&devmgr_state) != 0) {
+        return -1;
+    }
+    if (vibeos_vfs_start(&vfs_state) != 0) {
+        return -1;
+    }
+    if (vibeos_net_start(&net_state) != 0) {
+        return -1;
+    }
+
+    if (init_state.state != VIBEOS_SERVICE_RUNNING) {
+        return -1;
+    }
+    if (devmgr_state.state != VIBEOS_SERVICE_RUNNING) {
+        return -1;
+    }
+    if (vfs_state.state != VIBEOS_SERVICE_RUNNING) {
+        return -1;
+    }
+    if (net_state.state != VIBEOS_SERVICE_RUNNING) {
+        return -1;
+    }
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
     failures += test_pmm() != 0;
     failures += test_scheduler() != 0;
     failures += test_ipc() != 0;
     failures += test_kmain() != 0;
+    failures += test_vm() != 0;
+    failures += test_interrupts() != 0;
+    failures += test_syscalls() != 0;
+    failures += test_services() != 0;
 
     if (failures == 0) {
         puts("ALL_TESTS_PASS");

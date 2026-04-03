@@ -10,9 +10,12 @@ option(VIBEOS_BUILD_TESTS "Build VibeOS host-side tests" ON)
 add_library(vibeos_kernel_core STATIC
     kernel/core/kmain.c
     kernel/mm/pmm.c
+    kernel/mm/vm.c
     kernel/sched/scheduler.c
     kernel/ipc/event.c
     kernel/ipc/channel.c
+    kernel/core/interrupts.c
+    kernel/core/syscall.c
     kernel/arch/x86_64/boot_stub.c
 )
 
@@ -27,10 +30,28 @@ target_compile_options(vibeos_kernel_core PRIVATE
     -Wpedantic
 )
 
+add_library(vibeos_user_core STATIC
+    user/init/init_system.c
+    user/devmgr/device_manager.c
+    user/fs/vfs_service.c
+    user/net/network_service.c
+)
+
+target_include_directories(vibeos_user_core
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_compile_options(vibeos_user_core PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+)
+
 if(VIBEOS_BUILD_TESTS)
     add_executable(vibeos_kernel_tests
         tests/kernel/kernel_tests.c
     )
-    target_link_libraries(vibeos_kernel_tests PRIVATE vibeos_kernel_core)
+    target_link_libraries(vibeos_kernel_tests PRIVATE vibeos_kernel_core vibeos_user_core)
     target_include_directories(vibeos_kernel_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 endif()

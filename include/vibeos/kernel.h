@@ -2,14 +2,18 @@
 #define VIBEOS_KERNEL_H
 
 #include "vibeos/boot.h"
+#include "vibeos/interrupts.h"
 #include "vibeos/ipc.h"
 #include "vibeos/mm.h"
 #include "vibeos/scheduler.h"
+#include "vibeos/vm.h"
 
 typedef struct vibeos_kernel {
     vibeos_boot_state_t boot_state;
     vibeos_pmm_t pmm;
+    vibeos_address_space_t kernel_aspace;
     vibeos_scheduler_t scheduler;
+    vibeos_interrupt_controller_t intc;
     vibeos_event_t boot_event;
 } vibeos_kernel_t;
 
