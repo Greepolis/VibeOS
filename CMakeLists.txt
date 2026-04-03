@@ -16,6 +16,8 @@ add_library(vibeos_kernel_core STATIC
     kernel/ipc/channel.c
     kernel/core/interrupts.c
     kernel/core/syscall.c
+    kernel/time/timer.c
+    kernel/arch/x86_64/idt.c
     kernel/arch/x86_64/boot_stub.c
 )
 

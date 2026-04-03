@@ -6,6 +6,7 @@
 #include "vibeos/drivers.h"
 #include "vibeos/services.h"
 #include "vibeos/syscall.h"
+#include "vibeos/timer.h"
 #include "vibeos/user_api.h"
 #include "vibeos/vm.h"
 
@@ -51,6 +52,14 @@ static int test_scheduler(void) {
     }
     out = vibeos_sched_next(&sched, 0);
     if (!out || out->id != 2) {
+        return -1;
+    }
+    out = &t2;
+    out->timeslice_ticks = 1;
+    if (vibeos_sched_tick(&sched, out, 0) != 1) {
+        return -1;
+    }
+    if (vibeos_sched_preemptions(&sched, 0) != 1) {
         return -1;
     }
     return 0;
@@ -173,6 +182,16 @@ static int test_syscalls(void) {
     if (!vibeos_event_is_signaled(&kernel.boot_event)) {
         return -1;
     }
+    frame.id = VIBEOS_SYSCALL_PROCESS_SPAWN;
+    frame.arg0 = 41;
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 42) {
+        return -1;
+    }
+    frame.id = VIBEOS_SYSCALL_THREAD_CREATE;
+    frame.arg0 = 7;
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 8) {
+        return -1;
+    }
     return 0;
 }
 
@@ -263,6 +282,31 @@ static int test_user_api_and_bootloader(void) {
     return 0;
 }
 
+static int test_timer_and_idt(void) {
+    vibeos_timer_t timer;
+    vibeos_x86_64_idt_t idt;
+    int timer_vec;
+    if (vibeos_timer_init(&timer, 1000) != 0) {
+        return -1;
+    }
+    vibeos_timer_tick(&timer);
+    vibeos_timer_tick(&timer);
+    if (vibeos_timer_ticks(&timer) != 2) {
+        return -1;
+    }
+    if (vibeos_x86_64_idt_init(&idt) != 0) {
+        return -1;
+    }
+    timer_vec = vibeos_x86_64_timer_vector();
+    if (vibeos_x86_64_idt_set(&idt, (uint32_t)timer_vec) != 0) {
+        return -1;
+    }
+    if (!idt.present[timer_vec]) {
+        return -1;
+    }
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
     failures += test_pmm() != 0;
@@ -275,6 +319,7 @@ int main(void) {
     failures += test_services() != 0;
     failures += test_servicemgr_and_drivers() != 0;
     failures += test_user_api_and_bootloader() != 0;
+    failures += test_timer_and_idt() != 0;
 
     if (failures == 0) {
         puts("ALL_TESTS_PASS");

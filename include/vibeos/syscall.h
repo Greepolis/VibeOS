@@ -6,7 +6,9 @@
 typedef enum vibeos_syscall_id {
     VIBEOS_SYSCALL_NOP = 0,
     VIBEOS_SYSCALL_EVENT_SIGNAL = 1,
-    VIBEOS_SYSCALL_EVENT_CLEAR = 2
+    VIBEOS_SYSCALL_EVENT_CLEAR = 2,
+    VIBEOS_SYSCALL_PROCESS_SPAWN = 10,
+    VIBEOS_SYSCALL_THREAD_CREATE = 20
 } vibeos_syscall_id_t;
 
 typedef struct vibeos_syscall_frame {

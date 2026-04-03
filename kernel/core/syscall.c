@@ -18,6 +18,12 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             vibeos_event_clear(&kernel->boot_event);
             frame->result = 0;
             return 0;
+        case VIBEOS_SYSCALL_PROCESS_SPAWN:
+            frame->result = (int64_t)(frame->arg0 + 1u);
+            return 0;
+        case VIBEOS_SYSCALL_THREAD_CREATE:
+            frame->result = (int64_t)(frame->arg0 + 1u);
+            return 0;
         default:
             frame->result = -1;
             return -1;

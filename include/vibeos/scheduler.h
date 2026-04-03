@@ -31,10 +31,13 @@ typedef struct vibeos_runqueue {
 typedef struct vibeos_scheduler {
     uint32_t cpu_count;
     vibeos_runqueue_t runqueues[VIBEOS_MAX_CPUS];
+    uint64_t preemptions[VIBEOS_MAX_CPUS];
 } vibeos_scheduler_t;
 
 int vibeos_sched_init(vibeos_scheduler_t *sched, uint32_t cpu_count);
 int vibeos_sched_enqueue(vibeos_scheduler_t *sched, vibeos_thread_t *thread);
 vibeos_thread_t *vibeos_sched_next(vibeos_scheduler_t *sched, uint32_t cpu_id);
+int vibeos_sched_tick(vibeos_scheduler_t *sched, vibeos_thread_t *running, uint32_t cpu_id);
+uint64_t vibeos_sched_preemptions(const vibeos_scheduler_t *sched, uint32_t cpu_id);
 
 #endif

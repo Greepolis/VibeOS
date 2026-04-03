@@ -31,6 +31,7 @@ int vibeos_sched_init(vibeos_scheduler_t *sched, uint32_t cpu_count) {
         sched->runqueues[i].head = 0;
         sched->runqueues[i].tail = 0;
         sched->runqueues[i].count = 0;
+        sched->preemptions[i] = 0;
     }
     return 0;
 }
@@ -49,4 +50,25 @@ vibeos_thread_t *vibeos_sched_next(vibeos_scheduler_t *sched, uint32_t cpu_id) {
         return 0;
     }
     return runqueue_pop(&sched->runqueues[cpu_id]);
+}
+
+int vibeos_sched_tick(vibeos_scheduler_t *sched, vibeos_thread_t *running, uint32_t cpu_id) {
+    if (!sched || !running || cpu_id >= sched->cpu_count) {
+        return -1;
+    }
+    if (running->timeslice_ticks > 0) {
+        running->timeslice_ticks--;
+    }
+    if (running->timeslice_ticks == 0) {
+        sched->preemptions[cpu_id]++;
+        return 1;
+    }
+    return 0;
+}
+
+uint64_t vibeos_sched_preemptions(const vibeos_scheduler_t *sched, uint32_t cpu_id) {
+    if (!sched || cpu_id >= sched->cpu_count) {
+        return 0;
+    }
+    return sched->preemptions[cpu_id];
 }
