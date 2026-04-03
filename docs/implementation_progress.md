@@ -103,7 +103,7 @@
 ### IPC Subsystem
 - Responsibilities: event signaling and channel messaging
 - Main files: `kernel/ipc/event.c`, `kernel/ipc/channel.c`, `kernel/ipc/handle_transfer.c`, `kernel/ipc/waitset.c`, `include/vibeos/ipc.h`, `include/vibeos/ipc_transfer.h`, `include/vibeos/waitset.h`
-- Public interfaces: `vibeos_event_*`, `vibeos_channel_*`, `vibeos_waitset_wait`, `vibeos_waitset_wait_ex`
+- Public interfaces: `vibeos_event_*`, `vibeos_channel_*`, `vibeos_waitset_wait`, `vibeos_waitset_wait_ex`, `vibeos_waitset_wait_timed`
 - Dependencies: scheduler, handle model (future)
 
 ### Driver Framework
@@ -293,6 +293,7 @@ Implemented:
 - waitset timeout wait primitive
 - channel helpers for message transfer with handle rights metadata
 - waitset extended wait API with scheduler wake/timeout feedback
+- timer-driven waitset path integrated with kernel timer ticks
 Files Created/Modified:
 - `kernel/ipc/event.c`
 - `kernel/ipc/channel.c`
@@ -300,7 +301,6 @@ Files Created/Modified:
 - `include/vibeos/ipc.h`
 - `include/vibeos/waitset.h`
 Pending:
-- waitset blocking integration with timer interrupts
 - process-scoped waitset ownership model
 
 Module: Virtual Memory
@@ -467,7 +467,7 @@ Pending:
 | Virtual Memory | In Progress | address-space mapping primitives implemented |
 | Interrupt Handling | In Progress | controller + x86_64 IDT stub implemented |
 | System Call Interface | In Progress | dispatcher + centralized syscall rights policy |
-| IPC Subsystem | In Progress | event/channel/waitset primitives with handle-transfer metadata |
+| IPC Subsystem | In Progress | event/channel/waitset primitives with handle transfer and timer-driven waits |
 | Driver Framework | In Progress | driver framework registration stubs implemented |
 | Filesystem Layer | In Progress | VFS runtime mount/open/close primitives implemented |
 | Networking Stack | In Progress | socket runtime primitives implemented |
