@@ -363,6 +363,7 @@ Implemented:
 - thread create primitive
 - per-process entry table with owned handle tables
 - process handle-table lookup helper (`vibeos_proc_handles`)
+- process handle duplication policy helper (`vibeos_proc_duplicate_handle`)
 Files Created/Modified:
 - `kernel/proc/process.c`
 - `include/vibeos/proc.h`
@@ -378,13 +379,14 @@ Implemented:
 - handle required-rights check helper
 - IPC handle transfer primitive with rights reduction into receiver handle table
 - syscall handle isolation via caller PID-scoped process handle tables
+- cross-process handle duplication policy (related process only + source MANAGE right)
 Files Created/Modified:
 - `kernel/object/handle_table.c`
 - `include/vibeos/object.h`
 - `kernel/ipc/handle_transfer.c`
 - `include/vibeos/ipc_transfer.h`
 Pending:
-- cross-process handle duplication policy
+- handle revocation propagation across duplicated handles
 
 Module: Timer Subsystem
 Status: Partial
