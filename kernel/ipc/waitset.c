@@ -2,27 +2,37 @@
 #include "vibeos/ipc.h"
 
 int vibeos_waitset_init(vibeos_waitset_t *waitset) {
+    size_t i;
     if (!waitset) {
         return -1;
+    }
+    for (i = 0; i < VIBEOS_WAITSET_MAX_EVENTS; i++) {
+        waitset->events[i] = 0;
     }
     waitset->count = 0;
     waitset->owner_pid = 0;
     waitset->ownership_enforced = 0;
+    waitset->active = 1;
     return 0;
 }
 
 int vibeos_waitset_init_owned(vibeos_waitset_t *waitset, uint32_t owner_pid) {
+    size_t i;
     if (!waitset || owner_pid == 0) {
         return -1;
+    }
+    for (i = 0; i < VIBEOS_WAITSET_MAX_EVENTS; i++) {
+        waitset->events[i] = 0;
     }
     waitset->count = 0;
     waitset->owner_pid = owner_pid;
     waitset->ownership_enforced = 1;
+    waitset->active = 1;
     return 0;
 }
 
 int vibeos_waitset_add(vibeos_waitset_t *waitset, void *event_ptr) {
-    if (!waitset || !event_ptr || waitset->count >= VIBEOS_WAITSET_MAX_EVENTS) {
+    if (!waitset || !waitset->active || !event_ptr || waitset->count >= VIBEOS_WAITSET_MAX_EVENTS) {
         return -1;
     }
     waitset->events[waitset->count++] = event_ptr;
@@ -30,7 +40,7 @@ int vibeos_waitset_add(vibeos_waitset_t *waitset, void *event_ptr) {
 }
 
 int vibeos_waitset_add_owned(vibeos_waitset_t *waitset, void *event_ptr, uint32_t caller_pid) {
-    if (!waitset || !event_ptr || waitset->count >= VIBEOS_WAITSET_MAX_EVENTS || caller_pid == 0) {
+    if (!waitset || !waitset->active || !event_ptr || waitset->count >= VIBEOS_WAITSET_MAX_EVENTS || caller_pid == 0) {
         return -1;
     }
     if (waitset->ownership_enforced && waitset->owner_pid != caller_pid) {
@@ -40,8 +50,46 @@ int vibeos_waitset_add_owned(vibeos_waitset_t *waitset, void *event_ptr, uint32_
     return 0;
 }
 
+int vibeos_waitset_remove(vibeos_waitset_t *waitset, size_t index) {
+    size_t i;
+    if (!waitset || !waitset->active || index >= waitset->count) {
+        return -1;
+    }
+    for (i = index; i + 1 < waitset->count; i++) {
+        waitset->events[i] = waitset->events[i + 1];
+    }
+    waitset->events[waitset->count - 1] = 0;
+    waitset->count--;
+    return 0;
+}
+
+int vibeos_waitset_reset(vibeos_waitset_t *waitset) {
+    size_t i;
+    if (!waitset || !waitset->active) {
+        return -1;
+    }
+    for (i = 0; i < VIBEOS_WAITSET_MAX_EVENTS; i++) {
+        waitset->events[i] = 0;
+    }
+    waitset->count = 0;
+    return 0;
+}
+
+int vibeos_waitset_destroy(vibeos_waitset_t *waitset) {
+    if (!waitset || !waitset->active) {
+        return -1;
+    }
+    if (vibeos_waitset_reset(waitset) != 0) {
+        return -1;
+    }
+    waitset->owner_pid = 0;
+    waitset->ownership_enforced = 0;
+    waitset->active = 0;
+    return 0;
+}
+
 int vibeos_waitset_count(const vibeos_waitset_t *waitset, size_t *out_count) {
-    if (!waitset || !out_count) {
+    if (!waitset || !waitset->active || !out_count) {
         return -1;
     }
     *out_count = waitset->count;
@@ -49,7 +97,7 @@ int vibeos_waitset_count(const vibeos_waitset_t *waitset, size_t *out_count) {
 }
 
 int vibeos_waitset_owner(const vibeos_waitset_t *waitset, uint32_t *out_owner_pid, uint32_t *out_enforced) {
-    if (!waitset || !out_owner_pid || !out_enforced) {
+    if (!waitset || !waitset->active || !out_owner_pid || !out_enforced) {
         return -1;
     }
     *out_owner_pid = waitset->owner_pid;
@@ -64,7 +112,7 @@ int vibeos_waitset_wait(vibeos_waitset_t *waitset, uint64_t timeout_ticks, size_
 int vibeos_waitset_wait_ex(vibeos_waitset_t *waitset, uint64_t timeout_ticks, size_t *out_index, vibeos_scheduler_t *sched, uint32_t cpu_id) {
     uint64_t tick;
     size_t i;
-    if (!waitset || !out_index) {
+    if (!waitset || !waitset->active || !out_index) {
         return -1;
     }
     for (tick = 0; tick <= timeout_ticks; tick++) {
@@ -88,7 +136,7 @@ int vibeos_waitset_wait_ex(vibeos_waitset_t *waitset, uint64_t timeout_ticks, si
 int vibeos_waitset_wait_timed(vibeos_waitset_t *waitset, vibeos_timer_t *timer, uint64_t timeout_ticks, size_t *out_index, vibeos_scheduler_t *sched, uint32_t cpu_id) {
     uint64_t start_ticks;
     size_t i;
-    if (!waitset || !timer || !out_index) {
+    if (!waitset || !waitset->active || !timer || !out_index) {
         return -1;
     }
     start_ticks = vibeos_timer_ticks(timer);

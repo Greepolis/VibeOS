@@ -502,6 +502,49 @@ static int test_waitset_ownership(void) {
     return 0;
 }
 
+static int test_waitset_lifecycle(void) {
+    vibeos_waitset_t waitset;
+    vibeos_event_t ev1;
+    vibeos_event_t ev2;
+    size_t count = 0;
+    vibeos_event_init(&ev1);
+    vibeos_event_init(&ev2);
+    if (vibeos_waitset_init(&waitset) != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_add(&waitset, &ev1) != 0 || vibeos_waitset_add(&waitset, &ev2) != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_remove(&waitset, 0) != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_count(&waitset, &count) != 0 || count != 1) {
+        return -1;
+    }
+    if (vibeos_waitset_reset(&waitset) != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_count(&waitset, &count) != 0 || count != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_destroy(&waitset) != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_add(&waitset, &ev1) == 0) {
+        return -1;
+    }
+    if (vibeos_waitset_count(&waitset, &count) == 0) {
+        return -1;
+    }
+    if (vibeos_waitset_init(&waitset) != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_add(&waitset, &ev1) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 static int test_filesystem_runtime(void) {
     vibeos_vfs_runtime_t rt;
     vibeos_policy_state_t policy;
@@ -672,6 +715,7 @@ int main(void) {
     RUN_TEST(test_waitset);
     RUN_TEST(test_waitset_timed);
     RUN_TEST(test_waitset_ownership);
+    RUN_TEST(test_waitset_lifecycle);
     RUN_TEST(test_filesystem_runtime);
     RUN_TEST(test_network_runtime);
     RUN_TEST(test_security_token);
