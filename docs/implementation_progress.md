@@ -42,8 +42,8 @@
 
 ### Bootloader
 - Responsibilities: kernel image load and boot information handoff
-- Main files: `boot/` currently placeholder, shared contract in `include/vibeos/boot.h`
-- Public interfaces: `vibeos_boot_info_t`
+- Main files: `boot/bootloader_stub.c`, `include/vibeos/boot.h`, `include/vibeos/bootloader.h`
+- Public interfaces: `vibeos_boot_info_t`, `vibeos_bootloader_build_boot_info`
 - Dependencies: firmware and kernel entry contract
 
 ### Kernel Core
@@ -90,8 +90,8 @@
 
 ### Driver Framework
 - Responsibilities: user-space-first driver hosting
-- Main files: pending under `user/drivers/` and `user/devmgr/`
-- Public interfaces: pending
+- Main files: `user/drivers/driver_framework.c`, `user/devmgr/device_manager.c`, `include/vibeos/drivers.h`
+- Public interfaces: `vibeos_driver_framework_init`, `vibeos_driver_register`
 - Dependencies: IPC, security policy, device manager
 
 ### Filesystem Layer
@@ -108,8 +108,8 @@
 
 ### User Space Interface
 - Responsibilities: native runtime and system library boundary
-- Main files: pending under `user/lib/`
-- Public interfaces: pending
+- Main files: `user/lib/user_api.c`, `include/vibeos/user_api.h`
+- Public interfaces: `vibeos_user_context_init`, `vibeos_user_signal_boot_event`
 - Dependencies: syscall interface
 
 ### Init System
@@ -123,10 +123,16 @@
 ```text
 include/vibeos/
   boot.h
+  bootloader.h
+  drivers.h
   kernel.h
   mm.h
   scheduler.h
   ipc.h
+  services.h
+  syscall.h
+  user_api.h
+  vm.h
 
 kernel/
   core/kmain.c
@@ -141,8 +147,11 @@ kernel/
 
 user/
   init/init_system.c
+  servicemgr/service_manager.c
   devmgr/device_manager.c
+  drivers/driver_framework.c
   fs/vfs_service.c
+  lib/user_api.c
   net/network_service.c
 
 tests/kernel/
@@ -274,24 +283,41 @@ Module: User Space Services
 Status: Partial
 Implemented:
 - init service stub
+- service manager stub
 - device manager stub
 - filesystem service stub
 - networking service stub
 Files Created/Modified:
 - `user/init/init_system.c`
+- `user/servicemgr/service_manager.c`
 - `user/devmgr/device_manager.c`
+- `user/drivers/driver_framework.c`
 - `user/fs/vfs_service.c`
+- `user/lib/user_api.c`
 - `user/net/network_service.c`
 - `include/vibeos/services.h`
+- `include/vibeos/drivers.h`
+- `include/vibeos/user_api.h`
 Pending:
 - service manager process supervision
 - real IPC contracts between services
+
+Module: Bootloader Interface
+Status: Partial
+Implemented:
+- boot info builder stub for kernel handoff contract
+Files Created/Modified:
+- `boot/bootloader_stub.c`
+- `include/vibeos/bootloader.h`
+Pending:
+- real UEFI image loading path
+- firmware table extraction and handoff
 
 ## System Implementation Status
 
 | Component | Status | Notes |
 | --- | --- | --- |
-| Bootloader | Pending | only boot contract type is defined |
+| Bootloader | In Progress | boot info builder stub implemented |
 | Kernel Core | In Progress | `kmain` bootstrap logic implemented |
 | Process Scheduler | In Progress | queue primitives ready, no timer preemption yet |
 | Memory Manager | In Progress | bump allocator implemented |
@@ -299,8 +325,8 @@ Pending:
 | Interrupt Handling | In Progress | interrupt controller dispatch primitives implemented |
 | System Call Interface | In Progress | minimal syscall dispatcher implemented |
 | IPC Subsystem | In Progress | event + channel primitives implemented |
-| Driver Framework | Pending | user-space driver host not implemented yet |
+| Driver Framework | In Progress | driver framework registration stubs implemented |
 | Filesystem Layer | In Progress | VFS service stub implemented |
 | Networking Stack | In Progress | network service stub implemented |
-| User Space Interface | Pending | native runtime API layer not implemented yet |
+| User Space Interface | In Progress | user API syscall bridge stubs implemented |
 | Init System | In Progress | init service stub implemented |
