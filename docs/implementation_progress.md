@@ -103,7 +103,7 @@
 ### IPC Subsystem
 - Responsibilities: event signaling and channel messaging
 - Main files: `kernel/ipc/event.c`, `kernel/ipc/channel.c`, `kernel/ipc/handle_transfer.c`, `kernel/ipc/waitset.c`, `include/vibeos/ipc.h`, `include/vibeos/ipc_transfer.h`, `include/vibeos/waitset.h`
-- Public interfaces: `vibeos_event_*`, `vibeos_channel_*`, `vibeos_waitset_wait`, `vibeos_waitset_wait_ex`, `vibeos_waitset_wait_timed`
+- Public interfaces: `vibeos_event_*`, `vibeos_channel_*`, `vibeos_waitset_wait`, `vibeos_waitset_wait_ex`, `vibeos_waitset_wait_timed`, `vibeos_waitset_init_owned`, `vibeos_waitset_add_owned`
 - Dependencies: scheduler, handle model (future)
 
 ### Driver Framework
@@ -294,6 +294,7 @@ Implemented:
 - channel helpers for message transfer with handle rights metadata
 - waitset extended wait API with scheduler wake/timeout feedback
 - timer-driven waitset path integrated with kernel timer ticks
+- process-scoped waitset ownership enforcement (owner PID bound)
 Files Created/Modified:
 - `kernel/ipc/event.c`
 - `kernel/ipc/channel.c`
@@ -301,7 +302,7 @@ Files Created/Modified:
 - `include/vibeos/ipc.h`
 - `include/vibeos/waitset.h`
 Pending:
-- process-scoped waitset ownership model
+- waitset object lifecycle and reclamation semantics
 
 Module: Virtual Memory
 Status: Partial
