@@ -102,20 +102,20 @@
 
 ### Driver Framework
 - Responsibilities: user-space-first driver hosting
-- Main files: `user/drivers/driver_framework.c`, `user/devmgr/device_manager.c`, `include/vibeos/drivers.h`
-- Public interfaces: `vibeos_driver_framework_init`, `vibeos_driver_register`
+- Main files: `user/drivers/driver_framework.c`, `user/devmgr/device_manager.c`, `user/devmgr/driver_host.c`, `include/vibeos/drivers.h`, `include/vibeos/driver_host.h`
+- Public interfaces: `vibeos_driver_framework_init`, `vibeos_driver_register`, `vibeos_driver_host_probe`
 - Dependencies: IPC, security policy, device manager
 
 ### Filesystem Layer
 - Responsibilities: VFS contract and filesystem service boundaries
-- Main files: `user/fs/vfs_service.c`, `include/vibeos/services.h`
-- Public interfaces: `vibeos_vfs_start`
+- Main files: `user/fs/vfs_service.c`, `user/fs/vfs_ops.c`, `include/vibeos/services.h`, `include/vibeos/fs.h`
+- Public interfaces: `vibeos_vfs_start`, `vibeos_vfs_mount`, `vibeos_vfs_open`, `vibeos_vfs_close`
 - Dependencies: IPC, memory objects, driver framework
 
 ### Networking Stack
 - Responsibilities: socket and protocol layers
-- Main files: `user/net/network_service.c`, `include/vibeos/services.h`
-- Public interfaces: `vibeos_net_start`
+- Main files: `user/net/network_service.c`, `user/net/socket.c`, `include/vibeos/services.h`, `include/vibeos/net.h`
+- Public interfaces: `vibeos_net_start`, `vibeos_socket_*`
 - Dependencies: scheduler, memory manager, drivers
 
 ### User Space Interface
@@ -137,6 +137,10 @@ include/vibeos/
   boot.h
   bootloader.h
   drivers.h
+  driver_host.h
+  fs.h
+  net.h
+  security_model.h
   arch_x86_64.h
   kernel.h
   mm.h
@@ -171,10 +175,13 @@ user/
   init/init_system.c
   servicemgr/service_manager.c
   devmgr/device_manager.c
+  devmgr/driver_host.c
   drivers/driver_framework.c
   fs/vfs_service.c
+  fs/vfs_ops.c
   lib/user_api.c
   net/network_service.c
+  net/socket.c
 
 tests/kernel/
   kernel_tests.c
@@ -352,22 +359,44 @@ Implemented:
 - init service stub
 - service manager stub
 - device manager stub
+- driver host probe stub
 - filesystem service stub
+- VFS mount/open/close runtime primitives
 - networking service stub
+- socket create/bind/send/close runtime primitives
 Files Created/Modified:
 - `user/init/init_system.c`
 - `user/servicemgr/service_manager.c`
 - `user/devmgr/device_manager.c`
+- `user/devmgr/driver_host.c`
 - `user/drivers/driver_framework.c`
 - `user/fs/vfs_service.c`
+- `user/fs/vfs_ops.c`
 - `user/lib/user_api.c`
 - `user/net/network_service.c`
+- `user/net/socket.c`
 - `include/vibeos/services.h`
 - `include/vibeos/drivers.h`
+- `include/vibeos/driver_host.h`
+- `include/vibeos/fs.h`
+- `include/vibeos/net.h`
+- `include/vibeos/security_model.h`
 - `include/vibeos/user_api.h`
 Pending:
 - richer service supervision policies
 - real IPC contracts between services
+
+Module: Security Model
+Status: Partial
+Implemented:
+- security token model
+- capability bit check helper
+Files Created/Modified:
+- `kernel/core/security.c`
+- `include/vibeos/security_model.h`
+Pending:
+- token propagation across process/thread lifecycle
+- policy engine integration for MAC rules
 
 Module: Bootloader Interface
 Status: Partial
@@ -393,7 +422,7 @@ Pending:
 | System Call Interface | In Progress | dispatcher + process/thread/handle syscall stubs |
 | IPC Subsystem | In Progress | event + channel primitives implemented |
 | Driver Framework | In Progress | driver framework registration stubs implemented |
-| Filesystem Layer | In Progress | VFS service stub implemented |
-| Networking Stack | In Progress | network service stub implemented |
+| Filesystem Layer | In Progress | VFS runtime mount/open/close primitives implemented |
+| Networking Stack | In Progress | socket runtime primitives implemented |
 | User Space Interface | In Progress | user API syscall bridge stubs implemented |
 | Init System | In Progress | init service stub implemented |
