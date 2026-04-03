@@ -78,6 +78,8 @@ static int test_ipc(void) {
     vibeos_channel_t ch;
     vibeos_message_t send = { .code = 7, .payload = 0xAA55u };
     vibeos_message_t recv;
+    uint32_t out_handle = 0;
+    uint32_t out_rights = 0;
 
     vibeos_event_init(&event);
     if (vibeos_event_is_signaled(&event)) {
@@ -95,6 +97,15 @@ static int test_ipc(void) {
         return -1;
     }
     if (recv.code != send.code || recv.payload != send.payload) {
+        return -1;
+    }
+    if (vibeos_channel_send_with_handle(&ch, 9, 0x55AAu, 17, VIBEOS_HANDLE_RIGHT_SIGNAL) != 0) {
+        return -1;
+    }
+    if (vibeos_channel_recv_with_handle(&ch, &recv, &out_handle, &out_rights) != 0) {
+        return -1;
+    }
+    if (recv.code != 9 || recv.payload != 0x55AAu || out_handle != 17 || out_rights != VIBEOS_HANDLE_RIGHT_SIGNAL) {
         return -1;
     }
     return 0;
@@ -185,6 +196,11 @@ static int test_syscalls(void) {
         return -1;
     }
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result <= 0) {
+        return -1;
+    }
+    frame.id = VIBEOS_SYSCALL_EVENT_SIGNAL;
+    frame.arg0 = 0;
+    if (vibeos_syscall_dispatch(&kernel, &frame) == 0) {
         return -1;
     }
     frame.id = VIBEOS_SYSCALL_EVENT_SIGNAL;
