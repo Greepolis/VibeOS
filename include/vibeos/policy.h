@@ -1,0 +1,20 @@
+#ifndef VIBEOS_POLICY_H
+#define VIBEOS_POLICY_H
+
+#include <stdint.h>
+
+typedef enum vibeos_policy_action {
+    VIBEOS_POLICY_DENY = 0,
+    VIBEOS_POLICY_ALLOW = 1
+} vibeos_policy_action_t;
+
+typedef struct vibeos_policy_state {
+    uint32_t fs_open_required_capability_bit;
+    uint32_t net_bind_required_capability_bit;
+} vibeos_policy_state_t;
+
+int vibeos_policy_init(vibeos_policy_state_t *policy);
+vibeos_policy_action_t vibeos_policy_can_fs_open(const vibeos_policy_state_t *policy, uint32_t capability_mask);
+vibeos_policy_action_t vibeos_policy_can_net_bind(const vibeos_policy_state_t *policy, uint32_t capability_mask);
+
+#endif

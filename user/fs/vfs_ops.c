@@ -60,6 +60,16 @@ int vibeos_vfs_open(vibeos_vfs_runtime_t *rt, uint32_t mount_id, uint32_t *out_f
     return -1;
 }
 
+int vibeos_vfs_open_secure(vibeos_vfs_runtime_t *rt, uint32_t mount_id, const vibeos_policy_state_t *policy, const vibeos_security_token_t *token, uint32_t *out_fd) {
+    if (!policy || !token) {
+        return -1;
+    }
+    if (vibeos_policy_can_fs_open(policy, token->capability_mask) != VIBEOS_POLICY_ALLOW) {
+        return -1;
+    }
+    return vibeos_vfs_open(rt, mount_id, out_fd);
+}
+
 int vibeos_vfs_close(vibeos_vfs_runtime_t *rt, uint32_t fd) {
     uint32_t i;
     if (!rt || fd == 0) {

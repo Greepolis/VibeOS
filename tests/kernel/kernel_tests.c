@@ -9,6 +9,7 @@
 #include "vibeos/services.h"
 #include "vibeos/security_model.h"
 #include "vibeos/service_ipc.h"
+#include "vibeos/policy.h"
 #include "vibeos/syscall.h"
 #include "vibeos/timer.h"
 #include "vibeos/net.h"
@@ -384,6 +385,8 @@ static int test_waitset(void) {
 
 static int test_filesystem_runtime(void) {
     vibeos_vfs_runtime_t rt;
+    vibeos_policy_state_t policy;
+    vibeos_security_token_t token;
     uint32_t mount_id;
     uint32_t fd;
     if (vibeos_vfs_runtime_init(&rt) != 0) {
@@ -393,6 +396,18 @@ static int test_filesystem_runtime(void) {
         return -1;
     }
     if (vibeos_vfs_open(&rt, mount_id, &fd) != 0 || fd < 3) {
+        return -1;
+    }
+    if (vibeos_vfs_close(&rt, fd) != 0) {
+        return -1;
+    }
+    if (vibeos_policy_init(&policy) != 0) {
+        return -1;
+    }
+    if (vibeos_sec_token_init(&token, 1000, 1000, (1u << 0)) != 0) {
+        return -1;
+    }
+    if (vibeos_vfs_open_secure(&rt, mount_id, &policy, &token, &fd) != 0) {
         return -1;
     }
     if (vibeos_vfs_close(&rt, fd) != 0) {
@@ -425,10 +440,17 @@ static int test_network_runtime(void) {
 
 static int test_security_token(void) {
     vibeos_security_token_t token;
+    vibeos_policy_state_t policy;
     if (vibeos_sec_token_init(&token, 1000, 1000, (1u << 1) | (1u << 3)) != 0) {
         return -1;
     }
     if (!vibeos_sec_token_can(&token, 1) || vibeos_sec_token_can(&token, 2)) {
+        return -1;
+    }
+    if (vibeos_policy_init(&policy) != 0) {
+        return -1;
+    }
+    if (vibeos_policy_can_net_bind(&policy, token.capability_mask) != VIBEOS_POLICY_ALLOW) {
         return -1;
     }
     return 0;
