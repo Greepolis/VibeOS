@@ -91,7 +91,7 @@
 ### Object and Handle Model
 - Responsibilities: kernel object access mediation through handle IDs and rights
 - Main files: `kernel/object/handle_table.c`, `include/vibeos/object.h`
-- Public interfaces: `vibeos_handle_alloc`, `vibeos_handle_alloc_object`, `vibeos_handle_close`, `vibeos_handle_rights`, `vibeos_handle_object`, `vibeos_handle_has_rights`
+- Public interfaces: `vibeos_handle_alloc`, `vibeos_handle_alloc_object`, `vibeos_handle_close`, `vibeos_handle_rights`, `vibeos_handle_object`, `vibeos_handle_set_provenance`, `vibeos_handle_provenance`, `vibeos_handle_has_rights`
 - Dependencies: syscall interface, security model
 
 ### Security Policy Engine
@@ -371,6 +371,7 @@ Implemented:
 - lifecycle APIs (`vibeos_proc_state`, `vibeos_proc_set_state`, `vibeos_proc_terminate`)
 - thread registry with owner process binding
 - process and thread object-handle bind or resolve helpers
+- handle lineage revocation propagation across process handle tables
 Files Created/Modified:
 - `kernel/proc/process.c`
 - `include/vibeos/proc.h`
@@ -387,13 +388,14 @@ Implemented:
 - syscall handle isolation via caller PID-scoped process handle tables
 - cross-process handle duplication policy (related process only + source MANAGE right)
 - object-aware handle metadata (`object_type`, `object_id`) with lookup helper
+- handle provenance metadata (`origin_pid`, `origin_handle`) for duplication lineage tracking
 Files Created/Modified:
 - `kernel/object/handle_table.c`
 - `include/vibeos/object.h`
 - `kernel/ipc/handle_transfer.c`
 - `include/vibeos/ipc_transfer.h`
 Pending:
-- handle revocation propagation across duplicated handles
+- policy-scoped selective revocation (per-right/per-object scope)
 
 Module: Timer Subsystem
 Status: Partial
