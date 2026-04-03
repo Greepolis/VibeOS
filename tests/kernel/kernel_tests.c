@@ -196,6 +196,19 @@ static int test_syscalls(void) {
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 1) {
         return -1;
     }
+    frame.id = VIBEOS_SYSCALL_HANDLE_ALLOC;
+    frame.arg0 = 0x7;
+    if (vibeos_handle_table_init(&kernel.handles) != 0) {
+        return -1;
+    }
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result <= 0) {
+        return -1;
+    }
+    frame.id = VIBEOS_SYSCALL_HANDLE_CLOSE;
+    frame.arg0 = (uint64_t)frame.result;
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
     return 0;
 }
 

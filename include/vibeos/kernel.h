@@ -6,6 +6,7 @@
 #include "vibeos/interrupts.h"
 #include "vibeos/ipc.h"
 #include "vibeos/mm.h"
+#include "vibeos/object.h"
 #include "vibeos/proc.h"
 #include "vibeos/scheduler.h"
 #include "vibeos/timer.h"
@@ -15,6 +16,7 @@ typedef struct vibeos_kernel {
     vibeos_boot_state_t boot_state;
     vibeos_pmm_t pmm;
     vibeos_address_space_t kernel_aspace;
+    vibeos_handle_table_t handles;
     vibeos_process_table_t proc_table;
     vibeos_scheduler_t scheduler;
     vibeos_interrupt_controller_t intc;
