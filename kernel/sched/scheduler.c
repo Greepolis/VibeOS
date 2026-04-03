@@ -32,6 +32,8 @@ int vibeos_sched_init(vibeos_scheduler_t *sched, uint32_t cpu_count) {
         sched->runqueues[i].tail = 0;
         sched->runqueues[i].count = 0;
         sched->preemptions[i] = 0;
+        sched->waits_timed_out[i] = 0;
+        sched->waits_woken[i] = 0;
     }
     return 0;
 }
@@ -71,4 +73,34 @@ uint64_t vibeos_sched_preemptions(const vibeos_scheduler_t *sched, uint32_t cpu_
         return 0;
     }
     return sched->preemptions[cpu_id];
+}
+
+int vibeos_sched_note_wait_timeout(vibeos_scheduler_t *sched, uint32_t cpu_id) {
+    if (!sched || cpu_id >= sched->cpu_count) {
+        return -1;
+    }
+    sched->waits_timed_out[cpu_id]++;
+    return 0;
+}
+
+int vibeos_sched_note_wait_wake(vibeos_scheduler_t *sched, uint32_t cpu_id) {
+    if (!sched || cpu_id >= sched->cpu_count) {
+        return -1;
+    }
+    sched->waits_woken[cpu_id]++;
+    return 0;
+}
+
+uint64_t vibeos_sched_wait_timeouts(const vibeos_scheduler_t *sched, uint32_t cpu_id) {
+    if (!sched || cpu_id >= sched->cpu_count) {
+        return 0;
+    }
+    return sched->waits_timed_out[cpu_id];
+}
+
+uint64_t vibeos_sched_wait_wakes(const vibeos_scheduler_t *sched, uint32_t cpu_id) {
+    if (!sched || cpu_id >= sched->cpu_count) {
+        return 0;
+    }
+    return sched->waits_woken[cpu_id];
 }

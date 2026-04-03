@@ -26,6 +26,10 @@ int vibeos_waitset_count(const vibeos_waitset_t *waitset, size_t *out_count) {
 }
 
 int vibeos_waitset_wait(vibeos_waitset_t *waitset, uint64_t timeout_ticks, size_t *out_index) {
+    return vibeos_waitset_wait_ex(waitset, timeout_ticks, out_index, 0, 0);
+}
+
+int vibeos_waitset_wait_ex(vibeos_waitset_t *waitset, uint64_t timeout_ticks, size_t *out_index, vibeos_scheduler_t *sched, uint32_t cpu_id) {
     uint64_t tick;
     size_t i;
     if (!waitset || !out_index) {
@@ -36,9 +40,15 @@ int vibeos_waitset_wait(vibeos_waitset_t *waitset, uint64_t timeout_ticks, size_
             vibeos_event_t *ev = (vibeos_event_t *)waitset->events[i];
             if (ev && vibeos_event_is_signaled(ev)) {
                 *out_index = i;
+                if (sched) {
+                    (void)vibeos_sched_note_wait_wake(sched, cpu_id);
+                }
                 return 0;
             }
         }
+    }
+    if (sched) {
+        (void)vibeos_sched_note_wait_timeout(sched, cpu_id);
     }
     return -1;
 }

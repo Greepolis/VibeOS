@@ -13,6 +13,8 @@ typedef struct vibeos_event {
 typedef struct vibeos_message {
     uint32_t code;
     uint64_t payload;
+    uint32_t transferred_handle;
+    uint32_t transferred_rights;
 } vibeos_message_t;
 
 typedef struct vibeos_channel {
@@ -30,5 +32,7 @@ int vibeos_event_is_signaled(const vibeos_event_t *event);
 void vibeos_channel_init(vibeos_channel_t *channel);
 int vibeos_channel_send(vibeos_channel_t *channel, vibeos_message_t msg);
 int vibeos_channel_recv(vibeos_channel_t *channel, vibeos_message_t *out_msg);
+int vibeos_channel_send_with_handle(vibeos_channel_t *channel, uint32_t code, uint64_t payload, uint32_t handle, uint32_t rights);
+int vibeos_channel_recv_with_handle(vibeos_channel_t *channel, vibeos_message_t *out_msg, uint32_t *out_handle, uint32_t *out_rights);
 
 #endif

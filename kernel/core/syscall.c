@@ -1,5 +1,6 @@
 #include "vibeos/kernel.h"
 #include "vibeos/syscall.h"
+#include "vibeos/syscall_policy.h"
 #include "vibeos/waitset.h"
 
 int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_frame_t *frame) {
@@ -18,23 +19,25 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
         waitset_initialized = 1;
     }
 
+    {
+        vibeos_syscall_policy_t policy = vibeos_syscall_policy_for((vibeos_syscall_id_t)frame->id);
+        if (policy.requires_handle) {
+            if (!vibeos_handle_has_rights(&kernel->handles, (uint32_t)frame->arg0, policy.required_rights)) {
+                frame->result = -1;
+                return -1;
+            }
+        }
+    }
+
     switch ((vibeos_syscall_id_t)frame->id) {
         case VIBEOS_SYSCALL_NOP:
             frame->result = 0;
             return 0;
         case VIBEOS_SYSCALL_EVENT_SIGNAL:
-            if (!vibeos_handle_has_rights(&kernel->handles, (uint32_t)frame->arg0, VIBEOS_HANDLE_RIGHT_SIGNAL)) {
-                frame->result = -1;
-                return -1;
-            }
             vibeos_event_signal(&kernel->boot_event);
             frame->result = 0;
             return 0;
         case VIBEOS_SYSCALL_EVENT_CLEAR:
-            if (!vibeos_handle_has_rights(&kernel->handles, (uint32_t)frame->arg0, VIBEOS_HANDLE_RIGHT_SIGNAL)) {
-                frame->result = -1;
-                return -1;
-            }
             vibeos_event_clear(&kernel->boot_event);
             frame->result = 0;
             return 0;
@@ -49,10 +52,6 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             return 0;
         }
         case VIBEOS_SYSCALL_HANDLE_CLOSE:
-            if (!vibeos_handle_has_rights(&kernel->handles, (uint32_t)frame->arg0, VIBEOS_HANDLE_RIGHT_MANAGE)) {
-                frame->result = -1;
-                return -1;
-            }
             if (vibeos_handle_close(&kernel->handles, (uint32_t)frame->arg0) != 0) {
                 frame->result = -1;
                 return -1;
@@ -60,10 +59,6 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             frame->result = 0;
             return 0;
         case VIBEOS_SYSCALL_WAITSET_ADD_EVENT:
-            if (!vibeos_handle_has_rights(&kernel->handles, (uint32_t)frame->arg0, VIBEOS_HANDLE_RIGHT_SIGNAL)) {
-                frame->result = -1;
-                return -1;
-            }
             if (vibeos_waitset_add(&kernel_waitset, &kernel->boot_event) != 0) {
                 frame->result = -1;
                 return -1;

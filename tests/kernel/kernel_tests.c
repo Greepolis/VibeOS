@@ -385,9 +385,13 @@ static int test_timer_and_idt(void) {
 
 static int test_waitset(void) {
     vibeos_waitset_t waitset;
+    vibeos_scheduler_t sched;
     vibeos_event_t ev;
     size_t count = 0;
     vibeos_event_init(&ev);
+    if (vibeos_sched_init(&sched, 1) != 0) {
+        return -1;
+    }
     if (vibeos_waitset_init(&waitset) != 0) {
         return -1;
     }
@@ -397,11 +401,17 @@ static int test_waitset(void) {
     if (vibeos_waitset_count(&waitset, &count) != 0 || count != 1) {
         return -1;
     }
-    if (vibeos_waitset_wait(&waitset, 1, &count) == 0) {
+    if (vibeos_waitset_wait_ex(&waitset, 1, &count, &sched, 0) == 0) {
+        return -1;
+    }
+    if (vibeos_sched_wait_timeouts(&sched, 0) != 1) {
         return -1;
     }
     vibeos_event_signal(&ev);
-    if (vibeos_waitset_wait(&waitset, 1, &count) != 0 || count != 0) {
+    if (vibeos_waitset_wait_ex(&waitset, 1, &count, &sched, 0) != 0 || count != 0) {
+        return -1;
+    }
+    if (vibeos_sched_wait_wakes(&sched, 0) != 1) {
         return -1;
     }
     return 0;
