@@ -17,6 +17,7 @@
 #include "vibeos/user_api.h"
 #include "vibeos/vm.h"
 #include "vibeos/waitset.h"
+#include "vibeos/ipc_transfer.h"
 
 static void irq_handler(uint32_t irq, void *ctx) {
     uint32_t *acc = (uint32_t *)ctx;
@@ -562,6 +563,30 @@ static int test_trap_dispatch(void) {
     return 0;
 }
 
+static int test_ipc_handle_transfer(void) {
+    vibeos_handle_table_t sender;
+    vibeos_handle_table_t receiver;
+    uint32_t src_handle = 0;
+    uint32_t dst_handle = 0;
+    uint32_t rights = 0;
+    if (vibeos_handle_table_init(&sender) != 0 || vibeos_handle_table_init(&receiver) != 0) {
+        return -1;
+    }
+    if (vibeos_handle_alloc(&sender, VIBEOS_HANDLE_RIGHT_READ | VIBEOS_HANDLE_RIGHT_SIGNAL, &src_handle) != 0) {
+        return -1;
+    }
+    if (vibeos_ipc_transfer_handle(&sender, &receiver, src_handle, VIBEOS_HANDLE_RIGHT_SIGNAL, &dst_handle) != 0) {
+        return -1;
+    }
+    if (vibeos_handle_rights(&receiver, dst_handle, &rights) != 0 || rights != VIBEOS_HANDLE_RIGHT_SIGNAL) {
+        return -1;
+    }
+    if (vibeos_ipc_transfer_handle(&sender, &receiver, src_handle, VIBEOS_HANDLE_RIGHT_WRITE, &dst_handle) == 0) {
+        return -1;
+    }
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
     failures += test_pmm() != 0;
@@ -582,6 +607,7 @@ int main(void) {
     failures += test_driver_host() != 0;
     failures += test_service_ipc_contract() != 0;
     failures += test_trap_dispatch() != 0;
+    failures += test_ipc_handle_transfer() != 0;
 
     if (failures == 0) {
         puts("ALL_TESTS_PASS");

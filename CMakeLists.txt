@@ -16,6 +16,7 @@ add_library(vibeos_kernel_core STATIC
     kernel/sched/scheduler.c
     kernel/ipc/event.c
     kernel/ipc/channel.c
+    kernel/ipc/handle_transfer.c
     kernel/ipc/waitset.c
     kernel/core/interrupts.c
     kernel/core/policy.c
