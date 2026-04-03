@@ -188,6 +188,7 @@ static int test_interrupts(void) {
 static int test_syscalls(void) {
     vibeos_kernel_t kernel;
     vibeos_syscall_frame_t frame;
+    uint32_t signal_handle = 0;
     memset(&kernel, 0, sizeof(kernel));
     vibeos_event_init(&kernel.boot_event);
 
@@ -199,13 +200,14 @@ static int test_syscalls(void) {
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result <= 0) {
         return -1;
     }
+    signal_handle = (uint32_t)frame.result;
     frame.id = VIBEOS_SYSCALL_EVENT_SIGNAL;
     frame.arg0 = 0;
     if (vibeos_syscall_dispatch(&kernel, &frame) == 0) {
         return -1;
     }
     frame.id = VIBEOS_SYSCALL_EVENT_SIGNAL;
-    frame.arg0 = (uint64_t)frame.result;
+    frame.arg0 = (uint64_t)signal_handle;
     frame.arg1 = 0;
     frame.arg2 = 0;
     frame.result = -1;
@@ -589,25 +591,27 @@ static int test_ipc_handle_transfer(void) {
 
 int main(void) {
     int failures = 0;
-    failures += test_pmm() != 0;
-    failures += test_scheduler() != 0;
-    failures += test_ipc() != 0;
-    failures += test_kmain() != 0;
-    failures += test_vm() != 0;
-    failures += test_interrupts() != 0;
-    failures += test_syscalls() != 0;
-    failures += test_services() != 0;
-    failures += test_servicemgr_and_drivers() != 0;
-    failures += test_user_api_and_bootloader() != 0;
-    failures += test_timer_and_idt() != 0;
-    failures += test_waitset() != 0;
-    failures += test_filesystem_runtime() != 0;
-    failures += test_network_runtime() != 0;
-    failures += test_security_token() != 0;
-    failures += test_driver_host() != 0;
-    failures += test_service_ipc_contract() != 0;
-    failures += test_trap_dispatch() != 0;
-    failures += test_ipc_handle_transfer() != 0;
+#define RUN_TEST(fn) do { if ((fn)() != 0) { failures++; printf("FAIL:%s\n", #fn); } } while (0)
+    RUN_TEST(test_pmm);
+    RUN_TEST(test_scheduler);
+    RUN_TEST(test_ipc);
+    RUN_TEST(test_kmain);
+    RUN_TEST(test_vm);
+    RUN_TEST(test_interrupts);
+    RUN_TEST(test_syscalls);
+    RUN_TEST(test_services);
+    RUN_TEST(test_servicemgr_and_drivers);
+    RUN_TEST(test_user_api_and_bootloader);
+    RUN_TEST(test_timer_and_idt);
+    RUN_TEST(test_waitset);
+    RUN_TEST(test_filesystem_runtime);
+    RUN_TEST(test_network_runtime);
+    RUN_TEST(test_security_token);
+    RUN_TEST(test_driver_host);
+    RUN_TEST(test_service_ipc_contract);
+    RUN_TEST(test_trap_dispatch);
+    RUN_TEST(test_ipc_handle_transfer);
+#undef RUN_TEST
 
     if (failures == 0) {
         puts("ALL_TESTS_PASS");
