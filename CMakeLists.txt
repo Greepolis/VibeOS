@@ -21,6 +21,7 @@ add_library(vibeos_kernel_core STATIC
     kernel/core/security.c
     kernel/core/syscall.c
     kernel/time/timer.c
+    kernel/arch/x86_64/trap.c
     kernel/arch/x86_64/idt.c
     kernel/arch/x86_64/boot_stub.c
 )
@@ -39,6 +40,7 @@ target_compile_options(vibeos_kernel_core PRIVATE
 add_library(vibeos_user_core STATIC
     user/init/init_system.c
     user/servicemgr/service_manager.c
+    user/servicemgr/service_ipc.c
     user/devmgr/device_manager.c
     user/devmgr/driver_host.c
     user/drivers/driver_framework.c

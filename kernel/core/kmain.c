@@ -73,6 +73,10 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
         kernel->boot_state.last_error_code = 1005;
         return -1;
     }
+    if (vibeos_trap_state_init(&kernel->trap_state) != 0) {
+        kernel->boot_state.last_error_code = 1009;
+        return -1;
+    }
     if (vibeos_x86_64_idt_set(&kernel->idt, (uint32_t)vibeos_x86_64_timer_vector()) != 0) {
         kernel->boot_state.last_error_code = 1006;
         return -1;

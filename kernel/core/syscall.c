@@ -1,9 +1,21 @@
 #include "vibeos/kernel.h"
 #include "vibeos/syscall.h"
+#include "vibeos/waitset.h"
 
 int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_frame_t *frame) {
+    static vibeos_waitset_t kernel_waitset;
+    static int waitset_initialized = 0;
+
     if (!kernel || !frame) {
         return -1;
+    }
+
+    if (!waitset_initialized) {
+        if (vibeos_waitset_init(&kernel_waitset) != 0) {
+            frame->result = -1;
+            return -1;
+        }
+        waitset_initialized = 1;
     }
 
     switch ((vibeos_syscall_id_t)frame->id) {
@@ -35,6 +47,13 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             }
             frame->result = 0;
             return 0;
+        case VIBEOS_SYSCALL_WAITSET_ADD_EVENT:
+            if (vibeos_waitset_add(&kernel_waitset, &kernel->boot_event) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = 0;
+            return 0;
         case VIBEOS_SYSCALL_PROCESS_SPAWN:
         {
             uint32_t pid;
@@ -55,6 +74,27 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             frame->result = (int64_t)tid;
             return 0;
         }
+        case VIBEOS_SYSCALL_VM_MAP:
+            if (vibeos_vm_map(&kernel->kernel_aspace, (uintptr_t)frame->arg0, (uintptr_t)frame->arg1, (size_t)frame->arg2, VIBEOS_VM_PERM_READ | VIBEOS_VM_PERM_WRITE) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = 0;
+            return 0;
+        case VIBEOS_SYSCALL_VM_UNMAP:
+            if (vibeos_vm_unmap(&kernel->kernel_aspace, (uintptr_t)frame->arg0, (size_t)frame->arg1) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = 0;
+            return 0;
+        case VIBEOS_SYSCALL_VM_PROTECT:
+            if (vibeos_vm_protect(&kernel->kernel_aspace, (uintptr_t)frame->arg0, (size_t)frame->arg1, (uint32_t)frame->arg2) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = 0;
+            return 0;
         default:
             frame->result = -1;
             return -1;

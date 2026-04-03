@@ -8,9 +8,11 @@
 #include "vibeos/fs.h"
 #include "vibeos/services.h"
 #include "vibeos/security_model.h"
+#include "vibeos/service_ipc.h"
 #include "vibeos/syscall.h"
 #include "vibeos/timer.h"
 #include "vibeos/net.h"
+#include "vibeos/trap.h"
 #include "vibeos/user_api.h"
 #include "vibeos/vm.h"
 #include "vibeos/waitset.h"
@@ -210,6 +212,37 @@ static int test_syscalls(void) {
     }
     frame.id = VIBEOS_SYSCALL_HANDLE_CLOSE;
     frame.arg0 = (uint64_t)frame.result;
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
+    frame.id = VIBEOS_SYSCALL_VM_MAP;
+    frame.arg0 = 0x800000;
+    frame.arg1 = 0x300000;
+    frame.arg2 = 0x1000;
+    if (vibeos_vm_init(&kernel.kernel_aspace) != 0) {
+        return -1;
+    }
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
+    frame.id = VIBEOS_SYSCALL_VM_PROTECT;
+    frame.arg0 = 0x800000;
+    frame.arg1 = 0x1000;
+    frame.arg2 = VIBEOS_VM_PERM_READ;
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
+    frame.id = VIBEOS_SYSCALL_VM_UNMAP;
+    frame.arg0 = 0x800000;
+    frame.arg1 = 0x1000;
+    frame.arg2 = 0;
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
+    frame.id = VIBEOS_SYSCALL_WAITSET_ADD_EVENT;
+    frame.arg0 = 0;
+    frame.arg1 = 0;
+    frame.arg2 = 0;
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
         return -1;
     }
@@ -419,6 +452,37 @@ static int test_driver_host(void) {
     return 0;
 }
 
+static int test_service_ipc_contract(void) {
+    vibeos_service_msg_t msg;
+    if (vibeos_service_msg_build(&msg, VIBEOS_SERVICE_SERVICEMGR, VIBEOS_SERVICE_DEVMGR, VIBEOS_SERVICE_MSG_START, 42) != 0) {
+        return -1;
+    }
+    if (vibeos_service_msg_validate(&msg) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_trap_dispatch(void) {
+    vibeos_trap_state_t state;
+    vibeos_trap_frame_t frame;
+    if (vibeos_trap_state_init(&state) != 0) {
+        return -1;
+    }
+    frame.rip = 0x1000;
+    frame.rsp = 0x2000;
+    frame.rflags = 0x202;
+    frame.error_code = 0;
+    frame.vector = 14;
+    if (vibeos_trap_dispatch(&state, &frame) != 0) {
+        return -1;
+    }
+    if (state.last_vector != 14 || state.trap_count != 1) {
+        return -1;
+    }
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
     failures += test_pmm() != 0;
@@ -437,6 +501,8 @@ int main(void) {
     failures += test_network_runtime() != 0;
     failures += test_security_token() != 0;
     failures += test_driver_host() != 0;
+    failures += test_service_ipc_contract() != 0;
+    failures += test_trap_dispatch() != 0;
 
     if (failures == 0) {
         puts("ALL_TESTS_PASS");

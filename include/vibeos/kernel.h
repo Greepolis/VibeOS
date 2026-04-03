@@ -10,6 +10,7 @@
 #include "vibeos/proc.h"
 #include "vibeos/scheduler.h"
 #include "vibeos/timer.h"
+#include "vibeos/trap.h"
 #include "vibeos/vm.h"
 
 typedef struct vibeos_kernel {
@@ -22,6 +23,7 @@ typedef struct vibeos_kernel {
     vibeos_interrupt_controller_t intc;
     vibeos_timer_t timer;
     vibeos_x86_64_idt_t idt;
+    vibeos_trap_state_t trap_state;
     vibeos_event_t boot_event;
 } vibeos_kernel_t;
 
