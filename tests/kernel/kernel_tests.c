@@ -782,6 +782,47 @@ static int test_cross_process_handle_dup_policy(void) {
     return 0;
 }
 
+static int test_process_lifecycle(void) {
+    vibeos_process_table_t pt;
+    vibeos_process_state_t state;
+    vibeos_handle_table_t *handles = 0;
+    uint32_t pid = 0;
+    uint32_t tid = 0;
+    uint32_t h = 0;
+    uint32_t rights = 0;
+    if (vibeos_proc_init(&pt) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_spawn(&pt, 0, &pid) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_state(&pt, pid, &state) != 0 || state != VIBEOS_PROCESS_STATE_NEW) {
+        return -1;
+    }
+    if (vibeos_thread_create(&pt, pid, &tid) != 0 || tid == 0) {
+        return -1;
+    }
+    if (vibeos_proc_state(&pt, pid, &state) != 0 || state != VIBEOS_PROCESS_STATE_RUNNING) {
+        return -1;
+    }
+    if (vibeos_proc_handles(&pt, pid, &handles) != 0) {
+        return -1;
+    }
+    if (vibeos_handle_alloc(handles, VIBEOS_HANDLE_RIGHT_SIGNAL, &h) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_terminate(&pt, pid) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_state(&pt, pid, &state) != 0 || state != VIBEOS_PROCESS_STATE_TERMINATED) {
+        return -1;
+    }
+    if (vibeos_handle_rights(handles, h, &rights) == 0) {
+        return -1;
+    }
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
 #define RUN_TEST(fn) do { if ((fn)() != 0) { failures++; printf("FAIL:%s\n", #fn); } } while (0)
@@ -808,6 +849,7 @@ int main(void) {
     RUN_TEST(test_trap_dispatch);
     RUN_TEST(test_ipc_handle_transfer);
     RUN_TEST(test_cross_process_handle_dup_policy);
+    RUN_TEST(test_process_lifecycle);
 #undef RUN_TEST
 
     if (failures == 0) {

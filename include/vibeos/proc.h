@@ -7,10 +7,18 @@
 
 #define VIBEOS_MAX_PROCESSES 32u
 
+typedef enum vibeos_process_state {
+    VIBEOS_PROCESS_STATE_NEW = 0,
+    VIBEOS_PROCESS_STATE_RUNNING = 1,
+    VIBEOS_PROCESS_STATE_BLOCKED = 2,
+    VIBEOS_PROCESS_STATE_TERMINATED = 3
+} vibeos_process_state_t;
+
 typedef struct vibeos_process_entry {
     uint32_t pid;
     uint32_t parent_pid;
     uint32_t in_use;
+    vibeos_process_state_t state;
     vibeos_handle_table_t handles;
 } vibeos_process_entry_t;
 
@@ -27,5 +35,8 @@ int vibeos_proc_spawn(vibeos_process_table_t *pt, uint32_t parent_pid, uint32_t 
 int vibeos_thread_create(vibeos_process_table_t *pt, uint32_t pid, uint32_t *out_tid);
 int vibeos_proc_handles(vibeos_process_table_t *pt, uint32_t pid, vibeos_handle_table_t **out_handles);
 int vibeos_proc_duplicate_handle(vibeos_process_table_t *pt, uint32_t src_pid, uint32_t dst_pid, uint32_t src_handle, uint32_t requested_rights, uint32_t *out_dst_handle);
+int vibeos_proc_state(vibeos_process_table_t *pt, uint32_t pid, vibeos_process_state_t *out_state);
+int vibeos_proc_set_state(vibeos_process_table_t *pt, uint32_t pid, vibeos_process_state_t state);
+int vibeos_proc_terminate(vibeos_process_table_t *pt, uint32_t pid);
 
 #endif

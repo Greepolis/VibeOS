@@ -27,6 +27,18 @@ static int are_processes_related(const vibeos_process_entry_t *a, const vibeos_p
     return 0;
 }
 
+static void release_all_process_handles(vibeos_process_entry_t *entry) {
+    uint32_t i;
+    if (!entry) {
+        return;
+    }
+    for (i = 0; i < VIBEOS_MAX_HANDLES; i++) {
+        entry->handles.entries[i].in_use = 0;
+        entry->handles.entries[i].id = 0;
+        entry->handles.entries[i].rights = 0;
+    }
+}
+
 int vibeos_proc_init(vibeos_process_table_t *pt) {
     uint32_t i;
     if (!pt) {
@@ -40,6 +52,7 @@ int vibeos_proc_init(vibeos_process_table_t *pt) {
         pt->entries[i].pid = 0;
         pt->entries[i].parent_pid = 0;
         pt->entries[i].in_use = 0;
+        pt->entries[i].state = VIBEOS_PROCESS_STATE_TERMINATED;
     }
     return 0;
 }
@@ -54,10 +67,12 @@ int vibeos_proc_spawn(vibeos_process_table_t *pt, uint32_t parent_pid, uint32_t 
             pt->entries[i].pid = pt->next_pid++;
             pt->entries[i].parent_pid = parent_pid;
             pt->entries[i].in_use = 1;
+            pt->entries[i].state = VIBEOS_PROCESS_STATE_NEW;
             if (vibeos_handle_table_init(&pt->entries[i].handles) != 0) {
                 pt->entries[i].in_use = 0;
                 pt->entries[i].pid = 0;
                 pt->entries[i].parent_pid = 0;
+                pt->entries[i].state = VIBEOS_PROCESS_STATE_TERMINATED;
                 return -1;
             }
             *out_pid = pt->entries[i].pid;
@@ -77,6 +92,7 @@ int vibeos_thread_create(vibeos_process_table_t *pt, uint32_t pid, uint32_t *out
         if (pt->entries[i].in_use && pt->entries[i].pid == pid) {
             *out_tid = pt->next_tid++;
             pt->thread_count++;
+            pt->entries[i].state = VIBEOS_PROCESS_STATE_RUNNING;
             return 0;
         }
     }
@@ -114,4 +130,36 @@ int vibeos_proc_duplicate_handle(vibeos_process_table_t *pt, uint32_t src_pid, u
         return -1;
     }
     return vibeos_ipc_transfer_handle(&src_entry->handles, &dst_entry->handles, src_handle, requested_rights, out_dst_handle);
+}
+
+int vibeos_proc_state(vibeos_process_table_t *pt, uint32_t pid, vibeos_process_state_t *out_state) {
+    vibeos_process_entry_t *entry;
+    if (!out_state) {
+        return -1;
+    }
+    entry = find_process_entry(pt, pid);
+    if (!entry) {
+        return -1;
+    }
+    *out_state = entry->state;
+    return 0;
+}
+
+int vibeos_proc_set_state(vibeos_process_table_t *pt, uint32_t pid, vibeos_process_state_t state) {
+    vibeos_process_entry_t *entry = find_process_entry(pt, pid);
+    if (!entry) {
+        return -1;
+    }
+    entry->state = state;
+    return 0;
+}
+
+int vibeos_proc_terminate(vibeos_process_table_t *pt, uint32_t pid) {
+    vibeos_process_entry_t *entry = find_process_entry(pt, pid);
+    if (!entry) {
+        return -1;
+    }
+    release_all_process_handles(entry);
+    entry->state = VIBEOS_PROCESS_STATE_TERMINATED;
+    return 0;
 }
