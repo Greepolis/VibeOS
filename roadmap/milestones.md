@@ -1,5 +1,23 @@
 # Milestones
 
+## Current Snapshot (2026-04-03)
+
+| Milestone | Status | Delivery confidence |
+| --- | --- | --- |
+| M0 | Completed | High |
+| M1 | Partial | Medium |
+| M2 | Partial | Medium-Low |
+| M3 | Partial | Medium |
+| M4 | Partial | Medium-Low |
+| M5 | Partial | Medium |
+| M6 | Not started | Low |
+| M7 | Partial | Medium-Low |
+| M8 | Not started | Low |
+| M9 | Not started | Low |
+| M10 | Partial | Medium |
+
+Reference assessment: `docs/project_status_assessment_2026-04-03.md`
+
 ## M0: project charter complete
 
 - all Phase 1 documents created
