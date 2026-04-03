@@ -88,6 +88,12 @@
 - Public interfaces: `vibeos_proc_init`, `vibeos_proc_spawn`, `vibeos_thread_create`
 - Dependencies: syscall interface, scheduler
 
+### Object and Handle Model
+- Responsibilities: kernel object access mediation through handle IDs and rights
+- Main files: `kernel/object/handle_table.c`, `include/vibeos/object.h`
+- Public interfaces: `vibeos_handle_alloc`, `vibeos_handle_close`, `vibeos_handle_rights`
+- Dependencies: syscall interface, security model
+
 ### IPC Subsystem
 - Responsibilities: event signaling and channel messaging
 - Main files: `kernel/ipc/event.c`, `kernel/ipc/channel.c`, `kernel/ipc/waitset.c`, `include/vibeos/ipc.h`, `include/vibeos/waitset.h`
@@ -134,6 +140,7 @@ include/vibeos/
   arch_x86_64.h
   kernel.h
   mm.h
+  object.h
   proc.h
   scheduler.h
   ipc.h
@@ -150,6 +157,7 @@ kernel/
   core/syscall.c
   mm/pmm.c
   mm/vm.c
+  object/handle_table.c
   proc/process.c
   sched/scheduler.c
   time/timer.c
@@ -295,11 +303,12 @@ Implemented:
 - syscall frame model
 - dispatcher with initial syscall IDs
 - process/thread syscall group stubs
+- handle alloc/close syscall group stubs
 Files Created/Modified:
 - `kernel/core/syscall.c`
 - `include/vibeos/syscall.h`
 Pending:
-- handle-based object syscall surface
+- richer handle rights enforcement across subsystem APIs
 
 Module: Process Management
 Status: Partial
@@ -313,6 +322,18 @@ Files Created/Modified:
 Pending:
 - process lifecycle states
 - handle-based process and thread object integration
+
+Module: Object and Handle Model
+Status: Partial
+Implemented:
+- handle table initialization
+- handle allocation, close, and rights lookup primitives
+Files Created/Modified:
+- `kernel/object/handle_table.c`
+- `include/vibeos/object.h`
+Pending:
+- capability propagation in IPC transfers
+- per-process handle table isolation
 
 Module: Timer Subsystem
 Status: Partial
@@ -369,7 +390,7 @@ Pending:
 | Memory Manager | In Progress | bump allocator implemented |
 | Virtual Memory | In Progress | address-space mapping primitives implemented |
 | Interrupt Handling | In Progress | controller + x86_64 IDT stub implemented |
-| System Call Interface | In Progress | dispatcher + process/thread syscall stubs |
+| System Call Interface | In Progress | dispatcher + process/thread/handle syscall stubs |
 | IPC Subsystem | In Progress | event + channel primitives implemented |
 | Driver Framework | In Progress | driver framework registration stubs implemented |
 | Filesystem Layer | In Progress | VFS service stub implemented |
