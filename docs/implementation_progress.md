@@ -94,6 +94,12 @@
 - Public interfaces: `vibeos_handle_alloc`, `vibeos_handle_close`, `vibeos_handle_rights`
 - Dependencies: syscall interface, security model
 
+### Security Policy Engine
+- Responsibilities: capability-aware allow/deny decisions for sensitive operations
+- Main files: `kernel/core/policy.c`, `include/vibeos/policy.h`
+- Public interfaces: `vibeos_policy_can_fs_open`, `vibeos_policy_can_net_bind`
+- Dependencies: security token model
+
 ### IPC Subsystem
 - Responsibilities: event signaling and channel messaging
 - Main files: `kernel/ipc/event.c`, `kernel/ipc/channel.c`, `kernel/ipc/waitset.c`, `include/vibeos/ipc.h`, `include/vibeos/waitset.h`
@@ -146,6 +152,7 @@ include/vibeos/
   driver_host.h
   fs.h
   net.h
+  policy.h
   security_model.h
   arch_x86_64.h
   kernel.h
@@ -166,6 +173,7 @@ include/vibeos/
 kernel/
   core/kmain.c
   core/interrupts.c
+  core/policy.c
   core/syscall.c
   mm/pmm.c
   mm/vm.c
@@ -377,6 +385,7 @@ Implemented:
 - driver host probe stub
 - filesystem service stub
 - VFS mount/open/close runtime primitives
+- VFS secure-open policy gate
 - networking service stub
 - socket create/bind/send/close runtime primitives
 - service IPC message contract build/validate
@@ -398,6 +407,7 @@ Files Created/Modified:
 - `include/vibeos/driver_host.h`
 - `include/vibeos/fs.h`
 - `include/vibeos/net.h`
+- `include/vibeos/policy.h`
 - `include/vibeos/security_model.h`
 - `include/vibeos/user_api.h`
 Pending:
@@ -409,9 +419,12 @@ Status: Partial
 Implemented:
 - security token model
 - capability bit check helper
+- baseline policy engine for fs/net checks
 Files Created/Modified:
 - `kernel/core/security.c`
 - `include/vibeos/security_model.h`
+- `kernel/core/policy.c`
+- `include/vibeos/policy.h`
 Pending:
 - token propagation across process/thread lifecycle
 - policy engine integration for MAC rules
