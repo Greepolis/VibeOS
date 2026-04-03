@@ -14,5 +14,6 @@ typedef struct vibeos_waitset {
 int vibeos_waitset_init(vibeos_waitset_t *waitset);
 int vibeos_waitset_add(vibeos_waitset_t *waitset, void *event_ptr);
 int vibeos_waitset_count(const vibeos_waitset_t *waitset, size_t *out_count);
+int vibeos_waitset_wait(vibeos_waitset_t *waitset, uint64_t timeout_ticks, size_t *out_index);
 
 #endif

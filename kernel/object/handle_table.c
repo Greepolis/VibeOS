@@ -60,3 +60,11 @@ int vibeos_handle_rights(const vibeos_handle_table_t *table, uint32_t handle, ui
     }
     return -1;
 }
+
+int vibeos_handle_has_rights(const vibeos_handle_table_t *table, uint32_t handle, uint32_t required_rights) {
+    uint32_t rights = 0;
+    if (vibeos_handle_rights(table, handle, &rights) != 0) {
+        return 0;
+    }
+    return ((rights & required_rights) == required_rights) ? 1 : 0;
+}

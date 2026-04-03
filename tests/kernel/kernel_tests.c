@@ -179,8 +179,16 @@ static int test_syscalls(void) {
     memset(&kernel, 0, sizeof(kernel));
     vibeos_event_init(&kernel.boot_event);
 
+    frame.id = VIBEOS_SYSCALL_HANDLE_ALLOC;
+    frame.arg0 = VIBEOS_HANDLE_RIGHT_SIGNAL | VIBEOS_HANDLE_RIGHT_MANAGE;
+    if (vibeos_handle_table_init(&kernel.handles) != 0) {
+        return -1;
+    }
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result <= 0) {
+        return -1;
+    }
     frame.id = VIBEOS_SYSCALL_EVENT_SIGNAL;
-    frame.arg0 = 0;
+    frame.arg0 = (uint64_t)frame.result;
     frame.arg1 = 0;
     frame.arg2 = 0;
     frame.result = -1;
@@ -204,10 +212,7 @@ static int test_syscalls(void) {
         return -1;
     }
     frame.id = VIBEOS_SYSCALL_HANDLE_ALLOC;
-    frame.arg0 = 0x7;
-    if (vibeos_handle_table_init(&kernel.handles) != 0) {
-        return -1;
-    }
+    frame.arg0 = VIBEOS_HANDLE_RIGHT_SIGNAL | VIBEOS_HANDLE_RIGHT_MANAGE;
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result <= 0) {
         return -1;
     }
@@ -240,8 +245,13 @@ static int test_syscalls(void) {
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
         return -1;
     }
+    frame.id = VIBEOS_SYSCALL_HANDLE_ALLOC;
+    frame.arg0 = VIBEOS_HANDLE_RIGHT_SIGNAL;
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result <= 0) {
+        return -1;
+    }
     frame.id = VIBEOS_SYSCALL_WAITSET_ADD_EVENT;
-    frame.arg0 = 0;
+    frame.arg0 = (uint64_t)frame.result;
     frame.arg1 = 0;
     frame.arg2 = 0;
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
@@ -312,6 +322,7 @@ static int test_servicemgr_and_drivers(void) {
 static int test_user_api_and_bootloader(void) {
     vibeos_kernel_t kernel;
     vibeos_user_context_t user_ctx;
+    uint32_t signal_handle = 0;
     vibeos_memory_region_t regions[1];
     vibeos_boot_info_t boot_info;
     memset(&kernel, 0, sizeof(kernel));
@@ -332,7 +343,13 @@ static int test_user_api_and_bootloader(void) {
     if (boot_info.version != VIBEOS_BOOTINFO_VERSION || boot_info.memory_map_entries != 1) {
         return -1;
     }
-    if (vibeos_user_signal_boot_event(&kernel) != 0) {
+    if (vibeos_handle_table_init(&kernel.handles) != 0) {
+        return -1;
+    }
+    if (vibeos_handle_alloc(&kernel.handles, VIBEOS_HANDLE_RIGHT_SIGNAL, &signal_handle) != 0) {
+        return -1;
+    }
+    if (vibeos_user_signal_boot_event(&kernel, signal_handle) != 0) {
         return -1;
     }
     if (!vibeos_event_is_signaled(&kernel.boot_event)) {
@@ -378,6 +395,13 @@ static int test_waitset(void) {
         return -1;
     }
     if (vibeos_waitset_count(&waitset, &count) != 0 || count != 1) {
+        return -1;
+    }
+    if (vibeos_waitset_wait(&waitset, 1, &count) == 0) {
+        return -1;
+    }
+    vibeos_event_signal(&ev);
+    if (vibeos_waitset_wait(&waitset, 1, &count) != 0 || count != 0) {
         return -1;
     }
     return 0;
@@ -499,7 +523,14 @@ static int test_trap_dispatch(void) {
     if (vibeos_trap_dispatch(&state, &frame) != 0) {
         return -1;
     }
-    if (state.last_vector != 14 || state.trap_count != 1) {
+    if (state.last_vector != 14 || state.trap_count != 1 || state.class_counts[VIBEOS_TRAP_CLASS_FAULT] != 1) {
+        return -1;
+    }
+    frame.vector = 0x80;
+    if (vibeos_trap_dispatch(&state, &frame) != 0) {
+        return -1;
+    }
+    if (vibeos_trap_classify(0x80) != VIBEOS_TRAP_CLASS_SYSCALL) {
         return -1;
     }
     return 0;

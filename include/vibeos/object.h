@@ -4,6 +4,10 @@
 #include <stdint.h>
 
 #define VIBEOS_MAX_HANDLES 1024u
+#define VIBEOS_HANDLE_RIGHT_READ   (1u << 0)
+#define VIBEOS_HANDLE_RIGHT_WRITE  (1u << 1)
+#define VIBEOS_HANDLE_RIGHT_SIGNAL (1u << 2)
+#define VIBEOS_HANDLE_RIGHT_MANAGE (1u << 3)
 
 typedef struct vibeos_handle_entry {
     uint32_t id;
@@ -20,5 +24,6 @@ int vibeos_handle_table_init(vibeos_handle_table_t *table);
 int vibeos_handle_alloc(vibeos_handle_table_t *table, uint32_t rights, uint32_t *out_handle);
 int vibeos_handle_close(vibeos_handle_table_t *table, uint32_t handle);
 int vibeos_handle_rights(const vibeos_handle_table_t *table, uint32_t handle, uint32_t *out_rights);
+int vibeos_handle_has_rights(const vibeos_handle_table_t *table, uint32_t handle, uint32_t required_rights);
 
 #endif
