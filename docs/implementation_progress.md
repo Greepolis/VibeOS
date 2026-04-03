@@ -78,7 +78,7 @@
 
 ### System Call Interface
 - Responsibilities: user-kernel boundary ABI
-- Main files: `kernel/core/syscall.c`, `include/vibeos/syscall.h`
+- Main files: `kernel/core/syscall.c`, `kernel/core/syscall_policy.c`, `include/vibeos/syscall.h`, `include/vibeos/syscall_policy.h`
 - Public interfaces: `vibeos_syscall_dispatch`
 - Dependencies: kernel object model, IPC, VM
 
@@ -103,7 +103,7 @@
 ### IPC Subsystem
 - Responsibilities: event signaling and channel messaging
 - Main files: `kernel/ipc/event.c`, `kernel/ipc/channel.c`, `kernel/ipc/waitset.c`, `include/vibeos/ipc.h`, `include/vibeos/waitset.h`
-- Public interfaces: `vibeos_event_*`, `vibeos_channel_*`, `vibeos_waitset_wait`
+- Public interfaces: `vibeos_event_*`, `vibeos_channel_*`, `vibeos_waitset_wait`, `vibeos_waitset_wait_ex`
 - Dependencies: scheduler, handle model (future)
 
 ### Driver Framework
@@ -165,6 +165,7 @@ include/vibeos/
   services.h
   service_ipc.h
   syscall.h
+  syscall_policy.h
   timer.h
   trap.h
   user_api.h
@@ -175,6 +176,7 @@ kernel/
   core/interrupts.c
   core/policy.c
   core/syscall.c
+  core/syscall_policy.c
   mm/pmm.c
   mm/vm.c
   object/handle_table.c
@@ -272,6 +274,7 @@ Implemented:
 - per-CPU-ready runqueue structure
 - enqueue and dequeue primitives
 - tick-based preemption primitives
+- wait timeout and wake counters for scheduler observability
 Files Created/Modified:
 - `kernel/sched/scheduler.c`
 - `include/vibeos/scheduler.h`
@@ -286,6 +289,8 @@ Implemented:
 - bounded message channel primitive
 - waitset registration primitive
 - waitset timeout wait primitive
+- channel helpers for message transfer with handle rights metadata
+- waitset extended wait API with scheduler wake/timeout feedback
 Files Created/Modified:
 - `kernel/ipc/event.c`
 - `kernel/ipc/channel.c`
@@ -293,8 +298,8 @@ Files Created/Modified:
 - `include/vibeos/ipc.h`
 - `include/vibeos/waitset.h`
 Pending:
-- handle transfer semantics
-- wait sets and timeout policies
+- waitset blocking integration with timer interrupts
+- process-scoped waitset ownership model
 
 Module: Virtual Memory
 Status: Partial
@@ -337,9 +342,12 @@ Implemented:
 - vm map/unmap/protect syscall group stubs
 - waitset add-event syscall stub
 - handle-rights enforcement for sensitive syscall operations
+- centralized syscall policy lookup for required handle rights
 Files Created/Modified:
 - `kernel/core/syscall.c`
 - `include/vibeos/syscall.h`
+- `kernel/core/syscall_policy.c`
+- `include/vibeos/syscall_policy.h`
 Pending:
 - capability-to-policy integration for syscall authorization
 
@@ -450,12 +458,12 @@ Pending:
 | --- | --- | --- |
 | Bootloader | In Progress | boot info builder stub implemented |
 | Kernel Core | In Progress | `kmain` bootstrap logic implemented |
-| Process Scheduler | In Progress | queue + tick preemption primitives implemented |
+| Process Scheduler | In Progress | queue/preemption primitives plus wait wake-timeout counters |
 | Memory Manager | In Progress | bump allocator implemented |
 | Virtual Memory | In Progress | address-space mapping primitives implemented |
 | Interrupt Handling | In Progress | controller + x86_64 IDT stub implemented |
-| System Call Interface | In Progress | dispatcher + process/thread/handle/vm/ipc syscall stubs |
-| IPC Subsystem | In Progress | event + channel primitives implemented |
+| System Call Interface | In Progress | dispatcher + centralized syscall rights policy |
+| IPC Subsystem | In Progress | event/channel/waitset primitives with handle-transfer metadata |
 | Driver Framework | In Progress | driver framework registration stubs implemented |
 | Filesystem Layer | In Progress | VFS runtime mount/open/close primitives implemented |
 | Networking Stack | In Progress | socket runtime primitives implemented |
