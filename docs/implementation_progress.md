@@ -85,13 +85,13 @@
 ### Process Management
 - Responsibilities: process and thread identity lifecycle primitives
 - Main files: `kernel/proc/process.c`, `include/vibeos/proc.h`
-- Public interfaces: `vibeos_proc_init`, `vibeos_proc_spawn`, `vibeos_thread_create`
+- Public interfaces: `vibeos_proc_init`, `vibeos_proc_spawn`, `vibeos_thread_create`, `vibeos_proc_bind_process_handle`, `vibeos_proc_bind_thread_handle`, `vibeos_proc_resolve_object_handle`
 - Dependencies: syscall interface, scheduler
 
 ### Object and Handle Model
 - Responsibilities: kernel object access mediation through handle IDs and rights
 - Main files: `kernel/object/handle_table.c`, `include/vibeos/object.h`
-- Public interfaces: `vibeos_handle_alloc`, `vibeos_handle_close`, `vibeos_handle_rights`, `vibeos_handle_has_rights`
+- Public interfaces: `vibeos_handle_alloc`, `vibeos_handle_alloc_object`, `vibeos_handle_close`, `vibeos_handle_rights`, `vibeos_handle_object`, `vibeos_handle_has_rights`
 - Dependencies: syscall interface, security model
 
 ### Security Policy Engine
@@ -369,11 +369,13 @@ Implemented:
 - process handle duplication policy helper (`vibeos_proc_duplicate_handle`)
 - process lifecycle states (`NEW/RUNNING/BLOCKED/TERMINATED`)
 - lifecycle APIs (`vibeos_proc_state`, `vibeos_proc_set_state`, `vibeos_proc_terminate`)
+- thread registry with owner process binding
+- process and thread object-handle bind or resolve helpers
 Files Created/Modified:
 - `kernel/proc/process.c`
 - `include/vibeos/proc.h`
 Pending:
-- handle-based process and thread object integration
+- thread lifecycle transitions beyond create or terminate path
 
 Module: Object and Handle Model
 Status: Partial
@@ -384,6 +386,7 @@ Implemented:
 - IPC handle transfer primitive with rights reduction into receiver handle table
 - syscall handle isolation via caller PID-scoped process handle tables
 - cross-process handle duplication policy (related process only + source MANAGE right)
+- object-aware handle metadata (`object_type`, `object_id`) with lookup helper
 Files Created/Modified:
 - `kernel/object/handle_table.c`
 - `include/vibeos/object.h`
