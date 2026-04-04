@@ -846,6 +846,53 @@ static int test_handle_revocation_scoped(void) {
     return 0;
 }
 
+static int test_handle_revocation_audit(void) {
+    vibeos_process_table_t pt;
+    vibeos_handle_table_t *p1_handles = 0;
+    vibeos_handle_table_t *p2_handles = 0;
+    vibeos_proc_audit_event_t ev0;
+    vibeos_proc_audit_event_t ev1;
+    uint32_t p1 = 0;
+    uint32_t p2 = 0;
+    uint32_t src = 0;
+    uint32_t dup = 0;
+    uint32_t count = 0;
+    if (vibeos_proc_init(&pt) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_spawn(&pt, 0, &p1) != 0 || vibeos_proc_spawn(&pt, p1, &p2) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_handles(&pt, p1, &p1_handles) != 0 || vibeos_proc_handles(&pt, p2, &p2_handles) != 0) {
+        return -1;
+    }
+    if (vibeos_handle_alloc(p1_handles, VIBEOS_HANDLE_RIGHT_SIGNAL | VIBEOS_HANDLE_RIGHT_MANAGE, &src) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_duplicate_handle(&pt, p1, p2, src, VIBEOS_HANDLE_RIGHT_SIGNAL, &dup) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_revoke_handle_lineage(&pt, p1, src) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_revoke_handle_lineage_scoped(&pt, p1, src, VIBEOS_OBJECT_PROCESS, VIBEOS_HANDLE_RIGHT_READ) == 0) {
+        return -1;
+    }
+    if (vibeos_proc_audit_count(&pt, &count) != 0 || count != 2) {
+        return -1;
+    }
+    if (vibeos_proc_audit_get(&pt, 0, &ev0) != 0 || vibeos_proc_audit_get(&pt, 1, &ev1) != 0) {
+        return -1;
+    }
+    if (ev0.action != VIBEOS_PROC_AUDIT_REVOKE_LINEAGE || ev0.success != 1 || ev0.revoked_count == 0) {
+        return -1;
+    }
+    if (ev1.action != VIBEOS_PROC_AUDIT_REVOKE_LINEAGE_SCOPED || ev1.success != 0 || ev1.revoked_count != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 static int test_process_lifecycle(void) {
     vibeos_process_table_t pt;
     vibeos_process_state_t state;
@@ -966,6 +1013,7 @@ int main(void) {
     RUN_TEST(test_process_thread_object_handles);
     RUN_TEST(test_handle_revocation_propagation);
     RUN_TEST(test_handle_revocation_scoped);
+    RUN_TEST(test_handle_revocation_audit);
 #undef RUN_TEST
 
     if (failures == 0) {

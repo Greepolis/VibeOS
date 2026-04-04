@@ -90,6 +90,38 @@ static int revoke_lineage_in_table(vibeos_handle_table_t *table, uint32_t table_
     return revoked;
 }
 
+static void proc_audit_record(vibeos_process_table_t *pt,
+    vibeos_proc_audit_action_t action,
+    uint32_t owner_pid,
+    uint32_t request_handle,
+    uint32_t root_pid,
+    uint32_t root_handle,
+    vibeos_object_type_t object_type_filter,
+    uint32_t rights_mask_filter,
+    uint32_t revoked_count,
+    uint32_t success) {
+    vibeos_proc_audit_event_t *ev;
+    if (!pt) {
+        return;
+    }
+    ev = &pt->audit_events[pt->audit_head];
+    pt->audit_head = (pt->audit_head + 1u) % VIBEOS_PROC_AUDIT_CAPACITY;
+    if (pt->audit_count < VIBEOS_PROC_AUDIT_CAPACITY) {
+        pt->audit_count++;
+    }
+    pt->audit_seq++;
+    ev->seq = pt->audit_seq;
+    ev->action = (uint32_t)action;
+    ev->owner_pid = owner_pid;
+    ev->request_handle = request_handle;
+    ev->root_pid = root_pid;
+    ev->root_handle = root_handle;
+    ev->object_type_filter = (uint32_t)object_type_filter;
+    ev->rights_mask_filter = rights_mask_filter;
+    ev->revoked_count = revoked_count;
+    ev->success = success;
+}
+
 int vibeos_proc_init(vibeos_process_table_t *pt) {
     uint32_t i;
     if (!pt) {
@@ -99,6 +131,9 @@ int vibeos_proc_init(vibeos_process_table_t *pt) {
     pt->next_tid = 1;
     pt->process_count = 0;
     pt->thread_count = 0;
+    pt->audit_seq = 0;
+    pt->audit_head = 0;
+    pt->audit_count = 0;
     for (i = 0; i < VIBEOS_MAX_PROCESSES; i++) {
         pt->entries[i].pid = 0;
         pt->entries[i].parent_pid = 0;
@@ -110,6 +145,18 @@ int vibeos_proc_init(vibeos_process_table_t *pt) {
         pt->threads[i].owner_pid = 0;
         pt->threads[i].in_use = 0;
         pt->threads[i].state = VIBEOS_THREAD_STATE_EXITED;
+    }
+    for (i = 0; i < VIBEOS_PROC_AUDIT_CAPACITY; i++) {
+        pt->audit_events[i].seq = 0;
+        pt->audit_events[i].action = 0;
+        pt->audit_events[i].owner_pid = 0;
+        pt->audit_events[i].request_handle = 0;
+        pt->audit_events[i].root_pid = 0;
+        pt->audit_events[i].root_handle = 0;
+        pt->audit_events[i].object_type_filter = 0;
+        pt->audit_events[i].rights_mask_filter = 0;
+        pt->audit_events[i].revoked_count = 0;
+        pt->audit_events[i].success = 0;
     }
     return 0;
 }
@@ -224,6 +271,9 @@ int vibeos_proc_revoke_handle_lineage_scoped(vibeos_process_table_t *pt, uint32_
     uint32_t root_handle = 0;
     uint32_t i;
     int revoked_total = 0;
+    vibeos_proc_audit_action_t action;
+    uint32_t success = 0;
+    action = (object_type_filter == VIBEOS_OBJECT_NONE && rights_mask_filter == 0) ? VIBEOS_PROC_AUDIT_REVOKE_LINEAGE : VIBEOS_PROC_AUDIT_REVOKE_LINEAGE_SCOPED;
     if (!pt || owner_pid == 0 || handle == 0) {
         return -1;
     }
@@ -232,9 +282,11 @@ int vibeos_proc_revoke_handle_lineage_scoped(vibeos_process_table_t *pt, uint32_
         return -1;
     }
     if (!vibeos_handle_has_rights(&owner->handles, handle, VIBEOS_HANDLE_RIGHT_MANAGE)) {
+        proc_audit_record(pt, action, owner_pid, handle, 0, 0, object_type_filter, rights_mask_filter, 0, 0);
         return -1;
     }
     if (vibeos_handle_provenance(&owner->handles, handle, &root_pid, &root_handle) != 0) {
+        proc_audit_record(pt, action, owner_pid, handle, 0, 0, object_type_filter, rights_mask_filter, 0, 0);
         return -1;
     }
     if (root_pid == 0 || root_handle == 0) {
@@ -246,6 +298,8 @@ int vibeos_proc_revoke_handle_lineage_scoped(vibeos_process_table_t *pt, uint32_
             revoked_total += revoke_lineage_in_table(&pt->entries[i].handles, pt->entries[i].pid, root_pid, root_handle, object_type_filter, rights_mask_filter);
         }
     }
+    success = (revoked_total > 0) ? 1u : 0u;
+    proc_audit_record(pt, action, owner_pid, handle, root_pid, root_handle, object_type_filter, rights_mask_filter, (uint32_t)revoked_total, success);
     return (revoked_total > 0) ? 0 : -1;
 }
 
@@ -336,4 +390,24 @@ int vibeos_proc_resolve_object_handle(vibeos_process_table_t *pt, uint32_t owner
         return -1;
     }
     return vibeos_handle_object(&owner->handles, handle, out_object_type, out_object_id);
+}
+
+int vibeos_proc_audit_count(vibeos_process_table_t *pt, uint32_t *out_count) {
+    if (!pt || !out_count) {
+        return -1;
+    }
+    *out_count = pt->audit_count;
+    return 0;
+}
+
+int vibeos_proc_audit_get(vibeos_process_table_t *pt, uint32_t index, vibeos_proc_audit_event_t *out_event) {
+    uint32_t start;
+    uint32_t slot;
+    if (!pt || !out_event || index >= pt->audit_count) {
+        return -1;
+    }
+    start = (pt->audit_head + VIBEOS_PROC_AUDIT_CAPACITY - pt->audit_count) % VIBEOS_PROC_AUDIT_CAPACITY;
+    slot = (start + index) % VIBEOS_PROC_AUDIT_CAPACITY;
+    *out_event = pt->audit_events[slot];
+    return 0;
 }

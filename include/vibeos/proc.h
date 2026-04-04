@@ -7,6 +7,7 @@
 
 #define VIBEOS_MAX_PROCESSES 32u
 #define VIBEOS_PROC_MAX_THREADS 256u
+#define VIBEOS_PROC_AUDIT_CAPACITY 128u
 
 typedef enum vibeos_process_state {
     VIBEOS_PROCESS_STATE_NEW = 0,
@@ -37,6 +38,24 @@ typedef struct vibeos_thread_entry {
     vibeos_thread_state_t state;
 } vibeos_thread_entry_t;
 
+typedef struct vibeos_proc_audit_event {
+    uint64_t seq;
+    uint32_t action;
+    uint32_t owner_pid;
+    uint32_t request_handle;
+    uint32_t root_pid;
+    uint32_t root_handle;
+    uint32_t object_type_filter;
+    uint32_t rights_mask_filter;
+    uint32_t revoked_count;
+    uint32_t success;
+} vibeos_proc_audit_event_t;
+
+typedef enum vibeos_proc_audit_action {
+    VIBEOS_PROC_AUDIT_REVOKE_LINEAGE = 1,
+    VIBEOS_PROC_AUDIT_REVOKE_LINEAGE_SCOPED = 2
+} vibeos_proc_audit_action_t;
+
 typedef struct vibeos_process_table {
     uint32_t next_pid;
     uint32_t next_tid;
@@ -44,6 +63,10 @@ typedef struct vibeos_process_table {
     uint32_t thread_count;
     vibeos_process_entry_t entries[VIBEOS_MAX_PROCESSES];
     vibeos_thread_entry_t threads[VIBEOS_PROC_MAX_THREADS];
+    uint64_t audit_seq;
+    uint32_t audit_head;
+    uint32_t audit_count;
+    vibeos_proc_audit_event_t audit_events[VIBEOS_PROC_AUDIT_CAPACITY];
 } vibeos_process_table_t;
 
 int vibeos_proc_init(vibeos_process_table_t *pt);
@@ -59,5 +82,7 @@ int vibeos_proc_terminate(vibeos_process_table_t *pt, uint32_t pid);
 int vibeos_proc_bind_process_handle(vibeos_process_table_t *pt, uint32_t owner_pid, uint32_t target_pid, uint32_t rights, uint32_t *out_handle);
 int vibeos_proc_bind_thread_handle(vibeos_process_table_t *pt, uint32_t owner_pid, uint32_t target_tid, uint32_t rights, uint32_t *out_handle);
 int vibeos_proc_resolve_object_handle(vibeos_process_table_t *pt, uint32_t owner_pid, uint32_t handle, vibeos_object_type_t *out_object_type, uint32_t *out_object_id);
+int vibeos_proc_audit_count(vibeos_process_table_t *pt, uint32_t *out_count);
+int vibeos_proc_audit_get(vibeos_process_table_t *pt, uint32_t index, vibeos_proc_audit_event_t *out_event);
 
 #endif
