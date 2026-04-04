@@ -191,6 +191,26 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             frame->result = 0;
             return 0;
         }
+        case VIBEOS_SYSCALL_PROCESS_COUNT_GET:
+        {
+            uint32_t count = 0;
+            if (vibeos_proc_process_count(&kernel->proc_table, &count) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = (int64_t)count;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_THREAD_COUNT_GET:
+        {
+            uint32_t count = 0;
+            if (vibeos_proc_thread_count(&kernel->proc_table, &count) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = (int64_t)count;
+            return 0;
+        }
         case VIBEOS_SYSCALL_THREAD_CREATE:
         {
             uint32_t tid;
@@ -356,6 +376,22 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
                 return -1;
             }
             frame->result = (int64_t)dropped;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_SCHED_RUNNABLE_GET:
+            frame->result = (int64_t)vibeos_sched_runnable_threads(&kernel->scheduler);
+            return 0;
+        case VIBEOS_SYSCALL_SCHED_RUNQUEUE_DEPTH_GET:
+            frame->result = (int64_t)vibeos_sched_runqueue_depth(&kernel->scheduler, (uint32_t)frame->arg0);
+            return 0;
+        case VIBEOS_SYSCALL_SCHED_CPU_COUNT_GET:
+        {
+            uint32_t cpu_count = 0;
+            if (vibeos_sched_cpu_count(&kernel->scheduler, &cpu_count) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = (int64_t)cpu_count;
             return 0;
         }
         default:

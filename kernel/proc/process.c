@@ -564,3 +564,19 @@ int vibeos_proc_audit_get_dropped(vibeos_process_table_t *pt, uint32_t *out_drop
     *out_dropped = pt->audit_dropped;
     return 0;
 }
+
+int vibeos_proc_process_count(vibeos_process_table_t *pt, uint32_t *out_count) {
+    if (!pt || !out_count) {
+        return -1;
+    }
+    *out_count = pt->process_count;
+    return 0;
+}
+
+int vibeos_proc_thread_count(vibeos_process_table_t *pt, uint32_t *out_count) {
+    if (!pt || !out_count) {
+        return -1;
+    }
+    *out_count = pt->thread_count;
+    return 0;
+}

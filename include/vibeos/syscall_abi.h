@@ -107,6 +107,26 @@ static inline void vibeos_syscall_make_process_terminate(vibeos_syscall_frame_t 
     f->arg2 = caller_pid;
 }
 
+static inline void vibeos_syscall_make_process_count_get(vibeos_syscall_frame_t *f) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_PROCESS_COUNT_GET;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = 0;
+}
+
+static inline void vibeos_syscall_make_thread_count_get(vibeos_syscall_frame_t *f) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_THREAD_COUNT_GET;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = 0;
+}
+
 static inline void vibeos_syscall_make_thread_create(vibeos_syscall_frame_t *f, uint32_t pid) {
     if (!f) {
         return;
@@ -239,6 +259,36 @@ static inline void vibeos_syscall_make_proc_audit_dropped(vibeos_syscall_frame_t
     f->arg0 = 0;
     f->arg1 = 0;
     f->arg2 = caller_pid;
+}
+
+static inline void vibeos_syscall_make_sched_runnable_get(vibeos_syscall_frame_t *f) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_SCHED_RUNNABLE_GET;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = 0;
+}
+
+static inline void vibeos_syscall_make_sched_runqueue_depth_get(vibeos_syscall_frame_t *f, uint32_t cpu_id) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_SCHED_RUNQUEUE_DEPTH_GET;
+    f->arg0 = cpu_id;
+    f->arg1 = 0;
+    f->arg2 = 0;
+}
+
+static inline void vibeos_syscall_make_sched_cpu_count_get(vibeos_syscall_frame_t *f) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_SCHED_CPU_COUNT_GET;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = 0;
 }
 
 /* Waitset API */
