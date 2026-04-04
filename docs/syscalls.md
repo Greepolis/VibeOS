@@ -53,10 +53,14 @@ Argument semantics for current syscall groups:
 | `THREAD_COUNT_GET` | reserved (`0`) | reserved (`0`) | reserved (`0`) |
 | `PROCESS_LIVE_COUNT_GET` | reserved (`0`) | reserved (`0`) | reserved (`0`) |
 | `PROCESS_TERMINATED_COUNT_GET` | reserved (`0`) | reserved (`0`) | reserved (`0`) |
+| `PROCESS_STATE_COUNT_GET` | process state enum | reserved (`0`) | reserved (`0`) |
+| `PROCESS_STATE_SUMMARY_GET` | reserved (`0`) | reserved (`0`) | reserved (`0`) |
 | `THREAD_CREATE` | pid | reserved (`0`) | reserved (`0`) |
 | `THREAD_STATE_GET` | tid | reserved (`0`) | caller pid (`0` = kernel; otherwise owner pid only) |
 | `THREAD_STATE_SET` | tid | target state enum | caller pid (`0` = kernel; otherwise owner pid only) |
 | `THREAD_EXIT` | tid | reserved (`0`) | caller pid (`0` = kernel; otherwise owner pid only) |
+| `THREAD_STATE_COUNT_GET` | thread state enum | reserved (`0`) | reserved (`0`) |
+| `THREAD_STATE_SUMMARY_GET` | reserved (`0`) | reserved (`0`) | reserved (`0`) |
 | `VM_MAP` | va | pa | len |
 | `VM_UNMAP` | va | len | reserved (`0`) |
 | `VM_PROTECT` | va | len | perms |
@@ -101,6 +105,18 @@ Argument semantics for current syscall groups:
 
 `WAITSET_WAKE_POLICY_GET` returns:
 - `result` = current wake policy enum (`0` FIFO, `1` REVERSE).
+
+`PROCESS_STATE_SUMMARY_GET` returns:
+- `arg0` = count in `NEW`
+- `arg1` = count in `RUNNING`
+- `arg2` = count in `BLOCKED`
+- `result` = count in `TERMINATED`
+
+`THREAD_STATE_SUMMARY_GET` returns:
+- `arg0` = count in `NEW`
+- `arg1` = count in `RUNNABLE`
+- `arg2` = count in `BLOCKED`
+- `result` = count in `EXITED`
 
 Access policy:
 - `caller_pid == 0`: full global audit stream.

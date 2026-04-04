@@ -369,6 +369,7 @@ Implemented:
 - process lifecycle mutation syscalls (`PROCESS_STATE_SET`, `PROCESS_TERMINATE`) with self-or-kernel authorization
 - runtime observability syscalls for process or thread counts and scheduler queue metrics
 - runtime observability syscalls for process live or terminated counts and scheduler per-cpu and aggregate counters
+- runtime observability syscalls for process or thread state counts and summarized state distribution
 - waitset telemetry syscalls with owner-scoped access policy
 - waitset wake-policy set/get and waitset telemetry reset syscalls
 Files Created/Modified:
@@ -396,6 +397,7 @@ Implemented:
 - thread lifecycle controls (`state`, `set_state`, `exit`) and thread-count consistency updates
 - thread owner introspection helper (`vibeos_thread_owner`) used by syscall authorization
 - process-table observability helpers for total, live, and terminated process counts
+- process and thread state counters plus summary helpers for runtime introspection
 - process and thread object-handle bind or resolve helpers
 - handle lineage revocation propagation across process handle tables
 - selective handle lineage revocation filters (by object type and rights mask)
