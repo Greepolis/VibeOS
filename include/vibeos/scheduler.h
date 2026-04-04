@@ -38,6 +38,7 @@ typedef struct vibeos_scheduler {
 
 int vibeos_sched_init(vibeos_scheduler_t *sched, uint32_t cpu_count);
 int vibeos_sched_enqueue(vibeos_scheduler_t *sched, vibeos_thread_t *thread);
+int vibeos_sched_enqueue_balanced(vibeos_scheduler_t *sched, vibeos_thread_t *thread, uint32_t *out_cpu_id);
 vibeos_thread_t *vibeos_sched_next(vibeos_scheduler_t *sched, uint32_t cpu_id);
 int vibeos_sched_tick(vibeos_scheduler_t *sched, vibeos_thread_t *running, uint32_t cpu_id);
 uint64_t vibeos_sched_preemptions(const vibeos_scheduler_t *sched, uint32_t cpu_id);
@@ -47,5 +48,6 @@ uint64_t vibeos_sched_wait_timeouts(const vibeos_scheduler_t *sched, uint32_t cp
 uint64_t vibeos_sched_wait_wakes(const vibeos_scheduler_t *sched, uint32_t cpu_id);
 size_t vibeos_sched_runqueue_depth(const vibeos_scheduler_t *sched, uint32_t cpu_id);
 size_t vibeos_sched_runnable_threads(const vibeos_scheduler_t *sched);
+int vibeos_sched_least_loaded_cpu(const vibeos_scheduler_t *sched, uint32_t *out_cpu_id);
 
 #endif

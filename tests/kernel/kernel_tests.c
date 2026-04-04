@@ -81,6 +81,33 @@ static int test_scheduler(void) {
     return 0;
 }
 
+static int test_scheduler_balanced(void) {
+    vibeos_scheduler_t sched;
+    vibeos_thread_t t1 = { .id = 11, .cpu_hint = 0, .klass = VIBEOS_THREAD_NORMAL, .timeslice_ticks = 3 };
+    vibeos_thread_t t2 = { .id = 12, .cpu_hint = 0, .klass = VIBEOS_THREAD_NORMAL, .timeslice_ticks = 3 };
+    vibeos_thread_t t3 = { .id = 13, .cpu_hint = 0, .klass = VIBEOS_THREAD_NORMAL, .timeslice_ticks = 3 };
+    uint32_t cpu = 0;
+    if (vibeos_sched_init(&sched, 2) != 0) {
+        return -1;
+    }
+    if (vibeos_sched_enqueue_balanced(&sched, &t1, &cpu) != 0 || cpu != 0) {
+        return -1;
+    }
+    if (vibeos_sched_enqueue_balanced(&sched, &t2, &cpu) != 0 || cpu != 1) {
+        return -1;
+    }
+    if (vibeos_sched_enqueue_balanced(&sched, &t3, &cpu) != 0 || cpu != 0) {
+        return -1;
+    }
+    if (vibeos_sched_runqueue_depth(&sched, 0) != 2 || vibeos_sched_runqueue_depth(&sched, 1) != 1) {
+        return -1;
+    }
+    if (vibeos_sched_least_loaded_cpu(&sched, &cpu) != 0 || cpu != 1) {
+        return -1;
+    }
+    return 0;
+}
+
 static int test_ipc(void) {
     vibeos_event_t event;
     vibeos_channel_t ch;
@@ -197,6 +224,7 @@ static int test_syscalls(void) {
     vibeos_syscall_frame_t frame;
     uint32_t pid1 = 0;
     uint32_t pid2 = 0;
+    uint32_t pid3 = 0;
     uint32_t p1_handle = 0;
     uint32_t tid1 = 0;
     uint32_t signal_handle = 0;
@@ -247,6 +275,11 @@ static int test_syscalls(void) {
         return -1;
     }
     pid2 = (uint32_t)frame.result;
+    vibeos_syscall_make_process_spawn(&frame, 0);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 3) {
+        return -1;
+    }
+    pid3 = (uint32_t)frame.result;
     vibeos_syscall_make_thread_create(&frame, pid1);
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 1) {
         return -1;
@@ -256,8 +289,32 @@ static int test_syscalls(void) {
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != VIBEOS_PROCESS_STATE_RUNNING) {
         return -1;
     }
-    vibeos_syscall_make_process_state_get(&frame, pid1, pid2);
+    vibeos_syscall_make_process_state_get(&frame, pid2, pid1);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
+    vibeos_syscall_make_process_state_get(&frame, pid1, pid3);
     if (vibeos_syscall_dispatch(&kernel, &frame) == 0) {
+        return -1;
+    }
+    vibeos_syscall_make_process_state_set(&frame, pid1, VIBEOS_PROCESS_STATE_BLOCKED, pid1);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
+    vibeos_syscall_make_process_state_get(&frame, pid1, pid1);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != VIBEOS_PROCESS_STATE_BLOCKED) {
+        return -1;
+    }
+    vibeos_syscall_make_process_state_set(&frame, pid1, VIBEOS_PROCESS_STATE_RUNNING, pid2);
+    if (vibeos_syscall_dispatch(&kernel, &frame) == 0) {
+        return -1;
+    }
+    vibeos_syscall_make_process_terminate(&frame, pid3, pid3);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
+    vibeos_syscall_make_process_state_get(&frame, pid3, 0);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != VIBEOS_PROCESS_STATE_TERMINATED) {
         return -1;
     }
     vibeos_syscall_make_thread_state_get(&frame, tid1, pid1);
@@ -390,6 +447,32 @@ static int test_syscalls(void) {
     }
     vibeos_syscall_make_proc_audit_dropped(&frame, pid1);
     if (vibeos_syscall_dispatch(&kernel, &frame) == 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_process_relationships(void) {
+    vibeos_process_table_t pt;
+    uint32_t p1 = 0;
+    uint32_t p2 = 0;
+    uint32_t p3 = 0;
+    if (vibeos_proc_init(&pt) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_spawn(&pt, 0, &p1) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_spawn(&pt, p1, &p2) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_spawn(&pt, 0, &p3) != 0) {
+        return -1;
+    }
+    if (!vibeos_proc_are_related(&pt, p1, p2)) {
+        return -1;
+    }
+    if (vibeos_proc_are_related(&pt, p2, p3)) {
         return -1;
     }
     return 0;
@@ -1250,6 +1333,7 @@ int main(void) {
 #define RUN_TEST(fn) do { if ((fn)() != 0) { failures++; printf("FAIL:%s\n", #fn); } } while (0)
     RUN_TEST(test_pmm);
     RUN_TEST(test_scheduler);
+    RUN_TEST(test_scheduler_balanced);
     RUN_TEST(test_ipc);
     RUN_TEST(test_kmain);
     RUN_TEST(test_vm);
@@ -1273,6 +1357,7 @@ int main(void) {
     RUN_TEST(test_ipc_handle_transfer);
     RUN_TEST(test_cross_process_handle_dup_policy);
     RUN_TEST(test_process_lifecycle);
+    RUN_TEST(test_process_relationships);
     RUN_TEST(test_thread_lifecycle_controls);
     RUN_TEST(test_process_thread_object_handles);
     RUN_TEST(test_handle_revocation_propagation);

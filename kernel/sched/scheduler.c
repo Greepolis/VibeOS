@@ -47,6 +47,24 @@ int vibeos_sched_enqueue(vibeos_scheduler_t *sched, vibeos_thread_t *thread) {
     return runqueue_push(&sched->runqueues[cpu_id], thread);
 }
 
+int vibeos_sched_enqueue_balanced(vibeos_scheduler_t *sched, vibeos_thread_t *thread, uint32_t *out_cpu_id) {
+    uint32_t cpu_id = 0;
+    if (!sched || !thread) {
+        return -1;
+    }
+    if (vibeos_sched_least_loaded_cpu(sched, &cpu_id) != 0) {
+        return -1;
+    }
+    thread->cpu_hint = cpu_id;
+    if (runqueue_push(&sched->runqueues[cpu_id], thread) != 0) {
+        return -1;
+    }
+    if (out_cpu_id) {
+        *out_cpu_id = cpu_id;
+    }
+    return 0;
+}
+
 vibeos_thread_t *vibeos_sched_next(vibeos_scheduler_t *sched, uint32_t cpu_id) {
     if (!sched || cpu_id >= sched->cpu_count) {
         return 0;
@@ -122,4 +140,22 @@ size_t vibeos_sched_runnable_threads(const vibeos_scheduler_t *sched) {
         total += sched->runqueues[i].count;
     }
     return total;
+}
+
+int vibeos_sched_least_loaded_cpu(const vibeos_scheduler_t *sched, uint32_t *out_cpu_id) {
+    uint32_t i;
+    uint32_t best_cpu = 0;
+    size_t best_depth;
+    if (!sched || !out_cpu_id || sched->cpu_count == 0) {
+        return -1;
+    }
+    best_depth = sched->runqueues[0].count;
+    for (i = 1; i < sched->cpu_count; i++) {
+        if (sched->runqueues[i].count < best_depth) {
+            best_depth = sched->runqueues[i].count;
+            best_cpu = i;
+        }
+    }
+    *out_cpu_id = best_cpu;
+    return 0;
 }
