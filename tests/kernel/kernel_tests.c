@@ -305,6 +305,50 @@ static int test_syscalls(void) {
         return -1;
     }
     pid3 = (uint32_t)frame.result;
+    vibeos_syscall_make_process_token_get(&frame, pid1, 0);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.arg0 != 0 || frame.arg1 != 0 || frame.arg2 == 0) {
+        return -1;
+    }
+    vibeos_syscall_make_process_token_get(&frame, pid3, pid1);
+    if (vibeos_syscall_dispatch(&kernel, &frame) == 0) {
+        return -1;
+    }
+    vibeos_syscall_make_policy_capability_get(&frame, VIBEOS_POLICY_TARGET_PROCESS_SPAWN, 0);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 2) {
+        return -1;
+    }
+    vibeos_syscall_make_policy_capability_set(&frame, VIBEOS_POLICY_TARGET_PROCESS_SPAWN, 7, 0);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
+    vibeos_syscall_make_policy_summary_get(&frame, pid1);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.arg2 != 7) {
+        return -1;
+    }
+    vibeos_syscall_make_process_token_set(&frame, pid1, (1u << 7), 0);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
+    vibeos_syscall_make_process_token_set(&frame, pid2, 0, 0);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
+    vibeos_syscall_make_process_spawn_as(&frame, pid1, pid1);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 4) {
+        return -1;
+    }
+    vibeos_syscall_make_process_spawn_as(&frame, pid2, pid2);
+    if (vibeos_syscall_dispatch(&kernel, &frame) == 0) {
+        return -1;
+    }
+    vibeos_syscall_make_policy_capability_set(&frame, VIBEOS_POLICY_TARGET_PROCESS_SPAWN, 2, pid1);
+    if (vibeos_syscall_dispatch(&kernel, &frame) == 0) {
+        return -1;
+    }
+    vibeos_syscall_make_policy_capability_set(&frame, VIBEOS_POLICY_TARGET_PROCESS_SPAWN, 2, 0);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
     vibeos_syscall_make_thread_create(&frame, pid1);
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 1) {
         return -1;
@@ -343,11 +387,11 @@ static int test_syscalls(void) {
         return -1;
     }
     vibeos_syscall_make_process_count_get(&frame);
-    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 3) {
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 4) {
         return -1;
     }
     vibeos_syscall_make_process_live_count_get(&frame);
-    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 2) {
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 3) {
         return -1;
     }
     vibeos_syscall_make_process_terminated_count_get(&frame);
@@ -362,7 +406,7 @@ static int test_syscalls(void) {
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
         return -1;
     }
-    if (frame.arg0 != 1 || frame.arg1 != 0 || frame.arg2 != 1 || frame.result != 1) {
+    if (frame.arg0 != 2 || frame.arg1 != 0 || frame.arg2 != 1 || frame.result != 1) {
         return -1;
     }
     vibeos_syscall_make_thread_state_get(&frame, tid1, pid1);
@@ -1170,15 +1214,30 @@ static int test_filesystem_runtime(void) {
 
 static int test_network_runtime(void) {
     vibeos_net_runtime_t rt;
+    vibeos_policy_state_t policy;
+    vibeos_security_token_t denied;
+    vibeos_security_token_t allowed;
     uint32_t sock;
     const char payload[] = "ping";
     if (vibeos_net_runtime_init(&rt) != 0) {
         return -1;
     }
+    if (vibeos_policy_init(&policy) != 0) {
+        return -1;
+    }
+    if (vibeos_sec_token_init(&denied, 1000, 1000, 0) != 0) {
+        return -1;
+    }
+    if (vibeos_sec_token_init(&allowed, 1000, 1000, (1u << 1)) != 0) {
+        return -1;
+    }
     if (vibeos_socket_create(&rt, &sock) != 0 || sock == 0) {
         return -1;
     }
-    if (vibeos_socket_bind(&rt, sock, 1234) != 0) {
+    if (vibeos_socket_bind_secure(&rt, sock, 1234, &policy, &denied) == 0) {
+        return -1;
+    }
+    if (vibeos_socket_bind_secure(&rt, sock, 1234, &policy, &allowed) != 0) {
         return -1;
     }
     if (vibeos_socket_send(&rt, sock, payload, sizeof(payload)) != 0) {
@@ -1582,6 +1641,51 @@ static int test_process_thread_object_handles(void) {
     return 0;
 }
 
+static int test_process_security_tokens(void) {
+    vibeos_process_table_t pt;
+    vibeos_security_token_t parent_token;
+    vibeos_security_token_t child_token;
+    vibeos_security_token_t explicit_token;
+    uint32_t parent = 0;
+    uint32_t child = 0;
+    uint32_t sibling = 0;
+    if (vibeos_proc_init(&pt) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_spawn(&pt, 0, &parent) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_token_get(&pt, parent, &parent_token) != 0) {
+        return -1;
+    }
+    parent_token.capability_mask = (1u << 4) | (1u << 6);
+    if (vibeos_proc_token_set(&pt, parent, &parent_token) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_spawn(&pt, parent, &child) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_token_get(&pt, child, &child_token) != 0) {
+        return -1;
+    }
+    if (child_token.capability_mask != parent_token.capability_mask) {
+        return -1;
+    }
+    if (vibeos_sec_token_init(&explicit_token, 42, 43, (1u << 10)) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_spawn_with_token(&pt, 0, &explicit_token, &sibling) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_token_get(&pt, sibling, &child_token) != 0) {
+        return -1;
+    }
+    if (child_token.uid != 42 || child_token.gid != 43 || child_token.capability_mask != (1u << 10)) {
+        return -1;
+    }
+    return 0;
+}
+
 static int test_thread_lifecycle_controls(void) {
     vibeos_process_table_t pt;
     vibeos_thread_state_t state;
@@ -1728,6 +1832,7 @@ int main(void) {
     RUN_TEST(test_process_relationships);
     RUN_TEST(test_thread_lifecycle_controls);
     RUN_TEST(test_process_thread_object_handles);
+    RUN_TEST(test_process_security_tokens);
     RUN_TEST(test_handle_revocation_propagation);
     RUN_TEST(test_handle_revocation_scoped);
     RUN_TEST(test_handle_revocation_audit);
