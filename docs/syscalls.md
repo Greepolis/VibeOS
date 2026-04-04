@@ -44,6 +44,8 @@ Argument semantics for current syscall groups:
 | `PROCESS_STATE_GET` | target pid | reserved (`0`) | caller pid (`0` = kernel; otherwise self or directly related process) |
 | `PROCESS_STATE_SET` | target pid | target process state enum | caller pid (`0` = kernel; otherwise self only) |
 | `PROCESS_TERMINATE` | target pid | reserved (`0`) | caller pid (`0` = kernel; otherwise self only) |
+| `PROCESS_COUNT_GET` | reserved (`0`) | reserved (`0`) | reserved (`0`) |
+| `THREAD_COUNT_GET` | reserved (`0`) | reserved (`0`) | reserved (`0`) |
 | `THREAD_CREATE` | pid | reserved (`0`) | reserved (`0`) |
 | `THREAD_STATE_GET` | tid | reserved (`0`) | caller pid (`0` = kernel; otherwise owner pid only) |
 | `THREAD_STATE_SET` | tid | target state enum | caller pid (`0` = kernel; otherwise owner pid only) |
@@ -56,6 +58,9 @@ Argument semantics for current syscall groups:
 | `PROC_AUDIT_POLICY_SET` | retention policy (`0` overwrite-oldest, `1` drop-newest) | reserved (`0`) | caller pid (`0` required) |
 | `PROC_AUDIT_POLICY_GET` | reserved (`0`) | reserved (`0`) | caller pid (`0` required) |
 | `PROC_AUDIT_DROPPED` | reserved (`0`) | reserved (`0`) | caller pid (`0` required) |
+| `SCHED_RUNNABLE_GET` | reserved (`0`) | reserved (`0`) | reserved (`0`) |
+| `SCHED_RUNQUEUE_DEPTH_GET` | cpu id | reserved (`0`) | reserved (`0`) |
+| `SCHED_CPU_COUNT_GET` | reserved (`0`) | reserved (`0`) | reserved (`0`) |
 
 `PROC_AUDIT_GET` returns:
 - `result` = `event.seq` (positive on success)

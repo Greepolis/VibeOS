@@ -285,6 +285,7 @@ Implemented:
 - wait timeout and wake counters for scheduler observability
 - runqueue observability helpers (`runqueue_depth`, `runnable_threads`)
 - least-loaded CPU selection and balanced enqueue helper (`enqueue_balanced`)
+- scheduler CPU-count query helper for syscall observability paths
 Files Created/Modified:
 - `kernel/sched/scheduler.c`
 - `include/vibeos/scheduler.h`
@@ -363,6 +364,7 @@ Implemented:
 - spawn authorization gate tied to capability policy (`can_process_spawn`)
 - process or thread lifecycle introspection and control syscalls with caller ownership enforcement
 - process lifecycle mutation syscalls (`PROCESS_STATE_SET`, `PROCESS_TERMINATE`) with self-or-kernel authorization
+- runtime observability syscalls for process or thread counts and scheduler queue metrics
 Files Created/Modified:
 - `kernel/core/syscall.c`
 - `include/vibeos/syscall.h`
@@ -502,7 +504,7 @@ Pending:
 | Memory Manager | In Progress | bump allocator implemented |
 | Virtual Memory | In Progress | address-space mapping primitives implemented |
 | Interrupt Handling | In Progress | controller + x86_64 IDT stub implemented |
-| System Call Interface | In Progress | dispatcher + rights policy + caller-scoped audit + process/thread lifecycle controls |
+| System Call Interface | In Progress | dispatcher + rights policy + lifecycle controls + runtime observability syscalls |
 | IPC Subsystem | In Progress | event/channel/waitset primitives with timer waits and configurable wake ordering |
 | Driver Framework | In Progress | driver framework registration stubs implemented |
 | Filesystem Layer | In Progress | VFS runtime mount/open/close primitives implemented |
