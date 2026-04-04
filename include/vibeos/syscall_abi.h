@@ -227,6 +227,26 @@ static inline void vibeos_syscall_make_thread_state_summary_get(vibeos_syscall_f
     f->arg2 = 0;
 }
 
+static inline void vibeos_syscall_make_proc_transition_counters_get(vibeos_syscall_frame_t *f) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_PROC_TRANSITION_COUNTERS_GET;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = 0;
+}
+
+static inline void vibeos_syscall_make_proc_transition_counters_reset(vibeos_syscall_frame_t *f, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_PROC_TRANSITION_COUNTERS_RESET;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
 /* VM API */
 static inline void vibeos_syscall_make_vm_map(vibeos_syscall_frame_t *f, uint64_t va, uint64_t pa, uint64_t len) {
     if (!f) {
@@ -471,6 +491,16 @@ static inline void vibeos_syscall_make_waitset_stats_reset(vibeos_syscall_frame_
         return;
     }
     f->id = VIBEOS_SYSCALL_WAITSET_STATS_RESET;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
+static inline void vibeos_syscall_make_waitset_owner_get(vibeos_syscall_frame_t *f, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_WAITSET_OWNER_GET;
     f->arg0 = 0;
     f->arg1 = 0;
     f->arg2 = caller_pid;

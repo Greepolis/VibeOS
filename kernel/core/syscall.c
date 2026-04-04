@@ -232,6 +232,25 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             frame->result = 0;
             return 0;
         }
+        case VIBEOS_SYSCALL_WAITSET_OWNER_GET:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            uint32_t owner_pid = 0;
+            uint32_t enforced = 0;
+            if (!syscall_waitset_owner_access_allowed(caller_pid, kernel_waitset_owner_pid, waitset_initialized)) {
+                frame->result = -1;
+                return -1;
+            }
+            if (vibeos_waitset_owner(&kernel_waitset, &owner_pid, &enforced) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->arg0 = enforced;
+            frame->arg1 = (uint64_t)kernel_waitset.count;
+            frame->arg2 = 0;
+            frame->result = (int64_t)owner_pid;
+            return 0;
+        }
         case VIBEOS_SYSCALL_PROCESS_SPAWN:
         {
             uint32_t pid;
@@ -444,6 +463,36 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             frame->arg1 = state_runnable;
             frame->arg2 = state_blocked;
             frame->result = (int64_t)state_exited;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_PROC_TRANSITION_COUNTERS_GET:
+        {
+            uint64_t proc_transitions = 0;
+            uint64_t thread_transitions = 0;
+            uint64_t proc_terms = 0;
+            uint64_t thread_exits = 0;
+            if (vibeos_proc_transition_counters(&kernel->proc_table, &proc_transitions, &thread_transitions, &proc_terms, &thread_exits) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->arg0 = proc_transitions;
+            frame->arg1 = thread_transitions;
+            frame->arg2 = proc_terms;
+            frame->result = (int64_t)thread_exits;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_PROC_TRANSITION_COUNTERS_RESET:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            if (caller_pid != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            if (vibeos_proc_transition_counters_reset(&kernel->proc_table) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = 0;
             return 0;
         }
         case VIBEOS_SYSCALL_VM_MAP:

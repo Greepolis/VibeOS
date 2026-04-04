@@ -72,6 +72,10 @@ typedef struct vibeos_process_table {
     uint32_t audit_head;
     uint32_t audit_count;
     uint32_t audit_dropped;
+    uint64_t proc_state_transitions;
+    uint64_t thread_state_transitions;
+    uint64_t proc_terminations;
+    uint64_t thread_exits;
     vibeos_proc_audit_policy_t audit_policy;
     vibeos_proc_audit_event_t audit_events[VIBEOS_PROC_AUDIT_CAPACITY];
 } vibeos_process_table_t;
@@ -109,5 +113,7 @@ int vibeos_proc_count_in_state(vibeos_process_table_t *pt, vibeos_process_state_
 int vibeos_thread_count_in_state(vibeos_process_table_t *pt, vibeos_thread_state_t state, uint32_t *out_count);
 int vibeos_proc_state_summary(vibeos_process_table_t *pt, uint32_t *out_new, uint32_t *out_running, uint32_t *out_blocked, uint32_t *out_terminated);
 int vibeos_thread_state_summary(vibeos_process_table_t *pt, uint32_t *out_new, uint32_t *out_runnable, uint32_t *out_blocked, uint32_t *out_exited);
+int vibeos_proc_transition_counters(vibeos_process_table_t *pt, uint64_t *out_proc_state_transitions, uint64_t *out_thread_state_transitions, uint64_t *out_proc_terminations, uint64_t *out_thread_exits);
+int vibeos_proc_transition_counters_reset(vibeos_process_table_t *pt);
 
 #endif

@@ -139,6 +139,10 @@ int vibeos_proc_init(vibeos_process_table_t *pt) {
     pt->audit_head = 0;
     pt->audit_count = 0;
     pt->audit_dropped = 0;
+    pt->proc_state_transitions = 0;
+    pt->thread_state_transitions = 0;
+    pt->proc_terminations = 0;
+    pt->thread_exits = 0;
     pt->audit_policy = VIBEOS_PROC_AUDIT_OVERWRITE_OLDEST;
     for (i = 0; i < VIBEOS_MAX_PROCESSES; i++) {
         pt->entries[i].pid = 0;
@@ -223,7 +227,11 @@ int vibeos_thread_create(vibeos_process_table_t *pt, uint32_t pid, uint32_t *out
                     pt->threads[j].owner_pid = pid;
                     pt->threads[j].in_use = 1;
                     pt->threads[j].state = VIBEOS_THREAD_STATE_RUNNABLE;
-                    pt->entries[i].state = VIBEOS_PROCESS_STATE_RUNNING;
+                    pt->thread_state_transitions++;
+                    if (pt->entries[i].state != VIBEOS_PROCESS_STATE_RUNNING) {
+                        pt->proc_state_transitions++;
+                        pt->entries[i].state = VIBEOS_PROCESS_STATE_RUNNING;
+                    }
                     return 0;
                 }
             }
@@ -357,7 +365,10 @@ int vibeos_proc_set_state(vibeos_process_table_t *pt, uint32_t pid, vibeos_proce
     if (state > VIBEOS_PROCESS_STATE_TERMINATED) {
         return -1;
     }
-    entry->state = state;
+    if (entry->state != state) {
+        pt->proc_state_transitions++;
+        entry->state = state;
+    }
     return 0;
 }
 
@@ -367,13 +378,21 @@ int vibeos_proc_terminate(vibeos_process_table_t *pt, uint32_t pid) {
     if (!entry) {
         return -1;
     }
+    if (entry->state != VIBEOS_PROCESS_STATE_TERMINATED) {
+        pt->proc_state_transitions++;
+        pt->proc_terminations++;
+    }
     release_all_process_handles(entry);
     for (i = 0; i < VIBEOS_PROC_MAX_THREADS; i++) {
         if (pt->threads[i].in_use && pt->threads[i].owner_pid == pid) {
+            if (pt->threads[i].state != VIBEOS_THREAD_STATE_EXITED) {
+                pt->thread_state_transitions++;
+            }
             pt->threads[i].in_use = 0;
             pt->threads[i].state = VIBEOS_THREAD_STATE_EXITED;
             pt->threads[i].owner_pid = 0;
             pt->threads[i].tid = 0;
+            pt->thread_exits++;
             if (pt->thread_count > 0) {
                 pt->thread_count--;
             }
@@ -453,7 +472,10 @@ int vibeos_thread_set_state(vibeos_process_table_t *pt, uint32_t tid, vibeos_thr
     if (!thread) {
         return -1;
     }
-    thread->state = state;
+    if (thread->state != state) {
+        pt->thread_state_transitions++;
+        thread->state = state;
+    }
     return 0;
 }
 
@@ -467,9 +489,13 @@ int vibeos_thread_exit(vibeos_process_table_t *pt, uint32_t tid) {
         return -1;
     }
     thread->in_use = 0;
+    if (thread->state != VIBEOS_THREAD_STATE_EXITED) {
+        pt->thread_state_transitions++;
+    }
     thread->state = VIBEOS_THREAD_STATE_EXITED;
     thread->owner_pid = 0;
     thread->tid = 0;
+    pt->thread_exits++;
     if (pt->thread_count > 0) {
         pt->thread_count--;
     }
@@ -704,5 +730,27 @@ int vibeos_thread_state_summary(vibeos_process_table_t *pt, uint32_t *out_new, u
                 return -1;
         }
     }
+    return 0;
+}
+
+int vibeos_proc_transition_counters(vibeos_process_table_t *pt, uint64_t *out_proc_state_transitions, uint64_t *out_thread_state_transitions, uint64_t *out_proc_terminations, uint64_t *out_thread_exits) {
+    if (!pt || !out_proc_state_transitions || !out_thread_state_transitions || !out_proc_terminations || !out_thread_exits) {
+        return -1;
+    }
+    *out_proc_state_transitions = pt->proc_state_transitions;
+    *out_thread_state_transitions = pt->thread_state_transitions;
+    *out_proc_terminations = pt->proc_terminations;
+    *out_thread_exits = pt->thread_exits;
+    return 0;
+}
+
+int vibeos_proc_transition_counters_reset(vibeos_process_table_t *pt) {
+    if (!pt) {
+        return -1;
+    }
+    pt->proc_state_transitions = 0;
+    pt->thread_state_transitions = 0;
+    pt->proc_terminations = 0;
+    pt->thread_exits = 0;
     return 0;
 }
