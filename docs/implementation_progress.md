@@ -372,6 +372,7 @@ Implemented:
 - runtime observability syscalls for process or thread state counts and summarized state distribution
 - waitset telemetry syscalls with owner-scoped access policy
 - waitset wake-policy set/get and waitset telemetry reset syscalls
+- waitset owner introspection syscall and process or thread transition-counter telemetry syscalls
 Files Created/Modified:
 - `kernel/core/syscall.c`
 - `include/vibeos/syscall.h`
@@ -398,6 +399,7 @@ Implemented:
 - thread owner introspection helper (`vibeos_thread_owner`) used by syscall authorization
 - process-table observability helpers for total, live, and terminated process counts
 - process and thread state counters plus summary helpers for runtime introspection
+- process and thread transition counters with reset controls for instrumentation cycles
 - process and thread object-handle bind or resolve helpers
 - handle lineage revocation propagation across process handle tables
 - selective handle lineage revocation filters (by object type and rights mask)
