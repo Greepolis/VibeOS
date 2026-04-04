@@ -219,6 +219,19 @@ int vibeos_thread_create(vibeos_process_table_t *pt, uint32_t pid, uint32_t *out
     return -1;
 }
 
+int vibeos_thread_owner(vibeos_process_table_t *pt, uint32_t tid, uint32_t *out_owner_pid) {
+    vibeos_thread_entry_t *thread;
+    if (!pt || !out_owner_pid) {
+        return -1;
+    }
+    thread = find_thread_entry(pt, tid);
+    if (!thread) {
+        return -1;
+    }
+    *out_owner_pid = thread->owner_pid;
+    return 0;
+}
+
 int vibeos_proc_handles(vibeos_process_table_t *pt, uint32_t pid, vibeos_handle_table_t **out_handles) {
     vibeos_process_entry_t *entry;
     if (!out_handles) {

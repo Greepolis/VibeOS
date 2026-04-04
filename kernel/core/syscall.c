@@ -4,6 +4,20 @@
 #include "vibeos/syscall_policy.h"
 #include "vibeos/waitset.h"
 
+static int syscall_thread_access_allowed(vibeos_kernel_t *kernel, uint32_t caller_pid, uint32_t tid) {
+    uint32_t owner_pid = 0;
+    if (!kernel || tid == 0) {
+        return 0;
+    }
+    if (caller_pid == 0) {
+        return 1;
+    }
+    if (vibeos_thread_owner(&kernel->proc_table, tid, &owner_pid) != 0) {
+        return 0;
+    }
+    return caller_pid == owner_pid;
+}
+
 int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_frame_t *frame) {
     static vibeos_waitset_t kernel_waitset;
     static uint32_t kernel_waitset_owner_pid = 0;
@@ -110,6 +124,22 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             frame->result = (int64_t)pid;
             return 0;
         }
+        case VIBEOS_SYSCALL_PROCESS_STATE_GET:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            uint32_t target_pid = (uint32_t)frame->arg0;
+            vibeos_process_state_t state;
+            if (caller_pid != 0 && caller_pid != target_pid) {
+                frame->result = -1;
+                return -1;
+            }
+            if (vibeos_proc_state(&kernel->proc_table, target_pid, &state) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = (int64_t)state;
+            return 0;
+        }
         case VIBEOS_SYSCALL_THREAD_CREATE:
         {
             uint32_t tid;
@@ -118,6 +148,57 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
                 return -1;
             }
             frame->result = (int64_t)tid;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_THREAD_STATE_GET:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            uint32_t tid = (uint32_t)frame->arg0;
+            vibeos_thread_state_t state;
+            if (!syscall_thread_access_allowed(kernel, caller_pid, tid)) {
+                frame->result = -1;
+                return -1;
+            }
+            if (vibeos_thread_state(&kernel->proc_table, tid, &state) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = (int64_t)state;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_THREAD_STATE_SET:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            uint32_t tid = (uint32_t)frame->arg0;
+            vibeos_thread_state_t state = (vibeos_thread_state_t)frame->arg1;
+            if (!syscall_thread_access_allowed(kernel, caller_pid, tid)) {
+                frame->result = -1;
+                return -1;
+            }
+            if (state > VIBEOS_THREAD_STATE_EXITED) {
+                frame->result = -1;
+                return -1;
+            }
+            if (vibeos_thread_set_state(&kernel->proc_table, tid, state) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = 0;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_THREAD_EXIT:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            uint32_t tid = (uint32_t)frame->arg0;
+            if (!syscall_thread_access_allowed(kernel, caller_pid, tid)) {
+                frame->result = -1;
+                return -1;
+            }
+            if (vibeos_thread_exit(&kernel->proc_table, tid) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = 0;
             return 0;
         }
         case VIBEOS_SYSCALL_VM_MAP:

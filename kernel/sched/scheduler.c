@@ -104,3 +104,22 @@ uint64_t vibeos_sched_wait_wakes(const vibeos_scheduler_t *sched, uint32_t cpu_i
     }
     return sched->waits_woken[cpu_id];
 }
+
+size_t vibeos_sched_runqueue_depth(const vibeos_scheduler_t *sched, uint32_t cpu_id) {
+    if (!sched || cpu_id >= sched->cpu_count) {
+        return 0;
+    }
+    return sched->runqueues[cpu_id].count;
+}
+
+size_t vibeos_sched_runnable_threads(const vibeos_scheduler_t *sched) {
+    size_t total = 0;
+    uint32_t i;
+    if (!sched) {
+        return 0;
+    }
+    for (i = 0; i < sched->cpu_count; i++) {
+        total += sched->runqueues[i].count;
+    }
+    return total;
+}

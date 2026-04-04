@@ -77,6 +77,16 @@ static inline void vibeos_syscall_make_process_spawn(vibeos_syscall_frame_t *f, 
     f->arg2 = 0;
 }
 
+static inline void vibeos_syscall_make_process_state_get(vibeos_syscall_frame_t *f, uint32_t pid, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_PROCESS_STATE_GET;
+    f->arg0 = pid;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
 static inline void vibeos_syscall_make_thread_create(vibeos_syscall_frame_t *f, uint32_t pid) {
     if (!f) {
         return;
@@ -85,6 +95,36 @@ static inline void vibeos_syscall_make_thread_create(vibeos_syscall_frame_t *f, 
     f->arg0 = pid;
     f->arg1 = 0;
     f->arg2 = 0;
+}
+
+static inline void vibeos_syscall_make_thread_state_get(vibeos_syscall_frame_t *f, uint32_t tid, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_THREAD_STATE_GET;
+    f->arg0 = tid;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
+static inline void vibeos_syscall_make_thread_state_set(vibeos_syscall_frame_t *f, uint32_t tid, uint32_t state, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_THREAD_STATE_SET;
+    f->arg0 = tid;
+    f->arg1 = state;
+    f->arg2 = caller_pid;
+}
+
+static inline void vibeos_syscall_make_thread_exit(vibeos_syscall_frame_t *f, uint32_t tid, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_THREAD_EXIT;
+    f->arg0 = tid;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
 }
 
 /* VM API */
