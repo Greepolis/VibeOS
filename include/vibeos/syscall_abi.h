@@ -87,6 +87,26 @@ static inline void vibeos_syscall_make_process_state_get(vibeos_syscall_frame_t 
     f->arg2 = caller_pid;
 }
 
+static inline void vibeos_syscall_make_process_state_set(vibeos_syscall_frame_t *f, uint32_t pid, uint32_t state, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_PROCESS_STATE_SET;
+    f->arg0 = pid;
+    f->arg1 = state;
+    f->arg2 = caller_pid;
+}
+
+static inline void vibeos_syscall_make_process_terminate(vibeos_syscall_frame_t *f, uint32_t pid, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_PROCESS_TERMINATE;
+    f->arg0 = pid;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
 static inline void vibeos_syscall_make_thread_create(vibeos_syscall_frame_t *f, uint32_t pid) {
     if (!f) {
         return;

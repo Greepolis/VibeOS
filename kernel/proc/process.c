@@ -193,6 +193,20 @@ int vibeos_proc_spawn(vibeos_process_table_t *pt, uint32_t parent_pid, uint32_t 
     return -1;
 }
 
+int vibeos_proc_are_related(vibeos_process_table_t *pt, uint32_t pid_a, uint32_t pid_b) {
+    vibeos_process_entry_t *a;
+    vibeos_process_entry_t *b;
+    if (!pt || pid_a == 0 || pid_b == 0) {
+        return 0;
+    }
+    a = find_process_entry(pt, pid_a);
+    b = find_process_entry(pt, pid_b);
+    if (!a || !b) {
+        return 0;
+    }
+    return are_processes_related(a, b);
+}
+
 int vibeos_thread_create(vibeos_process_table_t *pt, uint32_t pid, uint32_t *out_tid) {
     uint32_t i;
     if (!pt || !out_tid) {
@@ -338,6 +352,9 @@ int vibeos_proc_state(vibeos_process_table_t *pt, uint32_t pid, vibeos_process_s
 int vibeos_proc_set_state(vibeos_process_table_t *pt, uint32_t pid, vibeos_process_state_t state) {
     vibeos_process_entry_t *entry = find_process_entry(pt, pid);
     if (!entry) {
+        return -1;
+    }
+    if (state > VIBEOS_PROCESS_STATE_TERMINATED) {
         return -1;
     }
     entry->state = state;
