@@ -6,6 +6,7 @@
 #include "vibeos/driver_host.h"
 #include "vibeos/drivers.h"
 #include "vibeos/fs.h"
+#include "vibeos/compat.h"
 #include "vibeos/services.h"
 #include "vibeos/security_model.h"
 #include "vibeos/service_ipc.h"
@@ -47,13 +48,16 @@ static int test_pmm(void) {
 
 static int test_scheduler(void) {
     vibeos_scheduler_t sched;
-    vibeos_thread_t t1 = { .id = 1, .cpu_hint = 0, .klass = VIBEOS_THREAD_NORMAL, .timeslice_ticks = 4 };
+    vibeos_thread_t t1 = { .id = 1, .cpu_hint = 0, .klass = VIBEOS_THREAD_NORMAL, .timeslice_ticks = 0 };
     vibeos_thread_t t2 = { .id = 2, .cpu_hint = 0, .klass = VIBEOS_THREAD_INTERACTIVE, .timeslice_ticks = 2 };
     vibeos_thread_t *out;
     if (vibeos_sched_init(&sched, 1) != 0) {
         return -1;
     }
     if (vibeos_sched_enqueue(&sched, &t1) != 0 || vibeos_sched_enqueue(&sched, &t2) != 0) {
+        return -1;
+    }
+    if (t1.timeslice_ticks != 4) {
         return -1;
     }
     if (vibeos_sched_runqueue_depth(&sched, 0) != 2 || vibeos_sched_runnable_threads(&sched) != 2) {
@@ -239,7 +243,28 @@ static int test_interrupts(void) {
     if (vibeos_intc_dispatch(&intc, 32) != 0) {
         return -1;
     }
-    if (acc != 32 || vibeos_intc_counter(&intc, 32) != 1) {
+    if (vibeos_intc_mask(&intc, 32) != 0 || vibeos_intc_is_masked(&intc, 32) != 1) {
+        return -1;
+    }
+    if (vibeos_intc_dispatch(&intc, 32) == 0) {
+        return -1;
+    }
+    if (vibeos_intc_unmask(&intc, 32) != 0 || vibeos_intc_is_masked(&intc, 32) != 0) {
+        return -1;
+    }
+    if (vibeos_intc_set_enabled(&intc, 0) != 0) {
+        return -1;
+    }
+    if (vibeos_intc_dispatch(&intc, 32) == 0) {
+        return -1;
+    }
+    if (vibeos_intc_set_enabled(&intc, 1) != 0) {
+        return -1;
+    }
+    if (vibeos_intc_dispatch(&intc, 32) != 0) {
+        return -1;
+    }
+    if (acc != 64 || vibeos_intc_counter(&intc, 32) != 2) {
         return -1;
     }
     return 0;
@@ -1047,6 +1072,18 @@ static int test_timer_and_idt(void) {
     if (vibeos_timer_ticks(&timer) != 2) {
         return -1;
     }
+    if (vibeos_timer_ticks_to_ms(&timer, 2) != 2 || vibeos_timer_ticks_to_ns(&timer, 1) != 1000000ull) {
+        return -1;
+    }
+    if (vibeos_timer_arm_deadline(&timer, 3) != 0) {
+        return -1;
+    }
+    if (vibeos_timer_deadline_expired(&timer, 2) != 0) {
+        return -1;
+    }
+    if (vibeos_timer_deadline_expired(&timer, 3) != 1) {
+        return -1;
+    }
     if (vibeos_x86_64_idt_init(&idt) != 0) {
         return -1;
     }
@@ -1055,6 +1092,50 @@ static int test_timer_and_idt(void) {
         return -1;
     }
     if (!idt.present[timer_vec]) {
+        return -1;
+    }
+    if (vibeos_x86_64_validate_boot_environment(VIBEOS_X86_64_FEATURE_SSE2 | VIBEOS_X86_64_FEATURE_NX) != 0) {
+        return -1;
+    }
+    if (vibeos_x86_64_validate_boot_environment(VIBEOS_X86_64_FEATURE_SSE2) == 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_compat_runtime(void) {
+    vibeos_compat_runtime_t rt;
+    uint32_t native_id = 0;
+    uint64_t translated = 0;
+    uint64_t denied = 0;
+    if (vibeos_compat_init(&rt) != 0) {
+        return -1;
+    }
+    if (vibeos_compat_translate_syscall(&rt, VIBEOS_COMPAT_TARGET_LINUX, 39, &native_id) == 0) {
+        return -1;
+    }
+    if (vibeos_compat_enable(&rt, VIBEOS_COMPAT_TARGET_LINUX, 1) != 0) {
+        return -1;
+    }
+    if (vibeos_compat_translate_syscall(&rt, VIBEOS_COMPAT_TARGET_LINUX, 39, &native_id) != 0 || native_id == 0) {
+        return -1;
+    }
+    if (vibeos_compat_enable(&rt, VIBEOS_COMPAT_TARGET_WINDOWS, 1) != 0) {
+        return -1;
+    }
+    if (vibeos_compat_translate_syscall(&rt, VIBEOS_COMPAT_TARGET_WINDOWS, 0xC0u, &native_id) != 0 || native_id != 10u) {
+        return -1;
+    }
+    if (vibeos_compat_enable(&rt, VIBEOS_COMPAT_TARGET_MACOS, 1) != 0) {
+        return -1;
+    }
+    if (vibeos_compat_translate_syscall(&rt, VIBEOS_COMPAT_TARGET_MACOS, 2u, &native_id) != 0 || native_id != 10u) {
+        return -1;
+    }
+    if (vibeos_compat_stats(&rt, &translated, &denied) != 0) {
+        return -1;
+    }
+    if (translated != 3 || denied < 1) {
         return -1;
     }
     return 0;
@@ -2052,6 +2133,7 @@ int main(void) {
     RUN_TEST(test_servicemgr_and_drivers);
     RUN_TEST(test_user_api_and_bootloader);
     RUN_TEST(test_timer_and_idt);
+    RUN_TEST(test_compat_runtime);
     RUN_TEST(test_waitset);
     RUN_TEST(test_waitset_timed);
     RUN_TEST(test_waitset_ownership);
