@@ -349,6 +349,44 @@ static int test_syscalls(void) {
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
         return -1;
     }
+    vibeos_syscall_make_sec_audit_count(&frame, 0);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result < 6) {
+        return -1;
+    }
+    vibeos_syscall_make_sec_audit_count_action(&frame, VIBEOS_SEC_AUDIT_PROCESS_SPAWN, 0);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result < 2) {
+        return -1;
+    }
+    vibeos_syscall_make_sec_audit_summary(&frame, 0);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.arg0 < frame.arg1 || frame.arg0 < frame.arg2) {
+        return -1;
+    }
+    if ((frame.arg1 + frame.arg2) != frame.arg0) {
+        return -1;
+    }
+    vibeos_syscall_make_sec_audit_get(&frame, 0, 0);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result <= 0) {
+        return -1;
+    }
+    if (frame.arg0 == 0) {
+        return -1;
+    }
+    vibeos_syscall_make_sec_audit_count(&frame, pid1);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result < 1) {
+        return -1;
+    }
+    vibeos_syscall_make_sec_audit_reset(&frame, pid1);
+    if (vibeos_syscall_dispatch(&kernel, &frame) == 0) {
+        return -1;
+    }
+    vibeos_syscall_make_sec_audit_reset(&frame, 0);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
+    vibeos_syscall_make_sec_audit_count(&frame, 0);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 0) {
+        return -1;
+    }
     vibeos_syscall_make_thread_create(&frame, pid1);
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 1) {
         return -1;
@@ -1267,6 +1305,52 @@ static int test_security_token(void) {
     return 0;
 }
 
+static int test_security_audit_log(void) {
+    vibeos_security_audit_log_t log;
+    vibeos_sec_audit_event_t event;
+    uint32_t count = 0;
+    uint32_t total = 0;
+    uint32_t success = 0;
+    uint32_t fail = 0;
+    if (vibeos_sec_audit_init(&log) != 0) {
+        return -1;
+    }
+    if (vibeos_sec_audit_record(&log, VIBEOS_SEC_AUDIT_PROCESS_SPAWN, 1, 2, 0, 1) != 0) {
+        return -1;
+    }
+    if (vibeos_sec_audit_record(&log, VIBEOS_SEC_AUDIT_POLICY_CAPABILITY_SET, 0, 0, 0, 0) != 0) {
+        return -1;
+    }
+    if (vibeos_sec_audit_count(&log, &count) != 0 || count != 2) {
+        return -1;
+    }
+    if (vibeos_sec_audit_count_action(&log, VIBEOS_SEC_AUDIT_PROCESS_SPAWN, &count) != 0 || count != 1) {
+        return -1;
+    }
+    if (vibeos_sec_audit_summary(&log, &total, &success, &fail) != 0) {
+        return -1;
+    }
+    if (total != 2 || success != 1 || fail != 1) {
+        return -1;
+    }
+    if (vibeos_sec_audit_count_for_pid(&log, 1, &count) != 0 || count != 1) {
+        return -1;
+    }
+    if (vibeos_sec_audit_get_for_pid(&log, 1, 0, &event) != 0) {
+        return -1;
+    }
+    if (event.action != VIBEOS_SEC_AUDIT_PROCESS_SPAWN || event.target_pid != 2 || event.success != 1) {
+        return -1;
+    }
+    if (vibeos_sec_audit_reset(&log) != 0) {
+        return -1;
+    }
+    if (vibeos_sec_audit_count(&log, &count) != 0 || count != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 static int test_driver_host(void) {
     vibeos_driver_framework_t fw;
     vibeos_devmgr_state_t devmgr;
@@ -1823,6 +1907,7 @@ int main(void) {
     RUN_TEST(test_filesystem_runtime);
     RUN_TEST(test_network_runtime);
     RUN_TEST(test_security_token);
+    RUN_TEST(test_security_audit_log);
     RUN_TEST(test_driver_host);
     RUN_TEST(test_service_ipc_contract);
     RUN_TEST(test_trap_dispatch);
