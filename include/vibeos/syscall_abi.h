@@ -541,6 +541,56 @@ static inline void vibeos_syscall_make_policy_summary_get(vibeos_syscall_frame_t
     f->arg2 = caller_pid;
 }
 
+static inline void vibeos_syscall_make_sec_audit_count(vibeos_syscall_frame_t *f, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_SEC_AUDIT_COUNT;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
+static inline void vibeos_syscall_make_sec_audit_get(vibeos_syscall_frame_t *f, uint32_t index, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_SEC_AUDIT_GET;
+    f->arg0 = index;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
+static inline void vibeos_syscall_make_sec_audit_count_action(vibeos_syscall_frame_t *f, uint32_t action, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_SEC_AUDIT_COUNT_ACTION;
+    f->arg0 = action;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
+static inline void vibeos_syscall_make_sec_audit_summary(vibeos_syscall_frame_t *f, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_SEC_AUDIT_SUMMARY;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
+static inline void vibeos_syscall_make_sec_audit_reset(vibeos_syscall_frame_t *f, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_SEC_AUDIT_RESET;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
 /* Waitset API */
 static inline uint32_t vibeos_syscall_waitset_owner_pid(const vibeos_syscall_frame_t *f) {
     return f ? (uint32_t)f->arg1 : 0;

@@ -74,6 +74,13 @@ static int syscall_waitset_owner_access_allowed(uint32_t caller_pid, uint32_t ow
     return caller_pid == owner_pid;
 }
 
+static void syscall_sec_audit_record(vibeos_kernel_t *kernel, vibeos_sec_audit_action_t action, uint32_t caller_pid, uint32_t target_pid, uint64_t aux, uint32_t success) {
+    if (!kernel || !kernel->sec_audit.initialized) {
+        return;
+    }
+    (void)vibeos_sec_audit_record(&kernel->sec_audit, action, caller_pid, target_pid, aux, success);
+}
+
 int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_frame_t *frame) {
     static vibeos_waitset_t kernel_waitset;
     static uint32_t kernel_waitset_owner_pid = 0;
@@ -89,6 +96,12 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             return -1;
         }
         waitset_initialized = 1;
+    }
+    if (!kernel->sec_audit.initialized) {
+        if (vibeos_sec_audit_init(&kernel->sec_audit) != 0) {
+            frame->result = -1;
+            return -1;
+        }
     }
 
     {
@@ -308,23 +321,28 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             vibeos_security_token_t caller_token;
             uint32_t pid;
             if (syscall_caller_capability_mask(kernel, caller_pid, &caller_capability_mask) != 0) {
+                syscall_sec_audit_record(kernel, VIBEOS_SEC_AUDIT_PROCESS_SPAWN, caller_pid, 0, (uint64_t)frame->arg0, 0);
                 frame->result = -1;
                 return -1;
             }
             if (vibeos_policy_can_process_spawn(&kernel->policy, caller_capability_mask) != VIBEOS_POLICY_ALLOW) {
+                syscall_sec_audit_record(kernel, VIBEOS_SEC_AUDIT_PROCESS_SPAWN, caller_pid, 0, (uint64_t)frame->arg0, 0);
                 frame->result = -1;
                 return -1;
             }
             if (caller_pid == 0) {
                 caller_token = kernel->kernel_token;
             } else if (vibeos_proc_token_get(&kernel->proc_table, caller_pid, &caller_token) != 0) {
+                syscall_sec_audit_record(kernel, VIBEOS_SEC_AUDIT_PROCESS_SPAWN, caller_pid, 0, (uint64_t)frame->arg0, 0);
                 frame->result = -1;
                 return -1;
             }
             if (vibeos_proc_spawn_with_token(&kernel->proc_table, (uint32_t)frame->arg0, &caller_token, &pid) != 0) {
+                syscall_sec_audit_record(kernel, VIBEOS_SEC_AUDIT_PROCESS_SPAWN, caller_pid, 0, (uint64_t)frame->arg0, 0);
                 frame->result = -1;
                 return -1;
             }
+            syscall_sec_audit_record(kernel, VIBEOS_SEC_AUDIT_PROCESS_SPAWN, caller_pid, pid, (uint64_t)frame->arg0, 1);
             frame->result = (int64_t)pid;
             return 0;
         }
@@ -890,19 +908,23 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             vibeos_security_token_t current;
             vibeos_security_token_t updated;
             if (!syscall_process_mutation_allowed(caller_pid, target_pid)) {
+                syscall_sec_audit_record(kernel, VIBEOS_SEC_AUDIT_PROCESS_TOKEN_SET, caller_pid, target_pid, frame->arg1, 0);
                 frame->result = -1;
                 return -1;
             }
             if (vibeos_proc_token_get(&kernel->proc_table, target_pid, &current) != 0) {
+                syscall_sec_audit_record(kernel, VIBEOS_SEC_AUDIT_PROCESS_TOKEN_SET, caller_pid, target_pid, frame->arg1, 0);
                 frame->result = -1;
                 return -1;
             }
             updated = current;
             updated.capability_mask = (uint32_t)frame->arg1;
             if (vibeos_proc_token_set(&kernel->proc_table, target_pid, &updated) != 0) {
+                syscall_sec_audit_record(kernel, VIBEOS_SEC_AUDIT_PROCESS_TOKEN_SET, caller_pid, target_pid, frame->arg1, 0);
                 frame->result = -1;
                 return -1;
             }
+            syscall_sec_audit_record(kernel, VIBEOS_SEC_AUDIT_PROCESS_TOKEN_SET, caller_pid, target_pid, frame->arg1, 1);
             frame->result = 0;
             return 0;
         }
@@ -920,13 +942,16 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
         {
             uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
             if (caller_pid != 0) {
+                syscall_sec_audit_record(kernel, VIBEOS_SEC_AUDIT_POLICY_CAPABILITY_SET, caller_pid, 0, ((frame->arg0 & 0xFFFFFFFFu) << 32) | (frame->arg1 & 0xFFFFFFFFu), 0);
                 frame->result = -1;
                 return -1;
             }
             if (vibeos_policy_required_capability_set(&kernel->policy, (vibeos_policy_capability_target_t)frame->arg0, (uint32_t)frame->arg1) != 0) {
+                syscall_sec_audit_record(kernel, VIBEOS_SEC_AUDIT_POLICY_CAPABILITY_SET, caller_pid, 0, ((frame->arg0 & 0xFFFFFFFFu) << 32) | (frame->arg1 & 0xFFFFFFFFu), 0);
                 frame->result = -1;
                 return -1;
             }
+            syscall_sec_audit_record(kernel, VIBEOS_SEC_AUDIT_POLICY_CAPABILITY_SET, caller_pid, 0, ((frame->arg0 & 0xFFFFFFFFu) << 32) | (frame->arg1 & 0xFFFFFFFFu), 1);
             frame->result = 0;
             return 0;
         }
@@ -942,6 +967,130 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             frame->arg0 = fs_open_bit;
             frame->arg1 = net_bind_bit;
             frame->arg2 = process_spawn_bit;
+            frame->result = 0;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_SEC_AUDIT_COUNT:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            uint32_t count = 0;
+            if (caller_pid == 0) {
+                if (vibeos_sec_audit_count(&kernel->sec_audit, &count) != 0) {
+                    frame->result = -1;
+                    return -1;
+                }
+            } else {
+                if (vibeos_sec_audit_count_for_pid(&kernel->sec_audit, caller_pid, &count) != 0) {
+                    frame->result = -1;
+                    return -1;
+                }
+            }
+            frame->result = (int64_t)count;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_SEC_AUDIT_GET:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            vibeos_sec_audit_event_t event;
+            if (caller_pid == 0) {
+                if (vibeos_sec_audit_get(&kernel->sec_audit, (uint32_t)frame->arg0, &event) != 0) {
+                    frame->result = -1;
+                    return -1;
+                }
+            } else {
+                if (vibeos_sec_audit_get_for_pid(&kernel->sec_audit, caller_pid, (uint32_t)frame->arg0, &event) != 0) {
+                    frame->result = -1;
+                    return -1;
+                }
+                event.seq = (uint64_t)((uint32_t)frame->arg0 + 1u);
+            }
+            frame->arg0 = event.action;
+            frame->arg1 = event.success;
+            frame->arg2 = event.target_pid;
+            frame->result = (int64_t)event.seq;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_SEC_AUDIT_COUNT_ACTION:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            uint32_t action = (uint32_t)frame->arg0;
+            uint32_t count = 0;
+            if (caller_pid == 0) {
+                if (vibeos_sec_audit_count_action(&kernel->sec_audit, action, &count) != 0) {
+                    frame->result = -1;
+                    return -1;
+                }
+            } else {
+                uint32_t i;
+                uint32_t visible = 0;
+                uint32_t scoped_count = 0;
+                vibeos_sec_audit_event_t event;
+                if (vibeos_sec_audit_count_for_pid(&kernel->sec_audit, caller_pid, &visible) != 0) {
+                    frame->result = -1;
+                    return -1;
+                }
+                for (i = 0; i < visible; i++) {
+                    if (vibeos_sec_audit_get_for_pid(&kernel->sec_audit, caller_pid, i, &event) != 0) {
+                        frame->result = -1;
+                        return -1;
+                    }
+                    if (event.action == action) {
+                        scoped_count++;
+                    }
+                }
+                count = scoped_count;
+            }
+            frame->result = (int64_t)count;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_SEC_AUDIT_SUMMARY:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            uint32_t total = 0;
+            uint32_t success_count = 0;
+            uint32_t fail_count = 0;
+            if (caller_pid == 0) {
+                if (vibeos_sec_audit_summary(&kernel->sec_audit, &total, &success_count, &fail_count) != 0) {
+                    frame->result = -1;
+                    return -1;
+                }
+            } else {
+                uint32_t i;
+                uint32_t visible = 0;
+                vibeos_sec_audit_event_t event;
+                if (vibeos_sec_audit_count_for_pid(&kernel->sec_audit, caller_pid, &visible) != 0) {
+                    frame->result = -1;
+                    return -1;
+                }
+                total = visible;
+                for (i = 0; i < visible; i++) {
+                    if (vibeos_sec_audit_get_for_pid(&kernel->sec_audit, caller_pid, i, &event) != 0) {
+                        frame->result = -1;
+                        return -1;
+                    }
+                    if (event.success) {
+                        success_count++;
+                    }
+                }
+                fail_count = total - success_count;
+            }
+            frame->arg0 = total;
+            frame->arg1 = success_count;
+            frame->arg2 = fail_count;
+            frame->result = 0;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_SEC_AUDIT_RESET:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            if (caller_pid != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            if (vibeos_sec_audit_reset(&kernel->sec_audit) != 0) {
+                frame->result = -1;
+                return -1;
+            }
             frame->result = 0;
             return 0;
         }

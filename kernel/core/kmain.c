@@ -62,6 +62,10 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
         kernel->boot_state.last_error_code = 1011;
         return -1;
     }
+    if (vibeos_sec_audit_init(&kernel->sec_audit) != 0) {
+        kernel->boot_state.last_error_code = 1012;
+        return -1;
+    }
     kernel->boot_state.stage = VIBEOS_BOOT_STAGE_MEMORY_READY;
 
     if (vibeos_sched_init(&kernel->scheduler, 1) != 0) {
