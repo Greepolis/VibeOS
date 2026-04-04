@@ -1,6 +1,7 @@
 param(
     [string]$BuildDir = "build",
-    [string]$Profile = "agent"
+    [string]$Profile = "agent",
+    [string]$Generator = "Ninja"
 )
 
 $ErrorActionPreference = "Stop"
@@ -29,12 +30,65 @@ try {
     if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
         throw "INFRA_CMAKE_MISSING: cmake command not found in PATH"
     }
-
-    cmake -S . -B $BuildDir -DVIBEOS_BUILD_TESTS=ON | Tee-Object -FilePath $logPath
-    cmake --build $BuildDir | Tee-Object -FilePath $logPath -Append
-    & ".\$BuildDir\vibeos_kernel_tests.exe" | Tee-Object -FilePath $logPath -Append
-    if ($LASTEXITCODE -ne 0) {
-        throw "kernel tests returned non-zero exit code"
+    try {
+        cmake -S . -B $BuildDir -G $Generator -DVIBEOS_BUILD_TESTS=ON | Tee-Object -FilePath $logPath
+        cmake --build $BuildDir | Tee-Object -FilePath $logPath -Append
+        & ".\$BuildDir\vibeos_kernel_tests.exe" | Tee-Object -FilePath $logPath -Append
+        if ($LASTEXITCODE -ne 0) {
+            throw "kernel tests returned non-zero exit code"
+        }
+    } catch {
+        Add-Content -Path $logPath -Value ("cmake_path_failed={0}" -f $_.Exception.Message)
+        if (-not (Get-Command gcc -ErrorAction SilentlyContinue)) {
+            throw "INFRA_GCC_MISSING: gcc command not found for manual fallback"
+        }
+        $manualExe = Join-Path $BuildDir "vibeos_kernel_tests_manual.exe"
+        $gccArgs = @(
+            "-std=c11", "-Wall", "-Wextra", "-Wpedantic",
+            "-Iinclude",
+            "tests/kernel/kernel_tests.c",
+            "kernel/core/kmain.c",
+            "kernel/mm/pmm.c",
+            "kernel/mm/vm.c",
+            "kernel/object/handle_table.c",
+            "kernel/proc/process.c",
+            "kernel/sched/scheduler.c",
+            "kernel/ipc/event.c",
+            "kernel/ipc/channel.c",
+            "kernel/ipc/handle_transfer.c",
+            "kernel/ipc/waitset.c",
+            "kernel/core/interrupts.c",
+            "kernel/core/policy.c",
+            "kernel/core/syscall_policy.c",
+            "kernel/core/security.c",
+            "kernel/core/syscall.c",
+            "kernel/time/timer.c",
+            "kernel/arch/x86_64/trap.c",
+            "kernel/arch/x86_64/idt.c",
+            "kernel/arch/x86_64/boot_stub.c",
+            "user/init/init_system.c",
+            "user/servicemgr/service_manager.c",
+            "user/servicemgr/service_ipc.c",
+            "user/devmgr/device_manager.c",
+            "user/devmgr/driver_host.c",
+            "user/drivers/driver_framework.c",
+            "user/fs/vfs_service.c",
+            "user/fs/vfs_ops.c",
+            "user/net/network_service.c",
+            "user/net/socket.c",
+            "user/lib/user_api.c",
+            "boot/bootloader_stub.c",
+            "-o", $manualExe
+        )
+        New-Item -ItemType Directory -Force $BuildDir | Out-Null
+        & gcc @gccArgs | Tee-Object -FilePath $logPath -Append
+        if ($LASTEXITCODE -ne 0) {
+            throw "manual gcc kernel tests build failed"
+        }
+        & $manualExe | Tee-Object -FilePath $logPath -Append
+        if ($LASTEXITCODE -ne 0) {
+            throw "manual gcc kernel tests execution failed"
+        }
     }
 } catch {
     $status = "fail"
