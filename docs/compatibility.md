@@ -87,6 +87,12 @@ macOS compatibility must be evaluated not only as a technical problem but also a
 - graphics and input broker services
 - sandboxed compatibility domains
 
+## Current runtime prototype status
+
+- compatibility runtime state machine is implemented for Linux, Windows, and macOS targets (`enable`, `translate`, `stats`).
+- initial syscall translation probes are available per target to exercise end-to-end ABI bridging paths in host tests.
+- translation statistics expose translated vs denied syscall counts for observability and safety gating.
+
 ## Recommended compatibility rollout
 
 1. Native toolchain and minimal userland

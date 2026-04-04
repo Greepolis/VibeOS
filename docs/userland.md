@@ -63,3 +63,4 @@ GUI is not part of the earliest milestones, but the architecture should anticipa
 - service lifecycle now includes start and stop paths across init, devmgr, vfs, and net services.
 - service manager exposes a health aggregation helper that reports currently running critical services.
 - runtime supervision counters are exercised by host tests to keep orchestration behavior regression-safe.
+- compatibility runtime core now includes per-target enablement and early syscall translation probes for Linux, Windows, and macOS layers.

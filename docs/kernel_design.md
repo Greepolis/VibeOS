@@ -98,3 +98,9 @@ The kernel should expose:
 - memory and IPC counters
 - fault reporting interfaces
 - boot and runtime diagnostics suitable for automated testing
+
+## Current runtime prototype status
+
+- interrupt controller runtime now supports IRQ masking/unmasking and global enable/disable gates.
+- timer runtime includes tick-to-time conversion helpers and deadline arming/expiry checks.
+- process security model includes token capabilities, security labels, and policy-driven interaction checks.

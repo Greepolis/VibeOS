@@ -290,6 +290,7 @@ Implemented:
 - aggregate scheduler counters (`preemptions`, `wait_timeouts`, `wait_wakes`) for runtime telemetry
 - scheduler counter summary helper (`preemptions`, `wait_timeouts`, `wait_wakes`, runnable threads, cpu count)
 - scheduler counter reset helper for controlled instrumentation epochs
+- class-based default timeslice policy helpers and enqueue-time timeslice normalization
 Files Created/Modified:
 - `kernel/sched/scheduler.c`
 - `include/vibeos/scheduler.h`
@@ -344,6 +345,7 @@ Implemented:
 - x86_64 IDT presence table stub and timer vector setup
 - x86_64 trap frame dispatch state
 - trap taxonomy classification (fault/interrupt/syscall/spurious)
+- IRQ mask/unmask controls and global interrupt enable/disable gate in host runtime controller
 Files Created/Modified:
 - `kernel/core/interrupts.c`
 - `include/vibeos/interrupts.h`
@@ -454,6 +456,7 @@ Module: Timer Subsystem
 Status: Partial
 Implemented:
 - timer tick counter and frequency state
+- tick conversion helpers (`ticks->ms`, `ticks->ns`) and deadline arming/expiry primitives
 Files Created/Modified:
 - `kernel/time/timer.c`
 - `include/vibeos/timer.h`
@@ -476,6 +479,7 @@ Implemented:
 - service IPC message contract build/validate
 - start/stop lifecycle controls for init, devmgr, vfs, and net service stubs
 - service-manager health aggregation helper for supervised service visibility
+- compatibility runtime core with per-target enable controls and translation telemetry
 Files Created/Modified:
 - `user/init/init_system.c`
 - `user/servicemgr/service_manager.c`
@@ -510,6 +514,7 @@ Implemented:
 - runtime policy capability introspection/update helpers for fs-open, net-bind, and process-spawn controls
 - kernel security-audit log for privileged security operations with caller-scoped introspection
 - security-audit success/failure counters by action and by outcome (`success` filter)
+- process security labels with inheritance and policy-configured override capability checks
 Files Created/Modified:
 - `kernel/core/security.c`
 - `include/vibeos/security_model.h`

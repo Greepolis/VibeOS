@@ -72,3 +72,9 @@ Periodic and event-driven balancing migrates threads across CPUs based on:
 - real-time scheduling class
 - deadline scheduling for selected workloads
 - energy-aware placement for mobile-class platforms
+
+## Current runtime prototype status
+
+- class-based default timeslice selection is implemented (`background=8`, `normal=4`, `interactive=2`, `realtime=1`).
+- enqueue paths normalize zero-timeslice threads to class defaults.
+- per-CPU and aggregate scheduler counters remain available through runtime telemetry helpers and syscall observability paths.
