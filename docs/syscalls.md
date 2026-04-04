@@ -46,6 +46,7 @@ Argument semantics for current syscall groups:
 | `WAITSET_WAKE_POLICY_GET` | reserved (`0`) | reserved (`0`) | caller pid (`0` = kernel or waitset owner) |
 | `WAITSET_STATS_RESET` | reserved (`0`) | reserved (`0`) | caller pid (`0` = kernel or waitset owner) |
 | `WAITSET_OWNER_GET` | reserved (`0`) | reserved (`0`) | caller pid (`0` = kernel or waitset owner) |
+| `WAITSET_SNAPSHOT_GET` | reserved (`0`) | reserved (`0`) | caller pid (`0` = kernel or waitset owner) |
 | `PROCESS_SPAWN` | parent pid | reserved (`0`) | reserved (`0`) |
 | `PROCESS_STATE_GET` | target pid | reserved (`0`) | caller pid (`0` = kernel; otherwise self or directly related process) |
 | `PROCESS_STATE_SET` | target pid | target process state enum | caller pid (`0` = kernel; otherwise self only) |
@@ -81,6 +82,12 @@ Argument semantics for current syscall groups:
 | `SCHED_PREEMPTIONS_TOTAL_GET` | reserved (`0`) | reserved (`0`) | reserved (`0`) |
 | `SCHED_WAIT_TIMEOUTS_TOTAL_GET` | reserved (`0`) | reserved (`0`) | reserved (`0`) |
 | `SCHED_WAIT_WAKES_TOTAL_GET` | reserved (`0`) | reserved (`0`) | reserved (`0`) |
+| `SCHED_COUNTER_SUMMARY_GET` | reserved (`0`) | reserved (`0`) | reserved (`0`) |
+| `SCHED_COUNTERS_RESET` | reserved (`0`) | reserved (`0`) | caller pid (`0` required) |
+
+| `PROC_AUDIT_COUNT_ACTION` | action enum | reserved (`0`) | caller pid (`0` = global, non-zero = caller-scoped) |
+| `PROC_AUDIT_COUNT_SUCCESS` | success value (`0`/`1`) | reserved (`0`) | caller pid (`0` = global, non-zero = caller-scoped) |
+| `PROC_AUDIT_SUMMARY` | reserved (`0`) | reserved (`0`) | caller pid (`0` = global, non-zero = caller-scoped) |
 
 `PROC_AUDIT_GET` returns:
 - `result` = `event.seq` (positive on success)
@@ -114,6 +121,12 @@ Argument semantics for current syscall groups:
 - `arg0` = ownership enforcement flag
 - `arg1` = current waitset event count
 
+`WAITSET_SNAPSHOT_GET` returns:
+- `result` = waitset owner pid
+- `arg0` = ownership enforcement flag
+- `arg1` = wake policy enum (`0` FIFO, `1` REVERSE)
+- `arg2` = current waitset event count
+
 `PROCESS_STATE_SUMMARY_GET` returns:
 - `arg0` = count in `NEW`
 - `arg1` = count in `RUNNING`
@@ -132,6 +145,18 @@ Argument semantics for current syscall groups:
 - `arg2` = process-termination count
 - `result` = thread-exit count
 
+`SCHED_COUNTER_SUMMARY_GET` returns:
+- `arg0` = total preemptions
+- `arg1` = total wait timeouts
+- `arg2` = total wait wakes
+- `result` = total runnable threads
+
+`PROC_AUDIT_SUMMARY` returns:
+- `arg0` = total visible audit events
+- `arg1` = visible successful events
+- `arg2` = visible failed events
+- `result` = `0` on success
+
 Access policy:
 - `caller_pid == 0`: full global audit stream.
 - `caller_pid != 0`: only events where `event.owner_pid == caller_pid`; `result` is redacted to caller-local sequence (`index + 1`).
@@ -142,7 +167,9 @@ Access policy:
 - `WAITSET_STATS_GET` and `WAITSET_STATS_EXT_GET` are kernel-only or waitset-owner scoped.
 - `WAITSET_WAKE_POLICY_SET`, `WAITSET_WAKE_POLICY_GET`, and `WAITSET_STATS_RESET` are kernel-only or waitset-owner scoped.
 - `WAITSET_OWNER_GET` is kernel-only or waitset-owner scoped.
+- `WAITSET_SNAPSHOT_GET` is kernel-only or waitset-owner scoped.
 - `PROC_TRANSITION_COUNTERS_RESET` is kernel-only.
+- `SCHED_COUNTERS_RESET` is kernel-only.
 
 Implementation helpers for ABI v0 are centralized in `include/vibeos/syscall_abi.h` and should be preferred over direct field writes in kernel tests and user-space glue.
 

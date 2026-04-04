@@ -287,6 +287,8 @@ Implemented:
 - least-loaded CPU selection and balanced enqueue helper (`enqueue_balanced`)
 - scheduler CPU-count query helper for syscall observability paths
 - aggregate scheduler counters (`preemptions`, `wait_timeouts`, `wait_wakes`) for runtime telemetry
+- scheduler counter summary helper (`preemptions`, `wait_timeouts`, `wait_wakes`, runnable threads, cpu count)
+- scheduler counter reset helper for controlled instrumentation epochs
 Files Created/Modified:
 - `kernel/sched/scheduler.c`
 - `include/vibeos/scheduler.h`
@@ -373,6 +375,9 @@ Implemented:
 - waitset telemetry syscalls with owner-scoped access policy
 - waitset wake-policy set/get and waitset telemetry reset syscalls
 - waitset owner introspection syscall and process or thread transition-counter telemetry syscalls
+- waitset runtime snapshot syscall (`owner`, `ownership-enforcement`, `wake-policy`, `event-count`)
+- process-audit aggregate and filtered counters (`count by action`, `count by success`, `summary`)
+- scheduler counter summary and kernel-only scheduler counter reset syscalls
 Files Created/Modified:
 - `kernel/core/syscall.c`
 - `include/vibeos/syscall.h`
@@ -405,6 +410,7 @@ Implemented:
 - selective handle lineage revocation filters (by object type and rights mask)
 - revocation audit trail ring-buffer with structured event retrieval
 - audit retention policy controls (`overwrite-oldest` vs `drop-newest`) with dropped-event accounting
+- audit helper queries (`count by action`, `count by success`, `summary`) for observability and policy feedback loops
 Files Created/Modified:
 - `kernel/proc/process.c`
 - `include/vibeos/proc.h`
