@@ -46,6 +46,8 @@ Current implementation status:
 - policy checks implemented for filesystem open, network bind, and process spawn.
 - policy required-capability bits are runtime-readable and kernel-mutable.
 - process spawn authorization evaluates the calling process token (or kernel token in kernel context), not a fixed global mask.
+- process entries expose security labels with inheritance on spawn and scoped mutation controls.
+- process interaction checks support label-based allow rules with capability-based override.
 
 ## Sandboxing
 

@@ -386,6 +386,8 @@ Implemented:
 - caller-aware spawn authorization path (policy checks against caller token capabilities, not global kernel token)
 - policy introspection and control syscalls (`POLICY_CAPABILITY_GET`, `POLICY_CAPABILITY_SET`, `POLICY_SUMMARY_GET`)
 - security-audit syscalls (`SEC_AUDIT_COUNT`, `SEC_AUDIT_GET`, `SEC_AUDIT_COUNT_ACTION`, `SEC_AUDIT_SUMMARY`, `SEC_AUDIT_RESET`)
+- security-audit success-filter syscall (`SEC_AUDIT_COUNT_SUCCESS`)
+- process MAC label syscalls (`PROCESS_SECURITY_LABEL_GET`, `PROCESS_SECURITY_LABEL_SET`, `PROCESS_INTERACT_CHECK`)
 Files Created/Modified:
 - `kernel/core/syscall.c`
 - `include/vibeos/syscall.h`
@@ -415,6 +417,8 @@ Implemented:
 - process and thread transition counters with reset controls for instrumentation cycles
 - per-process security token storage with explicit set/get APIs
 - token inheritance on process spawn and explicit token override spawn API (`spawn_with_token`)
+- per-process security labels with inheritance and explicit set/get controls
+- label-aware interaction checks with policy-configured override capability gate
 - process and thread object-handle bind or resolve helpers
 - handle lineage revocation propagation across process handle tables
 - selective handle lineage revocation filters (by object type and rights mask)

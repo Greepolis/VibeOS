@@ -90,8 +90,8 @@ Argument semantics for current syscall groups:
 | `PROC_AUDIT_SUMMARY` | reserved (`0`) | reserved (`0`) | caller pid (`0` = global, non-zero = caller-scoped) |
 | `PROCESS_TOKEN_GET` | target pid | reserved (`0`) | caller pid (`0` = kernel; otherwise self or directly related process) |
 | `PROCESS_TOKEN_SET` | target pid | capability mask | caller pid (`0` = kernel; otherwise self only) |
-| `POLICY_CAPABILITY_GET` | policy target enum (`1` fs-open, `2` net-bind, `3` process-spawn) | reserved (`0`) | caller pid (advisory, unrestricted read) |
-| `POLICY_CAPABILITY_SET` | policy target enum (`1` fs-open, `2` net-bind, `3` process-spawn) | required capability bit (`0..31`) | caller pid (`0` required) |
+| `POLICY_CAPABILITY_GET` | policy target enum (`1` fs-open, `2` net-bind, `3` process-spawn, `4` process-interact override) | reserved (`0`) | caller pid (advisory, unrestricted read) |
+| `POLICY_CAPABILITY_SET` | policy target enum (`1` fs-open, `2` net-bind, `3` process-spawn, `4` process-interact override) | required capability bit (`0..31`) | caller pid (`0` required) |
 | `POLICY_SUMMARY_GET` | reserved (`0`) | reserved (`0`) | caller pid (advisory, unrestricted read) |
 | `SEC_AUDIT_COUNT` | reserved (`0`) | reserved (`0`) | caller pid (`0` = global, non-zero = caller-scoped) |
 | `SEC_AUDIT_GET` | event index (caller-local if `arg2 != 0`) | reserved (`0`) | caller pid (`0` = global, non-zero = caller-scoped) |
@@ -99,6 +99,9 @@ Argument semantics for current syscall groups:
 | `SEC_AUDIT_COUNT_SUCCESS` | success value (`0`/`1`) | reserved (`0`) | caller pid (`0` = global, non-zero = caller-scoped) |
 | `SEC_AUDIT_SUMMARY` | reserved (`0`) | reserved (`0`) | caller pid (`0` = global, non-zero = caller-scoped) |
 | `SEC_AUDIT_RESET` | reserved (`0`) | reserved (`0`) | caller pid (`0` required) |
+| `PROCESS_SECURITY_LABEL_GET` | target pid | reserved (`0`) | caller pid (`0` = kernel; otherwise self or directly related process) |
+| `PROCESS_SECURITY_LABEL_SET` | target pid | security label | caller pid (`0` = kernel; otherwise self only) |
+| `PROCESS_INTERACT_CHECK` | target pid | reserved (`0`) | caller pid (`!= 0`, no kernel shortcut) |
 
 `PROC_AUDIT_GET` returns:
 - `result` = `event.seq` (positive on success)
@@ -181,7 +184,7 @@ Argument semantics for current syscall groups:
 - `arg0` = required capability bit for fs-open policy checks
 - `arg1` = required capability bit for net-bind policy checks
 - `arg2` = required capability bit for process-spawn policy checks
-- `result` = `0` on success
+- `result` = required capability bit for process-interact override checks
 
 `SEC_AUDIT_GET` returns:
 - `result` = security audit sequence (caller-local redacted sequence when `caller_pid != 0`)
@@ -195,6 +198,12 @@ Argument semantics for current syscall groups:
 - `arg2` = visible failed events
 - `result` = `0` on success
 
+`PROCESS_SECURITY_LABEL_GET` returns:
+- `result` = target process security label
+
+`PROCESS_INTERACT_CHECK` returns:
+- `result` = `1` if caller is currently allowed to interact with target process according to label and override capability policy, `0` if denied
+
 Access policy:
 - `caller_pid == 0`: full global audit stream.
 - `caller_pid != 0`: only events where `event.owner_pid == caller_pid`; `result` is redacted to caller-local sequence (`index + 1`).
@@ -203,6 +212,8 @@ Access policy:
 - `PROCESS_STATE_SET` and `PROCESS_TERMINATE` are kernel-only or self-targeted.
 - `PROCESS_TOKEN_GET` is kernel-only, self-introspection, or directly related process introspection (parent or child).
 - `PROCESS_TOKEN_SET` is kernel-only or self-targeted.
+- `PROCESS_SECURITY_LABEL_GET` is kernel-only, self-introspection, or directly related process introspection (parent or child).
+- `PROCESS_SECURITY_LABEL_SET` is kernel-only or self-targeted.
 - `SEC_AUDIT_COUNT`, `SEC_AUDIT_GET`, `SEC_AUDIT_COUNT_ACTION`, and `SEC_AUDIT_SUMMARY` are kernel-global for `caller_pid == 0`, caller-scoped otherwise.
 - `THREAD_STATE_GET`, `THREAD_STATE_SET`, `THREAD_EXIT` are kernel-only or thread-owner scoped.
 - `WAITSET_STATS_GET` and `WAITSET_STATS_EXT_GET` are kernel-only or waitset-owner scoped.
