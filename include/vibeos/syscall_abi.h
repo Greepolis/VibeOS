@@ -341,6 +341,36 @@ static inline void vibeos_syscall_make_proc_audit_dropped(vibeos_syscall_frame_t
     f->arg2 = caller_pid;
 }
 
+static inline void vibeos_syscall_make_proc_audit_count_action(vibeos_syscall_frame_t *f, uint32_t action, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_PROC_AUDIT_COUNT_ACTION;
+    f->arg0 = action;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
+static inline void vibeos_syscall_make_proc_audit_count_success(vibeos_syscall_frame_t *f, uint32_t success_value, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_PROC_AUDIT_COUNT_SUCCESS;
+    f->arg0 = success_value;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
+static inline void vibeos_syscall_make_proc_audit_summary(vibeos_syscall_frame_t *f, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_PROC_AUDIT_SUMMARY;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
 static inline void vibeos_syscall_make_sched_runnable_get(vibeos_syscall_frame_t *f) {
     if (!f) {
         return;
@@ -431,6 +461,26 @@ static inline void vibeos_syscall_make_sched_wait_wakes_total_get(vibeos_syscall
     f->arg2 = 0;
 }
 
+static inline void vibeos_syscall_make_sched_counter_summary_get(vibeos_syscall_frame_t *f) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_SCHED_COUNTER_SUMMARY_GET;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = 0;
+}
+
+static inline void vibeos_syscall_make_sched_counters_reset(vibeos_syscall_frame_t *f, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_SCHED_COUNTERS_RESET;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
 /* Waitset API */
 static inline uint32_t vibeos_syscall_waitset_owner_pid(const vibeos_syscall_frame_t *f) {
     return f ? (uint32_t)f->arg1 : 0;
@@ -501,6 +551,16 @@ static inline void vibeos_syscall_make_waitset_owner_get(vibeos_syscall_frame_t 
         return;
     }
     f->id = VIBEOS_SYSCALL_WAITSET_OWNER_GET;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
+static inline void vibeos_syscall_make_waitset_snapshot_get(vibeos_syscall_frame_t *f, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_WAITSET_SNAPSHOT_GET;
     f->arg0 = 0;
     f->arg1 = 0;
     f->arg2 = caller_pid;

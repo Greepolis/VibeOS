@@ -251,6 +251,30 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             frame->result = (int64_t)owner_pid;
             return 0;
         }
+        case VIBEOS_SYSCALL_WAITSET_SNAPSHOT_GET:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            uint32_t owner_pid = 0;
+            uint32_t enforced = 0;
+            vibeos_waitset_wake_policy_t policy;
+            if (!syscall_waitset_owner_access_allowed(caller_pid, kernel_waitset_owner_pid, waitset_initialized)) {
+                frame->result = -1;
+                return -1;
+            }
+            if (vibeos_waitset_owner(&kernel_waitset, &owner_pid, &enforced) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            if (vibeos_waitset_get_wake_policy(&kernel_waitset, &policy) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->arg0 = (uint64_t)enforced;
+            frame->arg1 = (uint64_t)policy;
+            frame->arg2 = (uint64_t)kernel_waitset.count;
+            frame->result = (int64_t)owner_pid;
+            return 0;
+        }
         case VIBEOS_SYSCALL_PROCESS_SPAWN:
         {
             uint32_t pid;
@@ -601,6 +625,113 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             frame->result = (int64_t)dropped;
             return 0;
         }
+        case VIBEOS_SYSCALL_PROC_AUDIT_COUNT_ACTION:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            uint32_t action = (uint32_t)frame->arg0;
+            uint32_t count = 0;
+            if (caller_pid == 0) {
+                if (vibeos_proc_audit_count_action(&kernel->proc_table, action, &count) != 0) {
+                    frame->result = -1;
+                    return -1;
+                }
+            } else {
+                uint32_t i;
+                uint32_t visible = 0;
+                vibeos_proc_audit_event_t ev;
+                uint32_t scoped_count = 0;
+                if (vibeos_proc_audit_count_for_pid(&kernel->proc_table, caller_pid, &visible) != 0) {
+                    frame->result = -1;
+                    return -1;
+                }
+                for (i = 0; i < visible; i++) {
+                    if (vibeos_proc_audit_get_for_pid(&kernel->proc_table, caller_pid, i, &ev) != 0) {
+                        frame->result = -1;
+                        return -1;
+                    }
+                    if (ev.action == action) {
+                        scoped_count++;
+                    }
+                }
+                count = scoped_count;
+            }
+            frame->result = (int64_t)count;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_PROC_AUDIT_COUNT_SUCCESS:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            uint32_t success_value = (uint32_t)frame->arg0;
+            uint32_t count = 0;
+            if (success_value > 1) {
+                frame->result = -1;
+                return -1;
+            }
+            if (caller_pid == 0) {
+                if (vibeos_proc_audit_count_success(&kernel->proc_table, success_value, &count) != 0) {
+                    frame->result = -1;
+                    return -1;
+                }
+            } else {
+                uint32_t i;
+                uint32_t visible = 0;
+                vibeos_proc_audit_event_t ev;
+                uint32_t scoped_count = 0;
+                if (vibeos_proc_audit_count_for_pid(&kernel->proc_table, caller_pid, &visible) != 0) {
+                    frame->result = -1;
+                    return -1;
+                }
+                for (i = 0; i < visible; i++) {
+                    if (vibeos_proc_audit_get_for_pid(&kernel->proc_table, caller_pid, i, &ev) != 0) {
+                        frame->result = -1;
+                        return -1;
+                    }
+                    if (ev.success == success_value) {
+                        scoped_count++;
+                    }
+                }
+                count = scoped_count;
+            }
+            frame->result = (int64_t)count;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_PROC_AUDIT_SUMMARY:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            uint32_t total = 0;
+            uint32_t success_count = 0;
+            uint32_t fail_count = 0;
+            if (caller_pid == 0) {
+                if (vibeos_proc_audit_summary(&kernel->proc_table, &total, &success_count, &fail_count) != 0) {
+                    frame->result = -1;
+                    return -1;
+                }
+            } else {
+                uint32_t i;
+                uint32_t visible = 0;
+                vibeos_proc_audit_event_t ev;
+                if (vibeos_proc_audit_count_for_pid(&kernel->proc_table, caller_pid, &visible) != 0) {
+                    frame->result = -1;
+                    return -1;
+                }
+                total = visible;
+                for (i = 0; i < visible; i++) {
+                    if (vibeos_proc_audit_get_for_pid(&kernel->proc_table, caller_pid, i, &ev) != 0) {
+                        frame->result = -1;
+                        return -1;
+                    }
+                    if (ev.success == 1) {
+                        success_count++;
+                    }
+                }
+                fail_count = total - success_count;
+            }
+            frame->arg0 = total;
+            frame->arg1 = success_count;
+            frame->arg2 = fail_count;
+            frame->result = 0;
+            return 0;
+        }
         case VIBEOS_SYSCALL_SCHED_RUNNABLE_GET:
             frame->result = (int64_t)vibeos_sched_runnable_threads(&kernel->scheduler);
             return 0;
@@ -663,6 +794,37 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
         case VIBEOS_SYSCALL_SCHED_WAIT_WAKES_TOTAL_GET:
             frame->result = (int64_t)vibeos_sched_wait_wakes_total(&kernel->scheduler);
             return 0;
+        case VIBEOS_SYSCALL_SCHED_COUNTER_SUMMARY_GET:
+        {
+            uint64_t preemptions = 0;
+            uint64_t wait_timeouts = 0;
+            uint64_t wait_wakes = 0;
+            size_t runnable = 0;
+            uint32_t cpu_count = 0;
+            if (vibeos_sched_counter_summary(&kernel->scheduler, &preemptions, &wait_timeouts, &wait_wakes, &runnable, &cpu_count) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->arg0 = preemptions;
+            frame->arg1 = wait_timeouts;
+            frame->arg2 = wait_wakes;
+            frame->result = (int64_t)runnable;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_SCHED_COUNTERS_RESET:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            if (caller_pid != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            if (vibeos_sched_counters_reset(&kernel->scheduler) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = 0;
+            return 0;
+        }
         default:
             frame->result = -1;
             return -1;

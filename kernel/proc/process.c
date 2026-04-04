@@ -564,6 +564,62 @@ int vibeos_proc_audit_get_for_pid(vibeos_process_table_t *pt, uint32_t caller_pi
     return -1;
 }
 
+int vibeos_proc_audit_count_action(vibeos_process_table_t *pt, uint32_t action, uint32_t *out_count) {
+    uint32_t i;
+    uint32_t count = 0;
+    vibeos_proc_audit_event_t ev;
+    if (!pt || !out_count || action == 0) {
+        return -1;
+    }
+    for (i = 0; i < pt->audit_count; i++) {
+        if (vibeos_proc_audit_get(pt, i, &ev) != 0) {
+            return -1;
+        }
+        if (ev.action == action) {
+            count++;
+        }
+    }
+    *out_count = count;
+    return 0;
+}
+
+int vibeos_proc_audit_count_success(vibeos_process_table_t *pt, uint32_t success_value, uint32_t *out_count) {
+    uint32_t i;
+    uint32_t count = 0;
+    vibeos_proc_audit_event_t ev;
+    if (!pt || !out_count || success_value > 1) {
+        return -1;
+    }
+    for (i = 0; i < pt->audit_count; i++) {
+        if (vibeos_proc_audit_get(pt, i, &ev) != 0) {
+            return -1;
+        }
+        if (ev.success == success_value) {
+            count++;
+        }
+    }
+    *out_count = count;
+    return 0;
+}
+
+int vibeos_proc_audit_summary(vibeos_process_table_t *pt, uint32_t *out_total, uint32_t *out_success, uint32_t *out_fail) {
+    uint32_t success_count = 0;
+    uint32_t fail_count = 0;
+    if (!pt || !out_total || !out_success || !out_fail) {
+        return -1;
+    }
+    if (vibeos_proc_audit_count_success(pt, 1, &success_count) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_audit_count_success(pt, 0, &fail_count) != 0) {
+        return -1;
+    }
+    *out_total = pt->audit_count;
+    *out_success = success_count;
+    *out_fail = fail_count;
+    return 0;
+}
+
 int vibeos_proc_audit_set_policy(vibeos_process_table_t *pt, vibeos_proc_audit_policy_t policy) {
     if (!pt) {
         return -1;

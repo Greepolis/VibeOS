@@ -203,3 +203,28 @@ uint64_t vibeos_sched_wait_wakes_total(const vibeos_scheduler_t *sched) {
     }
     return total;
 }
+
+int vibeos_sched_counters_reset(vibeos_scheduler_t *sched) {
+    uint32_t i;
+    if (!sched || sched->cpu_count == 0) {
+        return -1;
+    }
+    for (i = 0; i < sched->cpu_count; i++) {
+        sched->preemptions[i] = 0;
+        sched->waits_timed_out[i] = 0;
+        sched->waits_woken[i] = 0;
+    }
+    return 0;
+}
+
+int vibeos_sched_counter_summary(const vibeos_scheduler_t *sched, uint64_t *out_preemptions, uint64_t *out_wait_timeouts, uint64_t *out_wait_wakes, size_t *out_runnable, uint32_t *out_cpu_count) {
+    if (!sched || !out_preemptions || !out_wait_timeouts || !out_wait_wakes || !out_runnable || !out_cpu_count || sched->cpu_count == 0) {
+        return -1;
+    }
+    *out_preemptions = vibeos_sched_preemptions_total(sched);
+    *out_wait_timeouts = vibeos_sched_wait_timeouts_total(sched);
+    *out_wait_wakes = vibeos_sched_wait_wakes_total(sched);
+    *out_runnable = vibeos_sched_runnable_threads(sched);
+    *out_cpu_count = sched->cpu_count;
+    return 0;
+}
