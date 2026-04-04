@@ -85,7 +85,7 @@
 ### Process Management
 - Responsibilities: process and thread identity lifecycle primitives
 - Main files: `kernel/proc/process.c`, `include/vibeos/proc.h`
-- Public interfaces: `vibeos_proc_init`, `vibeos_proc_spawn`, `vibeos_thread_create`, `vibeos_proc_bind_process_handle`, `vibeos_proc_bind_thread_handle`, `vibeos_proc_resolve_object_handle`, `vibeos_proc_revoke_handle_lineage`, `vibeos_proc_revoke_handle_lineage_scoped`
+- Public interfaces: `vibeos_proc_init`, `vibeos_proc_spawn`, `vibeos_thread_create`, `vibeos_proc_bind_process_handle`, `vibeos_proc_bind_thread_handle`, `vibeos_proc_resolve_object_handle`, `vibeos_proc_revoke_handle_lineage`, `vibeos_proc_revoke_handle_lineage_scoped`, `vibeos_proc_audit_count`, `vibeos_proc_audit_get`
 - Dependencies: syscall interface, scheduler
 
 ### Object and Handle Model
@@ -373,6 +373,7 @@ Implemented:
 - process and thread object-handle bind or resolve helpers
 - handle lineage revocation propagation across process handle tables
 - selective handle lineage revocation filters (by object type and rights mask)
+- revocation audit trail ring-buffer with structured event retrieval
 Files Created/Modified:
 - `kernel/proc/process.c`
 - `include/vibeos/proc.h`
@@ -396,7 +397,7 @@ Files Created/Modified:
 - `kernel/ipc/handle_transfer.c`
 - `include/vibeos/ipc_transfer.h`
 Pending:
-- handle revocation audit trail and event reporting
+- syscall-level integration for revocation audit export
 
 Module: Timer Subsystem
 Status: Partial
