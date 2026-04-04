@@ -350,6 +350,17 @@ static int test_syscalls(void) {
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 1) {
         return -1;
     }
+    vibeos_syscall_make_process_state_count_get(&frame, VIBEOS_PROCESS_STATE_BLOCKED);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 1) {
+        return -1;
+    }
+    vibeos_syscall_make_process_state_summary_get(&frame);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
+    if (frame.arg0 != 1 || frame.arg1 != 0 || frame.arg2 != 1 || frame.result != 1) {
+        return -1;
+    }
     vibeos_syscall_make_thread_state_get(&frame, tid1, pid1);
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != VIBEOS_THREAD_STATE_RUNNABLE) {
         return -1;
@@ -366,6 +377,17 @@ static int test_syscalls(void) {
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != VIBEOS_THREAD_STATE_BLOCKED) {
         return -1;
     }
+    vibeos_syscall_make_thread_state_count_get(&frame, VIBEOS_THREAD_STATE_BLOCKED);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 1) {
+        return -1;
+    }
+    vibeos_syscall_make_thread_state_summary_get(&frame);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
+    if (frame.arg0 != 0 || frame.arg1 != 0 || frame.arg2 != 1 || frame.result != 0) {
+        return -1;
+    }
     vibeos_syscall_make_thread_state_set(&frame, tid1, 99, pid1);
     if (vibeos_syscall_dispatch(&kernel, &frame) == 0) {
         return -1;
@@ -379,6 +401,10 @@ static int test_syscalls(void) {
         return -1;
     }
     vibeos_syscall_make_thread_count_get(&frame);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 0) {
+        return -1;
+    }
+    vibeos_syscall_make_thread_state_count_get(&frame, VIBEOS_THREAD_STATE_EXITED);
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 0) {
         return -1;
     }
@@ -617,6 +643,18 @@ static int test_process_relationships(void) {
         return -1;
     }
     if (vibeos_proc_terminated_count(&pt, &count) != 0 || count != 1) {
+        return -1;
+    }
+    if (vibeos_proc_count_in_state(&pt, VIBEOS_PROCESS_STATE_TERMINATED, &count) != 0 || count != 1) {
+        return -1;
+    }
+    if (vibeos_proc_count_in_state(&pt, VIBEOS_PROCESS_STATE_NEW, &count) != 0 || count != 2) {
+        return -1;
+    }
+    if (vibeos_proc_state_summary(&pt, &p1, &p2, &p3, &count) != 0) {
+        return -1;
+    }
+    if (p1 != 2 || p2 != 0 || p3 != 0 || count != 1) {
         return -1;
     }
     return 0;
