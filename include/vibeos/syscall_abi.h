@@ -118,6 +118,39 @@ static inline void vibeos_syscall_make_vm_protect(vibeos_syscall_frame_t *f, uin
     f->arg2 = perms;
 }
 
+/* Process audit API */
+static inline void vibeos_syscall_make_proc_audit_count(vibeos_syscall_frame_t *f) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_PROC_AUDIT_COUNT;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = 0;
+}
+
+static inline void vibeos_syscall_make_proc_audit_get(vibeos_syscall_frame_t *f, uint32_t index) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_PROC_AUDIT_GET;
+    f->arg0 = index;
+    f->arg1 = 0;
+    f->arg2 = 0;
+}
+
+static inline uint32_t vibeos_syscall_audit_event_action(const vibeos_syscall_frame_t *f) {
+    return f ? (uint32_t)f->arg0 : 0;
+}
+
+static inline uint32_t vibeos_syscall_audit_event_success(const vibeos_syscall_frame_t *f) {
+    return f ? (uint32_t)f->arg1 : 0;
+}
+
+static inline uint32_t vibeos_syscall_audit_event_revoked_count(const vibeos_syscall_frame_t *f) {
+    return f ? (uint32_t)f->arg2 : 0;
+}
+
 /* Waitset API */
 static inline uint32_t vibeos_syscall_waitset_owner_pid(const vibeos_syscall_frame_t *f) {
     return f ? (uint32_t)f->arg1 : 0;

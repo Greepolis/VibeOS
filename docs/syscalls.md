@@ -45,6 +45,14 @@ Argument semantics for current syscall groups:
 | `VM_MAP` | va | pa | len |
 | `VM_UNMAP` | va | len | reserved (`0`) |
 | `VM_PROTECT` | va | len | perms |
+| `PROC_AUDIT_COUNT` | reserved (`0`) | reserved (`0`) | reserved (`0`) |
+| `PROC_AUDIT_GET` | audit index | out: `success` | out: `revoked_count` |
+
+`PROC_AUDIT_GET` returns:
+- `result` = `event.seq` (positive on success)
+- `arg0` = `event.action`
+- `arg1` = `event.success`
+- `arg2` = `event.revoked_count`
 
 Implementation helpers for ABI v0 are centralized in `include/vibeos/syscall_abi.h` and should be preferred over direct field writes in kernel tests and user-space glue.
 

@@ -14,7 +14,9 @@ typedef enum vibeos_syscall_id {
     VIBEOS_SYSCALL_THREAD_CREATE = 20,
     VIBEOS_SYSCALL_VM_MAP = 30,
     VIBEOS_SYSCALL_VM_UNMAP = 31,
-    VIBEOS_SYSCALL_VM_PROTECT = 32
+    VIBEOS_SYSCALL_VM_PROTECT = 32,
+    VIBEOS_SYSCALL_PROC_AUDIT_COUNT = 40,
+    VIBEOS_SYSCALL_PROC_AUDIT_GET = 41
 } vibeos_syscall_id_t;
 
 typedef struct vibeos_syscall_frame {

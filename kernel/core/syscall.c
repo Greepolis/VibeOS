@@ -137,6 +137,29 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             }
             frame->result = 0;
             return 0;
+        case VIBEOS_SYSCALL_PROC_AUDIT_COUNT:
+        {
+            uint32_t count = 0;
+            if (vibeos_proc_audit_count(&kernel->proc_table, &count) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = (int64_t)count;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_PROC_AUDIT_GET:
+        {
+            vibeos_proc_audit_event_t ev;
+            if (vibeos_proc_audit_get(&kernel->proc_table, (uint32_t)frame->arg0, &ev) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->arg0 = ev.action;
+            frame->arg1 = ev.success;
+            frame->arg2 = ev.revoked_count;
+            frame->result = (int64_t)ev.seq;
+            return 0;
+        }
         default:
             frame->result = -1;
             return -1;
