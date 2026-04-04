@@ -56,12 +56,18 @@ static int test_scheduler(void) {
     if (vibeos_sched_enqueue(&sched, &t1) != 0 || vibeos_sched_enqueue(&sched, &t2) != 0) {
         return -1;
     }
+    if (vibeos_sched_runqueue_depth(&sched, 0) != 2 || vibeos_sched_runnable_threads(&sched) != 2) {
+        return -1;
+    }
     out = vibeos_sched_next(&sched, 0);
     if (!out || out->id != 1) {
         return -1;
     }
     out = vibeos_sched_next(&sched, 0);
     if (!out || out->id != 2) {
+        return -1;
+    }
+    if (vibeos_sched_runqueue_depth(&sched, 0) != 0 || vibeos_sched_runnable_threads(&sched) != 0) {
         return -1;
     }
     out = &t2;
@@ -192,6 +198,7 @@ static int test_syscalls(void) {
     uint32_t pid1 = 0;
     uint32_t pid2 = 0;
     uint32_t p1_handle = 0;
+    uint32_t tid1 = 0;
     uint32_t signal_handle = 0;
     uint32_t revoke_root = 0;
     uint32_t revoke_dup = 0;
@@ -242,6 +249,43 @@ static int test_syscalls(void) {
     pid2 = (uint32_t)frame.result;
     vibeos_syscall_make_thread_create(&frame, pid1);
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 1) {
+        return -1;
+    }
+    tid1 = (uint32_t)frame.result;
+    vibeos_syscall_make_process_state_get(&frame, pid1, pid1);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != VIBEOS_PROCESS_STATE_RUNNING) {
+        return -1;
+    }
+    vibeos_syscall_make_process_state_get(&frame, pid1, pid2);
+    if (vibeos_syscall_dispatch(&kernel, &frame) == 0) {
+        return -1;
+    }
+    vibeos_syscall_make_thread_state_get(&frame, tid1, pid1);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != VIBEOS_THREAD_STATE_RUNNABLE) {
+        return -1;
+    }
+    vibeos_syscall_make_thread_state_get(&frame, tid1, pid2);
+    if (vibeos_syscall_dispatch(&kernel, &frame) == 0) {
+        return -1;
+    }
+    vibeos_syscall_make_thread_state_set(&frame, tid1, VIBEOS_THREAD_STATE_BLOCKED, pid1);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
+    vibeos_syscall_make_thread_state_get(&frame, tid1, pid1);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != VIBEOS_THREAD_STATE_BLOCKED) {
+        return -1;
+    }
+    vibeos_syscall_make_thread_state_set(&frame, tid1, 99, pid1);
+    if (vibeos_syscall_dispatch(&kernel, &frame) == 0) {
+        return -1;
+    }
+    vibeos_syscall_make_thread_exit(&frame, tid1, pid1);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
+    vibeos_syscall_make_thread_state_get(&frame, tid1, pid1);
+    if (vibeos_syscall_dispatch(&kernel, &frame) == 0) {
         return -1;
     }
     vibeos_syscall_make_handle_alloc(&frame, VIBEOS_HANDLE_RIGHT_SIGNAL | VIBEOS_HANDLE_RIGHT_MANAGE, pid1);
@@ -1101,6 +1145,7 @@ static int test_process_thread_object_handles(void) {
 static int test_thread_lifecycle_controls(void) {
     vibeos_process_table_t pt;
     vibeos_thread_state_t state;
+    uint32_t owner_pid = 0;
     uint32_t pid = 0;
     uint32_t tid = 0;
     if (vibeos_proc_init(&pt) != 0) {
@@ -1113,6 +1158,9 @@ static int test_thread_lifecycle_controls(void) {
         return -1;
     }
     if (vibeos_thread_state(&pt, tid, &state) != 0 || state != VIBEOS_THREAD_STATE_RUNNABLE) {
+        return -1;
+    }
+    if (vibeos_thread_owner(&pt, tid, &owner_pid) != 0 || owner_pid != pid) {
         return -1;
     }
     if (vibeos_thread_set_state(&pt, tid, VIBEOS_THREAD_STATE_BLOCKED) != 0) {
