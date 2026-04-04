@@ -47,6 +47,13 @@ static int are_processes_related(const vibeos_process_entry_t *a, const vibeos_p
     return 0;
 }
 
+static int security_override_allowed(uint32_t capability_mask, uint32_t override_capability_bit) {
+    if (override_capability_bit >= 32u) {
+        return 0;
+    }
+    return (capability_mask & (1u << override_capability_bit)) ? 1 : 0;
+}
+
 static void release_all_process_handles(vibeos_process_entry_t *entry) {
     uint32_t i;
     if (!entry) {
@@ -156,6 +163,7 @@ int vibeos_proc_init(vibeos_process_table_t *pt) {
         pt->entries[i].parent_pid = 0;
         pt->entries[i].in_use = 0;
         pt->entries[i].state = VIBEOS_PROCESS_STATE_TERMINATED;
+        pt->entries[i].security_label = 0;
         pt->entries[i].token.uid = 0;
         pt->entries[i].token.gid = 0;
         pt->entries[i].token.capability_mask = 0;
@@ -196,17 +204,20 @@ int vibeos_proc_spawn_with_token(vibeos_process_table_t *pt, uint32_t parent_pid
             pt->entries[i].parent_pid = parent_pid;
             pt->entries[i].in_use = 1;
             pt->entries[i].state = VIBEOS_PROCESS_STATE_NEW;
+            pt->entries[i].security_label = 0;
             if (token) {
                 pt->entries[i].token = *token;
             } else if (parent_pid != 0) {
                 vibeos_process_entry_t *parent = find_process_entry(pt, parent_pid);
                 if (parent) {
                     pt->entries[i].token = parent->token;
+                    pt->entries[i].security_label = parent->security_label;
                 } else if (process_default_token(pt->entries[i].pid, &pt->entries[i].token) != 0) {
                     pt->entries[i].in_use = 0;
                     pt->entries[i].pid = 0;
                     pt->entries[i].parent_pid = 0;
                     pt->entries[i].state = VIBEOS_PROCESS_STATE_TERMINATED;
+                    pt->entries[i].security_label = 0;
                     return -1;
                 }
             } else if (process_default_token(pt->entries[i].pid, &pt->entries[i].token) != 0) {
@@ -214,6 +225,7 @@ int vibeos_proc_spawn_with_token(vibeos_process_table_t *pt, uint32_t parent_pid
                 pt->entries[i].pid = 0;
                 pt->entries[i].parent_pid = 0;
                 pt->entries[i].state = VIBEOS_PROCESS_STATE_TERMINATED;
+                pt->entries[i].security_label = 0;
                 return -1;
             }
             if (vibeos_handle_table_init(&pt->entries[i].handles) != 0) {
@@ -221,6 +233,7 @@ int vibeos_proc_spawn_with_token(vibeos_process_table_t *pt, uint32_t parent_pid
                 pt->entries[i].pid = 0;
                 pt->entries[i].parent_pid = 0;
                 pt->entries[i].state = VIBEOS_PROCESS_STATE_TERMINATED;
+                pt->entries[i].security_label = 0;
                 pt->entries[i].token.uid = 0;
                 pt->entries[i].token.gid = 0;
                 pt->entries[i].token.capability_mask = 0;
@@ -871,5 +884,51 @@ int vibeos_proc_token_set(vibeos_process_table_t *pt, uint32_t pid, const vibeos
         return -1;
     }
     entry->token = *token;
+    return 0;
+}
+
+int vibeos_proc_security_label_get(vibeos_process_table_t *pt, uint32_t pid, uint32_t *out_label) {
+    vibeos_process_entry_t *entry;
+    if (!pt || !out_label || pid == 0) {
+        return -1;
+    }
+    entry = find_process_entry(pt, pid);
+    if (!entry) {
+        return -1;
+    }
+    *out_label = entry->security_label;
+    return 0;
+}
+
+int vibeos_proc_security_label_set(vibeos_process_table_t *pt, uint32_t pid, uint32_t label) {
+    vibeos_process_entry_t *entry;
+    if (!pt || pid == 0) {
+        return -1;
+    }
+    entry = find_process_entry(pt, pid);
+    if (!entry) {
+        return -1;
+    }
+    entry->security_label = label;
+    return 0;
+}
+
+int vibeos_proc_security_can_interact(vibeos_process_table_t *pt, uint32_t caller_pid, uint32_t target_pid, uint32_t caller_capability_mask, uint32_t override_capability_bit) {
+    vibeos_process_entry_t *caller;
+    vibeos_process_entry_t *target;
+    if (!pt || caller_pid == 0 || target_pid == 0) {
+        return -1;
+    }
+    caller = find_process_entry(pt, caller_pid);
+    target = find_process_entry(pt, target_pid);
+    if (!caller || !target) {
+        return -1;
+    }
+    if (caller->security_label == target->security_label) {
+        return 1;
+    }
+    if (security_override_allowed(caller_capability_mask, override_capability_bit)) {
+        return 1;
+    }
     return 0;
 }

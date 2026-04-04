@@ -511,6 +511,36 @@ static inline void vibeos_syscall_make_process_token_set(vibeos_syscall_frame_t 
     f->arg2 = caller_pid;
 }
 
+static inline void vibeos_syscall_make_process_security_label_get(vibeos_syscall_frame_t *f, uint32_t target_pid, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_PROCESS_SECURITY_LABEL_GET;
+    f->arg0 = target_pid;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
+static inline void vibeos_syscall_make_process_security_label_set(vibeos_syscall_frame_t *f, uint32_t target_pid, uint32_t label, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_PROCESS_SECURITY_LABEL_SET;
+    f->arg0 = target_pid;
+    f->arg1 = label;
+    f->arg2 = caller_pid;
+}
+
+static inline void vibeos_syscall_make_process_interact_check(vibeos_syscall_frame_t *f, uint32_t target_pid, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_PROCESS_INTERACT_CHECK;
+    f->arg0 = target_pid;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
 static inline void vibeos_syscall_make_policy_capability_get(vibeos_syscall_frame_t *f, uint32_t target, uint32_t caller_pid) {
     if (!f) {
         return;

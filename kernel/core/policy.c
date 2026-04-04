@@ -3,7 +3,8 @@
 static int policy_capability_target_valid(vibeos_policy_capability_target_t target) {
     return target == VIBEOS_POLICY_TARGET_FS_OPEN ||
         target == VIBEOS_POLICY_TARGET_NET_BIND ||
-        target == VIBEOS_POLICY_TARGET_PROCESS_SPAWN;
+        target == VIBEOS_POLICY_TARGET_PROCESS_SPAWN ||
+        target == VIBEOS_POLICY_TARGET_PROCESS_INTERACT_OVERRIDE;
 }
 
 int vibeos_policy_init(vibeos_policy_state_t *policy) {
@@ -13,6 +14,7 @@ int vibeos_policy_init(vibeos_policy_state_t *policy) {
     policy->fs_open_required_capability_bit = 0;
     policy->net_bind_required_capability_bit = 1;
     policy->process_spawn_required_capability_bit = 2;
+    policy->process_interact_override_capability_bit = 3;
     return 0;
 }
 
@@ -51,6 +53,9 @@ int vibeos_policy_required_capability_get(const vibeos_policy_state_t *policy, v
         case VIBEOS_POLICY_TARGET_PROCESS_SPAWN:
             *out_capability_bit = policy->process_spawn_required_capability_bit;
             return 0;
+        case VIBEOS_POLICY_TARGET_PROCESS_INTERACT_OVERRIDE:
+            *out_capability_bit = policy->process_interact_override_capability_bit;
+            return 0;
         default:
             return -1;
     }
@@ -70,17 +75,21 @@ int vibeos_policy_required_capability_set(vibeos_policy_state_t *policy, vibeos_
         case VIBEOS_POLICY_TARGET_PROCESS_SPAWN:
             policy->process_spawn_required_capability_bit = capability_bit;
             return 0;
+        case VIBEOS_POLICY_TARGET_PROCESS_INTERACT_OVERRIDE:
+            policy->process_interact_override_capability_bit = capability_bit;
+            return 0;
         default:
             return -1;
     }
 }
 
-int vibeos_policy_summary(const vibeos_policy_state_t *policy, uint32_t *out_fs_open_bit, uint32_t *out_net_bind_bit, uint32_t *out_process_spawn_bit) {
-    if (!policy || !out_fs_open_bit || !out_net_bind_bit || !out_process_spawn_bit) {
+int vibeos_policy_summary(const vibeos_policy_state_t *policy, uint32_t *out_fs_open_bit, uint32_t *out_net_bind_bit, uint32_t *out_process_spawn_bit, uint32_t *out_process_interact_override_bit) {
+    if (!policy || !out_fs_open_bit || !out_net_bind_bit || !out_process_spawn_bit || !out_process_interact_override_bit) {
         return -1;
     }
     *out_fs_open_bit = policy->fs_open_required_capability_bit;
     *out_net_bind_bit = policy->net_bind_required_capability_bit;
     *out_process_spawn_bit = policy->process_spawn_required_capability_bit;
+    *out_process_interact_override_bit = policy->process_interact_override_capability_bit;
     return 0;
 }

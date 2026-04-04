@@ -22,6 +22,7 @@ typedef struct vibeos_process_entry {
     uint32_t parent_pid;
     uint32_t in_use;
     vibeos_process_state_t state;
+    uint32_t security_label;
     vibeos_security_token_t token;
     vibeos_handle_table_t handles;
 } vibeos_process_entry_t;
@@ -123,5 +124,8 @@ int vibeos_proc_transition_counters(vibeos_process_table_t *pt, uint64_t *out_pr
 int vibeos_proc_transition_counters_reset(vibeos_process_table_t *pt);
 int vibeos_proc_token_get(vibeos_process_table_t *pt, uint32_t pid, vibeos_security_token_t *out_token);
 int vibeos_proc_token_set(vibeos_process_table_t *pt, uint32_t pid, const vibeos_security_token_t *token);
+int vibeos_proc_security_label_get(vibeos_process_table_t *pt, uint32_t pid, uint32_t *out_label);
+int vibeos_proc_security_label_set(vibeos_process_table_t *pt, uint32_t pid, uint32_t label);
+int vibeos_proc_security_can_interact(vibeos_process_table_t *pt, uint32_t caller_pid, uint32_t target_pid, uint32_t caller_capability_mask, uint32_t override_capability_bit);
 
 #endif

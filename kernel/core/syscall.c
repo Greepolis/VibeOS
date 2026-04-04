@@ -4,6 +4,8 @@
 #include "vibeos/syscall_policy.h"
 #include "vibeos/waitset.h"
 
+static int syscall_caller_capability_mask(vibeos_kernel_t *kernel, uint32_t caller_pid, uint32_t *out_capability_mask);
+
 static int syscall_thread_access_allowed(vibeos_kernel_t *kernel, uint32_t caller_pid, uint32_t tid) {
     uint32_t owner_pid = 0;
     if (!kernel || tid == 0) {
@@ -19,13 +21,26 @@ static int syscall_thread_access_allowed(vibeos_kernel_t *kernel, uint32_t calle
 }
 
 static int syscall_process_view_allowed(vibeos_kernel_t *kernel, uint32_t caller_pid, uint32_t target_pid) {
+    uint32_t caller_capability_mask = 0;
+    uint32_t override_capability_bit = 0;
+    int can_interact;
     if (!kernel || target_pid == 0) {
         return 0;
     }
     if (caller_pid == 0 || caller_pid == target_pid) {
         return 1;
     }
-    return vibeos_proc_are_related(&kernel->proc_table, caller_pid, target_pid);
+    if (syscall_caller_capability_mask(kernel, caller_pid, &caller_capability_mask) != 0) {
+        return 0;
+    }
+    if (vibeos_policy_required_capability_get(&kernel->policy, VIBEOS_POLICY_TARGET_PROCESS_INTERACT_OVERRIDE, &override_capability_bit) != 0) {
+        return 0;
+    }
+    can_interact = vibeos_proc_security_can_interact(&kernel->proc_table, caller_pid, target_pid, caller_capability_mask, override_capability_bit);
+    if (can_interact <= 0) {
+        return 0;
+    }
+    return vibeos_proc_are_related(&kernel->proc_table, caller_pid, target_pid) || (can_interact == 1 && ((caller_capability_mask & (1u << override_capability_bit)) != 0));
 }
 
 static int syscall_process_mutation_allowed(uint32_t caller_pid, uint32_t target_pid) {
@@ -928,6 +943,60 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             frame->result = 0;
             return 0;
         }
+        case VIBEOS_SYSCALL_PROCESS_SECURITY_LABEL_GET:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            uint32_t target_pid = (uint32_t)frame->arg0;
+            uint32_t label = 0;
+            if (!syscall_process_token_access_allowed(kernel, caller_pid, target_pid)) {
+                frame->result = -1;
+                return -1;
+            }
+            if (vibeos_proc_security_label_get(&kernel->proc_table, target_pid, &label) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = (int64_t)label;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_PROCESS_SECURITY_LABEL_SET:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            uint32_t target_pid = (uint32_t)frame->arg0;
+            if (!syscall_process_mutation_allowed(caller_pid, target_pid)) {
+                frame->result = -1;
+                return -1;
+            }
+            if (vibeos_proc_security_label_set(&kernel->proc_table, target_pid, (uint32_t)frame->arg1) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = 0;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_PROCESS_INTERACT_CHECK:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            uint32_t target_pid = (uint32_t)frame->arg0;
+            uint32_t caller_capability_mask = 0;
+            uint32_t override_capability_bit = 0;
+            int allowed;
+            if (caller_pid == 0 || target_pid == 0) {
+                frame->result = -1;
+                return -1;
+            }
+            if (syscall_caller_capability_mask(kernel, caller_pid, &caller_capability_mask) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            if (vibeos_policy_required_capability_get(&kernel->policy, VIBEOS_POLICY_TARGET_PROCESS_INTERACT_OVERRIDE, &override_capability_bit) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            allowed = vibeos_proc_security_can_interact(&kernel->proc_table, caller_pid, target_pid, caller_capability_mask, override_capability_bit);
+            frame->result = (int64_t)((allowed > 0) ? 1 : 0);
+            return (allowed < 0) ? -1 : 0;
+        }
         case VIBEOS_SYSCALL_POLICY_CAPABILITY_GET:
         {
             uint32_t required_bit = 0;
@@ -960,14 +1029,15 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             uint32_t fs_open_bit = 0;
             uint32_t net_bind_bit = 0;
             uint32_t process_spawn_bit = 0;
-            if (vibeos_policy_summary(&kernel->policy, &fs_open_bit, &net_bind_bit, &process_spawn_bit) != 0) {
+            uint32_t process_interact_override_bit = 0;
+            if (vibeos_policy_summary(&kernel->policy, &fs_open_bit, &net_bind_bit, &process_spawn_bit, &process_interact_override_bit) != 0) {
                 frame->result = -1;
                 return -1;
             }
             frame->arg0 = fs_open_bit;
             frame->arg1 = net_bind_bit;
             frame->arg2 = process_spawn_bit;
-            frame->result = 0;
+            frame->result = (int64_t)process_interact_override_bit;
             return 0;
         }
         case VIBEOS_SYSCALL_SEC_AUDIT_COUNT:
