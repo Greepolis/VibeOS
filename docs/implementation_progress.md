@@ -350,6 +350,7 @@ Implemented:
 - centralized syscall policy lookup for required handle rights
 - ABI v0 argument mapping formalized through shared helpers (`syscall_abi.h`)
 - process audit export syscall hooks (`PROC_AUDIT_COUNT`, `PROC_AUDIT_GET`)
+- caller-scoped audit access policy with redacted non-kernel view
 Files Created/Modified:
 - `kernel/core/syscall.c`
 - `include/vibeos/syscall.h`
@@ -398,7 +399,7 @@ Files Created/Modified:
 - `kernel/ipc/handle_transfer.c`
 - `include/vibeos/ipc_transfer.h`
 Pending:
-- syscall-level audit access policy and filtering
+- audit event retention and rollover policy controls
 
 Module: Timer Subsystem
 Status: Partial
