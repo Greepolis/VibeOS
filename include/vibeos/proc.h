@@ -105,5 +105,9 @@ int vibeos_proc_process_count(vibeos_process_table_t *pt, uint32_t *out_count);
 int vibeos_proc_thread_count(vibeos_process_table_t *pt, uint32_t *out_count);
 int vibeos_proc_live_count(vibeos_process_table_t *pt, uint32_t *out_count);
 int vibeos_proc_terminated_count(vibeos_process_table_t *pt, uint32_t *out_count);
+int vibeos_proc_count_in_state(vibeos_process_table_t *pt, vibeos_process_state_t state, uint32_t *out_count);
+int vibeos_thread_count_in_state(vibeos_process_table_t *pt, vibeos_thread_state_t state, uint32_t *out_count);
+int vibeos_proc_state_summary(vibeos_process_table_t *pt, uint32_t *out_new, uint32_t *out_running, uint32_t *out_blocked, uint32_t *out_terminated);
+int vibeos_thread_state_summary(vibeos_process_table_t *pt, uint32_t *out_new, uint32_t *out_runnable, uint32_t *out_blocked, uint32_t *out_exited);
 
 #endif

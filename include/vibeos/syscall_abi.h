@@ -147,6 +147,26 @@ static inline void vibeos_syscall_make_process_terminated_count_get(vibeos_sysca
     f->arg2 = 0;
 }
 
+static inline void vibeos_syscall_make_process_state_count_get(vibeos_syscall_frame_t *f, uint32_t state) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_PROCESS_STATE_COUNT_GET;
+    f->arg0 = state;
+    f->arg1 = 0;
+    f->arg2 = 0;
+}
+
+static inline void vibeos_syscall_make_process_state_summary_get(vibeos_syscall_frame_t *f) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_PROCESS_STATE_SUMMARY_GET;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = 0;
+}
+
 static inline void vibeos_syscall_make_thread_create(vibeos_syscall_frame_t *f, uint32_t pid) {
     if (!f) {
         return;
@@ -185,6 +205,26 @@ static inline void vibeos_syscall_make_thread_exit(vibeos_syscall_frame_t *f, ui
     f->arg0 = tid;
     f->arg1 = 0;
     f->arg2 = caller_pid;
+}
+
+static inline void vibeos_syscall_make_thread_state_count_get(vibeos_syscall_frame_t *f, uint32_t state) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_THREAD_STATE_COUNT_GET;
+    f->arg0 = state;
+    f->arg1 = 0;
+    f->arg2 = 0;
+}
+
+static inline void vibeos_syscall_make_thread_state_summary_get(vibeos_syscall_frame_t *f) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_THREAD_STATE_SUMMARY_GET;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = 0;
 }
 
 /* VM API */

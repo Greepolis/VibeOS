@@ -333,6 +333,32 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             frame->result = (int64_t)count;
             return 0;
         }
+        case VIBEOS_SYSCALL_PROCESS_STATE_COUNT_GET:
+        {
+            uint32_t count = 0;
+            if (vibeos_proc_count_in_state(&kernel->proc_table, (vibeos_process_state_t)frame->arg0, &count) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = (int64_t)count;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_PROCESS_STATE_SUMMARY_GET:
+        {
+            uint32_t state_new = 0;
+            uint32_t state_running = 0;
+            uint32_t state_blocked = 0;
+            uint32_t state_terminated = 0;
+            if (vibeos_proc_state_summary(&kernel->proc_table, &state_new, &state_running, &state_blocked, &state_terminated) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->arg0 = state_new;
+            frame->arg1 = state_running;
+            frame->arg2 = state_blocked;
+            frame->result = (int64_t)state_terminated;
+            return 0;
+        }
         case VIBEOS_SYSCALL_THREAD_CREATE:
         {
             uint32_t tid;
@@ -392,6 +418,32 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
                 return -1;
             }
             frame->result = 0;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_THREAD_STATE_COUNT_GET:
+        {
+            uint32_t count = 0;
+            if (vibeos_thread_count_in_state(&kernel->proc_table, (vibeos_thread_state_t)frame->arg0, &count) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = (int64_t)count;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_THREAD_STATE_SUMMARY_GET:
+        {
+            uint32_t state_new = 0;
+            uint32_t state_runnable = 0;
+            uint32_t state_blocked = 0;
+            uint32_t state_exited = 0;
+            if (vibeos_thread_state_summary(&kernel->proc_table, &state_new, &state_runnable, &state_blocked, &state_exited) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->arg0 = state_new;
+            frame->arg1 = state_runnable;
+            frame->arg2 = state_blocked;
+            frame->result = (int64_t)state_exited;
             return 0;
         }
         case VIBEOS_SYSCALL_VM_MAP:

@@ -610,3 +610,99 @@ int vibeos_proc_terminated_count(vibeos_process_table_t *pt, uint32_t *out_count
     *out_count = terminated;
     return 0;
 }
+
+int vibeos_proc_count_in_state(vibeos_process_table_t *pt, vibeos_process_state_t state, uint32_t *out_count) {
+    uint32_t i;
+    uint32_t count = 0;
+    if (!pt || !out_count || state > VIBEOS_PROCESS_STATE_TERMINATED) {
+        return -1;
+    }
+    for (i = 0; i < VIBEOS_MAX_PROCESSES; i++) {
+        if (pt->entries[i].in_use && pt->entries[i].state == state) {
+            count++;
+        }
+    }
+    *out_count = count;
+    return 0;
+}
+
+int vibeos_thread_count_in_state(vibeos_process_table_t *pt, vibeos_thread_state_t state, uint32_t *out_count) {
+    uint32_t i;
+    uint32_t count = 0;
+    if (!pt || !out_count || state > VIBEOS_THREAD_STATE_EXITED) {
+        return -1;
+    }
+    for (i = 0; i < VIBEOS_PROC_MAX_THREADS; i++) {
+        if (pt->threads[i].in_use && pt->threads[i].state == state) {
+            count++;
+        }
+    }
+    *out_count = count;
+    return 0;
+}
+
+int vibeos_proc_state_summary(vibeos_process_table_t *pt, uint32_t *out_new, uint32_t *out_running, uint32_t *out_blocked, uint32_t *out_terminated) {
+    uint32_t i;
+    if (!pt || !out_new || !out_running || !out_blocked || !out_terminated) {
+        return -1;
+    }
+    *out_new = 0;
+    *out_running = 0;
+    *out_blocked = 0;
+    *out_terminated = 0;
+    for (i = 0; i < VIBEOS_MAX_PROCESSES; i++) {
+        if (!pt->entries[i].in_use) {
+            continue;
+        }
+        switch (pt->entries[i].state) {
+            case VIBEOS_PROCESS_STATE_NEW:
+                (*out_new)++;
+                break;
+            case VIBEOS_PROCESS_STATE_RUNNING:
+                (*out_running)++;
+                break;
+            case VIBEOS_PROCESS_STATE_BLOCKED:
+                (*out_blocked)++;
+                break;
+            case VIBEOS_PROCESS_STATE_TERMINATED:
+                (*out_terminated)++;
+                break;
+            default:
+                return -1;
+        }
+    }
+    return 0;
+}
+
+int vibeos_thread_state_summary(vibeos_process_table_t *pt, uint32_t *out_new, uint32_t *out_runnable, uint32_t *out_blocked, uint32_t *out_exited) {
+    uint32_t i;
+    if (!pt || !out_new || !out_runnable || !out_blocked || !out_exited) {
+        return -1;
+    }
+    *out_new = 0;
+    *out_runnable = 0;
+    *out_blocked = 0;
+    *out_exited = 0;
+    for (i = 0; i < VIBEOS_PROC_MAX_THREADS; i++) {
+        if (!pt->threads[i].in_use) {
+            continue;
+        }
+        switch (pt->threads[i].state) {
+            case VIBEOS_THREAD_STATE_NEW:
+                (*out_new)++;
+                break;
+            case VIBEOS_THREAD_STATE_RUNNABLE:
+                (*out_runnable)++;
+                break;
+            case VIBEOS_THREAD_STATE_BLOCKED:
+                (*out_blocked)++;
+                break;
+            case VIBEOS_THREAD_STATE_EXITED:
+                (*out_exited)++;
+                break;
+            default:
+                return -1;
+        }
+    }
+    return 0;
+}
