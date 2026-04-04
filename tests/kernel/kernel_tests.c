@@ -345,7 +345,27 @@ static int test_syscalls(void) {
         return -1;
     }
     vibeos_syscall_make_policy_summary_get(&frame, pid1);
-    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.arg2 != 7) {
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.arg2 != 7 || frame.result != 3) {
+        return -1;
+    }
+    vibeos_syscall_make_process_security_label_set(&frame, pid1, 10, 0);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
+    vibeos_syscall_make_process_interact_check(&frame, pid2, pid1);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 0) {
+        return -1;
+    }
+    vibeos_syscall_make_process_security_label_set(&frame, pid2, 10, 0);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
+    vibeos_syscall_make_process_security_label_get(&frame, pid2, pid1);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 10) {
+        return -1;
+    }
+    vibeos_syscall_make_process_interact_check(&frame, pid2, pid1);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 1) {
         return -1;
     }
     vibeos_syscall_make_process_token_set(&frame, pid1, (1u << 7), 0);
@@ -1857,6 +1877,7 @@ static int test_process_security_tokens(void) {
     vibeos_security_token_t parent_token;
     vibeos_security_token_t child_token;
     vibeos_security_token_t explicit_token;
+    uint32_t label = 0;
     uint32_t parent = 0;
     uint32_t child = 0;
     uint32_t sibling = 0;
@@ -1873,6 +1894,9 @@ static int test_process_security_tokens(void) {
     if (vibeos_proc_token_set(&pt, parent, &parent_token) != 0) {
         return -1;
     }
+    if (vibeos_proc_security_label_set(&pt, parent, 77) != 0) {
+        return -1;
+    }
     if (vibeos_proc_spawn(&pt, parent, &child) != 0) {
         return -1;
     }
@@ -1880,6 +1904,9 @@ static int test_process_security_tokens(void) {
         return -1;
     }
     if (child_token.capability_mask != parent_token.capability_mask) {
+        return -1;
+    }
+    if (vibeos_proc_security_label_get(&pt, child, &label) != 0 || label != 77) {
         return -1;
     }
     if (vibeos_sec_token_init(&explicit_token, 42, 43, (1u << 10)) != 0) {
