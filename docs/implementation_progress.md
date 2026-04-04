@@ -349,6 +349,7 @@ Implemented:
 - handle-rights enforcement for sensitive syscall operations
 - centralized syscall policy lookup for required handle rights
 - ABI v0 argument mapping formalized through shared helpers (`syscall_abi.h`)
+- process audit export syscall hooks (`PROC_AUDIT_COUNT`, `PROC_AUDIT_GET`)
 Files Created/Modified:
 - `kernel/core/syscall.c`
 - `include/vibeos/syscall.h`
@@ -397,7 +398,7 @@ Files Created/Modified:
 - `kernel/ipc/handle_transfer.c`
 - `include/vibeos/ipc_transfer.h`
 Pending:
-- syscall-level integration for revocation audit export
+- syscall-level audit access policy and filtering
 
 Module: Timer Subsystem
 Status: Partial
