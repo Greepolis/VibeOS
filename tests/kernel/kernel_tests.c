@@ -292,11 +292,11 @@ static int test_syscalls(void) {
     if (vibeos_proc_revoke_handle_lineage(&kernel.proc_table, pid1, revoke_root) != 0) {
         return -1;
     }
-    vibeos_syscall_make_proc_audit_count(&frame);
+    vibeos_syscall_make_proc_audit_count(&frame, 0);
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result < 1) {
         return -1;
     }
-    vibeos_syscall_make_proc_audit_get(&frame, (uint32_t)(frame.result - 1));
+    vibeos_syscall_make_proc_audit_get(&frame, (uint32_t)(frame.result - 1), 0);
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result <= 0) {
         return -1;
     }
@@ -304,6 +304,18 @@ static int test_syscalls(void) {
         return -1;
     }
     if (vibeos_syscall_audit_event_success(&frame) != 1 || vibeos_syscall_audit_event_revoked_count(&frame) == 0) {
+        return -1;
+    }
+    vibeos_syscall_make_proc_audit_count(&frame, pid2);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 0) {
+        return -1;
+    }
+    vibeos_syscall_make_proc_audit_count(&frame, pid1);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result < 1) {
+        return -1;
+    }
+    vibeos_syscall_make_proc_audit_get(&frame, 0, pid1);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 1) {
         return -1;
     }
     return 0;

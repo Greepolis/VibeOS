@@ -45,14 +45,18 @@ Argument semantics for current syscall groups:
 | `VM_MAP` | va | pa | len |
 | `VM_UNMAP` | va | len | reserved (`0`) |
 | `VM_PROTECT` | va | len | perms |
-| `PROC_AUDIT_COUNT` | reserved (`0`) | reserved (`0`) | reserved (`0`) |
-| `PROC_AUDIT_GET` | audit index | out: `success` | out: `revoked_count` |
+| `PROC_AUDIT_COUNT` | reserved (`0`) | reserved (`0`) | caller pid (`0` = kernel/global view) |
+| `PROC_AUDIT_GET` | audit index (caller-local if `arg2 != 0`) | out: `success` | caller pid input, then out: `revoked_count` |
 
 `PROC_AUDIT_GET` returns:
 - `result` = `event.seq` (positive on success)
 - `arg0` = `event.action`
 - `arg1` = `event.success`
 - `arg2` = `event.revoked_count`
+
+Access policy:
+- `caller_pid == 0`: full global audit stream.
+- `caller_pid != 0`: only events where `event.owner_pid == caller_pid`; `result` is redacted to caller-local sequence (`index + 1`).
 
 Implementation helpers for ABI v0 are centralized in `include/vibeos/syscall_abi.h` and should be preferred over direct field writes in kernel tests and user-space glue.
 

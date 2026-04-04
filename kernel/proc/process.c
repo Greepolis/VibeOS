@@ -411,3 +411,45 @@ int vibeos_proc_audit_get(vibeos_process_table_t *pt, uint32_t index, vibeos_pro
     *out_event = pt->audit_events[slot];
     return 0;
 }
+
+int vibeos_proc_audit_count_for_pid(vibeos_process_table_t *pt, uint32_t caller_pid, uint32_t *out_count) {
+    uint32_t i;
+    uint32_t visible = 0;
+    vibeos_proc_audit_event_t ev;
+    if (!pt || !out_count || caller_pid == 0) {
+        return -1;
+    }
+    for (i = 0; i < pt->audit_count; i++) {
+        if (vibeos_proc_audit_get(pt, i, &ev) != 0) {
+            return -1;
+        }
+        if (ev.owner_pid == caller_pid) {
+            visible++;
+        }
+    }
+    *out_count = visible;
+    return 0;
+}
+
+int vibeos_proc_audit_get_for_pid(vibeos_process_table_t *pt, uint32_t caller_pid, uint32_t index, vibeos_proc_audit_event_t *out_event) {
+    uint32_t i;
+    uint32_t visible_index = 0;
+    vibeos_proc_audit_event_t ev;
+    if (!pt || !out_event || caller_pid == 0) {
+        return -1;
+    }
+    for (i = 0; i < pt->audit_count; i++) {
+        if (vibeos_proc_audit_get(pt, i, &ev) != 0) {
+            return -1;
+        }
+        if (ev.owner_pid != caller_pid) {
+            continue;
+        }
+        if (visible_index == index) {
+            *out_event = ev;
+            return 0;
+        }
+        visible_index++;
+    }
+    return -1;
+}

@@ -119,24 +119,24 @@ static inline void vibeos_syscall_make_vm_protect(vibeos_syscall_frame_t *f, uin
 }
 
 /* Process audit API */
-static inline void vibeos_syscall_make_proc_audit_count(vibeos_syscall_frame_t *f) {
+static inline void vibeos_syscall_make_proc_audit_count(vibeos_syscall_frame_t *f, uint32_t caller_pid) {
     if (!f) {
         return;
     }
     f->id = VIBEOS_SYSCALL_PROC_AUDIT_COUNT;
     f->arg0 = 0;
     f->arg1 = 0;
-    f->arg2 = 0;
+    f->arg2 = caller_pid;
 }
 
-static inline void vibeos_syscall_make_proc_audit_get(vibeos_syscall_frame_t *f, uint32_t index) {
+static inline void vibeos_syscall_make_proc_audit_get(vibeos_syscall_frame_t *f, uint32_t index, uint32_t caller_pid) {
     if (!f) {
         return;
     }
     f->id = VIBEOS_SYSCALL_PROC_AUDIT_GET;
     f->arg0 = index;
     f->arg1 = 0;
-    f->arg2 = 0;
+    f->arg2 = caller_pid;
 }
 
 static inline uint32_t vibeos_syscall_audit_event_action(const vibeos_syscall_frame_t *f) {

@@ -84,5 +84,7 @@ int vibeos_proc_bind_thread_handle(vibeos_process_table_t *pt, uint32_t owner_pi
 int vibeos_proc_resolve_object_handle(vibeos_process_table_t *pt, uint32_t owner_pid, uint32_t handle, vibeos_object_type_t *out_object_type, uint32_t *out_object_id);
 int vibeos_proc_audit_count(vibeos_process_table_t *pt, uint32_t *out_count);
 int vibeos_proc_audit_get(vibeos_process_table_t *pt, uint32_t index, vibeos_proc_audit_event_t *out_event);
+int vibeos_proc_audit_count_for_pid(vibeos_process_table_t *pt, uint32_t caller_pid, uint32_t *out_count);
+int vibeos_proc_audit_get_for_pid(vibeos_process_table_t *pt, uint32_t caller_pid, uint32_t index, vibeos_proc_audit_event_t *out_event);
 
 #endif

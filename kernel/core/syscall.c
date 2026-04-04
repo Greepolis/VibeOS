@@ -140,19 +140,37 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
         case VIBEOS_SYSCALL_PROC_AUDIT_COUNT:
         {
             uint32_t count = 0;
-            if (vibeos_proc_audit_count(&kernel->proc_table, &count) != 0) {
-                frame->result = -1;
-                return -1;
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            if (caller_pid == 0) {
+                if (vibeos_proc_audit_count(&kernel->proc_table, &count) != 0) {
+                    frame->result = -1;
+                    return -1;
+                }
+            } else {
+                if (vibeos_proc_audit_count_for_pid(&kernel->proc_table, caller_pid, &count) != 0) {
+                    frame->result = -1;
+                    return -1;
+                }
             }
             frame->result = (int64_t)count;
             return 0;
         }
         case VIBEOS_SYSCALL_PROC_AUDIT_GET:
         {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
             vibeos_proc_audit_event_t ev;
-            if (vibeos_proc_audit_get(&kernel->proc_table, (uint32_t)frame->arg0, &ev) != 0) {
-                frame->result = -1;
-                return -1;
+            if (caller_pid == 0) {
+                if (vibeos_proc_audit_get(&kernel->proc_table, (uint32_t)frame->arg0, &ev) != 0) {
+                    frame->result = -1;
+                    return -1;
+                }
+            } else {
+                if (vibeos_proc_audit_get_for_pid(&kernel->proc_table, caller_pid, (uint32_t)frame->arg0, &ev) != 0) {
+                    frame->result = -1;
+                    return -1;
+                }
+                /* Redacted for non-kernel callers: hide global sequence. */
+                ev.seq = (uint64_t)((uint32_t)frame->arg0 + 1u);
             }
             frame->arg0 = ev.action;
             frame->arg1 = ev.success;
