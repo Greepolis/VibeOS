@@ -28,6 +28,7 @@ VibeOS uses a layered security model combining isolation, rights-based access, s
 - handles with rights masks
 - capability-aware object access
 - service-mediated access to sensitive resources
+- per-process security tokens (`uid`, `gid`, `capability_mask`) with token inheritance on process spawn
 
 ### Policy layer
 
@@ -40,6 +41,11 @@ The system should support a mandatory policy engine for:
 - compatibility subsystem restrictions
 
 This policy layer can evolve toward a MAC framework.
+
+Current implementation status:
+- policy checks implemented for filesystem open, network bind, and process spawn.
+- policy required-capability bits are runtime-readable and kernel-mutable.
+- process spawn authorization evaluates the calling process token (or kernel token in kernel context), not a fixed global mask.
 
 ## Sandboxing
 

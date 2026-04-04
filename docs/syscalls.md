@@ -47,7 +47,7 @@ Argument semantics for current syscall groups:
 | `WAITSET_STATS_RESET` | reserved (`0`) | reserved (`0`) | caller pid (`0` = kernel or waitset owner) |
 | `WAITSET_OWNER_GET` | reserved (`0`) | reserved (`0`) | caller pid (`0` = kernel or waitset owner) |
 | `WAITSET_SNAPSHOT_GET` | reserved (`0`) | reserved (`0`) | caller pid (`0` = kernel or waitset owner) |
-| `PROCESS_SPAWN` | parent pid | reserved (`0`) | reserved (`0`) |
+| `PROCESS_SPAWN` | parent pid | reserved (`0`) | caller pid (`0` = kernel context) |
 | `PROCESS_STATE_GET` | target pid | reserved (`0`) | caller pid (`0` = kernel; otherwise self or directly related process) |
 | `PROCESS_STATE_SET` | target pid | target process state enum | caller pid (`0` = kernel; otherwise self only) |
 | `PROCESS_TERMINATE` | target pid | reserved (`0`) | caller pid (`0` = kernel; otherwise self only) |
@@ -88,6 +88,11 @@ Argument semantics for current syscall groups:
 | `PROC_AUDIT_COUNT_ACTION` | action enum | reserved (`0`) | caller pid (`0` = global, non-zero = caller-scoped) |
 | `PROC_AUDIT_COUNT_SUCCESS` | success value (`0`/`1`) | reserved (`0`) | caller pid (`0` = global, non-zero = caller-scoped) |
 | `PROC_AUDIT_SUMMARY` | reserved (`0`) | reserved (`0`) | caller pid (`0` = global, non-zero = caller-scoped) |
+| `PROCESS_TOKEN_GET` | target pid | reserved (`0`) | caller pid (`0` = kernel; otherwise self or directly related process) |
+| `PROCESS_TOKEN_SET` | target pid | capability mask | caller pid (`0` = kernel; otherwise self only) |
+| `POLICY_CAPABILITY_GET` | policy target enum (`1` fs-open, `2` net-bind, `3` process-spawn) | reserved (`0`) | caller pid (advisory, unrestricted read) |
+| `POLICY_CAPABILITY_SET` | policy target enum (`1` fs-open, `2` net-bind, `3` process-spawn) | required capability bit (`0..31`) | caller pid (`0` required) |
+| `POLICY_SUMMARY_GET` | reserved (`0`) | reserved (`0`) | caller pid (advisory, unrestricted read) |
 
 `PROC_AUDIT_GET` returns:
 - `result` = `event.seq` (positive on success)
@@ -157,12 +162,29 @@ Argument semantics for current syscall groups:
 - `arg2` = visible failed events
 - `result` = `0` on success
 
+`PROCESS_TOKEN_GET` returns:
+- `arg0` = token uid
+- `arg1` = token gid
+- `arg2` = token capability mask
+- `result` = `0` on success
+
+`POLICY_CAPABILITY_GET` returns:
+- `result` = required capability bit for the requested target
+
+`POLICY_SUMMARY_GET` returns:
+- `arg0` = required capability bit for fs-open policy checks
+- `arg1` = required capability bit for net-bind policy checks
+- `arg2` = required capability bit for process-spawn policy checks
+- `result` = `0` on success
+
 Access policy:
 - `caller_pid == 0`: full global audit stream.
 - `caller_pid != 0`: only events where `event.owner_pid == caller_pid`; `result` is redacted to caller-local sequence (`index + 1`).
 - `PROC_AUDIT_POLICY_SET`, `PROC_AUDIT_POLICY_GET`, `PROC_AUDIT_DROPPED` are kernel-only (`caller_pid == 0`) in ABI v0.
 - `PROCESS_STATE_GET` is kernel-only, self-introspection, or directly related process introspection (parent or child).
 - `PROCESS_STATE_SET` and `PROCESS_TERMINATE` are kernel-only or self-targeted.
+- `PROCESS_TOKEN_GET` is kernel-only, self-introspection, or directly related process introspection (parent or child).
+- `PROCESS_TOKEN_SET` is kernel-only or self-targeted.
 - `THREAD_STATE_GET`, `THREAD_STATE_SET`, `THREAD_EXIT` are kernel-only or thread-owner scoped.
 - `WAITSET_STATS_GET` and `WAITSET_STATS_EXT_GET` are kernel-only or waitset-owner scoped.
 - `WAITSET_WAKE_POLICY_SET`, `WAITSET_WAKE_POLICY_GET`, and `WAITSET_STATS_RESET` are kernel-only or waitset-owner scoped.
@@ -170,6 +192,7 @@ Access policy:
 - `WAITSET_SNAPSHOT_GET` is kernel-only or waitset-owner scoped.
 - `PROC_TRANSITION_COUNTERS_RESET` is kernel-only.
 - `SCHED_COUNTERS_RESET` is kernel-only.
+- `POLICY_CAPABILITY_SET` is kernel-only.
 
 Implementation helpers for ABI v0 are centralized in `include/vibeos/syscall_abi.h` and should be preferred over direct field writes in kernel tests and user-space glue.
 

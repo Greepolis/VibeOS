@@ -52,6 +52,12 @@ The native socket layer should be expressive enough to support:
 - Windows socket compatibility through subsystem translation
 - event-driven high-performance servers
 
+## Current runtime prototype status
+
+- `vibeos_socket_create`, `vibeos_socket_bind`, `vibeos_socket_send`, and `vibeos_socket_close` are available in the host test runtime.
+- `vibeos_socket_bind_secure` enforces policy-gated bind authorization using security-token capabilities (`net_bind_required_capability_bit`).
+- Policy capability updates are now runtime-configurable through syscall control paths (`POLICY_CAPABILITY_SET` for kernel callers).
+
 ## Performance direction
 
 - per-CPU queues

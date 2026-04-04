@@ -378,6 +378,9 @@ Implemented:
 - waitset runtime snapshot syscall (`owner`, `ownership-enforcement`, `wake-policy`, `event-count`)
 - process-audit aggregate and filtered counters (`count by action`, `count by success`, `summary`)
 - scheduler counter summary and kernel-only scheduler counter reset syscalls
+- process security-token syscalls (`PROCESS_TOKEN_GET`, `PROCESS_TOKEN_SET`) with scoped access control
+- caller-aware spawn authorization path (policy checks against caller token capabilities, not global kernel token)
+- policy introspection and control syscalls (`POLICY_CAPABILITY_GET`, `POLICY_CAPABILITY_SET`, `POLICY_SUMMARY_GET`)
 Files Created/Modified:
 - `kernel/core/syscall.c`
 - `include/vibeos/syscall.h`
@@ -405,6 +408,8 @@ Implemented:
 - process-table observability helpers for total, live, and terminated process counts
 - process and thread state counters plus summary helpers for runtime introspection
 - process and thread transition counters with reset controls for instrumentation cycles
+- per-process security token storage with explicit set/get APIs
+- token inheritance on process spawn and explicit token override spawn API (`spawn_with_token`)
 - process and thread object-handle bind or resolve helpers
 - handle lineage revocation propagation across process handle tables
 - selective handle lineage revocation filters (by object type and rights mask)
@@ -491,6 +496,7 @@ Implemented:
 - security token model
 - capability bit check helper
 - baseline policy engine for fs/net/process-spawn checks
+- runtime policy capability introspection/update helpers for fs-open, net-bind, and process-spawn controls
 Files Created/Modified:
 - `kernel/core/security.c`
 - `include/vibeos/security_model.h`
