@@ -66,7 +66,8 @@ typedef enum vibeos_syscall_id {
     VIBEOS_SYSCALL_SEC_AUDIT_GET = 67,
     VIBEOS_SYSCALL_SEC_AUDIT_COUNT_ACTION = 68,
     VIBEOS_SYSCALL_SEC_AUDIT_SUMMARY = 69,
-    VIBEOS_SYSCALL_SEC_AUDIT_RESET = 70
+    VIBEOS_SYSCALL_SEC_AUDIT_RESET = 70,
+    VIBEOS_SYSCALL_SEC_AUDIT_COUNT_SUCCESS = 71
 } vibeos_syscall_id_t;
 
 typedef struct vibeos_syscall_frame {

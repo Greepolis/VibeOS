@@ -43,6 +43,7 @@ int vibeos_sec_audit_get(vibeos_security_audit_log_t *log, uint32_t index, vibeo
 int vibeos_sec_audit_count_for_pid(vibeos_security_audit_log_t *log, uint32_t caller_pid, uint32_t *out_count);
 int vibeos_sec_audit_get_for_pid(vibeos_security_audit_log_t *log, uint32_t caller_pid, uint32_t index, vibeos_sec_audit_event_t *out_event);
 int vibeos_sec_audit_count_action(vibeos_security_audit_log_t *log, uint32_t action, uint32_t *out_count);
+int vibeos_sec_audit_count_success(vibeos_security_audit_log_t *log, uint32_t success_value, uint32_t *out_count);
 int vibeos_sec_audit_summary(vibeos_security_audit_log_t *log, uint32_t *out_total, uint32_t *out_success, uint32_t *out_fail);
 int vibeos_sec_audit_reset(vibeos_security_audit_log_t *log);
 

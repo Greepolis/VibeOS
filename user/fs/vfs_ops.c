@@ -34,6 +34,36 @@ int vibeos_vfs_mount(vibeos_vfs_runtime_t *rt, uint32_t *out_mount_id) {
     return -1;
 }
 
+int vibeos_vfs_unmount(vibeos_vfs_runtime_t *rt, uint32_t mount_id) {
+    uint32_t i;
+    if (!rt || mount_id == 0) {
+        return -1;
+    }
+    for (i = 0; i < VIBEOS_MAX_MOUNTS; i++) {
+        if (rt->mounts[i].active && rt->mounts[i].id == mount_id) {
+            rt->mounts[i].active = 0;
+            rt->mounts[i].id = 0;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+int vibeos_vfs_active_mounts(const vibeos_vfs_runtime_t *rt, uint32_t *out_count) {
+    uint32_t i;
+    uint32_t count = 0;
+    if (!rt || !out_count) {
+        return -1;
+    }
+    for (i = 0; i < VIBEOS_MAX_MOUNTS; i++) {
+        if (rt->mounts[i].active) {
+            count++;
+        }
+    }
+    *out_count = count;
+    return 0;
+}
+
 int vibeos_vfs_open(vibeos_vfs_runtime_t *rt, uint32_t mount_id, uint32_t *out_fd) {
     uint32_t i;
     uint32_t mount_ok = 0;

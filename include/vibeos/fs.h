@@ -28,6 +28,8 @@ typedef struct vibeos_vfs_runtime {
 
 int vibeos_vfs_runtime_init(vibeos_vfs_runtime_t *rt);
 int vibeos_vfs_mount(vibeos_vfs_runtime_t *rt, uint32_t *out_mount_id);
+int vibeos_vfs_unmount(vibeos_vfs_runtime_t *rt, uint32_t mount_id);
+int vibeos_vfs_active_mounts(const vibeos_vfs_runtime_t *rt, uint32_t *out_count);
 int vibeos_vfs_open(vibeos_vfs_runtime_t *rt, uint32_t mount_id, uint32_t *out_fd);
 int vibeos_vfs_open_secure(vibeos_vfs_runtime_t *rt, uint32_t mount_id, const vibeos_policy_state_t *policy, const vibeos_security_token_t *token, uint32_t *out_fd);
 int vibeos_vfs_close(vibeos_vfs_runtime_t *rt, uint32_t fd);

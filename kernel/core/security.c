@@ -148,6 +148,25 @@ int vibeos_sec_audit_count_action(vibeos_security_audit_log_t *log, uint32_t act
     return 0;
 }
 
+int vibeos_sec_audit_count_success(vibeos_security_audit_log_t *log, uint32_t success_value, uint32_t *out_count) {
+    uint32_t i;
+    uint32_t count = 0;
+    vibeos_sec_audit_event_t event;
+    if (!log || !out_count || !log->initialized || success_value > 1u) {
+        return -1;
+    }
+    for (i = 0; i < log->count; i++) {
+        if (vibeos_sec_audit_get(log, i, &event) != 0) {
+            return -1;
+        }
+        if (event.success == success_value) {
+            count++;
+        }
+    }
+    *out_count = count;
+    return 0;
+}
+
 int vibeos_sec_audit_summary(vibeos_security_audit_log_t *log, uint32_t *out_total, uint32_t *out_success, uint32_t *out_fail) {
     uint32_t i;
     uint32_t success_count = 0;

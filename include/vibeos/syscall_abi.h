@@ -571,6 +571,16 @@ static inline void vibeos_syscall_make_sec_audit_count_action(vibeos_syscall_fra
     f->arg2 = caller_pid;
 }
 
+static inline void vibeos_syscall_make_sec_audit_count_success(vibeos_syscall_frame_t *f, uint32_t success_value, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_SEC_AUDIT_COUNT_SUCCESS;
+    f->arg0 = success_value;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
 static inline void vibeos_syscall_make_sec_audit_summary(vibeos_syscall_frame_t *f, uint32_t caller_pid) {
     if (!f) {
         return;

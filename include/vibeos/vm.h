@@ -27,7 +27,11 @@ typedef struct vibeos_address_space {
 int vibeos_vm_init(vibeos_address_space_t *aspace);
 int vibeos_vm_map(vibeos_address_space_t *aspace, uintptr_t va, uintptr_t pa, size_t size, uint32_t perms);
 int vibeos_vm_unmap(vibeos_address_space_t *aspace, uintptr_t va, size_t size);
+int vibeos_vm_unmap_range(vibeos_address_space_t *aspace, uintptr_t va, size_t size);
 int vibeos_vm_protect(vibeos_address_space_t *aspace, uintptr_t va, size_t size, uint32_t perms);
 const vibeos_vm_map_t *vibeos_vm_lookup(const vibeos_address_space_t *aspace, uintptr_t va);
+size_t vibeos_vm_map_count(const vibeos_address_space_t *aspace);
+size_t vibeos_vm_total_mapped(const vibeos_address_space_t *aspace);
+int vibeos_vm_clone_readonly(vibeos_address_space_t *dst, const vibeos_address_space_t *src);
 
 #endif

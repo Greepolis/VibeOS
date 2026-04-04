@@ -1043,6 +1043,43 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             frame->result = (int64_t)count;
             return 0;
         }
+        case VIBEOS_SYSCALL_SEC_AUDIT_COUNT_SUCCESS:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            uint32_t success_value = (uint32_t)frame->arg0;
+            uint32_t count = 0;
+            if (success_value > 1u) {
+                frame->result = -1;
+                return -1;
+            }
+            if (caller_pid == 0) {
+                if (vibeos_sec_audit_count_success(&kernel->sec_audit, success_value, &count) != 0) {
+                    frame->result = -1;
+                    return -1;
+                }
+            } else {
+                uint32_t i;
+                uint32_t visible = 0;
+                vibeos_sec_audit_event_t event;
+                uint32_t scoped_count = 0;
+                if (vibeos_sec_audit_count_for_pid(&kernel->sec_audit, caller_pid, &visible) != 0) {
+                    frame->result = -1;
+                    return -1;
+                }
+                for (i = 0; i < visible; i++) {
+                    if (vibeos_sec_audit_get_for_pid(&kernel->sec_audit, caller_pid, i, &event) != 0) {
+                        frame->result = -1;
+                        return -1;
+                    }
+                    if (event.success == success_value) {
+                        scoped_count++;
+                    }
+                }
+                count = scoped_count;
+            }
+            frame->result = (int64_t)count;
+            return 0;
+        }
         case VIBEOS_SYSCALL_SEC_AUDIT_SUMMARY:
         {
             uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
