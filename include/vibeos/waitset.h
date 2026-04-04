@@ -21,6 +21,12 @@ typedef struct vibeos_waitset {
     uint32_t ownership_enforced;
     uint32_t active;
     uint32_t wake_policy;
+    uint64_t stats_added;
+    uint64_t stats_removed;
+    uint64_t stats_wait_calls;
+    uint64_t stats_wait_wakes;
+    uint64_t stats_wait_timeouts;
+    uint64_t stats_ownership_denials;
 } vibeos_waitset_t;
 
 int vibeos_waitset_init(vibeos_waitset_t *waitset);
@@ -32,6 +38,7 @@ int vibeos_waitset_reset(vibeos_waitset_t *waitset);
 int vibeos_waitset_destroy(vibeos_waitset_t *waitset);
 int vibeos_waitset_set_wake_policy(vibeos_waitset_t *waitset, vibeos_waitset_wake_policy_t policy);
 int vibeos_waitset_get_wake_policy(const vibeos_waitset_t *waitset, vibeos_waitset_wake_policy_t *out_policy);
+int vibeos_waitset_stats(vibeos_waitset_t *waitset, uint64_t *out_added, uint64_t *out_removed, uint64_t *out_wait_calls, uint64_t *out_wait_wakes, uint64_t *out_wait_timeouts, uint64_t *out_ownership_denials);
 int vibeos_waitset_count(const vibeos_waitset_t *waitset, size_t *out_count);
 int vibeos_waitset_owner(const vibeos_waitset_t *waitset, uint32_t *out_owner_pid, uint32_t *out_enforced);
 int vibeos_waitset_wait(vibeos_waitset_t *waitset, uint64_t timeout_ticks, size_t *out_index);

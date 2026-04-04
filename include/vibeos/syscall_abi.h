@@ -386,4 +386,24 @@ static inline void vibeos_syscall_make_waitset_add_event(vibeos_syscall_frame_t 
     f->arg2 = caller_pid;
 }
 
+static inline void vibeos_syscall_make_waitset_stats_get(vibeos_syscall_frame_t *f, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_WAITSET_STATS_GET;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
+static inline void vibeos_syscall_make_waitset_stats_ext_get(vibeos_syscall_frame_t *f, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_WAITSET_STATS_EXT_GET;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
 #endif

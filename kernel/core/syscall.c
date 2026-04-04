@@ -130,6 +130,63 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             }
             frame->result = 0;
             return 0;
+        case VIBEOS_SYSCALL_WAITSET_STATS_GET:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            uint64_t added = 0;
+            uint64_t removed = 0;
+            uint64_t waits = 0;
+            uint64_t wakes = 0;
+            uint64_t timeouts = 0;
+            uint64_t denials = 0;
+            if (caller_pid != 0 && caller_pid != kernel_waitset_owner_pid) {
+                frame->result = -1;
+                return -1;
+            }
+            if (!waitset_initialized) {
+                frame->result = -1;
+                return -1;
+            }
+            if (vibeos_waitset_stats(&kernel_waitset, &added, &removed, &waits, &wakes, &timeouts, &denials) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->arg0 = added;
+            frame->arg1 = removed;
+            frame->arg2 = waits;
+            frame->result = (int64_t)timeouts;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_WAITSET_STATS_EXT_GET:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            uint64_t added = 0;
+            uint64_t removed = 0;
+            uint64_t waits = 0;
+            uint64_t wakes = 0;
+            uint64_t timeouts = 0;
+            uint64_t denials = 0;
+            if (caller_pid != 0 && caller_pid != kernel_waitset_owner_pid) {
+                frame->result = -1;
+                return -1;
+            }
+            if (!waitset_initialized) {
+                frame->result = -1;
+                return -1;
+            }
+            if (vibeos_waitset_stats(&kernel_waitset, &added, &removed, &waits, &wakes, &timeouts, &denials) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            (void)added;
+            (void)removed;
+            (void)waits;
+            frame->arg0 = wakes;
+            frame->arg1 = denials;
+            frame->arg2 = (uint64_t)kernel_waitset_owner_pid;
+            frame->result = (int64_t)kernel_waitset.count;
+            return 0;
+        }
         case VIBEOS_SYSCALL_PROCESS_SPAWN:
         {
             uint32_t pid;
