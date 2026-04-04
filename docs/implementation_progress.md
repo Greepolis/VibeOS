@@ -85,7 +85,7 @@
 ### Process Management
 - Responsibilities: process and thread identity lifecycle primitives
 - Main files: `kernel/proc/process.c`, `include/vibeos/proc.h`
-- Public interfaces: `vibeos_proc_init`, `vibeos_proc_spawn`, `vibeos_thread_create`, `vibeos_proc_bind_process_handle`, `vibeos_proc_bind_thread_handle`, `vibeos_proc_resolve_object_handle`, `vibeos_proc_revoke_handle_lineage`, `vibeos_proc_revoke_handle_lineage_scoped`, `vibeos_proc_audit_count`, `vibeos_proc_audit_get`
+- Public interfaces: `vibeos_proc_init`, `vibeos_proc_spawn`, `vibeos_thread_create`, `vibeos_thread_state`, `vibeos_thread_set_state`, `vibeos_thread_exit`, `vibeos_proc_bind_process_handle`, `vibeos_proc_bind_thread_handle`, `vibeos_proc_resolve_object_handle`, `vibeos_proc_revoke_handle_lineage`, `vibeos_proc_revoke_handle_lineage_scoped`, `vibeos_proc_audit_count`, `vibeos_proc_audit_get`, `vibeos_proc_audit_set_policy`, `vibeos_proc_audit_get_policy`, `vibeos_proc_audit_get_dropped`
 - Dependencies: syscall interface, scheduler
 
 ### Object and Handle Model
@@ -97,13 +97,13 @@
 ### Security Policy Engine
 - Responsibilities: capability-aware allow/deny decisions for sensitive operations
 - Main files: `kernel/core/policy.c`, `include/vibeos/policy.h`
-- Public interfaces: `vibeos_policy_can_fs_open`, `vibeos_policy_can_net_bind`
+- Public interfaces: `vibeos_policy_can_fs_open`, `vibeos_policy_can_net_bind`, `vibeos_policy_can_process_spawn`
 - Dependencies: security token model
 
 ### IPC Subsystem
 - Responsibilities: event signaling and channel messaging
 - Main files: `kernel/ipc/event.c`, `kernel/ipc/channel.c`, `kernel/ipc/handle_transfer.c`, `kernel/ipc/waitset.c`, `include/vibeos/ipc.h`, `include/vibeos/ipc_transfer.h`, `include/vibeos/waitset.h`
-- Public interfaces: `vibeos_event_*`, `vibeos_channel_*`, `vibeos_waitset_wait`, `vibeos_waitset_wait_ex`, `vibeos_waitset_wait_timed`, `vibeos_waitset_init_owned`, `vibeos_waitset_add_owned`, `vibeos_waitset_remove`, `vibeos_waitset_reset`, `vibeos_waitset_destroy`
+- Public interfaces: `vibeos_event_*`, `vibeos_channel_*`, `vibeos_waitset_wait`, `vibeos_waitset_wait_ex`, `vibeos_waitset_wait_timed`, `vibeos_waitset_init_owned`, `vibeos_waitset_add_owned`, `vibeos_waitset_remove`, `vibeos_waitset_reset`, `vibeos_waitset_destroy`, `vibeos_waitset_set_wake_policy`, `vibeos_waitset_get_wake_policy`
 - Dependencies: scheduler, handle model (future)
 
 ### Driver Framework
@@ -222,7 +222,10 @@ scripts/
 3. Run tests:
    `.\build\vibeos_kernel_tests.exe`
 4. Run automated feedback profile:
-   `.\scripts\run-tests.ps1 -Profile agent`
+   `.\scripts\run-tests.ps1 -Profile agent -BuildDir build-agent -Generator Ninja`
+
+Notes:
+- in environments where CMake generator detection is unstable, `run-tests.ps1` falls back to a manual `gcc` host build path and still emits `artifacts/kernel-tests.log` plus `artifacts/test-summary.json`.
 
 The automated run writes:
 
@@ -237,6 +240,8 @@ Implemented:
 - root `CMakeLists.txt` with modular kernel-core targets
 - host-side kernel test executable
 - test runner script with machine-readable summary output
+- configurable CMake generator selection in test runner (`-Generator`)
+- automatic manual `gcc` fallback in test runner when CMake path fails
 Files Created/Modified:
 - `CMakeLists.txt`
 - `tests/kernel/kernel_tests.c`
@@ -244,7 +249,7 @@ Files Created/Modified:
 - `.gitignore`
 Problems:
 - no freestanding cross-toolchain configured yet, so first execution path uses host simulation
-- local environment currently reports `INFRA_CMAKE_MISSING`; test harness correctly classifies it as `infra_error` in `artifacts/test-summary.json`
+- CMake configuration can be unstable on some Windows environments due to executable file access or lock timing; fallback path mitigates this for host L0 coverage
 
 Module: Kernel Core Bootstrap
 Status: Partial
@@ -297,6 +302,7 @@ Implemented:
 - timer-driven waitset path integrated with kernel timer ticks
 - process-scoped waitset ownership enforcement (owner PID bound)
 - waitset lifecycle semantics: remove/reset/destroy with safe re-init behavior
+- configurable waitset wake policy (`FIFO` and `REVERSE`) with runtime getters/setters
 Files Created/Modified:
 - `kernel/ipc/event.c`
 - `kernel/ipc/channel.c`
@@ -304,7 +310,7 @@ Files Created/Modified:
 - `include/vibeos/ipc.h`
 - `include/vibeos/waitset.h`
 Pending:
-- waitset waitqueue wake ordering policy
+- fairness-aware wake scheduling for large waitsets
 
 Module: Virtual Memory
 Status: Partial
@@ -351,6 +357,8 @@ Implemented:
 - ABI v0 argument mapping formalized through shared helpers (`syscall_abi.h`)
 - process audit export syscall hooks (`PROC_AUDIT_COUNT`, `PROC_AUDIT_GET`)
 - caller-scoped audit access policy with redacted non-kernel view
+- kernel-only syscall controls for audit retention policy and dropped-event counters
+- spawn authorization gate tied to capability policy (`can_process_spawn`)
 Files Created/Modified:
 - `kernel/core/syscall.c`
 - `include/vibeos/syscall.h`
@@ -358,7 +366,7 @@ Files Created/Modified:
 - `kernel/core/syscall_policy.c`
 - `include/vibeos/syscall_policy.h`
 Pending:
-- capability-to-policy integration for syscall authorization
+- per-caller security token plumbing (today spawn policy is checked against kernel token)
 
 Module: Process Management
 Status: Partial
@@ -372,15 +380,17 @@ Implemented:
 - process lifecycle states (`NEW/RUNNING/BLOCKED/TERMINATED`)
 - lifecycle APIs (`vibeos_proc_state`, `vibeos_proc_set_state`, `vibeos_proc_terminate`)
 - thread registry with owner process binding
+- thread lifecycle controls (`state`, `set_state`, `exit`) and thread-count consistency updates
 - process and thread object-handle bind or resolve helpers
 - handle lineage revocation propagation across process handle tables
 - selective handle lineage revocation filters (by object type and rights mask)
 - revocation audit trail ring-buffer with structured event retrieval
+- audit retention policy controls (`overwrite-oldest` vs `drop-newest`) with dropped-event accounting
 Files Created/Modified:
 - `kernel/proc/process.c`
 - `include/vibeos/proc.h`
 Pending:
-- thread lifecycle transitions beyond create or terminate path
+- scheduler integration for blocked/runnable transitions based on wait primitives
 
 Module: Object and Handle Model
 Status: Partial
@@ -399,7 +409,7 @@ Files Created/Modified:
 - `kernel/ipc/handle_transfer.c`
 - `include/vibeos/ipc_transfer.h`
 Pending:
-- audit event retention and rollover policy controls
+- object-specific quota and lifecycle hooks for future revocation/garbage-collection policies
 
 Module: Timer Subsystem
 Status: Partial
@@ -455,7 +465,7 @@ Status: Partial
 Implemented:
 - security token model
 - capability bit check helper
-- baseline policy engine for fs/net checks
+- baseline policy engine for fs/net/process-spawn checks
 Files Created/Modified:
 - `kernel/core/security.c`
 - `include/vibeos/security_model.h`
@@ -486,8 +496,8 @@ Pending:
 | Memory Manager | In Progress | bump allocator implemented |
 | Virtual Memory | In Progress | address-space mapping primitives implemented |
 | Interrupt Handling | In Progress | controller + x86_64 IDT stub implemented |
-| System Call Interface | In Progress | dispatcher + centralized rights policy + PID-scoped handle enforcement |
-| IPC Subsystem | In Progress | event/channel/waitset primitives with handle transfer and timer-driven waits |
+| System Call Interface | In Progress | dispatcher + rights policy + caller-scoped process audit + audit retention controls |
+| IPC Subsystem | In Progress | event/channel/waitset primitives with timer waits and configurable wake ordering |
 | Driver Framework | In Progress | driver framework registration stubs implemented |
 | Filesystem Layer | In Progress | VFS runtime mount/open/close primitives implemented |
 | Networking Stack | In Progress | socket runtime primitives implemented |
