@@ -85,7 +85,7 @@
 ### Process Management
 - Responsibilities: process and thread identity lifecycle primitives
 - Main files: `kernel/proc/process.c`, `include/vibeos/proc.h`
-- Public interfaces: `vibeos_proc_init`, `vibeos_proc_spawn`, `vibeos_thread_create`, `vibeos_proc_bind_process_handle`, `vibeos_proc_bind_thread_handle`, `vibeos_proc_resolve_object_handle`
+- Public interfaces: `vibeos_proc_init`, `vibeos_proc_spawn`, `vibeos_thread_create`, `vibeos_proc_bind_process_handle`, `vibeos_proc_bind_thread_handle`, `vibeos_proc_resolve_object_handle`, `vibeos_proc_revoke_handle_lineage`, `vibeos_proc_revoke_handle_lineage_scoped`
 - Dependencies: syscall interface, scheduler
 
 ### Object and Handle Model
@@ -372,6 +372,7 @@ Implemented:
 - thread registry with owner process binding
 - process and thread object-handle bind or resolve helpers
 - handle lineage revocation propagation across process handle tables
+- selective handle lineage revocation filters (by object type and rights mask)
 Files Created/Modified:
 - `kernel/proc/process.c`
 - `include/vibeos/proc.h`
@@ -395,7 +396,7 @@ Files Created/Modified:
 - `kernel/ipc/handle_transfer.c`
 - `include/vibeos/ipc_transfer.h`
 Pending:
-- policy-scoped selective revocation (per-right/per-object scope)
+- handle revocation audit trail and event reporting
 
 Module: Timer Subsystem
 Status: Partial
