@@ -307,6 +307,7 @@ Implemented:
 - process-scoped waitset ownership enforcement (owner PID bound)
 - waitset lifecycle semantics: remove/reset/destroy with safe re-init behavior
 - configurable waitset wake policy (`FIFO` and `REVERSE`) with runtime getters/setters
+- waitset telemetry counters (add/remove/wait/wake/timeout/ownership-denial) with stats query API
 Files Created/Modified:
 - `kernel/ipc/event.c`
 - `kernel/ipc/channel.c`
@@ -367,6 +368,7 @@ Implemented:
 - process lifecycle mutation syscalls (`PROCESS_STATE_SET`, `PROCESS_TERMINATE`) with self-or-kernel authorization
 - runtime observability syscalls for process or thread counts and scheduler queue metrics
 - runtime observability syscalls for process live or terminated counts and scheduler per-cpu and aggregate counters
+- waitset telemetry syscalls with owner-scoped access policy
 Files Created/Modified:
 - `kernel/core/syscall.c`
 - `include/vibeos/syscall.h`
@@ -508,7 +510,7 @@ Pending:
 | Virtual Memory | In Progress | address-space mapping primitives implemented |
 | Interrupt Handling | In Progress | controller + x86_64 IDT stub implemented |
 | System Call Interface | In Progress | dispatcher + rights policy + lifecycle controls + extended observability syscalls |
-| IPC Subsystem | In Progress | event/channel/waitset primitives with timer waits and configurable wake ordering |
+| IPC Subsystem | In Progress | event/channel/waitset primitives with wake-order policy and runtime telemetry counters |
 | Driver Framework | In Progress | driver framework registration stubs implemented |
 | Filesystem Layer | In Progress | VFS runtime mount/open/close primitives implemented |
 | Networking Stack | In Progress | socket runtime primitives implemented |

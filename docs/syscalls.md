@@ -40,6 +40,8 @@ Argument semantics for current syscall groups:
 | `HANDLE_CLOSE` | handle id | reserved (`0`) | caller pid (`0` = kernel context) |
 | `EVENT_SIGNAL` | event handle | reserved (`0`) | reserved (`0`) |
 | `WAITSET_ADD_EVENT` | event handle | waitset owner pid | caller pid |
+| `WAITSET_STATS_GET` | reserved (`0`) | reserved (`0`) | caller pid (`0` = kernel or waitset owner) |
+| `WAITSET_STATS_EXT_GET` | reserved (`0`) | reserved (`0`) | caller pid (`0` = kernel or waitset owner) |
 | `PROCESS_SPAWN` | parent pid | reserved (`0`) | reserved (`0`) |
 | `PROCESS_STATE_GET` | target pid | reserved (`0`) | caller pid (`0` = kernel; otherwise self or directly related process) |
 | `PROCESS_STATE_SET` | target pid | target process state enum | caller pid (`0` = kernel; otherwise self only) |
@@ -82,6 +84,18 @@ Argument semantics for current syscall groups:
 `PROC_AUDIT_DROPPED` returns:
 - `result` = cumulative number of dropped audit events (only when retention mode is `DROP_NEWEST`).
 
+`WAITSET_STATS_GET` returns:
+- `arg0` = `added`
+- `arg1` = `removed`
+- `arg2` = `wait_calls`
+- `result` = `wait_timeouts`
+
+`WAITSET_STATS_EXT_GET` returns:
+- `arg0` = `wait_wakes`
+- `arg1` = `ownership_denials`
+- `arg2` = `owner_pid`
+- `result` = current waitset event count
+
 Access policy:
 - `caller_pid == 0`: full global audit stream.
 - `caller_pid != 0`: only events where `event.owner_pid == caller_pid`; `result` is redacted to caller-local sequence (`index + 1`).
@@ -89,6 +103,7 @@ Access policy:
 - `PROCESS_STATE_GET` is kernel-only, self-introspection, or directly related process introspection (parent or child).
 - `PROCESS_STATE_SET` and `PROCESS_TERMINATE` are kernel-only or self-targeted.
 - `THREAD_STATE_GET`, `THREAD_STATE_SET`, `THREAD_EXIT` are kernel-only or thread-owner scoped.
+- `WAITSET_STATS_GET` and `WAITSET_STATS_EXT_GET` are kernel-only or waitset-owner scoped.
 
 Implementation helpers for ABI v0 are centralized in `include/vibeos/syscall_abi.h` and should be preferred over direct field writes in kernel tests and user-space glue.
 
