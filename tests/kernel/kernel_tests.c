@@ -233,6 +233,7 @@ static int test_syscalls(void) {
     uint32_t p1_handle = 0;
     uint32_t tid1 = 0;
     uint32_t signal_handle = 0;
+    uint32_t waitset_event_handle = 0;
     uint32_t revoke_root = 0;
     uint32_t revoke_dup = 0;
     uint32_t i;
@@ -413,12 +414,31 @@ static int test_syscalls(void) {
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result <= 0) {
         return -1;
     }
-    vibeos_syscall_make_waitset_add_event(&frame, (uint32_t)frame.result, 100, pid1);
+    waitset_event_handle = (uint32_t)frame.result;
+    vibeos_syscall_make_waitset_add_event(&frame, waitset_event_handle, pid1, pid1);
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
         return -1;
     }
-    vibeos_syscall_make_waitset_add_event(&frame, (uint32_t)frame.result, 200, pid1);
+    vibeos_syscall_make_waitset_add_event(&frame, waitset_event_handle, 200, pid1);
     if (vibeos_syscall_dispatch(&kernel, &frame) == 0) {
+        return -1;
+    }
+    vibeos_syscall_make_waitset_stats_get(&frame, 0);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
+    if (frame.arg0 != 1 || frame.arg1 != 0 || frame.arg2 != 0 || frame.result != 0) {
+        return -1;
+    }
+    vibeos_syscall_make_waitset_stats_ext_get(&frame, pid2);
+    if (vibeos_syscall_dispatch(&kernel, &frame) == 0) {
+        return -1;
+    }
+    vibeos_syscall_make_waitset_stats_ext_get(&frame, pid1);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
+    if (frame.arg0 != 0 || frame.arg1 != 1 || frame.arg2 != pid1 || frame.result != 1) {
         return -1;
     }
     if (vibeos_proc_handles(&kernel.proc_table, pid1, &pid1_handles) != 0) {
@@ -866,6 +886,59 @@ static int test_waitset_wake_policy(void) {
         return -1;
     }
     if (vibeos_waitset_set_wake_policy(&waitset, (vibeos_waitset_wake_policy_t)99) == 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_waitset_stats(void) {
+    vibeos_waitset_t ws;
+    vibeos_waitset_t owned;
+    vibeos_scheduler_t sched;
+    vibeos_event_t ev;
+    size_t idx = 0;
+    uint64_t added = 0;
+    uint64_t removed = 0;
+    uint64_t waits = 0;
+    uint64_t wakes = 0;
+    uint64_t timeouts = 0;
+    uint64_t denials = 0;
+    if (vibeos_sched_init(&sched, 1) != 0) {
+        return -1;
+    }
+    vibeos_event_init(&ev);
+    if (vibeos_waitset_init(&ws) != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_add(&ws, &ev) != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_wait_ex(&ws, 0, &idx, &sched, 0) == 0) {
+        return -1;
+    }
+    vibeos_event_signal(&ev);
+    if (vibeos_waitset_wait_ex(&ws, 0, &idx, &sched, 0) != 0 || idx != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_remove(&ws, 0) != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_stats(&ws, &added, &removed, &waits, &wakes, &timeouts, &denials) != 0) {
+        return -1;
+    }
+    if (added != 1 || removed != 1 || waits != 2 || wakes != 1 || timeouts != 1 || denials != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_init_owned(&owned, 77) != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_add_owned(&owned, &ev, 88) == 0) {
+        return -1;
+    }
+    if (vibeos_waitset_stats(&owned, &added, &removed, &waits, &wakes, &timeouts, &denials) != 0) {
+        return -1;
+    }
+    if (denials != 1) {
         return -1;
     }
     return 0;
@@ -1441,6 +1514,7 @@ int main(void) {
     RUN_TEST(test_waitset_ownership);
     RUN_TEST(test_waitset_lifecycle);
     RUN_TEST(test_waitset_wake_policy);
+    RUN_TEST(test_waitset_stats);
     RUN_TEST(test_filesystem_runtime);
     RUN_TEST(test_network_runtime);
     RUN_TEST(test_security_token);
