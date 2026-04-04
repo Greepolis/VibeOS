@@ -105,6 +105,9 @@ static int test_scheduler_balanced(void) {
     if (vibeos_sched_least_loaded_cpu(&sched, &cpu) != 0 || cpu != 1) {
         return -1;
     }
+    if (vibeos_sched_cpu_count(&sched, &cpu) != 0 || cpu != 2) {
+        return -1;
+    }
     return 0;
 }
 
@@ -222,7 +225,7 @@ static int test_interrupts(void) {
 static int test_syscalls(void) {
     vibeos_kernel_t kernel;
     vibeos_syscall_frame_t frame;
-    vibeos_thread_t sthread1 = { .id = 101, .cpu_hint = 0, .klass = VIBEOS_THREAD_NORMAL, .timeslice_ticks = 2 };
+    vibeos_thread_t sthread1 = { .id = 101, .cpu_hint = 0, .klass = VIBEOS_THREAD_NORMAL, .timeslice_ticks = 1 };
     vibeos_thread_t sthread2 = { .id = 102, .cpu_hint = 1, .klass = VIBEOS_THREAD_NORMAL, .timeslice_ticks = 2 };
     uint32_t pid1 = 0;
     uint32_t pid2 = 0;
@@ -272,6 +275,15 @@ static int test_syscalls(void) {
         return -1;
     }
     if (vibeos_sched_enqueue(&kernel.scheduler, &sthread1) != 0 || vibeos_sched_enqueue(&kernel.scheduler, &sthread2) != 0) {
+        return -1;
+    }
+    if (vibeos_sched_tick(&kernel.scheduler, &sthread1, 0) != 1) {
+        return -1;
+    }
+    if (vibeos_sched_note_wait_timeout(&kernel.scheduler, 0) != 0) {
+        return -1;
+    }
+    if (vibeos_sched_note_wait_wake(&kernel.scheduler, 1) != 0) {
         return -1;
     }
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 1) {
@@ -327,6 +339,14 @@ static int test_syscalls(void) {
     }
     vibeos_syscall_make_process_count_get(&frame);
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 3) {
+        return -1;
+    }
+    vibeos_syscall_make_process_live_count_get(&frame);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 2) {
+        return -1;
+    }
+    vibeos_syscall_make_process_terminated_count_get(&frame);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 1) {
         return -1;
     }
     vibeos_syscall_make_thread_state_get(&frame, tid1, pid1);
@@ -481,6 +501,34 @@ static int test_syscalls(void) {
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 1) {
         return -1;
     }
+    vibeos_syscall_make_sched_runqueue_depth_get(&frame, 9);
+    if (vibeos_syscall_dispatch(&kernel, &frame) == 0) {
+        return -1;
+    }
+    vibeos_syscall_make_sched_preemptions_get(&frame, 0);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 1) {
+        return -1;
+    }
+    vibeos_syscall_make_sched_wait_timeouts_get(&frame, 0);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 1) {
+        return -1;
+    }
+    vibeos_syscall_make_sched_wait_wakes_get(&frame, 1);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 1) {
+        return -1;
+    }
+    vibeos_syscall_make_sched_preemptions_total_get(&frame);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 1) {
+        return -1;
+    }
+    vibeos_syscall_make_sched_wait_timeouts_total_get(&frame);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 1) {
+        return -1;
+    }
+    vibeos_syscall_make_sched_wait_wakes_total_get(&frame);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 1) {
+        return -1;
+    }
     return 0;
 }
 
@@ -489,6 +537,7 @@ static int test_process_relationships(void) {
     uint32_t p1 = 0;
     uint32_t p2 = 0;
     uint32_t p3 = 0;
+    uint32_t count = 0;
     if (vibeos_proc_init(&pt) != 0) {
         return -1;
     }
@@ -505,6 +554,18 @@ static int test_process_relationships(void) {
         return -1;
     }
     if (vibeos_proc_are_related(&pt, p2, p3)) {
+        return -1;
+    }
+    if (vibeos_proc_live_count(&pt, &count) != 0 || count != 3) {
+        return -1;
+    }
+    if (vibeos_proc_terminate(&pt, p2) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_live_count(&pt, &count) != 0 || count != 2) {
+        return -1;
+    }
+    if (vibeos_proc_terminated_count(&pt, &count) != 0 || count != 1) {
         return -1;
     }
     return 0;
