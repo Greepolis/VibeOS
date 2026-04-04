@@ -308,6 +308,7 @@ Implemented:
 - waitset lifecycle semantics: remove/reset/destroy with safe re-init behavior
 - configurable waitset wake policy (`FIFO` and `REVERSE`) with runtime getters/setters
 - waitset telemetry counters (add/remove/wait/wake/timeout/ownership-denial) with stats query API
+- waitset telemetry reset and owner-scoped wake-policy control paths
 Files Created/Modified:
 - `kernel/ipc/event.c`
 - `kernel/ipc/channel.c`
@@ -369,6 +370,7 @@ Implemented:
 - runtime observability syscalls for process or thread counts and scheduler queue metrics
 - runtime observability syscalls for process live or terminated counts and scheduler per-cpu and aggregate counters
 - waitset telemetry syscalls with owner-scoped access policy
+- waitset wake-policy set/get and waitset telemetry reset syscalls
 Files Created/Modified:
 - `kernel/core/syscall.c`
 - `include/vibeos/syscall.h`

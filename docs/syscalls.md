@@ -42,6 +42,9 @@ Argument semantics for current syscall groups:
 | `WAITSET_ADD_EVENT` | event handle | waitset owner pid | caller pid |
 | `WAITSET_STATS_GET` | reserved (`0`) | reserved (`0`) | caller pid (`0` = kernel or waitset owner) |
 | `WAITSET_STATS_EXT_GET` | reserved (`0`) | reserved (`0`) | caller pid (`0` = kernel or waitset owner) |
+| `WAITSET_WAKE_POLICY_SET` | wake policy enum (`0` FIFO, `1` REVERSE) | reserved (`0`) | caller pid (`0` = kernel or waitset owner) |
+| `WAITSET_WAKE_POLICY_GET` | reserved (`0`) | reserved (`0`) | caller pid (`0` = kernel or waitset owner) |
+| `WAITSET_STATS_RESET` | reserved (`0`) | reserved (`0`) | caller pid (`0` = kernel or waitset owner) |
 | `PROCESS_SPAWN` | parent pid | reserved (`0`) | reserved (`0`) |
 | `PROCESS_STATE_GET` | target pid | reserved (`0`) | caller pid (`0` = kernel; otherwise self or directly related process) |
 | `PROCESS_STATE_SET` | target pid | target process state enum | caller pid (`0` = kernel; otherwise self only) |
@@ -96,6 +99,9 @@ Argument semantics for current syscall groups:
 - `arg2` = `owner_pid`
 - `result` = current waitset event count
 
+`WAITSET_WAKE_POLICY_GET` returns:
+- `result` = current wake policy enum (`0` FIFO, `1` REVERSE).
+
 Access policy:
 - `caller_pid == 0`: full global audit stream.
 - `caller_pid != 0`: only events where `event.owner_pid == caller_pid`; `result` is redacted to caller-local sequence (`index + 1`).
@@ -104,6 +110,7 @@ Access policy:
 - `PROCESS_STATE_SET` and `PROCESS_TERMINATE` are kernel-only or self-targeted.
 - `THREAD_STATE_GET`, `THREAD_STATE_SET`, `THREAD_EXIT` are kernel-only or thread-owner scoped.
 - `WAITSET_STATS_GET` and `WAITSET_STATS_EXT_GET` are kernel-only or waitset-owner scoped.
+- `WAITSET_WAKE_POLICY_SET`, `WAITSET_WAKE_POLICY_GET`, and `WAITSET_STATS_RESET` are kernel-only or waitset-owner scoped.
 
 Implementation helpers for ABI v0 are centralized in `include/vibeos/syscall_abi.h` and should be preferred over direct field writes in kernel tests and user-space glue.
 
