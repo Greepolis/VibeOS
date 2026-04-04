@@ -52,6 +52,7 @@ int vibeos_thread_create(vibeos_process_table_t *pt, uint32_t pid, uint32_t *out
 int vibeos_proc_handles(vibeos_process_table_t *pt, uint32_t pid, vibeos_handle_table_t **out_handles);
 int vibeos_proc_duplicate_handle(vibeos_process_table_t *pt, uint32_t src_pid, uint32_t dst_pid, uint32_t src_handle, uint32_t requested_rights, uint32_t *out_dst_handle);
 int vibeos_proc_revoke_handle_lineage(vibeos_process_table_t *pt, uint32_t owner_pid, uint32_t handle);
+int vibeos_proc_revoke_handle_lineage_scoped(vibeos_process_table_t *pt, uint32_t owner_pid, uint32_t handle, vibeos_object_type_t object_type_filter, uint32_t rights_mask_filter);
 int vibeos_proc_state(vibeos_process_table_t *pt, uint32_t pid, vibeos_process_state_t *out_state);
 int vibeos_proc_set_state(vibeos_process_table_t *pt, uint32_t pid, vibeos_process_state_t state);
 int vibeos_proc_terminate(vibeos_process_table_t *pt, uint32_t pid);

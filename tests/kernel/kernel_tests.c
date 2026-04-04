@@ -787,6 +787,65 @@ static int test_handle_revocation_propagation(void) {
     return 0;
 }
 
+static int test_handle_revocation_scoped(void) {
+    vibeos_process_table_t pt;
+    vibeos_handle_table_t *p1_handles = 0;
+    vibeos_handle_table_t *p2_handles = 0;
+    uint32_t p1 = 0;
+    uint32_t p2 = 0;
+    uint32_t t2 = 0;
+    uint32_t src_proc = 0;
+    uint32_t src_thread = 0;
+    uint32_t dup_proc = 0;
+    uint32_t dup_thread = 0;
+    uint32_t src_rights = 0;
+    uint32_t dup_rights = 0;
+
+    if (vibeos_proc_init(&pt) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_spawn(&pt, 0, &p1) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_spawn(&pt, p1, &p2) != 0) {
+        return -1;
+    }
+    if (vibeos_thread_create(&pt, p2, &t2) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_handles(&pt, p1, &p1_handles) != 0 || vibeos_proc_handles(&pt, p2, &p2_handles) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_bind_process_handle(&pt, p1, p2, VIBEOS_HANDLE_RIGHT_READ | VIBEOS_HANDLE_RIGHT_MANAGE, &src_proc) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_bind_thread_handle(&pt, p1, t2, VIBEOS_HANDLE_RIGHT_READ | VIBEOS_HANDLE_RIGHT_MANAGE, &src_thread) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_duplicate_handle(&pt, p1, p2, src_proc, VIBEOS_HANDLE_RIGHT_READ, &dup_proc) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_duplicate_handle(&pt, p1, p2, src_thread, VIBEOS_HANDLE_RIGHT_READ, &dup_thread) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_revoke_handle_lineage_scoped(&pt, p1, src_proc, VIBEOS_OBJECT_PROCESS, VIBEOS_HANDLE_RIGHT_READ) != 0) {
+        return -1;
+    }
+    if (vibeos_handle_rights(p1_handles, src_proc, &src_rights) == 0) {
+        return -1;
+    }
+    if (vibeos_handle_rights(p2_handles, dup_proc, &dup_rights) == 0) {
+        return -1;
+    }
+    if (vibeos_handle_rights(p1_handles, src_thread, &src_rights) != 0) {
+        return -1;
+    }
+    if (vibeos_handle_rights(p2_handles, dup_thread, &dup_rights) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 static int test_process_lifecycle(void) {
     vibeos_process_table_t pt;
     vibeos_process_state_t state;
@@ -906,6 +965,7 @@ int main(void) {
     RUN_TEST(test_process_lifecycle);
     RUN_TEST(test_process_thread_object_handles);
     RUN_TEST(test_handle_revocation_propagation);
+    RUN_TEST(test_handle_revocation_scoped);
 #undef RUN_TEST
 
     if (failures == 0) {
