@@ -51,6 +51,10 @@ add_library(vibeos_user_core STATIC
     user/fs/vfs_ops.c
     user/net/network_service.c
     user/net/socket.c
+    user/compat/compat_runtime.c
+    user/compat/linux/linux_compat.c
+    user/compat/windows/windows_compat.c
+    user/compat/macos/macos_compat.c
     user/lib/user_api.c
     boot/bootloader_stub.c
 )

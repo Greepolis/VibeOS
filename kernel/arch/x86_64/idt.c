@@ -22,3 +22,8 @@ int vibeos_x86_64_idt_set(vibeos_x86_64_idt_t *idt, uint32_t vector) {
 int vibeos_x86_64_timer_vector(void) {
     return (int)VIBEOS_X86_64_TIMER_IRQ;
 }
+
+int vibeos_x86_64_validate_boot_environment(uint32_t feature_flags) {
+    uint32_t required = VIBEOS_X86_64_FEATURE_SSE2 | VIBEOS_X86_64_FEATURE_NX;
+    return ((feature_flags & required) == required) ? 0 : -1;
+}

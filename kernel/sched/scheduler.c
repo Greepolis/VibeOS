@@ -10,6 +10,31 @@ static int runqueue_push(vibeos_runqueue_t *rq, vibeos_thread_t *thread) {
     return 0;
 }
 
+uint32_t vibeos_sched_default_timeslice(vibeos_thread_class_t klass) {
+    switch (klass) {
+        case VIBEOS_THREAD_BACKGROUND:
+            return 8;
+        case VIBEOS_THREAD_NORMAL:
+            return 4;
+        case VIBEOS_THREAD_INTERACTIVE:
+            return 2;
+        case VIBEOS_THREAD_REALTIME:
+            return 1;
+        default:
+            return 4;
+    }
+}
+
+int vibeos_sched_normalize_thread(vibeos_thread_t *thread) {
+    if (!thread) {
+        return -1;
+    }
+    if (thread->timeslice_ticks == 0) {
+        thread->timeslice_ticks = vibeos_sched_default_timeslice(thread->klass);
+    }
+    return 0;
+}
+
 static vibeos_thread_t *runqueue_pop(vibeos_runqueue_t *rq) {
     vibeos_thread_t *thread;
     if (rq->count == 0) {
@@ -43,6 +68,9 @@ int vibeos_sched_enqueue(vibeos_scheduler_t *sched, vibeos_thread_t *thread) {
     if (!sched || !thread || sched->cpu_count == 0) {
         return -1;
     }
+    if (vibeos_sched_normalize_thread(thread) != 0) {
+        return -1;
+    }
     cpu_id = thread->cpu_hint % sched->cpu_count;
     return runqueue_push(&sched->runqueues[cpu_id], thread);
 }
@@ -50,6 +78,9 @@ int vibeos_sched_enqueue(vibeos_scheduler_t *sched, vibeos_thread_t *thread) {
 int vibeos_sched_enqueue_balanced(vibeos_scheduler_t *sched, vibeos_thread_t *thread, uint32_t *out_cpu_id) {
     uint32_t cpu_id = 0;
     if (!sched || !thread) {
+        return -1;
+    }
+    if (vibeos_sched_normalize_thread(thread) != 0) {
         return -1;
     }
     if (vibeos_sched_least_loaded_cpu(sched, &cpu_id) != 0) {

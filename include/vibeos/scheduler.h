@@ -55,5 +55,7 @@ uint64_t vibeos_sched_wait_timeouts_total(const vibeos_scheduler_t *sched);
 uint64_t vibeos_sched_wait_wakes_total(const vibeos_scheduler_t *sched);
 int vibeos_sched_counters_reset(vibeos_scheduler_t *sched);
 int vibeos_sched_counter_summary(const vibeos_scheduler_t *sched, uint64_t *out_preemptions, uint64_t *out_wait_timeouts, uint64_t *out_wait_wakes, size_t *out_runnable, uint32_t *out_cpu_count);
+uint32_t vibeos_sched_default_timeslice(vibeos_thread_class_t klass);
+int vibeos_sched_normalize_thread(vibeos_thread_t *thread);
 
 #endif

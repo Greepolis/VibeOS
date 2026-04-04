@@ -5,6 +5,8 @@
 
 #define VIBEOS_X86_64_IDT_ENTRIES 256u
 #define VIBEOS_X86_64_TIMER_IRQ 32u
+#define VIBEOS_X86_64_FEATURE_SSE2 (1u << 0)
+#define VIBEOS_X86_64_FEATURE_NX (1u << 1)
 
 typedef struct vibeos_x86_64_idt {
     uint8_t present[VIBEOS_X86_64_IDT_ENTRIES];
@@ -13,5 +15,6 @@ typedef struct vibeos_x86_64_idt {
 int vibeos_x86_64_idt_init(vibeos_x86_64_idt_t *idt);
 int vibeos_x86_64_idt_set(vibeos_x86_64_idt_t *idt, uint32_t vector);
 int vibeos_x86_64_timer_vector(void);
+int vibeos_x86_64_validate_boot_environment(uint32_t feature_flags);
 
 #endif
