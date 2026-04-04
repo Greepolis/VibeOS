@@ -41,7 +41,9 @@ Argument semantics for current syscall groups:
 | `EVENT_SIGNAL` | event handle | reserved (`0`) | reserved (`0`) |
 | `WAITSET_ADD_EVENT` | event handle | waitset owner pid | caller pid |
 | `PROCESS_SPAWN` | parent pid | reserved (`0`) | reserved (`0`) |
-| `PROCESS_STATE_GET` | target pid | reserved (`0`) | caller pid (`0` = kernel; non-zero only self) |
+| `PROCESS_STATE_GET` | target pid | reserved (`0`) | caller pid (`0` = kernel; otherwise self or directly related process) |
+| `PROCESS_STATE_SET` | target pid | target process state enum | caller pid (`0` = kernel; otherwise self only) |
+| `PROCESS_TERMINATE` | target pid | reserved (`0`) | caller pid (`0` = kernel; otherwise self only) |
 | `THREAD_CREATE` | pid | reserved (`0`) | reserved (`0`) |
 | `THREAD_STATE_GET` | tid | reserved (`0`) | caller pid (`0` = kernel; otherwise owner pid only) |
 | `THREAD_STATE_SET` | tid | target state enum | caller pid (`0` = kernel; otherwise owner pid only) |
@@ -71,7 +73,8 @@ Access policy:
 - `caller_pid == 0`: full global audit stream.
 - `caller_pid != 0`: only events where `event.owner_pid == caller_pid`; `result` is redacted to caller-local sequence (`index + 1`).
 - `PROC_AUDIT_POLICY_SET`, `PROC_AUDIT_POLICY_GET`, `PROC_AUDIT_DROPPED` are kernel-only (`caller_pid == 0`) in ABI v0.
-- `PROCESS_STATE_GET` is kernel-only or self-introspection (`caller_pid == target_pid`).
+- `PROCESS_STATE_GET` is kernel-only, self-introspection, or directly related process introspection (parent or child).
+- `PROCESS_STATE_SET` and `PROCESS_TERMINATE` are kernel-only or self-targeted.
 - `THREAD_STATE_GET`, `THREAD_STATE_SET`, `THREAD_EXIT` are kernel-only or thread-owner scoped.
 
 Implementation helpers for ABI v0 are centralized in `include/vibeos/syscall_abi.h` and should be preferred over direct field writes in kernel tests and user-space glue.

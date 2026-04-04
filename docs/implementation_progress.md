@@ -284,6 +284,7 @@ Implemented:
 - tick-based preemption primitives
 - wait timeout and wake counters for scheduler observability
 - runqueue observability helpers (`runqueue_depth`, `runnable_threads`)
+- least-loaded CPU selection and balanced enqueue helper (`enqueue_balanced`)
 Files Created/Modified:
 - `kernel/sched/scheduler.c`
 - `include/vibeos/scheduler.h`
@@ -361,6 +362,7 @@ Implemented:
 - kernel-only syscall controls for audit retention policy and dropped-event counters
 - spawn authorization gate tied to capability policy (`can_process_spawn`)
 - process or thread lifecycle introspection and control syscalls with caller ownership enforcement
+- process lifecycle mutation syscalls (`PROCESS_STATE_SET`, `PROCESS_TERMINATE`) with self-or-kernel authorization
 Files Created/Modified:
 - `kernel/core/syscall.c`
 - `include/vibeos/syscall.h`
@@ -369,6 +371,7 @@ Files Created/Modified:
 - `include/vibeos/syscall_policy.h`
 Pending:
 - per-caller security token plumbing (today spawn policy is checked against kernel token)
+- stronger cross-process authorization model beyond direct relationship checks
 
 Module: Process Management
 Status: Partial
@@ -495,11 +498,11 @@ Pending:
 | --- | --- | --- |
 | Bootloader | In Progress | boot info builder stub implemented |
 | Kernel Core | In Progress | `kmain` bootstrap logic implemented |
-| Process Scheduler | In Progress | queue/preemption primitives plus wait counters and runqueue observability |
+| Process Scheduler | In Progress | queue/preemption primitives, runqueue observability, and balanced enqueue |
 | Memory Manager | In Progress | bump allocator implemented |
 | Virtual Memory | In Progress | address-space mapping primitives implemented |
 | Interrupt Handling | In Progress | controller + x86_64 IDT stub implemented |
-| System Call Interface | In Progress | dispatcher + rights policy + caller-scoped audit + thread/process lifecycle control syscalls |
+| System Call Interface | In Progress | dispatcher + rights policy + caller-scoped audit + process/thread lifecycle controls |
 | IPC Subsystem | In Progress | event/channel/waitset primitives with timer waits and configurable wake ordering |
 | Driver Framework | In Progress | driver framework registration stubs implemented |
 | Filesystem Layer | In Progress | VFS runtime mount/open/close primitives implemented |
