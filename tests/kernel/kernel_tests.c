@@ -237,6 +237,10 @@ static int test_syscalls(void) {
     uint32_t revoke_root = 0;
     uint32_t revoke_dup = 0;
     uint32_t i;
+    uint64_t proc_transitions = 0;
+    uint64_t thread_transitions = 0;
+    uint64_t proc_terms = 0;
+    uint64_t thread_exits = 0;
     vibeos_handle_table_t *pid1_handles = 0;
     memset(&kernel, 0, sizeof(kernel));
     memset(&frame, 0, sizeof(frame));
@@ -467,6 +471,17 @@ static int test_syscalls(void) {
     if (frame.arg0 != 0 || frame.arg1 != 1 || frame.arg2 != pid1 || frame.result != 1) {
         return -1;
     }
+    vibeos_syscall_make_waitset_owner_get(&frame, pid2);
+    if (vibeos_syscall_dispatch(&kernel, &frame) == 0) {
+        return -1;
+    }
+    vibeos_syscall_make_waitset_owner_get(&frame, pid1);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
+    if (frame.result != pid1 || frame.arg0 != 1 || frame.arg1 != 1) {
+        return -1;
+    }
     vibeos_syscall_make_waitset_wake_policy_get(&frame, pid2);
     if (vibeos_syscall_dispatch(&kernel, &frame) == 0) {
         return -1;
@@ -606,6 +621,34 @@ static int test_syscalls(void) {
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 1) {
         return -1;
     }
+    if (vibeos_proc_transition_counters(&kernel.proc_table, &proc_transitions, &thread_transitions, &proc_terms, &thread_exits) != 0) {
+        return -1;
+    }
+    if (proc_transitions != 3 || thread_transitions != 3 || proc_terms != 1 || thread_exits != 1) {
+        return -1;
+    }
+    vibeos_syscall_make_proc_transition_counters_get(&frame);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
+    if (frame.arg0 != 3 || frame.arg1 != 3 || frame.arg2 != 1 || frame.result != 1) {
+        return -1;
+    }
+    vibeos_syscall_make_proc_transition_counters_reset(&frame, pid1);
+    if (vibeos_syscall_dispatch(&kernel, &frame) == 0) {
+        return -1;
+    }
+    vibeos_syscall_make_proc_transition_counters_reset(&frame, 0);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
+    vibeos_syscall_make_proc_transition_counters_get(&frame);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
+    if (frame.arg0 != 0 || frame.arg1 != 0 || frame.arg2 != 0 || frame.result != 0) {
+        return -1;
+    }
     return 0;
 }
 
@@ -615,6 +658,10 @@ static int test_process_relationships(void) {
     uint32_t p2 = 0;
     uint32_t p3 = 0;
     uint32_t count = 0;
+    uint64_t proc_transitions = 0;
+    uint64_t thread_transitions = 0;
+    uint64_t proc_terms = 0;
+    uint64_t thread_exits = 0;
     if (vibeos_proc_init(&pt) != 0) {
         return -1;
     }
@@ -655,6 +702,12 @@ static int test_process_relationships(void) {
         return -1;
     }
     if (p1 != 2 || p2 != 0 || p3 != 0 || count != 1) {
+        return -1;
+    }
+    if (vibeos_proc_transition_counters(&pt, &proc_transitions, &thread_transitions, &proc_terms, &thread_exits) != 0) {
+        return -1;
+    }
+    if (proc_transitions != 1 || thread_transitions != 0 || proc_terms != 1 || thread_exits != 0) {
         return -1;
     }
     return 0;
@@ -1485,6 +1538,10 @@ static int test_thread_lifecycle_controls(void) {
     vibeos_process_table_t pt;
     vibeos_thread_state_t state;
     uint32_t owner_pid = 0;
+    uint64_t proc_transitions = 0;
+    uint64_t thread_transitions = 0;
+    uint64_t proc_terms = 0;
+    uint64_t thread_exits = 0;
     uint32_t pid = 0;
     uint32_t tid = 0;
     if (vibeos_proc_init(&pt) != 0) {
@@ -1515,6 +1572,12 @@ static int test_thread_lifecycle_controls(void) {
         return -1;
     }
     if (pt.thread_count != 0) {
+        return -1;
+    }
+    if (vibeos_proc_transition_counters(&pt, &proc_transitions, &thread_transitions, &proc_terms, &thread_exits) != 0) {
+        return -1;
+    }
+    if (proc_transitions != 1 || thread_transitions != 3 || proc_terms != 0 || thread_exits != 1) {
         return -1;
     }
     return 0;
