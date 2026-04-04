@@ -580,3 +580,33 @@ int vibeos_proc_thread_count(vibeos_process_table_t *pt, uint32_t *out_count) {
     *out_count = pt->thread_count;
     return 0;
 }
+
+int vibeos_proc_live_count(vibeos_process_table_t *pt, uint32_t *out_count) {
+    uint32_t i;
+    uint32_t live = 0;
+    if (!pt || !out_count) {
+        return -1;
+    }
+    for (i = 0; i < VIBEOS_MAX_PROCESSES; i++) {
+        if (pt->entries[i].in_use && pt->entries[i].state != VIBEOS_PROCESS_STATE_TERMINATED) {
+            live++;
+        }
+    }
+    *out_count = live;
+    return 0;
+}
+
+int vibeos_proc_terminated_count(vibeos_process_table_t *pt, uint32_t *out_count) {
+    uint32_t i;
+    uint32_t terminated = 0;
+    if (!pt || !out_count) {
+        return -1;
+    }
+    for (i = 0; i < VIBEOS_MAX_PROCESSES; i++) {
+        if (pt->entries[i].in_use && pt->entries[i].state == VIBEOS_PROCESS_STATE_TERMINATED) {
+            terminated++;
+        }
+    }
+    *out_count = terminated;
+    return 0;
+}

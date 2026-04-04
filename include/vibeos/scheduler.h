@@ -50,5 +50,8 @@ size_t vibeos_sched_runqueue_depth(const vibeos_scheduler_t *sched, uint32_t cpu
 size_t vibeos_sched_runnable_threads(const vibeos_scheduler_t *sched);
 int vibeos_sched_least_loaded_cpu(const vibeos_scheduler_t *sched, uint32_t *out_cpu_id);
 int vibeos_sched_cpu_count(const vibeos_scheduler_t *sched, uint32_t *out_cpu_count);
+uint64_t vibeos_sched_preemptions_total(const vibeos_scheduler_t *sched);
+uint64_t vibeos_sched_wait_timeouts_total(const vibeos_scheduler_t *sched);
+uint64_t vibeos_sched_wait_wakes_total(const vibeos_scheduler_t *sched);
 
 #endif

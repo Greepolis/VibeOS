@@ -103,5 +103,7 @@ int vibeos_proc_audit_get_policy(vibeos_process_table_t *pt, vibeos_proc_audit_p
 int vibeos_proc_audit_get_dropped(vibeos_process_table_t *pt, uint32_t *out_dropped);
 int vibeos_proc_process_count(vibeos_process_table_t *pt, uint32_t *out_count);
 int vibeos_proc_thread_count(vibeos_process_table_t *pt, uint32_t *out_count);
+int vibeos_proc_live_count(vibeos_process_table_t *pt, uint32_t *out_count);
+int vibeos_proc_terminated_count(vibeos_process_table_t *pt, uint32_t *out_count);
 
 #endif

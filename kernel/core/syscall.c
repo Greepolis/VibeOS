@@ -211,6 +211,26 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             frame->result = (int64_t)count;
             return 0;
         }
+        case VIBEOS_SYSCALL_PROCESS_LIVE_COUNT_GET:
+        {
+            uint32_t count = 0;
+            if (vibeos_proc_live_count(&kernel->proc_table, &count) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = (int64_t)count;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_PROCESS_TERMINATED_COUNT_GET:
+        {
+            uint32_t count = 0;
+            if (vibeos_proc_terminated_count(&kernel->proc_table, &count) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = (int64_t)count;
+            return 0;
+        }
         case VIBEOS_SYSCALL_THREAD_CREATE:
         {
             uint32_t tid;
@@ -382,8 +402,15 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             frame->result = (int64_t)vibeos_sched_runnable_threads(&kernel->scheduler);
             return 0;
         case VIBEOS_SYSCALL_SCHED_RUNQUEUE_DEPTH_GET:
+        {
+            uint32_t cpu_count = 0;
+            if (vibeos_sched_cpu_count(&kernel->scheduler, &cpu_count) != 0 || (uint32_t)frame->arg0 >= cpu_count) {
+                frame->result = -1;
+                return -1;
+            }
             frame->result = (int64_t)vibeos_sched_runqueue_depth(&kernel->scheduler, (uint32_t)frame->arg0);
             return 0;
+        }
         case VIBEOS_SYSCALL_SCHED_CPU_COUNT_GET:
         {
             uint32_t cpu_count = 0;
@@ -394,6 +421,45 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             frame->result = (int64_t)cpu_count;
             return 0;
         }
+        case VIBEOS_SYSCALL_SCHED_PREEMPTIONS_GET:
+        {
+            uint32_t cpu_count = 0;
+            if (vibeos_sched_cpu_count(&kernel->scheduler, &cpu_count) != 0 || (uint32_t)frame->arg0 >= cpu_count) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = (int64_t)vibeos_sched_preemptions(&kernel->scheduler, (uint32_t)frame->arg0);
+            return 0;
+        }
+        case VIBEOS_SYSCALL_SCHED_WAIT_TIMEOUTS_GET:
+        {
+            uint32_t cpu_count = 0;
+            if (vibeos_sched_cpu_count(&kernel->scheduler, &cpu_count) != 0 || (uint32_t)frame->arg0 >= cpu_count) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = (int64_t)vibeos_sched_wait_timeouts(&kernel->scheduler, (uint32_t)frame->arg0);
+            return 0;
+        }
+        case VIBEOS_SYSCALL_SCHED_WAIT_WAKES_GET:
+        {
+            uint32_t cpu_count = 0;
+            if (vibeos_sched_cpu_count(&kernel->scheduler, &cpu_count) != 0 || (uint32_t)frame->arg0 >= cpu_count) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = (int64_t)vibeos_sched_wait_wakes(&kernel->scheduler, (uint32_t)frame->arg0);
+            return 0;
+        }
+        case VIBEOS_SYSCALL_SCHED_PREEMPTIONS_TOTAL_GET:
+            frame->result = (int64_t)vibeos_sched_preemptions_total(&kernel->scheduler);
+            return 0;
+        case VIBEOS_SYSCALL_SCHED_WAIT_TIMEOUTS_TOTAL_GET:
+            frame->result = (int64_t)vibeos_sched_wait_timeouts_total(&kernel->scheduler);
+            return 0;
+        case VIBEOS_SYSCALL_SCHED_WAIT_WAKES_TOTAL_GET:
+            frame->result = (int64_t)vibeos_sched_wait_wakes_total(&kernel->scheduler);
+            return 0;
         default:
             frame->result = -1;
             return -1;

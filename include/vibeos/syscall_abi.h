@@ -127,6 +127,26 @@ static inline void vibeos_syscall_make_thread_count_get(vibeos_syscall_frame_t *
     f->arg2 = 0;
 }
 
+static inline void vibeos_syscall_make_process_live_count_get(vibeos_syscall_frame_t *f) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_PROCESS_LIVE_COUNT_GET;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = 0;
+}
+
+static inline void vibeos_syscall_make_process_terminated_count_get(vibeos_syscall_frame_t *f) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_PROCESS_TERMINATED_COUNT_GET;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = 0;
+}
+
 static inline void vibeos_syscall_make_thread_create(vibeos_syscall_frame_t *f, uint32_t pid) {
     if (!f) {
         return;
@@ -286,6 +306,66 @@ static inline void vibeos_syscall_make_sched_cpu_count_get(vibeos_syscall_frame_
         return;
     }
     f->id = VIBEOS_SYSCALL_SCHED_CPU_COUNT_GET;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = 0;
+}
+
+static inline void vibeos_syscall_make_sched_preemptions_get(vibeos_syscall_frame_t *f, uint32_t cpu_id) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_SCHED_PREEMPTIONS_GET;
+    f->arg0 = cpu_id;
+    f->arg1 = 0;
+    f->arg2 = 0;
+}
+
+static inline void vibeos_syscall_make_sched_wait_timeouts_get(vibeos_syscall_frame_t *f, uint32_t cpu_id) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_SCHED_WAIT_TIMEOUTS_GET;
+    f->arg0 = cpu_id;
+    f->arg1 = 0;
+    f->arg2 = 0;
+}
+
+static inline void vibeos_syscall_make_sched_wait_wakes_get(vibeos_syscall_frame_t *f, uint32_t cpu_id) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_SCHED_WAIT_WAKES_GET;
+    f->arg0 = cpu_id;
+    f->arg1 = 0;
+    f->arg2 = 0;
+}
+
+static inline void vibeos_syscall_make_sched_preemptions_total_get(vibeos_syscall_frame_t *f) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_SCHED_PREEMPTIONS_TOTAL_GET;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = 0;
+}
+
+static inline void vibeos_syscall_make_sched_wait_timeouts_total_get(vibeos_syscall_frame_t *f) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_SCHED_WAIT_TIMEOUTS_TOTAL_GET;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = 0;
+}
+
+static inline void vibeos_syscall_make_sched_wait_wakes_total_get(vibeos_syscall_frame_t *f) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_SCHED_WAIT_WAKES_TOTAL_GET;
     f->arg0 = 0;
     f->arg1 = 0;
     f->arg2 = 0;
