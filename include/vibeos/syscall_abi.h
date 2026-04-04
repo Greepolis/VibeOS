@@ -406,4 +406,34 @@ static inline void vibeos_syscall_make_waitset_stats_ext_get(vibeos_syscall_fram
     f->arg2 = caller_pid;
 }
 
+static inline void vibeos_syscall_make_waitset_wake_policy_set(vibeos_syscall_frame_t *f, uint32_t policy, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_WAITSET_WAKE_POLICY_SET;
+    f->arg0 = policy;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
+static inline void vibeos_syscall_make_waitset_wake_policy_get(vibeos_syscall_frame_t *f, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_WAITSET_WAKE_POLICY_GET;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
+static inline void vibeos_syscall_make_waitset_stats_reset(vibeos_syscall_frame_t *f, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_WAITSET_STATS_RESET;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
 #endif

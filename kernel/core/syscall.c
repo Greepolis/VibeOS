@@ -38,6 +38,16 @@ static int syscall_process_mutation_allowed(uint32_t caller_pid, uint32_t target
     return caller_pid == target_pid;
 }
 
+static int syscall_waitset_owner_access_allowed(uint32_t caller_pid, uint32_t owner_pid, int waitset_initialized) {
+    if (!waitset_initialized) {
+        return 0;
+    }
+    if (caller_pid == 0) {
+        return 1;
+    }
+    return caller_pid == owner_pid;
+}
+
 int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_frame_t *frame) {
     static vibeos_waitset_t kernel_waitset;
     static uint32_t kernel_waitset_owner_pid = 0;
@@ -139,11 +149,7 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             uint64_t wakes = 0;
             uint64_t timeouts = 0;
             uint64_t denials = 0;
-            if (caller_pid != 0 && caller_pid != kernel_waitset_owner_pid) {
-                frame->result = -1;
-                return -1;
-            }
-            if (!waitset_initialized) {
+            if (!syscall_waitset_owner_access_allowed(caller_pid, kernel_waitset_owner_pid, waitset_initialized)) {
                 frame->result = -1;
                 return -1;
             }
@@ -166,11 +172,7 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             uint64_t wakes = 0;
             uint64_t timeouts = 0;
             uint64_t denials = 0;
-            if (caller_pid != 0 && caller_pid != kernel_waitset_owner_pid) {
-                frame->result = -1;
-                return -1;
-            }
-            if (!waitset_initialized) {
+            if (!syscall_waitset_owner_access_allowed(caller_pid, kernel_waitset_owner_pid, waitset_initialized)) {
                 frame->result = -1;
                 return -1;
             }
@@ -185,6 +187,49 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             frame->arg1 = denials;
             frame->arg2 = (uint64_t)kernel_waitset_owner_pid;
             frame->result = (int64_t)kernel_waitset.count;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_WAITSET_WAKE_POLICY_SET:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            if (!syscall_waitset_owner_access_allowed(caller_pid, kernel_waitset_owner_pid, waitset_initialized)) {
+                frame->result = -1;
+                return -1;
+            }
+            if (vibeos_waitset_set_wake_policy(&kernel_waitset, (vibeos_waitset_wake_policy_t)frame->arg0) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = 0;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_WAITSET_WAKE_POLICY_GET:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            vibeos_waitset_wake_policy_t policy;
+            if (!syscall_waitset_owner_access_allowed(caller_pid, kernel_waitset_owner_pid, waitset_initialized)) {
+                frame->result = -1;
+                return -1;
+            }
+            if (vibeos_waitset_get_wake_policy(&kernel_waitset, &policy) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = (int64_t)policy;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_WAITSET_STATS_RESET:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            if (!syscall_waitset_owner_access_allowed(caller_pid, kernel_waitset_owner_pid, waitset_initialized)) {
+                frame->result = -1;
+                return -1;
+            }
+            if (vibeos_waitset_stats_reset(&kernel_waitset) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = 0;
             return 0;
         }
         case VIBEOS_SYSCALL_PROCESS_SPAWN:

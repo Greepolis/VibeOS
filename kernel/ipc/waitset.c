@@ -83,13 +83,16 @@ int vibeos_waitset_remove(vibeos_waitset_t *waitset, size_t index) {
 
 int vibeos_waitset_reset(vibeos_waitset_t *waitset) {
     size_t i;
+    size_t removed_count;
     if (!waitset || !waitset->active) {
         return -1;
     }
+    removed_count = waitset->count;
     for (i = 0; i < VIBEOS_WAITSET_MAX_EVENTS; i++) {
         waitset->events[i] = 0;
     }
     waitset->count = 0;
+    waitset->stats_removed += (uint64_t)removed_count;
     return 0;
 }
 
@@ -142,6 +145,19 @@ int vibeos_waitset_stats(vibeos_waitset_t *waitset, uint64_t *out_added, uint64_
     *out_wait_wakes = waitset->stats_wait_wakes;
     *out_wait_timeouts = waitset->stats_wait_timeouts;
     *out_ownership_denials = waitset->stats_ownership_denials;
+    return 0;
+}
+
+int vibeos_waitset_stats_reset(vibeos_waitset_t *waitset) {
+    if (!waitset || !waitset->active) {
+        return -1;
+    }
+    waitset->stats_added = 0;
+    waitset->stats_removed = 0;
+    waitset->stats_wait_calls = 0;
+    waitset->stats_wait_wakes = 0;
+    waitset->stats_wait_timeouts = 0;
+    waitset->stats_ownership_denials = 0;
     return 0;
 }
 
