@@ -482,6 +482,13 @@ static int test_syscalls(void) {
     if (frame.result != pid1 || frame.arg0 != 1 || frame.arg1 != 1) {
         return -1;
     }
+    vibeos_syscall_make_waitset_snapshot_get(&frame, 0);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
+    if (frame.result != pid1 || frame.arg0 != 1 || frame.arg1 != VIBEOS_WAITSET_WAKE_FIFO || frame.arg2 != 1) {
+        return -1;
+    }
     vibeos_syscall_make_waitset_wake_policy_get(&frame, pid2);
     if (vibeos_syscall_dispatch(&kernel, &frame) == 0) {
         return -1;
@@ -577,6 +584,25 @@ static int test_syscalls(void) {
     if (vibeos_syscall_dispatch(&kernel, &frame) == 0) {
         return -1;
     }
+    vibeos_syscall_make_proc_audit_count_action(&frame, VIBEOS_PROC_AUDIT_REVOKE_LINEAGE, 0);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result <= 0) {
+        return -1;
+    }
+    vibeos_syscall_make_proc_audit_count_success(&frame, 1, 0);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result <= 0) {
+        return -1;
+    }
+    vibeos_syscall_make_proc_audit_summary(&frame, 0);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.arg0 < frame.arg1 || frame.arg0 < frame.arg2) {
+        return -1;
+    }
+    if ((frame.arg1 + frame.arg2) != frame.arg0) {
+        return -1;
+    }
+    vibeos_syscall_make_proc_audit_summary(&frame, pid1);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.arg0 < 1) {
+        return -1;
+    }
     vibeos_syscall_make_sched_cpu_count_get(&frame);
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 2) {
         return -1;
@@ -619,6 +645,28 @@ static int test_syscalls(void) {
     }
     vibeos_syscall_make_sched_wait_wakes_total_get(&frame);
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 1) {
+        return -1;
+    }
+    vibeos_syscall_make_sched_counter_summary_get(&frame);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
+    if (frame.arg0 != 1 || frame.arg1 != 1 || frame.arg2 != 1 || frame.result != 2) {
+        return -1;
+    }
+    vibeos_syscall_make_sched_counters_reset(&frame, pid1);
+    if (vibeos_syscall_dispatch(&kernel, &frame) == 0) {
+        return -1;
+    }
+    vibeos_syscall_make_sched_counters_reset(&frame, 0);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
+    vibeos_syscall_make_sched_counter_summary_get(&frame);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
+    if (frame.arg0 != 0 || frame.arg1 != 0 || frame.arg2 != 0 || frame.result != 2) {
         return -1;
     }
     if (vibeos_proc_transition_counters(&kernel.proc_table, &proc_transitions, &thread_transitions, &proc_terms, &thread_exits) != 0) {
