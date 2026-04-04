@@ -46,6 +46,8 @@ Argument semantics for current syscall groups:
 | `PROCESS_TERMINATE` | target pid | reserved (`0`) | caller pid (`0` = kernel; otherwise self only) |
 | `PROCESS_COUNT_GET` | reserved (`0`) | reserved (`0`) | reserved (`0`) |
 | `THREAD_COUNT_GET` | reserved (`0`) | reserved (`0`) | reserved (`0`) |
+| `PROCESS_LIVE_COUNT_GET` | reserved (`0`) | reserved (`0`) | reserved (`0`) |
+| `PROCESS_TERMINATED_COUNT_GET` | reserved (`0`) | reserved (`0`) | reserved (`0`) |
 | `THREAD_CREATE` | pid | reserved (`0`) | reserved (`0`) |
 | `THREAD_STATE_GET` | tid | reserved (`0`) | caller pid (`0` = kernel; otherwise owner pid only) |
 | `THREAD_STATE_SET` | tid | target state enum | caller pid (`0` = kernel; otherwise owner pid only) |
@@ -61,6 +63,12 @@ Argument semantics for current syscall groups:
 | `SCHED_RUNNABLE_GET` | reserved (`0`) | reserved (`0`) | reserved (`0`) |
 | `SCHED_RUNQUEUE_DEPTH_GET` | cpu id | reserved (`0`) | reserved (`0`) |
 | `SCHED_CPU_COUNT_GET` | reserved (`0`) | reserved (`0`) | reserved (`0`) |
+| `SCHED_PREEMPTIONS_GET` | cpu id | reserved (`0`) | reserved (`0`) |
+| `SCHED_WAIT_TIMEOUTS_GET` | cpu id | reserved (`0`) | reserved (`0`) |
+| `SCHED_WAIT_WAKES_GET` | cpu id | reserved (`0`) | reserved (`0`) |
+| `SCHED_PREEMPTIONS_TOTAL_GET` | reserved (`0`) | reserved (`0`) | reserved (`0`) |
+| `SCHED_WAIT_TIMEOUTS_TOTAL_GET` | reserved (`0`) | reserved (`0`) | reserved (`0`) |
+| `SCHED_WAIT_WAKES_TOTAL_GET` | reserved (`0`) | reserved (`0`) | reserved (`0`) |
 
 `PROC_AUDIT_GET` returns:
 - `result` = `event.seq` (positive on success)

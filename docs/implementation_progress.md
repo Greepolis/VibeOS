@@ -286,6 +286,7 @@ Implemented:
 - runqueue observability helpers (`runqueue_depth`, `runnable_threads`)
 - least-loaded CPU selection and balanced enqueue helper (`enqueue_balanced`)
 - scheduler CPU-count query helper for syscall observability paths
+- aggregate scheduler counters (`preemptions`, `wait_timeouts`, `wait_wakes`) for runtime telemetry
 Files Created/Modified:
 - `kernel/sched/scheduler.c`
 - `include/vibeos/scheduler.h`
@@ -365,6 +366,7 @@ Implemented:
 - process or thread lifecycle introspection and control syscalls with caller ownership enforcement
 - process lifecycle mutation syscalls (`PROCESS_STATE_SET`, `PROCESS_TERMINATE`) with self-or-kernel authorization
 - runtime observability syscalls for process or thread counts and scheduler queue metrics
+- runtime observability syscalls for process live or terminated counts and scheduler per-cpu and aggregate counters
 Files Created/Modified:
 - `kernel/core/syscall.c`
 - `include/vibeos/syscall.h`
@@ -389,6 +391,7 @@ Implemented:
 - thread registry with owner process binding
 - thread lifecycle controls (`state`, `set_state`, `exit`) and thread-count consistency updates
 - thread owner introspection helper (`vibeos_thread_owner`) used by syscall authorization
+- process-table observability helpers for total, live, and terminated process counts
 - process and thread object-handle bind or resolve helpers
 - handle lineage revocation propagation across process handle tables
 - selective handle lineage revocation filters (by object type and rights mask)
@@ -500,11 +503,11 @@ Pending:
 | --- | --- | --- |
 | Bootloader | In Progress | boot info builder stub implemented |
 | Kernel Core | In Progress | `kmain` bootstrap logic implemented |
-| Process Scheduler | In Progress | queue/preemption primitives, runqueue observability, and balanced enqueue |
+| Process Scheduler | In Progress | queue/preemption primitives, balanced enqueue, and per-cpu/aggregate telemetry |
 | Memory Manager | In Progress | bump allocator implemented |
 | Virtual Memory | In Progress | address-space mapping primitives implemented |
 | Interrupt Handling | In Progress | controller + x86_64 IDT stub implemented |
-| System Call Interface | In Progress | dispatcher + rights policy + lifecycle controls + runtime observability syscalls |
+| System Call Interface | In Progress | dispatcher + rights policy + lifecycle controls + extended observability syscalls |
 | IPC Subsystem | In Progress | event/channel/waitset primitives with timer waits and configurable wake ordering |
 | Driver Framework | In Progress | driver framework registration stubs implemented |
 | Filesystem Layer | In Progress | VFS runtime mount/open/close primitives implemented |
