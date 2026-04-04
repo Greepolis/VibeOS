@@ -57,3 +57,9 @@ GUI is not part of the earliest milestones, but the architecture should anticipa
 - emulator-friendly boot flows
 - serial and structured logs
 - conformance and regression test harnesses
+
+## Current implementation snapshot
+
+- service lifecycle now includes start and stop paths across init, devmgr, vfs, and net services.
+- service manager exposes a health aggregation helper that reports currently running critical services.
+- runtime supervision counters are exercised by host tests to keep orchestration behavior regression-safe.

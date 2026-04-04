@@ -79,3 +79,9 @@ The bootloader passes a versioned boot information block containing:
 - firmware diversity risk is mitigated by targeting UEFI first
 - early memory corruption risk is reduced through strict phase separation
 - boot ABI drift is controlled through versioned handoff structures
+
+## Current implementation snapshot
+
+- bootloader stub exposes boot-info validation and memory summary helpers.
+- boot-info contract checks now reject zero-length memory regions and invalid base contracts before kernel bring-up.
+- kernel bootstrap initializes security-audit state during early core initialization.

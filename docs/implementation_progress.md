@@ -257,6 +257,7 @@ Implemented:
 - `vibeos_kmain` entry sequence with boot contract checks
 - boot-stage state transitions and initialization event signaling
 - process table, timer, IDT, and trap bootstrap hooks
+- kernel security-audit log initialization during early core bootstrap
 Files Created/Modified:
 - `kernel/core/kmain.c`
 - `include/vibeos/kernel.h`
@@ -325,6 +326,9 @@ Status: Partial
 Implemented:
 - address-space object initialization
 - map, unmap, protect, and lookup primitives
+- partial range unmap with split-map handling
+- map-count and total-mapped observability helpers
+- read-only address-space clone primitive for early copy-on-write modeling
 Files Created/Modified:
 - `kernel/mm/vm.c`
 - `include/vibeos/vm.h`
@@ -466,6 +470,8 @@ Implemented:
 - networking service stub
 - socket create/bind/send/close runtime primitives
 - service IPC message contract build/validate
+- start/stop lifecycle controls for init, devmgr, vfs, and net service stubs
+- service-manager health aggregation helper for supervised service visibility
 Files Created/Modified:
 - `user/init/init_system.c`
 - `user/servicemgr/service_manager.c`
@@ -499,6 +505,7 @@ Implemented:
 - baseline policy engine for fs/net/process-spawn checks
 - runtime policy capability introspection/update helpers for fs-open, net-bind, and process-spawn controls
 - kernel security-audit log for privileged security operations with caller-scoped introspection
+- security-audit success/failure counters by action and by outcome (`success` filter)
 Files Created/Modified:
 - `kernel/core/security.c`
 - `include/vibeos/security_model.h`
@@ -512,6 +519,7 @@ Module: Bootloader Interface
 Status: Partial
 Implemented:
 - boot info builder stub for kernel handoff contract
+- boot-info validation helper and memory summary helper (`total` vs `usable` bytes)
 Files Created/Modified:
 - `boot/bootloader_stub.c`
 - `include/vibeos/bootloader.h`
@@ -533,6 +541,6 @@ Pending:
 | IPC Subsystem | In Progress | event/channel/waitset primitives with wake-order policy and runtime telemetry counters |
 | Driver Framework | In Progress | driver framework registration stubs implemented |
 | Filesystem Layer | In Progress | VFS runtime mount/open/close primitives implemented |
-| Networking Stack | In Progress | socket runtime primitives implemented |
+| Networking Stack | In Progress | socket runtime primitives, secure bind, receive simulation, and runtime stats implemented |
 | User Space Interface | In Progress | user API syscall bridge stubs implemented |
 | Init System | In Progress | init service stub implemented |

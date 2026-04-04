@@ -62,3 +62,9 @@ Full write support for foreign filesystems should be gated behind strong test co
 - immutable and verified system partitions in hardened modes
 - per-filesystem policy hooks
 - brokered access for sandboxed applications
+
+## Current implementation snapshot
+
+- VFS runtime supports mount, unmount, open, close, and secure-open policy checks.
+- mount observability is available through active-mount counters.
+- unmounted filesystems are rejected by open paths, improving lifecycle correctness.

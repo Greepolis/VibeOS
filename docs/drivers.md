@@ -62,3 +62,9 @@ This keeps the kernel in control of trust boundaries even when drivers live in u
 - supervised restart for user-space drivers
 - versioned driver-service protocols
 - structured fault and telemetry reporting
+
+## Current implementation snapshot
+
+- driver framework now enforces unique driver registration IDs.
+- runtime supports driver unregister and driver-state queries for service health checks.
+- driver-host probe path remains service-state aware and integrates with device discovery counters.

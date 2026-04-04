@@ -96,6 +96,7 @@ Argument semantics for current syscall groups:
 | `SEC_AUDIT_COUNT` | reserved (`0`) | reserved (`0`) | caller pid (`0` = global, non-zero = caller-scoped) |
 | `SEC_AUDIT_GET` | event index (caller-local if `arg2 != 0`) | reserved (`0`) | caller pid (`0` = global, non-zero = caller-scoped) |
 | `SEC_AUDIT_COUNT_ACTION` | security-audit action enum | reserved (`0`) | caller pid (`0` = global, non-zero = caller-scoped) |
+| `SEC_AUDIT_COUNT_SUCCESS` | success value (`0`/`1`) | reserved (`0`) | caller pid (`0` = global, non-zero = caller-scoped) |
 | `SEC_AUDIT_SUMMARY` | reserved (`0`) | reserved (`0`) | caller pid (`0` = global, non-zero = caller-scoped) |
 | `SEC_AUDIT_RESET` | reserved (`0`) | reserved (`0`) | caller pid (`0` required) |
 
