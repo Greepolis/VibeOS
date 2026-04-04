@@ -93,6 +93,11 @@ Argument semantics for current syscall groups:
 | `POLICY_CAPABILITY_GET` | policy target enum (`1` fs-open, `2` net-bind, `3` process-spawn) | reserved (`0`) | caller pid (advisory, unrestricted read) |
 | `POLICY_CAPABILITY_SET` | policy target enum (`1` fs-open, `2` net-bind, `3` process-spawn) | required capability bit (`0..31`) | caller pid (`0` required) |
 | `POLICY_SUMMARY_GET` | reserved (`0`) | reserved (`0`) | caller pid (advisory, unrestricted read) |
+| `SEC_AUDIT_COUNT` | reserved (`0`) | reserved (`0`) | caller pid (`0` = global, non-zero = caller-scoped) |
+| `SEC_AUDIT_GET` | event index (caller-local if `arg2 != 0`) | reserved (`0`) | caller pid (`0` = global, non-zero = caller-scoped) |
+| `SEC_AUDIT_COUNT_ACTION` | security-audit action enum | reserved (`0`) | caller pid (`0` = global, non-zero = caller-scoped) |
+| `SEC_AUDIT_SUMMARY` | reserved (`0`) | reserved (`0`) | caller pid (`0` = global, non-zero = caller-scoped) |
+| `SEC_AUDIT_RESET` | reserved (`0`) | reserved (`0`) | caller pid (`0` required) |
 
 `PROC_AUDIT_GET` returns:
 - `result` = `event.seq` (positive on success)
@@ -177,6 +182,18 @@ Argument semantics for current syscall groups:
 - `arg2` = required capability bit for process-spawn policy checks
 - `result` = `0` on success
 
+`SEC_AUDIT_GET` returns:
+- `result` = security audit sequence (caller-local redacted sequence when `caller_pid != 0`)
+- `arg0` = action enum (`1` process-spawn, `2` process-token-set, `3` policy-capability-set)
+- `arg1` = success flag (`0`/`1`)
+- `arg2` = target pid (`0` when not process-targeted)
+
+`SEC_AUDIT_SUMMARY` returns:
+- `arg0` = total visible security audit events
+- `arg1` = visible successful events
+- `arg2` = visible failed events
+- `result` = `0` on success
+
 Access policy:
 - `caller_pid == 0`: full global audit stream.
 - `caller_pid != 0`: only events where `event.owner_pid == caller_pid`; `result` is redacted to caller-local sequence (`index + 1`).
@@ -185,6 +202,7 @@ Access policy:
 - `PROCESS_STATE_SET` and `PROCESS_TERMINATE` are kernel-only or self-targeted.
 - `PROCESS_TOKEN_GET` is kernel-only, self-introspection, or directly related process introspection (parent or child).
 - `PROCESS_TOKEN_SET` is kernel-only or self-targeted.
+- `SEC_AUDIT_COUNT`, `SEC_AUDIT_GET`, `SEC_AUDIT_COUNT_ACTION`, and `SEC_AUDIT_SUMMARY` are kernel-global for `caller_pid == 0`, caller-scoped otherwise.
 - `THREAD_STATE_GET`, `THREAD_STATE_SET`, `THREAD_EXIT` are kernel-only or thread-owner scoped.
 - `WAITSET_STATS_GET` and `WAITSET_STATS_EXT_GET` are kernel-only or waitset-owner scoped.
 - `WAITSET_WAKE_POLICY_SET`, `WAITSET_WAKE_POLICY_GET`, and `WAITSET_STATS_RESET` are kernel-only or waitset-owner scoped.
@@ -193,6 +211,7 @@ Access policy:
 - `PROC_TRANSITION_COUNTERS_RESET` is kernel-only.
 - `SCHED_COUNTERS_RESET` is kernel-only.
 - `POLICY_CAPABILITY_SET` is kernel-only.
+- `SEC_AUDIT_RESET` is kernel-only.
 
 Implementation helpers for ABI v0 are centralized in `include/vibeos/syscall_abi.h` and should be preferred over direct field writes in kernel tests and user-space glue.
 

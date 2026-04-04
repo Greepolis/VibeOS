@@ -381,6 +381,7 @@ Implemented:
 - process security-token syscalls (`PROCESS_TOKEN_GET`, `PROCESS_TOKEN_SET`) with scoped access control
 - caller-aware spawn authorization path (policy checks against caller token capabilities, not global kernel token)
 - policy introspection and control syscalls (`POLICY_CAPABILITY_GET`, `POLICY_CAPABILITY_SET`, `POLICY_SUMMARY_GET`)
+- security-audit syscalls (`SEC_AUDIT_COUNT`, `SEC_AUDIT_GET`, `SEC_AUDIT_COUNT_ACTION`, `SEC_AUDIT_SUMMARY`, `SEC_AUDIT_RESET`)
 Files Created/Modified:
 - `kernel/core/syscall.c`
 - `include/vibeos/syscall.h`
@@ -497,6 +498,7 @@ Implemented:
 - capability bit check helper
 - baseline policy engine for fs/net/process-spawn checks
 - runtime policy capability introspection/update helpers for fs-open, net-bind, and process-spawn controls
+- kernel security-audit log for privileged security operations with caller-scoped introspection
 Files Created/Modified:
 - `kernel/core/security.c`
 - `include/vibeos/security_model.h`

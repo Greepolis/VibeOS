@@ -87,3 +87,8 @@ The design should permit:
 - security event logging
 - crash and tamper diagnostics
 - trace correlation for compatibility subsystem behavior
+
+Current implementation status:
+- kernel security-audit ring buffer tracks privileged security-relevant operations.
+- audited operations currently include process spawn authorization outcomes, process token updates, and policy capability mutations.
+- non-kernel callers can only inspect their own security-audit events through caller-scoped syscall views.
