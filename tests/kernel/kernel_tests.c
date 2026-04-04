@@ -195,6 +195,7 @@ static int test_syscalls(void) {
     uint32_t signal_handle = 0;
     uint32_t revoke_root = 0;
     uint32_t revoke_dup = 0;
+    uint32_t i;
     vibeos_handle_table_t *pid1_handles = 0;
     memset(&kernel, 0, sizeof(kernel));
     memset(&frame, 0, sizeof(frame));
@@ -218,6 +219,12 @@ static int test_syscalls(void) {
         return -1;
     }
     if (!vibeos_event_is_signaled(&kernel.boot_event)) {
+        return -1;
+    }
+    if (vibeos_policy_init(&kernel.policy) != 0) {
+        return -1;
+    }
+    if (vibeos_sec_token_init(&kernel.kernel_token, 0, 0, (1u << 0) | (1u << 1) | (1u << 2)) != 0) {
         return -1;
     }
     vibeos_syscall_make_process_spawn(&frame, 0);
@@ -316,6 +323,29 @@ static int test_syscalls(void) {
     }
     vibeos_syscall_make_proc_audit_get(&frame, 0, pid1);
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 1) {
+        return -1;
+    }
+    vibeos_syscall_make_proc_audit_policy_set(&frame, VIBEOS_PROC_AUDIT_DROP_NEWEST, pid1);
+    if (vibeos_syscall_dispatch(&kernel, &frame) == 0) {
+        return -1;
+    }
+    vibeos_syscall_make_proc_audit_policy_set(&frame, VIBEOS_PROC_AUDIT_DROP_NEWEST, 0);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
+    vibeos_syscall_make_proc_audit_policy_get(&frame, 0);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != VIBEOS_PROC_AUDIT_DROP_NEWEST) {
+        return -1;
+    }
+    for (i = 0; i < VIBEOS_PROC_AUDIT_CAPACITY + 8; i++) {
+        (void)vibeos_proc_revoke_handle_lineage(&kernel.proc_table, pid1, revoke_root);
+    }
+    vibeos_syscall_make_proc_audit_dropped(&frame, 0);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result <= 0) {
+        return -1;
+    }
+    vibeos_syscall_make_proc_audit_dropped(&frame, pid1);
+    if (vibeos_syscall_dispatch(&kernel, &frame) == 0) {
         return -1;
     }
     return 0;
@@ -575,6 +605,47 @@ static int test_waitset_lifecycle(void) {
         return -1;
     }
     if (vibeos_waitset_add(&waitset, &ev1) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_waitset_wake_policy(void) {
+    vibeos_waitset_t waitset;
+    vibeos_scheduler_t sched;
+    vibeos_event_t ev1;
+    vibeos_event_t ev2;
+    vibeos_waitset_wake_policy_t policy;
+    size_t idx = 0;
+    if (vibeos_sched_init(&sched, 1) != 0) {
+        return -1;
+    }
+    vibeos_event_init(&ev1);
+    vibeos_event_init(&ev2);
+    vibeos_event_signal(&ev1);
+    vibeos_event_signal(&ev2);
+    if (vibeos_waitset_init(&waitset) != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_get_wake_policy(&waitset, &policy) != 0 || policy != VIBEOS_WAITSET_WAKE_FIFO) {
+        return -1;
+    }
+    if (vibeos_waitset_add(&waitset, &ev1) != 0 || vibeos_waitset_add(&waitset, &ev2) != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_wait_ex(&waitset, 0, &idx, &sched, 0) != 0 || idx != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_set_wake_policy(&waitset, VIBEOS_WAITSET_WAKE_REVERSE) != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_get_wake_policy(&waitset, &policy) != 0 || policy != VIBEOS_WAITSET_WAKE_REVERSE) {
+        return -1;
+    }
+    if (vibeos_waitset_wait_ex(&waitset, 0, &idx, &sched, 0) != 0 || idx != 1) {
+        return -1;
+    }
+    if (vibeos_waitset_set_wake_policy(&waitset, (vibeos_waitset_wake_policy_t)99) == 0) {
         return -1;
     }
     return 0;
@@ -1027,6 +1098,105 @@ static int test_process_thread_object_handles(void) {
     return 0;
 }
 
+static int test_thread_lifecycle_controls(void) {
+    vibeos_process_table_t pt;
+    vibeos_thread_state_t state;
+    uint32_t pid = 0;
+    uint32_t tid = 0;
+    if (vibeos_proc_init(&pt) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_spawn(&pt, 0, &pid) != 0) {
+        return -1;
+    }
+    if (vibeos_thread_create(&pt, pid, &tid) != 0) {
+        return -1;
+    }
+    if (vibeos_thread_state(&pt, tid, &state) != 0 || state != VIBEOS_THREAD_STATE_RUNNABLE) {
+        return -1;
+    }
+    if (vibeos_thread_set_state(&pt, tid, VIBEOS_THREAD_STATE_BLOCKED) != 0) {
+        return -1;
+    }
+    if (vibeos_thread_state(&pt, tid, &state) != 0 || state != VIBEOS_THREAD_STATE_BLOCKED) {
+        return -1;
+    }
+    if (vibeos_thread_exit(&pt, tid) != 0) {
+        return -1;
+    }
+    if (vibeos_thread_state(&pt, tid, &state) == 0) {
+        return -1;
+    }
+    if (pt.thread_count != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_proc_audit_retention_policy(void) {
+    vibeos_process_table_t pt;
+    vibeos_handle_table_t *p1_handles = 0;
+    vibeos_proc_audit_event_t ev;
+    uint32_t p1 = 0;
+    uint32_t h = 0;
+    uint32_t count = 0;
+    uint32_t dropped = 0;
+    uint32_t i;
+    if (vibeos_proc_init(&pt) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_spawn(&pt, 0, &p1) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_handles(&pt, p1, &p1_handles) != 0) {
+        return -1;
+    }
+    if (vibeos_handle_alloc(p1_handles, VIBEOS_HANDLE_RIGHT_SIGNAL | VIBEOS_HANDLE_RIGHT_MANAGE, &h) != 0) {
+        return -1;
+    }
+    for (i = 0; i < VIBEOS_PROC_AUDIT_CAPACITY + 5; i++) {
+        (void)vibeos_proc_revoke_handle_lineage(&pt, p1, h);
+    }
+    if (vibeos_proc_audit_count(&pt, &count) != 0 || count != VIBEOS_PROC_AUDIT_CAPACITY) {
+        return -1;
+    }
+    if (vibeos_proc_audit_get_dropped(&pt, &dropped) != 0 || dropped != 0) {
+        return -1;
+    }
+    if (vibeos_proc_audit_get(&pt, 0, &ev) != 0 || ev.seq != 6) {
+        return -1;
+    }
+
+    if (vibeos_proc_init(&pt) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_spawn(&pt, 0, &p1) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_handles(&pt, p1, &p1_handles) != 0) {
+        return -1;
+    }
+    if (vibeos_handle_alloc(p1_handles, VIBEOS_HANDLE_RIGHT_SIGNAL | VIBEOS_HANDLE_RIGHT_MANAGE, &h) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_audit_set_policy(&pt, VIBEOS_PROC_AUDIT_DROP_NEWEST) != 0) {
+        return -1;
+    }
+    for (i = 0; i < VIBEOS_PROC_AUDIT_CAPACITY + 5; i++) {
+        (void)vibeos_proc_revoke_handle_lineage(&pt, p1, h);
+    }
+    if (vibeos_proc_audit_count(&pt, &count) != 0 || count != VIBEOS_PROC_AUDIT_CAPACITY) {
+        return -1;
+    }
+    if (vibeos_proc_audit_get_dropped(&pt, &dropped) != 0 || dropped != 5) {
+        return -1;
+    }
+    if (vibeos_proc_audit_get(&pt, VIBEOS_PROC_AUDIT_CAPACITY - 1, &ev) != 0 || ev.seq != VIBEOS_PROC_AUDIT_CAPACITY) {
+        return -1;
+    }
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
 #define RUN_TEST(fn) do { if ((fn)() != 0) { failures++; printf("FAIL:%s\n", #fn); } } while (0)
@@ -1045,6 +1215,7 @@ int main(void) {
     RUN_TEST(test_waitset_timed);
     RUN_TEST(test_waitset_ownership);
     RUN_TEST(test_waitset_lifecycle);
+    RUN_TEST(test_waitset_wake_policy);
     RUN_TEST(test_filesystem_runtime);
     RUN_TEST(test_network_runtime);
     RUN_TEST(test_security_token);
@@ -1054,10 +1225,12 @@ int main(void) {
     RUN_TEST(test_ipc_handle_transfer);
     RUN_TEST(test_cross_process_handle_dup_policy);
     RUN_TEST(test_process_lifecycle);
+    RUN_TEST(test_thread_lifecycle_controls);
     RUN_TEST(test_process_thread_object_handles);
     RUN_TEST(test_handle_revocation_propagation);
     RUN_TEST(test_handle_revocation_scoped);
     RUN_TEST(test_handle_revocation_audit);
+    RUN_TEST(test_proc_audit_retention_policy);
 #undef RUN_TEST
 
     if (failures == 0) {

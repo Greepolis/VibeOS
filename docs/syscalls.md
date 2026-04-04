@@ -47,6 +47,9 @@ Argument semantics for current syscall groups:
 | `VM_PROTECT` | va | len | perms |
 | `PROC_AUDIT_COUNT` | reserved (`0`) | reserved (`0`) | caller pid (`0` = kernel/global view) |
 | `PROC_AUDIT_GET` | audit index (caller-local if `arg2 != 0`) | out: `success` | caller pid input, then out: `revoked_count` |
+| `PROC_AUDIT_POLICY_SET` | retention policy (`0` overwrite-oldest, `1` drop-newest) | reserved (`0`) | caller pid (`0` required) |
+| `PROC_AUDIT_POLICY_GET` | reserved (`0`) | reserved (`0`) | caller pid (`0` required) |
+| `PROC_AUDIT_DROPPED` | reserved (`0`) | reserved (`0`) | caller pid (`0` required) |
 
 `PROC_AUDIT_GET` returns:
 - `result` = `event.seq` (positive on success)
@@ -54,9 +57,16 @@ Argument semantics for current syscall groups:
 - `arg1` = `event.success`
 - `arg2` = `event.revoked_count`
 
+`PROC_AUDIT_POLICY_GET` returns:
+- `result` = current retention policy enum value.
+
+`PROC_AUDIT_DROPPED` returns:
+- `result` = cumulative number of dropped audit events (only when retention mode is `DROP_NEWEST`).
+
 Access policy:
 - `caller_pid == 0`: full global audit stream.
 - `caller_pid != 0`: only events where `event.owner_pid == caller_pid`; `result` is redacted to caller-local sequence (`index + 1`).
+- `PROC_AUDIT_POLICY_SET`, `PROC_AUDIT_POLICY_GET`, `PROC_AUDIT_DROPPED` are kernel-only (`caller_pid == 0`) in ABI v0.
 
 Implementation helpers for ABI v0 are centralized in `include/vibeos/syscall_abi.h` and should be preferred over direct field writes in kernel tests and user-space glue.
 

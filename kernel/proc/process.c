@@ -104,6 +104,10 @@ static void proc_audit_record(vibeos_process_table_t *pt,
     if (!pt) {
         return;
     }
+    if (pt->audit_count >= VIBEOS_PROC_AUDIT_CAPACITY && pt->audit_policy == VIBEOS_PROC_AUDIT_DROP_NEWEST) {
+        pt->audit_dropped++;
+        return;
+    }
     ev = &pt->audit_events[pt->audit_head];
     pt->audit_head = (pt->audit_head + 1u) % VIBEOS_PROC_AUDIT_CAPACITY;
     if (pt->audit_count < VIBEOS_PROC_AUDIT_CAPACITY) {
@@ -134,6 +138,8 @@ int vibeos_proc_init(vibeos_process_table_t *pt) {
     pt->audit_seq = 0;
     pt->audit_head = 0;
     pt->audit_count = 0;
+    pt->audit_dropped = 0;
+    pt->audit_policy = VIBEOS_PROC_AUDIT_OVERWRITE_OLDEST;
     for (i = 0; i < VIBEOS_MAX_PROCESSES; i++) {
         pt->entries[i].pid = 0;
         pt->entries[i].parent_pid = 0;
@@ -338,6 +344,9 @@ int vibeos_proc_terminate(vibeos_process_table_t *pt, uint32_t pid) {
             pt->threads[i].state = VIBEOS_THREAD_STATE_EXITED;
             pt->threads[i].owner_pid = 0;
             pt->threads[i].tid = 0;
+            if (pt->thread_count > 0) {
+                pt->thread_count--;
+            }
         }
     }
     entry->state = VIBEOS_PROCESS_STATE_TERMINATED;
@@ -390,6 +399,51 @@ int vibeos_proc_resolve_object_handle(vibeos_process_table_t *pt, uint32_t owner
         return -1;
     }
     return vibeos_handle_object(&owner->handles, handle, out_object_type, out_object_id);
+}
+
+int vibeos_thread_state(vibeos_process_table_t *pt, uint32_t tid, vibeos_thread_state_t *out_state) {
+    vibeos_thread_entry_t *thread;
+    if (!pt || !out_state) {
+        return -1;
+    }
+    thread = find_thread_entry(pt, tid);
+    if (!thread) {
+        return -1;
+    }
+    *out_state = thread->state;
+    return 0;
+}
+
+int vibeos_thread_set_state(vibeos_process_table_t *pt, uint32_t tid, vibeos_thread_state_t state) {
+    vibeos_thread_entry_t *thread;
+    if (!pt) {
+        return -1;
+    }
+    thread = find_thread_entry(pt, tid);
+    if (!thread) {
+        return -1;
+    }
+    thread->state = state;
+    return 0;
+}
+
+int vibeos_thread_exit(vibeos_process_table_t *pt, uint32_t tid) {
+    vibeos_thread_entry_t *thread;
+    if (!pt) {
+        return -1;
+    }
+    thread = find_thread_entry(pt, tid);
+    if (!thread) {
+        return -1;
+    }
+    thread->in_use = 0;
+    thread->state = VIBEOS_THREAD_STATE_EXITED;
+    thread->owner_pid = 0;
+    thread->tid = 0;
+    if (pt->thread_count > 0) {
+        pt->thread_count--;
+    }
+    return 0;
 }
 
 int vibeos_proc_audit_count(vibeos_process_table_t *pt, uint32_t *out_count) {
@@ -452,4 +506,31 @@ int vibeos_proc_audit_get_for_pid(vibeos_process_table_t *pt, uint32_t caller_pi
         visible_index++;
     }
     return -1;
+}
+
+int vibeos_proc_audit_set_policy(vibeos_process_table_t *pt, vibeos_proc_audit_policy_t policy) {
+    if (!pt) {
+        return -1;
+    }
+    if (policy != VIBEOS_PROC_AUDIT_OVERWRITE_OLDEST && policy != VIBEOS_PROC_AUDIT_DROP_NEWEST) {
+        return -1;
+    }
+    pt->audit_policy = policy;
+    return 0;
+}
+
+int vibeos_proc_audit_get_policy(vibeos_process_table_t *pt, vibeos_proc_audit_policy_t *out_policy) {
+    if (!pt || !out_policy) {
+        return -1;
+    }
+    *out_policy = pt->audit_policy;
+    return 0;
+}
+
+int vibeos_proc_audit_get_dropped(vibeos_process_table_t *pt, uint32_t *out_dropped) {
+    if (!pt || !out_dropped) {
+        return -1;
+    }
+    *out_dropped = pt->audit_dropped;
+    return 0;
 }

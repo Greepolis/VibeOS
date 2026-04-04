@@ -151,6 +151,36 @@ static inline uint32_t vibeos_syscall_audit_event_revoked_count(const vibeos_sys
     return f ? (uint32_t)f->arg2 : 0;
 }
 
+static inline void vibeos_syscall_make_proc_audit_policy_set(vibeos_syscall_frame_t *f, uint32_t policy, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_PROC_AUDIT_POLICY_SET;
+    f->arg0 = policy;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
+static inline void vibeos_syscall_make_proc_audit_policy_get(vibeos_syscall_frame_t *f, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_PROC_AUDIT_POLICY_GET;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
+static inline void vibeos_syscall_make_proc_audit_dropped(vibeos_syscall_frame_t *f, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_PROC_AUDIT_DROPPED;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
 /* Waitset API */
 static inline uint32_t vibeos_syscall_waitset_owner_pid(const vibeos_syscall_frame_t *f) {
     return f ? (uint32_t)f->arg1 : 0;

@@ -13,6 +13,7 @@ int vibeos_waitset_init(vibeos_waitset_t *waitset) {
     waitset->owner_pid = 0;
     waitset->ownership_enforced = 0;
     waitset->active = 1;
+    waitset->wake_policy = VIBEOS_WAITSET_WAKE_FIFO;
     return 0;
 }
 
@@ -28,6 +29,7 @@ int vibeos_waitset_init_owned(vibeos_waitset_t *waitset, uint32_t owner_pid) {
     waitset->owner_pid = owner_pid;
     waitset->ownership_enforced = 1;
     waitset->active = 1;
+    waitset->wake_policy = VIBEOS_WAITSET_WAKE_FIFO;
     return 0;
 }
 
@@ -84,7 +86,27 @@ int vibeos_waitset_destroy(vibeos_waitset_t *waitset) {
     }
     waitset->owner_pid = 0;
     waitset->ownership_enforced = 0;
+    waitset->wake_policy = VIBEOS_WAITSET_WAKE_FIFO;
     waitset->active = 0;
+    return 0;
+}
+
+int vibeos_waitset_set_wake_policy(vibeos_waitset_t *waitset, vibeos_waitset_wake_policy_t policy) {
+    if (!waitset || !waitset->active) {
+        return -1;
+    }
+    if (policy != VIBEOS_WAITSET_WAKE_FIFO && policy != VIBEOS_WAITSET_WAKE_REVERSE) {
+        return -1;
+    }
+    waitset->wake_policy = (uint32_t)policy;
+    return 0;
+}
+
+int vibeos_waitset_get_wake_policy(const vibeos_waitset_t *waitset, vibeos_waitset_wake_policy_t *out_policy) {
+    if (!waitset || !waitset->active || !out_policy) {
+        return -1;
+    }
+    *out_policy = (vibeos_waitset_wake_policy_t)waitset->wake_policy;
     return 0;
 }
 
@@ -111,19 +133,33 @@ int vibeos_waitset_wait(vibeos_waitset_t *waitset, uint64_t timeout_ticks, size_
 
 int vibeos_waitset_wait_ex(vibeos_waitset_t *waitset, uint64_t timeout_ticks, size_t *out_index, vibeos_scheduler_t *sched, uint32_t cpu_id) {
     uint64_t tick;
-    size_t i;
     if (!waitset || !waitset->active || !out_index) {
         return -1;
     }
     for (tick = 0; tick <= timeout_ticks; tick++) {
-        for (i = 0; i < waitset->count; i++) {
-            vibeos_event_t *ev = (vibeos_event_t *)waitset->events[i];
-            if (ev && vibeos_event_is_signaled(ev)) {
-                *out_index = i;
-                if (sched) {
-                    (void)vibeos_sched_note_wait_wake(sched, cpu_id);
+        if (waitset->wake_policy == VIBEOS_WAITSET_WAKE_REVERSE) {
+            size_t i;
+            for (i = waitset->count; i > 0; i--) {
+                vibeos_event_t *ev = (vibeos_event_t *)waitset->events[i - 1];
+                if (ev && vibeos_event_is_signaled(ev)) {
+                    *out_index = i - 1;
+                    if (sched) {
+                        (void)vibeos_sched_note_wait_wake(sched, cpu_id);
+                    }
+                    return 0;
                 }
-                return 0;
+            }
+        } else {
+            size_t i;
+            for (i = 0; i < waitset->count; i++) {
+                vibeos_event_t *ev = (vibeos_event_t *)waitset->events[i];
+                if (ev && vibeos_event_is_signaled(ev)) {
+                    *out_index = i;
+                    if (sched) {
+                        (void)vibeos_sched_note_wait_wake(sched, cpu_id);
+                    }
+                    return 0;
+                }
             }
         }
     }
@@ -135,20 +171,34 @@ int vibeos_waitset_wait_ex(vibeos_waitset_t *waitset, uint64_t timeout_ticks, si
 
 int vibeos_waitset_wait_timed(vibeos_waitset_t *waitset, vibeos_timer_t *timer, uint64_t timeout_ticks, size_t *out_index, vibeos_scheduler_t *sched, uint32_t cpu_id) {
     uint64_t start_ticks;
-    size_t i;
     if (!waitset || !waitset->active || !timer || !out_index) {
         return -1;
     }
     start_ticks = vibeos_timer_ticks(timer);
     for (;;) {
-        for (i = 0; i < waitset->count; i++) {
-            vibeos_event_t *ev = (vibeos_event_t *)waitset->events[i];
-            if (ev && vibeos_event_is_signaled(ev)) {
-                *out_index = i;
-                if (sched) {
-                    (void)vibeos_sched_note_wait_wake(sched, cpu_id);
+        if (waitset->wake_policy == VIBEOS_WAITSET_WAKE_REVERSE) {
+            size_t i;
+            for (i = waitset->count; i > 0; i--) {
+                vibeos_event_t *ev = (vibeos_event_t *)waitset->events[i - 1];
+                if (ev && vibeos_event_is_signaled(ev)) {
+                    *out_index = i - 1;
+                    if (sched) {
+                        (void)vibeos_sched_note_wait_wake(sched, cpu_id);
+                    }
+                    return 0;
                 }
-                return 0;
+            }
+        } else {
+            size_t i;
+            for (i = 0; i < waitset->count; i++) {
+                vibeos_event_t *ev = (vibeos_event_t *)waitset->events[i];
+                if (ev && vibeos_event_is_signaled(ev)) {
+                    *out_index = i;
+                    if (sched) {
+                        (void)vibeos_sched_note_wait_wake(sched, cpu_id);
+                    }
+                    return 0;
+                }
             }
         }
         if ((vibeos_timer_ticks(timer) - start_ticks) >= timeout_ticks) {

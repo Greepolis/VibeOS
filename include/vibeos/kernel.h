@@ -7,8 +7,10 @@
 #include "vibeos/ipc.h"
 #include "vibeos/mm.h"
 #include "vibeos/object.h"
+#include "vibeos/policy.h"
 #include "vibeos/proc.h"
 #include "vibeos/scheduler.h"
+#include "vibeos/security_model.h"
 #include "vibeos/timer.h"
 #include "vibeos/trap.h"
 #include "vibeos/vm.h"
@@ -18,6 +20,8 @@ typedef struct vibeos_kernel {
     vibeos_pmm_t pmm;
     vibeos_address_space_t kernel_aspace;
     vibeos_handle_table_t handles;
+    vibeos_policy_state_t policy;
+    vibeos_security_token_t kernel_token;
     vibeos_process_table_t proc_table;
     vibeos_scheduler_t scheduler;
     vibeos_interrupt_controller_t intc;

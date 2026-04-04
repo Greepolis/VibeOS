@@ -99,6 +99,10 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
         case VIBEOS_SYSCALL_PROCESS_SPAWN:
         {
             uint32_t pid;
+            if (vibeos_policy_can_process_spawn(&kernel->policy, kernel->kernel_token.capability_mask) != VIBEOS_POLICY_ALLOW) {
+                frame->result = -1;
+                return -1;
+            }
             if (vibeos_proc_spawn(&kernel->proc_table, (uint32_t)frame->arg0, &pid) != 0) {
                 frame->result = -1;
                 return -1;
@@ -176,6 +180,50 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             frame->arg1 = ev.success;
             frame->arg2 = ev.revoked_count;
             frame->result = (int64_t)ev.seq;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_PROC_AUDIT_POLICY_SET:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            if (caller_pid != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            if (vibeos_proc_audit_set_policy(&kernel->proc_table, (vibeos_proc_audit_policy_t)frame->arg0) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = 0;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_PROC_AUDIT_POLICY_GET:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            vibeos_proc_audit_policy_t policy;
+            if (caller_pid != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            if (vibeos_proc_audit_get_policy(&kernel->proc_table, &policy) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = (int64_t)policy;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_PROC_AUDIT_DROPPED:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            uint32_t dropped = 0;
+            if (caller_pid != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            if (vibeos_proc_audit_get_dropped(&kernel->proc_table, &dropped) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = (int64_t)dropped;
             return 0;
         }
         default:

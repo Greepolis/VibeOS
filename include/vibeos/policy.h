@@ -11,10 +11,12 @@ typedef enum vibeos_policy_action {
 typedef struct vibeos_policy_state {
     uint32_t fs_open_required_capability_bit;
     uint32_t net_bind_required_capability_bit;
+    uint32_t process_spawn_required_capability_bit;
 } vibeos_policy_state_t;
 
 int vibeos_policy_init(vibeos_policy_state_t *policy);
 vibeos_policy_action_t vibeos_policy_can_fs_open(const vibeos_policy_state_t *policy, uint32_t capability_mask);
 vibeos_policy_action_t vibeos_policy_can_net_bind(const vibeos_policy_state_t *policy, uint32_t capability_mask);
+vibeos_policy_action_t vibeos_policy_can_process_spawn(const vibeos_policy_state_t *policy, uint32_t capability_mask);
 
 #endif
