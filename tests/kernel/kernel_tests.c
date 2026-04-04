@@ -222,6 +222,8 @@ static int test_interrupts(void) {
 static int test_syscalls(void) {
     vibeos_kernel_t kernel;
     vibeos_syscall_frame_t frame;
+    vibeos_thread_t sthread1 = { .id = 101, .cpu_hint = 0, .klass = VIBEOS_THREAD_NORMAL, .timeslice_ticks = 2 };
+    vibeos_thread_t sthread2 = { .id = 102, .cpu_hint = 1, .klass = VIBEOS_THREAD_NORMAL, .timeslice_ticks = 2 };
     uint32_t pid1 = 0;
     uint32_t pid2 = 0;
     uint32_t pid3 = 0;
@@ -264,6 +266,12 @@ static int test_syscalls(void) {
     }
     vibeos_syscall_make_process_spawn(&frame, 0);
     if (vibeos_proc_init(&kernel.proc_table) != 0) {
+        return -1;
+    }
+    if (vibeos_sched_init(&kernel.scheduler, 2) != 0) {
+        return -1;
+    }
+    if (vibeos_sched_enqueue(&kernel.scheduler, &sthread1) != 0 || vibeos_sched_enqueue(&kernel.scheduler, &sthread2) != 0) {
         return -1;
     }
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 1) {
@@ -317,6 +325,10 @@ static int test_syscalls(void) {
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != VIBEOS_PROCESS_STATE_TERMINATED) {
         return -1;
     }
+    vibeos_syscall_make_process_count_get(&frame);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 3) {
+        return -1;
+    }
     vibeos_syscall_make_thread_state_get(&frame, tid1, pid1);
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != VIBEOS_THREAD_STATE_RUNNABLE) {
         return -1;
@@ -343,6 +355,10 @@ static int test_syscalls(void) {
     }
     vibeos_syscall_make_thread_state_get(&frame, tid1, pid1);
     if (vibeos_syscall_dispatch(&kernel, &frame) == 0) {
+        return -1;
+    }
+    vibeos_syscall_make_thread_count_get(&frame);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 0) {
         return -1;
     }
     vibeos_syscall_make_handle_alloc(&frame, VIBEOS_HANDLE_RIGHT_SIGNAL | VIBEOS_HANDLE_RIGHT_MANAGE, pid1);
@@ -447,6 +463,22 @@ static int test_syscalls(void) {
     }
     vibeos_syscall_make_proc_audit_dropped(&frame, pid1);
     if (vibeos_syscall_dispatch(&kernel, &frame) == 0) {
+        return -1;
+    }
+    vibeos_syscall_make_sched_cpu_count_get(&frame);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 2) {
+        return -1;
+    }
+    vibeos_syscall_make_sched_runnable_get(&frame);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 2) {
+        return -1;
+    }
+    vibeos_syscall_make_sched_runqueue_depth_get(&frame, 0);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 1) {
+        return -1;
+    }
+    vibeos_syscall_make_sched_runqueue_depth_get(&frame, 1);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 1) {
         return -1;
     }
     return 0;
