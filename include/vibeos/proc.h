@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "vibeos/object.h"
+#include "vibeos/security_model.h"
 
 #define VIBEOS_MAX_PROCESSES 32u
 #define VIBEOS_PROC_MAX_THREADS 256u
@@ -21,6 +22,7 @@ typedef struct vibeos_process_entry {
     uint32_t parent_pid;
     uint32_t in_use;
     vibeos_process_state_t state;
+    vibeos_security_token_t token;
     vibeos_handle_table_t handles;
 } vibeos_process_entry_t;
 
@@ -82,6 +84,7 @@ typedef struct vibeos_process_table {
 
 int vibeos_proc_init(vibeos_process_table_t *pt);
 int vibeos_proc_spawn(vibeos_process_table_t *pt, uint32_t parent_pid, uint32_t *out_pid);
+int vibeos_proc_spawn_with_token(vibeos_process_table_t *pt, uint32_t parent_pid, const vibeos_security_token_t *token, uint32_t *out_pid);
 int vibeos_proc_are_related(vibeos_process_table_t *pt, uint32_t pid_a, uint32_t pid_b);
 int vibeos_thread_create(vibeos_process_table_t *pt, uint32_t pid, uint32_t *out_tid);
 int vibeos_thread_owner(vibeos_process_table_t *pt, uint32_t tid, uint32_t *out_owner_pid);
@@ -118,5 +121,7 @@ int vibeos_proc_state_summary(vibeos_process_table_t *pt, uint32_t *out_new, uin
 int vibeos_thread_state_summary(vibeos_process_table_t *pt, uint32_t *out_new, uint32_t *out_runnable, uint32_t *out_blocked, uint32_t *out_exited);
 int vibeos_proc_transition_counters(vibeos_process_table_t *pt, uint64_t *out_proc_state_transitions, uint64_t *out_thread_state_transitions, uint64_t *out_proc_terminations, uint64_t *out_thread_exits);
 int vibeos_proc_transition_counters_reset(vibeos_process_table_t *pt);
+int vibeos_proc_token_get(vibeos_process_table_t *pt, uint32_t pid, vibeos_security_token_t *out_token);
+int vibeos_proc_token_set(vibeos_process_table_t *pt, uint32_t pid, const vibeos_security_token_t *token);
 
 #endif

@@ -27,6 +27,13 @@ static vibeos_thread_entry_t *find_thread_entry(vibeos_process_table_t *pt, uint
     return 0;
 }
 
+static int process_default_token(uint32_t pid, vibeos_security_token_t *out_token) {
+    if (!out_token) {
+        return -1;
+    }
+    return vibeos_sec_token_init(out_token, pid, pid, 0);
+}
+
 static int are_processes_related(const vibeos_process_entry_t *a, const vibeos_process_entry_t *b) {
     if (!a || !b) {
         return 0;
@@ -149,6 +156,9 @@ int vibeos_proc_init(vibeos_process_table_t *pt) {
         pt->entries[i].parent_pid = 0;
         pt->entries[i].in_use = 0;
         pt->entries[i].state = VIBEOS_PROCESS_STATE_TERMINATED;
+        pt->entries[i].token.uid = 0;
+        pt->entries[i].token.gid = 0;
+        pt->entries[i].token.capability_mask = 0;
     }
     for (i = 0; i < VIBEOS_PROC_MAX_THREADS; i++) {
         pt->threads[i].tid = 0;
@@ -172,6 +182,10 @@ int vibeos_proc_init(vibeos_process_table_t *pt) {
 }
 
 int vibeos_proc_spawn(vibeos_process_table_t *pt, uint32_t parent_pid, uint32_t *out_pid) {
+    return vibeos_proc_spawn_with_token(pt, parent_pid, 0, out_pid);
+}
+
+int vibeos_proc_spawn_with_token(vibeos_process_table_t *pt, uint32_t parent_pid, const vibeos_security_token_t *token, uint32_t *out_pid) {
     uint32_t i;
     if (!pt || !out_pid) {
         return -1;
@@ -182,11 +196,34 @@ int vibeos_proc_spawn(vibeos_process_table_t *pt, uint32_t parent_pid, uint32_t 
             pt->entries[i].parent_pid = parent_pid;
             pt->entries[i].in_use = 1;
             pt->entries[i].state = VIBEOS_PROCESS_STATE_NEW;
+            if (token) {
+                pt->entries[i].token = *token;
+            } else if (parent_pid != 0) {
+                vibeos_process_entry_t *parent = find_process_entry(pt, parent_pid);
+                if (parent) {
+                    pt->entries[i].token = parent->token;
+                } else if (process_default_token(pt->entries[i].pid, &pt->entries[i].token) != 0) {
+                    pt->entries[i].in_use = 0;
+                    pt->entries[i].pid = 0;
+                    pt->entries[i].parent_pid = 0;
+                    pt->entries[i].state = VIBEOS_PROCESS_STATE_TERMINATED;
+                    return -1;
+                }
+            } else if (process_default_token(pt->entries[i].pid, &pt->entries[i].token) != 0) {
+                pt->entries[i].in_use = 0;
+                pt->entries[i].pid = 0;
+                pt->entries[i].parent_pid = 0;
+                pt->entries[i].state = VIBEOS_PROCESS_STATE_TERMINATED;
+                return -1;
+            }
             if (vibeos_handle_table_init(&pt->entries[i].handles) != 0) {
                 pt->entries[i].in_use = 0;
                 pt->entries[i].pid = 0;
                 pt->entries[i].parent_pid = 0;
                 pt->entries[i].state = VIBEOS_PROCESS_STATE_TERMINATED;
+                pt->entries[i].token.uid = 0;
+                pt->entries[i].token.gid = 0;
+                pt->entries[i].token.capability_mask = 0;
                 return -1;
             }
             *out_pid = pt->entries[i].pid;
@@ -808,5 +845,31 @@ int vibeos_proc_transition_counters_reset(vibeos_process_table_t *pt) {
     pt->thread_state_transitions = 0;
     pt->proc_terminations = 0;
     pt->thread_exits = 0;
+    return 0;
+}
+
+int vibeos_proc_token_get(vibeos_process_table_t *pt, uint32_t pid, vibeos_security_token_t *out_token) {
+    vibeos_process_entry_t *entry;
+    if (!pt || !out_token || pid == 0) {
+        return -1;
+    }
+    entry = find_process_entry(pt, pid);
+    if (!entry) {
+        return -1;
+    }
+    *out_token = entry->token;
+    return 0;
+}
+
+int vibeos_proc_token_set(vibeos_process_table_t *pt, uint32_t pid, const vibeos_security_token_t *token) {
+    vibeos_process_entry_t *entry;
+    if (!pt || !token || pid == 0) {
+        return -1;
+    }
+    entry = find_process_entry(pt, pid);
+    if (!entry) {
+        return -1;
+    }
+    entry->token = *token;
     return 0;
 }

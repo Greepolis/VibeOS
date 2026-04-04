@@ -38,6 +38,32 @@ static int syscall_process_mutation_allowed(uint32_t caller_pid, uint32_t target
     return caller_pid == target_pid;
 }
 
+static int syscall_process_token_access_allowed(vibeos_kernel_t *kernel, uint32_t caller_pid, uint32_t target_pid) {
+    if (!kernel || target_pid == 0) {
+        return 0;
+    }
+    if (caller_pid == 0 || caller_pid == target_pid) {
+        return 1;
+    }
+    return vibeos_proc_are_related(&kernel->proc_table, caller_pid, target_pid);
+}
+
+static int syscall_caller_capability_mask(vibeos_kernel_t *kernel, uint32_t caller_pid, uint32_t *out_capability_mask) {
+    vibeos_security_token_t token;
+    if (!kernel || !out_capability_mask) {
+        return -1;
+    }
+    if (caller_pid == 0) {
+        *out_capability_mask = kernel->kernel_token.capability_mask;
+        return 0;
+    }
+    if (vibeos_proc_token_get(&kernel->proc_table, caller_pid, &token) != 0) {
+        return -1;
+    }
+    *out_capability_mask = token.capability_mask;
+    return 0;
+}
+
 static int syscall_waitset_owner_access_allowed(uint32_t caller_pid, uint32_t owner_pid, int waitset_initialized) {
     if (!waitset_initialized) {
         return 0;
@@ -277,12 +303,25 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
         }
         case VIBEOS_SYSCALL_PROCESS_SPAWN:
         {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            uint32_t caller_capability_mask = 0;
+            vibeos_security_token_t caller_token;
             uint32_t pid;
-            if (vibeos_policy_can_process_spawn(&kernel->policy, kernel->kernel_token.capability_mask) != VIBEOS_POLICY_ALLOW) {
+            if (syscall_caller_capability_mask(kernel, caller_pid, &caller_capability_mask) != 0) {
                 frame->result = -1;
                 return -1;
             }
-            if (vibeos_proc_spawn(&kernel->proc_table, (uint32_t)frame->arg0, &pid) != 0) {
+            if (vibeos_policy_can_process_spawn(&kernel->policy, caller_capability_mask) != VIBEOS_POLICY_ALLOW) {
+                frame->result = -1;
+                return -1;
+            }
+            if (caller_pid == 0) {
+                caller_token = kernel->kernel_token;
+            } else if (vibeos_proc_token_get(&kernel->proc_table, caller_pid, &caller_token) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            if (vibeos_proc_spawn_with_token(&kernel->proc_table, (uint32_t)frame->arg0, &caller_token, &pid) != 0) {
                 frame->result = -1;
                 return -1;
             }
@@ -822,6 +861,87 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
                 frame->result = -1;
                 return -1;
             }
+            frame->result = 0;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_PROCESS_TOKEN_GET:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            uint32_t target_pid = (uint32_t)frame->arg0;
+            vibeos_security_token_t token;
+            if (!syscall_process_token_access_allowed(kernel, caller_pid, target_pid)) {
+                frame->result = -1;
+                return -1;
+            }
+            if (vibeos_proc_token_get(&kernel->proc_table, target_pid, &token) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->arg0 = token.uid;
+            frame->arg1 = token.gid;
+            frame->arg2 = token.capability_mask;
+            frame->result = 0;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_PROCESS_TOKEN_SET:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            uint32_t target_pid = (uint32_t)frame->arg0;
+            vibeos_security_token_t current;
+            vibeos_security_token_t updated;
+            if (!syscall_process_mutation_allowed(caller_pid, target_pid)) {
+                frame->result = -1;
+                return -1;
+            }
+            if (vibeos_proc_token_get(&kernel->proc_table, target_pid, &current) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            updated = current;
+            updated.capability_mask = (uint32_t)frame->arg1;
+            if (vibeos_proc_token_set(&kernel->proc_table, target_pid, &updated) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = 0;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_POLICY_CAPABILITY_GET:
+        {
+            uint32_t required_bit = 0;
+            if (vibeos_policy_required_capability_get(&kernel->policy, (vibeos_policy_capability_target_t)frame->arg0, &required_bit) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = (int64_t)required_bit;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_POLICY_CAPABILITY_SET:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            if (caller_pid != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            if (vibeos_policy_required_capability_set(&kernel->policy, (vibeos_policy_capability_target_t)frame->arg0, (uint32_t)frame->arg1) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = 0;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_POLICY_SUMMARY_GET:
+        {
+            uint32_t fs_open_bit = 0;
+            uint32_t net_bind_bit = 0;
+            uint32_t process_spawn_bit = 0;
+            if (vibeos_policy_summary(&kernel->policy, &fs_open_bit, &net_bind_bit, &process_spawn_bit) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->arg0 = fs_open_bit;
+            frame->arg1 = net_bind_bit;
+            frame->arg2 = process_spawn_bit;
             frame->result = 0;
             return 0;
         }

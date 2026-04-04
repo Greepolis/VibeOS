@@ -53,6 +53,16 @@ int vibeos_socket_bind(vibeos_net_runtime_t *rt, uint32_t socket_id, uint16_t po
     return 0;
 }
 
+int vibeos_socket_bind_secure(vibeos_net_runtime_t *rt, uint32_t socket_id, uint16_t port, const vibeos_policy_state_t *policy, const vibeos_security_token_t *token) {
+    if (!policy || !token) {
+        return -1;
+    }
+    if (vibeos_policy_can_net_bind(policy, token->capability_mask) != VIBEOS_POLICY_ALLOW) {
+        return -1;
+    }
+    return vibeos_socket_bind(rt, socket_id, port);
+}
+
 int vibeos_socket_send(vibeos_net_runtime_t *rt, uint32_t socket_id, const void *buf, size_t len) {
     vibeos_socket_entry_t *entry = find_socket(rt, socket_id);
     if (!entry || !buf || len == 0 || entry->port == 0) {

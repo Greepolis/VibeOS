@@ -77,6 +77,16 @@ static inline void vibeos_syscall_make_process_spawn(vibeos_syscall_frame_t *f, 
     f->arg2 = 0;
 }
 
+static inline void vibeos_syscall_make_process_spawn_as(vibeos_syscall_frame_t *f, uint32_t parent_pid, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_PROCESS_SPAWN;
+    f->arg0 = parent_pid;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
 static inline void vibeos_syscall_make_process_state_get(vibeos_syscall_frame_t *f, uint32_t pid, uint32_t caller_pid) {
     if (!f) {
         return;
@@ -476,6 +486,56 @@ static inline void vibeos_syscall_make_sched_counters_reset(vibeos_syscall_frame
         return;
     }
     f->id = VIBEOS_SYSCALL_SCHED_COUNTERS_RESET;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
+static inline void vibeos_syscall_make_process_token_get(vibeos_syscall_frame_t *f, uint32_t target_pid, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_PROCESS_TOKEN_GET;
+    f->arg0 = target_pid;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
+static inline void vibeos_syscall_make_process_token_set(vibeos_syscall_frame_t *f, uint32_t target_pid, uint32_t capability_mask, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_PROCESS_TOKEN_SET;
+    f->arg0 = target_pid;
+    f->arg1 = capability_mask;
+    f->arg2 = caller_pid;
+}
+
+static inline void vibeos_syscall_make_policy_capability_get(vibeos_syscall_frame_t *f, uint32_t target, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_POLICY_CAPABILITY_GET;
+    f->arg0 = target;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
+static inline void vibeos_syscall_make_policy_capability_set(vibeos_syscall_frame_t *f, uint32_t target, uint32_t capability_bit, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_POLICY_CAPABILITY_SET;
+    f->arg0 = target;
+    f->arg1 = capability_bit;
+    f->arg2 = caller_pid;
+}
+
+static inline void vibeos_syscall_make_policy_summary_get(vibeos_syscall_frame_t *f, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_POLICY_SUMMARY_GET;
     f->arg0 = 0;
     f->arg1 = 0;
     f->arg2 = caller_pid;
