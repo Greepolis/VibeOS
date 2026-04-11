@@ -30,6 +30,10 @@ static void irq_handler(uint32_t irq, void *ctx) {
 
 static int test_pmm(void) {
     vibeos_pmm_t pmm;
+    vibeos_memory_region_t regions[3];
+    vibeos_boot_info_t boot_info;
+    uintptr_t picked_base = 0;
+    size_t picked_size = 0;
     void *a;
     void *b;
     if (vibeos_pmm_init(&pmm, 0x100000, 8192, 4096) != 0) {
@@ -41,6 +45,36 @@ static int test_pmm(void) {
         return -1;
     }
     if (vibeos_pmm_alloc_page(&pmm) != 0) {
+        return -1;
+    }
+    regions[0].base = 0x100000;
+    regions[0].length = 0x9000;
+    regions[0].type = VIBEOS_MEMORY_REGION_USABLE;
+    regions[0].reserved = 0;
+    regions[1].base = 0x200000;
+    regions[1].length = 0x3000;
+    regions[1].type = VIBEOS_MEMORY_REGION_RESERVED;
+    regions[1].reserved = 0;
+    regions[2].base = 0x300000;
+    regions[2].length = 0x6000;
+    regions[2].type = VIBEOS_MEMORY_REGION_USABLE;
+    regions[2].reserved = 0;
+    if (vibeos_bootloader_build_boot_info(&boot_info, regions, 3) != 0) {
+        return -1;
+    }
+    if (vibeos_bootloader_set_initrd(&boot_info, 0x100000, 0x4000) != 0) {
+        return -1;
+    }
+    if (vibeos_pmm_pick_usable_region(&boot_info, 0x1000, &picked_base, &picked_size) != 0) {
+        return -1;
+    }
+    if (picked_base != 0x300000 || picked_size != 0x6000) {
+        return -1;
+    }
+    if (vibeos_pmm_init_from_boot_info(&pmm, &boot_info, 0x1000) != 0) {
+        return -1;
+    }
+    if (pmm.base != 0x300000 || pmm.size_bytes != 0x6000) {
         return -1;
     }
     return 0;
@@ -1011,6 +1045,7 @@ static int test_servicemgr_and_drivers(void) {
     vibeos_driver_framework_t fw;
     vibeos_driver_state_t state;
     uint32_t running = 0;
+    uint32_t can_restart = 0;
     if (vibeos_servicemgr_start(&mgr, &init_state, &devmgr_state, &vfs_state, &net_state) != 0) {
         return -1;
     }
@@ -1018,6 +1053,24 @@ static int test_servicemgr_and_drivers(void) {
         return -1;
     }
     if (mgr.supervised_count != 4 || mgr.state != VIBEOS_SERVICE_RUNNING) {
+        return -1;
+    }
+    if (vibeos_servicemgr_set_restart_budget(&mgr, 2) != 0) {
+        return -1;
+    }
+    if (vibeos_servicemgr_can_restart(&mgr, &can_restart) != 0 || can_restart != 1) {
+        return -1;
+    }
+    if (vibeos_servicemgr_report_service_failure(&mgr) != 0) {
+        return -1;
+    }
+    if (vibeos_servicemgr_report_service_failure(&mgr) != 0) {
+        return -1;
+    }
+    if (vibeos_servicemgr_can_restart(&mgr, &can_restart) != 0 || can_restart != 0) {
+        return -1;
+    }
+    if (vibeos_servicemgr_report_service_failure(&mgr) == 0) {
         return -1;
     }
     if (vibeos_driver_framework_init(&fw) != 0) {
@@ -1246,8 +1299,100 @@ static int test_bootloader_handoff_metadata(void) {
     return 0;
 }
 
+static int test_bootloader_firmware_tags_and_pe_plan(void) {
+    vibeos_memory_region_t regions[2];
+    vibeos_boot_info_t boot_info;
+    vibeos_firmware_tag_t tags[4];
+    vibeos_boot_image_plan_t plan;
+    uint8_t image[1024];
+    memset(&boot_info, 0, sizeof(boot_info));
+    memset(tags, 0, sizeof(tags));
+    memset(&plan, 0, sizeof(plan));
+    memset(image, 0, sizeof(image));
+
+    regions[0].base = 0x100000;
+    regions[0].length = 0x800000;
+    regions[0].type = VIBEOS_MEMORY_REGION_USABLE;
+    regions[0].reserved = 0;
+    regions[1].base = 0x90000000ull;
+    regions[1].length = 0x200000;
+    regions[1].type = VIBEOS_MEMORY_REGION_MMIO;
+    regions[1].reserved = 0;
+    if (vibeos_bootloader_build_boot_info(&boot_info, regions, 2) != 0) {
+        return -1;
+    }
+
+    tags[0].type = VIBEOS_FIRMWARE_TAG_ACPI_RSDP;
+    tags[0].value = 0x101000;
+    tags[1].type = VIBEOS_FIRMWARE_TAG_SMBIOS;
+    tags[1].value = 0x102000;
+    tags[2].type = VIBEOS_FIRMWARE_TAG_SECURE_BOOT;
+    tags[2].value = 1;
+    tags[3].type = VIBEOS_FIRMWARE_TAG_MEASURED_BOOT;
+    tags[3].value = 1;
+    if (vibeos_bootloader_apply_firmware_tags(&boot_info, tags, 4) != 0) {
+        return -1;
+    }
+    if ((boot_info.flags & VIBEOS_BOOT_FLAG_SECURE_BOOT) == 0 || (boot_info.flags & VIBEOS_BOOT_FLAG_MEASURED_BOOT) == 0) {
+        return -1;
+    }
+
+    image[0] = 'M';
+    image[1] = 'Z';
+    image[0x3c] = 0x80;
+    image[0x80] = 'P';
+    image[0x81] = 'E';
+    image[0x82] = 0;
+    image[0x83] = 0;
+    image[0x84] = 0x64;
+    image[0x85] = 0x86;
+    image[0x86] = 0x01;
+    image[0x87] = 0x00;
+    image[0x94] = 0xF0;
+    image[0x95] = 0x00;
+    image[0x98] = 0x0B;
+    image[0x99] = 0x02;
+    image[0xA8] = 0x00;
+    image[0xA9] = 0x10;
+    image[0xB0] = 0x00;
+    image[0xB1] = 0x00;
+    image[0xB2] = 0x40;
+    image[0xB3] = 0x00;
+    image[0xB4] = 0x00;
+    image[0xB5] = 0x00;
+    image[0xB6] = 0x00;
+    image[0xB7] = 0x00;
+    image[0x190] = 0x00;
+    image[0x191] = 0x20;
+    image[0x194] = 0x00;
+    image[0x195] = 0x10;
+    image[0x198] = 0x00;
+    image[0x199] = 0x02;
+    image[0x19C] = 0x00;
+    image[0x19D] = 0x02;
+    image[0x1AC] = 0x20;
+    image[0x1AD] = 0x00;
+    image[0x1AE] = 0x00;
+    image[0x1AF] = 0x60;
+
+    if (vibeos_bootloader_plan_pe_image(image, sizeof(image), &plan) != 0) {
+        return -1;
+    }
+    if (plan.segment_count != 1 || plan.entry_point != 0x401000ull) {
+        return -1;
+    }
+    if (plan.segments[0].image_address != 0x401000ull || plan.segments[0].file_offset != 0x200ull) {
+        return -1;
+    }
+    if ((plan.segments[0].flags & VIBEOS_BOOT_IMAGE_SEGMENT_EXEC) == 0 || (plan.segments[0].flags & VIBEOS_BOOT_IMAGE_SEGMENT_READ) == 0) {
+        return -1;
+    }
+    return 0;
+}
+
 static int test_timer_and_idt(void) {
     vibeos_timer_t timer;
+    vibeos_interrupt_controller_t intc;
     vibeos_x86_64_idt_t idt;
     int timer_vec;
     if (vibeos_timer_init(&timer, 1000) != 0) {
@@ -1278,6 +1423,16 @@ static int test_timer_and_idt(void) {
         return -1;
     }
     if (!idt.present[timer_vec]) {
+        return -1;
+    }
+    vibeos_intc_init(&intc);
+    if (vibeos_intc_bind_timer_irq(&intc, &timer, (uint32_t)timer_vec) != 0) {
+        return -1;
+    }
+    if (vibeos_intc_dispatch(&intc, (uint32_t)timer_vec) != 0) {
+        return -1;
+    }
+    if (vibeos_timer_ticks(&timer) != 3) {
         return -1;
     }
     if (vibeos_x86_64_validate_boot_environment(VIBEOS_X86_64_FEATURE_SSE2 | VIBEOS_X86_64_FEATURE_NX) != 0) {
@@ -1498,6 +1653,25 @@ static int test_waitset_wake_policy(void) {
     if (vibeos_waitset_wait_ex(&waitset, 0, &idx, &sched, 0) != 0 || idx != 1) {
         return -1;
     }
+    if (vibeos_waitset_reset(&waitset) != 0) {
+        return -1;
+    }
+    vibeos_event_clear(&ev1);
+    vibeos_event_clear(&ev2);
+    vibeos_event_signal(&ev1);
+    vibeos_event_signal(&ev2);
+    if (vibeos_waitset_add(&waitset, &ev1) != 0 || vibeos_waitset_add(&waitset, &ev2) != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_set_wake_policy(&waitset, VIBEOS_WAITSET_WAKE_ROUND_ROBIN) != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_wait_ex(&waitset, 0, &idx, &sched, 0) != 0 || idx != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_wait_ex(&waitset, 0, &idx, &sched, 0) != 0 || idx != 1) {
+        return -1;
+    }
     if (vibeos_waitset_set_wake_policy(&waitset, (vibeos_waitset_wake_policy_t)99) == 0) {
         return -1;
     }
@@ -1691,6 +1865,7 @@ static int test_network_runtime(void) {
 static int test_security_token(void) {
     vibeos_security_token_t token;
     vibeos_policy_state_t policy;
+    uint32_t mac_enabled = 0;
     if (vibeos_sec_token_init(&token, 1000, 1000, (1u << 1) | (1u << 3)) != 0) {
         return -1;
     }
@@ -1701,6 +1876,18 @@ static int test_security_token(void) {
         return -1;
     }
     if (vibeos_policy_can_net_bind(&policy, token.capability_mask) != VIBEOS_POLICY_ALLOW) {
+        return -1;
+    }
+    if (vibeos_policy_set_mac_enforced(&policy, 1) != 0) {
+        return -1;
+    }
+    if (vibeos_policy_get_mac_enforced(&policy, &mac_enabled) != 0 || mac_enabled != 1) {
+        return -1;
+    }
+    if (vibeos_policy_can_process_interact_mac(&policy, 7, 4, (1u << 1)) != VIBEOS_POLICY_DENY) {
+        return -1;
+    }
+    if (vibeos_policy_can_process_interact_mac(&policy, 4, 7, token.capability_mask) != VIBEOS_POLICY_ALLOW) {
         return -1;
     }
     return 0;
@@ -1789,6 +1976,17 @@ static int test_service_ipc_contract(void) {
         return -1;
     }
     if (vibeos_service_msg_validate(&msg) != 0) {
+        return -1;
+    }
+    msg.msg_type = VIBEOS_SERVICE_MSG_ACK;
+    if (vibeos_service_msg_set_reply(&msg, 9, 0) != 0) {
+        return -1;
+    }
+    if (vibeos_service_msg_validate(&msg) != 0) {
+        return -1;
+    }
+    msg.src_service = 99;
+    if (vibeos_service_msg_validate(&msg) == 0) {
         return -1;
     }
     return 0;
@@ -2347,6 +2545,7 @@ int main(void) {
     RUN_TEST(test_user_api_and_bootloader);
     RUN_TEST(test_bootloader_sanitized_map);
     RUN_TEST(test_bootloader_handoff_metadata);
+    RUN_TEST(test_bootloader_firmware_tags_and_pe_plan);
     RUN_TEST(test_timer_and_idt);
     RUN_TEST(test_compat_runtime);
     RUN_TEST(test_waitset);
