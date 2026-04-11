@@ -86,3 +86,5 @@ The bootloader passes a versioned boot information block containing:
 - boot-info contract checks now reject zero-length memory regions and invalid base contracts before kernel bring-up.
 - kernel bootstrap initializes security-audit state during early core initialization.
 - bootloader helpers now expose region-type counters and overlap detection for memory-map sanity checks.
+- sanitized boot-info builder now normalizes memory maps (supported-type filtering, base-order sort, adjacent-merge by type) before kernel handoff.
+- boot contract now provides max physical address helper to support early direct-map sizing decisions.

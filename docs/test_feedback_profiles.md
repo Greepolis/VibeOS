@@ -36,6 +36,7 @@ Characteristics:
 - includes `likely_causes`
 - includes `suggested_entrypoints`
 - preserves stable test IDs and subsystem mapping
+- classifies invalid CMake generator/configure errors early and falls back to manual host build when possible
 
 ### `ci`
 
