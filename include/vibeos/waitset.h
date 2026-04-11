@@ -11,7 +11,8 @@
 
 typedef enum vibeos_waitset_wake_policy {
     VIBEOS_WAITSET_WAKE_FIFO = 0,
-    VIBEOS_WAITSET_WAKE_REVERSE = 1
+    VIBEOS_WAITSET_WAKE_REVERSE = 1,
+    VIBEOS_WAITSET_WAKE_ROUND_ROBIN = 2
 } vibeos_waitset_wake_policy_t;
 
 typedef struct vibeos_waitset {
@@ -21,6 +22,7 @@ typedef struct vibeos_waitset {
     uint32_t ownership_enforced;
     uint32_t active;
     uint32_t wake_policy;
+    uint32_t rr_cursor;
     uint64_t stats_added;
     uint64_t stats_removed;
     uint64_t stats_wait_calls;

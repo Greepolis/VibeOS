@@ -1,4 +1,13 @@
 #include "vibeos/interrupts.h"
+#include "vibeos/timer.h"
+
+static void timer_irq_handler(uint32_t irq, void *ctx) {
+    vibeos_timer_t *timer = (vibeos_timer_t *)ctx;
+    (void)irq;
+    if (timer) {
+        vibeos_timer_tick(timer);
+    }
+}
 
 void vibeos_intc_init(vibeos_interrupt_controller_t *intc) {
     uint32_t i;
@@ -68,4 +77,11 @@ int vibeos_intc_is_masked(const vibeos_interrupt_controller_t *intc, uint32_t ir
         return -1;
     }
     return intc->masked[irq] ? 1 : 0;
+}
+
+int vibeos_intc_bind_timer_irq(vibeos_interrupt_controller_t *intc, struct vibeos_timer *timer, uint32_t irq) {
+    if (!intc || !timer) {
+        return -1;
+    }
+    return vibeos_intc_register(intc, irq, timer_irq_handler, timer);
 }

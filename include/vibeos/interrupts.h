@@ -5,6 +5,8 @@
 
 #define VIBEOS_MAX_IRQS 256u
 
+struct vibeos_timer;
+
 typedef void (*vibeos_irq_handler_t)(uint32_t irq, void *ctx);
 
 typedef struct vibeos_interrupt_controller {
@@ -23,5 +25,6 @@ int vibeos_intc_mask(vibeos_interrupt_controller_t *intc, uint32_t irq);
 int vibeos_intc_unmask(vibeos_interrupt_controller_t *intc, uint32_t irq);
 int vibeos_intc_set_enabled(vibeos_interrupt_controller_t *intc, uint32_t enabled);
 int vibeos_intc_is_masked(const vibeos_interrupt_controller_t *intc, uint32_t irq);
+int vibeos_intc_bind_timer_irq(vibeos_interrupt_controller_t *intc, struct vibeos_timer *timer, uint32_t irq);
 
 #endif
