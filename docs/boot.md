@@ -89,3 +89,4 @@ The bootloader passes a versioned boot information block containing:
 - sanitized boot-info builder now normalizes memory maps (supported-type filtering, base-order sort, adjacent-merge by type) before kernel handoff.
 - boot contract now provides max physical address helper to support early direct-map sizing decisions.
 - boot handoff metadata helpers now cover firmware table pointers (`ACPI`/`SMBIOS`), initrd boundaries, and framebuffer geometry with strict validation.
+- boot validation now enforces memory-map placement rules for firmware pointers, initrd ranges, and framebuffer regions to prevent invalid handoff layouts.
