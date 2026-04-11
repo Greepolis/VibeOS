@@ -535,6 +535,7 @@ Implemented:
 - boot memory-map region-type counters and overlap detection helpers
 - sanitized boot-info builder with supported-region filtering, ordering, overlap-rejection, and adjacent merge by type
 - max physical address helper for early paging/layout planning
+- firmware/initrd/framebuffer handoff metadata setters with boot-contract validation
 Files Created/Modified:
 - `boot/bootloader_stub.c`
 - `include/vibeos/bootloader.h`
