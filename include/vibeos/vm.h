@@ -33,5 +33,7 @@ const vibeos_vm_map_t *vibeos_vm_lookup(const vibeos_address_space_t *aspace, ui
 size_t vibeos_vm_map_count(const vibeos_address_space_t *aspace);
 size_t vibeos_vm_total_mapped(const vibeos_address_space_t *aspace);
 int vibeos_vm_clone_readonly(vibeos_address_space_t *dst, const vibeos_address_space_t *src);
+int vibeos_vm_validate(const vibeos_address_space_t *aspace);
+int vibeos_vm_compact(vibeos_address_space_t *aspace, uint32_t *out_merged);
 
 #endif
