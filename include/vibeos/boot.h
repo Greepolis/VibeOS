@@ -20,6 +20,14 @@ typedef struct vibeos_memory_region {
     uint32_t reserved;
 } vibeos_memory_region_t;
 
+enum {
+    VIBEOS_MEMORY_REGION_USABLE = 1u,
+    VIBEOS_MEMORY_REGION_RESERVED = 2u,
+    VIBEOS_MEMORY_REGION_ACPI_RECLAIMABLE = 3u,
+    VIBEOS_MEMORY_REGION_ACPI_NVS = 4u,
+    VIBEOS_MEMORY_REGION_MMIO = 5u
+};
+
 typedef struct vibeos_boot_info {
     uint32_t version;
     uint32_t flags;
