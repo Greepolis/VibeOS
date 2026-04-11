@@ -259,3 +259,50 @@ int vibeos_sched_counter_summary(const vibeos_scheduler_t *sched, uint64_t *out_
     *out_cpu_count = sched->cpu_count;
     return 0;
 }
+
+int vibeos_sched_age_cpu(vibeos_scheduler_t *sched, uint32_t cpu_id, uint32_t bonus_ticks, uint32_t max_timeslice, uint32_t *out_aged_threads) {
+    size_t i;
+    size_t idx;
+    uint32_t aged = 0;
+    vibeos_runqueue_t *rq;
+    if (!sched || !out_aged_threads || cpu_id >= sched->cpu_count || bonus_ticks == 0 || max_timeslice == 0) {
+        return -1;
+    }
+    rq = &sched->runqueues[cpu_id];
+    for (i = 0; i < rq->count; i++) {
+        vibeos_thread_t *thread;
+        uint32_t boosted;
+        idx = (rq->head + i) % VIBEOS_MAX_THREADS;
+        thread = rq->slots[idx];
+        if (!thread) {
+            continue;
+        }
+        boosted = thread->timeslice_ticks + bonus_ticks;
+        if (boosted < thread->timeslice_ticks || boosted > max_timeslice) {
+            boosted = max_timeslice;
+        }
+        if (boosted != thread->timeslice_ticks) {
+            thread->timeslice_ticks = boosted;
+            aged++;
+        }
+    }
+    *out_aged_threads = aged;
+    return 0;
+}
+
+int vibeos_sched_age_all(vibeos_scheduler_t *sched, uint32_t bonus_ticks, uint32_t max_timeslice, uint32_t *out_aged_threads) {
+    uint32_t cpu_id;
+    uint32_t aged_total = 0;
+    if (!sched || !out_aged_threads || bonus_ticks == 0 || max_timeslice == 0) {
+        return -1;
+    }
+    for (cpu_id = 0; cpu_id < sched->cpu_count; cpu_id++) {
+        uint32_t aged = 0;
+        if (vibeos_sched_age_cpu(sched, cpu_id, bonus_ticks, max_timeslice, &aged) != 0) {
+            return -1;
+        }
+        aged_total += aged;
+    }
+    *out_aged_threads = aged_total;
+    return 0;
+}
