@@ -48,6 +48,7 @@ Current implementation status:
 - process spawn authorization evaluates the calling process token (or kernel token in kernel context), not a fixed global mask.
 - process entries expose security labels with inheritance on spawn and scoped mutation controls.
 - process interaction checks support label-based allow rules with capability-based override.
+- thread entries now keep a token snapshot inherited from their owner process, and token updates propagate to live threads.
 
 ## Sandboxing
 
