@@ -1014,15 +1014,25 @@ static int test_user_api_and_bootloader(void) {
     vibeos_kernel_t kernel;
     vibeos_user_context_t user_ctx;
     uint32_t signal_handle = 0;
-    vibeos_memory_region_t regions[1];
+    uint32_t out_label = 0;
+    uint32_t interact_allowed = 0;
+    uint32_t p1 = 0;
+    uint32_t p2 = 0;
+    vibeos_memory_region_t regions[2];
     vibeos_boot_info_t boot_info;
     uint64_t total = 0;
     uint64_t usable = 0;
+    uint64_t usable_regions = 0;
+    uint32_t has_overlap = 0;
     memset(&kernel, 0, sizeof(kernel));
     regions[0].base = 0x200000;
     regions[0].length = 0x100000;
     regions[0].type = 1;
     regions[0].reserved = 0;
+    regions[1].base = 0x500000;
+    regions[1].length = 0x080000;
+    regions[1].type = 2;
+    regions[1].reserved = 0;
 
     if (vibeos_user_context_init(&user_ctx, 10, 1) != 0) {
         return -1;
@@ -1030,10 +1040,10 @@ static int test_user_api_and_bootloader(void) {
     if (user_ctx.pid != 10 || user_ctx.tid != 1) {
         return -1;
     }
-    if (vibeos_bootloader_build_boot_info(&boot_info, regions, 1) != 0) {
+    if (vibeos_bootloader_build_boot_info(&boot_info, regions, 2) != 0) {
         return -1;
     }
-    if (boot_info.version != VIBEOS_BOOTINFO_VERSION || boot_info.memory_map_entries != 1) {
+    if (boot_info.version != VIBEOS_BOOTINFO_VERSION || boot_info.memory_map_entries != 2) {
         return -1;
     }
     if (vibeos_bootloader_validate_boot_info(&boot_info) != 0) {
@@ -1042,7 +1052,13 @@ static int test_user_api_and_bootloader(void) {
     if (vibeos_bootloader_memory_summary(&boot_info, &total, &usable) != 0) {
         return -1;
     }
-    if (total != regions[0].length || usable != regions[0].length) {
+    if (total != (regions[0].length + regions[1].length) || usable != regions[0].length) {
+        return -1;
+    }
+    if (vibeos_bootloader_count_region_type(&boot_info, 1, &usable_regions) != 0 || usable_regions != 1) {
+        return -1;
+    }
+    if (vibeos_bootloader_has_overlap(&boot_info, &has_overlap) != 0 || has_overlap != 0) {
         return -1;
     }
     if (vibeos_handle_table_init(&kernel.handles) != 0) {
@@ -1055,6 +1071,27 @@ static int test_user_api_and_bootloader(void) {
         return -1;
     }
     if (!vibeos_event_is_signaled(&kernel.boot_event)) {
+        return -1;
+    }
+    if (vibeos_proc_init(&kernel.proc_table) != 0 || vibeos_policy_init(&kernel.policy) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_spawn(&kernel.proc_table, 0, &p1) != 0 || vibeos_proc_spawn(&kernel.proc_table, p1, &p2) != 0) {
+        return -1;
+    }
+    if (vibeos_user_set_process_security_label(&kernel, 0, p1, 5) != 0) {
+        return -1;
+    }
+    if (vibeos_user_get_process_security_label(&kernel, p1, p1, &out_label) != 0 || out_label != 5) {
+        return -1;
+    }
+    if (vibeos_user_check_process_interaction(&kernel, p1, p2, &interact_allowed) != 0 || interact_allowed != 0) {
+        return -1;
+    }
+    if (vibeos_user_set_process_security_label(&kernel, 0, p2, 5) != 0) {
+        return -1;
+    }
+    if (vibeos_user_check_process_interaction(&kernel, p1, p2, &interact_allowed) != 0 || interact_allowed != 1) {
         return -1;
     }
     return 0;
@@ -1641,10 +1678,22 @@ static int test_ipc_handle_transfer(void) {
     uint32_t src_handle = 0;
     uint32_t dst_handle = 0;
     uint32_t rights = 0;
+    uint32_t active = 0;
+    uint32_t quota = 0;
+    uint64_t failures = 0;
     if (vibeos_handle_table_init(&sender) != 0 || vibeos_handle_table_init(&receiver) != 0) {
         return -1;
     }
+    if (vibeos_handle_set_quota(&sender, 1) != 0) {
+        return -1;
+    }
     if (vibeos_handle_alloc(&sender, VIBEOS_HANDLE_RIGHT_READ | VIBEOS_HANDLE_RIGHT_SIGNAL, &src_handle) != 0) {
+        return -1;
+    }
+    if (vibeos_handle_alloc(&sender, VIBEOS_HANDLE_RIGHT_READ, &dst_handle) == 0) {
+        return -1;
+    }
+    if (vibeos_handle_stats(&sender, &active, &quota, &failures) != 0 || active != 1 || quota != 1 || failures < 1) {
         return -1;
     }
     if (vibeos_ipc_transfer_handle(&sender, &receiver, src_handle, VIBEOS_HANDLE_RIGHT_SIGNAL, &dst_handle) != 0) {
