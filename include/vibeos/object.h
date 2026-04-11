@@ -28,6 +28,8 @@ typedef struct vibeos_handle_entry {
 typedef struct vibeos_handle_table {
     vibeos_handle_entry_t entries[VIBEOS_MAX_HANDLES];
     uint32_t next_id;
+    uint32_t max_handles;
+    uint64_t alloc_failures;
 } vibeos_handle_table_t;
 
 int vibeos_handle_table_init(vibeos_handle_table_t *table);
@@ -39,5 +41,8 @@ int vibeos_handle_object(const vibeos_handle_table_t *table, uint32_t handle, vi
 int vibeos_handle_set_provenance(vibeos_handle_table_t *table, uint32_t handle, uint32_t origin_pid, uint32_t origin_handle);
 int vibeos_handle_provenance(const vibeos_handle_table_t *table, uint32_t handle, uint32_t *out_origin_pid, uint32_t *out_origin_handle);
 int vibeos_handle_has_rights(const vibeos_handle_table_t *table, uint32_t handle, uint32_t required_rights);
+int vibeos_handle_set_quota(vibeos_handle_table_t *table, uint32_t max_handles);
+int vibeos_handle_stats(const vibeos_handle_table_t *table, uint32_t *out_active_handles, uint32_t *out_max_handles, uint64_t *out_alloc_failures);
+int vibeos_handle_count_by_type(const vibeos_handle_table_t *table, vibeos_object_type_t object_type, uint32_t *out_count);
 
 #endif

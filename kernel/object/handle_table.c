@@ -1,8 +1,29 @@
 #include "vibeos/object.h"
 
+static uint32_t handle_active_count(const vibeos_handle_table_t *table) {
+    uint32_t i;
+    uint32_t active = 0;
+    if (!table) {
+        return 0;
+    }
+    for (i = 0; i < VIBEOS_MAX_HANDLES; i++) {
+        if (table->entries[i].in_use) {
+            active++;
+        }
+    }
+    return active;
+}
+
 static int handle_alloc_internal(vibeos_handle_table_t *table, uint32_t rights, vibeos_object_type_t object_type, uint32_t object_id, uint32_t *out_handle) {
     uint32_t i;
     if (!table || !out_handle) {
+        return -1;
+    }
+    if (table->max_handles == 0 || table->max_handles > VIBEOS_MAX_HANDLES) {
+        return -1;
+    }
+    if (handle_active_count(table) >= table->max_handles) {
+        table->alloc_failures++;
         return -1;
     }
     for (i = 0; i < VIBEOS_MAX_HANDLES; i++) {
@@ -27,6 +48,8 @@ int vibeos_handle_table_init(vibeos_handle_table_t *table) {
         return -1;
     }
     table->next_id = 1;
+    table->max_handles = VIBEOS_MAX_HANDLES;
+    table->alloc_failures = 0;
     for (i = 0; i < VIBEOS_MAX_HANDLES; i++) {
         table->entries[i].id = 0;
         table->entries[i].rights = 0;
@@ -135,4 +158,40 @@ int vibeos_handle_provenance(const vibeos_handle_table_t *table, uint32_t handle
         }
     }
     return -1;
+}
+
+int vibeos_handle_set_quota(vibeos_handle_table_t *table, uint32_t max_handles) {
+    if (!table || max_handles == 0 || max_handles > VIBEOS_MAX_HANDLES) {
+        return -1;
+    }
+    if (handle_active_count(table) > max_handles) {
+        return -1;
+    }
+    table->max_handles = max_handles;
+    return 0;
+}
+
+int vibeos_handle_stats(const vibeos_handle_table_t *table, uint32_t *out_active_handles, uint32_t *out_max_handles, uint64_t *out_alloc_failures) {
+    if (!table || !out_active_handles || !out_max_handles || !out_alloc_failures) {
+        return -1;
+    }
+    *out_active_handles = handle_active_count(table);
+    *out_max_handles = table->max_handles;
+    *out_alloc_failures = table->alloc_failures;
+    return 0;
+}
+
+int vibeos_handle_count_by_type(const vibeos_handle_table_t *table, vibeos_object_type_t object_type, uint32_t *out_count) {
+    uint32_t i;
+    uint32_t count = 0;
+    if (!table || !out_count || object_type == VIBEOS_OBJECT_NONE) {
+        return -1;
+    }
+    for (i = 0; i < VIBEOS_MAX_HANDLES; i++) {
+        if (table->entries[i].in_use && table->entries[i].object_type == (uint32_t)object_type) {
+            count++;
+        }
+    }
+    *out_count = count;
+    return 0;
 }
