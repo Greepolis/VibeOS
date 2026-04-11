@@ -21,6 +21,22 @@ $failedTests = @()
 $suite = "kernel-core-host"
 $gitRevision = "unknown"
 
+function Test-CMakeGeneratorAvailable {
+    param(
+        [string]$Name
+    )
+    $helpOutput = cmake --help 2>&1
+    foreach ($line in $helpOutput) {
+        if ($line -match "^\s*\*?\s*(.+?)\s*=\s*Generates") {
+            $generatorName = $Matches[1].Trim()
+            if ($generatorName -eq $Name) {
+                return $true
+            }
+        }
+    }
+    return $false
+}
+
 try {
     $gitRevision = (git rev-parse --short HEAD).Trim()
 } catch {
@@ -31,6 +47,9 @@ try {
         throw "INFRA_CMAKE_MISSING: cmake command not found in PATH"
     }
     try {
+        if (-not (Test-CMakeGeneratorAvailable -Name $Generator)) {
+            throw ("cmake generator unavailable (generator={0})" -f $Generator)
+        }
         cmake -S . -B $BuildDir -G $Generator -DVIBEOS_BUILD_TESTS=ON | Tee-Object -FilePath $logPath
         if ($LASTEXITCODE -ne 0) {
             throw ("cmake configure failed (generator={0})" -f $Generator)
