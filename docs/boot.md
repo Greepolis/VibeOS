@@ -90,3 +90,4 @@ The bootloader passes a versioned boot information block containing:
 - boot contract now provides max physical address helper to support early direct-map sizing decisions.
 - boot handoff metadata helpers now cover firmware table pointers (`ACPI`/`SMBIOS`), initrd boundaries, and framebuffer geometry with strict validation.
 - boot validation now enforces memory-map placement rules for firmware pointers, initrd ranges, and framebuffer regions to prevent invalid handoff layouts.
+- bootloader can now extract firmware tags into handoff fields/flags (`secure boot`, `measured boot`) and produce a PE32+ load plan for UEFI-style kernel image mapping.

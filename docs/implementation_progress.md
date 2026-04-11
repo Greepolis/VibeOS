@@ -270,12 +270,13 @@ Module: Memory Manager
 Status: Partial
 Implemented:
 - bootstrap page-frame bump allocator
+- boot-info-aware PMM usable-region selection with initrd-overlap avoidance
 Files Created/Modified:
 - `kernel/mm/pmm.c`
 - `include/vibeos/mm.h`
 Pending:
 - runtime buddy allocator policy
-- reserved-region filtering and mapping policies
+- richer reserved-region and zone policy mapping
 
 Module: Process Scheduler
 Status: Partial
@@ -314,6 +315,7 @@ Implemented:
 - configurable waitset wake policy (`FIFO` and `REVERSE`) with runtime getters/setters
 - waitset telemetry counters (add/remove/wait/wake/timeout/ownership-denial) with stats query API
 - waitset telemetry reset and owner-scoped wake-policy control paths
+- round-robin waitset wake policy with rotating cursor
 Files Created/Modified:
 - `kernel/ipc/event.c`
 - `kernel/ipc/channel.c`
@@ -349,6 +351,7 @@ Implemented:
 - x86_64 trap frame dispatch state
 - trap taxonomy classification (fault/interrupt/syscall/spurious)
 - IRQ mask/unmask controls and global interrupt enable/disable gate in host runtime controller
+- timer IRQ binding helper from interrupt controller to timer tick source
 Files Created/Modified:
 - `kernel/core/interrupts.c`
 - `include/vibeos/interrupts.h`
@@ -358,7 +361,6 @@ Files Created/Modified:
 - `include/vibeos/trap.h`
 Pending:
 - architecture-specific trap/IDT integration
-- timer IRQ source wiring
 
 Module: System Call Interface
 Status: Partial
@@ -486,6 +488,8 @@ Implemented:
 - service-manager health aggregation helper for supervised service visibility
 - compatibility runtime core with per-target enable controls and translation telemetry
 - user API wrappers for process security label get/set and interaction-check syscalls
+- service manager restart-budget/failure-report controls
+- service IPC reply-correlation/status fields with stricter contract validation
 Files Created/Modified:
 - `user/init/init_system.c`
 - `user/servicemgr/service_manager.c`
@@ -508,8 +512,8 @@ Files Created/Modified:
 - `include/vibeos/security_model.h`
 - `include/vibeos/user_api.h`
 Pending:
-- richer service supervision policies
-- real IPC contracts between services
+- richer service supervision policies (restart classes/backoff)
+- richer service IPC contracts beyond current ACK/ERROR extension
 
 Module: Security Model
 Status: Partial
@@ -522,13 +526,14 @@ Implemented:
 - security-audit success/failure counters by action and by outcome (`success` filter)
 - process security labels with inheritance and policy-configured override capability checks
 - thread token snapshot inheritance and propagation on process token updates
+- MAC interaction policy gate (`mac_enforced`) integrated in policy runtime and syscall interaction checks
 Files Created/Modified:
 - `kernel/core/security.c`
 - `include/vibeos/security_model.h`
 - `kernel/core/policy.c`
 - `include/vibeos/policy.h`
 Pending:
-- policy engine integration for MAC rules
+- advanced multi-domain MAC rule sets and label transition policy
 
 Module: Bootloader Interface
 Status: Partial
@@ -540,12 +545,13 @@ Implemented:
 - max physical address helper for early paging/layout planning
 - firmware/initrd/framebuffer handoff metadata setters with boot-contract validation
 - placement validation for firmware pointers, initrd ranges, and framebuffer ranges against memory-map region types
+- firmware-tag extraction/apply flow for ACPI/SMBIOS and secure/measured-boot flags
+- PE32+ kernel image load-plan parser for UEFI-style mapping preparation
 Files Created/Modified:
 - `boot/bootloader_stub.c`
 - `include/vibeos/bootloader.h`
 Pending:
 - real UEFI image loading path
-- firmware table extraction and handoff
 
 ## System Implementation Status
 

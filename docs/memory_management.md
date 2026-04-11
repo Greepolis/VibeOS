@@ -90,3 +90,4 @@ These primitives are sufficient to emulate Linux `mmap`, Windows virtual memory 
 - VM observability helpers expose total map count and total mapped bytes.
 - read-only clone support is available (`clone_readonly`) to model early copy-on-write style address-space duplication.
 - VM integrity helpers now include address-space validation (`validate`) and adjacent-map compaction (`compact`) for safer and denser map layouts.
+- PMM bootstrap can now select the best usable region from boot memory maps while avoiding initrd overlap, instead of assuming a fixed first-region layout.

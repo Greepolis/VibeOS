@@ -40,6 +40,10 @@ Use cases:
 
 Events allow low-cost signaling. Wait sets allow a service to block on multiple channels, timers, and events without ad hoc polling loops.
 
+Current runtime notes:
+- wait sets support `FIFO`, `REVERSE`, and `ROUND_ROBIN` wake policy modes.
+- round-robin wake policy keeps a rotating cursor to improve fairness under sustained multi-event contention.
+
 ## Contract model
 
 - every long-lived system service should publish a versioned IPC contract

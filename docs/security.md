@@ -49,6 +49,7 @@ Current implementation status:
 - process entries expose security labels with inheritance on spawn and scoped mutation controls.
 - process interaction checks support label-based allow rules with capability-based override.
 - thread entries now keep a token snapshot inherited from their owner process, and token updates propagate to live threads.
+- policy runtime now includes an enforceable MAC interaction gate (`mac_enforced`) layered on top of label and capability checks.
 
 ## Sandboxing
 

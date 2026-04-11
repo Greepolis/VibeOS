@@ -65,3 +65,5 @@ GUI is not part of the earliest milestones, but the architecture should anticipa
 - runtime supervision counters are exercised by host tests to keep orchestration behavior regression-safe.
 - compatibility runtime core now includes per-target enablement and early syscall translation probes for Linux, Windows, and macOS layers.
 - user API now includes wrappers for process security label get/set and interaction checks over native syscall ABI helpers.
+- service manager now exposes restart-budget controls and failure reporting hooks to support stricter supervision policy behavior.
+- service IPC runtime now validates service identifiers/message types and supports reply correlation/status fields for ACK/ERROR flows.
