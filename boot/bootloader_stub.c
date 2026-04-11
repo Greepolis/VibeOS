@@ -11,6 +11,39 @@ static int region_end(const vibeos_memory_region_t *region, uint64_t *out_end) {
     return 0;
 }
 
+static int range_end(uint64_t base, uint64_t size, uint64_t *out_end) {
+    if (!out_end || size == 0) {
+        return -1;
+    }
+    if (base > UINT64_MAX - size) {
+        return -1;
+    }
+    *out_end = base + size;
+    return 0;
+}
+
+static int find_region_type_for_range(const vibeos_boot_info_t *boot_info, uint64_t base, uint64_t size, uint32_t *out_region_type) {
+    uint64_t i;
+    uint64_t target_end = 0;
+    if (!boot_info || !out_region_type || size == 0) {
+        return -1;
+    }
+    if (range_end(base, size, &target_end) != 0) {
+        return -1;
+    }
+    for (i = 0; i < boot_info->memory_map_entries; i++) {
+        uint64_t region_finish = 0;
+        if (region_end(&boot_info->memory_map[i], &region_finish) != 0) {
+            return -1;
+        }
+        if (base >= boot_info->memory_map[i].base && target_end <= region_finish) {
+            *out_region_type = boot_info->memory_map[i].type;
+            return 0;
+        }
+    }
+    return -1;
+}
+
 static void sort_regions_by_base(vibeos_memory_region_t *regions, uint64_t count) {
     uint64_t i;
     uint64_t j;
@@ -97,11 +130,34 @@ int vibeos_bootloader_validate_boot_info(const vibeos_boot_info_t *boot_info) {
     if ((boot_info->acpi_rsdp == 0) != (boot_info->smbios_entry == 0)) {
         return -1;
     }
+    if (boot_info->acpi_rsdp != 0) {
+        uint32_t table_region_type = 0;
+        if (find_region_type_for_range(boot_info, boot_info->acpi_rsdp, 16, &table_region_type) != 0) {
+            return -1;
+        }
+        if (table_region_type == VIBEOS_MEMORY_REGION_MMIO) {
+            return -1;
+        }
+        if (find_region_type_for_range(boot_info, boot_info->smbios_entry, 16, &table_region_type) != 0) {
+            return -1;
+        }
+        if (table_region_type == VIBEOS_MEMORY_REGION_MMIO) {
+            return -1;
+        }
+    }
     if (boot_info->initrd_size > 0) {
+        uint32_t initrd_region_type = 0;
+        uint64_t initrd_end = 0;
         if (boot_info->initrd_base == 0) {
             return -1;
         }
-        if (boot_info->initrd_base > UINT64_MAX - boot_info->initrd_size) {
+        if (range_end(boot_info->initrd_base, boot_info->initrd_size, &initrd_end) != 0) {
+            return -1;
+        }
+        if (find_region_type_for_range(boot_info, boot_info->initrd_base, boot_info->initrd_size, &initrd_region_type) != 0) {
+            return -1;
+        }
+        if (initrd_region_type == VIBEOS_MEMORY_REGION_MMIO) {
             return -1;
         }
     }
@@ -110,7 +166,14 @@ int vibeos_bootloader_validate_boot_info(const vibeos_boot_info_t *boot_info) {
             return -1;
         }
     } else {
+        uint32_t fb_region_type = 0;
         if (boot_info->framebuffer_width == 0 || boot_info->framebuffer_height == 0) {
+            return -1;
+        }
+        if (find_region_type_for_range(boot_info, boot_info->framebuffer_base, 4096, &fb_region_type) != 0) {
+            return -1;
+        }
+        if (!(fb_region_type == VIBEOS_MEMORY_REGION_MMIO || fb_region_type == VIBEOS_MEMORY_REGION_RESERVED)) {
             return -1;
         }
     }
@@ -291,4 +354,14 @@ int vibeos_bootloader_set_framebuffer(vibeos_boot_info_t *boot_info, uint64_t fr
     boot_info->framebuffer_width = width;
     boot_info->framebuffer_height = height;
     return 0;
+}
+
+int vibeos_bootloader_find_region_type_for_range(const vibeos_boot_info_t *boot_info, uint64_t base, uint64_t size, uint32_t *out_region_type) {
+    if (!boot_info || !out_region_type) {
+        return -1;
+    }
+    if (vibeos_bootloader_validate_boot_info(boot_info) != 0) {
+        return -1;
+    }
+    return find_region_type_for_range(boot_info, base, size, out_region_type);
 }
