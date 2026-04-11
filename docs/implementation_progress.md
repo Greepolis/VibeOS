@@ -291,12 +291,13 @@ Implemented:
 - scheduler counter summary helper (`preemptions`, `wait_timeouts`, `wait_wakes`, runnable threads, cpu count)
 - scheduler counter reset helper for controlled instrumentation epochs
 - class-based default timeslice policy helpers and enqueue-time timeslice normalization
+- runqueue aging helpers (`age_cpu`, `age_all`) with bounded timeslice boosts
 Files Created/Modified:
 - `kernel/sched/scheduler.c`
 - `include/vibeos/scheduler.h`
 Pending:
 - full timeslice policy integration with runtime thread lifecycle
-- priority aging and balancing policies
+- priority aging policy feedback integration with live runtime priorities
 
 Module: IPC Subsystem
 Status: Partial
@@ -330,6 +331,8 @@ Implemented:
 - partial range unmap with split-map handling
 - map-count and total-mapped observability helpers
 - read-only address-space clone primitive for early copy-on-write modeling
+- address-space structural validation helper (`validate`) with overflow and overlap checks
+- adjacent mapping compaction helper (`compact`) for denser map layouts
 Files Created/Modified:
 - `kernel/mm/vm.c`
 - `include/vibeos/vm.h`
@@ -518,13 +521,13 @@ Implemented:
 - kernel security-audit log for privileged security operations with caller-scoped introspection
 - security-audit success/failure counters by action and by outcome (`success` filter)
 - process security labels with inheritance and policy-configured override capability checks
+- thread token snapshot inheritance and propagation on process token updates
 Files Created/Modified:
 - `kernel/core/security.c`
 - `include/vibeos/security_model.h`
 - `kernel/core/policy.c`
 - `include/vibeos/policy.h`
 Pending:
-- token propagation across process/thread lifecycle
 - policy engine integration for MAC rules
 
 Module: Bootloader Interface
@@ -536,6 +539,7 @@ Implemented:
 - sanitized boot-info builder with supported-region filtering, ordering, overlap-rejection, and adjacent merge by type
 - max physical address helper for early paging/layout planning
 - firmware/initrd/framebuffer handoff metadata setters with boot-contract validation
+- placement validation for firmware pointers, initrd ranges, and framebuffer ranges against memory-map region types
 Files Created/Modified:
 - `boot/bootloader_stub.c`
 - `include/vibeos/bootloader.h`
