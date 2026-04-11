@@ -91,7 +91,7 @@
 ### Object and Handle Model
 - Responsibilities: kernel object access mediation through handle IDs and rights
 - Main files: `kernel/object/handle_table.c`, `include/vibeos/object.h`
-- Public interfaces: `vibeos_handle_alloc`, `vibeos_handle_alloc_object`, `vibeos_handle_close`, `vibeos_handle_rights`, `vibeos_handle_object`, `vibeos_handle_set_provenance`, `vibeos_handle_provenance`, `vibeos_handle_has_rights`
+- Public interfaces: `vibeos_handle_alloc`, `vibeos_handle_alloc_object`, `vibeos_handle_close`, `vibeos_handle_rights`, `vibeos_handle_object`, `vibeos_handle_set_provenance`, `vibeos_handle_provenance`, `vibeos_handle_has_rights`, `vibeos_handle_set_quota`, `vibeos_handle_stats`, `vibeos_handle_count_by_type`
 - Dependencies: syscall interface, security model
 
 ### Security Policy Engine
@@ -397,7 +397,6 @@ Files Created/Modified:
 - `kernel/core/syscall_policy.c`
 - `include/vibeos/syscall_policy.h`
 Pending:
-- per-caller security token plumbing (today spawn policy is checked against kernel token)
 - stronger cross-process authorization model beyond direct relationship checks
 
 Module: Process Management
@@ -444,13 +443,16 @@ Implemented:
 - cross-process handle duplication policy (related process only + source MANAGE right)
 - object-aware handle metadata (`object_type`, `object_id`) with lookup helper
 - handle provenance metadata (`origin_pid`, `origin_handle`) for duplication lineage tracking
+- configurable per-table handle quota controls
+- handle allocation-failure telemetry for observability
+- object-type handle counters for runtime accounting
 Files Created/Modified:
 - `kernel/object/handle_table.c`
 - `include/vibeos/object.h`
 - `kernel/ipc/handle_transfer.c`
 - `include/vibeos/ipc_transfer.h`
 Pending:
-- object-specific quota and lifecycle hooks for future revocation/garbage-collection policies
+- object lifecycle hooks for future revocation/garbage-collection policies
 
 Module: Timer Subsystem
 Status: Partial
@@ -480,6 +482,7 @@ Implemented:
 - start/stop lifecycle controls for init, devmgr, vfs, and net service stubs
 - service-manager health aggregation helper for supervised service visibility
 - compatibility runtime core with per-target enable controls and translation telemetry
+- user API wrappers for process security label get/set and interaction-check syscalls
 Files Created/Modified:
 - `user/init/init_system.c`
 - `user/servicemgr/service_manager.c`
@@ -529,6 +532,7 @@ Status: Partial
 Implemented:
 - boot info builder stub for kernel handoff contract
 - boot-info validation helper and memory summary helper (`total` vs `usable` bytes)
+- boot memory-map region-type counters and overlap detection helpers
 Files Created/Modified:
 - `boot/bootloader_stub.c`
 - `include/vibeos/bootloader.h`

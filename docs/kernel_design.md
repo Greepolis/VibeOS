@@ -32,6 +32,11 @@ Every kernel-visible resource is represented as a typed object:
 
 Objects are referenced through handles. Handles carry rights masks and can be transferred in controlled ways through IPC.
 
+Current runtime prototype updates:
+- handle tables support configurable per-table quota limits.
+- handle allocation failure counters are tracked for observability.
+- object-type counters are available for process/thread handle accounting.
+
 ## Process model
 
 ### Process

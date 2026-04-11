@@ -85,3 +85,4 @@ The bootloader passes a versioned boot information block containing:
 - bootloader stub exposes boot-info validation and memory summary helpers.
 - boot-info contract checks now reject zero-length memory regions and invalid base contracts before kernel bring-up.
 - kernel bootstrap initializes security-audit state during early core initialization.
+- bootloader helpers now expose region-type counters and overlap detection for memory-map sanity checks.

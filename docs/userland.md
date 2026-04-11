@@ -64,3 +64,4 @@ GUI is not part of the earliest milestones, but the architecture should anticipa
 - service manager exposes a health aggregation helper that reports currently running critical services.
 - runtime supervision counters are exercised by host tests to keep orchestration behavior regression-safe.
 - compatibility runtime core now includes per-target enablement and early syscall translation probes for Linux, Windows, and macOS layers.
+- user API now includes wrappers for process security label get/set and interaction checks over native syscall ABI helpers.
