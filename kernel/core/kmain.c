@@ -29,9 +29,7 @@ const char *vibeos_kernel_stage_name(vibeos_boot_stage_t stage) {
 }
 
 int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
-    uintptr_t pmm_base;
-    size_t pmm_size;
-
+    uint32_t timer_irq;
     if (!kernel || kernel_bootinfo_validate(boot_info) != 0) {
         return -1;
     }
@@ -40,9 +38,7 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
     kernel->boot_state.last_error_code = 0;
     vibeos_event_init(&kernel->boot_event);
 
-    pmm_base = (uintptr_t)boot_info->memory_map[0].base;
-    pmm_size = (size_t)boot_info->memory_map[0].length;
-    if (vibeos_pmm_init(&kernel->pmm, pmm_base, pmm_size, 4096) != 0) {
+    if (vibeos_pmm_init_from_boot_info(&kernel->pmm, boot_info, 4096) != 0) {
         kernel->boot_state.last_error_code = 1001;
         return -1;
     }
@@ -91,6 +87,11 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
     }
     if (vibeos_x86_64_idt_set(&kernel->idt, (uint32_t)vibeos_x86_64_timer_vector()) != 0) {
         kernel->boot_state.last_error_code = 1006;
+        return -1;
+    }
+    timer_irq = (uint32_t)vibeos_x86_64_timer_vector();
+    if (vibeos_intc_bind_timer_irq(&kernel->intc, &kernel->timer, timer_irq) != 0) {
+        kernel->boot_state.last_error_code = 1013;
         return -1;
     }
     kernel->boot_state.stage = VIBEOS_BOOT_STAGE_SCHED_READY;
