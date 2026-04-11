@@ -15,6 +15,7 @@ int vibeos_policy_init(vibeos_policy_state_t *policy) {
     policy->net_bind_required_capability_bit = 1;
     policy->process_spawn_required_capability_bit = 2;
     policy->process_interact_override_capability_bit = 3;
+    policy->mac_enforced = 0;
     return 0;
 }
 
@@ -92,4 +93,37 @@ int vibeos_policy_summary(const vibeos_policy_state_t *policy, uint32_t *out_fs_
     *out_process_spawn_bit = policy->process_spawn_required_capability_bit;
     *out_process_interact_override_bit = policy->process_interact_override_capability_bit;
     return 0;
+}
+
+int vibeos_policy_set_mac_enforced(vibeos_policy_state_t *policy, uint32_t enabled) {
+    if (!policy) {
+        return -1;
+    }
+    policy->mac_enforced = enabled ? 1u : 0u;
+    return 0;
+}
+
+int vibeos_policy_get_mac_enforced(const vibeos_policy_state_t *policy, uint32_t *out_enabled) {
+    if (!policy || !out_enabled) {
+        return -1;
+    }
+    *out_enabled = policy->mac_enforced;
+    return 0;
+}
+
+vibeos_policy_action_t vibeos_policy_can_process_interact_mac(const vibeos_policy_state_t *policy, uint32_t caller_label, uint32_t target_label, uint32_t capability_mask) {
+    if (!policy) {
+        return VIBEOS_POLICY_DENY;
+    }
+    if (caller_label == target_label) {
+        return VIBEOS_POLICY_ALLOW;
+    }
+    if (!policy->mac_enforced) {
+        return VIBEOS_POLICY_ALLOW;
+    }
+    if (policy->process_interact_override_capability_bit < 32u &&
+        (capability_mask & (1u << policy->process_interact_override_capability_bit)) != 0) {
+        return VIBEOS_POLICY_ALLOW;
+    }
+    return (caller_label <= target_label) ? VIBEOS_POLICY_ALLOW : VIBEOS_POLICY_DENY;
 }
