@@ -78,3 +78,4 @@ Periodic and event-driven balancing migrates threads across CPUs based on:
 - class-based default timeslice selection is implemented (`background=8`, `normal=4`, `interactive=2`, `realtime=1`).
 - enqueue paths normalize zero-timeslice threads to class defaults.
 - per-CPU and aggregate scheduler counters remain available through runtime telemetry helpers and syscall observability paths.
+- runqueue aging helpers are available (`age_cpu`, `age_all`) to apply bounded timeslice boosts and reduce starvation risk.
