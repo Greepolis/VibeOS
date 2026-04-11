@@ -39,6 +39,7 @@ typedef struct vibeos_thread_entry {
     uint32_t owner_pid;
     uint32_t in_use;
     vibeos_thread_state_t state;
+    vibeos_security_token_t token_snapshot;
 } vibeos_thread_entry_t;
 
 typedef struct vibeos_proc_audit_event {
@@ -102,6 +103,7 @@ int vibeos_proc_resolve_object_handle(vibeos_process_table_t *pt, uint32_t owner
 int vibeos_thread_state(vibeos_process_table_t *pt, uint32_t tid, vibeos_thread_state_t *out_state);
 int vibeos_thread_set_state(vibeos_process_table_t *pt, uint32_t tid, vibeos_thread_state_t state);
 int vibeos_thread_exit(vibeos_process_table_t *pt, uint32_t tid);
+int vibeos_thread_token_get(vibeos_process_table_t *pt, uint32_t tid, vibeos_security_token_t *out_token);
 int vibeos_proc_audit_count(vibeos_process_table_t *pt, uint32_t *out_count);
 int vibeos_proc_audit_get(vibeos_process_table_t *pt, uint32_t index, vibeos_proc_audit_event_t *out_event);
 int vibeos_proc_audit_count_for_pid(vibeos_process_table_t *pt, uint32_t caller_pid, uint32_t *out_count);

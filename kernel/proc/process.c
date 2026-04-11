@@ -173,6 +173,9 @@ int vibeos_proc_init(vibeos_process_table_t *pt) {
         pt->threads[i].owner_pid = 0;
         pt->threads[i].in_use = 0;
         pt->threads[i].state = VIBEOS_THREAD_STATE_EXITED;
+        pt->threads[i].token_snapshot.uid = 0;
+        pt->threads[i].token_snapshot.gid = 0;
+        pt->threads[i].token_snapshot.capability_mask = 0;
     }
     for (i = 0; i < VIBEOS_PROC_AUDIT_CAPACITY; i++) {
         pt->audit_events[i].seq = 0;
@@ -277,6 +280,7 @@ int vibeos_thread_create(vibeos_process_table_t *pt, uint32_t pid, uint32_t *out
                     pt->threads[j].owner_pid = pid;
                     pt->threads[j].in_use = 1;
                     pt->threads[j].state = VIBEOS_THREAD_STATE_RUNNABLE;
+                    pt->threads[j].token_snapshot = pt->entries[i].token;
                     pt->thread_state_transitions++;
                     if (pt->entries[i].state != VIBEOS_PROCESS_STATE_RUNNING) {
                         pt->proc_state_transitions++;
@@ -442,6 +446,9 @@ int vibeos_proc_terminate(vibeos_process_table_t *pt, uint32_t pid) {
             pt->threads[i].state = VIBEOS_THREAD_STATE_EXITED;
             pt->threads[i].owner_pid = 0;
             pt->threads[i].tid = 0;
+            pt->threads[i].token_snapshot.uid = 0;
+            pt->threads[i].token_snapshot.gid = 0;
+            pt->threads[i].token_snapshot.capability_mask = 0;
             pt->thread_exits++;
             if (pt->thread_count > 0) {
                 pt->thread_count--;
@@ -545,6 +552,9 @@ int vibeos_thread_exit(vibeos_process_table_t *pt, uint32_t tid) {
     thread->state = VIBEOS_THREAD_STATE_EXITED;
     thread->owner_pid = 0;
     thread->tid = 0;
+    thread->token_snapshot.uid = 0;
+    thread->token_snapshot.gid = 0;
+    thread->token_snapshot.capability_mask = 0;
     pt->thread_exits++;
     if (pt->thread_count > 0) {
         pt->thread_count--;
@@ -876,6 +886,7 @@ int vibeos_proc_token_get(vibeos_process_table_t *pt, uint32_t pid, vibeos_secur
 
 int vibeos_proc_token_set(vibeos_process_table_t *pt, uint32_t pid, const vibeos_security_token_t *token) {
     vibeos_process_entry_t *entry;
+    uint32_t i;
     if (!pt || !token || pid == 0) {
         return -1;
     }
@@ -884,6 +895,24 @@ int vibeos_proc_token_set(vibeos_process_table_t *pt, uint32_t pid, const vibeos
         return -1;
     }
     entry->token = *token;
+    for (i = 0; i < VIBEOS_PROC_MAX_THREADS; i++) {
+        if (pt->threads[i].in_use && pt->threads[i].owner_pid == pid) {
+            pt->threads[i].token_snapshot = *token;
+        }
+    }
+    return 0;
+}
+
+int vibeos_thread_token_get(vibeos_process_table_t *pt, uint32_t tid, vibeos_security_token_t *out_token) {
+    vibeos_thread_entry_t *thread;
+    if (!pt || !out_token || tid == 0) {
+        return -1;
+    }
+    thread = find_thread_entry(pt, tid);
+    if (!thread) {
+        return -1;
+    }
+    *out_token = thread->token_snapshot;
     return 0;
 }
 
