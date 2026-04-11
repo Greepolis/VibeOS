@@ -32,7 +32,13 @@ try {
     }
     try {
         cmake -S . -B $BuildDir -G $Generator -DVIBEOS_BUILD_TESTS=ON | Tee-Object -FilePath $logPath
+        if ($LASTEXITCODE -ne 0) {
+            throw ("cmake configure failed (generator={0})" -f $Generator)
+        }
         cmake --build $BuildDir | Tee-Object -FilePath $logPath -Append
+        if ($LASTEXITCODE -ne 0) {
+            throw "cmake build failed"
+        }
         & ".\$BuildDir\vibeos_kernel_tests.exe" | Tee-Object -FilePath $logPath -Append
         if ($LASTEXITCODE -ne 0) {
             throw "kernel tests returned non-zero exit code"

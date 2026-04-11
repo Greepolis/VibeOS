@@ -1061,6 +1061,9 @@ static int test_user_api_and_bootloader(void) {
     if (vibeos_bootloader_has_overlap(&boot_info, &has_overlap) != 0 || has_overlap != 0) {
         return -1;
     }
+    if (vibeos_bootloader_max_physical_address(&boot_info, &total) != 0 || total != (regions[1].base + regions[1].length)) {
+        return -1;
+    }
     if (vibeos_handle_table_init(&kernel.handles) != 0) {
         return -1;
     }
@@ -1092,6 +1095,63 @@ static int test_user_api_and_bootloader(void) {
         return -1;
     }
     if (vibeos_user_check_process_interaction(&kernel, p1, p2, &interact_allowed) != 0 || interact_allowed != 1) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_bootloader_sanitized_map(void) {
+    vibeos_memory_region_t input[6];
+    vibeos_memory_region_t scratch[6];
+    vibeos_boot_info_t boot_info;
+    uint64_t sanitized_count = 0;
+    uint64_t count_usable = 0;
+    uint32_t has_overlap = 0;
+
+    memset(&boot_info, 0, sizeof(boot_info));
+    memset(input, 0, sizeof(input));
+    memset(scratch, 0, sizeof(scratch));
+
+    input[0].base = 0x400000;
+    input[0].length = 0x1000;
+    input[0].type = VIBEOS_MEMORY_REGION_RESERVED;
+
+    input[1].base = 0x100000;
+    input[1].length = 0x2000;
+    input[1].type = VIBEOS_MEMORY_REGION_USABLE;
+
+    input[2].base = 0x102000;
+    input[2].length = 0x1000;
+    input[2].type = VIBEOS_MEMORY_REGION_USABLE;
+
+    input[3].base = 0x800000;
+    input[3].length = 0x1000;
+    input[3].type = 99u;
+
+    input[4].base = 0x500000;
+    input[4].length = 0x3000;
+    input[4].type = VIBEOS_MEMORY_REGION_MMIO;
+
+    input[5].base = 0x200000;
+    input[5].length = 0x1000;
+    input[5].type = VIBEOS_MEMORY_REGION_ACPI_RECLAIMABLE;
+
+    if (vibeos_bootloader_build_boot_info_sanitized(&boot_info, input, 6, scratch, 6, &sanitized_count) != 0) {
+        return -1;
+    }
+    if (sanitized_count != 4 || boot_info.memory_map_entries != 4) {
+        return -1;
+    }
+    if (boot_info.memory_map[0].base != 0x100000 || boot_info.memory_map[0].length != 0x3000 || boot_info.memory_map[0].type != VIBEOS_MEMORY_REGION_USABLE) {
+        return -1;
+    }
+    if (boot_info.memory_map[1].base != 0x200000 || boot_info.memory_map[1].type != VIBEOS_MEMORY_REGION_ACPI_RECLAIMABLE) {
+        return -1;
+    }
+    if (vibeos_bootloader_count_region_type(&boot_info, VIBEOS_MEMORY_REGION_USABLE, &count_usable) != 0 || count_usable != 1) {
+        return -1;
+    }
+    if (vibeos_bootloader_has_overlap(&boot_info, &has_overlap) != 0 || has_overlap != 0) {
         return -1;
     }
     return 0;
@@ -2181,6 +2241,7 @@ int main(void) {
     RUN_TEST(test_services);
     RUN_TEST(test_servicemgr_and_drivers);
     RUN_TEST(test_user_api_and_bootloader);
+    RUN_TEST(test_bootloader_sanitized_map);
     RUN_TEST(test_timer_and_idt);
     RUN_TEST(test_compat_runtime);
     RUN_TEST(test_waitset);
