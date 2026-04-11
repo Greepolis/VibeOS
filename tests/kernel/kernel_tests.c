@@ -91,6 +91,7 @@ static int test_scheduler_balanced(void) {
     vibeos_thread_t t2 = { .id = 12, .cpu_hint = 0, .klass = VIBEOS_THREAD_NORMAL, .timeslice_ticks = 3 };
     vibeos_thread_t t3 = { .id = 13, .cpu_hint = 0, .klass = VIBEOS_THREAD_NORMAL, .timeslice_ticks = 3 };
     uint32_t cpu = 0;
+    uint32_t aged = 0;
     if (vibeos_sched_init(&sched, 2) != 0) {
         return -1;
     }
@@ -110,6 +111,18 @@ static int test_scheduler_balanced(void) {
         return -1;
     }
     if (vibeos_sched_cpu_count(&sched, &cpu) != 0 || cpu != 2) {
+        return -1;
+    }
+    if (vibeos_sched_age_cpu(&sched, 1, 2, 6, &aged) != 0 || aged != 1) {
+        return -1;
+    }
+    if (t2.timeslice_ticks != 5) {
+        return -1;
+    }
+    if (vibeos_sched_age_all(&sched, 4, 6, &aged) != 0 || aged != 3) {
+        return -1;
+    }
+    if (t1.timeslice_ticks != 6 || t2.timeslice_ticks != 6 || t3.timeslice_ticks != 6) {
         return -1;
     }
     return 0;
@@ -159,6 +172,7 @@ static int test_kmain(void) {
     vibeos_kernel_t kernel;
 
     memset(&kernel, 0, sizeof(kernel));
+    memset(&boot, 0, sizeof(boot));
     region.base = 0x100000;
     region.length = 0x200000;
     region.type = 1;
@@ -168,6 +182,10 @@ static int test_kmain(void) {
     boot.flags = 0;
     boot.memory_map_entries = 1;
     boot.memory_map = &region;
+    boot.acpi_rsdp = 0;
+    boot.smbios_entry = 0;
+    boot.initrd_base = 0;
+    boot.initrd_size = 0;
     boot.framebuffer_base = 0;
     boot.framebuffer_width = 0;
     boot.framebuffer_height = 0;
@@ -188,6 +206,7 @@ static int test_vm(void) {
     vibeos_address_space_t aspace;
     vibeos_address_space_t cloned;
     const vibeos_vm_map_t *found;
+    uint32_t merged = 0;
     if (vibeos_vm_init(&aspace) != 0) {
         return -1;
     }
@@ -199,6 +218,9 @@ static int test_vm(void) {
         return -1;
     }
     if (vibeos_vm_map_count(&aspace) != 1 || vibeos_vm_total_mapped(&aspace) != 0x2000) {
+        return -1;
+    }
+    if (vibeos_vm_validate(&aspace) != 0) {
         return -1;
     }
     if (vibeos_vm_protect(&aspace, 0x400000, 0x2000, VIBEOS_VM_PERM_READ) != 0) {
@@ -228,6 +250,21 @@ static int test_vm(void) {
         return -1;
     }
     if (vibeos_vm_map_count(&aspace) != 0) {
+        return -1;
+    }
+    if (vibeos_vm_map(&aspace, 0x500000, 0x200000, 0x1000, VIBEOS_VM_PERM_READ) != 0) {
+        return -1;
+    }
+    if (vibeos_vm_map(&aspace, 0x501000, 0x201000, 0x1000, VIBEOS_VM_PERM_READ) != 0) {
+        return -1;
+    }
+    if (vibeos_vm_compact(&aspace, &merged) != 0 || merged != 1) {
+        return -1;
+    }
+    if (vibeos_vm_map_count(&aspace) != 1 || vibeos_vm_total_mapped(&aspace) != 0x2000) {
+        return -1;
+    }
+    if (vibeos_vm_map(&aspace, UINTPTR_MAX - 0x100, 0x300000, 0x1000, VIBEOS_VM_PERM_READ) == 0) {
         return -1;
     }
     return 0;
@@ -1158,19 +1195,28 @@ static int test_bootloader_sanitized_map(void) {
 }
 
 static int test_bootloader_handoff_metadata(void) {
-    vibeos_memory_region_t regions[1];
+    vibeos_memory_region_t regions[3];
     vibeos_boot_info_t boot_info;
+    uint32_t region_type = 0;
     regions[0].base = 0x100000;
     regions[0].length = 0x400000;
     regions[0].type = VIBEOS_MEMORY_REGION_USABLE;
     regions[0].reserved = 0;
-    if (vibeos_bootloader_build_boot_info(&boot_info, regions, 1) != 0) {
+    regions[1].base = 0x90000000ull;
+    regions[1].length = 0x100000;
+    regions[1].type = VIBEOS_MEMORY_REGION_MMIO;
+    regions[1].reserved = 0;
+    regions[2].base = 0xA0000000ull;
+    regions[2].length = 0x100000;
+    regions[2].type = VIBEOS_MEMORY_REGION_RESERVED;
+    regions[2].reserved = 0;
+    if (vibeos_bootloader_build_boot_info(&boot_info, regions, 3) != 0) {
         return -1;
     }
-    if (vibeos_bootloader_set_firmware_tables(&boot_info, 0x12345000ull, 0x12346000ull) != 0) {
+    if (vibeos_bootloader_set_firmware_tables(&boot_info, 0x101000ull, 0x102000ull) != 0) {
         return -1;
     }
-    if (vibeos_bootloader_set_initrd(&boot_info, 0x2000000ull, 0x400000ull) != 0) {
+    if (vibeos_bootloader_set_initrd(&boot_info, 0x200000ull, 0x100000ull) != 0) {
         return -1;
     }
     if (vibeos_bootloader_set_framebuffer(&boot_info, 0x90000000ull, 1024, 768) != 0) {
@@ -1186,6 +1232,15 @@ static int test_bootloader_handoff_metadata(void) {
         return -1;
     }
     if (vibeos_bootloader_set_framebuffer(&boot_info, 0x90000000ull, 0, 768) == 0) {
+        return -1;
+    }
+    if (vibeos_bootloader_find_region_type_for_range(&boot_info, 0x90000000ull, 0x1000, &region_type) != 0 || region_type != VIBEOS_MEMORY_REGION_MMIO) {
+        return -1;
+    }
+    if (vibeos_bootloader_set_initrd(&boot_info, 0x90001000ull, 0x2000) != 0) {
+        return -1;
+    }
+    if (vibeos_bootloader_validate_boot_info(&boot_info) == 0) {
         return -1;
     }
     return 0;
@@ -2101,10 +2156,12 @@ static int test_process_security_tokens(void) {
     vibeos_security_token_t parent_token;
     vibeos_security_token_t child_token;
     vibeos_security_token_t explicit_token;
+    vibeos_security_token_t thread_token;
     uint32_t label = 0;
     uint32_t parent = 0;
     uint32_t child = 0;
     uint32_t sibling = 0;
+    uint32_t tid = 0;
     if (vibeos_proc_init(&pt) != 0) {
         return -1;
     }
@@ -2119,6 +2176,19 @@ static int test_process_security_tokens(void) {
         return -1;
     }
     if (vibeos_proc_security_label_set(&pt, parent, 77) != 0) {
+        return -1;
+    }
+    if (vibeos_thread_create(&pt, parent, &tid) != 0) {
+        return -1;
+    }
+    if (vibeos_thread_token_get(&pt, tid, &thread_token) != 0 || thread_token.capability_mask != parent_token.capability_mask) {
+        return -1;
+    }
+    parent_token.capability_mask |= (1u << 9);
+    if (vibeos_proc_token_set(&pt, parent, &parent_token) != 0) {
+        return -1;
+    }
+    if (vibeos_thread_token_get(&pt, tid, &thread_token) != 0 || thread_token.capability_mask != parent_token.capability_mask) {
         return -1;
     }
     if (vibeos_proc_spawn(&pt, parent, &child) != 0) {
