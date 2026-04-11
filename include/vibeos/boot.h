@@ -33,6 +33,10 @@ typedef struct vibeos_boot_info {
     uint32_t flags;
     uint64_t memory_map_entries;
     const vibeos_memory_region_t *memory_map;
+    uint64_t acpi_rsdp;
+    uint64_t smbios_entry;
+    uint64_t initrd_base;
+    uint64_t initrd_size;
     uint64_t framebuffer_base;
     uint32_t framebuffer_width;
     uint32_t framebuffer_height;

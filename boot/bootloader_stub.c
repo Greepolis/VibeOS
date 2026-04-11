@@ -61,6 +61,10 @@ int vibeos_bootloader_build_boot_info(vibeos_boot_info_t *boot_info, vibeos_memo
     boot_info->flags = 0;
     boot_info->memory_map_entries = region_count;
     boot_info->memory_map = region_buffer;
+    boot_info->acpi_rsdp = 0;
+    boot_info->smbios_entry = 0;
+    boot_info->initrd_base = 0;
+    boot_info->initrd_size = 0;
     boot_info->framebuffer_base = 0;
     boot_info->framebuffer_width = 0;
     boot_info->framebuffer_height = 0;
@@ -88,6 +92,26 @@ int vibeos_bootloader_validate_boot_info(const vibeos_boot_info_t *boot_info) {
             if (boot_info->memory_map[i].base < prev_end) {
                 return -1;
             }
+        }
+    }
+    if ((boot_info->acpi_rsdp == 0) != (boot_info->smbios_entry == 0)) {
+        return -1;
+    }
+    if (boot_info->initrd_size > 0) {
+        if (boot_info->initrd_base == 0) {
+            return -1;
+        }
+        if (boot_info->initrd_base > UINT64_MAX - boot_info->initrd_size) {
+            return -1;
+        }
+    }
+    if (boot_info->framebuffer_base == 0) {
+        if (boot_info->framebuffer_width != 0 || boot_info->framebuffer_height != 0) {
+            return -1;
+        }
+    } else {
+        if (boot_info->framebuffer_width == 0 || boot_info->framebuffer_height == 0) {
+            return -1;
         }
     }
     return 0;
@@ -224,4 +248,47 @@ int vibeos_bootloader_build_boot_info_sanitized(vibeos_boot_info_t *boot_info, c
     }
     *out_sanitized_count = merged_count;
     return vibeos_bootloader_validate_boot_info(boot_info);
+}
+
+int vibeos_bootloader_set_firmware_tables(vibeos_boot_info_t *boot_info, uint64_t acpi_rsdp, uint64_t smbios_entry) {
+    if (!boot_info) {
+        return -1;
+    }
+    if ((acpi_rsdp == 0) != (smbios_entry == 0)) {
+        return -1;
+    }
+    boot_info->acpi_rsdp = acpi_rsdp;
+    boot_info->smbios_entry = smbios_entry;
+    return 0;
+}
+
+int vibeos_bootloader_set_initrd(vibeos_boot_info_t *boot_info, uint64_t initrd_base, uint64_t initrd_size) {
+    if (!boot_info) {
+        return -1;
+    }
+    if (initrd_size > 0) {
+        if (initrd_base == 0 || initrd_base > UINT64_MAX - initrd_size) {
+            return -1;
+        }
+    }
+    boot_info->initrd_base = initrd_base;
+    boot_info->initrd_size = initrd_size;
+    return 0;
+}
+
+int vibeos_bootloader_set_framebuffer(vibeos_boot_info_t *boot_info, uint64_t framebuffer_base, uint32_t width, uint32_t height) {
+    if (!boot_info) {
+        return -1;
+    }
+    if (framebuffer_base == 0) {
+        if (width != 0 || height != 0) {
+            return -1;
+        }
+    } else if (width == 0 || height == 0) {
+        return -1;
+    }
+    boot_info->framebuffer_base = framebuffer_base;
+    boot_info->framebuffer_width = width;
+    boot_info->framebuffer_height = height;
+    return 0;
 }

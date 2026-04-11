@@ -10,5 +10,8 @@ int vibeos_bootloader_memory_summary(const vibeos_boot_info_t *boot_info, uint64
 int vibeos_bootloader_count_region_type(const vibeos_boot_info_t *boot_info, uint32_t region_type, uint64_t *out_count);
 int vibeos_bootloader_has_overlap(const vibeos_boot_info_t *boot_info, uint32_t *out_has_overlap);
 int vibeos_bootloader_max_physical_address(const vibeos_boot_info_t *boot_info, uint64_t *out_max_physical_exclusive);
+int vibeos_bootloader_set_firmware_tables(vibeos_boot_info_t *boot_info, uint64_t acpi_rsdp, uint64_t smbios_entry);
+int vibeos_bootloader_set_initrd(vibeos_boot_info_t *boot_info, uint64_t initrd_base, uint64_t initrd_size);
+int vibeos_bootloader_set_framebuffer(vibeos_boot_info_t *boot_info, uint64_t framebuffer_base, uint32_t width, uint32_t height);
 
 #endif

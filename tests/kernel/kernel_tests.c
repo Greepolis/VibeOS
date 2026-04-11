@@ -1157,6 +1157,40 @@ static int test_bootloader_sanitized_map(void) {
     return 0;
 }
 
+static int test_bootloader_handoff_metadata(void) {
+    vibeos_memory_region_t regions[1];
+    vibeos_boot_info_t boot_info;
+    regions[0].base = 0x100000;
+    regions[0].length = 0x400000;
+    regions[0].type = VIBEOS_MEMORY_REGION_USABLE;
+    regions[0].reserved = 0;
+    if (vibeos_bootloader_build_boot_info(&boot_info, regions, 1) != 0) {
+        return -1;
+    }
+    if (vibeos_bootloader_set_firmware_tables(&boot_info, 0x12345000ull, 0x12346000ull) != 0) {
+        return -1;
+    }
+    if (vibeos_bootloader_set_initrd(&boot_info, 0x2000000ull, 0x400000ull) != 0) {
+        return -1;
+    }
+    if (vibeos_bootloader_set_framebuffer(&boot_info, 0x90000000ull, 1024, 768) != 0) {
+        return -1;
+    }
+    if (vibeos_bootloader_validate_boot_info(&boot_info) != 0) {
+        return -1;
+    }
+    if (vibeos_bootloader_set_firmware_tables(&boot_info, 0x12345000ull, 0) == 0) {
+        return -1;
+    }
+    if (vibeos_bootloader_set_initrd(&boot_info, 0, 0x1000) == 0) {
+        return -1;
+    }
+    if (vibeos_bootloader_set_framebuffer(&boot_info, 0x90000000ull, 0, 768) == 0) {
+        return -1;
+    }
+    return 0;
+}
+
 static int test_timer_and_idt(void) {
     vibeos_timer_t timer;
     vibeos_x86_64_idt_t idt;
@@ -2242,6 +2276,7 @@ int main(void) {
     RUN_TEST(test_servicemgr_and_drivers);
     RUN_TEST(test_user_api_and_bootloader);
     RUN_TEST(test_bootloader_sanitized_map);
+    RUN_TEST(test_bootloader_handoff_metadata);
     RUN_TEST(test_timer_and_idt);
     RUN_TEST(test_compat_runtime);
     RUN_TEST(test_waitset);
