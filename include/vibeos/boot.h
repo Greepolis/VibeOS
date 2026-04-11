@@ -5,6 +5,8 @@
 #include <stdint.h>
 
 #define VIBEOS_BOOTINFO_VERSION 1u
+#define VIBEOS_BOOT_FLAG_SECURE_BOOT (1u << 0)
+#define VIBEOS_BOOT_FLAG_MEASURED_BOOT (1u << 1)
 
 typedef enum vibeos_boot_stage {
     VIBEOS_BOOT_STAGE_EARLY = 0,

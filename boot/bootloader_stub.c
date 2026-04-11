@@ -1,5 +1,27 @@
 #include "vibeos/bootloader.h"
 
+static uint16_t read_le16(const uint8_t *p) {
+    return (uint16_t)(p[0] | ((uint16_t)p[1] << 8));
+}
+
+static uint32_t read_le32(const uint8_t *p) {
+    return (uint32_t)(p[0] |
+        ((uint32_t)p[1] << 8) |
+        ((uint32_t)p[2] << 16) |
+        ((uint32_t)p[3] << 24));
+}
+
+static uint64_t read_le64(const uint8_t *p) {
+    return (uint64_t)p[0] |
+        ((uint64_t)p[1] << 8) |
+        ((uint64_t)p[2] << 16) |
+        ((uint64_t)p[3] << 24) |
+        ((uint64_t)p[4] << 32) |
+        ((uint64_t)p[5] << 40) |
+        ((uint64_t)p[6] << 48) |
+        ((uint64_t)p[7] << 56);
+}
+
 static int region_end(const vibeos_memory_region_t *region, uint64_t *out_end) {
     if (!region || !out_end || region->length == 0) {
         return -1;
@@ -364,4 +386,151 @@ int vibeos_bootloader_find_region_type_for_range(const vibeos_boot_info_t *boot_
         return -1;
     }
     return find_region_type_for_range(boot_info, base, size, out_region_type);
+}
+
+int vibeos_bootloader_extract_firmware_tags(const vibeos_firmware_tag_t *tags, uint32_t tag_count, uint64_t *out_acpi_rsdp, uint64_t *out_smbios_entry, uint32_t *out_secure_boot, uint32_t *out_measured_boot) {
+    uint32_t i;
+    uint64_t acpi = 0;
+    uint64_t smbios = 0;
+    uint32_t secure_boot = 0;
+    uint32_t measured_boot = 0;
+    if (!tags || !out_acpi_rsdp || !out_smbios_entry || !out_secure_boot || !out_measured_boot) {
+        return -1;
+    }
+    for (i = 0; i < tag_count; i++) {
+        switch (tags[i].type) {
+            case VIBEOS_FIRMWARE_TAG_ACPI_RSDP:
+                acpi = tags[i].value;
+                break;
+            case VIBEOS_FIRMWARE_TAG_SMBIOS:
+                smbios = tags[i].value;
+                break;
+            case VIBEOS_FIRMWARE_TAG_SECURE_BOOT:
+                secure_boot = tags[i].value ? 1u : 0u;
+                break;
+            case VIBEOS_FIRMWARE_TAG_MEASURED_BOOT:
+                measured_boot = tags[i].value ? 1u : 0u;
+                break;
+            default:
+                break;
+        }
+    }
+    if ((acpi == 0) != (smbios == 0)) {
+        return -1;
+    }
+    *out_acpi_rsdp = acpi;
+    *out_smbios_entry = smbios;
+    *out_secure_boot = secure_boot;
+    *out_measured_boot = measured_boot;
+    return 0;
+}
+
+int vibeos_bootloader_apply_firmware_tags(vibeos_boot_info_t *boot_info, const vibeos_firmware_tag_t *tags, uint32_t tag_count) {
+    uint64_t acpi = 0;
+    uint64_t smbios = 0;
+    uint32_t secure_boot = 0;
+    uint32_t measured_boot = 0;
+    if (!boot_info || !tags) {
+        return -1;
+    }
+    if (vibeos_bootloader_extract_firmware_tags(tags, tag_count, &acpi, &smbios, &secure_boot, &measured_boot) != 0) {
+        return -1;
+    }
+    if (vibeos_bootloader_set_firmware_tables(boot_info, acpi, smbios) != 0) {
+        return -1;
+    }
+    if (secure_boot) {
+        boot_info->flags |= VIBEOS_BOOT_FLAG_SECURE_BOOT;
+    } else {
+        boot_info->flags &= ~VIBEOS_BOOT_FLAG_SECURE_BOOT;
+    }
+    if (measured_boot) {
+        boot_info->flags |= VIBEOS_BOOT_FLAG_MEASURED_BOOT;
+    } else {
+        boot_info->flags &= ~VIBEOS_BOOT_FLAG_MEASURED_BOOT;
+    }
+    return vibeos_bootloader_validate_boot_info(boot_info);
+}
+
+int vibeos_bootloader_plan_pe_image(const uint8_t *image, uint64_t image_size, vibeos_boot_image_plan_t *out_plan) {
+    uint32_t pe_offset;
+    uint16_t num_sections;
+    uint16_t optional_header_size;
+    uint32_t entry_rva;
+    uint64_t image_base;
+    uint64_t section_table_offset;
+    uint32_t i;
+    if (!image || !out_plan || image_size < 0x100) {
+        return -1;
+    }
+    if (image[0] != 'M' || image[1] != 'Z') {
+        return -1;
+    }
+    pe_offset = read_le32(&image[0x3c]);
+    if ((uint64_t)pe_offset + 24 > image_size) {
+        return -1;
+    }
+    if (image[pe_offset] != 'P' || image[pe_offset + 1] != 'E' || image[pe_offset + 2] != 0 || image[pe_offset + 3] != 0) {
+        return -1;
+    }
+    num_sections = read_le16(&image[pe_offset + 6]);
+    optional_header_size = read_le16(&image[pe_offset + 20]);
+    if (num_sections == 0 || num_sections > VIBEOS_BOOT_IMAGE_MAX_SEGMENTS) {
+        return -1;
+    }
+    if ((uint64_t)pe_offset + 24 + optional_header_size > image_size) {
+        return -1;
+    }
+    if (read_le16(&image[pe_offset + 24]) != 0x20Bu) {
+        return -1;
+    }
+    entry_rva = read_le32(&image[pe_offset + 24 + 16]);
+    image_base = read_le64(&image[pe_offset + 24 + 24]);
+    section_table_offset = (uint64_t)pe_offset + 24u + (uint64_t)optional_header_size;
+    if (section_table_offset + ((uint64_t)num_sections * 40u) > image_size) {
+        return -1;
+    }
+
+    out_plan->image_base = image_base;
+    out_plan->entry_point = image_base + (uint64_t)entry_rva;
+    out_plan->segment_count = 0;
+
+    for (i = 0; i < num_sections; i++) {
+        uint64_t sh = section_table_offset + ((uint64_t)i * 40u);
+        uint32_t virtual_size = read_le32(&image[sh + 8]);
+        uint32_t virtual_address = read_le32(&image[sh + 12]);
+        uint32_t raw_size = read_le32(&image[sh + 16]);
+        uint32_t raw_offset = read_le32(&image[sh + 20]);
+        uint32_t characteristics = read_le32(&image[sh + 36]);
+        uint64_t mem_size = (virtual_size != 0) ? (uint64_t)virtual_size : (uint64_t)raw_size;
+        vibeos_boot_image_segment_t *seg;
+        if (mem_size == 0) {
+            continue;
+        }
+        if (raw_size > 0 && ((uint64_t)raw_offset + (uint64_t)raw_size > image_size)) {
+            return -1;
+        }
+        if (out_plan->segment_count >= VIBEOS_BOOT_IMAGE_MAX_SEGMENTS) {
+            return -1;
+        }
+        seg = &out_plan->segments[out_plan->segment_count++];
+        seg->file_offset = (uint64_t)raw_offset;
+        seg->image_address = image_base + (uint64_t)virtual_address;
+        seg->file_size = (uint64_t)raw_size;
+        seg->mem_size = mem_size;
+        seg->flags = 0;
+        if ((characteristics & 0x40000000u) != 0) {
+            seg->flags |= VIBEOS_BOOT_IMAGE_SEGMENT_READ;
+        }
+        if ((characteristics & 0x80000000u) != 0) {
+            seg->flags |= VIBEOS_BOOT_IMAGE_SEGMENT_WRITE;
+        }
+        if ((characteristics & 0x20000000u) != 0) {
+            seg->flags |= VIBEOS_BOOT_IMAGE_SEGMENT_EXEC;
+        }
+    }
+    if (out_plan->segment_count == 0) {
+        return -1;
+    }
+    return 0;
 }
