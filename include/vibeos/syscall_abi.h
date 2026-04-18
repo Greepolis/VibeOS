@@ -237,6 +237,36 @@ static inline void vibeos_syscall_make_thread_state_summary_get(vibeos_syscall_f
     f->arg2 = 0;
 }
 
+static inline void vibeos_syscall_make_process_thread_state_count_get(vibeos_syscall_frame_t *f, uint32_t target_pid, uint32_t thread_state, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_PROCESS_THREAD_STATE_COUNT_GET;
+    f->arg0 = target_pid;
+    f->arg1 = thread_state;
+    f->arg2 = caller_pid;
+}
+
+static inline void vibeos_syscall_make_process_runnable_threads_get(vibeos_syscall_frame_t *f, uint32_t target_pid, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_PROCESS_RUNNABLE_THREADS_GET;
+    f->arg0 = target_pid;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
+static inline void vibeos_syscall_make_process_blocked_threads_get(vibeos_syscall_frame_t *f, uint32_t target_pid, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_PROCESS_BLOCKED_THREADS_GET;
+    f->arg0 = target_pid;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
 static inline void vibeos_syscall_make_proc_transition_counters_get(vibeos_syscall_frame_t *f) {
     if (!f) {
         return;
@@ -489,6 +519,46 @@ static inline void vibeos_syscall_make_sched_counters_reset(vibeos_syscall_frame
     f->arg0 = 0;
     f->arg1 = 0;
     f->arg2 = caller_pid;
+}
+
+static inline void vibeos_syscall_make_sched_tracked_threads_get(vibeos_syscall_frame_t *f) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_SCHED_TRACKED_THREADS_GET;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = 0;
+}
+
+static inline void vibeos_syscall_make_sched_blocked_threads_get(vibeos_syscall_frame_t *f) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_SCHED_BLOCKED_THREADS_GET;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = 0;
+}
+
+static inline void vibeos_syscall_make_sched_wait_transition_summary_get(vibeos_syscall_frame_t *f) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_SCHED_WAIT_TRANSITION_SUMMARY_GET;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = 0;
+}
+
+static inline void vibeos_syscall_make_sched_thread_runtime_get(vibeos_syscall_frame_t *f, uint32_t tid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_SCHED_THREAD_RUNTIME_GET;
+    f->arg0 = tid;
+    f->arg1 = 0;
+    f->arg2 = 0;
 }
 
 static inline void vibeos_syscall_make_process_token_get(vibeos_syscall_frame_t *f, uint32_t target_pid, uint32_t caller_pid) {

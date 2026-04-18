@@ -570,6 +570,54 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             frame->result = (int64_t)state_exited;
             return 0;
         }
+        case VIBEOS_SYSCALL_PROCESS_THREAD_STATE_COUNT_GET:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            uint32_t target_pid = (uint32_t)frame->arg0;
+            uint32_t count = 0;
+            if (!syscall_process_view_allowed(kernel, caller_pid, target_pid)) {
+                frame->result = -1;
+                return -1;
+            }
+            if (vibeos_proc_thread_count_for_process_in_state(&kernel->proc_table, target_pid, (vibeos_thread_state_t)frame->arg1, &count) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = (int64_t)count;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_PROCESS_RUNNABLE_THREADS_GET:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            uint32_t target_pid = (uint32_t)frame->arg0;
+            uint32_t has_runnable = 0;
+            if (!syscall_process_view_allowed(kernel, caller_pid, target_pid)) {
+                frame->result = -1;
+                return -1;
+            }
+            if (vibeos_proc_process_has_runnable_threads(&kernel->proc_table, target_pid, &has_runnable) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = (int64_t)has_runnable;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_PROCESS_BLOCKED_THREADS_GET:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            uint32_t target_pid = (uint32_t)frame->arg0;
+            uint32_t count = 0;
+            if (!syscall_process_view_allowed(kernel, caller_pid, target_pid)) {
+                frame->result = -1;
+                return -1;
+            }
+            if (vibeos_proc_thread_count_for_process_in_state(&kernel->proc_table, target_pid, VIBEOS_THREAD_STATE_BLOCKED, &count) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = (int64_t)count;
+            return 0;
+        }
         case VIBEOS_SYSCALL_PROC_TRANSITION_COUNTERS_GET:
         {
             uint64_t proc_transitions = 0;
@@ -904,6 +952,44 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
                 return -1;
             }
             frame->result = 0;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_SCHED_TRACKED_THREADS_GET:
+            frame->result = (int64_t)vibeos_sched_tracked_threads(&kernel->scheduler);
+            return 0;
+        case VIBEOS_SYSCALL_SCHED_BLOCKED_THREADS_GET:
+            frame->result = (int64_t)vibeos_sched_blocked_threads(&kernel->scheduler);
+            return 0;
+        case VIBEOS_SYSCALL_SCHED_WAIT_TRANSITION_SUMMARY_GET:
+        {
+            uint64_t wait_begin = 0;
+            uint64_t wait_end = 0;
+            uint64_t requeues = 0;
+            uint64_t requeue_failures = 0;
+            if (vibeos_sched_wait_transition_summary(&kernel->scheduler, &wait_begin, &wait_end, &requeues, &requeue_failures) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->arg0 = wait_begin;
+            frame->arg1 = wait_end;
+            frame->arg2 = requeues;
+            frame->result = (int64_t)requeue_failures;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_SCHED_THREAD_RUNTIME_GET:
+        {
+            vibeos_sched_thread_runtime_state_t state = VIBEOS_SCHED_THREAD_ABSENT;
+            uint32_t cpu_id = 0;
+            uint64_t wait_begin = 0;
+            uint64_t wait_end = 0;
+            if (vibeos_sched_thread_runtime_get(&kernel->scheduler, (uint32_t)frame->arg0, &state, &cpu_id, &wait_begin, &wait_end, 0) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->arg0 = (uint64_t)state;
+            frame->arg1 = cpu_id;
+            frame->arg2 = wait_begin;
+            frame->result = (int64_t)wait_end;
             return 0;
         }
         case VIBEOS_SYSCALL_PROCESS_TOKEN_GET:
