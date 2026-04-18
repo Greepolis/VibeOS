@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.21)
-project(VibeOS C)
+project(VibeOS C ASM)
+
+# Enable ASM language for assembly sources
+enable_language(ASM)
+set(CMAKE_ASM_COMPILE_OBJECT "<CMAKE_C_COMPILER> <DEFINES> <INCLUDES> <FLAGS> -o <OBJECT> -c <SOURCE>")
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -92,16 +96,31 @@ endif()
 
 # Image and boot artifact generation
 if(VIBEOS_BUILD_KERNEL_IMAGE)
-    # Kernel ELF image (primary artifact for emulator/hardware loading)
+    # Kernel executable ELF (bootable by QEMU/hardware bootloader)
+    # Links entry.s + kernel_core + user_core into a single executable
+    add_executable(vibeos_kernel
+        kernel/arch/x86_64/entry.s
+    )
+    
+    target_link_libraries(vibeos_kernel PRIVATE vibeos_kernel_core vibeos_user_core)
+    
+    # Linker settings for kernel executable
+    target_link_options(vibeos_kernel PRIVATE
+        -no-pie             # Disable Position Independent Executable
+        -nostdlib           # No standard library
+        -Wl,--entry=_start  # Entry point is _start from entry.s
+    )
+    
+    # Copy kernel ELF to artifacts directory
     add_custom_target(vibeos_kernel_elf
         COMMAND ${CMAKE_COMMAND} -E copy
-            $<TARGET_FILE:vibeos_kernel_core>
+            $<TARGET_FILE:vibeos_kernel>
             ${VIBEOS_ARTIFACTS_DIR}/vibeos_kernel.elf
-        DEPENDS vibeos_kernel_core
+        DEPENDS vibeos_kernel
         COMMENT "Copying kernel ELF image to artifacts/"
     )
     
-    # Boot image stub (for M1: simple placeholder; will evolve to bootable disk image)
+    # Boot image stub (for M2: uses kernel ELF; will evolve to bootable disk image for M3+)
     add_custom_target(vibeos_boot_image
         COMMAND ${CMAKE_COMMAND} -E echo "Creating boot image stub..."
         COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/create_boot_image.cmake
