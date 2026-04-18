@@ -38,6 +38,7 @@ add_library(vibeos_kernel_core STATIC
     kernel/arch/x86_64/trap.c
     kernel/arch/x86_64/idt.c
     kernel/arch/x86_64/boot_stub.c
+    kernel/arch/x86_64/serial.c
 )
 
 target_include_directories(vibeos_kernel_core

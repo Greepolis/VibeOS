@@ -4,7 +4,8 @@ param(
     [string]$Generator = "Ninja",
     [switch]$SkipTests = $false,
     [switch]$SkipImageBuild = $false,
-    [switch]$RunQemu = $false
+    [switch]$RunQemu = $false,
+    [switch]$RunM2BootSmoke = $false
 )
 
 $ErrorActionPreference = "Stop"
@@ -192,6 +193,22 @@ try {
             }
         }
         
+        # Step 5: Run M2 boot smoke test (if requested)
+        if ($RunM2BootSmoke) {
+            Write-Host "[M2-BOOT] Starting M2 boot smoke test..."
+            $imagePath = Join-Path $BuildDir "artifacts" "vibeos_boot.img"
+            if (-not (Test-Path $imagePath)) {
+                Write-Host "[M2-BOOT] ERROR: boot image not found"
+                throw "M2 boot smoke test failed: boot image missing"
+            }
+            Write-Host "[M2-BOOT] Running QEMU boot verification..."
+            & .\scripts\run-qemu.ps1 -BuildDir $BuildDir -ImagePath $imagePath -ExpectToken "BOOT_OK" -Timeout 10 | Tee-Object -FilePath $logPath -Append
+            if ($LASTEXITCODE -ne 0) {
+                throw "M2 boot smoke test failed: kernel did not output BOOT_OK"
+            }
+            Write-Host "[M2-BOOT] Boot verification PASSED"
+        }
+        
     } catch {
         Add-Content -Path $logPath -Value ("cmake_path_failed={0}" -f $_.Exception.Message)
         if (-not (Get-Command gcc -ErrorAction SilentlyContinue)) {
@@ -224,6 +241,7 @@ try {
             "kernel/arch/x86_64/trap.c",
             "kernel/arch/x86_64/idt.c",
             "kernel/arch/x86_64/boot_stub.c",
+            "kernel/arch/x86_64/serial.c",
             "user/init/init_system.c",
             "user/servicemgr/service_manager.c",
             "user/servicemgr/service_ipc.c",

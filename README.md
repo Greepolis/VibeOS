@@ -41,40 +41,39 @@ This balances performance, fault isolation, portability, and long-term compatibi
 
 Phase 2: implementation bootstrap (build, kernel core primitives, automated feedback harness)
 
-**Current Status: Milestone M1 In Progress**
-- Build skeleton: ✓ CMake + Ninja/GCC support established
-- Toolchain validation: ✓ Version capture and generator detection
-- Boot image generation: ✓ ELF and stub image targets
-- Automated testing: ✓ Host-side tests + QEMU integration (partial)
+**Current Status: Milestone M2 In Progress**
+- M1 (Toolchain & Build Skeleton): ✓ COMPLETED
+- M2 (Boot to Kernel Banner): 🏗️ IN PROGRESS (serial I/O ready, QEMU test ready)
+  - Serial I/O primitives implemented
+  - Kernel logs boot phases to serial
+  - "BOOT_OK" marker on successful boot
+  - QEMU boot smoke test framework ready (requires QEMU installation)
 
-### Quick Start (M1)
+### M2 Quick Start (when QEMU installed)
 
-**Prerequisites**
-- CMake 3.21+ (or GCC for fallback)
-- Ninja or compiler of choice
-- Optional: QEMU for emulator tests
-
-**Build and Test**
 ```powershell
-# Configure and build (Windows PowerShell)
+# Build with M2 serial support
 cmake -S . -B build -G Ninja -DVIBEOS_BUILD_TESTS=ON -DVIBEOS_BUILD_KERNEL_IMAGE=ON
 cmake --build build
 
-# Run host-side tests
-./scripts/run-tests.ps1 -BuildDir build
+# Run M2 boot smoke test on QEMU
+./scripts/run-tests.ps1 -BuildDir build -RunM2BootSmoke
 
-# Run with QEMU smoke test (if QEMU installed)
-./scripts/run-tests.ps1 -BuildDir build -RunQemu
-
-# View results
-Get-Content artifacts/test-summary.json -Raw | ConvertFrom-Json | Format-Table
+# Or directly test kernel boot
+./scripts/run-qemu.ps1 -BuildDir build -ImagePath build/artifacts/vibeos_boot.img -ExpectToken "BOOT_OK"
 ```
 
-**Expected Output**
-- `artifacts/test-summary.json` with status `pass`
-- `artifacts/kernel-tests.log` with test execution log
-- `build/artifacts/vibeos_kernel.elf` loadable kernel image
-- `build/artifacts/vibeos_boot.img` boot artifact
+**Expected Serial Output (M2)**
+```
+[BOOT] VibeOS kernel starting...
+[BOOT] Boot info validated
+[BOOT] Memory manager initialized
+[BOOT] Virtual memory initialized
+[BOOT] Memory stage ready
+[BOOT] Scheduler stage ready
+[BOOT] BOOT_OK
+[BOOT] VibeOS kernel ready for user-space
+```
 
 - `docs/software_architecture_specification.md`
 - `docs/implementation_progress.md`

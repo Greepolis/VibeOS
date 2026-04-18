@@ -17,4 +17,10 @@ int vibeos_x86_64_idt_set(vibeos_x86_64_idt_t *idt, uint32_t vector);
 int vibeos_x86_64_timer_vector(void);
 int vibeos_x86_64_validate_boot_environment(uint32_t feature_flags);
 
+/* Early serial I/O for boot logging */
+int vibeos_x86_64_serial_init(void);
+void vibeos_x86_64_serial_putc(char c);
+void vibeos_x86_64_serial_puts(const char *s);
+void vibeos_x86_64_serial_print_hex(uint64_t value);
+
 #endif

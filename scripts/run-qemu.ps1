@@ -4,6 +4,7 @@ param(
     [int]$Timeout = 30,
     [string]$SerialLog = "artifacts/qemu-serial.log",
     [string]$ExitLog = "artifacts/qemu-exit.txt",
+    [string]$ExpectToken = "",
     [switch]$Debug = $false
 )
 
@@ -113,6 +114,13 @@ if (Test-Path $SerialLog) {
         Write-Host "---"
         Write-Host $serialContent
         Write-Host "---"
+        
+        # Check for expected token if specified
+        if ($ExpectToken -and $serialContent -match $ExpectToken) {
+            Write-Host "[QEMU] Token '$ExpectToken' found in serial output"
+        } elseif ($ExpectToken) {
+            Write-Host "[QEMU] WARNING: Expected token '$ExpectToken' not found"
+        }
     }
 } else {
     Write-Host "[WARNING] Serial log not generated"
@@ -126,7 +134,12 @@ if (Test-Path $SerialLog) {
     duration_ms = $duration
     serial_log = $SerialLog
     image_path = $imagePath
+    expected_token = $ExpectToken
 } | ConvertTo-Json | Set-Content $ExitLog
 
 Write-Host "[QEMU] Exit log written to $ExitLog"
+
+if ($ExpectToken -and $serialContent -notmatch $ExpectToken) {
+    exit 1
+}
 exit $exitCode
