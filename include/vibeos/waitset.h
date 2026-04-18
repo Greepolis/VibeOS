@@ -7,6 +7,8 @@
 #include "vibeos/scheduler.h"
 #include "vibeos/timer.h"
 
+struct vibeos_process_table;
+
 #define VIBEOS_WAITSET_MAX_EVENTS 32u
 
 typedef enum vibeos_waitset_wake_policy {
@@ -47,5 +49,7 @@ int vibeos_waitset_owner(const vibeos_waitset_t *waitset, uint32_t *out_owner_pi
 int vibeos_waitset_wait(vibeos_waitset_t *waitset, uint64_t timeout_ticks, size_t *out_index);
 int vibeos_waitset_wait_ex(vibeos_waitset_t *waitset, uint64_t timeout_ticks, size_t *out_index, vibeos_scheduler_t *sched, uint32_t cpu_id);
 int vibeos_waitset_wait_timed(vibeos_waitset_t *waitset, vibeos_timer_t *timer, uint64_t timeout_ticks, size_t *out_index, vibeos_scheduler_t *sched, uint32_t cpu_id);
+int vibeos_waitset_wait_for_thread(vibeos_waitset_t *waitset, uint64_t timeout_ticks, size_t *out_index, vibeos_scheduler_t *sched, uint32_t cpu_id, struct vibeos_process_table *proc_table, uint32_t tid);
+int vibeos_waitset_wait_timed_for_thread(vibeos_waitset_t *waitset, vibeos_timer_t *timer, uint64_t timeout_ticks, size_t *out_index, vibeos_scheduler_t *sched, uint32_t cpu_id, struct vibeos_process_table *proc_table, uint32_t tid);
 
 #endif

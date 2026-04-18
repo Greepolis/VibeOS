@@ -893,6 +893,14 @@ int vibeos_thread_token_get(vibeos_process_table_t *pt, uint32_t tid, vibeos_sec
     return 0;
 }
 
+int vibeos_proc_thread_wait_begin(vibeos_process_table_t *pt, uint32_t tid) {
+    return vibeos_thread_set_state(pt, tid, VIBEOS_THREAD_STATE_BLOCKED);
+}
+
+int vibeos_proc_thread_wait_end(vibeos_process_table_t *pt, uint32_t tid) {
+    return vibeos_thread_set_state(pt, tid, VIBEOS_THREAD_STATE_RUNNABLE);
+}
+
 int vibeos_proc_security_label_get(vibeos_process_table_t *pt, uint32_t pid, uint32_t *out_label) {
     vibeos_process_entry_t *entry;
     if (!pt || !out_label || pid == 0) {

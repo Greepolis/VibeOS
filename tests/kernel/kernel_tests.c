@@ -1590,6 +1590,51 @@ static int test_waitset_timed(void) {
     return 0;
 }
 
+static int test_waitset_thread_integration(void) {
+    vibeos_waitset_t waitset;
+    vibeos_scheduler_t sched;
+    vibeos_timer_t timer;
+    vibeos_process_table_t pt;
+    vibeos_event_t ev;
+    vibeos_thread_state_t state;
+    uint32_t pid = 0;
+    uint32_t tid = 0;
+    size_t idx = 0;
+    if (vibeos_sched_init(&sched, 1) != 0) {
+        return -1;
+    }
+    if (vibeos_timer_init(&timer, 1000) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_init(&pt) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_spawn(&pt, 0, &pid) != 0 || vibeos_thread_create(&pt, pid, &tid) != 0) {
+        return -1;
+    }
+    if (vibeos_thread_state(&pt, tid, &state) != 0 || state != VIBEOS_THREAD_STATE_RUNNABLE) {
+        return -1;
+    }
+    vibeos_event_init(&ev);
+    if (vibeos_waitset_init(&waitset) != 0 || vibeos_waitset_add(&waitset, &ev) != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_wait_for_thread(&waitset, 0, &idx, &sched, 0, &pt, tid) == 0) {
+        return -1;
+    }
+    if (vibeos_thread_state(&pt, tid, &state) != 0 || state != VIBEOS_THREAD_STATE_RUNNABLE) {
+        return -1;
+    }
+    vibeos_event_signal(&ev);
+    if (vibeos_waitset_wait_timed_for_thread(&waitset, &timer, 1, &idx, &sched, 0, &pt, tid) != 0 || idx != 0) {
+        return -1;
+    }
+    if (vibeos_thread_state(&pt, tid, &state) != 0 || state != VIBEOS_THREAD_STATE_RUNNABLE) {
+        return -1;
+    }
+    return 0;
+}
+
 static int test_waitset_ownership(void) {
     vibeos_waitset_t waitset;
     vibeos_event_t ev;
@@ -2632,6 +2677,7 @@ int main(void) {
     RUN_TEST(test_compat_runtime);
     RUN_TEST(test_waitset);
     RUN_TEST(test_waitset_timed);
+    RUN_TEST(test_waitset_thread_integration);
     RUN_TEST(test_waitset_ownership);
     RUN_TEST(test_waitset_lifecycle);
     RUN_TEST(test_waitset_wake_policy);

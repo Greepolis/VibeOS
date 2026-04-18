@@ -1,5 +1,6 @@
 #include "vibeos/waitset.h"
 #include "vibeos/ipc.h"
+#include "vibeos/proc.h"
 
 static int waitset_find_signaled(vibeos_waitset_t *waitset, size_t *out_index) {
     size_t i;
@@ -282,4 +283,34 @@ int vibeos_waitset_wait_timed(vibeos_waitset_t *waitset, vibeos_timer_t *timer, 
         }
         vibeos_timer_tick(timer);
     }
+}
+
+int vibeos_waitset_wait_for_thread(vibeos_waitset_t *waitset, uint64_t timeout_ticks, size_t *out_index, vibeos_scheduler_t *sched, uint32_t cpu_id, struct vibeos_process_table *proc_table, uint32_t tid) {
+    int rc;
+    if (!waitset || !out_index || !proc_table || tid == 0) {
+        return -1;
+    }
+    if (vibeos_proc_thread_wait_begin(proc_table, tid) != 0) {
+        return -1;
+    }
+    rc = vibeos_waitset_wait_ex(waitset, timeout_ticks, out_index, sched, cpu_id);
+    if (vibeos_proc_thread_wait_end(proc_table, tid) != 0) {
+        return -1;
+    }
+    return rc;
+}
+
+int vibeos_waitset_wait_timed_for_thread(vibeos_waitset_t *waitset, vibeos_timer_t *timer, uint64_t timeout_ticks, size_t *out_index, vibeos_scheduler_t *sched, uint32_t cpu_id, struct vibeos_process_table *proc_table, uint32_t tid) {
+    int rc;
+    if (!waitset || !timer || !out_index || !proc_table || tid == 0) {
+        return -1;
+    }
+    if (vibeos_proc_thread_wait_begin(proc_table, tid) != 0) {
+        return -1;
+    }
+    rc = vibeos_waitset_wait_timed(waitset, timer, timeout_ticks, out_index, sched, cpu_id);
+    if (vibeos_proc_thread_wait_end(proc_table, tid) != 0) {
+        return -1;
+    }
+    return rc;
 }
