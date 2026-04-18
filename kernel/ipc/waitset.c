@@ -285,32 +285,70 @@ int vibeos_waitset_wait_timed(vibeos_waitset_t *waitset, vibeos_timer_t *timer, 
     }
 }
 
-int vibeos_waitset_wait_for_thread(vibeos_waitset_t *waitset, uint64_t timeout_ticks, size_t *out_index, vibeos_scheduler_t *sched, uint32_t cpu_id, struct vibeos_process_table *proc_table, uint32_t tid) {
-    int rc;
-    if (!waitset || !out_index || !proc_table || tid == 0) {
+static int waitset_thread_wait_begin(vibeos_scheduler_t *sched, struct vibeos_process_table *proc_table, uint32_t tid) {
+    if (!proc_table || tid == 0) {
         return -1;
     }
     if (vibeos_proc_thread_wait_begin(proc_table, tid) != 0) {
         return -1;
     }
-    rc = vibeos_waitset_wait_ex(waitset, timeout_ticks, out_index, sched, cpu_id);
+    if (sched && vibeos_sched_wait_begin(sched, tid, 0) != 0) {
+        (void)vibeos_proc_thread_wait_end(proc_table, tid);
+        return -1;
+    }
+    return 0;
+}
+
+static int waitset_thread_wait_end(vibeos_scheduler_t *sched, struct vibeos_process_table *proc_table, uint32_t tid, uint32_t preferred_wake_cpu_id, uint32_t *out_wake_cpu_id) {
+    if (!proc_table || tid == 0) {
+        return -1;
+    }
+    if (sched && vibeos_sched_wait_end(sched, tid, preferred_wake_cpu_id, out_wake_cpu_id) != 0) {
+        return -1;
+    }
     if (vibeos_proc_thread_wait_end(proc_table, tid) != 0) {
+        if (sched) {
+            (void)vibeos_sched_wait_begin(sched, tid, 0);
+        }
+        return -1;
+    }
+    return 0;
+}
+
+int vibeos_waitset_wait_for_thread_on_cpu(vibeos_waitset_t *waitset, uint64_t timeout_ticks, size_t *out_index, vibeos_scheduler_t *sched, uint32_t cpu_id, struct vibeos_process_table *proc_table, uint32_t tid, uint32_t preferred_wake_cpu_id, uint32_t *out_wake_cpu_id) {
+    int rc;
+    if (!waitset || !out_index || !proc_table || tid == 0) {
+        return -1;
+    }
+    if (waitset_thread_wait_begin(sched, proc_table, tid) != 0) {
+        return -1;
+    }
+    rc = vibeos_waitset_wait_ex(waitset, timeout_ticks, out_index, sched, cpu_id);
+    if (waitset_thread_wait_end(sched, proc_table, tid, preferred_wake_cpu_id, out_wake_cpu_id) != 0) {
         return -1;
     }
     return rc;
 }
 
-int vibeos_waitset_wait_timed_for_thread(vibeos_waitset_t *waitset, vibeos_timer_t *timer, uint64_t timeout_ticks, size_t *out_index, vibeos_scheduler_t *sched, uint32_t cpu_id, struct vibeos_process_table *proc_table, uint32_t tid) {
+int vibeos_waitset_wait_timed_for_thread_on_cpu(vibeos_waitset_t *waitset, vibeos_timer_t *timer, uint64_t timeout_ticks, size_t *out_index, vibeos_scheduler_t *sched, uint32_t cpu_id, struct vibeos_process_table *proc_table, uint32_t tid, uint32_t preferred_wake_cpu_id, uint32_t *out_wake_cpu_id) {
     int rc;
     if (!waitset || !timer || !out_index || !proc_table || tid == 0) {
         return -1;
     }
-    if (vibeos_proc_thread_wait_begin(proc_table, tid) != 0) {
+    if (waitset_thread_wait_begin(sched, proc_table, tid) != 0) {
         return -1;
     }
     rc = vibeos_waitset_wait_timed(waitset, timer, timeout_ticks, out_index, sched, cpu_id);
-    if (vibeos_proc_thread_wait_end(proc_table, tid) != 0) {
+    if (waitset_thread_wait_end(sched, proc_table, tid, preferred_wake_cpu_id, out_wake_cpu_id) != 0) {
         return -1;
     }
     return rc;
+}
+
+int vibeos_waitset_wait_for_thread(vibeos_waitset_t *waitset, uint64_t timeout_ticks, size_t *out_index, vibeos_scheduler_t *sched, uint32_t cpu_id, struct vibeos_process_table *proc_table, uint32_t tid) {
+    return vibeos_waitset_wait_for_thread_on_cpu(waitset, timeout_ticks, out_index, sched, cpu_id, proc_table, tid, cpu_id, 0);
+}
+
+int vibeos_waitset_wait_timed_for_thread(vibeos_waitset_t *waitset, vibeos_timer_t *timer, uint64_t timeout_ticks, size_t *out_index, vibeos_scheduler_t *sched, uint32_t cpu_id, struct vibeos_process_table *proc_table, uint32_t tid) {
+    return vibeos_waitset_wait_timed_for_thread_on_cpu(waitset, timer, timeout_ticks, out_index, sched, cpu_id, proc_table, tid, cpu_id, 0);
 }

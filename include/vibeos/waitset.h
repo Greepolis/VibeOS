@@ -51,5 +51,7 @@ int vibeos_waitset_wait_ex(vibeos_waitset_t *waitset, uint64_t timeout_ticks, si
 int vibeos_waitset_wait_timed(vibeos_waitset_t *waitset, vibeos_timer_t *timer, uint64_t timeout_ticks, size_t *out_index, vibeos_scheduler_t *sched, uint32_t cpu_id);
 int vibeos_waitset_wait_for_thread(vibeos_waitset_t *waitset, uint64_t timeout_ticks, size_t *out_index, vibeos_scheduler_t *sched, uint32_t cpu_id, struct vibeos_process_table *proc_table, uint32_t tid);
 int vibeos_waitset_wait_timed_for_thread(vibeos_waitset_t *waitset, vibeos_timer_t *timer, uint64_t timeout_ticks, size_t *out_index, vibeos_scheduler_t *sched, uint32_t cpu_id, struct vibeos_process_table *proc_table, uint32_t tid);
+int vibeos_waitset_wait_for_thread_on_cpu(vibeos_waitset_t *waitset, uint64_t timeout_ticks, size_t *out_index, vibeos_scheduler_t *sched, uint32_t cpu_id, struct vibeos_process_table *proc_table, uint32_t tid, uint32_t preferred_wake_cpu_id, uint32_t *out_wake_cpu_id);
+int vibeos_waitset_wait_timed_for_thread_on_cpu(vibeos_waitset_t *waitset, vibeos_timer_t *timer, uint64_t timeout_ticks, size_t *out_index, vibeos_scheduler_t *sched, uint32_t cpu_id, struct vibeos_process_table *proc_table, uint32_t tid, uint32_t preferred_wake_cpu_id, uint32_t *out_wake_cpu_id);
 
 #endif

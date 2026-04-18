@@ -502,6 +502,9 @@ int vibeos_thread_set_state(vibeos_process_table_t *pt, uint32_t tid, vibeos_thr
     if (!pt) {
         return -1;
     }
+    if (state > VIBEOS_THREAD_STATE_EXITED) {
+        return -1;
+    }
     thread = find_thread_entry(pt, tid);
     if (!thread) {
         return -1;
@@ -760,6 +763,82 @@ int vibeos_thread_count_in_state(vibeos_process_table_t *pt, vibeos_thread_state
     return 0;
 }
 
+int vibeos_proc_thread_count_for_process_in_state(vibeos_process_table_t *pt, uint32_t pid, vibeos_thread_state_t state, uint32_t *out_count) {
+    uint32_t i;
+    uint32_t count = 0;
+    if (!pt || !out_count || pid == 0 || state > VIBEOS_THREAD_STATE_EXITED) {
+        return -1;
+    }
+    if (!find_process_entry(pt, pid)) {
+        return -1;
+    }
+    for (i = 0; i < VIBEOS_PROC_MAX_THREADS; i++) {
+        if (!pt->threads[i].in_use || pt->threads[i].owner_pid != pid) {
+            continue;
+        }
+        if (pt->threads[i].state == state) {
+            count++;
+        }
+    }
+    *out_count = count;
+    return 0;
+}
+
+int vibeos_proc_process_thread_summary(vibeos_process_table_t *pt, uint32_t pid, uint32_t *out_new, uint32_t *out_runnable, uint32_t *out_blocked) {
+    uint32_t i;
+    uint32_t count_new = 0;
+    uint32_t count_runnable = 0;
+    uint32_t count_blocked = 0;
+    if (!pt || !out_new || !out_runnable || !out_blocked || pid == 0) {
+        return -1;
+    }
+    if (!find_process_entry(pt, pid)) {
+        return -1;
+    }
+    for (i = 0; i < VIBEOS_PROC_MAX_THREADS; i++) {
+        if (!pt->threads[i].in_use || pt->threads[i].owner_pid != pid) {
+            continue;
+        }
+        if (pt->threads[i].state == VIBEOS_THREAD_STATE_NEW) {
+            count_new++;
+        } else if (pt->threads[i].state == VIBEOS_THREAD_STATE_RUNNABLE) {
+            count_runnable++;
+        } else if (pt->threads[i].state == VIBEOS_THREAD_STATE_BLOCKED) {
+            count_blocked++;
+        }
+    }
+    *out_new = count_new;
+    *out_runnable = count_runnable;
+    *out_blocked = count_blocked;
+    return 0;
+}
+
+int vibeos_proc_process_has_runnable_threads(vibeos_process_table_t *pt, uint32_t pid, uint32_t *out_has_runnable) {
+    uint32_t runnable = 0;
+    if (!pt || !out_has_runnable || pid == 0) {
+        return -1;
+    }
+    if (vibeos_proc_thread_count_for_process_in_state(pt, pid, VIBEOS_THREAD_STATE_RUNNABLE, &runnable) != 0) {
+        return -1;
+    }
+    *out_has_runnable = (runnable > 0) ? 1u : 0u;
+    return 0;
+}
+
+int vibeos_proc_process_fully_blocked(vibeos_process_table_t *pt, uint32_t pid, uint32_t *out_fully_blocked) {
+    uint32_t count_new = 0;
+    uint32_t count_runnable = 0;
+    uint32_t count_blocked = 0;
+    if (!pt || !out_fully_blocked || pid == 0) {
+        return -1;
+    }
+    if (vibeos_proc_process_thread_summary(pt, pid, &count_new, &count_runnable, &count_blocked) != 0) {
+        return -1;
+    }
+    *out_fully_blocked = (count_blocked > 0 && count_runnable == 0 && count_new == 0) ? 1u : 0u;
+    return 0;
+}
+
 int vibeos_proc_state_summary(vibeos_process_table_t *pt, uint32_t *out_new, uint32_t *out_running, uint32_t *out_blocked, uint32_t *out_terminated) {
     uint32_t i;
     if (!pt || !out_new || !out_running || !out_blocked || !out_terminated) {
@@ -894,11 +973,42 @@ int vibeos_thread_token_get(vibeos_process_table_t *pt, uint32_t tid, vibeos_sec
 }
 
 int vibeos_proc_thread_wait_begin(vibeos_process_table_t *pt, uint32_t tid) {
-    return vibeos_thread_set_state(pt, tid, VIBEOS_THREAD_STATE_BLOCKED);
+    vibeos_thread_entry_t *thread;
+    uint32_t owner_pid = 0;
+    uint32_t has_runnable = 0;
+    if (!pt || tid == 0) {
+        return -1;
+    }
+    thread = find_thread_entry(pt, tid);
+    if (!thread) {
+        return -1;
+    }
+    owner_pid = thread->owner_pid;
+    if (vibeos_thread_set_state(pt, tid, VIBEOS_THREAD_STATE_BLOCKED) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_process_has_runnable_threads(pt, owner_pid, &has_runnable) == 0 && has_runnable == 0) {
+        (void)vibeos_proc_set_state(pt, owner_pid, VIBEOS_PROCESS_STATE_BLOCKED);
+    }
+    return 0;
 }
 
 int vibeos_proc_thread_wait_end(vibeos_process_table_t *pt, uint32_t tid) {
-    return vibeos_thread_set_state(pt, tid, VIBEOS_THREAD_STATE_RUNNABLE);
+    vibeos_thread_entry_t *thread;
+    uint32_t owner_pid = 0;
+    if (!pt || tid == 0) {
+        return -1;
+    }
+    thread = find_thread_entry(pt, tid);
+    if (!thread) {
+        return -1;
+    }
+    owner_pid = thread->owner_pid;
+    if (vibeos_thread_set_state(pt, tid, VIBEOS_THREAD_STATE_RUNNABLE) != 0) {
+        return -1;
+    }
+    (void)vibeos_proc_set_state(pt, owner_pid, VIBEOS_PROCESS_STATE_RUNNING);
+    return 0;
 }
 
 int vibeos_proc_security_label_get(vibeos_process_table_t *pt, uint32_t pid, uint32_t *out_label) {

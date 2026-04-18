@@ -21,6 +21,27 @@ typedef struct vibeos_thread {
     uint32_t timeslice_ticks;
 } vibeos_thread_t;
 
+typedef enum vibeos_sched_thread_runtime_state {
+    VIBEOS_SCHED_THREAD_ABSENT = 0,
+    VIBEOS_SCHED_THREAD_RUNNABLE = 1,
+    VIBEOS_SCHED_THREAD_RUNNING = 2,
+    VIBEOS_SCHED_THREAD_BLOCKED = 3
+} vibeos_sched_thread_runtime_state_t;
+
+typedef struct vibeos_sched_thread_runtime {
+    uint32_t in_use;
+    uint32_t tid;
+    vibeos_thread_t *thread;
+    uint32_t cpu_id;
+    uint32_t last_cpu_id;
+    vibeos_sched_thread_runtime_state_t state;
+    uint64_t enqueue_count;
+    uint64_t dequeue_count;
+    uint64_t wait_begin_count;
+    uint64_t wait_end_count;
+    uint64_t migrations;
+} vibeos_sched_thread_runtime_t;
+
 typedef struct vibeos_runqueue {
     vibeos_thread_t *slots[VIBEOS_MAX_THREADS];
     size_t head;
@@ -34,6 +55,13 @@ typedef struct vibeos_scheduler {
     uint64_t preemptions[VIBEOS_MAX_CPUS];
     uint64_t waits_timed_out[VIBEOS_MAX_CPUS];
     uint64_t waits_woken[VIBEOS_MAX_CPUS];
+    vibeos_sched_thread_runtime_t tracked_threads[VIBEOS_MAX_THREADS];
+    size_t tracked_count;
+    size_t blocked_count;
+    uint64_t wait_begin_total;
+    uint64_t wait_end_total;
+    uint64_t wait_requeues;
+    uint64_t wait_requeue_failures;
 } vibeos_scheduler_t;
 
 int vibeos_sched_init(vibeos_scheduler_t *sched, uint32_t cpu_count);
@@ -59,5 +87,13 @@ uint32_t vibeos_sched_default_timeslice(vibeos_thread_class_t klass);
 int vibeos_sched_normalize_thread(vibeos_thread_t *thread);
 int vibeos_sched_age_cpu(vibeos_scheduler_t *sched, uint32_t cpu_id, uint32_t bonus_ticks, uint32_t max_timeslice, uint32_t *out_aged_threads);
 int vibeos_sched_age_all(vibeos_scheduler_t *sched, uint32_t bonus_ticks, uint32_t max_timeslice, uint32_t *out_aged_threads);
+int vibeos_sched_track_thread(vibeos_scheduler_t *sched, vibeos_thread_t *thread, uint32_t preferred_cpu_id);
+int vibeos_sched_untrack_thread(vibeos_scheduler_t *sched, uint32_t tid);
+int vibeos_sched_wait_begin(vibeos_scheduler_t *sched, uint32_t tid, uint32_t *out_cpu_id);
+int vibeos_sched_wait_end(vibeos_scheduler_t *sched, uint32_t tid, uint32_t preferred_cpu_id, uint32_t *out_cpu_id);
+int vibeos_sched_thread_runtime_get(const vibeos_scheduler_t *sched, uint32_t tid, vibeos_sched_thread_runtime_state_t *out_state, uint32_t *out_cpu_id, uint64_t *out_wait_begin_count, uint64_t *out_wait_end_count, uint64_t *out_migrations);
+size_t vibeos_sched_tracked_threads(const vibeos_scheduler_t *sched);
+size_t vibeos_sched_blocked_threads(const vibeos_scheduler_t *sched);
+int vibeos_sched_wait_transition_summary(const vibeos_scheduler_t *sched, uint64_t *out_wait_begin, uint64_t *out_wait_end, uint64_t *out_requeues, uint64_t *out_requeue_failures);
 
 #endif
