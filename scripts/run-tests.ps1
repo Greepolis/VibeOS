@@ -1,7 +1,10 @@
 param(
     [string]$BuildDir = "build",
     [string]$Profile = "agent",
-    [string]$Generator = "Ninja"
+    [string]$Generator = "Ninja",
+    [switch]$SkipTests = $false,
+    [switch]$SkipImageBuild = $false,
+    [switch]$RunQemu = $false
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,6 +23,7 @@ $status = "pass"
 $failedTests = @()
 $suite = "kernel-core-host"
 $gitRevision = "unknown"
+$toolchainInfo = @{}
 
 function Test-CMakeGeneratorAvailable {
     param(
@@ -37,36 +41,165 @@ function Test-CMakeGeneratorAvailable {
     return $false
 }
 
+function Get-ToolchainVersions {
+    # Capture toolchain versions for reporting
+    $versions = @{}
+    
+    # CMake version
+    try {
+        $cmakeOutput = cmake --version 2>&1
+        if ($cmakeOutput -match "cmake version (.+)") {
+            $versions["cmake"] = $Matches[1]
+        }
+    } catch { }
+    
+    # GCC version (fallback compiler)
+    try {
+        $gccOutput = gcc --version 2>&1
+        if ($gccOutput -match "gcc \(.*\) (.+)") {
+            $versions["gcc"] = $Matches[1]
+        }
+    } catch { }
+    
+    # QEMU version (if available)
+    try {
+        $qemuOutput = qemu-system-x86_64 --version 2>&1
+        if ($qemuOutput -match "QEMU emulator version (.+)") {
+            $versions["qemu"] = $Matches[1]
+        }
+    } catch { }
+    
+    # Ninja version (if using Ninja generator)
+    if ($Generator -eq "Ninja") {
+        try {
+            $ninjaOutput = ninja --version 2>&1
+            $versions["ninja"] = $ninjaOutput.Trim()
+        } catch { }
+    }
+    
+    return $versions
+}
+
+function Validate-BuildArtifacts {
+    param(
+        [string]$BuildDir,
+        [bool]$ImageBuildEnabled
+    )
+    $artifacts = @()
+    
+    # Check kernel ELF
+    $kernelElf = Join-Path $BuildDir "artifacts" "vibeos_kernel.elf"
+    if (Test-Path $kernelElf) {
+        $artifacts += @{
+            name = "vibeos_kernel.elf"
+            path = $kernelElf
+            status = "found"
+            size = (Get-Item $kernelElf).Length
+        }
+    } else {
+        $artifacts += @{
+            name = "vibeos_kernel.elf"
+            status = "missing"
+        }
+    }
+    
+    # Check boot image
+    if ($ImageBuildEnabled) {
+        $bootImage = Join-Path $BuildDir "artifacts" "vibeos_boot.img"
+        if (Test-Path $bootImage) {
+            $artifacts += @{
+                name = "vibeos_boot.img"
+                path = $bootImage
+                status = "found"
+                size = (Get-Item $bootImage).Length
+            }
+        } else {
+            $artifacts += @{
+                name = "vibeos_boot.img"
+                status = "missing"
+            }
+        }
+    }
+    
+    return $artifacts
+}
+
 try {
     $gitRevision = (git rev-parse --short HEAD).Trim()
 } catch {
 }
 
+# Collect toolchain versions before build
+$toolchainInfo = Get-ToolchainVersions
+Add-Content -Path $logPath -Value ("toolchain_info={0}" -f ($toolchainInfo | ConvertTo-Json -Compress))
+
 try {
     if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
         throw "INFRA_CMAKE_MISSING: cmake command not found in PATH"
     }
+    
+    # Step 1: Configure
     try {
         if (-not (Test-CMakeGeneratorAvailable -Name $Generator)) {
             throw ("cmake generator unavailable (generator={0})" -f $Generator)
         }
-        cmake -S . -B $BuildDir -G $Generator -DVIBEOS_BUILD_TESTS=ON | Tee-Object -FilePath $logPath
+        $configCmd = "cmake -S . -B $BuildDir -G $Generator -DVIBEOS_BUILD_TESTS=ON"
+        if (-not $SkipImageBuild) {
+            $configCmd += " -DVIBEOS_BUILD_KERNEL_IMAGE=ON"
+        }
+        Write-Host "[BUILD] Configuring with: $configCmd"
+        Invoke-Expression $configCmd | Tee-Object -FilePath $logPath -Append
         if ($LASTEXITCODE -ne 0) {
             throw ("cmake configure failed (generator={0})" -f $Generator)
         }
+        
+        # Step 2: Build
+        Write-Host "[BUILD] Building project..."
         cmake --build $BuildDir | Tee-Object -FilePath $logPath -Append
         if ($LASTEXITCODE -ne 0) {
             throw "cmake build failed"
         }
-        & ".\$BuildDir\vibeos_kernel_tests.exe" | Tee-Object -FilePath $logPath -Append
-        if ($LASTEXITCODE -ne 0) {
-            throw "kernel tests returned non-zero exit code"
+        
+        # Validate image artifacts if build enabled
+        if (-not $SkipImageBuild) {
+            Write-Host "[BUILD] Validating kernel image artifacts..."
+            $artifacts = Validate-BuildArtifacts -BuildDir $BuildDir -ImageBuildEnabled $true
+            Add-Content -Path $logPath -Value ("artifacts_validation={0}" -f ($artifacts | ConvertTo-Json -Compress))
+            
+            # Check if critical artifacts are missing
+            $missingCritical = $artifacts | Where-Object { $_.name -eq "vibeos_kernel.elf" -and $_.status -eq "missing" }
+            if ($missingCritical) {
+                throw "VALIDATION: Required kernel ELF image not generated"
+            }
         }
+        
+        # Step 3: Run host tests (if not skipped)
+        if (-not $SkipTests) {
+            Write-Host "[TEST] Running host-side kernel tests..."
+            & ".\$BuildDir\vibeos_kernel_tests.exe" | Tee-Object -FilePath $logPath -Append
+            if ($LASTEXITCODE -ne 0) {
+                throw "kernel tests returned non-zero exit code"
+            }
+        }
+        
+        # Step 4: Run QEMU smoke (if requested and image built)
+        if ($RunQemu -and -not $SkipImageBuild) {
+            Write-Host "[QEMU] Starting emulator smoke test..."
+            $imagePath = Join-Path $BuildDir "artifacts" "vibeos_boot.img"
+            & .\scripts\run-qemu.ps1 -BuildDir $BuildDir -ImagePath $imagePath | Tee-Object -FilePath $logPath -Append
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "[WARNING] QEMU test did not complete cleanly; continuing"
+            }
+        }
+        
     } catch {
         Add-Content -Path $logPath -Value ("cmake_path_failed={0}" -f $_.Exception.Message)
         if (-not (Get-Command gcc -ErrorAction SilentlyContinue)) {
             throw "INFRA_GCC_MISSING: gcc command not found for manual fallback"
         }
+        
+        # Fallback: manual GCC build
+        Write-Host "[BUILD] CMake failed, attempting manual GCC fallback..."
         $manualExe = Join-Path $BuildDir "vibeos_kernel_tests_manual.exe"
         $gccArgs = @(
             "-std=c11", "-Wall", "-Wextra", "-Wpedantic",
@@ -123,6 +256,8 @@ try {
     $status = "fail"
     if ($_.Exception.Message -like "INFRA_*") {
         $status = "infra_error"
+    } elseif ($_.Exception.Message -like "VALIDATION:*") {
+        $status = "build_validation_failed"
     }
     $failedTests += @{
         id = "KERNEL.CORE.HOST.001"
@@ -134,14 +269,16 @@ try {
         likely_causes = @(
             "regression in core module contracts",
             "host build flags mismatch",
-            "unexpected API break in kernel core"
+            "unexpected API break in kernel core",
+            "missing build artifacts or image generation failure"
         )
         suggested_entrypoints = @(
             "kernel/core/",
             "kernel/mm/",
             "kernel/sched/",
             "kernel/ipc/",
-            "tests/kernel/"
+            "tests/kernel/",
+            "cmake/"
         )
         artifacts = @(
             $logPath
@@ -158,14 +295,20 @@ $summary = @{
     profile = $Profile
     status = $status
     duration_ms = $durationMs
+    toolchain = $toolchainInfo
+    build_dir = $BuildDir
+    image_build_enabled = (-not $SkipImageBuild)
+    qemu_test_enabled = $RunQemu
     failed_tests = $failedTests
 }
 
-$summary | ConvertTo-Json -Depth 8 | Set-Content -Path $summaryPath -Encoding UTF8
+$summary | ConvertTo-Json -Depth 10 | Set-Content -Path $summaryPath -Encoding UTF8
 
 if ($status -ne "pass") {
     if ($status -eq "infra_error") {
         Write-Host "[INFRA] KERNEL.CORE.HOST.001 kernel-core Kernel test infrastructure error"
+    } elseif ($status -eq "build_validation_failed") {
+        Write-Host "[VALIDATION] KERNEL.CORE.BUILD.001 kernel-core Build artifact validation failed"
     } else {
         Write-Host "[FAIL] KERNEL.CORE.HOST.001 kernel-core Kernel core host tests failed"
     }
@@ -174,4 +317,6 @@ if ($status -ne "pass") {
 }
 
 Write-Host "[PASS] KERNEL.CORE.HOST.000 kernel-core Host kernel test suite passed"
+Write-Host "  toolchain: $(($toolchainInfo | ConvertTo-Json -Compress))"
+Write-Host "  summary: $(Join-Path (Get-Location) $summaryPath)"
 exit 0

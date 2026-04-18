@@ -1,0 +1,11 @@
+# vibeos_toolchain_info.cmake - Export toolchain configuration to scripts
+# This file is auto-generated during CMake configuration and consumed by build/test scripts.
+
+set(VIBEOS_CMAKE_VERSION "@CMAKE_VERSION@")
+set(VIBEOS_CMAKE_GENERATOR "@CMAKE_GENERATOR@")
+set(VIBEOS_C_COMPILER "@CMAKE_C_COMPILER@")
+set(VIBEOS_C_COMPILER_VERSION "@CMAKE_C_COMPILER_VERSION@")
+set(VIBEOS_TARGET_ARCH "@VIBEOS_TARGET_ARCH@")
+set(VIBEOS_BUILD_TYPE "@VIBEOS_BUILD_TYPE@")
+set(VIBEOS_BUILD_TIMESTAMP "@CMAKE_TIMESTAMP@")
+set(VIBEOS_ARTIFACTS_DIR "@VIBEOS_ARTIFACTS_DIR@")

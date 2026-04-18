@@ -41,7 +41,40 @@ This balances performance, fault isolation, portability, and long-term compatibi
 
 Phase 2: implementation bootstrap (build, kernel core primitives, automated feedback harness)
 
-See:
+**Current Status: Milestone M1 In Progress**
+- Build skeleton: ✓ CMake + Ninja/GCC support established
+- Toolchain validation: ✓ Version capture and generator detection
+- Boot image generation: ✓ ELF and stub image targets
+- Automated testing: ✓ Host-side tests + QEMU integration (partial)
+
+### Quick Start (M1)
+
+**Prerequisites**
+- CMake 3.21+ (or GCC for fallback)
+- Ninja or compiler of choice
+- Optional: QEMU for emulator tests
+
+**Build and Test**
+```powershell
+# Configure and build (Windows PowerShell)
+cmake -S . -B build -G Ninja -DVIBEOS_BUILD_TESTS=ON -DVIBEOS_BUILD_KERNEL_IMAGE=ON
+cmake --build build
+
+# Run host-side tests
+./scripts/run-tests.ps1 -BuildDir build
+
+# Run with QEMU smoke test (if QEMU installed)
+./scripts/run-tests.ps1 -BuildDir build -RunQemu
+
+# View results
+Get-Content artifacts/test-summary.json -Raw | ConvertFrom-Json | Format-Table
+```
+
+**Expected Output**
+- `artifacts/test-summary.json` with status `pass`
+- `artifacts/kernel-tests.log` with test execution log
+- `build/artifacts/vibeos_kernel.elf` loadable kernel image
+- `build/artifacts/vibeos_boot.img` boot artifact
 
 - `docs/software_architecture_specification.md`
 - `docs/implementation_progress.md`

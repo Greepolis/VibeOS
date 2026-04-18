@@ -71,7 +71,50 @@ The build system should produce:
 
 ## Early deliverables for phase 2
 
-- one-command local build
+### M1: Toolchain and Build Skeleton (Current Phase)
+
+The following are now available:
+
+**Build System**
+- CMake 3.21+ with Ninja support (primary generator)
+- GCC fallback for environments without CMake/Ninja
+- Reproducible host-to-target build for kernel core and user-space components
+- Modular target separation: `vibeos_kernel_core`, `vibeos_user_core`, `vibeos_image`
+
+**Commands**
+```bash
+# One-command configuration and build
+cmake -S . -B build -G Ninja -DVIBEOS_BUILD_TESTS=ON -DVIBEOS_BUILD_KERNEL_IMAGE=ON
+
+# Build all targets (kernel, user-space, boot image, tests)
+cmake --build build
+
+# Run host-side tests
+powershell ./scripts/run-tests.ps1 -BuildDir build
+
+# Run tests with QEMU smoke test (if available)
+powershell ./scripts/run-tests.ps1 -BuildDir build -RunQemu
+
+# Standalone QEMU boot test
+powershell ./scripts/run-qemu.ps1 -BuildDir build -ImagePath build/artifacts/vibeos_boot.img
+```
+
+**Artifacts Generated**
+- `build/artifacts/vibeos_kernel.elf` kernel ELF image (loadable by bootloader)
+- `build/artifacts/vibeos_boot.img` boot stub (placeholder; evolves to full disk image in M2)
+- `build/artifacts/boot_manifest.txt` manifest of boot artifacts
+- `build/vibeos_kernel_tests.exe` host-side unit test executable
+- `artifacts/test-summary.json` structured test results for CI/agents
+- `artifacts/qemu-serial.log` serial output from QEMU (if run)
+
+**Verified Configuration**
+- CMake generator availability detection
+- Automatic fallback to manual GCC compilation if CMake/Ninja unavailable
+- Toolchain version capture (cmake, gcc, qemu, ninja)
+- Build artifact validation before test execution
+
+### M2/M3: Boot and Early Kernel (Future)
+
 - one-command QEMU boot path
 - symbol-aware kernel debug session
 - image packaging pipeline with reproducible inputs
