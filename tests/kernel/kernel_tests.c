@@ -28,6 +28,27 @@ static void irq_handler(uint32_t irq, void *ctx) {
     }
 }
 
+typedef struct handle_hook_stats {
+    uint32_t alloc_events;
+    uint32_t close_events;
+    uint32_t revoke_events;
+} handle_hook_stats_t;
+
+static void handle_lifecycle_hook(vibeos_handle_lifecycle_event_t event, const vibeos_handle_entry_t *entry, void *ctx) {
+    handle_hook_stats_t *stats = (handle_hook_stats_t *)ctx;
+    (void)entry;
+    if (!stats) {
+        return;
+    }
+    if (event == VIBEOS_HANDLE_EVENT_ALLOC) {
+        stats->alloc_events++;
+    } else if (event == VIBEOS_HANDLE_EVENT_CLOSE) {
+        stats->close_events++;
+    } else if (event == VIBEOS_HANDLE_EVENT_REVOKE) {
+        stats->revoke_events++;
+    }
+}
+
 static int test_pmm(void) {
     vibeos_pmm_t pmm;
     vibeos_memory_region_t regions[3];
@@ -1394,6 +1415,9 @@ static int test_timer_and_idt(void) {
     vibeos_timer_t timer;
     vibeos_interrupt_controller_t intc;
     vibeos_x86_64_idt_t idt;
+    vibeos_timer_backend_t backend;
+    uint32_t irq_vector = 0;
+    uint32_t irq_divider = 0;
     int timer_vec;
     if (vibeos_timer_init(&timer, 1000) != 0) {
         return -1;
@@ -1427,6 +1451,21 @@ static int test_timer_and_idt(void) {
     }
     vibeos_intc_init(&intc);
     if (vibeos_intc_bind_timer_irq(&intc, &timer, (uint32_t)timer_vec) != 0) {
+        return -1;
+    }
+    if (vibeos_timer_backend_info(&timer, &backend, &irq_vector, &irq_divider) != 0) {
+        return -1;
+    }
+    if (backend != VIBEOS_TIMER_BACKEND_IRQ || irq_vector != (uint32_t)timer_vec || irq_divider != 1) {
+        return -1;
+    }
+    if (vibeos_timer_bind_backend(&timer, VIBEOS_TIMER_BACKEND_IRQ, (uint32_t)timer_vec, 2) != 0) {
+        return -1;
+    }
+    if (vibeos_intc_dispatch(&intc, (uint32_t)timer_vec) != 0) {
+        return -1;
+    }
+    if (vibeos_timer_ticks(&timer) != 2) {
         return -1;
     }
     if (vibeos_intc_dispatch(&intc, (uint32_t)timer_vec) != 0) {
@@ -2055,6 +2094,49 @@ static int test_ipc_handle_transfer(void) {
     return 0;
 }
 
+static int test_handle_lifecycle_hooks(void) {
+    vibeos_handle_table_t table;
+    handle_hook_stats_t stats;
+    uint32_t h1 = 0;
+    uint32_t h2 = 0;
+    uint32_t revoked = 0;
+    memset(&stats, 0, sizeof(stats));
+    if (vibeos_handle_table_init(&table) != 0) {
+        return -1;
+    }
+    if (vibeos_handle_set_lifecycle_hook(&table, handle_lifecycle_hook, &stats) != 0) {
+        return -1;
+    }
+    if (vibeos_handle_alloc_object(&table, VIBEOS_HANDLE_RIGHT_READ, VIBEOS_OBJECT_PROCESS, 11, &h1) != 0) {
+        return -1;
+    }
+    if (vibeos_handle_set_provenance(&table, h1, 1, h1) != 0) {
+        return -1;
+    }
+    if (vibeos_handle_alloc_object(&table, VIBEOS_HANDLE_RIGHT_SIGNAL, VIBEOS_OBJECT_THREAD, 12, &h2) != 0) {
+        return -1;
+    }
+    if (vibeos_handle_set_provenance(&table, h2, 1, h1) != 0) {
+        return -1;
+    }
+    if (stats.alloc_events != 2 || stats.close_events != 0 || stats.revoke_events != 0) {
+        return -1;
+    }
+    if (vibeos_handle_close(&table, h1) != 0) {
+        return -1;
+    }
+    if (stats.close_events != 1) {
+        return -1;
+    }
+    if (vibeos_handle_revoke_origin(&table, 2, 1, h1, VIBEOS_OBJECT_NONE, 0, &revoked) != 0) {
+        return -1;
+    }
+    if (revoked != 1 || stats.revoke_events != 1) {
+        return -1;
+    }
+    return 0;
+}
+
 static int test_cross_process_handle_dup_policy(void) {
     vibeos_process_table_t pt;
     vibeos_handle_table_t *p1_handles = 0;
@@ -2562,6 +2644,7 @@ int main(void) {
     RUN_TEST(test_service_ipc_contract);
     RUN_TEST(test_trap_dispatch);
     RUN_TEST(test_ipc_handle_transfer);
+    RUN_TEST(test_handle_lifecycle_hooks);
     RUN_TEST(test_cross_process_handle_dup_policy);
     RUN_TEST(test_process_lifecycle);
     RUN_TEST(test_process_relationships);

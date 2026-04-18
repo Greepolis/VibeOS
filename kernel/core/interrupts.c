@@ -3,9 +3,8 @@
 
 static void timer_irq_handler(uint32_t irq, void *ctx) {
     vibeos_timer_t *timer = (vibeos_timer_t *)ctx;
-    (void)irq;
     if (timer) {
-        vibeos_timer_tick(timer);
+        (void)vibeos_timer_on_irq(timer, irq);
     }
 }
 
@@ -81,6 +80,9 @@ int vibeos_intc_is_masked(const vibeos_interrupt_controller_t *intc, uint32_t ir
 
 int vibeos_intc_bind_timer_irq(vibeos_interrupt_controller_t *intc, struct vibeos_timer *timer, uint32_t irq) {
     if (!intc || !timer) {
+        return -1;
+    }
+    if (vibeos_timer_bind_backend(timer, VIBEOS_TIMER_BACKEND_IRQ, irq, 1) != 0) {
         return -1;
     }
     return vibeos_intc_register(intc, irq, timer_irq_handler, timer);

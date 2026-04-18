@@ -36,6 +36,7 @@ Current runtime prototype updates:
 - handle tables support configurable per-table quota limits.
 - handle allocation failure counters are tracked for observability.
 - object-type counters are available for process/thread handle accounting.
+- handle lifecycle hooks are available for alloc/close/revoke event instrumentation and cleanup orchestration.
 
 ## Process model
 
@@ -107,5 +108,5 @@ The kernel should expose:
 ## Current runtime prototype status
 
 - interrupt controller runtime now supports IRQ masking/unmasking and global enable/disable gates.
-- timer runtime includes tick-to-time conversion helpers and deadline arming/expiry checks.
+- timer runtime includes tick-to-time conversion helpers, deadline arming/expiry checks, and IRQ-backend binding semantics.
 - process security model includes token capabilities, security labels, and policy-driven interaction checks.

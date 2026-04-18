@@ -73,7 +73,7 @@
 ### Interrupt Handling
 - Responsibilities: trap/interrupt entry and dispatch
 - Main files: `kernel/core/interrupts.c`, `kernel/arch/x86_64/idt.c`, `kernel/arch/x86_64/trap.c`, `include/vibeos/interrupts.h`, `include/vibeos/arch_x86_64.h`, `include/vibeos/trap.h`
-- Public interfaces: `vibeos_intc_init`, `vibeos_intc_register`, `vibeos_intc_dispatch`, `vibeos_x86_64_idt_*`, `vibeos_trap_*`, `vibeos_trap_classify`
+- Public interfaces: `vibeos_intc_init`, `vibeos_intc_register`, `vibeos_intc_dispatch`, `vibeos_intc_bind_timer_irq`, `vibeos_x86_64_idt_*`, `vibeos_trap_*`, `vibeos_trap_classify`
 - Dependencies: HAL, scheduler, timer
 
 ### System Call Interface
@@ -91,7 +91,7 @@
 ### Object and Handle Model
 - Responsibilities: kernel object access mediation through handle IDs and rights
 - Main files: `kernel/object/handle_table.c`, `include/vibeos/object.h`
-- Public interfaces: `vibeos_handle_alloc`, `vibeos_handle_alloc_object`, `vibeos_handle_close`, `vibeos_handle_rights`, `vibeos_handle_object`, `vibeos_handle_set_provenance`, `vibeos_handle_provenance`, `vibeos_handle_has_rights`, `vibeos_handle_set_quota`, `vibeos_handle_stats`, `vibeos_handle_count_by_type`
+- Public interfaces: `vibeos_handle_alloc`, `vibeos_handle_alloc_object`, `vibeos_handle_close`, `vibeos_handle_rights`, `vibeos_handle_object`, `vibeos_handle_set_provenance`, `vibeos_handle_provenance`, `vibeos_handle_has_rights`, `vibeos_handle_set_quota`, `vibeos_handle_stats`, `vibeos_handle_count_by_type`, `vibeos_handle_set_lifecycle_hook`, `vibeos_handle_revoke_origin`
 - Dependencies: syscall interface, security model
 
 ### Security Policy Engine
@@ -451,25 +451,27 @@ Implemented:
 - configurable per-table handle quota controls
 - handle allocation-failure telemetry for observability
 - object-type handle counters for runtime accounting
+- lifecycle hook callbacks on handle alloc/close/revoke
+- table-level origin-based revoke helper used by process-lineage revocation paths
 Files Created/Modified:
 - `kernel/object/handle_table.c`
 - `include/vibeos/object.h`
 - `kernel/ipc/handle_transfer.c`
 - `include/vibeos/ipc_transfer.h`
 Pending:
-- object lifecycle hooks for future revocation/garbage-collection policies
+- richer object-type-specific garbage-collection and deferred cleanup policies
 
 Module: Timer Subsystem
 Status: Partial
 Implemented:
 - timer tick counter and frequency state
 - tick conversion helpers (`ticks->ms`, `ticks->ns`) and deadline arming/expiry primitives
+- timer backend binding (`HOST`/`IRQ`) with IRQ vector/divider metadata and IRQ-driven tick progression
 Files Created/Modified:
 - `kernel/time/timer.c`
 - `include/vibeos/timer.h`
 Pending:
-- hardware timer backend wiring
-- periodic interrupt source integration
+- hardware-backed timer calibration beyond host runtime simulation
 
 Module: User Space Services
 Status: Partial
