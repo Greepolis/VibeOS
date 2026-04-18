@@ -316,6 +316,7 @@ Implemented:
 - waitset telemetry counters (add/remove/wait/wake/timeout/ownership-denial) with stats query API
 - waitset telemetry reset and owner-scoped wake-policy control paths
 - round-robin waitset wake policy with rotating cursor
+- thread-aware wait wrappers (`wait_for_thread`, `wait_timed_for_thread`) that bracket waits with process-thread blocked/runnable transitions
 Files Created/Modified:
 - `kernel/ipc/event.c`
 - `kernel/ipc/channel.c`
@@ -431,11 +432,12 @@ Implemented:
 - revocation audit trail ring-buffer with structured event retrieval
 - audit retention policy controls (`overwrite-oldest` vs `drop-newest`) with dropped-event accounting
 - audit helper queries (`count by action`, `count by success`, `summary`) for observability and policy feedback loops
+- explicit thread wait lifecycle helpers (`thread_wait_begin`, `thread_wait_end`) used by wait primitives
 Files Created/Modified:
 - `kernel/proc/process.c`
 - `include/vibeos/proc.h`
 Pending:
-- scheduler integration for blocked/runnable transitions based on wait primitives
+- deeper scheduler queue-state coupling for blocked/runnable transitions under contention
 
 Module: Object and Handle Model
 Status: Partial
