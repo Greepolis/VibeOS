@@ -561,6 +561,86 @@ static inline void vibeos_syscall_make_sched_thread_runtime_get(vibeos_syscall_f
     f->arg2 = 0;
 }
 
+static inline void vibeos_syscall_make_sched_thread_affinity_set(vibeos_syscall_frame_t *f, uint32_t tid, uint32_t affinity_low, uint32_t affinity_high, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_SCHED_THREAD_AFFINITY_SET;
+    f->arg0 = tid;
+    f->arg1 = ((uint64_t)affinity_high << 32) | affinity_low;
+    f->arg2 = caller_pid;
+}
+
+static inline void vibeos_syscall_make_sched_thread_affinity_get(vibeos_syscall_frame_t *f, uint32_t tid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_SCHED_THREAD_AFFINITY_GET;
+    f->arg0 = tid;
+    f->arg1 = 0;
+    f->arg2 = 0;
+}
+
+static inline void vibeos_syscall_make_sched_thread_nice_set(vibeos_syscall_frame_t *f, uint32_t tid, int32_t nice_level, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_SCHED_THREAD_NICE_SET;
+    f->arg0 = tid;
+    f->arg1 = (uint32_t)nice_level;
+    f->arg2 = caller_pid;
+}
+
+static inline void vibeos_syscall_make_sched_thread_nice_get(vibeos_syscall_frame_t *f, uint32_t tid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_SCHED_THREAD_NICE_GET;
+    f->arg0 = tid;
+    f->arg1 = 0;
+    f->arg2 = 0;
+}
+
+static inline void vibeos_syscall_make_sched_rebalance(vibeos_syscall_frame_t *f, uint32_t max_moves, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_SCHED_REBALANCE;
+    f->arg0 = max_moves;
+    f->arg1 = 0;
+    f->arg2 = caller_pid;
+}
+
+static inline void vibeos_syscall_make_sched_starvation_tick(vibeos_syscall_frame_t *f, uint32_t cpu_id) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_SCHED_STARVATION_TICK;
+    f->arg0 = cpu_id;
+    f->arg1 = 0;
+    f->arg2 = 0;
+}
+
+static inline void vibeos_syscall_make_sched_qos_summary_get(vibeos_syscall_frame_t *f) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_SCHED_QOS_SUMMARY_GET;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = 0;
+}
+
+static inline void vibeos_syscall_make_sched_boost_starving(vibeos_syscall_frame_t *f, uint32_t starvation_threshold, uint32_t boost_ticks, uint32_t max_timeslice, uint32_t caller_pid) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_SCHED_BOOST_STARVING;
+    f->arg0 = starvation_threshold;
+    f->arg1 = ((uint64_t)max_timeslice << 32) | boost_ticks;
+    f->arg2 = caller_pid;
+}
+
 static inline void vibeos_syscall_make_process_token_get(vibeos_syscall_frame_t *f, uint32_t target_pid, uint32_t caller_pid) {
     if (!f) {
         return;

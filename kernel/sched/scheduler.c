@@ -22,16 +22,22 @@ static vibeos_thread_t *runqueue_pop(vibeos_runqueue_t *rq) {
     return thread;
 }
 
+static vibeos_thread_t *runqueue_thread_at(const vibeos_runqueue_t *rq, size_t offset) {
+    size_t idx;
+    if (!rq || offset >= rq->count) {
+        return 0;
+    }
+    idx = (rq->head + offset) % VIBEOS_MAX_THREADS;
+    return rq->slots[idx];
+}
+
 static int runqueue_contains_tid(const vibeos_runqueue_t *rq, uint32_t tid) {
     size_t i;
-    size_t idx;
     if (!rq || tid == 0) {
         return 0;
     }
     for (i = 0; i < rq->count; i++) {
-        vibeos_thread_t *thread;
-        idx = (rq->head + i) % VIBEOS_MAX_THREADS;
-        thread = rq->slots[idx];
+        vibeos_thread_t *thread = runqueue_thread_at(rq, i);
         if (thread && thread->id == tid) {
             return 1;
         }
@@ -102,6 +108,47 @@ static int sched_find_free_slot(vibeos_scheduler_t *sched, uint32_t *out_index) 
     return -1;
 }
 
+uint64_t vibeos_sched_default_affinity_mask(uint32_t cpu_count) {
+    if (cpu_count == 0) {
+        return 0;
+    }
+    if (cpu_count >= 64u) {
+        return UINT64_MAX;
+    }
+    return (1ull << cpu_count) - 1ull;
+}
+
+static int sched_cpu_allowed(const vibeos_sched_thread_runtime_t *slot, uint32_t cpu_id) {
+    uint64_t bit;
+    if (!slot || cpu_id >= 64u) {
+        return 0;
+    }
+    bit = 1ull << cpu_id;
+    return (slot->affinity_mask & bit) ? 1 : 0;
+}
+
+static uint32_t sched_timeslice_with_nice(vibeos_thread_t *thread, int32_t nice_level) {
+    uint32_t base;
+    uint32_t bonus = 0;
+    uint32_t penalty = 0;
+    uint32_t slice;
+    if (!thread) {
+        return 0;
+    }
+    base = vibeos_sched_default_timeslice(thread->klass);
+    if (nice_level < 0) {
+        bonus = (uint32_t)((-nice_level + 4) / 5);
+    } else if (nice_level > 0) {
+        penalty = (uint32_t)((nice_level + 4) / 5);
+    }
+    slice = base + bonus;
+    if (penalty >= slice) {
+        return 1;
+    }
+    slice -= penalty;
+    return (slice == 0) ? 1 : slice;
+}
+
 static void sched_clear_slot(vibeos_sched_thread_runtime_t *slot) {
     if (!slot) {
         return;
@@ -112,11 +159,15 @@ static void sched_clear_slot(vibeos_sched_thread_runtime_t *slot) {
     slot->cpu_id = 0;
     slot->last_cpu_id = 0;
     slot->state = VIBEOS_SCHED_THREAD_ABSENT;
+    slot->nice_level = 0;
+    slot->affinity_mask = 0;
+    slot->starvation_ticks = 0;
     slot->enqueue_count = 0;
     slot->dequeue_count = 0;
     slot->wait_begin_count = 0;
     slot->wait_end_count = 0;
     slot->migrations = 0;
+    slot->affinity_forced_moves = 0;
 }
 
 static void sched_recount_blocked(vibeos_scheduler_t *sched) {
@@ -131,6 +182,50 @@ static void sched_recount_blocked(vibeos_scheduler_t *sched) {
         }
     }
     sched->blocked_count = blocked;
+}
+
+static int sched_pick_allowed_cpu(const vibeos_scheduler_t *sched, const vibeos_sched_thread_runtime_t *slot, uint32_t preferred_cpu_id, uint32_t *out_cpu_id) {
+    uint32_t i;
+    uint32_t best_cpu = 0;
+    size_t best_depth = 0;
+    int found = 0;
+    if (!sched || !slot || !out_cpu_id || sched->cpu_count == 0) {
+        return -1;
+    }
+    if (preferred_cpu_id < sched->cpu_count && sched_cpu_allowed(slot, preferred_cpu_id)) {
+        *out_cpu_id = preferred_cpu_id;
+        return 0;
+    }
+    for (i = 0; i < sched->cpu_count; i++) {
+        if (!sched_cpu_allowed(slot, i)) {
+            continue;
+        }
+        if (!found || sched->runqueues[i].count < best_depth) {
+            best_cpu = i;
+            best_depth = sched->runqueues[i].count;
+            found = 1;
+        }
+    }
+    if (!found) {
+        return -1;
+    }
+    *out_cpu_id = best_cpu;
+    return 0;
+}
+
+static int sched_pick_allowed_cpu_and_note(vibeos_scheduler_t *sched, vibeos_sched_thread_runtime_t *slot, uint32_t preferred_cpu_id, uint32_t *out_cpu_id) {
+    int preferred_ok = 0;
+    if (!sched || !slot || !out_cpu_id) {
+        return -1;
+    }
+    preferred_ok = (preferred_cpu_id < sched->cpu_count && sched_cpu_allowed(slot, preferred_cpu_id));
+    if (sched_pick_allowed_cpu(sched, slot, preferred_cpu_id, out_cpu_id) != 0) {
+        return -1;
+    }
+    if (!preferred_ok) {
+        sched->affinity_misses++;
+    }
+    return 0;
 }
 
 static int sched_track_slot(vibeos_scheduler_t *sched, vibeos_thread_t *thread, uint32_t cpu_id, uint32_t *out_index) {
@@ -162,11 +257,15 @@ static int sched_track_slot(vibeos_scheduler_t *sched, vibeos_thread_t *thread, 
     sched->tracked_threads[idx].cpu_id = cpu_id % sched->cpu_count;
     sched->tracked_threads[idx].last_cpu_id = cpu_id % sched->cpu_count;
     sched->tracked_threads[idx].state = VIBEOS_SCHED_THREAD_RUNNABLE;
+    sched->tracked_threads[idx].nice_level = 0;
+    sched->tracked_threads[idx].affinity_mask = vibeos_sched_default_affinity_mask(sched->cpu_count);
+    sched->tracked_threads[idx].starvation_ticks = 0;
     sched->tracked_threads[idx].enqueue_count = 0;
     sched->tracked_threads[idx].dequeue_count = 0;
     sched->tracked_threads[idx].wait_begin_count = 0;
     sched->tracked_threads[idx].wait_end_count = 0;
     sched->tracked_threads[idx].migrations = 0;
+    sched->tracked_threads[idx].affinity_forced_moves = 0;
     sched->tracked_count++;
     if (out_index) {
         *out_index = idx;
@@ -222,6 +321,10 @@ int vibeos_sched_init(vibeos_scheduler_t *sched, uint32_t cpu_count) {
     sched->wait_end_total = 0;
     sched->wait_requeues = 0;
     sched->wait_requeue_failures = 0;
+    sched->rebalance_passes = 0;
+    sched->rebalance_moves = 0;
+    sched->affinity_misses = 0;
+    sched->priority_boosts = 0;
     return 0;
 }
 
@@ -258,6 +361,88 @@ int vibeos_sched_untrack_thread(vibeos_scheduler_t *sched, uint32_t tid) {
     return 0;
 }
 
+int vibeos_sched_set_thread_affinity(vibeos_scheduler_t *sched, uint32_t tid, uint64_t affinity_mask) {
+    uint32_t slot_idx = 0;
+    uint64_t valid_mask;
+    vibeos_sched_thread_runtime_t *slot;
+    if (!sched || tid == 0 || sched->cpu_count == 0) {
+        return -1;
+    }
+    if (sched_find_slot_index(sched, tid, &slot_idx) != 0) {
+        return -1;
+    }
+    valid_mask = affinity_mask & vibeos_sched_default_affinity_mask(sched->cpu_count);
+    if (valid_mask == 0) {
+        return -1;
+    }
+    slot = &sched->tracked_threads[slot_idx];
+    slot->affinity_mask = valid_mask;
+    if (slot->state == VIBEOS_SCHED_THREAD_RUNNABLE && !sched_cpu_allowed(slot, slot->cpu_id)) {
+        uint32_t target_cpu = 0;
+        uint32_t cpu_id;
+        if (sched_pick_allowed_cpu(sched, slot, slot->last_cpu_id, &target_cpu) != 0) {
+            return -1;
+        }
+        for (cpu_id = 0; cpu_id < sched->cpu_count; cpu_id++) {
+            vibeos_thread_t *removed = 0;
+            if (runqueue_remove_tid(&sched->runqueues[cpu_id], tid, &removed) == 0) {
+                break;
+            }
+        }
+        if (!runqueue_contains_tid(&sched->runqueues[target_cpu], tid)) {
+            if (runqueue_push(&sched->runqueues[target_cpu], slot->thread) != 0) {
+                return -1;
+            }
+        }
+        slot->migrations++;
+        slot->affinity_forced_moves++;
+        slot->cpu_id = target_cpu;
+        slot->last_cpu_id = target_cpu;
+    }
+    return 0;
+}
+
+int vibeos_sched_get_thread_affinity(const vibeos_scheduler_t *sched, uint32_t tid, uint64_t *out_affinity_mask) {
+    uint32_t slot_idx = 0;
+    if (!sched || !out_affinity_mask || tid == 0) {
+        return -1;
+    }
+    if (sched_find_slot_index(sched, tid, &slot_idx) != 0) {
+        return -1;
+    }
+    *out_affinity_mask = sched->tracked_threads[slot_idx].affinity_mask;
+    return 0;
+}
+
+int vibeos_sched_set_thread_nice(vibeos_scheduler_t *sched, uint32_t tid, int32_t nice_level) {
+    uint32_t slot_idx = 0;
+    vibeos_sched_thread_runtime_t *slot;
+    if (!sched || tid == 0 || nice_level < -20 || nice_level > 19) {
+        return -1;
+    }
+    if (sched_find_slot_index(sched, tid, &slot_idx) != 0) {
+        return -1;
+    }
+    slot = &sched->tracked_threads[slot_idx];
+    slot->nice_level = nice_level;
+    if (slot->thread) {
+        slot->thread->timeslice_ticks = sched_timeslice_with_nice(slot->thread, nice_level);
+    }
+    return 0;
+}
+
+int vibeos_sched_get_thread_nice(const vibeos_scheduler_t *sched, uint32_t tid, int32_t *out_nice_level) {
+    uint32_t slot_idx = 0;
+    if (!sched || !out_nice_level || tid == 0) {
+        return -1;
+    }
+    if (sched_find_slot_index(sched, tid, &slot_idx) != 0) {
+        return -1;
+    }
+    *out_nice_level = sched->tracked_threads[slot_idx].nice_level;
+    return 0;
+}
+
 int vibeos_sched_enqueue(vibeos_scheduler_t *sched, vibeos_thread_t *thread) {
     uint32_t cpu_id;
     uint32_t slot_idx = 0;
@@ -273,6 +458,9 @@ int vibeos_sched_enqueue(vibeos_scheduler_t *sched, vibeos_thread_t *thread) {
         return -1;
     }
     slot = &sched->tracked_threads[slot_idx];
+    if (sched_pick_allowed_cpu_and_note(sched, slot, cpu_id, &cpu_id) != 0) {
+        return -1;
+    }
     if (runqueue_contains_tid(&sched->runqueues[cpu_id], thread->id)) {
         if (slot->state == VIBEOS_SCHED_THREAD_BLOCKED && sched->blocked_count > 0) {
             sched->blocked_count--;
@@ -280,6 +468,7 @@ int vibeos_sched_enqueue(vibeos_scheduler_t *sched, vibeos_thread_t *thread) {
         slot->state = VIBEOS_SCHED_THREAD_RUNNABLE;
         slot->cpu_id = cpu_id;
         slot->last_cpu_id = cpu_id;
+        slot->starvation_ticks = 0;
         return 0;
     }
     if (runqueue_push(&sched->runqueues[cpu_id], thread) != 0) {
@@ -308,11 +497,14 @@ int vibeos_sched_enqueue_balanced(vibeos_scheduler_t *sched, vibeos_thread_t *th
     if (vibeos_sched_least_loaded_cpu(sched, &cpu_id) != 0) {
         return -1;
     }
-    thread->cpu_hint = cpu_id;
     if (sched_track_slot(sched, thread, cpu_id, &slot_idx) != 0) {
         return -1;
     }
     slot = &sched->tracked_threads[slot_idx];
+    if (sched_pick_allowed_cpu_and_note(sched, slot, cpu_id, &cpu_id) != 0) {
+        return -1;
+    }
+    thread->cpu_hint = cpu_id;
     if (!runqueue_contains_tid(&sched->runqueues[cpu_id], thread->id)) {
         if (runqueue_push(&sched->runqueues[cpu_id], thread) != 0) {
             return -1;
@@ -350,6 +542,7 @@ vibeos_thread_t *vibeos_sched_next(vibeos_scheduler_t *sched, uint32_t cpu_id) {
         slot->cpu_id = cpu_id;
         slot->last_cpu_id = cpu_id;
         slot->dequeue_count++;
+        slot->starvation_ticks = 0;
     }
     return thread;
 }
@@ -396,6 +589,7 @@ int vibeos_sched_wait_begin(vibeos_scheduler_t *sched, uint32_t tid, uint32_t *o
         slot->cpu_id = prev_cpu;
         slot->last_cpu_id = prev_cpu;
         slot->wait_begin_count++;
+        slot->starvation_ticks = 0;
         sched->wait_begin_total++;
         sched->blocked_count++;
     }
@@ -427,13 +621,7 @@ int vibeos_sched_wait_end(vibeos_scheduler_t *sched, uint32_t tid, uint32_t pref
         return 0;
     }
     previous_cpu = slot->cpu_id;
-    if (preferred_cpu_id < sched->cpu_count) {
-        target_cpu = preferred_cpu_id;
-    } else if (slot->cpu_id < sched->cpu_count) {
-        target_cpu = slot->cpu_id;
-    } else if (slot->last_cpu_id < sched->cpu_count) {
-        target_cpu = slot->last_cpu_id;
-    } else if (vibeos_sched_least_loaded_cpu(sched, &target_cpu) != 0) {
+    if (sched_pick_allowed_cpu_and_note(sched, slot, preferred_cpu_id, &target_cpu) != 0) {
         sched->wait_requeue_failures++;
         return -1;
     }
@@ -452,6 +640,7 @@ int vibeos_sched_wait_end(vibeos_scheduler_t *sched, uint32_t tid, uint32_t pref
     slot->cpu_id = target_cpu;
     slot->last_cpu_id = target_cpu;
     slot->wait_end_count++;
+    slot->starvation_ticks = 0;
     sched->wait_end_total++;
     if (sched->blocked_count > 0) {
         sched->blocked_count--;
@@ -459,6 +648,128 @@ int vibeos_sched_wait_end(vibeos_scheduler_t *sched, uint32_t tid, uint32_t pref
     if (out_cpu_id) {
         *out_cpu_id = target_cpu;
     }
+    return 0;
+}
+
+int vibeos_sched_starvation_tick(vibeos_scheduler_t *sched, uint32_t cpu_id) {
+    size_t i;
+    if (!sched || cpu_id >= sched->cpu_count) {
+        return -1;
+    }
+    for (i = 0; i < sched->runqueues[cpu_id].count; i++) {
+        vibeos_thread_t *thread = runqueue_thread_at(&sched->runqueues[cpu_id], i);
+        uint32_t slot_idx = 0;
+        if (!thread) {
+            continue;
+        }
+        if (sched_find_slot_index(sched, thread->id, &slot_idx) != 0) {
+            continue;
+        }
+        sched->tracked_threads[slot_idx].starvation_ticks++;
+    }
+    return 0;
+}
+
+int vibeos_sched_boost_starving(vibeos_scheduler_t *sched, uint64_t starvation_threshold, uint32_t boost_ticks, uint32_t max_timeslice, uint32_t *out_boosted) {
+    uint32_t i;
+    uint32_t boosted = 0;
+    if (!sched || !out_boosted || starvation_threshold == 0 || boost_ticks == 0 || max_timeslice == 0) {
+        return -1;
+    }
+    for (i = 0; i < VIBEOS_MAX_THREADS; i++) {
+        vibeos_sched_thread_runtime_t *slot = &sched->tracked_threads[i];
+        if (!slot->in_use || slot->state != VIBEOS_SCHED_THREAD_RUNNABLE || !slot->thread) {
+            continue;
+        }
+        if (slot->starvation_ticks < starvation_threshold) {
+            continue;
+        }
+        if (slot->thread->timeslice_ticks < max_timeslice) {
+            uint32_t boosted_slice = slot->thread->timeslice_ticks + boost_ticks;
+            if (boosted_slice < slot->thread->timeslice_ticks || boosted_slice > max_timeslice) {
+                boosted_slice = max_timeslice;
+            }
+            if (boosted_slice != slot->thread->timeslice_ticks) {
+                slot->thread->timeslice_ticks = boosted_slice;
+                boosted++;
+                sched->priority_boosts++;
+            }
+        }
+        slot->starvation_ticks = 0;
+    }
+    *out_boosted = boosted;
+    return 0;
+}
+
+int vibeos_sched_rebalance(vibeos_scheduler_t *sched, uint32_t max_moves, uint32_t *out_moves) {
+    uint32_t moved = 0;
+    if (!sched || !out_moves) {
+        return -1;
+    }
+    sched->rebalance_passes++;
+    if (max_moves == 0 || sched->cpu_count <= 1) {
+        *out_moves = 0;
+        return 0;
+    }
+    while (moved < max_moves) {
+        uint32_t src_cpu = 0;
+        uint32_t src_depth = 0;
+        uint32_t cpu_id;
+        int found_src = 0;
+        for (cpu_id = 0; cpu_id < sched->cpu_count; cpu_id++) {
+            uint32_t depth = (uint32_t)sched->runqueues[cpu_id].count;
+            if (!found_src || depth > src_depth) {
+                src_cpu = cpu_id;
+                src_depth = depth;
+                found_src = 1;
+            }
+        }
+        if (!found_src || src_depth <= 1) {
+            break;
+        }
+        {
+            size_t i;
+            int moved_one = 0;
+            for (i = 0; i < sched->runqueues[src_cpu].count; i++) {
+                vibeos_thread_t *candidate = runqueue_thread_at(&sched->runqueues[src_cpu], i);
+                uint32_t slot_idx = 0;
+                uint32_t dst_cpu = 0;
+                if (!candidate) {
+                    continue;
+                }
+                if (sched_find_slot_index(sched, candidate->id, &slot_idx) != 0) {
+                    continue;
+                }
+                if (sched_pick_allowed_cpu(sched, &sched->tracked_threads[slot_idx], sched->cpu_count, &dst_cpu) != 0) {
+                    continue;
+                }
+                if (dst_cpu == src_cpu || sched->runqueues[dst_cpu].count + 1 >= sched->runqueues[src_cpu].count) {
+                    continue;
+                }
+                {
+                    vibeos_thread_t *removed = 0;
+                    if (runqueue_remove_tid(&sched->runqueues[src_cpu], candidate->id, &removed) != 0 || !removed) {
+                        continue;
+                    }
+                    if (runqueue_push(&sched->runqueues[dst_cpu], removed) != 0) {
+                        (void)runqueue_push(&sched->runqueues[src_cpu], removed);
+                        continue;
+                    }
+                }
+                sched->tracked_threads[slot_idx].cpu_id = dst_cpu;
+                sched->tracked_threads[slot_idx].last_cpu_id = dst_cpu;
+                sched->tracked_threads[slot_idx].migrations++;
+                moved++;
+                moved_one = 1;
+                break;
+            }
+            if (!moved_one) {
+                break;
+            }
+        }
+    }
+    sched->rebalance_moves += moved;
+    *out_moves = moved;
     return 0;
 }
 
@@ -633,6 +944,17 @@ int vibeos_sched_wait_transition_summary(const vibeos_scheduler_t *sched, uint64
     return 0;
 }
 
+int vibeos_sched_qos_summary(const vibeos_scheduler_t *sched, uint64_t *out_rebalance_passes, uint64_t *out_rebalance_moves, uint64_t *out_affinity_misses, uint64_t *out_priority_boosts) {
+    if (!sched || !out_rebalance_passes || !out_rebalance_moves || !out_affinity_misses || !out_priority_boosts) {
+        return -1;
+    }
+    *out_rebalance_passes = sched->rebalance_passes;
+    *out_rebalance_moves = sched->rebalance_moves;
+    *out_affinity_misses = sched->affinity_misses;
+    *out_priority_boosts = sched->priority_boosts;
+    return 0;
+}
+
 int vibeos_sched_counters_reset(vibeos_scheduler_t *sched) {
     uint32_t i;
     if (!sched || sched->cpu_count == 0) {
@@ -645,17 +967,23 @@ int vibeos_sched_counters_reset(vibeos_scheduler_t *sched) {
     }
     for (i = 0; i < VIBEOS_MAX_THREADS; i++) {
         if (sched->tracked_threads[i].in_use) {
+            sched->tracked_threads[i].starvation_ticks = 0;
             sched->tracked_threads[i].enqueue_count = 0;
             sched->tracked_threads[i].dequeue_count = 0;
             sched->tracked_threads[i].wait_begin_count = 0;
             sched->tracked_threads[i].wait_end_count = 0;
             sched->tracked_threads[i].migrations = 0;
+            sched->tracked_threads[i].affinity_forced_moves = 0;
         }
     }
     sched->wait_begin_total = 0;
     sched->wait_end_total = 0;
     sched->wait_requeues = 0;
     sched->wait_requeue_failures = 0;
+    sched->rebalance_passes = 0;
+    sched->rebalance_moves = 0;
+    sched->affinity_misses = 0;
+    sched->priority_boosts = 0;
     sched_recount_blocked(sched);
     return 0;
 }
@@ -674,7 +1002,6 @@ int vibeos_sched_counter_summary(const vibeos_scheduler_t *sched, uint64_t *out_
 
 int vibeos_sched_age_cpu(vibeos_scheduler_t *sched, uint32_t cpu_id, uint32_t bonus_ticks, uint32_t max_timeslice, uint32_t *out_aged_threads) {
     size_t i;
-    size_t idx;
     uint32_t aged = 0;
     vibeos_runqueue_t *rq;
     if (!sched || !out_aged_threads || cpu_id >= sched->cpu_count || bonus_ticks == 0 || max_timeslice == 0) {
@@ -682,20 +1009,16 @@ int vibeos_sched_age_cpu(vibeos_scheduler_t *sched, uint32_t cpu_id, uint32_t bo
     }
     rq = &sched->runqueues[cpu_id];
     for (i = 0; i < rq->count; i++) {
-        vibeos_thread_t *thread;
-        uint32_t boosted;
-        idx = (rq->head + i) % VIBEOS_MAX_THREADS;
-        thread = rq->slots[idx];
-        if (!thread) {
-            continue;
-        }
-        boosted = thread->timeslice_ticks + bonus_ticks;
-        if (boosted < thread->timeslice_ticks || boosted > max_timeslice) {
-            boosted = max_timeslice;
-        }
-        if (boosted != thread->timeslice_ticks) {
-            thread->timeslice_ticks = boosted;
-            aged++;
+        vibeos_thread_t *thread = runqueue_thread_at(rq, i);
+        if (thread) {
+            uint32_t boosted = thread->timeslice_ticks + bonus_ticks;
+            if (boosted < thread->timeslice_ticks || boosted > max_timeslice) {
+                boosted = max_timeslice;
+            }
+            if (boosted != thread->timeslice_ticks) {
+                thread->timeslice_ticks = boosted;
+                aged++;
+            }
         }
     }
     *out_aged_threads = aged;

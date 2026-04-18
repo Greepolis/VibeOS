@@ -992,6 +992,114 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             frame->result = (int64_t)wait_end;
             return 0;
         }
+        case VIBEOS_SYSCALL_SCHED_THREAD_AFFINITY_SET:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            if (caller_pid != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            if (vibeos_sched_set_thread_affinity(&kernel->scheduler, (uint32_t)frame->arg0, frame->arg1) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = 0;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_SCHED_THREAD_AFFINITY_GET:
+        {
+            uint64_t affinity_mask = 0;
+            if (vibeos_sched_get_thread_affinity(&kernel->scheduler, (uint32_t)frame->arg0, &affinity_mask) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->arg0 = (uint32_t)(affinity_mask & 0xFFFFFFFFu);
+            frame->arg1 = (uint32_t)(affinity_mask >> 32);
+            frame->arg2 = 0;
+            frame->result = 0;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_SCHED_THREAD_NICE_SET:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            if (caller_pid != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            if (vibeos_sched_set_thread_nice(&kernel->scheduler, (uint32_t)frame->arg0, (int32_t)(uint32_t)frame->arg1) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = 0;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_SCHED_THREAD_NICE_GET:
+        {
+            int32_t nice_level = 0;
+            if (vibeos_sched_get_thread_nice(&kernel->scheduler, (uint32_t)frame->arg0, &nice_level) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = (int64_t)nice_level;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_SCHED_REBALANCE:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            uint32_t moved = 0;
+            if (caller_pid != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            if (vibeos_sched_rebalance(&kernel->scheduler, (uint32_t)frame->arg0, &moved) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = (int64_t)moved;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_SCHED_STARVATION_TICK:
+        {
+            if (vibeos_sched_starvation_tick(&kernel->scheduler, (uint32_t)frame->arg0) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = 0;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_SCHED_QOS_SUMMARY_GET:
+        {
+            uint64_t rebalance_passes = 0;
+            uint64_t rebalance_moves = 0;
+            uint64_t affinity_misses = 0;
+            uint64_t priority_boosts = 0;
+            if (vibeos_sched_qos_summary(&kernel->scheduler, &rebalance_passes, &rebalance_moves, &affinity_misses, &priority_boosts) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->arg0 = rebalance_passes;
+            frame->arg1 = rebalance_moves;
+            frame->arg2 = affinity_misses;
+            frame->result = (int64_t)priority_boosts;
+            return 0;
+        }
+        case VIBEOS_SYSCALL_SCHED_BOOST_STARVING:
+        {
+            uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
+            uint32_t boosted = 0;
+            uint32_t boost_ticks = (uint32_t)(frame->arg1 & 0xFFFFFFFFu);
+            uint32_t max_timeslice = (uint32_t)(frame->arg1 >> 32);
+            if (caller_pid != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            if (vibeos_sched_boost_starving(&kernel->scheduler, frame->arg0, boost_ticks, max_timeslice, &boosted) != 0) {
+                frame->result = -1;
+                return -1;
+            }
+            frame->result = (int64_t)boosted;
+            return 0;
+        }
         case VIBEOS_SYSCALL_PROCESS_TOKEN_GET:
         {
             uint32_t caller_pid = vibeos_syscall_caller_pid(frame);

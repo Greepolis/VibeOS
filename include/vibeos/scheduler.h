@@ -35,11 +35,15 @@ typedef struct vibeos_sched_thread_runtime {
     uint32_t cpu_id;
     uint32_t last_cpu_id;
     vibeos_sched_thread_runtime_state_t state;
+    int32_t nice_level;
+    uint64_t affinity_mask;
+    uint64_t starvation_ticks;
     uint64_t enqueue_count;
     uint64_t dequeue_count;
     uint64_t wait_begin_count;
     uint64_t wait_end_count;
     uint64_t migrations;
+    uint64_t affinity_forced_moves;
 } vibeos_sched_thread_runtime_t;
 
 typedef struct vibeos_runqueue {
@@ -62,6 +66,10 @@ typedef struct vibeos_scheduler {
     uint64_t wait_end_total;
     uint64_t wait_requeues;
     uint64_t wait_requeue_failures;
+    uint64_t rebalance_passes;
+    uint64_t rebalance_moves;
+    uint64_t affinity_misses;
+    uint64_t priority_boosts;
 } vibeos_scheduler_t;
 
 int vibeos_sched_init(vibeos_scheduler_t *sched, uint32_t cpu_count);
@@ -95,5 +103,14 @@ int vibeos_sched_thread_runtime_get(const vibeos_scheduler_t *sched, uint32_t ti
 size_t vibeos_sched_tracked_threads(const vibeos_scheduler_t *sched);
 size_t vibeos_sched_blocked_threads(const vibeos_scheduler_t *sched);
 int vibeos_sched_wait_transition_summary(const vibeos_scheduler_t *sched, uint64_t *out_wait_begin, uint64_t *out_wait_end, uint64_t *out_requeues, uint64_t *out_requeue_failures);
+uint64_t vibeos_sched_default_affinity_mask(uint32_t cpu_count);
+int vibeos_sched_set_thread_affinity(vibeos_scheduler_t *sched, uint32_t tid, uint64_t affinity_mask);
+int vibeos_sched_get_thread_affinity(const vibeos_scheduler_t *sched, uint32_t tid, uint64_t *out_affinity_mask);
+int vibeos_sched_set_thread_nice(vibeos_scheduler_t *sched, uint32_t tid, int32_t nice_level);
+int vibeos_sched_get_thread_nice(const vibeos_scheduler_t *sched, uint32_t tid, int32_t *out_nice_level);
+int vibeos_sched_rebalance(vibeos_scheduler_t *sched, uint32_t max_moves, uint32_t *out_moves);
+int vibeos_sched_starvation_tick(vibeos_scheduler_t *sched, uint32_t cpu_id);
+int vibeos_sched_boost_starving(vibeos_scheduler_t *sched, uint64_t starvation_threshold, uint32_t boost_ticks, uint32_t max_timeslice, uint32_t *out_boosted);
+int vibeos_sched_qos_summary(const vibeos_scheduler_t *sched, uint64_t *out_rebalance_passes, uint64_t *out_rebalance_moves, uint64_t *out_affinity_misses, uint64_t *out_priority_boosts);
 
 #endif
