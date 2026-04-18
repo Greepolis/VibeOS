@@ -1,5 +1,12 @@
 #include "vibeos/object.h"
 
+static void handle_emit_event(vibeos_handle_table_t *table, vibeos_handle_lifecycle_event_t event, const vibeos_handle_entry_t *entry) {
+    if (!table || !table->lifecycle_hook || !entry) {
+        return;
+    }
+    table->lifecycle_hook(event, entry, table->lifecycle_hook_ctx);
+}
+
 static uint32_t handle_active_count(const vibeos_handle_table_t *table) {
     uint32_t i;
     uint32_t active = 0;
@@ -36,6 +43,7 @@ static int handle_alloc_internal(vibeos_handle_table_t *table, uint32_t rights, 
             table->entries[i].origin_pid = 0;
             table->entries[i].origin_handle = 0;
             *out_handle = table->entries[i].id;
+            handle_emit_event(table, VIBEOS_HANDLE_EVENT_ALLOC, &table->entries[i]);
             return 0;
         }
     }
@@ -50,6 +58,8 @@ int vibeos_handle_table_init(vibeos_handle_table_t *table) {
     table->next_id = 1;
     table->max_handles = VIBEOS_MAX_HANDLES;
     table->alloc_failures = 0;
+    table->lifecycle_hook = 0;
+    table->lifecycle_hook_ctx = 0;
     for (i = 0; i < VIBEOS_MAX_HANDLES; i++) {
         table->entries[i].id = 0;
         table->entries[i].rights = 0;
@@ -80,6 +90,7 @@ int vibeos_handle_close(vibeos_handle_table_t *table, uint32_t handle) {
     }
     for (i = 0; i < VIBEOS_MAX_HANDLES; i++) {
         if (table->entries[i].in_use && table->entries[i].id == handle) {
+            vibeos_handle_entry_t ev = table->entries[i];
             table->entries[i].in_use = 0;
             table->entries[i].id = 0;
             table->entries[i].rights = 0;
@@ -87,6 +98,7 @@ int vibeos_handle_close(vibeos_handle_table_t *table, uint32_t handle) {
             table->entries[i].object_id = 0;
             table->entries[i].origin_pid = 0;
             table->entries[i].origin_handle = 0;
+            handle_emit_event(table, VIBEOS_HANDLE_EVENT_CLOSE, &ev);
             return 0;
         }
     }
@@ -193,5 +205,53 @@ int vibeos_handle_count_by_type(const vibeos_handle_table_t *table, vibeos_objec
         }
     }
     *out_count = count;
+    return 0;
+}
+
+int vibeos_handle_set_lifecycle_hook(vibeos_handle_table_t *table, vibeos_handle_lifecycle_hook_t hook, void *ctx) {
+    if (!table) {
+        return -1;
+    }
+    table->lifecycle_hook = hook;
+    table->lifecycle_hook_ctx = ctx;
+    return 0;
+}
+
+int vibeos_handle_revoke_origin(vibeos_handle_table_t *table, uint32_t table_pid, uint32_t root_pid, uint32_t root_handle, vibeos_object_type_t object_type_filter, uint32_t rights_mask_filter, uint32_t *out_revoked) {
+    uint32_t i;
+    uint32_t revoked = 0;
+    if (!table || !out_revoked || root_pid == 0 || root_handle == 0) {
+        return -1;
+    }
+    for (i = 0; i < VIBEOS_MAX_HANDLES; i++) {
+        int lineage_match;
+        if (!table->entries[i].in_use) {
+            continue;
+        }
+        lineage_match = ((table->entries[i].origin_pid == root_pid && table->entries[i].origin_handle == root_handle) ||
+            (table_pid == root_pid && table->entries[i].origin_pid == 0 && table->entries[i].origin_handle == 0 && table->entries[i].id == root_handle));
+        if (!lineage_match) {
+            continue;
+        }
+        if (object_type_filter != VIBEOS_OBJECT_NONE && table->entries[i].object_type != (uint32_t)object_type_filter) {
+            continue;
+        }
+        if (rights_mask_filter != 0 && (table->entries[i].rights & rights_mask_filter) == 0) {
+            continue;
+        }
+        {
+            vibeos_handle_entry_t ev = table->entries[i];
+            table->entries[i].in_use = 0;
+            table->entries[i].id = 0;
+            table->entries[i].rights = 0;
+            table->entries[i].object_type = VIBEOS_OBJECT_NONE;
+            table->entries[i].object_id = 0;
+            table->entries[i].origin_pid = 0;
+            table->entries[i].origin_handle = 0;
+            handle_emit_event(table, VIBEOS_HANDLE_EVENT_REVOKE, &ev);
+        }
+        revoked++;
+    }
+    *out_revoked = revoked;
     return 0;
 }

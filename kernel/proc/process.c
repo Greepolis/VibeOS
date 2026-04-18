@@ -71,37 +71,14 @@ static void release_all_process_handles(vibeos_process_entry_t *entry) {
 }
 
 static int revoke_lineage_in_table(vibeos_handle_table_t *table, uint32_t table_pid, uint32_t root_pid, uint32_t root_handle, vibeos_object_type_t object_type_filter, uint32_t rights_mask_filter) {
-    uint32_t i;
-    int revoked = 0;
+    uint32_t revoked = 0;
     if (!table || root_pid == 0 || root_handle == 0) {
         return 0;
     }
-    for (i = 0; i < VIBEOS_MAX_HANDLES; i++) {
-        int lineage_match;
-        if (!table->entries[i].in_use) {
-            continue;
-        }
-        lineage_match = ((table->entries[i].origin_pid == root_pid && table->entries[i].origin_handle == root_handle) ||
-            (table_pid == root_pid && table->entries[i].origin_pid == 0 && table->entries[i].origin_handle == 0 && table->entries[i].id == root_handle));
-        if (!lineage_match) {
-            continue;
-        }
-        if (object_type_filter != VIBEOS_OBJECT_NONE && table->entries[i].object_type != (uint32_t)object_type_filter) {
-            continue;
-        }
-        if (rights_mask_filter != 0 && (table->entries[i].rights & rights_mask_filter) == 0) {
-            continue;
-        }
-        table->entries[i].in_use = 0;
-        table->entries[i].id = 0;
-        table->entries[i].rights = 0;
-        table->entries[i].object_type = VIBEOS_OBJECT_NONE;
-        table->entries[i].object_id = 0;
-        table->entries[i].origin_pid = 0;
-        table->entries[i].origin_handle = 0;
-        revoked++;
+    if (vibeos_handle_revoke_origin(table, table_pid, root_pid, root_handle, object_type_filter, rights_mask_filter, &revoked) != 0) {
+        return 0;
     }
-    return revoked;
+    return (int)revoked;
 }
 
 static void proc_audit_record(vibeos_process_table_t *pt,
