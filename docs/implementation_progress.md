@@ -293,12 +293,16 @@ Implemented:
 - scheduler counter reset helper for controlled instrumentation epochs
 - class-based default timeslice policy helpers and enqueue-time timeslice normalization
 - runqueue aging helpers (`age_cpu`, `age_all`) with bounded timeslice boosts
+- scheduler runtime tracking for per-thread lifecycle state (`RUNNABLE/RUNNING/BLOCKED`) with tracked-thread registry
+- explicit wait lifecycle hooks (`wait_begin`, `wait_end`) with dequeue/requeue semantics and preferred wake CPU selection
+- scheduler wait-transition telemetry (`wait_begin`, `wait_end`, `requeues`, `requeue_failures`) plus tracked/blocked thread counters
+- per-thread runtime observability (`state`, `cpu`, wait transition counters, migrations)
 Files Created/Modified:
 - `kernel/sched/scheduler.c`
 - `include/vibeos/scheduler.h`
 Pending:
 - full timeslice policy integration with runtime thread lifecycle
-- priority aging policy feedback integration with live runtime priorities
+- priority-aware wake-placement heuristics under contention
 
 Module: IPC Subsystem
 Status: Partial
@@ -317,6 +321,8 @@ Implemented:
 - waitset telemetry reset and owner-scoped wake-policy control paths
 - round-robin waitset wake policy with rotating cursor
 - thread-aware wait wrappers (`wait_for_thread`, `wait_timed_for_thread`) that bracket waits with process-thread blocked/runnable transitions
+- scheduler-coupled thread wait wrappers with runtime `wait_begin/wait_end` integration
+- CPU-targeted thread wait wrappers (`wait_for_thread_on_cpu`, `wait_timed_for_thread_on_cpu`) with wake CPU feedback
 Files Created/Modified:
 - `kernel/ipc/event.c`
 - `kernel/ipc/channel.c`
@@ -396,6 +402,8 @@ Implemented:
 - security-audit syscalls (`SEC_AUDIT_COUNT`, `SEC_AUDIT_GET`, `SEC_AUDIT_COUNT_ACTION`, `SEC_AUDIT_SUMMARY`, `SEC_AUDIT_RESET`)
 - security-audit success-filter syscall (`SEC_AUDIT_COUNT_SUCCESS`)
 - process MAC label syscalls (`PROCESS_SECURITY_LABEL_GET`, `PROCESS_SECURITY_LABEL_SET`, `PROCESS_INTERACT_CHECK`)
+- process thread-state query syscalls (`PROCESS_THREAD_STATE_COUNT_GET`, `PROCESS_RUNNABLE_THREADS_GET`, `PROCESS_BLOCKED_THREADS_GET`)
+- scheduler runtime observability syscalls (`SCHED_TRACKED_THREADS_GET`, `SCHED_BLOCKED_THREADS_GET`, `SCHED_WAIT_TRANSITION_SUMMARY_GET`, `SCHED_THREAD_RUNTIME_GET`)
 Files Created/Modified:
 - `kernel/core/syscall.c`
 - `include/vibeos/syscall.h`
@@ -433,11 +441,13 @@ Implemented:
 - audit retention policy controls (`overwrite-oldest` vs `drop-newest`) with dropped-event accounting
 - audit helper queries (`count by action`, `count by success`, `summary`) for observability and policy feedback loops
 - explicit thread wait lifecycle helpers (`thread_wait_begin`, `thread_wait_end`) used by wait primitives
+- per-process thread-state introspection helpers (`thread count by process/state`, process thread summary)
+- wait-driven process state coupling (auto `BLOCKED` when no runnable thread remains, auto `RUNNING` on wake)
 Files Created/Modified:
 - `kernel/proc/process.c`
 - `include/vibeos/proc.h`
 Pending:
-- deeper scheduler queue-state coupling for blocked/runnable transitions under contention
+- richer process-state policy when a process has no active threads
 
 Module: Object and Handle Model
 Status: Partial

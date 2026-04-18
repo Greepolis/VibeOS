@@ -106,6 +106,12 @@ static int test_scheduler(void) {
     vibeos_thread_t t1 = { .id = 1, .cpu_hint = 0, .klass = VIBEOS_THREAD_NORMAL, .timeslice_ticks = 0 };
     vibeos_thread_t t2 = { .id = 2, .cpu_hint = 0, .klass = VIBEOS_THREAD_INTERACTIVE, .timeslice_ticks = 2 };
     vibeos_thread_t *out;
+    uint64_t wait_begin = 0;
+    uint64_t wait_end = 0;
+    uint64_t requeues = 0;
+    uint64_t requeue_failures = 0;
+    vibeos_sched_thread_runtime_state_t runtime_state = VIBEOS_SCHED_THREAD_ABSENT;
+    uint32_t runtime_cpu = 0;
     if (vibeos_sched_init(&sched, 1) != 0) {
         return -1;
     }
@@ -135,6 +141,27 @@ static int test_scheduler(void) {
         return -1;
     }
     if (vibeos_sched_preemptions(&sched, 0) != 1) {
+        return -1;
+    }
+    if (vibeos_sched_wait_begin(&sched, 2, 0) != 0) {
+        return -1;
+    }
+    if (vibeos_sched_blocked_threads(&sched) != 1 || vibeos_sched_runqueue_depth(&sched, 0) != 0) {
+        return -1;
+    }
+    if (vibeos_sched_wait_end(&sched, 2, 0, &runtime_cpu) != 0 || runtime_cpu != 0) {
+        return -1;
+    }
+    if (vibeos_sched_thread_runtime_get(&sched, 2, &runtime_state, &runtime_cpu, &wait_begin, &wait_end, 0) != 0) {
+        return -1;
+    }
+    if (runtime_state != VIBEOS_SCHED_THREAD_RUNNABLE || runtime_cpu != 0 || wait_begin != 1 || wait_end != 1) {
+        return -1;
+    }
+    if (vibeos_sched_wait_transition_summary(&sched, &wait_begin, &wait_end, &requeues, &requeue_failures) != 0) {
+        return -1;
+    }
+    if (wait_begin != 1 || wait_end != 1 || requeues != 1 || requeue_failures != 0) {
         return -1;
     }
     return 0;
@@ -178,6 +205,64 @@ static int test_scheduler_balanced(void) {
         return -1;
     }
     if (t1.timeslice_ticks != 6 || t2.timeslice_ticks != 6 || t3.timeslice_ticks != 6) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_scheduler_wait_runtime(void) {
+    vibeos_scheduler_t sched;
+    vibeos_thread_t t1 = { .id = 21, .cpu_hint = 0, .klass = VIBEOS_THREAD_NORMAL, .timeslice_ticks = 3 };
+    vibeos_thread_t t2 = { .id = 22, .cpu_hint = 0, .klass = VIBEOS_THREAD_NORMAL, .timeslice_ticks = 3 };
+    vibeos_sched_thread_runtime_state_t state = VIBEOS_SCHED_THREAD_ABSENT;
+    uint32_t cpu = 0;
+    uint64_t wait_begin = 0;
+    uint64_t wait_end = 0;
+    uint64_t migrations = 0;
+    uint64_t total_wait_begin = 0;
+    uint64_t total_wait_end = 0;
+    uint64_t total_requeues = 0;
+    uint64_t total_requeue_failures = 0;
+    if (vibeos_sched_init(&sched, 2) != 0) {
+        return -1;
+    }
+    if (vibeos_sched_enqueue(&sched, &t1) != 0 || vibeos_sched_enqueue(&sched, &t2) != 0) {
+        return -1;
+    }
+    if (vibeos_sched_tracked_threads(&sched) != 2 || vibeos_sched_blocked_threads(&sched) != 0) {
+        return -1;
+    }
+    if (vibeos_sched_wait_begin(&sched, t1.id, &cpu) != 0 || cpu != 0) {
+        return -1;
+    }
+    if (vibeos_sched_blocked_threads(&sched) != 1 || vibeos_sched_runqueue_depth(&sched, 0) != 1) {
+        return -1;
+    }
+    if (vibeos_sched_wait_end(&sched, t1.id, 1, &cpu) != 0 || cpu != 1) {
+        return -1;
+    }
+    if (vibeos_sched_runqueue_depth(&sched, 0) != 1 || vibeos_sched_runqueue_depth(&sched, 1) != 1) {
+        return -1;
+    }
+    if (vibeos_sched_thread_runtime_get(&sched, t1.id, &state, &cpu, &wait_begin, &wait_end, &migrations) != 0) {
+        return -1;
+    }
+    if (state != VIBEOS_SCHED_THREAD_RUNNABLE || cpu != 1 || wait_begin != 1 || wait_end != 1 || migrations != 1) {
+        return -1;
+    }
+    if (vibeos_sched_wait_transition_summary(&sched, &total_wait_begin, &total_wait_end, &total_requeues, &total_requeue_failures) != 0) {
+        return -1;
+    }
+    if (total_wait_begin != 1 || total_wait_end != 1 || total_requeues != 1 || total_requeue_failures != 0) {
+        return -1;
+    }
+    if (vibeos_sched_untrack_thread(&sched, t2.id) != 0 || vibeos_sched_tracked_threads(&sched) != 1) {
+        return -1;
+    }
+    if (vibeos_sched_untrack_thread(&sched, t1.id) != 0 || vibeos_sched_tracked_threads(&sched) != 0) {
+        return -1;
+    }
+    if (vibeos_sched_runnable_threads(&sched) != 0) {
         return -1;
     }
     return 0;
@@ -919,6 +1004,46 @@ static int test_syscalls(void) {
     if (frame.arg0 != 0 || frame.arg1 != 0 || frame.arg2 != 0 || frame.result != 2) {
         return -1;
     }
+    if (vibeos_sched_wait_begin(&kernel.scheduler, sthread1.id, 0) != 0) {
+        return -1;
+    }
+    if (vibeos_sched_wait_end(&kernel.scheduler, sthread1.id, 1, 0) != 0) {
+        return -1;
+    }
+    vibeos_syscall_make_sched_tracked_threads_get(&frame);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 2) {
+        return -1;
+    }
+    vibeos_syscall_make_sched_blocked_threads_get(&frame);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 0) {
+        return -1;
+    }
+    vibeos_syscall_make_sched_wait_transition_summary_get(&frame);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
+    if (frame.arg0 != 1 || frame.arg1 != 1 || frame.arg2 != 1 || frame.result != 0) {
+        return -1;
+    }
+    vibeos_syscall_make_sched_thread_runtime_get(&frame, sthread1.id);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
+    if (frame.arg0 != VIBEOS_SCHED_THREAD_RUNNABLE || frame.arg1 != 1 || frame.arg2 != 1 || frame.result != 1) {
+        return -1;
+    }
+    vibeos_syscall_make_process_thread_state_count_get(&frame, pid1, VIBEOS_THREAD_STATE_BLOCKED, pid1);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 0) {
+        return -1;
+    }
+    vibeos_syscall_make_process_runnable_threads_get(&frame, pid1, pid1);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 0) {
+        return -1;
+    }
+    vibeos_syscall_make_process_blocked_threads_get(&frame, pid1, pid1);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 0) {
+        return -1;
+    }
     if (vibeos_proc_transition_counters(&kernel.proc_table, &proc_transitions, &thread_transitions, &proc_terms, &thread_exits) != 0) {
         return -1;
     }
@@ -1596,7 +1721,14 @@ static int test_waitset_thread_integration(void) {
     vibeos_timer_t timer;
     vibeos_process_table_t pt;
     vibeos_event_t ev;
+    vibeos_thread_t sched_thread = { .id = 0, .cpu_hint = 0, .klass = VIBEOS_THREAD_NORMAL, .timeslice_ticks = 0 };
+    vibeos_process_state_t proc_state;
     vibeos_thread_state_t state;
+    uint32_t wake_cpu = 0;
+    uint64_t wait_begin = 0;
+    uint64_t wait_end = 0;
+    uint64_t requeues = 0;
+    uint64_t requeue_failures = 0;
     uint32_t pid = 0;
     uint32_t tid = 0;
     size_t idx = 0;
@@ -1612,7 +1744,14 @@ static int test_waitset_thread_integration(void) {
     if (vibeos_proc_spawn(&pt, 0, &pid) != 0 || vibeos_thread_create(&pt, pid, &tid) != 0) {
         return -1;
     }
+    sched_thread.id = tid;
+    if (vibeos_sched_enqueue(&sched, &sched_thread) != 0) {
+        return -1;
+    }
     if (vibeos_thread_state(&pt, tid, &state) != 0 || state != VIBEOS_THREAD_STATE_RUNNABLE) {
+        return -1;
+    }
+    if (vibeos_proc_state(&pt, pid, &proc_state) != 0 || proc_state != VIBEOS_PROCESS_STATE_RUNNING) {
         return -1;
     }
     vibeos_event_init(&ev);
@@ -1625,11 +1764,26 @@ static int test_waitset_thread_integration(void) {
     if (vibeos_thread_state(&pt, tid, &state) != 0 || state != VIBEOS_THREAD_STATE_RUNNABLE) {
         return -1;
     }
+    if (vibeos_proc_state(&pt, pid, &proc_state) != 0 || proc_state != VIBEOS_PROCESS_STATE_RUNNING) {
+        return -1;
+    }
     vibeos_event_signal(&ev);
-    if (vibeos_waitset_wait_timed_for_thread(&waitset, &timer, 1, &idx, &sched, 0, &pt, tid) != 0 || idx != 0) {
+    if (vibeos_waitset_wait_timed_for_thread_on_cpu(&waitset, &timer, 1, &idx, &sched, 0, &pt, tid, 0, &wake_cpu) != 0 || idx != 0) {
+        return -1;
+    }
+    if (wake_cpu != 0) {
         return -1;
     }
     if (vibeos_thread_state(&pt, tid, &state) != 0 || state != VIBEOS_THREAD_STATE_RUNNABLE) {
+        return -1;
+    }
+    if (vibeos_sched_blocked_threads(&sched) != 0) {
+        return -1;
+    }
+    if (vibeos_sched_wait_transition_summary(&sched, &wait_begin, &wait_end, &requeues, &requeue_failures) != 0) {
+        return -1;
+    }
+    if (wait_begin != 2 || wait_end != 2 || requeues != 2 || requeue_failures != 0) {
         return -1;
     }
     return 0;
@@ -2592,6 +2746,72 @@ static int test_thread_lifecycle_controls(void) {
     return 0;
 }
 
+static int test_process_wait_state_aggregation(void) {
+    vibeos_process_table_t pt;
+    vibeos_process_state_t proc_state;
+    uint32_t pid = 0;
+    uint32_t tid1 = 0;
+    uint32_t tid2 = 0;
+    uint32_t count = 0;
+    uint32_t has_runnable = 0;
+    uint32_t fully_blocked = 0;
+    if (vibeos_proc_init(&pt) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_spawn(&pt, 0, &pid) != 0) {
+        return -1;
+    }
+    if (vibeos_thread_create(&pt, pid, &tid1) != 0 || vibeos_thread_create(&pt, pid, &tid2) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_state(&pt, pid, &proc_state) != 0 || proc_state != VIBEOS_PROCESS_STATE_RUNNING) {
+        return -1;
+    }
+    if (vibeos_proc_thread_wait_begin(&pt, tid1) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_state(&pt, pid, &proc_state) != 0 || proc_state != VIBEOS_PROCESS_STATE_RUNNING) {
+        return -1;
+    }
+    if (vibeos_proc_thread_wait_begin(&pt, tid2) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_state(&pt, pid, &proc_state) != 0 || proc_state != VIBEOS_PROCESS_STATE_BLOCKED) {
+        return -1;
+    }
+    if (vibeos_proc_thread_count_for_process_in_state(&pt, pid, VIBEOS_THREAD_STATE_BLOCKED, &count) != 0 || count != 2) {
+        return -1;
+    }
+    if (vibeos_proc_process_has_runnable_threads(&pt, pid, &has_runnable) != 0 || has_runnable != 0) {
+        return -1;
+    }
+    if (vibeos_proc_process_fully_blocked(&pt, pid, &fully_blocked) != 0 || fully_blocked != 1) {
+        return -1;
+    }
+    if (vibeos_proc_thread_wait_end(&pt, tid1) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_state(&pt, pid, &proc_state) != 0 || proc_state != VIBEOS_PROCESS_STATE_RUNNING) {
+        return -1;
+    }
+    if (vibeos_proc_thread_count_for_process_in_state(&pt, pid, VIBEOS_THREAD_STATE_RUNNABLE, &count) != 0 || count != 1) {
+        return -1;
+    }
+    if (vibeos_proc_process_has_runnable_threads(&pt, pid, &has_runnable) != 0 || has_runnable != 1) {
+        return -1;
+    }
+    if (vibeos_proc_process_fully_blocked(&pt, pid, &fully_blocked) != 0 || fully_blocked != 0) {
+        return -1;
+    }
+    if (vibeos_proc_thread_wait_end(&pt, tid2) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_thread_count_for_process_in_state(&pt, pid, VIBEOS_THREAD_STATE_RUNNABLE, &count) != 0 || count != 2) {
+        return -1;
+    }
+    return 0;
+}
+
 static int test_proc_audit_retention_policy(void) {
     vibeos_process_table_t pt;
     vibeos_handle_table_t *p1_handles = 0;
@@ -2662,6 +2882,7 @@ int main(void) {
     RUN_TEST(test_pmm);
     RUN_TEST(test_scheduler);
     RUN_TEST(test_scheduler_balanced);
+    RUN_TEST(test_scheduler_wait_runtime);
     RUN_TEST(test_ipc);
     RUN_TEST(test_kmain);
     RUN_TEST(test_vm);
@@ -2695,6 +2916,7 @@ int main(void) {
     RUN_TEST(test_process_lifecycle);
     RUN_TEST(test_process_relationships);
     RUN_TEST(test_thread_lifecycle_controls);
+    RUN_TEST(test_process_wait_state_aggregation);
     RUN_TEST(test_process_thread_object_handles);
     RUN_TEST(test_process_security_tokens);
     RUN_TEST(test_handle_revocation_propagation);
