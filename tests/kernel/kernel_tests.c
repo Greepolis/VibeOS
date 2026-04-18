@@ -2090,6 +2090,124 @@ static int test_waitset_stats(void) {
     return 0;
 }
 
+static int test_waitset_priority_and_batch(void) {
+    vibeos_waitset_t ws;
+    vibeos_event_t ev1;
+    vibeos_event_t ev2;
+    vibeos_event_t ev3;
+    size_t idx = 0;
+    size_t indices[3];
+    size_t out_count = 0;
+    uint8_t prio = 0;
+    uint32_t enabled = 0;
+    if (vibeos_waitset_init(&ws) != 0) {
+        return -1;
+    }
+    vibeos_event_init(&ev1);
+    vibeos_event_init(&ev2);
+    vibeos_event_init(&ev3);
+    if (vibeos_waitset_add_with_priority(&ws, &ev1, 2) != 0 ||
+        vibeos_waitset_add_with_priority(&ws, &ev2, 9) != 0 ||
+        vibeos_waitset_add_with_priority(&ws, &ev3, 5) != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_set_wake_policy(&ws, VIBEOS_WAITSET_WAKE_PRIORITY) != 0) {
+        return -1;
+    }
+    vibeos_event_signal(&ev1);
+    vibeos_event_signal(&ev2);
+    vibeos_event_signal(&ev3);
+    if (vibeos_waitset_wait_ex(&ws, 0, &idx, 0, 0) != 0 || idx != 1) {
+        return -1;
+    }
+    if (vibeos_waitset_peek_signaled(&ws, indices, 3, &out_count) != 0 || out_count != 3) {
+        return -1;
+    }
+    if (indices[0] != 1 || indices[1] != 2 || indices[2] != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_wait_batch(&ws, 0, indices, 3, &out_count) != 0 || out_count != 3) {
+        return -1;
+    }
+    if (indices[0] != 1 || indices[1] != 2 || indices[2] != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_set_event_enabled(&ws, 1, 0) != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_get_event_enabled(&ws, 1, &enabled) != 0 || enabled != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_wait_ex(&ws, 0, &idx, 0, 0) != 0 || idx != 2) {
+        return -1;
+    }
+    if (vibeos_waitset_set_event_priority(&ws, 0, 12) != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_get_event_priority(&ws, 0, &prio) != 0 || prio != 12) {
+        return -1;
+    }
+    if (vibeos_waitset_wait_ex(&ws, 0, &idx, 0, 0) != 0 || idx != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_remove_event(&ws, &ev2) != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_count(&ws, &out_count) != 0 || out_count != 2) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_waitset_wait_all_and_ext_stats(void) {
+    vibeos_waitset_t ws;
+    vibeos_event_t ev1;
+    vibeos_event_t ev2;
+    vibeos_waitset_ext_stats_t stats;
+    size_t idx = 0;
+    if (vibeos_waitset_init(&ws) != 0) {
+        return -1;
+    }
+    vibeos_event_init(&ev1);
+    vibeos_event_init(&ev2);
+    if (vibeos_waitset_add(&ws, &ev1) != 0 || vibeos_waitset_add(&ws, &ev2) != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_wait_all(&ws, 0, 0) == 0) {
+        return -1;
+    }
+    vibeos_event_signal(&ev1);
+    if (vibeos_waitset_wait_all(&ws, 0, 0) == 0) {
+        return -1;
+    }
+    vibeos_event_signal(&ev2);
+    if (vibeos_waitset_wait_all(&ws, 0, 1) != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_wait_ex(&ws, 0, &idx, 0, 0) == 0) {
+        return -1;
+    }
+    if (vibeos_waitset_stats_ext(&ws, &stats) != 0) {
+        return -1;
+    }
+    if (stats.wait_all_calls < 3 || stats.wait_all_success < 1 || stats.wait_all_timeouts < 2) {
+        return -1;
+    }
+    if (stats.wait_timeouts < 1) {
+        return -1;
+    }
+    if (vibeos_waitset_stats_reset(&ws) != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_stats_ext(&ws, &stats) != 0) {
+        return -1;
+    }
+    if (stats.wait_all_calls != 0 || stats.wait_batch_calls != 0 || stats.peek_calls != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 static int test_filesystem_runtime(void) {
     vibeos_vfs_runtime_t rt;
     vibeos_policy_state_t policy;
@@ -3004,6 +3122,8 @@ int main(void) {
     RUN_TEST(test_waitset_lifecycle);
     RUN_TEST(test_waitset_wake_policy);
     RUN_TEST(test_waitset_stats);
+    RUN_TEST(test_waitset_priority_and_batch);
+    RUN_TEST(test_waitset_wait_all_and_ext_stats);
     RUN_TEST(test_filesystem_runtime);
     RUN_TEST(test_network_runtime);
     RUN_TEST(test_security_token);

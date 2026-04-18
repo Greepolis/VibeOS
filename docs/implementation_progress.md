@@ -297,12 +297,18 @@ Implemented:
 - explicit wait lifecycle hooks (`wait_begin`, `wait_end`) with dequeue/requeue semantics and preferred wake CPU selection
 - scheduler wait-transition telemetry (`wait_begin`, `wait_end`, `requeues`, `requeue_failures`) plus tracked/blocked thread counters
 - per-thread runtime observability (`state`, `cpu`, wait transition counters, migrations)
+- per-thread QoS controls (`nice` and CPU affinity mask) with safe validation and runtime getters/setters
+- scheduler starvation instrumentation and boost controls (`starvation_tick`, `boost_starving`)
+- affinity-aware enqueue/wake placement with mismatch telemetry (`affinity_misses`)
+- active runqueue rebalance pass (`rebalance`) with bounded migration budget and runtime counters
+- QoS summary telemetry (`rebalance_passes`, `rebalance_moves`, `affinity_misses`, `priority_boosts`)
 Files Created/Modified:
 - `kernel/sched/scheduler.c`
 - `include/vibeos/scheduler.h`
 Pending:
 - full timeslice policy integration with runtime thread lifecycle
 - priority-aware wake-placement heuristics under contention
+- NUMA/topology-aware load balancing policy
 
 Module: IPC Subsystem
 Status: Partial
@@ -323,6 +329,11 @@ Implemented:
 - thread-aware wait wrappers (`wait_for_thread`, `wait_timed_for_thread`) that bracket waits with process-thread blocked/runnable transitions
 - scheduler-coupled thread wait wrappers with runtime `wait_begin/wait_end` integration
 - CPU-targeted thread wait wrappers (`wait_for_thread_on_cpu`, `wait_timed_for_thread_on_cpu`) with wake CPU feedback
+- per-event waitset metadata (`priority`, `enabled`) with runtime update/query controls
+- wake policy extension with priority-based selection (`WAKE_PRIORITY`)
+- batch and aggregate wait primitives (`wait_batch`, `wait_all`, `peek_signaled`)
+- event-centric waitset control helpers (`add_with_priority`, `remove_event`, enable/disable by index)
+- extended waitset telemetry (`disabled_skips`, `priority_wakes`, `wait_all`, `wait_batch`, `peek`)
 Files Created/Modified:
 - `kernel/ipc/event.c`
 - `kernel/ipc/channel.c`
@@ -331,6 +342,7 @@ Files Created/Modified:
 - `include/vibeos/waitset.h`
 Pending:
 - fairness-aware wake scheduling for large waitsets
+- waitset sharding strategy for large fan-in workloads
 
 Module: Virtual Memory
 Status: Partial
@@ -404,6 +416,7 @@ Implemented:
 - process MAC label syscalls (`PROCESS_SECURITY_LABEL_GET`, `PROCESS_SECURITY_LABEL_SET`, `PROCESS_INTERACT_CHECK`)
 - process thread-state query syscalls (`PROCESS_THREAD_STATE_COUNT_GET`, `PROCESS_RUNNABLE_THREADS_GET`, `PROCESS_BLOCKED_THREADS_GET`)
 - scheduler runtime observability syscalls (`SCHED_TRACKED_THREADS_GET`, `SCHED_BLOCKED_THREADS_GET`, `SCHED_WAIT_TRANSITION_SUMMARY_GET`, `SCHED_THREAD_RUNTIME_GET`)
+- scheduler QoS control and observability syscalls (`SCHED_THREAD_AFFINITY_SET/GET`, `SCHED_THREAD_NICE_SET/GET`, `SCHED_REBALANCE`, `SCHED_STARVATION_TICK`, `SCHED_QOS_SUMMARY_GET`, `SCHED_BOOST_STARVING`)
 Files Created/Modified:
 - `kernel/core/syscall.c`
 - `include/vibeos/syscall.h`
