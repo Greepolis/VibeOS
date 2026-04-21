@@ -45,3 +45,6 @@ build/
 artifacts/*.log
 artifacts/*.json
 artifacts/*.txt
+
+# CMake generated files
+build-wsl/

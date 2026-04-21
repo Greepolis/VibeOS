@@ -128,8 +128,47 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         COMMENT "Generating bootable kernel image"
     )
     
+    # UEFI Bootloader (M2 bring-up)
+    add_executable(vibeos_bootloader_uefi
+        boot/uefi_main.c
+        boot/uefi_protocol.c
+        boot/bootloader_stub.c
+    )
+    
+    target_include_directories(vibeos_bootloader_uefi PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/boot
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+    
+    # UEFI freestanding compilation flags
+    target_compile_options(vibeos_bootloader_uefi PRIVATE
+        -ffreestanding      # No hosted libs
+        -fshort-wchar       # UEFI uses 16-bit wchar
+        -Wall
+        -Wextra
+        -Wpedantic
+    )
+    
+    # UEFI linker options
+    # NOTE: --subsystem=efi-app requires cross-compiler (LLVM/Clang on Linux)
+    # MinGW GCC on Windows doesn't support UEFI subsystem directly
+    # Phase 1: Link as generic executable, full UEFI support in Phase 2+ with WSL/Linux toolchain
+    target_link_options(vibeos_bootloader_uefi PRIVATE
+        -nostdlib                       # No standard library
+        -Wl,--entry=efi_main           # Entry point (will be PE entry when using UEFI toolchain)
+    )
+    
+    # Copy bootloader to artifacts directory
+    add_custom_target(vibeos_bootloader_efi
+        COMMAND ${CMAKE_COMMAND} -E copy
+            $<TARGET_FILE:vibeos_bootloader_uefi>
+            ${VIBEOS_ARTIFACTS_DIR}/bootloader.efi
+        DEPENDS vibeos_bootloader_uefi
+        COMMENT "Copying UEFI bootloader to artifacts/"
+    )
+    
     # Consolidated target: build all boot artifacts
-    add_custom_target(vibeos_image ALL DEPENDS vibeos_boot_image vibeos_kernel_elf)
+    add_custom_target(vibeos_image ALL DEPENDS vibeos_boot_image vibeos_kernel_elf vibeos_bootloader_efi)
 endif()
 
 # Export toolchain information for scripts
