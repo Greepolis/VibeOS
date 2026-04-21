@@ -132,6 +132,9 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
     add_executable(vibeos_bootloader_uefi
         boot/uefi_main.c
         boot/uefi_protocol.c
+        boot/uefi_serial.c
+        boot/uefi_memory.c
+        boot/uefi_firmware.c
         boot/bootloader_stub.c
     )
     
