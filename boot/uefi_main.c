@@ -7,6 +7,7 @@
 #include "uefi_firmware.h"
 #include "uefi_pe_loader.h"
 #include "uefi_boot_info.h"
+#include "uefi_boot_handoff.h"
 
 #define BOOT_INFO_MAX_REGIONS 32
 #define KERNEL_LOAD_ADDR 0x400000
@@ -119,8 +120,22 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle __attribute__((unused)), EFI_SYSTEM_T
     uefi_serial_puts("\n");
     uefi_serial_puts("[BOOT] === PHASE 4 COMPLETE ===\n");
     uefi_serial_puts("[BOOT] Boot structures ready\n");
-    uefi_serial_puts("[BOOT] TODO: Phase 5 (ExitBootServices, handoff)\n");
     uefi_serial_puts("\n");
     
+    /* PHASE 5: Boot Handoff to Kernel */
+    if (kernel_plan.kernel_entry_point == 0) {
+        uefi_serial_puts("[ERROR] Kernel entry point not available\n");
+        return EFI_LOAD_ERROR;
+    }
+    
+    kernel_entry_fn entry = (kernel_entry_fn)kernel_plan.kernel_entry_point;
+    
+    if (uefi_boot_handoff(SystemTable, kernel_struct, boot_info, entry) != 0) {
+        uefi_serial_puts("[ERROR] Boot handoff failed\n");
+        return EFI_LOAD_ERROR;
+    }
+    
+    /* Should not reach here - kernel should take over */
+    uefi_serial_puts("[ERROR] Returned from kernel (should not happen)\n");
     return EFI_SUCCESS;
 }
