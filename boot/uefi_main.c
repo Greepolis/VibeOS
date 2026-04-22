@@ -5,8 +5,10 @@
 #include "uefi_serial.h"
 #include "uefi_memory.h"
 #include "uefi_firmware.h"
+#include "uefi_pe_loader.h"
 
 #define BOOT_INFO_MAX_REGIONS 32
+#define KERNEL_LOAD_ADDR 0x400000
 
 /* Entry point for UEFI bootloader */
 EFI_STATUS efi_main(EFI_HANDLE ImageHandle __attribute__((unused)), EFI_SYSTEM_TABLE *SystemTable) {
@@ -14,7 +16,8 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle __attribute__((unused)), EFI_SYSTEM_T
     uint64_t memory_count = 0;
     uint64_t acpi_rsdp = 0;
     uint64_t smbios_entry = 0;
-    uint32_t i = 0;
+    uefi_kernel_load_plan_t kernel_plan;
+    const uint8_t *kernel_image = (const uint8_t *)KERNEL_LOAD_ADDR;
     
     if (!SystemTable || !SystemTable->BootServices) {
         return EFI_INVALID_PARAMETER;
@@ -30,7 +33,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle __attribute__((unused)), EFI_SYSTEM_T
     uefi_serial_puts("\n");
     
     /* PHASE 2: Acquire UEFI Memory Map */
-    uefi_serial_puts("[BOOT] === PHASE 2: Memory Discovery ===\n");
+    uefi_serial_puts("[BOOT] === PHASE 2: Memory & Firmware ===\n");
     if (uefi_acquire_memory_map(SystemTable, memory_regions, BOOT_INFO_MAX_REGIONS, &memory_count) != 0) {
         uefi_serial_puts("[ERROR] Failed to acquire UEFI memory map\n");
         return EFI_LOAD_ERROR;
@@ -50,51 +53,50 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle __attribute__((unused)), EFI_SYSTEM_T
     }
     uefi_serial_puts(" regions\n");
     
-    /* Print memory map summary */
-    uint64_t total_bytes = 0;
-    for (i = 0; i < memory_count; i++) {
-        vibeos_memory_region_t *region = &memory_regions[i];
-        const char *type_str = "UNKNOWN";
-        switch (region->type) {
-            case VIBEOS_MEMORY_REGION_USABLE: type_str = "USABLE"; break;
-            case VIBEOS_MEMORY_REGION_RESERVED: type_str = "RESERVED"; break;
-            case VIBEOS_MEMORY_REGION_ACPI_RECLAIMABLE: type_str = "ACPI_RECLM"; break;
-            case VIBEOS_MEMORY_REGION_ACPI_NVS: type_str = "ACPI_NVS"; break;
-            case VIBEOS_MEMORY_REGION_MMIO: type_str = "MMIO"; break;
-        }
-        
-        if (region->type == VIBEOS_MEMORY_REGION_USABLE) {
-            total_bytes += region->length;
-        }
-    }
-    
-    uefi_serial_puts("[BOOT] Total usable memory: ");
-    uefi_serial_puts("(calculation in next phase)\n");
-    
-    /* PHASE 2: Discover Firmware Tables */
-    uefi_serial_puts("\n[BOOT] === PHASE 2: Firmware Tables ===\n");
+    /* Discover Firmware Tables */
     if (uefi_discover_firmware_tables(SystemTable, &acpi_rsdp, &smbios_entry) != 0) {
         uefi_serial_puts("[WARN] Firmware table discovery had issues\n");
     }
     
-    uefi_serial_puts("[BOOT] ACPI RSDP: ");
-    if (acpi_rsdp != 0) {
+    uefi_serial_puts("[BOOT] ACPI/SMBIOS: ");
+    if (acpi_rsdp != 0 && smbios_entry != 0) {
         uefi_serial_puts("found\n");
     } else {
-        uefi_serial_puts("not found\n");
+        uefi_serial_puts("partial/not found\n");
     }
     
-    uefi_serial_puts("[BOOT] SMBIOS: ");
-    if (smbios_entry != 0) {
-        uefi_serial_puts("found\n");
+    /* PHASE 3: Load and Parse Kernel PE32+ */
+    uefi_serial_puts("\n[BOOT] === PHASE 3: Kernel Loading ===\n");
+    
+    /* M2 stub: kernel image expected at hardcoded address after UEFI firmware setup */
+    uefi_serial_puts("[BOOT] Kernel image location: 0x");
+    uint64_t addr = KERNEL_LOAD_ADDR;
+    for (int shift = 32; shift >= 0; shift -= 4) {
+        uint64_t nibble = (addr >> shift) & 0xf;
+        uefi_serial_putc(nibble < 10 ? '0' + nibble : 'a' + nibble - 10);
+    }
+    uefi_serial_puts("\n");
+    
+    /* Attempt to parse kernel PE image */
+    if (uefi_kernel_plan_load(kernel_image, 16 * 1024 * 1024, &kernel_plan) == 0) {
+        uefi_serial_puts("[BOOT] Kernel PE image parsed\n");
+        uefi_serial_puts("[BOOT] Kernel entry point: computed\n");
+        
+        /* Load kernel segments to physical memory */
+        if (uefi_kernel_load_segments(SystemTable, kernel_image, &kernel_plan) == 0) {
+            uefi_serial_puts("[BOOT] Kernel segments loaded to memory\n");
+        } else {
+            uefi_serial_puts("[WARN] Kernel segment loading had issues\n");
+        }
     } else {
-        uefi_serial_puts("not found\n");
+        uefi_serial_puts("[WARN] Kernel PE parsing failed (expected in M2 stub)\n");
+        uefi_serial_puts("[WARN] Continuing to Phase 4 anyway\n");
     }
     
     uefi_serial_puts("\n");
-    uefi_serial_puts("[BOOT] === PHASE 2 COMPLETE ===\n");
-    uefi_serial_puts("[BOOT] Memory and firmware discovery successful\n");
-    uefi_serial_puts("[BOOT] TODO: Phases 3-5 (kernel load, boot_info, handoff)\n");
+    uefi_serial_puts("[BOOT] === PHASE 3 COMPLETE ===\n");
+    uefi_serial_puts("[BOOT] Kernel loading attempted\n");
+    uefi_serial_puts("[BOOT] TODO: Phases 4-5 (boot_info allocation, handoff)\n");
     uefi_serial_puts("\n");
     
     return EFI_SUCCESS;

@@ -135,6 +135,7 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         boot/uefi_serial.c
         boot/uefi_memory.c
         boot/uefi_firmware.c
+        boot/uefi_pe_loader.c
         boot/bootloader_stub.c
     )
     
