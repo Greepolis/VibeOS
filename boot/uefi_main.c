@@ -6,6 +6,7 @@
 #include "uefi_memory.h"
 #include "uefi_firmware.h"
 #include "uefi_pe_loader.h"
+#include "uefi_boot_info.h"
 
 #define BOOT_INFO_MAX_REGIONS 32
 #define KERNEL_LOAD_ADDR 0x400000
@@ -18,6 +19,8 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle __attribute__((unused)), EFI_SYSTEM_T
     uint64_t smbios_entry = 0;
     uefi_kernel_load_plan_t kernel_plan;
     const uint8_t *kernel_image = (const uint8_t *)KERNEL_LOAD_ADDR;
+    vibeos_kernel_t *kernel_struct = NULL;
+    vibeos_boot_info_t *boot_info = NULL;
     
     if (!SystemTable || !SystemTable->BootServices) {
         return EFI_INVALID_PARAMETER;
@@ -96,7 +99,27 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle __attribute__((unused)), EFI_SYSTEM_T
     uefi_serial_puts("\n");
     uefi_serial_puts("[BOOT] === PHASE 3 COMPLETE ===\n");
     uefi_serial_puts("[BOOT] Kernel loading attempted\n");
-    uefi_serial_puts("[BOOT] TODO: Phases 4-5 (boot_info allocation, handoff)\n");
+    uefi_serial_puts("\n");
+    
+    /* PHASE 4: Allocate and Build boot_info */
+    uefi_serial_puts("[BOOT] === PHASE 4: Boot Info Building ===\n");
+    
+    if (uefi_boot_info_allocate(SystemTable, memory_regions, memory_count, 
+                                 acpi_rsdp, smbios_entry, &kernel_plan,
+                                 &kernel_struct, &boot_info) != 0) {
+        uefi_serial_puts("[ERROR] Boot info allocation failed\n");
+        return EFI_LOAD_ERROR;
+    }
+    
+    /* Finalize and validate boot_info */
+    if (uefi_boot_info_finalize(kernel_struct, boot_info) != 0) {
+        uefi_serial_puts("[WARN] Boot info finalization had issues\n");
+    }
+    
+    uefi_serial_puts("\n");
+    uefi_serial_puts("[BOOT] === PHASE 4 COMPLETE ===\n");
+    uefi_serial_puts("[BOOT] Boot structures ready\n");
+    uefi_serial_puts("[BOOT] TODO: Phase 5 (ExitBootServices, handoff)\n");
     uefi_serial_puts("\n");
     
     return EFI_SUCCESS;
