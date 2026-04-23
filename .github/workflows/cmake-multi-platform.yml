@@ -1,0 +1,60 @@
+name: VibeOS CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  build-and-test:
+
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+        build_type: [Debug, Release]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          qemu-system-x86 \
+          ninja-build \
+          build-essential \
+          clang
+
+    - name: Configure CMake
+      run: >
+        cmake -B build
+        -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+        -DCMAKE_C_COMPILER=${{ matrix.compiler }}
+        -DVIBEOS_BUILD_TESTS=ON
+        -DVIBEOS_BUILD_KERNEL_IMAGE=ON
+        -S .
+
+    - name: Build
+      run: cmake --build build --parallel
+
+    - name: Run host-side tests
+      run: ctest --test-dir build --output-on-failure
+
+    - name: Build boot artifacts
+      run: |
+        cmake --build build --target vibeos_image
+
+    - name: QEMU smoke boot test
+      timeout-minutes: 2
+      run: |
+        timeout 20s qemu-system-x86_64 \
+          -kernel build/artifacts/vibeos_kernel.elf \
+          -nographic \
+          -serial stdio \
+          | tee qemu.log || true
+
+        grep -E "Kernel initialized|panic-free boot|scheduler online" qemu.log
