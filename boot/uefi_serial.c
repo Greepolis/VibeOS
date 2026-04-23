@@ -72,6 +72,9 @@ int uefi_serial_printf(const char *fmt, ...) {
     char buffer[SERIAL_BUFFER_SIZE];
     va_list args;
     
+    (void)buffer;  /* Suppress unused variable warning */
+    (void)args;
+    
     if (!fmt) {
         return -1;
     }

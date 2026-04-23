@@ -162,6 +162,7 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
     target_link_options(vibeos_bootloader_uefi PRIVATE
         -nostdlib                       # No standard library
         -Wl,--entry=efi_main           # Entry point (will be PE entry when using UEFI toolchain)
+        -lc                             # Link libc for string functions (memcpy, etc.)
     )
     
     # Copy bootloader to artifacts directory
