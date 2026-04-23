@@ -59,6 +59,7 @@ $qemuArgs = @(
     "-cpu", "host",
     "-enable-kvm",  # Use hardware acceleration if available; will be ignored on non-KVM systems
     "-nographic",
+    "-monitor", "none",           # Disable QEMU monitor (prevents stdio conflicts)
     "-serial", "file:${SerialLog}",
     "-kernel", $imagePath,
     "-append", "console=ttyS0",
