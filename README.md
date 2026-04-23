@@ -1,6 +1,17 @@
 # VibeOS
 
-VibeOS is a from-scratch operating system research and engineering project focused on four primary goals:
+**VibeOS** is an AI-driven operating system research and engineering project that leverages artificial intelligence to accelerate the design, implementation, and validation of a modern from-scratch OS. By combining human expertise with AI assistance, we're building a high-performance, secure, and modular operating system from the ground up.
+
+## Vision
+
+We aim to demonstrate how AI can be effectively used to:
+- Accelerate OS design and architecture decisions
+- Generate and validate implementation code
+- Identify edge cases and security concerns early
+- Optimize performance-critical components
+- Maintain code quality and consistency at scale
+
+## Primary Goals
 
 - high performance on modern multi-core hardware
 - security-first isolation and hardening
@@ -36,6 +47,17 @@ VibeOS adopts a hybrid microkernel-inspired modular architecture:
 - drivers, filesystems, compatibility services, and high-risk components are biased toward user space
 
 This balances performance, fault isolation, portability, and long-term compatibility goals better than a classic monolithic design.
+
+## Contributing
+
+We welcome contributions from the community! Whether you're interested in:
+- Operating system design and architecture
+- Kernel implementation
+- AI-assisted development techniques
+- Testing and validation
+- Documentation and research
+
+...please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to get involved.
 
 ## Current phase
 
