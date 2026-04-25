@@ -9,6 +9,7 @@ Last review: 2026-04-25
 - Boot event signaling and serial boot markers (`BOOT_OK`) for smoke validation.
 - Kernel object containers wired in `include/vibeos/kernel.h`.
 - Security/policy subsystem initialization path integrated in core startup.
+- Host-safe x86_64 serial backend behavior: privileged port I/O is now gated by CPL detection to avoid user-mode `SIGILL` in CI host tests while preserving ring0 boot logging.
 
 ## Pending
 - Stronger failure-mode recovery between bring-up phases.
