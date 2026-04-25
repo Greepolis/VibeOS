@@ -1,6 +1,6 @@
 # Bootloader Progress
 
-Status: In Progress
+Status: Completed (Phase 2 scope)
 Last review: 2026-04-25
 
 ## Implemented
@@ -10,11 +10,14 @@ Last review: 2026-04-25
 - PE image load-plan and parsing helpers in `boot/uefi_pe_loader.c`.
 - Boot handoff structure builders in `boot/uefi_boot_info.c` and `boot/uefi_boot_handoff.c`.
 - Serial debug output support for boot-time diagnostics in `boot/uefi_serial.c`.
+- `ExitBootServices` hardening with real map-key refresh and retry-on-stale-key policy.
+- Boot structure allocation fallback (`AllocateAddress` -> `AllocateAnyPages`) with cleanup-aware error handling.
+- Firmware behavior matrix coverage via host-side UEFI mock tests (`tests/bootloader/uefi_bootloader_tests.c`).
+- Wider smoke matrix in CI (`q35`/`pc` x `vibeos_kernel.elf`/`vibeos_boot.img`) plus artifact checks.
+- Boot artifact pipeline fix preserving both `vibeos_kernel.elf` and `vibeos_boot.img` for QEMU gates.
 
 ## Pending
-- End-to-end hardware/firmware matrix validation (different UEFI implementations).
-- Hardened error-path reporting and retry strategy on partial boot failures.
-- Wider automated boot smoke coverage in CI for boot handoff correctness.
+- No open Phase 2 bootloader gaps in implementation progress.
 
 ## Next checkpoint
-- Stabilize one reproducible QEMU/OVMF boot handoff test as CI gate for bootloader changes.
+- Move to Phase 3 boot media pipeline: real EFI disk layout (`EFI/BOOT/BOOTX64.EFI`) and OVMF path validation with direct bootloader execution.

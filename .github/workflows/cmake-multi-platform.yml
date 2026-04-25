@@ -54,15 +54,28 @@ jobs:
         timeout-minutes: 2
         run: |
           set -euo pipefail
-          timeout 20s qemu-system-x86_64 \
-            -kernel build/artifacts/vibeos_kernel.elf \
-            -display none \
-            -monitor none \
-            -serial file:qemu-serial.log \
-            -no-reboot \
-            -no-shutdown || true
+          for image in vibeos_kernel.elf vibeos_boot.img; do
+            artifact_path="build/artifacts/${image}"
+            test -f "$artifact_path"
+          done
 
-          grep -E "BOOT_OK|Kernel initialized|scheduler online" qemu-serial.log
+          for machine in q35 pc; do
+            for image in vibeos_kernel.elf vibeos_boot.img; do
+              artifact_path="build/artifacts/${image}"
+              log_file="qemu-serial-${machine}-${image}.log"
+
+              timeout 20s qemu-system-x86_64 \
+                -machine "${machine}" \
+                -kernel "${artifact_path}" \
+                -display none \
+                -monitor none \
+                -serial "file:${log_file}" \
+                -no-reboot \
+                -no-shutdown || true
+
+              grep -E "BOOT_OK|Kernel initialized|scheduler online" "${log_file}"
+            done
+          done
 
       - name: Upload Linux Artifacts
         if: always()
@@ -72,7 +85,7 @@ jobs:
           path: |
             build/artifacts/**
             build/Testing/**/Test.xml
-            qemu-serial.log
+            qemu-serial-*.log
           if-no-files-found: warn
 
   windows-build-test:

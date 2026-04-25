@@ -26,6 +26,11 @@ typedef EFI_STATUS (*EFI_ALLOCATE_PAGES)(
     uint64_t *Memory
 );
 
+typedef EFI_STATUS (*EFI_FREE_PAGES)(
+    uint64_t Memory,
+    size_t Pages
+);
+
 typedef EFI_STATUS (*EFI_EXIT_BOOT_SERVICES)(
     EFI_HANDLE ImageHandle,
     size_t MapKey
@@ -44,7 +49,7 @@ typedef EFI_STATUS (*EFI_LOCATE_PROTOCOL)(
 typedef struct {
     EFI_GET_MEMORY_MAP GetMemoryMap;
     EFI_ALLOCATE_PAGES AllocatePages;
-    void *FreePages;
+    EFI_FREE_PAGES FreePages;
     void *AllocatePool;
     void *FreePool;
     void *CreateEvent;

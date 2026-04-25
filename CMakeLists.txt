@@ -87,11 +87,33 @@ target_compile_options(vibeos_user_core PRIVATE
 )
 
 if(VIBEOS_BUILD_TESTS)
+    enable_testing()
+
     add_executable(vibeos_kernel_tests
         tests/kernel/kernel_tests.c
     )
     target_link_libraries(vibeos_kernel_tests PRIVATE vibeos_kernel_core vibeos_user_core)
     target_include_directories(vibeos_kernel_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    add_test(NAME vibeos-kernel-host COMMAND vibeos_kernel_tests)
+
+    add_executable(vibeos_bootloader_tests
+        tests/bootloader/uefi_bootloader_tests.c
+        boot/bootloader_stub.c
+        boot/uefi_memory.c
+        boot/uefi_boot_info.c
+        boot/uefi_boot_handoff.c
+        boot/uefi_firmware.c
+    )
+    target_include_directories(vibeos_bootloader_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/boot
+    )
+    target_compile_options(vibeos_bootloader_tests PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+    )
+    add_test(NAME vibeos-bootloader-host COMMAND vibeos_bootloader_tests)
 endif()
 
 # Image and boot artifact generation

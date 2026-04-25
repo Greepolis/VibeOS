@@ -11,9 +11,19 @@
 
 #define BOOT_INFO_MAX_REGIONS 32
 #define KERNEL_LOAD_ADDR 0x400000
+#define MEMORY_MAP_MAX_ATTEMPTS 3u
+#define KERNEL_PLAN_MAX_ATTEMPTS 2u
+
+static void uefi_log_u64(uint64_t value) {
+    int shift;
+    for (shift = 60; shift >= 0; shift -= 4) {
+        uint64_t nibble = (value >> (uint32_t)shift) & 0xf;
+        uefi_serial_putc((int)(nibble < 10 ? ('0' + nibble) : ('a' + nibble - 10)));
+    }
+}
 
 /* Entry point for UEFI bootloader */
-EFI_STATUS efi_main(EFI_HANDLE ImageHandle __attribute__((unused)), EFI_SYSTEM_TABLE *SystemTable) {
+EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     vibeos_memory_region_t memory_regions[BOOT_INFO_MAX_REGIONS];
     uint64_t memory_count = 0;
     uint64_t acpi_rsdp = 0;
@@ -38,22 +48,38 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle __attribute__((unused)), EFI_SYSTEM_T
     
     /* PHASE 2: Acquire UEFI Memory Map */
     uefi_serial_puts("[BOOT] === PHASE 2: Memory & Firmware ===\n");
-    if (uefi_acquire_memory_map(SystemTable, memory_regions, BOOT_INFO_MAX_REGIONS, &memory_count) != 0) {
-        uefi_serial_puts("[ERROR] Failed to acquire UEFI memory map\n");
-        return EFI_LOAD_ERROR;
+    {
+        uint32_t attempt;
+        int memory_map_ok = -1;
+        for (attempt = 0; attempt < MEMORY_MAP_MAX_ATTEMPTS; attempt++) {
+            memory_map_ok = uefi_acquire_memory_map(SystemTable, memory_regions, BOOT_INFO_MAX_REGIONS, &memory_count);
+            if (memory_map_ok == 0) {
+                break;
+            }
+            uefi_serial_puts("[WARN] Memory map acquisition failed, retrying\n");
+        }
+        if (memory_map_ok != 0) {
+            uefi_serial_puts("[ERROR] Failed to acquire UEFI memory map\n");
+            return EFI_LOAD_ERROR;
+        }
     }
     
     uefi_serial_puts("[BOOT] Memory regions acquired: ");
-    char count_str[16];
-    int j = 0;
-    uint64_t temp = memory_count;
-    while (temp > 0) {
-        count_str[j++] = '0' + (temp % 10);
-        temp /= 10;
-    }
-    count_str[j] = '\0';
-    for (int k = j - 1; k >= 0; k--) {
-        uefi_serial_putc(count_str[k]);
+    {
+        char count_str[24];
+        int j = 0;
+        uint64_t temp = memory_count;
+        if (temp == 0) {
+            count_str[j++] = '0';
+        }
+        while (temp > 0 && j < (int)(sizeof(count_str) - 1u)) {
+            count_str[j++] = (char)('0' + (temp % 10u));
+            temp /= 10u;
+        }
+        while (j > 0) {
+            j--;
+            uefi_serial_putc(count_str[j]);
+        }
     }
     uefi_serial_puts(" regions\n");
     
@@ -74,15 +100,28 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle __attribute__((unused)), EFI_SYSTEM_T
     
     /* M2 stub: kernel image expected at hardcoded address after UEFI firmware setup */
     uefi_serial_puts("[BOOT] Kernel image location: 0x");
-    uint64_t addr = KERNEL_LOAD_ADDR;
-    for (int shift = 32; shift >= 0; shift -= 4) {
-        uint64_t nibble = (addr >> shift) & 0xf;
-        uefi_serial_putc(nibble < 10 ? '0' + nibble : 'a' + nibble - 10);
-    }
+    uefi_log_u64((uint64_t)KERNEL_LOAD_ADDR);
     uefi_serial_puts("\n");
     
     /* Attempt to parse kernel PE image */
-    if (uefi_kernel_plan_load(kernel_image, 16 * 1024 * 1024, &kernel_plan) == 0) {
+    {
+        const uint64_t parse_windows[KERNEL_PLAN_MAX_ATTEMPTS] = {
+            16ull * 1024ull * 1024ull,
+            4ull * 1024ull * 1024ull
+        };
+        uint32_t attempt;
+        int plan_ok = -1;
+        for (attempt = 0; attempt < KERNEL_PLAN_MAX_ATTEMPTS; attempt++) {
+            plan_ok = uefi_kernel_plan_load(kernel_image, parse_windows[attempt], &kernel_plan);
+            if (plan_ok == 0) {
+                break;
+            }
+            uefi_serial_puts("[WARN] Kernel PE parsing attempt failed, trying fallback window\n");
+        }
+        if (plan_ok != 0) {
+            uefi_serial_puts("[WARN] Kernel PE parsing failed (expected in M2 stub)\n");
+            uefi_serial_puts("[WARN] Continuing to Phase 4 anyway\n");
+        } else {
         uefi_serial_puts("[BOOT] Kernel PE image parsed\n");
         uefi_serial_puts("[BOOT] Kernel entry point: computed\n");
         
@@ -92,9 +131,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle __attribute__((unused)), EFI_SYSTEM_T
         } else {
             uefi_serial_puts("[WARN] Kernel segment loading had issues\n");
         }
-    } else {
-        uefi_serial_puts("[WARN] Kernel PE parsing failed (expected in M2 stub)\n");
-        uefi_serial_puts("[WARN] Continuing to Phase 4 anyway\n");
+        }
     }
     
     uefi_serial_puts("\n");
@@ -130,7 +167,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle __attribute__((unused)), EFI_SYSTEM_T
     
     kernel_entry_fn entry = (kernel_entry_fn)kernel_plan.kernel_entry_point;
     
-    if (uefi_boot_handoff(SystemTable, kernel_struct, boot_info, entry) != 0) {
+    if (uefi_boot_handoff(SystemTable, ImageHandle, kernel_struct, boot_info, entry) != 0) {
         uefi_serial_puts("[ERROR] Boot handoff failed\n");
         return EFI_LOAD_ERROR;
     }

@@ -177,9 +177,19 @@ try {
         # Step 3: Run host tests (if not skipped)
         if (-not $SkipTests) {
             Write-Host "[TEST] Running host-side kernel tests..."
-            & ".\$BuildDir\vibeos_kernel_tests.exe" | Tee-Object -FilePath $logPath -Append
-            if ($LASTEXITCODE -ne 0) {
-                throw "kernel tests returned non-zero exit code"
+            $hostTests = @(
+                (Join-Path $BuildDir "vibeos_kernel_tests.exe"),
+                (Join-Path $BuildDir "vibeos_bootloader_tests.exe")
+            )
+            foreach ($testExe in $hostTests) {
+                if (-not (Test-Path $testExe)) {
+                    throw "missing expected host test executable: $testExe"
+                }
+                Write-Host "[TEST] Executing $testExe"
+                & $testExe | Tee-Object -FilePath $logPath -Append
+                if ($LASTEXITCODE -ne 0) {
+                    throw ("host test executable returned non-zero exit code: {0}" -f $testExe)
+                }
             }
         }
         

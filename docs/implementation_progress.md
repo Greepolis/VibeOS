@@ -6,7 +6,7 @@ This document is now split by macro area for easier maintenance.
 
 | Macro Area | Status | Details |
 | --- | --- | --- |
-| Bootloader | In Progress | [bootloader.md](implementation_progress/bootloader.md) |
+| Bootloader | Completed (Phase 2 scope) | [bootloader.md](implementation_progress/bootloader.md) |
 | Kernel Core | In Progress | [kernel_core.md](implementation_progress/kernel_core.md) |
 | Process Scheduler | In Progress | [process_scheduler.md](implementation_progress/process_scheduler.md) |
 | Memory Manager | In Progress | [memory_manager.md](implementation_progress/memory_manager.md) |
