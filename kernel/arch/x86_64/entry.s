@@ -1,6 +1,12 @@
+# x86_64 kernel entry point for QEMU q35
+# 
 # Multiboot2 header for QEMU direct kernel loading
-.section .multiboot_header, "a"
+# Must be within first 32KB of executable
+.section .text
 .align 8
+
+# Multiboot2 header
+.global multiboot2_header
 multiboot2_header:
     # Multiboot2 magic number
     .long 0xE85250D6
@@ -8,15 +14,14 @@ multiboot2_header:
     # Architecture (0 = i386)
     .long 0
     
-    # Header length
+    # Header length (must be 8-byte aligned)
     .long (multiboot2_header_end - multiboot2_header)
     
     # Checksum: -(magic + architecture + header_length)
     # Calculated to make sum of all fields = 0
     .long -(0xE85250D6 + 0 + (multiboot2_header_end - multiboot2_header))
     
-    # Optional tags would go here
-    # For now, just the end tag
+    # Optional tags would go here (none for basic boot)
     
     # End tag (type=0, flags=0, size=8)
     .short 0    # type=0 (end tag)
@@ -24,17 +29,15 @@ multiboot2_header:
     .long 8     # size=8
 multiboot2_header_end:
 
-.section .text
-.global _start
 .align 4
 
-# x86_64 kernel entry point for QEMU q35
 # Bootloader/QEMU sets up:
 #   RDI = vibeos_kernel_t *kernel (or 0 if QEMU)
 #   RSI = const vibeos_boot_info_t *boot_info (or 0 if QEMU)
 # Stack and data are set up by bootloader/QEMU
 # This entry point initializes the kernel
 
+.global _start
 _start:
     # Set up stack using RIP-relative addressing (for 64-bit position independence)
     lea stack_top(%rip), %rsp
