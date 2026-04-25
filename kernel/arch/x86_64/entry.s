@@ -36,8 +36,8 @@ multiboot2_header_end:
 # This entry point initializes the kernel
 
 _start:
-    # Set up stack first (before any function calls)
-    mov $stack_top, %rsp
+    # Set up stack using RIP-relative addressing (for 64-bit position independence)
+    lea stack_top(%rip), %rsp
     
     # Align stack to 16 bytes as required by System V AMD64 ABI
     and $~15, %rsp
