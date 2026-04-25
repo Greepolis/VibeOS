@@ -5,12 +5,19 @@ on:
     branches: ["main"]
   pull_request:
     branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vibeos-ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build-and-test:
-
+  linux-build-test:
+    name: Linux ${{ matrix.compiler }} / ${{ matrix.build_type }}
     runs-on: ubuntu-latest
-
     strategy:
       fail-fast: false
       matrix:
@@ -18,43 +25,75 @@ jobs:
         build_type: [Debug, Release]
 
     steps:
-    - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          qemu-system-x86 \
-          ninja-build \
-          build-essential \
-          clang
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 ninja-build build-essential clang
 
-    - name: Configure CMake
-      run: >
-        cmake -B build
-        -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
-        -DCMAKE_C_COMPILER=${{ matrix.compiler }}
-        -DVIBEOS_BUILD_TESTS=ON
-        -DVIBEOS_BUILD_KERNEL_IMAGE=ON
-        -S .
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DCMAKE_C_COMPILER=${{ matrix.compiler }}
+          -DVIBEOS_BUILD_TESTS=ON
+          -DVIBEOS_BUILD_KERNEL_IMAGE=ON
 
-    - name: Build
-      run: cmake --build build --parallel
+      - name: Build
+        run: cmake --build build --parallel
 
-    - name: Run host-side tests
-      run: ctest --test-dir build --output-on-failure
+      - name: Run Host Tests
+        run: ctest --test-dir build --output-on-failure
 
-    - name: Build boot artifacts
-      run: |
-        cmake --build build --target vibeos_image
+      - name: Build Boot Artifacts
+        run: cmake --build build --target vibeos_image
 
-    - name: QEMU smoke boot test
-      timeout-minutes: 2
-      run: |
-        timeout 20s qemu-system-x86_64 \
-          -kernel build/artifacts/vibeos_kernel.elf \
-          -nographic \
-          -serial stdio \
-          | tee qemu.log || true
+      - name: QEMU Smoke Boot
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          timeout 20s qemu-system-x86_64 \
+            -kernel build/artifacts/vibeos_kernel.elf \
+            -display none \
+            -monitor none \
+            -serial file:qemu-serial.log \
+            -no-reboot \
+            -no-shutdown || true
 
-        grep -E "Kernel initialized|panic-free boot|scheduler online" qemu.log
+          grep -E "BOOT_OK|Kernel initialized|scheduler online" qemu-serial.log
+
+      - name: Upload Linux Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.compiler }}-${{ matrix.build_type }}-artifacts
+          path: |
+            build/artifacts/**
+            build/Testing/**/Test.xml
+            qemu-serial.log
+          if-no-files-found: warn
+
+  windows-build-test:
+    name: Windows Host Tests
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run PowerShell Test Pipeline
+        shell: pwsh
+        run: |
+          ./scripts/run-tests.ps1 -BuildDir build -Generator Ninja -Profile ci
+
+      - name: Upload Windows Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-host-artifacts
+          path: |
+            artifacts/**
+            build/artifacts/**
+          if-no-files-found: warn
