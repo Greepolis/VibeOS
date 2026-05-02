@@ -1551,10 +1551,14 @@ static int test_bootloader_firmware_tags_and_pe_plan(void) {
     vibeos_firmware_tag_t tags[4];
     vibeos_boot_image_plan_t plan;
     uint8_t image[1024];
+    uint8_t elf_image[512];
+    uint8_t elf_invalid[512];
     memset(&boot_info, 0, sizeof(boot_info));
     memset(tags, 0, sizeof(tags));
     memset(&plan, 0, sizeof(plan));
     memset(image, 0, sizeof(image));
+    memset(elf_image, 0, sizeof(elf_image));
+    memset(elf_invalid, 0, sizeof(elf_invalid));
 
     regions[0].base = 0x100000;
     regions[0].length = 0x800000;
@@ -1631,6 +1635,55 @@ static int test_bootloader_firmware_tags_and_pe_plan(void) {
         return -1;
     }
     if ((plan.segments[0].flags & VIBEOS_BOOT_IMAGE_SEGMENT_EXEC) == 0 || (plan.segments[0].flags & VIBEOS_BOOT_IMAGE_SEGMENT_READ) == 0) {
+        return -1;
+    }
+
+    elf_image[0] = 0x7f;
+    elf_image[1] = 'E';
+    elf_image[2] = 'L';
+    elf_image[3] = 'F';
+    elf_image[4] = 2;
+    elf_image[5] = 1;
+    elf_image[6] = 1;
+    elf_image[16] = 0x02;
+    elf_image[18] = 0x3e;
+    elf_image[20] = 0x01;
+    elf_image[24] = 0x00;
+    elf_image[25] = 0x10;
+    elf_image[26] = 0x40;
+    elf_image[32] = 0x40;
+    elf_image[54] = 0x38;
+    elf_image[56] = 0x01;
+    elf_image[64] = 0x01;
+    elf_image[68] = 0x05;
+    elf_image[72] = 0x00;
+    elf_image[73] = 0x01;
+    elf_image[80] = 0x00;
+    elf_image[81] = 0x10;
+    elf_image[82] = 0x40;
+    elf_image[88] = 0x00;
+    elf_image[89] = 0x10;
+    elf_image[90] = 0x40;
+    elf_image[96] = 0x20;
+    elf_image[104] = 0x40;
+
+    if (vibeos_bootloader_plan_elf_image(elf_image, sizeof(elf_image), &plan) != 0) {
+        return -1;
+    }
+    if (plan.segment_count != 1 || plan.entry_point != 0x401000ull || plan.image_base != 0x401000ull) {
+        return -1;
+    }
+    if (plan.segments[0].file_offset != 0x100ull || plan.segments[0].file_size != 0x20ull || plan.segments[0].mem_size != 0x40ull) {
+        return -1;
+    }
+    if ((plan.segments[0].flags & VIBEOS_BOOT_IMAGE_SEGMENT_EXEC) == 0 || (plan.segments[0].flags & VIBEOS_BOOT_IMAGE_SEGMENT_READ) == 0) {
+        return -1;
+    }
+
+    memcpy(elf_invalid, elf_image, sizeof(elf_invalid));
+    elf_invalid[104] = 0x10;
+    elf_invalid[105] = 0x00;
+    if (vibeos_bootloader_plan_elf_image(elf_invalid, sizeof(elf_invalid), &plan) == 0) {
         return -1;
     }
     return 0;

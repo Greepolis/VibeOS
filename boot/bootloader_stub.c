@@ -452,6 +452,103 @@ int vibeos_bootloader_apply_firmware_tags(vibeos_boot_info_t *boot_info, const v
     return vibeos_bootloader_validate_boot_info(boot_info);
 }
 
+int vibeos_bootloader_plan_elf_image(const uint8_t *image, uint64_t image_size, vibeos_boot_image_plan_t *out_plan) {
+    uint64_t ph_offset;
+    uint16_t ph_entry_size;
+    uint16_t ph_count;
+    uint64_t image_base = UINT64_MAX;
+    uint64_t i;
+
+    if (!image || !out_plan || image_size < 64u) {
+        return -1;
+    }
+    if (image[0] != 0x7fu || image[1] != 'E' || image[2] != 'L' || image[3] != 'F') {
+        return -1;
+    }
+    if (image[4] != 2u || image[5] != 1u || image[6] != 1u) {
+        return -1;
+    }
+    ph_offset = read_le64(&image[32]);
+    ph_entry_size = read_le16(&image[54]);
+    ph_count = read_le16(&image[56]);
+    if (ph_entry_size < 56u || ph_count == 0u || ph_count > VIBEOS_BOOT_IMAGE_MAX_SEGMENTS) {
+        return -1;
+    }
+    if (ph_offset > image_size) {
+        return -1;
+    }
+    if ((uint64_t)ph_entry_size > 0 && (uint64_t)ph_count > (UINT64_MAX / (uint64_t)ph_entry_size)) {
+        return -1;
+    }
+    if (ph_offset + ((uint64_t)ph_entry_size * (uint64_t)ph_count) > image_size) {
+        return -1;
+    }
+
+    out_plan->entry_point = read_le64(&image[24]);
+    out_plan->segment_count = 0;
+    out_plan->image_base = 0;
+
+    for (i = 0; i < ph_count; i++) {
+        uint64_t ph = ph_offset + ((uint64_t)i * (uint64_t)ph_entry_size);
+        uint32_t p_type = read_le32(&image[ph]);
+        uint32_t p_flags = read_le32(&image[ph + 4]);
+        uint64_t p_offset = read_le64(&image[ph + 8]);
+        uint64_t p_vaddr = read_le64(&image[ph + 16]);
+        uint64_t p_paddr = read_le64(&image[ph + 24]);
+        uint64_t p_filesz = read_le64(&image[ph + 32]);
+        uint64_t p_memsz = read_le64(&image[ph + 40]);
+        uint64_t file_end = 0;
+        uint64_t load_addr;
+        vibeos_boot_image_segment_t *seg;
+
+        if (p_type != 1u || p_memsz == 0) {
+            continue;
+        }
+        if (p_filesz > p_memsz) {
+            return -1;
+        }
+        if (p_filesz > 0) {
+            if (range_end(p_offset, p_filesz, &file_end) != 0) {
+                return -1;
+            }
+            if (file_end > image_size) {
+                return -1;
+            }
+        }
+        if (out_plan->segment_count >= VIBEOS_BOOT_IMAGE_MAX_SEGMENTS) {
+            return -1;
+        }
+
+        load_addr = (p_paddr != 0u) ? p_paddr : p_vaddr;
+        seg = &out_plan->segments[out_plan->segment_count++];
+        seg->file_offset = p_offset;
+        seg->image_address = load_addr;
+        seg->file_size = p_filesz;
+        seg->mem_size = p_memsz;
+        seg->flags = 0;
+
+        if ((p_flags & 0x4u) != 0) {
+            seg->flags |= VIBEOS_BOOT_IMAGE_SEGMENT_READ;
+        }
+        if ((p_flags & 0x2u) != 0) {
+            seg->flags |= VIBEOS_BOOT_IMAGE_SEGMENT_WRITE;
+        }
+        if ((p_flags & 0x1u) != 0) {
+            seg->flags |= VIBEOS_BOOT_IMAGE_SEGMENT_EXEC;
+        }
+
+        if (load_addr < image_base) {
+            image_base = load_addr;
+        }
+    }
+
+    if (out_plan->segment_count == 0) {
+        return -1;
+    }
+    out_plan->image_base = (image_base == UINT64_MAX) ? 0 : image_base;
+    return 0;
+}
+
 int vibeos_bootloader_plan_pe_image(const uint8_t *image, uint64_t image_size, vibeos_boot_image_plan_t *out_plan) {
     uint32_t pe_offset;
     uint16_t num_sections;

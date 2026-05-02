@@ -3,7 +3,7 @@
 
 int uefi_kernel_plan_load(const uint8_t *kernel_image, uint64_t image_size, 
                            uefi_kernel_load_plan_t *out_plan) {
-    vibeos_boot_image_plan_t pe_plan;
+    vibeos_boot_image_plan_t image_plan;
     uint32_t i;
     
     if (!kernel_image || !out_plan || image_size == 0) {
@@ -11,26 +11,30 @@ int uefi_kernel_plan_load(const uint8_t *kernel_image, uint64_t image_size,
         return -1;
     }
     
-    uefi_serial_puts("[BOOT] Parsing kernel PE32+ image...\n");
-    
-    /* Use bootloader helper to parse PE image */
-    if (vibeos_bootloader_plan_pe_image(kernel_image, image_size, &pe_plan) != 0) {
-        uefi_serial_puts("[ERROR] PE image parsing failed\n");
-        return -1;
+    uefi_serial_puts("[BOOT] Parsing kernel image (ELF64 primary, PE32+ fallback)...\n");
+
+    if (vibeos_bootloader_plan_elf_image(kernel_image, image_size, &image_plan) == 0) {
+        uefi_serial_puts("[BOOT] Kernel ELF64 image parsed successfully\n");
+    } else {
+        uefi_serial_puts("[WARN] ELF64 parse failed, trying PE32+ fallback\n");
+        if (vibeos_bootloader_plan_pe_image(kernel_image, image_size, &image_plan) != 0) {
+            uefi_serial_puts("[ERROR] Kernel image parsing failed for both ELF64 and PE32+\n");
+            return -1;
+        }
+        uefi_serial_puts("[BOOT] Kernel PE32+ fallback parsed successfully\n");
     }
-    
-    uefi_serial_puts("[BOOT] PE image parsed successfully\n");
+
     uefi_serial_puts("[BOOT] Kernel entry point: parsed\n");
     uefi_serial_puts("[BOOT] Kernel image base: computed\n");
     uefi_serial_puts("[BOOT] Segments: parsed\n");
     
-    out_plan->kernel_entry_point = pe_plan.entry_point;
-    out_plan->kernel_image_base = pe_plan.image_base;
-    out_plan->segment_count = pe_plan.segment_count;
+    out_plan->kernel_entry_point = image_plan.entry_point;
+    out_plan->kernel_image_base = image_plan.image_base;
+    out_plan->segment_count = image_plan.segment_count;
     
     /* Copy segments */
-    for (i = 0; i < pe_plan.segment_count && i < VIBEOS_BOOT_IMAGE_MAX_SEGMENTS; i++) {
-        out_plan->segments[i] = pe_plan.segments[i];
+    for (i = 0; i < image_plan.segment_count && i < VIBEOS_BOOT_IMAGE_MAX_SEGMENTS; i++) {
+        out_plan->segments[i] = image_plan.segments[i];
     }
     
     return 0;

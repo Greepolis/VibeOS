@@ -52,6 +52,7 @@ int vibeos_bootloader_set_framebuffer(vibeos_boot_info_t *boot_info, uint64_t fr
 int vibeos_bootloader_find_region_type_for_range(const vibeos_boot_info_t *boot_info, uint64_t base, uint64_t size, uint32_t *out_region_type);
 int vibeos_bootloader_extract_firmware_tags(const vibeos_firmware_tag_t *tags, uint32_t tag_count, uint64_t *out_acpi_rsdp, uint64_t *out_smbios_entry, uint32_t *out_secure_boot, uint32_t *out_measured_boot);
 int vibeos_bootloader_apply_firmware_tags(vibeos_boot_info_t *boot_info, const vibeos_firmware_tag_t *tags, uint32_t tag_count);
+int vibeos_bootloader_plan_elf_image(const uint8_t *image, uint64_t image_size, vibeos_boot_image_plan_t *out_plan);
 int vibeos_bootloader_plan_pe_image(const uint8_t *image, uint64_t image_size, vibeos_boot_image_plan_t *out_plan);
 
 #endif

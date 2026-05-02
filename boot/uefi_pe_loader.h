@@ -5,7 +5,7 @@
 #include "uefi_boot.h"
 #include "uefi_protocol.h"
 
-/* PE32+ kernel image loading and parsing */
+/* Kernel image loading and parsing (ELF64 primary, PE32+ fallback). */
 
 typedef struct {
     uint64_t kernel_entry_point;
@@ -14,7 +14,7 @@ typedef struct {
     vibeos_boot_image_segment_t segments[VIBEOS_BOOT_IMAGE_MAX_SEGMENTS];
 } uefi_kernel_load_plan_t;
 
-/* Load kernel image from memory buffer and parse PE format */
+/* Load kernel image from memory buffer and parse supported format. */
 int uefi_kernel_plan_load(const uint8_t *kernel_image, uint64_t image_size, 
                            uefi_kernel_load_plan_t *out_plan);
 
