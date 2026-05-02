@@ -14,11 +14,17 @@
 static int g_serial_io_available = -1;
 
 static int vibeos_x86_64_detect_io_privilege(void) {
-    uint16_t cs = 0;
+    unsigned long cs = 0;
 #if defined(__x86_64__) || defined(__i386__)
-    __asm__ volatile("mov %%cs, %0" : "=r"(cs));
+    /* Read CS register to detect privilege level.
+     * In kernel mode (ring 0), CS & 0x3 == 0
+     * Use constraint "=&r" (early clobber) to prevent optimization issues.
+     * We use 'unsigned long' to match register size on both 32/64-bit.
+     */
+    __asm__ __volatile__("mov %%cs, %0" : "=&r"(cs) : : "memory");
     return ((cs & 0x3u) == 0u) ? 1 : 0;
 #else
+    /* Non-x86 platforms: assume no I/O privilege (fail safe) */
     return 0;
 #endif
 }
