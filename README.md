@@ -23,6 +23,8 @@ The repository is in active implementation mode with host-side validation and bo
 cmake -S . -B build -DVIBEOS_BUILD_TESTS=ON -DVIBEOS_BUILD_KERNEL_IMAGE=ON
 cmake --build build
 powershell -ExecutionPolicy Bypass -File scripts\run-tests.ps1 -BuildDir build -Generator Ninja -Profile agent
+# Optional OVMF smoke (if QEMU+OVMF firmware are available on host):
+powershell -ExecutionPolicy Bypass -File scripts\run-qemu-ovmf.ps1 -BuildDir build -ExpectToken BOOT_OK
 ```
 
 ### Linux/WSL
@@ -31,10 +33,15 @@ powershell -ExecutionPolicy Bypass -File scripts\run-tests.ps1 -BuildDir build -
 cmake -S . -B build -G Ninja -DVIBEOS_BUILD_TESTS=ON -DVIBEOS_BUILD_KERNEL_IMAGE=ON
 cmake --build build
 ctest --test-dir build --output-on-failure
+# Required UEFI smoke gate (boots EFI/BOOT/BOOTX64.EFI from artifacts/efi_root):
+./scripts/qemu-smoke-ovmf-linux.sh build "BOOT_OK"
+# Informational direct-loader probe:
 ./scripts/qemu-smoke-linux.sh build
 ```
 
-Note: `qemu-system-x86_64 -kernel` has known compatibility limits with ELF64/Multiboot2 images in newer QEMU builds. The Linux smoke probe classifies these loader-side incompatibilities separately from real boot regressions.
+Notes:
+- CI uses dual boot gates: host tests + OVMF smoke are required, direct-loader probe is informational.
+- `qemu-system-x86_64 -kernel` has known compatibility limits with ELF64/Multiboot2 images in newer QEMU builds. The direct-loader probe classifies these loader-side incompatibilities separately from real boot regressions.
 
 ## Project Structure
 
