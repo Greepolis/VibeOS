@@ -26,6 +26,17 @@ $suite = "kernel-core-host"
 $gitRevision = "unknown"
 $toolchainInfo = @{}
 
+function Test-IsCMakeBuildDirectory {
+    param(
+        [string]$Dir
+    )
+    if (-not (Test-Path -LiteralPath $Dir)) {
+        return $false
+    }
+    $cachePath = Join-Path $Dir "CMakeCache.txt"
+    return (Test-Path -LiteralPath $cachePath)
+}
+
 function Test-CMakeGeneratorAvailable {
     param(
         [string]$Name
@@ -125,6 +136,52 @@ function Validate-BuildArtifacts {
     return $artifacts
 }
 
+function Get-LatestSourceWriteTimeUtc {
+    param(
+        [string[]]$Paths
+    )
+    $latest = [datetime]::MinValue
+    foreach ($entry in $Paths) {
+        if (-not (Test-Path -LiteralPath $entry)) {
+            continue
+        }
+        $item = Get-Item -LiteralPath $entry -ErrorAction SilentlyContinue
+        if ($item -and -not $item.PSIsContainer) {
+            if ($item.LastWriteTimeUtc -gt $latest) {
+                $latest = $item.LastWriteTimeUtc
+            }
+            continue
+        }
+        $files = Get-ChildItem -LiteralPath $entry -Recurse -File -ErrorAction SilentlyContinue
+        foreach ($f in $files) {
+            if ($f.LastWriteTimeUtc -gt $latest) {
+                $latest = $f.LastWriteTimeUtc
+            }
+        }
+    }
+    if ($latest -eq [datetime]::MinValue) {
+        return $null
+    }
+    return $latest
+}
+
+function Assert-HostTestExecutableFresh {
+    param(
+        [string]$Path,
+        [datetime]$ReferenceUtc
+    )
+    if (-not (Test-Path -LiteralPath $Path)) {
+        throw ("missing expected host test executable: {0}" -f $Path)
+    }
+    if ($ReferenceUtc -eq $null) {
+        return
+    }
+    $exeTime = (Get-Item -LiteralPath $Path).LastWriteTimeUtc
+    if ($exeTime -lt $ReferenceUtc) {
+        throw ("stale host test executable detected: {0} (exe_utc={1:o}, src_utc={2:o})" -f $Path, $exeTime, $ReferenceUtc)
+    }
+}
+
 try {
     $gitRevision = (git rev-parse --short HEAD).Trim()
 } catch {
@@ -138,29 +195,45 @@ try {
     if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
         throw "INFRA_CMAKE_MISSING: cmake command not found in PATH"
     }
-    
-    # Step 1: Configure
+
+    if (-not (Test-CMakeGeneratorAvailable -Name $Generator)) {
+        throw ("INFRA_CMAKE_GENERATOR_UNAVAILABLE: cmake generator unavailable (generator={0})" -f $Generator)
+    }
+
+    # Step 1: Configure and build via CMake
     try {
-        if (-not (Test-CMakeGeneratorAvailable -Name $Generator)) {
-            throw ("cmake generator unavailable (generator={0})" -f $Generator)
+        if (-not (Test-IsCMakeBuildDirectory -Dir $BuildDir)) {
+            if (Test-Path -LiteralPath $BuildDir) {
+                Write-Host ("[BUILD] Build directory '{0}' is not a CMake build tree; reconfiguring in-place" -f $BuildDir)
+            } else {
+                Write-Host ("[BUILD] Build directory '{0}' not found; creating via CMake configure" -f $BuildDir)
+            }
         }
-        $configCmd = "cmake -S . -B $BuildDir -G $Generator -DVIBEOS_BUILD_TESTS=ON"
-        if (-not $SkipImageBuild) {
-            $configCmd += " -DVIBEOS_BUILD_KERNEL_IMAGE=ON"
+
+        $configArgs = @(
+            "-S", ".",
+            "-B", $BuildDir,
+            "-G", $Generator,
+            "-DVIBEOS_BUILD_TESTS=ON"
+        )
+        if ($SkipImageBuild) {
+            $configArgs += "-DVIBEOS_BUILD_KERNEL_IMAGE=OFF"
+        } else {
+            $configArgs += "-DVIBEOS_BUILD_KERNEL_IMAGE=ON"
         }
-        Write-Host "[BUILD] Configuring with: $configCmd"
-        Invoke-Expression $configCmd | Tee-Object -FilePath $logPath -Append
+        Write-Host ("[BUILD] Configuring with generator '{0}'..." -f $Generator)
+        & cmake @configArgs | Tee-Object -FilePath $logPath -Append
         if ($LASTEXITCODE -ne 0) {
             throw ("cmake configure failed (generator={0})" -f $Generator)
         }
-        
+
         # Step 2: Build
         Write-Host "[BUILD] Building project..."
-        cmake --build $BuildDir | Tee-Object -FilePath $logPath -Append
+        & cmake --build $BuildDir --parallel | Tee-Object -FilePath $logPath -Append
         if ($LASTEXITCODE -ne 0) {
             throw "cmake build failed"
         }
-        
+
         # Validate image artifacts if build enabled
         if (-not $SkipImageBuild) {
             Write-Host "[BUILD] Validating kernel image artifacts..."
@@ -173,18 +246,26 @@ try {
                 throw "VALIDATION: Required kernel ELF image not generated"
             }
         }
-        
+
         # Step 3: Run host tests (if not skipped)
         if (-not $SkipTests) {
             Write-Host "[TEST] Running host-side kernel tests..."
+            $latestSourceUtc = Get-LatestSourceWriteTimeUtc -Paths @(
+                "kernel",
+                "boot",
+                "user",
+                "include",
+                "tests",
+                "CMakeLists.txt"
+            )
+            Add-Content -Path $logPath -Value ("latest_source_utc={0}" -f ($latestSourceUtc))
+
             $hostTests = @(
                 (Join-Path $BuildDir "vibeos_kernel_tests.exe"),
                 (Join-Path $BuildDir "vibeos_bootloader_tests.exe")
             )
             foreach ($testExe in $hostTests) {
-                if (-not (Test-Path $testExe)) {
-                    throw "missing expected host test executable: $testExe"
-                }
+                Assert-HostTestExecutableFresh -Path $testExe -ReferenceUtc $latestSourceUtc
                 Write-Host "[TEST] Executing $testExe"
                 & $testExe | Tee-Object -FilePath $logPath -Append
                 if ($LASTEXITCODE -ne 0) {
@@ -218,13 +299,18 @@ try {
             }
             Write-Host "[M2-BOOT] Boot verification PASSED"
         }
-        
+
     } catch {
         Add-Content -Path $logPath -Value ("cmake_path_failed={0}" -f $_.Exception.Message)
+
+        if ($_.Exception.Message -like "INFRA_CMAKE_GENERATOR_UNAVAILABLE:*") {
+            throw $_.Exception.Message
+        }
+
         if (-not (Get-Command gcc -ErrorAction SilentlyContinue)) {
             throw "INFRA_GCC_MISSING: gcc command not found for manual fallback"
         }
-        
+
         # Fallback: manual GCC build
         Write-Host "[BUILD] CMake failed, attempting manual GCC fallback..."
         $manualExe = Join-Path $BuildDir "vibeos_kernel_tests_manual.exe"
@@ -279,11 +365,14 @@ try {
         if ($LASTEXITCODE -ne 0) {
             throw "manual gcc kernel tests execution failed"
         }
+        Add-Content -Path $logPath -Value ("manual_fallback_exe={0}" -f $manualExe)
     }
 } catch {
     $status = "fail"
     if ($_.Exception.Message -like "INFRA_*") {
         $status = "infra_error"
+    } elseif ($_.Exception.Message -like "*stale host test executable*") {
+        $status = "build_validation_failed"
     } elseif ($_.Exception.Message -like "VALIDATION:*") {
         $status = "build_validation_failed"
     }
@@ -302,6 +391,7 @@ try {
         )
         suggested_entrypoints = @(
             "kernel/core/",
+            "kernel/arch/x86_64/",
             "kernel/mm/",
             "kernel/sched/",
             "kernel/ipc/",
