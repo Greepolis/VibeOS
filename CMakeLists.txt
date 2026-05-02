@@ -142,14 +142,6 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         COMMENT "Copying kernel ELF image to artifacts/"
     )
     
-    # Boot image stub (for M2: uses kernel ELF; will evolve to bootable disk image for M3+)
-    add_custom_target(vibeos_boot_image
-        COMMAND ${CMAKE_COMMAND} -E echo "Creating boot image stub..."
-        COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/create_boot_image.cmake
-        DEPENDS vibeos_kernel_elf
-        COMMENT "Generating bootable kernel image"
-    )
-    
     # UEFI Bootloader (M2 bring-up)
     add_executable(vibeos_bootloader_uefi
         boot/uefi_main.c
@@ -195,6 +187,14 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
             ${VIBEOS_ARTIFACTS_DIR}/bootloader.efi
         DEPENDS vibeos_bootloader_uefi
         COMMENT "Copying UEFI bootloader to artifacts/"
+    )
+
+    # Build EFI media layout in artifacts/efi_root with BOOTX64.EFI + kernel payload.
+    add_custom_target(vibeos_boot_image
+        COMMAND ${CMAKE_COMMAND} -E echo "Creating EFI media layout..."
+        COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/create_boot_image.cmake
+        DEPENDS vibeos_kernel_elf vibeos_bootloader_efi
+        COMMENT "Generating bootable kernel image"
     )
     
     # Consolidated target: build all boot artifacts
