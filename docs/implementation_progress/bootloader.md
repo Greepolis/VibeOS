@@ -14,6 +14,7 @@ Last review: 2026-05-02
 - Boot structure allocation fallback (`AllocateAddress` -> `AllocateAnyPages`) with cleanup-aware error handling.
 - Firmware behavior matrix coverage via host-side UEFI mock tests (`tests/bootloader/uefi_bootloader_tests.c`).
 - Linux CI direct-loader probe script (`scripts/qemu-smoke-linux.sh`) with explicit classification of known QEMU ELF loader incompatibilities.
+- Windows/agent QEMU runner hardened (`scripts/run-qemu.ps1`) with machine profile selection and direct-loader incompatibility classification.
 - Boot artifact pipeline fix preserving both `vibeos_kernel.elf` and `vibeos_boot.img` for QEMU gates.
 
 ## Pending

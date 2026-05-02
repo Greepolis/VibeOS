@@ -2,7 +2,9 @@ param(
     [string]$BuildDir = "build",
     [string]$ImagePath = "artifacts/vibeos_boot.img",
     [int]$Timeout = 30,
+    [string]$Machine = "pc-i440fx-3.1",
     [string]$SerialLog = "artifacts/qemu-serial.log",
+    [string]$ErrorLog = "artifacts/qemu-stderr.log",
     [string]$ExitLog = "artifacts/qemu-exit.txt",
     [string]$ExpectToken = "",
     [switch]$Debug = $false
@@ -13,6 +15,10 @@ $ErrorActionPreference = "Continue"
 # Ensure artifacts directory exists
 $artifactsDir = Split-Path -Path $SerialLog -Parent
 New-Item -ItemType Directory -Force $artifactsDir | Out-Null
+$errorDir = Split-Path -Path $ErrorLog -Parent
+if ($errorDir) {
+    New-Item -ItemType Directory -Force $errorDir | Out-Null
+}
 
 # Resolve image path
 $imagePath = if ([System.IO.Path]::IsPathRooted($ImagePath)) {
@@ -23,8 +29,10 @@ $imagePath = if ([System.IO.Path]::IsPathRooted($ImagePath)) {
 
 Write-Host "[QEMU] Starting VibeOS boot in emulator..."
 Write-Host "  Image: $imagePath"
+Write-Host "  Machine: $Machine"
 Write-Host "  Timeout: ${Timeout}s"
 Write-Host "  Serial log: $SerialLog"
+Write-Host "  Error log: $ErrorLog"
 
 # Check if image exists
 if (-not (Test-Path $imagePath)) {
@@ -54,10 +62,8 @@ $start = Get-Date
 # Configure QEMU arguments
 # M1-focused: minimal configuration, serial output only
 $qemuArgs = @(
-    "-machine", "q35",
+    "-machine", $Machine,
     "-m", "512M",
-    "-cpu", "host",
-    "-enable-kvm",  # Use hardware acceleration if available; will be ignored on non-KVM systems
     "-nographic",
     "-monitor", "none",           # Disable QEMU monitor (prevents stdio conflicts)
     "-serial", "file:${SerialLog}",
@@ -74,9 +80,10 @@ if ($Debug) {
 
 # Clear serial log
 "" | Set-Content $SerialLog -Encoding ASCII -Force
+"" | Set-Content $ErrorLog -Encoding ASCII -Force
 
 # Run QEMU with timeout
-$job = Start-Process -FilePath "qemu-system-x86_64" -ArgumentList $qemuArgs -PassThru -NoNewWindow
+$job = Start-Process -FilePath "qemu-system-x86_64" -ArgumentList $qemuArgs -PassThru -NoNewWindow -RedirectStandardError $ErrorLog
 $jobId = $job.Id
 
 Write-Host "[QEMU] Process started (PID: $jobId)"
@@ -134,11 +141,45 @@ if (Test-Path $SerialLog) {
     pid = $jobId
     duration_ms = $duration
     serial_log = $SerialLog
+    error_log = $ErrorLog
     image_path = $imagePath
     expected_token = $ExpectToken
 } | ConvertTo-Json | Set-Content $ExitLog
 
 Write-Host "[QEMU] Exit log written to $ExitLog"
+
+if (Test-Path $SerialLog) {
+    $directLoaderKnownErrors = @(
+        "without PVH ELF Note",
+        "invalid kernel header",
+        "linux kernel too old to load a ram disk",
+        "Error loading uncompressed kernel"
+    )
+    $stderrLike = ""
+    if (Test-Path $ErrorLog) {
+        $stderrLike = Get-Content $ErrorLog -Raw -ErrorAction SilentlyContinue
+    }
+    foreach ($sig in $directLoaderKnownErrors) {
+        if ($serialContent -match [regex]::Escape($sig) -or $stderrLike -match [regex]::Escape($sig)) {
+            Write-Host "[QEMU] WARNING: Direct -kernel loader incompatibility detected ($sig)"
+            @{
+                status = "loader_unsupported"
+                exit_code = $exitCode
+                pid = $jobId
+                duration_ms = $duration
+                serial_log = $SerialLog
+                error_log = $ErrorLog
+                image_path = $imagePath
+                machine = $Machine
+                expected_token = $ExpectToken
+            } | ConvertTo-Json | Set-Content $ExitLog
+            if (-not $ExpectToken) {
+                exit 0
+            }
+            break
+        }
+    }
+}
 
 if ($ExpectToken -and $serialContent -notmatch $ExpectToken) {
     exit 1
