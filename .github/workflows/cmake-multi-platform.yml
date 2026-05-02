@@ -50,32 +50,12 @@ jobs:
       - name: Build Boot Artifacts
         run: cmake --build build --target vibeos_image
 
-      - name: QEMU Smoke Boot
+      - name: QEMU Direct-Loader Probe
         timeout-minutes: 2
         run: |
           set -euo pipefail
-          for image in vibeos_kernel.elf vibeos_boot.img; do
-            artifact_path="build/artifacts/${image}"
-            test -f "$artifact_path"
-          done
-
-          for machine in q35 pc; do
-            for image in vibeos_kernel.elf vibeos_boot.img; do
-              artifact_path="build/artifacts/${image}"
-              log_file="qemu-serial-${machine}-${image}.log"
-
-              timeout 20s qemu-system-x86_64 \
-                -machine "${machine}" \
-                -kernel "${artifact_path}" \
-                -display none \
-                -monitor none \
-                -serial "file:${log_file}" \
-                -no-reboot \
-                -no-shutdown || true
-
-              grep -E "BOOT_OK|Kernel initialized|scheduler online" "${log_file}"
-            done
-          done
+          chmod +x scripts/qemu-smoke-linux.sh
+          ./scripts/qemu-smoke-linux.sh build
 
       - name: Upload Linux Artifacts
         if: always()
@@ -86,6 +66,8 @@ jobs:
             build/artifacts/**
             build/Testing/**/Test.xml
             qemu-serial-*.log
+            qemu-err-*.log
+            qemu-smoke-summary.txt
           if-no-files-found: warn
 
   windows-build-test:

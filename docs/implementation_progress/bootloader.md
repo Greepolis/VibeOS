@@ -1,7 +1,7 @@
 # Bootloader Progress
 
 Status: Completed (Phase 2 scope)
-Last review: 2026-04-25
+Last review: 2026-05-02
 
 ## Implemented
 - UEFI entry path and protocol wrappers in `boot/uefi_main.c` and `boot/uefi_protocol.c`.
@@ -13,7 +13,7 @@ Last review: 2026-04-25
 - `ExitBootServices` hardening with real map-key refresh and retry-on-stale-key policy.
 - Boot structure allocation fallback (`AllocateAddress` -> `AllocateAnyPages`) with cleanup-aware error handling.
 - Firmware behavior matrix coverage via host-side UEFI mock tests (`tests/bootloader/uefi_bootloader_tests.c`).
-- Wider smoke matrix in CI (`q35`/`pc` x `vibeos_kernel.elf`/`vibeos_boot.img`) plus artifact checks.
+- Linux CI direct-loader probe script (`scripts/qemu-smoke-linux.sh`) with explicit classification of known QEMU ELF loader incompatibilities.
 - Boot artifact pipeline fix preserving both `vibeos_kernel.elf` and `vibeos_boot.img` for QEMU gates.
 
 ## Pending

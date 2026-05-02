@@ -31,7 +31,10 @@ powershell -ExecutionPolicy Bypass -File scripts\run-tests.ps1 -BuildDir build -
 cmake -S . -B build -G Ninja -DVIBEOS_BUILD_TESTS=ON -DVIBEOS_BUILD_KERNEL_IMAGE=ON
 cmake --build build
 ctest --test-dir build --output-on-failure
+./scripts/qemu-smoke-linux.sh build
 ```
+
+Note: `qemu-system-x86_64 -kernel` has known compatibility limits with ELF64/Multiboot2 images in newer QEMU builds. The Linux smoke probe classifies these loader-side incompatibilities separately from real boot regressions.
 
 ## Project Structure
 
