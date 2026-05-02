@@ -31,7 +31,7 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-x86 ninja-build build-essential clang
+          sudo apt-get install -y qemu-system-x86 ninja-build build-essential clang ovmf
 
       - name: Configure
         run: >
@@ -50,7 +50,15 @@ jobs:
       - name: Build Boot Artifacts
         run: cmake --build build --target vibeos_image
 
-      - name: QEMU Direct-Loader Probe
+      - name: QEMU OVMF Smoke (Required Gate)
+        timeout-minutes: 3
+        run: |
+          set -euo pipefail
+          chmod +x scripts/qemu-smoke-ovmf-linux.sh
+          ./scripts/qemu-smoke-ovmf-linux.sh build "BOOT_OK"
+
+      - name: QEMU Direct-Loader Probe (Informational)
+        continue-on-error: true
         timeout-minutes: 2
         run: |
           set -euo pipefail
@@ -67,6 +75,9 @@ jobs:
             build/Testing/**/Test.xml
             qemu-serial-*.log
             qemu-err-*.log
+            qemu-ovmf-serial.log
+            qemu-ovmf-err.log
+            qemu-ovmf-summary.txt
             qemu-smoke-summary.txt
           if-no-files-found: warn
 

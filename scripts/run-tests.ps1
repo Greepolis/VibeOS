@@ -5,7 +5,8 @@ param(
     [switch]$SkipTests = $false,
     [switch]$SkipImageBuild = $false,
     [switch]$RunQemu = $false,
-    [switch]$RunM2BootSmoke = $false
+    [switch]$RunM2BootSmoke = $false,
+    [switch]$RunOvmfSmoke = $false
 )
 
 $ErrorActionPreference = "Stop"
@@ -298,6 +299,19 @@ try {
                 throw "M2 boot smoke test failed: kernel did not output BOOT_OK"
             }
             Write-Host "[M2-BOOT] Boot verification PASSED"
+        }
+
+        # Step 6: Run OVMF boot smoke (if requested)
+        if ($RunOvmfSmoke) {
+            if ($SkipImageBuild) {
+                throw "OVMF boot smoke requested with SkipImageBuild=ON"
+            }
+            Write-Host "[OVMF] Starting OVMF boot smoke test..."
+            & .\scripts\run-qemu-ovmf.ps1 -BuildDir $BuildDir -ExpectToken "BOOT_OK" | Tee-Object -FilePath $logPath -Append
+            if ($LASTEXITCODE -ne 0) {
+                throw "OVMF boot smoke failed"
+            }
+            Write-Host "[OVMF] Boot verification PASSED"
         }
 
     } catch {
