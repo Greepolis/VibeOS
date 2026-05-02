@@ -31,11 +31,17 @@ static int vibeos_x86_64_serial_can_io(void) {
 }
 
 static inline void vibeos_x86_64_outb(uint16_t port, uint8_t value) {
+    if (!vibeos_x86_64_serial_can_io()) {
+        return;
+    }
     __asm__ volatile("outb %0, %1" : : "a"(value), "Nd"(port));
 }
 
 static inline uint8_t vibeos_x86_64_inb(uint16_t port) {
     uint8_t value;
+    if (!vibeos_x86_64_serial_can_io()) {
+        return 0;
+    }
     __asm__ volatile("inb %1, %0" : "=a"(value) : "Nd"(port));
     return value;
 }
