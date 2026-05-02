@@ -1,6 +1,55 @@
 #include "uefi_pe_loader.h"
 #include "uefi_serial.h"
 
+static int uefi_segment_range_end(uint64_t base, uint64_t size, uint64_t *out_end) {
+    if (!out_end || size == 0) {
+        return -1;
+    }
+    if (base > UINT64_MAX - size) {
+        return -1;
+    }
+    *out_end = base + size;
+    return 0;
+}
+
+static int uefi_validate_segment_layout(const uefi_kernel_load_plan_t *plan, uint64_t image_size) {
+    uint32_t i;
+    uint32_t j;
+    if (!plan || plan->segment_count == 0 || plan->segment_count > VIBEOS_BOOT_IMAGE_MAX_SEGMENTS) {
+        return -1;
+    }
+    for (i = 0; i < plan->segment_count; i++) {
+        const vibeos_boot_image_segment_t *seg = &plan->segments[i];
+        uint64_t mem_end = 0;
+        uint64_t file_end = 0;
+        if (seg->mem_size == 0 || uefi_segment_range_end(seg->image_address, seg->mem_size, &mem_end) != 0) {
+            return -1;
+        }
+        if (seg->file_size > seg->mem_size) {
+            return -1;
+        }
+        if (seg->file_size > 0) {
+            if (uefi_segment_range_end(seg->file_offset, seg->file_size, &file_end) != 0) {
+                return -1;
+            }
+            if (file_end > image_size) {
+                return -1;
+            }
+        }
+        for (j = i + 1; j < plan->segment_count; j++) {
+            const vibeos_boot_image_segment_t *other = &plan->segments[j];
+            uint64_t other_end = 0;
+            if (other->mem_size == 0 || uefi_segment_range_end(other->image_address, other->mem_size, &other_end) != 0) {
+                return -1;
+            }
+            if (seg->image_address < other_end && other->image_address < mem_end) {
+                return -1;
+            }
+        }
+    }
+    return 0;
+}
+
 int uefi_kernel_plan_load(const uint8_t *kernel_image, uint64_t image_size, 
                            uefi_kernel_load_plan_t *out_plan) {
     vibeos_boot_image_plan_t image_plan;
@@ -40,7 +89,9 @@ int uefi_kernel_plan_load(const uint8_t *kernel_image, uint64_t image_size,
     return 0;
 }
 
-int uefi_kernel_load_segments(EFI_SYSTEM_TABLE *st, const uint8_t *kernel_image,
+int uefi_kernel_load_segments(EFI_SYSTEM_TABLE *st,
+                               const uint8_t *kernel_image,
+                               uint64_t kernel_image_size,
                                const uefi_kernel_load_plan_t *plan) {
     uint32_t i;
     uint32_t alloc_type = 2; /* AllocateAddress */
@@ -52,6 +103,10 @@ int uefi_kernel_load_segments(EFI_SYSTEM_TABLE *st, const uint8_t *kernel_image,
     
     if (!st->BootServices->AllocatePages) {
         uefi_serial_puts("[ERROR] AllocatePages not available\n");
+        return -1;
+    }
+    if (uefi_validate_segment_layout(plan, kernel_image_size) != 0) {
+        uefi_serial_puts("[ERROR] Kernel segment layout invalid\n");
         return -1;
     }
     

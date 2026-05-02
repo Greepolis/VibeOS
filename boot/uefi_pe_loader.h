@@ -18,8 +18,10 @@ typedef struct {
 int uefi_kernel_plan_load(const uint8_t *kernel_image, uint64_t image_size, 
                            uefi_kernel_load_plan_t *out_plan);
 
-/* Allocate and load kernel segments to physical memory */
-int uefi_kernel_load_segments(EFI_SYSTEM_TABLE *st, const uint8_t *kernel_image,
-                               const uefi_kernel_load_plan_t *plan);
+/* Allocate and load kernel segments to physical memory. */
+int uefi_kernel_load_segments(EFI_SYSTEM_TABLE *st,
+                              const uint8_t *kernel_image,
+                              uint64_t kernel_image_size,
+                              const uefi_kernel_load_plan_t *plan);
 
 #endif
