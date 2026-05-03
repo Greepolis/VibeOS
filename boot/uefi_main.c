@@ -119,6 +119,13 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
         uefi_serial_puts("[WARN] Firmware table discovery had issues\n");
     }
     
+    /* Discover Security Settings (Secure Boot, Measured Boot) */
+    vibeos_firmware_tag_t security_tags[4];
+    uint32_t security_tag_count = 0;
+    if (uefi_firmware_discover_security_settings(SystemTable, security_tags, 4u, &security_tag_count) != 0) {
+        uefi_serial_puts("[WARN] Security settings discovery had issues\n");
+    }
+    
     uefi_serial_puts("[BOOT] ACPI/SMBIOS: ");
     if (acpi_rsdp != 0 && smbios_entry != 0) {
         uefi_serial_puts("found\n");
@@ -173,9 +180,25 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
         uefi_serial_puts("[WARN] Boot info finalization had issues\n");
     }
     
+    /* Apply security settings to boot_info */
+    if (vibeos_bootloader_apply_firmware_tags(boot_info, security_tags, security_tag_count) != 0) {
+        uefi_serial_puts("[WARN] Failed to apply security tags to boot_info\n");
+    }
+    
+    /* Phase 4 telemetry: Log security settings summary */
+    {
+        uint32_t secure_boot_enabled = (boot_info->flags & VIBEOS_BOOT_FLAG_SECURE_BOOT) ? 1u : 0u;
+        uint32_t measured_boot_enabled = (boot_info->flags & VIBEOS_BOOT_FLAG_MEASURED_BOOT) ? 1u : 0u;
+        uefi_serial_puts("[BOOT] Security telemetry: SecureBoot=");
+        uefi_serial_puts(secure_boot_enabled ? "enabled" : "disabled");
+        uefi_serial_puts(", MeasuredBoot=");
+        uefi_serial_puts(measured_boot_enabled ? "enabled" : "disabled");
+        uefi_serial_puts("\n");
+    }
+    
     uefi_serial_puts("\n");
     uefi_serial_puts("[BOOT] === PHASE 4 COMPLETE ===\n");
-    uefi_serial_puts("[BOOT] Boot structures ready\n");
+    uefi_serial_puts("[BOOT] Boot structures ready for kernel handoff\n");
     uefi_serial_puts("\n");
     
     /* PHASE 5: Boot Handoff to Kernel */

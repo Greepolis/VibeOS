@@ -92,3 +92,72 @@ int uefi_firmware_discover_tables(EFI_SYSTEM_TABLE *st, uint64_t *out_acpi_rsdp,
     
     return 0;
 }
+
+int uefi_firmware_discover_security_settings(EFI_SYSTEM_TABLE *st __attribute__((unused)), 
+                                              vibeos_firmware_tag_t *out_tags,
+                                              uint32_t max_tags,
+                                              uint32_t *out_tag_count) {
+    uint32_t tag_index = 0;
+    
+    if (!out_tags || !out_tag_count || max_tags == 0) {
+        return -1;
+    }
+    
+    *out_tag_count = 0;
+    
+    uefi_serial_puts("[BOOT] === PHASE 4: Security Settings Discovery ===\n");
+    
+    /* Create SECURE_BOOT tag */
+    if (tag_index < max_tags) {
+        out_tags[tag_index].type = VIBEOS_FIRMWARE_TAG_SECURE_BOOT;
+        out_tags[tag_index].reserved = 0;
+        /* Phase 4: Default value (0 = not enabled) */
+        /* TODO: Future integration with GetVariable("SecureBoot") */
+        out_tags[tag_index].value = 0;
+        uefi_serial_puts("[BOOT] SECURE_BOOT tag: value=");
+        uefi_serial_putc('0' + (out_tags[tag_index].value ? 1 : 0));
+        uefi_serial_puts(" (phase 4: default, GetVariable pending)\n");
+        tag_index++;
+    } else {
+        uefi_serial_puts("[WARN] Out of tag space for SECURE_BOOT\n");
+        return -1;
+    }
+    
+    /* Create MEASURED_BOOT tag */
+    if (tag_index < max_tags) {
+        out_tags[tag_index].type = VIBEOS_FIRMWARE_TAG_MEASURED_BOOT;
+        out_tags[tag_index].reserved = 0;
+        /* Phase 4: Default value (0 = not enabled) */
+        /* TODO: Future integration with TCG GetVariable("MeasuredBoot") */
+        out_tags[tag_index].value = 0;
+        uefi_serial_puts("[BOOT] MEASURED_BOOT tag: value=");
+        uefi_serial_putc('0' + (out_tags[tag_index].value ? 1 : 0));
+        uefi_serial_puts(" (phase 4: default, GetVariable pending)\n");
+        tag_index++;
+    } else {
+        uefi_serial_puts("[WARN] Out of tag space for MEASURED_BOOT\n");
+        return -1;
+    }
+    
+    *out_tag_count = tag_index;
+    uefi_serial_puts("[BOOT] Security settings discovered: ");
+    {
+        char count_str[8];
+        int j = 0;
+        uint32_t temp = *out_tag_count;
+        if (temp == 0) {
+            count_str[j++] = '0';
+        }
+        while (temp > 0 && j < (int)(sizeof(count_str) - 1u)) {
+            count_str[j++] = (char)('0' + (temp % 10u));
+            temp /= 10u;
+        }
+        while (j > 0) {
+            j--;
+            uefi_serial_putc(count_str[j]);
+        }
+    }
+    uefi_serial_puts(" tags\n");
+    
+    return 0;
+}
