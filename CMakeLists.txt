@@ -99,6 +99,7 @@ if(VIBEOS_BUILD_TESTS)
     add_executable(vibeos_bootloader_tests
         tests/bootloader/uefi_bootloader_tests.c
         boot/bootloader_stub.c
+        boot/uefi_file_io.c
         boot/uefi_memory.c
         boot/uefi_boot_info.c
         boot/uefi_boot_handoff.c

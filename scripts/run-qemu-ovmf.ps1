@@ -28,6 +28,7 @@ function Find-OvmfPair {
         "C:\Program Files\qemu\share\OVMF_CODE_4M.fd"
     )
     $varsCandidates = @(
+        "C:\Program Files\qemu\share\edk2-x86_64-vars.fd",
         "C:\Program Files\qemu\share\edk2-i386-vars.fd",
         "C:\Program Files\qemu\share\OVMF_VARS.fd",
         "C:\Program Files\qemu\share\OVMF_VARS_4M.fd"

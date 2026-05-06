@@ -12,10 +12,47 @@
 #include "uefi_boot_info.h"
 #include "uefi_boot_handoff.h"
 #include "uefi_firmware.h"
+#include "uefi_file_io.h"
+
+typedef struct mock_file_protocol mock_file_protocol_t;
+
+typedef struct mock_simple_fs_protocol {
+    uint64_t Revision;
+    EFI_STATUS (*OpenVolume)(struct mock_simple_fs_protocol *This, mock_file_protocol_t **Root);
+} mock_simple_fs_protocol_t;
+
+struct mock_file_protocol {
+    uint64_t Revision;
+    EFI_STATUS (*Open)(mock_file_protocol_t *This, mock_file_protocol_t **NewHandle, const uint16_t *FileName, uint64_t OpenMode, uint64_t Attributes);
+    EFI_STATUS (*Close)(mock_file_protocol_t *This);
+    void *Delete;
+    EFI_STATUS (*Read)(mock_file_protocol_t *This, size_t *BufferSize, void *Buffer);
+    void *Write;
+    void *GetPosition;
+    void *SetPosition;
+    EFI_STATUS (*GetInfo)(mock_file_protocol_t *This, EFI_GUID *InformationType, size_t *BufferSize, void *Buffer);
+    void *SetInfo;
+    void *Flush;
+};
+
+typedef struct mock_efi_file_info {
+    uint64_t Size;
+    uint64_t FileSize;
+    uint64_t PhysicalSize;
+    EFI_TIME CreateTime;
+    EFI_TIME LastAccessTime;
+    EFI_TIME ModificationTime;
+    uint64_t Attribute;
+    uint16_t FileName[1];
+} mock_efi_file_info_t;
 
 typedef struct mock_uefi_ctx {
     EFI_BOOT_SERVICES boot_services;
     EFI_SYSTEM_TABLE system_table;
+    mock_simple_fs_protocol_t fs_protocol;
+    mock_file_protocol_t root_file;
+    mock_file_protocol_t kernel_file;
+    mock_efi_file_info_t file_info;
     EFI_MEMORY_DESCRIPTOR descriptors[4];
     size_t descriptor_count;
     size_t descriptor_size;
@@ -33,8 +70,20 @@ typedef struct mock_uefi_ctx {
     uint32_t free_pages_calls;
     uint32_t force_first_buffer_too_small;
     uint32_t allocate_address_fail_budget;
+    uint32_t allocate_any_fail_budget;
+    EFI_STATUS locate_protocol_status;
+    EFI_STATUS open_volume_status;
+    EFI_STATUS open_file_status;
+    EFI_STATUS get_info_status;
+    EFI_STATUS read_status;
+    uint32_t force_short_read;
+    uint32_t open_calls;
+    uint32_t close_calls;
+    size_t get_info_requested_size;
+    uint64_t file_blob_size;
     size_t alloc_pool_offset;
     uint8_t alloc_pool[64u * 4096u];
+    uint8_t file_blob[4096u];
 } mock_uefi_ctx_t;
 
 static mock_uefi_ctx_t *g_mock_ctx = NULL;
@@ -125,6 +174,10 @@ static EFI_STATUS mock_allocate_pages(uint32_t type,
 
     if (type == AllocateAnyPages) {
         g_mock_ctx->alloc_any_calls++;
+        if (g_mock_ctx->allocate_any_fail_budget > 0u) {
+            g_mock_ctx->allocate_any_fail_budget--;
+            return EFI_OUT_OF_RESOURCES;
+        }
         bytes = pages * 4096u;
         new_offset = g_mock_ctx->alloc_pool_offset + bytes;
         if (new_offset > sizeof(g_mock_ctx->alloc_pool)) {
@@ -162,15 +215,138 @@ static EFI_STATUS mock_exit_boot_services(EFI_HANDLE image_handle, size_t map_ke
     return EFI_SUCCESS;
 }
 
+static EFI_STATUS mock_locate_protocol(EFI_GUID *protocol, void *registration, void **interface) {
+    (void)protocol;
+    (void)registration;
+    if (!g_mock_ctx || !interface) {
+        return EFI_INVALID_PARAMETER;
+    }
+    if (g_mock_ctx->locate_protocol_status != EFI_SUCCESS) {
+        return g_mock_ctx->locate_protocol_status;
+    }
+    *interface = &g_mock_ctx->fs_protocol;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS mock_open_volume(mock_simple_fs_protocol_t *This, mock_file_protocol_t **root) {
+    (void)This;
+    if (!g_mock_ctx || !root) {
+        return EFI_INVALID_PARAMETER;
+    }
+    if (g_mock_ctx->open_volume_status != EFI_SUCCESS) {
+        return g_mock_ctx->open_volume_status;
+    }
+    *root = &g_mock_ctx->root_file;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS mock_file_open(mock_file_protocol_t *This,
+                                 mock_file_protocol_t **new_handle,
+                                 const uint16_t *file_name,
+                                 uint64_t open_mode,
+                                 uint64_t attributes) {
+    (void)This;
+    (void)file_name;
+    (void)open_mode;
+    (void)attributes;
+    if (!g_mock_ctx || !new_handle) {
+        return EFI_INVALID_PARAMETER;
+    }
+    g_mock_ctx->open_calls++;
+    if (g_mock_ctx->open_file_status != EFI_SUCCESS) {
+        return g_mock_ctx->open_file_status;
+    }
+    *new_handle = &g_mock_ctx->kernel_file;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS mock_file_close(mock_file_protocol_t *This) {
+    (void)This;
+    if (!g_mock_ctx) {
+        return EFI_INVALID_PARAMETER;
+    }
+    g_mock_ctx->close_calls++;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS mock_file_getinfo(mock_file_protocol_t *This,
+                                    EFI_GUID *info_type,
+                                    size_t *buffer_size,
+                                    void *buffer) {
+    size_t needed = sizeof(mock_efi_file_info_t);
+    mock_efi_file_info_t *info = (mock_efi_file_info_t *)buffer;
+    (void)This;
+    (void)info_type;
+    if (!g_mock_ctx || !buffer_size) {
+        return EFI_INVALID_PARAMETER;
+    }
+    g_mock_ctx->get_info_requested_size = *buffer_size;
+    if (g_mock_ctx->get_info_status != EFI_SUCCESS) {
+        return g_mock_ctx->get_info_status;
+    }
+    if (!buffer || *buffer_size < needed) {
+        *buffer_size = needed;
+        return EFI_BUFFER_TOO_SMALL;
+    }
+    memset(info, 0, needed);
+    info->Size = (uint64_t)needed;
+    info->FileSize = g_mock_ctx->file_blob_size;
+    *buffer_size = needed;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS mock_file_read(mock_file_protocol_t *This, size_t *buffer_size, void *buffer) {
+    size_t requested;
+    size_t to_copy;
+    (void)This;
+    if (!g_mock_ctx || !buffer_size || !buffer) {
+        return EFI_INVALID_PARAMETER;
+    }
+    if (g_mock_ctx->read_status != EFI_SUCCESS) {
+        return g_mock_ctx->read_status;
+    }
+    requested = *buffer_size;
+    to_copy = requested;
+    if ((uint64_t)to_copy > g_mock_ctx->file_blob_size) {
+        to_copy = (size_t)g_mock_ctx->file_blob_size;
+    }
+    if (g_mock_ctx->force_short_read && to_copy > 0u) {
+        to_copy--;
+    }
+    if (to_copy > 0u) {
+        memcpy(buffer, g_mock_ctx->file_blob, to_copy);
+    }
+    *buffer_size = to_copy;
+    return EFI_SUCCESS;
+}
+
 static void init_mock(mock_uefi_ctx_t *ctx) {
+    uint32_t i;
     memset(ctx, 0, sizeof(*ctx));
     ctx->descriptor_size = sizeof(EFI_MEMORY_DESCRIPTOR);
     ctx->required_map_size = ctx->descriptor_size;
+    ctx->locate_protocol_status = EFI_SUCCESS;
+    ctx->open_volume_status = EFI_SUCCESS;
+    ctx->open_file_status = EFI_SUCCESS;
+    ctx->get_info_status = EFI_SUCCESS;
+    ctx->read_status = EFI_SUCCESS;
+    ctx->file_blob_size = 64u;
+    for (i = 0; i < (uint32_t)ctx->file_blob_size; i++) {
+        ctx->file_blob[i] = (uint8_t)(0x40u + i);
+    }
 
     ctx->boot_services.GetMemoryMap = mock_get_memory_map;
     ctx->boot_services.AllocatePages = mock_allocate_pages;
     ctx->boot_services.FreePages = mock_free_pages;
     ctx->boot_services.ExitBootServices = mock_exit_boot_services;
+    ctx->boot_services.LocateProtocol = mock_locate_protocol;
+
+    ctx->fs_protocol.OpenVolume = mock_open_volume;
+    ctx->root_file.Open = mock_file_open;
+    ctx->root_file.Close = mock_file_close;
+    ctx->kernel_file.Close = mock_file_close;
+    ctx->kernel_file.GetInfo = mock_file_getinfo;
+    ctx->kernel_file.Read = mock_file_read;
 
     ctx->system_table.BootServices = &ctx->boot_services;
     g_mock_ctx = ctx;
@@ -350,6 +526,101 @@ static int test_firmware_table_discovery_paths(void) {
     return 0;
 }
 
+static int test_file_read_all_success(void) {
+    mock_uefi_ctx_t ctx;
+    static const uint16_t kernel_path[] = {
+        '\\', 'E', 'F', 'I', '\\', 'B', 'O', 'O', 'T', '\\', 'V', 'I', 'B', 'E', 'O', 'S', 'K', 'R', '.', 'E', 'L', 'F', 0
+    };
+    void *buffer = NULL;
+    uint64_t size = 0;
+    int rc;
+    uint32_t i;
+
+    init_mock(&ctx);
+    ctx.file_blob_size = 32u;
+    for (i = 0; i < (uint32_t)ctx.file_blob_size; i++) {
+        ctx.file_blob[i] = (uint8_t)(i + 1u);
+    }
+
+    rc = uefi_file_read_all((EFI_HANDLE)(uintptr_t)0x1u, &ctx.system_table, kernel_path, &buffer, &size);
+    if (rc != 0 || !buffer || size != 32u) {
+        return -1;
+    }
+    if (memcmp(buffer, ctx.file_blob, (size_t)size) != 0) {
+        return -1;
+    }
+    uefi_file_free_buffer(&ctx.system_table, buffer, size);
+    if (ctx.open_calls != 1u || ctx.close_calls < 2u || ctx.alloc_any_calls < 2u || ctx.free_pages_calls < 2u) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_file_read_all_missing_file(void) {
+    mock_uefi_ctx_t ctx;
+    static const uint16_t kernel_path[] = {
+        '\\', 'E', 'F', 'I', '\\', 'B', 'O', 'O', 'T', '\\', 'V', 'I', 'B', 'E', 'O', 'S', 'K', 'R', '.', 'E', 'L', 'F', 0
+    };
+    void *buffer = NULL;
+    uint64_t size = 0;
+
+    init_mock(&ctx);
+    ctx.open_file_status = EFI_NOT_READY;
+    if (uefi_file_read_all((EFI_HANDLE)(uintptr_t)0x1u, &ctx.system_table, kernel_path, &buffer, &size) == 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_file_read_all_empty_file(void) {
+    mock_uefi_ctx_t ctx;
+    static const uint16_t kernel_path[] = {
+        '\\', 'E', 'F', 'I', '\\', 'B', 'O', 'O', 'T', '\\', 'V', 'I', 'B', 'E', 'O', 'S', 'K', 'R', '.', 'E', 'L', 'F', 0
+    };
+    void *buffer = NULL;
+    uint64_t size = 0;
+
+    init_mock(&ctx);
+    ctx.file_blob_size = 0u;
+    if (uefi_file_read_all((EFI_HANDLE)(uintptr_t)0x1u, &ctx.system_table, kernel_path, &buffer, &size) == 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_file_read_all_alloc_failure(void) {
+    mock_uefi_ctx_t ctx;
+    static const uint16_t kernel_path[] = {
+        '\\', 'E', 'F', 'I', '\\', 'B', 'O', 'O', 'T', '\\', 'V', 'I', 'B', 'E', 'O', 'S', 'K', 'R', '.', 'E', 'L', 'F', 0
+    };
+    void *buffer = NULL;
+    uint64_t size = 0;
+
+    init_mock(&ctx);
+    ctx.allocate_any_fail_budget = 1u;
+    if (uefi_file_read_all((EFI_HANDLE)(uintptr_t)0x1u, &ctx.system_table, kernel_path, &buffer, &size) == 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_file_read_all_short_read(void) {
+    mock_uefi_ctx_t ctx;
+    static const uint16_t kernel_path[] = {
+        '\\', 'E', 'F', 'I', '\\', 'B', 'O', 'O', 'T', '\\', 'V', 'I', 'B', 'E', 'O', 'S', 'K', 'R', '.', 'E', 'L', 'F', 0
+    };
+    void *buffer = NULL;
+    uint64_t size = 0;
+
+    init_mock(&ctx);
+    ctx.file_blob_size = 16u;
+    ctx.force_short_read = 1u;
+    if (uefi_file_read_all((EFI_HANDLE)(uintptr_t)0x1u, &ctx.system_table, kernel_path, &buffer, &size) == 0) {
+        return -1;
+    }
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
 
@@ -359,6 +630,11 @@ int main(void) {
     RUN_TEST(test_exit_boot_services_retry_policy);
     RUN_TEST(test_exit_boot_services_non_retryable_failure);
     RUN_TEST(test_firmware_table_discovery_paths);
+    RUN_TEST(test_file_read_all_success);
+    RUN_TEST(test_file_read_all_missing_file);
+    RUN_TEST(test_file_read_all_empty_file);
+    RUN_TEST(test_file_read_all_alloc_failure);
+    RUN_TEST(test_file_read_all_short_read);
 #undef RUN_TEST
 
     if (failures != 0) {

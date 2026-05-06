@@ -307,7 +307,7 @@ try {
                 throw "OVMF boot smoke requested with SkipImageBuild=ON"
             }
             Write-Host "[OVMF] Starting OVMF boot smoke test..."
-            & .\scripts\run-qemu-ovmf.ps1 -BuildDir $BuildDir -ExpectToken "BOOT_OK" | Tee-Object -FilePath $logPath -Append
+            & .\scripts\run-qemu-ovmf.ps1 -BuildDir $BuildDir -ExpectToken "BOOT_OK" -Strict:$true | Tee-Object -FilePath $logPath -Append
             if ($LASTEXITCODE -ne 0) {
                 throw "OVMF boot smoke failed"
             }
