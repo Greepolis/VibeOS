@@ -22,6 +22,7 @@ Last review: 2026-05-02
   - required: host tests + OVMF boot smoke
   - informational: direct-loader probe (`-kernel`) for compatibility telemetry.
 - Host-side parser regression coverage (PE + ELF) in `tests/kernel/kernel_tests.c`.
+- Host-side UEFI file loader regression matrix (success, missing file, empty file, alloc failure, short read) in `tests/bootloader/uefi_bootloader_tests.c`.
 
 ## Final Bootloader Checklist
 - Build pipeline emits `bootloader.efi`, `vibeos_kernel.elf`, legacy `vibeos_boot.img`, and EFI media root.
