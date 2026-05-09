@@ -27,6 +27,7 @@ Last review: 2026-05-09
   - objcopy primary target: `efi-app-x86_64`
   - automatic fallback: `pei-x86-64`
   - fail-fast PE32+ checks: `MZ`, `PE`, optional-header magic `0x20B`, subsystem `10`.
+- Freestanding bootloader runtime memory primitives (`boot/freestanding_runtime.c`) to satisfy `-nostdlib` compiler-emitted calls (`memcpy`, `memmove`, `memset`, `memcmp`) on Linux/Clang and GCC.
 - Toolchain-safe UEFI intermediate link flow for MinGW/Linux without hardcoded libc dependency.
 - OVMF smoke hardening:
   - deterministic disk mapping with explicit drive/device and `bootindex`
