@@ -154,6 +154,7 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         boot/uefi_pe_loader.c
         boot/uefi_boot_info.c
         boot/uefi_boot_handoff.c
+        boot/freestanding_runtime.c
         boot/bootloader_stub.c
     )
     

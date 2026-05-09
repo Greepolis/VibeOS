@@ -83,7 +83,11 @@ int uefi_kernel_plan_load(const uint8_t *kernel_image, uint64_t image_size,
     
     /* Copy segments */
     for (i = 0; i < image_plan.segment_count && i < VIBEOS_BOOT_IMAGE_MAX_SEGMENTS; i++) {
-        out_plan->segments[i] = image_plan.segments[i];
+        out_plan->segments[i].file_offset = image_plan.segments[i].file_offset;
+        out_plan->segments[i].image_address = image_plan.segments[i].image_address;
+        out_plan->segments[i].file_size = image_plan.segments[i].file_size;
+        out_plan->segments[i].mem_size = image_plan.segments[i].mem_size;
+        out_plan->segments[i].flags = image_plan.segments[i].flags;
     }
     
     return 0;
