@@ -12,6 +12,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$TailLines = 30
 
 function Find-OvmfPair {
     param(
@@ -58,20 +59,83 @@ function Exit-WithSummary {
     param(
         [string]$Status,
         [string]$Reason,
-        [int]$Code
+        [int]$Code,
+        [string]$ProfileUsed = "none",
+        [string]$LastBootPhase = "none",
+        [int]$QemuRc = 0,
+        [int]$Attempts = 0,
+        [string]$SerialTail = "",
+        [string]$ErrorTail = ""
     )
     $summary = @{
         status = $Status
         reason = $Reason
+        qemu_rc = $QemuRc
         timeout_sec = $Timeout
         expect_token = $ExpectToken
+        profile_used = $ProfileUsed
+        last_boot_phase = $LastBootPhase
+        attempts = $Attempts
         build_dir = $BuildDir
         efi_root = $resolvedEfiRoot
         serial_log = $SerialLog
         error_log = $ErrorLog
+        ovmf_code = if ($ovmf) { $ovmf.code } else { "unknown" }
+        ovmf_vars_template = if ($ovmf) { $ovmf.vars } else { "unknown" }
+        serial_tail = $SerialTail
+        error_tail = $ErrorTail
     }
     $summary | ConvertTo-Json -Depth 5 | Set-Content -Path $SummaryLog -Encoding UTF8
     exit $Code
+}
+
+function Get-LastBootPhase {
+    param(
+        [string]$SerialText
+    )
+
+    $phase = "none"
+    if ($SerialText -match "BL_FS_OK") {
+        $phase = "BL_FS_OK"
+    }
+    if ($SerialText -match "BL_PLAN_OK") {
+        $phase = "BL_PLAN_OK"
+    }
+    if ($SerialText -match "BL_HANDOFF_OK|BL_HANDOFF_START") {
+        $phase = "BL_HANDOFF_OK"
+    }
+    if ($SerialText -match $ExpectToken) {
+        $phase = "BOOT_OK"
+    }
+    return $phase
+}
+
+function Get-PhaseScore {
+    param(
+        [string]$Phase
+    )
+    switch ($Phase) {
+        "BOOT_OK" { return 4 }
+        "BL_HANDOFF_OK" { return 3 }
+        "BL_PLAN_OK" { return 2 }
+        "BL_FS_OK" { return 1 }
+        default { return 0 }
+    }
+}
+
+function Get-TailInline {
+    param(
+        [string]$Path,
+        [int]$Lines = 30
+    )
+    if (-not (Test-Path $Path)) {
+        return ""
+    }
+    $tail = Get-Content -Path $Path -Tail $Lines -ErrorAction SilentlyContinue
+    if (-not $tail) {
+        return ""
+    }
+    return (($tail | ForEach-Object { $_ -replace "`r", " " }) -join " | ")
 }
 
 function Test-EfiBootloaderHeader {
@@ -175,41 +239,116 @@ if (-not $ovmf) {
     Exit-WithSummary -Status "infra_warning" -Reason "ovmf_missing" -Code 0
 }
 
-$runtimeVars = Join-Path (Split-Path $SummaryLog -Parent) "qemu-ovmf-vars-runtime.fd"
-Copy-Item -LiteralPath $ovmf.vars -Destination $runtimeVars -Force
-
-"" | Set-Content $SerialLog -Encoding ASCII
-"" | Set-Content $ErrorLog -Encoding ASCII
-
-$qemuArgs = @(
-    "-machine", "q35",
-    "-m", "512M",
-    "-display", "none",
-    "-monitor", "none",
-    "-serial", "file:$SerialLog",
-    "-drive", "if=pflash,format=raw,readonly=on,file=$($ovmf.code)",
-    "-drive", "if=pflash,format=raw,file=$runtimeVars",
-    "-drive", "if=none,id=esp,format=raw,file=fat:rw:$resolvedEfiRoot",
-    "-device", "virtio-blk-pci,drive=esp,bootindex=1",
-    "-net", "none",
-    "-no-reboot",
-    "-no-shutdown"
+$summaryDir = Split-Path $SummaryLog -Parent
+$fatEfiRoot = (Resolve-Path $resolvedEfiRoot).Path -replace "\\", "/"
+$profiles = @(
+    @{
+        name = "primary"
+        machine = "q35"
+        driveArgs = @(
+            "-drive", "if=none,id=esp,format=raw,file=fat:rw:$fatEfiRoot",
+            "-device", "virtio-blk-pci,drive=esp,bootindex=1"
+        )
+    },
+    @{
+        name = "compat"
+        machine = "pc"
+        driveArgs = @(
+            "-drive", "if=ide,index=0,media=disk,format=raw,file=fat:rw:$fatEfiRoot"
+        )
+    }
 )
 
-$proc = Start-Process -FilePath "qemu-system-x86_64" -ArgumentList $qemuArgs -PassThru -NoNewWindow -RedirectStandardError $ErrorLog
-$completed = $proc | Wait-Process -Timeout $Timeout -ErrorAction SilentlyContinue
+$attemptResults = @()
+$attemptCount = 0
+$best = $null
+$bestScore = -1
+$seenTimeout = $false
 
-if ($completed -eq $null) {
-    Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-    Exit-WithSummary -Status "timeout" -Reason "timeout_waiting_for_boot_token" -Code 2
+foreach ($profile in $profiles) {
+    $attemptCount += 1
+    $name = $profile.name
+    $machine = $profile.machine
+    $driveArgs = $profile.driveArgs
+
+    $runtimeVars = Join-Path $summaryDir ("qemu-ovmf-vars-runtime-{0}.fd" -f $name)
+    $attemptSerial = "qemu-ovmf-serial-{0}.log" -f $name
+    $attemptError = "qemu-ovmf-err-{0}.log" -f $name
+    Copy-Item -LiteralPath $ovmf.vars -Destination $runtimeVars -Force
+    "" | Set-Content $attemptSerial -Encoding ASCII
+    "" | Set-Content $attemptError -Encoding ASCII
+
+    $qemuArgs = @(
+        "-machine", $machine,
+        "-m", "512M",
+        "-display", "none",
+        "-monitor", "none",
+        "-serial", "file:$attemptSerial",
+        "-drive", "if=pflash,format=raw,readonly=on,file=$($ovmf.code)",
+        "-drive", "if=pflash,format=raw,file=$runtimeVars"
+    ) + $driveArgs + @(
+        "-net", "none",
+        "-no-reboot",
+        "-no-shutdown"
+    )
+
+    $proc = Start-Process -FilePath "qemu-system-x86_64" -ArgumentList $qemuArgs -PassThru -NoNewWindow -RedirectStandardError $attemptError
+    $completed = $proc | Wait-Process -Timeout $Timeout -ErrorAction SilentlyContinue
+    $timedOut = $completed -eq $null
+    if ($timedOut) {
+        $seenTimeout = $true
+        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+    }
+
+    $serialText = ""
+    if (Test-Path $attemptSerial) {
+        $serialText = Get-Content $attemptSerial -Raw -ErrorAction SilentlyContinue
+    }
+    $phase = Get-LastBootPhase -SerialText $serialText
+    $score = Get-PhaseScore -Phase $phase
+    $tokenFound = $serialText -match $ExpectToken
+    $exitCode = if ($timedOut) { 124 } else { $proc.ExitCode }
+    $serialTail = Get-TailInline -Path $attemptSerial -Lines $TailLines
+    $errorTail = Get-TailInline -Path $attemptError -Lines $TailLines
+
+    $result = @{
+        name = $name
+        machine = $machine
+        phase = $phase
+        score = $score
+        tokenFound = $tokenFound
+        timedOut = $timedOut
+        exitCode = $exitCode
+        serialLog = $attemptSerial
+        errorLog = $attemptError
+        serialTail = $serialTail
+        errorTail = $errorTail
+    }
+    $attemptResults += $result
+
+    if ($score -gt $bestScore) {
+        $bestScore = $score
+        $best = $result
+    }
+
+    if ($tokenFound) {
+        Copy-Item -LiteralPath $attemptSerial -Destination $SerialLog -Force
+        Copy-Item -LiteralPath $attemptError -Destination $ErrorLog -Force
+        Exit-WithSummary -Status "pass" -Reason "boot_token_found" -Code 0 -ProfileUsed $name -LastBootPhase "BOOT_OK" -QemuRc $exitCode -Attempts $attemptCount -SerialTail $serialTail -ErrorTail $errorTail
+    }
 }
 
-$serialText = ""
-if (Test-Path $SerialLog) {
-    $serialText = Get-Content $SerialLog -Raw -ErrorAction SilentlyContinue
-}
-if ($serialText -match $ExpectToken) {
-    Exit-WithSummary -Status "pass" -Reason "boot_token_found" -Code 0
+if (-not $best -and $attemptResults.Count -gt 0) {
+    $best = $attemptResults[-1]
 }
 
-Exit-WithSummary -Status "fail" -Reason ("boot_token_missing_rc_{0}" -f $proc.ExitCode) -Code 1
+if ($best) {
+    Copy-Item -LiteralPath $best.serialLog -Destination $SerialLog -Force
+    Copy-Item -LiteralPath $best.errorLog -Destination $ErrorLog -Force
+}
+
+if ($seenTimeout) {
+    Exit-WithSummary -Status "timeout" -Reason "timeout_waiting_for_boot_token" -Code 2 -ProfileUsed $best.name -LastBootPhase $best.phase -QemuRc $best.exitCode -Attempts $attemptCount -SerialTail $best.serialTail -ErrorTail $best.errorTail
+}
+
+Exit-WithSummary -Status "fail" -Reason ("boot_token_missing_rc_{0}" -f $best.exitCode) -Code 1 -ProfileUsed $best.name -LastBootPhase $best.phase -QemuRc $best.exitCode -Attempts $attemptCount -SerialTail $best.serialTail -ErrorTail $best.errorTail

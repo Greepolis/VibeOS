@@ -63,6 +63,11 @@ jobs:
           set -euo pipefail
           if [[ -f qemu-ovmf-summary.txt ]]; then
             cat qemu-ovmf-summary.txt
+            status="$(grep '^status=' qemu-ovmf-summary.txt | cut -d= -f2- || true)"
+            reason="$(grep '^reason=' qemu-ovmf-summary.txt | cut -d= -f2- || true)"
+            profile="$(grep '^profile_used=' qemu-ovmf-summary.txt | cut -d= -f2- || true)"
+            phase="$(grep '^last_boot_phase=' qemu-ovmf-summary.txt | cut -d= -f2- || true)"
+            echo "OVMF status=${status} reason=${reason} profile=${profile} phase=${phase}"
           fi
 
       - name: QEMU Direct-Loader Probe (Informational)
@@ -83,6 +88,8 @@ jobs:
             build/Testing/**/Test.xml
             qemu-serial-*.log
             qemu-err-*.log
+            qemu-ovmf-serial-*.log
+            qemu-ovmf-err-*.log
             qemu-ovmf-serial.log
             qemu-ovmf-err.log
             qemu-ovmf-summary.txt

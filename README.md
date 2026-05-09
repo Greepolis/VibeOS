@@ -43,7 +43,8 @@ Notes:
 - CI uses dual boot gates: host tests + OVMF smoke are required, direct-loader probe is informational.
 - `qemu-system-x86_64 -kernel` has known compatibility limits with ELF64/Multiboot2 images in newer QEMU builds. The direct-loader probe classifies these loader-side incompatibilities separately from real boot regressions.
 - Bootloader artifacts use a validated EFI conversion flow (`bootloader.elf` -> `bootloader.efi`) with fail-fast PE32+ checks.
-- OVMF smoke emits structured diagnostics (`qemu-ovmf-summary.txt` / `qemu-ovmf-summary.json`) with explicit status reasons.
+- OVMF smoke emits structured diagnostics (`qemu-ovmf-summary.txt` / `qemu-ovmf-summary.json`) with explicit status reasons, selected boot profile, and last observed boot phase.
+- EFI media generation includes `startup.nsh` fallback in `artifacts/efi_root` to make firmware-shell boot path deterministic.
 
 ## Project Structure
 

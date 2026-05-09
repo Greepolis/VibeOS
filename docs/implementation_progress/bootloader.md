@@ -1,6 +1,6 @@
 # Bootloader Progress
 
-Status: Completed (Phase 4)
+Status: At Risk (Phase 4 revalidation in progress)
 Last review: 2026-05-09
 
 ## Implemented
@@ -34,6 +34,15 @@ Last review: 2026-05-09
   - network disabled (`-net none`) to avoid PXE stalls
   - extended timeout window (`60s`)
   - structured summary with status taxonomy: `pass`, `timeout`, `fail`, `infra_error`.
+- OVMF smoke multi-profile retry strategy:
+  - primary profile: `q35` + `virtio-blk-pci`
+  - compatibility profile: `pc` + IDE disk path
+  - unified outcome reporting: `profile_used`, `last_boot_phase`, `attempts`, compact serial/stderr tails.
+- EFI media fallback hardening:
+  - auto-generated `startup.nsh` in EFI root to enforce fallback launch path from firmware shell.
+- CI OVMF summary enrichment:
+  - required gate now emits explicit `status`, `reason`, `profile_used`, `last_boot_phase`.
+  - profile-specific serial/stderr logs are uploaded as artifacts for post-failure diagnostics.
 - Bootloader observability tokens on serial path:
   - `BL_FS_OK`
   - `BL_PLAN_OK`
@@ -50,7 +59,8 @@ Last review: 2026-05-09
 - Host-side regression suite is green (`vibeos-kernel-host`, `vibeos-bootloader-host`).
 
 ## Pending
-- No open bootloader implementation gaps in current scope.
+- Revalidate OVMF required gate on Linux CI after multi-profile stabilization (`BOOT_OK` token pass).
+- If OVMF remains unstable, capture `profile_used` + `last_boot_phase` from summary and iterate on boot path/device mapping.
 
 ## Next checkpoint
-- Track long-horizon improvements (post-closure): signature verification policy enforcement, richer measured-boot event export, and expanded firmware matrix.
+- Close Phase 4 revalidation by collecting one green required OVMF CI run with `reason=boot_token_found`.

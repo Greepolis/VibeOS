@@ -8,6 +8,7 @@ set(EFI_ROOT_DIR "${ARTIFACTS_DIR}/efi_root")
 set(EFI_BOOT_DIR "${EFI_ROOT_DIR}/EFI/BOOT")
 set(EFI_BOOTX64 "${EFI_BOOT_DIR}/BOOTX64.EFI")
 set(EFI_KERNEL "${EFI_BOOT_DIR}/VIBEOSKR.ELF")
+set(EFI_STARTUP_NSH "${EFI_ROOT_DIR}/startup.nsh")
 set(EFI_ARCHIVE "${ARTIFACTS_DIR}/vibeos_efi_root.tar")
 
 if(NOT EXISTS "${KERNEL_ELF}")
@@ -24,6 +25,10 @@ file(MAKE_DIRECTORY "${EFI_BOOT_DIR}")
 # Real EFI filesystem layout (QEMU OVMF-compatible virtual FAT tree)
 file(COPY_FILE "${BOOTLOADER_EFI}" "${EFI_BOOTX64}" ONLY_IF_DIFFERENT)
 file(COPY_FILE "${KERNEL_ELF}" "${EFI_KERNEL}" ONLY_IF_DIFFERENT)
+file(WRITE "${EFI_STARTUP_NSH}"
+    "echo -off\r\n"
+    "fs0:\\EFI\\BOOT\\BOOTX64.EFI\r\n"
+)
 
 # Keep legacy kernel-as-image artifact for direct-loader probes.
 file(COPY_FILE "${KERNEL_ELF}" "${LEGACY_BOOT_IMAGE}" ONLY_IF_DIFFERENT)
@@ -40,12 +45,14 @@ endif()
 
 file(SHA256 "${EFI_BOOTX64}" BOOTLOADER_SHA256)
 file(SHA256 "${EFI_KERNEL}" KERNEL_SHA256)
+file(SHA256 "${EFI_STARTUP_NSH}" STARTUP_NSH_SHA256)
 file(SHA256 "${EFI_ARCHIVE}" EFI_ARCHIVE_SHA256)
 
 set(BOOT_MANIFEST "${ARTIFACTS_DIR}/boot_manifest.txt")
 string(TIMESTAMP BOOT_ARTIFACTS_GENERATED_UTC "%Y-%m-%dT%H:%M:%SZ" UTC)
 file(SIZE "${EFI_BOOTX64}" BOOTLOADER_SIZE)
 file(SIZE "${EFI_KERNEL}" KERNEL_SIZE)
+file(SIZE "${EFI_STARTUP_NSH}" STARTUP_NSH_SIZE)
 file(SIZE "${EFI_ARCHIVE}" ARCHIVE_SIZE)
 file(WRITE "${BOOT_MANIFEST}"
     "VibeOS Boot Artifacts Manifest\n"
@@ -59,14 +66,17 @@ file(WRITE "${BOOT_MANIFEST}"
     "root=${EFI_ROOT_DIR}\n"
     "bootloader=${EFI_BOOTX64}\n"
     "kernel=${EFI_KERNEL}\n"
+    "startup_nsh=${EFI_STARTUP_NSH}\n"
     "archive=${EFI_ARCHIVE}\n"
     "\n"
     "[integrity]\n"
     "bootloader_size=${BOOTLOADER_SIZE}\n"
     "kernel_size=${KERNEL_SIZE}\n"
+    "startup_nsh_size=${STARTUP_NSH_SIZE}\n"
     "archive_size=${ARCHIVE_SIZE}\n"
     "bootloader_sha256=${BOOTLOADER_SHA256}\n"
     "kernel_sha256=${KERNEL_SHA256}\n"
+    "startup_nsh_sha256=${STARTUP_NSH_SHA256}\n"
     "archive_sha256=${EFI_ARCHIVE_SHA256}\n"
 )
 
