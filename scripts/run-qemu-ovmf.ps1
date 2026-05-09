@@ -2,7 +2,7 @@ param(
     [string]$BuildDir = "build",
     [string]$EfiRoot = "",
     [string]$ExpectToken = "BOOT_OK",
-    [int]$Timeout = 25,
+    [int]$Timeout = 60,
     [string]$SerialLog = "artifacts/qemu-ovmf-serial.log",
     [string]$ErrorLog = "artifacts/qemu-ovmf-stderr.log",
     [string]$SummaryLog = "artifacts/qemu-ovmf-summary.json",
@@ -63,6 +63,7 @@ function Exit-WithSummary {
     $summary = @{
         status = $Status
         reason = $Reason
+        timeout_sec = $Timeout
         expect_token = $ExpectToken
         build_dir = $BuildDir
         efi_root = $resolvedEfiRoot
@@ -71,6 +72,67 @@ function Exit-WithSummary {
     }
     $summary | ConvertTo-Json -Depth 5 | Set-Content -Path $SummaryLog -Encoding UTF8
     exit $Code
+}
+
+function Test-EfiBootloaderHeader {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    if (-not (Test-Path $Path)) {
+        return @{ ok = $false; reason = "missing_file" }
+    }
+
+    $stream = $null
+    $reader = $null
+    try {
+        $stream = [System.IO.File]::OpenRead($Path)
+        if ($stream.Length -lt 128) {
+            return @{ ok = $false; reason = "too_small" }
+        }
+        $reader = New-Object System.IO.BinaryReader($stream)
+
+        $m0 = $reader.ReadByte()
+        $m1 = $reader.ReadByte()
+        if ($m0 -ne 0x4D -or $m1 -ne 0x5A) {
+            return @{ ok = $false; reason = "missing_mz" }
+        }
+
+        $stream.Position = 0x3C
+        $e_lfanew = $reader.ReadUInt32()
+        if (($e_lfanew + 0x18 + 0x46) -gt $stream.Length) {
+            return @{ ok = $false; reason = "pe_offset_out_of_range" }
+        }
+
+        $stream.Position = $e_lfanew
+        $sig = $reader.ReadBytes(4)
+        if ($sig.Length -ne 4 -or $sig[0] -ne 0x50 -or $sig[1] -ne 0x45 -or $sig[2] -ne 0x00 -or $sig[3] -ne 0x00) {
+            return @{ ok = $false; reason = "missing_pe_signature" }
+        }
+
+        $stream.Position = $e_lfanew + 0x18
+        $magic = $reader.ReadUInt16()
+        if ($magic -ne 0x20B) {
+            return @{ ok = $false; reason = ("optional_magic_0x{0:x}" -f $magic) }
+        }
+
+        $stream.Position = $e_lfanew + 0x18 + 0x44
+        $subsystem = $reader.ReadUInt16()
+        if ($subsystem -ne 10) {
+            return @{ ok = $false; reason = ("subsystem_{0}" -f $subsystem) }
+        }
+
+        return @{ ok = $true; reason = "ok" }
+    } catch {
+        return @{ ok = $false; reason = ("exception_{0}" -f $_.Exception.Message.Replace(' ', '_')) }
+    } finally {
+        if ($reader) {
+            $reader.Close()
+        } elseif ($stream) {
+            $stream.Close()
+        }
+    }
 }
 
 New-Item -ItemType Directory -Force (Split-Path -Path $SerialLog -Parent) | Out-Null
@@ -100,6 +162,11 @@ if (-not (Test-Path $bootx64) -or -not (Test-Path $kernelPayload)) {
     Exit-WithSummary -Status "infra_error" -Reason "efi_payload_missing" -Code 1
 }
 
+$efiValidation = Test-EfiBootloaderHeader -Path $bootx64
+if (-not $efiValidation.ok) {
+    Exit-WithSummary -Status "infra_error" -Reason ("efi_header_invalid_{0}" -f $efiValidation.reason) -Code 1
+}
+
 $ovmf = Find-OvmfPair -CodeOverride $OvmfCode -VarsOverride $OvmfVars
 if (-not $ovmf) {
     if ($Strict) {
@@ -122,7 +189,9 @@ $qemuArgs = @(
     "-serial", "file:$SerialLog",
     "-drive", "if=pflash,format=raw,readonly=on,file=$($ovmf.code)",
     "-drive", "if=pflash,format=raw,file=$runtimeVars",
-    "-drive", "format=raw,file=fat:rw:$resolvedEfiRoot",
+    "-drive", "if=none,id=esp,format=raw,file=fat:rw:$resolvedEfiRoot",
+    "-device", "virtio-blk-pci,drive=esp,bootindex=1",
+    "-net", "none",
     "-no-reboot",
     "-no-shutdown"
 )

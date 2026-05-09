@@ -51,11 +51,19 @@ jobs:
         run: cmake --build build --target vibeos_image
 
       - name: QEMU OVMF Smoke (Required Gate)
-        timeout-minutes: 3
+        timeout-minutes: 4
         run: |
           set -euo pipefail
           chmod +x scripts/qemu-smoke-ovmf-linux.sh
-          ./scripts/qemu-smoke-ovmf-linux.sh build "BOOT_OK"
+          ./scripts/qemu-smoke-ovmf-linux.sh build "BOOT_OK" 60
+
+      - name: QEMU OVMF Summary
+        if: always()
+        run: |
+          set -euo pipefail
+          if [[ -f qemu-ovmf-summary.txt ]]; then
+            cat qemu-ovmf-summary.txt
+          fi
 
       - name: QEMU Direct-Loader Probe (Informational)
         continue-on-error: true
