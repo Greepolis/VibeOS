@@ -1,7 +1,7 @@
 # Bootloader Progress
 
-Status: Completed (Phase 3 scope)
-Last review: 2026-05-02
+Status: Completed (Phase 4)
+Last review: 2026-05-09
 
 ## Implemented
 - UEFI entry path and protocol wrappers in `boot/uefi_main.c` and `boot/uefi_protocol.c`.
@@ -23,16 +23,33 @@ Last review: 2026-05-02
   - informational: direct-loader probe (`-kernel`) for compatibility telemetry.
 - Host-side parser regression coverage (PE + ELF) in `tests/kernel/kernel_tests.c`.
 - Host-side UEFI file loader regression matrix (success, missing file, empty file, alloc failure, short read) in `tests/bootloader/uefi_bootloader_tests.c`.
+- EFI build pipeline hardening with explicit intermediate image and conversion+validation stage (`cmake/convert_efi_image.cmake`):
+  - objcopy primary target: `efi-app-x86_64`
+  - automatic fallback: `pei-x86-64`
+  - fail-fast PE32+ checks: `MZ`, `PE`, optional-header magic `0x20B`, subsystem `10`.
+- Toolchain-safe UEFI intermediate link flow for MinGW/Linux without hardcoded libc dependency.
+- OVMF smoke hardening:
+  - deterministic disk mapping with explicit drive/device and `bootindex`
+  - network disabled (`-net none`) to avoid PXE stalls
+  - extended timeout window (`60s`)
+  - structured summary with status taxonomy: `pass`, `timeout`, `fail`, `infra_error`.
+- Bootloader observability tokens on serial path:
+  - `BL_FS_OK`
+  - `BL_PLAN_OK`
+  - `BL_HANDOFF_OK`
+  - final success token remains `BOOT_OK`.
 
 ## Final Bootloader Checklist
 - Build pipeline emits `bootloader.efi`, `vibeos_kernel.elf`, legacy `vibeos_boot.img`, and EFI media root.
+- `bootloader.efi` is emitted as validated EFI application (PE32+ subsystem 10), not a raw file rename.
 - EFI media contains canonical fallback path `EFI/BOOT/BOOTX64.EFI` and kernel payload `VIBEOSKR.ELF`.
 - Bootloader loads kernel from filesystem (no fixed hardcoded load-address dependency).
 - Segment plan enforces structural safety checks before memory copy/load.
 - OVMF smoke path and logs are integrated in CI artifacts.
+- Host-side regression suite is green (`vibeos-kernel-host`, `vibeos-bootloader-host`).
 
 ## Pending
-- No open Phase 3 bootloader gaps in implementation progress.
+- No open bootloader implementation gaps in current scope.
 
 ## Next checkpoint
-- Phase 4 boot hardening: Secure Boot policy path, measured boot metadata handoff, and richer fault telemetry around handoff failures.
+- Track long-horizon improvements (post-closure): signature verification policy enforcement, richer measured-boot event export, and expanded firmware matrix.
