@@ -165,29 +165,70 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
     # UEFI freestanding compilation flags
     target_compile_options(vibeos_bootloader_uefi PRIVATE
         -ffreestanding      # No hosted libs
+        -fno-stack-protector
         -fshort-wchar       # UEFI uses 16-bit wchar
         -Wall
         -Wextra
         -Wpedantic
     )
     
-    # UEFI linker options
-    # NOTE: --subsystem=efi-app requires cross-compiler (LLVM/Clang on Linux)
-    # MinGW GCC on Windows doesn't support UEFI subsystem directly
-    # Phase 1: Link as generic executable, full UEFI support in Phase 2+ with WSL/Linux toolchain
-    target_link_options(vibeos_bootloader_uefi PRIVATE
-        -nostdlib                       # No standard library
-        -Wl,--entry=efi_main           # Entry point (will be PE entry when using UEFI toolchain)
-        -lc                             # Link libc for string functions (memcpy, etc.)
+    # UEFI linker options for the intermediate image.
+    # Final BOOTX64.EFI is generated via objcopy conversion+validation step below.
+    if(MINGW)
+        # Keep freestanding linkage on MinGW and bypass CRT startup requirements.
+        target_link_options(vibeos_bootloader_uefi PRIVATE
+            -nostdlib
+            -Wl,--entry=efi_main
+            -Wl,--subsystem,10
+        )
+    else()
+        # Linux CI keeps freestanding linkage for predictable intermediate output.
+        target_link_options(vibeos_bootloader_uefi PRIVATE
+            -nostdlib
+            -Wl,--entry=efi_main
+        )
+    endif()
+
+    if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+        target_link_libraries(vibeos_bootloader_uefi PRIVATE gcc)
+    endif()
+
+    find_program(VIBEOS_OBJCOPY_TOOL
+        NAMES llvm-objcopy objcopy x86_64-w64-mingw32-objcopy
     )
-    
-    # Copy bootloader to artifacts directory
-    add_custom_target(vibeos_bootloader_efi
+    if(NOT VIBEOS_OBJCOPY_TOOL)
+        message(FATAL_ERROR "objcopy-compatible tool not found (required for EFI bootloader conversion)")
+    endif()
+
+    set(VIBEOS_BOOTLOADER_ELF "${VIBEOS_ARTIFACTS_DIR}/bootloader.elf")
+    set(VIBEOS_BOOTLOADER_EFI "${VIBEOS_ARTIFACTS_DIR}/bootloader.efi")
+
+    add_custom_command(
+        OUTPUT "${VIBEOS_BOOTLOADER_ELF}"
         COMMAND ${CMAKE_COMMAND} -E copy
             $<TARGET_FILE:vibeos_bootloader_uefi>
-            ${VIBEOS_ARTIFACTS_DIR}/bootloader.efi
+            "${VIBEOS_BOOTLOADER_ELF}"
         DEPENDS vibeos_bootloader_uefi
-        COMMENT "Copying UEFI bootloader to artifacts/"
+        COMMENT "Staging UEFI bootloader intermediate image"
+        VERBATIM
+    )
+
+    add_custom_command(
+        OUTPUT "${VIBEOS_BOOTLOADER_EFI}"
+        COMMAND ${CMAKE_COMMAND}
+            "-DINPUT_ELF=${VIBEOS_BOOTLOADER_ELF}"
+            "-DOUTPUT_EFI=${VIBEOS_BOOTLOADER_EFI}"
+            "-DOBJCOPY_TOOL=${VIBEOS_OBJCOPY_TOOL}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/convert_efi_image.cmake"
+        DEPENDS
+            "${VIBEOS_BOOTLOADER_ELF}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/convert_efi_image.cmake"
+        COMMENT "Converting bootloader intermediate image to validated EFI application"
+        VERBATIM
+    )
+
+    add_custom_target(vibeos_bootloader_efi
+        DEPENDS "${VIBEOS_BOOTLOADER_EFI}"
     )
 
     # Build EFI media layout in artifacts/efi_root with BOOTX64.EFI + kernel payload.

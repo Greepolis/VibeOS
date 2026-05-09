@@ -134,6 +134,7 @@ int uefi_boot_handoff(EFI_SYSTEM_TABLE *st,
     if (uefi_boot_exit_services(st, image_handle, UEFI_BOOT_EXIT_MAX_ATTEMPTS) != 0) {
         return -1;
     }
+    uefi_serial_puts("[BOOT] BL_HANDOFF_OK\n");
 
     uefi_serial_puts("[BOOT] Jumping to kernel at 0x");
     {

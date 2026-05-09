@@ -140,6 +140,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
         uefi_serial_puts("[ERROR] Failed to load kernel image from EFI filesystem\n");
         return EFI_LOAD_ERROR;
     }
+    uefi_serial_puts("[BOOT] BL_FS_OK\n");
     kernel_image = (const uint8_t *)kernel_image_buffer;
     uefi_serial_puts("[BOOT] Kernel image size (bytes): 0x");
     uefi_log_u64(kernel_image_size);
@@ -150,6 +151,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
         uefi_file_free_buffer(SystemTable, kernel_image_buffer, kernel_image_size);
         return EFI_LOAD_ERROR;
     }
+    uefi_serial_puts("[BOOT] BL_PLAN_OK\n");
 
     if (uefi_kernel_load_segments(SystemTable, kernel_image, kernel_image_size, &kernel_plan) != 0) {
         uefi_serial_puts("[ERROR] Kernel segment loading failed\n");
@@ -208,6 +210,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     }
     
     kernel_entry_fn entry = (kernel_entry_fn)kernel_plan.kernel_entry_point;
+    uefi_serial_puts("[BOOT] BL_HANDOFF_START\n");
     
     if (uefi_boot_handoff(SystemTable, ImageHandle, kernel_struct, boot_info, entry) != 0) {
         uefi_serial_puts("[ERROR] Boot handoff failed\n");
