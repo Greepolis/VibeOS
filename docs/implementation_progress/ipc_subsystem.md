@@ -1,7 +1,7 @@
 # IPC Subsystem Progress
 
 Status: In Progress
-Last review: 2026-04-25
+Last review: 2026-05-09
 
 ## Implemented
 - Event and bounded channel primitives in `kernel/ipc/event.c` and `kernel/ipc/channel.c`.
@@ -12,6 +12,7 @@ Last review: 2026-04-25
 - Batch wait, wait-all, and signaled peek helpers.
 - Extended telemetry for wait behavior (disabled skips, priority wakes, wait-all, batch, peek).
 - Scheduler-aware thread wait wrappers with wake CPU feedback.
+- Contention snapshot API (`vibeos_waitset_contention_snapshot`) with enabled/signaled visibility for load diagnostics.
 
 ## Pending
 - Large fan-in waitset sharding strategy.

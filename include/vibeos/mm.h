@@ -17,6 +17,8 @@ int vibeos_pmm_init(vibeos_pmm_t *pmm, uintptr_t base, size_t size_bytes, size_t
 int vibeos_pmm_pick_usable_region(const vibeos_boot_info_t *boot_info, size_t page_size, uintptr_t *out_base, size_t *out_size);
 int vibeos_pmm_init_from_boot_info(vibeos_pmm_t *pmm, const vibeos_boot_info_t *boot_info, size_t page_size);
 void *vibeos_pmm_alloc_page(vibeos_pmm_t *pmm);
+void *vibeos_pmm_alloc_pages(vibeos_pmm_t *pmm, size_t page_count);
+size_t vibeos_pmm_allocated_pages(const vibeos_pmm_t *pmm);
 size_t vibeos_pmm_remaining(const vibeos_pmm_t *pmm);
 
 #endif

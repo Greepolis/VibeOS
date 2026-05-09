@@ -15,8 +15,19 @@
 #include "vibeos/trap.h"
 #include "vibeos/vm.h"
 
+#define VIBEOS_BOOT_HEALTH_PMM_READY (1u << 0)
+#define VIBEOS_BOOT_HEALTH_VM_READY (1u << 1)
+#define VIBEOS_BOOT_HEALTH_HANDLES_READY (1u << 2)
+#define VIBEOS_BOOT_HEALTH_POLICY_READY (1u << 3)
+#define VIBEOS_BOOT_HEALTH_SCHED_READY (1u << 4)
+#define VIBEOS_BOOT_HEALTH_PROC_READY (1u << 5)
+#define VIBEOS_BOOT_HEALTH_IRQ_READY (1u << 6)
+#define VIBEOS_BOOT_HEALTH_BOOT_EVENT_SIGNALLED (1u << 7)
+
 typedef struct vibeos_kernel {
     vibeos_boot_state_t boot_state;
+    uint32_t boot_health_flags;
+    uint32_t boot_failure_fatal;
     vibeos_pmm_t pmm;
     vibeos_address_space_t kernel_aspace;
     vibeos_handle_table_t handles;
@@ -34,5 +45,6 @@ typedef struct vibeos_kernel {
 
 int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info);
 const char *vibeos_kernel_stage_name(vibeos_boot_stage_t stage);
+int vibeos_kernel_boot_health(const vibeos_kernel_t *kernel, uint32_t *out_health_flags, uint32_t *out_failure_fatal);
 
 #endif

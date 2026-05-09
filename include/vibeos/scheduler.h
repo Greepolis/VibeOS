@@ -112,5 +112,6 @@ int vibeos_sched_rebalance(vibeos_scheduler_t *sched, uint32_t max_moves, uint32
 int vibeos_sched_starvation_tick(vibeos_scheduler_t *sched, uint32_t cpu_id);
 int vibeos_sched_boost_starving(vibeos_scheduler_t *sched, uint64_t starvation_threshold, uint32_t boost_ticks, uint32_t max_timeslice, uint32_t *out_boosted);
 int vibeos_sched_qos_summary(const vibeos_scheduler_t *sched, uint64_t *out_rebalance_passes, uint64_t *out_rebalance_moves, uint64_t *out_affinity_misses, uint64_t *out_priority_boosts);
+int vibeos_sched_load_snapshot(const vibeos_scheduler_t *sched, uint32_t *out_depths, size_t max_depths, uint32_t *out_entries);
 
 #endif

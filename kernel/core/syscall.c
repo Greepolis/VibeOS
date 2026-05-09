@@ -150,6 +150,12 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
         case VIBEOS_SYSCALL_NOP:
             frame->result = 0;
             return 0;
+        case VIBEOS_SYSCALL_ABI_VERSION_GET:
+            frame->result = (int64_t)vibeos_syscall_abi_version_current();
+            return 0;
+        case VIBEOS_SYSCALL_ABI_COMPAT_CHECK:
+            frame->result = vibeos_syscall_abi_is_compatible((uint32_t)frame->arg0) ? 1 : 0;
+            return 0;
         case VIBEOS_SYSCALL_EVENT_SIGNAL:
             vibeos_event_signal(&kernel->boot_event);
             frame->result = 0;

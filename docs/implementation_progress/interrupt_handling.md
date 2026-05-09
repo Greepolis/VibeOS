@@ -1,11 +1,12 @@
 # Interrupt Handling Progress
 
 Status: In Progress
-Last review: 2026-04-25
+Last review: 2026-05-09
 
 ## Implemented
 - Interrupt controller registration/dispatch primitives in `kernel/core/interrupts.c`.
 - IRQ diagnostics counters and mask/unmask controls.
+- Denied-dispatch diagnostics with explicit cause counters (`bad_irq`, `unhandled`, `masked`, `disabled`) and counter reset API.
 - x86_64 IDT scaffolding in `kernel/arch/x86_64/idt.c`.
 - Trap state and classification flow in `kernel/arch/x86_64/trap.c`.
 - Timer IRQ binding path from interrupt controller to timer source.

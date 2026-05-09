@@ -3,14 +3,33 @@
 
 #include <stdint.h>
 
+#define VIBEOS_INIT_MAX_GRAPH_NODES 16u
+
 typedef enum vibeos_service_state {
     VIBEOS_SERVICE_STOPPED = 0,
     VIBEOS_SERVICE_RUNNING = 1
 } vibeos_service_state_t;
 
+typedef enum vibeos_init_service_class {
+    VIBEOS_INIT_SERVICE_CORE = 0,
+    VIBEOS_INIT_SERVICE_OPTIONAL = 1
+} vibeos_init_service_class_t;
+
+typedef struct vibeos_init_node {
+    uint32_t service_id;
+    uint32_t dependency_mask;
+    uint32_t enabled;
+    vibeos_init_service_class_t restart_class;
+} vibeos_init_node_t;
+
 typedef struct vibeos_init_state {
     vibeos_service_state_t state;
     uint32_t started_services;
+    uint32_t dependency_resolved;
+    uint32_t restart_budget_core;
+    uint32_t restart_budget_optional;
+    uint32_t restart_attempts_core;
+    uint32_t restart_attempts_optional;
 } vibeos_init_state_t;
 
 typedef struct vibeos_devmgr_state {
@@ -38,6 +57,10 @@ typedef struct vibeos_servicemgr_state {
 
 int vibeos_init_start(vibeos_init_state_t *state);
 int vibeos_init_stop(vibeos_init_state_t *state);
+int vibeos_init_graph_start(vibeos_init_state_t *state, const vibeos_init_node_t *nodes, uint32_t node_count, uint32_t *out_started, uint32_t *out_failed);
+int vibeos_init_restart_policy(vibeos_init_state_t *state, uint32_t core_budget, uint32_t optional_budget);
+int vibeos_init_restart_note(vibeos_init_state_t *state, vibeos_init_service_class_t service_class);
+int vibeos_init_restart_allowed(const vibeos_init_state_t *state, vibeos_init_service_class_t service_class, uint32_t *out_allowed);
 int vibeos_devmgr_start(vibeos_devmgr_state_t *state);
 int vibeos_devmgr_stop(vibeos_devmgr_state_t *state);
 int vibeos_vfs_start(vibeos_vfs_state_t *state);

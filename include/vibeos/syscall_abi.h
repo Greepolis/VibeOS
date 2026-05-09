@@ -5,6 +5,11 @@
 
 #include "vibeos/syscall.h"
 
+#define VIBEOS_SYSCALL_ABI_VERSION_MAJOR 1u
+#define VIBEOS_SYSCALL_ABI_VERSION_MINOR 1u
+#define VIBEOS_SYSCALL_ABI_VERSION_PACK(major, minor) ((((major) & 0xFFFFu) << 16) | ((minor) & 0xFFFFu))
+#define VIBEOS_SYSCALL_ABI_VERSION_CURRENT VIBEOS_SYSCALL_ABI_VERSION_PACK(VIBEOS_SYSCALL_ABI_VERSION_MAJOR, VIBEOS_SYSCALL_ABI_VERSION_MINOR)
+
 /*
  * Syscall ABI v0 mapping.
  *
@@ -32,6 +37,35 @@ static inline uint32_t vibeos_syscall_handle_arg(const vibeos_syscall_frame_t *f
 /* Caller identity lane for handle-scoped operations in ABI v0. */
 static inline uint32_t vibeos_syscall_caller_pid(const vibeos_syscall_frame_t *f) {
     return f ? (uint32_t)f->arg2 : 0;
+}
+
+static inline uint32_t vibeos_syscall_abi_version_current(void) {
+    return VIBEOS_SYSCALL_ABI_VERSION_CURRENT;
+}
+
+static inline int vibeos_syscall_abi_is_compatible(uint32_t requested_version) {
+    uint32_t requested_major = (requested_version >> 16) & 0xFFFFu;
+    return requested_major == VIBEOS_SYSCALL_ABI_VERSION_MAJOR;
+}
+
+static inline void vibeos_syscall_make_abi_version_get(vibeos_syscall_frame_t *f) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_ABI_VERSION_GET;
+    f->arg0 = 0;
+    f->arg1 = 0;
+    f->arg2 = 0;
+}
+
+static inline void vibeos_syscall_make_abi_compat_check(vibeos_syscall_frame_t *f, uint32_t requested_version) {
+    if (!f) {
+        return;
+    }
+    f->id = VIBEOS_SYSCALL_ABI_COMPAT_CHECK;
+    f->arg0 = requested_version;
+    f->arg1 = 0;
+    f->arg2 = 0;
 }
 
 /* Handle API */

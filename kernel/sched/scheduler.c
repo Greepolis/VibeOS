@@ -955,6 +955,18 @@ int vibeos_sched_qos_summary(const vibeos_scheduler_t *sched, uint64_t *out_reba
     return 0;
 }
 
+int vibeos_sched_load_snapshot(const vibeos_scheduler_t *sched, uint32_t *out_depths, size_t max_depths, uint32_t *out_entries) {
+    uint32_t cpu_id;
+    if (!sched || !out_depths || !out_entries || sched->cpu_count == 0 || max_depths < sched->cpu_count) {
+        return -1;
+    }
+    for (cpu_id = 0; cpu_id < sched->cpu_count; cpu_id++) {
+        out_depths[cpu_id] = (uint32_t)sched->runqueues[cpu_id].count;
+    }
+    *out_entries = sched->cpu_count;
+    return 0;
+}
+
 int vibeos_sched_counters_reset(vibeos_scheduler_t *sched) {
     uint32_t i;
     if (!sched || sched->cpu_count == 0) {

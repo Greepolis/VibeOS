@@ -541,6 +541,29 @@ int vibeos_waitset_wait_batch(vibeos_waitset_t *waitset, uint64_t timeout_ticks,
     return -1;
 }
 
+int vibeos_waitset_contention_snapshot(vibeos_waitset_t *waitset, uint32_t *out_registered, uint32_t *out_enabled, uint32_t *out_signaled) {
+    uint32_t enabled = 0;
+    uint32_t signaled = 0;
+    size_t i;
+    if (!waitset || !waitset->active || !out_registered || !out_enabled || !out_signaled) {
+        return -1;
+    }
+    for (i = 0; i < waitset->count; i++) {
+        vibeos_event_t *ev = (vibeos_event_t *)waitset->events[i];
+        if (!waitset->event_enabled[i]) {
+            continue;
+        }
+        enabled++;
+        if (ev && vibeos_event_is_signaled(ev)) {
+            signaled++;
+        }
+    }
+    *out_registered = (uint32_t)waitset->count;
+    *out_enabled = enabled;
+    *out_signaled = signaled;
+    return 0;
+}
+
 static int waitset_thread_wait_begin(vibeos_scheduler_t *sched, struct vibeos_process_table *proc_table, uint32_t tid) {
     if (!proc_table || tid == 0) {
         return -1;

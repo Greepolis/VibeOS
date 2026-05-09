@@ -1,13 +1,14 @@
 # User Space Interface Progress
 
 Status: In Progress
-Last review: 2026-04-25
+Last review: 2026-05-09
 
 ## Implemented
 - User API syscall bridge in `user/lib/user_api.c`.
 - Service-facing interface contracts in `include/vibeos/user_api.h`.
 - Compatibility runtime scaffolding under `user/compat/*`.
 - Baseline integration with process/security/syscall surfaces.
+- Versioned user API contract and capability matrix exposure (`vibeos_user_api_contract`, `vibeos_user_api_capabilities`).
 
 ## Pending
 - Stable libc/runtime contract for richer userland.

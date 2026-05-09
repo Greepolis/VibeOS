@@ -27,6 +27,15 @@ static int map_is_valid(const vibeos_vm_map_t *map) {
     return 1;
 }
 
+static uintptr_t vm_align_up(uintptr_t value, uintptr_t align) {
+    uintptr_t mask;
+    if (align == 0) {
+        return value;
+    }
+    mask = align - 1u;
+    return (value + mask) & ~mask;
+}
+
 int vibeos_vm_init(vibeos_address_space_t *aspace) {
     if (!aspace) {
         return -1;
@@ -244,4 +253,56 @@ int vibeos_vm_compact(vibeos_address_space_t *aspace, uint32_t *out_merged) {
     }
     *out_merged = merged;
     return 0;
+}
+
+int vibeos_vm_find_gap(const vibeos_address_space_t *aspace, uintptr_t min_va, size_t size, uintptr_t align, uintptr_t *out_va) {
+    uintptr_t candidate;
+    if (!aspace || !out_va || size == 0 || align == 0) {
+        return -1;
+    }
+    if ((align & (align - 1u)) != 0u) {
+        return -1;
+    }
+    if (vibeos_vm_validate(aspace) != 0) {
+        return -1;
+    }
+    candidate = vm_align_up(min_va, align);
+    if (candidate < min_va) {
+        return -1;
+    }
+    for (;;) {
+        size_t i;
+        uintptr_t candidate_end;
+        uintptr_t next_candidate = 0;
+        int overlap = 0;
+        if (candidate > UINTPTR_MAX - size) {
+            return -1;
+        }
+        candidate_end = candidate + size;
+        for (i = 0; i < aspace->map_count; i++) {
+            uintptr_t map_start = aspace->maps[i].va;
+            uintptr_t map_end = aspace->maps[i].va + aspace->maps[i].size;
+            if (!(candidate < map_end && map_start < candidate_end)) {
+                continue;
+            }
+            overlap = 1;
+            {
+                uintptr_t aligned_map_end = vm_align_up(map_end, align);
+                if (aligned_map_end < map_end) {
+                    return -1;
+                }
+                if (next_candidate == 0 || aligned_map_end < next_candidate) {
+                    next_candidate = aligned_map_end;
+                }
+            }
+        }
+        if (!overlap) {
+            *out_va = candidate;
+            return 0;
+        }
+        if (next_candidate <= candidate) {
+            return -1;
+        }
+        candidate = next_candidate;
+    }
 }

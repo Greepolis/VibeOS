@@ -99,12 +99,24 @@ int vibeos_pmm_init_from_boot_info(vibeos_pmm_t *pmm, const vibeos_boot_info_t *
 }
 
 void *vibeos_pmm_alloc_page(vibeos_pmm_t *pmm) {
+    return vibeos_pmm_alloc_pages(pmm, 1u);
+}
+
+void *vibeos_pmm_alloc_pages(vibeos_pmm_t *pmm, size_t page_count) {
+    size_t required_bytes;
     uintptr_t addr;
-    if (!pmm || pmm->offset_bytes + pmm->page_size > pmm->size_bytes) {
+    if (!pmm || page_count == 0 || pmm->page_size == 0) {
+        return 0;
+    }
+    if (page_count > (SIZE_MAX / pmm->page_size)) {
+        return 0;
+    }
+    required_bytes = page_count * pmm->page_size;
+    if (pmm->offset_bytes > pmm->size_bytes || required_bytes > (pmm->size_bytes - pmm->offset_bytes)) {
         return 0;
     }
     addr = pmm->base + pmm->offset_bytes;
-    pmm->offset_bytes += pmm->page_size;
+    pmm->offset_bytes += required_bytes;
     return (void *)addr;
 }
 
@@ -113,4 +125,11 @@ size_t vibeos_pmm_remaining(const vibeos_pmm_t *pmm) {
         return 0;
     }
     return pmm->size_bytes - pmm->offset_bytes;
+}
+
+size_t vibeos_pmm_allocated_pages(const vibeos_pmm_t *pmm) {
+    if (!pmm || pmm->page_size == 0) {
+        return 0;
+    }
+    return pmm->offset_bytes / pmm->page_size;
 }

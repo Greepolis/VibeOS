@@ -21,6 +21,8 @@ int vibeos_net_runtime_init(vibeos_net_runtime_t *rt) {
     rt->next_socket_id = 1;
     rt->total_tx_packets = 0;
     rt->total_rx_packets = 0;
+    rt->simulated_ticks = 0;
+    rt->simulated_drops = 0;
     for (i = 0; i < VIBEOS_MAX_SOCKETS; i++) {
         rt->sockets[i].id = 0;
         rt->sockets[i].in_use = 0;
@@ -128,5 +130,43 @@ int vibeos_net_stats(const vibeos_net_runtime_t *rt, uint64_t *out_total_tx_pack
     *out_total_tx_packets = rt->total_tx_packets;
     *out_total_rx_packets = rt->total_rx_packets;
     *out_open_sockets = open;
+    return 0;
+}
+
+int vibeos_net_stats_ext(const vibeos_net_runtime_t *rt, uint64_t *out_total_tx_packets, uint64_t *out_total_rx_packets, uint32_t *out_open_sockets, uint64_t *out_simulated_ticks, uint64_t *out_simulated_drops) {
+    if (!rt || !out_total_tx_packets || !out_total_rx_packets || !out_open_sockets || !out_simulated_ticks || !out_simulated_drops) {
+        return -1;
+    }
+    if (vibeos_net_stats(rt, out_total_tx_packets, out_total_rx_packets, out_open_sockets) != 0) {
+        return -1;
+    }
+    *out_simulated_ticks = rt->simulated_ticks;
+    *out_simulated_drops = rt->simulated_drops;
+    return 0;
+}
+
+int vibeos_net_simulate_path(vibeos_net_runtime_t *rt, uint32_t socket_id, uint32_t packets, uint32_t per_packet_ticks, uint32_t drop_every, uint32_t *out_delivered, uint64_t *out_latency_ticks) {
+    vibeos_socket_entry_t *entry = find_socket(rt, socket_id);
+    uint32_t i;
+    uint32_t delivered = 0;
+    uint64_t total_latency = 0;
+    if (!entry || entry->port == 0 || packets == 0 || per_packet_ticks == 0 || !out_delivered || !out_latency_ticks) {
+        return -1;
+    }
+    for (i = 1; i <= packets; i++) {
+        if (drop_every > 0 && (i % drop_every) == 0) {
+            rt->simulated_drops++;
+            continue;
+        }
+        delivered++;
+        total_latency += per_packet_ticks;
+    }
+    entry->tx_packets += delivered;
+    entry->rx_packets += delivered;
+    rt->total_tx_packets += delivered;
+    rt->total_rx_packets += delivered;
+    rt->simulated_ticks += total_latency;
+    *out_delivered = delivered;
+    *out_latency_ticks = total_latency;
     return 0;
 }

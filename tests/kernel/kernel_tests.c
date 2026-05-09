@@ -57,12 +57,19 @@ static int test_pmm(void) {
     size_t picked_size = 0;
     void *a;
     void *b;
+    void *block;
     if (vibeos_pmm_init(&pmm, 0x100000, 8192, 4096) != 0) {
+        return -1;
+    }
+    if (vibeos_pmm_allocated_pages(&pmm) != 0) {
         return -1;
     }
     a = vibeos_pmm_alloc_page(&pmm);
     b = vibeos_pmm_alloc_page(&pmm);
     if (!a || !b || a == b) {
+        return -1;
+    }
+    if (vibeos_pmm_allocated_pages(&pmm) != 2) {
         return -1;
     }
     if (vibeos_pmm_alloc_page(&pmm) != 0) {
@@ -98,6 +105,16 @@ static int test_pmm(void) {
     if (pmm.base != 0x300000 || pmm.size_bytes != 0x6000) {
         return -1;
     }
+    block = vibeos_pmm_alloc_pages(&pmm, 2);
+    if (block == 0 || (uintptr_t)block != 0x300000) {
+        return -1;
+    }
+    if (vibeos_pmm_allocated_pages(&pmm) != 2 || vibeos_pmm_remaining(&pmm) != 0x4000) {
+        return -1;
+    }
+    if (vibeos_pmm_alloc_pages(&pmm, 5) != 0) {
+        return -1;
+    }
     return 0;
 }
 
@@ -110,6 +127,8 @@ static int test_scheduler(void) {
     uint64_t wait_end = 0;
     uint64_t requeues = 0;
     uint64_t requeue_failures = 0;
+    uint32_t loads[4];
+    uint32_t load_entries = 0;
     vibeos_sched_thread_runtime_state_t runtime_state = VIBEOS_SCHED_THREAD_ABSENT;
     uint32_t runtime_cpu = 0;
     if (vibeos_sched_init(&sched, 1) != 0) {
@@ -122,6 +141,9 @@ static int test_scheduler(void) {
         return -1;
     }
     if (vibeos_sched_runqueue_depth(&sched, 0) != 2 || vibeos_sched_runnable_threads(&sched) != 2) {
+        return -1;
+    }
+    if (vibeos_sched_load_snapshot(&sched, loads, 4, &load_entries) != 0 || load_entries != 1 || loads[0] != 2) {
         return -1;
     }
     out = vibeos_sched_next(&sched, 0);
@@ -371,6 +393,8 @@ static int test_kmain(void) {
     vibeos_memory_region_t region;
     vibeos_boot_info_t boot;
     vibeos_kernel_t kernel;
+    uint32_t health_flags = 0;
+    uint32_t fatal_failure = 1;
 
     memset(&kernel, 0, sizeof(kernel));
     memset(&boot, 0, sizeof(boot));
@@ -400,6 +424,12 @@ static int test_kmain(void) {
     if (!vibeos_event_is_signaled(&kernel.boot_event)) {
         return -1;
     }
+    if (vibeos_kernel_boot_health(&kernel, &health_flags, &fatal_failure) != 0) {
+        return -1;
+    }
+    if ((health_flags & VIBEOS_BOOT_HEALTH_BOOT_EVENT_SIGNALLED) == 0 || fatal_failure != 0) {
+        return -1;
+    }
     return 0;
 }
 
@@ -408,6 +438,7 @@ static int test_vm(void) {
     vibeos_address_space_t cloned;
     const vibeos_vm_map_t *found;
     uint32_t merged = 0;
+    uintptr_t gap = 0;
     if (vibeos_vm_init(&aspace) != 0) {
         return -1;
     }
@@ -468,17 +499,30 @@ static int test_vm(void) {
     if (vibeos_vm_map(&aspace, UINTPTR_MAX - 0x100, 0x300000, 0x1000, VIBEOS_VM_PERM_READ) == 0) {
         return -1;
     }
+    if (vibeos_vm_find_gap(&aspace, 0x500000, 0x1000, 0x1000, &gap) != 0 || gap != 0x502000) {
+        return -1;
+    }
+    if (vibeos_vm_find_gap(&aspace, 0x500000, 0x1000, 0x300, &gap) == 0) {
+        return -1;
+    }
     return 0;
 }
 
 static int test_interrupts(void) {
     vibeos_interrupt_controller_t intc;
     uint32_t acc = 0;
+    uint64_t denied_bad = 0;
+    uint64_t denied_unhandled = 0;
+    uint64_t denied_masked = 0;
+    uint64_t denied_disabled = 0;
     vibeos_intc_init(&intc);
     if (vibeos_intc_register(&intc, 32, irq_handler, &acc) != 0) {
         return -1;
     }
     if (vibeos_intc_dispatch(&intc, 32) != 0) {
+        return -1;
+    }
+    if (vibeos_intc_dispatch(&intc, 33) == 0) {
         return -1;
     }
     if (vibeos_intc_mask(&intc, 32) != 0 || vibeos_intc_is_masked(&intc, 32) != 1) {
@@ -499,10 +543,25 @@ static int test_interrupts(void) {
     if (vibeos_intc_set_enabled(&intc, 1) != 0) {
         return -1;
     }
+    if (vibeos_intc_dispatch(&intc, 999) == 0) {
+        return -1;
+    }
     if (vibeos_intc_dispatch(&intc, 32) != 0) {
         return -1;
     }
     if (acc != 64 || vibeos_intc_counter(&intc, 32) != 2) {
+        return -1;
+    }
+    if (vibeos_intc_denied_counters(&intc, &denied_bad, &denied_unhandled, &denied_masked, &denied_disabled) != 0) {
+        return -1;
+    }
+    if (denied_bad != 1 || denied_unhandled != 1 || denied_masked != 1 || denied_disabled != 1) {
+        return -1;
+    }
+    if (vibeos_intc_counters_reset(&intc) != 0) {
+        return -1;
+    }
+    if (vibeos_intc_counter(&intc, 32) != 0) {
         return -1;
     }
     return 0;
@@ -527,10 +586,27 @@ static int test_syscalls(void) {
     uint64_t thread_transitions = 0;
     uint64_t proc_terms = 0;
     uint64_t thread_exits = 0;
+    uint32_t abi_version = 0;
     vibeos_handle_table_t *pid1_handles = 0;
     memset(&kernel, 0, sizeof(kernel));
     memset(&frame, 0, sizeof(frame));
     vibeos_event_init(&kernel.boot_event);
+    vibeos_syscall_make_abi_version_get(&frame);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
+        return -1;
+    }
+    abi_version = (uint32_t)frame.result;
+    if (abi_version != vibeos_syscall_abi_version_current()) {
+        return -1;
+    }
+    vibeos_syscall_make_abi_compat_check(&frame, abi_version);
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 1) {
+        return -1;
+    }
+    vibeos_syscall_make_abi_compat_check(&frame, VIBEOS_SYSCALL_ABI_VERSION_PACK(VIBEOS_SYSCALL_ABI_VERSION_MAJOR + 1u, 0));
+    if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 0) {
+        return -1;
+    }
 
     vibeos_syscall_make_handle_alloc(&frame, VIBEOS_HANDLE_RIGHT_SIGNAL | VIBEOS_HANDLE_RIGHT_MANAGE, 0);
     if (vibeos_handle_table_init(&kernel.handles) != 0) {
@@ -1241,6 +1317,10 @@ static int test_services(void) {
     vibeos_devmgr_state_t devmgr_state;
     vibeos_vfs_state_t vfs_state;
     vibeos_net_state_t net_state;
+    vibeos_init_node_t nodes[4];
+    uint32_t started = 0;
+    uint32_t failed = 0;
+    uint32_t restart_allowed = 0;
 
     if (vibeos_init_start(&init_state) != 0) {
         return -1;
@@ -1265,6 +1345,37 @@ static int test_services(void) {
         return -1;
     }
     if (net_state.state != VIBEOS_SERVICE_RUNNING) {
+        return -1;
+    }
+    nodes[0].service_id = 1;
+    nodes[0].dependency_mask = 0;
+    nodes[0].enabled = 1;
+    nodes[0].restart_class = VIBEOS_INIT_SERVICE_CORE;
+    nodes[1].service_id = 2;
+    nodes[1].dependency_mask = 1u << 0;
+    nodes[1].enabled = 1;
+    nodes[1].restart_class = VIBEOS_INIT_SERVICE_CORE;
+    nodes[2].service_id = 3;
+    nodes[2].dependency_mask = 1u << 1;
+    nodes[2].enabled = 1;
+    nodes[2].restart_class = VIBEOS_INIT_SERVICE_OPTIONAL;
+    nodes[3].service_id = 4;
+    nodes[3].dependency_mask = 1u << 2;
+    nodes[3].enabled = 1;
+    nodes[3].restart_class = VIBEOS_INIT_SERVICE_OPTIONAL;
+    if (vibeos_init_graph_start(&init_state, nodes, 4, &started, &failed) != 0 || started != 4 || failed != 0) {
+        return -1;
+    }
+    if (vibeos_init_restart_policy(&init_state, 2, 1) != 0) {
+        return -1;
+    }
+    if (vibeos_init_restart_note(&init_state, VIBEOS_INIT_SERVICE_CORE) != 0) {
+        return -1;
+    }
+    if (vibeos_init_restart_note(&init_state, VIBEOS_INIT_SERVICE_OPTIONAL) != 0) {
+        return -1;
+    }
+    if (vibeos_init_restart_allowed(&init_state, VIBEOS_INIT_SERVICE_OPTIONAL, &restart_allowed) != 0 || restart_allowed != 0) {
         return -1;
     }
     if (vibeos_net_stop(&net_state) != 0 || net_state.state != VIBEOS_SERVICE_STOPPED) {
@@ -1292,6 +1403,8 @@ static int test_servicemgr_and_drivers(void) {
     vibeos_driver_state_t state;
     uint32_t running = 0;
     uint32_t can_restart = 0;
+    uint32_t count_loaded = 0;
+    uint32_t count_faulted = 0;
     if (vibeos_servicemgr_start(&mgr, &init_state, &devmgr_state, &vfs_state, &net_state) != 0) {
         return -1;
     }
@@ -1322,7 +1435,16 @@ static int test_servicemgr_and_drivers(void) {
     if (vibeos_driver_framework_init(&fw) != 0) {
         return -1;
     }
+    if (vibeos_driver_framework_require_abi(&fw, 1) != 0) {
+        return -1;
+    }
     if (vibeos_driver_register(&fw, 100) != 0 || fw.count != 1) {
+        return -1;
+    }
+    if (vibeos_driver_register_versioned(&fw, 200, 2, 0, 0x10) == 0) {
+        return -1;
+    }
+    if (vibeos_driver_register_versioned(&fw, 101, 1, 2, 0x10) != 0 || fw.count != 2) {
         return -1;
     }
     if (vibeos_driver_register(&fw, 100) == 0) {
@@ -1331,10 +1453,22 @@ static int test_servicemgr_and_drivers(void) {
     if (vibeos_driver_state(&fw, 100, &state) != 0 || state != VIBEOS_DRIVER_LOADED) {
         return -1;
     }
+    if (vibeos_driver_mark_faulted(&fw, 101) != 0) {
+        return -1;
+    }
+    if (vibeos_driver_state(&fw, 101, &state) != 0 || state != VIBEOS_DRIVER_FAULTED) {
+        return -1;
+    }
+    if (vibeos_driver_count_state(&fw, VIBEOS_DRIVER_LOADED, &count_loaded) != 0 || count_loaded != 1) {
+        return -1;
+    }
+    if (vibeos_driver_count_state(&fw, VIBEOS_DRIVER_FAULTED, &count_faulted) != 0 || count_faulted != 1) {
+        return -1;
+    }
     if (vibeos_servicemgr_health(&mgr, &init_state, &devmgr_state, &vfs_state, &net_state, &running) != 0 || running != 5) {
         return -1;
     }
-    if (vibeos_driver_unregister(&fw, 100) != 0 || fw.count != 0) {
+    if (vibeos_driver_unregister(&fw, 100) != 0 || vibeos_driver_unregister(&fw, 101) != 0 || fw.count != 0) {
         return -1;
     }
     if (vibeos_servicemgr_stop(&mgr, &init_state, &devmgr_state, &vfs_state, &net_state) != 0) {
@@ -1349,6 +1483,9 @@ static int test_servicemgr_and_drivers(void) {
 static int test_user_api_and_bootloader(void) {
     vibeos_kernel_t kernel;
     vibeos_user_context_t user_ctx;
+    vibeos_user_api_caps_t caps;
+    uint32_t api_major = 0;
+    uint32_t api_minor = 0;
     uint32_t signal_handle = 0;
     uint32_t out_label = 0;
     uint32_t interact_allowed = 0;
@@ -1371,6 +1508,15 @@ static int test_user_api_and_bootloader(void) {
     regions[1].reserved = 0;
 
     if (vibeos_user_context_init(&user_ctx, 10, 1) != 0) {
+        return -1;
+    }
+    if (vibeos_user_api_contract(&api_major, &api_minor) != 0 || api_major != 1 || api_minor == 0) {
+        return -1;
+    }
+    if (vibeos_user_api_capabilities(&caps) != 0) {
+        return -1;
+    }
+    if (caps.supports_boot_event_signal == 0 || caps.supports_process_security_label == 0 || caps.supports_process_interaction_check == 0 || caps.supports_policy_summary == 0) {
         return -1;
     }
     if (user_ctx.pid != 10 || user_ctx.tid != 1) {
@@ -1804,6 +1950,9 @@ static int test_waitset(void) {
     vibeos_scheduler_t sched;
     vibeos_event_t ev;
     size_t count = 0;
+    uint32_t registered = 0;
+    uint32_t enabled = 0;
+    uint32_t signaled = 0;
     vibeos_event_init(&ev);
     if (vibeos_sched_init(&sched, 1) != 0) {
         return -1;
@@ -1817,6 +1966,12 @@ static int test_waitset(void) {
     if (vibeos_waitset_count(&waitset, &count) != 0 || count != 1) {
         return -1;
     }
+    if (vibeos_waitset_contention_snapshot(&waitset, &registered, &enabled, &signaled) != 0) {
+        return -1;
+    }
+    if (registered != 1 || enabled != 1 || signaled != 0) {
+        return -1;
+    }
     if (vibeos_waitset_wait_ex(&waitset, 1, &count, &sched, 0) == 0) {
         return -1;
     }
@@ -1825,6 +1980,12 @@ static int test_waitset(void) {
     }
     vibeos_event_signal(&ev);
     if (vibeos_waitset_wait_ex(&waitset, 1, &count, &sched, 0) != 0 || count != 0) {
+        return -1;
+    }
+    if (vibeos_waitset_contention_snapshot(&waitset, &registered, &enabled, &signaled) != 0) {
+        return -1;
+    }
+    if (registered != 1 || enabled != 1 || signaled != 1) {
         return -1;
     }
     if (vibeos_sched_wait_wakes(&sched, 0) != 1) {
@@ -2265,6 +2426,11 @@ static int test_filesystem_runtime(void) {
     vibeos_vfs_runtime_t rt;
     vibeos_policy_state_t policy;
     vibeos_security_token_t token;
+    uint8_t persist_in[16];
+    uint8_t persist_out[16];
+    size_t persist_len = 0;
+    uint32_t persist_count = 0;
+    uint32_t i;
     uint32_t mount_id;
     uint32_t fd;
     uint32_t active_mounts = 0;
@@ -2295,6 +2461,27 @@ static int test_filesystem_runtime(void) {
     if (vibeos_vfs_close(&rt, fd) != 0) {
         return -1;
     }
+    for (i = 0; i < sizeof(persist_in); i++) {
+        persist_in[i] = (uint8_t)(i + 1u);
+    }
+    if (vibeos_vfs_persist_write(&rt, mount_id, 7, persist_in, sizeof(persist_in)) != 0) {
+        return -1;
+    }
+    if (vibeos_vfs_persist_count(&rt, mount_id, &persist_count) != 0 || persist_count != 1) {
+        return -1;
+    }
+    if (vibeos_vfs_persist_read(&rt, mount_id, 7, persist_out, sizeof(persist_out), &persist_len) != 0 || persist_len != sizeof(persist_in)) {
+        return -1;
+    }
+    if (memcmp(persist_in, persist_out, sizeof(persist_in)) != 0) {
+        return -1;
+    }
+    if (vibeos_vfs_persist_delete(&rt, mount_id, 7) != 0) {
+        return -1;
+    }
+    if (vibeos_vfs_persist_count(&rt, mount_id, &persist_count) != 0 || persist_count != 0) {
+        return -1;
+    }
     if (vibeos_vfs_unmount(&rt, mount_id) != 0) {
         return -1;
     }
@@ -2316,6 +2503,10 @@ static int test_network_runtime(void) {
     uint32_t sock2;
     uint64_t total_tx = 0;
     uint64_t total_rx = 0;
+    uint64_t sim_ticks = 0;
+    uint64_t sim_drops = 0;
+    uint64_t latency_ticks = 0;
+    uint32_t delivered = 0;
     uint32_t open_sockets = 0;
     char recv_buf[8];
     size_t recv_len = 0;
@@ -2356,10 +2547,22 @@ static int test_network_runtime(void) {
     if (vibeos_socket_receive(&rt, sock, recv_buf, sizeof(recv_buf), &recv_len) != 0 || recv_len != sizeof(recv_buf)) {
         return -1;
     }
+    if (vibeos_net_simulate_path(&rt, sock, 5, 2, 3, &delivered, &latency_ticks) != 0) {
+        return -1;
+    }
+    if (delivered != 4 || latency_ticks != 8) {
+        return -1;
+    }
     if (vibeos_net_stats(&rt, &total_tx, &total_rx, &open_sockets) != 0) {
         return -1;
     }
-    if (total_tx != 1 || total_rx != 1 || open_sockets != 2) {
+    if (total_tx != 5 || total_rx != 5 || open_sockets != 2) {
+        return -1;
+    }
+    if (vibeos_net_stats_ext(&rt, &total_tx, &total_rx, &open_sockets, &sim_ticks, &sim_drops) != 0) {
+        return -1;
+    }
+    if (sim_ticks != 8 || sim_drops != 1) {
         return -1;
     }
     if (vibeos_socket_close(&rt, sock2) != 0) {

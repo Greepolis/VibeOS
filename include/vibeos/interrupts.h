@@ -13,6 +13,10 @@ typedef struct vibeos_interrupt_controller {
     vibeos_irq_handler_t handlers[VIBEOS_MAX_IRQS];
     void *contexts[VIBEOS_MAX_IRQS];
     uint64_t irq_count[VIBEOS_MAX_IRQS];
+    uint64_t dispatch_denied_bad_irq;
+    uint64_t dispatch_denied_unhandled;
+    uint64_t dispatch_denied_masked;
+    uint64_t dispatch_denied_disabled;
     uint8_t masked[VIBEOS_MAX_IRQS];
     uint8_t enabled;
 } vibeos_interrupt_controller_t;
@@ -26,5 +30,7 @@ int vibeos_intc_unmask(vibeos_interrupt_controller_t *intc, uint32_t irq);
 int vibeos_intc_set_enabled(vibeos_interrupt_controller_t *intc, uint32_t enabled);
 int vibeos_intc_is_masked(const vibeos_interrupt_controller_t *intc, uint32_t irq);
 int vibeos_intc_bind_timer_irq(vibeos_interrupt_controller_t *intc, struct vibeos_timer *timer, uint32_t irq);
+int vibeos_intc_denied_counters(const vibeos_interrupt_controller_t *intc, uint64_t *out_bad_irq, uint64_t *out_unhandled, uint64_t *out_masked, uint64_t *out_disabled);
+int vibeos_intc_counters_reset(vibeos_interrupt_controller_t *intc);
 
 #endif

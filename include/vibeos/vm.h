@@ -35,5 +35,6 @@ size_t vibeos_vm_total_mapped(const vibeos_address_space_t *aspace);
 int vibeos_vm_clone_readonly(vibeos_address_space_t *dst, const vibeos_address_space_t *src);
 int vibeos_vm_validate(const vibeos_address_space_t *aspace);
 int vibeos_vm_compact(vibeos_address_space_t *aspace, uint32_t *out_merged);
+int vibeos_vm_find_gap(const vibeos_address_space_t *aspace, uintptr_t min_va, size_t size, uintptr_t align, uintptr_t *out_va);
 
 #endif

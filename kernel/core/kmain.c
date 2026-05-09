@@ -32,6 +32,15 @@ const char *vibeos_kernel_stage_name(vibeos_boot_stage_t stage) {
     }
 }
 
+int vibeos_kernel_boot_health(const vibeos_kernel_t *kernel, uint32_t *out_health_flags, uint32_t *out_failure_fatal) {
+    if (!kernel || !out_health_flags || !out_failure_fatal) {
+        return -1;
+    }
+    *out_health_flags = kernel->boot_health_flags;
+    *out_failure_fatal = kernel->boot_failure_fatal;
+    return 0;
+}
+
 int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
     uint32_t timer_irq;
     
@@ -48,39 +57,57 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
 
     kernel->boot_state.stage = VIBEOS_BOOT_STAGE_EARLY;
     kernel->boot_state.last_error_code = 0;
+    kernel->boot_health_flags = 0;
+    kernel->boot_failure_fatal = 0;
     vibeos_event_init(&kernel->boot_event);
 
     if (vibeos_pmm_init_from_boot_info(&kernel->pmm, boot_info, 4096) != 0) {
         kernel->boot_state.last_error_code = 1001;
+        kernel->boot_failure_fatal = 1;
         vibeos_x86_64_serial_puts("[BOOT] FATAL: pmm_init failed\n");
         return -1;
     }
+    if (vibeos_pmm_remaining(&kernel->pmm) < kernel->pmm.page_size) {
+        kernel->boot_state.last_error_code = 1001;
+        kernel->boot_failure_fatal = 1;
+        vibeos_x86_64_serial_puts("[BOOT] FATAL: pmm has no free page\n");
+        return -1;
+    }
+    kernel->boot_health_flags |= VIBEOS_BOOT_HEALTH_PMM_READY;
     vibeos_x86_64_serial_puts("[BOOT] Memory manager initialized\n");
     
     if (vibeos_vm_init(&kernel->kernel_aspace) != 0) {
         kernel->boot_state.last_error_code = 1003;
+        kernel->boot_failure_fatal = 1;
         vibeos_x86_64_serial_puts("[BOOT] FATAL: vm_init failed\n");
         return -1;
     }
+    kernel->boot_health_flags |= VIBEOS_BOOT_HEALTH_VM_READY;
     vibeos_x86_64_serial_puts("[BOOT] Virtual memory initialized\n");
     
     if (vibeos_handle_table_init(&kernel->handles) != 0) {
         kernel->boot_state.last_error_code = 1008;
+        kernel->boot_failure_fatal = 1;
         vibeos_x86_64_serial_puts("[BOOT] FATAL: handle_table_init failed\n");
         return -1;
     }
+    kernel->boot_health_flags |= VIBEOS_BOOT_HEALTH_HANDLES_READY;
     if (vibeos_policy_init(&kernel->policy) != 0) {
         kernel->boot_state.last_error_code = 1010;
+        kernel->boot_failure_fatal = 1;
         vibeos_x86_64_serial_puts("[BOOT] FATAL: policy_init failed\n");
         return -1;
     }
+    kernel->boot_health_flags |= VIBEOS_BOOT_HEALTH_POLICY_READY;
     if (vibeos_sec_token_init(&kernel->kernel_token, 0, 0, (1u << 0) | (1u << 1) | (1u << 2)) != 0) {
         kernel->boot_state.last_error_code = 1011;
+        kernel->boot_failure_fatal = 1;
         vibeos_x86_64_serial_puts("[BOOT] FATAL: sec_token_init failed\n");
         return -1;
     }
     if (vibeos_sec_audit_init(&kernel->sec_audit) != 0) {
         kernel->boot_state.last_error_code = 1012;
+        kernel->boot_failure_fatal = 1;
         vibeos_x86_64_serial_puts("[BOOT] FATAL: sec_audit_init failed\n");
         return -1;
     }
@@ -89,45 +116,56 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
 
     if (vibeos_sched_init(&kernel->scheduler, 1) != 0) {
         kernel->boot_state.last_error_code = 1002;
+        kernel->boot_failure_fatal = 1;
         vibeos_x86_64_serial_puts("[BOOT] FATAL: sched_init failed\n");
         return -1;
     }
+    kernel->boot_health_flags |= VIBEOS_BOOT_HEALTH_SCHED_READY;
     if (vibeos_proc_init(&kernel->proc_table) != 0) {
         kernel->boot_state.last_error_code = 1007;
+        kernel->boot_failure_fatal = 1;
         vibeos_x86_64_serial_puts("[BOOT] FATAL: proc_init failed\n");
         return -1;
     }
+    kernel->boot_health_flags |= VIBEOS_BOOT_HEALTH_PROC_READY;
     if (vibeos_timer_init(&kernel->timer, 1000) != 0) {
         kernel->boot_state.last_error_code = 1004;
+        kernel->boot_failure_fatal = 1;
         vibeos_x86_64_serial_puts("[BOOT] FATAL: timer_init failed\n");
         return -1;
     }
     vibeos_intc_init(&kernel->intc);
     if (vibeos_x86_64_idt_init(&kernel->idt) != 0) {
         kernel->boot_state.last_error_code = 1005;
+        kernel->boot_failure_fatal = 1;
         vibeos_x86_64_serial_puts("[BOOT] FATAL: idt_init failed\n");
         return -1;
     }
     if (vibeos_trap_state_init(&kernel->trap_state) != 0) {
         kernel->boot_state.last_error_code = 1009;
+        kernel->boot_failure_fatal = 1;
         vibeos_x86_64_serial_puts("[BOOT] FATAL: trap_state_init failed\n");
         return -1;
     }
     if (vibeos_x86_64_idt_set(&kernel->idt, (uint32_t)vibeos_x86_64_timer_vector()) != 0) {
         kernel->boot_state.last_error_code = 1006;
+        kernel->boot_failure_fatal = 1;
         vibeos_x86_64_serial_puts("[BOOT] FATAL: idt_set failed\n");
         return -1;
     }
     timer_irq = (uint32_t)vibeos_x86_64_timer_vector();
     if (vibeos_intc_bind_timer_irq(&kernel->intc, &kernel->timer, timer_irq) != 0) {
         kernel->boot_state.last_error_code = 1013;
+        kernel->boot_failure_fatal = 1;
         vibeos_x86_64_serial_puts("[BOOT] FATAL: intc_bind_timer_irq failed\n");
         return -1;
     }
+    kernel->boot_health_flags |= VIBEOS_BOOT_HEALTH_IRQ_READY;
     kernel->boot_state.stage = VIBEOS_BOOT_STAGE_SCHED_READY;
     vibeos_x86_64_serial_puts("[BOOT] Scheduler stage ready\n");
 
     vibeos_event_signal(&kernel->boot_event);
+    kernel->boot_health_flags |= VIBEOS_BOOT_HEALTH_BOOT_EVENT_SIGNALLED;
     kernel->boot_state.stage = VIBEOS_BOOT_STAGE_CORE_READY;
     
     /* M2 boot completion marker */

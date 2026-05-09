@@ -1,7 +1,7 @@
 # Process Scheduler Progress
 
 Status: In Progress
-Last review: 2026-04-25
+Last review: 2026-05-09
 
 ## Implemented
 - Per-CPU runqueues and core enqueue/dequeue primitives in `kernel/sched/scheduler.c`.
@@ -11,6 +11,7 @@ Last review: 2026-04-25
 - Rebalance pass support with bounded migration budget.
 - Starvation tick and starvation-boost utilities for runnable threads.
 - QoS summary metrics (rebalance passes/moves, affinity misses, boosts).
+- CPU load snapshot API (`vibeos_sched_load_snapshot`) for deterministic benchmark/telemetry hooks.
 
 ## Pending
 - Topology/NUMA-aware placement strategy.
