@@ -199,7 +199,25 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
     if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
         target_link_libraries(vibeos_bootloader_uefi PRIVATE gcc)
     elseif(CMAKE_C_COMPILER_ID STREQUAL "Clang")
-        target_link_libraries(vibeos_bootloader_uefi PRIVATE clang_rt.builtins-x86_64)
+        # Try to locate compiler-rt builtins for Clang.
+        # These provide low-level compiler helper routines such as:
+        #   __muldi3, __udivdi3, __ashldi3, etc.
+        find_library(CLANG_RT_BUILTINS
+            NAMES
+                clang_rt.builtins-x86_64
+                clang_rt.builtins
+        )
+
+        # Link compiler-rt only if available.
+        if(CLANG_RT_BUILTINS)
+            target_link_libraries(vibeos_bootloader_uefi PRIVATE
+                ${CLANG_RT_BUILTINS}
+            )
+        endif()
+
+        # Many Clang toolchains inject compiler builtins automatically,
+        # even with -nostdlib. If unresolved builtin symbols appear,
+        # install compiler-rt or provide the runtime library manually.
     endif()
 
     find_program(VIBEOS_OBJCOPY_TOOL
