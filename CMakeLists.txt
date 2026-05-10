@@ -177,6 +177,8 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
     
     # UEFI linker options for the intermediate image.
     # Final BOOTX64.EFI is generated via objcopy conversion+validation step below.
+    # Note: GNU ld (Linux) doesn't support --subsystem; objcopy handles PE subsystem during conversion.
+    # lld-link (MinGW) requires it; MINGW toolchain uses lld or compatible linker.
     if(MINGW)
         # Keep freestanding linkage on MinGW and bypass CRT startup requirements.
         target_link_options(vibeos_bootloader_uefi PRIVATE
@@ -185,11 +187,10 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
             -Wl,--subsystem,10
         )
     else()
-        # Linux CI: Add subsystem flag and link compatibility libraries
+        # Linux CI: Don't specify subsystem (GNU ld ignores it, objcopy handles PE subsystem)
         target_link_options(vibeos_bootloader_uefi PRIVATE
             -nostdlib
             -Wl,--entry=efi_main
-            -Wl,--subsystem=10
         )
         # Ensure libc is available for string functions (memcpy, etc.)
         target_link_libraries(vibeos_bootloader_uefi PRIVATE c)
