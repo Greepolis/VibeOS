@@ -26,8 +26,7 @@ file(MAKE_DIRECTORY "${EFI_BOOT_DIR}")
 file(COPY_FILE "${BOOTLOADER_EFI}" "${EFI_BOOTX64}" ONLY_IF_DIFFERENT)
 file(COPY_FILE "${KERNEL_ELF}" "${EFI_KERNEL}" ONLY_IF_DIFFERENT)
 file(WRITE "${EFI_STARTUP_NSH}"
-    "echo -off\r\n"
-    "fs0:\\EFI\\BOOT\\BOOTX64.EFI\r\n"
+    "fs0:\\EFI\\BOOT\\BOOTX64.EFI\n"
 )
 
 # Keep legacy kernel-as-image artifact for direct-loader probes.
