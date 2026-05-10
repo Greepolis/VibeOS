@@ -168,6 +168,8 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         -ffreestanding      # No hosted libs
         -fno-stack-protector
         -fshort-wchar       # UEFI uses 16-bit wchar
+        -fPIE               # Position independent for UEFI
+        -fno-strict-aliasing # UEFI compatibility
         -Wall
         -Wextra
         -Wpedantic
@@ -183,15 +185,20 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
             -Wl,--subsystem,10
         )
     else()
-        # Linux CI keeps freestanding linkage for predictable intermediate output.
+        # Linux CI: Add subsystem flag and link compatibility libraries
         target_link_options(vibeos_bootloader_uefi PRIVATE
             -nostdlib
             -Wl,--entry=efi_main
+            -Wl,--subsystem=10
         )
+        # Ensure libc is available for string functions (memcpy, etc.)
+        target_link_libraries(vibeos_bootloader_uefi PRIVATE c)
     endif()
 
     if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
         target_link_libraries(vibeos_bootloader_uefi PRIVATE gcc)
+    elseif(CMAKE_C_COMPILER_ID STREQUAL "Clang")
+        target_link_libraries(vibeos_bootloader_uefi PRIVATE clang_rt.builtins-x86_64)
     endif()
 
     find_program(VIBEOS_OBJCOPY_TOOL

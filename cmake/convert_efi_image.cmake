@@ -87,22 +87,32 @@ endfunction()
 set(_conversion_ok FALSE)
 set(_primary_log "")
 set(_fallback_log "")
+set(_tertiary_log "")
 
+# Try primary target: efi-app-x86_64 (UEFI PE32+ format, preferred on Linux)
 _run_objcopy("efi-app-x86_64" _primary_rc _primary_log)
 if(_primary_rc EQUAL 0)
     set(_conversion_ok TRUE)
 else()
+    # Fallback 1: pei-x86-64 (Windows PE format)
     _run_objcopy("pei-x86-64" _fallback_rc _fallback_log)
     if(_fallback_rc EQUAL 0)
         set(_conversion_ok TRUE)
+    else()
+        # Fallback 2: pe-i386 (32-bit PE, last resort)
+        _run_objcopy("pe-i386" _tertiary_rc _tertiary_log)
+        if(_tertiary_rc EQUAL 0)
+            set(_conversion_ok TRUE)
+        endif()
     endif()
 endif()
 
 if(NOT _conversion_ok)
     message(FATAL_ERROR
         "Failed to convert bootloader to EFI application.\n"
-        "Primary attempt:\n${_primary_log}\n"
-        "Fallback attempt:\n${_fallback_log}\n"
+        "Primary attempt (efi-app-x86_64):\n${_primary_log}\n"
+        "Fallback attempt (pei-x86-64):\n${_fallback_log}\n"
+        "Tertiary attempt (pe-i386):\n${_tertiary_log}\n"
     )
 endif()
 
