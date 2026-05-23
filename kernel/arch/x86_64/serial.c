@@ -7,8 +7,10 @@
 #define VIBEOS_X86_64_COM1_BASE 0x3F8
 
 /* UART register offsets (when DLAB=0) */
+#define UART_RBR 0x00  /* Receiver Buffer Register */
 #define UART_THR 0x00  /* Transmitter Holding Register */
 #define UART_LSR 0x05  /* Line Status Register */
+#define UART_LSR_DR 0x01  /* Data Ready */
 #define UART_LSR_THRE 0x20  /* Transmitter Holding Register Empty */
 
 static int g_serial_io_available = -1;
@@ -95,4 +97,22 @@ void vibeos_x86_64_serial_print_hex(uint64_t value) {
     for (int i = 60; i >= 0; i -= 4) {
         vibeos_x86_64_serial_putc(hex_chars[(value >> i) & 0xF]);
     }
+}
+
+int vibeos_x86_64_serial_available(void) {
+    return vibeos_x86_64_serial_can_io();
+}
+
+int vibeos_x86_64_serial_can_read(void) {
+    if (!vibeos_x86_64_serial_can_io()) {
+        return 0;
+    }
+    return (vibeos_x86_64_inb(VIBEOS_X86_64_COM1_BASE + UART_LSR) & UART_LSR_DR) ? 1 : 0;
+}
+
+int vibeos_x86_64_serial_readc(void) {
+    if (!vibeos_x86_64_serial_can_read()) {
+        return -1;
+    }
+    return (int)vibeos_x86_64_inb(VIBEOS_X86_64_COM1_BASE + UART_RBR);
 }

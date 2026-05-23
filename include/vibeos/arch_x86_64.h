@@ -22,5 +22,8 @@ int vibeos_x86_64_serial_init(void);
 void vibeos_x86_64_serial_putc(char c);
 void vibeos_x86_64_serial_puts(const char *s);
 void vibeos_x86_64_serial_print_hex(uint64_t value);
+int vibeos_x86_64_serial_available(void);
+int vibeos_x86_64_serial_can_read(void);
+int vibeos_x86_64_serial_readc(void);
 
 #endif

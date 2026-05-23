@@ -1,5 +1,6 @@
 #include "vibeos/kernel.h"
 #include "vibeos/arch_x86_64.h"
+#include <stddef.h>
 
 static int kernel_bootinfo_validate(const vibeos_boot_info_t *boot_info) {
     if (!boot_info) {
@@ -15,6 +16,132 @@ static int kernel_bootinfo_validate(const vibeos_boot_info_t *boot_info) {
         return -1;
     }
     return 0;
+}
+
+static int kernel_str_eq(const char *a, const char *b) {
+    size_t i = 0;
+    if (!a || !b) {
+        return 0;
+    }
+    while (a[i] && b[i]) {
+        if (a[i] != b[i]) {
+            return 0;
+        }
+        i++;
+    }
+    return (a[i] == '\0' && b[i] == '\0') ? 1 : 0;
+}
+
+static int kernel_str_starts_with(const char *s, const char *prefix) {
+    size_t i = 0;
+    if (!s || !prefix) {
+        return 0;
+    }
+    while (prefix[i]) {
+        if (s[i] != prefix[i]) {
+            return 0;
+        }
+        i++;
+    }
+    return 1;
+}
+
+static void kernel_log_u32_hex(uint32_t value) {
+    int shift;
+    for (shift = 28; shift >= 0; shift -= 4) {
+        uint32_t nibble = (value >> (uint32_t)shift) & 0xfu;
+        vibeos_x86_64_serial_putc((char)(nibble < 10u ? ('0' + nibble) : ('a' + nibble - 10u)));
+    }
+}
+
+static void kernel_cli_print_help(void) {
+    vibeos_x86_64_serial_puts("[CLI] Commands: help, status, echo <text>, halt, reboot\n");
+}
+
+static void kernel_cli_print_status(const vibeos_kernel_t *kernel) {
+    vibeos_x86_64_serial_puts("[CLI] stage=");
+    vibeos_x86_64_serial_puts(vibeos_kernel_stage_name(kernel->boot_state.stage));
+    vibeos_x86_64_serial_puts(" health=0x");
+    kernel_log_u32_hex(kernel->boot_health_flags);
+    vibeos_x86_64_serial_puts(" fatal=");
+    vibeos_x86_64_serial_putc(kernel->boot_failure_fatal ? '1' : '0');
+    vibeos_x86_64_serial_puts("\n");
+}
+
+static void kernel_cli_prompt(void) {
+    vibeos_x86_64_serial_puts("vibeos> ");
+}
+
+static int kernel_cli_read_line(char *buffer, size_t buffer_size) {
+    size_t len = 0;
+    if (!buffer || buffer_size < 2u) {
+        return -1;
+    }
+    for (;;) {
+        int ch = vibeos_x86_64_serial_readc();
+        if (ch < 0) {
+            continue;
+        }
+        if (ch == '\r' || ch == '\n') {
+            vibeos_x86_64_serial_puts("\n");
+            buffer[len] = '\0';
+            return 0;
+        }
+        if (ch == 8 || ch == 127) {
+            if (len > 0u) {
+                len--;
+                vibeos_x86_64_serial_puts("\b \b");
+            }
+            continue;
+        }
+        if (ch < 32 || ch > 126) {
+            continue;
+        }
+        if (len + 1u >= buffer_size) {
+            continue;
+        }
+        buffer[len++] = (char)ch;
+        vibeos_x86_64_serial_putc((char)ch);
+    }
+}
+
+static void kernel_cli_run(vibeos_kernel_t *kernel) {
+    char line[128];
+    vibeos_x86_64_serial_puts("[CLI] Serial console ready\n");
+    kernel_cli_print_help();
+    for (;;) {
+        const char *payload;
+        kernel_cli_prompt();
+        if (kernel_cli_read_line(line, sizeof(line)) != 0) {
+            continue;
+        }
+        if (line[0] == '\0') {
+            continue;
+        }
+        if (kernel_str_eq(line, "help")) {
+            kernel_cli_print_help();
+            continue;
+        }
+        if (kernel_str_eq(line, "status")) {
+            kernel_cli_print_status(kernel);
+            continue;
+        }
+        if (kernel_str_eq(line, "halt")) {
+            vibeos_x86_64_serial_puts("[CLI] Halt requested\n");
+            break;
+        }
+        if (kernel_str_eq(line, "reboot")) {
+            vibeos_x86_64_serial_puts("[CLI] Reboot requested (not implemented)\n");
+            break;
+        }
+        if (kernel_str_starts_with(line, "echo ")) {
+            payload = line + 5;
+            vibeos_x86_64_serial_puts(payload);
+            vibeos_x86_64_serial_puts("\n");
+            continue;
+        }
+        vibeos_x86_64_serial_puts("[CLI] Unknown command\n");
+    }
 }
 
 const char *vibeos_kernel_stage_name(vibeos_boot_stage_t stage) {
@@ -171,6 +298,10 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
     /* M2 boot completion marker */
     vibeos_x86_64_serial_puts("[BOOT] BOOT_OK\n");
     vibeos_x86_64_serial_puts("[BOOT] VibeOS kernel ready for user-space\n");
-    
+
+    if (vibeos_x86_64_serial_available()) {
+        vibeos_x86_64_serial_puts("[BOOT] CLI_READY\n");
+        kernel_cli_run(kernel);
+    }
     return 0;
 }
