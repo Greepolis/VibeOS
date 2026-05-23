@@ -57,6 +57,13 @@ jobs:
           chmod +x scripts/qemu-smoke-ovmf-linux.sh
           ./scripts/qemu-smoke-ovmf-linux.sh build "BOOT_OK" 60
 
+      - name: QEMU Boot-to-CLI Smoke (Required Gate)
+        timeout-minutes: 3
+        run: |
+          set -euo pipefail
+          chmod +x scripts/qemu-smoke-cli-linux.sh
+          ./scripts/qemu-smoke-cli-linux.sh build 90
+
       - name: QEMU OVMF Summary
         if: always()
         run: |
@@ -93,6 +100,9 @@ jobs:
             qemu-ovmf-serial.log
             qemu-ovmf-err.log
             qemu-ovmf-summary.txt
+            qemu-cli-serial.log
+            qemu-cli-err.log
+            qemu-cli-summary.txt
             qemu-smoke-summary.txt
           if-no-files-found: warn
 

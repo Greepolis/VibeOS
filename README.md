@@ -35,16 +35,19 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 # Required UEFI smoke gate (boots EFI/BOOT/BOOTX64.EFI from artifacts/efi_root):
 ./scripts/qemu-smoke-ovmf-linux.sh build "BOOT_OK" 60
+# Interactive boot-to-CLI gate:
+./scripts/qemu-smoke-cli-linux.sh build 90
 # Informational direct-loader probe:
 ./scripts/qemu-smoke-linux.sh build
 ```
 
 Notes:
-- CI uses dual boot gates: host tests + OVMF smoke are required, direct-loader probe is informational.
+- CI uses required boot gates: host tests + OVMF smoke + boot-to-CLI smoke, while the direct-loader probe is informational.
 - `qemu-system-x86_64 -kernel` has known compatibility limits with ELF64/Multiboot2 images in newer QEMU builds. The direct-loader probe classifies these loader-side incompatibilities separately from real boot regressions.
-- Bootloader artifacts use a validated EFI conversion flow (`bootloader.elf` -> `bootloader.efi`) with fail-fast PE32+ checks.
-- OVMF smoke emits structured diagnostics (`qemu-ovmf-summary.txt` / `qemu-ovmf-summary.json`) with explicit status reasons, selected boot profile, and last observed boot phase.
+- Bootloader artifacts use a validated EFI conversion flow (`bootloader.elf` -> `bootloader.efi`) with fail-fast PE32+ and relocation checks.
+- OVMF smoke emits structured diagnostics (`qemu-ovmf-summary.txt`) with explicit status reasons, selected boot profile, and last observed boot phase.
 - EFI media generation includes `startup.nsh` fallback in `artifacts/efi_root` to make firmware-shell boot path deterministic.
+- Boot-to-CLI smoke waits for `BOOT_OK`, verifies `CLI_READY`, sends `help`, `status`, `echo vibeos`, and `halt`, and stores `qemu-cli-summary.txt`.
 
 ## Project Structure
 

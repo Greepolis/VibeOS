@@ -66,11 +66,20 @@ detect_last_phase() {
     if grep -Eq "BL_PLAN_OK" "$serial_path"; then
       phase="BL_PLAN_OK"
     fi
+    if grep -Eq "BL_LOAD_OK" "$serial_path"; then
+      phase="BL_LOAD_OK"
+    fi
     if grep -Eq "BL_HANDOFF_OK|BL_HANDOFF_START" "$serial_path"; then
       phase="BL_HANDOFF_OK"
     fi
+    if grep -Eq "BL_EBS_OK" "$serial_path"; then
+      phase="BL_EBS_OK"
+    fi
     if grep -Eq "${TOKEN_REGEX}" "$serial_path"; then
       phase="BOOT_OK"
+    fi
+    if grep -Eq "CLI_READY|vibeos> " "$serial_path"; then
+      phase="CLI_READY"
     fi
   fi
 
@@ -80,7 +89,10 @@ detect_last_phase() {
 phase_score() {
   local phase="$1"
   case "$phase" in
-    BOOT_OK) echo 4 ;;
+    CLI_READY) echo 7 ;;
+    BOOT_OK) echo 6 ;;
+    BL_EBS_OK) echo 5 ;;
+    BL_LOAD_OK) echo 4 ;;
     BL_HANDOFF_OK) echo 3 ;;
     BL_PLAN_OK) echo 2 ;;
     BL_FS_OK) echo 1 ;;
@@ -123,6 +135,21 @@ if optional_magic != 0x20B:
 subsystem = struct.unpack_from("<H", data, e_lfanew + 0x18 + 0x44)[0]
 if subsystem != 10:
     print(f"subsystem_{subsystem}")
+    raise SystemExit(1)
+
+characteristics = struct.unpack_from("<H", data, e_lfanew + 0x16)[0]
+if characteristics & 0x1:
+    print("relocs_stripped")
+    raise SystemExit(1)
+
+number_of_rva_and_sizes = struct.unpack_from("<I", data, e_lfanew + 0x18 + 0x6C)[0]
+if number_of_rva_and_sizes <= 5:
+    print("reloc_directory_slot_missing")
+    raise SystemExit(1)
+
+reloc_rva, reloc_size = struct.unpack_from("<II", data, e_lfanew + 0x18 + 0x70 + (5 * 8))
+if reloc_rva == 0 or reloc_size < 8:
+    print("reloc_directory_missing")
     raise SystemExit(1)
 
 print("ok")
