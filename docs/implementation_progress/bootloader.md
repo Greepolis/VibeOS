@@ -1,7 +1,7 @@
 # Bootloader Progress
 
-Status: Phase 4 in progress (Security Hardening)
-Last review: 2026-05-10
+Status: Completed (Phase 4 boot-to-CLI verified)
+Last review: 2026-05-23
 
 ## Implemented
 - UEFI entry path and protocol wrappers in `boot/uefi_main.c` and `boot/uefi_protocol.c`.
@@ -11,15 +11,21 @@ Last review: 2026-05-10
 - Kernel image planning with ELF64 primary parser and PE32+ fallback (`include/vibeos/bootloader.h`, `boot/bootloader_stub.c`, `boot/uefi_pe_loader.c`).
 - Real kernel load path from EFI filesystem (`boot/uefi_file_io.c`, `boot/uefi_main.c`) with primary/fallback file paths.
 - Segment layout validation before load (file range, size consistency, overlap checks) in `boot/uefi_pe_loader.c`.
+- Strict freestanding UEFI build path:
+  - bootloader no longer links `libc` or embedded kernel objects
+  - PE32+ fixup validates `Subsystem=10`, x86_64 machine type, non-stripped relocations, stack/heap reserve, and `.reloc` directory
+  - `BOOTX64.EFI` is accepted and started by OVMF.
 - Real EFI media pipeline in build artifacts:
   - `artifacts/efi_root/EFI/BOOT/BOOTX64.EFI`
   - `artifacts/efi_root/EFI/BOOT/VIBEOSKR.ELF`
   - manifest + SHA256 integrity entries (`cmake/create_boot_image.cmake`).
+- Boot diagnostics expose phase tokens: `BL_EFI_OK`, `BL_FS_OK`, `BL_PLAN_OK`, `BL_LOAD_OK`, `BL_EBS_OK`, `BOOT_OK`, `CLI_READY`.
 - OVMF smoke automation:
   - Linux required gate (`scripts/qemu-smoke-ovmf-linux.sh`)
+  - Linux/WSL boot-to-CLI gate (`scripts/qemu-smoke-cli-linux.sh`)
   - Windows smoke runner (`scripts/run-qemu-ovmf.ps1`).
-- CI dual gate model:
-  - required: host tests + OVMF boot smoke
+- CI gate model:
+  - required: host tests + OVMF boot smoke + boot-to-CLI smoke
   - informational: direct-loader probe (`-kernel`) for compatibility telemetry.
 - Host-side parser regression coverage (PE + ELF) in `tests/kernel/kernel_tests.c`.
 - **May 2 (commit 630d94c)**: Fixed serial I/O privilege detection for Clang inline asm (changed `uint16_t cs` → `unsigned long`, constraint `"=r"` → `"=&r"` with memory clobber) in `kernel/arch/x86_64/serial.c`.
@@ -42,14 +48,19 @@ Last review: 2026-05-10
 - Segment plan enforces structural safety checks before memory copy/load.
 - OVMF smoke path and logs are integrated in CI artifacts.
 
-## Pending
-- **Phase 4.1 (in progress)**: Secure Boot and Measured Boot policy path discovery via EFI GetVariable
+## Verified Evidence
+- `ctest --test-dir build-wsl --output-on-failure`: 2/2 host tests passed.
+- `./scripts/qemu-smoke-ovmf-linux.sh build-wsl BOOT_OK 60`: passed via OVMF primary profile.
+- `bash scripts/qemu-smoke-cli-linux.sh build-wsl 90`: passed, verified `help`, `status`, `echo vibeos`, and `halt` through the serial CLI.
+
+## Future Hardening
+- **Phase 4.1**: Secure Boot and Measured Boot policy path discovery via EFI GetVariable
   - Currently creates firmware tags with Phase 4 defaults (SecureBoot=0, MeasuredBoot=0)
   - TODO: Implement actual GetVariable calls to detect real firmware capabilities
   - Target: May 2026 sprint close
-- **Phase 4.2**: Richer fault telemetry around boot failures (handoff errors, security policy rejections)
+- **Phase 4.2**: Richer fault telemetry around boot failures (handoff errors, security policy rejections).
 
 ## Next checkpoint
-- Validate BOOTX64.EFI executes on QEMU OVMF with GitHub Actions Linux CI (pending rebuild)
-- Implement GetVariable integration for real Secure Boot detection in Phase 4.1
-- Phase 5: Kernel bring-up and boot handoff validation
+- Keep the GitHub Actions Linux matrix green across GCC/Clang and Debug/Release.
+- Implement GetVariable integration for real Secure Boot detection in Phase 4.1.
+- Start the next kernel/userland milestone on top of the verified boot-to-CLI baseline.
