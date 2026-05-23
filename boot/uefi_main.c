@@ -12,12 +12,25 @@
 
 #define BOOT_INFO_MAX_REGIONS 32
 #define MEMORY_MAP_MAX_ATTEMPTS 3u
+#define EFI_VIBEOS_ERR_PHASE2 0x101ull
+#define EFI_VIBEOS_ERR_KERNEL_FILE 0x102ull
+#define EFI_VIBEOS_ERR_KERNEL_PARSE 0x103ull
+#define EFI_VIBEOS_ERR_KERNEL_SEGMENTS 0x104ull
+#define EFI_VIBEOS_ERR_BOOTINFO_ALLOC 0x105ull
+#define EFI_VIBEOS_ERR_HANDOFF 0x106ull
+#define EFI_VIBEOS_ERR_ENTRYPOINT 0x107ull
 
 static const uint16_t VIBEOS_KERNEL_PATH_PRIMARY[] = {
     '\\', 'E', 'F', 'I', '\\', 'B', 'O', 'O', 'T', '\\', 'V', 'I', 'B', 'E', 'O', 'S', 'K', 'R', '.', 'E', 'L', 'F', 0
 };
+static const uint16_t VIBEOS_KERNEL_PATH_RELATIVE_BOOT[] = {
+    'E', 'F', 'I', '\\', 'B', 'O', 'O', 'T', '\\', 'V', 'I', 'B', 'E', 'O', 'S', 'K', 'R', '.', 'E', 'L', 'F', 0
+};
 static const uint16_t VIBEOS_KERNEL_PATH_FALLBACK[] = {
     '\\', 'V', 'I', 'B', 'E', 'O', 'S', 'K', 'R', '.', 'E', 'L', 'F', 0
+};
+static const uint16_t VIBEOS_KERNEL_PATH_RELATIVE_ROOT[] = {
+    'V', 'I', 'B', 'E', 'O', 'S', 'K', 'R', '.', 'E', 'L', 'F', 0
 };
 
 static void uefi_log_u64(uint64_t value) {
@@ -29,9 +42,11 @@ static void uefi_log_u64(uint64_t value) {
 }
 
 static int uefi_load_kernel_image(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st, void **out_image, uint64_t *out_size) {
-    const uint16_t *paths[2] = {
+    const uint16_t *paths[4] = {
         VIBEOS_KERNEL_PATH_PRIMARY,
-        VIBEOS_KERNEL_PATH_FALLBACK
+        VIBEOS_KERNEL_PATH_RELATIVE_BOOT,
+        VIBEOS_KERNEL_PATH_FALLBACK,
+        VIBEOS_KERNEL_PATH_RELATIVE_ROOT
     };
     uint32_t i;
     if (!out_image || !out_size) {
@@ -39,20 +54,20 @@ static int uefi_load_kernel_image(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st,
     }
     *out_image = 0;
     *out_size = 0;
-    for (i = 0; i < 2u; i++) {
+    for (i = 0; i < 4u; i++) {
         if (uefi_file_read_all(image_handle, st, paths[i], out_image, out_size) == 0) {
             uefi_serial_puts("[BOOT] Kernel image loaded from EFI filesystem\n");
             return 0;
         }
-        if (i == 0) {
-            uefi_serial_puts("[WARN] Primary kernel path not available, trying fallback path\n");
+        if (i < 3u) {
+            uefi_serial_puts("[WARN] Kernel path open failed, trying next candidate\n");
         }
     }
     return -1;
 }
 
 /* Entry point for UEFI bootloader */
-EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
+EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     vibeos_memory_region_t memory_regions[BOOT_INFO_MAX_REGIONS];
     uint64_t memory_count = 0;
     uint64_t acpi_rsdp = 0;
@@ -75,6 +90,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     uefi_serial_puts("[BOOT] VibeOS UEFI Bootloader M2\n");
     uefi_serial_puts("========================================\n");
     uefi_serial_puts("[BOOT] Entry: efi_main()\n");
+    uefi_serial_puts("[BOOT] BL_EFI_OK\n");
     uefi_serial_puts("\n");
     
     /* PHASE 2: Acquire UEFI Memory Map */
@@ -91,7 +107,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
         }
         if (memory_map_ok != 0) {
             uefi_serial_puts("[ERROR] Failed to acquire UEFI memory map\n");
-            return EFI_LOAD_ERROR;
+            return EFI_VIBEOS_ERR_PHASE2;
         }
     }
     
@@ -137,34 +153,36 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     uefi_serial_puts("\n[BOOT] === PHASE 3: Kernel Loading ===\n");
 
     if (uefi_load_kernel_image(ImageHandle, SystemTable, &kernel_image_buffer, &kernel_image_size) != 0) {
-        uefi_serial_puts("[ERROR] Failed to load kernel image from EFI filesystem\n");
-        return EFI_LOAD_ERROR;
-    }
-    uefi_serial_puts("[BOOT] BL_FS_OK\n");
-    kernel_image = (const uint8_t *)kernel_image_buffer;
-    uefi_serial_puts("[BOOT] Kernel image size (bytes): 0x");
-    uefi_log_u64(kernel_image_size);
-    uefi_serial_puts("\n");
+        uefi_serial_puts("[ERROR] Kernel image could not be loaded from EFI filesystem\n");
+        return EFI_VIBEOS_ERR_KERNEL_FILE;
+    } else {
+        uefi_serial_puts("[BOOT] BL_FS_OK\n");
+        kernel_image = (const uint8_t *)kernel_image_buffer;
+        uefi_serial_puts("[BOOT] Kernel image size (bytes): 0x");
+        uefi_log_u64(kernel_image_size);
+        uefi_serial_puts("\n");
 
-    if (uefi_kernel_plan_load(kernel_image, kernel_image_size, &kernel_plan) != 0) {
-        uefi_serial_puts("[ERROR] Kernel image parsing failed\n");
-        uefi_file_free_buffer(SystemTable, kernel_image_buffer, kernel_image_size);
-        return EFI_LOAD_ERROR;
-    }
-    uefi_serial_puts("[BOOT] BL_PLAN_OK\n");
+        if (uefi_kernel_plan_load(kernel_image, kernel_image_size, &kernel_plan) != 0) {
+            uefi_serial_puts("[ERROR] Kernel image parsing failed\n");
+            uefi_file_free_buffer(SystemTable, kernel_image_buffer, kernel_image_size);
+            return EFI_VIBEOS_ERR_KERNEL_PARSE;
+        }
+        uefi_serial_puts("[BOOT] BL_PLAN_OK\n");
 
-    if (uefi_kernel_load_segments(SystemTable, kernel_image, kernel_image_size, &kernel_plan) != 0) {
-        uefi_serial_puts("[ERROR] Kernel segment loading failed\n");
+        if (uefi_kernel_load_segments(SystemTable, kernel_image, kernel_image_size, &kernel_plan) != 0) {
+            uefi_serial_puts("[ERROR] Kernel segment loading failed\n");
+            uefi_file_free_buffer(SystemTable, kernel_image_buffer, kernel_image_size);
+            return EFI_VIBEOS_ERR_KERNEL_SEGMENTS;
+        }
+        uefi_serial_puts("[BOOT] Kernel segments loaded to memory\n");
+        uefi_serial_puts("[BOOT] BL_LOAD_OK\n");
         uefi_file_free_buffer(SystemTable, kernel_image_buffer, kernel_image_size);
-        return EFI_LOAD_ERROR;
+        kernel_image_buffer = 0;
     }
-    uefi_serial_puts("[BOOT] Kernel segments loaded to memory\n");
-    uefi_file_free_buffer(SystemTable, kernel_image_buffer, kernel_image_size);
-    kernel_image_buffer = 0;
     
     uefi_serial_puts("\n");
     uefi_serial_puts("[BOOT] === PHASE 3 COMPLETE ===\n");
-    uefi_serial_puts("[BOOT] Kernel loading attempted\n");
+    uefi_serial_puts("[BOOT] Kernel source: filesystem image\n");
     uefi_serial_puts("\n");
     
     /* PHASE 4: Allocate and Build boot_info */
@@ -174,7 +192,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
                                  acpi_rsdp, smbios_entry, &kernel_plan,
                                  &kernel_struct, &boot_info) != 0) {
         uefi_serial_puts("[ERROR] Boot info allocation failed\n");
-        return EFI_LOAD_ERROR;
+        return EFI_VIBEOS_ERR_BOOTINFO_ALLOC;
     }
     
     /* Finalize and validate boot_info */
@@ -206,7 +224,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     /* PHASE 5: Boot Handoff to Kernel */
     if (kernel_plan.kernel_entry_point == 0) {
         uefi_serial_puts("[ERROR] Kernel entry point not available\n");
-        return EFI_LOAD_ERROR;
+        return EFI_VIBEOS_ERR_ENTRYPOINT;
     }
     
     kernel_entry_fn entry = (kernel_entry_fn)kernel_plan.kernel_entry_point;
@@ -214,7 +232,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     
     if (uefi_boot_handoff(SystemTable, ImageHandle, kernel_struct, boot_info, entry) != 0) {
         uefi_serial_puts("[ERROR] Boot handoff failed\n");
-        return EFI_LOAD_ERROR;
+        return EFI_VIBEOS_ERR_HANDOFF;
     }
     
     /* Should not reach here - kernel should take over */

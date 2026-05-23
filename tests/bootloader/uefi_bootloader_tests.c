@@ -18,19 +18,19 @@ typedef struct mock_file_protocol mock_file_protocol_t;
 
 typedef struct mock_simple_fs_protocol {
     uint64_t Revision;
-    EFI_STATUS (*OpenVolume)(struct mock_simple_fs_protocol *This, mock_file_protocol_t **Root);
+    EFI_STATUS(EFIAPI *OpenVolume)(struct mock_simple_fs_protocol *This, mock_file_protocol_t **Root);
 } mock_simple_fs_protocol_t;
 
 struct mock_file_protocol {
     uint64_t Revision;
-    EFI_STATUS (*Open)(mock_file_protocol_t *This, mock_file_protocol_t **NewHandle, const uint16_t *FileName, uint64_t OpenMode, uint64_t Attributes);
-    EFI_STATUS (*Close)(mock_file_protocol_t *This);
+    EFI_STATUS(EFIAPI *Open)(mock_file_protocol_t *This, mock_file_protocol_t **NewHandle, const uint16_t *FileName, uint64_t OpenMode, uint64_t Attributes);
+    EFI_STATUS(EFIAPI *Close)(mock_file_protocol_t *This);
     void *Delete;
-    EFI_STATUS (*Read)(mock_file_protocol_t *This, size_t *BufferSize, void *Buffer);
+    EFI_STATUS(EFIAPI *Read)(mock_file_protocol_t *This, size_t *BufferSize, void *Buffer);
     void *Write;
     void *GetPosition;
     void *SetPosition;
-    EFI_STATUS (*GetInfo)(mock_file_protocol_t *This, EFI_GUID *InformationType, size_t *BufferSize, void *Buffer);
+    EFI_STATUS(EFIAPI *GetInfo)(mock_file_protocol_t *This, EFI_GUID *InformationType, size_t *BufferSize, void *Buffer);
     void *SetInfo;
     void *Flush;
 };
@@ -108,11 +108,11 @@ int uefi_serial_printf(const char *fmt, ...) {
     return 0;
 }
 
-static EFI_STATUS mock_get_memory_map(size_t *memory_map_size,
-                                      EFI_MEMORY_DESCRIPTOR *memory_map,
-                                      size_t *map_key,
-                                      size_t *descriptor_size,
-                                      uint32_t *descriptor_version) {
+static EFI_STATUS EFIAPI mock_get_memory_map(size_t *memory_map_size,
+                                             EFI_MEMORY_DESCRIPTOR *memory_map,
+                                             size_t *map_key,
+                                             size_t *descriptor_size,
+                                             uint32_t *descriptor_version) {
     size_t needed_size;
     if (!g_mock_ctx || !memory_map_size || !map_key || !descriptor_size || !descriptor_version) {
         return EFI_INVALID_PARAMETER;
@@ -143,10 +143,10 @@ static EFI_STATUS mock_get_memory_map(size_t *memory_map_size,
     return EFI_SUCCESS;
 }
 
-static EFI_STATUS mock_allocate_pages(uint32_t type,
-                                      EFI_MEMORY_TYPE memory_type,
-                                      size_t pages,
-                                      uint64_t *memory) {
+static EFI_STATUS EFIAPI mock_allocate_pages(uint32_t type,
+                                             EFI_MEMORY_TYPE memory_type,
+                                             size_t pages,
+                                             uint64_t *memory) {
     size_t bytes;
     size_t new_offset;
     uint8_t *base;
@@ -192,7 +192,7 @@ static EFI_STATUS mock_allocate_pages(uint32_t type,
     return EFI_UNSUPPORTED;
 }
 
-static EFI_STATUS mock_free_pages(uint64_t memory, size_t pages) {
+static EFI_STATUS EFIAPI mock_free_pages(uint64_t memory, size_t pages) {
     (void)memory;
     (void)pages;
     if (!g_mock_ctx) {
@@ -202,7 +202,7 @@ static EFI_STATUS mock_free_pages(uint64_t memory, size_t pages) {
     return EFI_SUCCESS;
 }
 
-static EFI_STATUS mock_exit_boot_services(EFI_HANDLE image_handle, size_t map_key) {
+static EFI_STATUS EFIAPI mock_exit_boot_services(EFI_HANDLE image_handle, size_t map_key) {
     (void)image_handle;
     (void)map_key;
     if (!g_mock_ctx) {
@@ -215,7 +215,7 @@ static EFI_STATUS mock_exit_boot_services(EFI_HANDLE image_handle, size_t map_ke
     return EFI_SUCCESS;
 }
 
-static EFI_STATUS mock_locate_protocol(EFI_GUID *protocol, void *registration, void **interface) {
+static EFI_STATUS EFIAPI mock_locate_protocol(EFI_GUID *protocol, void *registration, void **interface) {
     (void)protocol;
     (void)registration;
     if (!g_mock_ctx || !interface) {
@@ -228,7 +228,7 @@ static EFI_STATUS mock_locate_protocol(EFI_GUID *protocol, void *registration, v
     return EFI_SUCCESS;
 }
 
-static EFI_STATUS mock_open_volume(mock_simple_fs_protocol_t *This, mock_file_protocol_t **root) {
+static EFI_STATUS EFIAPI mock_open_volume(mock_simple_fs_protocol_t *This, mock_file_protocol_t **root) {
     (void)This;
     if (!g_mock_ctx || !root) {
         return EFI_INVALID_PARAMETER;
@@ -240,11 +240,11 @@ static EFI_STATUS mock_open_volume(mock_simple_fs_protocol_t *This, mock_file_pr
     return EFI_SUCCESS;
 }
 
-static EFI_STATUS mock_file_open(mock_file_protocol_t *This,
-                                 mock_file_protocol_t **new_handle,
-                                 const uint16_t *file_name,
-                                 uint64_t open_mode,
-                                 uint64_t attributes) {
+static EFI_STATUS EFIAPI mock_file_open(mock_file_protocol_t *This,
+                                        mock_file_protocol_t **new_handle,
+                                        const uint16_t *file_name,
+                                        uint64_t open_mode,
+                                        uint64_t attributes) {
     (void)This;
     (void)file_name;
     (void)open_mode;
@@ -260,7 +260,7 @@ static EFI_STATUS mock_file_open(mock_file_protocol_t *This,
     return EFI_SUCCESS;
 }
 
-static EFI_STATUS mock_file_close(mock_file_protocol_t *This) {
+static EFI_STATUS EFIAPI mock_file_close(mock_file_protocol_t *This) {
     (void)This;
     if (!g_mock_ctx) {
         return EFI_INVALID_PARAMETER;
@@ -269,10 +269,10 @@ static EFI_STATUS mock_file_close(mock_file_protocol_t *This) {
     return EFI_SUCCESS;
 }
 
-static EFI_STATUS mock_file_getinfo(mock_file_protocol_t *This,
-                                    EFI_GUID *info_type,
-                                    size_t *buffer_size,
-                                    void *buffer) {
+static EFI_STATUS EFIAPI mock_file_getinfo(mock_file_protocol_t *This,
+                                           EFI_GUID *info_type,
+                                           size_t *buffer_size,
+                                           void *buffer) {
     size_t needed = sizeof(mock_efi_file_info_t);
     mock_efi_file_info_t *info = (mock_efi_file_info_t *)buffer;
     (void)This;
@@ -295,7 +295,7 @@ static EFI_STATUS mock_file_getinfo(mock_file_protocol_t *This,
     return EFI_SUCCESS;
 }
 
-static EFI_STATUS mock_file_read(mock_file_protocol_t *This, size_t *buffer_size, void *buffer) {
+static EFI_STATUS EFIAPI mock_file_read(mock_file_protocol_t *This, size_t *buffer_size, void *buffer) {
     size_t requested;
     size_t to_copy;
     (void)This;

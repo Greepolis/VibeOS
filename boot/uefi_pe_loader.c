@@ -98,7 +98,7 @@ int uefi_kernel_load_segments(EFI_SYSTEM_TABLE *st,
                                uint64_t kernel_image_size,
                                const uefi_kernel_load_plan_t *plan) {
     uint32_t i;
-    uint32_t alloc_type = 2; /* AllocateAddress */
+    uint32_t alloc_type = AllocateAddress;
     
     if (!st || !st->BootServices || !kernel_image || !plan) {
         uefi_serial_puts("[ERROR] uefi_kernel_load_segments: invalid parameters\n");
@@ -121,6 +121,7 @@ int uefi_kernel_load_segments(EFI_SYSTEM_TABLE *st,
         const vibeos_boot_image_segment_t *seg = &plan->segments[i];
         uint64_t alloc_addr = seg->image_address;
         uint64_t num_pages = (seg->mem_size + 4095) / 4096;
+        EFI_MEMORY_TYPE memory_type = ((seg->flags & VIBEOS_BOOT_IMAGE_SEGMENT_EXEC) != 0) ? EfiLoaderCode : EfiLoaderData;
         EFI_STATUS status;
         
         if (seg->file_size == 0 && seg->mem_size == 0) {
@@ -128,7 +129,7 @@ int uefi_kernel_load_segments(EFI_SYSTEM_TABLE *st,
         }
         
         /* Allocate pages at specified address */
-        status = st->BootServices->AllocatePages(alloc_type, 7, num_pages, &alloc_addr);
+        status = st->BootServices->AllocatePages(alloc_type, memory_type, num_pages, &alloc_addr);
         if (status != 0) {
             uefi_serial_puts("[ERROR] Failed to allocate segment ");
             uefi_serial_putc('0' + i);

@@ -76,8 +76,7 @@ int uefi_boot_info_allocate(EFI_SYSTEM_TABLE *st,
     uint64_t boot_info_pages = 1;
     uint64_t memory_map_pages = 0;
     uint64_t memory_map_entries_capacity = 0;
-    uint64_t entries_to_copy = 0;
-    uint32_t i;
+    uint64_t sanitized_count = 0;
     
     if (!st || !st->BootServices || !st->BootServices->AllocatePages || !memory_regions || !out_kernel || !out_boot_info) {
         uefi_serial_puts("[ERROR] uefi_boot_info_allocate: invalid parameters\n");
@@ -149,23 +148,19 @@ int uefi_boot_info_allocate(EFI_SYSTEM_TABLE *st,
     uefi_zero_pages(boot_memory_map, memory_map_pages);
 
     memory_map_entries_capacity = (memory_map_pages * UEFI_PAGE_SIZE) / sizeof(vibeos_memory_region_t);
-    entries_to_copy = memory_count;
-    if (entries_to_copy > memory_map_entries_capacity) {
-        uefi_serial_puts("[WARN] Memory region count truncated\n");
-        entries_to_copy = memory_map_entries_capacity;
-    }
-    
-    for (i = 0; i < (uint32_t)entries_to_copy; i++) {
-        boot_memory_map[i] = memory_regions[i];
-    }
-
-    if (vibeos_bootloader_build_boot_info(boot_info, boot_memory_map, entries_to_copy) != 0) {
+    if (vibeos_bootloader_build_boot_info_sanitized(boot_info,
+                                                    memory_regions,
+                                                    memory_count,
+                                                    boot_memory_map,
+                                                    memory_map_entries_capacity,
+                                                    &sanitized_count) != 0) {
         uefi_serial_puts("[ERROR] Failed to initialize boot_info contract\n");
         uefi_free_pages_if_possible(st, memory_map_addr, memory_map_pages);
         uefi_free_pages_if_possible(st, boot_info_addr, boot_info_pages);
         uefi_free_pages_if_possible(st, kernel_addr, kernel_pages);
         return -1;
     }
+    (void)sanitized_count;
     
     /* Populate boot_info with firmware tables */
     boot_info->acpi_rsdp = acpi_rsdp;
@@ -217,8 +212,15 @@ int uefi_boot_info_finalize(vibeos_kernel_t *kernel, vibeos_boot_info_t *boot_in
     
     /* Validate boot_info structure */
     if (vibeos_bootloader_validate_boot_info(boot_info) != 0) {
-        uefi_serial_puts("[ERROR] boot_info validation failed\n");
-        return -1;
+        if (boot_info->acpi_rsdp != 0 || boot_info->smbios_entry != 0) {
+            uefi_serial_puts("[WARN] Firmware tables are outside sanitized memory map; clearing optional pointers\n");
+            boot_info->acpi_rsdp = 0;
+            boot_info->smbios_entry = 0;
+        }
+        if (vibeos_bootloader_validate_boot_info(boot_info) != 0) {
+            uefi_serial_puts("[ERROR] boot_info validation failed\n");
+            return -1;
+        }
     }
     
     uefi_serial_puts("[BOOT] boot_info validation passed\n");

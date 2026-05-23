@@ -4,6 +4,15 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* UEFI ABI:
+ * On x86_64 non-Windows toolchains UEFI uses Microsoft x64 calling convention.
+ */
+#if defined(__x86_64__) && !defined(_WIN32)
+#define EFIAPI __attribute__((ms_abi))
+#else
+#define EFIAPI
+#endif
+
 /* EFI types - minimal subset for bootloader */
 typedef uint64_t EFI_STATUS;
 typedef void *EFI_HANDLE;
