@@ -10,8 +10,17 @@ endif()
 if(NOT DEFINED OBJCOPY_TOOL OR OBJCOPY_TOOL STREQUAL "")
     message(FATAL_ERROR "OBJCOPY_TOOL is required")
 endif()
+if(NOT DEFINED PYTHON_EXECUTABLE OR PYTHON_EXECUTABLE STREQUAL "")
+    message(FATAL_ERROR "PYTHON_EXECUTABLE is required")
+endif()
+if(NOT DEFINED EFI_PE_FIXUP OR EFI_PE_FIXUP STREQUAL "")
+    message(FATAL_ERROR "EFI_PE_FIXUP is required")
+endif()
 if(NOT EXISTS "${INPUT_ELF}")
     message(FATAL_ERROR "Bootloader input image not found: ${INPUT_ELF}")
+endif()
+if(NOT EXISTS "${EFI_PE_FIXUP}")
+    message(FATAL_ERROR "EFI PE fixup script not found: ${EFI_PE_FIXUP}")
 endif()
 
 get_filename_component(_output_dir "${OUTPUT_EFI}" DIRECTORY)
@@ -120,6 +129,22 @@ if(NOT EXISTS "${OUTPUT_EFI}")
     message(FATAL_ERROR "Objcopy reported success but output EFI file was not generated: ${OUTPUT_EFI}")
 endif()
 
+execute_process(
+    COMMAND "${PYTHON_EXECUTABLE}" "${EFI_PE_FIXUP}" "${OUTPUT_EFI}"
+    RESULT_VARIABLE _fixup_rc
+    OUTPUT_VARIABLE _fixup_stdout
+    ERROR_VARIABLE _fixup_stderr
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_STRIP_TRAILING_WHITESPACE
+)
+if(NOT _fixup_rc EQUAL 0)
+    message(FATAL_ERROR
+        "EFI PE fixup/validation failed for ${OUTPUT_EFI}\n"
+        "stdout=${_fixup_stdout}\n"
+        "stderr=${_fixup_stderr}"
+    )
+endif()
+
 file(SIZE "${OUTPUT_EFI}" _efi_size)
 if(_efi_size LESS 128)
     message(FATAL_ERROR "EFI output too small to be valid: ${OUTPUT_EFI} (size=${_efi_size})")
@@ -169,4 +194,22 @@ if(NOT _subsystem EQUAL 10)
     message(FATAL_ERROR "EFI output subsystem is not EFI application (10): ${OUTPUT_EFI} (subsystem=${_subsystem})")
 endif()
 
-message(STATUS "Converted and validated EFI bootloader: ${OUTPUT_EFI}")
+math(EXPR _characteristics_off "${_lfanew} + 22")
+_read_hex_lower("${OUTPUT_EFI}" ${_characteristics_off} 2 _characteristics_hex)
+_le16_hex_to_dec("${_characteristics_hex}" _characteristics)
+math(EXPR _relocs_stripped "${_characteristics} & 1")
+if(_relocs_stripped)
+    message(FATAL_ERROR "EFI output still has RELOCS_STRIPPED set: ${OUTPUT_EFI}")
+endif()
+
+math(EXPR _reloc_dir_off "${_opt_magic_off} + 112 + (5 * 8)")
+math(EXPR _reloc_size_off "${_reloc_dir_off} + 4")
+_read_hex_lower("${OUTPUT_EFI}" ${_reloc_dir_off} 4 _reloc_rva_hex)
+_read_hex_lower("${OUTPUT_EFI}" ${_reloc_size_off} 4 _reloc_size_hex)
+_le32_hex_to_dec("${_reloc_rva_hex}" _reloc_rva)
+_le32_hex_to_dec("${_reloc_size_hex}" _reloc_size)
+if(_reloc_rva EQUAL 0 OR _reloc_size LESS 8)
+    message(FATAL_ERROR "EFI output has no valid base relocation directory: ${OUTPUT_EFI}")
+endif()
+
+message(STATUS "Converted and validated EFI bootloader: ${OUTPUT_EFI} (${_fixup_stdout})")

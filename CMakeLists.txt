@@ -54,6 +54,9 @@ target_compile_options(vibeos_kernel_core PRIVATE
     -Wall
     -Wextra
     -Wpedantic
+    -ffreestanding
+    -fno-stack-protector
+    -mno-red-zone
 )
 
 add_library(vibeos_user_core STATIC
@@ -132,6 +135,10 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         -no-pie             # Disable Position Independent Executable
         -nostdlib           # No standard library
         -Wl,--entry=_start  # Entry point is _start from entry.s
+        -Wl,-T,${CMAKE_CURRENT_SOURCE_DIR}/kernel/arch/x86_64/kernel.ld
+    )
+    set_target_properties(vibeos_kernel PROPERTIES
+        LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/kernel/arch/x86_64/kernel.ld"
     )
     
     # Copy kernel ELF to artifacts directory
@@ -162,13 +169,14 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         ${CMAKE_CURRENT_SOURCE_DIR}/boot
         ${CMAKE_CURRENT_SOURCE_DIR}/include
     )
-    
     # UEFI freestanding compilation flags
     target_compile_options(vibeos_bootloader_uefi PRIVATE
         -ffreestanding      # No hosted libs
         -fno-stack-protector
         -fshort-wchar       # UEFI uses 16-bit wchar
-        -fPIE               # Position independent for UEFI
+        -fPIC               # Relocatable image for UEFI loader
+        -fno-plt
+        -mno-red-zone
         -fno-strict-aliasing # UEFI compatibility
         -Wall
         -Wextra
@@ -187,13 +195,15 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
             -Wl,--subsystem,10
         )
     else()
-        # Linux CI: Don't specify subsystem (GNU ld ignores it, objcopy handles PE subsystem)
+        # Linux/WSL: build a freestanding shared ELF with relocations for objcopy -> EFI.
         target_link_options(vibeos_bootloader_uefi PRIVATE
             -nostdlib
             -Wl,--entry=efi_main
+            -Wl,-shared
+            -Wl,-Bsymbolic
+            -Wl,-znocombreloc
+            -Wl,--emit-relocs
         )
-        # Ensure libc is available for string functions (memcpy, etc.)
-        target_link_libraries(vibeos_bootloader_uefi PRIVATE c)
     endif()
 
     if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
@@ -226,6 +236,7 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
     if(NOT VIBEOS_OBJCOPY_TOOL)
         message(FATAL_ERROR "objcopy-compatible tool not found (required for EFI bootloader conversion)")
     endif()
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
     set(VIBEOS_BOOTLOADER_ELF "${VIBEOS_ARTIFACTS_DIR}/bootloader.elf")
     set(VIBEOS_BOOTLOADER_EFI "${VIBEOS_ARTIFACTS_DIR}/bootloader.efi")
@@ -246,6 +257,8 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
             "-DINPUT_ELF=${VIBEOS_BOOTLOADER_ELF}"
             "-DOUTPUT_EFI=${VIBEOS_BOOTLOADER_EFI}"
             "-DOBJCOPY_TOOL=${VIBEOS_OBJCOPY_TOOL}"
+            "-DPYTHON_EXECUTABLE=${Python3_EXECUTABLE}"
+            "-DEFI_PE_FIXUP=${CMAKE_CURRENT_SOURCE_DIR}/tools/efi_pe_fixup.py"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/convert_efi_image.cmake"
         DEPENDS
             "${VIBEOS_BOOTLOADER_ELF}"

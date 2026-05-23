@@ -45,6 +45,9 @@ build/
 artifacts/*.log
 artifacts/*.json
 artifacts/*.txt
+qemu-*.log
+qemu-*-summary.txt
+qemu-ovmf-vars*.fd
 
 # CMake generated files
 build-wsl/
