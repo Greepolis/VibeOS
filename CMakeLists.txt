@@ -34,6 +34,7 @@ add_library(vibeos_kernel_core STATIC
     kernel/ipc/handle_transfer.c
     kernel/ipc/waitset.c
     kernel/core/interrupts.c
+    kernel/core/log.c
     kernel/core/policy.c
     kernel/core/syscall_policy.c
     kernel/core/security.c

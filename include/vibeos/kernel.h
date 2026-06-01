@@ -5,6 +5,7 @@
 #include "vibeos/arch_x86_64.h"
 #include "vibeos/interrupts.h"
 #include "vibeos/ipc.h"
+#include "vibeos/log.h"
 #include "vibeos/mm.h"
 #include "vibeos/object.h"
 #include "vibeos/policy.h"
@@ -23,6 +24,7 @@
 #define VIBEOS_BOOT_HEALTH_PROC_READY (1u << 5)
 #define VIBEOS_BOOT_HEALTH_IRQ_READY (1u << 6)
 #define VIBEOS_BOOT_HEALTH_BOOT_EVENT_SIGNALLED (1u << 7)
+#define VIBEOS_BOOT_HEALTH_LOG_READY (1u << 8)
 
 typedef struct vibeos_kernel {
     vibeos_boot_state_t boot_state;
@@ -34,6 +36,7 @@ typedef struct vibeos_kernel {
     vibeos_policy_state_t policy;
     vibeos_security_token_t kernel_token;
     vibeos_security_audit_log_t sec_audit;
+    vibeos_log_t log;
     vibeos_process_table_t proc_table;
     vibeos_scheduler_t scheduler;
     vibeos_interrupt_controller_t intc;

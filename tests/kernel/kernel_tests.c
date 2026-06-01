@@ -389,12 +389,59 @@ static int test_ipc(void) {
     return 0;
 }
 
+static int test_kernel_log(void) {
+    vibeos_log_t log;
+    vibeos_log_event_t event;
+    uint32_t count = 0;
+    uint32_t dropped = 0;
+    uint32_t i;
+
+    if (vibeos_log_init(&log) != 0) {
+        return -1;
+    }
+    if (vibeos_log_count(&log, &count) != 0 || count != 0) {
+        return -1;
+    }
+    if (vibeos_log_record(&log, VIBEOS_LOG_INFO, 7, 11, 13, "boot_start") != 0) {
+        return -1;
+    }
+    if (vibeos_log_latest(&log, &event) != 0) {
+        return -1;
+    }
+    if (event.seq != 1 || event.level != VIBEOS_LOG_INFO || event.code != 7 || event.arg0 != 11 || event.arg1 != 13 || strcmp(event.message, "boot_start") != 0) {
+        return -1;
+    }
+    for (i = 0; i < VIBEOS_LOG_CAPACITY + 3u; i++) {
+        if (vibeos_log_record(&log, VIBEOS_LOG_WARN, 100u + i, i, 0, "fill") != 0) {
+            return -1;
+        }
+    }
+    if (vibeos_log_count(&log, &count) != 0 || count != VIBEOS_LOG_CAPACITY) {
+        return -1;
+    }
+    if (vibeos_log_dropped(&log, &dropped) != 0 || dropped != 4u) {
+        return -1;
+    }
+    if (vibeos_log_get(&log, 0, &event) != 0 || event.seq != 5u || event.code != 103u) {
+        return -1;
+    }
+    if (vibeos_log_latest(&log, &event) != 0 || event.seq != VIBEOS_LOG_CAPACITY + 4u || event.code != 100u + VIBEOS_LOG_CAPACITY + 2u) {
+        return -1;
+    }
+    if (strcmp(vibeos_log_level_name(VIBEOS_LOG_FATAL), "FATAL") != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 static int test_kmain(void) {
     vibeos_memory_region_t region;
     vibeos_boot_info_t boot;
     vibeos_kernel_t kernel;
     uint32_t health_flags = 0;
     uint32_t fatal_failure = 1;
+    uint32_t log_count = 0;
+    vibeos_log_event_t latest;
 
     memset(&kernel, 0, sizeof(kernel));
     memset(&boot, 0, sizeof(boot));
@@ -428,6 +475,15 @@ static int test_kmain(void) {
         return -1;
     }
     if ((health_flags & VIBEOS_BOOT_HEALTH_BOOT_EVENT_SIGNALLED) == 0 || fatal_failure != 0) {
+        return -1;
+    }
+    if ((health_flags & VIBEOS_BOOT_HEALTH_LOG_READY) == 0) {
+        return -1;
+    }
+    if (vibeos_log_count(&kernel.log, &log_count) != 0 || log_count < 5u) {
+        return -1;
+    }
+    if (vibeos_log_latest(&kernel.log, &latest) != 0 || strcmp(latest.message, "core_stage_ready") != 0) {
         return -1;
     }
     return 0;
@@ -3359,6 +3415,7 @@ int main(void) {
     RUN_TEST(test_scheduler_wait_runtime);
     RUN_TEST(test_scheduler_qos_affinity);
     RUN_TEST(test_ipc);
+    RUN_TEST(test_kernel_log);
     RUN_TEST(test_kmain);
     RUN_TEST(test_vm);
     RUN_TEST(test_interrupts);

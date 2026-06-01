@@ -1,13 +1,13 @@
 # Implementation Progress (Macro Areas)
 
-Last review: 2026-05-23
+Last review: 2026-06-01
 
 This document is now split by macro area for easier maintenance.
 
 | Macro Area | Status | Details |
 | --- | --- | --- |
 | Bootloader | Completed (Phase 4 boot-to-CLI verified) | [bootloader.md](implementation_progress/bootloader.md) |
-| Kernel Core | In Progress (boot-to-CLI baseline verified) | [kernel_core.md](implementation_progress/kernel_core.md) |
+| Kernel Core | In Progress (boot-to-CLI + kernel log baseline verified) | [kernel_core.md](implementation_progress/kernel_core.md) |
 | Process Scheduler | In Progress | [process_scheduler.md](implementation_progress/process_scheduler.md) |
 | Memory Manager | In Progress | [memory_manager.md](implementation_progress/memory_manager.md) |
 | Virtual Memory | In Progress | [virtual_memory.md](implementation_progress/virtual_memory.md) |

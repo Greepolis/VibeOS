@@ -42,6 +42,7 @@
 
 # Build and test artifacts
 build/
+build-*/
 artifacts/*.log
 artifacts/*.json
 artifacts/*.txt
