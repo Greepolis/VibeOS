@@ -179,6 +179,7 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         -fno-plt
         -mno-red-zone
         -fno-strict-aliasing # UEFI compatibility
+        -g0                 # Strip debug symbols (not applicable to freestanding bootloader)
         -Wall
         -Wextra
         -Wpedantic
