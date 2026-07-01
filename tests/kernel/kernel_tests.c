@@ -2770,6 +2770,8 @@ static int test_trap_dispatch(void) {
     frame.rsp = 0x2000;
     frame.rflags = 0x202;
     frame.error_code = 0;
+    frame.cs = 0;
+    frame.fault_address = 0;
     frame.vector = 14;
     if (vibeos_trap_dispatch(&state, &frame) != 0) {
         return -1;
@@ -2782,6 +2784,118 @@ static int test_trap_dispatch(void) {
         return -1;
     }
     if (vibeos_trap_classify(0x80) != VIBEOS_TRAP_CLASS_SYSCALL) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_trap_fault_decisions(void) {
+    vibeos_trap_state_t state;
+    vibeos_trap_frame_t frame;
+    vibeos_trap_decision_t decision;
+    vibeos_log_t log;
+    vibeos_log_event_t latest;
+
+    if (vibeos_trap_state_init(&state) != 0 || vibeos_log_init(&log) != 0) {
+        return -1;
+    }
+
+    memset(&frame, 0, sizeof(frame));
+    frame.rip = 0x401000;
+    frame.rsp = 0x7fff0000;
+    frame.rflags = 0x202;
+    frame.cs = VIBEOS_TRAP_X86_USER_CPL;
+    frame.fault_address = 0xdeadbeef;
+    frame.vector = VIBEOS_TRAP_VECTOR_PAGE_FAULT;
+
+    if (vibeos_trap_dispatch_ex(&state, &frame, &log, 42, &decision) != 0) {
+        return -1;
+    }
+    if (decision.action != VIBEOS_TRAP_ACTION_KILL_CURRENT || decision.user_mode != 1 || decision.current_pid != 42) {
+        return -1;
+    }
+    if (state.last_action != VIBEOS_TRAP_ACTION_KILL_CURRENT || state.action_counts[VIBEOS_TRAP_ACTION_KILL_CURRENT] != 1) {
+        return -1;
+    }
+    if (vibeos_log_latest(&log, &latest) != 0 || latest.level != VIBEOS_LOG_ERROR || strcmp(latest.message, "user_fault_kill_process") != 0) {
+        return -1;
+    }
+
+    frame.cs = 0;
+    frame.vector = VIBEOS_TRAP_VECTOR_GP_FAULT;
+    frame.fault_address = 0;
+    if (vibeos_trap_dispatch_ex(&state, &frame, &log, 0, &decision) != 0) {
+        return -1;
+    }
+    if (decision.action != VIBEOS_TRAP_ACTION_PANIC || decision.user_mode != 0) {
+        return -1;
+    }
+    if (state.last_action != VIBEOS_TRAP_ACTION_PANIC || state.action_counts[VIBEOS_TRAP_ACTION_PANIC] != 1) {
+        return -1;
+    }
+    if (vibeos_log_latest(&log, &latest) != 0 || latest.level != VIBEOS_LOG_FATAL || strcmp(latest.message, "kernel_fault_panic") != 0) {
+        return -1;
+    }
+
+    frame.vector = VIBEOS_TRAP_VECTOR_SYSCALL;
+    frame.cs = VIBEOS_TRAP_X86_USER_CPL;
+    if (vibeos_trap_dispatch_ex(&state, &frame, &log, 42, &decision) != 0) {
+        return -1;
+    }
+    if (decision.action != VIBEOS_TRAP_ACTION_CONTINUE || state.action_counts[VIBEOS_TRAP_ACTION_CONTINUE] != 1) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_kernel_trap_fault_handling(void) {
+    vibeos_kernel_t kernel;
+    vibeos_trap_frame_t frame;
+    vibeos_trap_decision_t decision;
+    vibeos_process_state_t proc_state;
+    vibeos_log_event_t latest;
+    uint32_t pid = 0;
+    uint32_t tid = 0;
+
+    memset(&kernel, 0, sizeof(kernel));
+    if (vibeos_log_init(&kernel.log) != 0 || vibeos_trap_state_init(&kernel.trap_state) != 0 || vibeos_proc_init(&kernel.proc_table) != 0) {
+        return -1;
+    }
+    if (vibeos_proc_spawn(&kernel.proc_table, 0, &pid) != 0 || vibeos_thread_create(&kernel.proc_table, pid, &tid) != 0) {
+        return -1;
+    }
+
+    memset(&frame, 0, sizeof(frame));
+    frame.rip = 0x401000;
+    frame.rsp = 0x7fff0000;
+    frame.rflags = 0x202;
+    frame.cs = VIBEOS_TRAP_X86_USER_CPL;
+    frame.fault_address = 0xcafebabe;
+    frame.vector = VIBEOS_TRAP_VECTOR_PAGE_FAULT;
+
+    if (vibeos_kernel_dispatch_trap(&kernel, &frame, pid, &decision) != 0) {
+        return -1;
+    }
+    if (decision.action != VIBEOS_TRAP_ACTION_KILL_CURRENT || kernel.boot_failure_fatal != 0) {
+        return -1;
+    }
+    if (vibeos_proc_state(&kernel.proc_table, pid, &proc_state) != 0 || proc_state != VIBEOS_PROCESS_STATE_TERMINATED) {
+        return -1;
+    }
+    if (vibeos_log_latest(&kernel.log, &latest) != 0 || latest.level != VIBEOS_LOG_WARN || strcmp(latest.message, "trap_user_process_terminated") != 0) {
+        return -1;
+    }
+
+    frame.cs = 0;
+    frame.vector = VIBEOS_TRAP_VECTOR_GP_FAULT;
+    frame.fault_address = 0;
+    if (vibeos_kernel_dispatch_trap(&kernel, &frame, 0, &decision) != 0) {
+        return -1;
+    }
+    if (decision.action != VIBEOS_TRAP_ACTION_PANIC || kernel.boot_failure_fatal != 1 || kernel.boot_state.last_error_code != 1201) {
+        return -1;
+    }
+    if (vibeos_log_latest(&kernel.log, &latest) != 0 || latest.level != VIBEOS_LOG_FATAL || strcmp(latest.message, "trap_kernel_panic") != 0) {
         return -1;
     }
     return 0;
@@ -3444,6 +3558,8 @@ int main(void) {
     RUN_TEST(test_driver_host);
     RUN_TEST(test_service_ipc_contract);
     RUN_TEST(test_trap_dispatch);
+    RUN_TEST(test_trap_fault_decisions);
+    RUN_TEST(test_kernel_trap_fault_handling);
     RUN_TEST(test_ipc_handle_transfer);
     RUN_TEST(test_handle_lifecycle_hooks);
     RUN_TEST(test_cross_process_handle_dup_policy);

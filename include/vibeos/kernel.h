@@ -49,5 +49,6 @@ typedef struct vibeos_kernel {
 int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info);
 const char *vibeos_kernel_stage_name(vibeos_boot_stage_t stage);
 int vibeos_kernel_boot_health(const vibeos_kernel_t *kernel, uint32_t *out_health_flags, uint32_t *out_failure_fatal);
+int vibeos_kernel_dispatch_trap(vibeos_kernel_t *kernel, const vibeos_trap_frame_t *frame, uint32_t current_pid, vibeos_trap_decision_t *out_decision);
 
 #endif

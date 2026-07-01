@@ -1,7 +1,7 @@
 # Kernel Core Progress
 
-Status: In Progress (boot-to-CLI + kernel log baseline verified)
-Last review: 2026-06-01
+Status: In Progress (Foundation fault-handling model verified)
+Last review: 2026-07-01
 
 ## Implemented
 - Boot stage orchestration in `kernel/core/kmain.c`.
@@ -14,12 +14,14 @@ Last review: 2026-06-01
 - Stage health model in `kernel/core/kmain.c` with explicit boot-health bitset and fatal-failure classification (`vibeos_kernel_boot_health`).
 - Kernel observability baseline: fixed-size in-memory ring log (`vibeos_log_t`) records boot milestones and fatal boot failures without dynamic allocation.
 - Bootstrap CLI exposes `log` and extends `status` with log counters for QEMU/serial diagnostics.
+- Foundation fault-handling model: `vibeos_kernel_dispatch_trap` turns user-mode faults into non-fatal current-process termination and kernel-mode faults into fatal panic state, both recorded in the kernel ring log.
 
 ## Pending
 - Stronger failure-mode recovery between bring-up phases.
-- Panic/page-fault integration with the kernel log and trap state.
+- Runtime hardware page-fault entry wiring from the x86_64 IDT/assembly path into the kernel trap decision API.
 - More explicit stage rollback behavior for partial init failures.
 - Deeper boot-time configuration profile support (debug/perf/hardened) across runtime tunables.
+- Real ring3 `/sbin/init` handoff; the current CLI remains kernel-space bootstrap/rescue only.
 
 ## Next checkpoint
-- Wire trap/page-fault reporting into the kernel log, then move the bootstrap CLI behind a cleaner console abstraction and prepare the transition toward userland init/shell.
+- Add the x86_64 ring3 transition/TSS groundwork and connect real exception frames to the verified trap decision path.

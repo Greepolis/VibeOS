@@ -241,6 +241,33 @@ int vibeos_kernel_boot_health(const vibeos_kernel_t *kernel, uint32_t *out_healt
     return 0;
 }
 
+int vibeos_kernel_dispatch_trap(vibeos_kernel_t *kernel, const vibeos_trap_frame_t *frame, uint32_t current_pid, vibeos_trap_decision_t *out_decision) {
+    vibeos_trap_decision_t local_decision;
+    vibeos_trap_decision_t *decision = out_decision ? out_decision : &local_decision;
+    if (!kernel || !frame) {
+        return -1;
+    }
+    if (vibeos_trap_dispatch_ex(&kernel->trap_state, frame, &kernel->log, current_pid, decision) != 0) {
+        return -1;
+    }
+    if (decision->action == VIBEOS_TRAP_ACTION_KILL_CURRENT) {
+        if (vibeos_proc_terminate(&kernel->proc_table, current_pid) != 0) {
+            kernel->boot_failure_fatal = 1;
+            kernel_boot_log(kernel, VIBEOS_LOG_FATAL, 1202, current_pid, frame->vector, "trap_kill_failed");
+            return -1;
+        }
+        kernel_boot_log(kernel, VIBEOS_LOG_WARN, 1200, current_pid, frame->vector, "trap_user_process_terminated");
+        return 0;
+    }
+    if (decision->action == VIBEOS_TRAP_ACTION_PANIC) {
+        kernel->boot_failure_fatal = 1;
+        kernel->boot_state.last_error_code = 1201;
+        kernel_boot_log(kernel, VIBEOS_LOG_FATAL, 1201, frame->vector, frame->rip, "trap_kernel_panic");
+        return 0;
+    }
+    return 0;
+}
+
 int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
     uint32_t timer_irq;
     
