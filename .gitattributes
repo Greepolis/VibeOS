@@ -1,0 +1,4 @@
+# Keep shell and Python scripts LF so Linux CI runners can execute them
+# regardless of the committer's platform (CRLF shebangs break bash).
+*.sh text eol=lf
+*.py text eol=lf
