@@ -284,6 +284,85 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
     hw_panic("unrecoverable CPU exception");
 }
 
+/* ---- Paging ------------------------------------------------------------- */
+
+#define PTE_PRESENT 0x001ull
+#define PTE_WRITE   0x002ull
+#define PTE_PS      0x080ull            /* 2 MiB page at PD level */
+#define VIBEOS_HW_IDENTITY_GIB 4u       /* identity-map the first 4 GiB */
+
+/* Kernel-owned page tables (static BSS, no PMM dependency during bring-up). */
+static uint64_t g_pml4[512] __attribute__((aligned(4096)));
+static uint64_t g_pdpt[512] __attribute__((aligned(4096)));
+static uint64_t g_pd[VIBEOS_HW_IDENTITY_GIB][512] __attribute__((aligned(4096)));
+
+/* Extra tables + backing frame to prove a non-identity VA->PA mapping. */
+static uint64_t g_pdpt_hi[512] __attribute__((aligned(4096)));
+static uint64_t g_pd_hi[512] __attribute__((aligned(4096)));
+static uint64_t g_pt_hi[512] __attribute__((aligned(4096)));
+static uint8_t  g_test_frame[4096] __attribute__((aligned(4096)));
+
+/* Canonical VA at 512 GiB (PML4[1]) - far outside the 4 GiB identity map, so a
+ * successful access there can only come from our explicit mapping. */
+#define VIBEOS_HW_TEST_VA 0x8000000000ull
+#define VIBEOS_HW_TEST_MAGIC 0x5642454F50414745ull /* "VBEOPAGE" */
+
+static uint64_t hw_read_cr3(void) {
+    uint64_t v;
+    __asm__ __volatile__("mov %%cr3, %0" : "=r"(v));
+    return v;
+}
+
+/* Map VIBEOS_HW_TEST_VA -> g_test_frame with a full PDPT/PD/PT walk. */
+static void hw_map_test_page(void) {
+    g_pt_hi[0]   = (uint64_t)(uintptr_t)&g_test_frame[0] | PTE_PRESENT | PTE_WRITE;
+    g_pd_hi[0]   = (uint64_t)(uintptr_t)&g_pt_hi[0]      | PTE_PRESENT | PTE_WRITE;
+    g_pdpt_hi[0] = (uint64_t)(uintptr_t)&g_pd_hi[0]      | PTE_PRESENT | PTE_WRITE;
+    g_pml4[1]    = (uint64_t)(uintptr_t)&g_pdpt_hi[0]    | PTE_PRESENT | PTE_WRITE;
+}
+
+/* Write through the high VA and confirm it lands in the backing frame. */
+static void hw_verify_test_mapping(void) {
+    volatile uint64_t *va = (volatile uint64_t *)(uintptr_t)VIBEOS_HW_TEST_VA;
+    uint64_t via_phys;
+
+    *va = VIBEOS_HW_TEST_MAGIC;
+    via_phys = *(volatile uint64_t *)(void *)&g_test_frame[0];
+    if (*va == VIBEOS_HW_TEST_MAGIC && via_phys == VIBEOS_HW_TEST_MAGIC) {
+        vibeos_x86_64_serial_puts("[HW] MAP_TEST_OK (VA 0x8000000000 -> frame translated)\n");
+    } else {
+        vibeos_x86_64_serial_puts("[HW] MAP_TEST_FAIL\n");
+    }
+}
+
+/* Build a fresh 4-level page table identity-mapping the first N GiB with 2 MiB
+ * pages, then switch CR3 to it. Everything the kernel touches (its image at
+ * 0x4000000, boot structures at 0x200000, the stack, and these tables) lives
+ * within the first GiB and QEMU RAM/MMIO is below 4 GiB, so the switch from the
+ * firmware's identity map to our own is safe and the mapping is unchanged. */
+static void hw_enable_paging(void) {
+    uint32_t g, e;
+
+    vibeos_x86_64_serial_puts("[HW] building page tables (identity, first 4GiB, 2MiB pages)\n");
+    for (g = 0; g < VIBEOS_HW_IDENTITY_GIB; g++) {
+        for (e = 0; e < 512u; e++) {
+            uint64_t phys = ((uint64_t)g * 0x40000000ull) + ((uint64_t)e * 0x200000ull);
+            g_pd[g][e] = phys | PTE_PRESENT | PTE_WRITE | PTE_PS;
+        }
+        g_pdpt[g] = (uint64_t)(uintptr_t)&g_pd[g][0] | PTE_PRESENT | PTE_WRITE;
+    }
+    g_pml4[0] = (uint64_t)(uintptr_t)&g_pdpt[0] | PTE_PRESENT | PTE_WRITE;
+    hw_map_test_page();
+
+    __asm__ __volatile__("mov %0, %%cr3"
+                         : : "r"((uint64_t)(uintptr_t)&g_pml4[0]) : "memory");
+
+    vibeos_x86_64_serial_puts("[HW] CR3 loaded with kernel-owned tables: 0x");
+    vibeos_x86_64_serial_print_hex(hw_read_cr3());
+    vibeos_x86_64_serial_puts("\n[HW] PAGING_OK (executing on kernel page tables)\n");
+    hw_verify_test_mapping();
+}
+
 /* Remap the PIC, start the PIT, enable interrupts, and confirm the timer IRQ
  * actually fires by watching the tick counter advance (bounded so we never
  * hang if delivery is broken). */
@@ -325,6 +404,8 @@ void vibeos_x86_64_hw_early_init(void) {
     (void)vibeos_trap_state_init(&g_arch_trap_state);
     g_arch_trap_ready = 1;
     vibeos_x86_64_serial_puts("[HW] trap model armed (routing faults via vibeos_trap_dispatch_ex)\n");
+
+    hw_enable_paging();
 
     vibeos_x86_64_serial_puts("[HW] self-test: raising int3\n");
     __asm__ __volatile__("int3");
