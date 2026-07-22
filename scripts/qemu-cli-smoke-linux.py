@@ -128,7 +128,7 @@ def main():
                 ("BOOT_OK", None),
                 ("CLI_READY", None),
                 ("vibeos> ", b"help\r"),
-                ("Commands: help, status, echo <text>, halt, reboot", b"status\r"),
+                ("Commands: help, status, log, echo <text>, halt, reboot", b"status\r"),
                 ("stage=core_ready", b"echo vibeos\r"),
                 ("\nvibeos\nvibeos> ", b"halt\r"),
                 ("Halt requested", None),
