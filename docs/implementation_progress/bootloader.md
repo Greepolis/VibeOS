@@ -53,6 +53,9 @@ Last review: 2026-05-23
 - `./scripts/qemu-smoke-ovmf-linux.sh build-wsl BOOT_OK 60`: passed via OVMF primary profile.
 - `bash scripts/qemu-smoke-cli-linux.sh build-wsl 90`: passed, verified `help`, `status`, `echo vibeos`, and `halt` through the serial CLI.
 
+## Known Limitations
+- **Clang-built EFI boots only partially**: the Clang toolchain *generates and validates* `bootloader.efi` (PE32+ fixup passes), but the resulting image does **not** boot under OVMF (serial shows no output, `last_phase=none`) — a Clang-specific EFI-conversion/codegen gap distinct from the GCC path. Because of this, the CI QEMU boot smokes and the importable VM images are gated to the **GCC** matrix; Clang jobs still build everything and run host tests (portability gate). TODO: reproduce a Clang build locally (needs `clang`/`lld` installed) and diagnose why the Clang EFI does not start.
+
 ## Future Hardening
 - **Phase 4.1**: Secure Boot and Measured Boot policy path discovery via EFI GetVariable
   - Currently creates firmware tags with Phase 4 defaults (SecureBoot=0, MeasuredBoot=0)
@@ -61,6 +64,6 @@ Last review: 2026-05-23
 - **Phase 4.2**: Richer fault telemetry around boot failures (handoff errors, security policy rejections).
 
 ## Next checkpoint
-- Keep the GitHub Actions Linux matrix green across GCC/Clang and Debug/Release.
+- Diagnose and fix the Clang EFI boot path so boot gates can re-include Clang (see Known Limitations).
 - Implement GetVariable integration for real Secure Boot detection in Phase 4.1.
 - Start the next kernel/userland milestone on top of the verified boot-to-CLI baseline.

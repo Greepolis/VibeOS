@@ -300,6 +300,18 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
     
     # Consolidated target: build all boot artifacts
     add_custom_target(vibeos_image ALL DEPENDS vibeos_boot_image vibeos_kernel_elf vibeos_bootloader_efi)
+
+    # Optional: importable VM images (esp.img/.vdi/.vmdk/.iso). Not part of ALL;
+    # build explicitly with `cmake --build <dir> --target vibeos_vm_images`.
+    # Linux/WSL only (uses qemu-img and, for the .iso, xorriso).
+    if(CMAKE_HOST_UNIX)
+        add_custom_target(vibeos_vm_images
+            COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/scripts/make-vm-images-linux.sh ${CMAKE_BINARY_DIR}
+            DEPENDS vibeos_image
+            COMMENT "Building importable VM images (esp.img/.vdi/.vmdk/.iso)"
+            USES_TERMINAL
+        )
+    endif()
 endif()
 
 # Export toolchain information for scripts

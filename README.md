@@ -49,6 +49,31 @@ Notes:
 - EFI media generation includes `startup.nsh` fallback in `artifacts/efi_root` to make firmware-shell boot path deterministic.
 - Boot-to-CLI smoke waits for `BOOT_OK`, verifies `CLI_READY`, sends `help`, `status`, `echo vibeos`, and `halt`, and stores `qemu-cli-summary.txt`.
 
+## Bootable VM Images (VirtualBox / VMware)
+
+After a Linux/WSL image build, generate importable disk/CD images:
+
+```bash
+./scripts/make-vm-images-linux.sh build
+# or: cmake --build build --target vibeos_vm_images
+```
+
+This produces, in `build/artifacts/`:
+
+| File | Use |
+| --- | --- |
+| `vibeos_esp.img` | Raw FAT16 UEFI EFI System Partition (boots directly in QEMU+OVMF) |
+| `vibeos.vdi` | VirtualBox disk |
+| `vibeos.vmdk` | VMware disk |
+| `vibeos.iso` | UEFI El Torito CD image (needs `xorriso`; the most portable option) |
+
+The ESP image is built by a self-contained FAT16 writer (`scripts/make_esp_image.py`, no `mtools` required); `.vdi`/`.vmdk` are produced with `qemu-img`. The images are boot-tested under QEMU+OVMF by `scripts/qemu-boot-image-linux.py`, and CI boot-tests the generated `.iso`.
+
+**Importing (UEFI is required — VibeOS has no legacy BIOS boot):**
+- **VirtualBox**: New VM → Type *Other/Unknown (64-bit)* → in *Settings → System → Motherboard* tick **Enable EFI**. Then either attach `vibeos.vdi` as the hard disk, or attach `vibeos.iso` to the optical drive.
+- **VMware**: create a VM with firmware type **UEFI**, then attach `vibeos.vmdk` as the disk (or `vibeos.iso` as a CD/DVD).
+- Output is on the **first serial port** (COM1). Enable a serial port in the VM to see the `[BOOT]`/`[CLI]` console; the VibeOS CLI is serial-only for now.
+
 ## Project Structure
 
 - `boot/`: bootloader and firmware handoff code (UEFI path + helpers)

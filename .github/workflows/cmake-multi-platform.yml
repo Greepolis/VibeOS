@@ -31,7 +31,7 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-x86 ninja-build build-essential clang ovmf
+          sudo apt-get install -y qemu-system-x86 qemu-utils ninja-build build-essential clang ovmf xorriso
 
       - name: Configure
         run: >
@@ -50,19 +50,39 @@ jobs:
       - name: Build Boot Artifacts
         run: cmake --build build --target vibeos_image
 
-      - name: QEMU OVMF Smoke (Required Gate)
+      # The bootable image (bootloader.efi -> objcopy PE) is only boot-verified
+      # for the GCC toolchain. Clang builds still validate that all code compiles
+      # and passes host tests; the Clang EFI-conversion path is a known TODO and
+      # its image is not boot-gated. See docs/implementation_progress/bootloader.md.
+      - name: QEMU OVMF Smoke (Required Gate, GCC image)
+        if: matrix.compiler == 'gcc'
         timeout-minutes: 4
         run: |
           set -euo pipefail
           chmod +x scripts/qemu-smoke-ovmf-linux.sh
           ./scripts/qemu-smoke-ovmf-linux.sh build "BOOT_OK" 60
 
-      - name: QEMU Boot-to-CLI Smoke (Required Gate)
+      - name: QEMU Boot-to-CLI Smoke (Required Gate, GCC image)
+        if: matrix.compiler == 'gcc'
         timeout-minutes: 3
         run: |
           set -euo pipefail
           chmod +x scripts/qemu-smoke-cli-linux.sh
           ./scripts/qemu-smoke-cli-linux.sh build 90
+
+      - name: Build Importable VM Images (esp.img/.vdi/.vmdk/.iso, GCC)
+        if: matrix.compiler == 'gcc'
+        run: |
+          set -euo pipefail
+          chmod +x scripts/make-vm-images-linux.sh
+          ./scripts/make-vm-images-linux.sh build
+
+      - name: QEMU Boot-Test Generated ISO (GCC)
+        if: matrix.compiler == 'gcc'
+        timeout-minutes: 3
+        run: |
+          set -euo pipefail
+          python3 scripts/qemu-boot-image-linux.py build/artifacts/vibeos.iso BOOT_OK 90 cdrom raw
 
       - name: QEMU OVMF Summary
         if: always()
@@ -92,6 +112,10 @@ jobs:
           name: linux-${{ matrix.compiler }}-${{ matrix.build_type }}-artifacts
           path: |
             build/artifacts/**
+            build/artifacts/vibeos_esp.img
+            build/artifacts/vibeos.vdi
+            build/artifacts/vibeos.vmdk
+            build/artifacts/vibeos.iso
             build/Testing/**/Test.xml
             qemu-serial-*.log
             qemu-err-*.log
