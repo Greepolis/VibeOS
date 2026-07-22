@@ -18,12 +18,15 @@ Last review: 2026-07-22
 - Extended trap decision flow with explicit actions (`CONTINUE`, `KILL_CURRENT`, `PANIC`), user/kernel CPL classification, fault-address tracking, action counters, and kernel-log integration for directed fault diagnostics.
 - Resumable-debug-trap handling: `#DB`(1)/`#BP`(3)/`#OF`(4) now yield `CONTINUE` instead of a kernel `PANIC` (covered by `test_trap_debug_resumable`).
 - **Real on-metal ISR handler routes CPU exceptions through `vibeos_trap_dispatch_ex`** using a bring-up-local trap_state, honoring the returned action (CONTINUE resumes via `iretq`; PANIC/KILL halt during bring-up). Verified in QEMU: real `int3` -> dispatch -> `action=CONTINUE count=1` -> resume.
-- Timer IRQ binding path from interrupt controller to timer source.
+- Timer IRQ binding path from interrupt controller to timer source (host model).
+- **Real hardware timer IRQ on metal** (`arch_hw.c`): 8259 PIC remapped to vectors 0x20-0x2F, PIT programmed to 100 Hz, IRQ ISR stubs 32-47, EOI handling, `sti`, and a tick counter incremented from IRQ0. Verified in QEMU: `TIMER_IRQ_OK ticks=3` (bounded spin confirms periodic delivery), boot continues to CLI with interrupts enabled.
 
 ## Pending
 - Point the on-metal handler at the live kernel `trap_state` and current PID (currently a bring-up-local trap_state) so KILL_CURRENT can terminate a real process.
-- PIC/APIC init to enable hardware IRQ delivery (currently only CPU exceptions are handled; external IRQs not yet unmasked).
-- SMP interrupt routing policy and APIC-level refinement.
+- Drive the scheduler from the real timer tick (preemption) instead of the host-modeled timer path.
+- APIC / IO-APIC support (currently legacy 8259 PIC; only IRQ0 unmasked).
+- SMP interrupt routing policy.
 
 ## Next checkpoint
-- Validate user-fault kill vs kernel panic in QEMU once ring-3 user mode exists (needs a deliberate faulting user probe); until then only kernel-mode traps are reachable.
+- Wire the timer tick into `vibeos_sched_*` so on-metal preemption is exercised in QEMU.
+- Validate user-fault kill vs kernel panic in QEMU once ring-3 user mode exists.

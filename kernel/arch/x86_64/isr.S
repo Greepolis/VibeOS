@@ -66,6 +66,24 @@ vibeos_isr_\num:
     ISR_ERR   30   /* #SX security exception      */
     ISR_NOERR 31   /* reserved                    */
 
+    /* Hardware IRQs after PIC remap: vectors 0x20-0x2F (IRQ 0-15). */
+    ISR_NOERR 32   /* IRQ0  PIT timer             */
+    ISR_NOERR 33   /* IRQ1  keyboard              */
+    ISR_NOERR 34   /* IRQ2  cascade               */
+    ISR_NOERR 35   /* IRQ3                        */
+    ISR_NOERR 36   /* IRQ4                        */
+    ISR_NOERR 37   /* IRQ5                        */
+    ISR_NOERR 38   /* IRQ6                        */
+    ISR_NOERR 39   /* IRQ7                        */
+    ISR_NOERR 40   /* IRQ8                        */
+    ISR_NOERR 41   /* IRQ9                        */
+    ISR_NOERR 42   /* IRQ10                       */
+    ISR_NOERR 43   /* IRQ11                       */
+    ISR_NOERR 44   /* IRQ12                       */
+    ISR_NOERR 45   /* IRQ13                       */
+    ISR_NOERR 46   /* IRQ14                       */
+    ISR_NOERR 47   /* IRQ15                       */
+
 vibeos_isr_common:
     /* Save general-purpose registers. Order matters: the last one pushed
      * (r15) is at the lowest address == first field of the frame struct. */
@@ -129,6 +147,10 @@ vibeos_isr_stub_table:
     .quad vibeos_isr_20, vibeos_isr_21, vibeos_isr_22, vibeos_isr_23
     .quad vibeos_isr_24, vibeos_isr_25, vibeos_isr_26, vibeos_isr_27
     .quad vibeos_isr_28, vibeos_isr_29, vibeos_isr_30, vibeos_isr_31
+    .quad vibeos_isr_32, vibeos_isr_33, vibeos_isr_34, vibeos_isr_35
+    .quad vibeos_isr_36, vibeos_isr_37, vibeos_isr_38, vibeos_isr_39
+    .quad vibeos_isr_40, vibeos_isr_41, vibeos_isr_42, vibeos_isr_43
+    .quad vibeos_isr_44, vibeos_isr_45, vibeos_isr_46, vibeos_isr_47
 
 /* Mark stack as non-executable to silence the linker warning. */
     .section .note.GNU-stack,"",@progbits
