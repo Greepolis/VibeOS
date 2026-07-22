@@ -129,6 +129,11 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         kernel/arch/x86_64/entry.s
         kernel/arch/x86_64/isr.S
         kernel/arch/x86_64/arch_hw.c
+        # Freestanding mem* runtime: the kernel image links -nostdlib, and some
+        # compilers (notably Clang) lower struct copies to memcpy/memset calls
+        # that GCC inlines. Provide the implementations so the image links on
+        # every toolchain, not just the one that happened to inline them.
+        boot/freestanding_runtime.c
     )
 
     # Real hardware bring-up sources (image-only, never linked into host tests).
