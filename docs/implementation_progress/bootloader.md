@@ -54,7 +54,12 @@ Last review: 2026-05-23
 - `bash scripts/qemu-smoke-cli-linux.sh build-wsl 90`: passed, verified `help`, `status`, `echo vibeos`, and `halt` through the serial CLI.
 
 ## Known Limitations
-- **Clang-built EFI boots only partially**: the Clang toolchain *generates and validates* `bootloader.efi` (PE32+ fixup passes), but the resulting image does **not** boot under OVMF (serial shows no output, `last_phase=none`) — a Clang-specific EFI-conversion/codegen gap distinct from the GCC path. Because of this, the CI QEMU boot smokes and the importable VM images are gated to the **GCC** matrix; Clang jobs still build everything and run host tests (portability gate). TODO: reproduce a Clang build locally (needs `clang`/`lld` installed) and diagnose why the Clang EFI does not start.
+- **Clang-built EFI is rejected at load by UEFI**. Diagnosed 2026-07-22 (clang 18 in WSL):
+  - The Clang `bootloader.efi` generates and passes the PE fixup, and its PE32+ optional header looks valid (Magic 0x20b, Subsystem 10, SectionAlignment 0x1000, valid `.reloc` directory) — nearly identical to the GCC image.
+  - Yet OVMF refuses to start it: `BdsDxe: failed to load ... Unsupported`, and running it from the UEFI shell gives `Script Error Status: Unsupported` — i.e. `LoadImage` returns `EFI_UNSUPPORTED` **before execution** (hence `last_phase=none`).
+  - Structural difference vs GCC: Clang emits an extra `.data.rel.ro` + `.rela.data.rel.ro` (relocatable read-only data) and a different section layout. The `objcopy --output-target=efi-app-x86_64` ELF→PE path does not translate this cleanly. Adding `.data.rel.ro`/`.got` to the objcopy keep-list did **not** fix the load rejection (verified), so the problem is the ELF→PE conversion itself, not just a dropped section.
+  - **Recommended real fix** (future, focused task): stop converting an ELF with `objcopy` and instead link the bootloader directly to a native PE with LLD — `clang -target x86_64-unknown-windows -fuse-ld=lld -Wl,-subsystem:efi_application -Wl,-entry:efi_main -nostdlib` — which produces a UEFI-conformant PE without the fragile objcopy step. `lld` is now available.
+  - Impact: **none on the shipping path** — GCC is the reference bootable toolchain and is fully boot-gated. CI runs the QEMU boot smokes and VM-image build on the GCC matrix; Clang jobs still build everything and run host tests as a portability gate.
 
 ## Future Hardening
 - **Phase 4.1**: Secure Boot and Measured Boot policy path discovery via EFI GetVariable
