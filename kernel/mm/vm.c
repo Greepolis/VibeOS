@@ -27,6 +27,49 @@ static int map_is_valid(const vibeos_vm_map_t *map) {
     return 1;
 }
 
+static int vm_page_aligned(uintptr_t value) {
+    return (value & ((uintptr_t)VIBEOS_VM_PAGE_SIZE - 1u)) == 0u;
+}
+
+static int vm_size_page_aligned(size_t size) {
+    return (size != 0 && (size & (VIBEOS_VM_PAGE_SIZE - 1u)) == 0u) ? 1 : 0;
+}
+
+static int vm_perms_valid(uint32_t perms) {
+    uint32_t valid = (uint32_t)(VIBEOS_VM_PERM_READ | VIBEOS_VM_PERM_WRITE | VIBEOS_VM_PERM_EXEC);
+    if (perms == 0 || (perms & ~valid) != 0) {
+        return 0;
+    }
+    if ((perms & VIBEOS_VM_PERM_WRITE) != 0 && (perms & VIBEOS_VM_PERM_EXEC) != 0) {
+        return 0;
+    }
+    return 1;
+}
+
+static int vm_range_end(uintptr_t va, size_t size, uintptr_t *out_end) {
+    if (!out_end || size == 0 || va > UINTPTR_MAX - size) {
+        return -1;
+    }
+    *out_end = va + size;
+    return 0;
+}
+
+static int vm_range_is_user(uintptr_t va, size_t size) {
+    uintptr_t end = 0;
+    if (vm_range_end(va, size, &end) != 0) {
+        return 0;
+    }
+    return (va >= VIBEOS_VM_USER_MIN && end <= VIBEOS_VM_USER_MAX + 1u) ? 1 : 0;
+}
+
+static int vm_range_is_kernel(uintptr_t va, size_t size) {
+    uintptr_t end = 0;
+    if (vm_range_end(va, size, &end) != 0) {
+        return 0;
+    }
+    return (va >= VIBEOS_VM_KERNEL_BASE && end > va) ? 1 : 0;
+}
+
 static uintptr_t vm_align_up(uintptr_t value, uintptr_t align) {
     uintptr_t mask;
     if (align == 0) {
@@ -42,6 +85,10 @@ int vibeos_vm_init(vibeos_address_space_t *aspace) {
     }
     aspace->map_count = 0;
     return 0;
+}
+
+int vibeos_address_space_create(vibeos_address_space_t *aspace) {
+    return vibeos_vm_init(aspace);
 }
 
 int vibeos_vm_map(vibeos_address_space_t *aspace, uintptr_t va, uintptr_t pa, size_t size, uint32_t perms) {
@@ -65,6 +112,28 @@ int vibeos_vm_map(vibeos_address_space_t *aspace, uintptr_t va, uintptr_t pa, si
     }
     aspace->maps[aspace->map_count++] = candidate;
     return 0;
+}
+
+static int vm_map_checked(vibeos_address_space_t *aspace, uintptr_t va, uintptr_t pa, size_t size, uint32_t perms, int user_mapping) {
+    if (!aspace || !vm_perms_valid(perms) || !vm_page_aligned(va) || !vm_page_aligned(pa) || !vm_size_page_aligned(size)) {
+        return -1;
+    }
+    if (user_mapping) {
+        if (!vm_range_is_user(va, size)) {
+            return -1;
+        }
+    } else if (!vm_range_is_kernel(va, size)) {
+        return -1;
+    }
+    return vibeos_vm_map(aspace, va, pa, size, perms);
+}
+
+int vibeos_vm_map_user(vibeos_address_space_t *aspace, uintptr_t va, uintptr_t pa, size_t size, uint32_t perms) {
+    return vm_map_checked(aspace, va, pa, size, perms, 1);
+}
+
+int vibeos_vm_map_kernel(vibeos_address_space_t *aspace, uintptr_t va, uintptr_t pa, size_t size, uint32_t perms) {
+    return vm_map_checked(aspace, va, pa, size, perms, 0);
 }
 
 int vibeos_vm_unmap(vibeos_address_space_t *aspace, uintptr_t va, size_t size) {
@@ -255,6 +324,31 @@ int vibeos_vm_compact(vibeos_address_space_t *aspace, uint32_t *out_merged) {
     return 0;
 }
 
+int vibeos_vm_validate_user_range(const vibeos_address_space_t *aspace, uintptr_t va, size_t size, uint32_t required_perms) {
+    uintptr_t cursor;
+    uintptr_t end;
+    uint32_t valid = (uint32_t)(VIBEOS_VM_PERM_READ | VIBEOS_VM_PERM_WRITE | VIBEOS_VM_PERM_EXEC);
+    if (!aspace || required_perms == 0 || (required_perms & ~valid) != 0 || !vm_range_is_user(va, size)) {
+        return -1;
+    }
+    if (vm_range_end(va, size, &end) != 0) {
+        return -1;
+    }
+    cursor = va;
+    while (cursor < end) {
+        const vibeos_vm_map_t *map = vibeos_vm_lookup(aspace, cursor);
+        uintptr_t map_end = 0;
+        if (!map || !vm_range_is_user(map->va, map->size) || (map->perms & required_perms) != required_perms) {
+            return -1;
+        }
+        if (vm_range_end(map->va, map->size, &map_end) != 0 || map_end <= cursor) {
+            return -1;
+        }
+        cursor = (map_end < end) ? map_end : end;
+    }
+    return 0;
+}
+
 int vibeos_vm_find_gap(const vibeos_address_space_t *aspace, uintptr_t min_va, size_t size, uintptr_t align, uintptr_t *out_va) {
     uintptr_t candidate;
     if (!aspace || !out_va || size == 0 || align == 0) {
@@ -305,4 +399,24 @@ int vibeos_vm_find_gap(const vibeos_address_space_t *aspace, uintptr_t min_va, s
         }
         candidate = next_candidate;
     }
+}
+
+int vibeos_vm_context_init(vibeos_vm_context_t *ctx, vibeos_address_space_t *initial) {
+    if (!ctx || !initial || vibeos_vm_validate(initial) != 0) {
+        return -1;
+    }
+    ctx->current = initial;
+    ctx->switch_count = 0;
+    return 0;
+}
+
+int vibeos_vm_switch_address_space(vibeos_vm_context_t *ctx, vibeos_address_space_t *next) {
+    if (!ctx || !next || vibeos_vm_validate(next) != 0) {
+        return -1;
+    }
+    if (ctx->current != next) {
+        ctx->current = next;
+        ctx->switch_count++;
+    }
+    return 0;
 }

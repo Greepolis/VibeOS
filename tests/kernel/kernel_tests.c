@@ -564,6 +564,57 @@ static int test_vm(void) {
     return 0;
 }
 
+static int test_vm_user_address_space_contract(void) {
+    vibeos_address_space_t user_aspace;
+    vibeos_address_space_t next_aspace;
+    vibeos_vm_context_t ctx;
+    uintptr_t kernel_va = VIBEOS_VM_KERNEL_BASE;
+
+    if (vibeos_address_space_create(&user_aspace) != 0 || vibeos_address_space_create(&next_aspace) != 0) {
+        return -1;
+    }
+    if (vibeos_vm_map_user(&user_aspace, 0x400000, 0x200000, VIBEOS_VM_PAGE_SIZE * 2u, VIBEOS_VM_PERM_READ | VIBEOS_VM_PERM_WRITE) != 0) {
+        return -1;
+    }
+    if (vibeos_vm_validate_user_range(&user_aspace, 0x400000, 16, VIBEOS_VM_PERM_READ) != 0) {
+        return -1;
+    }
+    if (vibeos_vm_validate_user_range(&user_aspace, 0x401000, VIBEOS_VM_PAGE_SIZE, VIBEOS_VM_PERM_WRITE) != 0) {
+        return -1;
+    }
+    if (vibeos_vm_validate_user_range(&user_aspace, 0x402000, 1, VIBEOS_VM_PERM_READ) == 0) {
+        return -1;
+    }
+    if (vibeos_vm_validate_user_range(&user_aspace, 0x400000, 16, VIBEOS_VM_PERM_EXEC) == 0) {
+        return -1;
+    }
+    if (vibeos_vm_map_user(&user_aspace, kernel_va, 0x300000, VIBEOS_VM_PAGE_SIZE, VIBEOS_VM_PERM_READ) == 0) {
+        return -1;
+    }
+    if (vibeos_vm_map_user(&user_aspace, 0x500000, 0x300000, VIBEOS_VM_PAGE_SIZE, VIBEOS_VM_PERM_WRITE | VIBEOS_VM_PERM_EXEC) == 0) {
+        return -1;
+    }
+    if (vibeos_vm_map_kernel(&user_aspace, kernel_va, 0x400000, VIBEOS_VM_PAGE_SIZE, VIBEOS_VM_PERM_READ) != 0) {
+        return -1;
+    }
+    if (vibeos_vm_validate_user_range(&user_aspace, kernel_va, 8, VIBEOS_VM_PERM_READ) == 0) {
+        return -1;
+    }
+    if (vibeos_vm_map_user(&next_aspace, 0x600000, 0x500000, VIBEOS_VM_PAGE_SIZE, VIBEOS_VM_PERM_READ | VIBEOS_VM_PERM_EXEC) != 0) {
+        return -1;
+    }
+    if (vibeos_vm_context_init(&ctx, &user_aspace) != 0) {
+        return -1;
+    }
+    if (vibeos_vm_switch_address_space(&ctx, &next_aspace) != 0 || ctx.current != &next_aspace || ctx.switch_count != 1) {
+        return -1;
+    }
+    if (vibeos_vm_switch_address_space(&ctx, &next_aspace) != 0 || ctx.switch_count != 1) {
+        return -1;
+    }
+    return 0;
+}
+
 static int test_interrupts(void) {
     vibeos_interrupt_controller_t intc;
     uint32_t acc = 0;
@@ -3532,6 +3583,7 @@ int main(void) {
     RUN_TEST(test_kernel_log);
     RUN_TEST(test_kmain);
     RUN_TEST(test_vm);
+    RUN_TEST(test_vm_user_address_space_contract);
     RUN_TEST(test_interrupts);
     RUN_TEST(test_syscalls);
     RUN_TEST(test_services);
