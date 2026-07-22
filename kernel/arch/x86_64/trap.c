@@ -43,8 +43,18 @@ int vibeos_trap_frame_is_user(const vibeos_trap_frame_t *frame) {
     return ((uint32_t)frame->cs & VIBEOS_TRAP_X86_CPL_MASK) == VIBEOS_TRAP_X86_USER_CPL;
 }
 
-static vibeos_trap_action_t trap_action_for(vibeos_trap_class_t klass, uint32_t user_mode, uint32_t current_pid) {
+static int trap_vector_is_resumable_debug(uint32_t vector) {
+    /* #DB (1), #BP (3) and #OF (4) are trap-class exceptions whose saved RIP
+     * already points past the trapping instruction, so execution can resume.
+     * They must not be treated as fatal kernel faults. */
+    return (vector == 1u || vector == 3u || vector == 4u) ? 1 : 0;
+}
+
+static vibeos_trap_action_t trap_action_for(vibeos_trap_class_t klass, uint32_t vector, uint32_t user_mode, uint32_t current_pid) {
     if (klass != VIBEOS_TRAP_CLASS_FAULT) {
+        return VIBEOS_TRAP_ACTION_CONTINUE;
+    }
+    if (trap_vector_is_resumable_debug(vector)) {
         return VIBEOS_TRAP_ACTION_CONTINUE;
     }
     if (user_mode && current_pid != 0) {
@@ -85,7 +95,7 @@ int vibeos_trap_dispatch_ex(vibeos_trap_state_t *state, const vibeos_trap_frame_
     }
     klass = vibeos_trap_classify(frame->vector);
     user_mode = (uint32_t)vibeos_trap_frame_is_user(frame);
-    action = trap_action_for(klass, user_mode, current_pid);
+    action = trap_action_for(klass, frame->vector, user_mode, current_pid);
 
     state->last_vector = frame->vector;
     state->last_pid = current_pid;

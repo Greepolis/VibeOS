@@ -14,6 +14,7 @@
 #include <stdint.h>
 
 #include "vibeos/arch_x86_64.h"
+#include "vibeos/trap.h"
 
 #define VIBEOS_HW_KERNEL_CS 0x08u
 #define VIBEOS_HW_KERNEL_DS 0x10u
@@ -133,8 +134,36 @@ static void hw_log_field(const char *name, uint64_t value) {
     vibeos_x86_64_serial_print_hex(value);
 }
 
+/* Bring-up-local trap sink. On-metal CPU exceptions are routed through the
+ * portable decision model (vibeos_trap_dispatch_ex) so the same classify /
+ * action logic that host tests cover also governs real faults. A later
+ * milestone will point this at the live kernel trap_state and current PID
+ * once user processes exist. */
+static vibeos_trap_state_t g_arch_trap_state;
+static int g_arch_trap_ready;
+
+static const char *hw_action_name(vibeos_trap_action_t action) {
+    switch (action) {
+        case VIBEOS_TRAP_ACTION_CONTINUE: return "CONTINUE";
+        case VIBEOS_TRAP_ACTION_KILL_CURRENT: return "KILL_CURRENT";
+        case VIBEOS_TRAP_ACTION_PANIC: return "PANIC";
+        default: return "UNKNOWN";
+    }
+}
+
+static void hw_panic(const char *why) {
+    vibeos_x86_64_serial_puts(" FATAL: ");
+    vibeos_x86_64_serial_puts(why);
+    vibeos_x86_64_serial_puts(", halting\n");
+    for (;;) {
+        __asm__ __volatile__("cli; hlt");
+    }
+}
+
 /* Called from the assembly common stub with a pointer to the saved frame. */
 void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
+    vibeos_trap_frame_t tf;
+    vibeos_trap_decision_t decision;
     uint64_t fault_address = (frame->vector == 14u) ? hw_read_cr2() : 0u;
 
     vibeos_x86_64_serial_puts("[HW][TRAP] ");
@@ -148,17 +177,37 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
         hw_log_field("cr2", fault_address);
     }
 
-    if (frame->vector == 3u) {
-        /* Breakpoint is a trap: rip already points past int3, so returning
-         * lets iretq resume the interrupted code. */
-        vibeos_x86_64_serial_puts(" (breakpoint, resuming)\n");
+    if (!g_arch_trap_ready) {
+        /* Handler ran before the trap model was initialized. Fail safe. */
+        hw_panic("trap before model init");
+    }
+
+    tf.rip = frame->rip;
+    tf.rsp = frame->rsp;
+    tf.rflags = frame->rflags;
+    tf.error_code = frame->error_code;
+    tf.cs = frame->cs;
+    tf.fault_address = fault_address;
+    tf.vector = (uint32_t)frame->vector;
+
+    if (vibeos_trap_dispatch_ex(&g_arch_trap_state, &tf, 0, 0, &decision) != 0) {
+        hw_panic("trap dispatch failed");
+    }
+
+    vibeos_x86_64_serial_puts(" -> action=");
+    vibeos_x86_64_serial_puts(hw_action_name(decision.action));
+    vibeos_x86_64_serial_puts(" count=0x");
+    vibeos_x86_64_serial_print_hex(g_arch_trap_state.trap_count);
+    vibeos_x86_64_serial_puts("\n");
+
+    if (decision.action == VIBEOS_TRAP_ACTION_CONTINUE) {
+        /* Resumable trap (e.g. #BP): iretq returns to the saved RIP. */
         return;
     }
 
-    vibeos_x86_64_serial_puts(" FATAL: unhandled CPU exception, halting\n");
-    for (;;) {
-        __asm__ __volatile__("cli; hlt");
-    }
+    /* KILL_CURRENT has no meaning yet (no user processes on metal); both
+     * remaining actions are fatal during bring-up. */
+    hw_panic("unrecoverable CPU exception");
 }
 
 /* Entry point invoked from entry.s before vibeos_kmain. */
@@ -170,9 +219,13 @@ void vibeos_x86_64_hw_early_init(void) {
     hw_load_idt();
     vibeos_x86_64_serial_puts("[HW] IDT loaded (256 gates, 32 CPU exceptions wired)\n");
 
+    (void)vibeos_trap_state_init(&g_arch_trap_state);
+    g_arch_trap_ready = 1;
+    vibeos_x86_64_serial_puts("[HW] trap model armed (routing faults via vibeos_trap_dispatch_ex)\n");
+
     vibeos_x86_64_serial_puts("[HW] self-test: raising int3\n");
     __asm__ __volatile__("int3");
-    vibeos_x86_64_serial_puts("[HW] resumed after int3\n");
+    vibeos_x86_64_serial_puts("[HW] resumed after int3 (trap routed through model)\n");
 
     vibeos_x86_64_serial_puts("[HW] HW_INIT_OK\n");
 }

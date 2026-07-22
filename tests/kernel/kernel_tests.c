@@ -2899,6 +2899,43 @@ static int test_trap_fault_decisions(void) {
     return 0;
 }
 
+static int test_trap_debug_resumable(void) {
+    vibeos_trap_state_t state;
+    vibeos_trap_frame_t frame;
+    vibeos_trap_decision_t decision;
+    /* #DB (1), #BP (3) and #OF (4) are resumable debug traps: even in kernel
+     * mode (cs=0, pid=0) they must yield CONTINUE, not PANIC. They are still
+     * FAULT-class for statistics. */
+    uint32_t debug_vectors[3] = {1u, 3u, 4u};
+    uint32_t i;
+
+    if (vibeos_trap_state_init(&state) != 0) {
+        return -1;
+    }
+    for (i = 0; i < 3u; i++) {
+        memset(&frame, 0, sizeof(frame));
+        frame.rip = 0x4000500;
+        frame.cs = 0; /* kernel CPL */
+        frame.vector = debug_vectors[i];
+        if (vibeos_trap_dispatch_ex(&state, &frame, 0, 0, &decision) != 0) {
+            return -1;
+        }
+        if (decision.action != VIBEOS_TRAP_ACTION_CONTINUE || decision.user_mode != 0) {
+            return -1;
+        }
+        if (decision.trap_class != VIBEOS_TRAP_CLASS_FAULT) {
+            return -1;
+        }
+    }
+    if (state.trap_count != 3 || state.action_counts[VIBEOS_TRAP_ACTION_PANIC] != 0) {
+        return -1;
+    }
+    if (state.action_counts[VIBEOS_TRAP_ACTION_CONTINUE] != 3) {
+        return -1;
+    }
+    return 0;
+}
+
 static int test_kernel_trap_fault_handling(void) {
     vibeos_kernel_t kernel;
     vibeos_trap_frame_t frame;
@@ -3611,6 +3648,7 @@ int main(void) {
     RUN_TEST(test_service_ipc_contract);
     RUN_TEST(test_trap_dispatch);
     RUN_TEST(test_trap_fault_decisions);
+    RUN_TEST(test_trap_debug_resumable);
     RUN_TEST(test_kernel_trap_fault_handling);
     RUN_TEST(test_ipc_handle_transfer);
     RUN_TEST(test_handle_lifecycle_hooks);

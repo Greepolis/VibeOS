@@ -16,12 +16,14 @@ Last review: 2026-07-22
   - Verified in QEMU+OVMF: `int3` self-test raises a real #BP, is caught by the ISR (vector=3, rip in kernel .text), resumes via `iretq`, and boot continues to CLI (`HW_INIT_OK`).
 - Trap state and classification flow in `kernel/arch/x86_64/trap.c`.
 - Extended trap decision flow with explicit actions (`CONTINUE`, `KILL_CURRENT`, `PANIC`), user/kernel CPL classification, fault-address tracking, action counters, and kernel-log integration for directed fault diagnostics.
+- Resumable-debug-trap handling: `#DB`(1)/`#BP`(3)/`#OF`(4) now yield `CONTINUE` instead of a kernel `PANIC` (covered by `test_trap_debug_resumable`).
+- **Real on-metal ISR handler routes CPU exceptions through `vibeos_trap_dispatch_ex`** using a bring-up-local trap_state, honoring the returned action (CONTINUE resumes via `iretq`; PANIC/KILL halt during bring-up). Verified in QEMU: real `int3` -> dispatch -> `action=CONTINUE count=1` -> resume.
 - Timer IRQ binding path from interrupt controller to timer source.
 
 ## Pending
-- Wire the real ISR C handler into `vibeos_kernel_dispatch_trap` / `vibeos_trap_dispatch_ex` so on-metal faults drive the existing decision model (kill-current vs panic).
+- Point the on-metal handler at the live kernel `trap_state` and current PID (currently a bring-up-local trap_state) so KILL_CURRENT can terminate a real process.
 - PIC/APIC init to enable hardware IRQ delivery (currently only CPU exceptions are handled; external IRQs not yet unmasked).
 - SMP interrupt routing policy and APIC-level refinement.
 
 ## Next checkpoint
-- Route real #PF/#GP frames through `vibeos_trap_dispatch_ex` and validate user-fault kill vs kernel panic in QEMU (needs the trap_state available to the handler and a deliberate faulting probe).
+- Validate user-fault kill vs kernel panic in QEMU once ring-3 user mode exists (needs a deliberate faulting user probe); until then only kernel-mode traps are reachable.
