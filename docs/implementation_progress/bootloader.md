@@ -53,13 +53,8 @@ Last review: 2026-05-23
 - `./scripts/qemu-smoke-ovmf-linux.sh build-wsl BOOT_OK 60`: passed via OVMF primary profile.
 - `bash scripts/qemu-smoke-cli-linux.sh build-wsl 90`: passed, verified `help`, `status`, `echo vibeos`, and `halt` through the serial CLI.
 
-## Known Limitations
-- **Clang-built EFI is rejected at load by UEFI**. Diagnosed 2026-07-22 (clang 18 in WSL):
-  - The Clang `bootloader.efi` generates and passes the PE fixup, and its PE32+ optional header looks valid (Magic 0x20b, Subsystem 10, SectionAlignment 0x1000, valid `.reloc` directory) — nearly identical to the GCC image.
-  - Yet OVMF refuses to start it: `BdsDxe: failed to load ... Unsupported`, and running it from the UEFI shell gives `Script Error Status: Unsupported` — i.e. `LoadImage` returns `EFI_UNSUPPORTED` **before execution** (hence `last_phase=none`).
-  - Structural difference vs GCC: Clang emits an extra `.data.rel.ro` + `.rela.data.rel.ro` (relocatable read-only data) and a different section layout. The `objcopy --output-target=efi-app-x86_64` ELF→PE path does not translate this cleanly. Adding `.data.rel.ro`/`.got` to the objcopy keep-list did **not** fix the load rejection (verified), so the problem is the ELF→PE conversion itself, not just a dropped section.
-  - **Recommended real fix** (future, focused task): stop converting an ELF with `objcopy` and instead link the bootloader directly to a native PE with LLD — `clang -target x86_64-unknown-windows -fuse-ld=lld -Wl,-subsystem:efi_application -Wl,-entry:efi_main -nostdlib` — which produces a UEFI-conformant PE without the fragile objcopy step. `lld` is now available.
-  - Impact: **none on the shipping path** — GCC is the reference bootable toolchain and is fully boot-gated. CI runs the QEMU boot smokes and VM-image build on the GCC matrix; Clang jobs still build everything and run host tests as a portability gate.
+## Toolchain notes
+- **Clang UEFI images: resolved (2026-07-22)**. Previously the Clang `bootloader.efi`, produced by the ELF→PE `objcopy` path, was rejected by OVMF at `LoadImage` (`EFI_UNSUPPORTED`, `last_phase=none`) — Clang's `.data.rel.ro`/`.rela.data.rel.ro` layout did not survive the objcopy conversion. Fixed by giving Clang a **native PE link path**: compile the bootloader with `--target=x86_64-unknown-windows-msvc` (MS x64 ABI matches UEFI) and link with `-fuse-ld=lld -Wl,-subsystem:efi_application -Wl,-entry:efi_main -nostdlib`, emitting `bootloader.efi` directly (no objcopy). Also removed a spurious `<stdio.h>` include from `boot/uefi_serial.h` so the bootloader is fully freestanding. GCC keeps the ELF→objcopy path unchanged. Both toolchains are now verified booting to CLI under QEMU+OVMF and both are boot-gated in CI.
 
 ## Future Hardening
 - **Phase 4.1**: Secure Boot and Measured Boot policy path discovery via EFI GetVariable
@@ -69,6 +64,5 @@ Last review: 2026-05-23
 - **Phase 4.2**: Richer fault telemetry around boot failures (handoff errors, security policy rejections).
 
 ## Next checkpoint
-- Diagnose and fix the Clang EFI boot path so boot gates can re-include Clang (see Known Limitations).
 - Implement GetVariable integration for real Secure Boot detection in Phase 4.1.
 - Start the next kernel/userland milestone on top of the verified boot-to-CLI baseline.

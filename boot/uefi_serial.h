@@ -2,9 +2,8 @@
 #define VIBEOS_UEFI_SERIAL_H
 
 #include "uefi_protocol.h"
-#include <stdio.h>
 
-/* Simple serial logging for bootloader */
+/* Simple serial logging for bootloader (freestanding: no hosted <stdio.h>). */
 
 int uefi_serial_init(EFI_SYSTEM_TABLE *st);
 int uefi_serial_puts(const char *str);

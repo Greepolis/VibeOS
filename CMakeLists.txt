@@ -187,108 +187,118 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         ${CMAKE_CURRENT_SOURCE_DIR}/boot
         ${CMAKE_CURRENT_SOURCE_DIR}/include
     )
-    # UEFI freestanding compilation flags
-    target_compile_options(vibeos_bootloader_uefi PRIVATE
-        -ffreestanding      # No hosted libs
-        -fno-stack-protector
-        -fshort-wchar       # UEFI uses 16-bit wchar
-        -fPIC               # Relocatable image for UEFI loader
-        -fno-plt
-        -mno-red-zone
-        -fno-strict-aliasing # UEFI compatibility
-        -g0                 # Strip debug symbols (not applicable to freestanding bootloader)
-        -Wall
-        -Wextra
-        -Wpedantic
-    )
-    
-    # UEFI linker options for the intermediate image.
-    # Final BOOTX64.EFI is generated via objcopy conversion+validation step below.
-    # Note: GNU ld (Linux) doesn't support --subsystem; objcopy handles PE subsystem during conversion.
-    # lld-link (MinGW) requires it; MINGW toolchain uses lld or compatible linker.
-    if(MINGW)
-        # Keep freestanding linkage on MinGW and bypass CRT startup requirements.
-        target_link_options(vibeos_bootloader_uefi PRIVATE
-            -nostdlib
-            -Wl,--entry=efi_main
-            -Wl,--subsystem,10
+    # UEFI freestanding compilation and EFI production. GCC builds a freestanding
+    # shared ELF and converts it to PE with objcopy; Clang emits a native UEFI PE
+    # directly via the Windows target + LLD, because the objcopy ELF->PE path
+    # produces a Clang image OVMF rejects at LoadImage (see
+    # docs/implementation_progress/bootloader.md).
+    set(VIBEOS_BOOTLOADER_EFI "${VIBEOS_ARTIFACTS_DIR}/bootloader.efi")
+
+    if(CMAKE_C_COMPILER_ID STREQUAL "Clang")
+        target_compile_options(vibeos_bootloader_uefi PRIVATE
+            --target=x86_64-unknown-windows-msvc  # MS x64 ABI matches UEFI; emits COFF
+            -ffreestanding
+            -fno-stack-protector
+            -mno-red-zone
+            -mno-stack-arg-probe   # avoid MSVC __chkstk probes under -nostdlib
+            -fno-strict-aliasing
+            -Wall
+            -Wextra
         )
+        target_link_options(vibeos_bootloader_uefi PRIVATE
+            --target=x86_64-unknown-windows-msvc
+            -fuse-ld=lld
+            -nostdlib
+            -Wl,-subsystem:efi_application
+            -Wl,-entry:efi_main
+            -Wl,-nodefaultlib
+        )
+        # LLD emits a valid PE32+ directly; drop it straight into artifacts/ as
+        # bootloader.efi (no objcopy conversion needed).
+        set_target_properties(vibeos_bootloader_uefi PROPERTIES
+            OUTPUT_NAME bootloader
+            SUFFIX .efi
+            RUNTIME_OUTPUT_DIRECTORY "${VIBEOS_ARTIFACTS_DIR}"
+        )
+        add_custom_target(vibeos_bootloader_efi DEPENDS vibeos_bootloader_uefi)
     else()
-        # Linux/WSL: build a freestanding shared ELF with relocations for objcopy -> EFI.
-        target_link_options(vibeos_bootloader_uefi PRIVATE
-            -nostdlib
-            -Wl,--entry=efi_main
-            -Wl,-shared
-            -Wl,-Bsymbolic
-            -Wl,-znocombreloc
-            -Wl,--emit-relocs
-        )
-    endif()
-
-    if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
-        target_link_libraries(vibeos_bootloader_uefi PRIVATE gcc)
-    elseif(CMAKE_C_COMPILER_ID STREQUAL "Clang")
-        # Try to locate compiler-rt builtins for Clang.
-        # These provide low-level compiler helper routines such as:
-        #   __muldi3, __udivdi3, __ashldi3, etc.
-        find_library(CLANG_RT_BUILTINS
-            NAMES
-                clang_rt.builtins-x86_64
-                clang_rt.builtins
+        target_compile_options(vibeos_bootloader_uefi PRIVATE
+            -ffreestanding      # No hosted libs
+            -fno-stack-protector
+            -fshort-wchar       # UEFI uses 16-bit wchar
+            -fPIC               # Relocatable image for UEFI loader
+            -fno-plt
+            -mno-red-zone
+            -fno-strict-aliasing # UEFI compatibility
+            -g0                 # Strip debug symbols (not applicable to freestanding bootloader)
+            -Wall
+            -Wextra
+            -Wpedantic
         )
 
-        # Link compiler-rt only if available.
-        if(CLANG_RT_BUILTINS)
-            target_link_libraries(vibeos_bootloader_uefi PRIVATE
-                ${CLANG_RT_BUILTINS}
+        # UEFI linker options for the intermediate image.
+        # Final BOOTX64.EFI is generated via objcopy conversion+validation step below.
+        # GNU ld (Linux) doesn't support --subsystem; objcopy handles PE subsystem.
+        if(MINGW)
+            target_link_options(vibeos_bootloader_uefi PRIVATE
+                -nostdlib
+                -Wl,--entry=efi_main
+                -Wl,--subsystem,10
+            )
+        else()
+            # Linux/WSL: build a freestanding shared ELF with relocations for objcopy -> EFI.
+            target_link_options(vibeos_bootloader_uefi PRIVATE
+                -nostdlib
+                -Wl,--entry=efi_main
+                -Wl,-shared
+                -Wl,-Bsymbolic
+                -Wl,-znocombreloc
+                -Wl,--emit-relocs
             )
         endif()
 
-        # Many Clang toolchains inject compiler builtins automatically,
-        # even with -nostdlib. If unresolved builtin symbols appear,
-        # install compiler-rt or provide the runtime library manually.
+        target_link_libraries(vibeos_bootloader_uefi PRIVATE gcc)
+
+        find_program(VIBEOS_OBJCOPY_TOOL
+            NAMES llvm-objcopy objcopy x86_64-w64-mingw32-objcopy
+        )
+        if(NOT VIBEOS_OBJCOPY_TOOL)
+            message(FATAL_ERROR "objcopy-compatible tool not found (required for EFI bootloader conversion)")
+        endif()
+        find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
+        set(VIBEOS_BOOTLOADER_ELF "${VIBEOS_ARTIFACTS_DIR}/bootloader.elf")
+
+        add_custom_command(
+            OUTPUT "${VIBEOS_BOOTLOADER_ELF}"
+            COMMAND ${CMAKE_COMMAND} -E copy
+                $<TARGET_FILE:vibeos_bootloader_uefi>
+                "${VIBEOS_BOOTLOADER_ELF}"
+            DEPENDS vibeos_bootloader_uefi
+            COMMENT "Staging UEFI bootloader intermediate image"
+            VERBATIM
+        )
+
+        add_custom_command(
+            OUTPUT "${VIBEOS_BOOTLOADER_EFI}"
+            COMMAND ${CMAKE_COMMAND}
+                "-DINPUT_ELF=${VIBEOS_BOOTLOADER_ELF}"
+                "-DOUTPUT_EFI=${VIBEOS_BOOTLOADER_EFI}"
+                "-DOBJCOPY_TOOL=${VIBEOS_OBJCOPY_TOOL}"
+                "-DPYTHON_EXECUTABLE=${Python3_EXECUTABLE}"
+                "-DEFI_PE_FIXUP=${CMAKE_CURRENT_SOURCE_DIR}/tools/efi_pe_fixup.py"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/convert_efi_image.cmake"
+            DEPENDS
+                "${VIBEOS_BOOTLOADER_ELF}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/cmake/convert_efi_image.cmake"
+            COMMENT "Converting bootloader intermediate image to validated EFI application"
+            VERBATIM
+        )
+
+        add_custom_target(vibeos_bootloader_efi
+            DEPENDS "${VIBEOS_BOOTLOADER_EFI}"
+        )
     endif()
-
-    find_program(VIBEOS_OBJCOPY_TOOL
-        NAMES llvm-objcopy objcopy x86_64-w64-mingw32-objcopy
-    )
-    if(NOT VIBEOS_OBJCOPY_TOOL)
-        message(FATAL_ERROR "objcopy-compatible tool not found (required for EFI bootloader conversion)")
-    endif()
-    find_package(Python3 COMPONENTS Interpreter REQUIRED)
-
-    set(VIBEOS_BOOTLOADER_ELF "${VIBEOS_ARTIFACTS_DIR}/bootloader.elf")
-    set(VIBEOS_BOOTLOADER_EFI "${VIBEOS_ARTIFACTS_DIR}/bootloader.efi")
-
-    add_custom_command(
-        OUTPUT "${VIBEOS_BOOTLOADER_ELF}"
-        COMMAND ${CMAKE_COMMAND} -E copy
-            $<TARGET_FILE:vibeos_bootloader_uefi>
-            "${VIBEOS_BOOTLOADER_ELF}"
-        DEPENDS vibeos_bootloader_uefi
-        COMMENT "Staging UEFI bootloader intermediate image"
-        VERBATIM
-    )
-
-    add_custom_command(
-        OUTPUT "${VIBEOS_BOOTLOADER_EFI}"
-        COMMAND ${CMAKE_COMMAND}
-            "-DINPUT_ELF=${VIBEOS_BOOTLOADER_ELF}"
-            "-DOUTPUT_EFI=${VIBEOS_BOOTLOADER_EFI}"
-            "-DOBJCOPY_TOOL=${VIBEOS_OBJCOPY_TOOL}"
-            "-DPYTHON_EXECUTABLE=${Python3_EXECUTABLE}"
-            "-DEFI_PE_FIXUP=${CMAKE_CURRENT_SOURCE_DIR}/tools/efi_pe_fixup.py"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/convert_efi_image.cmake"
-        DEPENDS
-            "${VIBEOS_BOOTLOADER_ELF}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/convert_efi_image.cmake"
-        COMMENT "Converting bootloader intermediate image to validated EFI application"
-        VERBATIM
-    )
-
-    add_custom_target(vibeos_bootloader_efi
-        DEPENDS "${VIBEOS_BOOTLOADER_EFI}"
-    )
 
     # Build EFI media layout in artifacts/efi_root with BOOTX64.EFI + kernel payload.
     add_custom_target(vibeos_boot_image

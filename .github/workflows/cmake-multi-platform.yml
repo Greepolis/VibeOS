@@ -50,20 +50,16 @@ jobs:
       - name: Build Boot Artifacts
         run: cmake --build build --target vibeos_image
 
-      # The bootable image (bootloader.efi -> objcopy PE) is only boot-verified
-      # for the GCC toolchain. Clang builds still validate that all code compiles
-      # and passes host tests; the Clang EFI-conversion path is a known TODO and
-      # its image is not boot-gated. See docs/implementation_progress/bootloader.md.
-      - name: QEMU OVMF Smoke (Required Gate, GCC image)
-        if: matrix.compiler == 'gcc'
+      # Both toolchains now produce a bootable image: GCC via ELF->objcopy PE,
+      # Clang via a native LLD PE link. Boot-gate both.
+      - name: QEMU OVMF Smoke (Required Gate)
         timeout-minutes: 4
         run: |
           set -euo pipefail
           chmod +x scripts/qemu-smoke-ovmf-linux.sh
           ./scripts/qemu-smoke-ovmf-linux.sh build "BOOT_OK" 60
 
-      - name: QEMU Boot-to-CLI Smoke (Required Gate, GCC image)
-        if: matrix.compiler == 'gcc'
+      - name: QEMU Boot-to-CLI Smoke (Required Gate)
         timeout-minutes: 3
         run: |
           set -euo pipefail
