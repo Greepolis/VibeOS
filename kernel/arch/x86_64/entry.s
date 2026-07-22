@@ -61,7 +61,15 @@ _start:
     
 .call_kmain:
     xor %rdx, %rdx
-    
+
+    # Bring up real GDT/IDT before entering C kernel. hw_early_init takes no
+    # arguments; preserve RDI (kernel_t*) and RSI (boot_info*) across the call.
+    push %rdi
+    push %rsi
+    call vibeos_x86_64_hw_early_init
+    pop %rsi
+    pop %rdi
+
     # Call kernel main with boot_info in RSI and kernel in RDI
     call vibeos_kmain
     
@@ -76,3 +84,6 @@ _start:
 stack_base:
     .space 4096
 stack_top:
+
+# Mark stack as non-executable to silence the linker warning.
+.section .note.GNU-stack,"",@progbits

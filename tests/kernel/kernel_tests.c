@@ -564,6 +564,57 @@ static int test_vm(void) {
     return 0;
 }
 
+static int test_vm_user_address_space_contract(void) {
+    vibeos_address_space_t user_aspace;
+    vibeos_address_space_t next_aspace;
+    vibeos_vm_context_t ctx;
+    uintptr_t kernel_va = VIBEOS_VM_KERNEL_BASE;
+
+    if (vibeos_address_space_create(&user_aspace) != 0 || vibeos_address_space_create(&next_aspace) != 0) {
+        return -1;
+    }
+    if (vibeos_vm_map_user(&user_aspace, 0x400000, 0x200000, VIBEOS_VM_PAGE_SIZE * 2u, VIBEOS_VM_PERM_READ | VIBEOS_VM_PERM_WRITE) != 0) {
+        return -1;
+    }
+    if (vibeos_vm_validate_user_range(&user_aspace, 0x400000, 16, VIBEOS_VM_PERM_READ) != 0) {
+        return -1;
+    }
+    if (vibeos_vm_validate_user_range(&user_aspace, 0x401000, VIBEOS_VM_PAGE_SIZE, VIBEOS_VM_PERM_WRITE) != 0) {
+        return -1;
+    }
+    if (vibeos_vm_validate_user_range(&user_aspace, 0x402000, 1, VIBEOS_VM_PERM_READ) == 0) {
+        return -1;
+    }
+    if (vibeos_vm_validate_user_range(&user_aspace, 0x400000, 16, VIBEOS_VM_PERM_EXEC) == 0) {
+        return -1;
+    }
+    if (vibeos_vm_map_user(&user_aspace, kernel_va, 0x300000, VIBEOS_VM_PAGE_SIZE, VIBEOS_VM_PERM_READ) == 0) {
+        return -1;
+    }
+    if (vibeos_vm_map_user(&user_aspace, 0x500000, 0x300000, VIBEOS_VM_PAGE_SIZE, VIBEOS_VM_PERM_WRITE | VIBEOS_VM_PERM_EXEC) == 0) {
+        return -1;
+    }
+    if (vibeos_vm_map_kernel(&user_aspace, kernel_va, 0x400000, VIBEOS_VM_PAGE_SIZE, VIBEOS_VM_PERM_READ) != 0) {
+        return -1;
+    }
+    if (vibeos_vm_validate_user_range(&user_aspace, kernel_va, 8, VIBEOS_VM_PERM_READ) == 0) {
+        return -1;
+    }
+    if (vibeos_vm_map_user(&next_aspace, 0x600000, 0x500000, VIBEOS_VM_PAGE_SIZE, VIBEOS_VM_PERM_READ | VIBEOS_VM_PERM_EXEC) != 0) {
+        return -1;
+    }
+    if (vibeos_vm_context_init(&ctx, &user_aspace) != 0) {
+        return -1;
+    }
+    if (vibeos_vm_switch_address_space(&ctx, &next_aspace) != 0 || ctx.current != &next_aspace || ctx.switch_count != 1) {
+        return -1;
+    }
+    if (vibeos_vm_switch_address_space(&ctx, &next_aspace) != 0 || ctx.switch_count != 1) {
+        return -1;
+    }
+    return 0;
+}
+
 static int test_interrupts(void) {
     vibeos_interrupt_controller_t intc;
     uint32_t acc = 0;
@@ -2848,6 +2899,43 @@ static int test_trap_fault_decisions(void) {
     return 0;
 }
 
+static int test_trap_debug_resumable(void) {
+    vibeos_trap_state_t state;
+    vibeos_trap_frame_t frame;
+    vibeos_trap_decision_t decision;
+    /* #DB (1), #BP (3) and #OF (4) are resumable debug traps: even in kernel
+     * mode (cs=0, pid=0) they must yield CONTINUE, not PANIC. They are still
+     * FAULT-class for statistics. */
+    uint32_t debug_vectors[3] = {1u, 3u, 4u};
+    uint32_t i;
+
+    if (vibeos_trap_state_init(&state) != 0) {
+        return -1;
+    }
+    for (i = 0; i < 3u; i++) {
+        memset(&frame, 0, sizeof(frame));
+        frame.rip = 0x4000500;
+        frame.cs = 0; /* kernel CPL */
+        frame.vector = debug_vectors[i];
+        if (vibeos_trap_dispatch_ex(&state, &frame, 0, 0, &decision) != 0) {
+            return -1;
+        }
+        if (decision.action != VIBEOS_TRAP_ACTION_CONTINUE || decision.user_mode != 0) {
+            return -1;
+        }
+        if (decision.trap_class != VIBEOS_TRAP_CLASS_FAULT) {
+            return -1;
+        }
+    }
+    if (state.trap_count != 3 || state.action_counts[VIBEOS_TRAP_ACTION_PANIC] != 0) {
+        return -1;
+    }
+    if (state.action_counts[VIBEOS_TRAP_ACTION_CONTINUE] != 3) {
+        return -1;
+    }
+    return 0;
+}
+
 static int test_kernel_trap_fault_handling(void) {
     vibeos_kernel_t kernel;
     vibeos_trap_frame_t frame;
@@ -3532,6 +3620,7 @@ int main(void) {
     RUN_TEST(test_kernel_log);
     RUN_TEST(test_kmain);
     RUN_TEST(test_vm);
+    RUN_TEST(test_vm_user_address_space_contract);
     RUN_TEST(test_interrupts);
     RUN_TEST(test_syscalls);
     RUN_TEST(test_services);
@@ -3559,6 +3648,7 @@ int main(void) {
     RUN_TEST(test_service_ipc_contract);
     RUN_TEST(test_trap_dispatch);
     RUN_TEST(test_trap_fault_decisions);
+    RUN_TEST(test_trap_debug_resumable);
     RUN_TEST(test_kernel_trap_fault_handling);
     RUN_TEST(test_ipc_handle_transfer);
     RUN_TEST(test_handle_lifecycle_hooks);

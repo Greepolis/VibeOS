@@ -127,8 +127,20 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
     # Links entry.s + kernel_core + user_core into a single executable
     add_executable(vibeos_kernel
         kernel/arch/x86_64/entry.s
+        kernel/arch/x86_64/isr.S
+        kernel/arch/x86_64/arch_hw.c
     )
-    
+
+    # Real hardware bring-up sources (image-only, never linked into host tests).
+    target_compile_options(vibeos_kernel PRIVATE
+        -ffreestanding
+        -fno-stack-protector
+        -mno-red-zone
+        -Wall
+        -Wextra
+        -Wpedantic
+    )
+
     target_link_libraries(vibeos_kernel PRIVATE vibeos_kernel_core vibeos_user_core)
     
     # Linker settings for kernel executable
