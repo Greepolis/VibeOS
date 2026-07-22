@@ -24,7 +24,7 @@ RESERVED_SECTORS = 4
 NUM_FATS = 2
 ROOT_ENTRIES = 512                    # 512 * 32 / 512 = 32 root-dir sectors
 MEDIA = 0xF8
-DEFAULT_SIZE_MB = 48
+DEFAULT_SIZE_MB = 24  # <32MB keeps the El Torito boot-image size field within 16 bits
 
 ATTR_FILE = 0x20
 ATTR_DIR = 0x10

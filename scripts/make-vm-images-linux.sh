@@ -25,7 +25,7 @@ if [[ ! -d "$EFI_ROOT" ]]; then
 fi
 
 echo "[VM-IMG] building ESP image..."
-python3 "$SCRIPT_DIR/make_esp_image.py" "$EFI_ROOT" "$ESP" 48 || exit 1
+python3 "$SCRIPT_DIR/make_esp_image.py" "$EFI_ROOT" "$ESP" 24 || exit 1
 
 if command -v qemu-img >/dev/null 2>&1; then
   echo "[VM-IMG] converting to VirtualBox (.vdi) and VMware (.vmdk)..."
@@ -40,9 +40,14 @@ if command -v xorriso >/dev/null 2>&1; then
   ISO_ROOT="$ART/iso_root"
   rm -rf "$ISO_ROOT"
   mkdir -p "$ISO_ROOT"
+  # Put the EFI tree directly in the ISO 9660 filesystem (so /EFI/BOOT exists
+  # for firmware that reads the ISO FS) *and* embed the ESP as the El Torito
+  # EFI boot image. This hybrid layout maximizes VirtualBox/VMware compat.
+  cp -r "$EFI_ROOT/EFI" "$ISO_ROOT/"
+  [ -f "$EFI_ROOT/startup.nsh" ] && cp "$EFI_ROOT/startup.nsh" "$ISO_ROOT/"
   cp "$ESP" "$ISO_ROOT/vibeos_esp.img"
   xorriso -as mkisofs \
-    -V VIBEOS -R -f \
+    -V VIBEOS -R -J -f \
     -e vibeos_esp.img -no-emul-boot \
     -o "$ART/vibeos.iso" "$ISO_ROOT" || exit 1
   rm -rf "$ISO_ROOT"
