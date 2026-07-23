@@ -84,6 +84,8 @@ vibeos_isr_\num:
     ISR_NOERR 46   /* IRQ14                       */
     ISR_NOERR 47   /* IRQ15                       */
 
+    ISR_NOERR 128  /* 0x80 software syscall       */
+
 vibeos_isr_common:
     /* Save general-purpose registers. Order matters: the last one pushed
      * (r15) is at the lowest address == first field of the frame struct. */
@@ -134,8 +136,71 @@ vibeos_isr_common:
     add $16, %rsp           /* discard vector + error_code */
     iretq
 
+/* void vibeos_x86_64_ring3_enter(uint64_t user_rip /rdi/, uint64_t user_rsp /rsi/)
+ * Save a setjmp-style kernel context, then iretq down to ring 3. The matching
+ * vibeos_x86_64_ring3_resume() (called from the syscall handler) restores that
+ * context so this function "returns" to its caller after the ring-3 excursion. */
+    .global vibeos_x86_64_ring3_enter
+vibeos_x86_64_ring3_enter:
+    lea g_ring3_kctx(%rip), %rax
+    mov %rbx, 0x00(%rax)
+    mov %rbp, 0x08(%rax)
+    mov %r12, 0x10(%rax)
+    mov %r13, 0x18(%rax)
+    mov %r14, 0x20(%rax)
+    mov %r15, 0x28(%rax)
+    mov %rsp, 0x30(%rax)     /* kernel rsp at return-address level */
+
+    mov $0x23, %rcx          /* user data selector (GDT idx 4 | RPL 3) */
+    push %rcx                /* SS */
+    push %rsi                /* user RSP */
+    pushfq
+    pop %rcx
+    or $0x200, %rcx          /* set IF in the ring-3 RFLAGS image */
+    push %rcx                /* RFLAGS */
+    mov $0x1b, %rcx          /* user code selector (GDT idx 3 | RPL 3) */
+    push %rcx                /* CS */
+    push %rdi                /* user RIP */
+    mov $0x23, %cx
+    mov %cx, %ds
+    mov %cx, %es
+    iretq                    /* -> ring 3 */
+
+/* void vibeos_x86_64_ring3_resume(void) - restore the saved kernel context. */
+    .global vibeos_x86_64_ring3_resume
+vibeos_x86_64_ring3_resume:
+    lea g_ring3_kctx(%rip), %rax
+    mov 0x00(%rax), %rbx
+    mov 0x08(%rax), %rbp
+    mov 0x10(%rax), %r12
+    mov 0x18(%rax), %r13
+    mov 0x20(%rax), %r14
+    mov 0x28(%rax), %r15
+    mov 0x30(%rax), %rsp
+    mov $0x10, %cx           /* restore kernel data segments */
+    mov %cx, %ds
+    mov %cx, %es
+    ret                      /* return to caller of vibeos_x86_64_ring3_enter */
+
+/* A tiny ring-3 program: write() a message, then exit(), via int 0x80. It must
+ * touch nothing privileged - it talks to the kernel only through syscalls. */
+    .global vibeos_x86_64_user_program
+vibeos_x86_64_user_program:
+    lea user_msg(%rip), %rdi
+    mov $user_msg_len, %rsi
+    mov $1, %rax             /* write */
+    int $0x80
+    xor %rdi, %rdi
+    mov $60, %rax            /* exit */
+    int $0x80
+1:  jmp 1b                   /* not reached */
+
 /* Table of stub entry points, indexed by vector, consumed by arch_hw.c. */
     .section .rodata
+user_msg:
+    .ascii "Hello from ring 3 via int 0x80\n"
+user_msg_end:
+    .set user_msg_len, user_msg_end - user_msg
     .align 8
     .global vibeos_isr_stub_table
 vibeos_isr_stub_table:
