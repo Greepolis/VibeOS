@@ -151,17 +151,17 @@ vibeos_x86_64_ring3_enter:
     mov %r15, 0x28(%rax)
     mov %rsp, 0x30(%rax)     /* kernel rsp at return-address level */
 
-    mov $0x23, %rcx          /* user data selector (GDT idx 4 | RPL 3) */
+    mov $0x1b, %rcx          /* user data selector (GDT idx 3 | RPL 3) */
     push %rcx                /* SS */
     push %rsi                /* user RSP */
     pushfq
     pop %rcx
     or $0x200, %rcx          /* set IF in the ring-3 RFLAGS image */
     push %rcx                /* RFLAGS */
-    mov $0x1b, %rcx          /* user code selector (GDT idx 3 | RPL 3) */
+    mov $0x23, %rcx          /* user code selector (GDT idx 4 | RPL 3) */
     push %rcx                /* CS */
     push %rdi                /* user RIP */
-    mov $0x23, %cx
+    mov $0x1b, %cx
     mov %cx, %ds
     mov %cx, %es
     iretq                    /* -> ring 3 */
@@ -182,25 +182,29 @@ vibeos_x86_64_ring3_resume:
     mov %cx, %es
     ret                      /* return to caller of vibeos_x86_64_ring3_enter */
 
-/* A tiny ring-3 program: write() a message, then exit(), via int 0x80. It must
- * touch nothing privileged - it talks to the kernel only through syscalls. */
-    .global vibeos_x86_64_user_program
-vibeos_x86_64_user_program:
-    lea user_msg(%rip), %rdi
-    mov $user_msg_len, %rsi
-    mov $1, %rax             /* write */
-    int $0x80
-    xor %rdi, %rdi
-    mov $60, %rax            /* exit */
-    int $0x80
-1:  jmp 1b                   /* not reached */
+/* SYSCALL entry (installed in LSTAR). On entry rcx=user rip, r11=user rflags,
+ * and rsp is still the *user* stack (syscall does not switch stacks). Switch to
+ * a kernel stack, marshal the Linux ABI args (rax=nr, rdi/rsi/rdx=a1..a3) into
+ * the SysV C ABI, call the dispatcher, then sysret back to ring 3. The exit
+ * syscall never returns here (it longjmps via ring3_resume). */
+    .global vibeos_x86_64_syscall_entry
+vibeos_x86_64_syscall_entry:
+    mov %rsp, g_user_saved_rsp(%rip)
+    mov g_syscall_kstack_top(%rip), %rsp
+    push %rcx                /* save user rip   */
+    push %r11                /* save user rflags */
+    mov %rdx, %rcx           /* C arg4 = a3 */
+    mov %rsi, %rdx           /* C arg3 = a2 */
+    mov %rdi, %rsi           /* C arg2 = a1 */
+    mov %rax, %rdi           /* C arg1 = nr */
+    call vibeos_x86_64_linux_syscall
+    pop %r11                 /* user rflags */
+    pop %rcx                 /* user rip    */
+    mov g_user_saved_rsp(%rip), %rsp
+    sysretq                  /* -> ring 3: rip=rcx, rflags=r11, cs/ss from STAR */
 
 /* Table of stub entry points, indexed by vector, consumed by arch_hw.c. */
     .section .rodata
-user_msg:
-    .ascii "Hello from ring 3 via int 0x80\n"
-user_msg_end:
-    .set user_msg_len, user_msg_end - user_msg
     .align 8
     .global vibeos_isr_stub_table
 vibeos_isr_stub_table:
