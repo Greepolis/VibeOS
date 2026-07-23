@@ -24,10 +24,17 @@ void _start(void) {
     line[0] = (char)('A' + (int)id);
     line[1] = '\n';
 
+    /* Write a small, bounded number of times (so serial output stays tiny even
+     * on slow emulated CI), then spin quietly. The kernel stops the demo after
+     * a fixed number of timer preemptions regardless. */
+    int writes = 0;
     for (;;) {
-        user_write(1, line, 2);
-        for (volatile long d = 0; d < 20000000L; d++) {
-            /* busy-wait so the timer preempts us mid-task */
+        if (writes < 3) {
+            user_write(1, line, 2);
+            writes++;
+        }
+        for (volatile long d = 0; d < 300000L; d++) {
+            /* short busy-wait so the timer preempts us mid-task */
         }
     }
 }

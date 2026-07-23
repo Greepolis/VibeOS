@@ -52,19 +52,21 @@ jobs:
 
       # Both toolchains now produce a bootable image: GCC via ELF->objcopy PE,
       # Clang via a native LLD PE link. Boot-gate both.
+      # Generous timeouts: GitHub runners emulate with TCG (no KVM), so OVMF
+      # boot plus the on-metal bring-up demos are much slower than on a dev box.
       - name: QEMU OVMF Smoke (Required Gate)
-        timeout-minutes: 4
+        timeout-minutes: 6
         run: |
           set -euo pipefail
           chmod +x scripts/qemu-smoke-ovmf-linux.sh
-          ./scripts/qemu-smoke-ovmf-linux.sh build "BOOT_OK" 60
+          ./scripts/qemu-smoke-ovmf-linux.sh build "BOOT_OK" 150
 
       - name: QEMU Boot-to-CLI Smoke (Required Gate)
-        timeout-minutes: 3
+        timeout-minutes: 6
         run: |
           set -euo pipefail
           chmod +x scripts/qemu-smoke-cli-linux.sh
-          ./scripts/qemu-smoke-cli-linux.sh build 90
+          ./scripts/qemu-smoke-cli-linux.sh build 180
 
       - name: Build Importable VM Images (esp.img/.vdi/.vmdk/.iso, GCC)
         if: matrix.compiler == 'gcc'
@@ -75,10 +77,10 @@ jobs:
 
       - name: QEMU Boot-Test Generated ISO (Required Gate, GCC)
         if: matrix.compiler == 'gcc'
-        timeout-minutes: 3
+        timeout-minutes: 6
         run: |
           set -euo pipefail
-          python3 scripts/qemu-boot-image-linux.py build/artifacts/vibeos.iso BOOT_OK 90 cdrom raw
+          python3 scripts/qemu-boot-image-linux.py build/artifacts/vibeos.iso BOOT_OK 180 cdrom raw
 
       - name: QEMU OVMF Summary
         if: always()
