@@ -35,14 +35,43 @@
 #define VIBEOS_HW_IRQ_TIMER 32u
 #define VIBEOS_HW_TIMER_HZ 100u
 
-/* ---- GDT ---------------------------------------------------------------- */
+/* ---- GDT + TSS ---------------------------------------------------------- */
 
-static uint64_t g_gdt[3];
+#define VIBEOS_HW_USER_CODE_SEL 0x1Bu   /* GDT index 3, RPL 3 */
+#define VIBEOS_HW_USER_DATA_SEL 0x23u   /* GDT index 4, RPL 3 */
+#define VIBEOS_HW_TSS_SEL 0x28u         /* GDT index 5 */
+
+struct tss64 {
+    uint32_t reserved0;
+    uint64_t rsp0;
+    uint64_t rsp1;
+    uint64_t rsp2;
+    uint64_t reserved1;
+    uint64_t ist[7];
+    uint64_t reserved2;
+    uint16_t reserved3;
+    uint16_t iomap_base;
+} __attribute__((packed));
+
+/* null, kcode, kdata, ucode, udata, then a 16-byte (two-slot) TSS descriptor. */
+static uint64_t g_gdt[7];
+static struct tss64 g_tss;
+static uint8_t g_kernel_syscall_stack[16384] __attribute__((aligned(16)));
 
 struct gdt_pointer {
     uint16_t limit;
     uint64_t base;
 } __attribute__((packed));
+
+static void hw_setup_tss_descriptor(uint32_t index, uint64_t base, uint32_t limit) {
+    g_gdt[index] = (uint64_t)(limit & 0xFFFFu)
+                 | ((base & 0xFFFFull) << 16)
+                 | (((base >> 16) & 0xFFull) << 32)
+                 | (0x89ull << 40)                      /* present, 64-bit TSS (available) */
+                 | (((uint64_t)(limit >> 16) & 0xFull) << 48)
+                 | (((base >> 24) & 0xFFull) << 56);
+    g_gdt[index + 1] = (base >> 32) & 0xFFFFFFFFull;
+}
 
 /* ---- IDT ---------------------------------------------------------------- */
 
@@ -66,6 +95,11 @@ static struct idt_entry g_idt[VIBEOS_HW_IDT_GATES];
 /* Populated by isr.S: one assembly stub entry point per wired vector. */
 extern uint64_t vibeos_isr_stub_table[VIBEOS_HW_WIRED_VECTORS];
 
+/* Ring-3 support implemented in isr.S. */
+extern void vibeos_x86_64_ring3_enter(uint64_t user_rip, uint64_t user_rsp);
+extern void vibeos_x86_64_ring3_resume(void);
+extern char vibeos_x86_64_user_program[];
+
 /* Frame pushed by the ISR stubs, in ascending memory order. */
 typedef struct vibeos_x86_64_isr_frame {
     uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
@@ -81,9 +115,21 @@ typedef struct vibeos_x86_64_isr_frame {
 
 static void hw_load_gdt(void) {
     struct gdt_pointer gdtr;
-    g_gdt[0] = 0x0000000000000000ull;        /* null                       */
-    g_gdt[1] = 0x00AF9A000000FFFFull;        /* kernel code (L=1, DPL=0)   */
-    g_gdt[2] = 0x00CF92000000FFFFull;        /* kernel data (DPL=0)        */
+    uint32_t i;
+
+    g_gdt[0] = 0x0000000000000000ull;        /* null                        */
+    g_gdt[1] = 0x00AF9A000000FFFFull;        /* kernel code (0x08, DPL=0)   */
+    g_gdt[2] = 0x00CF92000000FFFFull;        /* kernel data (0x10, DPL=0)   */
+    g_gdt[3] = 0x00AFFA000000FFFFull;        /* user code   (0x18, DPL=3)   */
+    g_gdt[4] = 0x00CFF2000000FFFFull;        /* user data   (0x20, DPL=3)   */
+
+    for (i = 0; i < (uint32_t)sizeof(g_tss); i++) {
+        ((uint8_t *)(void *)&g_tss)[i] = 0;
+    }
+    g_tss.rsp0 = (uint64_t)(uintptr_t)&g_kernel_syscall_stack[sizeof(g_kernel_syscall_stack)];
+    g_tss.iomap_base = (uint16_t)sizeof(g_tss);
+    hw_setup_tss_descriptor(5, (uint64_t)(uintptr_t)&g_tss, (uint32_t)(sizeof(g_tss) - 1u));
+
     gdtr.limit = (uint16_t)(sizeof(g_gdt) - 1u);
     gdtr.base = (uint64_t)(uintptr_t)&g_gdt[0];
 
@@ -103,18 +149,26 @@ static void hw_load_gdt(void) {
         :
         : "m"(gdtr)
         : "rax", "memory");
+
+    __asm__ __volatile__("ltr %0" : : "r"((uint16_t)VIBEOS_HW_TSS_SEL));
 }
 
-static void hw_set_gate(uint32_t vector, uint64_t handler) {
+static void hw_set_gate_attr(uint32_t vector, uint64_t handler, uint8_t type_attr) {
     struct idt_entry *e = &g_idt[vector];
     e->offset_low = (uint16_t)(handler & 0xFFFFull);
     e->selector = (uint16_t)VIBEOS_HW_KERNEL_CS;
     e->ist = 0;
-    e->type_attr = (uint8_t)VIBEOS_HW_GATE_INTERRUPT;
+    e->type_attr = type_attr;
     e->offset_mid = (uint16_t)((handler >> 16) & 0xFFFFull);
     e->offset_high = (uint32_t)((handler >> 32) & 0xFFFFFFFFull);
     e->reserved = 0;
 }
+
+static void hw_set_gate(uint32_t vector, uint64_t handler) {
+    hw_set_gate_attr(vector, handler, (uint8_t)VIBEOS_HW_GATE_INTERRUPT);
+}
+
+extern char vibeos_isr_128[];   /* isr.S: stub for the 0x80 syscall gate */
 
 static void hw_load_idt(void) {
     struct idt_pointer idtr;
@@ -131,6 +185,8 @@ static void hw_load_idt(void) {
     for (i = 0; i < VIBEOS_HW_WIRED_VECTORS; i++) {
         hw_set_gate(i, vibeos_isr_stub_table[i]);
     }
+    /* Syscall gate: DPL=3 so ring-3 `int 0x80` is permitted (0xEE). */
+    hw_set_gate_attr(0x80u, (uint64_t)(uintptr_t)vibeos_isr_128, 0xEEu);
     idtr.limit = (uint16_t)(sizeof(g_idt) - 1u);
     idtr.base = (uint64_t)(uintptr_t)&g_idt[0];
     __asm__ __volatile__("lidt %0" : : "m"(idtr) : "memory");
@@ -144,12 +200,6 @@ static uint64_t hw_read_cr2(void) {
 
 static void hw_outb(uint16_t port, uint8_t value) {
     __asm__ __volatile__("outb %0, %1" : : "a"(value), "Nd"(port));
-}
-
-static uint8_t hw_inb(uint16_t port) {
-    uint8_t value;
-    __asm__ __volatile__("inb %1, %0" : "=a"(value) : "Nd"(port));
-    return value;
 }
 
 static void hw_io_wait(void) {
@@ -222,11 +272,49 @@ static void hw_panic(const char *why) {
     }
 }
 
+/* Minimal int 0x80 syscall ABI: rax=number, rdi/rsi=args. A real dispatcher
+ * will move into kernel/core/syscall.c; this proves the ring-3 -> ring-0 path.
+ *   1  = write(ptr, len): emit len bytes from the user pointer over serial
+ *   60 = exit(code):      return control to the kernel boot flow */
+static void hw_syscall_dispatch(vibeos_x86_64_isr_frame_t *frame) {
+    uint64_t nr = frame->rax;
+
+    if (nr == 1u) {
+        const char *p = (const char *)(uintptr_t)frame->rdi;
+        uint64_t len = frame->rsi;
+        uint64_t i;
+        vibeos_x86_64_serial_puts("[HW][SYS] write(ring3): ");
+        for (i = 0; i < len; i++) {
+            char c = p[i];
+            if (c == '\n') {
+                vibeos_x86_64_serial_putc('\r');
+            }
+            vibeos_x86_64_serial_putc(c);
+        }
+        frame->rax = len;                 /* bytes written (returned to ring 3) */
+        return;
+    }
+    if (nr == 60u) {
+        vibeos_x86_64_serial_puts("[HW][SYS] exit(ring3) code=0x");
+        vibeos_x86_64_serial_print_hex(frame->rdi);
+        vibeos_x86_64_serial_puts("\n[HW] RING3_SYSCALL_OK (returning to kernel)\n");
+        vibeos_x86_64_ring3_resume();     /* does not return */
+    }
+    vibeos_x86_64_serial_puts("[HW][SYS] unknown syscall\n");
+    frame->rax = (uint64_t)-1;
+}
+
 /* Called from the assembly common stub with a pointer to the saved frame. */
 void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
     vibeos_trap_frame_t tf;
     vibeos_trap_decision_t decision;
     uint64_t fault_address;
+
+    /* Software syscall gate. */
+    if (frame->vector == 0x80u) {
+        hw_syscall_dispatch(frame);
+        return;
+    }
 
     /* Hardware IRQs (post-remap vectors 0x20-0x2F): acknowledge to the PIC and
      * return quietly. The timer fires ~100x/s, so no per-interrupt logging. */
@@ -288,8 +376,15 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
 
 #define PTE_PRESENT 0x001ull
 #define PTE_WRITE   0x002ull
+#define PTE_USER    0x004ull            /* ring-3 accessible */
 #define PTE_PS      0x080ull            /* 2 MiB page at PD level */
 #define VIBEOS_HW_IDENTITY_GIB 4u       /* identity-map the first 4 GiB */
+
+/* setjmp-style kernel context saved by ring3_enter (see isr.S). Global so the
+ * assembly can reference it by name. Layout: rbx,rbp,r12,r13,r14,r15,rsp. */
+uint64_t g_ring3_kctx[8];
+
+static uint8_t g_user_stack[8192] __attribute__((aligned(16)));
 
 /* Kernel-owned page tables (static BSS, no PMM dependency during bring-up). */
 static uint64_t g_pml4[512] __attribute__((aligned(4096)));
@@ -344,14 +439,17 @@ static void hw_enable_paging(void) {
     uint32_t g, e;
 
     vibeos_x86_64_serial_puts("[HW] building page tables (identity, first 4GiB, 2MiB pages)\n");
+    /* US bit is set throughout so ring-3 code can execute during bring-up.
+     * This is a temporary simplification: kernel/user isolation (per-page US
+     * and separate address spaces) is a later milestone. */
     for (g = 0; g < VIBEOS_HW_IDENTITY_GIB; g++) {
         for (e = 0; e < 512u; e++) {
             uint64_t phys = ((uint64_t)g * 0x40000000ull) + ((uint64_t)e * 0x200000ull);
-            g_pd[g][e] = phys | PTE_PRESENT | PTE_WRITE | PTE_PS;
+            g_pd[g][e] = phys | PTE_PRESENT | PTE_WRITE | PTE_USER | PTE_PS;
         }
-        g_pdpt[g] = (uint64_t)(uintptr_t)&g_pd[g][0] | PTE_PRESENT | PTE_WRITE;
+        g_pdpt[g] = (uint64_t)(uintptr_t)&g_pd[g][0] | PTE_PRESENT | PTE_WRITE | PTE_USER;
     }
-    g_pml4[0] = (uint64_t)(uintptr_t)&g_pdpt[0] | PTE_PRESENT | PTE_WRITE;
+    g_pml4[0] = (uint64_t)(uintptr_t)&g_pdpt[0] | PTE_PRESENT | PTE_WRITE | PTE_USER;
     hw_map_test_page();
 
     __asm__ __volatile__("mov %0, %%cr3"
@@ -392,6 +490,18 @@ static void hw_enable_timer_irq(void) {
     }
 }
 
+/* Drop to ring 3, run a small user program that issues int 0x80 syscalls, and
+ * return here once it exits. Runs with interrupts disabled (before the timer is
+ * enabled), so int 0x80 is the only control transfer back into the kernel. */
+static void hw_enter_usermode_demo(void) {
+    uint64_t user_rip = (uint64_t)(uintptr_t)vibeos_x86_64_user_program;
+    uint64_t user_rsp = (uint64_t)(uintptr_t)&g_user_stack[sizeof(g_user_stack)];
+
+    vibeos_x86_64_serial_puts("[HW] entering ring 3 (user mode)...\n");
+    vibeos_x86_64_ring3_enter(user_rip, user_rsp);
+    vibeos_x86_64_serial_puts("[HW] RING3_OK (back in ring 0)\n");
+}
+
 /* Entry point invoked from entry.s before vibeos_kmain. */
 void vibeos_x86_64_hw_early_init(void) {
     vibeos_x86_64_serial_puts("[HW] early init: loading GDT\n");
@@ -410,6 +520,8 @@ void vibeos_x86_64_hw_early_init(void) {
     vibeos_x86_64_serial_puts("[HW] self-test: raising int3\n");
     __asm__ __volatile__("int3");
     vibeos_x86_64_serial_puts("[HW] resumed after int3 (trap routed through model)\n");
+
+    hw_enter_usermode_demo();
 
     hw_enable_timer_irq();
 
