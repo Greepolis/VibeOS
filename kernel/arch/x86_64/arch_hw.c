@@ -119,6 +119,8 @@ typedef struct vibeos_x86_64_isr_frame {
     uint64_t ss;
 } vibeos_x86_64_isr_frame_t;
 
+static void hw_schedule(vibeos_x86_64_isr_frame_t *frame); /* defined below */
+
 static void hw_load_gdt(void) {
     struct gdt_pointer gdtr;
     uint32_t i;
@@ -333,11 +335,14 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
         return;
     }
 
-    /* Hardware IRQs (post-remap vectors 0x20-0x2F): acknowledge to the PIC and
-     * return quietly. The timer fires ~100x/s, so no per-interrupt logging. */
+    /* Hardware IRQs (post-remap vectors 0x20-0x2F): acknowledge to the PIC. The
+     * timer (IRQ0) additionally drives the preemptive scheduler. */
     if (frame->vector >= VIBEOS_HW_IRQ_BASE && frame->vector < VIBEOS_HW_WIRED_VECTORS) {
         if (frame->vector == VIBEOS_HW_IRQ_TIMER) {
             g_timer_ticks++;
+            hw_pic_send_eoi((uint32_t)frame->vector);
+            hw_schedule(frame); /* may rewrite the frame to switch tasks */
+            return;
         }
         hw_pic_send_eoi((uint32_t)frame->vector);
         return;
@@ -545,6 +550,78 @@ static void hw_enable_syscall(void) {
     vibeos_x86_64_serial_puts("[HW] syscall/sysret enabled (LSTAR set)\n");
 }
 
+/* ---- Preemptive round-robin scheduler ----------------------------------- */
+
+#define VIBEOS_HW_MAX_TASKS 2
+#define VIBEOS_HW_SCHED_SWITCHES 16u
+
+extern void vibeos_x86_64_sched_start(vibeos_x86_64_isr_frame_t *first);
+extern const unsigned char vibeos_user_task_elf[];
+extern const unsigned long vibeos_user_task_elf_len;
+
+static vibeos_x86_64_isr_frame_t g_task_ctx[VIBEOS_HW_MAX_TASKS];
+static uint8_t g_task_stack[VIBEOS_HW_MAX_TASKS][8192] __attribute__((aligned(16)));
+static int g_task_count;
+static int g_current_task;
+static int g_sched_active;
+static uint32_t g_sched_switch_count;
+
+/* Timer-driven round robin: save the interrupted task and restore the next by
+ * rewriting the live IRQ frame (the ISR stub's iretq then resumes it). After a
+ * bounded number of preemptions, return to the kernel via ring3_resume. */
+static void hw_schedule(vibeos_x86_64_isr_frame_t *frame) {
+    if (!g_sched_active || g_task_count == 0) {
+        return;
+    }
+    g_task_ctx[g_current_task] = *frame;
+    g_sched_switch_count++;
+    if (g_sched_switch_count >= VIBEOS_HW_SCHED_SWITCHES) {
+        g_sched_active = 0;
+        vibeos_x86_64_serial_puts("[HW] SCHED_OK (0x");
+        vibeos_x86_64_serial_print_hex(g_sched_switch_count);
+        vibeos_x86_64_serial_puts(" preemptions; returning to kernel)\n");
+        vibeos_x86_64_ring3_resume(); /* does not return */
+    }
+    g_current_task = (g_current_task + 1) % g_task_count;
+    *frame = g_task_ctx[g_current_task];
+}
+
+static void hw_task_init_ctx(int i, uint64_t entry, uint64_t id) {
+    vibeos_x86_64_isr_frame_t *c = &g_task_ctx[i];
+    uint32_t k;
+    for (k = 0; k < (uint32_t)sizeof(*c); k++) {
+        ((uint8_t *)(void *)c)[k] = 0;
+    }
+    c->rip = entry;
+    c->cs = VIBEOS_HW_USER_CODE_SEL;
+    c->rflags = 0x202;   /* reserved bit + IF */
+    c->rsp = (uint64_t)(uintptr_t)&g_task_stack[i][sizeof(g_task_stack[i])];
+    c->ss = VIBEOS_HW_USER_DATA_SEL;
+    c->rdi = id;         /* passed to the task's _start */
+}
+
+/* Load the task ELF, spin up two ring-3 tasks, and let the timer preempt
+ * between them. The timer must already be running (interrupts enabled). */
+static void hw_run_scheduler_demo(void) {
+    uint64_t entry = 0;
+    int i;
+
+    if (vibeos_x86_64_load_elf(vibeos_user_task_elf, vibeos_user_task_elf_len, &entry) != 0) {
+        vibeos_x86_64_serial_puts("[HW] SCHED task ELF load failed\n");
+        return;
+    }
+    g_task_count = VIBEOS_HW_MAX_TASKS;
+    for (i = 0; i < g_task_count; i++) {
+        hw_task_init_ctx(i, entry, (uint64_t)i);
+    }
+    g_current_task = 0;
+    g_sched_switch_count = 0;
+    g_sched_active = 1;
+    vibeos_x86_64_serial_puts("[HW] starting preemptive scheduler: 2 tasks (A/B)\n");
+    vibeos_x86_64_sched_start(&g_task_ctx[0]);
+    vibeos_x86_64_serial_puts("[HW] scheduler demo complete\n");
+}
+
 /* Drop to ring 3, load and run the embedded user ELF, and return here once it
  * exits. Runs with interrupts disabled (before the timer is enabled). */
 static void hw_enter_usermode_demo(void) {
@@ -588,6 +665,8 @@ void vibeos_x86_64_hw_early_init(void) {
     hw_enter_usermode_demo();
 
     hw_enable_timer_irq();
+
+    hw_run_scheduler_demo();
 
     vibeos_x86_64_serial_puts("[HW] HW_INIT_OK\n");
 }

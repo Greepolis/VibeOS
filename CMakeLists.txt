@@ -181,6 +181,36 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
     )
     target_sources(vibeos_kernel PRIVATE "${VIBEOS_USER_BLOB}")
 
+    # Second user program: a looping task for the preemptive scheduler demo.
+    add_executable(vibeos_user_task user/prog/task.c)
+    target_compile_options(vibeos_user_task PRIVATE
+        -ffreestanding -fno-stack-protector -fno-pic -mno-red-zone
+        -fno-strict-aliasing -Wall -Wextra
+    )
+    target_compile_definitions(vibeos_user_task PRIVATE VIBEOS_USE_SYSCALL_INSN=1)
+    target_link_options(vibeos_user_task PRIVATE
+        -nostdlib -no-pie
+        -Wl,-e,_start
+        -Wl,-T,${CMAKE_CURRENT_SOURCE_DIR}/user/prog/user.ld
+    )
+    set_target_properties(vibeos_user_task PROPERTIES
+        LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/user/prog/user.ld"
+    )
+    set(VIBEOS_TASK_BLOB "${CMAKE_BINARY_DIR}/generated/user_task_elf.c")
+    add_custom_command(
+        OUTPUT "${VIBEOS_TASK_BLOB}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/generated"
+        COMMAND ${Python3_EXECUTABLE}
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/bin2c.py"
+            $<TARGET_FILE:vibeos_user_task>
+            "${VIBEOS_TASK_BLOB}"
+            vibeos_user_task_elf
+        DEPENDS vibeos_user_task "${CMAKE_CURRENT_SOURCE_DIR}/tools/bin2c.py"
+        COMMENT "Embedding scheduler task ELF into the kernel image"
+        VERBATIM
+    )
+    target_sources(vibeos_kernel PRIVATE "${VIBEOS_TASK_BLOB}")
+
     target_link_libraries(vibeos_kernel PRIVATE vibeos_kernel_core vibeos_user_core)
     
     # Linker settings for kernel executable

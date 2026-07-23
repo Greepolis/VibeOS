@@ -203,6 +203,48 @@ vibeos_x86_64_syscall_entry:
     mov g_user_saved_rsp(%rip), %rsp
     sysretq                  /* -> ring 3: rip=rcx, rflags=r11, cs/ss from STAR */
 
+/* void vibeos_x86_64_sched_start(vibeos_x86_64_isr_frame_t *first /rdi/)
+ * Save a setjmp-style kernel context (so ring3_resume can return to the caller
+ * once the scheduler is done), then iretq into the first task's saved frame.
+ * Subsequent task switches are done in C by rewriting the live IRQ frame. Frame
+ * offsets match struct vibeos_x86_64_isr_frame. */
+    .global vibeos_x86_64_sched_start
+vibeos_x86_64_sched_start:
+    lea g_ring3_kctx(%rip), %rax
+    mov %rbx, 0x00(%rax)
+    mov %rbp, 0x08(%rax)
+    mov %r12, 0x10(%rax)
+    mov %r13, 0x18(%rax)
+    mov %r14, 0x20(%rax)
+    mov %r15, 0x28(%rax)
+    mov %rsp, 0x30(%rax)
+
+    mov %rdi, %rax           /* rax = frame pointer */
+    mov $0x1b, %cx           /* user data segments */
+    mov %cx, %ds
+    mov %cx, %es
+    pushq 0xA8(%rax)         /* ss     */
+    pushq 0xA0(%rax)         /* rsp    */
+    pushq 0x98(%rax)         /* rflags */
+    pushq 0x90(%rax)         /* cs     */
+    pushq 0x88(%rax)         /* rip    */
+    mov 0x00(%rax), %r15
+    mov 0x08(%rax), %r14
+    mov 0x10(%rax), %r13
+    mov 0x18(%rax), %r12
+    mov 0x20(%rax), %r11
+    mov 0x28(%rax), %r10
+    mov 0x30(%rax), %r9
+    mov 0x38(%rax), %r8
+    mov 0x40(%rax), %rbp
+    mov 0x48(%rax), %rdi
+    mov 0x50(%rax), %rsi
+    mov 0x58(%rax), %rdx
+    mov 0x60(%rax), %rcx
+    mov 0x68(%rax), %rbx
+    mov 0x70(%rax), %rax     /* rax last */
+    iretq                    /* -> first task in ring 3 */
+
 /* Table of stub entry points, indexed by vector, consumed by arch_hw.c. */
     .section .rodata
     .align 8
