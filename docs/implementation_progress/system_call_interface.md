@@ -4,7 +4,12 @@ Status: In Progress (real ring-3 syscall entry verified in QEMU)
 Last review: 2026-07-22
 
 ## Implemented
-- **Real on-metal ring-3 -> ring-0 syscall entry** (`kernel/arch/x86_64/arch_hw.c` + `isr.S`): user GDT segments (DPL 3), a TSS with RSP0, an `int 0x80` gate at DPL 3, and a minimal handler (`write`/`exit`). Verified in QEMU: the kernel drops to ring 3, a user program issues `int 0x80` syscalls (the kernel prints its `write` payload), and `exit` returns control to the kernel via a setjmp/longjmp-style resume. This is the hardware entry path; it will be connected to the portable dispatcher below.
+- **Real on-metal ring-3 -> ring-0 syscall entry** (`kernel/arch/x86_64/arch_hw.c` + `isr.S`), two paths into one Linux-ABI dispatcher (`vibeos_x86_64_linux_syscall`):
+  - **Native `syscall`/`sysret`** (the real Linux x86-64 fast path): EFER.SCE enabled, STAR/LSTAR/SFMASK programmed, and an LSTAR trampoline that switches to a kernel stack, marshals the Linux ABI (nr in rax; args in rdi/rsi/rdx) into the C ABI, dispatches, and `sysretq`s back to ring 3.
+  - **`int 0x80` gate** (DPL 3) as a legacy/bring-up path into the same dispatcher.
+  - User GDT segments ordered data-then-code (for SYSRET) + a TSS with RSP0.
+  - Linux syscall translation so far: `write`(1) -> serial, `getpid`(39), `exit`(60)/`exit_group`(231) -> return to kernel; unknown -> `-ENOSYS`.
+  - Verified in QEMU (GCC and Clang): a **real user ELF** is loaded (see `kernel/arch/x86_64/elf_load.c`), run in ring 3, and prints via a native `syscall`, then `exit` returns cleanly to the kernel. This hardware front end will route into the portable dispatcher and the Linux personality (`user/compat/linux`) next.
 - Central syscall dispatcher in `kernel/core/syscall.c` (portable model).
 - ABI helper mappings in `include/vibeos/syscall_abi.h`.
 - Rights/policy lookup layer in `kernel/core/syscall_policy.c`.

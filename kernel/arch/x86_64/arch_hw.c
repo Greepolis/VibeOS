@@ -37,8 +37,10 @@
 
 /* ---- GDT + TSS ---------------------------------------------------------- */
 
-#define VIBEOS_HW_USER_CODE_SEL 0x1Bu   /* GDT index 3, RPL 3 */
-#define VIBEOS_HW_USER_DATA_SEL 0x23u   /* GDT index 4, RPL 3 */
+/* SYSRET requires user data (SS) to precede user code (CS) in the GDT, so the
+ * user segments are ordered data-then-code: index 3 = data, index 4 = code. */
+#define VIBEOS_HW_USER_DATA_SEL 0x1Bu   /* GDT index 3, RPL 3 */
+#define VIBEOS_HW_USER_CODE_SEL 0x23u   /* GDT index 4, RPL 3 */
 #define VIBEOS_HW_TSS_SEL 0x28u         /* GDT index 5 */
 
 struct tss64 {
@@ -98,7 +100,11 @@ extern uint64_t vibeos_isr_stub_table[VIBEOS_HW_WIRED_VECTORS];
 /* Ring-3 support implemented in isr.S. */
 extern void vibeos_x86_64_ring3_enter(uint64_t user_rip, uint64_t user_rsp);
 extern void vibeos_x86_64_ring3_resume(void);
-extern char vibeos_x86_64_user_program[];
+
+/* ELF loader (elf_load.c) and the embedded user program (generated blob). */
+extern int vibeos_x86_64_load_elf(const unsigned char *elf, uint64_t len, uint64_t *out_entry);
+extern const unsigned char vibeos_user_hello_elf[];
+extern const unsigned long vibeos_user_hello_elf_len;
 
 /* Frame pushed by the ISR stubs, in ascending memory order. */
 typedef struct vibeos_x86_64_isr_frame {
@@ -120,8 +126,8 @@ static void hw_load_gdt(void) {
     g_gdt[0] = 0x0000000000000000ull;        /* null                        */
     g_gdt[1] = 0x00AF9A000000FFFFull;        /* kernel code (0x08, DPL=0)   */
     g_gdt[2] = 0x00CF92000000FFFFull;        /* kernel data (0x10, DPL=0)   */
-    g_gdt[3] = 0x00AFFA000000FFFFull;        /* user code   (0x18, DPL=3)   */
-    g_gdt[4] = 0x00CFF2000000FFFFull;        /* user data   (0x20, DPL=3)   */
+    g_gdt[3] = 0x00CFF2000000FFFFull;        /* user data   (0x18, DPL=3)   */
+    g_gdt[4] = 0x00AFFA000000FFFFull;        /* user code   (0x20, DPL=3)   */
 
     for (i = 0; i < (uint32_t)sizeof(g_tss); i++) {
         ((uint8_t *)(void *)&g_tss)[i] = 0;
@@ -272,36 +278,47 @@ static void hw_panic(const char *why) {
     }
 }
 
-/* Minimal int 0x80 syscall ABI: rax=number, rdi/rsi=args. A real dispatcher
- * will move into kernel/core/syscall.c; this proves the ring-3 -> ring-0 path.
- *   1  = write(ptr, len): emit len bytes from the user pointer over serial
- *   60 = exit(code):      return control to the kernel boot flow */
-static void hw_syscall_dispatch(vibeos_x86_64_isr_frame_t *frame) {
-    uint64_t nr = frame->rax;
-
-    if (nr == 1u) {
-        const char *p = (const char *)(uintptr_t)frame->rdi;
-        uint64_t len = frame->rsi;
-        uint64_t i;
-        vibeos_x86_64_serial_puts("[HW][SYS] write(ring3): ");
-        for (i = 0; i < len; i++) {
-            char c = p[i];
-            if (c == '\n') {
-                vibeos_x86_64_serial_putc('\r');
+/* Linux x86-64 syscall translation. Args follow the Linux ABI (nr in rax;
+ * a1..a3 in rdi, rsi, rdx). This is the on-metal front end that a real
+ * implementation will route into kernel/core/syscall.c and the Linux
+ * personality in user/compat/linux. Reached from both the int 0x80 gate and
+ * the native `syscall` trampoline.
+ *   1/write(fd, buf, len) : emit len bytes from the user buffer over serial
+ *   60/exit, 231/exit_group : return control to the kernel boot flow
+ *   39/getpid : returns 1
+ */
+long vibeos_x86_64_linux_syscall(uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3) {
+    switch (nr) {
+        case 1: {
+            const char *p = (const char *)(uintptr_t)a2;
+            uint64_t len = a3;
+            uint64_t i;
+            (void)a1; /* fd ignored during bring-up; all output goes to serial */
+            vibeos_x86_64_serial_puts("[HW][SYS] write(ring3): ");
+            for (i = 0; i < len; i++) {
+                char c = p[i];
+                if (c == '\n') {
+                    vibeos_x86_64_serial_putc('\r');
+                }
+                vibeos_x86_64_serial_putc(c);
             }
-            vibeos_x86_64_serial_putc(c);
+            return (long)len;
         }
-        frame->rax = len;                 /* bytes written (returned to ring 3) */
-        return;
+        case 39:
+            return 1; /* getpid */
+        case 60:
+        case 231:
+            vibeos_x86_64_serial_puts("[HW][SYS] exit(ring3) code=0x");
+            vibeos_x86_64_serial_print_hex(a1);
+            vibeos_x86_64_serial_puts("\n[HW] USER_SYSCALL_OK (returning to kernel)\n");
+            vibeos_x86_64_ring3_resume(); /* does not return */
+            return 0;
+        default:
+            vibeos_x86_64_serial_puts("[HW][SYS] unimplemented Linux syscall nr=0x");
+            vibeos_x86_64_serial_print_hex(nr);
+            vibeos_x86_64_serial_puts("\n");
+            return -38; /* -ENOSYS */
     }
-    if (nr == 60u) {
-        vibeos_x86_64_serial_puts("[HW][SYS] exit(ring3) code=0x");
-        vibeos_x86_64_serial_print_hex(frame->rdi);
-        vibeos_x86_64_serial_puts("\n[HW] RING3_SYSCALL_OK (returning to kernel)\n");
-        vibeos_x86_64_ring3_resume();     /* does not return */
-    }
-    vibeos_x86_64_serial_puts("[HW][SYS] unknown syscall\n");
-    frame->rax = (uint64_t)-1;
 }
 
 /* Called from the assembly common stub with a pointer to the saved frame. */
@@ -310,9 +327,9 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
     vibeos_trap_decision_t decision;
     uint64_t fault_address;
 
-    /* Software syscall gate. */
+    /* Software syscall gate (int 0x80), Linux argument order. */
     if (frame->vector == 0x80u) {
-        hw_syscall_dispatch(frame);
+        frame->rax = (uint64_t)vibeos_x86_64_linux_syscall(frame->rax, frame->rdi, frame->rsi, frame->rdx);
         return;
     }
 
@@ -383,6 +400,11 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
 /* setjmp-style kernel context saved by ring3_enter (see isr.S). Global so the
  * assembly can reference it by name. Layout: rbx,rbp,r12,r13,r14,r15,rsp. */
 uint64_t g_ring3_kctx[8];
+
+/* Used by the `syscall` trampoline (isr.S): the instruction does not switch
+ * stacks, so we stash the user rsp and load a kernel stack ourselves. */
+uint64_t g_user_saved_rsp;
+uint64_t g_syscall_kstack_top;
 
 static uint8_t g_user_stack[8192] __attribute__((aligned(16)));
 
@@ -490,15 +512,56 @@ static void hw_enable_timer_irq(void) {
     }
 }
 
-/* Drop to ring 3, run a small user program that issues int 0x80 syscalls, and
- * return here once it exits. Runs with interrupts disabled (before the timer is
- * enabled), so int 0x80 is the only control transfer back into the kernel. */
-static void hw_enter_usermode_demo(void) {
-    uint64_t user_rip = (uint64_t)(uintptr_t)vibeos_x86_64_user_program;
-    uint64_t user_rsp = (uint64_t)(uintptr_t)&g_user_stack[sizeof(g_user_stack)];
+/* ---- SYSCALL/SYSRET (native Linux ABI) ---------------------------------- */
 
-    vibeos_x86_64_serial_puts("[HW] entering ring 3 (user mode)...\n");
-    vibeos_x86_64_ring3_enter(user_rip, user_rsp);
+#define MSR_EFER   0xC0000080u
+#define MSR_STAR   0xC0000081u
+#define MSR_LSTAR  0xC0000082u
+#define MSR_SFMASK 0xC0000084u
+
+extern void vibeos_x86_64_syscall_entry(void); /* trampoline in isr.S */
+
+static uint64_t hw_rdmsr(uint32_t msr) {
+    uint32_t lo, hi;
+    __asm__ __volatile__("rdmsr" : "=a"(lo), "=d"(hi) : "c"(msr));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+static void hw_wrmsr(uint32_t msr, uint64_t value) {
+    __asm__ __volatile__("wrmsr"
+                         : : "c"(msr), "a"((uint32_t)value), "d"((uint32_t)(value >> 32)));
+}
+
+/* Enable the `syscall`/`sysret` fast path. STAR selects the CS/SS pairs:
+ * SYSCALL loads kernel CS=0x08 (SS=0x10); SYSRET loads user CS=0x20|3 and
+ * SS=0x18|3 from base 0x10 - which matches the data-then-code user GDT order. */
+static void hw_enable_syscall(void) {
+    g_syscall_kstack_top =
+        (uint64_t)(uintptr_t)&g_kernel_syscall_stack[sizeof(g_kernel_syscall_stack)];
+    hw_wrmsr(MSR_EFER, hw_rdmsr(MSR_EFER) | 1ull);                 /* SCE */
+    hw_wrmsr(MSR_STAR, ((uint64_t)0x10 << 48) | ((uint64_t)0x08 << 32));
+    hw_wrmsr(MSR_LSTAR, (uint64_t)(uintptr_t)vibeos_x86_64_syscall_entry);
+    hw_wrmsr(MSR_SFMASK, 0x200ull);                                /* clear IF on entry */
+    vibeos_x86_64_serial_puts("[HW] syscall/sysret enabled (LSTAR set)\n");
+}
+
+/* Drop to ring 3, load and run the embedded user ELF, and return here once it
+ * exits. Runs with interrupts disabled (before the timer is enabled). */
+static void hw_enter_usermode_demo(void) {
+    uint64_t user_rsp = (uint64_t)(uintptr_t)&g_user_stack[sizeof(g_user_stack)];
+    uint64_t entry = 0;
+
+    vibeos_x86_64_serial_puts("[HW] loading user ELF (0x");
+    vibeos_x86_64_serial_print_hex(vibeos_user_hello_elf_len);
+    vibeos_x86_64_serial_puts(" bytes)\n");
+    if (vibeos_x86_64_load_elf(vibeos_user_hello_elf, vibeos_user_hello_elf_len, &entry) != 0) {
+        vibeos_x86_64_serial_puts("[HW] ELF_LOAD_FAIL\n");
+        return;
+    }
+    vibeos_x86_64_serial_puts("[HW] ELF_LOADED entry=0x");
+    vibeos_x86_64_serial_print_hex(entry);
+    vibeos_x86_64_serial_puts("\n[HW] entering ring 3 (user mode)...\n");
+    vibeos_x86_64_ring3_enter(entry, user_rsp);
     vibeos_x86_64_serial_puts("[HW] RING3_OK (back in ring 0)\n");
 }
 
@@ -521,6 +584,7 @@ void vibeos_x86_64_hw_early_init(void) {
     __asm__ __volatile__("int3");
     vibeos_x86_64_serial_puts("[HW] resumed after int3 (trap routed through model)\n");
 
+    hw_enable_syscall();
     hw_enter_usermode_demo();
 
     hw_enable_timer_irq();

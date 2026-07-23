@@ -129,6 +129,7 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         kernel/arch/x86_64/entry.s
         kernel/arch/x86_64/isr.S
         kernel/arch/x86_64/arch_hw.c
+        kernel/arch/x86_64/elf_load.c
         # Freestanding mem* runtime: the kernel image links -nostdlib, and some
         # compilers (notably Clang) lower struct copies to memcpy/memset calls
         # that GCC inlines. Provide the implementations so the image links on
@@ -145,6 +146,40 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         -Wextra
         -Wpedantic
     )
+
+    # --- User program: a standalone freestanding ELF embedded into the kernel ---
+    # Built as a static, position-dependent ELF64 (linked at a fixed low vaddr),
+    # then turned into a C byte array the kernel's ELF loader parses at runtime.
+    add_executable(vibeos_user_hello user/prog/hello.c)
+    target_compile_options(vibeos_user_hello PRIVATE
+        -ffreestanding -fno-stack-protector -fno-pic -mno-red-zone
+        -fno-strict-aliasing -Wall -Wextra
+    )
+    target_compile_definitions(vibeos_user_hello PRIVATE VIBEOS_USE_SYSCALL_INSN=1)
+    target_link_options(vibeos_user_hello PRIVATE
+        -nostdlib -no-pie
+        -Wl,-e,_start
+        -Wl,-T,${CMAKE_CURRENT_SOURCE_DIR}/user/prog/user.ld
+    )
+    set_target_properties(vibeos_user_hello PROPERTIES
+        LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/user/prog/user.ld"
+    )
+
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    set(VIBEOS_USER_BLOB "${CMAKE_BINARY_DIR}/generated/user_hello_elf.c")
+    add_custom_command(
+        OUTPUT "${VIBEOS_USER_BLOB}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/generated"
+        COMMAND ${Python3_EXECUTABLE}
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/bin2c.py"
+            $<TARGET_FILE:vibeos_user_hello>
+            "${VIBEOS_USER_BLOB}"
+            vibeos_user_hello_elf
+        DEPENDS vibeos_user_hello "${CMAKE_CURRENT_SOURCE_DIR}/tools/bin2c.py"
+        COMMENT "Embedding user program ELF into the kernel image"
+        VERBATIM
+    )
+    target_sources(vibeos_kernel PRIVATE "${VIBEOS_USER_BLOB}")
 
     target_link_libraries(vibeos_kernel PRIVATE vibeos_kernel_core vibeos_user_core)
     
