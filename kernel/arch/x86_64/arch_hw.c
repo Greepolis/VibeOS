@@ -16,6 +16,7 @@
 #include "vibeos/arch_x86_64.h"
 #include "vibeos/trap.h"
 #include "vibeos/boot.h"
+#include "vibeos/mm.h"
 
 #define VIBEOS_HW_KERNEL_CS 0x08u
 #define VIBEOS_HW_KERNEL_DS 0x10u
@@ -369,6 +370,7 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
 #define PTE_USER    0x004ull            /* ring-3 accessible */
 #define PTE_PS      0x080ull            /* 2 MiB page at PD level */
 #define VIBEOS_HW_IDENTITY_GIB 4u       /* identity-map the first 4 GiB */
+#define VIBEOS_HW_IDENTITY_LIMIT 0x100000000ull
 
 /* setjmp-style kernel context saved by ring3_enter (see isr.S). Global so the
  * assembly can reference it by name. Layout: rbx,rbp,r12,r13,r14,r15,rsp. */
@@ -388,11 +390,16 @@ static uint64_t g_pd[VIBEOS_HW_IDENTITY_GIB][512] __attribute__((aligned(4096)))
 
 /* ---- Page pool + per-process address spaces ------------------------------ */
 
-/* Bump allocator over a static pool: backs per-process page tables and user
- * pages this early in boot, before the real PMM is available. */
-#define VIBEOS_HW_POOL_PAGES 128u
+/* Page frames come from the real physical memory manager, initialized from the
+ * firmware memory map. The small static pool is only a fallback for boot paths
+ * that hand us no boot_info (e.g. a direct -kernel load). */
+#define VIBEOS_HW_POOL_PAGES 32u
 static uint8_t g_page_pool[VIBEOS_HW_POOL_PAGES][4096] __attribute__((aligned(4096)));
 static uint32_t g_pool_next;
+
+static vibeos_pmm_t g_hw_pmm;
+static int g_hw_pmm_ready;
+static uint64_t g_hw_pmm_pages_used;
 
 /* User virtual layout: PML4 slot 1 (512 GiB). Programs are linked at
  * VIBEOS_HW_USER_BASE (user/prog/user.ld); their stack sits above the image. */
@@ -414,17 +421,47 @@ static void hw_write_cr3(uint64_t pml4_phys) {
     __asm__ __volatile__("mov %0, %%cr3" : : "r"(pml4_phys) : "memory");
 }
 
+/* Allocate one zeroed page frame. Frames must live inside the identity-mapped
+ * window, since the kernel reaches page tables and process images through it. */
 static void *hw_alloc_page(void) {
-    uint8_t *p;
+    uint8_t *p = 0;
     uint32_t i;
-    if (g_pool_next >= VIBEOS_HW_POOL_PAGES) {
-        return 0;
+
+    if (g_hw_pmm_ready) {
+        p = (uint8_t *)vibeos_pmm_alloc_page(&g_hw_pmm);
+        if (p && ((uint64_t)(uintptr_t)p + 4096ull) > VIBEOS_HW_IDENTITY_LIMIT) {
+            p = 0; /* outside the identity map: unusable this early */
+        }
+        if (p) {
+            g_hw_pmm_pages_used++;
+        }
     }
-    p = g_page_pool[g_pool_next++];
+    if (!p) {
+        if (g_pool_next >= VIBEOS_HW_POOL_PAGES) {
+            return 0;
+        }
+        p = g_page_pool[g_pool_next++];
+    }
     for (i = 0; i < 4096u; i++) {
         p[i] = 0;
     }
     return p;
+}
+
+/* Bring the physical memory manager online from the firmware memory map. */
+static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
+    if (!boot_info) {
+        vibeos_x86_64_serial_puts("[HW] no boot_info: using the static page pool\n");
+        return;
+    }
+    if (vibeos_pmm_init_from_boot_info(&g_hw_pmm, boot_info, 4096) != 0) {
+        vibeos_x86_64_serial_puts("[HW] PMM init failed: falling back to the static page pool\n");
+        return;
+    }
+    g_hw_pmm_ready = 1;
+    vibeos_x86_64_serial_puts("[HW] PMM online, free bytes=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)vibeos_pmm_remaining(&g_hw_pmm));
+    vibeos_x86_64_serial_puts("\n");
 }
 
 /* Walk the four levels (creating missing tables from the pool) and install a
@@ -1073,6 +1110,7 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
 
     /* From here the system is scheduled: the kernel itself becomes a task and
      * user tasks are preempted alongside it. */
+    hw_pmm_bringup(boot_info);
     hw_sched_bringup(boot_info);
 
     vibeos_x86_64_serial_puts("[HW] HW_INIT_OK\n");
