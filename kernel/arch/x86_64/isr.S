@@ -191,33 +191,53 @@ vibeos_x86_64_ring3_resume:
 vibeos_x86_64_syscall_entry:
     mov %rsp, g_user_saved_rsp(%rip)
     mov g_syscall_kstack_top(%rip), %rsp
-    push %rcx                /* save user rip    */
-    push %r11                /* save user rflags */
-    /* The Linux syscall ABI clobbers only rax, rcx and r11: every other
-     * register must come back unchanged. The C dispatcher preserves the
-     * callee-saved set, so save the caller-saved ones we would otherwise
-     * destroy (the argument marshalling below overwrites rdi/rsi/rdx). */
-    push %rdi
-    push %rsi
+
+    /* Build the same trapframe an interrupt would, so a syscall has a complete,
+     * resumable user context: fork() can copy it for the child, and the return
+     * path is a uniform iretq. syscall gave us rip in rcx and rflags in r11. */
+    pushq $0x1b              /* ss  = user data selector */
+    pushq g_user_saved_rsp(%rip)
+    push %r11                /* rflags */
+    pushq $0x23              /* cs  = user code selector */
+    push %rcx                /* rip */
+    pushq $0                 /* error_code */
+    pushq $0x80              /* vector: syscall */
+    push %rax
+    push %rbx
+    push %rcx
     push %rdx
+    push %rsi
+    push %rdi
+    push %rbp
     push %r8
     push %r9
     push %r10
-    mov %rdx, %rcx           /* C arg4 = a3 */
-    mov %rsi, %rdx           /* C arg3 = a2 */
-    mov %rdi, %rsi           /* C arg2 = a1 */
-    mov %rax, %rdi           /* C arg1 = nr */
-    call vibeos_x86_64_linux_syscall
+    push %r11
+    push %r12
+    push %r13
+    push %r14
+    push %r15
+
+    mov %rsp, %rdi           /* arg0 = trapframe */
+    call vibeos_x86_64_syscall_dispatch
+
+    pop %r15
+    pop %r14
+    pop %r13
+    pop %r12
+    pop %r11
     pop %r10
     pop %r9
     pop %r8
-    pop %rdx
-    pop %rsi
+    pop %rbp
     pop %rdi
-    pop %r11                 /* user rflags */
-    pop %rcx                 /* user rip    */
-    mov g_user_saved_rsp(%rip), %rsp
-    sysretq                  /* -> ring 3: rip=rcx, rflags=r11, cs/ss from STAR */
+    pop %rsi
+    pop %rdx
+    pop %rcx
+    pop %rbx
+    pop %rax
+    add $16, %rsp            /* discard vector + error_code */
+    iretq                    /* -> ring 3 using the frame we built */
 
 /* void vibeos_x86_64_sched_start(vibeos_x86_64_isr_frame_t *first /rdi/)
  * Save a setjmp-style kernel context (so ring3_resume can return to the caller

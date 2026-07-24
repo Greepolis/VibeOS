@@ -290,7 +290,8 @@ static void hw_panic(const char *why) {
 
 /* Linux x86-64 syscall front end; defined after the task/address-space code
  * because it validates user pointers against the calling task's page tables. */
-long vibeos_x86_64_linux_syscall(uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3);
+long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame, uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3);
+void vibeos_x86_64_syscall_dispatch(vibeos_x86_64_isr_frame_t *frame);
 
 /* Called from the assembly common stub with a pointer to the saved frame. */
 void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
@@ -300,7 +301,7 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
 
     /* Software syscall gate (int 0x80), Linux argument order. */
     if (frame->vector == 0x80u) {
-        frame->rax = (uint64_t)vibeos_x86_64_linux_syscall(frame->rax, frame->rdi, frame->rsi, frame->rdx);
+        frame->rax = (uint64_t)vibeos_x86_64_linux_syscall(frame, frame->rax, frame->rdi, frame->rsi, frame->rdx);
         return;
     }
 
@@ -700,12 +701,42 @@ typedef struct {
     hw_proc_t proc;
     uint64_t cr3;
     uint64_t exit_code;
+    uint64_t kstack_top;  /* private ring-0 stack: lets a task block in a syscall */
     uint32_t pid;
+    uint32_t ppid;
     /* Written from interrupt/syscall context (preemption, task exit) and read
      * by the kernel task, so it must not be cached across a wait loop. */
     volatile int state;
     int is_user;
 } hw_task_t;
+
+/* Point the CPU at a task's ring-0 stack: the TSS one is used when ring 3 is
+ * interrupted, the syscall one when it issues `syscall`. */
+static void hw_set_kernel_stack(uint64_t top) {
+    g_tss.rsp0 = top;
+    g_syscall_kstack_top = top;
+}
+
+/* Two contiguous pages when the PMM can give them, one otherwise. */
+static uint64_t hw_alloc_kstack(void) {
+    uint8_t *p = 0;
+    uint64_t size = 8192ull;
+
+    if (g_hw_pmm_ready) {
+        p = (uint8_t *)vibeos_pmm_alloc_pages(&g_hw_pmm, 2);
+        if (p && ((uint64_t)(uintptr_t)p + size) > VIBEOS_HW_IDENTITY_LIMIT) {
+            p = 0;
+        }
+    }
+    if (!p) {
+        p = (uint8_t *)hw_alloc_page();
+        size = 4096ull;
+    }
+    if (!p) {
+        return 0;
+    }
+    return (uint64_t)(uintptr_t)p + size;
+}
 
 static hw_task_t g_tasks[VIBEOS_HW_MAX_TASKS];
 static int g_current_task = -1;
@@ -755,6 +786,7 @@ static void hw_schedule(vibeos_x86_64_isr_frame_t *frame) {
     g_tasks[next].state = HW_TASK_RUNNING;
     *frame = g_tasks[next].ctx;
     hw_write_cr3(g_tasks[next].cr3);
+    hw_set_kernel_stack(g_tasks[next].kstack_top);
 }
 
 static void hw_task_init_user_ctx(vibeos_x86_64_isr_frame_t *c, uint64_t entry, uint64_t arg) {
@@ -781,6 +813,7 @@ static int hw_task_adopt_kernel(void) {
     g_tasks[i].state = HW_TASK_RUNNING;
     g_tasks[i].is_user = 0;
     g_tasks[i].pid = g_next_pid++;
+    g_tasks[i].kstack_top = (uint64_t)(uintptr_t)&g_kernel_syscall_stack[sizeof(g_kernel_syscall_stack)];
     g_tasks[i].cr3 = (uint64_t)(uintptr_t)&g_pml4[0];
     g_current_task = i;
     return i;
@@ -794,6 +827,10 @@ static int hw_task_spawn_user(const unsigned char *elf, uint64_t len, uint64_t a
         return -1;
     }
     if (hw_proc_create(&g_tasks[i].proc, elf, len) != 0) {
+        return -1;
+    }
+    g_tasks[i].kstack_top = hw_alloc_kstack();
+    if (g_tasks[i].kstack_top == 0) {
         return -1;
     }
     g_tasks[i].cr3 = hw_proc_cr3(&g_tasks[i].proc);
@@ -851,6 +888,8 @@ static void hw_task_exit(uint64_t code) {
 #define LSYS_getpid 39
 #define LSYS_exit   60
 #define LSYS_exit_group 231
+#define LSYS_fork   57
+#define LSYS_wait4  61
 
 static vibeos_compat_runtime_t g_compat_rt;
 
@@ -976,15 +1015,155 @@ static long hw_sys_mmap(uint64_t len) {
     return (long)base;
 }
 
-/* Linux ABI entry: nr in rax, args in rdi/rsi/rdx. Reached from both the
- * native `syscall` trampoline and the int 0x80 gate. Each number is offered to
- * the Linux personality (user/compat/linux) so the portable, host-tested
- * translation model sees and accounts for every real syscall. */
-long vibeos_x86_64_linux_syscall(uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3) {
+/* Duplicate every user mapping of `src` into `dst`, copying the backing pages.
+ * User space lives entirely in PML4 slot 1, so only that subtree is walked. */
+static int hw_aspace_copy_user(vibeos_hw_aspace_t *dst, const vibeos_hw_aspace_t *src) {
+    const uint64_t *spdpt;
+    uint32_t i, j, k;
+
+    if ((src->pml4[1] & PTE_PRESENT) == 0) {
+        return 0;
+    }
+    spdpt = (const uint64_t *)(uintptr_t)(src->pml4[1] & 0x000FFFFFFFFFF000ull);
+    for (i = 0; i < 512u; i++) {
+        const uint64_t *spd;
+        if ((spdpt[i] & PTE_PRESENT) == 0) {
+            continue;
+        }
+        spd = (const uint64_t *)(uintptr_t)(spdpt[i] & 0x000FFFFFFFFFF000ull);
+        for (j = 0; j < 512u; j++) {
+            const uint64_t *spt;
+            if ((spd[j] & PTE_PRESENT) == 0) {
+                continue;
+            }
+            spt = (const uint64_t *)(uintptr_t)(spd[j] & 0x000FFFFFFFFFF000ull);
+            for (k = 0; k < 512u; k++) {
+                uint64_t pte = spt[k];
+                const uint8_t *srcpage;
+                uint8_t *dstpage;
+                uint64_t va, b;
+
+                if ((pte & PTE_PRESENT) == 0) {
+                    continue;
+                }
+                va = (1ull << 39) | ((uint64_t)i << 30) | ((uint64_t)j << 21) | ((uint64_t)k << 12);
+                dstpage = (uint8_t *)hw_alloc_page();
+                if (!dstpage) {
+                    return -1;
+                }
+                srcpage = (const uint8_t *)(uintptr_t)(pte & 0x000FFFFFFFFFF000ull);
+                for (b = 0; b < 4096ull; b++) {
+                    dstpage[b] = srcpage[b];
+                }
+                if (hw_map_page(dst, va, (uint64_t)(uintptr_t)dstpage,
+                                pte & (PTE_PRESENT | PTE_WRITE | PTE_USER)) != 0) {
+                    return -1;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+/* fork(): duplicate the calling task, address space and all. The child resumes
+ * at the same instruction with a 0 return value. */
+static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
+    hw_task_t *parent;
+    hw_task_t *child;
+    int idx;
+
+    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+        return -VIBEOS_EINVAL;
+    }
+    idx = hw_task_alloc();
+    if (idx < 0) {
+        return -VIBEOS_ENOMEM;
+    }
+    parent = &g_tasks[g_current_task];
+    child = &g_tasks[idx];
+
+    if (hw_aspace_create(&child->proc.as) != 0 ||
+        hw_aspace_copy_user(&child->proc.as, &parent->proc.as) != 0) {
+        child->state = HW_TASK_FREE;
+        return -VIBEOS_ENOMEM;
+    }
+    child->kstack_top = hw_alloc_kstack();
+    if (child->kstack_top == 0) {
+        child->state = HW_TASK_FREE;
+        return -VIBEOS_ENOMEM;
+    }
+    child->proc.entry = parent->proc.entry;
+    child->proc.brk_cur = parent->proc.brk_cur;
+    child->proc.mmap_cur = parent->proc.mmap_cur;
+    child->cr3 = hw_proc_cr3(&child->proc);
+    child->ctx = *frame;   /* resume exactly where the parent is */
+    child->ctx.rax = 0;    /* ... but fork() returns 0 in the child */
+    child->pid = g_next_pid++;
+    child->ppid = parent->pid;
+    child->is_user = 1;
+    child->exit_code = 0;
+    child->state = HW_TASK_READY;
+    return (long)child->pid;
+}
+
+/* waitpid(): reap a finished child, optionally storing its status. Waits by
+ * idling with interrupts enabled, so the scheduler keeps running the child;
+ * this is safe because every task has its own ring-0 stack. A proper wait
+ * queue (descheduling the parent) is the natural refinement. */
+static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr) {
+    uint32_t mypid;
+
+    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+        return -VIBEOS_EINVAL;
+    }
+    mypid = g_tasks[g_current_task].pid;
+
+    for (;;) {
+        int i;
+        int have_children = 0;
+
+        for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+            hw_task_t *t = &g_tasks[i];
+            if (t->ppid != mypid || t->state == HW_TASK_FREE) {
+                continue;
+            }
+            if (want_pid != (uint64_t)-1 && t->pid != (uint32_t)want_pid) {
+                continue;
+            }
+            if (t->state == HW_TASK_ZOMBIE) {
+                uint32_t child_pid = t->pid;
+                uint64_t code = t->exit_code;
+                t->state = HW_TASK_FREE; /* reaped */
+                if (status_ptr != 0 && hw_user_range_ok(status_ptr, 4, 1)) {
+                    *(volatile int *)(uintptr_t)status_ptr = (int)((code & 0xFFull) << 8);
+                }
+                return (long)child_pid;
+            }
+            have_children = 1;
+        }
+        if (!have_children) {
+            return -VIBEOS_EINVAL; /* no such child */
+        }
+        /* Idle until the next timer tick; the child runs meanwhile. */
+        __asm__ __volatile__("sti; hlt" ::: "memory");
+    }
+}
+
+/* Linux ABI entry: nr in rax, args in rdi/rsi/rdx, with the full trapframe
+ * available (fork needs it). Reached from both the native `syscall` trampoline
+ * and the int 0x80 gate. Each number is offered to the Linux personality
+ * (user/compat/linux) so the portable, host-tested translation model sees and
+ * accounts for every real syscall. */
+long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
+                                 uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3) {
     uint32_t native = 0;
     (void)vibeos_linux_translate_syscall(&g_compat_rt, (uint32_t)nr, &native);
 
     switch (nr) {
+        case LSYS_fork:
+            return hw_sys_fork(frame);
+        case LSYS_wait4:
+            return hw_sys_waitpid(a1, a2);
         case LSYS_write:
             return hw_sys_write(a1, a2, a3);
         case LSYS_read:
@@ -1005,6 +1184,13 @@ long vibeos_x86_64_linux_syscall(uint64_t nr, uint64_t a1, uint64_t a2, uint64_t
             vibeos_x86_64_serial_puts("\n");
             return -VIBEOS_ENOSYS;
     }
+}
+
+/* Entry point for the `syscall` trampoline (isr.S): pull the Linux ABI
+ * arguments out of the trapframe and store the result back into rax. */
+void vibeos_x86_64_syscall_dispatch(vibeos_x86_64_isr_frame_t *frame) {
+    frame->rax = (uint64_t)vibeos_x86_64_linux_syscall(frame, frame->rax, frame->rdi,
+                                                       frame->rsi, frame->rdx);
 }
 
 /* Bring the scheduler up: spawn the initial user tasks, adopt the kernel as a
