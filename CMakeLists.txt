@@ -153,6 +153,7 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
     add_executable(vibeos_user_hello user/prog/hello.c)
     target_compile_options(vibeos_user_hello PRIVATE
         -ffreestanding -fno-stack-protector -fno-pic -mno-red-zone
+        -mcmodel=large   # user space is linked above 4 GiB (its own PML4 slot)
         -fno-strict-aliasing -Wall -Wextra
     )
     target_compile_definitions(vibeos_user_hello PRIVATE VIBEOS_USE_SYSCALL_INSN=1)
@@ -185,6 +186,7 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
     add_executable(vibeos_user_task user/prog/task.c)
     target_compile_options(vibeos_user_task PRIVATE
         -ffreestanding -fno-stack-protector -fno-pic -mno-red-zone
+        -mcmodel=large   # user space is linked above 4 GiB (its own PML4 slot)
         -fno-strict-aliasing -Wall -Wextra
     )
     target_compile_definitions(vibeos_user_task PRIVATE VIBEOS_USE_SYSCALL_INSN=1)
