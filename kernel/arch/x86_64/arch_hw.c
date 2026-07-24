@@ -286,45 +286,9 @@ static void hw_panic(const char *why) {
     }
 }
 
-/* Linux x86-64 syscall translation. Args follow the Linux ABI (nr in rax;
- * a1..a3 in rdi, rsi, rdx). This is the on-metal front end that a real
- * implementation will route into kernel/core/syscall.c and the Linux
- * personality in user/compat/linux. Reached from both the int 0x80 gate and
- * the native `syscall` trampoline.
- *   1/write(fd, buf, len) : emit len bytes from the user buffer over serial
- *   60/exit, 231/exit_group : return control to the kernel boot flow
- *   39/getpid : returns 1
- */
-long vibeos_x86_64_linux_syscall(uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3) {
-    switch (nr) {
-        case 1: {
-            const char *p = (const char *)(uintptr_t)a2;
-            uint64_t len = a3;
-            uint64_t i;
-            (void)a1; /* fd ignored during bring-up; all output goes to serial */
-            vibeos_x86_64_serial_puts("[HW][SYS] write(ring3): ");
-            for (i = 0; i < len; i++) {
-                char c = p[i];
-                if (c == '\n') {
-                    vibeos_x86_64_serial_putc('\r');
-                }
-                vibeos_x86_64_serial_putc(c);
-            }
-            return (long)len;
-        }
-        case 39:
-            return 1; /* getpid */
-        case 60:
-        case 231:
-            hw_task_exit(a1); /* retires this task and switches away; no return */
-            return 0;
-        default:
-            vibeos_x86_64_serial_puts("[HW][SYS] unimplemented Linux syscall nr=0x");
-            vibeos_x86_64_serial_print_hex(nr);
-            vibeos_x86_64_serial_puts("\n");
-            return -38; /* -ENOSYS */
-    }
-}
+/* Linux x86-64 syscall front end; defined after the task/address-space code
+ * because it validates user pointers against the calling task's page tables. */
+long vibeos_x86_64_linux_syscall(uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3);
 
 /* Called from the assembly common stub with a pointer to the saved frame. */
 void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
@@ -583,9 +547,20 @@ static void hw_enable_syscall(void) {
 
 /* ---- Process creation (ELF -> private address space) --------------------- */
 
+/* User address-space layout (all inside the process's own PML4 slot):
+ *   [USER_BASE ..]            program image (linked address)
+ *   [.. USER_STACK_TOP]       stack (grows down)
+ *   [USER_HEAP_BASE ..]       brk heap (grows up)
+ *   [USER_MMAP_BASE ..]       anonymous mmap arena (grows up)
+ */
+#define VIBEOS_HW_USER_HEAP_BASE (VIBEOS_HW_USER_BASE + 0x00800000ull) /* +8 MiB  */
+#define VIBEOS_HW_USER_MMAP_BASE (VIBEOS_HW_USER_BASE + 0x04000000ull) /* +64 MiB */
+
 typedef struct {
     vibeos_hw_aspace_t as;
     uint64_t entry;
+    uint64_t brk_cur;   /* current program break            */
+    uint64_t mmap_cur;  /* next free anonymous mmap address  */
 } hw_proc_t;
 
 typedef struct {
@@ -641,6 +616,21 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len) 
         void *page = hw_alloc_page();
         uint64_t va = VIBEOS_HW_USER_STACK_TOP - ((uint64_t)(i + 1u) * 4096ull);
         if (!page || hw_map_page(&p->as, va, (uint64_t)(uintptr_t)page,
+                                 PTE_PRESENT | PTE_WRITE | PTE_USER) != 0) {
+            return -1;
+        }
+    }
+    p->brk_cur = VIBEOS_HW_USER_HEAP_BASE;
+    p->mmap_cur = VIBEOS_HW_USER_MMAP_BASE;
+    return 0;
+}
+
+/* Map `pages` fresh zeroed user pages at `va` in an address space. */
+static int hw_map_user_pages(vibeos_hw_aspace_t *as, uint64_t va, uint64_t pages) {
+    uint64_t i;
+    for (i = 0; i < pages; i++) {
+        void *page = hw_alloc_page();
+        if (!page || hw_map_page(as, va + i * 4096ull, (uint64_t)(uintptr_t)page,
                                  PTE_PRESENT | PTE_WRITE | PTE_USER) != 0) {
             return -1;
         }
@@ -802,10 +792,191 @@ static void hw_task_exit(uint64_t code) {
     vibeos_x86_64_task_enter(&g_tasks[next].ctx); /* does not return */
 }
 
+/* ---- Linux syscall layer ------------------------------------------------- */
+
+#include "vibeos/compat.h"
+
+/* Linux errno values returned to user space (negated). */
+#define VIBEOS_ENOSYS 38
+#define VIBEOS_EFAULT 14
+#define VIBEOS_EINVAL 22
+#define VIBEOS_ENOMEM 12
+#define VIBEOS_EBADF  9
+
+/* Linux x86-64 syscall numbers we implement. */
+#define LSYS_read   0
+#define LSYS_write  1
+#define LSYS_brk    12
+#define LSYS_mmap   9
+#define LSYS_getpid 39
+#define LSYS_exit   60
+#define LSYS_exit_group 231
+
+static vibeos_compat_runtime_t g_compat_rt;
+
+/* Validate that [va, va+len) is mapped in the *calling task's* address space
+ * and reachable from ring 3. Without this the kernel would happily dereference
+ * any pointer a user task passes - including kernel addresses. */
+static int hw_user_range_ok(uint64_t va, uint64_t len, int need_write) {
+    static const uint32_t shifts[3] = {39u, 30u, 21u};
+    const hw_task_t *t;
+    uint64_t page;
+
+    if (len == 0) {
+        return 1;
+    }
+    if (va + len < va) {
+        return 0; /* wrap-around */
+    }
+    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+        return 0;
+    }
+    t = &g_tasks[g_current_task];
+
+    for (page = va & ~0xFFFull; page < va + len; page += 4096ull) {
+        const uint64_t *tbl = t->proc.as.pml4;
+        uint64_t e = 0;
+        uint32_t level;
+
+        for (level = 0; level < 3u; level++) {
+            e = tbl[(page >> shifts[level]) & 0x1FFu];
+            if ((e & PTE_PRESENT) == 0 || (e & PTE_USER) == 0) {
+                return 0;
+            }
+            if (level == 2u && (e & PTE_PS) != 0) {
+                break; /* 2 MiB leaf */
+            }
+            tbl = (const uint64_t *)(uintptr_t)(e & 0x000FFFFFFFFFF000ull);
+        }
+        if ((e & PTE_PS) == 0) {
+            e = tbl[(page >> 12) & 0x1FFu];
+            if ((e & PTE_PRESENT) == 0 || (e & PTE_USER) == 0) {
+                return 0;
+            }
+        }
+        if (need_write && (e & PTE_WRITE) == 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static long hw_sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
+    const char *p = (const char *)(uintptr_t)buf;
+    uint64_t i;
+
+    if (fd != 1u && fd != 2u) {
+        return -VIBEOS_EBADF; /* only stdout/stderr during bring-up */
+    }
+    if (!hw_user_range_ok(buf, len, 0)) {
+        return -VIBEOS_EFAULT;
+    }
+    vibeos_x86_64_serial_puts("[HW][SYS] write(ring3): ");
+    for (i = 0; i < len; i++) {
+        char c = p[i];
+        if (c == '\n') {
+            vibeos_x86_64_serial_putc('\r');
+        }
+        vibeos_x86_64_serial_putc(c);
+    }
+    return (long)len;
+}
+
+static long hw_sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
+    if (fd != 0u) {
+        return -VIBEOS_EBADF;
+    }
+    if (!hw_user_range_ok(buf, len, 1)) {
+        return -VIBEOS_EFAULT;
+    }
+    return 0; /* no console input source wired yet: EOF */
+}
+
+/* brk(0) reports the break; brk(addr) grows it, mapping fresh pages. */
+static long hw_sys_brk(uint64_t addr) {
+    hw_proc_t *proc;
+    uint64_t new_brk, pages;
+
+    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+        return -VIBEOS_EINVAL;
+    }
+    proc = &g_tasks[g_current_task].proc;
+    if (addr == 0u) {
+        return (long)proc->brk_cur;
+    }
+    if (addr < VIBEOS_HW_USER_HEAP_BASE || addr >= VIBEOS_HW_USER_MMAP_BASE) {
+        return (long)proc->brk_cur; /* out of the heap arena: unchanged */
+    }
+    new_brk = (addr + 0xFFFull) & ~0xFFFull;
+    if (new_brk > proc->brk_cur) {
+        pages = (new_brk - proc->brk_cur) / 4096ull;
+        if (hw_map_user_pages(&proc->as, proc->brk_cur, pages) != 0) {
+            return -VIBEOS_ENOMEM;
+        }
+    }
+    proc->brk_cur = new_brk;
+    return (long)proc->brk_cur;
+}
+
+/* Anonymous mmap only: bump the per-process arena and map zeroed pages. */
+static long hw_sys_mmap(uint64_t len) {
+    hw_proc_t *proc;
+    uint64_t pages, base;
+
+    if (g_current_task < 0 || !g_tasks[g_current_task].is_user || len == 0u) {
+        return -VIBEOS_EINVAL;
+    }
+    proc = &g_tasks[g_current_task].proc;
+    pages = (len + 0xFFFull) / 4096ull;
+    base = proc->mmap_cur;
+    if (hw_map_user_pages(&proc->as, base, pages) != 0) {
+        return -VIBEOS_ENOMEM;
+    }
+    proc->mmap_cur = base + pages * 4096ull;
+    return (long)base;
+}
+
+/* Linux ABI entry: nr in rax, args in rdi/rsi/rdx. Reached from both the
+ * native `syscall` trampoline and the int 0x80 gate. Each number is offered to
+ * the Linux personality (user/compat/linux) so the portable, host-tested
+ * translation model sees and accounts for every real syscall. */
+long vibeos_x86_64_linux_syscall(uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3) {
+    uint32_t native = 0;
+    (void)vibeos_linux_translate_syscall(&g_compat_rt, (uint32_t)nr, &native);
+
+    switch (nr) {
+        case LSYS_write:
+            return hw_sys_write(a1, a2, a3);
+        case LSYS_read:
+            return hw_sys_read(a1, a2, a3);
+        case LSYS_brk:
+            return hw_sys_brk(a1);
+        case LSYS_mmap:
+            return hw_sys_mmap(a2); /* addr hint ignored; a2 = length */
+        case LSYS_getpid:
+            return (g_current_task >= 0) ? (long)g_tasks[g_current_task].pid : 1;
+        case LSYS_exit:
+        case LSYS_exit_group:
+            hw_task_exit(a1); /* retires this task and switches away; no return */
+            return 0;
+        default:
+            vibeos_x86_64_serial_puts("[HW][SYS] unimplemented Linux syscall nr=0x");
+            vibeos_x86_64_serial_print_hex(nr);
+            vibeos_x86_64_serial_puts("\n");
+            return -VIBEOS_ENOSYS;
+    }
+}
+
 /* Bring the scheduler up: spawn the initial user tasks, adopt the kernel as a
  * task, and let the timer preempt from here on. */
 static void hw_sched_bringup(void) {
     int hello_id, a_id, b_id, kern_id;
+    uint64_t translated = 0, denied = 0;
+
+    /* Bring up the Linux personality so the portable translation model sees
+     * every syscall the on-metal front end serves. */
+    (void)vibeos_compat_init(&g_compat_rt);
+    (void)vibeos_compat_enable(&g_compat_rt, VIBEOS_COMPAT_TARGET_LINUX, 1);
 
     hello_id = hw_task_spawn_user(vibeos_user_hello_elf, vibeos_user_hello_elf_len, 0);
     a_id = hw_task_spawn_user(vibeos_user_task_elf, vibeos_user_task_elf_len, 0);
@@ -848,6 +1019,14 @@ static void hw_sched_bringup(void) {
         __asm__ __volatile__("hlt");
     }
     vibeos_x86_64_serial_puts("[SCHED] all user tasks retired; kernel task continues\n");
+
+    if (vibeos_compat_stats(&g_compat_rt, &translated, &denied) == 0) {
+        vibeos_x86_64_serial_puts("[COMPAT] linux syscalls translated=0x");
+        vibeos_x86_64_serial_print_hex(translated);
+        vibeos_x86_64_serial_puts(" denied=0x");
+        vibeos_x86_64_serial_print_hex(denied);
+        vibeos_x86_64_serial_puts("\n");
+    }
 }
 
 /* Entry point invoked from entry.s before vibeos_kmain. */
