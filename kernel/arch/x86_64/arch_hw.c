@@ -125,6 +125,7 @@ typedef struct vibeos_x86_64_isr_frame {
 } vibeos_x86_64_isr_frame_t;
 
 static void hw_schedule(vibeos_x86_64_isr_frame_t *frame); /* defined below */
+static void hw_task_exit(uint64_t code);                   /* defined below */
 
 static void hw_load_gdt(void) {
     struct gdt_pointer gdtr;
@@ -315,10 +316,7 @@ long vibeos_x86_64_linux_syscall(uint64_t nr, uint64_t a1, uint64_t a2, uint64_t
             return 1; /* getpid */
         case 60:
         case 231:
-            vibeos_x86_64_serial_puts("[HW][SYS] exit(ring3) code=0x");
-            vibeos_x86_64_serial_print_hex(a1);
-            vibeos_x86_64_serial_puts("\n[HW] USER_SYSCALL_OK (returning to kernel)\n");
-            vibeos_x86_64_ring3_resume(); /* does not return */
+            hw_task_exit(a1); /* retires this task and switches away; no return */
             return 0;
         default:
             vibeos_x86_64_serial_puts("[HW][SYS] unimplemented Linux syscall nr=0x");
@@ -654,46 +652,82 @@ static uint64_t hw_proc_cr3(const hw_proc_t *p) {
     return (uint64_t)(uintptr_t)p->as.pml4;
 }
 
-/* ---- Preemptive round-robin scheduler ----------------------------------- */
+/* ---- Task table + preemptive scheduler ---------------------------------- */
 
-#define VIBEOS_HW_MAX_TASKS 2
-#define VIBEOS_HW_SCHED_SWITCHES 16u
+#define VIBEOS_HW_MAX_TASKS 8
 
-extern void vibeos_x86_64_sched_start(vibeos_x86_64_isr_frame_t *first);
+enum {
+    HW_TASK_FREE = 0,
+    HW_TASK_READY = 1,
+    HW_TASK_RUNNING = 2,
+    HW_TASK_ZOMBIE = 3
+};
+
+extern void vibeos_x86_64_task_enter(vibeos_x86_64_isr_frame_t *task);
 extern const unsigned char vibeos_user_task_elf[];
 extern const unsigned long vibeos_user_task_elf_len;
 
-static vibeos_x86_64_isr_frame_t g_task_ctx[VIBEOS_HW_MAX_TASKS];
-static hw_proc_t g_task_proc[VIBEOS_HW_MAX_TASKS];
-static int g_task_count;
-static int g_current_task;
-static int g_sched_active;
-static uint32_t g_sched_switch_count;
+typedef struct {
+    vibeos_x86_64_isr_frame_t ctx;
+    hw_proc_t proc;
+    uint64_t cr3;
+    uint64_t exit_code;
+    uint32_t pid;
+    int state;
+    int is_user;
+} hw_task_t;
 
-/* Timer-driven round robin: save the interrupted task, restore the next by
- * rewriting the live IRQ frame, and switch CR3 to the next task's address
- * space. After a bounded number of preemptions, return to the kernel. */
-static void hw_schedule(vibeos_x86_64_isr_frame_t *frame) {
-    if (!g_sched_active || g_task_count == 0) {
-        return;
+static hw_task_t g_tasks[VIBEOS_HW_MAX_TASKS];
+static int g_current_task = -1;
+static int g_sched_running;
+static uint32_t g_next_pid = 1;
+
+static int hw_task_alloc(void) {
+    int i;
+    for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+        if (g_tasks[i].state == HW_TASK_FREE) {
+            return i;
+        }
     }
-    g_task_ctx[g_current_task] = *frame;
-    g_sched_switch_count++;
-    if (g_sched_switch_count >= VIBEOS_HW_SCHED_SWITCHES) {
-        g_sched_active = 0;
-        vibeos_x86_64_serial_puts("[HW] SCHED_OK (0x");
-        vibeos_x86_64_serial_print_hex(g_sched_switch_count);
-        vibeos_x86_64_serial_puts(" preemptions; returning to kernel)\n");
-        hw_write_cr3((uint64_t)(uintptr_t)&g_pml4[0]); /* back to kernel tables */
-        vibeos_x86_64_ring3_resume();                  /* does not return */
-    }
-    g_current_task = (g_current_task + 1) % g_task_count;
-    *frame = g_task_ctx[g_current_task];
-    hw_write_cr3(hw_proc_cr3(&g_task_proc[g_current_task]));
+    return -1;
 }
 
-static void hw_task_init_ctx(int i, uint64_t entry, uint64_t id) {
-    vibeos_x86_64_isr_frame_t *c = &g_task_ctx[i];
+/* Next runnable task after `from`, round robin. Returns -1 if none. */
+static int hw_pick_next(int from) {
+    int n;
+    for (n = 1; n <= VIBEOS_HW_MAX_TASKS; n++) {
+        int i = (from + n) % VIBEOS_HW_MAX_TASKS;
+        if (g_tasks[i].state == HW_TASK_READY || g_tasks[i].state == HW_TASK_RUNNING) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* Timer-driven preemption: save the interrupted task, pick the next runnable
+ * one, and resume it by rewriting the live IRQ frame and switching CR3. Runs
+ * for the life of the system - there is no "demo over" exit. */
+static void hw_schedule(vibeos_x86_64_isr_frame_t *frame) {
+    int next;
+
+    if (!g_sched_running || g_current_task < 0) {
+        return;
+    }
+    next = hw_pick_next(g_current_task);
+    if (next < 0 || next == g_current_task) {
+        return; /* nothing else runnable: keep running the current task */
+    }
+    g_tasks[g_current_task].ctx = *frame;
+    if (g_tasks[g_current_task].state == HW_TASK_RUNNING) {
+        g_tasks[g_current_task].state = HW_TASK_READY;
+    }
+    g_current_task = next;
+    g_tasks[next].state = HW_TASK_RUNNING;
+    *frame = g_tasks[next].ctx;
+    hw_write_cr3(g_tasks[next].cr3);
+}
+
+static void hw_task_init_user_ctx(vibeos_x86_64_isr_frame_t *c, uint64_t entry, uint64_t arg) {
     uint32_t k;
     for (k = 0; k < (uint32_t)sizeof(*c); k++) {
         ((uint8_t *)(void *)c)[k] = 0;
@@ -703,68 +737,117 @@ static void hw_task_init_ctx(int i, uint64_t entry, uint64_t id) {
     c->rflags = 0x202;   /* reserved bit + IF */
     c->rsp = VIBEOS_HW_USER_STACK_TOP;
     c->ss = VIBEOS_HW_USER_DATA_SEL;
-    c->rdi = id;         /* passed to the task's _start */
+    c->rdi = arg;        /* passed to the task's _start */
 }
 
-/* Spin up two ring-3 tasks, each in its OWN address space (same program, same
- * user virtual addresses, different physical pages), and let the timer preempt
- * between them. The timer must already be running. */
-static void hw_run_scheduler_demo(void) {
-    int i;
-
-    for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
-        if (hw_proc_create(&g_task_proc[i], vibeos_user_task_elf, vibeos_user_task_elf_len) != 0) {
-            vibeos_x86_64_serial_puts("[HW] SCHED process creation failed\n");
-            return;
-        }
-        hw_task_init_ctx(i, g_task_proc[i].entry, (uint64_t)i);
+/* Adopt the currently-executing kernel flow as a schedulable task, so the
+ * kernel (and its serial CLI) is just another entry in the run queue rather
+ * than something the scheduler has to "return to". */
+static int hw_task_adopt_kernel(void) {
+    int i = hw_task_alloc();
+    if (i < 0) {
+        return -1;
     }
-    g_task_count = VIBEOS_HW_MAX_TASKS;
-
-    vibeos_x86_64_serial_puts("[HW] scheduler: 2 tasks, separate address spaces (CR3 0x");
-    vibeos_x86_64_serial_print_hex(hw_proc_cr3(&g_task_proc[0]));
-    vibeos_x86_64_serial_puts(" / 0x");
-    vibeos_x86_64_serial_print_hex(hw_proc_cr3(&g_task_proc[1]));
-    vibeos_x86_64_serial_puts(")\n");
-
-    /* Arm and launch atomically: with interrupts on, a timer tick between
-     * arming the scheduler and entering the first task would capture the
-     * *kernel* context as a task. sched_start's iretq restores IF from the
-     * task's rflags, so preemption resumes as soon as we are in ring 3. */
-    __asm__ __volatile__("cli");
-    g_current_task = 0;
-    g_sched_switch_count = 0;
-    g_sched_active = 1;
-    hw_write_cr3(hw_proc_cr3(&g_task_proc[0]));
-    vibeos_x86_64_sched_start(&g_task_ctx[0]);
-
-    hw_write_cr3((uint64_t)(uintptr_t)&g_pml4[0]);
-    __asm__ __volatile__("sti"); /* scheduler is idle now; keep the timer live */
-    vibeos_x86_64_serial_puts("[HW] scheduler demo complete\n");
+    g_tasks[i].state = HW_TASK_RUNNING;
+    g_tasks[i].is_user = 0;
+    g_tasks[i].pid = g_next_pid++;
+    g_tasks[i].cr3 = (uint64_t)(uintptr_t)&g_pml4[0];
+    g_current_task = i;
+    return i;
 }
 
-/* Create a process from the embedded hello ELF, run it in ring 3 in its own
- * address space, and return here once it exits. */
-static void hw_enter_usermode_demo(void) {
-    static hw_proc_t proc;
+/* Create a ring-3 task from an ELF image: private address space, mapped stack,
+ * READY to be picked by the scheduler. */
+static int hw_task_spawn_user(const unsigned char *elf, uint64_t len, uint64_t arg) {
+    int i = hw_task_alloc();
+    if (i < 0) {
+        return -1;
+    }
+    if (hw_proc_create(&g_tasks[i].proc, elf, len) != 0) {
+        return -1;
+    }
+    g_tasks[i].cr3 = hw_proc_cr3(&g_tasks[i].proc);
+    hw_task_init_user_ctx(&g_tasks[i].ctx, g_tasks[i].proc.entry, arg);
+    g_tasks[i].state = HW_TASK_READY;
+    g_tasks[i].is_user = 1;
+    g_tasks[i].pid = g_next_pid++;
+    return i;
+}
 
-    vibeos_x86_64_serial_puts("[HW] loading user ELF (0x");
-    vibeos_x86_64_serial_print_hex(vibeos_user_hello_elf_len);
-    vibeos_x86_64_serial_puts(" bytes) into a private address space\n");
-    if (hw_proc_create(&proc, vibeos_user_hello_elf, vibeos_user_hello_elf_len) != 0) {
-        vibeos_x86_64_serial_puts("[HW] ELF_LOAD_FAIL\n");
+/* exit(): retire the calling task and switch to another runnable one. Called
+ * from the syscall path, so it enters the next task directly and never returns
+ * to the caller. */
+static void hw_task_exit(uint64_t code) {
+    int next;
+
+    if (g_current_task >= 0) {
+        g_tasks[g_current_task].state = HW_TASK_ZOMBIE;
+        g_tasks[g_current_task].exit_code = code;
+        vibeos_x86_64_serial_puts("[SCHED] task pid=0x");
+        vibeos_x86_64_serial_print_hex(g_tasks[g_current_task].pid);
+        vibeos_x86_64_serial_puts(" exited code=0x");
+        vibeos_x86_64_serial_print_hex(code);
+        vibeos_x86_64_serial_puts("\n");
+    }
+    next = hw_pick_next(g_current_task < 0 ? 0 : g_current_task);
+    if (next < 0) {
+        vibeos_x86_64_serial_puts("[SCHED] no runnable task; halting\n");
+        for (;;) {
+            __asm__ __volatile__("hlt");
+        }
+    }
+    g_current_task = next;
+    g_tasks[next].state = HW_TASK_RUNNING;
+    hw_write_cr3(g_tasks[next].cr3);
+    vibeos_x86_64_task_enter(&g_tasks[next].ctx); /* does not return */
+}
+
+/* Bring the scheduler up: spawn the initial user tasks, adopt the kernel as a
+ * task, and let the timer preempt from here on. */
+static void hw_sched_bringup(void) {
+    int hello_id, a_id, b_id, kern_id;
+
+    hello_id = hw_task_spawn_user(vibeos_user_hello_elf, vibeos_user_hello_elf_len, 0);
+    a_id = hw_task_spawn_user(vibeos_user_task_elf, vibeos_user_task_elf_len, 0);
+    b_id = hw_task_spawn_user(vibeos_user_task_elf, vibeos_user_task_elf_len, 1);
+    if (hello_id < 0 || a_id < 0 || b_id < 0) {
+        vibeos_x86_64_serial_puts("[SCHED] failed to spawn initial tasks\n");
         return;
     }
-    vibeos_x86_64_serial_puts("[HW] ELF_LOADED entry=0x");
-    vibeos_x86_64_serial_print_hex(proc.entry);
-    vibeos_x86_64_serial_puts(" cr3=0x");
-    vibeos_x86_64_serial_print_hex(hw_proc_cr3(&proc));
-    vibeos_x86_64_serial_puts("\n[HW] entering ring 3 (user mode)...\n");
 
-    hw_write_cr3(hw_proc_cr3(&proc));
-    vibeos_x86_64_ring3_enter(proc.entry, VIBEOS_HW_USER_STACK_TOP);
-    hw_write_cr3((uint64_t)(uintptr_t)&g_pml4[0]);
-    vibeos_x86_64_serial_puts("[HW] RING3_OK (back in ring 0)\n");
+    /* Printed before the scheduler is armed, so this line cannot be split by a
+     * preemption. */
+    vibeos_x86_64_serial_puts("[SCHED] scheduler live: kernel task + 3 user tasks, own address spaces\n");
+
+    __asm__ __volatile__("cli");
+    kern_id = hw_task_adopt_kernel();
+    if (kern_id < 0) {
+        __asm__ __volatile__("sti");
+        vibeos_x86_64_serial_puts("[SCHED] failed to adopt kernel task\n");
+        return;
+    }
+    g_sched_running = 1;
+    __asm__ __volatile__("sti");
+
+    /* Wait for the spawned tasks to finish before the kernel task goes on to
+     * the console (init-style child reaping). The kernel task is preempted
+     * while it waits, so the user tasks make progress; hlt idles until the next
+     * timer tick instead of spinning. */
+    for (;;) {
+        int i;
+        int alive = 0;
+        for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+            if (g_tasks[i].is_user &&
+                (g_tasks[i].state == HW_TASK_READY || g_tasks[i].state == HW_TASK_RUNNING)) {
+                alive = 1;
+            }
+        }
+        if (!alive) {
+            break;
+        }
+        __asm__ __volatile__("hlt");
+    }
+    vibeos_x86_64_serial_puts("[SCHED] all user tasks retired; kernel task continues\n");
 }
 
 /* Entry point invoked from entry.s before vibeos_kmain. */
@@ -787,11 +870,11 @@ void vibeos_x86_64_hw_early_init(void) {
     vibeos_x86_64_serial_puts("[HW] resumed after int3 (trap routed through model)\n");
 
     hw_enable_syscall();
-    hw_enter_usermode_demo();
-
     hw_enable_timer_irq();
 
-    hw_run_scheduler_demo();
+    /* From here the system is scheduled: the kernel itself becomes a task and
+     * user tasks are preempted alongside it. */
+    hw_sched_bringup();
 
     vibeos_x86_64_serial_puts("[HW] HW_INIT_OK\n");
 }

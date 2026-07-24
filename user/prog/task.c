@@ -16,6 +16,13 @@ static long user_write(long fd, const char *buf, long len) {
     return ret;
 }
 
+static void user_exit(long code) {
+    __asm__ __volatile__("syscall" : : "a"(60L), "D"(code) : "rcx", "r11", "memory");
+    for (;;) {
+        /* not reached */
+    }
+}
+
 void _start(void) {
     long id;
     __asm__ __volatile__("mov %%rdi, %0" : "=r"(id)); /* task id from the kernel */
@@ -25,16 +32,14 @@ void _start(void) {
     line[1] = '\n';
 
     /* Write a small, bounded number of times (so serial output stays tiny even
-     * on slow emulated CI), then spin quietly. The kernel stops the demo after
-     * a fixed number of timer preemptions regardless. */
-    int writes = 0;
-    for (;;) {
-        if (writes < 3) {
-            user_write(1, line, 2);
-            writes++;
-        }
+     * on slow emulated CI), with a short busy-wait so the timer preempts us
+     * mid-task, then exit - the kernel retires us and schedules someone else. */
+    int writes;
+    for (writes = 0; writes < 3; writes++) {
+        user_write(1, line, 2);
         for (volatile long d = 0; d < 300000L; d++) {
-            /* short busy-wait so the timer preempts us mid-task */
+            /* busy-wait */
         }
     }
+    user_exit(id);
 }

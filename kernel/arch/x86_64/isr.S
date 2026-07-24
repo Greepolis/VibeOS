@@ -218,9 +218,15 @@ vibeos_x86_64_sched_start:
     mov %r14, 0x20(%rax)
     mov %r15, 0x28(%rax)
     mov %rsp, 0x30(%rax)
+    /* fall through into the enter sequence */
 
+/* void vibeos_x86_64_task_enter(vibeos_x86_64_isr_frame_t *task /rdi/)
+ * Jump straight into a task's saved context without saving anything: used when
+ * the current task will never resume (e.g. it just called exit). */
+    .global vibeos_x86_64_task_enter
+vibeos_x86_64_task_enter:
     mov %rdi, %rax           /* rax = frame pointer */
-    mov $0x1b, %cx           /* user data segments */
+    mov 0xA8(%rax), %cx      /* data segments follow the task's SS (kernel or user) */
     mov %cx, %ds
     mov %cx, %es
     pushq 0xA8(%rax)         /* ss     */
