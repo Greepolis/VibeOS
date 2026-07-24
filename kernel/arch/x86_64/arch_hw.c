@@ -188,6 +188,12 @@ extern char vibeos_isr_128[];   /* isr.S: stub for the 0x80 syscall gate */
 
 extern int vibeos_x86_64_virtio_blk_init(void);
 extern int vibeos_x86_64_virtio_blk_read(uint64_t sector, void *buf);
+extern int vibeos_x86_64_fat_mount(void);
+extern long vibeos_x86_64_fat_read_file(const char *name, void *buf, uint32_t bufcap);
+
+/* Init program read from the on-disk filesystem, if present. */
+static uint8_t g_disk_init_elf[65536] __attribute__((aligned(16)));
+static long g_disk_init_len = -1;
 
 static void hw_load_idt(void) {
     struct idt_pointer idtr;
@@ -1204,15 +1210,17 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
     int hello_id, a_id, b_id, kern_id;
     uint64_t translated = 0, denied = 0;
 
-    /* Prefer the init program the bootloader loaded from the EFI system
-     * partition; fall back to the copy built into the kernel image. */
-    if (boot_info && boot_info->initrd_base != 0 && boot_info->initrd_size > 0 &&
-        boot_info->initrd_base + boot_info->initrd_size <= 0x100000000ull) {
+    /* Init program source, most real first: the on-disk filesystem (virtio-blk +
+     * FAT), then the bootloader's EFI module, then the built-in copy. */
+    if (g_disk_init_len > 0) {
+        init_elf = g_disk_init_elf;
+        init_len = (uint64_t)g_disk_init_len;
+        vibeos_x86_64_serial_puts("[SCHED] init program from on-disk filesystem (INIT.ELF)\n");
+    } else if (boot_info && boot_info->initrd_base != 0 && boot_info->initrd_size > 0 &&
+               boot_info->initrd_base + boot_info->initrd_size <= 0x100000000ull) {
         init_elf = (const unsigned char *)(uintptr_t)boot_info->initrd_base;
         init_len = boot_info->initrd_size;
-        vibeos_x86_64_serial_puts("[SCHED] init program from filesystem module at 0x");
-        vibeos_x86_64_serial_print_hex(boot_info->initrd_base);
-        vibeos_x86_64_serial_puts("\n");
+        vibeos_x86_64_serial_puts("[SCHED] init program from bootloader EFI module\n");
     } else {
         vibeos_x86_64_serial_puts("[SCHED] init program from built-in image\n");
     }
@@ -1301,18 +1309,17 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
      * user tasks are preempted alongside it. */
     hw_pmm_bringup(boot_info);
 
-    /* Real block device: bring up virtio-blk and read sector 0 to prove the
-     * driver talks to the disk (0x55AA is the boot-sector signature). */
-    if (vibeos_x86_64_virtio_blk_init() == 0) {
-        static uint8_t sector0[512] __attribute__((aligned(16)));
-        if (vibeos_x86_64_virtio_blk_read(0, sector0) == 0) {
-            vibeos_x86_64_serial_puts("[VIRTIO] sector0 sig=0x");
-            vibeos_x86_64_serial_print_hex((uint64_t)sector0[510] << 8 | sector0[511]);
-            vibeos_x86_64_serial_puts(" b0=0x");
-            vibeos_x86_64_serial_print_hex(sector0[0]);
+    /* Real storage: bring up virtio-blk, mount the FAT filesystem, and load the
+     * init program straight from disk (EFI/BOOT/INIT.ELF -> INIT.ELF at root). */
+    if (vibeos_x86_64_virtio_blk_init() == 0 && vibeos_x86_64_fat_mount() == 0) {
+        long n = vibeos_x86_64_fat_read_file("EFI/BOOT/INIT.ELF", g_disk_init_elf, sizeof(g_disk_init_elf));
+        if (n > 0) {
+            g_disk_init_len = n;
+            vibeos_x86_64_serial_puts("[FAT] read INIT.ELF from disk, size=0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)n);
             vibeos_x86_64_serial_puts("\n");
         } else {
-            vibeos_x86_64_serial_puts("[VIRTIO] sector0 read failed\n");
+            vibeos_x86_64_serial_puts("[FAT] INIT.ELF not found on disk\n");
         }
     }
 
