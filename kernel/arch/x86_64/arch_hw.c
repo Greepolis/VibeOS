@@ -15,6 +15,7 @@
 
 #include "vibeos/arch_x86_64.h"
 #include "vibeos/trap.h"
+#include "vibeos/boot.h"
 
 #define VIBEOS_HW_KERNEL_CS 0x08u
 #define VIBEOS_HW_KERNEL_DS 0x10u
@@ -969,16 +970,31 @@ long vibeos_x86_64_linux_syscall(uint64_t nr, uint64_t a1, uint64_t a2, uint64_t
 
 /* Bring the scheduler up: spawn the initial user tasks, adopt the kernel as a
  * task, and let the timer preempt from here on. */
-static void hw_sched_bringup(void) {
+static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
+    const unsigned char *init_elf = vibeos_user_hello_elf;
+    uint64_t init_len = vibeos_user_hello_elf_len;
     int hello_id, a_id, b_id, kern_id;
     uint64_t translated = 0, denied = 0;
+
+    /* Prefer the init program the bootloader loaded from the EFI system
+     * partition; fall back to the copy built into the kernel image. */
+    if (boot_info && boot_info->initrd_base != 0 && boot_info->initrd_size > 0 &&
+        boot_info->initrd_base + boot_info->initrd_size <= 0x100000000ull) {
+        init_elf = (const unsigned char *)(uintptr_t)boot_info->initrd_base;
+        init_len = boot_info->initrd_size;
+        vibeos_x86_64_serial_puts("[SCHED] init program from filesystem module at 0x");
+        vibeos_x86_64_serial_print_hex(boot_info->initrd_base);
+        vibeos_x86_64_serial_puts("\n");
+    } else {
+        vibeos_x86_64_serial_puts("[SCHED] init program from built-in image\n");
+    }
 
     /* Bring up the Linux personality so the portable translation model sees
      * every syscall the on-metal front end serves. */
     (void)vibeos_compat_init(&g_compat_rt);
     (void)vibeos_compat_enable(&g_compat_rt, VIBEOS_COMPAT_TARGET_LINUX, 1);
 
-    hello_id = hw_task_spawn_user(vibeos_user_hello_elf, vibeos_user_hello_elf_len, 0);
+    hello_id = hw_task_spawn_user(init_elf, init_len, 0);
     a_id = hw_task_spawn_user(vibeos_user_task_elf, vibeos_user_task_elf_len, 0);
     b_id = hw_task_spawn_user(vibeos_user_task_elf, vibeos_user_task_elf_len, 1);
     if (hello_id < 0 || a_id < 0 || b_id < 0) {
@@ -1030,7 +1046,7 @@ static void hw_sched_bringup(void) {
 }
 
 /* Entry point invoked from entry.s before vibeos_kmain. */
-void vibeos_x86_64_hw_early_init(void) {
+void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
     vibeos_x86_64_serial_puts("[HW] early init: loading GDT\n");
     hw_load_gdt();
     vibeos_x86_64_serial_puts("[HW] GDT loaded (CS=0x08 DS=0x10)\n");
@@ -1053,7 +1069,7 @@ void vibeos_x86_64_hw_early_init(void) {
 
     /* From here the system is scheduled: the kernel itself becomes a task and
      * user tasks are preempted alongside it. */
-    hw_sched_bringup();
+    hw_sched_bringup(boot_info);
 
     vibeos_x86_64_serial_puts("[HW] HW_INIT_OK\n");
 }

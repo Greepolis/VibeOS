@@ -195,6 +195,32 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         return EFI_VIBEOS_ERR_BOOTINFO_ALLOC;
     }
     
+    /* Load the init user program from the EFI system partition and hand it to
+     * the kernel as the initrd module, so user programs are real filesystem
+     * artifacts instead of blobs compiled into the kernel image. The buffer is
+     * UEFI pool memory, which survives ExitBootServices as loader data. */
+    {
+        static const uint16_t init_path[] = {
+            '\\', 'E', 'F', 'I', '\\', 'B', 'O', 'O', 'T', '\\',
+            'I', 'N', 'I', 'T', '.', 'E', 'L', 'F', 0
+        };
+        void *init_buffer = 0;
+        uint64_t init_size = 0;
+
+        if (uefi_file_read_all(ImageHandle, SystemTable, init_path, &init_buffer, &init_size) == 0 &&
+            init_buffer != 0 && init_size > 0) {
+            if (vibeos_bootloader_set_initrd(boot_info, (uint64_t)(uintptr_t)init_buffer, init_size) == 0) {
+                uefi_serial_puts("[BOOT] init program loaded from filesystem (INIT.ELF), size: ");
+                uefi_log_u64(init_size);
+                uefi_serial_puts("\n");
+            } else {
+                uefi_serial_puts("[WARN] INIT.ELF rejected by boot_info validation\n");
+            }
+        } else {
+            uefi_serial_puts("[WARN] INIT.ELF not found; kernel will use its built-in program\n");
+        }
+    }
+
     /* Finalize and validate boot_info */
     if (uefi_boot_info_finalize(kernel_struct, boot_info) != 0) {
         uefi_serial_puts("[WARN] Boot info finalization had issues\n");

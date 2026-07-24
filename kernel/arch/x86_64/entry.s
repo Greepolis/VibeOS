@@ -62,10 +62,12 @@ _start:
 .call_kmain:
     xor %rdx, %rdx
 
-    # Bring up real GDT/IDT before entering C kernel. hw_early_init takes no
-    # arguments; preserve RDI (kernel_t*) and RSI (boot_info*) across the call.
+    # Bring up real GDT/IDT/paging/scheduler before entering the C kernel.
+    # hw_early_init takes boot_info as its argument (for the initrd module);
+    # preserve RDI (kernel_t*) and RSI (boot_info*) across the call.
     push %rdi
     push %rsi
+    mov %rsi, %rdi
     call vibeos_x86_64_hw_early_init
     pop %rsi
     pop %rdi
