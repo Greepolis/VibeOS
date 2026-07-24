@@ -191,13 +191,29 @@ vibeos_x86_64_ring3_resume:
 vibeos_x86_64_syscall_entry:
     mov %rsp, g_user_saved_rsp(%rip)
     mov g_syscall_kstack_top(%rip), %rsp
-    push %rcx                /* save user rip   */
+    push %rcx                /* save user rip    */
     push %r11                /* save user rflags */
+    /* The Linux syscall ABI clobbers only rax, rcx and r11: every other
+     * register must come back unchanged. The C dispatcher preserves the
+     * callee-saved set, so save the caller-saved ones we would otherwise
+     * destroy (the argument marshalling below overwrites rdi/rsi/rdx). */
+    push %rdi
+    push %rsi
+    push %rdx
+    push %r8
+    push %r9
+    push %r10
     mov %rdx, %rcx           /* C arg4 = a3 */
     mov %rsi, %rdx           /* C arg3 = a2 */
     mov %rdi, %rsi           /* C arg2 = a1 */
     mov %rax, %rdi           /* C arg1 = nr */
     call vibeos_x86_64_linux_syscall
+    pop %r10
+    pop %r9
+    pop %r8
+    pop %rdx
+    pop %rsi
+    pop %rdi
     pop %r11                 /* user rflags */
     pop %rcx                 /* user rip    */
     mov g_user_saved_rsp(%rip), %rsp

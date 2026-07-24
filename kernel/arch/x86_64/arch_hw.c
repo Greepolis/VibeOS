@@ -664,7 +664,9 @@ typedef struct {
     uint64_t cr3;
     uint64_t exit_code;
     uint32_t pid;
-    int state;
+    /* Written from interrupt/syscall context (preemption, task exit) and read
+     * by the kernel task, so it must not be cached across a wait loop. */
+    volatile int state;
     int is_user;
 } hw_task_t;
 
@@ -1032,7 +1034,9 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
         if (!alive) {
             break;
         }
-        __asm__ __volatile__("hlt");
+        /* The memory clobber forces the task states to be re-read after each
+         * idle period: they are updated by interrupt/syscall context. */
+        __asm__ __volatile__("hlt" ::: "memory");
     }
     vibeos_x86_64_serial_puts("[SCHED] all user tasks retired; kernel task continues\n");
 
