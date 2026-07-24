@@ -1,9 +1,9 @@
-/* Minimal ELF64 loader for VibeOS user programs (image-only).
+/* Minimal ELF64 parser/loader for VibeOS user programs (image-only).
  *
- * Loads a statically-linked, position-dependent ELF64 from memory: it copies
- * each PT_LOAD segment to its p_vaddr (which must lie in the kernel's
- * identity-mapped, user-accessible low region) and zero-fills the BSS tail.
- * Returns the entry point so the caller can jump to it in ring 3.
+ * The parser validates the header and walks PT_LOAD segments, handing each to a
+ * caller-supplied callback. The callback decides where the memory comes from
+ * and how it is mapped, so the same parser serves both a flat identity load and
+ * a per-process address space load.
  */
 
 #include <stdint.h>
@@ -41,13 +41,18 @@ typedef struct {
 #define PT_LOAD 1u
 #define ELFCLASS64 2u
 #define EM_X86_64 62u
-#define VIBEOS_ELF_VADDR_LIMIT 0x100000000ull /* identity map covers first 4 GiB */
 
-int vibeos_x86_64_load_elf(const unsigned char *elf, uint64_t len, uint64_t *out_entry) {
+/* Called once per PT_LOAD segment. `flags` carries the ELF PF_* bits
+ * (1=X, 2=W, 4=R). Return non-zero to abort the load. */
+typedef int (*vibeos_elf_load_cb)(void *ctx, uint64_t vaddr, const unsigned char *data,
+                                  uint64_t filesz, uint64_t memsz, uint32_t flags);
+
+int vibeos_x86_64_elf_load(const unsigned char *elf, uint64_t len,
+                           void *ctx, vibeos_elf_load_cb cb, uint64_t *out_entry) {
     const Elf64_Ehdr *eh;
     uint16_t i;
 
-    if (!elf || !out_entry || len < sizeof(Elf64_Ehdr)) {
+    if (!elf || !cb || !out_entry || len < sizeof(Elf64_Ehdr)) {
         return -1;
     }
     eh = (const Elf64_Ehdr *)(const void *)elf;
@@ -66,25 +71,15 @@ int vibeos_x86_64_load_elf(const unsigned char *elf, uint64_t len, uint64_t *out
     for (i = 0; i < eh->e_phnum; i++) {
         const Elf64_Phdr *ph =
             (const Elf64_Phdr *)(const void *)(elf + eh->e_phoff + (uint64_t)i * eh->e_phentsize);
-        uint8_t *dst;
-        uint64_t j;
 
         if (ph->p_type != PT_LOAD || ph->p_memsz == 0) {
             continue;
         }
-        /* Bounds: file range in the blob, and target range in the identity map. */
         if (ph->p_offset + ph->p_filesz > len || ph->p_filesz > ph->p_memsz) {
             return -1;
         }
-        if (ph->p_vaddr + ph->p_memsz > VIBEOS_ELF_VADDR_LIMIT) {
+        if (cb(ctx, ph->p_vaddr, elf + ph->p_offset, ph->p_filesz, ph->p_memsz, ph->p_flags) != 0) {
             return -1;
-        }
-        dst = (uint8_t *)(uintptr_t)ph->p_vaddr;
-        for (j = 0; j < ph->p_filesz; j++) {
-            dst[j] = elf[ph->p_offset + j];
-        }
-        for (; j < ph->p_memsz; j++) {
-            dst[j] = 0; /* .bss */
         }
     }
 

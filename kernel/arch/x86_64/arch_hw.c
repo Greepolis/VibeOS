@@ -101,8 +101,13 @@ extern uint64_t vibeos_isr_stub_table[VIBEOS_HW_WIRED_VECTORS];
 extern void vibeos_x86_64_ring3_enter(uint64_t user_rip, uint64_t user_rsp);
 extern void vibeos_x86_64_ring3_resume(void);
 
-/* ELF loader (elf_load.c) and the embedded user program (generated blob). */
-extern int vibeos_x86_64_load_elf(const unsigned char *elf, uint64_t len, uint64_t *out_entry);
+/* ELF loader (elf_load.c) and the embedded user program (generated blob).
+ * The loader hands each PT_LOAD segment to a callback so we can place it in a
+ * process's private address space. */
+typedef int (*vibeos_elf_load_cb)(void *ctx, uint64_t vaddr, const unsigned char *data,
+                                  uint64_t filesz, uint64_t memsz, uint32_t flags);
+extern int vibeos_x86_64_elf_load(const unsigned char *elf, uint64_t len,
+                                  void *ctx, vibeos_elf_load_cb cb, uint64_t *out_entry);
 extern const unsigned char vibeos_user_hello_elf[];
 extern const unsigned long vibeos_user_hello_elf_len;
 
@@ -411,23 +416,30 @@ uint64_t g_ring3_kctx[8];
 uint64_t g_user_saved_rsp;
 uint64_t g_syscall_kstack_top;
 
-static uint8_t g_user_stack[8192] __attribute__((aligned(16)));
-
-/* Kernel-owned page tables (static BSS, no PMM dependency during bring-up). */
+/* Kernel-owned page tables (static BSS, no PMM dependency during bring-up).
+ * The identity map is supervisor-only; user memory lives in its own PML4 slot
+ * with per-process tables, so ring 3 cannot reach kernel pages. */
 static uint64_t g_pml4[512] __attribute__((aligned(4096)));
 static uint64_t g_pdpt[512] __attribute__((aligned(4096)));
 static uint64_t g_pd[VIBEOS_HW_IDENTITY_GIB][512] __attribute__((aligned(4096)));
 
-/* Extra tables + backing frame to prove a non-identity VA->PA mapping. */
-static uint64_t g_pdpt_hi[512] __attribute__((aligned(4096)));
-static uint64_t g_pd_hi[512] __attribute__((aligned(4096)));
-static uint64_t g_pt_hi[512] __attribute__((aligned(4096)));
-static uint8_t  g_test_frame[4096] __attribute__((aligned(4096)));
+/* ---- Page pool + per-process address spaces ------------------------------ */
 
-/* Canonical VA at 512 GiB (PML4[1]) - far outside the 4 GiB identity map, so a
- * successful access there can only come from our explicit mapping. */
-#define VIBEOS_HW_TEST_VA 0x8000000000ull
-#define VIBEOS_HW_TEST_MAGIC 0x5642454F50414745ull /* "VBEOPAGE" */
+/* Bump allocator over a static pool: backs per-process page tables and user
+ * pages this early in boot, before the real PMM is available. */
+#define VIBEOS_HW_POOL_PAGES 128u
+static uint8_t g_page_pool[VIBEOS_HW_POOL_PAGES][4096] __attribute__((aligned(4096)));
+static uint32_t g_pool_next;
+
+/* User virtual layout: PML4 slot 1 (512 GiB). Programs are linked at
+ * VIBEOS_HW_USER_BASE (user/prog/user.ld); their stack sits above the image. */
+#define VIBEOS_HW_USER_BASE 0x8000000000ull
+#define VIBEOS_HW_USER_STACK_TOP (VIBEOS_HW_USER_BASE + 0x00400000ull) /* +4 MiB */
+#define VIBEOS_HW_USER_STACK_PAGES 4u
+
+typedef struct vibeos_hw_aspace {
+    uint64_t *pml4;
+} vibeos_hw_aspace_t;
 
 static uint64_t hw_read_cr3(void) {
     uint64_t v;
@@ -435,57 +447,78 @@ static uint64_t hw_read_cr3(void) {
     return v;
 }
 
-/* Map VIBEOS_HW_TEST_VA -> g_test_frame with a full PDPT/PD/PT walk. */
-static void hw_map_test_page(void) {
-    g_pt_hi[0]   = (uint64_t)(uintptr_t)&g_test_frame[0] | PTE_PRESENT | PTE_WRITE;
-    g_pd_hi[0]   = (uint64_t)(uintptr_t)&g_pt_hi[0]      | PTE_PRESENT | PTE_WRITE;
-    g_pdpt_hi[0] = (uint64_t)(uintptr_t)&g_pd_hi[0]      | PTE_PRESENT | PTE_WRITE;
-    g_pml4[1]    = (uint64_t)(uintptr_t)&g_pdpt_hi[0]    | PTE_PRESENT | PTE_WRITE;
+static void hw_write_cr3(uint64_t pml4_phys) {
+    __asm__ __volatile__("mov %0, %%cr3" : : "r"(pml4_phys) : "memory");
 }
 
-/* Write through the high VA and confirm it lands in the backing frame. */
-static void hw_verify_test_mapping(void) {
-    volatile uint64_t *va = (volatile uint64_t *)(uintptr_t)VIBEOS_HW_TEST_VA;
-    uint64_t via_phys;
-
-    *va = VIBEOS_HW_TEST_MAGIC;
-    via_phys = *(volatile uint64_t *)(void *)&g_test_frame[0];
-    if (*va == VIBEOS_HW_TEST_MAGIC && via_phys == VIBEOS_HW_TEST_MAGIC) {
-        vibeos_x86_64_serial_puts("[HW] MAP_TEST_OK (VA 0x8000000000 -> frame translated)\n");
-    } else {
-        vibeos_x86_64_serial_puts("[HW] MAP_TEST_FAIL\n");
+static void *hw_alloc_page(void) {
+    uint8_t *p;
+    uint32_t i;
+    if (g_pool_next >= VIBEOS_HW_POOL_PAGES) {
+        return 0;
     }
+    p = g_page_pool[g_pool_next++];
+    for (i = 0; i < 4096u; i++) {
+        p[i] = 0;
+    }
+    return p;
 }
 
-/* Build a fresh 4-level page table identity-mapping the first N GiB with 2 MiB
- * pages, then switch CR3 to it. Everything the kernel touches (its image at
- * 0x4000000, boot structures at 0x200000, the stack, and these tables) lives
- * within the first GiB and QEMU RAM/MMIO is below 4 GiB, so the switch from the
- * firmware's identity map to our own is safe and the mapping is unchanged. */
+/* Walk the four levels (creating missing tables from the pool) and install a
+ * 4 KiB mapping. Intermediate entries carry US so the leaf's US decides access.
+ * Identity-mapped physical addresses double as the kernel's view of the tables. */
+static int hw_map_page(vibeos_hw_aspace_t *as, uint64_t va, uint64_t pa, uint64_t leaf_flags) {
+    static const uint32_t shifts[3] = {39u, 30u, 21u}; /* PML4, PDPT, PD */
+    uint64_t *tbl = as->pml4;
+    uint32_t level;
+
+    for (level = 0; level < 3u; level++) {
+        uint32_t idx = (uint32_t)((va >> shifts[level]) & 0x1FFu);
+        if ((tbl[idx] & PTE_PRESENT) == 0) {
+            void *page = hw_alloc_page();
+            if (!page) {
+                return -1;
+            }
+            tbl[idx] = (uint64_t)(uintptr_t)page | PTE_PRESENT | PTE_WRITE | PTE_USER;
+        }
+        tbl = (uint64_t *)(uintptr_t)(tbl[idx] & 0x000FFFFFFFFFF000ull);
+    }
+    tbl[(va >> 12) & 0x1FFu] = (pa & 0x000FFFFFFFFFF000ull) | leaf_flags;
+    return 0;
+}
+
+/* A fresh address space: a private PML4 that shares the supervisor-only kernel
+ * identity mapping, so ring 0 (syscalls, interrupts) keeps working while running
+ * on a process's CR3, but ring 3 cannot touch kernel memory. */
+static int hw_aspace_create(vibeos_hw_aspace_t *as) {
+    as->pml4 = (uint64_t *)hw_alloc_page();
+    if (!as->pml4) {
+        return -1;
+    }
+    as->pml4[0] = (uint64_t)(uintptr_t)&g_pdpt[0] | PTE_PRESENT | PTE_WRITE; /* no PTE_USER */
+    return 0;
+}
+
+/* Build the kernel's page tables: identity-map the first N GiB with 2 MiB
+ * supervisor pages (US=0) and switch CR3 to them. */
 static void hw_enable_paging(void) {
     uint32_t g, e;
 
-    vibeos_x86_64_serial_puts("[HW] building page tables (identity, first 4GiB, 2MiB pages)\n");
-    /* US bit is set throughout so ring-3 code can execute during bring-up.
-     * This is a temporary simplification: kernel/user isolation (per-page US
-     * and separate address spaces) is a later milestone. */
+    vibeos_x86_64_serial_puts("[HW] building kernel page tables (identity 4GiB, supervisor-only)\n");
     for (g = 0; g < VIBEOS_HW_IDENTITY_GIB; g++) {
         for (e = 0; e < 512u; e++) {
             uint64_t phys = ((uint64_t)g * 0x40000000ull) + ((uint64_t)e * 0x200000ull);
-            g_pd[g][e] = phys | PTE_PRESENT | PTE_WRITE | PTE_USER | PTE_PS;
+            g_pd[g][e] = phys | PTE_PRESENT | PTE_WRITE | PTE_PS;
         }
-        g_pdpt[g] = (uint64_t)(uintptr_t)&g_pd[g][0] | PTE_PRESENT | PTE_WRITE | PTE_USER;
+        g_pdpt[g] = (uint64_t)(uintptr_t)&g_pd[g][0] | PTE_PRESENT | PTE_WRITE;
     }
-    g_pml4[0] = (uint64_t)(uintptr_t)&g_pdpt[0] | PTE_PRESENT | PTE_WRITE | PTE_USER;
-    hw_map_test_page();
+    g_pml4[0] = (uint64_t)(uintptr_t)&g_pdpt[0] | PTE_PRESENT | PTE_WRITE;
 
-    __asm__ __volatile__("mov %0, %%cr3"
-                         : : "r"((uint64_t)(uintptr_t)&g_pml4[0]) : "memory");
+    hw_write_cr3((uint64_t)(uintptr_t)&g_pml4[0]);
 
     vibeos_x86_64_serial_puts("[HW] CR3 loaded with kernel-owned tables: 0x");
     vibeos_x86_64_serial_print_hex(hw_read_cr3());
-    vibeos_x86_64_serial_puts("\n[HW] PAGING_OK (executing on kernel page tables)\n");
-    hw_verify_test_mapping();
+    vibeos_x86_64_serial_puts("\n[HW] PAGING_OK (kernel tables, user pages isolated)\n");
 }
 
 /* Remap the PIC, start the PIT, enable interrupts, and confirm the timer IRQ
@@ -550,6 +583,77 @@ static void hw_enable_syscall(void) {
     vibeos_x86_64_serial_puts("[HW] syscall/sysret enabled (LSTAR set)\n");
 }
 
+/* ---- Process creation (ELF -> private address space) --------------------- */
+
+typedef struct {
+    vibeos_hw_aspace_t as;
+    uint64_t entry;
+} hw_proc_t;
+
+typedef struct {
+    vibeos_hw_aspace_t *as;
+} hw_load_ctx_t;
+
+/* Per PT_LOAD segment: allocate private pages, copy the file image into them
+ * through the kernel's identity view, then map them into the process address
+ * space with the segment's permissions (US=1; writable only if PF_W). */
+static int hw_elf_seg_cb(void *ctx, uint64_t vaddr, const unsigned char *data,
+                         uint64_t filesz, uint64_t memsz, uint32_t flags) {
+    hw_load_ctx_t *lc = (hw_load_ctx_t *)ctx;
+    uint64_t leaf = PTE_PRESENT | PTE_USER;
+    uint64_t va;
+
+    if ((flags & 2u) != 0) { /* PF_W */
+        leaf |= PTE_WRITE;
+    }
+    for (va = vaddr & ~0xFFFull; va < vaddr + memsz; va += 4096ull) {
+        uint8_t *page = (uint8_t *)hw_alloc_page();
+        uint64_t i;
+        if (!page) {
+            return -1;
+        }
+        for (i = 0; i < 4096ull; i++) {
+            uint64_t byte_va = va + i;
+            if (byte_va >= vaddr && byte_va < vaddr + filesz) {
+                page[i] = data[byte_va - vaddr];
+            }
+            /* remaining bytes stay zero: .bss and page padding */
+        }
+        if (hw_map_page(lc->as, va, (uint64_t)(uintptr_t)page, leaf) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* Build a process: private address space, the ELF image loaded into it, and a
+ * user stack mapped just below VIBEOS_HW_USER_STACK_TOP. */
+static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len) {
+    hw_load_ctx_t lc;
+    uint32_t i;
+
+    if (hw_aspace_create(&p->as) != 0) {
+        return -1;
+    }
+    lc.as = &p->as;
+    if (vibeos_x86_64_elf_load(elf, len, &lc, hw_elf_seg_cb, &p->entry) != 0) {
+        return -1;
+    }
+    for (i = 0; i < VIBEOS_HW_USER_STACK_PAGES; i++) {
+        void *page = hw_alloc_page();
+        uint64_t va = VIBEOS_HW_USER_STACK_TOP - ((uint64_t)(i + 1u) * 4096ull);
+        if (!page || hw_map_page(&p->as, va, (uint64_t)(uintptr_t)page,
+                                 PTE_PRESENT | PTE_WRITE | PTE_USER) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static uint64_t hw_proc_cr3(const hw_proc_t *p) {
+    return (uint64_t)(uintptr_t)p->as.pml4;
+}
+
 /* ---- Preemptive round-robin scheduler ----------------------------------- */
 
 #define VIBEOS_HW_MAX_TASKS 2
@@ -560,15 +664,15 @@ extern const unsigned char vibeos_user_task_elf[];
 extern const unsigned long vibeos_user_task_elf_len;
 
 static vibeos_x86_64_isr_frame_t g_task_ctx[VIBEOS_HW_MAX_TASKS];
-static uint8_t g_task_stack[VIBEOS_HW_MAX_TASKS][8192] __attribute__((aligned(16)));
+static hw_proc_t g_task_proc[VIBEOS_HW_MAX_TASKS];
 static int g_task_count;
 static int g_current_task;
 static int g_sched_active;
 static uint32_t g_sched_switch_count;
 
-/* Timer-driven round robin: save the interrupted task and restore the next by
- * rewriting the live IRQ frame (the ISR stub's iretq then resumes it). After a
- * bounded number of preemptions, return to the kernel via ring3_resume. */
+/* Timer-driven round robin: save the interrupted task, restore the next by
+ * rewriting the live IRQ frame, and switch CR3 to the next task's address
+ * space. After a bounded number of preemptions, return to the kernel. */
 static void hw_schedule(vibeos_x86_64_isr_frame_t *frame) {
     if (!g_sched_active || g_task_count == 0) {
         return;
@@ -580,10 +684,12 @@ static void hw_schedule(vibeos_x86_64_isr_frame_t *frame) {
         vibeos_x86_64_serial_puts("[HW] SCHED_OK (0x");
         vibeos_x86_64_serial_print_hex(g_sched_switch_count);
         vibeos_x86_64_serial_puts(" preemptions; returning to kernel)\n");
-        vibeos_x86_64_ring3_resume(); /* does not return */
+        hw_write_cr3((uint64_t)(uintptr_t)&g_pml4[0]); /* back to kernel tables */
+        vibeos_x86_64_ring3_resume();                  /* does not return */
     }
     g_current_task = (g_current_task + 1) % g_task_count;
     *frame = g_task_ctx[g_current_task];
+    hw_write_cr3(hw_proc_cr3(&g_task_proc[g_current_task]));
 }
 
 static void hw_task_init_ctx(int i, uint64_t entry, uint64_t id) {
@@ -595,50 +701,69 @@ static void hw_task_init_ctx(int i, uint64_t entry, uint64_t id) {
     c->rip = entry;
     c->cs = VIBEOS_HW_USER_CODE_SEL;
     c->rflags = 0x202;   /* reserved bit + IF */
-    c->rsp = (uint64_t)(uintptr_t)&g_task_stack[i][sizeof(g_task_stack[i])];
+    c->rsp = VIBEOS_HW_USER_STACK_TOP;
     c->ss = VIBEOS_HW_USER_DATA_SEL;
     c->rdi = id;         /* passed to the task's _start */
 }
 
-/* Load the task ELF, spin up two ring-3 tasks, and let the timer preempt
- * between them. The timer must already be running (interrupts enabled). */
+/* Spin up two ring-3 tasks, each in its OWN address space (same program, same
+ * user virtual addresses, different physical pages), and let the timer preempt
+ * between them. The timer must already be running. */
 static void hw_run_scheduler_demo(void) {
-    uint64_t entry = 0;
     int i;
 
-    if (vibeos_x86_64_load_elf(vibeos_user_task_elf, vibeos_user_task_elf_len, &entry) != 0) {
-        vibeos_x86_64_serial_puts("[HW] SCHED task ELF load failed\n");
-        return;
+    for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+        if (hw_proc_create(&g_task_proc[i], vibeos_user_task_elf, vibeos_user_task_elf_len) != 0) {
+            vibeos_x86_64_serial_puts("[HW] SCHED process creation failed\n");
+            return;
+        }
+        hw_task_init_ctx(i, g_task_proc[i].entry, (uint64_t)i);
     }
     g_task_count = VIBEOS_HW_MAX_TASKS;
-    for (i = 0; i < g_task_count; i++) {
-        hw_task_init_ctx(i, entry, (uint64_t)i);
-    }
+
+    vibeos_x86_64_serial_puts("[HW] scheduler: 2 tasks, separate address spaces (CR3 0x");
+    vibeos_x86_64_serial_print_hex(hw_proc_cr3(&g_task_proc[0]));
+    vibeos_x86_64_serial_puts(" / 0x");
+    vibeos_x86_64_serial_print_hex(hw_proc_cr3(&g_task_proc[1]));
+    vibeos_x86_64_serial_puts(")\n");
+
+    /* Arm and launch atomically: with interrupts on, a timer tick between
+     * arming the scheduler and entering the first task would capture the
+     * *kernel* context as a task. sched_start's iretq restores IF from the
+     * task's rflags, so preemption resumes as soon as we are in ring 3. */
+    __asm__ __volatile__("cli");
     g_current_task = 0;
     g_sched_switch_count = 0;
     g_sched_active = 1;
-    vibeos_x86_64_serial_puts("[HW] starting preemptive scheduler: 2 tasks (A/B)\n");
+    hw_write_cr3(hw_proc_cr3(&g_task_proc[0]));
     vibeos_x86_64_sched_start(&g_task_ctx[0]);
+
+    hw_write_cr3((uint64_t)(uintptr_t)&g_pml4[0]);
+    __asm__ __volatile__("sti"); /* scheduler is idle now; keep the timer live */
     vibeos_x86_64_serial_puts("[HW] scheduler demo complete\n");
 }
 
-/* Drop to ring 3, load and run the embedded user ELF, and return here once it
- * exits. Runs with interrupts disabled (before the timer is enabled). */
+/* Create a process from the embedded hello ELF, run it in ring 3 in its own
+ * address space, and return here once it exits. */
 static void hw_enter_usermode_demo(void) {
-    uint64_t user_rsp = (uint64_t)(uintptr_t)&g_user_stack[sizeof(g_user_stack)];
-    uint64_t entry = 0;
+    static hw_proc_t proc;
 
     vibeos_x86_64_serial_puts("[HW] loading user ELF (0x");
     vibeos_x86_64_serial_print_hex(vibeos_user_hello_elf_len);
-    vibeos_x86_64_serial_puts(" bytes)\n");
-    if (vibeos_x86_64_load_elf(vibeos_user_hello_elf, vibeos_user_hello_elf_len, &entry) != 0) {
+    vibeos_x86_64_serial_puts(" bytes) into a private address space\n");
+    if (hw_proc_create(&proc, vibeos_user_hello_elf, vibeos_user_hello_elf_len) != 0) {
         vibeos_x86_64_serial_puts("[HW] ELF_LOAD_FAIL\n");
         return;
     }
     vibeos_x86_64_serial_puts("[HW] ELF_LOADED entry=0x");
-    vibeos_x86_64_serial_print_hex(entry);
+    vibeos_x86_64_serial_print_hex(proc.entry);
+    vibeos_x86_64_serial_puts(" cr3=0x");
+    vibeos_x86_64_serial_print_hex(hw_proc_cr3(&proc));
     vibeos_x86_64_serial_puts("\n[HW] entering ring 3 (user mode)...\n");
-    vibeos_x86_64_ring3_enter(entry, user_rsp);
+
+    hw_write_cr3(hw_proc_cr3(&proc));
+    vibeos_x86_64_ring3_enter(proc.entry, VIBEOS_HW_USER_STACK_TOP);
+    hw_write_cr3((uint64_t)(uintptr_t)&g_pml4[0]);
     vibeos_x86_64_serial_puts("[HW] RING3_OK (back in ring 0)\n");
 }
 
