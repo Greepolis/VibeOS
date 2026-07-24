@@ -130,6 +130,7 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         kernel/arch/x86_64/isr.S
         kernel/arch/x86_64/arch_hw.c
         kernel/arch/x86_64/elf_load.c
+        kernel/arch/x86_64/virtio_blk.c
         # Freestanding mem* runtime: the kernel image links -nostdlib, and some
         # compilers (notably Clang) lower struct copies to memcpy/memset calls
         # that GCC inlines. Provide the implementations so the image links on

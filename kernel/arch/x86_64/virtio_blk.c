@@ -1,0 +1,232 @@
+/* Legacy virtio-blk over PCI: a real block-device driver (image-only).
+ *
+ * QEMU attaches the disk as a transitional virtio-blk-pci device (0x1AF4:0x1001)
+ * exposing the legacy I/O register interface at BAR0. This driver enumerates it
+ * on the PCI bus, sets up a single virtqueue in identity-mapped memory, and does
+ * polled 512-byte sector reads - enough to back a read-only filesystem.
+ */
+
+#include <stdint.h>
+
+#include "vibeos/arch_x86_64.h"
+
+/* ---- port I/O ------------------------------------------------------------ */
+
+static inline void vb_outb(uint16_t p, uint8_t v)  { __asm__ __volatile__("outb %0,%1"::"a"(v),"Nd"(p)); }
+static inline void vb_outw(uint16_t p, uint16_t v) { __asm__ __volatile__("outw %0,%1"::"a"(v),"Nd"(p)); }
+static inline void vb_outl(uint16_t p, uint32_t v) { __asm__ __volatile__("outl %0,%1"::"a"(v),"Nd"(p)); }
+static inline uint8_t  vb_inb(uint16_t p) { uint8_t v;  __asm__ __volatile__("inb %1,%0":"=a"(v):"Nd"(p)); return v; }
+static inline uint16_t vb_inw(uint16_t p) { uint16_t v; __asm__ __volatile__("inw %1,%0":"=a"(v):"Nd"(p)); return v; }
+static inline uint32_t vb_inl(uint16_t p) { uint32_t v; __asm__ __volatile__("inl %1,%0":"=a"(v):"Nd"(p)); return v; }
+
+/* ---- PCI config space ---------------------------------------------------- */
+
+#define PCI_ADDR 0xCF8u
+#define PCI_DATA 0xCFCu
+
+static uint32_t pci_read32(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off) {
+    uint32_t addr = 0x80000000u | ((uint32_t)bus << 16) | ((uint32_t)dev << 11) |
+                    ((uint32_t)fn << 8) | (off & 0xFCu);
+    vb_outl(PCI_ADDR, addr);
+    return vb_inl(PCI_DATA);
+}
+
+static void pci_write32(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off, uint32_t val) {
+    uint32_t addr = 0x80000000u | ((uint32_t)bus << 16) | ((uint32_t)dev << 11) |
+                    ((uint32_t)fn << 8) | (off & 0xFCu);
+    vb_outl(PCI_ADDR, addr);
+    vb_outl(PCI_DATA, val);
+}
+
+/* ---- legacy virtio register offsets (from BAR0 I/O base) ----------------- */
+
+#define VIRTIO_HOST_FEATURES 0x00u
+#define VIRTIO_GUEST_FEATURES 0x04u
+#define VIRTIO_QUEUE_PFN 0x08u
+#define VIRTIO_QUEUE_SIZE 0x0Cu
+#define VIRTIO_QUEUE_SELECT 0x0Eu
+#define VIRTIO_QUEUE_NOTIFY 0x10u
+#define VIRTIO_STATUS 0x12u
+#define VIRTIO_ISR 0x13u
+
+#define VIRTIO_STATUS_ACK 1u
+#define VIRTIO_STATUS_DRIVER 2u
+#define VIRTIO_STATUS_DRIVER_OK 4u
+#define VIRTIO_STATUS_FEATURES_OK 8u
+
+#define VRING_DESC_F_NEXT 1u
+#define VRING_DESC_F_WRITE 2u
+
+struct virtq_desc {
+    uint64_t addr;
+    uint32_t len;
+    uint16_t flags;
+    uint16_t next;
+} __attribute__((packed));
+
+struct virtq_avail {
+    uint16_t flags;
+    uint16_t idx;
+    uint16_t ring[];
+} __attribute__((packed));
+
+struct virtq_used_elem {
+    uint32_t id;
+    uint32_t len;
+} __attribute__((packed));
+
+struct virtq_used {
+    uint16_t flags;
+    uint16_t idx;
+    struct virtq_used_elem ring[];
+} __attribute__((packed));
+
+struct virtio_blk_req {
+    uint32_t type;
+    uint32_t reserved;
+    uint64_t sector;
+} __attribute__((packed));
+
+/* Static, page-aligned virtqueue region (identity-mapped: phys == virt). */
+static uint8_t g_vq[16384] __attribute__((aligned(4096)));
+static struct virtio_blk_req g_req __attribute__((aligned(16)));
+static volatile uint8_t g_status __attribute__((aligned(16)));
+
+static uint16_t g_io_base;
+static uint16_t g_qsz;
+static struct virtq_desc *g_desc;
+static struct virtq_avail *g_avail;
+static struct virtq_used *g_used;
+static uint16_t g_last_used;
+static int g_ready;
+
+static uint64_t align_up(uint64_t v, uint64_t a) { return (v + a - 1u) & ~(a - 1u); }
+
+/* Find the transitional virtio-blk device and return its BAR0 I/O base. */
+static uint16_t virtio_blk_find(void) {
+    uint16_t bus, dev;
+    for (bus = 0; bus < 256u; bus++) {
+        for (dev = 0; dev < 32u; dev++) {
+            uint32_t id = pci_read32((uint8_t)bus, (uint8_t)dev, 0, 0x00);
+            uint32_t bar0, cmd;
+            if ((id & 0xFFFFu) != 0x1AF4u) {
+                continue;
+            }
+            if ((id >> 16) != 0x1001u) { /* transitional virtio-blk */
+                continue;
+            }
+            /* Enable I/O space + bus mastering (DMA). */
+            cmd = pci_read32((uint8_t)bus, (uint8_t)dev, 0, 0x04);
+            pci_write32((uint8_t)bus, (uint8_t)dev, 0, 0x04, cmd | 0x5u);
+            bar0 = pci_read32((uint8_t)bus, (uint8_t)dev, 0, 0x10);
+            if ((bar0 & 1u) == 0) {
+                continue; /* not an I/O BAR */
+            }
+            return (uint16_t)(bar0 & 0xFFFCu);
+        }
+    }
+    return 0;
+}
+
+int vibeos_x86_64_virtio_blk_init(void) {
+    uint64_t desc_off, avail_off, used_off;
+    uint32_t i;
+
+    g_io_base = virtio_blk_find();
+    if (g_io_base == 0) {
+        vibeos_x86_64_serial_puts("[VIRTIO] no virtio-blk device found\n");
+        return -1;
+    }
+
+    vb_outb(g_io_base + VIRTIO_STATUS, 0);                       /* reset      */
+    vb_outb(g_io_base + VIRTIO_STATUS, VIRTIO_STATUS_ACK);
+    vb_outb(g_io_base + VIRTIO_STATUS, VIRTIO_STATUS_ACK | VIRTIO_STATUS_DRIVER);
+    (void)vb_inl(g_io_base + VIRTIO_HOST_FEATURES);
+    vb_outl(g_io_base + VIRTIO_GUEST_FEATURES, 0);              /* no features */
+
+    vb_outw(g_io_base + VIRTIO_QUEUE_SELECT, 0);
+    g_qsz = vb_inw(g_io_base + VIRTIO_QUEUE_SIZE);
+    if (g_qsz == 0 || g_qsz > 256u) {
+        vibeos_x86_64_serial_puts("[VIRTIO] unsupported queue size\n");
+        return -1;
+    }
+
+    for (i = 0; i < sizeof(g_vq); i++) {
+        g_vq[i] = 0;
+    }
+    desc_off = 0;
+    avail_off = (uint64_t)g_qsz * sizeof(struct virtq_desc);
+    used_off = align_up(avail_off + 6u + 2u * g_qsz, 4096u);
+    if (used_off + 6u + 8u * g_qsz > sizeof(g_vq)) {
+        vibeos_x86_64_serial_puts("[VIRTIO] virtqueue too large for static buffer\n");
+        return -1;
+    }
+    g_desc = (struct virtq_desc *)(void *)(g_vq + desc_off);
+    g_avail = (struct virtq_avail *)(void *)(g_vq + avail_off);
+    g_used = (struct virtq_used *)(void *)(g_vq + used_off);
+    g_last_used = 0;
+
+    /* Legacy: queue address is the page frame number of the queue region. */
+    vb_outl(g_io_base + VIRTIO_QUEUE_PFN, (uint32_t)((uint64_t)(uintptr_t)g_vq >> 12));
+
+    vb_outb(g_io_base + VIRTIO_STATUS,
+            VIRTIO_STATUS_ACK | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_DRIVER_OK);
+
+    g_ready = 1;
+    vibeos_x86_64_serial_puts("[VIRTIO] virtio-blk ready (io=0x");
+    vibeos_x86_64_serial_print_hex(g_io_base);
+    vibeos_x86_64_serial_puts(" qsz=0x");
+    vibeos_x86_64_serial_print_hex(g_qsz);
+    vibeos_x86_64_serial_puts(")\n");
+    return 0;
+}
+
+/* Read one 512-byte sector. buf must be identity-mapped (phys == virt). */
+int vibeos_x86_64_virtio_blk_read(uint64_t sector, void *buf) {
+    uint16_t head;
+
+    if (!g_ready || !buf) {
+        return -1;
+    }
+    g_req.type = 0;      /* VIRTIO_BLK_T_IN (read) */
+    g_req.reserved = 0;
+    g_req.sector = sector;
+    g_status = 0xFF;
+
+    g_desc[0].addr = (uint64_t)(uintptr_t)&g_req;
+    g_desc[0].len = sizeof(struct virtio_blk_req);
+    g_desc[0].flags = VRING_DESC_F_NEXT;
+    g_desc[0].next = 1;
+    g_desc[1].addr = (uint64_t)(uintptr_t)buf;
+    g_desc[1].len = 512;
+    g_desc[1].flags = VRING_DESC_F_NEXT | VRING_DESC_F_WRITE;
+    g_desc[1].next = 2;
+    g_desc[2].addr = (uint64_t)(uintptr_t)&g_status;
+    g_desc[2].len = 1;
+    g_desc[2].flags = VRING_DESC_F_WRITE;
+    g_desc[2].next = 0;
+
+    head = g_avail->idx % g_qsz;
+    g_avail->ring[head] = 0; /* descriptor chain head */
+    __asm__ __volatile__("sfence" ::: "memory");
+    g_avail->idx++;
+    __asm__ __volatile__("sfence" ::: "memory");
+
+    vb_outw(g_io_base + VIRTIO_QUEUE_NOTIFY, 0);
+
+    /* Poll for completion. */
+    {
+        uint64_t spins = 0;
+        while (g_used->idx == g_last_used) {
+            if (++spins > 100000000ull) {
+                vibeos_x86_64_serial_puts("[VIRTIO] read timeout\n");
+                return -1;
+            }
+            __asm__ __volatile__("pause" ::: "memory");
+        }
+    }
+    g_last_used = g_used->idx;
+    (void)vb_inb(g_io_base + VIRTIO_ISR); /* ack */
+
+    return (g_status == 0) ? 0 : -1;
+}

@@ -186,6 +186,9 @@ static void hw_set_gate(uint32_t vector, uint64_t handler) {
 
 extern char vibeos_isr_128[];   /* isr.S: stub for the 0x80 syscall gate */
 
+extern int vibeos_x86_64_virtio_blk_init(void);
+extern int vibeos_x86_64_virtio_blk_read(uint64_t sector, void *buf);
+
 static void hw_load_idt(void) {
     struct idt_pointer idtr;
     uint32_t i;
@@ -1297,6 +1300,22 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
     /* From here the system is scheduled: the kernel itself becomes a task and
      * user tasks are preempted alongside it. */
     hw_pmm_bringup(boot_info);
+
+    /* Real block device: bring up virtio-blk and read sector 0 to prove the
+     * driver talks to the disk (0x55AA is the boot-sector signature). */
+    if (vibeos_x86_64_virtio_blk_init() == 0) {
+        static uint8_t sector0[512] __attribute__((aligned(16)));
+        if (vibeos_x86_64_virtio_blk_read(0, sector0) == 0) {
+            vibeos_x86_64_serial_puts("[VIRTIO] sector0 sig=0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)sector0[510] << 8 | sector0[511]);
+            vibeos_x86_64_serial_puts(" b0=0x");
+            vibeos_x86_64_serial_print_hex(sector0[0]);
+            vibeos_x86_64_serial_puts("\n");
+        } else {
+            vibeos_x86_64_serial_puts("[VIRTIO] sector0 read failed\n");
+        }
+    }
+
     hw_sched_bringup(boot_info);
 
     vibeos_x86_64_serial_puts("[HW] HW_INIT_OK\n");
