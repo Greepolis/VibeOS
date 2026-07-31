@@ -195,6 +195,8 @@ extern int vibeos_x86_64_fat_open(const char *path, uint32_t *out_cluster, uint3
 extern long vibeos_x86_64_fat_read_at(uint32_t first_cluster, uint32_t size, uint32_t off, void *buf, uint32_t len);
 extern int vibeos_x86_64_fat_list(const char *path, uint32_t idx, char *name, uint32_t *out_size, int *out_is_dir);
 extern long vibeos_x86_64_fat_write_file(const char *name, const void *buf, uint32_t len);
+extern int vibeos_x86_64_fat_unlink(const char *path);
+extern int vibeos_x86_64_fat_mkdir(const char *path);
 extern void vibeos_x86_64_keyboard_irq(void);
 extern int vibeos_x86_64_keyboard_getc(void);
 extern void vibeos_x86_64_keyboard_inject(const char *s);
@@ -1049,6 +1051,8 @@ static void hw_task_exit(uint64_t code) {
 #define LSYS_close  3
 #define LSYS_lseek  8
 #define LSYS_getdents64 217
+#define LSYS_unlink 87
+#define LSYS_mkdir  83
 
 static vibeos_compat_runtime_t g_compat_rt;
 
@@ -1185,9 +1189,19 @@ static long hw_sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
         __asm__ __volatile__("cli");
         c = vibeos_x86_64_keyboard_getc();
         if (c >= 0) {
+            /* Line discipline: echo what was typed and let backspace erase the
+             * previous character before the line is handed to the program. */
             while (copied < len && c >= 0) {
+                if (c == '\b' || c == 127) {
+                    if (copied > 0) {
+                        copied--;
+                        vibeos_x86_64_serial_puts("\b \b");
+                        vibeos_x86_64_fb_putc('\b');
+                    }
+                    c = vibeos_x86_64_keyboard_getc();
+                    continue;
+                }
                 dst[copied++] = (uint8_t)c;
-                /* Echo what was typed, the way a terminal line discipline does. */
                 if (c == '\n') {
                     vibeos_x86_64_serial_putc('\r');
                 }
@@ -1330,6 +1344,23 @@ static long hw_sys_getdents64(uint64_t fd, uint64_t buf, uint64_t len) {
         f->dir_index++;
     }
     return (long)used;
+}
+
+/* unlink(path) / mkdir(path): filesystem mutations from user space. */
+static long hw_sys_unlink(uint64_t path_uptr) {
+    char path[64];
+    if (hw_copy_user_string(path_uptr, path, sizeof(path)) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    return (vibeos_x86_64_fat_unlink(path) == 0) ? 0 : -VIBEOS_ENOENT;
+}
+
+static long hw_sys_mkdir(uint64_t path_uptr) {
+    char path[64];
+    if (hw_copy_user_string(path_uptr, path, sizeof(path)) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    return (vibeos_x86_64_fat_mkdir(path) == 0) ? 0 : -VIBEOS_EIO;
 }
 
 /* brk(0) reports the break; brk(addr) grows it, mapping fresh pages. */
@@ -1601,6 +1632,10 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
             return hw_sys_lseek(a1, a2, a3);
         case LSYS_getdents64:
             return hw_sys_getdents64(a1, a2, a3);
+        case LSYS_unlink:
+            return hw_sys_unlink(a1);
+        case LSYS_mkdir:
+            return hw_sys_mkdir(a1);
         case LSYS_wait4:
             return hw_sys_waitpid(a1, a2);
         case LSYS_write:
@@ -1665,9 +1700,12 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
      * the same ring on hardware. */
     vibeos_x86_64_serial_puts("[KBD] keyboard armed (IRQ1); seeding read() self-test input\n");
     vibeos_x86_64_keyboard_inject("vibeos\n"
-                                  "ls EFI/BOOT\n"
-                                  "write NOTES.TXT persistent hello\n"
-                                  "cat NOTES.TXT\n"
+                                  "mkdir DOCS\n"
+                                  "write DOCS/NOTES.TXT persistent hello\n"
+                                  "cat DOCS/NOTES.TXT\n"
+                                  "ls DOCS\n"
+                                  "write TMP.TXT scratch\b\b\bch\n"  /* backspace editing */
+                                  "rm TMP.TXT\n"
                                   "EFI/BOOT/TASK.ELF\n"
                                   "exit\n");
 

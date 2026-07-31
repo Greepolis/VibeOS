@@ -15,6 +15,8 @@
 #define SYS_open   2
 #define SYS_close  3
 #define SYS_getdents64 217
+#define SYS_unlink 87
+#define SYS_mkdir  83
 
 static long sys3(long nr, long a1, long a2, long a3) {
     long ret;
@@ -108,6 +110,8 @@ void _start(void) {
                 "ls [dir]          list a directory\n"
                 "cat <file>        print a file\n"
                 "write <f> <text>  create a file with text\n"
+                "mkdir <dir>       create a directory\n"
+                "rm <file>         delete a file\n"
                 "exit              leave the shell\n"
                 "<path>            run a program, e.g. EFI/BOOT/TASK.ELF\n");
         } else if (seq(line, "echo")) {
@@ -159,6 +163,12 @@ void _start(void) {
                     put("write: commit failed\n");
                 }
             }
+        } else if (seq(line, "rm")) {
+            put(sys3(SYS_unlink, (long)(unsigned long)args, 0, 0) == 0 ? "removed\n"
+                                                                      : "rm: failed\n");
+        } else if (seq(line, "mkdir")) {
+            put(sys3(SYS_mkdir, (long)(unsigned long)args, 0, 0) == 0 ? "created\n"
+                                                                     : "mkdir: failed\n");
         } else if (seq(line, "exit")) {
             put("sh: bye\n");
             sys3(SYS_exit, 0, 0, 0);
