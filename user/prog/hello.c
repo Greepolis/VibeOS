@@ -44,6 +44,7 @@ static const char in_child[] = "child process running (fork ok)\n";
 static const char reaped_ok[] = "parent reaped child with status 7\n";
 static const char exec_path[] = "EFI/BOOT/TASK.ELF";
 static const char exec_done[] = "parent: exec'd child completed\n";
+static const char kbd_prefix[] = "console read: ";
 
 void _start(void) {
     long pid, brk0, brk1, map, rejected;
@@ -96,6 +97,16 @@ void _start(void) {
         } else if (child > 0) {
             user_syscall3(SYS_wait4, child, 0, 0);
             user_syscall3(SYS_write, 1, (long)(unsigned long)exec_done, sizeof(exec_done) - 1);
+        }
+    }
+
+    /* Read a line from the console (keyboard) and echo it back. */
+    {
+        char kb[32];
+        long k = user_syscall3(SYS_read, 0 /*stdin*/, (long)(unsigned long)kb, sizeof(kb));
+        if (k > 0) {
+            user_syscall3(SYS_write, 1, (long)(unsigned long)kbd_prefix, sizeof(kbd_prefix) - 1);
+            user_syscall3(SYS_write, 1, (long)(unsigned long)kb, k);
         }
     }
 

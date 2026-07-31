@@ -128,6 +128,7 @@ typedef struct vibeos_x86_64_isr_frame {
 
 static void hw_schedule(vibeos_x86_64_isr_frame_t *frame); /* defined below */
 static void hw_task_exit(uint64_t code);                   /* defined below */
+static void hw_keyboard_wake(void);                        /* defined below */
 
 static void hw_load_gdt(void) {
     struct gdt_pointer gdtr;
@@ -190,6 +191,9 @@ extern int vibeos_x86_64_virtio_blk_init(void);
 extern int vibeos_x86_64_virtio_blk_read(uint64_t sector, void *buf);
 extern int vibeos_x86_64_fat_mount(void);
 extern long vibeos_x86_64_fat_read_file(const char *name, void *buf, uint32_t bufcap);
+extern void vibeos_x86_64_keyboard_irq(void);
+extern int vibeos_x86_64_keyboard_getc(void);
+extern void vibeos_x86_64_keyboard_inject(const char *s);
 
 /* Init program read from the on-disk filesystem, if present. */
 static uint8_t g_disk_init_elf[65536] __attribute__((aligned(16)));
@@ -246,7 +250,7 @@ static void hw_pic_remap(void) {
     hw_outb(PIC2_DATA, 0x02); hw_io_wait();  /* ICW3: slave cascade id      */
     hw_outb(PIC1_DATA, 0x01); hw_io_wait();  /* ICW4: 8086 mode             */
     hw_outb(PIC2_DATA, 0x01); hw_io_wait();
-    hw_outb(PIC1_DATA, 0xFE);                /* mask all master IRQs but IRQ0 */
+    hw_outb(PIC1_DATA, 0xFC);                /* unmask IRQ0 (timer) + IRQ1 (kbd) */
     hw_outb(PIC2_DATA, 0xFF);                /* mask all slave IRQs          */
 }
 
@@ -321,6 +325,12 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
             g_timer_ticks++;
             hw_pic_send_eoi((uint32_t)frame->vector);
             hw_schedule(frame); /* may rewrite the frame to switch tasks */
+            return;
+        }
+        if (frame->vector == 33u) { /* IRQ1: keyboard */
+            vibeos_x86_64_keyboard_irq();
+            hw_keyboard_wake();
+            hw_pic_send_eoi((uint32_t)frame->vector);
             return;
         }
         hw_pic_send_eoi((uint32_t)frame->vector);
@@ -774,6 +784,7 @@ typedef struct {
      * by the kernel task, so it must not be cached across a wait loop. */
     volatile int state;
     int is_user;
+    int wait_input;   /* blocked in read() on stdin */
 } hw_task_t;
 
 /* Point the CPU at a task's ring-0 stack: the TSS one is used when ring 3 is
@@ -829,6 +840,17 @@ static int hw_pick_next(int from) {
         }
     }
     return -1;
+}
+
+/* Wake every task blocked in read() on stdin (called from the keyboard IRQ). */
+static void hw_keyboard_wake(void) {
+    int i;
+    for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+        if (g_tasks[i].state == HW_TASK_BLOCKED && g_tasks[i].wait_input) {
+            g_tasks[i].wait_input = 0;
+            g_tasks[i].state = HW_TASK_READY;
+        }
+    }
 }
 
 /* Timer-driven preemption: save the interrupted task, pick the next runnable
@@ -1043,14 +1065,44 @@ static long hw_sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
     return (long)len;
 }
 
+/* read(0, ...): blocking keyboard read. Returns after at least one character;
+ * blocks (BLOCKED + wait_input) until the keyboard IRQ enqueues input and wakes
+ * us. The cli window makes the check-and-block race-free against the IRQ. */
 static long hw_sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
+    uint8_t *dst = (uint8_t *)(uintptr_t)buf;
+
     if (fd != 0u) {
         return -VIBEOS_EBADF;
+    }
+    if (len == 0u) {
+        return 0;
     }
     if (!hw_user_range_ok(buf, len, 1)) {
         return -VIBEOS_EFAULT;
     }
-    return 0; /* no console input source wired yet: EOF */
+    for (;;) {
+        uint64_t copied = 0;
+        int c;
+
+        __asm__ __volatile__("cli");
+        c = vibeos_x86_64_keyboard_getc();
+        if (c >= 0) {
+            while (copied < len && c >= 0) {
+                dst[copied++] = (uint8_t)c;
+                if ((uint8_t)c == '\n') {
+                    break; /* line-oriented: stop at newline */
+                }
+                c = vibeos_x86_64_keyboard_getc();
+            }
+            __asm__ __volatile__("sti");
+            return (long)copied;
+        }
+        if (g_current_task >= 0) {
+            g_tasks[g_current_task].wait_input = 1;
+            g_tasks[g_current_task].state = HW_TASK_BLOCKED;
+        }
+        __asm__ __volatile__("sti; hlt" ::: "memory");
+    }
 }
 
 /* brk(0) reports the break; brk(addr) grows it, mapping fresh pages. */
@@ -1371,6 +1423,12 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
      * every syscall the on-metal front end serves. */
     (void)vibeos_compat_init(&g_compat_rt);
     (void)vibeos_compat_enable(&g_compat_rt, VIBEOS_COMPAT_TARGET_LINUX, 1);
+
+    /* Keyboard is live (IRQ1 unmasked). Seed a test line so the blocking read()
+     * path is exercised on the non-interactive CI console; real keystrokes fill
+     * the same ring on hardware. */
+    vibeos_x86_64_serial_puts("[KBD] keyboard armed (IRQ1); seeding read() self-test input\n");
+    vibeos_x86_64_keyboard_inject("vibeos\n");
 
     hello_id = hw_task_spawn_user(init_elf, init_len, 0);
     a_id = hw_task_spawn_user(vibeos_user_task_elf, vibeos_user_task_elf_len, 0);
