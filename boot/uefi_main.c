@@ -10,7 +10,7 @@
 #include "uefi_boot_info.h"
 #include "uefi_boot_handoff.h"
 
-#define BOOT_INFO_MAX_REGIONS 48   /* room for the firmware map plus the framebuffer MMIO range */
+#define BOOT_INFO_MAX_REGIONS 192  /* the firmware map (which can be long) plus the framebuffer MMIO range */
 #define MEMORY_MAP_MAX_ATTEMPTS 3u
 #define EFI_VIBEOS_ERR_PHASE2 0x101ull
 #define EFI_VIBEOS_ERR_KERNEL_FILE 0x102ull
@@ -307,6 +307,9 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     }
     
     kernel_entry_fn entry = (kernel_entry_fn)kernel_plan.kernel_entry_point;
+    uefi_serial_puts("[BOOT] handoff acpi_rsdp: ");
+    uefi_log_u64(boot_info->acpi_rsdp);
+    uefi_serial_puts("\n");
     uefi_serial_puts("[BOOT] BL_HANDOFF_START\n");
     
     if (uefi_boot_handoff(SystemTable, ImageHandle, kernel_struct, boot_info, entry) != 0) {

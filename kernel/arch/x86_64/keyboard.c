@@ -24,7 +24,7 @@ static const char g_map[0x3A] = {
     'b', 'n', 'm', ',', '.', '/', 0,   '*', 0,   ' '
 };
 
-#define KBD_RING 128u
+#define KBD_RING 512u
 static volatile char g_ring[KBD_RING];
 static volatile uint32_t g_head; /* producer (IRQ) */
 static volatile uint32_t g_tail; /* consumer (read) */

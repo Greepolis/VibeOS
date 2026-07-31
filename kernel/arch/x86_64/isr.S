@@ -85,6 +85,7 @@ vibeos_isr_\num:
     ISR_NOERR 47   /* IRQ15                       */
 
     ISR_NOERR 128  /* 0x80 software syscall       */
+    ISR_NOERR 255  /* 0xFF local-APIC spurious    */
 
 vibeos_isr_common:
     /* Save general-purpose registers. Order matters: the last one pushed
@@ -186,17 +187,21 @@ vibeos_x86_64_ring3_resume:
  * and rsp is still the *user* stack (syscall does not switch stacks). Switch to
  * a kernel stack, marshal the Linux ABI args (rax=nr, rdi/rsi/rdx=a1..a3) into
  * the SysV C ABI, call the dispatcher, then sysret back to ring 3. The exit
- * syscall never returns here (it longjmps via ring3_resume). */
+ * syscall never returns here (it longjmps via ring3_resume).
+ *
+ * The kernel stack is per-CPU: GS.base points at this core's hw_cpu_t, whose
+ * first two fields are the syscall stack top (offset 0) and a slot to stash the
+ * user rsp (offset 8). See hw_cpu_t in arch_hw.c. */
     .global vibeos_x86_64_syscall_entry
 vibeos_x86_64_syscall_entry:
-    mov %rsp, g_user_saved_rsp(%rip)
-    mov g_syscall_kstack_top(%rip), %rsp
+    mov %rsp, %gs:8
+    mov %gs:0, %rsp
 
     /* Build the same trapframe an interrupt would, so a syscall has a complete,
      * resumable user context: fork() can copy it for the child, and the return
      * path is a uniform iretq. syscall gave us rip in rcx and rflags in r11. */
     pushq $0x1b              /* ss  = user data selector */
-    pushq g_user_saved_rsp(%rip)
+    pushq %gs:8              /* user rsp stashed above   */
     push %r11                /* rflags */
     pushq $0x23              /* cs  = user code selector */
     push %rcx                /* rip */

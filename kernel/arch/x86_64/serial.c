@@ -76,6 +76,50 @@ void vibeos_x86_64_serial_putc(char c) {
     vibeos_x86_64_outb(VIBEOS_X86_64_COM1_BASE + UART_THR, c);
 }
 
+/* Once more than one CPU is running, two cores writing the console byte by byte
+ * would interleave mid-line. The lock below serializes them.
+ *
+ * It is recursive so a caller can bracket a whole multi-part message
+ * (vibeos_x86_64_serial_lock/unlock) while the individual puts/print_hex calls
+ * inside still take it. Ownership is by CPU id, which the arch layer provides;
+ * the weak default keeps host builds (single-threaded, no per-CPU block)
+ * working unchanged. */
+__attribute__((weak)) uint32_t vibeos_x86_64_cpu_id(void) { return 0; }
+
+#define SERIAL_NO_OWNER 0xFFFFFFFFu
+
+static volatile int g_serial_lock;
+static volatile uint32_t g_serial_owner = SERIAL_NO_OWNER;
+static volatile int g_serial_depth;
+
+void vibeos_x86_64_serial_lock(void) {
+    uint32_t me = vibeos_x86_64_cpu_id();
+    if (g_serial_depth > 0 && g_serial_owner == me) {
+        g_serial_depth++;
+        return;
+    }
+    while (__sync_lock_test_and_set(&g_serial_lock, 1)) {
+        while (g_serial_lock) {
+            __asm__ __volatile__("pause" ::: "memory");
+        }
+    }
+    g_serial_owner = me;
+    g_serial_depth = 1;
+}
+
+void vibeos_x86_64_serial_unlock(void) {
+    if (g_serial_depth > 1) {
+        g_serial_depth--;
+        return;
+    }
+    g_serial_depth = 0;
+    g_serial_owner = SERIAL_NO_OWNER;
+    __sync_lock_release(&g_serial_lock);
+}
+
+#define serial_lock() vibeos_x86_64_serial_lock()
+#define serial_unlock() vibeos_x86_64_serial_unlock()
+
 void vibeos_x86_64_serial_puts(const char *s) {
     if (!s) {
         return;
@@ -84,19 +128,23 @@ void vibeos_x86_64_serial_puts(const char *s) {
         return;
     }
 
+    serial_lock();
     for (const char *p = s; *p; ++p) {
         if (*p == '\n') {
             vibeos_x86_64_serial_putc('\r');
         }
         vibeos_x86_64_serial_putc(*p);
     }
+    serial_unlock();
 }
 
 void vibeos_x86_64_serial_print_hex(uint64_t value) {
     const char *hex_chars = "0123456789abcdef";
+    serial_lock();
     for (int i = 60; i >= 0; i -= 4) {
         vibeos_x86_64_serial_putc(hex_chars[(value >> i) & 0xF]);
     }
+    serial_unlock();
 }
 
 int vibeos_x86_64_serial_available(void) {

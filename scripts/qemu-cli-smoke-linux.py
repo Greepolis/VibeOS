@@ -79,6 +79,8 @@ def main():
                 "qemu-system-x86_64",
                 "-machine", "q35",
                 "-m", "512M",
+                # Four cores: the kernel is SMP, so the smoke must exercise it.
+                "-smp", "4",
                 "-display", "none",
                 "-monitor", "none",
                 "-chardev", f"socket,id=serial0,path={sock_path},server=on,wait=off",

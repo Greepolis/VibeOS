@@ -128,7 +128,9 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
     add_executable(vibeos_kernel
         kernel/arch/x86_64/entry.s
         kernel/arch/x86_64/isr.S
+        kernel/arch/x86_64/ap_boot.S
         kernel/arch/x86_64/arch_hw.c
+        kernel/arch/x86_64/apic.c
         kernel/arch/x86_64/elf_load.c
         kernel/arch/x86_64/virtio_blk.c
         kernel/arch/x86_64/fat.c

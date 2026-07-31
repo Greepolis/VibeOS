@@ -61,12 +61,15 @@ jobs:
           chmod +x scripts/qemu-smoke-ovmf-linux.sh
           ./scripts/qemu-smoke-ovmf-linux.sh build "BOOT_OK" 150
 
+      # This one runs the guest with 4 vCPUs so the SMP path (AP startup, the
+      # per-CPU LAPIC timers, the shared run queue) is actually exercised.
+      # Four TCG cores are several times slower than one, hence the budget.
       - name: QEMU Boot-to-CLI Smoke (Required Gate)
-        timeout-minutes: 6
+        timeout-minutes: 12
         run: |
           set -euo pipefail
           chmod +x scripts/qemu-smoke-cli-linux.sh
-          ./scripts/qemu-smoke-cli-linux.sh build 180
+          ./scripts/qemu-smoke-cli-linux.sh build 480
 
       - name: Build Importable VM Images (esp.img/.vdi/.vmdk/.iso, GCC)
         if: matrix.compiler == 'gcc'

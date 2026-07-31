@@ -57,10 +57,101 @@ struct tss64 {
     uint16_t iomap_base;
 } __attribute__((packed));
 
-/* null, kcode, kdata, ucode, udata, then a 16-byte (two-slot) TSS descriptor. */
-static uint64_t g_gdt[7];
-static struct tss64 g_tss;
-static uint8_t g_kernel_syscall_stack[16384] __attribute__((aligned(16)));
+#define VIBEOS_HW_MAX_CPUS 8u
+
+/* null, kcode, kdata, ucode, udata, then one 16-byte (two-slot) TSS descriptor
+ * per CPU: every core needs its own task state segment for RSP0. */
+static uint64_t g_gdt[5u + 2u * VIBEOS_HW_MAX_CPUS];
+
+#define VIBEOS_HW_TSS_SEL_FOR(cpu) ((uint16_t)((5u + 2u * (cpu)) * 8u))
+
+/* ---- per-CPU state ------------------------------------------------------- */
+
+/* One of these per core, reached through GS.base. The first two fields are read
+ * and written by the `syscall` trampoline in isr.S at fixed offsets 0 and 8 -
+ * do not reorder them.
+ *
+ * GS.base is programmed once per CPU and never swapped: user code cannot change
+ * it (CR4.FSGSBASE stays clear and ring-3 programs never load %gs), so the
+ * kernel entry paths can rely on it without a swapgs dance. */
+typedef struct hw_cpu {
+    uint64_t syscall_kstack_top;  /* offset 0  - isr.S loads rsp from here */
+    uint64_t user_saved_rsp;      /* offset 8  - isr.S stashes the user rsp */
+    struct hw_cpu *self;          /* offset 16 - so C can find its own block */
+    uint32_t lapic_id;
+    uint32_t index;
+    int current_task;             /* index into g_tasks, -1 before bring-up */
+    int idle_task;                /* this core's idle task, -1 on the BSP */
+    volatile int online;
+    struct tss64 tss;
+} hw_cpu_t;
+
+static hw_cpu_t g_cpus[VIBEOS_HW_MAX_CPUS];
+static uint32_t g_cpu_online_count = 1u;
+
+/* Ring-0 stacks: one per CPU for the syscall/interrupt entry paths, plus a
+ * separate boot stack each application processor starts on. */
+static uint8_t g_kernel_syscall_stack[VIBEOS_HW_MAX_CPUS][16384] __attribute__((aligned(16)));
+static uint8_t g_ap_boot_stack[VIBEOS_HW_MAX_CPUS][16384] __attribute__((aligned(16)));
+
+static hw_cpu_t *hw_this_cpu(void) {
+    hw_cpu_t *p;
+    __asm__ __volatile__("movq %%gs:16, %0" : "=r"(p));
+    return p;
+}
+
+/* The scheduler state below is shared by every core; `g_current_task` is not.
+ * Making it a macro over the per-CPU block keeps every existing use site
+ * (syscalls, exit, fork) correct on SMP without threading a CPU argument
+ * through the whole syscall layer. */
+#define g_current_task (hw_this_cpu()->current_task)
+
+/* Console-lock ownership (overrides the weak default in serial.c). Reads the
+ * GS base MSR directly so it is safe to call before the per-CPU block is
+ * installed, which happens after the first boot messages. */
+uint32_t vibeos_x86_64_cpu_id(void) {
+    uint32_t lo, hi;
+    uint64_t base;
+    __asm__ __volatile__("rdmsr" : "=a"(lo), "=d"(hi) : "c"(0xC0000101u));
+    base = ((uint64_t)hi << 32) | lo;
+    return (base == 0u) ? 0u : ((const hw_cpu_t *)(uintptr_t)base)->index;
+}
+
+/* ---- SMP locking ---------------------------------------------------------
+ *
+ * Interrupts are masked for the whole critical section. Most takers already run
+ * with IF clear (interrupt gates clear it, and SFMASK clears it on `syscall`),
+ * but bring-up code calls into the task table from an ordinary kernel task with
+ * interrupts on: if the timer preempted such a holder, the scheduler would spin
+ * on a lock its own CPU owns and never make progress. */
+
+typedef struct {
+    volatile int locked;
+    uint64_t flags;   /* caller's RFLAGS, restored on release */
+} hw_lock_t;
+
+static hw_lock_t g_sched_lock;
+static hw_lock_t g_mm_lock;
+static hw_lock_t g_exec_lock;
+
+static void hw_spin_lock(hw_lock_t *lock) {
+    uint64_t flags;
+    __asm__ __volatile__("pushfq\n\tpopq %0\n\tcli" : "=r"(flags) : : "memory");
+    while (__sync_lock_test_and_set(&lock->locked, 1)) {
+        while (lock->locked) {
+            __asm__ __volatile__("pause" ::: "memory");
+        }
+    }
+    lock->flags = flags;
+}
+
+static void hw_spin_unlock(hw_lock_t *lock) {
+    uint64_t flags = lock->flags;
+    __sync_lock_release(&lock->locked);
+    if (flags & 0x200ull) {   /* only re-enable if the caller had them on */
+        __asm__ __volatile__("sti" ::: "memory");
+    }
+}
 
 struct gdt_pointer {
     uint16_t limit;
@@ -130,8 +221,14 @@ static void hw_schedule(vibeos_x86_64_isr_frame_t *frame); /* defined below */
 static void hw_task_exit(uint64_t code);                   /* defined below */
 static void hw_keyboard_wake(void);                        /* defined below */
 
-static void hw_load_gdt(void) {
+/* Load the shared GDT on this CPU, install its private TSS, and point GS.base
+ * at its per-CPU block. Every core runs this; the shared descriptors are
+ * rewritten identically, which is harmless. */
+static void hw_load_gdt(uint32_t cpu_index) {
     struct gdt_pointer gdtr;
+    hw_cpu_t *cpu = &g_cpus[cpu_index];
+    uint64_t kstack_top =
+        (uint64_t)(uintptr_t)&g_kernel_syscall_stack[cpu_index][sizeof(g_kernel_syscall_stack[0])];
     uint32_t i;
 
     g_gdt[0] = 0x0000000000000000ull;        /* null                        */
@@ -140,12 +237,18 @@ static void hw_load_gdt(void) {
     g_gdt[3] = 0x00CFF2000000FFFFull;        /* user data   (0x18, DPL=3)   */
     g_gdt[4] = 0x00AFFA000000FFFFull;        /* user code   (0x20, DPL=3)   */
 
-    for (i = 0; i < (uint32_t)sizeof(g_tss); i++) {
-        ((uint8_t *)(void *)&g_tss)[i] = 0;
+    for (i = 0; i < (uint32_t)sizeof(cpu->tss); i++) {
+        ((uint8_t *)(void *)&cpu->tss)[i] = 0;
     }
-    g_tss.rsp0 = (uint64_t)(uintptr_t)&g_kernel_syscall_stack[sizeof(g_kernel_syscall_stack)];
-    g_tss.iomap_base = (uint16_t)sizeof(g_tss);
-    hw_setup_tss_descriptor(5, (uint64_t)(uintptr_t)&g_tss, (uint32_t)(sizeof(g_tss) - 1u));
+    cpu->tss.rsp0 = kstack_top;
+    cpu->tss.iomap_base = (uint16_t)sizeof(cpu->tss);
+    cpu->syscall_kstack_top = kstack_top;
+    cpu->self = cpu;
+    cpu->index = cpu_index;
+    cpu->current_task = -1;
+    cpu->idle_task = -1;
+    hw_setup_tss_descriptor(5u + 2u * cpu_index, (uint64_t)(uintptr_t)&cpu->tss,
+                            (uint32_t)(sizeof(cpu->tss) - 1u));
 
     gdtr.limit = (uint16_t)(sizeof(g_gdt) - 1u);
     gdtr.base = (uint64_t)(uintptr_t)&g_gdt[0];
@@ -167,7 +270,18 @@ static void hw_load_gdt(void) {
         : "m"(gdtr)
         : "rax", "memory");
 
-    __asm__ __volatile__("ltr %0" : : "r"((uint16_t)VIBEOS_HW_TSS_SEL));
+    __asm__ __volatile__("ltr %0" : : "r"(VIBEOS_HW_TSS_SEL_FOR(cpu_index)));
+
+    /* GS.base -> this CPU's block. Must come after the %gs selector load above,
+     * which resets the base to zero. IA32_KERNEL_GS_BASE gets the same value so
+     * a stray swapgs cannot desynchronize the two. */
+    {
+        uint64_t v = (uint64_t)(uintptr_t)cpu;
+        __asm__ __volatile__("wrmsr" : : "c"(0xC0000101u), "a"((uint32_t)v),
+                             "d"((uint32_t)(v >> 32)));
+        __asm__ __volatile__("wrmsr" : : "c"(0xC0000102u), "a"((uint32_t)v),
+                             "d"((uint32_t)(v >> 32)));
+    }
 }
 
 static void hw_set_gate_attr(uint32_t vector, uint64_t handler, uint8_t type_attr) {
@@ -185,7 +299,23 @@ static void hw_set_gate(uint32_t vector, uint64_t handler) {
     hw_set_gate_attr(vector, handler, (uint8_t)VIBEOS_HW_GATE_INTERRUPT);
 }
 
-extern char vibeos_isr_128[];   /* isr.S: stub for the 0x80 syscall gate */
+extern char vibeos_isr_128[];   /* isr.S: stub for the 0x80 syscall gate      */
+extern char vibeos_isr_255[];   /* isr.S: stub for the LAPIC spurious vector  */
+
+/* APIC / SMP (apic.c + ap_boot.S). */
+extern int vibeos_x86_64_acpi_init(uint64_t rsdp_addr);
+extern uint32_t vibeos_x86_64_acpi_cpu_count(void);
+extern uint32_t vibeos_x86_64_acpi_lapic_id(uint32_t index);
+extern void vibeos_x86_64_lapic_enable(uint32_t spurious_vector);
+extern void vibeos_x86_64_lapic_eoi(void);
+extern void vibeos_x86_64_lapic_timer_start(uint32_t hz, uint32_t vector);
+extern uint32_t vibeos_x86_64_lapic_id(void);
+extern int vibeos_x86_64_ioapic_route(uint8_t irq, uint8_t vector, uint32_t dest);
+extern int vibeos_x86_64_smp_start_cpu(uint32_t lapic_id, uint64_t cr3, uint64_t stack_top,
+                                       uint64_t entry);
+extern void vibeos_x86_64_pic_disable(void);
+extern int vibeos_x86_64_apic_available(void);
+extern volatile uint32_t vibeos_x86_64_ap_alive;
 
 extern int vibeos_x86_64_virtio_blk_init(void);
 extern int vibeos_x86_64_virtio_blk_read(uint64_t sector, void *buf);
@@ -226,6 +356,16 @@ static void hw_load_idt(void) {
     }
     /* Syscall gate: DPL=3 so ring-3 `int 0x80` is permitted (0xEE). */
     hw_set_gate_attr(0x80u, (uint64_t)(uintptr_t)vibeos_isr_128, 0xEEu);
+    /* Local-APIC spurious interrupt: must be handled, and must not be EOI'd. */
+    hw_set_gate(0xFFu, (uint64_t)(uintptr_t)vibeos_isr_255);
+    idtr.limit = (uint16_t)(sizeof(g_idt) - 1u);
+    idtr.base = (uint64_t)(uintptr_t)&g_idt[0];
+    __asm__ __volatile__("lidt %0" : : "m"(idtr) : "memory");
+}
+
+/* Application processors share the BSP's IDT; they only need to point at it. */
+static void hw_load_idt_only(void) {
+    struct idt_pointer idtr;
     idtr.limit = (uint16_t)(sizeof(g_idt) - 1u);
     idtr.base = (uint64_t)(uintptr_t)&g_idt[0];
     __asm__ __volatile__("lidt %0" : : "m"(idtr) : "memory");
@@ -272,7 +412,14 @@ static void hw_pit_init(void) {
     hw_outb(PIT_CH0, (uint8_t)((divisor >> 8) & 0xFF));
 }
 
+/* Set once the APIC pair has taken over from the 8259s. */
+static int g_apic_mode;
+
 static void hw_pic_send_eoi(uint32_t vector) {
+    if (g_apic_mode) {
+        vibeos_x86_64_lapic_eoi();
+        return;
+    }
     if (vector >= 40u) {          /* IRQ came via the slave PIC */
         hw_outb(PIC2_CMD, PIC_EOI);
     }
@@ -330,9 +477,17 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
 
     /* Hardware IRQs (post-remap vectors 0x20-0x2F): acknowledge to the PIC. The
      * timer (IRQ0) additionally drives the preemptive scheduler. */
+    /* Local-APIC spurious interrupt: by architecture it must NOT be EOI'd. */
+    if (frame->vector == 0xFFu) {
+        return;
+    }
+
     if (frame->vector >= VIBEOS_HW_IRQ_BASE && frame->vector < VIBEOS_HW_WIRED_VECTORS) {
         if (frame->vector == VIBEOS_HW_IRQ_TIMER) {
-            g_timer_ticks++;
+            /* Every core's LAPIC timer lands here; only one may own the clock. */
+            if (!g_apic_mode || hw_this_cpu()->index == 0u) {
+                g_timer_ticks++;
+            }
             hw_pic_send_eoi((uint32_t)frame->vector);
             hw_schedule(frame); /* may rewrite the frame to switch tasks */
             return;
@@ -349,6 +504,8 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
 
     fault_address = (frame->vector == 14u) ? hw_read_cr2() : 0u;
 
+    /* A fault report is many small writes; keep another core from splitting it. */
+    vibeos_x86_64_serial_lock();
     vibeos_x86_64_serial_puts("[HW][TRAP] ");
     hw_log_field("vector", frame->vector);
     vibeos_x86_64_serial_puts(" ");
@@ -382,6 +539,7 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
     vibeos_x86_64_serial_puts(" count=0x");
     vibeos_x86_64_serial_print_hex(g_arch_trap_state.trap_count);
     vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
 
     if (decision.action == VIBEOS_TRAP_ACTION_CONTINUE) {
         /* Resumable trap (e.g. #BP): iretq returns to the saved RIP. */
@@ -406,10 +564,10 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
  * assembly can reference it by name. Layout: rbx,rbp,r12,r13,r14,r15,rsp. */
 uint64_t g_ring3_kctx[8];
 
-/* Used by the `syscall` trampoline (isr.S): the instruction does not switch
- * stacks, so we stash the user rsp and load a kernel stack ourselves. */
-uint64_t g_user_saved_rsp;
-uint64_t g_syscall_kstack_top;
+/* The `syscall` trampoline (isr.S) stashes the user rsp and loads a kernel
+ * stack itself; both live in the per-CPU block reached through GS.base
+ * (hw_cpu_t fields at offsets 8 and 0).
+ */
 
 /* Kernel-owned page tables (static BSS, no PMM dependency during bring-up).
  * The identity map is supervisor-only; user memory lives in its own PML4 slot
@@ -458,18 +616,23 @@ static void hw_write_cr3(uint64_t pml4_phys) {
  * needing a free path in the portable PMM. */
 static void *g_free_pages;
 
+/* Both sides of the page allocator are shared by every core (a task can fork or
+ * exit on any of them), so they take the memory lock. */
 static void hw_free_page(void *p) {
     if (!p) {
         return;
     }
+    hw_spin_lock(&g_mm_lock);
     *(void **)p = g_free_pages;
     g_free_pages = p;
+    hw_spin_unlock(&g_mm_lock);
 }
 
 static void *hw_alloc_page(void) {
     uint8_t *p = 0;
     uint32_t i;
 
+    hw_spin_lock(&g_mm_lock);
     if (g_free_pages) {
         p = (uint8_t *)g_free_pages;
         g_free_pages = *(void **)g_free_pages;
@@ -485,10 +648,12 @@ static void *hw_alloc_page(void) {
     }
     if (!p) {
         if (g_pool_next >= VIBEOS_HW_POOL_PAGES) {
+            hw_spin_unlock(&g_mm_lock);
             return 0;
         }
         p = g_page_pool[g_pool_next++];
     }
+    hw_spin_unlock(&g_mm_lock);
     for (i = 0; i < 4096u; i++) {
         p[i] = 0;
     }
@@ -660,13 +825,13 @@ static void hw_wrmsr(uint32_t msr, uint64_t value) {
  * SYSCALL loads kernel CS=0x08 (SS=0x10); SYSRET loads user CS=0x20|3 and
  * SS=0x18|3 from base 0x10 - which matches the data-then-code user GDT order. */
 static void hw_enable_syscall(void) {
-    g_syscall_kstack_top =
-        (uint64_t)(uintptr_t)&g_kernel_syscall_stack[sizeof(g_kernel_syscall_stack)];
     hw_wrmsr(MSR_EFER, hw_rdmsr(MSR_EFER) | 1ull);                 /* SCE */
     hw_wrmsr(MSR_STAR, ((uint64_t)0x10 << 48) | ((uint64_t)0x08 << 32));
     hw_wrmsr(MSR_LSTAR, (uint64_t)(uintptr_t)vibeos_x86_64_syscall_entry);
     hw_wrmsr(MSR_SFMASK, 0x200ull);                                /* clear IF on entry */
-    vibeos_x86_64_serial_puts("[HW] syscall/sysret enabled (LSTAR set)\n");
+    if (hw_this_cpu()->index == 0u) {
+        vibeos_x86_64_serial_puts("[HW] syscall/sysret enabled (LSTAR set)\n");
+    }
 }
 
 /* ---- Process creation (ELF -> private address space) --------------------- */
@@ -768,7 +933,7 @@ static uint64_t hw_proc_cr3(const hw_proc_t *p) {
 
 /* ---- Task table + preemptive scheduler ---------------------------------- */
 
-#define VIBEOS_HW_MAX_TASKS 8
+#define VIBEOS_HW_MAX_TASKS 24  /* kernel + user processes + one idle task per CPU */
 
 /* Open-file table entry. Reads stream straight off the filesystem; writes are
  * buffered and committed to disk on close (the FAT writer stores whole files). */
@@ -793,7 +958,8 @@ enum {
     HW_TASK_READY = 1,
     HW_TASK_RUNNING = 2,
     HW_TASK_ZOMBIE = 3,
-    HW_TASK_BLOCKED = 4   /* waiting for an event; not schedulable until woken */
+    HW_TASK_BLOCKED = 4,  /* waiting for an event; not schedulable until woken */
+    HW_TASK_RESERVED = 5  /* slot claimed by a creator that is still filling it */
 };
 
 extern void vibeos_x86_64_task_enter(vibeos_x86_64_isr_frame_t *task);
@@ -812,6 +978,7 @@ typedef struct {
      * by the kernel task, so it must not be cached across a wait loop. */
     volatile int state;
     int is_user;
+    int is_idle;      /* per-CPU idle task: only run when nothing else is ready */
     int wait_input;   /* blocked in read() on stdin */
     uint64_t kstack_base;  /* for reclamation on exit */
     uint32_t kstack_pages;
@@ -821,9 +988,11 @@ typedef struct {
 /* Point the CPU at a task's ring-0 stack: the TSS one is used when ring 3 is
  * interrupted, the syscall one when it issues `syscall`. */
 static void hw_set_kernel_stack(uint64_t top) {
-    g_tss.rsp0 = top;
-    g_syscall_kstack_top = top;
+    hw_cpu_t *cpu = hw_this_cpu();
+    cpu->tss.rsp0 = top;
+    cpu->syscall_kstack_top = top;
 }
+
 
 /* Two contiguous pages when the PMM can give them, one otherwise. Reports the
  * base and page count so the stack can be reclaimed when the task exits. */
@@ -833,7 +1002,9 @@ static uint64_t hw_alloc_kstack(uint64_t *out_base, uint32_t *out_pages) {
     uint32_t pages = 2u;
 
     if (g_hw_pmm_ready) {
+        hw_spin_lock(&g_mm_lock);
         p = (uint8_t *)vibeos_pmm_alloc_pages(&g_hw_pmm, 2);
+        hw_spin_unlock(&g_mm_lock);
         if (p && ((uint64_t)(uintptr_t)p + size) > VIBEOS_HW_IDENTITY_LIMIT) {
             p = 0;
         }
@@ -865,63 +1036,99 @@ static void hw_free_kstack(hw_task_t *t) {
 }
 
 static hw_task_t g_tasks[VIBEOS_HW_MAX_TASKS];
-static int g_current_task = -1;
 static int g_sched_running;
 static uint32_t g_next_pid = 1;
 
+/* Claim a free slot atomically: two cores can fork at the same time, so the
+ * slot is marked RESERVED (never schedulable, never reapable) until the caller
+ * has finished filling it in. */
 static int hw_task_alloc(void) {
     int i;
+    hw_spin_lock(&g_sched_lock);
     for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
         if (g_tasks[i].state == HW_TASK_FREE) {
+            g_tasks[i].state = HW_TASK_RESERVED;
+            hw_spin_unlock(&g_sched_lock);
             return i;
         }
     }
+    hw_spin_unlock(&g_sched_lock);
     return -1;
 }
 
-/* Next runnable task after `from`, round robin. Returns -1 if none. */
-static int hw_pick_next(int from) {
+/* Give a reserved slot back after a failed creation. */
+static void hw_task_release(int i) {
+    if (i >= 0) {
+        g_tasks[i].state = HW_TASK_FREE;
+    }
+}
+
+/* Next task to run on `cpu`, round robin. Only READY tasks are candidates: a
+ * RUNNING one is owned by some core (possibly another), so on SMP it must never
+ * be picked twice. Idle tasks are skipped unless nothing else is available.
+ * Returns -1 when the caller should simply keep running what it has. */
+static int hw_pick_next(hw_cpu_t *cpu) {
     int n;
+    int cur = cpu->current_task;
+    int start = (cur < 0) ? 0 : cur;
+
     for (n = 1; n <= VIBEOS_HW_MAX_TASKS; n++) {
-        int i = (from + n) % VIBEOS_HW_MAX_TASKS;
-        if (g_tasks[i].state == HW_TASK_READY || g_tasks[i].state == HW_TASK_RUNNING) {
+        int i = (start + n) % VIBEOS_HW_MAX_TASKS;
+        if (g_tasks[i].state == HW_TASK_READY && !g_tasks[i].is_idle) {
             return i;
         }
     }
-    return -1;
+    if (cur >= 0 && g_tasks[cur].state == HW_TASK_RUNNING) {
+        return -1;  /* still runnable and nothing better: no switch */
+    }
+    return cpu->idle_task;  /* current task blocked/died: fall back to idle */
 }
 
 /* Wake every task blocked in read() on stdin (called from the keyboard IRQ). */
 static void hw_keyboard_wake(void) {
     int i;
+    hw_spin_lock(&g_sched_lock);
     for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
         if (g_tasks[i].state == HW_TASK_BLOCKED && g_tasks[i].wait_input) {
             g_tasks[i].wait_input = 0;
             g_tasks[i].state = HW_TASK_READY;
         }
     }
+    hw_spin_unlock(&g_sched_lock);
 }
 
 /* Timer-driven preemption: save the interrupted task, pick the next runnable
  * one, and resume it by rewriting the live IRQ frame and switching CR3. Runs
- * for the life of the system - there is no "demo over" exit. */
+ * for the life of the system - there is no "demo over" exit.
+ *
+ * On SMP every core's local-APIC timer calls this independently; the run queue
+ * is shared, so the pick-and-claim step is done under the scheduler lock. */
 static void hw_schedule(vibeos_x86_64_isr_frame_t *frame) {
-    int next;
+    hw_cpu_t *cpu = hw_this_cpu();
+    int cur, next;
 
-    if (!g_sched_running || g_current_task < 0) {
+    if (!g_sched_running) {
         return;
     }
-    next = hw_pick_next(g_current_task);
-    if (next < 0 || next == g_current_task) {
+
+    hw_spin_lock(&g_sched_lock);
+    cur = cpu->current_task;
+    next = hw_pick_next(cpu);
+    if (next < 0 || next == cur) {
+        hw_spin_unlock(&g_sched_lock);
         return; /* nothing else runnable: keep running the current task */
     }
-    g_tasks[g_current_task].ctx = *frame;
-    if (g_tasks[g_current_task].state == HW_TASK_RUNNING) {
-        g_tasks[g_current_task].state = HW_TASK_READY;
+    if (cur >= 0) {
+        g_tasks[cur].ctx = *frame;
+        if (g_tasks[cur].state == HW_TASK_RUNNING) {
+            g_tasks[cur].state = HW_TASK_READY;
+        }
     }
-    g_current_task = next;
+    cpu->current_task = next;
     g_tasks[next].state = HW_TASK_RUNNING;
     *frame = g_tasks[next].ctx;
+    hw_spin_unlock(&g_sched_lock);
+
     hw_write_cr3(g_tasks[next].cr3);
     hw_set_kernel_stack(g_tasks[next].kstack_top);
 }
@@ -949,10 +1156,54 @@ static int hw_task_adopt_kernel(void) {
     }
     g_tasks[i].state = HW_TASK_RUNNING;
     g_tasks[i].is_user = 0;
-    g_tasks[i].pid = g_next_pid++;
-    g_tasks[i].kstack_top = (uint64_t)(uintptr_t)&g_kernel_syscall_stack[sizeof(g_kernel_syscall_stack)];
+    g_tasks[i].pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
+    g_tasks[i].kstack_top = hw_this_cpu()->syscall_kstack_top;
     g_tasks[i].cr3 = (uint64_t)(uintptr_t)&g_pml4[0];
     g_current_task = i;
+    return i;
+}
+
+/* Idle task body: nothing to run on this core, so wait for the next interrupt
+ * rather than burning the core in a spin. */
+static void hw_idle_loop(void) {
+    for (;;) {
+        __asm__ __volatile__("sti; hlt" ::: "memory");
+    }
+}
+
+/* Every CPU needs a task it can always fall back to, so the scheduler never has
+ * to invent a context when the last runnable task blocks or exits. */
+static int hw_task_create_idle(hw_cpu_t *cpu) {
+    int i = hw_task_alloc();
+    if (i < 0) {
+        return -1;
+    }
+    g_tasks[i].kstack_top = hw_alloc_kstack(&g_tasks[i].kstack_base, &g_tasks[i].kstack_pages);
+    if (g_tasks[i].kstack_top == 0) {
+        hw_task_release(i);
+        return -1;
+    }
+    {
+        vibeos_x86_64_isr_frame_t *c = &g_tasks[i].ctx;
+        uint32_t k;
+        for (k = 0; k < (uint32_t)sizeof(*c); k++) {
+            ((uint8_t *)(void *)c)[k] = 0;
+        }
+        c->rip = (uint64_t)(uintptr_t)hw_idle_loop;
+        c->cs = VIBEOS_HW_KERNEL_CS;
+        c->ss = VIBEOS_HW_KERNEL_DS;
+        c->rflags = 0x202;
+        /* Leave slack below the top, and land on rsp % 16 == 8: the idle loop is
+         * entered by iretq rather than by a call, so the ABI's post-call stack
+         * alignment has to be reproduced by hand. */
+        c->rsp = g_tasks[i].kstack_top - 56ull;
+    }
+    g_tasks[i].cr3 = (uint64_t)(uintptr_t)&g_pml4[0];
+    g_tasks[i].state = HW_TASK_READY;
+    g_tasks[i].is_user = 0;
+    g_tasks[i].is_idle = 1;
+    g_tasks[i].pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
+    cpu->idle_task = i;
     return i;
 }
 
@@ -964,17 +1215,19 @@ static int hw_task_spawn_user(const unsigned char *elf, uint64_t len, uint64_t a
         return -1;
     }
     if (hw_proc_create(&g_tasks[i].proc, elf, len) != 0) {
+        hw_task_release(i);
         return -1;
     }
     g_tasks[i].kstack_top = hw_alloc_kstack(&g_tasks[i].kstack_base, &g_tasks[i].kstack_pages);
     if (g_tasks[i].kstack_top == 0) {
+        hw_task_release(i);
         return -1;
     }
     g_tasks[i].cr3 = hw_proc_cr3(&g_tasks[i].proc);
     hw_task_init_user_ctx(&g_tasks[i].ctx, g_tasks[i].proc.entry, arg);
     g_tasks[i].state = HW_TASK_READY;
     g_tasks[i].is_user = 1;
-    g_tasks[i].pid = g_next_pid++;
+    g_tasks[i].pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
     return i;
 }
 
@@ -982,33 +1235,44 @@ static int hw_task_spawn_user(const unsigned char *elf, uint64_t len, uint64_t a
  * from the syscall path, so it enters the next task directly and never returns
  * to the caller. */
 static void hw_task_exit(uint64_t code) {
-    int dying = g_current_task;
+    hw_cpu_t *cpu = hw_this_cpu();
+    int dying = cpu->current_task;
     int next, i;
 
     if (dying >= 0) {
+        hw_spin_lock(&g_sched_lock);
         g_tasks[dying].state = HW_TASK_ZOMBIE;
         g_tasks[dying].exit_code = code;
-        vibeos_x86_64_serial_puts("[SCHED] task pid=0x");
-        vibeos_x86_64_serial_print_hex(g_tasks[dying].pid);
-        vibeos_x86_64_serial_puts(" exited code=0x");
-        vibeos_x86_64_serial_print_hex(code);
-        vibeos_x86_64_serial_puts("\n");
         /* Wake a parent blocked in waitpid on this child. */
         for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
             if (g_tasks[i].state == HW_TASK_BLOCKED && g_tasks[i].pid == g_tasks[dying].ppid) {
                 g_tasks[i].state = HW_TASK_READY;
             }
         }
+        hw_spin_unlock(&g_sched_lock);
+        vibeos_x86_64_serial_lock();
+        vibeos_x86_64_serial_puts("[SCHED] task pid=0x");
+        vibeos_x86_64_serial_print_hex(g_tasks[dying].pid);
+        vibeos_x86_64_serial_puts(" exited code=0x");
+        vibeos_x86_64_serial_print_hex(code);
+        vibeos_x86_64_serial_puts("\n");
+        vibeos_x86_64_serial_unlock();
     }
-    next = hw_pick_next(dying < 0 ? 0 : dying);
+    hw_spin_lock(&g_sched_lock);
+    next = hw_pick_next(cpu);
     if (next < 0) {
+        next = cpu->idle_task;
+    }
+    if (next < 0) {
+        hw_spin_unlock(&g_sched_lock);
         vibeos_x86_64_serial_puts("[SCHED] no runnable task; halting\n");
         for (;;) {
             __asm__ __volatile__("hlt");
         }
     }
-    g_current_task = next;
+    cpu->current_task = next;
     g_tasks[next].state = HW_TASK_RUNNING;
+    hw_spin_unlock(&g_sched_lock);
     hw_write_cr3(g_tasks[next].cr3);
     hw_set_kernel_stack(g_tasks[next].kstack_top);
     /* Now on the next task's CR3; the dying user address space is still
@@ -1143,6 +1407,7 @@ static long hw_sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
     }
     /* User output goes to both consoles: the serial line (logs, CI) and the
      * display framebuffer (what a user in front of the machine sees). */
+    vibeos_x86_64_serial_lock();
     vibeos_x86_64_serial_puts("[HW][SYS] write(ring3): ");
     for (i = 0; i < len; i++) {
         char c = p[i];
@@ -1152,6 +1417,7 @@ static long hw_sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
         vibeos_x86_64_serial_putc(c);
         vibeos_x86_64_fb_putc(c);
     }
+    vibeos_x86_64_serial_unlock();
     return (long)len;
 }
 
@@ -1490,7 +1756,7 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
     child->cr3 = hw_proc_cr3(&child->proc);
     child->ctx = *frame;   /* resume exactly where the parent is */
     child->ctx.rax = 0;    /* ... but fork() returns 0 in the child */
-    child->pid = g_next_pid++;
+    child->pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
     child->ppid = parent->pid;
     child->is_user = 1;
     child->exit_code = 0;
@@ -1515,6 +1781,7 @@ static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr) {
         int have_children = 0;
 
         __asm__ __volatile__("cli");
+        hw_spin_lock(&g_sched_lock);
         for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
             hw_task_t *t = &g_tasks[i];
             if (t->ppid != mypid || t->state == HW_TASK_FREE) {
@@ -1526,8 +1793,9 @@ static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr) {
             if (t->state == HW_TASK_ZOMBIE) {
                 uint32_t child_pid = t->pid;
                 uint64_t code = t->exit_code;
-                hw_free_kstack(t);       /* safe here: the task is not running */
                 t->state = HW_TASK_FREE; /* reaped */
+                hw_spin_unlock(&g_sched_lock);
+                hw_free_kstack(t);       /* safe here: the task is not running */
                 __asm__ __volatile__("sti");
                 if (status_ptr != 0 && hw_user_range_ok(status_ptr, 4, 1)) {
                     *(volatile int *)(uintptr_t)status_ptr = (int)((code & 0xFFull) << 8);
@@ -1537,11 +1805,13 @@ static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr) {
             have_children = 1;
         }
         if (!have_children) {
+            hw_spin_unlock(&g_sched_lock);
             __asm__ __volatile__("sti");
             return -VIBEOS_ECHILD;
         }
         /* Block until a child exit sets us READY again (see hw_task_exit). */
         g_tasks[g_current_task].state = HW_TASK_BLOCKED;
+        hw_spin_unlock(&g_sched_lock);
         __asm__ __volatile__("sti; hlt" ::: "memory");
     }
 }
@@ -1581,13 +1851,20 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr) 
     if (hw_copy_user_string(path_uptr, path, sizeof(path)) != 0) {
         return -VIBEOS_EFAULT;
     }
+    /* g_exec_elf is a single shared staging buffer, so the read and the load out
+     * of it have to be one critical section: two cores exec'ing at once would
+     * otherwise each load the other's image. */
+    hw_spin_lock(&g_exec_lock);
     n = vibeos_x86_64_fat_read_file(path, g_exec_elf, sizeof(g_exec_elf));
     if (n <= 0) {
+        hw_spin_unlock(&g_exec_lock);
         return -VIBEOS_ENOENT;
     }
     if (hw_proc_create(&np, g_exec_elf, (uint64_t)n) != 0) {
+        hw_spin_unlock(&g_exec_lock);
         return -VIBEOS_ENOMEM;
     }
+    hw_spin_unlock(&g_exec_lock);
 
     t = &g_tasks[g_current_task];
     {
@@ -1669,6 +1946,134 @@ void vibeos_x86_64_syscall_dispatch(vibeos_x86_64_isr_frame_t *frame) {
 
 /* Bring the scheduler up: spawn the initial user tasks, adopt the kernel as a
  * task, and let the timer preempt from here on. */
+/* ---- APIC + SMP bring-up -------------------------------------------------- */
+
+/* Index of the CPU currently being started; read by that CPU's entry point. */
+static volatile uint32_t g_ap_starting;
+
+/* Entry point of an application processor, reached from the real-mode
+ * trampoline once it is in long mode on the kernel's page tables. Called with
+ * interrupts disabled on a temporary boot stack. Never returns: the core takes
+ * up its idle task and from then on is scheduled like any other. */
+void vibeos_x86_64_ap_main(void) {
+    uint32_t idx = g_ap_starting;
+    hw_cpu_t *cpu = &g_cpus[idx];
+    int idle;
+
+    hw_load_gdt(idx);
+    hw_load_idt_only();
+    hw_enable_syscall();
+    vibeos_x86_64_lapic_enable(0xFFu);
+    cpu->lapic_id = vibeos_x86_64_lapic_id();
+    cpu->online = 1;
+
+    idle = hw_task_create_idle(cpu);
+    if (idle < 0) {
+        /* No slot for this core's idle task: park it rather than let it run
+         * with no context to fall back to. Report it - a silent park here is
+         * indistinguishable from a core that never started. */
+        vibeos_x86_64_serial_puts("[SMP] no idle-task slot; parking cpu\n");
+        cpu->online = 0;
+        vibeos_x86_64_ap_alive = 1;
+        for (;;) {
+            __asm__ __volatile__("hlt");
+        }
+    }
+    cpu->current_task = idle;
+    g_tasks[idle].state = HW_TASK_RUNNING;
+    hw_set_kernel_stack(g_tasks[idle].kstack_top);
+
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts("[SMP] cpu online: lapic_id=0x");
+    vibeos_x86_64_serial_print_hex(cpu->lapic_id);
+    vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
+
+    /* Tell the BSP we made it, then start this core's own preemption clock and
+     * fall into the idle task; the timer will hand us real work. */
+    __asm__ __volatile__("sfence" ::: "memory");
+    vibeos_x86_64_ap_alive = 1;
+    vibeos_x86_64_lapic_timer_start(VIBEOS_HW_TIMER_HZ, VIBEOS_HW_IRQ_TIMER);
+    vibeos_x86_64_task_enter(&g_tasks[idle].ctx); /* does not return */
+}
+
+/* Switch the machine from the legacy 8259/PIT pair to the APIC pair: discover
+ * the topology through ACPI, enable the BSP's local APIC, move the keyboard IRQ
+ * to the IO-APIC, and run preemption off the local-APIC timer. Falls back to
+ * the PIC silently if the firmware gives us no usable MADT. */
+static void hw_apic_bringup(const vibeos_boot_info_t *boot_info) {
+    uint32_t bsp_id;
+
+    if (!boot_info || vibeos_x86_64_acpi_init(boot_info->acpi_rsdp) != 0) {
+        vibeos_x86_64_serial_puts("[APIC] no ACPI topology; staying on the 8259 PIC\n");
+        return;
+    }
+    if (!vibeos_x86_64_apic_available()) {
+        vibeos_x86_64_serial_puts("[APIC] MADT lists no IO-APIC; staying on the 8259 PIC\n");
+        return;
+    }
+
+    __asm__ __volatile__("cli");
+    vibeos_x86_64_lapic_enable(0xFFu);
+    bsp_id = vibeos_x86_64_lapic_id();
+    g_cpus[0].lapic_id = bsp_id;
+    g_cpus[0].online = 1;
+
+    vibeos_x86_64_pic_disable();   /* no double delivery from the 8259s */
+    if (vibeos_x86_64_ioapic_route(1u, 33u, bsp_id) != 0) {
+        vibeos_x86_64_serial_puts("[APIC] failed to route the keyboard IRQ\n");
+    }
+    vibeos_x86_64_lapic_timer_start(VIBEOS_HW_TIMER_HZ, VIBEOS_HW_IRQ_TIMER);
+    g_apic_mode = 1;
+    __asm__ __volatile__("sti");
+
+    vibeos_x86_64_serial_puts("[APIC] APIC_OK: bsp lapic_id=0x");
+    vibeos_x86_64_serial_print_hex(bsp_id);
+    vibeos_x86_64_serial_puts(" timer=LAPIC keyboard=IOAPIC\n");
+}
+
+/* Wake every other CPU the MADT listed. Done after the scheduler is live so an
+ * AP has a run queue to pull from the moment its timer fires. */
+static void hw_smp_bringup(void) {
+    uint32_t count = vibeos_x86_64_acpi_cpu_count();
+    uint32_t bsp_id = g_cpus[0].lapic_id;
+    uint32_t i;
+
+    if (!g_apic_mode || count <= 1u) {
+        vibeos_x86_64_serial_puts("[SMP] single processor (cpus=0x1)\n");
+        return;
+    }
+    if (count > VIBEOS_HW_MAX_CPUS) {
+        count = VIBEOS_HW_MAX_CPUS;
+    }
+
+    for (i = 0; i < count; i++) {
+        uint32_t id = vibeos_x86_64_acpi_lapic_id(i);
+        uint32_t slot = g_cpu_online_count;
+        if (id == bsp_id || slot >= VIBEOS_HW_MAX_CPUS) {
+            continue;
+        }
+        g_ap_starting = slot;
+        __asm__ __volatile__("sfence" ::: "memory");
+        if (vibeos_x86_64_smp_start_cpu(id, (uint64_t)(uintptr_t)&g_pml4[0],
+                                        (uint64_t)(uintptr_t)&g_ap_boot_stack[slot][sizeof(g_ap_boot_stack[0])],
+                                        (uint64_t)(uintptr_t)vibeos_x86_64_ap_main) == 0 &&
+            g_cpus[slot].online) {
+            g_cpu_online_count++;
+        } else {
+            vibeos_x86_64_serial_puts("[SMP] cpu did not come up: lapic_id=0x");
+            vibeos_x86_64_serial_print_hex(id);
+            vibeos_x86_64_serial_puts("\n");
+        }
+    }
+
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts("[SMP] SMP_OK: cpus online=0x");
+    vibeos_x86_64_serial_print_hex(g_cpu_online_count);
+    vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
+}
+
 static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
     const unsigned char *init_elf = vibeos_user_hello_elf;
     uint64_t init_len = vibeos_user_hello_elf_len;
@@ -1728,8 +2133,12 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
         vibeos_x86_64_serial_puts("[SCHED] failed to adopt kernel task\n");
         return;
     }
+    (void)hw_task_create_idle(&g_cpus[0]);
     g_sched_running = 1;
     __asm__ __volatile__("sti");
+
+    /* With a run queue in place, wake the other cores. */
+    hw_smp_bringup();
 
     /* Wait for the spawned tasks to finish before the kernel task goes on to
      * the console (init-style child reaping). The kernel task is preempted
@@ -1765,7 +2174,7 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
 /* Entry point invoked from entry.s before vibeos_kmain. */
 void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
     vibeos_x86_64_serial_puts("[HW] early init: loading GDT\n");
-    hw_load_gdt();
+    hw_load_gdt(0);
     vibeos_x86_64_serial_puts("[HW] GDT loaded (CS=0x08 DS=0x10)\n");
 
     hw_load_idt();
@@ -1783,6 +2192,10 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
 
     hw_enable_syscall();
     hw_enable_timer_irq();
+
+    /* Move off the legacy PIC/PIT onto the local + IO APIC pair (per-CPU timer,
+     * IO-APIC interrupt routing) now that basic IRQ delivery is proven. */
+    hw_apic_bringup(boot_info);
 
     /* From here the system is scheduled: the kernel itself becomes a task and
      * user tasks are preempted alongside it. */

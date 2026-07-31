@@ -34,7 +34,7 @@ static uint32_t rd32(const uint8_t *p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
-int vibeos_x86_64_fat_mount(void) {
+static int fat_mount_locked(void) {
     uint32_t part_lba = 0;
     uint16_t reserved, bytes_per_sec;
     uint32_t total_sectors, root_dir_sectors;
@@ -249,7 +249,7 @@ static int fat_resolve(const char *path, uint32_t *out_cluster, uint32_t *out_si
 extern int vibeos_x86_64_virtio_blk_write(uint64_t sector, const void *buf);
 
 /* Resolve a path to its first cluster and size (a file "open"). */
-int vibeos_x86_64_fat_open(const char *path, uint32_t *out_cluster, uint32_t *out_size) {
+static int fat_open_locked(const char *path, uint32_t *out_cluster, uint32_t *out_size) {
     if (!g_fat.mounted || !out_cluster || !out_size) {
         return -1;
     }
@@ -258,7 +258,7 @@ int vibeos_x86_64_fat_open(const char *path, uint32_t *out_cluster, uint32_t *ou
 
 /* Read `len` bytes at byte offset `off` from a file given by its first cluster
  * and size. Returns bytes read (0 at EOF). */
-long vibeos_x86_64_fat_read_at(uint32_t first_cluster, uint32_t size, uint32_t off,
+static long fat_read_at_locked(uint32_t first_cluster, uint32_t size, uint32_t off,
                                void *buf, uint32_t len) {
     uint32_t cluster_bytes, cluster, skip, done = 0;
     uint8_t *out = (uint8_t *)buf;
@@ -306,7 +306,7 @@ long vibeos_x86_64_fat_read_at(uint32_t first_cluster, uint32_t size, uint32_t o
 /* Enumerate directory entries: fill name (8.3, NUL-terminated) for entry index
  * `idx` of the directory at `path` (empty/"/" = root). Returns 0 on success,
  * -1 when the index is past the end. */
-int vibeos_x86_64_fat_list(const char *path, uint32_t idx, char *name, uint32_t *out_size,
+static int fat_list_locked(const char *path, uint32_t idx, char *name, uint32_t *out_size,
                            int *out_is_dir) {
     uint32_t dir_cluster = 0, sectors, lba, s, e, seen = 0;
 
@@ -566,7 +566,7 @@ static int fat_split_parent(const char *path, uint32_t *out_dir, uint8_t name83[
 
 /* Create or overwrite a file at `path` with `len` bytes (any directory, any
  * length that fits the volume). Returns bytes written. */
-long vibeos_x86_64_fat_write_file(const char *path, const void *buf, uint32_t len) {
+static long fat_write_file_locked(const char *path, const void *buf, uint32_t len) {
     uint8_t want[11];
     uint32_t dir_cluster = 0, lba = 0, off = 0, cluster_bytes, need, first = 0;
     uint32_t wrote = 0, cl;
@@ -646,7 +646,7 @@ long vibeos_x86_64_fat_write_file(const char *path, const void *buf, uint32_t le
 }
 
 /* Delete a file: free its clusters and mark the directory slot deleted. */
-int vibeos_x86_64_fat_unlink(const char *path) {
+static int fat_unlink_locked(const char *path) {
     uint8_t want[11];
     uint32_t dir_cluster = 0, lba = 0, off = 0, cluster;
 
@@ -674,7 +674,7 @@ int vibeos_x86_64_fat_unlink(const char *path) {
 }
 
 /* Create a directory: one cluster holding the "." and ".." entries. */
-int vibeos_x86_64_fat_mkdir(const char *path) {
+static int fat_mkdir_locked(const char *path) {
     uint8_t want[11];
     uint32_t dir_cluster = 0, lba = 0, off = 0, cluster;
     uint32_t s, i;
@@ -736,7 +736,7 @@ int vibeos_x86_64_fat_mkdir(const char *path) {
 
 /* Read a whole file by path (e.g. "EFI/BOOT/INIT.ELF") into buf (up to bufcap).
  * Returns the file size, or -1 on error / too big. */
-long vibeos_x86_64_fat_read_file(const char *path, void *buf, uint32_t bufcap) {
+static long fat_read_file_locked(const char *path, void *buf, uint32_t bufcap) {
     uint32_t cluster = 0, size = 0, copied = 0;
     uint8_t *out = (uint8_t *)buf;
 
@@ -765,4 +765,94 @@ long vibeos_x86_64_fat_read_file(const char *path, void *buf, uint32_t bufcap) {
         cluster = fat_next_cluster(cluster);
     }
     return (long)size;
+}
+
+/* ---- SMP serialization ---------------------------------------------------
+ *
+ * The reader/writer above works out of a handful of shared static buffers, and
+ * every request ultimately goes through the single virtio-blk virtqueue. Once
+ * more than one core can be inside a filesystem syscall at the same time, both
+ * would be corrupted, so the whole filesystem is entered under one lock.
+ *
+ * Callers are syscalls, which run with interrupts masked, so a core cannot be
+ * preempted while holding it. */
+
+static volatile int g_fs_lock;
+
+static void fs_lock(void) {
+    while (__sync_lock_test_and_set(&g_fs_lock, 1)) {
+        while (g_fs_lock) {
+            __asm__ __volatile__("pause" ::: "memory");
+        }
+    }
+}
+
+static void fs_unlock(void) {
+    __sync_lock_release(&g_fs_lock);
+}
+
+int vibeos_x86_64_fat_mount(void) {
+    int r;
+    fs_lock();
+    r = fat_mount_locked();
+    fs_unlock();
+    return r;
+}
+
+int vibeos_x86_64_fat_open(const char *path, uint32_t *out_cluster, uint32_t *out_size) {
+    int r;
+    fs_lock();
+    r = fat_open_locked(path, out_cluster, out_size);
+    fs_unlock();
+    return r;
+}
+
+long vibeos_x86_64_fat_read_at(uint32_t first_cluster, uint32_t size, uint32_t off,
+                               void *buf, uint32_t len) {
+    long r;
+    fs_lock();
+    r = fat_read_at_locked(first_cluster, size, off, buf, len);
+    fs_unlock();
+    return r;
+}
+
+int vibeos_x86_64_fat_list(const char *path, uint32_t idx, char *name, uint32_t *out_size,
+                           int *out_is_dir) {
+    int r;
+    fs_lock();
+    r = fat_list_locked(path, idx, name, out_size, out_is_dir);
+    fs_unlock();
+    return r;
+}
+
+long vibeos_x86_64_fat_write_file(const char *path, const void *buf, uint32_t len) {
+    long r;
+    fs_lock();
+    r = fat_write_file_locked(path, buf, len);
+    fs_unlock();
+    return r;
+}
+
+int vibeos_x86_64_fat_unlink(const char *path) {
+    int r;
+    fs_lock();
+    r = fat_unlink_locked(path);
+    fs_unlock();
+    return r;
+}
+
+int vibeos_x86_64_fat_mkdir(const char *path) {
+    int r;
+    fs_lock();
+    r = fat_mkdir_locked(path);
+    fs_unlock();
+    return r;
+}
+
+long vibeos_x86_64_fat_read_file(const char *path, void *buf, uint32_t bufcap) {
+    long r;
+    fs_lock();
+    r = fat_read_file_locked(path, buf, bufcap);
+    fs_unlock();
+    return r;
 }

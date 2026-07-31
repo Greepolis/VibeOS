@@ -436,7 +436,10 @@ int vibeos_bootloader_apply_firmware_tags(vibeos_boot_info_t *boot_info, const v
     if (vibeos_bootloader_extract_firmware_tags(tags, tag_count, &acpi, &smbios, &secure_boot, &measured_boot) != 0) {
         return -1;
     }
-    if (vibeos_bootloader_set_firmware_tables(boot_info, acpi, smbios) != 0) {
+    /* Only tag sets that actually carry firmware tables may set them. A caller
+     * applying, say, security tags on their own must not silently erase an
+     * ACPI/SMBIOS pointer discovered earlier. */
+    if (acpi != 0 && vibeos_bootloader_set_firmware_tables(boot_info, acpi, smbios) != 0) {
         return -1;
     }
     if (secure_boot) {

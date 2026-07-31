@@ -22,6 +22,12 @@ int vibeos_x86_64_serial_init(void);
 void vibeos_x86_64_serial_putc(char c);
 void vibeos_x86_64_serial_puts(const char *s);
 void vibeos_x86_64_serial_print_hex(uint64_t value);
+/* Bracket a multi-part message so other CPUs cannot split it. Recursive. */
+void vibeos_x86_64_serial_lock(void);
+void vibeos_x86_64_serial_unlock(void);
+/* Identity of the calling CPU, used to make the console lock recursive.
+ * Weakly defined as 0; the on-metal arch layer overrides it. */
+uint32_t vibeos_x86_64_cpu_id(void);
 int vibeos_x86_64_serial_available(void);
 int vibeos_x86_64_serial_can_read(void);
 int vibeos_x86_64_serial_readc(void);
