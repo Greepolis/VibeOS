@@ -39,6 +39,13 @@ else()
     message(STATUS "Init program not found at ${USER_INIT_ELF}; kernel will use its built-in copy")
 endif()
 
+# A second program on disk, for the init program to exec().
+set(USER_TASK_ELF "${CMAKE_BINARY_DIR}/vibeos_user_task")
+if(EXISTS "${USER_TASK_ELF}")
+    file(COPY_FILE "${USER_TASK_ELF}" "${EFI_BOOT_DIR}/TASK.ELF" ONLY_IF_DIFFERENT)
+    message(STATUS "EFI media includes exec target: EFI/BOOT/TASK.ELF")
+endif()
+
 # Keep legacy kernel-as-image artifact for direct-loader probes.
 file(COPY_FILE "${KERNEL_ELF}" "${LEGACY_BOOT_IMAGE}" ONLY_IF_DIFFERENT)
 

@@ -35,12 +35,15 @@ static long user_syscall3(long nr, long a1, long a2, long a3) {
 #define SYS_exit   60
 #define SYS_fork   57
 #define SYS_wait4  61
+#define SYS_execve 59
 
 static const char message[] = "Hello from a real user ELF (loaded by the kernel)\n";
 static const char ok_heap[] = "heap+mmap ok\n";
 static const char bad_ptr[] = "kernel pointer correctly rejected\n";
 static const char in_child[] = "child process running (fork ok)\n";
 static const char reaped_ok[] = "parent reaped child with status 7\n";
+static const char exec_path[] = "EFI/BOOT/TASK.ELF";
+static const char exec_done[] = "parent: exec'd child completed\n";
 
 void _start(void) {
     long pid, brk0, brk1, map, rejected;
@@ -81,6 +84,18 @@ void _start(void) {
             if (reaped == child && ((status >> 8) & 0xff) == 7) {
                 user_syscall3(SYS_write, 1, (long)(unsigned long)reaped_ok, sizeof(reaped_ok) - 1);
             }
+        }
+    }
+
+    /* fork + exec: the child replaces itself with a different program from disk. */
+    {
+        long child = user_syscall3(SYS_fork, 0, 0, 0);
+        if (child == 0) {
+            user_syscall3(SYS_execve, (long)(unsigned long)exec_path, 0, 0);
+            user_syscall3(SYS_exit, 99, 0, 0); /* only if exec failed */
+        } else if (child > 0) {
+            user_syscall3(SYS_wait4, child, 0, 0);
+            user_syscall3(SYS_write, 1, (long)(unsigned long)exec_done, sizeof(exec_done) - 1);
         }
     }
 

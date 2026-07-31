@@ -888,6 +888,7 @@ static void hw_task_exit(uint64_t code) {
 #define VIBEOS_EINVAL 22
 #define VIBEOS_ENOMEM 12
 #define VIBEOS_EBADF  9
+#define VIBEOS_ENOENT 2
 
 /* Linux x86-64 syscall numbers we implement. */
 #define LSYS_read   0
@@ -899,6 +900,7 @@ static void hw_task_exit(uint64_t code) {
 #define LSYS_exit_group 231
 #define LSYS_fork   57
 #define LSYS_wait4  61
+#define LSYS_execve 59
 
 static vibeos_compat_runtime_t g_compat_rt;
 
@@ -1158,6 +1160,66 @@ static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr) {
     }
 }
 
+/* Copy a NUL-terminated string from user space, validating each byte's page. */
+static int hw_copy_user_string(uint64_t uptr, char *dst, int max) {
+    int i;
+    for (i = 0; i < max - 1; i++) {
+        if (!hw_user_range_ok(uptr + (uint64_t)i, 1, 0)) {
+            return -1;
+        }
+        dst[i] = *(const char *)(uintptr_t)(uptr + (uint64_t)i);
+        if (dst[i] == 0) {
+            return 0;
+        }
+    }
+    dst[max - 1] = 0;
+    return 0;
+}
+
+static uint8_t g_exec_elf[65536] __attribute__((aligned(16)));
+
+/* execve(): replace the current process image with an ELF read from the
+ * filesystem. On success the trapframe is rewritten to the new program's entry
+ * and CR3 switched, so the syscall return path resumes into the new image. The
+ * old address space is not reclaimed yet (no PMM free), which is a known leak. */
+static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr) {
+    char path[128];
+    hw_proc_t np;
+    hw_task_t *t;
+    long n;
+    uint32_t k;
+
+    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+        return -VIBEOS_EINVAL;
+    }
+    if (hw_copy_user_string(path_uptr, path, sizeof(path)) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    n = vibeos_x86_64_fat_read_file(path, g_exec_elf, sizeof(g_exec_elf));
+    if (n <= 0) {
+        return -VIBEOS_ENOENT;
+    }
+    if (hw_proc_create(&np, g_exec_elf, (uint64_t)n) != 0) {
+        return -VIBEOS_ENOMEM;
+    }
+
+    t = &g_tasks[g_current_task];
+    t->proc = np;                    /* old address space leaks (no free yet) */
+    t->cr3 = hw_proc_cr3(&t->proc);
+
+    for (k = 0; k < (uint32_t)sizeof(*frame); k++) {
+        ((uint8_t *)(void *)frame)[k] = 0;
+    }
+    frame->rip = np.entry;
+    frame->cs = VIBEOS_HW_USER_CODE_SEL;
+    frame->rflags = 0x202;
+    frame->rsp = VIBEOS_HW_USER_STACK_TOP;
+    frame->ss = VIBEOS_HW_USER_DATA_SEL;
+
+    hw_write_cr3(t->cr3);
+    return 0; /* frame replaced; syscall return enters the new image */
+}
+
 /* Linux ABI entry: nr in rax, args in rdi/rsi/rdx, with the full trapframe
  * available (fork needs it). Reached from both the native `syscall` trampoline
  * and the int 0x80 gate. Each number is offered to the Linux personality
@@ -1171,6 +1233,8 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
     switch (nr) {
         case LSYS_fork:
             return hw_sys_fork(frame);
+        case LSYS_execve:
+            return hw_sys_execve(frame, a1);
         case LSYS_wait4:
             return hw_sys_waitpid(a1, a2);
         case LSYS_write:

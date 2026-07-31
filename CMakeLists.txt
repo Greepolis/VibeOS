@@ -373,7 +373,7 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
     add_custom_target(vibeos_boot_image
         COMMAND ${CMAKE_COMMAND} -E echo "Creating EFI media layout..."
         COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/create_boot_image.cmake
-        DEPENDS vibeos_kernel_elf vibeos_bootloader_efi vibeos_user_hello
+        DEPENDS vibeos_kernel_elf vibeos_bootloader_efi vibeos_user_hello vibeos_user_task
         COMMENT "Generating bootable kernel image"
     )
     
