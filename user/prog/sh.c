@@ -12,6 +12,9 @@
 #define SYS_execve 59
 #define SYS_exit   60
 #define SYS_wait4  61
+#define SYS_open   2
+#define SYS_close  3
+#define SYS_getdents64 217
 
 static long sys3(long nr, long a1, long a2, long a3) {
     long ret;
@@ -86,16 +89,13 @@ void _start(void) {
             put("\nsh: end of input\n");
             sys3(SYS_exit, 0, 0, 0);
         }
-        /* Trim the trailing newline and echo the command (the console does not
-         * echo keystrokes itself yet). */
+        /* Trim the trailing newline; the console echoes keystrokes itself. */
         for (i = 0; i < (int)n; i++) {
             if (line[i] == '\n' || line[i] == '\r') {
                 break;
             }
         }
         line[i] = 0;
-        put(line);
-        put("\n");
 
         if (line[0] == 0) {
             continue;
@@ -103,13 +103,62 @@ void _start(void) {
         args = split_word(line);
 
         if (seq(line, "help")) {
-            put("help            show this text\n"
-                "echo <text>     print text\n"
-                "exit            leave the shell\n"
-                "<path>          run a program, e.g. EFI/BOOT/TASK.ELF\n");
+            put("help              show this text\n"
+                "echo <text>       print text\n"
+                "ls [dir]          list a directory\n"
+                "cat <file>        print a file\n"
+                "write <f> <text>  create a file with text\n"
+                "exit              leave the shell\n"
+                "<path>            run a program, e.g. EFI/BOOT/TASK.ELF\n");
         } else if (seq(line, "echo")) {
             put(args);
             put("\n");
+        } else if (seq(line, "ls")) {
+            long fd = sys3(SYS_open, (long)(unsigned long)(args[0] ? args : "/"), 0, 0);
+            if (fd < 0) {
+                put("ls: cannot open\n");
+            } else {
+                char dbuf[512];
+                long n = sys3(SYS_getdents64, fd, (long)(unsigned long)dbuf, sizeof(dbuf));
+                long o = 0;
+                while (o + 19 < n) {
+                    unsigned short reclen = (unsigned char)dbuf[o + 16] |
+                                            ((unsigned char)dbuf[o + 17] << 8);
+                    if (reclen == 0) {
+                        break;
+                    }
+                    put(&dbuf[o + 19]);
+                    put(dbuf[o + 18] == 4 ? "/\n" : "\n");
+                    o += reclen;
+                }
+                sys3(SYS_close, fd, 0, 0);
+            }
+        } else if (seq(line, "cat")) {
+            long fd = sys3(SYS_open, (long)(unsigned long)args, 0, 0);
+            if (fd < 0) {
+                put("cat: no such file\n");
+            } else {
+                char fbuf[256];
+                long n;
+                while ((n = sys3(SYS_read, fd, (long)(unsigned long)fbuf, sizeof(fbuf))) > 0) {
+                    sys3(SYS_write, 1, (long)(unsigned long)fbuf, n);
+                }
+                sys3(SYS_close, fd, 0, 0);
+            }
+        } else if (seq(line, "write")) {
+            char *text = split_word(args);
+            long fd = sys3(SYS_open, (long)(unsigned long)args, 0100 /*O_CREAT*/, 0);
+            if (fd < 0) {
+                put("write: cannot create\n");
+            } else {
+                sys3(SYS_write, fd, (long)(unsigned long)text, (long)slen(text));
+                sys3(SYS_write, fd, (long)(unsigned long)"\n", 1);
+                if (sys3(SYS_close, fd, 0, 0) == 0) {
+                    put("written\n");
+                } else {
+                    put("write: commit failed\n");
+                }
+            }
         } else if (seq(line, "exit")) {
             put("sh: bye\n");
             sys3(SYS_exit, 0, 0, 0);

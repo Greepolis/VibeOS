@@ -191,6 +191,10 @@ extern int vibeos_x86_64_virtio_blk_init(void);
 extern int vibeos_x86_64_virtio_blk_read(uint64_t sector, void *buf);
 extern int vibeos_x86_64_fat_mount(void);
 extern long vibeos_x86_64_fat_read_file(const char *name, void *buf, uint32_t bufcap);
+extern int vibeos_x86_64_fat_open(const char *path, uint32_t *out_cluster, uint32_t *out_size);
+extern long vibeos_x86_64_fat_read_at(uint32_t first_cluster, uint32_t size, uint32_t off, void *buf, uint32_t len);
+extern int vibeos_x86_64_fat_list(const char *path, uint32_t idx, char *name, uint32_t *out_size, int *out_is_dir);
+extern long vibeos_x86_64_fat_write_file(const char *name, const void *buf, uint32_t len);
 extern void vibeos_x86_64_keyboard_irq(void);
 extern int vibeos_x86_64_keyboard_getc(void);
 extern void vibeos_x86_64_keyboard_inject(const char *s);
@@ -764,6 +768,24 @@ static uint64_t hw_proc_cr3(const hw_proc_t *p) {
 
 #define VIBEOS_HW_MAX_TASKS 8
 
+/* Open-file table entry. Reads stream straight off the filesystem; writes are
+ * buffered and committed to disk on close (the FAT writer stores whole files). */
+#define VIBEOS_HW_MAX_FDS 4
+#define VIBEOS_HW_WBUF 512
+
+typedef struct {
+    int used;
+    int writable;
+    int dirty;
+    uint32_t cluster;
+    uint32_t size;
+    uint32_t pos;
+    uint32_t dir_index;   /* for getdents64 on a directory fd */
+    char name[24];
+    uint8_t wbuf[VIBEOS_HW_WBUF];
+    uint32_t wlen;
+} hw_fd_t;
+
 enum {
     HW_TASK_FREE = 0,
     HW_TASK_READY = 1,
@@ -789,6 +811,9 @@ typedef struct {
     volatile int state;
     int is_user;
     int wait_input;   /* blocked in read() on stdin */
+    uint64_t kstack_base;  /* for reclamation on exit */
+    uint32_t kstack_pages;
+    hw_fd_t fds[VIBEOS_HW_MAX_FDS];
 } hw_task_t;
 
 /* Point the CPU at a task's ring-0 stack: the TSS one is used when ring 3 is
@@ -798,10 +823,12 @@ static void hw_set_kernel_stack(uint64_t top) {
     g_syscall_kstack_top = top;
 }
 
-/* Two contiguous pages when the PMM can give them, one otherwise. */
-static uint64_t hw_alloc_kstack(void) {
+/* Two contiguous pages when the PMM can give them, one otherwise. Reports the
+ * base and page count so the stack can be reclaimed when the task exits. */
+static uint64_t hw_alloc_kstack(uint64_t *out_base, uint32_t *out_pages) {
     uint8_t *p = 0;
     uint64_t size = 8192ull;
+    uint32_t pages = 2u;
 
     if (g_hw_pmm_ready) {
         p = (uint8_t *)vibeos_pmm_alloc_pages(&g_hw_pmm, 2);
@@ -812,11 +839,27 @@ static uint64_t hw_alloc_kstack(void) {
     if (!p) {
         p = (uint8_t *)hw_alloc_page();
         size = 4096ull;
+        pages = 1u;
     }
     if (!p) {
         return 0;
     }
+    if (out_base) {
+        *out_base = (uint64_t)(uintptr_t)p;
+    }
+    if (out_pages) {
+        *out_pages = pages;
+    }
     return (uint64_t)(uintptr_t)p + size;
+}
+
+static void hw_free_kstack(hw_task_t *t) {
+    uint32_t i;
+    for (i = 0; i < t->kstack_pages; i++) {
+        hw_free_page((void *)(uintptr_t)(t->kstack_base + (uint64_t)i * 4096ull));
+    }
+    t->kstack_base = 0;
+    t->kstack_pages = 0;
 }
 
 static hw_task_t g_tasks[VIBEOS_HW_MAX_TASKS];
@@ -921,7 +964,7 @@ static int hw_task_spawn_user(const unsigned char *elf, uint64_t len, uint64_t a
     if (hw_proc_create(&g_tasks[i].proc, elf, len) != 0) {
         return -1;
     }
-    g_tasks[i].kstack_top = hw_alloc_kstack();
+    g_tasks[i].kstack_top = hw_alloc_kstack(&g_tasks[i].kstack_base, &g_tasks[i].kstack_pages);
     if (g_tasks[i].kstack_top == 0) {
         return -1;
     }
@@ -970,6 +1013,8 @@ static void hw_task_exit(uint64_t code) {
      * reachable through the shared kernel identity map, so free it. */
     if (dying >= 0 && g_tasks[dying].is_user) {
         hw_aspace_destroy(&g_tasks[dying].proc.as);
+        /* The kernel stack stays until the parent reaps us: we are still
+         * executing on it right now. */
     }
     vibeos_x86_64_task_enter(&g_tasks[next].ctx); /* does not return */
 }
@@ -986,6 +1031,8 @@ static void hw_task_exit(uint64_t code) {
 #define VIBEOS_EBADF  9
 #define VIBEOS_ENOENT 2
 #define VIBEOS_ECHILD 10
+#define VIBEOS_EMFILE 24
+#define VIBEOS_EIO    5
 
 /* Linux x86-64 syscall numbers we implement. */
 #define LSYS_read   0
@@ -998,6 +1045,10 @@ static void hw_task_exit(uint64_t code) {
 #define LSYS_fork   57
 #define LSYS_wait4  61
 #define LSYS_execve 59
+#define LSYS_open   2
+#define LSYS_close  3
+#define LSYS_lseek  8
+#define LSYS_getdents64 217
 
 static vibeos_compat_runtime_t g_compat_rt;
 
@@ -1048,15 +1099,43 @@ static int hw_user_range_ok(uint64_t va, uint64_t len, int need_write) {
     return 1;
 }
 
+static int hw_copy_user_string(uint64_t uptr, char *dst, int max); /* defined below */
+
+/* Per-process open-file table helpers. fds 0-2 are the console; 3+ are files. */
+static hw_fd_t *hw_fd_get(uint64_t fd) {
+    if (g_current_task < 0 || fd < 3u || fd >= 3u + VIBEOS_HW_MAX_FDS) {
+        return 0;
+    }
+    {
+        hw_fd_t *f = &g_tasks[g_current_task].fds[fd - 3u];
+        return f->used ? f : 0;
+    }
+}
+
 static long hw_sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
     const char *p = (const char *)(uintptr_t)buf;
     uint64_t i;
 
-    if (fd != 1u && fd != 2u) {
-        return -VIBEOS_EBADF; /* only stdout/stderr during bring-up */
-    }
     if (!hw_user_range_ok(buf, len, 0)) {
         return -VIBEOS_EFAULT;
+    }
+    if (fd >= 3u) { /* a file: buffer the bytes, committed on close */
+        hw_fd_t *f = hw_fd_get(fd);
+        uint64_t i2;
+        if (!f || !f->writable) {
+            return -VIBEOS_EBADF;
+        }
+        for (i2 = 0; i2 < len; i2++) {
+            if (f->wlen >= VIBEOS_HW_WBUF) {
+                break;
+            }
+            f->wbuf[f->wlen++] = (uint8_t)p[i2];
+        }
+        f->dirty = 1;
+        return (long)i2;
+    }
+    if (fd != 1u && fd != 2u) {
+        return -VIBEOS_EBADF;
     }
     /* User output goes to both consoles: the serial line (logs, CI) and the
      * display framebuffer (what a user in front of the machine sees). */
@@ -1078,14 +1157,26 @@ static long hw_sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
 static long hw_sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
     uint8_t *dst = (uint8_t *)(uintptr_t)buf;
 
-    if (fd != 0u) {
-        return -VIBEOS_EBADF;
-    }
     if (len == 0u) {
         return 0;
     }
     if (!hw_user_range_ok(buf, len, 1)) {
         return -VIBEOS_EFAULT;
+    }
+    if (fd >= 3u) { /* a file: stream from the filesystem */
+        hw_fd_t *f = hw_fd_get(fd);
+        long n;
+        if (!f) {
+            return -VIBEOS_EBADF;
+        }
+        n = vibeos_x86_64_fat_read_at(f->cluster, f->size, f->pos, dst, (uint32_t)len);
+        if (n > 0) {
+            f->pos += (uint32_t)n;
+        }
+        return n;
+    }
+    if (fd != 0u) {
+        return -VIBEOS_EBADF;
     }
     for (;;) {
         uint64_t copied = 0;
@@ -1096,6 +1187,12 @@ static long hw_sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
         if (c >= 0) {
             while (copied < len && c >= 0) {
                 dst[copied++] = (uint8_t)c;
+                /* Echo what was typed, the way a terminal line discipline does. */
+                if (c == '\n') {
+                    vibeos_x86_64_serial_putc('\r');
+                }
+                vibeos_x86_64_serial_putc((char)c);
+                vibeos_x86_64_fb_putc((char)c);
                 if ((uint8_t)c == '\n') {
                     break; /* line-oriented: stop at newline */
                 }
@@ -1110,6 +1207,129 @@ static long hw_sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
         }
         __asm__ __volatile__("sti; hlt" ::: "memory");
     }
+}
+
+/* open(path, flags): resolve a file (or directory) and take an fd. With a write
+ * flag the file is created/truncated on close from the buffered bytes. */
+static long hw_sys_open(uint64_t path_uptr, uint64_t flags) {
+    char path[64];
+    hw_task_t *t;
+    int i, k;
+
+    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+        return -VIBEOS_EINVAL;
+    }
+    if (hw_copy_user_string(path_uptr, path, sizeof(path)) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    t = &g_tasks[g_current_task];
+    for (i = 0; i < VIBEOS_HW_MAX_FDS; i++) {
+        if (!t->fds[i].used) {
+            break;
+        }
+    }
+    if (i == VIBEOS_HW_MAX_FDS) {
+        return -VIBEOS_EMFILE;
+    }
+    {
+        hw_fd_t *f = &t->fds[i];
+        int writable = ((flags & 1u) != 0u) || ((flags & 0100u) != 0u); /* O_WRONLY|O_CREAT */
+        uint32_t cluster = 0, size = 0;
+
+        if (!writable && vibeos_x86_64_fat_open(path, &cluster, &size) != 0) {
+            return -VIBEOS_ENOENT;
+        }
+        for (k = 0; k < (int)sizeof(f->name) - 1 && path[k]; k++) {
+            f->name[k] = path[k];
+        }
+        f->name[k] = 0;
+        f->cluster = cluster;
+        f->size = size;
+        f->pos = 0;
+        f->dir_index = 0;
+        f->wlen = 0;
+        f->dirty = 0;
+        f->writable = writable;
+        f->used = 1;
+    }
+    return 3 + i;
+}
+
+/* close(fd): commit buffered writes to the filesystem and release the slot. */
+static long hw_sys_close(uint64_t fd) {
+    hw_fd_t *f = hw_fd_get(fd);
+    long rc = 0;
+
+    if (!f) {
+        return -VIBEOS_EBADF;
+    }
+    if (f->writable && f->dirty) {
+        if (vibeos_x86_64_fat_write_file(f->name, f->wbuf, f->wlen) < 0) {
+            rc = -VIBEOS_EIO;
+        }
+    }
+    f->used = 0;
+    return rc;
+}
+
+static long hw_sys_lseek(uint64_t fd, uint64_t off, uint64_t whence) {
+    hw_fd_t *f = hw_fd_get(fd);
+    uint32_t base;
+
+    if (!f) {
+        return -VIBEOS_EBADF;
+    }
+    base = (whence == 1u) ? f->pos : ((whence == 2u) ? f->size : 0u);
+    f->pos = base + (uint32_t)off;
+    return (long)f->pos;
+}
+
+/* getdents64(fd, buf, len): fill Linux dirent64 records from the directory the
+ * fd was opened on, so user space can list a directory. */
+static long hw_sys_getdents64(uint64_t fd, uint64_t buf, uint64_t len) {
+    hw_fd_t *f = hw_fd_get(fd);
+    uint8_t *out = (uint8_t *)(uintptr_t)buf;
+    uint64_t used = 0;
+
+    if (!f) {
+        return -VIBEOS_EBADF;
+    }
+    if (!hw_user_range_ok(buf, len, 1)) {
+        return -VIBEOS_EFAULT;
+    }
+    for (;;) {
+        char name[16];
+        uint32_t fsize = 0;
+        int is_dir = 0, n = 0;
+        uint16_t reclen;
+
+        if (vibeos_x86_64_fat_list(f->name, f->dir_index, name, &fsize, &is_dir) != 0) {
+            break; /* end of directory */
+        }
+        while (name[n]) {
+            n++;
+        }
+        reclen = (uint16_t)((19 + n + 1 + 7) & ~7); /* 8+8+2+1 header, 8-aligned */
+        if (used + reclen > len) {
+            break;
+        }
+        {
+            uint8_t *rec = out + used;
+            int k;
+            for (k = 0; k < reclen; k++) {
+                rec[k] = 0;
+            }
+            rec[16] = (uint8_t)(reclen & 0xFFu);
+            rec[17] = (uint8_t)(reclen >> 8);
+            rec[18] = is_dir ? 4u : 8u; /* DT_DIR / DT_REG */
+            for (k = 0; k < n; k++) {
+                rec[19 + k] = (uint8_t)name[k];
+            }
+        }
+        used += reclen;
+        f->dir_index++;
+    }
+    return (long)used;
 }
 
 /* brk(0) reports the break; brk(addr) grows it, mapping fresh pages. */
@@ -1228,7 +1448,7 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
         child->state = HW_TASK_FREE;
         return -VIBEOS_ENOMEM;
     }
-    child->kstack_top = hw_alloc_kstack();
+    child->kstack_top = hw_alloc_kstack(&child->kstack_base, &child->kstack_pages);
     if (child->kstack_top == 0) {
         child->state = HW_TASK_FREE;
         return -VIBEOS_ENOMEM;
@@ -1275,6 +1495,7 @@ static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr) {
             if (t->state == HW_TASK_ZOMBIE) {
                 uint32_t child_pid = t->pid;
                 uint64_t code = t->exit_code;
+                hw_free_kstack(t);       /* safe here: the task is not running */
                 t->state = HW_TASK_FREE; /* reaped */
                 __asm__ __volatile__("sti");
                 if (status_ptr != 0 && hw_user_range_ok(status_ptr, 4, 1)) {
@@ -1372,6 +1593,14 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
             return hw_sys_fork(frame);
         case LSYS_execve:
             return hw_sys_execve(frame, a1);
+        case LSYS_open:
+            return hw_sys_open(a1, a2);
+        case LSYS_close:
+            return hw_sys_close(a1);
+        case LSYS_lseek:
+            return hw_sys_lseek(a1, a2, a3);
+        case LSYS_getdents64:
+            return hw_sys_getdents64(a1, a2, a3);
         case LSYS_wait4:
             return hw_sys_waitpid(a1, a2);
         case LSYS_write:
@@ -1435,8 +1664,12 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
      * path is exercised on the non-interactive CI console; real keystrokes fill
      * the same ring on hardware. */
     vibeos_x86_64_serial_puts("[KBD] keyboard armed (IRQ1); seeding read() self-test input\n");
-    vibeos_x86_64_keyboard_inject("vibeos\nhelp\necho hello from the shell\n"
-                                  "EFI/BOOT/TASK.ELF\nexit\n");
+    vibeos_x86_64_keyboard_inject("vibeos\n"
+                                  "ls EFI/BOOT\n"
+                                  "write NOTES.TXT persistent hello\n"
+                                  "cat NOTES.TXT\n"
+                                  "EFI/BOOT/TASK.ELF\n"
+                                  "exit\n");
 
     hello_id = hw_task_spawn_user(init_elf, init_len, 0);
     a_id = hw_task_spawn_user(vibeos_user_task_elf, vibeos_user_task_elf_len, 0);

@@ -181,14 +181,16 @@ int vibeos_x86_64_virtio_blk_init(void) {
     return 0;
 }
 
-/* Read one 512-byte sector. buf must be identity-mapped (phys == virt). */
-int vibeos_x86_64_virtio_blk_read(uint64_t sector, void *buf) {
+/* Transfer one 512-byte sector. buf must be identity-mapped (phys == virt).
+ * `write` selects VIRTIO_BLK_T_OUT; the data descriptor is device-writable only
+ * for reads. */
+static int virtio_blk_rw(uint64_t sector, void *buf, int write) {
     uint16_t head;
 
     if (!g_ready || !buf) {
         return -1;
     }
-    g_req.type = 0;      /* VIRTIO_BLK_T_IN (read) */
+    g_req.type = write ? 1u : 0u;   /* OUT (write) / IN (read) */
     g_req.reserved = 0;
     g_req.sector = sector;
     g_status = 0xFF;
@@ -199,7 +201,8 @@ int vibeos_x86_64_virtio_blk_read(uint64_t sector, void *buf) {
     g_desc[0].next = 1;
     g_desc[1].addr = (uint64_t)(uintptr_t)buf;
     g_desc[1].len = 512;
-    g_desc[1].flags = VRING_DESC_F_NEXT | VRING_DESC_F_WRITE;
+    g_desc[1].flags = write ? VRING_DESC_F_NEXT
+                            : (VRING_DESC_F_NEXT | VRING_DESC_F_WRITE);
     g_desc[1].next = 2;
     g_desc[2].addr = (uint64_t)(uintptr_t)&g_status;
     g_desc[2].len = 1;
@@ -229,4 +232,12 @@ int vibeos_x86_64_virtio_blk_read(uint64_t sector, void *buf) {
     (void)vb_inb(g_io_base + VIRTIO_ISR); /* ack */
 
     return (g_status == 0) ? 0 : -1;
+}
+
+int vibeos_x86_64_virtio_blk_read(uint64_t sector, void *buf) {
+    return virtio_blk_rw(sector, buf, 0);
+}
+
+int vibeos_x86_64_virtio_blk_write(uint64_t sector, const void *buf) {
+    return virtio_blk_rw(sector, (void *)(uintptr_t)buf, 1);
 }
