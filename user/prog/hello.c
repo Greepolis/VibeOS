@@ -45,6 +45,7 @@ static const char reaped_ok[] = "parent reaped child with status 7\n";
 static const char exec_path[] = "EFI/BOOT/TASK.ELF";
 static const char exec_done[] = "parent: exec'd child completed\n";
 static const char kbd_prefix[] = "console read: ";
+static const char shell_path[] = "EFI/BOOT/SH.ELF";
 
 void _start(void) {
     long pid, brk0, brk1, map, rejected;
@@ -107,6 +108,17 @@ void _start(void) {
         if (k > 0) {
             user_syscall3(SYS_write, 1, (long)(unsigned long)kbd_prefix, sizeof(kbd_prefix) - 1);
             user_syscall3(SYS_write, 1, (long)(unsigned long)kb, k);
+        }
+    }
+
+    /* Hand off to the shell, the way init does: run it as a child and wait. */
+    {
+        long child = user_syscall3(SYS_fork, 0, 0, 0);
+        if (child == 0) {
+            user_syscall3(SYS_execve, (long)(unsigned long)shell_path, 0, 0);
+            user_syscall3(SYS_exit, 127, 0, 0);
+        } else if (child > 0) {
+            user_syscall3(SYS_wait4, child, 0, 0);
         }
     }
 

@@ -194,6 +194,10 @@ extern long vibeos_x86_64_fat_read_file(const char *name, void *buf, uint32_t bu
 extern void vibeos_x86_64_keyboard_irq(void);
 extern int vibeos_x86_64_keyboard_getc(void);
 extern void vibeos_x86_64_keyboard_inject(const char *s);
+extern int vibeos_x86_64_fb_init(uint64_t base, uint32_t width, uint32_t height);
+extern int vibeos_x86_64_fb_ready(void);
+extern void vibeos_x86_64_fb_putc(char c);
+extern void vibeos_x86_64_fb_puts(const char *s);
 
 /* Init program read from the on-disk filesystem, if present. */
 static uint8_t g_disk_init_elf[65536] __attribute__((aligned(16)));
@@ -1054,6 +1058,8 @@ static long hw_sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
     if (!hw_user_range_ok(buf, len, 0)) {
         return -VIBEOS_EFAULT;
     }
+    /* User output goes to both consoles: the serial line (logs, CI) and the
+     * display framebuffer (what a user in front of the machine sees). */
     vibeos_x86_64_serial_puts("[HW][SYS] write(ring3): ");
     for (i = 0; i < len; i++) {
         char c = p[i];
@@ -1061,6 +1067,7 @@ static long hw_sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
             vibeos_x86_64_serial_putc('\r');
         }
         vibeos_x86_64_serial_putc(c);
+        vibeos_x86_64_fb_putc(c);
     }
     return (long)len;
 }
@@ -1428,7 +1435,8 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
      * path is exercised on the non-interactive CI console; real keystrokes fill
      * the same ring on hardware. */
     vibeos_x86_64_serial_puts("[KBD] keyboard armed (IRQ1); seeding read() self-test input\n");
-    vibeos_x86_64_keyboard_inject("vibeos\n");
+    vibeos_x86_64_keyboard_inject("vibeos\nhelp\necho hello from the shell\n"
+                                  "EFI/BOOT/TASK.ELF\nexit\n");
 
     hello_id = hw_task_spawn_user(init_elf, init_len, 0);
     a_id = hw_task_spawn_user(vibeos_user_task_elf, vibeos_user_task_elf_len, 0);
@@ -1508,6 +1516,20 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
     /* From here the system is scheduled: the kernel itself becomes a task and
      * user tasks are preempted alongside it. */
     hw_pmm_bringup(boot_info);
+
+    /* Display console: render text into the firmware framebuffer, if any. */
+    if (boot_info && vibeos_x86_64_fb_init(boot_info->framebuffer_base,
+                                           boot_info->framebuffer_width,
+                                           boot_info->framebuffer_height) == 0) {
+        vibeos_x86_64_serial_puts("[FB] framebuffer console ready: 0x");
+        vibeos_x86_64_serial_print_hex(boot_info->framebuffer_width);
+        vibeos_x86_64_serial_puts(" x 0x");
+        vibeos_x86_64_serial_print_hex(boot_info->framebuffer_height);
+        vibeos_x86_64_serial_puts("\n");
+        vibeos_x86_64_fb_puts("VibeOS console\n");
+    } else {
+        vibeos_x86_64_serial_puts("[FB] no framebuffer; console is serial-only\n");
+    }
 
     /* Real storage: bring up virtio-blk, mount the FAT filesystem, and load the
      * init program straight from disk (EFI/BOOT/INIT.ELF -> INIT.ELF at root). */

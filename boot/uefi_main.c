@@ -10,7 +10,7 @@
 #include "uefi_boot_info.h"
 #include "uefi_boot_handoff.h"
 
-#define BOOT_INFO_MAX_REGIONS 32
+#define BOOT_INFO_MAX_REGIONS 48   /* room for the firmware map plus the framebuffer MMIO range */
 #define MEMORY_MAP_MAX_ATTEMPTS 3u
 #define EFI_VIBEOS_ERR_PHASE2 0x101ull
 #define EFI_VIBEOS_ERR_KERNEL_FILE 0x102ull
@@ -69,6 +69,8 @@ static int uefi_load_kernel_image(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st,
 /* Entry point for UEFI bootloader */
 EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     vibeos_memory_region_t memory_regions[BOOT_INFO_MAX_REGIONS];
+    uint64_t fb_base = 0;
+    uint32_t fb_width = 0, fb_height = 0;
     uint64_t memory_count = 0;
     uint64_t acpi_rsdp = 0;
     uint64_t smbios_entry = 0;
@@ -99,7 +101,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         uint32_t attempt;
         int memory_map_ok = -1;
         for (attempt = 0; attempt < MEMORY_MAP_MAX_ATTEMPTS; attempt++) {
-            memory_map_ok = uefi_acquire_memory_map(SystemTable, memory_regions, BOOT_INFO_MAX_REGIONS, &memory_count);
+            memory_map_ok = uefi_acquire_memory_map(SystemTable, memory_regions, BOOT_INFO_MAX_REGIONS - 1u, &memory_count);
             if (memory_map_ok == 0) {
                 break;
             }
@@ -188,7 +190,51 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     /* PHASE 4: Allocate and Build boot_info */
     uefi_serial_puts("[BOOT] === PHASE 4: Boot Info Building ===\n");
     
-    if (uefi_boot_info_allocate(SystemTable, memory_regions, memory_count, 
+    /* Discover the Graphics Output Protocol framebuffer before the memory map is
+     * handed to boot_info, and record its range as an MMIO region: boot_info
+     * validation only accepts a framebuffer that the map accounts for. */
+    {
+        typedef struct {
+            uint32_t Version, HorizontalResolution, VerticalResolution, PixelFormat;
+            uint32_t PixelInformation[4];
+            uint32_t PixelsPerScanLine;
+        } GOP_MODE_INFO;
+        typedef struct {
+            uint32_t MaxMode, Mode;
+            GOP_MODE_INFO *Info;
+            uint64_t SizeOfInfo, FrameBufferBase, FrameBufferSize;
+        } GOP_MODE;
+        typedef struct {
+            void *QueryMode, *SetMode, *Blt;
+            GOP_MODE *Mode;
+        } GOP;
+        EFI_GUID gop_guid = {0x9042a9de, 0x23dc, 0x4a38,
+                             {0x96, 0xfb, 0x7a, 0xde, 0xd0, 0x80, 0x51, 0x6a}};
+        GOP *gop = 0;
+
+        if (SystemTable->BootServices->LocateProtocol(&gop_guid, 0, (void **)&gop) == EFI_SUCCESS &&
+            gop && gop->Mode && gop->Mode->Info &&
+            gop->Mode->Info->PixelsPerScanLine == gop->Mode->Info->HorizontalResolution &&
+            memory_count < BOOT_INFO_MAX_REGIONS) {
+            fb_base = gop->Mode->FrameBufferBase;
+            fb_width = gop->Mode->Info->HorizontalResolution;
+            fb_height = gop->Mode->Info->VerticalResolution;
+            memory_regions[memory_count].base = fb_base;
+            memory_regions[memory_count].length = gop->Mode->FrameBufferSize;
+            memory_regions[memory_count].type = VIBEOS_MEMORY_REGION_MMIO;
+            memory_regions[memory_count].reserved = 0;
+            memory_count++;
+            uefi_serial_puts("[BOOT] framebuffer: ");
+            uefi_log_u64(fb_width);
+            uefi_serial_puts(" x ");
+            uefi_log_u64(fb_height);
+            uefi_serial_puts("\n");
+        } else {
+            uefi_serial_puts("[WARN] no usable GOP framebuffer; console stays serial-only\n");
+        }
+    }
+
+    if (uefi_boot_info_allocate(SystemTable, memory_regions, memory_count,
                                  acpi_rsdp, smbios_entry, &kernel_plan,
                                  &kernel_struct, &boot_info) != 0) {
         uefi_serial_puts("[ERROR] Boot info allocation failed\n");
@@ -219,6 +265,13 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         } else {
             uefi_serial_puts("[WARN] INIT.ELF not found; kernel will use its built-in program\n");
         }
+    }
+
+    /* Publish the framebuffer discovered before the memory map was handed over.
+     * Its MMIO range was added to the map above, so validation accepts it. */
+    if (fb_base != 0 &&
+        vibeos_bootloader_set_framebuffer(boot_info, fb_base, fb_width, fb_height) != 0) {
+        uefi_serial_puts("[WARN] framebuffer rejected by boot_info; console stays serial-only\n");
     }
 
     /* Finalize and validate boot_info */

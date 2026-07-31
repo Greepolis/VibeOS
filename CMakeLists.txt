@@ -133,6 +133,7 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         kernel/arch/x86_64/virtio_blk.c
         kernel/arch/x86_64/fat.c
         kernel/arch/x86_64/keyboard.c
+        kernel/arch/x86_64/fb.c
         # Freestanding mem* runtime: the kernel image links -nostdlib, and some
         # compilers (notably Clang) lower struct copies to memcpy/memset calls
         # that GCC inlines. Provide the implementations so the image links on
@@ -184,6 +185,22 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         VERBATIM
     )
     target_sources(vibeos_kernel PRIVATE "${VIBEOS_USER_BLOB}")
+
+    # Third user program: the shell (staged on media, exec-ed by init).
+    add_executable(vibeos_user_sh user/prog/sh.c)
+    target_compile_options(vibeos_user_sh PRIVATE
+        -ffreestanding -fno-stack-protector -fno-pic -mno-red-zone
+        -mcmodel=large
+        -fno-strict-aliasing -Wall -Wextra
+    )
+    target_link_options(vibeos_user_sh PRIVATE
+        -nostdlib -no-pie
+        -Wl,-e,_start
+        -Wl,-T,${CMAKE_CURRENT_SOURCE_DIR}/user/prog/user.ld
+    )
+    set_target_properties(vibeos_user_sh PROPERTIES
+        LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/user/prog/user.ld"
+    )
 
     # Second user program: a looping task for the preemptive scheduler demo.
     add_executable(vibeos_user_task user/prog/task.c)
@@ -374,7 +391,7 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
     add_custom_target(vibeos_boot_image
         COMMAND ${CMAKE_COMMAND} -E echo "Creating EFI media layout..."
         COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/create_boot_image.cmake
-        DEPENDS vibeos_kernel_elf vibeos_bootloader_efi vibeos_user_hello vibeos_user_task
+        DEPENDS vibeos_kernel_elf vibeos_bootloader_efi vibeos_user_hello vibeos_user_task vibeos_user_sh
         COMMENT "Generating bootable kernel image"
     )
     
