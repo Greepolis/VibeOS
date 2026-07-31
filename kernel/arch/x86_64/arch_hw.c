@@ -433,11 +433,28 @@ static void hw_write_cr3(uint64_t pml4_phys) {
 
 /* Allocate one zeroed page frame. Frames must live inside the identity-mapped
  * window, since the kernel reaches page tables and process images through it. */
+/* Freelist of reclaimed 4 KiB pages; the link is stored in the page itself.
+ * This gives real reclamation (address spaces freed on exit/exec) without
+ * needing a free path in the portable PMM. */
+static void *g_free_pages;
+
+static void hw_free_page(void *p) {
+    if (!p) {
+        return;
+    }
+    *(void **)p = g_free_pages;
+    g_free_pages = p;
+}
+
 static void *hw_alloc_page(void) {
     uint8_t *p = 0;
     uint32_t i;
 
-    if (g_hw_pmm_ready) {
+    if (g_free_pages) {
+        p = (uint8_t *)g_free_pages;
+        g_free_pages = *(void **)g_free_pages;
+    }
+    if (!p && g_hw_pmm_ready) {
         p = (uint8_t *)vibeos_pmm_alloc_page(&g_hw_pmm);
         if (p && ((uint64_t)(uintptr_t)p + 4096ull) > VIBEOS_HW_IDENTITY_LIMIT) {
             p = 0; /* outside the identity map: unusable this early */
@@ -507,6 +524,45 @@ static int hw_aspace_create(vibeos_hw_aspace_t *as) {
     }
     as->pml4[0] = (uint64_t)(uintptr_t)&g_pdpt[0] | PTE_PRESENT | PTE_WRITE; /* no PTE_USER */
     return 0;
+}
+
+/* Free an address space: the user subtree (PML4 slot 1 - pages and the tables
+ * that map them) and the PML4 itself. The shared kernel identity map (slot 0)
+ * is static and never freed. Must not be called while this CR3 is active. */
+static void hw_aspace_destroy(vibeos_hw_aspace_t *as) {
+    uint64_t *pdpt;
+    uint32_t i, j, k;
+
+    if (!as->pml4) {
+        return;
+    }
+    if (as->pml4[1] & PTE_PRESENT) {
+        pdpt = (uint64_t *)(uintptr_t)(as->pml4[1] & 0x000FFFFFFFFFF000ull);
+        for (i = 0; i < 512u; i++) {
+            uint64_t *pd;
+            if ((pdpt[i] & PTE_PRESENT) == 0) {
+                continue;
+            }
+            pd = (uint64_t *)(uintptr_t)(pdpt[i] & 0x000FFFFFFFFFF000ull);
+            for (j = 0; j < 512u; j++) {
+                uint64_t *pt;
+                if ((pd[j] & PTE_PRESENT) == 0) {
+                    continue;
+                }
+                pt = (uint64_t *)(uintptr_t)(pd[j] & 0x000FFFFFFFFFF000ull);
+                for (k = 0; k < 512u; k++) {
+                    if (pt[k] & PTE_PRESENT) {
+                        hw_free_page((void *)(uintptr_t)(pt[k] & 0x000FFFFFFFFFF000ull));
+                    }
+                }
+                hw_free_page(pt);
+            }
+            hw_free_page(pd);
+        }
+        hw_free_page(pdpt);
+    }
+    hw_free_page(as->pml4);
+    as->pml4 = 0;
 }
 
 /* Build the kernel's page tables: identity-map the first N GiB with 2 MiB
@@ -698,7 +754,8 @@ enum {
     HW_TASK_FREE = 0,
     HW_TASK_READY = 1,
     HW_TASK_RUNNING = 2,
-    HW_TASK_ZOMBIE = 3
+    HW_TASK_ZOMBIE = 3,
+    HW_TASK_BLOCKED = 4   /* waiting for an event; not schedulable until woken */
 };
 
 extern void vibeos_x86_64_task_enter(vibeos_x86_64_isr_frame_t *task);
@@ -854,18 +911,25 @@ static int hw_task_spawn_user(const unsigned char *elf, uint64_t len, uint64_t a
  * from the syscall path, so it enters the next task directly and never returns
  * to the caller. */
 static void hw_task_exit(uint64_t code) {
-    int next;
+    int dying = g_current_task;
+    int next, i;
 
-    if (g_current_task >= 0) {
-        g_tasks[g_current_task].state = HW_TASK_ZOMBIE;
-        g_tasks[g_current_task].exit_code = code;
+    if (dying >= 0) {
+        g_tasks[dying].state = HW_TASK_ZOMBIE;
+        g_tasks[dying].exit_code = code;
         vibeos_x86_64_serial_puts("[SCHED] task pid=0x");
-        vibeos_x86_64_serial_print_hex(g_tasks[g_current_task].pid);
+        vibeos_x86_64_serial_print_hex(g_tasks[dying].pid);
         vibeos_x86_64_serial_puts(" exited code=0x");
         vibeos_x86_64_serial_print_hex(code);
         vibeos_x86_64_serial_puts("\n");
+        /* Wake a parent blocked in waitpid on this child. */
+        for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+            if (g_tasks[i].state == HW_TASK_BLOCKED && g_tasks[i].pid == g_tasks[dying].ppid) {
+                g_tasks[i].state = HW_TASK_READY;
+            }
+        }
     }
-    next = hw_pick_next(g_current_task < 0 ? 0 : g_current_task);
+    next = hw_pick_next(dying < 0 ? 0 : dying);
     if (next < 0) {
         vibeos_x86_64_serial_puts("[SCHED] no runnable task; halting\n");
         for (;;) {
@@ -875,6 +939,12 @@ static void hw_task_exit(uint64_t code) {
     g_current_task = next;
     g_tasks[next].state = HW_TASK_RUNNING;
     hw_write_cr3(g_tasks[next].cr3);
+    hw_set_kernel_stack(g_tasks[next].kstack_top);
+    /* Now on the next task's CR3; the dying user address space is still
+     * reachable through the shared kernel identity map, so free it. */
+    if (dying >= 0 && g_tasks[dying].is_user) {
+        hw_aspace_destroy(&g_tasks[dying].proc.as);
+    }
     vibeos_x86_64_task_enter(&g_tasks[next].ctx); /* does not return */
 }
 
@@ -889,6 +959,7 @@ static void hw_task_exit(uint64_t code) {
 #define VIBEOS_ENOMEM 12
 #define VIBEOS_EBADF  9
 #define VIBEOS_ENOENT 2
+#define VIBEOS_ECHILD 10
 
 /* Linux x86-64 syscall numbers we implement. */
 #define LSYS_read   0
@@ -1117,10 +1188,10 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
     return (long)child->pid;
 }
 
-/* waitpid(): reap a finished child, optionally storing its status. Waits by
- * idling with interrupts enabled, so the scheduler keeps running the child;
- * this is safe because every task has its own ring-0 stack. A proper wait
- * queue (descheduling the parent) is the natural refinement. */
+/* waitpid(): reap a finished child. Blocks the caller (state BLOCKED, so the
+ * scheduler stops running it) until a child exit wakes it, instead of spinning.
+ * The check-and-block is done under cli so a child exit cannot slip in between
+ * (lost wakeup); `sti; hlt` then parks the task with interrupts enabled. */
 static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr) {
     uint32_t mypid;
 
@@ -1133,6 +1204,7 @@ static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr) {
         int i;
         int have_children = 0;
 
+        __asm__ __volatile__("cli");
         for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
             hw_task_t *t = &g_tasks[i];
             if (t->ppid != mypid || t->state == HW_TASK_FREE) {
@@ -1145,6 +1217,7 @@ static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr) {
                 uint32_t child_pid = t->pid;
                 uint64_t code = t->exit_code;
                 t->state = HW_TASK_FREE; /* reaped */
+                __asm__ __volatile__("sti");
                 if (status_ptr != 0 && hw_user_range_ok(status_ptr, 4, 1)) {
                     *(volatile int *)(uintptr_t)status_ptr = (int)((code & 0xFFull) << 8);
                 }
@@ -1153,9 +1226,11 @@ static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr) {
             have_children = 1;
         }
         if (!have_children) {
-            return -VIBEOS_EINVAL; /* no such child */
+            __asm__ __volatile__("sti");
+            return -VIBEOS_ECHILD;
         }
-        /* Idle until the next timer tick; the child runs meanwhile. */
+        /* Block until a child exit sets us READY again (see hw_task_exit). */
+        g_tasks[g_current_task].state = HW_TASK_BLOCKED;
         __asm__ __volatile__("sti; hlt" ::: "memory");
     }
 }
@@ -1204,8 +1279,13 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr) 
     }
 
     t = &g_tasks[g_current_task];
-    t->proc = np;                    /* old address space leaks (no free yet) */
-    t->cr3 = hw_proc_cr3(&t->proc);
+    {
+        vibeos_hw_aspace_t old_as = t->proc.as; /* reclaim after switching CR3 */
+        t->proc = np;
+        t->cr3 = hw_proc_cr3(&t->proc);
+        hw_write_cr3(t->cr3);
+        hw_aspace_destroy(&old_as);             /* old CR3 no longer active */
+    }
 
     for (k = 0; k < (uint32_t)sizeof(*frame); k++) {
         ((uint8_t *)(void *)frame)[k] = 0;
@@ -1215,8 +1295,6 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr) 
     frame->rflags = 0x202;
     frame->rsp = VIBEOS_HW_USER_STACK_TOP;
     frame->ss = VIBEOS_HW_USER_DATA_SEL;
-
-    hw_write_cr3(t->cr3);
     return 0; /* frame replaced; syscall return enters the new image */
 }
 
