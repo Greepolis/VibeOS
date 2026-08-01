@@ -14,9 +14,10 @@ Last review: 2026-08-01
 - User networking programs and the QEMU CLI smoke path exercise the on-metal network route rather than only the host simulation model.
 - The receive path rejects invalid TCP checksums and non-zero invalid UDP checksums before dispatching payloads; TCP handshake transitions require an acknowledgement for the transmitted sequence number.
 - Host regressions cover DHCP OFFER/ACK processing, DNS A response parsing, TCP retransmission and close paths, plus malformed L4 checksum rejection.
+- DNS keeps a bounded eight-entry positive cache with TTL clamping; cache hits are resolved without a new packet transmission.
 
 ## Pending
-- DHCP lease renew/rebind/expiry, concurrent DNS queries with TTL/negative cache, complete TCP state/error handling, firewall policy and robust recovery semantics.
+- DHCP lease renew/rebind/expiry, concurrent DNS queries and negative cache, complete TCP state/error handling, firewall policy and robust recovery semantics.
 - Packet-path performance instrumentation, queueing policy and concurrency hardening.
 
 ## Next checkpoint

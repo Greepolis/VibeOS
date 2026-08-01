@@ -19,6 +19,7 @@
 
 #define VIBEOS_INET_MAX_SOCKETS 16u
 #define VIBEOS_INET_ARP_ENTRIES 8u
+#define VIBEOS_INET_DNS_CACHE_ENTRIES 8u
 #define VIBEOS_INET_MTU 1514u        /* Ethernet frame incl. header, no FCS */
 #define VIBEOS_INET_RXBUF 4096u      /* per-socket receive buffer            */
 #define VIBEOS_INET_TXBUF 4096u      /* per-socket unacknowledged send data  */
@@ -60,6 +61,13 @@ typedef struct vibeos_arp_entry {
     uint8_t valid;
     uint64_t expires_ms;
 } vibeos_arp_entry_t;
+
+typedef struct vibeos_dns_cache_entry {
+    char name[64];
+    uint32_t ip;
+    uint64_t expires_ms;
+    uint8_t valid;
+} vibeos_dns_cache_entry_t;
 
 typedef struct vibeos_inet_socket {
     uint8_t type;            /* VIBEOS_INET_SOCK_*                          */
@@ -140,6 +148,7 @@ typedef struct vibeos_inet {
     uint8_t dns_done;
     uint32_t dns_result;
     char dns_name[64];
+    vibeos_dns_cache_entry_t dns_cache[VIBEOS_INET_DNS_CACHE_ENTRIES];
 
     /* Counters, so the system can report what the link actually did. */
     uint64_t rx_frames;

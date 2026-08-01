@@ -650,6 +650,52 @@ static uint32_t dns_encode_name(uint8_t *out, const char *name) {
     return o;
 }
 
+static int dns_name_equal(const char *a, const char *b) {
+    uint32_t i;
+    for (i = 0; i < 64u; i++) {
+        if (a[i] != b[i]) {
+            return 0;
+        }
+        if (a[i] == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void dns_cache_store(vibeos_inet_t *net, uint32_t ip, uint32_t ttl_seconds) {
+    uint32_t i;
+    uint32_t slot = 0;
+    uint64_t ttl_ms;
+
+    /* Keep cache residency bounded even when an upstream response advertises
+     * an unrealistic TTL. */
+    if (ttl_seconds == 0u) {
+        return;
+    }
+    if (ttl_seconds > 86400u) {
+        ttl_seconds = 86400u;
+    }
+    for (i = 0; i < VIBEOS_INET_DNS_CACHE_ENTRIES; i++) {
+        if (net->dns_cache[i].valid && dns_name_equal(net->dns_cache[i].name, net->dns_name)) {
+            slot = i;
+            break;
+        }
+        if (!net->dns_cache[i].valid || net->dns_cache[i].expires_ms <= net->now_ms) {
+            slot = i;
+            break;
+        }
+    }
+    ttl_ms = (uint64_t)ttl_seconds * 1000ull;
+    for (i = 0; i < sizeof(net->dns_cache[slot].name) - 1u && net->dns_name[i]; i++) {
+        net->dns_cache[slot].name[i] = net->dns_name[i];
+    }
+    net->dns_cache[slot].name[i] = 0;
+    net->dns_cache[slot].ip = ip;
+    net->dns_cache[slot].expires_ms = net->now_ms + ttl_ms;
+    net->dns_cache[slot].valid = 1;
+}
+
 int vibeos_inet_resolve(vibeos_inet_t *net, const char *name) {
     uint8_t q[300];
     uint32_t n;
@@ -662,6 +708,16 @@ int vibeos_inet_resolve(vibeos_inet_t *net, const char *name) {
         net->dns_name[i] = name[i];
     }
     net->dns_name[i] = 0;
+    for (i = 0; i < VIBEOS_INET_DNS_CACHE_ENTRIES; i++) {
+        vibeos_dns_cache_entry_t *entry = &net->dns_cache[i];
+        if (entry->valid && entry->expires_ms > net->now_ms &&
+            dns_name_equal(entry->name, net->dns_name)) {
+            net->dns_pending = 0;
+            net->dns_done = 1;
+            net->dns_result = entry->ip;
+            return 0;
+        }
+    }
 
     net->dns_id = (uint16_t)(net->dns_id + 0x1234u + 1u);
     net->dns_pending = 1;
@@ -727,11 +783,13 @@ static void dns_input(vibeos_inet_t *net, const uint8_t *b, uint32_t len) {
     }
     for (i = 0; i < an && o + 10u <= len; i++) {
         uint16_t rtype, rdlen;
+        uint32_t ttl;
         o = dns_skip_name(b, len, o);
         if (o + 10u > len) {
             break;
         }
         rtype = rd16(b + o);
+        ttl = rd32(b + o + 4u);
         rdlen = rd16(b + o + 8u);
         o += 10u;
         if (o + rdlen > len) {
@@ -739,6 +797,7 @@ static void dns_input(vibeos_inet_t *net, const uint8_t *b, uint32_t len) {
         }
         if (rtype == 1u && rdlen == 4u) {
             net->dns_result = rd32(b + o);
+            dns_cache_store(net, net->dns_result, ttl);
             net->dns_pending = 0;
             net->dns_done = 1;
             return;

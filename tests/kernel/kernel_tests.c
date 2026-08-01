@@ -3953,6 +3953,13 @@ static int test_inet_dhcp_and_dns(void) {
     if (vibeos_inet_resolve_result(&net, &answer_ip) != 0 || answer_ip != 0xC0000201u) {
         return -1;
     }
+    {
+        uint32_t frames_before = cap.count;
+        if (vibeos_inet_resolve(&net, "example.test") != 0 || cap.count != frames_before ||
+            vibeos_inet_resolve_result(&net, &answer_ip) != 0 || answer_ip != 0xC0000201u) {
+            return -1;
+        }
+    }
     return 0;
 }
 
