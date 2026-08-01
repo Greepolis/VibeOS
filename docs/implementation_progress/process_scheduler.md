@@ -1,7 +1,7 @@
 # Process Scheduler Progress
 
-Status: In Progress (real preemptive multitasking verified in QEMU)
-Last review: 2026-07-22
+Status: In Progress (preemptive SMP runtime verified)
+Last review: 2026-08-01
 
 ## Implemented
 - **Real on-metal preemptive round-robin scheduler** (`kernel/arch/x86_64/arch_hw.c` + `isr.S`): the timer IRQ (IRQ0) saves the interrupted task and restores the next by rewriting the live interrupt frame; `sched_start` launches the first task and `ring3_resume` returns to the kernel when the demo's bounded switch budget is reached. Verified in QEMU (GCC and Clang): two ring-3 user tasks (loaded from the embedded `task` ELF, distinct ids/stacks) interleave A/B under timer preemption (`SCHED_OK`). This is the hardware mechanism; it will be driven by the portable scheduler model below and gain per-process address spaces.
@@ -13,11 +13,14 @@ Last review: 2026-07-22
 - Starvation tick and starvation-boost utilities for runnable threads.
 - QoS summary metrics (rebalance passes/moves, affinity misses, boosts).
 - CPU load snapshot API (`vibeos_sched_load_snapshot`) for deterministic benchmark/telemetry hooks.
+- Local APIC and AP startup support bring additional CPUs online; each core enters the runtime scheduling path in QEMU.
+- Runtime task lifecycle includes per-task kernel stacks, fork, `execve`, blocking `waitpid`, exit handling and address-space reclamation.
 
 ## Pending
 - Topology/NUMA-aware placement strategy.
 - Better priority/wake fairness policy under heavy contention.
 - Runqueue lock/atomic model definition for true parallel execution path.
+- Remove the current bounded demonstration scheduler assumptions and bind all runtime scheduling decisions to the portable runqueue policy.
 
 ## Next checkpoint
-- Introduce topology-aware balancing policy and benchmark hooks for scheduler regressions.
+- Define the runqueue locking/atomic contract for concurrent AP scheduling, then add contention and fairness regression coverage.

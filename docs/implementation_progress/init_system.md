@@ -1,7 +1,7 @@
 # Init System Progress
 
 Status: In Progress
-Last review: 2026-05-09
+Last review: 2026-08-01
 
 ## Implemented
 - Init service bootstrap stub in `user/init/init_system.c`.
@@ -11,9 +11,10 @@ Last review: 2026-05-09
 - Restart-class policy controls for core vs optional services (`vibeos_init_restart_policy`, `vibeos_init_restart_note`, `vibeos_init_restart_allowed`).
 
 ## Pending
+- The runtime boot path still starts fixed user ELF programs; it is not yet a supervised init process.
 - Declarative/service-config source of truth for init graph nodes (currently call-site supplied).
 - Restart/backoff policies with stronger failure domains.
 - Declarative init configuration format and validation.
 
 ## Next checkpoint
-- Add dependency-aware init graph execution with restart class policies.
+- Replace fixed runtime program selection with ring-3 init execution and service supervision.

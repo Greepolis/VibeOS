@@ -1,14 +1,14 @@
 # System Call Interface Progress
 
-Status: In Progress (real ring-3 syscall entry verified in QEMU)
-Last review: 2026-07-22
+Status: In Progress (ring-3 Linux-ABI subset verified)
+Last review: 2026-08-01
 
 ## Implemented
 - **Real on-metal ring-3 -> ring-0 syscall entry** (`kernel/arch/x86_64/arch_hw.c` + `isr.S`), two paths into one Linux-ABI dispatcher (`vibeos_x86_64_linux_syscall`):
   - **Native `syscall`/`sysret`** (the real Linux x86-64 fast path): EFER.SCE enabled, STAR/LSTAR/SFMASK programmed, and an LSTAR trampoline that switches to a kernel stack, marshals the Linux ABI (nr in rax; args in rdi/rsi/rdx) into the C ABI, dispatches, and `sysretq`s back to ring 3.
   - **`int 0x80` gate** (DPL 3) as a legacy/bring-up path into the same dispatcher.
   - User GDT segments ordered data-then-code (for SYSRET) + a TSS with RSP0.
-  - Linux syscall translation so far: `write`(1) -> serial, `getpid`(39), `exit`(60)/`exit_group`(231) -> return to kernel; unknown -> `-ENOSYS`.
+  - Linux syscall translation now covers the runtime subset used by the user programs, including console I/O, process lifecycle and FAT-backed file operations; unsupported calls return `-ENOSYS`.
   - Verified in QEMU (GCC and Clang): a **real user ELF** is loaded (see `kernel/arch/x86_64/elf_load.c`), run in ring 3, and prints via a native `syscall`, then `exit` returns cleanly to the kernel. This hardware front end will route into the portable dispatcher and the Linux personality (`user/compat/linux`) next.
 - Central syscall dispatcher in `kernel/core/syscall.c` (portable model).
 - ABI helper mappings in `include/vibeos/syscall_abi.h`.
@@ -18,11 +18,13 @@ Last review: 2026-07-22
 - Waitset ownership/stats/wake-policy syscall paths.
 - Security/audit/policy control syscalls with kernel-vs-user authorization checks.
 - ABI version/compatibility syscalls (`VIBEOS_SYSCALL_ABI_VERSION_GET`, `VIBEOS_SYSCALL_ABI_COMPAT_CHECK`) with compatibility helpers in `syscall_abi.h`.
+- The on-metal dispatcher validates user pointers before dereference for the implemented Linux-ABI subset.
 
 ## Pending
 - Stronger multi-tenant authorization model beyond relation-based checks.
 - Syscall ABI versioning strategy with compatibility negotiation.
 - Per-syscall latency telemetry and regression thresholds.
+- Consolidate the hardware Linux-ABI dispatcher and portable syscall policy dispatcher behind one audited authorization boundary.
 
 ## Next checkpoint
-- Extend ABI negotiation from major-version compatibility to per-feature negotiation for optional syscall families.
+- Consolidate the runtime and portable dispatch paths, then add negative pointer/permission tests for every exposed syscall.

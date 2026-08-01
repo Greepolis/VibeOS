@@ -1,7 +1,7 @@
 # Bootloader Progress
 
 Status: Completed (Phase 4 boot-to-CLI verified)
-Last review: 2026-05-23
+Last review: 2026-08-01
 
 ## Implemented
 - UEFI entry path and protocol wrappers in `boot/uefi_main.c` and `boot/uefi_protocol.c`.

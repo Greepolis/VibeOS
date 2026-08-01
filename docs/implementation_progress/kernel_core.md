@@ -1,7 +1,7 @@
 # Kernel Core Progress
 
-Status: In Progress (Foundation fault-handling model verified)
-Last review: 2026-07-01
+Status: In Progress (ring-3 runtime and shell baseline verified)
+Last review: 2026-08-01
 
 ## Implemented
 - Boot stage orchestration in `kernel/core/kmain.c`.
@@ -15,13 +15,17 @@ Last review: 2026-07-01
 - Kernel observability baseline: fixed-size in-memory ring log (`vibeos_log_t`) records boot milestones and fatal boot failures without dynamic allocation.
 - Bootstrap CLI exposes `log` and extends `status` with log counters for QEMU/serial diagnostics.
 - Foundation fault-handling model: `vibeos_kernel_dispatch_trap` turns user-mode faults into non-fatal current-process termination and kernel-mode faults into fatal panic state, both recorded in the kernel ring log.
+- x86_64 runtime bring-up now owns paging, GDT/TSS, IDT, timer and syscall entry before starting ring-3 work in `kernel/arch/x86_64/arch_hw.c`.
+- A real user ELF can be loaded from the boot volume, forked/replaced, waited for and returned to the kernel without relying on the original kernel-space CLI path.
+- The runtime provides framebuffer and serial console paths; `/BIN/SH` supplies the interactive shell baseline.
 
 ## Pending
 - Stronger failure-mode recovery between bring-up phases.
 - Runtime hardware page-fault entry wiring from the x86_64 IDT/assembly path into the kernel trap decision API.
 - More explicit stage rollback behavior for partial init failures.
 - Deeper boot-time configuration profile support (debug/perf/hardened) across runtime tunables.
-- Real ring3 `/sbin/init` handoff; the current CLI remains kernel-space bootstrap/rescue only.
+- A supervised, persistent user-space init/service-manager handoff; the current boot flow launches fixed demonstration and shell programs.
+- Crash-dump persistence, recovery policy and production panic containment.
 
 ## Next checkpoint
-- Add the x86_64 ring3 transition/TSS groundwork and connect real exception frames to the verified trap decision path.
+- Route the live runtime task/process state through the portable kernel core, rather than maintaining bring-up-specific runtime state in `arch_hw.c`.
