@@ -149,6 +149,8 @@ void _start(void) {
         char *args;
         int i;
 
+        /* Prompt, then block until the console hands us a line. The kernel
+         * echoes keystrokes and handles editing, so this just reads. */
         put("$ ");
         n = sys3(SYS_read, 0, (long)(unsigned long)line, (long)sizeof(line) - 1);
         if (n <= 0) {
@@ -166,6 +168,7 @@ void _start(void) {
         if (line[0] == 0) {
             continue;
         }
+        /* First word selects the command, the rest is its argument text. */
         args = split_word(line);
 
         if (seq(line, "help")) {

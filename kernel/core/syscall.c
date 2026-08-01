@@ -146,6 +146,9 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
         }
     }
 
+    /* Dispatch on the syscall id. Every case validates its own arguments
+     * and writes its result into the frame; a case that returns non-zero
+     * reports a dispatch-level failure rather than a syscall error. */
     switch ((vibeos_syscall_id_t)frame->id) {
         case VIBEOS_SYSCALL_NOP:
             frame->result = 0;

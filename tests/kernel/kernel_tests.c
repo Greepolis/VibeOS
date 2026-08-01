@@ -683,6 +683,8 @@ static int test_interrupts(void) {
 static int test_syscalls(void) {
     vibeos_kernel_t kernel;
     vibeos_syscall_frame_t frame;
+    /* Two threads in two processes: enough to exercise ownership checks,
+     * which are what most of the syscall error paths turn on. */
     vibeos_thread_t sthread1 = { .id = 101, .cpu_hint = 0, .klass = VIBEOS_THREAD_NORMAL, .timeslice_ticks = 1 };
     vibeos_thread_t sthread2 = { .id = 102, .cpu_hint = 1, .klass = VIBEOS_THREAD_NORMAL, .timeslice_ticks = 2 };
     uint32_t pid1 = 0;
@@ -1613,6 +1615,8 @@ static int test_user_api_and_bootloader(void) {
     uint64_t usable = 0;
     uint64_t usable_regions = 0;
     uint32_t has_overlap = 0;
+    /* One usable region and one MMIO region: the smallest map that still
+     * exercises the type filtering the summaries depend on. */
     memset(&kernel, 0, sizeof(kernel));
     regions[0].base = 0x200000;
     regions[0].length = 0x100000;
@@ -1825,6 +1829,9 @@ static int test_bootloader_firmware_tags_and_pe_plan(void) {
     memset(elf_image, 0, sizeof(elf_image));
     memset(elf_invalid, 0, sizeof(elf_invalid));
 
+    /* A usable region plus an MMIO region above it: firmware pointers that
+     * land in MMIO must be rejected, which is what the tag checks below
+     * depend on. */
     regions[0].base = 0x100000;
     regions[0].length = 0x800000;
     regions[0].type = VIBEOS_MEMORY_REGION_USABLE;

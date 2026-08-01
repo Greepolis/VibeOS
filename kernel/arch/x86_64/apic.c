@@ -162,8 +162,10 @@ int vibeos_x86_64_acpi_init(uint64_t rsdp_addr) {
         }
     }
     if (sdt == 0) {
+        /* RsdtAddress is a 32-bit field, so it is always below 4 GiB and
+         * always inside the identity map; only the null case can fail. */
         uint64_t rsdt = (uint64_t)ld32(rsdp + 16);
-        if (rsdt == 0u || rsdt >= 0x100000000ull) {
+        if (rsdt == 0u) {
             vibeos_x86_64_serial_puts("[ACPI] no usable RSDT/XSDT\n");
             return -1;
         }

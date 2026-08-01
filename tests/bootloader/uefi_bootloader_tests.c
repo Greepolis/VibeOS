@@ -502,7 +502,10 @@ static int test_firmware_table_discovery_paths(void) {
     /* Static: setup_mock_context() publishes its address in a file-scope
      * pointer that outlives this function, so it must not be a stack local. */
     static mock_uefi_ctx_t ctx;
-    EFI_CONFIGURATION_TABLE_ENTRY tables[3];
+    /* Static for the same reason ctx is: ctx.system_table points at this
+     * array and outlives the call, so a stack array would leave a dangling
+     * pointer behind. */
+    static EFI_CONFIGURATION_TABLE_ENTRY tables[3];
     uint64_t acpi_rsdp = 0;
     uint64_t smbios_entry = 0;
 

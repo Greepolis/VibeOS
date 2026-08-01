@@ -297,6 +297,8 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
     kernel->boot_state.last_error_code = 0;
     kernel->boot_health_flags = 0;
     kernel->boot_failure_fatal = 0;
+    /* Logging first: every later step reports through it, so a failure
+     * after this point is visible rather than silent. */
     if (vibeos_log_init(&kernel->log) != 0) {
         vibeos_x86_64_serial_puts("[BOOT] FATAL: log_init failed\n");
         return -1;
@@ -305,6 +307,8 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
     kernel_boot_log(kernel, VIBEOS_LOG_INFO, 1, 0, 0, "kernel_boot_start");
     vibeos_event_init(&kernel->boot_event);
 
+    /* Physical memory next: the frame allocator underpins everything that
+     * follows, and it can only be built from the firmware memory map. */
     if (vibeos_pmm_init_from_boot_info(&kernel->pmm, boot_info, 4096) != 0) {
         return kernel_boot_fail(kernel, 1001, "pmm_init failed");
     }
@@ -315,6 +319,7 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
     kernel_boot_log(kernel, VIBEOS_LOG_INFO, 100, kernel->pmm.page_size, vibeos_pmm_remaining(&kernel->pmm), "pmm_ready");
     vibeos_x86_64_serial_puts("[BOOT] Memory manager initialized\n");
     
+    /* Virtual memory on top of the frame allocator. */
     if (vibeos_vm_init(&kernel->kernel_aspace) != 0) {
         return kernel_boot_fail(kernel, 1003, "vm_init failed");
     }
@@ -340,6 +345,8 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
     kernel_boot_log(kernel, VIBEOS_LOG_INFO, 102, kernel->boot_health_flags, 0, "memory_stage_ready");
     vibeos_x86_64_serial_puts("[BOOT] Memory stage ready\n");
 
+    /* The scheduler last: it needs memory and a live timer before it can
+     * put anything on a run queue. */
     if (vibeos_sched_init(&kernel->scheduler, 1) != 0) {
         return kernel_boot_fail(kernel, 1002, "sched_init failed");
     }

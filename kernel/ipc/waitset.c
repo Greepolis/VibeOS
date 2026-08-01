@@ -79,11 +79,15 @@ static int waitset_collect_signaled(vibeos_waitset_t *waitset, size_t *out_indic
                 if (!ev || !vibeos_event_is_signaled(ev)) {
                     continue;
                 }
+                /* Read the priority once, up front. Keeping the array access
+                 * out of the comparison also stops the `i < best_idx`
+                 * tie-break from reading like a bounds check on i. */
+                uint8_t prio = waitset->event_priority[i];
                 if (best_idx == VIBEOS_WAITSET_MAX_EVENTS ||
-                    waitset->event_priority[i] > best_priority ||
-                    (waitset->event_priority[i] == best_priority && i < best_idx)) {
+                    prio > best_priority ||
+                    (prio == best_priority && i < best_idx)) {
                     best_idx = i;
-                    best_priority = waitset->event_priority[i];
+                    best_priority = prio;
                 }
             }
             if (best_idx == VIBEOS_WAITSET_MAX_EVENTS) {
@@ -98,6 +102,8 @@ static int waitset_collect_signaled(vibeos_waitset_t *waitset, size_t *out_indic
         *out_count = written;
         return 0;
     }
+    /* Reverse: newest registration first. Used when later waiters should
+     * win, the mirror image of the FIFO default. */
     if (waitset->wake_policy == VIBEOS_WAITSET_WAKE_REVERSE) {
         for (i = waitset->count; i > 0 && written < max_indices; i--) {
             size_t idx = i - 1;
@@ -117,6 +123,8 @@ static int waitset_collect_signaled(vibeos_waitset_t *waitset, size_t *out_indic
         *out_count = written;
         return 0;
     }
+    /* Round robin: start from the cursor so no single event can starve the
+     * others, and leave the cursor past the last one taken. */
     if (waitset->wake_policy == VIBEOS_WAITSET_WAKE_ROUND_ROBIN) {
         for (i = 0; i < waitset->count && written < max_indices; i++) {
             size_t idx = ((size_t)waitset->rr_cursor + i) % waitset->count;

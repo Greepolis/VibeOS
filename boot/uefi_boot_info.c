@@ -105,6 +105,8 @@ int uefi_boot_info_allocate(EFI_SYSTEM_TABLE *st,
         return -1;
     }
 
+    /* Size the memory-map allocation from the region count, rounded up to
+     * whole pages: this array is what boot_info->memory_map points at. */
     memory_map_pages = (((uint64_t)memory_count * sizeof(vibeos_memory_region_t)) + (UEFI_PAGE_SIZE - 1ull)) / UEFI_PAGE_SIZE;
     if (memory_map_pages == 0) {
         memory_map_pages = 1;
@@ -158,10 +160,15 @@ int uefi_boot_info_allocate(EFI_SYSTEM_TABLE *st,
     }
     uefi_serial_puts("\n");
     
+    /* Firmware pages arrive with whatever was in them; zero all three so
+     * every field the kernel reads was written by us. */
     uefi_zero_pages(kernel, kernel_pages);
     uefi_zero_pages(boot_info, boot_info_pages);
     uefi_zero_pages(boot_memory_map, memory_map_pages);
 
+    /* Sanitize into the freshly allocated array: sort, merge and filter the
+     * firmware map so the kernel never sees overlapping or unordered
+     * regions. Failure here releases everything allocated above. */
     memory_map_entries_capacity = (memory_map_pages * UEFI_PAGE_SIZE) / sizeof(vibeos_memory_region_t);
     if (vibeos_bootloader_build_boot_info_sanitized(boot_info,
                                                     memory_regions,
