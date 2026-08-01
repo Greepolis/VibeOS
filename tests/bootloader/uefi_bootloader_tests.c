@@ -14,26 +14,12 @@
 #include "uefi_firmware.h"
 #include "uefi_file_io.h"
 
-typedef struct mock_file_protocol mock_file_protocol_t;
-
-typedef struct mock_simple_fs_protocol {
-    uint64_t Revision;
-    EFI_STATUS(EFIAPI *OpenVolume)(struct mock_simple_fs_protocol *This, mock_file_protocol_t **Root);
-} mock_simple_fs_protocol_t;
-
-struct mock_file_protocol {
-    uint64_t Revision;
-    EFI_STATUS(EFIAPI *Open)(mock_file_protocol_t *This, mock_file_protocol_t **NewHandle, const uint16_t *FileName, uint64_t OpenMode, uint64_t Attributes);
-    EFI_STATUS(EFIAPI *Close)(mock_file_protocol_t *This);
-    void *Delete;
-    EFI_STATUS(EFIAPI *Read)(mock_file_protocol_t *This, size_t *BufferSize, void *Buffer);
-    void *Write;
-    void *GetPosition;
-    void *SetPosition;
-    EFI_STATUS(EFIAPI *GetInfo)(mock_file_protocol_t *This, EFI_GUID *InformationType, size_t *BufferSize, void *Buffer);
-    void *SetInfo;
-    void *Flush;
-};
+/* The firmware protocol types come from uefi_file_io.h. The tests used to
+ * declare look-alike structs, which made every mock call go through a
+ * function pointer of a different type - undefined behaviour, and caught by
+ * the sanitizer job. */
+typedef EFI_FILE_PROTOCOL mock_file_protocol_t;
+typedef EFI_SIMPLE_FILE_SYSTEM_PROTOCOL mock_simple_fs_protocol_t;
 
 typedef struct mock_efi_file_info {
     uint64_t Size;

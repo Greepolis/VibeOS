@@ -5,63 +5,7 @@
 #define UEFI_PAGE_SIZE 4096ull
 #define EFI_OPEN_MODE_READ 0x0000000000000001ull
 
-typedef struct efi_file_protocol EFI_FILE_PROTOCOL;
 
-typedef EFI_STATUS(EFIAPI *EFI_FILE_OPEN)(
-    EFI_FILE_PROTOCOL *This,
-    EFI_FILE_PROTOCOL **NewHandle,
-    const uint16_t *FileName,
-    uint64_t OpenMode,
-    uint64_t Attributes
-);
-
-typedef EFI_STATUS(EFIAPI *EFI_FILE_CLOSE)(EFI_FILE_PROTOCOL *This);
-
-typedef EFI_STATUS(EFIAPI *EFI_FILE_READ)(
-    EFI_FILE_PROTOCOL *This,
-    size_t *BufferSize,
-    void *Buffer
-);
-
-typedef EFI_STATUS(EFIAPI *EFI_FILE_GET_INFO)(
-    EFI_FILE_PROTOCOL *This,
-    EFI_GUID *InformationType,
-    size_t *BufferSize,
-    void *Buffer
-);
-
-struct efi_file_protocol {
-    uint64_t Revision;
-    EFI_FILE_OPEN Open;
-    EFI_FILE_CLOSE Close;
-    void *Delete;
-    EFI_FILE_READ Read;
-    void *Write;
-    void *GetPosition;
-    void *SetPosition;
-    EFI_FILE_GET_INFO GetInfo;
-    void *SetInfo;
-    void *Flush;
-};
-
-typedef struct efi_simple_file_system_protocol {
-    uint64_t Revision;
-    EFI_STATUS(EFIAPI *OpenVolume)(
-        struct efi_simple_file_system_protocol *This,
-        EFI_FILE_PROTOCOL **Root
-    );
-} EFI_SIMPLE_FILE_SYSTEM_PROTOCOL;
-
-typedef struct efi_file_info {
-    uint64_t Size;
-    uint64_t FileSize;
-    uint64_t PhysicalSize;
-    EFI_TIME CreateTime;
-    EFI_TIME LastAccessTime;
-    EFI_TIME ModificationTime;
-    uint64_t Attribute;
-    uint16_t FileName[1];
-} EFI_FILE_INFO;
 
 static const EFI_GUID VIBEOS_EFI_SIMPLE_FILE_SYSTEM_GUID = {
     0x964e5b22u, 0x6459u, 0x11d2u, {0x8eu, 0x39u, 0x00u, 0xa0u, 0xc9u, 0x69u, 0x72u, 0x3bu}

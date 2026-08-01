@@ -1,0 +1,105 @@
+name: Nightly Deep Checks
+
+# The per-PR matrix answers "does one run work?". These answer the two
+# questions it cannot afford the time for: "does it work every time?" and
+# "does the parser survive input we did not write?".
+#
+# Intermittent failures are this project's dominant failure mode - a scheduler
+# race that appeared in roughly one boot in six, a DHCP lease that came out
+# zero about as often - so a single green run is not evidence.
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  boot-repeatability:
+    name: Boot Smoke x5 (flakiness gate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 qemu-utils ninja-build build-essential ovmf
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DVIBEOS_BUILD_TESTS=ON -DVIBEOS_BUILD_KERNEL_IMAGE=ON -DVIBEOS_REQUIRE_TLS=ON
+          cmake --build build --parallel
+          cmake --build build --target vibeos_image
+
+      - name: Boot Five Times, Fail If Any Run Fails
+        run: |
+          set -uo pipefail
+          failures=0
+          for i in $(seq 1 5); do
+            echo "::group::boot attempt $i"
+            if python3 scripts/qemu-cli-smoke-linux.py build 900; then
+              echo "attempt $i: pass"
+            else
+              failures=$((failures + 1))
+              echo "attempt $i: FAIL"
+              grep -o '^reason=.*' qemu-cli-summary.txt || true
+              cp qemu-cli-serial.log "serial-attempt-$i.log" || true
+            fi
+            echo "::endgroup::"
+          done
+          echo "failures=$failures of 5"
+          test "$failures" -eq 0
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nightly-boot-logs
+          path: |
+            serial-attempt-*.log
+            qemu-cli-summary.txt
+          if-no-files-found: ignore
+
+  fuzz-protocols:
+    name: Fuzz the Receive Path
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang
+
+      - name: Build Fuzz Target
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-fuzz -G Ninja \
+            -DCMAKE_C_COMPILER=clang \
+            -DVIBEOS_BUILD_FUZZERS=ON \
+            -DVIBEOS_BUILD_TESTS=OFF \
+            -DVIBEOS_BUILD_KERNEL_IMAGE=OFF \
+            -DVIBEOS_ENABLE_TLS=OFF
+          cmake --build build-fuzz --parallel
+
+      - name: Fuzz
+        run: |
+          set -euo pipefail
+          mkdir -p fuzz-corpus
+          ./build-fuzz/fuzz_inet_input fuzz-corpus \
+            -max_total_time=900 -max_len=1514 -print_final_stats=1
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-crash
+          path: |
+            crash-*
+            leak-*
+            timeout-*
+          if-no-files-found: ignore

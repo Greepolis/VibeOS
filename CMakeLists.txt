@@ -19,6 +19,8 @@ option(VIBEOS_ENABLE_TLS "Build the hosted Mbed TLS adapter" ON)
 # rather than refusing to configure at all. Builds that must ship TLS (release
 # gates, the Linux CI matrix) set VIBEOS_REQUIRE_TLS and fail loudly instead.
 option(VIBEOS_REQUIRE_TLS "Fail configuration when the TLS dependency is unavailable" OFF)
+# libFuzzer target over the network receive path. Clang only.
+option(VIBEOS_BUILD_FUZZERS "Build the protocol fuzz targets (clang + libFuzzer)" OFF)
 
 # Artifact directories
 set(VIBEOS_ARTIFACTS_DIR "${CMAKE_BINARY_DIR}/artifacts" CACHE PATH "Artifacts output directory")
@@ -92,6 +94,18 @@ if(VIBEOS_TLS_ACTIVE)
     # whether the audited dependency is present.
     target_compile_definitions(vibeos_tls PUBLIC VIBEOS_TLS_MBEDTLS=1)
     target_link_libraries(vibeos_tls PUBLIC mbedtls mbedx509 mbedcrypto)
+endif()
+
+if(VIBEOS_BUILD_FUZZERS)
+    # The receive path is the only code fed bytes an attacker chooses, so it is
+    # the one place a fuzzer earns its keep.
+    add_executable(fuzz_inet_input tests/fuzz/fuzz_inet_input.c kernel/net/inet.c)
+    target_include_directories(fuzz_inet_input PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_compile_options(fuzz_inet_input PRIVATE
+        -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer -g
+        -Wall -Wextra -Wpedantic
+    )
+    target_link_options(fuzz_inet_input PRIVATE -fsanitize=fuzzer,address,undefined)
 endif()
 
 if(VIBEOS_BUILD_TESTS)
