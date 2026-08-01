@@ -26,7 +26,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # The audited TLS dependency is a submodule; Linux is where it gets
           # built and tested, so it has to be fetched here.
@@ -139,7 +139,7 @@ jobs:
 
       - name: Upload Linux Artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: linux-${{ matrix.compiler }}-${{ matrix.build_type }}-artifacts
           path: |
@@ -168,7 +168,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Run PowerShell Test Pipeline
         shell: pwsh
@@ -185,7 +185,7 @@ jobs:
 
       - name: Upload Windows Artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-host-artifacts
           path: |
