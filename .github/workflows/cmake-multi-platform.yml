@@ -27,6 +27,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # The audited TLS dependency is a submodule; Linux is where it gets
+          # built and tested, so it has to be fetched here.
+          submodules: recursive
 
       - name: Install Dependencies
         run: |
@@ -40,6 +44,7 @@ jobs:
           -DCMAKE_C_COMPILER=${{ matrix.compiler }}
           -DVIBEOS_BUILD_TESTS=ON
           -DVIBEOS_BUILD_KERNEL_IMAGE=ON
+          -DVIBEOS_REQUIRE_TLS=ON
 
       - name: Build
         run: cmake --build build --parallel
@@ -146,6 +151,10 @@ jobs:
           # VibeOS target and its user programs assume LP64; building them with
           # a Windows-hosted toolchain produces something that could never run,
           # and only surfaces LLP64 noise. Linux builds and boot-gates the image.
+          #
+          # The TLS submodule is deliberately not fetched here: this job checks
+          # the portable core, and the adapter builds and tests its
+          # dependency-absent contract. Linux is the gate that requires TLS.
           ./scripts/run-tests.ps1 -BuildDir build -Generator Ninja -Profile ci -SkipImageBuild
 
       - name: Upload Windows Artifacts

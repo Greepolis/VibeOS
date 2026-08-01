@@ -2552,7 +2552,10 @@ static void hw_net_bringup(void) {
     g_net_up = 1;
 
     vibeos_x86_64_serial_puts("[NET] requesting a DHCP lease\n");
+    /* Under the lock: this transmits, and the timer's pump is already live. */
+    hw_spin_lock(&g_net_lock);
     (void)vibeos_inet_dhcp_start(&g_net);
+    hw_spin_unlock(&g_net_lock);
 
     /* The timer is already live but the scheduler is not, so pump inline.
      * Bounded: a network that does not answer must not hold up the boot. */
@@ -2560,8 +2563,14 @@ static void hw_net_bringup(void) {
         /* Go through the same locked path the timer uses: the interrupt is
          * already live and would otherwise reuse the staging buffer under us. */
         hw_net_pump();
-        if (vibeos_inet_dhcp_bound(&g_net)) {
-            break;
+        {
+            int bound_now;
+            hw_spin_lock(&g_net_lock);
+            bound_now = vibeos_inet_dhcp_bound(&g_net);
+            hw_spin_unlock(&g_net_lock);
+            if (bound_now) {
+                break;
+            }
         }
         {
             uint32_t d;

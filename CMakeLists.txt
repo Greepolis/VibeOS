@@ -14,6 +14,11 @@ option(VIBEOS_BUILD_TESTS "Build VibeOS host-side tests" ON)
 option(VIBEOS_BUILD_KERNEL_IMAGE "Build bootable kernel image for emulator/hardware" ON)
 option(VIBEOS_KERNEL_ONLY "Build kernel only (no user-space)" OFF)
 option(VIBEOS_ENABLE_TLS "Build the hosted Mbed TLS adapter" ON)
+# The audited TLS dependency lives in a git submodule. A plain `git clone`
+# does not fetch it, so a missing submodule degrades to a build without TLS
+# rather than refusing to configure at all. Builds that must ship TLS (release
+# gates, the Linux CI matrix) set VIBEOS_REQUIRE_TLS and fail loudly instead.
+option(VIBEOS_REQUIRE_TLS "Fail configuration when the TLS dependency is unavailable" OFF)
 
 # Artifact directories
 set(VIBEOS_ARTIFACTS_DIR "${CMAKE_BINARY_DIR}/artifacts" CACHE PATH "Artifacts output directory")
@@ -81,15 +86,23 @@ set(VIBEOS_USER_CORE_SOURCES
     boot/bootloader_stub.c
 )
 
+set(VIBEOS_TLS_ACTIVE OFF)
 if(VIBEOS_ENABLE_TLS)
-    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/mbedtls/CMakeLists.txt")
-        message(FATAL_ERROR "VIBEOS_ENABLE_TLS requires the third_party/mbedtls submodule")
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/mbedtls/CMakeLists.txt")
+        set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
+        set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+        set(MBEDTLS_FATAL_WARNINGS OFF CACHE BOOL "" FORCE)
+        add_subdirectory(third_party/mbedtls EXCLUDE_FROM_ALL)
+        set(VIBEOS_TLS_ACTIVE ON)
+    elseif(VIBEOS_REQUIRE_TLS)
+        message(FATAL_ERROR
+            "VIBEOS_REQUIRE_TLS is set but third_party/mbedtls is missing. "
+            "Run: git submodule update --init --recursive")
+    else()
+        message(WARNING
+            "third_party/mbedtls not present: building without TLS. "
+            "Run: git submodule update --init --recursive")
     endif()
-    set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
-    set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
-    set(MBEDTLS_FATAL_WARNINGS OFF CACHE BOOL "" FORCE)
-    add_subdirectory(third_party/mbedtls EXCLUDE_FROM_ALL)
-    list(APPEND VIBEOS_USER_CORE_SOURCES user/net/tls_adapter.c)
 endif()
 
 add_library(vibeos_user_core STATIC ${VIBEOS_USER_CORE_SOURCES})
@@ -105,9 +118,18 @@ target_compile_options(vibeos_user_core PRIVATE
     -Wpedantic
 )
 
-if(VIBEOS_ENABLE_TLS)
-    target_compile_definitions(vibeos_user_core PRIVATE VIBEOS_TLS_MBEDTLS=1)
-    target_link_libraries(vibeos_user_core PUBLIC mbedtls mbedx509 mbedcrypto)
+# The TLS adapter is a HOSTED component and lives in its own target, never in
+# vibeos_user_core. The kernel image links vibeos_user_core; keeping Mbed TLS
+# out of that library is what guarantees a hosted crypto stack can never be
+# dragged into the freestanding image by a future reference.
+add_library(vibeos_tls STATIC user/net/tls_adapter.c)
+target_include_directories(vibeos_tls PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_options(vibeos_tls PRIVATE -Wall -Wextra -Wpedantic)
+if(VIBEOS_TLS_ACTIVE)
+    # PUBLIC so anything linking the adapter compiles against the same view of
+    # whether the audited dependency is present.
+    target_compile_definitions(vibeos_tls PUBLIC VIBEOS_TLS_MBEDTLS=1)
+    target_link_libraries(vibeos_tls PUBLIC mbedtls mbedx509 mbedcrypto)
 endif()
 
 if(VIBEOS_BUILD_TESTS)
@@ -116,7 +138,7 @@ if(VIBEOS_BUILD_TESTS)
     add_executable(vibeos_kernel_tests
         tests/kernel/kernel_tests.c
     )
-    target_link_libraries(vibeos_kernel_tests PRIVATE vibeos_kernel_core vibeos_user_core)
+    target_link_libraries(vibeos_kernel_tests PRIVATE vibeos_kernel_core vibeos_user_core vibeos_tls)
     target_include_directories(vibeos_kernel_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     add_test(NAME vibeos-kernel-host COMMAND vibeos_kernel_tests)
 

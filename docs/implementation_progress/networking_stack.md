@@ -15,7 +15,8 @@ Last review: 2026-08-01
 - The receive path rejects invalid TCP checksums and non-zero invalid UDP checksums before dispatching payloads; TCP handshake transitions require an acknowledgement for the transmitted sequence number.
 - Host regressions cover DHCP OFFER/ACK processing, DNS A response parsing, TCP retransmission and close paths, plus malformed L4 checksum rejection.
 - DNS keeps a bounded eight-entry positive cache with TTL clamping; cache hits are resolved without a new packet transmission.
-- Mbed TLS 3.6.5 is pinned as a submodule and exposed through a narrow hosted adapter (`vibeos_tls_*`); the dependency and version gate compile under CTest without coupling it to the freestanding kernel image.
+- Mbed TLS 3.6.5 is pinned as a submodule and exposed through a narrow hosted adapter (`vibeos_tls_*`). The adapter is built into its own `vibeos_tls` target, linked only by the host tests: the freestanding kernel image links `vibeos_user_core`, so keeping the hosted crypto stack out of that library is what structurally prevents it from reaching the image.
+- The dependency is optional at build time. A tree without the submodule configures and builds with TLS absent, and the adapter reports `vibeos_tls_runtime_available() == 0`; the host test asserts the adapter's contract in both configurations. Builds that must ship TLS set `-DVIBEOS_REQUIRE_TLS=ON` and fail loudly if the submodule is missing, which is how the Linux CI matrix is configured.
 
 ## Pending
 - DHCP lease renew/rebind/expiry, concurrent DNS queries and negative cache, complete TCP state/error handling, firewall policy and robust recovery semantics.

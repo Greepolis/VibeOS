@@ -3766,8 +3766,23 @@ static int test_inet_checksum(void) {
     return 0;
 }
 
+/* The adapter must answer consistently in both build configurations, so this
+ * test is meaningful whether or not the audited dependency is checked out. */
 static int test_tls_dependency(void) {
-    return vibeos_tls_runtime_available() && vibeos_tls_library_version() >= 0x03060000u ? 0 : -1;
+#if defined(VIBEOS_TLS_MBEDTLS)
+    /* Built against the dependency: it must be present and new enough. */
+    if (!vibeos_tls_runtime_available()) {
+        return -1;
+    }
+    return (vibeos_tls_library_version() >= VIBEOS_TLS_MIN_VERSION) ? 0 : -1;
+#else
+    /* Built without it: the adapter must say so plainly rather than claim a
+     * version it does not have. */
+    if (vibeos_tls_runtime_available()) {
+        return -1;
+    }
+    return (vibeos_tls_library_version() == 0u) ? 0 : -1;
+#endif
 }
 
 static int test_inet_arp_and_icmp(void) {

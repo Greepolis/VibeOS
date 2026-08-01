@@ -271,7 +271,15 @@ static uint32_t next_hop(const vibeos_inet_t *net, uint32_t dst) {
 /* Build an IPv4 packet in the scratch buffer and transmit it. The payload must
  * already be at scratch + ETH_HDR + IP_HDR. Returns -VIBEOS_INET_EAGAIN if the
  * destination MAC is not known yet (an ARP request is sent). */
-static int ip_send(vibeos_inet_t *net, uint32_t dst, uint8_t proto, uint32_t payload_len) {
+/* The source address is an explicit argument rather than always net->ip.
+ *
+ * A DHCP client has to source from 0.0.0.0 before it holds a lease. Doing that
+ * by blanking net->ip around the send and restoring it afterwards is a trap:
+ * the restore writes back a value captured before the transmit, so anything
+ * that assigns the lease while the send is in progress gets silently undone.
+ * Passing the source down removes the mutable-global step entirely. */
+static int ip_send_from(vibeos_inet_t *net, uint32_t src, uint32_t dst, uint8_t proto,
+                        uint32_t payload_len) {
     uint8_t *ip = net->scratch + ETH_HDR;
     uint32_t hop;
     const uint8_t *mac;
@@ -285,7 +293,7 @@ static int ip_send(vibeos_inet_t *net, uint32_t dst, uint8_t proto, uint32_t pay
     ip[8] = 64;                         /* TTL */
     ip[9] = proto;
     wr16(ip + 10, 0);
-    wr32(ip + 12, net->ip);
+    wr32(ip + 12, src);
     wr32(ip + 16, dst);
     wr16(ip + 10, vibeos_inet_checksum(ip, IP_HDR));
 
@@ -300,6 +308,11 @@ static int ip_send(vibeos_inet_t *net, uint32_t dst, uint8_t proto, uint32_t pay
         }
     }
     return eth_send(net, mac, ETH_TYPE_IP, total);
+}
+
+/* Ordinary traffic sources from the interface address. */
+static int ip_send(vibeos_inet_t *net, uint32_t dst, uint8_t proto, uint32_t payload_len) {
+    return ip_send_from(net, net->ip, dst, proto, payload_len);
 }
 
 /* ---- ICMP ---------------------------------------------------------------- */
@@ -435,8 +448,9 @@ int vibeos_inet_socket_state(const vibeos_inet_t *net, int sock) {
 
 /* ---- UDP ----------------------------------------------------------------- */
 
-static int udp_send(vibeos_inet_t *net, uint32_t dst, uint16_t sport, uint16_t dport,
-                    const uint8_t *data, uint32_t len) {
+static int udp_send_from(vibeos_inet_t *net, uint32_t src, uint32_t dst,
+                         uint16_t sport, uint16_t dport,
+                         const uint8_t *data, uint32_t len) {
     uint8_t *u = net->scratch + ETH_HDR + IP_HDR;
     uint32_t i;
     uint16_t ck;
@@ -451,12 +465,17 @@ static int udp_send(vibeos_inet_t *net, uint32_t dst, uint16_t sport, uint16_t d
     for (i = 0; i < len; i++) {
         u[8 + i] = data[i];
     }
-    ck = l4_checksum(net->ip, dst, IP_PROTO_UDP, u, len + 8u);
+    ck = l4_checksum(src, dst, IP_PROTO_UDP, u, len + 8u);
     if (ck == 0u) {
         ck = 0xFFFFu;   /* 0 means "no checksum" on the wire */
     }
     wr16(u + 6, ck);
-    return ip_send(net, dst, IP_PROTO_UDP, len + 8u);
+    return ip_send_from(net, src, dst, IP_PROTO_UDP, len + 8u);
+}
+
+static int udp_send(vibeos_inet_t *net, uint32_t dst, uint16_t sport, uint16_t dport,
+                    const uint8_t *data, uint32_t len) {
+    return udp_send_from(net, net->ip, dst, sport, dport, data, len);
 }
 
 long vibeos_inet_sendto(vibeos_inet_t *net, int sock, const void *buf, uint32_t len,
@@ -536,10 +555,10 @@ static uint32_t dhcp_build(vibeos_inet_t *net, uint8_t *b, uint8_t msg_type,
 static void dhcp_send(vibeos_inet_t *net, uint8_t msg_type, uint32_t req, uint32_t srv) {
     uint8_t body[300];
     uint32_t n = dhcp_build(net, body, msg_type, req, srv);
-    uint32_t saved_ip = net->ip;
-    net->ip = 0;    /* a client without a lease must source from 0.0.0.0 */
-    (void)udp_send(net, 0xFFFFFFFFu, DHCP_LOCAL_PORT, DHCP_SERVER_PORT, body, n);
-    net->ip = saved_ip;
+    /* A client without a lease sources from 0.0.0.0. Passing that explicitly
+     * leaves net->ip untouched, so a lease assigned while this send is in
+     * flight cannot be undone by a restore. */
+    (void)udp_send_from(net, 0u, 0xFFFFFFFFu, DHCP_LOCAL_PORT, DHCP_SERVER_PORT, body, n);
     net->dhcp_retry_ms = net->now_ms + 1000ull;
 }
 

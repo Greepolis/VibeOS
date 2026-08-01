@@ -364,6 +364,9 @@ try {
             "user/fs/vfs_ops.c",
             "user/net/network_service.c",
             "user/net/socket.c",
+            # The TLS adapter compiles without the audited dependency and
+            # reports it as unavailable; the fallback build has no submodule.
+            "user/net/tls_adapter.c",
             "user/compat/compat_runtime.c",
             "user/compat/linux/linux_compat.c",
             "user/compat/windows/windows_compat.c",
