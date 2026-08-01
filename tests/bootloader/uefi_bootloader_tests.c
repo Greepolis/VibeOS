@@ -80,18 +80,36 @@ int uefi_serial_init(EFI_SYSTEM_TABLE *st) {
     return 0;
 }
 
-int uefi_serial_puts(const char *str) {
-    (void)str;
-    return 0;
-}
+/* Serial stubs.
+ *
+ * These record what the code under test tried to print instead of discarding
+ * it. Discarding made every uefi_serial_puts() call in the bootloader sources
+ * genuinely side-effect free in these translation units, which is what the
+ * static analysis reported - correctly - as dozens of statements with no
+ * effect. Recording is also more useful: a test can assert on the log. */
+static char g_serial_log[8192];
+static size_t g_serial_log_len;
 
 int uefi_serial_putc(int c) {
+    if (g_serial_log_len + 1u < sizeof(g_serial_log)) {
+        g_serial_log[g_serial_log_len++] = (char)c;
+        g_serial_log[g_serial_log_len] = '\0';
+    }
     return c;
 }
 
-int uefi_serial_printf(const char *fmt, ...) {
-    (void)fmt;
+int uefi_serial_puts(const char *str) {
+    if (!str) {
+        return -1;
+    }
+    for (const char *p = str; *p; ++p) {
+        (void)uefi_serial_putc((int)(unsigned char)*p);
+    }
     return 0;
+}
+
+int uefi_serial_printf(const char *fmt, ...) {
+    return uefi_serial_puts(fmt);
 }
 
 static EFI_STATUS EFIAPI mock_get_memory_map(size_t *memory_map_size,
@@ -339,7 +357,9 @@ static void init_mock(mock_uefi_ctx_t *ctx) {
 }
 
 static int test_memory_map_retry_and_conversion(void) {
-    mock_uefi_ctx_t ctx;
+    /* Static: setup_mock_context() publishes its address in a file-scope
+     * pointer that outlives this function, so it must not be a stack local. */
+    static mock_uefi_ctx_t ctx;
     vibeos_memory_region_t regions[8];
     uint64_t out_count = 0;
     int rc;
@@ -375,7 +395,9 @@ static int test_memory_map_retry_and_conversion(void) {
 }
 
 static int test_boot_info_allocation_fallback(void) {
-    mock_uefi_ctx_t ctx;
+    /* Static: setup_mock_context() publishes its address in a file-scope
+     * pointer that outlives this function, so it must not be a stack local. */
+    static mock_uefi_ctx_t ctx;
     vibeos_memory_region_t in_regions[3];
     vibeos_kernel_t *kernel = NULL;
     vibeos_boot_info_t *boot_info = NULL;
@@ -424,7 +446,9 @@ static int test_boot_info_allocation_fallback(void) {
 }
 
 static int test_exit_boot_services_retry_policy(void) {
-    mock_uefi_ctx_t ctx;
+    /* Static: setup_mock_context() publishes its address in a file-scope
+     * pointer that outlives this function, so it must not be a stack local. */
+    static mock_uefi_ctx_t ctx;
     int rc;
 
     init_mock(&ctx);
@@ -451,7 +475,9 @@ static int test_exit_boot_services_retry_policy(void) {
 }
 
 static int test_exit_boot_services_non_retryable_failure(void) {
-    mock_uefi_ctx_t ctx;
+    /* Static: setup_mock_context() publishes its address in a file-scope
+     * pointer that outlives this function, so it must not be a stack local. */
+    static mock_uefi_ctx_t ctx;
     int rc;
 
     init_mock(&ctx);
@@ -473,7 +499,9 @@ static int test_exit_boot_services_non_retryable_failure(void) {
 }
 
 static int test_firmware_table_discovery_paths(void) {
-    mock_uefi_ctx_t ctx;
+    /* Static: setup_mock_context() publishes its address in a file-scope
+     * pointer that outlives this function, so it must not be a stack local. */
+    static mock_uefi_ctx_t ctx;
     EFI_CONFIGURATION_TABLE_ENTRY tables[3];
     uint64_t acpi_rsdp = 0;
     uint64_t smbios_entry = 0;
@@ -513,7 +541,9 @@ static int test_firmware_table_discovery_paths(void) {
 }
 
 static int test_file_read_all_success(void) {
-    mock_uefi_ctx_t ctx;
+    /* Static: setup_mock_context() publishes its address in a file-scope
+     * pointer that outlives this function, so it must not be a stack local. */
+    static mock_uefi_ctx_t ctx;
     static const uint16_t kernel_path[] = {
         '\\', 'E', 'F', 'I', '\\', 'B', 'O', 'O', 'T', '\\', 'V', 'I', 'B', 'E', 'O', 'S', 'K', 'R', '.', 'E', 'L', 'F', 0
     };
@@ -543,7 +573,9 @@ static int test_file_read_all_success(void) {
 }
 
 static int test_file_read_all_missing_file(void) {
-    mock_uefi_ctx_t ctx;
+    /* Static: setup_mock_context() publishes its address in a file-scope
+     * pointer that outlives this function, so it must not be a stack local. */
+    static mock_uefi_ctx_t ctx;
     static const uint16_t kernel_path[] = {
         '\\', 'E', 'F', 'I', '\\', 'B', 'O', 'O', 'T', '\\', 'V', 'I', 'B', 'E', 'O', 'S', 'K', 'R', '.', 'E', 'L', 'F', 0
     };
@@ -559,7 +591,9 @@ static int test_file_read_all_missing_file(void) {
 }
 
 static int test_file_read_all_empty_file(void) {
-    mock_uefi_ctx_t ctx;
+    /* Static: setup_mock_context() publishes its address in a file-scope
+     * pointer that outlives this function, so it must not be a stack local. */
+    static mock_uefi_ctx_t ctx;
     static const uint16_t kernel_path[] = {
         '\\', 'E', 'F', 'I', '\\', 'B', 'O', 'O', 'T', '\\', 'V', 'I', 'B', 'E', 'O', 'S', 'K', 'R', '.', 'E', 'L', 'F', 0
     };
@@ -575,7 +609,9 @@ static int test_file_read_all_empty_file(void) {
 }
 
 static int test_file_read_all_alloc_failure(void) {
-    mock_uefi_ctx_t ctx;
+    /* Static: setup_mock_context() publishes its address in a file-scope
+     * pointer that outlives this function, so it must not be a stack local. */
+    static mock_uefi_ctx_t ctx;
     static const uint16_t kernel_path[] = {
         '\\', 'E', 'F', 'I', '\\', 'B', 'O', 'O', 'T', '\\', 'V', 'I', 'B', 'E', 'O', 'S', 'K', 'R', '.', 'E', 'L', 'F', 0
     };
@@ -591,7 +627,9 @@ static int test_file_read_all_alloc_failure(void) {
 }
 
 static int test_file_read_all_short_read(void) {
-    mock_uefi_ctx_t ctx;
+    /* Static: setup_mock_context() publishes its address in a file-scope
+     * pointer that outlives this function, so it must not be a stack local. */
+    static mock_uefi_ctx_t ctx;
     static const uint16_t kernel_path[] = {
         '\\', 'E', 'F', 'I', '\\', 'B', 'O', 'O', 'T', '\\', 'V', 'I', 'B', 'E', 'O', 'S', 'K', 'R', '.', 'E', 'L', 'F', 0
     };

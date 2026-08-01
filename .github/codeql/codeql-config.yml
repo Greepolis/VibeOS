@@ -1,0 +1,16 @@
+name: "VibeOS CodeQL configuration"
+
+queries:
+  - uses: security-and-quality
+
+# Rules excluded here are excluded because they do not apply to this code, not
+# because the findings were inconvenient. Every other alert from the first run
+# was fixed in the source rather than filtered.
+query-filters:
+  - exclude:
+      id: cpp/long-switch
+      # vibeos_syscall_dispatch is a syscall dispatcher: 84 cases mapping a
+      # syscall id to its handler. A long switch is what a dispatcher is. The
+      # alternative the rule suggests - splitting it up or going table-driven -
+      # would restructure the central syscall path for a style note, on code
+      # that every user-space call passes through. Not worth the risk.

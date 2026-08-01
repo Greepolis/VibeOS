@@ -24,7 +24,16 @@ def start_echo_server(stop_event, state):
     """Accept one connection at a time and echo whatever arrives."""
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    srv.bind(("127.0.0.1", ECHO_PORT))
+    try:
+        srv.bind(("127.0.0.1", ECHO_PORT))
+    except OSError as exc:
+        # Someone else holds the port - usually another smoke run still going.
+        # Say so as an infrastructure problem: it is not a guest failure, and
+        # it must not read like one.
+        srv.close()
+        raise RuntimeError(
+            f"INFRA: echo port {ECHO_PORT} unavailable ({exc}); "
+            "another smoke run is probably still active") from exc
     srv.listen(4)
     srv.settimeout(0.5)
 
@@ -113,6 +122,7 @@ def main():
     echo_stop = threading.Event()
     echo_state = {"connections": 0, "received": 0}
     echo_thread = None
+    infra = False
 
     try:
         echo_thread = start_echo_server(echo_stop, echo_state)
@@ -272,13 +282,14 @@ def main():
 
     except Exception as exc:
         reason = str(exc)
+        infra = reason.startswith("INFRA:")
         if qemu is not None and qemu.poll() is None:
             qemu.terminate()
             try:
                 qemu.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 qemu.kill()
-        status = "fail"
+        status = "infra_error" if infra else "fail"
     finally:
         echo_stop.set()
         if echo_thread is not None:

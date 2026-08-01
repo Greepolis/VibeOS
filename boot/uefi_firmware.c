@@ -107,8 +107,9 @@ int uefi_firmware_discover_security_settings(EFI_SYSTEM_TABLE *st __attribute__(
     
     uefi_serial_puts("[BOOT] === PHASE 4: Security Settings Discovery ===\n");
     
-    /* Create SECURE_BOOT tag */
-    if (tag_index < max_tags) {
+    /* Create SECURE_BOOT tag. max_tags is known to be non-zero from the
+     * parameter check above, so there is room for this first one. */
+    {
         out_tags[tag_index].type = VIBEOS_FIRMWARE_TAG_SECURE_BOOT;
         out_tags[tag_index].reserved = 0;
         /* Phase 4: Default value (0 = not enabled) */
@@ -118,11 +119,8 @@ int uefi_firmware_discover_security_settings(EFI_SYSTEM_TABLE *st __attribute__(
         uefi_serial_putc('0' + (out_tags[tag_index].value ? 1 : 0));
         uefi_serial_puts(" (phase 4: default, GetVariable pending)\n");
         tag_index++;
-    } else {
-        uefi_serial_puts("[WARN] Out of tag space for SECURE_BOOT\n");
-        return -1;
     }
-    
+
     /* Create MEASURED_BOOT tag */
     if (tag_index < max_tags) {
         out_tags[tag_index].type = VIBEOS_FIRMWARE_TAG_MEASURED_BOOT;

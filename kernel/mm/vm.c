@@ -294,8 +294,12 @@ int vibeos_vm_compact(vibeos_address_space_t *aspace, uint32_t *out_merged) {
     if (vibeos_vm_validate(aspace) != 0) {
         return -1;
     }
-    for (i = 0; i < aspace->map_count; i++) {
+    /* A plain for loop cannot express "stay on this entry after a merge", so the
+     * index is advanced explicitly at the bottom. */
+    i = 0;
+    while (i < aspace->map_count) {
         uintptr_t i_end;
+        int retry = 0;
         if (!map_is_valid(&aspace->maps[i])) {
             return -1;
         }
@@ -313,11 +317,18 @@ int vibeos_vm_compact(vibeos_address_space_t *aspace, uint32_t *out_merged) {
                 aspace->maps[j] = aspace->maps[aspace->map_count - 1];
                 aspace->map_count--;
                 merged++;
-                if (i > 0) {
-                    i--;
-                }
+                /* The entry at i just grew, so it may now also be adjacent to
+                 * something earlier. Re-examine it instead of advancing: the
+                 * loop below skips its own increment when this is set. */
+                retry = 1;
                 break;
             }
+        }
+        /* Same stepping the original for loop produced: after a merge it went
+         * back one and then forward one, which stands still - except at index
+         * 0, where there was nothing to go back to and it advanced. */
+        if (!(retry && i > 0)) {
+            i++;
         }
     }
     *out_merged = merged;

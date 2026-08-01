@@ -35,6 +35,15 @@ static void waitset_reset_stats(vibeos_waitset_t *waitset) {
     waitset->stats_peek_hits = 0;
 }
 
+/* Collect the indices of signaled events, highest priority first.
+ *
+ * Repeatedly scans the waitset picking the best remaining candidate: highest
+ * priority wins, and ties are broken by the lower index so the result is
+ * deterministic for a given waitset state. Disabled entries are skipped and
+ * counted separately, which is what makes the skip statistic meaningful.
+ *
+ * Writes at most max_indices entries and reports how many through out_count.
+ */
 static int waitset_collect_signaled(vibeos_waitset_t *waitset, size_t *out_indices, size_t max_indices, size_t *out_count) {
     size_t i;
     size_t written = 0;
@@ -53,7 +62,11 @@ static int waitset_collect_signaled(vibeos_waitset_t *waitset, size_t *out_indic
         while (written < max_indices) {
             size_t best_idx = VIBEOS_WAITSET_MAX_EVENTS;
             uint8_t best_priority = 0;
-            for (i = 0; i < waitset->count; i++) {
+            /* Bounded by the array capacity as well as by count: indexing must
+             * not rest on an invariant maintained somewhere else. */
+            size_t limit = (waitset->count < VIBEOS_WAITSET_MAX_EVENTS)
+                           ? waitset->count : VIBEOS_WAITSET_MAX_EVENTS;
+            for (i = 0; i < limit; i++) {
                 vibeos_event_t *ev;
                 if (selected[i]) {
                     continue;

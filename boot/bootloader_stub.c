@@ -480,7 +480,9 @@ int vibeos_bootloader_plan_elf_image(const uint8_t *image, uint64_t image_size, 
     if (ph_offset > image_size) {
         return -1;
     }
-    if ((uint64_t)ph_entry_size > 0 && (uint64_t)ph_count > (UINT64_MAX / (uint64_t)ph_entry_size)) {
+    /* ph_entry_size is already known to be >= 56 from the check above, so the
+     * division below cannot be by zero. */
+    if ((uint64_t)ph_count > (UINT64_MAX / (uint64_t)ph_entry_size)) {
         return -1;
     }
     if (ph_offset + ((uint64_t)ph_entry_size * (uint64_t)ph_count) > image_size) {

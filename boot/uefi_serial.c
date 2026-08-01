@@ -97,7 +97,10 @@ int uefi_serial_puts(const char *str) {
     }
     {
         size_t len = 0;
-        while (str[len] && len < SERIAL_BUFFER_SIZE - 1) {
+        /* Bound first: the old order read str[len] before checking that len
+         * was still inside the buffer, so an unterminated string could be
+         * read one past the limit. */
+        while (len < SERIAL_BUFFER_SIZE - 1 && str[len]) {
             len++;
         }
         if (len > 0) {

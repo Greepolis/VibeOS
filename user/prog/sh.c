@@ -132,6 +132,13 @@ static void run_program(const char *path) {
     }
 }
 
+/* Shell entry point.
+ *
+ * Reads a line at a time from the console and dispatches it: builtins are
+ * handled here, anything else is treated as a program path and run as a child
+ * process. Every operation goes through syscalls - there is no libc - so this
+ * also serves as a working example of the system call surface.
+ */
 void _start(void) {
     char line[128];
 
@@ -183,9 +190,9 @@ void _start(void) {
                 put("ls: cannot open\n");
             } else {
                 char dbuf[512];
-                long n = sys3(SYS_getdents64, fd, (long)(unsigned long)dbuf, sizeof(dbuf));
+                long dn = sys3(SYS_getdents64, fd, (long)(unsigned long)dbuf, sizeof(dbuf));
                 long o = 0;
-                while (o + 19 < n) {
+                while (o + 19 < dn) {
                     unsigned short reclen = (unsigned char)dbuf[o + 16] |
                                             ((unsigned char)dbuf[o + 17] << 8);
                     if (reclen == 0) {
@@ -203,9 +210,9 @@ void _start(void) {
                 put("cat: no such file\n");
             } else {
                 char fbuf[256];
-                long n;
-                while ((n = sys3(SYS_read, fd, (long)(unsigned long)fbuf, sizeof(fbuf))) > 0) {
-                    sys3(SYS_write, 1, (long)(unsigned long)fbuf, n);
+                long cn;
+                while ((cn = sys3(SYS_read, fd, (long)(unsigned long)fbuf, sizeof(fbuf))) > 0) {
+                    sys3(SYS_write, 1, (long)(unsigned long)fbuf, cn);
                 }
                 sys3(SYS_close, fd, 0, 0);
             }

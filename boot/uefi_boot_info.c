@@ -57,6 +57,21 @@ static void uefi_free_pages_if_possible(EFI_SYSTEM_TABLE *st, uint64_t address, 
     (void)st->BootServices->FreePages(address, (size_t)pages);
 }
 
+/* Allocate and populate the structures handed to the kernel at entry.
+ *
+ * Three separate page allocations are made through boot services: the
+ * vibeos_kernel_t, the vibeos_boot_info_t, and the array its memory map points
+ * at. All three must survive ExitBootServices, which is why they are pages of
+ * loader-owned memory rather than pool allocations.
+ *
+ * The firmware memory map is sanitized before it is published - sorted, merged
+ * and filtered to the region types the kernel understands - so the kernel never
+ * sees overlapping or unordered entries. The ACPI and SMBIOS pointers are
+ * attached afterwards and validated against that sanitized map.
+ *
+ * On failure every allocation made so far is released, so a partial failure
+ * does not leak firmware memory. Returns 0 on success.
+ */
 int uefi_boot_info_allocate(EFI_SYSTEM_TABLE *st, 
                              const vibeos_memory_region_t *memory_regions,
                              uint32_t memory_count,
@@ -170,13 +185,13 @@ int uefi_boot_info_allocate(EFI_SYSTEM_TABLE *st,
     {
         char count_str[16];
         int j = 0;
-        uint64_t temp = boot_info->memory_map_entries;
-        if (temp == 0) {
+        uint64_t entries = boot_info->memory_map_entries;
+        if (entries == 0) {
             count_str[j++] = '0';
         }
-        while (temp > 0) {
-            count_str[j++] = '0' + (temp % 10);
-            temp /= 10;
+        while (entries > 0) {
+            count_str[j++] = '0' + (entries % 10);
+            entries /= 10;
         }
         count_str[j] = '\0';
         for (int k = j - 1; k >= 0; k--) {

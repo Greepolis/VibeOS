@@ -268,6 +268,17 @@ int vibeos_kernel_dispatch_trap(vibeos_kernel_t *kernel, const vibeos_trap_frame
     return 0;
 }
 
+/* Portable kernel entry, called once the architecture layer has finished
+ * bring-up (descriptor tables, paging, interrupts, scheduler, devices).
+ *
+ * Brings the portable subsystems up in dependency order - logging, memory,
+ * virtual memory, interrupt registration, timer, scheduler - recording the
+ * boot stage as it goes so a failure reports how far it got. Each step is
+ * checked; the first failure marks the kernel unhealthy and stops rather than
+ * continuing on a half-initialized system.
+ *
+ * Returns 0 when the system reached the ready state, non-zero otherwise.
+ */
 int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
     uint32_t timer_irq;
     

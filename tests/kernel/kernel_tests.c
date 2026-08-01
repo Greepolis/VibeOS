@@ -676,6 +676,10 @@ static int test_interrupts(void) {
     return 0;
 }
 
+/* Exercises the syscall dispatcher end to end: ABI version negotiation,
+ * handle allocation and closing, waitset operations and their statistics, and
+ * the error paths for bad ids, bad arguments and policy denials. Covers the
+ * dispatcher's contract rather than any single call. */
 static int test_syscalls(void) {
     vibeos_kernel_t kernel;
     vibeos_syscall_frame_t frame;
@@ -1589,6 +1593,9 @@ static int test_servicemgr_and_drivers(void) {
     return 0;
 }
 
+/* Covers the user-facing API surface together with the bootloader contract:
+ * boot_info construction, validation of malformed maps, memory summaries and
+ * the region-type queries the kernel relies on at start-up. */
 static int test_user_api_and_bootloader(void) {
     vibeos_kernel_t kernel;
     vibeos_user_context_t user_ctx;
@@ -1800,6 +1807,9 @@ static int test_bootloader_handoff_metadata(void) {
     return 0;
 }
 
+/* Covers firmware tag extraction (ACPI, SMBIOS, secure and measured boot)
+ * and the kernel image load plan for both PE32+ and ELF64 inputs, including
+ * the rejection of malformed headers. */
 static int test_bootloader_firmware_tags_and_pe_plan(void) {
     vibeos_memory_region_t regions[2];
     vibeos_boot_info_t boot_info;
