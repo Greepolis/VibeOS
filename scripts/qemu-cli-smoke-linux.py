@@ -2,6 +2,7 @@
 """Interactive OVMF smoke test for the VibeOS serial CLI."""
 
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -14,6 +15,9 @@ import time
 # presents the host as 10.0.2.2. Serving the echo from the harness is what makes
 # the TCP path a real end-to-end test rather than a loopback inside the guest.
 ECHO_PORT = 7777
+
+# The guest is booted with this many vCPUs; every one of them must come online.
+EXPECTED_CPUS = 4
 
 
 def start_echo_server(stop_event, state):
@@ -214,16 +218,43 @@ def main():
                 if command is not None:
                     serial.sendall(command)
 
-            # Networking: the guest took a DHCP lease, answered ICMP, and
-            # completed a TCP exchange with the echo server running here.
+            # Beyond "did it print the marker": assert the system actually
+            # ended up in a sane state. A lease of 0.0.0.0 once passed this
+            # gate for weeks because only the marker was checked, and the
+            # guest kept limping along with a broken address.
             text = buffer().replace("\r", "")
-            net_markers = ["NET_OK", "TCP_OK"]
-            missing = [m for m in net_markers if m not in text]
-            if missing:
-                reason = "missing:" + ",".join(missing)
-                raise RuntimeError(reason)
+            problems = []
+
+            for marker in ("NET_OK", "TCP_OK"):
+                if marker not in text:
+                    problems.append("missing:" + marker)
+
+            lease = re.search(r"NET_OK dhcp lease ip=(\d+\.\d+\.\d+\.\d+)", text)
+            if lease is None:
+                problems.append("no_dhcp_lease_reported")
+            elif lease.group(1) == "0.0.0.0":
+                problems.append("dhcp_lease_is_zero")
+
+            cpus = re.search(r"SMP_OK: cpus online=0x0*([0-9a-f]+)", text)
+            if cpus is None:
+                problems.append("no_smp_report")
+            elif int(cpus.group(1), 16) != EXPECTED_CPUS:
+                problems.append(f"cpus_online={int(cpus.group(1), 16)}_expected={EXPECTED_CPUS}")
+
+            # A recovered fault still means something went wrong that the boot
+            # was not supposed to hit. The int3 self-test is the one exception.
+            faults = [line for line in text.splitlines()
+                      if "[HW][TRAP]" in line and "vector=0x0000000000000003" not in line]
+            if faults:
+                problems.append("unexpected_cpu_fault")
+            if "FATAL" in text or "PANIC" in text:
+                problems.append("panic")
+
             if echo_state["connections"] == 0:
-                reason = "no_tcp_connection_reached_the_host"
+                problems.append("no_tcp_connection_reached_the_host")
+
+            if problems:
+                reason = "invariant_failed:" + ",".join(problems)
                 raise RuntimeError(reason)
 
             status = "pass"

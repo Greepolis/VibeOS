@@ -328,51 +328,37 @@ try {
         # Fallback: manual GCC build
         Write-Host "[BUILD] CMake failed, attempting manual GCC fallback..."
         $manualExe = Join-Path $BuildDir "vibeos_kernel_tests_manual.exe"
+        # Sources come from cmake/core_sources.cmake, the same list CMake
+        # builds from. This script used to carry its own copy; the two drifted
+        # three times and each drift showed up as an undefined-reference wall
+        # here, long after the real change landed. Parse, do not duplicate.
+        $coreSourcesFile = Join-Path $PSScriptRoot "..\cmake\core_sources.cmake"
+        if (-not (Test-Path $coreSourcesFile)) {
+            throw "INFRA_CORE_SOURCES_MISSING: cmake/core_sources.cmake not found"
+        }
+        $coreText = Get-Content -Raw $coreSourcesFile
+        $sourceList = @()
+        foreach ($listName in @("VIBEOS_KERNEL_CORE_SOURCES",
+                                "VIBEOS_USER_CORE_SOURCES",
+                                "VIBEOS_TLS_SOURCES")) {
+            $m = [regex]::Match($coreText, "set\(\s*$listName\s*(?<body>[^)]*)\)")
+            if (-not $m.Success) {
+                throw ("INFRA_CORE_SOURCES_PARSE: {0} not found in core_sources.cmake" -f $listName)
+            }
+            foreach ($line in $m.Groups["body"].Value -split "`n") {
+                $trimmed = $line.Trim()
+                if ($trimmed -and -not $trimmed.StartsWith("#")) {
+                    $sourceList += $trimmed
+                }
+            }
+        }
+        Add-Content -Path $logPath -Value ("manual_fallback_sources={0}" -f $sourceList.Count)
+
         $gccArgs = @(
             "-std=c11", "-Wall", "-Wextra", "-Wpedantic",
             "-Iinclude",
-            "tests/kernel/kernel_tests.c",
-            "kernel/core/kmain.c",
-            "kernel/mm/pmm.c",
-            "kernel/net/inet.c",
-            "kernel/mm/vm.c",
-            "kernel/object/handle_table.c",
-            "kernel/proc/process.c",
-            "kernel/sched/scheduler.c",
-            "kernel/ipc/event.c",
-            "kernel/ipc/channel.c",
-            "kernel/ipc/handle_transfer.c",
-            "kernel/ipc/waitset.c",
-            "kernel/core/interrupts.c",
-            "kernel/core/log.c",
-            "kernel/core/policy.c",
-            "kernel/core/syscall_policy.c",
-            "kernel/core/security.c",
-            "kernel/core/syscall.c",
-            "kernel/time/timer.c",
-            "kernel/arch/x86_64/trap.c",
-            "kernel/arch/x86_64/idt.c",
-            "kernel/arch/x86_64/boot_stub.c",
-            "kernel/arch/x86_64/serial.c",
-            "user/init/init_system.c",
-            "user/servicemgr/service_manager.c",
-            "user/servicemgr/service_ipc.c",
-            "user/devmgr/device_manager.c",
-            "user/devmgr/driver_host.c",
-            "user/drivers/driver_framework.c",
-            "user/fs/vfs_service.c",
-            "user/fs/vfs_ops.c",
-            "user/net/network_service.c",
-            "user/net/socket.c",
-            # The TLS adapter compiles without the audited dependency and
-            # reports it as unavailable; the fallback build has no submodule.
-            "user/net/tls_adapter.c",
-            "user/compat/compat_runtime.c",
-            "user/compat/linux/linux_compat.c",
-            "user/compat/windows/windows_compat.c",
-            "user/compat/macos/macos_compat.c",
-            "user/lib/user_api.c",
-            "boot/bootloader_stub.c",
+            "tests/kernel/kernel_tests.c"
+        ) + $sourceList + @(
             "-o", $manualExe
         )
         New-Item -ItemType Directory -Force $BuildDir | Out-Null

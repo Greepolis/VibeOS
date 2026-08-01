@@ -32,6 +32,27 @@ jobs:
           # built and tested, so it has to be fetched here.
           submodules: recursive
 
+      - name: Host Tests Under Sanitizers
+        # The protocol code parses input an attacker controls, so the host
+        # tests are also run with the address and undefined-behaviour
+        # sanitizers. Cheap - it is the same tests, no emulation - and it is
+        # the only gate that sees memory errors at all.
+        if: matrix.compiler == 'clang' && matrix.build_type == 'Debug'
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-asan -G Ninja \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DVIBEOS_BUILD_TESTS=ON \
+            -DVIBEOS_BUILD_KERNEL_IMAGE=OFF \
+            -DVIBEOS_ENABLE_TLS=OFF \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          cmake --build build-asan --parallel
+          ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+            ctest --test-dir build-asan --output-on-failure
+
       - name: Install Dependencies
         run: |
           sudo apt-get update

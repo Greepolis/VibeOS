@@ -28,30 +28,9 @@ file(MAKE_DIRECTORY "${VIBEOS_ARTIFACTS_DIR}")
 set(VIBEOS_TARGET_ARCH "x86_64" CACHE STRING "Target architecture")
 set(VIBEOS_BUILD_TYPE "debug" CACHE STRING "Build type: debug, release, hardened")
 
-add_library(vibeos_kernel_core STATIC
-    kernel/core/kmain.c
-    kernel/mm/pmm.c
-    kernel/net/inet.c
-    kernel/mm/vm.c
-    kernel/object/handle_table.c
-    kernel/proc/process.c
-    kernel/sched/scheduler.c
-    kernel/ipc/event.c
-    kernel/ipc/channel.c
-    kernel/ipc/handle_transfer.c
-    kernel/ipc/waitset.c
-    kernel/core/interrupts.c
-    kernel/core/log.c
-    kernel/core/policy.c
-    kernel/core/syscall_policy.c
-    kernel/core/security.c
-    kernel/core/syscall.c
-    kernel/time/timer.c
-    kernel/arch/x86_64/trap.c
-    kernel/arch/x86_64/idt.c
-    kernel/arch/x86_64/boot_stub.c
-    kernel/arch/x86_64/serial.c
-)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/core_sources.cmake)
+
+add_library(vibeos_kernel_core STATIC ${VIBEOS_KERNEL_CORE_SOURCES})
 
 target_include_directories(vibeos_kernel_core
     PUBLIC
@@ -67,24 +46,7 @@ target_compile_options(vibeos_kernel_core PRIVATE
     -mno-red-zone
 )
 
-set(VIBEOS_USER_CORE_SOURCES
-    user/init/init_system.c
-    user/servicemgr/service_manager.c
-    user/servicemgr/service_ipc.c
-    user/devmgr/device_manager.c
-    user/devmgr/driver_host.c
-    user/drivers/driver_framework.c
-    user/fs/vfs_service.c
-    user/fs/vfs_ops.c
-    user/net/network_service.c
-    user/net/socket.c
-    user/compat/compat_runtime.c
-    user/compat/linux/linux_compat.c
-    user/compat/windows/windows_compat.c
-    user/compat/macos/macos_compat.c
-    user/lib/user_api.c
-    boot/bootloader_stub.c
-)
+
 
 set(VIBEOS_TLS_ACTIVE OFF)
 if(VIBEOS_ENABLE_TLS)
@@ -122,7 +84,7 @@ target_compile_options(vibeos_user_core PRIVATE
 # vibeos_user_core. The kernel image links vibeos_user_core; keeping Mbed TLS
 # out of that library is what guarantees a hosted crypto stack can never be
 # dragged into the freestanding image by a future reference.
-add_library(vibeos_tls STATIC user/net/tls_adapter.c)
+add_library(vibeos_tls STATIC ${VIBEOS_TLS_SOURCES})
 target_include_directories(vibeos_tls PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_options(vibeos_tls PRIVATE -Wall -Wextra -Wpedantic)
 if(VIBEOS_TLS_ACTIVE)
