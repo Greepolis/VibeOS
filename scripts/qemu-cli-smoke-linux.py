@@ -7,7 +7,51 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+
+# The guest's NET.ELF connects here through QEMU's user-mode network, which
+# presents the host as 10.0.2.2. Serving the echo from the harness is what makes
+# the TCP path a real end-to-end test rather than a loopback inside the guest.
+ECHO_PORT = 7777
+
+
+def start_echo_server(stop_event, state):
+    """Accept one connection at a time and echo whatever arrives."""
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", ECHO_PORT))
+    srv.listen(4)
+    srv.settimeout(0.5)
+
+    def serve():
+        while not stop_event.is_set():
+            try:
+                conn, _ = srv.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            state["connections"] += 1
+            conn.settimeout(5)
+            try:
+                data = conn.recv(4096)
+                if data:
+                    state["received"] += len(data)
+                    conn.sendall(b"ECHO:" + data)
+            except OSError:
+                pass
+            finally:
+                try:
+                    conn.shutdown(socket.SHUT_WR)
+                except OSError:
+                    pass
+                conn.close()
+        srv.close()
+
+    t = threading.Thread(target=serve, daemon=True)
+    t.start()
+    return t
 
 
 def write(path, text):
@@ -62,8 +106,12 @@ def main():
     qemu = None
     status = "fail"
     reason = "unknown"
+    echo_stop = threading.Event()
+    echo_state = {"connections": 0, "received": 0}
+    echo_thread = None
 
     try:
+        echo_thread = start_echo_server(echo_stop, echo_state)
         if not os.path.exists(bootloader) or not os.path.exists(kernel):
             raise RuntimeError("EFI bootloader or kernel payload missing")
         if shutil.which("qemu-system-x86_64") is None:
@@ -89,7 +137,10 @@ def main():
                 "-drive", f"if=pflash,format=raw,file={vars_path}",
                 "-drive", f"if=none,id=esp,format=raw,file=fat:rw:{efi_root}",
                 "-device", "virtio-blk-pci,drive=esp,bootindex=1",
-                "-net", "none",
+                # A real NIC on QEMU's user-mode network: DHCP and DNS come
+                # from the built-in services, and 10.0.2.2 is the host.
+                "-netdev", "user,id=n0",
+                "-device", "virtio-net-pci,netdev=n0",
                 "-no-reboot",
                 "-no-shutdown",
             ]
@@ -143,8 +194,22 @@ def main():
                 if command is not None:
                     serial.sendall(command)
 
+            # Networking: the guest took a DHCP lease, answered ICMP, and
+            # completed a TCP exchange with the echo server running here.
+            text = buffer().replace("\r", "")
+            net_markers = ["NET_OK", "TCP_OK"]
+            missing = [m for m in net_markers if m not in text]
+            if missing:
+                reason = "missing:" + ",".join(missing)
+                raise RuntimeError(reason)
+            if echo_state["connections"] == 0:
+                reason = "no_tcp_connection_reached_the_host"
+                raise RuntimeError(reason)
+
             status = "pass"
-            reason = "cli_commands_verified"
+            reason = (f"cli_and_network_verified"
+                      f" tcp_connections={echo_state['connections']}"
+                      f" bytes={echo_state['received']}")
             serial.close()
             qemu.terminate()
             try:
@@ -164,6 +229,9 @@ def main():
                 qemu.kill()
         status = "fail"
     finally:
+        echo_stop.set()
+        if echo_thread is not None:
+            echo_thread.join(timeout=2)
         if os.path.exists(err_log_path):
             with open(err_log_path, "rb") as fp:
                 err_text = fp.read().decode("utf-8", errors="replace")

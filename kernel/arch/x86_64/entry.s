@@ -80,11 +80,12 @@ _start:
     hlt
     jmp .
 
-# Minimal BSS section for stack
+# Boot stack. hw_early_init runs on this, and once the timer is enabled its
+# interrupt handler nests onto the same stack, so it needs real headroom.
 .section .bss
 .align 4096
 stack_base:
-    .space 4096
+    .space 16384
 stack_top:
 
 # Mark stack as non-executable to silence the linker warning.

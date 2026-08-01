@@ -17,6 +17,7 @@
 #include "vibeos/trap.h"
 #include "vibeos/boot.h"
 #include "vibeos/mm.h"
+#include "vibeos/inet.h"
 
 #define VIBEOS_HW_KERNEL_CS 0x08u
 #define VIBEOS_HW_KERNEL_DS 0x10u
@@ -94,6 +95,16 @@ static uint32_t g_cpu_online_count = 1u;
 static uint8_t g_kernel_syscall_stack[VIBEOS_HW_MAX_CPUS][16384] __attribute__((aligned(16)));
 static uint8_t g_ap_boot_stack[VIBEOS_HW_MAX_CPUS][16384] __attribute__((aligned(16)));
 
+/* Dedicated per-CPU stack for the timer interrupt, installed as IST slot 1.
+ *
+ * The timer is where task switching happens, and a switch must not run on the
+ * outgoing task's kernel stack: the moment that task is marked runnable another
+ * core can resume it and start writing to the very stack this core is still
+ * popping the interrupt frame from. Landing the timer on a stack that belongs
+ * to the CPU rather than to a task closes that window. Interrupt gates mask
+ * interrupts, so this stack can never be re-entered on the same core. */
+static uint8_t g_timer_ist_stack[VIBEOS_HW_MAX_CPUS][16384] __attribute__((aligned(16)));
+
 static hw_cpu_t *hw_this_cpu(void) {
     hw_cpu_t *p;
     __asm__ __volatile__("movq %%gs:16, %0" : "=r"(p));
@@ -133,6 +144,13 @@ typedef struct {
 static hw_lock_t g_sched_lock;
 static hw_lock_t g_mm_lock;
 static hw_lock_t g_exec_lock;
+
+/* The TCP/IP stack is entered both from syscalls and from the timer interrupt
+ * that pumps the device, so it lives behind its own lock. Declared here because
+ * the socket syscalls appear before the network bring-up code below. */
+static vibeos_inet_t g_net;
+static hw_lock_t g_net_lock;
+static int g_net_up;
 
 static void hw_spin_lock(hw_lock_t *lock) {
     uint64_t flags;
@@ -220,6 +238,7 @@ typedef struct vibeos_x86_64_isr_frame {
 static void hw_schedule(vibeos_x86_64_isr_frame_t *frame); /* defined below */
 static void hw_task_exit(uint64_t code);                   /* defined below */
 static void hw_keyboard_wake(void);                        /* defined below */
+static void hw_net_pump(void);                             /* defined below */
 
 /* Load the shared GDT on this CPU, install its private TSS, and point GS.base
  * at its per-CPU block. Every core runs this; the shared descriptors are
@@ -241,6 +260,9 @@ static void hw_load_gdt(uint32_t cpu_index) {
         ((uint8_t *)(void *)&cpu->tss)[i] = 0;
     }
     cpu->tss.rsp0 = kstack_top;
+    /* IST slot 1: the timer interrupt's own stack on this CPU (see above). */
+    cpu->tss.ist[0] =
+        (uint64_t)(uintptr_t)&g_timer_ist_stack[cpu_index][sizeof(g_timer_ist_stack[0])];
     cpu->tss.iomap_base = (uint16_t)sizeof(cpu->tss);
     cpu->syscall_kstack_top = kstack_top;
     cpu->self = cpu;
@@ -317,6 +339,14 @@ extern void vibeos_x86_64_pic_disable(void);
 extern int vibeos_x86_64_apic_available(void);
 extern volatile uint32_t vibeos_x86_64_ap_alive;
 
+/* Network interface (virtio_net.c). */
+extern int vibeos_x86_64_virtio_net_init(void);
+extern const uint8_t *vibeos_x86_64_virtio_net_mac(void);
+extern int vibeos_x86_64_virtio_net_ready(void);
+extern int vibeos_x86_64_virtio_net_send(const void *frame, uint32_t len);
+extern int vibeos_x86_64_virtio_net_recv(void *out, uint32_t cap);
+extern void vibeos_x86_64_virtio_net_stats(uint64_t *out_tx, uint64_t *out_rx);
+
 extern int vibeos_x86_64_virtio_blk_init(void);
 extern int vibeos_x86_64_virtio_blk_read(uint64_t sector, void *buf);
 extern int vibeos_x86_64_fat_mount(void);
@@ -358,6 +388,9 @@ static void hw_load_idt(void) {
     hw_set_gate_attr(0x80u, (uint64_t)(uintptr_t)vibeos_isr_128, 0xEEu);
     /* Local-APIC spurious interrupt: must be handled, and must not be EOI'd. */
     hw_set_gate(0xFFu, (uint64_t)(uintptr_t)vibeos_isr_255);
+    /* The timer runs the scheduler, so it takes IST slot 1 - a stack owned by
+     * the CPU rather than by whichever task happened to be interrupted. */
+    g_idt[VIBEOS_HW_IRQ_TIMER].ist = 1;
     idtr.limit = (uint16_t)(sizeof(g_idt) - 1u);
     idtr.base = (uint64_t)(uintptr_t)&g_idt[0];
     __asm__ __volatile__("lidt %0" : : "m"(idtr) : "memory");
@@ -489,6 +522,11 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
                 g_timer_ticks++;
             }
             hw_pic_send_eoi((uint32_t)frame->vector);
+            /* One core owns the network clock: draining the device from every
+             * core would just contend on the same lock. */
+            if (!g_apic_mode || hw_this_cpu()->index == 0u) {
+                hw_net_pump();
+            }
             hw_schedule(frame); /* may rewrite the frame to switch tasks */
             return;
         }
@@ -507,11 +545,23 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
     /* A fault report is many small writes; keep another core from splitting it. */
     vibeos_x86_64_serial_lock();
     vibeos_x86_64_serial_puts("[HW][TRAP] ");
+    hw_log_field("cpu", hw_this_cpu()->index);
+    vibeos_x86_64_serial_puts(" ");
+    hw_log_field("task", (uint64_t)(int64_t)hw_this_cpu()->current_task);
+    vibeos_x86_64_serial_puts(" ");
     hw_log_field("vector", frame->vector);
     vibeos_x86_64_serial_puts(" ");
     hw_log_field("err", frame->error_code);
     vibeos_x86_64_serial_puts(" ");
     hw_log_field("rip", frame->rip);
+    vibeos_x86_64_serial_puts(" ");
+    hw_log_field("cs", frame->cs);
+    vibeos_x86_64_serial_puts(" ");
+    hw_log_field("rsp", frame->rsp);
+    vibeos_x86_64_serial_puts(" ");
+    hw_log_field("ss", frame->ss);
+    vibeos_x86_64_serial_puts(" ");
+    hw_log_field("rflags", frame->rflags);
     if (frame->vector == 14u) {
         vibeos_x86_64_serial_puts(" ");
         hw_log_field("cr2", fault_address);
@@ -593,6 +643,15 @@ static uint64_t g_hw_pmm_pages_used;
  * VIBEOS_HW_USER_BASE (user/prog/user.ld); their stack sits above the image. */
 #define VIBEOS_HW_USER_BASE 0x8000000000ull
 #define VIBEOS_HW_USER_STACK_TOP (VIBEOS_HW_USER_BASE + 0x00400000ull) /* +4 MiB */
+
+/* Stack pointer a program actually starts on.
+ *
+ * `_start` is compiled as an ordinary function, so the compiler lays out its
+ * frame assuming the System V post-call state: rsp % 16 == 8. Handing it a
+ * 16-aligned stack shifts every local by 8, and the first aligned SSE store the
+ * optimizer emits then faults with #GP in ring 3. Bias the entry stack the way
+ * a `call` would. */
+#define VIBEOS_HW_USER_STACK_ENTRY (VIBEOS_HW_USER_STACK_TOP - 8ull)
 #define VIBEOS_HW_USER_STACK_PAGES 4u
 
 typedef struct vibeos_hw_aspace {
@@ -947,6 +1006,7 @@ typedef struct {
     uint32_t cluster;
     uint32_t size;
     uint32_t pos;
+    int net_sock;         /* index into the TCP/IP stack, or -1 for a file */
     uint32_t dir_index;   /* for getdents64 on a directory fd */
     char name[24];
     uint8_t wbuf[VIBEOS_HW_WBUF];
@@ -1141,7 +1201,7 @@ static void hw_task_init_user_ctx(vibeos_x86_64_isr_frame_t *c, uint64_t entry, 
     c->rip = entry;
     c->cs = VIBEOS_HW_USER_CODE_SEL;
     c->rflags = 0x202;   /* reserved bit + IF */
-    c->rsp = VIBEOS_HW_USER_STACK_TOP;
+    c->rsp = VIBEOS_HW_USER_STACK_ENTRY;
     c->ss = VIBEOS_HW_USER_DATA_SEL;
     c->rdi = arg;        /* passed to the task's _start */
 }
@@ -1317,6 +1377,16 @@ static void hw_task_exit(uint64_t code) {
 #define LSYS_getdents64 217
 #define LSYS_unlink 87
 #define LSYS_mkdir  83
+#define LSYS_socket   41
+#define LSYS_connect  42
+#define LSYS_accept   43
+#define LSYS_sendto   44
+#define LSYS_recvfrom 45
+#define LSYS_bind     49
+#define LSYS_listen   50
+/* VibeOS-specific: network control. Deliberately outside the Linux number
+ * space, so it can never collide with a real syscall we implement later. */
+#define LSYS_netctl   1000
 
 static vibeos_compat_runtime_t g_compat_rt;
 
@@ -1380,6 +1450,11 @@ static hw_fd_t *hw_fd_get(uint64_t fd) {
     }
 }
 
+/* Socket-backed descriptors are served by these (defined with the socket
+ * syscalls below), so read/write work on a connection like any other stream. */
+static long hw_net_recv(hw_fd_t *f, uint64_t buf, uint64_t len);
+static long hw_net_send(hw_fd_t *f, uint64_t buf, uint64_t len);
+
 static long hw_sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
     const char *p = (const char *)(uintptr_t)buf;
     uint64_t i;
@@ -1390,7 +1465,13 @@ static long hw_sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
     if (fd >= 3u) { /* a file: buffer the bytes, committed on close */
         hw_fd_t *f = hw_fd_get(fd);
         uint64_t i2;
-        if (!f || !f->writable) {
+        if (!f) {
+            return -VIBEOS_EBADF;
+        }
+        if (f->net_sock >= 0) {
+            return hw_net_send(f, buf, len);
+        }
+        if (!f->writable) {
             return -VIBEOS_EBADF;
         }
         for (i2 = 0; i2 < len; i2++) {
@@ -1438,6 +1519,9 @@ static long hw_sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
         long n;
         if (!f) {
             return -VIBEOS_EBADF;
+        }
+        if (f->net_sock >= 0) {
+            return hw_net_recv(f, buf, len);
         }
         n = vibeos_x86_64_fat_read_at(f->cluster, f->size, f->pos, dst, (uint32_t)len);
         if (n > 0) {
@@ -1530,9 +1614,429 @@ static long hw_sys_open(uint64_t path_uptr, uint64_t flags) {
         f->wlen = 0;
         f->dirty = 0;
         f->writable = writable;
+        f->net_sock = -1;
         f->used = 1;
     }
     return 3 + i;
+}
+
+/* ---- socket syscalls ------------------------------------------------------
+ *
+ * Sockets share the process file-descriptor table with files, so read/write/
+ * close work on them unchanged and a program can treat a connection like any
+ * other stream.
+ *
+ * The socket calls that wait - connect, accept, recv - block the calling task
+ * the same way read(0) does: mark it BLOCKED and hlt. The network keeps moving
+ * because the stack is pumped from the timer interrupt. */
+
+#define VIBEOS_HW_NET_TIMEOUT_TICKS (VIBEOS_HW_TIMER_HZ * 10u)   /* 10 seconds */
+
+/* Claim a free descriptor slot in the calling process. */
+static int hw_fd_alloc(hw_task_t *t) {
+    int i;
+    for (i = 0; i < VIBEOS_HW_MAX_FDS; i++) {
+        if (!t->fds[i].used) {
+            hw_fd_t *f = &t->fds[i];
+            uint32_t k;
+            for (k = 0; k < (uint32_t)sizeof(*f); k++) {
+                ((uint8_t *)(void *)f)[k] = 0;
+            }
+            f->net_sock = -1;
+            f->used = 1;
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* Read a struct sockaddr_in out of user memory: family (host order), port and
+ * address (both network order on the wire). */
+static int hw_read_sockaddr(uint64_t uptr, uint32_t *out_ip, uint16_t *out_port) {
+    const uint8_t *p;
+    if (!hw_user_range_ok(uptr, 8, 0)) {
+        return -1;
+    }
+    p = (const uint8_t *)(uintptr_t)uptr;
+    if (((uint16_t)p[0] | ((uint16_t)p[1] << 8)) != 2u) {   /* AF_INET */
+        return -1;
+    }
+    *out_port = (uint16_t)(((uint16_t)p[2] << 8) | p[3]);
+    *out_ip = ((uint32_t)p[4] << 24) | ((uint32_t)p[5] << 16) |
+              ((uint32_t)p[6] << 8) | (uint32_t)p[7];
+    return 0;
+}
+
+static int hw_write_sockaddr(uint64_t uptr, uint32_t ip, uint16_t port) {
+    uint8_t *p;
+    if (uptr == 0u) {
+        return 0;
+    }
+    if (!hw_user_range_ok(uptr, 16, 1)) {
+        return -1;
+    }
+    p = (uint8_t *)(uintptr_t)uptr;
+    p[0] = 2; p[1] = 0;
+    p[2] = (uint8_t)(port >> 8);
+    p[3] = (uint8_t)(port & 0xFFu);
+    p[4] = (uint8_t)(ip >> 24);
+    p[5] = (uint8_t)((ip >> 16) & 0xFFu);
+    p[6] = (uint8_t)((ip >> 8) & 0xFFu);
+    p[7] = (uint8_t)(ip & 0xFFu);
+    {
+        int k;
+        for (k = 8; k < 16; k++) {
+            p[k] = 0;
+        }
+    }
+    return 0;
+}
+
+/* Give up the CPU until the next tick; the network is pumped from there. */
+static void hw_net_wait_tick(void) {
+    __asm__ __volatile__("sti; hlt" ::: "memory");
+}
+
+static long hw_sys_socket(uint64_t domain, uint64_t type) {
+    hw_task_t *t;
+    int fd, s;
+    int kind;
+
+    if (!g_net_up || g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+        return -VIBEOS_EINVAL;
+    }
+    if (domain != 2u) {                       /* AF_INET only */
+        return -VIBEOS_EINVAL;
+    }
+    if ((type & 0xFFu) == 1u) {
+        kind = VIBEOS_INET_SOCK_TCP;          /* SOCK_STREAM */
+    } else if ((type & 0xFFu) == 2u) {
+        kind = VIBEOS_INET_SOCK_UDP;          /* SOCK_DGRAM  */
+    } else {
+        return -VIBEOS_EINVAL;
+    }
+
+    t = &g_tasks[g_current_task];
+    fd = hw_fd_alloc(t);
+    if (fd < 0) {
+        return -VIBEOS_EMFILE;
+    }
+    hw_spin_lock(&g_net_lock);
+    s = vibeos_inet_socket(&g_net, kind);
+    hw_spin_unlock(&g_net_lock);
+    if (s < 0) {
+        t->fds[fd].used = 0;
+        return -VIBEOS_ENOMEM;
+    }
+    t->fds[fd].net_sock = s;
+    return 3 + fd;
+}
+
+static long hw_sys_bind(uint64_t fd, uint64_t addr_uptr) {
+    hw_fd_t *f = hw_fd_get(fd);
+    uint32_t ip;
+    uint16_t port;
+    int r;
+
+    if (!f || f->net_sock < 0) {
+        return -VIBEOS_EBADF;
+    }
+    if (hw_read_sockaddr(addr_uptr, &ip, &port) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    hw_spin_lock(&g_net_lock);
+    r = vibeos_inet_bind(&g_net, f->net_sock, port);
+    hw_spin_unlock(&g_net_lock);
+    return (r == 0) ? 0 : -VIBEOS_EINVAL;
+}
+
+static long hw_sys_listen(uint64_t fd) {
+    hw_fd_t *f = hw_fd_get(fd);
+    int r;
+
+    if (!f || f->net_sock < 0) {
+        return -VIBEOS_EBADF;
+    }
+    hw_spin_lock(&g_net_lock);
+    r = vibeos_inet_listen(&g_net, f->net_sock);
+    hw_spin_unlock(&g_net_lock);
+    return (r == 0) ? 0 : -VIBEOS_EINVAL;
+}
+
+static long hw_sys_connect(uint64_t fd, uint64_t addr_uptr) {
+    hw_fd_t *f = hw_fd_get(fd);
+    uint32_t ip;
+    uint16_t port;
+    uint64_t deadline;
+    int r;
+
+    if (!f || f->net_sock < 0) {
+        return -VIBEOS_EBADF;
+    }
+    if (hw_read_sockaddr(addr_uptr, &ip, &port) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    hw_spin_lock(&g_net_lock);
+    r = vibeos_inet_connect(&g_net, f->net_sock, ip, port);
+    hw_spin_unlock(&g_net_lock);
+    if (r != 0) {
+        return -VIBEOS_EINVAL;
+    }
+
+    deadline = g_timer_ticks + VIBEOS_HW_NET_TIMEOUT_TICKS;
+    for (;;) {
+        int st;
+        hw_spin_lock(&g_net_lock);
+        st = vibeos_inet_socket_state(&g_net, f->net_sock);
+        hw_spin_unlock(&g_net_lock);
+        if (st == VIBEOS_TCP_ESTABLISHED) {
+            return 0;
+        }
+        if (st == VIBEOS_TCP_CLOSED || st < 0) {
+            return -VIBEOS_EIO;   /* refused, reset, or gave up retransmitting */
+        }
+        if (g_timer_ticks > deadline) {
+            return -VIBEOS_EIO;
+        }
+        hw_net_wait_tick();
+    }
+}
+
+static long hw_sys_accept(uint64_t fd, uint64_t addr_uptr) {
+    hw_fd_t *f = hw_fd_get(fd);
+    hw_task_t *t;
+    int child = -1;
+    int nfd;
+
+    if (!f || f->net_sock < 0 || g_current_task < 0) {
+        return -VIBEOS_EBADF;
+    }
+    t = &g_tasks[g_current_task];
+    for (;;) {
+        hw_spin_lock(&g_net_lock);
+        child = vibeos_inet_accept(&g_net, f->net_sock);
+        hw_spin_unlock(&g_net_lock);
+        if (child >= 0) {
+            break;
+        }
+        if (child != -VIBEOS_INET_EAGAIN) {
+            return -VIBEOS_EINVAL;
+        }
+        hw_net_wait_tick();
+    }
+
+    nfd = hw_fd_alloc(t);
+    if (nfd < 0) {
+        hw_spin_lock(&g_net_lock);
+        (void)vibeos_inet_close(&g_net, child);
+        hw_spin_unlock(&g_net_lock);
+        return -VIBEOS_EMFILE;
+    }
+    t->fds[nfd].net_sock = child;
+    {
+        uint32_t ip;
+        uint16_t port;
+        hw_spin_lock(&g_net_lock);
+        ip = g_net.sockets[child].remote_ip;
+        port = g_net.sockets[child].remote_port;
+        hw_spin_unlock(&g_net_lock);
+        (void)hw_write_sockaddr(addr_uptr, ip, port);
+    }
+    return 3 + nfd;
+}
+
+/* Blocking stream receive: returns 0 at end of stream, like Linux. */
+static long hw_net_recv(hw_fd_t *f, uint64_t buf, uint64_t len) {
+    uint64_t deadline = g_timer_ticks + VIBEOS_HW_NET_TIMEOUT_TICKS;
+
+    if (!hw_user_range_ok(buf, len, 1)) {
+        return -VIBEOS_EFAULT;
+    }
+    for (;;) {
+        long n;
+        hw_spin_lock(&g_net_lock);
+        n = vibeos_inet_recv(&g_net, f->net_sock, (void *)(uintptr_t)buf, (uint32_t)len);
+        hw_spin_unlock(&g_net_lock);
+        if (n >= 0) {
+            return n;
+        }
+        if (n == -VIBEOS_INET_ECONNRESET) {
+            return -VIBEOS_EIO;
+        }
+        if (n != -VIBEOS_INET_EAGAIN) {
+            return -VIBEOS_EINVAL;
+        }
+        if (g_timer_ticks > deadline) {
+            return -VIBEOS_EIO;
+        }
+        hw_net_wait_tick();
+    }
+}
+
+static long hw_net_send(hw_fd_t *f, uint64_t buf, uint64_t len) {
+    long n;
+    if (!hw_user_range_ok(buf, len, 0)) {
+        return -VIBEOS_EFAULT;
+    }
+    hw_spin_lock(&g_net_lock);
+    n = vibeos_inet_send(&g_net, f->net_sock, (const void *)(uintptr_t)buf, (uint32_t)len);
+    hw_spin_unlock(&g_net_lock);
+    if (n < 0) {
+        return (n == -VIBEOS_INET_EAGAIN) ? 0 : -VIBEOS_EIO;
+    }
+    return n;
+}
+
+static long hw_sys_sendto(uint64_t fd, uint64_t buf, uint64_t len, uint64_t addr_uptr) {
+    hw_fd_t *f = hw_fd_get(fd);
+    uint32_t ip;
+    uint16_t port;
+    long n;
+
+    if (!f || f->net_sock < 0) {
+        return -VIBEOS_EBADF;
+    }
+    if (addr_uptr == 0u) {
+        return hw_net_send(f, buf, len);
+    }
+    if (hw_read_sockaddr(addr_uptr, &ip, &port) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    if (!hw_user_range_ok(buf, len, 0)) {
+        return -VIBEOS_EFAULT;
+    }
+    hw_spin_lock(&g_net_lock);
+    n = vibeos_inet_sendto(&g_net, f->net_sock, (const void *)(uintptr_t)buf,
+                           (uint32_t)len, ip, port);
+    hw_spin_unlock(&g_net_lock);
+    return (n < 0) ? -VIBEOS_EIO : n;
+}
+
+/* netctl: the small control surface a shell needs to inspect and exercise the
+ * interface. Linux would spread this across ioctl and netlink; VibeOS keeps one
+ * explicit call rather than pretending to implement either.
+ *
+ *   op 0  write {ip, netmask, gateway, dns, up} as five u32 to `arg`
+ *   op 1  ping `arg` (an IPv4 address), returns the round trip in ms
+ *   op 2  resolve the name at `arg`, returns the address
+ *   op 3  write {tx_frames, rx_frames, rx_dropped, tcp_retransmits} as four u64
+ */
+static long hw_sys_netctl(uint64_t op, uint64_t arg) {
+    uint64_t deadline;
+
+    if (!g_net_up) {
+        return -VIBEOS_EIO;
+    }
+    switch (op) {
+        case 0: {
+            uint32_t *out;
+            if (!hw_user_range_ok(arg, 20, 1)) {
+                return -VIBEOS_EFAULT;
+            }
+            out = (uint32_t *)(uintptr_t)arg;
+            hw_spin_lock(&g_net_lock);
+            out[0] = g_net.ip;
+            out[1] = g_net.netmask;
+            out[2] = g_net.gateway;
+            out[3] = g_net.dns;
+            out[4] = (uint32_t)vibeos_inet_dhcp_bound(&g_net);
+            hw_spin_unlock(&g_net_lock);
+            return 0;
+        }
+        case 1: {
+            hw_spin_lock(&g_net_lock);
+            (void)vibeos_inet_ping(&g_net, (uint32_t)arg);
+            hw_spin_unlock(&g_net_lock);
+            deadline = g_timer_ticks + (VIBEOS_HW_TIMER_HZ * 4u);
+            for (;;) {
+                uint64_t rtt = 0;
+                int r;
+                hw_spin_lock(&g_net_lock);
+                r = vibeos_inet_ping_result(&g_net, &rtt);
+                hw_spin_unlock(&g_net_lock);
+                if (r == 0) {
+                    return (long)rtt;
+                }
+                if (g_timer_ticks > deadline) {
+                    return -VIBEOS_EIO;
+                }
+                hw_net_wait_tick();
+            }
+        }
+        case 2: {
+            char name[64];
+            if (hw_copy_user_string(arg, name, sizeof(name)) != 0) {
+                return -VIBEOS_EFAULT;
+            }
+            hw_spin_lock(&g_net_lock);
+            (void)vibeos_inet_resolve(&g_net, name);
+            hw_spin_unlock(&g_net_lock);
+            deadline = g_timer_ticks + (VIBEOS_HW_TIMER_HZ * 5u);
+            for (;;) {
+                uint32_t ip = 0;
+                int r;
+                hw_spin_lock(&g_net_lock);
+                r = vibeos_inet_resolve_result(&g_net, &ip);
+                hw_spin_unlock(&g_net_lock);
+                if (r == 0) {
+                    return (long)ip;
+                }
+                if (r != -VIBEOS_INET_EAGAIN || g_timer_ticks > deadline) {
+                    return -VIBEOS_ENOENT;
+                }
+                hw_net_wait_tick();
+            }
+        }
+        case 3: {
+            uint64_t *out;
+            if (!hw_user_range_ok(arg, 32, 1)) {
+                return -VIBEOS_EFAULT;
+            }
+            out = (uint64_t *)(uintptr_t)arg;
+            hw_spin_lock(&g_net_lock);
+            out[0] = g_net.tx_frames;
+            out[1] = g_net.rx_frames;
+            out[2] = g_net.rx_dropped;
+            out[3] = g_net.tcp_retransmits;
+            hw_spin_unlock(&g_net_lock);
+            return 0;
+        }
+        default:
+            return -VIBEOS_EINVAL;
+    }
+}
+
+static long hw_sys_recvfrom(uint64_t fd, uint64_t buf, uint64_t len, uint64_t addr_uptr) {
+    hw_fd_t *f = hw_fd_get(fd);
+    uint64_t deadline;
+
+    if (!f || f->net_sock < 0) {
+        return -VIBEOS_EBADF;
+    }
+    if (!hw_user_range_ok(buf, len, 1)) {
+        return -VIBEOS_EFAULT;
+    }
+    deadline = g_timer_ticks + VIBEOS_HW_NET_TIMEOUT_TICKS;
+    for (;;) {
+        long n;
+        uint32_t ip = 0;
+        uint16_t port = 0;
+        hw_spin_lock(&g_net_lock);
+        n = vibeos_inet_recvfrom(&g_net, f->net_sock, (void *)(uintptr_t)buf,
+                                 (uint32_t)len, &ip, &port);
+        hw_spin_unlock(&g_net_lock);
+        if (n >= 0) {
+            (void)hw_write_sockaddr(addr_uptr, ip, port);
+            return n;
+        }
+        if (n != -VIBEOS_INET_EAGAIN) {
+            return -VIBEOS_EINVAL;
+        }
+        if (g_timer_ticks > deadline) {
+            return -VIBEOS_EIO;
+        }
+        hw_net_wait_tick();
+    }
 }
 
 /* close(fd): commit buffered writes to the filesystem and release the slot. */
@@ -1542,6 +2046,14 @@ static long hw_sys_close(uint64_t fd) {
 
     if (!f) {
         return -VIBEOS_EBADF;
+    }
+    if (f->net_sock >= 0) {
+        hw_spin_lock(&g_net_lock);
+        (void)vibeos_inet_close(&g_net, f->net_sock);
+        hw_spin_unlock(&g_net_lock);
+        f->net_sock = -1;
+        f->used = 0;
+        return 0;
     }
     if (f->writable && f->dirty) {
         if (vibeos_x86_64_fat_write_file(f->name, f->wbuf, f->wlen) < 0) {
@@ -1881,7 +2393,7 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr) 
     frame->rip = np.entry;
     frame->cs = VIBEOS_HW_USER_CODE_SEL;
     frame->rflags = 0x202;
-    frame->rsp = VIBEOS_HW_USER_STACK_TOP;
+    frame->rsp = VIBEOS_HW_USER_STACK_ENTRY;
     frame->ss = VIBEOS_HW_USER_DATA_SEL;
     return 0; /* frame replaced; syscall return enters the new image */
 }
@@ -1925,6 +2437,24 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
             return hw_sys_mmap(a2); /* addr hint ignored; a2 = length */
         case LSYS_getpid:
             return (g_current_task >= 0) ? (long)g_tasks[g_current_task].pid : 1;
+        /* Sockets. The Linux ABI passes the 4th, 5th and 6th arguments in r10,
+         * r8 and r9; the trapframe has them, so read them straight from it. */
+        case LSYS_socket:
+            return hw_sys_socket(a1, a2);
+        case LSYS_connect:
+            return hw_sys_connect(a1, a2);
+        case LSYS_accept:
+            return hw_sys_accept(a1, a2);
+        case LSYS_sendto:
+            return hw_sys_sendto(a1, a2, a3, frame->r8);
+        case LSYS_recvfrom:
+            return hw_sys_recvfrom(a1, a2, a3, frame->r8);
+        case LSYS_bind:
+            return hw_sys_bind(a1, a2);
+        case LSYS_listen:
+            return hw_sys_listen(a1);
+        case LSYS_netctl:
+            return hw_sys_netctl(a1, a2);
         case LSYS_exit:
         case LSYS_exit_group:
             hw_task_exit(a1); /* retires this task and switches away; no return */
@@ -1946,6 +2476,142 @@ void vibeos_x86_64_syscall_dispatch(vibeos_x86_64_isr_frame_t *frame) {
 
 /* Bring the scheduler up: spawn the initial user tasks, adopt the kernel as a
  * task, and let the timer preempt from here on. */
+/* ---- networking ----------------------------------------------------------
+ *
+ * The protocol stack (kernel/net/inet.c) is portable and hardware-free: this
+ * layer gives it a transmit path, feeds it received frames, and drives its
+ * timers from the tick. Everything is serialized on one lock - the stack is
+ * entered both from syscalls and from the timer interrupt. */
+
+static uint64_t hw_net_now_ms(void) {
+    return g_timer_ticks * (1000ull / VIBEOS_HW_TIMER_HZ);
+}
+
+static int hw_net_tx(void *ctx, const void *frame, uint32_t len) {
+    (void)ctx;
+    return vibeos_x86_64_virtio_net_send(frame, len);
+}
+
+/* Drain the receive queue into the stack and advance its timers. Called from
+ * the timer IRQ, so the whole system keeps making network progress even while
+ * a task is blocked in a socket call. */
+/* Staging buffer for one received frame. Static rather than a local: this runs
+ * on the interrupt stack, and 1.5 KiB of frame there is enough to overflow it.
+ * Covered by the network lock, like everything else that touches the stack. */
+static uint8_t g_net_rxframe[VIBEOS_INET_MTU];
+
+static void hw_net_pump(void) {
+    int n;
+    int budget = 16;
+
+    if (!g_net_up) {
+        return;
+    }
+    hw_spin_lock(&g_net_lock);
+    while (budget-- > 0) {
+        n = vibeos_x86_64_virtio_net_recv(g_net_rxframe, (uint32_t)sizeof(g_net_rxframe));
+        if (n <= 0) {
+            break;
+        }
+        (void)vibeos_inet_input(&g_net, g_net_rxframe, (uint32_t)n);
+    }
+    vibeos_inet_poll(&g_net, hw_net_now_ms());
+    hw_spin_unlock(&g_net_lock);
+}
+
+static void hw_net_print_ip(uint32_t ip) {
+    int i;
+    for (i = 3; i >= 0; i--) {
+        uint32_t b = (ip >> (i * 8)) & 0xFFu;
+        char buf[4];
+        int k = 0;
+        if (b >= 100u) { buf[k++] = (char)('0' + b / 100u); }
+        if (b >= 10u)  { buf[k++] = (char)('0' + (b / 10u) % 10u); }
+        buf[k++] = (char)('0' + b % 10u);
+        buf[k] = 0;
+        vibeos_x86_64_serial_puts(buf);
+        if (i > 0) {
+            vibeos_x86_64_serial_puts(".");
+        }
+    }
+}
+
+/* Bring the interface up and take a DHCP lease. Runs before the scheduler is
+ * armed, so it pumps the device itself while it waits. */
+static void hw_net_bringup(void) {
+    uint32_t spins;
+
+    if (vibeos_x86_64_virtio_net_init() != 0) {
+        vibeos_x86_64_serial_puts("[NET] no network interface; networking disabled\n");
+        return;
+    }
+    if (vibeos_inet_init(&g_net, vibeos_x86_64_virtio_net_mac(), hw_net_tx, 0) != 0) {
+        vibeos_x86_64_serial_puts("[NET] stack init failed\n");
+        return;
+    }
+    g_net_up = 1;
+
+    vibeos_x86_64_serial_puts("[NET] requesting a DHCP lease\n");
+    (void)vibeos_inet_dhcp_start(&g_net);
+
+    /* The timer is already live but the scheduler is not, so pump inline.
+     * Bounded: a network that does not answer must not hold up the boot. */
+    for (spins = 0; spins < 400u; spins++) {
+        /* Go through the same locked path the timer uses: the interrupt is
+         * already live and would otherwise reuse the staging buffer under us. */
+        hw_net_pump();
+        if (vibeos_inet_dhcp_bound(&g_net)) {
+            break;
+        }
+        {
+            uint32_t d;
+            for (d = 0; d < 200000u; d++) {
+                __asm__ __volatile__("pause" ::: "memory");
+            }
+        }
+    }
+
+    /* Snapshot under the lock: the timer is pumping the stack concurrently, and
+     * a DHCP retry blanks the address for the duration of the send. Reading the
+     * live fields here could catch that window and report 0.0.0.0. */
+    {
+        int bound;
+        uint32_t ip, gw, dns;
+
+        hw_spin_lock(&g_net_lock);
+        bound = vibeos_inet_dhcp_bound(&g_net);
+        ip = g_net.ip;
+        gw = g_net.gateway;
+        dns = g_net.dns;
+        hw_spin_unlock(&g_net_lock);
+
+        vibeos_x86_64_serial_lock();
+        if (bound) {
+            vibeos_x86_64_serial_puts("[NET] NET_OK dhcp lease ip=");
+            hw_net_print_ip(ip);
+            vibeos_x86_64_serial_puts(" gw=");
+            hw_net_print_ip(gw);
+            vibeos_x86_64_serial_puts(" dns=");
+            hw_net_print_ip(dns);
+            vibeos_x86_64_serial_puts("\n");
+            vibeos_x86_64_serial_unlock();
+            return;
+        }
+        vibeos_x86_64_serial_unlock();
+    }
+    /* No DHCP server answered: fall back to QEMU's user-mode defaults so the
+     * stack is still usable, and say so plainly. */
+    hw_spin_lock(&g_net_lock);
+    vibeos_inet_set_addr(&g_net, 0x0A000210u, 0xFFFFFF00u, 0x0A000202u, 0x0A000203u);
+    hw_spin_unlock(&g_net_lock);
+
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts("[NET] no DHCP answer; using a static address ip=");
+    hw_net_print_ip(0x0A000210u);
+    vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
+}
+
 /* ---- APIC + SMP bring-up -------------------------------------------------- */
 
 /* Index of the CPU currently being started; read by that CPU's entry point. */
@@ -2112,6 +2778,9 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                   "write TMP.TXT scratch\b\b\bch\n"  /* backspace editing */
                                   "rm TMP.TXT\n"
                                   "EFI/BOOT/TASK.ELF\n"
+                                  "net\n"
+                                  "ping 10.0.2.2\n"
+                                  "EFI/BOOT/NET.ELF\n"
                                   "exit\n");
 
     hello_id = hw_task_spawn_user(init_elf, init_len, 0);
@@ -2228,6 +2897,9 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
             vibeos_x86_64_serial_puts("[FAT] INIT.ELF not found on disk\n");
         }
     }
+
+    /* Network interface: virtio-net + the TCP/IP stack, addressed by DHCP. */
+    hw_net_bringup();
 
     hw_sched_bringup(boot_info);
 

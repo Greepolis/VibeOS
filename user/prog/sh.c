@@ -17,6 +17,7 @@
 #define SYS_getdents64 217
 #define SYS_unlink 87
 #define SYS_mkdir  83
+#define SYS_netctl 1000
 
 static long sys3(long nr, long a1, long a2, long a3) {
     long ret;
@@ -60,6 +61,62 @@ static char *split_word(char *line) {
         }
     }
     return p;
+}
+
+/* Print an unsigned decimal number. */
+static void put_u(unsigned long v) {
+    char b[24];
+    int i = 0;
+    if (v == 0) {
+        put("0");
+        return;
+    }
+    while (v > 0 && i < 23) {
+        b[i++] = (char)('0' + (v % 10));
+        v /= 10;
+    }
+    while (i > 0) {
+        char one[2];
+        one[0] = b[--i];
+        one[1] = 0;
+        put(one);
+    }
+}
+
+static void put_ip(unsigned long ip) {
+    int shift;
+    for (shift = 24; shift >= 0; shift -= 8) {
+        put_u((ip >> shift) & 0xFF);
+        if (shift > 0) {
+            put(".");
+        }
+    }
+}
+
+static unsigned long parse_ip(const char *s) {
+    unsigned long v = 0, part = 0;
+    int parts = 0, digits = 0;
+    for (;;) {
+        char c = *s++;
+        if (c >= '0' && c <= '9') {
+            part = part * 10 + (unsigned long)(c - '0');
+            digits++;
+        } else if (c == '.' || c == 0) {
+            if (!digits || part > 255) {
+                return 0;
+            }
+            v = (v << 8) | part;
+            part = 0;
+            digits = 0;
+            parts++;
+            if (c == 0) {
+                break;
+            }
+        } else {
+            return 0;
+        }
+    }
+    return (parts == 4) ? v : 0;
 }
 
 static void run_program(const char *path) {
@@ -112,6 +169,9 @@ void _start(void) {
                 "write <f> <text>  create a file with text\n"
                 "mkdir <dir>       create a directory\n"
                 "rm <file>         delete a file\n"
+                "net               show the network interface\n"
+                "ping <a.b.c.d>    ICMP echo a host\n"
+                "resolve <name>    look a name up in DNS\n"
                 "exit              leave the shell\n"
                 "<path>            run a program, e.g. EFI/BOOT/TASK.ELF\n");
         } else if (seq(line, "echo")) {
@@ -169,6 +229,43 @@ void _start(void) {
         } else if (seq(line, "mkdir")) {
             put(sys3(SYS_mkdir, (long)(unsigned long)args, 0, 0) == 0 ? "created\n"
                                                                      : "mkdir: failed\n");
+        } else if (seq(line, "net")) {
+            unsigned int cfg[5];
+            unsigned long stats[4];
+            if (sys3(SYS_netctl, 0, (long)(unsigned long)cfg, 0) != 0) {
+                put("net: interface down\n");
+            } else {
+                put("ip      ");  put_ip(cfg[0]); put("\n");
+                put("netmask ");  put_ip(cfg[1]); put("\n");
+                put("gateway ");  put_ip(cfg[2]); put("\n");
+                put("dns     ");  put_ip(cfg[3]); put("\n");
+                put("dhcp    ");  put(cfg[4] ? "bound\n" : "static\n");
+                if (sys3(SYS_netctl, 3, (long)(unsigned long)stats, 0) == 0) {
+                    put("frames  tx="); put_u(stats[0]);
+                    put(" rx=");        put_u(stats[1]);
+                    put(" dropped=");   put_u(stats[2]);
+                    put(" retrans=");   put_u(stats[3]);
+                    put("\n");
+                }
+            }
+        } else if (seq(line, "ping")) {
+            unsigned long ip = parse_ip(args);
+            long rtt;
+            if (ip == 0) {
+                put("ping: usage: ping <a.b.c.d>\n");
+            } else if ((rtt = sys3(SYS_netctl, 1, (long)ip, 0)) < 0) {
+                put("ping: no reply\n");
+            } else {
+                put("reply from "); put_ip(ip);
+                put(" time="); put_u((unsigned long)rtt); put("ms\n");
+            }
+        } else if (seq(line, "resolve")) {
+            long ip = sys3(SYS_netctl, 2, (long)(unsigned long)args, 0);
+            if (ip <= 0) {
+                put("resolve: not found\n");
+            } else {
+                put(args); put(" is "); put_ip((unsigned long)ip); put("\n");
+            }
         } else if (seq(line, "exit")) {
             put("sh: bye\n");
             sys3(SYS_exit, 0, 0, 0);

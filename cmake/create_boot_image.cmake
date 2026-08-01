@@ -46,6 +46,12 @@ if(EXISTS "${USER_SH_ELF}")
     message(STATUS "EFI media includes shell: EFI/BOOT/SH.ELF")
 endif()
 
+set(USER_NET_ELF "${CMAKE_BINARY_DIR}/vibeos_user_net")
+if(EXISTS "${USER_NET_ELF}")
+    file(COPY_FILE "${USER_NET_ELF}" "${EFI_BOOT_DIR}/NET.ELF" ONLY_IF_DIFFERENT)
+    message(STATUS "EFI media includes network client: EFI/BOOT/NET.ELF")
+endif()
+
 set(USER_TASK_ELF "${CMAKE_BINARY_DIR}/vibeos_user_task")
 if(EXISTS "${USER_TASK_ELF}")
     file(COPY_FILE "${USER_TASK_ELF}" "${EFI_BOOT_DIR}/TASK.ELF" ONLY_IF_DIFFERENT)

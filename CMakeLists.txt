@@ -25,6 +25,7 @@ set(VIBEOS_BUILD_TYPE "debug" CACHE STRING "Build type: debug, release, hardened
 add_library(vibeos_kernel_core STATIC
     kernel/core/kmain.c
     kernel/mm/pmm.c
+    kernel/net/inet.c
     kernel/mm/vm.c
     kernel/object/handle_table.c
     kernel/proc/process.c
@@ -133,6 +134,7 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         kernel/arch/x86_64/apic.c
         kernel/arch/x86_64/elf_load.c
         kernel/arch/x86_64/virtio_blk.c
+        kernel/arch/x86_64/virtio_net.c
         kernel/arch/x86_64/fat.c
         kernel/arch/x86_64/keyboard.c
         kernel/arch/x86_64/fb.c
@@ -201,6 +203,22 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         -Wl,-T,${CMAKE_CURRENT_SOURCE_DIR}/user/prog/user.ld
     )
     set_target_properties(vibeos_user_sh PROPERTIES
+        LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/user/prog/user.ld"
+    )
+
+    # Fourth user program: a TCP client, staged on media as NET.ELF.
+    add_executable(vibeos_user_net user/prog/net.c)
+    target_compile_options(vibeos_user_net PRIVATE
+        -ffreestanding -fno-stack-protector -fno-pic -mno-red-zone
+        -mcmodel=large
+        -fno-strict-aliasing -Wall -Wextra
+    )
+    target_link_options(vibeos_user_net PRIVATE
+        -nostdlib -no-pie
+        -Wl,-e,_start
+        -Wl,-T,${CMAKE_CURRENT_SOURCE_DIR}/user/prog/user.ld
+    )
+    set_target_properties(vibeos_user_net PROPERTIES
         LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/user/prog/user.ld"
     )
 
@@ -393,7 +411,7 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
     add_custom_target(vibeos_boot_image
         COMMAND ${CMAKE_COMMAND} -E echo "Creating EFI media layout..."
         COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/create_boot_image.cmake
-        DEPENDS vibeos_kernel_elf vibeos_bootloader_efi vibeos_user_hello vibeos_user_task vibeos_user_sh
+        DEPENDS vibeos_kernel_elf vibeos_bootloader_efi vibeos_user_hello vibeos_user_task vibeos_user_sh vibeos_user_net
         COMMENT "Generating bootable kernel image"
     )
     

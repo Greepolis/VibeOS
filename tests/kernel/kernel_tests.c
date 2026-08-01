@@ -15,6 +15,7 @@
 #include "vibeos/syscall_abi.h"
 #include "vibeos/timer.h"
 #include "vibeos/net.h"
+#include "vibeos/inet.h"
 #include "vibeos/trap.h"
 #include "vibeos/user_api.h"
 #include "vibeos/vm.h"
@@ -3608,6 +3609,413 @@ static int test_proc_audit_retention_policy(void) {
     return 0;
 }
 
+
+/* ---- TCP/IP stack (kernel/net/inet.c) ------------------------------------
+ *
+ * The stack never touches hardware: it is driven entirely through
+ * vibeos_inet_input(), the transmit callback and vibeos_inet_poll(). That makes
+ * the whole protocol path - checksums, ARP, the TCP state machine - exercisable
+ * here, on the same code that runs behind virtio-net on metal.
+ */
+
+#define INET_TEST_CAPTURE 16
+
+typedef struct {
+    uint8_t frame[INET_TEST_CAPTURE][1600];
+    uint32_t len[INET_TEST_CAPTURE];
+    uint32_t count;
+} inet_capture_t;
+
+static int inet_capture_tx(void *ctx, const void *frame, uint32_t len) {
+    inet_capture_t *cap = (inet_capture_t *)ctx;
+    if (cap->count < INET_TEST_CAPTURE && len <= sizeof(cap->frame[0])) {
+        memcpy(cap->frame[cap->count], frame, len);
+        cap->len[cap->count] = len;
+        cap->count++;
+    }
+    return 0;
+}
+
+static const uint8_t inet_test_local_mac[6] = {0x52, 0x54, 0x00, 0x11, 0x22, 0x33};
+static const uint8_t inet_test_peer_mac[6] = {0x52, 0x54, 0x00, 0xAA, 0xBB, 0xCC};
+
+static void inet_wr16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)(v >> 8); p[1] = (uint8_t)v; }
+static void inet_wr32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16);
+    p[2] = (uint8_t)(v >> 8);  p[3] = (uint8_t)v;
+}
+static uint16_t inet_rd16(const uint8_t *p) { return (uint16_t)((p[0] << 8) | p[1]); }
+static uint32_t inet_rd32(const uint8_t *p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+}
+
+/* Build an Ethernet + IPv4 frame carrying `payload` and hand it to the stack. */
+static void inet_deliver(vibeos_inet_t *net, uint32_t src, uint32_t dst, uint8_t proto,
+                         const uint8_t *payload, uint32_t plen) {
+    uint8_t f[1600];
+    uint8_t *ip = f + 14;
+    uint32_t i;
+
+    memcpy(f, inet_test_local_mac, 6);
+    memcpy(f + 6, inet_test_peer_mac, 6);
+    inet_wr16(f + 12, 0x0800);
+
+    ip[0] = 0x45;
+    ip[1] = 0;
+    inet_wr16(ip + 2, (uint16_t)(20 + plen));
+    inet_wr16(ip + 4, 1);
+    inet_wr16(ip + 6, 0);
+    ip[8] = 64;
+    ip[9] = proto;
+    inet_wr16(ip + 10, 0);
+    inet_wr32(ip + 12, src);
+    inet_wr32(ip + 16, dst);
+    inet_wr16(ip + 10, vibeos_inet_checksum(ip, 20));
+    for (i = 0; i < plen; i++) {
+        ip[20 + i] = payload[i];
+    }
+    (void)vibeos_inet_input(net, f, 14 + 20 + plen);
+}
+
+/* Build a TCP segment towards us and deliver it. */
+static void inet_deliver_tcp(vibeos_inet_t *net, uint32_t src, uint16_t sport, uint16_t dport,
+                             uint32_t seq, uint32_t ack, uint8_t flags,
+                             const uint8_t *data, uint32_t dlen) {
+    uint8_t seg[600];
+    uint32_t i;
+
+    inet_wr16(seg + 0, sport);
+    inet_wr16(seg + 2, dport);
+    inet_wr32(seg + 4, seq);
+    inet_wr32(seg + 8, ack);
+    seg[12] = 0x50;
+    seg[13] = flags;
+    inet_wr16(seg + 14, 4096);
+    inet_wr16(seg + 16, 0);
+    inet_wr16(seg + 18, 0);
+    for (i = 0; i < dlen; i++) {
+        seg[20 + i] = data[i];
+    }
+    inet_deliver(net, src, net->ip, 6, seg, 20 + dlen);
+}
+
+static int test_inet_checksum(void) {
+    /* A header whose checksum field is already correct must sum to zero. */
+    uint8_t ip[20];
+    memset(ip, 0, sizeof(ip));
+    ip[0] = 0x45;
+    inet_wr16(ip + 2, 40);
+    ip[8] = 64;
+    ip[9] = 6;
+    inet_wr32(ip + 12, 0x0A00020Fu);
+    inet_wr32(ip + 16, 0x0A000202u);
+    inet_wr16(ip + 10, vibeos_inet_checksum(ip, 20));
+    if (vibeos_inet_checksum(ip, 20) != 0) {
+        return -1;
+    }
+    if (vibeos_inet_parse_ip("10.0.2.15") != 0x0A00020Fu) {
+        return -1;
+    }
+    if (vibeos_inet_parse_ip("10.0.2") != 0 || vibeos_inet_parse_ip("10.0.2.300") != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_inet_arp_and_icmp(void) {
+    static vibeos_inet_t net;
+    static inet_capture_t cap;
+    uint8_t arp[28];
+
+    memset(&cap, 0, sizeof(cap));
+    if (vibeos_inet_init(&net, inet_test_local_mac, inet_capture_tx, &cap) != 0) {
+        return -1;
+    }
+    vibeos_inet_set_addr(&net, 0x0A00020Fu, 0xFFFFFF00u, 0x0A000202u, 0x0A000203u);
+
+    /* An ARP request for our address must produce a reply carrying our MAC. */
+    inet_wr16(arp + 0, 1);
+    inet_wr16(arp + 2, 0x0800);
+    arp[4] = 6;
+    arp[5] = 4;
+    inet_wr16(arp + 6, 1);
+    memcpy(arp + 8, inet_test_peer_mac, 6);
+    inet_wr32(arp + 14, 0x0A000202u);
+    memset(arp + 18, 0, 6);
+    inet_wr32(arp + 24, 0x0A00020Fu);
+    {
+        uint8_t f[64];
+        memcpy(f, inet_test_local_mac, 6);
+        memcpy(f + 6, inet_test_peer_mac, 6);
+        inet_wr16(f + 12, 0x0806);
+        memcpy(f + 14, arp, 28);
+        if (vibeos_inet_input(&net, f, 14 + 28) != 0) {
+            return -1;
+        }
+    }
+    if (cap.count != 1 || inet_rd16(cap.frame[0] + 12) != 0x0806) {
+        return -1;
+    }
+    if (inet_rd16(cap.frame[0] + 14 + 6) != 2) {          /* opcode = reply */
+        return -1;
+    }
+    if (memcmp(cap.frame[0] + 14 + 8, inet_test_local_mac, 6) != 0) {
+        return -1;
+    }
+
+    /* An ICMP echo request must be answered, using the ARP entry just learned
+     * (so no further ARP traffic is generated). */
+    cap.count = 0;
+    {
+        uint8_t icmp[16];
+        memset(icmp, 0, sizeof(icmp));
+        icmp[0] = 8;
+        inet_wr16(icmp + 4, 0x1234);
+        inet_wr16(icmp + 6, 1);
+        inet_wr16(icmp + 2, vibeos_inet_checksum(icmp, sizeof(icmp)));
+        inet_deliver(&net, 0x0A000202u, 0x0A00020Fu, 1, icmp, sizeof(icmp));
+    }
+    if (cap.count != 1) {
+        return -1;
+    }
+    if (cap.frame[0][14 + 9] != 1 || cap.frame[0][14 + 20] != 0) {   /* ICMP echo reply */
+        return -1;
+    }
+    if (vibeos_inet_checksum(cap.frame[0] + 14, 20) != 0) {          /* valid IP header */
+        return -1;
+    }
+    return 0;
+}
+
+static int test_inet_udp(void) {
+    static vibeos_inet_t net;
+    static inet_capture_t cap;
+    int s;
+    uint8_t buf[64];
+    uint32_t from_ip = 0;
+    uint16_t from_port = 0;
+
+    memset(&cap, 0, sizeof(cap));
+    if (vibeos_inet_init(&net, inet_test_local_mac, inet_capture_tx, &cap) != 0) {
+        return -1;
+    }
+    vibeos_inet_set_addr(&net, 0x0A00020Fu, 0xFFFFFF00u, 0x0A000202u, 0x0A000203u);
+
+    s = vibeos_inet_socket(&net, VIBEOS_INET_SOCK_UDP);
+    if (s < 0 || vibeos_inet_bind(&net, s, 4242) != 0) {
+        return -1;
+    }
+
+    /* Nothing received yet. */
+    if (vibeos_inet_recvfrom(&net, s, buf, sizeof(buf), &from_ip, &from_port) !=
+        -VIBEOS_INET_EAGAIN) {
+        return -1;
+    }
+
+    {
+        uint8_t udp[8 + 5];
+        inet_wr16(udp + 0, 9999);
+        inet_wr16(udp + 2, 4242);
+        inet_wr16(udp + 4, 8 + 5);
+        inet_wr16(udp + 6, 0);
+        memcpy(udp + 8, "hello", 5);
+        inet_deliver(&net, 0x0A000202u, 0x0A00020Fu, 17, udp, sizeof(udp));
+    }
+    if (vibeos_inet_recvfrom(&net, s, buf, sizeof(buf), &from_ip, &from_port) != 5) {
+        return -1;
+    }
+    if (memcmp(buf, "hello", 5) != 0 || from_ip != 0x0A000202u || from_port != 9999) {
+        return -1;
+    }
+
+    /* Sending needs ARP first: the datagram is deferred behind a request. */
+    cap.count = 0;
+    if (vibeos_inet_sendto(&net, s, "pong", 4, 0x0A000202u, 9999) !=
+        -VIBEOS_INET_EAGAIN) {
+        return -1;
+    }
+    if (cap.count != 1 || inet_rd16(cap.frame[0] + 12) != 0x0806) {
+        return -1;   /* an ARP request, not the datagram */
+    }
+    return 0;
+}
+
+/* Teach a stack the peer's MAC, so a test is not held up by ARP. */
+static void inet_seed_arp(vibeos_inet_t *net) {
+    uint8_t arp[28];
+    uint8_t f[64];
+    inet_wr16(arp + 0, 1);
+    inet_wr16(arp + 2, 0x0800);
+    arp[4] = 6;
+    arp[5] = 4;
+    inet_wr16(arp + 6, 2);                    /* reply */
+    memcpy(arp + 8, inet_test_peer_mac, 6);
+    inet_wr32(arp + 14, 0x0A000202u);
+    memcpy(arp + 18, inet_test_local_mac, 6);
+    inet_wr32(arp + 24, 0x0A00020Fu);
+    memcpy(f, inet_test_local_mac, 6);
+    memcpy(f + 6, inet_test_peer_mac, 6);
+    inet_wr16(f + 12, 0x0806);
+    memcpy(f + 14, arp, 28);
+    (void)vibeos_inet_input(net, f, 14 + 28);
+}
+
+static int test_inet_tcp_connection(void) {
+    static vibeos_inet_t net;
+    static inet_capture_t cap;
+    int s;
+    uint32_t our_isn;
+    uint32_t peer_isn = 0x50000000u;
+    uint16_t our_port;
+    uint8_t buf[64];
+
+    memset(&cap, 0, sizeof(cap));
+    if (vibeos_inet_init(&net, inet_test_local_mac, inet_capture_tx, &cap) != 0) {
+        return -1;
+    }
+    vibeos_inet_set_addr(&net, 0x0A00020Fu, 0xFFFFFF00u, 0x0A000202u, 0x0A000203u);
+    inet_seed_arp(&net);
+
+    s = vibeos_inet_socket(&net, VIBEOS_INET_SOCK_TCP);
+    if (s < 0) {
+        return -1;
+    }
+
+    /* connect() emits a SYN. */
+    cap.count = 0;
+    if (vibeos_inet_connect(&net, s, 0x0A000202u, 80) != 0) {
+        return -1;
+    }
+    if (cap.count != 1) {
+        return -1;
+    }
+    if ((cap.frame[0][14 + 20 + 13] & 0x02) == 0) {         /* SYN set */
+        return -1;
+    }
+    our_isn = inet_rd32(cap.frame[0] + 14 + 20 + 4);
+    our_port = inet_rd16(cap.frame[0] + 14 + 20 + 0);
+    if (vibeos_inet_socket_state(&net, s) != VIBEOS_TCP_SYN_SENT) {
+        return -1;
+    }
+
+    /* SYN|ACK completes the handshake and must be acknowledged. */
+    cap.count = 0;
+    inet_deliver_tcp(&net, 0x0A000202u, 80, our_port, peer_isn, our_isn + 1, 0x12, 0, 0);
+    if (vibeos_inet_socket_state(&net, s) != VIBEOS_TCP_ESTABLISHED) {
+        return -1;
+    }
+    if (cap.count < 1 || (cap.frame[0][14 + 20 + 13] & 0x10) == 0) {
+        return -1;   /* the ACK that finishes the three-way handshake */
+    }
+
+    /* Sending queues data and puts it on the wire with the right sequence. */
+    cap.count = 0;
+    if (vibeos_inet_send(&net, s, "GET /\n", 6) != 6) {
+        return -1;
+    }
+    if (cap.count != 1) {
+        return -1;
+    }
+    if (inet_rd32(cap.frame[0] + 14 + 20 + 4) != our_isn + 1) {
+        return -1;
+    }
+    if (memcmp(cap.frame[0] + 14 + 20 + 20, "GET /\n", 6) != 0) {
+        return -1;
+    }
+
+    /* Unacknowledged data must be retransmitted once the timer expires. */
+    cap.count = 0;
+    vibeos_inet_poll(&net, 10000);
+    if (cap.count == 0 || net.tcp_retransmits == 0) {
+        return -1;
+    }
+
+    /* The peer acknowledges, then sends data of its own. */
+    inet_deliver_tcp(&net, 0x0A000202u, 80, our_port, peer_isn + 1, our_isn + 7, 0x10, 0, 0);
+    cap.count = 0;
+    inet_deliver_tcp(&net, 0x0A000202u, 80, our_port, peer_isn + 1, our_isn + 7, 0x18,
+                     (const uint8_t *)"OK\n", 3);
+    if (vibeos_inet_recv(&net, s, buf, sizeof(buf)) != 3 || memcmp(buf, "OK\n", 3) != 0) {
+        return -1;
+    }
+    if (cap.count == 0) {
+        return -1;   /* received data must be acknowledged */
+    }
+
+    /* A FIN from the peer moves us to CLOSE_WAIT and ends the stream. */
+    inet_deliver_tcp(&net, 0x0A000202u, 80, our_port, peer_isn + 4, our_isn + 7, 0x11, 0, 0);
+    if (vibeos_inet_socket_state(&net, s) != VIBEOS_TCP_CLOSE_WAIT) {
+        return -1;
+    }
+    if (vibeos_inet_recv(&net, s, buf, sizeof(buf)) != 0) {
+        return -1;   /* orderly shutdown reads as end of stream */
+    }
+
+    /* Closing sends our FIN and waits for the last acknowledgement. */
+    cap.count = 0;
+    if (vibeos_inet_close(&net, s) != 0) {
+        return -1;
+    }
+    if (cap.count != 1 || (cap.frame[0][14 + 20 + 13] & 0x01) == 0) {
+        return -1;
+    }
+    if (vibeos_inet_socket_state(&net, s) != VIBEOS_TCP_LAST_ACK) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_inet_tcp_listen_accept(void) {
+    static vibeos_inet_t net;
+    static inet_capture_t cap;
+    int srv, conn;
+    uint32_t child_isn;
+
+    memset(&cap, 0, sizeof(cap));
+    if (vibeos_inet_init(&net, inet_test_local_mac, inet_capture_tx, &cap) != 0) {
+        return -1;
+    }
+    vibeos_inet_set_addr(&net, 0x0A00020Fu, 0xFFFFFF00u, 0x0A000202u, 0x0A000203u);
+    inet_seed_arp(&net);
+
+    srv = vibeos_inet_socket(&net, VIBEOS_INET_SOCK_TCP);
+    if (srv < 0 || vibeos_inet_bind(&net, srv, 8080) != 0) {
+        return -1;
+    }
+    if (vibeos_inet_listen(&net, srv) != 0) {
+        return -1;
+    }
+    if (vibeos_inet_accept(&net, srv) != -VIBEOS_INET_EAGAIN) {
+        return -1;
+    }
+
+    /* An incoming SYN creates a child connection and answers SYN|ACK. */
+    cap.count = 0;
+    inet_deliver_tcp(&net, 0x0A000202u, 40000, 8080, 0x900u, 0, 0x02, 0, 0);
+    if (cap.count != 1 || (cap.frame[0][14 + 20 + 13] & 0x12) != 0x12) {
+        return -1;
+    }
+    child_isn = inet_rd32(cap.frame[0] + 14 + 20 + 4);
+    if (vibeos_inet_accept(&net, srv) != -VIBEOS_INET_EAGAIN) {
+        return -1;   /* not connected until the handshake completes */
+    }
+
+    /* The final ACK makes it acceptable. */
+    inet_deliver_tcp(&net, 0x0A000202u, 40000, 8080, 0x901u, child_isn + 1, 0x10, 0, 0);
+    conn = vibeos_inet_accept(&net, srv);
+    if (conn < 0) {
+        return -1;
+    }
+    if (vibeos_inet_socket_state(&net, conn) != VIBEOS_TCP_ESTABLISHED) {
+        return -1;
+    }
+    if (vibeos_inet_accept(&net, srv) != -VIBEOS_INET_EAGAIN) {
+        return -1;   /* the backlog held exactly one connection */
+    }
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
 #define RUN_TEST(fn) do { if ((fn)() != 0) { failures++; printf("FAIL:%s\n", #fn); } } while (0)
@@ -3642,6 +4050,11 @@ int main(void) {
     RUN_TEST(test_waitset_wait_all_and_ext_stats);
     RUN_TEST(test_filesystem_runtime);
     RUN_TEST(test_network_runtime);
+    RUN_TEST(test_inet_checksum);
+    RUN_TEST(test_inet_arp_and_icmp);
+    RUN_TEST(test_inet_udp);
+    RUN_TEST(test_inet_tcp_connection);
+    RUN_TEST(test_inet_tcp_listen_accept);
     RUN_TEST(test_security_token);
     RUN_TEST(test_security_audit_log);
     RUN_TEST(test_driver_host);
