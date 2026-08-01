@@ -16,6 +16,7 @@
 #include "vibeos/timer.h"
 #include "vibeos/net.h"
 #include "vibeos/inet.h"
+#include "vibeos/tls.h"
 #include "vibeos/trap.h"
 #include "vibeos/user_api.h"
 #include "vibeos/vm.h"
@@ -3765,6 +3766,10 @@ static int test_inet_checksum(void) {
     return 0;
 }
 
+static int test_tls_dependency(void) {
+    return vibeos_tls_runtime_available() && vibeos_tls_library_version() >= 0x03060000u ? 0 : -1;
+}
+
 static int test_inet_arp_and_icmp(void) {
     static vibeos_inet_t net;
     static inet_capture_t cap;
@@ -4217,6 +4222,7 @@ int main(void) {
     RUN_TEST(test_filesystem_runtime);
     RUN_TEST(test_network_runtime);
     RUN_TEST(test_inet_checksum);
+    RUN_TEST(test_tls_dependency);
     RUN_TEST(test_inet_arp_and_icmp);
     RUN_TEST(test_inet_udp);
     RUN_TEST(test_inet_dhcp_and_dns);
