@@ -24,8 +24,14 @@ static void user_exit(long code) {
 }
 
 void _start(void) {
+    /* The task id arrives in rdi. It must be read into a genuinely 64-bit
+     * variable: `long` is only 32 bits under LLP64, so a host compiler on
+     * Windows would pick a 32-bit register and `mov %rdi, %eax` will not
+     * assemble. `long long` is 64 bits on every target we build for. */
+    long long id_raw;
     long id;
-    __asm__ __volatile__("mov %%rdi, %0" : "=r"(id)); /* task id from the kernel */
+    __asm__ __volatile__("mov %%rdi, %0" : "=r"(id_raw)); /* task id from the kernel */
+    id = (long)id_raw;
 
     char line[2];
     line[0] = (char)('A' + (int)id);

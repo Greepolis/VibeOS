@@ -142,7 +142,11 @@ jobs:
       - name: Run PowerShell Test Pipeline
         shell: pwsh
         run: |
-          ./scripts/run-tests.ps1 -BuildDir build -Generator Ninja -Profile ci
+          # Host tests only. The bootable image is a freestanding ELF for the
+          # VibeOS target and its user programs assume LP64; building them with
+          # a Windows-hosted toolchain produces something that could never run,
+          # and only surfaces LLP64 noise. Linux builds and boot-gates the image.
+          ./scripts/run-tests.ps1 -BuildDir build -Generator Ninja -Profile ci -SkipImageBuild
 
       - name: Upload Windows Artifacts
         if: always()
