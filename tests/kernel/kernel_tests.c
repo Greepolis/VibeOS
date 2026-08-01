@@ -706,6 +706,8 @@ static int test_syscalls(void) {
     memset(&kernel, 0, sizeof(kernel));
     memset(&frame, 0, sizeof(frame));
     vibeos_event_init(&kernel.boot_event);
+    /* ABI first: everything after this assumes the version the kernel
+     * reports is the one this test was written against. */
     vibeos_syscall_make_abi_version_get(&frame);
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
         return -1;
@@ -723,6 +725,8 @@ static int test_syscalls(void) {
         return -1;
     }
 
+    /* Handles: allocate one with signal rights, then check that signalling
+     * through handle 0 is refused while the real handle works. */
     vibeos_syscall_make_handle_alloc(&frame, VIBEOS_HANDLE_RIGHT_SIGNAL | VIBEOS_HANDLE_RIGHT_MANAGE, 0);
     if (vibeos_handle_table_init(&kernel.handles) != 0) {
         return -1;
@@ -749,6 +753,7 @@ static int test_syscalls(void) {
     if (vibeos_sec_token_init(&kernel.kernel_token, 0, 0, (1u << 0) | (1u << 1) | (1u << 2)) != 0) {
         return -1;
     }
+    /* Processes: spawn, state transitions and the counters over them. */
     vibeos_syscall_make_process_spawn(&frame, 0);
     if (vibeos_proc_init(&kernel.proc_table) != 0) {
         return -1;
@@ -846,6 +851,7 @@ static int test_syscalls(void) {
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
         return -1;
     }
+    /* Security: tokens and the capability checks that gate the rest. */
     vibeos_syscall_make_sec_audit_count(&frame, 0);
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result < 6) {
         return -1;
@@ -892,6 +898,7 @@ static int test_syscalls(void) {
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 0) {
         return -1;
     }
+    /* Threads: creation, state changes and per-process aggregation. */
     vibeos_syscall_make_thread_create(&frame, pid1);
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 1) {
         return -1;
@@ -1012,6 +1019,7 @@ static int test_syscalls(void) {
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
         return -1;
     }
+    /* Virtual memory: mapping and protection through the syscall path. */
     vibeos_syscall_make_vm_map(&frame, 0x800000, 0x300000, 0x1000);
     if (vibeos_vm_init(&kernel.kernel_aspace) != 0) {
         return -1;
@@ -1032,6 +1040,7 @@ static int test_syscalls(void) {
         return -1;
     }
     waitset_event_handle = (uint32_t)frame.result;
+    /* Waitsets: membership and the statistics that back the wake policies. */
     vibeos_syscall_make_waitset_add_event(&frame, waitset_event_handle, pid1, pid1);
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
         return -1;
@@ -1190,6 +1199,7 @@ static int test_syscalls(void) {
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.arg0 < 1) {
         return -1;
     }
+    /* Scheduler: admission and the queue accounting it exposes. */
     vibeos_syscall_make_sched_cpu_count_get(&frame);
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result != 2) {
         return -1;

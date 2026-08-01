@@ -159,6 +159,8 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
         case VIBEOS_SYSCALL_ABI_COMPAT_CHECK:
             frame->result = vibeos_syscall_abi_is_compatible((uint32_t)frame->arg0) ? 1 : 0;
             return 0;
+
+        /* Events: signal and clear, the primitive waitsets are built on. */
         case VIBEOS_SYSCALL_EVENT_SIGNAL:
             vibeos_event_signal(&kernel->boot_event);
             frame->result = 0;
@@ -167,6 +169,9 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             vibeos_event_clear(&kernel->boot_event);
             frame->result = 0;
             return 0;
+
+        /* Handles: allocation and release, checked against the caller's process
+         so one process cannot close another's handle. */
         case VIBEOS_SYSCALL_HANDLE_ALLOC:
         {
             uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
@@ -198,6 +203,9 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             frame->result = 0;
             return 0;
         }
+
+        /* Waitsets: membership, wake policy, ownership and statistics. The
+         statistics calls are read-only and safe for any caller. */
         case VIBEOS_SYSCALL_WAITSET_ADD_EVENT:
             if (kernel_waitset_owner_pid == 0) {
                 kernel_waitset_owner_pid = vibeos_syscall_waitset_owner_pid(frame);
@@ -347,6 +355,9 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             frame->result = (int64_t)owner_pid;
             return 0;
         }
+
+        /* Processes: lifecycle and state queries. Spawn is the only one that
+         creates, and it is the one policy is consulted for. */
         case VIBEOS_SYSCALL_PROCESS_SPAWN:
         {
             uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
@@ -492,6 +503,8 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             frame->result = (int64_t)state_terminated;
             return 0;
         }
+
+        /* Threads: creation, state transitions and per-process counts. */
         case VIBEOS_SYSCALL_THREAD_CREATE:
         {
             uint32_t tid;
@@ -657,6 +670,9 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             frame->result = 0;
             return 0;
         }
+
+        /* Virtual memory: map, unmap and protection changes on the caller's
+         address space. */
         case VIBEOS_SYSCALL_VM_MAP:
             if (vibeos_vm_map(&kernel->kernel_aspace, (uintptr_t)frame->arg0, (uintptr_t)frame->arg1, (size_t)frame->arg2, VIBEOS_VM_PERM_READ | VIBEOS_VM_PERM_WRITE) != 0) {
                 frame->result = -1;
@@ -678,6 +694,8 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             }
             frame->result = 0;
             return 0;
+
+        /* Process audit trail: retention policy and event readback. */
         case VIBEOS_SYSCALL_PROC_AUDIT_COUNT:
         {
             uint32_t count = 0;
@@ -870,6 +888,9 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             frame->result = 0;
             return 0;
         }
+
+        /* Scheduler: queue inspection, thread admission and the accounting
+         the balancing tests rely on. */
         case VIBEOS_SYSCALL_SCHED_RUNNABLE_GET:
             frame->result = (int64_t)vibeos_sched_runnable_threads(&kernel->scheduler);
             return 0;
@@ -1263,6 +1284,8 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             frame->result = (int64_t)process_interact_override_bit;
             return 0;
         }
+
+        /* Security: tokens, capability checks and the audit log behind them. */
         case VIBEOS_SYSCALL_SEC_AUDIT_COUNT:
         {
             uint32_t caller_pid = vibeos_syscall_caller_pid(frame);
