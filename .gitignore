@@ -52,3 +52,7 @@ qemu-ovmf-vars*.fd
 
 # CMake generated files
 build-wsl/
+
+# Python bytecode from the test harness scripts
+__pycache__/
+*.pyc
