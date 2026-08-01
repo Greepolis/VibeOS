@@ -24,6 +24,14 @@
 #define VIBEOS_INET_RXBUF 4096u      /* per-socket receive buffer            */
 #define VIBEOS_INET_TXBUF 4096u      /* per-socket unacknowledged send data  */
 #define VIBEOS_INET_BACKLOG 4u
+#define VIBEOS_INET_OOO_SLOTS 4u     /* out-of-order TCP segments held per socket */
+#define VIBEOS_INET_TCP_MSS 1024u
+#define VIBEOS_INET_DNS_PENDING 4u   /* concurrent DNS queries                    */
+
+/* How long a closing connection is kept before its slot is reclaimed. Real
+ * TIME_WAIT is 2*MSL; a minimal stack on a virtual link uses a short, bounded
+ * value so sockets cannot accumulate. */
+#define VIBEOS_INET_TIME_WAIT_MS 4000ull
 
 /* Socket types. */
 enum {
@@ -96,9 +104,26 @@ typedef struct vibeos_inet_socket {
     uint8_t tx[VIBEOS_INET_TXBUF];
     uint32_t tx_len;         /* bytes queued but not yet acknowledged        */
 
-    /* UDP keeps the sender of the last datagram so recvfrom can report it. */
+    /* Out-of-order TCP segments, held until the gap ahead of them is filled.
+     * Without this a single reordered or lost segment forces the peer to
+     * retransmit everything after it. */
+    struct {
+        uint32_t seq;
+        uint32_t len;
+        uint8_t used;
+        uint8_t data[VIBEOS_INET_TCP_MSS];
+    } ooo[VIBEOS_INET_OOO_SLOTS];
+
+    /* Deadline for a connection sitting in TIME_WAIT or waiting for a final
+     * ACK; when it passes the slot is reclaimed. 0 when not armed. */
+    uint64_t close_deadline_ms;
+
+    /* UDP datagrams are queued in the same rx buffer, each one framed as
+     * [len:2][src ip:4][src port:2][payload], so a socket can hold several and
+     * recvfrom returns exactly one per call. */
     uint32_t last_src_ip;
     uint16_t last_src_port;
+    uint32_t udp_dropped;    /* datagrams discarded because the queue was full */
 
     /* Listening sockets hand completed connections to accept(). */
     int backlog[VIBEOS_INET_BACKLOG];
@@ -135,20 +160,30 @@ typedef struct vibeos_inet {
     uint64_t ping_sent_ms;
     uint64_t ping_rtt_ms;
 
-    /* DHCP client. */
-    uint8_t dhcp_state;      /* 0 idle, 1 discovering, 2 requesting, 3 bound */
+    /* DHCP client. States 4 and 5 are renewing and rebinding: a lease is not
+     * permanent, and one that is never renewed silently expires. */
+    uint8_t dhcp_state;      /* 0 idle, 1 discover, 2 request, 3 bound,
+                                4 renewing, 5 rebinding                       */
     uint32_t dhcp_xid;
     uint32_t dhcp_offer_ip;
     uint32_t dhcp_server;
     uint64_t dhcp_retry_ms;
+    uint64_t dhcp_t1_ms;     /* renew at this time  */
+    uint64_t dhcp_t2_ms;     /* rebind at this time */
+    uint64_t dhcp_expire_ms; /* lease is gone after this */
+    uint32_t dhcp_lease_secs;
+    uint64_t dhcp_renewals;
 
-    /* One in-flight DNS query. */
+    /* One in-flight DNS query, with bounded retries. */
     uint16_t dns_id;
     uint8_t dns_pending;
     uint8_t dns_done;
+    uint8_t dns_retries;
+    uint64_t dns_retry_ms;
     uint32_t dns_result;
     char dns_name[64];
     vibeos_dns_cache_entry_t dns_cache[VIBEOS_INET_DNS_CACHE_ENTRIES];
+    uint64_t dns_timeouts;
 
     /* Counters, so the system can report what the link actually did. */
     uint64_t rx_frames;

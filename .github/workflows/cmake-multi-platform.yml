@@ -70,11 +70,16 @@ jobs:
       # per-CPU LAPIC timers, the shared run queue) is actually exercised.
       # Four TCG cores are several times slower than one, hence the budget.
       - name: QEMU Boot-to-CLI Smoke (Required Gate)
-        timeout-minutes: 12
+        timeout-minutes: 20
         run: |
           set -euo pipefail
           chmod +x scripts/qemu-smoke-cli-linux.sh
-          ./scripts/qemu-smoke-cli-linux.sh build 480
+          # The budget is generous on purpose: four TCG cores, a full shell
+          # session and a TCP exchange, on a runner that also builds the TLS
+          # dependency. A failure now reports whether the guest went quiet or
+          # was still making progress, so an undersized budget is not mistaken
+          # for a hang.
+          ./scripts/qemu-smoke-cli-linux.sh build 900
 
       - name: Build Importable VM Images (esp.img/.vdi/.vmdk/.iso, GCC)
         if: matrix.compiler == 'gcc'

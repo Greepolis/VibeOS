@@ -1299,6 +1299,24 @@ static void hw_task_exit(uint64_t code) {
     int dying = cpu->current_task;
     int next, i;
 
+    /* A process owns its sockets: releasing them here is what stops a task that
+     * exits with connections open from leaking them for the life of the system.
+     * Done before the task is retired, while its descriptor table is still
+     * ours to walk. */
+    if (dying >= 0 && g_net_up) {
+        int fd;
+        for (fd = 0; fd < VIBEOS_HW_MAX_FDS; fd++) {
+            hw_fd_t *f = &g_tasks[dying].fds[fd];
+            if (f->used && f->net_sock >= 0) {
+                hw_spin_lock(&g_net_lock);
+                (void)vibeos_inet_close(&g_net, f->net_sock);
+                hw_spin_unlock(&g_net_lock);
+                f->net_sock = -1;
+                f->used = 0;
+            }
+        }
+    }
+
     if (dying >= 0) {
         hw_spin_lock(&g_sched_lock);
         g_tasks[dying].state = HW_TASK_ZOMBIE;

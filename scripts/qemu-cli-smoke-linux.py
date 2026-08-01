@@ -160,10 +160,12 @@ def main():
                     time.sleep(0.05)
 
             serial.setblocking(False)
-            deadline = time.monotonic() + timeout_sec
+            started = time.monotonic()
+            last_rx = started
+            deadline = started + timeout_sec
 
             def pump():
-                nonlocal serial_text
+                nonlocal serial_text, last_rx
                 while True:
                     try:
                         chunk = serial.recv(4096)
@@ -172,6 +174,11 @@ def main():
                     if not chunk:
                         return
                     serial_text += chunk.decode("utf-8", errors="replace")
+                    # When output last arrived is what separates "the guest is
+                    # wedged" from "the guest is just slow": a failure with the
+                    # serial line still active is a budget problem, one that has
+                    # been silent for a long time is a hang.
+                    last_rx = time.monotonic()
 
             def buffer():
                 pump()
@@ -189,7 +196,20 @@ def main():
 
             for expected, command in checks:
                 if not wait_for(buffer, expected, deadline):
-                    reason = f"missing:{expected}"
+                    # Say which kind of failure this is, so nobody has to run a
+                    # experiment to find out whether the guest froze or the
+                    # budget was simply too small on a loaded machine.
+                    now = time.monotonic()
+                    idle = now - last_rx
+                    if not serial_text:
+                        kind = "no_output_at_all"      # never got past firmware
+                    elif idle > 20:
+                        kind = "guest_went_quiet"      # produced output, then stopped: a hang
+                    else:
+                        kind = "guest_still_talking"   # still progressing: the budget was too small
+                    reason = (f"missing:{expected} verdict={kind}"
+                              f" elapsed={now - started:.0f}s"
+                              f" quiet_for={idle:.0f}s budget={timeout_sec}s")
                     raise RuntimeError(reason)
                 if command is not None:
                     serial.sendall(command)

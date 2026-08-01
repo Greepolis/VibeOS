@@ -4047,6 +4047,49 @@ static void inet_seed_arp(vibeos_inet_t *net) {
     (void)vibeos_inet_input(net, f, 14 + 28);
 }
 
+
+/* Deliver a BOOTP reply (DHCP OFFER/ACK/NAK) carrying the stack's own xid. */
+static void inet_deliver_dhcp(vibeos_inet_t *net, uint8_t msg_type,
+                              uint32_t yiaddr, uint32_t lease_secs) {
+    uint8_t body[300];
+    uint32_t o;
+    uint32_t i;
+
+    for (i = 0; i < sizeof(body); i++) {
+        body[i] = 0;
+    }
+    body[0] = 2;                       /* BOOTREPLY                       */
+    body[1] = 1;
+    body[2] = 6;
+    inet_wr32(body + 4, net->dhcp_xid);
+    inet_wr32(body + 16, yiaddr);      /* yiaddr                          */
+    inet_wr32(body + 236, 0x63825363u);/* magic cookie                    */
+
+    o = 240u;
+    body[o++] = 53; body[o++] = 1; body[o++] = msg_type;
+    body[o++] = 1;  body[o++] = 4; inet_wr32(body + o, 0xFFFFFF00u); o += 4u;
+    body[o++] = 3;  body[o++] = 4; inet_wr32(body + o, 0x0A000202u); o += 4u;
+    body[o++] = 6;  body[o++] = 4; inet_wr32(body + o, 0x0A000203u); o += 4u;
+    body[o++] = 54; body[o++] = 4; inet_wr32(body + o, 0x0A000202u); o += 4u;
+    if (lease_secs) {
+        body[o++] = 51; body[o++] = 4; inet_wr32(body + o, lease_secs); o += 4u;
+    }
+    body[o++] = 255;
+
+    {
+        uint8_t udp[600];
+        uint32_t k;
+        inet_wr16(udp + 0, 67);
+        inet_wr16(udp + 2, 68);
+        inet_wr16(udp + 4, (uint16_t)(8u + o));
+        inet_wr16(udp + 6, 0);
+        for (k = 0; k < o; k++) {
+            udp[8 + k] = body[k];
+        }
+        inet_deliver(net, 0x0A000202u, 0xFFFFFFFFu, 17, udp, 8u + o);
+    }
+}
+
 static int test_inet_tcp_connection(void) {
     static vibeos_inet_t net;
     static inet_capture_t cap;
@@ -4202,6 +4245,247 @@ static int test_inet_tcp_listen_accept(void) {
     return 0;
 }
 
+
+/* ---- Wave 1 reliability ---------------------------------------------------
+ * Each of these covers a limit the stack used to have: one datagram per socket,
+ * out-of-order segments dropped, closing connections never reclaimed, and a
+ * DHCP lease that was never renewed or given up.
+ */
+
+static int test_inet_udp_datagram_queue(void) {
+    static vibeos_inet_t net;
+    static inet_capture_t cap;
+    int s;
+    uint8_t buf[64];
+    uint32_t from_ip = 0;
+    uint16_t from_port = 0;
+
+    memset(&cap, 0, sizeof(cap));
+    if (vibeos_inet_init(&net, inet_test_local_mac, inet_capture_tx, &cap) != 0) {
+        return -1;
+    }
+    vibeos_inet_set_addr(&net, 0x0A00020Fu, 0xFFFFFF00u, 0x0A000202u, 0x0A000203u);
+    s = vibeos_inet_socket(&net, VIBEOS_INET_SOCK_UDP);
+    if (s < 0 || vibeos_inet_bind(&net, s, 4242) != 0) {
+        return -1;
+    }
+
+    /* Three datagrams from two different senders, delivered back to back. */
+    inet_deliver_udp(&net, 0x0A000202u, 1111, 4242, (const uint8_t *)"one", 3);
+    inet_deliver_udp(&net, 0x0A000203u, 2222, 4242, (const uint8_t *)"two", 3);
+    inet_deliver_udp(&net, 0x0A000202u, 1111, 4242, (const uint8_t *)"three", 5);
+
+    /* Each recvfrom must return exactly one datagram, in order, with the
+     * sender that actually sent it. */
+    if (vibeos_inet_recvfrom(&net, s, buf, sizeof(buf), &from_ip, &from_port) != 3 ||
+        memcmp(buf, (const uint8_t *)"one", 3) != 0 || from_ip != 0x0A000202u || from_port != 1111) {
+        return -1;
+    }
+    if (vibeos_inet_recvfrom(&net, s, buf, sizeof(buf), &from_ip, &from_port) != 3 ||
+        memcmp(buf, (const uint8_t *)"two", 3) != 0 || from_ip != 0x0A000203u || from_port != 2222) {
+        return -1;
+    }
+    if (vibeos_inet_recvfrom(&net, s, buf, sizeof(buf), &from_ip, &from_port) != 5 ||
+        memcmp(buf, (const uint8_t *)"three", 5) != 0) {
+        return -1;
+    }
+    if (vibeos_inet_recvfrom(&net, s, buf, sizeof(buf), &from_ip, &from_port) !=
+        -VIBEOS_INET_EAGAIN) {
+        return -1;
+    }
+
+    /* A short buffer truncates the datagram and discards the rest; it must not
+     * turn into a second, partial delivery. */
+    inet_deliver_udp(&net, 0x0A000202u, 1111, 4242, (const uint8_t *)"abcdefgh", 8);
+    if (vibeos_inet_recvfrom(&net, s, buf, 4, &from_ip, &from_port) != 4 ||
+        memcmp(buf, "abcd", 4) != 0) {
+        return -1;
+    }
+    if (vibeos_inet_recvfrom(&net, s, buf, sizeof(buf), &from_ip, &from_port) !=
+        -VIBEOS_INET_EAGAIN) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_inet_tcp_out_of_order(void) {
+    static vibeos_inet_t net;
+    static inet_capture_t cap;
+    int s;
+    uint32_t our_isn, peer_isn = 0x70000000u;
+    uint16_t our_port;
+    uint8_t buf[64];
+
+    memset(&cap, 0, sizeof(cap));
+    if (vibeos_inet_init(&net, inet_test_local_mac, inet_capture_tx, &cap) != 0) {
+        return -1;
+    }
+    vibeos_inet_set_addr(&net, 0x0A00020Fu, 0xFFFFFF00u, 0x0A000202u, 0x0A000203u);
+    inet_seed_arp(&net);
+
+    s = vibeos_inet_socket(&net, VIBEOS_INET_SOCK_TCP);
+    cap.count = 0;
+    if (s < 0 || vibeos_inet_connect(&net, s, 0x0A000202u, 80) != 0) {
+        return -1;
+    }
+    our_isn = inet_rd32(cap.frame[0] + 14 + 20 + 4);
+    our_port = inet_rd16(cap.frame[0] + 14 + 20 + 0);
+    inet_deliver_tcp(&net, 0x0A000202u, 80, our_port, peer_isn, our_isn + 1, 0x12, 0, 0);
+    if (vibeos_inet_socket_state(&net, s) != VIBEOS_TCP_ESTABLISHED) {
+        return -1;
+    }
+
+    /* Send the third chunk first, then the second: both are ahead of the gap
+     * and must be held, not dropped and not delivered early. */
+    inet_deliver_tcp(&net, 0x0A000202u, 80, our_port, peer_isn + 7, our_isn + 1, 0x18,
+                     (const uint8_t *)"GHI", 3);
+    inet_deliver_tcp(&net, 0x0A000202u, 80, our_port, peer_isn + 4, our_isn + 1, 0x18,
+                     (const uint8_t *)"DEF", 3);
+    if (vibeos_inet_recv(&net, s, buf, sizeof(buf)) != -VIBEOS_INET_EAGAIN) {
+        return -1;   /* nothing is deliverable while the first chunk is missing */
+    }
+
+    /* The missing chunk arrives: everything must now be readable in order. */
+    inet_deliver_tcp(&net, 0x0A000202u, 80, our_port, peer_isn + 1, our_isn + 1, 0x18,
+                     (const uint8_t *)"ABC", 3);
+    if (vibeos_inet_recv(&net, s, buf, sizeof(buf)) != 9 ||
+        memcmp(buf, "ABCDEFGHI", 9) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_inet_tcp_close_reclaims_socket(void) {
+    static vibeos_inet_t net;
+    static inet_capture_t cap;
+    int s;
+    uint32_t our_isn, peer_isn = 0x80000000u;
+    uint16_t our_port;
+
+    memset(&cap, 0, sizeof(cap));
+    if (vibeos_inet_init(&net, inet_test_local_mac, inet_capture_tx, &cap) != 0) {
+        return -1;
+    }
+    vibeos_inet_set_addr(&net, 0x0A00020Fu, 0xFFFFFF00u, 0x0A000202u, 0x0A000203u);
+    inet_seed_arp(&net);
+
+    s = vibeos_inet_socket(&net, VIBEOS_INET_SOCK_TCP);
+    cap.count = 0;
+    if (s < 0 || vibeos_inet_connect(&net, s, 0x0A000202u, 80) != 0) {
+        return -1;
+    }
+    our_isn = inet_rd32(cap.frame[0] + 14 + 20 + 4);
+    our_port = inet_rd16(cap.frame[0] + 14 + 20 + 0);
+    inet_deliver_tcp(&net, 0x0A000202u, 80, our_port, peer_isn, our_isn + 1, 0x12, 0, 0);
+
+    /* Close, then let the peer go silent: the slot must still come back. */
+    if (vibeos_inet_close(&net, s) != 0) {
+        return -1;
+    }
+    if (vibeos_inet_socket_state(&net, s) != VIBEOS_TCP_FIN_WAIT_1) {
+        return -1;
+    }
+    vibeos_inet_poll(&net, VIBEOS_INET_TIME_WAIT_MS + 1000ull);
+    if (vibeos_inet_socket_state(&net, s) != -VIBEOS_INET_EINVAL) {
+        return -1;   /* the socket is gone, so querying it is invalid */
+    }
+    /* And the freed slot is reusable. */
+    if (vibeos_inet_socket(&net, VIBEOS_INET_SOCK_TCP) < 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_inet_dhcp_lease_lifecycle(void) {
+    static vibeos_inet_t net;
+    static inet_capture_t cap;
+
+    memset(&cap, 0, sizeof(cap));
+    if (vibeos_inet_init(&net, inet_test_local_mac, inet_capture_tx, &cap) != 0) {
+        return -1;
+    }
+    if (vibeos_inet_dhcp_start(&net) != 0) {
+        return -1;
+    }
+    inet_deliver_dhcp(&net, 2 /* OFFER */, 0x0A00020Fu, 100u);
+    inet_deliver_dhcp(&net, 5 /* ACK */, 0x0A00020Fu, 100u);
+    if (!vibeos_inet_dhcp_bound(&net) || net.ip != 0x0A00020Fu) {
+        return -1;
+    }
+    if (net.dhcp_lease_secs != 100u) {
+        return -1;
+    }
+
+    /* Before T1 nothing is sent. */
+    cap.count = 0;
+    vibeos_inet_poll(&net, 10000);
+    if (cap.count != 0) {
+        return -1;
+    }
+
+    /* At T1 (half the lease) the client renews, and the ACK extends it. */
+    vibeos_inet_poll(&net, 51000);
+    if (cap.count == 0) {
+        return -1;
+    }
+    inet_deliver_dhcp(&net, 5, 0x0A00020Fu, 100u);
+    if (net.dhcp_renewals != 1u || !vibeos_inet_dhcp_bound(&net)) {
+        return -1;
+    }
+    if (net.ip != 0x0A00020Fu) {
+        return -1;
+    }
+
+    /* If nothing answers past the expiry, the address is given up and the
+     * client goes back to discovering rather than using a dead lease. */
+    vibeos_inet_poll(&net, 51000 + 200000);
+    if (net.ip != 0u || vibeos_inet_dhcp_bound(&net)) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_inet_dns_timeout_and_negative_cache(void) {
+    static vibeos_inet_t net;
+    static inet_capture_t cap;
+    uint32_t ip = 0;
+
+    memset(&cap, 0, sizeof(cap));
+    if (vibeos_inet_init(&net, inet_test_local_mac, inet_capture_tx, &cap) != 0) {
+        return -1;
+    }
+    vibeos_inet_set_addr(&net, 0x0A00020Fu, 0xFFFFFF00u, 0x0A000202u, 0x0A000203u);
+    inet_seed_arp(&net);
+
+    cap.count = 0;
+    if (vibeos_inet_resolve(&net, "example.test") != 0) {
+        return -1;
+    }
+    if (vibeos_inet_resolve_result(&net, &ip) != -VIBEOS_INET_EAGAIN) {
+        return -1;
+    }
+
+    /* Nothing answers: the query is retried a bounded number of times and then
+     * fails, instead of leaving the caller waiting forever. */
+    {
+        uint64_t t;
+        int sends = (int)cap.count;
+        for (t = 1000; t <= 6000; t += 1000) {
+            vibeos_inet_poll(&net, t);
+        }
+        if ((int)cap.count <= sends) {
+            return -1;   /* it must have retried at least once */
+        }
+    }
+    if (vibeos_inet_resolve_result(&net, &ip) == -VIBEOS_INET_EAGAIN) {
+        return -1;       /* it must have stopped waiting */
+    }
+    if (net.dns_timeouts == 0u) {
+        return -1;
+    }
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
 #define RUN_TEST(fn) do { if ((fn)() != 0) { failures++; printf("FAIL:%s\n", #fn); } } while (0)
@@ -4244,6 +4528,11 @@ int main(void) {
     RUN_TEST(test_inet_l4_checksum_rejection);
     RUN_TEST(test_inet_tcp_connection);
     RUN_TEST(test_inet_tcp_listen_accept);
+    RUN_TEST(test_inet_udp_datagram_queue);
+    RUN_TEST(test_inet_tcp_out_of_order);
+    RUN_TEST(test_inet_tcp_close_reclaims_socket);
+    RUN_TEST(test_inet_dhcp_lease_lifecycle);
+    RUN_TEST(test_inet_dns_timeout_and_negative_cache);
     RUN_TEST(test_security_token);
     RUN_TEST(test_security_audit_log);
     RUN_TEST(test_driver_host);
