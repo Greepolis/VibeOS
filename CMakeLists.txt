@@ -13,6 +13,7 @@ set(CMAKE_C_EXTENSIONS OFF)
 option(VIBEOS_BUILD_TESTS "Build VibeOS host-side tests" ON)
 option(VIBEOS_BUILD_KERNEL_IMAGE "Build bootable kernel image for emulator/hardware" ON)
 option(VIBEOS_KERNEL_ONLY "Build kernel only (no user-space)" OFF)
+option(VIBEOS_ENABLE_TLS "Build the hosted Mbed TLS adapter" ON)
 
 # Artifact directories
 set(VIBEOS_ARTIFACTS_DIR "${CMAKE_BINARY_DIR}/artifacts" CACHE PATH "Artifacts output directory")
@@ -61,7 +62,7 @@ target_compile_options(vibeos_kernel_core PRIVATE
     -mno-red-zone
 )
 
-add_library(vibeos_user_core STATIC
+set(VIBEOS_USER_CORE_SOURCES
     user/init/init_system.c
     user/servicemgr/service_manager.c
     user/servicemgr/service_ipc.c
@@ -80,6 +81,19 @@ add_library(vibeos_user_core STATIC
     boot/bootloader_stub.c
 )
 
+if(VIBEOS_ENABLE_TLS)
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/mbedtls/CMakeLists.txt")
+        message(FATAL_ERROR "VIBEOS_ENABLE_TLS requires the third_party/mbedtls submodule")
+    endif()
+    set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
+    set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+    set(MBEDTLS_FATAL_WARNINGS OFF CACHE BOOL "" FORCE)
+    add_subdirectory(third_party/mbedtls EXCLUDE_FROM_ALL)
+    list(APPEND VIBEOS_USER_CORE_SOURCES user/net/tls_adapter.c)
+endif()
+
+add_library(vibeos_user_core STATIC ${VIBEOS_USER_CORE_SOURCES})
+
 target_include_directories(vibeos_user_core
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -90,6 +104,11 @@ target_compile_options(vibeos_user_core PRIVATE
     -Wextra
     -Wpedantic
 )
+
+if(VIBEOS_ENABLE_TLS)
+    target_compile_definitions(vibeos_user_core PRIVATE VIBEOS_TLS_MBEDTLS=1)
+    target_link_libraries(vibeos_user_core PUBLIC mbedtls mbedx509 mbedcrypto)
+endif()
 
 if(VIBEOS_BUILD_TESTS)
     enable_testing()

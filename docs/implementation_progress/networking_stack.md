@@ -15,9 +15,11 @@ Last review: 2026-08-01
 - The receive path rejects invalid TCP checksums and non-zero invalid UDP checksums before dispatching payloads; TCP handshake transitions require an acknowledgement for the transmitted sequence number.
 - Host regressions cover DHCP OFFER/ACK processing, DNS A response parsing, TCP retransmission and close paths, plus malformed L4 checksum rejection.
 - DNS keeps a bounded eight-entry positive cache with TTL clamping; cache hits are resolved without a new packet transmission.
+- Mbed TLS 3.6.5 is pinned as a submodule and exposed through a narrow hosted adapter (`vibeos_tls_*`); the dependency and version gate compile under CTest without coupling it to the freestanding kernel image.
 
 ## Pending
 - DHCP lease renew/rebind/expiry, concurrent DNS queries and negative cache, complete TCP state/error handling, firewall policy and robust recovery semantics.
+- Ring-3 TLS service integration: entropy source, trust store, TCP callbacks and QEMU TLS handshake validation are intentionally pending; the current adapter is not a guest TLS implementation.
 - Packet-path performance instrumentation, queueing policy and concurrency hardening.
 
 ## Next checkpoint
