@@ -1,0 +1,66 @@
+name: CodeQL
+
+# Static analysis of the C sources.
+#
+# GCC's own -fanalyzer was tried first and rejected: it specialises in
+# malloc/free and file-descriptor lifetimes, which freestanding kernel code
+# barely uses, and a fault planted in kernel/net/inet.c went unreported. A
+# checker that cannot be shown to catch anything is not worth gating on.
+#
+# This runs separately from the required matrix so it never slows the gates
+# that block a merge.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+
+jobs:
+  analyze:
+    name: Analyze C
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+
+    steps:
+      - name: Checkout
+        # Deliberately without submodules: Mbed TLS is audited upstream and
+        # analysing it here would bury our own findings under third-party
+        # results. The build below is configured with TLS off to match.
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build build-essential
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: c-cpp
+          queries: security-and-quality
+
+      - name: Build
+        # A manual build rather than autobuild: the tree has several targets
+        # and we want the freestanding kernel image analysed too, since that is
+        # where the arch code lives.
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DVIBEOS_BUILD_TESTS=ON \
+            -DVIBEOS_BUILD_KERNEL_IMAGE=ON \
+            -DVIBEOS_ENABLE_TLS=OFF
+          cmake --build build --parallel
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:c-cpp"
