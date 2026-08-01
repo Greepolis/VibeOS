@@ -752,7 +752,8 @@ static void dns_input(vibeos_inet_t *net, const uint8_t *b, uint32_t len) {
 
 /* ---- UDP input ----------------------------------------------------------- */
 
-static void udp_input(vibeos_inet_t *net, uint32_t src, const uint8_t *u, uint32_t len) {
+static void udp_input(vibeos_inet_t *net, uint32_t src, uint32_t dst,
+                      const uint8_t *u, uint32_t len) {
     uint16_t sport, dport;
     const uint8_t *data;
     uint32_t dlen;
@@ -765,6 +766,11 @@ static void udp_input(vibeos_inet_t *net, uint32_t src, const uint8_t *u, uint32
     dport = rd16(u + 2);
     dlen = rd16(u + 4);
     if (dlen < 8u || dlen > len) {
+        return;
+    }
+    /* IPv4 permits a zero UDP checksum, but a supplied checksum is mandatory. */
+    if (rd16(u + 6) != 0u && l4_checksum(src, dst, IP_PROTO_UDP, u, dlen) != 0u) {
+        net->rx_dropped++;
         return;
     }
     data = u + 8;
@@ -1023,7 +1029,8 @@ static void tcp_ack_data(vibeos_inet_t *net, vibeos_inet_socket_t *s, uint32_t a
     s->rto_deadline_ms = (s->tx_len > 0u) ? (net->now_ms + s->rto_ms) : 0u;
 }
 
-static void tcp_input(vibeos_inet_t *net, uint32_t src, const uint8_t *t, uint32_t len) {
+static void tcp_input(vibeos_inet_t *net, uint32_t src, uint32_t dst,
+                      const uint8_t *t, uint32_t len) {
     uint16_t sport, dport;
     uint32_t seq, ack;
     uint8_t flags;
@@ -1042,6 +1049,10 @@ static void tcp_input(vibeos_inet_t *net, uint32_t src, const uint8_t *t, uint32
     hdr = (uint32_t)(t[12] >> 4) * 4u;
     flags = t[13];
     if (hdr < 20u || hdr > len) {
+        return;
+    }
+    if (l4_checksum(src, dst, IP_PROTO_TCP, t, len) != 0u) {
+        net->rx_dropped++;
         return;
     }
     data = t + hdr;
@@ -1091,7 +1102,7 @@ static void tcp_input(vibeos_inet_t *net, uint32_t src, const uint8_t *t, uint32
 
     switch (s->state) {
         case VIBEOS_TCP_SYN_SENT:
-            if ((flags & (TCP_SYN | TCP_ACK)) == (TCP_SYN | TCP_ACK)) {
+            if ((flags & (TCP_SYN | TCP_ACK)) == (TCP_SYN | TCP_ACK) && ack == s->snd_nxt) {
                 s->rcv_nxt = seq + 1u;
                 s->snd_una = ack;
                 s->state = VIBEOS_TCP_ESTABLISHED;
@@ -1103,7 +1114,7 @@ static void tcp_input(vibeos_inet_t *net, uint32_t src, const uint8_t *t, uint32
             return;
 
         case VIBEOS_TCP_SYN_RECEIVED:
-            if (flags & TCP_ACK) {
+            if ((flags & TCP_ACK) && ack == s->snd_nxt) {
                 s->snd_una = ack;
                 s->state = VIBEOS_TCP_ESTABLISHED;
                 s->rto_deadline_ms = 0;
@@ -1235,8 +1246,8 @@ static void ip_input(vibeos_inet_t *net, const uint8_t *ip, uint32_t len) {
 
     switch (ip[9]) {
         case IP_PROTO_ICMP: icmp_input(net, src, payload, plen); break;
-        case IP_PROTO_UDP:  udp_input(net, src, payload, plen); break;
-        case IP_PROTO_TCP:  tcp_input(net, src, payload, plen); break;
+        case IP_PROTO_UDP:  udp_input(net, src, dst, payload, plen); break;
+        case IP_PROTO_TCP:  tcp_input(net, src, dst, payload, plen); break;
         default: net->rx_dropped++; break;
     }
 }

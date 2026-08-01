@@ -1,6 +1,6 @@
 # Networking Stack Progress
 
-Status: In Progress (runtime virtio-net TCP/IP baseline verified)
+Status: In Progress (runtime IPv4 baseline and DHCP/DNS regressions verified)
 Last review: 2026-08-01
 
 ## Implemented
@@ -10,11 +10,13 @@ Last review: 2026-08-01
 - Service lifecycle integration under service manager control path.
 - Deterministic packet-path simulation API (`vibeos_net_simulate_path`) with latency/drop counters.
 - Extended network telemetry snapshot (`vibeos_net_stats_ext`) including simulated ticks and drops.
-- A runtime TCP/IP baseline in `kernel/net/inet.c` is connected to the virtio-net driver, with Ethernet, ARP, IPv4, ICMP, UDP and TCP handling for the QEMU path.
+- A runtime TCP/IP baseline in `kernel/net/inet.c` is connected to the virtio-net driver, with Ethernet, ARP, IPv4, ICMP, UDP, TCP, DHCPv4 and DNS handling for the QEMU path.
 - User networking programs and the QEMU CLI smoke path exercise the on-metal network route rather than only the host simulation model.
+- The receive path rejects invalid TCP checksums and non-zero invalid UDP checksums before dispatching payloads; TCP handshake transitions require an acknowledgement for the transmitted sequence number.
+- Host regressions cover DHCP OFFER/ACK processing, DNS A response parsing, TCP retransmission and close paths, plus malformed L4 checksum rejection.
 
 ## Pending
-- DHCP/DNS, complete TCP state/error handling, firewall policy and robust recovery semantics.
+- DHCP lease renew/rebind/expiry, concurrent DNS queries with TTL/negative cache, complete TCP state/error handling, firewall policy and robust recovery semantics.
 - Packet-path performance instrumentation, queueing policy and concurrency hardening.
 
 ## Next checkpoint

@@ -3650,6 +3650,33 @@ static uint32_t inet_rd32(const uint8_t *p) {
            ((uint32_t)p[2] << 8) | (uint32_t)p[3];
 }
 
+/* Match the TCP/UDP pseudo-header checksum used by the portable stack. */
+static uint16_t inet_l4_checksum(uint32_t src, uint32_t dst, uint8_t proto,
+                                 const uint8_t *data, uint32_t len) {
+    uint32_t sum = 0;
+    uint32_t i;
+    uint8_t pseudo[12];
+
+    inet_wr32(pseudo + 0, src);
+    inet_wr32(pseudo + 4, dst);
+    pseudo[8] = 0;
+    pseudo[9] = proto;
+    inet_wr16(pseudo + 10, (uint16_t)len);
+    for (i = 0; i < sizeof(pseudo); i += 2) {
+        sum += ((uint32_t)pseudo[i] << 8) | pseudo[i + 1];
+    }
+    for (i = 0; i + 1 < len; i += 2) {
+        sum += ((uint32_t)data[i] << 8) | data[i + 1];
+    }
+    if (len & 1u) {
+        sum += (uint32_t)data[len - 1u] << 8;
+    }
+    while (sum >> 16) {
+        sum = (sum & 0xFFFFu) + (sum >> 16);
+    }
+    return (uint16_t)~sum;
+}
+
 /* Build an Ethernet + IPv4 frame carrying `payload` and hand it to the stack. */
 static void inet_deliver(vibeos_inet_t *net, uint32_t src, uint32_t dst, uint8_t proto,
                          const uint8_t *payload, uint32_t plen) {
@@ -3697,8 +3724,23 @@ static void inet_deliver_tcp(vibeos_inet_t *net, uint32_t src, uint16_t sport, u
     for (i = 0; i < dlen; i++) {
         seg[20 + i] = data[i];
     }
+    inet_wr16(seg + 16, inet_l4_checksum(src, net->ip, 6, seg, 20 + dlen));
     inet_deliver(net, src, net->ip, 6, seg, 20 + dlen);
 }
+
+static void inet_deliver_udp(vibeos_inet_t *net, uint32_t src, uint16_t sport, uint16_t dport,
+                             const uint8_t *data, uint32_t dlen) {
+    uint8_t seg[600];
+
+    inet_wr16(seg + 0, sport);
+    inet_wr16(seg + 2, dport);
+    inet_wr16(seg + 4, (uint16_t)(8u + dlen));
+    inet_wr16(seg + 6, 0);
+    memcpy(seg + 8, data, dlen);
+    inet_deliver(net, src, net->ip, 17, seg, 8u + dlen);
+}
+
+static void inet_seed_arp(vibeos_inet_t *net);
 
 static int test_inet_checksum(void) {
     /* A header whose checksum field is already correct must sum to zero. */
@@ -3837,6 +3879,123 @@ static int test_inet_udp(void) {
     }
     if (cap.count != 1 || inet_rd16(cap.frame[0] + 12) != 0x0806) {
         return -1;   /* an ARP request, not the datagram */
+    }
+    return 0;
+}
+
+static int test_inet_dhcp_and_dns(void) {
+    static vibeos_inet_t net;
+    static inet_capture_t cap;
+    uint8_t offer[300];
+    uint8_t ack[300];
+    uint8_t dns[96];
+    uint32_t o;
+    uint32_t answer_ip = 0xC0000201u;
+
+    memset(&cap, 0, sizeof(cap));
+    if (vibeos_inet_init(&net, inet_test_local_mac, inet_capture_tx, &cap) != 0 ||
+        vibeos_inet_dhcp_start(&net) != 0 || cap.count != 1u) {
+        return -1;
+    }
+
+    memset(offer, 0, sizeof(offer));
+    offer[0] = 2; offer[1] = 1; offer[2] = 6;
+    inet_wr32(offer + 4, net.dhcp_xid);
+    inet_wr32(offer + 16, 0x0A00020Fu);
+    inet_wr32(offer + 236, 0x63825363u);
+    o = 240;
+    offer[o++] = 53; offer[o++] = 1; offer[o++] = 2;
+    offer[o++] = 54; offer[o++] = 4; inet_wr32(offer + o, 0x0A000202u); o += 4;
+    offer[o++] = 255;
+    inet_deliver_udp(&net, 0x0A000202u, 67, 68, offer, o);
+    if (net.dhcp_state != 2u || cap.count < 2u) {
+        return -1;
+    }
+
+    memset(ack, 0, sizeof(ack));
+    ack[0] = 2; ack[1] = 1; ack[2] = 6;
+    inet_wr32(ack + 4, net.dhcp_xid);
+    inet_wr32(ack + 16, 0x0A00020Fu);
+    inet_wr32(ack + 236, 0x63825363u);
+    o = 240;
+    ack[o++] = 53; ack[o++] = 1; ack[o++] = 5;
+    ack[o++] = 1; ack[o++] = 4; inet_wr32(ack + o, 0xFFFFFF00u); o += 4;
+    ack[o++] = 3; ack[o++] = 4; inet_wr32(ack + o, 0x0A000202u); o += 4;
+    ack[o++] = 6; ack[o++] = 4; inet_wr32(ack + o, 0x0A000203u); o += 4;
+    ack[o++] = 255;
+    inet_deliver_udp(&net, 0x0A000202u, 67, 68, ack, o);
+    if (!vibeos_inet_dhcp_bound(&net) || net.ip != 0x0A00020Fu || net.dns != 0x0A000203u) {
+        return -1;
+    }
+
+    inet_seed_arp(&net);
+    if (vibeos_inet_resolve(&net, "example.test") != 0) {
+        return -1;
+    }
+    memset(dns, 0, sizeof(dns));
+    inet_wr16(dns + 0, net.dns_id);
+    inet_wr16(dns + 2, 0x8180u);
+    inet_wr16(dns + 4, 1);
+    inet_wr16(dns + 6, 1);
+    o = 12;
+    dns[o++] = 7; memcpy(dns + o, "example", 7); o += 7;
+    dns[o++] = 4; memcpy(dns + o, "test", 4); o += 4;
+    dns[o++] = 0;
+    inet_wr16(dns + o, 1); o += 2;
+    inet_wr16(dns + o, 1); o += 2;
+    dns[o++] = 0xC0; dns[o++] = 0x0C;
+    inet_wr16(dns + o, 1); o += 2;
+    inet_wr16(dns + o, 1); o += 2;
+    inet_wr32(dns + o, 60); o += 4;
+    inet_wr16(dns + o, 4); o += 2;
+    inet_wr32(dns + o, answer_ip); o += 4;
+    inet_deliver_udp(&net, net.dns, 53, 0xC353u, dns, o);
+    if (vibeos_inet_resolve_result(&net, &answer_ip) != 0 || answer_ip != 0xC0000201u) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_inet_l4_checksum_rejection(void) {
+    static vibeos_inet_t net;
+    static inet_capture_t cap;
+    uint8_t tcp[20];
+    uint8_t udp[8];
+    uint8_t out[8];
+    uint64_t dropped;
+    int sock;
+
+    memset(&cap, 0, sizeof(cap));
+    if (vibeos_inet_init(&net, inet_test_local_mac, inet_capture_tx, &cap) != 0) {
+        return -1;
+    }
+    vibeos_inet_set_addr(&net, 0x0A00020Fu, 0xFFFFFF00u, 0x0A000202u, 0x0A000203u);
+    sock = vibeos_inet_socket(&net, VIBEOS_INET_SOCK_UDP);
+    if (sock < 0 || vibeos_inet_bind(&net, sock, 4242) != 0) {
+        return -1;
+    }
+
+    dropped = net.rx_dropped;
+    inet_wr16(udp + 0, 9999);
+    inet_wr16(udp + 2, 4242);
+    inet_wr16(udp + 4, sizeof(udp));
+    inet_wr16(udp + 6, 0x1234); /* Invalid non-zero checksum. */
+    inet_deliver(&net, 0x0A000202u, net.ip, 17, udp, sizeof(udp));
+    if (net.rx_dropped != dropped + 1u ||
+        vibeos_inet_recvfrom(&net, sock, out, sizeof(out), 0, 0) != -VIBEOS_INET_EAGAIN) {
+        return -1;
+    }
+
+    memset(tcp, 0, sizeof(tcp));
+    inet_wr16(tcp + 0, 80);
+    inet_wr16(tcp + 2, 4243);
+    tcp[12] = 0x50;
+    tcp[13] = 0x10;
+    inet_wr16(tcp + 14, 4096);
+    inet_wr16(tcp + 16, 0x1234); /* Invalid mandatory TCP checksum. */
+    inet_deliver(&net, 0x0A000202u, net.ip, 6, tcp, sizeof(tcp));
+    if (net.rx_dropped != dropped + 2u) {
+        return -1;
     }
     return 0;
 }
@@ -4053,6 +4212,8 @@ int main(void) {
     RUN_TEST(test_inet_checksum);
     RUN_TEST(test_inet_arp_and_icmp);
     RUN_TEST(test_inet_udp);
+    RUN_TEST(test_inet_dhcp_and_dns);
+    RUN_TEST(test_inet_l4_checksum_rejection);
     RUN_TEST(test_inet_tcp_connection);
     RUN_TEST(test_inet_tcp_listen_accept);
     RUN_TEST(test_security_token);
