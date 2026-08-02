@@ -93,7 +93,18 @@ if(VIBEOS_TLS_ACTIVE)
     # PUBLIC so anything linking the adapter compiles against the same view of
     # whether the audited dependency is present.
     target_compile_definitions(vibeos_tls PUBLIC VIBEOS_TLS_MBEDTLS=1)
-    target_link_libraries(vibeos_tls PUBLIC mbedtls mbedx509 mbedcrypto)
+    # The crypto library was renamed across the dependency's major versions:
+    # Mbed TLS 3.x builds `mbedcrypto`, 4.x moved it into TF-PSA-Crypto and
+    # builds `tfpsacrypto`. Ask which target actually exists instead of naming
+    # one - CMake silently turns an unknown target name into a raw -l flag, so
+    # a wrong guess is not a configure error but a link failure much later.
+    if(TARGET tfpsacrypto)
+        set(VIBEOS_TLS_CRYPTO_TARGET tfpsacrypto)
+    else()
+        set(VIBEOS_TLS_CRYPTO_TARGET mbedcrypto)
+    endif()
+    target_link_libraries(vibeos_tls PUBLIC mbedtls mbedx509 ${VIBEOS_TLS_CRYPTO_TARGET})
+    message(STATUS "TLS: linking ${VIBEOS_TLS_CRYPTO_TARGET} from third_party/mbedtls")
 endif()
 
 if(VIBEOS_BUILD_FUZZERS)
