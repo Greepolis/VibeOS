@@ -119,10 +119,45 @@ static unsigned long parse_ip(const char *s) {
     return (parts == 4) ? v : 0;
 }
 
-static void run_program(const char *path) {
-    long child = sys3(SYS_fork, 0, 0, 0);
+/* Split a command line into an argument vector, in place.
+ *
+ * A shell that cannot pass arguments can only run programs that need none,
+ * which excludes almost every real one - BusyBox decides which applet to be
+ * from its arguments. Quoting is not supported: whitespace separates, and
+ * that is stated rather than half-implemented. */
+#define SH_MAX_ARGS 12
+
+static int split_args(char *line, char **argv) {
+    int n = 0;
+    char *p = line;
+
+    while (*p && n < SH_MAX_ARGS) {
+        while (*p == ' ' || *p == '\t') {
+            *p++ = 0;
+        }
+        if (!*p) {
+            break;
+        }
+        argv[n++] = p;
+        while (*p && *p != ' ' && *p != '\t') {
+            p++;
+        }
+    }
+    argv[n] = 0;
+    return n;
+}
+
+static void run_program(char *line) {
+    static char *argv[SH_MAX_ARGS + 1];
+    long child;
+
+    if (split_args(line, argv) == 0) {
+        return;
+    }
+    child = sys3(SYS_fork, 0, 0, 0);
     if (child == 0) {
-        sys3(SYS_execve, (long)(unsigned long)path, 0, 0);
+        sys3(SYS_execve, (long)(unsigned long)argv[0],
+             (long)(unsigned long)argv, 0);
         put("sh: cannot exec\n");
         sys3(SYS_exit, 127, 0, 0);
     } else if (child > 0) {

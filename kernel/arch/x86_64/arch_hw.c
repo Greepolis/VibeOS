@@ -650,6 +650,18 @@ static uint64_t g_pd[VIBEOS_HW_IDENTITY_GIB][512] __attribute__((aligned(4096)))
 static uint8_t g_page_pool[VIBEOS_HW_POOL_PAGES][4096] __attribute__((aligned(4096)));
 static uint32_t g_pool_next;
 
+/* Staging buffer for an image being exec'd.
+ *
+ * A real program is not small - BusyBox is about two megabytes - and putting
+ * that in .bss would add it to every kernel image whether or not anything ever
+ * execs. It is taken from the page allocator instead, once, at boot, and a
+ * small static buffer remains as the fallback for the early paths that run
+ * before the allocator exists. */
+#define VIBEOS_HW_EXEC_STAGE_BYTES (4u * 1024u * 1024u)
+static uint8_t g_exec_elf_static[65536] __attribute__((aligned(16)));
+static uint8_t *g_exec_elf = g_exec_elf_static;
+static uint32_t g_exec_elf_cap = (uint32_t)sizeof(g_exec_elf_static);
+
 static vibeos_pmm_t g_hw_pmm;
 static int g_hw_pmm_ready;
 static uint64_t g_hw_pmm_pages_used;
@@ -768,6 +780,24 @@ static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
         return;
     }
     g_hw_pmm_ready = 1;
+
+    /* Now that pages exist, take a contiguous staging area large enough for a
+     * real program. Failing is not fatal: the small static buffer still works,
+     * and small programs still run - they simply cannot be large ones. */
+    {
+        void *stage = vibeos_pmm_alloc_pages(&g_hw_pmm,
+                                             VIBEOS_HW_EXEC_STAGE_BYTES / 4096u);
+        if (stage && ((uint64_t)(uintptr_t)stage + VIBEOS_HW_EXEC_STAGE_BYTES)
+                <= VIBEOS_HW_IDENTITY_LIMIT) {
+            g_exec_elf = (uint8_t *)stage;
+            g_exec_elf_cap = VIBEOS_HW_EXEC_STAGE_BYTES;
+            vibeos_x86_64_serial_puts("[HW] exec staging buffer: 4 MiB\n");
+        } else {
+            vibeos_x86_64_serial_puts("[HW] exec staging buffer stays at 64 KiB; "
+                                     "large programs will not load\n");
+        }
+    }
+
     vibeos_x86_64_serial_puts("[HW] PMM online, free bytes=0x");
     vibeos_x86_64_serial_print_hex((uint64_t)vibeos_pmm_remaining(&g_hw_pmm));
     vibeos_x86_64_serial_puts("\n");
@@ -1072,6 +1102,10 @@ typedef struct {
     uint64_t brk_cur;   /* current program break            */
     uint64_t mmap_cur;  /* next free anonymous mmap address  */
     uint64_t user_sp;   /* entry rsp, atop the startup block */
+    /* What execve was given. A program that wants to find itself reads
+     * /proc/self/exe, and answering from the real path is the difference
+     * between a correct answer and a plausible one. */
+    char exe_path[64];
 } hw_proc_t;
 
 typedef struct {
@@ -1079,12 +1113,45 @@ typedef struct {
 } hw_load_ctx_t;
 
 
+/* Sixteen bytes for AT_RANDOM.
+ *
+ * This is not a random number generator and must not be used as one. There is
+ * no entropy source in this system yet, so the bytes come from mixing the
+ * timestamp counter - which differs between boots and between processes, and
+ * is nothing better than that.
+ *
+ * It exists because AT_RANDOM is not optional in practice. A C runtime reads
+ * the pointer the kernel puts there and dereferences it to seed the
+ * stack-protector canary before it runs any of the program. Omitting the entry
+ * leaves that pointer NULL, and the program dies on its own canary setup with
+ * a null read - which is exactly how this was found.
+ *
+ * Supplying zeros would avoid the crash and be worse than the crash: every
+ * process would run with an identical, known canary while appearing protected.
+ * A varying value is honest about what it is. getrandom() still returns ENOSYS
+ * for the same reason - this is good enough to make canaries differ, and not
+ * good enough for anything a program would call getrandom for. */
+static void hw_seed_at_random(uint8_t out[16]) {
+    uint32_t i;
+    uint64_t mix = 0x9E3779B97F4A7C15ull;
+
+    for (i = 0; i < 16u; i++) {
+        uint32_t lo, hi;
+        __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
+        mix ^= ((uint64_t)hi << 32) | lo;
+        mix *= 0xFF51AFD7ED558CCDull;
+        mix ^= mix >> 33;
+        out[i] = (uint8_t)(mix >> 24);
+    }
+}
+
 /* Build a process: private address space, the ELF image loaded into it, and a
  * user stack mapped just below VIBEOS_HW_USER_STACK_TOP. */
 static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
                           const char *const *argv, const char *const *envp) {
     vibeos_elf_image_t img;
     vibeos_elf_stack_desc_t sd;
+    uint8_t at_random[16];
     uint8_t *top_page = 0;
     uint64_t va;
     uint32_t i;
@@ -1162,6 +1229,8 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
     sd.phdr_vaddr = img.phdr_vaddr;
     sd.phnum = img.phnum;
     sd.phentsize = img.phentsize;
+    hw_seed_at_random(at_random);
+    sd.random16 = at_random;
     p->user_sp = vibeos_elf_build_stack(top_page, 4096ull,
                                         VIBEOS_HW_USER_STACK_TOP, &sd);
     if (p->user_sp == 0) {
@@ -1245,6 +1314,8 @@ typedef struct {
     int is_user;
     int is_idle;      /* per-CPU idle task: only run when nothing else is ready */
     int wait_input;   /* blocked in read() on stdin */
+    /* Set by prctl(PR_SET_NAME); reported back by PR_GET_NAME. */
+    char comm[16];
     /* %fs base for this task, set by arch_prctl(ARCH_SET_FS). Restored on
      * every switch: leaving the previous task's value loaded would let one
      * program read and write another's thread-local state. */
@@ -1617,6 +1688,9 @@ static void hw_task_exit(uint64_t code) {
 #define VIBEOS_EAGAIN 11
 #define VIBEOS_ENOTTY 25
 #define VIBEOS_EPERM  1
+#define VIBEOS_ERANGE 34
+#define VIBEOS_EMFILE 24
+#define VIBEOS_E2BIG  7
 #define VIBEOS_EMFILE 24
 #define VIBEOS_EIO    5
 
@@ -1672,6 +1746,44 @@ static void hw_task_exit(uint64_t code) {
 #define LSYS_prlimit64     302
 #define LSYS_getrandom     318
 #define LSYS_rseq          334
+
+/* What a real program needs once it is past startup and doing work. Taken from
+ * a strace of BusyBox running echo, cat, ls, pwd and wc - see
+ * scripts/dev/trace-linux-binary.sh. */
+#define LSYS_fstat           5
+#define LSYS_sendfile       40
+#define LSYS_getcwd         79
+#define LSYS_setuid        105
+#define LSYS_setgid        106
+#define LSYS_prctl         157
+#define LSYS_openat        257
+#define LSYS_newfstatat    262
+#define LSYS_readlinkat    267
+
+/* openat/newfstatat interpret a relative path against this directory fd. There
+ * is no per-process working directory here, so it is the only value accepted. */
+#define AT_FDCWD           (-100)
+#define AT_EMPTY_PATH      0x1000
+
+/* struct stat, x86-64 layout. Byte offsets rather than a struct definition
+ * because the layout is the ABI: it is fixed by Linux, not by this compiler. */
+#define STAT_SIZE          144u
+#define STAT_OFF_MODE       24u
+#define STAT_OFF_NLINK      16u
+#define STAT_OFF_UID        28u
+#define STAT_OFF_GID        32u
+#define STAT_OFF_SIZE       48u
+#define STAT_OFF_BLKSIZE    56u
+#define STAT_OFF_BLOCKS     64u
+#define STAT_OFF_INO         8u
+
+#define S_IFREG 0100000u
+#define S_IFDIR 0040000u
+#define S_IFCHR 0020000u
+
+/* prctl operations. PR_SET_NAME is the one a real program actually uses. */
+#define PR_SET_NAME 15
+#define PR_GET_NAME 16
 
 /* arch_prctl subfunctions. */
 #define ARCH_SET_GS 0x1001
@@ -2838,23 +2950,77 @@ static int hw_copy_user_string(uint64_t uptr, char *dst, int max) {
     return 0;
 }
 
-static uint8_t g_exec_elf[65536] __attribute__((aligned(16)));
 
 /* execve(): replace the current process image with an ELF read from the
  * filesystem. On success the trapframe is rewritten to the new program's entry
  * and CR3 switched, so the syscall return path resumes into the new image. The
  * old address space is not reclaimed yet (no PMM free), which is a known leak. */
-static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr) {
+/* Copy an argument vector out of user memory.
+ *
+ * It has to be copied, not pointed at: the strings live in the address space
+ * that execve is about to destroy. Both the vector and every string it names
+ * are attacker-controlled, so each pointer is validated before it is followed
+ * and the whole thing is bounded - a program that asks for more arguments than
+ * fit gets E2BIG rather than a kernel that walks off the end of an array. */
+#define VIBEOS_HW_MAX_ARGV 16
+#define VIBEOS_HW_ARG_BYTES 512
+
+typedef struct {
+    const char *slot[VIBEOS_HW_MAX_ARGV + 1];
+    char store[VIBEOS_HW_ARG_BYTES];
+} hw_argv_t;
+
+static long hw_copy_user_argv(uint64_t uvec, hw_argv_t *out) {
+    uint32_t count = 0;
+    uint32_t used = 0;
+
+    out->slot[0] = 0;
+    if (uvec == 0u) {
+        return 0;
+    }
+    for (;;) {
+        uint64_t ptr;
+        int len;
+
+        if (count == VIBEOS_HW_MAX_ARGV) {
+            return -VIBEOS_E2BIG;
+        }
+        if (!hw_user_range_ok(uvec + (uint64_t)count * 8u, 8, 0)) {
+            return -VIBEOS_EFAULT;
+        }
+        ptr = *(const uint64_t *)(uintptr_t)(uvec + (uint64_t)count * 8u);
+        if (ptr == 0u) {
+            break;
+        }
+        if (used >= VIBEOS_HW_ARG_BYTES) {
+            return -VIBEOS_E2BIG;
+        }
+        if (hw_copy_user_string(ptr, &out->store[used],
+                                (int)(VIBEOS_HW_ARG_BYTES - used)) != 0) {
+            return -VIBEOS_EFAULT;
+        }
+        out->slot[count] = &out->store[used];
+        for (len = 0; out->store[used + (uint32_t)len]; len++) {
+            /* measure */
+        }
+        used += (uint32_t)len + 1u;
+        count++;
+    }
+    out->slot[count] = 0;
+    return (long)count;
+}
+
+static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
+                          uint64_t argv_uptr, uint64_t envp_uptr) {
     char path[128];
     hw_proc_t np;
     hw_task_t *t;
     long n;
     uint32_t k;
-    /* execve(path) with no argument vector still gives the new program an
-     * argv[0]: the path it was started from, which is what every program that
-     * prints its own name reads. `path` outlives the load, so pointing at it
-     * is safe. */
-    const char *exec_argv[2];
+    static hw_argv_t g_exec_argv;   /* under g_exec_lock, like the image buffer */
+    static hw_argv_t g_exec_envp;
+    const char *fallback_argv[2];
+    const char *const *argv;
 
     if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
         return -VIBEOS_EINVAL;
@@ -2862,25 +3028,48 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr) 
     if (hw_copy_user_string(path_uptr, path, sizeof(path)) != 0) {
         return -VIBEOS_EFAULT;
     }
-    exec_argv[0] = path;
-    exec_argv[1] = 0;
+    fallback_argv[0] = path;
+    fallback_argv[1] = 0;
     /* g_exec_elf is a single shared staging buffer, so the read and the load out
      * of it have to be one critical section: two cores exec'ing at once would
      * otherwise each load the other's image. */
     hw_spin_lock(&g_exec_lock);
-    n = vibeos_x86_64_fat_read_file(path, g_exec_elf, sizeof(g_exec_elf));
+    {
+        long na = hw_copy_user_argv(argv_uptr, &g_exec_argv);
+        long ne = hw_copy_user_argv(envp_uptr, &g_exec_envp);
+        if (na < 0 || ne < 0) {
+            hw_spin_unlock(&g_exec_lock);
+            return (na < 0) ? na : ne;
+        }
+        /* A caller that passes no argv still gets an argv[0]: the path it was
+         * started from, which is what a program prints as its own name - and
+         * what BusyBox uses to decide which applet it is. */
+        argv = (na > 0) ? g_exec_argv.slot : (const char *const *)fallback_argv;
+    }
+    vibeos_x86_64_serial_puts("[EXEC] reading ");
+    vibeos_x86_64_serial_puts(path);
+    vibeos_x86_64_serial_puts("\n");
+    n = vibeos_x86_64_fat_read_file(path, g_exec_elf, g_exec_elf_cap);
+    vibeos_x86_64_serial_puts("[EXEC] read bytes=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)n);
+    vibeos_x86_64_serial_puts("\n");
     if (n <= 0) {
         hw_spin_unlock(&g_exec_lock);
         return -VIBEOS_ENOENT;
     }
-    if (hw_proc_create(&np, g_exec_elf, (uint64_t)n,
-                       (const char *const *)exec_argv, 0) != 0) {
+    if (hw_proc_create(&np, g_exec_elf, (uint64_t)n, argv,
+                       g_exec_envp.slot[0] ? g_exec_envp.slot : 0) != 0) {
+        vibeos_x86_64_serial_puts("[EXEC] load failed\n");
         hw_spin_unlock(&g_exec_lock);
         return -VIBEOS_ENOMEM;
     }
     hw_spin_unlock(&g_exec_lock);
 
     t = &g_tasks[g_current_task];
+    for (k = 0; k < (uint32_t)sizeof(np.exe_path) - 1u && path[k]; k++) {
+        np.exe_path[k] = path[k];
+    }
+    np.exe_path[k] = 0;
     {
         vibeos_hw_aspace_t old_as = t->proc.as; /* reclaim after switching CR3 */
         t->proc = np;
@@ -2903,7 +3092,217 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr) 
     frame->rflags = 0x202;
     frame->rsp = np.user_sp;
     frame->ss = VIBEOS_HW_USER_DATA_SEL;
+    vibeos_x86_64_serial_puts("[EXEC] entering image, rip=0x");
+    vibeos_x86_64_serial_print_hex(np.entry);
+    vibeos_x86_64_serial_puts("\n");
     return 0; /* frame replaced; syscall return enters the new image */
+}
+
+/* ---- what a program needs once it is running ------------------------------
+ *
+ * Startup gets a libc to main. These are what the program does afterwards:
+ * look at files, read directories, ask who it is. The list came from tracing
+ * BusyBox rather than from reasoning about it.
+ */
+
+static void hw_stat_wr64(uint64_t base, uint32_t off, uint64_t v) {
+    uint8_t *p = (uint8_t *)(uintptr_t)(base + off);
+    uint32_t i;
+    for (i = 0; i < 8u; i++) {
+        p[i] = (uint8_t)(v >> (8u * i));
+    }
+}
+
+static void hw_stat_wr32(uint64_t base, uint32_t off, uint32_t v) {
+    uint8_t *p = (uint8_t *)(uintptr_t)(base + off);
+    uint32_t i;
+    for (i = 0; i < 4u; i++) {
+        p[i] = (uint8_t)(v >> (8u * i));
+    }
+}
+
+/* Fill a struct stat the caller can believe.
+ *
+ * The mode matters more than it looks: a libc decides how to buffer a stream
+ * from it, and a program decides whether to recurse from it. Reporting a
+ * regular file for a directory does not fail here - it fails later, inside the
+ * program, doing something that made sense given what it was told. */
+static long hw_write_stat(uint64_t ubuf, uint32_t mode, uint64_t size, uint64_t ino) {
+    uint32_t i;
+
+    if (!hw_user_range_ok(ubuf, STAT_SIZE, 1)) {
+        return -VIBEOS_EFAULT;
+    }
+    for (i = 0; i < STAT_SIZE; i++) {
+        ((uint8_t *)(uintptr_t)ubuf)[i] = 0;
+    }
+    hw_stat_wr64(ubuf, STAT_OFF_INO, ino);
+    hw_stat_wr64(ubuf, STAT_OFF_NLINK, 1);
+    hw_stat_wr32(ubuf, STAT_OFF_MODE, mode);
+    hw_stat_wr32(ubuf, STAT_OFF_UID, 0);
+    hw_stat_wr32(ubuf, STAT_OFF_GID, 0);
+    hw_stat_wr64(ubuf, STAT_OFF_SIZE, size);
+    hw_stat_wr64(ubuf, STAT_OFF_BLKSIZE, 512);
+    hw_stat_wr64(ubuf, STAT_OFF_BLOCKS, (size + 511ull) / 512ull);
+    return 0;
+}
+
+static long hw_sys_fstat(uint64_t fd, uint64_t ubuf) {
+    hw_fd_t *f;
+
+    if (fd < 3u) {
+        /* The console. Character device, and deliberately not a terminal -
+         * the same answer ioctl gives. */
+        return hw_write_stat(ubuf, S_IFCHR | 0620u, 0, fd + 1u);
+    }
+    f = hw_fd_get(fd);
+    if (!f) {
+        return -VIBEOS_EBADF;
+    }
+    if (f->net_sock >= 0) {
+        return hw_write_stat(ubuf, S_IFCHR | 0600u, 0, fd + 1u);
+    }
+    return hw_write_stat(ubuf, S_IFREG | 0644u, f->size, f->cluster ? f->cluster : fd + 1u);
+}
+
+/* newfstatat(dirfd, path, buf, flags): stat by name, or by fd when the path is
+ * empty and AT_EMPTY_PATH is set. Relative paths resolve against the volume
+ * root, which is the only directory there is. */
+static long hw_sys_newfstatat(uint64_t dirfd, uint64_t path_uptr, uint64_t ubuf,
+                              uint64_t flags) {
+    char path[64];
+    uint32_t cluster = 0, size = 0;
+
+    if (hw_copy_user_string(path_uptr, path, sizeof(path)) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    if (path[0] == 0) {
+        if ((flags & AT_EMPTY_PATH) == 0) {
+            return -VIBEOS_ENOENT;
+        }
+        return hw_sys_fstat(dirfd, ubuf);
+    }
+    if ((long)dirfd != AT_FDCWD && dirfd < 3u) {
+        return -VIBEOS_EBADF;
+    }
+    /* The root of the volume, however it is spelled. */
+    if ((path[0] == '/' && path[1] == 0) || (path[0] == '.' && path[1] == 0)) {
+        return hw_write_stat(ubuf, S_IFDIR | 0755u, 0, 1);
+    }
+    if (vibeos_x86_64_fat_open(path, &cluster, &size) != 0) {
+        return -VIBEOS_ENOENT;
+    }
+    return hw_write_stat(ubuf, S_IFREG | 0644u, size, cluster ? cluster : 2u);
+}
+
+/* openat(): the modern spelling of open. Only AT_FDCWD is accepted, because a
+ * directory fd would have to mean something and here it cannot. */
+static long hw_sys_openat(uint64_t dirfd, uint64_t path_uptr, uint64_t flags) {
+    if ((long)dirfd != AT_FDCWD) {
+        return -VIBEOS_ENOSYS;
+    }
+    return hw_sys_open(path_uptr, flags);
+}
+
+/* getcwd(): there is one directory. Saying so is accurate; inventing a path
+ * would make a program build filenames that do not resolve. */
+static long hw_sys_getcwd(uint64_t ubuf, uint64_t size) {
+    if (size < 2u) {
+        return -VIBEOS_ERANGE;
+    }
+    if (!hw_user_range_ok(ubuf, 2, 1)) {
+        return -VIBEOS_EFAULT;
+    }
+    ((char *)(uintptr_t)ubuf)[0] = '/';
+    ((char *)(uintptr_t)ubuf)[1] = 0;
+    return 2;   /* Linux returns the length including the terminator */
+}
+
+/* readlinkat(): the only symlink that exists here is the one a program uses to
+ * find itself, and it is answered from what execve was actually given rather
+ * than from a made-up path. Everything else is not a link, which is what
+ * EINVAL means. */
+static long hw_sys_readlinkat(uint64_t dirfd, uint64_t path_uptr, uint64_t ubuf,
+                              uint64_t bufsz) {
+    char path[64];
+    const char *self;
+    uint64_t n = 0;
+
+    (void)dirfd;
+    if (hw_copy_user_string(path_uptr, path, sizeof(path)) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    if (!(path[0] == '/' && path[1] == 'p' && path[2] == 'r' && path[3] == 'o' &&
+          path[4] == 'c' && path[5] == '/' && path[6] == 's' && path[7] == 'e' &&
+          path[8] == 'l' && path[9] == 'f' && path[10] == '/' && path[11] == 'e' &&
+          path[12] == 'x' && path[13] == 'e' && path[14] == 0)) {
+        return -VIBEOS_EINVAL;
+    }
+    if (g_current_task < 0) {
+        return -VIBEOS_EINVAL;
+    }
+    self = g_tasks[g_current_task].proc.exe_path;
+    while (self[n]) {
+        n++;
+    }
+    if (n == 0) {
+        return -VIBEOS_ENOENT;
+    }
+    if (n > bufsz) {
+        n = bufsz;
+    }
+    if (!hw_user_range_ok(ubuf, n, 1)) {
+        return -VIBEOS_EFAULT;
+    }
+    {
+        uint64_t i;
+        for (i = 0; i < n; i++) {
+            ((char *)(uintptr_t)ubuf)[i] = self[i];
+        }
+    }
+    return (long)n;   /* not terminated, as Linux does not terminate it */
+}
+
+/* prctl(): the process name is the operation programs actually use, and it is
+ * stored rather than acknowledged - it costs sixteen bytes and makes the
+ * scheduler's log say which program a pid is. */
+static long hw_sys_prctl(uint64_t op, uint64_t arg) {
+    hw_task_t *t;
+    uint32_t i;
+
+    if (g_current_task < 0) {
+        return -VIBEOS_EINVAL;
+    }
+    t = &g_tasks[g_current_task];
+    if (op == PR_SET_NAME) {
+        if (!hw_user_range_ok(arg, 16, 0)) {
+            return -VIBEOS_EFAULT;
+        }
+        for (i = 0; i < 15u; i++) {
+            t->comm[i] = ((const char *)(uintptr_t)arg)[i];
+            if (t->comm[i] == 0) {
+                break;
+            }
+        }
+        t->comm[15] = 0;
+        return 0;
+    }
+    if (op == PR_GET_NAME) {
+        if (!hw_user_range_ok(arg, 16, 1)) {
+            return -VIBEOS_EFAULT;
+        }
+        for (i = 0; i < 16u; i++) {
+            ((char *)(uintptr_t)arg)[i] = t->comm[i];
+        }
+        return 0;
+    }
+    return -VIBEOS_EINVAL;
+}
+
+/* setuid()/setgid(): there is one identity and it is root. Becoming it again
+ * succeeds; becoming anyone else is refused rather than pretended. */
+static long hw_sys_setresid(uint64_t id) {
+    return (id == 0u) ? 0 : -VIBEOS_EPERM;
 }
 
 /* ---- what a C runtime asks for before it runs the program ----------------
@@ -3165,7 +3564,7 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
         case LSYS_fork:
             return hw_sys_fork(frame);
         case LSYS_execve:
-            return hw_sys_execve(frame, a1);
+            return hw_sys_execve(frame, a1, a2, a3);
         case LSYS_open:
             return hw_sys_open(a1, a2);
         case LSYS_close:
@@ -3252,6 +3651,30 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
              * the next timer interrupt, which is where the switch happens. */
             __asm__ __volatile__("sti; hlt");
             return 0;
+        /* What a program does once it is running. */
+        case LSYS_fstat:
+            return hw_sys_fstat(a1, a2);
+        case LSYS_newfstatat:
+            return hw_sys_newfstatat(a1, a2, a3, frame->r10);
+        case LSYS_openat:
+            return hw_sys_openat(a1, a2, a3);
+        case LSYS_getcwd:
+            return hw_sys_getcwd(a1, a2);
+        case LSYS_readlinkat:
+            return hw_sys_readlinkat(a1, a2, a3, frame->r10);
+        case LSYS_prctl:
+            return hw_sys_prctl(a1, a2);
+        case LSYS_setuid:
+        case LSYS_setgid:
+            return hw_sys_setresid(a1);
+        case LSYS_sendfile:
+            /* Every caller of sendfile has to cope with it failing, and does:
+             * a read-and-write loop is the documented fallback. Refusing is
+             * therefore free, while serving it would mean a second copy of the
+             * file and console paths purely to move bytes between kernel
+             * buffers. */
+            return -VIBEOS_ENOSYS;
+
         case LSYS_getuid:
         case LSYS_geteuid:
         case LSYS_getgid:
@@ -3618,6 +4041,7 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                   "ping 10.0.2.2\n"
                                   "EFI/BOOT/NET.ELF\n"
                                   "EFI/BOOT/MUSL.ELF\n"
+                                  "EFI/BOOT/BUSYBOX.ELF echo BUSYBOX_ECHO_OK\n"
                                   "exit\n");
 
     hello_id = hw_task_spawn_user(init_elf, init_len, init_argv);

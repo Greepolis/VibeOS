@@ -67,6 +67,19 @@ if(EXISTS "${MUSL_ELF}")
     message(STATUS "EFI media includes an unmodified Linux binary: EFI/BOOT/MUSL.ELF")
 endif()
 
+# A static BusyBox from the host, if one is installed. This is a real program
+# doing real work - open a file, read a directory, write to stdout - rather than
+# a test written to pass. It is not built here and nothing about it was chosen
+# by this project.
+find_program(VIBEOS_BUSYBOX busybox PATHS /usr/bin /bin NO_CACHE)
+if(VIBEOS_BUSYBOX)
+    file(READ "${VIBEOS_BUSYBOX}" BB_MAGIC LIMIT 4 HEX)
+    if(BB_MAGIC STREQUAL "7f454c46")
+        file(COPY_FILE "${VIBEOS_BUSYBOX}" "${EFI_BOOT_DIR}/BUSYBOX.ELF" ONLY_IF_DIFFERENT)
+        message(STATUS "EFI media includes BusyBox: EFI/BOOT/BUSYBOX.ELF")
+    endif()
+endif()
+
 # Keep legacy kernel-as-image artifact for direct-loader probes.
 file(COPY_FILE "${KERNEL_ELF}" "${LEGACY_BOOT_IMAGE}" ONLY_IF_DIFFERENT)
 
