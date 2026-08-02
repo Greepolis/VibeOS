@@ -112,6 +112,11 @@ The ESP image is built by a self-contained FAT16 writer (`scripts/make_esp_image
 What to install and what each thing is for - including the tools used to answer
 questions rather than to build: [docs/development_tools.md](docs/development_tools.md).
 
+## License
+
+MIT - see [LICENSE](LICENSE). The vendored dependency under `third_party/` keeps
+its own license.
+
 ## Progress Tracking
 
 Implementation progress is tracked by macro area:
