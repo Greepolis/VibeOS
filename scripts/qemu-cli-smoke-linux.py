@@ -245,9 +245,14 @@ def main():
             elif lease.group(1) == "0.0.0.0":
                 problems.append("dhcp_lease_is_zero")
 
-            cpus = re.search(r"SMP_OK: cpus online=0x0*([0-9a-f]+)", text)
+            # Match the full 16-digit field. An earlier version stripped leading
+            # zeros with 0x0* and then required one more digit, which made the
+            # regex backtrack and report 0 for a line that was merely cut short
+            # - a harness bug that reads exactly like a kernel bug.
+            cpus = re.search(r"SMP_OK: cpus online=0x([0-9a-f]{16})", text)
             if cpus is None:
-                problems.append("no_smp_report")
+                truncated = "SMP_OK: cpus online=" in text
+                problems.append("smp_report_truncated" if truncated else "no_smp_report")
             elif int(cpus.group(1), 16) != EXPECTED_CPUS:
                 problems.append(f"cpus_online={int(cpus.group(1), 16)}_expected={EXPECTED_CPUS}")
 
