@@ -7,41 +7,66 @@
 - support for kernel-grade debugging and tracing
 - a sustainable language strategy for C and C++
 
-## Language split
+## Language
 
-The project is primarily written in C and C++ with a deliberate role split:
+The project is C and assembly. There is no C++ anywhere in the tree, and the
+CMake project declares only `C ASM`.
 
-- C for low-level kernel entry, architecture glue, boot interfaces, and areas requiring minimal runtime assumptions
-- C++ for higher-level kernel subsystems and user-space services where stronger type modeling improves maintainability
+That started as a plan for C++ in the higher-level subsystems and did not
+survive contact with the work. The kernel runs freestanding, with no runtime,
+no allocator during early boot and no unwinder; every C++ feature worth having
+there would have had to be disabled, and what remained would have been C with
+different syntax. Assembly is used only where nothing else can express the
+job: the AP trampoline, the syscall and interrupt entry stubs, and the program
+entry point in `user/prog/crt0.S`.
 
 Rules:
 
-- avoid exceptions and RTTI in kernel space unless a future explicit decision reverses this
 - minimize dynamic allocation during early boot
-- keep the freestanding kernel environment separate from hosted user-space components
+- keep the freestanding kernel environment separate from hosted user-space
+  components; the hosted TLS adapter lives in its own target precisely so it
+  cannot be dragged into the kernel image by a future reference
+- put portable logic in portable files - the ELF parser, the TCP/IP stack and
+  the syscall translation model are all host-tested because they were written
+  without touching hardware
 
-## Compiler and linker direction
+## Compilers
 
-Initial recommended baseline:
+GCC and Clang are both first-class and both gated in CI, in Debug and Release.
+Neither is the primary one.
 
-- Clang or LLVM as primary compiler family
-- LLD as preferred linker
-- GCC compatibility kept as a secondary portability target when feasible
+This is not even-handedness for its own sake. The two disagree about enough to
+have caught real bugs that the other missed: an entry stack misaligned by
+eight bytes faults on the aligned SSE store Clang emits and not on the code
+GCC generates; a page of SSE spills at `-O2` triple-faulted a core that GCC at
+`-O0` started cleanly. Two compilers are a cheap second opinion about
+undefined behaviour.
 
-Rationale:
+Linking follows the same split: the GCC path builds an ELF and converts it to
+PE, the Clang path links PE natively with LLD. Both produce a bootable image
+and both are boot-gated.
 
-- strong freestanding support
-- good diagnostics
-- sanitizer and control-flow hardening ecosystem for user-space components
-- solid cross-compilation workflow
+## Build system
 
-## Build system direction
+CMake 3.21+ with Ninja. Targets are separated by what they are allowed to
+assume about their environment:
 
-Recommended initial build strategy:
+| Target | Kind |
+| --- | --- |
+| `vibeos_kernel_core` | freestanding kernel logic |
+| `vibeos_kernel` | the linked kernel image |
+| `vibeos_bootloader_uefi` | UEFI bootloader |
+| `vibeos_user_core` | portable code shared with user space |
+| `vibeos_tls` | hosted Mbed TLS adapter, deliberately outside `vibeos_user_core` |
+| `vibeos_user_hello` / `_sh` / `_net` / `_task` | ring-3 programs, linked with `user/prog/user.ld` |
+| `vibeos_kernel_tests`, `vibeos_bootloader_tests` | host suites |
+| `vibeos_image`, `vibeos_vm_images` | bootable media |
+| `fuzz_inet_input` | libFuzzer harness over the network receive path |
 
-- CMake or Meson for host orchestration and developer ergonomics
-- Ninja as the default local executor
-- explicit target separation for bootloader, kernel, userland, image assembly, and tests
+The source list lives in `cmake/core_sources.cmake` and is read by both CMake
+and `scripts/run-tests.ps1`. It is a single file because it used to be two,
+and the copies drifted three times - each time breaking CI on Windows only,
+after the change had already been declared verified on Linux.
 
 The build system should produce:
 
@@ -71,9 +96,9 @@ The build system should produce:
 
 ## Early deliverables for phase 2
 
-### M1: Toolchain and Build Skeleton (Current Phase)
+### M1: Toolchain and Build Skeleton (completed)
 
-The following are now available:
+The following are available:
 
 **Build System**
 - CMake 3.21+ with Ninja support (primary generator)
@@ -101,7 +126,8 @@ powershell ./scripts/run-qemu.ps1 -BuildDir build -ImagePath build/artifacts/vib
 
 **Artifacts Generated**
 - `build/artifacts/vibeos_kernel.elf` kernel ELF image (loadable by bootloader)
-- `build/artifacts/vibeos_boot.img` boot stub (placeholder; evolves to full disk image in M2)
+- `build/artifacts/efi_root/` bootable EFI media, including the ring-3 programs staged as `EFI/BOOT/*.ELF`
+- `build/artifacts/vibeos_esp.img`, `vibeos.iso`, `vibeos.vdi`, `vibeos.vmdk` importable images (see the README)
 - `build/artifacts/boot_manifest.txt` manifest of boot artifacts
 - `build/vibeos_kernel_tests.exe` host-side unit test executable
 - `artifacts/test-summary.json` structured test results for CI/agents
@@ -113,8 +139,25 @@ powershell ./scripts/run-qemu.ps1 -BuildDir build -ImagePath build/artifacts/vib
 - Toolchain version capture (cmake, gcc, qemu, ninja)
 - Build artifact validation before test execution
 
-### M2/M3: Boot and Early Kernel (Future)
+### M2/M3: Boot and Early Kernel (completed)
 
-- one-command QEMU boot path
-- symbol-aware kernel debug session
-- image packaging pipeline with reproducible inputs
+- one-command QEMU boot path (`scripts/qemu-cli-smoke-linux.py`), which boots
+  four vCPUs under pure TCG and asserts state rather than grepping for a token
+- image packaging pipeline producing UEFI media and importable disk images
+
+### Dependencies
+
+`third_party/mbedtls` is the only external dependency, pinned as a submodule
+and fetched recursively - since 4.x it carries nested submodules of its own.
+It is optional: without it the build simply has no TLS, unless
+`VIBEOS_REQUIRE_TLS` is set, which the Linux CI matrix does so that a missing
+submodule fails loudly there instead of silently degrading.
+
+### Debugging a hang
+
+Serial output is the first channel, but a hung guest has stopped producing it.
+The QEMU monitor is the second: `info registers -a` gives every core's RIP,
+and resolving those against `nm` on the kernel ELF turns "it froze" into a
+function name. Two intermittent hangs were diagnosed this way that no amount
+of added logging would have found, because the hang was in code holding the
+lock the logger needed.
