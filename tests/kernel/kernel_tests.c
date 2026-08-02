@@ -5030,10 +5030,90 @@ static int test_elf_stack_carries_phdr(void) {
     return 0;
 }
 
+/* Reserving a physical range is what stops a kernel object from living at an
+ * address a process can shadow, so the arithmetic is worth checking directly
+ * rather than inferring it from a boot that happened not to crash. */
+static int test_pmm_reserve(void) {
+    vibeos_pmm_t pmm;
+    void *a;
+
+    /* A reservation covering the front of the region moves the base past it. */
+    if (vibeos_pmm_init(&pmm, 0x100000u, 0x100000u, 4096u) != 0) {
+        return -1;
+    }
+    if (vibeos_pmm_reserve(&pmm, 0x100000u, 0x10000u) != 0) {
+        return -1;
+    }
+    if (pmm.base != 0x110000u || pmm.size_bytes != 0xF0000u) {
+        return -1;
+    }
+    a = vibeos_pmm_alloc_page(&pmm);
+    if ((uintptr_t)a < 0x110000u) {
+        return -1;   /* handed out a reserved page */
+    }
+
+    /* Covering the tail shrinks the region instead. */
+    if (vibeos_pmm_init(&pmm, 0x100000u, 0x100000u, 4096u) != 0) {
+        return -1;
+    }
+    if (vibeos_pmm_reserve(&pmm, 0x1F0000u, 0x20000u) != 0) {
+        return -1;
+    }
+    if (pmm.base != 0x100000u || pmm.size_bytes != 0xF0000u) {
+        return -1;
+    }
+
+    /* A range that splits the region keeps the larger side; the allocator is a
+     * bump allocator over one range and cannot hold a hole. */
+    if (vibeos_pmm_init(&pmm, 0x100000u, 0x100000u, 4096u) != 0) {
+        return -1;
+    }
+    if (vibeos_pmm_reserve(&pmm, 0x120000u, 0x1000u) != 0) {
+        return -1;
+    }
+    if (pmm.base != 0x121000u || pmm.size_bytes != 0xDF000u) {
+        return -1;   /* the suffix is larger than the 0x20000 prefix */
+    }
+
+    /* No overlap at all is success and changes nothing. */
+    if (vibeos_pmm_init(&pmm, 0x100000u, 0x100000u, 4096u) != 0) {
+        return -1;
+    }
+    if (vibeos_pmm_reserve(&pmm, 0x400000u, 0x800000u) != 0) {
+        return -1;
+    }
+    if (pmm.base != 0x100000u || pmm.size_bytes != 0x100000u) {
+        return -1;
+    }
+
+    /* A reservation swallowing the whole region has to fail rather than leave
+     * an allocator with nothing in it. */
+    if (vibeos_pmm_init(&pmm, 0x100000u, 0x10000u, 4096u) != 0) {
+        return -1;
+    }
+    if (vibeos_pmm_reserve(&pmm, 0x100000u, 0x10000u) == 0) {
+        return -1;
+    }
+
+    /* Reserving after something has been handed out would be a lie: that page
+     * may already be inside the range. */
+    if (vibeos_pmm_init(&pmm, 0x100000u, 0x100000u, 4096u) != 0) {
+        return -1;
+    }
+    if (vibeos_pmm_alloc_page(&pmm) == 0) {
+        return -1;
+    }
+    if (vibeos_pmm_reserve(&pmm, 0x180000u, 0x1000u) == 0) {
+        return -1;
+    }
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
 #define RUN_TEST(fn) do { if ((fn)() != 0) { failures++; printf("FAIL:%s\n", #fn); } } while (0)
     RUN_TEST(test_pmm);
+    RUN_TEST(test_pmm_reserve);
     RUN_TEST(test_scheduler);
     RUN_TEST(test_scheduler_balanced);
     RUN_TEST(test_scheduler_wait_runtime);

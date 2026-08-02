@@ -56,7 +56,10 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-x86 qemu-utils ninja-build build-essential clang ovmf xorriso
+          # musl-tools builds the unmodified static Linux binary the boot gate
+          # runs. Without it that check silently does not happen, which is the
+          # kind of gap that turns a gate into decoration.
+          sudo apt-get install -y qemu-system-x86 qemu-utils ninja-build build-essential clang ovmf xorriso musl-tools
 
       - name: Configure
         run: >

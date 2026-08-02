@@ -202,6 +202,29 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/user/prog/user.ld"
     )
 
+    # An unmodified static Linux binary, built by a real Linux toolchain against
+    # a real libc, staged on the boot media as MUSL.ELF.
+    #
+    # This is the honest test of Linux compatibility: nothing about it knows
+    # VibeOS exists. It is optional because musl-gcc is not present everywhere -
+    # where it is missing the media simply lacks the file and the shell reports
+    # that it cannot find it, which is a clear result rather than a build break.
+    find_program(VIBEOS_MUSL_GCC musl-gcc)
+    if(VIBEOS_MUSL_GCC)
+        set(VIBEOS_MUSL_SRC "${CMAKE_CURRENT_SOURCE_DIR}/tests/linux/musl_hello.c")
+        set(VIBEOS_MUSL_BIN "${CMAKE_BINARY_DIR}/musl_hello")
+        add_custom_command(
+            OUTPUT "${VIBEOS_MUSL_BIN}"
+            COMMAND "${VIBEOS_MUSL_GCC}" -static -O2 -o "${VIBEOS_MUSL_BIN}" "${VIBEOS_MUSL_SRC}"
+            DEPENDS "${VIBEOS_MUSL_SRC}"
+            COMMENT "Building an unmodified static Linux binary with musl"
+            VERBATIM
+        )
+        add_custom_target(vibeos_musl_hello ALL DEPENDS "${VIBEOS_MUSL_BIN}")
+    else()
+        message(STATUS "musl-gcc not found: the boot media will carry no unmodified Linux binary")
+    endif()
+
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
     set(VIBEOS_USER_BLOB "${CMAKE_BINARY_DIR}/generated/user_hello_elf.c")
     add_custom_command(

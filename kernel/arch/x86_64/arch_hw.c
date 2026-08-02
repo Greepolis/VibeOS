@@ -654,9 +654,25 @@ static vibeos_pmm_t g_hw_pmm;
 static int g_hw_pmm_ready;
 static uint64_t g_hw_pmm_pages_used;
 
-/* User virtual layout: PML4 slot 1 (512 GiB). Programs are linked at
+/* User virtual layout: PML4 slot 1 (512 GiB). VibeOS programs are linked at
  * VIBEOS_HW_USER_BASE (user/prog/user.ld); their stack sits above the image. */
 #define VIBEOS_HW_USER_BASE 0x8000000000ull
+
+/* A second, much smaller user window down in the first GiB.
+ *
+ * This exists for one reason: a Linux executable is linked at 0x400000 and
+ * cannot be asked to move. That address is inside the region the kernel
+ * identity-maps for itself, so mapping user pages there means shadowing the
+ * kernel's own view of those physical addresses while that process is current.
+ * The window is therefore kept small and, crucially, the same physical range
+ * is reserved out of the page allocator at boot (vibeos_pmm_reserve), so no
+ * kernel object can ever live at an address a process is able to shadow.
+ *
+ * Only the program image goes here. Its stack, heap and mmap arena stay in the
+ * high window, where there is no such interaction - nothing in the Linux ABI
+ * requires those to be at any particular address. */
+#define VIBEOS_HW_LOW_USER_BASE  0x00400000ull
+#define VIBEOS_HW_LOW_USER_LIMIT 0x00C00000ull   /* 8 MiB */
 #define VIBEOS_HW_USER_STACK_TOP (VIBEOS_HW_USER_BASE + 0x00400000ull) /* +4 MiB */
 
 /* Programs no longer start on a bare stack: hw_proc_create builds the System V
@@ -741,6 +757,16 @@ static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
         vibeos_x86_64_serial_puts("[HW] PMM init failed: falling back to the static page pool\n");
         return;
     }
+    /* Nothing of the kernel's may live where a process can shadow it. See
+     * VIBEOS_HW_LOW_USER_BASE and vibeos_pmm_reserve for why this is a
+     * correctness requirement and not a tidiness one. */
+    if (vibeos_pmm_reserve(&g_hw_pmm, (uintptr_t)VIBEOS_HW_LOW_USER_BASE,
+                           (size_t)(VIBEOS_HW_LOW_USER_LIMIT - VIBEOS_HW_LOW_USER_BASE)) != 0) {
+        g_hw_pmm_ready = 0;
+        vibeos_x86_64_serial_puts("[HW] PMM cannot reserve the low user window; "
+                                 "falling back to the static page pool\n");
+        return;
+    }
     g_hw_pmm_ready = 1;
     vibeos_x86_64_serial_puts("[HW] PMM online, free bytes=0x");
     vibeos_x86_64_serial_print_hex((uint64_t)vibeos_pmm_remaining(&g_hw_pmm));
@@ -767,6 +793,88 @@ static int hw_map_page(vibeos_hw_aspace_t *as, uint64_t va, uint64_t pa, uint64_
         tbl = (uint64_t *)(uintptr_t)(tbl[idx] & 0x000FFFFFFFFFF000ull);
     }
     tbl[(va >> 12) & 0x1FFu] = (pa & 0x000FFFFFFFFFF000ull) | leaf_flags;
+    return 0;
+}
+
+/* Map one user page inside the kernel's identity region.
+ *
+ * The tables covering the first GiB are global and shared by every address
+ * space, and the identity map uses 2 MiB pages, so there is nowhere to put a
+ * 4 KiB user entry without first making private copies. This walks down and
+ * un-shares exactly as much as it has to:
+ *
+ *   - PML4 slot 0 still points at the global PDPT: copy it.
+ *   - The PDPT entry still points at a global PD: copy it.
+ *   - The PD entry is a 2 MiB leaf: split it into a page table whose 512
+ *     entries reproduce the same identity mapping at 4 KiB granularity, so the
+ *     kernel's view of that region is unchanged, and only then overwrite the
+ *     one entry the program wants.
+ *
+ * The upper levels get PTE_USER because on x86-64 access is the AND of the US
+ * bits along the path; the leaf decides. Every identity entry left behind has
+ * US clear, so ring 3 still cannot reach any of it. */
+static int hw_map_low_user_page(vibeos_hw_aspace_t *as, uint64_t va, uint64_t pa,
+                                uint64_t leaf_flags) {
+    uint64_t *pdpt, *pd, *pt;
+    uint32_t gi = (uint32_t)((va >> 30) & 0x1FFu);
+    uint32_t pdi = (uint32_t)((va >> 21) & 0x1FFu);
+    uint32_t pti = (uint32_t)((va >> 12) & 0x1FFu);
+
+    if (va >= VIBEOS_HW_IDENTITY_LIMIT) {
+        return -1;   /* not this function's business */
+    }
+
+    /* Level 1: the PDPT for the low 512 GiB. */
+    pdpt = (uint64_t *)(uintptr_t)(as->pml4[0] & 0x000FFFFFFFFFF000ull);
+    if (pdpt == &g_pdpt[0]) {
+        uint64_t *priv = (uint64_t *)hw_alloc_page();
+        uint32_t i;
+        if (!priv) {
+            return -1;
+        }
+        for (i = 0; i < 512u; i++) {
+            priv[i] = g_pdpt[i];
+        }
+        as->pml4[0] = (uint64_t)(uintptr_t)priv | PTE_PRESENT | PTE_WRITE | PTE_USER;
+        pdpt = priv;
+    }
+
+    /* Level 2: the page directory for this GiB. */
+    pd = (uint64_t *)(uintptr_t)(pdpt[gi] & 0x000FFFFFFFFFF000ull);
+    if (gi < VIBEOS_HW_IDENTITY_GIB && pd == &g_pd[gi][0]) {
+        uint64_t *priv = (uint64_t *)hw_alloc_page();
+        uint32_t i;
+        if (!priv) {
+            return -1;
+        }
+        for (i = 0; i < 512u; i++) {
+            priv[i] = g_pd[gi][i];
+        }
+        pdpt[gi] = (uint64_t)(uintptr_t)priv | PTE_PRESENT | PTE_WRITE | PTE_USER;
+        pd = priv;
+    }
+
+    /* Level 3: split the 2 MiB leaf into a real page table, preserving the
+     * identity mapping it stood for. */
+    if ((pd[pdi] & PTE_PRESENT) == 0 || (pd[pdi] & PTE_PS) != 0) {
+        uint64_t region = (uint64_t)gi << 30 | (uint64_t)pdi << 21;
+        uint64_t *priv = (uint64_t *)hw_alloc_page();
+        uint32_t i;
+        if (!priv) {
+            return -1;
+        }
+        for (i = 0; i < 512u; i++) {
+            /* Same physical address, same supervisor-only access, finer
+             * granularity. No PTE_USER: this is still the kernel's memory. */
+            priv[i] = (region + (uint64_t)i * 4096ull) | PTE_PRESENT | PTE_WRITE;
+        }
+        pd[pdi] = (uint64_t)(uintptr_t)priv | PTE_PRESENT | PTE_WRITE | PTE_USER;
+        pt = priv;
+    } else {
+        pt = (uint64_t *)(uintptr_t)(pd[pdi] & 0x000FFFFFFFFFF000ull);
+    }
+
+    pt[pti] = (pa & 0x000FFFFFFFFFF000ull) | leaf_flags;
     return 0;
 }
 
@@ -817,6 +925,44 @@ static void hw_aspace_destroy(vibeos_hw_aspace_t *as) {
         }
         hw_free_page(pdpt);
     }
+
+    /* Slot 0 is the kernel's identity map and is shared by every address
+     * space - unless this process had pages down there, in which case parts of
+     * it were copied. Free exactly the copies: a table that is still one of
+     * the globals belongs to everyone and must be left alone, and inside a
+     * split page table only the entries carrying PTE_USER own a frame; the
+     * rest are identity entries that were never allocated. */
+    if (as->pml4[0] & PTE_PRESENT) {
+        uint64_t *lowpdpt = (uint64_t *)(uintptr_t)(as->pml4[0] & 0x000FFFFFFFFFF000ull);
+        if (lowpdpt != &g_pdpt[0]) {
+            for (i = 0; i < 512u; i++) {
+                uint64_t *pd;
+                if ((lowpdpt[i] & PTE_PRESENT) == 0) {
+                    continue;
+                }
+                pd = (uint64_t *)(uintptr_t)(lowpdpt[i] & 0x000FFFFFFFFFF000ull);
+                if (i < VIBEOS_HW_IDENTITY_GIB && pd == &g_pd[i][0]) {
+                    continue;   /* shared */
+                }
+                for (j = 0; j < 512u; j++) {
+                    uint64_t *pt;
+                    if ((pd[j] & PTE_PRESENT) == 0 || (pd[j] & PTE_PS) != 0) {
+                        continue;   /* absent, or an untouched 2 MiB identity leaf */
+                    }
+                    pt = (uint64_t *)(uintptr_t)(pd[j] & 0x000FFFFFFFFFF000ull);
+                    for (k = 0; k < 512u; k++) {
+                        if ((pt[k] & PTE_PRESENT) && (pt[k] & PTE_USER)) {
+                            hw_free_page((void *)(uintptr_t)(pt[k] & 0x000FFFFFFFFFF000ull));
+                        }
+                    }
+                    hw_free_page(pt);
+                }
+                hw_free_page(pd);
+            }
+            hw_free_page(lowpdpt);
+        }
+    }
+
     hw_free_page(as->pml4);
     as->pml4 = 0;
 }
@@ -950,8 +1096,18 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
      * places it. Working a page at a time is what makes a page shared between
      * two segments come out right - allocated once, carrying the permissions
      * of both, holding the bytes of both. */
-    if (vibeos_elf_parse(elf, len, VIBEOS_HW_USER_BASE,
+    /* Two windows are allowed: the one VibeOS programs are linked into, and
+     * the low one a Linux executable is linked into. Parsing with the widest
+     * bounds and then checking which window the image landed in is what keeps
+     * a crafted file from asking to be placed between them - on top of the
+     * kernel, for instance, which is linked at 64 MiB. */
+    if (vibeos_elf_parse(elf, len, VIBEOS_HW_LOW_USER_BASE,
                          VIBEOS_HW_USER_STACK_TOP, &img) != VIBEOS_ELF_OK) {
+        return -1;
+    }
+    if (!(img.min_vaddr >= VIBEOS_HW_USER_BASE) &&
+        !(img.min_vaddr >= VIBEOS_HW_LOW_USER_BASE &&
+          img.end_vaddr <= VIBEOS_HW_LOW_USER_LIMIT)) {
         return -1;
     }
     for (va = img.min_vaddr; va < img.end_vaddr; va += 4096ull) {
@@ -970,7 +1126,11 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
             return -1;
         }
         vibeos_elf_fill_page(&img, elf, va, page);
-        if (hw_map_page(&p->as, va, (uint64_t)(uintptr_t)page, leaf) != 0) {
+        if (va < VIBEOS_HW_IDENTITY_LIMIT) {
+            if (hw_map_low_user_page(&p->as, va, (uint64_t)(uintptr_t)page, leaf) != 0) {
+                return -1;
+            }
+        } else if (hw_map_page(&p->as, va, (uint64_t)(uintptr_t)page, leaf) != 0) {
             return -1;
         }
     }
@@ -2464,10 +2624,77 @@ static long hw_sys_munmap(uint64_t addr, uint64_t len) {
 
 /* Duplicate every user mapping of `src` into `dst`, copying the backing pages.
  * User space lives entirely in PML4 slot 1, so only that subtree is walked. */
+/* Copy one present user leaf into the destination address space. */
+static int hw_copy_user_leaf(vibeos_hw_aspace_t *dst, uint64_t va, uint64_t pte) {
+    const uint8_t *srcpage = (const uint8_t *)(uintptr_t)(pte & 0x000FFFFFFFFFF000ull);
+    uint8_t *dstpage = (uint8_t *)hw_alloc_page();
+    uint64_t flags = pte & (PTE_PRESENT | PTE_WRITE | PTE_USER);
+    uint64_t b;
+
+    if (!dstpage) {
+        return -1;
+    }
+    for (b = 0; b < 4096ull; b++) {
+        dstpage[b] = srcpage[b];
+    }
+    if (va < VIBEOS_HW_IDENTITY_LIMIT) {
+        return hw_map_low_user_page(dst, va, (uint64_t)(uintptr_t)dstpage, flags);
+    }
+    return hw_map_page(dst, va, (uint64_t)(uintptr_t)dstpage, flags);
+}
+
+/* Duplicate the user pages a process has in the kernel's identity region -
+ * a Linux image linked at 0x400000 lives there, and a fork that skipped it
+ * would hand the child an address space with no program in it. Only entries
+ * marked PTE_USER are copied; everything else down there is the kernel's. */
+static int hw_aspace_copy_low_user(vibeos_hw_aspace_t *dst, const vibeos_hw_aspace_t *src) {
+    const uint64_t *spdpt;
+    uint32_t i, j, k;
+
+    if ((src->pml4[0] & PTE_PRESENT) == 0) {
+        return 0;
+    }
+    spdpt = (const uint64_t *)(uintptr_t)(src->pml4[0] & 0x000FFFFFFFFFF000ull);
+    if (spdpt == &g_pdpt[0]) {
+        return 0;   /* still fully shared: this process has nothing down here */
+    }
+    for (i = 0; i < 512u; i++) {
+        const uint64_t *spd;
+        if ((spdpt[i] & PTE_PRESENT) == 0) {
+            continue;
+        }
+        spd = (const uint64_t *)(uintptr_t)(spdpt[i] & 0x000FFFFFFFFFF000ull);
+        if (i < VIBEOS_HW_IDENTITY_GIB && spd == &g_pd[i][0]) {
+            continue;
+        }
+        for (j = 0; j < 512u; j++) {
+            const uint64_t *spt;
+            if ((spd[j] & PTE_PRESENT) == 0 || (spd[j] & PTE_PS) != 0) {
+                continue;
+            }
+            spt = (const uint64_t *)(uintptr_t)(spd[j] & 0x000FFFFFFFFFF000ull);
+            for (k = 0; k < 512u; k++) {
+                uint64_t va;
+                if ((spt[k] & PTE_PRESENT) == 0 || (spt[k] & PTE_USER) == 0) {
+                    continue;
+                }
+                va = ((uint64_t)i << 30) | ((uint64_t)j << 21) | ((uint64_t)k << 12);
+                if (hw_copy_user_leaf(dst, va, spt[k]) != 0) {
+                    return -1;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
 static int hw_aspace_copy_user(vibeos_hw_aspace_t *dst, const vibeos_hw_aspace_t *src) {
     const uint64_t *spdpt;
     uint32_t i, j, k;
 
+    if (hw_aspace_copy_low_user(dst, src) != 0) {
+        return -1;
+    }
     if ((src->pml4[1] & PTE_PRESENT) == 0) {
         return 0;
     }
@@ -2486,24 +2713,13 @@ static int hw_aspace_copy_user(vibeos_hw_aspace_t *dst, const vibeos_hw_aspace_t
             spt = (const uint64_t *)(uintptr_t)(spd[j] & 0x000FFFFFFFFFF000ull);
             for (k = 0; k < 512u; k++) {
                 uint64_t pte = spt[k];
-                const uint8_t *srcpage;
-                uint8_t *dstpage;
-                uint64_t va, b;
+                uint64_t va;
 
                 if ((pte & PTE_PRESENT) == 0) {
                     continue;
                 }
                 va = (1ull << 39) | ((uint64_t)i << 30) | ((uint64_t)j << 21) | ((uint64_t)k << 12);
-                dstpage = (uint8_t *)hw_alloc_page();
-                if (!dstpage) {
-                    return -1;
-                }
-                srcpage = (const uint8_t *)(uintptr_t)(pte & 0x000FFFFFFFFFF000ull);
-                for (b = 0; b < 4096ull; b++) {
-                    dstpage[b] = srcpage[b];
-                }
-                if (hw_map_page(dst, va, (uint64_t)(uintptr_t)dstpage,
-                                pte & (PTE_PRESENT | PTE_WRITE | PTE_USER)) != 0) {
+                if (hw_copy_user_leaf(dst, va, pte) != 0) {
                     return -1;
                 }
             }
@@ -2707,6 +2923,17 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr) 
  * stack-protector cookie, the locale pointer. The base of that segment lives
  * in a model-specific register, so setting it is privileged and a program
  * cannot do it itself. Until this works, a libc faults on its first line. */
+/* Is this an address a process is allowed to own? There are two user windows -
+ * the high one VibeOS programs are linked into and the low one a Linux
+ * executable is linked into - and the answer lives in one place so a new
+ * caller cannot accidentally know about only one of them. */
+static int hw_user_addr_ok(uint64_t va) {
+    if (va >= VIBEOS_HW_USER_BASE && va < VIBEOS_HW_USER_BASE + 0x8000000000ull) {
+        return 1;
+    }
+    return va >= VIBEOS_HW_LOW_USER_BASE && va < VIBEOS_HW_LOW_USER_LIMIT;
+}
+
 static long hw_sys_arch_prctl(uint64_t code, uint64_t addr) {
     hw_task_t *t;
 
@@ -2718,11 +2945,16 @@ static long hw_sys_arch_prctl(uint64_t code, uint64_t addr) {
     switch (code) {
         case ARCH_SET_FS:
             /* A non-canonical address in this MSR faults on the wrmsr itself,
-             * in ring 0 - user space must not be able to reach that. User
-             * memory is one PML4 slot, so anything outside it is refused
-             * before the write rather than after. */
-            if (addr < VIBEOS_HW_USER_BASE ||
-                addr >= VIBEOS_HW_USER_BASE + 0x8000000000ull) {
+             * in ring 0 - user space must not be able to reach that. So the
+             * base is checked before the write.
+             *
+             * It has to accept both user windows, and getting that wrong is
+             * not a subtle failure: a static musl binary keeps its thread
+             * pointer in its own .bss, down in the low window, and reacts to a
+             * refusal by executing hlt on purpose. The kernel then reports a
+             * general-protection fault in ring 3 with nothing to say that a
+             * bounds check three functions away was the cause. */
+            if (!hw_user_addr_ok(addr)) {
                 return -VIBEOS_EPERM;
             }
             t->fs_base = addr;
@@ -3385,6 +3617,7 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                   "net\n"
                                   "ping 10.0.2.2\n"
                                   "EFI/BOOT/NET.ELF\n"
+                                  "EFI/BOOT/MUSL.ELF\n"
                                   "exit\n");
 
     hello_id = hw_task_spawn_user(init_elf, init_len, init_argv);

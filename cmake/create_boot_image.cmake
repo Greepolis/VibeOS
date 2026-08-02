@@ -58,6 +58,15 @@ if(EXISTS "${USER_TASK_ELF}")
     message(STATUS "EFI media includes exec target: EFI/BOOT/TASK.ELF")
 endif()
 
+# An unmodified static Linux binary, if the build produced one. Nothing in it
+# was written for VibeOS: it is a normal Linux program compiled by musl-gcc,
+# and running it is the point of the whole Linux-ABI effort.
+set(MUSL_ELF "${CMAKE_BINARY_DIR}/musl_hello")
+if(EXISTS "${MUSL_ELF}")
+    file(COPY_FILE "${MUSL_ELF}" "${EFI_BOOT_DIR}/MUSL.ELF" ONLY_IF_DIFFERENT)
+    message(STATUS "EFI media includes an unmodified Linux binary: EFI/BOOT/MUSL.ELF")
+endif()
+
 # Keep legacy kernel-as-image artifact for direct-loader probes.
 file(COPY_FILE "${KERNEL_ELF}" "${LEGACY_BOOT_IMAGE}" ONLY_IF_DIFFERENT)
 

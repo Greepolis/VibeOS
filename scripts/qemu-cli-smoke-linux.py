@@ -290,6 +290,19 @@ def main():
             if echo_state["connections"] == 0:
                 problems.append("no_tcp_connection_reached_the_host")
 
+            # If the build staged an unmodified static Linux binary, it has to
+            # have run. This is checked only when the file exists because
+            # musl-gcc is not available on every machine - but where it is, a
+            # regression that stops a real Linux program from starting must
+            # fail the boot rather than be noticed later by someone reading
+            # the log.
+            musl = os.path.join(efi_root, "EFI", "BOOT", "MUSL.ELF")
+            if os.path.exists(musl):
+                if "MUSL_OK" not in text:
+                    problems.append("unmodified_linux_binary_did_not_run")
+                elif "MUSL_ARGS: argc=1" not in text:
+                    problems.append("linux_binary_got_wrong_argv")
+
             if problems:
                 reason = "invariant_failed:" + ",".join(problems)
                 raise RuntimeError(reason)

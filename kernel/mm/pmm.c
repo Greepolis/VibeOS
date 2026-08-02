@@ -98,6 +98,52 @@ int vibeos_pmm_init_from_boot_info(vibeos_pmm_t *pmm, const vibeos_boot_info_t *
     return vibeos_pmm_init(pmm, base, size_bytes, page_size);
 }
 
+int vibeos_pmm_reserve(vibeos_pmm_t *pmm, uintptr_t base, size_t size) {
+    uintptr_t region_end, res_end;
+    size_t prefix, suffix;
+
+    if (!pmm || pmm->page_size == 0 || size == 0) {
+        return -1;
+    }
+    if (pmm->offset_bytes != 0) {
+        return -1;   /* something has already been handed out of this region */
+    }
+    if (base + size < base) {
+        return -1;   /* wrap */
+    }
+    region_end = pmm->base + pmm->size_bytes;
+    res_end = base + size;
+    if (res_end <= pmm->base || base >= region_end) {
+        return 0;    /* no overlap: nothing to do, and that is success */
+    }
+
+    prefix = (base > pmm->base) ? (size_t)(base - pmm->base) : 0u;
+    suffix = (res_end < region_end) ? (size_t)(region_end - res_end) : 0u;
+
+    if (prefix >= suffix) {
+        if (prefix < pmm->page_size) {
+            return -1;   /* nothing usable left below the reservation */
+        }
+        pmm->size_bytes = align_down_size(prefix, pmm->page_size);
+    } else {
+        uintptr_t new_base = align_up(res_end, pmm->page_size);
+        size_t shift;
+        if (new_base < res_end || new_base >= region_end) {
+            return -1;
+        }
+        shift = (size_t)(new_base - res_end);
+        if (suffix <= shift || (suffix - shift) < pmm->page_size) {
+            return -1;
+        }
+        pmm->base = new_base;
+        pmm->size_bytes = align_down_size(suffix - shift, pmm->page_size);
+    }
+    if (pmm->size_bytes < pmm->page_size) {
+        return -1;
+    }
+    return 0;
+}
+
 void *vibeos_pmm_alloc_page(vibeos_pmm_t *pmm) {
     return vibeos_pmm_alloc_pages(pmm, 1u);
 }
