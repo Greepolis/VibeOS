@@ -83,6 +83,10 @@ The build system should produce:
 
 ## Debug and observability tooling
 
+The concrete list, with the reason for each, is in
+[development_tools.md](development_tools.md).
+
+
 - QEMU as the first emulator target
 - GDB and LLDB support from the start
 - serial logging as the first diagnostic channel
