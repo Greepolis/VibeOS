@@ -139,6 +139,16 @@ def main():
             err_fp = open(err_log_path, "wb")
             cmd = [
                 "qemu-system-x86_64",
+                # Software emulation, always - even where /dev/kvm exists.
+                #
+                # This is not a preference, it is the whole point. A four-core
+                # TCG guest interleaves differently from KVM, and an SMP race
+                # that KVM hides reproduces under TCG in roughly one boot in
+                # two. Local runs on a machine with KVM were passing this smoke
+                # twenty times in a row while CI failed, because they were not
+                # running the same thing. Verification has to be at least as
+                # harsh as the gate it is meant to predict.
+                "-accel", "tcg",
                 "-machine", "q35",
                 "-m", "512M",
                 # Four cores: the kernel is SMP, so the smoke must exercise it.
@@ -218,12 +228,24 @@ def main():
                     if not serial_text:
                         kind = "no_output_at_all"      # never got past firmware
                     elif idle > 20:
-                        kind = "guest_went_quiet"      # produced output, then stopped: a hang
+                        # Silence is not proof of a hang: firmware is quiet for
+                        # long stretches, especially with several TCG cores. The
+                        # tail printed below is what settles it.
+                        kind = "guest_quiet"
                     else:
                         kind = "guest_still_talking"   # still progressing: the budget was too small
                     reason = (f"missing:{expected} verdict={kind}"
                               f" elapsed={now - started:.0f}s"
                               f" quiet_for={idle:.0f}s budget={timeout_sec}s")
+                    # Put the tail in the job output, not only in an artifact
+                    # nobody downloads. Whether the guest stalled in firmware
+                    # or inside the kernel is visible from these lines alone.
+                    tail = serial_text.replace(chr(13), "").splitlines()[-15:]
+                    print(f"[QEMU-CLI] last {len(tail)} serial lines before the failure:")
+                    for line in tail:
+                        print(f"[QEMU-CLI]   {line}")
+                    if not tail:
+                        print("[QEMU-CLI]   (the guest never wrote to the serial port)")
                     raise RuntimeError(reason)
                 if command is not None:
                     serial.sendall(command)
