@@ -59,14 +59,19 @@ int vibeos_elf_parse(const void *image, uint64_t len,
                      vibeos_elf_image_t *out) {
     const uint8_t *b = (const uint8_t *)image;
     uint64_t phoff, ph_total;
-    uint16_t phnum, phentsize, etype, i;
+    uint16_t phnum, phentsize, etype;
+    /* Wider than every bound it is compared against. An index narrower than
+     * the count it is tested against cannot terminate the loop if the count
+     * ever exceeds the index's range - the comparison is promoted, the
+     * increment wraps, and the loop runs forever. */
+    uint32_t i;
     uint64_t lo = 0xFFFFFFFFFFFFFFFFull;
     uint64_t hi = 0;
 
     if (!image || !out || len < EHDR_SIZE) {
         return VIBEOS_ELF_ETRUNCATED;
     }
-    for (i = 0; i < (uint16_t)sizeof(*out); i++) {
+    for (i = 0; i < (uint32_t)sizeof(*out); i++) {
         ((uint8_t *)(void *)out)[i] = 0;
     }
 

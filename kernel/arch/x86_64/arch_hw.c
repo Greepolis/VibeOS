@@ -973,8 +973,10 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
     p->entry = img.entry;
     for (i = 0; i < VIBEOS_HW_USER_STACK_PAGES; i++) {
         void *page = hw_alloc_page();
-        uint64_t va = VIBEOS_HW_USER_STACK_TOP - ((uint64_t)(i + 1u) * 4096ull);
-        if (!page || hw_map_page(&p->as, va, (uint64_t)(uintptr_t)page,
+        /* Named apart from the image-loading loop's `va` above: two different
+         * addresses in one function should not share a name. */
+        uint64_t stack_va = VIBEOS_HW_USER_STACK_TOP - ((uint64_t)(i + 1u) * 4096ull);
+        if (!page || hw_map_page(&p->as, stack_va, (uint64_t)(uintptr_t)page,
                                  PTE_PRESENT | PTE_WRITE | PTE_USER) != 0) {
             return -1;
         }
