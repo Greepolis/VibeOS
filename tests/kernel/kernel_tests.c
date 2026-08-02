@@ -679,13 +679,24 @@ static int test_interrupts(void) {
 
 /* Exercises the syscall dispatcher end to end: ABI version negotiation,
  * handle allocation and closing, waitset operations and their statistics, and
- * the error paths for bad ids, bad arguments and policy denials. Covers the
- * dispatcher's contract rather than any single call. */
+ * the error paths for bad ids, bad arguments and policy denials.
+ *
+ * This is an integration-style contract test for syscall dispatch behavior,
+ * not a unit test of any single syscall implementation. The body is organized
+ * in phases that validate:
+ *   1) successful calls and expected side effects,
+ *   2) rejection paths (invalid ids/arguments),
+ *   3) ownership and policy enforcement checks,
+ *   4) observable accounting/statistics consistency.
+ */
 static int test_syscalls(void) {
     vibeos_kernel_t kernel;
     vibeos_syscall_frame_t frame;
-    /* Two threads in two processes: enough to exercise ownership checks,
-     * which are what most of the syscall error paths turn on. */
+    /* Test fixtures:
+     * - Two threads in two processes are sufficient to trigger cross-owner
+     *   access checks, which drive many negative dispatcher paths.
+     * - The scalar ids/handles below are populated incrementally as setup and
+     *   syscall phases progress, then reused by later assertions. */
     vibeos_thread_t sthread1 = { .id = 101, .cpu_hint = 0, .klass = VIBEOS_THREAD_NORMAL, .timeslice_ticks = 1 };
     vibeos_thread_t sthread2 = { .id = 102, .cpu_hint = 1, .klass = VIBEOS_THREAD_NORMAL, .timeslice_ticks = 2 };
     uint32_t pid1 = 0;
