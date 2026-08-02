@@ -222,3 +222,138 @@ void vibeos_elf_fill_page(const vibeos_elf_image_t *img, const void *image,
         }
     }
 }
+
+/* ---- initial process stack ------------------------------------------------ */
+
+static uint64_t str_len(const char *s) {
+    uint64_t n = 0;
+    while (s[n]) {
+        n++;
+    }
+    return n;
+}
+
+static uint64_t count_vec(const char *const *v) {
+    uint64_t n = 0;
+    if (!v) {
+        return 0;
+    }
+    while (v[n]) {
+        n++;
+    }
+    return n;
+}
+
+uint64_t vibeos_elf_build_stack(void *buf, uint64_t buf_len, uint64_t stack_top,
+                                const vibeos_elf_stack_desc_t *desc) {
+    uint8_t *base = (uint8_t *)buf;
+    uint64_t argc, envc, i;
+    uint64_t strings_bytes = 0;
+    uint64_t sp;                 /* virtual address as we build downwards */
+    uint64_t str_cursor;
+    uint64_t *slot;
+    uint64_t need;
+    uint64_t aux_pairs;
+
+    if (!buf || !desc || buf_len == 0u || (stack_top & 0xFu) != 0u) {
+        return 0;
+    }
+    argc = count_vec(desc->argv);
+    envc = count_vec(desc->envp);
+
+    for (i = 0; i < argc; i++) {
+        strings_bytes += str_len(desc->argv[i]) + 1u;
+    }
+    for (i = 0; i < envc; i++) {
+        strings_bytes += str_len(desc->envp[i]) + 1u;
+    }
+    if (desc->random16) {
+        strings_bytes += 16u;
+    }
+
+    /* PAGESZ, ENTRY, UID, EUID, GID, EGID, NULL, plus PHDR/PHENT/PHNUM and
+     * RANDOM when they apply. */
+    aux_pairs = 7u + (desc->phdr_vaddr ? 3u : 0u) + (desc->random16 ? 1u : 0u);
+
+    need = strings_bytes + 16u                     /* strings + alignment slack */
+         + 8u                                      /* argc                      */
+         + (argc + 1u) * 8u                        /* argv + NULL               */
+         + (envc + 1u) * 8u                        /* envp + NULL               */
+         + aux_pairs * 16u;                        /* auxv pairs                */
+    if (need + 16u > buf_len) {
+        return 0;
+    }
+
+    /* Strings sit at the very top; the pointer arrays below refer back to them. */
+    str_cursor = stack_top - strings_bytes;
+    str_cursor &= ~0xFull;
+    sp = str_cursor;
+
+    {
+        uint64_t at = str_cursor;
+        for (i = 0; i < argc; i++) {
+            uint64_t n = str_len(desc->argv[i]) + 1u;
+            uint64_t k;
+            for (k = 0; k < n; k++) {
+                base[(at + k) - (stack_top - buf_len)] = (uint8_t)desc->argv[i][k];
+            }
+            at += n;
+        }
+        for (i = 0; i < envc; i++) {
+            uint64_t n = str_len(desc->envp[i]) + 1u;
+            uint64_t k;
+            for (k = 0; k < n; k++) {
+                base[(at + k) - (stack_top - buf_len)] = (uint8_t)desc->envp[i][k];
+            }
+            at += n;
+        }
+        if (desc->random16) {
+            for (i = 0; i < 16u; i++) {
+                base[(at + i) - (stack_top - buf_len)] = desc->random16[i];
+            }
+        }
+    }
+
+    /* Now the vectors, growing down from just below the strings. The whole
+     * block has to leave the stack pointer 16-byte aligned at entry, which the
+     * ABI requires and a real _start relies on. */
+    sp -= aux_pairs * 16u;
+    sp -= (envc + 1u) * 8u;
+    sp -= (argc + 1u) * 8u;
+    sp -= 8u;                     /* argc itself */
+    sp &= ~0xFull;
+
+    slot = (uint64_t *)(void *)(base + (sp - (stack_top - buf_len)));
+    *slot++ = argc;
+
+    {
+        uint64_t at = str_cursor;
+        for (i = 0; i < argc; i++) {
+            *slot++ = at;
+            at += str_len(desc->argv[i]) + 1u;
+        }
+        *slot++ = 0;
+        for (i = 0; i < envc; i++) {
+            *slot++ = at;
+            at += str_len(desc->envp[i]) + 1u;
+        }
+        *slot++ = 0;
+
+        if (desc->phdr_vaddr) {
+            *slot++ = VIBEOS_AT_PHDR;   *slot++ = desc->phdr_vaddr;
+            *slot++ = VIBEOS_AT_PHENT;  *slot++ = desc->phentsize;
+            *slot++ = VIBEOS_AT_PHNUM;  *slot++ = desc->phnum;
+        }
+        *slot++ = VIBEOS_AT_PAGESZ; *slot++ = VIBEOS_ELF_PAGE_SIZE;
+        *slot++ = VIBEOS_AT_ENTRY;  *slot++ = desc->entry;
+        *slot++ = VIBEOS_AT_UID;    *slot++ = 0;
+        *slot++ = VIBEOS_AT_EUID;   *slot++ = 0;
+        *slot++ = VIBEOS_AT_GID;    *slot++ = 0;
+        *slot++ = VIBEOS_AT_EGID;   *slot++ = 0;
+        if (desc->random16) {
+            *slot++ = VIBEOS_AT_RANDOM; *slot++ = at;
+        }
+        *slot++ = VIBEOS_AT_NULL;   *slot++ = 0;
+    }
+    return sp;
+}

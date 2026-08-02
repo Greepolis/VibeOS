@@ -47,10 +47,59 @@ static const char exec_done[] = "parent: exec'd child completed\n";
 static const char kbd_prefix[] = "console read: ";
 static const char shell_path[] = "EFI/BOOT/SH.ELF";
 
-void _start(void) {
+static const char argv_bad[] = "argv wrong\n";
+static const char auxv_ok[] = "auxv ok: AT_PHDR points at our program headers\n";
+static const char auxv_bad[] = "auxv wrong\n";
+
+/* Walk the auxiliary vector the way a C runtime does: past the environment's
+ * NULL terminator, then key/value pairs until AT_NULL. Finding AT_PHDR,
+ * AT_PHNUM and AT_PHENT there - and finding a real program header table at the
+ * address AT_PHDR gives - is what a real libc needs to start, so checking it
+ * from ring 3 is the only proof that matters. */
+static int check_auxv(char **envp) {
+    unsigned long *aux;
+    unsigned long phdr = 0, phnum = 0, phent = 0, at_entry = 0;
+    const unsigned char *ph;
+
+    while (*envp) {
+        envp++;
+    }
+    aux = (unsigned long *)(void *)(envp + 1);
+    while (aux[0] != 0ul) {
+        if (aux[0] == 3ul) { phdr = aux[1]; }
+        if (aux[0] == 4ul) { phent = aux[1]; }
+        if (aux[0] == 5ul) { phnum = aux[1]; }
+        if (aux[0] == 9ul) { at_entry = aux[1]; }
+        aux += 2;
+    }
+    if (phdr == 0ul || phnum == 0ul || phent != 56ul || at_entry == 0ul) {
+        return 0;
+    }
+    /* The first program header of a static executable we loaded is PT_LOAD,
+     * and its p_vaddr is where the image starts. */
+    ph = (const unsigned char *)phdr;
+    if (ph[0] != 1u) {   /* p_type == PT_LOAD, little-endian low byte */
+        return 0;
+    }
+    return 1;
+}
+
+int vibeos_main(int argc, char **argv, char **envp) {
     long pid, brk0, brk1, map, rejected;
 
     user_syscall3(SYS_write, 1 /*stdout*/, (long)(unsigned long)message, sizeof(message) - 1);
+
+    /* The kernel built this stack; confirm it arrived intact. */
+    if (argc == 1 && argv[0] && argv[0][0] == 'i' && argv[1] == 0) {
+        /* argv is well formed and terminated. */
+    } else {
+        user_syscall3(SYS_write, 1, (long)(unsigned long)argv_bad, sizeof(argv_bad) - 1);
+    }
+    if (check_auxv(envp)) {
+        user_syscall3(SYS_write, 1, (long)(unsigned long)auxv_ok, sizeof(auxv_ok) - 1);
+    } else {
+        user_syscall3(SYS_write, 1, (long)(unsigned long)auxv_bad, sizeof(auxv_bad) - 1);
+    }
 
     pid = user_syscall3(SYS_getpid, 0, 0, 0);
 

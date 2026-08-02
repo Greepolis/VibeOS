@@ -175,7 +175,7 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
     # --- User program: a standalone freestanding ELF embedded into the kernel ---
     # Built as a static, position-dependent ELF64 (linked at a fixed low vaddr),
     # then turned into a C byte array the kernel's ELF loader parses at runtime.
-    add_executable(vibeos_user_hello user/prog/hello.c)
+    add_executable(vibeos_user_hello user/prog/hello.c user/prog/crt0.S)
     target_compile_options(vibeos_user_hello PRIVATE
         -ffreestanding -fno-stack-protector -fno-pic -mno-red-zone
         -mcmodel=large   # user space is linked above 4 GiB (its own PML4 slot)
@@ -208,7 +208,7 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
     target_sources(vibeos_kernel PRIVATE "${VIBEOS_USER_BLOB}")
 
     # Third user program: the shell (staged on media, exec-ed by init).
-    add_executable(vibeos_user_sh user/prog/sh.c)
+    add_executable(vibeos_user_sh user/prog/sh.c user/prog/crt0.S)
     target_compile_options(vibeos_user_sh PRIVATE
         -ffreestanding -fno-stack-protector -fno-pic -mno-red-zone
         -mcmodel=large
@@ -224,7 +224,7 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
     )
 
     # Fourth user program: a TCP client, staged on media as NET.ELF.
-    add_executable(vibeos_user_net user/prog/net.c)
+    add_executable(vibeos_user_net user/prog/net.c user/prog/crt0.S)
     target_compile_options(vibeos_user_net PRIVATE
         -ffreestanding -fno-stack-protector -fno-pic -mno-red-zone
         -mcmodel=large
@@ -240,7 +240,7 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
     )
 
     # Second user program: a looping task for the preemptive scheduler demo.
-    add_executable(vibeos_user_task user/prog/task.c)
+    add_executable(vibeos_user_task user/prog/task.c user/prog/crt0.S)
     target_compile_options(vibeos_user_task PRIVATE
         -ffreestanding -fno-stack-protector -fno-pic -mno-red-zone
         -mcmodel=large   # user space is linked above 4 GiB (its own PML4 slot)

@@ -659,14 +659,11 @@ static uint64_t g_hw_pmm_pages_used;
 #define VIBEOS_HW_USER_BASE 0x8000000000ull
 #define VIBEOS_HW_USER_STACK_TOP (VIBEOS_HW_USER_BASE + 0x00400000ull) /* +4 MiB */
 
-/* Stack pointer a program actually starts on.
- *
- * `_start` is compiled as an ordinary function, so the compiler lays out its
- * frame assuming the System V post-call state: rsp % 16 == 8. Handing it a
- * 16-aligned stack shifts every local by 8, and the first aligned SSE store the
- * optimizer emits then faults with #GP in ring 3. Bias the entry stack the way
- * a `call` would. */
-#define VIBEOS_HW_USER_STACK_ENTRY (VIBEOS_HW_USER_STACK_TOP - 8ull)
+/* Programs no longer start on a bare stack: hw_proc_create builds the System V
+ * startup block (argc, argv, envp, auxv) in the topmost stack page and reports
+ * the stack pointer to enter on, which is 16-byte aligned as the ABI requires.
+ * `_start` is written in assembly (user/prog/crt0.S) precisely so that state is
+ * consumed correctly instead of being reinterpreted as a function frame. */
 #define VIBEOS_HW_USER_STACK_PAGES 4u
 
 typedef struct vibeos_hw_aspace {
@@ -924,6 +921,7 @@ typedef struct {
     uint64_t entry;
     uint64_t brk_cur;   /* current program break            */
     uint64_t mmap_cur;  /* next free anonymous mmap address  */
+    uint64_t user_sp;   /* entry rsp, atop the startup block */
 } hw_proc_t;
 
 typedef struct {
@@ -933,8 +931,11 @@ typedef struct {
 
 /* Build a process: private address space, the ELF image loaded into it, and a
  * user stack mapped just below VIBEOS_HW_USER_STACK_TOP. */
-static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len) {
+static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
+                          const char *const *argv, const char *const *envp) {
     vibeos_elf_image_t img;
+    vibeos_elf_stack_desc_t sd;
+    uint8_t *top_page = 0;
     uint64_t va;
     uint32_t i;
 
@@ -977,6 +978,28 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len) 
                                  PTE_PRESENT | PTE_WRITE | PTE_USER) != 0) {
             return -1;
         }
+        if (i == 0u) {
+            top_page = (uint8_t *)page;
+        }
+    }
+
+    /* Fill the topmost stack page with the startup block. The page is still
+     * identity-mapped for the kernel, so it is written here through its
+     * physical address while the builder computes every pointer it stores in
+     * terms of the user virtual address the program will see. */
+    for (i = 0; i < sizeof(sd); i++) {
+        ((uint8_t *)(void *)&sd)[i] = 0;
+    }
+    sd.argv = argv;
+    sd.envp = envp;
+    sd.entry = img.entry;
+    sd.phdr_vaddr = img.phdr_vaddr;
+    sd.phnum = img.phnum;
+    sd.phentsize = img.phentsize;
+    p->user_sp = vibeos_elf_build_stack(top_page, 4096ull,
+                                        VIBEOS_HW_USER_STACK_TOP, &sd);
+    if (p->user_sp == 0) {
+        return -1;   /* arguments too large for the stack we mapped */
     }
     p->brk_cur = VIBEOS_HW_USER_HEAP_BASE;
     p->mmap_cur = VIBEOS_HW_USER_MMAP_BASE;
@@ -1214,7 +1237,7 @@ static void hw_schedule(vibeos_x86_64_isr_frame_t *frame) {
     hw_set_kernel_stack(g_tasks[next].kstack_top);
 }
 
-static void hw_task_init_user_ctx(vibeos_x86_64_isr_frame_t *c, uint64_t entry, uint64_t arg) {
+static void hw_task_init_user_ctx(vibeos_x86_64_isr_frame_t *c, uint64_t entry, uint64_t sp) {
     uint32_t k;
     for (k = 0; k < (uint32_t)sizeof(*c); k++) {
         ((uint8_t *)(void *)c)[k] = 0;
@@ -1222,9 +1245,8 @@ static void hw_task_init_user_ctx(vibeos_x86_64_isr_frame_t *c, uint64_t entry, 
     c->rip = entry;
     c->cs = VIBEOS_HW_USER_CODE_SEL;
     c->rflags = 0x202;   /* reserved bit + IF */
-    c->rsp = VIBEOS_HW_USER_STACK_ENTRY;
+    c->rsp = sp;         /* atop argc/argv/envp/auxv, 16-byte aligned */
     c->ss = VIBEOS_HW_USER_DATA_SEL;
-    c->rdi = arg;        /* passed to the task's _start */
 }
 
 /* Adopt the currently-executing kernel flow as a schedulable task, so the
@@ -1291,12 +1313,13 @@ static int hw_task_create_idle(hw_cpu_t *cpu) {
 
 /* Create a ring-3 task from an ELF image: private address space, mapped stack,
  * READY to be picked by the scheduler. */
-static int hw_task_spawn_user(const unsigned char *elf, uint64_t len, uint64_t arg) {
+static int hw_task_spawn_user(const unsigned char *elf, uint64_t len,
+                              const char *const *argv) {
     int i = hw_task_alloc();
     if (i < 0) {
         return -1;
     }
-    if (hw_proc_create(&g_tasks[i].proc, elf, len) != 0) {
+    if (hw_proc_create(&g_tasks[i].proc, elf, len, argv, 0) != 0) {
         hw_task_release(i);
         return -1;
     }
@@ -1306,7 +1329,8 @@ static int hw_task_spawn_user(const unsigned char *elf, uint64_t len, uint64_t a
         return -1;
     }
     g_tasks[i].cr3 = hw_proc_cr3(&g_tasks[i].proc);
-    hw_task_init_user_ctx(&g_tasks[i].ctx, g_tasks[i].proc.entry, arg);
+    hw_task_init_user_ctx(&g_tasks[i].ctx, g_tasks[i].proc.entry,
+                          g_tasks[i].proc.user_sp);
     g_tasks[i].state = HW_TASK_READY;
     g_tasks[i].is_user = 1;
     g_tasks[i].pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
@@ -2400,6 +2424,11 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr) 
     hw_task_t *t;
     long n;
     uint32_t k;
+    /* execve(path) with no argument vector still gives the new program an
+     * argv[0]: the path it was started from, which is what every program that
+     * prints its own name reads. `path` outlives the load, so pointing at it
+     * is safe. */
+    const char *exec_argv[2];
 
     if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
         return -VIBEOS_EINVAL;
@@ -2407,6 +2436,8 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr) 
     if (hw_copy_user_string(path_uptr, path, sizeof(path)) != 0) {
         return -VIBEOS_EFAULT;
     }
+    exec_argv[0] = path;
+    exec_argv[1] = 0;
     /* g_exec_elf is a single shared staging buffer, so the read and the load out
      * of it have to be one critical section: two cores exec'ing at once would
      * otherwise each load the other's image. */
@@ -2416,7 +2447,8 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr) 
         hw_spin_unlock(&g_exec_lock);
         return -VIBEOS_ENOENT;
     }
-    if (hw_proc_create(&np, g_exec_elf, (uint64_t)n) != 0) {
+    if (hw_proc_create(&np, g_exec_elf, (uint64_t)n,
+                       (const char *const *)exec_argv, 0) != 0) {
         hw_spin_unlock(&g_exec_lock);
         return -VIBEOS_ENOMEM;
     }
@@ -2437,7 +2469,7 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr) 
     frame->rip = np.entry;
     frame->cs = VIBEOS_HW_USER_CODE_SEL;
     frame->rflags = 0x202;
-    frame->rsp = VIBEOS_HW_USER_STACK_ENTRY;
+    frame->rsp = np.user_sp;
     frame->ss = VIBEOS_HW_USER_DATA_SEL;
     return 0; /* frame replaced; syscall return enters the new image */
 }
@@ -2799,6 +2831,11 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
     uint64_t init_len = vibeos_user_hello_elf_len;
     int hello_id, a_id, b_id, kern_id;
     uint64_t translated = 0, denied = 0;
+    /* Argument vectors for the first processes. The two scheduler-demo tasks
+     * differ only by argv[0], which is how they pick the letter they print. */
+    static const char *const init_argv[] = {"init", 0};
+    static const char *const task_a_argv[] = {"0", 0};
+    static const char *const task_b_argv[] = {"1", 0};
 
     /* Init program source, most real first: the on-disk filesystem (virtio-blk +
      * FAT), then the bootloader's EFI module, then the built-in copy. */
@@ -2837,9 +2874,11 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                   "EFI/BOOT/NET.ELF\n"
                                   "exit\n");
 
-    hello_id = hw_task_spawn_user(init_elf, init_len, 0);
-    a_id = hw_task_spawn_user(vibeos_user_task_elf, vibeos_user_task_elf_len, 0);
-    b_id = hw_task_spawn_user(vibeos_user_task_elf, vibeos_user_task_elf_len, 1);
+    hello_id = hw_task_spawn_user(init_elf, init_len, init_argv);
+    a_id = hw_task_spawn_user(vibeos_user_task_elf, vibeos_user_task_elf_len,
+                              task_a_argv);
+    b_id = hw_task_spawn_user(vibeos_user_task_elf, vibeos_user_task_elf_len,
+                              task_b_argv);
     if (hello_id < 0 || a_id < 0 || b_id < 0) {
         vibeos_x86_64_serial_puts("[SCHED] failed to spawn initial tasks\n");
         return;

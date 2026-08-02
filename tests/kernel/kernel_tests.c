@@ -4830,6 +4830,206 @@ static int test_elf_bss_is_zeroed(void) {
     return 0;
 }
 
+
+/* The startup stack is what a real libc reads before it runs any of the
+ * program, so these check the exact layout the System V ABI mandates rather
+ * than merely that the builder returned something. */
+#define STACKT_TOP 0x0000700000000000ull
+#define STACKT_LEN 4096u
+
+static uint8_t stackt_buf[STACKT_LEN];
+
+/* Read the 64-bit word the program would see at virtual address `va`. */
+static uint64_t stackt_word(uint64_t va) {
+    uint64_t v = 0;
+    uint32_t i;
+    uint64_t off = va - (STACKT_TOP - STACKT_LEN);
+    for (i = 0; i < 8u; i++) {
+        v |= (uint64_t)stackt_buf[off + i] << (8u * i);
+    }
+    return v;
+}
+
+static const char *stackt_str(uint64_t va) {
+    return (const char *)&stackt_buf[va - (STACKT_TOP - STACKT_LEN)];
+}
+
+static int test_elf_stack_layout(void) {
+    static const char *const argv[] = {"/bin/sh", "-c", "echo", NULL};
+    static const char *const envp[] = {"PATH=/bin", "HOME=/", NULL};
+    static const uint8_t rnd[16] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16};
+    vibeos_elf_stack_desc_t d;
+    uint64_t sp, p;
+    int i;
+    int seen_phdr = 0, seen_phent = 0, seen_phnum = 0;
+    int seen_entry = 0, seen_pagesz = 0, seen_random = 0, seen_null = 0;
+
+    memset(stackt_buf, 0xA5, sizeof(stackt_buf));
+    memset(&d, 0, sizeof(d));
+    d.argv = argv;
+    d.envp = envp;
+    d.entry = 0x400123ull;
+    d.phdr_vaddr = 0x400040ull;
+    d.phnum = 3;
+    d.phentsize = 56;
+    d.random16 = rnd;
+
+    sp = vibeos_elf_build_stack(stackt_buf, STACKT_LEN, STACKT_TOP, &d);
+    if (sp == 0) {
+        return -1;
+    }
+    /* Misalignment here is not cosmetic: the first movaps in a real _start
+     * faults on it. */
+    if ((sp & 0xFu) != 0u) {
+        return -1;
+    }
+    if (sp < STACKT_TOP - STACKT_LEN || sp >= STACKT_TOP) {
+        return -1;
+    }
+    if (stackt_word(sp) != 3u) {
+        return -1;
+    }
+    p = sp + 8u;
+    for (i = 0; i < 3; i++) {
+        uint64_t ptr = stackt_word(p + (uint64_t)i * 8u);
+        if (ptr == 0 || strcmp(stackt_str(ptr), argv[i]) != 0) {
+            return -1;
+        }
+    }
+    if (stackt_word(p + 24u) != 0u) {   /* argv NULL terminator */
+        return -1;
+    }
+    p += 32u;
+    for (i = 0; i < 2; i++) {
+        uint64_t ptr = stackt_word(p + (uint64_t)i * 8u);
+        if (ptr == 0 || strcmp(stackt_str(ptr), envp[i]) != 0) {
+            return -1;
+        }
+    }
+    if (stackt_word(p + 16u) != 0u) {   /* envp NULL terminator */
+        return -1;
+    }
+    p += 24u;
+
+    for (i = 0; i < 32; i++) {
+        uint64_t key = stackt_word(p);
+        uint64_t val = stackt_word(p + 8u);
+        p += 16u;
+        if (key == VIBEOS_AT_PHDR)   { seen_phdr   = (val == 0x400040ull); }
+        if (key == VIBEOS_AT_PHENT)  { seen_phent  = (val == 56u); }
+        if (key == VIBEOS_AT_PHNUM)  { seen_phnum  = (val == 3u); }
+        if (key == VIBEOS_AT_ENTRY)  { seen_entry  = (val == 0x400123ull); }
+        if (key == VIBEOS_AT_PAGESZ) { seen_pagesz = (val == VIBEOS_ELF_PAGE_SIZE); }
+        if (key == VIBEOS_AT_RANDOM) {
+            const uint8_t *r = (const uint8_t *)stackt_str(val);
+            int k, ok = 1;
+            for (k = 0; k < 16; k++) {
+                if (r[k] != rnd[k]) { ok = 0; }
+            }
+            seen_random = ok;
+        }
+        if (key == VIBEOS_AT_NULL) { seen_null = 1; break; }
+    }
+    if (!seen_phdr || !seen_phent || !seen_phnum || !seen_entry ||
+        !seen_pagesz || !seen_random || !seen_null) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_elf_stack_edges(void) {
+    static const char *const argv[] = {"a", NULL};
+    vibeos_elf_stack_desc_t d;
+    static char big[3000];
+    static const char *bigv[2];
+    uint64_t sp;
+
+    memset(&d, 0, sizeof(d));
+    /* No argv, no envp, no auxv extras: still a valid stack with argc == 0. */
+    sp = vibeos_elf_build_stack(stackt_buf, STACKT_LEN, STACKT_TOP, &d);
+    if (sp == 0 || (sp & 0xFu) != 0u || stackt_word(sp) != 0u) {
+        return -1;
+    }
+    if (stackt_word(sp + 8u) != 0u || stackt_word(sp + 16u) != 0u) {
+        return -1;   /* empty argv and envp terminators */
+    }
+
+    /* A stack top that is not 16-byte aligned cannot produce an aligned sp,
+     * so it is refused rather than silently rounded. */
+    d.argv = argv;
+    if (vibeos_elf_build_stack(stackt_buf, STACKT_LEN, STACKT_TOP + 8u, &d) != 0) {
+        return -1;
+    }
+    if (vibeos_elf_build_stack(NULL, STACKT_LEN, STACKT_TOP, &d) != 0) {
+        return -1;
+    }
+    if (vibeos_elf_build_stack(stackt_buf, 0, STACKT_TOP, &d) != 0) {
+        return -1;
+    }
+
+    /* Arguments larger than the stack are refused, not written past the end. */
+    memset(big, 'x', sizeof(big) - 1u);
+    big[sizeof(big) - 1u] = 0;
+    bigv[0] = big;
+    bigv[1] = NULL;
+    d.argv = (const char *const *)bigv;
+    if (vibeos_elf_build_stack(stackt_buf, 2048u, STACKT_TOP, &d) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_elf_stack_carries_phdr(void) {
+    static uint8_t img[8192];
+    vibeos_elf_image_t out;
+    vibeos_elf_stack_desc_t d;
+    /* A segment starting at file offset 0 maps the ELF header and the program
+     * headers along with the code, which is what makes AT_PHDR answerable. */
+    elft_seg_t seg = {1u, VIBEOS_ELF_R | VIBEOS_ELF_X, 0, ELFT_BASE, 0x800, 0x800};
+    uint64_t len = elft_build(img, sizeof(img), ELFT_BASE, &seg, 1, 2);
+    uint64_t sp, p, key, val;
+    uint64_t got_phdr = 0;
+    int i;
+
+    if (vibeos_elf_parse(img, len, ELFT_BASE, ELFT_LIMIT, &out) != VIBEOS_ELF_OK) {
+        return -1;
+    }
+    if (out.phdr_vaddr == 0u || out.phnum == 0u) {
+        return -1;   /* headers are inside the segment; they must be reported */
+    }
+    memset(&d, 0, sizeof(d));
+    d.entry = out.entry;
+    d.phdr_vaddr = out.phdr_vaddr;
+    d.phnum = out.phnum;
+    d.phentsize = out.phentsize;
+
+    sp = vibeos_elf_build_stack(stackt_buf, STACKT_LEN, STACKT_TOP, &d);
+    if (sp == 0) {
+        return -1;
+    }
+    p = sp + 8u + 8u + 8u;   /* argc, argv NULL, envp NULL */
+    for (i = 0; i < 32; i++) {
+        key = stackt_word(p);
+        val = stackt_word(p + 8u);
+        p += 16u;
+        if (key == VIBEOS_AT_PHDR) {
+            got_phdr = val;
+        }
+        if (key == VIBEOS_AT_NULL) {
+            break;
+        }
+    }
+    /* The address handed to the program must be the one the parser derived,
+     * and it must fall inside the image that was mapped. */
+    if (got_phdr != out.phdr_vaddr) {
+        return -1;
+    }
+    if (got_phdr < out.min_vaddr || got_phdr >= out.end_vaddr) {
+        return -1;
+    }
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
 #define RUN_TEST(fn) do { if ((fn)() != 0) { failures++; printf("FAIL:%s\n", #fn); } } while (0)
@@ -4881,6 +5081,9 @@ int main(void) {
     RUN_TEST(test_elf_shared_page);
     RUN_TEST(test_elf_rejects_malformed);
     RUN_TEST(test_elf_bss_is_zeroed);
+    RUN_TEST(test_elf_stack_layout);
+    RUN_TEST(test_elf_stack_edges);
+    RUN_TEST(test_elf_stack_carries_phdr);
     RUN_TEST(test_security_token);
     RUN_TEST(test_security_audit_log);
     RUN_TEST(test_driver_host);

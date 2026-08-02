@@ -40,7 +40,8 @@ static void put(const char *s) {
     sys3(SYS_write, 1, (long)(unsigned long)s, (long)slen(s));
 }
 
-void _start(void) {
+int vibeos_main(int argc, char **argv, char **envp) {
+    (void)argc; (void)argv; (void)envp;
     /* struct sockaddr_in: family little endian, port and address big endian. */
     unsigned char addr[16];
     char buf[128];
@@ -91,4 +92,5 @@ void _start(void) {
 
     sys3(SYS_close, fd, 0, 0);
     sys3(SYS_exit, 0, 0, 0);
+    return 0;   /* not reached; exit does not return */
 }

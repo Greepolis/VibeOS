@@ -139,7 +139,8 @@ static void run_program(const char *path) {
  * process. Every operation goes through syscalls - there is no libc - so this
  * also serves as a working example of the system call surface.
  */
-void _start(void) {
+int vibeos_main(int argc, char **argv, char **envp) {
+    (void)argc; (void)argv; (void)envp;
     char line[128];
 
     put("VibeOS shell. Commands: help, echo <text>, exit, <program path>\n");
