@@ -18,6 +18,7 @@
 #include "vibeos/boot.h"
 #include "vibeos/mm.h"
 #include "vibeos/inet.h"
+#include "vibeos/elf.h"
 
 #define VIBEOS_HW_KERNEL_CS 0x08u
 #define VIBEOS_HW_KERNEL_DS 0x10u
@@ -929,51 +930,46 @@ typedef struct {
     vibeos_hw_aspace_t *as;
 } hw_load_ctx_t;
 
-/* Per PT_LOAD segment: allocate private pages, copy the file image into them
- * through the kernel's identity view, then map them into the process address
- * space with the segment's permissions (US=1; writable only if PF_W). */
-static int hw_elf_seg_cb(void *ctx, uint64_t vaddr, const unsigned char *data,
-                         uint64_t filesz, uint64_t memsz, uint32_t flags) {
-    hw_load_ctx_t *lc = (hw_load_ctx_t *)ctx;
-    uint64_t leaf = PTE_PRESENT | PTE_USER;
-    uint64_t va;
-
-    if ((flags & 2u) != 0) { /* PF_W */
-        leaf |= PTE_WRITE;
-    }
-    for (va = vaddr & ~0xFFFull; va < vaddr + memsz; va += 4096ull) {
-        uint8_t *page = (uint8_t *)hw_alloc_page();
-        uint64_t i;
-        if (!page) {
-            return -1;
-        }
-        for (i = 0; i < 4096ull; i++) {
-            uint64_t byte_va = va + i;
-            if (byte_va >= vaddr && byte_va < vaddr + filesz) {
-                page[i] = data[byte_va - vaddr];
-            }
-            /* remaining bytes stay zero: .bss and page padding */
-        }
-        if (hw_map_page(lc->as, va, (uint64_t)(uintptr_t)page, leaf) != 0) {
-            return -1;
-        }
-    }
-    return 0;
-}
 
 /* Build a process: private address space, the ELF image loaded into it, and a
  * user stack mapped just below VIBEOS_HW_USER_STACK_TOP. */
 static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len) {
-    hw_load_ctx_t lc;
+    vibeos_elf_image_t img;
+    uint64_t va;
     uint32_t i;
 
     if (hw_aspace_create(&p->as) != 0) {
         return -1;
     }
-    lc.as = &p->as;
-    if (vibeos_x86_64_elf_load(elf, len, &lc, hw_elf_seg_cb, &p->entry) != 0) {
+    /* The portable parser validates the file and describes it; this loop just
+     * places it. Working a page at a time is what makes a page shared between
+     * two segments come out right - allocated once, carrying the permissions
+     * of both, holding the bytes of both. */
+    if (vibeos_elf_parse(elf, len, VIBEOS_HW_USER_BASE,
+                         VIBEOS_HW_USER_STACK_TOP, &img) != VIBEOS_ELF_OK) {
         return -1;
     }
+    for (va = img.min_vaddr; va < img.end_vaddr; va += 4096ull) {
+        uint32_t flags = vibeos_elf_page_flags(&img, va);
+        uint64_t leaf = PTE_PRESENT | PTE_USER;
+        uint8_t *page;
+
+        if (flags == 0u) {
+            continue;   /* a hole between segments stays unmapped */
+        }
+        if (flags & VIBEOS_ELF_W) {
+            leaf |= PTE_WRITE;
+        }
+        page = (uint8_t *)hw_alloc_page();
+        if (!page) {
+            return -1;
+        }
+        vibeos_elf_fill_page(&img, elf, va, page);
+        if (hw_map_page(&p->as, va, (uint64_t)(uintptr_t)page, leaf) != 0) {
+            return -1;
+        }
+    }
+    p->entry = img.entry;
     for (i = 0; i < VIBEOS_HW_USER_STACK_PAGES; i++) {
         void *page = hw_alloc_page();
         uint64_t va = VIBEOS_HW_USER_STACK_TOP - ((uint64_t)(i + 1u) * 4096ull);
@@ -1051,6 +1047,12 @@ typedef struct {
     /* Written from interrupt/syscall context (preemption, task exit) and read
      * by the kernel task, so it must not be cached across a wait loop. */
     volatile int state;
+    /* Set while some CPU is executing this task, cleared only once its
+     * context has been saved. A waker on another core can flip state to
+     * READY while the task is still running here; without this flag a
+     * third core would pick it up and two CPUs would run one task,
+     * sharing its kernel stack. */
+    volatile int on_cpu;
     int is_user;
     int is_idle;      /* per-CPU idle task: only run when nothing else is ready */
     int wait_input;   /* blocked in read() on stdin */
@@ -1148,7 +1150,8 @@ static int hw_pick_next(hw_cpu_t *cpu) {
 
     for (n = 1; n <= VIBEOS_HW_MAX_TASKS; n++) {
         int i = (start + n) % VIBEOS_HW_MAX_TASKS;
-        if (g_tasks[i].state == HW_TASK_READY && !g_tasks[i].is_idle) {
+        if (g_tasks[i].state == HW_TASK_READY && !g_tasks[i].is_idle &&
+            !g_tasks[i].on_cpu) {
             return i;
         }
     }
@@ -1197,9 +1200,13 @@ static void hw_schedule(vibeos_x86_64_isr_frame_t *frame) {
         if (g_tasks[cur].state == HW_TASK_RUNNING) {
             g_tasks[cur].state = HW_TASK_READY;
         }
+        /* Only now is it safe for another core to take it: its context is
+         * saved and this core is about to stop touching it. */
+        g_tasks[cur].on_cpu = 0;
     }
     cpu->current_task = next;
     g_tasks[next].state = HW_TASK_RUNNING;
+    g_tasks[next].on_cpu = 1;
     *frame = g_tasks[next].ctx;
     hw_spin_unlock(&g_sched_lock);
 
@@ -1229,6 +1236,7 @@ static int hw_task_adopt_kernel(void) {
         return -1;
     }
     g_tasks[i].state = HW_TASK_RUNNING;
+    g_tasks[i].on_cpu = 1;          /* it is this CPU, right now */
     g_tasks[i].is_user = 0;
     g_tasks[i].pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
     g_tasks[i].kstack_top = hw_this_cpu()->syscall_kstack_top;
@@ -1362,8 +1370,12 @@ static void hw_task_exit(uint64_t code) {
             __asm__ __volatile__("hlt");
         }
     }
+    if (dying >= 0) {
+        g_tasks[dying].on_cpu = 0;
+    }
     cpu->current_task = next;
     g_tasks[next].state = HW_TASK_RUNNING;
+    g_tasks[next].on_cpu = 1;
     hw_spin_unlock(&g_sched_lock);
     hw_write_cr3(g_tasks[next].cr3);
     hw_set_kernel_stack(g_tasks[next].kstack_top);
@@ -2688,6 +2700,7 @@ void vibeos_x86_64_ap_main(void) {
     }
     cpu->current_task = idle;
     g_tasks[idle].state = HW_TASK_RUNNING;
+    g_tasks[idle].on_cpu = 1;       /* this core is about to enter it */
     hw_set_kernel_stack(g_tasks[idle].kstack_top);
 
     vibeos_x86_64_serial_lock();

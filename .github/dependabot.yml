@@ -1,0 +1,24 @@
+version: 2
+
+# Kept deliberately small. Dependabot earns its place here for one reason: the
+# Node 20 deprecation on the GitHub Actions runners was warning on every single
+# workflow run for weeks and nobody noticed until a job log was read by hand.
+# That is exactly the kind of latent problem a bot should surface.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "ci"
+
+  # The audited TLS dependency. A CVE in Mbed TLS is something we want a pull
+  # request for, not something we find out about later.
+  - package-ecosystem: gitsubmodule
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "deps"

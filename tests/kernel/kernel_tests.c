@@ -16,6 +16,7 @@
 #include "vibeos/timer.h"
 #include "vibeos/net.h"
 #include "vibeos/inet.h"
+#include "vibeos/elf.h"
 #include "vibeos/tls.h"
 #include "vibeos/trap.h"
 #include "vibeos/user_api.h"
@@ -4513,6 +4514,304 @@ static int test_inet_dns_timeout_and_negative_cache(void) {
     return 0;
 }
 
+
+/* ---- ELF program-image parser --------------------------------------------
+ *
+ * These build ELF headers by hand so the malformed cases can be expressed at
+ * all: a compiler will not emit a segment whose filesz exceeds its memsz, or
+ * a program header that runs off the end of the file, and those are exactly
+ * the inputs the parser has to survive.
+ */
+
+#define ELFT_BASE 0x8000000000ull
+#define ELFT_LIMIT 0x8000400000ull
+
+static void elft_w16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
+static void elft_w32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
+}
+static void elft_w64(uint8_t *p, uint64_t v) {
+    elft_w32(p, (uint32_t)v); elft_w32(p + 4, (uint32_t)(v >> 32));
+}
+
+typedef struct {
+    uint32_t type;
+    uint32_t flags;
+    uint64_t off, vaddr, filesz, memsz;
+} elft_seg_t;
+
+/* Assemble a minimal but structurally valid ELF64 executable. */
+static uint64_t elft_build(uint8_t *buf, uint64_t cap, uint64_t entry,
+                           const elft_seg_t *segs, uint32_t nseg, uint16_t etype) {
+    uint64_t phoff = 64;
+    uint32_t i;
+    uint64_t used = phoff + (uint64_t)nseg * 56u;
+
+    for (i = 0; i < cap; i++) {
+        buf[i] = 0;
+    }
+    buf[0] = 0x7F; buf[1] = 'E'; buf[2] = 'L'; buf[3] = 'F';
+    buf[4] = 2;   /* ELFCLASS64  */
+    buf[5] = 1;   /* little endian */
+    buf[6] = 1;   /* version */
+    elft_w16(buf + 16, etype);
+    elft_w16(buf + 18, 62);          /* EM_X86_64 */
+    elft_w32(buf + 20, 1);
+    elft_w64(buf + 24, entry);
+    elft_w64(buf + 32, phoff);
+    elft_w16(buf + 52, 64);          /* e_ehsize    */
+    elft_w16(buf + 54, 56);          /* e_phentsize */
+    elft_w16(buf + 56, (uint16_t)nseg);
+
+    for (i = 0; i < nseg; i++) {
+        uint8_t *ph = buf + phoff + (uint64_t)i * 56u;
+        elft_w32(ph + 0, segs[i].type);
+        elft_w32(ph + 4, segs[i].flags);
+        elft_w64(ph + 8, segs[i].off);
+        elft_w64(ph + 16, segs[i].vaddr);
+        elft_w64(ph + 24, segs[i].vaddr);
+        elft_w64(ph + 32, segs[i].filesz);
+        elft_w64(ph + 40, segs[i].memsz);
+        elft_w64(ph + 48, 0x1000);
+        if (segs[i].off + segs[i].filesz > used) {
+            used = segs[i].off + segs[i].filesz;
+        }
+    }
+    return used;
+}
+
+static int test_elf_parse_valid(void) {
+    static uint8_t img[8192];
+    vibeos_elf_image_t out;
+    elft_seg_t segs[2] = {
+        {1u, VIBEOS_ELF_R | VIBEOS_ELF_X, 0x400, ELFT_BASE, 0x100, 0x100},
+        {1u, VIBEOS_ELF_R | VIBEOS_ELF_W, 0x600, ELFT_BASE + 0x1000, 0x40, 0x200},
+    };
+    uint64_t len = elft_build(img, sizeof(img), ELFT_BASE + 0x10, segs, 2, 2);
+
+    if (vibeos_elf_parse(img, len, ELFT_BASE, ELFT_LIMIT, &out) != VIBEOS_ELF_OK) {
+        return -1;
+    }
+    if (out.count != 2 || out.entry != ELFT_BASE + 0x10) {
+        return -1;
+    }
+    if (out.min_vaddr != ELFT_BASE || out.end_vaddr != ELFT_BASE + 0x2000) {
+        return -1;
+    }
+    /* The program headers live inside the first segment, so AT_PHDR resolves. */
+    if (out.phdr_vaddr != ELFT_BASE + (64 - 0x400)) {
+        /* phoff 64 is before the segment's file offset, so it is not covered */
+        if (out.phdr_vaddr != 0) {
+            return -1;
+        }
+    }
+    /* Permissions come from the segment covering each page. */
+    if (vibeos_elf_page_flags(&out, ELFT_BASE) != (VIBEOS_ELF_R | VIBEOS_ELF_X)) {
+        return -1;
+    }
+    if (vibeos_elf_page_flags(&out, ELFT_BASE + 0x1000) != (VIBEOS_ELF_R | VIBEOS_ELF_W)) {
+        return -1;
+    }
+    if (vibeos_elf_page_flags(&out, ELFT_BASE + 0x8000) != 0) {
+        return -1;   /* nothing there */
+    }
+    return 0;
+}
+
+/* The case the old loader got wrong: .text ending part way through the page
+ * where .data begins. Mapping segment by segment allocated that page twice and
+ * lost the first one's bytes. */
+static int test_elf_shared_page(void) {
+    static uint8_t img[8192];
+    static uint8_t page[VIBEOS_ELF_PAGE_SIZE];
+    vibeos_elf_image_t out;
+    uint64_t len;
+    uint32_t i;
+    elft_seg_t segs[2] = {
+        /* text: 0x000..0x800 of the page */
+        {1u, VIBEOS_ELF_R | VIBEOS_ELF_X, 0x400, ELFT_BASE, 0x800, 0x800},
+        /* data: 0x800..0xa00 of the SAME page, plus bss to 0xc00 */
+        {1u, VIBEOS_ELF_R | VIBEOS_ELF_W, 0xC00, ELFT_BASE + 0x800, 0x200, 0x400},
+    };
+
+    len = elft_build(img, sizeof(img), ELFT_BASE, segs, 2, 2);
+    for (i = 0; i < 0x800; i++) {
+        img[0x400 + i] = 0xAA;          /* text bytes  */
+    }
+    for (i = 0; i < 0x200; i++) {
+        img[0xC00 + i] = 0xBB;          /* data bytes  */
+    }
+    if (vibeos_elf_parse(img, len, ELFT_BASE, ELFT_LIMIT, &out) != VIBEOS_ELF_OK) {
+        return -1;
+    }
+    /* One page, and it must carry the permissions of both segments. */
+    if (out.min_vaddr != ELFT_BASE || out.end_vaddr != ELFT_BASE + 0x1000) {
+        return -1;
+    }
+    if (vibeos_elf_page_flags(&out, ELFT_BASE) !=
+        (VIBEOS_ELF_R | VIBEOS_ELF_W | VIBEOS_ELF_X)) {
+        return -1;
+    }
+    /* And both segments' bytes have to survive in it. */
+    vibeos_elf_fill_page(&out, img, ELFT_BASE, page);
+    for (i = 0; i < 0x800; i++) {
+        if (page[i] != 0xAA) {
+            return -1;
+        }
+    }
+    for (i = 0x800; i < 0xA00; i++) {
+        if (page[i] != 0xBB) {
+            return -1;
+        }
+    }
+    for (i = 0xA00; i < VIBEOS_ELF_PAGE_SIZE; i++) {
+        if (page[i] != 0x00) {
+            return -1;   /* .bss and padding must be zero */
+        }
+    }
+    return 0;
+}
+
+static int test_elf_rejects_malformed(void) {
+    static uint8_t img[8192];
+    vibeos_elf_image_t out;
+    uint64_t len;
+    elft_seg_t ok = {1u, VIBEOS_ELF_R | VIBEOS_ELF_X, 0x400, ELFT_BASE, 0x100, 0x100};
+
+    /* Not an ELF at all. */
+    len = elft_build(img, sizeof(img), ELFT_BASE, &ok, 1, 2);
+    img[1] = 'X';
+    if (vibeos_elf_parse(img, len, ELFT_BASE, ELFT_LIMIT, &out) != VIBEOS_ELF_ENOTELF) {
+        return -1;
+    }
+
+    /* Wrong machine. */
+    len = elft_build(img, sizeof(img), ELFT_BASE, &ok, 1, 2);
+    elft_w16(img + 18, 40);
+    if (vibeos_elf_parse(img, len, ELFT_BASE, ELFT_LIMIT, &out) != VIBEOS_ELF_EMACHINE) {
+        return -1;
+    }
+
+    /* Dynamic executable: refused explicitly, not loaded half way. */
+    len = elft_build(img, sizeof(img), ELFT_BASE, &ok, 1, 3 /* ET_DYN */);
+    if (vibeos_elf_parse(img, len, ELFT_BASE, ELFT_LIMIT, &out) != VIBEOS_ELF_EDYNAMIC) {
+        return -1;
+    }
+
+    /* Needs an interpreter. */
+    {
+        elft_seg_t segs[2] = {ok, {3u /* PT_INTERP */, 4u, 0x600, 0, 0x10, 0x10}};
+        len = elft_build(img, sizeof(img), ELFT_BASE, segs, 2, 2);
+        if (vibeos_elf_parse(img, len, ELFT_BASE, ELFT_LIMIT, &out) != VIBEOS_ELF_EDYNAMIC) {
+            return -1;
+        }
+    }
+
+    /* filesz beyond memsz. */
+    {
+        elft_seg_t bad = ok;
+        bad.filesz = 0x200;
+        bad.memsz = 0x100;
+        len = elft_build(img, sizeof(img), ELFT_BASE, &bad, 1, 2);
+        if (vibeos_elf_parse(img, len, ELFT_BASE, ELFT_LIMIT, &out) != VIBEOS_ELF_EMALFORMED) {
+            return -1;
+        }
+    }
+
+    /* Segment contents past the end of the file. */
+    {
+        elft_seg_t bad = ok;
+        bad.off = 0x400;
+        bad.filesz = 0x4000;
+        bad.memsz = 0x4000;
+        len = elft_build(img, sizeof(img), ELFT_BASE, &bad, 1, 2);
+        if (vibeos_elf_parse(img, 0x500, ELFT_BASE, ELFT_LIMIT, &out) != VIBEOS_ELF_ETRUNCATED) {
+            return -1;
+        }
+        (void)len;
+    }
+
+    /* Arithmetic that would wrap: vaddr + memsz overflows 64 bits. */
+    {
+        elft_seg_t bad = ok;
+        bad.vaddr = 0xFFFFFFFFFFFFF000ull;
+        bad.memsz = 0x2000;
+        len = elft_build(img, sizeof(img), ELFT_BASE, &bad, 1, 2);
+        if (vibeos_elf_parse(img, len, 0, 0xFFFFFFFFFFFFFFFFull, &out) !=
+            VIBEOS_ELF_EMALFORMED) {
+            return -1;
+        }
+    }
+
+    /* Asking to be placed outside the region the caller permits. */
+    {
+        elft_seg_t bad = ok;
+        bad.vaddr = 0x1000;         /* far below the user base */
+        len = elft_build(img, sizeof(img), 0x1000, &bad, 1, 2);
+        if (vibeos_elf_parse(img, len, ELFT_BASE, ELFT_LIMIT, &out) != VIBEOS_ELF_ERANGE) {
+            return -1;
+        }
+    }
+
+    /* An entry point outside every loaded segment. */
+    {
+        len = elft_build(img, sizeof(img), ELFT_BASE + 0x9000, &ok, 1, 2);
+        if (vibeos_elf_parse(img, len, ELFT_BASE, ELFT_LIMIT, &out) !=
+            VIBEOS_ELF_EMALFORMED) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int test_elf_bss_is_zeroed(void) {
+    static uint8_t img[8192];
+    static uint8_t page[VIBEOS_ELF_PAGE_SIZE];
+    vibeos_elf_image_t out;
+    uint32_t i;
+    /* 0x40 bytes in the file, 0x1000 in memory: the rest is .bss and spills
+     * into a second page that has no file backing at all. */
+    elft_seg_t seg = {1u, VIBEOS_ELF_R | VIBEOS_ELF_W, 0x400, ELFT_BASE, 0x40, 0x1800};
+    uint64_t len = elft_build(img, sizeof(img), ELFT_BASE, &seg, 1, 2);
+
+    for (i = 0; i < 0x40; i++) {
+        img[0x400 + i] = 0xCD;
+    }
+    if (vibeos_elf_parse(img, len, ELFT_BASE, ELFT_LIMIT, &out) != VIBEOS_ELF_OK) {
+        return -1;
+    }
+    if (out.end_vaddr != ELFT_BASE + 0x2000) {
+        return -1;
+    }
+    vibeos_elf_fill_page(&out, img, ELFT_BASE, page);
+    for (i = 0; i < 0x40; i++) {
+        if (page[i] != 0xCD) {
+            return -1;
+        }
+    }
+    for (i = 0x40; i < VIBEOS_ELF_PAGE_SIZE; i++) {
+        if (page[i] != 0) {
+            return -1;
+        }
+    }
+    /* The second page is pure .bss: mapped, writable, and entirely zero. */
+    if (vibeos_elf_page_flags(&out, ELFT_BASE + 0x1000) !=
+        (VIBEOS_ELF_R | VIBEOS_ELF_W)) {
+        return -1;
+    }
+    for (i = 0; i < VIBEOS_ELF_PAGE_SIZE; i++) {
+        page[i] = 0xEE;
+    }
+    vibeos_elf_fill_page(&out, img, ELFT_BASE + 0x1000, page);
+    for (i = 0; i < VIBEOS_ELF_PAGE_SIZE; i++) {
+        if (page[i] != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
 #define RUN_TEST(fn) do { if ((fn)() != 0) { failures++; printf("FAIL:%s\n", #fn); } } while (0)
@@ -4560,6 +4859,10 @@ int main(void) {
     RUN_TEST(test_inet_tcp_close_reclaims_socket);
     RUN_TEST(test_inet_dhcp_lease_lifecycle);
     RUN_TEST(test_inet_dns_timeout_and_negative_cache);
+    RUN_TEST(test_elf_parse_valid);
+    RUN_TEST(test_elf_shared_page);
+    RUN_TEST(test_elf_rejects_malformed);
+    RUN_TEST(test_elf_bss_is_zeroed);
     RUN_TEST(test_security_token);
     RUN_TEST(test_security_audit_log);
     RUN_TEST(test_driver_host);
