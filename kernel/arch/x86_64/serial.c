@@ -86,15 +86,32 @@ void vibeos_x86_64_serial_putc(char c) {
  * working unchanged. */
 __attribute__((weak)) uint32_t vibeos_x86_64_cpu_id(void) { return 0; }
 
+/* Interrupts must stay masked for the whole critical section - see below. The
+ * weak defaults do nothing so host tests, which run in ring 3 where cli would
+ * fault, link and behave unchanged. */
+__attribute__((weak)) uint64_t vibeos_x86_64_irq_save(void) { return 0; }
+__attribute__((weak)) void vibeos_x86_64_irq_restore(uint64_t flags) { (void)flags; }
+
 #define SERIAL_NO_OWNER 0xFFFFFFFFu
 
 static volatile int g_serial_lock;
 static volatile uint32_t g_serial_owner = SERIAL_NO_OWNER;
 static volatile int g_serial_depth;
+static uint64_t g_serial_flags;   /* saved by the outermost acquire */
 
+/* Recursion is keyed to the CPU, so the holder must not move while it holds
+ * the lock - and a task does move. With interrupts left enabled, the timer
+ * could preempt a task inside the critical section and resume it on another
+ * core; its next nested acquire then saw a different owner and spun forever on
+ * a lock it already held. Three cores deadlocked exactly that way, with
+ * interleaved bytes in the output as the first symptom. Masking interrupts
+ * removes both the interleaving and the migration. */
 void vibeos_x86_64_serial_lock(void) {
+    uint64_t flags = vibeos_x86_64_irq_save();
     uint32_t me = vibeos_x86_64_cpu_id();
+
     if (g_serial_depth > 0 && g_serial_owner == me) {
+        /* Already ours: keep interrupts masked, the outer release restores. */
         g_serial_depth++;
         return;
     }
@@ -105,16 +122,21 @@ void vibeos_x86_64_serial_lock(void) {
     }
     g_serial_owner = me;
     g_serial_depth = 1;
+    g_serial_flags = flags;
 }
 
 void vibeos_x86_64_serial_unlock(void) {
+    uint64_t flags;
+
     if (g_serial_depth > 1) {
         g_serial_depth--;
         return;
     }
+    flags = g_serial_flags;
     g_serial_depth = 0;
     g_serial_owner = SERIAL_NO_OWNER;
     __sync_lock_release(&g_serial_lock);
+    vibeos_x86_64_irq_restore(flags);
 }
 
 #define serial_lock() vibeos_x86_64_serial_lock()

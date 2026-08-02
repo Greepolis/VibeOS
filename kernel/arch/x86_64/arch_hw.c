@@ -128,6 +128,20 @@ uint32_t vibeos_x86_64_cpu_id(void) {
     return (base == 0u) ? 0u : ((const hw_cpu_t *)(uintptr_t)base)->index;
 }
 
+/* Strong versions of the console lock's interrupt hooks (weak no-ops in
+ * serial.c so host tests still link). */
+uint64_t vibeos_x86_64_irq_save(void) {
+    uint64_t flags;
+    __asm__ __volatile__("pushfq\n\tpopq %0\n\tcli" : "=r"(flags) : : "memory");
+    return flags;
+}
+
+void vibeos_x86_64_irq_restore(uint64_t flags) {
+    if (flags & 0x200ull) {
+        __asm__ __volatile__("sti" ::: "memory");
+    }
+}
+
 /* ---- SMP locking ---------------------------------------------------------
  *
  * Interrupts are masked for the whole critical section. Most takers already run

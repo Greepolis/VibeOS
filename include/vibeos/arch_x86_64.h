@@ -28,6 +28,10 @@ void vibeos_x86_64_serial_unlock(void);
 /* Identity of the calling CPU, used to make the console lock recursive.
  * Weakly defined as 0; the on-metal arch layer overrides it. */
 uint32_t vibeos_x86_64_cpu_id(void);
+/* Mask and restore interrupts around a console critical section. Weakly
+ * defined as no-ops for host builds, which cannot execute cli. */
+uint64_t vibeos_x86_64_irq_save(void);
+void vibeos_x86_64_irq_restore(uint64_t flags);
 int vibeos_x86_64_serial_available(void);
 int vibeos_x86_64_serial_can_read(void);
 int vibeos_x86_64_serial_readc(void);
