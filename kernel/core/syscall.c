@@ -105,15 +105,36 @@ static void syscall_sec_audit_record(vibeos_kernel_t *kernel, vibeos_sec_audit_a
     (void)vibeos_sec_audit_record(&kernel->sec_audit, action, caller_pid, target_pid, aux, success);
 }
 
+/*
+ * Central syscall dispatcher.
+ *
+ * Responsibilities:
+ *  - Validate syscall entry arguments and return a consistent failure code.
+ *  - Lazily initialize dispatcher-owned shared state (kernel waitset, security audit).
+ *  - Route the incoming syscall selector in `frame` to the corresponding kernel handler.
+ *  - Enforce access-control checks (caller identity/capabilities/ownership) before actions.
+ *  - Record security-audit events for sensitive operations.
+ *
+ * Conventions:
+ *  - PID 0 is treated as kernel/supervisor context in ownership checks.
+ *  - On unrecoverable dispatch/setup failure, `frame->result` is set to -1 and -1 is returned.
+ *  - On normal handling paths, per-syscall branches update `frame->result` and return status.
+ *
+ * Notes:
+ *  - `kernel_waitset` and `waitset_initialized` are static process-local dispatcher state.
+ *  - This function is intentionally broad because it is the ABI boundary for all syscalls.
+ */
 int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_frame_t *frame) {
     static vibeos_waitset_t kernel_waitset;
     static uint32_t kernel_waitset_owner_pid = 0;
     static int waitset_initialized = 0;
 
+    /* Validate syscall entry state before any frame dereference or dispatch work. */
     if (!kernel || !frame) {
         return -1;
     }
 
+    /* One-time initialization for dispatcher-global waitset used by wait-related syscalls. */
     if (!waitset_initialized) {
         if (vibeos_waitset_init(&kernel_waitset) != 0) {
             frame->result = -1;
@@ -121,6 +142,8 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
         }
         waitset_initialized = 1;
     }
+
+    /* Ensure security audit subsystem is available before processing sensitive operations. */
     if (!kernel->sec_audit.initialized) {
         if (vibeos_sec_audit_init(&kernel->sec_audit) != 0) {
             frame->result = -1;
