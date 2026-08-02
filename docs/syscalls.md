@@ -251,6 +251,47 @@ Implementation helpers for ABI v0 are centralized in `include/vibeos/syscall_abi
 - device
 - debug and trace
 
+## The Linux ABI as implemented on metal
+
+The native ABI above is the design. Separately, and in parallel, the x86-64 port
+serves the Linux system-call ABI directly to ring 3, because that is what lets
+real programs run before a native userland exists. Entry is the `syscall`
+instruction (with `int 0x80` kept as a bring-up path); both reach one dispatcher
+in `kernel/arch/x86_64/arch_hw.c`.
+
+Two rules govern what goes in it:
+
+- **A syscall either does the thing or returns the error Linux returns.**
+  Reporting a success that did not happen makes the program fail later,
+  somewhere unrelated, with nothing pointing back to the kernel. `rseq` and
+  `getrandom` return `-ENOSYS` for exactly this reason: both have mandatory
+  fallbacks, and a fabricated answer is worse than a refusal - particularly for
+  the syscall a program uses to get key material.
+- **Unimplemented numbers are named in the serial log**, so a missing one is
+  visible the first time it is reached rather than inferred from a crash.
+
+| Group | Calls |
+| --- | --- |
+| Process | `fork`, `execve`, `wait4`, `exit`, `exit_group`, `getpid`, `gettid`, `set_tid_address`, `set_robust_list` |
+| Memory | `brk`, `mmap`, `mprotect`, `munmap` |
+| Files | `open`, `close`, `read`, `write`, `readv`, `writev`, `lseek`, `getdents64`, `unlink`, `mkdir`, `ioctl` |
+| Sockets | `socket`, `bind`, `listen`, `connect`, `accept`, `sendto`, `recvfrom` |
+| Runtime startup | `arch_prctl`, `uname`, `clock_gettime`, `prlimit64`, `futex`, `sched_yield`, `rt_sigprocmask`, `rt_sigaction`, `getuid`/`geteuid`/`getgid`/`getegid` |
+
+Notable semantics:
+
+- `arch_prctl(ARCH_SET_FS)` writes `MSR_FS_BASE` and the value is per task,
+  reloaded on every context switch - thread-local storage is the first thing a
+  C runtime touches, and leaving one task's base loaded for another would let a
+  program read someone else's thread state. A base outside user memory is
+  refused before the write, since a non-canonical value faults in ring 0.
+- `mprotect` and `munmap` change the real page-table entries and flush the TLB.
+  `MAP_FIXED` and file-backed `mmap` are refused rather than ignored.
+- `ioctl` returns `-ENOTTY`. There is no terminal device here, and that is the
+  answer a libc uses to decide stdout should be block buffered.
+- `rt_sigaction` and `rt_sigprocmask` return success only because no signal is
+  ever delivered. They stop being accurate the moment delivery exists.
+
 ## Compatibility note
 
 Linux compatibility may expose a Linux-like user ABI inside its subsystem, but translation happens above the native kernel API unless a measured exception is justified.

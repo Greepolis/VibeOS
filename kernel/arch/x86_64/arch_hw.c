@@ -878,6 +878,10 @@ static void hw_enable_timer_irq(void) {
 #define MSR_STAR   0xC0000081u
 #define MSR_LSTAR  0xC0000082u
 #define MSR_SFMASK 0xC0000084u
+/* Thread-local storage base. A C runtime reaches its own thread state through
+ * %fs on x86-64 - errno, the stack guard, locale - so this MSR is per task,
+ * not per CPU, and has to be reloaded on every context switch. */
+#define MSR_FS_BASE 0xC0000100u
 
 extern void vibeos_x86_64_syscall_entry(void); /* trampoline in isr.S */
 
@@ -1081,6 +1085,10 @@ typedef struct {
     int is_user;
     int is_idle;      /* per-CPU idle task: only run when nothing else is ready */
     int wait_input;   /* blocked in read() on stdin */
+    /* %fs base for this task, set by arch_prctl(ARCH_SET_FS). Restored on
+     * every switch: leaving the previous task's value loaded would let one
+     * program read and write another's thread-local state. */
+    uint64_t fs_base;
     uint64_t kstack_base;  /* for reclamation on exit */
     uint32_t kstack_pages;
     hw_fd_t fds[VIBEOS_HW_MAX_FDS];
@@ -1199,6 +1207,23 @@ static void hw_keyboard_wake(void) {
     hw_spin_unlock(&g_sched_lock);
 }
 
+/* Load the CPU state that belongs to a task rather than to the CPU: its page
+ * tables, its kernel stack, and its thread-local storage base.
+ *
+ * This exists as one function because there is more than one way to resume a
+ * task - the timer switch, the exit path, and the idle entry - and each of
+ * them has to reload all of it. Missing the TLS base in one of them is not
+ * visible at the point of the mistake: the task simply reads through whatever
+ * base the previous occupant of the CPU left behind, which is a fault if that
+ * was zero and someone else's thread state if it was not. */
+static void hw_task_load_cpu_state(int idx) {
+    hw_write_cr3(g_tasks[idx].cr3);
+    hw_set_kernel_stack(g_tasks[idx].kstack_top);
+    if (g_tasks[idx].is_user) {
+        hw_wrmsr(MSR_FS_BASE, g_tasks[idx].fs_base);
+    }
+}
+
 /* Timer-driven preemption: save the interrupted task, pick the next runnable
  * one, and resume it by rewriting the live IRQ frame and switching CR3. Runs
  * for the life of the system - there is no "demo over" exit.
@@ -1235,8 +1260,7 @@ static void hw_schedule(vibeos_x86_64_isr_frame_t *frame) {
     *frame = g_tasks[next].ctx;
     hw_spin_unlock(&g_sched_lock);
 
-    hw_write_cr3(g_tasks[next].cr3);
-    hw_set_kernel_stack(g_tasks[next].kstack_top);
+    hw_task_load_cpu_state(next);
 }
 
 static void hw_task_init_user_ctx(vibeos_x86_64_isr_frame_t *c, uint64_t entry, uint64_t sp) {
@@ -1333,6 +1357,10 @@ static int hw_task_spawn_user(const unsigned char *elf, uint64_t len,
     g_tasks[i].cr3 = hw_proc_cr3(&g_tasks[i].proc);
     hw_task_init_user_ctx(&g_tasks[i].ctx, g_tasks[i].proc.entry,
                           g_tasks[i].proc.user_sp);
+    /* Task slots are recycled, so anything the previous occupant left has to
+     * be cleared explicitly. A stale TLS base would point the new program at
+     * a dead process's thread state. */
+    g_tasks[i].fs_base = 0;
     g_tasks[i].state = HW_TASK_READY;
     g_tasks[i].is_user = 1;
     g_tasks[i].pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
@@ -1403,8 +1431,7 @@ static void hw_task_exit(uint64_t code) {
     g_tasks[next].state = HW_TASK_RUNNING;
     g_tasks[next].on_cpu = 1;
     hw_spin_unlock(&g_sched_lock);
-    hw_write_cr3(g_tasks[next].cr3);
-    hw_set_kernel_stack(g_tasks[next].kstack_top);
+    hw_task_load_cpu_state(next);
     /* Now on the next task's CR3; the dying user address space is still
      * reachable through the shared kernel identity map, so free it. */
     if (dying >= 0 && g_tasks[dying].is_user) {
@@ -1427,6 +1454,9 @@ static void hw_task_exit(uint64_t code) {
 #define VIBEOS_EBADF  9
 #define VIBEOS_ENOENT 2
 #define VIBEOS_ECHILD 10
+#define VIBEOS_EAGAIN 11
+#define VIBEOS_ENOTTY 25
+#define VIBEOS_EPERM  1
 #define VIBEOS_EMFILE 24
 #define VIBEOS_EIO    5
 
@@ -1457,6 +1487,51 @@ static void hw_task_exit(uint64_t code) {
 /* VibeOS-specific: network control. Deliberately outside the Linux number
  * space, so it can never collide with a real syscall we implement later. */
 #define LSYS_netctl   1000
+
+/* Numbers a real C runtime reaches for before it runs any of the program.
+ * Taken from arch/x86/entry/syscalls/syscall_64.tbl, not from memory. */
+#define LSYS_mprotect       10
+#define LSYS_munmap         11
+#define LSYS_rt_sigaction   13
+#define LSYS_rt_sigprocmask 14
+#define LSYS_ioctl          16
+#define LSYS_readv          19
+#define LSYS_writev         20
+#define LSYS_sched_yield    24
+#define LSYS_uname          63
+#define LSYS_getuid        102
+#define LSYS_getgid        104
+#define LSYS_geteuid       107
+#define LSYS_getegid       108
+#define LSYS_arch_prctl    158
+#define LSYS_gettid        186
+#define LSYS_futex         202
+#define LSYS_set_tid_address 218
+#define LSYS_clock_gettime 228
+#define LSYS_set_robust_list 273
+#define LSYS_prlimit64     302
+#define LSYS_getrandom     318
+#define LSYS_rseq          334
+
+/* arch_prctl subfunctions. */
+#define ARCH_SET_GS 0x1001
+#define ARCH_SET_FS 0x1002
+#define ARCH_GET_FS 0x1003
+#define ARCH_GET_GS 0x1004
+
+/* mmap flags and protection bits (asm-generic/mman-common.h). */
+#define PROT_NONE  0x0
+#define PROT_READ  0x1
+#define PROT_WRITE 0x2
+#define PROT_EXEC  0x4
+#define MAP_PRIVATE   0x02
+#define MAP_FIXED     0x10
+#define MAP_ANONYMOUS 0x20
+
+/* futex operations we can answer honestly. */
+#define FUTEX_WAIT 0
+#define FUTEX_WAKE 1
+#define FUTEX_CMD_MASK 0x7F
 
 static vibeos_compat_runtime_t g_compat_rt;
 
@@ -2237,22 +2312,154 @@ static long hw_sys_brk(uint64_t addr) {
     return (long)proc->brk_cur;
 }
 
-/* Anonymous mmap only: bump the per-process arena and map zeroed pages. */
-static long hw_sys_mmap(uint64_t len) {
+/* Find the leaf page-table entry for `va`, or NULL if nothing maps it.
+ * Deliberately does not create tables: callers are changing or removing an
+ * existing mapping, and silently materialising one would hide a bad address. */
+static uint64_t *hw_pte_lookup(vibeos_hw_aspace_t *as, uint64_t va) {
+    static const uint32_t shifts[3] = {39u, 30u, 21u};
+    uint64_t *tbl = as->pml4;
+    uint32_t level;
+
+    for (level = 0; level < 3u; level++) {
+        uint64_t e = tbl[(va >> shifts[level]) & 0x1FFu];
+        if ((e & PTE_PRESENT) == 0) {
+            return 0;
+        }
+        if (level == 2u && (e & PTE_PS) != 0) {
+            return 0;   /* a 2 MiB leaf; user mappings are 4 KiB */
+        }
+        tbl = (uint64_t *)(uintptr_t)(e & 0x000FFFFFFFFFF000ull);
+    }
+    {
+        uint64_t *pte = &tbl[(va >> 12) & 0x1FFu];
+        return (*pte & PTE_PRESENT) ? pte : 0;
+    }
+}
+
+/* Drop one page from the TLB. Changing a PTE without this leaves the old
+ * translation cached, so a revoked write permission is not actually revoked
+ * until something else happens to flush it. */
+static void hw_invlpg(uint64_t va) {
+    __asm__ __volatile__("invlpg (%0)" : : "r"((void *)(uintptr_t)va) : "memory");
+}
+
+/* Anonymous mmap: bump the per-process arena and map zeroed pages.
+ *
+ * The address hint is ignored - the arena is bump-allocated, so honouring a
+ * fixed address would require a real VMA tree. MAP_FIXED is therefore refused
+ * rather than quietly ignored: a program that asks for a specific address and
+ * silently gets another one corrupts itself later, far from here. */
+static long hw_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot,
+                        uint64_t flags, uint64_t fd) {
     hw_proc_t *proc;
-    uint64_t pages, base;
+    uint64_t pages, base, leaf;
 
     if (g_current_task < 0 || !g_tasks[g_current_task].is_user || len == 0u) {
         return -VIBEOS_EINVAL;
     }
+    if (flags & MAP_FIXED) {
+        return -VIBEOS_EINVAL;
+    }
+    /* File-backed mappings need a page cache this kernel does not have. Say so
+     * instead of returning anonymous zeroes, which would look like a file full
+     * of NULs. */
+    if ((flags & MAP_ANONYMOUS) == 0 || (long)fd >= 0) {
+        return -VIBEOS_ENOSYS;
+    }
+    if (prot == PROT_NONE) {
+        return -VIBEOS_EINVAL;   /* nothing sensible to map */
+    }
+    (void)addr;
+
     proc = &g_tasks[g_current_task].proc;
     pages = (len + 0xFFFull) / 4096ull;
     base = proc->mmap_cur;
-    if (hw_map_user_pages(&proc->as, base, pages) != 0) {
+    if (base + pages * 4096ull < base) {
         return -VIBEOS_ENOMEM;
+    }
+    leaf = PTE_PRESENT | PTE_USER;
+    if (prot & PROT_WRITE) {
+        leaf |= PTE_WRITE;
+    }
+    {
+        uint64_t i;
+        for (i = 0; i < pages; i++) {
+            void *page = hw_alloc_page();
+            if (!page || hw_map_page(&proc->as, base + i * 4096ull,
+                                     (uint64_t)(uintptr_t)page, leaf) != 0) {
+                return -VIBEOS_ENOMEM;
+            }
+        }
     }
     proc->mmap_cur = base + pages * 4096ull;
     return (long)base;
+}
+
+/* mprotect(): change permissions on pages that are already mapped.
+ *
+ * Applied to the real page-table entries rather than recorded and ignored. A
+ * libc uses this for RELRO - it maps its relocated data writable, then takes
+ * write away - and a kernel that returns success without revoking anything
+ * leaves the program less protected than it believes itself to be. */
+static long hw_sys_mprotect(uint64_t addr, uint64_t len, uint64_t prot) {
+    hw_proc_t *proc;
+    uint64_t va, end;
+
+    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+        return -VIBEOS_EINVAL;
+    }
+    if ((addr & 0xFFFull) != 0u || len == 0u || addr + len < addr) {
+        return -VIBEOS_EINVAL;
+    }
+    proc = &g_tasks[g_current_task].proc;
+    end = (addr + len + 0xFFFull) & ~0xFFFull;
+
+    /* Check the whole range first: a partial application would leave the
+     * address space in a state the caller never asked for. */
+    for (va = addr; va < end; va += 4096ull) {
+        uint64_t *pte = hw_pte_lookup(&proc->as, va);
+        if (!pte || (*pte & PTE_USER) == 0) {
+            return -VIBEOS_EFAULT;
+        }
+    }
+    for (va = addr; va < end; va += 4096ull) {
+        uint64_t *pte = hw_pte_lookup(&proc->as, va);
+        if (prot & PROT_WRITE) {
+            *pte |= PTE_WRITE;
+        } else {
+            *pte &= ~PTE_WRITE;
+        }
+        hw_invlpg(va);
+    }
+    return 0;
+}
+
+/* munmap(): remove mappings and give the frames back.
+ *
+ * The arena is a bump allocator, so the address space is not reclaimed for
+ * reuse - but the pages are unmapped for real, so a use-after-unmap faults
+ * here exactly as it would on Linux instead of quietly still working. */
+static long hw_sys_munmap(uint64_t addr, uint64_t len) {
+    hw_proc_t *proc;
+    uint64_t va, end;
+
+    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+        return -VIBEOS_EINVAL;
+    }
+    if ((addr & 0xFFFull) != 0u || len == 0u || addr + len < addr) {
+        return -VIBEOS_EINVAL;
+    }
+    proc = &g_tasks[g_current_task].proc;
+    end = (addr + len + 0xFFFull) & ~0xFFFull;
+    for (va = addr; va < end; va += 4096ull) {
+        uint64_t *pte = hw_pte_lookup(&proc->as, va);
+        if (pte && (*pte & PTE_USER) != 0) {
+            hw_free_page((void *)(uintptr_t)(*pte & 0x000FFFFFFFFFF000ull));
+            *pte = 0;
+            hw_invlpg(va);
+        }
+    }
+    return 0;
 }
 
 /* Duplicate every user mapping of `src` into `dst`, copying the backing pages.
@@ -2340,6 +2547,7 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
     child->ctx.rax = 0;    /* ... but fork() returns 0 in the child */
     child->pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
     child->ppid = parent->pid;
+    child->fs_base = parent->fs_base;   /* the copied image expects its TLS */
     child->is_user = 1;
     child->exit_code = 0;
     child->state = HW_TASK_READY;
@@ -2468,12 +2676,247 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr) 
     for (k = 0; k < (uint32_t)sizeof(*frame); k++) {
         ((uint8_t *)(void *)frame)[k] = 0;
     }
+    /* The old image is gone and its thread-local storage with it. Clear the
+     * base here and in the register, because exec returns straight to user
+     * space without passing through the scheduler's restore. */
+    t->fs_base = 0;
+    hw_wrmsr(MSR_FS_BASE, 0);
+
     frame->rip = np.entry;
     frame->cs = VIBEOS_HW_USER_CODE_SEL;
     frame->rflags = 0x202;
     frame->rsp = np.user_sp;
     frame->ss = VIBEOS_HW_USER_DATA_SEL;
     return 0; /* frame replaced; syscall return enters the new image */
+}
+
+/* ---- what a C runtime asks for before it runs the program ----------------
+ *
+ * These are not conveniences. A static libc executes a fixed opening sequence
+ * and dies if any of it fails: it installs thread-local storage, registers a
+ * thread id, asks whether its output is a terminal, and only then reaches
+ * main. Each one below either does the real thing or returns the error Linux
+ * returns, because a syscall that reports a success it did not perform makes
+ * the program fail later, somewhere unrelated, with nothing pointing back
+ * here.
+ */
+
+/* arch_prctl(): the one everything else depends on.
+ *
+ * On x86-64 a C runtime addresses its thread state through %fs - errno, the
+ * stack-protector cookie, the locale pointer. The base of that segment lives
+ * in a model-specific register, so setting it is privileged and a program
+ * cannot do it itself. Until this works, a libc faults on its first line. */
+static long hw_sys_arch_prctl(uint64_t code, uint64_t addr) {
+    hw_task_t *t;
+
+    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+        return -VIBEOS_EINVAL;
+    }
+    t = &g_tasks[g_current_task];
+
+    switch (code) {
+        case ARCH_SET_FS:
+            /* A non-canonical address in this MSR faults on the wrmsr itself,
+             * in ring 0 - user space must not be able to reach that. User
+             * memory is one PML4 slot, so anything outside it is refused
+             * before the write rather than after. */
+            if (addr < VIBEOS_HW_USER_BASE ||
+                addr >= VIBEOS_HW_USER_BASE + 0x8000000000ull) {
+                return -VIBEOS_EPERM;
+            }
+            t->fs_base = addr;
+            hw_wrmsr(MSR_FS_BASE, addr);
+            return 0;
+        case ARCH_GET_FS:
+            if (!hw_user_range_ok(addr, 8, 1)) {
+                return -VIBEOS_EFAULT;
+            }
+            *(uint64_t *)(uintptr_t)addr = t->fs_base;
+            return 0;
+        case ARCH_SET_GS:
+        case ARCH_GET_GS:
+            /* %gs holds this CPU's per-CPU block. Handing it to a program
+             * would let ring 3 relocate the kernel's own state. */
+            return -VIBEOS_EPERM;
+        default:
+            return -VIBEOS_EINVAL;
+    }
+}
+
+/* ioctl(): there is no terminal device here. ENOTTY is not a shortcut, it is
+ * the truthful answer - and it is the answer a libc uses to decide that
+ * stdout is a file or a pipe and should be block buffered. */
+static long hw_sys_ioctl(uint64_t fd, uint64_t req) {
+    (void)req;
+    if (fd >= 3u && !hw_fd_get(fd)) {
+        return -VIBEOS_EBADF;
+    }
+    return -VIBEOS_ENOTTY;
+}
+
+/* writev()/readv(): scatter-gather over the existing single-buffer paths. The
+ * iovec array is itself user memory, so it is validated like any other user
+ * pointer before being walked. */
+typedef struct {
+    uint64_t base;
+    uint64_t len;
+} hw_iovec_t;
+
+static long hw_sys_writev(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt) {
+    long total = 0;
+    uint64_t i;
+
+    if (iovcnt > 1024u) {
+        return -VIBEOS_EINVAL;   /* Linux caps this at UIO_MAXIOV */
+    }
+    if (!hw_user_range_ok(iov_uptr, iovcnt * sizeof(hw_iovec_t), 0)) {
+        return -VIBEOS_EFAULT;
+    }
+    for (i = 0; i < iovcnt; i++) {
+        const hw_iovec_t *v = (const hw_iovec_t *)(uintptr_t)
+                              (iov_uptr + i * sizeof(hw_iovec_t));
+        long n;
+        if (v->len == 0u) {
+            continue;
+        }
+        n = hw_sys_write(fd, v->base, v->len);
+        if (n < 0) {
+            return total > 0 ? total : n;
+        }
+        total += n;
+        if ((uint64_t)n < v->len) {
+            break;   /* a short write ends the call, as it does on Linux */
+        }
+    }
+    return total;
+}
+
+static long hw_sys_readv(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt) {
+    long total = 0;
+    uint64_t i;
+
+    if (iovcnt > 1024u) {
+        return -VIBEOS_EINVAL;
+    }
+    if (!hw_user_range_ok(iov_uptr, iovcnt * sizeof(hw_iovec_t), 0)) {
+        return -VIBEOS_EFAULT;
+    }
+    for (i = 0; i < iovcnt; i++) {
+        const hw_iovec_t *v = (const hw_iovec_t *)(uintptr_t)
+                              (iov_uptr + i * sizeof(hw_iovec_t));
+        long n;
+        if (v->len == 0u) {
+            continue;
+        }
+        n = hw_sys_read(fd, v->base, v->len);
+        if (n < 0) {
+            return total > 0 ? total : n;
+        }
+        total += n;
+        if ((uint64_t)n < v->len) {
+            break;
+        }
+    }
+    return total;
+}
+
+/* uname(): six fixed 65-byte fields, in order. Programs branch on the release
+ * string, so it carries a real version number rather than a placeholder. */
+static long hw_sys_uname(uint64_t buf) {
+    static const char *const fields[6] = {
+        "Linux",            /* sysname: the ABI implemented here, which is    */
+                            /* what the question is actually about            */
+        "vibeos",           /* nodename   */
+        "6.1.0-vibeos",     /* release    */
+        "VibeOS",           /* version    */
+        "x86_64",           /* machine    */
+        "(none)"            /* domainname */
+    };
+    uint32_t f, i;
+
+    if (!hw_user_range_ok(buf, 6u * 65u, 1)) {
+        return -VIBEOS_EFAULT;
+    }
+    for (f = 0; f < 6u; f++) {
+        char *dst = (char *)(uintptr_t)(buf + (uint64_t)f * 65u);
+        const char *src = fields[f];
+        for (i = 0; i < 65u; i++) {
+            dst[i] = (i < 64u) ? src[i] : 0;
+            if (!dst[i]) {
+                break;
+            }
+        }
+        for (; i < 65u; i++) {
+            dst[i] = 0;
+        }
+    }
+    return 0;
+}
+
+/* clock_gettime(): derived from the timer tick, so it advances at the
+ * resolution the timer really has rather than pretending to a nanosecond
+ * accuracy it does not possess. */
+static long hw_sys_clock_gettime(uint64_t clk, uint64_t ts_uptr) {
+    uint64_t ticks = g_timer_ticks;
+    uint64_t *ts;
+
+    (void)clk;   /* monotonic and realtime are one clock here: uptime */
+    if (!hw_user_range_ok(ts_uptr, 16, 1)) {
+        return -VIBEOS_EFAULT;
+    }
+    ts = (uint64_t *)(uintptr_t)ts_uptr;
+    ts[0] = ticks / VIBEOS_HW_TIMER_HZ;
+    ts[1] = (ticks % VIBEOS_HW_TIMER_HZ) * (1000000000ull / VIBEOS_HW_TIMER_HZ);
+    return 0;
+}
+
+/* prlimit64(): report the limits that are real here. The stack is the one a
+ * runtime acts on - some size a guard region from it. */
+static long hw_sys_prlimit64(uint64_t resource, uint64_t new_uptr, uint64_t old_uptr) {
+    if (new_uptr != 0u) {
+        return -VIBEOS_EPERM;   /* the limits here are fixed by the layout */
+    }
+    if (old_uptr == 0u) {
+        return 0;
+    }
+    if (!hw_user_range_ok(old_uptr, 16, 1)) {
+        return -VIBEOS_EFAULT;
+    }
+    {
+        uint64_t *rl = (uint64_t *)(uintptr_t)old_uptr;
+        switch (resource) {
+            case 3: /* RLIMIT_STACK */
+                rl[0] = (uint64_t)VIBEOS_HW_USER_STACK_PAGES * 4096ull;
+                rl[1] = rl[0];
+                break;
+            case 7: /* RLIMIT_NOFILE */
+                rl[0] = 3u + VIBEOS_HW_MAX_FDS;
+                rl[1] = rl[0];
+                break;
+            default:
+                rl[0] = 0xFFFFFFFFFFFFFFFFull;   /* RLIM64_INFINITY */
+                rl[1] = rl[0];
+                break;
+        }
+    }
+    return 0;
+}
+
+/* futex(): one thread per process here, so there is never another thread to
+ * wake or to wait for. WAKE woke nobody, which is 0. WAIT would deadlock, and
+ * EAGAIN is what Linux returns when the value already moved - an outcome every
+ * caller is written to handle. Real futexes belong with real threads, not
+ * before them. */
+static long hw_sys_futex(uint64_t op) {
+    switch (op & FUTEX_CMD_MASK) {
+        case FUTEX_WAKE:
+            return 0;
+        case FUTEX_WAIT:
+            return -VIBEOS_EAGAIN;
+        default:
+            return -VIBEOS_ENOSYS;
+    }
 }
 
 /* Linux ABI entry: nr in rax, args in rdi/rsi/rdx, with the full trapframe
@@ -2512,9 +2955,77 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
         case LSYS_brk:
             return hw_sys_brk(a1);
         case LSYS_mmap:
-            return hw_sys_mmap(a2); /* addr hint ignored; a2 = length */
+            /* addr, len, prot in the first three; flags and fd are in r10 and
+             * r8, which the trapframe carries. */
+            return hw_sys_mmap(a1, a2, a3, frame->r10, frame->r8);
+        case LSYS_mprotect:
+            return hw_sys_mprotect(a1, a2, a3);
+        case LSYS_munmap:
+            return hw_sys_munmap(a1, a2);
         case LSYS_getpid:
             return (g_current_task >= 0) ? (long)g_tasks[g_current_task].pid : 1;
+
+        /* The opening sequence of a real C runtime. */
+        case LSYS_arch_prctl:
+            return hw_sys_arch_prctl(a1, a2);
+        case LSYS_ioctl:
+            return hw_sys_ioctl(a1, a2);
+        case LSYS_writev:
+            return hw_sys_writev(a1, a2, a3);
+        case LSYS_readv:
+            return hw_sys_readv(a1, a2, a3);
+        case LSYS_uname:
+            return hw_sys_uname(a1);
+        case LSYS_clock_gettime:
+            return hw_sys_clock_gettime(a1, a2);
+        case LSYS_prlimit64:
+            return hw_sys_prlimit64(a2, a3, frame->r10);
+        case LSYS_futex:
+            return hw_sys_futex(a2);
+        case LSYS_gettid:
+            /* One thread per process here, so the thread id is the process
+             * id - which is exactly what Linux reports for a single-threaded
+             * program too. */
+            return (g_current_task >= 0) ? (long)g_tasks[g_current_task].pid : 1;
+        case LSYS_set_tid_address:
+            /* The clear-on-exit address is only read when a thread exits and
+             * something waits on it; with no threads there is nothing to
+             * notify. The return value - the caller's tid - is what a libc
+             * actually stores. */
+            return (g_current_task >= 0) ? (long)g_tasks[g_current_task].pid : 1;
+        case LSYS_set_robust_list:
+            /* The list is walked by the kernel when a thread dies holding a
+             * robust mutex. No threads, no robust mutexes, nothing to walk. */
+            return 0;
+        case LSYS_rseq:
+            /* Restartable sequences are an optimisation with a mandatory
+             * fallback. Reporting ENOSYS makes the libc take that fallback;
+             * claiming success would make it run a fast path this kernel does
+             * not implement. */
+            return -VIBEOS_ENOSYS;
+        case LSYS_getrandom:
+            /* There is no entropy source here yet. Returning predictable bytes
+             * from the syscall a program uses for keys is worse than refusing:
+             * ENOSYS is visible, weak randomness is not. */
+            return -VIBEOS_ENOSYS;
+        case LSYS_rt_sigprocmask:
+        case LSYS_rt_sigaction:
+            /* No signal is ever delivered, so blocking one or installing a
+             * handler for it changes nothing - and reporting success is
+             * accurate rather than convenient. Delivery is what has to exist
+             * before these can mean anything. */
+            return 0;
+        case LSYS_sched_yield:
+            /* Give up the rest of this slice honestly: hlt parks the CPU until
+             * the next timer interrupt, which is where the switch happens. */
+            __asm__ __volatile__("sti; hlt");
+            return 0;
+        case LSYS_getuid:
+        case LSYS_geteuid:
+        case LSYS_getgid:
+        case LSYS_getegid:
+            /* Everything runs as the one identity this system has. */
+            return 0;
         /* Sockets. The Linux ABI passes the 4th, 5th and 6th arguments in r10,
          * r8 and r9; the trapframe has them, so read them straight from it. */
         case LSYS_socket:

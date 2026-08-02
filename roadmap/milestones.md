@@ -1,22 +1,25 @@
 # Milestones
 
-## Current Snapshot (2026-04-03)
+## Current Snapshot (2026-08-02)
 
-| Milestone | Status | Delivery confidence |
+| Milestone | Status | Evidence |
 | --- | --- | --- |
-| M0 | Completed | High |
-| M1 | Partial | Medium |
-| M2 | Partial | Medium-Low |
-| M3 | Partial | Medium |
-| M4 | Partial | Medium-Low |
-| M5 | Partial | Medium |
-| M6 | Not started | Low |
-| M7 | Partial | Medium-Low |
-| M8 | Not started | Low |
-| M9 | Not started | Low |
-| M10 | Partial | Medium |
+| M0 project charter | Completed | Phase 1 documents |
+| M1 toolchain and build | Completed | gcc/clang x Debug/Release matrix, green on every push |
+| M2 boot to kernel banner | Completed | UEFI boot gate under OVMF, required in CI |
+| M3 memory and interrupts | Completed | paging, traps, PIT and APIC timer, all boot-verified |
+| M4 scheduler and multitasking | Completed | preemptive SMP across all cores, per-process address spaces |
+| M5 first user-space service | Completed | ring-3 programs with fork/exec/wait |
+| M6 storage and shell | Completed | virtio-blk, FAT read and write, serial shell |
+| M7 networked native system | Completed | TCP/IP over virtio-net, TCP round trip to a host server in CI |
+| M8 Linux CLI compatibility | In progress | Linux ABI served in ring 3; startup ABI (stack, auxv, TLS) verified. Remaining: the syscalls a real static binary needs after startup |
+| M9 Windows console compatibility | Not started | - |
+| M10 architecture review | Ongoing | design documents updated alongside the code |
 
-Reference assessment: `docs/project_status_assessment_2026-04-03.md`
+Status here reflects what boots and passes a gate, not what has been designed.
+The April assessment (`docs/project_status_assessment_2026-04-03.md`) predates
+most of this work and is kept as a historical record rather than a current
+view.
 
 ## M0: project charter complete
 

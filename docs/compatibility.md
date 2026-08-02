@@ -42,6 +42,28 @@ Linux is the first compatibility target because:
 - POSIX-compatible libc strategy in the compatibility environment
 - container and namespace model for isolating Linux workloads
 
+### What exists today
+
+Ahead of the user-space personality, the x86-64 port serves the Linux ABI
+directly from the kernel, which is what makes it possible to run real programs
+now rather than after the full stack is built:
+
+- static `ET_EXEC` ELF64 images are loaded by a portable, host-tested parser;
+  `ET_DYN` and anything needing an interpreter are refused clearly rather than
+  loaded and left to fault at a puzzling address
+- programs start on a real System V stack with `argc`, `argv`, `envp` and an
+  auxiliary vector, so a C runtime can find the program headers it was loaded
+  from
+- thread-local storage works through `arch_prctl`, per task and preserved
+  across context switches
+- the syscall surface is listed in [syscalls.md](syscalls.md)
+
+What is still missing for an unmodified static binary is not the startup
+sequence but what comes after it: `fstat`, `openat`, `readlinkat`, `getcwd`,
+signal delivery, and threads with real futexes. Stubbing the full Linux table
+is explicitly not the plan - a program that receives a fabricated success dies
+later and less legibly than one that receives `-ENOSYS`.
+
 ### Fallback
 
 For software requiring tight kernel semantic fidelity, provide lightweight VM execution with shared filesystem and graphics bridges.

@@ -1,6 +1,6 @@
 # User Space Interface Progress
 
-Status: In Progress (ring-3 shell runtime verified)
+Status: In Progress (System V startup ABI verified from ring 3)
 Last review: 2026-08-02
 
 ## Implemented
@@ -11,6 +11,7 @@ Last review: 2026-08-02
 - Versioned user API contract and capability matrix exposure (`vibeos_user_api_contract`, `vibeos_user_api_capabilities`).
 - Real ELF programs now run in ring 3 through the native syscall entry path. The runtime loads programs from the FAT boot volume and supports fork, `execve`, `waitpid` and exit.
 - Programs start on a real System V startup stack, not a bare one: `vibeos_elf_build_stack` (`kernel/core/elf.c`) lays out `argc`, `argv`, `envp` and the auxiliary vector, and `user/prog/crt0.S` is a genuine assembly `_start` that converts that state into a C call. `AT_PHDR`, `AT_PHNUM`, `AT_PHENT`, `AT_ENTRY`, `AT_PAGESZ` and `AT_RANDOM` are all populated, and the user linker script now maps the ELF headers inside the first `PT_LOAD` so `AT_PHDR` points at a program header table that really exists in the address space. A ring-3 program verifies this on every boot (`auxv ok` in the serial log).
+- Every user program now enters through a real assembly `_start` (`user/prog/crt0.S`) and is written as an ordinary `vibeos_main(argc, argv, envp)`. This is not cosmetic: at entry `rsp` is aligned like a call site rather than a function frame, and the arguments are on the stack rather than in registers, so a C function as the entry point either misreads them or faults on the first aligned SSE store.
 - `/BIN/SH` supplies the current interactive shell baseline with keyboard/serial input, line editing and file commands; framebuffer output is available in the runtime console path.
 
 ## Pending

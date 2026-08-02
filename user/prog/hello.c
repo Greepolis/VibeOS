@@ -26,6 +26,32 @@ static long user_syscall3(long nr, long a1, long a2, long a3) {
     return ret;
 }
 
+/* Six-argument form. Linux puts the fourth, fifth and sixth arguments in r10,
+ * r8 and r9 - not rcx, which the syscall instruction overwrites with the
+ * return address. mmap is the reason this exists: with fewer arguments there
+ * is no way to say "anonymous, private, no file". */
+static long user_syscall6(long nr, long a1, long a2, long a3,
+                          long a4, long a5, long a6) {
+    long ret;
+    register long r10 __asm__("r10") = a4;
+    register long r8 __asm__("r8") = a5;
+    register long r9 __asm__("r9") = a6;
+#if defined(VIBEOS_USE_SYSCALL_INSN)
+    __asm__ __volatile__("syscall"
+                         : "=a"(ret)
+                         : "a"(nr), "D"(a1), "S"(a2), "d"(a3),
+                           "r"(r10), "r"(r8), "r"(r9)
+                         : "rcx", "r11", "memory");
+#else
+    __asm__ __volatile__("int $0x80"
+                         : "=a"(ret)
+                         : "a"(nr), "D"(a1), "S"(a2), "d"(a3),
+                           "r"(r10), "r"(r8), "r"(r9)
+                         : "memory");
+#endif
+    return ret;
+}
+
 /* Linux syscall numbers (x86-64). */
 #define SYS_read   0
 #define SYS_write  1
@@ -36,6 +62,13 @@ static long user_syscall3(long nr, long a1, long a2, long a3) {
 #define SYS_fork   57
 #define SYS_wait4  61
 #define SYS_execve 59
+#define SYS_mprotect 10
+#define SYS_munmap   11
+#define SYS_ioctl    16
+#define SYS_writev   20
+#define SYS_uname    63
+#define SYS_arch_prctl 158
+#define SYS_clock_gettime 228
 
 static const char message[] = "Hello from a real user ELF (loaded by the kernel)\n";
 static const char ok_heap[] = "heap+mmap ok\n";
@@ -84,6 +117,121 @@ static int check_auxv(char **envp) {
     return 1;
 }
 
+static const char abi_ok[] = "linux abi ok: fs/uname/clock/writev/mmap\n";
+static const char abi_fs[] = "abi: arch_prctl or %fs broken\n";
+static const char abi_uname[] = "abi: uname wrong\n";
+static const char abi_clock[] = "abi: clock_gettime wrong\n";
+static const char abi_iov[] = "abi: writev wrong\n";
+static const char abi_mm[] = "abi: mmap/mprotect/munmap wrong\n";
+static const char tls_kept[] = "tls survived context switches\n";
+static const char tls_lost[] = "abi: %fs lost across a context switch\n";
+static const char iov_a[] = "iov";
+static const char iov_b[] = "ec\n";
+
+/* The thread-control block a libc would allocate. Its first word is the
+ * self-pointer every x86-64 C runtime stores there, which is what makes
+ * "%fs:0" mean "the address of my own thread state". */
+static unsigned long tcb[16];
+
+struct abi_iovec { const void *base; unsigned long len; };
+
+/* Exercise the syscalls a static libc runs before main, and check the effect
+ * rather than the return code: setting %fs is only meaningful if a %fs-relative
+ * load afterwards actually reads through it. */
+static const char *check_linux_abi(void) {
+    unsigned long got = 0;
+    unsigned long self;
+    char un[6 * 65];
+    unsigned long ts[2];
+    struct abi_iovec iov[2];
+    long r, page;
+
+    tcb[0] = (unsigned long)(void *)tcb;
+    if (user_syscall3(SYS_arch_prctl, 0x1002 /*ARCH_SET_FS*/,
+                      (long)(unsigned long)tcb, 0) != 0) {
+        return abi_fs;
+    }
+    /* Read the self-pointer back through the segment, not through the C
+     * pointer: this is the access a libc makes, and it only works if the
+     * kernel really wrote the MSR. */
+    __asm__ __volatile__("movq %%fs:0, %0" : "=r"(self));
+    if (self != (unsigned long)(void *)tcb) {
+        return abi_fs;
+    }
+    if (user_syscall3(SYS_arch_prctl, 0x1003 /*ARCH_GET_FS*/,
+                      (long)(unsigned long)&got, 0) != 0 ||
+        got != (unsigned long)(void *)tcb) {
+        return abi_fs;
+    }
+    /* A base outside user memory must be refused - it would fault in ring 0. */
+    if (user_syscall3(SYS_arch_prctl, 0x1002, 0x1000, 0) == 0) {
+        return abi_fs;
+    }
+
+    if (user_syscall3(SYS_uname, (long)(unsigned long)un, 0, 0) != 0) {
+        return abi_uname;
+    }
+    if (un[0] != 'L' || un[1] != 'i' || un[2] != 'n' || un[3] != 'u' ||
+        un[4] != 'x' || un[5] != 0) {
+        return abi_uname;
+    }
+    if (un[4 * 65] != 'x' || un[4 * 65 + 1] != '8' || un[4 * 65 + 2] != '6') {
+        return abi_uname;   /* machine field must be x86_64 */
+    }
+
+    if (user_syscall3(SYS_clock_gettime, 1 /*CLOCK_MONOTONIC*/,
+                      (long)(unsigned long)ts, 0) != 0) {
+        return abi_clock;
+    }
+    if (ts[1] >= 1000000000ul) {
+        return abi_clock;   /* nanoseconds must be a fraction of a second */
+    }
+
+    /* stdout is not a terminal here, and a libc needs to be told so. */
+    if (user_syscall3(SYS_ioctl, 1, 0x5401 /*TCGETS*/, 0) != -25 /*ENOTTY*/) {
+        return abi_iov;
+    }
+    iov[0].base = iov_a;
+    iov[0].len = sizeof(iov_a) - 1;
+    iov[1].base = iov_b;
+    iov[1].len = sizeof(iov_b) - 1;
+    r = user_syscall3(SYS_writev, 1, (long)(unsigned long)iov, 2);
+    if (r != (long)(sizeof(iov_a) - 1 + sizeof(iov_b) - 1)) {
+        return abi_iov;
+    }
+
+    /* A real mmap/mprotect/munmap round trip: map it, write it, take write
+     * away, give it back, then unmap. */
+    page = user_syscall6(SYS_mmap, 0, 4096, 3 /*READ|WRITE*/,
+                         0x22 /*PRIVATE|ANONYMOUS*/, -1, 0);
+    if (page <= 0) {
+        return abi_mm;
+    }
+    *(volatile unsigned char *)(unsigned long)page = 0x5A;
+    if (*(volatile unsigned char *)(unsigned long)page != 0x5A) {
+        return abi_mm;
+    }
+    if (user_syscall3(SYS_mprotect, page, 4096, 1 /*READ*/) != 0) {
+        return abi_mm;
+    }
+    if (user_syscall3(SYS_mprotect, page, 4096, 3 /*READ|WRITE*/) != 0) {
+        return abi_mm;
+    }
+    if (user_syscall3(SYS_munmap, page, 4096, 0) != 0) {
+        return abi_mm;
+    }
+    /* An unmapped-but-still-fixed address must not be accepted afterwards. */
+    if (user_syscall3(SYS_mprotect, page, 4096, 3) == 0) {
+        return abi_mm;
+    }
+    /* MAP_FIXED is refused rather than silently ignored. */
+    if (user_syscall6(SYS_mmap, page, 4096, 3, 0x32 /*FIXED|ANON|PRIVATE*/,
+                      -1, 0) > 0) {
+        return abi_mm;
+    }
+    return abi_ok;
+}
+
 int vibeos_main(int argc, char **argv, char **envp) {
     long pid, brk0, brk1, map, rejected;
 
@@ -100,6 +248,14 @@ int vibeos_main(int argc, char **argv, char **envp) {
     } else {
         user_syscall3(SYS_write, 1, (long)(unsigned long)auxv_bad, sizeof(auxv_bad) - 1);
     }
+    {
+        const char *verdict = check_linux_abi();
+        long n = 0;
+        while (verdict[n]) {
+            n++;
+        }
+        user_syscall3(SYS_write, 1, (long)(unsigned long)verdict, n);
+    }
 
     pid = user_syscall3(SYS_getpid, 0, 0, 0);
 
@@ -109,7 +265,8 @@ int vibeos_main(int argc, char **argv, char **envp) {
     if (brk1 > brk0) {
         *(volatile char *)(unsigned long)brk0 = 'x';
     }
-    map = user_syscall3(SYS_mmap, 0, 4096, 0);
+    map = user_syscall6(SYS_mmap, 0, 4096, 3 /*READ|WRITE*/,
+                        0x22 /*PRIVATE|ANONYMOUS*/, -1, 0);
     if (map > 0) {
         *(volatile char *)(unsigned long)map = 'y';
     }
@@ -168,6 +325,23 @@ int vibeos_main(int argc, char **argv, char **envp) {
             user_syscall3(SYS_exit, 127, 0, 0);
         } else if (child > 0) {
             user_syscall3(SYS_wait4, child, 0, 0);
+        }
+    }
+
+    /* By now this task has forked, waited, and been preempted repeatedly, so
+     * it has been switched off this CPU and back many times. Setting %fs is
+     * easy; keeping it across those switches is the part that breaks, and it
+     * cannot be observed at all without checking here rather than only next
+     * to the arch_prctl call. */
+    {
+        unsigned long self_again;
+        __asm__ __volatile__("movq %%fs:0, %0" : "=r"(self_again));
+        if (self_again == (unsigned long)(void *)tcb) {
+            user_syscall3(SYS_write, 1, (long)(unsigned long)tls_kept,
+                          sizeof(tls_kept) - 1);
+        } else {
+            user_syscall3(SYS_write, 1, (long)(unsigned long)tls_lost,
+                          sizeof(tls_lost) - 1);
         }
     }
 

@@ -6,14 +6,36 @@ VibeOS is a from-scratch operating system project focused on:
 - high-performance kernel/runtime paths
 - multi-platform compatibility strategy (Linux/Windows/macOS software layers)
 
-The repository is in active implementation mode with host-side validation and boot-path bring-up.
+The system boots on UEFI firmware, brings up every core, and runs real ELF
+programs in ring 3 through the Linux system-call ABI.
+
+## What runs today
+
+- **Boot**: a UEFI bootloader hands off to the kernel, which sets up its own
+  GDT/IDT, page tables and TSS.
+- **SMP**: ACPI/MADT is parsed, the local and I/O APICs are programmed, and the
+  application processors are started with INIT-SIPI-SIPI. Every core runs the
+  scheduler against a shared run queue.
+- **Preemptive multitasking**: per-process address spaces, a private kernel
+  stack per task so a task can block inside a syscall, and `fork`, `execve`,
+  `wait4` and `exit`.
+- **Linux ABI in ring 3**: programs are loaded by a host-tested ELF64 parser and
+  entered on a real System V startup stack - `argc`, `argv`, `envp` and an
+  auxiliary vector carrying `AT_PHDR`/`AT_PHNUM`/`AT_PHENT`. Thread-local
+  storage works: `arch_prctl(ARCH_SET_FS)` writes the MSR and the base is
+  restored on every context switch.
+- **Storage**: virtio-blk with a FAT reader and writer; programs are loaded
+  from the boot volume.
+- **Networking**: a portable TCP/IP stack over virtio-net - ARP, IPv4, ICMP,
+  UDP, TCP, DHCP and DNS - verified end to end against a host echo server in
+  CI on every push.
+- **A serial shell** with line editing and file commands.
 
 ## Current Focus
 
-- kernel and user-space core primitives
-- bootloader and handoff stabilization
-- scheduler/IPC/syscall hardening
-- CI and automated regression feedback
+- running an unmodified static Linux binary end to end
+- the syscalls such a binary needs beyond startup
+- signal delivery, and threads with real futexes
 
 ## Build and Test
 
@@ -43,6 +65,8 @@ ctest --test-dir build --output-on-failure
 
 Notes:
 - CI uses required boot gates: host tests + OVMF smoke + boot-to-CLI smoke, while the direct-loader probe is informational.
+- The boot-to-CLI gate (`scripts/qemu-cli-smoke-linux.py`) is not a token grep: it boots four vCPUs under pure TCG, asserts state invariants (a non-zero DHCP lease, all cores online, no unexpected fault, no panic) and completes a TCP round trip to a host echo server. It distinguishes "produced nothing", "went quiet" and "still talking" so a hang is diagnosable from the log alone.
+- Beyond the boot gates, CI runs a gcc/clang x Debug/Release matrix, the host suites under AddressSanitizer and UndefinedBehaviorSanitizer, CodeQL static analysis, a libFuzzer harness over the network receive path, and a nightly job that boots repeatedly and fuzzes for longer. Dependabot tracks the actions and the submodules.
 - `qemu-system-x86_64 -kernel` has known compatibility limits with ELF64/Multiboot2 images in newer QEMU builds. The direct-loader probe classifies these loader-side incompatibilities separately from real boot regressions.
 - Bootloader artifacts use a validated EFI conversion flow (`bootloader.elf` -> `bootloader.efi`) with fail-fast PE32+ and relocation checks.
 - OVMF smoke emits structured diagnostics (`qemu-ovmf-summary.txt`) with explicit status reasons, selected boot profile, and last observed boot phase.

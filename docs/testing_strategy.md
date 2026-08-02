@@ -12,6 +12,33 @@ See also:
 - `docs/test_automation_spec.md`
 - `docs/test_feedback_profiles.md`
 
+## What runs on every push
+
+- **Build matrix**: gcc and clang, Debug and Release. Two compilers disagree
+  about enough - alignment assumptions, optimisation of inline assembly, PE
+  linking - that one of them alone has repeatedly been insufficient.
+- **Host suites** (`ctest`), plus the same suites again under AddressSanitizer
+  and UndefinedBehaviorSanitizer. The protocol code parses attacker-chosen
+  input, and the sanitizer run is the only gate that sees memory errors at all.
+- **UEFI boot gate** under OVMF, and a **boot-to-CLI gate** that boots four
+  vCPUs under pure TCG, asserts state invariants (DHCP lease non-zero, all
+  cores online, no unexpected fault, no panic) and completes a TCP round trip
+  to a host echo server.
+- **CodeQL** static analysis.
+- **libFuzzer** over the network receive path.
+- Nightly: repeated boots and a longer fuzz run. Dependabot tracks the actions
+  and the submodules.
+
+Two lessons are built into the above, both learned the expensive way:
+
+- The boot gate must assert **state**, not the presence of a token. A kernel
+  can print `BOOT_OK` and still have failed to get a DHCP lease or bring up
+  three of its four cores.
+- Local verification must use the **same configuration as CI**. Roughly twenty
+  clean local runs once validated a hardware-accelerated setup while CI ran
+  pure emulation; forcing `-accel tcg` locally reproduced the CI hang in two
+  runs out of three.
+
 ## Test layers
 
 ### Unit tests
