@@ -1608,7 +1608,11 @@ static int test_servicemgr_and_drivers(void) {
 
 /* Covers the user-facing API surface together with the bootloader contract:
  * boot_info construction, validation of malformed maps, memory summaries and
- * the region-type queries the kernel relies on at start-up. */
+ * the region-type queries the kernel relies on at start-up.
+ *
+ * The test is intentionally end-to-end: it verifies that user-visible API
+ * metadata and capability checks remain consistent with boot-time memory-map
+ * handling assumptions used during kernel initialization. */
 static int test_user_api_and_bootloader(void) {
     vibeos_kernel_t kernel;
     vibeos_user_context_t user_ctx;
@@ -1626,8 +1630,11 @@ static int test_user_api_and_bootloader(void) {
     uint64_t usable = 0;
     uint64_t usable_regions = 0;
     uint32_t has_overlap = 0;
-    /* One usable region and one MMIO region: the smallest map that still
-     * exercises the type filtering the summaries depend on. */
+
+    /* Build a minimal but representative memory map:
+     * - one usable RAM region
+     * - one MMIO region
+     * This allows us to validate usable-only accounting and type filtering. */
     memset(&kernel, 0, sizeof(kernel));
     regions[0].base = 0x200000;
     regions[0].length = 0x100000;
