@@ -138,6 +138,23 @@ static int split_args(char *line, char **argv) {
         if (!*p) {
             break;
         }
+        /* Quoted arguments are not a refinement here, they are the difference
+         * between being able to invoke another shell and not: `sh -c "a; b"`
+         * is one argument containing spaces, and splitting it gives the shell
+         * a command it never wrote. Only grouping is supported - no escapes,
+         * no expansion - and that limit is stated rather than half-built. */
+        if (*p == '"' || *p == '\'') {
+            char quote = *p;
+            *p++ = 0;
+            argv[n++] = p;
+            while (*p && *p != quote) {
+                p++;
+            }
+            if (*p == quote) {
+                *p++ = 0;
+            }
+            continue;
+        }
         argv[n++] = p;
         while (*p && *p != ' ' && *p != '\t') {
             p++;
@@ -179,6 +196,19 @@ static const char *program_name(const char *path) {
     return g_argv0;
 }
 
+/* The environment handed to programs.
+ *
+ * PATH is the whole point: a shell finds a command by searching it, and
+ * without one BusyBox's shell reports "not found" for commands that are
+ * sitting on the volume. HOME and TERM are there because programs read them
+ * and an absent value is a different case from an empty one. */
+static char *g_envp[] = {
+    (char *)"PATH=/EFI/BOOT",
+    (char *)"HOME=/",
+    (char *)"TERM=dumb",
+    0
+};
+
 static void run_program(char *line) {
     static char *argv[SH_MAX_ARGS + 1];
     long child;
@@ -192,7 +222,7 @@ static void run_program(char *line) {
     child = sys3(SYS_fork, 0, 0, 0);
     if (child == 0) {
         sys3(SYS_execve, (long)(unsigned long)path,
-             (long)(unsigned long)argv, 0);
+             (long)(unsigned long)argv, (long)(unsigned long)g_envp);
         put("sh: cannot exec\n");
         sys3(SYS_exit, 127, 0, 0);
     } else if (child > 0) {

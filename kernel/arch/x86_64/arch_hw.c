@@ -1767,6 +1767,13 @@ static void hw_task_exit(uint64_t code) {
 #define LSYS_kill           62
 #define LSYS_tgkill        234
 #define LSYS_time          201
+#define LSYS_clone          56
+#define LSYS_getppid       110
+#define LSYS_rt_sigreturn   15
+
+/* clone() flags that decide whether this is a fork or a thread. */
+#define CLONE_VM     0x00000100u
+#define CLONE_THREAD 0x00010000u
 
 /* openat/newfstatat interpret a relative path against this directory fd. There
  * is no per-process working directory here, so it is the only value accepted.
@@ -3763,6 +3770,24 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
             return hw_sys_setresid(a1);
         case LSYS_time:
             return hw_sys_time(a1);
+        case LSYS_clone:
+            /* A C library does not call fork(); it calls clone() with the
+             * flags that happen to mean fork - a new address space, a new
+             * process, SIGCHLD to the parent. Anything sharing the address
+             * space is a thread, which this kernel does not have, and saying
+             * ENOSYS is better than handing back something that looks like a
+             * thread and is not. */
+            if ((a1 & (CLONE_VM | CLONE_THREAD)) != 0u) {
+                return -VIBEOS_ENOSYS;
+            }
+            return hw_sys_fork(frame);
+        case LSYS_getppid:
+            return (g_current_task >= 0) ? (long)g_tasks[g_current_task].ppid : 0;
+        case LSYS_rt_sigreturn:
+            /* Only reachable on return from a signal handler, and no signal is
+             * ever delivered, so arriving here means the stack already says
+             * something untrue about how this process got where it is. */
+            return -VIBEOS_ENOSYS;
         case LSYS_kill:
             return hw_sys_kill(a1, a2);
         case LSYS_tgkill:
@@ -4146,6 +4171,7 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                   "EFI/BOOT/BUSYBOX.ELF echo BUSYBOX_ECHO_OK\n"
                                   "EFI/BOOT/BUSYBOX.ELF cat DOCS/NOTES.TXT\n"
                                   "EFI/BOOT/BUSYBOX.ELF ls EFI/BOOT\n"
+                                  "EFI/BOOT/BUSYBOX.ELF sh -c \"echo BUSYBOX_SH_OK; cat DOCS/NOTES.TXT\"\n"
                                   "exit\n");
 
     hello_id = hw_task_spawn_user(init_elf, init_len, init_argv);

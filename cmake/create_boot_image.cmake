@@ -80,6 +80,17 @@ if(VIBEOS_BUSYBOX)
     endif()
 endif()
 
+# BusyBox decides which command it is from the name it was invoked under, so a
+# real installation is one binary and a symlink per applet. FAT has no symlinks,
+# so these are copies - the mechanism is the same, only the storage is dumber.
+# Together with PATH this is what lets a real shell find real commands.
+if(VIBEOS_BUSYBOX AND BB_MAGIC STREQUAL "7f454c46")
+    foreach(applet CAT LS ECHO WC)
+        file(COPY_FILE "${VIBEOS_BUSYBOX}" "${EFI_BOOT_DIR}/${applet}" ONLY_IF_DIFFERENT)
+    endforeach()
+    message(STATUS "EFI media includes BusyBox applets: cat, ls, echo, wc")
+endif()
+
 # Keep legacy kernel-as-image artifact for direct-loader probes.
 file(COPY_FILE "${KERNEL_ELF}" "${LEGACY_BOOT_IMAGE}" ONLY_IF_DIFFERENT)
 

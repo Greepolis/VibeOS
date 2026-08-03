@@ -161,14 +161,23 @@ static int fat_chain_end(uint32_t cluster) {
     return g_fat.is_fat32 ? (cluster >= 0x0FFFFFF8u) : (cluster >= 0xFFF8u);
 }
 
-/* Build the 11-byte 8.3 on-disk name from "NAME.EXT". */
+/* Build the 11-byte 8.3 on-disk name from "NAME.EXT".
+ *
+ * Folded to upper case, because that is the only case a short FAT name has on
+ * disk. Without the fold, lookups are accidentally case-sensitive against a
+ * filesystem that is not, so a program asking for "cat" cannot find CAT - and
+ * programs do ask in lower case, since that is what Unix paths look like. */
+static uint8_t fat_upper(uint8_t c) {
+    return (c >= 'a' && c <= 'z') ? (uint8_t)(c - 'a' + 'A') : c;
+}
+
 static void fat_make_83(const char *name, uint8_t out[11]) {
     int i = 0, o = 0;
     for (o = 0; o < 11; o++) {
         out[o] = ' ';
     }
     for (o = 0; o < 8 && name[i] && name[i] != '.'; i++, o++) {
-        out[o] = (uint8_t)name[i];
+        out[o] = fat_upper((uint8_t)name[i]);
     }
     while (name[i] && name[i] != '.') {
         i++;
@@ -177,7 +186,7 @@ static void fat_make_83(const char *name, uint8_t out[11]) {
         i++;
     }
     for (o = 8; o < 11 && name[i]; i++, o++) {
-        out[o] = (uint8_t)name[i];
+        out[o] = fat_upper((uint8_t)name[i]);
     }
     return;
 }
