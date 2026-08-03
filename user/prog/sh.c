@@ -388,6 +388,17 @@ int vibeos_main(int argc, char **argv, char **envp) {
             } else {
                 put(args); put(" is "); put_ip((unsigned long)ip); put("\n");
             }
+        } else if (seq(line, "sh")) {
+            /* Hand the console over to BusyBox's shell, in place, so it
+             * inherits this session rather than running underneath it. argv[0]
+             * is "sh" because that is the name the program looks itself up by;
+             * the path is where the file happens to live. Nothing after this
+             * line runs if it succeeds. */
+            static char *ash_argv[] = {(char *)"sh", 0};
+            put("handing the console to BusyBox sh\n");
+            sys3(SYS_execve, (long)(unsigned long)"EFI/BOOT/BUSYBOX.ELF",
+                 (long)(unsigned long)ash_argv, (long)(unsigned long)g_envp);
+            put("sh: cannot exec BusyBox\n");
         } else if (seq(line, "exit")) {
             put("sh: bye\n");
             sys3(SYS_exit, 0, 0, 0);

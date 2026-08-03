@@ -327,6 +327,14 @@ def main():
                 # otherwise leave the boot looking green.
                 if "cat: can't open" in text or "ls: can't open" in text:
                     problems.append("busybox_file_operations_failed")
+                # The console is handed to BusyBox's shell, which then reads
+                # typed lines itself. This checks the whole chain: an
+                # interactive shell running a builtin, then finding an external
+                # command through PATH and exec'ing it.
+                if "ASH_INTERACTIVE_OK" not in text:
+                    problems.append("interactive_shell_did_not_run")
+                if "BUSYBOX_SH_OK" not in text:
+                    problems.append("shell_script_did_not_run")
 
             musl = os.path.join(efi_root, "EFI", "BOOT", "MUSL.ELF")
             if os.path.exists(musl):

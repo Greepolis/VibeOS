@@ -4172,6 +4172,13 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                   "EFI/BOOT/BUSYBOX.ELF cat DOCS/NOTES.TXT\n"
                                   "EFI/BOOT/BUSYBOX.ELF ls EFI/BOOT\n"
                                   "EFI/BOOT/BUSYBOX.ELF sh -c \"echo BUSYBOX_SH_OK; cat DOCS/NOTES.TXT\"\n"
+                                  /* Everything from here is typed at BusyBox's
+                                   * shell, not ours: it replaces this process
+                                   * and reads the rest of the console itself. */
+                                  "sh\n"
+                                  "echo ASH_INTERACTIVE_OK\n"
+                                  "cat DOCS/NOTES.TXT\n"
+                                  "ls /EFI/BOOT\n"
                                   "exit\n");
 
     hello_id = hw_task_spawn_user(init_elf, init_len, init_argv);
