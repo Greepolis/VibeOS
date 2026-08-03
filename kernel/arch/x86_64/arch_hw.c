@@ -484,6 +484,8 @@ static void hw_pic_send_eoi(uint32_t vector) {
     hw_outb(PIC1_CMD, PIC_EOI);
 }
 
+static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code);
+
 static void hw_log_field(const char *name, uint64_t value) {
     vibeos_x86_64_serial_puts(name);
     vibeos_x86_64_serial_puts("=0x");
@@ -573,6 +575,14 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
 
     fault_address = (frame->vector == 14u) ? hw_read_cr2() : 0u;
 
+    /* A write to a shared page is not an error, it is the mechanism: fork
+     * leaves both processes pointing at the same read-only frame, and this is
+     * where the copy actually happens. Resolved faults must be handled before
+     * anything is reported, or every fork would look like a crash. */
+    if (frame->vector == 14u && hw_handle_cow_fault(fault_address, frame->error_code)) {
+        return;
+    }
+
     /* A fault report is many small writes; keep another core from splitting it. */
     vibeos_x86_64_serial_lock();
     vibeos_x86_64_serial_puts("[HW][TRAP] ");
@@ -638,6 +648,12 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
 #define PTE_WRITE   0x002ull
 #define PTE_USER    0x004ull            /* ring-3 accessible */
 #define PTE_PS      0x080ull            /* 2 MiB page at PD level */
+/* Bits 9 through 11 are ignored by the hardware and belong to the OS. This one
+ * marks a page that is shared after fork and must be duplicated before it is
+ * written. Without it a read-only page is indistinguishable from a page the
+ * program was never allowed to write, and a genuine protection fault would be
+ * silently turned into a successful write. */
+#define PTE_COW     0x200ull
 #define VIBEOS_HW_IDENTITY_GIB 4u       /* identity-map the first 4 GiB */
 #define VIBEOS_HW_IDENTITY_LIMIT 0x100000000ull
 
@@ -677,6 +693,63 @@ static uint32_t g_pool_next;
 static uint8_t g_exec_elf_static[65536] __attribute__((aligned(16)));
 static uint8_t *g_exec_elf = g_exec_elf_static;
 static uint32_t g_exec_elf_cap = (uint32_t)sizeof(g_exec_elf_static);
+
+/* How many address spaces map each physical frame.
+ *
+ * fork() no longer copies pages; it maps the parent's frames into the child
+ * read-only and marks both copies as copy-on-write. A frame may therefore be
+ * live in several address spaces at once, and freeing it when the first of
+ * them exits would hand a running process's memory to the allocator.
+ *
+ * One byte per frame over the allocator's region, taken from that region at
+ * boot. A count of zero means "one owner" so that the ordinary case needs no
+ * bookkeeping at all: only sharing writes here. The count saturates rather
+ * than wrapping - at 255 owners the frame is simply never reclaimed, which
+ * leaks a page instead of freeing memory somebody is still using. */
+static uint8_t *g_frame_refs;
+/* How much work copy-on-write actually did. Reported at the end of the boot,
+ * because a mechanism that is never exercised and a mechanism that does not
+ * work look identical from outside: shared says how many pages fork handed
+ * over instead of copying, copied says how many of those a write later forced
+ * it to duplicate after all. */
+static volatile uint64_t g_cow_shared;
+static volatile uint64_t g_cow_copied;
+static uint64_t g_frame_refs_base;
+static uint64_t g_frame_refs_count;
+
+static uint8_t *frame_ref_slot(uint64_t phys) {
+    uint64_t idx;
+    if (!g_frame_refs) {
+        return 0;
+    }
+    if (phys < g_frame_refs_base) {
+        return 0;
+    }
+    idx = (phys - g_frame_refs_base) / 4096ull;
+    return (idx < g_frame_refs_count) ? &g_frame_refs[idx] : 0;
+}
+
+static void frame_ref_inc(uint64_t phys) {
+    uint8_t *slot = frame_ref_slot(phys);
+    if (slot && *slot < 255u) {
+        (*slot)++;
+    }
+}
+
+/* Returns non-zero when the caller was the last owner and may free it. */
+static int frame_ref_dec(uint64_t phys) {
+    uint8_t *slot = frame_ref_slot(phys);
+    if (!slot) {
+        return 1;   /* not tracked: it was never shared */
+    }
+    if (*slot == 0u) {
+        return 1;   /* sole owner */
+    }
+    if (*slot < 255u) {
+        (*slot)--;
+    }
+    return 0;
+}
 
 static vibeos_pmm_t g_hw_pmm;
 static int g_hw_pmm_ready;
@@ -796,6 +869,34 @@ static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
         return;
     }
     g_hw_pmm_ready = 1;
+
+    /* One byte per frame of the allocator's region, taken from that region.
+     * Without it fork cannot share pages safely, so failing to allocate it is
+     * not fatal - it only means fork keeps copying eagerly, which is slow
+     * rather than wrong. */
+    {
+        uint64_t bytes = (uint64_t)vibeos_pmm_remaining(&g_hw_pmm) / 4096ull;
+        uint64_t pages = (bytes + 4095ull) / 4096ull;
+        void *table = pages ? vibeos_pmm_alloc_pages(&g_hw_pmm, (size_t)pages) : 0;
+        if (table && ((uint64_t)(uintptr_t)table + pages * 4096ull) <= VIBEOS_HW_IDENTITY_LIMIT) {
+            uint64_t i;
+            g_frame_refs = (uint8_t *)table;
+            /* The base is the start of the allocator's whole region, not the
+             * end of this table. Indexing from the end leaves every frame
+             * handed out earlier untracked - and untracked means "sole owner",
+             * so the first process to exit frees pages another one is still
+             * running from. That is not a leak, it is corruption, and it
+             * presented as a shell that started and then silently stopped. */
+            g_frame_refs_base = (uint64_t)g_hw_pmm.base;
+            g_frame_refs_count = bytes;
+            for (i = 0; i < bytes; i++) {
+                g_frame_refs[i] = 0;
+            }
+            vibeos_x86_64_serial_puts("[MM] copy-on-write fork enabled\n");
+        } else {
+            vibeos_x86_64_serial_puts("[MM] no frame reference table; fork copies eagerly\n");
+        }
+    }
 
     /* Now that pages exist, take a contiguous staging area large enough for a
      * real program. Failing is not fatal: the small static buffer still works,
@@ -962,7 +1063,12 @@ static void hw_aspace_destroy(vibeos_hw_aspace_t *as) {
                 pt = (uint64_t *)(uintptr_t)(pd[j] & 0x000FFFFFFFFFF000ull);
                 for (k = 0; k < 512u; k++) {
                     if (pt[k] & PTE_PRESENT) {
-                        hw_free_page((void *)(uintptr_t)(pt[k] & 0x000FFFFFFFFFF000ull));
+                        uint64_t phys = pt[k] & 0x000FFFFFFFFFF000ull;
+                        /* Only the last owner frees it: after fork, several
+                         * address spaces map the same frame. */
+                        if (frame_ref_dec(phys)) {
+                            hw_free_page((void *)(uintptr_t)phys);
+                        }
                     }
                 }
                 hw_free_page(pt);
@@ -998,7 +1104,10 @@ static void hw_aspace_destroy(vibeos_hw_aspace_t *as) {
                     pt = (uint64_t *)(uintptr_t)(pd[j] & 0x000FFFFFFFFFF000ull);
                     for (k = 0; k < 512u; k++) {
                         if ((pt[k] & PTE_PRESENT) && (pt[k] & PTE_USER)) {
-                            hw_free_page((void *)(uintptr_t)(pt[k] & 0x000FFFFFFFFFF000ull));
+                            uint64_t phys = pt[k] & 0x000FFFFFFFFFF000ull;
+                            if (frame_ref_dec(phys)) {
+                                hw_free_page((void *)(uintptr_t)phys);
+                            }
                         }
                     }
                     hw_free_page(pt);
@@ -1887,7 +1996,13 @@ static int hw_user_range_ok(uint64_t va, uint64_t len, int need_write) {
                 return 0;
             }
         }
-        if (need_write && (e & PTE_WRITE) == 0) {
+        /* A copy-on-write page has its write bit cleared on purpose: the
+         * process may write it, and doing so faults so the page can be
+         * duplicated first. The hardware bit is the mechanism, not the
+         * permission, so refusing the buffer here rejects writes that are
+         * perfectly legal - which made every read() into freshly forked
+         * memory return EFAULT, and a shell report end of input. */
+        if (need_write && (e & PTE_WRITE) == 0 && (e & PTE_COW) == 0) {
             return 0;
         }
     }
@@ -2663,6 +2778,74 @@ static void hw_invlpg(uint64_t va) {
     __asm__ __volatile__("invlpg (%0)" : : "r"((void *)(uintptr_t)va) : "memory");
 }
 
+/* Resolve a write to a copy-on-write page.
+ *
+ * Returns non-zero when the fault was handled and execution may resume.
+ *
+ * Every condition is checked rather than assumed, because being wrong here
+ * turns a memory-protection violation into a silent success. The fault must be
+ * a write (bit 1), from user space (bit 2), to a page that is present (bit 0)
+ * - a not-present fault is a genuine bad access, not a shared page - and the
+ * entry must carry our own copy-on-write bit. A read-only page without that
+ * bit is read-only because the program is not allowed to write it. */
+static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code) {
+    hw_task_t *t;
+    uint64_t *pte;
+    uint64_t phys;
+    uint8_t *fresh;
+
+    /* Present and write. The originating privilege level is deliberately not
+     * required to be user: the kernel writes into user memory on a process's
+     * behalf - read() filling a buffer, a syscall storing a result - and with
+     * CR0.WP set those writes fault on a read-only page exactly as ring 3
+     * would. Insisting on the user bit here refuses precisely the faults that
+     * happen while serving a syscall, which is how a freshly forked shell
+     * dies without printing anything. */
+    if ((error_code & 0x3u) != 0x3u) {
+        return 0;
+    }
+    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+        return 0;
+    }
+    t = &g_tasks[g_current_task];
+    pte = hw_pte_lookup(&t->proc.as, fault_va);
+    if (!pte || (*pte & PTE_USER) == 0 || (*pte & PTE_COW) == 0) {
+        /* Not a shared page: a genuine protection violation, and the fault
+         * reporting below is where it belongs. */
+        return 0;
+    }
+    phys = *pte & 0x000FFFFFFFFFF000ull;
+
+    /* Sole owner: nothing to copy, just take the write permission back. This
+     * is the common case once the other side has exec'd or exited, and
+     * copying there would waste a page and a copy for nothing. */
+    if (frame_ref_dec(phys)) {
+        *pte = phys | PTE_PRESENT | PTE_WRITE | PTE_USER;
+        hw_invlpg(fault_va);
+        return 1;
+    }
+
+    fresh = (uint8_t *)hw_alloc_page();
+    if (!fresh) {
+        /* Out of memory. The reference was already dropped above, so put it
+         * back before giving up: leaving it low would let the frame be freed
+         * while this process is still using it. */
+        frame_ref_inc(phys);
+        return 0;
+    }
+    {
+        const uint8_t *src = (const uint8_t *)(uintptr_t)phys;
+        uint64_t b;
+        for (b = 0; b < 4096ull; b++) {
+            fresh[b] = src[b];
+        }
+    }
+    *pte = ((uint64_t)(uintptr_t)fresh) | PTE_PRESENT | PTE_WRITE | PTE_USER;
+    hw_invlpg(fault_va);
+    g_cow_copied++;
+    return 1;
+}
+
 /* Anonymous mmap: bump the per-process arena and map zeroed pages.
  *
  * The address hint is ignored - the arena is bump-allocated, so honouring a
@@ -2784,62 +2967,91 @@ static long hw_sys_munmap(uint64_t addr, uint64_t len) {
 
 /* Duplicate every user mapping of `src` into `dst`, copying the backing pages.
  * User space lives entirely in PML4 slot 1, so only that subtree is walked. */
-/* Copy one present user leaf into the destination address space. */
-static int hw_copy_user_leaf(vibeos_hw_aspace_t *dst, uint64_t va, uint64_t pte) {
-    const uint8_t *srcpage = (const uint8_t *)(uintptr_t)(pte & 0x000FFFFFFFFFF000ull);
-    uint8_t *dstpage = (uint8_t *)hw_alloc_page();
-    uint64_t flags = pte & (PTE_PRESENT | PTE_WRITE | PTE_USER);
-    uint64_t b;
+/* Share one present user leaf with the destination address space.
+ *
+ * The page itself is not copied. Both sides get a read-only mapping of the
+ * same frame, marked copy-on-write, and the first write from either side
+ * takes a fault that duplicates it. This is what makes fork cheap: a shell
+ * forks for every external command and the exec that follows immediately
+ * throws the copy away, so eager copying is work that is guaranteed to be
+ * wasted - two megabytes of it per command for a program the size of BusyBox.
+ *
+ * The parent's entry is rewritten too. Leaving it writable would let the
+ * parent modify a page the child can still see, which is precisely the
+ * sharing fork exists to prevent.
+ *
+ * A page that was already read-only is shared as-is: it can never be written,
+ * so it never needs duplicating, and marking it COW would turn a legitimate
+ * protection fault into a silent success. */
+static int hw_share_user_leaf(vibeos_hw_aspace_t *dst, uint64_t va, uint64_t *src_pte) {
+    uint64_t pte = *src_pte;
+    uint64_t phys = pte & 0x000FFFFFFFFFF000ull;
+    uint64_t flags = pte & (PTE_PRESENT | PTE_USER);
 
-    if (!dstpage) {
-        return -1;
+    /* Three cases, and conflating the last two is a silent disaster.
+     *
+     *   writable        -> becomes copy-on-write on both sides
+     *   already COW     -> stays copy-on-write; it is read-only because it is
+     *                      shared, not because the program may not write it
+     *   read-only       -> shared as is; it can never be written, so it never
+     *                      needs duplicating
+     *
+     * A second fork sees the first fork's pages as read-only. Treating them as
+     * the third case drops the copy-on-write mark, and the page becomes
+     * permanently unwritable for everyone - which is a shell that runs two
+     * commands and dies on the third. */
+    if (pte & PTE_WRITE) {
+        flags |= PTE_COW;
+        *src_pte = (pte & ~PTE_WRITE) | PTE_COW;
+        hw_invlpg(va);
+    } else if (pte & PTE_COW) {
+        flags |= PTE_COW;
     }
-    for (b = 0; b < 4096ull; b++) {
-        dstpage[b] = srcpage[b];
-    }
+    frame_ref_inc(phys);
+    g_cow_shared++;
     if (va < VIBEOS_HW_IDENTITY_LIMIT) {
-        return hw_map_low_user_page(dst, va, (uint64_t)(uintptr_t)dstpage, flags);
+        return hw_map_low_user_page(dst, va, phys, flags);
     }
-    return hw_map_page(dst, va, (uint64_t)(uintptr_t)dstpage, flags);
+    return hw_map_page(dst, va, phys, flags);
 }
 
 /* Duplicate the user pages a process has in the kernel's identity region -
  * a Linux image linked at 0x400000 lives there, and a fork that skipped it
  * would hand the child an address space with no program in it. Only entries
  * marked PTE_USER are copied; everything else down there is the kernel's. */
-static int hw_aspace_copy_low_user(vibeos_hw_aspace_t *dst, const vibeos_hw_aspace_t *src) {
-    const uint64_t *spdpt;
+static int hw_aspace_copy_low_user(vibeos_hw_aspace_t *dst, vibeos_hw_aspace_t *src) {
+    uint64_t *spdpt;
     uint32_t i, j, k;
 
     if ((src->pml4[0] & PTE_PRESENT) == 0) {
         return 0;
     }
-    spdpt = (const uint64_t *)(uintptr_t)(src->pml4[0] & 0x000FFFFFFFFFF000ull);
+    spdpt = (uint64_t *)(uintptr_t)(src->pml4[0] & 0x000FFFFFFFFFF000ull);
     if (spdpt == &g_pdpt[0]) {
         return 0;   /* still fully shared: this process has nothing down here */
     }
     for (i = 0; i < 512u; i++) {
-        const uint64_t *spd;
+        uint64_t *spd;
         if ((spdpt[i] & PTE_PRESENT) == 0) {
             continue;
         }
-        spd = (const uint64_t *)(uintptr_t)(spdpt[i] & 0x000FFFFFFFFFF000ull);
+        spd = (uint64_t *)(uintptr_t)(spdpt[i] & 0x000FFFFFFFFFF000ull);
         if (i < VIBEOS_HW_IDENTITY_GIB && spd == &g_pd[i][0]) {
             continue;
         }
         for (j = 0; j < 512u; j++) {
-            const uint64_t *spt;
+            uint64_t *spt;
             if ((spd[j] & PTE_PRESENT) == 0 || (spd[j] & PTE_PS) != 0) {
                 continue;
             }
-            spt = (const uint64_t *)(uintptr_t)(spd[j] & 0x000FFFFFFFFFF000ull);
+            spt = (uint64_t *)(uintptr_t)(spd[j] & 0x000FFFFFFFFFF000ull);
             for (k = 0; k < 512u; k++) {
                 uint64_t va;
                 if ((spt[k] & PTE_PRESENT) == 0 || (spt[k] & PTE_USER) == 0) {
                     continue;
                 }
                 va = ((uint64_t)i << 30) | ((uint64_t)j << 21) | ((uint64_t)k << 12);
-                if (hw_copy_user_leaf(dst, va, spt[k]) != 0) {
+                if (hw_share_user_leaf(dst, va, (uint64_t *)&spt[k]) != 0) {
                     return -1;
                 }
             }
@@ -2848,8 +3060,8 @@ static int hw_aspace_copy_low_user(vibeos_hw_aspace_t *dst, const vibeos_hw_aspa
     return 0;
 }
 
-static int hw_aspace_copy_user(vibeos_hw_aspace_t *dst, const vibeos_hw_aspace_t *src) {
-    const uint64_t *spdpt;
+static int hw_aspace_copy_user(vibeos_hw_aspace_t *dst, vibeos_hw_aspace_t *src) {
+    uint64_t *spdpt;
     uint32_t i, j, k;
 
     if (hw_aspace_copy_low_user(dst, src) != 0) {
@@ -2858,28 +3070,27 @@ static int hw_aspace_copy_user(vibeos_hw_aspace_t *dst, const vibeos_hw_aspace_t
     if ((src->pml4[1] & PTE_PRESENT) == 0) {
         return 0;
     }
-    spdpt = (const uint64_t *)(uintptr_t)(src->pml4[1] & 0x000FFFFFFFFFF000ull);
+    spdpt = (uint64_t *)(uintptr_t)(src->pml4[1] & 0x000FFFFFFFFFF000ull);
     for (i = 0; i < 512u; i++) {
-        const uint64_t *spd;
+        uint64_t *spd;
         if ((spdpt[i] & PTE_PRESENT) == 0) {
             continue;
         }
-        spd = (const uint64_t *)(uintptr_t)(spdpt[i] & 0x000FFFFFFFFFF000ull);
+        spd = (uint64_t *)(uintptr_t)(spdpt[i] & 0x000FFFFFFFFFF000ull);
         for (j = 0; j < 512u; j++) {
-            const uint64_t *spt;
+            uint64_t *spt;
             if ((spd[j] & PTE_PRESENT) == 0) {
                 continue;
             }
-            spt = (const uint64_t *)(uintptr_t)(spd[j] & 0x000FFFFFFFFFF000ull);
+            spt = (uint64_t *)(uintptr_t)(spd[j] & 0x000FFFFFFFFFF000ull);
             for (k = 0; k < 512u; k++) {
-                uint64_t pte = spt[k];
                 uint64_t va;
 
-                if ((pte & PTE_PRESENT) == 0) {
+                if ((spt[k] & PTE_PRESENT) == 0) {
                     continue;
                 }
                 va = (1ull << 39) | ((uint64_t)i << 30) | ((uint64_t)j << 21) | ((uint64_t)k << 12);
-                if (hw_copy_user_leaf(dst, va, pte) != 0) {
+                if (hw_share_user_leaf(dst, va, (uint64_t *)&spt[k]) != 0) {
                     return -1;
                 }
             }
@@ -4251,6 +4462,11 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
     vibeos_x86_64_serial_puts("[SCHED] all user tasks retired; kernel task continues\n");
 
     if (vibeos_compat_stats(&g_compat_rt, &translated, &denied) == 0) {
+        vibeos_x86_64_serial_puts("[MM] COW_STATS shared=0x");
+        vibeos_x86_64_serial_print_hex(g_cow_shared);
+        vibeos_x86_64_serial_puts(" copied=0x");
+        vibeos_x86_64_serial_print_hex(g_cow_copied);
+        vibeos_x86_64_serial_puts("\n");
         vibeos_x86_64_serial_puts("[COMPAT] linux syscalls translated=0x");
         vibeos_x86_64_serial_print_hex(translated);
         vibeos_x86_64_serial_puts(" denied=0x");
