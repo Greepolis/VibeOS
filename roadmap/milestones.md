@@ -1,6 +1,6 @@
 # Milestones
 
-## Current Snapshot (2026-08-02)
+## Current Snapshot (2026-08-03)
 
 | Milestone | Status | Evidence |
 | --- | --- | --- |
@@ -12,11 +12,28 @@
 | M5 first user-space service | Completed | ring-3 programs with fork/exec/wait |
 | M6 storage and shell | Completed | virtio-blk, FAT read and write, serial shell |
 | M7 networked native system | Completed | TCP/IP over virtio-net, TCP round trip to a host server in CI |
-| M8 Linux CLI compatibility | In progress | Linux ABI served in ring 3; startup ABI (stack, auxv, TLS) verified. Remaining: the syscalls a real static binary needs after startup |
-| M9 Windows console compatibility | Not started | - |
-| M10 architecture review | Ongoing | design documents updated alongside the code |
+| M8 Linux CLI compatibility | **Completed** | unmodified static BusyBox runs echo, cat and ls; its shell parses scripts, searches PATH, forks and execs. All four gated in CI |
+| M9 process semantics | **Completed** | signals delivered and verified by a program built against glibc; copy-on-write fork measured at 1221 pages shared to 24 copied |
+| M10 a machine with a screen | **In progress** | PS/2 mouse on IRQ12, framebuffer desktop, on-screen terminal mirroring the console. Gated on state; the pixels are still checked by hand |
+| M11 graphical user space | Not started | - |
+| M12 usable without a serial cable | Not started | - |
+| M13 dynamic executables | Not started | - |
+| M14 threads | Not started | - |
+| M15 Windows console compatibility | Not started | - |
+| M16 durable storage | Not started | - |
+| M17 architecture review for expansion | Ongoing | design documents updated alongside the code |
 
 Status here reflects what boots and passes a gate, not what has been designed.
+A milestone moves to Completed when something fails if it regresses.
+
+Two notes on how this list changed. The original M9 and M10 were Windows
+compatibility and an architecture review; the work that actually happened -
+process semantics, then drivers and a screen - had no milestone at all, which
+made the roadmap describe a different project from the one in the repository.
+Windows compatibility has moved down rather than away: it was never started,
+and putting it after the things this system needs to be usable is a statement
+about order, not about scope.
+
 The April assessment (`docs/project_status_assessment_2026-04-03.md`) predates
 most of this work and is kept as a historical record rather than a current
 view.
@@ -71,17 +88,103 @@ view.
 - TCP/IP available
 - remote diagnostics or package ingress possible
 
-## M8: Linux CLI compatibility demo
+## M8: Linux CLI compatibility (completed)
 
-- shell utilities or a small Linux user program run under compatibility mode
+Exit criterion was "shell utilities or a small Linux user program run under
+compatibility mode". Delivered, and gated:
 
-## M9: Windows console compatibility demo
+- a static musl binary and a static glibc BusyBox, neither built by this
+  project, load at the address they were linked for and reach `main`
+- BusyBox dispatches on its own name and runs `echo`, `cat` and `ls`, reaching
+  the filesystem through `openat`, `fstat`, `read` and `getdents64`
+- its shell parses a script, runs builtins, searches `PATH`, forks and execs
+- the boot fails on `busybox_did_not_run`, `busybox_applet_dispatch_failed`,
+  `busybox_file_operations_failed` and `interactive_shell_did_not_run`
 
-- basic Windows user-space executable runs in controlled scope
+## M9: process semantics (completed)
 
-## M10: architecture review for expansion
+Not in the original plan. It became a milestone because two things a real
+program assumes were missing, and both are invisible until something depends
+on them:
 
-- reassess kernel and service boundaries
-- validate security posture
-- review risk register and compatibility scope
-- decide ARM64 and GUI next steps
+- signals are raised, masked, queued and delivered on the way back to user
+  space, with the frame built on the process's own stack below the red zone.
+  Verified by a program written against Linux, so the return trampoline comes
+  from a real C library rather than from a test that agrees with us
+- `fork` shares pages copy-on-write instead of copying them. Measured: 1221
+  pages shared, 24 later duplicated. A shell forks for every command and the
+  `exec` after it discards the copy, so eager copying was work guaranteed to
+  be wasted
+
+## M10: a machine with a screen (in progress)
+
+- **done**: PS/2 mouse driver on IRQ12 with packet resynchronisation, a
+  framebuffer desktop with a pointer, and a window that mirrors the console so
+  the machine shows what it has been saying on the serial line
+- **done**: the boot gate fails if the on-screen terminal stayed empty
+- **remaining**: typed characters still reach only the shell; `Ctrl-C` becomes
+  `SIGINT` but that path is not yet exercised by a test
+- **remaining**: the pixels are checked by `scripts/dev/screenshot.py`, run by
+  hand. A gate that a human has to remember to run is not a gate
+
+## M11: graphical user space
+
+The GUI is currently kernel code, which makes it a drawing rather than a window
+system. Exit criterion: a ring-3 program draws its own window and receives its
+own input.
+
+- syscalls for querying the screen, presenting a buffer, and reading input
+- input routed to a focused window rather than to whatever reads the console
+- the desktop itself becomes one of those programs
+
+## M12: usable without a serial cable
+
+The point at which someone can sit in front of the machine and use it. Exit
+criterion: boot to a shell in a window, type, and get output, with no serial
+console attached.
+
+- keyboard into the terminal window, including editing
+- `dup`, `dup2`, `pipe2` and `poll`, without which a shell cannot do `ls | wc`
+- the boot self-test driven through that path, so it is gated rather than
+  demonstrated
+
+## M13: dynamic executables
+
+Today `ET_DYN` and `PT_INTERP` are refused, so "runs Linux programs" means
+static ones. Exit criterion: a dynamically linked binary runs.
+
+- load the interpreter, hand it the auxiliary vector, let it relocate
+- `mmap` with file backing, which needs a page cache
+- shared library search and `openat` on a real directory tree
+
+## M14: threads
+
+`clone` with `CLONE_VM` returns `ENOSYS` and futexes are answered honestly
+rather than implemented. Exit criterion: a threaded program runs correctly
+under contention.
+
+- threads sharing an address space, with per-thread TLS and kernel stacks
+- real futex wait and wake
+- `set_robust_list` starts meaning something
+
+## M15: Windows console compatibility
+
+Unchanged in scope, moved in order. A PE loader and enough of the NT
+user-space surface for a console executable, in a subsystem outside the kernel.
+
+## M16: durable storage
+
+FAT has no journal, so a write interrupted by a reset can leave the volume
+inconsistent. Exit criterion: power loss during a write does not corrupt the
+filesystem.
+
+- a filesystem with ordered metadata updates
+- a block cache with write-back and barriers
+- a test that cuts power mid-write and checks the result
+
+## M17: architecture review for expansion
+
+- reassess kernel and service boundaries now that there is a user space
+- validate the security posture: there is one identity, and it is root
+- review the risk register and compatibility scope
+- decide ARM64
