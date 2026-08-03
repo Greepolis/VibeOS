@@ -53,6 +53,19 @@ static uint32_t *g_back;
 static int32_t g_last_cx = -1, g_last_cy = -1;
 static uint32_t g_frames;
 
+/* The window is a terminal: whatever the system writes to the console is also
+ * written here, so the machine shows on screen what it has been saying on the
+ * serial line. Text is kept in a small grid and redrawn on change rather than
+ * scrolled pixel by pixel, because scrolling a framebuffer means reading it
+ * back, and reading write-combining video memory is far slower than
+ * recomposing from a buffer that lives in ordinary RAM. */
+#define TERM_COLS 72u
+#define TERM_ROWS 24u
+static char g_term[TERM_ROWS][TERM_COLS];
+static uint32_t g_term_col, g_term_row;
+static uint32_t g_win_x, g_win_y, g_win_w, g_win_h;
+static int g_term_dirty;
+
 extern const uint8_t *vibeos_x86_64_fb_font_row(char c, uint32_t row);
 
 static void fill_rect(uint32_t *dst, uint32_t x, uint32_t y, uint32_t w, uint32_t h,
@@ -154,25 +167,92 @@ static void blit_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
 }
 
 /* Draw everything that does not move. */
+/* Repaint the window's text area from the character grid. */
+static void compose_terminal(void) {
+    uint32_t row;
+
+    fill_rect(g_back, g_win_x + 4u, g_win_y + 22u,
+              g_win_w - 8u, g_win_h - 26u, COL_WINDOW);
+    for (row = 0; row < TERM_ROWS; row++) {
+        uint32_t col;
+        uint32_t y = g_win_y + 24u + row * 9u;
+        if (y + 8u > g_win_y + g_win_h - 2u) {
+            break;
+        }
+        for (col = 0; col < TERM_COLS; col++) {
+            char c = g_term[row][col];
+            if (c == 0) {
+                break;
+            }
+            draw_char(g_back, g_win_x + 8u + col * 8u, y, c, COL_TEXT);
+        }
+    }
+}
+
 static void compose_desktop(void) {
-    uint32_t win_x = g_w / 8u;
-    uint32_t win_y = g_h / 6u;
-    uint32_t win_w = (g_w * 3u) / 5u;
-    uint32_t win_h = (g_h * 2u) / 5u;
+    g_win_x = g_w / 8u;
+    g_win_y = g_h / 6u;
+    g_win_w = TERM_COLS * 8u + 16u;
+    g_win_h = TERM_ROWS * 9u + 32u;
+    if (g_win_x + g_win_w > g_w) {
+        g_win_w = g_w - g_win_x;
+    }
+    if (g_win_y + g_win_h > g_h) {
+        g_win_h = g_h - g_win_y;
+    }
 
     fill_rect(g_back, 0, 0, g_w, g_h, COL_DESKTOP);
     fill_rect(g_back, 0, 0, g_w, 24u, COL_PANEL);
     draw_text(g_back, 8u, 8u, "VibeOS", COL_TITLETXT);
 
-    fill_rect(g_back, win_x, win_y, win_w, win_h, COL_WINDOW);
-    fill_rect(g_back, win_x, win_y, win_w, 20u, COL_TITLE);
-    draw_text(g_back, win_x + 6u, win_y + 6u, "console", COL_TITLETXT);
-    draw_text(g_back, win_x + 10u, win_y + 34u,
-              "a real Linux binary ran here", COL_TEXT);
-    draw_text(g_back, win_x + 10u, win_y + 48u,
-              "busybox sh is the system shell", COL_TEXT);
-    draw_text(g_back, win_x + 10u, win_y + 62u,
-              "move the mouse", COL_TEXT);
+    fill_rect(g_back, g_win_x, g_win_y, g_win_w, g_win_h, COL_WINDOW);
+    fill_rect(g_back, g_win_x, g_win_y, g_win_w, 20u, COL_TITLE);
+    draw_text(g_back, g_win_x + 6u, g_win_y + 6u, "console", COL_TITLETXT);
+    compose_terminal();
+}
+
+/* One character into the terminal grid. Called from the console write path, so
+ * it does the least possible work: it only marks the window dirty, and the
+ * repaint happens on the timer where a full recompose is affordable. */
+void vibeos_x86_64_gui_putc(char c) {
+    if (!g_active) {
+        return;
+    }
+    if (c == '\r') {
+        return;
+    }
+    if (c == '\n') {
+        g_term_col = 0;
+        g_term_row++;
+    } else if (c == '\b') {
+        if (g_term_col > 0u) {
+            g_term_col--;
+            g_term[g_term_row][g_term_col] = 0;
+        }
+    } else {
+        if (g_term_col >= TERM_COLS - 1u) {
+            g_term_col = 0;
+            g_term_row++;
+        }
+        if (g_term_row < TERM_ROWS) {
+            g_term[g_term_row][g_term_col++] = c;
+        }
+    }
+    if (g_term_row >= TERM_ROWS) {
+        /* Scroll by moving the grid, not the pixels. */
+        uint32_t r, cc;
+        for (r = 1; r < TERM_ROWS; r++) {
+            for (cc = 0; cc < TERM_COLS; cc++) {
+                g_term[r - 1u][cc] = g_term[r][cc];
+            }
+        }
+        for (cc = 0; cc < TERM_COLS; cc++) {
+            g_term[TERM_ROWS - 1u][cc] = 0;
+        }
+        g_term_row = TERM_ROWS - 1u;
+        g_term_col = 0;
+    }
+    g_term_dirty = 1;
 }
 
 int vibeos_x86_64_gui_init(uint64_t fb_base, uint32_t width, uint32_t height,
@@ -196,6 +276,18 @@ int vibeos_x86_64_gui_init(uint64_t fb_base, uint32_t width, uint32_t height,
     return 0;
 }
 
+uint32_t vibeos_x86_64_gui_term_chars(void) {
+    uint32_t row, col, n = 0;
+    for (row = 0; row < TERM_ROWS; row++) {
+        for (col = 0; col < TERM_COLS; col++) {
+            if (g_term[row][col]) {
+                n++;
+            }
+        }
+    }
+    return n;
+}
+
 int vibeos_x86_64_gui_active(void) {
     return g_active;
 }
@@ -213,6 +305,15 @@ void vibeos_x86_64_gui_tick(void) {
     if (!g_active || !vibeos_x86_64_mouse_ready()) {
         return;
     }
+    /* Repaint the text before the pointer, so the pointer is drawn on top of
+     * current content rather than being erased by it. */
+    if (g_term_dirty) {
+        g_term_dirty = 0;
+        compose_terminal();
+        blit_rect(g_win_x, g_win_y, g_win_w, g_win_h);
+        g_last_cx = -1;   /* whatever was under the pointer is gone */
+    }
+
     vibeos_x86_64_mouse_state(&cx, &cy, &buttons);
     if (cx == g_last_cx && cy == g_last_cy) {
         return;

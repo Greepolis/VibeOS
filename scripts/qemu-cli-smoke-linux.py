@@ -101,7 +101,12 @@ def find_ovmf_pair():
 # TCG cores, so this is generous - but a boot that reaches the kernel and then
 # says nothing for two minutes has stopped, and waiting out the rest of the
 # budget only delays a verdict that is already decided.
-QUIET_GIVE_UP_SEC = 120
+# Long enough that an unoptimised build under emulation is not mistaken for a
+# wedged one. A Debug kernel loading a two-megabyte program on four TCG cores
+# can be silent for well over two minutes while doing real work, and cutting it
+# off there reported a hang that was not one. Still far below the budget, so a
+# genuine hang is caught in minutes instead of at the end.
+QUIET_GIVE_UP_SEC = 300
 
 
 def wait_for(buffer_getter, needle, deadline, last_rx_getter=None):
@@ -223,6 +228,12 @@ def main():
             checks = [
                 ("BOOT_OK", None),
                 ("CLI_READY", None),
+                # Wait for the user-space self-test to finish before driving
+                # the kernel CLI. The two run concurrently, and on a slower
+                # build the halt below arrived while the script was still
+                # working - failing the invariants for a reason that had
+                # nothing to do with the kernel.
+                ("VIBEOS_SELFTEST_DONE", None),
                 ("vibeos> ", b"help\r"),
                 ("Commands: help, status, log, echo <text>, halt, reboot", b"status\r"),
                 ("stage=core_ready", b"echo vibeos\r"),
@@ -340,6 +351,17 @@ def main():
             if os.path.exists(signal_elf):
                 if "SIG_OK" not in text:
                     problems.append("signal_delivery_broken")
+
+            # The graphical shell, to the extent a serial log can speak for
+            # it: the console has to have reached the on-screen terminal. Only
+            # checked when a desktop came up at all, since a build without a
+            # framebuffer is not a failing one.
+            gui = re.search(r"GUI_STATS frames=0x([0-9a-f]+) termchars=0x([0-9a-f]+)", text)
+            if "[GUI] desktop up" in text:
+                if gui is None:
+                    problems.append("gui_reported_nothing")
+                elif int(gui.group(2), 16) == 0:
+                    problems.append("gui_terminal_empty")
 
             musl = os.path.join(efi_root, "EFI", "BOOT", "MUSL.ELF")
             if os.path.exists(musl):

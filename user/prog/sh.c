@@ -187,7 +187,10 @@ static const char *program_name(const char *path) {
         }
         p++;
     }
-    while (base[i] && base[i] != '.' && i < (int)sizeof(g_argv0) - 1) {
+    /* The bound is tested before the subscript, not after it. Reading
+      * base[i] first and only then asking whether i is in range means the read
+      * that goes out of bounds has already happened. */
+    while (i < (int)sizeof(g_argv0) - 1 && base[i] && base[i] != '.') {
         char c = base[i];
         g_argv0[i] = (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
         i++;
@@ -210,7 +213,10 @@ static char *g_envp[] = {
 };
 
 static void run_program(char *line) {
-    static char *argv[SH_MAX_ARGS + 1];
+    /* Not static: these point into the caller's line buffer, and a static
+     * array keeps them reachable after that buffer is gone. The array is a
+     * dozen words - there is nothing to save by sharing it. */
+    char *argv[SH_MAX_ARGS + 1];
     long child;
     const char *path;
 

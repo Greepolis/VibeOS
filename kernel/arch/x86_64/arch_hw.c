@@ -382,6 +382,7 @@ extern int vibeos_x86_64_gui_init(uint64_t fb_base, uint32_t width, uint32_t hei
 extern void vibeos_x86_64_gui_tick(void);
 extern int vibeos_x86_64_gui_active(void);
 extern uint32_t vibeos_x86_64_gui_frames(void);
+extern uint32_t vibeos_x86_64_gui_term_chars(void);
 extern int vibeos_x86_64_keyboard_getc(void);
 extern void vibeos_x86_64_keyboard_inject(const char *s);
 extern int vibeos_x86_64_fb_init(uint64_t base, uint32_t width, uint32_t height);
@@ -489,6 +490,7 @@ static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code);
  * here so a signal raised while a task was running is delivered on the way
  * back to ring 3 rather than at the next syscall. */
 static int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame);
+static int hw_signal_raise(int task_index, uint32_t sig);
 
 static void hw_log_field(const char *name, uint64_t value) {
     vibeos_x86_64_serial_puts(name);
@@ -703,6 +705,41 @@ static uint32_t g_pool_next;
 static uint8_t g_exec_elf_static[65536] __attribute__((aligned(16)));
 static uint8_t *g_exec_elf = g_exec_elf_static;
 static uint32_t g_exec_elf_cap = (uint32_t)sizeof(g_exec_elf_static);
+
+/* Which image the staging buffer currently holds.
+ *
+ * A shell runs the same binary over and over - every external command in a
+ * BusyBox system is the same two megabytes - and re-reading it from the
+ * filesystem each time is the single most expensive thing an exec does. The
+ * buffer is already there and already holds exactly those bytes, so the read
+ * can be skipped when the path has not changed.
+ *
+ * Correctness rests on the whole thing living under g_exec_lock, and on any
+ * write to the volume dropping the cache: a program that has been rewritten
+ * must not keep running as its old self. */
+static char g_exec_cached[128];
+static long g_exec_cached_len;
+
+static void hw_exec_cache_drop(void) {
+    g_exec_cached[0] = 0;
+    g_exec_cached_len = 0;
+}
+
+static int hw_exec_cache_hit(const char *path) {
+    uint32_t i;
+    if (g_exec_cached_len <= 0) {
+        return 0;
+    }
+    for (i = 0; i < sizeof(g_exec_cached); i++) {
+        if (g_exec_cached[i] != path[i]) {
+            return 0;
+        }
+        if (path[i] == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
 
 /* How many address spaces map each physical frame.
  *
@@ -1610,6 +1647,33 @@ static int hw_pick_next(hw_cpu_t *cpu) {
         return -1;  /* still runnable and nothing better: no switch */
     }
     return cpu->idle_task;  /* current task blocked/died: fall back to idle */
+}
+
+/* Control-C from the console.
+ *
+ * A real system sends this to the foreground process group of the controlling
+ * terminal. There are no sessions or process groups here, so the target is the
+ * most recently created live user task - which is the one the console is
+ * talking to in every arrangement this system can currently produce. That is a
+ * limitation of the model, not an approximation of the signal: the signal
+ * itself is delivered exactly as any other. */
+void vibeos_x86_64_console_interrupt(void) {
+    int i, newest = -1;
+    uint32_t best = 0;
+
+    for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+        if (!g_tasks[i].is_user || g_tasks[i].state == HW_TASK_FREE ||
+            g_tasks[i].state == HW_TASK_ZOMBIE) {
+            continue;
+        }
+        if (newest < 0 || g_tasks[i].pid > best) {
+            best = g_tasks[i].pid;
+            newest = i;
+        }
+    }
+    if (newest >= 0) {
+        (void)hw_signal_raise(newest, VIBEOS_SIGINT);
+    }
 }
 
 /* Wake every task blocked in read() on stdin (called from the keyboard IRQ). */
@@ -2706,6 +2770,10 @@ static long hw_sys_close(uint64_t fd) {
         return 0;
     }
     if (f->writable && f->dirty) {
+        /* The volume changed, so a staged image may no longer match the file
+         * it came from. Dropping it here is the whole basis for trusting the
+         * cache: a rewritten program must not keep running as its old self. */
+        hw_exec_cache_drop();
         if (vibeos_x86_64_fat_write_file(f->name, f->wbuf, f->wlen) < 0) {
             rc = -VIBEOS_EIO;
         }
@@ -2997,6 +3065,13 @@ static long hw_sys_mprotect(uint64_t addr, uint64_t len, uint64_t prot) {
     }
     for (va = addr; va < end; va += 4096ull) {
         uint64_t *pte = hw_pte_lookup(&proc->as, va);
+        /* The pass above established that every page in the range is mapped,
+         * so this cannot be NULL - but checking there and not here is the kind
+         * of asymmetry that survives a later edit to one loop and not the
+         * other, and the cost of being consistent is one branch. */
+        if (!pte) {
+            continue;
+        }
         if (prot & PROT_WRITE) {
             *pte |= PTE_WRITE;
         } else {
@@ -3393,7 +3468,20 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
          * what BusyBox uses to decide which applet it is. */
         argv = (na > 0) ? g_exec_argv.slot : (const char *const *)fallback_argv;
     }
-    n = vibeos_x86_64_fat_read_file(path, g_exec_elf, g_exec_elf_cap);
+    if (hw_exec_cache_hit(path)) {
+        n = g_exec_cached_len;   /* already staged, byte for byte */
+    } else {
+        hw_exec_cache_drop();
+        n = vibeos_x86_64_fat_read_file(path, g_exec_elf, g_exec_elf_cap);
+        if (n > 0) {
+            uint32_t i;
+            for (i = 0; i < sizeof(g_exec_cached) - 1u && path[i]; i++) {
+                g_exec_cached[i] = path[i];
+            }
+            g_exec_cached[i] = 0;
+            g_exec_cached_len = n;
+        }
+    }
     if (n <= 0) {
         hw_spin_unlock(&g_exec_lock);
         return -VIBEOS_ENOENT;
@@ -4813,6 +4901,12 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                   "echo ASH_INTERACTIVE_OK\n"
                                   "cat DOCS/NOTES.TXT\n"
                                   "ls /EFI/BOOT\n"
+                                  /* The last thing the self-test says. The boot
+                                   * harness waits for this before driving the
+                                   * kernel CLI, so a slower build cannot have
+                                   * its script cut short by a halt that arrived
+                                   * while it was still working. */
+                                  "echo VIBEOS_SELFTEST_DONE\n"
                                   "exit\n");
 
     hello_id = hw_task_spawn_user(init_elf, init_len, init_argv);
@@ -4866,6 +4960,20 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
     vibeos_x86_64_serial_puts("[SCHED] all user tasks retired; kernel task continues\n");
 
     if (vibeos_compat_stats(&g_compat_rt, &translated, &denied) == 0) {
+        /* The graphical shell cannot be checked from a log - a log can only
+         * say a desktop was composed. What it can report is whether the
+         * pieces underneath it did work: how many pointer repaints happened
+         * (so the mouse produced packets) and how many characters reached the
+         * on-screen terminal (so the console really is mirrored). Both being
+         * non-zero is weak evidence of a picture and strong evidence that the
+         * paths are alive; screenshot.py is what looks at pixels. */
+        if (vibeos_x86_64_gui_active()) {
+            vibeos_x86_64_serial_puts("[GUI] GUI_STATS frames=0x");
+            vibeos_x86_64_serial_print_hex(vibeos_x86_64_gui_frames());
+            vibeos_x86_64_serial_puts(" termchars=0x");
+            vibeos_x86_64_serial_print_hex(vibeos_x86_64_gui_term_chars());
+            vibeos_x86_64_serial_puts("\n");
+        }
         vibeos_x86_64_serial_puts("[MM] COW_STATS shared=0x");
         vibeos_x86_64_serial_print_hex(g_cow_shared);
         vibeos_x86_64_serial_puts(" copied=0x");

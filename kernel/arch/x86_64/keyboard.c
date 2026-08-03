@@ -30,13 +30,38 @@ static volatile uint32_t g_head; /* producer (IRQ) */
 static volatile uint32_t g_tail; /* consumer (read) */
 
 /* Called from the IRQ1 handler: read the scancode and enqueue any ASCII. */
+/* Raised by the console when the interrupt key is typed. Weak so this file
+ * still links where there is no process to signal. */
+__attribute__((weak)) void vibeos_x86_64_console_interrupt(void) { }
+
+/* Control is a modifier, so it has to be tracked across keystrokes: the scan
+ * code for C is the same whether or not Control is down, and the difference is
+ * entirely in what arrived before it. */
+static int g_ctrl_down;
+#define KBD_SC_LCTRL 0x1Du
+#define KBD_SC_C     0x2Eu
+
 void vibeos_x86_64_keyboard_irq(void) {
     uint8_t sc = kbd_inb(KBD_DATA);
     char c;
     uint32_t next;
 
     if (sc & 0x80u) {
+        if ((sc & 0x7Fu) == KBD_SC_LCTRL) {
+            g_ctrl_down = 0;
+        }
         return; /* break code (key release) */
+    }
+    if (sc == KBD_SC_LCTRL) {
+        g_ctrl_down = 1;
+        return;
+    }
+    if (g_ctrl_down && sc == KBD_SC_C) {
+        /* Control-C is not a character. Putting it in the input ring would
+         * hand the shell a byte to echo; it has to become a signal, which is
+         * the whole difference between a terminal and a pipe. */
+        vibeos_x86_64_console_interrupt();
+        return;
     }
     if (sc >= 0x3Au) {
         return; /* outside the simple map */
