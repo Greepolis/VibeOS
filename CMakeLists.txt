@@ -166,6 +166,8 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         kernel/arch/x86_64/fat.c
         kernel/arch/x86_64/keyboard.c
         kernel/arch/x86_64/fb.c
+        kernel/arch/x86_64/mouse.c
+        kernel/arch/x86_64/gui.c
         # Freestanding mem* runtime: the kernel image links -nostdlib, and some
         # compilers (notably Clang) lower struct copies to memcpy/memset calls
         # that GCC inlines. Provide the implementations so the image links on

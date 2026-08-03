@@ -373,6 +373,15 @@ extern long vibeos_x86_64_fat_write_file(const char *name, const void *buf, uint
 extern int vibeos_x86_64_fat_unlink(const char *path);
 extern int vibeos_x86_64_fat_mkdir(const char *path);
 extern void vibeos_x86_64_keyboard_irq(void);
+extern void vibeos_x86_64_mouse_irq(void);
+extern int vibeos_x86_64_mouse_init(uint32_t width, uint32_t height);
+extern int vibeos_x86_64_mouse_ready(void);
+extern uint32_t vibeos_x86_64_mouse_packets(void);
+extern int vibeos_x86_64_gui_init(uint64_t fb_base, uint32_t width, uint32_t height,
+                                  void *back_buffer);
+extern void vibeos_x86_64_gui_tick(void);
+extern int vibeos_x86_64_gui_active(void);
+extern uint32_t vibeos_x86_64_gui_frames(void);
 extern int vibeos_x86_64_keyboard_getc(void);
 extern void vibeos_x86_64_keyboard_inject(const char *s);
 extern int vibeos_x86_64_fb_init(uint64_t base, uint32_t width, uint32_t height);
@@ -448,7 +457,8 @@ static void hw_pic_remap(void) {
     hw_outb(PIC2_DATA, 0x02); hw_io_wait();  /* ICW3: slave cascade id      */
     hw_outb(PIC1_DATA, 0x01); hw_io_wait();  /* ICW4: 8086 mode             */
     hw_outb(PIC2_DATA, 0x01); hw_io_wait();
-    hw_outb(PIC1_DATA, 0xFC);                /* unmask IRQ0 (timer) + IRQ1 (kbd) */
+    hw_outb(PIC1_DATA, 0xF8);   /* IRQ0 timer, IRQ1 keyboard, IRQ2 cascade */
+    hw_outb(PIC2_DATA, 0xEF);   /* IRQ12 mouse, on the slave controller */
     hw_outb(PIC2_DATA, 0xFF);                /* mask all slave IRQs          */
 }
 
@@ -541,9 +551,15 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
              * core would just contend on the same lock. */
             if (!g_apic_mode || hw_this_cpu()->index == 0u) {
                 hw_net_pump();
+                /* Repaint the pointer. Cheap by construction: it touches only
+                 * the two small rectangles that can have changed. */
+                vibeos_x86_64_gui_tick();
             }
             hw_schedule(frame); /* may rewrite the frame to switch tasks */
             return;
+        }
+        if (frame->vector == 44u) { /* IRQ12: PS/2 mouse */
+            vibeos_x86_64_mouse_irq();
         }
         if (frame->vector == 33u) { /* IRQ1: keyboard */
             vibeos_x86_64_keyboard_irq();
@@ -4067,6 +4083,9 @@ static void hw_apic_bringup(const vibeos_boot_info_t *boot_info) {
     g_cpus[0].online = 1;
 
     vibeos_x86_64_pic_disable();   /* no double delivery from the 8259s */
+    if (vibeos_x86_64_ioapic_route(12u, 44u, bsp_id) != 0) {
+        vibeos_x86_64_serial_puts("[APIC] failed to route the mouse IRQ\n");
+    }
     if (vibeos_x86_64_ioapic_route(1u, 33u, bsp_id) != 0) {
         vibeos_x86_64_serial_puts("[APIC] failed to route the keyboard IRQ\n");
     }
@@ -4271,7 +4290,35 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
     hw_pmm_bringup(boot_info);
 
     /* Display console: render text into the firmware framebuffer, if any. */
-    if (boot_info && vibeos_x86_64_fb_init(boot_info->framebuffer_base,
+    if (boot_info && boot_info->framebuffer_base != 0u) {
+        /* The graphical shell needs a screen-sized back buffer. Taken from the
+         * page allocator, since a static one would put several megabytes of
+         * .bss into every kernel image including the ones that never see a
+         * framebuffer. */
+        uint64_t px = (uint64_t)boot_info->framebuffer_width *
+                      boot_info->framebuffer_height;
+        uint64_t pages = (px * 4ull + 4095ull) / 4096ull;
+        void *back = g_hw_pmm_ready ? vibeos_pmm_alloc_pages(&g_hw_pmm, (size_t)pages) : 0;
+
+        if (vibeos_x86_64_mouse_init(boot_info->framebuffer_width,
+                                     boot_info->framebuffer_height) == 0) {
+            vibeos_x86_64_serial_puts("[MOUSE] PS/2 mouse ready on IRQ12\n");
+        } else {
+            vibeos_x86_64_serial_puts("[MOUSE] no PS/2 mouse\n");
+        }
+        if (back && ((uint64_t)(uintptr_t)back + px * 4ull) <= VIBEOS_HW_IDENTITY_LIMIT &&
+            vibeos_x86_64_gui_init(boot_info->framebuffer_base,
+                                   boot_info->framebuffer_width,
+                                   boot_info->framebuffer_height, back) == 0) {
+            vibeos_x86_64_serial_puts("[GUI] desktop up: 0x");
+            vibeos_x86_64_serial_print_hex(boot_info->framebuffer_width);
+            vibeos_x86_64_serial_puts("x0x");
+            vibeos_x86_64_serial_print_hex(boot_info->framebuffer_height);
+            vibeos_x86_64_serial_puts("\n");
+        }
+    }
+    if (boot_info && !vibeos_x86_64_gui_active() &&
+        vibeos_x86_64_fb_init(boot_info->framebuffer_base,
                                            boot_info->framebuffer_width,
                                            boot_info->framebuffer_height) == 0) {
         vibeos_x86_64_serial_puts("[FB] framebuffer console ready: 0x");

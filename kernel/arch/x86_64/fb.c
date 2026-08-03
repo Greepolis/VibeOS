@@ -41,6 +41,20 @@ static const uint8_t g_font[95][8] = {
 {24,24,24,0,24,24,24,0},{7,12,12,56,12,12,7,0},{110,59,0,0,0,0,0,0}
 };
 
+/* One row of one glyph, so the graphical shell can draw text without a second
+ * copy of the font. Returns NULL for characters the font does not cover. */
+const uint8_t *vibeos_x86_64_fb_font_row(char c, uint32_t row) {
+    uint32_t idx;
+    if (row >= FB_FONT_H) {
+        return 0;
+    }
+    if ((unsigned char)c < 0x20u || (unsigned char)c > 0x7Eu) {
+        return 0;
+    }
+    idx = (uint32_t)((unsigned char)c - 0x20u);
+    return &g_font[idx][row];
+}
+
 static uint32_t *g_fb;
 static uint32_t g_w, g_h, g_cols, g_rows, g_cx, g_cy;
 static int g_ready;

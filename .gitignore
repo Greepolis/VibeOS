@@ -56,3 +56,5 @@ build-wsl/
 # Python bytecode from the test harness scripts
 __pycache__/
 *.pyc
+vibeos-screen.ppm
+vibeos-screen.png
