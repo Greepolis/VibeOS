@@ -223,6 +223,20 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
             VERBATIM
         )
         add_custom_target(vibeos_musl_hello ALL DEPENDS "${VIBEOS_MUSL_BIN}")
+
+        # Signals, exercised by a program written against Linux rather than
+        # against this kernel - the trampoline a handler returns through comes
+        # from the C library, so only a real one tests the real path.
+        set(VIBEOS_SIG_SRC "${CMAKE_CURRENT_SOURCE_DIR}/tests/linux/musl_signal.c")
+        set(VIBEOS_SIG_BIN "${CMAKE_BINARY_DIR}/musl_signal")
+        add_custom_command(
+            OUTPUT "${VIBEOS_SIG_BIN}"
+            COMMAND "${VIBEOS_MUSL_GCC}" -static -O2 -o "${VIBEOS_SIG_BIN}" "${VIBEOS_SIG_SRC}"
+            DEPENDS "${VIBEOS_SIG_SRC}"
+            COMMENT "Building the signal test as a static Linux binary"
+            VERBATIM
+        )
+        add_custom_target(vibeos_musl_signal ALL DEPENDS "${VIBEOS_SIG_BIN}")
     else()
         message(STATUS "musl-gcc not found: the boot media will carry no unmodified Linux binary")
     endif()

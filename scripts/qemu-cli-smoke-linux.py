@@ -336,6 +336,11 @@ def main():
                 if "BUSYBOX_SH_OK" not in text:
                     problems.append("shell_script_did_not_run")
 
+            signal_elf = os.path.join(efi_root, "EFI", "BOOT", "SIGNAL.ELF")
+            if os.path.exists(signal_elf):
+                if "SIG_OK" not in text:
+                    problems.append("signal_delivery_broken")
+
             musl = os.path.join(efi_root, "EFI", "BOOT", "MUSL.ELF")
             if os.path.exists(musl):
                 if "MUSL_OK" not in text:

@@ -91,6 +91,12 @@ if(VIBEOS_BUSYBOX AND BB_MAGIC STREQUAL "7f454c46")
     message(STATUS "EFI media includes BusyBox applets: cat, ls, echo, wc")
 endif()
 
+set(SIG_ELF "${CMAKE_BINARY_DIR}/musl_signal")
+if(EXISTS "${SIG_ELF}")
+    file(COPY_FILE "${SIG_ELF}" "${EFI_BOOT_DIR}/SIGNAL.ELF" ONLY_IF_DIFFERENT)
+    message(STATUS "EFI media includes the signal test: EFI/BOOT/SIGNAL.ELF")
+endif()
+
 # Keep legacy kernel-as-image artifact for direct-loader probes.
 file(COPY_FILE "${KERNEL_ELF}" "${LEGACY_BOOT_IMAGE}" ONLY_IF_DIFFERENT)
 
