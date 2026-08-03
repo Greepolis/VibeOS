@@ -34,6 +34,38 @@ static uint32_t rd32(const uint8_t *p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
+/* One cached sector of the file allocation table.
+ *
+ * Following a chain re-read the same FAT sector for every cluster in it: a
+ * two-megabyte file meant about a thousand device round trips that returned
+ * identical bytes, on top of the thousand that carried actual data. A single
+ * sector of cache removes almost all of them, because a chain walks through
+ * the table in order.
+ *
+ * Invalidated on mount rather than on write, and the write path invalidates it
+ * explicitly - a stale entry here would send a read into the wrong cluster,
+ * which is the kind of corruption that surfaces far from its cause. */
+static uint8_t g_fatsec[SECTOR_SIZE];
+static uint32_t g_fatsec_lba;
+static int g_fatsec_valid;
+
+static void fat_cache_drop(void) {
+    g_fatsec_valid = 0;
+}
+
+static const uint8_t *fat_table_sector(uint32_t lba) {
+    if (g_fatsec_valid && g_fatsec_lba == lba) {
+        return g_fatsec;
+    }
+    if (vibeos_x86_64_virtio_blk_read(lba, g_fatsec) != 0) {
+        g_fatsec_valid = 0;
+        return 0;
+    }
+    g_fatsec_lba = lba;
+    g_fatsec_valid = 1;
+    return g_fatsec;
+}
+
 static int fat_mount_locked(void) {
     uint32_t part_lba = 0;
     uint16_t reserved, bytes_per_sec;
@@ -90,6 +122,7 @@ static int fat_mount_locked(void) {
     g_fat.root_lba = g_fat.fat_lba + 2u * g_fat.sectors_per_fat;         /* FAT16 root */
     g_fat.data_lba = g_fat.root_lba + root_dir_sectors;                  /* first data */
 
+    fat_cache_drop();
     g_fat.mounted = 1;
     vibeos_x86_64_serial_puts("[FAT] mounted ");
     vibeos_x86_64_serial_puts(g_fat.is_fat32 ? "FAT32" : "FAT16");
@@ -109,16 +142,18 @@ static uint32_t fat_cluster_lba(uint32_t cluster) {
 static uint32_t fat_next_cluster(uint32_t cluster) {
     if (g_fat.is_fat32) {
         uint32_t off = cluster * 4u;
-        if (vibeos_x86_64_virtio_blk_read(g_fat.fat_lba + off / SECTOR_SIZE, g_secbuf) != 0) {
+        const uint8_t *sec = fat_table_sector(g_fat.fat_lba + off / SECTOR_SIZE);
+        if (!sec) {
             return 0x0FFFFFFFu;
         }
-        return rd32(&g_secbuf[off % SECTOR_SIZE]) & 0x0FFFFFFFu;
+        return rd32(&sec[off % SECTOR_SIZE]) & 0x0FFFFFFFu;
     } else {
         uint32_t off = cluster * 2u;
-        if (vibeos_x86_64_virtio_blk_read(g_fat.fat_lba + off / SECTOR_SIZE, g_secbuf) != 0) {
+        const uint8_t *sec = fat_table_sector(g_fat.fat_lba + off / SECTOR_SIZE);
+        if (!sec) {
             return 0xFFFFu;
         }
-        return rd16(&g_secbuf[off % SECTOR_SIZE]);
+        return rd16(&sec[off % SECTOR_SIZE]);
     }
 }
 
@@ -247,6 +282,7 @@ static int fat_resolve(const char *path, uint32_t *out_cluster, uint32_t *out_si
 /* ---- public API: open / positional read / list / write ------------------- */
 
 extern int vibeos_x86_64_virtio_blk_write(uint64_t sector, const void *buf);
+extern int vibeos_x86_64_virtio_blk_read_many(uint64_t sector, void *buf, uint32_t sectors);
 
 /* Resolve a path to its first cluster and size (a file "open"). */
 static int fat_open_locked(const char *path, uint32_t *out_cluster, uint32_t *out_size) {
@@ -385,6 +421,7 @@ static int fat_set_entry(uint32_t cluster, uint32_t value) {
     if (vibeos_x86_64_virtio_blk_read(g_fat.fat_lba + s, g_fatbuf) != 0) {
         return -1;
     }
+    fat_cache_drop();
     if (g_fat.is_fat32) {
         wr32(&g_fatbuf[i * 4u], value & 0x0FFFFFFFu);
     } else {
@@ -746,23 +783,54 @@ static long fat_read_file_locked(const char *path, void *buf, uint32_t bufcap) {
     if (size > bufcap) {
         return -1;
     }
+    /* Read runs of consecutive clusters in single requests, straight into the
+     * caller's buffer.
+     *
+     * The previous form issued one request per 512-byte sector and copied each
+     * one through a bounce buffer. The cost of a request is what dominates -
+     * descriptors, a notify, a polled wait - so a two-megabyte program took
+     * about four thousand of them and minutes of wall time. A freshly written
+     * file is usually contiguous, so following the chain first and then reading
+     * the whole run at once turns those thousands of requests into tens. */
     while (!fat_chain_end(cluster) && cluster >= 2u && copied < size) {
-        uint32_t s;
-        for (s = 0; s < g_fat.sectors_per_cluster && copied < size; s++) {
-            uint32_t n, i;
-            if (vibeos_x86_64_virtio_blk_read(fat_cluster_lba(cluster) + s, g_secbuf) != 0) {
+        uint32_t run = 1u;
+        uint32_t first = cluster;
+        uint32_t next = fat_next_cluster(cluster);
+        uint32_t run_bytes, whole, tail;
+
+        while (!fat_chain_end(next) && next == first + run && copied +
+               (run + 1u) * g_fat.sectors_per_cluster * SECTOR_SIZE <= size + SECTOR_SIZE) {
+            run++;
+            next = fat_next_cluster(first + run - 1u);
+        }
+
+        run_bytes = run * g_fat.sectors_per_cluster * SECTOR_SIZE;
+        if (run_bytes > size - copied) {
+            run_bytes = size - copied;
+        }
+        /* Whole sectors go directly into the destination; a final partial
+         * sector goes through the bounce buffer so nothing is written past the
+         * end of what the caller asked for. */
+        whole = run_bytes / SECTOR_SIZE;
+        tail = run_bytes % SECTOR_SIZE;
+        if (whole > 0u &&
+            vibeos_x86_64_virtio_blk_read_many(fat_cluster_lba(first), out + copied,
+                                               whole) != 0) {
+            return -1;
+        }
+        copied += whole * SECTOR_SIZE;
+        if (tail > 0u) {
+            uint32_t i;
+            if (vibeos_x86_64_virtio_blk_read(fat_cluster_lba(first) + whole,
+                                              g_secbuf) != 0) {
                 return -1;
             }
-            n = size - copied;
-            if (n > SECTOR_SIZE) {
-                n = SECTOR_SIZE;
-            }
-            for (i = 0; i < n; i++) {
+            for (i = 0; i < tail; i++) {
                 out[copied + i] = g_secbuf[i];
             }
-            copied += n;
+            copied += tail;
         }
-        cluster = fat_next_cluster(cluster);
+        cluster = next;
     }
     return (long)size;
 }

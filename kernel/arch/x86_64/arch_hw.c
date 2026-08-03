@@ -1276,6 +1276,11 @@ typedef struct {
     uint32_t pos;
     int net_sock;         /* index into the TCP/IP stack, or -1 for a file */
     uint32_t dir_index;   /* for getdents64 on a directory fd */
+    /* Whether this descriptor names a directory. Determined when it is opened
+     * rather than guessed later: opendir() opens the path and then fstats the
+     * descriptor, and a descriptor that claims to be a regular file is refused
+     * with ENOTDIR no matter what stat said about the path a moment earlier. */
+    int isdir;
     char name[24];
     uint8_t wbuf[VIBEOS_HW_WBUF];
     uint32_t wlen;
@@ -1759,10 +1764,22 @@ static void hw_task_exit(uint64_t code) {
 #define LSYS_openat        257
 #define LSYS_newfstatat    262
 #define LSYS_readlinkat    267
+#define LSYS_kill           62
+#define LSYS_tgkill        234
+#define LSYS_time          201
 
 /* openat/newfstatat interpret a relative path against this directory fd. There
- * is no per-process working directory here, so it is the only value accepted. */
+ * is no per-process working directory here, so it is the only value accepted.
+ *
+ * Reading it needs care. Arguments the Linux ABI types as `int` arrive in the
+ * low half of a register, and writing a 32-bit register zeroes the upper half:
+ * a caller doing `mov $-100, %edi` delivers 0x00000000ffffff9c, not
+ * 0xffffffffffffff9c. Comparing the full 64 bits against -100 therefore never
+ * matches, and every relative open fails with ENOSYS - which is exactly what
+ * BusyBox reported as "can't open: Function not implemented". Read the low 32
+ * bits and sign-extend, as the kernel this ABI belongs to does. */
 #define AT_FDCWD           (-100)
+#define VIBEOS_ARG_INT(v)  ((int)(uint32_t)(v))
 #define AT_EMPTY_PATH      0x1000
 
 /* struct stat, x86-64 layout. Byte offsets rather than a struct definition
@@ -2028,6 +2045,14 @@ static long hw_sys_open(uint64_t path_uptr, uint64_t flags) {
         f->size = size;
         f->pos = 0;
         f->dir_index = 0;
+        {
+            char probe[16];
+            uint32_t probe_size = 0;
+            int probe_dir = 0;
+            f->isdir = (!writable &&
+                        vibeos_x86_64_fat_list(path, 0, probe, &probe_size,
+                                               &probe_dir) == 0) ? 1 : 0;
+        }
         f->wlen = 0;
         f->dirty = 0;
         f->writable = writable;
@@ -2635,7 +2660,7 @@ static long hw_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot,
     /* File-backed mappings need a page cache this kernel does not have. Say so
      * instead of returning anonymous zeroes, which would look like a file full
      * of NULs. */
-    if ((flags & MAP_ANONYMOUS) == 0 || (long)fd >= 0) {
+    if ((flags & MAP_ANONYMOUS) == 0 || VIBEOS_ARG_INT(fd) >= 0) {
         return -VIBEOS_ENOSYS;
     }
     if (prot == PROT_NONE) {
@@ -3046,13 +3071,7 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
          * what BusyBox uses to decide which applet it is. */
         argv = (na > 0) ? g_exec_argv.slot : (const char *const *)fallback_argv;
     }
-    vibeos_x86_64_serial_puts("[EXEC] reading ");
-    vibeos_x86_64_serial_puts(path);
-    vibeos_x86_64_serial_puts("\n");
     n = vibeos_x86_64_fat_read_file(path, g_exec_elf, g_exec_elf_cap);
-    vibeos_x86_64_serial_puts("[EXEC] read bytes=0x");
-    vibeos_x86_64_serial_print_hex((uint64_t)n);
-    vibeos_x86_64_serial_puts("\n");
     if (n <= 0) {
         hw_spin_unlock(&g_exec_lock);
         return -VIBEOS_ENOENT;
@@ -3066,10 +3085,20 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
     hw_spin_unlock(&g_exec_lock);
 
     t = &g_tasks[g_current_task];
-    for (k = 0; k < (uint32_t)sizeof(np.exe_path) - 1u && path[k]; k++) {
-        np.exe_path[k] = path[k];
+    /* Stored with a leading slash even when the caller used a relative path.
+     * /proc/self/exe is defined to be absolute, and a C runtime does not merely
+     * prefer that: glibc asserts on it during startup and aborts the process,
+     * which is how the relative form was found. */
+    {
+        uint32_t w = 0;
+        if (path[0] != '/') {
+            np.exe_path[w++] = '/';
+        }
+        for (k = 0; w < (uint32_t)sizeof(np.exe_path) - 1u && path[k]; k++) {
+            np.exe_path[w++] = path[k];
+        }
+        np.exe_path[w] = 0;
     }
-    np.exe_path[k] = 0;
     {
         vibeos_hw_aspace_t old_as = t->proc.as; /* reclaim after switching CR3 */
         t->proc = np;
@@ -3092,7 +3121,14 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
     frame->rflags = 0x202;
     frame->rsp = np.user_sp;
     frame->ss = VIBEOS_HW_USER_DATA_SEL;
-    vibeos_x86_64_serial_puts("[EXEC] entering image, rip=0x");
+    /* One line per exec: what was loaded, how big it was, and where it
+      * starts. Enough to tell a failed load from a failed program without
+      * being enough to drown the log. */
+    vibeos_x86_64_serial_puts("[EXEC] ");
+    vibeos_x86_64_serial_puts(path);
+    vibeos_x86_64_serial_puts(" bytes=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)n);
+    vibeos_x86_64_serial_puts(" entry=0x");
     vibeos_x86_64_serial_print_hex(np.entry);
     vibeos_x86_64_serial_puts("\n");
     return 0; /* frame replaced; syscall return enters the new image */
@@ -3162,6 +3198,10 @@ static long hw_sys_fstat(uint64_t fd, uint64_t ubuf) {
     if (f->net_sock >= 0) {
         return hw_write_stat(ubuf, S_IFCHR | 0600u, 0, fd + 1u);
     }
+    if (f->isdir) {
+        return hw_write_stat(ubuf, S_IFDIR | 0755u, 0,
+                             f->cluster ? f->cluster : fd + 1u);
+    }
     return hw_write_stat(ubuf, S_IFREG | 0644u, f->size, f->cluster ? f->cluster : fd + 1u);
 }
 
@@ -3182,7 +3222,7 @@ static long hw_sys_newfstatat(uint64_t dirfd, uint64_t path_uptr, uint64_t ubuf,
         }
         return hw_sys_fstat(dirfd, ubuf);
     }
-    if ((long)dirfd != AT_FDCWD && dirfd < 3u) {
+    if (VIBEOS_ARG_INT(dirfd) != AT_FDCWD && dirfd < 3u) {
         return -VIBEOS_EBADF;
     }
     /* The root of the volume, however it is spelled. */
@@ -3192,13 +3232,25 @@ static long hw_sys_newfstatat(uint64_t dirfd, uint64_t path_uptr, uint64_t ubuf,
     if (vibeos_x86_64_fat_open(path, &cluster, &size) != 0) {
         return -VIBEOS_ENOENT;
     }
+    /* Directory or file? The answer changes what a program does, not just what
+     * it prints: ls given a directory lists it and given a file names it, so
+     * reporting the wrong one produces a plausible, wrong result rather than an
+     * error. A path that can be listed is a directory. */
+    {
+        char probe[16];
+        uint32_t probe_size = 0;
+        int probe_dir = 0;
+        if (vibeos_x86_64_fat_list(path, 0, probe, &probe_size, &probe_dir) == 0) {
+            return hw_write_stat(ubuf, S_IFDIR | 0755u, 0, cluster ? cluster : 2u);
+        }
+    }
     return hw_write_stat(ubuf, S_IFREG | 0644u, size, cluster ? cluster : 2u);
 }
 
 /* openat(): the modern spelling of open. Only AT_FDCWD is accepted, because a
  * directory fd would have to mean something and here it cannot. */
 static long hw_sys_openat(uint64_t dirfd, uint64_t path_uptr, uint64_t flags) {
-    if ((long)dirfd != AT_FDCWD) {
+    if (VIBEOS_ARG_INT(dirfd) != AT_FDCWD) {
         return -VIBEOS_ENOSYS;
     }
     return hw_sys_open(path_uptr, flags);
@@ -3297,6 +3349,36 @@ static long hw_sys_prctl(uint64_t op, uint64_t arg) {
         return 0;
     }
     return -VIBEOS_EINVAL;
+}
+
+/* kill()/tgkill(): no signal is ever delivered here, and pretending otherwise
+ * would be a lie. But a process sending itself a fatal signal with no handler
+ * installed has exactly one possible outcome, and that outcome can be produced
+ * truthfully: the process dies with the status Linux would report.
+ *
+ * This is what abort() does, and a program that calls abort and keeps running
+ * is in a worse state than one that stops - it has already decided its own
+ * invariants are broken. Anything aimed at another process is refused, because
+ * delivering it is what does not exist. */
+static long hw_sys_kill(uint64_t target_pid, uint64_t sig) {
+    uint32_t me;
+
+    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+        return -VIBEOS_EINVAL;
+    }
+    if (sig == 0u) {
+        return 0;   /* the existence check; we exist */
+    }
+    if (sig > 64u) {
+        return -VIBEOS_EINVAL;
+    }
+    me = g_tasks[g_current_task].pid;
+    if ((uint32_t)target_pid != me) {
+        return -VIBEOS_EPERM;
+    }
+    /* Linux reports a signal death as 128 + signal to the waiting parent. */
+    hw_task_exit(128ull + sig);   /* does not return */
+    return 0;
 }
 
 /* setuid()/setgid(): there is one identity and it is root. Becoming it again
@@ -3502,6 +3584,18 @@ static long hw_sys_clock_gettime(uint64_t clk, uint64_t ts_uptr) {
     return 0;
 }
 
+static long hw_sys_time(uint64_t tptr) {
+    uint64_t secs = g_timer_ticks / VIBEOS_HW_TIMER_HZ;
+
+    if (tptr != 0u) {
+        if (!hw_user_range_ok(tptr, 8, 1)) {
+            return -VIBEOS_EFAULT;
+        }
+        *(uint64_t *)(uintptr_t)tptr = secs;
+    }
+    return (long)secs;
+}
+
 /* prlimit64(): report the limits that are real here. The stack is the one a
  * runtime acts on - some size a guard region from it. */
 static long hw_sys_prlimit64(uint64_t resource, uint64_t new_uptr, uint64_t old_uptr) {
@@ -3667,6 +3761,14 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
         case LSYS_setuid:
         case LSYS_setgid:
             return hw_sys_setresid(a1);
+        case LSYS_time:
+            return hw_sys_time(a1);
+        case LSYS_kill:
+            return hw_sys_kill(a1, a2);
+        case LSYS_tgkill:
+            /* tgkill(tgid, tid, sig): one thread per process, so the thread id
+             * is the process id and this is kill with an extra argument. */
+            return hw_sys_kill(a2, a3);
         case LSYS_sendfile:
             /* Every caller of sendfile has to cope with it failing, and does:
              * a read-and-write loop is the documented fallback. Refusing is
@@ -4042,6 +4144,8 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                   "EFI/BOOT/NET.ELF\n"
                                   "EFI/BOOT/MUSL.ELF\n"
                                   "EFI/BOOT/BUSYBOX.ELF echo BUSYBOX_ECHO_OK\n"
+                                  "EFI/BOOT/BUSYBOX.ELF cat DOCS/NOTES.TXT\n"
+                                  "EFI/BOOT/BUSYBOX.ELF ls EFI/BOOT\n"
                                   "exit\n");
 
     hello_id = hw_task_spawn_user(init_elf, init_len, init_argv);

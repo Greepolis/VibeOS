@@ -184,10 +184,21 @@ int vibeos_x86_64_virtio_blk_init(void) {
 /* Transfer one 512-byte sector. buf must be identity-mapped (phys == virt).
  * `write` selects VIRTIO_BLK_T_OUT; the data descriptor is device-writable only
  * for reads. */
-static int virtio_blk_rw(uint64_t sector, void *buf, int write) {
+/* Sectors per request.
+ *
+ * One request per 512-byte sector is correct and unusably slow: the cost here
+ * is per request, not per byte - a descriptor chain, a notify, and a polled
+ * wait for the device to come back. Reading a two-megabyte program that way
+ * takes about four thousand round trips and roughly two minutes under
+ * emulation. virtio-blk takes the transfer size from the data descriptor, so
+ * the same three descriptors can carry sixty-four kilobytes as easily as one
+ * sector. */
+#define VIRTIO_BLK_MAX_SECTORS 128u
+
+static int virtio_blk_rw_n(uint64_t sector, void *buf, uint32_t sectors, int write) {
     uint16_t head;
 
-    if (!g_ready || !buf) {
+    if (!g_ready || !buf || sectors == 0u || sectors > VIRTIO_BLK_MAX_SECTORS) {
         return -1;
     }
     g_req.type = write ? 1u : 0u;   /* OUT (write) / IN (read) */
@@ -200,7 +211,7 @@ static int virtio_blk_rw(uint64_t sector, void *buf, int write) {
     g_desc[0].flags = VRING_DESC_F_NEXT;
     g_desc[0].next = 1;
     g_desc[1].addr = (uint64_t)(uintptr_t)buf;
-    g_desc[1].len = 512;
+    g_desc[1].len = 512u * sectors;
     g_desc[1].flags = write ? VRING_DESC_F_NEXT
                             : (VRING_DESC_F_NEXT | VRING_DESC_F_WRITE);
     g_desc[1].next = 2;
@@ -235,9 +246,26 @@ static int virtio_blk_rw(uint64_t sector, void *buf, int write) {
 }
 
 int vibeos_x86_64_virtio_blk_read(uint64_t sector, void *buf) {
-    return virtio_blk_rw(sector, buf, 0);
+    return virtio_blk_rw_n(sector, buf, 1u, 0);
 }
 
 int vibeos_x86_64_virtio_blk_write(uint64_t sector, const void *buf) {
-    return virtio_blk_rw(sector, (void *)(uintptr_t)buf, 1);
+    return virtio_blk_rw_n(sector, (void *)(uintptr_t)buf, 1u, 1);
+}
+
+/* Read a run of consecutive sectors in as few requests as the device allows.
+ * `buf` must have room for `sectors` * 512 bytes. */
+int vibeos_x86_64_virtio_blk_read_many(uint64_t sector, void *buf, uint32_t sectors) {
+    uint8_t *out = (uint8_t *)buf;
+
+    while (sectors > 0u) {
+        uint32_t n = (sectors > VIRTIO_BLK_MAX_SECTORS) ? VIRTIO_BLK_MAX_SECTORS : sectors;
+        if (virtio_blk_rw_n(sector, out, n, 0) != 0) {
+            return -1;
+        }
+        sector += n;
+        out += (uint64_t)n * 512u;
+        sectors -= n;
+    }
+    return 0;
 }

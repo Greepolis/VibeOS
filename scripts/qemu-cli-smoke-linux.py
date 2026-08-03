@@ -96,10 +96,22 @@ def find_ovmf_pair():
     return code, vars_template
 
 
-def wait_for(buffer_getter, needle, deadline):
+# How long a guest may stay silent, once it has produced output at all, before
+# it is treated as wedged. Firmware goes quiet for long stretches with several
+# TCG cores, so this is generous - but a boot that reaches the kernel and then
+# says nothing for two minutes has stopped, and waiting out the rest of the
+# budget only delays a verdict that is already decided.
+QUIET_GIVE_UP_SEC = 120
+
+
+def wait_for(buffer_getter, needle, deadline, last_rx_getter=None):
     while time.monotonic() < deadline:
-        if needle in buffer_getter().replace("\r", ""):
+        text = buffer_getter().replace("\r", "")
+        if needle in text:
             return True
+        if last_rx_getter is not None and text:
+            if time.monotonic() - last_rx_getter() > QUIET_GIVE_UP_SEC:
+                return False   # wedged; the caller classifies it the same way
         time.sleep(0.05)
     return False
 
@@ -219,7 +231,7 @@ def main():
             ]
 
             for expected, command in checks:
-                if not wait_for(buffer, expected, deadline):
+                if not wait_for(buffer, expected, deadline, lambda: last_rx):
                     # Say which kind of failure this is, so nobody has to run a
                     # experiment to find out whether the guest froze or the
                     # budget was simply too small on a loaded machine.
@@ -227,6 +239,8 @@ def main():
                     idle = now - last_rx
                     if not serial_text:
                         kind = "no_output_at_all"      # never got past firmware
+                    elif idle >= QUIET_GIVE_UP_SEC:
+                        kind = "guest_wedged"          # gave up early on purpose
                     elif idle > 20:
                         # Silence is not proof of a hang: firmware is quiet for
                         # long stretches, especially with several TCG cores. The
@@ -296,6 +310,24 @@ def main():
             # regression that stops a real Linux program from starting must
             # fail the boot rather than be noticed later by someone reading
             # the log.
+            # BusyBox is a real program doing real work rather than a test
+            # written to pass: it dispatches on its own name, reads a file
+            # through openat/fstat/read, and lists a directory through
+            # getdents64. Checked only when the host had a static BusyBox to
+            # stage.
+            busybox = os.path.join(efi_root, "EFI", "BOOT", "BUSYBOX.ELF")
+            if os.path.exists(busybox):
+                if "BUSYBOX_ECHO_OK" not in text:
+                    problems.append("busybox_did_not_run")
+                if "applet not found" in text:
+                    problems.append("busybox_applet_dispatch_failed")
+                # Starting is not working. These are BusyBox's own error
+                # messages when a file operation fails, so they catch a
+                # regression in openat, fstat, read or getdents64 that would
+                # otherwise leave the boot looking green.
+                if "cat: can't open" in text or "ls: can't open" in text:
+                    problems.append("busybox_file_operations_failed")
+
             musl = os.path.join(efi_root, "EFI", "BOOT", "MUSL.ELF")
             if os.path.exists(musl):
                 if "MUSL_OK" not in text:

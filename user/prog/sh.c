@@ -147,16 +147,51 @@ static int split_args(char *line, char **argv) {
     return n;
 }
 
+/* The name a program is run under, as opposed to where its file lives.
+ *
+ * argv[0] is chosen by whoever calls exec, not by the filesystem - that is why
+ * a single BusyBox binary can be twenty commands, and why "exec -a" exists.
+ * Here the distinction is forced: this volume is FAT, which stores names in
+ * upper case with an 8.3 extension, so the file is BUSYBOX.ELF while the
+ * program it contains looks itself up as "busybox". Every system that mounts a
+ * FAT volume presents its names folded to lower case for the same reason.
+ *
+ * So the path is used to open the file, and this is used to name it. */
+static char g_argv0[24];
+
+static const char *program_name(const char *path) {
+    const char *base = path;
+    const char *p = path;
+    int i = 0;
+
+    while (*p) {
+        if (*p == '/' || *p == '\\') {
+            base = p + 1;
+        }
+        p++;
+    }
+    while (base[i] && base[i] != '.' && i < (int)sizeof(g_argv0) - 1) {
+        char c = base[i];
+        g_argv0[i] = (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+        i++;
+    }
+    g_argv0[i] = 0;
+    return g_argv0;
+}
+
 static void run_program(char *line) {
     static char *argv[SH_MAX_ARGS + 1];
     long child;
+    const char *path;
 
     if (split_args(line, argv) == 0) {
         return;
     }
+    path = argv[0];
+    argv[0] = (char *)(unsigned long)program_name(path);
     child = sys3(SYS_fork, 0, 0, 0);
     if (child == 0) {
-        sys3(SYS_execve, (long)(unsigned long)argv[0],
+        sys3(SYS_execve, (long)(unsigned long)path,
              (long)(unsigned long)argv, 0);
         put("sh: cannot exec\n");
         sys3(SYS_exit, 127, 0, 0);
@@ -177,6 +212,12 @@ static void run_program(char *line) {
 int vibeos_main(int argc, char **argv, char **envp) {
     (void)argc; (void)argv; (void)envp;
     char line[128];
+    /* split_word() cuts the line at the first space so the built-in commands
+     * can see their argument text. A program invoked from the same line needs
+     * the whole thing, so it is kept before the cut rather than reconstructed
+     * afterwards - reversing a destructive parse is how a shell ends up losing
+     * exactly the arguments it was asked to pass. */
+    char cmdline[128];
 
     put("VibeOS shell. Commands: help, echo <text>, exit, <program path>\n");
 
@@ -204,6 +245,11 @@ int vibeos_main(int argc, char **argv, char **envp) {
         if (line[0] == 0) {
             continue;
         }
+        for (i = 0; i < (int)sizeof(cmdline) - 1 && line[i]; i++) {
+            cmdline[i] = line[i];
+        }
+        cmdline[i] = 0;
+
         /* First word selects the command, the rest is its argument text. */
         args = split_word(line);
 
@@ -316,7 +362,7 @@ int vibeos_main(int argc, char **argv, char **envp) {
             put("sh: bye\n");
             sys3(SYS_exit, 0, 0, 0);
         } else {
-            run_program(line);
+            run_program(cmdline);
         }
     }
 }

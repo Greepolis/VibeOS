@@ -15,7 +15,7 @@ n="${2:-6}"
 
 pass=0
 for i in $(seq 1 "$n"); do
-    python3 scripts/qemu-cli-smoke-linux.py "$d" 900 > /dev/null 2>&1
+    python3 scripts/qemu-cli-smoke-linux.py "$d" 300 > /dev/null 2>&1
     r=$(grep -o '^reason=.*' qemu-cli-summary.txt | head -1)
     v=$(grep -aoE 'tls survived[^\r]*|tls lost[^\r]*|abi: [^\r]*|auxv wrong|MUSL_OK|action=PANIC' \
         qemu-cli-serial.log | sort -u | tr '\n' ';')

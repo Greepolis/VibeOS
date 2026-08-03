@@ -36,7 +36,10 @@ do_tests() {
 
 do_smoke() {
     echo "=== boot smoke $d"
-    python3 scripts/qemu-cli-smoke-linux.py "$d" 900 > /dev/null 2>&1
+    # 300s is ample for a healthy boot (about 90s) and the harness now
+    # gives up early on a wedged guest, so a failure costs about two minutes
+    # rather than the whole budget.
+    python3 scripts/qemu-cli-smoke-linux.py "$d" 300 > /dev/null 2>&1
     grep -o '^reason=.*' qemu-cli-summary.txt
     grep -aoE 'auxv ok|auxv wrong|linux abi ok[^\r]*|abi: [^\r]*|tls survived[^\r]*|tls lost[^\r]*|MUSL_OK[^\r]*|MUSL_ARGS[^\r]*|unimplemented Linux syscall nr=0x[0-9a-f]*' \
         qemu-cli-serial.log | sort -u
