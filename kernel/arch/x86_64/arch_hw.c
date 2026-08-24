@@ -167,6 +167,36 @@ static vibeos_inet_t g_net;
 static hw_lock_t g_net_lock;
 static int g_net_up;
 
+/* Acquire a lock without masking interrupts.
+ *
+ * The ordinary hw_spin_lock disables interrupts for the whole critical
+ * section, which is right for short sections and wrong for long ones: while it
+ * is held, this core takes no timer tick, runs no scheduler and pumps no
+ * network - and the other cores get nothing either, because the work they are
+ * waiting on is here.
+ *
+ * execve is the long one. It loads a two-megabyte image, allocates and maps
+ * six hundred pages, and tears down an address space. Doing that with the
+ * timer off stops the whole machine for the duration, which under emulation is
+ * long enough to be indistinguishable from a hang - and was reported as one,
+ * with five minutes of complete silence.
+ *
+ * Safe only for a lock no interrupt handler ever takes: with interrupts left
+ * enabled, a handler wanting this lock would spin forever against the code it
+ * interrupted. g_exec_lock qualifies - execve is its only user. */
+static void hw_spin_lock_preemptible(hw_lock_t *lock) {
+    while (__sync_lock_test_and_set(&lock->locked, 1)) {
+        while (lock->locked) {
+            __asm__ __volatile__("pause" ::: "memory");
+        }
+    }
+    lock->flags = 0;
+}
+
+static void hw_spin_unlock_preemptible(hw_lock_t *lock) {
+    __sync_lock_release(&lock->locked);
+}
+
 static void hw_spin_lock(hw_lock_t *lock) {
     uint64_t flags;
     __asm__ __volatile__("pushfq\n\tpopq %0\n\tcli" : "=r"(flags) : : "memory");
@@ -3455,12 +3485,12 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
     /* g_exec_elf is a single shared staging buffer, so the read and the load out
      * of it have to be one critical section: two cores exec'ing at once would
      * otherwise each load the other's image. */
-    hw_spin_lock(&g_exec_lock);
+    hw_spin_lock_preemptible(&g_exec_lock);
     {
         long na = hw_copy_user_argv(argv_uptr, &g_exec_argv);
         long ne = hw_copy_user_argv(envp_uptr, &g_exec_envp);
         if (na < 0 || ne < 0) {
-            hw_spin_unlock(&g_exec_lock);
+            hw_spin_unlock_preemptible(&g_exec_lock);
             return (na < 0) ? na : ne;
         }
         /* A caller that passes no argv still gets an argv[0]: the path it was
@@ -3483,16 +3513,16 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
         }
     }
     if (n <= 0) {
-        hw_spin_unlock(&g_exec_lock);
+        hw_spin_unlock_preemptible(&g_exec_lock);
         return -VIBEOS_ENOENT;
     }
     if (hw_proc_create(&np, g_exec_elf, (uint64_t)n, argv,
                        g_exec_envp.slot[0] ? g_exec_envp.slot : 0) != 0) {
         vibeos_x86_64_serial_puts("[EXEC] load failed\n");
-        hw_spin_unlock(&g_exec_lock);
+        hw_spin_unlock_preemptible(&g_exec_lock);
         return -VIBEOS_ENOMEM;
     }
-    hw_spin_unlock(&g_exec_lock);
+    hw_spin_unlock_preemptible(&g_exec_lock);
 
     t = &g_tasks[g_current_task];
     /* Stored with a leading slash even when the caller used a relative path.
