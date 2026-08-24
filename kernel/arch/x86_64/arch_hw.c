@@ -3895,12 +3895,22 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
         }
     }
     if (n <= 0) {
+        /* Which of the two it was matters: a file that cannot be read and a
+         * file that reads but does not parse are different bugs, and the shell
+         * prints the same "cannot exec" for both. */
+        vibeos_x86_64_serial_puts("[EXEC] read failed: ");
+        vibeos_x86_64_serial_puts(path);
+        vibeos_x86_64_serial_puts("\n");
         hw_spin_unlock_preemptible(&g_exec_lock);
         return -VIBEOS_ENOENT;
     }
     if (hw_proc_create(&np, g_exec_elf, (uint64_t)n, argv,
                        g_exec_envp.slot[0] ? g_exec_envp.slot : 0) != 0) {
-        vibeos_x86_64_serial_puts("[EXEC] load failed\n");
+        vibeos_x86_64_serial_puts("[EXEC] image rejected: ");
+        vibeos_x86_64_serial_puts(path);
+        vibeos_x86_64_serial_puts(" bytes=0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)n);
+        vibeos_x86_64_serial_puts("\n");
         hw_spin_unlock_preemptible(&g_exec_lock);
         return -VIBEOS_ENOMEM;
     }
