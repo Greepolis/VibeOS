@@ -1469,10 +1469,42 @@ static uint64_t hw_proc_cr3(const hw_proc_t *p) {
 #define VIBEOS_HW_MAX_FDS 4
 #define VIBEOS_HW_WBUF 512
 
+/* Pipes.
+ *
+ * A pipe is a ring buffer with two ends, and what makes it a pipe rather than
+ * a buffer is what happens at the edges: a reader with nothing to read waits
+ * for a writer, a writer with no room waits for a reader, and a reader whose
+ * writers have all closed gets end of file rather than waiting forever. Those
+ * three rules are the entire difference between `ls | wc -l` printing a number
+ * and hanging.
+ *
+ * The ends are counted, not flagged, because a descriptor can be duplicated
+ * and inherited: `ls | wc` gives the write end to a child, and the parent must
+ * close its own copy or the reader never sees end of file. That is the classic
+ * way a shell pipeline hangs, and it is a refcount bug, not a pipe bug. */
+#define VIBEOS_HW_MAX_PIPES 8
+#define VIBEOS_HW_PIPE_BYTES 4096u
+
+typedef struct {
+    int used;
+    uint32_t readers;
+    uint32_t writers;
+    uint32_t head;      /* next byte to read  */
+    uint32_t tail;      /* next byte to write */
+    uint32_t count;     /* bytes currently held */
+    uint8_t buf[VIBEOS_HW_PIPE_BYTES];
+} hw_pipe_t;
+
+static hw_pipe_t g_pipes[VIBEOS_HW_MAX_PIPES];
+static hw_lock_t g_pipe_lock;
+
 typedef struct {
     int used;
     int writable;
     int dirty;
+    /* Index into g_pipes, or -1. A descriptor is a pipe end when this is set;
+     * `writable` then says which end. */
+    int pipe;
     uint32_t cluster;
     uint32_t size;
     uint32_t pos;
@@ -1487,6 +1519,9 @@ typedef struct {
     uint8_t wbuf[VIBEOS_HW_WBUF];
     uint32_t wlen;
 } hw_fd_t;
+
+/* Defined with the pipe code below; the task-exit path above needs it. */
+static void hw_pipe_release(hw_fd_t *f);
 
 /* Signals 1..64; index 0 is unused so the numbering matches Linux. */
 #define VIBEOS_HW_NSIG 65
@@ -1577,6 +1612,11 @@ typedef struct {
     uint64_t kstack_base;  /* for reclamation on exit */
     uint32_t kstack_pages;
     hw_fd_t fds[VIBEOS_HW_MAX_FDS];
+    /* What descriptors 0, 1 and 2 currently mean. Unused entries mean the
+     * console, which is where they point when nothing has redirected them.
+     * Kept apart from fds[] because the console is not a table entry and a
+     * shell redirects the standard three far more often than anything else. */
+    hw_fd_t std_redirect[3];
 } hw_task_t;
 
 /* Point the CPU at a task's ring-0 stack: the TSS one is used when ring 3 is
@@ -1641,6 +1681,23 @@ static int hw_task_alloc(void) {
     hw_spin_lock(&g_sched_lock);
     for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
         if (g_tasks[i].state == HW_TASK_FREE) {
+            int fi;
+            /* Slots are recycled, so the descriptor tables hold whatever the
+             * previous occupant left. Clearing them here covers every way a
+             * task comes into existence - spawn, fork, the idle tasks - which
+             * is the only way to be sure none of them starts out believing a
+             * stale entry. An uninitialised redirection sends a write into a
+             * pipe that does not exist, and the task waits there forever. */
+            for (fi = 0; fi < VIBEOS_HW_MAX_FDS; fi++) {
+                g_tasks[i].fds[fi].used = 0;
+                g_tasks[i].fds[fi].pipe = -1;
+                g_tasks[i].fds[fi].net_sock = -1;
+            }
+            for (fi = 0; fi < 3; fi++) {
+                g_tasks[i].std_redirect[fi].used = 0;
+                g_tasks[i].std_redirect[fi].pipe = -1;
+                g_tasks[i].std_redirect[fi].net_sock = -1;
+            }
             g_tasks[i].state = HW_TASK_RESERVED;
             hw_spin_unlock(&g_sched_lock);
             return i;
@@ -1902,15 +1959,31 @@ static void hw_task_exit(uint64_t code) {
      * exits with connections open from leaking them for the life of the system.
      * Done before the task is retired, while its descriptor table is still
      * ours to walk. */
-    if (dying >= 0 && g_net_up) {
+    if (dying >= 0) {
         int fd;
         for (fd = 0; fd < VIBEOS_HW_MAX_FDS; fd++) {
             hw_fd_t *f = &g_tasks[dying].fds[fd];
-            if (f->used && f->net_sock >= 0) {
+            if (!f->used) {
+                continue;
+            }
+            if (f->net_sock >= 0 && g_net_up) {
                 hw_spin_lock(&g_net_lock);
                 (void)vibeos_inet_close(&g_net, f->net_sock);
                 hw_spin_unlock(&g_net_lock);
                 f->net_sock = -1;
+            }
+            /* Exiting closes everything, and for a pipe that is not tidiness:
+             * the reader at the other end is waiting for its writers to reach
+             * zero, and a program that produced its output and exited without
+             * closing is the normal case. Leaving the count high is how
+             * ls | wc -l prints nothing and hangs. */
+            hw_pipe_release(f);
+            f->used = 0;
+        }
+        for (fd = 0; fd < 3; fd++) {
+            hw_fd_t *f = &g_tasks[dying].std_redirect[fd];
+            if (f->used) {
+                hw_pipe_release(f);
                 f->used = 0;
             }
         }
@@ -1981,6 +2054,7 @@ static void hw_task_exit(uint64_t code) {
 #define VIBEOS_ENOTTY 25
 #define VIBEOS_EPERM  1
 #define VIBEOS_ESRCH  3
+#define VIBEOS_EPIPE 32
 #define VIBEOS_ERANGE 34
 #define VIBEOS_EMFILE 24
 #define VIBEOS_E2BIG  7
@@ -2055,6 +2129,10 @@ static void hw_task_exit(uint64_t code) {
 #define LSYS_kill           62
 #define LSYS_tgkill        234
 #define LSYS_tkill         200
+#define LSYS_dup            32
+#define LSYS_dup2           33
+#define LSYS_pipe           22
+#define LSYS_pipe2         293
 #define LSYS_time          201
 #define LSYS_clone          56
 #define LSYS_getppid       110
@@ -2191,6 +2269,227 @@ static hw_fd_t *hw_fd_get(uint64_t fd) {
 static long hw_net_recv(hw_fd_t *f, uint64_t buf, uint64_t len);
 static long hw_net_send(hw_fd_t *f, uint64_t buf, uint64_t len);
 
+/* Let go of one end of a pipe. The pipe itself lives until both ends are
+ * gone, because a reader may still have data to drain after every writer has
+ * closed. */
+static void hw_pipe_release(hw_fd_t *f) {
+    hw_pipe_t *pp;
+
+    if (!f || f->pipe < 0 || f->pipe >= VIBEOS_HW_MAX_PIPES) {
+        return;
+    }
+    pp = &g_pipes[f->pipe];
+    hw_spin_lock(&g_pipe_lock);
+    if (f->writable) {
+        if (pp->writers > 0u) {
+            pp->writers--;
+        }
+    } else if (pp->readers > 0u) {
+        pp->readers--;
+    }
+    if (pp->readers == 0u && pp->writers == 0u) {
+        pp->used = 0;
+        pp->count = 0;
+        pp->head = 0;
+        pp->tail = 0;
+    }
+    hw_spin_unlock(&g_pipe_lock);
+    f->pipe = -1;
+    /* Somebody may be waiting for the data or the space that just became
+     * possible - or for the end of file that just became true. */
+    hw_keyboard_wake();
+}
+
+static long hw_pipe_read(hw_fd_t *f, uint64_t buf, uint64_t len) {
+    hw_pipe_t *pp = &g_pipes[f->pipe];
+    uint8_t *dst = (uint8_t *)(uintptr_t)buf;
+
+    for (;;) {
+        uint64_t copied = 0;
+
+        hw_spin_lock(&g_pipe_lock);
+        while (copied < len && pp->count > 0u) {
+            dst[copied++] = pp->buf[pp->head];
+            pp->head = (pp->head + 1u) % VIBEOS_HW_PIPE_BYTES;
+            pp->count--;
+        }
+        hw_spin_unlock(&g_pipe_lock);
+        if (copied > 0u) {
+            hw_keyboard_wake();   /* a blocked writer may now have room */
+            return (long)copied;
+        }
+        if (pp->writers == 0u) {
+            return 0;   /* end of file: nobody can ever write again */
+        }
+        /* Nothing yet, and somebody could still write. Park instead of
+         * spinning, so the writer actually gets a chance to run. */
+        __asm__ __volatile__("sti; hlt" ::: "memory");
+    }
+}
+
+static long hw_pipe_write(hw_fd_t *f, uint64_t buf, uint64_t len) {
+    hw_pipe_t *pp = &g_pipes[f->pipe];
+    const uint8_t *src = (const uint8_t *)(uintptr_t)buf;
+    uint64_t written = 0;
+
+    while (written < len) {
+        uint64_t before = written;
+
+        if (pp->readers == 0u) {
+            /* Writing into a pipe nobody will read. Linux raises SIGPIPE and
+             * returns EPIPE; with no handler the default action ends the
+             * process, which is what stops a pipeline from filling memory
+             * after its reader has gone. */
+            if (g_current_task >= 0) {
+                (void)hw_signal_raise(g_current_task, VIBEOS_SIGPIPE);
+            }
+            return written > 0u ? (long)written : -VIBEOS_EPIPE;
+        }
+        hw_spin_lock(&g_pipe_lock);
+        while (written < len && pp->count < VIBEOS_HW_PIPE_BYTES) {
+            pp->buf[pp->tail] = src[written++];
+            pp->tail = (pp->tail + 1u) % VIBEOS_HW_PIPE_BYTES;
+            pp->count++;
+        }
+        hw_spin_unlock(&g_pipe_lock);
+        if (written > before) {
+            hw_keyboard_wake();   /* a blocked reader now has data */
+            continue;
+        }
+        __asm__ __volatile__("sti; hlt" ::: "memory");
+    }
+    return (long)written;
+}
+
+/* pipe2(): two descriptors onto one buffer, read end first. */
+static long hw_sys_pipe2(uint64_t fds_uptr, uint64_t flags) {
+    hw_task_t *t;
+    int slot = -1, rfd = -1, wfd = -1;
+    int i;
+
+    (void)flags;   /* O_CLOEXEC has no meaning without an exec-close list */
+    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+        return -VIBEOS_EINVAL;
+    }
+    if (!hw_user_range_ok(fds_uptr, 8, 1)) {
+        return -VIBEOS_EFAULT;
+    }
+    t = &g_tasks[g_current_task];
+
+    hw_spin_lock(&g_pipe_lock);
+    for (i = 0; i < VIBEOS_HW_MAX_PIPES; i++) {
+        if (!g_pipes[i].used) {
+            g_pipes[i].used = 1;
+            g_pipes[i].readers = 1;
+            g_pipes[i].writers = 1;
+            g_pipes[i].head = 0;
+            g_pipes[i].tail = 0;
+            g_pipes[i].count = 0;
+            slot = i;
+            break;
+        }
+    }
+    hw_spin_unlock(&g_pipe_lock);
+    if (slot < 0) {
+        return -VIBEOS_EMFILE;
+    }
+
+    for (i = 0; i < VIBEOS_HW_MAX_FDS && (rfd < 0 || wfd < 0); i++) {
+        if (t->fds[i].used) {
+            continue;
+        }
+        {
+            hw_fd_t *f = &t->fds[i];
+            uint32_t z;
+            for (z = 0; z < (uint32_t)sizeof(*f); z++) {
+                ((uint8_t *)(void *)f)[z] = 0;
+            }
+            f->net_sock = -1;
+            f->pipe = slot;
+            f->writable = (rfd < 0) ? 0 : 1;
+            f->used = 1;
+        }
+        if (rfd < 0) {
+            rfd = 3 + i;
+        } else {
+            wfd = 3 + i;
+        }
+    }
+    if (rfd < 0 || wfd < 0) {
+        hw_spin_lock(&g_pipe_lock);
+        g_pipes[slot].used = 0;
+        hw_spin_unlock(&g_pipe_lock);
+        if (rfd >= 0) {
+            t->fds[rfd - 3].used = 0;
+        }
+        return -VIBEOS_EMFILE;
+    }
+    ((int *)(uintptr_t)fds_uptr)[0] = rfd;
+    ((int *)(uintptr_t)fds_uptr)[1] = wfd;
+    return 0;
+}
+
+/* dup2(): make newfd refer to whatever oldfd refers to.
+ *
+ * This is how a shell attaches a pipe to a program's standard input or output
+ * without the program knowing. Only descriptors 0, 1 and 2 can be targets
+ * here: the console is not an entry in the table, so redirecting one means
+ * remembering that the entry now stands in for it. */
+static long hw_sys_dup2(uint64_t oldfd, uint64_t newfd) {
+    hw_task_t *t;
+    hw_fd_t *src;
+
+    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+        return -VIBEOS_EINVAL;
+    }
+    t = &g_tasks[g_current_task];
+    if (oldfd == newfd) {
+        return (long)newfd;
+    }
+    src = hw_fd_get(oldfd);
+    if (!src) {
+        return -VIBEOS_EBADF;
+    }
+    if (newfd >= 3u) {
+        hw_fd_t *dst = (newfd < 3u + VIBEOS_HW_MAX_FDS)
+                       ? &t->fds[newfd - 3u] : 0;
+        if (!dst) {
+            return -VIBEOS_EBADF;
+        }
+        if (dst->used) {
+            hw_pipe_release(dst);
+            dst->used = 0;
+        }
+        *dst = *src;
+        if (dst->pipe >= 0) {
+            hw_spin_lock(&g_pipe_lock);
+            if (dst->writable) {
+                g_pipes[dst->pipe].writers++;
+            } else {
+                g_pipes[dst->pipe].readers++;
+            }
+            hw_spin_unlock(&g_pipe_lock);
+        }
+        return (long)newfd;
+    }
+    /* Redirecting a standard descriptor. */
+    if (newfd > 2u) {
+        return -VIBEOS_EBADF;
+    }
+    hw_pipe_release(&t->std_redirect[newfd]);
+    t->std_redirect[newfd] = *src;
+    if (t->std_redirect[newfd].pipe >= 0) {
+        hw_spin_lock(&g_pipe_lock);
+        if (t->std_redirect[newfd].writable) {
+            g_pipes[t->std_redirect[newfd].pipe].writers++;
+        } else {
+            g_pipes[t->std_redirect[newfd].pipe].readers++;
+        }
+        hw_spin_unlock(&g_pipe_lock);
+    }
+    return (long)newfd;
+}
+
 static long hw_sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
     const char *p = (const char *)(uintptr_t)buf;
     uint64_t i;
@@ -2198,11 +2497,21 @@ static long hw_sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
     if (!hw_user_range_ok(buf, len, 0)) {
         return -VIBEOS_EFAULT;
     }
+    if (fd < 3u && g_current_task >= 0 &&
+        g_tasks[g_current_task].std_redirect[fd].used) {
+        hw_fd_t *r = &g_tasks[g_current_task].std_redirect[fd];
+        if (r->pipe >= 0) {
+            return hw_pipe_write(r, buf, len);
+        }
+    }
     if (fd >= 3u) { /* a file: buffer the bytes, committed on close */
         hw_fd_t *f = hw_fd_get(fd);
         uint64_t i2;
         if (!f) {
             return -VIBEOS_EBADF;
+        }
+        if (f->pipe >= 0) {
+            return hw_pipe_write(f, buf, len);
         }
         if (f->net_sock >= 0) {
             return hw_net_send(f, buf, len);
@@ -2250,11 +2559,21 @@ static long hw_sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
     if (!hw_user_range_ok(buf, len, 1)) {
         return -VIBEOS_EFAULT;
     }
+    if (fd < 3u && g_current_task >= 0 &&
+        g_tasks[g_current_task].std_redirect[fd].used) {
+        hw_fd_t *r = &g_tasks[g_current_task].std_redirect[fd];
+        if (r->pipe >= 0) {
+            return hw_pipe_read(r, buf, len);
+        }
+    }
     if (fd >= 3u) { /* a file: stream from the filesystem */
         hw_fd_t *f = hw_fd_get(fd);
         long n;
         if (!f) {
             return -VIBEOS_EBADF;
+        }
+        if (f->pipe >= 0) {
+            return hw_pipe_read(f, buf, len);
         }
         if (f->net_sock >= 0) {
             return hw_net_recv(f, buf, len);
@@ -2347,6 +2666,12 @@ static long hw_sys_open(uint64_t path_uptr, uint64_t flags) {
         f->size = size;
         f->pos = 0;
         f->dir_index = 0;
+        /* Not a pipe. The field has to be set explicitly: descriptor slots are
+         * recycled, so an uninitialised value here is whatever the previous
+         * occupant left, and a stale pipe index sends every read and write on
+         * this file into the pipe path - where it waits for a writer that does
+         * not exist. */
+        f->pipe = -1;
         {
             char probe[16];
             uint32_t probe_size = 0;
@@ -2473,6 +2798,7 @@ static long hw_sys_socket(uint64_t domain, uint64_t type) {
         return -VIBEOS_ENOMEM;
     }
     t->fds[fd].net_sock = s;
+    t->fds[fd].pipe = -1;
     return 3 + fd;
 }
 
@@ -2577,6 +2903,7 @@ static long hw_sys_accept(uint64_t fd, uint64_t addr_uptr) {
         return -VIBEOS_EMFILE;
     }
     t->fds[nfd].net_sock = child;
+    t->fds[nfd].pipe = -1;
     {
         uint32_t ip;
         uint16_t port;
@@ -2788,8 +3115,22 @@ static long hw_sys_close(uint64_t fd) {
     hw_fd_t *f = hw_fd_get(fd);
     long rc = 0;
 
+    if (fd < 3u && g_current_task >= 0) {
+        /* Closing a redirected standard descriptor drops the redirection. */
+        hw_task_t *t = &g_tasks[g_current_task];
+        if (t->std_redirect[fd].used) {
+            hw_pipe_release(&t->std_redirect[fd]);
+            t->std_redirect[fd].used = 0;
+            return 0;
+        }
+    }
     if (!f) {
         return -VIBEOS_EBADF;
+    }
+    if (f->pipe >= 0) {
+        hw_pipe_release(f);
+        f->used = 0;
+        return 0;
     }
     if (f->net_sock >= 0) {
         hw_spin_lock(&g_net_lock);
@@ -3312,6 +3653,47 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
     child->fs_base = parent->fs_base;   /* the copied image expects its TLS */
     {
         uint32_t sg;
+        /* Open descriptors are inherited. This is not a refinement: a shell
+         * builds a pipeline by creating the pipe, forking, and having the
+         * child move an inherited end onto its standard output. Without
+         * inheritance the child has no such descriptor, the redirection fails,
+         * and its output goes to the console while the reader waits forever.
+         *
+         * Task slots are recycled, so the child's table is whatever the
+         * previous occupant left; it must be overwritten, not added to. */
+        int fi;
+        for (fi = 0; fi < VIBEOS_HW_MAX_FDS; fi++) {
+            child->fds[fi] = parent->fds[fi];
+        }
+        for (fi = 0; fi < 3; fi++) {
+            child->std_redirect[fi] = parent->std_redirect[fi];
+        }
+        /* Every inherited pipe end gains an owner. Missing this is the other
+         * way a pipeline hangs: the reader waits for an end of file that never
+         * arrives because a count went wrong. */
+        hw_spin_lock(&g_pipe_lock);
+        for (fi = 0; fi < VIBEOS_HW_MAX_FDS; fi++) {
+            const hw_fd_t *cf = &child->fds[fi];
+            if (cf->used && cf->pipe >= 0) {
+                if (cf->writable) {
+                    g_pipes[cf->pipe].writers++;
+                } else {
+                    g_pipes[cf->pipe].readers++;
+                }
+            }
+        }
+        for (fi = 0; fi < 3; fi++) {
+            const hw_fd_t *cf = &child->std_redirect[fi];
+            if (cf->used && cf->pipe >= 0) {
+                if (cf->writable) {
+                    g_pipes[cf->pipe].writers++;
+                } else {
+                    g_pipes[cf->pipe].readers++;
+                }
+            }
+        }
+        hw_spin_unlock(&g_pipe_lock);
+
         child->exit_signal = 0;
         child->sig_pending = 0;   /* pending signals are not inherited */
         child->sig_blocked = parent->sig_blocked;
@@ -4495,6 +4877,27 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
             return hw_sys_newfstatat(a1, a2, a3, frame->r10);
         case LSYS_openat:
             return hw_sys_openat(a1, a2, a3);
+        case LSYS_pipe:
+            return hw_sys_pipe2(a1, 0);
+        case LSYS_pipe2:
+            return hw_sys_pipe2(a1, a2);
+        case LSYS_dup2:
+            return hw_sys_dup2(a1, a2);
+        case LSYS_dup: {
+            /* dup() is dup2() onto the lowest free descriptor. */
+            hw_task_t *dt;
+            int i;
+            if (g_current_task < 0) {
+                return -VIBEOS_EINVAL;
+            }
+            dt = &g_tasks[g_current_task];
+            for (i = 0; i < VIBEOS_HW_MAX_FDS; i++) {
+                if (!dt->fds[i].used) {
+                    return hw_sys_dup2(a1, (uint64_t)(3 + i));
+                }
+            }
+            return -VIBEOS_EMFILE;
+        }
         case LSYS_getcwd:
             return hw_sys_getcwd(a1, a2);
         case LSYS_readlinkat:
@@ -4936,6 +5339,8 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                    * kernel CLI, so a slower build cannot have
                                    * its script cut short by a halt that arrived
                                    * while it was still working. */
+                                  "ls /EFI/BOOT | wc -l\n"
+                                  "echo PIPE_OK\n"
                                   "echo VIBEOS_SELFTEST_DONE\n"
                                   "exit\n");
 

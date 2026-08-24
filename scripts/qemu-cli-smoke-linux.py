@@ -344,6 +344,12 @@ def main():
                 # command through PATH and exec'ing it.
                 if "ASH_INTERACTIVE_OK" not in text:
                     problems.append("interactive_shell_did_not_run")
+                # A pipeline is the first thing anyone tries on a shell, and
+                # the way it fails is by hanging rather than by erroring - so
+                # PIPE_OK arriving at all is the check. It is printed after
+                # the pipeline, so it cannot appear if the pipeline stalled.
+                if "PIPE_OK" not in text:
+                    problems.append("pipeline_did_not_complete")
                 if "BUSYBOX_SH_OK" not in text:
                     problems.append("shell_script_did_not_run")
 

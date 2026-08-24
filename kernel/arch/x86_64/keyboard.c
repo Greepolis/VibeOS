@@ -24,7 +24,11 @@ static const char g_map[0x3A] = {
     'b', 'n', 'm', ',', '.', '/', 0,   '*', 0,   ' '
 };
 
-#define KBD_RING 512u
+/* Large enough for the whole boot self-test script, which is injected in one
+ * go before anything reads it. Sized at 512 once, and the script outgrew it -
+ * the symptom was the last command silently never running, which looks like
+ * the shell hanging rather than like input being dropped. */
+#define KBD_RING 2048u
 static volatile char g_ring[KBD_RING];
 static volatile uint32_t g_head; /* producer (IRQ) */
 static volatile uint32_t g_tail; /* consumer (read) */
