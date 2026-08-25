@@ -58,3 +58,4 @@ __pycache__/
 *.pyc
 vibeos-screen.ppm
 vibeos-screen.png
+.claude/

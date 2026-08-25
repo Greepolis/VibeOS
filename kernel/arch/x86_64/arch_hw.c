@@ -3892,6 +3892,21 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
             }
             g_exec_cached[i] = 0;
             g_exec_cached_len = n;
+            /* Clear whatever the previous program left beyond this one.
+             *
+             * The staging buffer is shared by every exec, so a read that
+             * stops short leaves the tail of the last image in place - and
+             * the result is not obviously broken, it is a plausible ELF made
+             * of two programs. That parses far enough to fail somewhere
+             * confusing. Zeroing costs one pass over memory on a path that
+             * already read the file, and turns a subtle corruption into a
+             * clean parse failure. */
+            {
+                uint32_t z;
+                for (z = (uint32_t)n; z < g_exec_elf_cap; z++) {
+                    g_exec_elf[z] = 0;
+                }
+            }
         }
     }
     if (n <= 0) {
