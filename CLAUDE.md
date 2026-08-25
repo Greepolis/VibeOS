@@ -76,6 +76,15 @@ extension. The shell supplies the name; the path only opens the file.
 off. The 2 MB FAT read under `g_exec_lock` was indistinguishable from a hang
 until the block driver learned multi-sector transfers.
 
+**A failed FAT lookup used to look like the end of a file.** `fat_next_cluster`
+has to return a cluster number, so it reported a failed table read as the
+end-of-chain marker - the same value a healthy last cluster returns - and the
+reader then returned the size the directory claimed. A single flaky sector
+therefore produced a short file that said it was complete, and execve parsed
+whatever the previous program had left in the shared staging buffer.
+`g_fat_chain_error` and a byte count that reflects what was actually copied
+are what stop that; do not go back to returning the declared size.
+
 **Definition order bites repeatedly.** This is one 5000-line C file; a helper
 used above its definition compiles as an implicit declaration and then fails
 with a confusing "static declaration follows non-static declaration".

@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include "vibeos/arch_x86_64.h"
+#include "vibeos/fat_chain.h"
 
 extern int vibeos_x86_64_virtio_blk_read(uint64_t sector, void *buf);
 
@@ -49,6 +50,15 @@ static uint8_t g_fatsec[SECTOR_SIZE];
 static uint32_t g_fatsec_lba;
 static int g_fatsec_valid;
 
+/* Sticky "the chain walk went wrong" flag.
+ *
+ * fat_next_cluster() has to return a cluster number, so it reports a failed
+ * FAT read as the end-of-chain marker - which is exactly what a healthy last
+ * cluster returns. A reader cannot tell the two apart, so a single failed FAT
+ * sector read looked like a complete, shorter file. Callers clear this before
+ * a walk and check it after. */
+static int g_fat_chain_error;
+
 static void fat_cache_drop(void) {
     g_fatsec_valid = 0;
 }
@@ -59,6 +69,7 @@ static const uint8_t *fat_table_sector(uint32_t lba) {
     }
     if (vibeos_x86_64_virtio_blk_read(lba, g_fatsec) != 0) {
         g_fatsec_valid = 0;
+        g_fat_chain_error = 1;
         return 0;
     }
     g_fatsec_lba = lba;
@@ -138,23 +149,32 @@ static uint32_t fat_cluster_lba(uint32_t cluster) {
     return g_fat.data_lba + (cluster - 2u) * g_fat.sectors_per_cluster;
 }
 
-/* Follow the FAT chain: return the next cluster, or >= EOC when the chain ends. */
+/* Follow the FAT chain: return the next cluster, or >= EOC when the chain ends.
+ *
+ * The entry's sector is checked against the size of the table. Without that,
+ * a cluster number larger than the volume holds reads whatever sector follows
+ * the FAT - the root directory or file data - and hands back those bytes as
+ * the next cluster, which sends the reader off to an arbitrary sector or past
+ * the end of the device. fat_get_entry() has always made this check; the read
+ * path did not. */
 static uint32_t fat_next_cluster(uint32_t cluster) {
-    if (g_fat.is_fat32) {
-        uint32_t off = cluster * 4u;
-        const uint8_t *sec = fat_table_sector(g_fat.fat_lba + off / SECTOR_SIZE);
-        if (!sec) {
-            return 0x0FFFFFFFu;
-        }
-        return rd32(&sec[off % SECTOR_SIZE]) & 0x0FFFFFFFu;
-    } else {
-        uint32_t off = cluster * 2u;
-        const uint8_t *sec = fat_table_sector(g_fat.fat_lba + off / SECTOR_SIZE);
-        if (!sec) {
-            return 0xFFFFu;
-        }
-        return rd16(&sec[off % SECTOR_SIZE]);
+    uint32_t per_sec = g_fat.is_fat32 ? (SECTOR_SIZE / 4u) : (SECTOR_SIZE / 2u);
+    uint32_t eoc = g_fat.is_fat32 ? 0x0FFFFFFFu : 0xFFFFu;
+    uint32_t sec_index = cluster / per_sec;
+    const uint8_t *sec;
+
+    if (sec_index >= g_fat.sectors_per_fat) {
+        g_fat_chain_error = 1;
+        return eoc;
     }
+    sec = fat_table_sector(g_fat.fat_lba + sec_index);
+    if (!sec) {
+        return eoc;
+    }
+    if (g_fat.is_fat32) {
+        return rd32(&sec[(cluster % per_sec) * 4u]) & 0x0FFFFFFFu;
+    }
+    return rd16(&sec[(cluster % per_sec) * 2u]);
 }
 
 static int fat_chain_end(uint32_t cluster) {
@@ -319,6 +339,7 @@ static long fat_read_at_locked(uint32_t first_cluster, uint32_t size, uint32_t o
     }
     cluster_bytes = (uint32_t)g_fat.sectors_per_cluster * SECTOR_SIZE;
     cluster = first_cluster;
+    g_fat_chain_error = 0;
     for (skip = off / cluster_bytes; skip > 0 && !fat_chain_end(cluster); skip--) {
         cluster = fat_next_cluster(cluster);
     }
@@ -344,6 +365,11 @@ static long fat_read_at_locked(uint32_t first_cluster, uint32_t size, uint32_t o
         }
         off = 0;
         cluster = fat_next_cluster(cluster);
+    }
+    /* A broken chain must not look like a short read at end of file: read(2)
+     * would return the truncated count and the program would believe it. */
+    if (g_fat_chain_error) {
+        return -1;
     }
     return (long)done;
 }
@@ -780,11 +806,52 @@ static int fat_mkdir_locked(const char *path) {
     return 0;
 }
 
+/* The five primitives vibeos_fat_chain_read() needs from this driver. They
+ * exist only so the run arithmetic can live in kernel/fs/fat_chain.c, where a
+ * host test can drive it against a fabricated volume - the loop itself is the
+ * part that depends on a file's layout, and nothing on this side of the
+ * boundary can be tested without a device. */
+static uint32_t fat_io_next(void *ctx, uint32_t cluster) {
+    (void)ctx;
+    return fat_next_cluster(cluster);
+}
+
+static int fat_io_end(void *ctx, uint32_t cluster) {
+    (void)ctx;
+    return fat_chain_end(cluster);
+}
+
+static uint32_t fat_io_lba(void *ctx, uint32_t cluster) {
+    (void)ctx;
+    return fat_cluster_lba(cluster);
+}
+
+static int fat_io_sectors(void *ctx, uint32_t lba, void *dst, uint32_t sectors) {
+    (void)ctx;
+    return vibeos_x86_64_virtio_blk_read_many(lba, dst, sectors);
+}
+
+static int fat_io_partial(void *ctx, uint32_t lba, void *dst, uint32_t bytes) {
+    uint8_t *d = (uint8_t *)dst;
+    uint32_t i;
+    (void)ctx;
+    /* Through the bounce buffer, so a partial sector never writes past the end
+     * of what the caller asked for. */
+    if (vibeos_x86_64_virtio_blk_read(lba, g_secbuf) != 0) {
+        return -1;
+    }
+    for (i = 0; i < bytes; i++) {
+        d[i] = g_secbuf[i];
+    }
+    return 0;
+}
+
 /* Read a whole file by path (e.g. "EFI/BOOT/INIT.ELF") into buf (up to bufcap).
- * Returns the file size, or -1 on error / too big. */
+ * Returns the file size, or -1 on error / too big / short read. */
 static long fat_read_file_locked(const char *path, void *buf, uint32_t bufcap) {
-    uint32_t cluster = 0, size = 0, copied = 0;
-    uint8_t *out = (uint8_t *)buf;
+    uint32_t cluster = 0, size = 0;
+    vibeos_fat_chain_io_t io;
+    long copied;
 
     if (!g_fat.mounted || fat_resolve(path, &cluster, &size) != 0) {
         return -1;
@@ -792,56 +859,29 @@ static long fat_read_file_locked(const char *path, void *buf, uint32_t bufcap) {
     if (size > bufcap) {
         return -1;
     }
-    /* Read runs of consecutive clusters in single requests, straight into the
-     * caller's buffer.
+    io.ctx = 0;
+    io.cluster_bytes = (uint32_t)g_fat.sectors_per_cluster * SECTOR_SIZE;
+    io.next_cluster = fat_io_next;
+    io.chain_end = fat_io_end;
+    io.cluster_lba = fat_io_lba;
+    io.read_sectors = fat_io_sectors;
+    io.read_partial = fat_io_partial;
+
+    g_fat_chain_error = 0;
+    copied = vibeos_fat_chain_read(&io, cluster, size, (uint8_t *)buf);
+
+    /* Report what was actually read, not what the directory entry claimed.
      *
-     * The previous form issued one request per 512-byte sector and copied each
-     * one through a bounce buffer. The cost of a request is what dominates -
-     * descriptors, a notify, a polled wait - so a two-megabyte program took
-     * about four thousand of them and minutes of wall time. A freshly written
-     * file is usually contiguous, so following the chain first and then reading
-     * the whole run at once turns those thousands of requests into tens. */
-    while (!fat_chain_end(cluster) && cluster >= 2u && copied < size) {
-        uint32_t run = 1u;
-        uint32_t first = cluster;
-        uint32_t next = fat_next_cluster(cluster);
-        uint32_t run_bytes, whole, tail;
-
-        while (!fat_chain_end(next) && next == first + run && copied +
-               (run + 1u) * g_fat.sectors_per_cluster * SECTOR_SIZE <= size + SECTOR_SIZE) {
-            run++;
-            next = fat_next_cluster(first + run - 1u);
-        }
-
-        run_bytes = run * g_fat.sectors_per_cluster * SECTOR_SIZE;
-        if (run_bytes > size - copied) {
-            run_bytes = size - copied;
-        }
-        /* Whole sectors go directly into the destination; a final partial
-         * sector goes through the bounce buffer so nothing is written past the
-         * end of what the caller asked for. */
-        whole = run_bytes / SECTOR_SIZE;
-        tail = run_bytes % SECTOR_SIZE;
-        if (whole > 0u &&
-            vibeos_x86_64_virtio_blk_read_many(fat_cluster_lba(first), out + copied,
-                                               whole) != 0) {
-            return -1;
-        }
-        copied += whole * SECTOR_SIZE;
-        if (tail > 0u) {
-            uint32_t i;
-            if (vibeos_x86_64_virtio_blk_read(fat_cluster_lba(first) + whole,
-                                              g_secbuf) != 0) {
-                return -1;
-            }
-            for (i = 0; i < tail; i++) {
-                out[copied + i] = g_secbuf[i];
-            }
-            copied += tail;
-        }
-        cluster = next;
+     * This used to return `size` unconditionally. A chain that ended early - a
+     * failed FAT sector read, a free cluster in the middle of it - therefore
+     * looked like a complete file, and execve went on to parse a buffer whose
+     * tail still held whatever the previous program had left in the shared
+     * staging area. "Cannot exec" is the right answer to a short read, and a
+     * much better one than loading half a program. */
+    if (copied < 0 || g_fat_chain_error || (uint32_t)copied != size) {
+        return -1;
     }
-    return (long)size;
+    return copied;
 }
 
 /* ---- SMP serialization ---------------------------------------------------

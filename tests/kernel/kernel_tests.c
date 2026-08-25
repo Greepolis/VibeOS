@@ -17,6 +17,7 @@
 #include "vibeos/net.h"
 #include "vibeos/inet.h"
 #include "vibeos/elf.h"
+#include "vibeos/fat_chain.h"
 #include "vibeos/tls.h"
 #include "vibeos/trap.h"
 #include "vibeos/user_api.h"
@@ -4599,6 +4600,299 @@ static uint64_t elft_build(uint8_t *buf, uint64_t cap, uint64_t entry,
     return used;
 }
 
+/* ---- FAT cluster-chain reader -------------------------------------------
+ *
+ * A fabricated volume, so the run-coalescing reader can be driven over chains
+ * that are contiguous, fragmented, short, and failing - none of which can be
+ * arranged on a real disk on demand. Sector contents are a function of the
+ * sector number, so a request aimed at the wrong cluster shows up as wrong
+ * bytes rather than as bytes that happen to match.
+ */
+
+#define FATT_MAX_CLUSTERS 64u
+#define FATT_EOC 0x0FFFFFFFu
+#define FATT_BASE_LBA 1000u
+
+static uint32_t fatt_table[FATT_MAX_CLUSTERS];
+static uint8_t fatt_owned[FATT_MAX_CLUSTERS];
+static uint32_t fatt_spc;
+static uint32_t fatt_requests;
+static uint32_t fatt_largest_request;
+static int fatt_stray_request;      /* a read touched a cluster the file does not own */
+static long fatt_fail_after;        /* -1 never; otherwise fail once this many reads have run */
+
+static uint8_t fatt_byte(uint32_t lba, uint32_t off) {
+    return (uint8_t)(lba * 7u + off * 3u + 1u);
+}
+
+static uint32_t fatt_lba_of(void *ctx, uint32_t cluster) {
+    (void)ctx;
+    return FATT_BASE_LBA + (cluster - 2u) * fatt_spc;
+}
+
+static uint32_t fatt_next(void *ctx, uint32_t cluster) {
+    (void)ctx;
+    return (cluster < FATT_MAX_CLUSTERS) ? fatt_table[cluster] : FATT_EOC;
+}
+
+static int fatt_end(void *ctx, uint32_t cluster) {
+    (void)ctx;
+    return cluster >= 0x0FFFFFF8u;
+}
+
+static int fatt_serve(uint32_t lba, uint8_t *dst, uint32_t sectors, uint32_t bytes) {
+    uint32_t s, i;
+
+    fatt_requests++;
+    if (sectors > fatt_largest_request) {
+        fatt_largest_request = sectors;
+    }
+    if (fatt_fail_after >= 0) {
+        if (fatt_fail_after == 0) {
+            return -1;
+        }
+        fatt_fail_after--;
+    }
+    for (s = 0; s < sectors; s++) {
+        uint32_t cluster = 2u + (lba + s - FATT_BASE_LBA) / fatt_spc;
+        uint32_t n = (bytes < 512u) ? bytes : 512u;
+        if (cluster >= FATT_MAX_CLUSTERS || !fatt_owned[cluster]) {
+            fatt_stray_request = 1;
+            return -1;
+        }
+        for (i = 0; i < n; i++) {
+            dst[s * 512u + i] = fatt_byte(lba + s, i);
+        }
+    }
+    return 0;
+}
+
+static int fatt_read_sectors(void *ctx, uint32_t lba, void *dst, uint32_t sectors) {
+    (void)ctx;
+    return fatt_serve(lba, (uint8_t *)dst, sectors, 512u);
+}
+
+static int fatt_read_partial(void *ctx, uint32_t lba, void *dst, uint32_t bytes) {
+    (void)ctx;
+    if (bytes == 0u || bytes >= 512u) {
+        return -1;
+    }
+    return fatt_serve(lba, (uint8_t *)dst, 1u, bytes);
+}
+
+static void fatt_build(const uint32_t *chain, uint32_t n, uint32_t spc) {
+    uint32_t i;
+    fatt_spc = spc;
+    for (i = 0; i < FATT_MAX_CLUSTERS; i++) {
+        fatt_table[i] = FATT_EOC;
+        fatt_owned[i] = 0;
+    }
+    for (i = 0; i < n; i++) {
+        fatt_owned[chain[i]] = 1;
+        fatt_table[chain[i]] = (i + 1u < n) ? chain[i + 1u] : FATT_EOC;
+    }
+    fatt_requests = 0;
+    fatt_largest_request = 0;
+    fatt_stray_request = 0;
+    fatt_fail_after = -1;
+}
+
+/* What the reader replaced: one sector at a time, straight down the chain. */
+static uint32_t fatt_reference(const uint32_t *chain, uint32_t n, uint32_t size, uint8_t *out) {
+    uint32_t copied = 0, c, s, i;
+    for (c = 0; c < n && copied < size; c++) {
+        for (s = 0; s < fatt_spc && copied < size; s++) {
+            uint32_t lba = FATT_BASE_LBA + (chain[c] - 2u) * fatt_spc + s;
+            uint32_t take = size - copied;
+            if (take > 512u) {
+                take = 512u;
+            }
+            for (i = 0; i < take; i++) {
+                out[copied + i] = fatt_byte(lba, i);
+            }
+            copied += take;
+        }
+    }
+    return copied;
+}
+
+static void fatt_io(vibeos_fat_chain_io_t *io) {
+    io->ctx = NULL;
+    io->cluster_bytes = fatt_spc * 512u;
+    io->next_cluster = fatt_next;
+    io->chain_end = fatt_end;
+    io->cluster_lba = fatt_lba_of;
+    io->read_sectors = fatt_read_sectors;
+    io->read_partial = fatt_read_partial;
+}
+
+static uint8_t fatt_got[FATT_MAX_CLUSTERS * 512u * 8u];
+static uint8_t fatt_want[FATT_MAX_CLUSTERS * 512u * 8u];
+
+static int fatt_case(const uint32_t *chain, uint32_t n, uint32_t spc, uint32_t size) {
+    vibeos_fat_chain_io_t io;
+    long got;
+
+    fatt_build(chain, n, spc);
+    fatt_io(&io);
+    memset(fatt_got, 0xAA, size + 1u);
+    memset(fatt_want, 0xBB, size + 1u);
+    got = vibeos_fat_chain_read(&io, chain[0], size, fatt_got);
+    if (got != (long)size || fatt_stray_request) {
+        return -1;
+    }
+    if (fatt_reference(chain, n, size, fatt_want) != size) {
+        return -1;
+    }
+    if (memcmp(fatt_got, fatt_want, size) != 0) {
+        return -1;
+    }
+    /* One byte past the end must be untouched: the last sector of a file is
+     * rarely full, and the run reader writes device sectors straight into the
+     * caller's buffer. */
+    if (fatt_got[size] != 0xAAu) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_fat_chain_layouts(void) {
+    uint32_t chain[8];
+    uint32_t spcs[3] = {1u, 2u, 8u};
+    uint32_t si, n, pat, k, size;
+
+    for (si = 0; si < 3u; si++) {
+        uint32_t spc = spcs[si];
+        uint32_t cb = spc * 512u;
+        for (n = 1u; n <= 5u; n++) {
+            for (pat = 0; pat < (1u << (n - 1u)); pat++) {
+                uint32_t total = n * cb;
+                uint32_t cur = 3u;
+                chain[0] = cur;
+                for (k = 1u; k < n; k++) {
+                    /* Bit set: a gap in the chain, so the run cannot coalesce
+                     * across it. Every arrangement of gaps is covered. */
+                    cur += (pat & (1u << (k - 1u))) ? 7u : 1u;
+                    chain[k] = cur;
+                }
+                for (size = 1u; size <= total; size += (cb <= 512u) ? 1u : 173u) {
+                    if (fatt_case(chain, n, spc, size) != 0) {
+                        return -1;
+                    }
+                }
+                /* Every cluster and sector boundary, which is where a
+                 * miscounted run shows up first. */
+                for (k = 1u; k <= n; k++) {
+                    if (fatt_case(chain, n, spc, k * cb) != 0 ||
+                        fatt_case(chain, n, spc, k * cb - 1u) != 0) {
+                        return -1;
+                    }
+                }
+                if (fatt_case(chain, n, spc, total) != 0) {
+                    return -1;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+static int test_fat_chain_coalescing(void) {
+    uint32_t contiguous[4] = {3u, 4u, 5u, 6u};
+    uint32_t fragmented[4] = {3u, 9u, 4u, 20u};
+    vibeos_fat_chain_io_t io;
+
+    /* A contiguous file is the whole point of the run reader: four clusters
+     * must cost one request, not four. This is what turned a two-megabyte
+     * program from four thousand round trips into tens. */
+    fatt_build(contiguous, 4u, 2u);
+    fatt_io(&io);
+    if (vibeos_fat_chain_read(&io, 3u, 4u * 1024u, fatt_got) != (long)(4u * 1024u)) {
+        return -1;
+    }
+    if (fatt_requests != 1u || fatt_largest_request != 8u || fatt_stray_request) {
+        return -1;
+    }
+
+    /* A fragmented chain must fall back to one request per cluster and must
+     * not coalesce across the gap - the sectors after cluster 3 belong to
+     * something else. */
+    fatt_build(fragmented, 4u, 2u);
+    fatt_io(&io);
+    if (vibeos_fat_chain_read(&io, 3u, 4u * 1024u, fatt_got) != (long)(4u * 1024u)) {
+        return -1;
+    }
+    if (fatt_requests != 4u || fatt_largest_request != 2u || fatt_stray_request) {
+        return -1;
+    }
+
+    /* A run stops at the last cluster the file needs even when the chain runs
+     * on contiguously past it: a file may hold fewer bytes than its chain. */
+    fatt_build(contiguous, 4u, 2u);
+    fatt_io(&io);
+    if (vibeos_fat_chain_read(&io, 3u, 2048u, fatt_got) != 2048L) {
+        return -1;
+    }
+    if (fatt_requests != 1u || fatt_largest_request != 4u || fatt_stray_request) {
+        return -1;
+    }
+
+    /* A file that ends part way through a cluster still needs that cluster in
+     * the run. Counting the whole clusters and stopping there leaves the
+     * remainder to a request of its own - correct, but it is the shape of the
+     * mistake this bound exists to prevent, so it is asserted against: 2560
+     * bytes of an eight-sector chain is five sectors in one request. */
+    fatt_build(contiguous, 4u, 2u);
+    fatt_io(&io);
+    if (vibeos_fat_chain_read(&io, 3u, 2560u, fatt_got) != 2560L) {
+        return -1;
+    }
+    if (fatt_requests != 1u || fatt_largest_request != 5u || fatt_stray_request) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_fat_chain_short_and_failed(void) {
+    uint32_t chain[2] = {3u, 4u};
+    vibeos_fat_chain_io_t io;
+    long got;
+
+    /* A chain shorter than the size the directory claims must report the
+     * short count. Returning the claimed size here is what let execve parse a
+     * buffer whose tail still held the previous program. */
+    fatt_build(chain, 2u, 1u);
+    fatt_io(&io);
+    got = vibeos_fat_chain_read(&io, 3u, 4u * 512u, fatt_got);
+    if (got != 2L * 512L || fatt_stray_request) {
+        return -1;
+    }
+
+    /* A device error is an error, not a short file. */
+    fatt_build(chain, 2u, 1u);
+    fatt_io(&io);
+    fatt_fail_after = 0;
+    if (vibeos_fat_chain_read(&io, 3u, 2u * 512u, fatt_got) != -1L) {
+        return -1;
+    }
+
+    /* Nothing to read is not a failure. */
+    fatt_build(chain, 2u, 1u);
+    fatt_io(&io);
+    if (vibeos_fat_chain_read(&io, 3u, 0u, fatt_got) != 0L || fatt_requests != 0u) {
+        return -1;
+    }
+
+    /* A cluster number below the first data cluster ends the walk rather than
+     * indexing behind the data area. */
+    fatt_build(chain, 2u, 1u);
+    fatt_io(&io);
+    if (vibeos_fat_chain_read(&io, 1u, 512u, fatt_got) != 0L) {
+        return -1;
+    }
+    return 0;
+}
+
 static int test_elf_parse_valid(void) {
     static uint8_t img[8192];
     vibeos_elf_image_t out;
@@ -5508,6 +5802,9 @@ int main(void) {
     RUN_TEST(test_inet_tcp_close_reclaims_socket);
     RUN_TEST(test_inet_dhcp_lease_lifecycle);
     RUN_TEST(test_inet_dns_timeout_and_negative_cache);
+    RUN_TEST(test_fat_chain_layouts);
+    RUN_TEST(test_fat_chain_coalescing);
+    RUN_TEST(test_fat_chain_short_and_failed);
     RUN_TEST(test_elf_parse_valid);
     RUN_TEST(test_elf_shared_page);
     RUN_TEST(test_elf_rejects_malformed);
