@@ -24,18 +24,44 @@ programs in ring 3 through the Linux system-call ABI.
   auxiliary vector carrying `AT_PHDR`/`AT_PHNUM`/`AT_PHENT`. Thread-local
   storage works: `arch_prctl(ARCH_SET_FS)` writes the MSR and the base is
   restored on every context switch.
+- **Unmodified static Linux programs**: a static musl binary and a static
+  BusyBox, neither built by this project, run from the boot volume. BusyBox
+  dispatches on its own name, reads and lists files, and its shell parses
+  scripts, searches `PATH`, forks and execs. Dynamic binaries are refused, so
+  this means static ones.
+- **Copy-on-write fork**: `fork` shares the parent's pages read-only instead of
+  copying them, and a write faults and duplicates just that page. Measured at
+  boot: 1221 pages shared, 24 later copied.
+- **Signals**: raised, masked, queued, and delivered on the way back to user
+  space with the frame built on the process's own stack below the red zone;
+  `rt_sigreturn` restores it. Verified by a program built against a real C
+  library, so the handler returns through that library's own trampoline.
+- **Pipes**: `pipe2`, `dup`, `dup2`, descriptors inherited across `fork` and
+  released on exit, and `SIGPIPE` for a write with no reader. The boot
+  self-test runs `ls /EFI/BOOT | wc -l` in BusyBox's shell - 13 on a full
+  build - and the gate fails if the pipeline does not complete.
 - **Storage**: virtio-blk with a FAT reader and writer; programs are loaded
   from the boot volume.
 - **Networking**: a portable TCP/IP stack over virtio-net - ARP, IPv4, ICMP,
   UDP, TCP, DHCP and DNS - verified end to end against a host echo server in
   CI on every push.
-- **A serial shell** with line editing and file commands.
+- **A serial shell** with line editing and file commands, and `Ctrl-C` that
+  becomes a real `SIGINT`.
+- **A screen**: a PS/2 mouse on IRQ12 and a framebuffer desktop with a pointer
+  and a window that mirrors the console. The boot gate checks that characters
+  reached the on-screen terminal; the pixels themselves are checked by hand
+  with `scripts/dev/screenshot.py`, so the GUI is not gated.
+
+Everything above is asserted by the boot gate unless it says otherwise: the
+GUI's pixels are not, and the copy-on-write page counts are reported rather
+than asserted.
 
 ## Current Focus
 
-- running an unmodified static Linux binary end to end
-- the syscalls such a binary needs beyond startup
-- signal delivery, and threads with real futexes
+- a ring-3 program that draws its own window and receives its own input; the
+  GUI is currently kernel code
+- keyboard into that window, so the machine is usable without a serial cable
+- dynamic executables, then threads with real futexes
 
 ## Build and Test
 
@@ -65,7 +91,7 @@ ctest --test-dir build --output-on-failure
 
 Notes:
 - CI uses required boot gates: host tests + OVMF smoke + boot-to-CLI smoke, while the direct-loader probe is informational.
-- The boot-to-CLI gate (`scripts/qemu-cli-smoke-linux.py`) is not a token grep: it boots four vCPUs under pure TCG, asserts state invariants (a non-zero DHCP lease, all cores online, no unexpected fault, no panic) and completes a TCP round trip to a host echo server. It distinguishes "produced nothing", "went quiet" and "still talking" so a hang is diagnosable from the log alone.
+- The boot-to-CLI gate (`scripts/qemu-cli-smoke-linux.py`) is not a token grep: it boots four vCPUs under pure TCG, asserts state invariants (a non-zero DHCP lease, all cores online, no unexpected fault, no panic) and completes a TCP round trip to a host echo server. It also asserts that the programs did their work: the unmodified Linux binary ran with the right `argv`, BusyBox dispatched an applet and touched files, its interactive shell ran a builtin and exec'd through `PATH`, a pipeline completed, signals were delivered, and the on-screen terminal was not empty. It distinguishes "produced nothing", "went quiet" and "still talking" so a hang is diagnosable from the log alone.
 - Beyond the boot gates, CI runs a gcc/clang x Debug/Release matrix, the host suites under AddressSanitizer and UndefinedBehaviorSanitizer, CodeQL static analysis, a libFuzzer harness over the network receive path, and a nightly job that boots repeatedly and fuzzes for longer. Dependabot tracks the actions and the submodules.
 - `qemu-system-x86_64 -kernel` has known compatibility limits with ELF64/Multiboot2 images in newer QEMU builds. The direct-loader probe classifies these loader-side incompatibilities separately from real boot regressions.
 - Bootloader artifacts use a validated EFI conversion flow (`bootloader.elf` -> `bootloader.efi`) with fail-fast PE32+ and relocation checks.

@@ -56,11 +56,30 @@ now rather than after the full stack is built:
   from
 - thread-local storage works through `arch_prctl`, per task and preserved
   across context switches
+- an unmodified static BusyBox runs: it dispatches on its own name, reads files
+  through `openat`/`fstat`/`read`, lists directories through `getdents64`, and
+  its shell parses scripts, searches `PATH`, forks and execs. All of that is
+  gated - the boot fails on `busybox_did_not_run`,
+  `busybox_applet_dispatch_failed`, `busybox_file_operations_failed` or
+  `interactive_shell_did_not_run`
+- process semantics a real program assumes are present: `fork` is
+  copy-on-write, signals are raised, masked, queued and delivered on the way
+  back to user space, and `wait4` reports a status with the exit code in the
+  high byte and a killing signal in the low seven bits
+- pipelines work. `pipe2`, `dup`, `dup2`, descriptor inheritance across `fork`,
+  descriptors released on exit and `SIGPIPE` when the reader is gone are all
+  implemented; the gate runs `ls /EFI/BOOT | wc -l` in BusyBox's shell and
+  fails on `pipeline_did_not_complete` if the pipeline stalls
 - the syscall surface is listed in [syscalls.md](syscalls.md)
 
-What is still missing for an unmodified static binary is not the startup
-sequence but what comes after it: `fstat`, `openat`, `readlinkat`, `getcwd`,
-signal delivery, and threads with real futexes. Stubbing the full Linux table
+What is still missing is the part that begins where a single static program
+ends. `ET_DYN` and `PT_INTERP` are refused, so "runs Linux programs" means
+static ones. `clone` with `CLONE_VM` or `CLONE_THREAD` returns `-ENOSYS` and
+futexes are answered honestly rather than implemented, so a threaded program
+does not run. There is no entropy source, so `getrandom` refuses. There is one
+working directory - every path resolves against the volume root, so `getcwd`
+says `/` and `openat` accepts only `AT_FDCWD` - one identity, and no terminal
+device. Stubbing the full Linux table
 is explicitly not the plan - a program that receives a fabricated success dies
 later and less legibly than one that receives `-ENOSYS`.
 

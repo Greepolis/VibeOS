@@ -270,13 +270,23 @@ Two rules govern what goes in it:
 - **Unimplemented numbers are named in the serial log**, so a missing one is
   visible the first time it is reached rather than inferred from a crash.
 
+The list below is the `switch` in `vibeos_x86_64_linux_syscall`, not an
+aspiration. Anything not in it is refused with `-ENOSYS` and named in the log.
+
 | Group | Calls |
 | --- | --- |
-| Process | `fork`, `execve`, `wait4`, `exit`, `exit_group`, `getpid`, `gettid`, `set_tid_address`, `set_robust_list` |
+| Process | `fork`, `clone`, `execve`, `wait4`, `exit`, `exit_group`, `getpid`, `getppid`, `gettid`, `prctl`, `set_tid_address`, `set_robust_list`, `setuid`, `setgid` |
+| Signals | `rt_sigaction`, `rt_sigprocmask`, `rt_sigreturn`, `kill`, `tkill`, `tgkill` |
 | Memory | `brk`, `mmap`, `mprotect`, `munmap` |
-| Files | `open`, `close`, `read`, `write`, `readv`, `writev`, `lseek`, `getdents64`, `unlink`, `mkdir`, `ioctl` |
+| Files | `open`, `openat`, `close`, `read`, `write`, `readv`, `writev`, `lseek`, `fstat`, `newfstatat`, `getdents64`, `getcwd`, `readlinkat`, `unlink`, `mkdir`, `ioctl` |
+| Descriptors | `pipe`, `pipe2`, `dup`, `dup2` |
 | Sockets | `socket`, `bind`, `listen`, `connect`, `accept`, `sendto`, `recvfrom` |
-| Runtime startup | `arch_prctl`, `uname`, `clock_gettime`, `prlimit64`, `futex`, `sched_yield`, `rt_sigprocmask`, `rt_sigaction`, `getuid`/`geteuid`/`getgid`/`getegid` |
+| Time | `clock_gettime`, `time` |
+| Runtime startup | `arch_prctl`, `uname`, `prlimit64`, `futex`, `sched_yield`, `getuid`/`geteuid`/`getgid`/`getegid` |
+
+Deliberately refused with `-ENOSYS`: `rseq`, `getrandom`, `sendfile`, and
+`clone` when `CLONE_VM` or `CLONE_THREAD` is set. Each has a documented caller
+fallback; a fabricated success would move the failure somewhere unrelated.
 
 Notable semantics:
 
@@ -288,9 +298,79 @@ Notable semantics:
 - `mprotect` and `munmap` change the real page-table entries and flush the TLB.
   `MAP_FIXED` and file-backed `mmap` are refused rather than ignored.
 - `ioctl` returns `-ENOTTY`. There is no terminal device here, and that is the
-  answer a libc uses to decide stdout should be block buffered.
-- `rt_sigaction` and `rt_sigprocmask` return success only because no signal is
-  ever delivered. They stop being accurate the moment delivery exists.
+  answer a libc uses to decide stdout should be block buffered. `fstat` on a
+  standard descriptor agrees with it: a character device that is not a
+  terminal.
+- `fork` shares pages instead of copying them. Every writable user leaf becomes
+  read-only and copy-on-write in both address spaces, the frame's reference
+  count goes up, and the first write from either side faults and duplicates it.
+  Three details make it work rather than nearly work: the fault handler must
+  accept a fault raised in ring 0, because the kernel writes user buffers with
+  `CR0.WP` set and `read()` filling a freshly forked buffer is exactly such a
+  write; `hw_user_range_ok` must treat a copy-on-write page as writable, or a
+  syscall rejects the buffer before the fault can fix it; and a second `fork`
+  must recognise an already-COW page rather than filing it under "read-only, so
+  it never needs copying", which would leave it permanently unwritable.
+- Signals are real. `rt_sigaction` and `rt_sigprocmask` install dispositions and
+  masks that are honoured; a raise sets a pending bit and wakes the task if it
+  was blocked; delivery happens on the way back to user space, where the
+  process's own stack is available. The frame is built below the 128-byte red
+  zone, 16-byte aligned with room for a return address, and the return address
+  is the C library's `SA_RESTORER` trampoline - a handler installed without one
+  cannot return anywhere, so the signal takes its default action instead.
+  `rt_sigreturn` restores the saved frame but forces `cs`, `ss` and `rflags`
+  back to safe values, because that frame lives in memory the program can
+  write and nothing read out of it may decide privilege. A magic word in the
+  frame is checked for the same reason.
+- A Linux `sigset_t` numbers its bits from zero: bit 0 is signal 1. This kernel
+  numbers them by signal, and converts only in `hw_sigset_from_user` /
+  `hw_sigset_to_user`. Getting it wrong shifts every mask by one.
+- `SIGKILL` and `SIGSTOP` can be neither caught nor blocked: `rt_sigaction`
+  returns `EINVAL` for them and `rt_sigprocmask` accepts the request and drops
+  the two bits, as Linux does.
+- A wait status from `wait4` is not an exit code. The exit code sits in the
+  high byte and a killing signal in the low seven bits; `128 + sig` is what a
+  shell prints, not what the kernel stores.
+- `pipe2` allocates one buffer and two descriptors, read end first; `O_CLOEXEC`
+  is accepted and ignored, since there is no close-on-exec list. `dup2` onto 0,
+  1 or 2 records a standard-descriptor redirection, which is how a shell
+  attaches a pipe to a program that knows nothing about it. `dup` is `dup2`
+  onto the lowest free descriptor. Descriptors are inherited across `fork` with
+  the pipe's reader and writer counts incremented, and released on exit - a
+  pipe stays alive until both ends are gone, so a reader can still drain data
+  after the last writer closed. Writing to a pipe with no readers raises
+  `SIGPIPE` and returns `EPIPE`.
+- `clone` is what a C library actually calls for `fork`. Flags that mean a
+  thread (`CLONE_VM`, `CLONE_THREAD`) return `-ENOSYS`; anything else forks.
+  `tkill` and `tgkill` reduce to `kill`, since there is one thread per process.
+- `getcwd` returns `/` and `readlinkat` answers only `/proc/self/exe`, from the
+  path `execve` was given. Both say what is true rather than inventing a path a
+  program would then fail to open.
+- `openat` accepts only `AT_FDCWD`; `newfstatat` additionally handles an empty
+  path with `AT_EMPTY_PATH`, and distinguishes a directory from a file by
+  trying to list it, because `ls` behaves differently for each.
+- `setuid`/`setgid` succeed for 0 and return `EPERM` otherwise. There is one
+  identity here and it is root.
+- `time` and `clock_gettime` are derived from the timer tick, not from a
+  real-time clock.
+
+### How much of this a gate defends
+
+The boot gate (`scripts/qemu-cli-smoke-linux.py`) drives these paths through
+real programs rather than a test written to agree with the kernel. It fails on
+`signal_delivery_broken` if a program built by `musl-gcc` against a real libc
+(`tests/linux/musl_signal.c`, staged as `SIGNAL.ELF`) does not print `SIG_OK`
+after exercising handlers, masking, ignoring and default actions - the
+trampoline a handler returns through comes from that libc, not from a test that
+agrees with the kernel; on `pipeline_did_not_complete` if
+`ls /EFI/BOOT | wc -l` in BusyBox's shell does not get as far as the `PIPE_OK`
+that follows it; and on `busybox_file_operations_failed` if `openat`, `fstat`,
+`read` or `getdents64` regress, since those are BusyBox's own error messages.
+
+Copy-on-write is reported, not asserted: the kernel prints
+`[MM] COW_STATS shared=... copied=...` at the end of the self-test - 1221 and 24
+on the boot this was written against - but no invariant checks the numbers. What
+the gate defends is that forking and exec'ing programs keep working.
 
 ## Compatibility note
 

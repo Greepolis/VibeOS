@@ -1,7 +1,7 @@
 # User Space Interface Progress
 
-Status: In Progress (System V startup ABI verified from ring 3)
-Last review: 2026-08-02
+Status: In Progress (unmodified static Linux binaries verified from ring 3)
+Last review: 2026-08-25
 
 ## Implemented
 - User API syscall bridge in `user/lib/user_api.c`.
@@ -13,9 +13,15 @@ Last review: 2026-08-02
 - Programs start on a real System V startup stack, not a bare one: `vibeos_elf_build_stack` (`kernel/core/elf.c`) lays out `argc`, `argv`, `envp` and the auxiliary vector, and `user/prog/crt0.S` is a genuine assembly `_start` that converts that state into a C call. `AT_PHDR`, `AT_PHNUM`, `AT_PHENT`, `AT_ENTRY`, `AT_PAGESZ` and `AT_RANDOM` are all populated, and the user linker script now maps the ELF headers inside the first `PT_LOAD` so `AT_PHDR` points at a program header table that really exists in the address space. A ring-3 program verifies this on every boot (`auxv ok` in the serial log).
 - Every user program now enters through a real assembly `_start` (`user/prog/crt0.S`) and is written as an ordinary `vibeos_main(argc, argv, envp)`. This is not cosmetic: at entry `rsp` is aligned like a call site rather than a function frame, and the arguments are on the stack rather than in registers, so a C function as the entry point either misreads them or faults on the first aligned SSE store.
 - `/BIN/SH` supplies the current interactive shell baseline with keyboard/serial input, line editing and file commands; framebuffer output is available in the runtime console path.
+- **Unmodified static Linux binaries run end to end.** A static musl program and a static BusyBox - neither built by this project - load, reach `main`, and do real work. BusyBox dispatches on `argv[0]` (which is not the path: the shell supplies the name, the path only opens the file), runs `echo`, `cat` and `ls`, and its shell parses scripts, searches `PATH`, forks and execs. Gated: `busybox_did_not_run`, `busybox_applet_dispatch_failed`, `busybox_file_operations_failed`, `interactive_shell_did_not_run`, `shell_script_did_not_run`, `unmodified_linux_binary_did_not_run` and `linux_binary_got_wrong_argv` all fail the boot.
+- **Pipelines run in that shell.** `pipe2`, `dup`, `dup2` and descriptor inheritance across `fork` are enough for `ls /EFI/BOOT | wc -l`; the boot self-test runs exactly that and the gate fails on `pipeline_did_not_complete`. Writing into a pipe with no reader raises `SIGPIPE`, which is what stops a pipeline filling memory after its reader has gone.
+- **A signal reaches a real handler.** A program built against a real libc installs handlers, blocks and unblocks signals, ignores one and lets another take its default action; the return path goes through the libc's own trampoline and `rt_sigreturn`. Gated on `signal_delivery_broken`.
+- `Ctrl-C` on the console raises `SIGINT` against the newest live user task. The signal itself is delivered like any other; picking the recipient by newest pid is the stand-in for process groups, which do not exist yet. Not covered by a gate.
 
 ## Pending
-- Running an unmodified static Linux binary end to end. The startup stack it needs is in place; what remains is the set of syscalls a real static musl or busybox actually calls on startup (`set_tid_address`, `rt_sigprocmask`, `ioctl(TCGETS)`, `writev`, `readlinkat`, `clock_gettime`, `mmap` with real flags). Stubbing all ~350 Linux syscalls is not the goal and would be worse than nothing; the goal is the ones a real binary reaches.
+- Process groups and a controlling terminal, so `Ctrl-C` targets a job rather than the newest pid, and so `ioctl(TCGETS)` can become something other than `ENOTTY`.
+- A test that exercises the `Ctrl-C` to `SIGINT` path, which is currently demonstrated rather than gated.
+- Dynamic executables. `ET_DYN` and `PT_INTERP` are refused, so "runs Linux programs" means static ones.
 - Stable libc/runtime contract for richer userland.
 - Expanded compatibility ABI translation depth (Linux/Windows/macOS targets).
 - Tooling and diagnostics for userland API evolution.
