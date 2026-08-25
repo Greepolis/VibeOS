@@ -18,6 +18,7 @@
 #include "vibeos/inet.h"
 #include "vibeos/elf.h"
 #include "vibeos/fat_chain.h"
+#include "vibeos/blockdev.h"
 #include "vibeos/tls.h"
 #include "vibeos/trap.h"
 #include "vibeos/user_api.h"
@@ -5754,11 +5755,237 @@ static int test_pmm_reserve(void) {
     return 0;
 }
 
+/* ---- block cache ---------------------------------------------------------
+ *
+ * Driven against an array rather than a disk, which is the point of the cache
+ * living in kernel/fs: eviction order and write-back timing are exactly the
+ * things that are invisible in a boot and obvious in a sweep.
+ */
+#define BCT_SECTORS 64u
+
+typedef struct {
+    uint8_t disk[BCT_SECTORS][VIBEOS_BLOCK_SIZE];
+    uint32_t reads;
+    uint32_t writes;
+    int fail_writes;
+    int fail_reads;
+} bct_disk_t;
+
+static bct_disk_t g_bct;
+
+static int bct_read(void *ctx, uint64_t lba, void *buf) {
+    bct_disk_t *d = (bct_disk_t *)ctx;
+    if (d->fail_reads || lba >= BCT_SECTORS) {
+        return -1;
+    }
+    memcpy(buf, d->disk[lba], VIBEOS_BLOCK_SIZE);
+    d->reads++;
+    return 0;
+}
+
+static int bct_write(void *ctx, uint64_t lba, const void *buf) {
+    bct_disk_t *d = (bct_disk_t *)ctx;
+    if (d->fail_writes || lba >= BCT_SECTORS) {
+        return -1;
+    }
+    memcpy(d->disk[lba], buf, VIBEOS_BLOCK_SIZE);
+    d->writes++;
+    return 0;
+}
+
+static void bct_reset(void) {
+    uint32_t i, j;
+    memset(&g_bct, 0, sizeof(g_bct));
+    for (i = 0; i < BCT_SECTORS; i++) {
+        for (j = 0; j < VIBEOS_BLOCK_SIZE; j++) {
+            g_bct.disk[i][j] = (uint8_t)(i * 7u + j);
+        }
+    }
+}
+
+#define BCT_SLOTS 4u
+static uint8_t g_bct_storage[BCT_SLOTS][VIBEOS_BLOCK_SIZE];
+static vibeos_block_slot_t g_bct_slots[BCT_SLOTS];
+
+static void bct_setup(vibeos_blockcache_t *bc, vibeos_blockdev_t *dev, int writable) {
+    uint32_t i;
+    bct_reset();
+    for (i = 0; i < BCT_SLOTS; i++) {
+        g_bct_slots[i].data = g_bct_storage[i];
+    }
+    dev->read = bct_read;
+    dev->write = writable ? bct_write : 0;
+    dev->ctx = &g_bct;
+    dev->sectors = BCT_SECTORS;
+    (void)vibeos_blockcache_init(bc, dev, g_bct_slots, BCT_SLOTS);
+}
+
+static int test_blockcache_hits(void) {
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    uint8_t buf[VIBEOS_BLOCK_SIZE];
+
+    bct_setup(&bc, &dev, 1);
+    if (vibeos_blockcache_read(&bc, 5, buf) != 0 || buf[0] != (uint8_t)(5u * 7u)) {
+        return -1;
+    }
+    if (g_bct.reads != 1u) {
+        return -1;
+    }
+    /* The second read of the same block must not reach the device - that is
+     * the entire reason the cache exists. */
+    if (vibeos_blockcache_read(&bc, 5, buf) != 0 || g_bct.reads != 1u) {
+        return -1;
+    }
+    if (bc.hits != 1u || bc.misses != 1u) {
+        return -1;
+    }
+    /* Out of range is refused rather than passed to the device. */
+    if (vibeos_blockcache_read(&bc, BCT_SECTORS, buf) == 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_blockcache_writeback(void) {
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    uint8_t buf[VIBEOS_BLOCK_SIZE];
+    uint32_t i;
+
+    bct_setup(&bc, &dev, 1);
+    for (i = 0; i < VIBEOS_BLOCK_SIZE; i++) {
+        buf[i] = 0xAB;
+    }
+    if (vibeos_blockcache_write(&bc, 9, buf) != 0) {
+        return -1;
+    }
+    /* Write-back: the device must NOT have been touched yet. A cache that
+     * writes through is a cache that cannot order anything, which is the
+     * property a journal will need. */
+    if (g_bct.writes != 0u || g_bct.disk[9][0] == 0xAB) {
+        return -1;
+    }
+    /* Reading it back comes from the cache and sees the new bytes. */
+    memset(buf, 0, sizeof(buf));
+    if (vibeos_blockcache_read(&bc, 9, buf) != 0 || buf[0] != 0xAB) {
+        return -1;
+    }
+    if (vibeos_blockcache_flush(&bc) != 0) {
+        return -1;
+    }
+    if (g_bct.writes != 1u || g_bct.disk[9][0] != 0xAB) {
+        return -1;
+    }
+    /* Flushing twice must not write twice: the block is no longer dirty. */
+    if (vibeos_blockcache_flush(&bc) != 0 || g_bct.writes != 1u) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_blockcache_eviction(void) {
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    uint8_t buf[VIBEOS_BLOCK_SIZE];
+    uint32_t i;
+
+    bct_setup(&bc, &dev, 1);
+    /* Dirty one block, then push it out by touching more blocks than there
+     * are slots. Eviction must write it, not drop it - dropping would discard
+     * a write the caller was told had succeeded. */
+    for (i = 0; i < VIBEOS_BLOCK_SIZE; i++) {
+        buf[i] = 0x5C;
+    }
+    if (vibeos_blockcache_write(&bc, 1, buf) != 0) {
+        return -1;
+    }
+    for (i = 2; i < 2u + BCT_SLOTS; i++) {
+        if (vibeos_blockcache_read(&bc, i, buf) != 0) {
+            return -1;
+        }
+    }
+    if (g_bct.disk[1][0] != 0x5C || bc.writebacks != 1u) {
+        return -1;
+    }
+    /* And the evicted block really left the cache: reading it again costs a
+     * device read. */
+    {
+        uint32_t before = g_bct.reads;
+        if (vibeos_blockcache_read(&bc, 1, buf) != 0 || g_bct.reads != before + 1u) {
+            return -1;
+        }
+        if (buf[0] != 0x5C) {
+            return -1;   /* what came back must be what was written */
+        }
+    }
+    return 0;
+}
+
+static int test_blockcache_failures(void) {
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    uint8_t buf[VIBEOS_BLOCK_SIZE];
+
+    /* A read-only device refuses writes rather than accepting them and
+     * failing later at flush, when the caller has moved on. */
+    bct_setup(&bc, &dev, 0);
+    if (vibeos_blockcache_write(&bc, 3, buf) == 0) {
+        return -1;
+    }
+
+    /* A device that fails must produce a failed read, not a stale slot that
+     * later looks valid. */
+    bct_setup(&bc, &dev, 1);
+    g_bct.fail_reads = 1;
+    if (vibeos_blockcache_read(&bc, 4, buf) == 0) {
+        return -1;
+    }
+    g_bct.fail_reads = 0;
+    if (vibeos_blockcache_read(&bc, 4, buf) != 0 || buf[0] != (uint8_t)(4u * 7u)) {
+        return -1;
+    }
+
+    /* A flush that cannot write must say so. Reporting success would let a
+     * journal trust an ordering that never reached the disk. */
+    bct_setup(&bc, &dev, 1);
+    memset(buf, 0x11, sizeof(buf));
+    if (vibeos_blockcache_write(&bc, 6, buf) != 0) {
+        return -1;
+    }
+    g_bct.fail_writes = 1;
+    if (vibeos_blockcache_flush(&bc) == 0) {
+        return -1;
+    }
+    /* Still dirty, so a later successful flush still writes it. */
+    g_bct.fail_writes = 0;
+    if (vibeos_blockcache_flush(&bc) != 0 || g_bct.disk[6][0] != 0x11) {
+        return -1;
+    }
+
+    /* Invalidate drops dirty data on purpose; the caller flushes first if it
+     * wanted it kept. */
+    bct_setup(&bc, &dev, 1);
+    memset(buf, 0x22, sizeof(buf));
+    if (vibeos_blockcache_write(&bc, 7, buf) != 0) {
+        return -1;
+    }
+    vibeos_blockcache_invalidate(&bc);
+    if (vibeos_blockcache_flush(&bc) != 0 || g_bct.writes != 0u) {
+        return -1;
+    }
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
 #define RUN_TEST(fn) do { if ((fn)() != 0) { failures++; printf("FAIL:%s\n", #fn); } } while (0)
     RUN_TEST(test_pmm);
     RUN_TEST(test_pmm_reserve);
+    RUN_TEST(test_blockcache_hits);
+    RUN_TEST(test_blockcache_writeback);
+    RUN_TEST(test_blockcache_eviction);
+    RUN_TEST(test_blockcache_failures);
     RUN_TEST(test_scheduler);
     RUN_TEST(test_scheduler_balanced);
     RUN_TEST(test_scheduler_wait_runtime);
