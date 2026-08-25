@@ -57,6 +57,14 @@ static int page_up(uint64_t v, uint64_t *out) {
 int vibeos_elf_parse(const void *image, uint64_t len,
                      uint64_t min_allowed, uint64_t end_allowed,
                      vibeos_elf_image_t *out) {
+    /* No options: the historical contract, static ET_EXEC only. */
+    return vibeos_elf_parse_ex(image, len, 0, min_allowed, end_allowed, 0, out);
+}
+
+int vibeos_elf_parse_ex(const void *image, uint64_t len,
+                        uint64_t load_bias,
+                        uint64_t min_allowed, uint64_t end_allowed,
+                        uint32_t opts, vibeos_elf_image_t *out) {
     const uint8_t *b = (const uint8_t *)image;
     uint64_t phoff, ph_total;
     uint16_t phnum, phentsize, etype;
@@ -87,14 +95,29 @@ int vibeos_elf_parse(const void *image, uint64_t len,
 
     etype = rd16(b + 16);
     if (etype == ET_DYN) {
-        /* Position-independent executables need relocation and usually an
-         * interpreter. Refuse clearly rather than load something that will
-         * fault at a puzzling address. */
-        return VIBEOS_ELF_EDYNAMIC;
-    }
-    if (etype != ET_EXEC) {
+        if (!(opts & VIBEOS_ELF_ALLOW_DYN)) {
+            /* A caller that cannot relocate would map the file's zero-based
+             * addresses literally and fault at a puzzling address. Refuse
+             * clearly instead. */
+            return VIBEOS_ELF_EDYNAMIC;
+        }
+        out->is_dyn = 1u;
+    } else if (etype == ET_EXEC) {
+        /* Not relocatable: its addresses are absolute, so a bias would move
+         * the pages out from under the program's own references. Refusing is
+         * the only honest answer to a caller that asked for one anyway. */
+        if (load_bias != 0u) {
+            return VIBEOS_ELF_EMALFORMED;
+        }
+    } else {
         return VIBEOS_ELF_ETYPE;
     }
+    /* A sub-page bias would leave every segment straddling a page boundary it
+     * was not built to straddle, and the caller maps whole pages. */
+    if (load_bias != page_down(load_bias)) {
+        return VIBEOS_ELF_EMALFORMED;
+    }
+    out->load_bias = load_bias;
 
     phoff = rd64(b + 32);
     phentsize = rd16(b + 54);
@@ -117,7 +140,31 @@ int vibeos_elf_parse(const void *image, uint64_t len,
         uint64_t file_end, mem_end;
 
         if (type == PT_INTERP) {
-            return VIBEOS_ELF_EDYNAMIC;
+            uint64_t k;
+            if (!(opts & VIBEOS_ELF_ALLOW_INTERP)) {
+                return VIBEOS_ELF_EDYNAMIC;
+            }
+            /* Two interpreters is not a choice to make on the file's behalf. */
+            if (out->has_interp) {
+                return VIBEOS_ELF_EMALFORMED;
+            }
+            if (!add_ok(off, filesz, &file_end) || file_end > len) {
+                return VIBEOS_ELF_ETRUNCATED;
+            }
+            if (filesz == 0u || filesz > VIBEOS_ELF_MAX_INTERP) {
+                return VIBEOS_ELF_EMALFORMED;
+            }
+            /* The path must already be terminated inside its own segment.
+             * Terminating it here would turn a malformed file into a request
+             * to open some prefix of a path, which is a different file. */
+            if (b[off + filesz - 1u] != 0) {
+                return VIBEOS_ELF_EMALFORMED;
+            }
+            for (k = 0; k < filesz; k++) {
+                out->interp[k] = (char)b[off + k];
+            }
+            out->has_interp = 1u;
+            continue;
         }
         if (type != PT_LOAD || memsz == 0u) {
             continue;
@@ -127,6 +174,12 @@ int vibeos_elf_parse(const void *image, uint64_t len,
         }
         if (!add_ok(off, filesz, &file_end) || file_end > len) {
             return VIBEOS_ELF_ETRUNCATED;
+        }
+        /* From here on `vaddr` is where the segment will really live. Biasing
+         * before the range and overflow checks is what makes those checks mean
+         * anything for an ET_DYN image. */
+        if (!add_ok(vaddr, load_bias, &vaddr)) {
+            return VIBEOS_ELF_EMALFORMED;
         }
         if (!add_ok(vaddr, memsz, &mem_end)) {
             return VIBEOS_ELF_EMALFORMED;
@@ -157,7 +210,11 @@ int vibeos_elf_parse(const void *image, uint64_t len,
         return VIBEOS_ELF_EMALFORMED;
     }
 
-    out->entry = rd64(b + 24);
+    /* e_entry is file-relative for ET_DYN just as segment addresses are, so it
+     * is biased before it is checked against the biased segment span. */
+    if (!add_ok(rd64(b + 24), load_bias, &out->entry)) {
+        return VIBEOS_ELF_EMALFORMED;
+    }
     if (out->entry < lo || out->entry >= hi) {
         return VIBEOS_ELF_EMALFORMED;
     }
@@ -165,11 +222,14 @@ int vibeos_elf_parse(const void *image, uint64_t len,
     if (!page_up(hi, &out->end_vaddr)) {
         return VIBEOS_ELF_EMALFORMED;
     }
+    out->image_span = out->end_vaddr - out->min_vaddr;
     out->phnum = phnum;
     out->phentsize = phentsize;
 
     /* AT_PHDR needs the address the headers ended up at, which only exists if
-     * some PT_LOAD segment actually covers them. */
+     * some PT_LOAD segment actually covers them. The segment's vaddr already
+     * carries the bias, so what comes out of this is where the headers really
+     * are, not where the file said they would be. */
     for (i = 0; i < out->count; i++) {
         const vibeos_elf_segment_t *s = &out->seg[i];
         if (phoff >= s->file_off && ph_total <= s->file_off + s->filesz) {
@@ -276,9 +336,10 @@ uint64_t vibeos_elf_build_stack(void *buf, uint64_t buf_len, uint64_t stack_top,
         strings_bytes += 16u;
     }
 
-    /* PAGESZ, ENTRY, UID, EUID, GID, EGID, NULL, plus PHDR/PHENT/PHNUM and
-     * RANDOM when they apply. */
-    aux_pairs = 7u + (desc->phdr_vaddr ? 3u : 0u) + (desc->random16 ? 1u : 0u);
+    /* PAGESZ, ENTRY, UID, EUID, GID, EGID, NULL, plus PHDR/PHENT/PHNUM,
+     * RANDOM and BASE when they apply. */
+    aux_pairs = 7u + (desc->phdr_vaddr ? 3u : 0u) + (desc->random16 ? 1u : 0u)
+              + (desc->interp_base ? 1u : 0u);
 
     need = strings_bytes + 16u                     /* strings + alignment slack */
          + 8u                                      /* argc                      */
@@ -348,6 +409,11 @@ uint64_t vibeos_elf_build_stack(void *buf, uint64_t buf_len, uint64_t stack_top,
             *slot++ = VIBEOS_AT_PHDR;   *slot++ = desc->phdr_vaddr;
             *slot++ = VIBEOS_AT_PHENT;  *slot++ = desc->phentsize;
             *slot++ = VIBEOS_AT_PHNUM;  *slot++ = desc->phnum;
+        }
+        if (desc->interp_base) {
+            /* Only when an interpreter was actually loaded. A static program
+             * that saw AT_BASE would believe it. */
+            *slot++ = VIBEOS_AT_BASE; *slot++ = desc->interp_base;
         }
         *slot++ = VIBEOS_AT_PAGESZ; *slot++ = VIBEOS_ELF_PAGE_SIZE;
         *slot++ = VIBEOS_AT_ENTRY;  *slot++ = desc->entry;

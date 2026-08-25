@@ -5030,6 +5030,357 @@ static int test_elf_stack_carries_phdr(void) {
     return 0;
 }
 
+/* ---- ET_DYN, PT_INTERP and AT_BASE ---------------------------------------
+ *
+ * A dynamically linked executable differs from a static one in three ways the
+ * portable parser has to cope with: its addresses are relative to zero and the
+ * kernel picks where they land, it names an interpreter to run instead of
+ * itself, and that interpreter needs its own load address handed to it in the
+ * auxiliary vector. Each of those is checked here rather than only on metal,
+ * because each is arithmetic on untrusted input.
+ */
+
+#define ELFT_DYN_BIAS (ELFT_BASE + 0x20000ull)
+#define ELFT_INTERP_PATH "/lib64/ld-linux-x86-64.so.2"
+
+/* Drop a NUL-terminated string into the image at `off`, as the linker would. */
+static void elft_put_str(uint8_t *buf, uint64_t off, const char *s) {
+    uint64_t i = 0;
+    do {
+        buf[off + i] = (uint8_t)s[i];
+    } while (s[i++]);
+}
+
+/* A PIE placed at a caller-chosen bias: everything reported must already
+ * include it, because the caller maps what it is told and never adds the bias
+ * a second time. */
+static int test_elf_parse_dyn_bias(void) {
+    static uint8_t img[8192];
+    static uint8_t page[VIBEOS_ELF_PAGE_SIZE];
+    vibeos_elf_image_t out, sized;
+    uint32_t i;
+    /* Zero-based, as a PIE's program headers really are. The first segment
+     * starts at file offset 0 so it maps the program headers too. */
+    elft_seg_t segs[2] = {
+        {1u, VIBEOS_ELF_R | VIBEOS_ELF_X, 0, 0, 0x800, 0x800},
+        {1u, VIBEOS_ELF_R | VIBEOS_ELF_W, 0x1000, 0x1000, 0x40, 0x200},
+    };
+    uint64_t len = elft_build(img, sizeof(img), 0x10, segs, 2, 3 /* ET_DYN */);
+
+    img[0x100] = 0x5A;   /* a byte to prove the file offsets still line up */
+
+    /* Without being asked to, the parser must still refuse: a caller that
+     * cannot relocate would map these zero-based addresses literally. */
+    if (vibeos_elf_parse(img, len, 0, ELFT_LIMIT, &out) != VIBEOS_ELF_EDYNAMIC) {
+        return -1;
+    }
+    if (vibeos_elf_parse_ex(img, len, 0, 0, ELFT_LIMIT, 0, &out) !=
+        VIBEOS_ELF_EDYNAMIC) {
+        return -1;
+    }
+
+    /* The sizing pass: bias 0 is how a caller learns how much space to
+     * reserve before it can choose where to put the image. */
+    if (vibeos_elf_parse_ex(img, len, 0, 0, ELFT_LIMIT,
+                            VIBEOS_ELF_ALLOW_DYN, &sized) != VIBEOS_ELF_OK) {
+        return -1;
+    }
+    if (!sized.is_dyn || sized.load_bias != 0 || sized.image_span != 0x2000ull) {
+        return -1;
+    }
+    if (sized.min_vaddr != 0 || sized.end_vaddr != 0x2000ull) {
+        return -1;
+    }
+
+    /* And the placing pass. */
+    if (vibeos_elf_parse_ex(img, len, ELFT_DYN_BIAS, ELFT_BASE, ELFT_LIMIT,
+                            VIBEOS_ELF_ALLOW_DYN, &out) != VIBEOS_ELF_OK) {
+        return -1;
+    }
+    if (!out.is_dyn || out.has_interp || out.load_bias != ELFT_DYN_BIAS) {
+        return -1;
+    }
+    /* The span does not depend on the bias; if it did, a caller could not
+     * reserve the right amount of space before choosing one. */
+    if (out.image_span != sized.image_span) {
+        return -1;
+    }
+    if (out.entry != ELFT_DYN_BIAS + 0x10ull) {
+        return -1;
+    }
+    if (out.min_vaddr != ELFT_DYN_BIAS ||
+        out.end_vaddr != ELFT_DYN_BIAS + 0x2000ull) {
+        return -1;
+    }
+    if (out.count != 2 || out.seg[0].vaddr != ELFT_DYN_BIAS ||
+        out.seg[1].vaddr != ELFT_DYN_BIAS + 0x1000ull) {
+        return -1;
+    }
+    /* AT_PHDR after the bias, not before: an interpreter told the file-relative
+     * address would read the program headers out of whatever is at 64. */
+    if (out.phdr_vaddr != ELFT_DYN_BIAS + 64ull) {
+        return -1;
+    }
+    /* Permissions and file bytes must still resolve at the biased addresses,
+     * which is the whole point of reporting them biased. */
+    if (vibeos_elf_page_flags(&out, ELFT_DYN_BIAS) !=
+        (VIBEOS_ELF_R | VIBEOS_ELF_X)) {
+        return -1;
+    }
+    if (vibeos_elf_page_flags(&out, ELFT_DYN_BIAS + 0x1000ull) !=
+        (VIBEOS_ELF_R | VIBEOS_ELF_W)) {
+        return -1;
+    }
+    if (vibeos_elf_page_flags(&out, 0) != 0) {
+        return -1;   /* nothing is left behind at the unbiased address */
+    }
+    memset(page, 0xEE, sizeof(page));
+    vibeos_elf_fill_page(&out, img, ELFT_DYN_BIAS, page);
+    if (page[0x100] != 0x5A || page[0] != 0x7F) {
+        return -1;
+    }
+    for (i = 0x800; i < VIBEOS_ELF_PAGE_SIZE; i++) {
+        if (page[i] != 0) {
+            return -1;   /* past filesz: padding, and it must be zeroed */
+        }
+    }
+    return 0;
+}
+
+/* The bias is arithmetic on an address the file supplied, so every way it can
+ * go wrong has to end in a refusal rather than a wrong mapping. */
+static int test_elf_dyn_rejects_crafted(void) {
+    static uint8_t img[8192];
+    vibeos_elf_image_t out;
+    uint64_t len;
+    elft_seg_t dyn[2] = {
+        {1u, VIBEOS_ELF_R | VIBEOS_ELF_X, 0, 0, 0x800, 0x800},
+        {1u, VIBEOS_ELF_R | VIBEOS_ELF_W, 0x1000, 0x1000, 0x40, 0x200},
+    };
+    elft_seg_t exec = {1u, VIBEOS_ELF_R | VIBEOS_ELF_X, 0x400, ELFT_BASE, 0x100, 0x100};
+
+    /* A sub-page bias would leave every segment straddling a page boundary the
+     * caller maps whole. */
+    len = elft_build(img, sizeof(img), 0x10, dyn, 2, 3);
+    if (vibeos_elf_parse_ex(img, len, ELFT_BASE + 0x800ull, ELFT_BASE, ELFT_LIMIT,
+                            VIBEOS_ELF_ALLOW_DYN, &out) != VIBEOS_ELF_EMALFORMED) {
+        return -1;
+    }
+
+    /* Biased past the range the caller permits. The check has to happen on the
+     * biased address; on the file's own it would pass. */
+    len = elft_build(img, sizeof(img), 0x10, dyn, 2, 3);
+    if (vibeos_elf_parse_ex(img, len, ELFT_BASE + 0x3FF000ull, ELFT_BASE,
+                            ELFT_LIMIT, VIBEOS_ELF_ALLOW_DYN, &out) !=
+        VIBEOS_ELF_ERANGE) {
+        return -1;
+    }
+
+    /* vaddr + bias wrapping 64 bits. Only the second segment wraps, and the
+     * entry point does not, so the refusal has to come from the segment's own
+     * arithmetic - left unchecked, the wrapped address lands back at the
+     * bottom of memory and looks perfectly reasonable. */
+    {
+        elft_seg_t wrap[2] = {
+            {1u, VIBEOS_ELF_R | VIBEOS_ELF_X, 0x400, 0x1000, 0x100, 0x400},
+            {1u, VIBEOS_ELF_R | VIBEOS_ELF_W, 0x600, 0x100000000ull, 0x100, 0x100},
+        };
+        /* The bias is chosen so the surviving segment stays well clear of the
+         * top of memory: otherwise page_up rejects the image for its own
+         * reasons and the segment check is never the thing under test. */
+        len = elft_build(img, sizeof(img), 0x1000, wrap, 2, 3);
+        if (vibeos_elf_parse_ex(img, len, 0xFFFFFFFF00000000ull, 0,
+                                0xFFFFFFFFFFFFFFFFull, VIBEOS_ELF_ALLOW_DYN,
+                                &out) != VIBEOS_ELF_EMALFORMED) {
+            return -1;
+        }
+    }
+
+    /* ET_EXEC is not relocatable: its addresses are absolute and biasing them
+     * moves the pages out from under the program's own references. */
+    len = elft_build(img, sizeof(img), ELFT_BASE, &exec, 1, 2);
+    if (vibeos_elf_parse_ex(img, len, 0x1000, ELFT_BASE, ELFT_LIMIT,
+                            VIBEOS_ELF_ALLOW_DYN, &out) != VIBEOS_ELF_EMALFORMED) {
+        return -1;
+    }
+    /* ...but the same file with no bias is exactly what it was before. */
+    len = elft_build(img, sizeof(img), ELFT_BASE, &exec, 1, 2);
+    if (vibeos_elf_parse_ex(img, len, 0, ELFT_BASE, ELFT_LIMIT,
+                            VIBEOS_ELF_ALLOW_DYN, &out) != VIBEOS_ELF_OK) {
+        return -1;
+    }
+    if (out.is_dyn || out.load_bias != 0 || out.entry != ELFT_BASE) {
+        return -1;
+    }
+    return 0;
+}
+
+/* PT_INTERP names the file the kernel must run instead of this one, so the
+ * path is copied out whole or the file is refused - never truncated, because a
+ * truncated path names a different file. */
+static int test_elf_interp_reported(void) {
+    static uint8_t img[8192];
+    vibeos_elf_image_t out;
+    uint64_t len;
+    const uint64_t plen = sizeof(ELFT_INTERP_PATH);   /* includes the NUL */
+    elft_seg_t segs[2] = {
+        {1u, VIBEOS_ELF_R | VIBEOS_ELF_X, 0, 0, 0x800, 0x800},
+        {3u /* PT_INTERP */, VIBEOS_ELF_R, 0x900, 0, 0, 0},
+    };
+    elft_seg_t three[3];
+
+    segs[1].filesz = plen;
+    segs[1].memsz = plen;
+
+    /* Not asked for: still refused, so a caller that cannot load an
+     * interpreter cannot be handed a file that needs one. */
+    len = elft_build(img, sizeof(img), 0x10, segs, 2, 3);
+    elft_put_str(img, 0x900, ELFT_INTERP_PATH);
+    if (vibeos_elf_parse_ex(img, len, 0, 0, ELFT_LIMIT,
+                            VIBEOS_ELF_ALLOW_DYN, &out) != VIBEOS_ELF_EDYNAMIC) {
+        return -1;
+    }
+
+    /* Asked for: reported, alongside a perfectly normal biased image. */
+    len = elft_build(img, sizeof(img), 0x10, segs, 2, 3);
+    elft_put_str(img, 0x900, ELFT_INTERP_PATH);
+    if (vibeos_elf_parse_ex(img, len, ELFT_DYN_BIAS, ELFT_BASE, ELFT_LIMIT,
+                            VIBEOS_ELF_ALLOW_DYN | VIBEOS_ELF_ALLOW_INTERP,
+                            &out) != VIBEOS_ELF_OK) {
+        return -1;
+    }
+    if (!out.has_interp || strcmp(out.interp, ELFT_INTERP_PATH) != 0) {
+        return -1;
+    }
+    /* PT_INTERP is not loadable, so it must not have become a segment or
+     * stretched the span the caller reserves. */
+    if (out.count != 1 || out.end_vaddr != ELFT_DYN_BIAS + 0x1000ull) {
+        return -1;
+    }
+
+    /* A path the file never terminated. Terminating it here would turn a
+     * malformed file into a request to open some prefix of a path. */
+    segs[1].filesz = plen - 1u;
+    len = elft_build(img, sizeof(img), 0x10, segs, 2, 3);
+    elft_put_str(img, 0x900, ELFT_INTERP_PATH);
+    if (vibeos_elf_parse_ex(img, len, 0, 0, ELFT_LIMIT,
+                            VIBEOS_ELF_ALLOW_DYN | VIBEOS_ELF_ALLOW_INTERP,
+                            &out) != VIBEOS_ELF_EMALFORMED) {
+        return -1;
+    }
+
+    /* Longer than the buffer that holds it. */
+    segs[1].filesz = VIBEOS_ELF_MAX_INTERP + 1u;
+    segs[1].memsz = segs[1].filesz;
+    len = elft_build(img, sizeof(img), 0x10, segs, 2, 3);
+    memset(img + 0x900, 'a', (size_t)segs[1].filesz - 1u);
+    img[0x900 + segs[1].filesz - 1u] = 0;
+    if (vibeos_elf_parse_ex(img, len, 0, 0, ELFT_LIMIT,
+                            VIBEOS_ELF_ALLOW_DYN | VIBEOS_ELF_ALLOW_INTERP,
+                            &out) != VIBEOS_ELF_EMALFORMED) {
+        return -1;
+    }
+
+    /* Empty. */
+    segs[1].filesz = 0;
+    segs[1].memsz = 0;
+    len = elft_build(img, sizeof(img), 0x10, segs, 2, 3);
+    if (vibeos_elf_parse_ex(img, len, 0, 0, ELFT_LIMIT,
+                            VIBEOS_ELF_ALLOW_DYN | VIBEOS_ELF_ALLOW_INTERP,
+                            &out) != VIBEOS_ELF_EMALFORMED) {
+        return -1;
+    }
+
+    /* Running off the end of the file: read as-is this would walk past the
+     * image the caller actually holds. */
+    segs[1].filesz = plen;
+    segs[1].memsz = plen;
+    len = elft_build(img, sizeof(img), 0x10, segs, 2, 3);
+    elft_put_str(img, 0x900, ELFT_INTERP_PATH);
+    if (vibeos_elf_parse_ex(img, 0x905, 0, 0, ELFT_LIMIT,
+                            VIBEOS_ELF_ALLOW_DYN | VIBEOS_ELF_ALLOW_INTERP,
+                            &out) != VIBEOS_ELF_ETRUNCATED) {
+        return -1;
+    }
+
+    /* Two interpreters is not a choice to make on the file's behalf. */
+    three[0] = segs[0];
+    three[1] = segs[1];
+    three[2] = segs[1];
+    three[2].off = 0xA00;
+    len = elft_build(img, sizeof(img), 0x10, three, 3, 3);
+    elft_put_str(img, 0x900, ELFT_INTERP_PATH);
+    elft_put_str(img, 0xA00, ELFT_INTERP_PATH);
+    if (vibeos_elf_parse_ex(img, len, 0, 0, ELFT_LIMIT,
+                            VIBEOS_ELF_ALLOW_DYN | VIBEOS_ELF_ALLOW_INTERP,
+                            &out) != VIBEOS_ELF_EMALFORMED) {
+        return -1;
+    }
+    return 0;
+}
+
+/* AT_BASE is where the interpreter relocates itself from. Without it a
+ * dynamic program faults on its very first relocation. */
+static int test_elf_stack_at_base(void) {
+    static const char *const argv[] = {"/bin/true", NULL};
+    vibeos_elf_stack_desc_t d;
+    uint64_t sp, p;
+    int i;
+    int seen_base = 0, seen_null = 0;
+
+    memset(&d, 0, sizeof(d));
+    d.argv = argv;
+    d.entry = 0x400123ull;
+    d.interp_base = 0x7FFFF7000000ull;
+
+    sp = vibeos_elf_build_stack(stackt_buf, STACKT_LEN, STACKT_TOP, &d);
+    if (sp == 0 || (sp & 0xFu) != 0u) {
+        return -1;
+    }
+    /* The extra pair has to have been budgeted for, not just written: an
+     * auxv one pair longer than the space reserved for it runs straight into
+     * the argument strings sitting above. */
+    if (strcmp(stackt_str(stackt_word(sp + 8u)), argv[0]) != 0) {
+        return -1;
+    }
+    p = sp + 8u + 16u + 8u;   /* argc, argv[0] + NULL, envp NULL */
+    for (i = 0; i < 32; i++) {
+        uint64_t key = stackt_word(p);
+        uint64_t val = stackt_word(p + 8u);
+        p += 16u;
+        if (key == VIBEOS_AT_BASE) {
+            seen_base = (val == 0x7FFFF7000000ull);
+        }
+        if (key == VIBEOS_AT_NULL) {
+            seen_null = 1;
+            break;
+        }
+    }
+    if (!seen_base || !seen_null) {
+        return -1;
+    }
+
+    /* With no interpreter it must be absent, not zero: 0 is a legal load
+     * address and a libc would believe it. */
+    d.interp_base = 0;
+    sp = vibeos_elf_build_stack(stackt_buf, STACKT_LEN, STACKT_TOP, &d);
+    if (sp == 0) {
+        return -1;
+    }
+    p = sp + 8u + 16u + 8u;
+    for (i = 0; i < 32; i++) {
+        uint64_t key = stackt_word(p);
+        p += 16u;
+        if (key == VIBEOS_AT_BASE) {
+            return -1;
+        }
+        if (key == VIBEOS_AT_NULL) {
+            return 0;
+        }
+    }
+    return -1;   /* never terminated */
+}
+
 /* Reserving a physical range is what stops a kernel object from living at an
  * address a process can shadow, so the arithmetic is worth checking directly
  * rather than inferring it from a boot that happened not to crash. */
@@ -5164,6 +5515,10 @@ int main(void) {
     RUN_TEST(test_elf_stack_layout);
     RUN_TEST(test_elf_stack_edges);
     RUN_TEST(test_elf_stack_carries_phdr);
+    RUN_TEST(test_elf_parse_dyn_bias);
+    RUN_TEST(test_elf_dyn_rejects_crafted);
+    RUN_TEST(test_elf_interp_reported);
+    RUN_TEST(test_elf_stack_at_base);
     RUN_TEST(test_security_token);
     RUN_TEST(test_security_audit_log);
     RUN_TEST(test_driver_host);
