@@ -15,6 +15,7 @@ set(VIBEOS_KERNEL_CORE_SOURCES
     kernel/core/elf.c
     kernel/fs/fat_chain.c
     kernel/fs/blockcache.c
+    kernel/fs/vfs.c
     kernel/mm/pmm.c
     kernel/net/inet.c
     kernel/mm/vm.c

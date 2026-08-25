@@ -394,14 +394,13 @@ extern void vibeos_x86_64_virtio_net_stats(uint64_t *out_tx, uint64_t *out_rx);
 
 extern int vibeos_x86_64_virtio_blk_init(void);
 extern int vibeos_x86_64_virtio_blk_read(uint64_t sector, void *buf);
-extern int vibeos_x86_64_fat_mount(void);
-extern long vibeos_x86_64_fat_read_file(const char *name, void *buf, uint32_t bufcap);
-extern int vibeos_x86_64_fat_open(const char *path, uint32_t *out_cluster, uint32_t *out_size);
-extern long vibeos_x86_64_fat_read_at(uint32_t first_cluster, uint32_t size, uint32_t off, void *buf, uint32_t len);
-extern int vibeos_x86_64_fat_list(const char *path, uint32_t idx, char *name, uint32_t *out_size, int *out_is_dir);
-extern long vibeos_x86_64_fat_write_file(const char *name, const void *buf, uint32_t len);
-extern int vibeos_x86_64_fat_unlink(const char *path);
-extern int vibeos_x86_64_fat_mkdir(const char *path);
+#include "vibeos/vfs.h"
+
+/* The one mounted volume. Everything below reaches the filesystem through
+ * this, so no syscall in this file knows which driver is underneath it. */
+static vibeos_fsmount_t g_rootfs;
+extern int vibeos_x86_64_fat_vfs_mount(vibeos_fsmount_t *mnt);
+
 extern void vibeos_x86_64_keyboard_irq(void);
 extern void vibeos_x86_64_mouse_irq(void);
 extern int vibeos_x86_64_mouse_init(uint32_t width, uint32_t height);
@@ -2578,7 +2577,13 @@ static long hw_sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
         if (f->net_sock >= 0) {
             return hw_net_recv(f, buf, len);
         }
-        n = vibeos_x86_64_fat_read_at(f->cluster, f->size, f->pos, dst, (uint32_t)len);
+        {
+            vibeos_fs_node_t node;
+            node.id = f->cluster;
+            node.size = f->size;
+            node.is_dir = f->isdir;
+            n = vibeos_fs_read_at(&g_rootfs, &node, f->pos, dst, (uint32_t)len);
+        }
         if (n > 0) {
             f->pos += (uint32_t)n;
         }
@@ -2654,9 +2659,16 @@ static long hw_sys_open(uint64_t path_uptr, uint64_t flags) {
         hw_fd_t *f = &t->fds[i];
         int writable = ((flags & 1u) != 0u) || ((flags & 0100u) != 0u); /* O_WRONLY|O_CREAT */
         uint32_t cluster = 0, size = 0;
+        vibeos_fs_node_t node;
+        int node_is_dir = 0;
 
-        if (!writable && vibeos_x86_64_fat_open(path, &cluster, &size) != 0) {
-            return -VIBEOS_ENOENT;
+        if (!writable) {
+            if (vibeos_fs_lookup(&g_rootfs, path, &node) != 0) {
+                return -VIBEOS_ENOENT;
+            }
+            cluster = (uint32_t)node.id;
+            size = (uint32_t)node.size;
+            node_is_dir = node.is_dir;
         }
         for (k = 0; k < (int)sizeof(f->name) - 1 && path[k]; k++) {
             f->name[k] = path[k];
@@ -2672,14 +2684,9 @@ static long hw_sys_open(uint64_t path_uptr, uint64_t flags) {
          * this file into the pipe path - where it waits for a writer that does
          * not exist. */
         f->pipe = -1;
-        {
-            char probe[16];
-            uint32_t probe_size = 0;
-            int probe_dir = 0;
-            f->isdir = (!writable &&
-                        vibeos_x86_64_fat_list(path, 0, probe, &probe_size,
-                                               &probe_dir) == 0) ? 1 : 0;
-        }
+        /* The filesystem already answered this during lookup; asking twice
+         * would put a FAT-specific question back in the syscall layer. */
+        f->isdir = node_is_dir;
         f->wlen = 0;
         f->dirty = 0;
         f->writable = writable;
@@ -3145,7 +3152,7 @@ static long hw_sys_close(uint64_t fd) {
          * it came from. Dropping it here is the whole basis for trusting the
          * cache: a rewritten program must not keep running as its old self. */
         hw_exec_cache_drop();
-        if (vibeos_x86_64_fat_write_file(f->name, f->wbuf, f->wlen) < 0) {
+        if (vibeos_fs_write_file(&g_rootfs, f->name, f->wbuf, f->wlen) < 0) {
             rc = -VIBEOS_EIO;
         }
     }
@@ -3184,8 +3191,14 @@ static long hw_sys_getdents64(uint64_t fd, uint64_t buf, uint64_t len) {
         int is_dir = 0, n = 0;
         uint16_t reclen;
 
-        if (vibeos_x86_64_fat_list(f->name, f->dir_index, name, &fsize, &is_dir) != 0) {
-            break; /* end of directory */
+        {
+            uint64_t entry_size = 0;
+            if (vibeos_fs_list(&g_rootfs, f->name, f->dir_index, name,
+                                sizeof(name), &entry_size, &is_dir) != 0) {
+                break; /* end of directory */
+            }
+            fsize = (uint32_t)entry_size;
+            (void)fsize;   /* getdents64 reports names and kinds, not sizes */
         }
         while (name[n]) {
             n++;
@@ -3219,7 +3232,7 @@ static long hw_sys_unlink(uint64_t path_uptr) {
     if (hw_copy_user_string(path_uptr, path, sizeof(path)) != 0) {
         return -VIBEOS_EFAULT;
     }
-    return (vibeos_x86_64_fat_unlink(path) == 0) ? 0 : -VIBEOS_ENOENT;
+    return (vibeos_fs_unlink(&g_rootfs, path) == 0) ? 0 : -VIBEOS_ENOENT;
 }
 
 static long hw_sys_mkdir(uint64_t path_uptr) {
@@ -3227,7 +3240,7 @@ static long hw_sys_mkdir(uint64_t path_uptr) {
     if (hw_copy_user_string(path_uptr, path, sizeof(path)) != 0) {
         return -VIBEOS_EFAULT;
     }
-    return (vibeos_x86_64_fat_mkdir(path) == 0) ? 0 : -VIBEOS_EIO;
+    return (vibeos_fs_mkdir(&g_rootfs, path) == 0) ? 0 : -VIBEOS_EIO;
 }
 
 /* brk(0) reports the break; brk(addr) grows it, mapping fresh pages. */
@@ -3884,7 +3897,7 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
         n = g_exec_cached_len;   /* already staged, byte for byte */
     } else {
         hw_exec_cache_drop();
-        n = vibeos_x86_64_fat_read_file(path, g_exec_elf, g_exec_elf_cap);
+        n = vibeos_fs_read_file(&g_rootfs, path, g_exec_elf, g_exec_elf_cap);
         if (n > 0) {
             uint32_t i;
             for (i = 0; i < sizeof(g_exec_cached) - 1u && path[i]; i++) {
@@ -4091,18 +4104,19 @@ static long hw_sys_newfstatat(uint64_t dirfd, uint64_t path_uptr, uint64_t ubuf,
     if ((path[0] == '/' && path[1] == 0) || (path[0] == '.' && path[1] == 0)) {
         return hw_write_stat(ubuf, S_IFDIR | 0755u, 0, 1);
     }
-    if (vibeos_x86_64_fat_open(path, &cluster, &size) != 0) {
-        return -VIBEOS_ENOENT;
-    }
-    /* Directory or file? The answer changes what a program does, not just what
-     * it prints: ls given a directory lists it and given a file names it, so
-     * reporting the wrong one produces a plausible, wrong result rather than an
-     * error. A path that can be listed is a directory. */
     {
-        char probe[16];
-        uint32_t probe_size = 0;
-        int probe_dir = 0;
-        if (vibeos_x86_64_fat_list(path, 0, probe, &probe_size, &probe_dir) == 0) {
+        /* Directory or file? The answer changes what a program does, not just
+         * what it prints: ls given a directory lists it and given a file names
+         * it, so reporting the wrong one produces a plausible wrong result
+         * rather than an error. The filesystem decides; how it decides is its
+         * business. */
+        vibeos_fs_node_t node;
+        if (vibeos_fs_lookup(&g_rootfs, path, &node) != 0) {
+            return -VIBEOS_ENOENT;
+        }
+        cluster = (uint32_t)node.id;
+        size = (uint32_t)node.size;
+        if (node.is_dir) {
             return hw_write_stat(ubuf, S_IFDIR | 0755u, 0, cluster ? cluster : 2u);
         }
     }
@@ -5521,8 +5535,10 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
 
     /* Real storage: bring up virtio-blk, mount the FAT filesystem, and load the
      * init program straight from disk (EFI/BOOT/INIT.ELF -> INIT.ELF at root). */
-    if (vibeos_x86_64_virtio_blk_init() == 0 && vibeos_x86_64_fat_mount() == 0) {
-        long n = vibeos_x86_64_fat_read_file("EFI/BOOT/INIT.ELF", g_disk_init_elf, sizeof(g_disk_init_elf));
+    if (vibeos_x86_64_virtio_blk_init() == 0 &&
+        vibeos_x86_64_fat_vfs_mount(&g_rootfs) == 0) {
+        long n = vibeos_fs_read_file(&g_rootfs, "EFI/BOOT/INIT.ELF",
+                                      g_disk_init_elf, sizeof(g_disk_init_elf));
         if (n > 0) {
             g_disk_init_len = n;
             vibeos_x86_64_serial_puts("[FAT] read INIT.ELF from disk, size=0x");

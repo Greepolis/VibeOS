@@ -164,6 +164,7 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         kernel/arch/x86_64/virtio_blk.c
         kernel/arch/x86_64/virtio_net.c
         kernel/arch/x86_64/fat.c
+        kernel/arch/x86_64/fat_vfs.c
         kernel/arch/x86_64/keyboard.c
         kernel/arch/x86_64/fb.c
         kernel/arch/x86_64/mouse.c
