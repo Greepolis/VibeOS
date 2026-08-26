@@ -5521,21 +5521,19 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
     }
     vibeos_x86_64_serial_puts("[SCHED] all user tasks retired; kernel task continues\n");
 
+    /* The graphical shell cannot be checked from a log - a log can only say a
+     * desktop was composed. What it can report is whether the pieces beneath
+     * it did work. Keep this marker independent from the compatibility stats:
+     * a compat accounting failure must not erase evidence that the GUI itself
+     * was initialized and rendered. */
+    if (vibeos_x86_64_gui_active()) {
+        vibeos_x86_64_serial_puts("[GUI] GUI_STATS frames=0x");
+        vibeos_x86_64_serial_print_hex(vibeos_x86_64_gui_frames());
+        vibeos_x86_64_serial_puts(" termchars=0x");
+        vibeos_x86_64_serial_print_hex(vibeos_x86_64_gui_term_chars());
+        vibeos_x86_64_serial_puts("\n");
+    }
     if (vibeos_compat_stats(&g_compat_rt, &translated, &denied) == 0) {
-        /* The graphical shell cannot be checked from a log - a log can only
-         * say a desktop was composed. What it can report is whether the
-         * pieces underneath it did work: how many pointer repaints happened
-         * (so the mouse produced packets) and how many characters reached the
-         * on-screen terminal (so the console really is mirrored). Both being
-         * non-zero is weak evidence of a picture and strong evidence that the
-         * paths are alive; screenshot.py is what looks at pixels. */
-        if (vibeos_x86_64_gui_active()) {
-            vibeos_x86_64_serial_puts("[GUI] GUI_STATS frames=0x");
-            vibeos_x86_64_serial_print_hex(vibeos_x86_64_gui_frames());
-            vibeos_x86_64_serial_puts(" termchars=0x");
-            vibeos_x86_64_serial_print_hex(vibeos_x86_64_gui_term_chars());
-            vibeos_x86_64_serial_puts("\n");
-        }
         vibeos_x86_64_serial_puts("[MM] COW_STATS shared=0x");
         vibeos_x86_64_serial_print_hex(g_cow_shared);
         vibeos_x86_64_serial_puts(" copied=0x");
