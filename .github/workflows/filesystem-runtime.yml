@@ -72,8 +72,8 @@ jobs:
       - name: Boot-to-CLI filesystem smoke
         run: |
           set -euo pipefail
-          chmod +x scripts/qemu-cli-smoke-linux.sh
-          ./scripts/qemu-cli-smoke-linux.sh build 900
+          chmod +x scripts/qemu-cli-smoke-linux.py
+          python3 scripts/qemu-cli-smoke-linux.py build 900
 
       - name: Upload filesystem diagnostics
         if: always()
