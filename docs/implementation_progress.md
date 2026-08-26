@@ -16,7 +16,7 @@ This document is now split by macro area for easier maintenance.
 | IPC Subsystem | In Progress | [ipc_subsystem.md](implementation_progress/ipc_subsystem.md) |
 | Driver Framework | In Progress (virtio block/network, PS/2 keyboard and mouse, framebuffer desktop verified; block requests serialised) | [driver_framework.md](implementation_progress/driver_framework.md) |
 | Filesystem Layer | In Progress (FAT, ext2, ISO9660, exFAT and NTFS behind one VFS; journalled writes verified against power loss) | [filesystem_layer.md](implementation_progress/filesystem_layer.md) |
-| Networking Stack | In Progress (runtime virtio-net TCP/IP baseline verified) | [networking_stack.md](implementation_progress/networking_stack.md) |
+| Networking Stack | In Progress (IPv4 runtime plus portable route/firewall data-path enforcement verified) | [networking_stack.md](implementation_progress/networking_stack.md) |
 | User Space Interface | In Progress (unmodified static Linux binaries verified from ring 3) | [user_space_interface.md](implementation_progress/user_space_interface.md) |
 | Init System | In Progress | [init_system.md](implementation_progress/init_system.md) |
 

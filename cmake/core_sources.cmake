@@ -24,6 +24,7 @@ set(VIBEOS_KERNEL_CORE_SOURCES
     kernel/fs/journal.c
     kernel/mm/pmm.c
     kernel/net/inet.c
+    kernel/net/net_policy.c
     kernel/mm/vm.c
     kernel/object/handle_table.c
     kernel/proc/process.c

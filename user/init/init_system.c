@@ -33,9 +33,15 @@ int vibeos_init_stop(vibeos_init_state_t *state) {
 int vibeos_init_graph_start(vibeos_init_state_t *state, const vibeos_init_node_t *nodes, uint32_t node_count, uint32_t *out_started, uint32_t *out_failed) {
     uint32_t resolved = 0;
     uint32_t started = 0;
+    uint32_t enabled_count = 0;
     uint32_t pass_progress;
     if (!state || !nodes || !out_started || !out_failed || node_count == 0 || node_count > VIBEOS_INIT_MAX_GRAPH_NODES) {
         return -1;
+    }
+    for (uint32_t i = 0; i < node_count; i++) {
+        if (nodes[i].enabled) {
+            enabled_count++;
+        }
     }
     do {
         uint32_t i;
@@ -56,7 +62,7 @@ int vibeos_init_graph_start(vibeos_init_state_t *state, const vibeos_init_node_t
 
     *out_started = started;
     *out_failed = 0;
-    if (started < node_count) {
+    if (started < enabled_count) {
         uint32_t i;
         for (i = 0; i < node_count; i++) {
             if ((resolved & (1u << i)) == 0 && nodes[i].enabled) {

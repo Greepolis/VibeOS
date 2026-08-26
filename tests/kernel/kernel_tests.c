@@ -26,6 +26,7 @@
 #include "vibeos/ntfs.h"
 #include "vibeos/journal.h"
 #include "vibeos/tls.h"
+#include "vibeos/net_policy.h"
 #include "vibeos/trap.h"
 #include "vibeos/user_api.h"
 #include "vibeos/vm.h"
@@ -1511,6 +1512,14 @@ static int test_services(void) {
     if (vibeos_init_graph_start(&init_state, nodes, 4, &started, &failed) != 0 || started != 4 || failed != 0) {
         return -1;
     }
+    nodes[3].enabled = 0;
+    nodes[3].dependency_mask = 1u << 2;
+    started = 0;
+    failed = 0;
+    if (vibeos_init_graph_start(&init_state, nodes, 4, &started, &failed) != 0 ||
+        started != 3 || failed != 0) {
+        return -1;
+    }
     if (vibeos_init_restart_policy(&init_state, 2, 1) != 0) {
         return -1;
     }
@@ -2585,6 +2594,46 @@ static int test_waitset_wait_all_and_ext_stats(void) {
     return 0;
 }
 
+static int test_waitset_large_fan_in(void) {
+    vibeos_waitset_t ws;
+    vibeos_event_t events[VIBEOS_WAITSET_MAX_EVENTS];
+    size_t indices[VIBEOS_WAITSET_MAX_EVENTS];
+    size_t count = 0;
+    uint32_t registered = 0;
+    uint32_t enabled = 0;
+    uint32_t signaled = 0;
+    uint32_t i;
+
+    if (vibeos_waitset_init(&ws) != 0 ||
+        vibeos_waitset_set_wake_policy(&ws, VIBEOS_WAITSET_WAKE_ROUND_ROBIN) != 0) {
+        return -1;
+    }
+    for (i = 0; i < VIBEOS_WAITSET_MAX_EVENTS; i++) {
+        vibeos_event_init(&events[i]);
+        if (vibeos_waitset_add(&ws, &events[i]) != 0) {
+            return -1;
+        }
+        if ((i & 1u) == 0u) {
+            vibeos_event_signal(&events[i]);
+        }
+    }
+    if (vibeos_waitset_contention_snapshot(&ws, &registered, &enabled, &signaled) != 0 ||
+        registered != VIBEOS_WAITSET_MAX_EVENTS || enabled != VIBEOS_WAITSET_MAX_EVENTS ||
+        signaled != VIBEOS_WAITSET_MAX_EVENTS / 2u) {
+        return -1;
+    }
+    if (vibeos_waitset_wait_batch(&ws, 0, indices, VIBEOS_WAITSET_MAX_EVENTS, &count) != 0 ||
+        count != VIBEOS_WAITSET_MAX_EVENTS / 2u) {
+        return -1;
+    }
+    for (i = 0; i < count; i++) {
+        if ((indices[i] & 1u) != 0u) {
+            return -1;
+        }
+    }
+    return vibeos_waitset_destroy(&ws);
+}
+
 static int test_filesystem_runtime(void) {
     vibeos_vfs_runtime_t rt;
     vibeos_policy_state_t policy;
@@ -3076,6 +3125,10 @@ static int test_ipc_handle_transfer(void) {
         return -1;
     }
     if (vibeos_ipc_transfer_handle(&sender, &receiver, src_handle, VIBEOS_HANDLE_RIGHT_WRITE, &dst_handle) == 0) {
+        return -1;
+    }
+    if (vibeos_ipc_transfer_handle(&sender, &receiver, 0xFFFFFFFFu,
+                                   VIBEOS_HANDLE_RIGHT_READ, &dst_handle) == 0) {
         return -1;
     }
     return 0;
@@ -4076,6 +4129,124 @@ static int test_inet_l4_checksum_rejection(void) {
     inet_wr16(tcp + 16, 0x1234); /* Invalid mandatory TCP checksum. */
     inet_deliver(&net, 0x0A000202u, net.ip, 6, tcp, sizeof(tcp));
     if (net.rx_dropped != dropped + 2u) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_network_route_and_firewall_policy(void) {
+    vibeos_net_policy_t policy;
+    vibeos_net_route_t route;
+
+    if (vibeos_net_policy_init(&policy) != 0) {
+        return -1;
+    }
+    if (vibeos_net_route_add(&policy, 0u, 0u, 0x0A000202u, 1u, 100u) != 0 ||
+        vibeos_net_route_add(&policy, 0x0A000000u, 8u, 0u, 1u, 50u) != 0 ||
+        vibeos_net_route_add(&policy, 0x0A000200u, 24u, 0u, 1u, 10u) != 0) {
+        return -1;
+    }
+    if (vibeos_net_route_lookup(&policy, 0x0A00020Fu, &route) != 0 || route.prefix_len != 24u ||
+        vibeos_net_route_lookup(&policy, 0xC0000201u, &route) != 0 || route.prefix_len != 0u) {
+        return -1;
+    }
+
+    /* Ingress is deny-by-default; an allowed egress flow permits its reply. */
+    if (vibeos_net_policy_check(&policy, VIBEOS_NET_DIR_INGRESS, VIBEOS_NET_PROTO_TCP,
+                                0x0A00020Fu, 8080u, 0x0A000202u, 40000u, 1u) != 0 ||
+        policy.denied_packets != 1u) {
+        return -1;
+    }
+    if (vibeos_net_rule_add(&policy, 1u, VIBEOS_NET_DIR_EGRESS, VIBEOS_NET_PROTO_TCP,
+                            40000u, 8080u, 0x0A000200u, 24u) != 0 ||
+        vibeos_net_policy_check(&policy, VIBEOS_NET_DIR_EGRESS, VIBEOS_NET_PROTO_TCP,
+                                0x0A00020Fu, 40000u, 0x0A000202u, 8080u, 2u) != 1 ||
+        vibeos_net_policy_check(&policy, VIBEOS_NET_DIR_INGRESS, VIBEOS_NET_PROTO_TCP,
+                                0x0A00020Fu, 40000u, 0x0A000202u, 8080u, 3u) != 1) {
+        return -1;
+    }
+    if (vibeos_net_policy_check(&policy, VIBEOS_NET_DIR_EGRESS, VIBEOS_NET_PROTO_UDP,
+                                0x0A00020Fu, 40000u, 0xC0000201u, 53u, 4u) != 0) {
+        return -1;
+    }
+    if (vibeos_net_policy_expire_flows(&policy, 60003u, 60000u) != 1 ||
+        vibeos_net_policy_check(&policy, VIBEOS_NET_DIR_INGRESS, VIBEOS_NET_PROTO_TCP,
+                                0x0A00020Fu, 40000u, 0x0A000202u, 8080u, 60004u) != 0) {
+        return -1;
+    }
+    if (vibeos_net_rule_remove(&policy, 0u) != 0 || policy.rule_count != 0u ||
+        vibeos_net_route_remove(&policy, 2u) != 0 || policy.route_count != 2u ||
+        vibeos_net_route_lookup(&policy, 0x0A00020Fu, &route) != 0 || route.prefix_len != 8u) {
+        return -1;
+    }
+    return 0;
+}
+
+static void inet_seed_arp(vibeos_inet_t *net);
+
+static int test_network_policy_data_path(void) {
+    vibeos_inet_t net;
+    vibeos_net_policy_t policy;
+    vibeos_inet_t allowed_net;
+    vibeos_net_policy_t allowed_policy;
+    inet_capture_t cap;
+    inet_capture_t allowed_cap;
+    uint8_t udp[8 + 2];
+    int sock;
+    int second_sock;
+    uint32_t owner_pid = 0;
+    uint64_t denied;
+
+    memset(&cap, 0, sizeof(cap));
+    if (vibeos_net_policy_init(&policy) != 0 ||
+        vibeos_inet_init(&net, inet_test_local_mac, inet_capture_tx, &cap) != 0) {
+        return -1;
+    }
+    vibeos_inet_set_addr(&net, 0x0A00020Fu, 0xFFFFFF00u, 0x0A000202u, 0x0A000203u);
+    vibeos_inet_set_policy(&net, &policy);
+    if (vibeos_net_route_add(&policy, 0x0A000200u, 24u, 0u, 1u, 1u) != 0 ||
+        vibeos_net_rule_add(&policy, 1u, VIBEOS_NET_DIR_EGRESS, VIBEOS_NET_PROTO_UDP,
+                             0u, 0u, 0x0A000200u, 24u) != 0) {
+        return -1;
+    }
+    denied = policy.denied_packets;
+    memset(udp, 0, sizeof(udp));
+    inet_wr16(udp + 0, 9999u);
+    inet_wr16(udp + 2, 4242u);
+    inet_wr16(udp + 4, sizeof(udp));
+    inet_deliver(&net, 0x0A000202u, net.ip, 17, udp, sizeof(udp));
+    if (policy.denied_packets <= denied) {
+        return -1;
+    }
+
+    memset(&allowed_cap, 0, sizeof(allowed_cap));
+    if (vibeos_net_policy_init(&allowed_policy) != 0 ||
+        vibeos_inet_init(&allowed_net, inet_test_local_mac, inet_capture_tx, &allowed_cap) != 0) {
+        return -1;
+    }
+    vibeos_inet_set_addr(&allowed_net, 0x0A00020Fu, 0xFFFFFF00u, 0x0A000202u, 0x0A000203u);
+    vibeos_inet_set_policy(&allowed_net, &allowed_policy);
+    if (vibeos_net_route_add(&allowed_policy, 0x0A000200u, 24u, 0u, 1u, 1u) != 0 ||
+        vibeos_net_rule_add(&allowed_policy, 1u, VIBEOS_NET_DIR_EGRESS, VIBEOS_NET_PROTO_UDP,
+                            4242u, 9999u, 0x0A000200u, 24u) != 0) {
+        return -1;
+    }
+    inet_seed_arp(&allowed_net);
+    sock = vibeos_inet_socket(&allowed_net, VIBEOS_INET_SOCK_UDP);
+    if (sock < 0 || vibeos_inet_bind(&allowed_net, sock, 4242u) != 0 ||
+        vibeos_inet_socket_set_owner(&allowed_net, sock, 42u) != 0 ||
+        vibeos_inet_socket_owner(&allowed_net, sock, &owner_pid) != 0 || owner_pid != 42u ||
+        vibeos_inet_sendto(&allowed_net, sock, "ok", 2u, 0x0A000202u, 9999u) != 2) {
+        return -1;
+    }
+    if (vibeos_inet_close_owned(&allowed_net, sock, 43u) == 0 ||
+        vibeos_inet_close_owned(&allowed_net, sock, 42u) != 0) {
+        return -1;
+    }
+    second_sock = vibeos_inet_socket(&allowed_net, VIBEOS_INET_SOCK_UDP);
+    if (second_sock < 0 || vibeos_inet_socket_set_owner(&allowed_net, second_sock, 42u) != 0 ||
+        vibeos_inet_release_owner_sockets(&allowed_net, 42u) != 1 ||
+        vibeos_inet_socket_owner(&allowed_net, second_sock, &owner_pid) == 0) {
         return -1;
     }
     return 0;
@@ -8130,6 +8301,7 @@ int main(void) {
     RUN_TEST(test_waitset_stats);
     RUN_TEST(test_waitset_priority_and_batch);
     RUN_TEST(test_waitset_wait_all_and_ext_stats);
+    RUN_TEST(test_waitset_large_fan_in);
     RUN_TEST(test_filesystem_runtime);
     RUN_TEST(test_network_runtime);
     RUN_TEST(test_inet_checksum);
@@ -8138,6 +8310,8 @@ int main(void) {
     RUN_TEST(test_inet_udp);
     RUN_TEST(test_inet_dhcp_and_dns);
     RUN_TEST(test_inet_l4_checksum_rejection);
+    RUN_TEST(test_network_route_and_firewall_policy);
+    RUN_TEST(test_network_policy_data_path);
     RUN_TEST(test_inet_tcp_connection);
     RUN_TEST(test_inet_tcp_listen_accept);
     RUN_TEST(test_inet_udp_datagram_queue);

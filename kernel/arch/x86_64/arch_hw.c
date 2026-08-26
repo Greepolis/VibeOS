@@ -1466,6 +1466,7 @@ static uint64_t hw_proc_cr3(const hw_proc_t *p) {
 /* Open-file table entry. Reads stream straight off the filesystem; writes are
  * buffered and committed to disk on close (the FAT writer stores whole files). */
 #define VIBEOS_HW_MAX_FDS 4
+#define VIBEOS_HW_MAX_DIR_ENTRIES 4096u
 #define VIBEOS_HW_WBUF 512
 
 /* Pipes.
@@ -1960,15 +1961,17 @@ static void hw_task_exit(uint64_t code) {
      * ours to walk. */
     if (dying >= 0) {
         int fd;
+        if (g_net_up) {
+            hw_spin_lock(&g_net_lock);
+            (void)vibeos_inet_release_owner_sockets(&g_net, g_tasks[dying].pid);
+            hw_spin_unlock(&g_net_lock);
+        }
         for (fd = 0; fd < VIBEOS_HW_MAX_FDS; fd++) {
             hw_fd_t *f = &g_tasks[dying].fds[fd];
             if (!f->used) {
                 continue;
             }
-            if (f->net_sock >= 0 && g_net_up) {
-                hw_spin_lock(&g_net_lock);
-                (void)vibeos_inet_close(&g_net, f->net_sock);
-                hw_spin_unlock(&g_net_lock);
+            if (f->net_sock >= 0) {
                 f->net_sock = -1;
             }
             /* Exiting closes everything, and for a pipe that is not tidiness:
@@ -2059,6 +2062,7 @@ static void hw_task_exit(uint64_t code) {
 #define VIBEOS_E2BIG  7
 #define VIBEOS_EMFILE 24
 #define VIBEOS_EIO    5
+#define VIBEOS_ENOTDIR 20
 
 /* Linux x86-64 syscall numbers we implement. */
 #define LSYS_read   0
@@ -2798,6 +2802,10 @@ static long hw_sys_socket(uint64_t domain, uint64_t type) {
     }
     hw_spin_lock(&g_net_lock);
     s = vibeos_inet_socket(&g_net, kind);
+    if (s >= 0 && vibeos_inet_socket_set_owner(&g_net, s, t->pid) != 0) {
+        (void)vibeos_inet_close(&g_net, s);
+        s = -1;
+    }
     hw_spin_unlock(&g_net_lock);
     if (s < 0) {
         t->fds[fd].used = 0;
@@ -3177,14 +3185,20 @@ static long hw_sys_getdents64(uint64_t fd, uint64_t buf, uint64_t len) {
     hw_fd_t *f = hw_fd_get(fd);
     uint8_t *out = (uint8_t *)(uintptr_t)buf;
     uint64_t used = 0;
+    uint32_t records = 0;
 
     if (!f) {
         return -VIBEOS_EBADF;
     }
+    if (!f->isdir) {
+        return -VIBEOS_ENOTDIR;
+    }
     if (!hw_user_range_ok(buf, len, 1)) {
         return -VIBEOS_EFAULT;
     }
-    for (;;) {
+    /* A bounded syscall must not spin forever if a filesystem backend returns
+     * a cyclic directory stream or fails to advance its cursor. */
+    while (records < 256u && f->dir_index < VIBEOS_HW_MAX_DIR_ENTRIES) {
         char name[16];
         uint32_t fsize = 0;
         int is_dir = 0, n = 0;
@@ -3221,6 +3235,7 @@ static long hw_sys_getdents64(uint64_t fd, uint64_t buf, uint64_t len) {
         }
         used += reclen;
         f->dir_index++;
+        records++;
     }
     return (long)used;
 }

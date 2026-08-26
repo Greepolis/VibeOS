@@ -96,7 +96,7 @@ ctest --test-dir build --output-on-failure
 ```
 
 Notes:
-- CI uses required boot gates: host tests + OVMF smoke + boot-to-CLI smoke, while the direct-loader probe is informational.
+- CI uses required boot gates: host tests + OVMF smoke + boot-to-CLI smoke, while the direct-loader probe is informational. Filesystem-sensitive changes additionally run the targeted Filesystem Runtime Gate.
 - The boot-to-CLI gate (`scripts/qemu-cli-smoke-linux.py`) is not a token grep: it boots four vCPUs under pure TCG, asserts state invariants (a non-zero DHCP lease, all cores online, no unexpected fault, no panic) and completes a TCP round trip to a host echo server. It also asserts that the programs did their work: the unmodified Linux binary ran with the right `argv`, BusyBox dispatched an applet and touched files, its interactive shell ran a builtin and exec'd through `PATH`, a pipeline completed, signals were delivered, and the on-screen terminal was not empty. It distinguishes "produced nothing", "went quiet" and "still talking" so a hang is diagnosable from the log alone.
 - Beyond the boot gates, CI runs a gcc/clang x Debug/Release matrix, the host suites under AddressSanitizer and UndefinedBehaviorSanitizer, CodeQL static analysis, a libFuzzer harness over the network receive path, and a nightly job that boots repeatedly and fuzzes for longer. Dependabot tracks the actions and the submodules.
 - `qemu-system-x86_64 -kernel` has known compatibility limits with ELF64/Multiboot2 images in newer QEMU builds. The direct-loader probe classifies these loader-side incompatibilities separately from real boot regressions.

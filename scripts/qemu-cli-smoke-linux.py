@@ -109,6 +109,35 @@ def find_ovmf_pair():
 QUIET_GIVE_UP_SEC = 300
 
 
+def detect_guest_phase(text):
+    """Return the furthest observable BusyBox phase in the serial stream."""
+    phase = "boot"
+    for line in text.replace("\r", "").splitlines():
+        if "BUSYBOX.ELF echo" in line:
+            phase = "busybox_echo_started"
+        elif "BUSYBOX_ECHO_OK" in line:
+            phase = "busybox_echo"
+        elif "BUSYBOX.ELF cat" in line:
+            phase = "busybox_cat_started"
+        elif "persistent hello" in line:
+            phase = "busybox_cat"
+        elif "BUSYBOX.ELF ls" in line:
+            phase = "busybox_ls_started"
+        elif phase == "busybox_ls_started" and "[SCHED] task pid=" in line:
+            phase = "busybox_ls"
+        elif "BUSYBOX.ELF sh -c" in line:
+            phase = "busybox_shell_started"
+        elif "BUSYBOX_SH_OK" in line:
+            phase = "busybox_shell"
+        elif "ASH_INTERACTIVE_OK" in line:
+            phase = "busybox_interactive_shell"
+        elif "PIPE_OK" in line:
+            phase = "busybox_pipeline"
+        elif "VIBEOS_SELFTEST_DONE" in line:
+            phase = "selftest_done"
+    return phase
+
+
 def wait_for(buffer_getter, needle, deadline, last_rx_getter=None):
     while time.monotonic() < deadline:
         text = buffer_getter().replace("\r", "")
@@ -140,6 +169,8 @@ def main():
     echo_state = {"connections": 0, "received": 0}
     echo_thread = None
     infra = False
+    last_guest_phase = "boot"
+    last_serial_timestamp = 0.0
 
     try:
         echo_thread = start_echo_server(echo_stop, echo_state)
@@ -206,7 +237,7 @@ def main():
             deadline = started + timeout_sec
 
             def pump():
-                nonlocal serial_text, last_rx
+                nonlocal serial_text, last_rx, last_guest_phase, last_serial_timestamp
                 while True:
                     try:
                         chunk = serial.recv(4096)
@@ -215,6 +246,8 @@ def main():
                     if not chunk:
                         return
                     serial_text += chunk.decode("utf-8", errors="replace")
+                    last_guest_phase = detect_guest_phase(serial_text)
+                    last_serial_timestamp = time.monotonic() - started
                     # When output last arrived is what separates "the guest is
                     # wedged" from "the guest is just slow": a failure with the
                     # serial line still active is a budget problem, one that has
@@ -414,6 +447,10 @@ def main():
         write(summary_path, "\n".join([
             f"status={status}",
             f"reason={reason}",
+            f"failure_class={'infra_error' if infra else ('pass' if status == 'pass' else 'guest_failure')}",
+            f"last_guest_phase={last_guest_phase}",
+            f"last_serial_timestamp={last_serial_timestamp:.3f}",
+            f"qemu_exit_code={qemu.returncode if qemu is not None else 'unknown'}",
             f"build_dir={build_dir}",
             f"efi_root={efi_root}",
             f"serial_log={serial_log_path}",

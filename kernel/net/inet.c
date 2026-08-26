@@ -161,6 +161,12 @@ void vibeos_inet_set_addr(vibeos_inet_t *net, uint32_t ip, uint32_t netmask,
     net->dns = dns;
 }
 
+void vibeos_inet_set_policy(vibeos_inet_t *net, vibeos_net_policy_t *policy) {
+    if (net) {
+        net->policy = policy;
+    }
+}
+
 uint32_t vibeos_inet_parse_ip(const char *s) {
     uint32_t v = 0;
     uint32_t part = 0;
@@ -283,11 +289,21 @@ static uint32_t next_hop(const vibeos_inet_t *net, uint32_t dst) {
  * that assigns the lease while the send is in progress gets silently undone.
  * Passing the source down removes the mutable-global step entirely. */
 static int ip_send_from(vibeos_inet_t *net, uint32_t src, uint32_t dst, uint8_t proto,
+                        uint16_t local_port, uint16_t remote_port,
                         uint32_t payload_len) {
     uint8_t *ip = net->scratch + ETH_HDR;
     uint32_t hop;
     const uint8_t *mac;
     uint16_t total = (uint16_t)(IP_HDR + payload_len);
+
+    if (net->policy) {
+        vibeos_net_route_t route;
+        if (vibeos_net_route_lookup(net->policy, dst, &route) != 0 ||
+            vibeos_net_policy_check(net->policy, VIBEOS_NET_DIR_EGRESS, proto,
+                                     src, local_port, dst, remote_port, net->now_ms) != 1) {
+            return -VIBEOS_INET_EINVAL;
+        }
+    }
 
     ip[0] = 0x45;                       /* IPv4, 20-byte header */
     ip[1] = 0;
@@ -316,7 +332,7 @@ static int ip_send_from(vibeos_inet_t *net, uint32_t src, uint32_t dst, uint8_t 
 
 /* Ordinary traffic sources from the interface address. */
 static int ip_send(vibeos_inet_t *net, uint32_t dst, uint8_t proto, uint32_t payload_len) {
-    return ip_send_from(net, net->ip, dst, proto, payload_len);
+    return ip_send_from(net, net->ip, dst, proto, 0u, 0u, payload_len);
 }
 
 /* ---- ICMP ---------------------------------------------------------------- */
@@ -431,6 +447,24 @@ int vibeos_inet_socket(vibeos_inet_t *net, int type) {
     return sock_alloc(net, type);
 }
 
+int vibeos_inet_socket_set_owner(vibeos_inet_t *net, int sock, uint32_t owner_pid) {
+    vibeos_inet_socket_t *s = sock_at(net, sock);
+    if (!s || owner_pid == 0u) {
+        return -VIBEOS_INET_EINVAL;
+    }
+    s->owner_pid = owner_pid;
+    return 0;
+}
+
+int vibeos_inet_socket_owner(const vibeos_inet_t *net, int sock, uint32_t *out_owner_pid) {
+    if (!net || !out_owner_pid || sock < 0 || (uint32_t)sock >= VIBEOS_INET_MAX_SOCKETS ||
+        !net->sockets[sock].used) {
+        return -VIBEOS_INET_EINVAL;
+    }
+    *out_owner_pid = net->sockets[sock].owner_pid;
+    return 0;
+}
+
 int vibeos_inet_bind(vibeos_inet_t *net, int sock, uint16_t port) {
     vibeos_inet_socket_t *s = sock_at(net, sock);
     if (!s) {
@@ -474,7 +508,7 @@ static int udp_send_from(vibeos_inet_t *net, uint32_t src, uint32_t dst,
         ck = 0xFFFFu;   /* 0 means "no checksum" on the wire */
     }
     wr16(u + 6, ck);
-    return ip_send_from(net, src, dst, IP_PROTO_UDP, len + 8u);
+    return ip_send_from(net, src, dst, IP_PROTO_UDP, sport, dport, len + 8u);
 }
 
 static int udp_send(vibeos_inet_t *net, uint32_t dst, uint16_t sport, uint16_t dport,
@@ -993,7 +1027,8 @@ static int tcp_send_seg(vibeos_inet_t *net, vibeos_inet_socket_t *s, uint8_t fla
         t[20 + i] = data[i];
     }
     wr16(t + 16, l4_checksum(net->ip, s->remote_ip, IP_PROTO_TCP, t, 20u + dlen));
-    return ip_send(net, s->remote_ip, IP_PROTO_TCP, 20u + dlen);
+    return ip_send_from(net, net->ip, s->remote_ip, IP_PROTO_TCP,
+                        s->local_port, s->remote_port, 20u + dlen);
 }
 
 /* Send whatever is queued and unsent, and arm the retransmission timer. */
@@ -1146,6 +1181,32 @@ int vibeos_inet_close(vibeos_inet_t *net, int sock) {
     s->used = 0;
     s->state = VIBEOS_TCP_CLOSED;
     return 0;
+}
+
+int vibeos_inet_close_owned(vibeos_inet_t *net, int sock, uint32_t owner_pid) {
+    vibeos_inet_socket_t *s = sock_at(net, sock);
+    if (!s || owner_pid == 0u || s->owner_pid != owner_pid) {
+        return -VIBEOS_INET_EINVAL;
+    }
+    return vibeos_inet_close(net, sock);
+}
+
+uint32_t vibeos_inet_release_owner_sockets(vibeos_inet_t *net, uint32_t owner_pid) {
+    uint32_t i;
+    uint32_t released = 0;
+    if (!net || owner_pid == 0u) {
+        return 0;
+    }
+    for (i = 0; i < VIBEOS_INET_MAX_SOCKETS; i++) {
+        vibeos_inet_socket_t *s = &net->sockets[i];
+        if (s->used && s->owner_pid == owner_pid) {
+            s->used = 0;
+            s->state = VIBEOS_TCP_CLOSED;
+            s->close_deadline_ms = 0;
+            released++;
+        }
+    }
+    return released;
 }
 
 /* Find the socket a segment belongs to: an exact four-tuple match first, then a
@@ -1473,6 +1534,19 @@ static void ip_input(vibeos_inet_t *net, const uint8_t *ip, uint32_t len) {
         return;
     }
 
+    if (net->policy) {
+        uint16_t remote_port = 0u;
+        uint16_t local_port = 0u;
+        if (plen >= 4u && (ip[9] == IP_PROTO_TCP || ip[9] == IP_PROTO_UDP)) {
+            remote_port = rd16(payload);
+            local_port = rd16(payload + 2u);
+        }
+        if (vibeos_net_policy_check(net->policy, VIBEOS_NET_DIR_INGRESS, ip[9],
+                                    dst, local_port, src, remote_port, net->now_ms) != 1) {
+            return;
+        }
+    }
+
     switch (ip[9]) {
         case IP_PROTO_ICMP: icmp_input(net, src, payload, plen); break;
         case IP_PROTO_UDP:  udp_input(net, src, dst, payload, plen); break;
@@ -1518,6 +1592,10 @@ void vibeos_inet_poll(vibeos_inet_t *net, uint64_t now_ms) {
         return;
     }
     net->now_ms = now_ms;
+
+    if (net->policy) {
+        (void)vibeos_net_policy_expire_flows(net->policy, now_ms, 60000ull);
+    }
 
     for (i = 0; i < VIBEOS_INET_ARP_ENTRIES; i++) {
         if (net->arp[i].valid && now_ms > net->arp[i].expires_ms) {

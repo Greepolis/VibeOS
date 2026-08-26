@@ -1,7 +1,7 @@
 # Networking Stack Progress
 
-Status: In Progress (runtime IPv4 baseline and DHCP/DNS regressions verified)
-Last review: 2026-08-01
+Status: In Progress (runtime IPv4 baseline plus portable route/firewall data-path enforcement verified)
+Last review: 2026-08-26
 
 ## Implemented
 - Network runtime/service scaffolding in `user/net/network_service.c`.
@@ -15,6 +15,12 @@ Last review: 2026-08-01
 - The receive path rejects invalid TCP checksums and non-zero invalid UDP checksums before dispatching payloads; TCP handshake transitions require an acknowledgement for the transmitted sequence number.
 - Host regressions cover DHCP OFFER/ACK processing, DNS A response parsing, TCP retransmission and close paths, plus malformed L4 checksum rejection.
 - DNS keeps a bounded eight-entry positive cache with TTL clamping; cache hits are resolved without a new packet transmission.
+- A portable routing/firewall policy contract (`include/vibeos/net_policy.h`, `kernel/net/net_policy.c`) now provides longest-prefix IPv4 route lookup and default-deny stateful flow admission; host tests cover route precedence, ingress denial, allowed reply flow and protocol denial.
+- `vibeos_inet` can attach the portable policy to its IPv4 data path: transmit requires a matching route and egress rule, receive validates TCP/UDP endpoint ports before protocol dispatch, and an accepted egress flow admits the reverse reply. Host regression covers ingress denial and a per-port UDP allow through `sendto`; virtio-net and syscall control-plane wiring remain separate follow-up work.
+- Stateful policy flows now have bounded idle garbage collection (`vibeos_net_policy_expire_flows`) and are reclaimed from the portable network poll path, preventing stale entries from exhausting the fixed flow table. Host coverage verifies an accepted reply is denied after expiry.
+- Portable sockets now carry an explicit owner PID and expose owner-checked close operations; host coverage rejects cross-process close attempts. Syscall propagation and automatic process-exit cleanup remain pending.
+- The x86_64 socket syscall assigns the current PID as owner, and process exit now invokes forced owner cleanup before retiring file descriptors, reclaiming all owned sockets without waiting for TCP close timers. Broader syscall capability checks remain pending.
+- Route and firewall policy entries now support validated removal with bounded-table counters, allowing a control plane to replace configuration without rebooting or leaking slots; transactional updates and syscall capability gates remain pending.
 - Mbed TLS 4.2.0 is pinned as a submodule and exposed through a narrow hosted adapter (`vibeos_tls_*`). The adapter is built into its own `vibeos_tls` target, linked only by the host tests: the freestanding kernel image links `vibeos_user_core`, so keeping the hosted crypto stack out of that library is what structurally prevents it from reaching the image. In 4.x the crypto implementation lives in TF-PSA-Crypto, a nested submodule building `tfpsacrypto`; the build asks which target exists rather than naming one, because CMake turns an unknown target name into a raw linker flag and the failure then surfaces at link time instead of configure time.
 - The dependency is optional at build time. A tree without the submodule configures and builds with TLS absent, and the adapter reports `vibeos_tls_runtime_available() == 0`; the host test asserts the adapter's contract in both configurations. Builds that must ship TLS set `-DVIBEOS_REQUIRE_TLS=ON` and fail loudly if the submodule is missing, which is how the Linux CI matrix is configured.
 
@@ -29,7 +35,8 @@ Last review: 2026-08-01
 ## Pending
 - Concurrent DNS queries (the API still resolves one name at a time) and negative caching.
 - Complete TCP error handling: RST generation for unknown connections, window probing, congestion control.
-- Firewall policy, routing table and robust recovery semantics.
+- Firewall policy, routing table and robust recovery semantics beyond the portable IPv4 path.
+- The routing/firewall contract is not yet wired into virtio-net or the socket syscalls; process ownership, rule audit events, flow expiry and IPv6 policy remain pending.
 - Ring-3 TLS service integration: entropy source, trust store, TCP callbacks and QEMU TLS handshake validation are intentionally pending; the current adapter is not a guest TLS implementation.
 - Packet-path performance instrumentation, queueing policy and concurrency hardening.
 
@@ -43,4 +50,4 @@ stays `In Progress` until the Wave 5 gates pass, per the plan's own rule.
 - **Wave 5 - performance and release gates.** Bounded buffer pools with backpressure, multiqueue virtio-net with IRQ affinity, rate limiting and per-namespace quotas, repeatable benchmarks, continuous protocol fuzzing, and a 24h soak. These are largely process gates rather than code.
 
 ## Next checkpoint
-- Add repeatable QEMU network integration tests, malformed-packet coverage and TCP lifecycle regression tests.
+- Wire the policy into the x86_64 virtio/socket control path, add rule audit events, then add repeatable QEMU network integration tests, malformed-packet coverage and TCP lifecycle regression tests.

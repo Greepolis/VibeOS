@@ -1,0 +1,89 @@
+name: Filesystem Runtime Gate
+
+on:
+  pull_request:
+    paths:
+      - "kernel/arch/x86_64/arch_hw.c"
+      - "kernel/arch/x86_64/fat.c"
+      - "kernel/arch/x86_64/fat_vfs.c"
+      - "kernel/fs/**"
+      - "include/vibeos/**"
+      - "user/prog/**"
+      - "scripts/qemu-*.py"
+      - "scripts/qemu-*.sh"
+      - "cmake/**"
+      - ".github/workflows/filesystem-runtime.yml"
+  push:
+    branches: ["main"]
+    paths:
+      - "kernel/arch/x86_64/arch_hw.c"
+      - "kernel/arch/x86_64/fat.c"
+      - "kernel/arch/x86_64/fat_vfs.c"
+      - "kernel/fs/**"
+      - "include/vibeos/**"
+      - "user/prog/**"
+      - "scripts/qemu-*.py"
+      - "scripts/qemu-*.sh"
+      - "cmake/**"
+      - ".github/workflows/filesystem-runtime.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: filesystem-runtime-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  filesystem-runtime:
+    name: Filesystem runtime / Clang Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 qemu-utils ninja-build build-essential clang ovmf xorriso musl-tools busybox-static
+
+      - name: Configure
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang \
+            -DVIBEOS_BUILD_TESTS=ON \
+            -DVIBEOS_BUILD_KERNEL_IMAGE=ON \
+            -DVIBEOS_REQUIRE_TLS=ON
+
+      - name: Build and host tests
+        run: |
+          set -euo pipefail
+          cmake --build build --parallel
+          ctest --test-dir build --output-on-failure
+          cmake --build build --target vibeos_image
+
+      - name: Boot-to-CLI filesystem smoke
+        run: |
+          set -euo pipefail
+          chmod +x scripts/qemu-cli-smoke-linux.sh
+          ./scripts/qemu-cli-smoke-linux.sh build 900
+
+      - name: Upload filesystem diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: filesystem-runtime-diagnostics
+          path: |
+            build/artifacts/**
+            build/Testing/**/Test.xml
+            qemu-cli-serial.log
+            qemu-cli-err.log
+            qemu-cli-summary.txt
+          if-no-files-found: warn

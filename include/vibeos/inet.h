@@ -16,6 +16,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "vibeos/net_policy.h"
 
 #define VIBEOS_INET_MAX_SOCKETS 16u
 #define VIBEOS_INET_ARP_ENTRIES 8u
@@ -85,6 +86,7 @@ typedef struct vibeos_inet_socket {
     uint16_t local_port;
     uint16_t remote_port;
     uint32_t remote_ip;
+    uint32_t owner_pid;         /* 0 while owned by the kernel/control plane */
 
     /* TCP sequence state. */
     uint32_t snd_una;        /* oldest unacknowledged byte                  */
@@ -143,6 +145,7 @@ typedef struct vibeos_inet {
 
     vibeos_inet_tx_fn tx;
     void *tx_ctx;
+    vibeos_net_policy_t *policy;
 
     uint64_t now_ms;
     uint16_t next_ephemeral;
@@ -201,6 +204,7 @@ int vibeos_inet_init(vibeos_inet_t *net, const uint8_t mac[6],
                      vibeos_inet_tx_fn tx, void *tx_ctx);
 void vibeos_inet_set_addr(vibeos_inet_t *net, uint32_t ip, uint32_t netmask,
                           uint32_t gateway, uint32_t dns);
+void vibeos_inet_set_policy(vibeos_inet_t *net, vibeos_net_policy_t *policy);
 
 /* Feed one received Ethernet frame. Returns 0 if it was consumed. */
 int vibeos_inet_input(vibeos_inet_t *net, const void *frame, uint32_t len);
@@ -211,6 +215,8 @@ void vibeos_inet_poll(vibeos_inet_t *net, uint64_t now_ms);
 /* ---- sockets ------------------------------------------------------------ */
 
 int vibeos_inet_socket(vibeos_inet_t *net, int type);
+int vibeos_inet_socket_set_owner(vibeos_inet_t *net, int sock, uint32_t owner_pid);
+int vibeos_inet_socket_owner(const vibeos_inet_t *net, int sock, uint32_t *out_owner_pid);
 int vibeos_inet_bind(vibeos_inet_t *net, int sock, uint16_t port);
 int vibeos_inet_connect(vibeos_inet_t *net, int sock, uint32_t ip, uint16_t port);
 int vibeos_inet_listen(vibeos_inet_t *net, int sock);
@@ -222,6 +228,8 @@ long vibeos_inet_sendto(vibeos_inet_t *net, int sock, const void *buf, uint32_t 
 long vibeos_inet_recvfrom(vibeos_inet_t *net, int sock, void *buf, uint32_t len,
                           uint32_t *out_ip, uint16_t *out_port);
 int vibeos_inet_close(vibeos_inet_t *net, int sock);
+int vibeos_inet_close_owned(vibeos_inet_t *net, int sock, uint32_t owner_pid);
+uint32_t vibeos_inet_release_owner_sockets(vibeos_inet_t *net, uint32_t owner_pid);
 int vibeos_inet_socket_state(const vibeos_inet_t *net, int sock);
 
 /* ---- utilities ---------------------------------------------------------- */

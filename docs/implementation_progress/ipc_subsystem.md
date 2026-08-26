@@ -1,7 +1,7 @@
 # IPC Subsystem Progress
 
 Status: In Progress
-Last review: 2026-05-09
+Last review: 2026-08-26
 
 ## Implemented
 - Event and bounded channel primitives in `kernel/ipc/event.c` and `kernel/ipc/channel.c`.
@@ -13,11 +13,13 @@ Last review: 2026-05-09
 - Extended telemetry for wait behavior (disabled skips, priority wakes, wait-all, batch, peek).
 - Scheduler-aware thread wait wrappers with wake CPU feedback.
 - Contention snapshot API (`vibeos_waitset_contention_snapshot`) with enabled/signaled visibility for load diagnostics.
+- Handle transfer rejects invalid source handles before allocating anything; valid generic handles remain transferable with reduced rights. Host regression covers invalid-source rejection.
+- Maximum fan-in waitset coverage exercises all 32 event slots, contention snapshots and batch wake selection under round-robin policy.
 
 ## Pending
-- Large fan-in waitset sharding strategy.
+- Large fan-in waitset sharding strategy beyond the current bounded 32-slot primitive.
 - Fairness proofs under mixed policy workloads.
 - Stronger IPC load/perf benchmarks with reproducible profiles.
 
 ## Next checkpoint
-- Add large-scale contention test suite for waitset policy fairness and throughput.
+- Add reproducible throughput benchmarks and a sharding design for waitsets larger than 32 events.

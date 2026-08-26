@@ -20,6 +20,7 @@ typedef struct {
     uint32_t root_lba;        /* FAT16 root dir sector (0 if F32) */
     uint32_t data_lba;        /* first data sector                */
     uint32_t sectors_per_fat;
+    uint32_t max_clusters;
     uint32_t root_cluster;    /* FAT32 root cluster               */
     uint16_t root_entries;    /* FAT16 root entry count           */
     uint8_t  sectors_per_cluster;
@@ -126,12 +127,18 @@ static int fat_mount_locked(void) {
     if (total_sectors == 0) {
         total_sectors = rd32(&g_secbuf[32]);
     }
-    (void)total_sectors;
-
     root_dir_sectors = ((uint32_t)g_fat.root_entries * 32u + (SECTOR_SIZE - 1u)) / SECTOR_SIZE;
     g_fat.fat_lba = part_lba + reserved;
     g_fat.root_lba = g_fat.fat_lba + 2u * g_fat.sectors_per_fat;         /* FAT16 root */
     g_fat.data_lba = g_fat.root_lba + root_dir_sectors;                  /* first data */
+    if (total_sectors <= g_fat.data_lba - part_lba) {
+        return -1;
+    }
+    g_fat.max_clusters = (total_sectors - (g_fat.data_lba - part_lba)) /
+                         g_fat.sectors_per_cluster;
+    if (g_fat.max_clusters == 0u) {
+        return -1;
+    }
 
     fat_cache_drop();
     g_fat.mounted = 1;
@@ -163,7 +170,8 @@ static uint32_t fat_next_cluster(uint32_t cluster) {
     uint32_t sec_index = cluster / per_sec;
     const uint8_t *sec;
 
-    if (sec_index >= g_fat.sectors_per_fat) {
+    if (cluster < 2u || cluster - 2u >= g_fat.max_clusters ||
+        sec_index >= g_fat.sectors_per_fat) {
         g_fat_chain_error = 1;
         return eoc;
     }
@@ -250,18 +258,23 @@ static int fat_scan_sectors(uint32_t lba, uint32_t sectors, const uint8_t want[1
 static int fat_dir_find(uint32_t dir_cluster, const uint8_t want[11],
                         uint32_t *out_cluster, uint32_t *out_size, uint8_t *out_attr) {
     uint32_t cl;
+    uint32_t steps = 0;
 
     if (dir_cluster == 0 && !g_fat.is_fat32) {
         uint32_t root_sectors = ((uint32_t)g_fat.root_entries * 32u + (SECTOR_SIZE - 1u)) / SECTOR_SIZE;
         return fat_scan_sectors(g_fat.root_lba, root_sectors, want, out_cluster, out_size, out_attr);
     }
     cl = (dir_cluster == 0) ? g_fat.root_cluster : dir_cluster;
-    while (!fat_chain_end(cl) && cl >= 2u) {
+    while (!fat_chain_end(cl) && cl >= 2u && cl - 2u < g_fat.max_clusters &&
+           steps++ < g_fat.max_clusters) {
         if (fat_scan_sectors(fat_cluster_lba(cl), g_fat.sectors_per_cluster,
                              want, out_cluster, out_size, out_attr) == 0) {
             return 0;
         }
         cl = fat_next_cluster(cl);
+    }
+    if (cl >= 2u && !fat_chain_end(cl)) {
+        g_fat_chain_error = 1;
     }
     return -1;
 }

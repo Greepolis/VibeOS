@@ -39,6 +39,13 @@ Partition tables (MBR and GPT) sit between the device and the drivers in
 - The syscall layer no longer names FAT: it goes through `vibeos_fs_*`.
 - VFS runtime/service scaffold in `user/fs/vfs_service.c` and
   `user/fs/vfs_ops.c`, with the policy-aware secure open path.
+- x86_64 `getdents64` now rejects non-directory descriptors and bounds each
+  directory stream to 4096 entries, preventing malformed or cyclic metadata
+  from wedging a user process indefinitely.
+- The QEMU CLI harness records phase-specific BusyBox progress, and filesystem
+  changes are covered by a dedicated Clang Release runtime workflow with
+  serial/stderr artifacts. The Linux/WSL gate still must pass before this area
+  can be marked runtime-complete.
 
 ## How it is verified
 
