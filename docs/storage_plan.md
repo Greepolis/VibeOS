@@ -131,3 +131,22 @@ The documentation has to catch up, and in more than one place:
 Written here rather than left to memory: this project has already shipped
 documentation claiming that things were pending which had been done for weeks,
 and the fix for that is to name the files while the work is fresh.
+
+Agreed at the same time, and recorded for the same reason:
+
+- fold `roadmap/phase2_technical_backlog.md` into the roadmap and delete it.
+  Two documents planning the same work is worse than one, because someone will
+  follow the wrong one; the roadmap has exit criteria and this does not.
+- the same for `roadmap/development_phases.md`, whose Phase 1 closed months ago
+- correct `docs/filesystem.md`, `memory_management.md`, `scheduler.md`,
+  `architecture.md` and `software_architecture_specification.md`, which between
+  them still describe finished work in the future tense. The specification
+  matters most of the five: it is the longest document here and the one a
+  newcomer reads first
+- keep the two files dated `2026-04-03` exactly as they are. The date in the
+  filename already marks them historical, and deleting them would lose the
+  record of how the project got here
+- write the two documents that do not exist at all: the graphics stack (mouse,
+  framebuffer, compositor, on-screen terminal) and process semantics (signals,
+  copy-on-write, pipes, descriptor inheritance). Both currently live only in
+  code comments and commit messages
