@@ -41,19 +41,34 @@ The native filesystem, tentatively named `AuroraFS`, should target:
 
 ## Compatibility strategy
 
-### Planned read or integration priorities
+### Where this now stands
 
-- FAT32 or exFAT for boot and removable media interoperability
-- ext4 read support as an early interoperability milestone
-- NTFS read support later through service-level implementation
-- APFS support deferred due to complexity and ecosystem constraints
+Five filesystems are implemented, each behind the same `vibeos_fs_ops_t`, so
+nothing above the mount layer names any of them:
 
-Full write support for foreign filesystems should be gated behind strong test coverage.
+| Filesystem | Access |
+| --- | --- |
+| FAT16/FAT32 | read/write - the boot volume |
+| ext2 | read, including triple-indirect blocks and holes |
+| ISO9660 | read, including Joliet names |
+| exFAT | read |
+| NTFS | read - fixups, resident and non-resident attributes, run lists |
+
+MBR and GPT partition tables are parsed. ext4 and APFS remain unimplemented;
+ext2 was built first because it is the same shape of problem with a fraction of
+the surface, and it is what proved the interface could hold a second
+filesystem at all.
+
+Full write support for foreign filesystems stays gated behind test coverage,
+and the bar here is a sabotage case per guard: removing any single check must
+turn a named test red.
 
 ## Caching model
 
 - unified page cache where feasible
-- write-back with journaling or transaction semantics for supported filesystems
+- write-back with journalling or transaction semantics for supported
+  filesystems. The block cache is write-back today and its flush reaches the
+  device's own cache, which is what makes a barrier real rather than nominal.
 - explicit invalidation contracts for compatibility runtimes and VM-backed file access
 
 ## Security considerations
@@ -68,3 +83,8 @@ Full write support for foreign filesystems should be gated behind strong test co
 - VFS runtime supports mount, unmount, open, close, and secure-open policy checks.
 - mount observability is available through active-mount counters.
 - unmounted filesystems are rejected by open paths, improving lifecycle correctness.
+- the kernel path is block device -> block cache -> filesystem driver -> mount,
+  with the syscall layer naming none of the five drivers.
+- a write-ahead journal recovers at attach and is swept against power loss, but
+  no driver stages its metadata through it yet: the mechanism is verified, the
+  volume is not. See `docs/implementation_progress/filesystem_layer.md`.

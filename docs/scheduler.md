@@ -79,3 +79,8 @@ Periodic and event-driven balancing migrates threads across CPUs based on:
 - enqueue paths normalize zero-timeslice threads to class defaults.
 - per-CPU and aggregate scheduler counters remain available through runtime telemetry helpers and syscall observability paths.
 - runqueue aging helpers are available (`age_cpu`, `age_all`) to apply bounded timeslice boosts and reduce starvation risk.
+- the x86-64 runtime runs preemptively on four cores, and the boot gate asserts
+  all four are online rather than assuming it. Two cores ending up on one task
+  and a lost TLS base both reproduced at roughly one boot in three, which is
+  why scheduler changes here are checked with `scripts/dev/repeat-boot.sh` and
+  not with a single green run.

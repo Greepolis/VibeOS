@@ -20,7 +20,7 @@
 | M13 dynamic executables | Not started | - |
 | M14 threads | Not started | - |
 | M15 Windows console compatibility | Not started | - |
-| M16 durable storage | Not started | - |
+| M16 durable storage | Partly done | journal, block cache and device barrier built and swept against power loss; no filesystem routes its metadata through it yet |
 | M17 architecture review for expansion | Ongoing | design documents updated alongside the code |
 
 Status here reflects what boots and passes a gate, not what has been designed.
@@ -178,9 +178,17 @@ FAT has no journal, so a write interrupted by a reset can leave the volume
 inconsistent. Exit criterion: power loss during a write does not corrupt the
 filesystem.
 
-- a filesystem with ordered metadata updates
-- a block cache with write-back and barriers
-- a test that cuts power mid-write and checks the result
+- a block cache with write-back and barriers - **done**, and the barrier now
+  reaches the device, because a drive acknowledges a write when it reaches its
+  own volatile cache and not before
+- a test that cuts power mid-write and checks the result - **done**, as a sweep
+  rather than a single case: a fake drive stops accepting writes after exactly
+  N of them, for every N a transaction performs and under several flush
+  orderings, and the volume must come back all-old or all-new
+- a filesystem with ordered metadata updates - **not done**. The journal
+  exists, is tested and recovers at mount, but no driver stages its metadata
+  through it yet. Until that connection is made, this milestone describes a
+  mechanism and not a volume, and FAT writes remain as crash-unsafe as before.
 
 ## M17: architecture review for expansion
 

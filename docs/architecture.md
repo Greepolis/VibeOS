@@ -174,4 +174,13 @@ The design deliberately avoids:
 - exposing foreign kernel ABIs as first-class native kernel interfaces
 - allowing user-space subsystems to depend on unstable private kernel structures
 - placing full filesystem parsers or broad driver stacks in ring 0 without demonstrated need
+
+> **Where the code currently differs.** The five filesystem drivers, the
+> virtio block and network drivers and the PS/2 input drivers are in ring 0
+> today, not in user-space services. That is a deliberate staging decision -
+> getting the semantics right in one address space first - and not a revision
+> of the target above. The layering is arranged so the move is possible: a
+> filesystem driver reaches the disk only through `vibeos_blockdev_t`, and
+> callers reach a filesystem only through `vibeos_fs_ops_t`, so neither side
+> names the other. It should be read as debt with a plan, not as the design.
 - promising complete foreign application parity before subsystem maturity and legal review

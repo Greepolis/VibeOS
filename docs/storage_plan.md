@@ -115,38 +115,17 @@ volume.
 Stage 8 needs a test that does not exist yet: kill the machine mid-write and
 mount the result. That test is the milestone, more than the journal is.
 
-## When the plan completes
+## Status
 
-The documentation has to catch up, and in more than one place:
+All eight stages are built. Stage 8 delivered the journal, the device-level
+barrier it needs, and the power-cut sweep; what it did **not** deliver is a
+filesystem that routes its metadata through the journal, so M16's exit
+criterion is met for the mechanism and not yet for a volume. That connection is
+the next piece of storage work.
 
-- `docs/implementation_progress/filesystem_layer.md` - the block cache, the
-  mount interface, and each driver, with what a gate actually defends
-- `docs/implementation_progress.md` - the status line for the filesystem area
-- `docs/filesystem.md` - it describes a VFS as future architecture; there is
-  one now
-- `roadmap/milestones.md` - M16 is durable storage, and stages one to seven
-  are the road to it
-- `README.md` - the "What runs today" list says FAT
+## Documentation debt, settled
 
-Written here rather than left to memory: this project has already shipped
-documentation claiming that things were pending which had been done for weeks,
-and the fix for that is to name the files while the work is fresh.
-
-Agreed at the same time, and recorded for the same reason:
-
-- fold `roadmap/phase2_technical_backlog.md` into the roadmap and delete it.
-  Two documents planning the same work is worse than one, because someone will
-  follow the wrong one; the roadmap has exit criteria and this does not.
-- the same for `roadmap/development_phases.md`, whose Phase 1 closed months ago
-- correct `docs/filesystem.md`, `memory_management.md`, `scheduler.md`,
-  `architecture.md` and `software_architecture_specification.md`, which between
-  them still describe finished work in the future tense. The specification
-  matters most of the five: it is the longest document here and the one a
-  newcomer reads first
-- keep the two files dated `2026-04-03` exactly as they are. The date in the
-  filename already marks them historical, and deleting them would lose the
-  record of how the project got here
-- write the two documents that do not exist at all: the graphics stack (mouse,
-  framebuffer, compositor, on-screen terminal) and process semantics (signals,
-  copy-on-write, pipes, descriptor inheritance). Both currently live only in
-  code comments and commit messages
+The list this section used to carry has been worked through: the two roadmap
+files were deleted, the filesystem and progress documents rewritten around the
+layer that now exists, and `docs/graphics.md` and `docs/process_semantics.md`
+written for the two areas that had code and no document.

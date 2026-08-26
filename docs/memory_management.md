@@ -89,5 +89,11 @@ These primitives are sufficient to emulate Linux `mmap`, Windows virtual memory 
 - VM runtime now supports partial unmap (`unmap_range`) with map splitting semantics.
 - VM observability helpers expose total map count and total mapped bytes.
 - read-only clone support is available (`clone_readonly`) to model early copy-on-write style address-space duplication.
+- on x86-64 this is no longer a model: `fork` is real copy-on-write, with the
+  writable bit cleared, `PTE_COW` set and a frame refcount table deciding when
+  a page can be freed. The three places that have to agree about it - the
+  fault handler accepting kernel-mode writes, `hw_user_range_ok` treating a COW
+  page as writable, and a second fork preserving the bit - are described in
+  `docs/process_semantics.md`.
 - VM integrity helpers now include address-space validation (`validate`) and adjacent-map compaction (`compact`) for safer and denser map layouts.
 - PMM bootstrap can now select the best usable region from boot memory maps while avoiding initrd overlap, instead of assuming a fixed first-region layout.

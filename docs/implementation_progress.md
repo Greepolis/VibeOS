@@ -1,6 +1,6 @@
 # Implementation Progress (Macro Areas)
 
-Last review: 2026-08-25
+Last review: 2026-08-26
 
 This document is now split by macro area for easier maintenance.
 
@@ -14,8 +14,8 @@ This document is now split by macro area for easier maintenance.
 | Interrupt Handling | In Progress (CPU traps, PIT and APIC timer paths verified) | [interrupt_handling.md](implementation_progress/interrupt_handling.md) |
 | System Call Interface | In Progress (Linux process semantics verified from ring 3) | [system_call_interface.md](implementation_progress/system_call_interface.md) |
 | IPC Subsystem | In Progress | [ipc_subsystem.md](implementation_progress/ipc_subsystem.md) |
-| Driver Framework | In Progress (virtio block/network, PS/2 keyboard and mouse, framebuffer desktop verified) | [driver_framework.md](implementation_progress/driver_framework.md) |
-| Filesystem Layer | In Progress (runtime FAT read/write verified) | [filesystem_layer.md](implementation_progress/filesystem_layer.md) |
+| Driver Framework | In Progress (virtio block/network, PS/2 keyboard and mouse, framebuffer desktop verified; block requests serialised) | [driver_framework.md](implementation_progress/driver_framework.md) |
+| Filesystem Layer | In Progress (FAT, ext2, ISO9660, exFAT and NTFS behind one VFS; journalled writes verified against power loss) | [filesystem_layer.md](implementation_progress/filesystem_layer.md) |
 | Networking Stack | In Progress (runtime virtio-net TCP/IP baseline verified) | [networking_stack.md](implementation_progress/networking_stack.md) |
 | User Space Interface | In Progress (unmodified static Linux binaries verified from ring 3) | [user_space_interface.md](implementation_progress/user_space_interface.md) |
 | Init System | In Progress | [init_system.md](implementation_progress/init_system.md) |

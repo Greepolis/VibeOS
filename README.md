@@ -40,8 +40,14 @@ programs in ring 3 through the Linux system-call ABI.
   released on exit, and `SIGPIPE` for a write with no reader. The boot
   self-test runs `ls /EFI/BOOT | wc -l` in BusyBox's shell - 13 on a full
   build - and the gate fails if the pipeline does not complete.
-- **Storage**: virtio-blk with a FAT reader and writer; programs are loaded
-  from the boot volume.
+- **Storage**: virtio-blk under a block cache, with five filesystems behind one
+  VFS - FAT (read/write), ext2, ISO9660, exFAT and NTFS (read) - plus MBR and
+  GPT partition tables. Programs are loaded from the boot volume. A write-ahead
+  journal is built and swept against power loss: a fake drive with its own
+  volatile cache is stopped after every write a transaction makes, and the
+  volume must come back holding either the old contents or the new ones. No
+  filesystem routes its metadata through the journal yet, so FAT writes are not
+  crash-safe today.
 - **Networking**: a portable TCP/IP stack over virtio-net - ARP, IPv4, ICMP,
   UDP, TCP, DHCP and DNS - verified end to end against a host echo server in
   CI on every push.
@@ -147,6 +153,12 @@ its own license.
 
 Implementation progress is tracked by macro area:
 
+- [docs/filesystem.md](docs/filesystem.md) - the storage stack and the five
+  filesystems behind it
+- [docs/graphics.md](docs/graphics.md) - the framebuffer path, and what no gate
+  would catch if it broke
+- [docs/process_semantics.md](docs/process_semantics.md) - fork, exec, signals
+  and wait, and where matching Linux meant something other than it first looked
 - [docs/implementation_progress.md](docs/implementation_progress.md)
 - [docs/implementation_progress/bootloader.md](docs/implementation_progress/bootloader.md)
 - [docs/implementation_progress/kernel_core.md](docs/implementation_progress/kernel_core.md)

@@ -52,6 +52,9 @@ The system shall use a hybrid microkernel-inspired modular kernel with the follo
 
 - the kernel core contains only primitives that are unsafe, impossible, or measurably inefficient to host in user space
 - drivers, filesystems, policy engines, compatibility runtimes, and high-risk parsers default to user space
+  - *as implemented today, the filesystem and device drivers are in the kernel;
+    see the note in `docs/architecture.md` for why, and for the interfaces that
+    keep the move open*
 - any privileged exception requires architectural review and benchmark evidence
 
 ### 1.4 Design drivers
