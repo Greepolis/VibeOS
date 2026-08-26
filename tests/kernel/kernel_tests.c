@@ -22,6 +22,7 @@
 #include "vibeos/partition.h"
 #include "vibeos/ext2.h"
 #include "vibeos/iso9660.h"
+#include "vibeos/exfat.h"
 #include "vibeos/tls.h"
 #include "vibeos/trap.h"
 #include "vibeos/user_api.h"
@@ -6776,6 +6777,307 @@ static int test_iso_refusals(void) {
     return 0;
 }
 
+/* ---- exFAT ---------------------------------------------------------------
+ *
+ * The two cases worth building an image for: a file described by a set of
+ * entries rather than one, and a file that is contiguous so the allocation
+ * table says nothing about it. A driver that follows the chain anyway reads
+ * whatever the table happens to contain - and on a real volume most files are
+ * contiguous, so that mistake affects almost everything.
+ */
+#define XF_SECTORS 128u
+static uint8_t g_xf[XF_SECTORS * VIBEOS_BLOCK_SIZE];
+
+static uint8_t *xf_sec(uint32_t n) { return g_xf + (uint64_t)n * VIBEOS_BLOCK_SIZE; }
+
+static void xf_w32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
+}
+static void xf_w64(uint8_t *p, uint64_t v) {
+    xf_w32(p, (uint32_t)v);
+    xf_w32(p + 4, (uint32_t)(v >> 32));
+}
+
+/* Geometry: 512-byte sectors, one sector per cluster, FAT at sector 8,
+ * cluster heap at sector 16 (so cluster 2 is sector 16). */
+#define XF_FAT_SEC 8u
+#define XF_HEAP_SEC 16u
+static uint8_t *xf_cluster(uint32_t c) { return xf_sec(XF_HEAP_SEC + (c - 2u)); }
+
+static void xf_fat_set(uint32_t cluster, uint32_t next) {
+    xf_w32(xf_sec(XF_FAT_SEC + (cluster * 4u) / VIBEOS_BLOCK_SIZE)
+           + ((cluster * 4u) % VIBEOS_BLOCK_SIZE), next);
+}
+
+/* Write one file entry set at `at`: a file entry, a stream entry, one name
+ * entry. Returns the bytes used. */
+static uint32_t xf_entry(uint8_t *at, const char *name, uint32_t first_cluster,
+                         uint64_t size, int is_dir, int contiguous) {
+    uint32_t nlen = 0, i;
+    while (name[nlen]) { nlen++; }
+
+    memset(at, 0, 96);
+    at[0] = 0x85u;                       /* file entry           */
+    at[1] = 2u;                          /* two secondary entries */
+    at[4] = (uint8_t)(is_dir ? 0x10u : 0x20u);
+
+    at[32] = 0xC0u;                      /* stream entry */
+    at[33] = (uint8_t)(contiguous ? 0x02u : 0x00u);
+    at[35] = (uint8_t)nlen;
+    xf_w32(at + 32 + 20, first_cluster);
+    xf_w64(at + 32 + 24, size);
+
+    at[64] = 0xC1u;                      /* name entry */
+    for (i = 0; i < nlen && i < 15u; i++) {
+        at[64 + 2 + i * 2] = (uint8_t)name[i];
+    }
+    return 96u;
+}
+
+/* Root directory in cluster 2. Contains:
+ *   CONTIG.BIN  - 3 clusters starting at 5, marked contiguous, FAT left wrong
+ *                 on purpose so a driver that follows it reads the wrong data
+ *   CHAINED.BIN - 2 clusters, 8 then 20, joined through the table
+ *   SUB         - a directory in cluster 30 containing DEEP.TXT
+ */
+static void xf_build(void) {
+    uint8_t *boot, *root, *sub;
+    uint32_t off;
+    uint32_t i;
+
+    memset(g_xf, 0, sizeof(g_xf));
+
+    boot = xf_sec(0);
+    memcpy(boot + 3, "EXFAT   ", 8);
+    xf_w32(boot + 80, XF_FAT_SEC);       /* FatOffset          */
+    xf_w32(boot + 84, 8u);               /* FatLength          */
+    xf_w32(boot + 88, XF_HEAP_SEC);      /* ClusterHeapOffset  */
+    xf_w32(boot + 92, 100u);             /* ClusterCount       */
+    xf_w32(boot + 96, 2u);               /* root cluster       */
+    boot[108] = 9u;                      /* 512-byte sectors   */
+    boot[109] = 0u;                      /* one sector/cluster */
+
+    root = xf_cluster(2);
+    off = xf_entry(root, "CONTIG.BIN", 5u, 3u * VIBEOS_BLOCK_SIZE, 0, 1);
+    off += xf_entry(root + off, "CHAINED.BIN", 8u, 2u * VIBEOS_BLOCK_SIZE, 0, 0);
+    (void)xf_entry(root + off, "SUB", 30u, 0u, 1, 1);
+
+    sub = xf_cluster(30);
+    (void)xf_entry(sub, "DEEP.TXT", 40u, 10u, 0, 1);
+
+    /* A malformed set at the end of the root: a file entry whose secondary is
+     * not a stream entry. A driver that does not insist on the stream decodes
+     * garbage as a file, so the check is what stops a corrupt directory from
+     * inventing entries. */
+    {
+        uint8_t *bad = root + off + 96u;
+        memset(bad, 0, 96);
+        bad[0] = 0x85u;
+        bad[1] = 2u;
+        bad[32] = 0xC1u;   /* a name entry where the stream must be */
+        bad[64] = 0xC1u;
+    }
+
+    /* The contiguous file's clusters, 5..7, each marked with its own byte. */
+    for (i = 0; i < 3u; i++) {
+        memset(xf_cluster(5u + i), (int)(0xB0u + i), VIBEOS_BLOCK_SIZE);
+    }
+    /* Deliberately wrong table entries for it: a driver that follows the chain
+     * instead of honouring the contiguous flag lands on cluster 60. */
+    xf_fat_set(5u, 60u);
+    xf_fat_set(6u, 60u);
+    memset(xf_cluster(60), 0xDD, VIBEOS_BLOCK_SIZE);
+
+    /* The chained file: cluster 8 then 20. */
+    memset(xf_cluster(8), 0xC8, VIBEOS_BLOCK_SIZE);
+    memset(xf_cluster(20), 0xCA, VIBEOS_BLOCK_SIZE);
+    xf_fat_set(8u, 20u);
+    xf_fat_set(20u, 0xFFFFFFFFu);
+
+    memset(xf_cluster(40), 0x77, 10u);
+}
+
+static int xf_dev_read(void *ctx, uint64_t lba, void *buf) {
+    (void)ctx;
+    if (lba >= XF_SECTORS) {
+        return -1;
+    }
+    memcpy(buf, g_xf + lba * VIBEOS_BLOCK_SIZE, VIBEOS_BLOCK_SIZE);
+    return 0;
+}
+
+#define XF_SLOTS 8u
+static uint8_t g_xf_cache_mem[XF_SLOTS][VIBEOS_BLOCK_SIZE];
+static vibeos_block_slot_t g_xf_slots[XF_SLOTS];
+
+static int xf_mount(vibeos_exfat_t *fs, vibeos_blockcache_t *bc,
+                    vibeos_blockdev_t *dev) {
+    uint32_t i;
+    xf_build();
+    for (i = 0; i < XF_SLOTS; i++) {
+        g_xf_slots[i].data = g_xf_cache_mem[i];
+    }
+    dev->read = xf_dev_read;
+    dev->write = 0;
+    dev->ctx = 0;
+    dev->sectors = XF_SECTORS;
+    if (vibeos_blockcache_init(bc, dev, g_xf_slots, XF_SLOTS) != 0) {
+        return -1;
+    }
+    return vibeos_exfat_mount(fs, bc, 0);
+}
+
+static int test_exfat_lookup_and_read(void) {
+    vibeos_exfat_t fs;
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    vibeos_fsmount_t mnt;
+    vibeos_fs_node_t node;
+    uint8_t buf[VIBEOS_BLOCK_SIZE * 3u];
+
+    if (xf_mount(&fs, &bc, &dev) != 0 ||
+        vibeos_fs_mount(&mnt, vibeos_exfat_ops(), &fs, "exfat") != 0) {
+        return -1;
+    }
+    if (fs.cluster_bytes != VIBEOS_BLOCK_SIZE || fs.root_cluster != 2u) {
+        return -1;
+    }
+
+    /* The contiguous file. The allocation table points somewhere else on
+     * purpose, so reading the right bytes proves the flag was honoured. */
+    if (vibeos_fs_lookup(&mnt, "contig.bin", &node) != 0) {
+        return -1;
+    }
+    if (node.is_dir || node.size != 3u * VIBEOS_BLOCK_SIZE) {
+        return -1;
+    }
+    if (vibeos_fs_read_at(&mnt, &node, 0, buf, sizeof(buf)) != (long)sizeof(buf)) {
+        return -1;
+    }
+    if (buf[0] != 0xB0u || buf[VIBEOS_BLOCK_SIZE] != 0xB1u ||
+        buf[VIBEOS_BLOCK_SIZE * 2u] != 0xB2u) {
+        return -1;
+    }
+
+    /* The chained file, which does need the table. */
+    if (vibeos_fs_lookup(&mnt, "CHAINED.BIN", &node) != 0) {
+        return -1;
+    }
+    if (vibeos_fs_read_at(&mnt, &node, 0, buf, VIBEOS_BLOCK_SIZE * 2u) !=
+        (long)(VIBEOS_BLOCK_SIZE * 2u)) {
+        return -1;
+    }
+    if (buf[0] != 0xC8u || buf[VIBEOS_BLOCK_SIZE] != 0xCAu) {
+        return -1;
+    }
+
+    /* A directory, and a file inside it. */
+    if (vibeos_fs_lookup(&mnt, "/sub", &node) != 0 || !node.is_dir) {
+        return -1;
+    }
+    if (vibeos_fs_lookup(&mnt, "/sub/deep.txt", &node) != 0 || node.size != 10u) {
+        return -1;
+    }
+    if (vibeos_fs_read_at(&mnt, &node, 0, buf, 10u) != 10 || buf[0] != 0x77u) {
+        return -1;
+    }
+    /* Asking for more than the file holds returns the file, not the buffer.
+     * An unclamped read walks into the next cluster and hands back bytes that
+     * belong to something else. */
+    if (vibeos_fs_read_at(&mnt, &node, 0, buf, 400u) != 10) {
+        return -1;
+    }
+    if (vibeos_fs_lookup(&mnt, "/nothing", &node) == 0) {
+        return -1;
+    }
+    if (vibeos_fs_write_file(&mnt, "/x", "y", 1u) >= 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_exfat_list(void) {
+    vibeos_exfat_t fs;
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    vibeos_fsmount_t mnt;
+    char name[VIBEOS_FS_NAME_MAX];
+    uint64_t size = 0;
+    int is_dir = 0;
+
+    if (xf_mount(&fs, &bc, &dev) != 0 ||
+        vibeos_fs_mount(&mnt, vibeos_exfat_ops(), &fs, "exfat") != 0) {
+        return -1;
+    }
+    if (vibeos_fs_list(&mnt, "/", 0, name, sizeof(name), &size, &is_dir) != 0 ||
+        strcmp(name, "CONTIG.BIN") != 0 || is_dir ||
+        size != 3u * VIBEOS_BLOCK_SIZE) {
+        return -1;
+    }
+    if (vibeos_fs_list(&mnt, "/", 1, name, sizeof(name), &size, &is_dir) != 0 ||
+        strcmp(name, "CHAINED.BIN") != 0) {
+        return -1;
+    }
+    if (vibeos_fs_list(&mnt, "/", 2, name, sizeof(name), &size, &is_dir) != 0 ||
+        strcmp(name, "SUB") != 0 || !is_dir) {
+        return -1;
+    }
+    /* The malformed set at the end contributes nothing: there is no fourth
+     * entry, and a driver that accepted it would report a fourth with a name
+     * made of whatever those bytes happened to be. */
+    if (vibeos_fs_list(&mnt, "/", 3, name, sizeof(name), &size, &is_dir) == 0) {
+        return -1;
+    }
+    if (vibeos_fs_list(&mnt, "/sub", 0, name, sizeof(name), &size, &is_dir) != 0 ||
+        strcmp(name, "DEEP.TXT") != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_exfat_refusals(void) {
+    vibeos_exfat_t fs;
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+
+    if (xf_mount(&fs, &bc, &dev) != 0) {
+        return -1;
+    }
+    /* Not an exFAT volume. */
+    xf_sec(0)[5] = 'X';
+    vibeos_blockcache_invalidate(&bc);
+    if (vibeos_exfat_mount(&fs, &bc, 0) == 0) {
+        return -1;
+    }
+
+    /* A sector size the block cache cannot serve. Reading anyway would use the
+     * wrong offsets from the first cluster onwards. */
+    xf_build();
+    xf_sec(0)[108] = 12u;
+    vibeos_blockcache_invalidate(&bc);
+    if (vibeos_exfat_mount(&fs, &bc, 0) == 0) {
+        return -1;
+    }
+
+    /* A cluster size beyond what this driver buffers. */
+    xf_build();
+    xf_sec(0)[109] = 6u;
+    vibeos_blockcache_invalidate(&bc);
+    if (vibeos_exfat_mount(&fs, &bc, 0) == 0) {
+        return -1;
+    }
+
+    /* A root cluster below 2 is not a cluster at all. */
+    xf_build();
+    xf_w32(xf_sec(0) + 96, 1u);
+    vibeos_blockcache_invalidate(&bc);
+    if (vibeos_exfat_mount(&fs, &bc, 0) == 0) {
+        return -1;
+    }
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
 #define RUN_TEST(fn) do { if ((fn)() != 0) { failures++; printf("FAIL:%s\n", #fn); } } while (0)
@@ -6795,6 +7097,9 @@ int main(void) {
     RUN_TEST(test_iso_lookup_and_read);
     RUN_TEST(test_iso_list);
     RUN_TEST(test_iso_refusals);
+    RUN_TEST(test_exfat_lookup_and_read);
+    RUN_TEST(test_exfat_list);
+    RUN_TEST(test_exfat_refusals);
     RUN_TEST(test_scheduler);
     RUN_TEST(test_scheduler_balanced);
     RUN_TEST(test_scheduler_wait_runtime);
