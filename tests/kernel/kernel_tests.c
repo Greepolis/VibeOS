@@ -8242,8 +8242,21 @@ static int test_journal_refusals(void)
     return 0;
 }
 
+/*
+ * Kernel test runner entry point.
+ *
+ * This function executes the full kernel/unit/integration test matrix in a
+ * fixed order. Each test returns 0 on success and non-zero on failure.
+ * Failures are counted and emitted as "FAIL:<test_name>" lines to make
+ * diagnostics easy to parse in CI logs.
+ *
+ * Exit contract:
+ *   - returns 0 and prints "ALL_TESTS_PASS" when no tests fail
+ *   - returns 1 and prints "TEST_FAILURES=<n>" otherwise
+ */
 int main(void) {
     int failures = 0;
+    /* Run each test and accumulate failures while preserving full execution. */
 #define RUN_TEST(fn) do { if ((fn)() != 0) { failures++; printf("FAIL:%s\n", #fn); } } while (0)
     RUN_TEST(test_pmm);
     RUN_TEST(test_pmm_reserve);
@@ -8356,6 +8369,7 @@ int main(void) {
     RUN_TEST(test_proc_audit_retention_policy);
 #undef RUN_TEST
 
+    /* Emit a stable summary line and process exit code for automation. */
     if (failures == 0) {
         puts("ALL_TESTS_PASS");
         return 0;
