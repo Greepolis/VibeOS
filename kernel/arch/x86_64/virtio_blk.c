@@ -102,6 +102,34 @@ static int g_ready;
 
 static uint64_t align_up(uint64_t v, uint64_t a) { return (v + a - 1u) & ~(a - 1u); }
 
+/* One request is in flight at a time, and everything describing it is a single
+ * global: one header, one status byte, descriptors 0 to 2, one used index. Two
+ * cores reading at once therefore did not race over some window, they simply
+ * overwrote each other - and both ways it goes wrong were seen in the same
+ * boot. One core's sector number lands in the other core's request, so a read
+ * succeeds and returns somebody else's data, which arrives upstream as a
+ * filesystem that has gone bad. And whichever core consumes the used index
+ * first advances it past the other's completion, leaving that one spinning on
+ * a notification that has already been taken: a hundred million pauses of
+ * total silence, which is what a wedged machine looks like from outside.
+ *
+ * Interrupts stay on. Nothing in an interrupt handler touches the disk, so a
+ * handler can never want this lock, and a two-megabyte transfer with the timer
+ * off is exactly the thing that has been mistaken for a hang here before. */
+static volatile int g_blk_lock;
+
+static void blk_lock(void) {
+    while (__sync_lock_test_and_set(&g_blk_lock, 1)) {
+        while (g_blk_lock) {
+            __asm__ __volatile__("pause" ::: "memory");
+        }
+    }
+}
+
+static void blk_unlock(void) {
+    __sync_lock_release(&g_blk_lock);
+}
+
 /* Find the transitional virtio-blk device and return its BAR0 I/O base. */
 static uint16_t virtio_blk_find(void) {
     uint16_t bus, dev;
@@ -201,6 +229,7 @@ static int virtio_blk_rw_n(uint64_t sector, void *buf, uint32_t sectors, int wri
     if (!g_ready || !buf || sectors == 0u || sectors > VIRTIO_BLK_MAX_SECTORS) {
         return -1;
     }
+    blk_lock();
     g_req.type = write ? 1u : 0u;   /* OUT (write) / IN (read) */
     g_req.reserved = 0;
     g_req.sector = sector;
@@ -233,7 +262,10 @@ static int virtio_blk_rw_n(uint64_t sector, void *buf, uint32_t sectors, int wri
         uint64_t spins = 0;
         while (g_used->idx == g_last_used) {
             if (++spins > 100000000ull) {
+                /* Leaving the lock held here would turn one timed-out request
+                 * into a machine that never reads a sector again. */
                 vibeos_x86_64_serial_puts("[VIRTIO] read timeout\n");
+                blk_unlock();
                 return -1;
             }
             __asm__ __volatile__("pause" ::: "memory");
@@ -242,7 +274,11 @@ static int virtio_blk_rw_n(uint64_t sector, void *buf, uint32_t sectors, int wri
     g_last_used = g_used->idx;
     (void)vb_inb(g_io_base + VIRTIO_ISR); /* ack */
 
-    return (g_status == 0) ? 0 : -1;
+    {
+        int rc = (g_status == 0) ? 0 : -1;
+        blk_unlock();
+        return rc;
+    }
 }
 
 int vibeos_x86_64_virtio_blk_read(uint64_t sector, void *buf) {

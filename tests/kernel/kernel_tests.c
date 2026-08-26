@@ -7603,7 +7603,8 @@ static int jt_flush(void *ctx)
 
     (void)ctx;
     for (k = 0; k < n; k++) {
-        uint32_t i = (n == 0u) ? 0u : (k + g_jt_order) % n;
+        /* The loop condition already established that n is not zero. */
+        uint32_t i = (k + g_jt_order) % n;
 
         if (g_jt_landed >= g_jt_power_off) {
             /* The power went during the flush. Whatever has not landed is

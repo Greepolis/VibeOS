@@ -2471,10 +2471,9 @@ static long hw_sys_dup2(uint64_t oldfd, uint64_t newfd) {
         }
         return (long)newfd;
     }
-    /* Redirecting a standard descriptor. */
-    if (newfd > 2u) {
-        return -VIBEOS_EBADF;
-    }
+    /* Redirecting a standard descriptor: the branch above returned for every
+     * other value, so newfd is 0, 1 or 2 here and re-checking that only looks
+     * like a bound. */
     hw_pipe_release(&t->std_redirect[newfd]);
     t->std_redirect[newfd] = *src;
     if (t->std_redirect[newfd].pipe >= 0) {

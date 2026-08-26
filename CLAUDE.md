@@ -85,6 +85,33 @@ whatever the previous program had left in the shared staging buffer.
 `g_fat_chain_error` and a byte count that reflects what was actually copied
 are what stop that; do not go back to returning the declared size.
 
+**One virtqueue, one request struct, no lock.** `virtio_blk_rw_n` used a
+single global header, status byte, descriptor chain and used-index for every
+request. Two cores reading at once did not race over a window, they overwrote
+each other: one core's sector number landed in the other's request, so a read
+returned somebody else's data and succeeded. And whichever core took the used
+index first left the other spinning on a completion already consumed. It has
+a lock now, with interrupts left on - nothing in an interrupt handler touches
+the disk.
+
+**The intermittent boot wedge is still open, and here is what is known.**
+Roughly one boot in four or five goes completely silent, always partway
+through the filesystem work (`ls`, `cat`, the second BusyBox exec), never with
+a fault or a panic. `catch-hang.py` is not useful for it: the RIPs it reports
+are the CLI idle in `serial_readc`. `scripts/dev/until-wedge.sh` keeps the
+serial log of the boot that failed, which is the part `repeat-boot.sh` drops.
+
+The strongest lead is a lock-protocol mismatch that is written down in fat.c's
+own comment. It says callers are syscalls running with interrupts masked, so
+the holder cannot be preempted - but execve takes `g_exec_lock` preemptibly on
+purpose and reads the image through `g_fs_lock`, so the holder *is* preemptible
+for the length of a two-megabyte read. A core waiting on `g_fs_lock` with
+interrupts masked never reaches the scheduler, and cannot give the preempted
+holder a CPU to finish on. That predicts exactly this: silence, no fault, only
+under filesystem load. Enabling interrupts while waiting was tried and made it
+*worse* - a wedge earlier in boot and more often - so the analysis is not the
+whole story and the change was not kept. Do not re-apply it without measuring.
+
 **Definition order bites repeatedly.** This is one 5000-line C file; a helper
 used above its definition compiles as an implicit declaration and then fails
 with a confusing "static declaration follows non-static declaration".
