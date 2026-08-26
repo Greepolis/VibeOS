@@ -1605,6 +1605,7 @@ typedef struct {
     uint64_t sig_handler[VIBEOS_HW_NSIG];
     uint64_t sig_restorer[VIBEOS_HW_NSIG];
     uint64_t sig_flags[VIBEOS_HW_NSIG];
+    uint64_t sig_mask[VIBEOS_HW_NSIG];
     /* %fs base for this task, set by arch_prctl(ARCH_SET_FS). Restored on
      * every switch: leaving the previous task's value loaded would let one
      * program read and write another's thread-local state. */
@@ -1939,6 +1940,7 @@ static int hw_task_spawn_user(const unsigned char *elf, uint64_t len,
             g_tasks[i].sig_handler[sg] = SIG_DFL_ADDR;
             g_tasks[i].sig_restorer[sg] = 0;
             g_tasks[i].sig_flags[sg] = 0;
+            g_tasks[i].sig_mask[sg] = 0;
         }
     }
     g_tasks[i].state = HW_TASK_READY;
@@ -3728,6 +3730,7 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
             child->sig_handler[sg] = parent->sig_handler[sg];
             child->sig_restorer[sg] = parent->sig_restorer[sg];
             child->sig_flags[sg] = parent->sig_flags[sg];
+            child->sig_mask[sg] = parent->sig_mask[sg];
         }
     }
     child->is_user = 1;
@@ -4333,7 +4336,7 @@ static long hw_sys_rt_sigaction(uint64_t sig, uint64_t act_uptr, uint64_t old_up
         ((uint64_t *)(uintptr_t)old_uptr)[0] = t->sig_handler[sig];
         ((uint64_t *)(uintptr_t)old_uptr)[1] = t->sig_flags[sig];
         ((uint64_t *)(uintptr_t)old_uptr)[2] = t->sig_restorer[sig];
-        ((uint64_t *)(uintptr_t)old_uptr)[3] = 0;
+        ((uint64_t *)(uintptr_t)old_uptr)[3] = t->sig_mask[sig] >> 1;
     }
     if (act_uptr != 0u) {
         const uint64_t *act;
@@ -4344,6 +4347,7 @@ static long hw_sys_rt_sigaction(uint64_t sig, uint64_t act_uptr, uint64_t old_up
         t->sig_handler[sig] = act[0];
         t->sig_flags[sig] = act[1];
         t->sig_restorer[sig] = act[2];
+        t->sig_mask[sig] = act[3] << 1;
     }
     return 0;
 }
@@ -4775,7 +4779,7 @@ static int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame) {
     /* While the handler runs, this signal is blocked, plus whatever the
      * program asked to block along with it - otherwise a repeating signal
      * re-enters the handler until the stack is gone. */
-    t->sig_blocked |= (1ull << sig);
+    t->sig_blocked |= (1ull << sig) | t->sig_mask[sig];
 
     frame->rip = handler;
     frame->rsp = sp;

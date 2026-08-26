@@ -39,6 +39,8 @@ int main(void) {
     volatile long witness = 0x5A5A5A5A;
     int ok = 1;
 
+    printf("SIG_PHASE: sigaction\n");
+    fflush(stdout);
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = on_signal;
     if (sigaction(SIGUSR1, &sa, NULL) != 0) {
@@ -47,6 +49,8 @@ int main(void) {
     }
 
     raise(SIGUSR1);
+    printf("SIG_PHASE: handler\n");
+    fflush(stdout);
     if (g_got != SIGUSR1 || g_count != 1) {
         printf("SIG_FAIL: handler did not run\n");
         ok = 0;
@@ -61,6 +65,8 @@ int main(void) {
     /* Blocked means deferred, not dropped. */
     sigemptyset(&block);
     sigaddset(&block, SIGUSR2);
+    printf("SIG_PHASE: masking\n");
+    fflush(stdout);
     if (sigprocmask(SIG_BLOCK, &block, &old) != 0) {
         printf("SIG_FAIL: sigprocmask\n");
         ok = 0;
@@ -87,6 +93,8 @@ int main(void) {
     /* Ignored means gone. */
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = SIG_IGN;
+    printf("SIG_PHASE: ignoring\n");
+    fflush(stdout);
     sigaction(SIGUSR1, &sa, NULL);
     g_got = 0;
     raise(SIGUSR1);
@@ -99,7 +107,11 @@ int main(void) {
      * see that rather than a normal exit. */
     {
         pid_t child = fork();
+        printf("SIG_PHASE: fork child=%d\n", (int)child);
+        fflush(stdout);
         if (child == 0) {
+            printf("SIG_PHASE: child terminate\n");
+            fflush(stdout);
             raise(SIGTERM);
             _exit(0);          /* only reached if the signal did nothing */
         } else if (child > 0) {
