@@ -20,6 +20,7 @@
 #include "vibeos/fat_chain.h"
 #include "vibeos/blockdev.h"
 #include "vibeos/partition.h"
+#include "vibeos/ext2.h"
 #include "vibeos/tls.h"
 #include "vibeos/trap.h"
 #include "vibeos/user_api.h"
@@ -6173,6 +6174,362 @@ static int test_partition_gpt_refusals(void) {
     return 0;
 }
 
+/* ---- ext2 ----------------------------------------------------------------
+ *
+ * A fabricated filesystem in an array. Building the image by hand is the point:
+ * it is the only way to place a file's blocks exactly where the indirection
+ * boundaries are, and those boundaries are what a real image almost never
+ * exercises and a boot can never show you - a file simply reads back plausible
+ * and wrong somewhere past its twelfth block.
+ *
+ * Layout, 1 KiB blocks, one group:
+ *   block 0  padding (the superblock starts at byte 1024)
+ *   block 1  superblock
+ *   block 2  group descriptors
+ *   block 3  inode table
+ *   block 4  root directory data
+ *   block 5+ file data
+ */
+#define E2_BLOCK 1024u
+#define E2_BLOCKS 80u
+#define E2_INODE_SIZE 128u
+
+static uint8_t g_e2[E2_BLOCKS * E2_BLOCK];
+
+static void e2_w16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
+static void e2_w32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
+}
+
+static uint8_t *e2_block(uint32_t n) { return g_e2 + (uint64_t)n * E2_BLOCK; }
+
+/* One inode, written into the table at block 3. */
+static uint8_t *e2_inode(uint32_t ino) {
+    return e2_block(3) + (uint64_t)(ino - 1u) * E2_INODE_SIZE;
+}
+
+static void e2_dirent(uint8_t *at, uint32_t ino, const char *name, uint16_t reclen) {
+    uint32_t n = 0;
+    while (name[n]) { n++; }
+    e2_w32(at, ino);
+    e2_w16(at + 4, reclen);
+    at[6] = (uint8_t)n;
+    at[7] = 0;
+    memcpy(at + 8, name, n);
+}
+
+/* Build an image with:
+ *   inode 2  root directory, containing "." ".." "small" "big"
+ *   inode 11 "small", 100 bytes, one direct block
+ *   inode 12 "big", spanning direct blocks and into single indirection, with a
+ *            hole where a block pointer is zero
+ */
+static void e2_build(void) {
+    uint8_t *sb, *gd, *root, *ino, *ind;
+    uint32_t i;
+
+    memset(g_e2, 0, sizeof(g_e2));
+    /* Block zero is padding before the superblock, and it is filled with a
+     * marker rather than left zeroed on purpose: a driver that treats a hole
+     * as a real block reads block zero, and if that block were zeroes the
+     * mistake would produce exactly the right answer. */
+    memset(e2_block(0), 0xEE, E2_BLOCK);
+
+    sb = e2_block(1);
+    e2_w32(sb + 0, 32u);          /* inodes count      */
+    e2_w32(sb + 4, E2_BLOCKS);    /* blocks count      */
+    e2_w32(sb + 20, 1u);          /* first data block  */
+    e2_w32(sb + 24, 0u);          /* log block size -> 1024 */
+    e2_w32(sb + 32, E2_BLOCKS);   /* blocks per group  */
+    e2_w32(sb + 40, 32u);         /* inodes per group  */
+    e2_w16(sb + 56, 0xEF53u);     /* magic             */
+    e2_w32(sb + 76, 0u);          /* revision 0 -> 128-byte inodes */
+
+    gd = e2_block(2);
+    e2_w32(gd + 8, 3u);           /* inode table starts at block 3 */
+
+    /* Root directory: one block of entries. */
+    ino = e2_inode(2);
+    e2_w16(ino + 0, 0x41EDu);     /* directory, 0755 */
+    e2_w32(ino + 4, E2_BLOCK);    /* size            */
+    e2_w32(ino + 40, 4u);         /* first direct block */
+
+    root = e2_block(4);
+    e2_dirent(root + 0,   2u,  ".",     12u);
+    e2_dirent(root + 12,  2u,  "..",    12u);
+    e2_dirent(root + 24,  11u, "small", 16u);
+    e2_dirent(root + 40,  12u, "big",   (uint16_t)(E2_BLOCK - 40u));
+
+    /* "small": 100 bytes in block 5. */
+    ino = e2_inode(11);
+    e2_w16(ino + 0, 0x81A4u);     /* regular, 0644 */
+    e2_w32(ino + 4, 100u);
+    e2_w32(ino + 40, 5u);
+    for (i = 0; i < 100u; i++) {
+        e2_block(5)[i] = (uint8_t)(i + 1u);
+    }
+
+    /* "big": 14 blocks. Twelve direct (6..17, with 10 left as a hole), then
+     * single indirection through block 20 for blocks 12 and 13. */
+    ino = e2_inode(12);
+    e2_w16(ino + 0, 0x81A4u);
+    e2_w32(ino + 4, 14u * E2_BLOCK);
+    for (i = 0; i < 12u; i++) {
+        /* Block index 4 is deliberately left zero: a hole. */
+        e2_w32(ino + 40 + i * 4u, (i == 4u) ? 0u : (6u + i));
+    }
+    e2_w32(ino + 40 + 12u * 4u, 20u);      /* single indirect block */
+    ind = e2_block(20);
+    e2_w32(ind + 0, 30u);
+    e2_w32(ind + 4, 31u);
+
+    /* Fill every data block with a byte identifying it, so a wrong mapping
+     * produces the wrong marker rather than something that merely looks odd. */
+    for (i = 0; i < 12u; i++) {
+        if (i != 4u) {
+            memset(e2_block(6u + i), (int)(0xA0u + i), E2_BLOCK);
+        }
+    }
+    memset(e2_block(30), 0xC0, E2_BLOCK);
+    memset(e2_block(31), 0xC1, E2_BLOCK);
+}
+
+static int e2_dev_read(void *ctx, uint64_t lba, void *buf) {
+    (void)ctx;
+    if (lba >= (uint64_t)E2_BLOCKS * (E2_BLOCK / VIBEOS_BLOCK_SIZE)) {
+        return -1;
+    }
+    memcpy(buf, g_e2 + lba * VIBEOS_BLOCK_SIZE, VIBEOS_BLOCK_SIZE);
+    return 0;
+}
+
+#define E2_SLOTS 8u
+static uint8_t g_e2_cache_mem[E2_SLOTS][VIBEOS_BLOCK_SIZE];
+static vibeos_block_slot_t g_e2_slots[E2_SLOTS];
+
+static int e2_mount(vibeos_ext2_t *fs, vibeos_blockcache_t *bc,
+                    vibeos_blockdev_t *dev) {
+    uint32_t i;
+    e2_build();
+    for (i = 0; i < E2_SLOTS; i++) {
+        g_e2_slots[i].data = g_e2_cache_mem[i];
+    }
+    dev->read = e2_dev_read;
+    dev->write = 0;
+    dev->ctx = 0;
+    dev->sectors = (uint64_t)E2_BLOCKS * (E2_BLOCK / VIBEOS_BLOCK_SIZE);
+    if (vibeos_blockcache_init(bc, dev, g_e2_slots, E2_SLOTS) != 0) {
+        return -1;
+    }
+    return vibeos_ext2_mount(fs, bc, 0);
+}
+
+static int test_ext2_mount_and_lookup(void) {
+    vibeos_ext2_t fs;
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    vibeos_fs_node_t node;
+    vibeos_fsmount_t mnt;
+
+    if (e2_mount(&fs, &bc, &dev) != 0) {
+        return -1;
+    }
+    if (fs.block_size != 1024u || fs.inode_size != 128u) {
+        return -1;
+    }
+    if (vibeos_fs_mount(&mnt, vibeos_ext2_ops(), &fs, "ext2") != 0) {
+        return -1;
+    }
+    /* The root, and a file inside it, through the same interface FAT uses. */
+    if (vibeos_fs_lookup(&mnt, "/", &node) != 0 || !node.is_dir) {
+        return -1;
+    }
+    if (vibeos_fs_lookup(&mnt, "/small", &node) != 0) {
+        return -1;
+    }
+    if (node.is_dir || node.size != 100u || node.id != 11u) {
+        return -1;
+    }
+    if (vibeos_fs_lookup(&mnt, "missing", &node) == 0) {
+        return -1;
+    }
+    /* Read-only: the wrapper must refuse rather than follow a null pointer. */
+    if (vibeos_fs_write_file(&mnt, "/small", "x", 1u) >= 0) {
+        return -1;
+    }
+    if (vibeos_fs_mkdir(&mnt, "/d") == 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_ext2_read(void) {
+    vibeos_ext2_t fs;
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    vibeos_fs_node_t node;
+    vibeos_fsmount_t mnt;
+    uint8_t buf[E2_BLOCK * 2u];
+    long n;
+    uint32_t i;
+
+    if (e2_mount(&fs, &bc, &dev) != 0 ||
+        vibeos_fs_mount(&mnt, vibeos_ext2_ops(), &fs, "ext2") != 0) {
+        return -1;
+    }
+
+    /* A short file out of one direct block. */
+    if (vibeos_fs_lookup(&mnt, "small", &node) != 0) {
+        return -1;
+    }
+    n = vibeos_fs_read_at(&mnt, &node, 0, buf, sizeof(buf));
+    if (n != 100) {
+        return -1;   /* clamped to the file's size, not the buffer's */
+    }
+    for (i = 0; i < 100u; i++) {
+        if (buf[i] != (uint8_t)(i + 1u)) {
+            return -1;
+        }
+    }
+    /* Reading past the end is end of file, not an error. */
+    if (vibeos_fs_read_at(&mnt, &node, 100u, buf, 10u) != 0) {
+        return -1;
+    }
+
+    if (vibeos_fs_lookup(&mnt, "big", &node) != 0 || node.size != 14u * E2_BLOCK) {
+        return -1;
+    }
+    /* Direct block 0. */
+    if (vibeos_fs_read_at(&mnt, &node, 0, buf, 16u) != 16 || buf[0] != 0xA0u) {
+        return -1;
+    }
+    /* Direct block 11, the last one before indirection. */
+    if (vibeos_fs_read_at(&mnt, &node, 11u * E2_BLOCK, buf, 16u) != 16 ||
+        buf[0] != 0xABu) {
+        return -1;
+    }
+    /* The first indirect block - the boundary that matters. */
+    if (vibeos_fs_read_at(&mnt, &node, 12u * E2_BLOCK, buf, 16u) != 16 ||
+        buf[0] != 0xC0u) {
+        return -1;
+    }
+    if (vibeos_fs_read_at(&mnt, &node, 13u * E2_BLOCK, buf, 16u) != 16 ||
+        buf[0] != 0xC1u) {
+        return -1;
+    }
+    /* The hole reads as zeroes rather than failing: a sparse file is valid. */
+    if (vibeos_fs_read_at(&mnt, &node, 4u * E2_BLOCK, buf, 16u) != 16) {
+        return -1;
+    }
+    for (i = 0; i < 16u; i++) {
+        if (buf[i] != 0u) {
+            return -1;
+        }
+    }
+    /* A read spanning the direct/indirect boundary must not repeat or skip. */
+    n = vibeos_fs_read_at(&mnt, &node, 12u * E2_BLOCK - 8u, buf, 16u);
+    if (n != 16) {
+        return -1;
+    }
+    for (i = 0; i < 8u; i++) {
+        if (buf[i] != 0xABu || buf[8u + i] != 0xC0u) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int test_ext2_list(void) {
+    vibeos_ext2_t fs;
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    vibeos_fsmount_t mnt;
+    char name[VIBEOS_FS_NAME_MAX];
+    uint64_t size = 0;
+    int is_dir = 0;
+
+    if (e2_mount(&fs, &bc, &dev) != 0 ||
+        vibeos_fs_mount(&mnt, vibeos_ext2_ops(), &fs, "ext2") != 0) {
+        return -1;
+    }
+    if (vibeos_fs_list(&mnt, "/", 0, name, sizeof(name), &size, &is_dir) != 0 ||
+        strcmp(name, ".") != 0 || !is_dir) {
+        return -1;
+    }
+    if (vibeos_fs_list(&mnt, "/", 2, name, sizeof(name), &size, &is_dir) != 0 ||
+        strcmp(name, "small") != 0 || is_dir || size != 100u) {
+        return -1;
+    }
+    if (vibeos_fs_list(&mnt, "/", 3, name, sizeof(name), &size, &is_dir) != 0 ||
+        strcmp(name, "big") != 0) {
+        return -1;
+    }
+    /* Past the last entry is a refusal, which is how a caller stops. */
+    if (vibeos_fs_list(&mnt, "/", 4, name, sizeof(name), &size, &is_dir) == 0) {
+        return -1;
+    }
+    /* Listing a file is not listing. */
+    if (vibeos_fs_list(&mnt, "/small", 0, name, sizeof(name), &size, &is_dir) == 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_ext2_refusals(void) {
+    vibeos_ext2_t fs;
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+
+    /* A wrong magic is not an ext2 volume, and mounting one anyway would read
+     * plausible bytes from the wrong offsets forever after. */
+    if (e2_mount(&fs, &bc, &dev) != 0) {
+        return -1;
+    }
+    e2_w16(e2_block(1) + 56, 0x1234u);
+    vibeos_blockcache_invalidate(&bc);
+    if (vibeos_ext2_mount(&fs, &bc, 0) == 0) {
+        return -1;
+    }
+
+    /* A block size this driver does not support is refused rather than
+     * approximated. */
+    e2_build();
+    e2_w32(e2_block(1) + 24, 5u);
+    vibeos_blockcache_invalidate(&bc);
+    if (vibeos_ext2_mount(&fs, &bc, 0) == 0) {
+        return -1;
+    }
+
+    /* A directory record claiming zero length. Without the guard the scan
+     * advances by zero and never terminates, so the failure mode here is a
+     * hung test rather than a red one - which is why the guard exists at all
+     * rather than being left to the caller. */
+    {
+        vibeos_fsmount_t mnt;
+        vibeos_fs_node_t node;
+        e2_build();
+        e2_w16(e2_block(4) + 4, 0u);
+        vibeos_blockcache_invalidate(&bc);
+        if (vibeos_ext2_mount(&fs, &bc, 0) != 0 ||
+            vibeos_fs_mount(&mnt, vibeos_ext2_ops(), &fs, "ext2") != 0) {
+            return -1;
+        }
+        if (vibeos_fs_lookup(&mnt, "/small", &node) == 0) {
+            return -1;   /* a corrupt directory cannot resolve a name */
+        }
+    }
+
+    /* Zero inodes per group would divide by zero on the first lookup. */
+    e2_build();
+    e2_w32(e2_block(1) + 40, 0u);
+    vibeos_blockcache_invalidate(&bc);
+    if (vibeos_ext2_mount(&fs, &bc, 0) == 0) {
+        return -1;
+    }
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
 #define RUN_TEST(fn) do { if ((fn)() != 0) { failures++; printf("FAIL:%s\n", #fn); } } while (0)
@@ -6185,6 +6542,10 @@ int main(void) {
     RUN_TEST(test_partition_mbr);
     RUN_TEST(test_partition_gpt);
     RUN_TEST(test_partition_gpt_refusals);
+    RUN_TEST(test_ext2_mount_and_lookup);
+    RUN_TEST(test_ext2_read);
+    RUN_TEST(test_ext2_list);
+    RUN_TEST(test_ext2_refusals);
     RUN_TEST(test_scheduler);
     RUN_TEST(test_scheduler_balanced);
     RUN_TEST(test_scheduler_wait_runtime);
