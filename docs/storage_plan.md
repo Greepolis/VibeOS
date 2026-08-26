@@ -114,3 +114,20 @@ volume.
 
 Stage 8 needs a test that does not exist yet: kill the machine mid-write and
 mount the result. That test is the milestone, more than the journal is.
+
+## When the plan completes
+
+The documentation has to catch up, and in more than one place:
+
+- `docs/implementation_progress/filesystem_layer.md` - the block cache, the
+  mount interface, and each driver, with what a gate actually defends
+- `docs/implementation_progress.md` - the status line for the filesystem area
+- `docs/filesystem.md` - it describes a VFS as future architecture; there is
+  one now
+- `roadmap/milestones.md` - M16 is durable storage, and stages one to seven
+  are the road to it
+- `README.md` - the "What runs today" list says FAT
+
+Written here rather than left to memory: this project has already shipped
+documentation claiming that things were pending which had been done for weeks,
+and the fix for that is to name the files while the work is fresh.
