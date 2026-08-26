@@ -2075,6 +2075,7 @@ static void hw_task_exit(uint64_t code) {
 #define LSYS_exit   60
 #define LSYS_exit_group 231
 #define LSYS_fork   57
+#define LSYS_vfork  58
 #define LSYS_wait4  61
 #define LSYS_execve 59
 #define LSYS_open   2
@@ -4902,6 +4903,14 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
 
     switch (nr) {
         case LSYS_fork:
+            return hw_sys_fork(frame);
+        case LSYS_vfork:
+            /* ash uses vfork for the short child->exec path. A real vfork
+             * shares the parent's address space until exec, but returning a
+             * private fork here preserves the observable contract while
+             * avoiding a parent that can be modified by a still-running child.
+             * The child is constrained by the same exec/exit ABI as vfork's
+             * supported use in this personality. */
             return hw_sys_fork(frame);
         case LSYS_execve:
             return hw_sys_execve(frame, a1, a2, a3);
