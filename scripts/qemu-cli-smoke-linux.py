@@ -110,10 +110,24 @@ QUIET_GIVE_UP_SEC = 300
 
 
 def detect_guest_phase(text):
-    """Return the furthest observable BusyBox phase in the serial stream."""
+    """Return the furthest observable phase in the serial stream."""
     phase = "boot"
     for line in text.replace("\r", "").splitlines():
-        if "BUSYBOX.ELF echo" in line:
+        if "BL_EFI_OK" in line:
+            phase = "bootloader_efi"
+        elif "BL_FS_OK" in line:
+            phase = "bootloader_filesystem"
+        elif "BL_PLAN_OK" in line:
+            phase = "bootloader_plan"
+        elif "BL_LOAD_OK" in line:
+            phase = "bootloader_load"
+        elif "BL_EBS_OK" in line:
+            phase = "bootloader_exit_boot_services"
+        elif "BOOT_OK" in line:
+            phase = "kernel_boot"
+        elif "CLI_READY" in line:
+            phase = "kernel_cli_ready"
+        elif "BUSYBOX.ELF echo" in line:
             phase = "busybox_echo_started"
         elif "BUSYBOX_ECHO_OK" in line:
             phase = "busybox_echo"
@@ -171,6 +185,9 @@ def main():
     infra = False
     last_guest_phase = "boot"
     last_serial_timestamp = 0.0
+    phase_history = []
+    last_expected = "startup"
+    verbose = os.environ.get("VIBEOS_QEMU_VERBOSE", "") == "1"
 
     try:
         echo_thread = start_echo_server(echo_stop, echo_state)
@@ -246,8 +263,12 @@ def main():
                     if not chunk:
                         return
                     serial_text += chunk.decode("utf-8", errors="replace")
-                    last_guest_phase = detect_guest_phase(serial_text)
                     last_serial_timestamp = time.monotonic() - started
+                    new_phase = detect_guest_phase(serial_text)
+                    if new_phase != last_guest_phase:
+                        last_guest_phase = new_phase
+                        phase_history.append(f"{last_serial_timestamp:.3f}:{new_phase}")
+                        print(f"[QEMU-CLI] phase={new_phase} elapsed={last_serial_timestamp:.1f}s")
                     # When output last arrived is what separates "the guest is
                     # wedged" from "the guest is just slow": a failure with the
                     # serial line still active is a budget problem, one that has
@@ -275,6 +296,7 @@ def main():
             ]
 
             for expected, command in checks:
+                last_expected = expected
                 if not wait_for(buffer, expected, deadline, lambda: last_rx):
                     # Say which kind of failure this is, so nobody has to run a
                     # experiment to find out whether the guest froze or the
@@ -298,10 +320,21 @@ def main():
                     # Put the tail in the job output, not only in an artifact
                     # nobody downloads. Whether the guest stalled in firmware
                     # or inside the kernel is visible from these lines alone.
-                    tail = serial_text.replace(chr(13), "").splitlines()[-15:]
+                    tail_lines = 80 if verbose else 40
+                    tail = serial_text.replace(chr(13), "").splitlines()[-tail_lines:]
                     print(f"[QEMU-CLI] last {len(tail)} serial lines before the failure:")
                     for line in tail:
                         print(f"[QEMU-CLI]   {line}")
+                    try:
+                        err_fp.flush()
+                        with open(err_log_path, "rb") as fp:
+                            err_text = fp.read().decode("utf-8", errors="replace")
+                    except (OSError, UnboundLocalError):
+                        err_text = ""
+                    if err_text:
+                        print(f"[QEMU-CLI] qemu stderr tail:")
+                        for line in err_text.replace(chr(13), "").splitlines()[-40:]:
+                            print(f"[QEMU-CLI]   {line}")
                     if not tail:
                         print("[QEMU-CLI]   (the guest never wrote to the serial port)")
                     raise RuntimeError(reason)
@@ -449,7 +482,9 @@ def main():
             f"reason={reason}",
             f"failure_class={'infra_error' if infra else ('pass' if status == 'pass' else 'guest_failure')}",
             f"last_guest_phase={last_guest_phase}",
+            f"last_expected={last_expected}",
             f"last_serial_timestamp={last_serial_timestamp:.3f}",
+            f"phase_history={'|'.join(phase_history)}",
             f"qemu_exit_code={qemu.returncode if qemu is not None else 'unknown'}",
             f"build_dir={build_dir}",
             f"efi_root={efi_root}",
