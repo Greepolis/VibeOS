@@ -23,6 +23,7 @@
 #include "vibeos/ext2.h"
 #include "vibeos/iso9660.h"
 #include "vibeos/exfat.h"
+#include "vibeos/ntfs.h"
 #include "vibeos/tls.h"
 #include "vibeos/trap.h"
 #include "vibeos/user_api.h"
@@ -7078,6 +7079,455 @@ static int test_exfat_refusals(void) {
     return 0;
 }
 
+/* ---- NTFS ----------------------------------------------------------------
+ *
+ * Building the image is most of the work, and deliberately so: the fixups have
+ * to be applied when writing it, which means the test image is only readable
+ * if the test builder and the driver agree about them. A driver that skipped
+ * fixups would read two wrong bytes per sector, and the only way to notice is
+ * to have written the right ones in the first place.
+ */
+#define NT_SECTORS 256u
+#define NT_RECORD 1024u
+#define NT_MFT_LCN 4u          /* cluster 4, one sector per cluster */
+static uint8_t g_nt[NT_SECTORS * VIBEOS_BLOCK_SIZE];
+
+static uint8_t *nt_sec(uint32_t n) { return g_nt + (uint64_t)n * VIBEOS_BLOCK_SIZE; }
+
+static void nt_w16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
+static void nt_w32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
+}
+static void nt_w64(uint8_t *p, uint64_t v) {
+    nt_w32(p, (uint32_t)v);
+    nt_w32(p + 4, (uint32_t)(v >> 32));
+}
+
+/* A record lives at MFT cluster + number * 1024, i.e. two sectors each. */
+static uint8_t *nt_record(uint32_t number) {
+    return nt_sec(NT_MFT_LCN + number * (NT_RECORD / VIBEOS_BLOCK_SIZE));
+}
+
+/* Write a UTF-16 name. */
+static uint32_t nt_name(uint8_t *at, const char *name) {
+    uint32_t n = 0;
+    while (name[n]) {
+        nt_w16(at + n * 2u, (uint16_t)name[n]);
+        n++;
+    }
+    return n;
+}
+
+/* Apply the update sequence to a finished record: stash the last two bytes of
+ * each sector into the array and write the sequence number in their place. */
+static void nt_fixup(uint8_t *rec) {
+    uint16_t seq = 0x0BAD;
+    uint32_t sectors = NT_RECORD / VIBEOS_BLOCK_SIZE;
+    uint32_t i;
+
+    nt_w16(rec + 4, 48u);              /* update sequence array offset */
+    nt_w16(rec + 6, (uint16_t)(sectors + 1u));
+    nt_w16(rec + 48, seq);
+    for (i = 1; i <= sectors; i++) {
+        uint8_t *tail = rec + i * VIBEOS_BLOCK_SIZE - 2u;
+        rec[48 + i * 2u] = tail[0];
+        rec[48 + i * 2u + 1u] = tail[1];
+        nt_w16(tail, seq);
+    }
+}
+
+/* An index entry inside a directory's index root. Returns its length. */
+static uint32_t nt_index_entry(uint8_t *at, uint64_t ref, const char *name,
+                               uint64_t size, int is_dir, int dos_only) {
+    uint32_t chars, len;
+
+    memset(at, 0, 128);
+    nt_w64(at, ref);
+    nt_w64(at + 64, size);                          /* real size    */
+    nt_w32(at + 72, is_dir ? 0x10000000u : 0u);     /* flags        */
+    chars = nt_name(at + 82, name);
+    at[80] = (uint8_t)chars;
+    at[81] = (uint8_t)(dos_only ? 2u : 1u);         /* namespace    */
+    len = 82u + chars * 2u;
+    len = (len + 7u) & ~7u;                         /* eight-byte aligned */
+    nt_w16(at + 8, (uint16_t)len);
+    return len;
+}
+
+/* Records: 5 is the root directory, 6 a resident file, 7 a file with a run
+ * list, 8 a subdirectory, 9 a file inside it. */
+static void nt_build(void) {
+    uint8_t *boot, *rec, *attr, *root_idx;
+    uint32_t off, chars, i;
+
+    memset(g_nt, 0, sizeof(g_nt));
+
+    boot = nt_sec(0);
+    memcpy(boot + 3, "NTFS    ", 8);
+    nt_w16(boot + 11, VIBEOS_BLOCK_SIZE);
+    boot[13] = 1u;                       /* one sector per cluster */
+    nt_w64(boot + 0x30, NT_MFT_LCN);
+    boot[0x40] = (uint8_t)(int8_t)(-10); /* 2^10 = 1024-byte records */
+
+    /* ---- record 5: the root directory ---- */
+    rec = nt_record(5);
+    memcpy(rec, "FILE", 4);
+    nt_w16(rec + 22, 0x0003u);           /* in use + directory */
+    nt_w16(rec + 0x14, 64u);             /* first attribute    */
+
+    attr = rec + 64;
+    nt_w32(attr, 0x90u);                 /* $INDEX_ROOT        */
+    attr[8] = 0u;                        /* resident           */
+    nt_w16(attr + 0x14, 32u);            /* value offset       */
+    root_idx = attr + 32;
+    nt_w32(root_idx + 16, 16u);          /* first entry, from the header */
+    off = 16u + 16u;
+    off += nt_index_entry(root_idx + off, 6u, "RESIDENT.TXT", 12u, 0, 0);
+    off += nt_index_entry(root_idx + off, 7u, "BIG.BIN", 3u * VIBEOS_BLOCK_SIZE, 0, 0);
+    off += nt_index_entry(root_idx + off, 8u, "SUB", 0u, 1, 0);
+    /* A DOS short-name duplicate, which must not be reported twice. */
+    off += nt_index_entry(root_idx + off, 6u, "RESIDE~1.TXT", 12u, 0, 1);
+    {
+        /* The end entry: no name, flag bit 1 set. */
+        uint8_t *end = root_idx + off;
+        memset(end, 0, 16);
+        nt_w16(end + 8, 16u);
+        nt_w32(end + 12, 0x02u);
+        off += 16u;
+    }
+    nt_w32(attr + 0x10, off);            /* value length */
+    nt_w32(attr + 4, 32u + off);         /* attribute length */
+    nt_w32(rec + 64 + 32u + off, 0xFFFFFFFFu);   /* end of attributes */
+    nt_fixup(rec);
+
+    /* ---- record 6: a resident file ---- */
+    rec = nt_record(6);
+    memcpy(rec, "FILE", 4);
+    nt_w16(rec + 22, 0x0001u);
+    nt_w16(rec + 0x14, 64u);
+    attr = rec + 64;
+    nt_w32(attr, 0x80u);                 /* $DATA    */
+    attr[8] = 0u;                        /* resident */
+    nt_w32(attr + 0x10, 12u);            /* value length */
+    nt_w16(attr + 0x14, 24u);            /* value offset */
+    memcpy(attr + 24, "hello resid", 11);
+    attr[24 + 11] = '!';
+    nt_w32(attr + 4, 24u + 12u);
+    nt_w32(rec + 64 + 24u + 12u, 0xFFFFFFFFu);
+    nt_fixup(rec);
+
+    /* ---- record 7: a file described by a run list ----
+     * Two runs: three clusters from 100, then a sparse run, so both paths are
+     * exercised by one file. */
+    rec = nt_record(7);
+    memcpy(rec, "FILE", 4);
+    nt_w16(rec + 22, 0x0001u);
+    nt_w16(rec + 0x14, 64u);
+    attr = rec + 64;
+    nt_w32(attr, 0x80u);
+    attr[8] = 1u;                        /* non-resident */
+    nt_w16(attr + 0x20, 64u);            /* mapping pairs offset */
+    nt_w64(attr + 0x30, 5u * VIBEOS_BLOCK_SIZE);  /* data size */
+    {
+        uint8_t *runs = attr + 64;
+        uint32_t r = 0;
+        runs[r++] = 0x11u;               /* one length byte, one offset byte */
+        runs[r++] = 3u;                  /* three clusters                   */
+        runs[r++] = 100u;                /* starting at cluster 100          */
+        runs[r++] = 0x01u;               /* one length byte, no offset: sparse */
+        runs[r++] = 1u;                  /* one cluster                      */
+        /* A run that starts *below* the previous one. The offset is a signed
+         * delta stored in as few bytes as it fits, so 0xCE here means -50, and
+         * a reader that does not sign-extend lands at cluster 306 instead of
+         * 50 - off the end of this volume, and on a real one simply the wrong
+         * data. */
+        runs[r++] = 0x11u;
+        runs[r++] = 1u;
+        runs[r++] = 0xCEu;               /* -50 from cluster 100             */
+        runs[r++] = 0x00u;               /* end of the run list              */
+        nt_w32(attr + 4, 64u + r);
+        nt_w32(attr + 64u + r, 0xFFFFFFFFu);
+    }
+    nt_fixup(rec);
+    for (i = 0; i < 3u; i++) {
+        memset(nt_sec(100u + i), (int)(0xE0u + i), VIBEOS_BLOCK_SIZE);
+    }
+    memset(nt_sec(50), 0xE5, VIBEOS_BLOCK_SIZE);   /* the backwards run */
+
+    /* ---- record 8: a subdirectory holding record 9 ---- */
+    rec = nt_record(8);
+    memcpy(rec, "FILE", 4);
+    nt_w16(rec + 22, 0x0003u);
+    nt_w16(rec + 0x14, 64u);
+    attr = rec + 64;
+    nt_w32(attr, 0x90u);
+    attr[8] = 0u;
+    nt_w16(attr + 0x14, 32u);
+    root_idx = attr + 32;
+    nt_w32(root_idx + 16, 16u);
+    off = 16u + 16u;
+    off += nt_index_entry(root_idx + off, 9u, "INNER.DAT", 5u, 0, 0);
+    off += nt_index_entry(root_idx + off, 10u, "BADATTR", 0u, 0, 0);
+    {
+        uint8_t *end = root_idx + off;
+        memset(end, 0, 16);
+        nt_w16(end + 8, 16u);
+        nt_w32(end + 12, 0x02u);
+        off += 16u;
+    }
+    nt_w32(attr + 0x10, off);
+    nt_w32(attr + 4, 32u + off);
+    nt_w32(rec + 64 + 32u + off, 0xFFFFFFFFu);
+    nt_fixup(rec);
+
+    /* ---- record 10: an attribute claiming zero length ----
+     * Walking attributes by their own length is how the list is traversed, so
+     * a zero length means the walk never advances. The guard turns that into
+     * "no such attribute"; without it the search never returns. */
+    rec = nt_record(10);
+    memcpy(rec, "FILE", 4);
+    nt_w16(rec + 22, 0x0001u);
+    nt_w16(rec + 0x14, 64u);
+    attr = rec + 64;
+    nt_w32(attr, 0x30u);                 /* $FILE_NAME, not $DATA */
+    nt_w32(attr + 4, 0u);                /* length zero           */
+    nt_fixup(rec);
+
+    /* ---- record 9 ---- */
+    rec = nt_record(9);
+    memcpy(rec, "FILE", 4);
+    nt_w16(rec + 22, 0x0001u);
+    nt_w16(rec + 0x14, 64u);
+    attr = rec + 64;
+    nt_w32(attr, 0x80u);
+    attr[8] = 0u;
+    nt_w32(attr + 0x10, 5u);
+    nt_w16(attr + 0x14, 24u);
+    memcpy(attr + 24, "inner", 5);
+    nt_w32(attr + 4, 24u + 5u);
+    nt_w32(rec + 64 + 24u + 5u, 0xFFFFFFFFu);
+    nt_fixup(rec);
+    (void)chars;
+}
+
+static int nt_dev_read(void *ctx, uint64_t lba, void *buf) {
+    (void)ctx;
+    if (lba >= NT_SECTORS) {
+        return -1;
+    }
+    memcpy(buf, g_nt + lba * VIBEOS_BLOCK_SIZE, VIBEOS_BLOCK_SIZE);
+    return 0;
+}
+
+#define NT_SLOTS 8u
+static uint8_t g_nt_cache_mem[NT_SLOTS][VIBEOS_BLOCK_SIZE];
+static vibeos_block_slot_t g_nt_slots[NT_SLOTS];
+
+static int nt_mount(vibeos_ntfs_t *fs, vibeos_blockcache_t *bc,
+                    vibeos_blockdev_t *dev) {
+    uint32_t i;
+    nt_build();
+    for (i = 0; i < NT_SLOTS; i++) {
+        g_nt_slots[i].data = g_nt_cache_mem[i];
+    }
+    dev->read = nt_dev_read;
+    dev->write = 0;
+    dev->ctx = 0;
+    dev->sectors = NT_SECTORS;
+    if (vibeos_blockcache_init(bc, dev, g_nt_slots, NT_SLOTS) != 0) {
+        return -1;
+    }
+    return vibeos_ntfs_mount(fs, bc, 0);
+}
+
+static int test_ntfs_mount_and_read(void) {
+    vibeos_ntfs_t fs;
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    vibeos_fsmount_t mnt;
+    vibeos_fs_node_t node;
+    uint8_t buf[VIBEOS_BLOCK_SIZE * 4u];
+    uint32_t i;
+
+    if (nt_mount(&fs, &bc, &dev) != 0 ||
+        vibeos_fs_mount(&mnt, vibeos_ntfs_ops(), &fs, "ntfs") != 0) {
+        return -1;
+    }
+    if (fs.mft_record_bytes != NT_RECORD || fs.cluster_bytes != VIBEOS_BLOCK_SIZE) {
+        return -1;
+    }
+
+    /* A resident file: its contents are inside its own record, so it occupies
+     * no clusters at all. */
+    if (vibeos_fs_lookup(&mnt, "/resident.txt", &node) != 0) {
+        return -1;
+    }
+    if (node.is_dir || node.size != 12u) {
+        return -1;
+    }
+    if (vibeos_fs_read_at(&mnt, &node, 0, buf, sizeof(buf)) != 12) {
+        return -1;
+    }
+    if (memcmp(buf, "hello resid!", 12) != 0) {
+        return -1;
+    }
+
+    /* A file with a run list: three real clusters then a sparse one. */
+    if (vibeos_fs_lookup(&mnt, "BIG.BIN", &node) != 0 ||
+        node.size != 5u * VIBEOS_BLOCK_SIZE) {
+        return -1;
+    }
+    if (vibeos_fs_read_at(&mnt, &node, 0, buf, sizeof(buf)) != (long)sizeof(buf)) {
+        return -1;
+    }
+    if (buf[0] != 0xE0u || buf[VIBEOS_BLOCK_SIZE] != 0xE1u ||
+        buf[VIBEOS_BLOCK_SIZE * 2u] != 0xE2u) {
+        return -1;
+    }
+    /* The sparse run reads as zeroes; treating it as cluster zero would hand
+     * back the boot sector from the middle of the file. */
+    for (i = 0; i < VIBEOS_BLOCK_SIZE; i++) {
+        if (buf[VIBEOS_BLOCK_SIZE * 3u + i] != 0u) {
+            return -1;
+        }
+    }
+    /* The backwards run: cluster four of the file lives at a lower cluster
+     * than cluster zero, which only works if the offset was read as a signed
+     * delta. Read as unsigned it lands at cluster 306 - off this volume, and
+     * on a real one simply somebody else's data. */
+    if (vibeos_fs_read_at(&mnt, &node, 4u * VIBEOS_BLOCK_SIZE, buf, 16u) != 16) {
+        return -1;
+    }
+    if (buf[0] != 0xE5u) {
+        return -1;
+    }
+
+    /* Down a level. */
+    if (vibeos_fs_lookup(&mnt, "/sub", &node) != 0 || !node.is_dir) {
+        return -1;
+    }
+    if (vibeos_fs_lookup(&mnt, "/sub/inner.dat", &node) != 0 || node.size != 5u) {
+        return -1;
+    }
+    if (vibeos_fs_read_at(&mnt, &node, 0, buf, 5u) != 5 ||
+        memcmp(buf, "inner", 5) != 0) {
+        return -1;
+    }
+    /* A record whose attribute claims zero length: the walk must end rather
+     * than never advance. Reaching this line at all is the assertion. */
+    if (vibeos_fs_lookup(&mnt, "/sub/badattr", &node) != 0 || node.size != 0u) {
+        return -1;
+    }
+    if (vibeos_fs_lookup(&mnt, "/absent", &node) == 0) {
+        return -1;
+    }
+    if (vibeos_fs_write_file(&mnt, "/x", "y", 1u) >= 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_ntfs_list(void) {
+    vibeos_ntfs_t fs;
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    vibeos_fsmount_t mnt;
+    char name[VIBEOS_FS_NAME_MAX];
+    uint64_t size = 0;
+    int is_dir = 0;
+
+    if (nt_mount(&fs, &bc, &dev) != 0 ||
+        vibeos_fs_mount(&mnt, vibeos_ntfs_ops(), &fs, "ntfs") != 0) {
+        return -1;
+    }
+    if (vibeos_fs_list(&mnt, "/", 0, name, sizeof(name), &size, &is_dir) != 0 ||
+        strcmp(name, "RESIDENT.TXT") != 0 || is_dir || size != 12u) {
+        return -1;
+    }
+    if (vibeos_fs_list(&mnt, "/", 1, name, sizeof(name), &size, &is_dir) != 0 ||
+        strcmp(name, "BIG.BIN") != 0) {
+        return -1;
+    }
+    if (vibeos_fs_list(&mnt, "/", 2, name, sizeof(name), &size, &is_dir) != 0 ||
+        strcmp(name, "SUB") != 0 || !is_dir) {
+        return -1;
+    }
+    /* The DOS short-name duplicate must not appear: every file would be listed
+     * twice, under two names, and a caller has no way to tell which is which. */
+    if (vibeos_fs_list(&mnt, "/", 3, name, sizeof(name), &size, &is_dir) == 0) {
+        return -1;
+    }
+    if (vibeos_fs_list(&mnt, "/sub", 0, name, sizeof(name), &size, &is_dir) != 0 ||
+        strcmp(name, "INNER.DAT") != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_ntfs_refusals(void) {
+    vibeos_ntfs_t fs;
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    vibeos_fsmount_t mnt;
+    vibeos_fs_node_t node;
+
+    if (nt_mount(&fs, &bc, &dev) != 0) {
+        return -1;
+    }
+    /* Not NTFS. */
+    nt_sec(0)[5] = 'X';
+    vibeos_blockcache_invalidate(&bc);
+    if (vibeos_ntfs_mount(&fs, &bc, 0) == 0) {
+        return -1;
+    }
+
+    /* A sector size the block cache cannot serve. */
+    nt_build();
+    nt_w16(nt_sec(0) + 11, 4096u);
+    vibeos_blockcache_invalidate(&bc);
+    if (vibeos_ntfs_mount(&fs, &bc, 0) == 0) {
+        return -1;
+    }
+
+    /* A record size out of range. */
+    nt_build();
+    nt_sec(0)[0x40] = (uint8_t)(int8_t)(-40);
+    vibeos_blockcache_invalidate(&bc);
+    if (vibeos_ntfs_mount(&fs, &bc, 0) == 0) {
+        return -1;
+    }
+
+    /* A torn record: one sector of it carries a different sequence number, so
+     * it was not written with the rest and its contents cannot be trusted. */
+    nt_build();
+    vibeos_blockcache_invalidate(&bc);
+    if (vibeos_ntfs_mount(&fs, &bc, 0) != 0 ||
+        vibeos_fs_mount(&mnt, vibeos_ntfs_ops(), &fs, "ntfs") != 0) {
+        return -1;
+    }
+    nt_w16(nt_record(6) + 2u * VIBEOS_BLOCK_SIZE - 2u, 0x1234u);
+    vibeos_blockcache_invalidate(&bc);
+    if (vibeos_fs_lookup(&mnt, "/resident.txt", &node) == 0) {
+        return -1;
+    }
+
+    /* A record that is not a record. Without the magic check the fixups are
+     * applied to whatever those bytes are and the result is decoded as a file. */
+    nt_build();
+    vibeos_blockcache_invalidate(&bc);
+    if (vibeos_ntfs_mount(&fs, &bc, 0) != 0 ||
+        vibeos_fs_mount(&mnt, vibeos_ntfs_ops(), &fs, "ntfs") != 0) {
+        return -1;
+    }
+    memcpy(nt_record(6), "XXXX", 4);
+    vibeos_blockcache_invalidate(&bc);
+    if (vibeos_fs_lookup(&mnt, "/resident.txt", &node) == 0) {
+        return -1;
+    }
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
 #define RUN_TEST(fn) do { if ((fn)() != 0) { failures++; printf("FAIL:%s\n", #fn); } } while (0)
@@ -7100,6 +7550,9 @@ int main(void) {
     RUN_TEST(test_exfat_lookup_and_read);
     RUN_TEST(test_exfat_list);
     RUN_TEST(test_exfat_refusals);
+    RUN_TEST(test_ntfs_mount_and_read);
+    RUN_TEST(test_ntfs_list);
+    RUN_TEST(test_ntfs_refusals);
     RUN_TEST(test_scheduler);
     RUN_TEST(test_scheduler_balanced);
     RUN_TEST(test_scheduler_wait_runtime);
