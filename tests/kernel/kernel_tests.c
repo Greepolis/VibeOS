@@ -19,6 +19,7 @@
 #include "vibeos/elf.h"
 #include "vibeos/fat_chain.h"
 #include "vibeos/blockdev.h"
+#include "vibeos/partition.h"
 #include "vibeos/tls.h"
 #include "vibeos/trap.h"
 #include "vibeos/user_api.h"
@@ -5977,6 +5978,201 @@ static int test_blockcache_failures(void) {
     return 0;
 }
 
+/* ---- partition tables ----------------------------------------------------
+ *
+ * Fabricated tables rather than a disk image: every case below is a byte
+ * layout, and a boot can only tell you that one particular real table worked.
+ */
+static uint8_t g_pt_sector[512];
+static uint8_t g_pt_entries[128 * 4];
+
+static void pt_wr32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
+}
+
+static void pt_wr64(uint8_t *p, uint64_t v) {
+    pt_wr32(p, (uint32_t)v);
+    pt_wr32(p + 4, (uint32_t)(v >> 32));
+}
+
+static void pt_mbr_entry(uint32_t idx, uint8_t type, uint32_t first, uint32_t count) {
+    uint8_t *e = g_pt_sector + 446u + idx * 16u;
+    memset(e, 0, 16);
+    e[4] = type;
+    pt_wr32(e + 8, first);
+    pt_wr32(e + 12, count);
+}
+
+static int test_partition_mbr(void) {
+    vibeos_parttable_t tbl;
+    int protective = 0;
+
+    memset(g_pt_sector, 0, sizeof(g_pt_sector));
+    /* No signature: not a table, and saying so beats reporting zero
+     * partitions, which is what an empty-but-valid table looks like. */
+    if (vibeos_partition_parse_mbr(g_pt_sector, &tbl, &protective) == 0) {
+        return -1;
+    }
+    g_pt_sector[510] = 0x55; g_pt_sector[511] = 0xAA;
+
+    pt_mbr_entry(0, 0x0Cu, 2048u, 100000u);   /* FAT32 LBA */
+    pt_mbr_entry(1, 0x83u, 200000u, 50000u);  /* Linux */
+    pt_mbr_entry(2, 0x00u, 0u, 0u);           /* empty slot in the middle */
+    pt_mbr_entry(3, 0x0Cu, 300000u, 0u);      /* zero length: not a partition */
+
+    if (vibeos_partition_parse_mbr(g_pt_sector, &tbl, &protective) != 0) {
+        return -1;
+    }
+    if (tbl.count != 2u || protective != 0 || tbl.is_gpt != 0) {
+        return -1;
+    }
+    if (tbl.entry[0].first_lba != 2048u || tbl.entry[0].sector_count != 100000u) {
+        return -1;
+    }
+    if (tbl.entry[0].kind != VIBEOS_PART_FAT || tbl.entry[0].mbr_type != 0x0Cu) {
+        return -1;
+    }
+    if (tbl.entry[1].kind != VIBEOS_PART_LINUX) {
+        return -1;
+    }
+
+    /* A protective entry is reported as such and not as a partition -
+     * mounting it would hand a filesystem the whole disk including the GPT. */
+    memset(g_pt_sector + 446, 0, 64);
+    g_pt_sector[510] = 0x55; g_pt_sector[511] = 0xAA;
+    pt_mbr_entry(0, 0xEEu, 1u, 0xFFFFFFFFu);
+    if (vibeos_partition_parse_mbr(g_pt_sector, &tbl, &protective) != 0) {
+        return -1;
+    }
+    if (tbl.count != 0u || protective != 1) {
+        return -1;
+    }
+    return 0;
+}
+
+/* Build a GPT header and entry array that check out, so a test can then break
+ * exactly one thing and see it refused. */
+static void pt_build_gpt(uint32_t entry_count, uint32_t entry_size) {
+    uint8_t *h = g_pt_sector;
+    uint32_t crc;
+
+    memset(g_pt_sector, 0, sizeof(g_pt_sector));
+    memset(g_pt_entries, 0, sizeof(g_pt_entries));
+    memcpy(h, "EFI PART", 8);
+    pt_wr32(h + 12, 92u);           /* header size */
+    pt_wr64(h + 40, 34u);           /* first usable */
+    pt_wr64(h + 48, 1000000u);      /* last usable  */
+    pt_wr32(h + 80, entry_count);
+    pt_wr32(h + 84, entry_size);
+
+    /* One EFI system partition, one Linux one, named. */
+    memcpy(g_pt_entries, "\x28\x73\x2A\xC1\x1F\xF8\xD2\x11\xBA\x4B\x00\xA0\xC9\x3E\xC9\x3B", 16);
+    pt_wr64(g_pt_entries + 32, 2048u);
+    pt_wr64(g_pt_entries + 40, 4095u);
+    g_pt_entries[56] = 'E'; g_pt_entries[58] = 'S'; g_pt_entries[60] = 'P';
+
+    memcpy(g_pt_entries + entry_size,
+           "\xAF\x3D\xC6\x0F\x83\x84\x72\x47\x8E\x79\x3D\x69\xD8\x47\x7D\xE4", 16);
+    pt_wr64(g_pt_entries + entry_size + 32, 4096u);
+    pt_wr64(g_pt_entries + entry_size + 40, 8191u);
+
+    pt_wr32(h + 88, vibeos_partition_crc32(g_pt_entries, entry_count * entry_size));
+    pt_wr32(h + 16, 0);
+    crc = vibeos_partition_crc32(h, 92u);
+    pt_wr32(h + 16, crc);
+}
+
+static int test_partition_gpt(void) {
+    vibeos_parttable_t tbl;
+
+    pt_build_gpt(4u, 128u);
+    if (vibeos_partition_parse_gpt(g_pt_sector, g_pt_entries, sizeof(g_pt_entries),
+                                   1000000u, &tbl) != 0) {
+        return -1;
+    }
+    if (!tbl.is_gpt || tbl.count != 2u) {
+        return -1;
+    }
+    if (tbl.entry[0].first_lba != 2048u || tbl.entry[0].sector_count != 2048u) {
+        return -1;
+    }
+    if (tbl.entry[0].kind != VIBEOS_PART_EFI_SYSTEM) {
+        return -1;
+    }
+    if (strcmp(tbl.entry[0].name, "ESP") != 0) {
+        return -1;
+    }
+    if (tbl.entry[1].kind != VIBEOS_PART_LINUX) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_partition_gpt_refusals(void) {
+    vibeos_parttable_t tbl;
+
+    /* A corrupt header CRC. A table that fails its own checksum says where
+     * other people's data begins, so using it cautiously is not an option. */
+    pt_build_gpt(4u, 128u);
+    g_pt_sector[20] ^= 0xFFu;
+    if (vibeos_partition_parse_gpt(g_pt_sector, g_pt_entries, sizeof(g_pt_entries),
+                                   1000000u, &tbl) == 0) {
+        return -1;
+    }
+
+    /* A corrupt entry array, with the header still intact.
+     *
+     * The byte flipped is an attribute flag, chosen because nothing else in
+     * the parser looks at it: corrupting a boundary field instead would be
+     * refused for being an impossible partition, and the test would pass while
+     * proving nothing about the checksum it names. */
+    pt_build_gpt(4u, 128u);
+    g_pt_entries[48] ^= 0xFFu;
+    if (vibeos_partition_parse_gpt(g_pt_sector, g_pt_entries, sizeof(g_pt_entries),
+                                   1000000u, &tbl) == 0) {
+        return -1;
+    }
+
+    /* A header claiming more entries than the caller supplied bytes for.
+     *
+     * Everything stays consistent - the CRCs are correct over four entries -
+     * and only the buffer handed in is short. Inflating the count instead
+     * would make the checksum fail first, so the bounds check would never be
+     * the reason for the refusal. */
+    pt_build_gpt(4u, 128u);
+    if (vibeos_partition_parse_gpt(g_pt_sector, g_pt_entries, 2u * 128u,
+                                   1000000u, &tbl) == 0) {
+        return -1;
+    }
+
+    /* A partition running off the end of the disk. */
+    pt_build_gpt(4u, 128u);
+    if (vibeos_partition_parse_gpt(g_pt_sector, g_pt_entries, sizeof(g_pt_entries),
+                                   4000u, &tbl) == 0) {
+        return -1;
+    }
+
+    /* A partition that ends before it begins. */
+    pt_build_gpt(4u, 128u);
+    pt_wr64(g_pt_entries + 40, 100u);
+    pt_wr32(g_pt_sector + 88, vibeos_partition_crc32(g_pt_entries, 4u * 128u));
+    pt_wr32(g_pt_sector + 16, 0);
+    pt_wr32(g_pt_sector + 16, vibeos_partition_crc32(g_pt_sector, 92u));
+    if (vibeos_partition_parse_gpt(g_pt_sector, g_pt_entries, sizeof(g_pt_entries),
+                                   1000000u, &tbl) == 0) {
+        return -1;
+    }
+
+    /* Not a GPT at all. */
+    memset(g_pt_sector, 0, sizeof(g_pt_sector));
+    if (vibeos_partition_parse_gpt(g_pt_sector, g_pt_entries, sizeof(g_pt_entries),
+                                   1000000u, &tbl) == 0) {
+        return -1;
+    }
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
 #define RUN_TEST(fn) do { if ((fn)() != 0) { failures++; printf("FAIL:%s\n", #fn); } } while (0)
@@ -5986,6 +6182,9 @@ int main(void) {
     RUN_TEST(test_blockcache_writeback);
     RUN_TEST(test_blockcache_eviction);
     RUN_TEST(test_blockcache_failures);
+    RUN_TEST(test_partition_mbr);
+    RUN_TEST(test_partition_gpt);
+    RUN_TEST(test_partition_gpt_refusals);
     RUN_TEST(test_scheduler);
     RUN_TEST(test_scheduler_balanced);
     RUN_TEST(test_scheduler_wait_runtime);
