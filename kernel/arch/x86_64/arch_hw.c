@@ -3768,6 +3768,10 @@ static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr) {
             if (t->state == HW_TASK_ZOMBIE) {
                 uint32_t child_pid = t->pid;
                 uint64_t code = t->exit_code;
+                uint32_t exit_signal = t->exit_signal;
+                int status = (exit_signal != 0u)
+                             ? (int)(exit_signal & 0x7Fu)
+                             : (int)((code & 0xFFull) << 8);
                 t->state = HW_TASK_FREE; /* reaped */
                 hw_spin_unlock(&g_sched_lock);
                 hw_free_kstack(t);       /* safe here: the task is not running */
@@ -3777,9 +3781,6 @@ static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr) {
                      * high byte and leaves the low seven bits clear; a signal
                      * death puts the signal number in those low bits. That is
                      * what WIFEXITED and WIFSIGNALED read. */
-                    int status = (t->exit_signal != 0u)
-                                 ? (int)(t->exit_signal & 0x7Fu)
-                                 : (int)((code & 0xFFull) << 8);
                     *(volatile int *)(uintptr_t)status_ptr = status;
                 }
                 return (long)child_pid;
@@ -4297,6 +4298,13 @@ static int hw_task_by_pid(uint32_t pid) {
     return -1;
 }
 
+/* There is currently one thread per process, so Linux tid and pid are equal.
+ * Keep this lookup separate from kill(2), because tkill/tgkill address a
+ * thread rather than a process group. */
+static int hw_task_by_tid(uint32_t tid) {
+    return hw_task_by_pid(tid);
+}
+
 static long hw_sys_kill(uint64_t target_pid, uint64_t sig) {
     int target;
 
@@ -4313,6 +4321,53 @@ static long hw_sys_kill(uint64_t target_pid, uint64_t sig) {
     if (sig == 0u) {
         return 0;   /* the existence check, and it exists */
     }
+    return (hw_signal_raise(target, (uint32_t)sig) == 0) ? 0 : -VIBEOS_EINVAL;
+}
+
+static long hw_sys_tkill(uint64_t target_tid, uint64_t sig) {
+    int target;
+
+    if (g_current_task < 0 || !g_tasks[g_current_task].is_user ||
+        sig >= VIBEOS_HW_NSIG) {
+        return -VIBEOS_EINVAL;
+    }
+    target = hw_task_by_tid((uint32_t)target_tid);
+    if (target < 0) {
+        return -VIBEOS_ESRCH;
+    }
+    if (sig == 0u) {
+        return 0;
+    }
+    vibeos_x86_64_serial_puts("[SIG] tkill tid=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)(uint32_t)target_tid);
+    vibeos_x86_64_serial_puts(" sig=0x");
+    vibeos_x86_64_serial_print_hex(sig);
+    vibeos_x86_64_serial_puts("\n");
+    return (hw_signal_raise(target, (uint32_t)sig) == 0) ? 0 : -VIBEOS_EINVAL;
+}
+
+static long hw_sys_tgkill(uint64_t target_tgid, uint64_t target_tid,
+                          uint64_t sig) {
+    int target;
+
+    if (g_current_task < 0 || !g_tasks[g_current_task].is_user ||
+        sig >= VIBEOS_HW_NSIG) {
+        return -VIBEOS_EINVAL;
+    }
+    target = hw_task_by_tid((uint32_t)target_tid);
+    if (target < 0 || g_tasks[target].pid != (uint32_t)target_tgid) {
+        return -VIBEOS_ESRCH;
+    }
+    if (sig == 0u) {
+        return 0;
+    }
+    vibeos_x86_64_serial_puts("[SIG] tgkill tgid=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)(uint32_t)target_tgid);
+    vibeos_x86_64_serial_puts(" tid=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)(uint32_t)target_tid);
+    vibeos_x86_64_serial_puts(" sig=0x");
+    vibeos_x86_64_serial_print_hex(sig);
+    vibeos_x86_64_serial_puts("\n");
     return (hw_signal_raise(target, (uint32_t)sig) == 0) ? 0 : -VIBEOS_EINVAL;
 }
 
@@ -4746,6 +4801,12 @@ static int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame) {
         break;
     }
 
+    vibeos_x86_64_serial_puts("[SIG] deliver sig=0x");
+    vibeos_x86_64_serial_print_hex(sig);
+    vibeos_x86_64_serial_puts(" handler=0x");
+    vibeos_x86_64_serial_print_hex(handler);
+    vibeos_x86_64_serial_puts("\n");
+
 
     /* Below the red zone, then aligned. The handler is entered as if by a
      * call, so it wants rsp % 16 == 8 once the return address is pushed. */
@@ -4987,11 +5048,11 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
             /* raise() goes through tkill, not kill: a library raising a signal
              * in itself targets its own thread, and with one thread per
              * process that is the same destination. */
-            return hw_sys_kill(a1, a2);
+            return hw_sys_tkill(a1, a2);
         case LSYS_tgkill:
             /* tgkill(tgid, tid, sig): one thread per process, so the thread id
              * is the process id and this is kill with an extra argument. */
-            return hw_sys_kill(a2, a3);
+            return hw_sys_tgkill(a1, a2, a3);
         case LSYS_sendfile:
             /* Every caller of sendfile has to cope with it failing, and does:
              * a read-and-write loop is the documented fallback. Refusing is
