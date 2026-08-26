@@ -21,6 +21,7 @@
 #include "vibeos/blockdev.h"
 #include "vibeos/partition.h"
 #include "vibeos/ext2.h"
+#include "vibeos/iso9660.h"
 #include "vibeos/tls.h"
 #include "vibeos/trap.h"
 #include "vibeos/user_api.h"
@@ -6530,6 +6531,251 @@ static int test_ext2_refusals(void) {
     return 0;
 }
 
+/* ---- ISO9660 -------------------------------------------------------------
+ *
+ * A fabricated disc. The cases that matter are all about names: ISO9660 stores
+ * them upper case with a version suffix, so "vmlinuz" is "VMLINUZ;1" on the
+ * disc, and a driver that reports the stored form hands back a name its caller
+ * cannot pass to open().
+ */
+#define ISO_SECTORS 40u
+static uint8_t g_iso[ISO_SECTORS * VIBEOS_ISO_SECTOR];
+
+static uint8_t *iso_sec(uint32_t n) { return g_iso + (uint64_t)n * VIBEOS_ISO_SECTOR; }
+
+static void iso_w32both(uint8_t *p, uint32_t v) {
+    /* Little-endian then big-endian, which is how ISO9660 stores every number
+     * and the reason a naive 8-byte read produces an enormous wrong one. */
+    p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
+    p[4] = (uint8_t)(v >> 24); p[5] = (uint8_t)(v >> 16);
+    p[6] = (uint8_t)(v >> 8); p[7] = (uint8_t)v;
+}
+
+/* One directory record. Returns its length. */
+static uint32_t iso_rec(uint8_t *at, uint32_t extent, uint32_t len, int is_dir,
+                        const char *name) {
+    uint32_t nlen = 0, total;
+    while (name[nlen]) { nlen++; }
+    total = 33u + nlen;
+    if (total & 1u) { total++; }   /* records are padded to an even length */
+    memset(at, 0, total);
+    at[0] = (uint8_t)total;
+    iso_w32both(at + 2, extent);
+    iso_w32both(at + 10, len);
+    at[25] = is_dir ? 0x02u : 0x00u;
+    at[32] = (uint8_t)nlen;
+    memcpy(at + 33, name, nlen);
+    return total;
+}
+
+/* Special "." / ".." records, whose names are a single byte 0 or 1. */
+static uint32_t iso_rec_dot(uint8_t *at, uint32_t extent, uint8_t which) {
+    memset(at, 0, 34);
+    at[0] = 34u;
+    iso_w32both(at + 2, extent);
+    iso_w32both(at + 10, VIBEOS_ISO_SECTOR);
+    at[25] = 0x02u;
+    at[32] = 1u;
+    at[33] = which;
+    return 34u;
+}
+
+/* Root at sector 20 with "README.TXT;1", "NOEXT." and a directory "SUB";
+ * SUB at 21 containing "INNER.BIN;1"; file data at 22 and 23. */
+static void iso_build(void) {
+    uint8_t *pvd, *root, *sub;
+    uint32_t off;
+    uint32_t i;
+
+    memset(g_iso, 0, sizeof(g_iso));
+
+    pvd = iso_sec(VIBEOS_ISO_PVD_SECTOR);
+    pvd[0] = 1u;
+    memcpy(pvd + 1, "CD001", 5);
+    iso_w32both(pvd + 128, VIBEOS_ISO_SECTOR);
+    iso_rec(pvd + 156, 20u, VIBEOS_ISO_SECTOR, 1, "\x00");
+    /* iso_rec wrote a one-character name; fix it up to the root's form. */
+    pvd[156 + 32] = 1u;
+    pvd[156 + 33] = 0u;
+
+    root = iso_sec(20);
+    off = iso_rec_dot(root, 20u, 0u);
+    off += iso_rec_dot(root + off, 20u, 1u);
+    off += iso_rec(root + off, 22u, 300u, 0, "README.TXT;1");
+    off += iso_rec(root + off, 23u, 2048u, 0, "NOEXT.");
+    (void)iso_rec(root + off, 21u, VIBEOS_ISO_SECTOR, 1, "SUB");
+
+    sub = iso_sec(21);
+    off = iso_rec_dot(sub, 21u, 0u);
+    off += iso_rec_dot(sub + off, 20u, 1u);
+    (void)iso_rec(sub + off, 24u, 64u, 0, "INNER.BIN;1");
+
+    for (i = 0; i < 300u; i++) {
+        iso_sec(22)[i] = (uint8_t)(i & 0xFFu);
+    }
+    memset(iso_sec(23), 0x77, VIBEOS_ISO_SECTOR);
+    memset(iso_sec(24), 0x5A, 64u);
+}
+
+static int iso_dev_read(void *ctx, uint64_t lba, void *buf) {
+    (void)ctx;
+    if (lba >= (uint64_t)ISO_SECTORS * (VIBEOS_ISO_SECTOR / VIBEOS_BLOCK_SIZE)) {
+        return -1;
+    }
+    memcpy(buf, g_iso + lba * VIBEOS_BLOCK_SIZE, VIBEOS_BLOCK_SIZE);
+    return 0;
+}
+
+#define ISO_SLOTS 8u
+static uint8_t g_iso_cache_mem[ISO_SLOTS][VIBEOS_BLOCK_SIZE];
+static vibeos_block_slot_t g_iso_slots[ISO_SLOTS];
+
+static int iso_mount(vibeos_iso9660_t *fs, vibeos_blockcache_t *bc,
+                     vibeos_blockdev_t *dev) {
+    uint32_t i;
+    iso_build();
+    for (i = 0; i < ISO_SLOTS; i++) {
+        g_iso_slots[i].data = g_iso_cache_mem[i];
+    }
+    dev->read = iso_dev_read;
+    dev->write = 0;
+    dev->ctx = 0;
+    dev->sectors = (uint64_t)ISO_SECTORS * (VIBEOS_ISO_SECTOR / VIBEOS_BLOCK_SIZE);
+    if (vibeos_blockcache_init(bc, dev, g_iso_slots, ISO_SLOTS) != 0) {
+        return -1;
+    }
+    return vibeos_iso9660_mount(fs, bc, 0);
+}
+
+static int test_iso_lookup_and_read(void) {
+    vibeos_iso9660_t fs;
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    vibeos_fsmount_t mnt;
+    vibeos_fs_node_t node;
+    uint8_t buf[512];
+    uint32_t i;
+
+    if (iso_mount(&fs, &bc, &dev) != 0 ||
+        vibeos_fs_mount(&mnt, vibeos_iso9660_ops(), &fs, "iso9660") != 0) {
+        return -1;
+    }
+
+    /* Asked for in lower case and without the version suffix, which is how a
+     * program would ask - and is not how the disc stores it. */
+    if (vibeos_fs_lookup(&mnt, "/readme.txt", &node) != 0) {
+        return -1;
+    }
+    if (node.is_dir || node.size != 300u) {
+        return -1;
+    }
+    if (vibeos_fs_read_at(&mnt, &node, 0, buf, sizeof(buf)) != 300) {
+        return -1;
+    }
+    for (i = 0; i < 300u; i++) {
+        if (buf[i] != (uint8_t)(i & 0xFFu)) {
+            return -1;
+        }
+    }
+    /* A name with no extension is stored with a trailing dot. */
+    if (vibeos_fs_lookup(&mnt, "NOEXT", &node) != 0 || node.size != 2048u) {
+        return -1;
+    }
+    /* Down one level. */
+    if (vibeos_fs_lookup(&mnt, "/sub", &node) != 0 || !node.is_dir) {
+        return -1;
+    }
+    if (vibeos_fs_lookup(&mnt, "/sub/inner.bin", &node) != 0 || node.size != 64u) {
+        return -1;
+    }
+    if (vibeos_fs_read_at(&mnt, &node, 0, buf, 64u) != 64 || buf[0] != 0x5Au) {
+        return -1;
+    }
+    /* A component below a file is not a path. */
+    if (vibeos_fs_lookup(&mnt, "/readme.txt/x", &node) == 0) {
+        return -1;
+    }
+    if (vibeos_fs_lookup(&mnt, "/nope", &node) == 0) {
+        return -1;
+    }
+    /* Read-only. */
+    if (vibeos_fs_write_file(&mnt, "/x", "y", 1u) >= 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_iso_list(void) {
+    vibeos_iso9660_t fs;
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    vibeos_fsmount_t mnt;
+    char name[VIBEOS_FS_NAME_MAX];
+    uint64_t size = 0;
+    int is_dir = 0;
+
+    if (iso_mount(&fs, &bc, &dev) != 0 ||
+        vibeos_fs_mount(&mnt, vibeos_iso9660_ops(), &fs, "iso9660") != 0) {
+        return -1;
+    }
+    /* "." and ".." are skipped, and the version suffix is not reported - a
+     * name a caller cannot hand back to open() is not a useful answer. */
+    if (vibeos_fs_list(&mnt, "/", 0, name, sizeof(name), &size, &is_dir) != 0 ||
+        strcmp(name, "README.TXT") != 0 || is_dir || size != 300u) {
+        return -1;
+    }
+    if (vibeos_fs_list(&mnt, "/", 1, name, sizeof(name), &size, &is_dir) != 0 ||
+        strcmp(name, "NOEXT") != 0) {
+        return -1;
+    }
+    if (vibeos_fs_list(&mnt, "/", 2, name, sizeof(name), &size, &is_dir) != 0 ||
+        strcmp(name, "SUB") != 0 || !is_dir) {
+        return -1;
+    }
+    if (vibeos_fs_list(&mnt, "/", 3, name, sizeof(name), &size, &is_dir) == 0) {
+        return -1;
+    }
+    if (vibeos_fs_list(&mnt, "/sub", 0, name, sizeof(name), &size, &is_dir) != 0 ||
+        strcmp(name, "INNER.BIN") != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_iso_refusals(void) {
+    vibeos_iso9660_t fs;
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+
+    /* No CD001: not an ISO9660 volume. */
+    if (iso_mount(&fs, &bc, &dev) != 0) {
+        return -1;
+    }
+    iso_sec(VIBEOS_ISO_PVD_SECTOR)[2] = 'X';
+    vibeos_blockcache_invalidate(&bc);
+    if (vibeos_iso9660_mount(&fs, &bc, 0) == 0) {
+        return -1;
+    }
+
+    /* Wrong descriptor type in the right place. */
+    iso_build();
+    iso_sec(VIBEOS_ISO_PVD_SECTOR)[0] = 2u;
+    vibeos_blockcache_invalidate(&bc);
+    if (vibeos_iso9660_mount(&fs, &bc, 0) == 0) {
+        return -1;
+    }
+
+    /* A logical block size this driver does not handle. */
+    iso_build();
+    iso_w32both(iso_sec(VIBEOS_ISO_PVD_SECTOR) + 128, 512u);
+    vibeos_blockcache_invalidate(&bc);
+    if (vibeos_iso9660_mount(&fs, &bc, 0) == 0) {
+        return -1;
+    }
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
 #define RUN_TEST(fn) do { if ((fn)() != 0) { failures++; printf("FAIL:%s\n", #fn); } } while (0)
@@ -6546,6 +6792,9 @@ int main(void) {
     RUN_TEST(test_ext2_read);
     RUN_TEST(test_ext2_list);
     RUN_TEST(test_ext2_refusals);
+    RUN_TEST(test_iso_lookup_and_read);
+    RUN_TEST(test_iso_list);
+    RUN_TEST(test_iso_refusals);
     RUN_TEST(test_scheduler);
     RUN_TEST(test_scheduler_balanced);
     RUN_TEST(test_scheduler_wait_runtime);
