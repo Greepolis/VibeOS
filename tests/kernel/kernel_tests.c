@@ -24,6 +24,7 @@
 #include "vibeos/iso9660.h"
 #include "vibeos/exfat.h"
 #include "vibeos/ntfs.h"
+#include "vibeos/journal.h"
 #include "vibeos/tls.h"
 #include "vibeos/trap.h"
 #include "vibeos/user_api.h"
@@ -5818,6 +5819,7 @@ static void bct_setup(vibeos_blockcache_t *bc, vibeos_blockdev_t *dev, int writa
     for (i = 0; i < BCT_SLOTS; i++) {
         g_bct_slots[i].data = g_bct_storage[i];
     }
+    memset(dev, 0, sizeof(*dev));
     dev->read = bct_read;
     dev->write = writable ? bct_write : 0;
     dev->ctx = &g_bct;
@@ -6318,6 +6320,7 @@ static int e2_mount(vibeos_ext2_t *fs, vibeos_blockcache_t *bc,
     for (i = 0; i < E2_SLOTS; i++) {
         g_e2_slots[i].data = g_e2_cache_mem[i];
     }
+    memset(dev, 0, sizeof(*dev));
     dev->read = e2_dev_read;
     dev->write = 0;
     dev->ctx = 0;
@@ -6640,6 +6643,7 @@ static int iso_mount(vibeos_iso9660_t *fs, vibeos_blockcache_t *bc,
     for (i = 0; i < ISO_SLOTS; i++) {
         g_iso_slots[i].data = g_iso_cache_mem[i];
     }
+    memset(dev, 0, sizeof(*dev));
     dev->read = iso_dev_read;
     dev->write = 0;
     dev->ctx = 0;
@@ -6919,6 +6923,7 @@ static int xf_mount(vibeos_exfat_t *fs, vibeos_blockcache_t *bc,
     for (i = 0; i < XF_SLOTS; i++) {
         g_xf_slots[i].data = g_xf_cache_mem[i];
     }
+    memset(dev, 0, sizeof(*dev));
     dev->read = xf_dev_read;
     dev->write = 0;
     dev->ctx = 0;
@@ -7331,6 +7336,7 @@ static int nt_mount(vibeos_ntfs_t *fs, vibeos_blockcache_t *bc,
     for (i = 0; i < NT_SLOTS; i++) {
         g_nt_slots[i].data = g_nt_cache_mem[i];
     }
+    memset(dev, 0, sizeof(*dev));
     dev->read = nt_dev_read;
     dev->write = 0;
     dev->ctx = 0;
@@ -7528,6 +7534,542 @@ static int test_ntfs_refusals(void) {
     return 0;
 }
 
+/* ---------------------------------------------------------------- journal --
+ * The claim being tested is not "the journal writes a journal", it is that a
+ * machine losing power part way through an update comes back holding either
+ * the old contents or the new ones, and never a mixture. So the device below
+ * can be told to stop accepting writes after exactly N of them, and the test
+ * walks N across every write the transaction performs.
+ */
+
+#define JT_SECTORS 64u
+#define JT_JOURNAL_BASE 32u
+#define JT_JOURNAL_BLOCKS 8u
+#define JT_TARGETS 3u
+
+/* A drive with a volatile cache of its own, which is what real ones have.
+ * A write is acknowledged immediately but sits in `pending` until a flush;
+ * only then does it reach `platter`, and the flush applies the pending writes
+ * in an order the test chooses rather than the order they were issued. That
+ * second part matters more than it looks: a journal that survives a power cut
+ * only because the cache happened to write its blocks in a helpful order has
+ * not been shown to survive anything. */
+#define JT_PENDING_MAX 32u
+
+static uint8_t g_jt_platter[JT_SECTORS][VIBEOS_BLOCK_SIZE];
+static uint64_t g_jt_pending_lba[JT_PENDING_MAX];
+static uint8_t g_jt_pending_data[JT_PENDING_MAX][VIBEOS_BLOCK_SIZE];
+static uint32_t g_jt_pending;
+static uint32_t g_jt_landed;      /* writes that reached the platter */
+static uint32_t g_jt_power_off;   /* let this many land, then the power goes */
+static uint32_t g_jt_order;       /* which flush order to use */
+
+static int jt_read(void *ctx, uint64_t lba, void *buf)
+{
+    uint32_t i;
+
+    (void)ctx;
+    if (lba >= JT_SECTORS) {
+        return -1;
+    }
+    /* The drive answers from its own cache, so a block written but not yet
+     * flushed still reads back as the new contents. */
+    for (i = g_jt_pending; i > 0u; i--) {
+        if (g_jt_pending_lba[i - 1u] == lba) {
+            memcpy(buf, g_jt_pending_data[i - 1u], VIBEOS_BLOCK_SIZE);
+            return 0;
+        }
+    }
+    memcpy(buf, g_jt_platter[lba], VIBEOS_BLOCK_SIZE);
+    return 0;
+}
+
+static int jt_write(void *ctx, uint64_t lba, const void *buf)
+{
+    (void)ctx;
+    if (lba >= JT_SECTORS || g_jt_pending >= JT_PENDING_MAX) {
+        return -1;
+    }
+    g_jt_pending_lba[g_jt_pending] = lba;
+    memcpy(g_jt_pending_data[g_jt_pending], buf, VIBEOS_BLOCK_SIZE);
+    g_jt_pending++;
+    return 0;
+}
+
+static int jt_flush(void *ctx)
+{
+    uint32_t n = g_jt_pending;
+    uint32_t k;
+
+    (void)ctx;
+    for (k = 0; k < n; k++) {
+        uint32_t i = (n == 0u) ? 0u : (k + g_jt_order) % n;
+
+        if (g_jt_landed >= g_jt_power_off) {
+            /* The power went during the flush. Whatever has not landed is
+             * gone, and so is everything the drive still held. */
+            g_jt_pending = 0;
+            return -1;
+        }
+        memcpy(g_jt_platter[g_jt_pending_lba[i]], g_jt_pending_data[i],
+               VIBEOS_BLOCK_SIZE);
+        g_jt_landed++;
+    }
+    g_jt_pending = 0;
+    return 0;
+}
+
+/* The lights come back: the drive's cache did not survive. */
+static void jt_power_restore(void)
+{
+    g_jt_pending = 0;
+    g_jt_power_off = 0xFFFFFFFFu;
+}
+
+static const uint64_t g_jt_target_lba[JT_TARGETS] = { 4u, 9u, 17u };
+
+/* The volume starts with 'O' in every target and the transaction puts 'N'
+ * there. Two states are acceptable afterwards and nothing else is. */
+static void jt_reset(void)
+{
+    uint32_t i;
+
+    memset(g_jt_platter, 0, sizeof(g_jt_platter));
+    for (i = 0; i < JT_TARGETS; i++) {
+        memset(g_jt_platter[g_jt_target_lba[i]], 'O', VIBEOS_BLOCK_SIZE);
+    }
+    g_jt_pending = 0;
+    g_jt_landed = 0;
+    g_jt_power_off = 0xFFFFFFFFu;
+}
+
+static void jt_attach(vibeos_blockdev_t *dev, vibeos_blockcache_t *bc,
+                      vibeos_block_slot_t *slots, uint8_t *storage,
+                      uint32_t slot_count)
+{
+    uint32_t i;
+
+    memset(dev, 0, sizeof(*dev));
+    dev->read = jt_read;
+    dev->write = jt_write;
+    dev->flush = jt_flush;
+    dev->ctx = 0;
+    dev->sectors = JT_SECTORS;
+    for (i = 0; i < slot_count; i++) {
+        slots[i].data = storage + (size_t)i * VIBEOS_BLOCK_SIZE;
+    }
+    vibeos_blockcache_init(bc, dev, slots, slot_count);
+}
+
+/* 0 = all targets old, 1 = all targets new, -1 = a mixture, which is the
+ * failure this whole layer exists to prevent. */
+static int jt_volume_state(void)
+{
+    uint32_t i;
+    uint32_t j;
+    int old_count = 0;
+    int new_count = 0;
+
+    for (i = 0; i < JT_TARGETS; i++) {
+        const uint8_t *b = g_jt_platter[g_jt_target_lba[i]];
+        int all_old = 1;
+        int all_new = 1;
+
+        for (j = 0; j < VIBEOS_BLOCK_SIZE; j++) {
+            if (b[j] != 'O') {
+                all_old = 0;
+            }
+            if (b[j] != 'N') {
+                all_new = 0;
+            }
+        }
+        if (all_old) {
+            old_count++;
+        } else if (all_new) {
+            new_count++;
+        } else {
+            return -1;   /* one block half updated */
+        }
+    }
+    if (old_count == (int)JT_TARGETS) {
+        return 0;
+    }
+    if (new_count == (int)JT_TARGETS) {
+        return 1;
+    }
+    return -1;
+}
+
+static int jt_run_transaction_on(const uint64_t *lbas)
+{
+    vibeos_blockdev_t dev;
+    vibeos_blockcache_t bc;
+    vibeos_block_slot_t slots[8];
+    static uint8_t storage[8][VIBEOS_BLOCK_SIZE];
+    vibeos_journal_t j;
+    uint64_t targets[JT_JOURNAL_BLOCKS];
+    static uint8_t staging[JT_JOURNAL_BLOCKS][VIBEOS_BLOCK_SIZE];
+    uint8_t block[VIBEOS_BLOCK_SIZE];
+    uint32_t i;
+
+    jt_attach(&dev, &bc, slots, &storage[0][0], 8u);
+    if (vibeos_journal_init(&j, &bc, JT_JOURNAL_BASE, JT_JOURNAL_BLOCKS,
+                            targets, &staging[0][0]) != 0) {
+        return -1;
+    }
+    if (vibeos_journal_begin(&j) != 0) {
+        return -1;
+    }
+    memset(block, 'N', sizeof(block));
+    for (i = 0; i < JT_TARGETS; i++) {
+        if (vibeos_journal_stage(&j, lbas[i], block) != 0) {
+            return -1;
+        }
+    }
+    return vibeos_journal_commit(&j);
+}
+
+static int jt_run_transaction(void)
+{
+    return jt_run_transaction_on(g_jt_target_lba);
+}
+
+/* Mount after the lights come back: recovery decides what the volume holds. */
+static int jt_recover(void)
+{
+    vibeos_blockdev_t dev;
+    vibeos_blockcache_t bc;
+    vibeos_block_slot_t slots[8];
+    static uint8_t storage[8][VIBEOS_BLOCK_SIZE];
+    vibeos_journal_t j;
+    uint64_t targets[JT_JOURNAL_BLOCKS];
+    static uint8_t staging[JT_JOURNAL_BLOCKS][VIBEOS_BLOCK_SIZE];
+
+    jt_attach(&dev, &bc, slots, &storage[0][0], 8u);
+    return vibeos_journal_init(&j, &bc, JT_JOURNAL_BASE, JT_JOURNAL_BLOCKS,
+                               targets, &staging[0][0]);
+}
+
+static int test_journal_commit(void)
+{
+    jt_reset();
+    if (jt_run_transaction() != 0) {
+        return -1;
+    }
+    if (jt_volume_state() != 1) {
+        return -1;
+    }
+    /* The region must not still claim a transaction is in flight, or every
+     * later mount would replay this one over whatever came after it. */
+    if (g_jt_platter[JT_JOURNAL_BASE][0] != 0u) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_journal_power_cut(void)
+{
+    uint32_t total;
+    uint32_t cut;
+    uint32_t order;
+    int saw_old = 0;
+    int saw_new = 0;
+
+    /* How many blocks a clean transaction lands. Cutting the power at each of
+     * them in turn, under each flush order, is the sweep. */
+    jt_reset();
+    if (jt_run_transaction() != 0) {
+        return -1;
+    }
+    total = g_jt_landed;
+    if (total < 4u) {
+        return -1;   /* too few to be exercising the phases at all */
+    }
+
+    for (order = 0; order < 6u; order++) {
+        for (cut = 0; cut <= total; cut++) {
+            int state;
+
+            jt_reset();
+            g_jt_order = order;
+            g_jt_power_off = cut;
+            (void)jt_run_transaction();   /* expected to fail for most cuts */
+
+            jt_power_restore();
+            if (jt_recover() != 0) {
+                return -1;
+            }
+
+            state = jt_volume_state();
+            if (state < 0) {
+                return -1;   /* a mixture: the property is broken */
+            }
+            if (state == 0) {
+                saw_old = 1;
+            } else {
+                saw_new = 1;
+            }
+
+            /* Recovery must also leave the region retired, so that mounting
+             * twice does not replay a transaction already checkpointed. */
+            if (g_jt_platter[JT_JOURNAL_BASE][0] != 0u) {
+                return -1;
+            }
+            /* And a second mount must not change its mind. */
+            if (jt_recover() != 0 || jt_volume_state() != state) {
+                return -1;
+            }
+        }
+    }
+    g_jt_order = 0;
+
+    /* If every cut produced the same answer the sweep proved nothing about
+     * the commit point - either it never got far enough to commit, or it
+     * committed before writing anything. */
+    if (!saw_old || !saw_new) {
+        return -1;
+    }
+    return 0;
+}
+
+/* A commit record left behind by an earlier transaction, sitting where the
+ * current one's would go. Its data happens to match, so only the sequence
+ * number distinguishes it - and the transaction it belongs to is finished,
+ * which makes replaying it a change nobody asked for. */
+static int test_journal_stale_commit(void)
+{
+    static const uint64_t others[JT_TARGETS] = { 5u, 11u, 19u };
+    uint8_t old_commit[VIBEOS_BLOCK_SIZE];
+    uint32_t cut;
+    uint32_t i;
+    int staged = 0;
+
+    jt_reset();
+    if (jt_run_transaction() != 0) {
+        return -1;
+    }
+    /* Keep the finished transaction's commit record. Retiring the region only
+     * clears the descriptor, so on a real volume this block is still lying
+     * there when the next transaction writes its own descriptor over the old
+     * one - and it carries the same sequence number, because the counter
+     * restarts at every mount. */
+    memcpy(old_commit, g_jt_platter[JT_JOURNAL_BASE + 1u + JT_TARGETS],
+           VIBEOS_BLOCK_SIZE);
+
+    /* A second transaction, over different blocks with identical contents, cut
+     * after its descriptor and data are durable but before its own commit
+     * record lands. */
+    for (cut = 1u; cut < 24u; cut++) {
+        jt_power_restore();
+        g_jt_landed = 0;
+        memset(g_jt_platter[JT_JOURNAL_BASE], 0, VIBEOS_BLOCK_SIZE);
+        memcpy(g_jt_platter[JT_JOURNAL_BASE + 1u + JT_TARGETS], old_commit,
+               VIBEOS_BLOCK_SIZE);
+        for (i = 0; i < JT_TARGETS; i++) {
+            memset(g_jt_platter[others[i]], 'O', VIBEOS_BLOCK_SIZE);
+        }
+
+        g_jt_power_off = cut;
+        (void)jt_run_transaction_on(others);
+        jt_power_restore();
+
+        if (g_jt_platter[JT_JOURNAL_BASE][0] == 0x56u &&
+            g_jt_platter[JT_JOURNAL_BASE + 1u + JT_TARGETS][0] == 0x56u &&
+            g_jt_platter[others[0]][0] == 'O') {
+            staged = 1;
+            break;
+        }
+    }
+    if (!staged) {
+        return -1;   /* never reached the state this test is about */
+    }
+
+    if (jt_recover() != 0) {
+        return -1;
+    }
+    for (i = 0; i < JT_TARGETS; i++) {
+        if (g_jt_platter[others[i]][0] != 'O') {
+            return -1;   /* an uncommitted transaction was replayed */
+        }
+    }
+    return 0;
+}
+
+/* A commit record whose every field is right except the four bytes that say
+ * it is one. The region is reused by transactions of different sizes, so the
+ * block a short transaction's commit record lands on is where a longer one
+ * kept file data - and that data must not be mistaken for a commit. */
+static int test_journal_commit_magic(void)
+{
+    uint8_t good_commit[VIBEOS_BLOCK_SIZE];
+    uint32_t cut;
+    uint32_t i;
+    int staged = 0;
+
+    /* A transaction that runs to the end produces the commit record belonging
+     * to this exact descriptor; keep it. */
+    jt_reset();
+    if (jt_run_transaction() != 0) {
+        return -1;
+    }
+    memcpy(good_commit, g_jt_platter[JT_JOURNAL_BASE + 1u + JT_TARGETS],
+           VIBEOS_BLOCK_SIZE);
+
+    /* Now stop the same transaction before its commit record lands. */
+    for (cut = 1u; cut < 24u; cut++) {
+        jt_reset();
+        g_jt_power_off = cut;
+        (void)jt_run_transaction();
+        jt_power_restore();
+        /* The descriptor and every staged block must be on the platter, so
+         * that nothing but the commit record is missing - otherwise the
+         * checksum would be what rejects the transaction and this test would
+         * be about the checksum instead. */
+        if (g_jt_platter[JT_JOURNAL_BASE][0] == 0x56u &&
+            jt_volume_state() == 0) {
+            int complete = 1;
+
+            for (i = 0; i < JT_TARGETS; i++) {
+                if (g_jt_platter[JT_JOURNAL_BASE + 1u + i][0] != 'N') {
+                    complete = 0;
+                }
+            }
+            if (complete) {
+                staged = 1;
+                break;
+            }
+        }
+    }
+    if (!staged) {
+        return -1;
+    }
+
+    memcpy(g_jt_platter[JT_JOURNAL_BASE + 1u + JT_TARGETS], good_commit,
+           VIBEOS_BLOCK_SIZE);
+    g_jt_platter[JT_JOURNAL_BASE + 1u + JT_TARGETS][0] ^= 0xFFu;
+
+    if (jt_recover() != 0) {
+        return -1;
+    }
+    for (i = 0; i < JT_TARGETS; i++) {
+        if (g_jt_platter[g_jt_target_lba[i]][0] != 'O') {
+            return -1;   /* replayed a transaction that never committed */
+        }
+    }
+    return 0;
+}
+
+/* A descriptor claiming more targets than the region could ever hold. It was
+ * never committed, so the only correct response is to drop it - but a reader
+ * that believes the count walks off the end of the region first. */
+static int test_journal_absurd_count(void)
+{
+    uint8_t desc[VIBEOS_BLOCK_SIZE];
+
+    jt_reset();
+    memset(desc, 0, sizeof(desc));
+    desc[0] = 0x56u; desc[1] = 0x42u; desc[2] = 0x4Au; desc[3] = 0x31u;
+    desc[4] = 0xFFu; desc[5] = 0xFFu;   /* count far beyond the region */
+    memcpy(g_jt_platter[JT_JOURNAL_BASE], desc, sizeof(desc));
+
+    if (jt_recover() != 0) {
+        return -1;
+    }
+    if (jt_volume_state() != 0) {
+        return -1;
+    }
+    if (g_jt_platter[JT_JOURNAL_BASE][0] != 0u) {
+        return -1;   /* the bad descriptor is still there for the next mount */
+    }
+    return 0;
+}
+
+static int test_journal_refusals(void)
+{
+    vibeos_blockdev_t dev;
+    vibeos_blockcache_t bc;
+    vibeos_block_slot_t slots[8];
+    static uint8_t storage[8][VIBEOS_BLOCK_SIZE];
+    vibeos_journal_t j;
+    uint64_t targets[JT_JOURNAL_BLOCKS];
+    static uint8_t staging[JT_JOURNAL_BLOCKS][VIBEOS_BLOCK_SIZE];
+    uint8_t block[VIBEOS_BLOCK_SIZE];
+    uint32_t i;
+
+    jt_reset();
+    jt_attach(&dev, &bc, slots, &storage[0][0], 8u);
+
+    /* A region with no room for a single target is not a small journal, it is
+     * an unusable one. */
+    if (vibeos_journal_init(&j, &bc, JT_JOURNAL_BASE, 2u, targets,
+                            &staging[0][0]) == 0) {
+        return -1;
+    }
+    if (vibeos_journal_init(&j, &bc, JT_JOURNAL_BASE, JT_JOURNAL_BLOCKS,
+                            targets, &staging[0][0]) != 0) {
+        return -1;
+    }
+    /* Staging outside a transaction has nowhere to go. */
+    memset(block, 'N', sizeof(block));
+    if (vibeos_journal_stage(&j, 4u, block) == 0) {
+        return -1;
+    }
+    if (vibeos_journal_commit(&j) == 0) {
+        return -1;
+    }
+    if (vibeos_journal_begin(&j) != 0 || vibeos_journal_begin(&j) == 0) {
+        return -1;
+    }
+    /* More targets than the region holds must be refused while nothing has
+     * been written, not discovered half way through the commit. */
+    for (i = 0; i < j.max_targets; i++) {
+        if (vibeos_journal_stage(&j, 100u + i, block) != 0) {
+            return -1;
+        }
+    }
+    if (vibeos_journal_stage(&j, 999u, block) == 0) {
+        return -1;
+    }
+    /* Re-staging one that is already there is not a new target, so it must
+     * still be accepted at the limit. */
+    if (vibeos_journal_stage(&j, 100u, block) != 0) {
+        return -1;
+    }
+    vibeos_journal_abort(&j);
+    if (jt_volume_state() != 0) {
+        return -1;   /* an aborted transaction touched the volume */
+    }
+
+    /* A commit record whose data no longer matches it. Stop the machine at
+     * the first cut that leaves a committed transaction not yet checkpointed,
+     * then damage a block inside the region. Recovery must discard the whole
+     * transaction rather than checkpoint bytes it cannot vouch for. */
+    for (i = 0; i < 64u; i++) {
+        jt_reset();
+        jt_power_restore();
+        g_jt_power_off = i;
+        (void)jt_run_transaction();
+        jt_power_restore();
+        if (g_jt_platter[JT_JOURNAL_BASE][0] == 0x56u &&
+            g_jt_platter[JT_JOURNAL_BASE + 1u + JT_TARGETS][0] == 0x56u &&
+            jt_volume_state() == 0) {
+            break;
+        }
+    }
+    if (i == 64u) {
+        return -1;   /* no such moment: the sweep below would prove nothing */
+    }
+    g_jt_platter[JT_JOURNAL_BASE + 1u][7] ^= 0xFFu;
+    jt_power_restore();
+    if (jt_recover() != 0) {
+        return -1;
+    }
+    if (jt_volume_state() != 0) {
+        return -1;   /* damaged data was checkpointed anyway */
+    }
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
 #define RUN_TEST(fn) do { if ((fn)() != 0) { failures++; printf("FAIL:%s\n", #fn); } } while (0)
@@ -7553,6 +8095,12 @@ int main(void) {
     RUN_TEST(test_ntfs_mount_and_read);
     RUN_TEST(test_ntfs_list);
     RUN_TEST(test_ntfs_refusals);
+    RUN_TEST(test_journal_commit);
+    RUN_TEST(test_journal_power_cut);
+    RUN_TEST(test_journal_stale_commit);
+    RUN_TEST(test_journal_commit_magic);
+    RUN_TEST(test_journal_absurd_count);
+    RUN_TEST(test_journal_refusals);
     RUN_TEST(test_scheduler);
     RUN_TEST(test_scheduler_balanced);
     RUN_TEST(test_scheduler_wait_runtime);

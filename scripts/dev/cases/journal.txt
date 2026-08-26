@@ -1,0 +1,87 @@
+### targets not durable before the descriptor is retired
+--- old
+    /* The targets must be durable before the descriptor is retired, or a crash
+     * here would leave a volume that is half updated and no longer has a
+     * record saying so. */
+    return journal_flush(j);
++++ new
+    return 0;
+
+### commit record magic not checked
+--- old
+    if (rd32(commit) != JOURNAL_COMMIT_MAGIC ||
++++ new
+    if (0 ||
+
+### commit record not tied to the descriptor it commits
+--- old
+        rd64(commit + 8) != rd64(desc + 8) ||
+        rd32(commit + 20) != journal_sum(0xFFFFFFFFu, desc, VIBEOS_BLOCK_SIZE)) {
++++ new
+        rd64(commit + 8) != rd64(desc + 8)) {
+
+### staged data not checksummed at recovery
+--- old
+    if (sum != rd32(commit + 16)) {
+        return journal_retire(j);
+    }
++++ new
+
+### descriptor count not validated
+--- old
+    if (count == 0u || count > j->max_targets) {
++++ new
+    if (0) {
+
+### transaction not capped at the region size
+--- old
+    if (j->staged >= j->max_targets) {
+        return -1;
+    }
++++ new
+
+### restaging one target recorded as a second target
+--- old
+    for (i = 0; i < j->staged; i++) {
+        if (j->targets[i] == lba) {
+            memcpy(j->staging + (size_t)i * VIBEOS_BLOCK_SIZE, buf,
+                   VIBEOS_BLOCK_SIZE);
+            return 0;
+        }
+    }
++++ new
+
+### region retired before it is checkpointed
+--- old
+    if (journal_checkpoint(j, desc, j->staged) != 0) {
+        j->open = 0;
+        return -1;
+    }
+
+    j->commits++;
+    j->open = 0;
+    j->staged = 0;
+    return journal_retire(j);
++++ new
+    if (journal_retire(j) != 0) {
+        j->open = 0;
+        return -1;
+    }
+
+    j->commits++;
+    j->open = 0;
+    j->staged = 0;
+    return journal_checkpoint(j, desc, j->staged);
+
+### staging outside a transaction accepted
+--- old
+    if (j == 0 || !j->open || buf == 0) {
++++ new
+    if (j == 0 || buf == 0) {
+
+### a region too small to hold a target accepted
+--- old
+    if (capacity <= VIBEOS_JOURNAL_OVERHEAD) {
+        return -1;   /* no room for even one target */
+    }
++++ new

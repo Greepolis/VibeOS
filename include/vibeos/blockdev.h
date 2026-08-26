@@ -31,10 +31,17 @@
 /* Return 0 on success, non-zero on failure. `ctx` is the driver's own. */
 typedef int (*vibeos_blockdev_read_fn)(void *ctx, uint64_t lba, void *buf);
 typedef int (*vibeos_blockdev_write_fn)(void *ctx, uint64_t lba, const void *buf);
+/* Make everything already written durable. A real drive acknowledges a write
+ * as soon as it reaches its own volatile cache, so a write-back cache above it
+ * that never issues this is ordering blocks it has no ability to order: after
+ * a power cut the drive may have kept the last write and dropped an earlier
+ * one. Everything the journal claims rests on this call existing. */
+typedef int (*vibeos_blockdev_flush_fn)(void *ctx);
 
 typedef struct {
     vibeos_blockdev_read_fn read;
     vibeos_blockdev_write_fn write;   /* may be NULL: a read-only device */
+    vibeos_blockdev_flush_fn flush;   /* may be NULL: no volatile cache */
     void *ctx;
     uint64_t sectors;                 /* 0 when the size is unknown */
 } vibeos_blockdev_t;
@@ -76,7 +83,11 @@ int vibeos_blockcache_write(vibeos_blockcache_t *bc, uint64_t lba, const void *b
 
 /* Write every dirty block out. Returns 0 only if all of them succeeded: a
  * partial flush that reported success would be worse than no flush at all,
- * because a journal would then trust an ordering that did not happen. */
+ * because a journal would then trust an ordering that did not happen.
+ *
+ * This is also where the device is told to empty its own cache, so a caller
+ * that returns from here has a real barrier and not merely an empty slot
+ * table. */
 int vibeos_blockcache_flush(vibeos_blockcache_t *bc);
 
 /* Forget everything, dirty blocks included. For a volume being unmounted after

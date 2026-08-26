@@ -171,6 +171,12 @@ int vibeos_blockcache_flush(vibeos_blockcache_t *bc) {
             rc = -1;
         }
     }
+    /* Handing the blocks to the device is not the same as the device having
+     * kept them. Skipping this when a write failed would report a barrier the
+     * caller did not get. */
+    if (bc->dev->flush != 0 && bc->dev->flush(bc->dev->ctx) != 0) {
+        rc = -1;
+    }
     return rc;
 }
 
