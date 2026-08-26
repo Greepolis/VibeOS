@@ -38,6 +38,48 @@ function Test-IsCMakeBuildDirectory {
     return (Test-Path -LiteralPath $cachePath)
 }
 
+function Get-CMakeCacheValue {
+    param(
+        [string]$Dir,
+        [string]$Key
+    )
+    $cachePath = Join-Path $Dir "CMakeCache.txt"
+    if (-not (Test-Path -LiteralPath $cachePath)) {
+        return $null
+    }
+    $line = Get-Content -LiteralPath $cachePath -ErrorAction SilentlyContinue |
+        Where-Object { $_ -match ("^" + [regex]::Escape($Key) + ":") } |
+        Select-Object -First 1
+    if ($line -and $line -match "^[^=]+=([^#]*)") {
+        return $Matches[1].Trim()
+    }
+    return $null
+}
+
+function Test-CMakeBuildDirectoryCompatible {
+    param(
+        [string]$Dir,
+        [string]$RequestedGenerator
+    )
+    if (-not (Test-IsCMakeBuildDirectory -Dir $Dir)) {
+        return $false
+    }
+    $cachedGenerator = Get-CMakeCacheValue -Dir $Dir -Key "CMAKE_GENERATOR"
+    if ($cachedGenerator -and $cachedGenerator -ne $RequestedGenerator) {
+        throw ("INFRA_CMAKE_BUILD_DIR_GENERATOR_MISMATCH: build directory '{0}' uses '{1}', requested '{2}'; choose a new BuildDir" -f $Dir, $cachedGenerator, $RequestedGenerator)
+    }
+    $cachedSystem = Get-CMakeCacheValue -Dir $Dir -Key "CMAKE_HOST_SYSTEM_NAME"
+    if ($cachedSystem -and $cachedSystem -ne $env:OS) {
+        # CMAKE_HOST_SYSTEM_NAME is normally Windows/Linux. $env:OS is Windows_NT
+        # on Windows, so only reject an unmistakable Unix cache here; this avoids
+        # destroying a valid tree while still explaining cross-platform reuse.
+        if ($IsWindows -and $cachedSystem -match "Linux|Darwin") {
+            throw ("INFRA_CMAKE_BUILD_DIR_PLATFORM_MISMATCH: build directory '{0}' was configured for '{1}' and cannot be reused from Windows; choose a new BuildDir" -f $Dir, $cachedSystem)
+        }
+    }
+    return $true
+}
+
 function Test-CMakeGeneratorAvailable {
     param(
         [string]$Name
@@ -203,7 +245,7 @@ try {
 
     # Step 1: Configure and build via CMake
     try {
-        if (-not (Test-IsCMakeBuildDirectory -Dir $BuildDir)) {
+        if (-not (Test-CMakeBuildDirectoryCompatible -Dir $BuildDir -RequestedGenerator $Generator)) {
             if (Test-Path -LiteralPath $BuildDir) {
                 Write-Host ("[BUILD] Build directory '{0}' is not a CMake build tree; reconfiguring in-place" -f $BuildDir)
             } else {
