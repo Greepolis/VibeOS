@@ -394,6 +394,7 @@ extern void vibeos_x86_64_virtio_net_stats(uint64_t *out_tx, uint64_t *out_rx);
 
 extern int vibeos_x86_64_virtio_blk_init(void);
 extern int vibeos_x86_64_virtio_blk_read(uint64_t sector, void *buf);
+#include "vibeos/log.h"
 #include "vibeos/vfs.h"
 
 /* The one mounted volume. Everything below reaches the filesystem through
@@ -544,6 +545,89 @@ static const char *hw_action_name(vibeos_trap_action_t action) {
     }
 }
 
+/* ---- the kernel log ------------------------------------------------------
+ *
+ * There has been a structured log with levels in kernel/core/log.c since early
+ * on, and the running kernel never used it: the trap dispatcher was handed a
+ * null pointer for it, and everything that mattered was printed with bare
+ * serial_puts calls carrying no level at all. So there was no way to ask for
+ * more detail, no way to ask for less, and nothing at all to show after a
+ * machine went quiet.
+ *
+ * Two things are wanted from a log here and they pull in opposite directions.
+ * A failure in CI should print the last thing that happened, which argues for
+ * writing everything to the serial line. But the serial line is slow enough
+ * under emulation to change the timing of the bug being hunted, and this
+ * kernel has an intermittent wedge that is plainly timing-sensitive. So events
+ * are always recorded into a ring in memory, which costs a memcpy, and only
+ * those at or above a threshold are also written out. When the machine dies,
+ * the ring is dumped - including everything that was too quiet to print at the
+ * time, which is usually the part worth reading. */
+
+static vibeos_log_t g_kernel_log;
+static uint32_t g_log_serial_level = VIBEOS_LOG_INFO;
+
+static void hw_log_emit(const vibeos_log_event_t *ev) {
+    vibeos_x86_64_serial_puts("[LOG][");
+    vibeos_x86_64_serial_puts(vibeos_log_level_name((vibeos_log_level_t)ev->level));
+    vibeos_x86_64_serial_puts("] ");
+    vibeos_x86_64_serial_puts(ev->message);
+    if (ev->code != 0u || ev->arg0 != 0u || ev->arg1 != 0u) {
+        vibeos_x86_64_serial_puts(" code=0x");
+        vibeos_x86_64_serial_print_hex(ev->code);
+        vibeos_x86_64_serial_puts(" a0=0x");
+        vibeos_x86_64_serial_print_hex(ev->arg0);
+        vibeos_x86_64_serial_puts(" a1=0x");
+        vibeos_x86_64_serial_print_hex(ev->arg1);
+    }
+    vibeos_x86_64_serial_puts("\n");
+}
+
+static void hw_log(vibeos_log_level_t level, uint32_t code, uint64_t a0,
+                   uint64_t a1, const char *message) {
+    vibeos_log_event_t ev;
+
+    (void)vibeos_log_record(&g_kernel_log, level, code, a0, a1, message);
+    if ((uint32_t)level < g_log_serial_level) {
+        return;   /* recorded, not printed: it is still there after a panic */
+    }
+    if (vibeos_log_latest(&g_kernel_log, &ev) == 0) {
+        hw_log_emit(&ev);
+    }
+}
+
+/* Everything the ring still holds, oldest first. Called when the machine is
+ * about to stop, which is the only moment the quiet events are worth their
+ * transmission time. */
+static void hw_log_dump(void) {
+    uint32_t count = 0;
+    uint32_t dropped = 0;
+    uint32_t i;
+
+    if (vibeos_log_count(&g_kernel_log, &count) != 0) {
+        return;
+    }
+    (void)vibeos_log_dropped(&g_kernel_log, &dropped);
+
+    vibeos_x86_64_serial_puts("[LOG] dump count=0x");
+    vibeos_x86_64_serial_print_hex(count);
+    vibeos_x86_64_serial_puts(" dropped=0x");
+    vibeos_x86_64_serial_print_hex(dropped);
+    vibeos_x86_64_serial_puts("\n");
+
+    for (i = 0; i < count; i++) {
+        vibeos_log_event_t ev;
+
+        if (vibeos_log_get(&g_kernel_log, i, &ev) != 0) {
+            continue;
+        }
+        vibeos_x86_64_serial_puts("[LOG] #");
+        vibeos_x86_64_serial_print_hex(ev.seq);
+        vibeos_x86_64_serial_puts(" ");
+        hw_log_emit(&ev);
+    }
+}
+
 /* Walk the saved frame pointers and print the return addresses.
  *
  * A panic used to say what went wrong and nothing about how the machine got
@@ -623,6 +707,7 @@ static void hw_panic(const char *why) {
     vibeos_x86_64_serial_puts(why);
     vibeos_x86_64_serial_puts(", halting\n");
     hw_backtrace(rbp, rip);
+    hw_log_dump();
     for (;;) {
         __asm__ __volatile__("cli; hlt");
     }
@@ -737,7 +822,8 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
     tf.fault_address = fault_address;
     tf.vector = (uint32_t)frame->vector;
 
-    if (vibeos_trap_dispatch_ex(&g_arch_trap_state, &tf, 0, 0, &decision) != 0) {
+    if (vibeos_trap_dispatch_ex(&g_arch_trap_state, &tf, &g_kernel_log,
+                                0, &decision) != 0) {
         hw_panic("trap dispatch failed");
     }
 
@@ -4025,6 +4111,14 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
         /* Which of the two it was matters: a file that cannot be read and a
          * file that reads but does not parse are different bugs, and the shell
          * prints the same "cannot exec" for both. */
+        /* DEBUG, not ERROR. A shell resolving a bare command name tries it as
+         * a path first, and a C runtime asks for /proc/self/exe, which this
+         * filesystem does not have. Both miss on every healthy boot, and an
+         * error that fires every time teaches you to ignore errors. It is
+         * still recorded, so it is in the ring dump if a failure turns out to
+         * be about one of these. */
+        hw_log(VIBEOS_LOG_DEBUG, 3u, (uint64_t)n, 0,
+               "execve could not read the program image");
         vibeos_x86_64_serial_puts("[EXEC] read failed: ");
         vibeos_x86_64_serial_puts(path);
         vibeos_x86_64_serial_puts("\n");
@@ -4033,6 +4127,8 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
     }
     if (hw_proc_create(&np, g_exec_elf, (uint64_t)n, argv,
                        g_exec_envp.slot[0] ? g_exec_envp.slot : 0) != 0) {
+        hw_log(VIBEOS_LOG_ERROR, 4u, (uint64_t)n, 0,
+               "execve rejected the program image");
         vibeos_x86_64_serial_puts("[EXEC] image rejected: ");
         vibeos_x86_64_serial_puts(path);
         vibeos_x86_64_serial_puts(" bytes=0x");
@@ -5699,6 +5795,9 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
         vibeos_x86_64_serial_puts("[FB] no framebuffer; console is serial-only\n");
     }
 
+    (void)vibeos_log_init(&g_kernel_log);
+    hw_log(VIBEOS_LOG_INFO, 0, 0, 0, "kernel log ready");
+
     /* Real storage: bring up virtio-blk, mount the FAT filesystem, and load the
      * init program straight from disk (EFI/BOOT/INIT.ELF -> INIT.ELF at root). */
     if (vibeos_x86_64_virtio_blk_init() == 0 &&
@@ -5707,19 +5806,18 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
                                       g_disk_init_elf, sizeof(g_disk_init_elf));
         if (n > 0) {
             g_disk_init_len = n;
+            hw_log(VIBEOS_LOG_INFO, 1u, (uint64_t)n, 0,
+                   "init program read from disk");
             vibeos_x86_64_serial_puts("[FAT] read INIT.ELF from disk, size=0x");
             vibeos_x86_64_serial_print_hex((uint64_t)n);
             vibeos_x86_64_serial_puts("\n");
         } else {
+            hw_log(VIBEOS_LOG_ERROR, 2u, 0, 0,
+                   "init program missing from the boot volume");
             vibeos_x86_64_serial_puts("[FAT] INIT.ELF not found on disk\n");
         }
     }
 
-    /* TEMPORARY backtrace trigger - removed after verification. */
-    {
-        volatile uint64_t *boom = (volatile uint64_t *)0x10;
-        *boom = 1;
-    }
     /* Network interface: virtio-net + the TCP/IP stack, addressed by DHCP. */
     hw_net_bringup();
 

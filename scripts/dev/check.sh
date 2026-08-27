@@ -26,6 +26,15 @@ do_build() {
     # The build-id note warning comes from linking a freestanding image and is
     # expected; counting it would hide the ones that are not.
     echo "warnings=$(grep 'warning:' /tmp/vibeos-build.log | grep -vc build-id)"
+    # A deliberate fault planted to test the panic path once got committed,
+    # because removing it was a separate step that a change of plan skipped.
+    # Verifying a crash handler means planting crashes, so this will be done
+    # again; the check costs nothing and the mistake costs a boot that dies on
+    # purpose in everybody's build.
+    if grep -rn 'TEMPORARY' kernel/ --include=*.c > /dev/null 2>&1; then
+        echo "LEFTOVER-DEBUG-CODE:"
+        grep -rn 'TEMPORARY' kernel/ --include=*.c | head -3
+    fi
 }
 
 do_tests() {
