@@ -1953,6 +1953,48 @@ static void hw_keyboard_wake(void) {
  * base the previous occupant of the CPU left behind, which is a fault if that
  * was zero and someone else's thread state if it was not. */
 static void hw_task_load_cpu_state(int idx) {
+    /* Refuse to install an address space that no longer maps the kernel.
+     *
+     * This is the check that turned the intermittent wedge from a mystery into
+     * an event with a name. Asking the emulator where a stopped guest's cores
+     * were put one of them, every time, on the CR3 write below - holding a
+     * PML4 whose entry 0, the kernel's own mapping, was not present. After
+     * that write the next instruction fetch has nowhere to come from, and the
+     * machine cannot even report a fault, because reporting one means running
+     * kernel code. Hence silence rather than a panic.
+     *
+     * Entry 0 goes missing because a freed page is where the allocator keeps
+     * its freelist link: hw_free_page writes the next pointer into offset zero
+     * of the page it is reclaiming, and offset zero of a PML4 is exactly the
+     * kernel's entry. So an address space that has been destroyed does not
+     * merely become stale, it becomes an address space with no kernel in it -
+     * and the pointer stored there is page-aligned, so the present bit reads
+     * as clear.
+     *
+     * Panicking here is not a fix; it converts an unexplainable silence into a
+     * backtrace, a log dump and the identity of the task involved, which is
+     * what the fix will be built from. */
+    {
+        const uint64_t *pml4 =
+            (const uint64_t *)(uintptr_t)(g_tasks[idx].cr3 & ~0xFFFull);
+
+        if (pml4 == 0 || (pml4[0] & PTE_PRESENT) == 0) {
+            vibeos_x86_64_serial_puts("[SCHED] address space has no kernel:"
+                                      " task=0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)idx);
+            vibeos_x86_64_serial_puts(" pid=0x");
+            vibeos_x86_64_serial_print_hex(g_tasks[idx].pid);
+            vibeos_x86_64_serial_puts(" cr3=0x");
+            vibeos_x86_64_serial_print_hex(g_tasks[idx].cr3);
+            vibeos_x86_64_serial_puts(" pml4[0]=0x");
+            vibeos_x86_64_serial_print_hex(pml4 ? pml4[0] : 0);
+            vibeos_x86_64_serial_puts("\n");
+            hw_log(VIBEOS_LOG_FATAL, 5u, g_tasks[idx].cr3,
+                   (uint64_t)g_tasks[idx].pid,
+                   "scheduler asked to install a freed address space");
+            hw_panic("address space freed while still schedulable");
+        }
+    }
     hw_write_cr3(g_tasks[idx].cr3);
     hw_set_kernel_stack(g_tasks[idx].kstack_top);
     if (g_tasks[idx].is_user) {

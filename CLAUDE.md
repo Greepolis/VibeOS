@@ -102,30 +102,43 @@ index first left the other spinning on a completion already consumed. It has
 a lock now, with interrupts left on - nothing in an interrupt handler touches
 the disk.
 
-**The intermittent boot wedge is still open, and here is what is known.**
-Roughly one boot in four or five goes completely silent, never with a fault or
-a panic. It was recorded here as "always partway through the filesystem work",
-and that is now known to be wrong: six parallel boots produced two wedges in
-different places, one exec'ing SIGNAL.ELF and the other immediately after
-`parent reaped child with status 7` in the self-test, with `[SMP] cpu online`
-on the preceding line. The second one touches no filesystem at all. So the
-shared cause is more likely to be the scheduler or AP bring-up than the disk,
-and any theory built only on fat.c has to explain that boot too. `catch-hang.py` is not useful for it: the RIPs it reports
-are the CLI idle in `serial_readc`. `scripts/dev/boots.sh` is the tool for it: several boots at once, each keeping
-the serial log of the one that failed. Two at a time on eight cores - four at a
-time means sixteen vCPUs on eight, and the oversubscription produces its own
-timing failures that look exactly like the bug being hunted.
+**The intermittent boot wedge: mechanism found, producer still open.**
+Roughly one boot in three or four goes completely silent, and it is not a
+filesystem bug. A guest that has stopped cannot report on itself - nothing
+panics, so no backtrace and no log dump run - so the answer came from outside,
+by asking QEMU's monitor where each core was. `scripts/dev/wedge_report.py`
+does that automatically on every wedge now: per-core RIP, CR3 and a frame walk
+done from the host, symbolised with addr2line.
 
-The strongest lead is a lock-protocol mismatch that is written down in fat.c's
-own comment. It says callers are syscalls running with interrupts masked, so
-the holder cannot be preempted - but execve takes `g_exec_lock` preemptibly on
-purpose and reads the image through `g_fs_lock`, so the holder *is* preemptible
-for the length of a two-megabyte read. A core waiting on `g_fs_lock` with
-interrupts masked never reaches the scheduler, and cannot give the preempted
-holder a CPU to finish on. That predicts exactly this: silence, no fault, only
-under filesystem load. Enabling interrupts while waiting was tried and made it
-*worse* - a wedge earlier in boot and more often - so the analysis is not the
-whole story and the change was not kept. Do not re-apply it without measuring.
+In every wedge, one core is stopped on the CR3 write in
+`hw_task_load_cpu_state`, holding a PML4 whose entry 0 - the kernel's own
+mapping - is not present. After that write the next instruction fetch has
+nowhere to come from, and the machine cannot even report a fault, because
+reporting one means running kernel code. That is why it is silence and not a
+panic.
+
+Entry 0 goes missing for a specific and tidy reason: `hw_free_page` stores the
+freelist link *inside the page it reclaims*, at offset zero - and offset zero
+of a PML4 is the kernel's entry. So a destroyed address space does not become
+merely stale, it becomes an address space with no kernel in it, and the stored
+pointer is page-aligned so the present bit reads clear. The guard now in
+`hw_task_load_cpu_state` printed exactly that: `pml4[0]=0x21ce000`, a bare
+aligned pointer where a page-table entry should be.
+
+The guard converts the silence into a panic naming the task, so the trigger
+path is now known: timer interrupt -> `hw_schedule` -> load a freed space. What
+is *not* yet known is who frees it while the task is still schedulable. The two
+candidates are `hw_task_exit`, which destroys the dying space after switching
+CR3, and `execve`, which destroys the old one and runs preemptibly with
+interrupts on. Instrumenting where each task's cr3 was last set is the next
+step; do not guess between them.
+
+Tools: `scripts/dev/boots.sh` runs several boots at once and keeps the serial
+log of each failure - two at a time on eight cores, because four means sixteen
+vCPUs on eight and the oversubscription invents timing failures that look
+exactly like this one. `scripts/dev/symbolize.py` turns a backtrace into file
+and line. `catch-hang.py` is not useful here: the RIPs it reports are the CLI
+idle in `serial_readc`.
 
 **Definition order bites repeatedly.** This is one 5000-line C file; a helper
 used above its definition compiles as an implicit declaration and then fails

@@ -235,8 +235,18 @@ def main():
     serial_log_path = f"qemu-cli-serial{suffix}.log"
     err_log_path = f"qemu-cli-err{suffix}.log"
     summary_path = f"qemu-cli-summary{suffix}.txt"
+    # Not beside the other artefacts: on a Windows-mounted working directory a
+    # unix socket cannot be created at all, and the failure is QEMU refusing to
+    # start rather than anything to do with the guest.
+    monitor_path = os.path.join(tempfile.gettempdir(),
+                                f"vibeos-monitor{suffix}.sock")
+    try:
+        os.unlink(monitor_path)
+    except OSError:
+        pass
 
     serial_text = ""
+    serial_extra = []
     err_text = ""
     qemu = None
     status = "fail"
@@ -282,7 +292,10 @@ def main():
                 # Four cores: the kernel is SMP, so the smoke must exercise it.
                 "-smp", "4",
                 "-display", "none",
-                "-monitor", "none",
+                # A monitor rather than none: a wedged guest cannot
+                # report on itself, and this is the only way to ask
+                # where its cores are once it has stopped.
+                "-monitor", "unix:" + monitor_path + ",server,nowait",
                 "-chardev", f"socket,id=serial0,path={sock_path},server=on,wait=off",
                 "-serial", "chardev:serial0",
                 "-drive", f"if=pflash,format=raw,readonly=on,file={ovmf_code}",
@@ -383,6 +396,23 @@ def main():
                               f" quiet_budget={quiet_budget(serial_text)}s"
                               f" phase={detect_guest_phase(serial_text)}"
                               f" budget={timeout_sec}s")
+                    # A wedged guest is exactly the case where none of the
+                    # in-guest logging runs: nothing panicked, so no backtrace
+                    # and no log dump. Ask the emulator instead, while the
+                    # machine is still up - after the kill there is nothing to
+                    # ask.
+                    if kind in ("guest_wedged", "guest_quiet"):
+                        try:
+                            sys.path.insert(0, os.path.join(
+                                os.path.dirname(os.path.abspath(__file__)),
+                                "dev"))
+                            import wedge_report
+                            for wl in wedge_report.report(monitor_path, kernel):
+                                print("[QEMU-CLI] " + wl)
+                                serial_extra.append(wl)
+                        except Exception as exc:      # never mask the verdict
+                            print(f"[QEMU-CLI] wedge report failed: {exc}")
+
                     # Put the tail in the job output, not only in an artifact
                     # nobody downloads. Whether the guest stalled in firmware
                     # or inside the kernel is visible from these lines alone.
@@ -556,6 +586,7 @@ def main():
             f"last_expected={last_expected}",
             f"last_serial_timestamp={last_serial_timestamp:.3f}",
             f"phase_history={'|'.join(phase_history)}",
+            "wedge_report=" + " || ".join(serial_extra),
             f"qemu_exit_code={qemu.returncode if qemu is not None else 'unknown'}",
             f"build_dir={build_dir}",
             f"efi_root={efi_root}",
