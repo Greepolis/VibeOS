@@ -125,13 +125,29 @@ pointer is page-aligned so the present bit reads clear. The guard now in
 `hw_task_load_cpu_state` printed exactly that: `pml4[0]=0x21ce000`, a bare
 aligned pointer where a page-table entry should be.
 
-The guard converts the silence into a panic naming the task, so the trigger
-path is now known: timer interrupt -> `hw_schedule` -> load a freed space. What
-is *not* yet known is who frees it while the task is still schedulable. The two
-candidates are `hw_task_exit`, which destroys the dying space after switching
-CR3, and `execve`, which destroys the old one and runs preemptibly with
-interrupts on. Instrumenting where each task's cr3 was last set is the next
-step; do not guess between them.
+The guard converts the silence into a panic naming the task, and widening it
+narrowed things considerably. Seven hits out of seven look identical:
+
+    task=9 pid=varies cr3=<stale, points at a freed page> pml4=0x0
+    state=RUNNING user=1 idle=0 on_cpu=1 ppid=<the shell>
+
+`proc.as.pml4 == 0` is the tell. Only `hw_aspace_destroy` writes that zero, and
+only `hw_task_exit` calls it on a task's *own* address space - execve destroys a
+local copy, so it cannot zero the field. So the task being scheduled has already
+been through exit: its space was destroyed and its `cr3` left pointing at the
+freed PML4.
+
+What is still missing is how such a task becomes schedulable again.
+`hw_pick_next` takes only READY, the wake paths only promote BLOCKED, and exit
+sets ZOMBIE - so on paper there is no route from "exited" back to "picked".
+Something is taking one anyway. Two things have been checked and are *not* it:
+`g_current_task` is per-CPU (a macro over `hw_this_cpu()`), and idle tasks do
+get a cr3.
+
+The next instrument is per-task history: record where each task's cr3 was last
+set and where its address space was last destroyed, and print both from the
+guard. Do not reason further from the code alone - three plausible readings of
+it have already been wrong.
 
 Tools: `scripts/dev/boots.sh` runs several boots at once and keeps the serial
 log of each failure - two at a time on eight cores, because four means sixteen

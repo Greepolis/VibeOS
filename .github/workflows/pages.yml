@@ -63,6 +63,12 @@ jobs:
           [ "$missing" -eq 0 ]
 
       - uses: actions/configure-pages@v5
+        with:
+          # Turn Pages on rather than requiring somebody to find the setting.
+          # Without this the first run fails with "Get Pages site failed... Not
+          # Found", which reads like a broken workflow and is in fact a
+          # repository that has never had Pages enabled.
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: docs/book

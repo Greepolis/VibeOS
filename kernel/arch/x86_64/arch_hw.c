@@ -1988,6 +1988,25 @@ static void hw_task_load_cpu_state(int idx) {
             vibeos_x86_64_serial_print_hex(g_tasks[idx].cr3);
             vibeos_x86_64_serial_puts(" pml4[0]=0x");
             vibeos_x86_64_serial_print_hex(pml4 ? pml4[0] : 0);
+            /* What *kind* of task this is decides where to look. A cr3 of zero
+             * and a cr3 pointing at a recycled page are different bugs wearing
+             * the same symptom: the first is a task made runnable before its
+             * address space was installed, the second one whose space was
+             * taken away afterwards. Reading the code did not separate them,
+             * so the guard says which it is holding. */
+            vibeos_x86_64_serial_puts(" state=0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)g_tasks[idx].state);
+            vibeos_x86_64_serial_puts(" user=0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)g_tasks[idx].is_user);
+            vibeos_x86_64_serial_puts(" idle=0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)g_tasks[idx].is_idle);
+            vibeos_x86_64_serial_puts(" on_cpu=0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)g_tasks[idx].on_cpu);
+            vibeos_x86_64_serial_puts(" ppid=0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)g_tasks[idx].ppid);
+            vibeos_x86_64_serial_puts(" pml4=0x");
+            vibeos_x86_64_serial_print_hex(
+                (uint64_t)(uintptr_t)g_tasks[idx].proc.as.pml4);
             vibeos_x86_64_serial_puts("\n");
             hw_log(VIBEOS_LOG_FATAL, 5u, g_tasks[idx].cr3,
                    (uint64_t)g_tasks[idx].pid,
