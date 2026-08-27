@@ -22,7 +22,11 @@ par="${3:-$(( $(nproc) / 2 ))}"
 # over the worst honest case and not the five minutes the gate allows. It bounds
 # the one failure the per-phase quiet budget cannot catch: a guest that keeps
 # talking without ever getting anywhere.
-budget="${4:-150}"
+# 180, not 90: the first boot of a sweep reads OVMF and the images off a cold
+# host cache and is markedly slower than the rest. At 90 it failed reliably in
+# the bootloader phase, and that looked like a bootloader defect for a while.
+# It was this number.
+budget="${4:-180}"
 [ "$par" -lt 1 ] && par=1
 [ "$par" -gt "$n" ] && par="$n"
 
