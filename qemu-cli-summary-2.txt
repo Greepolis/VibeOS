@@ -1,0 +1,14 @@
+status=pass
+reason=cli_and_network_verified tcp_connections=0 bytes=0
+failure_class=pass
+last_guest_phase=kernel_cli_ready
+last_expected=Halt requested
+last_serial_timestamp=6.334
+phase_history=2.556:bootloader_efi|2.657:bootloader_filesystem|2.707:bootloader_load|2.859:bootloader_exit_boot_services|3.415:busybox_cat|4.373:busybox_echo_started|4.674:busybox_cat_started|4.725:busybox_ls_started|4.775:busybox_shell_started|4.826:busybox_shell|5.127:busybox_cat|5.378:busybox_interactive_shell|5.679:busybox_cat|6.031:selftest_done|6.182:kernel_cli_ready
+qemu_exit_code=0
+build_dir=build-gcc-Release
+efi_root=build-gcc-Release/artifacts/efi_root
+serial_log=qemu-cli-serial-2.log
+error_log=qemu-cli-err-2.log
+serial_tail=[SCHED] task pid=0x0000000000000016 exited code=0x0000000000000000 |ls /EFI/BOOT | wc -l |[EXEC] read failed: /proc/self/exe |[EXEC] read failed: wc |[SCHED] task pid=0x0000000000000017 exited code=0x0000000000000000 |[EXEC] /EFI/BOOT/wc bytes=0x0000000000206b40 entry=0x0000000000410870 |[HW][SYS] write(ring3): 13 |[SCHED] task pid=0x0000000000000018 exited code=0x0000000000000000 |echo PIPE_OK |[HW][SYS] write(ring3): PIPE_OK |echo VIBEOS_SELFTEST_DONE |[HW][SYS] write(ring3): VIBEOS_SELFTEST_DONE |exit |[SCHED] task pid=0x000000000000000b exited code=0x0000000000000000 |[HW][SYS] write(ring3): tls survived context switches |[SCHED] task pid=0x0000000000000001 exited code=0x0000000000000001 |[SCHED] all user tasks retired; kernel task continues |[GUI] GUI_STATS frames=0x0000000000000033 termchars=0x0000000000000336 |[MM] COW_STATS shared=0x0000000000000944 copied=0x0000000000000031 |[COMPAT] linux syscalls translated=0x0000000000000007 denied=0x0000000000000243 |[HW] HW_INIT_OK |[BOOT] VibeOS kernel starting... |[BOOT] Boot info validated |[BOOT] Memory manager initialized |[BOOT] Virtual memory initialized |[BOOT] Memory stage ready |[BOOT] Scheduler stage ready |[BOOT] BOOT_OK |[BOOT] VibeOS kernel ready for user-space |[BOOT] CLI_READY |[CLI] Serial console ready |[CLI] Commands: help, status, log, echo <text>, halt, reboot |vibeos> help |[CLI] Commands: help, status, log, echo <text>, halt, reboot |vibeos> status |[CLI] stage=core_ready health=0x000001ff fatal=0 log_count=0x00000006 log_dropped=0x00000000 |vibeos> echo vibeos |vibeos |vibeos> halt |[CLI] Halt requested 
+error_tail=qemu-system-x86_64: terminating on signal 15 from pid 435 (python3)

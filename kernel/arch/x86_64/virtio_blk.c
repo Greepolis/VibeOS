@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 #include "vibeos/arch_x86_64.h"
+#include "vibeos/blockdev.h"
 
 /* ---- port I/O ------------------------------------------------------------ */
 
@@ -99,6 +100,12 @@ static struct virtq_avail *g_avail;
 static struct virtq_used *g_used;
 static uint16_t g_last_used;
 static int g_ready;
+
+/* Sector count, read from the device's own configuration space. Asking the
+ * device beats trusting a partition table about where the disk ends: GPT
+ * validates its entries against the disk size, so a wrong size there turns a
+ * bad table into an accepted one. */
+static uint64_t g_capacity;
 
 static uint64_t align_up(uint64_t v, uint64_t a) { return (v + a - 1u) & ~(a - 1u); }
 
@@ -193,6 +200,11 @@ int vibeos_x86_64_virtio_blk_init(void) {
     g_avail = (struct virtq_avail *)(void *)(g_vq + avail_off);
     g_used = (struct virtq_used *)(void *)(g_vq + used_off);
     g_last_used = 0;
+
+    /* Device-specific configuration follows the legacy header at offset 20
+     * while MSI-X is disabled, and capacity is its first field. */
+    g_capacity = (uint64_t)vb_inl(g_io_base + 20u) |
+                 ((uint64_t)vb_inl(g_io_base + 24u) << 32);
 
     /* Legacy: queue address is the page frame number of the queue region. */
     vb_outl(g_io_base + VIRTIO_QUEUE_PFN, (uint32_t)((uint64_t)(uintptr_t)g_vq >> 12));
@@ -304,4 +316,36 @@ int vibeos_x86_64_virtio_blk_read_many(uint64_t sector, void *buf, uint32_t sect
         sectors -= n;
     }
     return 0;
+}
+
+/* ---- the portable block-device view -------------------------------------- */
+
+/* The rest of the storage stack is written against vibeos_blockdev_t and knows
+ * nothing about virtio, which is what lets it be tested on the host against an
+ * array. This is the one function that joins the two, and it is deliberately
+ * the only place in the kernel that does. */
+
+static int blk_dev_read(void *ctx, uint64_t lba, void *buf) {
+    (void)ctx;
+    return virtio_blk_rw_n(lba, buf, 1u, 0);
+}
+
+static int blk_dev_write(void *ctx, uint64_t lba, const void *buf) {
+    (void)ctx;
+    return virtio_blk_rw_n(lba, (void *)(uintptr_t)buf, 1u, 1);
+}
+
+void vibeos_x86_64_virtio_blk_device(vibeos_blockdev_t *out) {
+    if (!out) {
+        return;
+    }
+    out->read = blk_dev_read;
+    out->write = blk_dev_write;
+    /* No flush: this device completes a request when the used ring says so,
+     * with no cache of its own to empty. Claiming a barrier it does not
+     * provide would be worse than admitting there is none - the journal reads
+     * a missing flush as "nothing to do", not as "already durable". */
+    out->flush = 0;
+    out->ctx = 0;
+    out->sectors = g_capacity;
 }

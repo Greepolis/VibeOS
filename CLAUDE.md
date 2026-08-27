@@ -95,11 +95,18 @@ a lock now, with interrupts left on - nothing in an interrupt handler touches
 the disk.
 
 **The intermittent boot wedge is still open, and here is what is known.**
-Roughly one boot in four or five goes completely silent, always partway
-through the filesystem work (`ls`, `cat`, the second BusyBox exec), never with
-a fault or a panic. `catch-hang.py` is not useful for it: the RIPs it reports
-are the CLI idle in `serial_readc`. `scripts/dev/until-wedge.sh` keeps the
-serial log of the boot that failed, which is the part `repeat-boot.sh` drops.
+Roughly one boot in four or five goes completely silent, never with a fault or
+a panic. It was recorded here as "always partway through the filesystem work",
+and that is now known to be wrong: six parallel boots produced two wedges in
+different places, one exec'ing SIGNAL.ELF and the other immediately after
+`parent reaped child with status 7` in the self-test, with `[SMP] cpu online`
+on the preceding line. The second one touches no filesystem at all. So the
+shared cause is more likely to be the scheduler or AP bring-up than the disk,
+and any theory built only on fat.c has to explain that boot too. `catch-hang.py` is not useful for it: the RIPs it reports
+are the CLI idle in `serial_readc`. `scripts/dev/boots.sh` is the tool for it: several boots at once, each keeping
+the serial log of the one that failed. Two at a time on eight cores - four at a
+time means sixteen vCPUs on eight, and the oversubscription produces its own
+timing failures that look exactly like the bug being hunted.
 
 The strongest lead is a lock-protocol mismatch that is written down in fat.c's
 own comment. It says callers are syscalls running with interrupts masked, so

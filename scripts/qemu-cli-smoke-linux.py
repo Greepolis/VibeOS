@@ -14,7 +14,27 @@ import time
 # The guest's NET.ELF connects here through QEMU's user-mode network, which
 # presents the host as 10.0.2.2. Serving the echo from the harness is what makes
 # the TCP path a real end-to-end test rather than a loopback inside the guest.
+# The guest always dials 10.0.2.2:7777 - that address is compiled into NET.ELF
+# and is not negotiable from here. What *is* negotiable is where QEMU forwards
+# it on the host, which is what lets several boots run at once instead of one
+# after another. Set VIBEOS_SMOKE_ID to a small integer to move this run's host
+# port and its log files out of another run's way.
+#
+# Serial boots were costing about ninety seconds each, and the honest way to
+# see through a failure that reproduces one time in four is to run a lot of
+# them. In series that is the afternoon; in parallel it is a coffee.
+# The guest dials 10.0.2.2:7777, and slirp will not let that be redirected:
+# 10.0.2.2 is its gateway, and guestfwd refuses the gateway address. So a
+# parallel run cannot have an echo server of its own, and runs with a non-zero
+# id do without one - they check everything except the TCP round trip.
+#
+# That is the right trade for the thing parallelism is for. Hunting a failure
+# that appears one boot in four means running a lot of boots, and the question
+# being asked of them is "did it reach the shell", not "did the network work".
+# The full gate, echo server included, is still what run 0 and CI do.
+SMOKE_ID = int(os.environ.get("VIBEOS_SMOKE_ID", "0"))
 ECHO_PORT = 7777
+SKIP_ECHO = SMOKE_ID != 0
 
 # The guest is booted with this many vCPUs; every one of them must come online.
 EXPECTED_CPUS = 4
@@ -170,9 +190,12 @@ def main():
     efi_root = os.path.join(build_dir, "artifacts", "efi_root")
     bootloader = os.path.join(efi_root, "EFI", "BOOT", "BOOTX64.EFI")
     kernel = os.path.join(efi_root, "EFI", "BOOT", "VIBEOSKR.ELF")
-    serial_log_path = "qemu-cli-serial.log"
-    err_log_path = "qemu-cli-err.log"
-    summary_path = "qemu-cli-summary.txt"
+    # Run 0 keeps the historical names, so every existing script and habit that
+    # greps qemu-cli-serial.log still works.
+    suffix = "" if SMOKE_ID == 0 else f"-{SMOKE_ID}"
+    serial_log_path = f"qemu-cli-serial{suffix}.log"
+    err_log_path = f"qemu-cli-err{suffix}.log"
+    summary_path = f"qemu-cli-summary{suffix}.txt"
 
     serial_text = ""
     err_text = ""
@@ -190,7 +213,8 @@ def main():
     verbose = os.environ.get("VIBEOS_QEMU_VERBOSE", "") == "1"
 
     try:
-        echo_thread = start_echo_server(echo_stop, echo_state)
+        echo_thread = None if SKIP_ECHO else start_echo_server(echo_stop,
+                                                                echo_state)
         if not os.path.exists(bootloader) or not os.path.exists(kernel):
             raise RuntimeError("EFI bootloader or kernel payload missing")
         if shutil.which("qemu-system-x86_64") is None:
@@ -348,7 +372,12 @@ def main():
             text = buffer().replace("\r", "")
             problems = []
 
-            for marker in ("NET_OK", "TCP_OK"):
+            # TCP_OK only appears when something answered on the host, so a
+            # parallel run without its own echo server must not require it.
+            # DHCP still must work: that comes from QEMU's own services and is
+            # a real assertion about the guest either way.
+            markers = ("NET_OK",) if SKIP_ECHO else ("NET_OK", "TCP_OK")
+            for marker in markers:
                 if marker not in text:
                     problems.append("missing:" + marker)
 
@@ -378,7 +407,7 @@ def main():
             if "FATAL" in text or "PANIC" in text:
                 problems.append("panic")
 
-            if echo_state["connections"] == 0:
+            if echo_state["connections"] == 0 and not SKIP_ECHO:
                 problems.append("no_tcp_connection_reached_the_host")
 
             # If the build staged an unmodified static Linux binary, it has to
