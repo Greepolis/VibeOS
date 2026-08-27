@@ -18,14 +18,19 @@ cd "$(dirname "$0")/../.."
 d="${1:-build-gcc-Release}"
 n="${2:-4}"
 par="${3:-$(( $(nproc) / 2 ))}"
+# A healthy boot reaches the shell in about ninety seconds, so this is a little
+# over the worst honest case and not the five minutes the gate allows. It bounds
+# the one failure the per-phase quiet budget cannot catch: a guest that keeps
+# talking without ever getting anywhere.
+budget="${4:-150}"
 [ "$par" -lt 1 ] && par=1
 [ "$par" -gt "$n" ] && par="$n"
 
-echo "booting $n times, $par at a time"
+echo "booting $n times, $par at a time, ${budget}s budget each"
 
 run_one() {
     local id="$1"
-    VIBEOS_SMOKE_ID="$id" python3 scripts/qemu-cli-smoke-linux.py "$d" 300 \
+    VIBEOS_SMOKE_ID="$id" python3 scripts/qemu-cli-smoke-linux.py "$d" "$budget" \
         > /dev/null 2>&1
     local sfx=""
     [ "$id" != "0" ] && sfx="-$id"

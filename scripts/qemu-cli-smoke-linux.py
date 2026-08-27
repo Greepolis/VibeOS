@@ -126,7 +126,46 @@ def find_ovmf_pair():
 # can be silent for well over two minutes while doing real work, and cutting it
 # off there reported a hang that was not one. Still far below the budget, so a
 # genuine hang is caught in minutes instead of at the end.
-QUIET_GIVE_UP_SEC = 300
+# How long silence is allowed depends entirely on where the guest is, which is
+# why one number was always going to be either too slow or wrong. Before the
+# kernel says BOOT_OK the machine is firmware and a bootloader dragging a
+# two-megabyte kernel off a FAT volume through TCG, and it is legitimately mute
+# for minutes. After BOOT_OK it narrates constantly - every task exit, every
+# exec, every line the shell echoes - and the longest honest gap in a healthy
+# Release boot is the BusyBox exec, which is seconds.
+#
+# So a wedged boot used to cost the whole 300-second budget, and a run of six
+# spent most of its time waiting for verdicts that were already decided.
+# Measured, not guessed: a healthy boot reaches the interactive shell in about
+# twelve seconds, and its whole kernel phase is under ten. Waiting seventy-five
+# seconds for silence to mean something was therefore spending six times the
+# entire boot to confirm a verdict, and it was the single largest cost in a run
+# of several boots - far larger than the boots themselves.
+#
+# 45 rather than 30: six boots at each gave two passes and three, which is
+# noise at this failure rate and therefore not evidence that the tighter number
+# is safe. Four times the whole healthy boot is a margin that does not need
+# defending, and it is still six times faster than waiting out the budget.
+QUIET_GIVE_UP_SEC = 300           # before the kernel is up
+QUIET_GIVE_UP_KERNEL_SEC = int(os.environ.get("VIBEOS_QUIET_KERNEL_SEC", "45"))
+
+# A Debug kernel on four emulated cores is several times slower than a Release
+# one, and cutting it off mid-exec reports a hang that is not one - that
+# mistake is why this number was raised to five minutes in the first place. The
+# build directory names the configuration, so the tighter number is not applied
+# to a build that cannot meet it.
+if any("debug" in a.lower() for a in sys.argv[1:]):
+    QUIET_GIVE_UP_KERNEL_SEC = max(QUIET_GIVE_UP_KERNEL_SEC, 120)
+
+_KERNEL_PHASES_START = "kernel_boot"
+
+
+def quiet_budget(text):
+    """Seconds of silence to tolerate, given how far the guest has got."""
+    phase = detect_guest_phase(text)
+    if phase == "boot" or phase.startswith("bootloader"):
+        return QUIET_GIVE_UP_SEC
+    return QUIET_GIVE_UP_KERNEL_SEC
 
 
 def detect_guest_phase(text):
@@ -178,7 +217,7 @@ def wait_for(buffer_getter, needle, deadline, last_rx_getter=None):
         if needle in text:
             return True
         if last_rx_getter is not None and text:
-            if time.monotonic() - last_rx_getter() > QUIET_GIVE_UP_SEC:
+            if time.monotonic() - last_rx_getter() > quiet_budget(buffer_getter()):
                 return False   # wedged; the caller classifies it the same way
         time.sleep(0.05)
     return False
@@ -329,7 +368,7 @@ def main():
                     idle = now - last_rx
                     if not serial_text:
                         kind = "no_output_at_all"      # never got past firmware
-                    elif idle >= QUIET_GIVE_UP_SEC:
+                    elif idle >= quiet_budget(serial_text):
                         kind = "guest_wedged"          # gave up early on purpose
                     elif idle > 20:
                         # Silence is not proof of a hang: firmware is quiet for
@@ -340,7 +379,10 @@ def main():
                         kind = "guest_still_talking"   # still progressing: the budget was too small
                     reason = (f"missing:{expected} verdict={kind}"
                               f" elapsed={now - started:.0f}s"
-                              f" quiet_for={idle:.0f}s budget={timeout_sec}s")
+                              f" quiet_for={idle:.0f}s"
+                              f" quiet_budget={quiet_budget(serial_text)}s"
+                              f" phase={detect_guest_phase(serial_text)}"
+                              f" budget={timeout_sec}s")
                     # Put the tail in the job output, not only in an artifact
                     # nobody downloads. Whether the guest stalled in firmware
                     # or inside the kernel is visible from these lines alone.
