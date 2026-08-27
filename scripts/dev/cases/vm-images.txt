@@ -1,0 +1,36 @@
+### VirtualBox firmware left on the default
+--- old
+        <Firmware type="EFI"/>
++++ new
+        <Firmware type="BIOS"/>
+
+### VMware firmware left on the default
+--- old
+      <vmw:Config ovf:required="false" vmw:key="firmware" vmw:value="efi"/>
++++ new
+
+### vmx firmware left on the default
+--- old
+firmware = "efi"
++++ new
+firmware = "bios"
+
+### descriptor no longer first in the archive
+--- old
+        for member, path in ((ovf_name, ovf_path), (mf_name, mf_path),
+                             (disk_name, disk_path)):
++++ new
+        for member, path in ((disk_name, disk_path), (mf_name, mf_path),
+                             (ovf_name, ovf_path)):
+
+### declared disk size not the real one
+--- old
+                              disk_size=os.path.getsize(disk_path),
++++ new
+                              disk_size=os.path.getsize(disk_path) + 1,
+
+### manifest describes something else
+--- old
+        fp.write(f"SHA256({disk_name})= {sha256(disk_path)}\n")
++++ new
+        fp.write(f"SHA256({disk_name})= {'0' * 64}\n")

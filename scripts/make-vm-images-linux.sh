@@ -55,5 +55,14 @@ else
   echo "[VM-IMG] NOTE: xorriso not found; skipping .iso (install xorriso to enable)"
 fi
 
+# The disks above are disks, not machines: importing one still leaves you
+# creating a VM, picking a chipset and - the step everybody misses - turning on
+# EFI. The appliance carries that configuration with it.
+if command -v qemu-img >/dev/null 2>&1; then
+  echo "[VM-IMG] building importable appliance (.ova) and VMware .vmx..."
+  python3 "$SCRIPT_DIR/make_ova.py" "$ESP" "$ART" || exit 1
+  python3 "$SCRIPT_DIR/dev/check-vm-images.py" "$ART" || exit 1
+fi
+
 echo "[VM-IMG] done. Artifacts in $ART:"
-ls -1 "$ART" | grep -E '^vibeos(\.(vdi|vmdk|iso)|_esp\.img)$' || true
+ls -1 "$ART" | grep -E '^vibeos(\.(vdi|vmdk|iso|ova|vmx)|-disk1\.vmdk|_esp\.img)$' || true

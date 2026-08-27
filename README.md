@@ -123,6 +123,14 @@ This produces, in `build/artifacts/`:
 | `vibeos.vmdk` | VMware disk |
 | `vibeos.iso` | UEFI El Torito CD image (needs `xorriso`; the most portable option) |
 
+`vibeos.ova` is the one to reach for: **VirtualBox** File -> Import Appliance,
+**VMware** Workstation/Player File -> Open. It carries its own configuration,
+including the setting that matters - VibeOS boots through UEFI and has no
+legacy path, so a VM left on default BIOS firmware does not report an error, it
+shows a blank window. `vibeos.vmx` is the same machine for people who prefer to
+open a VMware config directly, and the plain `.vdi`/`.vmdk`/`.iso` remain for
+anyone wiring up a VM by hand (enable EFI when you do).
+
 The ESP image is built by a self-contained FAT16 writer (`scripts/make_esp_image.py`, no `mtools` required); `.vdi`/`.vmdk` are produced with `qemu-img`. The images are boot-tested under QEMU+OVMF by `scripts/qemu-boot-image-linux.py`, and CI boot-tests the generated `.iso`.
 
 **Importing (UEFI is required — VibeOS has no legacy BIOS boot):**

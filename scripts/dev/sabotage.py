@@ -51,12 +51,24 @@ def parse_cases(text):
     return cases
 
 
-def build_and_test(build_dir):
-    """Returns 'pass', 'red', 'hung' or 'nobuild'."""
-    if subprocess.run(["cmake", "--build", build_dir, "-j4"],
-                      capture_output=True).returncode != 0:
+def build_and_test(build_dir, verify=None):
+    """Returns 'pass', 'red', 'hung' or 'nobuild'.
+
+    `verify` runs a shell command instead of the kernel test binary, for guards
+    that live outside the C code - a generated VM appliance, say, whose checks
+    are a script over build artifacts. The verdicts mean the same thing either
+    way: non-zero is red.
+    """
+    if verify is None and subprocess.run(["cmake", "--build", build_dir, "-j4"],
+                                         capture_output=True).returncode != 0:
         return 'nobuild', ''
     try:
+        if verify is not None:
+            r = subprocess.run(verify, shell=True, capture_output=True,
+                               text=True, timeout=300)
+            if r.returncode == 0:
+                return 'pass', r.stdout
+            return 'red', r.stdout.strip()
         r = subprocess.run(["./%s/vibeos_kernel_tests" % build_dir],
                            capture_output=True, text=True, timeout=120)
     except subprocess.TimeoutExpired:
@@ -73,6 +85,7 @@ def main():
         return 2
     src, cases_path = sys.argv[1], sys.argv[2]
     build_dir = sys.argv[3] if len(sys.argv) > 3 else "build-gcc-Release"
+    verify = os.environ.get("SABOTAGE_VERIFY")
 
     with open(cases_path, encoding='utf-8') as fh:
         cases = parse_cases(fh.read())
@@ -96,7 +109,7 @@ def main():
                 continue
             with open(src, 'w', encoding='utf-8', newline='') as fh:
                 fh.write(original.replace(old, new, 1))
-            verdict, detail = build_and_test(build_dir)
+            verdict, detail = build_and_test(build_dir, verify)
             if verdict == 'red':
                 for line in detail.splitlines():
                     print("    " + line)
