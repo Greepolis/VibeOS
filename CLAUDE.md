@@ -102,59 +102,43 @@ index first left the other spinning on a completion already consumed. It has
 a lock now, with interrupts left on - nothing in an interrupt handler touches
 the disk.
 
-**The intermittent boot wedge: mechanism found, producer still open.**
-Roughly one boot in three or four goes completely silent, and it is not a
-filesystem bug. A guest that has stopped cannot report on itself - nothing
-panics, so no backtrace and no log dump run - so the answer came from outside,
-by asking QEMU's monitor where each core was. `scripts/dev/wedge_report.py`
-does that automatically on every wedge now: per-core RIP, CR3 and a frame walk
-done from the host, symbolised with addr2line.
+**The intermittent boot wedge was exit announcing before it tore down.**
+Found and fixed. Roughly one boot in three used to go completely silent; the
+fix took sixteen boots with one unrelated failure, and putting the old ordering
+back reproduced it immediately with the same signature. Worth reading if a
+similar silence ever returns, because almost nothing about it was visible from
+the code.
 
-In every wedge, one core is stopped on the CR3 write in
-`hw_task_load_cpu_state`, holding a PML4 whose entry 0 - the kernel's own
-mapping - is not present. After that write the next instruction fetch has
-nowhere to come from, and the machine cannot even report a fault, because
-reporting one means running kernel code. That is why it is silence and not a
-panic.
+`hw_task_exit` used to set the dying task ZOMBIE and wake its parent *first*,
+and destroy the address space several steps later. Between those two, the
+parent can reap the slot - that is what a zombie is for - and a fork on another
+core can take it and build a new address space in it. The late teardown then
+frees the *new* tenant's page tables. The new process keeps running on a CR3
+whose top-level page has gone back to the allocator, and `hw_free_page` stores
+its freelist link at offset zero of the page it reclaims, which in a PML4 is
+the kernel's own entry. The next core to install that CR3 stops on the
+instruction that loads it, with no kernel mapped to fault from - so no panic,
+no output, nothing. Exit now tears down first and announces afterwards, and
+clears `cr3` while it is at it.
 
-Entry 0 goes missing for a specific and tidy reason: `hw_free_page` stores the
-freelist link *inside the page it reclaims*, at offset zero - and offset zero
-of a PML4 is the kernel's entry. So a destroyed address space does not become
-merely stale, it becomes an address space with no kernel in it, and the stored
-pointer is page-aligned so the present bit reads clear. The guard now in
-`hw_task_load_cpu_state` printed exactly that: `pml4[0]=0x21ce000`, a bare
-aligned pointer where a page-table entry should be.
+The same shape was fixed in the reaper: it published a slot as FREE and then
+kept writing to the task. Publish last, take what you need first.
 
-The guard converts the silence into a panic naming the task, and widening it
-narrowed things considerably. Seven hits out of seven look identical:
+How it was actually found, since three careful readings of the code were wrong:
 
-    task=9 pid=varies cr3=<stale, points at a freed page> pml4=0x0
-    state=RUNNING user=1 idle=0 on_cpu=1 ppid=<the shell>
+1. A guest that has stopped cannot report on itself, so ask QEMU's monitor.
+   `scripts/dev/wedge_report.py` runs on every wedge and gives per-core RIP,
+   CR3 and a frame walk done from the host, symbolised with addr2line.
+2. That put a core on the CR3 write in `hw_task_load_cpu_state` every time,
+   holding a PML4 with no kernel in it. A guard there turned the silence into a
+   named panic.
+3. The guard was widened until it stopped being ambiguous: task state, whether
+   the slot had been recycled, where the cr3 was last set, and finally which
+   caller last destroyed which address space. That last field named
+   `hw_task_exit` and printed a page identical to the live task's cr3.
 
-`proc.as.pml4 == 0` is the tell. Only `hw_aspace_destroy` writes that zero, and
-only `hw_task_exit` calls it on a task's *own* address space - execve destroys a
-local copy, so it cannot zero the field. So the task being scheduled has already
-been through exit: its space was destroyed and its `cr3` left pointing at the
-freed PML4.
-
-What is still missing is how such a task becomes schedulable again.
-`hw_pick_next` takes only READY, the wake paths only promote BLOCKED, and exit
-sets ZOMBIE - so on paper there is no route from "exited" back to "picked".
-Something is taking one anyway. Two things have been checked and are *not* it:
-`g_current_task` is per-CPU (a macro over `hw_this_cpu()`), and idle tasks do
-get a cr3.
-
-The next instrument is per-task history: record where each task's cr3 was last
-set and where its address space was last destroyed, and print both from the
-guard. Do not reason further from the code alone - three plausible readings of
-it have already been wrong.
-
-Tools: `scripts/dev/boots.sh` runs several boots at once and keeps the serial
-log of each failure - two at a time on eight cores, because four means sixteen
-vCPUs on eight and the oversubscription invents timing failures that look
-exactly like this one. `scripts/dev/symbolize.py` turns a backtrace into file
-and line. `catch-hang.py` is not useful here: the RIPs it reports are the CLI
-idle in `serial_readc`.
+Keep the guard. It costs one read per context switch and it is the difference
+between a machine that stops and a machine that says why.
 
 **Definition order bites repeatedly.** This is one 5000-line C file; a helper
 used above its definition compiles as an implicit declaration and then fails

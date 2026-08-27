@@ -1282,7 +1282,17 @@ static int hw_aspace_create(vibeos_hw_aspace_t *as) {
 /* Free an address space: the user subtree (PML4 slot 1 - pages and the tables
  * that map them) and the PML4 itself. The shared kernel identity map (slot 0)
  * is static and never freed. Must not be called while this CR3 is active. */
-static void hw_aspace_destroy(vibeos_hw_aspace_t *as) {
+/* Who last tore an address space down, and which one.
+ *
+ * proc.as.pml4 going to zero is the one unexplained step left in the wedge,
+ * and this function is its only writer. Three readings of the call sites have
+ * been wrong, so the function records what it did rather than being reasoned
+ * about. */
+static const char *g_last_destroy_why;
+static uint64_t g_last_destroy_pml4;
+static uint32_t g_last_destroy_cpu;
+
+static void hw_aspace_destroy_why(vibeos_hw_aspace_t *as, const char *why) {
     uint64_t *pdpt;
     uint32_t i, j, k;
 
@@ -1360,9 +1370,14 @@ static void hw_aspace_destroy(vibeos_hw_aspace_t *as) {
         }
     }
 
+    g_last_destroy_why = why;
+    g_last_destroy_pml4 = (uint64_t)(uintptr_t)as->pml4;
+    g_last_destroy_cpu = hw_this_cpu()->index;
     hw_free_page(as->pml4);
     as->pml4 = 0;
 }
+
+#define hw_aspace_destroy(as) hw_aspace_destroy_why((as), __func__)
 
 /* Build the kernel's page tables: identity-map the first N GiB with 2 MiB
  * supervisor pages (US=0) and switch CR3 to them. */
@@ -1714,6 +1729,16 @@ static void hw_pipe_release(hw_fd_t *f);
 /* SA_RESTORER: the handler entry carries the address the handler returns to. */
 #define VIBEOS_SA_RESTORER 0x04000000u
 
+/* Where a task was last handled, for the guard in hw_task_load_cpu_state.
+ *
+ * Three readings of this code have already been wrong about how an exited task
+ * gets scheduled again, so the code stops being the source: each task records
+ * the last place its cr3 was written, the last place it was made runnable, and
+ * the last place its address space was destroyed. Static strings, one store
+ * each - the cost is a pointer write on paths that already do far more, and
+ * what it buys is the difference between a theory and a name. */
+#define HW_TASK_MARK(idx, field, where) (g_tasks[idx].field = (where))
+
 enum {
     HW_TASK_FREE = 0,
     HW_TASK_READY = 1,
@@ -1731,6 +1756,10 @@ typedef struct {
     vibeos_x86_64_isr_frame_t ctx;
     hw_proc_t proc;
     uint64_t cr3;
+    const char *cr3_set_by;      /* diagnostics only; see HW_TASK_MARK */
+    const char *ready_by;
+    const char *aspace_killed_by;
+    uint32_t alloc_seq;          /* which tenancy of this slot this is */
     uint64_t exit_code;
     /* Non-zero when this task was killed by a signal rather than exiting.
      * wait() encodes the two cases differently, and a parent that cannot tell
@@ -1827,16 +1856,21 @@ static uint64_t hw_alloc_kstack(uint64_t *out_base, uint32_t *out_pages) {
     return (uint64_t)(uintptr_t)p + size;
 }
 
-static void hw_free_kstack(hw_task_t *t) {
+/* Free a kernel stack from its address and length, not from the task.
+ *
+ * Deliberately not taking a task pointer: the only caller reaps a slot, and a
+ * helper that writes back into the task invites doing so after the slot has
+ * been published as reusable - which is exactly the bug this shape prevents.
+ * The caller takes what it needs under the lock and frees afterwards. */
+static void hw_free_kstack_pages(uint64_t base, uint32_t pages) {
     uint32_t i;
-    for (i = 0; i < t->kstack_pages; i++) {
-        hw_free_page((void *)(uintptr_t)(t->kstack_base + (uint64_t)i * 4096ull));
+    for (i = 0; i < pages; i++) {
+        hw_free_page((void *)(uintptr_t)(base + (uint64_t)i * 4096ull));
     }
-    t->kstack_base = 0;
-    t->kstack_pages = 0;
 }
 
 static hw_task_t g_tasks[VIBEOS_HW_MAX_TASKS];
+static uint32_t g_alloc_seq;
 static int g_sched_running;
 static uint32_t g_next_pid = 1;
 
@@ -1865,6 +1899,25 @@ static int hw_task_alloc(void) {
                 g_tasks[i].std_redirect[fi].pipe = -1;
                 g_tasks[i].std_redirect[fi].net_sock = -1;
             }
+            /* A recycled slot must not keep the previous tenant's address
+             * space. Leaving cr3 behind is not a tidiness problem: the page it
+             * names has been freed and handed back to the allocator, so a slot
+             * scheduled before its creator finishes filling it in installs a
+             * page table that belongs to somebody else now. Zeroing it makes
+             * that a named panic on the next context switch instead of a
+             * machine that stops without a word.
+             *
+             * The three markers go with it, or a diagnostic reads as the
+             * history of whoever had the slot last. */
+            g_tasks[i].cr3 = 0;
+            g_tasks[i].cr3_set_by = 0;
+            g_tasks[i].ready_by = 0;
+            /* Marked, not cleared: this is the other way pml4 reaches zero,
+             * and leaving it blank made the guard's report ambiguous between
+             * "the space was destroyed" and "the slot was handed out again". */
+            g_tasks[i].aspace_killed_by = "task_alloc_clear";
+            g_tasks[i].alloc_seq = (uint32_t)__sync_add_and_fetch(&g_alloc_seq, 1u);
+            g_tasks[i].proc.as.pml4 = 0;
             g_tasks[i].state = HW_TASK_RESERVED;
             hw_spin_unlock(&g_sched_lock);
             return i;
@@ -1938,6 +1991,7 @@ static void hw_keyboard_wake(void) {
         if (g_tasks[i].state == HW_TASK_BLOCKED && g_tasks[i].wait_input) {
             g_tasks[i].wait_input = 0;
             g_tasks[i].state = HW_TASK_READY;
+            HW_TASK_MARK(i, ready_by, "keyboard_wake");
         }
     }
     hw_spin_unlock(&g_sched_lock);
@@ -2007,6 +2061,22 @@ static void hw_task_load_cpu_state(int idx) {
             vibeos_x86_64_serial_puts(" pml4=0x");
             vibeos_x86_64_serial_print_hex(
                 (uint64_t)(uintptr_t)g_tasks[idx].proc.as.pml4);
+            vibeos_x86_64_serial_puts(" cr3_set_by=");
+            vibeos_x86_64_serial_puts(g_tasks[idx].cr3_set_by
+                                      ? g_tasks[idx].cr3_set_by : "never");
+            vibeos_x86_64_serial_puts(" ready_by=");
+            vibeos_x86_64_serial_puts(g_tasks[idx].ready_by
+                                      ? g_tasks[idx].ready_by : "never");
+            vibeos_x86_64_serial_puts(" aspace_killed_by=");
+            vibeos_x86_64_serial_puts(g_tasks[idx].aspace_killed_by
+                                      ? g_tasks[idx].aspace_killed_by : "never");
+            vibeos_x86_64_serial_puts(" last_destroy=");
+            vibeos_x86_64_serial_puts(g_last_destroy_why ? g_last_destroy_why
+                                                         : "none");
+            vibeos_x86_64_serial_puts(" of=0x");
+            vibeos_x86_64_serial_print_hex(g_last_destroy_pml4);
+            vibeos_x86_64_serial_puts(" on_cpu=0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)g_last_destroy_cpu);
             vibeos_x86_64_serial_puts("\n");
             hw_log(VIBEOS_LOG_FATAL, 5u, g_tasks[idx].cr3,
                    (uint64_t)g_tasks[idx].pid,
@@ -2046,6 +2116,7 @@ static void hw_schedule(vibeos_x86_64_isr_frame_t *frame) {
         g_tasks[cur].ctx = *frame;
         if (g_tasks[cur].state == HW_TASK_RUNNING) {
             g_tasks[cur].state = HW_TASK_READY;
+            HW_TASK_MARK(cur, ready_by, "preempted");
         }
         /* Only now is it safe for another core to take it: its context is
          * saved and this core is about to stop touching it. */
@@ -2086,6 +2157,7 @@ static int hw_task_adopt_kernel(void) {
     g_tasks[i].pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
     g_tasks[i].kstack_top = hw_this_cpu()->syscall_kstack_top;
     g_tasks[i].cr3 = (uint64_t)(uintptr_t)&g_pml4[0];
+    HW_TASK_MARK(i, cr3_set_by, "adopt_kernel");
     g_current_task = i;
     return i;
 }
@@ -2126,7 +2198,9 @@ static int hw_task_create_idle(hw_cpu_t *cpu) {
         c->rsp = g_tasks[i].kstack_top - 56ull;
     }
     g_tasks[i].cr3 = (uint64_t)(uintptr_t)&g_pml4[0];
+    HW_TASK_MARK(i, cr3_set_by, "create_idle");
     g_tasks[i].state = HW_TASK_READY;
+    HW_TASK_MARK(i, ready_by, "create_idle");
     g_tasks[i].is_user = 0;
     g_tasks[i].is_idle = 1;
     g_tasks[i].pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
@@ -2152,6 +2226,7 @@ static int hw_task_spawn_user(const unsigned char *elf, uint64_t len,
         return -1;
     }
     g_tasks[i].cr3 = hw_proc_cr3(&g_tasks[i].proc);
+    HW_TASK_MARK(i, cr3_set_by, "spawn_user");
     hw_task_init_user_ctx(&g_tasks[i].ctx, g_tasks[i].proc.entry,
                           g_tasks[i].proc.user_sp);
     /* Task slots are recycled, so anything the previous occupant left has to
@@ -2221,15 +2296,20 @@ static void hw_task_exit(uint64_t code) {
     }
 
     if (dying >= 0) {
+        /* Only the exit code is recorded here. Becoming a ZOMBIE - which is
+         * what lets the parent reap the slot and hand it to the next fork -
+         * waits until this task's address space has actually been taken down,
+         * further below.
+         *
+         * It used to happen here, and that window is the wedge: the parent
+         * reaps between the announcement and the teardown, a fork on another
+         * core takes the freed slot and builds an address space in it, and
+         * then the teardown below frees the *new* tenant's page tables. The
+         * new process keeps running on a CR3 whose top-level page has gone
+         * back to the allocator, and the next core to install it stops on the
+         * instruction that loads it, with no kernel mapped to report from. */
         hw_spin_lock(&g_sched_lock);
-        g_tasks[dying].state = HW_TASK_ZOMBIE;
         g_tasks[dying].exit_code = code;
-        /* Wake a parent blocked in waitpid on this child. */
-        for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
-            if (g_tasks[i].state == HW_TASK_BLOCKED && g_tasks[i].pid == g_tasks[dying].ppid) {
-                g_tasks[i].state = HW_TASK_READY;
-            }
-        }
         hw_spin_unlock(&g_sched_lock);
         vibeos_x86_64_serial_lock();
         vibeos_x86_64_serial_puts("[SCHED] task pid=0x");
@@ -2262,9 +2342,30 @@ static void hw_task_exit(uint64_t code) {
     /* Now on the next task's CR3; the dying user address space is still
      * reachable through the shared kernel identity map, so free it. */
     if (dying >= 0 && g_tasks[dying].is_user) {
+        HW_TASK_MARK(dying, aspace_killed_by, "task_exit");
         hw_aspace_destroy(&g_tasks[dying].proc.as);
         /* The kernel stack stays until the parent reaps us: we are still
          * executing on it right now. */
+    }
+
+    /* Now, and not before: the address space is gone, so a parent that reaps
+     * this slot the instant it sees the zombie cannot have its child's page
+     * tables pulled out from under it. cr3 goes too, so nothing can be
+     * scheduled on a table that has been freed - the guard in
+     * hw_task_load_cpu_state would catch that, but not being wrong beats
+     * being told. */
+    if (dying >= 0) {
+        hw_spin_lock(&g_sched_lock);
+        g_tasks[dying].cr3 = 0;
+        g_tasks[dying].state = HW_TASK_ZOMBIE;
+        for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+            if (g_tasks[i].state == HW_TASK_BLOCKED &&
+                g_tasks[i].pid == g_tasks[dying].ppid) {
+                g_tasks[i].state = HW_TASK_READY;
+                HW_TASK_MARK(i, ready_by, "parent_woken_by_child_exit");
+            }
+        }
+        hw_spin_unlock(&g_sched_lock);
     }
     vibeos_x86_64_task_enter(&g_tasks[next].ctx); /* does not return */
 }
@@ -3878,6 +3979,7 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
     hw_task_t *parent;
     hw_task_t *child;
     int idx;
+    uint32_t my_tenancy;
 
     if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
         return -VIBEOS_EINVAL;
@@ -3888,6 +3990,7 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
     }
     parent = &g_tasks[g_current_task];
     child = &g_tasks[idx];
+    my_tenancy = child->alloc_seq;
 
     if (hw_aspace_create(&child->proc.as) != 0 ||
         hw_aspace_copy_user(&child->proc.as, &parent->proc.as) != 0) {
@@ -3903,6 +4006,7 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
     child->proc.brk_cur = parent->proc.brk_cur;
     child->proc.mmap_cur = parent->proc.mmap_cur;
     child->cr3 = hw_proc_cr3(&child->proc);
+    child->cr3_set_by = "fork";
     child->ctx = *frame;   /* resume exactly where the parent is */
     child->ctx.rax = 0;    /* ... but fork() returns 0 in the child */
     child->pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
@@ -3963,7 +4067,27 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
     }
     child->is_user = 1;
     child->exit_code = 0;
+    /* The slot must still be the one this fork was given.
+     *
+     * Everything above writes into g_tasks[idx] without the scheduler lock,
+     * on the strength of hw_task_alloc having marked it RESERVED. If that ever
+     * fails to hold, two owners fill one slot and the loser's half-written
+     * task is what gets scheduled - which is exactly the shape of the wedge
+     * this is hunting. Saying so out loud beats inferring it from wreckage. */
+    if (child->alloc_seq != my_tenancy || child->state != HW_TASK_RESERVED) {
+        vibeos_x86_64_serial_puts("[SCHED] fork lost its slot: idx=0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)idx);
+        vibeos_x86_64_serial_puts(" mine=0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)my_tenancy);
+        vibeos_x86_64_serial_puts(" now=0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)child->alloc_seq);
+        vibeos_x86_64_serial_puts(" state=0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)child->state);
+        vibeos_x86_64_serial_puts("\n");
+        hw_panic("two owners filled one task slot");
+    }
     child->state = HW_TASK_READY;
+    child->ready_by = "fork";
     return (long)child->pid;
 }
 
@@ -4000,9 +4124,31 @@ static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr) {
                 int status = (exit_signal != 0u)
                              ? (int)(exit_signal & 0x7Fu)
                              : (int)((code & 0xFFull) << 8);
-                t->state = HW_TASK_FREE; /* reaped */
+                /* Publishing the slot as FREE is the last thing done to it,
+                 * and everything still needed from it is taken first.
+                 *
+                 * It used to set FREE, drop the lock, and only then call
+                 * hw_free_kstack(t) - which both frees pages and writes to the
+                 * task. In between, another core allocating a task slot sees
+                 * this one free and starts a fork into it, and the two owners
+                 * interleave: the reaper then frees the kernel stack the fork
+                 * has just allocated, those pages go back on the freelist, and
+                 * the allocator hands them out again as page tables. That is
+                 * how a live process ends up with a PML4 whose entry zero is a
+                 * freelist pointer instead of the kernel - and a core loading
+                 * that CR3 stops mid-instruction with no way to report why.
+                 *
+                 * The freeing happens outside the lock, from locals, because
+                 * hw_free_page takes the memory lock and nesting the two would
+                 * be a new ordering rule to get wrong. */
+                uint64_t kbase = t->kstack_base;
+                uint32_t kpages = t->kstack_pages;
+
+                t->kstack_base = 0;
+                t->kstack_pages = 0;
+                t->state = HW_TASK_FREE; /* reaped; nothing may touch t now */
                 hw_spin_unlock(&g_sched_lock);
-                hw_free_kstack(t);       /* safe here: the task is not running */
+                hw_free_kstack_pages(kbase, kpages);
                 __asm__ __volatile__("sti");
                 if (status_ptr != 0 && hw_user_range_ok(status_ptr, 4, 1)) {
                     /* The wait status word: a normal exit puts the code in the
@@ -4219,6 +4365,7 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
         vibeos_hw_aspace_t old_as = t->proc.as; /* reclaim after switching CR3 */
         t->proc = np;
         t->cr3 = hw_proc_cr3(&t->proc);
+        t->cr3_set_by = "execve";
         hw_write_cr3(t->cr3);
         hw_aspace_destroy(&old_as);             /* old CR3 no longer active */
     }
@@ -4521,6 +4668,7 @@ static int hw_signal_raise(int task_index, uint32_t sig) {
     if (g_tasks[task_index].state == HW_TASK_BLOCKED) {
         g_tasks[task_index].wait_input = 0;
         g_tasks[task_index].state = HW_TASK_READY;
+        HW_TASK_MARK(task_index, ready_by, "signal_wake");
     }
     return 0;
 }
