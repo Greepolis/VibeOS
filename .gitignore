@@ -60,3 +60,7 @@ vibeos-screen.ppm
 vibeos-screen.png
 .claude/
 build-fuzz/
+qemu-cli-summary-*.txt
+qemu-cli-serial-*.log
+qemu-cli-err-*.log
+wedge-serial*.log
