@@ -110,13 +110,7 @@ endif()
 if(VIBEOS_BUILD_FUZZERS)
     # The receive path is the only code fed bytes an attacker chooses, so it is
     # the one place a fuzzer earns its keep.
-    # net_policy.c is here because ip_input calls into it on every packet: the
-    # policy check and the flow table are part of the receive path, not a layer
-    # above it. Stubbing them out would fuzz a shape of the code that does not
-    # ship. This target is not built by scripts/dev/check.sh, so it is only CI
-    # that notices when the receive path grows a new dependency.
-    add_executable(fuzz_inet_input tests/fuzz/fuzz_inet_input.c kernel/net/inet.c
-                   kernel/net/net_policy.c)
+    add_executable(fuzz_inet_input ${VIBEOS_FUZZ_INET_SOURCES})
     target_include_directories(fuzz_inet_input PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_compile_options(fuzz_inet_input PRIVATE
         -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer -g
@@ -164,17 +158,7 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         kernel/arch/x86_64/entry.s
         kernel/arch/x86_64/isr.S
         kernel/arch/x86_64/ap_boot.S
-        kernel/arch/x86_64/arch_hw.c
-        kernel/arch/x86_64/apic.c
-        kernel/arch/x86_64/elf_load.c
-        kernel/arch/x86_64/virtio_blk.c
-        kernel/arch/x86_64/virtio_net.c
-        kernel/arch/x86_64/fat.c
-        kernel/arch/x86_64/fat_vfs.c
-        kernel/arch/x86_64/keyboard.c
-        kernel/arch/x86_64/fb.c
-        kernel/arch/x86_64/mouse.c
-        kernel/arch/x86_64/gui.c
+        ${VIBEOS_ARCH_X86_64_SOURCES}
         # Freestanding mem* runtime: the kernel image links -nostdlib, and some
         # compilers (notably Clang) lower struct copies to memcpy/memset calls
         # that GCC inlines. Provide the implementations so the image links on

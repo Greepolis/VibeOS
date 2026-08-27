@@ -71,3 +71,31 @@ set(VIBEOS_USER_CORE_SOURCES
 set(VIBEOS_TLS_SOURCES
     user/net/tls_adapter.c
 )
+
+# The freestanding half of the kernel image: hardware bring-up that host tests
+# never link. Kept here for the same reason as the lists above - it was written
+# out by hand in CMakeLists.txt, which made it a second place to remember, and
+# the two lists do not fail loudly when they disagree.
+set(VIBEOS_ARCH_X86_64_SOURCES
+    kernel/arch/x86_64/arch_hw.c
+    kernel/arch/x86_64/apic.c
+    kernel/arch/x86_64/elf_load.c
+    kernel/arch/x86_64/virtio_blk.c
+    kernel/arch/x86_64/virtio_net.c
+    kernel/arch/x86_64/fat.c
+    kernel/arch/x86_64/fat_vfs.c
+    kernel/arch/x86_64/keyboard.c
+    kernel/arch/x86_64/fb.c
+    kernel/arch/x86_64/mouse.c
+    kernel/arch/x86_64/gui.c
+)
+
+# The receive path, as the fuzzer must link it. net_policy.c belongs here
+# because ip_input calls into it for every packet: leaving it out is what broke
+# the CI fuzz build while a local check.sh stayed green, and stubbing it would
+# have fuzzed a shape of the code that does not ship.
+set(VIBEOS_FUZZ_INET_SOURCES
+    tests/fuzz/fuzz_inet_input.c
+    kernel/net/inet.c
+    kernel/net/net_policy.c
+)

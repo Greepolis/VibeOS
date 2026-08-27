@@ -59,3 +59,4 @@ __pycache__/
 vibeos-screen.ppm
 vibeos-screen.png
 .claude/
+build-fuzz/
