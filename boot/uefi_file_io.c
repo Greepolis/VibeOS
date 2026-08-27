@@ -90,7 +90,7 @@ static int uefi_open_root_volume(EFI_HANDLE image_handle,
     *out_root = 0;
 
     /* Preferred path: locate filesystem bound to the current loaded image device. */
-    handle_protocol = (EFI_HANDLE_PROTOCOL)st->BootServices->HandleProtocol;
+    handle_protocol = st->BootServices->HandleProtocol;
     if (image_handle && handle_protocol) {
         EFI_LOADED_IMAGE_PROTOCOL *loaded_image = 0;
         EFI_STATUS status = handle_protocol(image_handle, (EFI_GUID *)&VIBEOS_EFI_LOADED_IMAGE_PROTOCOL_GUID, (void **)&loaded_image);

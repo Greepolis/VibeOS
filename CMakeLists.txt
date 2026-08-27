@@ -131,7 +131,7 @@ if(VIBEOS_BUILD_TESTS)
 
     add_executable(vibeos_bootloader_tests
         tests/bootloader/uefi_bootloader_tests.c
-        boot/bootloader_stub.c
+        boot/bootloader_core.c
         boot/uefi_file_io.c
         boot/uefi_memory.c
         boot/uefi_boot_info.c
@@ -355,7 +355,7 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         boot/uefi_boot_info.c
         boot/uefi_boot_handoff.c
         boot/freestanding_runtime.c
-        boot/bootloader_stub.c
+        boot/bootloader_core.c
     )
     
     target_include_directories(vibeos_bootloader_uefi PRIVATE
@@ -373,6 +373,7 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         target_compile_options(vibeos_bootloader_uefi PRIVATE
             --target=x86_64-unknown-windows-msvc  # MS x64 ABI matches UEFI; emits COFF
             -ffreestanding
+            -fno-omit-frame-pointer   # see the GCC branch below
             -fno-stack-protector
             -mno-red-zone
             -mno-stack-arg-probe   # avoid MSVC __chkstk probes under -nostdlib
@@ -405,7 +406,15 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
             -fno-plt
             -mno-red-zone
             -fno-strict-aliasing # UEFI compatibility
-            -g0                 # Strip debug symbols (not applicable to freestanding bootloader)
+            # Frame pointers and debug info, for the same reason the kernel has
+            # them: this code runs before any kernel diagnostics exist, so if it
+            # ever stops quietly the only things to work with are an address
+            # from the emulator and whatever can resolve it. They cost nothing
+            # in the shipped image - the objcopy step below copies an explicit
+            # list of sections and .debug_* is not on it, so the debug info
+            # stays in the intermediate ELF where addr2line can read it.
+            -fno-omit-frame-pointer
+            -g
             -Wall
             -Wextra
             -Wpedantic

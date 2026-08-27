@@ -1,3 +1,13 @@
+/* The firmware-independent half of the bootloader: parsing a kernel image and
+ * planning where its segments go.
+ *
+ * Kept apart from the uefi_*.c files on purpose - none of this touches
+ * firmware, so all of it is exercised by host tests, which is where a parser's
+ * bugs are findable. It was called bootloader_stub.c for a long time after it
+ * had stopped being one; six hundred lines of ELF64 and PE32+ parsing that a
+ * required boot gate depends on is not a stub, and a name that says otherwise
+ * invites treating it as disposable. */
+
 #include "vibeos/bootloader.h"
 
 static uint16_t read_le16(const uint8_t *p) {

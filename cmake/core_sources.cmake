@@ -63,7 +63,7 @@ set(VIBEOS_USER_CORE_SOURCES
     user/compat/windows/windows_compat.c
     user/compat/macos/macos_compat.c
     user/lib/user_api.c
-    boot/bootloader_stub.c
+    boot/bootloader_core.c
 )
 
 # The TLS adapter is built into its own target so hosted crypto can never be

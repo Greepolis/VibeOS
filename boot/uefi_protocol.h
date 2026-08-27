@@ -80,7 +80,12 @@ struct _EFI_BOOT_SERVICES {
     void *InstallProtocolInterface;
     void *ReinstallProtocolInterface;
     void *UninstallProtocolInterface;
-    void *HandleProtocol;
+    /* Typed, unlike its neighbours, because it is the one this bootloader
+     * actually calls. Casting a void* to a function pointer is something ISO C
+     * does not define - UEFI requires it to work, but there is no need to do
+     * it here when the table can simply say what the entry is. */
+    EFI_STATUS(EFIAPI *HandleProtocol)(void *handle, EFI_GUID *protocol,
+                                       void **interface);
     void *Reserved;
     void *RegisterProtocolNotify;
     void *LocateHandle;
