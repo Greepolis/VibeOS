@@ -145,7 +145,9 @@ The ESP image is built by a self-contained FAT16 writer (`scripts/make_esp_image
 - `user/`: user-space services/runtime scaffolding (`init`, `servicemgr`, `fs`, `net`, `drivers`, `compat`)
 - `include/`: public/internal subsystem headers
 - `tests/`: host-side integration and subsystem regression suite
-- `docs/`: architecture specs and progress tracking
+- `docs/`: architecture specs and progress tracking, published as a site by
+  the Pages workflow (its table of contents is generated from the directory, so
+  a new document appears without anyone remembering to list it)
 
 ## Development Tools
 

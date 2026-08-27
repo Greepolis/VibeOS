@@ -1,0 +1,22 @@
+# mdBook configuration for the published documentation site.
+#
+# src is the docs directory itself rather than a separate src/ tree: the
+# documents are written to be read in the repository as well as on the site,
+# and moving them under src/ would break every relative link between them and
+# every path referenced from CLAUDE.md and the README.
+[book]
+title = "VibeOS"
+description = "An operating system written from scratch, and the reasoning behind it"
+authors = ["Greepolis"]
+src = "."
+language = "en"
+
+[output.html]
+default-theme = "rust"
+git-repository-url = "https://github.com/Greepolis/VibeOS"
+# Edit links point at the file that produced the page, so a reader who spots
+# something wrong is one click from fixing it.
+edit-url-template = "https://github.com/Greepolis/VibeOS/edit/main/docs/{path}"
+
+[output.html.search]
+enable = true

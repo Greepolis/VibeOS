@@ -1,0 +1,78 @@
+name: Documentation Site
+
+# The design documents are the part of this project that explains why anything
+# is the way it is, and they have been readable only by cloning the repository.
+# This publishes them.
+#
+# The table of contents is generated from the directory on every build rather
+# than committed. A hand-maintained one is a second place to remember, and a
+# document added without touching it is not "missing from the menu", it is
+# absent from the site with nothing to say so.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - '.github/workflows/pages.yml'
+      - 'scripts/dev/make-book-summary.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time, and never cancel one half-done: a cancelled deploy
+# can leave the site serving a partial build.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install mdBook
+        run: |
+          set -euo pipefail
+          version=0.4.40
+          url="https://github.com/rust-lang/mdBook/releases/download/v${version}/mdbook-v${version}-x86_64-unknown-linux-gnu.tar.gz"
+          mkdir -p "$HOME/.local/bin"
+          curl -sSL "$url" | tar -xz -C "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Generate the table of contents
+        run: python3 scripts/dev/make-book-summary.py docs
+
+      - name: Build
+        run: mdbook build docs
+
+      - name: Check every listed page exists
+        # mdBook is happy to publish a menu entry pointing at nothing. A
+        # generated summary makes that unlikely rather than impossible, and a
+        # site with dead links is worse than no site.
+        run: |
+          set -euo pipefail
+          missing=0
+          while read -r page; do
+            [ -f "docs/$page" ] || { echo "missing: $page"; missing=1; }
+          done < <(grep -oP '\]\(\K[^)]+' docs/SUMMARY.md)
+          [ "$missing" -eq 0 ]
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/book
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

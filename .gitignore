@@ -64,3 +64,4 @@ qemu-cli-summary-*.txt
 qemu-cli-serial-*.log
 qemu-cli-err-*.log
 wedge-serial*.log
+SUMMARY.md

@@ -1,0 +1,93 @@
+name: Release Provenance
+
+# VibeOS now ships bootable images somebody downloads and runs: an appliance
+# for VirtualBox and VMware, an ISO, raw disks. That is a different kind of
+# artifact from a source tarball - whoever imports it hands it their machine -
+# and the honest question they should be able to ask is "did this come from
+# that source, built by that workflow", not "does the checksum on the page
+# match the file on the page", which any tampering would update together.
+#
+# SLSA provenance answers that question with a signed statement produced by a
+# workflow the release author does not control the innards of. It is the one
+# thing in this area that could not be forged by whoever produced the files.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      hashes: ${{ steps.hash.outputs.hashes }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ninja-build qemu-utils xorriso ovmf
+
+      - name: Build the kernel image
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+                -DVIBEOS_BUILD_TESTS=ON -DVIBEOS_BUILD_KERNEL_IMAGE=ON
+          cmake --build build -j"$(nproc)"
+
+      - name: Host tests must pass before anything is signed
+        # Provenance says where a file came from, not that it works. Refusing
+        # to attest a build that fails its own tests is what keeps the two from
+        # being confused.
+        run: |
+          set -euo pipefail
+          ./build/vibeos_kernel_tests | tail -2
+          ./build/vibeos_bootloader_tests | tail -1
+
+      - name: Build the importable images
+        run: |
+          set -euo pipefail
+          chmod +x scripts/make-vm-images-linux.sh
+          ./scripts/make-vm-images-linux.sh build
+
+      - name: The appliance must still be importable
+        run: python3 scripts/dev/check-vm-images.py build/artifacts
+
+      - name: Hash the release artifacts
+        id: hash
+        run: |
+          set -euo pipefail
+          cd build/artifacts
+          files="vibeos.ova vibeos.iso vibeos.vmdk vibeos.vdi vibeos_esp.img"
+          present=""
+          for f in $files; do
+            [ -f "$f" ] && present="$present $f"
+          done
+          # shellcheck disable=SC2086
+          echo "hashes=$(sha256sum $present | base64 -w0)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: vibeos-release-images
+          path: |
+            build/artifacts/vibeos.ova
+            build/artifacts/vibeos.vmx
+            build/artifacts/vibeos.iso
+            build/artifacts/vibeos.vmdk
+            build/artifacts/vibeos.vdi
+            build/artifacts/vibeos_esp.img
+
+  provenance:
+    needs: [build]
+    permissions:
+      actions: read      # to read the workflow that produced the files
+      id-token: write    # to sign the provenance
+      contents: write    # to attach it to the release
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.0.0
+    with:
+      base64-subjects: "${{ needs.build.outputs.hashes }}"
+      upload-assets: true
