@@ -78,6 +78,15 @@ def check_ova(path, problems):
                     fail(problems, f"ovf declares {href} as {declared} bytes, "
                                    f"archive holds {actual}")
 
+        # VirtualBox refuses to import a machine with no uuid, and says so in
+        # a message that reads as if it were about the name. Checked here
+        # because the first appliance shipped without one and the failure only
+        # appeared on somebody else's machine.
+        machine_el = root.find(".//vbox:Machine", NS)
+        if machine_el is None or not machine_el.get("uuid"):
+            fail(problems, "vbox:Machine has no uuid; VirtualBox refuses the "
+                           "import with 'Required Machine/@uuid ... is missing'")
+
         # VirtualBox reads firmware from its own machine section. The
         # elements inside vbox:Machine inherit the document's default
         # namespace rather than the vbox one, and which namespace that is

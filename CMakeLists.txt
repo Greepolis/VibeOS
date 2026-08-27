@@ -238,6 +238,20 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
             VERBATIM
         )
         add_custom_target(vibeos_musl_signal ALL DEPENDS "${VIBEOS_SIG_BIN}")
+
+        # A position-independent executable. Same compiler, same library, one
+        # linker flag apart - which is the point: the difference under test is
+        # the loading, not the program.
+        set(VIBEOS_PIE_SRC "${CMAKE_CURRENT_SOURCE_DIR}/tests/linux/musl_pie.c")
+        set(VIBEOS_PIE_BIN "${CMAKE_BINARY_DIR}/musl_pie")
+        add_custom_command(
+            OUTPUT "${VIBEOS_PIE_BIN}"
+            COMMAND "${VIBEOS_MUSL_GCC}" -static-pie -O2 -o "${VIBEOS_PIE_BIN}" "${VIBEOS_PIE_SRC}"
+            DEPENDS "${VIBEOS_PIE_SRC}"
+            COMMENT "Building a position-independent Linux binary with musl"
+            VERBATIM
+        )
+        add_custom_target(vibeos_musl_pie ALL DEPENDS "${VIBEOS_PIE_BIN}")
     else()
         message(STATUS "musl-gcc not found: the boot media will carry no unmodified Linux binary")
     endif()

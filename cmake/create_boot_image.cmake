@@ -67,6 +67,15 @@ if(EXISTS "${MUSL_ELF}")
     message(STATUS "EFI media includes an unmodified Linux binary: EFI/BOOT/MUSL.ELF")
 endif()
 
+# The same program built position-independent. An ET_DYN executable is placed
+# by the loader rather than by the file, so this is the one that says whether
+# VibeOS can do the placing.
+set(PIE_ELF "${CMAKE_BINARY_DIR}/musl_pie")
+if(EXISTS "${PIE_ELF}")
+    file(COPY_FILE "${PIE_ELF}" "${EFI_BOOT_DIR}/PIE.ELF" ONLY_IF_DIFFERENT)
+    message(STATUS "EFI media includes a position-independent Linux binary: EFI/BOOT/PIE.ELF")
+endif()
+
 # A static BusyBox from the host, if one is installed. This is a real program
 # doing real work - open a file, read a directory, write to stdout - rather than
 # a test written to pass. It is not built here and nothing about it was chosen

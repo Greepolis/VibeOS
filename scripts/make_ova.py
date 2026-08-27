@@ -114,8 +114,8 @@ OVF_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
     </VirtualHardwareSection>
     <!-- VirtualBox ignores the section above for firmware and reads this one.
          Both are present on purpose; neither hypervisor minds the other's. -->
-    <vbox:Machine ovf:required="false" version="1.16-linux" name="{name}"
-                  OSType="Other_64">
+    <vbox:Machine ovf:required="false" version="1.16-linux"
+                  uuid="{machine_uuid}" name="{name}" OSType="Other_64">
       <ovf:Info>VirtualBox machine configuration in VirtualBox format</ovf:Info>
       <Hardware>
         <CPU count="{cpus}"/>
@@ -180,7 +180,21 @@ def build(esp, out_dir, name, cpus, memory):
          "-o", "subformat=streamOptimized", esp, disk_path])
 
     capacity = os.path.getsize(esp)
+    # VirtualBox refuses an appliance whose vbox:Machine has no uuid - the
+    # import fails with "Required Machine/@uuid or @name attributes is
+    # missing", which names the attribute it wants and is easy to read as
+    # being about the name. Derived from the machine name so that rebuilding
+    # the same appliance produces the same identity rather than a new machine
+    # every time.
+    machine_uuid = "{%s-%s-%s-%s-%s}" % (
+        hashlib.sha256(name.encode()).hexdigest()[:8],
+        hashlib.sha256(name.encode()).hexdigest()[8:12],
+        hashlib.sha256(name.encode()).hexdigest()[12:16],
+        hashlib.sha256(name.encode()).hexdigest()[16:20],
+        hashlib.sha256(name.encode()).hexdigest()[20:32])
+
     ovf = OVF_TEMPLATE.format(disk_name=disk_name,
+                              machine_uuid=machine_uuid,
                               disk_size=os.path.getsize(disk_path),
                               capacity=capacity, name=name,
                               cpus=cpus, memory=memory)

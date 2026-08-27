@@ -536,6 +536,18 @@ def main():
                 elif int(gui.group(2), 16) == 0:
                     problems.append("gui_terminal_empty")
 
+            # A position-independent executable is placed by the loader, not
+            # by the file. Checking argv as well as the greeting is what
+            # separates "it ran" from "it ran and could still see the stack
+            # the loader built" - a bias applied to the image but not to
+            # AT_PHDR produces the first without the second.
+            pie = os.path.join(efi_root, "EFI", "BOOT", "PIE.ELF")
+            if os.path.exists(pie):
+                if "PIE_OK" not in text:
+                    problems.append("position_independent_binary_did_not_run")
+                elif "PIE_ARGS: argc=1" not in text:
+                    problems.append("position_independent_binary_got_wrong_argv")
+
             musl = os.path.join(efi_root, "EFI", "BOOT", "MUSL.ELF")
             if os.path.exists(musl):
                 if "MUSL_OK" not in text:

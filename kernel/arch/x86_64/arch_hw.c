@@ -1550,9 +1550,53 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
      * bounds and then checking which window the image landed in is what keeps
      * a crafted file from asking to be placed between them - on top of the
      * kernel, for instance, which is linked at 64 MiB. */
-    if (vibeos_elf_parse(elf, len, VIBEOS_HW_LOW_USER_BASE,
-                         VIBEOS_HW_USER_STACK_TOP, &img) != VIBEOS_ELF_OK) {
-        return -1;
+    /* Position-independent executables are read twice on purpose.
+     *
+     * An ET_DYN image describes itself from zero, so where it goes is the
+     * loader's decision, not the file's - and the span it needs is what the
+     * decision is made from. The first pass asks for that span at bias zero,
+     * which is the only question that can be answered without having already
+     * chosen. The second pass describes the image where it will actually live,
+     * so every address the rest of this function uses - segment addresses, the
+     * entry point, the program headers AT_PHDR must point at - is the real one
+     * rather than something to be adjusted later and forgotten in one place.
+     *
+     * Static ET_EXEC files take the same path and answer is_dyn = 0, so there
+     * is one route through here rather than two.
+     *
+     * Interpreters are still refused: a PT_INTERP file needs a second image
+     * fetched from the filesystem and mapped alongside this one, and pretending
+     * to load it would produce a process that jumps into an empty address. */
+    {
+        uint64_t bias = 0;
+        /* The sizing pass is deliberately not bounded by the window: an
+         * ET_DYN image sits at zero until it is placed, so measuring it
+         * against the address it has not been given yet rejects every
+         * position-independent file. The window is enforced below, on the
+         * addresses the image will really occupy, and again by the explicit
+         * check after this block. */
+        int rc = vibeos_elf_parse_ex(elf, len, 0, 0,
+                                     VIBEOS_HW_USER_STACK_TOP,
+                                     VIBEOS_ELF_ALLOW_DYN, &img);
+
+        if (rc != VIBEOS_ELF_OK) {
+            return -1;
+        }
+        if (img.is_dyn) {
+            /* The low window, the same place a Linux ET_EXEC links itself to.
+             * Somewhere else would work equally well for the program, and
+             * would need the whole two-window address policy re-argued. */
+            bias = VIBEOS_HW_LOW_USER_BASE;
+            if (img.image_span > VIBEOS_HW_LOW_USER_LIMIT - bias) {
+                return -1;   /* would not fit in the window it is offered */
+            }
+            rc = vibeos_elf_parse_ex(elf, len, bias, VIBEOS_HW_LOW_USER_BASE,
+                                     VIBEOS_HW_USER_STACK_TOP,
+                                     VIBEOS_ELF_ALLOW_DYN, &img);
+            if (rc != VIBEOS_ELF_OK) {
+                return -1;
+            }
+        }
     }
     if (!(img.min_vaddr >= VIBEOS_HW_USER_BASE) &&
         !(img.min_vaddr >= VIBEOS_HW_LOW_USER_BASE &&
@@ -5834,6 +5878,7 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                   "ping 10.0.2.2\n"
                                   "EFI/BOOT/NET.ELF\n"
                                   "EFI/BOOT/MUSL.ELF\n"
+                                  "EFI/BOOT/PIE.ELF\n"
                                   "EFI/BOOT/SIGNAL.ELF\n"
                                   "EFI/BOOT/BUSYBOX.ELF echo BUSYBOX_ECHO_OK\n"
                                   "EFI/BOOT/BUSYBOX.ELF cat DOCS/NOTES.TXT\n"

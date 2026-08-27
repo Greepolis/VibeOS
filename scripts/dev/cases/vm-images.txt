@@ -1,3 +1,9 @@
+### machine has no uuid, VirtualBox refuses the import
+--- old
+                  uuid="{machine_uuid}" name="{name}" OSType="Other_64">
++++ new
+                  name="{name}" OSType="Other_64">
+
 ### VirtualBox firmware left on the default
 --- old
         <Firmware type="EFI"/>
