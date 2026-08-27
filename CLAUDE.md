@@ -39,6 +39,14 @@ first for this reason.
 **Read the CI log before theorising.** A hang I diagnosed twice from the wrong
 end was named outright in the CI output: glibc printed the failing assertion.
 
+**A panic prints a backtrace now.** `hw_backtrace` walks the frame pointers
+and prints raw return addresses; `scripts/dev/symbolize.py` turns a serial log
+into function names and source lines with addr2line. The addresses are raw on
+purpose - nearest-preceding-symbol naming against a live guest is frequently
+wrong here, and a confidently wrong name is worse than a number. The kernel
+image is built `-fno-omit-frame-pointer -g` for this; the debug info never
+reaches the guest.
+
 **Instrument rather than infer.** `catch-hang.py` resolves a hung core's RIP,
 but almost everything in `arch_hw.c` is `static`, so nearest-preceding-symbol
 names are frequently wrong. When it matters, make the kernel print where it is.

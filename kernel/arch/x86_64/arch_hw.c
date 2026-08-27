@@ -544,10 +544,85 @@ static const char *hw_action_name(vibeos_trap_action_t action) {
     }
 }
 
+/* Walk the saved frame pointers and print the return addresses.
+ *
+ * A panic used to say what went wrong and nothing about how the machine got
+ * there, which for a fault inside one of two hundred static helpers is most of
+ * the question. The addresses are raw on purpose: almost everything in this
+ * file is static, so naming them from the nearest preceding symbol is
+ * frequently wrong - and a confidently wrong name costs more than a number.
+ * scripts/dev/symbolize.py turns them into file and line with addr2line, which
+ * has the debug info and does not guess.
+ *
+ * Every read is checked before it happens. This runs inside a fault handler,
+ * so following a corrupt chain would fault again and the second fault would
+ * replace the first one's evidence with a reset. */
+#define HW_BT_MAX_FRAMES 16u
+#define HW_BT_CODE_LO 0x4000000ull
+#define HW_BT_CODE_HI 0x5000000ull
+
+static int hw_bt_plausible_code(uint64_t addr) {
+    return addr >= HW_BT_CODE_LO && addr < HW_BT_CODE_HI;
+}
+
+static int hw_bt_plausible_frame(uint64_t rbp, uint64_t prev) {
+    if (rbp == 0 || (rbp & 7u) != 0) {
+        return 0;   /* a frame pointer is always 8-aligned */
+    }
+    if (rbp < 0x1000ull || rbp >= 0x8000000000ull) {
+        return 0;   /* not kernel memory */
+    }
+    /* Stacks grow down, so each caller's frame sits above the callee's. A
+     * chain that goes backwards is a loop, and a loop here never ends. */
+    return prev == 0 || rbp > prev;
+}
+
+static void hw_backtrace(uint64_t rbp, uint64_t rip) {
+    uint64_t prev = 0;
+    uint32_t depth;
+
+    vibeos_x86_64_serial_puts("[BT] rip=0x");
+    vibeos_x86_64_serial_print_hex(rip);
+    vibeos_x86_64_serial_puts("\n");
+
+    for (depth = 0; depth < HW_BT_MAX_FRAMES; depth++) {
+        const uint64_t *frame;
+        uint64_t ret;
+
+        if (!hw_bt_plausible_frame(rbp, prev)) {
+            break;
+        }
+        frame = (const uint64_t *)(uintptr_t)rbp;
+        ret = frame[1];             /* [rbp+8] is the return address */
+        if (!hw_bt_plausible_code(ret)) {
+            break;
+        }
+        vibeos_x86_64_serial_puts("[BT]   #");
+        vibeos_x86_64_serial_print_hex(depth);
+        vibeos_x86_64_serial_puts(" 0x");
+        vibeos_x86_64_serial_print_hex(ret);
+        vibeos_x86_64_serial_puts("\n");
+        prev = rbp;
+        rbp = frame[0];             /* [rbp] is the caller's frame pointer */
+    }
+    vibeos_x86_64_serial_puts("[BT] end depth=0x");
+    vibeos_x86_64_serial_print_hex(depth);
+    vibeos_x86_64_serial_puts("\n");
+}
+
 static void hw_panic(const char *why) {
+    uint64_t rbp;
+    uint64_t rip;
+
+    __asm__ __volatile__("movq %%rbp, %0" : "=r"(rbp));
+    /* The panic site itself, so the first line of the trace is this call and
+     * not whatever the compiler left in a register. */
+    __asm__ __volatile__("leaq (%%rip), %0" : "=r"(rip));
+
     vibeos_x86_64_serial_puts(" FATAL: ");
     vibeos_x86_64_serial_puts(why);
     vibeos_x86_64_serial_puts(", halting\n");
+    hw_backtrace(rbp, rip);
     for (;;) {
         __asm__ __volatile__("cli; hlt");
     }
@@ -677,6 +752,11 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
         /* Resumable trap (e.g. #BP): iretq returns to the saved RIP. */
         return;
     }
+
+    /* The trace comes from the interrupted frame's own base pointer, not from
+     * this handler's: what is wanted is the path that reached the fault, and
+     * the handler's own frames are noise on top of it. */
+    hw_backtrace(frame->rbp, frame->rip);
 
     /* KILL_CURRENT has no meaning yet (no user processes on metal); both
      * remaining actions are fatal during bring-up. */
@@ -5635,6 +5715,11 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
         }
     }
 
+    /* TEMPORARY backtrace trigger - removed after verification. */
+    {
+        volatile uint64_t *boom = (volatile uint64_t *)0x10;
+        *boom = 1;
+    }
     /* Network interface: virtio-net + the TCP/IP stack, addressed by DHCP. */
     hw_net_bringup();
 

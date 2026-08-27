@@ -171,6 +171,16 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         -ffreestanding
         -fno-stack-protector
         -mno-red-zone
+        # Keep the frame pointer. A release build drops it, and without the
+        # chain a panic can report where the machine stopped but nothing about
+        # how it got there - which for a fault inside one of two hundred static
+        # helpers is most of the question. One register is a cheap price for a
+        # backtrace on a kernel nobody can attach a debugger to.
+        -fno-omit-frame-pointer
+        # Debug info in the image on disk, never loaded at runtime: it costs
+        # nothing to the guest and is what turns a panic's addresses into a
+        # file and a line number through scripts/dev/symbolize.py.
+        -g
         -Wall
         -Wextra
         -Wpedantic
