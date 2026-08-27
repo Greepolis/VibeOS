@@ -25,6 +25,7 @@
 #include "vibeos/exfat.h"
 #include "vibeos/ntfs.h"
 #include "vibeos/journal.h"
+#include "vibeos/storage.h"
 #include "vibeos/tls.h"
 #include "vibeos/net_policy.h"
 #include "vibeos/trap.h"
@@ -8242,6 +8243,173 @@ static int test_journal_refusals(void)
     return 0;
 }
 
+/* ---------------------------------------------------------------- storage --
+ * Bring-up: the step that takes a disk and produces something mounted. Every
+ * piece under it was already tested; what was never tested is that they join
+ * up, because until now nothing joined them.
+ *
+ * The interesting claim is not "an ext2 partition mounts as ext2" but that the
+ * three drivers which did *not* recognise it stayed quiet. Probing is only
+ * safe if refusing is reliable, so a volume claimed by the wrong driver is the
+ * failure this checks for by name.
+ */
+
+#define ST_PART_LBA 64u
+#define ST_SECTORS (ST_PART_LBA + (uint64_t)E2_BLOCKS * (E2_BLOCK / VIBEOS_BLOCK_SIZE))
+
+static int g_st_partitioned;   /* serve an MBR at sector 0 */
+static int g_st_garbage;       /* serve a disk with no filesystem on it */
+
+static int st_dev_read(void *ctx, uint64_t lba, void *buf)
+{
+    (void)ctx;
+    if (lba >= ST_SECTORS) {
+        return -1;
+    }
+    memset(buf, 0, VIBEOS_BLOCK_SIZE);
+
+    if (g_st_garbage) {
+        /* Not zeroes: a driver that reads a zeroed field as "absent" would be
+         * let off by an empty disk. This is plausible-looking rubbish. */
+        memset(buf, 0x5A, VIBEOS_BLOCK_SIZE);
+        return 0;
+    }
+
+    if (g_st_partitioned) {
+        if (lba == 0) {
+            uint8_t *pe = (uint8_t *)buf + 446;
+
+            pe[0] = 0x00;          /* not bootable          */
+            pe[4] = 0x83;          /* Linux                 */
+            pe[8] = (uint8_t)ST_PART_LBA;
+            pe[12] = (uint8_t)(E2_BLOCKS * (E2_BLOCK / VIBEOS_BLOCK_SIZE));
+            ((uint8_t *)buf)[510] = 0x55;
+            ((uint8_t *)buf)[511] = 0xAA;
+            return 0;
+        }
+        if (lba < ST_PART_LBA) {
+            return 0;   /* the gap before the partition */
+        }
+        memcpy(buf, g_e2 + (lba - ST_PART_LBA) * VIBEOS_BLOCK_SIZE,
+               VIBEOS_BLOCK_SIZE);
+        return 0;
+    }
+
+    /* Unpartitioned: the filesystem starts at sector zero. */
+    if (lba >= (uint64_t)E2_BLOCKS * (E2_BLOCK / VIBEOS_BLOCK_SIZE)) {
+        return 0;
+    }
+    memcpy(buf, g_e2 + lba * VIBEOS_BLOCK_SIZE, VIBEOS_BLOCK_SIZE);
+    return 0;
+}
+
+static int st_scan(vibeos_storage_t *st, vibeos_blockcache_t *bc,
+                   vibeos_blockdev_t *dev, vibeos_block_slot_t *slots,
+                   uint8_t *storage, uint32_t slot_count)
+{
+    uint32_t i;
+
+    e2_build();
+    memset(dev, 0, sizeof(*dev));
+    dev->read = st_dev_read;
+    dev->sectors = ST_SECTORS;
+    for (i = 0; i < slot_count; i++) {
+        slots[i].data = storage + (size_t)i * VIBEOS_BLOCK_SIZE;
+    }
+    if (vibeos_blockcache_init(bc, dev, slots, slot_count) != 0) {
+        return -1;
+    }
+    return vibeos_storage_scan(st, bc, ST_SECTORS);
+}
+
+static int test_storage_partitioned(void)
+{
+    static vibeos_storage_t st;
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    vibeos_block_slot_t slots[8];
+    static uint8_t mem[8][VIBEOS_BLOCK_SIZE];
+    vibeos_fsmount_t *root;
+    vibeos_fs_node_t node;
+
+    g_st_partitioned = 1;
+    g_st_garbage = 0;
+    if (st_scan(&st, &bc, &dev, slots, &mem[0][0], 8u) != 0) {
+        return -1;
+    }
+    if (st.volume_count != 1u || st.mounted_count != 1u) {
+        return -1;
+    }
+    if (st.volume[0].first_lba != ST_PART_LBA) {
+        return -1;
+    }
+    /* By name: the point is that the other three refused it. */
+    if (st.volume[0].fs_name == 0 ||
+        strcmp(st.volume[0].fs_name, "ext2") != 0) {
+        return -1;
+    }
+    /* And the mount is usable, not merely reported. A scan that filled in the
+     * fields without producing something readable would pass every check
+     * above. */
+    root = vibeos_storage_first(&st);
+    if (root == 0 || vibeos_fs_lookup(root, "/small", &node) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_storage_unpartitioned(void)
+{
+    static vibeos_storage_t st;
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    vibeos_block_slot_t slots[8];
+    static uint8_t mem[8][VIBEOS_BLOCK_SIZE];
+
+    /* A bare filesystem from sector zero is ordinary on removable media, so it
+     * must not need a partition table to be found. */
+    g_st_partitioned = 0;
+    g_st_garbage = 0;
+    if (st_scan(&st, &bc, &dev, slots, &mem[0][0], 8u) != 0) {
+        return -1;
+    }
+    if (st.volume_count != 1u || st.mounted_count != 1u) {
+        return -1;
+    }
+    if (st.volume[0].first_lba != 0u ||
+        strcmp(st.volume[0].fs_name, "ext2") != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_storage_claims_nothing(void)
+{
+    static vibeos_storage_t st;
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    vibeos_block_slot_t slots[8];
+    static uint8_t mem[8][VIBEOS_BLOCK_SIZE];
+
+    /* A disk holding no filesystem any of these drivers implements. Probing is
+     * only safe because refusing is reliable, so a driver claiming this is the
+     * failure that matters - and it would not look like a failure at the time,
+     * it would look like a mounted volume returning wrong bytes. */
+    g_st_partitioned = 0;
+    g_st_garbage = 1;
+    if (st_scan(&st, &bc, &dev, slots, &mem[0][0], 8u) != 0) {
+        return -1;   /* the scan itself must still complete */
+    }
+    if (st.mounted_count != 0u) {
+        return -1;
+    }
+    if (vibeos_storage_first(&st) != 0) {
+        return -1;
+    }
+    g_st_garbage = 0;
+    return 0;
+}
+
 /*
  * Kernel test runner entry point.
  *
@@ -8286,6 +8454,9 @@ int main(void) {
     RUN_TEST(test_journal_commit_magic);
     RUN_TEST(test_journal_absurd_count);
     RUN_TEST(test_journal_refusals);
+    RUN_TEST(test_storage_partitioned);
+    RUN_TEST(test_storage_unpartitioned);
+    RUN_TEST(test_storage_claims_nothing);
     RUN_TEST(test_scheduler);
     RUN_TEST(test_scheduler_balanced);
     RUN_TEST(test_scheduler_wait_runtime);

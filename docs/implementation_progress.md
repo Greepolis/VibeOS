@@ -1,6 +1,6 @@
 # Implementation Progress (Macro Areas)
 
-Last review: 2026-08-26
+Last review: 2026-08-27
 
 This document is now split by macro area for easier maintenance.
 
@@ -19,10 +19,18 @@ This document is now split by macro area for easier maintenance.
 | Networking Stack | In Progress (IPv4 runtime plus portable route/firewall data-path enforcement verified) | [networking_stack.md](implementation_progress/networking_stack.md) |
 | User Space Interface | In Progress (unmodified static Linux binaries verified from ring 3) | [user_space_interface.md](implementation_progress/user_space_interface.md) |
 | Init System | In Progress | [init_system.md](implementation_progress/init_system.md) |
+| Linux Compatibility | In Progress (67 syscalls; unmodified static binaries run, dynamic ones refused) | [linux_compatibility.md](implementation_progress/linux_compatibility.md) |
+| Windows Compatibility | Not started (a two-entry translation table, no runtime) | [windows_compatibility.md](implementation_progress/windows_compatibility.md) |
+| macOS Compatibility | Not started (same, and deliberately dormant) | [macos_compatibility.md](implementation_progress/macos_compatibility.md) |
 
 ## Notes
 
 - Status reflects code currently present in repository, not only planned milestones.
+- A file existing under `user/compat/` is not progress. The Windows and macOS
+  translators are twenty-four lines each, know two syscall numbers, and nothing
+  calls them; they are tracked as not started for that reason. The Linux
+  compatibility that works is the kernel syscall layer, which is a different
+  piece of code entirely.
 - "Verified" here means a gate fails if it regresses, unless the entry says otherwise. The framebuffer desktop is the standing exception: its serial-visible state is gated, its pixels are checked by hand with `scripts/dev/screenshot.py`.
 - Each macro-area file contains:
   - implemented items verified in code

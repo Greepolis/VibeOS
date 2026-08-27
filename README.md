@@ -173,6 +173,9 @@ Implementation progress is tracked by macro area:
 - [docs/implementation_progress/networking_stack.md](docs/implementation_progress/networking_stack.md)
 - [docs/implementation_progress/user_space_interface.md](docs/implementation_progress/user_space_interface.md)
 - [docs/implementation_progress/init_system.md](docs/implementation_progress/init_system.md)
+- [docs/implementation_progress/linux_compatibility.md](docs/implementation_progress/linux_compatibility.md)
+- [docs/implementation_progress/windows_compatibility.md](docs/implementation_progress/windows_compatibility.md)
+- [docs/implementation_progress/macos_compatibility.md](docs/implementation_progress/macos_compatibility.md)
 
 ## Contributing
 

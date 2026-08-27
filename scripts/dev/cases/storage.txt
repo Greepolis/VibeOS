@@ -1,0 +1,55 @@
+### partition offset ignored, volume probed at sector zero
+--- old
+            st->volume[st->volume_count].first_lba = st->table.entry[i].first_lba;
++++ new
+            st->volume[st->volume_count].first_lba = 0;
+
+### a disk with no partition table is not examined
+--- old
+    if (st->table.count == 0u) {
+        st->volume_count = 1;
+        st->volume[0].first_lba = 0;
+        storage_probe_volume(&st->volume[0], cache);
+    } else {
++++ new
+    if (0) {
+
+### a driver that refused the volume is recorded as having mounted it
+--- old
+    v->fs_name = 0;
+    for (i = 0; i < sizeof(g_probes) / sizeof(g_probes[0]); i++) {
+        if (g_probes[i].probe(v, bc) == 0) {
+            v->fs_name = g_probes[i].name;
+            return;
+        }
+    }
++++ new
+    v->fs_name = 0;
+    for (i = 0; i < sizeof(g_probes) / sizeof(g_probes[0]); i++) {
+        (void)g_probes[i].probe(v, bc);
+        v->fs_name = g_probes[i].name;
+        return;
+    }
+
+### mounted volumes not counted
+--- old
+    for (i = 0; i < st->volume_count; i++) {
+        if (st->volume[i].fs_name != 0) {
+            st->mounted_count++;
+        }
+    }
++++ new
+
+### first mounted volume reported without checking it mounted
+--- old
+    for (i = 0; i < st->volume_count; i++) {
+        if (st->volume[i].fs_name != 0) {
+            return &st->volume[i].mount;
+        }
+    }
+    return 0;
++++ new
+    for (i = 0; i < st->volume_count; i++) {
+        return &st->volume[i].mount;
+    }
+    return 0;

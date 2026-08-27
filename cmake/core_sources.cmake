@@ -22,6 +22,7 @@ set(VIBEOS_KERNEL_CORE_SOURCES
     kernel/fs/exfat.c
     kernel/fs/ntfs.c
     kernel/fs/journal.c
+    kernel/fs/storage.c
     kernel/mm/pmm.c
     kernel/net/inet.c
     kernel/net/net_policy.c
