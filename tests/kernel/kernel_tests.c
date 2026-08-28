@@ -1836,6 +1836,12 @@ static int test_native_service_supervisor(void) {
         vibeos_service_supervisor_service_for_pid(&supervisor, 100, &i) == 0) {
         return -1;
     }
+    if (vibeos_service_supervisor_bind_pid(&supervisor, 2, 200) != 0 ||
+        vibeos_service_supervisor_report_exit_pid(&supervisor, 200, 7, VIBEOS_PROCESS_EXIT_FAULT) != 0 ||
+        supervisor.runtime[1].state != VIBEOS_NATIVE_SERVICE_STARTING ||
+        vibeos_service_supervisor_service_for_pid(&supervisor, 200, &i) == 0) {
+        return -1;
+    }
     manifests[2].service_id = manifests[1].service_id;
     if (vibeos_service_supervisor_load(&supervisor, manifests, 3) == 0) {
         return -1;
@@ -1844,7 +1850,7 @@ static int test_native_service_supervisor(void) {
     if (vibeos_service_supervisor_report_exit(&supervisor, 2, 9, VIBEOS_PROCESS_EXIT_FAULT) != 0 ||
         vibeos_service_supervisor_tick(&supervisor, 16) != 0 ||
         supervisor.runtime[1].state != VIBEOS_NATIVE_SERVICE_RUNNING ||
-        supervisor.runtime[1].restart_count != 1) {
+        supervisor.runtime[1].restart_count != 2) {
         return -1;
     }
     if (vibeos_service_supervisor_report_exit(&supervisor, 2, 9, VIBEOS_PROCESS_EXIT_NORMAL) != 0 ||

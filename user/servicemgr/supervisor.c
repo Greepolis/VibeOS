@@ -175,6 +175,19 @@ int vibeos_service_supervisor_service_for_pid(const vibeos_service_supervisor_t 
     return -1;
 }
 
+int vibeos_service_supervisor_report_exit_pid(vibeos_service_supervisor_t *supervisor,
+                                              uint32_t pid, uint32_t exit_code,
+                                              vibeos_process_exit_reason_t reason) {
+    uint32_t service_id;
+    if (vibeos_service_supervisor_service_for_pid(supervisor, pid, &service_id) != 0) {
+        return -1;
+    }
+    if (vibeos_service_supervisor_unbind_pid(supervisor, pid) != 0) {
+        return -1;
+    }
+    return vibeos_service_supervisor_report_exit(supervisor, service_id, exit_code, reason);
+}
+
 int vibeos_service_supervisor_tick(vibeos_service_supervisor_t *supervisor, uint64_t ticks) {
     uint32_t i;
     if (!supervisor) {
@@ -189,7 +202,11 @@ int vibeos_service_supervisor_tick(vibeos_service_supervisor_t *supervisor, uint
             supervisor->runtime[i].last_transition_ticks = supervisor->now_ticks;
         }
     }
-    return vibeos_service_supervisor_start_ready(supervisor);
+    /* A failed service is a valid terminal observation for a tick. The
+     * supervisor reports it through the runtime snapshot; only malformed
+     * input or an invalid transition should make the clock operation fail. */
+    (void)vibeos_service_supervisor_start_ready(supervisor);
+    return 0;
 }
 
 int vibeos_service_supervisor_health(const vibeos_service_supervisor_t *supervisor,
