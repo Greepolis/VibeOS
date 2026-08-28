@@ -13,6 +13,7 @@ set(CMAKE_C_EXTENSIONS OFF)
 option(VIBEOS_BUILD_TESTS "Build VibeOS host-side tests" ON)
 option(VIBEOS_BUILD_KERNEL_IMAGE "Build bootable kernel image for emulator/hardware" ON)
 option(VIBEOS_KERNEL_ONLY "Build kernel only (no user-space)" OFF)
+option(VIBEOS_USE_NATIVE_INIT "Select the native ring-3 init for EFI media" OFF)
 option(VIBEOS_ENABLE_TLS "Build the hosted Mbed TLS adapter" ON)
 # The audited TLS dependency lives in a git submodule. A plain `git clone`
 # does not fetch it, so a missing submodule degrades to a build without TLS
@@ -543,7 +544,9 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
     # Build EFI media layout in artifacts/efi_root with BOOTX64.EFI + kernel payload.
     add_custom_target(vibeos_boot_image
         COMMAND ${CMAKE_COMMAND} -E echo "Creating EFI media layout..."
-        COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/create_boot_image.cmake
+        COMMAND ${CMAKE_COMMAND}
+            -DVIBEOS_USE_NATIVE_INIT=${VIBEOS_USE_NATIVE_INIT}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/create_boot_image.cmake
         DEPENDS vibeos_kernel_elf vibeos_bootloader_efi vibeos_user_hello vibeos_user_init vibeos_user_task vibeos_user_sh vibeos_user_net
         COMMENT "Generating bootable kernel image"
     )
