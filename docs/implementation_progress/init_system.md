@@ -15,6 +15,7 @@ Last review: 2026-08-28
 - `user/servicemgr/supervisor.c` provides a bounded runtime supervisor model with dependency ordering, `STARTING`/`RUNNING`/`FAILED` states, restart limits and exponential backoff. The model is covered by the kernel host regression suite.
 - A separate freestanding ring-3 native init candidate (`user/prog/init.c`) is built with the target user ABI and staged as `EFI/BOOT/NATIVE_INIT.ELF`; it starts the shell child and waits for its exit. It is not yet selected as runtime PID 1.
 - Media generation now exposes an explicit `VIBEOS_USE_NATIVE_INIT=ON` switch to select that candidate as `INIT.ELF`; the default remains the legacy bring-up workload until the native-init QEMU acceptance gate is green.
+- Supervisor startup now fails closed when dependency resolution stops before all manifest nodes are running, including cyclic dependency graphs; host regression coverage verifies the bounded failure.
 
 ## Pending
 - The runtime boot path still starts fixed user ELF programs; it is not yet a supervised init process.
