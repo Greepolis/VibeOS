@@ -13,6 +13,7 @@ Last review: 2026-08-28
 - Service-manager startup now commits the manager to `RUNNING` only after all dependencies start; each failure path rolls back already-started services and resets the supervised count.
 - Native service manifest and runtime snapshot contracts are defined in `include/vibeos/userland.h` and validated host-side.
 - `user/servicemgr/supervisor.c` provides a bounded runtime supervisor model with dependency ordering, `STARTING`/`RUNNING`/`FAILED` states, restart limits and exponential backoff. The model is covered by the kernel host regression suite.
+- A separate freestanding ring-3 native init candidate (`user/prog/init.c`) is built with the target user ABI and staged as `EFI/BOOT/NATIVE_INIT.ELF`; it starts the shell child and waits for its exit. It is not yet selected as runtime PID 1.
 
 ## Pending
 - The runtime boot path still starts fixed user ELF programs; it is not yet a supervised init process.
