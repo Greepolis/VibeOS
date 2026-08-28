@@ -20,6 +20,9 @@ typedef enum vibeos_process_state {
 typedef struct vibeos_process_entry {
     uint32_t pid;
     uint32_t parent_pid;
+    uint32_t process_group_id;
+    uint32_t session_id;
+    uint32_t session_leader;
     uint32_t in_use;
     vibeos_process_state_t state;
     uint32_t security_label;
@@ -87,6 +90,9 @@ typedef struct vibeos_process_table {
 int vibeos_proc_init(vibeos_process_table_t *pt);
 int vibeos_proc_spawn(vibeos_process_table_t *pt, uint32_t parent_pid, uint32_t *out_pid);
 int vibeos_proc_spawn_with_token(vibeos_process_table_t *pt, uint32_t parent_pid, const vibeos_security_token_t *token, uint32_t *out_pid);
+int vibeos_proc_set_process_group(vibeos_process_table_t *pt, uint32_t pid, uint32_t process_group_id);
+int vibeos_proc_create_session(vibeos_process_table_t *pt, uint32_t pid, uint32_t *out_session_id);
+int vibeos_proc_get_session(vibeos_process_table_t *pt, uint32_t pid, uint32_t *out_session_id);
 int vibeos_proc_are_related(vibeos_process_table_t *pt, uint32_t pid_a, uint32_t pid_b);
 int vibeos_thread_create(vibeos_process_table_t *pt, uint32_t pid, uint32_t *out_tid);
 int vibeos_thread_owner(vibeos_process_table_t *pt, uint32_t tid, uint32_t *out_owner_pid);

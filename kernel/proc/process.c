@@ -138,6 +138,9 @@ int vibeos_proc_init(vibeos_process_table_t *pt) {
     for (i = 0; i < VIBEOS_MAX_PROCESSES; i++) {
         pt->entries[i].pid = 0;
         pt->entries[i].parent_pid = 0;
+        pt->entries[i].process_group_id = 0;
+        pt->entries[i].session_id = 0;
+        pt->entries[i].session_leader = 0;
         pt->entries[i].in_use = 0;
         pt->entries[i].state = VIBEOS_PROCESS_STATE_TERMINATED;
         pt->entries[i].security_label = 0;
@@ -182,6 +185,9 @@ int vibeos_proc_spawn_with_token(vibeos_process_table_t *pt, uint32_t parent_pid
         if (!pt->entries[i].in_use) {
             pt->entries[i].pid = pt->next_pid++;
             pt->entries[i].parent_pid = parent_pid;
+            pt->entries[i].process_group_id = pt->entries[i].pid;
+            pt->entries[i].session_id = pt->entries[i].pid;
+            pt->entries[i].session_leader = pt->entries[i].pid;
             pt->entries[i].in_use = 1;
             pt->entries[i].state = VIBEOS_PROCESS_STATE_NEW;
             pt->entries[i].security_label = 0;
@@ -192,6 +198,9 @@ int vibeos_proc_spawn_with_token(vibeos_process_table_t *pt, uint32_t parent_pid
                 if (parent) {
                     pt->entries[i].token = parent->token;
                     pt->entries[i].security_label = parent->security_label;
+                    pt->entries[i].process_group_id = parent->process_group_id;
+                    pt->entries[i].session_id = parent->session_id;
+                    pt->entries[i].session_leader = parent->session_leader;
                 } else if (process_default_token(pt->entries[i].pid, &pt->entries[i].token) != 0) {
                     pt->entries[i].in_use = 0;
                     pt->entries[i].pid = 0;
@@ -225,6 +234,44 @@ int vibeos_proc_spawn_with_token(vibeos_process_table_t *pt, uint32_t parent_pid
         }
     }
     return -1;
+}
+
+int vibeos_proc_set_process_group(vibeos_process_table_t *pt, uint32_t pid, uint32_t process_group_id) {
+    vibeos_process_entry_t *entry;
+    vibeos_process_entry_t *group_leader;
+    if (!pt || pid == 0 || process_group_id == 0) {
+        return -1;
+    }
+    entry = find_process_entry(pt, pid);
+    group_leader = find_process_entry(pt, process_group_id);
+    if (!entry || !group_leader || entry->session_id != group_leader->session_id) {
+        return -1;
+    }
+    entry->process_group_id = process_group_id;
+    return 0;
+}
+
+int vibeos_proc_create_session(vibeos_process_table_t *pt, uint32_t pid, uint32_t *out_session_id) {
+    vibeos_process_entry_t *entry;
+    if (!pt || !out_session_id || pid == 0 || (entry = find_process_entry(pt, pid)) == 0) {
+        return -1;
+    }
+    if (entry->session_leader != entry->pid) {
+        return -1;
+    }
+    entry->session_id = entry->pid;
+    entry->process_group_id = entry->pid;
+    *out_session_id = entry->session_id;
+    return 0;
+}
+
+int vibeos_proc_get_session(vibeos_process_table_t *pt, uint32_t pid, uint32_t *out_session_id) {
+    vibeos_process_entry_t *entry;
+    if (!pt || !out_session_id || pid == 0 || (entry = find_process_entry(pt, pid)) == 0) {
+        return -1;
+    }
+    *out_session_id = entry->session_id;
+    return 0;
 }
 
 int vibeos_proc_are_related(vibeos_process_table_t *pt, uint32_t pid_a, uint32_t pid_b) {
