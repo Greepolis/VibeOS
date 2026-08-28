@@ -2199,6 +2199,7 @@ static int hw_pick_next(hw_cpu_t *cpu) {
  * itself is delivered exactly as any other. */
 void vibeos_x86_64_console_interrupt(void) {
     int i, newest = -1;
+    uint32_t delivered = 0;
     uint32_t best = 0;
 
     for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
@@ -2228,8 +2229,26 @@ void vibeos_x86_64_console_interrupt(void) {
             newest = i;
         }
     }
-    if (newest >= 0) {
+    if (g_console_foreground_pgid != 0) {
+        for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+            if (!g_tasks[i].is_user || g_tasks[i].state == HW_TASK_FREE ||
+                g_tasks[i].state == HW_TASK_ZOMBIE ||
+                g_tasks[i].pgid != g_console_foreground_pgid) {
+                continue;
+            }
+            if (hw_signal_raise(i, VIBEOS_SIGINT) == 0) {
+                delivered++;
+            }
+        }
+    }
+    if (delivered == 0 && newest >= 0) {
         (void)hw_signal_raise(newest, VIBEOS_SIGINT);
+        delivered = 1;
+    }
+    if (delivered > 1) {
+        vibeos_x86_64_serial_puts("[SIG] Ctrl-C delivered to foreground process group members=0x");
+        vibeos_x86_64_serial_print_hex(delivered);
+        vibeos_x86_64_serial_puts("\n");
     }
 }
 
