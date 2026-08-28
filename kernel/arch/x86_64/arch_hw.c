@@ -19,6 +19,7 @@
 #include "vibeos/mm.h"
 #include "vibeos/inet.h"
 #include "vibeos/elf.h"
+#include "vibeos/services.h"
 
 #define VIBEOS_HW_KERNEL_CS 0x08u
 #define VIBEOS_HW_KERNEL_DS 0x10u
@@ -1979,6 +1980,7 @@ typedef struct {
     uint32_t ppid;
     uint32_t pgid;
     uint32_t sid;
+    uint32_t service_id;
 
     /* A thread shares its creator's address space rather than owning one, so
      * exit must not tear that space down while siblings are still running in
@@ -2104,6 +2106,8 @@ static uint32_t g_alloc_seq;
 static int g_sched_running;
 static uint32_t g_next_pid = 1;
 static uint32_t g_console_foreground_pgid;
+static vibeos_service_supervisor_t g_runtime_supervisor;
+static uint8_t g_runtime_supervisor_ready;
 
 /* Claim a free slot atomically: two cores can fork at the same time, so the
  * slot is marked RESERVED (never schedulable, never reapable) until the caller
@@ -2151,6 +2155,7 @@ static int hw_task_alloc(void) {
             g_tasks[i].proc.as.pml4 = 0;
             g_tasks[i].is_thread = 0;
             g_tasks[i].ran_once = 0;
+            g_tasks[i].service_id = 0;
             g_tasks[i].clear_child_tid = 0;
             g_tasks[i].state = HW_TASK_RESERVED;
             hw_spin_unlock(&g_sched_lock);
@@ -2576,6 +2581,15 @@ static void hw_task_exit(uint64_t code) {
     hw_cpu_t *cpu = hw_this_cpu();
     int dying = cpu->current_task;
     int next, i;
+
+    if (dying >= 0 && g_runtime_supervisor_ready && g_tasks[dying].service_id != 0) {
+        vibeos_process_exit_reason_t reason = g_tasks[dying].exit_signal != 0
+            ? VIBEOS_PROCESS_EXIT_SIGNAL : VIBEOS_PROCESS_EXIT_NORMAL;
+        (void)vibeos_service_supervisor_report_exit_pid(&g_runtime_supervisor,
+                                                        g_tasks[dying].pid,
+                                                        (uint32_t)code, reason);
+        g_tasks[dying].service_id = 0;
+    }
 
     /* A process owns its sockets: releasing them here is what stops a task that
      * exits with connections open from leaking them for the life of the system.
@@ -6685,6 +6699,48 @@ static void hw_smp_bringup(void) {
     vibeos_x86_64_serial_unlock();
 }
 
+static void hw_runtime_copy_string(char *dst, uint32_t capacity, const char *src) {
+    uint32_t i;
+    if (!dst || !src || capacity == 0) {
+        return;
+    }
+    for (i = 0; i + 1u < capacity && src[i] != 0; i++) {
+        dst[i] = src[i];
+    }
+    dst[i] = 0;
+}
+
+static void hw_runtime_supervisor_init(void) {
+    vibeos_service_manifest_t manifests[3] = {0};
+    uint32_t i;
+    if (vibeos_service_supervisor_init(&g_runtime_supervisor) != 0) {
+        return;
+    }
+    for (i = 0; i < 3; i++) {
+        manifests[i].abi_major = VIBEOS_NATIVE_ABI_MAJOR;
+        manifests[i].struct_size = sizeof(manifests[i]);
+        manifests[i].service_id = i + 1u;
+        manifests[i].restart_policy = VIBEOS_NATIVE_RESTART_ON_FAILURE;
+        manifests[i].restart_limit = 3u;
+        manifests[i].startup_timeout_ms = 5000u;
+        manifests[i].health_timeout_ms = 1000u;
+    }
+    manifests[0].dependency_mask = 0;
+    manifests[1].dependency_mask = 1u;
+    manifests[2].dependency_mask = 1u;
+    hw_runtime_copy_string(manifests[0].name, sizeof(manifests[0].name), "init");
+    hw_runtime_copy_string(manifests[1].name, sizeof(manifests[1].name), "shell");
+    hw_runtime_copy_string(manifests[2].name, sizeof(manifests[2].name), "logd");
+    hw_runtime_copy_string(manifests[0].image_path, sizeof(manifests[0].image_path), "/sbin/init");
+    hw_runtime_copy_string(manifests[1].image_path, sizeof(manifests[1].image_path), "/bin/sh");
+    hw_runtime_copy_string(manifests[2].image_path, sizeof(manifests[2].image_path), "/sbin/logd");
+    if (vibeos_service_supervisor_load(&g_runtime_supervisor, manifests, 3) == 0 &&
+        vibeos_service_supervisor_start_ready(&g_runtime_supervisor) == 0) {
+        g_runtime_supervisor_ready = 1;
+        vibeos_x86_64_serial_puts("[INIT] native supervisor manifest ready\n");
+    }
+}
+
 static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
     const unsigned char *init_elf = vibeos_user_hello_elf;
     uint64_t init_len = vibeos_user_hello_elf_len;
@@ -6765,6 +6821,12 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
     if (hello_id < 0 || a_id < 0 || b_id < 0) {
         vibeos_x86_64_serial_puts("[SCHED] failed to spawn initial tasks\n");
         return;
+    }
+    hw_runtime_supervisor_init();
+    if (g_runtime_supervisor_ready) {
+        g_tasks[hello_id].service_id = 1u;
+        (void)vibeos_service_supervisor_bind_pid(&g_runtime_supervisor, 1u,
+                                                 g_tasks[hello_id].pid);
     }
     g_console_foreground_pgid = g_tasks[hello_id].pgid;
 
