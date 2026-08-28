@@ -67,22 +67,14 @@ Recorded because each cost hours and none is visible from the code:
   written under Implemented above covers them. What remains unproven is
   breadth: one program and one interpreter have been run, not a library with
   dependencies of its own.
-- **Threads work, and are not gated.** `clone(CLONE_VM|CLONE_THREAD)` creates a
+- **Threads work, and are gated.** `clone(CLONE_VM|CLONE_THREAD)` creates a
   task sharing the caller's address space with its own kernel stack and TLS
   base; `futex` waits and wakes for real; exit clears the word a joiner sleeps
   on - before any context switch, because the word lives in the dying task's
   address space - and only tears that space down when the last thread of the
-  group leaves. Four threads share a counter under a contended mutex and land
-  on exactly 8000, each seeing its own thread-local.
-
-  What stops it being gated is stability, measured rather than assumed: with
-  the threaded program in the self-test, six boots in eight pass; with every
-  other change from the same day and that program left out, seven in eight -
-  which is what the tree did before any of it. So the defect is in running
-  several threads and not in the memory or exit changes that landed with them.
-  Two signatures: a #GP in ring 3 with a rip in the low window and an rsp in
-  the high one, and a silent wedge at the busybox phase.
-  `tests/linux/musl_threads.c` reproduces both and records what is known.
+  group leaves. Four threads share a counter under a contended mutex, land on
+  exactly 8000, and each sees its own thread-local. Sixteen boots out of
+  sixteen with that running.
 
 - `getrandom` is deliberately `ENOSYS`. `AT_RANDOM` is supplied; a real entropy
   source is a separate promise and has not been made.

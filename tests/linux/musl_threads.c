@@ -4,25 +4,17 @@
  * with CLONE_VM|CLONE_THREAD and the rest, and pthread_join sleeps on a futex
  * until the exiting thread's kernel-side clear_child_tid write wakes it.
  *
- * It passes: one thread created and joined, then four at once contending for a
- * mutex, with the counter landing exactly on 8000 and every thread seeing its
- * own thread-local.
+ * Two stages, kept apart on purpose. One thread created and joined is the
+ * smaller claim, and it already needs two tasks in one address space, a
+ * thread-local base of its own, a scheduler that runs the new task, an exit
+ * that clears the word the joiner sleeps on, and a futex whose wait and wake
+ * meet. Four at once adds what only overlapping threads can show: shared
+ * memory under a lock that really contends, and each thread keeping its own
+ * thread-local while doing it.
  *
- * It is NOT on the boot media, and that is a measurement rather than caution.
- * With this program in the self-test the boot passes six times in eight; with
- * every other change from the same day and this program left out, seven in
- * eight - the same as the tree before any of it, whose one failure is the
- * known cold-start stall in the firmware. So the remaining defect is in
- * running several threads, not in the memory or exit changes that went in
- * alongside.
- *
- * The two failure signatures, for whoever picks this up:
- *
- *   - a #GP in ring 3 at a rip inside the low Linux window with an rsp in the
- *     high VibeOS window, which is two programs' state in one context;
- *   - a wedge at the busybox phase with no fault at all.
- *
- * Build it and run it by hand from the kernel CLI while working on that.
+ * The counter is asserted, not printed. "The threads ran" and "the threads ran
+ * and lost no increment" are different claims, and a kernel can produce the
+ * first while failing the second.
  */
 #include <pthread.h>
 #include <stdio.h>

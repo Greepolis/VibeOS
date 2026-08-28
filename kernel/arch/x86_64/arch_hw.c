@@ -6556,6 +6556,7 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                   "EFI/BOOT/MUSL.ELF\n"
                                   "EFI/BOOT/PIE.ELF\n"
                                   "EFI/BOOT/DYN.ELF\n"
+                                  "EFI/BOOT/THREADS.ELF\n"
                                   "EFI/BOOT/SIGNAL.ELF\n"
                                   "EFI/BOOT/BUSYBOX.ELF echo BUSYBOX_ECHO_OK\n"
                                   "EFI/BOOT/BUSYBOX.ELF cat DOCS/NOTES.TXT\n"

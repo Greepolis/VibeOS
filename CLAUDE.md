@@ -154,6 +154,14 @@ came back interleaved from different cores and read as a contradiction: a page
 table walk that found nothing wrong, printed next to a refusal. Anything meant
 to be read together has to be written in one call.
 
+**Threads work; the console lock is why finding out took so long.** Neither
+`hw_log_emit` nor the `read()` echo path held it, so lines from two cores
+interleaved mid-word - which split the very markers the boot gate matches on
+and reported failures that had not happened. Twice I measured instability that
+was really corrupted output, and once I measured a stale image because I tailed
+`check.sh` to two lines and cut off the `rc=1`. Sixteen boots out of sixteen
+pass with four threads running.
+
 **A PROT_NONE mapping is a mapping, not a refusal.** A C library builds a
 thread stack by asking for stack plus guard as one PROT_NONE region and then
 mprotecting the usable part - so refusing PROT_NONE makes pthread_create fail

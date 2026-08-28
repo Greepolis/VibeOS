@@ -96,6 +96,14 @@ if(EXISTS "${DYN_ELF}")
     endif()
 endif()
 
+# Threads, through the library's own pthread implementation: one created and
+# joined, then four at once contending for a mutex.
+set(THR_ELF "${CMAKE_BINARY_DIR}/musl_threads")
+if(EXISTS "${THR_ELF}")
+    file(COPY_FILE "${THR_ELF}" "${EFI_BOOT_DIR}/THREADS.ELF" ONLY_IF_DIFFERENT)
+    message(STATUS "EFI media includes a threaded Linux binary: EFI/BOOT/THREADS.ELF")
+endif()
+
 # A static BusyBox from the host, if one is installed. This is a real program
 # doing real work - open a file, read a directory, write to stdout - rather than
 # a test written to pass. It is not built here and nothing about it was chosen
