@@ -2830,6 +2830,10 @@ static void hw_task_exit(uint64_t code) {
 #define LSYS_time          201
 #define LSYS_clone          56
 #define LSYS_getppid       110
+#define LSYS_setpgid       109
+#define LSYS_getpgrp       111
+#define LSYS_setsid        112
+#define LSYS_getsid        124
 #define LSYS_rt_sigreturn   15
 
 /* clone() flags that decide whether this is a fork or a thread. */
@@ -5324,6 +5328,65 @@ static long hw_sys_kill(uint64_t target_pid, uint64_t sig) {
     return (hw_signal_raise(target, (uint32_t)sig) == 0) ? 0 : -VIBEOS_EINVAL;
 }
 
+static long hw_sys_setpgid(uint64_t requested_pid, uint64_t requested_pgid) {
+    uint32_t pid;
+    int target;
+    int leader;
+    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+        return -VIBEOS_EINVAL;
+    }
+    pid = requested_pid == 0 ? g_tasks[g_current_task].tgid : (uint32_t)requested_pid;
+    target = hw_task_by_pid(pid);
+    if (target < 0) {
+        return -VIBEOS_ESRCH;
+    }
+    if (g_tasks[target].sid != g_tasks[g_current_task].sid) {
+        return -VIBEOS_EPERM;
+    }
+    leader = requested_pgid == 0 ? pid : (int)requested_pgid;
+    if (leader <= 0 || hw_task_by_pid((uint32_t)leader) < 0) {
+        return -VIBEOS_ESRCH;
+    }
+    if (g_tasks[hw_task_by_pid((uint32_t)leader)].sid != g_tasks[target].sid) {
+        return -VIBEOS_EPERM;
+    }
+    g_tasks[target].pgid = (uint32_t)leader;
+    return 0;
+}
+
+static long hw_sys_setsid(void) {
+    int i;
+    hw_task_t *current;
+    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+        return -VIBEOS_EINVAL;
+    }
+    current = &g_tasks[g_current_task];
+    if (current->pgid == current->tgid) {
+        return -VIBEOS_EPERM;
+    }
+    current->sid = current->tgid;
+    current->pgid = current->tgid;
+    for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+        if (i != g_current_task && g_tasks[i].is_user &&
+            g_tasks[i].state != HW_TASK_FREE && g_tasks[i].tgid == current->tgid) {
+            g_tasks[i].sid = current->sid;
+            g_tasks[i].pgid = current->pgid;
+        }
+    }
+    return (long)current->sid;
+}
+
+static long hw_sys_getsid(uint64_t requested_pid) {
+    int target;
+    uint32_t pid;
+    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+        return -VIBEOS_EINVAL;
+    }
+    pid = requested_pid == 0 ? g_tasks[g_current_task].tgid : (uint32_t)requested_pid;
+    target = hw_task_by_pid(pid);
+    return target < 0 ? -VIBEOS_ESRCH : (long)g_tasks[target].sid;
+}
+
 static long hw_sys_tkill(uint64_t target_tid, uint64_t sig) {
     int target;
 
@@ -6078,6 +6141,15 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
              * gets the same answer here, which is the whole point of the
              * distinction: getpid() names the process. */
             return (g_current_task >= 0) ? (long)g_tasks[g_current_task].tgid : 1;
+        case LSYS_setpgid:
+            return hw_sys_setpgid(a1, a2);
+        case LSYS_getpgrp:
+            return (g_current_task >= 0 && g_tasks[g_current_task].is_user) ?
+                (long)g_tasks[g_current_task].pgid : -VIBEOS_EINVAL;
+        case LSYS_setsid:
+            return hw_sys_setsid();
+        case LSYS_getsid:
+            return hw_sys_getsid(a1);
 
         /* The opening sequence of a real C runtime. */
         case LSYS_arch_prctl:

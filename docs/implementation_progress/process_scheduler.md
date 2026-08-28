@@ -21,6 +21,7 @@ Last review: 2026-08-28
 - Descriptors are part of task lifecycle: inherited on `fork` with pipe endpoint counts adjusted, and released on exit, so a pipeline's reader sees end-of-file when the last writer dies.
 - The portable process table now tracks process-group ID, session ID and session leader. Host APIs validate same-session group assignment and leader-only session creation (`vibeos_proc_set_process_group`, `vibeos_proc_create_session`, `vibeos_proc_get_session`).
 - The x86_64 console now broadcasts `SIGINT` to every live member of the foreground process group, with a bounded newest-task fallback during early boot. Runtime task-group reassignment and stopped-job semantics are still pending.
+- The x86_64 Linux personality now exposes `setpgid`, `getpgrp`, `setsid` and `getsid` with same-session and group-leader checks. The APIs are syntax-checked in the freestanding build; QEMU syscall/job-control coverage is still pending.
 - The portable lifecycle reparents children of a terminating process to PID 1, or clears the parent if PID 1 itself exits; handle and thread cleanup remains part of the same termination transaction.
 
 ## Pending
