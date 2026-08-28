@@ -21,6 +21,7 @@ Last review: 2026-08-28
 - A bounded native service supervisor is implemented in `user/servicemgr/supervisor.c`: it loads validated manifests, starts dependency-ready services, records runtime snapshots, applies restart limits/backoff and isolates terminal service failures. Host regression coverage exercises dependency ordering, restart and failure state transitions.
 - The portable process model now exposes validated process-group and session membership. This is a host-verified contract only; x86_64 task wiring and controlling-terminal job control remain open.
 - A freestanding native init candidate is built and staged separately from the legacy bring-up workload. Runtime selection and process-backed service startup remain pending.
+- External commands launched by the native shell now receive a distinct process group; the shell transfers and restores foreground terminal ownership around `wait4`. Job-control behavior remains unverified in QEMU.
 
 ## Pending
 - Process groups and a controlling terminal, so `Ctrl-C` targets a job rather than the newest pid, and so `ioctl(TCGETS)` can become something other than `ENOTTY`.

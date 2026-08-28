@@ -23,6 +23,7 @@ Last review: 2026-08-28
 - The x86_64 console now broadcasts `SIGINT` to every live member of the foreground process group, with a bounded newest-task fallback during early boot. Runtime task-group reassignment and stopped-job semantics are still pending.
 - The x86_64 Linux personality now exposes `setpgid`, `getpgrp`, `setsid` and `getsid` with same-session and group-leader checks. The APIs are syntax-checked in the freestanding build; QEMU syscall/job-control coverage is still pending.
 - `SIGSTOP` now marks a task stopped and unschedulable, while `SIGCONT` clears that state and wakes it. The transition is implemented in the x86_64 signal path; user-visible stop/continue regression coverage still requires the QEMU gate.
+- The shell now places external foreground jobs in their own process group and uses `TIOCSPGRP` to transfer terminal ownership while waiting. Kernel-side session validation is implemented; interactive QEMU coverage and background jobs remain pending.
 - The portable lifecycle reparents children of a terminating process to PID 1, or clears the parent if PID 1 itself exits; handle and thread cleanup remains part of the same termination transaction.
 
 ## Pending
