@@ -2755,6 +2755,8 @@ static void hw_task_exit(uint64_t code) {
 #define VIBEOS_EMFILE 24
 #define VIBEOS_EIO    5
 #define VIBEOS_ENOTDIR 20
+#define VIBEOS_TIOCGPGRP 0x540Fu
+#define VIBEOS_TIOCSPGRP 0x5410u
 
 /* Linux x86-64 syscall numbers we implement. */
 #define LSYS_read   0
@@ -5606,10 +5608,30 @@ static long hw_sys_arch_prctl(uint64_t code, uint64_t addr) {
 /* ioctl(): there is no terminal device here. ENOTTY is not a shortcut, it is
  * the truthful answer - and it is the answer a libc uses to decide that
  * stdout is a file or a pipe and should be block buffered. */
-static long hw_sys_ioctl(uint64_t fd, uint64_t req) {
-    (void)req;
+static long hw_sys_ioctl(uint64_t fd, uint64_t req, uint64_t arg) {
     if (fd >= 3u && !hw_fd_get(fd)) {
         return -VIBEOS_EBADF;
+    }
+    if (fd < 3u && req == VIBEOS_TIOCGPGRP) {
+        if (!hw_user_range_ok(arg, sizeof(uint32_t), 1) || g_current_task < 0) {
+            return -VIBEOS_EFAULT;
+        }
+        *(uint32_t *)(uintptr_t)arg = g_console_foreground_pgid;
+        return 0;
+    }
+    if (fd < 3u && req == VIBEOS_TIOCSPGRP) {
+        uint32_t pgid;
+        int group;
+        if (!hw_user_range_ok(arg, sizeof(uint32_t), 0) || g_current_task < 0) {
+            return -VIBEOS_EFAULT;
+        }
+        pgid = *(const uint32_t *)(uintptr_t)arg;
+        group = hw_task_by_pid(pgid);
+        if (group < 0 || g_tasks[group].sid != g_tasks[g_current_task].sid) {
+            return -VIBEOS_EPERM;
+        }
+        g_console_foreground_pgid = g_tasks[group].pgid;
+        return 0;
     }
     return -VIBEOS_ENOTTY;
 }
@@ -6171,7 +6193,7 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
         case LSYS_arch_prctl:
             return hw_sys_arch_prctl(a1, a2);
         case LSYS_ioctl:
-            return hw_sys_ioctl(a1, a2);
+            return hw_sys_ioctl(a1, a2, a3);
         case LSYS_writev:
             return hw_sys_writev(a1, a2, a3);
         case LSYS_readv:

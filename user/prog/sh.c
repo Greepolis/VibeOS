@@ -18,6 +18,9 @@
 #define SYS_unlink 87
 #define SYS_mkdir  83
 #define SYS_netctl 1000
+#define SYS_setpgid 109
+#define SYS_ioctl 16
+#define TIOCSPGRP 0x5410
 
 static long sys3(long nr, long a1, long a2, long a3) {
     long ret;
@@ -227,12 +230,19 @@ static void run_program(char *line) {
     argv[0] = (char *)(unsigned long)program_name(path);
     child = sys3(SYS_fork, 0, 0, 0);
     if (child == 0) {
+        /* Give each foreground job its own group before exec. */
+        sys3(SYS_setpgid, 0, 0, 0);
         sys3(SYS_execve, (long)(unsigned long)path,
              (long)(unsigned long)argv, (long)(unsigned long)g_envp);
         put("sh: cannot exec\n");
         sys3(SYS_exit, 127, 0, 0);
     } else if (child > 0) {
+        sys3(SYS_ioctl, 1, TIOCSPGRP, (long)(unsigned long)&child);
         sys3(SYS_wait4, child, 0, 0);
+        {
+            long self = sys3(39, 0, 0, 0);
+            sys3(SYS_ioctl, 1, TIOCSPGRP, (long)(unsigned long)&self);
+        }
     } else {
         put("sh: fork failed\n");
     }
