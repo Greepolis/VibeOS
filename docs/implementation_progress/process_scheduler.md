@@ -20,6 +20,7 @@ Last review: 2026-08-28
 - **Exit status carries a signal.** A task killed by a signal records it, and `waitpid` encodes the exit code in the high byte and the signal in the low seven bits. `128 + sig` is what a shell prints, not what the kernel stores.
 - Descriptors are part of task lifecycle: inherited on `fork` with pipe endpoint counts adjusted, and released on exit, so a pipeline's reader sees end-of-file when the last writer dies.
 - The portable process table now tracks process-group ID, session ID and session leader. Host APIs validate same-session group assignment and leader-only session creation (`vibeos_proc_set_process_group`, `vibeos_proc_create_session`, `vibeos_proc_get_session`).
+- The x86_64 console now broadcasts `SIGINT` to every live member of the foreground process group, with a bounded newest-task fallback during early boot. Runtime task-group reassignment and stopped-job semantics are still pending.
 
 ## Pending
 - Process groups and sessions. `Ctrl-C` currently raises `SIGINT` against the newest live user task because there is no job to target.
