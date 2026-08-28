@@ -18,6 +18,18 @@ int vibeos_service_supervisor_init(vibeos_service_supervisor_t *supervisor) {
     return 0;
 }
 
+int vibeos_service_supervisor_set_hooks(vibeos_service_supervisor_t *supervisor,
+                                        int (*spawn_hook)(const vibeos_service_manifest_t *, void *, uint32_t *),
+                                        int (*stop_hook)(uint32_t, void *), void *context) {
+    if (!supervisor || (!spawn_hook && stop_hook)) {
+        return -1;
+    }
+    supervisor->spawn_hook = spawn_hook;
+    supervisor->stop_hook = stop_hook;
+    supervisor->hook_context = context;
+    return 0;
+}
+
 int vibeos_service_supervisor_load(vibeos_service_supervisor_t *supervisor,
                                    const vibeos_service_manifest_t *manifests,
                                    uint32_t manifest_count) {
@@ -197,6 +209,14 @@ int vibeos_service_supervisor_tick(vibeos_service_supervisor_t *supervisor, uint
     for (i = 0; i < supervisor->manifest_count; i++) {
         if (supervisor->runtime[i].state == VIBEOS_NATIVE_SERVICE_STARTING &&
             supervisor->now_ticks >= supervisor->runtime[i].last_transition_ticks) {
+            if (supervisor->spawn_hook) {
+                uint32_t pid = 0;
+                if (supervisor->spawn_hook(&supervisor->manifests[i], supervisor->hook_context, &pid) != 0 ||
+                    vibeos_service_supervisor_bind_pid(supervisor,
+                                                       supervisor->manifests[i].service_id, pid) != 0) {
+                    continue;
+                }
+            }
             supervisor->runtime[i].state = VIBEOS_NATIVE_SERVICE_RUNNING;
             supervisor->started_mask |= 1u << i;
             supervisor->runtime[i].last_transition_ticks = supervisor->now_ticks;

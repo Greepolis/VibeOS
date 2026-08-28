@@ -1880,6 +1880,46 @@ static int test_native_service_supervisor(void) {
            running == 1 && failed == 0 ? 0 : -1;
 }
 
+static int native_supervisor_spawn(const vibeos_service_manifest_t *manifest, void *context, uint32_t *out_pid) {
+    uint32_t *next_pid = (uint32_t *)context;
+    if (!manifest || !out_pid || !next_pid || manifest->service_id == 0) {
+        return -1;
+    }
+    *out_pid = (*next_pid)++;
+    return 0;
+}
+
+static int test_native_service_spawn_hook(void) {
+    vibeos_service_supervisor_t supervisor;
+    vibeos_service_manifest_t manifest = {0};
+    uint32_t next_pid = 401;
+    if (vibeos_service_supervisor_init(&supervisor) != 0) {
+        return -1;
+    }
+    manifest.abi_major = VIBEOS_NATIVE_ABI_MAJOR;
+    manifest.struct_size = sizeof(manifest);
+    manifest.service_id = 1;
+    manifest.restart_policy = VIBEOS_NATIVE_RESTART_ON_FAILURE;
+    manifest.restart_limit = 1;
+    strcpy(manifest.name, "init");
+    strcpy(manifest.image_path, "/sbin/init");
+    if (vibeos_service_supervisor_load(&supervisor, &manifest, 1) != 0 ||
+        vibeos_service_supervisor_set_hooks(&supervisor, native_supervisor_spawn, 0, &next_pid) != 0 ||
+        vibeos_service_supervisor_start_ready(&supervisor) != 0 ||
+        vibeos_service_supervisor_bind_pid(&supervisor, 1, 400) != 0) {
+        return -1;
+    }
+    /* Initial activation is already running; after a fault, the hook owns the
+     * transition and supplies the replacement PID. */
+    if (vibeos_service_supervisor_report_exit_pid(&supervisor, 400, 1, VIBEOS_PROCESS_EXIT_FAULT) != 0 ||
+        vibeos_service_supervisor_tick(&supervisor, 16) != 0 ||
+        supervisor.runtime[0].pid != 401 ||
+        supervisor.runtime[0].state != VIBEOS_NATIVE_SERVICE_RUNNING) {
+        return -1;
+    }
+    return 0;
+}
+
 static int test_process_groups_and_sessions(void) {
     vibeos_process_table_t table;
     uint32_t leader, child, session;
@@ -8641,6 +8681,7 @@ int main(void) {
     RUN_TEST(test_user_api_and_bootloader);
     RUN_TEST(test_native_userland_abi);
     RUN_TEST(test_native_service_supervisor);
+    RUN_TEST(test_native_service_spawn_hook);
     RUN_TEST(test_process_groups_and_sessions);
     RUN_TEST(test_process_orphan_adoption);
     RUN_TEST(test_bootloader_sanitized_map);

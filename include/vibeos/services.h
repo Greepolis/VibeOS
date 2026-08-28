@@ -62,6 +62,9 @@ typedef struct vibeos_service_supervisor {
     uint32_t started_mask;
     uint32_t failed_mask;
     uint64_t now_ticks;
+    int (*spawn_hook)(const vibeos_service_manifest_t *manifest, void *context, uint32_t *out_pid);
+    int (*stop_hook)(uint32_t pid, void *context);
+    void *hook_context;
     vibeos_service_manifest_t manifests[VIBEOS_NATIVE_MAX_SERVICES];
     vibeos_service_runtime_snapshot_t runtime[VIBEOS_NATIVE_MAX_SERVICES];
 } vibeos_service_supervisor_t;
@@ -85,6 +88,9 @@ int vibeos_servicemgr_set_restart_budget(vibeos_servicemgr_state_t *mgr, uint32_
 int vibeos_servicemgr_report_service_failure(vibeos_servicemgr_state_t *mgr);
 int vibeos_servicemgr_can_restart(const vibeos_servicemgr_state_t *mgr, uint32_t *out_allowed);
 int vibeos_service_supervisor_init(vibeos_service_supervisor_t *supervisor);
+int vibeos_service_supervisor_set_hooks(vibeos_service_supervisor_t *supervisor,
+                                        int (*spawn_hook)(const vibeos_service_manifest_t *, void *, uint32_t *),
+                                        int (*stop_hook)(uint32_t, void *), void *context);
 int vibeos_service_supervisor_load(vibeos_service_supervisor_t *supervisor,
                                    const vibeos_service_manifest_t *manifests,
                                    uint32_t manifest_count);
