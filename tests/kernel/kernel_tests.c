@@ -8,6 +8,7 @@
 #include "vibeos/fs.h"
 #include "vibeos/compat.h"
 #include "vibeos/services.h"
+#include "vibeos/userland.h"
 #include "vibeos/security_model.h"
 #include "vibeos/service_ipc.h"
 #include "vibeos/policy.h"
@@ -1747,6 +1748,62 @@ static int test_user_api_and_bootloader(void) {
         return -1;
     }
     return 0;
+}
+
+static int test_native_userland_abi(void) {
+    vibeos_process_start_info_t start = {0};
+    vibeos_service_manifest_t manifest[2] = {0};
+    vibeos_service_runtime_snapshot_t snapshot = {0};
+
+    start.abi_major = VIBEOS_NATIVE_ABI_MAJOR;
+    start.abi_minor = VIBEOS_NATIVE_ABI_MINOR;
+    start.struct_size = sizeof(start);
+    start.argc = 1;
+    start.argv_ptr = 0x1000;
+    strcpy(start.image_path, "/sbin/init");
+    if (vibeos_process_start_info_validate(&start) != 0) {
+        return -1;
+    }
+    start.abi_major++;
+    if (vibeos_process_start_info_validate(&start) == 0) {
+        return -1;
+    }
+    start.abi_major = VIBEOS_NATIVE_ABI_MAJOR;
+    start.argv_ptr = 0;
+    if (vibeos_process_start_info_validate(&start) == 0) {
+        return -1;
+    }
+
+    manifest[0].abi_major = VIBEOS_NATIVE_ABI_MAJOR;
+    manifest[0].struct_size = sizeof(manifest[0]);
+    manifest[0].service_id = 1;
+    manifest[0].restart_policy = VIBEOS_NATIVE_RESTART_ON_FAILURE;
+    strcpy(manifest[0].name, "init");
+    strcpy(manifest[0].image_path, "/sbin/init");
+    manifest[1] = manifest[0];
+    manifest[1].service_id = 2;
+    manifest[1].dependency_mask = 1u;
+    strcpy(manifest[1].name, "shell");
+    strcpy(manifest[1].image_path, "/bin/sh");
+    if (vibeos_service_manifest_validate(manifest, 2, 0) != 0 ||
+        vibeos_service_manifest_validate(manifest, 2, 1) != 0) {
+        return -1;
+    }
+    manifest[1].dependency_mask = 2u;
+    if (vibeos_service_manifest_validate(manifest, 2, 1) == 0) {
+        return -1;
+    }
+
+    snapshot.abi_major = VIBEOS_NATIVE_ABI_MAJOR;
+    snapshot.struct_size = sizeof(snapshot);
+    snapshot.service_id = 2;
+    snapshot.state = VIBEOS_NATIVE_SERVICE_RUNNING;
+    snapshot.last_exit_reason = VIBEOS_PROCESS_EXIT_NORMAL;
+    if (vibeos_service_snapshot_validate(&snapshot) != 0) {
+        return -1;
+    }
+    snapshot.state = 99;
+    return vibeos_service_snapshot_validate(&snapshot) == 0 ? -1 : 0;
 }
 
 static int test_bootloader_sanitized_map(void) {
@@ -8471,6 +8528,7 @@ int main(void) {
     RUN_TEST(test_services);
     RUN_TEST(test_servicemgr_and_drivers);
     RUN_TEST(test_user_api_and_bootloader);
+    RUN_TEST(test_native_userland_abi);
     RUN_TEST(test_bootloader_sanitized_map);
     RUN_TEST(test_bootloader_handoff_metadata);
     RUN_TEST(test_bootloader_firmware_tags_and_pe_plan);
