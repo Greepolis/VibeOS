@@ -1829,6 +1829,13 @@ static int test_native_service_supervisor(void) {
         running != 3 || failed != 0) {
         return -1;
     }
+    if (vibeos_service_supervisor_bind_pid(&supervisor, 1, 100) != 0 ||
+        vibeos_service_supervisor_bind_pid(&supervisor, 2, 100) == 0 ||
+        vibeos_service_supervisor_service_for_pid(&supervisor, 100, &i) != 0 || i != 1 ||
+        vibeos_service_supervisor_unbind_pid(&supervisor, 100) != 0 ||
+        vibeos_service_supervisor_service_for_pid(&supervisor, 100, &i) == 0) {
+        return -1;
+    }
     manifests[2].service_id = manifests[1].service_id;
     if (vibeos_service_supervisor_load(&supervisor, manifests, 3) == 0) {
         return -1;

@@ -92,6 +92,12 @@ int vibeos_service_supervisor_start_ready(vibeos_service_supervisor_t *superviso
 int vibeos_service_supervisor_report_exit(vibeos_service_supervisor_t *supervisor,
                                           uint32_t service_id, uint32_t exit_code,
                                           vibeos_process_exit_reason_t reason);
+int vibeos_service_supervisor_bind_pid(vibeos_service_supervisor_t *supervisor,
+                                       uint32_t service_id, uint32_t pid);
+int vibeos_service_supervisor_unbind_pid(vibeos_service_supervisor_t *supervisor,
+                                         uint32_t pid);
+int vibeos_service_supervisor_service_for_pid(const vibeos_service_supervisor_t *supervisor,
+                                              uint32_t pid, uint32_t *out_service_id);
 int vibeos_service_supervisor_tick(vibeos_service_supervisor_t *supervisor, uint64_t ticks);
 int vibeos_service_supervisor_health(const vibeos_service_supervisor_t *supervisor,
                                      uint32_t *out_running, uint32_t *out_failed);

@@ -122,6 +122,59 @@ int vibeos_service_supervisor_report_exit(vibeos_service_supervisor_t *superviso
     return 0;
 }
 
+int vibeos_service_supervisor_bind_pid(vibeos_service_supervisor_t *supervisor,
+                                       uint32_t service_id, uint32_t pid) {
+    int index;
+    uint32_t i;
+    if (!supervisor || service_id == 0 || pid == 0) {
+        return -1;
+    }
+    index = find_service(supervisor, service_id);
+    if (index < 0) {
+        return -1;
+    }
+    for (i = 0; i < supervisor->manifest_count; i++) {
+        if (i != (uint32_t)index && supervisor->runtime[i].pid == pid) {
+            return -1;
+        }
+    }
+    if (supervisor->runtime[index].pid != 0 && supervisor->runtime[index].pid != pid) {
+        return -1;
+    }
+    supervisor->runtime[index].pid = pid;
+    return 0;
+}
+
+int vibeos_service_supervisor_unbind_pid(vibeos_service_supervisor_t *supervisor,
+                                         uint32_t pid) {
+    uint32_t i;
+    if (!supervisor || pid == 0) {
+        return -1;
+    }
+    for (i = 0; i < supervisor->manifest_count; i++) {
+        if (supervisor->runtime[i].pid == pid) {
+            supervisor->runtime[i].pid = 0;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+int vibeos_service_supervisor_service_for_pid(const vibeos_service_supervisor_t *supervisor,
+                                              uint32_t pid, uint32_t *out_service_id) {
+    uint32_t i;
+    if (!supervisor || !out_service_id || pid == 0) {
+        return -1;
+    }
+    for (i = 0; i < supervisor->manifest_count; i++) {
+        if (supervisor->runtime[i].pid == pid) {
+            *out_service_id = supervisor->runtime[i].service_id;
+            return 0;
+        }
+    }
+    return -1;
+}
+
 int vibeos_service_supervisor_tick(vibeos_service_supervisor_t *supervisor, uint64_t ticks) {
     uint32_t i;
     if (!supervisor) {
