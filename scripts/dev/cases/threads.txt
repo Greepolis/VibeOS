@@ -1,0 +1,28 @@
+### the join word is cleared after the context switch, so nobody is woken
+--- old
+    if (dying >= 0 && g_tasks[dying].clear_child_tid != 0u) {
+        uint64_t addr = g_tasks[dying].clear_child_tid;
+        uint32_t why = HW_RANGE_OK;
++++ new
+    if (0) {
+        uint64_t addr = g_tasks[dying].clear_child_tid;
+        uint32_t why = HW_RANGE_OK;
+
+### a thread gets its creator's TLS instead of its own
+--- old
+    child->fs_base = (flags & CLONE_SETTLS) ? tls : parent->fs_base;
++++ new
+    child->fs_base = parent->fs_base;
+
+### futex wait sleeps without checking the value first
+--- old
+    if (*(volatile uint32_t *)(uintptr_t)addr != expected) {
+        hw_spin_unlock(&g_futex_lock);
++++ new
+    if (0) {
+        hw_spin_unlock(&g_futex_lock);
+
+### mprotect leaves a reserved page unreachable from ring 3
+--- old
+            *pte |= PTE_USER;
++++ new

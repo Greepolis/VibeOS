@@ -554,6 +554,22 @@ def main():
             # pointed at the program. argv0len comes back through the C
             # library's strlen, so a symbol had to be resolved rather than
             # folded away by the compiler.
+            # Threads. The counter is asserted as well as the greeting:
+            # "the threads ran" and "the threads ran, shared one address
+            # space and took a contended lock without losing an increment"
+            # are different claims, and a kernel can produce the first while
+            # failing the second. tls=ok says each thread saw its own
+            # thread-local, which is what separates four threads from one
+            # thread run four times.
+            thr = os.path.join(efi_root, "EFI", "BOOT", "THREADS.ELF")
+            if os.path.exists(thr):
+                if "THREADS_STAGE1_OK" not in text:
+                    problems.append("thread_create_or_join_failed")
+                elif "counter=8000 expected=8000" not in text:
+                    problems.append("threads_lost_an_increment")
+                elif "tls=ok" not in text:
+                    problems.append("thread_local_storage_shared")
+
             # The ring-3 ABI round trip. This was printing "abi: ...wrong"
             # for a whole session while the gate stayed green, because the
             # line was collected into the summary and never asserted on - so

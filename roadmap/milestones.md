@@ -18,7 +18,7 @@
 | M11 graphical user space | Not started | - |
 | M12 usable without a serial cable | Not started | - |
 | M13 dynamic executables | Done | ET_DYN loaded at a bias, PT_INTERP mapped alongside, and a dynamically linked musl binary runs in the boot gate |
-| M14 threads | Partly done | clone(CLONE_THREAD), futex wait/wake, tgid/tid and thread exit are in; one thread can be created and joined, several at once still hangs |
+| M14 threads | Partly done | clone(CLONE_THREAD), futex wait/wake, tgid/tid and thread exit all work - four threads share memory under a contended mutex and lose no increment. Not gated: running them costs about one boot in four to a #GP or a wedge |
 | M15 Windows console compatibility | Not started | - |
 | M16 durable storage | Partly done | journal, block cache and device barrier built and swept against power loss; no filesystem routes its metadata through it yet |
 | M17 architecture review for expansion | Ongoing | design documents updated alongside the code |

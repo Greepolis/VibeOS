@@ -64,6 +64,7 @@ static long user_syscall6(long nr, long a1, long a2, long a3,
 #define SYS_execve 59
 #define SYS_mprotect 10
 #define SYS_munmap   11
+#define SYS_futex    202
 #define SYS_ioctl    16
 #define SYS_writev   20
 #define SYS_uname    63
@@ -123,6 +124,7 @@ static const char abi_uname[] = "abi: uname wrong\n";
 static const char abi_clock[] = "abi: clock_gettime wrong\n";
 static const char abi_iov[] = "abi: writev wrong\n";
 static const char abi_mm[] = "abi: mmap/mprotect/munmap wrong\n";
+static const char abi_futex[] = "abi: futex did not check the value\n";
 static const char tls_kept[] = "tls survived context switches\n";
 static const char tls_lost[] = "abi: %fs lost across a context switch\n";
 static const char iov_a[] = "iov";
@@ -224,6 +226,27 @@ static const char *check_linux_abi(void) {
     if (user_syscall3(SYS_mprotect, page, 4096, 3) == 0) {
         return abi_mm;
     }
+    /* FUTEX_WAIT must compare before it sleeps.
+     *
+     * That comparison is the whole contract: it is what makes a wake that
+     * arrives between reading a word and deciding to sleep impossible to lose.
+     * Asking to wait for a value the word does not hold must come straight
+     * back with EAGAIN - and if the check were missing this call would block
+     * forever instead, which is the failure it exists to prevent, so the test
+     * either returns wrong or never returns.
+     *
+     * Deterministic on purpose: the race itself needs two threads and a
+     * particular interleaving, and a test that only sometimes exercises a
+     * check is a check that is only sometimes tested. */
+    {
+        volatile int word = 1;
+        long r = user_syscall3(SYS_futex, (unsigned long)&word, 0 /*WAIT*/, 2);
+
+        if (r != -11 /*EAGAIN*/) {
+            return abi_futex;
+        }
+    }
+
     /* MAP_FIXED is refused rather than silently ignored. */
     if (user_syscall6(SYS_mmap, page, 4096, 3, 0x32 /*FIXED|ANON|PRIVATE*/,
                       -1, 0) > 0) {

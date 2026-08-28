@@ -140,6 +140,20 @@ How it was actually found, since three careful readings of the code were wrong:
 Keep the guard. It costs one read per context switch and it is the difference
 between a machine that stops and a machine that says why.
 
+**Anything the kernel writes on a task's behalf must happen before the
+context switch.** exit clears the word a joiner sleeps on; that word lives in
+the dying task's address space, so once exit has picked the next task and
+loaded its CR3, the write goes somewhere else and the range check refuses it
+for the honest reason that there is no current user task. pthread_join then
+waits forever on a wake the kernel politely declined to send. The range check
+says which of its reasons it hit now - `hw_user_range_why` - because "not
+writable" without a reason is a dead end.
+
+**Two log lines are not one fact.** A diagnostic split across two hw_log calls
+came back interleaved from different cores and read as a contradiction: a page
+table walk that found nothing wrong, printed next to a refusal. Anything meant
+to be read together has to be written in one call.
+
 **A PROT_NONE mapping is a mapping, not a refusal.** A C library builds a
 thread stack by asking for stack plus guard as one PROT_NONE region and then
 mprotecting the usable part - so refusing PROT_NONE makes pthread_create fail

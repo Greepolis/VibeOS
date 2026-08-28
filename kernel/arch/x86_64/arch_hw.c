@@ -285,7 +285,19 @@ static void hw_schedule(vibeos_x86_64_isr_frame_t *frame); /* defined below */
 /* Both defined further down, and both needed above their definitions: this is
  * one 5000-line file, and a helper used before it is declared compiles as an
  * implicit declaration and then fails confusingly at the definition. */
+/* Reasons a range is refused, so a caller can say which one it hit. */
+#define HW_RANGE_OK          0u
+#define HW_RANGE_NO_TASK     1u   /* no current task, or not a user one */
+#define HW_RANGE_WRAP        2u
+#define HW_RANGE_LEVEL0      3u   /* PML4 entry absent or not user */
+#define HW_RANGE_LEVEL1      4u
+#define HW_RANGE_LEVEL2      5u
+#define HW_RANGE_LEAF        6u   /* the 4 KiB entry itself */
+#define HW_RANGE_READONLY    7u
+
 static int hw_user_range_ok(uint64_t va, uint64_t len, int need_write);
+static int hw_user_range_why(uint64_t va, uint64_t len, int need_write,
+                             uint32_t *why);
 static long hw_futex_wake(uint64_t addr, uint32_t count);
 static void hw_task_exit(uint64_t code);                   /* defined below */
 static void hw_keyboard_wake(void);                        /* defined below */
@@ -2578,6 +2590,34 @@ static void hw_task_exit(uint64_t code) {
         vibeos_x86_64_serial_puts("\n");
         vibeos_x86_64_serial_unlock();
     }
+    /* Tell a joiner this thread is gone.
+     *
+     * Before anything is scheduled, and that placement is the whole of it.
+     * This used to sit after the switch to the next task, where the CR3 and
+     * g_current_task both belong to somebody else - so the write went to
+     * another address space and the range check refused it for the honest
+     * reason that there was no current user task. The joiner was never woken
+     * and pthread_join hung, with the kernel having politely declined to do
+     * the one thing the joiner was waiting for.
+     *
+     * The word lives in the dying task's address space, so it can only be
+     * written while that space is still the one loaded. */
+    if (dying >= 0 && g_tasks[dying].clear_child_tid != 0u) {
+        uint64_t addr = g_tasks[dying].clear_child_tid;
+        uint32_t why = HW_RANGE_OK;
+
+        if (hw_user_range_why(addr, 4u, 1, &why)) {
+            *(volatile uint32_t *)(uintptr_t)addr = 0u;
+            hw_futex_wake(addr, 0x7FFFFFFF);
+        } else {
+            hw_log(VIBEOS_LOG_WARN, 28u, addr,
+                   (uint64_t)why | ((uint64_t)g_tasks[dying].pid << 8),
+                   "exit: join word not writable, nobody will be woken "
+                   "(a1 = reason | tid<<8)");
+        }
+        g_tasks[dying].clear_child_tid = 0;
+    }
+
     hw_spin_lock(&g_sched_lock);
     next = hw_pick_next(cpu);
     if (next < 0) {
@@ -2600,19 +2640,6 @@ static void hw_task_exit(uint64_t code) {
     hw_task_load_cpu_state(next);
     /* Now on the next task's CR3; the dying user address space is still
      * reachable through the shared kernel identity map, so free it. */
-    /* Tell a joiner this thread is gone, while its address space is still
-     * mapped: the word lives in that space. pthread_join sleeps on it, so a
-     * thread that exits without clearing it is a join that never returns. */
-    if (dying >= 0 && g_tasks[dying].clear_child_tid != 0u) {
-        uint64_t addr = g_tasks[dying].clear_child_tid;
-
-        if (hw_user_range_ok(addr, 4u, 1)) {
-            *(volatile uint32_t *)(uintptr_t)addr = 0u;
-            hw_futex_wake(addr, 0x7FFFFFFF);
-        }
-        g_tasks[dying].clear_child_tid = 0;
-    }
-
     if (dying >= 0 && g_tasks[dying].is_user) {
         int last;
 
@@ -2832,17 +2859,26 @@ static vibeos_compat_runtime_t g_compat_rt;
  * and reachable from ring 3. Without this the kernel would happily dereference
  * any pointer a user task passes - including kernel addresses. */
 static int hw_user_range_ok(uint64_t va, uint64_t len, int need_write) {
+    uint32_t why = HW_RANGE_OK;
+    return hw_user_range_why(va, len, need_write, &why);
+}
+
+static int hw_user_range_why(uint64_t va, uint64_t len, int need_write,
+                             uint32_t *why) {
     static const uint32_t shifts[3] = {39u, 30u, 21u};
     const hw_task_t *t;
     uint64_t page;
 
+    *why = HW_RANGE_OK;
     if (len == 0) {
         return 1;
     }
     if (va + len < va) {
-        return 0; /* wrap-around */
+        *why = HW_RANGE_WRAP;
+        return 0;
     }
     if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+        *why = HW_RANGE_NO_TASK;
         return 0;
     }
     t = &g_tasks[g_current_task];
@@ -2855,6 +2891,7 @@ static int hw_user_range_ok(uint64_t va, uint64_t len, int need_write) {
         for (level = 0; level < 3u; level++) {
             e = tbl[(page >> shifts[level]) & 0x1FFu];
             if ((e & PTE_PRESENT) == 0 || (e & PTE_USER) == 0) {
+                *why = HW_RANGE_LEVEL0 + level;
                 return 0;
             }
             if (level == 2u && (e & PTE_PS) != 0) {
@@ -2865,6 +2902,7 @@ static int hw_user_range_ok(uint64_t va, uint64_t len, int need_write) {
         if ((e & PTE_PS) == 0) {
             e = tbl[(page >> 12) & 0x1FFu];
             if ((e & PTE_PRESENT) == 0 || (e & PTE_USER) == 0) {
+                *why = HW_RANGE_LEAF;
                 return 0;
             }
         }
@@ -2875,6 +2913,7 @@ static int hw_user_range_ok(uint64_t va, uint64_t len, int need_write) {
          * perfectly legal - which made every read() into freshly forked
          * memory return EFAULT, and a shell report end of input. */
         if (need_write && (e & PTE_WRITE) == 0 && (e & PTE_COW) == 0) {
+            *why = HW_RANGE_READONLY;
             return 0;
         }
     }
@@ -3242,10 +3281,17 @@ static long hw_sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
                     continue;
                 }
                 dst[copied++] = (uint8_t)c;
+                /* Under the console lock, like every other writer. Echoing
+                 * without it lets a character land in the middle of another
+                 * core's write() - which does not merely look untidy: it
+                 * splits the markers the boot gate matches on, so a passing
+                 * run reports a failure that never happened. */
+                vibeos_x86_64_serial_lock();
                 if (c == '\n') {
                     vibeos_x86_64_serial_putc('\r');
                 }
                 vibeos_x86_64_serial_putc((char)c);
+                vibeos_x86_64_serial_unlock();
                 vibeos_x86_64_fb_putc((char)c);
                 if ((uint8_t)c == '\n') {
                     break; /* line-oriented: stop at newline */
@@ -4148,10 +4194,22 @@ static long hw_sys_mprotect(uint64_t addr, uint64_t len, uint64_t prot) {
         if (!pte) {
             continue;
         }
-        if (prot & PROT_WRITE) {
-            *pte |= PTE_WRITE;
+        /* Reachability and writability are two bits, and mprotect decides
+         * both. Only the write bit used to be touched, on the assumption that
+         * anything mapped was already reachable from ring 3 - which stopped
+         * being true when a PROT_NONE region became a real mapping with
+         * PTE_USER deliberately clear. The page then stayed present and
+         * unreachable, and the thread that had just been given a stack faulted
+         * on its first write to it: present, user, write - error code 7. */
+        if (prot == PROT_NONE) {
+            *pte &= ~(PTE_USER | PTE_WRITE);
         } else {
-            *pte &= ~PTE_WRITE;
+            *pte |= PTE_USER;
+            if (prot & PROT_WRITE) {
+                *pte |= PTE_WRITE;
+            } else {
+                *pte &= ~PTE_WRITE;
+            }
         }
         hw_invlpg(va);
     }
@@ -6354,7 +6412,9 @@ void vibeos_x86_64_ap_main(void) {
     hw_set_kernel_stack(g_tasks[idle].kstack_top);
 
     vibeos_x86_64_serial_lock();
-    vibeos_x86_64_serial_puts("[SMP] cpu online: lapic_id=0x");
+    vibeos_x86_64_serial_puts("[SMP] cpu online: console_id=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)vibeos_x86_64_cpu_id());
+    vibeos_x86_64_serial_puts(" lapic_id=0x");
     vibeos_x86_64_serial_print_hex(cpu->lapic_id);
     vibeos_x86_64_serial_puts("\n");
     vibeos_x86_64_serial_unlock();
