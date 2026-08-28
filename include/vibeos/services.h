@@ -2,8 +2,10 @@
 #define VIBEOS_SERVICES_H
 
 #include <stdint.h>
+#include "vibeos/userland.h"
 
 #define VIBEOS_INIT_MAX_GRAPH_NODES 16u
+#define VIBEOS_NATIVE_MAX_SERVICES 16u
 
 typedef enum vibeos_service_state {
     VIBEOS_SERVICE_STOPPED = 0,
@@ -55,6 +57,15 @@ typedef struct vibeos_servicemgr_state {
     uint32_t failed_services;
 } vibeos_servicemgr_state_t;
 
+typedef struct vibeos_service_supervisor {
+    uint32_t manifest_count;
+    uint32_t started_mask;
+    uint32_t failed_mask;
+    uint64_t now_ticks;
+    vibeos_service_manifest_t manifests[VIBEOS_NATIVE_MAX_SERVICES];
+    vibeos_service_runtime_snapshot_t runtime[VIBEOS_NATIVE_MAX_SERVICES];
+} vibeos_service_supervisor_t;
+
 int vibeos_init_start(vibeos_init_state_t *state);
 int vibeos_init_stop(vibeos_init_state_t *state);
 int vibeos_init_graph_start(vibeos_init_state_t *state, const vibeos_init_node_t *nodes, uint32_t node_count, uint32_t *out_started, uint32_t *out_failed);
@@ -73,5 +84,16 @@ int vibeos_servicemgr_health(const vibeos_servicemgr_state_t *mgr, const vibeos_
 int vibeos_servicemgr_set_restart_budget(vibeos_servicemgr_state_t *mgr, uint32_t budget);
 int vibeos_servicemgr_report_service_failure(vibeos_servicemgr_state_t *mgr);
 int vibeos_servicemgr_can_restart(const vibeos_servicemgr_state_t *mgr, uint32_t *out_allowed);
+int vibeos_service_supervisor_init(vibeos_service_supervisor_t *supervisor);
+int vibeos_service_supervisor_load(vibeos_service_supervisor_t *supervisor,
+                                   const vibeos_service_manifest_t *manifests,
+                                   uint32_t manifest_count);
+int vibeos_service_supervisor_start_ready(vibeos_service_supervisor_t *supervisor);
+int vibeos_service_supervisor_report_exit(vibeos_service_supervisor_t *supervisor,
+                                          uint32_t service_id, uint32_t exit_code,
+                                          vibeos_process_exit_reason_t reason);
+int vibeos_service_supervisor_tick(vibeos_service_supervisor_t *supervisor, uint64_t ticks);
+int vibeos_service_supervisor_health(const vibeos_service_supervisor_t *supervisor,
+                                     uint32_t *out_running, uint32_t *out_failed);
 
 #endif

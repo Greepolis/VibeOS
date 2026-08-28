@@ -1806,6 +1806,42 @@ static int test_native_userland_abi(void) {
     return vibeos_service_snapshot_validate(&snapshot) == 0 ? -1 : 0;
 }
 
+static int test_native_service_supervisor(void) {
+    vibeos_service_supervisor_t supervisor;
+    vibeos_service_manifest_t manifests[3] = {0};
+    uint32_t running = 0, failed = 0;
+    uint32_t i;
+    for (i = 0; i < 3; i++) {
+        manifests[i].abi_major = VIBEOS_NATIVE_ABI_MAJOR;
+        manifests[i].struct_size = sizeof(manifests[i]);
+        manifests[i].service_id = i + 1;
+        manifests[i].restart_policy = VIBEOS_NATIVE_RESTART_ON_FAILURE;
+        manifests[i].restart_limit = 2;
+        strcpy(manifests[i].name, i == 0 ? "init" : (i == 1 ? "logd" : "shell"));
+        strcpy(manifests[i].image_path, i == 0 ? "/sbin/init" : "/bin/service");
+    }
+    manifests[1].dependency_mask = 1u;
+    manifests[2].dependency_mask = 3u;
+    if (vibeos_service_supervisor_init(&supervisor) != 0 ||
+        vibeos_service_supervisor_load(&supervisor, manifests, 3) != 0 ||
+        vibeos_service_supervisor_start_ready(&supervisor) != 0 ||
+        vibeos_service_supervisor_health(&supervisor, &running, &failed) != 0 ||
+        running != 3 || failed != 0) {
+        return -1;
+    }
+    if (vibeos_service_supervisor_report_exit(&supervisor, 2, 9, VIBEOS_PROCESS_EXIT_FAULT) != 0 ||
+        vibeos_service_supervisor_tick(&supervisor, 16) != 0 ||
+        supervisor.runtime[1].state != VIBEOS_NATIVE_SERVICE_RUNNING ||
+        supervisor.runtime[1].restart_count != 1) {
+        return -1;
+    }
+    if (vibeos_service_supervisor_report_exit(&supervisor, 2, 9, VIBEOS_PROCESS_EXIT_NORMAL) != 0 ||
+        supervisor.runtime[1].state != VIBEOS_NATIVE_SERVICE_FAILED) {
+        return -1;
+    }
+    return vibeos_service_supervisor_health(&supervisor, &running, &failed) == 0 && failed == 1 ? 0 : -1;
+}
+
 static int test_bootloader_sanitized_map(void) {
     vibeos_memory_region_t input[6];
     vibeos_memory_region_t scratch[6];
@@ -8529,6 +8565,7 @@ int main(void) {
     RUN_TEST(test_servicemgr_and_drivers);
     RUN_TEST(test_user_api_and_bootloader);
     RUN_TEST(test_native_userland_abi);
+    RUN_TEST(test_native_service_supervisor);
     RUN_TEST(test_bootloader_sanitized_map);
     RUN_TEST(test_bootloader_handoff_metadata);
     RUN_TEST(test_bootloader_firmware_tags_and_pe_plan);

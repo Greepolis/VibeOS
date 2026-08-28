@@ -1,0 +1,137 @@
+#include "vibeos/services.h"
+
+static int find_service(const vibeos_service_supervisor_t *s, uint32_t id) {
+    uint32_t i;
+    for (i = 0; i < s->manifest_count; i++) {
+        if (s->manifests[i].service_id == id) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+int vibeos_service_supervisor_init(vibeos_service_supervisor_t *supervisor) {
+    if (!supervisor) {
+        return -1;
+    }
+    *supervisor = (vibeos_service_supervisor_t){0};
+    return 0;
+}
+
+int vibeos_service_supervisor_load(vibeos_service_supervisor_t *supervisor,
+                                   const vibeos_service_manifest_t *manifests,
+                                   uint32_t manifest_count) {
+    uint32_t i;
+    if (!supervisor || !manifests || manifest_count == 0 ||
+        manifest_count > VIBEOS_NATIVE_MAX_SERVICES) {
+        return -1;
+    }
+    for (i = 0; i < manifest_count; i++) {
+        if (vibeos_service_manifest_validate(manifests, manifest_count, i) != 0) {
+            return -1;
+        }
+        if (find_service(supervisor, manifests[i].service_id) >= 0) {
+            return -1;
+        }
+    }
+    supervisor->manifest_count = manifest_count;
+    supervisor->started_mask = 0;
+    supervisor->failed_mask = 0;
+    for (i = 0; i < manifest_count; i++) {
+        supervisor->manifests[i] = manifests[i];
+        supervisor->runtime[i] = (vibeos_service_runtime_snapshot_t){
+            VIBEOS_NATIVE_ABI_MAJOR, VIBEOS_NATIVE_ABI_MINOR,
+            sizeof(vibeos_service_runtime_snapshot_t), manifests[i].service_id, 0, 0,
+            0, VIBEOS_PROCESS_EXIT_NORMAL, VIBEOS_NATIVE_SERVICE_STOPPED, 0, 0, 0
+        };
+    }
+    return 0;
+}
+
+int vibeos_service_supervisor_start_ready(vibeos_service_supervisor_t *supervisor) {
+    uint32_t i;
+    uint32_t progress = 1;
+    if (!supervisor || supervisor->manifest_count == 0) {
+        return -1;
+    }
+    while (progress) {
+        progress = 0;
+        for (i = 0; i < supervisor->manifest_count; i++) {
+            uint32_t deps = supervisor->manifests[i].dependency_mask;
+            if ((supervisor->started_mask & (1u << i)) != 0 ||
+                (supervisor->failed_mask & (1u << i)) != 0 ||
+                (deps & supervisor->started_mask) != deps) {
+                continue;
+            }
+            supervisor->runtime[i].state = VIBEOS_NATIVE_SERVICE_RUNNING;
+            supervisor->runtime[i].started_at_ticks = supervisor->now_ticks;
+            supervisor->runtime[i].last_transition_ticks = supervisor->now_ticks;
+            supervisor->started_mask |= 1u << i;
+            progress = 1;
+        }
+    }
+    return 0;
+}
+
+int vibeos_service_supervisor_report_exit(vibeos_service_supervisor_t *supervisor,
+                                          uint32_t service_id, uint32_t exit_code,
+                                          vibeos_process_exit_reason_t reason) {
+    int index;
+    vibeos_service_runtime_snapshot_t *r;
+    const vibeos_service_manifest_t *m;
+    if (!supervisor || reason > VIBEOS_PROCESS_EXIT_TIMEOUT) {
+        return -1;
+    }
+    index = find_service(supervisor, service_id);
+    if (index < 0) {
+        return -1;
+    }
+    r = &supervisor->runtime[index];
+    m = &supervisor->manifests[index];
+    r->last_exit_code = exit_code;
+    r->last_exit_reason = reason;
+    r->last_transition_ticks = supervisor->now_ticks;
+    supervisor->started_mask &= ~(1u << index);
+    if (reason == VIBEOS_PROCESS_EXIT_NORMAL || m->restart_policy == VIBEOS_NATIVE_RESTART_NEVER ||
+        r->restart_count >= m->restart_limit) {
+        r->state = VIBEOS_NATIVE_SERVICE_FAILED;
+        supervisor->failed_mask |= 1u << index;
+        return 0;
+    }
+    r->state = VIBEOS_NATIVE_SERVICE_STARTING;
+    r->restart_count++;
+    r->last_transition_ticks = supervisor->now_ticks + (1ull << (r->restart_count > 6 ? 6 : r->restart_count));
+    return 0;
+}
+
+int vibeos_service_supervisor_tick(vibeos_service_supervisor_t *supervisor, uint64_t ticks) {
+    uint32_t i;
+    if (!supervisor) {
+        return -1;
+    }
+    supervisor->now_ticks += ticks;
+    for (i = 0; i < supervisor->manifest_count; i++) {
+        if (supervisor->runtime[i].state == VIBEOS_NATIVE_SERVICE_STARTING &&
+            supervisor->now_ticks >= supervisor->runtime[i].last_transition_ticks) {
+            supervisor->runtime[i].state = VIBEOS_NATIVE_SERVICE_RUNNING;
+            supervisor->started_mask |= 1u << i;
+            supervisor->runtime[i].last_transition_ticks = supervisor->now_ticks;
+        }
+    }
+    return vibeos_service_supervisor_start_ready(supervisor);
+}
+
+int vibeos_service_supervisor_health(const vibeos_service_supervisor_t *supervisor,
+                                     uint32_t *out_running, uint32_t *out_failed) {
+    uint32_t i, running = 0, failed = 0;
+    if (!supervisor || !out_running || !out_failed) {
+        return -1;
+    }
+    for (i = 0; i < supervisor->manifest_count; i++) {
+        running += supervisor->runtime[i].state == VIBEOS_NATIVE_SERVICE_RUNNING;
+        failed += supervisor->runtime[i].state == VIBEOS_NATIVE_SERVICE_FAILED;
+    }
+    *out_running = running;
+    *out_failed = failed;
+    return 0;
+}

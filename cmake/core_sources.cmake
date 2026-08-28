@@ -51,6 +51,7 @@ set(VIBEOS_USER_CORE_SOURCES
     user/init/init_system.c
     user/init/userland_abi.c
     user/servicemgr/service_manager.c
+    user/servicemgr/supervisor.c
     user/servicemgr/service_ipc.c
     user/devmgr/device_manager.c
     user/devmgr/driver_host.c
