@@ -1946,8 +1946,32 @@ typedef struct {
      * - which is how a crashed child looks like a successful one. */
     uint32_t exit_signal;
     uint64_t kstack_top;  /* private ring-0 stack: lets a task block in a syscall */
+    /* `pid` is the thread id: unique per task, which is what Linux calls a
+     * tid. `tgid` is the thread group - the number a program thinks of as its
+     * process id, shared by every thread in it. For a single-threaded process
+     * the two are equal, which is why everything worked while `pid` was the
+     * only one of them.
+     *
+     * getpid() returns tgid and gettid() returns pid. Getting that backwards
+     * is not a cosmetic error: a C library uses the pair to decide whether it
+     * is signalling itself or another thread. */
     uint32_t pid;
+    uint32_t tgid;
     uint32_t ppid;
+
+    /* A thread shares its creator's address space rather than owning one, so
+     * exit must not tear that space down while siblings are still running in
+     * it. Whether this task is the last of its group is asked of the task
+     * table, not tracked in a counter: the table is what the scheduler already
+     * believes, and a second count of the same thing is a second thing that
+     * can be wrong. */
+    uint8_t is_thread;
+
+    /* CLONE_CHILD_CLEARTID: the address to zero and wake when this thread
+     * exits. It is how pthread_join learns the thread is gone - the joiner
+     * waits on this word, so a thread that exits without clearing it is a
+     * join that never returns. */
+    uint64_t clear_child_tid;
     /* Written from interrupt/syscall context (preemption, task exit) and read
      * by the kernel task, so it must not be cached across a wait loop. */
     volatile int state;
@@ -2334,6 +2358,7 @@ static int hw_task_adopt_kernel(void) {
     g_tasks[i].on_cpu = 1;          /* it is this CPU, right now */
     g_tasks[i].is_user = 0;
     g_tasks[i].pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
+    g_tasks[i].tgid = g_tasks[i].pid;
     g_tasks[i].kstack_top = hw_this_cpu()->syscall_kstack_top;
     g_tasks[i].cr3 = (uint64_t)(uintptr_t)&g_pml4[0];
     HW_TASK_MARK(i, cr3_set_by, "adopt_kernel");
@@ -2383,6 +2408,7 @@ static int hw_task_create_idle(hw_cpu_t *cpu) {
     g_tasks[i].is_user = 0;
     g_tasks[i].is_idle = 1;
     g_tasks[i].pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
+    g_tasks[i].tgid = g_tasks[i].pid;
     cpu->idle_task = i;
     return i;
 }
@@ -2427,6 +2453,7 @@ static int hw_task_spawn_user(const unsigned char *elf, uint64_t len,
     g_tasks[i].state = HW_TASK_READY;
     g_tasks[i].is_user = 1;
     g_tasks[i].pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
+    g_tasks[i].tgid = g_tasks[i].pid;
     return i;
 }
 
@@ -2446,7 +2473,7 @@ static void hw_task_exit(uint64_t code) {
         int fd;
         if (g_net_up) {
             hw_spin_lock(&g_net_lock);
-            (void)vibeos_inet_release_owner_sockets(&g_net, g_tasks[dying].pid);
+            (void)vibeos_inet_release_owner_sockets(&g_net, g_tasks[dying].tgid);
             hw_spin_unlock(&g_net_lock);
         }
         for (fd = 0; fd < VIBEOS_HW_MAX_FDS; fd++) {
@@ -3312,7 +3339,7 @@ static long hw_sys_socket(uint64_t domain, uint64_t type) {
     }
     hw_spin_lock(&g_net_lock);
     s = vibeos_inet_socket(&g_net, kind);
-    if (s >= 0 && vibeos_inet_socket_set_owner(&g_net, s, t->pid) != 0) {
+    if (s >= 0 && vibeos_inet_socket_set_owner(&g_net, s, t->tgid) != 0) {
         (void)vibeos_inet_close(&g_net, s);
         s = -1;
     }
@@ -4189,7 +4216,13 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
     child->ctx = *frame;   /* resume exactly where the parent is */
     child->ctx.rax = 0;    /* ... but fork() returns 0 in the child */
     child->pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
-    child->ppid = parent->pid;
+    /* fork makes a process, so the child heads its own thread group. Its
+     * parent is the *group*, not the thread that happened to call fork:
+     * wait() is a process relationship. */
+    child->tgid = child->pid;
+    child->ppid = parent->tgid;
+    child->is_thread = 0;
+    child->clear_child_tid = 0;
     child->fs_base = parent->fs_base;   /* the copied image expects its TLS */
     {
         uint32_t sg;
@@ -4280,7 +4313,7 @@ static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr) {
     if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
         return -VIBEOS_EINVAL;
     }
-    mypid = g_tasks[g_current_task].pid;
+    mypid = g_tasks[g_current_task].tgid;
 
     for (;;) {
         int i;
@@ -4293,11 +4326,11 @@ static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr) {
             if (t->ppid != mypid || t->state == HW_TASK_FREE) {
                 continue;
             }
-            if (want_pid != (uint64_t)-1 && t->pid != (uint32_t)want_pid) {
+            if (want_pid != (uint64_t)-1 && t->tgid != (uint32_t)want_pid) {
                 continue;
             }
             if (t->state == HW_TASK_ZOMBIE) {
-                uint32_t child_pid = t->pid;
+                uint32_t child_pid = t->tgid;
                 uint64_t code = t->exit_code;
                 uint32_t exit_signal = t->exit_signal;
                 int status = (exit_signal != 0u)
@@ -4852,11 +4885,14 @@ static int hw_signal_raise(int task_index, uint32_t sig) {
     return 0;
 }
 
+/* Find a task by thread-group id: kill(pid) names a process, and any of its
+ * threads will do as the place to record a pending signal. Threads are looked
+ * up by hw_task_by_tid instead, which matches the thread id. */
 static int hw_task_by_pid(uint32_t pid) {
     int i;
     for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
         if (g_tasks[i].is_user && g_tasks[i].state != HW_TASK_FREE &&
-            g_tasks[i].pid == pid) {
+            g_tasks[i].tgid == pid) {
             return i;
         }
     }
@@ -5507,7 +5543,10 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
         case LSYS_munmap:
             return hw_sys_munmap(a1, a2);
         case LSYS_getpid:
-            return (g_current_task >= 0) ? (long)g_tasks[g_current_task].pid : 1;
+            /* The thread group, not the thread. Every thread of a program
+             * gets the same answer here, which is the whole point of the
+             * distinction: getpid() names the process. */
+            return (g_current_task >= 0) ? (long)g_tasks[g_current_task].tgid : 1;
 
         /* The opening sequence of a real C runtime. */
         case LSYS_arch_prctl:
@@ -5527,16 +5566,19 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
         case LSYS_futex:
             return hw_sys_futex(a2);
         case LSYS_gettid:
-            /* One thread per process here, so the thread id is the process
-             * id - which is exactly what Linux reports for a single-threaded
-             * program too. */
+            /* The thread id proper. Equal to getpid() for a single-threaded
+             * program, which is what Linux reports too, and different for
+             * every thread of a program that has several. */
             return (g_current_task >= 0) ? (long)g_tasks[g_current_task].pid : 1;
         case LSYS_set_tid_address:
-            /* The clear-on-exit address is only read when a thread exits and
-             * something waits on it; with no threads there is nothing to
-             * notify. The return value - the caller's tid - is what a libc
-             * actually stores. */
-            return (g_current_task >= 0) ? (long)g_tasks[g_current_task].pid : 1;
+            /* Where to write zero and wake when this thread exits. A joiner
+             * sleeps on that word, so recording it is half of what makes
+             * pthread_join return; the other half is exit doing the writing. */
+            if (g_current_task >= 0) {
+                g_tasks[g_current_task].clear_child_tid = a1;
+                return (long)g_tasks[g_current_task].pid;
+            }
+            return 1;
         case LSYS_set_robust_list:
             /* The list is walked by the kernel when a thread dies holding a
              * robust mutex. No threads, no robust mutexes, nothing to walk. */
