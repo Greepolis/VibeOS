@@ -1,6 +1,6 @@
 # Linux Compatibility Progress
 
-Status: In Progress (unmodified static Linux binaries run end to end)
+Status: In Progress (static, position-independent and dynamically linked Linux binaries all run end to end)
 Last review: 2026-08-27
 
 ## Read this first: there are two things called "Linux compatibility"
@@ -35,6 +35,17 @@ BusyBox.
   trampoline, and pipelines in BusyBox's shell.
 - An unimplemented syscall is reported by number on the serial line rather than
   silently returning zero, so a program failing for that reason says so.
+- **Dynamically linked programs run.** A position-independent executable is
+  placed at a bias chosen by the loader, and one naming a `PT_INTERP` has that
+  interpreter mapped into the same address space and entered instead of the
+  program. The interpreter relocates itself from `AT_BASE` and jumps to
+  `AT_ENTRY`, which stays the program's own entry. Gated: `DYN_OK` and
+  `PIE_OK` both fail the boot if they stop appearing.
+- The interpreter path is translated. A musl binary asks for
+  `/lib/ld-musl-x86_64.so.1`, and the boot volume is FAT, which has neither
+  that directory nor a name that long; the loader sits beside the other
+  programs and the one path is substituted in the kernel. That is a stand-in
+  for a filesystem layout, not a design.
 
 ## Known sharp edges
 
@@ -52,9 +63,10 @@ Recorded because each cost hours and none is visible from the code:
 
 ## Pending
 
-- **Dynamic executables.** `ET_DYN` and `PT_INTERP` are refused, so "runs Linux
-  programs" means static ones. This is milestone M13 and is the single largest
-  gap in this area.
+- Dynamic executables were the largest gap here and are now closed; what is
+  written under Implemented above covers them. What remains unproven is
+  breadth: one program and one interpreter have been run, not a library with
+  dependencies of its own.
 - **Threads.** `clone` with `CLONE_THREAD` is not implemented (M14), so
   anything using pthreads does not run.
 - `getrandom` is deliberately `ENOSYS`. `AT_RANDOM` is supplied; a real entropy

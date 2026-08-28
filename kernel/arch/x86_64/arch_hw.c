@@ -901,6 +901,17 @@ static uint8_t g_exec_elf_static[65536] __attribute__((aligned(16)));
 static uint8_t *g_exec_elf = g_exec_elf_static;
 static uint32_t g_exec_elf_cap = (uint32_t)sizeof(g_exec_elf_static);
 
+/* And a second one, for a dynamic program's interpreter.
+ *
+ * It cannot share the buffer above: loading a dynamic program means having
+ * both images in memory at once, because the interpreter is mapped into the
+ * same address space as the program that named it. musl's loader is its C
+ * library and is about seven hundred kilobytes, so this is sized for a real
+ * one rather than for a token. */
+#define VIBEOS_HW_INTERP_STAGE_BYTES (2u * 1024u * 1024u)
+static uint8_t *g_interp_elf;
+static uint32_t g_interp_elf_cap;
+
 /* Which image the staging buffer currently holds.
  *
  * A shell runs the same binary over and over - every external command in a
@@ -1156,6 +1167,23 @@ static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
                                      "large programs will not load\n");
         }
     }
+    {
+        void *stage = vibeos_pmm_alloc_pages(&g_hw_pmm,
+                                             VIBEOS_HW_INTERP_STAGE_BYTES / 4096u);
+
+        if (stage && ((uint64_t)(uintptr_t)stage + VIBEOS_HW_INTERP_STAGE_BYTES)
+                <= VIBEOS_HW_IDENTITY_LIMIT) {
+            g_interp_elf = (uint8_t *)stage;
+            g_interp_elf_cap = VIBEOS_HW_INTERP_STAGE_BYTES;
+            vibeos_x86_64_serial_puts("[HW] interpreter staging buffer: 2 MiB\n");
+        } else {
+            /* Left null on purpose. A dynamic program is then refused with the
+             * same message as before this existed, which is a truthful "cannot
+             * load" rather than a load that goes somewhere undefined. */
+            vibeos_x86_64_serial_puts("[HW] no interpreter staging buffer; "
+                                     "dynamic programs will not load\n");
+        }
+    }
 
     vibeos_x86_64_serial_puts("[HW] PMM online, free bytes=0x");
     vibeos_x86_64_serial_print_hex((uint64_t)vibeos_pmm_remaining(&g_hw_pmm));
@@ -1270,6 +1298,56 @@ static int hw_map_low_user_page(vibeos_hw_aspace_t *as, uint64_t va, uint64_t pa
 /* A fresh address space: a private PML4 that shares the supervisor-only kernel
  * identity mapping, so ring 0 (syscalls, interrupts) keeps working while running
  * on a process's CR3, but ring 3 cannot touch kernel memory. */
+/* Exact string equality. Only used to recognise the one interpreter path this
+ * kernel knows how to substitute, so it is a comparison and not a library. */
+static int hw_streq(const char *a, const char *b) {
+    uint32_t i;
+    for (i = 0; a[i] != 0 && b[i] != 0; i++) {
+        if (a[i] != b[i]) {
+            return 0;
+        }
+    }
+    return a[i] == b[i];
+}
+
+/* Place one parsed image into an address space, a page at a time.
+ *
+ * A page at a time is what makes a page shared between two segments come out
+ * right: allocated once, carrying the permissions of both and holding the
+ * bytes of both. Separated from process creation because a dynamic program
+ * needs this done twice - once for the program and once for the interpreter
+ * it names - into the same address space. */
+static int hw_map_elf_image(vibeos_hw_aspace_t *as,
+                            const vibeos_elf_image_t *img, const void *elf) {
+    uint64_t va;
+
+    for (va = img->min_vaddr; va < img->end_vaddr; va += 4096ull) {
+        uint32_t flags = vibeos_elf_page_flags(img, va);
+        uint64_t leaf = PTE_PRESENT | PTE_USER;
+        uint8_t *page;
+
+        if (flags == 0u) {
+            continue;   /* a hole between segments stays unmapped */
+        }
+        if (flags & VIBEOS_ELF_W) {
+            leaf |= PTE_WRITE;
+        }
+        page = (uint8_t *)hw_alloc_page();
+        if (!page) {
+            return -1;
+        }
+        vibeos_elf_fill_page(img, elf, va, page);
+        if (va < VIBEOS_HW_IDENTITY_LIMIT) {
+            if (hw_map_low_user_page(as, va, (uint64_t)(uintptr_t)page, leaf) != 0) {
+                return -1;
+            }
+        } else if (hw_map_page(as, va, (uint64_t)(uintptr_t)page, leaf) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
 static int hw_aspace_create(vibeos_hw_aspace_t *as) {
     as->pml4 = (uint64_t *)hw_alloc_page();
     if (!as->pml4) {
@@ -1481,6 +1559,10 @@ static void hw_enable_syscall(void) {
 typedef struct {
     vibeos_hw_aspace_t as;
     uint64_t entry;
+    /* Where the interpreter was mapped, or 0 for a program that has none.
+     * The interpreter relocates itself from this, so it is not a diagnostic:
+     * without it a dynamic program faults on its first relocation. */
+    uint64_t interp_base;
     uint64_t brk_cur;   /* current program break            */
     uint64_t mmap_cur;  /* next free anonymous mmap address  */
     uint64_t user_sp;   /* entry rsp, atop the startup block */
@@ -1535,7 +1617,6 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
     vibeos_elf_stack_desc_t sd;
     uint8_t at_random[16];
     uint8_t *top_page = 0;
-    uint64_t va;
     uint32_t i;
 
     if (hw_aspace_create(&p->as) != 0) {
@@ -1577,7 +1658,8 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
          * check after this block. */
         int rc = vibeos_elf_parse_ex(elf, len, 0, 0,
                                      VIBEOS_HW_USER_STACK_TOP,
-                                     VIBEOS_ELF_ALLOW_DYN, &img);
+                                     VIBEOS_ELF_ALLOW_DYN |
+                                     VIBEOS_ELF_ALLOW_INTERP, &img);
 
         if (rc != VIBEOS_ELF_OK) {
             return -1;
@@ -1592,7 +1674,8 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
             }
             rc = vibeos_elf_parse_ex(elf, len, bias, VIBEOS_HW_LOW_USER_BASE,
                                      VIBEOS_HW_USER_STACK_TOP,
-                                     VIBEOS_ELF_ALLOW_DYN, &img);
+                                     VIBEOS_ELF_ALLOW_DYN |
+                                     VIBEOS_ELF_ALLOW_INTERP, &img);
             if (rc != VIBEOS_ELF_OK) {
                 return -1;
             }
@@ -1603,31 +1686,77 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
           img.end_vaddr <= VIBEOS_HW_LOW_USER_LIMIT)) {
         return -1;
     }
-    for (va = img.min_vaddr; va < img.end_vaddr; va += 4096ull) {
-        uint32_t flags = vibeos_elf_page_flags(&img, va);
-        uint64_t leaf = PTE_PRESENT | PTE_USER;
-        uint8_t *page;
-
-        if (flags == 0u) {
-            continue;   /* a hole between segments stays unmapped */
-        }
-        if (flags & VIBEOS_ELF_W) {
-            leaf |= PTE_WRITE;
-        }
-        page = (uint8_t *)hw_alloc_page();
-        if (!page) {
-            return -1;
-        }
-        vibeos_elf_fill_page(&img, elf, va, page);
-        if (va < VIBEOS_HW_IDENTITY_LIMIT) {
-            if (hw_map_low_user_page(&p->as, va, (uint64_t)(uintptr_t)page, leaf) != 0) {
-                return -1;
-            }
-        } else if (hw_map_page(&p->as, va, (uint64_t)(uintptr_t)page, leaf) != 0) {
-            return -1;
-        }
+    if (hw_map_elf_image(&p->as, &img, elf) != 0) {
+        return -1;
     }
     p->entry = img.entry;
+
+    /* A dynamic program names an interpreter, and the kernel's job is to put
+     * both images in the address space and start the *interpreter*, not the
+     * program. The interpreter then relocates itself, loads whatever libraries
+     * the program needs, and jumps to AT_ENTRY. Starting the program directly
+     * would run code whose every external call still points at an unrelocated
+     * stub. */
+    if (img.has_interp) {
+        vibeos_elf_image_t interp;
+        const char *path = img.interp;
+        long n;
+        uint64_t bias;
+
+        if (g_interp_elf == 0) {
+            return -1;   /* no staging buffer: say no rather than half-load */
+        }
+
+        /* The path in the file is a Linux one - musl asks for
+         * /lib/ld-musl-x86_64.so.1 - and the boot volume is FAT, which has
+         * neither that directory nor a name that long. The loader lives beside
+         * the other programs under a name FAT can hold, and the file's request
+         * is translated to it. This is a stand-in for a real filesystem
+         * layout, and it is written here rather than hidden in the media build
+         * so that the substitution is visible from the code that makes it. */
+        if (hw_streq(path, "/lib/ld-musl-x86_64.so.1")) {
+            path = "EFI/BOOT/LDMUSL.SO";
+        }
+
+        n = vibeos_fs_read_file(&g_rootfs, path, g_interp_elf, g_interp_elf_cap);
+        if (n <= 0) {
+            vibeos_x86_64_serial_puts("[EXEC] interpreter not found: ");
+            vibeos_x86_64_serial_puts(img.interp);
+            vibeos_x86_64_serial_puts("\n");
+            return -1;
+        }
+
+        /* Above the program, with a gap. Both live in the low window, and an
+         * interpreter placed immediately after the program would share a page
+         * with it whenever the program's last page is partly used. */
+        bias = (img.end_vaddr + 0xFFFFull + 0x10000ull) & ~0xFFFull;
+
+        if (vibeos_elf_parse_ex(g_interp_elf, (uint64_t)n, bias,
+                                VIBEOS_HW_LOW_USER_BASE,
+                                VIBEOS_HW_USER_STACK_TOP,
+                                VIBEOS_ELF_ALLOW_DYN, &interp) != VIBEOS_ELF_OK) {
+            return -1;
+        }
+        if (interp.has_interp || interp.end_vaddr > VIBEOS_HW_LOW_USER_LIMIT) {
+            /* An interpreter that needs an interpreter is not a chain this
+             * kernel follows, and one that does not fit is refused before any
+             * of it is mapped. */
+            return -1;
+        }
+        if (hw_map_elf_image(&p->as, &interp, g_interp_elf) != 0) {
+            return -1;
+        }
+
+        /* Start there, and tell it where it was put. */
+        p->entry = interp.entry;
+        p->interp_base = bias;
+
+        vibeos_x86_64_serial_puts("[EXEC] interpreter ");
+        vibeos_x86_64_serial_puts(path);
+        vibeos_x86_64_serial_puts(" at 0x");
+        vibeos_x86_64_serial_print_hex(bias);
+        vibeos_x86_64_serial_puts("\n");
+    }
     for (i = 0; i < VIBEOS_HW_USER_STACK_PAGES; i++) {
         void *page = hw_alloc_page();
         /* Named apart from the image-loading loop's `va` above: two different
@@ -1652,6 +1781,12 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
     sd.argv = argv;
     sd.envp = envp;
     sd.entry = img.entry;
+    /* AT_ENTRY is the *program's* entry even when the interpreter is what
+     * starts: it is how the interpreter knows where to jump once it has
+     * finished. p->entry is where the CPU begins, and the two differ exactly
+     * when there is an interpreter. */
+    sd.entry = img.entry;
+    sd.interp_base = p->interp_base;
     sd.phdr_vaddr = img.phdr_vaddr;
     sd.phnum = img.phnum;
     sd.phentsize = img.phentsize;
@@ -5879,6 +6014,7 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                   "EFI/BOOT/NET.ELF\n"
                                   "EFI/BOOT/MUSL.ELF\n"
                                   "EFI/BOOT/PIE.ELF\n"
+                                  "EFI/BOOT/DYN.ELF\n"
                                   "EFI/BOOT/SIGNAL.ELF\n"
                                   "EFI/BOOT/BUSYBOX.ELF echo BUSYBOX_ECHO_OK\n"
                                   "EFI/BOOT/BUSYBOX.ELF cat DOCS/NOTES.TXT\n"

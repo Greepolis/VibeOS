@@ -154,8 +154,16 @@ applet and did file work, the interactive shell ran, signals were delivered.
 It waits for `VIBEOS_SELFTEST_DONE` before driving the kernel CLI, because the
 two run concurrently and a slower build used to get its script cut short.
 
-The GUI is **not** gated - `screenshot.py` is run by hand. Dynamic binaries are
-refused, so "runs Linux programs" means static ones.
+The GUI is **not** gated - `screenshot.py` is run by hand.
+
+Static, position-independent and dynamically linked Linux binaries all run and
+are all gated. A dynamic one has its interpreter mapped into the same address
+space and entered first; `AT_ENTRY` stays the program's own entry, which is how
+the interpreter knows where to jump when it is done. The interpreter path is
+translated in the kernel - a musl binary asks for /lib/ld-musl-x86_64.so.1 and
+FAT has neither that directory nor a name that long - so the loader lives at
+EFI/BOOT/LDMUSL.SO. That substitution is a stand-in for a filesystem layout,
+and if the layout ever becomes real it should be deleted, not generalised.
 
 ## Tone of the code
 

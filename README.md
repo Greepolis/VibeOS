@@ -27,8 +27,7 @@ programs in ring 3 through the Linux system-call ABI.
 - **Unmodified static Linux programs**: a static musl binary and a static
   BusyBox, neither built by this project, run from the boot volume. BusyBox
   dispatches on its own name, reads and lists files, and its shell parses
-  scripts, searches `PATH`, forks and execs. Dynamic binaries are refused, so
-  this means static ones.
+  scripts, searches `PATH`, forks and execs.
 - **Copy-on-write fork**: `fork` shares the parent's pages read-only instead of
   copying them, and a write faults and duplicates just that page. Measured at
   boot: 1221 pages shared, 24 later copied.
@@ -40,6 +39,10 @@ programs in ring 3 through the Linux system-call ABI.
   released on exit, and `SIGPIPE` for a write with no reader. The boot
   self-test runs `ls /EFI/BOOT | wc -l` in BusyBox's shell - 13 on a full
   build - and the gate fails if the pipeline does not complete.
+- **Linux programs, including dynamic ones**: static, position-independent and
+  dynamically linked binaries all run - the last of those has its interpreter
+  mapped alongside it and entered first, which is what lets ordinary Linux
+  software run rather than only specially built software.
 - **Storage**: virtio-blk under a block cache, with five filesystems behind one
   VFS - FAT (read/write), ext2, ISO9660, exFAT and NTFS (read) - plus MBR and
   GPT partition tables. Programs are loaded from the boot volume. A write-ahead

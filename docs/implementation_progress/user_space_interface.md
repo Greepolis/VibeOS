@@ -21,7 +21,7 @@ Last review: 2026-08-25
 ## Pending
 - Process groups and a controlling terminal, so `Ctrl-C` targets a job rather than the newest pid, and so `ioctl(TCGETS)` can become something other than `ENOTTY`.
 - A test that exercises the `Ctrl-C` to `SIGINT` path, which is currently demonstrated rather than gated.
-- Dynamic executables. `ET_DYN` and `PT_INTERP` are refused, so "runs Linux programs" means static ones.
+- Libraries with dependencies of their own. Dynamic executables load - the kernel places an `ET_DYN` image at a bias it chooses, maps the `PT_INTERP` interpreter alongside it and enters the interpreter - but one program and one interpreter is what has been shown, not a shared object that pulls in another.
 - Stable libc/runtime contract for richer userland.
 - Expanded compatibility ABI translation depth (Linux/Windows/macOS targets).
 - Tooling and diagnostics for userland API evolution.

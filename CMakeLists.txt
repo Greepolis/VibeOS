@@ -252,6 +252,20 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
             VERBATIM
         )
         add_custom_target(vibeos_musl_pie ALL DEPENDS "${VIBEOS_PIE_BIN}")
+
+        # And a dynamically linked one. This is the kind that needs an
+        # interpreter loaded alongside it, which is the last step in running
+        # ordinary Linux software rather than specially built software.
+        set(VIBEOS_DYN_SRC "${CMAKE_CURRENT_SOURCE_DIR}/tests/linux/musl_dynamic.c")
+        set(VIBEOS_DYN_BIN "${CMAKE_BINARY_DIR}/musl_dynamic")
+        add_custom_command(
+            OUTPUT "${VIBEOS_DYN_BIN}"
+            COMMAND "${VIBEOS_MUSL_GCC}" -O2 -o "${VIBEOS_DYN_BIN}" "${VIBEOS_DYN_SRC}"
+            DEPENDS "${VIBEOS_DYN_SRC}"
+            COMMENT "Building a dynamically linked Linux binary with musl"
+            VERBATIM
+        )
+        add_custom_target(vibeos_musl_dynamic ALL DEPENDS "${VIBEOS_DYN_BIN}")
     else()
         message(STATUS "musl-gcc not found: the boot media will carry no unmodified Linux binary")
     endif()

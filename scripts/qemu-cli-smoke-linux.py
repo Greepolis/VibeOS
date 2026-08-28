@@ -548,6 +548,19 @@ def main():
                 elif "PIE_ARGS: argc=1" not in text:
                     problems.append("position_independent_binary_got_wrong_argv")
 
+            # A dynamic executable is started by its interpreter, not by the
+            # kernel. Reaching main() at all means the second image was mapped,
+            # AT_BASE told the loader where it landed, and AT_ENTRY still
+            # pointed at the program. argv0len comes back through the C
+            # library's strlen, so a symbol had to be resolved rather than
+            # folded away by the compiler.
+            dyn = os.path.join(efi_root, "EFI", "BOOT", "DYN.ELF")
+            if os.path.exists(dyn):
+                if "DYN_OK" not in text:
+                    problems.append("dynamic_binary_did_not_run")
+                elif "DYN_ARGS: argc=1" not in text:
+                    problems.append("dynamic_binary_got_wrong_argv")
+
             musl = os.path.join(efi_root, "EFI", "BOOT", "MUSL.ELF")
             if os.path.exists(musl):
                 if "MUSL_OK" not in text:
