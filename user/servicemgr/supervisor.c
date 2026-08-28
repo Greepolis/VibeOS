@@ -30,8 +30,13 @@ int vibeos_service_supervisor_load(vibeos_service_supervisor_t *supervisor,
         if (vibeos_service_manifest_validate(manifests, manifest_count, i) != 0) {
             return -1;
         }
-        if (find_service(supervisor, manifests[i].service_id) >= 0) {
-            return -1;
+        {
+            uint32_t previous;
+            for (previous = 0; previous < i; previous++) {
+                if (manifests[previous].service_id == manifests[i].service_id) {
+                    return -1;
+                }
+            }
         }
     }
     supervisor->manifest_count = manifest_count;

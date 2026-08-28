@@ -1829,6 +1829,11 @@ static int test_native_service_supervisor(void) {
         running != 3 || failed != 0) {
         return -1;
     }
+    manifests[2].service_id = manifests[1].service_id;
+    if (vibeos_service_supervisor_load(&supervisor, manifests, 3) == 0) {
+        return -1;
+    }
+    manifests[2].service_id = 3;
     if (vibeos_service_supervisor_report_exit(&supervisor, 2, 9, VIBEOS_PROCESS_EXIT_FAULT) != 0 ||
         vibeos_service_supervisor_tick(&supervisor, 16) != 0 ||
         supervisor.runtime[1].state != VIBEOS_NATIVE_SERVICE_RUNNING ||
