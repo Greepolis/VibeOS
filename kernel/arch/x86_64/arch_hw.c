@@ -2010,6 +2010,7 @@ typedef struct {
     int is_user;
     int is_idle;      /* per-CPU idle task: only run when nothing else is ready */
     int wait_input;   /* blocked in read() on stdin */
+    uint8_t signal_stopped; /* stopped by SIGSTOP until SIGCONT */
     /* Set by prctl(PR_SET_NAME); reported back by PR_GET_NAME. */
     char comm[16];
     /* Signals.
@@ -2531,6 +2532,7 @@ static int hw_task_spawn_user(const unsigned char *elf, uint64_t len,
     g_tasks[i].tgid = g_tasks[i].pid;
     g_tasks[i].pgid = g_tasks[i].pid;
     g_tasks[i].sid = g_tasks[i].pid;
+    g_tasks[i].signal_stopped = 0;
     return i;
 }
 
@@ -4473,6 +4475,7 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
     child->ppid = parent->tgid;
     child->pgid = parent->pgid;
     child->sid = parent->sid;
+    child->signal_stopped = 0;
     child->is_thread = 0;
     child->clear_child_tid = 0;
     child->fs_base = parent->fs_base;   /* the copied image expects its TLS */
@@ -4623,6 +4626,7 @@ static long hw_sys_clone_thread(const vibeos_x86_64_isr_frame_t *frame,
     child->ppid = parent->ppid;    /* threads share their creator's parent */
     child->pgid = parent->pgid;
     child->sid = parent->sid;
+    child->signal_stopped = 0;
     child->is_thread = 1;
     child->is_user = 1;
     child->exit_code = 0;
@@ -5271,6 +5275,11 @@ static int hw_signal_raise(int task_index, uint32_t sig) {
     }
     if (!g_tasks[task_index].is_user || g_tasks[task_index].state == HW_TASK_FREE) {
         return -1;
+    }
+    if (sig == VIBEOS_SIGCONT && g_tasks[task_index].signal_stopped) {
+        g_tasks[task_index].signal_stopped = 0;
+        g_tasks[task_index].state = HW_TASK_READY;
+        HW_TASK_MARK(task_index, ready_by, "sigcont");
     }
     /* SIGKILL and SIGSTOP cannot be caught or blocked. Honouring a handler for
      * them would make a process unkillable. */
@@ -5986,6 +5995,13 @@ static int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame) {
             continue;
         }
         if (handler == SIG_DFL_ADDR) {
+            if (sig == VIBEOS_SIGSTOP) {
+                t->signal_stopped = 1;
+                t->state = HW_TASK_BLOCKED;
+                HW_TASK_MARK(g_current_task, ready_by, "sigstop");
+                vibeos_x86_64_serial_puts("[SIG] task stopped by SIGSTOP\n");
+                return 0;
+            }
             if (hw_signal_default_kills(sig)) {
                 t->exit_signal = sig;
                 hw_task_exit(128ull + sig);   /* does not return */
