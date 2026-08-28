@@ -5322,6 +5322,8 @@ static int hw_task_by_tid(uint32_t tid) {
 
 static long hw_sys_kill(uint64_t target_pid, uint64_t sig) {
     int target;
+    int delivered = 0;
+    int64_t signed_pid = (int64_t)target_pid;
 
     if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
         return -VIBEOS_EINVAL;
@@ -5329,12 +5331,29 @@ static long hw_sys_kill(uint64_t target_pid, uint64_t sig) {
     if (sig >= VIBEOS_HW_NSIG) {
         return -VIBEOS_EINVAL;
     }
-    target = hw_task_by_pid((uint32_t)target_pid);
+    if (sig == 0u) {
+        if (signed_pid <= 0) {
+            signed_pid = g_tasks[g_current_task].tgid;
+        }
+        target = hw_task_by_pid((uint32_t)(signed_pid < 0 ? -signed_pid : signed_pid));
+        return target < 0 ? -VIBEOS_ESRCH : 0;
+    }
+    if (signed_pid < 0 || signed_pid == 0) {
+        uint32_t group = signed_pid < 0 ? (uint32_t)(-signed_pid) : g_tasks[g_current_task].pgid;
+        int i;
+        for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+            if (g_tasks[i].is_user && g_tasks[i].state != HW_TASK_FREE &&
+                g_tasks[i].pgid == group && g_tasks[i].sid == g_tasks[g_current_task].sid) {
+                if (hw_signal_raise(i, (uint32_t)sig) == 0) {
+                    delivered++;
+                }
+            }
+        }
+        return delivered == 0 ? -VIBEOS_ESRCH : 0;
+    }
+    target = hw_task_by_pid((uint32_t)signed_pid);
     if (target < 0) {
         return -VIBEOS_ESRCH;
-    }
-    if (sig == 0u) {
-        return 0;   /* the existence check, and it exists */
     }
     return (hw_signal_raise(target, (uint32_t)sig) == 0) ? 0 : -VIBEOS_EINVAL;
 }
