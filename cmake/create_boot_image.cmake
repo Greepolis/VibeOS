@@ -96,6 +96,13 @@ if(EXISTS "${DYN_ELF}")
     endif()
 endif()
 
+# The threaded program is deliberately NOT on the boot media.
+#
+# Threads work far enough to create one, run it, and join it - but the join
+# hangs often enough that putting it in the self-test would turn a boot into
+# five minutes of silence rather than a test that says no. Build and run it by
+# hand while working on that; see tests/linux/musl_threads.c.
+
 # A static BusyBox from the host, if one is installed. This is a real program
 # doing real work - open a file, read a directory, write to stdout - rather than
 # a test written to pass. It is not built here and nothing about it was chosen

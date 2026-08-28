@@ -266,6 +266,19 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
             VERBATIM
         )
         add_custom_target(vibeos_musl_dynamic ALL DEPENDS "${VIBEOS_DYN_BIN}")
+
+        # Threads, through the library's own pthread implementation. Static so
+        # that a failure is about clone and futex rather than about loading.
+        set(VIBEOS_THR_SRC "${CMAKE_CURRENT_SOURCE_DIR}/tests/linux/musl_threads.c")
+        set(VIBEOS_THR_BIN "${CMAKE_BINARY_DIR}/musl_threads")
+        add_custom_command(
+            OUTPUT "${VIBEOS_THR_BIN}"
+            COMMAND "${VIBEOS_MUSL_GCC}" -static -O2 -o "${VIBEOS_THR_BIN}" "${VIBEOS_THR_SRC}"
+            DEPENDS "${VIBEOS_THR_SRC}"
+            COMMENT "Building a threaded Linux binary with musl"
+            VERBATIM
+        )
+        add_custom_target(vibeos_musl_threads ALL DEPENDS "${VIBEOS_THR_BIN}")
     else()
         message(STATUS "musl-gcc not found: the boot media will carry no unmodified Linux binary")
     endif()

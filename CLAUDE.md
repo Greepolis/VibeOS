@@ -140,6 +140,21 @@ How it was actually found, since three careful readings of the code were wrong:
 Keep the guard. It costs one read per context switch and it is the difference
 between a machine that stops and a machine that says why.
 
+**A PROT_NONE mapping is a mapping, not a refusal.** A C library builds a
+thread stack by asking for stack plus guard as one PROT_NONE region and then
+mprotecting the usable part - so refusing PROT_NONE makes pthread_create fail
+before it ever reaches clone(). The pages are allocated and mapped without
+PTE_USER, which faults from ring 3 exactly as a guard should. Reserving address
+space without backing it was tried first and could not be told apart from a
+range munmap had just freed: both are "unmapped inside the arena", and mprotect
+began accepting an address the ABI self-test requires it to refuse.
+
+**A line in the serial log is not a check.** The ring-3 ABI self-test printed
+"abi: mmap/mprotect/munmap wrong" for an entire session while the boot gate
+stayed green, because the line was collected into the summary and never
+asserted on. It is asserted now, and the assertion was confirmed to go red by
+removing the check it protects.
+
 **Definition order bites repeatedly.** This is one 5000-line C file; a helper
 used above its definition compiles as an implicit declaration and then fails
 with a confusing "static declaration follows non-static declaration".

@@ -554,6 +554,15 @@ def main():
             # pointed at the program. argv0len comes back through the C
             # library's strlen, so a symbol had to be resolved rather than
             # folded away by the compiler.
+            # The ring-3 ABI round trip. This was printing "abi: ...wrong"
+            # for a whole session while the gate stayed green, because the
+            # line was collected into the summary and never asserted on - so
+            # a regression in mmap/mprotect/munmap was visible in the log and
+            # invisible to CI. A check that is only ever read by a human is
+            # not a check.
+            if "linux abi ok" not in text:
+                problems.append("linux_abi_selftest_failed")
+
             dyn = os.path.join(efi_root, "EFI", "BOOT", "DYN.ELF")
             if os.path.exists(dyn):
                 if "DYN_OK" not in text:

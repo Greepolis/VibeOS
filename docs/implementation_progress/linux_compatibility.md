@@ -67,8 +67,24 @@ Recorded because each cost hours and none is visible from the code:
   written under Implemented above covers them. What remains unproven is
   breadth: one program and one interpreter have been run, not a library with
   dependencies of its own.
-- **Threads.** `clone` with `CLONE_THREAD` is not implemented (M14), so
-  anything using pthreads does not run.
+- **Threads, past the first one.** `clone(CLONE_VM|CLONE_THREAD)` creates a
+  task sharing the caller's address space with its own kernel stack and TLS
+  base; `futex` waits and wakes for real; exit clears the word a joiner sleeps
+  on and only tears the address space down when the last thread of the group
+  leaves. One thread can be created, run and joined.
+
+  Creating several while others exit hangs: the main thread ends up sleeping on
+  musl's `__thread_list_lock`, whose word holds the tid of a thread that has
+  already exited. The reproducer is `tests/linux/musl_threads_many.c`, kept off
+  the boot media because a hanging program turns a boot into five minutes of
+  silence. What has been ruled out is listed in that file - each thread does
+  get its own TLS base, the futex path is the same one a working join uses, and
+  no unsupported futex operation is being requested.
+
+  It is timing-dependent in a way worth writing down: with debug logging on the
+  serial line the single-thread join passed consistently, and it hangs without
+  it. Logging changed the outcome, so the remaining defect is a race and not a
+  missing feature.
 - `getrandom` is deliberately `ENOSYS`. `AT_RANDOM` is supplied; a real entropy
   source is a separate promise and has not been made.
 - Process groups and a controlling terminal, so `ioctl(TCGETS)` can be

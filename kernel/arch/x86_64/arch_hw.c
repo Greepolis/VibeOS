@@ -281,6 +281,12 @@ typedef struct vibeos_x86_64_isr_frame {
 } vibeos_x86_64_isr_frame_t;
 
 static void hw_schedule(vibeos_x86_64_isr_frame_t *frame); /* defined below */
+
+/* Both defined further down, and both needed above their definitions: this is
+ * one 5000-line file, and a helper used before it is declared compiles as an
+ * implicit declaration and then fails confusingly at the definition. */
+static int hw_user_range_ok(uint64_t va, uint64_t len, int need_write);
+static long hw_futex_wake(uint64_t addr, uint32_t count);
 static void hw_task_exit(uint64_t code);                   /* defined below */
 static void hw_keyboard_wake(void);                        /* defined below */
 static void hw_net_pump(void);                             /* defined below */
@@ -581,6 +587,7 @@ static void hw_log_emit(const vibeos_log_event_t *ev) {
         vibeos_x86_64_serial_print_hex(ev->arg1);
     }
     vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
 }
 
 static void hw_log(vibeos_log_level_t level, uint32_t code, uint64_t a0,
@@ -1966,6 +1973,11 @@ typedef struct {
      * believes, and a second count of the same thing is a second thing that
      * can be wrong. */
     uint8_t is_thread;
+    /* Whether this task has ever been scheduled. One branch per context
+     * switch, and it answered the question that moved the thread
+     * investigation furthest: a thread that is created but never runs and a
+     * thread that runs and exits immediately look identical from outside. */
+    uint8_t ran_once;
 
     /* CLONE_CHILD_CLEARTID: the address to zero and wake when this thread
      * exits. It is how pthread_join learns the thread is gone - the joiner
@@ -2121,6 +2133,9 @@ static int hw_task_alloc(void) {
             g_tasks[i].aspace_killed_by = "task_alloc_clear";
             g_tasks[i].alloc_seq = (uint32_t)__sync_add_and_fetch(&g_alloc_seq, 1u);
             g_tasks[i].proc.as.pml4 = 0;
+            g_tasks[i].is_thread = 0;
+            g_tasks[i].ran_once = 0;
+            g_tasks[i].clear_child_tid = 0;
             g_tasks[i].state = HW_TASK_RESERVED;
             hw_spin_unlock(&g_sched_lock);
             return i;
@@ -2286,6 +2301,11 @@ static void hw_task_load_cpu_state(int idx) {
                    "scheduler asked to install a freed address space");
             hw_panic("address space freed while still schedulable");
         }
+    }
+    if (g_tasks[idx].is_thread && !g_tasks[idx].ran_once) {
+        g_tasks[idx].ran_once = 1;
+        hw_log(VIBEOS_LOG_DEBUG, 24u, (uint64_t)g_tasks[idx].pid,
+               g_tasks[idx].ctx.rip, "thread scheduled for the first time");
     }
     hw_write_cr3(g_tasks[idx].cr3);
     hw_set_kernel_stack(g_tasks[idx].kstack_top);
@@ -2457,6 +2477,39 @@ static int hw_task_spawn_user(const unsigned char *elf, uint64_t len,
     return i;
 }
 
+/* Does anyone else still hold this address space?
+ *
+ * Threads share page tables, so the space may only be destroyed by whoever
+ * leaves last. The answer is derived from the task table rather than from a
+ * reference count kept alongside it: the table is what the scheduler already
+ * believes, and a second count of the same thing is a second thing that can
+ * disagree with the first. Yesterday's silent wedge was exactly a teardown
+ * acting on a belief the scheduler no longer shared.
+ *
+ * Must be called with g_sched_lock held: without it the answer can be stale by
+ * the time it is acted on, which is the whole failure mode.
+ */
+static int hw_aspace_still_shared(int me) {
+    const uint64_t *pml4 = g_tasks[me].proc.as.pml4;
+    int i;
+
+    if (pml4 == 0) {
+        return 0;
+    }
+    for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+        if (i == me || g_tasks[i].state == HW_TASK_FREE) {
+            continue;
+        }
+        /* A zombie is not running, but it has not been reaped either, and its
+         * cr3 still names these tables - the guard in hw_task_load_cpu_state
+         * would fire if they were freed under it. */
+        if (g_tasks[i].proc.as.pml4 == pml4) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* exit(): retire the calling task and switch to another runnable one. Called
  * from the syscall path, so it enters the next task directly and never returns
  * to the caller. */
@@ -2547,9 +2600,38 @@ static void hw_task_exit(uint64_t code) {
     hw_task_load_cpu_state(next);
     /* Now on the next task's CR3; the dying user address space is still
      * reachable through the shared kernel identity map, so free it. */
+    /* Tell a joiner this thread is gone, while its address space is still
+     * mapped: the word lives in that space. pthread_join sleeps on it, so a
+     * thread that exits without clearing it is a join that never returns. */
+    if (dying >= 0 && g_tasks[dying].clear_child_tid != 0u) {
+        uint64_t addr = g_tasks[dying].clear_child_tid;
+
+        if (hw_user_range_ok(addr, 4u, 1)) {
+            *(volatile uint32_t *)(uintptr_t)addr = 0u;
+            hw_futex_wake(addr, 0x7FFFFFFF);
+        }
+        g_tasks[dying].clear_child_tid = 0;
+    }
+
     if (dying >= 0 && g_tasks[dying].is_user) {
+        int last;
+
+        hw_spin_lock(&g_sched_lock);
+        last = !hw_aspace_still_shared(dying);
+        if (!last) {
+            /* A sibling is still running in here. Give up the reference
+             * without freeing anything - and clear the pointer, so nothing
+             * later mistakes this task for an owner. */
+            g_tasks[dying].proc.as.pml4 = 0;
+        }
+        hw_spin_unlock(&g_sched_lock);
+
+        if (!last) {
+            HW_TASK_MARK(dying, aspace_killed_by, "thread_exit_kept_shared");
+        } else {
         HW_TASK_MARK(dying, aspace_killed_by, "task_exit");
         hw_aspace_destroy(&g_tasks[dying].proc.as);
+        }
         /* The kernel stack stays until the parent reaps us: we are still
          * executing on it right now. */
     }
@@ -2680,7 +2762,15 @@ static void hw_task_exit(uint64_t code) {
 
 /* clone() flags that decide whether this is a fork or a thread. */
 #define CLONE_VM     0x00000100u
+#define CLONE_FS     0x00000200u
+#define CLONE_FILES  0x00000400u
+#define CLONE_SIGHAND 0x00000800u
 #define CLONE_THREAD 0x00010000u
+#define CLONE_SYSVSEM 0x00040000u
+#define CLONE_SETTLS 0x00080000u
+#define CLONE_PARENT_SETTID  0x00100000u
+#define CLONE_CHILD_CLEARTID 0x00200000u
+#define CLONE_CHILD_SETTID   0x01000000u
 
 /* openat/newfstatat interpret a relative path against this directory fd. There
  * is no per-process working directory here, so it is the only value accepted.
@@ -3930,24 +4020,65 @@ static long hw_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot,
     hw_proc_t *proc;
     uint64_t pages, base, leaf;
 
+    hw_log(VIBEOS_LOG_DEBUG, 12u, len, prot | (flags << 32), "mmap");
     if (g_current_task < 0 || !g_tasks[g_current_task].is_user || len == 0u) {
         return -VIBEOS_EINVAL;
     }
+    /* Established here, before anything reads it. The reservation branch below
+     * used it one statement too early and handed back a base of zero, which a
+     * C library then mprotected at address 0x2000 - a thread stack placed on
+     * top of nothing. */
+    proc = &g_tasks[g_current_task].proc;
     if (flags & MAP_FIXED) {
+        hw_log(VIBEOS_LOG_WARN, 10u, addr, flags, "mmap refused: MAP_FIXED");
         return -VIBEOS_EINVAL;
     }
     /* File-backed mappings need a page cache this kernel does not have. Say so
      * instead of returning anonymous zeroes, which would look like a file full
      * of NULs. */
     if ((flags & MAP_ANONYMOUS) == 0 || VIBEOS_ARG_INT(fd) >= 0) {
+        hw_log(VIBEOS_LOG_WARN, 11u, flags, fd,
+               "mmap refused: file-backed mapping");
         return -VIBEOS_ENOSYS;
     }
     if (prot == PROT_NONE) {
-        return -VIBEOS_EINVAL;   /* nothing sensible to map */
-    }
-    (void)addr;
+        /* A mapping with no access, which is how a thread stack is made: a C
+         * library asks for stack plus guard as one PROT_NONE region and then
+         * mprotects the usable part readable and writable, so a thread that
+         * overruns its stack lands on the guard instead of on another
+         * thread's memory. Refusing this - which this did, calling it
+         * "nothing sensible to map" - is why pthread_create failed before it
+         * ever reached clone().
+         *
+         * The pages are allocated, not merely promised. Handing back address
+         * space and populating it later in mprotect was the first attempt, and
+         * it could not tell a reservation from a range that munmap had just
+         * freed: both are "unmapped inside the arena", so mprotect started
+         * accepting an address the ABI self-test requires it to refuse. One
+         * bit in the page table answers the question that two ranges could
+         * not, at the cost of a frame per guard page.
+         *
+         * No PTE_USER, so ring 3 faults on it exactly as a guard should. */
+        uint64_t i;
 
-    proc = &g_tasks[g_current_task].proc;
+        pages = (len + 0xFFFull) / 4096ull;
+        base = proc->mmap_cur;
+        if (base + pages * 4096ull < base) {
+            return -VIBEOS_ENOMEM;
+        }
+        for (i = 0; i < pages; i++) {
+            void *page = hw_alloc_page();
+
+            if (!page || hw_map_page(&proc->as, base + i * 4096ull,
+                                     (uint64_t)(uintptr_t)page,
+                                     PTE_PRESENT) != 0) {
+                return -VIBEOS_ENOMEM;
+            }
+        }
+        proc->mmap_cur = base + pages * 4096ull;
+        return (long)base;
+    }
+
     pages = (len + 0xFFFull) / 4096ull;
     base = proc->mmap_cur;
     if (base + pages * 4096ull < base) {
@@ -3978,6 +4109,7 @@ static long hw_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot,
  * write away - and a kernel that returns success without revoking anything
  * leaves the program less protected than it believes itself to be. */
 static long hw_sys_mprotect(uint64_t addr, uint64_t len, uint64_t prot) {
+    hw_log(VIBEOS_LOG_DEBUG, 14u, addr, len, "mprotect");
     hw_proc_t *proc;
     uint64_t va, end;
 
@@ -3991,13 +4123,22 @@ static long hw_sys_mprotect(uint64_t addr, uint64_t len, uint64_t prot) {
     end = (addr + len + 0xFFFull) & ~0xFFFull;
 
     /* Check the whole range first: a partial application would leave the
-     * address space in a state the caller never asked for. */
+     * address space in a state the caller never asked for.
+     *
+     * "Mapped" is the question, not "mapped and reachable from ring 3": a
+     * PROT_NONE region is mapped with no user access, and mprotect turning
+     * that into a usable stack is the entire point of the pattern. A page
+     * munmap has freed is not mapped at all, and stays a fault - which is what
+     * the ABI self-test checks, and what the first version of this broke. */
     for (va = addr; va < end; va += 4096ull) {
         uint64_t *pte = hw_pte_lookup(&proc->as, va);
-        if (!pte || (*pte & PTE_USER) == 0) {
+        if (!pte || (*pte & PTE_PRESENT) == 0) {
+            hw_log(VIBEOS_LOG_WARN, 13u, va, len,
+                   "mprotect refused: page not mapped");
             return -VIBEOS_EFAULT;
         }
     }
+
     for (va = addr; va < end; va += 4096ull) {
         uint64_t *pte = hw_pte_lookup(&proc->as, va);
         /* The pass above established that every page in the range is mapped,
@@ -4192,6 +4333,8 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
     }
     idx = hw_task_alloc();
     if (idx < 0) {
+        hw_log(VIBEOS_LOG_WARN, 7u, 0, 0,
+               "fork refused: no free task slot");
         return -VIBEOS_ENOMEM;
     }
     parent = &g_tasks[g_current_task];
@@ -4300,6 +4443,155 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
     }
     child->state = HW_TASK_READY;
     child->ready_by = "fork";
+    return (long)child->pid;
+}
+
+/* clone() with CLONE_VM|CLONE_THREAD: another thread in this process.
+ *
+ * The difference from fork is what is *not* copied. The address space is
+ * shared rather than duplicated, which means the new task carries the same
+ * page tables and the same cr3 - not a copy of them - and exit must therefore
+ * not tear that space down while siblings are still running in it.
+ *
+ * What the new thread does have of its own: a kernel stack, so it can block in
+ * a syscall independently; a user stack, which the caller supplies because a C
+ * library allocates it; and a TLS base, because thread-local storage is the
+ * one thing threads must not share.
+ *
+ * It resumes at the same instruction the caller returns to, with rax zero -
+ * the same trick fork uses - so the C library's clone wrapper sees a return of
+ * 0 in the child and the tid in the parent, and branches on that.
+ */
+static long hw_sys_clone_thread(const vibeos_x86_64_isr_frame_t *frame,
+                                uint64_t flags, uint64_t child_stack,
+                                uint64_t ptid, uint64_t ctid, uint64_t tls) {
+    hw_task_t *parent;
+    hw_task_t *child;
+    int idx;
+    uint32_t my_tenancy;
+
+    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+        return -VIBEOS_EINVAL;
+    }
+    /* A thread with no stack of its own would run on its creator's, which is
+     * not a degraded thread but two threads writing to one stack. */
+    if (child_stack == 0u || !hw_user_range_ok(child_stack - 8u, 8u, 1)) {
+        hw_log(VIBEOS_LOG_WARN, 6u, child_stack, flags,
+               "clone refused: unusable thread stack");
+        return -VIBEOS_EINVAL;
+    }
+
+    idx = hw_task_alloc();
+    if (idx < 0) {
+        hw_log(VIBEOS_LOG_WARN, 7u, flags, 0,
+               "clone refused: no free task slot");
+        return -VIBEOS_ENOMEM;
+    }
+    parent = &g_tasks[g_current_task];
+    child = &g_tasks[idx];
+    my_tenancy = child->alloc_seq;
+
+    child->kstack_top = hw_alloc_kstack(&child->kstack_base, &child->kstack_pages);
+    if (child->kstack_top == 0) {
+        child->state = HW_TASK_FREE;
+        return -VIBEOS_ENOMEM;
+    }
+
+    /* The same address space, by sharing the description rather than copying
+     * the tables. hw_aspace_create is deliberately not called: two sets of
+     * page tables would be two processes wearing one name. */
+    child->proc = parent->proc;
+    child->cr3 = parent->cr3;
+    child->cr3_set_by = "clone_thread";
+
+    child->ctx = *frame;
+    child->ctx.rax = 0;            /* the child's return from clone() */
+    child->ctx.rsp = child_stack;  /* on the stack the library gave it */
+    child->ctx.rbp = 0;            /* no caller frame: this is a stack top */
+
+    child->pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
+    child->tgid = parent->tgid;    /* same process */
+    child->ppid = parent->ppid;    /* threads share their creator's parent */
+    child->is_thread = 1;
+    child->is_user = 1;
+    child->exit_code = 0;
+    child->exit_signal = 0;
+
+    /* Thread-local storage. Without this every thread reads the creator's
+     * errno and its own stack guard, which is the kind of sharing that looks
+     * like memory corruption from user space. */
+    child->fs_base = (flags & CLONE_SETTLS) ? tls : parent->fs_base;
+
+    child->clear_child_tid = (flags & CLONE_CHILD_CLEARTID) ? ctid : 0;
+
+    /* Descriptors are copied, not shared. Linux shares them under CLONE_FILES
+     * and a C library asks for that; here each thread gets its own table with
+     * the same entries, so opening a file in one thread is invisible to the
+     * others. Pipe ownership stays balanced because the copy takes a
+     * reference and exit releases it. Recorded as a difference rather than
+     * hidden: it is wrong for a program that passes descriptors between its
+     * own threads. */
+    {
+        int fi;
+        for (fi = 0; fi < VIBEOS_HW_MAX_FDS; fi++) {
+            child->fds[fi] = parent->fds[fi];
+        }
+        for (fi = 0; fi < 3; fi++) {
+            child->std_redirect[fi] = parent->std_redirect[fi];
+        }
+        hw_spin_lock(&g_pipe_lock);
+        for (fi = 0; fi < VIBEOS_HW_MAX_FDS; fi++) {
+            const hw_fd_t *cf = &child->fds[fi];
+            if (cf->used && cf->pipe >= 0) {
+                if (cf->writable) {
+                    g_pipes[cf->pipe].writers++;
+                } else {
+                    g_pipes[cf->pipe].readers++;
+                }
+            }
+        }
+        for (fi = 0; fi < 3; fi++) {
+            const hw_fd_t *cf = &child->std_redirect[fi];
+            if (cf->used && cf->pipe >= 0) {
+                if (cf->writable) {
+                    g_pipes[cf->pipe].writers++;
+                } else {
+                    g_pipes[cf->pipe].readers++;
+                }
+            }
+        }
+        hw_spin_unlock(&g_pipe_lock);
+    }
+
+    /* Signal dispositions are the process's, so a thread inherits them. */
+    {
+        uint32_t sg;
+        child->sig_pending = 0;
+        child->sig_blocked = parent->sig_blocked;
+        for (sg = 0; sg < VIBEOS_HW_NSIG; sg++) {
+            child->sig_handler[sg] = parent->sig_handler[sg];
+            child->sig_restorer[sg] = parent->sig_restorer[sg];
+            child->sig_flags[sg] = parent->sig_flags[sg];
+            child->sig_mask[sg] = parent->sig_mask[sg];
+        }
+    }
+
+    if ((flags & CLONE_PARENT_SETTID) && ptid != 0u &&
+        hw_user_range_ok(ptid, 4u, 1)) {
+        *(volatile uint32_t *)(uintptr_t)ptid = child->pid;
+    }
+    if ((flags & CLONE_CHILD_SETTID) && ctid != 0u &&
+        hw_user_range_ok(ctid, 4u, 1)) {
+        *(volatile uint32_t *)(uintptr_t)ctid = child->pid;
+    }
+
+    if (child->alloc_seq != my_tenancy || child->state != HW_TASK_RESERVED) {
+        hw_panic("two owners filled one task slot");
+    }
+    child->state = HW_TASK_READY;
+    child->ready_by = "clone_thread";
+    hw_log(VIBEOS_LOG_DEBUG, 8u, (uint64_t)child->pid, child->fs_base,
+           "thread created (a1 = its TLS base)");
     return (long)child->pid;
 }
 
@@ -5308,13 +5600,144 @@ static long hw_sys_prlimit64(uint64_t resource, uint64_t new_uptr, uint64_t old_
  * EAGAIN is what Linux returns when the value already moved - an outcome every
  * caller is written to handle. Real futexes belong with real threads, not
  * before them. */
-static long hw_sys_futex(uint64_t op) {
+/* futex: the primitive every thread library builds its waiting on.
+ *
+ * The contract is deliberately odd and the oddity is the point. WAIT says
+ * "sleep, but only if this word still holds the value I last saw"; the check
+ * and the sleep happen together, under a lock, so a wake that arrives between
+ * a thread reading the word and deciding to sleep cannot be lost. Without
+ * that, a mutex hands out a lock to a thread that will never be told, which is
+ * a hang and not a slowdown.
+ *
+ * Uncontended locks never come here at all - a library takes those with an
+ * atomic instruction - so this is the path for contention and for joins.
+ *
+ * Waiters are matched on the address alone. Every thread that can share a
+ * futex shares an address space, so the same virtual address is the same word;
+ * two processes waiting on the same address in their own spaces would be
+ * confused with each other, and that is a real limitation, written down rather
+ * than papered over. Shared futexes across processes are not implemented.
+ */
+#define VIBEOS_HW_MAX_FUTEX_WAITERS VIBEOS_HW_MAX_TASKS
+
+typedef struct {
+    /* `used` and `addr` are not the same question, and conflating them was a
+     * bug worth keeping the distinction for. A woken waiter still owns its
+     * slot until it returns - it is reading `woken` out of it - so the waker
+     * clears `addr`, which stops further wakes from matching, and leaves
+     * `used` alone. Freeing on the waker's side let a new waiter take the slot
+     * while the old one was still in it: the old one then cleared the new
+     * one's registration on its way out, and that thread slept forever with
+     * every wake passing it by. */
+    uint8_t used;
+    uint64_t addr;     /* 0 once woken: no further wake should match */
+    int task;
+    volatile int woken;
+} hw_futex_waiter_t;
+
+static hw_futex_waiter_t g_futex_waiters[VIBEOS_HW_MAX_FUTEX_WAITERS];
+static hw_lock_t g_futex_lock;
+
+/* Wake up to `count` waiters on `addr`. Returns how many were woken, which is
+ * what the caller is told: a library uses it to decide whether it needs to
+ * wake anybody else. */
+static long hw_futex_wake(uint64_t addr, uint32_t count) {
+    long woke = 0;
+    uint32_t i;
+
+    if (addr == 0u) {
+        return 0;
+    }
+    hw_spin_lock(&g_futex_lock);
+    for (i = 0; i < VIBEOS_HW_MAX_FUTEX_WAITERS && (uint32_t)woke < count; i++) {
+        if (!g_futex_waiters[i].used || g_futex_waiters[i].addr != addr) {
+            continue;
+        }
+        g_futex_waiters[i].addr = 0;   /* no second wake for this waiter */
+        g_futex_waiters[i].woken = 1;
+        hw_spin_lock(&g_sched_lock);
+        if (g_tasks[g_futex_waiters[i].task].state == HW_TASK_BLOCKED) {
+            g_tasks[g_futex_waiters[i].task].state = HW_TASK_READY;
+            HW_TASK_MARK(g_futex_waiters[i].task, ready_by, "futex_wake");
+        }
+        hw_spin_unlock(&g_sched_lock);
+        woke++;
+    }
+    hw_spin_unlock(&g_futex_lock);
+    hw_log(VIBEOS_LOG_DEBUG, 20u, addr, (uint64_t)woke, "futex wake");
+    return woke;
+}
+
+static long hw_futex_wait(uint64_t addr, uint32_t expected) {
+    uint32_t slot;
+    int me = g_current_task;
+
+    if (me < 0 || addr == 0u || !hw_user_range_ok(addr, 4u, 0)) {
+        return -VIBEOS_EINVAL;
+    }
+
+    hw_spin_lock(&g_futex_lock);
+    /* The compare and the enqueue are one step. Reading the word first and
+     * enqueuing after would leave a window in which a waker sees no waiter and
+     * the waiter then sleeps on a value that has already changed - the lost
+     * wakeup, which presents as a program that stops for no reason. */
+    if (*(volatile uint32_t *)(uintptr_t)addr != expected) {
+        hw_spin_unlock(&g_futex_lock);
+        hw_log(VIBEOS_LOG_DEBUG, 21u, addr, (uint64_t)expected,
+               "futex wait: value already moved");
+        return -VIBEOS_EAGAIN;
+    }
+    for (slot = 0; slot < VIBEOS_HW_MAX_FUTEX_WAITERS; slot++) {
+        if (!g_futex_waiters[slot].used) {
+            break;
+        }
+    }
+    if (slot == VIBEOS_HW_MAX_FUTEX_WAITERS) {
+        hw_spin_unlock(&g_futex_lock);
+        return -VIBEOS_ENOMEM;
+    }
+    g_futex_waiters[slot].used = 1;
+    g_futex_waiters[slot].addr = addr;
+    g_futex_waiters[slot].task = me;
+    g_futex_waiters[slot].woken = 0;
+
+    hw_spin_lock(&g_sched_lock);
+    g_tasks[me].state = HW_TASK_BLOCKED;
+    hw_spin_unlock(&g_sched_lock);
+    hw_spin_unlock(&g_futex_lock);
+    hw_log(VIBEOS_LOG_DEBUG, 22u, addr,
+           (uint64_t)(*(volatile uint32_t *)(uintptr_t)addr) |
+           ((uint64_t)g_tasks[me].pid << 32),
+           "futex wait: sleeping (a1 = value | tid<<32)");
+
+    /* Yield until somebody wakes us. The scheduler runs from the timer, so
+     * this is a wait and not a spin: the core is given away on the first
+     * interrupt and this task is not runnable again until a wake says so. */
+    while (!g_futex_waiters[slot].woken) {
+        __asm__ __volatile__("sti; hlt" ::: "memory");
+    }
+
+    hw_spin_lock(&g_futex_lock);
+    g_futex_waiters[slot].addr = 0;
+    g_futex_waiters[slot].used = 0;   /* released by its owner, and only here */
+    hw_spin_unlock(&g_futex_lock);
+    hw_log(VIBEOS_LOG_DEBUG, 23u, addr, (uint64_t)g_tasks[me].pid,
+           "futex wait: woken");
+    return 0;
+}
+
+static long hw_sys_futex(uint64_t addr, uint64_t op, uint64_t val) {
     switch (op & FUTEX_CMD_MASK) {
         case FUTEX_WAKE:
-            return 0;
+            return hw_futex_wake(addr, (uint32_t)val);
         case FUTEX_WAIT:
-            return -VIBEOS_EAGAIN;
+            return hw_futex_wait(addr, (uint32_t)val);
         default:
+            /* Loudly, because this is how a thread library silently stops
+             * working: it asks for an operation, is told it does not exist,
+             * and carries on believing the wakeup it requested happened. */
+            hw_log(VIBEOS_LOG_WARN, 25u, addr, op,
+                   "futex: unsupported operation");
             return -VIBEOS_ENOSYS;
     }
 }
@@ -5499,6 +5922,7 @@ static long hw_sys_rt_sigreturn(vibeos_x86_64_isr_frame_t *frame) {
 long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
                                  uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3) {
     uint32_t native = 0;
+
     (void)vibeos_linux_translate_syscall(&g_compat_rt, (uint32_t)nr, &native);
 
     switch (nr) {
@@ -5564,7 +5988,7 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
         case LSYS_prlimit64:
             return hw_sys_prlimit64(a2, a3, frame->r10);
         case LSYS_futex:
-            return hw_sys_futex(a2);
+            return hw_sys_futex(a1, a2, a3);
         case LSYS_gettid:
             /* The thread id proper. Equal to getpid() for a single-threaded
              * program, which is what Linux reports too, and different for
@@ -5649,8 +6073,23 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
              * space is a thread, which this kernel does not have, and saying
              * ENOSYS is better than handing back something that looks like a
              * thread and is not. */
-            if ((a1 & (CLONE_VM | CLONE_THREAD)) != 0u) {
-                return -VIBEOS_ENOSYS;
+            /* Sharing the address space means a thread; a new one means a
+             * process. Both arrive here because a C library does not call
+             * fork(), it calls clone() with the flags that happen to mean
+             * fork. */
+            if ((a1 & CLONE_THREAD) != 0u) {
+                if ((a1 & CLONE_VM) == 0u) {
+                    /* A thread of the same process with a private address
+                     * space is not something this kernel can produce, and
+                     * approximating it would produce a process that believes
+                     * it is a thread. */
+                    return -VIBEOS_ENOSYS;
+                }
+                return hw_sys_clone_thread(frame, a1, a2, a3,
+                                           frame->r10, frame->r8);
+            }
+            if ((a1 & CLONE_VM) != 0u) {
+                return -VIBEOS_ENOSYS;   /* vfork-like sharing: not supported */
             }
             return hw_sys_fork(frame);
         case LSYS_getppid:
