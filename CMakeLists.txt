@@ -205,6 +205,21 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/user/prog/user.ld"
     )
 
+    # Native init candidate. It is staged separately from the compatibility
+    # bring-up program until the runtime acceptance gate selects it as PID 1.
+    add_executable(vibeos_user_init user/prog/init.c user/prog/crt0.S)
+    target_compile_options(vibeos_user_init PRIVATE
+        -ffreestanding -fno-stack-protector -fno-pic -mno-red-zone
+        -mcmodel=large -fno-strict-aliasing -Wall -Wextra
+    )
+    target_link_options(vibeos_user_init PRIVATE
+        -nostdlib -no-pie -Wl,-e,_start
+        -Wl,-T,${CMAKE_CURRENT_SOURCE_DIR}/user/prog/user.ld
+    )
+    set_target_properties(vibeos_user_init PROPERTIES
+        LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/user/prog/user.ld"
+    )
+
     # An unmodified static Linux binary, built by a real Linux toolchain against
     # a real libc, staged on the boot media as MUSL.ELF.
     #
@@ -529,7 +544,7 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
     add_custom_target(vibeos_boot_image
         COMMAND ${CMAKE_COMMAND} -E echo "Creating EFI media layout..."
         COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/create_boot_image.cmake
-        DEPENDS vibeos_kernel_elf vibeos_bootloader_efi vibeos_user_hello vibeos_user_task vibeos_user_sh vibeos_user_net
+        DEPENDS vibeos_kernel_elf vibeos_bootloader_efi vibeos_user_hello vibeos_user_init vibeos_user_task vibeos_user_sh vibeos_user_net
         COMMENT "Generating bootable kernel image"
     )
     

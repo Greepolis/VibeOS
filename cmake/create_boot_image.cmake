@@ -39,6 +39,12 @@ else()
     message(STATUS "Init program not found at ${USER_INIT_ELF}; kernel will use its built-in copy")
 endif()
 
+set(NATIVE_INIT_ELF "${CMAKE_BINARY_DIR}/vibeos_user_init")
+if(EXISTS "${NATIVE_INIT_ELF}")
+    file(COPY_FILE "${NATIVE_INIT_ELF}" "${EFI_BOOT_DIR}/NATIVE_INIT.ELF" ONLY_IF_DIFFERENT)
+    message(STATUS "EFI media includes native init candidate: EFI/BOOT/NATIVE_INIT.ELF")
+endif()
+
 # A second program on disk, for the init program to exec().
 set(USER_SH_ELF "${CMAKE_BINARY_DIR}/vibeos_user_sh")
 if(EXISTS "${USER_SH_ELF}")
