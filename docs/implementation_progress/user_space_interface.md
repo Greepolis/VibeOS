@@ -19,6 +19,7 @@ Last review: 2026-08-28
 - `Ctrl-C` on the console raises `SIGINT` against the newest live user task. The signal itself is delivered like any other; picking the recipient by newest pid is the stand-in for process groups, which do not exist yet. Not covered by a gate.
 - Native userland ABI v1 is now defined in `include/vibeos/userland.h`, with fixed-width process start metadata, service manifests, runtime snapshots, and deterministic validation of versions, sizes, bounded strings, dependency masks and lifecycle enums.
 - A bounded native service supervisor is implemented in `user/servicemgr/supervisor.c`: it loads validated manifests, starts dependency-ready services, records runtime snapshots, applies restart limits/backoff and isolates terminal service failures. Host regression coverage exercises dependency ordering, restart and failure state transitions.
+- The portable process model now exposes validated process-group and session membership. This is a host-verified contract only; x86_64 task wiring and controlling-terminal job control remain open.
 
 ## Pending
 - Process groups and a controlling terminal, so `Ctrl-C` targets a job rather than the newest pid, and so `ioctl(TCGETS)` can become something other than `ENOTTY`.
