@@ -460,6 +460,16 @@ int vibeos_proc_terminate(vibeos_process_table_t *pt, uint32_t pid) {
         pt->proc_state_transitions++;
         pt->proc_terminations++;
     }
+    /* Init (PID 1) is the adoption point for descendants. Reparent before
+     * marking the parent terminated so a concurrent lifecycle observer never
+     * sees a live child attached to a dead parent. If init itself exits, clear
+     * the parent instead of inventing a non-existent adopter. */
+    for (i = 0; i < VIBEOS_MAX_PROCESSES; i++) {
+        if (pt->entries[i].in_use && pt->entries[i].pid != pid &&
+            pt->entries[i].parent_pid == pid) {
+            pt->entries[i].parent_pid = (pid == 1u) ? 0u : 1u;
+        }
+    }
     release_all_process_handles(entry);
     for (i = 0; i < VIBEOS_PROC_MAX_THREADS; i++) {
         if (pt->threads[i].in_use && pt->threads[i].owner_pid == pid) {

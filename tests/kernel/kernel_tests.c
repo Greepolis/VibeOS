@@ -1865,6 +1865,25 @@ static int test_process_groups_and_sessions(void) {
     return 0;
 }
 
+static int test_process_orphan_adoption(void) {
+    vibeos_process_table_t table;
+    uint32_t init_pid, parent_pid, child_pid;
+    if (vibeos_proc_init(&table) != 0 ||
+        vibeos_proc_spawn(&table, 0, &init_pid) != 0 || init_pid != 1 ||
+        vibeos_proc_spawn(&table, init_pid, &parent_pid) != 0 ||
+        vibeos_proc_spawn(&table, parent_pid, &child_pid) != 0 ||
+        vibeos_proc_terminate(&table, parent_pid) != 0) {
+        return -1;
+    }
+    if (table.entries[2].pid != child_pid || table.entries[2].parent_pid != init_pid) {
+        return -1;
+    }
+    if (vibeos_proc_terminate(&table, init_pid) != 0 || table.entries[2].parent_pid != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 static int test_bootloader_sanitized_map(void) {
     vibeos_memory_region_t input[6];
     vibeos_memory_region_t scratch[6];
@@ -8590,6 +8609,7 @@ int main(void) {
     RUN_TEST(test_native_userland_abi);
     RUN_TEST(test_native_service_supervisor);
     RUN_TEST(test_process_groups_and_sessions);
+    RUN_TEST(test_process_orphan_adoption);
     RUN_TEST(test_bootloader_sanitized_map);
     RUN_TEST(test_bootloader_handoff_metadata);
     RUN_TEST(test_bootloader_firmware_tags_and_pe_plan);
