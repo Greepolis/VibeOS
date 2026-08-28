@@ -1841,10 +1841,16 @@ static int test_native_service_supervisor(void) {
         return -1;
     }
     if (vibeos_service_supervisor_report_exit(&supervisor, 2, 9, VIBEOS_PROCESS_EXIT_NORMAL) != 0 ||
-        supervisor.runtime[1].state != VIBEOS_NATIVE_SERVICE_FAILED) {
+        supervisor.runtime[1].state != VIBEOS_NATIVE_SERVICE_STOPPED) {
         return -1;
     }
-    if (vibeos_service_supervisor_health(&supervisor, &running, &failed) != 0 || failed != 1) {
+    if (vibeos_service_supervisor_health(&supervisor, &running, &failed) != 0 || failed != 0) {
+        return -1;
+    }
+    if (vibeos_service_supervisor_report_exit(&supervisor, 2, 11, VIBEOS_PROCESS_EXIT_FAULT) != 0 ||
+        vibeos_service_supervisor_tick(&supervisor, 16) != 0 ||
+        vibeos_service_supervisor_report_exit(&supervisor, 2, 12, VIBEOS_PROCESS_EXIT_FAULT) != 0 ||
+        supervisor.runtime[1].state != VIBEOS_NATIVE_SERVICE_FAILED) {
         return -1;
     }
     manifests[1].service_id = 2;

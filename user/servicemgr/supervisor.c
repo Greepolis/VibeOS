@@ -102,8 +102,16 @@ int vibeos_service_supervisor_report_exit(vibeos_service_supervisor_t *superviso
     r->last_exit_reason = reason;
     r->last_transition_ticks = supervisor->now_ticks;
     supervisor->started_mask &= ~(1u << index);
-    if (reason == VIBEOS_PROCESS_EXIT_NORMAL || m->restart_policy == VIBEOS_NATIVE_RESTART_NEVER ||
-        r->restart_count >= m->restart_limit) {
+    if (m->restart_policy == VIBEOS_NATIVE_RESTART_NEVER ||
+        (reason == VIBEOS_PROCESS_EXIT_NORMAL && m->restart_policy != VIBEOS_NATIVE_RESTART_ALWAYS)) {
+        r->state = reason == VIBEOS_PROCESS_EXIT_NORMAL ? VIBEOS_NATIVE_SERVICE_STOPPED
+                                                        : VIBEOS_NATIVE_SERVICE_FAILED;
+        if (r->state == VIBEOS_NATIVE_SERVICE_FAILED) {
+            supervisor->failed_mask |= 1u << index;
+        }
+        return 0;
+    }
+    if (r->restart_count >= m->restart_limit) {
         r->state = VIBEOS_NATIVE_SERVICE_FAILED;
         supervisor->failed_mask |= 1u << index;
         return 0;
