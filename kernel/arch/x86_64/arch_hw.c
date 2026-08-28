@@ -1977,6 +1977,8 @@ typedef struct {
     uint32_t pid;
     uint32_t tgid;
     uint32_t ppid;
+    uint32_t pgid;
+    uint32_t sid;
 
     /* A thread shares its creator's address space rather than owning one, so
      * exit must not tear that space down while siblings are still running in
@@ -2100,6 +2102,7 @@ static hw_task_t g_tasks[VIBEOS_HW_MAX_TASKS];
 static uint32_t g_alloc_seq;
 static int g_sched_running;
 static uint32_t g_next_pid = 1;
+static uint32_t g_console_foreground_pgid;
 
 /* Claim a free slot atomically: two cores can fork at the same time, so the
  * slot is marked RESERVED (never schedulable, never reapable) until the caller
@@ -2200,10 +2203,27 @@ void vibeos_x86_64_console_interrupt(void) {
 
     for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
         if (!g_tasks[i].is_user || g_tasks[i].state == HW_TASK_FREE ||
-            g_tasks[i].state == HW_TASK_ZOMBIE) {
+            g_tasks[i].state == HW_TASK_ZOMBIE ||
+            (g_console_foreground_pgid != 0 &&
+             g_tasks[i].pgid != g_console_foreground_pgid)) {
             continue;
         }
         if (newest < 0 || g_tasks[i].pid > best) {
+            best = g_tasks[i].pid;
+            newest = i;
+        }
+    }
+    /* A stale foreground group must not make console input disappear during
+     * early boot. Use the legacy newest-task fallback only when the group has
+     * no live member, and keep it visible in diagnostics through the signal
+     * path rather than silently dropping Ctrl-C. */
+    if (newest < 0 && g_console_foreground_pgid != 0) {
+        for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+            if (!g_tasks[i].is_user || g_tasks[i].state == HW_TASK_FREE ||
+                g_tasks[i].state == HW_TASK_ZOMBIE ||
+                (newest >= 0 && g_tasks[i].pid <= best)) {
+                continue;
+            }
             best = g_tasks[i].pid;
             newest = i;
         }
@@ -2391,6 +2411,8 @@ static int hw_task_adopt_kernel(void) {
     g_tasks[i].is_user = 0;
     g_tasks[i].pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
     g_tasks[i].tgid = g_tasks[i].pid;
+    g_tasks[i].pgid = g_tasks[i].pid;
+    g_tasks[i].sid = g_tasks[i].pid;
     g_tasks[i].kstack_top = hw_this_cpu()->syscall_kstack_top;
     g_tasks[i].cr3 = (uint64_t)(uintptr_t)&g_pml4[0];
     HW_TASK_MARK(i, cr3_set_by, "adopt_kernel");
@@ -2441,6 +2463,8 @@ static int hw_task_create_idle(hw_cpu_t *cpu) {
     g_tasks[i].is_idle = 1;
     g_tasks[i].pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
     g_tasks[i].tgid = g_tasks[i].pid;
+    g_tasks[i].pgid = g_tasks[i].pid;
+    g_tasks[i].sid = g_tasks[i].pid;
     cpu->idle_task = i;
     return i;
 }
@@ -2486,6 +2510,8 @@ static int hw_task_spawn_user(const unsigned char *elf, uint64_t len,
     g_tasks[i].is_user = 1;
     g_tasks[i].pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
     g_tasks[i].tgid = g_tasks[i].pid;
+    g_tasks[i].pgid = g_tasks[i].pid;
+    g_tasks[i].sid = g_tasks[i].pid;
     return i;
 }
 
@@ -4422,6 +4448,8 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
      * wait() is a process relationship. */
     child->tgid = child->pid;
     child->ppid = parent->tgid;
+    child->pgid = parent->pgid;
+    child->sid = parent->sid;
     child->is_thread = 0;
     child->clear_child_tid = 0;
     child->fs_base = parent->fs_base;   /* the copied image expects its TLS */
@@ -4570,6 +4598,8 @@ static long hw_sys_clone_thread(const vibeos_x86_64_isr_frame_t *frame,
     child->pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
     child->tgid = parent->tgid;    /* same process */
     child->ppid = parent->ppid;    /* threads share their creator's parent */
+    child->pgid = parent->pgid;
+    child->sid = parent->sid;
     child->is_thread = 1;
     child->is_user = 1;
     child->exit_code = 0;
@@ -6588,6 +6618,7 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
         vibeos_x86_64_serial_puts("[SCHED] failed to spawn initial tasks\n");
         return;
     }
+    g_console_foreground_pgid = g_tasks[hello_id].pgid;
 
     /* Printed before the scheduler is armed, so this line cannot be split by a
      * preemption. */
