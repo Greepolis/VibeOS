@@ -1844,7 +1844,21 @@ static int test_native_service_supervisor(void) {
         supervisor.runtime[1].state != VIBEOS_NATIVE_SERVICE_FAILED) {
         return -1;
     }
-    return vibeos_service_supervisor_health(&supervisor, &running, &failed) == 0 && failed == 1 ? 0 : -1;
+    if (vibeos_service_supervisor_health(&supervisor, &running, &failed) != 0 || failed != 1) {
+        return -1;
+    }
+    manifests[1].service_id = 2;
+    manifests[1].dependency_mask = 4u;
+    manifests[2].dependency_mask = 2u;
+    {
+        int load_result = vibeos_service_supervisor_load(&supervisor, manifests, 3);
+        int start_result = vibeos_service_supervisor_start_ready(&supervisor);
+        if (load_result != 0 || start_result == 0) {
+            return -1;
+        }
+    }
+    return vibeos_service_supervisor_health(&supervisor, &running, &failed) == 0 &&
+           running == 1 && failed == 0 ? 0 : -1;
 }
 
 static int test_process_groups_and_sessions(void) {

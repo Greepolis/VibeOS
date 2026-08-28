@@ -56,10 +56,12 @@ int vibeos_service_supervisor_load(vibeos_service_supervisor_t *supervisor,
 int vibeos_service_supervisor_start_ready(vibeos_service_supervisor_t *supervisor) {
     uint32_t i;
     uint32_t progress = 1;
+    uint32_t started_before;
     if (!supervisor || supervisor->manifest_count == 0) {
         return -1;
     }
     while (progress) {
+        started_before = supervisor->started_mask;
         progress = 0;
         for (i = 0; i < supervisor->manifest_count; i++) {
             uint32_t deps = supervisor->manifests[i].dependency_mask;
@@ -74,8 +76,11 @@ int vibeos_service_supervisor_start_ready(vibeos_service_supervisor_t *superviso
             supervisor->started_mask |= 1u << i;
             progress = 1;
         }
+        if (progress == 0 && started_before != supervisor->started_mask) {
+            progress = 1;
+        }
     }
-    return 0;
+    return supervisor->started_mask == ((1u << supervisor->manifest_count) - 1u) ? 0 : -1;
 }
 
 int vibeos_service_supervisor_report_exit(vibeos_service_supervisor_t *supervisor,
