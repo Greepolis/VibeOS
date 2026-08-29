@@ -18,6 +18,7 @@ This document is now split by macro area for easier maintenance.
 | Filesystem Layer | In Progress (FAT, ext2, ISO9660, exFAT and NTFS behind one VFS; journalled writes verified against power loss) | [filesystem_layer.md](implementation_progress/filesystem_layer.md) |
 | Networking Stack | In Progress (IPv4 runtime plus portable route/firewall data-path enforcement verified) | [networking_stack.md](implementation_progress/networking_stack.md) |
 | User Space Interface | In Progress (unmodified static Linux binaries verified from ring 3) | [user_space_interface.md](implementation_progress/user_space_interface.md) |
+| Diagnostics & Observability | In Progress (six runtime detectors, all gated; two found defects on their first run) | [diagnostics.md](implementation_progress/diagnostics.md) |
 | Init System | In Progress (native ring-3 init is PID 1 and supervises a four-service manifest in the guest: start, clean stop, bounded restart, and a real crash the kernel survives) | [init_system.md](implementation_progress/init_system.md) |
 | Linux Compatibility | In Progress (static, position-independent **and dynamically linked** binaries all run end to end and are gated) | [linux_compatibility.md](implementation_progress/linux_compatibility.md) |
 | Windows Compatibility | Not started (a two-entry translation table, no runtime) | [windows_compatibility.md](implementation_progress/windows_compatibility.md) |

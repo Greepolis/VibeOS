@@ -384,6 +384,17 @@ line so a failure can be replayed with `EFI/BOOT/SVC_STRS.ELF <seed>`. It found
 a copy-on-write defect on its first serious run - the first bug here to arrive
 with a reproduction recipe rather than a story.
 
+**Everything gets tracked in the docs.** Not "significant work" - anything.
+A macro-area row in `docs/implementation_progress.md`, a detail file under
+`docs/implementation_progress/`, and `scripts/dev/make-book-summary.py` re-run
+so the new file reaches `docs/SUMMARY.md` and the published book. A detail file
+that is not in SUMMARY.md exists for whoever finds it by accident.
+
+The table and its detail files have drifted apart twice, and the second time
+the table contradicted a file it linked to - it said dynamically linked Linux
+binaries were refused while the file recorded them running and gated. Whoever
+changes a status changes both.
+
 ## Verification that exists
 
 The boot gate (`scripts/qemu-cli-smoke-linux.py`) asserts state, not markers:

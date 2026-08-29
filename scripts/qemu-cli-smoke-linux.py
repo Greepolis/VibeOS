@@ -54,6 +54,45 @@ if DISK not in DISK_ARGS:
                      + ", ".join(sorted(DISK_ARGS)))
 
 
+# Kernel log lines that a healthy boot is *expected* to produce, because
+# something deliberately provokes them. Everything else at WARN or above is a
+# failure - the kernel said something was wrong and, until now, nobody was
+# listening.
+#
+# This is the same lesson as the ring-3 self-test that printed "abi: ...wrong"
+# for a whole session while the gate stayed green: a diagnostic nobody asserts
+# on is decoration. The kernel has had levelled logging for a long time and its
+# WARN and ERROR lines have never once failed a build.
+#
+# Keep this list short and specific. A pattern added to quieten a real warning
+# is how the mechanism stops working.
+EXPECTED_KERNEL_COMPLAINTS = (
+    # The ring-3 ABI self-test asks for things it expects to be refused.
+    "mmap refused: MAP_FIXED",
+    "mprotect refused: page not mapped",
+    # svc-crash dereferences null on purpose, every boot.
+    "ring-3 fault: killing the task",
+)
+
+
+def unexpected_complaints(text):
+    """WARN and above from the kernel that nothing in the boot asked for."""
+    out = []
+    for line in text.splitlines():
+        if "[LOG][WARN]" not in line and "[LOG][ERROR]" not in line and \
+           "[LOG][FATAL]" not in line:
+            continue
+        if any(expected in line for expected in EXPECTED_KERNEL_COMPLAINTS):
+            continue
+        out.append(line)
+    return out
+
+
+assert unexpected_complaints("[LOG][WARN] mmap refused: MAP_FIXED code=0xa") == []
+assert unexpected_complaints("[LOG][ERROR] something nobody expected") != []
+assert unexpected_complaints("[HW][SYS] write(ring3): all fine") == []
+
+
 def start_echo_server(stop_event, state):
     """Accept one connection at a time and echo whatever arrives."""
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -563,6 +602,14 @@ def main():
                 problems.append(f"serial_log_interleaved({len(split)}_lines)")
                 for line in split[:3]:
                     print(f"[QEMU-CLI] split line: {line[:160]}")
+
+            # The kernel's own complaints. It has been raising these all along
+            # and nothing has ever failed a boot for one.
+            complaints = unexpected_complaints(text)
+            if complaints:
+                problems.append(f"kernel_reported_problems({len(complaints)})")
+                for line in complaints[:5]:
+                    print(f"[QEMU-CLI] kernel complaint: {line[:160]}")
 
             # TCP_OK only appears when something answered on the host, so a
             # parallel run without its own echo server must not require it.

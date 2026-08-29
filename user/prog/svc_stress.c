@@ -115,6 +115,39 @@ static uint64_t parse_u64(const char *s) {
 
 /* ---- the operations ------------------------------------------------------ */
 
+/* What the kernel writes into a page as it frees it. Recognising it here turns
+ * "the data was wrong" into "this page was handed to somebody else while we
+ * were still using it", which is a different investigation entirely. */
+#define PAGE_POISON_BYTE_0 0x00u
+#define PAGE_POISON_BYTE_7 0xDEu
+
+static void say_mismatch(const char *what, uint64_t off, uint8_t got, uint8_t want) {
+    char line[160];
+    unsigned at = put_str(line, 0, what);
+    at = put_str(line, at, " at offset ");
+    at = put_dec(line, at, off);
+    at = put_str(line, at, ": found 0x");
+    at = put_dec(line, at, (uint64_t)got);
+    at = put_str(line, at, " expected 0x");
+    at = put_dec(line, at, (uint64_t)want);
+    /* The poison repeats every eight bytes as DE AD 00 00 DE AD 00 00 read
+     * little-endian, so byte 0 of a word is 0x00 and byte 7 is 0xDE. Checking
+     * the byte we actually read against the byte the poison would have put at
+     * that offset is enough to name it. */
+    {
+        unsigned b = (unsigned)(off % 8ull);
+        uint8_t poison = (b == 6u) ? 0xADu : (b == 7u) ? 0xDEu : 0x00u;
+        if (got == poison) {
+            at = put_str(line, at, " - this is the kernel's free-page poison: "
+                                   "the page was reclaimed while still mapped here");
+        }
+    }
+    line[at++] = '\n';
+    sys3(SYS_write, 1, (uint64_t)(uintptr_t)line, (uint64_t)at);
+}
+
+
+
 #define ROUNDS 120u
 
 static int op_map_touch_unmap(uint64_t r) {
@@ -139,7 +172,8 @@ static int op_map_touch_unmap(uint64_t r) {
      * invisible unless somebody looks. */
     for (i = 0; i < len; i += 512ull) {
         if (mem[i] != pattern) {
-            say("STRESS_FAIL: anonymous memory did not keep what was written at ", i, 1);
+            say("STRESS_FAIL: anonymous memory did not keep what was written", 0, 0);
+            say_mismatch("STRESS_FAIL: mapped page", i, mem[i], pattern);
             return -1;
         }
     }
@@ -206,6 +240,11 @@ static int op_cow(uint64_t r) {
         }
         for (i = 0; i < 4096ull; i += 256ull) {
             if (mem[i] != after) {
+                /* Reported from inside the child: the parent cannot see this
+                 * page, so an exit code alone would throw away the only
+                 * evidence there is. */
+                say_mismatch("STRESS_FAIL: the child's own copy-on-write page",
+                             i, mem[i], after);
                 sys3(SYS_exit, 3, 0, 0);
             }
         }
@@ -219,7 +258,8 @@ static int op_cow(uint64_t r) {
     /* And the parent's copy is untouched: that is the half people forget. */
     for (i = 0; i < 4096ull; i += 256ull) {
         if (mem[i] != before) {
-            say("STRESS_FAIL: the child's writes reached the parent at ", i, 1);
+            say("STRESS_FAIL: the child's writes reached the parent", 0, 0);
+            say_mismatch("STRESS_FAIL: the parent's page", i, mem[i], before);
             return -1;
         }
     }
