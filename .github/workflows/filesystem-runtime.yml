@@ -69,10 +69,23 @@ jobs:
           ctest --test-dir build --output-on-failure
           cmake --build build --target vibeos_image
 
-      - name: Boot-to-CLI filesystem smoke
+      - name: Boot-to-CLI filesystem smoke (virtio-blk)
         run: |
           set -euo pipefail
           chmod +x scripts/qemu-cli-smoke-linux.py
+          python3 scripts/qemu-cli-smoke-linux.py build 900
+
+      # The same boot on a SATA controller. VibeOS could only talk to
+      # virtio-blk for a long time, which is what QEMU offers and no desktop
+      # hypervisor does, so the appliances imported, booted, and then could not
+      # read their own disk - and nothing caught it because CI only ever ran
+      # the controller QEMU defaults to. The driver that nobody runs is the one
+      # that ships broken.
+      - name: Boot-to-CLI filesystem smoke (AHCI/SATA)
+        env:
+          VIBEOS_SMOKE_DISK: ahci
+        run: |
+          set -euo pipefail
           python3 scripts/qemu-cli-smoke-linux.py build 900
 
       - name: Upload filesystem diagnostics

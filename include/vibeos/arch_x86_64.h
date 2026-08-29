@@ -39,4 +39,25 @@ int vibeos_x86_64_serial_readc(void);
  * process group; weak where there is no process to signal. */
 void vibeos_x86_64_console_interrupt(void);
 
+/* Mark an identity-mapped physical range uncacheable (device registers). */
+void vibeos_x86_64_mark_uncacheable(uint64_t phys, uint64_t len);
+
+/* The block device the filesystem talks to. Bound by whichever driver came up;
+ * see kernel/arch/x86_64/blk.c for why this indirection exists. */
+void vibeos_x86_64_blk_bind(const char *name,
+                            int (*read)(uint64_t, void *),
+                            int (*read_many)(uint64_t, void *, uint32_t),
+                            int (*write)(uint64_t, const void *));
+const char *vibeos_x86_64_blk_name(void);
+int vibeos_x86_64_blk_present(void);
+int vibeos_x86_64_blk_read(uint64_t lba, void *buf);
+int vibeos_x86_64_blk_read_many(uint64_t lba, void *buf, uint32_t sectors);
+int vibeos_x86_64_blk_write(uint64_t lba, const void *buf);
+
+/* AHCI (SATA): what VirtualBox, VMware and real machines provide. */
+int vibeos_x86_64_ahci_init(void);
+int vibeos_x86_64_ahci_read(uint64_t lba, void *buf);
+int vibeos_x86_64_ahci_read_many(uint64_t lba, void *buf, uint32_t sectors);
+int vibeos_x86_64_ahci_write(uint64_t lba, const void *buf);
+
 #endif

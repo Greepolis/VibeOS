@@ -10,7 +10,7 @@
 #include "vibeos/arch_x86_64.h"
 #include "vibeos/fat_chain.h"
 
-extern int vibeos_x86_64_virtio_blk_read(uint64_t sector, void *buf);
+extern int vibeos_x86_64_blk_read(uint64_t sector, void *buf);
 
 #define SECTOR_SIZE 512u
 
@@ -68,7 +68,7 @@ static const uint8_t *fat_table_sector(uint32_t lba) {
     if (g_fatsec_valid && g_fatsec_lba == lba) {
         return g_fatsec;
     }
-    if (vibeos_x86_64_virtio_blk_read(lba, g_fatsec) != 0) {
+    if (vibeos_x86_64_blk_read(lba, g_fatsec) != 0) {
         g_fatsec_valid = 0;
         g_fat_chain_error = 1;
         return 0;
@@ -86,7 +86,7 @@ static int fat_mount_locked(void) {
     g_fat.mounted = 0;
 
     /* MBR: use the first non-empty partition; fall back to a bare superfloppy. */
-    if (vibeos_x86_64_virtio_blk_read(0, g_secbuf) != 0) {
+    if (vibeos_x86_64_blk_read(0, g_secbuf) != 0) {
         return -1;
     }
     if (rd16(&g_secbuf[510]) != 0xAA55u) {
@@ -100,7 +100,7 @@ static int fat_mount_locked(void) {
     }
 
     /* Read the volume boot record / BPB. */
-    if (vibeos_x86_64_virtio_blk_read(part_lba, g_secbuf) != 0) {
+    if (vibeos_x86_64_blk_read(part_lba, g_secbuf) != 0) {
         return -1;
     }
     bytes_per_sec = rd16(&g_secbuf[11]);
@@ -224,7 +224,7 @@ static int fat_scan_sectors(uint32_t lba, uint32_t sectors, const uint8_t want[1
                             uint32_t *out_cluster, uint32_t *out_size, uint8_t *out_attr) {
     uint32_t s, e;
     for (s = 0; s < sectors; s++) {
-        if (vibeos_x86_64_virtio_blk_read(lba + s, g_secbuf) != 0) {
+        if (vibeos_x86_64_blk_read(lba + s, g_secbuf) != 0) {
             return -1;
         }
         for (e = 0; e < SECTOR_SIZE; e += 32u) {
@@ -323,8 +323,8 @@ static int fat_resolve(const char *path, uint32_t *out_cluster, uint32_t *out_si
 
 /* ---- public API: open / positional read / list / write ------------------- */
 
-extern int vibeos_x86_64_virtio_blk_write(uint64_t sector, const void *buf);
-extern int vibeos_x86_64_virtio_blk_read_many(uint64_t sector, void *buf, uint32_t sectors);
+extern int vibeos_x86_64_blk_write(uint64_t sector, const void *buf);
+extern int vibeos_x86_64_blk_read_many(uint64_t sector, void *buf, uint32_t sectors);
 
 /* Resolve a path to its first cluster and size (a file "open"). */
 static int fat_open_locked(const char *path, uint32_t *out_cluster, uint32_t *out_size) {
@@ -364,7 +364,7 @@ static long fat_read_at_locked(uint32_t first_cluster, uint32_t size, uint32_t o
             uint32_t in_sec = off % SECTOR_SIZE;
             uint32_t n = SECTOR_SIZE - in_sec;
             uint32_t i;
-            if (vibeos_x86_64_virtio_blk_read(fat_cluster_lba(cluster) + s, g_secbuf) != 0) {
+            if (vibeos_x86_64_blk_read(fat_cluster_lba(cluster) + s, g_secbuf) != 0) {
                 return -1;
             }
             if (n > len - done) {
@@ -412,7 +412,7 @@ static int fat_list_locked(const char *path, uint32_t idx, char *name, uint32_t 
     }
 
     for (s = 0; s < sectors; s++) {
-        if (vibeos_x86_64_virtio_blk_read(lba + s, g_secbuf) != 0) {
+        if (vibeos_x86_64_blk_read(lba + s, g_secbuf) != 0) {
             return -1;
         }
         for (e = 0; e < SECTOR_SIZE; e += 32u) {
@@ -466,7 +466,7 @@ static int fat_set_entry(uint32_t cluster, uint32_t value) {
     if (s >= g_fat.sectors_per_fat) {
         return -1;
     }
-    if (vibeos_x86_64_virtio_blk_read(g_fat.fat_lba + s, g_fatbuf) != 0) {
+    if (vibeos_x86_64_blk_read(g_fat.fat_lba + s, g_fatbuf) != 0) {
         return -1;
     }
     fat_cache_drop();
@@ -476,7 +476,7 @@ static int fat_set_entry(uint32_t cluster, uint32_t value) {
         wr16(&g_fatbuf[i * 2u], (uint16_t)value);
     }
     for (copy = 0; copy < 2u; copy++) {
-        if (vibeos_x86_64_virtio_blk_write(g_fat.fat_lba + copy * g_fat.sectors_per_fat + s,
+        if (vibeos_x86_64_blk_write(g_fat.fat_lba + copy * g_fat.sectors_per_fat + s,
                                            g_fatbuf) != 0) {
             return -1;
         }
@@ -489,7 +489,7 @@ static uint32_t fat_get_entry(uint32_t cluster) {
     uint32_t s = cluster / per_sec, i = cluster % per_sec;
 
     if (s >= g_fat.sectors_per_fat ||
-        vibeos_x86_64_virtio_blk_read(g_fat.fat_lba + s, g_fatbuf) != 0) {
+        vibeos_x86_64_blk_read(g_fat.fat_lba + s, g_fatbuf) != 0) {
         return g_fat.is_fat32 ? 0x0FFFFFFFu : 0xFFFFu;
     }
     return g_fat.is_fat32 ? (rd32(&g_fatbuf[i * 4u]) & 0x0FFFFFFFu) : rd16(&g_fatbuf[i * 2u]);
@@ -574,7 +574,7 @@ static int fat_dir_slot(uint32_t dir_cluster, const uint8_t want[11], int create
     uint32_t free_lba = 0, free_off = 0;
 
     for (i = 0; fat_dir_sector(dir_cluster, i, &lba) == 0; i++) {
-        if (vibeos_x86_64_virtio_blk_read(lba, g_secbuf) != 0) {
+        if (vibeos_x86_64_blk_read(lba, g_secbuf) != 0) {
             return -1;
         }
         for (e = 0; e < SECTOR_SIZE; e += 32u) {
@@ -610,7 +610,7 @@ static int fat_dir_slot(uint32_t dir_cluster, const uint8_t want[11], int create
     }
 done:
     if (create && free_seen) {
-        if (vibeos_x86_64_virtio_blk_read(free_lba, g_secbuf) != 0) {
+        if (vibeos_x86_64_blk_read(free_lba, g_secbuf) != 0) {
             return -1;
         }
         *out_lba = free_lba;
@@ -697,7 +697,7 @@ static long fat_write_file_locked(const char *path, const void *buf, uint32_t le
             for (i = 0; i < SECTOR_SIZE; i++) {
                 g_fatbuf[i] = (i < n) ? in[wrote + i] : 0u;
             }
-            if (vibeos_x86_64_virtio_blk_write(fat_cluster_lba(cl) + s, g_fatbuf) != 0) {
+            if (vibeos_x86_64_blk_write(fat_cluster_lba(cl) + s, g_fatbuf) != 0) {
                 return -1;
             }
             wrote += n;
@@ -707,7 +707,7 @@ static long fat_write_file_locked(const char *path, const void *buf, uint32_t le
 
     /* Re-read the directory sector (FAT I/O reused the buffer) and store the
      * entry. */
-    if (vibeos_x86_64_virtio_blk_read(lba, g_secbuf) != 0) {
+    if (vibeos_x86_64_blk_read(lba, g_secbuf) != 0) {
         return -1;
     }
     {
@@ -723,7 +723,7 @@ static long fat_write_file_locked(const char *path, const void *buf, uint32_t le
         wr16(&d[20], (uint16_t)(first >> 16));         /* cluster high (FAT32) */
         wr16(&d[26], (uint16_t)(first & 0xFFFFu));     /* cluster low          */
         wr32(&d[28], len);
-        if (vibeos_x86_64_virtio_blk_write(lba, g_secbuf) != 0) {
+        if (vibeos_x86_64_blk_write(lba, g_secbuf) != 0) {
             return -1;
         }
     }
@@ -748,7 +748,7 @@ static int fat_unlink_locked(const char *path) {
         }
         cluster = ((uint32_t)rd16(&d[20]) << 16) | rd16(&d[26]);
         d[0] = 0xE5;
-        if (vibeos_x86_64_virtio_blk_write(lba, g_secbuf) != 0) {
+        if (vibeos_x86_64_blk_write(lba, g_secbuf) != 0) {
             return -1;
         }
     }
@@ -792,11 +792,11 @@ static int fat_mkdir_locked(const char *path) {
             g_fatbuf[43] = 0x10;
             wr16(&g_fatbuf[58], (uint16_t)dir_cluster);
         }
-        if (vibeos_x86_64_virtio_blk_write(fat_cluster_lba(cluster) + s, g_fatbuf) != 0) {
+        if (vibeos_x86_64_blk_write(fat_cluster_lba(cluster) + s, g_fatbuf) != 0) {
             return -1;
         }
     }
-    if (vibeos_x86_64_virtio_blk_read(lba, g_secbuf) != 0) {
+    if (vibeos_x86_64_blk_read(lba, g_secbuf) != 0) {
         return -1;
     }
     {
@@ -812,7 +812,7 @@ static int fat_mkdir_locked(const char *path) {
         wr16(&d[20], (uint16_t)(cluster >> 16));
         wr16(&d[26], (uint16_t)(cluster & 0xFFFFu));
         wr32(&d[28], 0);
-        if (vibeos_x86_64_virtio_blk_write(lba, g_secbuf) != 0) {
+        if (vibeos_x86_64_blk_write(lba, g_secbuf) != 0) {
             return -1;
         }
     }
@@ -841,7 +841,7 @@ static uint32_t fat_io_lba(void *ctx, uint32_t cluster) {
 
 static int fat_io_sectors(void *ctx, uint32_t lba, void *dst, uint32_t sectors) {
     (void)ctx;
-    return vibeos_x86_64_virtio_blk_read_many(lba, dst, sectors);
+    return vibeos_x86_64_blk_read_many(lba, dst, sectors);
 }
 
 static int fat_io_partial(void *ctx, uint32_t lba, void *dst, uint32_t bytes) {
@@ -850,7 +850,7 @@ static int fat_io_partial(void *ctx, uint32_t lba, void *dst, uint32_t bytes) {
     (void)ctx;
     /* Through the bounce buffer, so a partial sector never writes past the end
      * of what the caller asked for. */
-    if (vibeos_x86_64_virtio_blk_read(lba, g_secbuf) != 0) {
+    if (vibeos_x86_64_blk_read(lba, g_secbuf) != 0) {
         return -1;
     }
     for (i = 0; i < bytes; i++) {

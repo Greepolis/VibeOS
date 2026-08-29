@@ -40,6 +40,20 @@ SKIP_ECHO = SMOKE_ID != 0
 EXPECTED_CPUS = 4
 
 
+# The disk controller under test. "virtio" is QEMU's own and is what the
+# default run uses; "ahci" is the standard SATA controller every desktop
+# hypervisor provides, and is how the AHCI driver gets exercised at all.
+DISK = os.environ.get("VIBEOS_SMOKE_DISK", "virtio")
+DISK_ARGS = {
+    "virtio": ["-device", "virtio-blk-pci,drive=esp,bootindex=1"],
+    "ahci": ["-device", "ich9-ahci,id=ahci",
+             "-device", "ide-hd,drive=esp,bus=ahci.0,bootindex=1"],
+}
+if DISK not in DISK_ARGS:
+    raise SystemExit(f"VIBEOS_SMOKE_DISK={DISK!r}: expected one of "
+                     + ", ".join(sorted(DISK_ARGS)))
+
+
 def start_echo_server(stop_event, state):
     """Accept one connection at a time and echo whatever arrives."""
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -301,7 +315,6 @@ def main():
                 "-drive", f"if=pflash,format=raw,readonly=on,file={ovmf_code}",
                 "-drive", f"if=pflash,format=raw,file={vars_path}",
                 "-drive", f"if=none,id=esp,format=raw,file=fat:rw:{efi_root}",
-                "-device", "virtio-blk-pci,drive=esp,bootindex=1",
                 # A real NIC on QEMU's user-mode network: DHCP and DNS come
                 # from the built-in services, and 10.0.2.2 is the host.
                 "-netdev", "user,id=n0",
@@ -309,6 +322,12 @@ def main():
                 "-no-reboot",
                 "-no-shutdown",
             ]
+            # Which controller the disk hangs off. virtio-blk is QEMU's and is
+            # the default here; AHCI is what VirtualBox, VMware and real
+            # machines have, and until it was exercised the appliances booted
+            # and then could not read their own disk. Both paths have to be run
+            # somewhere, or the one nobody runs is the one that ships.
+            cmd += DISK_ARGS[DISK]
             qemu = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=err_fp)
 
             serial = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -520,6 +539,18 @@ def main():
             # status and leaves the exit-code byte zero, so an init that reads
             # only the code byte reports a segfault as a clean stop - which is
             # what this one did until SVC_KILLED existed.
+            # The stack the kernel builds for a new program. This printed
+            # "argv wrong" on every boot for as long as it was unasserted: the
+            # self-test still required argv[0] to begin with 'i', from when it
+            # was init, and it had since become a service exec'd under its own
+            # name. A line in the serial log is not a check.
+            if "argv ok" not in text or "argv wrong" in text:
+                problems.append("argv_not_delivered_correctly")
+            # Each service is exec'd under its own name, which is what makes
+            # the supervisor's own logs mean anything.
+            if "SVC_OK_RUNNING" not in text:
+                problems.append("named_service_did_not_run")
+
             if "SVC_CRASH_FAULTING" not in text:
                 problems.append("crashing_service_never_ran")
             if "SVC_KILLED svc-crash" not in text:

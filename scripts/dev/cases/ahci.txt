@@ -1,0 +1,32 @@
+# Run these with VIBEOS_SMOKE_DISK=ahci, or every case passes by testing the
+# virtio driver instead - which is the exact shape of failure this driver was
+# written to fix.
+
+### bus mastering is never enabled, so the controller can fetch no descriptors
+--- old
+                pci_write32((uint8_t)bus, (uint8_t)dev, fn, 0x04, cmd | 0x6u);
++++ new
+                pci_write32((uint8_t)bus, (uint8_t)dev, fn, 0x04, cmd | 0x2u);
+
+### the port's command engine is never started
+--- old
+    port_write(PxCMD, port_read(PxCMD) | PxCMD_ST);
++++ new
+
+# Three more cases were written, run, and came back NOT RED. They are kept here
+# rather than deleted, because "no case exists" and "the case exists and this
+# environment cannot tell the difference" are very different things, and the
+# next person to write them deserves to know which one they are looking at.
+#
+#   - not setting GHC.AE, leaving the HBA in legacy mode
+#   - putting the plain byte count in the PRDT instead of count-1
+#   - leaving the register window cacheable
+#
+# QEMU's ich9-ahci tolerates all three: it does not enforce the mode bit, it
+# ignores the extra byte, and its MMIO is never served from a cache line
+# because nothing backs it with RAM. Real hardware enforces all three, and the
+# first two are in the specification as requirements rather than advice.
+#
+# So these lines are correct, load-bearing on metal, and unverifiable here.
+# The only evidence beyond the specification is that the same code also works
+# under VirtualBox's ICH8, which is a second implementation and not a test.

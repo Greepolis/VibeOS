@@ -119,7 +119,11 @@ typedef struct {
     int state;
 } service_t;
 
-static char *const svc_argv[] = {(char *)"svc", 0};
+/* Each service is exec'd under its own name. argv[0] is chosen by whoever
+ * calls exec, not by the filesystem - the same reason one BusyBox binary is
+ * twenty commands - and a supervisor that gives every service the same name
+ * makes its own logs useless. */
+static char *svc_argv[] = {(char *)"svc", 0};
 static char *const svc_envp[] = {(char *)"PATH=/EFI/BOOT", (char *)"TERM=dumb", 0};
 
 static service_t services[] = {
@@ -143,6 +147,7 @@ static int start_service(service_t *svc) {
     int64_t child = sys3(SYS_fork, 0, 0, 0);
 
     if (child == 0) {
+        svc_argv[0] = (char *)svc->name;
         sys3(SYS_execve, (uint64_t)(uintptr_t)svc->path,
              (uint64_t)(uintptr_t)svc_argv, (uint64_t)(uintptr_t)svc_envp);
         /* execve only returns when it failed, and there is nothing else this

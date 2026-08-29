@@ -215,6 +215,35 @@ that the reason lines had gone quiet. It lives in `scripts/dev/verify-boot.sh`
 now, it prints the gate's own reason, and a sabotage run should start by
 checking that the unmodified tree still passes.
 
+**The driver nobody runs is the one that ships broken.** The kernel could
+only talk to virtio-blk, which is what QEMU offers and no desktop hypervisor
+does. The VM images imported, booted, and then every exec failed - the files
+were on the disk and there was no way to read them. UEFI does the reading up to
+ExitBootServices, so the bootloader worked and hid it, and what was left was an
+absence rather than a failure, which is quieter. CI ran one controller, so the
+gap was invisible for as long as nobody tried the artifact by hand.
+
+There is an AHCI driver now, and the smoke test takes `VIBEOS_SMOKE_DISK=ahci`
+so both controllers are gated. Match a controller by PCI class, not by device
+id: VirtualBox emulates an ICH8, QEMU an ICH9, VMware something else again.
+
+Two of its five sabotage cases turn the boot red. The other three - the AHCI
+mode bit, a PRDT count that must be one less than the byte count, and marking
+the register window uncacheable - are requirements on real hardware that QEMU
+does not enforce, so they are correct and unverifiable here. They are kept in
+the case file as a comment saying so, because "no case exists" and "the case
+exists and this environment cannot tell" are different things.
+
+**Drive the real tool rather than reasoning about its format.** Three separate
+defects kept the OVA from importing into VirtualBox, and all three were found
+by running VBoxManage: making it write a .vbox settled where StorageControllers
+belongs, and exporting an appliance from it revealed that vbox:uuid on the Disk
+is written bare while the machine's Image uuid is written in braces. No amount
+of reading the OVF specification would have produced that asymmetry. Also:
+uuids sliced out of a SHA-256 digest are not uuids - VirtualBox parses the
+malformed value to null instead of rejecting it, and then reports that an image
+it can see does not exist.
+
 ## Verification that exists
 
 The boot gate (`scripts/qemu-cli-smoke-linux.py`) asserts state, not markers:

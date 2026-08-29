@@ -413,6 +413,8 @@ extern void vibeos_x86_64_virtio_net_stats(uint64_t *out_tx, uint64_t *out_rx);
 
 extern int vibeos_x86_64_virtio_blk_init(void);
 extern int vibeos_x86_64_virtio_blk_read(uint64_t sector, void *buf);
+extern int vibeos_x86_64_virtio_blk_read_many(uint64_t sector, void *buf, uint32_t sectors);
+extern int vibeos_x86_64_virtio_blk_write(uint64_t sector, const void *buf);
 #include "vibeos/log.h"
 #include "vibeos/vfs.h"
 
@@ -894,6 +896,8 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
 #define PTE_PRESENT 0x001ull
 #define PTE_WRITE   0x002ull
 #define PTE_USER    0x004ull            /* ring-3 accessible */
+#define PTE_PWT     0x008ull            /* write-through */
+#define PTE_PCD     0x010ull            /* cache disable; with PWT gives UC- */
 #define PTE_PS      0x080ull            /* 2 MiB page at PD level */
 /* Bits 9 through 11 are ignored by the hardware and belong to the OS. This one
  * marks a page that is shared after fork and must be duplicated before it is
@@ -1517,6 +1521,39 @@ static void hw_enable_paging(void) {
     vibeos_x86_64_serial_puts("[HW] CR3 loaded with kernel-owned tables: 0x");
     vibeos_x86_64_serial_print_hex(hw_read_cr3());
     vibeos_x86_64_serial_puts("\n[HW] PAGING_OK (kernel tables, user pages isolated)\n");
+}
+
+/* Mark an identity-mapped physical range uncacheable.
+ *
+ * The identity map is built above with plain write-back 2 MiB pages, which is
+ * right for memory and wrong for a device's registers: reads there have side
+ * effects, and a cached one returns what the register said last time. A driver
+ * polling a completion bit would then spin on a stale copy forever. Whole 2 MiB
+ * pages are marked, because that is the granularity the map has - the ranges
+ * this is used for are device BARs, which nothing else shares.
+ *
+ * PCD|PWT rather than a PAT entry: it is UC- on every processor that has ever
+ * run this, needs no MSR set up first, and the difference from true UC does not
+ * matter for a BAR. */
+void vibeos_x86_64_mark_uncacheable(uint64_t phys, uint64_t len) {
+    uint64_t addr;
+
+    if (len == 0ull || phys >= VIBEOS_HW_IDENTITY_LIMIT) {
+        return;
+    }
+    for (addr = phys & ~0x1FFFFFull; addr < phys + len; addr += 0x200000ull) {
+        uint32_t g = (uint32_t)(addr / 0x40000000ull);
+        uint32_t e = (uint32_t)((addr % 0x40000000ull) / 0x200000ull);
+
+        if (g >= VIBEOS_HW_IDENTITY_GIB) {
+            break;
+        }
+        g_pd[g][e] |= PTE_PCD | PTE_PWT;
+    }
+    /* Reload CR3 to drop the TLB entries that still describe the old
+     * attributes. INVLPG per page would do, but this runs once per device at
+     * bring-up and correctness is worth more here than the microseconds. */
+    hw_write_cr3(hw_read_cr3());
 }
 
 /* Remap the PIC, start the PIT, enable interrupts, and confirm the timer IRQ
@@ -7042,9 +7079,31 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
     (void)vibeos_log_init(&g_kernel_log);
     hw_log(VIBEOS_LOG_INFO, 0, 0, 0, "kernel log ready");
 
-    /* Real storage: bring up virtio-blk, mount the FAT filesystem, and load the
-     * init program straight from disk (EFI/BOOT/INIT.ELF -> INIT.ELF at root). */
-    if (vibeos_x86_64_virtio_blk_init() == 0 &&
+    /* Real storage: find a disk, mount the FAT filesystem, and load the init
+     * program straight from it (EFI/BOOT/INIT.ELF -> INIT.ELF at root).
+     *
+     * Two drivers, tried in this order, and the order is the whole point:
+     * virtio-blk is what QEMU offers and is faster, AHCI is what VirtualBox,
+     * VMware and real machines offer. Only virtio existed until now, so the
+     * appliances booted and then could not read their own disk - the
+     * bootloader hid it, because UEFI does the reading up to ExitBootServices
+     * and after that there was simply no device. */
+    if (vibeos_x86_64_virtio_blk_init() == 0) {
+        vibeos_x86_64_blk_bind("virtio-blk",
+                               vibeos_x86_64_virtio_blk_read,
+                               vibeos_x86_64_virtio_blk_read_many,
+                               vibeos_x86_64_virtio_blk_write);
+    } else if (vibeos_x86_64_ahci_init() == 0) {
+        vibeos_x86_64_blk_bind("ahci",
+                               vibeos_x86_64_ahci_read,
+                               vibeos_x86_64_ahci_read_many,
+                               vibeos_x86_64_ahci_write);
+    }
+    vibeos_x86_64_serial_puts("[BLK] disk driver: ");
+    vibeos_x86_64_serial_puts(vibeos_x86_64_blk_name());
+    vibeos_x86_64_serial_puts("\n");
+
+    if (vibeos_x86_64_blk_present() &&
         vibeos_x86_64_fat_vfs_mount(&g_rootfs) == 0) {
         long n = vibeos_fs_read_file(&g_rootfs, "EFI/BOOT/INIT.ELF",
                                       g_disk_init_elf, sizeof(g_disk_init_elf));

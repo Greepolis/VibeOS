@@ -81,6 +81,7 @@ static const char exec_done[] = "parent: exec'd child completed\n";
 static const char kbd_prefix[] = "console read: ";
 static const char shell_path[] = "EFI/BOOT/SH.ELF";
 
+static const char argv_ok[] = "argv ok: well formed and NULL terminated\n";
 static const char argv_bad[] = "argv wrong\n";
 static const char auxv_ok[] = "auxv ok: AT_PHDR points at our program headers\n";
 static const char auxv_bad[] = "auxv wrong\n";
@@ -260,9 +261,17 @@ int vibeos_main(int argc, char **argv, char **envp) {
 
     user_syscall3(SYS_write, 1 /*stdout*/, (long)(unsigned long)message, sizeof(message) - 1);
 
-    /* The kernel built this stack; confirm it arrived intact. */
-    if (argc == 1 && argv[0] && argv[0][0] == 'i' && argv[1] == 0) {
-        /* argv is well formed and terminated. */
+    /* The kernel built this stack; confirm it arrived intact.
+     *
+     * This used to require argv[0] to begin with 'i', from when this program
+     * was init and was called "init". It became a supervised service, its
+     * argv[0] became the service name, and the check started failing on every
+     * boot - visibly, in the serial log, for as long as nobody was asserting
+     * on the line. What the kernel is responsible for is a well-formed,
+     * NULL-terminated vector; which name the parent chose is the parent's
+     * business, so that is what this checks now. */
+    if (argc == 1 && argv[0] && argv[0][0] != '\0' && argv[1] == 0) {
+        user_syscall3(SYS_write, 1, (long)(unsigned long)argv_ok, sizeof(argv_ok) - 1);
     } else {
         user_syscall3(SYS_write, 1, (long)(unsigned long)argv_bad, sizeof(argv_bad) - 1);
     }
