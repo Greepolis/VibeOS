@@ -1,6 +1,6 @@
 # Diagnostics and Observability Progress
 
-Status: In Progress (six runtime detectors, all gated; two found defects on their first run)
+Status: In Progress (six runtime detectors, all gated; they found and closed the premature-free defect that had been chased three times from the far end)
 Last review: 2026-08-29
 
 Everything here exists because of a specific bug that cost hours, not because
@@ -57,10 +57,13 @@ must *not* be flagged. Known limit, in the docstring rather than left to be
 rediscovered: a split inside a ring-3 write that truncates no number is not
 caught here - the bad-unlock counter guards that case.
 
-**Found on its first run:** four multi-part kernel messages assembled without
-bracketing (`[EXEC]` three times, `[SIG] deliver` once). `serial_puts` and
-`serial_print_hex` each take the lock on their own, so an unbracketed six-part
-line is six critical sections. All four fixed.
+**Found, over three runs:** eight multi-part kernel messages assembled without
+bracketing - `[EXEC]` three times, then `[SIG] deliver`, `[SIG] tkill`,
+`[SIG] tgkill`, `[SCHED] fork lost its slot` and the unimplemented-syscall
+notice. `serial_puts` and `serial_print_hex` each take the lock on their own, so
+an unbracketed six-part line is six critical sections. All eight fixed; the
+check kept finding the next one each time the previous was fixed, which is what
+a working detector looks like.
 
 Gate: `serial_log_interleaved(N_lines)`.
 
@@ -121,17 +124,46 @@ Gate: `stress_seed_not_reported`, `stress_run_did_not_finish`,
 
 | Detector | Defect | Status |
 | --- | --- | --- |
-| Log integrity | four unbracketed multi-part kernel messages | fixed |
-| Seeded stress | a page freed while a forked child still had it mapped | **open**, see below |
+| Log integrity | eight unbracketed multi-part kernel messages | fixed |
+| Seeded stress | `munmap` freed copy-on-write pages without consulting the reference count | fixed |
+
+### The premature free, and what closed it
+
+`hw_sys_munmap` freed the frame behind every user page it unmapped, outright,
+with no `frame_ref_dec`. That is correct only for a page nobody else has - and
+after a fork, that is the rare case rather than the common one. Unmapping a
+copy-on-write page therefore put it straight back on the freelist while another
+process was still running from it.
+
+This is the same defect that had already been chased three times from the far
+end, each time presenting as something else entirely: a musl program tripping
+over its own malloc bins, init printing a pointer where a pid belonged, a forked
+child reading back a value it had not written. Each investigation ended in a
+plausible-looking garbage pointer and no mechanism.
+
+What closed it was two detectors meeting. The stress run produced the failure on
+demand instead of one boot in thirty; the free-page poison told it *what* the
+wrong bytes were. The message it printed named the mechanism outright:
+
+    STRESS_FAIL: the child's own copy-on-write page at offset 0:
+      found 0x0 expected 0x96 - this is the kernel's free-page poison:
+      the page was reclaimed while still mapped here
+
+From there the fix was one call. 48 boots since without a recurrence.
 
 ## Pending
 
-- **A page reclaimed while still mapped, about one boot in twenty.** The stress
-  run says so outright now: seed 230000012, round 58, the child's own
-  copy-on-write page reads back as the kernel's free-page poison. This is the
-  same family as the musl-heap and `fork`-return corruptions chased earlier -
-  premature free - but it is the first time the evidence names the mechanism
-  instead of leaving it to be inferred from a garbage pointer.
+- **`munmap` does not shoot down the other cores' TLBs.** The need is real - a
+  thread of the same process elsewhere keeps a translation for an address whose
+  frame has just been handed back, so it can write into memory that now belongs
+  to something else. It was implemented and then removed: two runs in
+  twenty-four failed with `tlb_acks below shootdowns`, a core that never
+  answered. `syscall` clears IF, so a target cannot take the IPI until it
+  returns to ring 3, and `munmap` is called far more often than `fork` - the
+  stress run alone calls it a hundred and twenty times. Trading a rare
+  correctness gap for a frequent stall is the wrong trade. The honest fix is for
+  the syscall path to stop masking interrupts for its whole duration, which is a
+  larger change.
 - A hang in the bootloader phase, about one boot in twenty-four, still
   uninvestigated. It is not slowness: a 300-second budget leaves the guest
   silent for 296 of them.

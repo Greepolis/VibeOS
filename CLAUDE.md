@@ -395,6 +395,25 @@ the table contradicted a file it linked to - it said dynamically linked Linux
 binaries were refused while the file recorded them running and gated. Whoever
 changes a status changes both.
 
+**munmap has to consult the reference count, like teardown does.** It freed
+the frame behind every page it unmapped, outright. That is correct only for a
+page nobody else has, and after a fork that is the rare case - so unmapping a
+copy-on-write page put it back on the freelist while another process was still
+running from it.
+
+This one defect had been chased three times from the far end and presented as
+something different each time: a musl program tripping over its own malloc
+bins, init printing a pointer where a pid belonged, a forked child reading back
+a value it had not written. Every investigation ended at a plausible-looking
+garbage pointer with no mechanism behind it.
+
+What closed it was two detectors meeting. The stress run produced the failure
+on demand instead of one boot in thirty, and the free-page poison said what the
+wrong bytes *were*, so the message named the mechanism: "this is the kernel's
+free-page poison: the page was reclaimed while still mapped here". The fix was
+one call. That is the argument for building detectors before chasing the next
+rare bug by hand.
+
 ## Verification that exists
 
 The boot gate (`scripts/qemu-cli-smoke-linux.py`) asserts state, not markers:

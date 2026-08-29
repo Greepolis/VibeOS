@@ -4695,11 +4695,48 @@ static long hw_sys_munmap(uint64_t addr, uint64_t len) {
     for (va = addr; va < end; va += 4096ull) {
         uint64_t *pte = hw_pte_lookup(&proc->as, va);
         if (pte && (*pte & PTE_USER) != 0) {
-            hw_free_page((void *)(uintptr_t)(*pte & 0x000FFFFFFFFFF000ull));
+            uint64_t phys = *pte & 0x000FFFFFFFFFF000ull;
+
+            /* Drop the mapping first, then ask whether the frame is ours to
+             * free. This used to free it outright, which is correct only for a
+             * page nobody else has - and after fork, that is not the common
+             * case but the rare one. Unmapping a copy-on-write page therefore
+             * put it back on the freelist while another process was still
+             * running from it.
+             *
+             * It is the same premature free that had been chased three times
+             * from the far end: a musl program tripping over its own malloc
+             * bins, init printing a pointer where a pid belonged, a forked
+             * child reading back something it had not written. The stress run
+             * is what finally named it, by recognising the free-page poison in
+             * a page it still held. */
             *pte = 0;
             hw_invlpg(va);
+            if (frame_ref_dec(phys)) {
+                hw_free_page((void *)(uintptr_t)phys);
+            }
         }
     }
+    /* A shootdown belongs here too, and is deliberately absent.
+     *
+     * The need is real: a thread of this process on another core still has the
+     * old translation for an address whose frame has just been handed back, so
+     * it can write into memory that now belongs to somebody else. fork does
+     * shoot down for exactly that reason.
+     *
+     * It was tried here and made the boot worse rather than better - two runs
+     * in twenty-four failed with `tlb_acks below shootdowns`, a core that never
+     * answered. The mechanism cannot meet a synchronous barrier at this call
+     * rate: `syscall` clears IF (SFMASK is 0x200), so a target cannot take the
+     * IPI until it returns to ring 3, and munmap is called far more often than
+     * fork - the stress run alone calls it a hundred and twenty times.
+     *
+     * Trading a rare correctness gap for a frequent stall is the wrong trade,
+     * and papering over the timeout would be worse than either. The honest fix
+     * is for the syscall path to stop masking interrupts for its whole
+     * duration, which is a larger change than this one; it is recorded in
+     * docs/implementation_progress/diagnostics.md rather than left here as a
+     * silent omission. */
     return 0;
 }
 
@@ -4956,6 +4993,8 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
      * task is what gets scheduled - which is exactly the shape of the wedge
      * this is hunting. Saying so out loud beats inferring it from wreckage. */
     if (child->alloc_seq != my_tenancy || child->state != HW_TASK_RESERVED) {
+        /* One line, one critical section: puts and print_hex each take the console lock on their own. */
+        vibeos_x86_64_serial_lock();
         vibeos_x86_64_serial_puts("[SCHED] fork lost its slot: idx=0x");
         vibeos_x86_64_serial_print_hex((uint64_t)idx);
         vibeos_x86_64_serial_puts(" mine=0x");
@@ -4965,6 +5004,7 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
         vibeos_x86_64_serial_puts(" state=0x");
         vibeos_x86_64_serial_print_hex((uint64_t)child->state);
         vibeos_x86_64_serial_puts("\n");
+        vibeos_x86_64_serial_unlock();
         hw_panic("two owners filled one task slot");
     }
     child->state = HW_TASK_READY;
@@ -5858,11 +5898,14 @@ static long hw_sys_tkill(uint64_t target_tid, uint64_t sig) {
     if (sig == 0u) {
         return 0;
     }
+    /* One line, one critical section: puts and print_hex each take the console lock on their own. */
+    vibeos_x86_64_serial_lock();
     vibeos_x86_64_serial_puts("[SIG] tkill tid=0x");
     vibeos_x86_64_serial_print_hex((uint64_t)(uint32_t)target_tid);
     vibeos_x86_64_serial_puts(" sig=0x");
     vibeos_x86_64_serial_print_hex(sig);
     vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
     return (hw_signal_raise(target, (uint32_t)sig) == 0) ? 0 : -VIBEOS_EINVAL;
 }
 
@@ -5881,6 +5924,8 @@ static long hw_sys_tgkill(uint64_t target_tgid, uint64_t target_tid,
     if (sig == 0u) {
         return 0;
     }
+    /* One line, one critical section: puts and print_hex each take the console lock on their own. */
+    vibeos_x86_64_serial_lock();
     vibeos_x86_64_serial_puts("[SIG] tgkill tgid=0x");
     vibeos_x86_64_serial_print_hex((uint64_t)(uint32_t)target_tgid);
     vibeos_x86_64_serial_puts(" tid=0x");
@@ -5888,6 +5933,7 @@ static long hw_sys_tgkill(uint64_t target_tgid, uint64_t target_tid,
     vibeos_x86_64_serial_puts(" sig=0x");
     vibeos_x86_64_serial_print_hex(sig);
     vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
     return (hw_signal_raise(target, (uint32_t)sig) == 0) ? 0 : -VIBEOS_EINVAL;
 }
 
@@ -6965,9 +7011,12 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
             hw_task_exit(a1); /* retires this task and switches away; no return */
             return 0;
         default:
+            /* One line, one critical section: puts and print_hex each take the console lock on their own. */
+            vibeos_x86_64_serial_lock();
             vibeos_x86_64_serial_puts("[HW][SYS] unimplemented Linux syscall nr=0x");
             vibeos_x86_64_serial_print_hex(nr);
             vibeos_x86_64_serial_puts("\n");
+            vibeos_x86_64_serial_unlock();
             return -VIBEOS_ENOSYS;
     }
 }
