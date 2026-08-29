@@ -70,9 +70,36 @@ signal in the low seven bits of the wait status and leaves the exit-code byte
 zero, so an init reading only the code byte reported a segfault as a clean
 stop. `svc-crash` came back `STOPPED` until `SVC_KILLED` existed.
 
+
+### Ctrl-C and process groups
+
+The foreground-process-group machinery (`g_console_foreground_pgid`,
+`vibeos_x86_64_console_interrupt`, `setpgid`, `TIOCSPGRP`) has been present and
+correct for some time, and was reachable only from the PS/2 keyboard IRQ. The
+serial console - the one VibeOS is actually driven through, in CI and by hand -
+discarded `0x03` along with every other control byte in `kernel_cli_read_line`.
+The mechanism existed and no input could get to it, which is why nothing
+noticed. Ctrl-C is now routed to the signal path from there too, and the boot
+gate asserts it: sabotaging the branch turns the boot red.
+
+What is **not** gated is the delivery itself. By the time the kernel CLI runs,
+userland has finished - init exits when its one session service does - so there
+is no foreground process for the signal to reach. The instrumentation says so
+in the log rather than leaving it to be assumed:
+
+    [SIG] console interrupt: delivered=0x0 newest_pid=0x0 fg_pgid=0x1
+
+A sabotage case that removes the delivery call was written and came back NOT
+RED, which is a fact about this boot rather than a hole in the gate; it is kept
+in `scripts/dev/cases/ctrl-c.txt` as a comment so the next person does not
+rediscover it by hand. Gating delivery needs a live foreground job at the
+moment the key arrives.
+
 ## Pending
 - Dependency ordering and exponential restart backoff exist only in the host-tested model (`user/servicemgr/supervisor.c`). The manifest the guest actually runs has no dependencies between its services and restarts immediately; the two are not yet the same code.
 - Declarative/service-config source of truth for init graph nodes (currently call-site supplied).
+- Ctrl-C delivery to a live foreground job is not gated (see above); only the
+  routing of the key into the signal path is.
 - Stronger failure domains. A crashing service is now contained to its own task, but nothing yet limits what one service can do to shared kernel state before it faults.
 - An intermittent stack-check failure in the ring-3 musl signal test (~1 boot in 14 observed). The canary is read through `%fs:0x28`, so a TLS base that is not preserved across signal delivery or fork would produce exactly this, and the sigframe itself saves the trapframe, which does not carry `FS_BASE`. Not yet instrumented, so this is a lead and not a diagnosis.
 - Declarative init configuration format and validation.

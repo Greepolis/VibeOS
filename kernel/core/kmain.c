@@ -137,6 +137,11 @@ static void kernel_cli_print_log(const vibeos_kernel_t *kernel) {
     }
 }
 
+/* The real one lives with the task table, which the host test binary does not
+ * link. Weak, so the kernel build still gets the version that can signal a
+ * process group and the tests get one that does nothing. */
+__attribute__((weak)) void vibeos_x86_64_console_interrupt(void) { }
+
 static void kernel_cli_prompt(void) {
     vibeos_x86_64_serial_puts("vibeos> ");
 }
@@ -162,6 +167,18 @@ static int kernel_cli_read_line(char *buffer, size_t buffer_size) {
                 vibeos_x86_64_serial_puts("\b \b");
             }
             continue;
+        }
+        if (ch == 3) {
+            /* Ctrl-C is not a character here either. The PS/2 path has always
+             * turned it into a signal, with a comment saying so; this one
+             * dropped it on the floor along with every other control byte. So
+             * the foreground process group, and everything built on top of it,
+             * were unreachable from the console VibeOS is actually driven
+             * through - the machinery existed and no input could reach it. */
+            vibeos_x86_64_serial_puts("^C\n");
+            vibeos_x86_64_console_interrupt();
+            buffer[0] = '\0';
+            return 0;
         }
         if (ch < 32 || ch > 126) {
             continue;

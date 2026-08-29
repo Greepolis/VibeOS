@@ -35,5 +35,8 @@ void vibeos_x86_64_irq_restore(uint64_t flags);
 int vibeos_x86_64_serial_available(void);
 int vibeos_x86_64_serial_can_read(void);
 int vibeos_x86_64_serial_readc(void);
+/* Raised when the interrupt key arrives on a console. Signals the foreground
+ * process group; weak where there is no process to signal. */
+void vibeos_x86_64_console_interrupt(void);
 
 #endif

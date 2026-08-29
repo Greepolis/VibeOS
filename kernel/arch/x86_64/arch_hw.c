@@ -2276,6 +2276,20 @@ void vibeos_x86_64_console_interrupt(void) {
         vibeos_x86_64_serial_print_hex(delivered);
         vibeos_x86_64_serial_puts("\n");
     }
+    /* Always say what happened, including "nothing". A gate could otherwise
+     * only check that the byte was echoed - and it did exactly that: removing
+     * the call to this function left the boot green, because an echo and a
+     * signal look identical from outside. One line, one call: this is read
+     * next to output from other cores. */
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts("[SIG] console interrupt: delivered=0x");
+    vibeos_x86_64_serial_print_hex(delivered);
+    vibeos_x86_64_serial_puts(" newest_pid=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)best);
+    vibeos_x86_64_serial_puts(" fg_pgid=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)g_console_foreground_pgid);
+    vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
 }
 
 /* Wake every task blocked in read() on stdin (called from the keyboard IRQ). */
@@ -5407,7 +5421,11 @@ static long hw_sys_setpgid(uint64_t requested_pid, uint64_t requested_pgid) {
     if (g_tasks[target].sid != g_tasks[g_current_task].sid) {
         return -VIBEOS_EPERM;
     }
-    leader = requested_pgid == 0 ? pid : (int)requested_pgid;
+    /* Both arms cast to int explicitly. `pid` is uint32_t, so the conditional
+     * otherwise takes the unsigned type and converts back on assignment - the
+     * guard below still works, but the reader has to prove that, and the
+     * compiler warns rather than take it on faith. */
+    leader = requested_pgid == 0 ? (int)pid : (int)requested_pgid;
     if (leader <= 0 || hw_task_by_pid((uint32_t)leader) < 0) {
         return -VIBEOS_ESRCH;
     }

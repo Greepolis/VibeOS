@@ -366,7 +366,15 @@ def main():
                 ("VIBEOS_SELFTEST_DONE", None),
                 ("vibeos> ", b"help\r"),
                 ("Commands: help, status, log, echo <text>, halt, reboot", b"status\r"),
-                ("stage=core_ready", b"echo vibeos\r"),
+                # Ctrl-C on the serial console. The PS/2 path has turned it
+                # into a signal since it was written; this one dropped it along
+                # with every other control byte, so the foreground process
+                # group - and every syscall built on it - was unreachable from
+                # the console this system is actually driven through. The
+                # machinery existed and no input could get to it, which is why
+                # nothing noticed. Asserted because the fix is one comparison.
+                ("stage=core_ready", b"\x03"),
+                ("^C", b"echo vibeos\r"),
                 ("\nvibeos\nvibeos> ", b"halt\r"),
                 ("Halt requested", None),
             ]

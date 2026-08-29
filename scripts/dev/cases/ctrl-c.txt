@@ -1,0 +1,17 @@
+### Ctrl-C on the serial console is discarded as an ordinary control byte
+--- old
+        if (ch == 3) {
++++ new
+        if (0) {
+
+# Deliberately not a case: removing the call to console_interrupt() below
+# leaves the boot green, and that is a fact about the boot rather than a hole
+# in the gate. By the time the kernel CLI runs, userland has finished - the
+# instrumentation says so outright, "delivered=0 newest_pid=0" - so there is
+# no foreground process for Ctrl-C to reach and nothing an assertion here
+# could observe. Gating delivery needs a live foreground job at the moment the
+# key arrives, which this boot does not have; see init_system.md.
+#
+# The case was written, run, and came back NOT RED. It is recorded here rather
+# than deleted, because the next person to add it will otherwise rediscover
+# the same thing by hand.

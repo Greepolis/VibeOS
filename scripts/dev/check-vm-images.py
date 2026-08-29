@@ -33,6 +33,9 @@ NS = {
 }
 
 
+import uuid
+
+
 def fail(problems, message):
     problems.append(message)
 
@@ -86,6 +89,47 @@ def check_ova(path, problems):
         if machine_el is None or not machine_el.get("uuid"):
             fail(problems, "vbox:Machine has no uuid; VirtualBox refuses the "
                            "import with 'Required Machine/@uuid ... is missing'")
+
+        # The machine's disk attachment and the OVF's disk have to name the
+        # same image, and they say so in two different notations: the Disk
+        # element carries vbox:uuid bare, the AttachedDevice's Image carries
+        # the same value in braces. Braces on both, or a uuid on only one side,
+        # imports 0% of the way and stops with "<vbox:Machine> element in OVF
+        # contains a medium attachment for the disk image ... but the OVF
+        # describes no such image" - which names an image the OVF does
+        # describe, one section earlier.
+        #
+        # Both were wrong at once here: the uuids were slices of a SHA-256
+        # digest, so their version and variant nibbles were whatever the digest
+        # happened to hold. VirtualBox parses such a value to null instead of
+        # rejecting it, so the first failure named an empty image.
+        disks = root.findall(".//{*}DiskSection/{*}Disk")
+        images = root.findall(".//{*}AttachedDevice/{*}Image")
+        if not images:
+            fail(problems, "vbox:Machine attaches no disk; VirtualBox builds "
+                           "storage from this section, not from the generic "
+                           "OVF hardware items, so the guest boots with no "
+                           "disk at all")
+        for image in images:
+            attached = (image.get("uuid") or "").strip()
+            if not (attached.startswith("{") and attached.endswith("}")):
+                fail(problems, f"AttachedDevice Image uuid {attached!r} is not "
+                               "in braces; VirtualBox writes it that way")
+                continue
+            bare = attached[1:-1]
+            try:
+                parsed = uuid.UUID(bare)
+            except ValueError:
+                fail(problems, f"attached image uuid {bare!r} is not a uuid")
+                continue
+            if parsed.version is None or parsed.variant != uuid.RFC_4122:
+                fail(problems, f"attached image uuid {bare} is uuid-shaped but "
+                               "not a valid uuid; VirtualBox reads it as null "
+                               "and then cannot find the image")
+            if not any((d.get(f"{{{NS['vbox']}}}uuid") or "") == bare
+                       for d in disks):
+                fail(problems, f"no Disk carries vbox:uuid=\"{bare}\" (bare, "
+                               "no braces) to match the machine's attachment")
 
         # VirtualBox reads firmware from its own machine section. The
         # elements inside vbox:Machine inherit the document's default

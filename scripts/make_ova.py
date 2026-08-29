@@ -19,6 +19,7 @@ key `firmware`. Each ignores the other's, so both can be present and there is
 no third file to keep in step.
 """
 import argparse
+import uuid
 import hashlib
 import os
 import subprocess
@@ -39,7 +40,8 @@ OVF_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
   <DiskSection>
     <Info>Virtual disk information</Info>
     <Disk ovf:capacity="{capacity}" ovf:diskId="vmdisk1" ovf:fileRef="file1"
-          ovf:format="http://www.vmware.com/interfaces/specifications/vmdk.html#streamOptimized"/>
+          ovf:format="http://www.vmware.com/interfaces/specifications/vmdk.html#streamOptimized"
+          vbox:uuid="{disk_uuid_plain}"/>
   </DiskSection>
   <NetworkSection>
     <Info>The list of logical networks</Info>
@@ -124,6 +126,31 @@ OVF_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
         <Boot>
           <Order position="1" device="HardDisk"/>
         </Boot>
+        <!-- VirtualBox takes its storage layout from here, not from the
+             generic OVF hardware section, and it resolves the attachment by
+             matching this uuid against vbox:uuid on the Disk element above -
+             which is written bare there and in braces here. That asymmetry is
+             not cosmetic: with braces on both, VirtualBox reports "the OVF
+             describes no such image" while naming the very uuid the Disk
+             element carries. Confirmed by exporting an appliance from
+             VirtualBox itself and reading what it wrote.
+             With no StorageControllers here the import failed with "<vbox:Machine>
+             element in OVF contains a medium attachment for the disk image
+             but the OVF describes no such image" - and the disk image was
+             named by an empty string in that message, which is the tell: it
+             was looking the medium up by a uuid nothing had set.
+
+             StorageControllers belongs inside Hardware. That is not a guess:
+             VBoxManage was asked to build a VM with an AHCI controller and a
+             disk, and this is the shape of the .vbox it wrote. -->
+        <StorageControllers>
+          <StorageController name="SATA" type="AHCI" PortCount="1"
+                             useHostIOCache="false" Bootable="true">
+            <AttachedDevice type="HardDisk" hotpluggable="false" port="0" device="0">
+              <Image uuid="{disk_uuid}"/>
+            </AttachedDevice>
+          </StorageController>
+        </StorageControllers>
       </Hardware>
     </vbox:Machine>
   </VirtualSystem>
@@ -186,15 +213,24 @@ def build(esp, out_dir, name, cpus, memory):
     # being about the name. Derived from the machine name so that rebuilding
     # the same appliance produces the same identity rather than a new machine
     # every time.
-    machine_uuid = "{%s-%s-%s-%s-%s}" % (
-        hashlib.sha256(name.encode()).hexdigest()[:8],
-        hashlib.sha256(name.encode()).hexdigest()[8:12],
-        hashlib.sha256(name.encode()).hexdigest()[12:16],
-        hashlib.sha256(name.encode()).hexdigest()[16:20],
-        hashlib.sha256(name.encode()).hexdigest()[20:32])
+    # uuid5, not a sliced hash. Both of these were built by cutting a SHA-256
+    # digest into five pieces, which produces something UUID-shaped whose
+    # version and variant nibbles are whatever the digest happened to contain.
+    # VirtualBox parses such a value to null rather than rejecting it, so the
+    # machine's disk attachment resolved to nothing and the import failed with
+    # "the OVF describes no such image" - naming an image the OVF plainly did
+    # describe, one line above. uuid5 is still derived from the name, so
+    # rebuilding the same appliance still yields the same identity.
+    machine_uuid = "{%s}" % uuid.uuid5(uuid.NAMESPACE_DNS, "machine." + name)
+    # The disk needs an identity distinct from the machine's: VirtualBox
+    # registers both, and one value used twice collides on re-import.
+    disk_uuid_plain = str(uuid.uuid5(uuid.NAMESPACE_DNS, "disk." + name))
+    disk_uuid = "{%s}" % disk_uuid_plain
 
     ovf = OVF_TEMPLATE.format(disk_name=disk_name,
                               machine_uuid=machine_uuid,
+                              disk_uuid=disk_uuid,
+                              disk_uuid_plain=disk_uuid_plain,
                               disk_size=os.path.getsize(disk_path),
                               capacity=capacity, name=name,
                               cpus=cpus, memory=memory)
