@@ -581,7 +581,41 @@ static int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame);
 static int hw_signal_raise(int task_index, uint32_t sig);
 /* Defined with the task code, because it needs the signal numbers that are
  * #defined a thousand lines below here and C only reads the file once. */
-static void hw_fault_kill_current_user(uint64_t vector);
+static void hw_fault_kill_current_user(const vibeos_x86_64_isr_frame_t *frame,
+                                       uint64_t fault_address);
+
+/* ---- crash records --------------------------------------------------------
+ *
+ * A process that dies from a fault used to leave two numbers behind, rip and
+ * cr2, printed once and gone. That is enough to know *that* something died and
+ * almost never enough to know why: every hard bug in this kernel has been
+ * diagnosed by going back for the registers, the stack, and which program the
+ * task was actually running - and by then the process no longer exists.
+ *
+ * So the state is taken at the moment of the fault, while it is all still
+ * there, and kept. `crash` on the kernel console prints the last one in full.
+ *
+ * A ring of four, not one: services restart, and the interesting crash is
+ * frequently not the most recent. */
+#define HW_CRASH_RECORDS 4u
+#define HW_CRASH_STACK_WORDS 16u
+
+typedef struct {
+    uint32_t used;
+    uint32_t pid;
+    uint32_t sig;
+    uint64_t vector;
+    uint64_t error_code;
+    uint64_t fault_addr;
+    vibeos_x86_64_isr_frame_t regs;
+    uint64_t stack[HW_CRASH_STACK_WORDS];
+    uint32_t stack_words;      /* how many were readable; the rest is off-map */
+    char exe[64];
+} hw_crash_t;
+
+static hw_crash_t g_crashes[HW_CRASH_RECORDS];
+static uint32_t g_crash_next;
+static volatile uint64_t g_crash_count;
 
 static void hw_log_field(const char *name, uint64_t value) {
     vibeos_x86_64_serial_puts(name);
@@ -956,7 +990,7 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
      * A kernel-mode fault is still fatal - there is nothing to kill but
      * itself, and continuing would be guessing. */
     if ((frame->cs & 3u) == 3u) {
-        hw_fault_kill_current_user(frame->vector);   /* no return, if it can */
+        hw_fault_kill_current_user(frame, fault_address);  /* no return, if it can */
     }
     hw_panic("unrecoverable CPU exception");
 }
@@ -1205,12 +1239,38 @@ static void *g_free_pages;
 
 /* Both sides of the page allocator are shared by every core (a task can fork or
  * exit on any of them), so they take the memory lock. */
+/* Written into every page as it is freed.
+ *
+ * Read as a pointer this is non-canonical - the top sixteen bits are neither
+ * all zeroes nor all ones - so dereferencing it faults on the spot instead of
+ * quietly reaching some other page. That is the entire point: a freed page
+ * used to keep its old contents, so a use-after-free read plausible data and
+ * the program carried on, and every memory bug found in this kernel surfaced
+ * a long way from its cause. In one case a musl program tripped over its own
+ * malloc free list; in another init printed a pointer where a pid belonged.
+ * Both were the same page, freed early, still in use. */
+#define HW_PAGE_POISON 0xDEAD0000DEAD0000ull
+
+/* How many words of a reclaimed page to check before handing it out again.
+ * Sampled rather than exhaustive: the loop that zeroes the page is already the
+ * cost of an allocation, and a writer that corrupts a free page almost never
+ * touches only one word of it. */
+#define HW_POISON_PROBES 16u
+
 static void hw_free_page(void *p) {
+    uint64_t *w = (uint64_t *)p;
+    uint32_t i;
+
     if (!p) {
         return;
     }
+    /* Poison outside the lock. Anything slow under a spinlock is slow with
+     * interrupts off, and a 4 KiB write is not free. */
+    for (i = 0; i < 4096u / 8u; i++) {
+        w[i] = HW_PAGE_POISON;
+    }
     hw_spin_lock(&g_mm_lock);
-    *(void **)p = g_free_pages;
+    *(void **)p = g_free_pages;   /* the link overwrites the first word */
     g_free_pages = p;
     hw_spin_unlock(&g_mm_lock);
 }
@@ -1218,11 +1278,13 @@ static void hw_free_page(void *p) {
 static void *hw_alloc_page(void) {
     uint8_t *p = 0;
     uint32_t i;
+    int recycled = 0;
 
     hw_spin_lock(&g_mm_lock);
     if (g_free_pages) {
         p = (uint8_t *)g_free_pages;
         g_free_pages = *(void **)g_free_pages;
+        recycled = 1;
     }
     if (!p && g_hw_pmm_ready) {
         p = (uint8_t *)vibeos_pmm_alloc_page(&g_hw_pmm);
@@ -1241,6 +1303,26 @@ static void *hw_alloc_page(void) {
         p = g_page_pool[g_pool_next++];
     }
     hw_spin_unlock(&g_mm_lock);
+
+    /* Was anything written to this page while it sat on the freelist? The
+     * first word is the link and is expected to differ; every other probe
+     * should still read as poison. A hit here names the corruption at the
+     * moment it is discovered rather than leaving it to surface later, in some
+     * unrelated program, as a pointer that makes no sense. */
+    if (recycled) {
+        const uint64_t *w = (const uint64_t *)p;
+        uint32_t step = (4096u / 8u) / HW_POISON_PROBES;
+        for (i = 1; i < HW_POISON_PROBES; i++) {
+            uint32_t idx = i * step;
+            if (w[idx] != HW_PAGE_POISON) {
+                hw_log(VIBEOS_LOG_ERROR, 31u, (uint64_t)(uintptr_t)p, w[idx],
+                       "free page was written after it was freed "
+                       "(a0 = page, a1 = what was found instead of poison)");
+                break;
+            }
+        }
+    }
+
     for (i = 0; i < 4096u; i++) {
         p[i] = 0;
     }
@@ -6439,7 +6521,9 @@ static int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame) {
 /* Turn a ring-3 CPU exception into the death of one task. The signal numbers
  * are the ones Linux reports for these vectors, so a shell that prints
  * "Segmentation fault" is printing the same thing it would there. */
-static void hw_fault_kill_current_user(uint64_t vector) {
+static void hw_fault_kill_current_user(const vibeos_x86_64_isr_frame_t *frame,
+                                       uint64_t fault_address) {
+    uint64_t vector = frame->vector;
     uint32_t sig;
 
     if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
@@ -6467,8 +6551,122 @@ static void hw_fault_kill_current_user(uint64_t vector) {
     vibeos_x86_64_serial_puts("\n");
     vibeos_x86_64_serial_unlock();
 
+    /* Take the whole picture before anything is torn down. */
+    {
+        hw_crash_t *rec = &g_crashes[g_crash_next];
+        const hw_task_t *t = &g_tasks[g_current_task];
+        uint32_t i;
+
+        rec->used = 1;
+        rec->pid = t->pid;
+        rec->sig = sig;
+        rec->vector = vector;
+        rec->error_code = frame->error_code;
+        rec->fault_addr = fault_address;
+        rec->regs = *frame;
+        for (i = 0; i < sizeof(rec->exe) - 1u && t->proc.exe_path[i]; i++) {
+            rec->exe[i] = t->proc.exe_path[i];
+        }
+        rec->exe[i] = 0;
+        /* The stack is user memory and the fault may well have been about
+         * exactly that, so every word is range-checked. Stopping at the first
+         * unreadable one is the honest thing: a dump that invents the rest is
+         * worse than a short dump. */
+        rec->stack_words = 0;
+        for (i = 0; i < HW_CRASH_STACK_WORDS; i++) {
+            uint64_t addr = frame->rsp + (uint64_t)i * 8ull;
+            if (!hw_user_range_ok(addr, 8u, 0)) {
+                break;
+            }
+            rec->stack[i] = *(const uint64_t *)(uintptr_t)addr;
+            rec->stack_words++;
+        }
+        g_crash_next = (g_crash_next + 1u) % HW_CRASH_RECORDS;
+        __atomic_fetch_add(&g_crash_count, 1ull, __ATOMIC_RELAXED);
+
+        vibeos_x86_64_serial_lock();
+        vibeos_x86_64_serial_puts("[CRASH] recorded pid=0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)rec->pid);
+        vibeos_x86_64_serial_puts(" sig=0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)sig);
+        vibeos_x86_64_serial_puts(" exe=");
+        vibeos_x86_64_serial_puts(rec->exe[0] ? rec->exe : "(unknown)");
+        vibeos_x86_64_serial_puts(" - `crash` on the console prints it in full\n");
+        vibeos_x86_64_serial_unlock();
+    }
+
     g_tasks[g_current_task].exit_signal = sig;
     hw_task_exit(128ull + sig);   /* switches away; does not return */
+}
+
+/* Print the most recent crash in full. Reached from the kernel console's
+ * `crash` command; safe to call at any time, including when nothing has
+ * crashed - saying so plainly is more useful than printing an empty record. */
+void vibeos_x86_64_crash_dump(void) {
+    const hw_crash_t *rec;
+    uint32_t i;
+
+    vibeos_x86_64_serial_lock();
+    if (g_crash_count == 0ull) {
+        vibeos_x86_64_serial_puts("[CRASH] no process has faulted since boot\n");
+        vibeos_x86_64_serial_unlock();
+        return;
+    }
+    rec = &g_crashes[(g_crash_next + HW_CRASH_RECORDS - 1u) % HW_CRASH_RECORDS];
+
+    vibeos_x86_64_serial_puts("[CRASH] total=0x");
+    vibeos_x86_64_serial_print_hex(g_crash_count);
+    vibeos_x86_64_serial_puts(" pid=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)rec->pid);
+    vibeos_x86_64_serial_puts(" sig=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)rec->sig);
+    vibeos_x86_64_serial_puts(" exe=");
+    vibeos_x86_64_serial_puts(rec->exe[0] ? rec->exe : "(unknown)");
+    vibeos_x86_64_serial_puts("\n[CRASH] vector=0x");
+    vibeos_x86_64_serial_print_hex(rec->vector);
+    vibeos_x86_64_serial_puts(" err=0x");
+    vibeos_x86_64_serial_print_hex(rec->error_code);
+    vibeos_x86_64_serial_puts(" fault_addr=0x");
+    vibeos_x86_64_serial_print_hex(rec->fault_addr);
+    vibeos_x86_64_serial_puts("\n[CRASH] rip=0x");
+    vibeos_x86_64_serial_print_hex(rec->regs.rip);
+    vibeos_x86_64_serial_puts(" rsp=0x");
+    vibeos_x86_64_serial_print_hex(rec->regs.rsp);
+    vibeos_x86_64_serial_puts(" rbp=0x");
+    vibeos_x86_64_serial_print_hex(rec->regs.rbp);
+    vibeos_x86_64_serial_puts(" rflags=0x");
+    vibeos_x86_64_serial_print_hex(rec->regs.rflags);
+    vibeos_x86_64_serial_puts("\n[CRASH] rax=0x");
+    vibeos_x86_64_serial_print_hex(rec->regs.rax);
+    vibeos_x86_64_serial_puts(" rbx=0x");
+    vibeos_x86_64_serial_print_hex(rec->regs.rbx);
+    vibeos_x86_64_serial_puts(" rcx=0x");
+    vibeos_x86_64_serial_print_hex(rec->regs.rcx);
+    vibeos_x86_64_serial_puts(" rdx=0x");
+    vibeos_x86_64_serial_print_hex(rec->regs.rdx);
+    vibeos_x86_64_serial_puts("\n[CRASH] rsi=0x");
+    vibeos_x86_64_serial_print_hex(rec->regs.rsi);
+    vibeos_x86_64_serial_puts(" rdi=0x");
+    vibeos_x86_64_serial_print_hex(rec->regs.rdi);
+    vibeos_x86_64_serial_puts(" r8=0x");
+    vibeos_x86_64_serial_print_hex(rec->regs.r8);
+    vibeos_x86_64_serial_puts(" r9=0x");
+    vibeos_x86_64_serial_print_hex(rec->regs.r9);
+    vibeos_x86_64_serial_puts("\n");
+    for (i = 0; i < rec->stack_words; i++) {
+        vibeos_x86_64_serial_puts("[CRASH] stack+0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)i * 8ull);
+        vibeos_x86_64_serial_puts(" = 0x");
+        vibeos_x86_64_serial_print_hex(rec->stack[i]);
+        vibeos_x86_64_serial_puts("\n");
+    }
+    if (rec->stack_words < HW_CRASH_STACK_WORDS) {
+        /* Said out loud: a short dump is a fact about the process's stack,
+         * not a bug in the dumper. */
+        vibeos_x86_64_serial_puts("[CRASH] stack truncated: the next word is not readable\n");
+    }
+    vibeos_x86_64_serial_puts("[CRASH] end\n");
+    vibeos_x86_64_serial_unlock();
 }
 
 /* rt_sigreturn(): put back everything the handler interrupted. */
@@ -7247,6 +7445,8 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
         vibeos_x86_64_serial_print_hex(g_tlb_shootdowns);
         vibeos_x86_64_serial_puts(" tlb_acks=0x");
         vibeos_x86_64_serial_print_hex(g_tlb_acks);
+        vibeos_x86_64_serial_puts(" bad_unlocks=0x");
+        vibeos_x86_64_serial_print_hex(vibeos_x86_64_serial_bad_unlocks());
         vibeos_x86_64_serial_puts("\n");
         vibeos_x86_64_serial_puts("[COMPAT] linux syscalls translated=0x");
         vibeos_x86_64_serial_print_hex(translated);

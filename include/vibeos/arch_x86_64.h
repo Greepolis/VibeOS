@@ -46,6 +46,12 @@ void vibeos_x86_64_mark_uncacheable(uint64_t phys, uint64_t len);
 void vibeos_x86_64_lapic_ipi_all_but_self(uint8_t vector);
 void vibeos_x86_64_lapic_ipi_one(uint32_t lapic_id, uint8_t vector);
 
+/* Console-lock hygiene: unlock calls from a core that did not hold it. */
+uint64_t vibeos_x86_64_serial_bad_unlocks(void);
+
+/* Print the most recent ring-3 crash: registers, fault address, stack. */
+void vibeos_x86_64_crash_dump(void);
+
 /* The block device the filesystem talks to. Bound by whichever driver came up;
  * see kernel/arch/x86_64/blk.c for why this indirection exists. */
 void vibeos_x86_64_blk_bind(const char *name,

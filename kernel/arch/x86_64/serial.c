@@ -107,6 +107,9 @@ __attribute__((weak)) void vibeos_x86_64_irq_restore(uint64_t flags) { (void)fla
 static volatile int g_serial_lock;
 static volatile uint32_t g_serial_owner = SERIAL_NO_OWNER;
 static volatile int g_serial_depth;
+/* Unlock calls from a core that did not hold the lock. Should be zero; the
+ * boot gate fails if it is not. */
+static volatile uint64_t g_serial_bad_unlocks;
 static uint64_t g_serial_flags;   /* saved by the outermost acquire */
 
 /* Recursion is keyed to the CPU, so the holder must not move while it holds
@@ -140,8 +143,32 @@ void vibeos_x86_64_serial_lock(void) {
     g_serial_flags = flags;
 }
 
+/* Counted, not panicked on: this is the console lock, so a panic here would
+ * try to print through the very lock whose state is in question. The count is
+ * asserted on by the boot gate instead, which is the same red light one step
+ * further out. */
+uint64_t vibeos_x86_64_serial_bad_unlocks(void) {
+    return g_serial_bad_unlocks;
+}
+
 void vibeos_x86_64_serial_unlock(void) {
     uint64_t flags;
+
+    /* Releasing a lock this core does not hold is not a tidiness problem. It
+     * frees the lock out from under whichever core *is* mid-line, lets a third
+     * writer into that critical section, and restores somebody else's
+     * interrupt flag on the way out. One missing serial_lock() in hw_log_emit
+     * did exactly that: output interleaved mid-word, split the markers the
+     * boot gate matches on, and the gate reported failures that had never
+     * happened - which cost two full investigations into crashes that were a
+     * marker cut in half.
+     *
+     * So: refuse, and count it. Returning without touching anything leaves the
+     * real owner's critical section intact, which is the safe direction. */
+    if (g_serial_depth <= 0 || g_serial_owner != vibeos_x86_64_cpu_id()) {
+        g_serial_bad_unlocks++;
+        return;
+    }
 
     if (g_serial_depth > 1) {
         g_serial_depth--;

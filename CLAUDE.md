@@ -337,6 +337,28 @@ acknowledgements come back short, or if a shootdown timed out. A shootdown that
 silently never fires leaves the bug exactly as it was, with every boot green -
 which is the failure this counter exists to make impossible.
 
+**A freed page keeps its old contents, so a use-after-free reads plausible
+data.** That is why every hard memory bug here surfaced a long way from its
+cause: musl tripping over its own malloc free list, init printing a pointer
+where a pid belonged. Freed pages are poisoned now with a non-canonical
+pattern, so the first dereference faults instead of the tenth one corrupting
+something, and the poison is re-checked when the page is handed out again -
+which catches a write to a page that was already free, at the moment it is
+discovered rather than whenever it happens to matter.
+
+**Refuse an unlock from a core that does not hold the lock, and count it.**
+The console lock now does, and the boot gate asserts the count is zero. One
+missing `serial_lock()` cost two investigations into crashes that were a marker
+cut in half.
+
+**Take the crash state at the crash.** A faulting process used to leave two
+numbers behind, rip and cr2. Every hard bug here was then diagnosed by going
+back for the registers, the stack, and which binary the task was running - and
+by then the process is gone. `hw_fault_kill_current_user` records all of it
+into a ring of four, and `crash` on the kernel console prints the last one.
+The record names the executable, because an address alone identifies nothing
+when every Linux program links at 0x400000.
+
 ## Verification that exists
 
 The boot gate (`scripts/qemu-cli-smoke-linux.py`) asserts state, not markers:

@@ -82,7 +82,7 @@ static int kernel_boot_fail(vibeos_kernel_t *kernel, size_t code, const char *me
 }
 
 static void kernel_cli_print_help(void) {
-    vibeos_x86_64_serial_puts("[CLI] Commands: help, status, log, echo <text>, halt, reboot\n");
+    vibeos_x86_64_serial_puts("[CLI] Commands: help, status, log, crash, echo <text>, halt, reboot\n");
 }
 
 static void kernel_cli_print_status(const vibeos_kernel_t *kernel) {
@@ -141,6 +141,11 @@ static void kernel_cli_print_log(const vibeos_kernel_t *kernel) {
  * link. Weak, so the kernel build still gets the version that can signal a
  * process group and the tests get one that does nothing. */
 __attribute__((weak)) void vibeos_x86_64_console_interrupt(void) { }
+
+/* Same arrangement: the crash records live with the task table. */
+__attribute__((weak)) void vibeos_x86_64_crash_dump(void) {
+    vibeos_x86_64_serial_puts("[CRASH] no crash recorder in this build\n");
+}
 
 static void kernel_cli_prompt(void) {
     vibeos_x86_64_serial_puts("vibeos> ");
@@ -214,6 +219,14 @@ static void kernel_cli_run(vibeos_kernel_t *kernel) {
         }
         if (kernel_str_eq(line, "log")) {
             kernel_cli_print_log(kernel);
+            continue;
+        }
+        /* The last process to die from a fault, in full: registers, the fault
+         * address, and as much of its stack as was readable. Captured at the
+         * moment of the fault, because by the time anyone asks, the process is
+         * gone - which is why every hard bug here has been diagnosed twice. */
+        if (kernel_str_eq(line, "crash")) {
+            vibeos_x86_64_crash_dump();
             continue;
         }
         if (kernel_str_eq(line, "halt")) {

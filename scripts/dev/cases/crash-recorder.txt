@@ -1,0 +1,14 @@
+### a ring-3 fault is killed without its state ever being captured
+--- old
+        rec->used = 1;
++++ new
+        rec->used = 0;
+        return;
+
+### the dump forgets which program was running
+--- old
+        for (i = 0; i < sizeof(rec->exe) - 1u && t->proc.exe_path[i]; i++) {
+            rec->exe[i] = t->proc.exe_path[i];
+        }
++++ new
+        i = 0;

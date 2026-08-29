@@ -384,7 +384,12 @@ def main():
                 # nothing to do with the kernel.
                 ("VIBEOS_SELFTEST_DONE", None),
                 ("vibeos> ", b"help\r"),
-                ("Commands: help, status, log, echo <text>, halt, reboot", b"status\r"),
+                # `crash` prints the last ring-3 fault in full. svc-crash
+                # dereferences null earlier in every boot, so there is always
+                # one to print - and a dumper that only works when nothing has
+                # crashed would pass a test that never asked it for anything.
+                ("Commands: help, status, log, crash, echo <text>, halt, reboot", b"crash\r"),
+                ("[CRASH] end", b"status\r"),
                 # Ctrl-C on the serial console. The PS/2 path has turned it
                 # into a signal since it was written; this one dropped it along
                 # with every other control byte, so the foreground process
@@ -576,10 +581,38 @@ def main():
                     # Every shootdown waits for one acknowledgement per other
                     # core, so acks below shootdowns means somebody gave up.
                     problems.append(f"tlb_acks={acks}_below_shootdowns={shootdowns}")
+            # Console-lock hygiene. An unlock from a core that never held
+            # the lock frees it out from under whoever is mid-line, and the
+            # result is a gate that reports failures which did not happen.
+            # It is refused and counted now; the count must stay zero.
+            bad = re.search(r"bad_unlocks=0x([0-9a-f]{16})", text)
+            if bad is None:
+                problems.append("no_lock_hygiene_stats")
+            elif int(bad.group(1), 16) != 0:
+                problems.append(f"console_unlock_by_non_owner={int(bad.group(1), 16)}")
+
+            # Freed pages are poisoned, and the poison is checked when the
+            # page is handed out again. A hit means something wrote to
+            # memory after it was released - which is how every hard
+            # memory bug in this kernel has started.
+            if "free page was written after it was freed" in text:
+                problems.append("use_after_free_detected")
+
             if "shootdown timed out" in text:
                 problems.append("tlb_shootdown_timed_out")
             if "TFORK_OK" not in text:
                 problems.append("threaded_fork_lost_the_child_pages")
+
+            # The crash recorder captured the deliberate fault, and named
+            # the program it happened in. A dump that cannot say which
+            # binary the task was running is the failure mode that cost
+            # this project three wrong diagnoses of one address.
+            if "[CRASH] recorded" not in text:
+                problems.append("fault_was_not_recorded")
+            elif "SVC_CRSH.ELF" not in text.split("[CRASH] recorded")[1][:200]:
+                problems.append("crash_record_does_not_name_the_program")
+            if "[CRASH] no process has faulted" in text:
+                problems.append("crash_dump_found_no_record")
 
             if "SVC_CRASH_FAULTING" not in text:
                 problems.append("crashing_service_never_ran")
