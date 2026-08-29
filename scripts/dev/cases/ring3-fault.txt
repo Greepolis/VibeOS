@@ -1,0 +1,14 @@
+### a ring-3 fault halts the machine instead of killing the task
+--- old
+    if ((frame->cs & 3u) == 3u) {
+        hw_fault_kill_current_user(frame->vector);   /* no return, if it can */
+    }
++++ new
+
+### the fault is swallowed and the task keeps running on a bad state
+--- old
+    g_tasks[g_current_task].exit_signal = sig;
+    hw_task_exit(128ull + sig);   /* switches away; does not return */
++++ new
+    (void)sig;
+    return;

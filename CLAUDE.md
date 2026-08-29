@@ -181,6 +181,40 @@ removing the check it protects.
 used above its definition compiles as an implicit declaration and then fails
 with a confusing "static declaration follows non-static declaration".
 
+**A service that exits is not a service that crashes.** The supervisor's
+manifest had a service that exits zero and one that exits non-zero every time,
+which covered clean stops and bounded restarts, and the boot gate asserted all
+of it. What none of them did was fault. A cooperative death never reaches the
+trap handler, so "the kernel stays up after a service crashes" was gated, green
+and false: the trap handler panicked on *any* fault, under a comment saying
+KILL_CURRENT had no meaning because there were no user processes on metal. That
+had been true when it was written. One null dereference from any unprivileged
+program halted the machine.
+
+It surfaced sideways. A boot wedged in the BusyBox phase; the trap dump gave a
+#GP at a ring-3 address, and addr2line against the right binary put it on the
+`hlt` inside musl's `__stack_chk_fail` stub - a stack-check failure taking the
+whole machine down instead of one process. (Against the *wrong* binary it named
+`fflush`, confidently, because every Linux program here links at 0x400000.
+Check which program the task was running before believing an address.)
+
+The fix is one branch - a ring-3 fault kills the task with the signal Linux
+reports for that vector - and the service that proves it, `svc-crash`,
+dereferences null. Removing the branch turns the boot from green to wedged,
+which is how it was confirmed.
+
+That fix then exposed one in init: a task killed by a signal carries the signal
+in the low seven bits of the wait status and leaves the exit-code byte zero, so
+an init that reads only the code byte reports a segfault as a clean stop. The
+crashing service came back STOPPED. The wait-status rule above is not trivia.
+
+**A sabotage run whose verify script is missing scores every case red**, which
+is indistinguishable from every case working. The verify script lived in /tmp,
+WSL cleaned it, and eight cases "passed" having proved nothing - the tell was
+that the reason lines had gone quiet. It lives in `scripts/dev/verify-boot.sh`
+now, it prints the gate's own reason, and a sabotage run should start by
+checking that the unmodified tree still passes.
+
 ## Verification that exists
 
 The boot gate (`scripts/qemu-cli-smoke-linux.py`) asserts state, not markers:

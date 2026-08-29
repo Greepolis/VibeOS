@@ -540,6 +540,9 @@ static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code);
  * back to ring 3 rather than at the next syscall. */
 static int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame);
 static int hw_signal_raise(int task_index, uint32_t sig);
+/* Defined with the task code, because it needs the signal numbers that are
+ * #defined a thousand lines below here and C only reads the file once. */
+static void hw_fault_kill_current_user(uint64_t vector);
 
 static void hw_log_field(const char *name, uint64_t value) {
     vibeos_x86_64_serial_puts(name);
@@ -864,8 +867,25 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
      * the handler's own frames are noise on top of it. */
     hw_backtrace(frame->rbp, frame->rip);
 
-    /* KILL_CURRENT has no meaning yet (no user processes on metal); both
-     * remaining actions are fatal during bring-up. */
+    /* A fault in ring 3 is the program's fault, not the machine's.
+     *
+     * This used to panic unconditionally, under a comment saying KILL_CURRENT
+     * had no meaning because there were no user processes on metal. That
+     * stopped being true when init started supervising services, and nothing
+     * noticed, because the services in the manifest all died by exiting - a
+     * cooperative death that never reaches this code. So "the kernel stays up
+     * after a service crashes" was gated, green, and false.
+     *
+     * It was found from the other end: musl's stack-check stub is a `hlt`, a
+     * spurious canary failure in a ring-3 test binary executed it, and one
+     * privileged instruction from an unprivileged program halted the whole
+     * machine with no output. Any null dereference would have done the same.
+     *
+     * A kernel-mode fault is still fatal - there is nothing to kill but
+     * itself, and continuing would be guessing. */
+    if ((frame->cs & 3u) == 3u) {
+        hw_fault_kill_current_user(frame->vector);   /* no return, if it can */
+    }
     hw_panic("unrecoverable CPU exception");
 }
 
@@ -6114,6 +6134,39 @@ static int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame) {
     frame->rdx = 0;
     frame->rax = 0;
     return 1;
+}
+
+/* Turn a ring-3 CPU exception into the death of one task. The signal numbers
+ * are the ones Linux reports for these vectors, so a shell that prints
+ * "Segmentation fault" is printing the same thing it would there. */
+static void hw_fault_kill_current_user(uint64_t vector) {
+    uint32_t sig;
+
+    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+        return;   /* nothing to kill: the caller panics instead */
+    }
+    switch (vector) {
+        case 0u:  sig = VIBEOS_SIGFPE;  break;   /* #DE divide error      */
+        case 6u:  sig = VIBEOS_SIGILL;  break;   /* #UD invalid opcode    */
+        case 13u: sig = VIBEOS_SIGSEGV; break;   /* #GP general protection*/
+        case 14u: sig = VIBEOS_SIGSEGV; break;   /* #PF page fault        */
+        default:  sig = VIBEOS_SIGSEGV; break;
+    }
+    /* One call, one line: this is read next to the trap dump above it, and a
+     * diagnostic split across two writes came back interleaved from two cores
+     * once already and read as a contradiction. */
+    hw_log(VIBEOS_LOG_WARN, 29u, vector, (uint64_t)sig,
+           "ring-3 fault: killing the task (a0 = vector, a1 = signal)");
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts("[HW][TRAP] ring3 fault: killing task, not the machine, vector=0x");
+    vibeos_x86_64_serial_print_hex(vector);
+    vibeos_x86_64_serial_puts(" sig=0x");
+    vibeos_x86_64_serial_print_hex(sig);
+    vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
+
+    g_tasks[g_current_task].exit_signal = sig;
+    hw_task_exit(128ull + sig);   /* switches away; does not return */
 }
 
 /* rt_sigreturn(): put back everything the handler interrupted. */

@@ -471,13 +471,55 @@ def main():
                 problems.append(f"cpus_online={int(cpus.group(1), 16)}_expected={EXPECTED_CPUS}")
 
             # A recovered fault still means something went wrong that the boot
-            # was not supposed to hit. The int3 self-test is the one exception.
-            faults = [line for line in text.splitlines()
-                      if "[HW][TRAP]" in line and "vector=0x0000000000000003" not in line]
+            # was not supposed to hit. There are exactly two exceptions, and
+            # both are deliberate: the int3 self-test, and svc-crash, which
+            # dereferences null so that the boot proves a ring-3 fault kills
+            # one task rather than the machine. That claim used to be gated and
+            # green while being false, because every service in the manifest
+            # died by exiting - a cooperative death that never reaches the trap
+            # handler at all.
+            lines = text.splitlines()
+            killed = [ln for ln in lines if "ring3 fault: killing task" in ln]
+            if len(killed) != 1:
+                # Not "at least one": a second ring-3 fault is a real one, and
+                # allowing any number would re-open exactly the hole this
+                # assertion exists to close.
+                problems.append("deliberate_ring3_faults=%d_expected=1" % len(killed))
+
+            faults = [ln for ln in lines
+                      if "[HW][TRAP]" in ln
+                      and "vector=0x0000000000000003" not in ln       # int3 self-test
+                      and "ring3 fault: killing task" not in ln]      # the kill notice
+            # ...and the one trap dump that belongs to the deliberate crash: a
+            # page fault raised from ring 3 (cs=0x23). Removed once, by value,
+            # so a second identical fault still counts.
+            for ln in faults:
+                if "vector=0x000000000000000e" in ln and "cs=0x0000000000000023" in ln:
+                    faults.remove(ln)
+                    break
             if faults:
                 problems.append("unexpected_cpu_fault")
-            if "FATAL" in text or "PANIC" in text:
+
+            # "action=PANIC" is the trap model's recommendation, not what
+            # happened: a ring-3 fault is now classified that way and then
+            # survived. What says the machine actually stopped is hw_panic's
+            # own output, so that is what this asserts on.
+            if "FATAL" in text:
                 problems.append("panic")
+
+            # The supervisor's view of that same crash. A service killed by a
+            # signal carries the signal in the low seven bits of the wait
+            # status and leaves the exit-code byte zero, so an init that reads
+            # only the code byte reports a segfault as a clean stop - which is
+            # what this one did until SVC_KILLED existed.
+            if "SVC_CRASH_FAULTING" not in text:
+                problems.append("crashing_service_never_ran")
+            if "SVC_KILLED svc-crash" not in text:
+                problems.append("signal_death_not_distinguished_from_exit")
+            if "SVC_STOPPED svc-crash" in text:
+                problems.append("crashed_service_reported_as_clean_stop")
+            if "SVC_FAILED svc-crash" not in text:
+                problems.append("crashed_service_not_marked_failed")
 
             if echo_state["connections"] == 0 and not SKIP_ECHO:
                 problems.append("no_tcp_connection_reached_the_host")
@@ -583,6 +625,37 @@ def main():
                 # look the same - so this is the assertion that says init is a
                 # parent rather than the workload wearing its name.
                 problems.append("native_init_did_not_fork_a_child")
+
+            # Supervision, asserted as behaviour rather than as a marker. Each
+            # of these is a different way "we have services" can be false:
+            #
+            #  - three services start from the manifest, so init is reading a
+            #    list rather than knowing one program by name;
+            #  - a service that exits zero is left stopped. This one is easy to
+            #    get wrong in the direction that looks healthy: a supervisor
+            #    that restarts everything produces a busy, plausible log and an
+            #    infinite loop;
+            #  - a failing service is restarted by policy, then given up on. A
+            #    supervisor with no limit and one with no restarts both "work"
+            #    right up until a service starts failing;
+            #  - init is still there afterwards and says so. Without this the
+            #    other three could all be true of a supervisor that died with
+            #    the last service it was watching.
+            started = set(re.findall(r"SVC_START (\S+)", text))
+            if len(started) < 3:
+                problems.append("services_did_not_start_from_manifest")
+            if "SVC_STOPPED svc-ok" not in text:
+                problems.append("clean_exit_not_left_stopped")
+            if "SVC_RESTART svc-flap 2" not in text:
+                problems.append("failed_service_not_restarted_by_policy")
+            if "SVC_FAILED svc-flap" not in text:
+                problems.append("restart_limit_not_enforced")
+            if "SVC_STOPPED svc-flap" in text:
+                # The restart limit marks a service FAILED; calling it stopped
+                # would report a machine in trouble as a machine at rest.
+                problems.append("exhausted_service_reported_as_clean_stop")
+            if "NATIVE_INIT_CHILD_EXITED" not in text:
+                problems.append("init_did_not_survive_its_services")
 
             # The ring-3 ABI round trip. This was printing "abi: ...wrong"
             # for a whole session while the gate stayed green, because the

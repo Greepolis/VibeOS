@@ -1,0 +1,41 @@
+### only one service is started, so init knows a program rather than a manifest
+--- old
+#define SERVICE_COUNT (int)(sizeof(services) / sizeof(services[0]))
++++ new
+#define SERVICE_COUNT 1
+
+### a clean exit is treated as a failure and restarted
+--- old
+        if (killed == 0 && (code == 0 || svc->oneshot)) {
++++ new
+        if (killed == 0 && svc->oneshot) {
+
+### a failing service is never restarted
+--- old
+        } else if (svc->restarts < svc->restart_limit) {
++++ new
+        } else if (0) {
+
+### the restart limit is reached but the service is called stopped
+--- old
+            svc->state = SVC_FAILED;
+            say("SVC_FAILED", svc->name, svc->restarts, -1);
++++ new
+            svc->state = SVC_STOPPED;
+            say("SVC_STOPPED", svc->name, svc->restarts, -1);
+
+### init does not outlive the services it supervises
+--- old
+    say("NATIVE_INIT_CHILD_EXITED", 0, -1, -1);
++++ new
+
+### a service killed by a signal is read as a clean exit
+--- old
+        if (killed == 0 && (code == 0 || svc->oneshot)) {
++++ new
+        if (code == 0 || svc->oneshot) {
+
+### the crashing service never runs at all
+--- old
+    {"svc-crash", "EFI/BOOT/SVC_CRSH.ELF", 0, 0, 0, -1, SVC_STOPPED},
++++ new

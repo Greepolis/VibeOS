@@ -39,6 +39,17 @@ if(NOT VIBEOS_USE_NATIVE_INIT)
     set(USER_INIT_ELF "${CMAKE_BINARY_DIR}/vibeos_user_hello")
 endif()
 
+# The supervised services named in init's manifest.
+foreach(svc_pair "vibeos_user_svc_ok:SVC_OK.ELF" "vibeos_user_svc_flap:SVC_FLAP.ELF" "vibeos_user_svc_crash:SVC_CRSH.ELF")
+    string(REPLACE ":" ";" svc_parts "${svc_pair}")
+    list(GET svc_parts 0 svc_target)
+    list(GET svc_parts 1 svc_name)
+    if(EXISTS "${CMAKE_BINARY_DIR}/${svc_target}")
+        file(COPY_FILE "${CMAKE_BINARY_DIR}/${svc_target}"
+             "${EFI_BOOT_DIR}/${svc_name}" ONLY_IF_DIFFERENT)
+    endif()
+endforeach()
+
 set(SELFTEST_ELF "${CMAKE_BINARY_DIR}/vibeos_user_hello")
 if(EXISTS "${SELFTEST_ELF}")
     file(COPY_FILE "${SELFTEST_ELF}" "${EFI_BOOT_DIR}/SELFTEST.ELF" ONLY_IF_DIFFERENT)

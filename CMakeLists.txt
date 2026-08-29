@@ -219,6 +219,23 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
 
     # Native init candidate. It is staged separately from the compatibility
     # bring-up program until the runtime acceptance gate selects it as PID 1.
+    # Two supervised services, so the supervisor has something real to
+    # supervise: one that finishes cleanly and one that fails every time.
+    foreach(svc svc_ok svc_flap svc_crash)
+        add_executable(vibeos_user_${svc} user/prog/${svc}.c user/prog/crt0.S)
+        target_compile_options(vibeos_user_${svc} PRIVATE
+            -ffreestanding -fno-stack-protector -fno-pic -mno-red-zone
+            -mcmodel=large -fno-strict-aliasing -Wall -Wextra
+        )
+        target_link_options(vibeos_user_${svc} PRIVATE
+            -nostdlib -no-pie -Wl,-e,_start
+            -Wl,-T,${CMAKE_CURRENT_SOURCE_DIR}/user/prog/user.ld
+        )
+        set_target_properties(vibeos_user_${svc} PROPERTIES
+            LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/user/prog/user.ld"
+        )
+    endforeach()
+
     add_executable(vibeos_user_init user/prog/init.c user/prog/crt0.S)
     target_compile_options(vibeos_user_init PRIVATE
         -ffreestanding -fno-stack-protector -fno-pic -mno-red-zone
