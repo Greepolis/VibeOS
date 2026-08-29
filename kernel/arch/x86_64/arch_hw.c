@@ -1066,26 +1066,58 @@ static uint8_t *frame_ref_slot(uint64_t phys) {
     return (idx < g_frame_refs_count) ? &g_frame_refs[idx] : 0;
 }
 
+/* The count is "owners beyond the first", so zero means sole owner.
+ *
+ * Both of these were a plain read-modify-write on a byte, and both are called
+ * from several cores at once: two processes forking at the same moment share
+ * frames their common ancestor left copy-on-write, and a teardown or a
+ * copy-on-write fault elsewhere is decrementing the same byte meanwhile. A
+ * lost increment makes the count too low, which is the dangerous direction -
+ * one owner too few, so the frame is freed while another process is still
+ * running from it, and the page goes back on the freelist under a live heap.
+ *
+ * That is what a musl program tripping over its own free list looks like from
+ * the outside, and it took about one boot in thirty-two. */
 static void frame_ref_inc(uint64_t phys) {
     uint8_t *slot = frame_ref_slot(phys);
-    if (slot && *slot < 255u) {
-        (*slot)++;
+    uint8_t old;
+
+    if (!slot) {
+        return;
     }
+    old = __atomic_load_n(slot, __ATOMIC_RELAXED);
+    while (old < 255u) {
+        if (__atomic_compare_exchange_n(slot, &old, (uint8_t)(old + 1u), 0,
+                                        __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+            return;
+        }
+        /* old now holds what was actually there; try again. */
+    }
+    /* Saturated. Never freed rather than freed too early: a leak is a bug you
+     * can measure, and this is not. */
 }
 
 /* Returns non-zero when the caller was the last owner and may free it. */
 static int frame_ref_dec(uint64_t phys) {
     uint8_t *slot = frame_ref_slot(phys);
+    uint8_t old;
+
     if (!slot) {
         return 1;   /* not tracked: it was never shared */
     }
-    if (*slot == 0u) {
-        return 1;   /* sole owner */
+    old = __atomic_load_n(slot, __ATOMIC_RELAXED);
+    for (;;) {
+        if (old == 0u) {
+            return 1;    /* sole owner */
+        }
+        if (old == 255u) {
+            return 0;    /* saturated above: this frame is never reclaimed */
+        }
+        if (__atomic_compare_exchange_n(slot, &old, (uint8_t)(old - 1u), 0,
+                                        __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+            return 0;
+        }
     }
-    if (*slot < 255u) {
-        (*slot)--;
-    }
-    return 0;
 }
 
 static vibeos_pmm_t g_hw_pmm;

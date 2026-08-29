@@ -277,6 +277,26 @@ from CPUID leaf 1 is unique and valid from the first instruction.
 source had never been compiled. Build first, and check `rc=` - the same trap as
 `check.sh`, wearing different clothes.
 
+**A refcount that several cores touch has to be atomic.** The
+copy-on-write frame counters were `(*slot)++` and `(*slot)--` on a byte, called
+from every core: two processes forking at the same moment share frames their
+common ancestor left copy-on-write, while a teardown elsewhere decrements the
+same byte. A lost increment leaves the count one owner short, and one owner
+short means the frame is freed while somebody is still running from it. From
+outside that is a musl program tripping over its own malloc free list, about
+one boot in thirty-two, in a different program each time.
+
+Compare-exchange now, saturating at 255 rather than wrapping: a frame that is
+never reclaimed is a leak you can measure, and one freed early is not.
+
+**Symbolise against the binary the faulting task was actually running.** The
+same fault was attributed to three different things before that rule was
+followed: `fflush` (wrong binary), then argv/auxv construction (right binary,
+but the address was read as if it were in startup code), and finally
+`nontrivial_free` - musl's own free list, which is a completely different bug
+from the first two guesses. Every Linux program here links at 0x400000, so an
+address alone identifies nothing.
+
 ## Verification that exists
 
 The boot gate (`scripts/qemu-cli-smoke-linux.py`) asserts state, not markers:

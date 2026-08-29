@@ -101,27 +101,32 @@ moment the key arrives.
 - Ctrl-C delivery to a live foreground job is not gated (see above); only the
   routing of the key into the signal path is.
 - Stronger failure domains. A crashing service is now contained to its own task, but nothing yet limits what one service can do to shared kernel state before it faults.
-- **An intermittent ring-3 fault, ~1 boot in 32.** Sharpened considerably, and
-  most of what was previously written about it turned out to be about a
-  different bug entirely.
+- **Intermittent corruption of a user process's memory after fork, ~1 boot in
+  32.** Two sightings, one family: musl tripping over its own malloc free list
+  (`nontrivial_free`, writing through a chunk pointer read out of the heap),
+  and a local variable holding a stale user pointer where `fork()`'s return
+  value should be - the child took the parent's branch and the signal test
+  never completed.
 
-  Two failures were being counted as one. The first was not a fault at all:
-  `hw_log_emit` released a console lock it had never taken, which freed the
-  lock out from under whichever core was mid-line, and the resulting mid-word
-  interleaving split the markers the boot gate matches on. The gate then
-  reported failures that had not happened - including, twice, "crashes" that
-  were a marker cut in half. Fixed; that signature (`deliberate_ring3_faults=0`)
-  is gone across 32 boots.
+  One cause found and fixed: `frame_ref_inc`/`frame_ref_dec` were a plain
+  read-modify-write on a byte, called from several cores at once. A lost
+  increment leaves the count one owner short, so a shared page is freed while
+  another process is still running from it. They are compare-exchange now. The
+  musl-heap signature has not reappeared in 48 boots; the second signature
+  appeared once in 32 after the fix, so the family is not closed.
 
-  What remains is real and now has a clean signature: the static musl binary
-  faults during startup, before it prints `MUSL_ARGS`, writing to a garbage
-  pointer (`rip=0x401bbc` in the 0x400000 window, `err=0x6`,
-  `cr2=0x00ffffff01000007`). That is a C runtime walking argv/envp/auxv and
-  finding something malformed, so the suspect is the initial stack execve
-  builds - not, as previously written here, the TLS base or the signal frame.
-  The earlier `%fs:0x28` note is withdrawn: it rested on evidence from a
-  corrupted log.
-- (withdrawn) An intermittent stack-check failure attributed to a lost TLS base. Two signatures seen, and they
+  Concrete next lead, identified but not proven: `hw_share_user_leaf` clears
+  PTE_WRITE to mark a page copy-on-write and then calls `hw_invlpg`, which
+  invalidates the TLB of the calling core only. There is no TLB shootdown, so
+  for a process with threads running on other cores the old writable entry
+  survives and that core writes straight through into the page the child now
+  shares. The kernel runs four cores and the gate runs a four-thread program.
+
+- **A hang in the bootloader phase, ~1 boot in 24.** Previously written up here
+  as a benign cold-start stall; that was wrong. Raising the per-boot budget
+  from 180s to 300s does not help - the guest stays silent for 296 of 300
+  seconds at `bootloader_exit_boot_services` - so it is a hang and not
+  slowness. Not yet investigated. Two signatures seen, and they
   may be one bug: a stack-check failure in the musl signal test (the canary is
   read through `%fs:0x28`, and the sigframe saves the trapframe, which does not
   carry `FS_BASE`), and init faulting inside its own `say()` while reading a
