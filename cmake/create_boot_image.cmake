@@ -40,7 +40,7 @@ if(NOT VIBEOS_USE_NATIVE_INIT)
 endif()
 
 # The supervised services named in init's manifest.
-foreach(svc_pair "vibeos_user_svc_ok:SVC_OK.ELF" "vibeos_user_svc_flap:SVC_FLAP.ELF" "vibeos_user_svc_crash:SVC_CRSH.ELF")
+foreach(svc_pair "vibeos_user_svc_ok:SVC_OK.ELF" "vibeos_user_svc_flap:SVC_FLAP.ELF" "vibeos_user_svc_crash:SVC_CRSH.ELF" "vibeos_user_svc_stress:SVC_STRS.ELF")
     string(REPLACE ":" ";" svc_parts "${svc_pair}")
     list(GET svc_parts 0 svc_target)
     list(GET svc_parts 1 svc_name)

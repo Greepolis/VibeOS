@@ -1,0 +1,18 @@
+### the stress run never reports the seed it used
+--- old
+    say("STRESS_SEED ", seed, 1);
++++ new
+
+### copy-on-write is not checked from the parent's side
+--- old
+        if (mem[i] != before) {
+            say("STRESS_FAIL: the child's writes reached the parent at ", i, 1);
+            return -1;
+        }
++++ new
+
+# The second case is the interesting one and it is honest about its limits: it
+# removes a check rather than breaking the kernel, so it goes red only if the
+# kernel is *also* wrong about copy-on-write. On a healthy tree it stays green,
+# which is the correct result - it proves the check is wired to the gate, not
+# that the kernel is broken.

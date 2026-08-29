@@ -95,6 +95,43 @@ in `scripts/dev/cases/ctrl-c.txt` as a comment so the next person does not
 rediscover it by hand. Gating delivery needs a live foreground job at the
 moment the key arrives.
 
+
+### Detectors, and what they found on their first run
+
+Four things were added because the bugs in this kernel keep surfacing a long
+way from their cause, and each is aimed at a failure that actually cost time
+here rather than at a category of good practice.
+
+| Detector | Catches | Found immediately |
+| --- | --- | --- |
+| Poisoned freed pages | use-after-free, at the first dereference instead of the tenth | - |
+| Console-lock hygiene (`bad_unlocks`) | an unlock from a core that never held the lock | - |
+| Log-integrity check in the gate | one kernel write cut into another | four unbracketed multi-part messages |
+| `svc-stress`, seeded and self-checking | randomised fork/mmap/COW/pipe churn | a copy-on-write defect, replayable |
+
+The log-integrity check is the one worth explaining. Every assertion in the
+boot gate reads the serial log, so a split line can invent a failure or hide a
+real one - and for one session it did exactly that, producing two full
+investigations into crashes that were a marker cut in half. The check therefore
+runs *before* anything is concluded from the text. Its first run flagged four
+messages that were assembled without bracketing (`[EXEC]` three times, `[SIG]
+deliver` once); all four are fixed. It carries its own self-tests, including
+one line that must *not* be flagged - a ring-3 write with no trailing newline
+legitimately leaves the physical line open, and the first version of the check
+called that a defect.
+
+`svc-stress` runs 120 rounds of randomised work with a seed printed on its
+first line, so a failure is replayable:
+`EFI/BOOT/SVC_STRS.ELF <seed>`. Every operation checks its own result, because
+churn nobody verifies only asks whether the kernel crashes, which is the
+weakest question available.
+
+**Open, found by the stress run on its first serious outing:** at seed
+280000012, round 13, a forked child wrote its own copy-on-write page and read
+back something other than what it had just written - `STRESS_FAIL: the child
+could not keep its own copy`. About one boot in sixteen. This is the first time
+one of these has arrived with a reproduction recipe attached.
+
 ## Pending
 - Dependency ordering and exponential restart backoff exist only in the host-tested model (`user/servicemgr/supervisor.c`). The manifest the guest actually runs has no dependencies between its services and restarts immediately; the two are not yet the same code.
 - Declarative/service-config source of truth for init graph nodes (currently call-site supplied).

@@ -359,6 +359,31 @@ into a ring of four, and `crash` on the kernel console prints the last one.
 The record names the executable, because an address alone identifies nothing
 when every Linux program links at 0x400000.
 
+**Check the log is trustworthy before concluding anything from it.** Every
+assertion in the boot gate reads the serial log, so one write cut into another
+can invent a failure or hide a real one - and for a session it did, costing two
+investigations into crashes that were a marker cut in half. `interleaved_lines`
+now runs first, before any other check. On its first run it found four
+multi-part kernel messages assembled without bracketing.
+
+The check carries self-tests, including a line it must *not* flag: a ring-3
+write with no trailing newline leaves the physical line open, and the next
+kernel line legitimately continues it. The first version called that a defect
+and cried wolf immediately. A detector that reports healthy behaviour is a
+detector people learn to ignore.
+
+**A multi-part message is several critical sections unless it is bracketed.**
+`serial_puts` and `serial_print_hex` each take the console lock on their own,
+so a line built from six of them is six of them. The tell in the log is a hex
+field cut off right after its `0x`.
+
+**Randomised churn is only useful if the seed is printed.** `svc-stress` runs
+120 rounds of fork, mmap, copy-on-write and pipe work in an order that differs
+every boot, checks the result of each one, and prints the seed on its first
+line so a failure can be replayed with `EFI/BOOT/SVC_STRS.ELF <seed>`. It found
+a copy-on-write defect on its first serious run - the first bug here to arrive
+with a reproduction recipe rather than a story.
+
 ## Verification that exists
 
 The boot gate (`scripts/qemu-cli-smoke-linux.py`) asserts state, not markers:

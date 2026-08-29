@@ -106,6 +106,85 @@ def write(path, text):
         fp.write(text)
 
 
+# Tags the kernel puts at the start of a line. Two of them in one line means
+# one line was written into the middle of another, which only happens when the
+# console lock was not doing its job.
+#
+# This check exists because the harness was, for a session, capable of lying.
+# A missing serial_lock() let one core free the lock out from under another
+# mid-line; the markers this script matches on were cut in half, and the gate
+# reported failures that had never happened. Two crashes were investigated in
+# detail before the split was noticed. A test that can report a fault that did
+# not occur is worse than no test, so the log's integrity is now checked before
+# anything is concluded from its contents.
+KERNEL_TAGS = ("[HW][TRAP]", "[HW][SYS]", "[CRASH]", "[SIG]", "[MM]", "[SCHED]",
+               "[EXEC]", "[LOG][", "[BT]", "[BLK]", "[AHCI]", "[VIRTIO]",
+               "[NET]", "[SMP]", "[CLI]", "[BOOT]", "[FAT]", "[COMPAT]")
+
+
+def interleaved_lines(text):
+    """Lines that show one kernel write cut into another.
+
+    Two kernel tags on one physical line is the symptom, but on its own it is
+    not proof: a ring-3 program may write without a trailing newline - a shell
+    echoing a prompt does exactly that - and the next kernel line then
+    legitimately continues the same physical line. Flagging those was the first
+    version of this check and it cried wolf on its first run.
+
+    So a line is reported when either
+
+      - a hex field is cut short: "0x" with no hex digits after it and a tag
+        following. The kernel always prints its values in full, so this can
+        only mean another writer arrived mid-number. That is what caught the
+        unbracketed [EXEC] messages.
+      - a second tag follows a *kernel* tag. A kernel line ends with its own
+        newline, so nothing of anyone else's belongs on it. A line opened by a
+        ring-3 write is exempt, because that one really can be left open.
+
+    Known limit, written down rather than papered over: a split that lands
+    inside a ring-3 write and truncates no number is not caught here. The
+    console lock's bad-unlock counter is what guards that case.
+    """
+    bad = []
+    for line in text.splitlines():
+        hits = sorted((line.index(tag), tag) for tag in KERNEL_TAGS if tag in line)
+
+        truncated = False
+        pos = line.find("0x")
+        while pos >= 0:
+            i = pos + 2
+            while i < len(line) and line[i] in "0123456789abcdef":
+                i += 1
+            if i == pos + 2 and i < len(line) and line[i] == "[":
+                truncated = True
+                break
+            pos = line.find("0x", pos + 2)
+
+        if truncated:
+            bad.append(line)
+        elif len(hits) > 1 and not hits[0][1].startswith("[HW][SYS]"):
+            bad.append(line)
+    return bad
+
+
+# Verified against real examples of each kind rather than trusted. The first
+# two are taken verbatim from boots and were real defects: an [EXEC] message
+# assembled without bracketing, cut mid-number and cut by another tag.
+_SPLIT_HEX = "[EXEC] EFI/BOOT/SVC_OK.ELF bytes=0x[HW][SYS] write(ring3): argv ok"
+_SPLIT_TAGS = ("[EXEC] EFI/BOOT/SVC_FLAP.ELF bytes=0x0000000000001260"
+               "[LOG][WARN] mprotect refused: page not mapped")
+# And one that is not a defect: a shell prompt written with no trailing
+# newline, which leaves the physical line open for whatever comes next.
+_OPEN_LINE = ("[HW][SYS] write(ring3): $ write TMP.TXT scratch"
+              "[SCHED] task pid=0x000000000000002e exited code=0x0000000000000001")
+_CLEAN = "[HW][SYS] write(ring3): SVC_START selftest 6"
+
+assert interleaved_lines(_SPLIT_HEX) == [_SPLIT_HEX], "misses a truncated hex field"
+assert interleaved_lines(_SPLIT_TAGS) == [_SPLIT_TAGS], "misses a kernel line cut by another"
+assert interleaved_lines(_OPEN_LINE) == [], "flags a ring-3 write left open"
+assert interleaved_lines(_CLEAN) == [], "flags a healthy line"
+
+
 def tail_text(text, lines=40):
     return "|".join(text.replace("\r", " ").splitlines()[-lines:])
 
@@ -476,6 +555,15 @@ def main():
             text = buffer().replace("\r", "")
             problems = []
 
+            # First, before anything is concluded from this text: is it
+            # trustworthy? Every other assertion below reads these lines,
+            # so a split one can invent a failure or hide a real one.
+            split = interleaved_lines(text)
+            if split:
+                problems.append(f"serial_log_interleaved({len(split)}_lines)")
+                for line in split[:3]:
+                    print(f"[QEMU-CLI] split line: {line[:160]}")
+
             # TCP_OK only appears when something answered on the host, so a
             # parallel run without its own echo server must not require it.
             # DHCP still must work: that comes from QEMU's own services and is
@@ -613,6 +701,17 @@ def main():
                 problems.append("crash_record_does_not_name_the_program")
             if "[CRASH] no process has faulted" in text:
                 problems.append("crash_dump_found_no_record")
+
+            # Randomised churn, and the seed that produced it. The seed is
+            # asserted on as well as the result: a stress run whose seed is
+            # not in the log is one nobody can replay, which is most of
+            # what makes a rare failure findable.
+            if "STRESS_SEED" not in text:
+                problems.append("stress_seed_not_reported")
+            if "STRESS_OK" not in text:
+                problems.append("stress_run_did_not_finish")
+            if "STRESS_FAIL" in text:
+                problems.append("stress_run_found_a_defect")
 
             if "SVC_CRASH_FAULTING" not in text:
                 problems.append("crashing_service_never_ran")

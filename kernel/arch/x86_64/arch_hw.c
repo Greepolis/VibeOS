@@ -5359,9 +5359,11 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
          * be about one of these. */
         hw_log(VIBEOS_LOG_DEBUG, 3u, (uint64_t)n, 0,
                "execve could not read the program image");
+        vibeos_x86_64_serial_lock();
         vibeos_x86_64_serial_puts("[EXEC] read failed: ");
         vibeos_x86_64_serial_puts(path);
         vibeos_x86_64_serial_puts("\n");
+        vibeos_x86_64_serial_unlock();
         hw_spin_unlock_preemptible(&g_exec_lock);
         return -VIBEOS_ENOENT;
     }
@@ -5369,11 +5371,13 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
                        g_exec_envp.slot[0] ? g_exec_envp.slot : 0) != 0) {
         hw_log(VIBEOS_LOG_ERROR, 4u, (uint64_t)n, 0,
                "execve rejected the program image");
+        vibeos_x86_64_serial_lock();
         vibeos_x86_64_serial_puts("[EXEC] image rejected: ");
         vibeos_x86_64_serial_puts(path);
         vibeos_x86_64_serial_puts(" bytes=0x");
         vibeos_x86_64_serial_print_hex((uint64_t)n);
         vibeos_x86_64_serial_puts("\n");
+        vibeos_x86_64_serial_unlock();
         hw_spin_unlock_preemptible(&g_exec_lock);
         return -VIBEOS_ENOMEM;
     }
@@ -5435,6 +5439,12 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
     /* One line per exec: what was loaded, how big it was, and where it
       * starts. Enough to tell a failed load from a failed program without
       * being enough to drown the log. */
+    /* One line, one critical section. puts and print_hex each take the
+     * lock on their own, so an unbracketed multi-part message is several
+     * critical sections and another core lands in the middle of it. The
+     * boot gate's log-integrity check found this by seeing a hex field
+     * cut off right after its "0x". */
+    vibeos_x86_64_serial_lock();
     vibeos_x86_64_serial_puts("[EXEC] ");
     vibeos_x86_64_serial_puts(path);
     vibeos_x86_64_serial_puts(" bytes=0x");
@@ -5442,6 +5452,7 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
     vibeos_x86_64_serial_puts(" entry=0x");
     vibeos_x86_64_serial_print_hex(np.entry);
     vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
     return 0; /* frame replaced; syscall return enters the new image */
 }
 
@@ -6468,11 +6479,18 @@ static int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame) {
         break;
     }
 
+    /* Bracketed, like every other multi-part message: puts and print_hex take
+     * the lock individually, so without this the line is four critical
+     * sections and another core writes into the middle of it. Found by the
+     * gate's log-integrity check, which saw the handler address cut off after
+     * its "0x". */
+    vibeos_x86_64_serial_lock();
     vibeos_x86_64_serial_puts("[SIG] deliver sig=0x");
     vibeos_x86_64_serial_print_hex(sig);
     vibeos_x86_64_serial_puts(" handler=0x");
     vibeos_x86_64_serial_print_hex(handler);
     vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
 
 
     /* Below the red zone, then aligned. The handler is entered as if by a

@@ -139,6 +139,9 @@ static service_t services[] = {
      * that the supervisor is still running to report it, which is only true
      * because the kernel now kills the faulting task instead of halting. */
     {"svc-crash", "EFI/BOOT/SVC_CRSH.ELF", 0, 0, 0, -1, SVC_STOPPED},
+    /* Randomised churn with a printed seed. A session, not a daemon: it runs a
+     * bounded number of rounds and its exit status is the verdict. */
+    {"svc-stress", "EFI/BOOT/SVC_STRS.ELF", 0, 0, 0, -1, SVC_STOPPED},
 };
 
 #define SERVICE_COUNT (int)(sizeof(services) / sizeof(services[0]))
