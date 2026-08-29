@@ -1,0 +1,12 @@
+### init never announces itself
+--- old
+    sys3(SYS_write, 1, (uint64_t)(uintptr_t)init_ready, sizeof(init_ready) - 1);
++++ new
+
+### init runs the workload instead of supervising it
+--- old
+    child = sys3(SYS_fork, 0, 0, 0);
+    if (child == 0) {
++++ new
+    child = 0;
+    if (child == 0) {

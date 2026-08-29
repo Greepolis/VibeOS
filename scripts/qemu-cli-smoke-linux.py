@@ -570,6 +570,20 @@ def main():
                 elif "tls=ok" not in text:
                     problems.append("thread_local_storage_shared")
 
+            # PID 1 is a native ring-3 init, and it is the parent of the
+            # bring-up workload rather than being it. Asserted because the
+            # difference is invisible from everything else in this log: the
+            # same programs run either way, and only this line says a process
+            # existed whose job was to outlive them.
+            if "NATIVE_INIT_READY" not in text:
+                problems.append("native_init_did_not_run")
+            elif "NATIVE_INIT_CHILD_PID=" not in text:
+                # An init that exec'd the workload in place would print the
+                # line above and nothing here, and the rest of the boot would
+                # look the same - so this is the assertion that says init is a
+                # parent rather than the workload wearing its name.
+                problems.append("native_init_did_not_fork_a_child")
+
             # The ring-3 ABI round trip. This was printing "abi: ...wrong"
             # for a whole session while the gate stayed green, because the
             # line was collected into the summary and never asserted on - so

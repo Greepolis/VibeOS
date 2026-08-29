@@ -13,7 +13,10 @@ set(CMAKE_C_EXTENSIONS OFF)
 option(VIBEOS_BUILD_TESTS "Build VibeOS host-side tests" ON)
 option(VIBEOS_BUILD_KERNEL_IMAGE "Build bootable kernel image for emulator/hardware" ON)
 option(VIBEOS_KERNEL_ONLY "Build kernel only (no user-space)" OFF)
-option(VIBEOS_USE_NATIVE_INIT "Select the native ring-3 init for EFI media" OFF)
+# On by default now that init supervises the bring-up workload instead of
+# replacing it: switching this off returns to the old arrangement, where
+# PID 1 was the workload itself.
+option(VIBEOS_USE_NATIVE_INIT "Select the native ring-3 init for EFI media" ON)
 option(VIBEOS_ENABLE_TLS "Build the hosted Mbed TLS adapter" ON)
 # The audited TLS dependency lives in a git submodule. A plain `git clone`
 # does not fetch it, so a missing submodule degrades to a build without TLS
@@ -81,6 +84,14 @@ target_compile_options(vibeos_user_core PRIVATE
     -Wall
     -Wextra
     -Wpedantic
+    # This library is linked into the freestanding kernel image, so it has to
+    # be built like the kernel is. Without this a function with a large enough
+    # frame gets a stack-protector prologue and the image fails to link on
+    # __stack_chk_fail - which does not exist there, and which nothing in the
+    # library asked for. It surfaced the first time a change forced the kernel
+    # to relink, not when the code was written, so it is the kind of breakage
+    # that arrives long after its cause.
+    -fno-stack-protector
 )
 
 # The TLS adapter is a HOSTED component and lives in its own target, never in

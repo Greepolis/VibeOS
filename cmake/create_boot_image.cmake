@@ -31,9 +31,17 @@ file(WRITE "${EFI_STARTUP_NSH}"
 
 # Ship the init user program on the EFI media so the bootloader can load it from
 # the filesystem and hand it to the kernel as the initrd module.
-set(USER_INIT_ELF "${CMAKE_BINARY_DIR}/vibeos_user_hello")
-if(VIBEOS_USE_NATIVE_INIT)
-    set(USER_INIT_ELF "${CMAKE_BINARY_DIR}/vibeos_user_init")
+# PID 1 is the native init. The bring-up workload it supervises ships beside
+# it under its own name - it used to *be* INIT.ELF, which is why there was no
+# process left to supervise anything.
+set(USER_INIT_ELF "${CMAKE_BINARY_DIR}/vibeos_user_init")
+if(NOT VIBEOS_USE_NATIVE_INIT)
+    set(USER_INIT_ELF "${CMAKE_BINARY_DIR}/vibeos_user_hello")
+endif()
+
+set(SELFTEST_ELF "${CMAKE_BINARY_DIR}/vibeos_user_hello")
+if(EXISTS "${SELFTEST_ELF}")
+    file(COPY_FILE "${SELFTEST_ELF}" "${EFI_BOOT_DIR}/SELFTEST.ELF" ONLY_IF_DIFFERENT)
 endif()
 if(EXISTS "${USER_INIT_ELF}")
     file(COPY_FILE "${USER_INIT_ELF}" "${EFI_BOOT_DIR}/INIT.ELF" ONLY_IF_DIFFERENT)
