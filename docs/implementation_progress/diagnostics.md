@@ -120,6 +120,30 @@ here" is a different investigation from "the data was wrong".
 Gate: `stress_seed_not_reported`, `stress_run_did_not_finish`,
 `stress_run_found_a_defect`.
 
+### Panic records
+
+A kernel panic prints which core noticed, and then one line per online core:
+its task, pid, state, `cr3`, and the executable that task was running.
+
+A ring-3 fault has had a full crash record for a while; a panic had a backtrace
+of the single core that noticed and nothing at all about the other three. Every
+wedge investigated in this project needed exactly the missing part - which core
+was on which task, and on whose address space - and it had to be dug out of
+QEMU's monitor from the host afterwards, when it could have been printed at the
+time for the cost of a loop.
+
+The per-CPU blocks are read directly rather than stopping the cores with an
+IPI. This is a machine that is about to halt, and a round trip is the kind of
+thing that hangs instead of reporting; a slightly stale line is worth more than
+no line.
+
+Verified against a real panic, not a synthetic one: removing the branch that
+kills a faulting ring-3 task turns `svc-crash` back into a machine halt, and
+the record then names it -
+
+    FATAL: unrecoverable CPU exception, halting on cpu 0x2
+    [PANIC] cpu=0x2 ... pid=0xa state=0x2 cr3=0x21d5000 exe=/EFI/BOOT/SVC_CRSH.ELF
+
 ## What these found
 
 | Detector | Defect | Status |
@@ -234,8 +258,6 @@ exactly like one with nothing to report.
 - A hang in the bootloader phase, about one boot in twenty-four, still
   uninvestigated. It is not slowness: a 300-second budget leaves the guest
   silent for 296 of them.
-- No panic record: a kernel panic still prints a backtrace and stops, without
-  the per-core register state a crash record gives for ring 3.
 - No host-side memory dump wired into the harness. QEMU's `dump-guest-memory`
   and VirtualBox's `VBoxManage debugvm dumpvmcore` both exist and neither is
   used; a full guest core is the right answer for wedges, and pushing megabytes

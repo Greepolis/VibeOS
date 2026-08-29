@@ -581,6 +581,7 @@ static int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame);
 static int hw_signal_raise(int task_index, uint32_t sig);
 /* Defined with the task code, because it needs the signal numbers that are
  * #defined a thousand lines below here and C only reads the file once. */
+static void hw_panic_cpu_summary(void);   /* defined with the task table */
 static void hw_fault_kill_current_user(const vibeos_x86_64_isr_frame_t *frame,
                                        uint64_t fault_address);
 
@@ -819,9 +820,16 @@ static void hw_panic(const char *why) {
      * not whatever the compiler left in a register. */
     __asm__ __volatile__("leaq (%%rip), %0" : "=r"(rip));
 
+    vibeos_x86_64_serial_lock();
     vibeos_x86_64_serial_puts(" FATAL: ");
     vibeos_x86_64_serial_puts(why);
-    vibeos_x86_64_serial_puts(", halting\n");
+    vibeos_x86_64_serial_puts(", halting on cpu 0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)vibeos_x86_64_cpu_id());
+    vibeos_x86_64_serial_puts("\n");
+
+    hw_panic_cpu_summary();
+    vibeos_x86_64_serial_unlock();
+
     hw_backtrace(rbp, rip);
     hw_log_dump();
     for (;;) {
@@ -6589,6 +6597,51 @@ static int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame) {
 /* Turn a ring-3 CPU exception into the death of one task. The signal numbers
  * are the ones Linux reports for these vectors, so a shell that prints
  * "Segmentation fault" is printing the same thing it would there. */
+static void hw_panic_cpu_summary(void) {
+    /* Who else was running what.
+     *
+     * A ring-3 fault gets a full crash record; a panic got a backtrace of the
+     * one core that noticed and nothing about the other three. Every wedge
+     * investigated in this project needed exactly this - which core was on
+     * which task, and on whose address space - and the answer had to be dug
+     * out of QEMU's monitor from the host afterwards, when it could have been
+     * printed here for the cost of a loop.
+     *
+     * Read from the per-CPU blocks rather than stopping the cores: this is a
+     * machine that is about to halt, and an IPI round trip is exactly the kind
+     * of thing that hangs instead of reporting. A slightly stale line is worth
+     * more than no line. */
+    uint32_t i;
+    {
+        for (i = 0; i < VIBEOS_HW_MAX_CPUS; i++) {
+            int t;
+            if (!g_cpus[i].online) {
+                continue;
+            }
+            t = g_cpus[i].current_task;
+            vibeos_x86_64_serial_puts("[PANIC] cpu=0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)i);
+            vibeos_x86_64_serial_puts(" lapic=0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)g_cpus[i].lapic_id);
+            vibeos_x86_64_serial_puts(" task=0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)(int64_t)t);
+            if (t >= 0 && t < (int)VIBEOS_HW_MAX_TASKS) {
+                vibeos_x86_64_serial_puts(" pid=0x");
+                vibeos_x86_64_serial_print_hex((uint64_t)g_tasks[t].pid);
+                vibeos_x86_64_serial_puts(" state=0x");
+                vibeos_x86_64_serial_print_hex((uint64_t)g_tasks[t].state);
+                vibeos_x86_64_serial_puts(" cr3=0x");
+                vibeos_x86_64_serial_print_hex(g_tasks[t].cr3);
+                vibeos_x86_64_serial_puts(" exe=");
+                vibeos_x86_64_serial_puts(g_tasks[t].proc.exe_path[0]
+                                          ? g_tasks[t].proc.exe_path
+                                          : "(none)");
+            }
+            vibeos_x86_64_serial_puts("\n");
+        }
+    }
+}
+
 static void hw_fault_kill_current_user(const vibeos_x86_64_isr_frame_t *frame,
                                        uint64_t fault_address) {
     uint64_t vector = frame->vector;
