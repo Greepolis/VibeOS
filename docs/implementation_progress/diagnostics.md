@@ -186,6 +186,38 @@ merits rather than silenced:
 | Local variable address stored in non-local memory (`storage.c`) | real observation about a contract that was nowhere in the code: the block cache must outlive the storage struct. Documented at the assignment; the ownership is still not expressed in the types. |
 | Unused static function (`bootloader_core.c:35`) | **not reproduced.** `region_end` has seven callers in that file, and no static function there is unused. Not acted on: deleting a used function to quieten a checker is worse than the alert. Needs the CodeQL run's own log to settle. |
 
+### Crash collector
+
+`scripts/dev/report-crash.py` reads crash records out of a serial log and
+collects them into a single GitHub issue, one comment per distinct crash. It is
+the "send a report" every desktop OS has, with three rules that keep it useful
+rather than noisy:
+
+- **The guest never sends anything.** VibeOS writes a crash record to its
+  console and stops there. The reporter runs on a host, on an explicit command,
+  on a log somebody chose to hand it. An operating system that uploads on its
+  own is a different kind of thing from one with a bug reporter.
+- **One issue, never more.** Reports are comments on a collector issue found by
+  its exact title. The script will not open a second one.
+- **Deduplicated by signature** - the program, the vector, and the faulting
+  instruction, deliberately not the pid or the stack contents. A crash that
+  recurs for a fortnight edits its own comment, bumping a count and a last-seen
+  date, instead of adding fourteen. It also skips the crashes the boot provokes
+  on purpose (`svc-crash` faults every single run), and refuses to open more
+  than three new reports in one invocation.
+
+Nothing is posted without `--post`. Without it the script prints exactly what
+it would send, which is also how to check what a dump contains before it
+becomes public: a crash record carries register values and a slice of the
+process stack.
+
+    python scripts/dev/report-crash.py qemu-cli-serial.log
+
+Wired into the nightly workflow only, and only on failure, with
+`issues: write` declared explicitly on the job - the default token permissions
+depend on a repository setting, and a reporter that silently cannot post looks
+exactly like one with nothing to report.
+
 ## Pending
 
 - **`munmap` does not shoot down the other cores' TLBs.** The need is real - a
@@ -208,7 +240,3 @@ merits rather than silenced:
   and VirtualBox's `VBoxManage debugvm dumpvmcore` both exist and neither is
   used; a full guest core is the right answer for wedges, and pushing megabytes
   through a serial port is not.
-- No crash reporter. The intent is a single fixed GitHub issue as a collector,
-  deduplicated by signature (`exe + vector + rip`) so a recurring crash updates
-  a count rather than filling the thread, posted by host-side tooling on an
-  explicit command - never by the guest itself.

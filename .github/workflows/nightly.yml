@@ -18,6 +18,13 @@ jobs:
     name: Boot Smoke x5 (flakiness gate)
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    # Only what the crash collector needs. Spelled out rather than inherited:
+    # the default token permissions depend on a repository setting, and a
+    # reporter that silently cannot post is worse than one that is not wired
+    # up at all - it looks like there is nothing to report.
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -54,6 +61,23 @@ jobs:
           done
           echo "failures=$failures of 5"
           test "$failures" -eq 0
+
+      # Crashes from the failed attempts, collected into one issue rather than
+      # left in an artifact nobody downloads. Deliberately only here, on the
+      # nightly, and only when something actually failed: a collector that
+      # posts on every push stops being read.
+      #
+      # The reporter deduplicates by signature, so a bug that recurs for a
+      # fortnight updates one comment instead of adding fourteen, skips the
+      # crashes this boot provokes on purpose, and refuses to open more than
+      # three new reports in a run.
+      - name: Report crashes to the collector issue
+        if: failure()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          python3 scripts/dev/report-crash.py serial-attempt-*.log --post || true
 
       - uses: actions/upload-artifact@v7
         if: always()
