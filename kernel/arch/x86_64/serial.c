@@ -120,7 +120,12 @@ void vibeos_x86_64_serial_lock(void) {
     uint64_t flags = vibeos_x86_64_irq_save();
     uint32_t me = vibeos_x86_64_cpu_id();
 
-    if (g_serial_depth > 0 && g_serial_owner == me) {
+    /* g_serial_lock is checked as well as the owner: the recursive branch is
+     * only reachable when somebody actually holds the lock, so a stale or
+     * duplicated identity can no longer walk in behind a real owner. That is
+     * belt and braces - cpu ids are unique now - but this is the path whose
+     * failure mode is a boot gate reporting things that did not happen. */
+    if (g_serial_lock && g_serial_depth > 0 && g_serial_owner == me) {
         /* Already ours: keep interrupts masked, the outer release restores. */
         g_serial_depth++;
         return;

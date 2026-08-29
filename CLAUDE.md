@@ -244,6 +244,39 @@ uuids sliced out of a SHA-256 digest are not uuids - VirtualBox parses the
 malformed value to null instead of rejecting it, and then reports that an image
 it can see does not exist.
 
+**An unmatched unlock hands away a lock this core does not hold.**
+`hw_log_emit` ended with `vibeos_x86_64_serial_unlock()` and never took the
+lock. Two defects came out of that one missing line, and the second is far
+worse than the first.
+
+The log line itself was interleavable, because `serial_puts` and
+`serial_print_hex` each lock and release on their own - a line assembled from
+eight of them is eight critical sections, not one. That is the ordinary bug.
+
+The real one: `__sync_lock_release` on a lock held by *another* core freed it
+mid-line, a third writer walked in, and `irq_restore` re-enabled interrupts
+inside somebody else's critical section. Output interleaved mid-word and split
+the very markers the boot gate matches on, so the gate reported failures that
+had not happened - about one boot in fourteen. That is the most expensive kind
+of bug to chase, because every piece of evidence it produces is a lie: two of
+the crashes investigated before finding it were not crashes at all, just a
+marker cut in half.
+
+If a lock is recursive and tracks an owner, count the lock and unlock calls per
+file. `grep -c` found this in one command after three sessions of reasoning
+about it did not.
+
+**A core that cannot say who it is will claim to be core 0.**
+`vibeos_x86_64_cpu_id` read the per-CPU pointer out of KERNEL_GS_BASE and
+returned 0 when that MSR was still zero - which it is on every core until its
+per-CPU area is installed. So several cores answered "cpu 0" at once and the
+console lock's `owner == me` recursion check believed them. The initial APIC id
+from CPUID leaf 1 is unique and valid from the first instruction.
+
+**boots.sh does not rebuild.** Sixteen green boots once "confirmed" a fix whose
+source had never been compiled. Build first, and check `rc=` - the same trap as
+`check.sh`, wearing different clothes.
+
 ## Verification that exists
 
 The boot gate (`scripts/qemu-cli-smoke-linux.py`) asserts state, not markers:

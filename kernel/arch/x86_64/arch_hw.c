@@ -122,12 +122,32 @@ static hw_cpu_t *hw_this_cpu(void) {
 /* Console-lock ownership (overrides the weak default in serial.c). Reads the
  * GS base MSR directly so it is safe to call before the per-CPU block is
  * installed, which happens after the first boot messages. */
+/* Who am I, for a lock that has to tell cores apart.
+ *
+ * This used to read the per-CPU pointer out of KERNEL_GS_BASE and return 0
+ * when that MSR was still zero - which it is on every core until its per-CPU
+ * area is installed. So more than one core answered "I am cpu 0" at once, and
+ * the console lock believed them: its recursion check is `depth > 0 && owner
+ * == me`, so while cpu 0 genuinely held the lock, any core still reporting 0
+ * took the already-mine branch and walked into the critical section without
+ * it. Lines from two cores then interleaved mid-word, splitting the very
+ * markers the boot gate matches on - and the gate reported a failure that had
+ * not happened, which is the worst kind, because it sends you looking for a
+ * bug in whatever the split line was about.
+ *
+ * The initial APIC id from CPUID leaf 1 is unique per core and valid from the
+ * first instruction, with no MSR to set up first. CPUID serializes, which
+ * costs something - but this is only reached around serial output, which is
+ * orders of magnitude slower than the instruction. */
 uint32_t vibeos_x86_64_cpu_id(void) {
-    uint32_t lo, hi;
-    uint64_t base;
-    __asm__ __volatile__("rdmsr" : "=a"(lo), "=d"(hi) : "c"(0xC0000101u));
-    base = ((uint64_t)hi << 32) | lo;
-    return (base == 0u) ? 0u : ((const hw_cpu_t *)(uintptr_t)base)->index;
+    uint32_t eax, ebx, ecx, edx;
+    __asm__ __volatile__("cpuid"
+                         : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+                         : "a"(1u), "c"(0u));
+    (void)eax;
+    (void)ecx;
+    (void)edx;
+    return ebx >> 24;
 }
 
 /* Strong versions of the console lock's interrupt hooks (weak no-ops in
@@ -592,6 +612,21 @@ static vibeos_log_t g_kernel_log;
 static uint32_t g_log_serial_level = VIBEOS_LOG_INFO;
 
 static void hw_log_emit(const vibeos_log_event_t *ev) {
+    /* This function has always ended with serial_unlock() and never taken the
+     * lock. Two separate defects came out of that one missing line.
+     *
+     * The log line itself was interleavable, because puts and print_hex each
+     * lock and release on their own - so a line assembled from eight of them
+     * is eight critical sections, not one.
+     *
+     * Worse, the unmatched release handed away a lock this core did not hold.
+     * When another core was mid-line, __sync_lock_release freed *its* lock, a
+     * third writer walked straight in, and irq_restore re-enabled interrupts
+     * inside somebody else's critical section. Output then interleaved
+     * mid-word and split the markers the boot gate matches on, so the gate
+     * reported failures that had not happened - about one boot in fourteen,
+     * which is expensive to chase precisely because the evidence is a lie. */
+    vibeos_x86_64_serial_lock();
     vibeos_x86_64_serial_puts("[LOG][");
     vibeos_x86_64_serial_puts(vibeos_log_level_name((vibeos_log_level_t)ev->level));
     vibeos_x86_64_serial_puts("] ");
@@ -690,6 +725,10 @@ static void hw_backtrace(uint64_t rbp, uint64_t rip) {
     uint64_t prev = 0;
     uint32_t depth;
 
+    /* The whole trace under one lock. It printed unlocked, so another core's
+     * output landed between two frames of it - and a backtrace with a foreign
+     * line in the middle is not a backtrace, it is a puzzle. */
+    vibeos_x86_64_serial_lock();
     vibeos_x86_64_serial_puts("[BT] rip=0x");
     vibeos_x86_64_serial_print_hex(rip);
     vibeos_x86_64_serial_puts("\n");
@@ -717,6 +756,7 @@ static void hw_backtrace(uint64_t rbp, uint64_t rip) {
     vibeos_x86_64_serial_puts("[BT] end depth=0x");
     vibeos_x86_64_serial_print_hex(depth);
     vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
 }
 
 static void hw_panic(const char *why) {
@@ -1172,7 +1212,24 @@ static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
      * not fatal - it only means fork keeps copying eagerly, which is slow
      * rather than wrong. */
     {
-        uint64_t bytes = (uint64_t)vibeos_pmm_remaining(&g_hw_pmm) / 4096ull;
+        /* One entry per frame of the *whole* region, not per frame still free.
+         *
+         * The base was already the start of the region - a previous fix, whose
+         * comment is below - but the count was taken from vibeos_pmm_remaining,
+         * which is what is left at this moment. Anything already handed out
+         * therefore shrank the table while the base stayed put, so the last
+         * `allocated` frames of the region had no entry at all. The allocator
+         * is a bump allocator: it reaches those frames only when the machine
+         * has actually used that much memory, which is why this survived every
+         * short boot and appeared about one boot in fourteen, always late.
+         *
+         * An untracked frame reads as "never shared", so both owners of a
+         * copy-on-write page free it, and it goes back on the freelist while a
+         * live process is still running from it. hw_free_page writes its
+         * freelist link at offset 0 of the page it reclaims, which is how this
+         * was found: a user pointer whose value was a page-aligned kernel
+         * address, read by init inside its own say(). */
+        uint64_t bytes = (uint64_t)g_hw_pmm.size_bytes / 4096ull;
         uint64_t pages = (bytes + 4095ull) / 4096ull;
         void *table = pages ? vibeos_pmm_alloc_pages(&g_hw_pmm, (size_t)pages) : 0;
         if (table && ((uint64_t)(uintptr_t)table + pages * 4096ull) <= VIBEOS_HW_IDENTITY_LIMIT) {
@@ -1189,7 +1246,19 @@ static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
             for (i = 0; i < bytes; i++) {
                 g_frame_refs[i] = 0;
             }
-            vibeos_x86_64_serial_puts("[MM] copy-on-write fork enabled\n");
+            /* Printed because the failure this fixes was invisible from the
+             * code: the numbers say outright whether every frame the allocator
+             * can hand out has an entry. */
+            vibeos_x86_64_serial_puts("[MM] copy-on-write fork enabled: frames=0x");
+            vibeos_x86_64_serial_print_hex(bytes);
+            vibeos_x86_64_serial_puts(" base=0x");
+            vibeos_x86_64_serial_print_hex(g_frame_refs_base);
+            vibeos_x86_64_serial_puts(" covers_to=0x");
+            vibeos_x86_64_serial_print_hex(g_frame_refs_base + bytes * 4096ull);
+            vibeos_x86_64_serial_puts(" region_end=0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)g_hw_pmm.base +
+                                           (uint64_t)g_hw_pmm.size_bytes);
+            vibeos_x86_64_serial_puts("\n");
         } else {
             vibeos_x86_64_serial_puts("[MM] no frame reference table; fork copies eagerly\n");
         }
@@ -6213,7 +6282,9 @@ static void hw_fault_kill_current_user(uint64_t vector) {
     hw_log(VIBEOS_LOG_WARN, 29u, vector, (uint64_t)sig,
            "ring-3 fault: killing the task (a0 = vector, a1 = signal)");
     vibeos_x86_64_serial_lock();
-    vibeos_x86_64_serial_puts("[HW][TRAP] ring3 fault: killing task, not the machine, vector=0x");
+    vibeos_x86_64_serial_puts("[HW][TRAP] ring3 fault: killing task, not the machine, cpu=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)vibeos_x86_64_cpu_id());
+    vibeos_x86_64_serial_puts(" vector=0x");
     vibeos_x86_64_serial_print_hex(vector);
     vibeos_x86_64_serial_puts(" sig=0x");
     vibeos_x86_64_serial_print_hex(sig);

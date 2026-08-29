@@ -101,7 +101,27 @@ moment the key arrives.
 - Ctrl-C delivery to a live foreground job is not gated (see above); only the
   routing of the key into the signal path is.
 - Stronger failure domains. A crashing service is now contained to its own task, but nothing yet limits what one service can do to shared kernel state before it faults.
-- **An intermittent ring-3 fault, ~1 boot in 14.** Two signatures seen, and they
+- **An intermittent ring-3 fault, ~1 boot in 32.** Sharpened considerably, and
+  most of what was previously written about it turned out to be about a
+  different bug entirely.
+
+  Two failures were being counted as one. The first was not a fault at all:
+  `hw_log_emit` released a console lock it had never taken, which freed the
+  lock out from under whichever core was mid-line, and the resulting mid-word
+  interleaving split the markers the boot gate matches on. The gate then
+  reported failures that had not happened - including, twice, "crashes" that
+  were a marker cut in half. Fixed; that signature (`deliberate_ring3_faults=0`)
+  is gone across 32 boots.
+
+  What remains is real and now has a clean signature: the static musl binary
+  faults during startup, before it prints `MUSL_ARGS`, writing to a garbage
+  pointer (`rip=0x401bbc` in the 0x400000 window, `err=0x6`,
+  `cr2=0x00ffffff01000007`). That is a C runtime walking argv/envp/auxv and
+  finding something malformed, so the suspect is the initial stack execve
+  builds - not, as previously written here, the TLS base or the signal frame.
+  The earlier `%fs:0x28` note is withdrawn: it rested on evidence from a
+  corrupted log.
+- (withdrawn) An intermittent stack-check failure attributed to a lost TLS base. Two signatures seen, and they
   may be one bug: a stack-check failure in the musl signal test (the canary is
   read through `%fs:0x28`, and the sigframe saves the trapframe, which does not
   carry `FS_BASE`), and init faulting inside its own `say()` while reading a
@@ -115,8 +135,7 @@ moment the key arrives.
   exactly one deliberate ring-3 fault occurs, so this shows up as a named
   failure (`deliberate_ring3_faults=2_expected=1`) instead of a wedge. Not yet
   instrumented far enough to say which pointer, so this is evidence and not a
-  diagnosis.
-- (superseded) An intermittent stack-check failure in the ring-3 musl signal test. The canary is read through `%fs:0x28`, so a TLS base that is not preserved across signal delivery or fork would produce exactly this, and the sigframe itself saves the trapframe, which does not carry `FS_BASE`. Not yet instrumented, so this is a lead and not a diagnosis.
+  diagnosis. The canary is read through `%fs:0x28`, so a TLS base that is not preserved across signal delivery or fork would produce exactly this, and the sigframe itself saves the trapframe, which does not carry `FS_BASE`. Not yet instrumented, so this is a lead and not a diagnosis.
 - Declarative init configuration format and validation.
 - Runtime health probes and process-backed failure-domain isolation remain pending.
 
