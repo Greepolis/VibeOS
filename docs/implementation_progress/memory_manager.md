@@ -1,6 +1,6 @@
 # Memory Manager Progress
 
-Status: In Progress (runtime PMM allocation and frame refcounting verified)
+Status: In Progress (runtime PMM allocation and atomic frame refcounting verified)
 Last review: 2026-08-25
 
 ## Implemented

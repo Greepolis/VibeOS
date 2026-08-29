@@ -1,6 +1,6 @@
 # Virtual Memory Progress
 
-Status: In Progress (hardware paging, per-process isolation and copy-on-write fork verified)
+Status: In Progress (hardware paging, per-process isolation, copy-on-write fork and cross-core TLB shootdown verified)
 Last review: 2026-08-25
 
 ## Implemented
