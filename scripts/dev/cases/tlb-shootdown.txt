@@ -1,0 +1,31 @@
+### fork never tells the other cores their TLBs are stale
+--- old
+    hw_tlb_shootdown((uint64_t)(uintptr_t)src->pml4);
++++ new
+
+### the shootdown is sent but nobody waits for it
+--- old
+    while (__atomic_load_n(&g_tlb_shootdown_pending, __ATOMIC_ACQUIRE) > 0) {
++++ new
+    while (0) {
+
+### the shootdown goes to every core instead of the ones running this address space
+--- old
+        if (g_tasks[t].cr3 != cr3) {
+            continue;
+        }
++++ new
+
+# What each case actually caught, since it is not what you would guess:
+#
+#   - removing the shootdown was caught by the *counter*, not by TFORK.ELF.
+#     The data check in that program is opportunistic - the stale write has to
+#     land in the window between the fork and the child's read - so a single
+#     boot without the shootdown often still passes it. The counter is what
+#     makes the case deterministic, which is the whole reason it exists.
+#   - not waiting for the acknowledgement wedges the boot outright.
+#   - sending to every core instead of only those running this address space
+#     does not corrupt anything; it stalls. `syscall` clears IF, so a core in
+#     a syscall cannot answer until it returns to ring 3, and waiting on cores
+#     with no stake in the mapping was the first version of this code. It timed
+#     out about three boots in thirty-two.

@@ -115,12 +115,59 @@ moment the key arrives.
   musl-heap signature has not reappeared in 48 boots; the second signature
   appeared once in 32 after the fix, so the family is not closed.
 
-  Concrete next lead, identified but not proven: `hw_share_user_leaf` clears
-  PTE_WRITE to mark a page copy-on-write and then calls `hw_invlpg`, which
-  invalidates the TLB of the calling core only. There is no TLB shootdown, so
-  for a process with threads running on other cores the old writable entry
-  survives and that core writes straight through into the page the child now
-  shares. The kernel runs four cores and the gate runs a four-thread program.
+  Second cause found and fixed: there was no TLB shootdown. `hw_share_user_leaf`
+  clears PTE_WRITE to mark a page copy-on-write and called `hw_invlpg`, which
+  reaches the calling core's TLB and nothing else. A thread of the same process
+  on another core kept its cached writable entry and wrote straight through
+  into a page the child had just been given a share of - no fault, no copy, and
+  the damage surfacing much later in whichever program the page ended up
+  serving.
+
+  fork now sends a fixed-delivery IPI (vector 0xFE) and waits for each target
+  to reload CR3, once per fork rather than once per page. The wait is what
+  makes it a barrier: when it returns, no other core can still be writing
+  through the permission just revoked. It is bounded and says so if a core does
+  not answer, because a shootdown that hangs is a silent machine.
+
+  It goes only to the cores actually running that address space. The first
+  version broadcast to everybody and timed out about three boots in
+  thirty-two: `syscall` clears IF (SFMASK is 0x200), so a core sitting in a
+  syscall cannot take the IPI until it returns to ring 3, and with this much
+  serial output that is most cores most of the time. Waiting on cores with no
+  stake in the mapping bought nothing and was paid for in stalls. A
+  single-threaded fork - nearly all of them - now sends nothing and waits for
+  nothing.
+
+  The copy-on-write *fault* needs the same treatment, and that was found the
+  hard way. When it copies, the page's physical address changes; a thread on
+  another core keeps the old frame and from then on reads and writes a page
+  nobody else can see. `TFORK.ELF` hung outright on it: the flag its worker
+  was spinning on lived on a copied page, so the store the parent made was
+  invisible to the worker forever.
+
+  That exposed a second requirement: once one core resolves a copy-on-write
+  fault, another thread can still fault on a stale entry for a page that is now
+  plainly writable. `hw_handle_cow_fault` used to see no COW bit and let the
+  task be killed for a protection violation it had not committed; it now
+  recognises the already-writable case and just invalidates.
+
+  `tests/linux/musl_tfork.c` (staged as `TFORK.ELF`) is what exercises any of
+  this: it forks while a worker thread is still running and checks that the
+  child keeps the pages it forked with. Nothing else in the boot produces that
+  shape, and before it existed the shootdown count was zero on every boot -
+  the code was correct in principle and never once executed.
+
+  What is gated is the mechanism, not the absence of the corruption:
+  `COW_STATS` reports `tlb_shootdowns` and `tlb_acks`, and the boot fails if
+  the threaded fork shot down nothing, if acknowledgements came back short, or
+  if a shootdown timed out. Three sabotage cases in
+  `scripts/dev/cases/tlb-shootdown.txt` each turn the boot red - and the case
+  file records which check caught which, because removing the shootdown is
+  caught by the counter rather than by TFORK's own data check.
+
+  A corruption that appears one boot in thirty cannot be asserted on in a
+  single boot. Pretending otherwise is how the earlier claims here came to be
+  wrong, twice.
 
 - **A hang in the bootloader phase, ~1 boot in 24.** Previously written up here
   as a benign cold-start stall; that was wrong. Raising the per-boot budget

@@ -132,6 +132,14 @@ if(EXISTS "${THR_ELF}")
     message(STATUS "EFI media includes a threaded Linux binary: EFI/BOOT/THREADS.ELF")
 endif()
 
+# fork() from a process that still has a thread running - what exercises the
+# TLB shootdown. 8.3 names: TFORK, not MUSL_TFORK.
+set(TFORK_ELF "${CMAKE_BINARY_DIR}/musl_tfork")
+if(EXISTS "${TFORK_ELF}")
+    file(COPY_FILE "${TFORK_ELF}" "${EFI_BOOT_DIR}/TFORK.ELF" ONLY_IF_DIFFERENT)
+    message(STATUS "EFI media includes a threaded-fork Linux binary: EFI/BOOT/TFORK.ELF")
+endif()
+
 # A static BusyBox from the host, if one is installed. This is a real program
 # doing real work - open a file, read a directory, write to stdout - rather than
 # a test written to pass. It is not built here and nothing about it was chosen

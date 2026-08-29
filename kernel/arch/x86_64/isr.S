@@ -85,6 +85,7 @@ vibeos_isr_\num:
     ISR_NOERR 47   /* IRQ15                       */
 
     ISR_NOERR 128  /* 0x80 software syscall       */
+    ISR_NOERR 254  /* 0xFE TLB shootdown IPI      */
     ISR_NOERR 255  /* 0xFF local-APIC spurious    */
 
 vibeos_isr_common:

@@ -92,6 +92,15 @@ typedef struct hw_cpu {
 static hw_cpu_t g_cpus[VIBEOS_HW_MAX_CPUS];
 static uint32_t g_cpu_online_count = 1u;
 
+/* Outstanding acknowledgements for a TLB shootdown, so the core that changed a
+ * mapping can wait until every other core has stopped believing the old one. */
+static volatile int g_tlb_shootdown_pending;
+/* Counted, because a shootdown that never fires and one that is not needed
+ * look identical from outside - and the first would leave the bug this exists
+ * to fix exactly as it was, with the boot still green. */
+static volatile uint64_t g_tlb_shootdowns;
+static volatile uint64_t g_tlb_acks;
+
 /* Ring-0 stacks: one per CPU for the syscall/interrupt entry paths, plus a
  * separate boot stack each application processor starts on. */
 static uint8_t g_kernel_syscall_stack[VIBEOS_HW_MAX_CPUS][16384] __attribute__((aligned(16)));
@@ -407,6 +416,7 @@ static void hw_set_gate(uint32_t vector, uint64_t handler) {
 
 extern char vibeos_isr_128[];   /* isr.S: stub for the 0x80 syscall gate      */
 extern char vibeos_isr_255[];   /* isr.S: stub for the LAPIC spurious vector  */
+extern char vibeos_isr_254[];   /* isr.S: stub for the TLB shootdown IPI      */
 
 /* APIC / SMP (apic.c + ap_boot.S). */
 extern int vibeos_x86_64_acpi_init(uint64_t rsdp_addr);
@@ -484,6 +494,9 @@ static void hw_load_idt(void) {
     hw_set_gate_attr(0x80u, (uint64_t)(uintptr_t)vibeos_isr_128, 0xEEu);
     /* Local-APIC spurious interrupt: must be handled, and must not be EOI'd. */
     hw_set_gate(0xFFu, (uint64_t)(uintptr_t)vibeos_isr_255);
+    /* TLB shootdown. See hw_tlb_shootdown for why a kernel with more than one
+     * core cannot do without it. */
+    hw_set_gate(0xFEu, (uint64_t)(uintptr_t)vibeos_isr_254);
     /* The timer runs the scheduler, so it takes IST slot 1 - a stack owned by
      * the CPU rather than by whichever task happened to be interrupted. */
     g_idt[VIBEOS_HW_IRQ_TIMER].ist = 1;
@@ -556,6 +569,10 @@ static void hw_pic_send_eoi(uint32_t vector) {
     hw_outb(PIC1_CMD, PIC_EOI);
 }
 
+/* Defined with the paging code below; the trap dispatcher needs them for the
+ * TLB shootdown IPI, which arrives long before that point in the file. */
+static uint64_t hw_read_cr3(void);
+static void hw_write_cr3(uint64_t value);
 static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code);
 /* Defined with the rest of the signal code, far below; the timer path needs it
  * here so a signal raised while a task was running is delivered on the way
@@ -799,6 +816,19 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
      * timer (IRQ0) additionally drives the preemptive scheduler. */
     /* Local-APIC spurious interrupt: by architecture it must NOT be EOI'd. */
     if (frame->vector == 0xFFu) {
+        return;
+    }
+
+    /* TLB shootdown: another core changed a mapping in an address space this
+     * one may be running, and a stale entry here would let it keep writing
+     * through permissions that no longer exist. Reloading CR3 drops every
+     * non-global entry, which is heavier than invalidating one page and is
+     * what makes it correct without the sender having to say which page. */
+    if (frame->vector == 0xFEu) {
+        hw_write_cr3(hw_read_cr3());
+        __atomic_fetch_sub(&g_tlb_shootdown_pending, 1, __ATOMIC_ACQ_REL);
+        __atomic_fetch_add(&g_tlb_acks, 1ull, __ATOMIC_RELAXED);
+        vibeos_x86_64_lapic_eoi();
         return;
     }
 
@@ -4226,6 +4256,93 @@ static void hw_invlpg(uint64_t va) {
     __asm__ __volatile__("invlpg (%0)" : : "r"((void *)(uintptr_t)va) : "memory");
 }
 
+/* Make every other core forget the mappings it has cached.
+ *
+ * invlpg reaches the calling core's TLB and nothing else. That was enough
+ * while a page's permissions only ever changed for a process that was not
+ * running anywhere - but fork revokes write permission on pages of a process
+ * whose *other threads* may be executing on other cores right now, with the
+ * old writable entry still in their TLBs. Those threads then write straight
+ * through into a page the child has just been given a share of, and the
+ * corruption surfaces much later, in whichever program the page ended up
+ * serving.
+ *
+ * The wait is what makes it a barrier rather than a hint: when this returns,
+ * no other core can still be writing through the permission just revoked.
+ *
+ * Bounded, and it says so if it gives up. A shootdown that hangs would be a
+ * silent machine, which is strictly worse than the bug it is fixing - and a
+ * core that never answers is itself worth knowing about. */
+static void hw_tlb_shootdown(uint64_t cr3) {
+    uint32_t i;
+    int targets = 0;
+    uint64_t spins = 0;
+    uint32_t me;
+
+    if (!g_apic_mode || g_cpu_online_count <= 1u) {
+        return;   /* nobody else can be holding a stale entry */
+    }
+    me = hw_this_cpu()->index;
+
+    /* Only the cores actually running this address space can hold a stale
+     * entry for it, and only they need telling.
+     *
+     * The first version broadcast to everybody and waited for all of them,
+     * and it timed out about three boots in thirty-two. `syscall` clears IF
+     * (SFMASK is 0x200), so every core sitting in a syscall - and with this
+     * much serial output, that is most of them, most of the time - cannot
+     * take the IPI at all until it returns to ring 3. Waiting on cores that
+     * have nothing to do with the mapping was buying nothing and paying for
+     * it in stalls.
+     *
+     * A single-threaded fork, which is nearly all of them, now sends no IPI
+     * and waits for nothing. */
+    __atomic_store_n(&g_tlb_shootdown_pending, 0, __ATOMIC_RELEASE);
+    for (i = 0; i < VIBEOS_HW_MAX_CPUS; i++) {
+        int t;
+        if (i == me || !g_cpus[i].online) {
+            continue;
+        }
+        t = g_cpus[i].current_task;
+        if (t < 0 || t >= (int)VIBEOS_HW_MAX_TASKS) {
+            continue;
+        }
+        if (g_tasks[t].cr3 != cr3) {
+            continue;
+        }
+        __atomic_fetch_add(&g_tlb_shootdown_pending, 1, __ATOMIC_ACQ_REL);
+        targets++;
+    }
+    if (targets == 0) {
+        return;
+    }
+    __atomic_fetch_add(&g_tlb_shootdowns, 1ull, __ATOMIC_RELAXED);
+    for (i = 0; i < VIBEOS_HW_MAX_CPUS; i++) {
+        int t;
+        if (i == me || !g_cpus[i].online) {
+            continue;
+        }
+        t = g_cpus[i].current_task;
+        if (t < 0 || t >= (int)VIBEOS_HW_MAX_TASKS || g_tasks[t].cr3 != cr3) {
+            continue;
+        }
+        vibeos_x86_64_lapic_ipi_one(g_cpus[i].lapic_id, 0xFEu);
+    }
+
+    /* Bounded, and it says so if it gives up. A shootdown that hangs would be
+     * a silent machine, which is strictly worse than the bug it is fixing -
+     * and a core that never answers is itself worth knowing about. */
+    while (__atomic_load_n(&g_tlb_shootdown_pending, __ATOMIC_ACQUIRE) > 0) {
+        __asm__ __volatile__("pause" ::: "memory");
+        if (++spins > 200000000ull) {
+            __atomic_store_n(&g_tlb_shootdown_pending, 0, __ATOMIC_RELEASE);
+            hw_log(VIBEOS_LOG_ERROR, 30u, (uint64_t)targets, cr3,
+                   "TLB shootdown timed out; a core did not acknowledge");
+            return;
+        }
+    }
+}
+
 /* Resolve a write to a copy-on-write page.
  *
  * Returns non-zero when the fault was handled and execution may resume.
@@ -4257,6 +4374,16 @@ static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code) {
     }
     t = &g_tasks[g_current_task];
     pte = hw_pte_lookup(&t->proc.as, fault_va);
+    /* Already writable: another thread of this process resolved the same
+     * copy-on-write page on another core, and this core faulted on a TLB entry
+     * that had not caught up. Without this the page looks like a plain
+     * read-only mapping - no COW bit, because the other core cleared it - and
+     * the task is killed for a protection violation it did not commit. */
+    if (pte && (*pte & PTE_PRESENT) != 0 && (*pte & PTE_WRITE) != 0 &&
+        (*pte & PTE_USER) != 0) {
+        hw_invlpg(fault_va);
+        return 1;
+    }
     if (!pte || (*pte & PTE_USER) == 0 || (*pte & PTE_COW) == 0) {
         /* Not a shared page: a genuine protection violation, and the fault
          * reporting below is where it belongs. */
@@ -4290,6 +4417,17 @@ static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code) {
     }
     *pte = ((uint64_t)(uintptr_t)fresh) | PTE_PRESENT | PTE_WRITE | PTE_USER;
     hw_invlpg(fault_va);
+    /* This one is not about permissions: the page's *physical address* just
+     * changed. A thread of this same process on another core still has the old
+     * frame cached, so from here on it reads and writes a page nobody else can
+     * see - it never observes anything this thread stores.
+     *
+     * That is not theory. A test that forks with a worker thread running, then
+     * sets a flag the worker is spinning on, hung outright: the flag lived on a
+     * page fork had marked copy-on-write, the parent's store copied it, and the
+     * worker kept watching the original frame for a change that could never
+     * arrive. */
+    hw_tlb_shootdown((uint64_t)(uintptr_t)t->proc.as.pml4);
     g_cow_copied++;
     return 1;
 }
@@ -4614,6 +4752,12 @@ static int hw_aspace_copy_user(vibeos_hw_aspace_t *dst, vibeos_hw_aspace_t *src)
             }
         }
     }
+    /* Once, here, rather than per page: every leaf above has just had its write
+     * permission revoked in the parent, and until the other cores are told,
+     * a thread of this same process can still write through a cached entry
+     * into a page the child now shares. One IPI for a whole fork is also the
+     * difference between a shootdown and a stall. */
+    hw_tlb_shootdown((uint64_t)(uintptr_t)src->pml4);
     return 0;
 }
 
@@ -7002,6 +7146,7 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                   "EFI/BOOT/PIE.ELF\n"
                                   "EFI/BOOT/DYN.ELF\n"
                                   "EFI/BOOT/THREADS.ELF\n"
+                                  "EFI/BOOT/TFORK.ELF\n"
                                   "EFI/BOOT/SIGNAL.ELF\n"
                                   "EFI/BOOT/BUSYBOX.ELF echo BUSYBOX_ECHO_OK\n"
                                   "EFI/BOOT/BUSYBOX.ELF cat DOCS/NOTES.TXT\n"
@@ -7098,6 +7243,10 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
         vibeos_x86_64_serial_print_hex(g_cow_shared);
         vibeos_x86_64_serial_puts(" copied=0x");
         vibeos_x86_64_serial_print_hex(g_cow_copied);
+        vibeos_x86_64_serial_puts(" tlb_shootdowns=0x");
+        vibeos_x86_64_serial_print_hex(g_tlb_shootdowns);
+        vibeos_x86_64_serial_puts(" tlb_acks=0x");
+        vibeos_x86_64_serial_print_hex(g_tlb_acks);
         vibeos_x86_64_serial_puts("\n");
         vibeos_x86_64_serial_puts("[COMPAT] linux syscalls translated=0x");
         vibeos_x86_64_serial_print_hex(translated);

@@ -551,6 +551,36 @@ def main():
             if "SVC_OK_RUNNING" not in text:
                 problems.append("named_service_did_not_run")
 
+            # The TLB shootdown actually runs. This gates the mechanism, not
+            # the absence of the bug it fixes: a corruption that shows up one
+            # boot in thirty cannot be asserted on in a single boot. What can
+            # be asserted is that fork tells the other cores at all - and a
+            # shootdown that silently never fires would leave the bug exactly
+            # as it was, with every boot still green.
+            stats = re.search(r"tlb_shootdowns=0x([0-9a-f]{16}) tlb_acks=0x([0-9a-f]{16})", text)
+            if stats is None:
+                problems.append("no_tlb_shootdown_stats")
+            else:
+                shootdowns = int(stats.group(1), 16)
+                acks = int(stats.group(2), 16)
+                if shootdowns == 0:
+                    # TFORK.ELF forks while one of its threads is still
+                    # running, which is the only thing in this boot that
+                    # gives another core a stale entry to drop. Requiring a
+                    # non-zero count without it was simply wrong: an ordinary
+                    # single-threaded fork correctly sends nothing at all,
+                    # and the first version of this assertion failed every
+                    # boot for saying otherwise.
+                    problems.append("threaded_fork_never_shot_down_other_tlbs")
+                elif acks < shootdowns:
+                    # Every shootdown waits for one acknowledgement per other
+                    # core, so acks below shootdowns means somebody gave up.
+                    problems.append(f"tlb_acks={acks}_below_shootdowns={shootdowns}")
+            if "shootdown timed out" in text:
+                problems.append("tlb_shootdown_timed_out")
+            if "TFORK_OK" not in text:
+                problems.append("threaded_fork_lost_the_child_pages")
+
             if "SVC_CRASH_FAULTING" not in text:
                 problems.append("crashing_service_never_ran")
             if "SVC_KILLED svc-crash" not in text:

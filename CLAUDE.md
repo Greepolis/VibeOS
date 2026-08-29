@@ -297,6 +297,46 @@ but the address was read as if it were in startup code), and finally
 from the first two guesses. Every Linux program here links at 0x400000, so an
 address alone identifies nothing.
 
+**invlpg is one core's opinion.** `hw_share_user_leaf` revokes write
+permission to mark a page copy-on-write and then invalidated the calling core's
+TLB - which is complete only if no other core is running that address space.
+Threads make that false: a thread of the same process on another core keeps a
+cached writable entry and writes straight through into the page the child has
+just been given a share of. No fault, no copy, and the damage appears much
+later in whatever program the page ends up serving.
+
+fork sends an IPI (vector 0xFE) and waits for each target to reload CR3 - once
+per fork, not once per page. The wait is the point: when it returns, nobody can
+still be writing through the permission just revoked.
+
+Send it only to the cores running that address space. Broadcasting to all of
+them timed out about three boots in thirty-two, and the reason is worth
+remembering: `syscall` clears IF (SFMASK is 0x200), so a core inside a syscall
+cannot answer an IPI until it returns to ring 3 - and with this much serial
+output, that is most cores most of the time. A single-threaded fork now sends
+nothing at all, which is nearly all of them.
+
+The copy-on-write fault needs it too, and for a different reason: the copy
+changes the page's *physical address*, so a thread on another core keeps the
+old frame and silently stops sharing memory with the rest of its process. That
+one hangs rather than corrupts - a worker spinning on a flag never sees the
+store that sets it.
+
+It has a second half that is easy to miss. Once one core resolves the
+copy-on-write fault, another thread can still fault on a stale entry for a page
+that is now plainly writable. The fault handler saw no COW bit and let the task
+be killed for a violation it had not committed, so it has to recognise the
+already-writable case and just invalidate.
+
+**Gate the mechanism when you cannot gate the bug.** A corruption that appears
+one boot in thirty cannot be asserted on in a single boot, and every earlier
+claim here that it was "fixed" rested on a handful of green boots. What a boot
+*can* assert is that fork told the other cores at all: `COW_STATS` carries
+`tlb_shootdowns` and `tlb_acks`, and the gate fails if the count is zero, if
+acknowledgements come back short, or if a shootdown timed out. A shootdown that
+silently never fires leaves the bug exactly as it was, with every boot green -
+which is the failure this counter exists to make impossible.
+
 ## Verification that exists
 
 The boot gate (`scripts/qemu-cli-smoke-linux.py`) asserts state, not markers:

@@ -409,6 +409,22 @@ static void lapic_ipi(uint32_t dest, uint32_t low) {
     }
 }
 
+/* Send a fixed-delivery IPI to every other core.
+ *
+ * Destination shorthand 0b11 ("all excluding self"), so no destination id is
+ * needed and no core interrupts itself. Level assert, edge triggered: the
+ * combination every fixed IPI uses. */
+void vibeos_x86_64_lapic_ipi_all_but_self(uint8_t vector) {
+    lapic_ipi(0, (uint32_t)vector | 0x000C4000u);
+}
+
+/* Fixed-delivery IPI to one core, by physical LAPIC id. No shorthand, so the
+ * destination field is the one that matters. */
+void vibeos_x86_64_lapic_ipi_one(uint32_t lapic_id, uint8_t vector) {
+    lapic_ipi(lapic_id, (uint32_t)vector | 0x00004000u);
+}
+
+
 /* Wake one application processor and wait for it to report in.
  * `stack_top` is the ring-0 stack it starts on, `entry` its C entry point. */
 int vibeos_x86_64_smp_start_cpu(uint32_t lapic_id, uint64_t cr3, uint64_t stack_top,

@@ -42,6 +42,10 @@ void vibeos_x86_64_console_interrupt(void);
 /* Mark an identity-mapped physical range uncacheable (device registers). */
 void vibeos_x86_64_mark_uncacheable(uint64_t phys, uint64_t len);
 
+/* Fixed-delivery IPI to every core but this one. */
+void vibeos_x86_64_lapic_ipi_all_but_self(uint8_t vector);
+void vibeos_x86_64_lapic_ipi_one(uint32_t lapic_id, uint8_t vector);
+
 /* The block device the filesystem talks to. Bound by whichever driver came up;
  * see kernel/arch/x86_64/blk.c for why this indirection exists. */
 void vibeos_x86_64_blk_bind(const char *name,

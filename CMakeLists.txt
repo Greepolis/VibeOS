@@ -323,6 +323,20 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
             VERBATIM
         )
         add_custom_target(vibeos_musl_threads ALL DEPENDS "${VIBEOS_THR_BIN}")
+
+        # fork() from a process that still has a thread running: the one shape
+        # that needs a TLB shootdown, and the only thing in the boot that
+        # produces it.
+        set(VIBEOS_TFORK_SRC "${CMAKE_CURRENT_SOURCE_DIR}/tests/linux/musl_tfork.c")
+        set(VIBEOS_TFORK_BIN "${CMAKE_BINARY_DIR}/musl_tfork")
+        add_custom_command(
+            OUTPUT "${VIBEOS_TFORK_BIN}"
+            COMMAND "${VIBEOS_MUSL_GCC}" -static -O2 -o "${VIBEOS_TFORK_BIN}" "${VIBEOS_TFORK_SRC}"
+            DEPENDS "${VIBEOS_TFORK_SRC}"
+            COMMENT "Building a threaded-fork Linux binary with musl"
+            VERBATIM
+        )
+        add_custom_target(vibeos_musl_tfork ALL DEPENDS "${VIBEOS_TFORK_BIN}")
     else()
         message(STATUS "musl-gcc not found: the boot media will carry no unmodified Linux binary")
     endif()
