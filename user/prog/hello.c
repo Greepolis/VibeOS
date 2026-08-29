@@ -240,8 +240,12 @@ static const char *check_linux_abi(void) {
      * particular interleaving, and a test that only sometimes exercises a
      * check is a check that is only sometimes tested. */
     {
-        volatile int word = 1;
-        long r = user_syscall3(SYS_futex, (unsigned long)&word, 0 /*WAIT*/, 2);
+        /* Named for what it is rather than `word`, which shadowed an outer
+         * declaration. Harmless as it stood, and exactly the kind of thing
+         * that stops being harmless the day somebody edits around it. */
+        volatile int futex_word = 1;
+        long r = user_syscall3(SYS_futex, (unsigned long)&futex_word,
+                               0 /*WAIT*/, 2);
 
         if (r != -11 /*EAGAIN*/) {
             return abi_futex;

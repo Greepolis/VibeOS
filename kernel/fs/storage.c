@@ -128,6 +128,16 @@ int vibeos_storage_scan(vibeos_storage_t *st, vibeos_blockcache_t *cache,
         return -1;
     }
     memset(st, 0, sizeof(*st));
+    /* The storage struct keeps this pointer for as long as it is used, so the
+     * cache has to outlive it. That is the contract the whole block layer is
+     * built on - the caller supplies the storage, so this imposes no allocator
+     * on the kernel - but it was nowhere in the code, only in a header comment
+     * about something else.
+     *
+     * CodeQL is right to flag it: today the only caller is a host test that
+     * passes a stack-local cache, and it happens to outlive the scan. A real
+     * caller that does not would corrupt quietly, and nothing here would say
+     * so. Written down until the ownership is expressed in the types. */
     st->cache = cache;
 
     if (storage_read_table(st, disk_sectors) != 0) {

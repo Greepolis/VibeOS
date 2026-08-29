@@ -151,6 +151,41 @@ wrong bytes were. The message it printed named the mechanism outright:
 
 From there the fix was one call. 48 boots since without a recurrence.
 
+### Driving VirtualBox from the harness
+
+`scripts/dev/vbox-run.py` imports the shipped appliance, boots it headless with
+the serial line to a file, watches for the boot markers, and takes the guest
+apart if it stops talking: per-core registers through `debugvm getregisters`,
+symbolised with `addr2line` against the kernel ELF, the guest paging mode, and
+optionally a full ELF core through `debugvm dumpvmcore` (about a gigabyte).
+It removes the VM afterwards unless asked to keep it.
+
+A second hypervisor is not a luxury here. VibeOS could only talk to virtio-blk
+for months: the appliances imported, booted, and could not read their own disk,
+and nothing caught it because nothing ever ran the artifact by hand. And
+VirtualBox inspects a stopped guest better than the QEMU monitor does - a full
+guest core is the right answer for a wedge, where pushing megabytes through a
+serial port is not.
+
+    python scripts/dev/vbox-run.py            # boot, watch, clean up
+    python scripts/dev/vbox-run.py --core     # write a guest core if it hangs
+    python scripts/dev/vbox-run.py --keep     # leave the VM registered
+
+Windows-side, because that is where VBoxManage lives; `addr2line` is called
+through WSL, because that is where the toolchain that built the kernel is.
+
+### Static analysis
+
+CodeQL runs on every push. Four alerts were open and each was answered on its
+merits rather than silenced:
+
+| Alert | Verdict |
+| --- | --- |
+| Comparison result is always the same (`arch_hw.c`) | real. A negate-if-negative in `kill()` that could never run, because the line above had already forced the value positive. Removed. |
+| Declaration hides variable (`hello.c`) | real, and harmless as it stood. The futex test's `word` shadowed an outer declaration; renamed. |
+| Local variable address stored in non-local memory (`storage.c`) | real observation about a contract that was nowhere in the code: the block cache must outlive the storage struct. Documented at the assignment; the ownership is still not expressed in the types. |
+| Unused static function (`bootloader_core.c:35`) | **not reproduced.** `region_end` has seven callers in that file, and no static function there is unused. Not acted on: deleting a used function to quieten a checker is worse than the alert. Needs the CodeQL run's own log to settle. |
+
 ## Pending
 
 - **`munmap` does not shoot down the other cores' TLBs.** The need is real - a

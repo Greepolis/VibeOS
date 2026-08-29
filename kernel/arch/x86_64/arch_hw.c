@@ -5798,7 +5798,11 @@ static long hw_sys_kill(uint64_t target_pid, uint64_t sig) {
         if (signed_pid <= 0) {
             signed_pid = g_tasks[g_current_task].tgid;
         }
-        target = hw_task_by_pid((uint32_t)(signed_pid < 0 ? -signed_pid : signed_pid));
+        /* Positive by construction after the line above, so the negate-if-
+         * negative that used to be here could never run. CodeQL called it what
+         * it was - a comparison whose result is always the same - and a dead
+         * branch in a signal path is worth removing rather than explaining. */
+        target = hw_task_by_pid((uint32_t)signed_pid);
         return target < 0 ? -VIBEOS_ESRCH : 0;
     }
     if (signed_pid < 0 || signed_pid == 0) {
