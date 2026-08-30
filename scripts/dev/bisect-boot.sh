@@ -17,8 +17,15 @@ d="${3:-build-gcc-Release}"
 here="$(git rev-parse --abbrev-ref HEAD)"
 [ "$here" = "HEAD" ] && here="$(git rev-parse HEAD)"
 
+# Refresh the index before asking whether the tree is dirty. On Windows the
+# line-ending normalisation that runs with a commit leaves every touched file
+# looking modified until something re-stats it, and the first attempt at this
+# script refused to start for that reason alone - on a tree that was clean.
+git update-index -q --refresh 2>/dev/null
+
 if [ -n "$(git status --porcelain)" ]; then
     echo "working tree is dirty; commit or stash first"
+    git status --porcelain | head -5
     exit 2
 fi
 
