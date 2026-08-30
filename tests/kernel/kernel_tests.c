@@ -8674,6 +8674,7 @@ static int test_storage_claims_nothing(void)
  *   - returns 1 and prints "TEST_FAILURES=<n>" otherwise
  */
 int test_mm_stats(void);
+int test_frame(void);
 
 int main(void) {
     int failures = 0;
@@ -8682,6 +8683,7 @@ int main(void) {
     /* Memory-management counters: defined in mm_stats_tests.c, kept out of
      * this file because it is already past eight thousand lines. */
     RUN_TEST(test_mm_stats);
+    RUN_TEST(test_frame);
     RUN_TEST(test_pmm);
     RUN_TEST(test_pmm_reserve);
     RUN_TEST(test_blockcache_hits);
