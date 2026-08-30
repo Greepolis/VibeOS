@@ -121,15 +121,23 @@ static uint64_t parse_u64(const char *s) {
 #define PAGE_POISON_BYTE_0 0x00u
 #define PAGE_POISON_BYTE_7 0xDEu
 
+
+static unsigned put_hex2(char *dst, unsigned at, uint8_t v) {
+    static const char digits[] = "0123456789abcdef";
+    dst[at++] = digits[(v >> 4) & 0xFu];
+    dst[at++] = digits[v & 0xFu];
+    return at;
+}
+
 static void say_mismatch(const char *what, uint64_t off, uint8_t got, uint8_t want) {
     char line[160];
     unsigned at = put_str(line, 0, what);
     at = put_str(line, at, " at offset ");
     at = put_dec(line, at, off);
     at = put_str(line, at, ": found 0x");
-    at = put_dec(line, at, (uint64_t)got);
+    at = put_hex2(line, at, got);
     at = put_str(line, at, " expected 0x");
-    at = put_dec(line, at, (uint64_t)want);
+    at = put_hex2(line, at, want);
     /* The poison repeats every eight bytes as DE AD 00 00 DE AD 00 00 read
      * little-endian, so byte 0 of a word is 0x00 and byte 7 is 0xDE. Checking
      * the byte we actually read against the byte the poison would have put at

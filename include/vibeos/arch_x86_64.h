@@ -52,6 +52,13 @@ uint64_t vibeos_x86_64_serial_bad_unlocks(void);
 /* Print the most recent ring-3 crash: registers, fault address, stack. */
 void vibeos_x86_64_crash_dump(void);
 
+/* Start init and every service. Called by vibeos_kmain once the kernel is up
+ * and has said so; returns when every user task has retired. */
+void vibeos_x86_64_hw_start_userland(void);
+
+/* Newest entries of the arch log ring: fork, exec, exit, signals, memory. */
+void vibeos_x86_64_log_dump_recent(uint32_t want);
+
 /* The block device the filesystem talks to. Bound by whichever driver came up;
  * see kernel/arch/x86_64/blk.c for why this indirection exists. */
 void vibeos_x86_64_blk_bind(const char *name,

@@ -323,9 +323,9 @@ def detect_guest_phase(text):
         # session was spent looking for a bootloader bug that did not exist.
         elif "early init: loading GDT" in line:
             phase = "kernel_early_init"
-        elif "scheduler live" in line:
+        elif "USERLAND_START" in line:
             phase = "userland_running"
-        elif "all user tasks retired" in line:
+        elif "USERLAND_DONE" in line:
             phase = "userland_finished"
         elif "BOOT_OK" in line:
             phase = "kernel_boot"
@@ -520,7 +520,13 @@ def main():
                 # one to print - and a dumper that only works when nothing has
                 # crashed would pass a test that never asked it for anything.
                 ("Commands: help, status, log, crash, echo <text>, halt, reboot", b"crash\r"),
-                ("[CRASH] end", b"status\r"),
+                ("[CRASH] end", b"log\r"),
+                # `log` shows two rings: the boot stages kmain records, and
+                # the arch ring holding what the machine actually did - fork,
+                # exec, exit, signals, copy-on-write, munmap. The second was
+                # not reachable from the console at all until now, and the
+                # gate never ran this command, so neither was exercised.
+                ("[LOG] arch ring: showing", b"status\r"),
                 # Ctrl-C on the serial console. The PS/2 path has turned it
                 # into a signal since it was written; this one dropped it along
                 # with every other control byte, so the foreground process
@@ -776,6 +782,25 @@ def main():
             # asserted on as well as the result: a stress run whose seed is
             # not in the log is one nobody can replay, which is most of
             # what makes a rare failure findable.
+            # The boot sequence itself, in order. The kernel must be up and
+            # say so before userland starts: that ordering was inverted until
+            # now, and asserting it is what stops it quietly reverting.
+            # The console can actually show the history. A log nobody
+            # can read is the same as no log, which is most of why the
+            # last two days went the way they did.
+            ring = re.search(r"arch ring: showing 0x([0-9a-f]{16})", text)
+            if ring is None:
+                problems.append("console_cannot_show_the_arch_log")
+            elif int(ring.group(1), 16) == 0:
+                problems.append("arch_log_ring_is_empty")
+
+            if "USERLAND_START" not in text:
+                problems.append("userland_never_started")
+            elif text.index("BOOT_OK") > text.index("USERLAND_START"):
+                problems.append("kernel_announced_itself_after_userland_ran")
+            if "USERLAND_DONE" not in text:
+                problems.append("userland_never_finished")
+
             if "STRESS_SEED" not in text:
                 problems.append("stress_seed_not_reported")
             if "STRESS_OK" not in text:

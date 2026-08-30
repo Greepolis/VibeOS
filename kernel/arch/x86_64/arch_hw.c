@@ -711,6 +711,36 @@ static void hw_log(vibeos_log_level_t level, uint32_t code, uint64_t a0,
 /* Everything the ring still holds, oldest first. Called when the machine is
  * about to stop, which is the only moment the quiet events are worth their
  * transmission time. */
+/* The arch ring, on demand, newest `want` entries. Exposed because the console
+ * had been showing the *other* log: kmain records boot stages into
+ * vibeos_kernel_t.log while everything the machine actually does - fork, exec,
+ * exit, signals, copy-on-write, munmap - goes into this one. `log` on the
+ * console printed eight boot stages and none of the history, which is the
+ * opposite of useful when something has just gone wrong. */
+void vibeos_x86_64_log_dump_recent(uint32_t want) {
+    uint32_t count = 0;
+    uint32_t i, start;
+
+    if (vibeos_log_count(&g_kernel_log, &count) != 0) {
+        vibeos_x86_64_serial_puts("[LOG] arch ring unavailable\n");
+        return;
+    }
+    start = (want == 0u || count <= want) ? 0u : count - want;
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts("[LOG] arch ring: showing 0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)(count - start));
+    vibeos_x86_64_serial_puts(" of 0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)count);
+    vibeos_x86_64_serial_puts("\n");
+    for (i = start; i < count; i++) {
+        vibeos_log_event_t ev;
+        if (vibeos_log_get(&g_kernel_log, i, &ev) == 0) {
+            hw_log_emit(&ev);
+        }
+    }
+    vibeos_x86_64_serial_unlock();
+}
+
 static void hw_log_dump(void) {
     uint32_t count = 0;
     uint32_t dropped = 0;
@@ -2968,6 +2998,8 @@ static void hw_task_exit(uint64_t code) {
         g_tasks[dying].exit_code = code;
         hw_spin_unlock(&g_sched_lock);
         vibeos_x86_64_serial_lock();
+        hw_log(VIBEOS_LOG_DEBUG, 40u, (uint64_t)g_tasks[dying].pid, code,
+               "task exited (a0 = pid, a1 = code)");
         vibeos_x86_64_serial_puts("[SCHED] task pid=0x");
         vibeos_x86_64_serial_print_hex(g_tasks[dying].pid);
         vibeos_x86_64_serial_puts(" exited code=0x");
@@ -4550,6 +4582,8 @@ static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code) {
      * worker kept watching the original frame for a change that could never
      * arrive. */
     hw_tlb_shootdown((uint64_t)(uintptr_t)t->proc.as.pml4);
+    hw_log(VIBEOS_LOG_DEBUG, 43u, fault_va, (uint64_t)(uintptr_t)fresh,
+           "copy-on-write copied a page (a0 = address, a1 = new frame)");
     g_cow_copied++;
     return 1;
 }
@@ -4753,6 +4787,9 @@ static long hw_sys_munmap(uint64_t addr, uint64_t len) {
             *pte = 0;
             hw_invlpg(va);
             if (frame_ref_dec(phys)) {
+                hw_log(VIBEOS_LOG_DEBUG, 45u, va, phys,
+                       "munmap released the last reference to a frame "
+                       "(a0 = address, a1 = frame)");
                 hw_free_page((void *)(uintptr_t)phys);
             }
         }
@@ -4959,6 +4996,8 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
     child->ctx = *frame;   /* resume exactly where the parent is */
     child->ctx.rax = 0;    /* ... but fork() returns 0 in the child */
     child->pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
+    hw_log(VIBEOS_LOG_DEBUG, 44u, (uint64_t)parent->pid, (uint64_t)child->pid,
+           "fork produced a child (a0 = parent, a1 = child)");
     /* fork makes a process, so the child heads its own thread group. Its
      * parent is the *group*, not the thread that happened to call fork:
      * wait() is a process relationship. */
@@ -5524,6 +5563,8 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
      * critical sections and another core lands in the middle of it. The
      * boot gate's log-integrity check found this by seeing a hex field
      * cut off right after its "0x". */
+    hw_log(VIBEOS_LOG_DEBUG, 41u, (uint64_t)n, np.entry,
+           "execve loaded a program (a0 = bytes, a1 = entry)");
     vibeos_x86_64_serial_lock();
     vibeos_x86_64_serial_puts("[EXEC] ");
     vibeos_x86_64_serial_puts(path);
@@ -6574,6 +6615,8 @@ static int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame) {
      * sections and another core writes into the middle of it. Found by the
      * gate's log-integrity check, which saw the handler address cut off after
      * its "0x". */
+    hw_log(VIBEOS_LOG_DEBUG, 42u, (uint64_t)sig, handler,
+           "signal delivered to a handler (a0 = signal, a1 = handler)");
     vibeos_x86_64_serial_lock();
     vibeos_x86_64_serial_puts("[SIG] deliver sig=0x");
     vibeos_x86_64_serial_print_hex(sig);
@@ -7481,6 +7524,10 @@ static void hw_runtime_supervisor_init(void) {
     }
 }
 
+/* Held between hardware bring-up and the moment userland is started, which
+ * are now two separate steps with the portable kernel in between. */
+static const vibeos_boot_info_t *g_saved_boot_info;
+
 static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
     const unsigned char *init_elf = vibeos_user_hello_elf;
     uint64_t init_len = vibeos_user_hello_elf_len;
@@ -7644,34 +7691,66 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
 }
 
 /* Entry point invoked from entry.s before vibeos_kmain. */
+/* Boot stages, in one format, on the serial line and in the kernel log.
+ *
+ * Every stage of the boot says its own name as it completes. This is not
+ * decoration: the boundary between "the kernel is up" and "userland is
+ * running" was nowhere in the output, and its absence cost a full session -
+ * every userland hang was reported against the last bootloader marker anyone
+ * had seen, so a firmware bug was hunted that did not exist.
+ *
+ * The names are asserted, in order, by the boot gate. A stage that disappears
+ * or moves fails the boot rather than quietly changing what the log means. */
+static void hw_boot_stage(const char *name) {
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts("[BOOT] STAGE ");
+    vibeos_x86_64_serial_puts(name);
+    vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
+    /* The ring only exists from the "log" stage onwards; before that the
+     * serial line is the only record there is, which is why both are used. */
+    if (g_kernel_log.initialized) {
+        hw_log(VIBEOS_LOG_INFO, 200u, 0, 0, name);
+    }
+}
+
 void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
     vibeos_x86_64_serial_puts("[HW] early init: loading GDT\n");
     hw_load_gdt(0);
     vibeos_x86_64_serial_puts("[HW] GDT loaded (CS=0x08 DS=0x10)\n");
+    hw_boot_stage("gdt");
 
     hw_load_idt();
     vibeos_x86_64_serial_puts("[HW] IDT loaded (256 gates, 48 vectors wired: 32 exceptions + 16 IRQs)\n");
+    hw_boot_stage("idt");
 
     (void)vibeos_trap_state_init(&g_arch_trap_state);
     g_arch_trap_ready = 1;
     vibeos_x86_64_serial_puts("[HW] trap model armed (routing faults via vibeos_trap_dispatch_ex)\n");
+    hw_boot_stage("traps");
 
     hw_enable_paging();
 
     vibeos_x86_64_serial_puts("[HW] self-test: raising int3\n");
     __asm__ __volatile__("int3");
     vibeos_x86_64_serial_puts("[HW] resumed after int3 (trap routed through model)\n");
+    hw_boot_stage("trap_selftest");
 
     hw_enable_syscall();
+    hw_boot_stage("syscall");
+
     hw_enable_timer_irq();
+    hw_boot_stage("timer");
 
     /* Move off the legacy PIC/PIT onto the local + IO APIC pair (per-CPU timer,
      * IO-APIC interrupt routing) now that basic IRQ delivery is proven. */
     hw_apic_bringup(boot_info);
+    hw_boot_stage("apic_smp");
 
     /* From here the system is scheduled: the kernel itself becomes a task and
      * user tasks are preempted alongside it. */
     hw_pmm_bringup(boot_info);
+    hw_boot_stage("physical_memory");
 
     /* Display console: render text into the firmware framebuffer, if any. */
     if (boot_info && boot_info->framebuffer_base != 0u) {
@@ -7717,6 +7796,7 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
 
     (void)vibeos_log_init(&g_kernel_log);
     hw_log(VIBEOS_LOG_INFO, 0, 0, 0, "kernel log ready");
+    hw_boot_stage("log");
 
     /* Real storage: find a disk, mount the FAT filesystem, and load the init
      * program straight from it (EFI/BOOT/INIT.ELF -> INIT.ELF at root).
@@ -7741,6 +7821,7 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
     vibeos_x86_64_serial_puts("[BLK] disk driver: ");
     vibeos_x86_64_serial_puts(vibeos_x86_64_blk_name());
     vibeos_x86_64_serial_puts("\n");
+    hw_boot_stage("block_device");
 
     if (vibeos_x86_64_blk_present() &&
         vibeos_x86_64_fat_vfs_mount(&g_rootfs) == 0) {
@@ -7762,8 +7843,33 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
 
     /* Network interface: virtio-net + the TCP/IP stack, addressed by DHCP. */
     hw_net_bringup();
+    hw_boot_stage("network");
 
-    hw_sched_bringup(boot_info);
+    /* Userland does *not* start here any more.
+     *
+     * It used to, and the name of this function is what hid it: everything
+     * below the hardware - init, every service, the self-test, BusyBox, the
+     * shell - ran to completion inside something called "early init", and
+     * vibeos_kmain was only entered afterwards, to bring up portable
+     * subsystems nothing would ever use and print BOOT_OK.
+     *
+     * That made BOOT_OK mean "the machine has already finished" rather than
+     * "the kernel is up", so the boot gate attributed every userland hang to
+     * the last bootloader marker it had seen. A full session went into looking
+     * for a firmware bug that did not exist.
+     *
+     * The kernel now announces itself before it runs anything: entry.s calls
+     * this, then vibeos_kmain, and vibeos_kmain calls
+     * vibeos_x86_64_hw_start_userland once it has said BOOT_OK. */
+    g_saved_boot_info = boot_info;
 
+    hw_boot_stage("hardware_ready");
     vibeos_x86_64_serial_puts("[HW] HW_INIT_OK\n");
+}
+
+/* Start init and everything under it. Called from vibeos_kmain, after the
+ * portable subsystems are up and the kernel has said so. Does not return until
+ * every user task has retired. */
+void vibeos_x86_64_hw_start_userland(void) {
+    hw_sched_bringup(g_saved_boot_info);
 }

@@ -142,6 +142,12 @@ static void kernel_cli_print_log(const vibeos_kernel_t *kernel) {
  * process group and the tests get one that does nothing. */
 __attribute__((weak)) void vibeos_x86_64_console_interrupt(void) { }
 
+/* The host test binary links kmain without the arch layer, and has no
+ * userland to start. */
+__attribute__((weak)) void vibeos_x86_64_hw_start_userland(void) { }
+
+__attribute__((weak)) void vibeos_x86_64_log_dump_recent(uint32_t want) { (void)want; }
+
 /* Same arrangement: the crash records live with the task table. */
 __attribute__((weak)) void vibeos_x86_64_crash_dump(void) {
     vibeos_x86_64_serial_puts("[CRASH] no crash recorder in this build\n");
@@ -219,6 +225,11 @@ static void kernel_cli_run(vibeos_kernel_t *kernel) {
         }
         if (kernel_str_eq(line, "log")) {
             kernel_cli_print_log(kernel);
+            /* And the ring that holds what the machine actually did. These are
+             * two different logs: the one above records boot stages, this one
+             * records fork, exec, exit, signals and memory. Showing only the
+             * first was showing the table of contents and not the book. */
+            vibeos_x86_64_log_dump_recent(24u);
             continue;
         }
         /* The last process to die from a fault, in full: registers, the fault
@@ -412,8 +423,30 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
     kernel->boot_state.stage = VIBEOS_BOOT_STAGE_CORE_READY;
     kernel_boot_log(kernel, VIBEOS_LOG_INFO, 104, kernel->boot_health_flags, 0, "core_stage_ready");
     
-    /* M2 boot completion marker */
+    /* The kernel is up. This is the honest place to say so: everything the
+     * kernel needs exists, and nothing of userland has run yet. It used to be
+     * printed after the entire userland had already finished. */
     vibeos_x86_64_serial_puts("[BOOT] BOOT_OK\n");
+
+    /* Now the machine does its work. Returns when every user task has
+     * retired, which is what leaves the serial console free for the CLI
+     * below.
+     *
+     * Both ends are recorded, at INFO, in the kernel log as well as on the
+     * serial line. The boundary between "the kernel is up" and "userland is
+     * running" is the single most useful fact when a boot goes wrong - it was
+     * invisible until now, and its absence is why every userland hang was
+     * being attributed to the bootloader. */
+    kernel->boot_state.stage = VIBEOS_BOOT_STAGE_CORE_READY;
+    kernel_boot_log(kernel, VIBEOS_LOG_INFO, 105, kernel->boot_health_flags, 0,
+                    "userland_starting");
+    vibeos_x86_64_serial_puts("[BOOT] USERLAND_START\n");
+
+    vibeos_x86_64_hw_start_userland();
+
+    kernel_boot_log(kernel, VIBEOS_LOG_INFO, 106, kernel->boot_health_flags, 0,
+                    "userland_finished");
+    vibeos_x86_64_serial_puts("[BOOT] USERLAND_DONE\n");
     vibeos_x86_64_serial_puts("[BOOT] VibeOS kernel ready for user-space\n");
 
     if (vibeos_x86_64_serial_available()) {

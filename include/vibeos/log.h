@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define VIBEOS_LOG_CAPACITY 64u
+#define VIBEOS_LOG_CAPACITY 2048u   /* 128 bytes each: 256 KiB of history, which is the point */
 #define VIBEOS_LOG_MESSAGE_SIZE 96u
 
 typedef enum vibeos_log_level {

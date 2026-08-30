@@ -320,6 +320,39 @@ not after it, and `hw_early_init` should be split into bring-up and run. That
 is a structural change and is recorded here rather than attempted at the end of
 a long session.
 
+### Logging, and why there was so little of it
+
+Three separate gaps, each of which cost real investigation time before being
+noticed:
+
+**The boot sequence was inverted and unlogged.** Fixed: `entry.s` now calls
+hardware bring-up, then `vibeos_kmain`, and `vibeos_kmain` starts userland
+after announcing `BOOT_OK`. Every stage says its own name in one format -
+`[BOOT] STAGE gdt`, `idt`, `traps`, `trap_selftest`, `syscall`, `timer`,
+`apic_smp`, `physical_memory`, `log`, `block_device`, `network`,
+`hardware_ready` - followed by `BOOT_OK`, `USERLAND_START`, `USERLAND_DONE`,
+`CLI_READY`. The gate asserts the order, including that `BOOT_OK` precedes
+`USERLAND_START`, so the inversion cannot come back quietly.
+
+**The ring held 64 events.** That is about a tenth of a second of a running
+system, so any history was gone before anyone could look at it. It holds 2048
+now - 256 KiB, against 440 MiB of RAM - and a boot ends with around 500 events
+in it.
+
+**Almost nothing was recorded.** The 27 existing `hw_log` calls were nearly all
+refusals and failures; the lifecycle was printed to the serial line and nowhere
+else, so it vanished when the console scrolled and never appeared in a panic
+dump. Task exit, `execve`, `fork`, signal delivery, copy-on-write copies and
+the `munmap` frame release are recorded now, at DEBUG - written to the ring,
+not printed, which is what makes recording all of them affordable.
+
+**And the console showed the wrong log.** There are two rings: `kmain` records
+boot stages into `vibeos_kernel_t.log`, while everything the machine does goes
+into the arch ring. `log` on the console printed the first - eight boot stages
+and none of the history. It prints both now, and the boot gate runs the command
+and asserts the arch ring is not empty, because a log nobody exercises is a log
+nobody can rely on.
+
 ## Pending
 
 - **`munmap` does not shoot down the other cores' TLBs.** The need is real - a
