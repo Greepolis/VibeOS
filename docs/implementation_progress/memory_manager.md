@@ -51,6 +51,18 @@ the copy-on-write fault and `mprotect`, and torn down in two places with
 different rules for the two windows. Counting was added to two of those; making
 it reliable means giving mappings one owner, not more counters.
 
+## Superseded by a rewrite
+
+The arrangement described above is being replaced rather than repaired. One
+defect - a frame released while another address space maps it - has survived
+four fixes, because ownership is inferred from hardware bits rather than
+recorded. See [ADR-0007](../adrs/ADR-0007-centralised-memory-management.md) and
+the plan in [docs/mm/](../mm/README.md).
+
+Work proceeds in phases P0 to P7; P2 is the phase that repairs the defect.
+Nothing in this file is being changed in the meantime, so that it remains an
+accurate description of what is running.
+
 ## Pending
 - A gate on the copy-on-write counters, so a fork that silently went back to eager copying would fail the boot rather than be noticed by someone reading the log.
 - Buddy or segregated allocator for long-lived runtime.

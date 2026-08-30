@@ -78,6 +78,25 @@ def main():
                 rel = f"implementation_progress/{f}"
                 lines.append(f"- [{title_of(os.path.join(docs, rel))}]({rel})")
 
+    # docs/mm/ - the memory management plan, split one concern per file. The
+    # README is listed first because it is the index; the rest follow it in a
+    # deliberate reading order rather than alphabetically, because "phases"
+    # after "observability" is a sequence and P0 before architecture is not.
+    mm = os.path.join(docs, "mm")
+    if os.path.isdir(mm):
+        order = ["README.md", "architecture.md", "observability.md",
+                 "maintainability.md", "phases.md", "decisions.md"]
+        present = [f for f in order if os.path.exists(os.path.join(mm, f))]
+        present += sorted(f for f in os.listdir(mm)
+                          if f.endswith(".md") and f not in order)
+        if present:
+            lines.append("")
+            lines.append("# Memory management plan")
+            lines.append("")
+            for f in present:
+                rel = f"mm/{f}"
+                lines.append(f"- [{title_of(os.path.join(docs, rel))}]({rel})")
+
     adrs = os.path.join(docs, "adrs")
     if os.path.isdir(adrs):
         entries = sorted(f for f in os.listdir(adrs) if f.endswith(".md"))

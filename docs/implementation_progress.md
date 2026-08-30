@@ -9,7 +9,7 @@ This document is now split by macro area for easier maintenance.
 | Bootloader | Completed (Phase 4 boot-to-CLI verified) | [bootloader.md](implementation_progress/bootloader.md) |
 | Kernel Core | In Progress (ring-3 runtime and shell baseline verified) | [kernel_core.md](implementation_progress/kernel_core.md) |
 | Process Scheduler | In Progress (preemptive SMP runtime and signal-carrying process lifecycle verified) | [process_scheduler.md](implementation_progress/process_scheduler.md) |
-| Memory Manager | In Progress (runtime PMM allocation and atomic frame refcounting verified) | [memory_manager.md](implementation_progress/memory_manager.md) |
+| Memory Manager | **Rewrite planned** (ADR-0007): ownership is inferred rather than recorded, and one defect has survived four fixes. Plan in [docs/mm/](mm/README.md); current state in [memory_manager.md](implementation_progress/memory_manager.md) | [memory_manager.md](implementation_progress/memory_manager.md) |
 | Virtual Memory | In Progress (hardware paging, per-process isolation, reference-counted copy-on-write fork and unmap, TLB shootdown across cores verified) | [virtual_memory.md](implementation_progress/virtual_memory.md) |
 | Interrupt Handling | In Progress (CPU traps, PIT and APIC timer paths verified) | [interrupt_handling.md](implementation_progress/interrupt_handling.md) |
 | System Call Interface | In Progress (Linux process semantics verified from ring 3) | [system_call_interface.md](implementation_progress/system_call_interface.md) |
