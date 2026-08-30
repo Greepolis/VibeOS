@@ -172,6 +172,19 @@ int vibeos_vmspace_unmap(vibeos_vmspace_t *as, uint64_t va);
  * shootdown and a stall. */
 int vibeos_vmspace_clone_cow(vibeos_vmspace_t *dst, vibeos_vmspace_t *src);
 
+/* Resolve a fault this layer is responsible for. Returns 1 when it handled the
+ * fault and the instruction may be retried, 0 when the fault is somebody
+ * else's problem - which for the caller means a genuine violation.
+ *
+ * `write` says whether the faulting access was a write. Note that the
+ * originating privilege level is deliberately not part of the question: the
+ * kernel writes into user memory on a process's behalf - a read() filling a
+ * buffer, a syscall storing a result - and with CR0.WP set those writes fault
+ * on a read-only page exactly as ring 3 would. Requiring a user-mode fault here
+ * refuses precisely the faults that happen while serving a syscall, which is
+ * how a freshly forked shell dies without printing anything. */
+int vibeos_vmspace_fault(vibeos_vmspace_t *as, uint64_t va, int write);
+
 /* The entry for an address, or null. Read-only; callers must not write through
  * it - that is the point of this layer. */
 uint64_t *vibeos_vmspace_entry(vibeos_vmspace_t *as, uint64_t va);

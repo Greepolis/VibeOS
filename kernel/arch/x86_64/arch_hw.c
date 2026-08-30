@@ -1212,20 +1212,21 @@ static int hw_exec_cache_hit(const char *path) {
  * and reclaiming are one operation now, so there is no window in which a frame
  * is owned by nobody and still not free. Every caller that used to follow this
  * with hw_free_page has had that call removed. */
+/* No locking here any more. The frame layer takes the memory lock itself, via
+ * the hooks installed at bring-up.
+ *
+ * It was taken at the call sites for one release, and that lasted exactly
+ * until something new touched a frame: the copy-on-write fault moved into the
+ * address-space layer, allocated without it, and two cores resolving a fault
+ * at the same moment corrupted the free list. The boot wedged silently.
+ * "Remember to hold the memory lock" is not a property a compiler checks, and
+ * a layer several cores can drive has to defend itself. */
 static int hw_page_put(uint64_t phys) {
-    int freed;
-    hw_spin_lock(&g_mm_lock);
-    freed = vibeos_frame_put(phys);
-    hw_spin_unlock(&g_mm_lock);
-    return freed;
+    return vibeos_frame_put(phys);
 }
 
 static uint32_t hw_page_owners(uint64_t phys) {
-    uint32_t n;
-    hw_spin_lock(&g_mm_lock);
-    n = vibeos_frame_owners(phys);
-    hw_spin_unlock(&g_mm_lock);
-    return n;
+    return vibeos_frame_owners(phys);
 }
 
 static vibeos_pmm_t g_hw_pmm;
@@ -1396,9 +1397,7 @@ static void *hw_alloc_page(void) {
     uint64_t phys = 0;
 
     if (g_frame_layer_ready) {
-        hw_spin_lock(&g_mm_lock);
         phys = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
-        hw_spin_unlock(&g_mm_lock);
         return (void *)(uintptr_t)phys;
     }
 
@@ -1430,25 +1429,30 @@ static void *hw_alloc_pages_contig(uint32_t count) {
     if (!g_frame_layer_ready) {
         return 0;
     }
-    hw_spin_lock(&g_mm_lock);
     phys = vibeos_frame_alloc_contig(count, VIBEOS_FRAME_ALLOCATED);
-    hw_spin_unlock(&g_mm_lock);
     return (void *)(uintptr_t)phys;
+}
+
+/* The memory lock, as the frame layer wants it: two functions taking nothing.
+ * Interrupts are masked for the duration, which is what hw_spin_lock does and
+ * why nothing under this lock may be slow. */
+static void hw_frame_lock(void) {
+    hw_spin_lock(&g_mm_lock);
+}
+
+static void hw_frame_unlock(void) {
+    hw_spin_unlock(&g_mm_lock);
 }
 
 /* What L1 allocates its page tables from. A table is a frame like any other -
  * one owner, the address space that built it - and it is freed by structure at
  * teardown rather than by the ownership bit, which marks user frames only. */
 static uint64_t hw_vmspace_alloc_table(void) {
-    uint64_t phys;
     /* Allocated with its state, rather than as a generic frame relabelled
      * later. meminfo can then say how much of memory is page tables, which is
      * a figure that grows with the number of processes and had nowhere to be
      * seen before. */
-    hw_spin_lock(&g_mm_lock);
-    phys = vibeos_frame_alloc(VIBEOS_FRAME_PAGE_TABLE);
-    hw_spin_unlock(&g_mm_lock);
-    return phys;
+    return vibeos_frame_alloc(VIBEOS_FRAME_PAGE_TABLE);
 }
 
 static void hw_vmspace_free_table(uint64_t phys) {
@@ -1562,6 +1566,10 @@ static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
              * for - and the previous version of this got the coverage wrong in
              * a way that stayed invisible until the machine used enough memory
              * to reach the frames it had missed. */
+            /* Before init, so the layer is never touched unlocked - including
+             * by the initialisation itself, which runs on one core here but
+             * should not depend on that. */
+            vibeos_frame_set_lock(hw_frame_lock, hw_frame_unlock);
             prefix = (uint64_t)g_hw_pmm.offset_bytes;
             if (vibeos_frame_init((uint64_t)g_hw_pmm.base,
                                   (uint64_t)g_hw_pmm.size_bytes,
@@ -4547,17 +4555,16 @@ static void hw_tlb_shootdown(uint64_t cr3) {
  * bit is read-only because the program is not allowed to write it. */
 static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code) {
     hw_task_t *t;
-    uint64_t *pte;
-    uint64_t phys;
-    uint8_t *fresh;
+    vibeos_vmspace_t v;
+    int handled;
 
     /* Present and write. The originating privilege level is deliberately not
      * required to be user: the kernel writes into user memory on a process's
      * behalf - read() filling a buffer, a syscall storing a result - and with
      * CR0.WP set those writes fault on a read-only page exactly as ring 3
      * would. Insisting on the user bit here refuses precisely the faults that
-     * happen while serving a syscall, which is how a freshly forked shell
-     * dies without printing anything. */
+     * happen while serving a syscall, which is how a freshly forked shell dies
+     * without printing anything. */
     if ((error_code & 0x3u) != 0x3u) {
         return 0;
     }
@@ -4565,80 +4572,19 @@ static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code) {
         return 0;
     }
     t = &g_tasks[g_current_task];
-    pte = hw_pte_lookup(&t->proc.as, fault_va);
-    /* Already writable: another thread of this process resolved the same
-     * copy-on-write page on another core, and this core faulted on a TLB entry
-     * that had not caught up. Without this the page looks like a plain
-     * read-only mapping - no COW bit, because the other core cleared it - and
-     * the task is killed for a protection violation it did not commit. */
-    if (pte && (*pte & PTE_PRESENT) != 0 && (*pte & PTE_WRITE) != 0 &&
-        (*pte & PTE_USER) != 0) {
-        hw_invlpg(fault_va);
-        return 1;
-    }
-    if (!pte || (*pte & PTE_USER) == 0 || (*pte & PTE_COW) == 0) {
-        /* Not a shared page: a genuine protection violation, and the fault
-         * reporting below is where it belongs. */
-        return 0;
-    }
-    phys = *pte & 0x000FFFFFFFFFF000ull;
 
-    /* Sole owner: nothing to copy, just take the write permission back. This
-     * is the common case once the other side has exec'd or exited, and
-     * copying there would waste a page and a copy for nothing. */
-    /* Sole owner: take the write permission back rather than copying. Asked as
-     * a question about the count, not as a side effect of decrementing it -
-     * the old form dropped a reference to find out, and had to put it back on
-     * every path that then failed. */
-    if (hw_page_owners(phys) <= 1u) {
-        /* The ownership bit is carried over deliberately. This entry was
-         * installed by the mapping layer and this address space still holds the
-         * frame; only the permission changes. Dropping the bit here would make
-         * teardown walk past a frame it owns, which is a leak per
-         * copy-on-write resolution - about one page per fork that ever
-         * writes. */
-        *pte = phys | PTE_PRESENT | PTE_WRITE | PTE_USER | VIBEOS_PTE_OWNED;
-        hw_invlpg(fault_va);
-        return 1;
+    /* The decision, the copy, the reference arithmetic and the shootdown all
+     * live in L1 now, where a host test can drive them. What stays here is what
+     * is genuinely architectural: reading the error code, knowing which task
+     * faulted, and saying so in the log. */
+    v = hw_vm(&t->proc.as);
+    handled = vibeos_vmspace_fault(&v, fault_va, 1);
+    if (handled) {
+        hw_log(VIBEOS_LOG_DEBUG, 43u, fault_va,
+               (uint64_t)(uintptr_t)t->proc.as.pml4,
+               "copy-on-write fault resolved (a0 = address, a1 = address space)");
     }
-
-    fresh = (uint8_t *)hw_alloc_page();
-    if (!fresh) {
-        return 0;   /* out of memory; nothing has been dropped, so nothing to undo */
-    }
-    {
-        const uint8_t *src = (const uint8_t *)(uintptr_t)phys;
-        uint64_t b;
-        for (b = 0; b < 4096ull; b++) {
-            fresh[b] = src[b];
-        }
-    }
-    /* This address space swaps one frame for another: it lets go of the shared
-     * one and takes the copy. Both halves, together, so the counts are never
-     * momentarily wrong. */
-    (void)hw_page_put(phys);
-    *pte = ((uint64_t)(uintptr_t)fresh) | PTE_PRESENT | PTE_WRITE | PTE_USER |
-           VIBEOS_PTE_OWNED;
-    /* No get on the copy. Under D9 the allocation already gave it one owner,
-     * and this address space is that owner - the mapping installed above is
-     * what the reference stands for. Taking a second here would mean the frame
-     * was never reclaimed when the process exited. */
-    hw_invlpg(fault_va);
-    /* This one is not about permissions: the page's *physical address* just
-     * changed. A thread of this same process on another core still has the old
-     * frame cached, so from here on it reads and writes a page nobody else can
-     * see - it never observes anything this thread stores.
-     *
-     * That is not theory. A test that forks with a worker thread running, then
-     * sets a flag the worker is spinning on, hung outright: the flag lived on a
-     * page fork had marked copy-on-write, the parent's store copied it, and the
-     * worker kept watching the original frame for a change that could never
-     * arrive. */
-    hw_tlb_shootdown((uint64_t)(uintptr_t)t->proc.as.pml4);
-    hw_log(VIBEOS_LOG_DEBUG, 43u, fault_va, (uint64_t)(uintptr_t)fresh,
-           "copy-on-write copied a page (a0 = address, a1 = new frame)");
-    g_cow_copied++;
-    return 1;
+    return handled;
 }
 
 /* Anonymous mmap: bump the per-process arena and map zeroed pages.
@@ -4836,38 +4782,31 @@ static long hw_sys_munmap(uint64_t addr, uint64_t len) {
     }
     proc = &g_tasks[g_current_task].proc;
     end = (addr + len + 0xFFFull) & ~0xFFFull;
-    for (va = addr; va < end; va += 4096ull) {
-        uint64_t *pte = hw_pte_lookup(&proc->as, va);
-        if (pte && (*pte & PTE_PRESENT) != 0) {
-            uint64_t phys = *pte & 0x000FFFFFFFFFF000ull;
+    {
+        vibeos_vmspace_t v = hw_vm(&proc->as);
 
-            /* Drop the mapping first, then ask whether the frame is ours to
-             * free. This used to free it outright, which is correct only for a
-             * page nobody else has - and after fork, that is not the common
-             * case but the rare one. Unmapping a copy-on-write page therefore
-             * put it back on the freelist while another process was still
-             * running from it.
+        for (va = addr; va < end; va += 4096ull) {
+            /* One call, and it is the last page-table write that lived outside
+             * kernel/mm/vmspace.c.
              *
-             * It is the same premature free that had been chased three times
-             * from the far end: a musl program tripping over its own malloc
-             * bins, init printing a pointer where a pid belonged, a forked
-             * child reading back something it had not written. The stress run
-             * is what finally named it, by recognising the free-page poison in
-             * a page it still held. */
-            /* Only an entry this address space owns. Before the ownership bit
-             * this asked whether the page was present and user-reachable, which
-             * is the same inference that freed the kernel's identity map from
-             * teardown - munmap simply had not been pointed at a low-window
-             * address by anything that mattered yet. */
-            if ((*pte & VIBEOS_PTE_OWNED) == 0u) {
-                continue;
-            }
-            *pte = 0;
-            hw_invlpg(va);
-            if (hw_page_put(phys)) {
-                hw_log(VIBEOS_LOG_DEBUG, 45u, va, phys,
-                       "munmap released the last reference to a frame "
-                       "(a0 = address, a1 = frame)");
+             * The two rules this used to get wrong are now properties of the
+             * layer rather than of this loop. It freed the frame outright,
+             * which is correct only for a page nobody else has - and after a
+             * fork that is the rare case, so unmapping a copy-on-write page put
+             * it back on the free list while another process was still running
+             * from it. And it decided ownership by asking whether the page was
+             * present and user-reachable, the same inference that freed the
+             * kernel's identity map from teardown; munmap had simply never been
+             * pointed at a low-window address by anything that mattered.
+             *
+             * That premature free was chased three times from the far end and
+             * presented as something different each time: a musl program
+             * tripping over its own malloc bins, init printing a pointer where
+             * a pid belonged, a forked child reading back something it had not
+             * written. */
+            if (vibeos_vmspace_unmap(&v, va) == 1) {
+                hw_log(VIBEOS_LOG_DEBUG, 45u, va, 0,
+                       "munmap released a page (a0 = address)");
             }
         }
     }

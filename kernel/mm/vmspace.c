@@ -566,6 +566,110 @@ int vibeos_vmspace_clone_cow(vibeos_vmspace_t *dst, vibeos_vmspace_t *src) {
     return 0;
 }
 
+/* ---- faults -------------------------------------------------------------- */
+
+/* Copy 4 KiB between two frames, through whatever the backend calls memory. */
+static int copy_frame(uint64_t dst, uint64_t src) {
+    uint64_t *d = (uint64_t *)g_be.map_phys(dst);
+    const uint64_t *s = (const uint64_t *)g_be.map_phys(src);
+    uint32_t i;
+
+    if (!d || !s) {
+        return -1;
+    }
+    for (i = 0; i < 4096u / 8u; i++) {
+        d[i] = s[i];
+    }
+    return 0;
+}
+
+int vibeos_vmspace_fault(vibeos_vmspace_t *as, uint64_t va, int write) {
+    uint64_t *pte;
+    uint64_t phys, fresh;
+
+    if (!g_ready || !as || !as->root || !write) {
+        return 0;
+    }
+    pte = walk(as, va, 0);
+    if (!pte || (*pte & PTE_PRESENT) == 0u) {
+        return 0;
+    }
+
+    /* Already writable: another thread of this process resolved the same page
+     * on another core, and this core faulted on a translation that had not
+     * caught up. Without this the page looks like a plain read-only mapping -
+     * no copy-on-write mark, because the other core cleared it - and the task
+     * is killed for a violation it did not commit.
+     *
+     * It is the second half of the shootdown story and easy to miss: telling
+     * the other cores is not enough, because one of them may already be inside
+     * the fault before the message lands. */
+    if ((*pte & PTE_WRITE) && (*pte & PTE_USER)) {
+        if (g_be.invlpg) {
+            g_be.invlpg(va);
+        }
+        return 1;
+    }
+
+    if ((*pte & PTE_COW_BIT) == 0u || (*pte & VIBEOS_PTE_OWNED) == 0u) {
+        return 0;   /* not a shared page: a genuine protection violation */
+    }
+    phys = *pte & PTE_ADDR_MASK;
+
+    /* Sole owner: take the write permission back rather than copying. The
+     * common case once the other side has exec'd or exited, and copying there
+     * would waste a page and a copy for nothing.
+     *
+     * Asked as a question about the count, not as a side effect of
+     * decrementing it: the old shape dropped a reference to find out and had
+     * to put it back on every path that then failed. */
+    if (vibeos_frame_owners(phys) <= 1u) {
+        *pte = phys | PTE_PRESENT | PTE_WRITE | PTE_USER | VIBEOS_PTE_OWNED;
+        if (g_be.invlpg) {
+            g_be.invlpg(va);
+        }
+        return 1;
+    }
+
+    fresh = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+    if (!fresh) {
+        return 0;   /* out of memory; nothing dropped, so nothing to undo (I5) */
+    }
+    if (copy_frame(fresh, phys) != 0) {
+        (void)vibeos_frame_put(fresh);
+        return 0;
+    }
+
+    /* This address space swaps one frame for another: it lets go of the shared
+     * one and takes the copy. Both halves together, so the counts are never
+     * momentarily wrong.
+     *
+     * No second reference on the copy: the allocation already gave it one and
+     * this address space is that owner, which is what the entry below records.
+     * Taking another would mean the frame is never reclaimed. */
+    (void)vibeos_frame_put(phys);
+    *pte = (fresh & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITE | PTE_USER |
+           VIBEOS_PTE_OWNED;
+    if (g_be.invlpg) {
+        g_be.invlpg(va);
+    }
+
+    /* Not about permissions: the page's *physical address* just changed. A
+     * thread of this same process on another core still has the old frame
+     * cached, so from here on it reads and writes a page nobody else can see -
+     * it never observes anything this thread stores.
+     *
+     * Not theory. A test that forks with a worker thread running, then sets a
+     * flag the worker is spinning on, hung outright: the flag lived on a page
+     * fork had marked copy-on-write, the parent's store copied it, and the
+     * worker watched the original frame for a change that could never arrive. */
+    if (g_be.shootdown) {
+        g_be.shootdown(as->root_phys);
+    }
+    vibeos_mm_stats()->cow_copied++;
+    return 1;
+}
+
 /* ---- inspection ---------------------------------------------------------- */
 
 static int count_one(vibeos_vmspace_t *as, uint64_t va, uint64_t *pte, void *ctx) {

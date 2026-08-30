@@ -393,6 +393,95 @@ int test_vmspace(void) {
             vibeos_mm_stats()->frames_double_put != 0ull) { goto fail; }
     }
 
+    /* ---- the copy-on-write fault ---------------------------------------- */
+    if (setup(0) != 0) { goto fail; }
+    {
+        vibeos_vmspace_t child;
+        uint64_t shared;
+        uint64_t *pe, *ce;
+        unsigned char *bytes;
+
+        if (vibeos_vmspace_create(&as) != 0) { goto fail; }
+        if (vibeos_vmspace_create(&child) != 0) { goto fail; }
+        shared = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+        if (!shared) { goto fail; }
+        /* Something recognisable in the page, so the copy can be shown to be a
+         * copy rather than a fresh zeroed frame handed over silently. */
+        bytes = (unsigned char *)vs_map(shared);
+        bytes[0] = 0xAB;
+        bytes[4095] = 0xCD;
+
+        if (vibeos_vmspace_map(&as, 0x8000000000ull, shared,
+                               VIBEOS_PROT_READ | VIBEOS_PROT_WRITE |
+                               VIBEOS_PROT_USER) != 0) { goto fail; }
+        if (vibeos_vmspace_clone_cow(&child, &as) != 0) { goto fail; }
+        if (vibeos_frame_owners(shared) != 3u) { goto fail; }
+
+        /* A read fault is not this layer's business, whatever else is true. */
+        if (vibeos_vmspace_fault(&as, 0x8000000000ull, 0) != 0) { goto fail; }
+
+        /* Two owners: the write has to copy. */
+        if (vibeos_vmspace_fault(&as, 0x8000000000ull, 1) != 1) { goto fail; }
+        pe = vibeos_vmspace_entry(&as, 0x8000000000ull);
+        ce = vibeos_vmspace_entry(&child, 0x8000000000ull);
+        if (!pe || !ce) { goto fail; }
+        if ((*pe & ~0xFFFull) == shared) {
+            printf("FAIL:the copy-on-write fault did not copy\n");
+            goto fail;
+        }
+        if ((*pe & 2ull) == 0ull) { goto fail; }              /* now writable */
+        if ((*pe & VIBEOS_PTE_OWNED) == 0ull) { goto fail; }
+        if ((*ce & ~0xFFFull) != shared) { goto fail; }       /* child unmoved */
+        if (vibeos_frame_owners(shared) != 2u) { goto fail; } /* one let go */
+
+        /* The copy carries the data, not zeroes. A fault handler that hands
+         * back a blank page passes every reference-count check ever written
+         * and destroys the program's memory. */
+        bytes = (unsigned char *)vs_map(*pe & ~0xFFFull);
+        if (bytes[0] != 0xABu || bytes[4095] != 0xCDu) {
+            printf("FAIL:the copy-on-write copy lost the page contents\n");
+            goto fail;
+        }
+
+        /* The child is now the only mapper besides the standalone reference.
+         * Drop that one, and its write must take the permission back rather
+         * than copying a page nobody else has. */
+        (void)vibeos_frame_put(shared);
+        if (vibeos_frame_owners(shared) != 1u) { goto fail; }
+        if (vibeos_vmspace_fault(&child, 0x8000000000ull, 1) != 1) { goto fail; }
+        ce = vibeos_vmspace_entry(&child, 0x8000000000ull);
+        if (!ce || (*ce & ~0xFFFull) != shared) {
+            printf("FAIL:the sole owner copied instead of taking write back\n");
+            goto fail;
+        }
+        if ((*ce & 2ull) == 0ull) { goto fail; }
+
+        /* A write fault on a page that is already writable is the stale-TLB
+         * case: another core resolved it first. It must be reported handled,
+         * not passed up as a violation the task never committed. */
+        if (vibeos_vmspace_fault(&child, 0x8000000000ull, 1) != 1) {
+            printf("FAIL:a stale-TLB write fault was called a violation\n");
+            goto fail;
+        }
+
+        /* A genuine violation stays a violation: read-only, not shared. */
+        {
+            uint64_t plain = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+            if (!plain) { goto fail; }
+            if (vibeos_vmspace_map(&as, 0x8000002000ull, plain,
+                                   VIBEOS_PROT_READ | VIBEOS_PROT_USER) != 0) { goto fail; }
+            if (vibeos_vmspace_fault(&as, 0x8000002000ull, 1) != 0) {
+                printf("FAIL:a write to a read-only page was silently allowed\n");
+                goto fail;
+            }
+        }
+
+        if (vibeos_vmspace_destroy(&child) != 0) { goto fail; }
+        if (vibeos_vmspace_destroy(&as) != 0) { goto fail; }
+        if (vibeos_mm_stats()->frames_leaked != 0ull ||
+            vibeos_mm_stats()->frames_double_put != 0ull) { goto fail; }
+    }
+
     free(g_ram);
     g_ram = 0;
     return 0;

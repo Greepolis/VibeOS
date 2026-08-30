@@ -36,6 +36,11 @@ do_build() {
     # Verifying a crash handler means planting crashes, so this will be done
     # again; the check costs nothing and the mistake costs a boot that dies on
     # purpose in everybody's build.
+    # The memory manager's layering, checked by the build rather than by
+    # review. The property it guards - one place decides what an address space
+    # owns - is the whole of phase P2, and it is the kind that erodes one
+    # reasonable-looking line at a time.
+    bash scripts/dev/check-mm-layering.sh | tail -1
     if grep -rn 'TEMPORARY' kernel/ --include=*.c > /dev/null 2>&1; then
         echo "LEFTOVER-DEBUG-CODE:"
         grep -rn 'TEMPORARY' kernel/ --include=*.c | head -3

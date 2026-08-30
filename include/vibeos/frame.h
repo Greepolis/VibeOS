@@ -27,6 +27,22 @@
  * frame it cannot touch is still a frame it can count. */
 typedef void *(*vibeos_frame_map_fn)(uint64_t phys);
 
+/* Serialise this layer against itself.
+ *
+ * The lock belongs here, not at the call sites. It used to be taken by the
+ * architecture around each of the three or four places that touched a frame,
+ * which worked exactly as long as nothing new touched one - and then the
+ * copy-on-write fault moved into the address-space layer, allocated a frame
+ * without it, and two cores resolving a fault at the same moment corrupted the
+ * free list. The boot wedged with no output, which is the expensive kind.
+ *
+ * A layer that can be driven from several cores has to defend itself, because
+ * "remember to hold the memory lock" is not a property a compiler checks.
+ *
+ * Neither function may allocate, free, or re-enter this layer. Both may be
+ * null, which is what a host test passes. */
+void vibeos_frame_set_lock(void (*lock)(void), void (*unlock)(void));
+
 /* Bring the layer up over [base, base+len), with `table` holding one descriptor
  * per frame. `entries` must be at least len/4096; anything beyond that is
  * ignored. Returns 0 on success.

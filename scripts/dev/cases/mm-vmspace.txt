@@ -99,3 +99,31 @@
         *pte = (entry & ~PTE_WRITE) | PTE_COW_BIT;
 +++ new
         *pte = entry | PTE_COW_BIT;
+
+### the copy-on-write fault hands back a blank page instead of a copy
+--- old
+    if (copy_frame(fresh, phys) != 0) {
++++ new
+    if (0) {
+
+### the fault treats a stale-TLB write as a protection violation
+--- old
+    if ((*pte & PTE_WRITE) && (*pte & PTE_USER)) {
+        if (g_be.invlpg) {
+            g_be.invlpg(va);
+        }
+        return 1;
+    }
++++ new
+
+### the sole owner copies instead of taking the write permission back
+--- old
+    if (vibeos_frame_owners(phys) <= 1u) {
++++ new
+    if (0) {
+
+### the fault resolves a write to a page that was never shared
+--- old
+    if ((*pte & PTE_COW_BIT) == 0u || (*pte & VIBEOS_PTE_OWNED) == 0u) {
++++ new
+    if ((*pte & VIBEOS_PTE_OWNED) == 0u) {

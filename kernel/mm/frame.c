@@ -39,6 +39,29 @@ static uint32_t g_free_head = FRAME_NONE;
 static uint64_t g_free_count;
 static vibeos_frame_map_fn g_map;
 static int g_allocated_yet;      /* reserve() must come first */
+static void (*g_lock)(void);
+static void (*g_unlock)(void);
+
+void vibeos_frame_set_lock(void (*lock)(void), void (*unlock)(void)) {
+    g_lock = lock;
+    g_unlock = unlock;
+}
+
+/* Deliberately not recursive, and nothing inside this file calls another
+ * public entry point of it, so it does not need to be. If that ever stops
+ * being true the deadlock is immediate and obvious, which is the failure mode
+ * to prefer. */
+static void frame_lock(void) {
+    if (g_lock) {
+        g_lock();
+    }
+}
+
+static void frame_unlock(void) {
+    if (g_unlock) {
+        g_unlock();
+    }
+}
 
 static uint32_t frame_index(uint64_t phys) {
     uint64_t off;
@@ -211,7 +234,7 @@ static void frame_take(uint32_t index, vibeos_frame_state_t state) {
     g_table[index].lru_next = FRAME_NONE;
 }
 
-uint64_t vibeos_frame_alloc(vibeos_frame_state_t state) {
+uint64_t vibeos_frame_alloc_locked(vibeos_frame_state_t state) {
     uint32_t index;
 
     if (!g_table || g_free_head == FRAME_NONE) {
@@ -228,7 +251,7 @@ uint64_t vibeos_frame_alloc(vibeos_frame_state_t state) {
     return frame_addr(index);
 }
 
-uint64_t vibeos_frame_alloc_contig(uint32_t count, vibeos_frame_state_t state) {
+uint64_t vibeos_frame_alloc_contig_locked(uint32_t count, vibeos_frame_state_t state) {
     uint32_t i, run = 0u, first = 0u;
     uint32_t prev, cur;
 
@@ -283,7 +306,7 @@ uint64_t vibeos_frame_alloc_contig(uint32_t count, vibeos_frame_state_t state) {
     return frame_addr(first);
 }
 
-void vibeos_frame_get(uint64_t phys) {
+void vibeos_frame_get_locked(uint64_t phys) {
     uint32_t index = frame_index(phys);
 
     if (index == FRAME_NONE) {
@@ -296,7 +319,7 @@ void vibeos_frame_get(uint64_t phys) {
      * one freed early is found three programs later. */
 }
 
-int vibeos_frame_put(uint64_t phys) {
+int vibeos_frame_put_locked(uint64_t phys) {
     uint32_t index = frame_index(phys);
 
     if (index == FRAME_NONE) {
@@ -323,7 +346,7 @@ int vibeos_frame_put(uint64_t phys) {
     return 1;                         /* freed, and only at zero (I1) */
 }
 
-uint32_t vibeos_frame_owners(uint64_t phys) {
+uint32_t vibeos_frame_owners_locked(uint64_t phys) {
     uint32_t index = frame_index(phys);
     return (index == FRAME_NONE) ? 0u : g_table[index].owners;
 }
@@ -334,7 +357,7 @@ vibeos_frame_state_t vibeos_frame_state(uint64_t phys) {
                                  : (vibeos_frame_state_t)g_table[index].state;
 }
 
-void vibeos_frame_survey(uint64_t *by_state, uint64_t *largest_free_run) {
+void vibeos_frame_survey_locked(uint64_t *by_state, uint64_t *largest_free_run) {
     uint32_t i;
     uint64_t run = 0, best = 0;
 
@@ -371,6 +394,65 @@ uint64_t vibeos_frame_total(void) {
     return g_entries;
 }
 
-uint64_t vibeos_frame_free_count(void) {
+uint64_t vibeos_frame_free_count_locked(void) {
     return g_free_count;
 }
+
+uint64_t vibeos_frame_alloc(vibeos_frame_state_t state) {
+    uint64_t r;
+    frame_lock();
+    r = vibeos_frame_alloc_locked(state);
+    frame_unlock();
+    return r;
+}
+
+uint64_t vibeos_frame_alloc_contig(uint32_t count, vibeos_frame_state_t state) {
+    uint64_t r;
+    frame_lock();
+    r = vibeos_frame_alloc_contig_locked(count, state);
+    frame_unlock();
+    return r;
+}
+
+void vibeos_frame_get(uint64_t phys) {
+    frame_lock();
+    vibeos_frame_get_locked(phys);
+    frame_unlock();
+}
+
+int vibeos_frame_put(uint64_t phys) {
+    int r;
+    frame_lock();
+    r = vibeos_frame_put_locked(phys);
+    frame_unlock();
+    return r;
+}
+
+uint32_t vibeos_frame_owners(uint64_t phys) {
+    uint32_t r;
+    frame_lock();
+    r = vibeos_frame_owners_locked(phys);
+    frame_unlock();
+    return r;
+}
+
+uint64_t vibeos_frame_free_count(void) {
+    uint64_t r;
+    frame_lock();
+    r = vibeos_frame_free_count_locked();
+    frame_unlock();
+    return r;
+}
+
+void vibeos_frame_survey(uint64_t *by_state, uint64_t *largest_free_run) {
+    frame_lock();
+    vibeos_frame_survey_locked(by_state, largest_free_run);
+    frame_unlock();
+}
+
+/* A note on vibeos_frame_survey: it walks every descriptor, which with a
+ * hundred thousand frames is a few hundred microseconds under the lock, and on
+ * this machine the lock masks interrupts. That is acceptable because the only
+ * caller is a command somebody typed. It would not be acceptable on a fault
+ * path, and if one ever needs these numbers it should get them from the
+ * counters rather than from a walk. */
