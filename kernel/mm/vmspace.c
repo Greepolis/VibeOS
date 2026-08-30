@@ -467,28 +467,45 @@ int vibeos_vmspace_protect(vibeos_vmspace_t *as, uint64_t va,
 
 int vibeos_vmspace_unmap(vibeos_vmspace_t *as, uint64_t va) {
     uint64_t *pte;
+    uint64_t entry;
     g_op = "unmap";
 
     if (!g_ready || !as || !as->root) {
         return -1;
     }
     pte = walk(as, va, 0);
-    if (!pte || (*pte & PTE_PRESENT) == 0u) {
+    if (!pte) {
         return 0;
     }
-    if ((*pte & VIBEOS_PTE_OWNED) == 0u) {
+    entry = __atomic_load_n(pte, __ATOMIC_ACQUIRE);
+    if ((entry & PTE_PRESENT) == 0u) {
+        return 0;
+    }
+    if ((entry & VIBEOS_PTE_OWNED) == 0u) {
         /* Present, and not ours. An identity-split entry, or a table shared
          * with the kernel. Left exactly as it is: this is the case that used to
          * be freed on the strength of it being present and writable. */
         return 0;
     }
     {
-        uint64_t phys = *pte & PTE_ADDR_MASK;
-        *pte = 0;
+        /* Clear it with a compare-exchange, and release only if this core is
+         * the one that cleared it.
+         *
+         * Two threads unmapping the same address both read the same entry, both
+         * store zero, and both release - two references dropped for one
+         * mapping, which puts the frame on the free list while somebody still
+         * has it. The same race as the copy-on-write fault, and the same
+         * answer: the store decides who owns the release. */
+        uint64_t expected = entry;
+
+        if (!__atomic_compare_exchange_n(pte, &expected, 0ull, 0,
+                                         __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+            return 0;   /* somebody else unmapped it; theirs to release */
+        }
         if (g_be.invlpg) {
             g_be.invlpg(va);
         }
-        (void)vibeos_frame_put(phys);
+        (void)vibeos_frame_put(entry & PTE_ADDR_MASK);
         vibeos_mm_stats()->unmaps++;
     }
     return 1;
@@ -623,47 +640,56 @@ static int copy_frame(uint64_t dst, uint64_t src) {
 
 int vibeos_vmspace_fault(vibeos_vmspace_t *as, uint64_t va, int write) {
     uint64_t *pte;
-    g_op = "cow-fault";
-    uint64_t phys, fresh;
+    uint64_t entry, expected, desired, phys, fresh;
 
+    g_op = "cow-fault";
     if (!g_ready || !as || !as->root || !write) {
         return 0;
     }
     pte = walk(as, va, 0);
-    if (!pte || (*pte & PTE_PRESENT) == 0u) {
+    if (!pte) {
         return 0;
     }
 
-    /* Already writable: another thread of this process resolved the same page
-     * on another core, and this core faulted on a translation that had not
-     * caught up. Without this the page looks like a plain read-only mapping -
-     * no copy-on-write mark, because the other core cleared it - and the task
-     * is killed for a violation it did not commit.
+    /* Read the entry once, and act on that value.
      *
-     * It is the second half of the shootdown story and easy to miss: telling
-     * the other cores is not enough, because one of them may already be inside
-     * the fault before the message lands. */
-    if ((*pte & PTE_WRITE) && (*pte & PTE_USER)) {
+     * Two threads of one process can fault on the same page at the same
+     * instant, and re-reading *pte at each step lets each of them make a
+     * decision based on a world the other has already changed. Every store back
+     * is a compare-exchange against this value, so a core that lost the race
+     * discovers it instead of overwriting the winner. */
+    entry = __atomic_load_n(pte, __ATOMIC_ACQUIRE);
+    if ((entry & PTE_PRESENT) == 0u) {
+        return 0;
+    }
+
+    /* Already writable: another thread resolved this page on another core and
+     * this one faulted on a translation that had not caught up. Without this
+     * the page looks like a plain read-only mapping - no copy-on-write mark,
+     * because the other core cleared it - and the task is killed for a
+     * violation it did not commit. */
+    if ((entry & PTE_WRITE) && (entry & PTE_USER)) {
         if (g_be.invlpg) {
             g_be.invlpg(va);
         }
         return 1;
     }
 
-    if ((*pte & PTE_COW_BIT) == 0u || (*pte & VIBEOS_PTE_OWNED) == 0u) {
+    if ((entry & PTE_COW_BIT) == 0u || (entry & VIBEOS_PTE_OWNED) == 0u) {
         return 0;   /* not a shared page: a genuine protection violation */
     }
-    phys = *pte & PTE_ADDR_MASK;
+    phys = entry & PTE_ADDR_MASK;
 
     /* Sole owner: take the write permission back rather than copying. The
      * common case once the other side has exec'd or exited, and copying there
-     * would waste a page and a copy for nothing.
-     *
-     * Asked as a question about the count, not as a side effect of
-     * decrementing it: the old shape dropped a reference to find out and had
-     * to put it back on every path that then failed. */
+     * would waste a page and a copy for nothing. */
     if (vibeos_frame_owners(phys) <= 1u) {
-        *pte = phys | PTE_PRESENT | PTE_WRITE | PTE_USER | VIBEOS_PTE_OWNED;
+        expected = entry;
+        desired = phys | PTE_PRESENT | PTE_WRITE | PTE_USER | VIBEOS_PTE_OWNED;
+        (void)__atomic_compare_exchange_n(pte, &expected, desired, 0,
+                                          __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
+        /* Either we granted the write or somebody else already did; the
+         * instruction is retried and will succeed or fault again honestly. */
         if (g_be.invlpg) {
             g_be.invlpg(va);
         }
@@ -679,19 +705,37 @@ int vibeos_vmspace_fault(vibeos_vmspace_t *as, uint64_t va, int write) {
         return 0;
     }
 
-    /* This address space swaps one frame for another: it lets go of the shared
-     * one and takes the copy. Both halves together, so the counts are never
-     * momentarily wrong.
+    /* Install the copy only if the entry is still the one we read.
      *
-     * No second reference on the copy: the allocation already gave it one and
-     * this address space is that owner, which is what the entry below records.
-     * Taking another would mean the frame is never reclaimed. */
-    /* Install the copy first, then let go of the shared frame - the same rule
-     * as in map, from the other side. Releasing while the entry still points at
-     * the old frame means the count can reach zero on a page this address space
-     * is still mapping, and the next allocation hands it to somebody else. */
-    *pte = (fresh & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITE | PTE_USER |
-           VIBEOS_PTE_OWNED;
+     * This is the race that survived the ordering fix. Two threads of the same
+     * process faulting on one page both reached this point, both allocated a
+     * copy, both stored, and both released the shared frame - so one reference
+     * was dropped for a mapping that only ever existed once, and the frame went
+     * back on the free list while the other process was still running from it.
+     *
+     * It fits the numbers the detector reported. With a page shared three ways
+     * - a parent and two children - two threads of one child each drop a
+     * reference for the single mapping they share, leaving two address spaces
+     * holding the frame and one reference counted: mappers=2 owners=1, which is
+     * what the log said.
+     *
+     * Losing the exchange is not a failure. The other core has already made
+     * this page writable and private; our copy is unused, and the shared frame
+     * was never ours to release. */
+    expected = entry;
+    desired = (fresh & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITE | PTE_USER |
+              VIBEOS_PTE_OWNED;
+    if (!__atomic_compare_exchange_n(pte, &expected, desired, 0,
+                                     __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+        (void)vibeos_frame_put(fresh);
+        if (g_be.invlpg) {
+            g_be.invlpg(va);
+        }
+        return 1;
+    }
+
+    /* We won: this address space has stopped pointing at the shared frame, so
+     * now it may let go of it. */
     (void)vibeos_frame_put(phys);
     if (g_be.invlpg) {
         g_be.invlpg(va);
