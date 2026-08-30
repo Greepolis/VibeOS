@@ -598,6 +598,11 @@ static int hw_signal_raise(int task_index, uint32_t sig);
 static void hw_panic_cpu_summary(void);   /* defined with the task table */
 /* Defined with the task table: answers whether a frame about to be freed
  * is still mapped by a live process. */
+/* How many owned mappings the last walk found. One is a lost reference; more
+ * than one says how many were lost, which is the difference between "somebody
+ * forgot a get" and "a whole fork's worth went missing". */
+static uint32_t g_frame_mappers;
+
 static int hw_frame_still_mapped(uint64_t phys, uint32_t *out_pid);
 /* Forward-declared for the same reason as the line above: this is one 5000-line
  * file, and a helper used before its definition compiles as an implicit
@@ -1362,6 +1367,22 @@ static void hw_frame_release_watch(uint64_t phys) {
     if (!hw_frame_still_mapped(phys, &pid)) {
         return;
     }
+    /* Compare the two numbers that must agree, instead of asking whether the
+     * frame is still free.
+     *
+     * Every owned page-table entry is one reference, so mappers and owners are
+     * the same quantity counted two ways. Asking "is it still free" was wrong
+     * in both directions: it reported a frame another core had legitimately
+     * reallocated and mapped (owners=1 mappers=1, a healthy frame described by
+     * an unhealthy detector), and it silently dropped the real cases where the
+     * reallocation happened to win the race - which is how a genuine premature
+     * free went unreported while the stress service was still finding it.
+     *
+     * More mappings than references is the dangerous direction and the only one
+     * worth a report: it means somebody holds a page nothing is counting. */
+    if (g_frame_mappers <= vibeos_frame_owners(phys)) {
+        return;
+    }
     hw_log(VIBEOS_LOG_ERROR, 46u, phys, (uint64_t)pid,
            "reclaiming a frame that a live process still maps "
            "(a0 = frame, a1 = pid)");
@@ -1372,6 +1393,10 @@ static void hw_frame_release_watch(uint64_t phys) {
     vibeos_x86_64_serial_print_hex((uint64_t)pid);
     vibeos_x86_64_serial_puts(" during ");
     vibeos_x86_64_serial_puts(vibeos_vmspace_current_op());
+    vibeos_x86_64_serial_puts(" mappers=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)g_frame_mappers);
+    vibeos_x86_64_serial_puts(" owners=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)vibeos_frame_owners(phys));
     vibeos_x86_64_serial_puts("\n");
     vibeos_x86_64_serial_unlock();
 }
@@ -6627,6 +6652,8 @@ static int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame) {
 static int hw_frame_still_mapped(uint64_t phys, uint32_t *out_pid) {
     int t;
 
+    g_frame_mappers = 0;
+
     for (t = 0; t < (int)VIBEOS_HW_MAX_TASKS; t++) {
         const uint64_t *pml4;
         uint32_t slot;
@@ -6665,21 +6692,29 @@ static int hw_frame_still_mapped(uint64_t phys, uint32_t *out_pid) {
                     }
                     pt = (const uint64_t *)(uintptr_t)(pd[j] & 0x000FFFFFFFFFF000ull);
                     for (k = 0; k < 512u; k++) {
-                        if ((pt[k] & PTE_PRESENT) == 0 || (pt[k] & PTE_USER) == 0) {
+                        /* The ownership mark, not PTE_USER.
+                         *
+                         * PTE_USER asks whether ring 3 can reach the page,
+                         * which is a different question and misses exactly the
+                         * cases that matter: a PROT_NONE thread guard is owned
+                         * and unreachable, so a frame leaked or freed under one
+                         * was invisible to this walk. */
+                        if ((pt[k] & PTE_PRESENT) == 0 ||
+                            (pt[k] & VIBEOS_PTE_OWNED) == 0) {
                             continue;
                         }
                         if ((pt[k] & 0x000FFFFFFFFFF000ull) == phys) {
                             if (out_pid) {
                                 *out_pid = g_tasks[t].pid;
                             }
-                            return 1;
+                            g_frame_mappers++;
                         }
                     }
                 }
             }
         }
     }
-    return 0;
+    return g_frame_mappers != 0u;
 }
 
 static void hw_panic_cpu_summary(void) {

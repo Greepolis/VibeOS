@@ -429,16 +429,25 @@ void vibeos_frame_get(uint64_t phys) {
 int vibeos_frame_put(uint64_t phys) {
     int r;
 
-    /* Before the lock, and sampled by the caller's own counter: the watch walks
-     * page tables to ask whether a live process still maps this frame, which is
-     * far too slow to do under a lock that masks interrupts - and it takes that
-     * lock itself, by asking this layer for owner counts. */
-    if (g_watch && vibeos_frame_owners(phys) == 1u) {
-        g_watch(phys);
-    }
     frame_lock();
     r = vibeos_frame_put_locked(phys);
     frame_unlock();
+
+    /* After the release, and only when the frame actually went back on the free
+     * list. The first version asked before the decrement, on the prediction
+     * that owners == 1 meant this put would free it - and a prediction taken
+     * while other cores are mapping and unmapping is not a fact. It reported
+     * frames that were never freed at all, which is the one thing a detector
+     * must not do: eleven boots were failed by the detector after the defect it
+     * was built for had been fixed.
+     *
+     * Asking afterwards is unambiguous. The frame is on the free list; if a
+     * live process still maps it, that is wrong however it happened. Outside
+     * the lock because the check walks page tables, which is not work to do
+     * with interrupts masked. */
+    if (r && g_watch) {
+        g_watch(phys);
+    }
     return r;
 }
 

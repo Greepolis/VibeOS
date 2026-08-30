@@ -257,9 +257,15 @@ static void release_pt(uint64_t *pt) {
 
     for (i = 0; i < 512u; i++) {
         if ((pt[i] & PTE_PRESENT) && (pt[i] & VIBEOS_PTE_OWNED)) {
-            (void)vibeos_frame_put(pt[i] & PTE_ADDR_MASK);
-            vibeos_mm_stats()->unmaps++;
+            /* Stop pointing at it, then let go - the same rule as map and the
+             * fault. Teardown is the least exposed of the three, because the
+             * address space is dying and nothing runs on it, but a rule with an
+             * exception is a rule somebody will apply the exception to. */
+            uint64_t phys = pt[i] & PTE_ADDR_MASK;
+
             pt[i] = 0;
+            (void)vibeos_frame_put(phys);
+            vibeos_mm_stats()->unmaps++;
         }
     }
 }
