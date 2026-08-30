@@ -239,6 +239,35 @@ phase — it is rewritten in P3 — but it walks *through* `vmspace_unmap`.
 `FREE_WHILE_MAPPED`, no stress failure and no unexpected ring-3 fault; the four
 sabotage cases seen red.
 
+**Status: done.** Six commits, `87134d7` through `b2d6d7f`. Fifteen sabotage
+cases rather than four, all red. No page-table write and no frame reference
+taken outside `kernel/mm/`, checked by `scripts/dev/check-mm-layering.sh` on
+every build rather than by review.
+
+**What the phase cost that the plan did not predict**
+
+- **The ownership bit had to move.** The plan said bit 9; `PTE_COW` is 0x200,
+  which is bit 9. See decisions.md D3. A `_Static_assert` now answers it.
+- **`vibeos_vmspace_map_raw`.** Fork installs mappings carrying the
+  copy-on-write mark, and the portable protection type has no word for it.
+  Widening `vibeos_prot_t` with an x86-64 detail was the wrong trade; the
+  architecture passes the leaf it wants and the layer still adds the ownership
+  bit and takes the reference. It can go when P5 moves copy-on-write in.
+- **The memory lock moved into L0.** Step 5 wedged the boot: the layer
+  allocates a frame, and until then every allocation had gone through an arch
+  wrapper that took the lock. A layer several cores can drive has to defend
+  itself - "remember to hold the lock" held for exactly one phase.
+- **Two behaviours were fixed rather than moved**, both in the same family and
+  both reachable from an ordinary program:
+  - `mprotect` used to grant write access to a copy-on-write page, letting a
+    forked process write into a page its parent was still reading.
+  - `fork` selected low-window pages by `PTE_USER`, so a child of a threaded
+    process inherited an address space with holes where its `PROT_NONE` thread
+    guards belonged. `cow_shared` rose from 0xbd2 to 0xc09 per boot when that
+    was fixed - fifty-five pages that had never been cloned.
+- **Steps 4 and 5 of P1 folded in here**, as recorded at the time. The wrapper
+  names remain; they now wrap one call each.
+
 ---
 
 ### P3 — Regions

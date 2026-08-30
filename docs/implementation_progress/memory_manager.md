@@ -1,6 +1,6 @@
 # Memory Manager Progress
 
-Status: In Progress - rewrite phases P0 and P1 of [docs/mm/](../mm/README.md) are done. Physical frames have one owner, in one file; the bootstrap bump allocator is closed; `meminfo` reports a breakdown the boot gate checks adds up. The premature-free family is not closed - P2 is the phase that repairs it.
+Status: In Progress - rewrite phases P0, P1 and P2 of [docs/mm/](../mm/README.md) are done. Physical frames have one owner, in one file. Address spaces record what they own in the page-table entry, so nothing infers ownership from permission bits any more - which is what the premature-free family came from. No page-table write and no frame reference taken outside `kernel/mm/`, checked on every build.
 Last review: 2026-08-30
 
 ## Implemented
@@ -48,6 +48,65 @@ demand paging and a page cache are phase P4, and the portable model becoming the
 live authority is what P1 and P2 are doing. `kernel/mm/vm.c` remains an early
 portable sketch with no runtime role; `kernel/mm/vmspace.c` is the one being
 built to replace it.
+
+### The address-space layer (rewrite phase P2)
+
+**This is the phase that repairs the defect.**
+
+`kernel/mm/vmspace.c` is the only code that writes a page-table entry.
+`VIBEOS_PTE_OWNED` - bit 11 - is set by `vibeos_vmspace_map` and by nothing
+else, and teardown, `munmap` and `fork` act on exactly the entries carrying it.
+
+What that replaces is four generations of *inference*. The question "does this
+address space own this frame?" was answered by looking at permissions: is the
+entry present, does it carry `PTE_USER`, does it sit in the low window. Every
+one of those is a statement about access, and each was wrong in a different
+case:
+
+- A `PROT_NONE` guard page has no `PTE_USER` and is owned. Selecting on that
+  bit leaked a thread stack per thread, and made `fork` hand a child of a
+  threaded process an address space with holes where its guards belonged.
+- An identity-split entry is present and writable and belongs to the kernel.
+  Selecting on *that* freed the kernel's own page tables at teardown, and the
+  machine stopped with no output at all - no panic, because there was no kernel
+  left to fault from.
+
+The answer is written down now, at the moment it becomes true, in the same word
+of memory as the mapping it describes. There is nothing left that can drift.
+
+The compiler helps keep it that way: `hw_page_get` became unused the moment the
+mapping functions moved, because taking a reference on a user frame now happens
+in exactly one place. `scripts/dev/check-mm-layering.sh` runs on every build and
+fails if a page-table write or a `vibeos_frame_get` appears outside
+`kernel/mm/`.
+
+**Two bugs fixed rather than moved**, both reachable from an ordinary program:
+
+- `mprotect` granted write access to a copy-on-write page on request. Such a
+  page is read-only *because it is shared*, so this let a forked process write
+  straight into a page its parent was still reading. It now stays read-only;
+  the write faults, the fault copies, and the program gets what it asked for one
+  fault later.
+- `fork` skipped `PROT_NONE` pages in the low window. Fixing it raised
+  `cow_shared` from 0xbd2 to 0xc09 per boot - fifty-five pages that had never
+  been cloned at all.
+
+**And one nearly shipped.** The plan specified bit 9 for the ownership mark;
+`PTE_COW` is 0x200, which is bit 9. Every mapped page would have read as
+copy-on-write, so a write fault on a genuinely read-only page would have been
+resolved by granting the write. Sixteen clean boots showed nothing. A
+`_Static_assert` now makes the two bits provably different.
+
+**And one wedged the boot.** Moving the copy-on-write fault into the layer
+meant it allocated a frame directly, and until then every allocation had gone
+through an architecture wrapper that took the memory lock. Two cores resolving
+a fault at the same moment corrupted the free list. The lock lives inside the
+frame layer now: a layer several cores can drive has to defend itself, because
+"remember to hold the memory lock" is not a property a compiler checks - and it
+held for exactly one phase.
+
+Fifteen sabotage cases in `scripts/dev/cases/mm-vmspace.txt`, all confirmed red,
+scored on the host in about a second each rather than by booting.
 
 ### The frame layer (rewrite phase P1)
 

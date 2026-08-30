@@ -31,8 +31,6 @@ and ask at each one rather than pick.
 | --- | --- | --- | --- |
 | D1 | ~~Where does the new code live?~~ | **Decided 2026-08-30: `kernel/mm/`**, linked into both the kernel image and the host test binary. See below. | — |
 | D2 | ~~How large is the frame descriptor?~~ | **Decided 2026-08-30: 16 bytes**, the complete form. See below. | — |
-| D3 | Bit 9 for `PTE_OWNED`, or a side table? | Bit 9 is free today; a side table costs memory but survives a future use of the bit | Before P2 |
-| D4 | Does P2 land as one commit or seven? | Seven is safer to bisect, one is easier to review | Before P2 |
 | D5 | Is the boot allowed to get slower, and by how much? | The frame walk and the region lookups are not free | Before P3 |
 | D6 | Does the block cache in `kernel/fs/` get merged into the page cache, or kept? | Merging touches the filesystem layer, which is outside this plan's scope | Before P4 |
 | D7 | Which device backs swap, and is it configured or discovered? | A product decision about how VibeOS is deployed | Before P5 |
@@ -160,3 +158,44 @@ rather than by planning it:
    which swallowed every reserved frame, and took reserved from somewhere else
    again. One walk of the frame table answers it now and the boot gate fails if
    the states do not sum to the total.
+
+## D3 — a bit in the entry, decided 2026-08-30 (and the bit was wrong)
+
+A software bit in the page-table entry, not a side table. `VIBEOS_PTE_OWNED`.
+
+The argument for a side table was that a future use of the bit would break it.
+The argument against, which won, is that a side table is a second structure
+that has to agree with the first - and this subsystem's entire history is two
+structures disagreeing about who owns a frame. The whole point of the bit is
+that the record and the thing it describes cannot drift apart, because they are
+the same word of memory.
+
+**The plan named bit 9 and bit 9 was not free.** `PTE_COW` in the x86-64 code is
+`0x200`, which is bit 9. Sharing them makes every mapped page read as
+copy-on-write, so a write fault on a genuinely read-only page would be resolved
+by granting the write instead of killing the process - a program could write to
+its own text segment and be told it worked.
+
+Sixteen clean boots showed nothing, because the two bits only disagree on a
+path that needs a fault on a page a program is not allowed to write. It was
+caught by reading the definition while wiring up `protect`, which is luck, not
+method. What replaces the luck is a `_Static_assert` that the two bits are
+different, confirmed to fire by putting them back together.
+
+Ownership is bit 11. The risk the side-table argument raised is real and is now
+answered by the compiler rather than by care.
+
+## D4 — seven commits, decided 2026-08-30
+
+Landed as six, and the phase's own history is the argument for it. Each step
+was verified before the next began, and two of them failed in ways that would
+have been far harder to attribute inside one large commit:
+
+- Step 2 wedged nothing but hid the bit collision above.
+- Step 5 wedged the boot outright, and the cause was not the code the step was
+  about - it was that moving allocation into the layer moved it out from under
+  the memory lock the architecture had been taking at the call sites.
+
+Both were found by having a green commit immediately before them to compare
+against. A single commit for the phase would have presented both at once, in a
+diff of about a thousand lines, with a silent wedge as the only symptom.

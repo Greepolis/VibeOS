@@ -415,3 +415,28 @@ low-window tables failed 20 seeds out of 20, each naming the round and the
 frame; an `unmap` that forgets to release the frame fails it as well. On the
 unmodified tree, 120 seeds at 3000 rounds and 40 seeds at 4000 rounds under the
 sanitizers are clean.
+
+## The memory-manager layering check (2026-08-30)
+
+`scripts/dev/check-mm-layering.sh`, run by `check.sh` on every build, which
+prints `mm-layering=ok` alongside `rc=` and `warnings=`.
+
+It fails if anything outside `kernel/mm/` writes a page-table entry or takes a
+reference on a frame, or if the bootstrap bump allocator is called from
+anywhere but `hw_pmm_bringup`.
+
+The reason it is a build step and not a review note: the property it guards -
+one place decides what an address space owns - is exactly the kind that erodes
+one reasonable-looking line at a time. Every defect this subsystem has produced
+came from a second place making that decision independently, and each of those
+places looked entirely sensible where it was written. Nobody added them
+carelessly. A grep is what stops the sixth one.
+
+Two false positives were removed before it was wired in: `uint64_t *pte = ...`
+is a declaration rather than a write, and a comment mentioning
+`vibeos_pmm_alloc_*` is not a call. A detector that reports healthy code is one
+people learn to skip, which this project has already built once and does not
+need again.
+
+Confirmed to fail by adding a single `vibeos_frame_get` to the architecture
+layer.
