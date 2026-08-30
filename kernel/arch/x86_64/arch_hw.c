@@ -1171,19 +1171,28 @@ static uint8_t *frame_ref_slot(uint64_t phys) {
     return (idx < g_frame_refs_count) ? &g_frame_refs[idx] : 0;
 }
 
-/* The count is "owners beyond the first", so zero means sole owner.
+/* One reference count per frame, meaning what it says: the number of address
+ * spaces that map it. One owner is 1, nobody is 0, and a frame is freed when
+ * it reaches 0 - not before.
  *
- * Both of these were a plain read-modify-write on a byte, and both are called
- * from several cores at once: two processes forking at the same moment share
- * frames their common ancestor left copy-on-write, and a teardown or a
- * copy-on-write fault elsewhere is decrementing the same byte meanwhile. A
- * lost increment makes the count too low, which is the dangerous direction -
- * one owner too few, so the frame is freed while another process is still
- * running from it, and the page goes back on the freelist under a live heap.
+ * The previous scheme counted "owners beyond the first", so zero meant one
+ * owner, and every path had to inc and dec with a mental offset of one. Worse,
+ * an untracked frame answered "yes, free it". A missed increment anywhere -
+ * including in code not yet written - therefore produced silent corruption
+ * rather than an error, and this one defect was diagnosed four times from the
+ * far end and fixed three times without going away.
  *
- * That is what a musl program tripping over its own free list looks like from
- * the outside, and it took about one boot in thirty-two. */
-static void frame_ref_inc(uint64_t phys) {
+ * So the default is reversed: a frame this table cannot describe is never
+ * freed. That leaks, and a leak can be measured; freeing a page somebody is
+ * running on cannot.
+ *
+ * Counting happens where mappings are made and unmade - hw_map_page,
+ * hw_map_low_user_page, and the paths that clear a user PTE - so sharing a
+ * frame without counting it is not something a future caller can forget to do.
+ */
+static volatile uint64_t g_untracked_frees;   /* frames refused for lack of an entry */
+
+static void hw_page_get(uint64_t phys) {
     uint8_t *slot = frame_ref_slot(phys);
     uint8_t old;
 
@@ -1196,33 +1205,44 @@ static void frame_ref_inc(uint64_t phys) {
                                         __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
             return;
         }
-        /* old now holds what was actually there; try again. */
     }
-    /* Saturated. Never freed rather than freed too early: a leak is a bug you
-     * can measure, and this is not. */
+    /* Saturated: never reclaimed. A frame that leaks is a bug you can see in a
+     * counter; one freed early is a bug you find three programs later. */
 }
 
-/* Returns non-zero when the caller was the last owner and may free it. */
-static int frame_ref_dec(uint64_t phys) {
+/* Returns non-zero when the last owner has let go and the frame may be freed. */
+static int hw_page_put(uint64_t phys) {
     uint8_t *slot = frame_ref_slot(phys);
     uint8_t old;
 
     if (!slot) {
-        return 1;   /* not tracked: it was never shared */
+        /* Not describable, so not ours to free. Counted, because a number that
+         * grows without bound is a question somebody should ask. */
+        __atomic_fetch_add(&g_untracked_frees, 1ull, __ATOMIC_RELAXED);
+        return 0;
     }
     old = __atomic_load_n(slot, __ATOMIC_RELAXED);
     for (;;) {
         if (old == 0u) {
-            return 1;    /* sole owner */
+            /* Already at zero: somebody put a reference they did not hold.
+             * Refusing is the safe half; saying so is the useful half. */
+            hw_log(VIBEOS_LOG_ERROR, 47u, phys, 0,
+                   "reference dropped on a frame that had no owners (a0 = frame)");
+            return 0;
         }
         if (old == 255u) {
-            return 0;    /* saturated above: this frame is never reclaimed */
+            return 0;   /* saturated above; never reclaimed */
         }
         if (__atomic_compare_exchange_n(slot, &old, (uint8_t)(old - 1u), 0,
                                         __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
-            return 0;
+            return (old == 1u) ? 1 : 0;
         }
     }
+}
+
+static uint32_t hw_page_owners(uint64_t phys) {
+    const uint8_t *slot = frame_ref_slot(phys);
+    return slot ? (uint32_t)__atomic_load_n(slot, __ATOMIC_RELAXED) : 0u;
 }
 
 static vibeos_pmm_t g_hw_pmm;
@@ -1355,6 +1375,8 @@ static void hw_free_page_why(void *p, const char *why) {
             vibeos_x86_64_serial_print_hex((uint64_t)pid);
             vibeos_x86_64_serial_puts(" freed by ");
             vibeos_x86_64_serial_puts(why ? why : "(unknown)");
+            vibeos_x86_64_serial_puts(" owners_after_put=0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)hw_page_owners((uint64_t)(uintptr_t)p));
             vibeos_x86_64_serial_puts("\n");
             vibeos_x86_64_serial_unlock();
         }
@@ -1579,6 +1601,16 @@ static int hw_map_page(vibeos_hw_aspace_t *as, uint64_t va, uint64_t pa, uint64_
         tbl = (uint64_t *)(uintptr_t)(tbl[idx] & 0x000FFFFFFFFFF000ull);
     }
     tbl[(va >> 12) & 0x1FFu] = (pa & 0x000FFFFFFFFFF000ull) | leaf_flags;
+    /* Counted on every leaf, not only the ones carrying PTE_USER.
+     *
+     * A PROT_NONE mapping - which is how a C library reserves a thread stack
+     * and its guard - is mapped without PTE_USER and given it later by
+     * mprotect. Counting on the USER bit therefore missed the mapping and saw
+     * the release, and the frame was reported as having no owners 211 times in
+     * a single boot. Whether a page is reachable from ring 3 is a permission;
+     * whether this address space maps the frame is ownership, and they are not
+     * the same question. */
+    hw_page_get(pa & 0x000FFFFFFFFFF000ull);
     return 0;
 }
 
@@ -1661,6 +1693,7 @@ static int hw_map_low_user_page(vibeos_hw_aspace_t *as, uint64_t va, uint64_t pa
     }
 
     pt[pti] = (pa & 0x000FFFFFFFFFF000ull) | leaf_flags;
+    hw_page_get(pa & 0x000FFFFFFFFFF000ull);
     return 0;
 }
 
@@ -1766,7 +1799,7 @@ static void hw_aspace_destroy_why(vibeos_hw_aspace_t *as, const char *why) {
                         uint64_t phys = pt[k] & 0x000FFFFFFFFFF000ull;
                         /* Only the last owner frees it: after fork, several
                          * address spaces map the same frame. */
-                        if (frame_ref_dec(phys)) {
+                        if (hw_page_put(phys)) {
                             hw_free_page((void *)(uintptr_t)phys);
                         }
                     }
@@ -1803,9 +1836,29 @@ static void hw_aspace_destroy_why(vibeos_hw_aspace_t *as, const char *why) {
                     }
                     pt = (uint64_t *)(uintptr_t)(pd[j] & 0x000FFFFFFFFFF000ull);
                     for (k = 0; k < 512u; k++) {
+                        /* PTE_USER, and only PTE_USER, in this window.
+                         *
+                         * Splitting a 2 MiB identity leaf into 4 KiB entries
+                         * leaves 511 mappings of kernel memory behind, present
+                         * and supervisor-only. They were never mapped through
+                         * hw_map_low_user_page and never counted - but they
+                         * point at physical addresses inside the allocator's
+                         * region, so they do have reference slots, belonging to
+                         * whoever really owns those frames.
+                         *
+                         * Releasing them therefore decrements somebody else's
+                         * count. I made exactly that mistake here, reasoning
+                         * that untracked frames would be refused; they are not
+                         * untracked, they are other people's. The detector
+                         * caught it in three boots out of sixteen -
+                         * FREE_WHILE_MAPPED, naming this function.
+                         *
+                         * A PROT_NONE page is owned like any other, but those
+                         * live in the mmap arena in the high window, so nothing
+                         * is leaked by the narrower test here. */
                         if ((pt[k] & PTE_PRESENT) && (pt[k] & PTE_USER)) {
                             uint64_t phys = pt[k] & 0x000FFFFFFFFFF000ull;
-                            if (frame_ref_dec(phys)) {
+                            if (hw_page_put(phys)) {
                                 hw_free_page((void *)(uintptr_t)phys);
                             }
                         }
@@ -4592,7 +4645,11 @@ static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code) {
     /* Sole owner: nothing to copy, just take the write permission back. This
      * is the common case once the other side has exec'd or exited, and
      * copying there would waste a page and a copy for nothing. */
-    if (frame_ref_dec(phys)) {
+    /* Sole owner: take the write permission back rather than copying. Asked as
+     * a question about the count, not as a side effect of decrementing it -
+     * the old form dropped a reference to find out, and had to put it back on
+     * every path that then failed. */
+    if (hw_page_owners(phys) <= 1u) {
         *pte = phys | PTE_PRESENT | PTE_WRITE | PTE_USER;
         hw_invlpg(fault_va);
         return 1;
@@ -4600,11 +4657,7 @@ static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code) {
 
     fresh = (uint8_t *)hw_alloc_page();
     if (!fresh) {
-        /* Out of memory. The reference was already dropped above, so put it
-         * back before giving up: leaving it low would let the frame be freed
-         * while this process is still using it. */
-        frame_ref_inc(phys);
-        return 0;
+        return 0;   /* out of memory; nothing has been dropped, so nothing to undo */
     }
     {
         const uint8_t *src = (const uint8_t *)(uintptr_t)phys;
@@ -4613,7 +4666,12 @@ static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code) {
             fresh[b] = src[b];
         }
     }
+    /* This address space swaps one frame for another: it lets go of the shared
+     * one and takes the copy. Both halves, together, so the counts are never
+     * momentarily wrong. */
+    (void)hw_page_put(phys);
     *pte = ((uint64_t)(uintptr_t)fresh) | PTE_PRESENT | PTE_WRITE | PTE_USER;
+    hw_page_get((uint64_t)(uintptr_t)fresh);
     hw_invlpg(fault_va);
     /* This one is not about permissions: the page's *physical address* just
      * changed. A thread of this same process on another core still has the old
@@ -4812,7 +4870,7 @@ static long hw_sys_munmap(uint64_t addr, uint64_t len) {
     end = (addr + len + 0xFFFull) & ~0xFFFull;
     for (va = addr; va < end; va += 4096ull) {
         uint64_t *pte = hw_pte_lookup(&proc->as, va);
-        if (pte && (*pte & PTE_USER) != 0) {
+        if (pte && (*pte & PTE_PRESENT) != 0) {
             uint64_t phys = *pte & 0x000FFFFFFFFFF000ull;
 
             /* Drop the mapping first, then ask whether the frame is ours to
@@ -4830,7 +4888,7 @@ static long hw_sys_munmap(uint64_t addr, uint64_t len) {
              * a page it still held. */
             *pte = 0;
             hw_invlpg(va);
-            if (frame_ref_dec(phys)) {
+            if (hw_page_put(phys)) {
                 hw_log(VIBEOS_LOG_DEBUG, 45u, va, phys,
                        "munmap released the last reference to a frame "
                        "(a0 = address, a1 = frame)");
@@ -4903,7 +4961,8 @@ static int hw_share_user_leaf(vibeos_hw_aspace_t *dst, uint64_t va, uint64_t *sr
     } else if (pte & PTE_COW) {
         flags |= PTE_COW;
     }
-    frame_ref_inc(phys);
+    /* No explicit count here any more: the two mapping calls below do it, and
+     * that is the point - a future path that shares a frame cannot forget. */
     g_cow_shared++;
     if (va < VIBEOS_HW_IDENTITY_LIMIT) {
         return hw_map_low_user_page(dst, va, phys, flags);
