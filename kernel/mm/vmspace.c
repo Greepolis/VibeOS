@@ -380,6 +380,55 @@ int vibeos_vmspace_map_raw(vibeos_vmspace_t *as, uint64_t va, uint64_t pa,
     return 0;
 }
 
+/* The copy-on-write mark. This layer does not resolve copy-on-write faults yet
+ * - that is phase P5 - but it must not destroy the mark when permissions
+ * change, and it must not grant write access over the top of one. Kept as its
+ * own name here rather than as a magic number so the two places agree. */
+#define PTE_COW_BIT (1ull << 9)   /* must equal PTE_COW in arch_hw.c */
+
+int vibeos_vmspace_protect(vibeos_vmspace_t *as, uint64_t va,
+                           vibeos_prot_t prot) {
+    uint64_t *pte;
+    uint64_t before;
+
+    if (!g_ready || !as || !as->root) {
+        return -1;
+    }
+    pte = walk(as, va, 0);
+    if (!pte || (*pte & PTE_PRESENT) == 0u) {
+        return -1;   /* not mapped: a permission change is not a mapping */
+    }
+    before = *pte;
+
+    /* Reachability and writability are two separate bits and this decides both.
+     * Only the write bit used to be touched, on the assumption that anything
+     * mapped was already reachable from ring 3 - which stopped being true when
+     * a PROT_NONE region became a real mapping with PTE_USER deliberately
+     * clear. The page then stayed present and unreachable, and a thread that
+     * had just been given a stack faulted on its first write to it. */
+    *pte &= ~(PTE_USER | PTE_WRITE);
+    if (prot != VIBEOS_PROT_NONE) {
+        if (prot & VIBEOS_PROT_USER) {
+            *pte |= PTE_USER;
+        }
+        if ((prot & VIBEOS_PROT_WRITE) && (before & PTE_COW_BIT) == 0u) {
+            *pte |= PTE_WRITE;
+        }
+    }
+
+    if (g_be.invlpg) {
+        g_be.invlpg(va);
+    }
+    /* Narrowing needs the other cores told; widening does not, because a stale
+     * entry that is more restrictive only costs a spurious fault, and the fault
+     * handler recognises an already-permitted access and simply invalidates. */
+    if (g_be.shootdown && (before & (PTE_USER | PTE_WRITE)) &
+                          ~(*pte & (PTE_USER | PTE_WRITE))) {
+        g_be.shootdown(as->root_phys);
+    }
+    return 0;
+}
+
 int vibeos_vmspace_unmap(vibeos_vmspace_t *as, uint64_t va) {
     uint64_t *pte;
 

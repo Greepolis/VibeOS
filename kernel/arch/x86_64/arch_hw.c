@@ -1069,6 +1069,20 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
  * program was never allowed to write, and a genuine protection fault would be
  * silently turned into a successful write. */
 #define PTE_COW     0x200ull
+
+/* x86-64 leaves bits 9, 10 and 11 of a page-table entry to software, and this
+ * kernel now uses two of them for different questions: PTE_COW says this page
+ * is shared and must be duplicated before it is written, and VIBEOS_PTE_OWNED
+ * says this address space holds a reference to the frame.
+ *
+ * They were briefly the same bit. Every mapped page then read as
+ * copy-on-write, so a write fault on a genuinely read-only page would have
+ * been resolved by granting the write rather than killing the process - and
+ * sixteen clean boots showed nothing, because the two only disagree on a path
+ * that needs a fault on a page a program is not allowed to write. Whoever
+ * takes the third bit gets told at compile time instead. */
+_Static_assert((PTE_COW & VIBEOS_PTE_OWNED) == 0ull,
+               "the copy-on-write bit and the ownership bit must be different bits");
 #define VIBEOS_HW_IDENTITY_GIB 4u       /* identity-map the first 4 GiB */
 #define VIBEOS_HW_IDENTITY_LIMIT 0x100000000ull
 
@@ -4768,15 +4782,30 @@ static long hw_sys_mprotect(uint64_t addr, uint64_t len, uint64_t prot) {
          * PTE_USER deliberately clear. The page then stayed present and
          * unreachable, and the thread that had just been given a stack faulted
          * on its first write to it: present, user, write - error code 7. */
-        if (prot == PROT_NONE) {
-            *pte &= ~(PTE_USER | PTE_WRITE);
-        } else {
-            *pte |= PTE_USER;
-            if (prot & PROT_WRITE) {
-                *pte |= PTE_WRITE;
-            } else {
-                *pte &= ~PTE_WRITE;
+        {
+            /* Through L1, which does the read-modify-write and preserves
+             * everything the entry records that a permission change does not
+             * alter: the frame, the ownership mark, the copy-on-write mark.
+             *
+             * One behaviour changes, and it is a fix rather than a
+             * consequence. This used to grant PTE_WRITE on request even to a
+             * page marked copy-on-write, which let a forked process write
+             * straight into a page its parent was still reading - the exact
+             * corruption fork's sharing exists to prevent, reachable from a
+             * program simply calling mprotect on its own memory. The layer
+             * leaves such a page read-only; the write then faults, the fault
+             * makes the copy, and the program gets what it asked for one fault
+             * later without anybody else's memory changing. */
+            vibeos_vmspace_t v = hw_vm(&proc->as);
+            vibeos_prot_t p = VIBEOS_PROT_NONE;
+
+            if (prot != PROT_NONE) {
+                p = (vibeos_prot_t)(VIBEOS_PROT_READ | VIBEOS_PROT_USER);
+                if (prot & PROT_WRITE) {
+                    p = (vibeos_prot_t)(p | VIBEOS_PROT_WRITE);
+                }
             }
+            (void)vibeos_vmspace_protect(&v, va, p);
         }
         hw_invlpg(va);
     }

@@ -23,16 +23,24 @@
  * for the order this was built in.
  */
 
-/* Bit 9 of a page-table entry. x86-64 leaves bits 9-11 to software, and this is
+/* Bit 11 of a page-table entry. x86-64 leaves bits 9-11 to software, and this is
  * the whole mechanism: an entry this layer installed says so, and an entry that
  * arrived some other way - an identity mapping split to finer granularity, a
  * table shared with the kernel - does not.
+ *
+ * Bit 11, not bit 9, and the difference nearly shipped. The plan said bit 9
+ * because bit 9 was documented as free; it is not - PTE_COW in the x86-64 code
+ * is 0x200, which is bit 9. Sharing them makes every mapped page read as
+ * copy-on-write, so a write fault on a genuinely read-only page would be
+ * resolved by granting the write instead of killing the process. Sixteen clean
+ * boots did not show it, because the two bits only disagree on a path that
+ * needs a fault on a page a program is not allowed to write.
  *
  * The distinction matters most where it is least obvious. A PROT_NONE guard
  * page has no PTE_USER and is still owned, which is why "not user-reachable"
  * was never a safe test for "not ours". An identity-split entry has PTE_WRITE
  * and is not owned, which is why "writable" was not one either. */
-#define VIBEOS_PTE_OWNED (1ull << 9)
+#define VIBEOS_PTE_OWNED (1ull << 11)
 
 typedef struct vibeos_vmspace {
     uint64_t root_phys;     /* what goes in CR3 */
@@ -116,6 +124,25 @@ int vibeos_vmspace_map(vibeos_vmspace_t *as, uint64_t va, uint64_t pa,
  * when it does. */
 int vibeos_vmspace_map_raw(vibeos_vmspace_t *as, uint64_t va, uint64_t pa,
                            uint64_t leaf_flags);
+
+/* Change the permissions on a page that is already mapped.
+ *
+ * Read-modify-write, touching only the bits that describe access. Everything
+ * else in the entry - the frame, the ownership mark, the copy-on-write mark -
+ * is left exactly as it was, because those record facts that a change of
+ * permission does not alter.
+ *
+ * Write access to a copy-on-write page is refused rather than granted, and
+ * that is deliberate: such a page is read-only *because it is shared*, not
+ * because the program may not write it. Handing out the write bit would let
+ * one process write into a page another one is still reading, which is
+ * precisely the corruption fork's sharing exists to prevent. The mapping stays
+ * read-only, the write faults, and the fault handler makes the copy and grants
+ * the access - so the program sees what it asked for, one fault later.
+ *
+ * `mark` is set on success to the pending access, so the caller can record
+ * that the page will still take a fault. Pass null to ignore it. */
+int vibeos_vmspace_protect(vibeos_vmspace_t *as, uint64_t va, vibeos_prot_t prot);
 
 /* Unmap one page, releasing the reference if this address space owned it.
  * Returns 1 if an owned entry was released, 0 if there was nothing mapped or

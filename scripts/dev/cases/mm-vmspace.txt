@@ -65,3 +65,15 @@
 #     first, and the one a reviewer is least likely to spot by reading: the
 #     code looks like it is being careful, and it is being careful about the
 #     wrong 512 entries.
+
+### protect grants write over a copy-on-write page
+--- old
+        if ((prot & VIBEOS_PROT_WRITE) && (before & PTE_COW_BIT) == 0u) {
++++ new
+        if (prot & VIBEOS_PROT_WRITE) {
+
+### protect rewrites the entry instead of modifying it, losing the ownership mark
+--- old
+    *pte &= ~(PTE_USER | PTE_WRITE);
++++ new
+    *pte = (*pte & ~(PTE_USER | PTE_WRITE | VIBEOS_PTE_OWNED));

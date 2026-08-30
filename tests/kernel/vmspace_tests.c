@@ -238,6 +238,75 @@ int test_vmspace(void) {
     if (vibeos_vmspace_destroy(&as) != 0) { goto fail; }
     if (vibeos_frame_owners(f1) != 1u) { goto fail; }
 
+    /* ---- protect changes access and nothing else ------------------------ */
+    if (setup(0) != 0) { goto fail; }
+    if (vibeos_vmspace_create(&as) != 0) { goto fail; }
+    f1 = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+    if (vibeos_vmspace_map(&as, 0x8000000000ull, f1,
+                           VIBEOS_PROT_READ | VIBEOS_PROT_USER) != 0) { goto fail; }
+
+    /* Widen to writable, then take it away again. The frame and the ownership
+     * mark must survive both, because neither is a permission. */
+    if (vibeos_vmspace_protect(&as, 0x8000000000ull,
+                               VIBEOS_PROT_READ | VIBEOS_PROT_WRITE |
+                               VIBEOS_PROT_USER) != 0) { goto fail; }
+    {
+        uint64_t *e = vibeos_vmspace_entry(&as, 0x8000000000ull);
+        if (!e) { goto fail; }
+        if ((*e & 2ull) == 0ull) { goto fail; }                  /* writable */
+        if ((*e & VIBEOS_PTE_OWNED) == 0ull) {
+            printf("FAIL:protect dropped the ownership mark\n");
+            goto fail;
+        }
+        if ((*e & ~0xFFFull) != f1) {
+            printf("FAIL:protect moved the page to a different frame\n");
+            goto fail;
+        }
+    }
+    if (vibeos_vmspace_protect(&as, 0x8000000000ull, VIBEOS_PROT_NONE) != 0) { goto fail; }
+    {
+        uint64_t *e = vibeos_vmspace_entry(&as, 0x8000000000ull);
+        if (!e || (*e & 1ull) == 0ull) { goto fail; }             /* still present */
+        if ((*e & (2ull | 4ull)) != 0ull) { goto fail; }          /* no access */
+        if ((*e & VIBEOS_PTE_OWNED) == 0ull) { goto fail; }
+    }
+    /* ...and the frame is still released at teardown, which is what makes the
+     * ownership mark surviving a permission change matter at all. */
+    if (vibeos_vmspace_destroy(&as) != 0) { goto fail; }
+    if (vibeos_frame_owners(f1) != 1u) { goto fail; }
+
+    /* ---- protect never grants write over a copy-on-write page ------------
+     *
+     * Such a page is read-only because it is *shared*, not because the program
+     * may not write it. Granting the write bit here let a forked process write
+     * straight into a page its parent was still reading - the corruption
+     * fork's sharing exists to prevent, reachable by a program calling
+     * mprotect on its own memory. It stays read-only; the write faults, the
+     * fault makes the copy, and the program gets what it asked for one fault
+     * later. */
+    if (setup(0) != 0) { goto fail; }
+    if (vibeos_vmspace_create(&as) != 0) { goto fail; }
+    f1 = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+    if (vibeos_vmspace_map_raw(&as, 0x8000000000ull, f1,
+                               1ull | 4ull | (1ull << 9)) != 0) { goto fail; }
+    if (vibeos_vmspace_protect(&as, 0x8000000000ull,
+                               VIBEOS_PROT_READ | VIBEOS_PROT_WRITE |
+                               VIBEOS_PROT_USER) != 0) { goto fail; }
+    {
+        uint64_t *e = vibeos_vmspace_entry(&as, 0x8000000000ull);
+        if (!e) { goto fail; }
+        if (*e & 2ull) {
+            printf("FAIL:protect made a copy-on-write page writable\n");
+            goto fail;
+        }
+        if ((*e & (1ull << 9)) == 0ull) {
+            printf("FAIL:protect cleared the copy-on-write mark\n");
+            goto fail;
+        }
+        if ((*e & 4ull) == 0ull) { goto fail; }   /* readable, as asked */
+    }
+    if (vibeos_vmspace_destroy(&as) != 0) { goto fail; }
+
     free(g_ram);
     g_ram = 0;
     return 0;
