@@ -37,6 +37,7 @@ and ask at each one rather than pick.
 | D6 | Does the block cache in `kernel/fs/` get merged into the page cache, or kept? | Merging touches the filesystem layer, which is outside this plan's scope | Before P4 |
 | D7 | Which device backs swap, and is it configured or discovered? | A product decision about how VibeOS is deployed | Before P5 |
 | D8 | What happens when swap is full — kill the allocating process, or fail the allocation? | A policy question with no technically correct answer | Before P5 |
+| D9 | Does an allocation hand back a frame with one owner, or with none? | It decides whether the first mapping counts, and it is the difference between a leak and a double free at every alloc site | Before P1 step 3 |
 
 Anything not on this list and not specified above, I will implement as written.
 If the plan turns out to be wrong about something, I stop and say so rather than
@@ -71,3 +72,54 @@ a megabyte and costs a second migration of the structure and its tests, at P4 or
 P6, in a subsystem whose whole problem has been changing the same thing four
 times. The point of this rewrite is not to do that again.
 
+
+## D9 — the ownership contract of an allocation
+
+**Open. This blocks P1 step 3, and I am not deciding it on my own.**
+
+It surfaced while writing the wrappers, and it is not a detail: today
+`hw_alloc_page` hands back a frame with a reference count of **zero**, and the
+count only becomes one when `hw_map_page` maps it. The new layer hands back a
+frame with **one** owner, because "allocated and owned by nobody" is exactly the
+state that made the old scheme unsafe - it is indistinguishable from free.
+
+Both are coherent; they are not compatible, and the mismatch is silent in the
+worst way. Wire the wrappers without settling it and every user page ends up
+with two owners instead of one (allocation plus first mapping), so nothing is
+ever reclaimed - a leak. Settle it the other way carelessly and a kernel page
+table, which is allocated and freed without ever being mapped, is freed at a
+count that was never incremented - a double free.
+
+### Option A — an allocation gives the caller one owner (Linux's model)
+
+`alloc` returns owners = 1. The caller holds that reference. Mapping the frame
+takes another; unmapping drops it. A caller that allocates a frame purely to map
+it drops its own reference once the mapping exists, exactly as
+`alloc_page`/`put_page` do.
+
+- Correct for kernel page tables with no change: allocate, use, `put`, freed.
+- Every path that allocates a frame *for a mapping* gains one `put`. There are
+  about nine such sites.
+- A missed `put` leaks one frame and shows up in `meminfo`. A leak is the
+  failure direction this whole rewrite chose on purpose.
+
+### Option B — an allocation gives the caller nothing, mapping owns the frame
+
+`alloc` returns owners = 0, as today. Only mappings count.
+
+- No call site changes at all.
+- Keeps the state that has caused every defect in this subsystem: a frame that
+  is allocated and owned by nobody reads as free to anything that asks, which is
+  precisely what the invariant "a frame is freed only at zero" was written to
+  make impossible.
+- Kernel page tables live permanently at zero owners, so the count cannot be
+  used to check anything about them.
+
+**My recommendation is A**, and it is not close. B is cheaper this week and
+re-creates the exact ambiguity that cost four fixes; A costs nine `put` calls
+and makes every wrong one a measurable leak rather than a corruption that
+surfaces in an unrelated program three boots later.
+
+What I need from you is a yes to A, or a reason for B. Until then P1 stops at
+step 2, which is where it is: the layer is built, host-tested and compiled in,
+and nothing calls it yet.

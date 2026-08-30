@@ -3,6 +3,11 @@
 #
 #   scripts/dev/check.sh [build|tests|smoke|all] [build-dir]
 #
+# Every subcommand builds first. "tests" and "smoke" used to run whatever binary
+# was lying around, and a sabotage run scored green against a stale one within an
+# hour of that being possible - the same trap CLAUDE.md records for boots.sh,
+# wearing a third set of clothes. Building twice costs a no-op ninja run.
+#
 # Defaults to everything against build-gcc-Release. Prints only what matters:
 # the return code, the count of real warnings, the test verdict, and the boot
 # reason plus every ring-3 self-check line the guest produced.
@@ -86,8 +91,8 @@ do_fuzz() {
 
 case "$what" in
     build) do_build ;;
-    tests) do_tests ;;
-    smoke) do_smoke ;;
+    tests) do_build; do_tests ;;
+    smoke) do_build; do_smoke ;;
     fuzz)  do_fuzz ;;
     all)   do_build; do_tests; do_fuzz; do_smoke ;;
     *)     echo "usage: $0 [build|tests|smoke|fuzz|all] [build-dir]"; exit 2 ;;

@@ -112,12 +112,36 @@ int      vibeos_frame_reserve(uint64_t base, uint64_t len);
 
 **Steps, in order**
 1. Write `frame.c` with the descriptor array of §5, the free list, poison, and
-   the counters from P0. No callers yet.
+   the counters from P0. No callers yet. **Done** (`bec59e3`).
+
+   One correction to the design landed here: the poison is written on *release*,
+   never at init. Initialising over a region whose first megabytes are already
+   live would destroy them. `VIBEOS_FRAME_WAS_FREED` marks the frames the poison
+   check may judge, so a never-freed frame is not reported as corrupt - see
+   `12a1e19`.
 2. Host tests first: alloc/free round trip, get/put arithmetic, double-put
    refused, out-of-range refused, poison verified on reuse, reserve excludes a
-   range. `ctest` green before any kernel change.
-3. Point `hw_alloc_page`/`hw_free_page` at the new layer as one-line wrappers.
-   Boot; `meminfo` numbers must match P0's.
+   range, and a never-freed frame full of garbage that must *not* be flagged.
+   Green before any kernel change. **Done**; each was confirmed to go red by
+   breaking the code it protects.
+3. **Blocked on D9** — the ownership contract of an allocation. The old
+   allocator hands back a frame with zero owners and lets the first mapping make
+   it one; the new layer hands back one owner. Wiring the wrappers without
+   settling that leaks every user page or double-frees every page table, and the
+   mismatch is silent either way. See `decisions.md` D9; the recommendation is
+   option A. Nothing in step 3 starts before that is answered.
+
+   Then: point `hw_alloc_page`/`hw_free_page` at the new layer as one-line
+   wrappers. Boot; `meminfo` numbers must match P0's.
+
+   Two things step 3 also has to get right, found while reading the allocator:
+   - The layer comes up *after* the bump allocator has already handed out the
+     early page tables and the descriptor table itself. Those frames must be
+     reserved, not free - `vibeos_frame_reserve(base, pmm.offset_bytes)` covers
+     exactly the prefix a bump allocator has consumed.
+   - The old allocator refused any frame above `VIBEOS_HW_IDENTITY_LIMIT`, since
+     it cannot address one. Reserve that tail rather than letting `alloc` return
+     a frame nobody can write.
 4. Replace call sites of the wrappers with the real names, file by file.
 5. Delete the wrappers. Add the layering check for `g_free_pages`.
 
