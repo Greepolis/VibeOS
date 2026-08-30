@@ -30,6 +30,14 @@
 #define PTE_COW_BIT (1ull << 9)   /* must equal PTE_COW in arch_hw.c */
 
 static vibeos_vmspace_backend_t g_be;
+
+/* See vibeos_vmspace_current_op. One store per entry point; no lock, because a
+ * lock here would change the very timing being investigated. */
+static const char *g_op = "none";
+
+const char *vibeos_vmspace_current_op(void) {
+    return g_op ? g_op : "none";
+}
 static int g_ready;
 
 int vibeos_vmspace_init(const vibeos_vmspace_backend_t *backend) {
@@ -280,6 +288,7 @@ static void release_pd(uint64_t *pd, const uint64_t *shared) {
 
 int vibeos_vmspace_destroy(vibeos_vmspace_t *as) {
     uint32_t slot, gi;
+    g_op = "destroy";
 
     if (!g_ready || !as || !as->root) {
         return -1;
@@ -346,6 +355,7 @@ int vibeos_vmspace_map(vibeos_vmspace_t *as, uint64_t va, uint64_t pa,
 int vibeos_vmspace_map_raw(vibeos_vmspace_t *as, uint64_t va, uint64_t pa,
                            uint64_t leaf) {
     uint64_t *pte = 0;
+    g_op = "map";
 
     if (!g_ready || !as || !as->root || (va & 0xFFFull) || (pa & 0xFFFull)) {
         return -1;
@@ -364,20 +374,39 @@ int vibeos_vmspace_map_raw(vibeos_vmspace_t *as, uint64_t va, uint64_t pa,
         }
     }
 
-    /* Replacing a mapping releases what was there. Without this, mapping over
-     * an owned entry loses the reference and the frame is never reclaimed -
-     * a leak rather than a corruption, but a leak that grows with every exec. */
-    if ((*pte & PTE_PRESENT) && (*pte & VIBEOS_PTE_OWNED)) {
-        (void)vibeos_frame_put(*pte & PTE_ADDR_MASK);
-        vibeos_mm_stats()->unmaps++;
+
+    /* Take the reference *before* the entry is visible, not after.
+     *
+     * The other order published a mapping that no count knew about yet, and
+     * every other core can see a page-table entry the instant it is stored.
+     * During fork that window is wide enough to matter: a core resolving a
+     * copy-on-write fault on the same frame reads owners == 1, concludes it is
+     * the only owner, and keeps the shared page writable - so parent and child
+     * end up writing the same memory. The mirror case is worse: the same read
+     * lets a release take the count to zero while the freshly published entry
+     * still points at the frame, which is a page reclaimed while a live process
+     * maps it.
+     *
+     * Both were observed: the stress service saw a child read its parent's
+     * value, and the release watch named the frame and the process that still
+     * mapped it. Counting first costs nothing and closes the window entirely -
+     * an extra reference on a mapping that then fails to be installed is a
+     * leak, and a leak is the direction this subsystem chooses on purpose. */
+    {
+        /* Replacing a mapping releases what was there - after the new entry is
+         * in place, for the reason above. Without it, mapping over an owned
+         * entry loses the reference and the frame is never reclaimed: a leak
+         * that grows with every exec. */
+        uint64_t old = *pte;
+
+        vibeos_frame_get(pa & PTE_ADDR_MASK);
+        *pte = (pa & PTE_ADDR_MASK) | leaf | PTE_PRESENT | VIBEOS_PTE_OWNED;
+
+        if ((old & PTE_PRESENT) && (old & VIBEOS_PTE_OWNED)) {
+            (void)vibeos_frame_put(old & PTE_ADDR_MASK);
+            vibeos_mm_stats()->unmaps++;
+        }
     }
-
-    *pte = (pa & PTE_ADDR_MASK) | leaf | PTE_PRESENT | VIBEOS_PTE_OWNED;
-
-    /* The reference and the record of it are written together, here, and
-     * nowhere else. That is the entire repair: there is no longer any way for
-     * an address space to hold a frame without having said so. */
-    vibeos_frame_get(pa & PTE_ADDR_MASK);
     vibeos_mm_stats()->maps++;
 
     if (g_be.invlpg) {
@@ -389,6 +418,7 @@ int vibeos_vmspace_map_raw(vibeos_vmspace_t *as, uint64_t va, uint64_t pa,
 int vibeos_vmspace_protect(vibeos_vmspace_t *as, uint64_t va,
                            vibeos_prot_t prot) {
     uint64_t *pte;
+    g_op = "protect";
     uint64_t before;
 
     if (!g_ready || !as || !as->root) {
@@ -431,6 +461,7 @@ int vibeos_vmspace_protect(vibeos_vmspace_t *as, uint64_t va,
 
 int vibeos_vmspace_unmap(vibeos_vmspace_t *as, uint64_t va) {
     uint64_t *pte;
+    g_op = "unmap";
 
     if (!g_ready || !as || !as->root) {
         return -1;
@@ -554,6 +585,7 @@ static int clone_one(vibeos_vmspace_t *src, uint64_t va, uint64_t *pte, void *ct
 }
 
 int vibeos_vmspace_clone_cow(vibeos_vmspace_t *dst, vibeos_vmspace_t *src) {
+    g_op = "fork";
     if (!g_ready || !dst || !src || !dst->root || !src->root) {
         return -1;
     }
@@ -585,6 +617,7 @@ static int copy_frame(uint64_t dst, uint64_t src) {
 
 int vibeos_vmspace_fault(vibeos_vmspace_t *as, uint64_t va, int write) {
     uint64_t *pte;
+    g_op = "cow-fault";
     uint64_t phys, fresh;
 
     if (!g_ready || !as || !as->root || !write) {
@@ -647,9 +680,13 @@ int vibeos_vmspace_fault(vibeos_vmspace_t *as, uint64_t va, int write) {
      * No second reference on the copy: the allocation already gave it one and
      * this address space is that owner, which is what the entry below records.
      * Taking another would mean the frame is never reclaimed. */
-    (void)vibeos_frame_put(phys);
+    /* Install the copy first, then let go of the shared frame - the same rule
+     * as in map, from the other side. Releasing while the entry still points at
+     * the old frame means the count can reach zero on a page this address space
+     * is still mapping, and the next allocation hands it to somebody else. */
     *pte = (fresh & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITE | PTE_USER |
            VIBEOS_PTE_OWNED;
+    (void)vibeos_frame_put(phys);
     if (g_be.invlpg) {
         g_be.invlpg(va);
     }

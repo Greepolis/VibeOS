@@ -1336,6 +1336,46 @@ static const uint64_t *g_aspace_being_destroyed;
  * When a poisoned page is handed out again with the poison disturbed, or when
  * anything else finds this pattern where data should be, the tag names the
  * last function to release it. */
+/* Is a live process still mapping the frame that is about to be reclaimed?
+ *
+ * The same question hw_free_page_why has always asked, moved to where the
+ * frees actually happen. Since the address-space layer arrived, almost nothing
+ * reaches a frame's last release through hw_free_page: vibeos_vmspace_unmap
+ * and vibeos_vmspace_destroy release directly, and the detector sat in a path
+ * nothing walks - so its silence was being read as evidence when it was only
+ * absence.
+ *
+ * Sampled one release in sixteen. The walk is expensive; the bug appears about
+ * four boots in ten, so one in sixteen still meets it within a run. */
+static void hw_frame_release_watch(uint64_t phys) {
+    uint32_t pid = 0;
+
+    if ((++g_free_seq & 0x0Fu) != 0u) {
+        return;
+    }
+    if (g_aspace_being_destroyed) {
+        /* Teardown legitimately holds every frame it is freeing: the dying
+         * task is still the current one and still maps them. Reporting that
+         * cost eighty false alarms a boot the first time this check existed. */
+        return;
+    }
+    if (!hw_frame_still_mapped(phys, &pid)) {
+        return;
+    }
+    hw_log(VIBEOS_LOG_ERROR, 46u, phys, (uint64_t)pid,
+           "reclaiming a frame that a live process still maps "
+           "(a0 = frame, a1 = pid)");
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts("[MM] FREE_WHILE_MAPPED frame=0x");
+    vibeos_x86_64_serial_print_hex(phys);
+    vibeos_x86_64_serial_puts(" still mapped by pid=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)pid);
+    vibeos_x86_64_serial_puts(" during ");
+    vibeos_x86_64_serial_puts(vibeos_vmspace_current_op());
+    vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
+}
+
 static void hw_free_page_why(void *p, const char *why) {
     uint64_t phys = (uint64_t)(uintptr_t)p;
 
@@ -1570,6 +1610,7 @@ static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
              * by the initialisation itself, which runs on one core here but
              * should not depend on that. */
             vibeos_frame_set_lock(hw_frame_lock, hw_frame_unlock);
+            vibeos_frame_set_release_watch(hw_frame_release_watch);
             prefix = (uint64_t)g_hw_pmm.offset_bytes;
             if (vibeos_frame_init((uint64_t)g_hw_pmm.base,
                                   (uint64_t)g_hw_pmm.size_bytes,

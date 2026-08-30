@@ -39,6 +39,12 @@ static uint32_t g_free_head = FRAME_NONE;
 static uint64_t g_free_count;
 static vibeos_frame_map_fn g_map;
 static int g_allocated_yet;      /* reserve() must come first */
+static void (*g_watch)(uint64_t phys);
+
+void vibeos_frame_set_release_watch(void (*watch)(uint64_t phys)) {
+    g_watch = watch;
+}
+
 static void (*g_lock)(void);
 static void (*g_unlock)(void);
 
@@ -422,6 +428,14 @@ void vibeos_frame_get(uint64_t phys) {
 
 int vibeos_frame_put(uint64_t phys) {
     int r;
+
+    /* Before the lock, and sampled by the caller's own counter: the watch walks
+     * page tables to ask whether a live process still maps this frame, which is
+     * far too slow to do under a lock that masks interrupts - and it takes that
+     * lock itself, by asking this layer for owner counts. */
+    if (g_watch && vibeos_frame_owners(phys) == 1u) {
+        g_watch(phys);
+    }
     frame_lock();
     r = vibeos_frame_put_locked(phys);
     frame_unlock();

@@ -87,6 +87,16 @@ typedef struct vibeos_vmspace_backend {
 
 int vibeos_vmspace_init(const vibeos_vmspace_backend_t *backend);
 
+/* Which operation of this layer is running, as a name.
+ *
+ * Instrumentation, not bookkeeping. Two versions of the copy-on-write fault
+ * handler with identical reference arithmetic behave differently, and reading
+ * them side by side has now failed several times - so the kernel is made to say
+ * which operation is releasing a frame that somebody still maps, instead of
+ * being reasoned about. Racy across cores on purpose: a name that is usually
+ * right costs one store and beats a correct silence. */
+const char *vibeos_vmspace_current_op(void);
+
 /* A fresh address space sharing the kernel's identity map. */
 int vibeos_vmspace_create(vibeos_vmspace_t *out);
 

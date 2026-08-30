@@ -27,6 +27,19 @@
  * frame it cannot touch is still a frame it can count. */
 typedef void *(*vibeos_frame_map_fn)(uint64_t phys);
 
+/* Watch the last release of a frame.
+ *
+ * Called just before a frame goes back on the free list, with the address of
+ * the frame whose owner count is about to reach zero. It exists because the
+ * free-while-mapped detector was installed in the architecture's free path, and
+ * since the rewrite almost nothing frees a frame through there any more: the
+ * address-space layer releases directly. The detector was watching a door
+ * nothing walks through, and "it is silent" was being read as evidence.
+ *
+ * Sampled by the caller, not here - the check walks page tables and is far too
+ * expensive to run on every release. */
+void vibeos_frame_set_release_watch(void (*watch)(uint64_t phys));
+
 /* Serialise this layer against itself.
  *
  * The lock belongs here, not at the call sites. It used to be taken by the
