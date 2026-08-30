@@ -239,7 +239,43 @@ phase — it is rewritten in P3 — but it walks *through* `vmspace_unmap`.
 `FREE_WHILE_MAPPED`, no stress failure and no unexpected ring-3 fault; the four
 sabotage cases seen red.
 
-**Status: NOT done. The 48-boot criterion failed - 27 clean out of 48.**
+**Status: NOT done. Best measured rate is 21-22 clean out of 24, against a
+criterion of 48 out of 48.** It started at 27 out of 48.
+
+### Where to pick this up
+
+Three defects were found and fixed, all of them the same shape - two cores
+disagreeing about a page-table entry - and all three confirmed by experiment
+rather than by reading:
+
+1. **Publication order** (`e02d9dd`). `map_raw` stored the entry and then took
+   the reference, so a mapping existed that no count knew about. This was the
+   big one: no `STRESS_FAIL` has appeared in the ~100 boots since.
+2. **Release order** in the fault and in teardown: releasing a frame while the
+   entry still pointed at it.
+3. **Double resolution** (`6510827`). Two threads faulting on one page both
+   copied and both released the shared frame. Every store to an entry is a
+   compare-exchange now, so the loser discovers it.
+
+**What is still open.** About one boot in twelve, and it no longer looks like
+the original defect:
+
+- `svc-flap` takes a not-present *instruction fetch* with `cr2` equal to `rip`,
+  inside the same page it was already executing from - a page that vanished
+  under a running process. No detector has caught the moment yet.
+- A wedge, roughly one boot in twenty-four, at varying phases.
+
+Both may predate P2: CLAUDE.md already records an intermittent wedge and a
+`ping` hang from before this work. **That is the first thing to establish** -
+run `scripts/dev/bisect-boot.sh a714dbe 24` (P2 step 2, which measured 16/16)
+and see whether these two signatures appear there too. If they do, they are not
+P2's to fix and the phase can close on its own terms.
+
+**Tools that now exist for it**, all of which earned their place today:
+`repeat-boot.sh` keeps the log of every failed boot; the free-while-mapped
+detector sits on the frame layer's last release and compares mappings against
+references; `vibeos_vmspace_current_op()` names the operation in the report;
+`bisect-boot.sh` builds a revision and always puts the tree back.
 
 The code is written and the six commits are in (`87134d7` through `b2d6d7f`).
 Fifteen sabotage cases, all red. No page-table write and no frame reference
