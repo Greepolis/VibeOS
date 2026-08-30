@@ -448,6 +448,7 @@ extern int vibeos_x86_64_virtio_blk_write(uint64_t sector, const void *buf);
 #include "vibeos/log.h"
 #include "vibeos/mm_model.h"
 #include "vibeos/frame.h"
+#include "vibeos/vmspace.h"
 
 /* The counters live in one structure now (plan phase P0), so the console, the
  * boot gate and a panic all read the same numbers. The names below keep the
@@ -598,6 +599,11 @@ static void hw_panic_cpu_summary(void);   /* defined with the task table */
 /* Defined with the task table: answers whether a frame about to be freed
  * is still mapped by a live process. */
 static int hw_frame_still_mapped(uint64_t phys, uint32_t *out_pid);
+/* Forward-declared for the same reason as the line above: this is one 5000-line
+ * file, and a helper used before its definition compiles as an implicit
+ * declaration and then fails with a confusing message about a static
+ * declaration following a non-static one. */
+static void hw_invlpg(uint64_t va);
 static void hw_fault_kill_current_user(const vibeos_x86_64_isr_frame_t *frame,
                                        uint64_t fault_address);
 
@@ -1178,11 +1184,13 @@ static int hw_exec_cache_hit(const char *path) {
  * memory lock is taken here, on the arch side, exactly where it was taken
  * before for the free list. */
 
-static void hw_page_get(uint64_t phys) {
-    hw_spin_lock(&g_mm_lock);
-    vibeos_frame_get(phys);
-    hw_spin_unlock(&g_mm_lock);
-}
+/* There is deliberately no hw_page_get any more.
+ *
+ * Taking a reference on a user frame happens in exactly one place -
+ * vibeos_vmspace_map, at the moment the mapping is installed - and the compiler
+ * says so: the wrapper that used to exist here became unused the instant the
+ * mapping functions moved into L1. That is the invariant this phase exists to
+ * establish, and an unused-function warning is a cheap way to keep it. */
 
 /* Returns non-zero when the last owner let go. Unlike the old one, that also
  * means the frame has *already* gone back to the free list, poisoned: releasing
@@ -1413,6 +1421,36 @@ static void *hw_alloc_pages_contig(uint32_t count) {
     return (void *)(uintptr_t)phys;
 }
 
+/* What L1 allocates its page tables from. A table is a frame like any other -
+ * one owner, the address space that built it - and it is freed by structure at
+ * teardown rather than by the ownership bit, which marks user frames only. */
+static uint64_t hw_vmspace_alloc_table(void) {
+    uint64_t phys;
+    /* Allocated with its state, rather than as a generic frame relabelled
+     * later. meminfo can then say how much of memory is page tables, which is
+     * a figure that grows with the number of processes and had nowhere to be
+     * seen before. */
+    hw_spin_lock(&g_mm_lock);
+    phys = vibeos_frame_alloc(VIBEOS_FRAME_PAGE_TABLE);
+    hw_spin_unlock(&g_mm_lock);
+    return phys;
+}
+
+static void hw_vmspace_free_table(uint64_t phys) {
+    hw_free_page((void *)(uintptr_t)phys);
+}
+
+/* The page directories the kernel shares with every address space. L1 compares
+ * against these to know what it must copy before carving a user page out of the
+ * identity region - by identity, not by address range, so a future change to
+ * where the kernel maps itself cannot quietly make the test wrong. */
+static const uint64_t *hw_vmspace_shared_pd(uint32_t gib) {
+    if (gib >= VIBEOS_HW_IDENTITY_GIB) {
+        return 0;
+    }
+    return &g_pd[gib][0];
+}
+
 /* The kernel reaches every frame through the identity map, so "addressable" and
  * "below the identity limit" are the same question. The frame layer asks this
  * before poisoning or zeroing a frame; null means it counts the frame without
@@ -1532,6 +1570,33 @@ static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
 
         if (ok) {
             g_frame_layer_ready = 1;
+
+            /* The address-space layer, immediately after the frame layer it
+             * allocates from. Nothing has created an address space yet: user
+             * tasks come later in the boot, and the kernel's own page tables
+             * are the static ones built in hw_paging_bringup. */
+            {
+                vibeos_vmspace_backend_t vb;
+                uint32_t bi;
+                for (bi = 0; bi < sizeof(vb); bi++) {
+                    ((uint8_t *)(void *)&vb)[bi] = 0;
+                }
+                vb.map_phys = hw_frame_identity_map;
+                vb.alloc_table = hw_vmspace_alloc_table;
+                vb.free_table = hw_vmspace_free_table;
+                /* Exactly what hw_aspace_create used to write into slot 0:
+                 * the kernel's identity map, shared, and with no PTE_USER so
+                 * ring 3 cannot reach any of it. */
+                vb.kernel_pml4e = (uint64_t)(uintptr_t)&g_pdpt[0] |
+                                  PTE_PRESENT | PTE_WRITE;
+                vb.identity_limit = VIBEOS_HW_IDENTITY_LIMIT;
+                vb.shared_pdpt = &g_pdpt[0];
+                vb.shared_pd = hw_vmspace_shared_pd;
+                vb.invlpg = hw_invlpg;
+                if (vibeos_vmspace_init(&vb) != 0) {
+                    ok = 0;
+                }
+            }
             /* The bump allocator is closed, not merely unused.
              *
              * Every vibeos_pmm_alloc_* call site checks this flag, so a call
@@ -1575,120 +1640,45 @@ static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
     vibeos_x86_64_serial_puts("\n");
 }
 
-/* Walk the four levels (creating missing tables from the pool) and install a
- * 4 KiB mapping. Intermediate entries carry US so the leaf's US decides access.
- * Identity-mapped physical addresses double as the kernel's view of the tables. */
-static int hw_map_page(vibeos_hw_aspace_t *as, uint64_t va, uint64_t pa, uint64_t leaf_flags) {
-    static const uint32_t shifts[3] = {39u, 30u, 21u}; /* PML4, PDPT, PD */
-    uint64_t *tbl = as->pml4;
-    uint32_t level;
-
-    for (level = 0; level < 3u; level++) {
-        uint32_t idx = (uint32_t)((va >> shifts[level]) & 0x1FFu);
-        if ((tbl[idx] & PTE_PRESENT) == 0) {
-            void *page = hw_alloc_page();
-            if (!page) {
-                return -1;
-            }
-            tbl[idx] = (uint64_t)(uintptr_t)page | PTE_PRESENT | PTE_WRITE | PTE_USER;
-        }
-        tbl = (uint64_t *)(uintptr_t)(tbl[idx] & 0x000FFFFFFFFFF000ull);
-    }
-    tbl[(va >> 12) & 0x1FFu] = (pa & 0x000FFFFFFFFFF000ull) | leaf_flags;
-    /* Counted on every leaf, not only the ones carrying PTE_USER.
-     *
-     * A PROT_NONE mapping - which is how a C library reserves a thread stack
-     * and its guard - is mapped without PTE_USER and given it later by
-     * mprotect. Counting on the USER bit therefore missed the mapping and saw
-     * the release, and the frame was reported as having no owners 211 times in
-     * a single boot. Whether a page is reachable from ring 3 is a permission;
-     * whether this address space maps the frame is ownership, and they are not
-     * the same question. */
-    hw_page_get(pa & 0x000FFFFFFFFFF000ull);
-    return 0;
+/* The bridge to L1.
+ *
+ * In this kernel a page table's physical address and the pointer the kernel
+ * uses to reach it are the same number - that is what the identity map is for -
+ * so an address space is fully described by its PML4 and the vmspace handle can
+ * be built on the spot rather than stored. Keeping vibeos_hw_aspace_t as it was
+ * means the hundred places that read `as->pml4` or load it into CR3 are
+ * untouched by this phase. */
+static vibeos_vmspace_t hw_vm(const vibeos_hw_aspace_t *as) {
+    vibeos_vmspace_t v;
+    v.root_phys = (uint64_t)(uintptr_t)as->pml4;
+    v.root = as->pml4;
+    return v;
 }
 
-/* Map one user page inside the kernel's identity region.
+/* Install a 4 KiB mapping. Both windows, one call: the address decides.
  *
- * The tables covering the first GiB are global and shared by every address
- * space, and the identity map uses 2 MiB pages, so there is nowhere to put a
- * 4 KiB user entry without first making private copies. This walks down and
- * un-shares exactly as much as it has to:
+ * This is now a wrapper. The walking, the un-sharing of the kernel's low-window
+ * tables, the split of a 2 MiB identity leaf, the reference on the frame and
+ * the ownership mark all happen in kernel/mm/vmspace.c, which is host-tested.
+ * hw_map_low_user_page remains only as a name some callers still use; it does
+ * the same thing, because choosing between two mapping functions by address was
+ * the caller's job and one caller chose wrong.
  *
- *   - PML4 slot 0 still points at the global PDPT: copy it.
- *   - The PDPT entry still points at a global PD: copy it.
- *   - The PD entry is a 2 MiB leaf: split it into a page table whose 512
- *     entries reproduce the same identity mapping at 4 KiB granularity, so the
- *     kernel's view of that region is unchanged, and only then overwrite the
- *     one entry the program wants.
- *
- * The upper levels get PTE_USER because on x86-64 access is the AND of the US
- * bits along the path; the leaf decides. Every identity entry left behind has
- * US clear, so ring 3 still cannot reach any of it. */
+ * The flags are passed through rather than translated, because fork installs
+ * mappings carrying PTE_COW and the portable protection type has no word for
+ * it. The ownership bit is still added by the layer and nowhere else. */
+static int hw_map_page(vibeos_hw_aspace_t *as, uint64_t va, uint64_t pa,
+                       uint64_t leaf_flags) {
+    vibeos_vmspace_t v = hw_vm(as);
+    return vibeos_vmspace_map_raw(&v, va, pa, leaf_flags);
+}
+
 static int hw_map_low_user_page(vibeos_hw_aspace_t *as, uint64_t va, uint64_t pa,
                                 uint64_t leaf_flags) {
-    uint64_t *pdpt, *pd, *pt;
-    uint32_t gi = (uint32_t)((va >> 30) & 0x1FFu);
-    uint32_t pdi = (uint32_t)((va >> 21) & 0x1FFu);
-    uint32_t pti = (uint32_t)((va >> 12) & 0x1FFu);
-
     if (va >= VIBEOS_HW_IDENTITY_LIMIT) {
         return -1;   /* not this function's business */
     }
-
-    /* Level 1: the PDPT for the low 512 GiB. */
-    pdpt = (uint64_t *)(uintptr_t)(as->pml4[0] & 0x000FFFFFFFFFF000ull);
-    if (pdpt == &g_pdpt[0]) {
-        uint64_t *priv = (uint64_t *)hw_alloc_page();
-        uint32_t i;
-        if (!priv) {
-            return -1;
-        }
-        for (i = 0; i < 512u; i++) {
-            priv[i] = g_pdpt[i];
-        }
-        as->pml4[0] = (uint64_t)(uintptr_t)priv | PTE_PRESENT | PTE_WRITE | PTE_USER;
-        pdpt = priv;
-    }
-
-    /* Level 2: the page directory for this GiB. */
-    pd = (uint64_t *)(uintptr_t)(pdpt[gi] & 0x000FFFFFFFFFF000ull);
-    if (gi < VIBEOS_HW_IDENTITY_GIB && pd == &g_pd[gi][0]) {
-        uint64_t *priv = (uint64_t *)hw_alloc_page();
-        uint32_t i;
-        if (!priv) {
-            return -1;
-        }
-        for (i = 0; i < 512u; i++) {
-            priv[i] = g_pd[gi][i];
-        }
-        pdpt[gi] = (uint64_t)(uintptr_t)priv | PTE_PRESENT | PTE_WRITE | PTE_USER;
-        pd = priv;
-    }
-
-    /* Level 3: split the 2 MiB leaf into a real page table, preserving the
-     * identity mapping it stood for. */
-    if ((pd[pdi] & PTE_PRESENT) == 0 || (pd[pdi] & PTE_PS) != 0) {
-        uint64_t region = (uint64_t)gi << 30 | (uint64_t)pdi << 21;
-        uint64_t *priv = (uint64_t *)hw_alloc_page();
-        uint32_t i;
-        if (!priv) {
-            return -1;
-        }
-        for (i = 0; i < 512u; i++) {
-            /* Same physical address, same supervisor-only access, finer
-             * granularity. No PTE_USER: this is still the kernel's memory. */
-            priv[i] = (region + (uint64_t)i * 4096ull) | PTE_PRESENT | PTE_WRITE;
-        }
-        pd[pdi] = (uint64_t)(uintptr_t)priv | PTE_PRESENT | PTE_WRITE | PTE_USER;
-        pt = priv;
-    } else {
-        pt = (uint64_t *)(uintptr_t)(pd[pdi] & 0x000FFFFFFFFFF000ull);
-    }
-
-    pt[pti] = (pa & 0x000FFFFFFFFFF000ull) | leaf_flags;
-    hw_page_get(pa & 0x000FFFFFFFFFF000ull);
-    return 0;
+    return hw_map_page(as, va, pa, leaf_flags);
 }
 
 /* A fresh address space: a private PML4 that shares the supervisor-only kernel
@@ -1751,11 +1741,12 @@ static int hw_map_elf_image(vibeos_hw_aspace_t *as,
 }
 
 static int hw_aspace_create(vibeos_hw_aspace_t *as) {
-    as->pml4 = (uint64_t *)hw_alloc_page();
-    if (!as->pml4) {
+    vibeos_vmspace_t v;
+
+    if (vibeos_vmspace_create(&v) != 0) {
         return -1;
     }
-    as->pml4[0] = (uint64_t)(uintptr_t)&g_pdpt[0] | PTE_PRESENT | PTE_WRITE; /* no PTE_USER */
+    as->pml4 = v.root;
     return 0;
 }
 
@@ -1773,104 +1764,36 @@ static uint64_t g_last_destroy_pml4;
 static uint32_t g_last_destroy_cpu;
 
 static void hw_aspace_destroy_why(vibeos_hw_aspace_t *as, const char *why) {
-    uint64_t *pdpt;
-    uint32_t i, j, k;
+    vibeos_vmspace_t v;
 
     if (!as->pml4) {
         return;
     }
+    /* Kept exactly as it was, and for the reason CLAUDE.md records: this is the
+     * only writer of as->pml4 going to zero, three readings of its call sites
+     * have been wrong, and the guard in the context switch is what turned a
+     * machine that stopped silently into a machine that says why. */
     g_aspace_being_destroyed = as->pml4;
-    if (as->pml4[1] & PTE_PRESENT) {
-        pdpt = (uint64_t *)(uintptr_t)(as->pml4[1] & 0x000FFFFFFFFFF000ull);
-        for (i = 0; i < 512u; i++) {
-            uint64_t *pd;
-            if ((pdpt[i] & PTE_PRESENT) == 0) {
-                continue;
-            }
-            pd = (uint64_t *)(uintptr_t)(pdpt[i] & 0x000FFFFFFFFFF000ull);
-            for (j = 0; j < 512u; j++) {
-                uint64_t *pt;
-                if ((pd[j] & PTE_PRESENT) == 0) {
-                    continue;
-                }
-                pt = (uint64_t *)(uintptr_t)(pd[j] & 0x000FFFFFFFFFF000ull);
-                for (k = 0; k < 512u; k++) {
-                    if (pt[k] & PTE_PRESENT) {
-                        uint64_t phys = pt[k] & 0x000FFFFFFFFFF000ull;
-                        /* Only the last owner frees it: after fork, several
-                         * address spaces map the same frame. */
-                        (void)hw_page_put(phys);
-                    }
-                }
-                hw_free_page(pt);
-            }
-            hw_free_page(pd);
-        }
-        hw_free_page(pdpt);
-    }
 
-    /* Slot 0 is the kernel's identity map and is shared by every address
-     * space - unless this process had pages down there, in which case parts of
-     * it were copied. Free exactly the copies: a table that is still one of
-     * the globals belongs to everyone and must be left alone, and inside a
-     * split page table only the entries carrying PTE_USER own a frame; the
-     * rest are identity entries that were never allocated. */
-    if (as->pml4[0] & PTE_PRESENT) {
-        uint64_t *lowpdpt = (uint64_t *)(uintptr_t)(as->pml4[0] & 0x000FFFFFFFFFF000ull);
-        if (lowpdpt != &g_pdpt[0]) {
-            for (i = 0; i < 512u; i++) {
-                uint64_t *pd;
-                if ((lowpdpt[i] & PTE_PRESENT) == 0) {
-                    continue;
-                }
-                pd = (uint64_t *)(uintptr_t)(lowpdpt[i] & 0x000FFFFFFFFFF000ull);
-                if (i < VIBEOS_HW_IDENTITY_GIB && pd == &g_pd[i][0]) {
-                    continue;   /* shared */
-                }
-                for (j = 0; j < 512u; j++) {
-                    uint64_t *pt;
-                    if ((pd[j] & PTE_PRESENT) == 0 || (pd[j] & PTE_PS) != 0) {
-                        continue;   /* absent, or an untouched 2 MiB identity leaf */
-                    }
-                    pt = (uint64_t *)(uintptr_t)(pd[j] & 0x000FFFFFFFFFF000ull);
-                    for (k = 0; k < 512u; k++) {
-                        /* PTE_USER, and only PTE_USER, in this window.
-                         *
-                         * Splitting a 2 MiB identity leaf into 4 KiB entries
-                         * leaves 511 mappings of kernel memory behind, present
-                         * and supervisor-only. They were never mapped through
-                         * hw_map_low_user_page and never counted - but they
-                         * point at physical addresses inside the allocator's
-                         * region, so they do have reference slots, belonging to
-                         * whoever really owns those frames.
-                         *
-                         * Releasing them therefore decrements somebody else's
-                         * count. I made exactly that mistake here, reasoning
-                         * that untracked frames would be refused; they are not
-                         * untracked, they are other people's. The detector
-                         * caught it in three boots out of sixteen -
-                         * FREE_WHILE_MAPPED, naming this function.
-                         *
-                         * A PROT_NONE page is owned like any other, but those
-                         * live in the mmap arena in the high window, so nothing
-                         * is leaked by the narrower test here. */
-                        if ((pt[k] & PTE_PRESENT) && (pt[k] & PTE_USER)) {
-                            uint64_t phys = pt[k] & 0x000FFFFFFFFFF000ull;
-                            (void)hw_page_put(phys);
-                        }
-                    }
-                    hw_free_page(pt);
-                }
-                hw_free_page(pd);
-            }
-            hw_free_page(lowpdpt);
-        }
-    }
+    /* Everything below this line used to be four nested loops deciding, at each
+     * level, whether an entry was the process's to free - by asking whether it
+     * was present, whether it carried PTE_USER, whether it sat in the low
+     * window. Those are permissions being asked a question about ownership, and
+     * they gave the wrong answer in both directions: a PROT_NONE thread stack
+     * was leaked because it is not user-reachable, and a split identity entry
+     * was freed because it is present and writable, which handed the kernel's
+     * own page tables back to the allocator.
+     *
+     * There is nothing to decide now. vibeos_vmspace_destroy releases the
+     * entries carrying the ownership bit, which are exactly the ones
+     * vibeos_vmspace_map installed, and leaves everything else alone because it
+     * was never marked - not because of a test that could be wrong. */
+    v = hw_vm(as);
+    (void)vibeos_vmspace_destroy(&v);
 
     g_last_destroy_why = why;
     g_last_destroy_pml4 = (uint64_t)(uintptr_t)as->pml4;
     g_last_destroy_cpu = hw_this_cpu()->index;
-    hw_free_page(as->pml4);
     g_aspace_being_destroyed = 0;
     as->pml4 = 0;
 }
@@ -4647,7 +4570,13 @@ static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code) {
      * the old form dropped a reference to find out, and had to put it back on
      * every path that then failed. */
     if (hw_page_owners(phys) <= 1u) {
-        *pte = phys | PTE_PRESENT | PTE_WRITE | PTE_USER;
+        /* The ownership bit is carried over deliberately. This entry was
+         * installed by the mapping layer and this address space still holds the
+         * frame; only the permission changes. Dropping the bit here would make
+         * teardown walk past a frame it owns, which is a leak per
+         * copy-on-write resolution - about one page per fork that ever
+         * writes. */
+        *pte = phys | PTE_PRESENT | PTE_WRITE | PTE_USER | VIBEOS_PTE_OWNED;
         hw_invlpg(fault_va);
         return 1;
     }
@@ -4667,7 +4596,8 @@ static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code) {
      * one and takes the copy. Both halves, together, so the counts are never
      * momentarily wrong. */
     (void)hw_page_put(phys);
-    *pte = ((uint64_t)(uintptr_t)fresh) | PTE_PRESENT | PTE_WRITE | PTE_USER;
+    *pte = ((uint64_t)(uintptr_t)fresh) | PTE_PRESENT | PTE_WRITE | PTE_USER |
+           VIBEOS_PTE_OWNED;
     /* No get on the copy. Under D9 the allocation already gave it one owner,
      * and this address space is that owner - the mapping installed above is
      * what the reference stands for. Taking a second here would mean the frame
@@ -4888,6 +4818,14 @@ static long hw_sys_munmap(uint64_t addr, uint64_t len) {
              * child reading back something it had not written. The stress run
              * is what finally named it, by recognising the free-page poison in
              * a page it still held. */
+            /* Only an entry this address space owns. Before the ownership bit
+             * this asked whether the page was present and user-reachable, which
+             * is the same inference that freed the kernel's identity map from
+             * teardown - munmap simply had not been pointed at a low-window
+             * address by anything that mattered yet. */
+            if ((*pte & VIBEOS_PTE_OWNED) == 0u) {
+                continue;
+            }
             *pte = 0;
             hw_invlpg(va);
             if (hw_page_put(phys)) {

@@ -101,6 +101,22 @@ int vibeos_vmspace_destroy(vibeos_vmspace_t *as);
 int vibeos_vmspace_map(vibeos_vmspace_t *as, uint64_t va, uint64_t pa,
                        vibeos_prot_t prot);
 
+/* The same, with the hardware leaf bits given directly.
+ *
+ * This exists for one reason: copy-on-write is marked with an
+ * available-to-software bit that vibeos_prot_t has no word for, and fork must
+ * install a mapping that carries it. Rather than widen the portable protection
+ * type with an x86-64 detail, the architecture passes the leaf it wants and
+ * this layer adds the ownership bit and takes the reference exactly as the
+ * prot-based form does.
+ *
+ * It is not a way round the layer. The reference and the ownership mark are
+ * still written here and nowhere else - which is the whole property being
+ * defended. Phase P5 moves the copy-on-write logic itself in, and this can go
+ * when it does. */
+int vibeos_vmspace_map_raw(vibeos_vmspace_t *as, uint64_t va, uint64_t pa,
+                           uint64_t leaf_flags);
+
 /* Unmap one page, releasing the reference if this address space owned it.
  * Returns 1 if an owned entry was released, 0 if there was nothing mapped or
  * the entry was not ours, and negative on a bad argument. */

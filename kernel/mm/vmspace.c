@@ -334,8 +334,12 @@ int vibeos_vmspace_destroy(vibeos_vmspace_t *as) {
 
 int vibeos_vmspace_map(vibeos_vmspace_t *as, uint64_t va, uint64_t pa,
                        vibeos_prot_t prot) {
+    return vibeos_vmspace_map_raw(as, va, pa, vibeos_vmspace_leaf_flags(prot));
+}
+
+int vibeos_vmspace_map_raw(vibeos_vmspace_t *as, uint64_t va, uint64_t pa,
+                           uint64_t leaf) {
     uint64_t *pte = 0;
-    uint64_t leaf;
 
     if (!g_ready || !as || !as->root || (va & 0xFFFull) || (pa & 0xFFFull)) {
         return -1;
@@ -362,8 +366,7 @@ int vibeos_vmspace_map(vibeos_vmspace_t *as, uint64_t va, uint64_t pa,
         vibeos_mm_stats()->unmaps++;
     }
 
-    leaf = vibeos_vmspace_leaf_flags(prot);
-    *pte = (pa & PTE_ADDR_MASK) | leaf | VIBEOS_PTE_OWNED;
+    *pte = (pa & PTE_ADDR_MASK) | leaf | PTE_PRESENT | VIBEOS_PTE_OWNED;
 
     /* The reference and the record of it are written together, here, and
      * nowhere else. That is the entire repair: there is no longer any way for

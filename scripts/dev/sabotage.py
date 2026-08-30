@@ -34,6 +34,20 @@ import sys
 def parse_cases(text):
     cases, label, old, new, mode = [], None, [], [], None
     for line in text.splitlines():
+        if line.startswith('#') and not line.startswith('### '):
+            # A comment, anywhere, including after the last case.
+            #
+            # Every case file here ends with a paragraph explaining what each
+            # case actually caught, and those lines were being appended to the
+            # final case's replacement text - so the last case of every file
+            # was substituting prose into C. It came back as a compile failure,
+            # which with a custom verifier scored as *red*: the case looked
+            # like it was working, and was testing nothing at all. That is the
+            # exact failure this whole tool exists to catch, in the tool.
+            #
+            # A replacement that genuinely needs a preprocessor directive can
+            # indent it; nothing here does.
+            continue
         if line.startswith('### '):
             if label is not None:
                 cases.append((label, '\n'.join(old), '\n'.join(new)))
@@ -68,6 +82,13 @@ def build_and_test(build_dir, verify=None):
                                text=True, timeout=300)
             if r.returncode == 0:
                 return 'pass', r.stdout
+            # A verifier that could not build has not scored the case. Without
+            # this, a sabotage that does not compile is indistinguishable from
+            # one the tests caught - and "every case red" is indistinguishable
+            # from "every case working", which is how eight cases once passed
+            # having proved nothing.
+            if 'BUILD_FAILED' in r.stdout or 'BUILD_FAILED' in r.stderr:
+                return 'nobuild', ''
             return 'red', r.stdout.strip()
         r = subprocess.run(["./%s/vibeos_kernel_tests" % build_dir],
                            capture_output=True, text=True, timeout=120)

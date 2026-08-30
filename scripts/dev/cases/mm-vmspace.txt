@@ -1,0 +1,67 @@
+### teardown frees whatever is present, instead of what it owns
+--- old
+        if ((pt[i] & PTE_PRESENT) && (pt[i] & VIBEOS_PTE_OWNED)) {
++++ new
+        if ((pt[i] & PTE_PRESENT)) {
+
+### map installs the entry without recording that it owns the frame
+--- old
+    *pte = (pa & PTE_ADDR_MASK) | leaf | PTE_PRESENT | VIBEOS_PTE_OWNED;
++++ new
+    *pte = (pa & PTE_ADDR_MASK) | leaf | PTE_PRESENT;
+
+### map installs the entry without taking the reference
+--- old
+    vibeos_frame_get(pa & PTE_ADDR_MASK);
++++ new
+
+### unmap clears the entry without releasing the frame
+--- old
+        (void)vibeos_frame_put(phys);
+        vibeos_mm_stats()->unmaps++;
++++ new
+        vibeos_mm_stats()->unmaps++;
+
+### teardown skips the low window's private tables, copied or not
+--- old
+        if (shared && (shared[i] & PTE_ADDR_MASK) == (e & PTE_ADDR_MASK)) {
+            continue;   /* still the kernel's table; we never copied it */
+        }
++++ new
+        if (shared) { continue; }
+
+### the identity split marks the kernel's own entries as the process's
+--- old
+            priv[i] = (region + (uint64_t)i * 4096ull) | PTE_PRESENT | PTE_WRITE;
++++ new
+            priv[i] = (region + (uint64_t)i * 4096ull) | PTE_PRESENT | PTE_WRITE | VIBEOS_PTE_OWNED;
+
+# All six are in kernel/mm/vmspace.c, and all six are caught by the host tests
+# and the torture run rather than by a boot. That is the point of the phase:
+# the logic that decides what an address space owns is portable C now, so a
+# case takes milliseconds to score instead of ninety seconds, and the ones that
+# only show up one boot in thirty can be found at all.
+#
+# What each case caught, since it is not always what you would guess:
+#
+#   - "frees whatever is present" is the original defect, in its purest form.
+#     It fails in the low-window test, where the 512 identity entries a split
+#     leaves behind are present and writable and the kernel's. Before the
+#     ownership bit, that inference handed the kernel's own page tables back to
+#     the allocator, and the machine stopped with no output at all - no panic,
+#     because there was no kernel left to fault from.
+#
+#   - "without recording that it owns the frame" and "without taking the
+#     reference" fail in opposite directions, which is why both exist. The
+#     first leaks every user page; the second frees pages nobody has finished
+#     with. A single test that only checked the total would pass one of them.
+#
+#   - "skips the low window's private tables" is the case that needed the
+#     torture run: 20 seeds out of 20 caught it, each naming the round and the
+#     frame, while the unit tests alone did not exercise a long enough sequence
+#     of create-and-destroy in that window.
+#
+#   - "marks the kernel's own entries as the process's" is the mirror of the
+#     first, and the one a reviewer is least likely to spot by reading: the
+#     code looks like it is being careful, and it is being careful about the
+#     wrong 512 entries.

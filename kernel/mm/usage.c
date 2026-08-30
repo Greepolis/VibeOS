@@ -60,7 +60,6 @@ int vibeos_mm_usage(vibeos_mm_usage_t *out) {
         out->frames_by_state[i] = 0;
     }
     out->bytes_total = vibeos_mm_bytes_total();
-    out->bytes_free = vibeos_mm_bytes_free();
     out->bytes_reserved = vibeos_mm_bytes_reserved();
 
     /* Everything below needs the frame table (P1) or the address-space layer
@@ -80,6 +79,15 @@ int vibeos_mm_usage(vibeos_mm_usage_t *out) {
      * frame table can be asked directly now, and one source that can be wrong
      * beats three that can disagree. */
     vibeos_frame_survey(out->frames_by_state, &out->largest_free_run);
+
+    /* Free bytes come from the same walk, not from a second call.
+     *
+     * They used to be read separately, and on a running machine the two
+     * disagreed by a frame or two - other cores allocate between the two reads.
+     * A person comparing the byte figure with the frame histogram then finds
+     * them inconsistent and, quite reasonably, stops believing either. One
+     * snapshot is worth more than two accurate-at-different-instants numbers. */
+    out->bytes_free = out->frames_by_state[VIBEOS_FRAME_FREE] * 4096ull;
 
     out->processes = 0;
     return 0;
