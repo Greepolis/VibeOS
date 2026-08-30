@@ -68,6 +68,11 @@ typedef struct vibeos_frame {
 #define VIBEOS_FRAME_DIRTY        0x02u  /* differs from its backing store    */
 #define VIBEOS_FRAME_REFERENCED   0x04u  /* touched since the last scan       */
 #define VIBEOS_FRAME_SWAP_BACKED  0x08u  /* has a slot in the swap map        */
+/* This frame has been through the free list at least once, so its contents are
+ * the poison and may be verified when it is handed out again. A frame that has
+ * never been freed holds whatever the firmware left, which is not a defect and
+ * must not be reported as one. */
+#define VIBEOS_FRAME_WAS_FREED    0x10u
 
 /* ---- L1: address spaces (P2) -------------------------------------------- */
 

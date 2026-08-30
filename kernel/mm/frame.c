@@ -87,6 +87,9 @@ static void frame_check_poison(uint32_t index) {
     if (!g_map) {
         return;
     }
+    if ((g_table[index].flags & VIBEOS_FRAME_WAS_FREED) == 0u) {
+        return;   /* never released, so there is no poison to have survived */
+    }
     w = (const uint64_t *)g_map(frame_addr(index));
     if (!w) {
         return;
@@ -102,7 +105,9 @@ static void frame_check_poison(uint32_t index) {
 static void frame_push_free(uint32_t index) {
     g_table[index].state = (uint8_t)VIBEOS_FRAME_FREE;
     g_table[index].owners = 0;
-    g_table[index].flags = 0;
+    /* Everything except the was-freed mark, which is the one fact about a frame
+     * that must outlive its contents. */
+    g_table[index].flags &= (uint8_t)VIBEOS_FRAME_WAS_FREED;
     g_table[index].backing = 0;
     g_table[index].lru_next = g_free_head;
     g_free_head = index;
@@ -131,11 +136,16 @@ int vibeos_frame_init(uint64_t base, uint64_t len,
     g_allocated_yet = 0;
 
     /* Built back to front so the list comes out in ascending order, which makes
-     * a boot's allocations land contiguously and a dump readable. */
+     * a boot's allocations land contiguously and a dump readable.
+     *
+     * Deliberately no poisoning here. When the kernel brings this layer up, the
+     * bump allocator underneath has already handed out early page tables and
+     * this very descriptor table; filling the region would destroy live memory.
+     * Poison belongs to release, and the check that reads it only applies to
+     * frames that have actually been released - see VIBEOS_FRAME_WAS_FREED. */
     for (i = g_entries; i > 0u; i--) {
         uint32_t index = i - 1u;
         g_table[index].lru_prev = FRAME_NONE;
-        frame_fill(index, FRAME_POISON);
         frame_push_free(index);
     }
 
@@ -243,6 +253,7 @@ int vibeos_frame_put(uint64_t phys) {
         return 0;
     }
     frame_fill(index, FRAME_POISON);  /* released poisoned (I4) */
+    g_table[index].flags |= (uint8_t)VIBEOS_FRAME_WAS_FREED;
     frame_push_free(index);
     vibeos_mm_stats()->frames_free = g_free_count;
     if (vibeos_mm_stats()->frames_allocated > 0ull) {

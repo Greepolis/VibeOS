@@ -117,6 +117,21 @@ int test_frame(void) {
         goto fail;
     }
 
+    /* ---- a frame that has never been freed is not judged by the poison ---
+     *
+     * The layer cannot poison at init: when the kernel brings it up, part of the
+     * region already holds live page tables and the descriptor table itself, and
+     * filling it would destroy them. So a never-freed frame holds whatever was
+     * there before, and reporting that as corruption would make the detector cry
+     * wolf on every boot - which is how a detector stops being read. */
+    if (setup() != 0) { goto fail; }
+    memset(g_ram, 0x5A, (size_t)TEST_FRAMES * 4096u);
+    if (vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED) == 0ull) { goto fail; }
+    if (vibeos_mm_stats()->poison_hits != 0ull) {
+        printf("FAIL:untouched frame reported as corrupted\n");
+        goto fail;
+    }
+
     /* ---- reserve: takes a range out, and refuses after the first alloc - */
     if (setup() != 0) { goto fail; }
     if (vibeos_frame_reserve(TEST_BASE, 4096ull * 4ull) != 0) { goto fail; }
