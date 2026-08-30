@@ -239,10 +239,34 @@ phase — it is rewritten in P3 — but it walks *through* `vmspace_unmap`.
 `FREE_WHILE_MAPPED`, no stress failure and no unexpected ring-3 fault; the four
 sabotage cases seen red.
 
-**Status: done.** Six commits, `87134d7` through `b2d6d7f`. Fifteen sabotage
-cases rather than four, all red. No page-table write and no frame reference
-taken outside `kernel/mm/`, checked by `scripts/dev/check-mm-layering.sh` on
-every build rather than by review.
+**Status: NOT done. The 48-boot criterion failed - 27 clean out of 48.**
+
+The code is written and the six commits are in (`87134d7` through `b2d6d7f`).
+Fifteen sabotage cases, all red. No page-table write and no frame reference
+taken outside `kernel/mm/`, checked on every build. The host tests, the torture
+run at 150 seeds, and single boots are all green.
+
+None of that is the phase's own criterion, and the criterion says no. This
+section stays open until it passes.
+
+**What failed, from the three verdicts the run preserved**
+
+- `phase=userland_running`, wedged, quiet for 45s (boot 44).
+- `deliberate_ring3_faults=3_expected=1, unexpected_cpu_fault,
+  stress_run_found_a_defect` (boot 47). The stress service found something,
+  which is the detector built for exactly this doing its job.
+
+Twenty-one boots failed and only the last boot's log survived - and it had
+passed. `repeat-boot.sh` did not keep the logs of failed boots; it does now.
+The next run starts with evidence instead of a count.
+
+**What this is not.** It is not the old premature-free family showing through:
+`FREE_WHILE_MAPPED` is silent, the three MUSTBEZERO counters are zero on every
+boot that reached the console, and the torture run compares against an
+independent model at 150 seeds without a disagreement. Whatever this is, it was
+introduced between P2 step 2 - which was 16 boots out of 16 - and step 7. That
+range is five commits, each individually revertible, which is the reason D4
+chose six commits over one.
 
 **What the phase cost that the plan did not predict**
 

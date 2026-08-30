@@ -66,3 +66,4 @@ qemu-cli-err-*.log
 wedge-serial*.log
 SUMMARY.md
 build-asan/
+repeat-fail-*

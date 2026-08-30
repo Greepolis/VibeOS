@@ -1,6 +1,6 @@
 # Memory Manager Progress
 
-Status: In Progress - rewrite phases P0, P1 and P2 of [docs/mm/](../mm/README.md) are done. Physical frames have one owner, in one file. Address spaces record what they own in the page-table entry, so nothing infers ownership from permission bits any more - which is what the premature-free family came from. No page-table write and no frame reference taken outside `kernel/mm/`, checked on every build.
+Status: In Progress - P0 and P1 done, P2 written but **not certified**: 27 clean boots out of 48, against a criterion of 48. Details in [the plan](../mm/phases.md). Physical frames have one owner, in one file. Address spaces record what they own in the page-table entry, so nothing infers ownership from permission bits any more - which is what the premature-free family came from. No page-table write and no frame reference taken outside `kernel/mm/`, checked on every build.
 Last review: 2026-08-30
 
 ## Implemented
@@ -51,7 +51,16 @@ built to replace it.
 
 ### The address-space layer (rewrite phase P2)
 
-**This is the phase that repairs the defect.**
+**This is the phase that repairs the defect - and it is not finished.**
+
+A 48-boot run came back 27 clean. Everything below describes code that is
+written, host-tested, sabotage-checked and green on a single boot; none of that
+is the criterion, and the criterion says no. The failures are a wedge in
+userland and one run where the stress service reported a defect. What they are
+not is the old premature-free family: `FREE_WHILE_MAPPED` is silent, the three
+must-be-zero counters are zero, and the torture run finds no disagreement with
+its model. Step 2 alone was 16 boots out of 16, so the cause lies in the five
+commits after it.
 
 `kernel/mm/vmspace.c` is the only code that writes a page-table entry.
 `VIBEOS_PTE_OWNED` - bit 11 - is set by `vibeos_vmspace_map` and by nothing
