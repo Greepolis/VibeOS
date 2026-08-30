@@ -697,13 +697,23 @@ def main():
             # be asserted is that fork tells the other cores at all - and a
             # shootdown that silently never fires would leave the bug exactly
             # as it was, with every boot still green.
+            # TFORK.ELF is built with musl-gcc, and a machine without it - the
+            # CI runner, as it turns out - carries no such file. The assertions
+            # below are therefore conditional on the binary being staged, the
+            # same way the musl, PIE, dynamic and threads ones already are.
+            #
+            # Getting this wrong failed every CI boot, five out of five, while
+            # fifty local boots stayed green: the gate was demanding evidence
+            # from a program that was never on the disk. Worth remembering when
+            # a test fails everywhere except where it was written.
+            tfork = os.path.join(efi_root, "EFI", "BOOT", "TFORK.ELF")
             stats = re.search(r"tlb_shootdowns=0x([0-9a-f]{16}) tlb_acks=0x([0-9a-f]{16})", text)
             if stats is None:
                 problems.append("no_tlb_shootdown_stats")
             else:
                 shootdowns = int(stats.group(1), 16)
                 acks = int(stats.group(2), 16)
-                if shootdowns == 0:
+                if shootdowns == 0 and os.path.exists(tfork):
                     # TFORK.ELF forks while one of its threads is still
                     # running, which is the only thing in this boot that
                     # gives another core a stale entry to drop. Requiring a
@@ -735,7 +745,7 @@ def main():
 
             if "shootdown timed out" in text:
                 problems.append("tlb_shootdown_timed_out")
-            if "TFORK_OK" not in text:
+            if os.path.exists(tfork) and "TFORK_OK" not in text:
                 problems.append("threaded_fork_lost_the_child_pages")
 
             # The crash recorder captured the deliberate fault, and named
@@ -759,6 +769,15 @@ def main():
                 problems.append("stress_run_did_not_finish")
             if "STRESS_FAIL" in text:
                 problems.append("stress_run_found_a_defect")
+                # Print it here rather than leaving it in an artifact. This
+                # failure has reproduced five times out of five in CI and not
+                # once in fifty boots locally, so the run that can see it is
+                # the only one that can say what it is - and every one of
+                # these lines names what was found, at which offset, and the
+                # seed that replays it.
+                for line in text.splitlines():
+                    if "STRESS_FAIL" in line or "STRESS_SEED" in line:
+                        print(f"[QEMU-CLI] {line.strip()[:200]}")
 
             if "SVC_CRASH_FAULTING" not in text:
                 problems.append("crashing_service_never_ran")

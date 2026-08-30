@@ -303,9 +303,28 @@ int vibeos_main(int argc, char **argv, char **envp) {
         seed = parse_u64(argv[1]);        /* replaying a failure */
     } else {
         /* Different every boot, so the interleavings explored differ too. */
+        /* rdtsc, not the clock.
+         *
+         * clock_gettime was the obvious source and it was a bad one: the
+         * seeds it produced here were 220000010, 230000012, 180000010,
+         * 160000010 - the same value give or take a coarse tick. So every
+         * boot explored very nearly the same sequence, which is the one thing
+         * a randomised test must not do, and the local runs stayed green while
+         * CI failed five times out of five on sequences this machine had never
+         * tried.
+         *
+         * The timestamp counter changes every cycle and is readable from ring
+         * 3, so the low bits are genuinely different each run. The clock and
+         * the pid are still mixed in: cheap, and they separate two boots that
+         * somehow start at the same cycle count. */
         uint64_t ts[2] = {0, 0};
+        uint32_t lo = 0, hi = 0;
+
         (void)sys3(SYS_clock_gettime, 0, (uint64_t)(uintptr_t)ts, 0);
-        seed = ts[1] ^ (ts[0] << 20) ^ (uint64_t)sys3(SYS_getpid, 0, 0, 0);
+        __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
+        seed = ((uint64_t)hi << 32 | lo)
+             ^ (ts[1] << 8) ^ (ts[0] << 20)
+             ^ ((uint64_t)sys3(SYS_getpid, 0, 0, 0) << 3);
     }
     if (seed == 0ull) {
         seed = 0x9E3779B97F4A7C15ull;      /* xorshift is stuck at zero */

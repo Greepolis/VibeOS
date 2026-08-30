@@ -1265,7 +1265,18 @@ static void *g_free_pages;
  * touches only one word of it. */
 #define HW_POISON_PROBES 16u
 
-static void hw_free_page(void *p) {
+/* Every free records who did it, in the page itself.
+ *
+ * The premature-free family has now been diagnosed twice from the far end and
+ * fixed once, and it came back: a page still mapped by a live process turns up
+ * on the freelist, and the poison says *that* it happened but not *who*. The
+ * freelist link occupies the first word of a reclaimed page; the second is
+ * free, so the caller's name goes there and costs nothing.
+ *
+ * When a poisoned page is handed out again with the poison disturbed, or when
+ * anything else finds this pattern where data should be, the tag names the
+ * last function to release it. */
+static void hw_free_page_why(void *p, const char *why) {
     uint64_t *w = (uint64_t *)p;
     uint32_t i;
 
@@ -1279,9 +1290,12 @@ static void hw_free_page(void *p) {
     }
     hw_spin_lock(&g_mm_lock);
     *(void **)p = g_free_pages;   /* the link overwrites the first word */
+    w[1] = (uint64_t)(uintptr_t)why;   /* ...and the second says who freed it */
     g_free_pages = p;
     hw_spin_unlock(&g_mm_lock);
 }
+
+#define hw_free_page(p) hw_free_page_why((p), __func__)
 
 static void *hw_alloc_page(void) {
     uint8_t *p = 0;
@@ -1320,12 +1334,30 @@ static void *hw_alloc_page(void) {
     if (recycled) {
         const uint64_t *w = (const uint64_t *)p;
         uint32_t step = (4096u / 8u) / HW_POISON_PROBES;
+        /* Words 0 and 1 are the freelist link and the freer's name, so the
+         * probes start past them. */
         for (i = 1; i < HW_POISON_PROBES; i++) {
             uint32_t idx = i * step;
             if (w[idx] != HW_PAGE_POISON) {
+                const char *freed_by = (const char *)(uintptr_t)w[1];
                 hw_log(VIBEOS_LOG_ERROR, 31u, (uint64_t)(uintptr_t)p, w[idx],
                        "free page was written after it was freed "
                        "(a0 = page, a1 = what was found instead of poison)");
+                vibeos_x86_64_serial_lock();
+                vibeos_x86_64_serial_puts("[MM] page 0x");
+                vibeos_x86_64_serial_print_hex((uint64_t)(uintptr_t)p);
+                vibeos_x86_64_serial_puts(" was written after being freed by ");
+                /* The tag is a string literal in the kernel image, so it is
+                 * either a sane pointer into it or the page was scribbled on
+                 * hard enough that saying so is the useful answer. */
+                if ((uint64_t)(uintptr_t)freed_by > 0x100000ull &&
+                    (uint64_t)(uintptr_t)freed_by < VIBEOS_HW_IDENTITY_LIMIT) {
+                    vibeos_x86_64_serial_puts(freed_by);
+                } else {
+                    vibeos_x86_64_serial_puts("(the tag itself was overwritten)");
+                }
+                vibeos_x86_64_serial_puts("\n");
+                vibeos_x86_64_serial_unlock();
                 break;
             }
         }

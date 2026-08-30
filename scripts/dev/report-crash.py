@@ -63,6 +63,8 @@ EXPECTED_CRASHERS = (
 
 
 def is_expected(crash):
+    if crash.get("stress"):
+        return False   # a failed stress round is never deliberate
     return any(name in crash["exe"] for name in EXPECTED_CRASHERS)
 
 
@@ -83,6 +85,7 @@ def parse_crashes(text):
             "exe": m.group(3),
             "vector": None,
             "rip": None,
+            "stress": None,
             "dump": "",
         })
 
@@ -101,10 +104,30 @@ def parse_crashes(text):
                 c["rip"] = int(rip.group(1), 16) if rip else None
                 break
 
+    # A failed stress round is not a crash, and is the most actionable report
+    # this system produces: it comes with the seed that reproduces it. The
+    # first version of this reporter collected only faults, so a night of five
+    # failed boots generated nothing at all - correct, and useless.
+    seed = re.search(r"STRESS_SEED (\d+)", text)
+    fails = re.findall(r"(STRESS_FAIL: [^\n]+)", text)
+    if fails:
+        # The first line is what went wrong; the rest are the round and the
+        # replay hint, which belong in the body rather than the identity.
+        what = fails[0].strip()
+        crashes.append({
+            "pid": 0, "sig": 0,
+            "exe": "svc-stress",
+            "vector": None, "rip": None,
+            "stress": what,
+            "dump": "\n".join(f.strip() for f in fails) +
+                    (f"\n\nreplay: EFI/BOOT/SVC_STRS.ELF {seed.group(1)}"
+                     if seed else ""),
+        })
+
     # A kernel panic is not a process crash, and is worth collecting too.
     for m in re.finditer(r"FATAL: ([^\n]+)", text):
         crashes.append({"pid": 0, "sig": 0, "exe": "(kernel)",
-                        "vector": None, "rip": None,
+                        "vector": None, "rip": None, "stress": None,
                         "dump": "panic: " + m.group(1).strip()})
     return crashes
 
@@ -116,7 +139,13 @@ def signature(crash):
     pid, the timestamp or the stack contents - those differ every run, and a
     signature that includes them turns the collector into a firehose.
     """
-    key = "%s|%s|%s" % (crash["exe"], crash["vector"], crash["rip"])
+    if crash.get("stress"):
+        # The check that failed, with its numbers stripped: the offset, the
+        # bytes and the round differ every run, and a signature that keeps them
+        # files the same defect afresh every night.
+        key = "stress|" + re.sub(r"\d+", "N", crash["stress"])
+    else:
+        key = "%s|%s|%s" % (crash["exe"], crash["vector"], crash["rip"])
     return hashlib.sha256(key.encode()).hexdigest()[:12]
 
 
@@ -144,7 +173,9 @@ def find_collector(repo, token):
 def render(crash, sig, count, first_seen, now):
     lines = [
         SIG_PREFIX + sig + " -->",
-        f"### `{crash['exe']}` — signal {crash['sig']}",
+        (f"### stress: {crash['stress'][len('STRESS_FAIL: '):]}"
+         if crash.get("stress")
+         else f"### `{crash['exe']}` — signal {crash['sig']}"),
         "",
         f"| | |",
         f"| --- | --- |",
@@ -158,7 +189,8 @@ def render(crash, sig, count, first_seen, now):
     if crash["rip"] is not None:
         lines.append(f"| rip | `0x{crash['rip']:x}` |")
     if crash["dump"]:
-        lines += ["", "<details><summary>crash record</summary>", "",
+        label = "stress failure" if crash.get("stress") else "crash record"
+        lines += ["", f"<details><summary>{label}</summary>", "",
                   "```", crash["dump"], "```", "", "</details>"]
     lines += ["", "_Posted by `scripts/dev/report-crash.py`. The guest does "
               "not send anything; this ran on a host, on a log somebody chose "

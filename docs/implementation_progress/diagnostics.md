@@ -149,7 +149,7 @@ the record then names it -
 | Detector | Defect | Status |
 | --- | --- | --- |
 | Log integrity | eight unbracketed multi-part kernel messages | fixed |
-| Seeded stress | `munmap` freed copy-on-write pages without consulting the reference count | fixed |
+| Seeded stress | `munmap` freed copy-on-write pages without consulting the reference count | fixed, but the family is **not closed** - see below |
 
 ### The premature free, and what closed it
 
@@ -173,7 +173,20 @@ wrong bytes were. The message it printed named the mechanism outright:
       found 0x0 expected 0x96 - this is the kernel's free-page poison:
       the page was reclaimed while still mapped here
 
-From there the fix was one call. 48 boots since without a recurrence.
+From there the fix was one call, and 48 local boots passed without a
+recurrence.
+
+**It came back.** The nightly of 2026-08-30, running a commit that contained
+the fix, reproduced it: seed 170000012, round 18, the same free-page poison in
+a child's own copy-on-write page. So `munmap` was one premature-free path and
+not the only one, and the claim that the family was closed was made on the
+strength of local boots that could not see it. Both statements have been
+corrected here rather than left standing.
+
+Freed pages now also record *who freed them*: the freelist link takes the first
+word of a reclaimed page and the caller's name goes in the second, so the next
+occurrence names the function that released it instead of only proving that
+something did.
 
 ### Driving VirtualBox from the harness
 
@@ -241,6 +254,26 @@ Wired into the nightly workflow only, and only on failure, with
 `issues: write` declared explicitly on the job - the default token permissions
 depend on a repository setting, and a reporter that silently cannot post looks
 exactly like one with nothing to report.
+
+### A seed with no entropy is not a random test
+
+The stress service seeded itself from `clock_gettime`, and the seeds it
+produced here were 220000010, 230000012, 180000010, 160000010 - the same value
+give or take a coarse tick. Every boot therefore explored very nearly the same
+sequence, which is the one thing a randomised test must not do. Fifty local
+boots stayed green while CI failed five times out of five on sequences this
+machine had never tried.
+
+It reads `rdtsc` now, which changes every cycle and is available from ring 3;
+the clock and the pid are still mixed in to separate two boots that start on
+the same cycle count. Seeds are eleven digits and different every run.
+
+**Still not reproduced locally.** The configurations are identical - same
+Release flags, same TLS setting, and it fails under both gcc and clang in CI -
+so the difference is the machine. Rather than keep guessing from here, the gate
+now prints every `STRESS_FAIL` and `STRESS_SEED` line when the stress run
+fails, and the crash collector files stress failures as well as faults. The
+environment that can see the defect is the one that gets to describe it.
 
 ## Pending
 
