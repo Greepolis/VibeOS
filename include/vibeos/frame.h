@@ -46,6 +46,23 @@ int vibeos_frame_reserve(uint64_t base, uint64_t len);
  * is nothing left - and changes nothing when it does (I5). */
 uint64_t vibeos_frame_alloc(vibeos_frame_state_t state);
 
+/* `count` physically contiguous frames, zeroed, each with one owner.
+ *
+ * This exists because the bootstrap bump allocator has to stop existing. While
+ * two allocators hand out frames from the same region, one of them is wrong
+ * about what is free - and that is the shape of the defect this rewrite is for.
+ * So everything that needed contiguous memory from the bump allocator needs it
+ * here instead: the exec staging area, and a two-page kernel stack.
+ *
+ * First fit over the descriptor table. It is a linear scan, which is fine for
+ * something asked for once at boot and twice per task creation, and would not
+ * be fine for a page fault - which is why the single-frame path is a free list
+ * and this is not.
+ *
+ * Returns 0 when no run that long is free, having changed nothing (I5).
+ */
+uint64_t vibeos_frame_alloc_contig(uint32_t count, vibeos_frame_state_t state);
+
 /* One more address space maps this frame. Silently ignores a frame the table
  * does not describe: not knowing about a frame is not a reason to miscount a
  * different one. */
@@ -63,6 +80,23 @@ int vibeos_frame_put(uint64_t phys);
  * reports zero owners and state FREE. */
 uint32_t vibeos_frame_owners(uint64_t phys);
 vibeos_frame_state_t vibeos_frame_state(uint64_t phys);
+
+/* One walk of the descriptor table, answering what a memory tool actually asks:
+ * how many frames are in each state, and how long the longest run of free ones
+ * is.
+ *
+ * Both come from the same walk on purpose. meminfo used to assemble its picture
+ * from three independent sources - a bump remainder, a free-list length and a
+ * reserved constant - which did not add up to the total and could not, since
+ * nothing made them one partition. A tool that reports a memory breakdown whose
+ * parts do not sum to the whole teaches people to distrust all of it.
+ *
+ * `by_state` must have VIBEOS_FRAME_STATE_COUNT entries. Either pointer may be
+ * null. The longest free run is the honest measure of fragmentation: free
+ * memory that cannot satisfy a contiguous request is not usable memory, and
+ * without this number that only becomes visible as an allocation failure
+ * nobody can explain. */
+void vibeos_frame_survey(uint64_t *by_state, uint64_t *largest_free_run);
 
 /* Totals, for meminfo and the boot gate. */
 uint64_t vibeos_frame_total(void);

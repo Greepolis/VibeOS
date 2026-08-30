@@ -447,6 +447,7 @@ extern int vibeos_x86_64_virtio_blk_read_many(uint64_t sector, void *buf, uint32
 extern int vibeos_x86_64_virtio_blk_write(uint64_t sector, const void *buf);
 #include "vibeos/log.h"
 #include "vibeos/mm_model.h"
+#include "vibeos/frame.h"
 
 /* The counters live in one structure now (plan phase P0), so the console, the
  * boot gate and a panic all read the same numbers. The names below keep the
@@ -1160,107 +1161,57 @@ static int hw_exec_cache_hit(const char *path) {
  * bookkeeping at all: only sharing writes here. The count saturates rather
  * than wrapping - at 255 owners the frame is simply never reclaimed, which
  * leaks a page instead of freeing memory somebody is still using. */
-static uint8_t *g_frame_refs;
-/* How much work copy-on-write actually did. Reported at the end of the boot,
- * because a mechanism that is never exercised and a mechanism that does not
- * work look identical from outside: shared says how many pages fork handed
- * over instead of copying, copied says how many of those a write later forced
- * it to duplicate after all. */
-
-
-static uint64_t g_frame_refs_base;
-static uint64_t g_frame_refs_count;
-
-static uint8_t *frame_ref_slot(uint64_t phys) {
-    uint64_t idx;
-    if (!g_frame_refs) {
-        return 0;
-    }
-    if (phys < g_frame_refs_base) {
-        return 0;
-    }
-    idx = (phys - g_frame_refs_base) / 4096ull;
-    return (idx < g_frame_refs_count) ? &g_frame_refs[idx] : 0;
-}
-
-/* One reference count per frame, meaning what it says: the number of address
- * spaces that map it. One owner is 1, nobody is 0, and a frame is freed when
- * it reaches 0 - not before.
+/* Reference counting lives in kernel/mm/frame.c now.
  *
- * The previous scheme counted "owners beyond the first", so zero meant one
- * owner, and every path had to inc and dec with a mental offset of one. Worse,
- * an untracked frame answered "yes, free it". A missed increment anywhere -
- * including in code not yet written - therefore produced silent corruption
- * rather than an error, and this one defect was diagnosed four times from the
- * far end and fixed three times without going away.
+ * What used to be here was one byte per frame in a side table, incremented with
+ * a compare-exchange from nine call sites. It was correct arithmetic over an
+ * incomplete picture: a frame the table did not describe answered "nobody owns
+ * me", which reads as "free it". That default is what let one defect survive
+ * four fixes, and it is reversed in the new layer - see docs/mm/.
  *
- * So the default is reversed: a frame this table cannot describe is never
- * freed. That leaks, and a leak can be measured; freeing a page somebody is
- * running on cannot.
+ * These three names stay as wrappers for now, because renaming nine call sites
+ * and changing what they mean in the same commit is how the last four attempts
+ * went. P1 step 4 replaces the names; this commit only moves where the
+ * arithmetic happens.
  *
- * Counting happens where mappings are made and unmade - hw_map_page,
- * hw_map_low_user_page, and the paths that clear a user PTE - so sharing a
- * frame without counting it is not something a future caller can forget to do.
- */
-
+ * The layer is not internally locked - a host test has one thread - so the
+ * memory lock is taken here, on the arch side, exactly where it was taken
+ * before for the free list. */
 
 static void hw_page_get(uint64_t phys) {
-    uint8_t *slot = frame_ref_slot(phys);
-    uint8_t old;
-
-    if (!slot) {
-        return;
-    }
-    old = __atomic_load_n(slot, __ATOMIC_RELAXED);
-    while (old < 255u) {
-        if (__atomic_compare_exchange_n(slot, &old, (uint8_t)(old + 1u), 0,
-                                        __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
-            return;
-        }
-    }
-    /* Saturated: never reclaimed. A frame that leaks is a bug you can see in a
-     * counter; one freed early is a bug you find three programs later. */
+    hw_spin_lock(&g_mm_lock);
+    vibeos_frame_get(phys);
+    hw_spin_unlock(&g_mm_lock);
 }
 
-/* Returns non-zero when the last owner has let go and the frame may be freed. */
+/* Returns non-zero when the last owner let go. Unlike the old one, that also
+ * means the frame has *already* gone back to the free list, poisoned: releasing
+ * and reclaiming are one operation now, so there is no window in which a frame
+ * is owned by nobody and still not free. Every caller that used to follow this
+ * with hw_free_page has had that call removed. */
 static int hw_page_put(uint64_t phys) {
-    uint8_t *slot = frame_ref_slot(phys);
-    uint8_t old;
-
-    if (!slot) {
-        /* Not describable, so not ours to free. Counted, because a number that
-         * grows without bound is a question somebody should ask. */
-        __atomic_fetch_add(&g_untracked_frees, 1ull, __ATOMIC_RELAXED);
-        return 0;
-    }
-    old = __atomic_load_n(slot, __ATOMIC_RELAXED);
-    for (;;) {
-        if (old == 0u) {
-            /* Already at zero: somebody put a reference they did not hold.
-             * Refusing is the safe half; saying so is the useful half. */
-            vibeos_mm_stats()->frames_double_put++;
-            hw_log(VIBEOS_LOG_ERROR, 47u, phys, 0,
-                   "reference dropped on a frame that had no owners (a0 = frame)");
-            return 0;
-        }
-        if (old == 255u) {
-            return 0;   /* saturated above; never reclaimed */
-        }
-        if (__atomic_compare_exchange_n(slot, &old, (uint8_t)(old - 1u), 0,
-                                        __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
-            return (old == 1u) ? 1 : 0;
-        }
-    }
+    int freed;
+    hw_spin_lock(&g_mm_lock);
+    freed = vibeos_frame_put(phys);
+    hw_spin_unlock(&g_mm_lock);
+    return freed;
 }
 
 static uint32_t hw_page_owners(uint64_t phys) {
-    const uint8_t *slot = frame_ref_slot(phys);
-    return slot ? (uint32_t)__atomic_load_n(slot, __ATOMIC_RELAXED) : 0u;
+    uint32_t n;
+    hw_spin_lock(&g_mm_lock);
+    n = vibeos_frame_owners(phys);
+    hw_spin_unlock(&g_mm_lock);
+    return n;
 }
 
 static vibeos_pmm_t g_hw_pmm;
+/* The bump allocator is now a bootstrap stage, not a running allocator: it
+ * serves the early page tables and the staging buffers, and is closed the
+ * moment the frame layer takes over the region. Nothing may allocate from it
+ * afterwards - see hw_pmm_bringup for why that is a correctness rule and not a
+ * tidiness one. */
 static int g_hw_pmm_ready;
-static uint64_t g_hw_pmm_pages_used;
 
 /* User virtual layout: PML4 slot 1 (512 GiB). VibeOS programs are linked at
  * VIBEOS_HW_USER_BASE (user/prog/user.ld); their stack sits above the image. */
@@ -1304,14 +1255,13 @@ static void hw_write_cr3(uint64_t pml4_phys) {
     __asm__ __volatile__("mov %0, %%cr3" : : "r"(pml4_phys) : "memory");
 }
 
-/* Allocate one zeroed page frame. Frames must live inside the identity-mapped
- * window, since the kernel reaches page tables and process images through it. */
-/* Freelist of reclaimed 4 KiB pages; the link is stored in the page itself.
- * This gives real reclamation (address spaces freed on exit/exec) without
- * needing a free path in the portable PMM. */
-static void *g_free_pages;
-
-/* Both sides of the page allocator are shared by every core (a task can fork or
+/* The free list used to live here, threaded through the first word of every
+ * reclaimed page. It is in kernel/mm/frame.c now, threaded through the frame
+ * descriptors instead - which is what lets a freed page be poison from end to
+ * end rather than poison with a pointer at the front, and lets the poison check
+ * read every word instead of skipping the two the list needed.
+ *
+ * Both sides of the page allocator are shared by every core (a task can fork or
  * exit on any of them), so they take the memory lock. */
 /* Written into every page as it is freed.
  *
@@ -1323,6 +1273,11 @@ static void *g_free_pages;
  * a long way from its cause. In one case a musl program tripped over its own
  * malloc free list; in another init printed a pointer where a pid belonged.
  * Both were the same page, freed early, still in use. */
+/* Must equal FRAME_POISON in kernel/mm/frame.c, which is what actually writes
+ * it now. This copy exists because the crash reporter recognises the pattern in
+ * a faulting task's stack and says so in words - "this is the kernel free-page
+ * poison: the page was reclaimed while still mapped here" - which is the
+ * sentence that finally named the munmap defect. */
 #define HW_PAGE_POISON 0xDEAD0000DEAD0000ull
 
 /* How many words of a reclaimed page to check before handing it out again.
@@ -1358,123 +1313,117 @@ static const uint64_t *g_aspace_being_destroyed;
  * anything else finds this pattern where data should be, the tag names the
  * last function to release it. */
 static void hw_free_page_why(void *p, const char *why) {
-    uint64_t *w = (uint64_t *)p;
-    uint32_t i;
+    uint64_t phys = (uint64_t)(uintptr_t)p;
 
     if (!p) {
         return;
-    }
-    /* Poison outside the lock. Anything slow under a spinlock is slow with
-     * interrupts off, and a 4 KiB write is not free. */
-    for (i = 0; i < 4096u / 8u; i++) {
-        w[i] = HW_PAGE_POISON;
     }
     /* Sampled, because the walk is expensive and the bug is not rare enough to
      * need every free checked. One in sixty-four frees costs little and still
      * catches a fault that appears once in twenty boots within a run or two -
      * and when it hits, it names the function doing the freeing and the process
-     * that still has the page, which is the whole difference between this and
-     * four previous investigations. */
-    if (g_frame_refs && (++g_free_seq & 0x3Fu) == 0u) {
+     * that still has the page.
+     *
+     * Before the release, and outside the memory lock: hw_page_owners takes
+     * that lock, and this walk reads page tables, which is not work to do with
+     * interrupts masked. */
+    if (vibeos_frame_total() != 0ull && (++g_free_seq & 0x3Fu) == 0u) {
         uint32_t pid = 0;
-        if (hw_frame_still_mapped((uint64_t)(uintptr_t)p, &pid)) {
-            hw_log(VIBEOS_LOG_ERROR, 46u, (uint64_t)(uintptr_t)p, (uint64_t)pid,
+        if (hw_frame_still_mapped(phys, &pid)) {
+            hw_log(VIBEOS_LOG_ERROR, 46u, phys, (uint64_t)pid,
                    "freeing a frame that a live process still maps "
                    "(a0 = frame, a1 = pid)");
             vibeos_x86_64_serial_lock();
             vibeos_x86_64_serial_puts("[MM] FREE_WHILE_MAPPED frame=0x");
-            vibeos_x86_64_serial_print_hex((uint64_t)(uintptr_t)p);
+            vibeos_x86_64_serial_print_hex(phys);
             vibeos_x86_64_serial_puts(" still mapped by pid=0x");
             vibeos_x86_64_serial_print_hex((uint64_t)pid);
             vibeos_x86_64_serial_puts(" freed by ");
             vibeos_x86_64_serial_puts(why ? why : "(unknown)");
-            vibeos_x86_64_serial_puts(" owners_after_put=0x");
-            vibeos_x86_64_serial_print_hex((uint64_t)hw_page_owners((uint64_t)(uintptr_t)p));
+            vibeos_x86_64_serial_puts(" owners_before_put=0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)hw_page_owners(phys));
             vibeos_x86_64_serial_puts("\n");
             vibeos_x86_64_serial_unlock();
         }
     }
 
-    hw_spin_lock(&g_mm_lock);
-    *(void **)p = g_free_pages;   /* the link overwrites the first word */
-    w[1] = (uint64_t)(uintptr_t)why;   /* ...and the second says who freed it */
-    g_free_pages = p;
-    hw_spin_unlock(&g_mm_lock);
+    /* One owner, released. Direct callers of hw_free_page - page tables, kernel
+     * stacks, the PML4 - allocate a frame and never map it, so the reference
+     * the allocation gave them is the only one and this frees it. That is the
+     * D9 contract; a caller that allocated *in order to map* drops its own
+     * reference at the mapping instead and never comes through here. */
+    if (hw_page_put(phys)) {
+        /* Who freed it, in the page itself. The layer has just poisoned all of
+         * it; word 1 is written afterwards on purpose and is the one word the
+         * poison check never probes, so a corrupted page still says which
+         * function last released it. That tag is what turned the fourth
+         * investigation of the premature-free family into a one-line answer. */
+        ((uint64_t *)(uintptr_t)phys)[1] = (uint64_t)(uintptr_t)why;
+    }
 }
 
 #define hw_free_page(p) hw_free_page_why((p), __func__)
 
-static void *hw_alloc_page(void) {
-    uint8_t *p = 0;
-    uint32_t i;
-    int recycled = 0;
+/* Is the frame layer up? Until it is - the very first page tables, before the
+ * firmware memory map has even been read - allocation comes from a small static
+ * pool whose pages are never released. */
+static int g_frame_layer_ready;
 
-    hw_spin_lock(&g_mm_lock);
-    if (g_free_pages) {
-        p = (uint8_t *)g_free_pages;
-        g_free_pages = *(void **)g_free_pages;
-        recycled = 1;
+static void *hw_alloc_page(void) {
+    uint64_t phys = 0;
+
+    if (g_frame_layer_ready) {
+        hw_spin_lock(&g_mm_lock);
+        phys = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+        hw_spin_unlock(&g_mm_lock);
+        return (void *)(uintptr_t)phys;
     }
-    if (!p && g_hw_pmm_ready) {
-        p = (uint8_t *)vibeos_pmm_alloc_page(&g_hw_pmm);
-        if (p && ((uint64_t)(uintptr_t)p + 4096ull) > VIBEOS_HW_IDENTITY_LIMIT) {
-            p = 0; /* outside the identity map: unusable this early */
-        }
-        if (p) {
-            g_hw_pmm_pages_used++;
-        }
-    }
-    if (!p) {
+
+    /* The bootstrap pool. Static, tiny, and deliberately not reference counted:
+     * nothing allocated before the frame layer exists is ever released. */
+    {
+        uint8_t *p;
+        uint32_t i;
+        hw_spin_lock(&g_mm_lock);
         if (g_pool_next >= VIBEOS_HW_POOL_PAGES) {
             hw_spin_unlock(&g_mm_lock);
             return 0;
         }
         p = g_page_pool[g_pool_next++];
-    }
-    hw_spin_unlock(&g_mm_lock);
-
-    /* Was anything written to this page while it sat on the freelist? The
-     * first word is the link and is expected to differ; every other probe
-     * should still read as poison. A hit here names the corruption at the
-     * moment it is discovered rather than leaving it to surface later, in some
-     * unrelated program, as a pointer that makes no sense. */
-    if (recycled) {
-        const uint64_t *w = (const uint64_t *)p;
-        uint32_t step = (4096u / 8u) / HW_POISON_PROBES;
-        /* Words 0 and 1 are the freelist link and the freer's name, so the
-         * probes start past them. */
-        for (i = 1; i < HW_POISON_PROBES; i++) {
-            uint32_t idx = i * step;
-            if (w[idx] != HW_PAGE_POISON) {
-                const char *freed_by = (const char *)(uintptr_t)w[1];
-                vibeos_mm_stats()->poison_hits++;
-                hw_log(VIBEOS_LOG_ERROR, 31u, (uint64_t)(uintptr_t)p, w[idx],
-                       "free page was written after it was freed "
-                       "(a0 = page, a1 = what was found instead of poison)");
-                vibeos_x86_64_serial_lock();
-                vibeos_x86_64_serial_puts("[MM] page 0x");
-                vibeos_x86_64_serial_print_hex((uint64_t)(uintptr_t)p);
-                vibeos_x86_64_serial_puts(" was written after being freed by ");
-                /* The tag is a string literal in the kernel image, so it is
-                 * either a sane pointer into it or the page was scribbled on
-                 * hard enough that saying so is the useful answer. */
-                if ((uint64_t)(uintptr_t)freed_by > 0x100000ull &&
-                    (uint64_t)(uintptr_t)freed_by < VIBEOS_HW_IDENTITY_LIMIT) {
-                    vibeos_x86_64_serial_puts(freed_by);
-                } else {
-                    vibeos_x86_64_serial_puts("(the tag itself was overwritten)");
-                }
-                vibeos_x86_64_serial_puts("\n");
-                vibeos_x86_64_serial_unlock();
-                break;
-            }
+        hw_spin_unlock(&g_mm_lock);
+        for (i = 0; i < 4096u; i++) {
+            p[i] = 0;
         }
+        return p;
     }
+}
 
-    for (i = 0; i < 4096u; i++) {
-        p[i] = 0;
+/* Several contiguous frames. Exists because the bump allocator underneath used
+ * to serve this and must not serve anything once the frame layer is up: two
+ * allocators over one region means one of them is wrong about what is free. */
+static void *hw_alloc_pages_contig(uint32_t count) {
+    uint64_t phys;
+
+    if (!g_frame_layer_ready) {
+        return 0;
     }
-    return p;
+    hw_spin_lock(&g_mm_lock);
+    phys = vibeos_frame_alloc_contig(count, VIBEOS_FRAME_ALLOCATED);
+    hw_spin_unlock(&g_mm_lock);
+    return (void *)(uintptr_t)phys;
+}
+
+/* The kernel reaches every frame through the identity map, so "addressable" and
+ * "below the identity limit" are the same question. The frame layer asks this
+ * before poisoning or zeroing a frame; null means it counts the frame without
+ * touching it. In practice the tail above the limit is reserved at bring-up, so
+ * this never returns null here - it is the layer's contract, not a condition
+ * this kernel leans on. */
+static void *hw_frame_identity_map(uint64_t phys) {
+    if (phys + 4096ull > VIBEOS_HW_IDENTITY_LIMIT) {
+        return 0;
+    }
+    return (void *)(uintptr_t)phys;
 }
 
 /* Bring the physical memory manager online from the firmware memory map. */
@@ -1498,63 +1447,6 @@ static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
         return;
     }
     g_hw_pmm_ready = 1;
-
-    /* One byte per frame of the allocator's region, taken from that region.
-     * Without it fork cannot share pages safely, so failing to allocate it is
-     * not fatal - it only means fork keeps copying eagerly, which is slow
-     * rather than wrong. */
-    {
-        /* One entry per frame of the *whole* region, not per frame still free.
-         *
-         * The base was already the start of the region - a previous fix, whose
-         * comment is below - but the count was taken from vibeos_pmm_remaining,
-         * which is what is left at this moment. Anything already handed out
-         * therefore shrank the table while the base stayed put, so the last
-         * `allocated` frames of the region had no entry at all. The allocator
-         * is a bump allocator: it reaches those frames only when the machine
-         * has actually used that much memory, which is why this survived every
-         * short boot and appeared about one boot in fourteen, always late.
-         *
-         * An untracked frame reads as "never shared", so both owners of a
-         * copy-on-write page free it, and it goes back on the freelist while a
-         * live process is still running from it. hw_free_page writes its
-         * freelist link at offset 0 of the page it reclaims, which is how this
-         * was found: a user pointer whose value was a page-aligned kernel
-         * address, read by init inside its own say(). */
-        uint64_t bytes = (uint64_t)g_hw_pmm.size_bytes / 4096ull;
-        uint64_t pages = (bytes + 4095ull) / 4096ull;
-        void *table = pages ? vibeos_pmm_alloc_pages(&g_hw_pmm, (size_t)pages) : 0;
-        if (table && ((uint64_t)(uintptr_t)table + pages * 4096ull) <= VIBEOS_HW_IDENTITY_LIMIT) {
-            uint64_t i;
-            g_frame_refs = (uint8_t *)table;
-            /* The base is the start of the allocator's whole region, not the
-             * end of this table. Indexing from the end leaves every frame
-             * handed out earlier untracked - and untracked means "sole owner",
-             * so the first process to exit frees pages another one is still
-             * running from. That is not a leak, it is corruption, and it
-             * presented as a shell that started and then silently stopped. */
-            g_frame_refs_base = (uint64_t)g_hw_pmm.base;
-            g_frame_refs_count = bytes;
-            for (i = 0; i < bytes; i++) {
-                g_frame_refs[i] = 0;
-            }
-            /* Printed because the failure this fixes was invisible from the
-             * code: the numbers say outright whether every frame the allocator
-             * can hand out has an entry. */
-            vibeos_x86_64_serial_puts("[MM] copy-on-write fork enabled: frames=0x");
-            vibeos_x86_64_serial_print_hex(bytes);
-            vibeos_x86_64_serial_puts(" base=0x");
-            vibeos_x86_64_serial_print_hex(g_frame_refs_base);
-            vibeos_x86_64_serial_puts(" covers_to=0x");
-            vibeos_x86_64_serial_print_hex(g_frame_refs_base + bytes * 4096ull);
-            vibeos_x86_64_serial_puts(" region_end=0x");
-            vibeos_x86_64_serial_print_hex((uint64_t)g_hw_pmm.base +
-                                           (uint64_t)g_hw_pmm.size_bytes);
-            vibeos_x86_64_serial_puts("\n");
-        } else {
-            vibeos_x86_64_serial_puts("[MM] no frame reference table; fork copies eagerly\n");
-        }
-    }
 
     /* Now that pages exist, take a contiguous staging area large enough for a
      * real program. Failing is not fatal: the small static buffer still works,
@@ -1587,6 +1479,94 @@ static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
              * load" rather than a load that goes somewhere undefined. */
             vibeos_x86_64_serial_puts("[HW] no interpreter staging buffer; "
                                      "dynamic programs will not load\n");
+        }
+    }
+
+    /* Last, and the order matters.
+     *
+     * Everything above this point comes from the bump allocator: the early page
+     * tables, the two staging buffers. From here on nothing may, because two
+     * allocators over one region means one of them is wrong about what is free
+     * - which is the shape of the defect this rewrite exists to end. So the
+     * frame layer takes over the whole region and the prefix already handed out
+     * is reserved rather than described as free.
+     *
+     * A bump allocator makes that prefix exactly [base, base + offset_bytes),
+     * which is why this is a reservation and not a scan of anything. */
+    {
+        uint64_t frames = (uint64_t)g_hw_pmm.size_bytes / 4096ull;
+        uint64_t table_bytes = frames * (uint64_t)sizeof(vibeos_frame_t);
+        uint64_t table_pages = (table_bytes + 4095ull) / 4096ull;
+        void *table = frames ? vibeos_pmm_alloc_pages(&g_hw_pmm,
+                                                      (size_t)table_pages) : 0;
+        uint64_t prefix;
+        int ok = 0;
+
+        if (table && ((uint64_t)(uintptr_t)table + table_pages * 4096ull)
+                <= VIBEOS_HW_IDENTITY_LIMIT) {
+            /* The table describes the whole region including itself, because a
+             * frame the table cannot describe is a frame nothing can account
+             * for - and the previous version of this got the coverage wrong in
+             * a way that stayed invisible until the machine used enough memory
+             * to reach the frames it had missed. */
+            prefix = (uint64_t)g_hw_pmm.offset_bytes;
+            if (vibeos_frame_init((uint64_t)g_hw_pmm.base,
+                                  (uint64_t)g_hw_pmm.size_bytes,
+                                  (vibeos_frame_t *)table, (uint32_t)frames,
+                                  hw_frame_identity_map) == 0 &&
+                vibeos_frame_reserve((uint64_t)g_hw_pmm.base, prefix) == 0) {
+                ok = 1;
+                /* The kernel reaches frames only through the identity map, so a
+                 * frame above that limit is one no allocation could use. The
+                 * old allocator discovered this by handing one out and throwing
+                 * it away; reserving says it once. */
+                if ((uint64_t)g_hw_pmm.base + (uint64_t)g_hw_pmm.size_bytes
+                        > VIBEOS_HW_IDENTITY_LIMIT) {
+                    (void)vibeos_frame_reserve(VIBEOS_HW_IDENTITY_LIMIT,
+                                               (uint64_t)g_hw_pmm.base +
+                                               (uint64_t)g_hw_pmm.size_bytes -
+                                               VIBEOS_HW_IDENTITY_LIMIT);
+                }
+            }
+        }
+
+        if (ok) {
+            g_frame_layer_ready = 1;
+            /* The bump allocator is closed, not merely unused.
+             *
+             * Every vibeos_pmm_alloc_* call site checks this flag, so a call
+             * added after this point returns null and fails visibly instead of
+             * handing out frames the frame layer believes are free. One such
+             * call - the GUI back buffer - already existed and cost an
+             * afternoon: it produced a wild pointer inside a dynamic loader,
+             * with none of the memory detectors firing, because nothing had
+             * been freed early. Two allocators over one region do not corrupt
+             * by freeing; they corrupt by agreeing. */
+            g_hw_pmm_ready = 0;
+            /* One call, because two log lines are not one fact - and these five
+             * numbers are read together or not at all: they say whether every
+             * frame the machine has is described, and how many of them were
+             * already spoken for before the layer existed. */
+            vibeos_x86_64_serial_lock();
+            vibeos_x86_64_serial_puts("[MM] frame layer online: frames=0x");
+            vibeos_x86_64_serial_print_hex(vibeos_frame_total());
+            vibeos_x86_64_serial_puts(" free=0x");
+            vibeos_x86_64_serial_print_hex(vibeos_frame_free_count());
+            vibeos_x86_64_serial_puts(" base=0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)g_hw_pmm.base);
+            vibeos_x86_64_serial_puts(" covers_to=0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)g_hw_pmm.base +
+                                           (uint64_t)g_hw_pmm.size_bytes);
+            vibeos_x86_64_serial_puts(" reserved_prefix=0x");
+            vibeos_x86_64_serial_print_hex(prefix);
+            vibeos_x86_64_serial_puts("\n");
+            vibeos_x86_64_serial_unlock();
+        } else {
+            /* Not fatal, and not silent. The static pool still boots a small
+             * machine, and saying so beats a boot that runs out of memory later
+             * for a reason nothing recorded. */
+            vibeos_x86_64_serial_puts("[MM] no frame layer; the static page pool "
+                                     "is all this boot has\n");
         }
     }
 
@@ -1760,6 +1740,12 @@ static int hw_map_elf_image(vibeos_hw_aspace_t *as,
         } else if (hw_map_page(as, va, (uint64_t)(uintptr_t)page, leaf) != 0) {
             return -1;
         }
+        /* The allocation gave this frame an owner and the mapping gave it a
+         * second; the address space is the one that keeps it. Decision D9: a
+         * caller that allocates in order to map hands the frame over and lets
+         * go, exactly as alloc_page/put_page do. Forgetting this leaks the page
+         * - visible in meminfo - rather than freeing one somebody is using. */
+        hw_page_put((uint64_t)(uintptr_t)page);
     }
     return 0;
 }
@@ -1813,9 +1799,7 @@ static void hw_aspace_destroy_why(vibeos_hw_aspace_t *as, const char *why) {
                         uint64_t phys = pt[k] & 0x000FFFFFFFFFF000ull;
                         /* Only the last owner frees it: after fork, several
                          * address spaces map the same frame. */
-                        if (hw_page_put(phys)) {
-                            hw_free_page((void *)(uintptr_t)phys);
-                        }
+                        (void)hw_page_put(phys);
                     }
                 }
                 hw_free_page(pt);
@@ -1872,9 +1856,7 @@ static void hw_aspace_destroy_why(vibeos_hw_aspace_t *as, const char *why) {
                          * is leaked by the narrower test here. */
                         if ((pt[k] & PTE_PRESENT) && (pt[k] & PTE_USER)) {
                             uint64_t phys = pt[k] & 0x000FFFFFFFFFF000ull;
-                            if (hw_page_put(phys)) {
-                                hw_free_page((void *)(uintptr_t)phys);
-                            }
+                            (void)hw_page_put(phys);
                         }
                     }
                     hw_free_page(pt);
@@ -2237,7 +2219,10 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
                                  PTE_PRESENT | PTE_WRITE | PTE_USER) != 0) {
             return -1;
         }
+        hw_page_put((uint64_t)(uintptr_t)page);   /* D9: the mapping owns it now */
         if (i == 0u) {
+            /* Still safe to write through: the address space holds the frame,
+             * and the kernel reaches it by its physical address either way. */
             top_page = (uint8_t *)page;
         }
     }
@@ -2282,6 +2267,7 @@ static int hw_map_user_pages(vibeos_hw_aspace_t *as, uint64_t va, uint64_t pages
                                  PTE_PRESENT | PTE_WRITE | PTE_USER) != 0) {
             return -1;
         }
+        hw_page_put((uint64_t)(uintptr_t)page);   /* D9: the mapping owns it now */
     }
     return 0;
 }
@@ -2514,14 +2500,10 @@ static uint64_t hw_alloc_kstack(uint64_t *out_base, uint32_t *out_pages) {
     uint64_t size = 8192ull;
     uint32_t pages = 2u;
 
-    if (g_hw_pmm_ready) {
-        hw_spin_lock(&g_mm_lock);
-        p = (uint8_t *)vibeos_pmm_alloc_pages(&g_hw_pmm, 2);
-        hw_spin_unlock(&g_mm_lock);
-        if (p && ((uint64_t)(uintptr_t)p + size) > VIBEOS_HW_IDENTITY_LIMIT) {
-            p = 0;
-        }
-    }
+    /* Two contiguous frames from the frame layer, not from the bump allocator
+     * underneath it. The bump allocator is closed once the layer is up, and a
+     * kernel stack taken from it would be a frame the layer believes is free. */
+    p = (uint8_t *)hw_alloc_pages_contig(2u);
     if (!p) {
         p = (uint8_t *)hw_alloc_page();
         size = 4096ull;
@@ -4686,7 +4668,10 @@ static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code) {
      * momentarily wrong. */
     (void)hw_page_put(phys);
     *pte = ((uint64_t)(uintptr_t)fresh) | PTE_PRESENT | PTE_WRITE | PTE_USER;
-    hw_page_get((uint64_t)(uintptr_t)fresh);
+    /* No get on the copy. Under D9 the allocation already gave it one owner,
+     * and this address space is that owner - the mapping installed above is
+     * what the reference stands for. Taking a second here would mean the frame
+     * was never reclaimed when the process exited. */
     hw_invlpg(fault_va);
     /* This one is not about permissions: the page's *physical address* just
      * changed. A thread of this same process on another core still has the old
@@ -4770,6 +4755,7 @@ static long hw_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot,
                                      PTE_PRESENT) != 0) {
                 return -VIBEOS_ENOMEM;
             }
+            hw_page_put((uint64_t)(uintptr_t)page);   /* D9 */
         }
         proc->mmap_cur = base + pages * 4096ull;
         return (long)base;
@@ -4792,6 +4778,7 @@ static long hw_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot,
                                      (uint64_t)(uintptr_t)page, leaf) != 0) {
                 return -VIBEOS_ENOMEM;
             }
+            hw_page_put((uint64_t)(uintptr_t)page);   /* D9 */
         }
     }
     proc->mmap_cur = base + pages * 4096ull;
@@ -4907,7 +4894,6 @@ static long hw_sys_munmap(uint64_t addr, uint64_t len) {
                 hw_log(VIBEOS_LOG_DEBUG, 45u, va, phys,
                        "munmap released the last reference to a frame "
                        "(a0 = address, a1 = frame)");
-                hw_free_page((void *)(uintptr_t)phys);
             }
         }
     }
@@ -7886,31 +7872,34 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
  * address-space layer, and reports zero until those exist rather than being
  * guessed at. */
 uint64_t vibeos_mm_bytes_total(void) {
-    return g_hw_pmm_ready ? (uint64_t)g_hw_pmm.size_bytes : 0ull;
+    return vibeos_frame_total() * 4096ull;
 }
 
 uint64_t vibeos_mm_bytes_free(void) {
-    uint64_t freelist = 0;
-    void *p;
-
-    if (!g_hw_pmm_ready) {
-        return 0ull;
-    }
-    /* The bump allocator's remainder, plus what has come back to the free list.
-     * Counted by walking, which is honest and cheap enough for a command a
-     * person types. */
-    hw_spin_lock(&g_mm_lock);
-    for (p = g_free_pages; p; p = *(void **)p) {
-        freelist += 4096ull;
-    }
-    hw_spin_unlock(&g_mm_lock);
-    return (uint64_t)vibeos_pmm_remaining(&g_hw_pmm) + freelist;
+    /* One number, kept by the layer that hands frames out, instead of a bump
+     * remainder plus a walk of a free list. The walk was honest and it was also
+     * the reason "how much memory is free" could disagree with "how many frames
+     * are free" - two answers to one question, which is how this subsystem got
+     * its reputation. */
+    return vibeos_frame_free_count() * 4096ull;
 }
 
 uint64_t vibeos_mm_bytes_reserved(void) {
-    /* The low user window, taken out of the allocator at boot so nothing of the
-     * kernel's can live where a Linux process shadows it. */
-    return VIBEOS_HW_LOW_USER_LIMIT - VIBEOS_HW_LOW_USER_BASE;
+    /* Two different reservations, and both are real memory a person cannot use.
+     *
+     * The low user window is taken out before the allocator starts, so nothing
+     * of the kernel's lives where a Linux process shadows it. The rest is what
+     * the bootstrap bump allocator had already handed out when the frame layer
+     * took over - early page tables, the staging buffers, the descriptor table
+     * itself. That second part used to be invisible: it was simply missing from
+     * every total, which is exactly the kind of gap this command exists to
+     * close. */
+    uint64_t prefix = 0;
+
+    if (g_frame_layer_ready) {
+        prefix = (uint64_t)g_hw_pmm.offset_bytes;
+    }
+    return (VIBEOS_HW_LOW_USER_LIMIT - VIBEOS_HW_LOW_USER_BASE) + prefix;
 }
 
 /* Entry point invoked from entry.s before vibeos_kmain. */
@@ -7984,7 +7973,21 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
         uint64_t px = (uint64_t)boot_info->framebuffer_width *
                       boot_info->framebuffer_height;
         uint64_t pages = (px * 4ull + 4095ull) / 4096ull;
-        void *back = g_hw_pmm_ready ? vibeos_pmm_alloc_pages(&g_hw_pmm, (size_t)pages) : 0;
+        /* From the frame layer, not from the bump allocator underneath it.
+         *
+         * This line is why the first attempt at wiring the layer in broke the
+         * dynamic loader. hw_pmm_bringup hands the whole region over to the
+         * frame layer and reserves the prefix already consumed; this call ran
+         * *afterwards* and took several megabytes straight from the bump
+         * allocator, which the frame table still described as free. The layer
+         * then handed the same frames to a process, and the desktop rendered
+         * over its memory.
+         *
+         * There was no poison hit and no free-while-mapped report, because
+         * nothing was freed early - the frames were simply given out twice.
+         * That is the failure mode of having two allocators, and it is why the
+         * bump allocator is closed below rather than left available. */
+        void *back = hw_alloc_pages_contig((uint32_t)pages);
 
         if (vibeos_x86_64_mouse_init(boot_info->framebuffer_width,
                                      boot_info->framebuffer_height) == 0) {

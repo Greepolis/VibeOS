@@ -814,6 +814,44 @@ def main():
                     if value != 0:
                         problems.append(f"mm_{name}={value}")
 
+            # The frame states must partition the total exactly.
+            #
+            # This is the assertion that would have caught meminfo assembling
+            # its picture from three sources that could not add up: allocated
+            # was derived as total minus free and silently swallowed every
+            # reserved frame. A breakdown whose parts do not sum to the whole is
+            # worse than no breakdown, because somebody acts on it.
+            mt = re.search(r"\[MEM\] bytes total=0x([0-9a-f]{16})", text)
+            mf = re.search(r"\[MEM\] frames free=0x([0-9a-f]{16}) "
+                           r"allocated=0x([0-9a-f]{16}) "
+                           r"reserved=0x([0-9a-f]{16}) "
+                           r"page-table=0x([0-9a-f]{16}) "
+                           r"cache=0x([0-9a-f]{16})", text)
+            if mt is None or mf is None:
+                problems.append("meminfo_frames_missing")
+            else:
+                total = int(mt.group(1), 16) // 4096
+                parts = sum(int(mf.group(i), 16) for i in range(1, 6))
+                if parts != total:
+                    problems.append(f"mm_states_do_not_sum {parts}!={total}")
+                if int(mf.group(1), 16) == 0:
+                    problems.append("mm_no_free_frames_at_cli")
+
+            # Fragmentation. Asserted rather than printed, because a run of zero
+            # means no contiguous allocation can ever succeed again - and the
+            # kernel stack of the next task is a contiguous allocation.
+            mr = re.search(r"largest_free_run=0x([0-9a-f]{16})", text)
+            if mr is None:
+                problems.append("meminfo_fragmentation_missing")
+            elif int(mr.group(1), 16) < 2:
+                problems.append("mm_no_contiguous_memory_left")
+
+            # The frame layer replaced the bump allocator; if it failed to come
+            # up the machine still boots on the static pool, which is a very
+            # different machine and must not pass quietly.
+            if "[MM] frame layer online:" not in text:
+                problems.append("mm_frame_layer_absent")
+
             if "USERLAND_START" not in text:
                 problems.append("userland_never_started")
             elif text.index("BOOT_OK") > text.index("USERLAND_START"):

@@ -328,16 +328,45 @@ swap is byte-identical; 24 boots green.
 3. Eviction order: clean cache, then dirty cache written back, then anonymous to
    swap. Pinned frames never.
 4. Pinning for page tables, DMA buffers and kernel allocations.
+5. **Compaction.** Reclaiming free memory is not the same problem as making it
+   *usable*: `vibeos_frame_alloc_contig` is first fit, so after a few hours of
+   allocation and release there can be plenty free and no run of it long enough
+   for a 4 MiB staging buffer or a DMA descriptor. Free frames are recovered by
+   P6 steps 1-3; contiguous *space* is only recovered by moving frames that are
+   still in use and repointing whatever maps them.
+
+   Deliberately last, and it cannot move earlier. Moving a frame means finding
+   every page-table entry that points at it, and that is only answerable once
+   ownership is recorded rather than inferred - which is what L1 and L2 build at
+   P2 and P3, and precisely what today's kernel cannot do. Attempting it before
+   then would mean scanning every address space on every move and trusting the
+   result, which is the same "reconstruct the truth from the hardware bits"
+   mistake this rewrite exists to end.
+
+   The order is: a reverse map from frame to the mappings that hold it (the
+   `backing` field in the descriptor is reserved for its handle), then a move
+   that copies the frame, updates every mapping, shoots down the TLB, and only
+   then releases the old frame. Pinned frames - page tables, DMA, anything a
+   device has an address for - are never moved, which is the same list as step 4.
+
+   Measured, not asserted by eye: `frag_largest_run` and `frag_free_frames` in
+   the stats, so "there is memory but not in one piece" is a number somebody can
+   read in `meminfo` before it becomes an allocation failure nobody can explain.
 
 **Tests**
-- Host: list ordering, watermark transitions, pinned frames skipped.
+- Host: list ordering, watermark transitions, pinned frames skipped; a
+  compaction that moves a frame, with every mapping following it, and a pinned
+  frame refusing to move.
 - Gate: `reclaim_scans`/`reclaim_freed` non-zero under the pressure test; the
   order asserted by which counter moves first.
 - Sabotage: `scripts/dev/cases/mm-reclaim.txt` — evict a pinned frame; evict
-  dirty before clean; never write back. Three cases, each red.
+  dirty before clean; never write back; compact a frame and skip one of its
+  mappings; compact a pinned frame. Five cases, each red.
 
 **Done when.** The exhaustion workload from P7 completes through reclaim rather
-than failing; the order is asserted.
+than failing; the order is asserted; and a run that fragments memory
+deliberately can still satisfy a 4 MiB contiguous request afterwards, which is
+the only honest test of compaction.
 
 ---
 

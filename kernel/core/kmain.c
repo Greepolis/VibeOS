@@ -181,7 +181,13 @@ static void kernel_cli_print_meminfo(void) {
     kernel_log_u64_hex(use.bytes_free);
     vibeos_x86_64_serial_puts(" reserved=0x");
     kernel_log_u64_hex(use.bytes_reserved);
-    vibeos_x86_64_serial_puts("\n");
+    /* Said out loud because it is the one figure here that is not a slice of
+     * the frame table: it also covers the low user window, which is taken out
+     * before the allocator's region even begins. Somebody adding the frame
+     * states up and comparing them to this number deserves to be told why they
+     * differ rather than to find out by not trusting either. */
+    vibeos_x86_64_serial_puts(" (reserved includes the low user window, "
+                              "which is outside the frame table)\n");
 
     vibeos_x86_64_serial_puts("[MEM] frames");
     for (i = 0; i < (unsigned)VIBEOS_FRAME_STATE_COUNT; i++) {
@@ -192,9 +198,23 @@ static void kernel_cli_print_meminfo(void) {
     }
     vibeos_x86_64_serial_puts("\n");
 
-    /* Not measured yet: said plainly, with the phase that will answer it. */
+    /* Fragmentation, which is a different question from "how much is free" and
+     * the one that actually decides whether a large contiguous request can be
+     * served. Free memory scattered in single frames will not give you a 4 MiB
+     * staging buffer, and without this number that only shows up as an
+     * allocation failure with no explanation attached. Compaction is plan P6;
+     * being able to see the problem comes first. */
+    vibeos_x86_64_serial_puts("[MEM] largest_free_run=0x");
+    kernel_log_u64_hex(use.largest_free_run);
+    vibeos_x86_64_serial_puts(" frames (0x");
+    kernel_log_u64_hex(use.largest_free_run * 4096ull);
+    vibeos_x86_64_serial_puts(" bytes contiguous)\n");
+
+    /* Not measured yet: said plainly, with the phase that will answer it.
+     * The frame states above are counted; this split needs to know *who* owns
+     * a frame, which is the address-space layer at plan P2. */
     vibeos_x86_64_serial_puts("[MEM] kernel/user/shared/cache bytes: not measured "
-                              "until the frame table exists (plan P1)\n");
+                              "until ownership is recorded (plan P2)\n");
 
     vibeos_x86_64_serial_puts("[MEM] maps=0x");
     kernel_log_u64_hex(st->maps);

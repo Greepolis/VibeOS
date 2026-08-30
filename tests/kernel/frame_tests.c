@@ -152,6 +152,31 @@ int test_frame(void) {
     /* Reserving after an allocation is refused rather than half-applied. */
     if (vibeos_frame_reserve(TEST_BASE + 4096ull * 8ull, 4096ull) == 0) { goto fail; }
 
+    /* ---- contiguous allocation ----------------------------------------
+     *
+     * The case that matters is not the happy one: it is that a run broken by a
+     * reserved frame is not handed out anyway. Two allocators disagreeing about
+     * what is free is the whole defect this layer exists to end, and a
+     * contiguous allocator that walks over a reservation is exactly that. */
+    if (setup() != 0) { goto fail; }
+    if (vibeos_frame_reserve(TEST_BASE + 4096ull * 2ull, 4096ull) != 0) { goto fail; }
+    /* Frames 0 and 1 are free, 2 is reserved, 3.. are free. A run of four must
+     * therefore start at 3, not at 0. */
+    if (vibeos_frame_alloc_contig(4u, VIBEOS_FRAME_ALLOCATED)
+        != TEST_BASE + 4096ull * 3ull) { goto fail; }
+    if (vibeos_frame_owners(TEST_BASE + 4096ull * 6ull) != 1u) { goto fail; }
+    if (vibeos_frame_free_count() != TEST_FRAMES - 5u) { goto fail; }
+    /* Each frame of the run is independently owned, so releasing one releases
+     * one - a contiguous allocation is not a unit that comes back together. */
+    if (vibeos_frame_put(TEST_BASE + 4096ull * 3ull) != 1) { goto fail; }
+    if (vibeos_frame_free_count() != TEST_FRAMES - 4u) { goto fail; }
+    /* A run longer than anything free changes nothing (I5). */
+    if (vibeos_frame_alloc_contig(TEST_FRAMES, VIBEOS_FRAME_ALLOCATED) != 0ull) { goto fail; }
+    if (vibeos_frame_free_count() != TEST_FRAMES - 4u) { goto fail; }
+    /* ...and the frames it walked past are still free and still allocatable,
+     * which is the half of "changes nothing" that a partial scan breaks. */
+    if (vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED) == 0ull) { goto fail; }
+
     free(g_ram);
     g_ram = 0;
     return 0;

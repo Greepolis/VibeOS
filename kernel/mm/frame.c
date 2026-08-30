@@ -197,6 +197,20 @@ int vibeos_frame_reserve(uint64_t base, uint64_t len) {
     return 0;
 }
 
+/* Hand one frame out: checked, zeroed, one owner. Shared by both allocation
+ * paths so they cannot drift apart - the contiguous one was written second, and
+ * a second copy of "what allocation means" is how this subsystem got here. */
+static void frame_take(uint32_t index, vibeos_frame_state_t state) {
+    g_allocated_yet = 1;
+    frame_check_poison(index);
+    frame_fill(index, 0ull);          /* handed out zeroed (I4) */
+    g_table[index].owners = 1;
+    g_table[index].state = (uint8_t)state;
+    g_table[index].flags = 0;
+    g_table[index].backing = 0;
+    g_table[index].lru_next = FRAME_NONE;
+}
+
 uint64_t vibeos_frame_alloc(vibeos_frame_state_t state) {
     uint32_t index;
 
@@ -206,20 +220,67 @@ uint64_t vibeos_frame_alloc(vibeos_frame_state_t state) {
     index = g_free_head;
     g_free_head = g_table[index].lru_next;
     g_free_count--;
-    g_allocated_yet = 1;
 
-    frame_check_poison(index);
-    frame_fill(index, 0ull);          /* handed out zeroed (I4) */
-
-    g_table[index].owners = 1;
-    g_table[index].state = (uint8_t)state;
-    g_table[index].flags = 0;
-    g_table[index].backing = 0;
-    g_table[index].lru_next = FRAME_NONE;
+    frame_take(index, state);
 
     vibeos_mm_stats()->frames_free = g_free_count;
     vibeos_mm_stats()->frames_allocated++;
     return frame_addr(index);
+}
+
+uint64_t vibeos_frame_alloc_contig(uint32_t count, vibeos_frame_state_t state) {
+    uint32_t i, run = 0u, first = 0u;
+    uint32_t prev, cur;
+
+    if (!g_table || count == 0u || count > g_entries) {
+        return 0;
+    }
+
+    /* First fit. The state field is the authority on what is free, not
+     * membership of the list: a reserved frame is not free and must break the
+     * run even though it is nowhere in the list. */
+    for (i = 0; i < g_entries; i++) {
+        if (g_table[i].state == (uint8_t)VIBEOS_FRAME_FREE) {
+            if (run == 0u) {
+                first = i;
+            }
+            if (++run == count) {
+                break;
+            }
+        } else {
+            run = 0u;
+        }
+    }
+    if (run < count) {
+        return 0;   /* nothing changed (I5) */
+    }
+
+    /* Unlink the whole run in one walk of the free list rather than one walk
+     * per frame. The frames are contiguous by address, not by position in the
+     * list, so there is no shortcut past this. */
+    prev = FRAME_NONE;
+    cur = g_free_head;
+    while (cur != FRAME_NONE) {
+        uint32_t next = g_table[cur].lru_next;
+        if (cur >= first && cur < first + count) {
+            if (prev == FRAME_NONE) {
+                g_free_head = next;
+            } else {
+                g_table[prev].lru_next = next;
+            }
+            g_free_count--;
+        } else {
+            prev = cur;
+        }
+        cur = next;
+    }
+
+    for (i = 0; i < count; i++) {
+        frame_take(first + i, state);
+    }
+    vibeos_mm_stats()->frames_free = g_free_count;
+    vibeos_mm_stats()->frames_allocated += count;
+    return frame_addr(first);
 }
 
 void vibeos_frame_get(uint64_t phys) {
@@ -271,6 +332,39 @@ vibeos_frame_state_t vibeos_frame_state(uint64_t phys) {
     uint32_t index = frame_index(phys);
     return (index == FRAME_NONE) ? VIBEOS_FRAME_FREE
                                  : (vibeos_frame_state_t)g_table[index].state;
+}
+
+void vibeos_frame_survey(uint64_t *by_state, uint64_t *largest_free_run) {
+    uint32_t i;
+    uint64_t run = 0, best = 0;
+
+    if (by_state) {
+        for (i = 0; i < (uint32_t)VIBEOS_FRAME_STATE_COUNT; i++) {
+            by_state[i] = 0;
+        }
+    }
+    if (largest_free_run) {
+        *largest_free_run = 0;
+    }
+    if (!g_table) {
+        return;
+    }
+    for (i = 0; i < g_entries; i++) {
+        uint8_t st = g_table[i].state;
+        if (by_state && st < (uint8_t)VIBEOS_FRAME_STATE_COUNT) {
+            by_state[st]++;
+        }
+        if (st == (uint8_t)VIBEOS_FRAME_FREE) {
+            if (++run > best) {
+                best = run;
+            }
+        } else {
+            run = 0;
+        }
+    }
+    if (largest_free_run) {
+        *largest_free_run = best;
+    }
 }
 
 uint64_t vibeos_frame_total(void) {

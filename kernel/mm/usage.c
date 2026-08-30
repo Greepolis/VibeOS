@@ -25,6 +25,7 @@
  */
 
 #include "vibeos/mm_model.h"
+#include "vibeos/frame.h"
 
 /* Provided by the architecture layer, which owns the allocator today. Weak, so
  * the host test binary links without dragging in the kernel. */
@@ -69,16 +70,16 @@ int vibeos_mm_usage(vibeos_mm_usage_t *out) {
     out->bytes_user = 0;
     out->bytes_shared = 0;
     out->bytes_cache = 0;
-    out->largest_free_run = 0;
 
-    /* The allocator can at least say how much it has handed out, which is the
-     * one honest breakdown available before the frame table exists. */
-    if (out->bytes_total >= out->bytes_free) {
-        out->frames_by_state[VIBEOS_FRAME_ALLOCATED] =
-            (out->bytes_total - out->bytes_free) / 4096ull;
-    }
-    out->frames_by_state[VIBEOS_FRAME_FREE] = out->bytes_free / 4096ull;
-    out->frames_by_state[VIBEOS_FRAME_RESERVED] = out->bytes_reserved / 4096ull;
+    /* Counted from the frame table, in one walk, so the states partition the
+     * total exactly.
+     *
+     * They used to be derived: allocated was total minus free, which quietly
+     * swallowed every reserved frame, and reserved came from a different source
+     * again - so the three numbers added up to more than the machine had. The
+     * frame table can be asked directly now, and one source that can be wrong
+     * beats three that can disagree. */
+    vibeos_frame_survey(out->frames_by_state, &out->largest_free_run);
 
     out->processes = 0;
     return 0;
