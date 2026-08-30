@@ -1,0 +1,453 @@
+/* L1: address spaces.
+ *
+ * The only writer of page-table entries. See include/vibeos/vmspace.h for why
+ * that matters and docs/mm/phases.md P2 for the order this was built in.
+ *
+ * The shape of the file is deliberate: every function that walks the tables
+ * goes through `walk`, and every function that changes an entry goes through
+ * `set_leaf` or `clear_leaf`. There is no second path. The defect this layer
+ * exists to close survived four fixes precisely because there were several
+ * places that each decided, independently and by inspection, whether a frame
+ * belonged to the address space being torn down.
+ */
+
+#include "vibeos/vmspace.h"
+#include "vibeos/frame.h"
+#include "vibeos/mm_stats.h"
+
+#define PTE_PRESENT (1ull << 0)
+#define PTE_WRITE   (1ull << 1)
+#define PTE_USER    (1ull << 2)
+#define PTE_PS      (1ull << 7)
+#define PTE_NX      (1ull << 63)
+
+#define PTE_ADDR_MASK 0x000FFFFFFFFFF000ull
+
+static vibeos_vmspace_backend_t g_be;
+static int g_ready;
+
+int vibeos_vmspace_init(const vibeos_vmspace_backend_t *backend) {
+    if (!backend || !backend->map_phys || !backend->alloc_table) {
+        return -1;
+    }
+    g_be = *backend;
+    g_ready = 1;
+    return 0;
+}
+
+uint64_t vibeos_vmspace_leaf_flags(vibeos_prot_t prot) {
+    uint64_t f = PTE_PRESENT;
+
+    /* PROT_NONE is a mapping, not a refusal.
+     *
+     * A C library builds a thread stack by asking for stack plus guard as one
+     * PROT_NONE region and then making the usable part accessible, so refusing
+     * it breaks pthread_create before it ever reaches clone(). The pages are
+     * mapped and present, simply without PTE_USER, which faults from ring 3
+     * exactly as a guard should. */
+    if (prot & VIBEOS_PROT_WRITE) {
+        f |= PTE_WRITE;
+    }
+    if (prot & VIBEOS_PROT_USER) {
+        f |= PTE_USER;
+    }
+    return f;
+}
+
+/* ---- walking ------------------------------------------------------------ */
+
+static uint64_t *table_at(uint64_t phys) {
+    return (uint64_t *)g_be.map_phys(phys & PTE_ADDR_MASK);
+}
+
+/* Find the leaf entry for `va`, optionally creating the tables on the way.
+ *
+ * Returns null when a level is missing and `create` is zero, when a table
+ * cannot be allocated, or when a 2 MiB leaf blocks the path - the last of which
+ * is not an error the high window can produce and is handled by the low-window
+ * carving below. */
+static uint64_t *walk(vibeos_vmspace_t *as, uint64_t va, int create) {
+    static const uint32_t shifts[3] = {39u, 30u, 21u};
+    uint64_t *tbl = as->root;
+    uint32_t level;
+
+    for (level = 0; level < 3u; level++) {
+        uint32_t idx = (uint32_t)((va >> shifts[level]) & 0x1FFu);
+
+        if ((tbl[idx] & PTE_PRESENT) == 0u) {
+            uint64_t page;
+            if (!create) {
+                return 0;
+            }
+            page = g_be.alloc_table();
+            if (!page) {
+                return 0;
+            }
+            /* Intermediate entries carry USER because access is the AND of the
+             * bits along the path: the leaf is what decides, and an
+             * intermediate that says no would make a PROT_NONE guard page and
+             * a kernel page indistinguishable from ring 3's point of view.
+             * They deliberately do not carry the ownership bit - they are
+             * tables, not user frames, and destroy frees them by structure. */
+            tbl[idx] = (page & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITE | PTE_USER;
+        } else if (tbl[idx] & PTE_PS) {
+            return 0;   /* a large leaf stands here; the caller must split it */
+        }
+        tbl = table_at(tbl[idx]);
+        if (!tbl) {
+            return 0;
+        }
+    }
+    return &tbl[(va >> 12) & 0x1FFu];
+}
+
+uint64_t *vibeos_vmspace_entry(vibeos_vmspace_t *as, uint64_t va) {
+    if (!g_ready || !as || !as->root) {
+        return 0;
+    }
+    return walk(as, va, 0);
+}
+
+/* ---- the low window ------------------------------------------------------
+ *
+ * Below the identity limit the kernel reaches memory by its physical address,
+ * and the tables covering that region are shared by every address space and use
+ * 2 MiB pages. There is nowhere to put a 4 KiB user entry without first making
+ * private copies, so this walks down un-sharing exactly as much as it must:
+ * the shared PDPT, then the shared page directory for that GiB, then the 2 MiB
+ * leaf, which is split into 512 identity entries reproducing the same mapping
+ * at finer granularity.
+ *
+ * Those 512 entries are the reason this layer exists. They are present and
+ * writable and belong to the kernel, and a teardown that decided ownership by
+ * looking at them freed the kernel's identity map. They do not carry the
+ * ownership bit, so nothing has to reason about them ever again.
+ */
+static int unshare_low(vibeos_vmspace_t *as, uint64_t va, uint64_t **out_pt) {
+    uint32_t gi  = (uint32_t)((va >> 30) & 0x1FFu);
+    uint32_t pdi = (uint32_t)((va >> 21) & 0x1FFu);
+    uint64_t *pdpt, *pd;
+
+    pdpt = table_at(as->root[0]);
+    if (!pdpt) {
+        return -1;
+    }
+    if (g_be.shared_pdpt && pdpt == g_be.shared_pdpt) {
+        uint64_t page = g_be.alloc_table();
+        uint64_t *priv;
+        uint32_t i;
+        if (!page) {
+            return -1;
+        }
+        priv = table_at(page);
+        if (!priv) {
+            return -1;
+        }
+        for (i = 0; i < 512u; i++) {
+            priv[i] = g_be.shared_pdpt[i];
+        }
+        as->root[0] = (page & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITE | PTE_USER;
+        pdpt = priv;
+    }
+
+    pd = table_at(pdpt[gi]);
+    if (g_be.shared_pd) {
+        const uint64_t *shared = g_be.shared_pd(gi);
+        if (shared && pd == shared) {
+            uint64_t page = g_be.alloc_table();
+            uint64_t *priv;
+            uint32_t i;
+            if (!page) {
+                return -1;
+            }
+            priv = table_at(page);
+            if (!priv) {
+                return -1;
+            }
+            for (i = 0; i < 512u; i++) {
+                priv[i] = shared[i];
+            }
+            pdpt[gi] = (page & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITE | PTE_USER;
+            pd = priv;
+        }
+    }
+    if (!pd) {
+        return -1;
+    }
+
+    if ((pd[pdi] & PTE_PRESENT) == 0u || (pd[pdi] & PTE_PS) != 0u) {
+        uint64_t region = ((uint64_t)gi << 30) | ((uint64_t)pdi << 21);
+        uint64_t page = g_be.alloc_table();
+        uint64_t *priv;
+        uint32_t i;
+        if (!page) {
+            return -1;
+        }
+        priv = table_at(page);
+        if (!priv) {
+            return -1;
+        }
+        for (i = 0; i < 512u; i++) {
+            /* Same physical address, same supervisor-only access, finer
+             * granularity. No PTE_USER: this is still the kernel's memory. And
+             * no ownership bit: the kernel did not get these frames from this
+             * address space and must not lose them when it dies. */
+            priv[i] = (region + (uint64_t)i * 4096ull) | PTE_PRESENT | PTE_WRITE;
+        }
+        pd[pdi] = (page & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITE | PTE_USER;
+        *out_pt = priv;
+        return 0;
+    }
+
+    *out_pt = table_at(pd[pdi]);
+    return *out_pt ? 0 : -1;
+}
+
+/* ---- create and destroy -------------------------------------------------- */
+
+int vibeos_vmspace_create(vibeos_vmspace_t *out) {
+    uint64_t page;
+
+    if (!g_ready || !out) {
+        return -1;
+    }
+    page = g_be.alloc_table();
+    if (!page) {
+        return -1;
+    }
+    out->root_phys = page;
+    out->root = table_at(page);
+    if (!out->root) {
+        g_be.free_table(page);
+        out->root_phys = 0;
+        return -1;
+    }
+    /* Slot 0 is the kernel's identity map: shared, supervisor-only, and never
+     * freed by this layer. */
+    out->root[0] = g_be.kernel_pml4e;
+    return 0;
+}
+
+/* Walk one page table, releasing what this address space owns, and say whether
+ * the table itself was private to it.
+ *
+ * A table is private when this layer allocated it, which is every table below
+ * the top level that is not one of the backend's shared ones. Rather than test
+ * against the shared list at every level - which is the inference this rewrite
+ * removes - the caller tracks it structurally: a table reached through an entry
+ * this layer wrote is private, and the only entries this layer does not write
+ * are slot 0 of the root and the backend's shared tables, both known by
+ * identity at the one place they are installed. */
+static void release_pt(uint64_t *pt) {
+    uint32_t i;
+
+    for (i = 0; i < 512u; i++) {
+        if ((pt[i] & PTE_PRESENT) && (pt[i] & VIBEOS_PTE_OWNED)) {
+            (void)vibeos_frame_put(pt[i] & PTE_ADDR_MASK);
+            vibeos_mm_stats()->unmaps++;
+            pt[i] = 0;
+        }
+    }
+}
+
+static void release_pd(uint64_t *pd, const uint64_t *shared) {
+    uint32_t i;
+
+    for (i = 0; i < 512u; i++) {
+        uint64_t e = pd[i];
+        uint64_t *pt;
+
+        if ((e & PTE_PRESENT) == 0u || (e & PTE_PS) != 0u) {
+            continue;   /* absent, or a 2 MiB identity leaf that is not ours */
+        }
+        if (shared && (shared[i] & PTE_ADDR_MASK) == (e & PTE_ADDR_MASK)) {
+            continue;   /* still the kernel's table; we never copied it */
+        }
+        pt = table_at(e);
+        if (pt) {
+            release_pt(pt);
+        }
+        g_be.free_table(e & PTE_ADDR_MASK);
+        pd[i] = 0;
+    }
+}
+
+int vibeos_vmspace_destroy(vibeos_vmspace_t *as) {
+    uint32_t slot, gi;
+
+    if (!g_ready || !as || !as->root) {
+        return -1;
+    }
+
+    for (slot = 0; slot < 512u; slot++) {
+        uint64_t *pdpt;
+        int slot_is_kernel = (slot == 0u);
+
+        if ((as->root[slot] & PTE_PRESENT) == 0u) {
+            continue;
+        }
+        /* Slot 0 is the kernel's, unless this process had pages in the low
+         * window and unshare_low replaced it with a private copy. Comparing
+         * against the entry create() installed is exact and needs no reasoning
+         * about addresses. */
+        if (slot_is_kernel &&
+            (as->root[slot] & PTE_ADDR_MASK) ==
+            (g_be.kernel_pml4e & PTE_ADDR_MASK)) {
+            continue;
+        }
+        pdpt = table_at(as->root[slot]);
+        if (!pdpt) {
+            continue;
+        }
+        for (gi = 0; gi < 512u; gi++) {
+            uint64_t e = pdpt[gi];
+            uint64_t *pd;
+            const uint64_t *shared = 0;
+
+            if ((e & PTE_PRESENT) == 0u || (e & PTE_PS) != 0u) {
+                continue;
+            }
+            if (slot_is_kernel && g_be.shared_pd) {
+                shared = g_be.shared_pd(gi);
+                if (shared && (shared == table_at(e))) {
+                    continue;   /* never copied; the kernel still owns it */
+                }
+            }
+            pd = table_at(e);
+            if (pd) {
+                release_pd(pd, shared);
+            }
+            g_be.free_table(e & PTE_ADDR_MASK);
+            pdpt[gi] = 0;
+        }
+        g_be.free_table(as->root[slot] & PTE_ADDR_MASK);
+        as->root[slot] = 0;
+    }
+
+    g_be.free_table(as->root_phys);
+    as->root = 0;
+    as->root_phys = 0;
+    return 0;
+}
+
+/* ---- map and unmap ------------------------------------------------------- */
+
+int vibeos_vmspace_map(vibeos_vmspace_t *as, uint64_t va, uint64_t pa,
+                       vibeos_prot_t prot) {
+    uint64_t *pte = 0;
+    uint64_t leaf;
+
+    if (!g_ready || !as || !as->root || (va & 0xFFFull) || (pa & 0xFFFull)) {
+        return -1;
+    }
+
+    if (g_be.identity_limit != 0ull && va < g_be.identity_limit) {
+        uint64_t *pt = 0;
+        if (unshare_low(as, va, &pt) != 0) {
+            return -1;
+        }
+        pte = &pt[(va >> 12) & 0x1FFu];
+    } else {
+        pte = walk(as, va, 1);
+        if (!pte) {
+            return -1;
+        }
+    }
+
+    /* Replacing a mapping releases what was there. Without this, mapping over
+     * an owned entry loses the reference and the frame is never reclaimed -
+     * a leak rather than a corruption, but a leak that grows with every exec. */
+    if ((*pte & PTE_PRESENT) && (*pte & VIBEOS_PTE_OWNED)) {
+        (void)vibeos_frame_put(*pte & PTE_ADDR_MASK);
+        vibeos_mm_stats()->unmaps++;
+    }
+
+    leaf = vibeos_vmspace_leaf_flags(prot);
+    *pte = (pa & PTE_ADDR_MASK) | leaf | VIBEOS_PTE_OWNED;
+
+    /* The reference and the record of it are written together, here, and
+     * nowhere else. That is the entire repair: there is no longer any way for
+     * an address space to hold a frame without having said so. */
+    vibeos_frame_get(pa & PTE_ADDR_MASK);
+    vibeos_mm_stats()->maps++;
+
+    if (g_be.invlpg) {
+        g_be.invlpg(va);
+    }
+    return 0;
+}
+
+int vibeos_vmspace_unmap(vibeos_vmspace_t *as, uint64_t va) {
+    uint64_t *pte;
+
+    if (!g_ready || !as || !as->root) {
+        return -1;
+    }
+    pte = walk(as, va, 0);
+    if (!pte || (*pte & PTE_PRESENT) == 0u) {
+        return 0;
+    }
+    if ((*pte & VIBEOS_PTE_OWNED) == 0u) {
+        /* Present, and not ours. An identity-split entry, or a table shared
+         * with the kernel. Left exactly as it is: this is the case that used to
+         * be freed on the strength of it being present and writable. */
+        return 0;
+    }
+    {
+        uint64_t phys = *pte & PTE_ADDR_MASK;
+        *pte = 0;
+        if (g_be.invlpg) {
+            g_be.invlpg(va);
+        }
+        (void)vibeos_frame_put(phys);
+        vibeos_mm_stats()->unmaps++;
+    }
+    return 1;
+}
+
+/* ---- inspection ---------------------------------------------------------- */
+
+uint64_t vibeos_vmspace_owned_count(vibeos_vmspace_t *as) {
+    uint64_t n = 0;
+    uint32_t slot, gi, pdi, i;
+
+    if (!g_ready || !as || !as->root) {
+        return 0;
+    }
+    for (slot = 0; slot < 512u; slot++) {
+        uint64_t *pdpt;
+        if ((as->root[slot] & PTE_PRESENT) == 0u) {
+            continue;
+        }
+        pdpt = table_at(as->root[slot]);
+        if (!pdpt) {
+            continue;
+        }
+        for (gi = 0; gi < 512u; gi++) {
+            uint64_t *pd;
+            if ((pdpt[gi] & PTE_PRESENT) == 0u || (pdpt[gi] & PTE_PS)) {
+                continue;
+            }
+            pd = table_at(pdpt[gi]);
+            if (!pd) {
+                continue;
+            }
+            for (pdi = 0; pdi < 512u; pdi++) {
+                uint64_t *pt;
+                if ((pd[pdi] & PTE_PRESENT) == 0u || (pd[pdi] & PTE_PS)) {
+                    continue;
+                }
+                pt = table_at(pd[pdi]);
+                if (!pt) {
+                    continue;
+                }
+                for (i = 0; i < 512u; i++) {
+                    if ((pt[i] & PTE_PRESENT) && (pt[i] & VIBEOS_PTE_OWNED)) {
+                        n++;
+                    }
+                }
+            }
+        }
+    }
+    return n;
+}
