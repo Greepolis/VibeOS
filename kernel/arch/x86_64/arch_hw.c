@@ -604,6 +604,7 @@ static int hw_frame_still_mapped(uint64_t phys, uint32_t *out_pid);
  * declaration and then fails with a confusing message about a static
  * declaration following a non-static one. */
 static void hw_invlpg(uint64_t va);
+static void hw_tlb_shootdown(uint64_t cr3);
 static void hw_fault_kill_current_user(const vibeos_x86_64_isr_frame_t *frame,
                                        uint64_t fault_address);
 
@@ -1607,6 +1608,12 @@ static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
                 vb.shared_pdpt = &g_pdpt[0];
                 vb.shared_pd = hw_vmspace_shared_pd;
                 vb.invlpg = hw_invlpg;
+                /* Only fork uses this today. munmap deliberately does not -
+                 * see the long comment there: a synchronous barrier at
+                 * munmap's call rate stalls, because syscall clears IF and a
+                 * core inside a system call cannot answer the IPI. The layer
+                 * asks; what the architecture does about it stays here. */
+                vb.shootdown = hw_tlb_shootdown;
                 if (vibeos_vmspace_init(&vb) != 0) {
                     ok = 0;
                 }
@@ -4887,145 +4894,26 @@ static long hw_sys_munmap(uint64_t addr, uint64_t len) {
     return 0;
 }
 
-/* Duplicate every user mapping of `src` into `dst`, copying the backing pages.
- * User space lives entirely in PML4 slot 1, so only that subtree is walked. */
-/* Share one present user leaf with the destination address space.
+/* fork, in one call.
  *
- * The page itself is not copied. Both sides get a read-only mapping of the
- * same frame, marked copy-on-write, and the first write from either side
- * takes a fault that duplicates it. This is what makes fork cheap: a shell
- * forks for every external command and the exec that follows immediately
- * throws the copy away, so eager copying is work that is guaranteed to be
- * wasted - two megabytes of it per command for a program the size of BusyBox.
+ * What used to be here was three functions and about a hundred and forty lines:
+ * one walking the high window, one walking the low window, and one deciding
+ * per page how to share it. They disagreed with each other in a way that only
+ * showed up in a threaded program - the high-window walk took every entry that
+ * was present, the low-window walk took only entries marked PTE_USER, and a
+ * PROT_NONE thread guard is present and not user-reachable. A child forked
+ * from a threaded process therefore inherited an address space with holes
+ * where its guards belonged.
  *
- * The parent's entry is rewritten too. Leaving it writable would let the
- * parent modify a page the child can still see, which is precisely the
- * sharing fork exists to prevent.
- *
- * A page that was already read-only is shared as-is: it can never be written,
- * so it never needs duplicating, and marking it COW would turn a legitimate
- * protection fault into a silent success. */
-static int hw_share_user_leaf(vibeos_hw_aspace_t *dst, uint64_t va, uint64_t *src_pte) {
-    uint64_t pte = *src_pte;
-    uint64_t phys = pte & 0x000FFFFFFFFFF000ull;
-    uint64_t flags = pte & (PTE_PRESENT | PTE_USER);
-
-    /* Three cases, and conflating the last two is a silent disaster.
-     *
-     *   writable        -> becomes copy-on-write on both sides
-     *   already COW     -> stays copy-on-write; it is read-only because it is
-     *                      shared, not because the program may not write it
-     *   read-only       -> shared as is; it can never be written, so it never
-     *                      needs duplicating
-     *
-     * A second fork sees the first fork's pages as read-only. Treating them as
-     * the third case drops the copy-on-write mark, and the page becomes
-     * permanently unwritable for everyone - which is a shell that runs two
-     * commands and dies on the third. */
-    if (pte & PTE_WRITE) {
-        flags |= PTE_COW;
-        *src_pte = (pte & ~PTE_WRITE) | PTE_COW;
-        hw_invlpg(va);
-    } else if (pte & PTE_COW) {
-        flags |= PTE_COW;
-    }
-    /* No explicit count here any more: the two mapping calls below do it, and
-     * that is the point - a future path that shares a frame cannot forget. */
-    g_cow_shared++;
-    if (va < VIBEOS_HW_IDENTITY_LIMIT) {
-        return hw_map_low_user_page(dst, va, phys, flags);
-    }
-    return hw_map_page(dst, va, phys, flags);
-}
-
-/* Duplicate the user pages a process has in the kernel's identity region -
- * a Linux image linked at 0x400000 lives there, and a fork that skipped it
- * would hand the child an address space with no program in it. Only entries
- * marked PTE_USER are copied; everything else down there is the kernel's. */
-static int hw_aspace_copy_low_user(vibeos_hw_aspace_t *dst, vibeos_hw_aspace_t *src) {
-    uint64_t *spdpt;
-    uint32_t i, j, k;
-
-    if ((src->pml4[0] & PTE_PRESENT) == 0) {
-        return 0;
-    }
-    spdpt = (uint64_t *)(uintptr_t)(src->pml4[0] & 0x000FFFFFFFFFF000ull);
-    if (spdpt == &g_pdpt[0]) {
-        return 0;   /* still fully shared: this process has nothing down here */
-    }
-    for (i = 0; i < 512u; i++) {
-        uint64_t *spd;
-        if ((spdpt[i] & PTE_PRESENT) == 0) {
-            continue;
-        }
-        spd = (uint64_t *)(uintptr_t)(spdpt[i] & 0x000FFFFFFFFFF000ull);
-        if (i < VIBEOS_HW_IDENTITY_GIB && spd == &g_pd[i][0]) {
-            continue;
-        }
-        for (j = 0; j < 512u; j++) {
-            uint64_t *spt;
-            if ((spd[j] & PTE_PRESENT) == 0 || (spd[j] & PTE_PS) != 0) {
-                continue;
-            }
-            spt = (uint64_t *)(uintptr_t)(spd[j] & 0x000FFFFFFFFFF000ull);
-            for (k = 0; k < 512u; k++) {
-                uint64_t va;
-                if ((spt[k] & PTE_PRESENT) == 0 || (spt[k] & PTE_USER) == 0) {
-                    continue;
-                }
-                va = ((uint64_t)i << 30) | ((uint64_t)j << 21) | ((uint64_t)k << 12);
-                if (hw_share_user_leaf(dst, va, (uint64_t *)&spt[k]) != 0) {
-                    return -1;
-                }
-            }
-        }
-    }
-    return 0;
-}
-
+ * There is one walk now, over the entries carrying the ownership mark, and it
+ * is the same walk the inspection count uses so the two cannot drift. The
+ * sharing rules, the parent's revoked write permission and the single
+ * shootdown at the end all moved with it, into code a host test can drive. */
 static int hw_aspace_copy_user(vibeos_hw_aspace_t *dst, vibeos_hw_aspace_t *src) {
-    uint64_t *spdpt;
-    uint32_t i, j, k;
+    vibeos_vmspace_t d = hw_vm(dst);
+    vibeos_vmspace_t sp = hw_vm(src);
 
-    if (hw_aspace_copy_low_user(dst, src) != 0) {
-        return -1;
-    }
-    if ((src->pml4[1] & PTE_PRESENT) == 0) {
-        return 0;
-    }
-    spdpt = (uint64_t *)(uintptr_t)(src->pml4[1] & 0x000FFFFFFFFFF000ull);
-    for (i = 0; i < 512u; i++) {
-        uint64_t *spd;
-        if ((spdpt[i] & PTE_PRESENT) == 0) {
-            continue;
-        }
-        spd = (uint64_t *)(uintptr_t)(spdpt[i] & 0x000FFFFFFFFFF000ull);
-        for (j = 0; j < 512u; j++) {
-            uint64_t *spt;
-            if ((spd[j] & PTE_PRESENT) == 0) {
-                continue;
-            }
-            spt = (uint64_t *)(uintptr_t)(spd[j] & 0x000FFFFFFFFFF000ull);
-            for (k = 0; k < 512u; k++) {
-                uint64_t va;
-
-                if ((spt[k] & PTE_PRESENT) == 0) {
-                    continue;
-                }
-                va = (1ull << 39) | ((uint64_t)i << 30) | ((uint64_t)j << 21) | ((uint64_t)k << 12);
-                if (hw_share_user_leaf(dst, va, (uint64_t *)&spt[k]) != 0) {
-                    return -1;
-                }
-            }
-        }
-    }
-    /* Once, here, rather than per page: every leaf above has just had its write
-     * permission revoked in the parent, and until the other cores are told,
-     * a thread of this same process can still write through a cached entry
-     * into a page the child now shares. One IPI for a whole fork is also the
-     * difference between a shootdown and a stall. */
-    hw_tlb_shootdown((uint64_t)(uintptr_t)src->pml4);
-    return 0;
+    return vibeos_vmspace_clone_cow(&d, &sp);
 }
 
 /* fork(): duplicate the calling task, address space and all. The child resumes

@@ -307,6 +307,92 @@ int test_vmspace(void) {
     }
     if (vibeos_vmspace_destroy(&as) != 0) { goto fail; }
 
+    /* ---- clone_cow: fork ------------------------------------------------ */
+    if (setup(1) != 0) { goto fail; }
+    {
+        vibeos_vmspace_t child;
+        uint64_t guard, rw, ro;
+        uint64_t *e;
+
+        if (vibeos_vmspace_create(&as) != 0) { goto fail; }
+
+        /* Three kinds of page, because the sharing rule differs for each and
+         * conflating the last two is the defect that made a shell die on its
+         * third command. */
+        rw = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+        ro = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+        guard = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+        if (!rw || !ro || !guard) { goto fail; }
+        if (vibeos_vmspace_map(&as, 0x8000000000ull, rw,
+                               VIBEOS_PROT_READ | VIBEOS_PROT_WRITE |
+                               VIBEOS_PROT_USER) != 0) { goto fail; }
+        if (vibeos_vmspace_map(&as, 0x8000001000ull, ro,
+                               VIBEOS_PROT_READ | VIBEOS_PROT_USER) != 0) { goto fail; }
+        /* A thread guard: present, owned, and deliberately not reachable from
+         * ring 3. The old low-window walk selected pages by PTE_USER and so
+         * skipped exactly this, handing a forked child an address space with a
+         * hole where its guard belonged. It lives in the low window here
+         * because that is where the walk that skipped it ran. */
+        if (vibeos_vmspace_map(&as, 0x400000ull, guard, VIBEOS_PROT_NONE) != 0) { goto fail; }
+
+        if (vibeos_vmspace_create(&child) != 0) { goto fail; }
+        if (vibeos_vmspace_clone_cow(&child, &as) != 0) { goto fail; }
+
+        /* All three pages, in both address spaces, with two owners each. */
+        if (vibeos_vmspace_owned_count(&child) != 3ull) {
+            printf("FAIL:fork cloned %llu pages, not 3\n",
+                   (unsigned long long)vibeos_vmspace_owned_count(&child));
+            goto fail;
+        }
+        if (vibeos_frame_owners(guard) != 3u) {   /* allocation + both spaces */
+            printf("FAIL:fork skipped the PROT_NONE guard page\n");
+            goto fail;
+        }
+
+        /* The writable page became copy-on-write on both sides, and the
+         * parent's write permission is gone - leaving it would let the parent
+         * modify a page the child can still see. */
+        e = vibeos_vmspace_entry(&as, 0x8000000000ull);
+        if (!e || (*e & 2ull) || (*e & (1ull << 9)) == 0ull) {
+            printf("FAIL:fork left the parent able to write a shared page\n");
+            goto fail;
+        }
+        e = vibeos_vmspace_entry(&child, 0x8000000000ull);
+        if (!e || (*e & 2ull) || (*e & (1ull << 9)) == 0ull) { goto fail; }
+
+        /* The read-only page is shared as it was. Marking it copy-on-write
+         * would turn a genuine protection fault into a silent success. */
+        e = vibeos_vmspace_entry(&child, 0x8000001000ull);
+        if (!e || (*e & (1ull << 9))) {
+            printf("FAIL:a read-only page was marked copy-on-write\n");
+            goto fail;
+        }
+
+        /* A second fork. The first fork's pages are read-only *because they
+         * are shared*, and treating them as plain read-only drops the mark -
+         * after which the page is permanently unwritable for everyone. */
+        {
+            vibeos_vmspace_t grand;
+            if (vibeos_vmspace_create(&grand) != 0) { goto fail; }
+            if (vibeos_vmspace_clone_cow(&grand, &child) != 0) { goto fail; }
+            e = vibeos_vmspace_entry(&grand, 0x8000000000ull);
+            if (!e || (*e & (1ull << 9)) == 0ull) {
+                printf("FAIL:a second fork dropped the copy-on-write mark\n");
+                goto fail;
+            }
+            if (vibeos_frame_owners(rw) != 4u) { goto fail; }
+            if (vibeos_vmspace_destroy(&grand) != 0) { goto fail; }
+        }
+
+        if (vibeos_vmspace_destroy(&child) != 0) { goto fail; }
+        if (vibeos_frame_owners(rw) != 2u) { goto fail; }
+        if (vibeos_vmspace_destroy(&as) != 0) { goto fail; }
+        if (vibeos_frame_owners(rw) != 1u) { goto fail; }
+        if (vibeos_frame_owners(guard) != 1u) { goto fail; }
+        if (vibeos_mm_stats()->frames_leaked != 0ull ||
+            vibeos_mm_stats()->frames_double_put != 0ull) { goto fail; }
+    }
+
     free(g_ram);
     g_ram = 0;
     return 0;

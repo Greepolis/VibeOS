@@ -149,6 +149,29 @@ int vibeos_vmspace_protect(vibeos_vmspace_t *as, uint64_t va, vibeos_prot_t prot
  * the entry was not ours, and negative on a bad argument. */
 int vibeos_vmspace_unmap(vibeos_vmspace_t *as, uint64_t va);
 
+/* Give `dst` a copy-on-write view of everything `src` owns. This is fork.
+ *
+ * No page is copied. Both sides end up mapping the same frames read-only and
+ * marked copy-on-write, and the first write from either side faults and
+ * duplicates. That is what makes fork cheap enough to use: a shell forks for
+ * every external command and the exec that follows throws the copy away, so
+ * eager copying is work guaranteed to be wasted - two megabytes of it per
+ * command for a program the size of BusyBox.
+ *
+ * Which pages get cloned is no longer a question with two answers. It is the
+ * entries carrying the ownership mark, in both windows, full stop. The
+ * previous code walked the high window taking everything present and the low
+ * window taking everything marked PTE_USER, and the second test silently
+ * excluded PROT_NONE guard pages - so a forked child of a threaded process got
+ * an address space with holes where its thread guards belonged.
+ *
+ * One shootdown at the end, not one per page: every entry has just had its
+ * write permission revoked in the parent, and until the other cores are told,
+ * a thread of the same process can still write through a cached entry into a
+ * page the child now shares. Once per fork is also the difference between a
+ * shootdown and a stall. */
+int vibeos_vmspace_clone_cow(vibeos_vmspace_t *dst, vibeos_vmspace_t *src);
+
 /* The entry for an address, or null. Read-only; callers must not write through
  * it - that is the point of this layer. */
 uint64_t *vibeos_vmspace_entry(vibeos_vmspace_t *as, uint64_t va);

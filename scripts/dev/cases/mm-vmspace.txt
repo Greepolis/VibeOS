@@ -77,3 +77,25 @@
     *pte &= ~(PTE_USER | PTE_WRITE);
 +++ new
     *pte = (*pte & ~(PTE_USER | PTE_WRITE | VIBEOS_PTE_OWNED));
+
+### fork selects pages by user-reachability, as the low-window walk used to
+--- old
+                    if ((pt[i] & PTE_PRESENT) == 0u ||
+                        (pt[i] & VIBEOS_PTE_OWNED) == 0u) {
++++ new
+                    if ((pt[i] & PTE_PRESENT) == 0u ||
+                        (pt[i] & PTE_USER) == 0u) {
+
+### fork treats an already-shared page as plain read-only, dropping the mark
+--- old
+    } else if (entry & PTE_COW_BIT) {
+        flags |= PTE_COW_BIT;
+    }
++++ new
+    }
+
+### fork leaves the parent able to write a page it has just shared
+--- old
+        *pte = (entry & ~PTE_WRITE) | PTE_COW_BIT;
++++ new
+        *pte = entry | PTE_COW_BIT;

@@ -23,6 +23,12 @@
 
 #define PTE_ADDR_MASK 0x000FFFFFFFFFF000ull
 
+/* The copy-on-write mark. This layer does not resolve copy-on-write faults yet
+ * - that is phase P5 - but it sets the mark in fork, must not destroy it when
+ * permissions change, and must not grant write access over the top of one.
+ * Named here rather than written as a number in three places. */
+#define PTE_COW_BIT (1ull << 9)   /* must equal PTE_COW in arch_hw.c */
+
 static vibeos_vmspace_backend_t g_be;
 static int g_ready;
 
@@ -380,12 +386,6 @@ int vibeos_vmspace_map_raw(vibeos_vmspace_t *as, uint64_t va, uint64_t pa,
     return 0;
 }
 
-/* The copy-on-write mark. This layer does not resolve copy-on-write faults yet
- * - that is phase P5 - but it must not destroy the mark when permissions
- * change, and it must not grant write access over the top of one. Kept as its
- * own name here rather than as a magic number so the two places agree. */
-#define PTE_COW_BIT (1ull << 9)   /* must equal PTE_COW in arch_hw.c */
-
 int vibeos_vmspace_protect(vibeos_vmspace_t *as, uint64_t va,
                            vibeos_prot_t prot) {
     uint64_t *pte;
@@ -457,15 +457,17 @@ int vibeos_vmspace_unmap(vibeos_vmspace_t *as, uint64_t va) {
     return 1;
 }
 
-/* ---- inspection ---------------------------------------------------------- */
+/* ---- fork ---------------------------------------------------------------- */
 
-uint64_t vibeos_vmspace_owned_count(vibeos_vmspace_t *as) {
-    uint64_t n = 0;
+/* Visit every leaf this address space owns, with the virtual address it sits
+ * at. Shared by fork and by the inspection count, so the two cannot disagree
+ * about what "owned" means - and they are the two places most likely to drift,
+ * because one is on a hot path and the other is not. */
+static int foreach_owned(vibeos_vmspace_t *as,
+                         int (*fn)(vibeos_vmspace_t *, uint64_t, uint64_t *, void *),
+                         void *ctx) {
     uint32_t slot, gi, pdi, i;
 
-    if (!g_ready || !as || !as->root) {
-        return 0;
-    }
     for (slot = 0; slot < 512u; slot++) {
         uint64_t *pdpt;
         if ((as->root[slot] & PTE_PRESENT) == 0u) {
@@ -494,12 +496,94 @@ uint64_t vibeos_vmspace_owned_count(vibeos_vmspace_t *as) {
                     continue;
                 }
                 for (i = 0; i < 512u; i++) {
-                    if ((pt[i] & PTE_PRESENT) && (pt[i] & VIBEOS_PTE_OWNED)) {
-                        n++;
+                    uint64_t va;
+                    if ((pt[i] & PTE_PRESENT) == 0u ||
+                        (pt[i] & VIBEOS_PTE_OWNED) == 0u) {
+                        continue;
+                    }
+                    va = ((uint64_t)slot << 39) | ((uint64_t)gi << 30) |
+                         ((uint64_t)pdi << 21) | ((uint64_t)i << 12);
+                    if (fn(as, va, &pt[i], ctx) != 0) {
+                        return -1;
                     }
                 }
             }
         }
     }
+    return 0;
+}
+
+static int clone_one(vibeos_vmspace_t *src, uint64_t va, uint64_t *pte, void *ctx) {
+    vibeos_vmspace_t *dst = (vibeos_vmspace_t *)ctx;
+    uint64_t entry = *pte;
+    uint64_t phys = entry & PTE_ADDR_MASK;
+    uint64_t flags = entry & (PTE_PRESENT | PTE_USER);
+
+    /* Three cases, and conflating the last two is a silent disaster.
+     *
+     *   writable        -> becomes copy-on-write on both sides
+     *   already COW     -> stays copy-on-write; it is read-only because it is
+     *                      shared, not because the program may not write it
+     *   read-only       -> shared as is; it can never be written, so it never
+     *                      needs duplicating, and marking it would turn a
+     *                      genuine protection fault into a silent success
+     *
+     * A second fork sees the first fork's pages as read-only. Treating them as
+     * the third case drops the mark, and the page becomes permanently
+     * unwritable for everyone - a shell that runs two commands and dies on the
+     * third. */
+    if (entry & PTE_WRITE) {
+        flags |= PTE_COW_BIT;
+        *pte = (entry & ~PTE_WRITE) | PTE_COW_BIT;
+        if (g_be.invlpg) {
+            g_be.invlpg(va);
+        }
+    } else if (entry & PTE_COW_BIT) {
+        flags |= PTE_COW_BIT;
+    }
+
+    /* The reference is taken by the mapping, as it is everywhere else. There is
+     * deliberately no explicit count here: a future path that shares a frame
+     * cannot forget to do something it never had to remember. */
+    if (vibeos_vmspace_map_raw(dst, va, phys, flags) != 0) {
+        return -1;
+    }
+    vibeos_mm_stats()->cow_shared++;
+    (void)src;
+    return 0;
+}
+
+int vibeos_vmspace_clone_cow(vibeos_vmspace_t *dst, vibeos_vmspace_t *src) {
+    if (!g_ready || !dst || !src || !dst->root || !src->root) {
+        return -1;
+    }
+    if (foreach_owned(src, clone_one, dst) != 0) {
+        return -1;
+    }
+    if (g_be.shootdown) {
+        g_be.shootdown(src->root_phys);
+    }
+    return 0;
+}
+
+/* ---- inspection ---------------------------------------------------------- */
+
+static int count_one(vibeos_vmspace_t *as, uint64_t va, uint64_t *pte, void *ctx) {
+    (void)as; (void)va; (void)pte;
+    (*(uint64_t *)ctx)++;
+    return 0;
+}
+
+uint64_t vibeos_vmspace_owned_count(vibeos_vmspace_t *as) {
+    uint64_t n = 0;
+
+    if (!g_ready || !as || !as->root) {
+        return 0;
+    }
+    /* The same walk fork uses. Four nested loops written twice is how two
+     * pieces of code come to disagree about what "owned" means, and one of
+     * these is on a hot path while the other is not - which is exactly the
+     * pair that drifts. */
+    (void)foreach_owned(as, count_one, &n);
     return n;
 }
