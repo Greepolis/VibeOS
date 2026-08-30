@@ -275,6 +275,51 @@ now prints every `STRESS_FAIL` and `STRESS_SEED` line when the stress run
 fails, and the crash collector files stress failures as well as faults. The
 environment that can see the defect is the one that gets to describe it.
 
+### The boot sequence is inside out, and it was hiding every userland failure
+
+Asked plainly - "don't you have a boot sequence, kernel first and then the
+services?" - the honest answer turned out to be no. The real order, read off a
+healthy log rather than off the code:
+
+| line | what happens |
+| --- | --- |
+| 72 | `[HW] early init: loading GDT` — the arch layer starts |
+| 107 | `[SCHED] scheduler live` — **the entire userland runs**: init, every service, the self-test, BusyBox, the shell, ping |
+| 444 | `[SCHED] all user tasks retired` |
+| 449 | `[BOOT] VibeOS kernel starting...` — the *first line of `vibeos_kmain`* |
+| 453-457 | memory stage, scheduler stage, `BOOT_OK`, `CLI_READY` |
+
+`entry.s` calls `vibeos_x86_64_hw_early_init()`, and that name is the whole
+problem: it does descriptor tables, paging, APIC, SMP, the block and network
+drivers, the filesystem, spawns init and **runs the machine to completion**.
+Only then is `vibeos_kmain` entered, which brings up the portable memory
+manager, timer, interrupt controller and scheduler that nothing will ever use,
+and prints `BOOT_OK`.
+
+So `BOOT_OK` is not a boot marker. It means "everything already finished".
+
+Two consequences, both of which cost real time before this was noticed:
+
+- **Every userland hang was reported as a bootloader failure.** The gate waits
+  for `BOOT_OK` first, and until it arrives the phase stays at the last
+  bootloader marker. `phase=bootloader_exit_boot_services` was chased as a
+  firmware problem for an entire session; the guest was always well past the
+  bootloader, running userland. `phase=busybox_cat` was the same illusion: the
+  guest was hung in `ping`, several commands later.
+- **`kernel/core/` is initialised too late to matter.** It is host-tested, its
+  stages are recorded, and the machine has already done all its work on the
+  arch layer's own structures by the time any of it runs. There are effectively
+  two kernels, and the portable one is a report.
+
+Fixed here for now: the gate has `kernel_early_init`, `userland_running` and
+`userland_finished` phases, so a hang is attributed to the part of the system
+that is actually hung.
+
+**Not fixed:** the ordering itself. `vibeos_kmain` should run before userland,
+not after it, and `hw_early_init` should be split into bring-up and run. That
+is a structural change and is recorded here rather than attempted at the end of
+a long session.
+
 ## Pending
 
 - **`munmap` does not shoot down the other cores' TLBs.** The need is real - a

@@ -6745,6 +6745,37 @@ static void hw_fault_kill_current_user(const vibeos_x86_64_isr_frame_t *frame,
         vibeos_x86_64_serial_puts(" exe=");
         vibeos_x86_64_serial_puts(rec->exe[0] ? rec->exe : "(unknown)");
         vibeos_x86_64_serial_puts(" - `crash` on the console prints it in full\n");
+
+        /* Is this task standing on a page that was given away underneath it?
+         *
+         * A crash whose registers and stack are all 0xDEAD0000DEAD0000 is not
+         * a program bug: that is the pattern this kernel writes into a page as
+         * it frees one. The task returned into poison because the memory it
+         * was running on had been handed back to the allocator while it was
+         * still there.
+         *
+         * That has now happened three times and been diagnosed from the far
+         * end each time. The page still carries the name of whoever released
+         * it, in the word after the freelist link, so read it out and say it
+         * here - at the crash, where somebody is already looking. */
+        if (rec->stack_words > 0 && rec->stack[0] == HW_PAGE_POISON) {
+            uint64_t page = frame->rsp & ~0xFFFull;
+            const char *freed_by = 0;
+
+            if (hw_user_range_ok(page, 16u, 0)) {
+                freed_by = (const char *)(uintptr_t)((const uint64_t *)(uintptr_t)page)[1];
+            }
+            vibeos_x86_64_serial_puts("[CRASH] this task's stack is the free-page "
+                                      "poison: its memory was reclaimed while it "
+                                      "was still running on it");
+            if (freed_by &&
+                (uint64_t)(uintptr_t)freed_by > 0x100000ull &&
+                (uint64_t)(uintptr_t)freed_by < VIBEOS_HW_IDENTITY_LIMIT) {
+                vibeos_x86_64_serial_puts(", last freed by ");
+                vibeos_x86_64_serial_puts(freed_by);
+            }
+            vibeos_x86_64_serial_puts("\n");
+        }
         vibeos_x86_64_serial_unlock();
     }
 

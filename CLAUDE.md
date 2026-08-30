@@ -414,6 +414,25 @@ free-page poison: the page was reclaimed while still mapped here". The fix was
 one call. That is the argument for building detectors before chasing the next
 rare bug by hand.
 
+**BOOT_OK is printed after userland has finished, not before it starts.**
+`entry.s` calls `vibeos_x86_64_hw_early_init`, and despite the name that
+function runs the whole machine - descriptor tables, paging, SMP, drivers,
+filesystem, init, every service, the shell - and only then is `vibeos_kmain`
+entered to bring up the portable subsystems and print `BOOT_OK`.
+
+The cost of not knowing this is high and was paid in full: the boot gate waits
+for `BOOT_OK`, so until it arrives the reported phase stays at the last
+*bootloader* marker. A hang anywhere in userland therefore reads as
+`phase=bootloader_exit_boot_services`, and a whole session went into looking
+for a firmware bug that did not exist. `phase=busybox_cat` was the same
+illusion - the guest was stuck in `ping`, several commands later.
+
+The gate now has `kernel_early_init`, `userland_running` and
+`userland_finished` phases. The ordering itself is still wrong: the portable
+kernel in `kernel/core/` is initialised after the machine has already done all
+its work on the arch layer's structures, which is also why it can be
+host-tested and yet have no runtime role.
+
 ## Verification that exists
 
 The boot gate (`scripts/qemu-cli-smoke-linux.py`) asserts state, not markers:

@@ -314,6 +314,19 @@ def detect_guest_phase(text):
             phase = "bootloader_load"
         elif "BL_EBS_OK" in line:
             phase = "bootloader_exit_boot_services"
+        # The kernel is alive from here. This matters more than it looks: the
+        # arch layer runs the *entire* userland before vibeos_kmain is ever
+        # called, so BOOT_OK is printed after every user task has retired -
+        # it is an "everything finished" marker, not a boot one. Without the
+        # two phases below, any hang anywhere in userland was reported with
+        # the phase still stuck at the last bootloader marker, and a whole
+        # session was spent looking for a bootloader bug that did not exist.
+        elif "early init: loading GDT" in line:
+            phase = "kernel_early_init"
+        elif "scheduler live" in line:
+            phase = "userland_running"
+        elif "all user tasks retired" in line:
+            phase = "userland_finished"
         elif "BOOT_OK" in line:
             phase = "kernel_boot"
         elif "CLI_READY" in line:
