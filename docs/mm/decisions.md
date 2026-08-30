@@ -31,8 +31,6 @@ and ask at each one rather than pick.
 | --- | --- | --- | --- |
 | D1 | ~~Where does the new code live?~~ | **Decided 2026-08-30: `kernel/mm/`**, linked into both the kernel image and the host test binary. See below. | — |
 | D2 | ~~How large is the frame descriptor?~~ | **Decided 2026-08-30: 16 bytes**, the complete form. See below. | — |
-| D5 | Is the boot allowed to get slower, and by how much? | The frame walk and the region lookups are not free | Before P3 |
-| D6 | Does the block cache in `kernel/fs/` get merged into the page cache, or kept? | Merging touches the filesystem layer, which is outside this plan's scope | Before P4 |
 | D7 | Which device backs swap, and is it configured or discovered? | A product decision about how VibeOS is deployed | Before P5 |
 | D8 | What happens when swap is full — kill the allocating process, or fail the allocation? | A policy question with no technically correct answer | Before P5 |
 
@@ -199,3 +197,34 @@ have been far harder to attribute inside one large commit:
 Both were found by having a green commit immediately before them to compare
 against. A single commit for the phase would have presented both at once, in a
 diff of about a thousand lines, with a silent wedge as the only symptom.
+
+## D5 — ten per cent, and measured, decided 2026-08-30
+
+The boot may get up to 10% slower per phase, and the boot gate times it and
+fails past that.
+
+The measurement is the decision, more than the number is. A budget nobody
+checks is not a budget, and a slowdown noticed three phases later cannot be
+attributed to the phase that caused it - which in this subsystem means it gets
+attributed to whichever phase somebody happens to be reading. The gate records
+the elapsed time to `BOOT_OK` and compares it against a recorded baseline.
+
+The user's framing, which is the right one: optimising the system as a whole is
+its own milestone, a long way out. This budget exists to stop a phase making
+things quietly worse in the meantime, not to make anything fast.
+
+## D6 — two caches, for now, decided 2026-08-30
+
+P4 builds a page cache for memory. The block cache in `kernel/fs/` stays where
+it is and keeps doing what it does.
+
+They hold different things keyed differently - one by sector, one by offset
+within a file - and merging them pulls the filesystem into a plan that does not
+otherwise touch it. The argument that settled it is narrower than tidiness:
+this subsystem's every serious defect has been two structures disagreeing about
+one resource, and creating that situation on purpose, mid-rewrite, to save a
+layer of indirection is the wrong week for it.
+
+The question is worth reopening once P4 exists and the duplication can be
+measured rather than guessed at. It is recorded here so that reopening it is a
+decision rather than a rediscovery.

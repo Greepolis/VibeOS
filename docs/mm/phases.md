@@ -272,6 +272,12 @@ every build rather than by review.
 
 ### P3 — Regions
 
+**Budget (decision D5).** This phase may cost up to 10% of boot time and no
+more, and the boot gate measures it rather than trusting a reading of the code.
+Whole-system optimisation is a much later milestone; this number exists only to
+stop a phase making things quietly worse in the meantime.
+
+
 **Objective.** `mmap`, `munmap`, `mprotect` and `brk` operate on descriptors of
 what was asked for.
 
