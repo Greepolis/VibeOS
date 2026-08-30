@@ -39,8 +39,20 @@ do_build() {
 
 do_tests() {
     echo "=== host tests"
-    "./$d/vibeos_kernel_tests" | tail -2
-    "./$d/vibeos_bootloader_tests" | tail -1
+    # A single verdict line, in the same shape as rc= and reason=, because the
+    # detail above it is easy to filter away by accident - and was. Several
+    # sessions reported "host tests green" while test_kmain had been failing,
+    # for want of one greppable word in a fixed place.
+    local k=0 b=0
+    "./$d/vibeos_kernel_tests" | tail -2 || k=1
+    "./$d/vibeos_kernel_tests" >/dev/null 2>&1 || k=1
+    "./$d/vibeos_bootloader_tests" | tail -1 || b=1
+    "./$d/vibeos_bootloader_tests" >/dev/null 2>&1 || b=1
+    if [ "$k" -eq 0 ] && [ "$b" -eq 0 ]; then
+        echo "host-tests=pass"
+    else
+        echo "host-tests=FAIL kernel=$k bootloader=$b"
+    fi
 }
 
 do_smoke() {

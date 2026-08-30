@@ -11,6 +11,8 @@
 # does not evaluate CMake syntax.
 
 set(VIBEOS_KERNEL_CORE_SOURCES
+    kernel/mm/stats.c
+    kernel/mm/usage.c
     kernel/core/kmain.c
     kernel/core/elf.c
     kernel/fs/fat_chain.c

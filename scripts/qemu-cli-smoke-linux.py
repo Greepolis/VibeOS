@@ -519,14 +519,18 @@ def main():
                 # dereferences null earlier in every boot, so there is always
                 # one to print - and a dumper that only works when nothing has
                 # crashed would pass a test that never asked it for anything.
-                ("Commands: help, status, log, crash, echo <text>, halt, reboot", b"crash\r"),
+                ("Commands: help, status, log, meminfo, crash, echo <text>, halt, reboot", b"crash\r"),
                 ("[CRASH] end", b"log\r"),
                 # `log` shows two rings: the boot stages kmain records, and
                 # the arch ring holding what the machine actually did - fork,
                 # exec, exit, signals, copy-on-write, munmap. The second was
                 # not reachable from the console at all until now, and the
                 # gate never ran this command, so neither was exercised.
-                ("[LOG] arch ring: showing", b"status\r"),
+                ("[LOG] arch ring: showing", b"meminfo\r"),
+                # meminfo is the memory picture a person asks for, and the three
+                # counters that must be zero are printed on one line so the gate
+                # can assert them without parsing the rest.
+                ("[MEM] end", b"status\r"),
                 # Ctrl-C on the serial console. The PS/2 path has turned it
                 # into a signal since it was written; this one dropped it along
                 # with every other control byte, so the foreground process
@@ -793,6 +797,22 @@ def main():
                 problems.append("console_cannot_show_the_arch_log")
             elif int(ring.group(1), 16) == 0:
                 problems.append("arch_log_ring_is_empty")
+
+            # The three memory counters that are assertions rather than
+            # diagnostics. Each one is a defect this subsystem has actually
+            # produced, and each was invisible until it was counted.
+            mz = re.search(r"MUSTBEZERO frames_leaked=0x([0-9a-f]{16}) "
+                           r"frames_double_put=0x([0-9a-f]{16}) "
+                           r"poison_hits=0x([0-9a-f]{16})", text)
+            if mz is None:
+                problems.append("meminfo_missing")
+            else:
+                for name, group in (("frames_leaked", 1),
+                                    ("frames_double_put", 2),
+                                    ("poison_hits", 3)):
+                    value = int(mz.group(group), 16)
+                    if value != 0:
+                        problems.append(f"mm_{name}={value}")
 
             if "USERLAND_START" not in text:
                 problems.append("userland_never_started")

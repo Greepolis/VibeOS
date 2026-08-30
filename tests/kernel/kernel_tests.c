@@ -497,8 +497,51 @@ static int test_kmain(void) {
     if (vibeos_log_count(&kernel.log, &log_count) != 0 || log_count < 5u) {
         return -1;
     }
-    if (vibeos_log_latest(&kernel.log, &latest) != 0 || strcmp(latest.message, "core_stage_ready") != 0) {
+    /* The boot order, asserted here rather than only in a serial log.
+     *
+     * This used to check that the last thing kmain logged was
+     * "core_stage_ready", and that was right when kmain was the last thing to
+     * run - the architecture layer had already executed the whole of userland
+     * before kmain was ever entered, so BOOT_OK meant "everything finished".
+     *
+     * That inversion cost a full session of hunting a bootloader bug that did
+     * not exist: the boot gate waits for BOOT_OK, so any userland hang was
+     * reported against the last bootloader marker anyone had seen. The order is
+     * now kernel first, then userland, and this is the cheapest place to keep
+     * it that way - a host test, with no machine to boot.
+     */
+    if (vibeos_log_latest(&kernel.log, &latest) != 0 ||
+        strcmp(latest.message, "userland_finished") != 0) {
         return -1;
+    }
+    {
+        /* core_stage_ready, then userland_starting, then userland_finished -
+         * in that order and each exactly once. */
+        uint32_t i;
+        int core_at = -1, start_at = -1, done_at = -1;
+
+        for (i = 0; i < log_count; i++) {
+            vibeos_log_event_t ev;
+            if (vibeos_log_get(&kernel.log, i, &ev) != 0) {
+                return -1;
+            }
+            if (strcmp(ev.message, "core_stage_ready") == 0) {
+                if (core_at >= 0) { return -1; }
+                core_at = (int)i;
+            } else if (strcmp(ev.message, "userland_starting") == 0) {
+                if (start_at >= 0) { return -1; }
+                start_at = (int)i;
+            } else if (strcmp(ev.message, "userland_finished") == 0) {
+                if (done_at >= 0) { return -1; }
+                done_at = (int)i;
+            }
+        }
+        if (core_at < 0 || start_at < 0 || done_at < 0) {
+            return -1;
+        }
+        if (!(core_at < start_at && start_at < done_at)) {
+            return -1;
+        }
     }
     return 0;
 }
@@ -8630,10 +8673,15 @@ static int test_storage_claims_nothing(void)
  *   - returns 0 and prints "ALL_TESTS_PASS" when no tests fail
  *   - returns 1 and prints "TEST_FAILURES=<n>" otherwise
  */
+int test_mm_stats(void);
+
 int main(void) {
     int failures = 0;
     /* Run each test and accumulate failures while preserving full execution. */
 #define RUN_TEST(fn) do { if ((fn)() != 0) { failures++; printf("FAIL:%s\n", #fn); } } while (0)
+    /* Memory-management counters: defined in mm_stats_tests.c, kept out of
+     * this file because it is already past eight thousand lines. */
+    RUN_TEST(test_mm_stats);
     RUN_TEST(test_pmm);
     RUN_TEST(test_pmm_reserve);
     RUN_TEST(test_blockcache_hits);

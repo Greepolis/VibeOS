@@ -1,5 +1,6 @@
 #include "vibeos/kernel.h"
 #include "vibeos/arch_x86_64.h"
+#include "vibeos/mm_model.h"
 #include <stddef.h>
 
 static int kernel_bootinfo_validate(const vibeos_boot_info_t *boot_info) {
@@ -82,7 +83,7 @@ static int kernel_boot_fail(vibeos_kernel_t *kernel, size_t code, const char *me
 }
 
 static void kernel_cli_print_help(void) {
-    vibeos_x86_64_serial_puts("[CLI] Commands: help, status, log, crash, echo <text>, halt, reboot\n");
+    vibeos_x86_64_serial_puts("[CLI] Commands: help, status, log, meminfo, crash, echo <text>, halt, reboot\n");
 }
 
 static void kernel_cli_print_status(const vibeos_kernel_t *kernel) {
@@ -151,6 +152,88 @@ __attribute__((weak)) void vibeos_x86_64_log_dump_recent(uint32_t want) { (void)
 /* Same arrangement: the crash records live with the task table. */
 __attribute__((weak)) void vibeos_x86_64_crash_dump(void) {
     vibeos_x86_64_serial_puts("[CRASH] no crash recorder in this build\n");
+}
+
+/* meminfo: what memory is being used for, and what has happened to it.
+ *
+ * Two halves on purpose. The counters say what has *happened* - pages mapped,
+ * copies fork forced, references refused - and the usage figures say what *is*,
+ * which is the question somebody actually asks when a machine misbehaves. This
+ * project has spent whole sessions inferring both from a serial log.
+ *
+ * Figures the current kernel cannot answer are printed as "not measured"
+ * rather than as zero. A memory tool that reports an invented number is worse
+ * than one that admits a gap, because the invented number is the one somebody
+ * acts on. They fill in as the phases in docs/mm/ land.
+ */
+static void kernel_cli_print_meminfo(void) {
+    const vibeos_mm_stats_t *st = vibeos_mm_stats();
+    vibeos_mm_usage_t use;
+    unsigned i;
+
+    vibeos_x86_64_serial_puts("[MEM] bytes total=0x");
+    if (vibeos_mm_usage(&use) != 0) {
+        vibeos_x86_64_serial_puts("unavailable\n");
+        return;
+    }
+    kernel_log_u64_hex(use.bytes_total);
+    vibeos_x86_64_serial_puts(" free=0x");
+    kernel_log_u64_hex(use.bytes_free);
+    vibeos_x86_64_serial_puts(" reserved=0x");
+    kernel_log_u64_hex(use.bytes_reserved);
+    vibeos_x86_64_serial_puts("\n");
+
+    vibeos_x86_64_serial_puts("[MEM] frames");
+    for (i = 0; i < (unsigned)VIBEOS_FRAME_STATE_COUNT; i++) {
+        vibeos_x86_64_serial_puts(" ");
+        vibeos_x86_64_serial_puts(vibeos_frame_state_name((vibeos_frame_state_t)i));
+        vibeos_x86_64_serial_puts("=0x");
+        kernel_log_u64_hex(use.frames_by_state[i]);
+    }
+    vibeos_x86_64_serial_puts("\n");
+
+    /* Not measured yet: said plainly, with the phase that will answer it. */
+    vibeos_x86_64_serial_puts("[MEM] kernel/user/shared/cache bytes: not measured "
+                              "until the frame table exists (plan P1)\n");
+
+    vibeos_x86_64_serial_puts("[MEM] maps=0x");
+    kernel_log_u64_hex(st->maps);
+    vibeos_x86_64_serial_puts(" unmaps=0x");
+    kernel_log_u64_hex(st->unmaps);
+    vibeos_x86_64_serial_puts(" cow_shared=0x");
+    kernel_log_u64_hex(st->cow_shared);
+    vibeos_x86_64_serial_puts(" cow_copied=0x");
+    kernel_log_u64_hex(st->cow_copied);
+    vibeos_x86_64_serial_puts("\n");
+
+    vibeos_x86_64_serial_puts("[MEM] tlb_shootdowns=0x");
+    kernel_log_u64_hex(st->tlb_shootdowns);
+    vibeos_x86_64_serial_puts(" tlb_acks=0x");
+    kernel_log_u64_hex(st->tlb_acks);
+    vibeos_x86_64_serial_puts(" tlb_timeouts=0x");
+    kernel_log_u64_hex(st->tlb_timeouts);
+    vibeos_x86_64_serial_puts("\n");
+
+    /* The three that must be zero. Printed together and last, so the eye lands
+     * on them, and asserted by the boot gate. */
+    vibeos_x86_64_serial_puts("[MEM] MUSTBEZERO frames_leaked=0x");
+    kernel_log_u64_hex(st->frames_leaked);
+    vibeos_x86_64_serial_puts(" frames_double_put=0x");
+    kernel_log_u64_hex(st->frames_double_put);
+    vibeos_x86_64_serial_puts(" poison_hits=0x");
+    kernel_log_u64_hex(st->poison_hits);
+    vibeos_x86_64_serial_puts("\n");
+
+    vibeos_x86_64_serial_puts("[MEM] cache_hits=0x");
+    kernel_log_u64_hex(st->cache_hits);
+    vibeos_x86_64_serial_puts(" cache_misses=0x");
+    kernel_log_u64_hex(st->cache_misses);
+    vibeos_x86_64_serial_puts(" swap_ins=0x");
+    kernel_log_u64_hex(st->swap_ins);
+    vibeos_x86_64_serial_puts(" swap_outs=0x");
+    kernel_log_u64_hex(st->swap_outs);
+    vibeos_x86_64_serial_puts(" (zero until plan P4/P5)\n");
+    vibeos_x86_64_serial_puts("[MEM] end\n");
 }
 
 static void kernel_cli_prompt(void) {
@@ -236,6 +319,10 @@ static void kernel_cli_run(vibeos_kernel_t *kernel) {
          * address, and as much of its stack as was readable. Captured at the
          * moment of the fault, because by the time anyone asks, the process is
          * gone - which is why every hard bug here has been diagnosed twice. */
+        if (kernel_str_eq(line, "meminfo")) {
+            kernel_cli_print_meminfo();
+            continue;
+        }
         if (kernel_str_eq(line, "crash")) {
             vibeos_x86_64_crash_dump();
             continue;

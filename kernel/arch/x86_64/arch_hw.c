@@ -98,8 +98,8 @@ static volatile int g_tlb_shootdown_pending;
 /* Counted, because a shootdown that never fires and one that is not needed
  * look identical from outside - and the first would leave the bug this exists
  * to fix exactly as it was, with the boot still green. */
-static volatile uint64_t g_tlb_shootdowns;
-static volatile uint64_t g_tlb_acks;
+
+
 
 /* Ring-0 stacks: one per CPU for the syscall/interrupt entry paths, plus a
  * separate boot stack each application processor starts on. */
@@ -446,6 +446,18 @@ extern int vibeos_x86_64_virtio_blk_read(uint64_t sector, void *buf);
 extern int vibeos_x86_64_virtio_blk_read_many(uint64_t sector, void *buf, uint32_t sectors);
 extern int vibeos_x86_64_virtio_blk_write(uint64_t sector, const void *buf);
 #include "vibeos/log.h"
+#include "vibeos/mm_model.h"
+
+/* The counters live in one structure now (plan phase P0), so the console, the
+ * boot gate and a panic all read the same numbers. The names below keep the
+ * call sites unchanged - there are about forty - while there is exactly one
+ * place holding the values. */
+#define g_cow_shared      (vibeos_mm_stats()->cow_shared)
+#define g_cow_copied      (vibeos_mm_stats()->cow_copied)
+#define g_tlb_shootdowns  (vibeos_mm_stats()->tlb_shootdowns)
+#define g_tlb_acks        (vibeos_mm_stats()->tlb_acks)
+#define g_untracked_frees (vibeos_mm_stats()->frames_leaked)
+
 #include "vibeos/vfs.h"
 
 /* The one mounted volume. Everything below reaches the filesystem through
@@ -1154,8 +1166,8 @@ static uint8_t *g_frame_refs;
  * work look identical from outside: shared says how many pages fork handed
  * over instead of copying, copied says how many of those a write later forced
  * it to duplicate after all. */
-static volatile uint64_t g_cow_shared;
-static volatile uint64_t g_cow_copied;
+
+
 static uint64_t g_frame_refs_base;
 static uint64_t g_frame_refs_count;
 
@@ -1190,7 +1202,7 @@ static uint8_t *frame_ref_slot(uint64_t phys) {
  * hw_map_low_user_page, and the paths that clear a user PTE - so sharing a
  * frame without counting it is not something a future caller can forget to do.
  */
-static volatile uint64_t g_untracked_frees;   /* frames refused for lack of an entry */
+
 
 static void hw_page_get(uint64_t phys) {
     uint8_t *slot = frame_ref_slot(phys);
@@ -1226,6 +1238,7 @@ static int hw_page_put(uint64_t phys) {
         if (old == 0u) {
             /* Already at zero: somebody put a reference they did not hold.
              * Refusing is the safe half; saying so is the useful half. */
+            vibeos_mm_stats()->frames_double_put++;
             hw_log(VIBEOS_LOG_ERROR, 47u, phys, 0,
                    "reference dropped on a frame that had no owners (a0 = frame)");
             return 0;
@@ -1434,6 +1447,7 @@ static void *hw_alloc_page(void) {
             uint32_t idx = i * step;
             if (w[idx] != HW_PAGE_POISON) {
                 const char *freed_by = (const char *)(uintptr_t)w[1];
+                vibeos_mm_stats()->poison_hits++;
                 hw_log(VIBEOS_LOG_ERROR, 31u, (uint64_t)(uintptr_t)p, w[idx],
                        "free page was written after it was freed "
                        "(a0 = page, a1 = what was found instead of poison)");
@@ -4587,6 +4601,7 @@ static void hw_tlb_shootdown(uint64_t cr3) {
         __asm__ __volatile__("pause" ::: "memory");
         if (++spins > 200000000ull) {
             __atomic_store_n(&g_tlb_shootdown_pending, 0, __ATOMIC_RELEASE);
+            vibeos_mm_stats()->tlb_timeouts++;
             hw_log(VIBEOS_LOG_ERROR, 30u, (uint64_t)targets, cr3,
                    "TLB shootdown timed out; a core did not acknowledge");
             return;
@@ -7862,6 +7877,40 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
         vibeos_x86_64_serial_print_hex(denied);
         vibeos_x86_64_serial_puts("\n");
     }
+}
+
+/* What the portable inspection layer (kernel/mm/usage.c) asks the architecture
+ * for. Weak stubs there return zero; these are the real answers, and they are
+ * everything today's allocator can honestly report. The rest of the picture -
+ * the state histogram, the per-process split - needs the frame table and the
+ * address-space layer, and reports zero until those exist rather than being
+ * guessed at. */
+uint64_t vibeos_mm_bytes_total(void) {
+    return g_hw_pmm_ready ? (uint64_t)g_hw_pmm.size_bytes : 0ull;
+}
+
+uint64_t vibeos_mm_bytes_free(void) {
+    uint64_t freelist = 0;
+    void *p;
+
+    if (!g_hw_pmm_ready) {
+        return 0ull;
+    }
+    /* The bump allocator's remainder, plus what has come back to the free list.
+     * Counted by walking, which is honest and cheap enough for a command a
+     * person types. */
+    hw_spin_lock(&g_mm_lock);
+    for (p = g_free_pages; p; p = *(void **)p) {
+        freelist += 4096ull;
+    }
+    hw_spin_unlock(&g_mm_lock);
+    return (uint64_t)vibeos_pmm_remaining(&g_hw_pmm) + freelist;
+}
+
+uint64_t vibeos_mm_bytes_reserved(void) {
+    /* The low user window, taken out of the allocator at boot so nothing of the
+     * kernel's can live where a Linux process shadows it. */
+    return VIBEOS_HW_LOW_USER_LIMIT - VIBEOS_HW_LOW_USER_BASE;
 }
 
 /* Entry point invoked from entry.s before vibeos_kmain. */

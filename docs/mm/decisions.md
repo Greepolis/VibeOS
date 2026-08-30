@@ -29,8 +29,8 @@ and ask at each one rather than pick.
 
 | # | Decision | Why it is not mine | When it is needed |
 | --- | --- | --- | --- |
-| D1 | Does the new code live in `kernel/mm/` or in `kernel/core/`? | It settles what the portable kernel is *for*, which is an architecture decision, not a file layout one | Before P1 |
-| D2 | 16 bytes per frame (1.7 MiB) or a smaller descriptor without the reclaim fields? | Trades memory now against a second migration later | Before P1 |
+| D1 | ~~Where does the new code live?~~ | **Decided 2026-08-30: `kernel/mm/`**, linked into both the kernel image and the host test binary. See below. | — |
+| D2 | ~~How large is the frame descriptor?~~ | **Decided 2026-08-30: 16 bytes**, the complete form. See below. | — |
 | D3 | Bit 9 for `PTE_OWNED`, or a side table? | Bit 9 is free today; a side table costs memory but survives a future use of the bit | Before P2 |
 | D4 | Does P2 land as one commit or seven? | Seven is safer to bisect, one is easier to review | Before P2 |
 | D5 | Is the boot allowed to get slower, and by how much? | The frame walk and the region lookups are not free | Before P3 |
@@ -41,4 +41,33 @@ and ask at each one rather than pick.
 Anything not on this list and not specified above, I will implement as written.
 If the plan turns out to be wrong about something, I stop and say so rather than
 improvise a different design.
+
+## Decisions taken
+
+### D1 — `kernel/mm/`, decided 2026-08-30
+
+A dedicated module, compiled into the kernel image and into the host test
+binary. The name says what it contains and it inherits nothing.
+
+The alternative was `kernel/core/`, which would have given the portable kernel
+the runtime job it has never had - and that argument got stronger this week,
+because `vibeos_kmain` now runs *before* userland rather than after it. It was
+rejected because `kernel/core/` already holds the boot state, the log, the timer
+and the interrupt controller; adding memory to it turns a module into a
+container.
+
+This does not close the "two kernels" question recorded in the plan. It is
+noted there as still open, deliberately, rather than being quietly answered by
+where a file was put.
+
+### D2 — 16 bytes per frame, decided 2026-08-30
+
+The complete descriptor: `owners`, `state`, `flags`, `backing`, `lru_next`,
+`lru_prev`. 1.7 MiB against the 440 MiB this kernel sees, or 0.4%.
+
+The smaller forms - 8 bytes without the reclaim lists, 4 bytes with only what
+the repair needs - were rejected for the same reason: each buys back well under
+a megabyte and costs a second migration of the structure and its tests, at P4 or
+P6, in a subsystem whose whole problem has been changing the same thing four
+times. The point of this rewrite is not to do that again.
 
