@@ -582,6 +582,9 @@ static int hw_signal_raise(int task_index, uint32_t sig);
 /* Defined with the task code, because it needs the signal numbers that are
  * #defined a thousand lines below here and C only reads the file once. */
 static void hw_panic_cpu_summary(void);   /* defined with the task table */
+/* Defined with the task table: answers whether a frame about to be freed
+ * is still mapped by a live process. */
+static int hw_frame_still_mapped(uint64_t phys, uint32_t *out_pid);
 static void hw_fault_kill_current_user(const vibeos_x86_64_isr_frame_t *frame,
                                        uint64_t fault_address);
 
@@ -1295,6 +1298,21 @@ static void *g_free_pages;
  * touches only one word of it. */
 #define HW_POISON_PROBES 16u
 
+/* Counts frees, so only every sixty-fourth pays for the walk above. */
+static uint32_t g_free_seq;
+
+/* The address space being torn down right now, if any.
+ *
+ * hw_aspace_destroy runs before the dying task is marked ZOMBIE - deliberately,
+ * so a parent reaping the slot cannot pull the tables out from under it - so a
+ * walk of "live" tasks finds the dying task still holding every frame being
+ * freed. The first version of the check below reported that as a defect on
+ * every boot, eighty times over. It was reporting the teardown doing its job.
+ *
+ * A detector that fires constantly is worse than none: it is a hundred lines
+ * of noise between whoever is looking and the one line that matters. */
+static const uint64_t *g_aspace_being_destroyed;
+
 /* Every free records who did it, in the page itself.
  *
  * The premature-free family has now been diagnosed twice from the far end and
@@ -1318,6 +1336,30 @@ static void hw_free_page_why(void *p, const char *why) {
     for (i = 0; i < 4096u / 8u; i++) {
         w[i] = HW_PAGE_POISON;
     }
+    /* Sampled, because the walk is expensive and the bug is not rare enough to
+     * need every free checked. One in sixty-four frees costs little and still
+     * catches a fault that appears once in twenty boots within a run or two -
+     * and when it hits, it names the function doing the freeing and the process
+     * that still has the page, which is the whole difference between this and
+     * four previous investigations. */
+    if (g_frame_refs && (++g_free_seq & 0x3Fu) == 0u) {
+        uint32_t pid = 0;
+        if (hw_frame_still_mapped((uint64_t)(uintptr_t)p, &pid)) {
+            hw_log(VIBEOS_LOG_ERROR, 46u, (uint64_t)(uintptr_t)p, (uint64_t)pid,
+                   "freeing a frame that a live process still maps "
+                   "(a0 = frame, a1 = pid)");
+            vibeos_x86_64_serial_lock();
+            vibeos_x86_64_serial_puts("[MM] FREE_WHILE_MAPPED frame=0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)(uintptr_t)p);
+            vibeos_x86_64_serial_puts(" still mapped by pid=0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)pid);
+            vibeos_x86_64_serial_puts(" freed by ");
+            vibeos_x86_64_serial_puts(why ? why : "(unknown)");
+            vibeos_x86_64_serial_puts("\n");
+            vibeos_x86_64_serial_unlock();
+        }
+    }
+
     hw_spin_lock(&g_mm_lock);
     *(void **)p = g_free_pages;   /* the link overwrites the first word */
     w[1] = (uint64_t)(uintptr_t)why;   /* ...and the second says who freed it */
@@ -1704,6 +1746,7 @@ static void hw_aspace_destroy_why(vibeos_hw_aspace_t *as, const char *why) {
     if (!as->pml4) {
         return;
     }
+    g_aspace_being_destroyed = as->pml4;
     if (as->pml4[1] & PTE_PRESENT) {
         pdpt = (uint64_t *)(uintptr_t)(as->pml4[1] & 0x000FFFFFFFFFF000ull);
         for (i = 0; i < 512u; i++) {
@@ -1779,6 +1822,7 @@ static void hw_aspace_destroy_why(vibeos_hw_aspace_t *as, const char *why) {
     g_last_destroy_pml4 = (uint64_t)(uintptr_t)as->pml4;
     g_last_destroy_cpu = hw_this_cpu()->index;
     hw_free_page(as->pml4);
+    g_aspace_being_destroyed = 0;
     as->pml4 = 0;
 }
 
@@ -6672,6 +6716,77 @@ static int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame) {
 /* Turn a ring-3 CPU exception into the death of one task. The signal numbers
  * are the ones Linux reports for these vectors, so a shell that prints
  * "Segmentation fault" is printing the same thing it would there. */
+/* Is this frame still mapped by any live user task?
+ *
+ * Freeing a page somebody is still running on has now been diagnosed four
+ * times in this project, from the far end each time, and fixed once. The
+ * evidence always arrives late: a musl heap in knots, a stack full of poison,
+ * a child reading a third program's data. This asks the question at the moment
+ * the mistake is made.
+ *
+ * Walks the user portion of every live address space. That is not cheap, which
+ * is why the caller samples rather than checking every free - a bug that has
+ * shown up once every twenty boots does not need catching on the first
+ * attempt, it needs catching at all, with the culprit named.
+ */
+static int hw_frame_still_mapped(uint64_t phys, uint32_t *out_pid) {
+    int t;
+
+    for (t = 0; t < (int)VIBEOS_HW_MAX_TASKS; t++) {
+        const uint64_t *pml4;
+        uint32_t slot;
+
+        if (!g_tasks[t].is_user || g_tasks[t].state == HW_TASK_FREE ||
+            g_tasks[t].state == HW_TASK_ZOMBIE) {
+            continue;
+        }
+        pml4 = g_tasks[t].proc.as.pml4;
+        if (!pml4 || pml4 == g_aspace_being_destroyed) {
+            continue;   /* this is the space being torn down; it owns nothing now */
+        }
+        /* Slot 0 carries the low user window, slot 1 the high one. */
+        for (slot = 0; slot < 2u; slot++) {
+            const uint64_t *pdpt;
+            uint32_t i;
+
+            if ((pml4[slot] & PTE_PRESENT) == 0) {
+                continue;
+            }
+            pdpt = (const uint64_t *)(uintptr_t)(pml4[slot] & 0x000FFFFFFFFFF000ull);
+            for (i = 0; i < 512u; i++) {
+                const uint64_t *pd;
+                uint32_t j;
+
+                if ((pdpt[i] & PTE_PRESENT) == 0) {
+                    continue;
+                }
+                pd = (const uint64_t *)(uintptr_t)(pdpt[i] & 0x000FFFFFFFFFF000ull);
+                for (j = 0; j < 512u; j++) {
+                    const uint64_t *pt;
+                    uint32_t k;
+
+                    if ((pd[j] & PTE_PRESENT) == 0 || (pd[j] & PTE_PS) != 0) {
+                        continue;
+                    }
+                    pt = (const uint64_t *)(uintptr_t)(pd[j] & 0x000FFFFFFFFFF000ull);
+                    for (k = 0; k < 512u; k++) {
+                        if ((pt[k] & PTE_PRESENT) == 0 || (pt[k] & PTE_USER) == 0) {
+                            continue;
+                        }
+                        if ((pt[k] & 0x000FFFFFFFFFF000ull) == phys) {
+                            if (out_pid) {
+                                *out_pid = g_tasks[t].pid;
+                            }
+                            return 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return 0;
+}
+
 static void hw_panic_cpu_summary(void) {
     /* Who else was running what.
      *
