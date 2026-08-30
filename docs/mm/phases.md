@@ -143,10 +143,30 @@ int      vibeos_frame_reserve(uint64_t base, uint64_t len);
      it cannot address one. Reserve that tail rather than letting `alloc` return
      a frame nobody can write.
 4. Replace call sites of the wrappers with the real names, file by file.
-5. Delete the wrappers. Add the layering check for `g_free_pages`.
+   **Deferred, deliberately.** Steps 3 and 4 could not stay separate: the two
+   contracts for what an allocation returns are incompatible, so the call sites
+   had to change meaning in the same commit that changed where the arithmetic
+   happens. Renaming them as well would have put three kinds of change in one
+   diff, in the subsystem whose whole history is exactly that. The wrappers keep
+   their names and now carry a comment saying so; the rename lands with P2,
+   which touches these call sites anyway.
+5. Delete the wrappers. Add the layering check for `g_free_pages`. `g_free_pages`
+   is gone; the wrappers stay until P2 for the reason above.
+
+**Status: done** (`29a6e29`), with steps 4 and 5 folded into P2 as recorded.
+`check.sh all` green and 8 boots out of 8.
 
 **Out of scope.** Page tables, address spaces, the two windows. `PTE_OWNED` is
 not introduced here.
+
+**Added during the phase, and not in the original plan**
+- `vibeos_frame_alloc_contig`, because the bump allocator had to stop serving
+  the callers that needed contiguous memory rather than merely stop being
+  preferred. See decisions.md D9.
+- `vibeos_frame_survey`, one walk giving the state histogram and the longest
+  free run, so `meminfo` has a single source and fragmentation is a number.
+- The bump allocator is closed, not just unused. It was still serving the GUI
+  back buffer after the frame layer had adopted the region.
 
 **Tests**
 - Host: the seven cases in step 2, each with a negative form.

@@ -1,7 +1,7 @@
 # Memory Manager Progress
 
-Status: In Progress (frame ownership redesigned and counted at the mapping; a frame is still occasionally released while another process maps it, and the kernel now says so)
-Last review: 2026-08-25
+Status: In Progress - rewrite phases P0 and P1 of [docs/mm/](../mm/README.md) are done. Physical frames have one owner, in one file; the bootstrap bump allocator is closed; `meminfo` reports a breakdown the boot gate checks adds up. The premature-free family is not closed - P2 is the phase that repairs it.
+Last review: 2026-08-30
 
 ## Implemented
 - Early physical memory manager initialization in `kernel/mm/pmm.c`.
@@ -13,7 +13,46 @@ Last review: 2026-08-25
 - **Frame reference counting, which is what makes copy-on-write safe.** One byte per frame over the allocator's region, taken out of that region at boot. Zero means "one owner", so the ordinary unshared case costs no bookkeeping at all and only sharing writes to the table. The count saturates at 255 rather than wrapping: past that a frame is simply never reclaimed, which leaks a page instead of freeing one somebody is still using. Address-space teardown and the copy-on-write fault both drop a reference and free only when they were the last owner.
 - **Copy-on-write accounting.** `g_cow_shared` and `g_cow_copied` are printed at the end of the boot self-test as `[MM] COW_STATS shared=... copied=...` - 1221 shared to 24 copied on the boot this was written against. The report exists because a mechanism that is never exercised and a mechanism that is broken look identical from outside. No gate asserts the numbers; what is gated is that forking and exec'ing programs keep working.
 
-### Frame ownership, redesigned
+### The frame layer (rewrite phase P1)
+
+Everything in the section below describes the scheme this replaced. It is kept
+because the reasoning is still the reason the new one is shaped as it is.
+
+`kernel/mm/frame.c` is now the only code that owns a free list or a reference
+count, and it is host-tested: allocation, sharing, double release, a release of
+something the table does not describe, poison verified on reuse, reservation,
+contiguous allocation broken by a reservation, and a never-freed frame that must
+*not* be reported as corrupt. Each was confirmed to go red by breaking the code
+it protects.
+
+What changed in substance, rather than in location:
+
+- **An allocation owns its frame** (decision D9). A caller that allocates in
+  order to map hands the frame to the address space and lets go; a caller that
+  allocates for the kernel holds the only reference. Releasing the last
+  reference and reclaiming the frame are one operation, so there is no longer a
+  moment in which a frame has no owners and is not yet free - the state every
+  defect here has lived in.
+
+- **The free list moved out of the pages.** It used to be a pointer in the first
+  word of every reclaimed page, so the poison could not cover the whole page and
+  the check had to skip the first two words. The list is threaded through the
+  frame descriptors now; a freed page is poison end to end.
+
+- **The bootstrap allocator is closed, not merely unused.** It was still serving
+  the GUI back buffer after the frame layer had adopted the region - several
+  megabytes the frame table described as free and handed to a process, with the
+  desktop rendering over its memory. No detector fired: nothing had been freed
+  early, the frames were given out twice. That is the failure mode of having two
+  allocators, and it is why closing it is a correctness rule.
+
+- **`meminfo` is one picture.** The states partition the total exactly and the
+  boot gate fails if they do not. The same walk reports `largest_free_run`, so
+  free memory that is too scattered to satisfy a contiguous request is a number
+  somebody can read rather than an allocation failure nobody can explain.
+  Compaction itself is phase P6.
+
+### Frame ownership, redesigned (the scheme P1 replaced)
 
 The reference count now means what it says: the number of address spaces that
 map a frame. One owner is 1, nobody is 0, and a frame is freed at 0. The

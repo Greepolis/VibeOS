@@ -37,7 +37,6 @@ and ask at each one rather than pick.
 | D6 | Does the block cache in `kernel/fs/` get merged into the page cache, or kept? | Merging touches the filesystem layer, which is outside this plan's scope | Before P4 |
 | D7 | Which device backs swap, and is it configured or discovered? | A product decision about how VibeOS is deployed | Before P5 |
 | D8 | What happens when swap is full — kill the allocating process, or fail the allocation? | A policy question with no technically correct answer | Before P5 |
-| D9 | Does an allocation hand back a frame with one owner, or with none? | It decides whether the first mapping counts, and it is the difference between a leak and a double free at every alloc site | Before P1 step 3 |
 
 Anything not on this list and not specified above, I will implement as written.
 If the plan turns out to be wrong about something, I stop and say so rather than
@@ -75,7 +74,9 @@ times. The point of this rewrite is not to do that again.
 
 ## D9 — the ownership contract of an allocation
 
-**Open. This blocks P1 step 3, and I am not deciding it on my own.**
+**Decided A, 2026-08-30.** Landed in `29a6e29`. What follows is the question
+as it was put, kept because the reasoning is the record of why the kernel
+counts the way it does.
 
 It surfaced while writing the wrappers, and it is not a detail: today
 `hw_alloc_page` hands back a frame with a reference count of **zero**, and the
@@ -123,3 +124,39 @@ surfaces in an unrelated program three boots later.
 What I need from you is a yes to A, or a reason for B. Until then P1 stops at
 step 2, which is where it is: the layer is built, host-tested and compiled in,
 and nothing calls it yet.
+
+### D9 as implemented
+
+An allocation returns a frame with one owner, and that owner is the caller.
+
+- A caller that allocates **in order to map** - process images, stacks, `mmap`,
+  `brk`, the copy-on-write copy - hands the frame to the address space and
+  releases its own reference immediately after the mapping succeeds. Nine sites,
+  each carrying a comment naming this decision.
+- A caller that allocates memory **for the kernel itself** - page tables, the
+  PML4, kernel stacks - never maps it, so its one reference is the only one and
+  `hw_free_page` releases it.
+- Releasing the last reference and reclaiming the frame are now one operation.
+  There is no longer any moment in which a frame has no owners and is not yet
+  free, which is the state every defect in this subsystem has lived in.
+
+Three consequences worth writing down, because each was found by doing it
+rather than by planning it:
+
+1. **Contiguous allocation had to exist before any of this could be wired in.**
+   The bump allocator underneath served the exec staging buffers and the
+   two-page kernel stacks, and it has to stop serving anything at all: while two
+   allocators hand out frames from one region, one of them is wrong about what
+   is free. `vibeos_frame_alloc_contig` covers those callers.
+
+2. **A second allocator was already live and invisible.** The GUI back buffer -
+   several megabytes - was taken from the bump allocator *after* the frame layer
+   had adopted the region. The frame table still described those frames as free
+   and handed them to a process; the desktop then rendered over its memory. No
+   detector fired, because nothing was freed early. The bump allocator is closed
+   the moment the layer comes up, so the next such call fails visibly.
+
+3. **`meminfo` was not one picture.** It derived allocated as total minus free,
+   which swallowed every reserved frame, and took reserved from somewhere else
+   again. One walk of the frame table answers it now and the boot gate fails if
+   the states do not sum to the total.
