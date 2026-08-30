@@ -373,3 +373,45 @@ nobody can rely on.
   and VirtualBox's `VBoxManage debugvm dumpvmcore` both exist and neither is
   used; a full guest core is the right answer for wedges, and pushing megabytes
   through a serial port is not.
+
+## Memory-manager torture (2026-08-30)
+
+`tests/kernel/mm_torture.c`, driven by `scripts/dev/mm-torture.sh`, runs the
+frame layer and the address-space layer through long random sequences of
+create, map, remap, share, unmap and destroy - and compares every frame's owner
+count against a model kept independently in plain arrays, after every single
+operation.
+
+The comparison against a separate model is the whole point. Every hard defect
+in this subsystem has been a reference count that was self-consistent and wrong
+about the world: the kernel believed nobody owned a frame while a live process
+was running from it. Asserting the kernel against itself cannot see that, which
+is why four fixes did not close it. A model that shares no code with the thing
+it checks can.
+
+It also asks the premature-free question directly - is any frame the model
+still maps sitting on the free list? - instead of waiting for the damage to
+surface somewhere unrelated, which is how that defect was found the first four
+times and why each hunt cost a session.
+
+The seed is printed on the first line and taken as the first argument, so a
+failure is replayed with `vibeos_mm_torture <seed> <rounds>` rather than
+investigated as a story about something that happened once. The message names
+the round, the frame, the count the kernel has and the count the model expects.
+
+Where it runs:
+
+- `check.sh` runs one short sequence, so a change that breaks the memory
+  manager outright fails on the machine that made it. It is part of the
+  `host-tests=` verdict rather than a line above it - a distinction this
+  project has already paid for once.
+- The nightly `memory-manager` job runs 150 seeds under AddressSanitizer and
+  UBSan, then 1200 seeds unsanitized at 20000 rounds each. Two builds on
+  purpose: the model catches wrong arithmetic, the sanitizers catch walking off
+  the descriptor table while doing it, and neither finds the other's failures.
+
+Confirmed by breaking the code it protects. A `destroy` that skips the
+low-window tables failed 20 seeds out of 20, each naming the round and the
+frame; an `unmap` that forgets to release the frame fails it as well. On the
+unmodified tree, 120 seeds at 3000 rounds and 40 seeds at 4000 rounds under the
+sanitizers are clean.

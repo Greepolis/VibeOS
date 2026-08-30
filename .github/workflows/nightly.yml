@@ -88,6 +88,67 @@ jobs:
             qemu-cli-summary.txt
           if-no-files-found: ignore
 
+  memory-manager:
+    name: Memory Manager Torture (model + sanitizers)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # The boot job answers "does the machine come up?". This answers the
+    # question that job structurally cannot: is the memory manager's idea of
+    # who owns a frame the same as the truth?
+    #
+    # Every hard defect in this subsystem has been a reference count that was
+    # self-consistent and wrong about the world - the kernel believed nobody
+    # owned a frame while a live process ran from it - and one boot cannot see
+    # that, because the damage surfaces later, in an unrelated program, about
+    # one boot in thirty. The torture test keeps an independent model and
+    # compares after every operation, so the disagreement is caught at the
+    # operation that caused it rather than three programs later.
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build build-essential
+
+      # Two builds on purpose: the model catches wrong arithmetic, the
+      # sanitizers catch walking off the descriptor table while doing it.
+      # Neither finds the other's failures.
+      - name: Build (sanitized)
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DVIBEOS_BUILD_TESTS=ON -DVIBEOS_BUILD_KERNEL_IMAGE=OFF \
+            -DVIBEOS_ENABLE_TLS=OFF \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          cmake --build build-asan --parallel
+
+      - name: Host tests under AddressSanitizer and UBSan
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+        run: ./build-asan/vibeos_kernel_tests
+
+      # Long sequences, many seeds. A failure prints the seed that produced it,
+      # so it is replayed with `vibeos_mm_torture <seed> <rounds>` rather than
+      # investigated as a story about something that happened once.
+      - name: Torture the memory manager (sanitized, 150 seeds)
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+        run: bash scripts/dev/mm-torture.sh build-asan 150 6000
+
+      - name: Build (release) and torture harder
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-rel -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DVIBEOS_BUILD_TESTS=ON -DVIBEOS_BUILD_KERNEL_IMAGE=OFF \
+            -DVIBEOS_ENABLE_TLS=OFF
+          cmake --build build-rel --parallel
+          # Unsanitized, so the rounds are cheap: this is the pass that gets
+          # enough sequences to matter.
+          bash scripts/dev/mm-torture.sh build-rel 1200 20000
+
   fuzz-protocols:
     name: Fuzz the Receive Path
     runs-on: ubuntu-latest

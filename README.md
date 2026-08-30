@@ -177,7 +177,6 @@ Implementation progress is tracked by macro area:
 - [docs/implementation_progress/kernel_core.md](docs/implementation_progress/kernel_core.md)
 - [docs/implementation_progress/process_scheduler.md](docs/implementation_progress/process_scheduler.md)
 - [docs/implementation_progress/memory_manager.md](docs/implementation_progress/memory_manager.md)
-- [docs/implementation_progress/virtual_memory.md](docs/implementation_progress/virtual_memory.md)
 - [docs/implementation_progress/interrupt_handling.md](docs/implementation_progress/interrupt_handling.md)
 - [docs/implementation_progress/system_call_interface.md](docs/implementation_progress/system_call_interface.md)
 - [docs/implementation_progress/ipc_subsystem.md](docs/implementation_progress/ipc_subsystem.md)

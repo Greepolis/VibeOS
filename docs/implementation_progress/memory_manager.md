@@ -13,6 +13,42 @@ Last review: 2026-08-30
 - **Frame reference counting, which is what makes copy-on-write safe.** One byte per frame over the allocator's region, taken out of that region at boot. Zero means "one owner", so the ordinary unshared case costs no bookkeeping at all and only sharing writes to the table. The count saturates at 255 rather than wrapping: past that a frame is simply never reclaimed, which leaks a page instead of freeing one somebody is still using. Address-space teardown and the copy-on-write fault both drop a reference and free only when they were the last owner.
 - **Copy-on-write accounting.** `g_cow_shared` and `g_cow_copied` are printed at the end of the boot self-test as `[MM] COW_STATS shared=... copied=...` - 1221 shared to 24 copied on the boot this was written against. The report exists because a mechanism that is never exercised and a mechanism that is broken look identical from outside. No gate asserts the numbers; what is gated is that forking and exec'ing programs keep working.
 
+### Virtual memory, folded in from virtual_memory.md
+
+That file was a second account of the same subsystem and the two had already
+contradicted each other once, so it is gone and this is the only one. What was
+still true of it:
+
+- **The kernel runs on page tables it built.** Four levels, the first 4 GiB
+  identity-mapped with 2 MiB pages, CR3 loaded with kernel-owned tables rather
+  than the firmware's. A non-identity mapping is written through and confirmed
+  translated, so this is arbitrary virtual-to-physical control and not an
+  equivalent identity swap.
+
+- **Copy-on-write fork on those tables.** `fork` rewrites each writable user
+  leaf read-only with `PTE_COW` in both address spaces and raises the frame's
+  reference count; a write takes a fault that resolves by taking the permission
+  back when this process turned out to be the only owner, and by copying
+  otherwise. A page that was never writable is shared as-is - marking it
+  copy-on-write would turn a genuine protection violation into a silent
+  success.
+
+- **Both user windows.** The high one VibeOS programs link into, and the low one
+  a Linux `ET_EXEC` image lives in, inside the kernel's identity map. A fork
+  that skipped the low window would hand the child an address space with no
+  program in it. Phase P2 makes this one implementation chosen by address rather
+  than two functions a caller has to pick between.
+
+- **Cross-core TLB shootdown**, sent only to the cores running the address space
+  being changed, because `syscall` clears IF and a broadcast times out against
+  cores sitting in a system call.
+
+What that file listed as pending is now the plan in [docs/mm/](../mm/README.md):
+demand paging and a page cache are phase P4, and the portable model becoming the
+live authority is what P1 and P2 are doing. `kernel/mm/vm.c` remains an early
+portable sketch with no runtime role; `kernel/mm/vmspace.c` is the one being
+built to replace it.
+
 ### The frame layer (rewrite phase P1)
 
 Everything in the section below describes the scheme this replaced. It is kept

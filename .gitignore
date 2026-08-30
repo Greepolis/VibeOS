@@ -65,3 +65,4 @@ qemu-cli-serial-*.log
 qemu-cli-err-*.log
 wedge-serial*.log
 SUMMARY.md
+build-asan/

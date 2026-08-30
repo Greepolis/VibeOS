@@ -48,15 +48,19 @@ do_tests() {
     # detail above it is easy to filter away by accident - and was. Several
     # sessions reported "host tests green" while test_kmain had been failing,
     # for want of one greppable word in a fixed place.
-    local k=0 b=0
+    local k=0 b=0 t=0
     "./$d/vibeos_kernel_tests" | tail -2 || k=1
     "./$d/vibeos_kernel_tests" >/dev/null 2>&1 || k=1
     "./$d/vibeos_bootloader_tests" | tail -1 || b=1
     "./$d/vibeos_bootloader_tests" >/dev/null 2>&1 || b=1
-    if [ "$k" -eq 0 ] && [ "$b" -eq 0 ]; then
+    # A short torture run here too, not only in the nightly. The nightly is
+    # where the seeds get deep enough to matter, but a change that breaks the
+    # memory manager outright should fail on the machine that made it.
+    "./$d/vibeos_mm_torture" 1 2000 >/dev/null 2>&1 || t=1
+    if [ "$k" -eq 0 ] && [ "$b" -eq 0 ] && [ "$t" -eq 0 ]; then
         echo "host-tests=pass"
     else
-        echo "host-tests=FAIL kernel=$k bootloader=$b"
+        echo "host-tests=FAIL kernel=$k bootloader=$b mm-torture=$t"
     fi
 }
 

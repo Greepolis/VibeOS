@@ -144,6 +144,17 @@ if(VIBEOS_BUILD_TESTS)
     target_include_directories(vibeos_kernel_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     add_test(NAME vibeos-kernel-host COMMAND vibeos_kernel_tests)
 
+    # Randomised torture for the memory manager, checked against a reference
+    # model kept in plain arrays. Its own executable rather than a test case
+    # because it takes a seed and a round count: the nightly runs many seeds
+    # under a sanitizer, and a failure is replayed by passing its seed back.
+    add_executable(vibeos_mm_torture tests/kernel/mm_torture.c)
+    target_link_libraries(vibeos_mm_torture PRIVATE vibeos_kernel_core)
+    target_include_directories(vibeos_mm_torture PRIVATE /include)
+    # One short run in the ordinary suite, so a change that breaks it is caught
+    # before the nightly rather than by it.
+    add_test(NAME vibeos-mm-torture COMMAND vibeos_mm_torture 1 2000)
+
     add_executable(vibeos_bootloader_tests
         tests/bootloader/uefi_bootloader_tests.c
         boot/bootloader_core.c
