@@ -180,11 +180,13 @@ removing the check it protects.
 **A weak symbol only works in the same file as its caller.** The Windows CI
 job builds the portable core with mingw, and PE/COFF does not resolve a weak
 definition living in a different object from the code that calls it: the Linux
-build linked, the Windows one failed with . Every weak stub
-that works here - in , ,  - happens to sit in the
-same translation unit as its caller, which is why the pattern looked safe. Use
-a registration function instead, as  and
- do; it is portable and says who supplies what.
+build linked and said nothing, the Windows one failed with `undefined`
+`reference`. Every weak stub that works in this kernel - in `serial.c`,
+`kmain.c`, `usage.c` - happens to sit in the same translation unit as
+its caller, which is why the pattern looked safe when it was copied. Use a
+registration function instead, as `vibeos_frame_set_lock` and
+`vibeos_task_view_set_source` do: it is portable, and it says who supplies
+what rather than leaving it to link order.
 
 **Definition order bites repeatedly.** This is one 5000-line C file; a helper
 used above its definition compiles as an implicit declaration and then fails
