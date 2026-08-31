@@ -235,14 +235,68 @@ phase — it is rewritten in P3 — but it walks *through* `vmspace_unmap`.
 
 **Rollback.** Steps 2-6 are individually revertible; each is a separate commit.
 
-**Done when.** No page-table write outside `vmspace.c`; **48 boots** with no
-`FREE_WHILE_MAPPED`, no stress failure and no unexpected ring-3 fault; the four
-sabotage cases seen red.
+**Done when** (revised 2026-08-31, and the revision matters more than the
+criterion). No page-table write outside `kernel/mm/`; across **48 boots**, no
+`FREE_WHILE_MAPPED`, no stress-service defect, and `frames_leaked`,
+`frames_double_put` and `poison_hits` all zero with the frame states summing to
+the total; the sabotage cases seen red.
 
-**Status: NOT done. Best measured rate is 21-22 clean out of 24, against a
-criterion of 48 out of 48.** It started at 27 out of 48.
+The original wording was "48 boots with no failure", full stop. That was wrong,
+and not by a little: the machine has a pre-existing intermittent boot failure of
+roughly 8% - see
+[boot_repeatability.md](../implementation_progress/boot_repeatability.md) -
+which makes 48 consecutive clean boots about a 0.02% event. No revision of this
+project has ever met it, before or after this work, and the nightly gate that
+applies the same rule to five boots has failed 27 times out of 31 since it was
+created.
 
-### Where to pick this up
+So the criterion was measuring the background rather than the phase. It is now
+written in terms of what P2 is actually responsible for: the memory manager's
+own invariants, asserted over a sample large enough to catch a rare violation.
+Whether the machine boots cleanly every time is a real question and it now has
+its own file, because it is a different defect with a different history.
+
+**The rule this cost two days to learn: check a criterion against the baseline
+before using it to judge a change.** A single 24-boot run of the parent commit
+would have settled it, and was not taken until it was asked for.
+
+**Status: done**, against the criterion above. Three concurrency defects found
+and fixed, all the same shape - two cores disagreeing about a page-table entry -
+and every one of them settled by experiment, because reading the code reached
+the wrong answer six times.
+
+The boot rate went from 27/48 while those defects were live to the ~90% that
+`f45ab1d` (the commit before P2), `a714dbe` (step 2) and the finished phase all
+measure equally. That equality is the evidence that what remains is not P2's.
+
+### The three defects
+
+1. **Publication order** (`e02d9dd`). `map_raw` stored the entry and then took
+   the reference, so a mapping existed that no count knew about. The big one:
+   no `STRESS_FAIL` has appeared in the ~150 boots since.
+2. **Release order**, in the fault and in teardown: releasing a frame while the
+   entry still pointed at it.
+3. **Double resolution** (`6510827`). Two threads faulting on one page both
+   copied and both released the shared frame. Every store to an entry is a
+   compare-exchange now, so the core that loses discovers it instead of
+   overwriting the winner.
+
+### What was learned about the detectors, which is worth as much
+
+The free-while-mapped detector lived in the architecture's free path, and after
+this rewrite almost nothing frees a frame through there - the address-space
+layer releases directly. It was watching a door nobody walks through, and its
+silence was being read as evidence. Moved to the frame layer's last release, it
+fired immediately.
+
+It then needed three predicates before it was worth trusting: a prediction
+(`owners == 1`, taken while other cores map and unmap) reported frames that
+were never freed; "is it still free" dropped the real cases where another core
+won the race; **more mappings than references** is the invariant itself and is
+indifferent to both. That last one produced `mappers=2 owners=1`, which is the
+fact that named the third defect.
+
+### Where to pick up the rest
 
 Three defects were found and fixed, all of them the same shape - two cores
 disagreeing about a page-table entry - and all three confirmed by experiment

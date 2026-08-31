@@ -1,6 +1,6 @@
 # Memory Manager Progress
 
-Status: In Progress - P0 and P1 done, P2 written but **not certified**: 21-22 clean boots out of 24, from 27 of 48, against a criterion of 48 out of 48. Three concurrency defects found and fixed; what remains may predate the phase. Details in [the plan](../mm/phases.md). Physical frames have one owner, in one file. Address spaces record what they own in the page-table entry, so nothing infers ownership from permission bits any more - which is what the premature-free family came from. No page-table write and no frame reference taken outside `kernel/mm/`, checked on every build.
+Status: In Progress - P0 and P1 done, P2 written but **not certified**: P2 done. Three concurrency defects found and fixed - publication order, release order, and two cores resolving one fault. The residual boot flakiness turned out to predate the whole rewrite and is tracked in [boot_repeatability.md](boot_repeatability.md). Details in [the plan](../mm/phases.md). Physical frames have one owner, in one file. Address spaces record what they own in the page-table entry, so nothing infers ownership from permission bits any more - which is what the premature-free family came from. No page-table write and no frame reference taken outside `kernel/mm/`, checked on every build.
 Last review: 2026-08-30
 
 ## Implemented
