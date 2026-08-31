@@ -530,6 +530,18 @@ decisions.md.
 4. A stress operation that allocates beyond memory and verifies every byte,
    with the seed printed as usual.
 
+**Correction, 2026-08-31: this phase depends on P6 and cannot run before it.**
+
+Step 2 above says "record the slot in the region", which assumes a frame
+belongs to one region. After a fork it belongs to several, in different address
+spaces, and evicting it means unmapping it from all of them - which needs the
+reverse map from frame to mappings that P6 introduces for compaction.
+
+So P5 either restricts itself to frames with a single mapper, which is a swap
+that cannot evict the pages a forking workload actually accumulates, or it
+waits for that map. It waits. The order is P6 then P5, and P6 step 1 grows the
+reverse map as its first item rather than its last.
+
 **Out of scope.** Choosing *which* page to evict beyond FIFO — that is P6.
 
 **Tests**

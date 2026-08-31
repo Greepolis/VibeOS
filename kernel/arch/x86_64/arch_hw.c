@@ -451,6 +451,7 @@ extern int vibeos_x86_64_virtio_blk_write(uint64_t sector, const void *buf);
 #include "vibeos/vmspace.h"
 #include "vibeos/vma.h"
 #include "vibeos/backing.h"
+#include "vibeos/task_stats.h"
 
 /* The counters live in one structure now (plan phase P0), so the console, the
  * boot gate and a panic all read the same numbers. The names below keep the
@@ -2751,6 +2752,64 @@ static uint8_t g_runtime_supervisor_ready;
 /* Claim a free slot atomically: two cores can fork at the same time, so the
  * slot is marked RESERVED (never schedulable, never reapable) until the caller
  * has finished filling it in. */
+/* Answer the portable task view. Phase S-P0 of docs/sched/.
+ *
+ * This is the whole of what the architecture layer owes the rest of the kernel
+ * about a task: a copy of one slot. Deciding what to print is portable and
+ * lives in kernel/sched/view.c; reading the table is not and lives here. The
+ * split is the first piece of the scheduler rewrite, and it is deliberately the
+ * cheapest one - a subsystem that cannot be looked at is a subsystem that gets
+ * debugged by adding print statements to an eight-thousand-line file, which is
+ * how every task defect in this project has actually been found.
+ *
+ * A copy, not a pointer: the console prints this while other cores create and
+ * destroy tasks, and a pointer would name a slot that can be recycled between
+ * one field and the next. */
+static const char *hw_task_state_name(int state) {
+    switch (state) {
+        case HW_TASK_FREE:     return "free";
+        case HW_TASK_READY:    return "ready";
+        case HW_TASK_RUNNING:  return "running";
+        case HW_TASK_ZOMBIE:   return "zombie";
+        case HW_TASK_BLOCKED:  return "blocked";
+        case HW_TASK_RESERVED: return "reserved";
+        default:               return "?";
+    }
+}
+
+uint32_t vibeos_task_slots(void) {
+    return (uint32_t)VIBEOS_HW_MAX_TASKS;
+}
+
+int vibeos_task_describe(uint32_t slot, vibeos_task_desc_t *out) {
+    const hw_task_t *t;
+    uint32_t i;
+
+    if (!out || slot >= (uint32_t)VIBEOS_HW_MAX_TASKS) {
+        return -1;
+    }
+    t = &g_tasks[slot];
+    out->slot = slot;
+    out->generation = t->alloc_seq;
+    out->state = (uint32_t)t->state;
+    out->state_name = hw_task_state_name(t->state);
+    out->pid = t->pid;
+    out->tgid = t->tgid;
+    out->ppid = t->ppid;
+    out->is_user = t->is_user;
+    out->is_thread = t->is_thread;
+    out->on_cpu = t->on_cpu;
+    out->cr3 = t->cr3;
+    out->cr3_set_by = t->cr3_set_by;
+    out->ready_by = t->ready_by;
+    out->aspace_killed_by = t->aspace_killed_by;
+    for (i = 0; i + 1u < sizeof(out->exe) && t->proc.exe_path[i]; i++) {
+        out->exe[i] = t->proc.exe_path[i];
+    }
+    out->exe[i] = 0;
+    return 0;
+}
+
 static int hw_task_alloc(void) {
     int i;
     hw_spin_lock(&g_sched_lock);
@@ -2797,10 +2856,12 @@ static int hw_task_alloc(void) {
             g_tasks[i].service_id = 0;
             g_tasks[i].clear_child_tid = 0;
             g_tasks[i].state = HW_TASK_RESERVED;
+            vibeos_task_stats()->created++;
             hw_spin_unlock(&g_sched_lock);
             return i;
         }
     }
+    vibeos_task_stats()->slot_refused++;
     hw_spin_unlock(&g_sched_lock);
     return -1;
 }

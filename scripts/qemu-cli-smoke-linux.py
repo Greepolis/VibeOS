@@ -519,7 +519,7 @@ def main():
                 # dereferences null earlier in every boot, so there is always
                 # one to print - and a dumper that only works when nothing has
                 # crashed would pass a test that never asked it for anything.
-                ("Commands: help, status, log, meminfo, crash, echo <text>, halt, reboot", b"crash\r"),
+                ("Commands: help, status, log, meminfo, tasks, crash, echo <text>, halt, reboot", b"crash\r"),
                 ("[CRASH] end", b"log\r"),
                 # `log` shows two rings: the boot stages kmain records, and
                 # the arch ring holding what the machine actually did - fork,
@@ -530,7 +530,12 @@ def main():
                 # meminfo is the memory picture a person asks for, and the three
                 # counters that must be zero are printed on one line so the gate
                 # can assert them without parsing the rest.
-                ("[MEM] end", b"status\r"),
+                ("[MEM] end", b"tasks\r"),
+                # The task table, for the same reason meminfo is driven: a
+                # subsystem that cannot be looked at on a running machine gets
+                # debugged by adding print statements to an eight-thousand-line
+                # file, which is how every task defect here has been found.
+                ("[TASKS] end", b"status\r"),
                 # Ctrl-C on the serial console. The PS/2 path has turned it
                 # into a signal since it was written; this one dropped it along
                 # with every other control byte, so the foreground process
@@ -831,6 +836,24 @@ def main():
                     problems.append(f"cache_not_exercised hits={hits} misses={misses}")
                 elif hits * 4 < misses:
                     problems.append(f"cache_hit_ratio_too_low hits={hits} misses={misses}")
+
+            # The three task counters that are assertions rather than
+            # diagnostics. Each names a defect this subsystem has produced: a
+            # slot written to after being published as reusable, a stale
+            # reference used as if it still named its task, and a task about to
+            # run on page tables somebody else had freed.
+            mt = re.search(r"\[TASKS\] MUSTBEZERO use_after_publish=0x([0-9a-f]{16}) "
+                           r"tenancy_mismatch=0x([0-9a-f]{16}) "
+                           r"cr3_without_owner=0x([0-9a-f]{16})", text)
+            if mt is None:
+                problems.append("tasks_counters_missing")
+            else:
+                for name, group in (("use_after_publish", 1),
+                                    ("tenancy_mismatch", 2),
+                                    ("cr3_without_owner", 3)):
+                    value = int(mt.group(group), 16)
+                    if value != 0:
+                        problems.append(f"task_{name}={value}")
 
             # The frame states must partition the total exactly.
             #

@@ -78,16 +78,22 @@ change them.
    of each reasoning about threads.
 4. **The run queue is separable.** Picking the next task is a data-structure
    question and belongs in portable C where it can be tested.
-5. **Observable by construction.** Provenance fields (`cr3_set_by`,
+5. **Policy comes last, and only after accounting.** Priorities, fairness,
+   affinity and load balancing are the point of a scheduler and they are phases
+   S-P4 and S-P5, not omissions - the first draft of this plan listed them as
+   non-goals in one line, which was wrong. A policy chooses between correct
+   options, so it needs a correct lifetime layer underneath it; and fairness
+   cannot be built before something measures CPU time, which nothing here does
+   today.
+6. **Observable by construction.** Provenance fields (`cr3_set_by`,
    `aspace_killed_by`, `ready_by`) already exist because they were each added
    after a bug; they become part of the design instead of scar tissue.
 
 ## 4. Non-goals
 
-- Scheduling policy. Round-robin with per-CPU idle tasks is adequate; this plan
-  does not introduce priorities, fairness or CPU affinity. It makes room and
-  stops there.
-- Preemption model changes. Timer-driven preemption stays as it is.
+- Preemption model changes at the hardware level. Timer-driven preemption stays
+  as it is; what changes at S-P5 is the quantum being a named number rather than
+  whatever the timer period happens to be.
 - SMP bring-up, the APIC, or the interrupt path, except where they read task
   state.
 - The syscall dispatch table, which is its own subsystem and its own plan.

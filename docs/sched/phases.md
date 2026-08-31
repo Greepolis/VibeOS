@@ -116,7 +116,74 @@ the boot rate measured against the parent commit rather than against a number.
 
 ---
 
-## S-P4 — Acceptance
+## S-P4 — Accounting: what each task actually costs
+
+**Objective.** The machine can say how much CPU every task has had. Nothing
+above this phase is possible without it, and none of it exists today.
+
+**Files created** — `kernel/sched/account.c`, `tests/kernel/account_tests.c`
+
+**Steps, in order**
+1. A per-task tick count and a wall-clock stamp of when it was last scheduled,
+   updated in the one place the context switch happens.
+2. Per-CPU idle time, so "the machine is busy" and "one task is busy" stop being
+   the same number.
+3. `tasks` reports it; the boot gate asserts that the accounted time is within a
+   bound of the elapsed time, which is what catches time being lost or
+   double-counted.
+
+**Out of scope.** Using any of it to make a decision. That is S-P5.
+
+**Done when.** Accounted CPU time across all tasks plus idle matches elapsed
+time to within one tick per core.
+
+---
+
+## S-P5 — Policy: priorities, fairness, affinity
+
+**This is the phase that makes it a scheduler rather than a rotation.**
+
+It is last on purpose, and the ordering is the argument: a policy decides which
+of several correct choices to make, so it can only be built on a lifetime layer
+that is correct, and it can only be evaluated with the accounting from S-P4.
+Building it earlier means tuning a thing whose behaviour is dominated by a
+defect.
+
+**Files created** — `kernel/sched/policy.c`, `tests/kernel/policy_tests.c`
+
+**Steps, in order**
+1. **Time slices, stated rather than implied.** The timer preempts today and
+   the quantum is whatever the timer period happens to be. It becomes a number
+   with a name, per class.
+2. **Priorities and classes.** A static priority per task, a small number of
+   classes, and the rule that a higher class runs before a lower one. `nice`
+   becomes a syscall that does something.
+3. **Fairness within a class.** Weighted round-robin over the accounted time
+   from S-P4 - the simplest thing that is provably not starving anybody, and
+   testable as a data structure.
+4. **Affinity and balance.** A task may be pinned; an idle core may take work
+   from a loaded one. Both are decisions the run queue makes, so both are host
+   tests over the queue rather than boot experiments.
+5. **Priority inversion.** Once priorities exist, a low-priority task holding a
+   lock a high-priority task wants is a new failure mode. The kernel's locks are
+   spinlocks with interrupts masked, so the answer here is probably "do not hold
+   one across a scheduling point" enforced by a check, rather than inheritance -
+   but that is decision T7 and not mine to settle.
+
+**Tests**
+- Host: a task that never runs is a failure the queue reports; weights produce
+  the ratios they promise over a long run; a pinned task never appears on
+  another CPU; stealing does not take a running task.
+- Gate: no task in the boot goes more than N ticks without running.
+- Sabotage: `scripts/dev/cases/sched-policy.txt` - ignore the weight; let the
+  highest priority starve everything; steal a running task.
+
+**Done when.** A starvation test passes, the weights are measured rather than
+asserted by inspection, and `tasks` shows the accounting that justifies them.
+
+---
+
+## S-P6 — Acceptance
 
 - **Fork storm.** A service that forks until slots run out, then exits: refusals
   counted, no panic, `tasks` returns to its starting shape.

@@ -18,6 +18,8 @@ looked settled.
 | T4 | Does the run queue stay round-robin, or is a ready-list per CPU with work stealing worth it now? | A policy question with a cost this workload cannot measure; my instinct is no, but it is a product decision | S-P2 |
 | T5 | Should `execve` kill sibling threads, as POSIX says, or keep refusing to destroy their address space? | POSIX is clear and this kernel is not POSIX; killing threads from exec is a lifetime change with its own races | S-P3 |
 | T6 | How is a boot-count criterion expressed, given the pre-existing flakiness? | A ratio against the parent commit is my proposal; the alternative is to fix the flakiness first, which is open-ended | S-P2 |
+| T7 | With priorities, how is priority inversion handled - inheritance, or a rule that no lock is held across a scheduling point? | Inheritance is real work and this kernel's locks mask interrupts, which may make the rule sufficient; getting it wrong is a hang under load | S-P5 |
+| T8 | How many scheduling classes, and does anything need real-time guarantees? | A product question about what VibeOS is for; the answer changes the queue's shape | S-P5 |
 
 ## Taken
 
