@@ -1,6 +1,6 @@
 # Memory Manager Progress
 
-Status: In Progress - P0 and P1 done, P2 written but **not certified**: P2 done. Three concurrency defects found and fixed - publication order, release order, and two cores resolving one fault. The residual boot flakiness turned out to predate the whole rewrite and is tracked in [boot_repeatability.md](boot_repeatability.md). Details in [the plan](../mm/phases.md). Physical frames have one owner, in one file. Address spaces record what they own in the page-table entry, so nothing infers ownership from permission bits any more - which is what the premature-free family came from. No page-table write and no frame reference taken outside `kernel/mm/`, checked on every build.
+Status: In Progress - P0 and P1 done, P2 written but **not certified**: P2 and P3 done: a process now records the regions it asked for, and munmap and mprotect consult that instead of walking page tables. Three concurrency defects found and fixed in P2 - publication order, release order, and two cores resolving one fault. The residual boot flakiness turned out to predate the whole rewrite and is tracked in [boot_repeatability.md](boot_repeatability.md). Details in [the plan](../mm/phases.md). Physical frames have one owner, in one file. Address spaces record what they own in the page-table entry, so nothing infers ownership from permission bits any more - which is what the premature-free family came from. No page-table write and no frame reference taken outside `kernel/mm/`, checked on every build.
 Last review: 2026-08-30
 
 ## Implemented

@@ -100,6 +100,26 @@ with a leak in
 fork's error paths, which published a task slot as free without destroying the
 address space it had already created. Neither closed this signature.
 
+## Still open in the copy-on-write path (2026-08-31)
+
+Separate from the two signatures above, and the more tractable of everything
+here because it has a detector that names it:
+
+    [MM] FREE_WHILE_MAPPED frame=0x237d000 still mapped by pid=0x5a
+         during cow-fault mappers=0x2 owners=0x1
+
+Two address spaces hold the frame and one reference is counted, so a `get` was
+lost rather than a `put` duplicated. Three concurrency defects in this path were
+found and fixed during P2 - publication order, release order, and two cores
+resolving one fault with a compare-exchange - and the rate improved from 27/48
+to the background. **This one is not closed.** It appears roughly once in
+twenty-four boots, and it was reported as fixed once already on the strength of
+a clean 48-boot run, which at this rate proves little.
+
+The detector is trustworthy now: it compares mappings against references after
+the release, so it is indifferent to a frame being reallocated under it - the
+two predicates it had before were wrong in opposite directions.
+
 ## Next
 
 - Establish when this started. The nightly has never been reliably green, so the
