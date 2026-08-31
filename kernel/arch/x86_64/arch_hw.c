@@ -7107,6 +7107,36 @@ static int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame) {
  * shown up once every twenty boots does not need catching on the first
  * attempt, it needs catching at all, with the culprit named.
  */
+/* Follow a page-table entry, or refuse to.
+ *
+ * This walk reads the tables of every live task without holding the scheduler
+ * lock, because it runs on the frame layer's release path and taking that lock
+ * there would invert the order everything else uses. The consequence is that it
+ * can read a table that another core has just freed - and a freed frame that
+ * has been handed out again holds arbitrary bytes, some of which have the
+ * present bit set and an address field pointing anywhere at all.
+ *
+ * Following one of those faulted the kernel. The detector built to catch a
+ * page vanishing under a process was itself panicking the machine, roughly
+ * twice in twenty-four boots, and the failures were being counted as the
+ * defect it was hunting.
+ *
+ * So every step is bounded: an entry that does not name an address inside the
+ * identity map is not a page table, whatever its present bit says. A diagnostic
+ * that can crash the kernel is worse than no diagnostic. */
+static const uint64_t *hw_walk_step(uint64_t entry) {
+    uint64_t next;
+
+    if ((entry & PTE_PRESENT) == 0u) {
+        return 0;
+    }
+    next = entry & 0x000FFFFFFFFFF000ull;
+    if (next == 0u || next + 4096ull > VIBEOS_HW_IDENTITY_LIMIT) {
+        return 0;   /* not reachable through the identity map: not a table */
+    }
+    return (const uint64_t *)(uintptr_t)next;
+}
+
 static int hw_frame_still_mapped(uint64_t phys, uint32_t *out_pid) {
     int t;
     /* Address spaces already walked.
@@ -7130,6 +7160,12 @@ static int hw_frame_still_mapped(uint64_t phys, uint32_t *out_pid) {
             continue;
         }
         pml4 = g_tasks[t].proc.as.pml4;
+        /* Read without the scheduler lock, so it may already have been freed.
+         * The same bound as every other step: a pointer outside the identity
+         * map is not a page table. */
+        if (pml4 && ((uint64_t)(uintptr_t)pml4 + 4096ull) > VIBEOS_HW_IDENTITY_LIMIT) {
+            continue;
+        }
         if (!pml4 || pml4 == g_aspace_being_destroyed) {
             continue;   /* this is the space being torn down; it owns nothing now */
         }
@@ -7150,26 +7186,29 @@ static int hw_frame_still_mapped(uint64_t phys, uint32_t *out_pid) {
             const uint64_t *pdpt;
             uint32_t i;
 
-            if ((pml4[slot] & PTE_PRESENT) == 0) {
+            pdpt = hw_walk_step(pml4[slot]);
+            if (!pdpt) {
                 continue;
             }
-            pdpt = (const uint64_t *)(uintptr_t)(pml4[slot] & 0x000FFFFFFFFFF000ull);
             for (i = 0; i < 512u; i++) {
                 const uint64_t *pd;
                 uint32_t j;
 
-                if ((pdpt[i] & PTE_PRESENT) == 0) {
+                pd = hw_walk_step(pdpt[i]);
+                if (!pd) {
                     continue;
                 }
-                pd = (const uint64_t *)(uintptr_t)(pdpt[i] & 0x000FFFFFFFFFF000ull);
                 for (j = 0; j < 512u; j++) {
                     const uint64_t *pt;
                     uint32_t k;
 
-                    if ((pd[j] & PTE_PRESENT) == 0 || (pd[j] & PTE_PS) != 0) {
+                    if ((pd[j] & PTE_PS) != 0) {
+                        continue;   /* a 2 MiB leaf, not a table */
+                    }
+                    pt = hw_walk_step(pd[j]);
+                    if (!pt) {
                         continue;
                     }
-                    pt = (const uint64_t *)(uintptr_t)(pd[j] & 0x000FFFFFFFFFF000ull);
                     for (k = 0; k < 512u; k++) {
                         /* The ownership mark, not PTE_USER.
                          *
@@ -7241,6 +7280,90 @@ static void hw_panic_cpu_summary(void) {
     }
 }
 
+/* Everything known about a page that vanished under a running process.
+ *
+ * Armed on one signature only: a ring-3 *instruction fetch* on a page that is
+ * not present. That is narrow enough to cost nothing on a healthy boot - an
+ * earlier, broader version of this dump perturbed the timing enough to change
+ * the failure rate, which is its own kind of lying - and it is the exact shape
+ * of the defect in boot_repeatability.md: cr2 equal to rip, inside the page the
+ * program was already executing from.
+ *
+ * The walk answers which level is missing. The frame questions answer the one
+ * the walk cannot: whether the page table the CPU is using has been handed back
+ * to the allocator while a task still runs on it. A leaf that is gone is a lost
+ * mapping; a PML4 that is *free* is an address space destroyed under its owner,
+ * and those are different defects with different fixes. */
+static void hw_dump_vanished(uint64_t va) {
+    static const uint32_t shifts[4] = {39u, 30u, 21u, 12u};
+    uint64_t e[4] = {0, 0, 0, 0};
+    uint64_t cr3 = hw_read_cr3() & 0x000FFFFFFFFFF000ull;
+    uint64_t *tbl;
+    uint32_t level;
+    int depth = 0;
+
+    tbl = (uint64_t *)(uintptr_t)cr3;
+    for (level = 0; level < 4u; level++) {
+        uint64_t next;
+        e[level] = tbl[(va >> shifts[level]) & 0x1FFu];
+        depth = (int)level + 1;
+        if ((e[level] & PTE_PRESENT) == 0u || (e[level] & PTE_PS) != 0u) {
+            break;
+        }
+        if (level == 3u) {
+            break;
+        }
+        next = e[level] & 0x000FFFFFFFFFF000ull;
+        if (next + 4096ull > VIBEOS_HW_IDENTITY_LIMIT) {
+            break;
+        }
+        tbl = (uint64_t *)(uintptr_t)next;
+    }
+
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts("[MM] VANISHED va=0x");
+    vibeos_x86_64_serial_print_hex(va);
+    vibeos_x86_64_serial_puts(" cr3=0x");
+    vibeos_x86_64_serial_print_hex(cr3);
+    vibeos_x86_64_serial_puts(" stopped_at=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)depth);
+    vibeos_x86_64_serial_puts(" pml4e=0x");
+    vibeos_x86_64_serial_print_hex(e[0]);
+    vibeos_x86_64_serial_puts(" pdpte=0x");
+    vibeos_x86_64_serial_print_hex(e[1]);
+    vibeos_x86_64_serial_puts(" pde=0x");
+    vibeos_x86_64_serial_print_hex(e[2]);
+    vibeos_x86_64_serial_puts(" pte=0x");
+    vibeos_x86_64_serial_print_hex(e[3]);
+    /* The decisive pair: if the frame holding this CR3 is free, or owned by
+     * nobody, the address space was destroyed while its task kept running. */
+    vibeos_x86_64_serial_puts(" cr3_state=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)vibeos_frame_state(cr3));
+    vibeos_x86_64_serial_puts(" cr3_owners=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)vibeos_frame_owners(cr3));
+    vibeos_x86_64_serial_puts(" slot=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)g_current_task);
+    vibeos_x86_64_serial_puts(" gen=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)(g_current_task >= 0 ?
+        vibeos_task_generation((uint32_t)g_current_task) : 0u));
+    vibeos_x86_64_serial_puts(" cr3_by=");
+    vibeos_x86_64_serial_puts((g_current_task >= 0 &&
+                               g_tasks[g_current_task].cr3_set_by) ?
+                              g_tasks[g_current_task].cr3_set_by : "-");
+    vibeos_x86_64_serial_puts(" aspace_by=");
+    vibeos_x86_64_serial_puts((g_current_task >= 0 &&
+                               g_tasks[g_current_task].aspace_killed_by) ?
+                              g_tasks[g_current_task].aspace_killed_by : "-");
+    vibeos_x86_64_serial_puts(" last_destroy=");
+    vibeos_x86_64_serial_puts(g_last_destroy_why ? g_last_destroy_why : "-");
+    vibeos_x86_64_serial_puts(" of=0x");
+    vibeos_x86_64_serial_print_hex(g_last_destroy_pml4);
+    vibeos_x86_64_serial_puts(" by_cpu=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)g_last_destroy_cpu);
+    vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
+}
+
 static void hw_fault_kill_current_user(const vibeos_x86_64_isr_frame_t *frame,
                                        uint64_t fault_address) {
     uint64_t vector = frame->vector;
@@ -7259,6 +7382,13 @@ static void hw_fault_kill_current_user(const vibeos_x86_64_isr_frame_t *frame,
     /* One call, one line: this is read next to the trap dump above it, and a
      * diagnostic split across two writes came back interleaved from two cores
      * once already and read as a contradiction. */
+    /* A ring-3 instruction fetch on a page that is not present: the page the
+     * process was executing from has gone. Nothing else is dumped, so a healthy
+     * boot pays nothing. */
+    if (vector == 14u && (frame->error_code & 0x01u) == 0u &&
+        (frame->error_code & 0x04u) != 0u && (frame->error_code & 0x10u) != 0u) {
+        hw_dump_vanished(fault_address);
+    }
     hw_log(VIBEOS_LOG_WARN, 29u, vector, (uint64_t)sig,
            "ring-3 fault: killing the task (a0 = vector, a1 = signal)");
     vibeos_x86_64_serial_lock();
