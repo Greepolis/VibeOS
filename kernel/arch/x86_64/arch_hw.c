@@ -450,6 +450,7 @@ extern int vibeos_x86_64_virtio_blk_write(uint64_t sector, const void *buf);
 #include "vibeos/frame.h"
 #include "vibeos/vmspace.h"
 #include "vibeos/vma.h"
+#include "vibeos/backing.h"
 
 /* The counters live in one structure now (plan phase P0), so the console, the
  * boot gate and a panic all read the same numbers. The names below keep the
@@ -611,6 +612,11 @@ static int hw_frame_still_mapped(uint64_t phys, uint32_t *out_pid);
  * declaration following a non-static one. */
 static void hw_invlpg(uint64_t va);
 static void hw_tlb_shootdown(uint64_t cr3);
+/* Same reason again: the memory bring-up installs this as the cache's
+ * read-through, and it is defined with the rest of the cache a few hundred
+ * lines below. */
+static int hw_cache_read(void *ctx, uint32_t file_id, uint64_t offset,
+                         uint64_t phys);
 static void hw_fault_kill_current_user(const vibeos_x86_64_isr_frame_t *frame,
                                        uint64_t fault_address);
 
@@ -1245,6 +1251,35 @@ static uint32_t hw_page_owners(uint64_t phys) {
 #define VIBEOS_HW_VMA_ENTRIES 2048u
 static vibeos_vma_t g_vma_pool[VIBEOS_HW_VMA_ENTRIES];
 
+/* The page cache, and the small table that gives a path an identity.
+ *
+ * Every exec reads a whole program off the disk, so a shell that runs twenty
+ * commands reads twenty programs it has already seen - and the read happens
+ * under g_exec_lock with interrupts masked, which is why a 2 MiB FAT read was
+ * once indistinguishable from a hang. Caching by (file, offset) makes the
+ * second read free.
+ *
+ * 3072 pages is twelve megabytes held out of the four hundred this machine
+ * has. A boot reads about eleven megabytes of programs, and a table smaller
+ * than that thrashes: the first size tried was 768 and every program evicted
+ * the last one, so the hit count stayed in single figures. */
+#define VIBEOS_HW_CACHE_ENTRIES 3072u
+static vibeos_cache_entry_t g_cache_table[VIBEOS_HW_CACHE_ENTRIES];
+
+/* A path's identity, as a number the cache can key on.
+ *
+ * Small and fixed: the alternative is hashing the path, and two paths that
+ * collide would serve each other's contents with nothing reporting an error -
+ * the one failure in a cache that is completely silent. A table compares the
+ * whole path and simply runs out instead. */
+#define VIBEOS_HW_CACHE_FILES 32u
+typedef struct {
+    char path[64];
+    vibeos_fs_node_t node;
+} hw_cached_file_t;
+static hw_cached_file_t g_cached_files[VIBEOS_HW_CACHE_FILES];
+static uint32_t g_cached_file_count;
+
 static vibeos_pmm_t g_hw_pmm;
 /* The bump allocator is now a bootstrap stage, not a running allocator: it
  * serves the early page tables and the staging buffers, and is closed the
@@ -1648,6 +1683,8 @@ static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
             vibeos_frame_set_lock(hw_frame_lock, hw_frame_unlock);
             vibeos_frame_set_release_watch(hw_frame_release_watch);
             vibeos_vma_pool_init(g_vma_pool, VIBEOS_HW_VMA_ENTRIES);
+            vibeos_cache_init(g_cache_table, VIBEOS_HW_CACHE_ENTRIES,
+                              hw_cache_read, 0);
             prefix = (uint64_t)g_hw_pmm.offset_bytes;
             if (vibeos_frame_init((uint64_t)g_hw_pmm.base,
                                   (uint64_t)g_hw_pmm.size_bytes,
@@ -1745,6 +1782,113 @@ static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
     vibeos_x86_64_serial_puts("[HW] PMM online, free bytes=0x");
     vibeos_x86_64_serial_print_hex((uint64_t)vibeos_pmm_remaining(&g_hw_pmm));
     vibeos_x86_64_serial_puts("\n");
+}
+
+/* ---- the page cache, wired to the filesystem ----------------------------- */
+
+/* A cache miss reaching the disk. One page, at an offset, through the same
+ * read_at the rest of the kernel uses. */
+static int hw_cache_read(void *ctx, uint32_t file_id, uint64_t offset,
+                         uint64_t phys) {
+    long n;
+
+    (void)ctx;
+    if (file_id == 0u || file_id > g_cached_file_count) {
+        return -1;
+    }
+    n = vibeos_fs_read_at(&g_rootfs, &g_cached_files[file_id - 1u].node,
+                          offset, (void *)(uintptr_t)phys, 4096u);
+    if (n < 0) {
+        return -1;
+    }
+    /* A short read is the end of the file, not a failure: the tail page of any
+     * file that is not a multiple of 4 KiB. Zero the rest so the page holds the
+     * file and nothing else - whatever the frame held before is not part of it,
+     * and handing it to a program would be a leak of somebody else's data. */
+    {
+        uint8_t *p = (uint8_t *)(uintptr_t)phys;
+        uint32_t k;
+        for (k = (uint32_t)n; k < 4096u; k++) {
+            p[k] = 0;
+        }
+    }
+    return 0;
+}
+
+static int hw_streq_n(const char *a, const char *b) {
+    uint32_t i;
+    for (i = 0; a[i] || b[i]; i++) {
+        if (a[i] != b[i]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* The identity of a path, or 0 if it cannot be given one. Ids start at 1
+ * because the cache uses 0 to mark an empty slot. */
+static uint32_t hw_file_id(const char *path) {
+    uint32_t i;
+    vibeos_fs_node_t node;
+
+    if (!path) {
+        return 0;
+    }
+    for (i = 0; i < g_cached_file_count; i++) {
+        if (hw_streq_n(g_cached_files[i].path, path)) {
+            return i + 1u;
+        }
+    }
+    if (g_cached_file_count >= VIBEOS_HW_CACHE_FILES) {
+        return 0;   /* out of identities: read uncached rather than guess */
+    }
+    if (vibeos_fs_lookup(&g_rootfs, path, &node) != 0) {
+        return 0;
+    }
+    for (i = 0; i + 1u < sizeof(g_cached_files[0].path) && path[i]; i++) {
+        g_cached_files[g_cached_file_count].path[i] = path[i];
+    }
+    g_cached_files[g_cached_file_count].path[i] = 0;
+    g_cached_files[g_cached_file_count].node = node;
+    g_cached_file_count++;
+    return g_cached_file_count;
+}
+
+/* Read a whole file, a page at a time, through the cache.
+ *
+ * Falls back to the uncached path whenever anything is unusual - no identity
+ * left, a file too large for the buffer - because a cache that refuses is a
+ * slow machine and a cache that guesses is a wrong one. */
+static long hw_read_file_cached(const char *path, void *buf, uint32_t cap) {
+    uint32_t id = hw_file_id(path);
+    uint64_t size, off;
+    uint8_t *out = (uint8_t *)buf;
+
+    if (id == 0u) {
+        return vibeos_fs_read_file(&g_rootfs, path, buf, cap);
+    }
+    size = g_cached_files[id - 1u].node.size;
+    if (size > (uint64_t)cap) {
+        return -1;
+    }
+    for (off = 0; off < size; off += 4096ull) {
+        uint64_t phys = 0;
+        uint64_t take = size - off < 4096ull ? size - off : 4096ull;
+        const uint8_t *src;
+        uint64_t k;
+
+        if (vibeos_cache_get(id, off, &phys) != 0) {
+            /* Whatever went wrong, the file itself is still readable the old
+             * way. Falling back is the difference between a slower boot and a
+             * machine that cannot exec. */
+            return vibeos_fs_read_file(&g_rootfs, path, buf, cap);
+        }
+        src = (const uint8_t *)(uintptr_t)phys;
+        for (k = 0; k < take; k++) {
+            out[off + k] = src[k];
+        }
+    }
+    return (long)size;
 }
 
 /* The bridge to L1.
@@ -2228,7 +2372,7 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
             path = "EFI/BOOT/LDMUSL.SO";
         }
 
-        n = vibeos_fs_read_file(&g_rootfs, path, g_interp_elf, g_interp_elf_cap);
+        n = hw_read_file_cached(path, g_interp_elf, g_interp_elf_cap);
         if (n <= 0) {
             vibeos_x86_64_serial_puts("[EXEC] interpreter not found: ");
             vibeos_x86_64_serial_puts(img.interp);
@@ -5544,7 +5688,7 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
         n = g_exec_cached_len;   /* already staged, byte for byte */
     } else {
         hw_exec_cache_drop();
-        n = vibeos_fs_read_file(&g_rootfs, path, g_exec_elf, g_exec_elf_cap);
+        n = hw_read_file_cached(path, g_exec_elf, g_exec_elf_cap);
         if (n > 0) {
             uint32_t i;
             for (i = 0; i < sizeof(g_exec_cached) - 1u && path[i]; i++) {

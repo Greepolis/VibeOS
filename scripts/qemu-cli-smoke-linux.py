@@ -814,6 +814,24 @@ def main():
                     if value != 0:
                         problems.append(f"mm_{name}={value}")
 
+            # The page cache, asserted as a ratio rather than as "not zero".
+            #
+            # Non-zero is satisfied by a cache that works once and thrashes
+            # afterwards, which is what the first table size actually did: 768
+            # pages against eleven megabytes of programs gave five hits in a
+            # whole boot. A ratio is the difference between a cache and a
+            # decoration.
+            mc = re.search(r"cache_hits=0x([0-9a-f]{16}) cache_misses=0x([0-9a-f]{16})", text)
+            if mc is None:
+                problems.append("cache_counters_missing")
+            else:
+                hits = int(mc.group(1), 16)
+                misses = int(mc.group(2), 16)
+                if hits == 0 or misses == 0:
+                    problems.append(f"cache_not_exercised hits={hits} misses={misses}")
+                elif hits * 4 < misses:
+                    problems.append(f"cache_hit_ratio_too_low hits={hits} misses={misses}")
+
             # The frame states must partition the total exactly.
             #
             # This is the assertion that would have caught meminfo assembling

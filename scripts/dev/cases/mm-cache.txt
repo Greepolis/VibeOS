@@ -1,0 +1,55 @@
+### a hit is never recorded, so every read goes to the disk
+--- old
+    if (e) {
+        e->used = 1;
+        *out_phys = e->phys;
+        vibeos_mm_stats()->cache_hits++;
+        return 0;
+    }
++++ new
+
+### the key is placed before the read, so a failed read caches whatever was there
+--- old
+    if (!g_read || g_read(g_read_ctx, file_id, offset, phys) != 0) {
+        (void)vibeos_frame_put(phys);
+        return -1;
+    }
++++ new
+    if (!g_read) {
+        (void)vibeos_frame_put(phys);
+        return -1;
+    }
+    (void)g_read(g_read_ctx, file_id, offset, phys);
+
+### the lookup matches on the file alone, so any offset of it returns one page
+--- old
+        if (e->file_id == file_id && e->offset == offset) {
++++ new
+        if (e->file_id == file_id) {
+
+### eviction forgets the entry but keeps its frame
+--- old
+        (void)vibeos_frame_put(e->phys);
+        e->file_id = 0;
+        e->phys = 0;
+        if (g_resident > 0u) {
+            g_resident--;
+        }
+        vibeos_mm_stats()->reclaim_freed++;
++++ new
+        e->file_id = 0;
+        e->phys = 0;
+        if (g_resident > 0u) {
+            g_resident--;
+        }
+        vibeos_mm_stats()->reclaim_freed++;
+
+### forget drops every file rather than the one it was given
+--- old
+        if (e->file_id != file_id) {
+            continue;
+        }
++++ new
+        if (e->file_id == 0u) {
+            continue;
+        }

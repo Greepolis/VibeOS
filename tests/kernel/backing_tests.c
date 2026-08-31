@@ -131,6 +131,25 @@ int test_backing(void) {
 
     /* ---- eviction: more keys than slots ---------------------------------- */
     setup();
+    {
+        /* Frames, not just counters. An eviction that forgets its entry and
+         * keeps the frame leaks one page every time the table turns over, and
+         * no counter would notice: the frame layer still has an owner for it,
+         * so nothing is leaked as far as it can tell. Only the free count
+         * falling faster than the table fills shows it. */
+        uint64_t free_before = vibeos_frame_free_count();
+        uint64_t phys;
+        for (i = 0; i < ENTRIES * 3u; i++) {
+            if (vibeos_cache_get(1u, (uint64_t)i * 4096ull, &phys) != 0) { goto fail; }
+        }
+        if (vibeos_frame_free_count() != free_before - (uint64_t)ENTRIES) {
+            printf("FAIL:backing held %llu frames for a table of %u\n",
+                   (unsigned long long)(free_before - vibeos_frame_free_count()),
+                   ENTRIES);
+            goto fail;
+        }
+    }
+    setup();
     for (i = 0; i < ENTRIES * 3u; i++) {
         uint64_t phys;
         if (vibeos_cache_get(1u, (uint64_t)i * 4096ull, &phys) != 0) {
