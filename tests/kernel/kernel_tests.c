@@ -8680,6 +8680,7 @@ int test_vma(void);
 int test_backing(void);
 int test_task(void);
 int test_runq(void);
+int test_lifetime(void);
 
 int main(void) {
     int failures = 0;
@@ -8694,6 +8695,7 @@ int main(void) {
     RUN_TEST(test_backing);
     RUN_TEST(test_task);
     RUN_TEST(test_runq);
+    RUN_TEST(test_lifetime);
     RUN_TEST(test_pmm);
     RUN_TEST(test_pmm_reserve);
     RUN_TEST(test_blockcache_hits);

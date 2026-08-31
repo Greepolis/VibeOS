@@ -1,0 +1,44 @@
+### a signal death is reported as a clean exit
+--- old
+    if (signal != 0u) {
++++ new
+    if (0) {
+
+### the exit code is put in the low bits, where the signal belongs
+--- old
+    return (int)((exit_code & 0xFFu) << 8);
++++ new
+    return (int)(exit_code & 0x7Fu);
+
+### the shell's 128+sig convention leaks into the kernel
+--- old
+        return (int)(signal & 0x7Fu);
++++ new
+        return (int)(128u + (signal & 0x7Fu));
+
+### a reap acts on a reference whose slot has moved on
+--- old
+    if (!vibeos_task_ref_valid(child)) {
+        return VIBEOS_REAP_GONE;
+    }
++++ new
+
+### a living child can be reaped
+--- old
+    if (vibeos_task_state(child.slot) != VIBEOS_TASK_ZOMBIE) {
+        return VIBEOS_REAP_NOT_DEAD;
+    }
++++ new
+
+### a slot may be published before its address space is gone
+--- old
+    if ((uint32_t)step < (uint32_t)g_step[slot] ||
+        (uint32_t)step > (uint32_t)g_step[slot] + 1u) {
++++ new
+    if (0) {
+
+# The last case is the silent wedge stated as one line: publishing a slot
+# before its address space is released lets a parent reap it, a fork on another
+# core take it, and the late teardown free the new tenant's page tables. The
+# machine stops with no output at all, which is why this is a counter the boot
+# gate asserts rather than something anybody would notice.

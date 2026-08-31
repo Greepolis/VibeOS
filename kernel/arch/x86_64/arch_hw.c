@@ -454,6 +454,7 @@ extern int vibeos_x86_64_virtio_blk_write(uint64_t sector, const void *buf);
 #include "vibeos/task_stats.h"
 #include "vibeos/task.h"
 #include "vibeos/runq.h"
+#include "vibeos/lifetime.h"
 
 /* The counters live in one structure now (plan phase P0), so the console, the
  * boot gate and a panic all read the same numbers. The names below keep the
@@ -3499,6 +3500,12 @@ static void hw_task_exit(uint64_t code) {
     if (dying >= 0 && g_tasks[dying].is_user) {
         int last;
 
+        /* The order this subsystem learned the hard way, declared rather than
+         * remembered: the address space goes before the slot is announced,
+         * because a parent may reap the instant it sees a zombie. A step taken
+         * out of order is counted and the boot gate asserts the count. */
+        vibeos_teardown_reset((uint32_t)dying);
+
         hw_spin_lock(&g_sched_lock);
         last = !hw_aspace_still_shared(dying);
         if (!last) {
@@ -3510,10 +3517,14 @@ static void hw_task_exit(uint64_t code) {
         hw_spin_unlock(&g_sched_lock);
 
         if (!last) {
+            /* Shared with a sibling: the tables stay, but this task has still
+             * finished with them - the same point in the order. */
+            (void)vibeos_teardown_step((uint32_t)dying, VIBEOS_TEARDOWN_ASPACE);
             HW_TASK_MARK(dying, aspace_killed_by, "thread_exit_kept_shared");
         } else {
         HW_TASK_MARK(dying, aspace_killed_by, "task_exit");
         hw_aspace_destroy(&g_tasks[dying].proc.as);
+        (void)vibeos_teardown_step((uint32_t)dying, VIBEOS_TEARDOWN_ASPACE);
         /* The regions go with the address space they described. A sibling
          * thread that keeps the tables keeps the list too, which is why this
          * is inside the branch that actually frees. */
@@ -5641,9 +5652,11 @@ static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr) {
                 uint32_t child_pid = t->tgid;
                 uint64_t code = t->exit_code;
                 uint32_t exit_signal = t->exit_signal;
-                int status = (exit_signal != 0u)
-                             ? (int)(exit_signal & 0x7Fu)
-                             : (int)((code & 0xFFull) << 8);
+                /* One encoding, defined once. A wait status is not an exit
+                 * code, and an init that read only the code byte reported a
+                 * segfault as a clean stop - the crashing service came back
+                 * STOPPED. Producer and consumer now share the function. */
+                int status = vibeos_wait_status_make((uint32_t)code, exit_signal);
                 /* Publishing the slot as FREE is the last thing done to it,
                  * and everything still needed from it is taken first.
                  *
@@ -5666,6 +5679,10 @@ static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr) {
 
                 t->kstack_base = 0;
                 t->kstack_pages = 0;
+                (void)vibeos_teardown_step((uint32_t)(t - g_tasks),
+                                           VIBEOS_TEARDOWN_HARVESTED);
+                (void)vibeos_teardown_step((uint32_t)(t - g_tasks),
+                                           VIBEOS_TEARDOWN_PUBLISHED);
                 (void)hw_task_set_state((int)(t - g_tasks), HW_TASK_FREE, __func__); /* reaped; nothing may touch t now */
                 hw_spin_unlock(&g_sched_lock);
                 hw_free_kstack_pages(kbase, kpages);
