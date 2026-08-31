@@ -1,10 +1,10 @@
 # Boot Repeatability Progress
 
-Status: **Open defect, pre-existing and untriaged.** Roughly one boot in twelve
-fails, in two signatures. It predates the memory-manager rewrite by weeks and is
-not caused by it.
+Status: **Largely resolved.** 23 boots clean out of 24, from a long-standing
+~1 in 8. Three defects were found and fixed, and all three were introduced by
+the diagnostics built to hunt the failure rather than by the kernel they were
+watching. One rare wedge remains, with a lead.
 Last review: 2026-08-31
-
 ## What fails
 
 Two signatures, both intermittent, on an otherwise green build:
@@ -100,7 +100,61 @@ with a leak in
 fork's error paths, which published a task slot as free without destroying the
 address space it had already created. Neither closed this signature.
 
-## Still open in the copy-on-write path (2026-08-31)
+## What it actually was (2026-08-31)
+
+Three defects, found in one afternoon by reading failure logs instead of
+re-running boots. Every one of them was in the instrumentation.
+
+**1. The "who freed it" tag was a use-after-free.** `hw_free_page_why` released
+a frame and then wrote the freeing function's name into word 1 of the page.
+Between the release and that store another core can allocate the frame - and
+word 1 of a page is **slot 1 of a PML4**, the user window. A diagnostic meant to
+say who let go of a page was reaching into a live address space and replacing
+its entire user half with a pointer to a string literal.
+
+That is the signature recorded above and never explained: a ring-3 instruction
+fetch faulting inside the page the program was already executing from, the walk
+stopping at level one, a kernel pointer where a page-directory pointer belonged.
+The dump that finally caught it printed the missing half - `cr3_state=page-table`,
+`cr3_owners=1`: the frame was not free at all. A live, owned PML4 with
+garbage in one slot.
+
+The comment that had justified the write is worth keeping in mind. It reasoned
+carefully about the poison check never probing word 1, and not at all about the
+frame being reallocated in between. **Being careful about the wrong hazard reads
+exactly like being careful.**
+
+**2. The free-while-mapped walk was panicking the kernel.** It reads every live
+task's page tables without the scheduler lock - deliberately, because it runs on
+the frame layer's release path - so it can read a table another core has just
+freed. A freed frame handed out again holds arbitrary bytes, some with the
+present bit set and an address field pointing anywhere. Following one faulted
+the machine, twice in twenty-four boots, and those failures were being counted
+as the defect it was hunting. Every step is bounded now.
+
+**3. The region pool had no lock.** Eight refused inserts in a boot whose peak
+usage was twenty-nine descriptors out of two thousand - a pool nowhere near full
+that had shredded its own free list. Two allocations racing both take the head
+and both advance it. `fork` then failed with ENOMEM and the stress service
+reported "fork for cow". The same mistake the frame layer had already made and
+fixed, repeated in a layer written the day before.
+
+## What remains
+
+One wedge in twenty-four boots, and it has a lead rather than a mystery:
+
+    #GP at vibeos_x86_64_task_enter (isr.S:294)
+    then #GP at rip=0xe4e4e4e4e4e4e4e4
+
+A task's saved register context contains a repeated fill byte, so restoring it
+faults - and the panic handler then runs on the broken state and faults again.
+`0xe4` appears nowhere in the source as a constant, so the next question is
+what writes it: an uninitialised context, a recycled slot scheduled before its
+creator finished filling it in, or a kernel stack being used after it was freed.
+The task state machine's `SETUP` state and its tenancy counter exist for
+exactly this shape and should be the first things consulted.
+
+## Superseded: the copy-on-write path (2026-08-31)
 
 Separate from the two signatures above, and the more tractable of everything
 here because it has a detector that names it:
