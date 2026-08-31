@@ -253,6 +253,11 @@ static void kernel_cli_print_meminfo(void) {
     vibeos_x86_64_serial_puts(" swap_outs=0x");
     kernel_log_u64_hex(st->swap_outs);
     vibeos_x86_64_serial_puts(" (zero until plan P4/P5)\n");
+    vibeos_x86_64_serial_puts("[MEM] vmas_live=0x");
+    kernel_log_u64_hex(st->vmas_live);
+    vibeos_x86_64_serial_puts(" vmas_refused=0x");
+    kernel_log_u64_hex(st->vmas_refused);
+    vibeos_x86_64_serial_puts("\n");
     vibeos_x86_64_serial_puts("[MEM] end\n");
 }
 

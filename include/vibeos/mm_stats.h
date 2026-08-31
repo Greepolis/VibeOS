@@ -43,6 +43,7 @@ typedef struct vibeos_mm_stats {
     uint64_t vmas_live;          /* regions currently described               */
     uint64_t vmas_created;       /* insert calls that produced a region       */
     uint64_t vmas_split;         /* a partial unmap or protect cut one in two */
+    uint64_t vmas_refused;       /* inserts the pool could not satisfy       */
     uint64_t vmas_removed;       /* remove calls, whatever they found         */
 
     /* L3 - backing stores. Zero until P4 and P5. */

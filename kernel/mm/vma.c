@@ -153,6 +153,11 @@ int vibeos_vma_insert(vibeos_vma_list_t *list, uint64_t base, uint64_t len,
 
     v = vma_alloc();
     if (!v) {
+        /* Counted, not silent. Every caller ignores the return - a region that
+         * cannot be described is not a reason to fail an mmap that worked -
+         * so without this the pool running dry looks like mprotect refusing
+         * addresses for no reason, several services later. */
+        vibeos_mm_stats()->vmas_refused++;
         return -1;
     }
     v->base = base;

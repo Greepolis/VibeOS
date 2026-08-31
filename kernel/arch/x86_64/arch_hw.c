@@ -449,6 +449,7 @@ extern int vibeos_x86_64_virtio_blk_write(uint64_t sector, const void *buf);
 #include "vibeos/mm_model.h"
 #include "vibeos/frame.h"
 #include "vibeos/vmspace.h"
+#include "vibeos/vma.h"
 
 /* The counters live in one structure now (plan phase P0), so the console, the
  * boot gate and a panic all read the same numbers. The names below keep the
@@ -1234,6 +1235,16 @@ static uint32_t hw_page_owners(uint64_t phys) {
     return vibeos_frame_owners(phys);
 }
 
+/* Region descriptors for every process.
+ *
+ * Static and shared: a per-process pool would waste most of it, and a global
+ * one turns "too many regions" into a refusal from mmap - which is what a
+ * program can handle - rather than into an allocation failure somewhere less
+ * convenient. Sixteen per task is generous for what runs here; the boot gate
+ * asserts the count returns to zero. */
+#define VIBEOS_HW_VMA_ENTRIES 2048u
+static vibeos_vma_t g_vma_pool[VIBEOS_HW_VMA_ENTRIES];
+
 static vibeos_pmm_t g_hw_pmm;
 /* The bump allocator is now a bootstrap stage, not a running allocator: it
  * serves the early page tables and the staging buffers, and is closed the
@@ -1636,6 +1647,7 @@ static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
              * should not depend on that. */
             vibeos_frame_set_lock(hw_frame_lock, hw_frame_unlock);
             vibeos_frame_set_release_watch(hw_frame_release_watch);
+            vibeos_vma_pool_init(g_vma_pool, VIBEOS_HW_VMA_ENTRIES);
             prefix = (uint64_t)g_hw_pmm.offset_bytes;
             if (vibeos_frame_init((uint64_t)g_hw_pmm.base,
                                   (uint64_t)g_hw_pmm.size_bytes,
@@ -1798,7 +1810,7 @@ static int hw_streq(const char *a, const char *b) {
  * bytes of both. Separated from process creation because a dynamic program
  * needs this done twice - once for the program and once for the interpreter
  * it names - into the same address space. */
-static int hw_map_elf_image(vibeos_hw_aspace_t *as,
+static int hw_map_elf_image(vibeos_hw_aspace_t *as, vibeos_vma_list_t *vmas,
                             const vibeos_elf_image_t *img, const void *elf) {
     uint64_t va;
 
@@ -1831,6 +1843,20 @@ static int hw_map_elf_image(vibeos_hw_aspace_t *as,
          * go, exactly as alloc_page/put_page do. Forgetting this leaks the page
          * - visible in meminfo - rather than freeing one somebody is using. */
         hw_page_put((uint64_t)(uintptr_t)page);
+
+        /* Record the page as a region, one at a time so the list merges runs
+         * of alike pages and leaves the gaps between segments as gaps. One
+         * region spanning the whole image would describe its holes as mapped,
+         * and mprotect would then accept an address the ABI self-test requires
+         * it to refuse. */
+        if (vmas) {
+            vibeos_prot_t rp = (vibeos_prot_t)(VIBEOS_PROT_READ | VIBEOS_PROT_USER);
+            if (flags & VIBEOS_ELF_W) {
+                rp = (vibeos_prot_t)(rp | VIBEOS_PROT_WRITE);
+            }
+            (void)vibeos_vma_insert(vmas, va, 4096ull, rp,
+                                    VIBEOS_BACKING_ANON, 0, 0);
+        }
     }
     return 0;
 }
@@ -2035,6 +2061,10 @@ typedef struct {
      * without it a dynamic program faults on its first relocation. */
     uint64_t interp_base;
     uint64_t brk_cur;   /* current program break            */
+    /* What this process asked for, as opposed to what happens to be mapped.
+     * munmap and mprotect consult this; the page tables are the consequence,
+     * not the record. See kernel/mm/vma.c. */
+    vibeos_vma_list_t vmas;
     uint64_t mmap_cur;  /* next free anonymous mmap address  */
     uint64_t user_sp;   /* entry rsp, atop the startup block */
     /* What execve was given. A program that wants to find itself reads
@@ -2157,7 +2187,16 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
           img.end_vaddr <= VIBEOS_HW_LOW_USER_LIMIT)) {
         return -1;
     }
-    if (hw_map_elf_image(&p->as, &img, elf) != 0) {
+    /* Empty before anything is mapped, not after.
+     *
+     * The struct is reused across execs, so it arrives holding the previous
+     * program's regions - and clearing it *after* the image was mapped threw
+     * away the regions just built for the new one. mprotect then refused the
+     * RELRO that a C library performs on its own image during startup, which
+     * is how the dynamic loader reported "RELRO protection failed". */
+    p->vmas.head = 0;
+    p->vmas.count = 0;
+    if (hw_map_elf_image(&p->as, &p->vmas, &img, elf) != 0) {
         return -1;
     }
     p->entry = img.entry;
@@ -2214,7 +2253,7 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
              * of it is mapped. */
             return -1;
         }
-        if (hw_map_elf_image(&p->as, &interp, g_interp_elf) != 0) {
+        if (hw_map_elf_image(&p->as, &p->vmas, &interp, g_interp_elf) != 0) {
             return -1;
         }
 
@@ -2238,6 +2277,11 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
             return -1;
         }
         hw_page_put((uint64_t)(uintptr_t)page);   /* D9: the mapping owns it now */
+        (void)vibeos_vma_insert(&p->vmas, stack_va, 4096ull,
+                                (vibeos_prot_t)(VIBEOS_PROT_READ |
+                                                VIBEOS_PROT_WRITE |
+                                                VIBEOS_PROT_USER),
+                                VIBEOS_BACKING_ANON, 0, 0);
         if (i == 0u) {
             /* Still safe to write through: the address space holds the frame,
              * and the kernel reaches it by its physical address either way. */
@@ -3205,6 +3249,10 @@ static void hw_task_exit(uint64_t code) {
         } else {
         HW_TASK_MARK(dying, aspace_killed_by, "task_exit");
         hw_aspace_destroy(&g_tasks[dying].proc.as);
+        /* The regions go with the address space they described. A sibling
+         * thread that keeps the tables keeps the list too, which is why this
+         * is inside the branch that actually frees. */
+        vibeos_vma_clear(&g_tasks[dying].proc.vmas);
         }
         /* The kernel stack stays until the parent reaps us: we are still
          * executing on it right now. */
@@ -4505,6 +4553,16 @@ static long hw_sys_brk(uint64_t addr) {
             return -VIBEOS_ENOMEM;
         }
     }
+    if (new_brk > proc->brk_cur) {
+        (void)vibeos_vma_insert(&proc->vmas, proc->brk_cur,
+                                new_brk - proc->brk_cur,
+                                (vibeos_prot_t)(VIBEOS_PROT_READ |
+                                                VIBEOS_PROT_WRITE |
+                                                VIBEOS_PROT_USER),
+                                VIBEOS_BACKING_ANON, 0, 0);
+    } else if (new_brk < proc->brk_cur) {
+        (void)vibeos_vma_remove(&proc->vmas, new_brk, proc->brk_cur - new_brk);
+    }
     proc->brk_cur = new_brk;
     return (long)proc->brk_cur;
 }
@@ -4678,6 +4736,23 @@ static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code) {
  * fixed address would require a real VMA tree. MAP_FIXED is therefore refused
  * rather than quietly ignored: a program that asks for a specific address and
  * silently gets another one corrupts itself later, far from here. */
+/* The syscall's protection bits as this kernel's own type. One place, because
+ * mmap and mprotect must agree about what a region's protection means or the
+ * list and the tables drift apart - which is the drift this layer exists to
+ * end. */
+static vibeos_prot_t hw_prot_of(uint64_t prot) {
+    vibeos_prot_t p = VIBEOS_PROT_NONE;
+
+    if (prot == PROT_NONE) {
+        return p;   /* a guard: mapped, owned, and reachable by nobody */
+    }
+    p = (vibeos_prot_t)(VIBEOS_PROT_READ | VIBEOS_PROT_USER);
+    if (prot & PROT_WRITE) {
+        p = (vibeos_prot_t)(p | VIBEOS_PROT_WRITE);
+    }
+    return p;
+}
+
 static long hw_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot,
                         uint64_t flags, uint64_t fd) {
     hw_proc_t *proc;
@@ -4740,6 +4815,8 @@ static long hw_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot,
             hw_page_put((uint64_t)(uintptr_t)page);   /* D9 */
         }
         proc->mmap_cur = base + pages * 4096ull;
+        (void)vibeos_vma_insert(&proc->vmas, base, pages * 4096ull,
+                                hw_prot_of(prot), VIBEOS_BACKING_ANON, 0, 0);
         return (long)base;
     }
 
@@ -4764,6 +4841,8 @@ static long hw_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot,
         }
     }
     proc->mmap_cur = base + pages * 4096ull;
+    (void)vibeos_vma_insert(&proc->vmas, base, pages * 4096ull,
+                            hw_prot_of(prot), VIBEOS_BACKING_ANON, 0, 0);
     return (long)base;
 }
 
@@ -4802,6 +4881,22 @@ static long hw_sys_mprotect(uint64_t addr, uint64_t len, uint64_t prot) {
                    "mprotect refused: page not mapped");
             return -VIBEOS_EFAULT;
         }
+    }
+
+    /* The list is the authority on whether the range is mapped, and it refuses
+     * the whole request rather than applying part of it. The page-table pass
+     * below then carries the decision out.
+     *
+     * A PROT_NONE region is a region like any other here - that is the point of
+     * describing what was asked for. It used to be a mapping trick that only
+     * the page tables knew about, which is why "is this address reserved?" and
+     * "is this address mapped?" were the same question and the ABI self-test
+     * caught mprotect accepting an address it had to refuse. */
+    if (vibeos_vma_protect(&proc->vmas, addr, end - addr,
+                           hw_prot_of(prot)) != 0) {
+        hw_log(VIBEOS_LOG_WARN, 15u, addr, len,
+               "mprotect refused: the range is not one this process asked for");
+        return -VIBEOS_EFAULT;
     }
 
     for (va = addr; va < end; va += 4096ull) {
@@ -4867,6 +4962,14 @@ static long hw_sys_munmap(uint64_t addr, uint64_t len) {
     }
     proc = &g_tasks[g_current_task].proc;
     end = (addr + len + 0xFFFull) & ~0xFFFull;
+    /* The list decides what this range contains; the page tables are then made
+     * to agree. That order is the phase: the tables record what the hardware
+     * currently does, and asking *them* what to release is what let munmap free
+     * frames that belonged to somebody else.
+     *
+     * Removed first, so a region is never described after it has stopped
+     * existing - the same publish-last rule as everywhere else in here. */
+    (void)vibeos_vma_remove(&proc->vmas, addr, end - addr);
     {
         vibeos_vmspace_t v = hw_vm(&proc->as);
 
@@ -4973,6 +5076,17 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
     }
     child->kstack_top = hw_alloc_kstack(&child->kstack_base, &child->kstack_pages);
     if (child->kstack_top == 0) {
+        hw_aspace_destroy(&child->proc.as);
+        child->state = HW_TASK_FREE;
+        return -VIBEOS_ENOMEM;
+    }
+    /* The child's regions are its own from the first instruction. Copying the
+     * proc struct copied the list *head*, which would have left two processes
+     * sharing one chain of descriptors - and the first munmap in either would
+     * have unlinked descriptors out from under the other. */
+    child->proc.vmas.head = 0;
+    child->proc.vmas.count = 0;
+    if (vibeos_vma_clone(&child->proc.vmas, &parent->proc.vmas) != 0) {
         hw_aspace_destroy(&child->proc.as);
         child->state = HW_TASK_FREE;
         return -VIBEOS_ENOMEM;
@@ -5508,8 +5622,15 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
     }
     {
         vibeos_hw_aspace_t old_as = t->proc.as; /* reclaim after switching CR3 */
+        vibeos_vma_list_t old_vmas = t->proc.vmas;
         int shared;
 
+        /* np already carries the regions the loader built for the new image;
+         * old_vmas above is the outgoing list, saved before this assignment
+         * overwrites it. Clearing t->proc.vmas here - which the first version
+         * did - throws away the description of the program that is about to
+         * run, and mprotect then refuses the RELRO the C library performs on
+         * its own image during startup. */
         t->proc = np;
         t->cr3 = hw_proc_cr3(&t->proc);
         t->cr3_set_by = "execve";
@@ -5538,6 +5659,10 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
                          "execve_kept_shared");
         } else {
             hw_aspace_destroy(&old_as);         /* old CR3 no longer active */
+            /* The regions described that address space, so they go with it.
+             * When it is kept, so are they: the siblings still holding it are
+             * describing the same memory. */
+            vibeos_vma_clear(&old_vmas);
         }
     }
 
