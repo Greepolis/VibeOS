@@ -6827,6 +6827,15 @@ static int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame) {
  */
 static int hw_frame_still_mapped(uint64_t phys, uint32_t *out_pid) {
     int t;
+    /* Address spaces already walked.
+     *
+     * Threads share one set of page tables across several task slots, so
+     * walking per task counted the same entry once per thread - and reported
+     * mappers=2 owners=1 for a perfectly healthy two-threaded process. That
+     * was read as a lost reference and chased as a defect. Counting mappings
+     * means counting address spaces, not tasks. */
+    const uint64_t *seen[VIBEOS_HW_MAX_TASKS];
+    int nseen = 0;
 
     g_frame_mappers = 0;
 
@@ -6841,6 +6850,18 @@ static int hw_frame_still_mapped(uint64_t phys, uint32_t *out_pid) {
         pml4 = g_tasks[t].proc.as.pml4;
         if (!pml4 || pml4 == g_aspace_being_destroyed) {
             continue;   /* this is the space being torn down; it owns nothing now */
+        }
+        {
+            int k, dup = 0;
+            for (k = 0; k < nseen; k++) {
+                if (seen[k] == pml4) { dup = 1; break; }
+            }
+            if (dup) {
+                continue;   /* another thread of a process already counted */
+            }
+            if (nseen < (int)VIBEOS_HW_MAX_TASKS) {
+                seen[nseen++] = pml4;
+            }
         }
         /* Slot 0 carries the low user window, slot 1 the high one. */
         for (slot = 0; slot < 2u; slot++) {

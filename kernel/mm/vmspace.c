@@ -399,14 +399,33 @@ int vibeos_vmspace_map_raw(vibeos_vmspace_t *as, uint64_t va, uint64_t pa,
      * an extra reference on a mapping that then fails to be installed is a
      * leak, and a leak is the direction this subsystem chooses on purpose. */
     {
-        /* Replacing a mapping releases what was there - after the new entry is
-         * in place, for the reason above. Without it, mapping over an owned
-         * entry loses the reference and the frame is never reclaimed: a leak
-         * that grows with every exec. */
-        uint64_t old = *pte;
+        /* A compare-exchange, like every other store to an entry in this file.
+         *
+         * This was a plain read-modify-write, and two cores mapping the same
+         * address both read the old entry, both took a reference, both stored,
+         * and both released what had been there - one release too many for a
+         * single mapping, which puts a frame on the free list while somebody
+         * still holds it. The reference is taken before the exchange and given
+         * back if the exchange loses, so a frame is never published without a
+         * count and never counted without being published.
+         *
+         * Replacing an owned entry releases what it held, and only after the
+         * new entry is in place: this address space has to stop pointing at a
+         * frame before it can let go of it. */
+        uint64_t old;
+        uint64_t desired = (pa & PTE_ADDR_MASK) | leaf | PTE_PRESENT |
+                           VIBEOS_PTE_OWNED;
 
-        vibeos_frame_get(pa & PTE_ADDR_MASK);
-        *pte = (pa & PTE_ADDR_MASK) | leaf | PTE_PRESENT | VIBEOS_PTE_OWNED;
+        for (;;) {
+            old = __atomic_load_n(pte, __ATOMIC_ACQUIRE);
+            vibeos_frame_get(pa & PTE_ADDR_MASK);
+            if (__atomic_compare_exchange_n(pte, &old, desired, 0,
+                                            __ATOMIC_ACQ_REL,
+                                            __ATOMIC_RELAXED)) {
+                break;
+            }
+            (void)vibeos_frame_put(pa & PTE_ADDR_MASK);
+        }
 
         if ((old & PTE_PRESENT) && (old & VIBEOS_PTE_OWNED)) {
             (void)vibeos_frame_put(old & PTE_ADDR_MASK);
@@ -587,8 +606,24 @@ static int clone_one(vibeos_vmspace_t *src, uint64_t va, uint64_t *pte, void *ct
      * unwritable for everyone - a shell that runs two commands and dies on the
      * third. */
     if (entry & PTE_WRITE) {
+        uint64_t expected = entry;
+        uint64_t desired = (entry & ~PTE_WRITE) | PTE_COW_BIT;
+
         flags |= PTE_COW_BIT;
-        *pte = (entry & ~PTE_WRITE) | PTE_COW_BIT;
+        if (!__atomic_compare_exchange_n(pte, &expected, desired, 0,
+                                         __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+            /* Another core changed this entry between the read and here - a
+             * thread of the same process resolving its own fault on it. Take
+             * what is there now rather than storing a stale value back, which
+             * would reinstate a frame the other core has already stopped
+             * pointing at and released. */
+            entry = expected;
+            phys = entry & PTE_ADDR_MASK;
+            flags = entry & (PTE_PRESENT | PTE_USER);
+            if (entry & PTE_COW_BIT) {
+                flags |= PTE_COW_BIT;
+            }
+        }
         if (g_be.invlpg) {
             g_be.invlpg(va);
         }
