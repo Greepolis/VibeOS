@@ -36,6 +36,39 @@ sabotaging the thing they fixed and confirming the gate went red.
 and the boot "passed" on the previous binary. `check.sh` prints the return code
 first for this reason.
 
+**A failed boot is evidence, not a score.** The instinct is to re-run and
+compare counts; that is the slowest possible way to learn anything here, and it
+has been done repeatedly. Every failed boot already leaves a trap dump with
+`err`, `rip` and `cr2`, a crash record naming the program, the task
+counters, `wedge_report` output in the summary, and the serial log kept by
+`repeat-boot.sh`. Read those first. One failing log has repeatedly said more
+than twenty-four boots of pass/fail.
+
+A worked example: a phase measured 17/24 against a parent's 21/24 and was
+treated as a possible regression. One line of the failure log - `err=0x14`,
+`cr2 == rip`, a user instruction fetch on a missing page - identified it as the
+*pre-existing* defect already written up in
+`docs/implementation_progress/boot_repeatability.md`. The count said "maybe a
+regression"; the log said "the known bug, again".
+
+**Never delete the evidence before reading it.** `rm -f repeat-fail-*` at the
+start of a run is convenient and has twice destroyed the logs of a failure that
+then had to be reproduced. Read them, or move them aside; do not clear them
+because the next run is about to start.
+
+**Never rebuild while a boot run is in flight.** `repeat-boot.sh` does not hold
+the binary it is testing, so a rebuild half-way through means the run measured
+two different kernels and its number means nothing. This has invalidated three
+separate runs, each about half an hour.
+
+**Check a criterion against the baseline before using it to judge a change.**
+The memory manager's P2 was declared unfinished for a day and a half against
+"48 boots with no failure", a number no revision of this project has ever met -
+the machine has a pre-existing intermittent failure of roughly one boot in
+eight, so the criterion measured the background rather than the phase. One
+24-boot run of the parent commit settles it, and `scripts/dev/bisect-boot.sh`
+exists to make that cheap.
+
 **Read the CI log before theorising.** A hang I diagnosed twice from the wrong
 end was named outright in the CI output: glibc printed the failing assertion.
 
