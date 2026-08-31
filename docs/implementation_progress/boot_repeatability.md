@@ -68,6 +68,37 @@ Insisting on 48 boots surfaced three genuine concurrency defects that a 16-boot
 gate would have passed over. The mistake was in what the number was allowed to
 *conclude*, not in running it.
 
+## What the walk dump found (2026-08-31)
+
+A temporary probe printed the four entries of the page-table walk on any fatal
+not-present user fault. It answered the question the trap dump cannot:
+
+    va=0x8000001243 cr3=0x231f000 pml4e=0x040326e0 pdpte=0 pde=0 pte=0
+    stopped_at_level=1
+
+**The leaf is not missing - PML4 slot 1 is**, so the whole user window of a
+running process is gone. And the value sitting in that slot is not anything this
+code writes: the present bit is clear and bit 7 (PS) is set, which is illegal at
+that level. Read as data rather than as an entry,  is a pointer into
+the kernel image. The same shape appeared at three different cr3 values across
+boots (, , ).
+
+So a process page table is being freed and handed to some kernel allocation
+that writes a pointer into it, while a task still runs on that CR3.
+
+This also explains why every memory detector stayed silent through the hunt:
+they watch frames mapped as *leaves*, and a page table is not a leaf. The
+free-while-mapped check could not have caught this by construction.
+
+**One candidate was fixed and was not it.**  destroyed the outgoing
+address space unconditionally, while  has asked
+ since the wedge it was written for - so a threaded
+process that execs freed tables its siblings were still running on. That is a
+real defect and the fix is in (, asked by address
+space so exec and exit cannot answer differently), together with a leak in
+fork's error paths, which published a task slot as free without destroying the
+address space it had already created. Neither closed this signature.
+
 ## Next
 
 - Establish when this started. The nightly has never been reliably green, so the

@@ -3018,15 +3018,22 @@ static int hw_task_spawn_user(const unsigned char *elf, uint64_t len,
  * Must be called with g_sched_lock held: without it the answer can be stale by
  * the time it is acted on, which is the whole failure mode.
  */
-static int hw_aspace_still_shared(int me) {
-    const uint64_t *pml4 = g_tasks[me].proc.as.pml4;
+/* Does any live task other than `except` run on these tables?
+ *
+ * Asked by address space rather than by task, because exec needs the same
+ * question about tables it has *already* stopped using - and asking it through
+ * the task would look at the new address space, which is not the one about to
+ * be freed. Both callers share this so the two can never answer differently.
+ *
+ * The caller holds g_sched_lock. */
+static int hw_aspace_shared_by_other(const uint64_t *pml4, int except) {
     int i;
 
     if (pml4 == 0) {
         return 0;
     }
     for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
-        if (i == me || g_tasks[i].state == HW_TASK_FREE) {
+        if (i == except || g_tasks[i].state == HW_TASK_FREE) {
             continue;
         }
         /* A zombie is not running, but it has not been reaped either, and its
@@ -3038,6 +3045,18 @@ static int hw_aspace_still_shared(int me) {
     }
     return 0;
 }
+
+static int hw_aspace_still_shared(int me) {
+    const uint64_t *pml4 = g_tasks[me].proc.as.pml4;
+    int i;
+
+    if (pml4 == 0) {
+        return 0;
+    }
+    (void)i;
+    return hw_aspace_shared_by_other(pml4, me);
+}
+
 
 /* exit(): retire the calling task and switch to another runnable one. Called
  * from the syscall path, so it enters the next task directly and never returns
@@ -4944,11 +4963,17 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
 
     if (hw_aspace_create(&child->proc.as) != 0 ||
         hw_aspace_copy_user(&child->proc.as, &parent->proc.as) != 0) {
+        /* Give the tables back before the slot is published as reusable.
+         * Publishing first leaves an address space nothing will ever free -
+         * the next tenant overwrites the pointer - and it leaves a FREE slot
+         * naming live tables, which is a question the sharing test skips. */
+        hw_aspace_destroy(&child->proc.as);
         child->state = HW_TASK_FREE;
         return -VIBEOS_ENOMEM;
     }
     child->kstack_top = hw_alloc_kstack(&child->kstack_base, &child->kstack_pages);
     if (child->kstack_top == 0) {
+        hw_aspace_destroy(&child->proc.as);
         child->state = HW_TASK_FREE;
         return -VIBEOS_ENOMEM;
     }
@@ -5483,11 +5508,37 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
     }
     {
         vibeos_hw_aspace_t old_as = t->proc.as; /* reclaim after switching CR3 */
+        int shared;
+
         t->proc = np;
         t->cr3 = hw_proc_cr3(&t->proc);
         t->cr3_set_by = "execve";
         hw_write_cr3(t->cr3);
-        hw_aspace_destroy(&old_as);             /* old CR3 no longer active */
+
+        /* Only if nobody else is running in there.
+         *
+         * This used to free the old tables unconditionally, and a threaded
+         * process that execs shares them with its siblings: their PML4 went
+         * back to the allocator, was handed to some other allocation, and was
+         * written over while they were still executing. The symptom is a
+         * ring-3 instruction fetch that faults with cr2 equal to rip on a page
+         * the process was already running from, and a walk that stops at level
+         * one with a PML4 entry holding a kernel pointer instead of a table.
+         *
+         * hw_task_exit has asked this question since the wedge it was written
+         * for; exec never did, which is the whole defect. Not destroying is
+         * safe: the last sibling to exit takes the same path and frees them
+         * then. */
+        hw_spin_lock(&g_sched_lock);
+        shared = hw_aspace_shared_by_other(old_as.pml4, (int)(t - g_tasks));
+        hw_spin_unlock(&g_sched_lock);
+
+        if (shared) {
+            HW_TASK_MARK((int)(t - g_tasks), aspace_killed_by,
+                         "execve_kept_shared");
+        } else {
+            hw_aspace_destroy(&old_as);         /* old CR3 no longer active */
+        }
     }
 
     for (k = 0; k < (uint32_t)sizeof(*frame); k++) {
