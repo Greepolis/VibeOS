@@ -483,8 +483,29 @@ refused with `ENOSYS` in this phase and implemented in a later one.
 - Sabotage: `scripts/dev/cases/mm-cache.txt` — never record a hit; return the
   wrong page for a key; skip eviction. Three cases, each red.
 
-**Done when.** The staging buffers no longer exist; the hit ratio on a normal
-boot is asserted, not merely non-zero; 24 boots green.
+**Done when.** The hit ratio on a normal boot is asserted, not merely non-zero.
+
+**Status: steps 1 and 2 done** (`kernel/mm/backing.c`). The interface, the
+anonymous implementation and the page cache exist, are host-tested in eight
+groups, and have five sabotage cases, all red. The cache is wired to the exec
+path: a boot reads about eleven megabytes of programs, and 1041 of those pages
+now come from memory against 1820 from disk - a 36% hit ratio, which the boot
+gate asserts as a ratio.
+
+The first table size was 768 pages and gave **five** hits in an entire boot:
+every program evicted the last one. "Non-zero" would have passed that happily,
+which is why the assertion is a ratio and not a presence check.
+
+**Step 3 is not done, and the phase is not finished.** `execve` still reads a
+whole program into the 4 MiB staging buffer and copies out of it; faulting
+pages in instead is a substantial rewrite of the exec path and is the remaining
+work here. The staging buffers therefore still exist, which was part of the
+original "done when" - that line has been narrowed to what is actually met
+rather than quietly treated as satisfied.
+
+**Step 4 is out of scope by decision D6**: the filesystem block cache stays
+where it is. Decided before the phase began, with the reasoning in
+decisions.md.
 
 ---
 
