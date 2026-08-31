@@ -79,9 +79,9 @@ not-present user fault. It answered the question the trap dump cannot:
 **The leaf is not missing - PML4 slot 1 is**, so the whole user window of a
 running process is gone. And the value sitting in that slot is not anything this
 code writes: the present bit is clear and bit 7 (PS) is set, which is illegal at
-that level. Read as data rather than as an entry,  is a pointer into
-the kernel image. The same shape appeared at three different cr3 values across
-boots (, , ).
+that level. Read as data rather than as an entry, `0x040326e0` is a pointer
+into the kernel image. The same shape appeared at three different cr3 values
+across boots (`0x040326e0`, `0x040336c0`, `0x040336f0`).
 
 So a process page table is being freed and handed to some kernel allocation
 that writes a pointer into it, while a task still runs on that CR3.
@@ -90,12 +90,13 @@ This also explains why every memory detector stayed silent through the hunt:
 they watch frames mapped as *leaves*, and a page table is not a leaf. The
 free-while-mapped check could not have caught this by construction.
 
-**One candidate was fixed and was not it.**  destroyed the outgoing
-address space unconditionally, while  has asked
- since the wedge it was written for - so a threaded
-process that execs freed tables its siblings were still running on. That is a
-real defect and the fix is in (, asked by address
-space so exec and exit cannot answer differently), together with a leak in
+**One candidate was fixed and was not it.** `execve` destroyed the
+outgoing address space unconditionally, while `hw_task_exit` has asked
+`hw_aspace_still_shared` since the wedge it was written for - so a
+threaded process that execs freed tables its siblings were still running on.
+That is a real defect and the fix is in (`hw_aspace_shared_by_other`,
+asked by address space so exec and exit cannot answer differently), together
+with a leak in
 fork's error paths, which published a task slot as free without destroying the
 address space it had already created. Neither closed this signature.
 
