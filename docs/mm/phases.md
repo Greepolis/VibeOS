@@ -496,6 +496,11 @@ The first table size was 768 pages and gave **five** hits in an entire boot:
 every program evicted the last one. "Non-zero" would have passed that happily,
 which is why the assertion is a ratio and not a presence check.
 
+**Step 3 is blocked on the loader rewrite** - see [docs/exec/](../exec/README.md),
+phase X-P2, which is where it will actually land. It cannot be done here:
+faulting pages in means execve stops copying out of a staging buffer, and that
+is a rewrite of the exec path rather than a change to the cache.
+
 **Step 3 is not done, and the phase is not finished.** `execve` still reads a
 whole program into the 4 MiB staging buffer and copies out of it; faulting
 pages in instead is a substantial rewrite of the exec path and is the remaining
