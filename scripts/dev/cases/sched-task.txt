@@ -1,0 +1,41 @@
+### a running task can be released, which is the silent wedge
+--- old
+    /* RUNNING */   {  0,   1,    0,   1,   1,    0 },
++++ new
+    /* RUNNING */   {  1,   1,    0,   1,   1,    0 },
+
+### a zombie can be made runnable again
+--- old
+    /* ZOMBIE  */   {  1,   0,    0,   0,   0,    0 },
++++ new
+    /* ZOMBIE  */   {  1,   1,    0,   0,   0,    0 },
+
+### an illegal transition is performed anyway, and only counted
+--- old
+        vibeos_task_stats()->illegal_transition++;
+        return -1;
++++ new
+        vibeos_task_stats()->illegal_transition++;
+
+### the tenancy is bumped on release instead of on claim
+--- old
+    if (from == VIBEOS_TASK_FREE && to == VIBEOS_TASK_SETUP) {
+        g_generation[slot]++;
+    }
++++ new
+    if (from == VIBEOS_TASK_ZOMBIE && to == VIBEOS_TASK_FREE) {
+        g_generation[slot]++;
+    }
+
+### a reference to a released slot is accepted at the right generation
+--- old
+    return g_state[ref.slot] != (uint8_t)VIBEOS_TASK_FREE;
++++ new
+    return 1;
+
+# The fourth case is the one worth explaining. Bumping the generation on
+# release looks equivalent and is not: the freed slot then already carries the
+# number its next occupant will have, so a reference taken before the release
+# validates against the new tenant - which is precisely the failure the
+# generation exists to catch. It is the kind of mistake that reads as correct
+# and is testable in one line.

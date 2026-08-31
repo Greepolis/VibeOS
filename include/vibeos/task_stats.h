@@ -38,6 +38,7 @@ typedef struct vibeos_task_stats {
      * still named its task, and a task scheduled onto page tables somebody
      * else had freed. They are counters rather than panics because a count can
      * be asserted across a whole boot, and a panic can only be met once. */
+    uint64_t illegal_transition; /* a state change the table does not allow  */
     uint64_t use_after_publish;  /* a write to a slot already published FREE  */
     uint64_t tenancy_mismatch;   /* a reference whose generation had moved on */
     uint64_t cr3_without_owner;  /* a task about to run on unowned tables     */

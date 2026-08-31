@@ -842,15 +842,17 @@ def main():
             # slot written to after being published as reusable, a stale
             # reference used as if it still named its task, and a task about to
             # run on page tables somebody else had freed.
-            mt = re.search(r"\[TASKS\] MUSTBEZERO use_after_publish=0x([0-9a-f]{16}) "
+            mt = re.search(r"\[TASKS\] MUSTBEZERO illegal_transition=0x([0-9a-f]{16}) "
+                           r"use_after_publish=0x([0-9a-f]{16}) "
                            r"tenancy_mismatch=0x([0-9a-f]{16}) "
                            r"cr3_without_owner=0x([0-9a-f]{16})", text)
             if mt is None:
                 problems.append("tasks_counters_missing")
             else:
-                for name, group in (("use_after_publish", 1),
-                                    ("tenancy_mismatch", 2),
-                                    ("cr3_without_owner", 3)):
+                for name, group in (("illegal_transition", 1),
+                                    ("use_after_publish", 2),
+                                    ("tenancy_mismatch", 3),
+                                    ("cr3_without_owner", 4)):
                     value = int(mt.group(group), 16)
                     if value != 0:
                         problems.append(f"task_{name}={value}")

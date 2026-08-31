@@ -8678,6 +8678,7 @@ int test_frame(void);
 int test_vmspace(void);
 int test_vma(void);
 int test_backing(void);
+int test_task(void);
 
 int main(void) {
     int failures = 0;
@@ -8690,6 +8691,7 @@ int main(void) {
     RUN_TEST(test_vmspace);
     RUN_TEST(test_vma);
     RUN_TEST(test_backing);
+    RUN_TEST(test_task);
     RUN_TEST(test_pmm);
     RUN_TEST(test_pmm_reserve);
     RUN_TEST(test_blockcache_hits);

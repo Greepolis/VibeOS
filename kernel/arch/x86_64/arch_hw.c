@@ -452,6 +452,7 @@ extern int vibeos_x86_64_virtio_blk_write(uint64_t sector, const void *buf);
 #include "vibeos/vma.h"
 #include "vibeos/backing.h"
 #include "vibeos/task_stats.h"
+#include "vibeos/task.h"
 
 /* The counters live in one structure now (plan phase P0), so the console, the
  * boot gate and a panic all read the same numbers. The names below keep the
@@ -2582,14 +2583,16 @@ static void hw_pipe_release(hw_fd_t *f);
  * what it buys is the difference between a theory and a name. */
 #define HW_TASK_MARK(idx, field, where) (g_tasks[idx].field = (where))
 
-enum {
-    HW_TASK_FREE = 0,
-    HW_TASK_READY = 1,
-    HW_TASK_RUNNING = 2,
-    HW_TASK_ZOMBIE = 3,
-    HW_TASK_BLOCKED = 4,  /* waiting for an event; not schedulable until woken */
-    HW_TASK_RESERVED = 5  /* slot claimed by a creator that is still filling it */
-};
+/* The architecture's names for the portable states, so one transition table
+ * governs both and there is no second enum to drift. RESERVED was this file's
+ * word for what the plan calls SETUP; the name stays because forty call sites
+ * use it and the value is what matters. */
+#define HW_TASK_FREE     VIBEOS_TASK_FREE
+#define HW_TASK_READY    VIBEOS_TASK_READY
+#define HW_TASK_RUNNING  VIBEOS_TASK_RUNNING
+#define HW_TASK_ZOMBIE   VIBEOS_TASK_ZOMBIE
+#define HW_TASK_BLOCKED  VIBEOS_TASK_BLOCKED
+#define HW_TASK_RESERVED VIBEOS_TASK_SETUP
 
 extern void vibeos_x86_64_task_enter(vibeos_x86_64_isr_frame_t *task);
 extern const unsigned char vibeos_user_task_elf[];
@@ -2810,6 +2813,44 @@ int vibeos_task_describe(uint32_t slot, vibeos_task_desc_t *out) {
     return 0;
 }
 
+/* The only function that changes a task's state. Phase S-P1 of docs/sched/.
+ *
+ * It asks the portable transition table first, so an illegal change is refused
+ * and counted rather than performed - and the two most expensive defects this
+ * kernel has had were illegal changes that nothing refused: a slot released
+ * while its task was still on a CPU, and a dying task announced before its
+ * address space was gone.
+ *
+ * Both the layer's copy and this file's field are written here, in one place,
+ * so they cannot disagree. The field stays because forty reads use it and
+ * moving storage is S-P3's work; what has moved already is the decision about
+ * whether the change is allowed at all.
+ *
+ * `why` is kept and printed by `tasks`. Three fields in this struct exist
+ * because somebody once needed exactly that and did not have it. */
+static int hw_task_set_state(int slot, vibeos_task_state_t to, const char *why) {
+    if (slot < 0 || slot >= (int)VIBEOS_HW_MAX_TASKS) {
+        return -1;
+    }
+    if (vibeos_task_transition((uint32_t)slot, to, why) != 0) {
+        vibeos_x86_64_serial_lock();
+        vibeos_x86_64_serial_puts("[TASKS] ILLEGAL slot=0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)slot);
+        vibeos_x86_64_serial_puts(" from=");
+        vibeos_x86_64_serial_puts(vibeos_task_state_name(
+            (vibeos_task_state_t)g_tasks[slot].state));
+        vibeos_x86_64_serial_puts(" to=");
+        vibeos_x86_64_serial_puts(vibeos_task_state_name(to));
+        vibeos_x86_64_serial_puts(" by=");
+        vibeos_x86_64_serial_puts(why ? why : "-");
+        vibeos_x86_64_serial_puts("\n");
+        vibeos_x86_64_serial_unlock();
+        return -1;
+    }
+    g_tasks[slot].state = (int)to;
+    return 0;
+}
+
 static int hw_task_alloc(void) {
     int i;
     hw_spin_lock(&g_sched_lock);
@@ -2855,7 +2896,7 @@ static int hw_task_alloc(void) {
             g_tasks[i].ran_once = 0;
             g_tasks[i].service_id = 0;
             g_tasks[i].clear_child_tid = 0;
-            g_tasks[i].state = HW_TASK_RESERVED;
+            (void)hw_task_set_state(i, HW_TASK_RESERVED, __func__);
             vibeos_task_stats()->created++;
             hw_spin_unlock(&g_sched_lock);
             return i;
@@ -2869,7 +2910,7 @@ static int hw_task_alloc(void) {
 /* Give a reserved slot back after a failed creation. */
 static void hw_task_release(int i) {
     if (i >= 0) {
-        g_tasks[i].state = HW_TASK_FREE;
+        (void)hw_task_set_state(i, HW_TASK_FREE, __func__);
     }
 }
 
@@ -2979,7 +3020,7 @@ static void hw_keyboard_wake(void) {
     for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
         if (g_tasks[i].state == HW_TASK_BLOCKED && g_tasks[i].wait_input) {
             g_tasks[i].wait_input = 0;
-            g_tasks[i].state = HW_TASK_READY;
+            (void)hw_task_set_state(i, HW_TASK_READY, __func__);
             HW_TASK_MARK(i, ready_by, "keyboard_wake");
         }
     }
@@ -3109,7 +3150,7 @@ static void hw_schedule(vibeos_x86_64_isr_frame_t *frame) {
     if (cur >= 0) {
         g_tasks[cur].ctx = *frame;
         if (g_tasks[cur].state == HW_TASK_RUNNING) {
-            g_tasks[cur].state = HW_TASK_READY;
+            (void)hw_task_set_state(cur, HW_TASK_READY, __func__);
             HW_TASK_MARK(cur, ready_by, "preempted");
         }
         /* Only now is it safe for another core to take it: its context is
@@ -3117,7 +3158,7 @@ static void hw_schedule(vibeos_x86_64_isr_frame_t *frame) {
         g_tasks[cur].on_cpu = 0;
     }
     cpu->current_task = next;
-    g_tasks[next].state = HW_TASK_RUNNING;
+    (void)hw_task_set_state(next, HW_TASK_RUNNING, __func__);
     g_tasks[next].on_cpu = 1;
     *frame = g_tasks[next].ctx;
     hw_spin_unlock(&g_sched_lock);
@@ -3145,7 +3186,7 @@ static int hw_task_adopt_kernel(void) {
     if (i < 0) {
         return -1;
     }
-    g_tasks[i].state = HW_TASK_RUNNING;
+    (void)hw_task_set_state(i, HW_TASK_RUNNING, __func__);
     g_tasks[i].on_cpu = 1;          /* it is this CPU, right now */
     g_tasks[i].is_user = 0;
     g_tasks[i].pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
@@ -3196,7 +3237,7 @@ static int hw_task_create_idle(hw_cpu_t *cpu) {
     }
     g_tasks[i].cr3 = (uint64_t)(uintptr_t)&g_pml4[0];
     HW_TASK_MARK(i, cr3_set_by, "create_idle");
-    g_tasks[i].state = HW_TASK_READY;
+    (void)hw_task_set_state(i, HW_TASK_READY, __func__);
     HW_TASK_MARK(i, ready_by, "create_idle");
     g_tasks[i].is_user = 0;
     g_tasks[i].is_idle = 1;
@@ -3245,7 +3286,7 @@ static int hw_task_spawn_user(const unsigned char *elf, uint64_t len,
             g_tasks[i].sig_mask[sg] = 0;
         }
     }
-    g_tasks[i].state = HW_TASK_READY;
+    (void)hw_task_set_state(i, HW_TASK_READY, __func__);
     g_tasks[i].is_user = 1;
     g_tasks[i].pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
     g_tasks[i].tgid = g_tasks[i].pid;
@@ -3430,7 +3471,7 @@ static void hw_task_exit(uint64_t code) {
         g_tasks[dying].on_cpu = 0;
     }
     cpu->current_task = next;
-    g_tasks[next].state = HW_TASK_RUNNING;
+    (void)hw_task_set_state(next, HW_TASK_RUNNING, __func__);
     g_tasks[next].on_cpu = 1;
     hw_spin_unlock(&g_sched_lock);
     hw_task_load_cpu_state(next);
@@ -3472,11 +3513,11 @@ static void hw_task_exit(uint64_t code) {
     if (dying >= 0) {
         hw_spin_lock(&g_sched_lock);
         g_tasks[dying].cr3 = 0;
-        g_tasks[dying].state = HW_TASK_ZOMBIE;
+        (void)hw_task_set_state(dying, HW_TASK_ZOMBIE, __func__);
         for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
             if (g_tasks[i].state == HW_TASK_BLOCKED &&
                 g_tasks[i].pid == g_tasks[dying].ppid) {
-                g_tasks[i].state = HW_TASK_READY;
+                (void)hw_task_set_state(i, HW_TASK_READY, __func__);
                 HW_TASK_MARK(i, ready_by, "parent_woken_by_child_exit");
             }
         }
@@ -4109,7 +4150,7 @@ static long hw_sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
         }
         if (g_current_task >= 0) {
             g_tasks[g_current_task].wait_input = 1;
-            g_tasks[g_current_task].state = HW_TASK_BLOCKED;
+            (void)hw_task_set_state(g_current_task, HW_TASK_BLOCKED, __func__);
         }
         __asm__ __volatile__("sti; hlt" ::: "memory");
     }
@@ -5276,13 +5317,13 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
          * the next tenant overwrites the pointer - and it leaves a FREE slot
          * naming live tables, which is a question the sharing test skips. */
         hw_aspace_destroy(&child->proc.as);
-        child->state = HW_TASK_FREE;
+        (void)hw_task_set_state((int)(child - g_tasks), HW_TASK_FREE, __func__);
         return -VIBEOS_ENOMEM;
     }
     child->kstack_top = hw_alloc_kstack(&child->kstack_base, &child->kstack_pages);
     if (child->kstack_top == 0) {
         hw_aspace_destroy(&child->proc.as);
-        child->state = HW_TASK_FREE;
+        (void)hw_task_set_state((int)(child - g_tasks), HW_TASK_FREE, __func__);
         return -VIBEOS_ENOMEM;
     }
     /* The child's regions are its own from the first instruction. Copying the
@@ -5293,7 +5334,7 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
     child->proc.vmas.count = 0;
     if (vibeos_vma_clone(&child->proc.vmas, &parent->proc.vmas) != 0) {
         hw_aspace_destroy(&child->proc.as);
-        child->state = HW_TASK_FREE;
+        (void)hw_task_set_state((int)(child - g_tasks), HW_TASK_FREE, __func__);
         return -VIBEOS_ENOMEM;
     }
     child->proc.entry = parent->proc.entry;
@@ -5394,7 +5435,7 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
         vibeos_x86_64_serial_unlock();
         hw_panic("two owners filled one task slot");
     }
-    child->state = HW_TASK_READY;
+    (void)hw_task_set_state((int)(child - g_tasks), HW_TASK_READY, __func__);
     child->ready_by = "fork";
     return (long)child->pid;
 }
@@ -5446,7 +5487,7 @@ static long hw_sys_clone_thread(const vibeos_x86_64_isr_frame_t *frame,
 
     child->kstack_top = hw_alloc_kstack(&child->kstack_base, &child->kstack_pages);
     if (child->kstack_top == 0) {
-        child->state = HW_TASK_FREE;
+        (void)hw_task_set_state((int)(child - g_tasks), HW_TASK_FREE, __func__);
         return -VIBEOS_ENOMEM;
     }
 
@@ -5544,7 +5585,7 @@ static long hw_sys_clone_thread(const vibeos_x86_64_isr_frame_t *frame,
     if (child->alloc_seq != my_tenancy || child->state != HW_TASK_RESERVED) {
         hw_panic("two owners filled one task slot");
     }
-    child->state = HW_TASK_READY;
+    (void)hw_task_set_state((int)(child - g_tasks), HW_TASK_READY, __func__);
     child->ready_by = "clone_thread";
     hw_log(VIBEOS_LOG_DEBUG, 8u, (uint64_t)child->pid, child->fs_base,
            "thread created (a1 = its TLS base)");
@@ -5606,7 +5647,7 @@ static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr) {
 
                 t->kstack_base = 0;
                 t->kstack_pages = 0;
-                t->state = HW_TASK_FREE; /* reaped; nothing may touch t now */
+                (void)hw_task_set_state((int)(t - g_tasks), HW_TASK_FREE, __func__); /* reaped; nothing may touch t now */
                 hw_spin_unlock(&g_sched_lock);
                 hw_free_kstack_pages(kbase, kpages);
                 __asm__ __volatile__("sti");
@@ -5627,7 +5668,7 @@ static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr) {
             return -VIBEOS_ECHILD;
         }
         /* Block until a child exit sets us READY again (see hw_task_exit). */
-        g_tasks[g_current_task].state = HW_TASK_BLOCKED;
+        (void)hw_task_set_state(g_current_task, HW_TASK_BLOCKED, __func__);
         hw_spin_unlock(&g_sched_lock);
         __asm__ __volatile__("sti; hlt" ::: "memory");
     }
@@ -6169,7 +6210,7 @@ static int hw_signal_raise(int task_index, uint32_t sig) {
     }
     if (sig == VIBEOS_SIGCONT && g_tasks[task_index].signal_stopped) {
         g_tasks[task_index].signal_stopped = 0;
-        g_tasks[task_index].state = HW_TASK_READY;
+        (void)hw_task_set_state(task_index, HW_TASK_READY, __func__);
         HW_TASK_MARK(task_index, ready_by, "sigcont");
     }
     /* SIGKILL and SIGSTOP cannot be caught or blocked. Honouring a handler for
@@ -6182,7 +6223,7 @@ static int hw_signal_raise(int task_index, uint32_t sig) {
     /* A task asleep in read() has to wake up to notice. */
     if (g_tasks[task_index].state == HW_TASK_BLOCKED) {
         g_tasks[task_index].wait_input = 0;
-        g_tasks[task_index].state = HW_TASK_READY;
+        (void)hw_task_set_state(task_index, HW_TASK_READY, __func__);
         HW_TASK_MARK(task_index, ready_by, "signal_wake");
     }
     return 0;
@@ -6780,7 +6821,7 @@ static long hw_futex_wake(uint64_t addr, uint32_t count) {
         g_futex_waiters[i].woken = 1;
         hw_spin_lock(&g_sched_lock);
         if (g_tasks[g_futex_waiters[i].task].state == HW_TASK_BLOCKED) {
-            g_tasks[g_futex_waiters[i].task].state = HW_TASK_READY;
+            (void)hw_task_set_state(g_futex_waiters[i].task, HW_TASK_READY, __func__);
             HW_TASK_MARK(g_futex_waiters[i].task, ready_by, "futex_wake");
         }
         hw_spin_unlock(&g_sched_lock);
@@ -6825,7 +6866,7 @@ static long hw_futex_wait(uint64_t addr, uint32_t expected) {
     g_futex_waiters[slot].woken = 0;
 
     hw_spin_lock(&g_sched_lock);
-    g_tasks[me].state = HW_TASK_BLOCKED;
+    (void)hw_task_set_state(me, HW_TASK_BLOCKED, __func__);
     hw_spin_unlock(&g_sched_lock);
     hw_spin_unlock(&g_futex_lock);
     hw_log(VIBEOS_LOG_DEBUG, 22u, addr,
@@ -6941,7 +6982,7 @@ static int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame) {
         if (handler == SIG_DFL_ADDR) {
             if (sig == VIBEOS_SIGSTOP) {
                 t->signal_stopped = 1;
-                t->state = HW_TASK_BLOCKED;
+                (void)hw_task_set_state((int)(t - g_tasks), HW_TASK_BLOCKED, __func__);
                 HW_TASK_MARK(g_current_task, ready_by, "sigstop");
                 vibeos_x86_64_serial_puts("[SIG] task stopped by SIGSTOP\n");
                 return 0;
@@ -7829,7 +7870,7 @@ void vibeos_x86_64_ap_main(void) {
         }
     }
     cpu->current_task = idle;
-    g_tasks[idle].state = HW_TASK_RUNNING;
+    (void)hw_task_set_state(idle, HW_TASK_RUNNING, __func__);
     g_tasks[idle].on_cpu = 1;       /* this core is about to enter it */
     hw_set_kernel_stack(g_tasks[idle].kstack_top);
 
@@ -8233,6 +8274,8 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
 
     /* From here the system is scheduled: the kernel itself becomes a task and
      * user tasks are preempted alongside it. */
+    /* The task table's state machine, before anything can claim a slot. */
+    (void)vibeos_task_table_init((uint32_t)VIBEOS_HW_MAX_TASKS);
     hw_pmm_bringup(boot_info);
     hw_boot_stage("physical_memory");
 

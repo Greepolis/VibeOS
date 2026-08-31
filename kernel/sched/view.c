@@ -13,6 +13,7 @@
  */
 
 #include "vibeos/task_stats.h"
+#include "vibeos/task.h"
 #include "vibeos/arch_x86_64.h"
 
 static void view_hex(uint64_t v) {
@@ -74,6 +75,8 @@ void vibeos_task_print_table(void) {
         view_str(d.ready_by);
         vibeos_x86_64_serial_puts(" aspace=");
         view_str(d.aspace_killed_by);
+        vibeos_x86_64_serial_puts(" state_by=");
+        view_str(vibeos_task_last_why(d.slot));
         if (d.exe[0]) {
             vibeos_x86_64_serial_puts(" exe=");
             view_str(d.exe);
@@ -107,7 +110,9 @@ void vibeos_task_print_stats(void) {
     /* The three that must be zero, on their own line and last, so the eye
      * lands on them - and so the boot gate can match one pattern. */
     vibeos_x86_64_serial_lock();
-    vibeos_x86_64_serial_puts("[TASKS] MUSTBEZERO use_after_publish=0x");
+    vibeos_x86_64_serial_puts("[TASKS] MUSTBEZERO illegal_transition=0x");
+    view_hex(s->illegal_transition);
+    vibeos_x86_64_serial_puts(" use_after_publish=0x");
     view_hex(s->use_after_publish);
     vibeos_x86_64_serial_puts(" tenancy_mismatch=0x");
     view_hex(s->tenancy_mismatch);
