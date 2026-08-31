@@ -105,6 +105,21 @@ void vibeos_frame_get(uint64_t phys);
  * leak rather than corrupt, which is the direction that can be measured. */
 int vibeos_frame_put(uint64_t phys);
 
+/* The same, recording who released it inside the freed page.
+ *
+ * The tag must be written by this layer, under the lock that also guards
+ * allocation. Written by the caller afterwards it is a use-after-free: between
+ * the release and the write, another core can allocate the frame and start
+ * using it - and word 1 of a page is slot 1 of a PML4, the user window. That is
+ * not hypothetical. It corrupted a live address space and presented as a
+ * process faulting on an instruction fetch inside its own code, with the whole
+ * user window gone and a kernel string pointer where a page-directory pointer
+ * belonged.
+ *
+ * `tag` should be a string literal in the kernel image, so that a corrupted
+ * page can still say which function last let go of it. */
+int vibeos_frame_put_why(uint64_t phys, const void *tag);
+
 /* Queries, for the copy-on-write path and for inspection. An unknown frame
  * reports zero owners and state FREE. */
 uint32_t vibeos_frame_owners(uint64_t phys);

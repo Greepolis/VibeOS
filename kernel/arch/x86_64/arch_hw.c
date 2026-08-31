@@ -1491,14 +1491,17 @@ static void hw_free_page_why(void *p, const char *why) {
      * the allocation gave them is the only one and this frees it. That is the
      * D9 contract; a caller that allocated *in order to map* drops its own
      * reference at the mapping instead and never comes through here. */
-    if (hw_page_put(phys)) {
-        /* Who freed it, in the page itself. The layer has just poisoned all of
-         * it; word 1 is written afterwards on purpose and is the one word the
-         * poison check never probes, so a corrupted page still says which
-         * function last released it. That tag is what turned the fourth
-         * investigation of the premature-free family into a one-line answer. */
-        ((uint64_t *)(uintptr_t)phys)[1] = (uint64_t)(uintptr_t)why;
-    }
+    /* The tag goes in through the layer, which writes it under the lock that
+     * also guards allocation.
+     *
+     * Writing it here, after the release, was a use-after-free that took a day
+     * to find: between the put and the store another core can allocate the
+     * frame, and word 1 of a page is slot 1 of a PML4 - the user window. A live
+     * process then faulted on an instruction fetch inside its own code, with
+     * its whole user window replaced by a pointer to a string literal. The
+     * comment that used to be here reasoned carefully about the poison check
+     * and not at all about the frame being reallocated. */
+    (void)vibeos_frame_put_why(phys, why);
 }
 
 #define hw_free_page(p) hw_free_page_why((p), __func__)

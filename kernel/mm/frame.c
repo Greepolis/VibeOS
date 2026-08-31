@@ -325,6 +325,10 @@ void vibeos_frame_get_locked(uint64_t phys) {
      * one freed early is found three programs later. */
 }
 
+/* Set while a release is in progress, so the poison fill can leave the tag
+ * behind without a second pass over the page. */
+static const void *g_put_tag;
+
 int vibeos_frame_put_locked(uint64_t phys) {
     uint32_t index = frame_index(phys);
 
@@ -343,6 +347,19 @@ int vibeos_frame_put_locked(uint64_t phys) {
         return 0;
     }
     frame_fill(index, FRAME_POISON);  /* released poisoned (I4) */
+    if (g_put_tag && g_map) {
+        /* Who released it, in the page itself, written here rather than by the
+         * caller. A caller writing it after the release is a use-after-free:
+         * the frame can be allocated by another core in between, and word 1 is
+         * slot 1 of a PML4. Under this lock, allocation cannot intervene.
+         *
+         * Word 1 is chosen because the poison check never probes it, so the
+         * tag does not read as corruption when the frame is handed out again. */
+        uint64_t *w = (uint64_t *)g_map(frame_addr(index));
+        if (w) {
+            w[1] = (uint64_t)(uintptr_t)g_put_tag;
+        }
+    }
     g_table[index].flags |= (uint8_t)VIBEOS_FRAME_WAS_FREED;
     frame_push_free(index);
     vibeos_mm_stats()->frames_free = g_free_count;
@@ -424,6 +441,21 @@ void vibeos_frame_get(uint64_t phys) {
     frame_lock();
     vibeos_frame_get_locked(phys);
     frame_unlock();
+}
+
+int vibeos_frame_put_why(uint64_t phys, const void *tag) {
+    int r;
+
+    frame_lock();
+    g_put_tag = tag;
+    r = vibeos_frame_put_locked(phys);
+    g_put_tag = 0;
+    frame_unlock();
+
+    if (r && g_watch) {
+        g_watch(phys);
+    }
+    return r;
 }
 
 int vibeos_frame_put(uint64_t phys) {
