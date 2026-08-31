@@ -24,17 +24,24 @@ void vibeos_task_stats_reset(void) {
     }
 }
 
-/* Weak defaults, so the portable kernel and the host tests link without the
- * architecture layer. A machine with no task table answers "no slots" rather
- * than failing to build - and answering honestly is better than a stub that
- * invents a plausible table. */
-__attribute__((weak)) uint32_t vibeos_task_slots(void) {
-    return 0;
+/* The view's data source, registered by whoever has a task table.
+ *
+ * Defined here rather than as weak symbols: see task_stats.h. A machine with
+ * nothing registered answers "no slots", which the view prints honestly
+ * instead of inventing a plausible table. */
+static vibeos_task_slots_fn g_slots_fn;
+static vibeos_task_describe_fn g_describe_fn;
+
+void vibeos_task_view_set_source(vibeos_task_slots_fn slots,
+                                 vibeos_task_describe_fn describe) {
+    g_slots_fn = slots;
+    g_describe_fn = describe;
 }
 
-__attribute__((weak)) int vibeos_task_describe(uint32_t slot,
-                                               vibeos_task_desc_t *out) {
-    (void)slot;
-    (void)out;
-    return -1;
+uint32_t vibeos_task_slots(void) {
+    return g_slots_fn ? g_slots_fn() : 0u;
+}
+
+int vibeos_task_describe(uint32_t slot, vibeos_task_desc_t *out) {
+    return g_describe_fn ? g_describe_fn(slot, out) : -1;
 }

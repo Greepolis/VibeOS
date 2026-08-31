@@ -177,6 +177,15 @@ stayed green, because the line was collected into the summary and never
 asserted on. It is asserted now, and the assertion was confirmed to go red by
 removing the check it protects.
 
+**A weak symbol only works in the same file as its caller.** The Windows CI
+job builds the portable core with mingw, and PE/COFF does not resolve a weak
+definition living in a different object from the code that calls it: the Linux
+build linked, the Windows one failed with . Every weak stub
+that works here - in , ,  - happens to sit in the
+same translation unit as its caller, which is why the pattern looked safe. Use
+a registration function instead, as  and
+ do; it is portable and says who supplies what.
+
 **Definition order bites repeatedly.** This is one 5000-line C file; a helper
 used above its definition compiles as an implicit declaration and then fails
 with a confusing "static declaration follows non-static declaration".

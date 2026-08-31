@@ -453,6 +453,7 @@ extern int vibeos_x86_64_virtio_blk_write(uint64_t sector, const void *buf);
 #include "vibeos/backing.h"
 #include "vibeos/task_stats.h"
 #include "vibeos/task.h"
+#include "vibeos/runq.h"
 
 /* The counters live in one structure now (plan phase P0), so the console, the
  * boot gate and a panic all read the same numbers. The names below keep the
@@ -2780,11 +2781,11 @@ static const char *hw_task_state_name(int state) {
     }
 }
 
-uint32_t vibeos_task_slots(void) {
+static uint32_t hw_task_slots(void) {
     return (uint32_t)VIBEOS_HW_MAX_TASKS;
 }
 
-int vibeos_task_describe(uint32_t slot, vibeos_task_desc_t *out) {
+static int hw_task_describe(uint32_t slot, vibeos_task_desc_t *out) {
     const hw_task_t *t;
     uint32_t i;
 
@@ -2918,22 +2919,37 @@ static void hw_task_release(int i) {
  * RUNNING one is owned by some core (possibly another), so on SMP it must never
  * be picked twice. Idle tasks are skipped unless nothing else is available.
  * Returns -1 when the caller should simply keep running what it has. */
-static int hw_pick_next(hw_cpu_t *cpu) {
-    int n;
-    int cur = cpu->current_task;
-    int start = (cur < 0) ? 0 : cur;
+/* Is this slot something `cpu` may run?
+ *
+ * The one thing the run queue cannot answer for itself, and deliberately so:
+ * the state machine is the single source of truth about what READY means, and
+ * a queue that kept its own opinion would be a second one. An idle task is
+ * excluded because it is the fallback, not a candidate; a task already on a
+ * CPU is excluded because two cores running one task is a defect this kernel
+ * has had. */
+static int hw_task_runnable(void *ctx, uint32_t slot, uint32_t cpu) {
+    (void)ctx;
+    (void)cpu;
+    if (slot >= (uint32_t)VIBEOS_HW_MAX_TASKS) {
+        return 0;
+    }
+    return vibeos_task_state(slot) == VIBEOS_TASK_READY &&
+           !g_tasks[slot].is_idle && !g_tasks[slot].on_cpu;
+}
 
-    for (n = 1; n <= VIBEOS_HW_MAX_TASKS; n++) {
-        int i = (start + n) % VIBEOS_HW_MAX_TASKS;
-        if (g_tasks[i].state == HW_TASK_READY && !g_tasks[i].is_idle &&
-            !g_tasks[i].on_cpu) {
-            return i;
-        }
-    }
-    if (cur >= 0 && g_tasks[cur].state == HW_TASK_RUNNING) {
-        return -1;  /* still runnable and nothing better: no switch */
-    }
-    return cpu->idle_task;  /* current task blocked/died: fall back to idle */
+static vibeos_runq_t g_runq;
+
+/* Now a wrapper. The scan, the cursor and the idle fallback are in
+ * kernel/sched/runq.c, where "two CPUs never pick the same slot" is a unit test
+ * rather than a boot somebody hopes goes wrong.
+ *
+ * One behaviour changed in the move, and it is a fix: the old scan started from
+ * the *current* task, which is fair while something is running and degenerates
+ * when the current task is idle - the search then begins at the same place
+ * every time and the high-numbered slots wait behind the low ones. The queue
+ * keeps a cursor per CPU instead. */
+static int hw_pick_next(hw_cpu_t *cpu) {
+    return vibeos_runq_pick(&g_runq, (uint32_t)cpu->index, cpu->current_task);
 }
 
 /* Control-C from the console.
@@ -3246,6 +3262,9 @@ static int hw_task_create_idle(hw_cpu_t *cpu) {
     g_tasks[i].pgid = g_tasks[i].pid;
     g_tasks[i].sid = g_tasks[i].pid;
     cpu->idle_task = i;
+    /* The queue needs to know the fallback too, or a CPU with nothing runnable
+     * is told to keep running a task that has stopped. */
+    vibeos_runq_set_idle(&g_runq, (uint32_t)cpu->index, i);
     return i;
 }
 
@@ -8276,6 +8295,9 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
      * user tasks are preempted alongside it. */
     /* The task table's state machine, before anything can claim a slot. */
     (void)vibeos_task_table_init((uint32_t)VIBEOS_HW_MAX_TASKS);
+    vibeos_task_view_set_source(hw_task_slots, hw_task_describe);
+    (void)vibeos_runq_init(&g_runq, (uint32_t)VIBEOS_HW_MAX_TASKS,
+                           (uint32_t)VIBEOS_HW_MAX_CPUS, hw_task_runnable, 0);
     hw_pmm_bringup(boot_info);
     hw_boot_stage("physical_memory");
 

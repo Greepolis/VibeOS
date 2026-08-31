@@ -72,9 +72,26 @@ typedef struct vibeos_task_desc {
     char exe[64];
 } vibeos_task_desc_t;
 
-/* How many slots the table has, and a snapshot of one. `describe` returns 0 on
- * success; a free slot is described rather than skipped, because "which slots
- * are free" is part of what somebody reading this wants to know. */
+/* Where the view gets its data. Registered by the architecture at bring-up.
+ *
+ * A registration rather than a weak symbol, and the difference is not taste.
+ * The first version made these weak defaults in kernel/sched/stats.c and the
+ * real ones in arch_hw.c, which links on ELF and fails on PE/COFF: mingw would
+ * not resolve a weak definition living in a *different* object from its caller.
+ * The weak stubs elsewhere in this kernel all sit in the same translation unit
+ * as the code that calls them, which is why they work and why the pattern
+ * looked safe.
+ *
+ * `describe` returns 0 on success; a free slot is described rather than
+ * skipped, because "which slots are free" is part of what somebody reading
+ * this wants to know. Before anything registers, the view reports no table
+ * rather than inventing one. */
+typedef uint32_t (*vibeos_task_slots_fn)(void);
+typedef int (*vibeos_task_describe_fn)(uint32_t slot, vibeos_task_desc_t *out);
+
+void vibeos_task_view_set_source(vibeos_task_slots_fn slots,
+                                 vibeos_task_describe_fn describe);
+
 uint32_t vibeos_task_slots(void);
 int vibeos_task_describe(uint32_t slot, vibeos_task_desc_t *out);
 

@@ -1,0 +1,38 @@
+### the queue picks a slot without asking whether it may run
+--- old
+        if (q->runnable(q->ctx, slot, cpu)) {
+            q->cursor[cpu] = (slot + 1u) % q->slots;
+            return (int)slot;
+        }
++++ new
+        q->cursor[cpu] = (slot + 1u) % q->slots;
+        return (int)slot;
+
+### the scan restarts from zero, so the high slots starve
+--- old
+        q->cursor[cpu] = (slot + 1u) % q->slots;
++++ new
+        q->cursor[cpu] = 0;
+
+### a task that has stopped being runnable keeps its CPU
+--- old
+    if (current >= 0 && q->runnable(q->ctx, (uint32_t)current, cpu)) {
+        return -1;
+    }
++++ new
+    if (current >= 0) {
+        return -1;
+    }
+
+### the current task is picked again instead of rotating
+--- old
+        if ((int)slot == current) {
+            continue;   /* considered below, and only if nothing else will do */
+        }
++++ new
+
+# The first case is the one that matters: the queue does not decide what may
+# run, it asks. Removing the question is what would let two CPUs be handed one
+# task, and it fails the two-CPU test directly. An earlier version of this case
+# sabotaged the test's own callback instead, which proved nothing - the
+# sabotage tool said so, which is what it is for.
