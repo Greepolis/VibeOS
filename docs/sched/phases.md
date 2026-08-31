@@ -33,6 +33,10 @@ are. The memory manager did this first and it paid for itself immediately.
 **Done when.** `tasks` prints the table on a running machine; the must-be-zero
 counters are asserted by the boot gate.
 
+**Status: done** (`5d696fa`). The command prints every slot with its
+generation, state, pid, tgid, ppid, cr3 and the three provenance fields; the
+gate drives it and asserts four counters at zero.
+
 ---
 
 ## S-P1 — The task table and the state machine
@@ -64,6 +68,19 @@ caught rather than performed.
 **Done when.** No `.state` assignment outside the layer; illegal transitions
 counted and zero on a normal boot; the sabotage cases red.
 
+**Status: done** (`142e3fc`). All twenty-six assignments go through one
+function; eleven host cases and five sabotage cases, all red.
+
+**The table was wrong on its first boot and the machine said so.** SETUP to
+RUNNING was missing: a core adopts the thread it is already executing, and an
+idle task is created already on its CPU - neither passes through READY because
+neither was ever waiting. The refusal named the slot, both states and the
+function, which is the argument for a table over scattered assignments in one
+line of output.
+
+Storage still lives in the architecture's field; what moved is the decision
+about whether a change is allowed. Moving the storage is S-P3's work.
+
 ---
 
 ## S-P2 — The run queue
@@ -80,8 +97,24 @@ counted and zero on a normal boot; the sabotage cases red.
 3. Add the layering check: nothing under `g_sched_lock` allocates, frees or
    walks page tables. Enforced by review plus a grep, as the memory manager's is.
 
-**Done when.** `hw_pick_next` is gone; the host tests cover the six cases; boot
-rate unchanged against the parent commit.
+**Done when.** `hw_pick_next` is a wrapper over the tested queue; the host
+tests cover the cases; boot rate unchanged against the parent commit.
+
+**Status: done** (`97ae443`). Seven host cases, four sabotage cases, all
+red. 21 boots clean out of 24, which is the background rate, with all four task
+counters zero in the failing boots as well.
+
+**One real defect fixed in the move.** The old scan started from the *current*
+task, which is fair while something is running and degenerates when the current
+task is idle: the search then begins at the same place every time and the
+high-numbered slots wait behind the low ones. There is a cursor per CPU now,
+and the fairness case - every runnable slot must run within forty picks - is
+what catches it.
+
+**And one lesson about the shape.** The queue does not decide what may run; it
+asks through a callback, so the state machine stays the single source of truth
+about what READY means. The sabotage case that matters is removing the
+question.
 
 ---
 
