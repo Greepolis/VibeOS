@@ -139,6 +139,7 @@ if(VIBEOS_BUILD_TESTS)
         tests/kernel/mm_stats_tests.c
         tests/kernel/frame_tests.c
         tests/kernel/vmspace_tests.c
+        tests/kernel/vma_tests.c
     )
     target_link_libraries(vibeos_kernel_tests PRIVATE vibeos_kernel_core vibeos_user_core vibeos_tls)
     target_include_directories(vibeos_kernel_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)

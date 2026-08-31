@@ -1,0 +1,41 @@
+### a partial unmap does not split, so the tail of the region is lost
+--- old
+        if (cur->base < base && cur_end > end) {
+            vibeos_vma_t *hi = vma_split(list, cur, end);
++++ new
+        if (0) {
+            vibeos_vma_t *hi = vma_split(list, cur, end);
+
+### an overlapping insert is accepted
+--- old
+        if (cur->base + cur->len > base) {
+            return -1;   /* overlaps an existing region */
+        }
++++ new
+
+### clearing a list drops the descriptors instead of returning them
+--- old
+        vibeos_vma_t *next = cur->next;
+        vma_free(cur);
+        cur = next;
++++ new
+        vibeos_vma_t *next = cur->next;
+        cur = next;
+
+### protect applies to the pages it can and gives up on the rest
+--- old
+    if (covered != len) {
+        return -1;
+    }
++++ new
+
+### a split forgets to advance the backing offset of the upper half
+--- old
+    hi->backing_offset = v->backing_offset + (at - v->base);
++++ new
+    hi->backing_offset = v->backing_offset;
+
+# The last one is the case a reviewer is least likely to catch by reading: an
+# anonymous region has no offset to be wrong about, so it stays green until
+# file backing arrives at P4 and then fails as a file being read from the wrong
+# place. The test covers it by cloning a FILE-backed region and splitting it.

@@ -8676,6 +8676,7 @@ static int test_storage_claims_nothing(void)
 int test_mm_stats(void);
 int test_frame(void);
 int test_vmspace(void);
+int test_vma(void);
 
 int main(void) {
     int failures = 0;
@@ -8686,6 +8687,7 @@ int main(void) {
     RUN_TEST(test_mm_stats);
     RUN_TEST(test_frame);
     RUN_TEST(test_vmspace);
+    RUN_TEST(test_vma);
     RUN_TEST(test_pmm);
     RUN_TEST(test_pmm_reserve);
     RUN_TEST(test_blockcache_hits);
