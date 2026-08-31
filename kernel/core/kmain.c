@@ -256,6 +256,12 @@ static void kernel_cli_print_meminfo(void) {
     vibeos_x86_64_serial_puts("\n");
     vibeos_x86_64_serial_puts("[MEM] vmas_live=0x");
     kernel_log_u64_hex(st->vmas_live);
+    vibeos_x86_64_serial_puts(" vmas_peak=0x");
+    kernel_log_u64_hex(st->vmas_peak);
+    vibeos_x86_64_serial_puts(" vmas_created=0x");
+    kernel_log_u64_hex(st->vmas_created);
+    vibeos_x86_64_serial_puts(" vmas_split=0x");
+    kernel_log_u64_hex(st->vmas_split);
     vibeos_x86_64_serial_puts(" vmas_refused=0x");
     kernel_log_u64_hex(st->vmas_refused);
     vibeos_x86_64_serial_puts("\n");

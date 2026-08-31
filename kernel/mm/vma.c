@@ -14,6 +14,29 @@ static vibeos_vma_t *g_pool;
 static uint32_t g_pool_entries;
 static vibeos_vma_t *g_free;        /* threaded through `next` */
 static uint32_t g_live;
+static void (*g_lock)(void);
+static void (*g_unlock)(void);
+
+void vibeos_vma_set_lock(void (*lock)(void), void (*unlock)(void)) {
+    g_lock = lock;
+    g_unlock = unlock;
+}
+
+/* Not recursive, and nothing inside this file calls another public entry point
+ * of it, so it does not need to be. */
+static void vibeos_vma_clear_locked(vibeos_vma_list_t *list);
+
+static void vma_lock(void) {
+    if (g_lock) {
+        g_lock();
+    }
+}
+
+static void vma_unlock(void) {
+    if (g_unlock) {
+        g_unlock();
+    }
+}
 
 void vibeos_vma_pool_init(vibeos_vma_t *pool, uint32_t entries) {
     uint32_t i;
@@ -47,6 +70,13 @@ static vibeos_vma_t *vma_alloc(void) {
     v->next = 0;
     g_live++;
     vibeos_mm_stats()->vmas_live = g_live;
+    /* The peak, not just the current count. A pool that runs dry mid-boot and
+     * is empty again by the time anybody looks reports zero live regions and
+     * eight refusals, which says something went wrong but not how close the
+     * ceiling is. */
+    if ((uint64_t)g_live > vibeos_mm_stats()->vmas_peak) {
+        vibeos_mm_stats()->vmas_peak = g_live;
+    }
     return v;
 }
 
@@ -125,7 +155,7 @@ static void vma_try_merge(vibeos_vma_list_t *list, vibeos_vma_t *prev,
     }
 }
 
-int vibeos_vma_insert(vibeos_vma_list_t *list, uint64_t base, uint64_t len,
+int vibeos_vma_insert_locked(vibeos_vma_list_t *list, uint64_t base, uint64_t len,
                       vibeos_prot_t prot, vibeos_backing_kind_t backing,
                       uint32_t backing_id, uint64_t backing_offset) {
     vibeos_vma_t *prev = 0, *cur, *v;
@@ -172,7 +202,7 @@ int vibeos_vma_insert(vibeos_vma_list_t *list, uint64_t base, uint64_t len,
     return 0;
 }
 
-vibeos_vma_t *vibeos_vma_find(vibeos_vma_list_t *list, uint64_t va) {
+vibeos_vma_t *vibeos_vma_find_locked(vibeos_vma_list_t *list, uint64_t va) {
     vibeos_vma_t *cur;
 
     if (!list) {
@@ -217,7 +247,7 @@ static vibeos_vma_t *vma_split(vibeos_vma_list_t *list, vibeos_vma_t *v,
     return hi;
 }
 
-uint64_t vibeos_vma_remove(vibeos_vma_list_t *list, uint64_t base, uint64_t len) {
+uint64_t vibeos_vma_remove_locked(vibeos_vma_list_t *list, uint64_t base, uint64_t len) {
     vibeos_vma_t *prev = 0, *cur;
     uint64_t end, removed = 0;
 
@@ -278,7 +308,7 @@ uint64_t vibeos_vma_remove(vibeos_vma_list_t *list, uint64_t base, uint64_t len)
     return removed;
 }
 
-int vibeos_vma_protect(vibeos_vma_list_t *list, uint64_t base, uint64_t len,
+int vibeos_vma_protect_locked(vibeos_vma_list_t *list, uint64_t base, uint64_t len,
                        vibeos_prot_t prot) {
     vibeos_vma_t *prev = 0, *cur;
     uint64_t end, covered = 0;
@@ -346,7 +376,7 @@ int vibeos_vma_protect(vibeos_vma_list_t *list, uint64_t base, uint64_t len,
     return 0;
 }
 
-int vibeos_vma_clone(vibeos_vma_list_t *dst, const vibeos_vma_list_t *src) {
+int vibeos_vma_clone_locked(vibeos_vma_list_t *dst, const vibeos_vma_list_t *src) {
     const vibeos_vma_t *cur;
     vibeos_vma_t *tail = 0;
 
@@ -360,7 +390,7 @@ int vibeos_vma_clone(vibeos_vma_list_t *dst, const vibeos_vma_list_t *src) {
             /* Empty it again rather than handing back half a picture: a
              * process whose regions describe some of its memory is worse than
              * one whose fork failed. */
-            vibeos_vma_clear(dst);
+            vibeos_vma_clear_locked(dst);
             return -1;
         }
         *v = *cur;
@@ -376,7 +406,7 @@ int vibeos_vma_clone(vibeos_vma_list_t *dst, const vibeos_vma_list_t *src) {
     return 0;
 }
 
-void vibeos_vma_clear(vibeos_vma_list_t *list) {
+void vibeos_vma_clear_locked(vibeos_vma_list_t *list) {
     vibeos_vma_t *cur;
 
     if (!list) {
@@ -390,4 +420,53 @@ void vibeos_vma_clear(vibeos_vma_list_t *list) {
     }
     list->head = 0;
     list->count = 0;
+}
+
+int vibeos_vma_insert(vibeos_vma_list_t *list, uint64_t base, uint64_t len,
+                      vibeos_prot_t prot, vibeos_backing_kind_t backing,
+                      uint32_t backing_id, uint64_t backing_offset) {
+    int r;
+    vma_lock();
+    r = vibeos_vma_insert_locked(list, base, len, prot, backing, backing_id, backing_offset);
+    vma_unlock();
+    return r;
+}
+
+uint64_t vibeos_vma_remove(vibeos_vma_list_t *list, uint64_t base, uint64_t len) {
+    uint64_t r;
+    vma_lock();
+    r = vibeos_vma_remove_locked(list, base, len);
+    vma_unlock();
+    return r;
+}
+
+int vibeos_vma_protect(vibeos_vma_list_t *list, uint64_t base, uint64_t len,
+                       vibeos_prot_t prot) {
+    int r;
+    vma_lock();
+    r = vibeos_vma_protect_locked(list, base, len, prot);
+    vma_unlock();
+    return r;
+}
+
+int vibeos_vma_clone(vibeos_vma_list_t *dst, const vibeos_vma_list_t *src) {
+    int r;
+    vma_lock();
+    r = vibeos_vma_clone_locked(dst, src);
+    vma_unlock();
+    return r;
+}
+
+void vibeos_vma_clear(vibeos_vma_list_t *list) {
+    vma_lock();
+    vibeos_vma_clear_locked(list);
+    vma_unlock();
+}
+
+vibeos_vma_t *vibeos_vma_find(vibeos_vma_list_t *list, uint64_t va) {
+    vibeos_vma_t * r;
+    vma_lock();
+    r = vibeos_vma_find_locked(list, va);
+    vma_unlock();
+    return r;
 }

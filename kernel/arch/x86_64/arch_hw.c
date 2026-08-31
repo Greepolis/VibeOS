@@ -1404,6 +1404,15 @@ static const uint64_t *g_aspace_being_destroyed;
  * four boots in ten, so one in sixteen still meets it within a run. */
 static void hw_frame_release_watch(uint64_t phys) {
     uint32_t pid = 0;
+    /* The count that triggered the report, kept.
+     *
+     * The first version re-read the owner count when printing it, so the
+     * message showed mappers=1 owners=1 - numbers that cannot have triggered
+     * anything - because the frame had been legitimately taken in between.
+     * A report that does not show the values it fired on is unreadable, and
+     * this is the third time in this subsystem that reading state twice and
+     * reporting the second read has produced a confusing message. */
+    uint32_t owners_at_check = 0;
 
     if ((++g_free_seq & 0x0Fu) != 0u) {
         return;
@@ -1430,7 +1439,8 @@ static void hw_frame_release_watch(uint64_t phys) {
      *
      * More mappings than references is the dangerous direction and the only one
      * worth a report: it means somebody holds a page nothing is counting. */
-    if (g_frame_mappers <= vibeos_frame_owners(phys)) {
+    owners_at_check = vibeos_frame_owners(phys);
+    if (g_frame_mappers <= owners_at_check) {
         return;
     }
     hw_log(VIBEOS_LOG_ERROR, 46u, phys, (uint64_t)pid,
@@ -1446,6 +1456,8 @@ static void hw_frame_release_watch(uint64_t phys) {
     vibeos_x86_64_serial_puts(" mappers=0x");
     vibeos_x86_64_serial_print_hex((uint64_t)g_frame_mappers);
     vibeos_x86_64_serial_puts(" owners=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)owners_at_check);
+    vibeos_x86_64_serial_puts(" owners_now=0x");
     vibeos_x86_64_serial_print_hex((uint64_t)vibeos_frame_owners(phys));
     vibeos_x86_64_serial_puts("\n");
     vibeos_x86_64_serial_unlock();
@@ -1689,6 +1701,7 @@ static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
              * should not depend on that. */
             vibeos_frame_set_lock(hw_frame_lock, hw_frame_unlock);
             vibeos_frame_set_release_watch(hw_frame_release_watch);
+            vibeos_vma_set_lock(hw_frame_lock, hw_frame_unlock);
             vibeos_vma_pool_init(g_vma_pool, VIBEOS_HW_VMA_ENTRIES);
             vibeos_cache_init(g_cache_table, VIBEOS_HW_CACHE_ENTRIES,
                               hw_cache_read, 0);
@@ -3525,6 +3538,7 @@ static void hw_task_exit(uint64_t code) {
             (void)vibeos_teardown_step((uint32_t)dying, VIBEOS_TEARDOWN_ASPACE);
             HW_TASK_MARK(dying, aspace_killed_by, "thread_exit_kept_shared");
         } else {
+        vibeos_task_stats()->exited++;
         HW_TASK_MARK(dying, aspace_killed_by, "task_exit");
         hw_aspace_destroy(&g_tasks[dying].proc.as);
         (void)vibeos_teardown_step((uint32_t)dying, VIBEOS_TEARDOWN_ASPACE);
@@ -5370,6 +5384,7 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
         (void)hw_task_set_state((int)(child - g_tasks), HW_TASK_FREE, __func__);
         return -VIBEOS_ENOMEM;
     }
+    vibeos_task_stats()->forks++;
     child->proc.entry = parent->proc.entry;
     child->proc.brk_cur = parent->proc.brk_cur;
     child->proc.mmap_cur = parent->proc.mmap_cur;
@@ -5527,6 +5542,7 @@ static long hw_sys_clone_thread(const vibeos_x86_64_isr_frame_t *frame,
     /* The same address space, by sharing the description rather than copying
      * the tables. hw_aspace_create is deliberately not called: two sets of
      * page tables would be two processes wearing one name. */
+    vibeos_task_stats()->threads++;
     child->proc = parent->proc;
     child->cr3 = parent->cr3;
     child->cr3_set_by = "clone_thread";
@@ -5684,6 +5700,7 @@ static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr) {
                 t->kstack_pages = 0;
                 (void)vibeos_teardown_step((uint32_t)(t - g_tasks),
                                            VIBEOS_TEARDOWN_HARVESTED);
+                vibeos_task_stats()->reaped++;
                 (void)vibeos_teardown_step((uint32_t)(t - g_tasks),
                                            VIBEOS_TEARDOWN_PUBLISHED);
                 (void)hw_task_set_state((int)(t - g_tasks), HW_TASK_FREE, __func__); /* reaped; nothing may touch t now */
@@ -5908,6 +5925,8 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
     {
         vibeos_hw_aspace_t old_as = t->proc.as; /* reclaim after switching CR3 */
         vibeos_vma_list_t old_vmas = t->proc.vmas;
+
+        vibeos_task_stats()->execs++;
         int shared;
 
         /* np already carries the regions the loader built for the new image;

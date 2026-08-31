@@ -48,6 +48,20 @@ typedef struct vibeos_vma_list {
  * created afterwards draws on it. */
 void vibeos_vma_pool_init(vibeos_vma_t *pool, uint32_t entries);
 
+/* Serialise this layer against itself, exactly as the frame layer does.
+ *
+ * The pool is a free list threaded through the descriptors, and mmap, munmap,
+ * exec and fork all reach it from any core. Without this, two allocations
+ * racing both take the head and both advance it: one descriptor is handed to
+ * two callers and the rest of the list is lost. The symptom was eight refused
+ * inserts in a boot whose peak usage was twenty-nine descriptors out of two
+ * thousand - a pool that was nowhere near full and had shredded its own list.
+ *
+ * The same mistake the frame layer made, repeated here. A layer several cores
+ * can drive has to defend itself; "remember to hold the lock" is not a property
+ * a compiler checks. Both may be null, which is what a host test passes. */
+void vibeos_vma_set_lock(void (*lock)(void), void (*unlock)(void));
+
 /* How many regions are in use across every list. The boot gate asserts this
  * returns to zero once userland has finished: a region leaked per process is a
  * machine that stops accepting new ones after a few hundred commands, and the
