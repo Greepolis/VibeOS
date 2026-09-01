@@ -60,6 +60,24 @@ void vibeos_cache_init(vibeos_cache_entry_t *table, uint32_t entries,
  *
  * `file_id` must not be zero: zero marks an empty slot, and letting it through
  * would make "not cached" and "cached under file zero" the same state. */
+/* Serialise this layer against itself, exactly as the frame layer and the
+ * region pool do. Both may be null, which is what a host test passes.
+ *
+ * The fourth time this project has needed this sentence, and the third layer to
+ * have shipped without it. A table with linear probing and a clock hand is not
+ * a set of independent slots: two cores placing entries at once can leave one
+ * entry's frame beside another entry's key, and then a lookup that "hits"
+ * returns the pages of a different file. Nothing about that reads as a cache
+ * bug from the outside - it reads as a program that was handed somebody else's
+ * text.
+ *
+ * It stayed invisible for as long as the cache had exactly one caller,
+ * `hw_read_file_cached`, which runs under the exec lock. The moment a second
+ * caller appeared - a loader mapping image pages instead of copying them,
+ * reachable from a boot-time spawn that holds no such lock - the table became
+ * concurrent and nothing said so. */
+void vibeos_cache_set_lock(void (*lock)(void), void (*unlock)(void));
+
 int vibeos_cache_get(uint32_t file_id, uint64_t offset, uint64_t *out_phys);
 
 /* Drop everything belonging to a file - what a write or a delete must do, or

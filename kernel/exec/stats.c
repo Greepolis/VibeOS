@@ -23,6 +23,20 @@ void vibeos_exec_stats_reset(void) {
     }
 }
 
+static void (*g_auditor)(uint64_t *checked, uint64_t *changed);
+
+void vibeos_exec_set_auditor(void (*fn)(uint64_t *checked, uint64_t *changed)) {
+    g_auditor = fn;
+}
+
+void vibeos_exec_audit_cache(void) {
+    g_stats.cache_audit_checked = 0;
+    g_stats.cache_audit_changed = 0;
+    if (g_auditor) {
+        g_auditor(&g_stats.cache_audit_checked, &g_stats.cache_audit_changed);
+    }
+}
+
 const char *vibeos_exec_fail_name(vibeos_exec_fail_t why) {
     switch (why) {
         case VIBEOS_EXEC_OK:              return "ok";

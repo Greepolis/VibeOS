@@ -1,6 +1,6 @@
 # Program Loading Progress
 
-Status: **Rewrite underway** ([docs/exec/](../exec/README.md)). X-P0 and X-P1 done; X-P2 attempted, measured and turned off.
+Status: **Rewrite underway** ([docs/exec/](../exec/README.md)). X-P0, X-P1, X-P3 and X-P4 done. X-P2 mapping on after four attempts; the staging buffers and demand paging remain.
 Last review: 2026-09-01
 
 ## Why it is being rewritten
@@ -200,6 +200,148 @@ shape anyway.
 and the wedge chased for a day in
 [boot_repeatability.md](boot_repeatability.md) restored a register context full
 of `0xe4`. That may be one corruption family rather than two mysteries.
+
+### Attempt three, and what it eliminated (2026-09-01)
+
+The hypothesis from attempt two was that this branch created a *second source of
+truth* for which file is being loaded. It was implemented properly:
+`hw_read_file_cached` now reports the cache identity the bytes actually
+came from - 0 when it fell back to an uncached read - and that identity is
+threaded to the mapping site instead of `hw_file_id(path)` being
+recomputed there. That is a real improvement and it is kept: the ratio moved to
+**4242 pages mapped against 237 copied**, from 4067/412, which is exactly what a
+more often-correct identity looks like.
+
+**The failure did not move: 21/24 again.** So the hypothesis was wrong.
+
+Two further explanations were then eliminated by measurement rather than by
+reading code:
+
+- **Wrong content at map time.** A probe compared every page mapped from the
+  cache against what `vibeos_elf_fill_page` would have built for it.
+  **Zero mismatches** across a whole boot.
+- **Stray writes to a page that is now shared.** `hw_cache_audit`
+  compares every resident cache page against the file it came from, at the end
+  of the boot. **1820 checked, 0 changed.** That detector is kept and gated: once
+  image pages are shared rather than copied, one frame is the text of every
+  process running that program, so a single stray write reaches all of them -
+  and reaches them as a program misbehaving far from whatever did the writing.
+
+One more fact worth more than the count: **two of the three failures were
+byte-identical** - BusyBox, the same `rip`, the same
+`fault_addr=0xe4`. This is a deterministic defect reached by a specific
+path, not a race. That is a much better starting point than any of the three
+attempts began with.
+
+So the bytes are right when they are mapped, right at the end, and both sides
+agree which file they came from. What is left is **the mapping itself** -
+aliasing, a reference, or a lifetime - and that is where a fourth attempt should
+start rather than at the top.
+
+### It was the page cache having no lock (2026-09-01)
+
+`kernel/mm/backing.c` had no lock. Not a weak one, not a wrong one -
+none, in a table with linear probing and a clock hand.
+
+**It was invisible for as long as the cache had exactly one caller.**
+`hw_read_file_cached` runs under `g_exec_lock`, so the table
+was serialised by accident. The moment this branch added a second caller - a
+loader mapping image pages, reachable from a boot-time spawn that holds no such
+lock - the table became concurrent and nothing said so.
+
+Two cores placing entries at once can leave one entry's frame beside another
+entry's key. A lookup then *hits* and returns the pages of a different file.
+From outside that does not look like a cache defect at all: it looks like a
+program that was handed somebody else's text - which is exactly the shape of the
+two byte-identical BusyBox faults.
+
+It is the fourth time this project has needed a `set_lock`, and the third layer
+to have shipped without one. The pattern is now the same in all three.
+
+Two decisions inside the fix:
+
+- **A lock of its own, not the frame layer's.** A lookup that misses allocates a
+  frame, and the frame layer takes `g_mm_lock` to do it, so sharing
+  the lock would deadlock on the first miss. Ordering is cache then frame, never
+  the reverse; nothing in the frame layer knows the cache exists.
+- **The disk read stays inside the lock.** It serialises the execs that miss.
+  Taking the lock only around the table would leave a window where a slot is
+  claimed and not yet filled, and the comment already in that function says what
+  a hit on such a slot hands out.
+
+**Measured: 22/24 with the mapping on, and the signature is gone.** Zero
+occurrences of the faulting `rip` that appeared in both earlier runs,
+zero unexpected CPU faults. The one failure is a wedge in `busybox_cat`
+with no crash record - the background failure that appears with the mapping off
+as well.
+
+The full picture, and the reason the count alone was never the argument:
+
+| state | boots | the deterministic signature |
+|---|---|---|
+| mapping off | 24/24, 23/24, 22/24 | absent |
+| mapping on, cache unlocked | 21/24, 21/24 | **present, byte-identical twice** |
+| mapping on, cache locked | 22/24 | absent |
+
+22/24 sits inside the off baseline, which is 22 to 24 - a range I had earlier
+described as "24/24", and that overstatement is corrected here. What actually
+separated the two states was never the count; it was whether a specific
+deterministic fault appeared. It no longer does.
+
+**Status: the mapping is on.** 4242 image pages mapped against 237 copied, 94%
+of the copying gone.
+
+---
+
+## X-P3 — All-or-nothing (done, 2026-09-01)
+
+**A failed exec leaked an entire address space.** `hw_proc_create` had
+eleven refusal points after the address space existed, most of them after pages
+were mapped and regions recorded, and every one returned -1 and walked away.
+`execve` then reported ENOMEM, the calling program carried on correctly -
+and the page tables, every frame they mapped and every region descriptor stayed
+allocated with nothing holding a name for them.
+
+The unwinding is now structural rather than remembered: all eleven route through
+one `fail:` label that destroys the address space, clears the region list
+and zeroes the fields it filled. There is one function that builds a process, so
+there is one function that takes it apart, and **a refusal added later cannot
+forget to**.
+
+---
+
+## X-P4 — Acceptance (done, 2026-09-01)
+
+**The interpreter substitution is one function, and the build enforces it.**
+`hw_interp_path_substitute` is the only place that may name an
+interpreter path; `scripts/dev/check-exec-layering.sh` fails if a second
+one appears anywhere in the kernel, or if the function stops saying in its own
+comment that it is a stand-in. The risk with a stand-in is not that it exists -
+it is that it breeds, the two copies disagree, and it stops being something
+anyone can find or delete.
+
+Confirmed by breaking it: a hard-coded path added to an unrelated file is found
+and named. It also caught a real mistake within the hour - a new function
+inserted between the substitution's comment and its signature, splitting a
+comment from what it describes.
+
+**Re-exec is cheap, asserted as a ratio.** `pages_from_cache` and
+`pages_copied` are on the `exec` line, and the gate asserts the
+former exceeds the latter *when the mapping is on*. A threshold in pages would
+be tuned to today's manifest and would fail the day somebody adds a program.
+
+**A truncated program is refused, not parsed.** Covered at the parser by
+`case_truncated_is_refused_not_parsed` in the loader tests, and at the
+loader by `VIBEOS_EXEC_SHORT_READ` having a counter the gate watches.
+
+**Concurrent exec is serialised, not parallel, and that is recorded rather than
+claimed.** `g_exec_lock` makes two execs take turns, because they share
+one staging buffer. The acceptance criterion as written - two processes exec'ing
+different programs at once - is satisfied in the sense that neither corrupts the
+other, and *not* in the sense of them proceeding together. That only becomes
+true when the staging buffers go, which is the part of X-P2 still open.
+
+---
 
 **What X-P2 still needs, in order: the copy-on-write defect closed first,
 since it is what makes this unmeasurable; then demand paging, so `execve` stops

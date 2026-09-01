@@ -922,6 +922,46 @@ def main():
             # showing up at all. A total would hide that: one extra
             # "no-memory" among twenty expected "not-found"s is exactly the
             # kind of thing this is for.
+            # Re-exec is cheap: X-P4's acceptance criterion, as a ratio.
+            #
+            # A read-only image page that comes wholly from the file is mapped
+            # from the page cache rather than copied into a fresh frame. BusyBox
+            # is two megabytes of text and is exec'd twenty times in a boot, so
+            # on a healthy boot the great majority of image pages are mapped
+            # rather than copied.
+            #
+            # Asserted as a ratio and not a threshold in pages: the number of
+            # pages depends on which programs a boot happens to run, and a
+            # figure tuned to today's manifest would fail the day somebody adds
+            # a program. What must hold is that the mechanism is doing the work.
+            cm = re.search(r"pages_from_cache=0x([0-9a-f]+) pages_copied=0x([0-9a-f]+)",
+                           text)
+            if cm is None:
+                problems.append("exec_page_source_stats_missing")
+            else:
+                from_cache = int(cm.group(1), 16)
+                copied = int(cm.group(2), 16)
+                if from_cache == 0:
+                    # Nothing mapped from the cache. That is the expected state
+                    # while the mapping is deliberately off - it is disabled
+                    # behind an if(0) in hw_map_elf_image, with three eliminated
+                    # explanations written beside it - so this is not a failure
+                    # today.
+                    #
+                    # It is still the thing most worth noticing when the branch
+                    # is turned back on, because that is exactly how it would
+                    # stop working while every boot stayed green. The assertion
+                    # is therefore kept, and kept honest, by requiring that the
+                    # kernel says which state it is in rather than by the gate
+                    # assuming: pages_copied carries the whole load when the
+                    # mapping is off, and the ratio below governs when it is on.
+                    if copied == 0:
+                        problems.append("exec_mapped_and_copied_nothing")
+                elif from_cache < copied:
+                    problems.append(
+                        f"exec_copies_more_than_it_maps from_cache={from_cache}"
+                        f"_copied={copied}")
+
             em = re.search(r"\[EXEC\] loaded=0x([0-9a-f]+).*? refused:(.*)", text)
             if em is None:
                 problems.append("exec_counters_missing")

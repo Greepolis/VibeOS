@@ -109,6 +109,32 @@ this file\'s own rule about naming an address - a local build has different
 layout and the guest binaries are stripped. Two defects here were found in
 minutes from an artifact bundle after days of local sweeps said nothing.
 
+**A layer that is serialised by accident is not serialised.** `backing.c`
+had no lock at all, and it did not matter for months because the page cache had
+exactly one caller and that caller ran under `g_exec_lock`. Adding a
+second caller turned a table with linear probing and a clock hand into a
+concurrent one, and two cores placing entries at once left one entry's frame
+beside another entry's key - so a lookup *hit* and returned the pages of a
+different file. From outside it looked like a program handed somebody else's
+text, and it took four attempts to find, three of which produced confident wrong
+answers. When adding a caller to a layer, ask what was holding it together
+before, not only what the layer does.
+
+Fourth time this project has needed a `set_lock`: frames, the region
+pool, and now the page cache. If a layer has mutable statics and more than one
+possible caller, it locks itself - "remember to hold the lock" is not a property
+a compiler checks. And give it **its own** lock: the cache allocates frames, so
+handing it the frame layer's lock would have deadlocked on the first miss.
+
+**The count was never the argument.** Mapping image pages from the page cache
+measured 21/24 twice against an "off" baseline reported as 24/24 - which was
+itself wrong, because the same baseline also measured 23 and 22. Two boots of
+difference proves very little. What separated the two states was that a specific
+fault appeared with the change and never without it: BusyBox, the same rip, the
+same fault address, byte-identical twice. When comparing two states, look for a
+signature that is present in one and absent in the other before reaching for the
+ratio.
+
 ## Sharp edges in the code
 
 **Syscall arguments typed `int` arrive zero-extended.** `mov $-100, %edi`

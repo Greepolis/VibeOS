@@ -52,6 +52,14 @@ typedef struct vibeos_exec_stats {
      * because a ratio with one half missing is a number nobody can act on. */
     uint64_t pages_from_cache;
     uint64_t pages_copied;
+
+    /* Resident cache pages compared against the file they came from, and how
+     * many no longer matched. Once image pages are shared rather than copied,
+     * one frame is the text of every process running that program, so a stray
+     * write reaches all of them - and reaches them as a program misbehaving
+     * somewhere far from the write. The gate asserts changed == 0. */
+    uint64_t cache_audit_checked;
+    uint64_t cache_audit_changed;
 } vibeos_exec_stats_t;
 
 vibeos_exec_stats_t *vibeos_exec_stats(void);
@@ -69,5 +77,18 @@ const char *vibeos_exec_refuse(vibeos_exec_fail_t why);
 /* Print the counters. Lives in kernel/exec/view.c; declared here so the CLI
  * does not have to know which file answers. */
 void vibeos_exec_print_stats(void);
+
+/* Compare every resident cache page against the file it came from, filling the
+ * two counters above. Supplied by whoever owns a page cache; a build without
+ * one leaves the counters at zero, which the gate reads as "not exercised"
+ * rather than as "clean". */
+void vibeos_exec_audit_cache(void);
+
+/* Who answers it. Registered rather than defined across objects: the host tests
+ * link kmain without the architecture layer, and PE/COFF will not resolve a
+ * definition living in a different object from its caller - a rule this project
+ * has already paid for once. A build with nothing registered audits nothing and
+ * says so through the counters. */
+void vibeos_exec_set_auditor(void (*fn)(uint64_t *checked, uint64_t *changed));
 
 #endif /* VIBEOS_EXEC_STATS_H */

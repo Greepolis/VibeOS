@@ -366,6 +366,7 @@ static void kernel_cli_run(vibeos_kernel_t *kernel) {
             /* Why programs failed to start, by reason. Before this, every way
              * of failing printed the same sentence, so the log could not tell
              * an absent file from a short one from an exhausted allocator. */
+            vibeos_exec_audit_cache();
             vibeos_exec_print_stats();
             continue;
         }

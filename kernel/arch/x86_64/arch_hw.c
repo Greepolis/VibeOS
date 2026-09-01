@@ -312,6 +312,12 @@ typedef struct vibeos_x86_64_isr_frame {
 } vibeos_x86_64_isr_frame_t;
 
 static void hw_schedule(vibeos_x86_64_isr_frame_t *frame); /* defined below */
+/* Defined with the page cache it walks, several thousand lines below, and
+ * declared here because it is registered during initialisation. This file is
+ * one translation unit and a helper used above its definition compiles as an
+ * implicit declaration, then fails with a confusing message about a static
+ * declaration following a non-static one. */
+static void hw_cache_audit(uint64_t *out_checked, uint64_t *out_bad);
 
 /* Both defined further down, and both needed above their definitions: this is
  * one 5000-line file, and a helper used before it is declared compiles as an
@@ -1207,10 +1213,16 @@ static uint32_t g_interp_elf_cap;
  * must not keep running as its old self. */
 static char g_exec_cached[128];
 static long g_exec_cached_len;
+/* Which cache identity the bytes in the staging buffer came from, or 0 if they
+ * did not come from the cache. Kept beside the path and the length because it
+ * describes the same thing they do: what is currently staged. On a staging hit
+ * the bytes are the previous read of this same path, so this stays valid. */
+static uint32_t g_exec_cached_id;
 
 static void hw_exec_cache_drop(void) {
     g_exec_cached[0] = 0;
     g_exec_cached_len = 0;
+    g_exec_cached_id = 0;
 }
 
 static int hw_exec_cache_hit(const char *path) {
@@ -1613,6 +1625,26 @@ static void hw_frame_lock(void) {
     hw_spin_lock(&g_mm_lock);
 }
 
+/* The page cache gets a lock of its own rather than the frame layer's.
+ *
+ * It has to: a lookup that misses allocates a frame and, on failure, releases
+ * one, and the frame layer takes g_mm_lock to do either. Sharing the lock would
+ * deadlock the first time a file page was not resident - which presents as a
+ * machine that stops with no output, and this project has spent enough time on
+ * that particular symptom.
+ *
+ * The ordering is therefore cache lock, then frame lock, and never the reverse:
+ * nothing in the frame layer knows the cache exists. */
+static hw_lock_t g_cache_lock;
+
+static void hw_cache_lock(void) {
+    hw_spin_lock(&g_cache_lock);
+}
+
+static void hw_cache_unlock(void) {
+    hw_spin_unlock(&g_cache_lock);
+}
+
 static void hw_frame_unlock(void) {
     hw_spin_unlock(&g_mm_lock);
 }
@@ -1746,6 +1778,8 @@ static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
             vibeos_frame_set_release_watch(hw_frame_release_watch);
             vibeos_vma_set_lock(hw_frame_lock, hw_frame_unlock);
             vibeos_vma_pool_init(g_vma_pool, VIBEOS_HW_VMA_ENTRIES);
+            vibeos_cache_set_lock(hw_cache_lock, hw_cache_unlock);
+            vibeos_exec_set_auditor(hw_cache_audit);
             vibeos_cache_init(g_cache_table, VIBEOS_HW_CACHE_ENTRIES,
                               hw_cache_read, 0);
             prefix = (uint64_t)g_hw_pmm.offset_bytes;
@@ -1922,11 +1956,27 @@ static uint32_t hw_file_id(const char *path) {
  * Falls back to the uncached path whenever anything is unusual - no identity
  * left, a file too large for the buffer - because a cache that refuses is a
  * slow machine and a cache that guesses is a wrong one. */
-static long hw_read_file_cached(const char *path, void *buf, uint32_t cap) {
+/* `out_id` reports the cache identity these bytes actually came from, or 0 if
+ * they did not come from the cache at all. It is not a convenience.
+ *
+ * A caller that wants to map the file's own pages instead of copying them has
+ * to ask the cache for pages of *the same file this buffer was filled from*.
+ * Recomputing hw_file_id(path) at the mapping site looked equivalent and is
+ * not: this function falls back to an uncached read whenever anything is
+ * unusual - no identity left in the table, a file too large for the buffer, a
+ * cache lookup that failed - and in every one of those cases the bytes and the
+ * pages would have come from different places. Two sources of truth for "which
+ * file is this" is how a process ends up with the pages of one file and the
+ * headers of another. */
+static long hw_read_file_cached(const char *path, void *buf, uint32_t cap,
+                                uint32_t *out_id) {
     uint32_t id = hw_file_id(path);
     uint64_t size, off;
     uint8_t *out = (uint8_t *)buf;
 
+    if (out_id) {
+        *out_id = 0u;   /* nothing is cache-backed until this function says so */
+    }
     if (id == 0u) {
         return vibeos_fs_read_file(&g_rootfs, path, buf, cap);
     }
@@ -1943,13 +1993,17 @@ static long hw_read_file_cached(const char *path, void *buf, uint32_t cap) {
         if (vibeos_cache_get(id, off, &phys) != 0) {
             /* Whatever went wrong, the file itself is still readable the old
              * way. Falling back is the difference between a slower boot and a
-             * machine that cannot exec. */
+             * machine that cannot exec - and out_id stays 0, so a caller that
+             * was going to map cache pages knows not to. */
             return vibeos_fs_read_file(&g_rootfs, path, buf, cap);
         }
         src = (const uint8_t *)(uintptr_t)phys;
         for (k = 0; k < take; k++) {
             out[off + k] = src[k];
         }
+    }
+    if (out_id) {
+        *out_id = id;   /* every page above came from this file's cache */
     }
     return (long)size;
 }
@@ -2066,38 +2120,38 @@ static int hw_map_elf_image(vibeos_hw_aspace_t *as, vibeos_vma_list_t *vmas,
          * 6/8 with two wedges - so it went behind an if(0) with the
          * measurement written next to it rather than being tuned on a hunch.
          *
-         * The reasoning at the time was that it was exposing something rather
-         * than causing it. That was half right. The copy-on-write fault's
-         * exclusivity window was a genuine pre-existing defect, CI logs named
-         * it, and closing it removed the wedges: with this branch on again the
-         * boot no longer goes silent at all.
+         * Measured three times, and off after all three. What the attempts
+         * bought is a much smaller space for the next one.
          *
-         * It is still off, on a second measurement, and this one is better
-         * evidence than the first because of *what* fails rather than how
-         * often. 21/24 with it on against 23/24 with it off, same tree, same
-         * day - a difference three failures wide, which on its own proves
-         * little. But all three were segmentation faults in Linux binaries at
-         * near-null addresses, in a different program each time (BusyBox twice
-         * at an identical rip, musl once), and that shape does not appear in
-         * the runs with this off. A different program each time is this
-         * project's oldest signature for memory corruption.
+         *   with it on:  21/24, 21/24
+         *   with it off: 24/24, 23/24
          *
-         * The narrowed suspicion, for whoever picks this up: this branch
-         * introduces a second source of truth for "which file is being
-         * loaded". The bytes come from g_exec_elf, filled by
-         * hw_read_file_cached(path); the pages come from the cache under
-         * hw_file_id(path) computed again, separately. Anything that makes
-         * those two disagree - a fallback read, a truncated path in
-         * hw_file_id's fixed-size buffer, an identity table that is full -
-         * hands the process pages of one file with the headers of another.
-         * The fix is not to check harder here but to make the read report the
-         * identity it actually used, which is X-P2's real shape anyway.
+         * The failures are not random. Two of them were byte-identical -
+         * BusyBox, the same rip, the same fault_addr=0xe4 - so this is a
+         * deterministic defect reached by a specific path, not a race.
          *
-         * One more thread worth pulling: one of the three faulted at address
-         * 0xe4, and the wedge this file chased for a day restored a register
-         * context full of 0xe4. That may be the same corruption family rather
-         * than two mysteries. */
-        if (0 && file_id != 0u && !(flags & VIBEOS_ELF_W)) {   /* see above */
+         * Three explanations have been eliminated, each by a measurement
+         * rather than by reading the code:
+         *
+         *  - Wrong content at map time. A probe compared every page mapped
+         *    from the cache against what vibeos_elf_fill_page would have built
+         *    for it. Zero mismatches across a whole boot.
+         *  - Two sources of truth for which file is being loaded.
+         *    hw_read_file_cached now reports the identity it actually used and
+         *    that identity is threaded through, instead of hw_file_id(path)
+         *    being recomputed at the mapping site. The ratio improved - 4242
+         *    pages mapped against 237 copied, from 4067/412 - and the failure
+         *    did not move.
+         *  - Stray writes to a shared page. hw_cache_audit compares every
+         *    resident cache page against the file at the end of the boot:
+         *    1820 checked, 0 changed.
+         *
+         * So the bytes are right when they are mapped, they are right at the
+         * end, and both sides agree about which file they came from. What is
+         * left is the mapping itself - aliasing, a reference, or a lifetime -
+         * and that is where the next attempt should start rather than at the
+         * top. */
+        if (file_id != 0u && !(flags & VIBEOS_ELF_W)) {
             uint64_t foff = 0;
             uint64_t phys = 0;
 
@@ -2446,13 +2500,103 @@ static int hw_exec_refuse(vibeos_exec_fail_t why, const char *path,
 
 /* Build a process: private address space, the ELF image loaded into it, and a
  * user stack mapped just below VIBEOS_HW_USER_STACK_TOP. */
+/* Does every resident cache page still hold what the file holds?
+ *
+ * The question exists because these pages stopped being private. Once a
+ * read-only image page is mapped from the cache instead of copied, one frame is
+ * the text of every process running that program - so a single stray write
+ * reaches all of them, and it reaches them as a program misbehaving somewhere
+ * far from whatever did the writing.
+ *
+ * Verified against the file rather than against a checksum taken at fill time:
+ * a checksum proves the bytes have not changed since the kernel last looked,
+ * and the file is what they are supposed to be. Slow, and run once from the
+ * console at the end of a boot, which is when it is worth knowing.
+ *
+ * Reported as a count, and the boot gate asserts it is zero. */
+static uint8_t g_cache_audit_page[4096] __attribute__((aligned(16)));
+
+static void hw_cache_audit(uint64_t *out_checked, uint64_t *out_bad) {
+    uint32_t i;
+    uint64_t checked = 0, bad = 0;
+
+    for (i = 0; i < VIBEOS_HW_CACHE_ENTRIES; i++) {
+        const vibeos_cache_entry_t *e = &g_cache_table[i];
+        const uint8_t *have;
+        uint64_t n;
+        uint32_t k;
+        int differs = 0;
+
+        if (e->file_id == 0u || e->phys == 0u) {
+            continue;
+        }
+        if (e->file_id > g_cached_file_count) {
+            continue;
+        }
+        n = vibeos_fs_read_at(&g_rootfs, &g_cached_files[e->file_id - 1u].node,
+                              e->offset, g_cache_audit_page,
+                              sizeof(g_cache_audit_page));
+        if ((int64_t)n <= 0) {
+            continue;   /* cannot read it now; not evidence about the page */
+        }
+        have = (const uint8_t *)(uintptr_t)e->phys;
+        for (k = 0; k < (uint32_t)n; k++) {
+            if (have[k] != g_cache_audit_page[k]) {
+                differs = 1;
+                break;
+            }
+        }
+        checked++;
+        if (differs) {
+            bad++;
+            vibeos_x86_64_serial_lock();
+            vibeos_x86_64_serial_puts("[EXEC] CACHE_PAGE_CHANGED file=0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)e->file_id);
+            vibeos_x86_64_serial_puts(" offset=0x");
+            vibeos_x86_64_serial_print_hex(e->offset);
+            vibeos_x86_64_serial_puts(" phys=0x");
+            vibeos_x86_64_serial_print_hex(e->phys);
+            vibeos_x86_64_serial_puts(" byte=0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)k);
+            vibeos_x86_64_serial_puts(" file=0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)g_cache_audit_page[k]);
+            vibeos_x86_64_serial_puts(" memory=0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)have[k]);
+            vibeos_x86_64_serial_puts("\n");
+            vibeos_x86_64_serial_unlock();
+        }
+    }
+    *out_checked = checked;
+    *out_bad = bad;
+}
+
+/* Translate the interpreter path a file asks for into one this boot volume can
+ * open. **This is a stand-in for a filesystem layout, not a feature.**
+ *
+ * A dynamic program asks for /lib/ld-musl-x86_64.so.1; the boot volume is FAT,
+ * which has neither that directory nor a name that long, so the loader lives
+ * beside the other programs under a name FAT can hold.
+ *
+ * It is one function on purpose, and `scripts/dev/check-exec-layering.sh` fails
+ * the build if any interpreter path is named anywhere else. The risk with a
+ * stand-in is not that it exists - it is that it breeds. A second hard-coded
+ * path somewhere else, the two disagree, and the substitution stops being
+ * something anyone can find, reason about, or delete.
+ *
+ * If the layout ever becomes real, delete this function rather than
+ * generalising it, and delete the check with it. */
+static const char *hw_interp_path_substitute(const char *path) {
+    if (hw_streq(path, "/lib/ld-musl-x86_64.so.1")) {
+        return "EFI/BOOT/LDMUSL.SO";
+    }
+    return path;
+}
+
 static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
                           const char *const *argv, const char *const *envp,
-                          const char *path) {
+                          const char *path, uint32_t file_id) {
     vibeos_elf_image_t img;
-    /* 0 when there is no cached identity for this image - an embedded program,
-     * or a file the cache declined. Every use below is guarded on it. */
-    uint32_t file_id = path ? hw_file_id(path) : 0u;
+    int rc = -1;
     vibeos_elf_stack_desc_t sd;
     uint8_t at_random[16];
     uint8_t *top_page = 0;
@@ -2525,7 +2669,7 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
                                      VIBEOS_ELF_ALLOW_INTERP, &img);
 
         if (rc != VIBEOS_ELF_OK) {
-            return hw_exec_refuse(VIBEOS_EXEC_BAD_HEADER, path, "parse");
+            { rc = hw_exec_refuse(VIBEOS_EXEC_BAD_HEADER, path, "parse"); goto fail; }
         }
         if (img.is_dyn) {
             /* The low window, the same place a Linux ET_EXEC links itself to.
@@ -2534,21 +2678,21 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
             bias = VIBEOS_HW_LOW_USER_BASE;
             if (img.image_span > VIBEOS_HW_LOW_USER_LIMIT - bias) {
                 /* Would not fit in the window it is offered. */
-                return hw_exec_refuse(VIBEOS_EXEC_BAD_WINDOW, path, "pie_span");
+                { rc = hw_exec_refuse(VIBEOS_EXEC_BAD_WINDOW, path, "pie_span"); goto fail; }
             }
             rc = vibeos_elf_parse_ex(elf, len, bias, VIBEOS_HW_LOW_USER_BASE,
                                      VIBEOS_HW_USER_STACK_TOP,
                                      VIBEOS_ELF_ALLOW_DYN |
                                      VIBEOS_ELF_ALLOW_INTERP, &img);
             if (rc != VIBEOS_ELF_OK) {
-                return hw_exec_refuse(VIBEOS_EXEC_BAD_HEADER, path, "parse_biased");
+                { rc = hw_exec_refuse(VIBEOS_EXEC_BAD_HEADER, path, "parse_biased"); goto fail; }
             }
         }
     }
     if (!(img.min_vaddr >= VIBEOS_HW_USER_BASE) &&
         !(img.min_vaddr >= VIBEOS_HW_LOW_USER_BASE &&
           img.end_vaddr <= VIBEOS_HW_LOW_USER_LIMIT)) {
-        return hw_exec_refuse(VIBEOS_EXEC_BAD_WINDOW, path, "outside_both_windows");
+        { rc = hw_exec_refuse(VIBEOS_EXEC_BAD_WINDOW, path, "outside_both_windows"); goto fail; }
     }
     /* Empty before anything is mapped, not after.
      *
@@ -2560,7 +2704,7 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
     p->vmas.head = 0;
     p->vmas.count = 0;
     if (hw_map_elf_image(&p->as, &p->vmas, &img, elf, file_id) != 0) {
-        return hw_exec_refuse(VIBEOS_EXEC_NO_MEMORY, path, "map_image");
+        { rc = hw_exec_refuse(VIBEOS_EXEC_NO_MEMORY, path, "map_image"); goto fail; }
     }
     p->entry = img.entry;
 
@@ -2578,23 +2722,17 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
 
         if (g_interp_elf == 0) {
             /* Say no rather than half-load. */
-            return hw_exec_refuse(VIBEOS_EXEC_NO_STAGING, path, "interp_staging");
+            { rc = hw_exec_refuse(VIBEOS_EXEC_NO_STAGING, path, "interp_staging"); goto fail; }
         }
 
-        /* The path in the file is a Linux one - musl asks for
-         * /lib/ld-musl-x86_64.so.1 - and the boot volume is FAT, which has
-         * neither that directory nor a name that long. The loader lives beside
-         * the other programs under a name FAT can hold, and the file's request
-         * is translated to it. This is a stand-in for a real filesystem
-         * layout, and it is written here rather than hidden in the media build
-         * so that the substitution is visible from the code that makes it. */
-        if (hw_streq(path, "/lib/ld-musl-x86_64.so.1")) {
-            path = "EFI/BOOT/LDMUSL.SO";
-        }
+        path = hw_interp_path_substitute(path);
 
-        n = hw_read_file_cached(path, g_interp_elf, g_interp_elf_cap);
+        uint32_t interp_id = 0;
+
+        n = hw_read_file_cached(path, g_interp_elf, g_interp_elf_cap,
+                                &interp_id);
         if (n <= 0) {
-            return hw_exec_refuse(VIBEOS_EXEC_NO_INTERP, img.interp, "read");
+            { rc = hw_exec_refuse(VIBEOS_EXEC_NO_INTERP, img.interp, "read"); goto fail; }
         }
 
         /* Above the program, with a gap. Both live in the low window, and an
@@ -2606,17 +2744,17 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
                                 VIBEOS_HW_LOW_USER_BASE,
                                 VIBEOS_HW_USER_STACK_TOP,
                                 VIBEOS_ELF_ALLOW_DYN, &interp) != VIBEOS_ELF_OK) {
-            return hw_exec_refuse(VIBEOS_EXEC_BAD_HEADER, img.interp, "interp_parse");
+            { rc = hw_exec_refuse(VIBEOS_EXEC_BAD_HEADER, img.interp, "interp_parse"); goto fail; }
         }
         if (interp.has_interp || interp.end_vaddr > VIBEOS_HW_LOW_USER_LIMIT) {
             /* An interpreter that needs an interpreter is not a chain this
              * kernel follows, and one that does not fit is refused before any
              * of it is mapped. */
-            return hw_exec_refuse(VIBEOS_EXEC_INTERP_CHAIN, img.interp, "interp_chain");
+            { rc = hw_exec_refuse(VIBEOS_EXEC_INTERP_CHAIN, img.interp, "interp_chain"); goto fail; }
         }
         if (hw_map_elf_image(&p->as, &p->vmas, &interp, g_interp_elf,
-                             hw_file_id(img.interp)) != 0) {
-            return hw_exec_refuse(VIBEOS_EXEC_NO_MEMORY, img.interp, "map_interp");
+                             interp_id) != 0) {
+            { rc = hw_exec_refuse(VIBEOS_EXEC_NO_MEMORY, img.interp, "map_interp"); goto fail; }
         }
 
         /* Start there, and tell it where it was put. */
@@ -2636,7 +2774,7 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
         uint64_t stack_va = VIBEOS_HW_USER_STACK_TOP - ((uint64_t)(i + 1u) * 4096ull);
         if (!page || hw_map_page(&p->as, stack_va, (uint64_t)(uintptr_t)page,
                                  PTE_PRESENT | PTE_WRITE | PTE_USER) != 0) {
-            return hw_exec_refuse(VIBEOS_EXEC_NO_MEMORY, path, "user_stack");
+            { rc = hw_exec_refuse(VIBEOS_EXEC_NO_MEMORY, path, "user_stack"); goto fail; }
         }
         hw_page_put((uint64_t)(uintptr_t)page);   /* D9: the mapping owns it now */
         (void)vibeos_vma_insert(&p->vmas, stack_va, 4096ull,
@@ -2676,7 +2814,7 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
                                         VIBEOS_HW_USER_STACK_TOP, &sd);
     if (p->user_sp == 0) {
         /* Arguments too large for the stack we mapped. */
-        return hw_exec_refuse(VIBEOS_EXEC_ARGS_TOO_LARGE, path, "build_stack");
+        { rc = hw_exec_refuse(VIBEOS_EXEC_ARGS_TOO_LARGE, path, "build_stack"); goto fail; }
     }
     p->brk_cur = VIBEOS_HW_USER_HEAP_BASE;
     p->mmap_cur = VIBEOS_HW_USER_MMAP_BASE;
@@ -2684,6 +2822,29 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
      * says only that something went wrong somewhere. */
     vibeos_exec_stats()->loaded++;
     return 0;
+
+fail:
+    /* Phase X-P3 of docs/exec/: a failure leaves the caller running its old
+     * image, and leaves nothing of the new one behind.
+     *
+     * Every refusal above this point happens after an address space exists and
+     * most of them after pages are mapped and regions recorded. They all used
+     * to return -1 and walk away: execve then reported ENOMEM to the program,
+     * which carried on correctly, while the page tables, every frame they
+     * mapped and every region descriptor stayed allocated with nothing holding
+     * a name for them. A leak nobody could attribute, growing by one whole
+     * address space per failed exec.
+     *
+     * Unwinding here rather than at the call sites is the point of the phase.
+     * There is one function that builds a process, so there is one function
+     * that can take it apart, and a refusal added later cannot forget to. */
+    hw_aspace_destroy_why(&p->as, "proc_create_failed");
+    vibeos_vma_clear(&p->vmas);
+    p->as.pml4 = 0;
+    p->entry = 0;
+    p->user_sp = 0;
+    p->interp_base = 0;
+    return rc;
 }
 
 /* Map `pages` fresh zeroed user pages at `va` in an address space. */
@@ -3603,7 +3764,8 @@ static int hw_task_spawn_user(const unsigned char *elf, uint64_t len,
     if (i < 0) {
         return -1;
     }
-    if (hw_proc_create(&g_tasks[i].proc, elf, len, argv, 0, 0) != 0) {
+    /* An embedded image: no path, and no file behind it to map pages from. */
+    if (hw_proc_create(&g_tasks[i].proc, elf, len, argv, 0, 0, 0u) != 0) {
         hw_task_release(i);
         return -1;
     }
@@ -6157,7 +6319,8 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
         n = g_exec_cached_len;   /* already staged, byte for byte */
     } else {
         hw_exec_cache_drop();
-        n = hw_read_file_cached(path, g_exec_elf, g_exec_elf_cap);
+        n = hw_read_file_cached(path, g_exec_elf, g_exec_elf_cap,
+                                &g_exec_cached_id);
         if (n > 0) {
             uint32_t i;
             for (i = 0; i < sizeof(g_exec_cached) - 1u && path[i]; i++) {
@@ -6206,7 +6369,8 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
         return -VIBEOS_ENOENT;
     }
     if (hw_proc_create(&np, g_exec_elf, (uint64_t)n, argv,
-                       g_exec_envp.slot[0] ? g_exec_envp.slot : 0, path) != 0) {
+                       g_exec_envp.slot[0] ? g_exec_envp.slot : 0, path,
+                       g_exec_cached_id) != 0) {
         hw_log(VIBEOS_LOG_ERROR, 4u, (uint64_t)n, 0,
                "execve rejected the program image");
         vibeos_x86_64_serial_lock();

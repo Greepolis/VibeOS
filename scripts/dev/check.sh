@@ -41,6 +41,10 @@ do_build() {
     # owns - is the whole of phase P2, and it is the kind that erodes one
     # reasonable-looking line at a time.
     bash scripts/dev/check-mm-layering.sh | tail -1
+    # The interpreter substitution, checked the same way and for the same
+    # reason: a rule that lives only in a comment erodes one reasonable
+    # looking line at a time.
+    bash scripts/dev/check-exec-layering.sh | tail -1
     if grep -rn 'TEMPORARY' kernel/ --include=*.c > /dev/null 2>&1; then
         echo "LEFTOVER-DEBUG-CODE:"
         grep -rn 'TEMPORARY' kernel/ --include=*.c | head -3

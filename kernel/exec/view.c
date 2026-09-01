@@ -22,6 +22,10 @@ void vibeos_exec_print_stats(void) {
     vibeos_x86_64_serial_print_hex(s->pages_from_cache);
     vibeos_x86_64_serial_puts(" pages_copied=0x");
     vibeos_x86_64_serial_print_hex(s->pages_copied);
+    vibeos_x86_64_serial_puts(" cache_audit_checked=0x");
+    vibeos_x86_64_serial_print_hex(s->cache_audit_checked);
+    vibeos_x86_64_serial_puts(" cache_audit_changed=0x");
+    vibeos_x86_64_serial_print_hex(s->cache_audit_changed);
     /* The refusals are announced, not just appended.
      *
      * The gate matched them with a bare `name=0x...` pattern, which worked

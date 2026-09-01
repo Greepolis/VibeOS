@@ -51,6 +51,27 @@ static uint32_t g_entries;
 static vibeos_cache_read_fn g_read;
 static void *g_read_ctx;
 static uint32_t g_hand;         /* the clock hand */
+static void (*g_lock)(void);
+static void (*g_unlock)(void);
+
+void vibeos_cache_set_lock(void (*lock)(void), void (*unlock)(void)) {
+    g_lock = lock;
+    g_unlock = unlock;
+}
+
+/* Not recursive, and nothing inside this file calls another public entry point
+ * of it, so it does not need to be. */
+static void cache_lock(void) {
+    if (g_lock) {
+        g_lock();
+    }
+}
+
+static void cache_unlock(void) {
+    if (g_unlock) {
+        g_unlock();
+    }
+}
 static uint32_t g_resident;
 
 void vibeos_cache_init(vibeos_cache_entry_t *table, uint32_t entries,
@@ -153,7 +174,8 @@ static vibeos_cache_entry_t *cache_place(uint32_t file_id, uint64_t offset) {
     return 0;
 }
 
-int vibeos_cache_get(uint32_t file_id, uint64_t offset, uint64_t *out_phys) {
+static int cache_get_locked(uint32_t file_id, uint64_t offset,
+                            uint64_t *out_phys) {
     vibeos_cache_entry_t *e;
     uint64_t phys;
 
@@ -199,12 +221,27 @@ int vibeos_cache_get(uint32_t file_id, uint64_t offset, uint64_t *out_phys) {
     return 0;
 }
 
+/* The read stays inside the lock, and that is a decision rather than an
+ * oversight. It serialises the execs that miss, which is the cost; taking the
+ * lock only around the table would leave a window where a slot is claimed and
+ * not yet filled, and the comment above says what a hit on such a slot hands
+ * out. A slow cache is a slow machine; a cache that guesses is a wrong one. */
+int vibeos_cache_get(uint32_t file_id, uint64_t offset, uint64_t *out_phys) {
+    int r;
+
+    cache_lock();
+    r = cache_get_locked(file_id, offset, out_phys);
+    cache_unlock();
+    return r;
+}
+
 void vibeos_cache_forget(uint32_t file_id) {
     uint32_t i;
 
     if (!g_table || file_id == 0u) {
         return;
     }
+    cache_lock();
     for (i = 0; i < g_entries; i++) {
         vibeos_cache_entry_t *e = &g_table[i];
         if (e->file_id != file_id) {
@@ -218,4 +255,5 @@ void vibeos_cache_forget(uint32_t file_id) {
             g_resident--;
         }
     }
+    cache_unlock();
 }
