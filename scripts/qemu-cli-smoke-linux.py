@@ -777,6 +777,23 @@ def main():
                     # Every shootdown waits for one acknowledgement per other
                     # core, so acks below shootdowns means somebody gave up.
                     problems.append(f"tlb_acks={acks}_below_shootdowns={shootdowns}")
+            # The copy-on-write exclusivity window.
+            #
+            # A page that looked exclusively one address space's, was widened to
+            # writable, and turned out to have been shared in the window between
+            # the decision and the store. That is a real race between a fault
+            # and a fork on another core, and it used to end with one process
+            # holding a writable mapping of another's copy-on-write page.
+            #
+            # Asserted as *present*, not as zero. It is handled now - the entry
+            # is put back and the page copied instead - so a non-zero count is
+            # the handling working. What must not happen is the number going
+            # missing: it was silently common before anything counted it, and a
+            # counter that stops being printed is a detector that stops
+            # existing.
+            if re.search(r"exclusive_lost=0x([0-9a-f]{16})", text) is None:
+                problems.append("no_cow_exclusivity_stats")
+
             # Console-lock hygiene. An unlock from a core that never held
             # the lock frees it out from under whoever is mid-line, and the
             # result is a gate that reports failures which did not happen.

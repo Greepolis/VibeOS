@@ -8582,7 +8582,9 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
         vibeos_x86_64_serial_puts("\n");
     }
     if (vibeos_compat_stats(&g_compat_rt, &translated, &denied) == 0) {
-        vibeos_x86_64_serial_puts("[MM] COW_STATS shared=0x");
+        vibeos_x86_64_serial_puts("[MM] COW_STATS exclusive_lost=0x");
+        vibeos_x86_64_serial_print_hex(vibeos_mm_stats()->cow_exclusive_lost);
+        vibeos_x86_64_serial_puts(" shared=0x");
         vibeos_x86_64_serial_print_hex(g_cow_shared);
         vibeos_x86_64_serial_puts(" copied=0x");
         vibeos_x86_64_serial_print_hex(g_cow_copied);

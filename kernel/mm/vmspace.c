@@ -588,7 +588,14 @@ static int foreach_owned(vibeos_vmspace_t *as,
 
 static int clone_one(vibeos_vmspace_t *src, uint64_t va, uint64_t *pte, void *ctx) {
     vibeos_vmspace_t *dst = (vibeos_vmspace_t *)ctx;
-    uint64_t entry = *pte;
+    /* Read once, atomically, and act on that value.
+     *
+     * This was a plain load, and the read-only and already-COW branches below
+     * commit to the `phys` it yields without ever re-validating it - they take
+     * a reference on that frame and map it into the child. A plain load of a
+     * word another core is compare-exchanging is exactly the read this file
+     * spends the rest of its length avoiding. */
+    uint64_t entry = __atomic_load_n(pte, __ATOMIC_ACQUIRE);
     uint64_t phys = entry & PTE_ADDR_MASK;
     uint64_t flags = entry & (PTE_PRESENT | PTE_USER);
 
@@ -673,6 +680,12 @@ static int copy_frame(uint64_t dst, uint64_t src) {
     return 0;
 }
 
+static void (*g_race_hook)(uint64_t phys);
+
+void vibeos_vmspace_set_race_hook(void (*fn)(uint64_t phys)) {
+    g_race_hook = fn;
+}
+
 int vibeos_vmspace_fault(vibeos_vmspace_t *as, uint64_t va, int write) {
     uint64_t *pte;
     uint64_t entry, expected, desired, phys, fresh;
@@ -721,8 +734,45 @@ int vibeos_vmspace_fault(vibeos_vmspace_t *as, uint64_t va, int write) {
     if (vibeos_frame_owners(phys) <= 1u) {
         expected = entry;
         desired = phys | PTE_PRESENT | PTE_WRITE | PTE_USER | VIBEOS_PTE_OWNED;
-        (void)__atomic_compare_exchange_n(pte, &expected, desired, 0,
-                                          __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
+        if (g_race_hook) {
+            g_race_hook(phys);
+        }
+        if (__atomic_compare_exchange_n(pte, &expected, desired, 0,
+                                        __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+            /* Re-check, because the exchange above could not have guarded this.
+             *
+             * The decision to widen this entry to writable rests on the frame
+             * having exactly one owner. That fact lives in the reference count,
+             * not in the page-table entry, so a compare-exchange on the entry
+             * proves nothing about it: a fork on another core can take a
+             * reference to this frame in the window and leave the entry byte
+             * for byte identical. The already-COW branch of clone_one does
+             * exactly that - it shares the frame and never writes to the source
+             * entry at all, so there is nothing for the exchange to notice.
+             *
+             * The result was a process holding a *writable* mapping of a frame
+             * another address space held copy-on-write: one side's writes
+             * appearing in the other's private page. That is the defect the
+             * stress service reports as "the child could not keep its own copy"
+             * and, when the frame is later reused, as a page holding a value
+             * from a different round entirely.
+             *
+             * Undoing is safe precisely because no TLB has seen the writable
+             * form yet: it is installed and withdrawn before any invlpg, and
+             * the faulting instruction has not been retried. */
+            if (vibeos_frame_owners(phys) > 1u) {
+                uint64_t installed = desired;
+
+                if (__atomic_compare_exchange_n(pte, &installed, entry, 0,
+                                                __ATOMIC_ACQ_REL,
+                                                __ATOMIC_RELAXED)) {
+                    vibeos_mm_stats()->cow_exclusive_lost++;
+                    goto copy;   /* it is shared after all */
+                }
+                /* Lost the undo: another core has resolved this page since,
+                 * and whatever it decided is newer than what we know. */
+            }
+        }
         /* Either we granted the write or somebody else already did; the
          * instruction is retried and will succeed or fault again honestly. */
         if (g_be.invlpg) {
@@ -730,6 +780,8 @@ int vibeos_vmspace_fault(vibeos_vmspace_t *as, uint64_t va, int write) {
         }
         return 1;
     }
+
+copy:
 
     fresh = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
     if (!fresh) {

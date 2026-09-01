@@ -154,6 +154,76 @@ creator finished filling it in, or a kernel stack being used after it was freed.
 The task state machine's `SETUP` state and its tenancy counter exist for
 exactly this shape and should be the first things consulted.
 
+## The copy-on-write defect, found and closed (2026-09-01)
+
+Closed by CI logs, not by another boot sweep. The nightly's clang/Release job
+had failed with
+
+    STRESS_FAIL: the child's own copy-on-write page at offset 0: found 0xf3 expected 0x0c
+    STRESS_FAIL: replay with EFI/BOOT/SVC_STRS.ELF 5498867...
+
+on a build that predates all of this session's work, which settled that it was
+pre-existing rather than a regression. Decoding the two numbers is what pointed
+at the mechanism: the stress service writes `after` to every byte of the
+page and reads it back, and `found=0xf3` is exactly `before` - the
+*parent's* value. The child was reading the parent's frame after writing its
+own.
+
+### Two defects, one page of code
+
+**1. The fault handler's exclusivity check rests on a fact its
+compare-exchange cannot guard.** `vibeos_vmspace_fault` has a fast path:
+if the frame has one owner, take the write permission back in place rather than
+copying. It reads `vibeos_frame_owners(phys)`, then compare-exchanges the
+page-table entry.
+
+The exchange guards the **entry**. The decision depends on the **reference
+count**. The entry does not encode the count, so the two are unrelated, and a
+fork on another core can take a reference in the window while leaving the entry
+byte for byte identical.
+
+**2. `clone_one` is what walks into that window.** Its already-copy-on-write
+branch does no compare-exchange at all - it has nothing to change, since the
+entry is already marked - so it takes a reference on the frame and maps it into
+the child without touching the source entry. There is nothing for the fault
+handler's exchange to notice. It also read the entry with a plain load, in a
+file whose entire design is that every page-table word is read once and acted on
+atomically.
+
+The result is a process holding a **writable** mapping of a frame another
+address space holds copy-on-write: one side's writes landing in the other's
+private page. When the frame is later reused, the same defect shows up instead
+as a page holding a value from a completely different round - which is the local
+failure, `found 0x5b`, a `before` value from another iteration.
+
+### The fix, and why it can stay fast
+
+The fast path keeps its optimisation and re-checks after the store: if the frame
+gained an owner while the entry was being widened, the entry is put back and the
+copy path taken instead. Undoing is safe precisely because no TLB has seen the
+writable form - it is installed and withdrawn before any `invlpg`, and the
+faulting instruction has not been retried. `clone_one` now reads its entry
+atomically. `cow_exclusive_lost` counts the window being hit, because it
+was silently common and must never become unobservable again.
+
+### It is asserted deterministically, not through boots
+
+This is the part worth keeping. A race that appears once in some number of boots
+cannot be gated by a boot, and every earlier claim in this file that such a
+thing was "fixed" rested on a handful of green runs.
+
+`vibeos_vmspace_set_race_hook` is a seam that lets a host test occupy the
+window on purpose: it fires between the ownership decision and the store, and
+the test takes exactly the reference `clone_one` would. The assertion is
+that the frame shared during the fault is not the frame the address space can
+afterwards write. Removing the re-check turns it red with
+
+    FAIL:a frame shared during the fault was made writable in place
+
+every time, on the host, in under a second.
+
+Rate after the fix: **23/24, with no stress failure in any of them**.
+
 ## Superseded: the copy-on-write path (2026-08-31)
 
 Separate from the two signatures above, and the more tractable of everything

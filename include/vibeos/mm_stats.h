@@ -33,6 +33,11 @@ typedef struct vibeos_mm_stats {
     uint64_t unmaps;             /* user PTEs destroyed                       */
     uint64_t cow_shared;         /* pages handed to a child instead of copied */
     uint64_t cow_copied;         /* copies a later write forced               */
+
+    /* Times a page looked exclusively ours, was widened to writable, and turned
+     * out to have been shared in the window between the two. Must be rare; it
+     * must never be impossible to observe, because it was silently common. */
+    uint64_t cow_exclusive_lost;
     uint64_t tlb_shootdowns;     /* cross-core invalidations sent             */
     uint64_t tlb_acks;           /* ...and acknowledged                       */
     uint64_t tlb_timeouts;       /* a core never answered. MUST BE ZERO       */

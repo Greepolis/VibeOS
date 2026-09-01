@@ -105,6 +105,19 @@ static int setup(int with_low_window) {
     }
 }
 
+/* Stands in for a fork on another core landing inside the copy-on-write
+ * fault's exclusivity window. It takes exactly the reference clone_one's
+ * already-COW branch takes, and - like that branch - leaves the source
+ * page-table entry untouched, which is what makes the compare-exchange in the
+ * fault handler blind to it. */
+static uint64_t g_race_frame;
+
+static void race_take_a_reference(uint64_t phys) {
+    if (phys == g_race_frame) {
+        vibeos_frame_get(phys);
+    }
+}
+
 int test_vmspace(void) {
     vibeos_vmspace_t as;
     uint64_t f1, f2;
@@ -455,6 +468,79 @@ int test_vmspace(void) {
             goto fail;
         }
         if ((*ce & 2ull) == 0ull) { goto fail; }
+
+        /* ---- a fork that lands in the exclusivity window ------------------
+         *
+         * The defect this proves, and the reason it needs a seam rather than a
+         * boot: the sole-owner path above decides to widen the entry to
+         * writable because the frame has one owner, and then stores. The store
+         * is a compare-exchange, but it guards the *entry*, and the fact it
+         * depends on lives in the *reference count*. clone_one's already-COW
+         * branch takes a reference and never touches the source entry, so a
+         * fork on another core can make the decision false while leaving the
+         * exchange nothing to notice.
+         *
+         * The result was a process holding a writable mapping of a frame
+         * another address space held copy-on-write - one side's writes landing
+         * in the other's private page. On a running machine that is
+         * "STRESS_FAIL: the child could not keep its own copy", once in
+         * however many boots. Here it is every time.
+         *
+         * The hook stands in for the concurrent fork: it runs inside the
+         * window and takes exactly the reference clone_one would. */
+        {
+            uint64_t page = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+            const uint64_t va = 0x8000002000ull;
+            uint64_t *e;
+            uint64_t before_lost;
+
+            if (!page) { goto fail; }
+            if (vibeos_vmspace_map(&as, va, page,
+                                   VIBEOS_PROT_READ | VIBEOS_PROT_WRITE |
+                                   VIBEOS_PROT_USER) != 0) { goto fail; }
+            /* Fork, then take the child's mapping and the standalone reference
+             * away again. What is left is the state the fast path exists for:
+             * an entry still marked copy-on-write, on a frame this address
+             * space is now the only owner of - a parent whose child has since
+             * exited. */
+            if (vibeos_vmspace_clone_cow(&child, &as) != 0) { goto fail; }
+            if (vibeos_vmspace_unmap(&child, va) != 1) { goto fail; }
+            (void)vibeos_frame_put(page);
+            if (vibeos_frame_owners(page) != 1u) {
+                printf("FAIL:the exclusivity case was not set up\n");
+                goto fail;
+            }
+
+            before_lost = vibeos_mm_stats()->cow_exclusive_lost;
+            g_race_frame = page;
+            vibeos_vmspace_set_race_hook(race_take_a_reference);
+            if (vibeos_vmspace_fault(&as, va, 1) != 1) { goto fail; }
+            vibeos_vmspace_set_race_hook(0);
+
+            e = vibeos_vmspace_entry(&as, va);
+            if (!e) { goto fail; }
+            if ((*e & 2ull) == 0ull) {
+                printf("FAIL:the fault left the page unwritable\n");
+                goto fail;
+            }
+            /* The whole point. The frame the hook took a reference to must not
+             * be the frame this address space can now write. */
+            if ((*e & ~0xFFFull) == page) {
+                printf("FAIL:a frame shared during the fault was made writable in place\n");
+                goto fail;
+            }
+            if (vibeos_mm_stats()->cow_exclusive_lost != before_lost + 1ull) {
+                printf("FAIL:losing exclusivity mid-fault was not counted\n");
+                goto fail;
+            }
+            /* And the reference the hook took is still there: the fault copied
+             * instead, so it never released a frame somebody else had taken. */
+            if (vibeos_frame_owners(page) != 1u) {
+                printf("FAIL:the fault released a frame taken during its own window\n");
+                goto fail;
+            }
+            (void)vibeos_frame_put(page);
+        }
 
         /* A write fault on a page that is already writable is the stale-TLB
          * case: another core resolved it first. It must be reported handled,

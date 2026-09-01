@@ -193,6 +193,21 @@ int vibeos_vmspace_clone_cow(vibeos_vmspace_t *dst, vibeos_vmspace_t *src);
  * on a read-only page exactly as ring 3 would. Requiring a user-mode fault here
  * refuses precisely the faults that happen while serving a syscall, which is
  * how a freshly forked shell dies without printing anything. */
+/* A seam for the one race that cannot be reached from a single-threaded test.
+ *
+ * The copy-on-write fault decides whether a frame is exclusively this address
+ * space's by reading its reference count, and then stores a new page-table
+ * entry. The store is a compare-exchange, but the compare-exchange guards the
+ * *entry* and the hazard is a change to the *count* - which the entry does not
+ * encode. A concurrent fork can take a reference in that window without
+ * touching the entry at all.
+ *
+ * Registered only by the host test, which uses it to occupy that window on
+ * purpose. In the kernel it is null and costs one predictable branch. This is
+ * here because the alternative is asserting on a race through boot counts, and
+ * this project has already learned what that costs. */
+void vibeos_vmspace_set_race_hook(void (*fn)(uint64_t phys));
+
 int vibeos_vmspace_fault(vibeos_vmspace_t *as, uint64_t va, int write);
 
 /* The entry for an address, or null. Read-only; callers must not write through
