@@ -31,6 +31,18 @@ static uint32_t g_slots;
  *                     reap race a wake and resurrect a task onto a destroyed
  *                     address space.
  *
+ * BLOCKED -> BLOCKED is the one legal entry on the diagonal, and it took a
+ * failed boot to put it there. A blocking syscall is a loop: set BLOCKED, halt,
+ * and on waking re-check the condition it was waiting for. `hlt` returns on any
+ * interrupt, not only on the wake that was meant for it - so a timer tick while
+ * nothing else is runnable drops waitpid back into its loop with the condition
+ * still false, and it blocks again from BLOCKED rather than from RUNNING.
+ *
+ * That is the task correctly re-asserting its own condition, and refusing it
+ * made a whole boot red for a defect that was not there. The other diagonals
+ * stay illegal: RUNNING -> RUNNING would hide two cores on one task, which is a
+ * bug this project has actually had.
+ *
  * SETUP -> RUNNING is legal, and was missing from the first draft of this
  * table. The state machine refused it on the first boot, which is the table
  * being wrong rather than the kernel: a core adopts the thread it is already
@@ -43,7 +55,7 @@ static const uint8_t g_legal[VIBEOS_TASK_STATE_COUNT][VIBEOS_TASK_STATE_COUNT] =
     /* READY   */   {  0,   0,    1,   1,   1,    0 },
     /* RUNNING */   {  0,   1,    0,   1,   1,    0 },
     /* ZOMBIE  */   {  1,   0,    0,   0,   0,    0 },
-    /* BLOCKED */   {  0,   1,    0,   1,   0,    0 },
+    /* BLOCKED */   {  0,   1,    0,   1,   1,    0 },
     /* SETUP   */   {  1,   1,    1,   0,   0,    0 },
 };
 

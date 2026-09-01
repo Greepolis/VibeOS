@@ -91,6 +91,25 @@ int test_lifetime(void) {
     if (!expect(vibeos_reap_check(stale, 20u, 10u, 10u, 0u) == VIBEOS_REAP_GONE,
                 "a reference from a previous tenancy reaped the new task")) { goto fail; }
 
+    /* ---- an idempotent re-block ------------------------------------------ *
+     *
+     * A blocking syscall halts and re-checks, and `hlt` returns on any
+     * interrupt - so a task can come back round its loop with the condition
+     * still false and block again from BLOCKED. One boot went red on that.
+     *
+     * The rest of the diagonal stays refused, which is the point of testing
+     * both halves: RUNNING -> RUNNING would hide two cores on one task. */
+    if (vibeos_task_transition(1, VIBEOS_TASK_FREE, "reaped again") != 0) { goto fail; }
+    if (vibeos_task_transition(1, VIBEOS_TASK_SETUP, "fork") != 0) { goto fail; }
+    if (vibeos_task_transition(1, VIBEOS_TASK_READY, "spawn") != 0) { goto fail; }
+    if (vibeos_task_transition(1, VIBEOS_TASK_BLOCKED, "waitpid") != 0) { goto fail; }
+    if (!expect(vibeos_task_transition(1, VIBEOS_TASK_BLOCKED, "waitpid again") == 0,
+                "a task could not re-assert the condition it was already waiting on")) { goto fail; }
+    if (!expect(vibeos_task_transition_legal(VIBEOS_TASK_RUNNING, VIBEOS_TASK_RUNNING) == 0,
+                "running to running was allowed: two cores on one task would pass")) { goto fail; }
+    if (!expect(vibeos_task_transition_legal(VIBEOS_TASK_READY, VIBEOS_TASK_READY) == 0,
+                "ready to ready was allowed")) { goto fail; }
+
     /* ---- teardown order --------------------------------------------------- */
     vibeos_task_stats_reset();
     vibeos_teardown_reset(2);

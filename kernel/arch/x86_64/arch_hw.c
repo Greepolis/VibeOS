@@ -3165,6 +3165,104 @@ static void hw_task_load_cpu_state(int idx) {
  *
  * On SMP every core's local-APIC timer calls this independently; the run queue
  * is shared, so the pick-and-claim step is done under the scheduler lock. */
+/* Refuse to enter a context that cannot be a context. Phase S-P1 of docs/sched/.
+ *
+ * The failure this exists for: a #GP inside vibeos_x86_64_task_enter, and then
+ * a second #GP at rip=0xe4e4e4e4e4e4e4e4 - a saved register context holding a
+ * repeated fill byte. iretq consumed it, so the machine died on the way into
+ * ring 3 with the panic handler running on the same broken state, and every
+ * boot it happened in reported nothing but silence.
+ *
+ * iretq is the wrong place to find out. It has no way to say which task, which
+ * slot, or who filled it in; it just faults, and by then the state that would
+ * have named the culprit is the state that caused the fault. Six comparisons
+ * before the jump turn that into a sentence.
+ *
+ * What is checked is only what the hardware requires and this kernel controls:
+ * the two selector pairs it ever uses, a canonical rip and rsp, and the two
+ * rflags bits that are not negotiable (bit 1 is always set; IF must be on or
+ * the task can never be preempted again). Anything else a task may legitimately
+ * hold. */
+static void hw_ctx_check(int slot, const char *where) {
+    const vibeos_x86_64_isr_frame_t *c;
+    const char *bad = 0;
+
+    if (slot < 0 || slot >= VIBEOS_HW_MAX_TASKS) {
+        hw_panic("task_enter on a slot that does not exist");
+    }
+    c = &g_tasks[slot].ctx;
+
+    if (c->cs == VIBEOS_HW_USER_CODE_SEL) {
+        if (c->ss != VIBEOS_HW_USER_DATA_SEL) { bad = "user cs with a non-user ss"; }
+    } else if (c->cs == VIBEOS_HW_KERNEL_CS) {
+        if (c->ss != 0x10u) { bad = "kernel cs with a non-kernel ss"; }
+    } else {
+        bad = "cs is not a selector this kernel issues";
+    }
+    /* Canonical: bits 63..47 all equal. A fill byte fails this, and so does a
+     * pointer read out of a page that has been recycled. */
+    if (!bad && ((c->rip >> 47) != 0ull && (c->rip >> 47) != 0x1FFFFull)) {
+        bad = "rip is not canonical";
+    }
+    if (!bad && ((c->rsp >> 47) != 0ull && (c->rsp >> 47) != 0x1FFFFull)) {
+        bad = "rsp is not canonical";
+    }
+    if (!bad && (c->rflags & 0x2ull) == 0ull) { bad = "rflags bit 1 clear"; }
+    if (!bad && (c->rflags & 0x200ull) == 0ull) { bad = "rflags has interrupts off"; }
+    if (!bad) {
+        return;
+    }
+
+    /* One call, because a report assembled from a dozen serial_puts is a dozen
+     * critical sections and three other cores are writing their own. */
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts("[CTX] refusing to enter task: ");
+    vibeos_x86_64_serial_puts(bad);
+    vibeos_x86_64_serial_puts(" from=");
+    vibeos_x86_64_serial_puts(where ? where : "-");
+    vibeos_x86_64_serial_puts(" slot=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)slot);
+    vibeos_x86_64_serial_puts(" gen=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)g_tasks[slot].alloc_seq);
+    vibeos_x86_64_serial_puts(" state=");
+    vibeos_x86_64_serial_puts(hw_task_state_name(g_tasks[slot].state));
+    vibeos_x86_64_serial_puts(" state_by=");
+    vibeos_x86_64_serial_puts(vibeos_task_last_why((uint32_t)slot));
+    vibeos_x86_64_serial_puts(" ready_by=");
+    vibeos_x86_64_serial_puts(g_tasks[slot].ready_by ? g_tasks[slot].ready_by : "-");
+    vibeos_x86_64_serial_puts(" on_cpu=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)g_tasks[slot].on_cpu);
+    vibeos_x86_64_serial_puts(" pid=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)g_tasks[slot].pid);
+    vibeos_x86_64_serial_puts(" cr3=0x");
+    vibeos_x86_64_serial_print_hex(g_tasks[slot].cr3);
+    vibeos_x86_64_serial_puts(" cr3_by=");
+    vibeos_x86_64_serial_puts(g_tasks[slot].cr3_set_by ? g_tasks[slot].cr3_set_by : "-");
+    vibeos_x86_64_serial_puts(" exe=");
+    vibeos_x86_64_serial_puts(g_tasks[slot].proc.exe_path[0] ?
+                              g_tasks[slot].proc.exe_path : "-");
+    vibeos_x86_64_serial_puts(" rip=0x");
+    vibeos_x86_64_serial_print_hex(c->rip);
+    vibeos_x86_64_serial_puts(" cs=0x");
+    vibeos_x86_64_serial_print_hex(c->cs);
+    vibeos_x86_64_serial_puts(" rflags=0x");
+    vibeos_x86_64_serial_print_hex(c->rflags);
+    vibeos_x86_64_serial_puts(" rsp=0x");
+    vibeos_x86_64_serial_print_hex(c->rsp);
+    vibeos_x86_64_serial_puts(" ss=0x");
+    vibeos_x86_64_serial_print_hex(c->ss);
+    vibeos_x86_64_serial_puts(" rax=0x");
+    vibeos_x86_64_serial_print_hex(c->rax);
+    vibeos_x86_64_serial_puts(" rbp=0x");
+    vibeos_x86_64_serial_print_hex(c->rbp);
+    vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
+
+    /* A panic, not a skip. The context is already unusable, and a task quietly
+     * dropped from the run queue is the silence this was written to end. */
+    hw_panic("a task context was not enterable");
+}
+
 static void hw_schedule(vibeos_x86_64_isr_frame_t *frame) {
     hw_cpu_t *cpu = hw_this_cpu();
     int cur, next;
@@ -3195,6 +3293,16 @@ static void hw_schedule(vibeos_x86_64_isr_frame_t *frame) {
     g_tasks[next].on_cpu = 1;
     *frame = g_tasks[next].ctx;
     hw_spin_unlock(&g_sched_lock);
+
+    /* The ordinary switch, and the one that matters most: this frame is about
+     * to be consumed by the iretq at the end of the ISR, several returns away
+     * from anything that could say which task it belonged to.
+     *
+     * Checked outside the scheduler lock deliberately - the report takes the
+     * console lock, and taking that one inside this one is a lock order this
+     * kernel does not otherwise use. `next` is marked on_cpu here, so no other
+     * core can be writing the context being read. */
+    hw_ctx_check(next, "preempt");
 
     hw_task_load_cpu_state(next);
 }
@@ -3570,6 +3678,7 @@ static void hw_task_exit(uint64_t code) {
         }
         hw_spin_unlock(&g_sched_lock);
     }
+    hw_ctx_check(next, "schedule");
     vibeos_x86_64_task_enter(&g_tasks[next].ctx); /* does not return */
 }
 
@@ -8075,6 +8184,7 @@ void vibeos_x86_64_ap_main(void) {
     __asm__ __volatile__("sfence" ::: "memory");
     vibeos_x86_64_ap_alive = 1;
     vibeos_x86_64_lapic_timer_start(VIBEOS_HW_TIMER_HZ, VIBEOS_HW_IRQ_TIMER);
+    hw_ctx_check(idle, "ap_idle");
     vibeos_x86_64_task_enter(&g_tasks[idle].ctx); /* does not return */
 }
 
