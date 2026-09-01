@@ -2,6 +2,7 @@
 #include "vibeos/arch_x86_64.h"
 #include "vibeos/mm_model.h"
 #include "vibeos/task_stats.h"
+#include "vibeos/exec_stats.h"
 #include <stddef.h>
 
 static int kernel_bootinfo_validate(const vibeos_boot_info_t *boot_info) {
@@ -84,7 +85,7 @@ static int kernel_boot_fail(vibeos_kernel_t *kernel, size_t code, const char *me
 }
 
 static void kernel_cli_print_help(void) {
-    vibeos_x86_64_serial_puts("[CLI] Commands: help, status, log, meminfo, tasks, crash, echo <text>, halt, reboot\n");
+    vibeos_x86_64_serial_puts("[CLI] Commands: help, status, log, meminfo, tasks, exec, crash, echo <text>, halt, reboot\n");
 }
 
 static void kernel_cli_print_status(const vibeos_kernel_t *kernel) {
@@ -359,6 +360,13 @@ static void kernel_cli_run(vibeos_kernel_t *kernel) {
             vibeos_task_print_table();
             vibeos_task_print_stats();
             vibeos_x86_64_serial_puts("[TASKS] end\n");
+            continue;
+        }
+        if (kernel_str_eq(line, "exec")) {
+            /* Why programs failed to start, by reason. Before this, every way
+             * of failing printed the same sentence, so the log could not tell
+             * an absent file from a short one from an exhausted allocator. */
+            vibeos_exec_print_stats();
             continue;
         }
         if (kernel_str_eq(line, "meminfo")) {

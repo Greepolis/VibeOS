@@ -20,6 +20,7 @@
 #include "vibeos/inet.h"
 #include "vibeos/elf.h"
 #include "vibeos/services.h"
+#include "vibeos/exec_stats.h"
 
 #define VIBEOS_HW_KERNEL_CS 0x08u
 #define VIBEOS_HW_KERNEL_DS 0x10u
@@ -2274,10 +2275,43 @@ static void hw_seed_at_random(uint8_t out[16]) {
     }
 }
 
+/* Say no, out loud, once. Phase X-P0 of docs/exec/.
+ *
+ * The loader had fourteen `return -1` sites and one message between them, so
+ * every way of failing to start a program produced the same sentence. "Cannot
+ * load" is not a diagnosis: the file being absent, the file being present and
+ * short, and the file being perfect with no memory left are three unrelated
+ * investigations, and the log could not tell them apart.
+ *
+ * One line, one call, because a message assembled from six serial_puts is six
+ * critical sections with three other cores writing into the gaps - and a line
+ * cut in half has already cost this project two investigations into crashes
+ * that never happened.
+ *
+ * The counter is portable and separate so a host test can assert it too. */
+static int hw_exec_refuse(vibeos_exec_fail_t why, const char *path,
+                          const char *detail) {
+    const char *name = vibeos_exec_refuse(why);
+
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts("[EXEC] refused reason=");
+    vibeos_x86_64_serial_puts(name);
+    vibeos_x86_64_serial_puts(" path=");
+    vibeos_x86_64_serial_puts(path && path[0] ? path : "-");
+    if (detail && detail[0]) {
+        vibeos_x86_64_serial_puts(" at=");
+        vibeos_x86_64_serial_puts(detail);
+    }
+    vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
+    return -1;
+}
+
 /* Build a process: private address space, the ELF image loaded into it, and a
  * user stack mapped just below VIBEOS_HW_USER_STACK_TOP. */
 static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
-                          const char *const *argv, const char *const *envp) {
+                          const char *const *argv, const char *const *envp,
+                          const char *path) {
     vibeos_elf_image_t img;
     vibeos_elf_stack_desc_t sd;
     uint8_t at_random[16];
@@ -2285,7 +2319,7 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
     uint32_t i;
 
     if (hw_aspace_create(&p->as) != 0) {
-        return -1;
+        return hw_exec_refuse(VIBEOS_EXEC_NO_ASPACE, path, "aspace_create");
     }
     /* The portable parser validates the file and describes it; this loop just
      * places it. Working a page at a time is what makes a page shared between
@@ -2327,7 +2361,7 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
                                      VIBEOS_ELF_ALLOW_INTERP, &img);
 
         if (rc != VIBEOS_ELF_OK) {
-            return -1;
+            return hw_exec_refuse(VIBEOS_EXEC_BAD_HEADER, path, "parse");
         }
         if (img.is_dyn) {
             /* The low window, the same place a Linux ET_EXEC links itself to.
@@ -2335,21 +2369,22 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
              * would need the whole two-window address policy re-argued. */
             bias = VIBEOS_HW_LOW_USER_BASE;
             if (img.image_span > VIBEOS_HW_LOW_USER_LIMIT - bias) {
-                return -1;   /* would not fit in the window it is offered */
+                /* Would not fit in the window it is offered. */
+                return hw_exec_refuse(VIBEOS_EXEC_BAD_WINDOW, path, "pie_span");
             }
             rc = vibeos_elf_parse_ex(elf, len, bias, VIBEOS_HW_LOW_USER_BASE,
                                      VIBEOS_HW_USER_STACK_TOP,
                                      VIBEOS_ELF_ALLOW_DYN |
                                      VIBEOS_ELF_ALLOW_INTERP, &img);
             if (rc != VIBEOS_ELF_OK) {
-                return -1;
+                return hw_exec_refuse(VIBEOS_EXEC_BAD_HEADER, path, "parse_biased");
             }
         }
     }
     if (!(img.min_vaddr >= VIBEOS_HW_USER_BASE) &&
         !(img.min_vaddr >= VIBEOS_HW_LOW_USER_BASE &&
           img.end_vaddr <= VIBEOS_HW_LOW_USER_LIMIT)) {
-        return -1;
+        return hw_exec_refuse(VIBEOS_EXEC_BAD_WINDOW, path, "outside_both_windows");
     }
     /* Empty before anything is mapped, not after.
      *
@@ -2361,7 +2396,7 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
     p->vmas.head = 0;
     p->vmas.count = 0;
     if (hw_map_elf_image(&p->as, &p->vmas, &img, elf) != 0) {
-        return -1;
+        return hw_exec_refuse(VIBEOS_EXEC_NO_MEMORY, path, "map_image");
     }
     p->entry = img.entry;
 
@@ -2378,7 +2413,8 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
         uint64_t bias;
 
         if (g_interp_elf == 0) {
-            return -1;   /* no staging buffer: say no rather than half-load */
+            /* Say no rather than half-load. */
+            return hw_exec_refuse(VIBEOS_EXEC_NO_STAGING, path, "interp_staging");
         }
 
         /* The path in the file is a Linux one - musl asks for
@@ -2394,10 +2430,7 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
 
         n = hw_read_file_cached(path, g_interp_elf, g_interp_elf_cap);
         if (n <= 0) {
-            vibeos_x86_64_serial_puts("[EXEC] interpreter not found: ");
-            vibeos_x86_64_serial_puts(img.interp);
-            vibeos_x86_64_serial_puts("\n");
-            return -1;
+            return hw_exec_refuse(VIBEOS_EXEC_NO_INTERP, img.interp, "read");
         }
 
         /* Above the program, with a gap. Both live in the low window, and an
@@ -2409,16 +2442,16 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
                                 VIBEOS_HW_LOW_USER_BASE,
                                 VIBEOS_HW_USER_STACK_TOP,
                                 VIBEOS_ELF_ALLOW_DYN, &interp) != VIBEOS_ELF_OK) {
-            return -1;
+            return hw_exec_refuse(VIBEOS_EXEC_BAD_HEADER, img.interp, "interp_parse");
         }
         if (interp.has_interp || interp.end_vaddr > VIBEOS_HW_LOW_USER_LIMIT) {
             /* An interpreter that needs an interpreter is not a chain this
              * kernel follows, and one that does not fit is refused before any
              * of it is mapped. */
-            return -1;
+            return hw_exec_refuse(VIBEOS_EXEC_INTERP_CHAIN, img.interp, "interp_chain");
         }
         if (hw_map_elf_image(&p->as, &p->vmas, &interp, g_interp_elf) != 0) {
-            return -1;
+            return hw_exec_refuse(VIBEOS_EXEC_NO_MEMORY, img.interp, "map_interp");
         }
 
         /* Start there, and tell it where it was put. */
@@ -2438,7 +2471,7 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
         uint64_t stack_va = VIBEOS_HW_USER_STACK_TOP - ((uint64_t)(i + 1u) * 4096ull);
         if (!page || hw_map_page(&p->as, stack_va, (uint64_t)(uintptr_t)page,
                                  PTE_PRESENT | PTE_WRITE | PTE_USER) != 0) {
-            return -1;
+            return hw_exec_refuse(VIBEOS_EXEC_NO_MEMORY, path, "user_stack");
         }
         hw_page_put((uint64_t)(uintptr_t)page);   /* D9: the mapping owns it now */
         (void)vibeos_vma_insert(&p->vmas, stack_va, 4096ull,
@@ -2477,10 +2510,14 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
     p->user_sp = vibeos_elf_build_stack(top_page, 4096ull,
                                         VIBEOS_HW_USER_STACK_TOP, &sd);
     if (p->user_sp == 0) {
-        return -1;   /* arguments too large for the stack we mapped */
+        /* Arguments too large for the stack we mapped. */
+        return hw_exec_refuse(VIBEOS_EXEC_ARGS_TOO_LARGE, path, "build_stack");
     }
     p->brk_cur = VIBEOS_HW_USER_HEAP_BASE;
     p->mmap_cur = VIBEOS_HW_USER_MMAP_BASE;
+    /* The denominator. A count of refusals with nothing to compare it against
+     * says only that something went wrong somewhere. */
+    vibeos_exec_stats()->loaded++;
     return 0;
 }
 
@@ -3401,7 +3438,7 @@ static int hw_task_spawn_user(const unsigned char *elf, uint64_t len,
     if (i < 0) {
         return -1;
     }
-    if (hw_proc_create(&g_tasks[i].proc, elf, len, argv, 0) != 0) {
+    if (hw_proc_create(&g_tasks[i].proc, elf, len, argv, 0, 0) != 0) {
         hw_task_release(i);
         return -1;
     }
@@ -5992,16 +6029,19 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
          * be about one of these. */
         hw_log(VIBEOS_LOG_DEBUG, 3u, (uint64_t)n, 0,
                "execve could not read the program image");
-        vibeos_x86_64_serial_lock();
-        vibeos_x86_64_serial_puts("[EXEC] read failed: ");
-        vibeos_x86_64_serial_puts(path);
-        vibeos_x86_64_serial_puts("\n");
-        vibeos_x86_64_serial_unlock();
+        /* Counted as well as printed. This one had a message of its own, which
+         * is exactly how it stayed outside the tally: a sentence in the log is
+         * not a reason anything can assert on. It is also the *expected*
+         * refusal on a healthy boot - a shell resolving a bare command name
+         * tries it as a path first, and a C runtime asks for /proc/self/exe -
+         * so the gate's expected set is not empty, and a set that must contain
+         * this and nothing else is a much stronger assertion than a count. */
+        (void)hw_exec_refuse(VIBEOS_EXEC_NOT_FOUND, path, "read_file");
         hw_spin_unlock_preemptible(&g_exec_lock);
         return -VIBEOS_ENOENT;
     }
     if (hw_proc_create(&np, g_exec_elf, (uint64_t)n, argv,
-                       g_exec_envp.slot[0] ? g_exec_envp.slot : 0) != 0) {
+                       g_exec_envp.slot[0] ? g_exec_envp.slot : 0, path) != 0) {
         hw_log(VIBEOS_LOG_ERROR, 4u, (uint64_t)n, 0,
                "execve rejected the program image");
         vibeos_x86_64_serial_lock();

@@ -368,6 +368,24 @@ def wait_for(buffer_getter, needle, deadline, last_rx_getter=None):
     return False
 
 
+# The exec refusals a healthy boot is expected to perform.
+#
+# Measured from a green boot rather than reasoned about from the loader, which
+# is the whole point of the phase that added it: nobody could tell which
+# refusals were happening, because every one of them printed a different
+# ad-hoc sentence and none of them was counted.
+#
+# "not-found" is expected and frequent. A shell resolving a bare command name
+# tries it as a path first, and a C runtime asks for /proc/self/exe, which this
+# filesystem does not have. Both miss on every healthy boot.
+#
+# Every other reason is a failure. That is a far stronger assertion than a
+# total would be: one "no-memory" or one "short-read" hidden among forty
+# expected "not-found"s is exactly what this is watching for, and a count of
+# forty-one would not blink.
+EXEC_EXPECTED_REFUSALS = {"not-found"}
+
+
 def main():
     build_dir = sys.argv[1] if len(sys.argv) > 1 else "build"
     timeout_sec = int(sys.argv[2]) if len(sys.argv) > 2 else 90
@@ -519,7 +537,7 @@ def main():
                 # dereferences null earlier in every boot, so there is always
                 # one to print - and a dumper that only works when nothing has
                 # crashed would pass a test that never asked it for anything.
-                ("Commands: help, status, log, meminfo, tasks, crash, echo <text>, halt, reboot", b"crash\r"),
+                ("Commands: help, status, log, meminfo, tasks, exec, crash, echo <text>, halt, reboot", b"crash\r"),
                 ("[CRASH] end", b"log\r"),
                 # `log` shows two rings: the boot stages kmain records, and
                 # the arch ring holding what the machine actually did - fork,
@@ -535,7 +553,12 @@ def main():
                 # subsystem that cannot be looked at on a running machine gets
                 # debugged by adding print statements to an eight-thousand-line
                 # file, which is how every task defect here has been found.
-                ("[TASKS] end", b"status\r"),
+                # Why programs failed to start, by reason. The loader had
+                # fourteen refusal sites and one message between them, so a
+                # program that would not start told you only that. This line is
+                # asserted below on which reasons appear, not on a total.
+                ("[TASKS] end", b"exec\r"),
+                ("[EXEC] loaded=", b"status\r"),
                 # Ctrl-C on the serial console. The PS/2 path has turned it
                 # into a signal since it was written; this one dropped it along
                 # with every other control byte, so the foreground process
@@ -848,6 +871,7 @@ def main():
                            r"cr3_without_owner=0x([0-9a-f]{16})", text)
             if mt is None:
                 problems.append("tasks_counters_missing")
+
             else:
                 for name, group in (("illegal_transition", 1),
                                     ("use_after_publish", 2),
@@ -856,6 +880,25 @@ def main():
                     value = int(mt.group(group), 16)
                     if value != 0:
                         problems.append(f"task_{name}={value}")
+
+            # Exec refusals, by reason.
+            #
+            # Asserted on the *names* that appear, not on a count. A boot
+            # deliberately provokes some refusals - a service that is meant to
+            # fail to start is a test - and the failure is any other reason
+            # showing up at all. A total would hide that: one extra
+            # "no-memory" among twenty expected "not-found"s is exactly the
+            # kind of thing this is for.
+            em = re.search(r"\[EXEC\] loaded=0x([0-9a-f]+)(.*)", text)
+            if em is None:
+                problems.append("exec_counters_missing")
+            else:
+                if int(em.group(1), 16) == 0:
+                    problems.append("exec_loaded_zero")
+                seen = set(re.findall(r"([a-z-]+)=0x[0-9a-f]+", em.group(2)))
+                unexpected = sorted(seen - EXEC_EXPECTED_REFUSALS)
+                if unexpected:
+                    problems.append("exec_unexpected_refusal=" + ",".join(unexpected))
 
             # The frame states must partition the total exactly.
             #

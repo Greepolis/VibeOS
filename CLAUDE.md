@@ -428,6 +428,15 @@ line so a failure can be replayed with `EFI/BOOT/SVC_STRS.ELF <seed>`. It found
 a copy-on-write defect on its first serious run - the first bug here to arrive
 with a reproduction recipe rather than a story.
 
+**A gate that crashes leaves the last run's verdict lying around.**
+`check.sh` runs the boot gate as `python3 ... > /dev/null 2>&1` and then greps
+`qemu-cli-summary.txt`. A syntax error in the gate therefore reads as a pass:
+the script dies, the summary file still holds the previous run's
+`reason=cli_and_network_verified`, and `check.sh` prints it. Three runs passed
+here having executed nothing. Same family as "a green build is not a build",
+and the tell was the same - a timestamp that had not moved. Check that
+`qemu-cli-serial.log` is newer than the change being tested.
+
 **Everything gets tracked in the docs.** Not "significant work" - anything.
 A macro-area row in `docs/implementation_progress.md`, a detail file under
 `docs/implementation_progress/`, and `scripts/dev/make-book-summary.py` re-run
