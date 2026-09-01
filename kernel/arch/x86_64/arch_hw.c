@@ -1975,8 +1975,34 @@ static int hw_streq(const char *a, const char *b) {
  * bytes of both. Separated from process creation because a dynamic program
  * needs this done twice - once for the program and once for the interpreter
  * it names - into the same address space. */
+/* Phase X-P2 of docs/exec/, and memory plan P4 step 3.
+ *
+ * `file_id` is the page cache's name for the file this image came from, or 0
+ * when there is none - an embedded image, or a file the cache declined. When it
+ * is non-zero, a page that is read-only and comes wholly from the file is
+ * mapped *from the cache* rather than copied into a fresh frame.
+ *
+ * The copy it replaces was a copy of a copy: the cache already holds the file's
+ * page, and the loader was allocating a second frame to memcpy it into. For
+ * BusyBox that is two megabytes of text per exec, and BusyBox execs twenty
+ * times in a boot.
+ *
+ * This is safe under the frame layer's ownership contract, and the contract is
+ * the whole reason it is safe. Eviction releases only *the cache's* reference
+ * (`vibeos_frame_put` in cache_evict), so a frame a process still maps survives
+ * being evicted; the cache then re-reads the file into a different frame, and
+ * the process keeps the one it was given, whose contents are identical because
+ * nothing may write it. The mapping is read-only, and that is load-bearing
+ * rather than incidental: a writable shared mapping of a cache page would let
+ * one process edit another's text.
+ *
+ * Writable pages, pages with a .bss tail, and pages shared by two segments
+ * still get a private frame. `vibeos_elf_page_file_offset` is what draws that
+ * line, and it refuses every case it is not certain about.
+ */
 static int hw_map_elf_image(vibeos_hw_aspace_t *as, vibeos_vma_list_t *vmas,
-                            const vibeos_elf_image_t *img, const void *elf) {
+                            const vibeos_elf_image_t *img, const void *elf,
+                            uint32_t file_id) {
     uint64_t va;
 
     for (va = img->min_vaddr; va < img->end_vaddr; va += 4096ull) {
@@ -1990,11 +2016,66 @@ static int hw_map_elf_image(vibeos_hw_aspace_t *as, vibeos_vma_list_t *vmas,
         if (flags & VIBEOS_ELF_W) {
             leaf |= PTE_WRITE;
         }
+        /* Disabled, and left in place with the measurement that disabled it.
+         *
+         * Mapping the cache's own page here works and is a large win on paper:
+         * 4067 of 4479 image pages stopped being copied, 91% of them, and
+         * BusyBox alone is two megabytes of text execed twenty times a boot.
+         * It also made the machine worse. Eight boots gave 6 clean with two
+         * wedges, against 22/24 with no wedge at all measured on the parent
+         * commit the same day.
+         *
+         * The mechanism is not understood, and that is the reason this is off
+         * rather than tuned. The likely shape is not the mapping itself but
+         * what it changes underneath: not allocating four thousand frames per
+         * boot rearranges every subsequent allocation, so a latent defect that
+         * used to land on a harmless frame now lands on a live one. The stress
+         * service's copy-on-write failure is a known-open defect of roughly one
+         * boot in twenty-four, and it fired here on the first run.
+         *
+         * Turning this on before that is understood would poison every
+         * measurement taken after it - which is the trap this project has
+         * fallen into repeatedly, and the reason the numbers above were taken
+         * against a parent commit rather than read on their own.
+         *
+         * `vibeos_elf_page_file_offset` stays, with its host tests: the part
+         * that decides *which* pages could ever be shared is pure, tested, and
+         * is what X-P2 will need when it is finished properly. */
+        if (0 && file_id != 0u && !(flags & VIBEOS_ELF_W)) {
+            uint64_t foff = 0;
+            uint64_t phys = 0;
+
+            if (vibeos_elf_page_file_offset(img, va, &foff) &&
+                vibeos_cache_get(file_id, foff, &phys) == 0) {
+                int rc = (va < VIBEOS_HW_IDENTITY_LIMIT)
+                    ? hw_map_low_user_page(as, va, phys, leaf)
+                    : hw_map_page(as, va, phys, leaf);
+
+                if (rc != 0) {
+                    return -1;
+                }
+                /* No put here, and the asymmetry is deliberate. The branch
+                 * below allocated a frame and hands its reference to the
+                 * mapping; this one never took one - the mapping took its own
+                 * through vmspace, and the cache keeps the reference it has
+                 * held since it read the page. */
+                if (vmas) {
+                    (void)vibeos_vma_insert(vmas, va, 4096ull,
+                                            (vibeos_prot_t)(VIBEOS_PROT_READ |
+                                                            VIBEOS_PROT_USER),
+                                            VIBEOS_BACKING_FILE, file_id, foff);
+                }
+                vibeos_exec_stats()->pages_from_cache++;
+                continue;
+            }
+        }
+
         page = (uint8_t *)hw_alloc_page();
         if (!page) {
             return -1;
         }
         vibeos_elf_fill_page(img, elf, va, page);
+        vibeos_exec_stats()->pages_copied++;
         if (va < VIBEOS_HW_IDENTITY_LIMIT) {
             if (hw_map_low_user_page(as, va, (uint64_t)(uintptr_t)page, leaf) != 0) {
                 return -1;
@@ -2313,6 +2394,9 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
                           const char *const *argv, const char *const *envp,
                           const char *path) {
     vibeos_elf_image_t img;
+    /* 0 when there is no cached identity for this image - an embedded program,
+     * or a file the cache declined. Every use below is guarded on it. */
+    uint32_t file_id = path ? hw_file_id(path) : 0u;
     vibeos_elf_stack_desc_t sd;
     uint8_t at_random[16];
     uint8_t *top_page = 0;
@@ -2395,7 +2479,7 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
      * is how the dynamic loader reported "RELRO protection failed". */
     p->vmas.head = 0;
     p->vmas.count = 0;
-    if (hw_map_elf_image(&p->as, &p->vmas, &img, elf) != 0) {
+    if (hw_map_elf_image(&p->as, &p->vmas, &img, elf, file_id) != 0) {
         return hw_exec_refuse(VIBEOS_EXEC_NO_MEMORY, path, "map_image");
     }
     p->entry = img.entry;
@@ -2450,7 +2534,8 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
              * of it is mapped. */
             return hw_exec_refuse(VIBEOS_EXEC_INTERP_CHAIN, img.interp, "interp_chain");
         }
-        if (hw_map_elf_image(&p->as, &p->vmas, &interp, g_interp_elf) != 0) {
+        if (hw_map_elf_image(&p->as, &p->vmas, &interp, g_interp_elf,
+                             hw_file_id(img.interp)) != 0) {
             return hw_exec_refuse(VIBEOS_EXEC_NO_MEMORY, img.interp, "map_interp");
         }
 

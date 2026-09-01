@@ -1,6 +1,6 @@
 # Program Loading Progress
 
-Status: **Rewrite underway** ([docs/exec/](../exec/README.md)). X-P0 and X-P1 done.
+Status: **Rewrite underway** ([docs/exec/](../exec/README.md)). X-P0 and X-P1 done; X-P2 attempted, measured and turned off.
 Last review: 2026-09-01
 
 ## Why it is being rewritten
@@ -108,6 +108,68 @@ like a hang - and `AT_BASE` is *omitted* for a static program rather than
 written as zero, because zero is a legal load address and a runtime believes it.
 
 Confirmed by breaking it: changing one expected value turns `test_loader` red.
+
+---
+
+## X-P2 — attempted, measured, and turned off (2026-09-01)
+
+**Status: not done. The mechanism is built and disabled behind `if (0)`, with
+the measurement that disabled it written next to it.**
+
+The step taken was the first half of X-P2: a read-only image page that comes
+wholly from the file is mapped *from the page cache* instead of being copied
+into a fresh frame. The cache already holds the file's page, so the loader was
+allocating a second frame to memcpy a copy of a copy into.
+
+It works, and the win is large:
+
+    [EXEC] loaded=0x1c pages_from_cache=0xfe3 pages_copied=0x19c
+
+4067 of 4479 image pages - 91% - stopped being copied. BusyBox alone is two
+megabytes of text, exec'd twenty times in a boot.
+
+**And it made the machine worse.** Eight boots: 6 clean, with two wedges. The
+parent commit measured 22/24 the same day *with no wedge at all*. The first run
+also tripped the stress service:
+
+    STRESS_FAIL: the child's own copy-on-write page at offset 0: found 0x5b expected 0x54
+    STRESS_FAIL: replay with EFI/BOOT/SVC_STRS.ELF 97300336535
+
+**Why it is off rather than tuned: there is no mechanism.** The failing page is
+a child's private writable page, which this change never touches - it only maps
+read-only pages. The likely shape is therefore not the mapping but what it
+changes underneath: not allocating four thousand frames per boot rearranges
+every subsequent allocation, so a latent defect that used to land on a harmless
+frame now lands on a live one. The copy-on-write failure the stress service
+reports is a **known-open** defect of roughly one boot in twenty-four, recorded
+in [boot_repeatability.md](boot_repeatability.md); this change appears to make
+it common rather than to create it.
+
+Shipping it in that state would poison every measurement taken afterwards. That
+is the trap this project has fallen into repeatedly, and it is the reason the
+numbers above were taken against the parent commit rather than read on their
+own.
+
+**What is kept, because it is sound on its own:**
+
+- `vibeos_elf_page_file_offset` - the pure function deciding *which* pages could
+  ever be shared, with five host cases. It is mostly about saying no: a page
+  straddling the end of `filesz`, a page inside the `.bss`, a page covered by
+  two segments, a page in a hole, and a segment that does not start on a page
+  boundary. Every wrong "yes" maps file bytes where zeroes belong, and a program
+  whose `.bss` starts out holding whatever followed `.data` in the file *runs* -
+  it just runs wrong, much later.
+- `pages_from_cache` and `pages_copied` on the `exec` line, so the ratio is
+  measurable rather than argued about.
+- The refusal list on that line now has a `refused:` marker. Adding two counters
+  silently broke the gate's bare `name=0x...` pattern, which would have read
+  `pages_from_cache=0x..` as a refusal called "cache". A marker costs six
+  characters and makes the boundary a fact rather than a coincidence.
+
+**What X-P2 still needs**, in order: the copy-on-write defect closed first,
+since it is what makes this unmeasurable; then demand paging, so `execve` stops
+reading whole files; then `g_exec_elf` and `g_interp_elf` and their six
+megabytes go.
 
 ### One thing this phase cost, worth recording
 

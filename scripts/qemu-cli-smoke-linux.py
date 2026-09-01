@@ -889,7 +889,7 @@ def main():
             # showing up at all. A total would hide that: one extra
             # "no-memory" among twenty expected "not-found"s is exactly the
             # kind of thing this is for.
-            em = re.search(r"\[EXEC\] loaded=0x([0-9a-f]+)(.*)", text)
+            em = re.search(r"\[EXEC\] loaded=0x([0-9a-f]+).*? refused:(.*)", text)
             if em is None:
                 problems.append("exec_counters_missing")
             else:

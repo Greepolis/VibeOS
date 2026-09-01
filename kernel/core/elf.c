@@ -260,6 +260,53 @@ uint32_t vibeos_elf_page_flags(const vibeos_elf_image_t *img, uint64_t page_va) 
     return flags;
 }
 
+int vibeos_elf_page_file_offset(const vibeos_elf_image_t *img, uint64_t page_va,
+                                uint64_t *out_off) {
+    uint32_t i;
+    uint32_t covering = 0;
+    uint64_t off = 0;
+
+    if (!img || !out_off) {
+        return 0;
+    }
+    for (i = 0; i < img->count; i++) {
+        const vibeos_elf_segment_t *s = &img->seg[i];
+        uint64_t seg_first = page_down(s->vaddr);
+        uint64_t seg_last = page_down(s->vaddr + s->memsz - 1u);
+
+        if (page_va < seg_first || page_va > seg_last) {
+            continue;
+        }
+        /* A second segment touching this page means the page belongs to both,
+         * and no single file offset describes it. */
+        covering++;
+        if (covering > 1u) {
+            return 0;
+        }
+        /* The page must lie entirely inside the part of the segment the file
+         * actually supplies, and start where the file does: a segment whose
+         * vaddr is not page-aligned begins part-way into its first page, so
+         * that page carries bytes from before the segment too. */
+        if ((s->vaddr & (VIBEOS_ELF_PAGE_SIZE - 1u)) != 0u) {
+            return 0;
+        }
+        if (page_va + VIBEOS_ELF_PAGE_SIZE > s->vaddr + s->filesz) {
+            return 0;   /* runs into the .bss tail, or past the file */
+        }
+        off = s->file_off + (page_va - s->vaddr);
+        /* And the file offset has to be page-aligned, or the cache - which is
+         * keyed on page-aligned offsets - cannot hand back this page. */
+        if ((off & (VIBEOS_ELF_PAGE_SIZE - 1u)) != 0u) {
+            return 0;
+        }
+    }
+    if (covering != 1u) {
+        return 0;
+    }
+    *out_off = off;
+    return 1;
+}
+
 void vibeos_elf_fill_page(const vibeos_elf_image_t *img, const void *image,
                           uint64_t page_va, void *dst) {
     const uint8_t *src = (const uint8_t *)image;

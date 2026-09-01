@@ -194,6 +194,27 @@ typedef struct {
 uint64_t vibeos_elf_build_stack(void *buf, uint64_t buf_len, uint64_t stack_top,
                                 const vibeos_elf_stack_desc_t *desc);
 
+/* Where in the file a page comes from, when the whole page comes from the file.
+ *
+ * The qualification is the point, and it is why this returns a verdict rather
+ * than an offset. A page may be file-backed for only part of its length - the
+ * last page of a segment whose memsz exceeds its filesz has a .bss tail, and a
+ * page shared by two segments is covered by two different file ranges. Such a
+ * page has to be built, not pointed at.
+ *
+ * A caller that wants to map the file's own page directly - the page cache
+ * holds it already, so copying it into a fresh frame is a copy of a copy - may
+ * only do so when the answer here is 1. Getting that wrong maps whatever
+ * follows the segment in the file where .bss should be, which is zero bytes
+ * replaced by plausible ones: the worst kind of wrong, because the program
+ * runs.
+ *
+ * Returns 1 and writes *out_off when the entire page is file-backed by exactly
+ * one segment; 0 otherwise, including for a page in a hole.
+ */
+int vibeos_elf_page_file_offset(const vibeos_elf_image_t *img, uint64_t page_va,
+                                uint64_t *out_off);
+
 /* Fill one page of the image. `dst` must be VIBEOS_ELF_PAGE_SIZE bytes and is
  * fully written: bytes backed by the file are copied, everything else - .bss
  * and padding either side - is zeroed. */

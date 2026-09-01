@@ -322,6 +322,122 @@ static void case_not_an_elf(void) {
            "a file with bad magic was parsed");
 }
 
+/* ---- which pages may be mapped from the file itself ----------------------
+ *
+ * `vibeos_elf_page_file_offset` decides whether a page can be pointed at the
+ * page cache's own copy instead of being built in a fresh frame. Every "yes"
+ * it gets wrong maps file bytes where zeroes belong, and a program whose .bss
+ * starts out holding whatever followed .data in the file *runs* - it just runs
+ * wrong, much later. So the cases below are mostly about it saying no.
+ */
+
+static void case_file_offset_plain_page(void) {
+    vibeos_elf_image_t im;
+    uint64_t off = 0;
+
+    /* Two full pages of pure text: both are the file's, at the file's offsets. */
+    memset(g_img, 0, sizeof(g_img));
+    build_ehdr(g_img, 2, BASE, 1);
+    build_phdr(g_img, 0, PF_R | PF_X, 0x1000, BASE, 0x2000, 0x2000, 0x1000);
+
+    if (!expect(vibeos_elf_parse_ex(g_img, sizeof(g_img), 0, BASE,
+                                    BASE + 0x100000ull, 0, &im) == VIBEOS_ELF_OK,
+                "a two-page text segment was refused")) {
+        return;
+    }
+    if (expect(vibeos_elf_page_file_offset(&im, BASE, &off) == 1,
+               "the first page of a whole-page segment was not file-backed")) {
+        expect(off == 0x1000ull, "the first page's file offset is wrong");
+    }
+    if (expect(vibeos_elf_page_file_offset(&im, BASE + 0x1000ull, &off) == 1,
+               "the second page of a whole-page segment was not file-backed")) {
+        expect(off == 0x2000ull, "the second page's file offset is wrong");
+    }
+}
+
+static void case_file_offset_refuses_the_bss_tail(void) {
+    vibeos_elf_image_t im;
+    uint64_t off = 0;
+
+    /* filesz covers one page and a bit; memsz runs to three. The page holding
+     * the boundary is part file and part .bss, and the pages past it are pure
+     * .bss. Saying yes to any of them puts file bytes where zeroes belong. */
+    memset(g_img, 0, sizeof(g_img));
+    build_ehdr(g_img, 2, BASE, 1);
+    build_phdr(g_img, 0, PF_R | PF_W, 0x1000, BASE, 0x1800, 0x3000, 0x1000);
+
+    if (!expect(vibeos_elf_parse_ex(g_img, sizeof(g_img), 0, BASE,
+                                    BASE + 0x100000ull, 0, &im) == VIBEOS_ELF_OK,
+                "a segment with a bss tail was refused")) {
+        return;
+    }
+    expect(vibeos_elf_page_file_offset(&im, BASE, &off) == 1,
+           "a page wholly inside filesz was not file-backed");
+    expect(vibeos_elf_page_file_offset(&im, BASE + 0x1000ull, &off) == 0,
+           "the page straddling the end of the file was claimed as file-backed");
+    expect(vibeos_elf_page_file_offset(&im, BASE + 0x2000ull, &off) == 0,
+           "a page entirely inside the bss was claimed as file-backed");
+}
+
+static void case_file_offset_refuses_a_shared_page(void) {
+    vibeos_elf_image_t im;
+    uint64_t off = 0;
+
+    /* Two segments in one page: no single file offset describes it, and the
+     * page must carry the permissions of both. */
+    memset(g_img, 0, sizeof(g_img));
+    build_ehdr(g_img, 2, BASE, 2);
+    build_phdr(g_img, 0, PF_R | PF_X, 0x1000, BASE, 0x80, 0x80, 0x1000);
+    build_phdr(g_img, 1, PF_R | PF_W, 0x1080, BASE + 0x80ull, 0x40, 0x40, 0x1000);
+
+    if (!expect(vibeos_elf_parse_ex(g_img, sizeof(g_img), 0, BASE,
+                                    BASE + 0x100000ull, 0, &im) == VIBEOS_ELF_OK,
+                "two segments sharing a page were refused")) {
+        return;
+    }
+    expect(vibeos_elf_page_file_offset(&im, BASE, &off) == 0,
+           "a page covered by two segments was claimed as file-backed");
+}
+
+static void case_file_offset_refuses_a_hole(void) {
+    vibeos_elf_image_t im;
+    uint64_t off = 0;
+
+    memset(g_img, 0, sizeof(g_img));
+    build_ehdr(g_img, 2, BASE, 2);
+    build_phdr(g_img, 0, PF_R | PF_X, 0x1000, BASE, 0x800, 0x800, 0x1000);
+    build_phdr(g_img, 1, PF_R | PF_W, 0x2000, BASE + 0x10000ull, 0x40, 0x40, 0x1000);
+
+    if (!expect(vibeos_elf_parse_ex(g_img, sizeof(g_img), 0, BASE,
+                                    BASE + 0x100000ull, 0, &im) == VIBEOS_ELF_OK,
+                "a two-segment image was refused")) {
+        return;
+    }
+    expect(vibeos_elf_page_file_offset(&im, BASE + 0x8000ull, &off) == 0,
+           "a page in a hole was claimed as file-backed");
+}
+
+static void case_file_offset_refuses_an_unaligned_segment(void) {
+    vibeos_elf_image_t im;
+    uint64_t off = 0;
+
+    /* A segment starting part-way into a page: that page also carries the
+     * bytes before it, which come from somewhere else in the file or from
+     * nowhere at all. And a file offset that is not page-aligned cannot be
+     * asked of a cache keyed on page-aligned offsets. */
+    memset(g_img, 0, sizeof(g_img));
+    build_ehdr(g_img, 2, BASE + 0x200ull, 1);
+    build_phdr(g_img, 0, PF_R | PF_X, 0x1200, BASE + 0x200ull, 0x400, 0x400, 0x1000);
+
+    if (!expect(vibeos_elf_parse_ex(g_img, sizeof(g_img), 0, BASE,
+                                    BASE + 0x100000ull, 0, &im) == VIBEOS_ELF_OK,
+                "a segment not starting on a page was refused")) {
+        return;
+    }
+    expect(vibeos_elf_page_file_offset(&im, BASE, &off) == 0,
+           "a page holding a segment that starts part-way in was claimed as file-backed");
+}
+
 /* ---- the startup block ---------------------------------------------------
  *
  * Decoded back and compared, rather than spot-checked. Every field here is one
@@ -492,6 +608,11 @@ int test_loader(void) {
     case_dyn_is_biased_once();
     case_dyn_refused_when_not_allowed();
     case_not_an_elf();
+    case_file_offset_plain_page();
+    case_file_offset_refuses_the_bss_tail();
+    case_file_offset_refuses_a_shared_page();
+    case_file_offset_refuses_a_hole();
+    case_file_offset_refuses_an_unaligned_segment();
     case_startup_block();
     case_no_interpreter_omits_at_base();
     case_arguments_that_do_not_fit();

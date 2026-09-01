@@ -45,6 +45,13 @@ typedef enum vibeos_exec_fail {
 typedef struct vibeos_exec_stats {
     uint64_t refused[VIBEOS_EXEC_REASON_COUNT];
     uint64_t loaded;              /* images that started                      */
+
+    /* How image pages were obtained. The ratio is the measurement X-P2 exists
+     * to move: a page mapped from the cache is the file's own page, and a page
+     * copied is a second frame holding the same bytes. Both are printed
+     * because a ratio with one half missing is a number nobody can act on. */
+    uint64_t pages_from_cache;
+    uint64_t pages_copied;
 } vibeos_exec_stats_t;
 
 vibeos_exec_stats_t *vibeos_exec_stats(void);
