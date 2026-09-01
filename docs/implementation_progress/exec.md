@@ -166,7 +166,42 @@ own.
   `pages_from_cache=0x..` as a refusal called "cache". A marker costs six
   characters and makes the boundary a fact rather than a coincidence.
 
-**What X-P2 still needs**, in order: the copy-on-write defect closed first,
+### Measured a second time, after the blocker was closed (2026-09-01)
+
+The copy-on-write exclusivity window - the defect this was thought to be
+exposing - was found and fixed the same day, from CI logs. So this was turned
+back on and measured again.
+
+**The wedges are gone.** That half of the first measurement was the
+copy-on-write defect, and closing it removed the silence entirely: with this
+branch on, no boot goes quiet any more.
+
+**It is still off.** 21/24 with it on against 23/24 with it off, same tree, same
+day. Three failures against one proves very little on its own - and this file
+already records what happens when a count is treated as a verdict. What decided
+it is *what* failed: all three were segmentation faults in Linux binaries at
+near-null addresses, in a different program each time (BusyBox twice at an
+identical rip, musl once), and that shape is absent from the runs with this off.
+**A different program each time is this project's oldest signature for memory
+corruption.**
+
+**The narrowed suspicion**, which is the useful output of the second attempt:
+this branch introduces a *second source of truth* for which file is being
+loaded. The bytes come from `g_exec_elf`, filled by
+`hw_read_file_cached(path)`; the pages come from the cache under
+`hw_file_id(path)` computed again, separately. Anything that makes those
+two disagree - a fallback read, a path truncated into `hw_file_id`'s
+fixed-size buffer, a full identity table - hands a process the pages of one file
+with the headers of another. The fix is not to check harder at the mapping site
+but to make the read report the identity it actually used, which is X-P2's real
+shape anyway.
+
+**One thread worth pulling**: one of the three faulted at address `0xe4`,
+and the wedge chased for a day in
+[boot_repeatability.md](boot_repeatability.md) restored a register context full
+of `0xe4`. That may be one corruption family rather than two mysteries.
+
+**What X-P2 still needs, in order: the copy-on-write defect closed first,
 since it is what makes this unmeasurable; then demand paging, so `execve` stops
 reading whole files; then `g_exec_elf` and `g_interp_elf` and their six
 megabytes go.

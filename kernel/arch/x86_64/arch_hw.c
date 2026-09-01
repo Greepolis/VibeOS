@@ -2016,32 +2016,46 @@ static int hw_map_elf_image(vibeos_hw_aspace_t *as, vibeos_vma_list_t *vmas,
         if (flags & VIBEOS_ELF_W) {
             leaf |= PTE_WRITE;
         }
-        /* Disabled, and left in place with the measurement that disabled it.
+        /* The page the file already holds, when this page is entirely the
+         * file's and nothing may write it.
          *
-         * Mapping the cache's own page here works and is a large win on paper:
-         * 4067 of 4479 image pages stopped being copied, 91% of them, and
-         * BusyBox alone is two megabytes of text execed twenty times a boot.
-         * It also made the machine worse. Eight boots gave 6 clean with two
-         * wedges, against 22/24 with no wedge at all measured on the parent
-         * commit the same day.
+         * Turned off for a day. It removes 91% of the copying and, when it
+         * first landed, took eight boots from a 22/24-with-no-wedge parent to
+         * 6/8 with two wedges - so it went behind an if(0) with the
+         * measurement written next to it rather than being tuned on a hunch.
          *
-         * The mechanism is not understood, and that is the reason this is off
-         * rather than tuned. The likely shape is not the mapping itself but
-         * what it changes underneath: not allocating four thousand frames per
-         * boot rearranges every subsequent allocation, so a latent defect that
-         * used to land on a harmless frame now lands on a live one. The stress
-         * service's copy-on-write failure is a known-open defect of roughly one
-         * boot in twenty-four, and it fired here on the first run.
+         * The reasoning at the time was that it was exposing something rather
+         * than causing it. That was half right. The copy-on-write fault's
+         * exclusivity window was a genuine pre-existing defect, CI logs named
+         * it, and closing it removed the wedges: with this branch on again the
+         * boot no longer goes silent at all.
          *
-         * Turning this on before that is understood would poison every
-         * measurement taken after it - which is the trap this project has
-         * fallen into repeatedly, and the reason the numbers above were taken
-         * against a parent commit rather than read on their own.
+         * It is still off, on a second measurement, and this one is better
+         * evidence than the first because of *what* fails rather than how
+         * often. 21/24 with it on against 23/24 with it off, same tree, same
+         * day - a difference three failures wide, which on its own proves
+         * little. But all three were segmentation faults in Linux binaries at
+         * near-null addresses, in a different program each time (BusyBox twice
+         * at an identical rip, musl once), and that shape does not appear in
+         * the runs with this off. A different program each time is this
+         * project's oldest signature for memory corruption.
          *
-         * `vibeos_elf_page_file_offset` stays, with its host tests: the part
-         * that decides *which* pages could ever be shared is pure, tested, and
-         * is what X-P2 will need when it is finished properly. */
-        if (0 && file_id != 0u && !(flags & VIBEOS_ELF_W)) {
+         * The narrowed suspicion, for whoever picks this up: this branch
+         * introduces a second source of truth for "which file is being
+         * loaded". The bytes come from g_exec_elf, filled by
+         * hw_read_file_cached(path); the pages come from the cache under
+         * hw_file_id(path) computed again, separately. Anything that makes
+         * those two disagree - a fallback read, a truncated path in
+         * hw_file_id's fixed-size buffer, an identity table that is full -
+         * hands the process pages of one file with the headers of another.
+         * The fix is not to check harder here but to make the read report the
+         * identity it actually used, which is X-P2's real shape anyway.
+         *
+         * One more thread worth pulling: one of the three faulted at address
+         * 0xe4, and the wedge this file chased for a day restored a register
+         * context full of 0xe4. That may be the same corruption family rather
+         * than two mysteries. */
+        if (0 && file_id != 0u && !(flags & VIBEOS_ELF_W)) {   /* see above */
             uint64_t foff = 0;
             uint64_t phys = 0;
 
