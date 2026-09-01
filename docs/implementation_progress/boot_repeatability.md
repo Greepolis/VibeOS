@@ -165,6 +165,46 @@ creator finished filling it in, or a kernel stack being used after it was freed.
 The task state machine's `SETUP` state and its tenancy counter exist for
 exactly this shape and should be the first things consulted.
 
+## The remaining wedge was virtio-net transmitting without a lock (2026-09-01)
+
+Named by the wedge report rather than guessed at, which is what that tool is
+for. A boot that went quiet at `busybox_cat` left this:
+
+    CPU#0 rip=... vibeos_x86_64_virtio_net_send virtio_net.c:276
+    CPU#2 rip=... hw_spin_lock  <- from hw_sys_munmap
+    CPU#3 idle
+
+and QEMU said the rest on its own stderr:
+
+    qemu-system-x86_64: Guest says index 65535 is available
+
+`virtio_net.c` had no lock on the transmit path. Every send uses one
+staging buffer, one descriptor - `g_tx.desc[0]` - and one
+`g_tx.last_used`, and publishes with a plain `g_tx.avail->idx++`
+on a 16-bit field.
+
+**This is the same defect virtio-blk had, in the same shape, never applied
+here.** Two cores sending at once do not race over a window, they overwrite each
+other: one core's frame lands in the other's descriptor, the available index
+skips or repeats - 65535 is what a lost increment on a `uint16_t`
+produces - and whichever core reads the used index first leaves the other
+spinning on a completion that has already been consumed. The spin has a bound,
+but 50 million pauses is far longer than the gate's quiet budget, so it presents
+as a wedge rather than as the timeout it eventually becomes.
+
+Interrupts stay on, as in the block driver: nothing in an interrupt handler
+transmits, so this lock can never be wanted from one. The timeout path releases
+it before returning, because holding it there would turn one late frame into a
+permanently dead network.
+
+**Fifth layer in this project to have shipped without a lock**, after the frame
+allocator, the region pool, the page cache and the block driver.
+
+Worth separating from it: the crash record that appears in every boot is
+`svc-crash` dereferencing null **on purpose**, to prove a ring-3 fault
+kills the task and not the machine. It is a gate, not a defect, and its absence
+would be the failure.
+
 ## A panic stopped a core, not the machine (2026-09-01)
 
 **This is the explanation for the silent-wedge family, and it had been visible

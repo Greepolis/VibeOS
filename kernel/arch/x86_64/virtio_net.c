@@ -244,6 +244,37 @@ int vibeos_x86_64_virtio_net_ready(void) {
     return g_net_ready;
 }
 
+/* One virtqueue, one descriptor, one staging buffer - and, until now, no lock.
+ *
+ * The same defect virtio-blk had, in the same shape, never applied here. Every
+ * transmit uses g_tx_buf, g_tx.desc[0] and g_tx.last_used, and publishes with a
+ * plain `g_tx.avail->idx++` on a 16-bit field. Two cores sending at once do not
+ * race over a window, they overwrite each other: one core's frame lands in the
+ * other's descriptor, the available index skips or repeats, and whichever core
+ * reads the used index first leaves the other spinning on a completion that has
+ * already been consumed.
+ *
+ * That last part is what a wedge looks like from outside. The report put CPU#0
+ * inside the loop below with three other cores alive, and QEMU said it out loud
+ * on its own stderr: "Guest says index 65535 is available" - which is exactly
+ * what a lost increment on a uint16_t produces.
+ *
+ * Interrupts stay on, as in the block driver: nothing in an interrupt handler
+ * transmits, so this lock can never be wanted from one. */
+static volatile int g_tx_lock;
+
+static void tx_lock(void) {
+    while (__sync_lock_test_and_set(&g_tx_lock, 1)) {
+        while (g_tx_lock) {
+            __asm__ __volatile__("pause" ::: "memory");
+        }
+    }
+}
+
+static void tx_unlock(void) {
+    __sync_lock_release(&g_tx_lock);
+}
+
 /* Transmit one Ethernet frame. Blocks until the device consumes the descriptor,
  * which under QEMU is immediate. */
 int vibeos_x86_64_virtio_net_send(const void *frame, uint32_t len) {
@@ -254,6 +285,7 @@ int vibeos_x86_64_virtio_net_send(const void *frame, uint32_t len) {
     if (!g_net_ready || !frame || len == 0u || len + VNET_HDR > VNET_BUF) {
         return -1;
     }
+    tx_lock();
     for (i = 0; i < VNET_HDR; i++) {
         g_tx_buf[i] = 0;                 /* no offload flags, no GSO */
     }
@@ -275,6 +307,11 @@ int vibeos_x86_64_virtio_net_send(const void *frame, uint32_t len) {
 
     while (g_tx.used->idx == g_tx.last_used) {
         if (++spins > 50000000ull) {
+            /* Giving the lock back matters more than the frame does: holding it
+             * here would turn one timed-out transmit into a permanently dead
+             * network, which is the shape of failure this whole change exists
+             * to remove. */
+            tx_unlock();
             vibeos_x86_64_serial_puts("[VNET] transmit timeout\n");
             return -1;
         }
@@ -283,6 +320,7 @@ int vibeos_x86_64_virtio_net_send(const void *frame, uint32_t len) {
     g_tx.last_used = g_tx.used->idx;
     (void)vn_inb(g_net_io + VIRTIO_ISR);
     g_tx_frames++;
+    tx_unlock();
     return 0;
 }
 
