@@ -94,6 +94,7 @@ static const char auxv_bad[] = "auxv wrong\n";
 static int check_auxv(char **envp) {
     unsigned long *aux;
     unsigned long phdr = 0, phnum = 0, phent = 0, at_entry = 0;
+    int saw_at_base = 0;
     const unsigned char *ph;
 
     while (*envp) {
@@ -105,9 +106,23 @@ static int check_auxv(char **envp) {
         if (aux[0] == 4ul) { phent = aux[1]; }
         if (aux[0] == 5ul) { phnum = aux[1]; }
         if (aux[0] == 9ul) { at_entry = aux[1]; }
+        if (aux[0] == 7ul) { saw_at_base = 1; }   /* AT_BASE */
         aux += 2;
     }
     if (phdr == 0ul || phnum == 0ul || phent != 56ul || at_entry == 0ul) {
+        return 0;
+    }
+    /* AT_BASE must be absent. This program has no interpreter, so there is no
+     * interpreter base to report - and the kernel field that supplies it was
+     * written only on the interpreter path and read unconditionally, so a
+     * program like this one was handed whatever the kernel had left on its
+     * stack. A static position-independent binary relocates itself against
+     * that value.
+     *
+     * Checked from ring 3 because that is the only place the answer is real,
+     * and asserted rather than printed: the value that leaked was a kernel
+     * pointer, and it only crashed when the leftover happened to be one. */
+    if (saw_at_base) {
         return 0;
     }
     /* The first program header of a static executable we loaded is PT_LOAD,

@@ -881,6 +881,23 @@ static void hw_backtrace(uint64_t rbp, uint64_t rip) {
     vibeos_x86_64_serial_unlock();
 }
 
+/* Set by hw_panic before it halts. Every core checks it on the way out of an
+ * interrupt and parks itself.
+ *
+ * A panic used to stop one core. The message even said so - "halting on cpu 2" -
+ * and it was read for weeks as though it said "halting". The other three cores
+ * carried on, the log kept moving, and the machine went quiet some seconds
+ * later at a place with no connection to the fault. That is the whole silent
+ * wedge family: the evidence and the failure were separated by however long it
+ * took the survivors to need the core that had died.
+ *
+ * Not an IPI, deliberately. Every core already takes a timer interrupt a
+ * hundred times a second, so this needs no new vector, no acknowledgement
+ * protocol and no timeout to get wrong. A core sitting in a syscall with
+ * interrupts masked answers when it returns to ring 3; a core that never
+ * returns was stuck with or without this. */
+static volatile int g_panicked;
+
 static void hw_panic(const char *why) {
     uint64_t rbp;
     uint64_t rip;
@@ -902,6 +919,16 @@ static void hw_panic(const char *why) {
 
     hw_backtrace(rbp, rip);
     hw_log_dump();
+
+    /* Announced after the dump, so the evidence is out before anything else
+     * stops, and on one line because three other cores may still be writing. */
+    g_panicked = 1;
+    __asm__ __volatile__("sfence" ::: "memory");
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts("[PANIC] MACHINE_STOPPED every core parks on its "
+                              "next interrupt\n");
+    vibeos_x86_64_serial_unlock();
+
     for (;;) {
         __asm__ __volatile__("cli; hlt");
     }
@@ -945,6 +972,21 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
     }
 
     if (frame->vector >= VIBEOS_HW_IRQ_BASE && frame->vector < VIBEOS_HW_WIRED_VECTORS) {
+        /* Somebody has panicked. Stop being a running machine.
+         *
+         * Checked here rather than only in the scheduler because a core that is
+         * idle still takes this interrupt, and a half-stopped machine is what
+         * made the original failure so hard to read. */
+        if (g_panicked) {
+            vibeos_x86_64_serial_lock();
+            vibeos_x86_64_serial_puts("[PANIC] parked cpu 0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)vibeos_x86_64_cpu_id());
+            vibeos_x86_64_serial_puts("\n");
+            vibeos_x86_64_serial_unlock();
+            for (;;) {
+                __asm__ __volatile__("cli; hlt");
+            }
+        }
         if (frame->vector == VIBEOS_HW_IRQ_TIMER) {
             /* Every core's LAPIC timer lands here; only one may own the clock. */
             if (!g_apic_mode || hw_this_cpu()->index == 0u) {
@@ -2415,6 +2457,30 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
     uint8_t at_random[16];
     uint8_t *top_page = 0;
     uint32_t i;
+
+    /* Before anything else, and it is not tidiness.
+     *
+     * interp_base is written in exactly one place - the branch that maps an
+     * interpreter - and read unconditionally when the startup block is built.
+     * A program without an interpreter therefore shipped whatever was already
+     * in this field to ring 3 as AT_BASE: uninitialised kernel stack for an
+     * execve (`hw_proc_t np` is a local), or the previous tenant's value for a
+     * recycled task slot.
+     *
+     * That is not a cosmetic leak. A static position-independent binary
+     * relocates itself against AT_BASE, so musl's rcrt1 took a stray kernel
+     * pointer as its load address and dereferenced it - a ring-3 read of the
+     * kernel's log ring at 0x4046220, which is what the nightly reported as
+     * "position_independent_binary_did_not_run". It is intermittent for the
+     * honest reason that it depends on what was left on the stack.
+     *
+     * It is also a kernel address handed to ring 3, which is a disclosure
+     * whatever the program does with it.
+     *
+     * Zeroed here rather than at each caller: this function owns the contract,
+     * and "every caller must remember to clear a field" is the kind of rule
+     * that holds until somebody adds a caller. */
+    p->interp_base = 0;
 
     if (hw_aspace_create(&p->as) != 0) {
         return hw_exec_refuse(VIBEOS_EXEC_NO_ASPACE, path, "aspace_create");

@@ -1,10 +1,21 @@
 # Boot Repeatability Progress
 
-Status: **Largely resolved.** 23 boots clean out of 24, from a long-standing
-~1 in 8. Three defects were found and fixed, and all three were introduced by
-the diagnostics built to hunt the failure rather than by the kernel they were
-watching. One rare wedge remains, with a lead.
-Last review: 2026-08-31
+Status: **24 boots clean out of 24**, from a long-standing ~1 in 8.
+
+Six defects fixed. The first three were in the diagnostics built to hunt the
+failure rather than in the kernel they were watching. The last three came from
+CI and nightly logs rather than from another local sweep: a copy-on-write fast
+path deciding on a fact its compare-exchange could not guard, a kernel address
+handed to ring 3 as AT_BASE, and - the one that explains the rest - a panic that
+stopped one core instead of the machine.
+
+**24/24 is a good number and not a proof.** At the rate this measured
+immediately before (23/24), a clean run of 24 happens about a third of the time
+by luck alone. What is stronger than the count is that two of the three new
+fixes are asserted deterministically - a host test for the copy-on-write window,
+a ring-3 assertion for AT_BASE - and the third turns any future kernel fault
+from a silence into a named panic.
+Last review: 2026-09-01
 ## What fails
 
 Two signatures, both intermittent, on an otherwise green build:
@@ -153,6 +164,71 @@ what writes it: an uninitialised context, a recycled slot scheduled before its
 creator finished filling it in, or a kernel stack being used after it was freed.
 The task state machine's `SETUP` state and its tenancy counter exist for
 exactly this shape and should be the first things consulted.
+
+## A panic stopped a core, not the machine (2026-09-01)
+
+**This is the explanation for the silent-wedge family, and it had been visible
+in every log all along.**
+
+`hw_panic` ended with `for (;;) { cli; hlt; }` - which stops the
+calling core. Its own message said so: *"halting on cpu 2"*. For weeks that line
+was read as though it said "halting".
+
+The other three cores carried on. The log kept moving. The machine went quiet
+some seconds later, at a place with **no connection to the fault**, and every
+investigation started from that place. That is why so many of them ended at a
+plausible-looking pointer with no mechanism behind it: the evidence and the
+failure were separated by however long it took the survivors to need the core
+that had died.
+
+A nightly log showed it plainly once the question was asked: a ring-0 #GP on
+cpu 2 with `action=PANIC`, followed by four hundred more lines of healthy
+boot, then silence.
+
+**The fix.** A panic sets a flag and every core parks itself on its next
+interrupt. Deliberately not an IPI: every core already takes a timer interrupt a
+hundred times a second, so this needs no new vector, no acknowledgement protocol
+and no timeout to get wrong. A core inside a syscall with interrupts masked
+parks when it returns to ring 3; a core that never returns was stuck either way.
+
+Proved by causing one. cpu 3 panics, and cpus 1, 2 and 3 report parking.
+
+**The gate now calls it a panic, not a wedge**, and carries the reason:
+
+    reason=missing:<why> (waiting for CLI_READY) verdict=guest_panicked
+
+Calling a panic a wedge sent the next person looking for a hang. That mattered
+much more than it sounds, for exactly as long as a panic left three cores
+running.
+
+## A kernel address handed to ring 3 as AT_BASE (2026-09-01)
+
+Found from the nightly's artifacts, which carry the kernel ELF and the guest
+binaries - so a faulting address could be symbolised against **the binary the
+task was actually running**, which is the rule this file has been repeating
+without being able to follow it.
+
+PIE.ELF faulted at `0x4046220` in `_start_c` (`rcrt1.c:139`),
+musl's self-relocation for a static position-independent binary. `nm` on the
+kernel places that address inside `g_kernel_log`.
+
+`p->interp_base` was written in exactly one place - the branch that maps an
+interpreter - and read unconditionally when the startup block was built. A
+program without an interpreter therefore shipped whatever was already in that
+field to ring 3 as `AT_BASE`: uninitialised kernel stack for an
+`execve` (`hw_proc_t np` is a local), or the previous tenant's value
+for a recycled task slot. A static PIE relocates itself against `AT_BASE`,
+so musl took a stray kernel pointer as its load address and dereferenced it.
+
+Intermittent for the honest reason that it depends on what was left on the
+stack - which is why it read as "position_independent_binary_did_not_run" some
+nights and nothing at all on others. It is also a kernel address disclosure to
+ring 3 whatever the program does with it.
+
+Zeroed in `hw_proc_create`, which owns the contract - "every caller must
+remember to clear a field" holds until somebody adds a caller. The ring-3 ABI
+self-test now **asserts `AT_BASE` is absent** for a program with no
+interpreter, every boot, deterministically.
 
 ## The copy-on-write defect, found and closed (2026-09-01)
 

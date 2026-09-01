@@ -582,6 +582,18 @@ def main():
                     idle = now - last_rx
                     if not serial_text:
                         kind = "no_output_at_all"      # never got past firmware
+                    elif " FATAL: " in serial_text:
+                        # A guest that panicked did not wedge, and calling it a
+                        # wedge sends the next person looking for a hang.
+                        #
+                        # This became worth distinguishing the day a panic
+                        # started stopping the whole machine instead of one
+                        # core. Before that, a kernel fault parked a single cpu
+                        # and the survivors kept the log moving, so the boot
+                        # really did look like it froze somewhere unrelated,
+                        # seconds later - which is how the silent-wedge family
+                        # stayed unexplained for as long as it did.
+                        kind = "guest_panicked"
                     elif idle >= quiet_budget(serial_text):
                         kind = "guest_wedged"          # gave up early on purpose
                     elif idle > 20:
@@ -591,6 +603,10 @@ def main():
                         kind = "guest_quiet"
                     else:
                         kind = "guest_still_talking"   # still progressing: the budget was too small
+                    if kind == "guest_panicked":
+                        pm = re.search(r" FATAL: ([^,\r\n]*)", serial_text)
+                        expected = (pm.group(1).strip() if pm else "unknown") \
+                            + f" (waiting for {expected})"
                     reason = (f"missing:{expected} verdict={kind}"
                               f" elapsed={now - started:.0f}s"
                               f" quiet_for={idle:.0f}s"

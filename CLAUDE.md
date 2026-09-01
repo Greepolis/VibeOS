@@ -84,6 +84,31 @@ reaches the guest.
 but almost everything in `arch_hw.c` is `static`, so nearest-preceding-symbol
 names are frequently wrong. When it matters, make the kernel print where it is.
 
+**A panic must stop the machine, not a core.** `hw_panic` ended with
+`for (;;) { cli; hlt; }`, and its own message said `halting on cpu 2` - which
+was read for weeks as though it said `halting`. The other three cores carried
+on, the log kept moving, and the guest went quiet seconds later somewhere with
+no connection to the fault. That is the whole silent-wedge family, and it is why
+so many investigations here ended at a plausible pointer with no mechanism
+behind it: the evidence and the failure were separated by however long it took
+the survivors to need the core that had died. A panic now parks every core on
+its next timer interrupt, and the boot gate reports `guest_panicked` with the
+reason rather than `guest_wedged`.
+
+**A field written on one path and read on all of them will leak whatever was
+there.** `p->interp_base` was set only when an interpreter was mapped and read
+unconditionally when the startup block was built, so every program without an
+interpreter was handed a stale kernel pointer as `AT_BASE` - uninitialised
+kernel stack for an execve, the previous tenant's value for a recycled slot. A
+static PIE relocates itself against `AT_BASE`, so musl dereferenced it. Clear
+such a field in the function that owns the contract, not at each caller.
+
+**Symbolise against the artifacts, not against a local rebuild.** The nightly
+uploads the kernel ELF and every guest binary, which is the only way to follow
+this file\'s own rule about naming an address - a local build has different
+layout and the guest binaries are stripped. Two defects here were found in
+minutes from an artifact bundle after days of local sweeps said nothing.
+
 ## Sharp edges in the code
 
 **Syscall arguments typed `int` arrive zero-extended.** `mov $-100, %edi`
