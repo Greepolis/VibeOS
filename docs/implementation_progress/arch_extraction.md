@@ -1,6 +1,6 @@
 # Splitting arch_hw.c
 
-Status: **first cut done.** 9088 → 8544 lines.
+Status: **two cuts done.** 9088 → 8359 lines.
 Last review: 2026-09-02
 
 ## Why
@@ -64,18 +64,58 @@ Exporting it would have put `hw_cpu_t` on the header for the sake of one
 integer, so the seam has `hw_current_task()` instead. A file that has been
 lifted out has no business knowing how this kernel finds the current core.
 
+## Cut 2 — signal delivery (done, 2026-09-02)
+
+`kernel/arch/x86_64/linux_signal.c`. Building a frame on a user stack,
+calling a handler on it, and taking the frame back when the handler returns is
+Linux ABI, not x86. What is architectural about it - the selectors, the trap
+frame layout - is named in the seam header and nothing else in the file needs to
+know.
+
+**The two halves were four hundred lines apart**, with the crash dumper and half
+the syscall table between them. That is the more useful thing this cut fixed:
+`hw_signal_deliver` and `hw_sys_rt_sigreturn` are one
+subject and now sit together.
+
+| | lines |
+|---|---|
+| `arch_hw.c` after cut 1 | 8544 |
+| `arch_hw.c` after cut 2 | **8359** (−185) |
+| `linux_signal.c` | 154 |
+| seam header | 258 → 330 (+72) |
+
+**A correction to this plan's own estimate.** The table below called this
+section 915 lines. It is not: the banner "delivering a signal" covers signals,
+the memory-diagnostic walk, the panic summary, the crash dumper *and* the whole
+Linux syscall table. The signal code proper is 185 lines. Section banners in
+that file describe where somebody stopped writing, not what follows.
+
+**The diagnostics group was measured and deliberately left.**
+`hw_walk_step`, `hw_frame_still_mapped`,
+`hw_panic_cpu_summary`, `hw_dump_vanished` and
+`vibeos_x86_64_crash_dump` are ~427 cohesive lines and would make a good
+file - but they touch eleven globals including `g_cpus`, which would put
+`hw_cpu_t` on the seam. That is exactly the widening avoided in cut 1
+with `hw_current_task()`. It needs an accessor pass first, so it waits
+rather than being taken at the wrong price.
+
 ## Next cuts, in the order they look worth doing
 
-Measured against the file as it stands now:
+Measured, not estimated from section banners - which is what cut 2 taught:
 
-| section | lines | goes to |
-|---|---|---|
-| delivering a signal | ~915 | `linux_signal.c` |
-| the Linux syscall layer | ~693 | `linux_syscall.c` |
-| what a C runtime asks for | ~408 | with the syscall layer |
-| the kernel log | ~434 | `kernel/core/` — portable |
+| section | lines | goes to | blocked on |
+|---|---|---|---|
+| crash and wedge diagnostics | ~427 | `arch_diag.c` | needs an accessor for `g_cpus` |
+| the Linux syscall table | ~693 | `linux_syscall.c` | - |
+| what a C runtime asks for | ~408 | with the syscall table | - |
+| the kernel log | ~434 | `kernel/core/` — genuinely portable | - |
 
-The log is the only one of those that can become genuinely portable rather than
-merely a separate file in the same layer. The other three stay architecture-
-adjacent, and that is fine: a 900-line file that does one thing is not the
-problem this plan exists to solve.
+And one that is not a move at all: **X-P2 steps 3 and 4**. Demand paging removes
+the eager read, and with it `g_exec_elf`, `g_interp_elf`, the staging cache and
+the copy loop around them - several hundred lines that leave without needing a
+seam, because they stop existing.
+
+The log is the only one that can become genuinely portable rather than merely a
+separate file in the same layer. The others stay architecture-adjacent, and that
+is fine: a 700-line file that does one thing is not the problem this plan exists
+to solve.

@@ -21,6 +21,8 @@
 #include "vibeos/inet.h"
 #include "vibeos/fs.h"
 #include "vibeos/vma.h"
+#include "vibeos/log.h"
+#include "vibeos/task.h"
 #include "vibeos/mm_model.h"
 
 /* Linux errno values returned to user space (negated). */
@@ -254,5 +256,75 @@ long hw_sys_recvfrom(uint64_t fd, uint64_t buf, uint64_t len, uint64_t addr_uptr
 long hw_sys_netctl(uint64_t op, uint64_t arg);
 long hw_net_recv(hw_fd_t *f, uint64_t buf, uint64_t len);
 long hw_net_send(hw_fd_t *f, uint64_t buf, uint64_t len);
+
+/* Saved on the user stack across a handler. The layout is private to this
+ * kernel - only the code that writes it and rt_sigreturn read it - so it holds
+ * the whole trapframe rather than a Linux-compatible ucontext, which would
+ * matter only to a program that inspects it. */
+typedef struct {
+    uint64_t magic;
+    uint64_t blocked;
+    vibeos_x86_64_isr_frame_t frame;
+} hw_sigframe_t;
+
+#define HW_SIGFRAME_MAGIC 0x5649424553494721ull   /* "VIBESIG!" */
+
+#define SIG_DFL_ADDR 0ull
+#define SIG_IGN_ADDR 1ull
+
+/* The signal numbers are in arch_hw_internal.h: two files name them now. */
+#define VIBEOS_SA_RESTORER 0x04000000u
+
+/* Where a task was last handled, for the guard in hw_task_load_cpu_state.
+ *
+ * Three readings of this code have already been wrong about how an exited task
+ * gets scheduled again, so the code stops being the source: each task records
+ * the last place its cr3 was written, the last place it was made runnable, and
+ * the last place its address space was destroyed. Static strings, one store
+ * each - the cost is a pointer write on paths that already do far more, and
+ * what it buys is the difference between a theory and a name. */
+#define HW_TASK_MARK(idx, field, where) (g_tasks[idx].field = (where))
+
+/* The architecture's names for the portable states, so one transition table
+ * governs both and there is no second enum to drift. RESERVED was this file's
+ * word for what the plan calls SETUP; the name stays because forty call sites
+ * use it and the value is what matters. */
+#define HW_TASK_FREE     VIBEOS_TASK_FREE
+#define HW_TASK_READY    VIBEOS_TASK_READY
+#define HW_TASK_RUNNING  VIBEOS_TASK_RUNNING
+#define HW_TASK_ZOMBIE   VIBEOS_TASK_ZOMBIE
+#define HW_TASK_BLOCKED  VIBEOS_TASK_BLOCKED
+#define HW_TASK_RESERVED VIBEOS_TASK_SETUP
+
+#define VIBEOS_SIGHUP   1u
+#define VIBEOS_SIGINT   2u
+#define VIBEOS_SIGQUIT  3u
+#define VIBEOS_SIGILL   4u
+#define VIBEOS_SIGABRT  6u
+#define VIBEOS_SIGFPE   8u
+#define VIBEOS_SIGKILL  9u
+#define VIBEOS_SIGSEGV 11u
+#define VIBEOS_SIGPIPE 13u
+#define VIBEOS_SIGALRM 14u
+#define VIBEOS_SIGTERM 15u
+#define VIBEOS_SIGCHLD 17u
+#define VIBEOS_SIGCONT 18u
+#define VIBEOS_SIGSTOP 19u
+#define VIBEOS_SIGWINCH 28u
+
+/* SA_RESTORER: the handler entry carries the address the handler returns to. */
+
+/* ---- signal delivery, now in linux_signal.c ------------------------------ */
+
+int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame);
+long hw_sys_rt_sigreturn(vibeos_x86_64_isr_frame_t *frame);
+
+/* What it reaches back for. hw_task_exit is here because a signal whose default
+ * action is death ends the task from inside the delivery path. */
+void hw_log(vibeos_log_level_t level, uint32_t code, uint64_t a0, uint64_t a1,
+            const char *msg);
+void hw_task_exit(uint64_t code);
+int hw_task_set_state(int slot, vibeos_task_state_t to, const char *why);
+int hw_signal_default_kills(uint32_t sig);
 
 #endif /* VIBEOS_ARCH_HW_INTERNAL_H */
