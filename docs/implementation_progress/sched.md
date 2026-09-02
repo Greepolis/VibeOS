@@ -194,3 +194,75 @@ within an hour of quoting it.
 running - is recorded here because this is the only moment both halves are
 known. It is the number that says whether anybody is starving, and it is
 deliberately the worst case rather than the last one.
+
+---
+
+## S-P5 — Policy (the layer, done 2026-09-02)
+
+**The phase that makes it a scheduler rather than a rotation.** It is last on
+purpose: a policy decides which of several *correct* choices to make, so it can
+only sit on a lifetime layer that is correct, and it can only be evaluated with
+the accounting from S-P4. Built earlier it would have been tuned against a
+defect.
+
+`kernel/sched/sched_policy.c` is a pure function of state the caller
+supplies - which slots are runnable, which core is asking. No task table, no
+lock, no clock. Every rule is therefore settled by a host test rather than by
+watching a boot and forming an impression, which is the only way a policy can be
+argued about at all.
+
+**What it decides**
+
+- **The quantum is a number somebody chose.** Preemption happened whenever the
+  timer fired, so the slice was "the timer period" - nobody's decision. It is
+  now per class, in ticks, with the reason written next to each.
+- **Classes are absolute.** A runnable kernel task runs before any normal one,
+  however long the normal one has waited. That is what makes a class different
+  from a large weight. Idle is a class rather than a flag, so an idle task
+  competes by the same rule instead of needing a special case in the picker.
+- **Weights come from nice**, as a table rather than a formula - the property
+  that matters, roughly 25% per step over a range of about a thousand, is
+  readable in a table and is not readable in an expression.
+- **A new task is admitted level with its class, not at zero.** Admitting at
+  zero hands every newly created task the whole machine until it catches up:
+  not a subtle unfairness but a fork bomb that needs no malice.
+- **Renicing does not reset history.** Otherwise a task can have the machine for
+  free by renicing itself.
+- **Affinity is checked in the picker**, so a pinned task cannot appear
+  elsewhere even when it is the only thing runnable.
+
+**The tests measure rather than inspect.** They run the picker for tens of
+thousands of ticks and count who got what: nice 0 against nice 5 must land
+between 2.7:1 and 3.5:1, which is the weight ratio doing its job rather than a
+number read off the table. And every rule was confirmed by breaking it - class
+ordering, weighting, affinity and level admission each produce their own named
+failure when removed.
+
+### The first run found a real starvation bug
+
+Virtual time advanced by `(ticks * WEIGHT_BASE) / weight` in whole
+units. For any task more favoured than nice 0 the weight exceeds the base, so
+**that division truncates to zero**: a nice -5 task accumulated no virtual time
+at all, always held the smallest, and ran forever. Not a rounding error - total
+starvation of everything else.
+
+Virtual time is fixed point now, ten bits of fraction, which puts the smallest
+step (nice -20) at 11 instead of 0 and leaves four orders of magnitude before a
+64-bit overflow.
+
+### A mistake worth recording: the header collided with an existing one
+
+The first version of this layer was written to `include/vibeos/policy.h`,
+which **already existed** - it is the security policy, capabilities and MAC. The
+file was overwritten. It was restored from git intact and the scheduling one
+renamed to `sched_policy.h`.
+
+The tell was there and was read past: the editor reported the file as *updated*
+rather than *created*. Check whether a name is taken before taking it, and read
+what a tool says it did rather than what it was asked to do.
+
+### Still open in S-P5
+
+The layer exists, is tested and is not yet wired into `hw_pick_next`.
+Steps 4's work stealing and step 5's priority inversion are untouched - the
+latter is decision T7 and is not mine to settle.

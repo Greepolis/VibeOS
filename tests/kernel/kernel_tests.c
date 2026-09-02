@@ -8683,6 +8683,7 @@ int test_runq(void);
 int test_lifetime(void);
 int test_loader(void);
 int test_account(void);
+int test_sched_policy(void);
 
 int main(void) {
     int failures = 0;
@@ -8700,6 +8701,7 @@ int main(void) {
     RUN_TEST(test_lifetime);
     RUN_TEST(test_loader);
     RUN_TEST(test_account);
+    RUN_TEST(test_sched_policy);
     RUN_TEST(test_pmm);
     RUN_TEST(test_pmm_reserve);
     RUN_TEST(test_blockcache_hits);
