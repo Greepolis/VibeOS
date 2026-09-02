@@ -8684,6 +8684,7 @@ int test_lifetime(void);
 int test_loader(void);
 int test_account(void);
 int test_sched_policy(void);
+int test_forkguard(void);
 
 int main(void) {
     int failures = 0;
@@ -8702,6 +8703,7 @@ int main(void) {
     RUN_TEST(test_loader);
     RUN_TEST(test_account);
     RUN_TEST(test_sched_policy);
+    RUN_TEST(test_forkguard);
     RUN_TEST(test_pmm);
     RUN_TEST(test_pmm_reserve);
     RUN_TEST(test_blockcache_hits);

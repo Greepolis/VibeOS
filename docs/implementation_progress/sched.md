@@ -266,3 +266,44 @@ what a tool says it did rather than what it was asked to do.
 The layer exists, is tested and is not yet wired into `hw_pick_next`.
 Steps 4's work stealing and step 5's priority inversion are untouched - the
 latter is decision T7 and is not mine to settle.
+
+---
+
+## Fork-bomb protection (2026-09-02)
+
+**The failure this closes is not that fork can fail.** It already could, and
+returned an error as it should. It is what running out of slots *meant*: the
+task table is first-come, so a program forking in a loop took every slot, and
+then init could not start a service and the shell could not run a command. The
+machine stayed alive and became unadministrable, which is worse than one that
+refuses.
+
+kernel/sched/forkguard.c answers one question - may this task create another -
+from counts the caller supplies, so the rules are settled by host tests instead
+of by writing a fork bomb and hoping it reproduces.
+
+Two rules, and **neither is interesting alone**:
+
+- **A reserve.** Four slots, one per core, that only privileged tasks may take.
+  Without the ceiling below, a bomb still fills every unreserved slot and every
+  ordinary program stops working.
+- **A ceiling.** Eight live children per task. Without the reserve above,
+  enough cooperating processes reach the same place.
+
+Both numbers are chosen rather than discovered, and the reasoning is written
+where they are set: four is the smallest reserve that leaves every core able to
+start something, and eight is comfortably more than anything in this boot forks
+- the shell's deepest pipeline is three - so the limit binds on a bomb and on
+nothing else. A healthy boot refuses **zero** forks.
+
+The refusal says which rule it was, because both return EAGAIN and they are
+completely different investigations: one is a program misbehaving, the other is
+a machine that is full.
+
+    [SCHED] fork refused reason=too-many-children pid=0x19 children=0x6 slots_in_use=0x11
+
+Confirmed by tightening the child limit to two, which makes an ordinary boot
+trip it six times with the reason, the pid and the counts. Live children are
+counted by walking the table rather than kept in a field: a counter has to be
+right on every exit path including the ones that fail half way, and the table is
+twenty-four entries long. Zombies count, because a zombie still holds a slot.

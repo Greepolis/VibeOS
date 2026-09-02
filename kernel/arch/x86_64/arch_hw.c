@@ -23,6 +23,7 @@
 #include "vibeos/exec_stats.h"
 #include "arch_hw_internal.h"
 #include "vibeos/account.h"
+#include "vibeos/forkguard.h"
 
 #define VIBEOS_HW_KERNEL_CS 0x08u
 #define VIBEOS_HW_KERNEL_DS 0x10u
@@ -5269,6 +5270,60 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
     if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
         return -VIBEOS_EINVAL;
     }
+
+    /* Asked before a slot is taken, not after.
+     *
+     * Running out of slots is fine and fork returns EAGAIN as it should. What
+     * is not fine is what running out *meant*: the table is first-come, so a
+     * program forking in a loop took every slot, and then init could not start
+     * a service and the shell could not run a command. The machine stayed alive
+     * and became unadministrable, which is worse than one that refuses.
+     *
+     * init and the kernel's own tasks are privileged here - they are exactly
+     * the ones that must still be able to act once a program has taken
+     * everything it is allowed to. */
+    {
+        uint32_t in_use = 0, kids = 0;
+        uint32_t pid = g_tasks[g_current_task].tgid;
+        vibeos_fork_verdict_t verdict;
+        int i;
+
+        hw_spin_lock(&g_sched_lock);
+        for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+            if (g_tasks[i].state == HW_TASK_FREE) {
+                continue;
+            }
+            in_use++;
+            /* Live children, counted rather than tracked in a field: a counter
+             * has to be right on every exit path, including the ones that fail
+             * half way, and this table is twenty-four entries long. */
+            if (g_tasks[i].ppid == pid) {
+                kids++;
+            }
+        }
+        hw_spin_unlock(&g_sched_lock);
+
+        verdict = vibeos_forkguard_check(in_use, kids,
+                                         g_tasks[g_current_task].pid <= 1u);
+        if (verdict != VIBEOS_FORK_OK) {
+            vibeos_x86_64_serial_lock();
+            vibeos_x86_64_serial_puts("[SCHED] fork refused reason=");
+            vibeos_x86_64_serial_puts(vibeos_fork_verdict_name(verdict));
+            vibeos_x86_64_serial_puts(" pid=0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)pid);
+            vibeos_x86_64_serial_puts(" children=0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)kids);
+            vibeos_x86_64_serial_puts(" slots_in_use=0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)in_use);
+            vibeos_x86_64_serial_puts("\n");
+            vibeos_x86_64_serial_unlock();
+            /* EAGAIN, which is what a C library turns into "resource
+             * temporarily unavailable" and what a shell retries on - the
+             * refusal is temporary by nature, since a child exiting undoes it. */
+            return -VIBEOS_EAGAIN;
+        }
+    }
+
     idx = hw_task_alloc();
     if (idx < 0) {
         hw_log(VIBEOS_LOG_WARN, 7u, 0, 0,
@@ -8096,6 +8151,15 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
      * to the current count silently refused three quarters of the ticks while
      * balancing perfectly. */
     (void)vibeos_account_init((uint32_t)VIBEOS_HW_MAX_TASKS, VIBEOS_HW_MAX_CPUS);
+    /* Four slots held back, and eight children to any one task.
+     *
+     * Four is one per core, which is the smallest reserve that lets every core
+     * still start something. Eight is comfortably more than anything in this
+     * boot forks - the shell's deepest pipeline is three - so the limit binds
+     * on a bomb and on nothing else. Both are numbers chosen rather than
+     * discovered, and if a workload ever needs more the place to argue about it
+     * is here. */
+    (void)vibeos_forkguard_init((uint32_t)VIBEOS_HW_MAX_TASKS, 4u, 8u);
     g_sched_running = 1;
     __asm__ __volatile__("sti");
 
