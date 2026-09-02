@@ -1,6 +1,6 @@
 # Boot Repeatability Progress
 
-Status: **24 boots clean out of 24**, from a long-standing ~1 in 8.
+Status: **24 local boots clean out of 24** - but CI still reproduces the copy-on-write stress defect on a build containing every fix below, so this number is not the whole picture. See the correction dated 2026-09-02, from a long-standing ~1 in 8.
 
 Six defects fixed. The first three were in the diagnostics built to hunt the
 failure rather than in the kernel they were watching. The last three came from
@@ -270,7 +270,40 @@ remember to clear a field" holds until somebody adds a caller. The ring-3 ABI
 self-test now **asserts `AT_BASE` is absent** for a program with no
 interpreter, every boot, deterministically.
 
-## The copy-on-write defect, found and closed (2026-09-01)
+## The copy-on-write defect: one window closed, the defect still open (2026-09-02)
+
+**Correction.** This section previously said "found and closed". It was not.
+
+A nightly on a build that *contains* the fix - its exec line carries
+`cache_audit_checked`, which only exists from `d9c0049` -
+failed again with the same signature:
+
+    STRESS_FAIL: the child's own copy-on-write page at offset 0: found 0x07 expected 0xf8
+
+`after` is 0xf8, so `before` is 0x07: the child read the
+*parent's* value after writing its own across the whole page. And
+`COW_STATS` reported `exclusive_lost=0`, so the window fixed
+below was never even entered in that boot.
+
+The window was real - the host test proves it deterministically, and it stays -
+but it was not this one.
+
+**"Closed" was inferred from 24 boots with no stress failure.** That is an
+inference from an absence, on a defect this same file records as appearing about
+once in twenty-four. This document exists largely to record what that habit
+costs, and it happened again here.
+
+What the evidence says now, across three occurrences: the child writes
+`after` to all 4096 bytes and then reads `before` back at
+offset 0. That is not a lost write - it is the page being **replaced by a fresh
+copy of the original** after the child had already written into it. So the
+question for the next attempt is not "which write was lost" but **what resolves
+a fault on that page a second time**, and how the entry still looks
+copy-on-write when it does.
+
+Replay seeds recorded: `76419299086`, `97300336535`.
+
+## The window that was closed (2026-09-01)
 
 Closed by CI logs, not by another boot sweep. The nightly's clang/Release job
 had failed with

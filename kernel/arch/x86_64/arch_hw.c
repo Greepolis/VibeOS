@@ -21,6 +21,7 @@
 #include "vibeos/elf.h"
 #include "vibeos/services.h"
 #include "vibeos/exec_stats.h"
+#include "arch_hw_internal.h"
 
 #define VIBEOS_HW_KERNEL_CS 0x08u
 #define VIBEOS_HW_KERNEL_DS 0x10u
@@ -39,7 +40,7 @@
 #define PIT_BASE_HZ 1193182u
 #define VIBEOS_HW_IRQ_BASE 32u
 #define VIBEOS_HW_IRQ_TIMER 32u
-#define VIBEOS_HW_TIMER_HZ 100u
+/* VIBEOS_HW_TIMER_HZ is in arch_hw_internal.h. */
 
 /* ---- GDT + TSS ---------------------------------------------------------- */
 
@@ -129,6 +130,9 @@ static hw_cpu_t *hw_this_cpu(void) {
  * through the whole syscall layer. */
 #define g_current_task (hw_this_cpu()->current_task)
 
+/* The same value, for the files lifted out of here; see arch_hw_internal.h. */
+int hw_current_task(void);
+
 /* Console-lock ownership (overrides the weak default in serial.c). Reads the
  * GS base MSR directly so it is safe to call before the per-CPU block is
  * installed, which happens after the first boot messages. */
@@ -182,10 +186,8 @@ void vibeos_x86_64_irq_restore(uint64_t flags) {
  * interrupts on: if the timer preempted such a holder, the scheduler would spin
  * on a lock its own CPU owns and never make progress. */
 
-typedef struct {
-    volatile int locked;
-    uint64_t flags;   /* caller's RFLAGS, restored on release */
-} hw_lock_t;
+/* hw_lock_t now lives in arch_hw_internal.h, so the files lifted out
+ * of here can see it. */
 
 static hw_lock_t g_sched_lock;
 static hw_lock_t g_mm_lock;
@@ -194,9 +196,9 @@ static hw_lock_t g_exec_lock;
 /* The TCP/IP stack is entered both from syscalls and from the timer interrupt
  * that pumps the device, so it lives behind its own lock. Declared here because
  * the socket syscalls appear before the network bring-up code below. */
-static vibeos_inet_t g_net;
-static hw_lock_t g_net_lock;
-static int g_net_up;
+vibeos_inet_t g_net;
+hw_lock_t g_net_lock;
+int g_net_up;
 
 /* Acquire a lock without masking interrupts.
  *
@@ -228,7 +230,11 @@ static void hw_spin_unlock_preemptible(hw_lock_t *lock) {
     __sync_lock_release(&lock->locked);
 }
 
-static void hw_spin_lock(hw_lock_t *lock) {
+int hw_current_task(void) {
+    return g_current_task;
+}
+
+void hw_spin_lock(hw_lock_t *lock) {
     uint64_t flags;
     __asm__ __volatile__("pushfq\n\tpopq %0\n\tcli" : "=r"(flags) : : "memory");
     while (__sync_lock_test_and_set(&lock->locked, 1)) {
@@ -239,7 +245,7 @@ static void hw_spin_lock(hw_lock_t *lock) {
     lock->flags = flags;
 }
 
-static void hw_spin_unlock(hw_lock_t *lock) {
+void hw_spin_unlock(hw_lock_t *lock) {
     uint64_t flags = lock->flags;
     __sync_lock_release(&lock->locked);
     if (flags & 0x200ull) {   /* only re-enable if the caller had them on */
@@ -298,18 +304,7 @@ extern int vibeos_x86_64_elf_load(const unsigned char *elf, uint64_t len,
 extern const unsigned char vibeos_user_hello_elf[];
 extern const unsigned long vibeos_user_hello_elf_len;
 
-/* Frame pushed by the ISR stubs, in ascending memory order. */
-typedef struct vibeos_x86_64_isr_frame {
-    uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
-    uint64_t rbp, rdi, rsi, rdx, rcx, rbx, rax;
-    uint64_t vector;
-    uint64_t error_code;
-    uint64_t rip;
-    uint64_t cs;
-    uint64_t rflags;
-    uint64_t rsp;
-    uint64_t ss;
-} vibeos_x86_64_isr_frame_t;
+/* vibeos_x86_64_isr_frame_t now lives in arch_hw_internal.h. */
 
 static void hw_schedule(vibeos_x86_64_isr_frame_t *frame); /* defined below */
 /* Defined with the page cache it walks, several thousand lines below, and
@@ -332,7 +327,7 @@ static void hw_cache_audit(uint64_t *out_checked, uint64_t *out_bad);
 #define HW_RANGE_LEAF        6u   /* the 4 KiB entry itself */
 #define HW_RANGE_READONLY    7u
 
-static int hw_user_range_ok(uint64_t va, uint64_t len, int need_write);
+int hw_user_range_ok(uint64_t va, uint64_t len, int need_write);
 static int hw_user_range_why(uint64_t va, uint64_t len, int need_write,
                              uint32_t *why);
 static long hw_futex_wake(uint64_t addr, uint32_t count);
@@ -556,7 +551,7 @@ static void hw_io_wait(void) {
 }
 
 /* Timer tick counter, incremented from the IRQ0 handler. */
-static volatile uint64_t g_timer_ticks;
+volatile uint64_t g_timer_ticks;
 
 /* Remap the 8259 PIC so IRQ 0-15 arrive as vectors 0x20-0x2F, then mask
  * everything except the timer (IRQ0). */
@@ -1375,9 +1370,7 @@ static int g_hw_pmm_ready;
  * consumed correctly instead of being reinterpreted as a function frame. */
 #define VIBEOS_HW_USER_STACK_PAGES 4u
 
-typedef struct vibeos_hw_aspace {
-    uint64_t *pml4;
-} vibeos_hw_aspace_t;
+/* vibeos_hw_aspace_t now lives in arch_hw_internal.h. */
 
 static uint64_t hw_read_cr3(void) {
     uint64_t v;
@@ -2409,25 +2402,7 @@ static void hw_enable_syscall(void) {
 #define VIBEOS_HW_USER_HEAP_BASE (VIBEOS_HW_USER_BASE + 0x00800000ull) /* +8 MiB  */
 #define VIBEOS_HW_USER_MMAP_BASE (VIBEOS_HW_USER_BASE + 0x04000000ull) /* +64 MiB */
 
-typedef struct {
-    vibeos_hw_aspace_t as;
-    uint64_t entry;
-    /* Where the interpreter was mapped, or 0 for a program that has none.
-     * The interpreter relocates itself from this, so it is not a diagnostic:
-     * without it a dynamic program faults on its first relocation. */
-    uint64_t interp_base;
-    uint64_t brk_cur;   /* current program break            */
-    /* What this process asked for, as opposed to what happens to be mapped.
-     * munmap and mprotect consult this; the page tables are the consequence,
-     * not the record. See kernel/mm/vma.c. */
-    vibeos_vma_list_t vmas;
-    uint64_t mmap_cur;  /* next free anonymous mmap address  */
-    uint64_t user_sp;   /* entry rsp, atop the startup block */
-    /* What execve was given. A program that wants to find itself reads
-     * /proc/self/exe, and answering from the real path is the difference
-     * between a correct answer and a plausible one. */
-    char exe_path[64];
-} hw_proc_t;
+/* hw_proc_t now lives in arch_hw_internal.h. */
 
 typedef struct {
     vibeos_hw_aspace_t *as;
@@ -2867,13 +2842,13 @@ static uint64_t hw_proc_cr3(const hw_proc_t *p) {
 
 /* ---- Task table + preemptive scheduler ---------------------------------- */
 
-#define VIBEOS_HW_MAX_TASKS 24  /* kernel + user processes + one idle task per CPU */
+/* VIBEOS_HW_MAX_TASKS is in arch_hw_internal.h. */
 
 /* Open-file table entry. Reads stream straight off the filesystem; writes are
  * buffered and committed to disk on close (the FAT writer stores whole files). */
-#define VIBEOS_HW_MAX_FDS 4
+/* VIBEOS_HW_MAX_FDS is in arch_hw_internal.h. */
 #define VIBEOS_HW_MAX_DIR_ENTRIES 4096u
-#define VIBEOS_HW_WBUF 512
+/* VIBEOS_HW_WBUF is in arch_hw_internal.h. */
 
 /* Pipes.
  *
@@ -2904,33 +2879,14 @@ typedef struct {
 static hw_pipe_t g_pipes[VIBEOS_HW_MAX_PIPES];
 static hw_lock_t g_pipe_lock;
 
-typedef struct {
-    int used;
-    int writable;
-    int dirty;
-    /* Index into g_pipes, or -1. A descriptor is a pipe end when this is set;
-     * `writable` then says which end. */
-    int pipe;
-    uint32_t cluster;
-    uint32_t size;
-    uint32_t pos;
-    int net_sock;         /* index into the TCP/IP stack, or -1 for a file */
-    uint32_t dir_index;   /* for getdents64 on a directory fd */
-    /* Whether this descriptor names a directory. Determined when it is opened
-     * rather than guessed later: opendir() opens the path and then fstats the
-     * descriptor, and a descriptor that claims to be a regular file is refused
-     * with ENOTDIR no matter what stat said about the path a moment earlier. */
-    int isdir;
-    char name[24];
-    uint8_t wbuf[VIBEOS_HW_WBUF];
-    uint32_t wlen;
-} hw_fd_t;
+/* hw_fd_t now lives in arch_hw_internal.h, so the files lifted out
+ * of here can see it. */
 
 /* Defined with the pipe code below; the task-exit path above needs it. */
 static void hw_pipe_release(hw_fd_t *f);
 
 /* Signals 1..64; index 0 is unused so the numbering matches Linux. */
-#define VIBEOS_HW_NSIG 65
+/* VIBEOS_HW_NSIG is in arch_hw_internal.h. */
 
 #define SIG_DFL_ADDR 0ull
 #define SIG_IGN_ADDR 1ull
@@ -2979,101 +2935,8 @@ extern void vibeos_x86_64_task_enter(vibeos_x86_64_isr_frame_t *task);
 extern const unsigned char vibeos_user_task_elf[];
 extern const unsigned long vibeos_user_task_elf_len;
 
-typedef struct {
-    vibeos_x86_64_isr_frame_t ctx;
-    hw_proc_t proc;
-    uint64_t cr3;
-    const char *cr3_set_by;      /* diagnostics only; see HW_TASK_MARK */
-    const char *ready_by;
-    const char *aspace_killed_by;
-    uint32_t alloc_seq;          /* which tenancy of this slot this is */
-    uint64_t exit_code;
-    /* Non-zero when this task was killed by a signal rather than exiting.
-     * wait() encodes the two cases differently, and a parent that cannot tell
-     * them apart reads a signal death as an ordinary exit with a large status
-     * - which is how a crashed child looks like a successful one. */
-    uint32_t exit_signal;
-    uint64_t kstack_top;  /* private ring-0 stack: lets a task block in a syscall */
-    /* `pid` is the thread id: unique per task, which is what Linux calls a
-     * tid. `tgid` is the thread group - the number a program thinks of as its
-     * process id, shared by every thread in it. For a single-threaded process
-     * the two are equal, which is why everything worked while `pid` was the
-     * only one of them.
-     *
-     * getpid() returns tgid and gettid() returns pid. Getting that backwards
-     * is not a cosmetic error: a C library uses the pair to decide whether it
-     * is signalling itself or another thread. */
-    uint32_t pid;
-    uint32_t tgid;
-    uint32_t ppid;
-    uint32_t pgid;
-    uint32_t sid;
-    uint32_t service_id;
-
-    /* A thread shares its creator's address space rather than owning one, so
-     * exit must not tear that space down while siblings are still running in
-     * it. Whether this task is the last of its group is asked of the task
-     * table, not tracked in a counter: the table is what the scheduler already
-     * believes, and a second count of the same thing is a second thing that
-     * can be wrong. */
-    uint8_t is_thread;
-    /* Whether this task has ever been scheduled. One branch per context
-     * switch, and it answered the question that moved the thread
-     * investigation furthest: a thread that is created but never runs and a
-     * thread that runs and exits immediately look identical from outside. */
-    uint8_t ran_once;
-
-    /* CLONE_CHILD_CLEARTID: the address to zero and wake when this thread
-     * exits. It is how pthread_join learns the thread is gone - the joiner
-     * waits on this word, so a thread that exits without clearing it is a
-     * join that never returns. */
-    uint64_t clear_child_tid;
-    /* Written from interrupt/syscall context (preemption, task exit) and read
-     * by the kernel task, so it must not be cached across a wait loop. */
-    volatile int state;
-    /* Set while some CPU is executing this task, cleared only once its
-     * context has been saved. A waker on another core can flip state to
-     * READY while the task is still running here; without this flag a
-     * third core would pick it up and two CPUs would run one task,
-     * sharing its kernel stack. */
-    volatile int on_cpu;
-    int is_user;
-    int is_idle;      /* per-CPU idle task: only run when nothing else is ready */
-    int wait_input;   /* blocked in read() on stdin */
-    uint8_t signal_stopped; /* stopped by SIGSTOP until SIGCONT */
-    /* Set by prctl(PR_SET_NAME); reported back by PR_GET_NAME. */
-    char comm[16];
-    /* Signals.
-     *
-     * pending is a bitmask of signals raised but not yet delivered; blocked is
-     * the mask the process asked to defer. Delivery happens on the way back to
-     * user space, never at the point the signal is raised - raising can happen
-     * from an interrupt or from another CPU, and building a signal frame on a
-     * stack that is not currently in use would corrupt it.
-     *
-     * handler[] holds one user address per signal, plus the flags and the
-     * restorer trampoline the C library supplied. SIG_DFL and SIG_IGN are
-     * stored as they arrive so the default action is a property of the entry
-     * rather than of a separate table that could disagree with it. */
-    uint64_t sig_pending;
-    uint64_t sig_blocked;
-    uint64_t sig_handler[VIBEOS_HW_NSIG];
-    uint64_t sig_restorer[VIBEOS_HW_NSIG];
-    uint64_t sig_flags[VIBEOS_HW_NSIG];
-    uint64_t sig_mask[VIBEOS_HW_NSIG];
-    /* %fs base for this task, set by arch_prctl(ARCH_SET_FS). Restored on
-     * every switch: leaving the previous task's value loaded would let one
-     * program read and write another's thread-local state. */
-    uint64_t fs_base;
-    uint64_t kstack_base;  /* for reclamation on exit */
-    uint32_t kstack_pages;
-    hw_fd_t fds[VIBEOS_HW_MAX_FDS];
-    /* What descriptors 0, 1 and 2 currently mean. Unused entries mean the
-     * console, which is where they point when nothing has redirected them.
-     * Kept apart from fds[] because the console is not a table entry and a
-     * shell redirects the standard three far more often than anything else. */
-    hw_fd_t std_redirect[3];
-} hw_task_t;
+/* hw_task_t now lives in arch_hw_internal.h, so the files lifted out
+ * of here can see it. */
 
 /* Point the CPU at a task's ring-0 stack: the TSS one is used when ring 3 is
  * interrupted, the syscall one when it issues `syscall`. */
@@ -3125,7 +2988,7 @@ static void hw_free_kstack_pages(uint64_t base, uint32_t pages) {
     }
 }
 
-static hw_task_t g_tasks[VIBEOS_HW_MAX_TASKS];
+hw_task_t g_tasks[VIBEOS_HW_MAX_TASKS];
 static uint32_t g_alloc_seq;
 static int g_sched_running;
 static uint32_t g_next_pid = 1;
@@ -4050,25 +3913,7 @@ static void hw_task_exit(uint64_t code) {
 
 #include "vibeos/compat.h"
 
-/* Linux errno values returned to user space (negated). */
-#define VIBEOS_ENOSYS 38
-#define VIBEOS_EFAULT 14
-#define VIBEOS_EINVAL 22
-#define VIBEOS_ENOMEM 12
-#define VIBEOS_EBADF  9
-#define VIBEOS_ENOENT 2
-#define VIBEOS_ECHILD 10
-#define VIBEOS_EAGAIN 11
-#define VIBEOS_ENOTTY 25
-#define VIBEOS_EPERM  1
-#define VIBEOS_ESRCH  3
-#define VIBEOS_EPIPE 32
-#define VIBEOS_ERANGE 34
-#define VIBEOS_EMFILE 24
-#define VIBEOS_E2BIG  7
-#define VIBEOS_EMFILE 24
-#define VIBEOS_EIO    5
-#define VIBEOS_ENOTDIR 20
+/* The Linux errno values are in arch_hw_internal.h. */
 #define VIBEOS_TIOCGPGRP 0x540Fu
 #define VIBEOS_TIOCSPGRP 0x5410u
 
@@ -4225,7 +4070,7 @@ static vibeos_compat_runtime_t g_compat_rt;
 /* Validate that [va, va+len) is mapped in the *calling task's* address space
  * and reachable from ring 3. Without this the kernel would happily dereference
  * any pointer a user task passes - including kernel addresses. */
-static int hw_user_range_ok(uint64_t va, uint64_t len, int need_write) {
+int hw_user_range_ok(uint64_t va, uint64_t len, int need_write) {
     uint32_t why = HW_RANGE_OK;
     return hw_user_range_why(va, len, need_write, &why);
 }
@@ -4287,10 +4132,10 @@ static int hw_user_range_why(uint64_t va, uint64_t len, int need_write,
     return 1;
 }
 
-static int hw_copy_user_string(uint64_t uptr, char *dst, int max); /* defined below */
+int hw_copy_user_string(uint64_t uptr, char *dst, int max); /* defined below */
 
 /* Per-process open-file table helpers. fds 0-2 are the console; 3+ are files. */
-static hw_fd_t *hw_fd_get(uint64_t fd) {
+hw_fd_t *hw_fd_get(uint64_t fd) {
     if (g_current_task < 0 || fd < 3u || fd >= 3u + VIBEOS_HW_MAX_FDS) {
         return 0;
     }
@@ -4302,8 +4147,8 @@ static hw_fd_t *hw_fd_get(uint64_t fd) {
 
 /* Socket-backed descriptors are served by these (defined with the socket
  * syscalls below), so read/write work on a connection like any other stream. */
-static long hw_net_recv(hw_fd_t *f, uint64_t buf, uint64_t len);
-static long hw_net_send(hw_fd_t *f, uint64_t buf, uint64_t len);
+long hw_net_recv(hw_fd_t *f, uint64_t buf, uint64_t len);
+long hw_net_send(hw_fd_t *f, uint64_t buf, uint64_t len);
 
 /* Let go of one end of a pipe. The pipe itself lives until both ends are
  * gone, because a reader may still have data to drain after every writer has
@@ -4749,10 +4594,10 @@ static long hw_sys_open(uint64_t path_uptr, uint64_t flags) {
  * the same way read(0) does: mark it BLOCKED and hlt. The network keeps moving
  * because the stack is pumped from the timer interrupt. */
 
-#define VIBEOS_HW_NET_TIMEOUT_TICKS (VIBEOS_HW_TIMER_HZ * 10u)   /* 10 seconds */
+/* VIBEOS_HW_NET_TIMEOUT_TICKS is in arch_hw_internal.h. */
 
 /* Claim a free descriptor slot in the calling process. */
-static int hw_fd_alloc(hw_task_t *t) {
+int hw_fd_alloc(hw_task_t *t) {
     int i;
     for (i = 0; i < VIBEOS_HW_MAX_FDS; i++) {
         if (!t->fds[i].used) {
@@ -4769,400 +4614,11 @@ static int hw_fd_alloc(hw_task_t *t) {
     return -1;
 }
 
-/* Read a struct sockaddr_in out of user memory: family (host order), port and
- * address (both network order on the wire). */
-static int hw_read_sockaddr(uint64_t uptr, uint32_t *out_ip, uint16_t *out_port) {
-    const uint8_t *p;
-    if (!hw_user_range_ok(uptr, 8, 0)) {
-        return -1;
-    }
-    p = (const uint8_t *)(uintptr_t)uptr;
-    if (((uint16_t)p[0] | ((uint16_t)p[1] << 8)) != 2u) {   /* AF_INET */
-        return -1;
-    }
-    *out_port = (uint16_t)(((uint16_t)p[2] << 8) | p[3]);
-    *out_ip = ((uint32_t)p[4] << 24) | ((uint32_t)p[5] << 16) |
-              ((uint32_t)p[6] << 8) | (uint32_t)p[7];
-    return 0;
-}
+/* The socket syscalls moved to linux_socket.c. None of what they do is
+ * architecture: reading a sockaddr out of user memory and blocking until a
+ * connection arrives is Linux ABI translation over kernel/net/inet.c, and it
+ * sat beside the GDT only because that is where this file started. */
 
-static int hw_write_sockaddr(uint64_t uptr, uint32_t ip, uint16_t port) {
-    uint8_t *p;
-    if (uptr == 0u) {
-        return 0;
-    }
-    if (!hw_user_range_ok(uptr, 16, 1)) {
-        return -1;
-    }
-    p = (uint8_t *)(uintptr_t)uptr;
-    p[0] = 2; p[1] = 0;
-    p[2] = (uint8_t)(port >> 8);
-    p[3] = (uint8_t)(port & 0xFFu);
-    p[4] = (uint8_t)(ip >> 24);
-    p[5] = (uint8_t)((ip >> 16) & 0xFFu);
-    p[6] = (uint8_t)((ip >> 8) & 0xFFu);
-    p[7] = (uint8_t)(ip & 0xFFu);
-    {
-        int k;
-        for (k = 8; k < 16; k++) {
-            p[k] = 0;
-        }
-    }
-    return 0;
-}
-
-/* Give up the CPU until the next tick; the network is pumped from there. */
-static void hw_net_wait_tick(void) {
-    __asm__ __volatile__("sti; hlt" ::: "memory");
-}
-
-static long hw_sys_socket(uint64_t domain, uint64_t type) {
-    hw_task_t *t;
-    int fd, s;
-    int kind;
-
-    if (!g_net_up || g_current_task < 0 || !g_tasks[g_current_task].is_user) {
-        return -VIBEOS_EINVAL;
-    }
-    if (domain != 2u) {                       /* AF_INET only */
-        return -VIBEOS_EINVAL;
-    }
-    if ((type & 0xFFu) == 1u) {
-        kind = VIBEOS_INET_SOCK_TCP;          /* SOCK_STREAM */
-    } else if ((type & 0xFFu) == 2u) {
-        kind = VIBEOS_INET_SOCK_UDP;          /* SOCK_DGRAM  */
-    } else {
-        return -VIBEOS_EINVAL;
-    }
-
-    t = &g_tasks[g_current_task];
-    fd = hw_fd_alloc(t);
-    if (fd < 0) {
-        return -VIBEOS_EMFILE;
-    }
-    hw_spin_lock(&g_net_lock);
-    s = vibeos_inet_socket(&g_net, kind);
-    if (s >= 0 && vibeos_inet_socket_set_owner(&g_net, s, t->tgid) != 0) {
-        (void)vibeos_inet_close(&g_net, s);
-        s = -1;
-    }
-    hw_spin_unlock(&g_net_lock);
-    if (s < 0) {
-        t->fds[fd].used = 0;
-        return -VIBEOS_ENOMEM;
-    }
-    t->fds[fd].net_sock = s;
-    t->fds[fd].pipe = -1;
-    return 3 + fd;
-}
-
-static long hw_sys_bind(uint64_t fd, uint64_t addr_uptr) {
-    hw_fd_t *f = hw_fd_get(fd);
-    uint32_t ip;
-    uint16_t port;
-    int r;
-
-    if (!f || f->net_sock < 0) {
-        return -VIBEOS_EBADF;
-    }
-    if (hw_read_sockaddr(addr_uptr, &ip, &port) != 0) {
-        return -VIBEOS_EFAULT;
-    }
-    hw_spin_lock(&g_net_lock);
-    r = vibeos_inet_bind(&g_net, f->net_sock, port);
-    hw_spin_unlock(&g_net_lock);
-    return (r == 0) ? 0 : -VIBEOS_EINVAL;
-}
-
-static long hw_sys_listen(uint64_t fd) {
-    hw_fd_t *f = hw_fd_get(fd);
-    int r;
-
-    if (!f || f->net_sock < 0) {
-        return -VIBEOS_EBADF;
-    }
-    hw_spin_lock(&g_net_lock);
-    r = vibeos_inet_listen(&g_net, f->net_sock);
-    hw_spin_unlock(&g_net_lock);
-    return (r == 0) ? 0 : -VIBEOS_EINVAL;
-}
-
-static long hw_sys_connect(uint64_t fd, uint64_t addr_uptr) {
-    hw_fd_t *f = hw_fd_get(fd);
-    uint32_t ip;
-    uint16_t port;
-    uint64_t deadline;
-    int r;
-
-    if (!f || f->net_sock < 0) {
-        return -VIBEOS_EBADF;
-    }
-    if (hw_read_sockaddr(addr_uptr, &ip, &port) != 0) {
-        return -VIBEOS_EFAULT;
-    }
-    hw_spin_lock(&g_net_lock);
-    r = vibeos_inet_connect(&g_net, f->net_sock, ip, port);
-    hw_spin_unlock(&g_net_lock);
-    if (r != 0) {
-        return -VIBEOS_EINVAL;
-    }
-
-    deadline = g_timer_ticks + VIBEOS_HW_NET_TIMEOUT_TICKS;
-    for (;;) {
-        int st;
-        hw_spin_lock(&g_net_lock);
-        st = vibeos_inet_socket_state(&g_net, f->net_sock);
-        hw_spin_unlock(&g_net_lock);
-        if (st == VIBEOS_TCP_ESTABLISHED) {
-            return 0;
-        }
-        if (st == VIBEOS_TCP_CLOSED || st < 0) {
-            return -VIBEOS_EIO;   /* refused, reset, or gave up retransmitting */
-        }
-        if (g_timer_ticks > deadline) {
-            return -VIBEOS_EIO;
-        }
-        hw_net_wait_tick();
-    }
-}
-
-static long hw_sys_accept(uint64_t fd, uint64_t addr_uptr) {
-    hw_fd_t *f = hw_fd_get(fd);
-    hw_task_t *t;
-    int child = -1;
-    int nfd;
-
-    if (!f || f->net_sock < 0 || g_current_task < 0) {
-        return -VIBEOS_EBADF;
-    }
-    t = &g_tasks[g_current_task];
-    for (;;) {
-        hw_spin_lock(&g_net_lock);
-        child = vibeos_inet_accept(&g_net, f->net_sock);
-        hw_spin_unlock(&g_net_lock);
-        if (child >= 0) {
-            break;
-        }
-        if (child != -VIBEOS_INET_EAGAIN) {
-            return -VIBEOS_EINVAL;
-        }
-        hw_net_wait_tick();
-    }
-
-    nfd = hw_fd_alloc(t);
-    if (nfd < 0) {
-        hw_spin_lock(&g_net_lock);
-        (void)vibeos_inet_close(&g_net, child);
-        hw_spin_unlock(&g_net_lock);
-        return -VIBEOS_EMFILE;
-    }
-    t->fds[nfd].net_sock = child;
-    t->fds[nfd].pipe = -1;
-    {
-        uint32_t ip;
-        uint16_t port;
-        hw_spin_lock(&g_net_lock);
-        ip = g_net.sockets[child].remote_ip;
-        port = g_net.sockets[child].remote_port;
-        hw_spin_unlock(&g_net_lock);
-        (void)hw_write_sockaddr(addr_uptr, ip, port);
-    }
-    return 3 + nfd;
-}
-
-/* Blocking stream receive: returns 0 at end of stream, like Linux. */
-static long hw_net_recv(hw_fd_t *f, uint64_t buf, uint64_t len) {
-    uint64_t deadline = g_timer_ticks + VIBEOS_HW_NET_TIMEOUT_TICKS;
-
-    if (!hw_user_range_ok(buf, len, 1)) {
-        return -VIBEOS_EFAULT;
-    }
-    for (;;) {
-        long n;
-        hw_spin_lock(&g_net_lock);
-        n = vibeos_inet_recv(&g_net, f->net_sock, (void *)(uintptr_t)buf, (uint32_t)len);
-        hw_spin_unlock(&g_net_lock);
-        if (n >= 0) {
-            return n;
-        }
-        if (n == -VIBEOS_INET_ECONNRESET) {
-            return -VIBEOS_EIO;
-        }
-        if (n != -VIBEOS_INET_EAGAIN) {
-            return -VIBEOS_EINVAL;
-        }
-        if (g_timer_ticks > deadline) {
-            return -VIBEOS_EIO;
-        }
-        hw_net_wait_tick();
-    }
-}
-
-static long hw_net_send(hw_fd_t *f, uint64_t buf, uint64_t len) {
-    long n;
-    if (!hw_user_range_ok(buf, len, 0)) {
-        return -VIBEOS_EFAULT;
-    }
-    hw_spin_lock(&g_net_lock);
-    n = vibeos_inet_send(&g_net, f->net_sock, (const void *)(uintptr_t)buf, (uint32_t)len);
-    hw_spin_unlock(&g_net_lock);
-    if (n < 0) {
-        return (n == -VIBEOS_INET_EAGAIN) ? 0 : -VIBEOS_EIO;
-    }
-    return n;
-}
-
-static long hw_sys_sendto(uint64_t fd, uint64_t buf, uint64_t len, uint64_t addr_uptr) {
-    hw_fd_t *f = hw_fd_get(fd);
-    uint32_t ip;
-    uint16_t port;
-    long n;
-
-    if (!f || f->net_sock < 0) {
-        return -VIBEOS_EBADF;
-    }
-    if (addr_uptr == 0u) {
-        return hw_net_send(f, buf, len);
-    }
-    if (hw_read_sockaddr(addr_uptr, &ip, &port) != 0) {
-        return -VIBEOS_EFAULT;
-    }
-    if (!hw_user_range_ok(buf, len, 0)) {
-        return -VIBEOS_EFAULT;
-    }
-    hw_spin_lock(&g_net_lock);
-    n = vibeos_inet_sendto(&g_net, f->net_sock, (const void *)(uintptr_t)buf,
-                           (uint32_t)len, ip, port);
-    hw_spin_unlock(&g_net_lock);
-    return (n < 0) ? -VIBEOS_EIO : n;
-}
-
-/* netctl: the small control surface a shell needs to inspect and exercise the
- * interface. Linux would spread this across ioctl and netlink; VibeOS keeps one
- * explicit call rather than pretending to implement either.
- *
- *   op 0  write {ip, netmask, gateway, dns, up} as five u32 to `arg`
- *   op 1  ping `arg` (an IPv4 address), returns the round trip in ms
- *   op 2  resolve the name at `arg`, returns the address
- *   op 3  write {tx_frames, rx_frames, rx_dropped, tcp_retransmits} as four u64
- */
-static long hw_sys_netctl(uint64_t op, uint64_t arg) {
-    uint64_t deadline;
-
-    if (!g_net_up) {
-        return -VIBEOS_EIO;
-    }
-    switch (op) {
-        case 0: {
-            uint32_t *out;
-            if (!hw_user_range_ok(arg, 20, 1)) {
-                return -VIBEOS_EFAULT;
-            }
-            out = (uint32_t *)(uintptr_t)arg;
-            hw_spin_lock(&g_net_lock);
-            out[0] = g_net.ip;
-            out[1] = g_net.netmask;
-            out[2] = g_net.gateway;
-            out[3] = g_net.dns;
-            out[4] = (uint32_t)vibeos_inet_dhcp_bound(&g_net);
-            hw_spin_unlock(&g_net_lock);
-            return 0;
-        }
-        case 1: {
-            hw_spin_lock(&g_net_lock);
-            (void)vibeos_inet_ping(&g_net, (uint32_t)arg);
-            hw_spin_unlock(&g_net_lock);
-            deadline = g_timer_ticks + (VIBEOS_HW_TIMER_HZ * 4u);
-            for (;;) {
-                uint64_t rtt = 0;
-                int r;
-                hw_spin_lock(&g_net_lock);
-                r = vibeos_inet_ping_result(&g_net, &rtt);
-                hw_spin_unlock(&g_net_lock);
-                if (r == 0) {
-                    return (long)rtt;
-                }
-                if (g_timer_ticks > deadline) {
-                    return -VIBEOS_EIO;
-                }
-                hw_net_wait_tick();
-            }
-        }
-        case 2: {
-            char name[64];
-            if (hw_copy_user_string(arg, name, sizeof(name)) != 0) {
-                return -VIBEOS_EFAULT;
-            }
-            hw_spin_lock(&g_net_lock);
-            (void)vibeos_inet_resolve(&g_net, name);
-            hw_spin_unlock(&g_net_lock);
-            deadline = g_timer_ticks + (VIBEOS_HW_TIMER_HZ * 5u);
-            for (;;) {
-                uint32_t ip = 0;
-                int r;
-                hw_spin_lock(&g_net_lock);
-                r = vibeos_inet_resolve_result(&g_net, &ip);
-                hw_spin_unlock(&g_net_lock);
-                if (r == 0) {
-                    return (long)ip;
-                }
-                if (r != -VIBEOS_INET_EAGAIN || g_timer_ticks > deadline) {
-                    return -VIBEOS_ENOENT;
-                }
-                hw_net_wait_tick();
-            }
-        }
-        case 3: {
-            uint64_t *out;
-            if (!hw_user_range_ok(arg, 32, 1)) {
-                return -VIBEOS_EFAULT;
-            }
-            out = (uint64_t *)(uintptr_t)arg;
-            hw_spin_lock(&g_net_lock);
-            out[0] = g_net.tx_frames;
-            out[1] = g_net.rx_frames;
-            out[2] = g_net.rx_dropped;
-            out[3] = g_net.tcp_retransmits;
-            hw_spin_unlock(&g_net_lock);
-            return 0;
-        }
-        default:
-            return -VIBEOS_EINVAL;
-    }
-}
-
-static long hw_sys_recvfrom(uint64_t fd, uint64_t buf, uint64_t len, uint64_t addr_uptr) {
-    hw_fd_t *f = hw_fd_get(fd);
-    uint64_t deadline;
-
-    if (!f || f->net_sock < 0) {
-        return -VIBEOS_EBADF;
-    }
-    if (!hw_user_range_ok(buf, len, 1)) {
-        return -VIBEOS_EFAULT;
-    }
-    deadline = g_timer_ticks + VIBEOS_HW_NET_TIMEOUT_TICKS;
-    for (;;) {
-        long n;
-        uint32_t ip = 0;
-        uint16_t port = 0;
-        hw_spin_lock(&g_net_lock);
-        n = vibeos_inet_recvfrom(&g_net, f->net_sock, (void *)(uintptr_t)buf,
-                                 (uint32_t)len, &ip, &port);
-        hw_spin_unlock(&g_net_lock);
-        if (n >= 0) {
-            (void)hw_write_sockaddr(addr_uptr, ip, port);
-            return n;
-        }
-        if (n != -VIBEOS_INET_EAGAIN) {
-            return -VIBEOS_EINVAL;
-        }
-        if (g_timer_ticks > deadline) {
-            return -VIBEOS_EIO;
-        }
-        hw_net_wait_tick();
-    }
-}
 
 /* close(fd): commit buffered writes to the filesystem and release the slot. */
 static long hw_sys_close(uint64_t fd) {
@@ -6204,7 +5660,7 @@ static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr) {
 }
 
 /* Copy a NUL-terminated string from user space, validating each byte's page. */
-static int hw_copy_user_string(uint64_t uptr, char *dst, int max) {
+int hw_copy_user_string(uint64_t uptr, char *dst, int max) {
     int i;
     for (i = 0; i < max - 1; i++) {
         if (!hw_user_range_ok(uptr + (uint64_t)i, 1, 0)) {
