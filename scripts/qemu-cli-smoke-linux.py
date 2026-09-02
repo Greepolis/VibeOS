@@ -914,6 +914,38 @@ def main():
                     if value != 0:
                         problems.append(f"task_{name}={value}")
 
+            # Where the machine's time went.
+            #
+            # Asserted as an identity: every tick is charged to exactly one
+            # place - one task, or one core's idleness - so charged plus idle is
+            # seen, exactly. Not a tolerance. A mismatch is a tick that went
+            # somewhere nobody can name, and S-P5's policy would be tuned
+            # against the result.
+            #
+            # Also asserted non-zero: an accounting layer that is wired up but
+            # never called balances perfectly at zero, which is the way this
+            # check would quietly stop meaning anything.
+            cp = re.search(r"\[TASKS\] CPUTIME charged=0x([0-9a-f]+) idle=0x([0-9a-f]+)"
+                           r" seen=0x([0-9a-f]+) balanced=(\w+) dropped=0x([0-9a-f]+)", text)
+            if cp is None:
+                problems.append("cputime_accounting_missing")
+            else:
+                ch, idl, sn = (int(cp.group(i), 16) for i in (1, 2, 3))
+                if cp.group(4) != "yes" or ch + idl != sn:
+                    problems.append(
+                        f"cputime_does_not_balance charged={ch}_idle={idl}_seen={sn}")
+                elif sn == 0:
+                    problems.append("cputime_never_accounted")
+                elif ch == 0:
+                    problems.append("cputime_all_idle_no_task_ran")
+                # A refused tick keeps the identity above intact, because it was
+                # never counted at all - so this needs its own assertion or an
+                # accounting layer sized for one core would balance perfectly
+                # while reporting a quarter of a four-core machine. It did
+                # exactly that, once.
+                if int(cp.group(5), 16) != 0:
+                    problems.append(f"cputime_ticks_dropped={int(cp.group(5), 16)}")
+
             # Exec refusals, by reason.
             #
             # Asserted on the *names* that appear, not on a count. A boot

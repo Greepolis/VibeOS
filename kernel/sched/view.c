@@ -14,6 +14,7 @@
 
 #include "vibeos/task_stats.h"
 #include "vibeos/task.h"
+#include "vibeos/account.h"
 #include "vibeos/arch_x86_64.h"
 
 static void view_hex(uint64_t v) {
@@ -75,6 +76,17 @@ void vibeos_task_print_table(void) {
         view_str(d.ready_by);
         vibeos_x86_64_serial_puts(" aspace=");
         view_str(d.aspace_killed_by);
+        {
+            const vibeos_task_account_t *acct = vibeos_account_task(d.slot);
+            if (acct) {
+                vibeos_x86_64_serial_puts(" ticks=0x");
+                view_hex(acct->ticks);
+                vibeos_x86_64_serial_puts(" runs=0x");
+                view_hex(acct->switches);
+                vibeos_x86_64_serial_puts(" maxwait=0x");
+                view_hex(acct->max_wait);
+            }
+        }
         vibeos_x86_64_serial_puts(" state_by=");
         view_str(vibeos_task_last_why(d.slot));
         if (d.exe[0]) {
@@ -106,6 +118,54 @@ void vibeos_task_print_stats(void) {
     view_hex(s->slot_refused);
     vibeos_x86_64_serial_puts("\n");
     vibeos_x86_64_serial_unlock();
+
+    /* Where the machine's time went.
+     *
+     * Charged plus idle must equal seen, exactly. It is an identity rather than
+     * a tolerance because every tick is charged to exactly one place, so a
+     * mismatch is not drift - it is a tick that went somewhere nobody can name,
+     * and every number a policy would be built on inherits that error. */
+    {
+        uint64_t charged = 0, idle = 0, seen = 0;
+        uint64_t per_cpu[8];
+        uint64_t dropped;
+        int balanced;
+        uint32_t c;
+
+        /* Snapshot everything before printing any of it. The first version read
+         * the totals, then walked the per-CPU counters - and ticks kept
+         * arriving in between, so it printed a core with more idle time than
+         * the whole machine. Two moments reported as one is the same mistake as
+         * a log line assembled from two writes. */
+        for (c = 0; c < 8u; c++) {
+            per_cpu[c] = vibeos_account_idle(c);
+        }
+        dropped = vibeos_account_dropped();
+        balanced = vibeos_account_balance(&charged, &idle, &seen) == 0;
+
+        vibeos_x86_64_serial_lock();
+        vibeos_x86_64_serial_puts("[TASKS] CPUTIME charged=0x");
+        view_hex(charged);
+        vibeos_x86_64_serial_puts(" idle=0x");
+        view_hex(idle);
+        vibeos_x86_64_serial_puts(" seen=0x");
+        view_hex(seen);
+        vibeos_x86_64_serial_puts(balanced ? " balanced=yes" : " balanced=NO");
+        vibeos_x86_64_serial_puts(" dropped=0x");
+        view_hex(dropped);
+        for (c = 0; c < 8u; c++) {
+            uint64_t ci = per_cpu[c];
+            if (ci == 0ull) {
+                continue;
+            }
+            vibeos_x86_64_serial_puts(" cpu");
+            view_hex((uint64_t)c);
+            vibeos_x86_64_serial_puts("_idle=0x");
+            view_hex(ci);
+        }
+        vibeos_x86_64_serial_puts("\n");
+        vibeos_x86_64_serial_unlock();
+    }
 
     /* The three that must be zero, on their own line and last, so the eye
      * lands on them - and so the boot gate can match one pattern. */

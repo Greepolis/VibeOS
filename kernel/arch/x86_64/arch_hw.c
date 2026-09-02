@@ -22,6 +22,7 @@
 #include "vibeos/services.h"
 #include "vibeos/exec_stats.h"
 #include "arch_hw_internal.h"
+#include "vibeos/account.h"
 
 #define VIBEOS_HW_KERNEL_CS 0x08u
 #define VIBEOS_HW_KERNEL_DS 0x10u
@@ -992,6 +993,30 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
             /* Every core's LAPIC timer lands here; only one may own the clock. */
             if (!g_apic_mode || hw_this_cpu()->index == 0u) {
                 g_timer_ticks++;
+            }
+            /* Accounting is charged by *every* core, unlike the clock above.
+             *
+             * The distinction matters and is easy to get backwards: the clock
+             * owner counts wall time, and accounting counts CPU time. On four
+             * cores those differ by a factor of four, and charging only the
+             * owner would report a machine as three quarters idle no matter
+             * what it was doing. */
+            {
+                hw_cpu_t *acpu = hw_this_cpu();
+                int cur = acpu->current_task;
+                int idle = 0;
+
+                /* Bounded before it indexes the table, not after. This runs on
+                 * every timer interrupt on every core, including before the
+                 * task table means anything, and an interrupt handler that
+                 * indexes an array with a value it has not checked is how a
+                 * boot goes quiet somewhere unrelated. */
+                if (cur < 0 || cur >= VIBEOS_HW_MAX_TASKS) {
+                    cur = -1;
+                } else {
+                    idle = g_tasks[cur].is_idle;
+                }
+                vibeos_account_tick(acpu->index, cur, idle);
             }
             hw_pic_send_eoi((uint32_t)frame->vector);
             /* One core owns the network clock: draining the device from every
@@ -3052,6 +3077,12 @@ int hw_task_set_state(int slot, vibeos_task_state_t to, const char *why) {
         return -1;
     }
     g_tasks[slot].state = (int)to;
+    /* Stamped here because this is the only writer of task state, so no path
+     * that makes a task runnable can forget to - which is the same argument
+     * that put the state change here in the first place. */
+    if (to == VIBEOS_TASK_READY) {
+        g_tasks[slot].ready_at = vibeos_account_ticks();
+    }
     return 0;
 }
 
@@ -3477,6 +3508,7 @@ static void hw_schedule(vibeos_x86_64_isr_frame_t *frame) {
     cpu->current_task = next;
     (void)hw_task_set_state(next, HW_TASK_RUNNING, __func__);
     g_tasks[next].on_cpu = 1;
+    vibeos_account_switch(hw_this_cpu()->index, next, g_tasks[next].ready_at);
     *frame = g_tasks[next].ctx;
     hw_spin_unlock(&g_sched_lock);
 
@@ -3804,6 +3836,7 @@ void hw_task_exit(uint64_t code) {
     cpu->current_task = next;
     (void)hw_task_set_state(next, HW_TASK_RUNNING, __func__);
     g_tasks[next].on_cpu = 1;
+    vibeos_account_switch(hw_this_cpu()->index, next, g_tasks[next].ready_at);
     hw_spin_unlock(&g_sched_lock);
     hw_task_load_cpu_state(next);
     /* Now on the next task's CR3; the dying user address space is still
@@ -8056,6 +8089,13 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
         return;
     }
     (void)hw_task_create_idle(&g_cpus[0]);
+    /* Before the first switch: a scheduler that starts accounting after it
+     * starts scheduling reports a machine that idled through its own boot. */
+    /* Sized for every core this kernel can have, not the ones online right
+     * now: the application processors come up after this point, and sizing it
+     * to the current count silently refused three quarters of the ticks while
+     * balancing perfectly. */
+    (void)vibeos_account_init((uint32_t)VIBEOS_HW_MAX_TASKS, VIBEOS_HW_MAX_CPUS);
     g_sched_running = 1;
     __asm__ __volatile__("sti");
 

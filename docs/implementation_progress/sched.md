@@ -103,3 +103,66 @@ after the per-task CPU accounting at S-P4 that nothing here has today. The first
 draft of the plan listed it as a one-line non-goal, which was wrong: a plan
 called "Tasks and Scheduling" that contains no scheduling is mis-scoped. The
 ordering argument stands, the omission did not.
+
+---
+
+## S-P4 — Accounting (done, 2026-09-02)
+
+**The machine can now say where its time went.** Nothing above this phase was
+possible without it: a policy decides which of several correct choices to make,
+and every way of deciding - priorities, weights, whether anybody is starving - is
+a statement about time already spent. Tuning a policy against numbers this
+kernel could not produce would have been tuning against a guess.
+
+`kernel/sched/account.c` is arithmetic and nothing else: it makes no
+decision, holds no lock, and calls nothing, so it is host-tested exhaustively and
+a defect in it can never be a defect in scheduling.
+
+**Charged by tick, not by timestamp.** Every tick goes to exactly one place -
+one task, or one core's idleness - which makes the check an *identity* rather
+than a tolerance:
+
+    [TASKS] CPUTIME charged=0x241 idle=0x3b0 seen=0x5f1 balanced=yes dropped=0x0
+            cpu0_idle=0x10c cpu1_idle=0xfc cpu2_idle=0xae cpu3_idle=0xfa
+
+577 + 944 = 1521, and the four per-core figures add to the idle total exactly. A
+tolerance is something you argue about when it drifts; an identity is something
+the boot gate asserts.
+
+**An idle task is a task, and must not read as work.** Every core here has an
+idle task holding a real slot, so charging by slot alone would report a machine
+doing nothing as fully busy - and every ratio built on that would be wrong in
+the direction that hides a problem.
+
+**Every core charges its own tick**, unlike the wall clock, which only core zero
+owns. The distinction is easy to get backwards: the clock counts wall time and
+this counts CPU time, and on four cores those differ by a factor of four.
+
+### Three defects in the wiring, two of them found by their own counters
+
+- **The tick handler indexed the task table with a value it had not checked.**
+  It runs on every core on every interrupt, including before that table means
+  anything.
+- **Accounting was sized with `g_cpu_online_count`**, which is 1 when
+  the scheduler starts - the other cores come up afterwards. Three quarters of
+  the ticks were refused.
+- **The report read the totals, then walked the per-core counters**, with ticks
+  arriving in between. It printed a core with more idle time than the whole
+  machine had. Two moments reported as one, which is the same mistake as a log
+  line assembled from two writes.
+
+The second is the interesting one. **A refused tick keeps the identity intact** -
+charged plus idle still equalled seen, because a refused tick was never seen - so
+the balance check could never have found it. It needed its own counter, and with
+that counter the sabotage is unambiguous: sizing the layer for one core again
+turns the boot red with `cputime_ticks_dropped=1184`.
+
+That is the shape this project keeps meeting: a check that cannot fail is not a
+check. The balance assertion is real, and it would have watched this bug go past.
+
+### What S-P5 will be judged against
+
+`max_wait` - the longest a task waited between becoming runnable and
+running - is recorded here because this is the only moment both halves are
+known. It is the number that says whether anybody is starving, and it is
+deliberately the worst case rather than the last one.

@@ -211,6 +211,11 @@ typedef struct {
      * every switch: leaving the previous task's value loaded would let one
      * program read and write another's thread-local state. */
     uint64_t fs_base;
+    /* The tick at which this task last became runnable. Half of "how long did
+     * it wait"; the other half is recorded when it is picked. Zero means
+     * unknown, which the accounting reads as no wait rather than as a wait
+     * since boot - the difference between a fresh task and a starved one. */
+    uint64_t ready_at;
     uint64_t kstack_base;  /* for reclamation on exit */
     uint32_t kstack_pages;
     hw_fd_t fds[VIBEOS_HW_MAX_FDS];

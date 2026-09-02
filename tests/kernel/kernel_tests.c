@@ -8682,6 +8682,7 @@ int test_task(void);
 int test_runq(void);
 int test_lifetime(void);
 int test_loader(void);
+int test_account(void);
 
 int main(void) {
     int failures = 0;
@@ -8698,6 +8699,7 @@ int main(void) {
     RUN_TEST(test_runq);
     RUN_TEST(test_lifetime);
     RUN_TEST(test_loader);
+    RUN_TEST(test_account);
     RUN_TEST(test_pmm);
     RUN_TEST(test_pmm_reserve);
     RUN_TEST(test_blockcache_hits);
