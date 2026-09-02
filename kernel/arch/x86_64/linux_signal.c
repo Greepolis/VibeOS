@@ -11,6 +11,11 @@
 
 #include "arch_hw_internal.h"
 
+/* The console. gcc let this file call it on an implicit declaration and only
+ * warned; clang treats that as the error it is. A lifted file has to say what
+ * it uses - the whole point of a seam is that nothing arrives by accident. */
+#include "vibeos/arch_x86_64.h"
+
 /* ---- delivering a signal ---------------------------------------------------
  *
  * A signal is delivered by making the interrupted program call the handler and

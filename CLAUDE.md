@@ -135,6 +135,34 @@ same fault address, byte-identical twice. When comparing two states, look for a
 signature that is present in one and absent in the other before reaching for the
 ratio.
 
+**A gcc build is not a build either.** gcc accepts an implicit function
+declaration with a warning; clang rejects it. A file lifted out of
+`arch_hw.c` that forgot `#include "vibeos/arch_x86_64.h"`
+compiled green locally and failed the CI job that uses clang. `check.sh`
+now builds the kernel with clang too, and breaking the include again reproduces
+the CI errors exactly.
+
+The tell was there and was read as noise: the local warning count moved from 0
+to 4. A warning count that moves is the build telling you something. Treat
+`warnings=` the way this file already says to treat `rc=`.
+
+**A lock does not remove a wait, it shares it.** virtio-net's transmit spun up
+to fifty million times for a completion - always far longer than the boot gate
+waits for output, and for years that only stalled the core doing the
+transmitting. Putting the queue behind a lock, which it needed, turned one stuck
+transmit into every core parked in `hw_spin_lock` behind it. The wedge
+report showed exactly that: one core in the driver, three queued.
+
+When adding a lock around something that already waited, look at what the wait
+costs now that others are behind it. The bound is two million now - still orders
+of magnitude of headroom, and a failed frame instead of a failed machine.
+
+**Section banners in `arch_hw.c` describe where somebody stopped
+writing, not what follows.** The banner "delivering a signal" covers signals,
+the memory-diagnostic walk, the panic summary, the crash dumper and the whole
+Linux syscall table - 915 lines, of which the signal code is 185. Measure a
+section by its functions before planning around its size.
+
 ## Sharp edges in the code
 
 **Syscall arguments typed `int` arrive zero-extended.** `mov $-100, %edi`

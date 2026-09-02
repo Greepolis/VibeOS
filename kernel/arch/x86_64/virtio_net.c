@@ -263,6 +263,11 @@ int vibeos_x86_64_virtio_net_ready(void) {
  * transmits, so this lock can never be wanted from one. */
 static volatile int g_tx_lock;
 
+/* Transmits that gave up waiting. Zero on a healthy boot, and the difference
+ * between a slow network and a wedged machine now that one is tellable from
+ * the other. */
+static uint64_t g_tx_timeouts;
+
 static void tx_lock(void) {
     while (__sync_lock_test_and_set(&g_tx_lock, 1)) {
         while (g_tx_lock) {
@@ -306,7 +311,19 @@ int vibeos_x86_64_virtio_net_send(const void *frame, uint32_t len) {
     vn_outw(g_net_io + VIRTIO_QUEUE_NOTIFY, 1);
 
     while (g_tx.used->idx == g_tx.last_used) {
-        if (++spins > 50000000ull) {
+        /* Fifty million pauses was the old bound, and it was always far longer
+         * than the boot gate waits for any output at all. That only stalled the
+         * core doing the transmitting - until this loop gained the lock above
+         * it, at which point one stuck transmit parks every core that wants to
+         * send. A wedge report caught exactly that shape: CPU#0 here, and the
+         * other three queued behind it in hw_spin_lock.
+         *
+         * The device completes in microseconds when it is working, so a bound
+         * this large never distinguished "slow" from "never". Two million keeps
+         * several orders of magnitude of headroom and gives up in well under a
+         * second, which is a failed frame instead of a failed machine. */
+        if (++spins > 2000000ull) {
+            g_tx_timeouts++;
             /* Giving the lock back matters more than the frame does: holding it
              * here would turn one timed-out transmit into a permanently dead
              * network, which is the shape of failure this whole change exists

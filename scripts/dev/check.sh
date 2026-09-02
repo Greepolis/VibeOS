@@ -88,6 +88,36 @@ do_smoke() {
 # clang and its own configuration - and that is exactly how a receive path that
 # had grown a new dependency stayed green here while CI could not link it. It
 # gets its own build directory rather than disturbing "$d".
+# The kernel, compiled by the other compiler CI uses.
+#
+# This is not thoroughness for its own sake. gcc accepts an implicit function
+# declaration with a warning; clang rejects it. A file lifted out of arch_hw.c
+# that forgot an include therefore built green here and failed in CI - and the
+# local warning count had moved from 0 to 4, which is the build saying so and
+# was read as noise.
+#
+# Only the compile: the boot and the tests already run against the gcc build,
+# and what differs between the two compilers is what they refuse, not what they
+# emit.
+do_clang() {
+    echo "=== clang build"
+    if ! command -v clang > /dev/null 2>&1; then
+        # Said out loud rather than skipped quietly, for the same reason the
+        # fuzz step says it: a step that vanishes reads exactly like one that
+        # passed.
+        echo "clang=skipped-no-clang"
+        return
+    fi
+    cmake -S . -B build-clang-Release -G Ninja -DCMAKE_C_COMPILER=clang \
+          -DCMAKE_BUILD_TYPE=Release > /tmp/vibeos-clang-cfg.log 2>&1
+    cmake --build build-clang-Release -j"$(nproc)" > /tmp/vibeos-clang.log 2>&1
+    echo "clang-rc=$?"
+    # Source warnings only: the linker's build-id note is unavoidable here and
+    # counting it would make the number meaningless.
+    echo "clang-warnings=$(grep -c 'warning:' /tmp/vibeos-clang.log | head -1)"
+    grep -E 'error:' /tmp/vibeos-clang.log | head -5
+}
+
 do_fuzz() {
     echo "=== fuzz build"
     if ! command -v clang > /dev/null 2>&1; then
@@ -107,7 +137,8 @@ case "$what" in
     tests) do_build; do_tests ;;
     smoke) do_build; do_smoke ;;
     fuzz)  do_fuzz ;;
-    all)   do_build; do_tests; do_fuzz; do_smoke ;;
+    clang) do_clang ;;
+    all)   do_build; do_tests; do_clang; do_fuzz; do_smoke ;;
     *)     echo "usage: $0 [build|tests|smoke|fuzz|all] [build-dir]"; exit 2 ;;
 esac
 echo CHECK_DONE
