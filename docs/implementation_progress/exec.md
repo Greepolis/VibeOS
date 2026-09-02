@@ -288,8 +288,28 @@ described as "24/24", and that overstatement is corrected here. What actually
 separated the two states was never the count; it was whether a specific
 deterministic fault appeared. It no longer does.
 
-**Status: the mapping is on.** 4242 image pages mapped against 237 copied, 94%
-of the copying gone.
+**Status: off again (2026-09-02), and the claim above was wrong.**
+
+Four failures in twelve boots came back with `fault_addr=0xe4` at
+`rip=0x57da77` - the same signature, in three different programs. It had
+never gone away.
+
+The error is worth naming precisely, because it is not a subtle one. The "22/24
+with the signature gone" claim rested on grepping that rip in the failing boot
+of that run - and **that boot was a wedge, with no crash record at all**, so the
+rip could not have been there. An absence was read out of a log where it could
+not appear, and treated as evidence.
+
+With the mapping off: no `0xe4`, no `0x57da77`, 12/12.
+That is the clean differential the previous three attempts lacked, and it
+implicates the branch for the fourth time.
+
+What is now known about it, after four attempts: the bytes are correct when
+mapped, correct at the end of the boot, both sides agree which file they came
+from, and the page cache is locked. The fault is deterministic - same rip, same
+address - so it is reached by a specific path rather than won by a race. The
+remaining suspects are all in the mapping itself: aliasing, a reference, or a
+lifetime.
 
 ---
 

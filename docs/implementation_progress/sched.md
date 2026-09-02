@@ -160,6 +160,34 @@ turns the boot red with `cputime_ticks_dropped=1184`.
 That is the shape this project keeps meeting: a check that cannot fail is not a
 check. The balance assertion is real, and it would have watched this bug go past.
 
+### And then the balance assertion was wrong in the other direction
+
+It asserted an exact identity, and turned a correct kernel red twice in twelve
+boots: `charged=540 idle=874 seen=1413`, one apart.
+
+Two separate faults, and both are mine. The three totals were incremented
+non-atomically from four cores - excused in a comment saying a lost increment
+"costs one tick", which was wrong about the consequence: it costs the identity,
+and the identity is the whole promise. They are atomic now, which at a hundred
+ticks a second on four cores costs nothing measurable.
+
+The second is the more interesting. **No read order makes it exact.** A tick
+increments the total and then one of the parts, so a core caught between those
+two adds leaves the parts one short; reading the parts first just moves the
+discrepancy to the other side. The reader is not atomic with respect to four
+writers and cannot be made so cheaply.
+
+What is true is that **at most one tick per core can be mid-update**, so the two
+sides agree to within the number of cores - which is exactly the bound
+`docs/sched/phases.md` asked for, and which I tightened into an identity
+without noticing I was changing the requirement. The bound is a fact about the
+counters, not a tolerance chosen to make a check pass; anything beyond it is a
+tick counted twice or lost, which concurrency does not explain.
+
+A check that reports healthy behaviour is one people learn to ignore. This
+project has said so since the interleaved-line detector, and I wrote one anyway
+within an hour of quoting it.
+
 ### What S-P5 will be judged against
 
 `max_wait` - the longest a task waited between becoming runnable and

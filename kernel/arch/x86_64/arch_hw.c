@@ -2169,7 +2169,7 @@ static int hw_map_elf_image(vibeos_hw_aspace_t *as, vibeos_vma_list_t *vmas,
          * left is the mapping itself - aliasing, a reference, or a lifetime -
          * and that is where the next attempt should start rather than at the
          * top. */
-        if (file_id != 0u && !(flags & VIBEOS_ELF_W)) {
+        if (0 && file_id != 0u && !(flags & VIBEOS_ELF_W)) {
             uint64_t foff = 0;
             uint64_t phys = 0;
 

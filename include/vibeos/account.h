@@ -12,10 +12,10 @@
  * task had", so any policy built on top of it would be tuned by guesswork.
  *
  * Charged by tick, not by timestamp. A tick is charged to exactly one place -
- * one task, or one core's idle - which makes the invariant an identity rather
- * than an approximation: accounted plus idle equals ticks observed. An
- * approximation is a thing you argue about when it drifts; an identity is a
- * thing the boot gate can assert.
+ * one task, or one core's idle - so accounted plus idle equals ticks observed,
+ * to within the one tick per core that can be in flight while the totals are
+ * read. That bound is a fact about the counters rather than a tolerance chosen
+ * to make a check pass, which is what lets the boot gate assert it.
  */
 
 #define VIBEOS_ACCOUNT_MAX_SLOTS 64u
@@ -55,11 +55,19 @@ uint64_t vibeos_account_idle(uint32_t cpu);
  *
  * `*out_charged` is every tick charged to a task, `*out_idle` every tick
  * charged to a core's idleness, and `*out_seen` the number of ticks this layer
- * was told about. The first two must add up to the third exactly - not within a
- * tolerance. A mismatch means a tick went somewhere unaccounted or was counted
- * twice, and either way every number above this layer is wrong.
+ * was told about.
  *
- * Returns 0 when they balance, negative when they do not. */
+ * The first two add up to the third **to within the number of cores**, and the
+ * bound is the honest one rather than a hedge: a tick increments the total and
+ * then one of the parts, so a core caught between those two adds leaves the
+ * parts one short, and at most one tick per core can be in that state. No read
+ * order removes it - the reader is not atomic with respect to the writers.
+ *
+ * Anything beyond that bound is a tick counted twice or lost, which
+ * concurrency does not explain and which makes every number above this layer
+ * wrong.
+ *
+ * Returns 0 when they balance within the bound, negative when they do not. */
 int vibeos_account_balance(uint64_t *out_charged, uint64_t *out_idle,
                            uint64_t *out_seen);
 

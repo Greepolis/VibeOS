@@ -931,7 +931,13 @@ def main():
                 problems.append("cputime_accounting_missing")
             else:
                 ch, idl, sn = (int(cp.group(i), 16) for i in (1, 2, 3))
-                if cp.group(4) != "yes" or ch + idl != sn:
+                # Within the number of cores - what can be in flight while
+                # the three counters are read - and not an exact match. A
+                # tick increments the total and then one of the parts, so a
+                # core caught between those two adds leaves the parts one
+                # short. The first version asserted equality and turned a
+                # correct kernel red twice in twelve boots.
+                if cp.group(4) != "yes" or abs((ch + idl) - sn) > 8:
                     problems.append(
                         f"cputime_does_not_balance charged={ch}_idle={idl}_seen={sn}")
                 elif sn == 0:
