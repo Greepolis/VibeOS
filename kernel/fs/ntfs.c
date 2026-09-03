@@ -74,6 +74,106 @@ static int ntfs_apply_fixups(uint8_t *rec, uint32_t size, uint32_t sector_size) 
 
 /* Find an attribute of a given type in a record. Returns a pointer into `rec`
  * or NULL. */
+/* A $DATA attribute, after its own internal fields have been checked.
+ *
+ * `ntfs_find_attr` below bounds an attribute's *total* length inside the MFT
+ * record, and nothing more. Every field inside the attribute - where the
+ * resident value starts, how long it is, where the run list starts - came off
+ * the volume and was used as it arrived.
+ *
+ * That is a hole a USB stick walks through. `kernel/fs/storage.c` tries NTFS
+ * during filesystem recognition, so simply plugging in a crafted image reaches
+ * this code with no privilege at all, and the resident read path copies from
+ * `rec` - a four-kilobyte buffer on the *kernel stack* - straight into the
+ * buffer a user `read()` supplied. A resident length the volume chose therefore
+ * chose how much kernel stack to hand to a user process.
+ *
+ * The non-resident path had an unsigned subtraction on top: run-list offset
+ * beyond the attribute length wrapped to a near-4-gigabyte run list.
+ *
+ * So the fields are extracted once, here, or the attribute is refused. A
+ * refused attribute is a file that cannot be read; an unrefused one was a
+ * kernel memory disclosure. */
+typedef struct {
+    int resident;
+    uint64_t size;            /* the file's length as the volume states it */
+    const uint8_t *value;     /* resident bytes, valid for value_len       */
+    uint32_t value_len;
+    const uint8_t *runs;      /* non-resident run list, valid for runs_len */
+    uint32_t runs_len;
+} ntfs_data_attr_t;
+
+/* `attr` must have come from ntfs_find_attr against the same `rec`/`size`, so
+ * its total length is already known to fit. Returns 0 on success. */
+static int ntfs_data_attr(const uint8_t *rec, uint32_t size,
+                          const uint8_t *attr, ntfs_data_attr_t *out) {
+    uint32_t attr_len;
+    uint32_t at;
+
+    if (!rec || !attr || !out || attr < rec) {
+        return -1;
+    }
+    at = (uint32_t)(attr - rec);
+    if (at + 8u > size) {
+        return -1;
+    }
+    attr_len = rd32(attr + 4);
+    if (attr_len < 8u || at + attr_len > size) {
+        return -1;   /* find_attr promised this; not trusting it costs nothing */
+    }
+
+    out->resident = (attr[8] == 0u) ? 1 : 0;
+    out->value = 0;
+    out->value_len = 0;
+    out->runs = 0;
+    out->runs_len = 0;
+    out->size = 0;
+
+    if (out->resident) {
+        uint32_t value_off, value_len;
+
+        /* A resident attribute's header is 0x18 bytes: below that, the offset
+         * and length fields being read are not part of the attribute. */
+        if (attr_len < 0x18u) {
+            return -1;
+        }
+        value_len = rd32(attr + 0x10);
+        value_off = rd16(attr + 0x14);
+        if (value_off < 0x18u || value_off > attr_len) {
+            return -1;
+        }
+        if (value_len > attr_len - value_off) {
+            return -1;   /* the value claims to run past its own attribute */
+        }
+        out->value = attr + value_off;
+        out->value_len = value_len;
+        out->size = value_len;
+        return 0;
+    }
+
+    {
+        uint32_t runs_off;
+
+        /* A non-resident header is 0x40 bytes, and the real size lives at
+         * 0x30 - so reading it at all requires the attribute to be that long.
+         * It was read unconditionally before, which is an eight-byte read past
+         * a short attribute and into whatever follows it in the record. */
+        if (attr_len < 0x40u) {
+            return -1;
+        }
+        runs_off = rd16(attr + 0x20);
+        if (runs_off < 0x40u || runs_off >= attr_len) {
+            /* The subtraction below was unsigned and unguarded: an offset past
+             * the attribute produced a run list of nearly four gigabytes. */
+            return -1;
+        }
+        out->runs = attr + runs_off;
+        out->runs_len = attr_len - runs_off;
+        out->size = rd64(attr + 0x30);
+        return 0;
+    }
+}
+
 static const uint8_t *ntfs_find_attr(const uint8_t *rec, uint32_t size, uint32_t type) {
     uint32_t off = rd16(rec + 0x14);
 
@@ -401,9 +501,14 @@ static int ntfs_op_lookup(void *fsv, const char *path, vibeos_fs_node_t *out) {
     out->size = 0;
     data = ntfs_find_attr(rec, fs->mft_record_bytes, NTFS_ATTR_DATA);
     if (data) {
-        /* Resident data has its length in the record; non-resident data has a
-         * real size field. A directory has no data attribute at all. */
-        out->size = (data[8] == 0u) ? rd32(data + 0x10) : rd64(data + 0x30);
+        ntfs_data_attr_t d;
+
+        /* A directory has no data attribute at all, and an attribute whose own
+         * fields do not fit inside it is a file with no readable length rather
+         * than a length to believe. */
+        if (ntfs_data_attr(rec, fs->mft_record_bytes, data, &d) == 0) {
+            out->size = d.size;
+        }
     }
     return 0;
 }
@@ -415,6 +520,7 @@ static long ntfs_op_read_at(void *fsv, const vibeos_fs_node_t *node,
     uint8_t cluster[VIBEOS_NTFS_MFT_RECORD_MAX];
     uint8_t *dst = (uint8_t *)buf;
     const uint8_t *data;
+    ntfs_data_attr_t attr;
     uint32_t done = 0;
 
     if (!fs || !fs->mounted || node->is_dir) {
@@ -433,20 +539,33 @@ static long ntfs_op_read_at(void *fsv, const vibeos_fs_node_t *node,
     if (!data) {
         return -1;
     }
-    if (data[8] == 0u) {
+    if (ntfs_data_attr(rec, fs->mft_record_bytes, data, &attr) != 0) {
+        return -1;
+    }
+    if (attr.resident) {
         /* Resident: the file is inside its own record, and there are no
          * clusters to map. A small file on NTFS occupies no space on the
-         * volume at all. */
-        const uint8_t *value = data + rd16(data + 0x14);
+         * volume at all.
+         *
+         * Bounded against the *validated* value length rather than against the
+         * size the volume claimed. The two disagree exactly when somebody is
+         * trying to read the kernel stack this record sits on. */
         uint32_t i;
+
+        if (offset >= attr.value_len) {
+            return 0;
+        }
+        if (len > attr.value_len - (uint32_t)offset) {
+            len = attr.value_len - (uint32_t)offset;
+        }
         for (i = 0; i < len; i++) {
-            dst[i] = value[offset + i];
+            dst[i] = attr.value[offset + i];
         }
         return (long)len;
     }
     {
-        const uint8_t *runs = data + rd16(data + 0x20);
-        uint32_t runs_len = rd32(data + 4) - rd16(data + 0x20);
+        const uint8_t *runs = attr.runs;
+        uint32_t runs_len = attr.runs_len;
 
         while (done < len) {
             uint64_t vcn = (offset + done) / fs->cluster_bytes;

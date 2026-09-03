@@ -7522,6 +7522,15 @@ static uint8_t g_nt[NT_SECTORS * VIBEOS_BLOCK_SIZE];
 
 static uint8_t *nt_sec(uint32_t n) { return g_nt + (uint64_t)n * VIBEOS_BLOCK_SIZE; }
 
+/* Readers to match the writers: the hostile-attribute cases have to walk the
+ * record the way the driver does rather than assume an offset the fixture
+ * could change. */
+static uint16_t nt_r16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
+static uint32_t nt_r32(const uint8_t *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
+           ((uint32_t)p[3] << 24);
+}
+
 static void nt_w16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
 static void nt_w32(uint8_t *p, uint32_t v) {
     p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8);
@@ -7900,6 +7909,7 @@ static int test_ntfs_refusals(void) {
     vibeos_blockdev_t dev;
     vibeos_fsmount_t mnt;
     vibeos_fs_node_t node;
+    uint8_t buf[VIBEOS_BLOCK_SIZE * 4u];
 
     if (nt_mount(&fs, &bc, &dev) != 0) {
         return -1;
@@ -7954,6 +7964,131 @@ static int test_ntfs_refusals(void) {
     if (vibeos_fs_lookup(&mnt, "/resident.txt", &node) == 0) {
         return -1;
     }
+
+    /* ---- an attribute whose own fields do not fit inside it ---------------
+     *
+     * From an external security review. ntfs_find_attr bounds an attribute's
+     * total length inside the record and nothing more; every field *inside* the
+     * attribute came off the volume and was used as it arrived.
+     *
+     * The resident read path copies from `rec` - a four-kilobyte buffer on the
+     * kernel stack - into the buffer a user read() supplied, so a resident
+     * length chosen by the volume chose how much kernel stack to hand to an
+     * unprivileged process. And storage.c tries NTFS during filesystem
+     * recognition, so a USB stick is enough to reach it.
+     *
+     * Record 6 is /resident.txt, and its $DATA attribute starts after the
+     * $FILE_NAME one; rather than assume an offset, walk the record the way the
+     * driver does. */
+    nt_build();
+    vibeos_blockcache_invalidate(&bc);
+    if (vibeos_ntfs_mount(&fs, &bc, 0) != 0 ||
+        vibeos_fs_mount(&mnt, vibeos_ntfs_ops(), &fs, "ntfs") != 0) {
+        return -1;
+    }
+    {
+        uint8_t *rec6 = nt_record(6);
+        uint32_t off = nt_r16(rec6 + 0x14);
+        uint8_t *data = 0;
+
+        while (off + 8u <= NT_RECORD) {
+            uint32_t type = nt_r32(rec6 + off);
+            uint32_t alen = nt_r32(rec6 + off + 4);
+            if (type == 0xFFFFFFFFu || alen < 8u || off + alen > NT_RECORD) {
+                break;
+            }
+            if (type == 0x80u) {          /* $DATA */
+                data = rec6 + off;
+                break;
+            }
+            off += alen;
+        }
+        if (!data) {
+            return -1;                    /* the fixture changed shape */
+        }
+
+        /* A resident value that claims to be far longer than the attribute
+         * holding it. Before the fix this became a read of 4096 bytes of kernel
+         * stack into a user buffer; now the attribute is refused, so the file
+         * has no readable length and the read yields nothing. */
+        nt_w32(data + 0x10, 4096u);
+        vibeos_blockcache_invalidate(&bc);
+        if (vibeos_fs_lookup(&mnt, "/resident.txt", &node) == 0 && node.size != 0u) {
+            return -1;
+        }
+        if (vibeos_fs_read_at(&mnt, &node, 0, buf, sizeof(buf)) > 0) {
+            return -1;
+        }
+
+        /* A value offset pointing outside the attribute. */
+        nt_build();
+        vibeos_blockcache_invalidate(&bc);
+        rec6 = nt_record(6);
+        nt_w16(data + 0x14, 0xFFFFu);
+        vibeos_blockcache_invalidate(&bc);
+        /* Asserted the way the case above is, and the first version of these
+         * two was not: it read "if the lookup succeeded AND the read returned
+         * something", which passes silently whenever the lookup fails for an
+         * unrelated reason. Removing the bound under test left both cases
+         * green - which is how a test comes to assert nothing at all. */
+        if (vibeos_fs_lookup(&mnt, "/resident.txt", &node) == 0 &&
+            node.size != 0u) {
+            return -1;
+        }
+
+        /* A value offset inside the attribute header, which would let the value
+         * overlap the fields describing it. */
+        nt_build();
+        vibeos_blockcache_invalidate(&bc);
+        nt_w16(data + 0x14, 4u);
+        vibeos_blockcache_invalidate(&bc);
+        /* Asserted the way the case above is, and the first version of these
+         * two was not: it read "if the lookup succeeded AND the read returned
+         * something", which passes silently whenever the lookup fails for an
+         * unrelated reason. Removing the bound under test left both cases
+         * green - which is how a test comes to assert nothing at all. */
+        if (vibeos_fs_lookup(&mnt, "/resident.txt", &node) == 0 &&
+            node.size != 0u) {
+            return -1;
+        }
+    }
+
+    /* ---- a run-list offset past the attribute ----------------------------
+     *
+     * runs_len was computed as (attribute length - run-list offset) with no
+     * check that the offset was inside the attribute. Unsigned, so an offset
+     * past the end wrapped to a run list of nearly four gigabytes, walked out
+     * of a 4 KiB stack buffer. BIG.BIN is the non-resident file. */
+    nt_build();
+    vibeos_blockcache_invalidate(&bc);
+    {
+        uint8_t *rec7 = nt_record(7);
+        uint32_t off = nt_r16(rec7 + 0x14);
+        uint8_t *data = 0;
+
+        while (off + 8u <= NT_RECORD) {
+            uint32_t type = nt_r32(rec7 + off);
+            uint32_t alen = nt_r32(rec7 + off + 4);
+            if (type == 0xFFFFFFFFu || alen < 8u || off + alen > NT_RECORD) {
+                break;
+            }
+            if (type == 0x80u) {
+                data = rec7 + off;
+                break;
+            }
+            off += alen;
+        }
+        if (data && data[8] != 0u) {
+            uint32_t alen = nt_r32(data + 4);
+            nt_w16(data + 0x20, (uint16_t)(alen + 16u));
+            vibeos_blockcache_invalidate(&bc);
+            if (vibeos_fs_lookup(&mnt, "BIG.BIN", &node) == 0 &&
+                node.size != 0u) {
+                return -1;
+            }
+        }
+    }
+
     return 0;
 }
 
