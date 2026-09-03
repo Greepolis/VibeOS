@@ -24,6 +24,7 @@
 #include "arch_hw_internal.h"
 #include "vibeos/account.h"
 #include "vibeos/forkguard.h"
+#include "vibeos/sched_policy.h"
 
 #define VIBEOS_HW_KERNEL_CS 0x08u
 #define VIBEOS_HW_KERNEL_DS 0x10u
@@ -3244,6 +3245,12 @@ static int hw_task_alloc_guarded(int guarded, int privileged, uint32_t parent_pi
             g_tasks[i].service_id = 0;
             g_tasks[i].clear_child_tid = 0;
             (void)hw_task_set_state(i, HW_TASK_RESERVED, __func__);
+            /* Admitted here because this is the only place a slot is claimed,
+             * so no way of making a task can forget to. The class is corrected
+             * by the idle-task path, which is the only caller that knows it is
+             * making one; everything else is a normal task at nice 0 until
+             * something says otherwise. */
+            (void)vibeos_sched_policy_admit((uint32_t)i, VIBEOS_SCHED_NORMAL, 0, 0u);
             vibeos_task_stats()->created++;
             hw_spin_unlock(&g_sched_lock);
             return i;
@@ -3290,6 +3297,12 @@ static int hw_task_alloc_for_user(const char *what) {
 
 /* Give a reserved slot back after a failed creation. */
 static void hw_task_release(int i) {
+    /* Forgotten before the slot is published, not after: a slot the policy
+     * still knows about is one it will schedule the moment somebody else
+     * claims it, charging the new tenant's time to the old one's history. */
+    if (i >= 0 && i < VIBEOS_HW_MAX_TASKS) {
+        vibeos_sched_policy_forget((uint32_t)i);
+    }
     if (i >= 0) {
         (void)hw_task_set_state(i, HW_TASK_FREE, __func__);
     }
@@ -3329,6 +3342,34 @@ static vibeos_runq_t g_runq;
  * every time and the high-numbered slots wait behind the low ones. The queue
  * keeps a cursor per CPU instead. */
 static int hw_pick_next(hw_cpu_t *cpu) {
+    uint64_t runnable = 0;
+    uint32_t i;
+    int chosen;
+
+    /* The run queue decides *who may run*; the policy decides *which of them*.
+     *
+     * Keeping those two apart is the reason the policy could be written as a
+     * pure function and tested exhaustively: it never asks about task state,
+     * only about the set it is handed. hw_task_runnable stays the single
+     * definition of runnable, so a task the scheduler would not have run
+     * cannot become runnable by being favoured.
+     */
+    for (i = 0; i < (uint32_t)VIBEOS_HW_MAX_TASKS && i < 64u; i++) {
+        if (hw_task_runnable(0, i, (uint32_t)cpu->index)) {
+            runnable |= (1ull << i);
+        }
+    }
+
+    chosen = vibeos_sched_policy_pick((uint32_t)cpu->index, runnable);
+    if (chosen >= 0) {
+        return chosen;
+    }
+
+    /* Nothing the policy knows about. Fall back rather than idle: a task the
+     * policy was never told about is a bug in admission, and refusing to run it
+     * would turn that bug into a hang instead of a slower machine. The run
+     * queue also owns the "keep running the current task" answer, which the
+     * policy has no way to express. */
     return vibeos_runq_pick(&g_runq, (uint32_t)cpu->index, cpu->current_task);
 }
 
@@ -3747,6 +3788,8 @@ static int hw_task_create_idle(hw_cpu_t *cpu) {
     HW_TASK_MARK(i, ready_by, "create_idle");
     g_tasks[i].is_user = 0;
     g_tasks[i].is_idle = 1;
+    /* An idle task is a class, not a flag the picker special-cases. */
+    (void)vibeos_sched_policy_admit((uint32_t)i, VIBEOS_SCHED_IDLE, 19, 0u);
     g_tasks[i].pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
     g_tasks[i].tgid = g_tasks[i].pid;
     g_tasks[i].pgid = g_tasks[i].pid;
