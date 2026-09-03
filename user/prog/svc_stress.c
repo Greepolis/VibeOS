@@ -294,6 +294,23 @@ static int op_cow(uint64_t r) {
                  * evidence there is. */
                 say_mismatch("STRESS_FAIL: the child's own copy-on-write page",
                              i, mem[i], after);
+                /* How many, not just the first.
+                 *
+                 * The check reports the first byte that differs, which is
+                 * always offset 0 - and that was read for a whole session as
+                 * "only offset 0 is wrong" when it is equally consistent with
+                 * every byte being wrong. Those are different defects: a
+                 * handful of stale bytes is a copy racing a store, a whole
+                 * stale page is a write loop that went somewhere else. */
+                {
+                    uint64_t wrong = 0, k;
+                    for (k = 0; k < 4096ull; k++) {
+                        if (mem[k] != after) {
+                            wrong++;
+                        }
+                    }
+                    say("STRESS_FAIL: bytes wrong of 4096 = ", wrong, 1);
+                }
                 /* The whole reason this call exists. Without these four lines a
                  * failure says only that the bytes are wrong, and three
                  * unrelated defects produce that sentence. */

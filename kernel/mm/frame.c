@@ -229,7 +229,24 @@ int vibeos_frame_reserve(uint64_t base, uint64_t len) {
 /* Hand one frame out: checked, zeroed, one owner. Shared by both allocation
  * paths so they cannot drift apart - the contiguous one was written second, and
  * a second copy of "what allocation means" is how this subsystem got here. */
+/* A frame handed out while somebody still owns it.
+ *
+ * Every other detector in this layer watches the release side, because that is
+ * where a frame is normally lost. This one watches the other end, and the
+ * difference is why the defect it looks for survived so long: a double
+ * *allocation* frees nothing, so the free-side watch stays silent for a whole
+ * boot, and the new owner's first act is to be handed a zeroed page with
+ * owners reset to 1 - which erases the evidence that two parties held it.
+ * What is left from outside is a live private page whose contents changed with
+ * nobody visibly to blame, which is exactly how this was reported for months.
+ *
+ * Counted rather than refused: this layer is host-tested and has no console,
+ * and the boot gate asserts the count is zero. */
 static void frame_take(uint32_t index, vibeos_frame_state_t state) {
+    if (g_table[index].state != (uint8_t)VIBEOS_FRAME_FREE ||
+        g_table[index].owners != 0u) {
+        vibeos_mm_stats()->double_allocs++;
+    }
     g_allocated_yet = 1;
     frame_check_poison(index);
     frame_fill(index, 0ull);          /* handed out zeroed (I4) */
