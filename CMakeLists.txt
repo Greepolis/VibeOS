@@ -360,6 +360,22 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
             VERBATIM
         )
         add_custom_target(vibeos_musl_tfork ALL DEPENDS "${VIBEOS_TFORK_BIN}")
+
+        # Threads created and joined while children of the process exec: the
+        # other half of the combination that produced the execve defect, and
+        # the half nothing exercised. execve destroys the outgoing address
+        # space, and for a long time it did so without asking whether a sibling
+        # thread was still running on it.
+        set(VIBEOS_TEXEC_SRC "${CMAKE_CURRENT_SOURCE_DIR}/tests/linux/musl_texec.c")
+        set(VIBEOS_TEXEC_BIN "${CMAKE_BINARY_DIR}/musl_texec")
+        add_custom_command(
+            OUTPUT "${VIBEOS_TEXEC_BIN}"
+            COMMAND "${VIBEOS_MUSL_GCC}" -static -O2 -o "${VIBEOS_TEXEC_BIN}" "${VIBEOS_TEXEC_SRC}" -lpthread
+            DEPENDS "${VIBEOS_TEXEC_SRC}"
+            COMMENT "Building a thread-and-exec Linux binary with musl"
+            VERBATIM
+        )
+        add_custom_target(vibeos_musl_texec ALL DEPENDS "${VIBEOS_TEXEC_BIN}")
     else()
         message(STATUS "musl-gcc not found: the boot media will carry no unmodified Linux binary")
     endif()

@@ -61,7 +61,7 @@ typedef struct vibeos_hw_aspace {
 #define VIBEOS_HW_TIMER_HZ 100u
 #define VIBEOS_HW_NET_TIMEOUT_TICKS (VIBEOS_HW_TIMER_HZ * 10u)   /* 10 seconds */
 
-#define VIBEOS_HW_MAX_TASKS 24  /* kernel + user processes + one idle task per CPU */
+#define VIBEOS_HW_MAX_TASKS 32  /* kernel + user processes + one idle task per CPU */
 #define VIBEOS_HW_MAX_FDS 4
 #define VIBEOS_HW_NSIG 65
 

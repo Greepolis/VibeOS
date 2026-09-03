@@ -134,6 +134,13 @@ endif()
 
 # fork() from a process that still has a thread running - what exercises the
 # TLB shootdown. 8.3 names: TFORK, not MUSL_TFORK.
+# Threads and exec together. 8.3 name: TEXEC.
+set(TEXEC_ELF "${CMAKE_BINARY_DIR}/musl_texec")
+if(EXISTS "${TEXEC_ELF}")
+    file(COPY_FILE "${TEXEC_ELF}" "${EFI_BOOT_DIR}/TEXEC.ELF" ONLY_IF_DIFFERENT)
+    message(STATUS "EFI media includes a thread-and-exec Linux binary: EFI/BOOT/TEXEC.ELF")
+endif()
+
 set(TFORK_ELF "${CMAKE_BINARY_DIR}/musl_tfork")
 if(EXISTS "${TFORK_ELF}")
     file(COPY_FILE "${TFORK_ELF}" "${EFI_BOOT_DIR}/TFORK.ELF" ONLY_IF_DIFFERENT)

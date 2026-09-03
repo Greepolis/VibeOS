@@ -92,6 +92,8 @@ typedef struct hw_cpu {
     int current_task;             /* index into g_tasks, -1 before bring-up */
     int idle_task;                /* this core's idle task, -1 on the BSP */
     volatile int online;
+    /* Ticks left in the current task's slice. See hw_schedule. */
+    uint32_t slice_left;
     struct tss64 tss;
 } hw_cpu_t;
 
@@ -3342,6 +3344,51 @@ static vibeos_runq_t g_runq;
  * when the current task is idle - the search then begins at the same place
  * every time and the high-numbered slots wait behind the low ones. The queue
  * keeps a cursor per CPU instead. */
+/* How long this task may hold a core, in ticks. An idle task gets the
+ * shortest slice there is: it must give the core back the moment anything else
+ * wants it, and its slice only bounds how long a core stays idle when work has
+ * appeared and no timer has fired yet. */
+static uint32_t hw_slice_for(int slot) {
+    vibeos_sched_class_t cls;
+
+    if (slot < 0 || slot >= VIBEOS_HW_MAX_TASKS) {
+        return 1u;
+    }
+    cls = g_tasks[slot].is_idle ? VIBEOS_SCHED_IDLE : VIBEOS_SCHED_NORMAL;
+    return vibeos_sched_policy_quantum(cls);
+}
+
+/* Is anything runnable that outranks what this core is running?
+ *
+ * Only a class comparison, deliberately. Preempting for a *better-weighted*
+ * task in the same class would make the slice meaningless - the whole point of
+ * a slice is that a task keeps the core for it - and weights are already
+ * honoured when the next task is chosen. A class is different: it is a promise
+ * that higher work runs first, and a promise that waits for a slice boundary is
+ * a promise with an asterisk. */
+static int hw_higher_class_runnable(hw_cpu_t *cpu, int current) {
+    uint32_t i;
+    uint8_t mine;
+
+    if (current < 0 || current >= VIBEOS_HW_MAX_TASKS) {
+        return 1;
+    }
+    mine = g_tasks[current].is_idle ? (uint8_t)VIBEOS_SCHED_IDLE
+                                    : (uint8_t)VIBEOS_SCHED_NORMAL;
+    if (mine == (uint8_t)VIBEOS_SCHED_KERNEL) {
+        return 0;   /* nothing outranks the top class */
+    }
+    for (i = 0; i < (uint32_t)VIBEOS_HW_MAX_TASKS; i++) {
+        if ((int)i == current || !hw_task_runnable(0, i, (uint32_t)cpu->index)) {
+            continue;
+        }
+        if (!g_tasks[i].is_idle && mine == (uint8_t)VIBEOS_SCHED_IDLE) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int hw_pick_next(hw_cpu_t *cpu) {
     uint64_t runnable = 0;
     uint32_t i;
@@ -3676,6 +3723,39 @@ static void hw_schedule(vibeos_x86_64_isr_frame_t *frame) {
         return;
     }
 
+    /* The quantum, finally consulted.
+     *
+     * Preemption used to happen on every timer tick, so the time slice was
+     * "whatever the timer period is" - a number nobody chose, and the thing
+     * step 1 of S-P5 exists to remove. The policy states a slice per class;
+     * this is where it is spent.
+     *
+     * Two ways out of a slice before it is used up, and both are required
+     * rather than convenient:
+     *
+     *   the task stopped being runnable - it blocked, exited, or was killed,
+     *   and holding a core for the rest of a slice nobody is using is just a
+     *   stall;
+     *
+     *   something in a higher class became runnable - a class is only absolute
+     *   if it preempts, otherwise a kernel task waits behind a normal one for
+     *   the rest of its slice and the guarantee is only true between slices.
+     *
+     * Checked before taking the scheduler lock, because the common case is
+     * "keep running" and taking a lock to decide not to switch is the cost
+     * this whole path is trying to avoid. */
+    if (cpu->slice_left > 0u) {
+        int c = cpu->current_task;
+
+        if (c >= 0 && c < VIBEOS_HW_MAX_TASKS && !g_tasks[c].is_idle &&
+            vibeos_task_state((uint32_t)c) == VIBEOS_TASK_RUNNING &&
+            !hw_higher_class_runnable(cpu, c)) {
+            cpu->slice_left--;
+            return;
+        }
+        cpu->slice_left = 0;   /* the slice is over, whatever is left of it */
+    }
+
     hw_spin_lock(&g_sched_lock);
     cur = cpu->current_task;
     next = hw_pick_next(cpu);
@@ -3697,6 +3777,7 @@ static void hw_schedule(vibeos_x86_64_isr_frame_t *frame) {
     (void)hw_task_set_state(next, HW_TASK_RUNNING, __func__);
     g_tasks[next].on_cpu = 1;
     vibeos_account_switch(hw_this_cpu()->index, next, g_tasks[next].ready_at);
+    hw_this_cpu()->slice_left = hw_slice_for(next);
     *frame = g_tasks[next].ctx;
     hw_spin_unlock(&g_sched_lock);
 
@@ -4031,6 +4112,7 @@ void hw_task_exit(uint64_t code) {
     (void)hw_task_set_state(next, HW_TASK_RUNNING, __func__);
     g_tasks[next].on_cpu = 1;
     vibeos_account_switch(hw_this_cpu()->index, next, g_tasks[next].ready_at);
+    hw_this_cpu()->slice_left = hw_slice_for(next);
     hw_spin_unlock(&g_sched_lock);
     hw_task_load_cpu_state(next);
     /* Now on the next task's CR3; the dying user address space is still
@@ -4082,6 +4164,38 @@ void hw_task_exit(uint64_t code) {
     if (dying >= 0) {
         hw_spin_lock(&g_sched_lock);
         g_tasks[dying].cr3 = 0;
+
+        /* A thread has no reaper, so it must not become a zombie.
+         *
+         * waitpid matches on ppid, and a thread inherits its *creator's*
+         * parent rather than becoming its child - so the thing that joins it
+         * cannot wait for it, and nothing else is looking. Left as a zombie it
+         * holds its slot for the rest of the boot.
+         *
+         * That is exactly what happened. A program creating and joining eight
+         * threads leaked eight slots, and the failure surfaced nowhere near the
+         * threads: the shell's next fork was refused, on a machine with plenty
+         * of memory, because the task table had quietly filled with threads
+         * that had already finished. The fork guard is what made it visible -
+         * before that the slots were simply gone.
+         *
+         * Joining is already synchronised without a zombie: exit clears the
+         * word the joiner sleeps on and wakes the futex, a few lines above.
+         * The zombie was carrying an exit status nobody can ask for.
+         *
+         * Released here rather than at exit because this is after the context
+         * switch: the stack it was running on is no longer in use. */
+        if (g_tasks[dying].is_thread) {
+            /* Through ZOMBIE, not straight to FREE. The transition table
+             * refuses running->free outright, and it was right to: the first
+             * version of this called hw_task_release directly, the table logged
+             * ILLEGAL, and the slot stayed RUNNING for the rest of the boot - a
+             * worse leak than the one being fixed, and invisible except for
+             * that one line. Reap it immediately afterwards, since this is the
+             * reaper nothing else will be. */
+            (void)hw_task_set_state(dying, HW_TASK_ZOMBIE, __func__);
+            hw_task_release(dying);
+        } else {
         (void)hw_task_set_state(dying, HW_TASK_ZOMBIE, __func__);
         for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
             if (g_tasks[i].state == HW_TASK_BLOCKED &&
@@ -4089,6 +4203,7 @@ void hw_task_exit(uint64_t code) {
                 (void)hw_task_set_state(i, HW_TASK_READY, __func__);
                 HW_TASK_MARK(i, ready_by, "parent_woken_by_child_exit");
             }
+        }
         }
         hw_spin_unlock(&g_sched_lock);
     }

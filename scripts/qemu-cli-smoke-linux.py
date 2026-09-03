@@ -952,6 +952,52 @@ def main():
                 if int(cp.group(5), 16) != 0:
                     problems.append(f"cputime_ticks_dropped={int(cp.group(5), 16)}")
 
+            # Threads created and joined while children exec. S-P6.
+            #
+            # Asserted rather than merely run, and the first run is why: the
+            # test failed, printed why, and the boot was reported verified
+            # because nothing was looking. A line in the log is not a check -
+            # this file has said so since the ring-3 ABI self-test spent a whole
+            # session printing "mmap/mprotect/munmap wrong" into a green boot.
+            # Keyed on the program having been *started*, not on the file
+            # being present. Those are different questions, and the difference
+            # cost a run: the binary ships on the media whether or not the boot
+            # script runs it, so a file check reported a missing result as a
+            # failure while nothing had been asked to produce one.
+            if "EFI/BOOT/TEXEC.ELF bytes=" in text:
+                if "TEXEC_OK" not in text:
+                    problems.append("thread_and_exec_did_not_pass")
+                for line in text.splitlines():
+                    if "TEXEC_FAIL" in line:
+                        problems.append("thread_and_exec_failed")
+                        break
+
+            # The time slice is spent, not merely declared.
+            #
+            # Preemption used to happen on every timer tick, so a task ran for
+            # exactly one tick per turn: ticks and runs were equal on every
+            # line of the task view. With a quantum they are not, and the ratio
+            # is the whole visible effect of the phase.
+            #
+            # Asserted on the busiest task, because a task that ran twice tells
+            # you nothing, and asserted as "more than one tick per turn" rather
+            # than as the quantum itself - a task blocks, is preempted by a
+            # higher class, or exits mid-slice, and pinning the exact number
+            # would fail on a boot that simply did different work.
+            #
+            # This exists because the quantum was defined and consulted by
+            # nothing for a whole phase, and every boot stayed green.
+            busiest = None
+            for tm in re.finditer(r"ticks=0x([0-9a-f]+) runs=0x([0-9a-f]+)", text):
+                t, r = int(tm.group(1), 16), int(tm.group(2), 16)
+                if r > 0 and (busiest is None or t > busiest[0]):
+                    busiest = (t, r)
+            if busiest is None:
+                problems.append("no_task_cpu_times_reported")
+            elif busiest[0] <= busiest[1]:
+                problems.append(
+                    f"quantum_not_spent ticks={busiest[0]}_runs={busiest[1]}")
+
             # The fork storm. Phase S-P6 of docs/sched/.
             #
             # What is asserted is not that the storm ran but that it was

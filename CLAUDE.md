@@ -565,6 +565,36 @@ kernel in `kernel/core/` is initialised after the machine has already done all
 its work on the arch layer's structures, which is also why it can be
 host-tested and yet have no runtime role.
 
+**A thread has no reaper, so it must not be left as a zombie.** `waitpid`
+matches on `ppid`, and a thread inherits its *creator's* parent rather than
+becoming its child - so the thing that joins it cannot wait for it, and nothing
+else is looking. Every thread that exited held its slot for the rest of the
+boot. The failure surfaced nowhere near the threads: a program that created and
+joined eight of them leaked eight slots, and several commands later the shell's
+fork was refused on a machine with plenty of memory. Joining never needed the
+zombie - exit clears the word the joiner sleeps on and wakes the futex.
+
+Two things that cost more than the fix:
+
+*A slot released outside the transition table stays RUNNING.* Calling
+`hw_task_release` directly is `running -> free`, which the table refuses -
+correctly - and logs one `ILLEGAL` line per thread. So the first attempt
+replaced a leaked zombie with a task stuck RUNNING, which is worse and quieter.
+Go through ZOMBIE. Without that table the change would have looked like it
+worked.
+
+*One boot argued the opposite of the truth.* Raising the task table from 24 to
+32 measured a broken boot and 24 measured a working one, so 32 was written down
+as the cause. It was not - the leak was, and with the leak fixed 32 boots clean
+8/8. Two single boots on a machine with a known intermittent failure decided a
+question they cannot decide. That is this file's own rule about counts, applied
+to a sample of one, and it was applied by the person who wrote the rule down.
+
+**Assert on a program having *started*, not on its binary being present.**
+A test binary ships on the media whether or not the boot script runs it, so a
+gate keyed on the file reported a missing result as a failure while nothing had
+been asked to produce one.
+
 ## Verification that exists
 
 The boot gate (`scripts/qemu-cli-smoke-linux.py`) asserts state, not markers:
