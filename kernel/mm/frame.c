@@ -483,6 +483,10 @@ int vibeos_frame_put(uint64_t phys) {
     return r;
 }
 
+uint32_t vibeos_frame_id(uint64_t phys) {
+    return frame_index(phys);
+}
+
 uint32_t vibeos_frame_owners(uint64_t phys) {
     uint32_t r;
     frame_lock();

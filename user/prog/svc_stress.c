@@ -220,7 +220,38 @@ static int op_fork_wait(uint64_t r) {
 /* A child that writes its own private copy of a page the parent also holds.
  * This is the copy-on-write path, which is where most of the memory bugs in
  * this kernel have lived. */
+/* What backs a page, asked of the kernel. See include/vibeos/pageinfo.h.
+ *
+ * Reports an identity rather than a physical address, so comparing samples is
+ * possible and reading the machine's layout is not. */
+#define SYS_pageinfo 1001
+
+typedef struct {
+    unsigned long frame;
+    unsigned int flags;
+    unsigned int owners;
+} pageinfo_t;
+
+#define PAGE_WRITE 0x02u
+#define PAGE_COW   0x08u
+
+static void page_sample(const void *at, pageinfo_t *out) {
+    out->frame = 0;
+    out->flags = 0;
+    out->owners = 0;
+    (void)sys3(SYS_pageinfo, (unsigned long)(unsigned long long)(unsigned long)at,
+               (unsigned long)(unsigned long long)(unsigned long)out, 0);
+}
+
+static void say_page(const char *what, const pageinfo_t *p) {
+    say(what, 0, 0);
+    say("STRESS_PAGE   frame=", p->frame, 1);
+    say("STRESS_PAGE   owners=", p->owners, 1);
+    say("STRESS_PAGE   flags=", p->flags, 1);
+}
+
 static int op_cow(uint64_t r) {
+    pageinfo_t before_fork, after_fork, after_write, at_check;
     uint8_t before = (uint8_t)(r | 1u);
     uint8_t after = (uint8_t)(~before);
     int64_t p = sys6(SYS_mmap, 0, 4096, PROT_READ | PROT_WRITE,
@@ -237,15 +268,25 @@ static int op_cow(uint64_t r) {
     for (i = 0; i < 4096ull; i++) {
         mem[i] = before;
     }
+    /* Sampled before the fork so a failure can say what changed rather than
+     * only that something did. Four samples turn one symptom into three
+     * distinguishable causes: the copy never happened (the child still shares
+     * the parent's frame), the copy was made and then lost (the frame changes
+     * twice), or the page was private throughout and somebody wrote it anyway
+     * (the frame never moves and is singly owned). */
+    page_sample(mem, &before_fork);
+
     child = sys3(SYS_fork, 0, 0, 0);
     if (child < 0) {
         say("STRESS_FAIL: fork for cow", 0, 0);
         return -1;
     }
     if (child == 0) {
+        page_sample(mem, &after_fork);
         for (i = 0; i < 4096ull; i++) {
             mem[i] = after;      /* forces the copy */
         }
+        page_sample(mem, &after_write);
         for (i = 0; i < 4096ull; i += 256ull) {
             if (mem[i] != after) {
                 /* Reported from inside the child: the parent cannot see this
@@ -253,6 +294,21 @@ static int op_cow(uint64_t r) {
                  * evidence there is. */
                 say_mismatch("STRESS_FAIL: the child's own copy-on-write page",
                              i, mem[i], after);
+                /* The whole reason this call exists. Without these four lines a
+                 * failure says only that the bytes are wrong, and three
+                 * unrelated defects produce that sentence. */
+                page_sample(mem, &at_check);
+                say_page("STRESS_FAIL: parent's page before the fork", &before_fork);
+                say_page("STRESS_FAIL: child's page after the fork", &after_fork);
+                say_page("STRESS_FAIL: child's page after its write", &after_write);
+                say_page("STRESS_FAIL: child's page at the check", &at_check);
+                if (after_write.frame == after_fork.frame) {
+                    say("STRESS_FAIL: verdict=the copy never happened", 0, 0);
+                } else if (at_check.frame != after_write.frame) {
+                    say("STRESS_FAIL: verdict=the copy was made and then replaced", 0, 0);
+                } else {
+                    say("STRESS_FAIL: verdict=the page was private and changed anyway", 0, 0);
+                }
                 sys3(SYS_exit, 3, 0, 0);
             }
         }

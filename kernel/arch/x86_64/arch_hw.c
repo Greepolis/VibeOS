@@ -25,6 +25,7 @@
 #include "vibeos/account.h"
 #include "vibeos/forkguard.h"
 #include "vibeos/sched_policy.h"
+#include "vibeos/pageinfo.h"
 
 #define VIBEOS_HW_KERNEL_CS 0x08u
 #define VIBEOS_HW_KERNEL_DS 0x10u
@@ -4131,6 +4132,7 @@ void hw_task_exit(uint64_t code) {
 /* VibeOS-specific: network control. Deliberately outside the Linux number
  * space, so it can never collide with a real syscall we implement later. */
 #define LSYS_netctl   1000
+#define LSYS_pageinfo 1001
 
 /* Numbers a real C runtime reaches for before it runs any of the program.
  * Taken from arch/x86/entry/syscalls/syscall_64.tbl, not from memory. */
@@ -6481,6 +6483,65 @@ static int hw_signal_permitted(int target) {
     return g_tasks[target].sid == me->sid;
 }
 
+/* Describe the page backing one address of the caller's own address space.
+ *
+ * Only its own: the walk starts from the current task's page tables and there
+ * is no way to name another. A process learning how its own memory is shared is
+ * not a disclosure - it is the information it would have had if the kernel had
+ * not been the one holding it.
+ *
+ * What it reports is an *identity* and not a physical address. The frame index
+ * is stable within a boot and comparable between samples, which is all a
+ * diagnosis needs, and it says nothing about where memory physically lives.
+ * Handing ring 3 the layout of the machine to make debugging easier is the kind
+ * of trade that outlives the bug it was made for.
+ *
+ * It exists because one symptom - "the bytes are not what I wrote" - has three
+ * causes that a program cannot tell apart: the copy never happened, the copy
+ * was made and then lost, or the page is private and somebody wrote it anyway.
+ * Every report of the third kind has been investigated as if it might be the
+ * first. */
+static long hw_sys_pageinfo(uint64_t va, uint64_t out_uptr) {
+    vibeos_pageinfo_t info;
+    uint64_t *pte;
+    uint64_t entry;
+
+    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+        return -VIBEOS_EINVAL;
+    }
+    if (!hw_user_range_ok(out_uptr, sizeof(info), 1)) {
+        return -VIBEOS_EFAULT;
+    }
+
+    info.frame = 0;
+    info.flags = 0;
+    info.owners = 0;
+
+    pte = hw_pte_lookup(&g_tasks[g_current_task].proc.as, va);
+    if (pte) {
+        entry = __atomic_load_n(pte, __ATOMIC_ACQUIRE);
+        if (entry & PTE_PRESENT) {
+            uint64_t phys = entry & 0x000FFFFFFFFFF000ull;
+            uint32_t id = vibeos_frame_id(phys);
+
+            info.flags |= VIBEOS_PAGE_PRESENT;
+            if (entry & PTE_WRITE)         { info.flags |= VIBEOS_PAGE_WRITE; }
+            if (entry & PTE_USER)          { info.flags |= VIBEOS_PAGE_USER; }
+            if (entry & PTE_COW)           { info.flags |= VIBEOS_PAGE_COW; }
+            if (entry & VIBEOS_PTE_OWNED)  { info.flags |= VIBEOS_PAGE_OWNED; }
+            /* A frame the allocator does not describe - the low identity
+             * window, say - reports no identity rather than a wrong one. */
+            if (id != 0xFFFFFFFFu) {
+                info.frame = (uint64_t)id + 1ull;   /* 0 stays "nothing" */
+                info.owners = vibeos_frame_owners(phys);
+            }
+        }
+    }
+
+    *(volatile vibeos_pageinfo_t *)(uintptr_t)out_uptr = info;
+    return 0;
+}
+
 static long hw_sys_kill(uint64_t target_pid, uint64_t sig) {
     int target;
     int delivered = 0;
@@ -7889,6 +7950,8 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
             return hw_sys_listen(a1);
         case LSYS_netctl:
             return hw_sys_netctl(a1, a2);
+        case LSYS_pageinfo:
+            return hw_sys_pageinfo(a1, a2);
         case LSYS_exit:
         case LSYS_exit_group:
             hw_task_exit(a1); /* retires this task and switches away; no return */

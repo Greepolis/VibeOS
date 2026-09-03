@@ -123,6 +123,16 @@ int vibeos_frame_put_why(uint64_t phys, const void *tag);
 /* Queries, for the copy-on-write path and for inspection. An unknown frame
  * reports zero owners and state FREE. */
 uint32_t vibeos_frame_owners(uint64_t phys);
+
+/* This frame's index in the table, or UINT32_MAX when the address is not one
+ * this layer describes.
+ *
+ * An identity rather than an address, and that distinction is the point: it is
+ * stable within a boot and comparable between samples, which is everything a
+ * diagnosis needs, and it says nothing about where memory physically is. That
+ * lets the page-information call hand it to ring 3 without handing over the
+ * layout of the machine. */
+uint32_t vibeos_frame_id(uint64_t phys);
 vibeos_frame_state_t vibeos_frame_state(uint64_t phys);
 
 /* One walk of the descriptor table, answering what a memory tool actually asks:
