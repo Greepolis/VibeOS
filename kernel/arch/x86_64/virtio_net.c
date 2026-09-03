@@ -322,7 +322,19 @@ int vibeos_x86_64_virtio_net_send(const void *frame, uint32_t len) {
          * this large never distinguished "slow" from "never". Two million keeps
          * several orders of magnitude of headroom and gives up in well under a
          * second, which is a failed frame instead of a failed machine. */
-        if (++spins > 2000000ull) {
+        /* Twenty million, and both earlier numbers were wrong for opposite
+         * reasons.
+         *
+         * Fifty million let one stuck transmit hold this lock past the boot
+         * gate\'s patience, parking every core that wanted to send. Two million
+         * was below what the device needs under TCG: forty-two timeouts in one
+         * boot and no network at all - a bound that turns a working machine
+         * into a broken one is not a safety margin.
+         *
+         * What makes a long bound survivable is not the number, it is that the
+         * timeout below releases the lock. One slow frame fails; the rest
+         * proceed. */
+        if (++spins > 20000000ull) {
             g_tx_timeouts++;
             /* Giving the lock back matters more than the frame does: holding it
              * here would turn one timed-out transmit into a permanently dead

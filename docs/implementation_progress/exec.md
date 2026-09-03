@@ -300,9 +300,18 @@ of that run - and **that boot was a wedge, with no crash record at all**, so the
 rip could not have been there. An absence was read out of a log where it could
 not appear, and treated as evidence.
 
-With the mapping off: no `0xe4`, no `0x57da77`, 12/12.
-That is the clean differential the previous three attempts lacked, and it
-implicates the branch for the fourth time.
+With the mapping off one run gave 12/12 with neither marker, and **that was
+read as a clean differential. It was not.** The same fault appeared later in the
+session with the mapping still off.
+
+**Twelve boots without a defect that shows up a few times in twenty-four is a
+quiet run, not evidence.** Three different conclusions have now been drawn about
+this one signature from too few boots - that it was gone, that the mapping
+caused it, and that turning the mapping off removed it - and all three were the
+same mistake.
+
+The branch is still off, and now for a weaker and more honest reason: it has
+never been shown to be safe, rather than having been shown to be the cause.
 
 What is now known about it, after four attempts: the bytes are correct when
 mapped, correct at the end of the boot, both sides agree which file they came

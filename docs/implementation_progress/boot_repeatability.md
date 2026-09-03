@@ -205,6 +205,40 @@ Worth separating from it: the crash record that appears in every boot is
 kills the task and not the machine. It is a gate, not a defect, and its absence
 would be the failure.
 
+## The 0xe4 fault is not attributed to anything (2026-09-02)
+
+**Nothing in this file explains it, and three attempts to say otherwise were
+wrong.** Recorded plainly so the next attempt does not start from a conclusion.
+
+    rip=0x57da77  cr2=0xe4  err=0x5   (user read, present, supervisor-only)
+
+What is known:
+
+- It appears in **two different programs**, `BUSYBOX.ELF` and
+  `THREADS.ELF`, at the **same rip**. Both are static musl binaries, so
+  that address is almost certainly a musl internal function rather than program
+  code - which is why the same number turns up in unrelated programs.
+- The faulting access is a read of a near-null pointer plus 0xe4. So a pointer
+  that should have been valid came back as zero, or nearly.
+- It is **deterministic in its path** - the same rip, the same offset, every
+  time - and **rare in occurrence**, a few times in twenty-four boots.
+- It appears with the X-P2 cache mapping **on and off**.
+
+What is not known: anything about the cause.
+
+The three wrong conclusions, kept because the pattern is the lesson:
+
+1. "The signature is gone" - from grepping the rip in a boot that had wedged and
+   had no crash record at all, so the rip could not have appeared.
+2. "The cache mapping causes it" - from 21/24 twice against a baseline reported
+   as better than it was.
+3. "Turning the mapping off removes it" - from one clean run of twelve, against
+   a defect that appears a few times in twenty-four.
+
+Every one of them read an absence over too short a run as proof. The next
+attempt needs the faulting instruction disassembled out of the binary the task
+was running, not another ratio.
+
 ## A panic stopped a core, not the machine (2026-09-01)
 
 **This is the explanation for the silent-wedge family, and it had been visible

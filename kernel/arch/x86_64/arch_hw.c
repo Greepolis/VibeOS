@@ -6401,6 +6401,43 @@ static int hw_task_by_tid(uint32_t tid) {
     return hw_task_by_pid(tid);
 }
 
+/* May the calling task send a signal to `target`?
+ *
+ * The rule was already here and applied to half the cases. kill's
+ * process-group branch filtered on `sid == the caller's sid`; its single-pid
+ * branch, and tkill and tgkill, checked nothing at all - so any unprivileged
+ * program could SIGKILL any process on the machine by pid: another session's
+ * shell, or a supervised service, repeatedly, until init's restart budget was
+ * spent and the service was permanently down.
+ *
+ * Written as one function rather than three copies of a condition, for the
+ * reason the fork guard ended up with one entry point: the version with the
+ * check in some places and not others is exactly what shipped.
+ *
+ * Session, not parent, because that is the relationship this kernel already
+ * uses to decide the same question for a group, and inventing a second rule
+ * would mean two answers to "may I signal this".
+ *
+ * init and the kernel are exempt: init supervises services and stopping them is
+ * its job. */
+static int hw_signal_permitted(int target) {
+    hw_task_t *me;
+
+    if (g_current_task < 0 || target < 0 || target >= VIBEOS_HW_MAX_TASKS) {
+        return 0;
+    }
+    me = &g_tasks[g_current_task];
+    if (me->pid <= 1u) {
+        return 1;
+    }
+    /* Its own thread group, always: a program may signal itself and its
+     * threads whatever else is true. */
+    if (g_tasks[target].tgid == me->tgid) {
+        return 1;
+    }
+    return g_tasks[target].sid == me->sid;
+}
+
 static long hw_sys_kill(uint64_t target_pid, uint64_t sig) {
     int target;
     int delivered = 0;
@@ -6421,7 +6458,10 @@ static long hw_sys_kill(uint64_t target_pid, uint64_t sig) {
          * it was - a comparison whose result is always the same - and a dead
          * branch in a signal path is worth removing rather than explaining. */
         target = hw_task_by_pid((uint32_t)signed_pid);
-        return target < 0 ? -VIBEOS_ESRCH : 0;
+        if (target < 0) {
+            return -VIBEOS_ESRCH;
+        }
+        return hw_signal_permitted(target) ? 0 : -VIBEOS_EPERM;
     }
     if (signed_pid < 0 || signed_pid == 0) {
         uint32_t group = signed_pid < 0 ? (uint32_t)(-signed_pid) : g_tasks[g_current_task].pgid;
@@ -6439,6 +6479,12 @@ static long hw_sys_kill(uint64_t target_pid, uint64_t sig) {
     target = hw_task_by_pid((uint32_t)signed_pid);
     if (target < 0) {
         return -VIBEOS_ESRCH;
+    }
+    if (!hw_signal_permitted(target)) {
+        /* EPERM and not ESRCH: the caller is being refused, not lied to about
+         * whether the process exists. Hiding existence would be a different
+         * decision, and this kernel's group branch does not make it either. */
+        return -VIBEOS_EPERM;
     }
     return (hw_signal_raise(target, (uint32_t)sig) == 0) ? 0 : -VIBEOS_EINVAL;
 }
@@ -6514,6 +6560,9 @@ static long hw_sys_tkill(uint64_t target_tid, uint64_t sig) {
         return -VIBEOS_EINVAL;
     }
     target = hw_task_by_tid((uint32_t)target_tid);
+    if (target >= 0 && !hw_signal_permitted(target)) {
+        return -VIBEOS_EPERM;   /* same rule as kill; see hw_signal_permitted */
+    }
     if (target < 0) {
         return -VIBEOS_ESRCH;
     }
@@ -6540,6 +6589,9 @@ static long hw_sys_tgkill(uint64_t target_tgid, uint64_t target_tid,
         return -VIBEOS_EINVAL;
     }
     target = hw_task_by_tid((uint32_t)target_tid);
+    if (target >= 0 && !hw_signal_permitted(target)) {
+        return -VIBEOS_EPERM;   /* same rule as kill; see hw_signal_permitted */
+    }
     if (target < 0 || g_tasks[target].pid != (uint32_t)target_tgid) {
         return -VIBEOS_ESRCH;
     }
