@@ -387,3 +387,21 @@ crashed gate left the *previous* run's summary in place and `check.sh` reported
 
 It is the same trap as "a green build is not a build", wearing different
 clothes, and the tell was the same: a file's timestamp that had not moved.
+
+## Status: closed, with two gaps named
+
+X-P0 (refusals that say why), X-P1 (one unwinding path, one place that names an
+interpreter) and the exec-stats view are done and gated. The plan is closed
+rather than finished, and what it does not cover is written down here rather
+than left to be rediscovered:
+
+- **X-P2 is off.** Mapping image pages from the page cache is present and
+  disabled at `if (0 && file_id != 0u ...)`. It was measured against a baseline
+  that was itself unstable, and what argued against it was not the count but a
+  signature: BusyBox, the same rip, the same fault address, byte-identical
+  twice, present with the change and absent without it. Demand paging and the
+  deletion of the 6 MiB staging buffers depend on it and are not started.
+- **Threads and exec together are not run in the boot.** `musl_texec` passes
+  its own rounds and the gate asserts on it whenever it is started, but running
+  it in the boot script wedges a later phase. See
+  [sched_quantum_threads.md](sched_quantum_threads.md).

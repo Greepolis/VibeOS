@@ -354,3 +354,17 @@ that had nothing to do with the code.
 CLAUDE.md says to treat a moving warning count as the build telling you
 something. That only works if it is telling the truth, and this one was not: it
 is filtered now, and reads 0.
+
+## Status: closed
+
+S-P4 (the machine can say where its time went), S-P5 (classes, nice-weighted
+fairness, affinity), the fork-bomb guard and S-P6 (an enforced quantum, threads
+reaped where they die) are done and gated. 16 clean boots out of 16 across the
+Release and Debug configurations, which is the best this project has measured.
+
+The one thing the plan raised and did not do is T7: no lock may be held across
+a scheduling point. It was attempted with a per-core lock-depth counter, and
+the attempt inserted a field into `hw_cpu_t` that shifted the offsets `isr.S`
+reads at `%gs:8` and `%gs:16` - a #GP at rip=0x39 on the next boot. It was
+reverted whole, and `hw_sched_point()` carries a comment saying why it is not
+implemented rather than a stub that looks like it is.
