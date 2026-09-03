@@ -205,6 +205,36 @@ Worth separating from it: the crash record that appears in every boot is
 kills the task and not the machine. It is a gate, not a defect, and its absence
 would be the failure.
 
+## The copy-on-write failure is a copy that was replaced (2026-09-03)
+
+Deduced from four CI logs, without a new run, and it narrows the search from
+three causes to one.
+
+**The child always reads exactly the parent's value**, never garbage:
+`found 0xd7 expected 0x28` with
+`after = 0x28` means `before = 0xd7`. Four logs, four
+times, the same relationship.
+
+And `op_cow` checks the *parent's* page separately, after reaping the
+child - "the child's writes reached the parent". **That check has never fired.**
+
+Put together: the parent's page is intact, so the child was not writing into it,
+so the child did have a private frame. And the private frame holds a clean copy
+of the original, so the child's writes are gone from it.
+
+**That is not "the copy never happened". It is "the copy was made and then
+replaced."** One of the three causes, chosen by evidence already in hand.
+
+What that implicates: only `clone_one` - fork - sets the
+copy-on-write bit, and the child of `op_cow` never forks. So something
+is putting that bit back on a page that had already been made private, and the
+next fault copies the original over the child's work.
+
+`vibeos_pageinfo` answers this directly: svc-stress now samples the
+frame before the fork, after it, after the child's write and at the check, and
+prints which of the three cases it was. **That output needs a push to reach
+CI** - the artifacts analysed here predate it.
+
 ## The 0xe4 fault is not attributed to anything (2026-09-02)
 
 **Nothing in this file explains it, and three attempts to say otherwise were

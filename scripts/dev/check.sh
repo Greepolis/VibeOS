@@ -112,9 +112,17 @@ do_clang() {
           -DCMAKE_BUILD_TYPE=Release > /tmp/vibeos-clang-cfg.log 2>&1
     cmake --build build-clang-Release -j"$(nproc)" > /tmp/vibeos-clang.log 2>&1
     echo "clang-rc=$?"
-    # Source warnings only: the linker's build-id note is unavoidable here and
-    # counting it would make the number meaningless.
-    echo "clang-warnings=$(grep -c 'warning:' /tmp/vibeos-clang.log | head -1)"
+    # Source warnings only, and the filter is the whole point.
+    #
+    # The first version counted every line containing "warning:", which is
+    # mostly the linker saying it discarded a build-id note - nineteen of
+    # them on a clean build and none on an incremental one. The number moved
+    # between 0, 1, 2, 3 and 19 for reasons that had nothing to do with the
+    # code, which makes it a check that reports healthy behaviour and so a
+    # check people learn to ignore. CLAUDE.md says to treat a moving warning
+    # count as the build telling you something; that only works if it is
+    # telling the truth.
+    echo "clang-warnings=$(grep 'warning:' /tmp/vibeos-clang.log | grep -vc 'build-id\|unused-command-line-argument')"
     grep -E 'error:' /tmp/vibeos-clang.log | head -5
 }
 

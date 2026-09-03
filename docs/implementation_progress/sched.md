@@ -307,3 +307,50 @@ trip it six times with the reason, the pid and the counts. Live children are
 counted by walking the table rather than kept in a field: a counter has to be
 right on every exit path including the ones that fail half way, and the table is
 twenty-four entries long. Zombies count, because a zombie still holds a slot.
+
+---
+
+## S-P6 — Acceptance (2026-09-03)
+
+**Fork storm — done.** `user/prog/svc_bomb.c` forks until the kernel
+refuses, reports how far it got and which rule stopped it, reaps every child and
+exits. Its children exit immediately rather than sleeping, because a storm of
+*zombies* is the harder case: a zombie still holds a slot, so the parent must
+reap them all or the table stays full for everybody else.
+
+What the gate asserts is not that the storm ran but that it was **stopped and
+cleaned up after** - `SVC_BOMB_DONE` prints only once every child is
+reaped - and `SVC_BOMB_UNBOUNDED` must never appear, which is the
+guard silently not working while every other line still looks healthy. The real
+assertion is everything the boot does afterwards: the shell still runs commands
+and the kernel CLI still answers, on a machine a program has just tried to fill.
+
+It is last in the manifest so that "afterwards" means something.
+
+**The state machine is asserted — done, and was already.**
+`illegal_transition` is on the MUSTBEZERO line and the gate fails on
+it; that is how `blocked -> blocked by=hw_sys_waitpid` was found.
+
+**Soak — partly done, and stated rather than claimed.** The gate asserts
+`vmas_live` returns to zero, `frames_leaked` and
+`frames_double_put` are zero, and the CPU-time identity balances. It
+does **not** assert that the task counters return to their starting values,
+because "starting" is not a thing this boot has - init and the services are
+still running when the counters are read.
+
+**Thread churn during exec — not done.** `TFORK.ELF` forks with a
+thread running and is gated, which is half of it; threads created and joined
+*while the process execs* is the other half and does not exist. Left open rather
+than declared, because it is the combination that produced the execve defect and
+a criterion nobody exercises is worse than one nobody wrote.
+
+### A defect this phase found in one of my own checks
+
+`clang-warnings` counted every line containing "warning:", which is
+mostly the linker discarding a build-id note - nineteen on a clean build, none
+on an incremental one. The number moved between 0, 1, 2, 3 and 19 for reasons
+that had nothing to do with the code.
+
+CLAUDE.md says to treat a moving warning count as the build telling you
+something. That only works if it is telling the truth, and this one was not: it
+is filtered now, and reads 0.

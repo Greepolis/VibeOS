@@ -147,6 +147,11 @@ static service_t services[] = {
     /* Randomised churn with a printed seed. A session, not a daemon: it runs a
      * bounded number of rounds and its exit status is the verdict. */
     {"svc-stress", "EFI/BOOT/SVC_STRS.ELF", 0, 0, 0, 0, -1, SVC_STOPPED},
+    /* A fork storm, on purpose. What it proves is not its own output but that
+     * everything after it still works: init can still start something and the
+     * shell can still run a command once a program has taken everything it is
+     * allowed to. Last in the manifest so that "after" means something. */
+    {"svc-bomb", "EFI/BOOT/SVC_BOMB.ELF", 0, 0, 0, 0, -1, SVC_STOPPED},
 };
 
 #define SERVICE_COUNT (int)(sizeof(services) / sizeof(services[0]))

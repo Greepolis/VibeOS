@@ -5474,7 +5474,12 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
      * unavailable" and what a shell retries on. */
     idx = hw_task_alloc_for_user("fork");
     if (idx < 0) {
-        hw_log(VIBEOS_LOG_WARN, 7u, 0, 0,
+        /* DEBUG, not WARN. hw_task_alloc_for_user already prints a line
+         * naming which rule refused, which is strictly more than this said -
+         * and a warning that a service provokes on purpose is a warning people
+         * learn to scroll past. It stays in the ring for a failure that turns
+         * out to be about one of these. */
+        hw_log(VIBEOS_LOG_DEBUG, 7u, 0, 0,
                "fork refused: guard or no free task slot");
         return -VIBEOS_EAGAIN;
     }

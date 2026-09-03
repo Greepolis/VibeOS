@@ -952,6 +952,25 @@ def main():
                 if int(cp.group(5), 16) != 0:
                     problems.append(f"cputime_ticks_dropped={int(cp.group(5), 16)}")
 
+            # The fork storm. Phase S-P6 of docs/sched/.
+            #
+            # What is asserted is not that the storm ran but that it was
+            # *stopped* and then cleaned up after: SVC_BOMB_DONE only prints
+            # once every child has been reaped, and everything the boot does
+            # afterwards - the shell, the kernel CLI - is the real assertion
+            # that the machine stayed administrable.
+            #
+            # SVC_BOMB_UNBOUNDED is the case that must never appear: it means
+            # the program forked as many times as it cared to and the kernel
+            # never said no, which is the guard silently not working while
+            # every other line still looks healthy.
+            if "SVC_BOMB_START" not in text:
+                problems.append("fork_storm_never_ran")
+            elif "SVC_BOMB_DONE" not in text:
+                problems.append("fork_storm_did_not_finish_or_reap")
+            if "SVC_BOMB_UNBOUNDED" in text:
+                problems.append("fork_storm_was_never_refused")
+
             # Exec refusals, by reason.
             #
             # Asserted on the *names* that appear, not on a count. A boot
