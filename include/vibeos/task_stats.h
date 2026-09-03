@@ -41,7 +41,8 @@ typedef struct vibeos_task_stats {
     uint64_t illegal_transition; /* a state change the table does not allow  */
     uint64_t use_after_publish;  /* a write to a slot already published FREE  */
     uint64_t tenancy_mismatch;   /* a reference whose generation had moved on */
-    uint64_t cr3_without_owner;  /* a task about to run on unowned tables     */
+    uint64_t cr3_without_owner;
+  /* a task about to run on unowned tables     */
 } vibeos_task_stats_t;
 
 vibeos_task_stats_t *vibeos_task_stats(void);

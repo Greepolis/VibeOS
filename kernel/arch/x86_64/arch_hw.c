@@ -236,6 +236,11 @@ int hw_current_task(void) {
     return g_current_task;
 }
 
+/* Read by the spinlocks below, so it is defined above them: this is one
+ * translation unit and a use before the definition compiles as an implicit
+ * declaration and then fails confusingly. */
+static volatile int g_sched_running;
+
 void hw_spin_lock(hw_lock_t *lock) {
     uint64_t flags;
     __asm__ __volatile__("pushfq\n\tpopq %0\n\tcli" : "=r"(flags) : : "memory");
@@ -900,6 +905,53 @@ static void hw_backtrace(uint64_t rbp, uint64_t rip) {
  * interrupts masked answers when it returns to ring 3; a core that never
  * returns was stuck with or without this. */
 static volatile int g_panicked;
+
+/* Decision T7: no lock may be held across a scheduling point.
+ *
+ * The classic priority inversion - a low-priority task holding a lock a
+ * high-priority task wants, while something in between runs - cannot happen
+ * here in its usual form, because these spinlocks mask interrupts: a core
+ * inside one never takes the timer, so it is never preempted while holding.
+ *
+ * What *can* happen is worse. A path that takes a lock and then blocks or
+ * exits leaves the lock held by a task that is no longer running, and every
+ * core that wants it spins with interrupts off, forever. That is not a task
+ * being delayed; it is the machine stopping. The virtio-net wedge found this
+ * evening was exactly that shape, one layer down.
+ *
+ * So the answer is not inheritance or a priority ceiling - both of which would
+ * make the situation survivable - but making it impossible to enter, and
+ * saying so when somebody tries.
+ *
+ * Counted rather than fatal, for the reason the transition table gives: a count
+ * can be asserted across a whole boot, and a panic can only be met once, on
+ * somebody else's investigation. */
+static void hw_sched_point(const char *where) {
+    (void)where;
+    /* Not implemented yet, and the first attempt is why.
+     *
+     * The check needs a per-core count of held locks, so the first version
+     * incremented one in hw_spin_lock through hw_this_cpu(). That reads the
+     * per-CPU pointer out of GS - and an application processor takes locks
+     * before it installs its own area, so the increment wrote through a garbage
+     * pointer into low memory. The boot died with a #GP at rip=0x39: the kernel
+     * jumping to an address that is not code.
+     *
+     * A diagnostic that corrupts is worse than no diagnostic, which this
+     * project has already learned three times over, so it came straight back
+     * out rather than being guarded into working.
+     *
+     * What the next attempt needs is a core identity that is valid before the
+     * per-CPU area exists. `vibeos_x86_64_cpu_id()` is exactly that - it reads
+     * the initial APIC id from CPUID leaf 1, which is valid from the first
+     * instruction - but CPUID is serialising and this would be on every lock,
+     * so the honest options are a cheap per-core index established earlier in
+     * bring-up, or counting only in the handful of layers that can block.
+     *
+     * The decision itself stands and is not in question: no lock may be held
+     * across a scheduling point. Nothing in the kernel does it today. What is
+     * missing is the check that would notice if something started. */
+}
 
 static void hw_panic(const char *why) {
     uint64_t rbp;
@@ -2976,7 +3028,7 @@ static void hw_free_kstack_pages(uint64_t base, uint32_t pages) {
 
 hw_task_t g_tasks[VIBEOS_HW_MAX_TASKS];
 static uint32_t g_alloc_seq;
-static int g_sched_running;
+/* Defined near the spinlocks, which read it. */
 static uint32_t g_next_pid = 1;
 static uint32_t g_console_foreground_pgid;
 static vibeos_service_supervisor_t g_runtime_supervisor;
@@ -3087,9 +3139,68 @@ int hw_task_set_state(int slot, vibeos_task_state_t to, const char *why) {
     return 0;
 }
 
-static int hw_task_alloc(void) {
+/* Take a task slot, optionally subject to the fork guard.
+ *
+ * The guard and the allocation are one critical section, and that is the whole
+ * point of the parameter. The first version asked the guard, dropped the lock,
+ * and then allocated - so two cores forking at once both read the same
+ * under-threshold snapshot, both got permission, and both allocated. The
+ * reserve eroded in proportion to how many forks raced.
+ *
+ * `guarded` is 0 for the paths that create the kernel's own tasks and the idle
+ * tasks, which exist before there is anything to protect them from.
+ * `privileged` is init and the kernel: the tasks that must still be able to act
+ * once a program has taken everything it is allowed to.
+ *
+ * Returns the slot, or negative. `*out_verdict` says why, so a caller can
+ * report which rule refused rather than "no memory". */
+static int hw_task_alloc_guarded(int guarded, int privileged, uint32_t parent_pid,
+                                 vibeos_fork_verdict_t *out_verdict) {
     int i;
+    if (out_verdict) {
+        *out_verdict = VIBEOS_FORK_OK;
+    }
     hw_spin_lock(&g_sched_lock);
+    if (guarded) {
+        uint32_t in_use = 0, kids = 0;
+        vibeos_fork_verdict_t v;
+
+        for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+            if (g_tasks[i].state == HW_TASK_FREE) {
+                continue;
+            }
+            in_use++;
+            /* What this thread group is accountable for, which is *not* just
+             * its children.
+             *
+             * A thread inherits its creator's parent rather than becoming its
+             * child - `child->ppid = parent->ppid` in clone - so counting by
+             * ppid alone bounds fork and does not bound threads at all. With
+             * the ceiling set to two, a boot that creates four threads produced
+             * no clone refusal whatsoever: the reserve stopped a thread bomb
+             * from taking the machine, and the per-task ceiling did nothing.
+             *
+             * So both are counted: tasks whose parent is this group, and other
+             * tasks in this group. Counted rather than tracked in a field,
+             * because a counter has to be right on every exit path including
+             * the ones that fail half way, and this table is twenty-four
+             * entries long. Zombies count, because a zombie still holds a
+             * slot. */
+            if (g_tasks[i].ppid == parent_pid) {
+                kids++;
+            } else if (g_tasks[i].tgid == parent_pid && g_tasks[i].is_thread) {
+                kids++;
+            }
+        }
+        v = vibeos_forkguard_check(in_use, kids, privileged);
+        if (v != VIBEOS_FORK_OK) {
+            hw_spin_unlock(&g_sched_lock);
+            if (out_verdict) {
+                *out_verdict = v;
+            }
+            return -1;
+        }
+    }
     for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
         if (g_tasks[i].state == HW_TASK_FREE) {
             int fi;
@@ -3140,7 +3251,41 @@ static int hw_task_alloc(void) {
     }
     vibeos_task_stats()->slot_refused++;
     hw_spin_unlock(&g_sched_lock);
+    if (out_verdict) {
+        *out_verdict = VIBEOS_FORK_NO_SLOTS;
+    }
     return -1;
+}
+
+/* Unguarded, for the kernel's own tasks and the idle tasks. */
+static int hw_task_alloc(void) {
+    return hw_task_alloc_guarded(0, 1, 0u, 0);
+}
+
+/* Everything a user program can ask for goes through here. Both fork and
+ * clone(CLONE_THREAD) do, which is the point: the guard was on fork alone, and
+ * a thread-based bomb - which is all pthread_create does in a loop - filled the
+ * table including the reserve that was supposed to keep the machine
+ * administrable. One entry point, so a third way to make a task cannot forget
+ * to ask. */
+static int hw_task_alloc_for_user(const char *what) {
+    vibeos_fork_verdict_t v = VIBEOS_FORK_OK;
+    uint32_t pid = (g_current_task >= 0) ? g_tasks[g_current_task].tgid : 0u;
+    int privileged = (g_current_task >= 0) && g_tasks[g_current_task].pid <= 1u;
+    int idx = hw_task_alloc_guarded(1, privileged, pid, &v);
+
+    if (idx < 0 && v != VIBEOS_FORK_OK) {
+        vibeos_x86_64_serial_lock();
+        vibeos_x86_64_serial_puts("[SCHED] ");
+        vibeos_x86_64_serial_puts(what ? what : "spawn");
+        vibeos_x86_64_serial_puts(" refused reason=");
+        vibeos_x86_64_serial_puts(vibeos_fork_verdict_name(v));
+        vibeos_x86_64_serial_puts(" pid=0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)pid);
+        vibeos_x86_64_serial_puts("\n");
+        vibeos_x86_64_serial_unlock();
+    }
+    return idx;
 }
 
 /* Give a reserved slot back after a failed creation. */
@@ -3564,6 +3709,7 @@ static int hw_task_adopt_kernel(void) {
  * rather than burning the core in a spin. */
 static void hw_idle_loop(void) {
     for (;;) {
+        hw_sched_point("block");
         __asm__ __volatile__("sti; hlt" ::: "memory");
     }
 }
@@ -3716,6 +3862,9 @@ static int hw_aspace_still_shared(int me) {
  * from the syscall path, so it enters the next task directly and never returns
  * to the caller. */
 void hw_task_exit(uint64_t code) {
+    /* Exit is the scheduling point that never comes back, so a lock held here
+     * is held by a task that will not exist to release it. */
+    hw_sched_point("exit");
     hw_cpu_t *cpu = hw_this_cpu();
     int dying = cpu->current_task;
     int next, i;
@@ -4198,6 +4347,7 @@ static long hw_pipe_read(hw_fd_t *f, uint64_t buf, uint64_t len) {
         }
         /* Nothing yet, and somebody could still write. Park instead of
          * spinning, so the writer actually gets a chance to run. */
+        hw_sched_point("block");
         __asm__ __volatile__("sti; hlt" ::: "memory");
     }
 }
@@ -4231,6 +4381,7 @@ static long hw_pipe_write(hw_fd_t *f, uint64_t buf, uint64_t len) {
             hw_keyboard_wake();   /* a blocked reader now has data */
             continue;
         }
+        hw_sched_point("block");
         __asm__ __volatile__("sti; hlt" ::: "memory");
     }
     return (long)written;
@@ -4511,6 +4662,7 @@ static long hw_sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
             g_tasks[g_current_task].wait_input = 1;
             (void)hw_task_set_state(g_current_task, HW_TASK_BLOCKED, __func__);
         }
+        hw_sched_point("block");
         __asm__ __volatile__("sti; hlt" ::: "memory");
     }
 }
@@ -5271,64 +5423,15 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
         return -VIBEOS_EINVAL;
     }
 
-    /* Asked before a slot is taken, not after.
-     *
-     * Running out of slots is fine and fork returns EAGAIN as it should. What
-     * is not fine is what running out *meant*: the table is first-come, so a
-     * program forking in a loop took every slot, and then init could not start
-     * a service and the shell could not run a command. The machine stayed alive
-     * and became unadministrable, which is worse than one that refuses.
-     *
-     * init and the kernel's own tasks are privileged here - they are exactly
-     * the ones that must still be able to act once a program has taken
-     * everything it is allowed to. */
-    {
-        uint32_t in_use = 0, kids = 0;
-        uint32_t pid = g_tasks[g_current_task].tgid;
-        vibeos_fork_verdict_t verdict;
-        int i;
-
-        hw_spin_lock(&g_sched_lock);
-        for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
-            if (g_tasks[i].state == HW_TASK_FREE) {
-                continue;
-            }
-            in_use++;
-            /* Live children, counted rather than tracked in a field: a counter
-             * has to be right on every exit path, including the ones that fail
-             * half way, and this table is twenty-four entries long. */
-            if (g_tasks[i].ppid == pid) {
-                kids++;
-            }
-        }
-        hw_spin_unlock(&g_sched_lock);
-
-        verdict = vibeos_forkguard_check(in_use, kids,
-                                         g_tasks[g_current_task].pid <= 1u);
-        if (verdict != VIBEOS_FORK_OK) {
-            vibeos_x86_64_serial_lock();
-            vibeos_x86_64_serial_puts("[SCHED] fork refused reason=");
-            vibeos_x86_64_serial_puts(vibeos_fork_verdict_name(verdict));
-            vibeos_x86_64_serial_puts(" pid=0x");
-            vibeos_x86_64_serial_print_hex((uint64_t)pid);
-            vibeos_x86_64_serial_puts(" children=0x");
-            vibeos_x86_64_serial_print_hex((uint64_t)kids);
-            vibeos_x86_64_serial_puts(" slots_in_use=0x");
-            vibeos_x86_64_serial_print_hex((uint64_t)in_use);
-            vibeos_x86_64_serial_puts("\n");
-            vibeos_x86_64_serial_unlock();
-            /* EAGAIN, which is what a C library turns into "resource
-             * temporarily unavailable" and what a shell retries on - the
-             * refusal is temporary by nature, since a child exiting undoes it. */
-            return -VIBEOS_EAGAIN;
-        }
-    }
-
-    idx = hw_task_alloc();
+    /* The guard and the allocation, one critical section. EAGAIN rather than
+     * ENOMEM: the refusal is temporary by nature, since a child exiting undoes
+     * it, and that is what a C library turns into "resource temporarily
+     * unavailable" and what a shell retries on. */
+    idx = hw_task_alloc_for_user("fork");
     if (idx < 0) {
         hw_log(VIBEOS_LOG_WARN, 7u, 0, 0,
-               "fork refused: no free task slot");
-        return -VIBEOS_ENOMEM;
+               "fork refused: guard or no free task slot");
+        return -VIBEOS_EAGAIN;
     }
     parent = &g_tasks[g_current_task];
     child = &g_tasks[idx];
@@ -5500,7 +5603,14 @@ static long hw_sys_clone_thread(const vibeos_x86_64_isr_frame_t *frame,
         return -VIBEOS_EINVAL;
     }
 
-    idx = hw_task_alloc();
+    /* The same door fork uses.
+     *
+     * This path had no guard at all, so a thread bomb - pthread_create in a
+     * loop, which is all it takes - filled the task table including the
+     * reserve that was supposed to keep the machine administrable. The guard
+     * was written for fork and clone was left open beside it, which is why
+     * there is now one entry point rather than a rule to remember. */
+    idx = hw_task_alloc_for_user("clone");
     if (idx < 0) {
         hw_log(VIBEOS_LOG_WARN, 7u, flags, 0,
                "clone refused: no free task slot");
@@ -5703,6 +5813,7 @@ static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr) {
         /* Block until a child exit sets us READY again (see hw_task_exit). */
         (void)hw_task_set_state(g_current_task, HW_TASK_BLOCKED, __func__);
         hw_spin_unlock(&g_sched_lock);
+        hw_sched_point("block");
         __asm__ __volatile__("sti; hlt" ::: "memory");
     }
 }
@@ -6918,6 +7029,7 @@ static long hw_futex_wait(uint64_t addr, uint32_t expected) {
      * this is a wait and not a spin: the core is given away on the first
      * interrupt and this task is not runnable again until a wake says so. */
     while (!g_futex_waiters[slot].woken) {
+        hw_sched_point("block");
         __asm__ __volatile__("sti; hlt" ::: "memory");
     }
 
