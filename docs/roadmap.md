@@ -71,3 +71,42 @@ a stated rule.
 Written here because it cost two days on the memory manager: a phase was
 declared unfinished for a day and a half against a boot count that no revision
 of this project has ever met.
+
+## Open decision: the second syscall layer (deferred 2026-09-02)
+
+`kernel/core/syscall.c` and `kernel/proc/process.c` are a
+complete syscall dispatcher and process table that **nothing in ring 3 reaches**.
+The real path is `vibeos_x86_64_syscall_entry`, wired through MSR_LSTAR
+into the `hw_sys_*` functions in `arch_hw.c`; the portable
+dispatcher is called only from `user/lib/user_api.c`, which nothing else
+in `user/` uses, and from the host tests.
+
+An external review found three real defects in it, all latent for that reason:
+
+- `vibeos_thread_create` takes a raw pid with no caller/target
+  relationship check, unlike `PROCESS_TERMINATE` beside it - a thread
+  created that way inherits the target process's security token.
+- `vibeos_proc_terminate` marks a slot TERMINATED and never clears
+  `in_use`, so after 32 process creations every further one fails
+  permanently.
+- The caller id used for every privilege check comes from
+  `frame->arg2`, supplied by the caller: passing 0 impersonates the
+  kernel.
+
+**Deferred until the memory-manager plan is finished, deliberately.** The
+question is not "are these bugs" - they are - but whether that layer should
+exist at all, and that depends on what the memory manager ends up exposing.
+Deciding now means deciding with less information than we will have in two
+phases.
+
+The risk of deferring is bounded and worth stating plainly: none of it is
+reachable from ring 3 today, so this is a decision about architecture rather
+than an open hole. The risk of *not writing the deferral down* is the real one -
+a month from now this is simply code that is there, and nobody remembers it was
+a choice.
+
+**When it is taken, the options are:** remove it, wire it and fix it first, or
+keep it as the host-tested model it currently is with a comment saying so. What
+must not happen is that it becomes reachable before the three defects above are
+fixed.
+

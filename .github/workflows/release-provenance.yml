@@ -25,6 +25,12 @@ jobs:
       hashes: ${{ steps.hash.outputs.hashes }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          # third_party/mbedtls is a submodule, and without it CMake only warns
+          # and builds without the TLS adapter. This is the workflow that signs
+          # the images people download, so it was the one place in the repo
+          # where the gate every other job treats as blocking was absent.
+          submodules: recursive
 
       - name: Install build dependencies
         run: |
@@ -35,8 +41,14 @@ jobs:
       - name: Build the kernel image
         run: |
           set -euo pipefail
+          # REQUIRE_TLS turns the missing-submodule warning into a hard
+          # failure, which is what cmake-multi-platform, filesystem-runtime and
+          # nightly all do. Signed provenance on an image built without a check
+          # the rest of the repo treats as mandatory is worse than no
+          # provenance: it attests to the wrong thing convincingly.
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-                -DVIBEOS_BUILD_TESTS=ON -DVIBEOS_BUILD_KERNEL_IMAGE=ON
+                -DVIBEOS_BUILD_TESTS=ON -DVIBEOS_BUILD_KERNEL_IMAGE=ON \
+                -DVIBEOS_REQUIRE_TLS=ON
           cmake --build build -j"$(nproc)"
 
       - name: Host tests must pass before anything is signed
