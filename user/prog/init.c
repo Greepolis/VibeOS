@@ -107,6 +107,11 @@ enum svc_state {
 typedef struct {
     const char *name;
     const char *path;
+    /* One optional argument, or null. It exists so a service that prints a
+     * replay seed can be handed one back: without it the seed from a failing
+     * boot can be read and never used, which is a reproduction recipe nobody
+     * can follow. */
+    const char *arg;
     int restart_limit;   /* how many times a failure may be retried */
     /* A session rather than a daemon: it runs until the user is finished with
      * it, and whatever status it leaves with is the end of the session and not
@@ -123,25 +128,25 @@ typedef struct {
  * calls exec, not by the filesystem - the same reason one BusyBox binary is
  * twenty commands - and a supervisor that gives every service the same name
  * makes its own logs useless. */
-static char *svc_argv[] = {(char *)"svc", 0};
+static char *svc_argv[] = {(char *)"svc", 0, 0};
 static char *const svc_envp[] = {(char *)"PATH=/EFI/BOOT", (char *)"TERM=dumb", 0};
 
 static service_t services[] = {
     /* The bring-up workload: everything the boot gate checks runs inside this
      * one, and it ends by exec'ing the shell. A session - when the shell is
      * done, so is the machine. */
-    {"selftest", "EFI/BOOT/SELFTEST.ELF", 0, 1, 0, -1, SVC_STOPPED},
+    {"selftest", "EFI/BOOT/SELFTEST.ELF", 0, 0, 1, 0, -1, SVC_STOPPED},
     /* Exits zero: a clean stop, which must not be restarted. */
-    {"svc-ok", "EFI/BOOT/SVC_OK.ELF", 2, 0, 0, -1, SVC_STOPPED},
+    {"svc-ok", "EFI/BOOT/SVC_OK.ELF", 0, 2, 0, 0, -1, SVC_STOPPED},
     /* Fails every time: restarted twice, then marked FAILED and left alone. */
-    {"svc-flap", "EFI/BOOT/SVC_FLAP.ELF", 2, 0, 0, -1, SVC_STOPPED},
+    {"svc-flap", "EFI/BOOT/SVC_FLAP.ELF", 0, 2, 0, 0, -1, SVC_STOPPED},
     /* Faults instead of exiting. Not restarted: the point is not recovery but
      * that the supervisor is still running to report it, which is only true
      * because the kernel now kills the faulting task instead of halting. */
-    {"svc-crash", "EFI/BOOT/SVC_CRSH.ELF", 0, 0, 0, -1, SVC_STOPPED},
+    {"svc-crash", "EFI/BOOT/SVC_CRSH.ELF", 0, 0, 0, 0, -1, SVC_STOPPED},
     /* Randomised churn with a printed seed. A session, not a daemon: it runs a
      * bounded number of rounds and its exit status is the verdict. */
-    {"svc-stress", "EFI/BOOT/SVC_STRS.ELF", 0, 0, 0, -1, SVC_STOPPED},
+    {"svc-stress", "EFI/BOOT/SVC_STRS.ELF", 0, 0, 0, 0, -1, SVC_STOPPED},
 };
 
 #define SERVICE_COUNT (int)(sizeof(services) / sizeof(services[0]))
@@ -151,6 +156,10 @@ static int start_service(service_t *svc) {
 
     if (child == 0) {
         svc_argv[0] = (char *)svc->name;
+        /* One optional argument, so a service that prints a replay seed can be
+         * given one back. Without this the seed in a failing boot could be read
+         * and never used - a reproduction recipe nobody can follow. */
+        svc_argv[1] = (char *)svc->arg;
         sys3(SYS_execve, (uint64_t)(uintptr_t)svc->path,
              (uint64_t)(uintptr_t)svc_argv, (uint64_t)(uintptr_t)svc_envp);
         /* execve only returns when it failed, and there is nothing else this
