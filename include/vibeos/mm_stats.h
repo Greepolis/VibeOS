@@ -44,6 +44,14 @@ typedef struct vibeos_mm_stats {
     uint64_t compact_refused_raced;
     uint64_t compact_refused_untracked;  /* a reference that is not a mapping */
 
+    /* Swap. The refusals matter as much as the successes: a swap that cannot
+     * touch shared pages will never reclaim what a forking workload
+     * accumulates, and that should be a number rather than a silence. */
+    uint64_t swap_refused_pinned;
+    uint64_t swap_refused_shared;
+    uint64_t swap_write_failed;
+    uint64_t swap_read_failed;
+
     /* L1 - address spaces. */
     uint64_t maps;               /* user PTEs created                         */
     uint64_t unmaps;             /* user PTEs destroyed                       */

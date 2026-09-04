@@ -46,3 +46,45 @@ case: a failed write frees the slot
     that reads it back gets somebody else's page. A failed write must leave
     the slot allocated and report - losing a page loudly is recoverable,
     losing it quietly is not.
+
+# --- page-out and page-in (P5 steps 2-3) -----------------------------------
+#
+# These live in kernel/mm/vmspace.c and their tests are in compact_tests.c,
+# which already had the address-space harness. Look for "FAIL:test_compact".
+
+case: a shared page is paged out anyway
+  in vibeos_vmspace_swap_out, change the owners/holders test to if (0)
+  expect: compact: FAIL refused / counted as shared / and the entry is untouched
+  why it matters: after a fork the frame belongs to several address spaces.
+    Evicting it through one of them leaves the others mapping a frame that has
+    been released, and the fault that follows for them finds a present entry
+    naming somebody else's page.
+
+case: a pinned page is paged out anyway
+  wrap the PINNED test in if (0)
+  expect: compact: FAIL refused / counted as pinned
+  why it matters: the same list as compaction and reclaim. A page table or a
+    device buffer does not survive its frame being given away.
+
+case: a failed write leaves the page swapped and lost
+  delete the compare-exchange that puts the mapping back
+  expect: compact: FAIL the mapping is back / and names the same frame
+  why it matters: this recovery exists *because* page-out unmaps before it
+    writes. With the entry already changed and nothing on disk, leaving it
+    swapped loses the page for good; putting the mapping back loses nothing,
+    since the frame still holds the contents.
+
+case: page-out releases the frame before the write
+  add a vibeos_frame_put(phys) just before the swap_write call
+  expect: compact: FAIL the contents came back / the frame was not released
+  why it matters: the frame can be reallocated and overwritten between the
+    release and the write, so what reaches the disk is the next tenant's page.
+
+case: page-in accepts a present entry
+  wrap the "not swapped out" guard in if (0)
+  expect: compact: FAIL and no read was attempted
+  NOTE: this case walked through a green test first. Without the guard,
+    page-in derives a slot number from the frame address, which is far outside
+    the swap area, so the transfer failed anyway and the test still passed -
+    for the wrong reason. The test now asserts that no read was *attempted*,
+    which is the same property the swap map asserts for an unallocated slot.

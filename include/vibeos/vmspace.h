@@ -42,6 +42,16 @@
  * and is not owned, which is why "writable" was not one either. */
 #define VIBEOS_PTE_OWNED (1ull << 11)
 
+/* This entry names a swap slot rather than a frame.
+ *
+ * Only meaningful when PTE_PRESENT is clear, which is what makes it safe to
+ * put in bit 10: the hardware never looks at a non-present entry, so the whole
+ * of it is the kernel's to use. The slot number lives in the address field,
+ * where the frame number would be - the two are never both true, and giving
+ * them the same bits means a walk that forgets to check is looking at an
+ * address that cannot be valid rather than at a plausible one. */
+#define VIBEOS_PTE_SWAPPED (1ull << 10)
+
 typedef struct vibeos_vmspace {
     uint64_t root_phys;     /* what goes in CR3 */
     uint64_t *root;         /* the same table, through the backend's mapping */
@@ -61,6 +71,11 @@ typedef struct vibeos_vmspace_backend {
      * layer in the kernel; a test can hand out anything it likes. */
     uint64_t (*alloc_table)(void);
     void (*free_table)(uint64_t phys);
+    /* Swap transfers, supplied by whoever owns a swap area. Absent means this
+     * kernel has no swap, and page-out simply never succeeds - which is a
+     * configuration, not a failure. */
+    int (*swap_write)(uint32_t slot, void *page);
+    int (*swap_read)(uint32_t slot, void *page);
 
     /* Installed in slot 0 of every new address space: the kernel's identity
      * map, shared and never freed. Zero leaves the slot empty, which is what a
@@ -209,6 +224,31 @@ int vibeos_vmspace_clone_cow(vibeos_vmspace_t *dst, vibeos_vmspace_t *src);
  * Pinned frames are never moved: a page table or a buffer a device holds an
  * address for does not tolerate its contents arriving somewhere else. */
 int vibeos_vmspace_move_frame(uint64_t old_phys, uint64_t new_phys);
+
+/* Evict the page at `va` to `slot`, and bring it back.
+ *
+ * ## The order, which is the whole design
+ *
+ * Page-out unmaps **first**, then writes. The other order loses a store: a
+ * process that writes between the copy and the unmap would have its store go
+ * into a frame that is about to be freed, and the value would simply be gone.
+ * Unmapping first means a store in that window *faults*, and the fault finds
+ * an entry that says "swapped" - so it waits for the write and then reads back
+ * exactly what was written. The window becomes correct rather than narrow.
+ *
+ * The two are serialised by the swap map's own lock, which the fault path also
+ * takes, so a fault cannot read a slot that page-out has not finished writing.
+ *
+ * Page-out is refused for a shared page: after a fork a frame belongs to
+ * several address spaces, and evicting it means changing all of their entries,
+ * which is a different operation from this one. `swap_refused_shared` counts
+ * it, so the pages a forking workload accumulates are visibly out of reach
+ * rather than quietly skipped. */
+int vibeos_vmspace_swap_out(vibeos_vmspace_t *as, uint64_t va, uint32_t slot);
+int vibeos_vmspace_swap_in(vibeos_vmspace_t *as, uint64_t va, uint64_t frame);
+
+/* The slot a swapped-out entry names, or -1 if the entry is not swapped. */
+int64_t vibeos_vmspace_swap_slot(vibeos_vmspace_t *as, uint64_t va);
 
 /* Resolve a fault this layer is responsible for. Returns 1 when it handled the
  * fault and the instruction may be retried, 0 when the fault is somebody

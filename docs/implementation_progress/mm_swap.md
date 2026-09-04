@@ -59,9 +59,65 @@ Another asserts that a refused transfer never reached the device at all — a
 refusal that still issued the read would leak the previous tenant's page
 through the driver's buffers rather than through the caller's.
 
+# P5 steps 2-3 — page-out and page-in
+
+## The order is the whole design
+
+Page-out **unmaps first, then writes**. The other order loses a store: a
+process writing between the copy and the unmap would put its value into a frame
+that is about to be freed, and the value is simply gone — silently, in a page
+somebody reads back later.
+
+Unmapping first turns that window from narrow into correct. A store in the
+window *faults*; the fault finds an entry marked swapped, waits for the write
+and reads back exactly what was written. Nothing is lost, only delayed.
+
+That order is also why the write-failure recovery has to exist. When the write
+fails the entry has already changed and there is nothing on disk, so leaving it
+swapped loses the page for good. Putting the mapping back loses nothing — the
+frame still holds the contents — and the next fault finds a normal page.
+
+## Where the slot lives
+
+In the entry, in the address field, with `VIBEOS_PTE_SWAPPED` (bit 10) saying
+so. Only meaningful when the entry is not present, which is what makes bit 10
+safe: the hardware never looks at a non-present entry, so the whole of it is
+the kernel's.
+
+Putting the slot number where the frame number would be is deliberate. The two
+are never both true, and sharing the bits means a walk that forgets to check
+the marker is looking at an address that cannot be valid rather than at a
+plausible one.
+
+## What it refuses, and why the refusals are counted
+
+- **Pinned.** The same list as compaction and reclaim.
+- **Shared.** After a fork a frame belongs to several address spaces, and
+  evicting it means changing all of their entries — a different operation.
+  Counted, because a swap that cannot touch shared pages will never reclaim
+  what a forking workload accumulates, and that should be a number rather than
+  a silence. It is the reason the plan says P5 waits for the reverse map.
+
+## Verified
+
+Five more host-test groups (fourteen in `compact_tests.c` now) and five more
+sabotage cases, each confirmed red.
+
+One of them walked through a green test first, and the reason is worth keeping.
+"Page-in accepts a present entry" did not fail: with the guard removed, page-in
+derives a slot number from the frame address, which is far outside the swap
+area, so the transfer failed anyway — the test passed for the wrong reason. It
+now asserts that no read was *attempted*, which is the same property the swap
+map asserts for an unallocated slot. That is twice in this phase that a test
+has been right about the outcome and wrong about the mechanism.
+
+The round-trip test scribbles over the old frame before paging back in, so a
+page-in that read from memory instead of from the slot would be caught rather
+than flattered by the frame happening to still hold the right bytes.
+
 ## What is not done
 
-Steps 2 to 4: page-out, page-in on fault, and the stress operation. Those touch
-the fault handler and the region descriptors, and they need reclaim to choose
-candidates — which is where the anonymous tier that `skipped_no_swap` currently
-counts will finally have somewhere to go.
+Step 4: the stress operation, and the wiring that makes reclaim choose
+anonymous pages and call this. `skipped_no_swap` still counts every anonymous
+page reclaim was not allowed to take — that number is what should start moving
+when the two are connected.

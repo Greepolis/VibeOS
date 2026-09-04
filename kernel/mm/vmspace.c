@@ -937,6 +937,139 @@ copy:
     return 1;
 }
 
+/* ---- swap ---------------------------------------------------------------- */
+
+#define PTE_SWAPPED VIBEOS_PTE_SWAPPED
+
+int64_t vibeos_vmspace_swap_slot(vibeos_vmspace_t *as, uint64_t va) {
+    uint64_t *pte;
+    uint64_t e;
+
+    if (!g_ready || !as || !as->root) {
+        return -1;
+    }
+    pte = walk(as, va, 0);
+    if (!pte) {
+        return -1;
+    }
+    e = __atomic_load_n(pte, __ATOMIC_ACQUIRE);
+    if ((e & PTE_PRESENT) || (e & PTE_SWAPPED) == 0u) {
+        return -1;
+    }
+    return (int64_t)((e & PTE_ADDR_MASK) >> 12);
+}
+
+int vibeos_vmspace_swap_out(vibeos_vmspace_t *as, uint64_t va, uint32_t slot) {
+    uint64_t *pte, entry, phys, desired;
+
+    g_op = "swap-out";
+    if (!g_ready || !as || !as->root) {
+        return -1;
+    }
+    pte = walk(as, va, 0);
+    if (!pte) {
+        return -1;
+    }
+    entry = __atomic_load_n(pte, __ATOMIC_ACQUIRE);
+    if ((entry & PTE_PRESENT) == 0u || (entry & VIBEOS_PTE_OWNED) == 0u) {
+        return -1;
+    }
+    phys = entry & PTE_ADDR_MASK;
+
+    if (vibeos_frame_test_flag(phys, VIBEOS_FRAME_PINNED)) {
+        vibeos_mm_stats()->swap_refused_pinned++;
+        return -1;
+    }
+    /* One holder only. After a fork a frame belongs to several address spaces
+     * and evicting it means changing all of their entries - a different
+     * operation from this one, and one that needs every holder's TLB dealt
+     * with before the frame is released. Counted rather than silently skipped:
+     * the pages a forking workload accumulates are exactly the ones a swap
+     * that cannot do this will never reclaim, and that should be visible. */
+    if (vibeos_frame_owners(phys) != 1u || vibeos_rmap_count(phys) != 1u) {
+        vibeos_mm_stats()->swap_refused_shared++;
+        return -1;
+    }
+
+    /* The entry goes first. A store after this point faults, and the fault
+     * finds an entry that says "swapped" - so it is delayed rather than lost,
+     * which is the difference between a window that is narrow and one that is
+     * correct. */
+    desired = ((uint64_t)slot << 12) | PTE_SWAPPED;
+    if (!__atomic_compare_exchange_n(pte, &entry, desired, 0,
+                                     __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+        return -1;   /* somebody else changed it; theirs to deal with */
+    }
+    if (g_be.invlpg) {
+        g_be.invlpg(va);
+    }
+    if (g_be.shootdown) {
+        g_be.shootdown(as->root_phys);
+    }
+
+    /* Now the contents, with nothing able to reach the frame through this
+     * address space any more. */
+    if (g_be.swap_write && g_be.swap_write(slot, g_be.map_phys(phys)) != 0) {
+        /* The page is not on disk and the entry no longer names the frame.
+         * Putting the mapping back is the only recovery that loses nothing:
+         * the frame still holds the contents, and the fault that follows will
+         * find a normal mapping again. */
+        uint64_t back = entry;
+        uint64_t expect = desired;
+        (void)__atomic_compare_exchange_n(pte, &expect, back, 0,
+                                          __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
+        vibeos_mm_stats()->swap_write_failed++;
+        return -1;
+    }
+
+    (void)vibeos_rmap_remove(phys, as->root_phys, va);
+    (void)vibeos_frame_put(phys);
+    vibeos_mm_stats()->swap_outs++;
+    return 0;
+}
+
+int vibeos_vmspace_swap_in(vibeos_vmspace_t *as, uint64_t va, uint64_t frame) {
+    uint64_t *pte, entry, desired;
+    uint32_t slot;
+
+    g_op = "swap-in";
+    if (!g_ready || !as || !as->root || frame == 0ull) {
+        return -1;
+    }
+    pte = walk(as, va, 0);
+    if (!pte) {
+        return -1;
+    }
+    entry = __atomic_load_n(pte, __ATOMIC_ACQUIRE);
+    if ((entry & PTE_PRESENT) || (entry & PTE_SWAPPED) == 0u) {
+        return -1;   /* not swapped out; nothing to bring back */
+    }
+    slot = (uint32_t)((entry & PTE_ADDR_MASK) >> 12);
+
+    if (g_be.swap_read && g_be.swap_read(slot, g_be.map_phys(frame)) != 0) {
+        vibeos_mm_stats()->swap_read_failed++;
+        return -1;   /* nothing changed: the entry still names the slot (I5) */
+    }
+
+    /* Writable, because an anonymous page is what gets swapped and it was
+     * writable when it left. Restoring it read-only would fault the moment the
+     * program touched it again and there would be nothing to resolve. */
+    desired = (frame & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITE | PTE_USER |
+              VIBEOS_PTE_OWNED;
+    vibeos_frame_get(frame);
+    if (!__atomic_compare_exchange_n(pte, &entry, desired, 0,
+                                     __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+        (void)vibeos_frame_put(frame);
+        return -1;   /* another core brought it in first */
+    }
+    (void)vibeos_rmap_add(frame, as->root_phys, va);
+    if (g_be.invlpg) {
+        g_be.invlpg(va);
+    }
+    vibeos_mm_stats()->swap_ins++;
+    return 0;
+}
+
 /* ---- compaction ---------------------------------------------------------- */
 
 /* At most this many holders are moved in one go. A frame with more than this

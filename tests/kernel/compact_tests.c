@@ -24,6 +24,7 @@
 #include "vibeos/mm_stats.h"
 #include "vibeos/mm_model.h"
 #include "vibeos/reclaim.h"
+#include "vibeos/swapmap.h"
 
 int test_compact(void);
 void vibeos_rmap_set_base(uint64_t base_phys);
@@ -60,6 +61,29 @@ static void cp_free_table(uint64_t phys) {
     (void)vibeos_frame_put(phys);
 }
 
+/* A swap area that is memory, so a round trip through page-out and page-in
+ * can be checked byte for byte without a disk. */
+#define CP_SLOTS 32u
+static uint8_t g_swapbits[(CP_SLOTS + 7u) / 8u];
+static unsigned char g_swapdisk[CP_SLOTS][4096];
+static int g_swap_write_fails;
+
+static int cp_swap_io(void *ctx, uint32_t slot, void *page, int write) {
+    (void)ctx;
+    if (slot >= CP_SLOTS) {
+        return -1;
+    }
+    if (write) {
+        if (g_swap_write_fails) {
+            return -1;
+        }
+        memcpy(g_swapdisk[slot], page, 4096);
+    } else {
+        memcpy(page, g_swapdisk[slot], 4096);
+    }
+    return 0;
+}
+
 static uint64_t g_shootdowns;
 
 static void cp_shootdown(uint64_t root_phys) {
@@ -89,6 +113,13 @@ static int cp_setup(void) {
     be.alloc_table = cp_alloc_table;
     be.free_table = cp_free_table;
     be.shootdown = cp_shootdown;
+    be.swap_write = vibeos_swap_write;
+    be.swap_read = vibeos_swap_read;
+    memset(g_swapdisk, 0, sizeof(g_swapdisk));
+    g_swap_write_fails = 0;
+    if (vibeos_swapmap_init(g_swapbits, CP_SLOTS, cp_swap_io, 0) != 0) {
+        return -1;
+    }
     return vibeos_vmspace_init(&be);
 }
 
@@ -439,6 +470,183 @@ static void test_unclearable_window_is_honest(void) {
           "and says the frames were pinned");
 }
 
+/* --- swap: page-out and page-in ------------------------------------------- */
+
+/* A page goes out and comes back with its contents intact, and while it is out
+ * the entry is not present. That last part is the property page-out exists to
+ * establish: an entry that stayed present would let the program keep using a
+ * frame that has been given away. */
+static void test_swap_round_trip(void) {
+    vibeos_vmspace_t as;
+    uint64_t f, back;
+    uint32_t slot = 0;
+    unsigned char *p;
+
+    if (cp_setup() != 0 || vibeos_vmspace_create(&as) != 0) {
+        printf("  compact: FAIL setup\n"); g_fail++; return;
+    }
+    f = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+    p = (unsigned char *)cp_map(f);
+    memset(p, 0x6B, 4096);
+    CHECK(map_as_kernel_does(&as, VA_A, f,
+                             (vibeos_prot_t)(VIBEOS_PROT_READ |
+                                             VIBEOS_PROT_WRITE |
+                                             VIBEOS_PROT_USER)) == 0, "map");
+
+    CHECK(vibeos_swap_alloc(&slot) == 0, "a slot");
+    CHECK(vibeos_vmspace_swap_out(&as, VA_A, slot) == 0, "paged out");
+    CHECK(vibeos_mm_stats()->swap_outs == 1u, "counted");
+
+    /* Out means out: not present, and the frame given back. */
+    {
+        uint64_t *pte = vibeos_vmspace_entry(&as, VA_A);
+        CHECK(pte && (*pte & 1ull) == 0ull, "the entry is not present");
+    }
+    CHECK(vibeos_vmspace_swap_slot(&as, VA_A) == (int64_t)slot,
+          "and it names the slot it went to");
+    CHECK(vibeos_frame_owners(f) == 0u, "the frame was released");
+
+    /* Deliberately scribble on the old frame before bringing the page back.
+     * If page-in read from memory rather than from the slot, this is what it
+     * would return - so the check below is about the disk and not about the
+     * frame happening to still hold the right bytes. */
+    memset(cp_map(f), 0xEE, 4096);
+
+    back = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+    CHECK(vibeos_vmspace_swap_in(&as, VA_A, back) == 0, "paged in");
+    CHECK(vibeos_mm_stats()->swap_ins == 1u, "counted");
+    {
+        unsigned char *q = (unsigned char *)cp_map(back);
+        CHECK(q[0] == 0x6B && q[4095] == 0x6B, "the contents came back");
+        CHECK(vibeos_rmap_count(back) == 1u, "and the holder is recorded");
+    }
+}
+
+/* A shared page is refused. After a fork the frame belongs to several address
+ * spaces, and evicting it means changing all of their entries - a different
+ * operation. Counted, so what a forking workload accumulates is visibly out of
+ * reach rather than quietly skipped. */
+static void test_swap_refuses_shared(void) {
+    vibeos_vmspace_t a, b;
+    uint64_t f;
+    uint32_t slot = 0;
+
+    if (cp_setup() != 0) { printf("  compact: FAIL setup\n"); g_fail++; return; }
+    if (vibeos_vmspace_create(&a) != 0 || vibeos_vmspace_create(&b) != 0) {
+        printf("  compact: FAIL create\n"); g_fail++; return;
+    }
+    f = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+    (void)vibeos_vmspace_map(&a, VA_A, f,
+                             (vibeos_prot_t)(VIBEOS_PROT_READ |
+                                             VIBEOS_PROT_USER));
+    (void)map_as_kernel_does(&b, VA_A, f,
+                             (vibeos_prot_t)(VIBEOS_PROT_READ |
+                                             VIBEOS_PROT_USER));
+    (void)vibeos_swap_alloc(&slot);
+
+    CHECK(vibeos_vmspace_swap_out(&a, VA_A, slot) != 0, "refused");
+    CHECK(vibeos_mm_stats()->swap_refused_shared == 1u, "counted as shared");
+    {
+        uint64_t *pte = vibeos_vmspace_entry(&a, VA_A);
+        CHECK(pte && (*pte & 1ull) == 1ull, "and the entry is untouched");
+    }
+}
+
+/* A pinned page is refused. Same list as compaction and reclaim: a page table
+ * or a buffer a device holds an address for. */
+static void test_swap_refuses_pinned(void) {
+    vibeos_vmspace_t as;
+    uint64_t f;
+    uint32_t slot = 0;
+
+    if (cp_setup() != 0 || vibeos_vmspace_create(&as) != 0) {
+        printf("  compact: FAIL setup\n"); g_fail++; return;
+    }
+    f = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+    (void)map_as_kernel_does(&as, VA_A, f,
+                             (vibeos_prot_t)(VIBEOS_PROT_READ |
+                                             VIBEOS_PROT_WRITE |
+                                             VIBEOS_PROT_USER));
+    vibeos_frame_set_flag(f, VIBEOS_FRAME_PINNED);
+    (void)vibeos_swap_alloc(&slot);
+
+    CHECK(vibeos_vmspace_swap_out(&as, VA_A, slot) != 0, "refused");
+    CHECK(vibeos_mm_stats()->swap_refused_pinned == 1u, "counted as pinned");
+}
+
+/* A write that fails puts the mapping back.
+ *
+ * The page is not on disk and the entry no longer names the frame, so leaving
+ * it swapped would lose the page for good. Restoring the mapping loses nothing
+ * - the frame still holds the contents - and the next fault finds a normal
+ * page again. This is the recovery that has to exist because page-out unmaps
+ * before it writes. */
+static void test_swap_write_failure_restores(void) {
+    vibeos_vmspace_t as;
+    uint64_t f;
+    uint32_t slot = 0;
+
+    if (cp_setup() != 0 || vibeos_vmspace_create(&as) != 0) {
+        printf("  compact: FAIL setup\n"); g_fail++; return;
+    }
+    f = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+    memset(cp_map(f), 0x42, 4096);
+    (void)map_as_kernel_does(&as, VA_A, f,
+                             (vibeos_prot_t)(VIBEOS_PROT_READ |
+                                             VIBEOS_PROT_WRITE |
+                                             VIBEOS_PROT_USER));
+    (void)vibeos_swap_alloc(&slot);
+    g_swap_write_fails = 1;
+
+    CHECK(vibeos_vmspace_swap_out(&as, VA_A, slot) != 0, "the page-out fails");
+    CHECK(vibeos_mm_stats()->swap_write_failed == 1u, "counted");
+    {
+        uint64_t *pte = vibeos_vmspace_entry(&as, VA_A);
+        CHECK(pte && (*pte & 1ull) == 1ull, "the mapping is back");
+        CHECK(pte && (*pte & 0x000FFFFFFFFFF000ull) == f,
+              "and names the same frame");
+    }
+    CHECK(vibeos_frame_owners(f) >= 1u, "the frame was not released");
+    CHECK(((unsigned char *)cp_map(f))[0] == 0x42, "with its contents");
+}
+
+/* Bringing in a page that is not swapped out is refused rather than
+ * overwriting a live mapping with whatever a slot happens to hold. */
+static void test_swap_in_of_a_present_page(void) {
+    vibeos_vmspace_t as;
+    uint64_t f, other;
+
+    if (cp_setup() != 0 || vibeos_vmspace_create(&as) != 0) {
+        printf("  compact: FAIL setup\n"); g_fail++; return;
+    }
+    f = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+    other = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+    (void)map_as_kernel_does(&as, VA_A, f,
+                             (vibeos_prot_t)(VIBEOS_PROT_READ |
+                                             VIBEOS_PROT_WRITE |
+                                             VIBEOS_PROT_USER));
+
+    CHECK(vibeos_vmspace_swap_in(&as, VA_A, other) != 0, "refused");
+    /* Refused *before* the device, not by it.
+     *
+     * Without this the test passed for the wrong reason: with the guard
+     * removed, page-in derives a slot number from the frame address, which is
+     * far outside the swap area, and the transfer fails anyway - so the
+     * sabotage case walked straight through a green test. What must hold is
+     * that a present entry is rejected without a read being attempted at all,
+     * which is the same property the swap map asserts for an unallocated slot.
+     */
+    CHECK(vibeos_mm_stats()->swap_read_failed == 0u,
+          "and no read was attempted");
+    CHECK(vibeos_vmspace_swap_slot(&as, VA_A) == -1,
+          "a present entry names no slot");
+    {
+        uint64_t *pte = vibeos_vmspace_entry(&as, VA_A);
+        CHECK(pte && (*pte & 0x000FFFFFFFFFF000ull) == f,
+              "the mapping still names its own frame");
+    }
+}
+
 int test_compact(void) {
     g_fail = 0;
 
@@ -457,12 +665,17 @@ int test_compact(void) {
     test_refuses_untracked_reference();
     test_fragmented_then_contiguous();
     test_unclearable_window_is_honest();
+    test_swap_round_trip();
+    test_swap_refuses_shared();
+    test_swap_refuses_pinned();
+    test_swap_write_failure_restores();
+    test_swap_in_of_a_present_page();
 
     free(g_ram);
     g_ram = 0;
 
     if (g_fail == 0) {
-        printf("  compact: 9 groups ok\n");
+        printf("  compact: 14 groups ok\n");
     }
     return g_fail == 0 ? 0 : 1;
 }
