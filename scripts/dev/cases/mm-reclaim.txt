@@ -1,0 +1,39 @@
+# Sabotage cases for reclaim (kernel/mm/reclaim.c), plan phase P6 steps 2-4.
+#
+# Each was applied, the host tests confirmed red, and the tree confirmed green
+# again afterwards. Run: apply, rebuild vibeos_kernel_tests, look for
+# "FAIL:test_reclaim".
+
+case: the reserve refuses privileged allocations too
+  in vibeos_reclaim_admit, change if (privileged) to if (0)
+  expect: reclaim: FAIL privileged allocation still admitted
+  why it matters: this is the deadlock. The reserve exists so the work that
+    ends the pressure - a page table the teardown needs, the kernel's own
+    bookkeeping - can still allocate. Refusing it means the machine stops at
+    exactly the moment it needed to free something, and it stops quietly.
+
+case: the minimum is off by one
+  in vibeos_reclaim_pressure, change if (f <= g_min) to if (f < g_min)
+  expect: reclaim: FAIL on min is critical
+  why it matters: the reserve is one frame smaller than whoever set it
+    believes, and the difference only shows up on the boot that needed it.
+
+case: a pin does not take
+  in vibeos_reclaim_pin, replace the set_flag call with (void)phys
+  expect: reclaim: FAIL pin is visible
+  why it matters: the safety property. An eviction that reaches a page table
+    or a buffer a device holds the address of does not degrade, it corrupts,
+    and asynchronously.
+
+case: the shortfall is not counted
+  in vibeos_reclaim_run, wrap the skipped_no_swap accumulation in if (0)
+  expect: reclaim: FAIL the eight it could not take are counted, not silent
+  why it matters: "reclaim did nothing" and "reclaim had nothing it was
+    allowed to take" become the same silence, and a gate that cannot tell them
+    apart is satisfied by a reclaim that has quietly stopped working.
+
+case: a transition is counted on every query
+  in vibeos_reclaim_pressure, change if (p != g_last) to if (1)
+  expect: reclaim: FAIL one low event for three asks
+  why it matters: the counter would measure how chatty the caller is rather
+    than how often the machine was in trouble.

@@ -142,6 +142,7 @@ if(VIBEOS_BUILD_TESTS)
         tests/kernel/vma_tests.c
         tests/kernel/backing_tests.c
         tests/kernel/rmap_tests.c
+        tests/kernel/reclaim_tests.c
         tests/kernel/task_tests.c
         tests/kernel/runq_tests.c
         tests/kernel/lifetime_tests.c
@@ -245,7 +246,7 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
     # bring-up program until the runtime acceptance gate selects it as PID 1.
     # Two supervised services, so the supervisor has something real to
     # supervise: one that finishes cleanly and one that fails every time.
-    foreach(svc svc_ok svc_flap svc_crash svc_stress svc_bomb)
+    foreach(svc svc_ok svc_flap svc_crash svc_stress svc_bomb svc_press)
         add_executable(vibeos_user_${svc} user/prog/${svc}.c user/prog/crt0.S)
         target_compile_options(vibeos_user_${svc} PRIVATE
             -ffreestanding -fno-stack-protector -fno-pic -mno-red-zone

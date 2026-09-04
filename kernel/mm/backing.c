@@ -157,6 +157,33 @@ static vibeos_cache_entry_t *cache_evict(void) {
     return 0;
 }
 
+uint32_t vibeos_cache_reclaim(uint32_t want) {
+    uint32_t freed = 0;
+
+    cache_lock();
+    /* cache_evict returns a slot it has already emptied, so each successful
+     * call is one frame given back. It returns null when every entry has been
+     * given its second chance and none was cold - which is a full cache of hot
+     * pages, and a legitimate answer of "nothing", not a failure. */
+    while (freed < want) {
+        vibeos_cache_entry_t *e = cache_evict();
+
+        if (!e) {
+            break;
+        }
+        /* An entry that was already free is not a frame reclaimed. Counting it
+         * would let a cache with spare slots report progress it never made,
+         * and a reclaim loop that believed it would spin instead of moving on
+         * to the next tier. */
+        if (e->phys == 0u && e->file_id == 0u) {
+            break;
+        }
+        freed++;
+    }
+    cache_unlock();
+    return freed;
+}
+
 /* Insert a key at its slot, probing forward. Only called after eviction has
  * guaranteed a free slot exists, but the probe still has a bound: a table with
  * no empty slot must return a failure rather than loop. */

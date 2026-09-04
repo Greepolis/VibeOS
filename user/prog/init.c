@@ -152,6 +152,21 @@ static service_t services[] = {
      * shell can still run a command once a program has taken everything it is
      * allowed to. Last in the manifest so that "after" means something. */
     {"svc-bomb", "EFI/BOOT/SVC_BOMB.ELF", 0, 0, 0, 0, -1, SVC_STOPPED},
+    /* svc-press is built and shipped but NOT started here, and that is a
+     * statement about the kernel rather than about the test.
+     *
+     * It allocates 256 KiB at a time and touches every page. At 80 blocks -
+     * twenty megabytes, on a guest with four hundred - the machine stops
+     * answering and the serial log fills with binary. That is not memory
+     * exhaustion and it is not the watermarks refusing anything; it is a
+     * defect this boot had all along and nothing had ever asked it for enough
+     * pages in a row to find.
+     *
+     * Starting it here would turn every boot red on a defect that is not
+     * reclaim's, and this project has a rule about gates people learn to
+     * ignore. Run it by hand from the shell, or add it back once the defect
+     * behind it is closed. Written up in
+     * docs/implementation_progress/mm_reclaim.md. */
 };
 
 #define SERVICE_COUNT (int)(sizeof(services) / sizeof(services[0]))

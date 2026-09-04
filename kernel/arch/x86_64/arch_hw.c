@@ -27,6 +27,7 @@
 #include "vibeos/sched_policy.h"
 #include "vibeos/pageinfo.h"
 #include "vibeos/rmap.h"
+#include "vibeos/reclaim.h"
 
 #define VIBEOS_HW_KERNEL_CS 0x08u
 #define VIBEOS_HW_KERNEL_DS 0x10u
@@ -1657,10 +1658,27 @@ static void hw_free_page_why(void *p, const char *why) {
  * pool whose pages are never released. */
 static int g_frame_layer_ready;
 
-static void *hw_alloc_page(void) {
+/* An ordinary page for a user process, subject to the watermarks. */
+static void *hw_alloc_page_admitted(int privileged) {
     uint64_t phys = 0;
 
     if (g_frame_layer_ready) {
+        /* The marks are consulted here, and the first version of this file did
+         * not consult them anywhere - they were configured and then read by
+         * nobody, which is this project's most repeated defect wearing new
+         * clothes. The pressure service found it in one boot: the machine ran
+         * memory to nothing and died with a corrupted backtrace, because
+         * "refuse before the last frame" was a number rather than a rule.
+         *
+         * Below the low mark, try to give something back first. The clean tier
+         * costs nothing to drop - the file still has the page - so this is
+         * worth doing before refusing anybody. */
+        if (vibeos_reclaim_pressure() != VIBEOS_MEM_OK) {
+            (void)vibeos_reclaim_run(32u);
+        }
+        if (!vibeos_reclaim_admit(privileged)) {
+            return 0;
+        }
         phys = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
         return (void *)(uintptr_t)phys;
     }
@@ -1687,6 +1705,21 @@ static void *hw_alloc_page(void) {
 /* Several contiguous frames. Exists because the bump allocator underneath used
  * to serve this and must not serve anything once the frame layer is up: two
  * allocators over one region means one of them is wrong about what is free. */
+
+/* The unqualified door, for everything the kernel needs in order to keep
+ * working - page tables, kernel stacks, the bookkeeping a teardown allocates.
+ * Refusing these is how a machine deadlocks at the minimum instead of
+ * recovering from it, which is the whole reason the reserve exists. */
+static void *hw_alloc_page(void) {
+    return hw_alloc_page_admitted(1);
+}
+
+/* And the door for a page a user process asked for, which is what the reserve
+ * is being held back from. */
+static void *hw_alloc_user_page(void) {
+    return hw_alloc_page_admitted(0);
+}
+
 static void *hw_alloc_pages_contig(uint32_t count) {
     uint64_t phys;
 
@@ -1746,14 +1779,30 @@ static void hw_frame_unlock(void) {
  * one owner, the address space that built it - and it is freed by structure at
  * teardown rather than by the ownership bit, which marks user frames only. */
 static uint64_t hw_vmspace_alloc_table(void) {
+    /* Pinned before it is used, and this is a safety property rather than a
+     * tuning one. A page table that gets evicted does not make the machine
+     * slow: the next walk reads whatever the frame now holds and installs it
+     * as a translation, which corrupts an address space asynchronously and a
+     * long way from here. The same argument covers DMA buffers, which is why
+     * both are on the same list. */
     /* Allocated with its state, rather than as a generic frame relabelled
      * later. meminfo can then say how much of memory is page tables, which is
      * a figure that grows with the number of processes and had nowhere to be
      * seen before. */
-    return vibeos_frame_alloc(VIBEOS_FRAME_PAGE_TABLE);
+    uint64_t phys = vibeos_frame_alloc(VIBEOS_FRAME_PAGE_TABLE);
+
+    if (phys) {
+        vibeos_reclaim_pin(phys);
+    }
+    return phys;
 }
 
 static void hw_vmspace_free_table(uint64_t phys) {
+    /* Unpinned before release, or the bit follows the frame into the free list
+     * and the next tenant inherits a pin nobody asked for - a frame that can
+     * never be reclaimed again, which is a leak no counter would report as
+     * one because the frame is perfectly accounted for. */
+    vibeos_reclaim_unpin(phys);
     hw_free_page((void *)(uintptr_t)phys);
 }
 
@@ -1938,6 +1987,29 @@ static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
         }
 
         if (ok) {
+            /* Watermarks, as a fraction of what this machine actually has
+             * rather than as a constant. A number that suits a large machine
+             * starves a small one, and this kernel is run on both.
+             *
+             * A 64th and a 256th - about 1.5% and 0.4% - which on a boot with
+             * ~104k frames is a low mark near 1600 and a minimum near 400.
+             * The minimum has to be large enough for the work that ends the
+             * pressure: a teardown allocates page tables of its own. */
+            {
+                uint64_t total = vibeos_frame_total();
+                uint64_t low = total / 64ull;
+                uint64_t min = total / 256ull;
+
+                if (min < 64ull) {
+                    min = 64ull;      /* a floor for very small machines */
+                }
+                if (low <= min) {
+                    low = min * 4ull;
+                }
+                (void)vibeos_reclaim_set_marks(low, min);
+                vibeos_reclaim_set_clean_source(vibeos_cache_reclaim);
+            }
+
             g_frame_layer_ready = 1;
 
             /* The address-space layer, immediately after the frame layer it
@@ -5438,7 +5510,7 @@ static long hw_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot,
             return -VIBEOS_ENOMEM;
         }
         for (i = 0; i < pages; i++) {
-            void *page = hw_alloc_page();
+            void *page = hw_alloc_user_page();
 
             if (!page || hw_map_page(&proc->as, base + i * 4096ull,
                                      (uint64_t)(uintptr_t)page,
@@ -5465,7 +5537,7 @@ static long hw_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot,
     {
         uint64_t i;
         for (i = 0; i < pages; i++) {
-            void *page = hw_alloc_page();
+            void *page = hw_alloc_user_page();
             if (!page || hw_map_page(&proc->as, base + i * 4096ull,
                                      (uint64_t)(uintptr_t)page, leaf) != 0) {
                 return -VIBEOS_ENOMEM;

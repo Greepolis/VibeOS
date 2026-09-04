@@ -133,6 +133,19 @@ uint32_t vibeos_frame_owners(uint64_t phys);
  * lets the page-information call hand it to ring 3 without handing over the
  * layout of the machine. */
 uint32_t vibeos_frame_id(uint64_t phys);
+
+/* The descriptor's flag bits, which P1 reserved and nothing has needed until
+ * reclaim. Exposed as three calls rather than as the descriptor, so the table
+ * stays private and every write to it happens under this layer's lock.
+ *
+ * PINNED is the one that matters for safety: an eviction that reaches a page
+ * table or a buffer a device holds an address for does not degrade, it
+ * corrupts, and asynchronously. Setting the bit is how a caller says so, and
+ * this layer is the only place that can say it under the same lock that
+ * guards allocation. */
+void vibeos_frame_set_flag(uint64_t phys, uint8_t flag);
+void vibeos_frame_clear_flag(uint64_t phys, uint8_t flag);
+int  vibeos_frame_test_flag(uint64_t phys, uint8_t flag);
 vibeos_frame_state_t vibeos_frame_state(uint64_t phys);
 
 /* One walk of the descriptor table, answering what a memory tool actually asks:

@@ -87,4 +87,15 @@ void vibeos_cache_forget(uint32_t file_id);
 /* Resident pages, for meminfo and the gate. */
 uint32_t vibeos_cache_resident(void);
 
+/* Give back up to `want` resident pages, and return how many were actually
+ * dropped. This is the clean tier reclaim evicts first: dropping one costs
+ * nothing because the file still has it and the next fault reads it back.
+ *
+ * Exposed here rather than reimplemented in reclaim, because this layer
+ * already owns the clock hand and the eviction, and a second copy of that
+ * knowledge elsewhere is how two structures come to disagree about the same
+ * fact - which is the family of defect this subsystem has spent four
+ * investigations on. */
+uint32_t vibeos_cache_reclaim(uint32_t want);
+
 #endif /* VIBEOS_BACKING_H */

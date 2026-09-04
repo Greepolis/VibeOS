@@ -454,6 +454,41 @@ uint64_t vibeos_frame_alloc_contig(uint32_t count, vibeos_frame_state_t state) {
     return r;
 }
 
+void vibeos_frame_set_flag(uint64_t phys, uint8_t flag) {
+    uint32_t index;
+
+    frame_lock();
+    index = frame_index(phys);
+    if (index != FRAME_NONE) {
+        g_table[index].flags |= flag;
+    }
+    frame_unlock();
+}
+
+void vibeos_frame_clear_flag(uint64_t phys, uint8_t flag) {
+    uint32_t index;
+
+    frame_lock();
+    index = frame_index(phys);
+    if (index != FRAME_NONE) {
+        g_table[index].flags &= (uint8_t)~flag;
+    }
+    frame_unlock();
+}
+
+int vibeos_frame_test_flag(uint64_t phys, uint8_t flag) {
+    uint32_t index;
+    int set = 0;
+
+    frame_lock();
+    index = frame_index(phys);
+    if (index != FRAME_NONE) {
+        set = (g_table[index].flags & flag) != 0u;
+    }
+    frame_unlock();
+    return set;
+}
+
 void vibeos_frame_get(uint64_t phys) {
     frame_lock();
     vibeos_frame_get_locked(phys);
