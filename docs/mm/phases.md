@@ -632,3 +632,42 @@ optional. Each item is a test that did not exist before.
 *Done when:* all five run in CI, each has a sabotage case that turns it red, and
 the invariants of §2 are each mapped to the test that proves it.
 
+---
+
+## Where the plan stands
+
+Written after P5, P6 and most of P7 landed in one stretch. Each phase has its
+own detail file under `docs/implementation_progress/`; this is the summary that
+says what is *not* done, because that is the part a status table tends to lose.
+
+| phase | state |
+| --- | --- |
+| P0–P3 | done |
+| P4 | steps 1–2 done; image pages are mapped from the cache (95% of them, 74% hit ratio, both gated as ratios). **Step 3 not done**: execve still reads whole programs into the 4 MiB staging buffer, so the buffers are still there. |
+| P5 | map, page-out, page-in and the anonymous tier built, tested and sabotage-verified against a memory-backed device. **No swap area exists on the boot media**, so no anonymous source is registered and page-out is never called on the real machine. `skipped_no_swap` counts what that costs. |
+| P6 | done. Reverse map audited on every fork, watermarks and admission wired into the allocator, page tables pinned, compaction with the fragmentation test the plan calls the only honest one. |
+| P7 | three properties of five: exhaustion, isolation, fault injection. **Soak and latency are not proved** and are named as such. |
+
+### The two things most worth doing next
+
+**Give swap somewhere to write.** Everything above the device is built and
+tested; what is missing is carving and sizing an area on the block device. Until
+then P5 is a subsystem that has never run on the real machine, which is the
+state this project has learned to distrust - "the driver nobody runs is the one
+that ships broken".
+
+**The 20 MiB pressure defect.** `svc-press` allocates 256 KiB at a time and
+touches every page; at eighty blocks - twenty megabytes on a guest with four
+hundred - the machine stops answering and the serial log fills with binary.
+That is not exhaustion and not the watermarks refusing anything. It is a defect
+the boot has always had that nothing had ever asked it for enough pages in a
+row to find, and it is the reason `svc-press` is built but not started by init.
+
+### One defect still open from before all this
+
+A frame released while an address space still maps it, seen as `mappers=2
+owners=1` at a destroy and as a page of zeroes handed to a live process. Fork is
+now excluded by measurement - `fork_undercounted` reads zero across every boot -
+so the remaining candidates are `munmap`, the copy-on-write resolution and
+teardown. Three detectors watch for it every boot and the gate fails on any of
+them.
