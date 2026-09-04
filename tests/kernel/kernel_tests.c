@@ -8816,6 +8816,7 @@ int test_backing(void);
 int test_rmap(void);
 int test_reclaim(void);
 int test_compact(void);
+int test_swap(void);
 int test_task(void);
 int test_runq(void);
 int test_lifetime(void);
@@ -8838,6 +8839,7 @@ int main(void) {
     RUN_TEST(test_rmap);
     RUN_TEST(test_reclaim);
     RUN_TEST(test_compact);
+    RUN_TEST(test_swap);
     RUN_TEST(test_task);
     RUN_TEST(test_runq);
     RUN_TEST(test_lifetime);

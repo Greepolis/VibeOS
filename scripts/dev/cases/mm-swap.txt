@@ -1,0 +1,48 @@
+# Sabotage cases for the swap map (kernel/mm/swapmap.c), plan phase P5 step 1.
+#
+# Each was applied, the host tests confirmed red, and the tree confirmed green
+# again afterwards. Run: apply, rebuild vibeos_kernel_tests, look for
+# "FAIL:test_swap".
+#
+# Six of the seven test groups are refusals rather than function, and these cases
+# are why. Deciding which page to evict can be wrong without being dangerous;
+# deciding where it went cannot. Every case below ends with one process able to
+# read another process's memory, at some later fault, with nothing reporting an
+# error at the moment it goes wrong.
+
+case: allocation does not mark the slot taken
+  in vibeos_swap_alloc, delete the bit_set(s)
+  expect: swap: FAIL write a / write b / read a
+  why it matters: every allocation returns the same slot, so every evicted
+    page overwrites the last one. The map still reports the right number of
+    allocations, which is why the test marks the slots it has seen rather than
+    counting them.
+
+case: a double free is accepted
+  in vibeos_swap_free, change the !bit_test guard to if (0)
+  expect: swap: FAIL second free refused / and counted
+  why it matters: two things believe they own the same page of swap and
+    neither finds out - the second write simply wins.
+
+case: io on an unallocated slot is allowed through
+  in swap_io, change the !bit_test guard to if (0)
+  expect: swap: FAIL read of a free slot refused / write of a free slot refused
+  why it matters: reading a free slot returns whatever the previous tenant
+    left there. This is the disclosure the layer exists to prevent, and the
+    test also asserts the device was never touched - a refusal that still
+    issued the transfer would leak through the driver's own buffers.
+
+case: out of range is not checked
+  in vibeos_swap_free, drop the slot >= g_slots half of the guard
+  expect: swap: FAIL all counted
+  why it matters: it indexes off the end of the bitmap and clears a bit
+    belonging to whatever follows it in memory.
+
+case: a failed write frees the slot
+  in swap_io, add bit_clear(slot) beside the io_errors++
+  expect: swap: FAIL the slot is still held
+  why it matters: the slot goes back to the pool while a page still believes
+    its contents are there, so the next eviction overwrites it and the fault
+    that reads it back gets somebody else's page. A failed write must leave
+    the slot allocated and report - losing a page loudly is recoverable,
+    losing it quietly is not.
