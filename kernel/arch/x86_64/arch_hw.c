@@ -2720,12 +2720,12 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
          * position-independent file. The window is enforced below, on the
          * addresses the image will really occupy, and again by the explicit
          * check after this block. */
-        int rc = vibeos_elf_parse_ex(elf, len, 0, 0,
+        int parse_rc = vibeos_elf_parse_ex(elf, len, 0, 0,
                                      VIBEOS_HW_USER_STACK_TOP,
                                      VIBEOS_ELF_ALLOW_DYN |
                                      VIBEOS_ELF_ALLOW_INTERP, &img);
 
-        if (rc != VIBEOS_ELF_OK) {
+        if (parse_rc != VIBEOS_ELF_OK) {
             { rc = hw_exec_refuse(VIBEOS_EXEC_BAD_HEADER, path, "parse"); goto fail; }
         }
         if (img.is_dyn) {
@@ -2737,11 +2737,11 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
                 /* Would not fit in the window it is offered. */
                 { rc = hw_exec_refuse(VIBEOS_EXEC_BAD_WINDOW, path, "pie_span"); goto fail; }
             }
-            rc = vibeos_elf_parse_ex(elf, len, bias, VIBEOS_HW_LOW_USER_BASE,
+            parse_rc = vibeos_elf_parse_ex(elf, len, bias, VIBEOS_HW_LOW_USER_BASE,
                                      VIBEOS_HW_USER_STACK_TOP,
                                      VIBEOS_ELF_ALLOW_DYN |
                                      VIBEOS_ELF_ALLOW_INTERP, &img);
-            if (rc != VIBEOS_ELF_OK) {
+            if (parse_rc != VIBEOS_ELF_OK) {
                 { rc = hw_exec_refuse(VIBEOS_EXEC_BAD_HEADER, path, "parse_biased"); goto fail; }
             }
         }
@@ -2773,20 +2773,20 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
      * stub. */
     if (img.has_interp) {
         vibeos_elf_image_t interp;
-        const char *path = img.interp;
+        const char *interp_path = img.interp;
         long n;
         uint64_t bias;
 
         if (g_interp_elf == 0) {
             /* Say no rather than half-load. */
-            { rc = hw_exec_refuse(VIBEOS_EXEC_NO_STAGING, path, "interp_staging"); goto fail; }
+            { rc = hw_exec_refuse(VIBEOS_EXEC_NO_STAGING, interp_path, "interp_staging"); goto fail; }
         }
 
-        path = hw_interp_path_substitute(path);
+        interp_path = hw_interp_path_substitute(interp_path);
 
         uint32_t interp_id = 0;
 
-        n = hw_read_file_cached(path, g_interp_elf, g_interp_elf_cap,
+        n = hw_read_file_cached(interp_path, g_interp_elf, g_interp_elf_cap,
                                 &interp_id);
         if (n <= 0) {
             { rc = hw_exec_refuse(VIBEOS_EXEC_NO_INTERP, img.interp, "read"); goto fail; }
@@ -2819,7 +2819,7 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
         p->interp_base = bias;
 
         vibeos_x86_64_serial_puts("[EXEC] interpreter ");
-        vibeos_x86_64_serial_puts(path);
+        vibeos_x86_64_serial_puts(interp_path);
         vibeos_x86_64_serial_puts(" at 0x");
         vibeos_x86_64_serial_print_hex(bias);
         vibeos_x86_64_serial_puts("\n");
@@ -3354,7 +3354,10 @@ static uint32_t hw_slice_for(int slot) {
     if (slot < 0 || slot >= VIBEOS_HW_MAX_TASKS) {
         return 1u;
     }
-    cls = g_tasks[slot].is_idle ? VIBEOS_SCHED_IDLE : VIBEOS_SCHED_NORMAL;
+    /* Asked, not derived. Deriving it from is_idle was the same mistake in
+     * two places: it cannot see a KERNEL task, so the top class got a NORMAL
+     * slice. */
+    cls = vibeos_sched_policy_class((uint32_t)slot);
     return vibeos_sched_policy_quantum(cls);
 }
 
@@ -3373,8 +3376,7 @@ static int hw_higher_class_runnable(hw_cpu_t *cpu, int current) {
     if (current < 0 || current >= VIBEOS_HW_MAX_TASKS) {
         return 1;
     }
-    mine = g_tasks[current].is_idle ? (uint8_t)VIBEOS_SCHED_IDLE
-                                    : (uint8_t)VIBEOS_SCHED_NORMAL;
+    mine = (uint8_t)vibeos_sched_policy_class((uint32_t)current);
     if (mine == (uint8_t)VIBEOS_SCHED_KERNEL) {
         return 0;   /* nothing outranks the top class */
     }
@@ -3402,7 +3404,14 @@ static int hw_pick_next(hw_cpu_t *cpu) {
      * definition of runnable, so a task the scheduler would not have run
      * cannot become runnable by being favoured.
      */
-    for (i = 0; i < (uint32_t)VIBEOS_HW_MAX_TASKS && i < 64u; i++) {
+    /* The bitmask is 64 bits wide, so the table must fit in it. This was a
+     * runtime `i < 64u` that has never once been false, which is worse than no
+     * check at all: it reads as a guard, it costs a comparison per slot, and
+     * it would have silently dropped slots 64 and up rather than failing. A
+     * static assertion cannot be true-by-accident. */
+    _Static_assert(VIBEOS_HW_MAX_TASKS <= 64,
+                   "the runnable bitmask is 64 bits wide");
+    for (i = 0; i < (uint32_t)VIBEOS_HW_MAX_TASKS; i++) {
         if (hw_task_runnable(0, i, (uint32_t)cpu->index)) {
             runnable |= (1ull << i);
         }

@@ -158,6 +158,13 @@ int vibeos_sched_policy_set_nice(uint32_t slot, int nice) {
     return 0;
 }
 
+vibeos_sched_class_t vibeos_sched_policy_class(uint32_t slot) {
+    if (!g_task || slot >= g_slots || !g_task[slot].present) {
+        return VIBEOS_SCHED_NORMAL;
+    }
+    return (vibeos_sched_class_t)g_task[slot].cls;
+}
+
 int vibeos_sched_policy_nice(uint32_t slot) {
     return slot_ok(slot) ? (int)g_task[slot].nice : 0;
 }

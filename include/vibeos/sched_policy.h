@@ -59,6 +59,14 @@ void vibeos_sched_policy_forget(uint32_t slot);
 
 int vibeos_sched_policy_set_nice(uint32_t slot, int nice);
 int vibeos_sched_policy_nice(uint32_t slot);
+
+/* The class a slot was admitted in, or NORMAL for a slot the policy does not
+ * know. The scheduler needs this and used to derive it instead - from the one
+ * bit it had to hand, is_idle - which silently collapsed every class that is
+ * not IDLE into NORMAL. CodeQL found it as a comparison that is always false;
+ * the defect behind it was that a KERNEL task could not outrank anything,
+ * because nothing could ever be seen to be in the KERNEL class. */
+vibeos_sched_class_t vibeos_sched_policy_class(uint32_t slot);
 int vibeos_sched_policy_set_affinity(uint32_t slot, uint32_t cpu_mask);
 
 /* Charge `ticks` of CPU to a slot. Weighted: a favourable nice makes a tick
