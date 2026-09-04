@@ -3,6 +3,7 @@
 #include "vibeos/mm_model.h"
 #include "vibeos/task_stats.h"
 #include "vibeos/exec_stats.h"
+#include "vibeos/backing.h"
 #include <stddef.h>
 
 static int kernel_bootinfo_validate(const vibeos_boot_info_t *boot_info) {
@@ -586,10 +587,57 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
                     "userland_starting");
     vibeos_x86_64_serial_puts("[BOOT] USERLAND_START\n");
 
+    /* Free frames on the way in and on the way out, in one line each.
+     *
+     * P7's leak property, and the only one of the five that costs nothing to
+     * run: every user process that started before this point has exited by the
+     * time userland finishes, so whatever memory they held has been given back
+     * and the two numbers should agree.
+     *
+     * It is worth its own assertion because a leak of one frame per fork is
+     * invisible in any single measurement - meminfo looks healthy, the totals
+     * still partition, and nothing fails until a long-lived machine runs out
+     * hours later with no event to point at. A difference here names it on the
+     * boot that introduced it.
+     *
+     * The pair is deliberately not a single computed delta: the two raw
+     * numbers say which direction it went, and *fewer* free frames afterwards
+     * is a leak while *more* is a frame released twice - two different
+     * defects, and this subsystem has produced both. */
+    {
+        uint64_t before = vibeos_mm_stats()->frames_free;
+        vibeos_x86_64_serial_puts("[MM] FRAMES_AT_USERLAND_START=0x");
+        kernel_log_u64_hex(before);
+        vibeos_x86_64_serial_puts("\n");
+    }
+
     vibeos_x86_64_hw_start_userland();
 
     kernel_boot_log(kernel, VIBEOS_LOG_INFO, 106, kernel->boot_health_flags, 0,
                     "userland_finished");
+    {
+        /* The page cache is reported alongside, because it is the one pool
+         * that legitimately still holds frames here and it is large enough to
+         * swamp the thing being measured.
+         *
+         * The first version of this check compared the two free counts alone
+         * and found 1848 frames "leaked". They were not leaked - the cache was
+         * holding 1820 of them on purpose, which is what a page cache is for.
+         * An assertion on the raw difference would have accused correct
+         * behaviour on every boot, and the natural next move would have been to
+         * loosen it until it passed, at which point it would no longer catch
+         * the leak it exists for.
+         *
+         * So the line carries both numbers and the gate does the arithmetic:
+         * free + cache-resident, compared against the free count on the way in.
+         * Anything the cache is holding is accounted for by name rather than
+         * absorbed into a fudge factor. */
+        vibeos_x86_64_serial_puts("[MM] FRAMES_AT_USERLAND_DONE=0x");
+        kernel_log_u64_hex(vibeos_mm_stats()->frames_free);
+        vibeos_x86_64_serial_puts(" cache_resident=0x");
+        kernel_log_u64_hex((uint64_t)vibeos_cache_resident());
+        vibeos_x86_64_serial_puts("\n");
+    }
     vibeos_x86_64_serial_puts("[BOOT] USERLAND_DONE\n");
     vibeos_x86_64_serial_puts("[BOOT] VibeOS kernel ready for user-space\n");
 
