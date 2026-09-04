@@ -606,7 +606,8 @@ static void hw_pic_send_eoi(uint32_t vector) {
  * TLB shootdown IPI, which arrives long before that point in the file. */
 static uint64_t hw_read_cr3(void);
 static void hw_write_cr3(uint64_t value);
-static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code);
+static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code,
+                               uint64_t rip);
 /* Defined with the rest of the signal code, far below; the timer path needs it
  * here so a signal raised while a task was running is delivered on the way
  * back to ring 3 rather than at the next syscall. */
@@ -1112,7 +1113,8 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
      * leaves both processes pointing at the same read-only frame, and this is
      * where the copy actually happens. Resolved faults must be handled before
      * anything is reported, or every fork would look like a crash. */
-    if (frame->vector == 14u && hw_handle_cow_fault(fault_address, frame->error_code)) {
+    if (frame->vector == 14u && hw_handle_cow_fault(fault_address, frame->error_code,
+                                                    frame->rip)) {
         return;
     }
 
@@ -5234,7 +5236,12 @@ static void hw_tlb_shootdown(uint64_t cr3) {
  * - a not-present fault is a genuine bad access, not a shared page - and the
  * entry must carry our own copy-on-write bit. A read-only page without that
  * bit is read-only because the program is not allowed to write it. */
-static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code) {
+#ifndef VIBEOS_COW_FAULT_TRACE
+#define VIBEOS_COW_FAULT_TRACE 0
+#endif
+
+static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code,
+                               uint64_t rip) {
     hw_task_t *t;
     vibeos_vmspace_t v;
     int handled;
@@ -5260,6 +5267,38 @@ static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code) {
      * faulted, and saying so in the log. */
     v = hw_vm(&t->proc.as);
     handled = vibeos_vmspace_fault(&v, fault_va, 1);
+    /* Off by default, and on when a run is chasing this.
+     *
+     * A line per copy-on-write fault is hundreds of lines in a boot: it floods
+     * the log the gate reads, and it changes the timing of the very defect it
+     * is looking for. An unhandled fault is rare and always worth a line, so
+     * that half is unconditional.
+     *
+     * Build with -DVIBEOS_COW_FAULT_TRACE=1 to see every one. What it answered
+     * once already: the page that loses a wide store faults exactly once, so
+     * the store is lost after a successful resolution rather than to a second
+     * fault nobody handled. */
+    /* One line, not three, and it carries the faulting rip.
+     *
+     * The open question is whether a page that loses a wide store faults once
+     * or twice - if once, the store was lost after a successful resolution; if
+     * twice, the second fault is the interesting one. Neither the address nor
+     * the outcome can answer that on its own, and a diagnostic split across
+     * several calls comes back interleaved from different cores and reads as a
+     * contradiction. */
+    if (VIBEOS_COW_FAULT_TRACE || !handled) {
+        vibeos_x86_64_serial_lock();
+        vibeos_x86_64_serial_puts("[MM] COW_FAULT va=0x");
+        vibeos_x86_64_serial_print_hex(fault_va);
+        vibeos_x86_64_serial_puts(" rip=0x");
+        vibeos_x86_64_serial_print_hex(rip);
+        vibeos_x86_64_serial_puts(" err=0x");
+        vibeos_x86_64_serial_print_hex(error_code);
+        vibeos_x86_64_serial_puts(" pid=0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)t->pid);
+        vibeos_x86_64_serial_puts(handled ? " handled\n" : " NOT-handled\n");
+        vibeos_x86_64_serial_unlock();
+    }
     if (handled) {
         hw_log(VIBEOS_LOG_DEBUG, 43u, fault_va,
                (uint64_t)(uintptr_t)t->proc.as.pml4,

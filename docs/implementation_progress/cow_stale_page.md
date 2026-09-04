@@ -208,3 +208,47 @@ candidates are few enough to check one at a time:
 Instrument the fault handler to log the faulting `rip` and the fault count for
 this page. If the page faults once, the store was lost after a successful
 resolution; if it faults twice, the second fault is the interesting one.
+
+## The page faults once, and there is more than one failure here
+
+The fault handler can now log every copy-on-write fault with its faulting
+`rip` - built with `-DVIBEOS_COW_FAULT_TRACE=1`, off otherwise, because a line
+per fault is hundreds of lines in a boot: it floods the log the gate reads and
+it changes the timing of the defect it is looking for. An *unhandled* fault is
+rare and always worth a line, so that half is unconditional.
+
+It answered the question it was built for. The page that loses a wide store
+faults **once**: `va=0x8004000000 ... handled`, and nothing further. So the
+store is lost after a successful resolution, not to a second fault that nobody
+handled.
+
+It also showed something that changes how these runs should be read. The
+failing round is **not always the same defect**. One run reported:
+
+```
+STRESS_FAIL: the child's own copy-on-write page at offset 0:
+  found 0x00 expected 0x68 - this is the kernel's free-page poison:
+  the page was reclaimed while still mapped here
+```
+
+All zeroes, which is what `frame_take` fills a page with - so that page was
+properly freed and then legitimately reallocated to somebody else while this
+process still mapped it. `double_allocs` is zero, so the allocator was not at
+fault; something released the frame without the ownership layer noticing.
+
+That is the *same family* as the `mappers=2, owners=1` event, and a different
+defect from the lost wide store. Both hide behind one sentence from ring 3 -
+"the bytes are not what I wrote" - which is exactly the confusion `pageinfo`
+was added to end, and it is why the four verdicts the stress service prints
+matter more than the byte values.
+
+Two defects, then, not one:
+
+1. **A wide store lost after a resolved copy-on-write fault.** One fault, page
+   healthy afterwards, an ordinary byte store lands. clang only so far.
+2. **A frame released while an address space still maps it.** Reported both as
+   `mappers=2 owners=1` at a destroy and as a page of zeroes handed to a live
+   process.
+
+Previous investigations treated these as one, which is a large part of why each
+of them ended somewhere plausible and wrong.
