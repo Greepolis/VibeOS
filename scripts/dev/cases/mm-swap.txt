@@ -88,3 +88,36 @@ case: page-in accepts a present entry
     the swap area, so the transfer failed anyway and the test still passed -
     for the wrong reason. The test now asserts that no read was *attempted*,
     which is the same property the swap map asserts for an unallocated slot.
+
+# --- the anonymous tier, and the chain (P5 step 4) -------------------------
+#
+# In kernel/mm/reclaim.c, tested from compact_tests.c.
+
+case: reclaim never calls the anonymous tier
+  in vibeos_reclaim_run, change the anon-tier condition to if (0)
+  expect: compact: FAIL reclaim freed four / from the anonymous tier
+  why it matters: this is the defect the end-to-end test exists for. Reclaim
+    can be right and page-out can be right and the machine can still never
+    swap anything, because nothing ever called the second from the first. It
+    is the same shape as the scheduler's quantum and the watermarks: a
+    mechanism that works and is not connected.
+
+case: the anonymous tier is asked for the whole amount, not the shortfall
+  change g_drop_anon(want - freed) to g_drop_anon(want)
+  expect: compact: FAIL and swap was asked for the shortfall, not the whole
+    request
+  NOTE: this case walked through a green test first. With no clean source in
+    the harness, freed was zero when the anonymous tier was called, so the
+    shortfall and the request were the same number and nothing could tell them
+    apart. The test now gives the clean tier a stock of two against a request
+    of four, which is the arrangement that makes the difference observable.
+  why it matters: a reclaim that takes from both tiers when the first has
+    already satisfied it pays a write for pages nobody asked for.
+
+case: what could not be reclaimed is not counted
+  wrap the skipped_no_swap accumulation in if (0)
+  expect: compact: FAIL and all six are counted as out of reach
+  why it matters: "reclaim did nothing" and "reclaim had nothing it was
+    allowed to take" become the same silence. With no swap area on this boot
+    media, the second is the machine's actual state - a gate that could not
+    see the difference would read zero and call it healthy.

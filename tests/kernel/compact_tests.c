@@ -647,6 +647,161 @@ static void test_swap_in_of_a_present_page(void) {
     }
 }
 
+/* --- the whole chain, end to end ------------------------------------------ */
+
+/* Pressure, then reclaim choosing the anonymous tier, then page-out, then a
+ * fault, then page-in, then the bytes.
+ *
+ * This is P5's step 4 as far as a host test can carry it. Every other test in
+ * this file exercises one link; this one asks whether the links are connected,
+ * which is a different question and the one that has caught the most in this
+ * subsystem. Reclaim can be right, page-out can be right, and the machine can
+ * still never swap anything because nothing ever called the second from the
+ * first.
+ */
+static vibeos_vmspace_t g_e2e_as;
+static uint64_t g_e2e_va[8];
+static uint32_t g_e2e_slots[8];
+static uint32_t g_e2e_n;
+
+/* The anonymous tier, as reclaim sees it: take up to `want` of the pages this
+ * address space holds and send them to swap. */
+/* A clean tier with a small, fixed stock.
+ *
+ * Present so that the two tiers are asked for *different* amounts: with no
+ * clean source the shortfall and the request are the same number, and a
+ * reclaim that asked the anonymous tier for the whole request rather than what
+ * was still missing would be indistinguishable from a correct one. That
+ * sabotage case walked through a green test until this existed. */
+static uint32_t g_e2e_clean_stock;
+static uint32_t g_e2e_anon_asked;
+
+static uint32_t e2e_drop_clean(uint32_t want) {
+    uint32_t n = want < g_e2e_clean_stock ? want : g_e2e_clean_stock;
+
+    g_e2e_clean_stock -= n;
+    return n;
+}
+
+static uint32_t e2e_evict_anon(uint32_t want) {
+    g_e2e_anon_asked = want;
+    uint32_t done = 0;
+    uint32_t i;
+
+    for (i = 0; i < g_e2e_n && done < want; i++) {
+        uint32_t slot;
+
+        if (g_e2e_va[i] == 0ull) {
+            continue;
+        }
+        if (vibeos_swap_alloc(&slot) != 0) {
+            break;      /* swap full: a condition, not a failure */
+        }
+        if (vibeos_vmspace_swap_out(&g_e2e_as, g_e2e_va[i], slot) != 0) {
+            (void)vibeos_swap_free(slot);
+            continue;
+        }
+        g_e2e_slots[i] = slot;
+        done++;
+    }
+    return done;
+}
+
+static void test_pressure_swaps_and_faults_back(void) {
+    uint32_t i;
+    uint32_t freed;
+
+    if (cp_setup() != 0 || vibeos_vmspace_create(&g_e2e_as) != 0) {
+        printf("  compact: FAIL setup\n"); g_fail++; return;
+    }
+    /* Reclaim keeps its own statistics and cp_setup does not clear them, so
+     * they still hold whatever the earlier groups did. Cleared here rather
+     * than in cp_setup because two of those groups deliberately inspect them
+     * across calls. */
+    memset(vibeos_reclaim_stats(), 0, sizeof(vibeos_reclaim_stats_t));
+    vibeos_reclaim_set_free_source(0);          /* the real frame layer */
+    g_e2e_clean_stock = 2u;    /* the clean tier can supply two of the four */
+    g_e2e_anon_asked = 0xFFFFFFFFu;
+    vibeos_reclaim_set_clean_source(e2e_drop_clean);
+    vibeos_reclaim_set_anon_source(e2e_evict_anon);
+    (void)vibeos_reclaim_set_marks(4, 1);
+
+    /* Eight anonymous pages, each with its own recognisable byte, so a page
+     * that comes back holding a *different* page's contents is caught rather
+     * than merely a page that comes back wrong. */
+    g_e2e_n = 0;
+    for (i = 0; i < 8u; i++) {
+        uint64_t f = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+        uint64_t va = VA_A + (uint64_t)i * 4096ull;
+
+        if (!f) { break; }
+        memset(cp_map(f), (int)(0x10 + i), 4096);
+        if (map_as_kernel_does(&g_e2e_as, va, f,
+                               (vibeos_prot_t)(VIBEOS_PROT_READ |
+                                               VIBEOS_PROT_WRITE |
+                                               VIBEOS_PROT_USER)) != 0) {
+            break;
+        }
+        g_e2e_va[g_e2e_n] = va;
+        g_e2e_slots[g_e2e_n] = 0xFFFFFFFFu;
+        g_e2e_n++;
+    }
+    CHECK(g_e2e_n == 8u, "eight anonymous pages mapped");
+
+    /* Reclaim is asked for four, and has only the anonymous tier to get them
+     * from. */
+    freed = vibeos_reclaim_run(4u);
+    CHECK(freed == 4u, "reclaim freed four");
+    CHECK(vibeos_reclaim_stats()->freed_clean == 2u, "two from the clean tier");
+    CHECK(vibeos_reclaim_stats()->freed_anon == 2u, "two from the anonymous one");
+    CHECK(g_e2e_anon_asked == 2u,
+          "and swap was asked for the shortfall, not the whole request");
+    CHECK(vibeos_reclaim_stats()->skipped_no_swap == 0u,
+          "and nothing was out of reach");
+    CHECK(vibeos_mm_stats()->swap_outs == 2u, "two pages went out");
+
+    /* Each of those is now a fault waiting to happen. Bring them back the way
+     * a fault handler would and check the bytes - by index, so a page-in that
+     * mixed two slots up is caught. */
+    for (i = 0; i < g_e2e_n; i++) {
+        int64_t slot = vibeos_vmspace_swap_slot(&g_e2e_as, g_e2e_va[i]);
+        uint64_t fresh;
+
+        if (slot < 0) {
+            continue;   /* still mapped; reclaim only took four */
+        }
+        CHECK((uint32_t)slot == g_e2e_slots[i],
+              "the entry names the slot it was written to");
+
+        fresh = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+        CHECK(fresh != 0ull, "a frame to bring it back into");
+        CHECK(vibeos_vmspace_swap_in(&g_e2e_as, g_e2e_va[i], fresh) == 0,
+              "paged back in");
+        CHECK(((unsigned char *)cp_map(fresh))[0] == (unsigned char)(0x10 + i),
+              "and it is this page's contents, not another's");
+    }
+    CHECK(vibeos_mm_stats()->swap_ins == 2u, "both came back");
+}
+
+/* With no swap area, the same pressure reports that it could not do anything -
+ * rather than appearing to succeed, or appearing to be broken.
+ *
+ * This is the state the kernel is actually in: there is no swap area on the
+ * boot media, so no anonymous source is registered, and skipped_no_swap counts
+ * every page reclaim was not allowed to take. A gate reading zero there would
+ * be reading a machine that has nothing to reclaim, not one that is working. */
+static void test_no_swap_area_is_reported(void) {
+    if (cp_setup() != 0) { printf("  compact: FAIL setup\n"); g_fail++; return; }
+    memset(vibeos_reclaim_stats(), 0, sizeof(vibeos_reclaim_stats_t));
+    vibeos_reclaim_set_clean_source(0);
+    vibeos_reclaim_set_anon_source(0);
+
+    CHECK(vibeos_reclaim_run(6u) == 0u, "nothing freed");
+    CHECK(vibeos_reclaim_stats()->freed_anon == 0u, "none from swap");
+    CHECK(vibeos_reclaim_stats()->skipped_no_swap == 6u,
+          "and all six are counted as out of reach");
+}
+
 int test_compact(void) {
     g_fail = 0;
 
@@ -670,12 +825,14 @@ int test_compact(void) {
     test_swap_refuses_pinned();
     test_swap_write_failure_restores();
     test_swap_in_of_a_present_page();
+    test_pressure_swaps_and_faults_back();
+    test_no_swap_area_is_reported();
 
     free(g_ram);
     g_ram = 0;
 
     if (g_fail == 0) {
-        printf("  compact: 14 groups ok\n");
+        printf("  compact: 16 groups ok\n");
     }
     return g_fail == 0 ? 0 : 1;
 }

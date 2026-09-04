@@ -88,9 +88,21 @@ typedef uint32_t (*vibeos_reclaim_drop_fn)(uint32_t want);
 
 void vibeos_reclaim_set_clean_source(vibeos_reclaim_drop_fn fn);
 
+/* The anonymous tier: evict up to `want` pages to swap, and return how many
+ * went. Second, because every page it takes costs a write and every page the
+ * clean tier takes costs nothing.
+ *
+ * Absent by default, and that is a configuration rather than an oversight: a
+ * kernel with no swap area has nowhere to put an anonymous page, and this is
+ * how it says so. With no source registered, `skipped_no_swap` keeps counting
+ * exactly what it counted before - which is the number that should start
+ * moving the day a swap area exists. */
+void vibeos_reclaim_set_anon_source(vibeos_reclaim_drop_fn fn);
+
 typedef struct vibeos_reclaim_stats {
     uint64_t scans;             /* reclaim runs                              */
     uint64_t freed_clean;       /* frames dropped from the clean tier        */
+    uint64_t freed_anon;        /* anonymous pages sent to swap              */
     uint64_t skipped_pinned;    /* candidates refused because pinned         */
     uint64_t skipped_no_swap;   /* anonymous pages, unreclaimable until P5   */
     uint64_t admit_refused;     /* allocations refused at the minimum        */

@@ -115,9 +115,62 @@ The round-trip test scribbles over the old frame before paging back in, so a
 page-in that read from memory instead of from the slot would be caught rather
 than flattered by the frame happening to still hold the right bytes.
 
-## What is not done
+# P5 step 4 — the anonymous tier, and the chain
 
-Step 4: the stress operation, and the wiring that makes reclaim choose
-anonymous pages and call this. `skipped_no_swap` still counts every anonymous
-page reclaim was not allowed to take — that number is what should start moving
-when the two are connected.
+Reclaim has a second tier now: anonymous pages, to swap, tried **only for the
+shortfall** after the clean tier. Second because the order is by cost and this
+one costs a write; only for the shortfall because a reclaim that took from both
+when the first had already satisfied it pays for pages nobody asked for.
+
+## The test that matters is the one about the joins
+
+Every other test in this subsystem exercises one link. The end-to-end one asks
+whether the links are *connected*, which is a different question and the one
+that has caught the most here: reclaim can be right, page-out can be right, and
+the machine can still never swap anything because nothing ever calls the second
+from the first. That is the same shape as the scheduler's unread quantum and
+the watermarks that were configured and consulted by nobody — three times in
+this project, now, that a working mechanism was simply not wired to anything.
+
+So: pressure, reclaim choosing the anonymous tier, page-out, a fault, page-in,
+and the bytes. Each page carries a different byte, and the check is by index,
+so a page-in that mixed two slots up is caught rather than a page that merely
+comes back wrong.
+
+## Two tests that were right about the outcome and wrong about the mechanism
+
+That is now three in this phase, and all three were found by sabotage rather
+than by review.
+
+**"The anonymous tier is asked for the whole amount, not the shortfall"** did
+not fail. With no clean source in the harness, `freed` was zero when the
+anonymous tier was called, so the shortfall and the request were the same
+number and nothing could tell them apart. The harness now gives the clean tier
+a stock of two against a request of four.
+
+**"Page-in accepts a present entry"** did not fail either, for the reason in
+the previous section.
+
+The pattern is worth naming: a test that reaches the right verdict through an
+arrangement where the defect cannot show is indistinguishable from a test that
+works, until somebody breaks the code on purpose.
+
+## The state this kernel is actually in
+
+There is **no swap area on the boot media**, so no anonymous source is
+registered and page-out is never called on the real machine. That is a
+configuration rather than a gap, and it is visible rather than silent:
+`skipped_no_swap` counts every page reclaim was not allowed to take, and a
+test asserts that it does. A gate reading zero there would be reading a
+machine that had nothing to reclaim, not one that is working.
+
+Giving it a real area means carving one on the block device and sizing it,
+which is arch work of its own and is not started. Everything above it — the
+map, page-out, page-in, the tier and the chain — is built and tested against a
+memory-backed device.
+
+## Verified
+
+Sixteen host-test groups in `compact_tests.c` and thirteen sabotage cases in
+`scripts/dev/cases/mm-swap.txt`, each confirmed red with the tree confirmed
+green again.

@@ -19,6 +19,7 @@ static int      g_marks_set;
 
 static vibeos_reclaim_stats_t g_stats;
 static vibeos_reclaim_drop_fn g_drop_clean;
+static vibeos_reclaim_drop_fn g_drop_anon;
 static uint64_t (*g_free_frames)(void);
 
 /* The last pressure reported, so a transition can be counted once rather than
@@ -32,6 +33,10 @@ vibeos_reclaim_stats_t *vibeos_reclaim_stats(void) {
 
 void vibeos_reclaim_set_clean_source(vibeos_reclaim_drop_fn fn) {
     g_drop_clean = fn;
+}
+
+void vibeos_reclaim_set_anon_source(vibeos_reclaim_drop_fn fn) {
+    g_drop_anon = fn;
 }
 
 void vibeos_reclaim_set_free_source(uint64_t (*free_frames)(void)) {
@@ -244,14 +249,31 @@ uint32_t vibeos_reclaim_run(uint32_t want) {
         g_stats.freed_clean += freed;
     }
 
-    /* Tier two would be dirty cache pages written back, and tier three
-     * anonymous pages to swap. Neither exists yet: there is nowhere to write.
+    /* Tier two: anonymous pages, to swap.
+     *
+     * Second because the order is by cost and this one costs a write. It is
+     * only tried for the shortfall - a reclaim that took from both tiers when
+     * the first had already satisfied it would be paying for pages nobody
+     * asked for.
+     *
+     * The source is absent unless a swap area exists, and that absence is the
+     * honest state rather than a gap: a kernel with nowhere to write an
+     * anonymous page cannot reclaim one. */
+    if (freed < want && g_drop_anon) {
+        uint32_t n = g_drop_anon(want - freed);
+
+        freed += n;
+        g_stats.freed_anon += n;
+    }
+
+    /* Whatever is still missing had nowhere to go.
      *
      * Counted rather than left silent, so "reclaim did nothing" and "reclaim
      * had nothing it was allowed to take" are different numbers. The first is
-     * a defect; the second is this phase being honest about its scope, and a
+     * a defect; the second is the machine being honest about its scope, and a
      * gate that could not tell them apart would be satisfied by a reclaim that
-     * had quietly stopped working. */
+     * had quietly stopped working. Dirty page-cache write-back is the tier
+     * that is still missing entirely. */
     if (freed < want) {
         g_stats.skipped_no_swap += (uint64_t)(want - freed);
     }
