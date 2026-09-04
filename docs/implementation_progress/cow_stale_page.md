@@ -135,3 +135,76 @@ The free-side walk now samples one release in eight rather than one in
 sixty-four. A counter that only sees one free in sixty-four cannot be compared
 between two states, which is the whole point of having it. Eight clean boots
 out of eight at the higher rate.
+
+## Asking a second observer, and what it settled
+
+`pageinfo` now returns `first_word`: the first eight bytes of the frame as read
+by the *kernel*, through its own mapping rather than through the caller's. The
+whole value of the field is that it does not use the translation under
+suspicion. Two runs settled two questions that five investigations had not.
+
+**The store never reached the frame.** In the failing round the child wrote
+`188` to all 4096 bytes; immediately afterwards the kernel read `239` at byte
+zero of the frame the page tables point at - and `239` is the pre-fork value.
+So the copy is intact and untouched, and the child's writes are simply not in
+it. The reads are fine: child and kernel agree on what the frame holds.
+
+**The page itself works.** After the failure, the child stores one ordinary
+byte, `0x5a`, and samples again: child reads `90`, kernel reads `90`, same
+frame. The mapping is right, the frame is right, the permissions are right, and
+an ordinary store lands immediately.
+
+So nothing is wrong with the page. What is lost is specifically the *write
+loop*.
+
+## The write loop, and why this is not "a test bug"
+
+`for (i = 0; i < 4096; i++) mem[i] = after;` is not 4096 byte stores by the
+time clang has had it. Making that loop `volatile` - so each byte is a separate
+ordinary store - makes the failure vanish: three runs out of three clean, where
+the same tree failed three out of three.
+
+What the binaries do contain is `movaps` and `movdqa` - ordinary 16-byte
+aligned SSE stores - and **no** non-temporal stores at all, so no missing fence
+explains this. Ordinary SSE stores are cache-coherent and atomic with respect
+to faults: architecturally there is no reason for one to be lost.
+
+One measurement here was taken wrongly and is recorded so it is not taken
+again. Counting wide stores across the whole binary gives gcc 18 and clang 172,
+and that was briefly written down as evidence that clang vectorises this loop
+and gcc does not. It is not evidence of anything: the same two counts come back
+*unchanged* when the loop is made volatile, so they are counting other code
+entirely and never described the fill loop. The restore that was supposed to
+put the loop back had failed silently first - the backup was in `/tmp`, which
+WSL had cleaned, which is a trap this project has already written down once.
+The volatile result itself was measured correctly and stands; the disassembly
+comparison did not and does not.
+
+**The loop has therefore not been made volatile, and must not be.** A volatile
+loop would turn the boot green while leaving the defect exactly where it is,
+and this file already records three fixes that were believed on that kind of
+evidence. musl's own `memset` uses the same instructions, so if a wide store to
+a freshly copy-on-write-resolved page can be lost, it is lost for every program
+on this machine and not only for the one that noticed.
+
+## Where the next attempt should start
+
+The question is now narrow and mechanical: what happens when a 16-byte SSE
+store, rather than a byte store, takes the copy-on-write fault?
+
+The child's first `movaps` faults on a read-only shared page. The handler
+allocates a frame, copies the old one into it, installs the entry and
+invalidates. The instruction is then retried by hardware. Something in that
+sequence loses the retried store while a byte store survives it, and the
+candidates are few enough to check one at a time:
+
+1. Whether the fault is even reported the same way - the error code, and
+   whether `hw_handle_cow_fault` accepts it.
+2. Whether the retry happens at all, or the handler returns to the following
+   instruction. A skipped `rep`-like vectorised block would lose the whole
+   fill, which is precisely the symptom.
+3. Whether the copy runs after the retried store rather than before it.
+
+Instrument the fault handler to log the faulting `rip` and the fault count for
+this page. If the page faults once, the store was lost after a successful
+resolution; if it faults twice, the second fault is the interesting one.

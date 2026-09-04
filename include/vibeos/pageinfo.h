@@ -39,6 +39,21 @@ typedef struct vibeos_pageinfo {
     uint64_t frame;    /* allocator index, 0 when nothing is mapped */
     uint32_t flags;
     uint32_t owners;   /* address spaces plus other holders of this frame */
+    /* The first eight bytes of the frame, read by the kernel through its own
+     * mapping rather than through the caller's.
+     *
+     * The three causes above are all about *which frame*. This answers a
+     * different question that none of them can: whether the caller and the
+     * kernel, looking at the same frame by two different translations, see the
+     * same bytes. A process reporting "the bytes are not what I wrote" from a
+     * page that the page tables and the ownership count both say is its own
+     * has only two remaining explanations - the store never reached the frame,
+     * or the read did not come from it - and they are told apart by asking
+     * somebody else to look.
+     *
+     * No disclosure: these are bytes of a page the caller already maps and can
+     * read for itself. */
+    uint64_t first_word;
 } vibeos_pageinfo_t;
 
 #endif /* VIBEOS_PAGEINFO_H */

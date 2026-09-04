@@ -6646,6 +6646,7 @@ static long hw_sys_pageinfo(uint64_t va, uint64_t out_uptr) {
     info.frame = 0;
     info.flags = 0;
     info.owners = 0;
+    info.first_word = 0;
 
     pte = hw_pte_lookup(&g_tasks[g_current_task].proc.as, va);
     if (pte) {
@@ -6665,6 +6666,10 @@ static long hw_sys_pageinfo(uint64_t va, uint64_t out_uptr) {
                 info.frame = (uint64_t)id + 1ull;   /* 0 stays "nothing" */
                 info.owners = vibeos_frame_owners(phys);
             }
+            /* Read through the kernel's identity map, deliberately not through
+             * the caller's translation - the whole value of this field is that
+             * it does not use the mapping under suspicion. */
+            info.first_word = *(const volatile uint64_t *)(uintptr_t)phys;
         }
     }
 

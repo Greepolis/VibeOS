@@ -226,16 +226,22 @@ static int op_fork_wait(uint64_t r) {
  * possible and reading the machine's layout is not. */
 #define SYS_pageinfo 1001
 
+/* Must match vibeos_pageinfo_t in include/vibeos/pageinfo.h. This program is
+ * freestanding and cannot include the kernel header, so the two are kept in
+ * step by hand - and the compiler catches a missing field, which is how this
+ * one was caught, but it would not catch a reordered one. */
 typedef struct {
     unsigned long frame;
     unsigned int flags;
     unsigned int owners;
+    unsigned long first_word;
 } pageinfo_t;
 
 #define PAGE_WRITE 0x02u
 #define PAGE_COW   0x08u
 
 static void page_sample(const void *at, pageinfo_t *out) {
+    out->first_word = 0;
     out->frame = 0;
     out->flags = 0;
     out->owners = 0;
@@ -248,6 +254,23 @@ static void say_page(const char *what, const pageinfo_t *p) {
     say("STRESS_PAGE   frame=", p->frame, 1);
     say("STRESS_PAGE   owners=", p->owners, 1);
     say("STRESS_PAGE   flags=", p->flags, 1);
+}
+
+/* Does the kernel, looking at the same frame through its own mapping, see what
+ * this process just wrote? Everything else about the page has checked out -
+ * private, singly owned, the same frame before and after - so the only two
+ * explanations left are that the store never reached the frame or that the
+ * read did not come from it, and one number separates them. */
+static void say_witness(const char *what, const pageinfo_t *p, uint8_t expect) {
+    uint8_t kernel_sees = (uint8_t)(p->first_word & 0xffull);
+
+    say(what, (uint64_t)kernel_sees, 1);
+    if (kernel_sees == expect) {
+        say("STRESS_FAIL: verdict=the store landed; this task read a stale "
+            "translation", 0, 0);
+    } else {
+        say("STRESS_FAIL: verdict=the store never reached the frame", 0, 0);
+    }
 }
 
 static int op_cow(uint64_t r) {
@@ -283,6 +306,14 @@ static int op_cow(uint64_t r) {
     }
     if (child == 0) {
         page_sample(mem, &after_fork);
+        /* Deliberately not volatile.
+         *
+         * Making it volatile - one ordinary byte store per iteration - makes
+         * the failure vanish, three runs out of three. That is a diagnosis,
+         * not a fix: it would turn the boot green and leave the defect exactly
+         * where it is, and this project has already believed three fixes on
+         * that kind of evidence. clang compiles this to wide SSE stores, and
+         * musl's own memset uses the same instructions. */
         for (i = 0; i < 4096ull; i++) {
             mem[i] = after;      /* forces the copy */
         }
@@ -325,6 +356,39 @@ static int op_cow(uint64_t r) {
                     say("STRESS_FAIL: verdict=the copy was made and then replaced", 0, 0);
                 } else {
                     say("STRESS_FAIL: verdict=the page was private and changed anyway", 0, 0);
+                    /* Both samples, because "the store never reached the
+                     * frame" and "the store landed and was undone" are still
+                     * two different defects and the check-time sample cannot
+                     * tell them apart. The after_write sample was already
+                     * taken; it just had nothing to say until now. */
+                    say("STRESS_FAIL: kernel read byte 0 right after the write = ",
+                        (unsigned long)(after_write.first_word & 0xffull), 1);
+                    say_witness("STRESS_FAIL: kernel reads byte 0 = ",
+                                &at_check, after);
+                    say("STRESS_FAIL: the value written was = ",
+                        (unsigned long)after, 1);
+                    say("STRESS_FAIL: the value before the fork was = ",
+                        (unsigned long)before, 1);
+                    /* One byte, written now, with a witness.
+                     *
+                     * The write loop is a memset once clang has had it, so
+                     * "the stores did not land" and "one wide store was
+                     * skipped" are still the same sentence. A single ordinary
+                     * byte store separates them: if even this does not reach
+                     * the frame, nothing about vectorisation is involved. */
+                    {
+                        pageinfo_t probe;
+
+                        mem[0] = 0x5a;
+                        page_sample(mem, &probe);
+                        say("STRESS_FAIL: after one plain byte store, "
+                            "the child reads = ", (unsigned long)mem[0], 1);
+                        say("STRESS_FAIL: after one plain byte store, "
+                            "the kernel reads = ",
+                            (unsigned long)(probe.first_word & 0xffull), 1);
+                        say("STRESS_FAIL: the frame is still = ",
+                            (unsigned long)probe.frame, 1);
+                    }
                 }
                 sys3(SYS_exit, 3, 0, 0);
             }
