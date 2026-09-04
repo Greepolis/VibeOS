@@ -285,6 +285,22 @@ Everything the kernel is responsible for has been shown correct - one fault,
 handled, a private singly-owned frame, the right contents copied into it, and
 an ordinary byte store landing in it immediately afterwards.
 
+The strongest evidence is not the KVM run at all - it is in CI, and it holds
+the emulator constant. Of the five jobs on this commit, exactly one fails:
+
+| job | result |
+| --- | --- |
+| Linux clang / Release | **fails** - QEMU Boot-to-CLI Smoke |
+| Linux clang / Debug | passes |
+| Linux gcc / Release | passes |
+| Linux gcc / Debug | passes |
+| Windows Host Tests | passes |
+
+Same kernel, same TCG, same machine, same test. The only thing that changes
+between the clang job that fails and the clang job that passes is the
+optimisation level - that is, whether the fill loop is vectorised. A kernel
+defect does not know about `-O2`.
+
 The last piece came free from the disassembly. `svc-stress` has another
 operation that fills a fresh `mmap` page with the *same* `movdqu` instructions
 and checks it, and that one passes. So:
