@@ -1,0 +1,47 @@
+# Sabotage cases for compaction (kernel/mm/vmspace.c), plan phase P6 step 5.
+#
+# Each was applied, the host tests confirmed red, and the tree confirmed green
+# again afterwards. Run: apply, rebuild vibeos_kernel_tests, look for
+# "FAIL:test_compact".
+#
+# Compaction is the only operation here that moves memory which is still in
+# use, so four of these five are about it *refusing* rather than working. A
+# move that goes ahead when it should not does not cost performance; it hands a
+# running process the contents of a different page.
+
+case: a pinned frame is moved anyway
+  in vibeos_vmspace_move_frame, change the PINNED test to if (0)
+  expect: compact: FAIL refused / counted as pinned / and nothing moved
+  why it matters: a page table or a buffer a device holds an address for does
+    not tolerate its contents arriving somewhere else, and the damage is
+    asynchronous.
+
+case: a writable holder is moved anyway
+  in the holder loop, change if (e & PTE_WRITE) to if (0)
+  expect: compact: FAIL refused / counted / nothing moved
+  why it matters: this is the whole reason the restriction exists. Between the
+    copy and the repoint a writer stores into the old frame and the store is
+    lost - silently, and in a page somebody else will read later.
+
+case: only the first holder is checked for writability
+  change the check loop bound to i < n && i < 1u
+  expect: compact: FAIL refused with the writable holder mapped first
+  NOTE: this case is why the test now maps in both orders. The first version
+    of the test mapped the writable holder last, the reverse map inserts at the
+    head, so the writable holder was examined first anyway and this sabotage
+    walked straight through a passing test. A test that only happens to be
+    right about the arrangement is not testing the property.
+
+case: the contents are not copied
+  wrap the copy_frame call in if (0)
+  expect: compact: FAIL contents copied / contents carried
+  why it matters: the mapping would follow the frame to a page holding
+    whatever was there before - a use of uninitialised memory that looks
+    exactly like a successful move.
+
+case: the reverse map is not updated with the move
+  delete the vibeos_rmap_add on the winning branch
+  expect: compact: FAIL the new frame has the holder
+  why it matters: the next compaction would believe nobody maps the new frame
+    and move it out from under a live process. Compaction breaking compaction
+    is a defect that grows rather than repeats.

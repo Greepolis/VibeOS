@@ -937,6 +937,132 @@ copy:
     return 1;
 }
 
+/* ---- compaction ---------------------------------------------------------- */
+
+/* At most this many holders are moved in one go. A frame with more than this
+ * is refused rather than partly moved: a frame whose mappings disagree about
+ * where it is would hand two processes different memory under one address, and
+ * "partly compacted" is not a state anything here could recover from. */
+#define MOVE_MAX_HOLDERS 32u
+
+int vibeos_vmspace_move_frame(uint64_t old_phys, uint64_t new_phys) {
+    vibeos_rmap_holder_t holders[MOVE_MAX_HOLDERS];
+    uint32_t n, i, total;
+
+    g_op = "compact";
+    if (!g_ready || old_phys == new_phys) {
+        return -1;
+    }
+    if ((old_phys & 0xFFFull) || (new_phys & 0xFFFull)) {
+        return -1;
+    }
+
+    /* Pinned is checked first and separately from everything else, because it
+     * is the refusal that protects rather than the one that optimises. */
+    if (vibeos_frame_test_flag(old_phys, VIBEOS_FRAME_PINNED)) {
+        vibeos_mm_stats()->compact_refused_pinned++;
+        return -1;
+    }
+
+    total = vibeos_rmap_count(old_phys);
+    if (total > MOVE_MAX_HOLDERS) {
+        vibeos_mm_stats()->compact_refused_many++;
+        return -1;
+    }
+    n = vibeos_rmap_holders(old_phys, holders, MOVE_MAX_HOLDERS);
+    if (n != total) {
+        /* The list changed under us, so what was read is not what is there.
+         * Refusing is the only safe answer: moving on a stale list would leave
+         * whichever mapping appeared afterwards pointing at the old frame. */
+        vibeos_mm_stats()->compact_refused_raced++;
+        return -1;
+    }
+
+    /* Every holder must be read-only. See the header: the copy-then-repoint
+     * window loses a write, and this is the check that makes the window
+     * harmless rather than an argument that it is unlikely. */
+    for (i = 0; i < n; i++) {
+        vibeos_vmspace_t as;
+        uint64_t *pte;
+
+        as.root_phys = holders[i].root_phys;
+        as.root = table_at(holders[i].root_phys);
+        if (!as.root) {
+            vibeos_mm_stats()->compact_refused_raced++;
+            return -1;
+        }
+        pte = walk(&as, holders[i].va, 0);
+        if (!pte) {
+            vibeos_mm_stats()->compact_refused_raced++;
+            return -1;
+        }
+        {
+            uint64_t e = __atomic_load_n(pte, __ATOMIC_ACQUIRE);
+            if ((e & PTE_PRESENT) == 0u ||
+                (e & PTE_ADDR_MASK) != (old_phys & PTE_ADDR_MASK)) {
+                vibeos_mm_stats()->compact_refused_raced++;
+                return -1;
+            }
+            if (e & PTE_WRITE) {
+                vibeos_mm_stats()->compact_refused_writable++;
+                return -1;
+            }
+        }
+    }
+
+    /* Contents first. Nothing points at the new frame yet, so a reader of the
+     * old one is still correct throughout this. */
+    if (copy_frame(new_phys, old_phys) != 0) {
+        return -1;
+    }
+
+    /* Then the mappings, one compare-exchange each against the entry that was
+     * checked above. A holder that changed since is left alone and the move is
+     * abandoned for that entry - it now points somewhere the mover does not
+     * own, and forcing it would be the mover overwriting somebody else's
+     * decision. */
+    for (i = 0; i < n; i++) {
+        vibeos_vmspace_t as;
+        uint64_t *pte, e, desired;
+
+        as.root_phys = holders[i].root_phys;
+        as.root = table_at(holders[i].root_phys);
+        if (!as.root) {
+            continue;
+        }
+        pte = walk(&as, holders[i].va, 0);
+        if (!pte) {
+            continue;
+        }
+        e = __atomic_load_n(pte, __ATOMIC_ACQUIRE);
+        if ((e & PTE_ADDR_MASK) != (old_phys & PTE_ADDR_MASK)) {
+            continue;
+        }
+        desired = (e & ~PTE_ADDR_MASK) | (new_phys & PTE_ADDR_MASK);
+
+        /* The reference moves with the mapping, and in that order: the new
+         * frame gains an owner before the old one loses it, so the count never
+         * dips through a value that would let a release take the old frame
+         * while this entry still names it. */
+        vibeos_frame_get(new_phys);
+        if (__atomic_compare_exchange_n(pte, &e, desired, 0,
+                                        __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+            (void)vibeos_rmap_add(new_phys, as.root_phys, holders[i].va);
+            (void)vibeos_rmap_remove(old_phys, as.root_phys, holders[i].va);
+            (void)vibeos_frame_put(old_phys);
+            if (g_be.shootdown) {
+                g_be.shootdown(as.root_phys);
+            }
+            vibeos_mm_stats()->compact_mappings_moved++;
+        } else {
+            (void)vibeos_frame_put(new_phys);
+        }
+    }
+
+    vibeos_mm_stats()->compact_moved++;
+    return 0;
+}
+
 /* ---- inspection ---------------------------------------------------------- */
 
 static int count_one(vibeos_vmspace_t *as, uint64_t va, uint64_t *pte, void *ctx) {

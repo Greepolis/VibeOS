@@ -143,6 +143,7 @@ if(VIBEOS_BUILD_TESTS)
         tests/kernel/backing_tests.c
         tests/kernel/rmap_tests.c
         tests/kernel/reclaim_tests.c
+        tests/kernel/compact_tests.c
         tests/kernel/task_tests.c
         tests/kernel/runq_tests.c
         tests/kernel/lifetime_tests.c

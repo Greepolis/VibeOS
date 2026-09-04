@@ -32,6 +32,17 @@ typedef struct vibeos_mm_stats {
     uint64_t fork_undercounted;  /* shared frame with <2 owners. MUST BE ZERO */
     uint64_t rmap_mismatch;      /* holders != owners. MUST BE ZERO           */
 
+    /* Compaction. The first two say it works; the four refusals say what it
+     * could not take and why - so "compaction did nothing" and "compaction was
+     * not allowed to do anything" stay different numbers, which is the same
+     * distinction skipped_no_swap exists for one layer up. */
+    uint64_t compact_moved;
+    uint64_t compact_mappings_moved;
+    uint64_t compact_refused_pinned;
+    uint64_t compact_refused_writable;
+    uint64_t compact_refused_many;
+    uint64_t compact_refused_raced;
+
     /* L1 - address spaces. */
     uint64_t maps;               /* user PTEs created                         */
     uint64_t unmaps;             /* user PTEs destroyed                       */

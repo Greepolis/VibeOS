@@ -182,6 +182,34 @@ int vibeos_vmspace_unmap(vibeos_vmspace_t *as, uint64_t va);
  * shootdown and a stall. */
 int vibeos_vmspace_clone_cow(vibeos_vmspace_t *dst, vibeos_vmspace_t *src);
 
+/* Move a frame's contents to another frame and repoint everything that maps
+ * it. Returns 0 on success, and a negative value when the frame was refused.
+ *
+ * This is what makes reclaimed memory *usable* rather than merely free:
+ * vibeos_frame_alloc_contig is first fit, so a machine can have plenty free
+ * and no run of it long enough for a DMA descriptor or a staging buffer.
+ * Recovering free frames is P6 steps 1-3; recovering contiguous space needs
+ * frames that are still in use to move.
+ *
+ * ## The window, and the restriction that closes it
+ *
+ * Between copying a frame and repointing what maps it there is an interval in
+ * which a writer would store into the old copy and lose the write. Closing
+ * that properly means revoking write access first, taking the faults, and
+ * repointing - which is a stop-the-world or a fault handler that knows about
+ * migration, and neither exists here yet.
+ *
+ * So a frame is refused unless **no holder maps it writable**. That is not a
+ * placeholder: it covers exactly the frames that fragment this machine in
+ * practice - page-cache pages and program text, which is most of memory after
+ * a boot - and it is a restriction that can be checked rather than a race that
+ * has to be reasoned about. Every refusal is counted by reason, so what
+ * compaction cannot move is a number rather than a silence.
+ *
+ * Pinned frames are never moved: a page table or a buffer a device holds an
+ * address for does not tolerate its contents arriving somewhere else. */
+int vibeos_vmspace_move_frame(uint64_t old_phys, uint64_t new_phys);
+
 /* Resolve a fault this layer is responsible for. Returns 1 when it handled the
  * fault and the instruction may be retried, 0 when the fault is somebody
  * else's problem - which for the caller means a genuine violation.
