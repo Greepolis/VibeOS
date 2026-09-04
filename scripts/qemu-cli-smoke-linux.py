@@ -873,7 +873,8 @@ def main():
                            r"frames_double_put=0x([0-9a-f]{16}) "
                            r"poison_hits=0x([0-9a-f]{16}) "
                            r"double_allocs=0x([0-9a-f]{16}) "
-                           r"free_while_mapped=0x([0-9a-f]{16})", text)
+                           r"free_while_mapped=0x([0-9a-f]{16}) "
+                           r"fork_undercounted=0x([0-9a-f]{16})", text)
             if mz is None:
                 problems.append("meminfo_missing")
             else:
@@ -881,7 +882,8 @@ def main():
                                     ("frames_double_put", 2),
                                     ("poison_hits", 3),
                                     ("double_allocs", 4),
-                                    ("free_while_mapped", 5)):
+                                    ("free_while_mapped", 5),
+                                    ("fork_undercounted", 6)):
                     value = int(mz.group(group), 16)
                     if value != 0:
                         problems.append(f"mm_{name}={value}")

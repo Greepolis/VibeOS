@@ -649,6 +649,35 @@ static int clone_one(vibeos_vmspace_t *src, uint64_t va, uint64_t *pte, void *ct
     return 0;
 }
 
+/* Every frame the child now shares must be counted twice.
+ *
+ * Checked here rather than waited for at a release, and that is the whole
+ * point. "More mappers than owners" is discovered today when somebody frees
+ * the frame, which happens about one boot in sixteen and a long way from
+ * whatever lost the reference - so the message names a victim and never a
+ * cause. The invariant it violates, though, is established exactly here: after
+ * clone_cow, a frame the parent still maps and the child now maps as well has
+ * at least two owners. A parent that has since exec'd or exited can push it
+ * back to one legitimately, but that cannot happen before this returns.
+ *
+ * Counted rather than refused: the address space is already built, and a
+ * refusal here would leave a half-forked child, which is worse than a number
+ * the gate reads. */
+static uint32_t g_fork_audits;
+
+static int audit_one(vibeos_vmspace_t *as, uint64_t va, uint64_t *pte,
+                     void *ctx) {
+    uint64_t entry = __atomic_load_n(pte, __ATOMIC_ACQUIRE);
+    (void)as; (void)va; (void)ctx;
+
+    if ((entry & PTE_PRESENT) && (entry & VIBEOS_PTE_OWNED)) {
+        if (vibeos_frame_owners(entry & PTE_ADDR_MASK) < 2u) {
+            vibeos_mm_stats()->fork_undercounted++;
+        }
+    }
+    return 0;
+}
+
 int vibeos_vmspace_clone_cow(vibeos_vmspace_t *dst, vibeos_vmspace_t *src) {
     g_op = "fork";
     if (!g_ready || !dst || !src || !dst->root || !src->root) {
@@ -656,6 +685,18 @@ int vibeos_vmspace_clone_cow(vibeos_vmspace_t *dst, vibeos_vmspace_t *src) {
     }
     if (foreach_owned(src, clone_one, dst) != 0) {
         return -1;
+    }
+    /* The first few forks only.
+     *
+     * Auditing every one wedged the boot outright: this walks the whole child
+     * address space and takes the frame lock once per page, on a path that
+     * already runs with interrupts masked, and BusyBox forks constantly. The
+     * defect is not rare among forks - it is rare among *boots* - so a bounded
+     * sample early in the boot is as likely to see it as an unbounded one, and
+     * costs nothing after the first few. */
+    if (g_fork_audits < 8u) {
+        g_fork_audits++;
+        (void)foreach_owned(dst, audit_one, 0);
     }
     if (g_be.shootdown) {
         g_be.shootdown(src->root_phys);

@@ -29,6 +29,7 @@ typedef struct vibeos_mm_stats {
     uint64_t poison_hits;        /* write to a freed page. MUST BE ZERO       */
     uint64_t double_allocs;      /* handed out while owned. MUST BE ZERO      */
     uint64_t free_while_mapped;  /* more mappers than owners. MUST BE ZERO    */
+    uint64_t fork_undercounted;  /* shared frame with <2 owners. MUST BE ZERO */
 
     /* L1 - address spaces. */
     uint64_t maps;               /* user PTEs created                         */
