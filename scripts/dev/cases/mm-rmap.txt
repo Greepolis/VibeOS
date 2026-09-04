@@ -1,0 +1,53 @@
+# Sabotage cases for the reverse map (kernel/mm/rmap.c), plan phase P6 step 1.
+#
+# Each one was applied, the host tests were confirmed to go red, and the tree
+# was confirmed to go green again afterwards. A sabotage run that starts on a
+# tree which does not pass proves nothing - that is written down in CLAUDE.md
+# because eight cases once "passed" having executed nothing.
+#
+# Run: apply the edit, rebuild vibeos_kernel_tests, look for "FAIL:test_rmap".
+
+case: a duplicate add lengthens the list
+  in add_locked, replace the "already recorded?" comparison with if (0)
+  expect: rmap: FAIL duplicate did not lengthen
+  why it matters: the copy-on-write fault maps over an entry that is already
+    there. If that grew the list, the holder count would drift above the frame's
+    owner count on every COW resolution, and the invariant the address-space
+    layer is audited against would report a defect on every healthy boot -
+    which is worse than no audit, because people learn to ignore it.
+
+case: forget_frame drops the list without returning its nodes
+  in vibeos_rmap_forget_frame, delete the release_node loop, keeping the
+  assignment of RMAP_NONE to the head
+  expect: rmap: FAIL nodes returned to the pool
+  why it matters: it works perfectly until the pool runs out, which on a
+    long-lived machine is hours later and nowhere near the cause. Exhaustion is
+    reported rather than fatal, so this would degrade reclaim silently instead
+    of failing.
+
+case: forget_root forgets every holder, not only that root's
+  in vibeos_rmap_forget_root, change the root_phys comparison to if (1)
+  expect: rmap: FAIL the other root survives / one holder / and it is the
+    right one
+  why it matters: the generous direction is the dangerous one here. Teardown
+    would unrecord mappings that are still live, and compaction would then move
+    a frame believing nobody holds it - leaving a running process pointing at
+    the old copy.
+
+case: a remove that matches nothing is not counted
+  in vibeos_rmap_remove, delete the g_stats.missing_remove++ before the
+  failing return
+  expect: rmap: FAIL and is counted
+  why it matters: a remove that finds nothing means the two sides disagree
+    about what was mapped, which is the same shape as the defect this subsystem
+    keeps producing, seen from the other end. Uncounted, it is invisible.
+
+# Not a case, and deliberately so:
+#
+# "make the node pool larger" cannot be sabotaged into a failure, because
+# exhaustion is a reported state rather than an error - the layer is required
+# to keep working with the holders it already has. The exhaustion test asserts
+# that both halves hold: the counter moves, and every add that claimed to
+# succeed is still on the list. Its pool is sized in bytes rather than in
+# nodes for a reason worth repeating: the first version guessed the node size,
+# guessed high, and the test passed without ever exhausting anything.

@@ -141,6 +141,7 @@ if(VIBEOS_BUILD_TESTS)
         tests/kernel/vmspace_tests.c
         tests/kernel/vma_tests.c
         tests/kernel/backing_tests.c
+        tests/kernel/rmap_tests.c
         tests/kernel/task_tests.c
         tests/kernel/runq_tests.c
         tests/kernel/lifetime_tests.c

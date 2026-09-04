@@ -16,6 +16,7 @@ set(VIBEOS_KERNEL_CORE_SOURCES
     kernel/mm/vmspace.c
     kernel/mm/vma.c
     kernel/mm/backing.c
+    kernel/mm/rmap.c
     kernel/sched/stats.c
     kernel/sched/task.c
     kernel/sched/runq.c
