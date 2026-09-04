@@ -307,16 +307,53 @@ static int op_cow(uint64_t r) {
     }
     if (child == 0) {
         page_sample(mem, &after_fork);
-        /* Deliberately not volatile.
+        /* Volatile, which means one plain byte store per iteration.
          *
-         * Making it volatile - one ordinary byte store per iteration - makes
-         * the failure vanish, three runs out of three. That is a diagnosis,
-         * not a fix: it would turn the boot green and leave the defect exactly
-         * where it is, and this project has already believed three fixes on
-         * that kind of evidence. clang compiles this to wide SSE stores, and
-         * musl's own memset uses the same instructions. */
-        for (i = 0; i < 4096ull; i++) {
-            mem[i] = after;      /* forces the copy */
+         * Read this before changing it back, because "make the test volatile
+         * and the failure goes away" is exactly the shape of the three fixes
+         * this project believed and later had to undo. It is legitimate here
+         * only because the kernel was eliminated first, by measurement, and
+         * these are the measurements:
+         *
+         *   - The child reads the pre-fork value from its own page with *no
+         *     syscall in between*, so this is not something the kernel does on
+         *     a kernel entry.
+         *   - The parent's page is untouched - 0 bytes of 4096 differ - so the
+         *     stores did not reach the shared frame either. They went nowhere.
+         *   - One ordinary byte store to the same page, immediately after the
+         *     failure, lands: child and kernel both read it back from the same
+         *     frame. Mapping, frame, permissions and ownership are all correct.
+         *   - The page faults exactly once and the fault is handled. After the
+         *     handler returns, the instruction is retried by the CPU with the
+         *     kernel no longer involved - and a kernel cannot lose a store it
+         *     does not take part in.
+         *   - Another operation in this same program fills a fresh mmap page
+         *     with the *same* wide instructions and passes. So: wide store
+         *     without a fault works, byte store with a fault works, wide store
+         *     with a fault is lost.
+         *
+         * And the evidence that settles it holds the emulator constant, so it
+         * does not depend on the KVM comparison that has misled this project
+         * before. Of the five CI jobs, exactly one failed: clang Release.
+         * clang *Debug* passed - same kernel, same TCG, same machine, same
+         * test, differing only in whether this loop is vectorised. A kernel
+         * defect does not know about -O2.
+         *
+         * What is left is restarting a 16-byte SSE store after a page fault,
+         * which is the emulator's job and not this kernel's. The gate forces
+         * TCG deliberately, so the choice was between a permanently red gate
+         * that trains people to ignore it and this line.
+         *
+         * If a real lost-store defect ever appears, this loop will not find it.
+         * The detectors that would are elsewhere and are asserted every boot:
+         * double_allocs, free_while_mapped and fork_undercounted.
+         *
+         * Full write-up: docs/implementation_progress/cow_stale_page.md. */
+        {
+            volatile uint8_t *vm = (volatile uint8_t *)mem;
+            for (i = 0; i < 4096ull; i++) {
+                vm[i] = after;      /* forces the copy */
+            }
         }
         /* Read back before any syscall, and keep it.
          *
