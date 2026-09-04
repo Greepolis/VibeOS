@@ -252,3 +252,69 @@ Two defects, then, not one:
 
 Previous investigations treated these as one, which is a large part of why each
 of them ended somewhere plausible and wrong.
+
+## The lost wide store is TCG, not the kernel
+
+Two more measurements finished this half.
+
+**The child reads the old value from its own page with no kernel in between.**
+Every earlier observation went through `page_sample`, which is a syscall - so
+"the child sees the wrong value" had always been seen on the far side of a
+kernel entry. Reading `mem[0]` straight after the loop, before any syscall,
+returns `before`: the loop wrote 60 to all 4096 bytes and the next instruction
+to look reads 195.
+
+**The parent's page is untouched.** 0 bytes of 4096 differ, parent and kernel
+agree, so the stores did not go to the shared frame either. They went nowhere.
+
+**And it does not happen on real hardware.** Same binary, same kernel, three
+runs each:
+
+| accelerator | outcome |
+| --- | --- |
+| TCG | 21 STRESS_FAIL lines, 3 runs of 3 |
+| KVM | clean, 3 runs of 3 |
+
+The argument that settles it does not rest on that table, because this project
+has been misled by a KVM-clean result before - twenty clean runs once validated
+a setup that pure TCG broke in two runs out of three, which is why every script
+here forces TCG. It rests on where the store happens: **once the fault handler
+returns, the faulting instruction is retried by the CPU with no kernel
+involvement at all.** The kernel cannot lose a store it does not take part in.
+Everything the kernel is responsible for has been shown correct - one fault,
+handled, a private singly-owned frame, the right contents copied into it, and
+an ordinary byte store landing in it immediately afterwards.
+
+The last piece came free from the disassembly. `svc-stress` has another
+operation that fills a fresh `mmap` page with the *same* `movdqu` instructions
+and checks it, and that one passes. So:
+
+- wide store, no fault - works
+- byte store, copy-on-write fault - works
+- wide store, copy-on-write fault - lost
+
+which is a statement about restarting a 16-byte store after a page fault, and
+that is the emulator's job.
+
+### What this means for the gate
+
+The boot gate forces TCG, deliberately and for good reasons, so CI will keep
+failing here until something is done. The options are not equal and the choice
+is not obvious:
+
+- Make the fill volatile. One line, and it is exactly the kind of change this
+  file warns about three times: the boot goes green and nothing is understood.
+  It is defensible *only* because the kernel has now been shown not to be
+  involved, and it should carry a comment saying so.
+- Keep it and accept a permanently red gate, which trains people to ignore it.
+- Narrow the assertion so this specific operation is reported but not fatal.
+
+This is a maintainer's decision, not the investigation's, and it is left open
+here rather than settled quietly.
+
+### What is still open
+
+The *other* defect is untouched by all of this: a frame released while an
+address space still maps it, seen as `mappers=2 owners=1` at a destroy and as a
+page of zeroes handed to a live process. That one is real, it is the kernel's,
+and it is what the memory-manager rewrite exists for.

@@ -275,6 +275,7 @@ static void say_witness(const char *what, const pageinfo_t *p, uint8_t expect) {
 
 static int op_cow(uint64_t r) {
     pageinfo_t before_fork, after_fork, after_write, at_check;
+    volatile uint8_t own_view = 0;
     uint8_t before = (uint8_t)(r | 1u);
     uint8_t after = (uint8_t)(~before);
     int64_t p = sys6(SYS_mmap, 0, 4096, PROT_READ | PROT_WRITE,
@@ -317,6 +318,14 @@ static int op_cow(uint64_t r) {
         for (i = 0; i < 4096ull; i++) {
             mem[i] = after;      /* forces the copy */
         }
+        /* Read back before any syscall, and keep it.
+         *
+         * Everything measured so far has gone through page_sample, which is a
+         * syscall - so "the child sees the wrong value" has always been
+         * observed on the far side of a kernel entry, and could equally have
+         * been the loop failing to run or the value being lost afterwards.
+         * This is the child looking at its own page with nothing in between. */
+        own_view = mem[0];
         page_sample(mem, &after_write);
         for (i = 0; i < 4096ull; i += 256ull) {
             if (mem[i] != after) {
@@ -369,6 +378,9 @@ static int op_cow(uint64_t r) {
                         (unsigned long)after, 1);
                     say("STRESS_FAIL: the value before the fork was = ",
                         (unsigned long)before, 1);
+                    say("STRESS_FAIL: the child read byte 0 straight after "
+                        "its own loop, before any syscall = ",
+                        (unsigned long)own_view, 1);
                     /* One byte, written now, with a witness.
                      *
                      * The write loop is a memset once clang has had it, so
@@ -397,6 +409,32 @@ static int op_cow(uint64_t r) {
     }
     (void)sys3(SYS_wait4, (uint64_t)child, (uint64_t)(uintptr_t)&status, 0);
     if (((status >> 8) & 0xff) != 0) {
+        /* Look at the parent's own page before giving up.
+         *
+         * The child's stores went somewhere, and the one candidate that
+         * explains every other measurement is the frame the child shared
+         * before the copy - this one. Returning here without looking threw
+         * that away on every failing run so far: the parent's check below is
+         * only reached when the child *passes*, which is exactly when it has
+         * nothing to say. */
+        pageinfo_t mine;
+        uint64_t k;
+        uint64_t theirs = 0;
+
+        page_sample(mem, &mine);
+        for (k = 0; k < 4096ull; k++) {
+            if (mem[k] != before) {
+                theirs++;
+            }
+        }
+        say("STRESS_FAIL: bytes of the parent's page that are no longer "
+            "`before` = ", theirs, 1);
+        say("STRESS_FAIL: the parent reads byte 0 = ",
+            (unsigned long)mem[0], 1);
+        say("STRESS_FAIL: the kernel reads byte 0 of the parent's frame = ",
+            (unsigned long)(mine.first_word & 0xffull), 1);
+        say("STRESS_FAIL: the parent's frame is = ",
+            (unsigned long)mine.frame, 1);
         say("STRESS_FAIL: the child could not keep its own copy", 0, 0);
         return -1;
     }
