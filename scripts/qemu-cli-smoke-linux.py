@@ -859,18 +859,29 @@ def main():
             elif int(ring.group(1), 16) == 0:
                 problems.append("arch_log_ring_is_empty")
 
-            # The three memory counters that are assertions rather than
-            # diagnostics. Each one is a defect this subsystem has actually
-            # produced, and each was invisible until it was counted.
+            # The memory counters that are assertions rather than diagnostics.
+            # Each one is a defect this subsystem has actually produced, and
+            # each was invisible until it was counted.
+            #
+            # The last two are the allocation side, which nothing watched. A
+            # frame handed out while somebody still owns it frees nothing, so
+            # every release-side watch stays silent through a whole boot; and
+            # "more mappers than owners" appears about one boot in sixteen, so
+            # a message alone is a lottery in which "nothing reported" and
+            # "fixed" look identical. Counted, two boots compare two states.
             mz = re.search(r"MUSTBEZERO frames_leaked=0x([0-9a-f]{16}) "
                            r"frames_double_put=0x([0-9a-f]{16}) "
-                           r"poison_hits=0x([0-9a-f]{16})", text)
+                           r"poison_hits=0x([0-9a-f]{16}) "
+                           r"double_allocs=0x([0-9a-f]{16}) "
+                           r"free_while_mapped=0x([0-9a-f]{16})", text)
             if mz is None:
                 problems.append("meminfo_missing")
             else:
                 for name, group in (("frames_leaked", 1),
                                     ("frames_double_put", 2),
-                                    ("poison_hits", 3)):
+                                    ("poison_hits", 3),
+                                    ("double_allocs", 4),
+                                    ("free_while_mapped", 5)):
                     value = int(mz.group(group), 16)
                     if value != 0:
                         problems.append(f"mm_{name}={value}")

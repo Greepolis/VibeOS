@@ -1573,6 +1573,7 @@ static void hw_frame_release_watch(uint64_t phys) {
     if (g_frame_mappers <= owners_at_check) {
         return;
     }
+    vibeos_mm_stats()->free_while_mapped++;
     hw_log(VIBEOS_LOG_ERROR, 46u, phys, (uint64_t)pid,
            "reclaiming a frame that a live process still maps "
            "(a0 = frame, a1 = pid)");
@@ -1608,7 +1609,7 @@ static void hw_free_page_why(void *p, const char *why) {
      * Before the release, and outside the memory lock: hw_page_owners takes
      * that lock, and this walk reads page tables, which is not work to do with
      * interrupts masked. */
-    if (vibeos_frame_total() != 0ull && (++g_free_seq & 0x3Fu) == 0u) {
+    if (vibeos_frame_total() != 0ull && (++g_free_seq & 0x7u) == 0u) {
         uint32_t pid = 0;
         if (hw_frame_still_mapped(phys, &pid)) {
             hw_log(VIBEOS_LOG_ERROR, 46u, phys, (uint64_t)pid,

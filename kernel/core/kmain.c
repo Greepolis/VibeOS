@@ -246,6 +246,8 @@ static void kernel_cli_print_meminfo(void) {
     kernel_log_u64_hex(st->poison_hits);
     vibeos_x86_64_serial_puts(" double_allocs=0x");
     kernel_log_u64_hex(st->double_allocs);
+    vibeos_x86_64_serial_puts(" free_while_mapped=0x");
+    kernel_log_u64_hex(st->free_while_mapped);
     vibeos_x86_64_serial_puts("\n");
 
     vibeos_x86_64_serial_puts("[MEM] cache_hits=0x");

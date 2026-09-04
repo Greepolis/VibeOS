@@ -87,3 +87,51 @@ Note also that the write loop is compiled by clang at `-O2` and the defect is
 clang-only so far; whether that is a vectorised store pattern or simply a
 different allocation order has not been established, and should not be assumed
 either way.
+
+## The sharpest fact so far: mappers=2, owners=1
+
+A `repeat-boot` run caught the release-side watch firing, and its message is
+the most precise statement this defect has produced in five investigations:
+
+```
+[MM] FREE_WHILE_MAPPED frame=0x2355000 still mapped by pid=0xb
+     during destroy mappers=0x2 owners=0x1 owners_now=0x1
+```
+
+Two address spaces map the frame; the ownership count knows about one. That is
+not an arithmetic error in the count - it is a **mapping that was installed
+without taking a reference**, which is exactly the failure the memory-manager
+rewrite was proposed to make impossible.
+
+It is reported during a `destroy`, and specifically a destroy of an address
+space that is *not* the current task's - the arch-level short circuit for "the
+dying task legitimately still maps what it is freeing" did not apply. So the
+path is a task tearing down somebody else's address space: exit being reaped,
+or execve discarding an old image.
+
+`vibeos_vmspace_map_raw` takes its reference before publishing the entry, and
+`clone_one` goes through it, so neither fork nor an ordinary map is the
+uncounted one. The next attempt should look for a page-table entry written
+without going through that function.
+
+## Why these counters exist
+
+The condition appears about one boot in sixteen. A message alone therefore
+makes every run a lottery in which "nothing reported" and "fixed" are
+indistinguishable - which is how three earlier fixes here were believed. Two
+counters now make each boot a measurement:
+
+- `double_allocs` - a frame handed out while somebody still owns it. Nothing
+  watched the allocation side before, and it is the blind spot that matters:
+  a double allocation frees nothing, so every release-side watch stays silent.
+- `free_while_mapped` - more mappers than owners, counted rather than only
+  printed.
+
+Both are on the `MUSTBEZERO` line and the boot gate fails if either is
+non-zero. The assertion was confirmed to go red by making `frame_take` count
+unconditionally: `mm_double_allocs=4813`.
+
+The free-side walk now samples one release in eight rather than one in
+sixty-four. A counter that only sees one free in sixty-four cannot be compared
+between two states, which is the whole point of having it. Eight clean boots
+out of eight at the higher rate.
