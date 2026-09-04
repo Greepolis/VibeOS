@@ -903,7 +903,13 @@ def main():
                 misses = int(mc.group(2), 16)
                 if hits == 0 or misses == 0:
                     problems.append(f"cache_not_exercised hits={hits} misses={misses}")
-                elif hits * 4 < misses:
+                elif hits < misses:
+                    # Tightened from "hits * 4 < misses" - a 20% floor - once
+                    # image pages started coming from the cache. A boot now
+                    # measures 5285 hits against 1822 misses, which is 74%, and
+                    # a floor of 20% would have let that collapse back to the
+                    # 36% this cache shipped with while every boot stayed green.
+                    # A floor is only useful near what the thing actually does.
                     problems.append(f"cache_hit_ratio_too_low hits={hits} misses={misses}")
 
             # The three task counters that are assertions rather than
@@ -1058,21 +1064,18 @@ def main():
                 from_cache = int(cm.group(1), 16)
                 copied = int(cm.group(2), 16)
                 if from_cache == 0:
-                    # Nothing mapped from the cache. That is the expected state
-                    # while the mapping is deliberately off - it is disabled
-                    # behind an if(0) in hw_map_elf_image, with three eliminated
-                    # explanations written beside it - so this is not a failure
-                    # today.
+                    # The branch is on now, so nothing mapped from the cache is
+                    # a failure rather than a state.
                     #
-                    # It is still the thing most worth noticing when the branch
-                    # is turned back on, because that is exactly how it would
-                    # stop working while every boot stayed green. The assertion
-                    # is therefore kept, and kept honest, by requiring that the
-                    # kernel says which state it is in rather than by the gate
-                    # assuming: pages_copied carries the whole load when the
-                    # mapping is off, and the ratio below governs when it is on.
-                    if copied == 0:
-                        problems.append("exec_mapped_and_copied_nothing")
+                    # This is the case the previous version of this comment
+                    # anticipated and deliberately tolerated while the mapping
+                    # was disabled behind an if(0): "that is exactly how it
+                    # would stop working while every boot stayed green". It is
+                    # on, it measures 4242 pages mapped against 239 copied, and
+                    # the tolerance has to go with the if(0) - a gate that still
+                    # accepts zero would accept the branch being switched off
+                    # again by accident.
+                    problems.append("exec_mapped_nothing_from_cache")
                 elif from_cache < copied:
                     problems.append(
                         f"exec_copies_more_than_it_maps from_cache={from_cache}"
