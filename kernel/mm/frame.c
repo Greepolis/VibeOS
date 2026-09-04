@@ -257,9 +257,38 @@ static void frame_take(uint32_t index, vibeos_frame_state_t state) {
     g_table[index].lru_next = FRAME_NONE;
 }
 
+/* Fault injection. See the header for why it is compiled in. */
+static uint32_t g_fail_after;
+static uint32_t g_injected;
+
+void vibeos_frame_fail_after(uint32_t n) {
+    frame_lock();
+    g_fail_after = n;
+    g_injected = 0;
+    frame_unlock();
+}
+
+uint32_t vibeos_frame_injected_failures(void) {
+    uint32_t n;
+
+    frame_lock();
+    n = g_injected;
+    frame_unlock();
+    return n;
+}
+
 uint64_t vibeos_frame_alloc_locked(vibeos_frame_state_t state) {
     uint32_t index;
 
+    if (g_fail_after != 0u) {
+        /* Counted down under the same lock that guards the free list, so an
+         * injected failure lands at a definite point in a sequence rather than
+         * approximately. */
+        if (--g_fail_after == 0u) {
+            g_injected++;
+            return 0;   /* nothing changed (I5) - the point of the exercise */
+        }
+    }
     if (!g_table || g_free_head == FRAME_NONE) {
         return 0;   /* nothing changed (I5) */
     }

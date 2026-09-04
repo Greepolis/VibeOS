@@ -143,6 +143,27 @@ uint32_t vibeos_frame_id(uint64_t phys);
  * corrupts, and asynchronously. Setting the bit is how a caller says so, and
  * this layer is the only place that can say it under the same lock that
  * guards allocation. */
+/* Fail the nth allocation from now, for fault injection.
+ *
+ * P7's second property: every allocation failure must leave the counts
+ * unchanged and no mapping behind. That is invariant I5, and until this
+ * existed it was asserted rather than proved - the paths that unwind after a
+ * failed allocation are exactly the ones no ordinary run reaches, because
+ * ordinary runs do not run out of memory.
+ *
+ * A count rather than a rate: a sweep over n exercises a different unwind path
+ * each time, and "the third allocation of this operation" is reproducible in a
+ * way that "one in twenty" is not. Zero disables it.
+ *
+ * This is a test hook and it is compiled in, deliberately. The alternative is a
+ * build the tests cannot reach, which is how a subsystem comes to have unwind
+ * paths nothing has ever executed. */
+void vibeos_frame_fail_after(uint32_t n);
+
+/* How many allocations have been refused by the hook, so a test can tell "the
+ * injection fired" from "the operation happened not to allocate". */
+uint32_t vibeos_frame_injected_failures(void);
+
 void vibeos_frame_set_flag(uint64_t phys, uint8_t flag);
 void vibeos_frame_clear_flag(uint64_t phys, uint8_t flag);
 int  vibeos_frame_test_flag(uint64_t phys, uint8_t flag);

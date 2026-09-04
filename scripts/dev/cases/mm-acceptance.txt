@@ -1,0 +1,48 @@
+# Sabotage cases for the acceptance properties (P7), tests in
+# tests/kernel/acceptance_tests.c.
+#
+# Run: apply, rebuild vibeos_kernel_tests, look for "FAIL:test_acceptance".
+#
+# These properties all exercise paths an ordinary run never reaches - the
+# unwind after a failed allocation, the state of a machine that has run out,
+# the contents of a frame handed to its second owner. None of them happen on a
+# boot that goes well, which is why none of them had ever been executed.
+
+case: a fresh frame is not zeroed
+  in frame_take, delete the frame_fill(index, 0ull)
+  expect: acceptance: FAIL a fresh frame is zeroed, not left as the firmware
+    had it
+  why it matters: the isolation property. The second owner of a frame reads
+    the first one's data. The test's fake RAM is filled with 0xCD rather than
+    zero for exactly this reason - on zeroed memory the test would pass
+    whether or not the kernel clears anything.
+
+case: the injected failure never fires
+  in vibeos_frame_alloc_locked, change the countdown test to if (0)
+  expect: acceptance: FAIL the injected failure refuses the allocation
+  why it matters: without this the fault-injection sweep runs past the end of
+    the allocations and asserts nothing, while passing. A sweep that never
+    triggers is indistinguishable from a subsystem with perfect unwind paths.
+
+case: teardown does not forget the address space's holders
+  in vibeos_vmspace_destroy, delete the vibeos_rmap_forget_root call
+  expect: acceptance: FAIL and none after teardown
+  why it matters: a stale holder is worse than a leaked frame. Compaction
+    would follow it and write into memory that now belongs to something else.
+
+# Recorded as it actually behaves, not as it was expected to:
+#
+#   "a release does not put the frame back on the free list"
+#   (in frame_free, set lru_next to FRAME_NONE instead of g_free_head)
+#
+# This does turn the suite red - loudly: the binary segfaults, rc=139, core
+# dumped, and check.sh reports host-tests=FAIL. But it crashes in an *earlier*
+# test group, so "FAIL:test_acceptance" never prints and the acceptance test's
+# own assertion is not what catches it.
+#
+# The exhaustion test was extended because of this case anyway, and the
+# extension is worth keeping regardless: it now re-allocates everything after
+# freeing it, because the free *count* and the free *list* are separate. A
+# release that decrements one without linking into the other leaves a machine
+# that believes it has memory and cannot hand any out - and "the count came
+# back exactly" was true and meant nothing.
