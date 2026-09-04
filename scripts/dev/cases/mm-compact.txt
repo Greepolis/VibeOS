@@ -45,3 +45,30 @@ case: the reverse map is not updated with the move
   why it matters: the next compaction would believe nobody maps the new frame
     and move it out from under a live process. Compaction breaking compaction
     is a defect that grows rather than repeats.
+
+# --- added with the compactor (P6 step 5, second half) ---------------------
+
+case: the untracked-reference refusal is removed
+  in vibeos_vmspace_move_frame, change the owners != rmap_count test to if (0)
+  expect: compact: FAIL refused / counted / nothing moved
+  why it matters: a frame with an owner that is not a mapping has a holder the
+    reverse map cannot repoint - the page cache, a DMA buffer, whoever
+    allocated it and kept the physical address. Moving it leaves that holder
+    reading the old frame while everything else reads the new one. This
+    refusal was missing from the first version and the fragmentation test
+    found it by failing for the right reason: the "moved" frame never became
+    free, because the allocation reference had not gone anywhere.
+
+# Not a case, and said so rather than counted:
+#
+#   "the compactor takes its target from inside the window"
+#   (delete the best_start..best_start+want skip in vibeos_reclaim_compact)
+#
+# The reasoning for the guard is sound - a target inside the window is undone
+# by the next move, and a run of moves chasing each other around one window is
+# a compactor that appears to work and never finishes. But it cannot be turned
+# red here: the target scan starts at frame zero, so it finds a free frame
+# outside the window before it reaches the window in every arrangement these
+# tests can build. Written down as unverifiable rather than listed among the
+# cases that pass, because "no case exists" and "the case exists and this
+# environment cannot tell" are different things.

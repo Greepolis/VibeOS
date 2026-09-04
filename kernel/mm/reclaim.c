@@ -10,6 +10,8 @@
 
 #include "vibeos/reclaim.h"
 #include "vibeos/frame.h"
+#include "vibeos/vmspace.h"
+#include "vibeos/mm_stats.h"
 
 static uint64_t g_low;
 static uint64_t g_min;
@@ -118,6 +120,105 @@ void vibeos_reclaim_unpin(uint64_t phys) {
 
 int vibeos_reclaim_is_pinned(uint64_t phys) {
     return vibeos_frame_test_flag(phys, VIBEOS_FRAME_PINNED);
+}
+
+/* ---- compaction ---------------------------------------------------------- */
+
+static uint64_t g_region_base;
+static uint32_t g_region_frames;
+
+void vibeos_reclaim_set_region(uint64_t base_phys, uint32_t frames) {
+    g_region_base = base_phys;
+    g_region_frames = frames;
+}
+
+static uint64_t frame_at(uint32_t i) {
+    return g_region_base + (uint64_t)i * 4096ull;
+}
+
+static int frame_is_free(uint32_t i) {
+    return vibeos_frame_state(frame_at(i)) == VIBEOS_FRAME_FREE;
+}
+
+/* The largest run of free frames, measured here rather than asked of the frame
+ * layer, because this walk is already happening and a second one under a
+ * different lock could disagree with it. */
+static uint32_t largest_run(void) {
+    uint32_t i, run = 0, best = 0;
+
+    for (i = 0; i < g_region_frames; i++) {
+        if (frame_is_free(i)) {
+            if (++run > best) {
+                best = run;
+            }
+        } else {
+            run = 0;
+        }
+    }
+    return best;
+}
+
+uint32_t vibeos_reclaim_compact(uint32_t want) {
+    uint32_t i, best_start = 0, best_cost = 0xFFFFFFFFu;
+    uint32_t moved = 0;
+
+    if (want == 0u || g_region_frames == 0u || want > g_region_frames) {
+        return largest_run();
+    }
+
+    /* Cheapest window first.
+     *
+     * "Cheapest" is the number of frames in the way, not their size - every
+     * frame costs one copy. Scanning for the minimum rather than taking the
+     * first window that could work matters more than it looks: the first
+     * suitable window is often one occupied by long-lived pages, and moving
+     * those is both the most work and the most likely to be refused. */
+    for (i = 0; i + want <= g_region_frames; i++) {
+        uint32_t j, cost = 0;
+
+        for (j = 0; j < want; j++) {
+            if (!frame_is_free(i + j)) {
+                cost++;
+            }
+        }
+        if (cost == 0u) {
+            return largest_run();   /* already a run this long; nothing to do */
+        }
+        if (cost < best_cost) {
+            best_cost = cost;
+            best_start = i;
+        }
+    }
+
+    /* Empty the window into free frames outside it.
+     *
+     * A target taken from inside the window would be undone by the next move,
+     * and a run of moves that chase each other around one window is the shape
+     * of a compactor that appears to work and never finishes. */
+    for (i = 0; i < want; i++) {
+        uint32_t src = best_start + i;
+        uint32_t k;
+
+        if (frame_is_free(src)) {
+            continue;
+        }
+        for (k = 0; k < g_region_frames; k++) {
+            if (k >= best_start && k < best_start + want) {
+                continue;   /* inside the window */
+            }
+            if (!frame_is_free(k)) {
+                continue;
+            }
+            if (vibeos_vmspace_move_frame(frame_at(src), frame_at(k)) == 0) {
+                moved++;
+            }
+            break;   /* one attempt per frame: a refusal is about the source */
+        }
+    }
+
+    vibeos_reclaim_stats()->compact_runs++;
+    vibeos_reclaim_stats()->compact_frames_moved += moved;
+    return largest_run();
 }
 
 /* ---- the scan ------------------------------------------------------------ */

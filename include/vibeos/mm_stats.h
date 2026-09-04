@@ -42,6 +42,7 @@ typedef struct vibeos_mm_stats {
     uint64_t compact_refused_writable;
     uint64_t compact_refused_many;
     uint64_t compact_refused_raced;
+    uint64_t compact_refused_untracked;  /* a reference that is not a mapping */
 
     /* L1 - address spaces. */
     uint64_t maps;               /* user PTEs created                         */

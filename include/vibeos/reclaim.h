@@ -96,9 +96,29 @@ typedef struct vibeos_reclaim_stats {
     uint64_t admit_refused;     /* allocations refused at the minimum        */
     uint64_t low_events;        /* transitions into LOW                      */
     uint64_t critical_events;   /* transitions into CRITICAL                 */
+    uint64_t compact_runs;      /* compaction attempts                       */
+    uint64_t compact_frames_moved;
 } vibeos_reclaim_stats_t;
 
 vibeos_reclaim_stats_t *vibeos_reclaim_stats(void);
+
+/* Open a contiguous run of `want` frames by moving what is in the way.
+ *
+ * Returns the largest free run after trying, in frames - so a caller compares
+ * it against what it asked for and decides, rather than being told "success"
+ * about a run it cannot use. A machine with plenty free and nothing in one
+ * piece is the whole reason this exists, and it is the state a boolean would
+ * hide.
+ *
+ * Best-effort by construction: it picks the window that needs the fewest moves
+ * and moves what it is allowed to. Anything pinned or writable stays, so a
+ * window can be chosen and then not fully cleared - which is why the honest
+ * answer is a measurement rather than a verdict. */
+uint32_t vibeos_reclaim_compact(uint32_t want);
+
+/* The frame region, so the compactor can walk it. Given rather than asked for,
+ * because the frame layer holds its own lock and this walks outside it. */
+void vibeos_reclaim_set_region(uint64_t base_phys, uint32_t frames);
 
 /* How the layer sees free memory. Supplied rather than called directly so the
  * host tests can drive pressure without a frame allocator. */

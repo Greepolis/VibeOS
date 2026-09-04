@@ -969,6 +969,26 @@ int vibeos_vmspace_move_frame(uint64_t old_phys, uint64_t new_phys) {
         vibeos_mm_stats()->compact_refused_many++;
         return -1;
     }
+    /* Every reference must be a mapping this can repoint.
+     *
+     * A frame with more owners than holders has a reference held by something
+     * that is not a page-table entry - whoever allocated it and kept the
+     * physical address: the page cache, a DMA buffer, a kernel structure. The
+     * reverse map cannot repoint those because it does not know they exist, so
+     * moving the contents would leave the holder reading the old frame while
+     * everything else reads the new one.
+     *
+     * This was missing from the first version, and the fragmentation test
+     * found it by failing for the right reason: an unmapped allocated frame
+     * was "moved" and then never became free, because the allocation reference
+     * stayed exactly where it was. That is the harmless face of it. The
+     * harmful one is a cache page moved out from under the entry that still
+     * names its address. */
+    if (vibeos_frame_owners(old_phys) != vibeos_rmap_count(old_phys)) {
+        vibeos_mm_stats()->compact_refused_untracked++;
+        return -1;
+    }
+
     n = vibeos_rmap_holders(old_phys, holders, MOVE_MAX_HOLDERS);
     if (n != total) {
         /* The list changed under us, so what was read is not what is there.

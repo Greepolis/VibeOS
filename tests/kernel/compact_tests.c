@@ -23,6 +23,7 @@
 #include "vibeos/rmap.h"
 #include "vibeos/mm_stats.h"
 #include "vibeos/mm_model.h"
+#include "vibeos/reclaim.h"
 
 int test_compact(void);
 void vibeos_rmap_set_base(uint64_t base_phys);
@@ -93,6 +94,25 @@ static int cp_setup(void) {
 
 #define VA_A 0x8000000000ull
 
+/* Map a frame the way the kernel does, which is decision D9: a caller that
+ * allocates *in order to map* hands the frame over and lets go, so the
+ * mapping's reference is the only one.
+ *
+ * The tests did not do this at first and every move was refused for the right
+ * reason - the frame had an owner that was not a mapping, namely the test
+ * itself. That is the same refusal that protects a cache page from being moved
+ * out from under the entry holding its address, so the tests were wrong and
+ * the layer was right. Arranging a test differently from the code it exercises
+ * is how a test comes to disagree with reality. */
+static int map_as_kernel_does(vibeos_vmspace_t *as, uint64_t va, uint64_t phys,
+                              vibeos_prot_t prot) {
+    if (vibeos_vmspace_map(as, va, phys, prot) != 0) {
+        return -1;
+    }
+    (void)vibeos_frame_put(phys);   /* D9: the mapping owns it now */
+    return 0;
+}
+
 /* --- it works ------------------------------------------------------------- */
 
 /* A read-only page moves, its contents arrive, and the mapping follows it. */
@@ -111,7 +131,7 @@ static void test_move_carries_contents_and_mapping(void) {
     p = (unsigned char *)cp_map(old_f);
     memset(p, 0xA5, 4096);
 
-    CHECK(vibeos_vmspace_map(&as, VA_A, old_f,
+    CHECK(map_as_kernel_does(&as, VA_A, old_f,
                              VIBEOS_PROT_READ | VIBEOS_PROT_USER) == 0, "map");
     CHECK(vibeos_rmap_count(old_f) == 1u, "one holder before");
 
@@ -161,7 +181,7 @@ static void test_move_follows_every_holder(void) {
 
     (void)vibeos_vmspace_map(&a, VA_A, old_f,
                              VIBEOS_PROT_READ | VIBEOS_PROT_USER);
-    (void)vibeos_vmspace_map(&b, VA_A, old_f,
+    (void)map_as_kernel_does(&b, VA_A, old_f,
                              VIBEOS_PROT_READ | VIBEOS_PROT_USER);
     CHECK(vibeos_rmap_count(old_f) == 2u, "two holders");
 
@@ -190,7 +210,7 @@ static void test_refuses_pinned(void) {
     }
     old_f = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
     new_f = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
-    (void)vibeos_vmspace_map(&as, VA_A, old_f,
+    (void)map_as_kernel_does(&as, VA_A, old_f,
                              VIBEOS_PROT_READ | VIBEOS_PROT_USER);
     vibeos_frame_set_flag(old_f, VIBEOS_FRAME_PINNED);
 
@@ -219,7 +239,7 @@ static void test_refuses_writable(void) {
     }
     old_f = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
     new_f = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
-    (void)vibeos_vmspace_map(&as, VA_A, old_f,
+    (void)map_as_kernel_does(&as, VA_A, old_f,
                              VIBEOS_PROT_READ | VIBEOS_PROT_WRITE |
                              VIBEOS_PROT_USER);
 
@@ -256,10 +276,10 @@ static void writable_among_readonly(int writable_first, const char *what) {
 
     if (writable_first) {
         (void)vibeos_vmspace_map(&a, VA_A, old_f, rw);
-        (void)vibeos_vmspace_map(&b, VA_A, old_f, ro);
+        (void)map_as_kernel_does(&b, VA_A, old_f, ro);
     } else {
         (void)vibeos_vmspace_map(&a, VA_A, old_f, ro);
-        (void)vibeos_vmspace_map(&b, VA_A, old_f, rw);
+        (void)map_as_kernel_does(&b, VA_A, old_f, rw);
     }
     CHECK(vibeos_rmap_count(old_f) == 2u, "two holders");
     CHECK(vibeos_vmspace_move_frame(old_f, new_f) != 0, what);
@@ -285,11 +305,21 @@ static void test_refuses_nonsense(void) {
     CHECK(vibeos_vmspace_move_frame(f, f + 1ull) != 0, "unaligned target");
 }
 
-/* A frame nobody maps still moves: it has contents worth carrying (a cache
- * page holds a file's bytes whether or not anything has mapped it yet) and no
- * holders to repoint. A version that required at least one holder would refuse
- * exactly the frames that are easiest and safest to move. */
-static void test_unmapped_frame_moves(void) {
+/* A frame with a reference that is not a mapping is refused, and this is a
+ * safety refusal rather than a limitation.
+ *
+ * An allocated frame nobody has mapped still has an owner: whoever allocated
+ * it and kept the physical address - the page cache, a DMA buffer, a kernel
+ * structure. The reverse map cannot repoint those because it does not know
+ * they exist, so moving the contents would leave that holder reading the old
+ * frame while everything else reads the new one.
+ *
+ * This test was written the other way round at first, asserting that such a
+ * frame *should* move because it looked like the easiest case. The
+ * fragmentation test disproved it: the "moved" frame never became free,
+ * because the allocation reference stayed exactly where it was. That is the
+ * harmless face of the same defect. */
+static void test_refuses_untracked_reference(void) {
     uint64_t old_f, new_f;
     unsigned char *p;
 
@@ -300,9 +330,113 @@ static void test_unmapped_frame_moves(void) {
     memset(p, 0x3C, 4096);
 
     CHECK(vibeos_rmap_count(old_f) == 0u, "no holders");
-    CHECK(vibeos_vmspace_move_frame(old_f, new_f) == 0, "accepted");
-    CHECK(((unsigned char *)cp_map(new_f))[0] == 0x3C, "contents carried");
-    CHECK(vibeos_mm_stats()->compact_mappings_moved == 0u, "no mappings moved");
+    CHECK(vibeos_frame_owners(old_f) == 1u, "but one owner");
+    CHECK(vibeos_vmspace_move_frame(old_f, new_f) != 0, "refused");
+    CHECK(vibeos_mm_stats()->compact_refused_untracked == 1u, "counted");
+    CHECK(vibeos_mm_stats()->compact_moved == 0u, "nothing moved");
+}
+
+/* --- the only honest test of compaction ----------------------------------- */
+
+/* Fragment memory deliberately, then ask for a contiguous run.
+ *
+ * The plan calls this the only honest test of compaction, because every other
+ * test here checks a mechanism in isolation. This one asks what a machine
+ * actually asks: there is plenty free and none of it in one piece - can a
+ * driver still get its buffer?
+ *
+ * The occupied frames are *mapped read-only*, not merely allocated, and that
+ * is the whole point rather than a detail. A plain allocated frame has an
+ * owner the reverse map cannot see and is correctly refused; what fragments a
+ * real machine and what compaction can actually move are both the mapped kind
+ * - page-cache pages and program text. Fragmenting with unmovable frames would
+ * be a test of the refusal, which is elsewhere.
+ */
+static void test_fragmented_then_contiguous(void) {
+    vibeos_vmspace_t as;
+    uint64_t held[CP_FRAMES];
+    uint32_t n = 0, i;
+    uint32_t before, after;
+    const uint32_t want = 8u;
+
+    if (cp_setup() != 0 || vibeos_vmspace_create(&as) != 0) {
+        printf("  compact: FAIL setup\n"); g_fail++; return;
+    }
+    vibeos_reclaim_set_region(CP_BASE, CP_FRAMES);
+
+    /* Half the region, each frame mapped read-only at its own address. Not all
+     * of it: the address space needs page tables of its own, and an allocator
+     * with nothing left cannot build them. */
+    for (i = 0; i < CP_FRAMES; i++) {
+        uint64_t f = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+        if (!f) {
+            break;
+        }
+        if (map_as_kernel_does(&as, VA_A + (uint64_t)n * 4096ull, f,
+                               (vibeos_prot_t)(VIBEOS_PROT_READ |
+                                               VIBEOS_PROT_USER)) != 0) {
+            break;
+        }
+        held[n++] = f;
+    }
+    CHECK(n > 32u, "enough mapped frames to fragment with");
+
+    /* Unmap every other one. Half free, and no two adjacent - the worst case,
+     * and the one a first-fit allocator can do nothing with. */
+    for (i = 0; i < n; i += 2u) {
+        (void)vibeos_vmspace_unmap(&as, VA_A + (uint64_t)i * 4096ull);
+        held[i] = 0;
+    }
+
+    before = vibeos_reclaim_compact(0u);   /* measures without moving */
+    CHECK(before < want, "fragmented: the largest run is shorter than we want");
+
+    after = vibeos_reclaim_compact(want);
+    CHECK(after >= want, "after compaction a run of the wanted length exists");
+    CHECK(vibeos_reclaim_stats()->compact_frames_moved > 0u,
+          "and it took actual moves to get there");
+}
+
+/* A window that cannot be cleared reports the truth rather than a success.
+ *
+ * Every odd frame is pinned, so no window of the wanted size can ever be
+ * emptied. The compactor must come back with a measurement that says so - a
+ * caller that was told "done" and then failed to allocate would have no way to
+ * find out why. */
+static void test_unclearable_window_is_honest(void) {
+    vibeos_vmspace_t as;
+    uint64_t held[CP_FRAMES];
+    uint32_t n = 0, i;
+    uint32_t after;
+
+    if (cp_setup() != 0 || vibeos_vmspace_create(&as) != 0) {
+        printf("  compact: FAIL setup\n"); g_fail++; return;
+    }
+    vibeos_reclaim_set_region(CP_BASE, CP_FRAMES);
+
+    for (i = 0; i < CP_FRAMES; i++) {
+        uint64_t f = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+        if (!f) { break; }
+        if (map_as_kernel_does(&as, VA_A + (uint64_t)n * 4096ull, f,
+                               (vibeos_prot_t)(VIBEOS_PROT_READ |
+                                               VIBEOS_PROT_USER)) != 0) {
+            break;
+        }
+        held[n++] = f;
+    }
+    for (i = 0; i < n; i += 2u) {
+        (void)vibeos_vmspace_unmap(&as, VA_A + (uint64_t)i * 4096ull);
+        held[i] = 0;
+    }
+    /* Everything still mapped is pinned, so nothing can move. */
+    for (i = 1; i < n; i += 2u) {
+        vibeos_frame_set_flag(held[i], VIBEOS_FRAME_PINNED);
+    }
+
+    after = vibeos_reclaim_compact(16u);
+    CHECK(after < 16u, "it reports the run it could not open");
+    CHECK(vibeos_mm_stats()->compact_refused_pinned > 0u,
+          "and says the frames were pinned");
 }
 
 int test_compact(void) {
@@ -320,13 +454,15 @@ int test_compact(void) {
     test_refuses_writable();
     test_refuses_if_any_holder_is_writable();
     test_refuses_nonsense();
-    test_unmapped_frame_moves();
+    test_refuses_untracked_reference();
+    test_fragmented_then_contiguous();
+    test_unclearable_window_is_honest();
 
     free(g_ram);
     g_ram = 0;
 
     if (g_fail == 0) {
-        printf("  compact: 7 groups ok\n");
+        printf("  compact: 9 groups ok\n");
     }
     return g_fail == 0 ? 0 : 1;
 }
