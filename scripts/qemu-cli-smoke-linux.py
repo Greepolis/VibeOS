@@ -874,7 +874,10 @@ def main():
                            r"poison_hits=0x([0-9a-f]{16}) "
                            r"double_allocs=0x([0-9a-f]{16}) "
                            r"free_while_mapped=0x([0-9a-f]{16}) "
-                           r"fork_undercounted=0x([0-9a-f]{16})", text)
+                           r"fork_undercounted=0x([0-9a-f]{16}) "
+                           r"rmap_mismatch=0x([0-9a-f]{16}) "
+                           r"rmap_cycles=0x([0-9a-f]{16}) "
+                           r"rmap_missing_remove=0x([0-9a-f]{16})", text)
             if mz is None:
                 problems.append("meminfo_missing")
             else:
@@ -883,7 +886,23 @@ def main():
                                     ("poison_hits", 3),
                                     ("double_allocs", 4),
                                     ("free_while_mapped", 5),
-                                    ("fork_undercounted", 6)):
+                                    ("fork_undercounted", 6),
+                                    # The reverse map against the reference
+                                    # count: the same quantity counted two
+                                    # ways, so a disagreement is somebody
+                                    # holding a page nothing counts. That is
+                                    # the defect four investigations chased,
+                                    # and it could previously only be found at
+                                    # a release, one boot in sixteen.
+                                    ("rmap_mismatch", 7),
+                                    # A holder list that loops. Not
+                                    # hypothetical: the first wiring of this
+                                    # layer put its node pool where the frame
+                                    # allocator could hand the pages out again,
+                                    # the lists were overwritten, and the boot
+                                    # stopped inside vibeos_rmap_add.
+                                    ("rmap_cycles", 8),
+                                    ("rmap_missing_remove", 9)):
                     value = int(mz.group(group), 16)
                     if value != 0:
                         problems.append(f"mm_{name}={value}")

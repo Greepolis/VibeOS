@@ -56,6 +56,11 @@ typedef struct vibeos_rmap_holder {
  * ability to map one is not. */
 int vibeos_rmap_init(void *pool, uint64_t bytes, uint32_t frames);
 
+/* The physical address the frame table starts at, so this layer can turn an
+ * address into an index without calling back into the frame layer while a
+ * different lock is held. Set before init. */
+void vibeos_rmap_set_base(uint64_t base_phys);
+
 /* Its own lock, supplied by whoever has one.
  *
  * The fourth time this project has needed this, and the reason is written down
@@ -96,6 +101,7 @@ typedef struct vibeos_rmap_stats {
     uint64_t nodes_peak;      /* high water mark, so the pool can be sized    */
     uint64_t exhausted;       /* an add that found no free node. SHOULD BE 0  */
     uint64_t missing_remove;  /* a remove that found nothing. MUST BE ZERO    */
+    uint64_t cycles;          /* a holder list that loops. MUST BE ZERO       */
 } vibeos_rmap_stats_t;
 
 vibeos_rmap_stats_t *vibeos_rmap_stats(void);

@@ -75,10 +75,72 @@ intended and the exhaustion case passed without ever exhausting anything. It is
 sized in bytes now, with an attempt count that is a multiple of the pool rather
 than a number tuned to it. Same family as the vacuous NTFS cases.
 
-## Not yet wired into the kernel
+## Wired, and audited
 
-The layer is built, tested and sabotage-verified, and nothing calls it yet. The
-next step is the callers - map, unmap, fork and teardown - and then the audit
-that compares holder count against owner count, which is what turns the
-invariant above into a boot assertion. That order is deliberate: wiring it in
-without the audit would add cost and answer nothing.
+Four call sites, chosen by one rule: wherever a reference is taken by
+publishing an entry, a holder is recorded; wherever a reference is given back
+by clearing one, the holder is forgotten. The two lines sit next to each other
+in every case, so an edit that moves one has to look at the other.
+
+- `map_raw`, next to the `vibeos_frame_get` that publishes the entry - and the
+  previous holder forgotten next to the `put` that retires the old one.
+- `unmap`, next to its `put`.
+- The copy-on-write fault's winning side, in **both** directions: the page's
+  physical address changed, so this address space holds a different frame at
+  the same address. Recording the new holder without forgetting the old one
+  would leave the shared frame looking like it has one holder more than it
+  does, and compaction would then move a page on behalf of an address space
+  that had stopped pointing at it.
+- `destroy`, as one sweep rather than one removal per entry - which would be
+  quadratic in the size of the address space, and which also means a teardown
+  that failed half way leaves nothing behind for the next tenant of a recycled
+  root.
+
+`clone_cow` needs no call of its own: it goes through `map_raw`.
+
+### The audit
+
+Every audited fork now compares, for each owned entry, the holder count against
+the owner count. They are the same quantity counted two ways, so a disagreement
+means somebody holds a page nothing is counting - `mappers=2, owners=1`, the
+defect four investigations chased. Until now it could only be discovered at a
+release, one boot in sixteen and a long way from whatever lost the reference.
+
+It is skipped when the node pool has been exhausted at all, because a truncated
+list is shorter than the truth by design and reporting that as a mismatch would
+turn a reported degradation into a false defect.
+
+`rmap_mismatch`, `rmap_cycles` and `rmap_missing_remove` are on the MUSTBEZERO
+line and the gate fails on any of them. Verified in both directions: the clean
+tree passes, and removing the single `vibeos_rmap_add` from `map_raw` gives
+`mm_rmap_mismatch=58, mm_rmap_missing_remove=392`.
+
+### What a boot measures
+
+Zero on every counter, and `rmap_peak=1710` nodes against a pool of two per
+frame - so the pool is oversized by a wide margin and `nodes_peak` is the
+number to size it from if that ever matters. 8/8 clean boots.
+
+## The wiring was wrong first, and the wedge report named it
+
+The node pool was carved *after* `vibeos_frame_init`, and the frame table is
+carved before it. What protects those pages from being handed out again is the
+reserve of everything the physical allocator had already given away when the
+frame layer started - so anything carved afterwards is memory the frame layer
+believes is free.
+
+It did exactly what that sounds like. User pages were allocated on top of the
+node pool, the lists were overwritten with whatever the new tenant wrote, and
+one of them closed into a cycle. The boot stopped with `CPU#0` inside
+`vibeos_rmap_add` and every other core outside the kernel - a spin with nobody
+to wait for, which is what walking a circular list looks like from outside.
+
+Two things worth keeping from that. The wedge report named the function on the
+first failing boot, which is the whole argument for it existing. And the fix is
+one line moved, not a workaround: the pool is carved beside the frame table
+where the reserve covers it.
+
+A bound on the list walk was drafted as a safety net and then not kept -
+bounding the symptom would have made the real defect survivable and quiet,
+which is the opposite of what this subsystem needs. `rmap_cycles` exists for a
+cycle that arrives some other way.

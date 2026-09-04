@@ -4,6 +4,7 @@
 #include "vibeos/task_stats.h"
 #include "vibeos/exec_stats.h"
 #include "vibeos/backing.h"
+#include "vibeos/rmap.h"
 #include <stddef.h>
 
 static int kernel_bootinfo_validate(const vibeos_boot_info_t *boot_info) {
@@ -251,6 +252,16 @@ static void kernel_cli_print_meminfo(void) {
     kernel_log_u64_hex(st->free_while_mapped);
     vibeos_x86_64_serial_puts(" fork_undercounted=0x");
     kernel_log_u64_hex(st->fork_undercounted);
+    vibeos_x86_64_serial_puts(" rmap_mismatch=0x");
+    kernel_log_u64_hex(st->rmap_mismatch);
+    vibeos_x86_64_serial_puts(" rmap_cycles=0x");
+    kernel_log_u64_hex(vibeos_rmap_stats()->cycles);
+    vibeos_x86_64_serial_puts(" rmap_missing_remove=0x");
+    kernel_log_u64_hex(vibeos_rmap_stats()->missing_remove);
+    vibeos_x86_64_serial_puts(" rmap_peak=0x");
+    kernel_log_u64_hex(vibeos_rmap_stats()->nodes_peak);
+    vibeos_x86_64_serial_puts(" rmap_exhausted=0x");
+    kernel_log_u64_hex(vibeos_rmap_stats()->exhausted);
     vibeos_x86_64_serial_puts("\n");
 
     vibeos_x86_64_serial_puts("[MEM] cache_hits=0x");

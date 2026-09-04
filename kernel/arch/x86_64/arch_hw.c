@@ -26,6 +26,7 @@
 #include "vibeos/forkguard.h"
 #include "vibeos/sched_policy.h"
 #include "vibeos/pageinfo.h"
+#include "vibeos/rmap.h"
 
 #define VIBEOS_HW_KERNEL_CS 0x08u
 #define VIBEOS_HW_KERNEL_DS 0x10u
@@ -1723,6 +1724,20 @@ static void hw_cache_unlock(void) {
     hw_spin_unlock(&g_cache_lock);
 }
 
+/* The reverse map's own lock. Its own, because it is called from inside the
+ * address-space layer while the frame lock is held, and from teardown while
+ * neither is - a borrowed lock would deadlock in the first case and protect
+ * nothing in the second. */
+static hw_lock_t g_rmap_lock;
+
+static void hw_rmap_lock(void) {
+    hw_spin_lock(&g_rmap_lock);
+}
+
+static void hw_rmap_unlock(void) {
+    hw_spin_unlock(&g_rmap_lock);
+}
+
 static void hw_frame_unlock(void) {
     hw_spin_unlock(&g_mm_lock);
 }
@@ -1839,6 +1854,35 @@ static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
         uint64_t table_pages = (table_bytes + 4095ull) / 4096ull;
         void *table = frames ? vibeos_pmm_alloc_pages(&g_hw_pmm,
                                                       (size_t)table_pages) : 0;
+        /* The reverse map's storage, carved here and not later.
+         *
+         * It has to come out of the allocator *before* vibeos_frame_init,
+         * beside the frame table, because what protects these pages from being
+         * handed out again is the reserve of everything the physical allocator
+         * had already given away by the time the frame layer started - the
+         * prefix, below. Anything carved afterwards is memory the frame layer
+         * believes is free.
+         *
+         * That was the first version, and it did exactly what it sounds like:
+         * user pages were allocated on top of the node pool, the lists were
+         * overwritten with whatever the new tenant wrote, and one of them
+         * closed into a cycle. The boot stopped with CPU#0 inside
+         * vibeos_rmap_add and every other core outside the kernel - a spin with
+         * nobody to wait for, which is what walking a circular list looks like
+         * from the outside.
+         *
+         * Sizing: one list head per frame is mandatory, because the table is
+         * indexed directly and that is what removes collisions from a structure
+         * whose whole job is to be trustworthy about identity. Two nodes per
+         * frame is a choice - it covers a parent and a child sharing
+         * everything, which is what a fork produces - and running out is
+         * reported rather than fatal, so an unusual workload degrades reclaim
+         * instead of failing a mapping. nodes_peak says afterwards what it
+         * should have been. */
+        uint64_t rmap_bytes = frames * (sizeof(uint32_t) + 2ull * 24ull);
+        uint64_t rmap_pages = (rmap_bytes + 4095ull) / 4096ull;
+        void *rmap_pool = frames ? vibeos_pmm_alloc_pages(&g_hw_pmm,
+                                                          (size_t)rmap_pages) : 0;
         uint64_t prefix;
         int ok = 0;
 
@@ -1857,6 +1901,18 @@ static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
             vibeos_vma_set_lock(hw_frame_lock, hw_frame_unlock);
             vibeos_vma_pool_init(g_vma_pool, VIBEOS_HW_VMA_ENTRIES);
             vibeos_cache_set_lock(hw_cache_lock, hw_cache_unlock);
+            /* Its own lock, like every other layer here, and for the reason
+             * CLAUDE.md gives: sharing the frame layer's would deadlock, since
+             * this is called from inside the address-space layer while the
+             * frame lock is held. */
+            vibeos_rmap_set_lock(hw_rmap_lock, hw_rmap_unlock);
+            if (rmap_pool &&
+                ((uint64_t)(uintptr_t)rmap_pool + rmap_pages * 4096ull)
+                    <= VIBEOS_HW_IDENTITY_LIMIT) {
+                vibeos_rmap_set_base((uint64_t)g_hw_pmm.base);
+                (void)vibeos_rmap_init(rmap_pool, rmap_pages * 4096ull,
+                                       (uint32_t)frames);
+            }
             vibeos_exec_set_auditor(hw_cache_audit);
             vibeos_cache_init(g_cache_table, VIBEOS_HW_CACHE_ENTRIES,
                               hw_cache_read, 0);

@@ -14,6 +14,7 @@
 #include "vibeos/vmspace.h"
 #include "vibeos/frame.h"
 #include "vibeos/mm_stats.h"
+#include "vibeos/rmap.h"
 
 #define PTE_PRESENT (1ull << 0)
 #define PTE_WRITE   (1ull << 1)
@@ -345,6 +346,14 @@ int vibeos_vmspace_destroy(vibeos_vmspace_t *as) {
         as->root[slot] = 0;
     }
 
+    /* Everything this address space held, in one sweep.
+     *
+     * Doing it per entry as release_pt walks would be correct and quadratic in
+     * the size of the address space; doing it here also means a teardown that
+     * failed half way still leaves nothing behind for the next tenant of this
+     * root, which matters because roots are recycled. */
+    vibeos_rmap_forget_root(as->root_phys);
+
     g_be.free_table(as->root_phys);
     as->root = 0;
     as->root_phys = 0;
@@ -427,7 +436,21 @@ int vibeos_vmspace_map_raw(vibeos_vmspace_t *as, uint64_t va, uint64_t pa,
             (void)vibeos_frame_put(pa & PTE_ADDR_MASK);
         }
 
+        /* The holder is recorded next to the reference that was just taken,
+         * and the previous holder is forgotten next to the reference that is
+         * about to be given back.
+         *
+         * Placed here rather than in a wrapper because the pairing is the
+         * invariant: every vibeos_frame_get in this file publishes an entry and
+         * every vibeos_frame_put retires one, so a holder recorded anywhere
+         * else would be a holder the count does not know about - which is the
+         * exact defect this map exists to make visible. Keeping the two lines
+         * adjacent means a future edit that moves one has to look at the
+         * other. */
+        (void)vibeos_rmap_add(pa & PTE_ADDR_MASK, as->root_phys, va);
+
         if ((old & PTE_PRESENT) && (old & VIBEOS_PTE_OWNED)) {
+            (void)vibeos_rmap_remove(old & PTE_ADDR_MASK, as->root_phys, va);
             (void)vibeos_frame_put(old & PTE_ADDR_MASK);
             vibeos_mm_stats()->unmaps++;
         }
@@ -524,6 +547,7 @@ int vibeos_vmspace_unmap(vibeos_vmspace_t *as, uint64_t va) {
         if (g_be.invlpg) {
             g_be.invlpg(va);
         }
+        (void)vibeos_rmap_remove(entry & PTE_ADDR_MASK, as->root_phys, va);
         (void)vibeos_frame_put(entry & PTE_ADDR_MASK);
         vibeos_mm_stats()->unmaps++;
     }
@@ -671,8 +695,29 @@ static int audit_one(vibeos_vmspace_t *as, uint64_t va, uint64_t *pte,
     (void)as; (void)va; (void)ctx;
 
     if ((entry & PTE_PRESENT) && (entry & VIBEOS_PTE_OWNED)) {
-        if (vibeos_frame_owners(entry & PTE_ADDR_MASK) < 2u) {
+        uint64_t phys = entry & PTE_ADDR_MASK;
+
+        if (vibeos_frame_owners(phys) < 2u) {
             vibeos_mm_stats()->fork_undercounted++;
+        }
+        /* Holders against owners, which is the whole reason the reverse map
+         * exists.
+         *
+         * These are the same quantity counted two ways: every owned entry is
+         * one reference and one holder. When they disagree, somebody holds a
+         * page nothing is counting - `mappers=2, owners=1` - and until now that
+         * could only be discovered at a release, one boot in sixteen and a long
+         * way from whatever lost the reference. Here it is checked where the
+         * mapping was just made.
+         *
+         * Only when the list is not truncated: a frame whose holders exceeded
+         * the node pool has a list shorter than the truth by design, and
+         * reporting that as a mismatch would turn a reported degradation into a
+         * false defect. exhausted says when that has happened at all. */
+        if (vibeos_rmap_stats()->exhausted == 0u) {
+            if (vibeos_rmap_count(phys) != (uint32_t)vibeos_frame_owners(phys)) {
+                vibeos_mm_stats()->rmap_mismatch++;
+            }
         }
     }
     return 0;
@@ -863,7 +908,14 @@ copy:
     }
 
     /* We won: this address space has stopped pointing at the shared frame, so
-     * now it may let go of it. */
+     * now it may let go of it - and it holds a different frame at the same
+     * address, which the reverse map has to be told in both directions. A copy
+     * that recorded the new holder without forgetting the old one would leave
+     * the shared frame looking like it has one more holder than it does, and
+     * compaction would then move a page on behalf of an address space that
+     * stopped pointing at it. */
+    (void)vibeos_rmap_add(fresh & PTE_ADDR_MASK, as->root_phys, va);
+    (void)vibeos_rmap_remove(phys, as->root_phys, va);
     (void)vibeos_frame_put(phys);
     if (g_be.invlpg) {
         g_be.invlpg(va);

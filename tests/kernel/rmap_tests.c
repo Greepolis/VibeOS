@@ -18,7 +18,6 @@
 #include "vibeos/rmap.h"
 
 int test_rmap(void);
-void vibeos_rmap_set_base(uint64_t base_phys);
 
 #define RM_FRAMES 64u
 #define RM_BASE   0x400000ull
