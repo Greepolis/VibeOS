@@ -125,10 +125,44 @@ int vibeos_elf_parse(const void *image, uint64_t len,
  * interp[] instead of failing. Nothing here loads that interpreter: the caller
  * must, must then enter at the interpreter's entry point rather than
  * out->entry, and must pass the interpreter's load address as AT_BASE. */
+/* Fetch `len` bytes of the file at `off` into `buf`. Return 0 on success.
+ *
+ * The reason this exists is that filling a page needs bytes at an arbitrary
+ * file offset, and the only way to serve that from a pointer is to have the
+ * whole file in memory. That is what the 4 MiB staging buffer was for: every
+ * execve read an entire program into it so that a handful of pages could be
+ * copied out. A reader makes the same operation answerable a page at a time,
+ * from the page cache, which is where the bytes already are. */
+typedef int (*vibeos_elf_read_fn)(void *ctx, uint64_t off, uint32_t len,
+                                  void *buf);
+
 int vibeos_elf_parse_ex(const void *image, uint64_t len,
                         uint64_t load_bias,
                         uint64_t min_allowed, uint64_t end_allowed,
                         uint32_t opts, vibeos_elf_image_t *out);
+
+/* The same parse, with a reader for the one thing that is not in the headers.
+ *
+ * Everything this parser needs is within the first few kilobytes of a file -
+ * the ELF header and the program headers - with exactly one exception: the
+ * interpreter path, which is the contents of a PT_INTERP segment at an
+ * arbitrary file offset. That single access is why `image` had to be the whole
+ * file, and why every execve read an entire program into a four-megabyte
+ * buffer so that a parser could look at its first hundred bytes.
+ *
+ * With a reader, `image` need only cover the headers. Pass null for `read` and
+ * this behaves exactly as vibeos_elf_parse_ex: the interpreter path is taken
+ * from the buffer, which is what the bootloader and the host tests want since
+ * they have the whole file to hand anyway.
+ *
+ * A file whose headers reach past `len` is refused rather than read beyond -
+ * the caller's window is a fact about the caller, not about the file. */
+int vibeos_elf_parse_read(const void *image, uint64_t len,
+                          uint64_t load_bias,
+                          uint64_t min_allowed, uint64_t end_allowed,
+                          uint32_t opts,
+                          vibeos_elf_read_fn read, void *read_ctx,
+                          vibeos_elf_image_t *out);
 
 /* Permissions for one page: the union over every segment that touches it, so a
  * page shared between .text and .data ends up readable, writable and
@@ -218,6 +252,18 @@ int vibeos_elf_page_file_offset(const vibeos_elf_image_t *img, uint64_t page_va,
 /* Fill one page of the image. `dst` must be VIBEOS_ELF_PAGE_SIZE bytes and is
  * fully written: bytes backed by the file are copied, everything else - .bss
  * and padding either side - is zeroed. */
+/* The same fill, asking a reader instead of indexing a buffer.
+ *
+ * A page of virtual address maps to at most one contiguous range per segment,
+ * so this issues at most one read per segment that covers the page - not one
+ * per byte, and not one for the whole file. A read that fails leaves the
+ * remainder of the page zeroed rather than half-written: a partially filled
+ * page of program text is indistinguishable from a correct one until it is
+ * executed. */
+void vibeos_elf_fill_page_via(const vibeos_elf_image_t *img,
+                              vibeos_elf_read_fn read, void *ctx,
+                              uint64_t page_va, void *dst);
+
 void vibeos_elf_fill_page(const vibeos_elf_image_t *img, const void *image,
                           uint64_t page_va, void *dst);
 

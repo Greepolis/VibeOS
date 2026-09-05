@@ -65,6 +65,17 @@ int vibeos_elf_parse_ex(const void *image, uint64_t len,
                         uint64_t load_bias,
                         uint64_t min_allowed, uint64_t end_allowed,
                         uint32_t opts, vibeos_elf_image_t *out) {
+    /* The buffer *is* the reader. See vibeos_elf_parse_read. */
+    return vibeos_elf_parse_read(image, len, load_bias, min_allowed,
+                                 end_allowed, opts, 0, 0, out);
+}
+
+int vibeos_elf_parse_read(const void *image, uint64_t len,
+                          uint64_t load_bias,
+                          uint64_t min_allowed, uint64_t end_allowed,
+                          uint32_t opts,
+                          vibeos_elf_read_fn read, void *read_ctx,
+                          vibeos_elf_image_t *out) {
     const uint8_t *b = (const uint8_t *)image;
     uint64_t phoff, ph_total;
     uint16_t phnum, phentsize, etype;
@@ -154,14 +165,34 @@ int vibeos_elf_parse_ex(const void *image, uint64_t len,
             if (filesz == 0u || filesz > VIBEOS_ELF_MAX_INTERP) {
                 return VIBEOS_ELF_EMALFORMED;
             }
+            /* The only thing here that is not in the headers, and therefore
+             * the only reason `image` ever had to be the whole file.
+             *
+             * With a reader the caller's buffer need only cover the headers;
+             * without one it must cover this too, and a range past the end of
+             * it is refused rather than read beyond. */
+            if (read) {
+                if (read(read_ctx, off, (uint32_t)filesz, out->interp) != 0) {
+                    return VIBEOS_ELF_EMALFORMED;
+                }
+            } else {
+                if (off + filesz > len) {
+                    return VIBEOS_ELF_EMALFORMED;
+                }
+                for (k = 0; k < filesz; k++) {
+                    out->interp[k] = (char)b[off + k];
+                }
+            }
             /* The path must already be terminated inside its own segment.
              * Terminating it here would turn a malformed file into a request
-             * to open some prefix of a path, which is a different file. */
-            if (b[off + filesz - 1u] != 0) {
+             * to open some prefix of a path, which is a different file.
+             *
+             * Checked after the copy rather than before it, because with a
+             * reader the bytes are not addressable until they have been
+             * fetched - and checking a different copy from the one that is
+             * used is how the two come to disagree. */
+            if (out->interp[filesz - 1u] != 0) {
                 return VIBEOS_ELF_EMALFORMED;
-            }
-            for (k = 0; k < filesz; k++) {
-                out->interp[k] = (char)b[off + k];
             }
             out->has_interp = 1u;
             continue;
@@ -307,14 +338,14 @@ int vibeos_elf_page_file_offset(const vibeos_elf_image_t *img, uint64_t page_va,
     return 1;
 }
 
-void vibeos_elf_fill_page(const vibeos_elf_image_t *img, const void *image,
-                          uint64_t page_va, void *dst) {
-    const uint8_t *src = (const uint8_t *)image;
+void vibeos_elf_fill_page_via(const vibeos_elf_image_t *img,
+                              vibeos_elf_read_fn read, void *ctx,
+                              uint64_t page_va, void *dst) {
     uint8_t *d = (uint8_t *)dst;
     uint32_t i;
     uint64_t k;
 
-    if (!img || !image || !dst) {
+    if (!img || !read || !dst) {
         return;
     }
     for (k = 0; k < VIBEOS_ELF_PAGE_SIZE; k++) {
@@ -329,10 +360,63 @@ void vibeos_elf_fill_page(const vibeos_elf_image_t *img, const void *image,
 
         from = (copy_start > page_va) ? copy_start : page_va;
         to = (copy_end < page_end) ? copy_end : page_end;
-        for (k = from; k < to; k++) {
-            d[k - page_va] = src[s->file_off + (k - s->vaddr)];
+        if (from >= to) {
+            continue;   /* this segment does not reach this page */
+        }
+        /* One read for the whole overlap. Within a segment the file layout is
+         * contiguous, so the bytes this page needs from it are one range - and
+         * issuing one read per byte would turn a page fill into four thousand
+         * cache lookups. */
+        if (read(ctx, s->file_off + (from - s->vaddr),
+                 (uint32_t)(to - from), d + (from - page_va)) != 0) {
+            /* Leave the rest zeroed rather than half-written. A partially
+             * filled page of program text is indistinguishable from a correct
+             * one until it is executed. */
+            for (k = from; k < to; k++) {
+                d[k - page_va] = 0;
+            }
         }
     }
+}
+
+/* The pointer form, now a reader over memory.
+ *
+ * Kept because the host tests and the bootloader have the whole image to hand
+ * and there is no reason to make them invent a callback. It is the same code
+ * path, which is the point: two fills that could drift apart is how the copied
+ * pages and the mapped pages come to disagree about a program. */
+typedef struct elf_mem_reader {
+    const uint8_t *base;
+    uint64_t len;
+} elf_mem_reader_t;
+
+static int elf_read_memory(void *ctx, uint64_t off, uint32_t len, void *buf) {
+    const elf_mem_reader_t *m = (const elf_mem_reader_t *)ctx;
+    uint8_t *d = (uint8_t *)buf;
+    uint32_t i;
+
+    if (!m || off + (uint64_t)len > m->len) {
+        return -1;
+    }
+    for (i = 0; i < len; i++) {
+        d[i] = m->base[off + i];
+    }
+    return 0;
+}
+
+void vibeos_elf_fill_page(const vibeos_elf_image_t *img, const void *image,
+                          uint64_t page_va, void *dst) {
+    elf_mem_reader_t m;
+
+    if (!img || !image || !dst) {
+        return;
+    }
+    m.base = (const uint8_t *)image;
+    /* The pointer form has no length, so the bound is the largest offset any
+     * segment names. A caller that passes a shorter buffer than its own image
+     * header describes is already wrong in a way this cannot detect. */
+    m.len = 0xFFFFFFFFFFFFFFFFull;
+    vibeos_elf_fill_page_via(img, elf_read_memory, &m, page_va, dst);
 }
 
 /* ---- initial process stack ------------------------------------------------ */

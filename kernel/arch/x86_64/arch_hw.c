@@ -2355,10 +2355,64 @@ static int hw_streq(const char *a, const char *b) {
  * still get a private frame. `vibeos_elf_page_file_offset` is what draws that
  * line, and it refuses every case it is not certain about.
  */
+/* Serve an arbitrary file range out of the page cache.
+ *
+ * This is what makes the staging buffer unnecessary for the pages exec has to
+ * *copy*. The cache is already holding the file - X-P2 maps most image pages
+ * straight out of it - so the bytes a writable page needs are a lookup away
+ * rather than a four-megabyte read away.
+ *
+ * A range can straddle two cache pages, so the loop is not decoration: a
+ * segment's file offset has no reason to be page-aligned, and a version that
+ * assumed one lookup per read would corrupt every page whose data crossed a
+ * boundary - which is most of them, and only for some programs. */
+typedef struct hw_elf_cache_reader {
+    uint32_t file_id;
+    uint64_t file_len;
+} hw_elf_cache_reader_t;
+
+static int hw_elf_read_cached(void *ctx, uint64_t off, uint32_t len, void *buf) {
+    hw_elf_cache_reader_t *r = (hw_elf_cache_reader_t *)ctx;
+    uint8_t *d = (uint8_t *)buf;
+    uint32_t done = 0;
+
+    if (!r || r->file_id == 0u) {
+        return -1;
+    }
+    if (off + (uint64_t)len > r->file_len) {
+        return -1;   /* past the end of the file: not this reader's to invent */
+    }
+    while (done < len) {
+        uint64_t page_off = (off + done) & ~0xFFFull;
+        uint32_t within = (uint32_t)((off + done) - page_off);
+        uint32_t take = 4096u - within;
+        uint64_t phys = 0;
+        const uint8_t *src;
+        uint32_t i;
+
+        if (take > len - done) {
+            take = len - done;
+        }
+        if (vibeos_cache_get(r->file_id, page_off, &phys) != 0 || phys == 0u) {
+            return -1;
+        }
+        src = (const uint8_t *)(uintptr_t)phys;
+        for (i = 0; i < take; i++) {
+            d[done + i] = src[within + i];
+        }
+        done += take;
+    }
+    return 0;
+}
+
 static int hw_map_elf_image(vibeos_hw_aspace_t *as, vibeos_vma_list_t *vmas,
                             const vibeos_elf_image_t *img, const void *elf,
-                            uint32_t file_id) {
+                            uint32_t file_id, uint64_t file_len) {
     uint64_t va;
+    hw_elf_cache_reader_t reader;
+
+    reader.file_id = file_id;
+    reader.file_len = file_len;
 
     for (va = img->min_vaddr; va < img->end_vaddr; va += 4096ull) {
         uint32_t flags = vibeos_elf_page_flags(img, va);
@@ -2443,7 +2497,26 @@ static int hw_map_elf_image(vibeos_hw_aspace_t *as, vibeos_vma_list_t *vmas,
         if (!page) {
             return -1;
         }
-        vibeos_elf_fill_page(img, elf, va, page);
+        /* From the cache when there is one, from the staged image otherwise.
+         *
+         * The two produce the same page - that was checked page by page across
+         * a whole boot when the cache mapping was first turned on - and the
+         * difference is only where the bytes come from. Preferring the cache
+         * is what makes the staging buffer unnecessary for these pages: the
+         * file is already in memory, one page at a time, and reading four
+         * megabytes to copy a handful of them was the arrangement P4 step 3
+         * exists to end.
+         *
+         * The fallback is not dead code. hw_read_file_cached reports no file
+         * identity when the cache could not take the file - a program larger
+         * than the cache, or a read that missed - and a load with no identity
+         * still has to work. */
+        if (file_id != 0u) {
+            vibeos_elf_fill_page_via(img, hw_elf_read_cached, &reader,
+                                     va, page);
+        } else {
+            vibeos_elf_fill_page(img, elf, va, page);
+        }
         vibeos_exec_stats()->pages_copied++;
         if (va < VIBEOS_HW_IDENTITY_LIMIT) {
             if (hw_map_low_user_page(as, va, (uint64_t)(uintptr_t)page, leaf) != 0) {
@@ -2904,10 +2977,25 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
          * position-independent file. The window is enforced below, on the
          * addresses the image will really occupy, and again by the explicit
          * check after this block. */
-        int parse_rc = vibeos_elf_parse_ex(elf, len, 0, 0,
+        /* The reader is what lets `elf` be a header window rather than the
+         * whole file: the interpreter path is the one thing the parser needs
+         * that is not in the headers, and with a reader it comes from the page
+         * cache like everything else.
+         *
+         * Null when the cache has no identity for this file - a program it
+         * could not take - and then the buffer must cover the path, which it
+         * does because that is the path this kernel took for years. */
+        hw_elf_cache_reader_t hdr_reader;
+        int parse_rc;
+
+        hdr_reader.file_id = file_id;
+        hdr_reader.file_len = len;
+        parse_rc = vibeos_elf_parse_read(elf, len, 0, 0,
                                      VIBEOS_HW_USER_STACK_TOP,
                                      VIBEOS_ELF_ALLOW_DYN |
-                                     VIBEOS_ELF_ALLOW_INTERP, &img);
+                                     VIBEOS_ELF_ALLOW_INTERP,
+                                     file_id ? hw_elf_read_cached : 0,
+                                     file_id ? &hdr_reader : 0, &img);
 
         if (parse_rc != VIBEOS_ELF_OK) {
             { rc = hw_exec_refuse(VIBEOS_EXEC_BAD_HEADER, path, "parse"); goto fail; }
@@ -2921,10 +3009,13 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
                 /* Would not fit in the window it is offered. */
                 { rc = hw_exec_refuse(VIBEOS_EXEC_BAD_WINDOW, path, "pie_span"); goto fail; }
             }
-            parse_rc = vibeos_elf_parse_ex(elf, len, bias, VIBEOS_HW_LOW_USER_BASE,
+            parse_rc = vibeos_elf_parse_read(elf, len, bias,
+                                     VIBEOS_HW_LOW_USER_BASE,
                                      VIBEOS_HW_USER_STACK_TOP,
                                      VIBEOS_ELF_ALLOW_DYN |
-                                     VIBEOS_ELF_ALLOW_INTERP, &img);
+                                     VIBEOS_ELF_ALLOW_INTERP,
+                                     file_id ? hw_elf_read_cached : 0,
+                                     file_id ? &hdr_reader : 0, &img);
             if (parse_rc != VIBEOS_ELF_OK) {
                 { rc = hw_exec_refuse(VIBEOS_EXEC_BAD_HEADER, path, "parse_biased"); goto fail; }
             }
@@ -2944,7 +3035,7 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
      * is how the dynamic loader reported "RELRO protection failed". */
     p->vmas.head = 0;
     p->vmas.count = 0;
-    if (hw_map_elf_image(&p->as, &p->vmas, &img, elf, file_id) != 0) {
+    if (hw_map_elf_image(&p->as, &p->vmas, &img, elf, file_id, len) != 0) {
         { rc = hw_exec_refuse(VIBEOS_EXEC_NO_MEMORY, path, "map_image"); goto fail; }
     }
     p->entry = img.entry;
@@ -2994,7 +3085,7 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
             { rc = hw_exec_refuse(VIBEOS_EXEC_INTERP_CHAIN, img.interp, "interp_chain"); goto fail; }
         }
         if (hw_map_elf_image(&p->as, &p->vmas, &interp, g_interp_elf,
-                             interp_id) != 0) {
+                             interp_id, (uint64_t)n) != 0) {
             { rc = hw_exec_refuse(VIBEOS_EXEC_NO_MEMORY, img.interp, "map_interp"); goto fail; }
         }
 
