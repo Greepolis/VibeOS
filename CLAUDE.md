@@ -595,6 +595,53 @@ A test binary ships on the media whether or not the boot script runs it, so a
 gate keyed on the file reported a missing result as a failure while nothing had
 been asked to produce one.
 
+**A test can be right about the outcome and wrong about the mechanism.**
+Three times in one stretch of memory-manager work, a sabotage case walked
+straight through a green test - and each time the test was asserting the
+correct property about an arrangement in which the defect could not show:
+
+- "only the first holder is checked for writability" passed, because the test
+  mapped the writable holder last and the reverse map inserts at the head, so
+  the writable one was examined first anyway. It maps in both orders now.
+- "page-in accepts a present entry" passed, because with the guard removed
+  page-in derives a slot number from the frame address, which is far outside
+  the swap area, so the transfer failed for a different reason. The test now
+  asserts that no read was *attempted*.
+- "the anonymous tier is asked for the whole amount, not the shortfall" passed,
+  because with no clean tier in the harness the shortfall and the request were
+  the same number. The harness now supplies part of the request from the clean
+  tier so the two differ.
+
+None of these were found by reading. A test whose arrangement hides the defect
+is indistinguishable from a test that works, and only breaking the code on
+purpose tells them apart. This is why the sabotage cases are worth their cost:
+they test the tests.
+
+**The free count and the free list are separate things.** A release that
+decrements one without linking into the other leaves a machine that believes it
+has memory and cannot hand any out. An exhaustion test that checked only the
+count passed a sabotage that broke the list - "the count came back exactly" was
+true and meant nothing. Allocate everything a second time.
+
+**"Configured and consulted by nobody" is the defect this project produces most
+often.** Three separate instances in one session: the scheduler computed a time
+slice and re-picked on every tick so nothing read it; the memory watermarks
+were set at boot and never consulted from the allocation path; and reclaim grew
+an anonymous tier that nothing called. Each mechanism was correct in isolation
+and connected to nothing.
+
+The tell is the same every time: a number that is written and never read. When
+adding one, write the assertion that would fail if the caller disappeared -
+`ticks > runs` for the quantum, an admission refusal for the watermarks, an
+end-to-end test for the tier.
+
+**A sabotage case that turns the suite red is not the same as one your test
+caught.** Breaking the frame free list segfaults an earlier test group, so the
+suite fails loudly and `FAIL:test_acceptance` never prints. That is worth
+recording as what it is rather than counting among the cases that pass - the
+same distinction the AHCI cases carry between "no case exists" and "this
+environment cannot tell".
+
 ## Verification that exists
 
 The boot gate (`scripts/qemu-cli-smoke-linux.py`) asserts state, not markers:
