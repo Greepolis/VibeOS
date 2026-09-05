@@ -1027,6 +1027,58 @@ def main():
                     if value != 0:
                         problems.append(f"swap_{name}={value}")
 
+            # The block cache below the filesystem (I2).
+            #
+            # Asserted as a *ratio*, not as a presence, and this project has
+            # paid for the difference: the mm page cache shipped at 36% while a
+            # "non-zero hits" check passed happily, so the gate said the cache
+            # was wired in and said nothing about whether it worked. One hit
+            # satisfies "non-zero" on a boot that reads four thousand sectors.
+            #
+            # The floor is 50, and how it was arrived at is the point.
+            #
+            # It was first set to 20 from a single measurement of 38%, which is
+            # the mistake this project has a written rule about - check a
+            # criterion against the baseline before using it to judge a change.
+            # Twenty-four consecutive boots then measured 7%, exactly, every
+            # time: the 38% was a stale image and the real number was a seventh
+            # of it.
+            #
+            # That 7% turned out to be a defect rather than a property. fat.c
+            # still had its own one-sector FAT cache, which absorbed every
+            # repeated table read and passed on only the misses - two caches in
+            # series where the first is a hundredth the size of the second, so
+            # the small one decided what the large one was allowed to see.
+            # Removing it took the ratio to 93%.
+            #
+            # Fifty is therefore comfortably under a healthy boot and far above
+            # anything a cache that had stopped caching could reach. It is
+            # still a ratio rather than a presence check, because the mm page
+            # cache shipped at 36% while "non-zero hits" passed happily.
+            #
+            # evict_failed is a defect, not a description: it means a block the
+            # caller was told had been written is still only in this cache.
+            mbc = re.search(r"\[IO\] BLKCACHE hits=0x([0-9a-f]{16}) "
+                            r"misses=0x([0-9a-f]{16}) "
+                            r"evictions=0x([0-9a-f]{16}) "
+                            r"evict_failed=0x([0-9a-f]{16}) "
+                            r"hit_pct=0x([0-9a-f]{16})", text)
+            if mbc is None:
+                problems.append("blockcache_line_missing")
+            else:
+                hits = int(mbc.group(1), 16)
+                misses = int(mbc.group(2), 16)
+                failed = int(mbc.group(4), 16)
+                pct = int(mbc.group(5), 16)
+                if hits == 0:
+                    problems.append("blockcache_never_hit")
+                if misses == 0:
+                    problems.append("blockcache_never_missed")
+                if failed != 0:
+                    problems.append(f"blockcache_evict_failed={failed}")
+                if hits and misses and pct < 50:
+                    problems.append(f"blockcache_hit_ratio={pct}pct_floor=50")
+
             # The console lock, which is the one that cannot report itself.
             #
             # Every other lock here panics when its bound fires. This one takes

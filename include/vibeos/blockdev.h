@@ -66,8 +66,39 @@ typedef struct {
      * look identical from outside. */
     uint64_t hits;
     uint64_t misses;
+    /* Evictions, separately from writebacks. A cache that evicts constantly
+     * and writes back rarely is thrashing on read traffic; one that writes
+     * back on every eviction is holding dirty blocks it cannot afford. The two
+     * were one number and could not tell those apart. */
+    uint64_t evictions;
     uint64_t writebacks;
+    /* An eviction that could not happen because the block it had to write out
+     * would not go. MUST BE ZERO: the alternative to failing here is dropping
+     * a write the caller believes succeeded. */
+    uint64_t evict_failed;
 } vibeos_blockcache_t;
+
+/* Its own lock, by registration.
+ *
+ * The sixth layer in this kernel to need one, and the reason has not changed
+ * since the first: a layer with mutable state and more than one possible
+ * caller locks itself, because "remember to hold the lock" is not a property a
+ * compiler checks. The page cache learned it the expensive way - it had no
+ * lock at all, which did not matter while it had exactly one caller, and
+ * adding a second left one entry's frame beside another entry's key, so a
+ * lookup *hit* and returned the pages of a different file.
+ *
+ * One lock for every cache instance rather than one per instance. There is
+ * exactly one below the boot filesystem today, several instances are a
+ * multi-volume machine's problem, and a per-instance lock would have to live
+ * in the struct - which this header deliberately keeps free of anything the
+ * portable layer cannot host-test. If contention between volumes ever
+ * measures, that is the moment to split it, and not before.
+ *
+ * A registration function rather than a weak symbol, because PE/COFF will not
+ * resolve a weak definition living in a different object from its caller and
+ * the Windows CI job builds this core with mingw. */
+void vibeos_blockcache_set_lock(void (*lock)(void), void (*unlock)(void));
 
 /* `slots` must have `slot_count` entries, each with `data` already pointing at
  * VIBEOS_BLOCK_SIZE bytes. Returns 0 on success. */

@@ -29,6 +29,7 @@
 #include "vibeos/rmap.h"
 #include "vibeos/reclaim.h"
 #include "vibeos/blkdev.h"
+#include "vibeos/blockdev.h"
 #include "vibeos/swapmap.h"
 #include "vibeos/anon.h"
 #include "vibeos/swaparea.h"
@@ -2000,6 +2001,23 @@ static void hw_frame_lock(void) {
  * nothing in the frame layer knows the cache exists. */
 static hw_lock_t g_cache_lock;
 
+/* The block cache's lock, below the filesystem.
+ *
+ * Its own, not the page cache's and not the frame layer's. Those sit at
+ * different levels, and a lock shared across levels is what would have
+ * deadlocked the page cache on its first miss - it allocates a frame, and the
+ * frame layer takes its own lock to do it. The ordering here is filesystem,
+ * then block cache, then the driver, and never upwards. */
+static hw_lock_t g_blockcache_lock;
+
+static void hw_blockcache_lock(void) {
+    hw_spin_lock_named(&g_blockcache_lock, __func__);
+}
+
+static void hw_blockcache_unlock(void) {
+    hw_spin_unlock(&g_blockcache_lock);
+}
+
 static void hw_cache_lock(void) {
     hw_spin_lock_named(&g_cache_lock, __func__);
 }
@@ -2221,6 +2239,12 @@ static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
             vibeos_vma_set_lock(hw_frame_lock, hw_frame_unlock);
             vibeos_vma_pool_init(g_vma_pool, VIBEOS_HW_VMA_ENTRIES);
             vibeos_cache_set_lock(hw_cache_lock, hw_cache_unlock);
+            /* The block cache below the filesystem, which until I2 had no
+             * lock and no caller on a booting machine. Its own, not the page
+             * cache's: they sit at different levels and a shared lock between
+             * levels is how the page cache would have deadlocked on its first
+             * miss. */
+            vibeos_blockcache_set_lock(hw_blockcache_lock, hw_blockcache_unlock);
             /* Its own lock, like every other layer here, and for the reason
              * CLAUDE.md gives: sharing the frame layer's would deadlock, since
              * this is called from inside the address-space layer while the
@@ -6683,6 +6707,17 @@ typedef struct {
  * distinction that matters here: a page that is not mapped and a page that is
  * mapped but refused are different bugs, and the argv vector lives in a page
  * the child has just written through a copy-on-write fault. */
+/* Set on failure and never cleared, which is deliberate and was learned the
+ * short way.
+ *
+ * The first version cleared it on entry. execve calls this twice - argv then
+ * envp - so when argv failed and envp then succeeded, envp's entry wiped the
+ * reason argv had just recorded and the refusal printed `at=argv:-`. The
+ * diagnostic erased its own evidence, and it took two boots out of twenty-four
+ * to find out, because the failure it explains is intermittent.
+ *
+ * Only read immediately after a call returned negative, so the last failure to
+ * set it is the one being reported. */
 static const char *g_argv_fail_why = "-";
 
 static long hw_copy_user_argv(uint64_t uvec, hw_argv_t *out) {
@@ -6690,7 +6725,6 @@ static long hw_copy_user_argv(uint64_t uvec, hw_argv_t *out) {
     uint32_t used = 0;
 
     out->slot[0] = 0;
-    g_argv_fail_why = "-";
     if (uvec == 0u) {
         return 0;
     }

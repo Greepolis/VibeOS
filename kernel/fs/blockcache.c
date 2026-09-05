@@ -9,6 +9,33 @@
 
 #include "vibeos/blockdev.h"
 
+/* The lock, registered rather than assumed. See the header for why it is one
+ * lock for every instance and why it is a registration function.
+ *
+ * Null until somebody registers one, and that is the host-test arrangement:
+ * the tests drive this layer from a single thread against an array, so there
+ * is nothing to serialise and nothing to deadlock. On a machine, kmain
+ * registers before any filesystem mounts. */
+static void (*g_lock)(void);
+static void (*g_unlock)(void);
+
+void vibeos_blockcache_set_lock(void (*lock)(void), void (*unlock)(void)) {
+    g_lock = lock;
+    g_unlock = unlock;
+}
+
+static void bc_lock(void) {
+    if (g_lock) {
+        g_lock();
+    }
+}
+
+static void bc_unlock(void) {
+    if (g_unlock) {
+        g_unlock();
+    }
+}
+
 static void block_copy(uint8_t *dst, const uint8_t *src) {
     uint32_t i;
     for (i = 0; i < VIBEOS_BLOCK_SIZE; i++) {
@@ -38,7 +65,9 @@ int vibeos_blockcache_init(vibeos_blockcache_t *bc, const vibeos_blockdev_t *dev
     bc->clock = 0;
     bc->hits = 0;
     bc->misses = 0;
+    bc->evictions = 0;
     bc->writebacks = 0;
+    bc->evict_failed = 0;
     return 0;
 }
 
@@ -83,8 +112,17 @@ static vibeos_block_slot_t *evict(vibeos_blockcache_t *bc) {
         }
     }
     if (writeback(bc, oldest) != 0) {
+        /* Counted, because returning null here looks from above like an
+         * ordinary miss that could not be served, and it is not: it is a block
+         * the caller was told had been written and which is still only in this
+         * cache. The gate asserts it is zero. */
+        bc->evict_failed++;
         return 0;
     }
+    /* Counted only when a slot was actually taken from another block. The
+     * early return above hands back a slot that was never in use, and calling
+     * that an eviction would make a cold cache look like a thrashing one. */
+    bc->evictions++;
     return oldest;
 }
 
@@ -127,11 +165,18 @@ int vibeos_blockcache_read(vibeos_blockcache_t *bc, uint64_t lba, void *buf) {
     if (bc->dev->sectors != 0u && lba >= bc->dev->sectors) {
         return -1;
     }
+    bc_lock();
     s = fetch(bc, lba, 0);
     if (!s) {
+        bc_unlock();
         return -1;
     }
+    /* Copied out under the lock, not after it. The slot can be evicted and
+     * refilled with another block the moment the lock is released, so a copy
+     * outside it is the page cache's old defect wearing different clothes: a
+     * lookup that hit and handed back somebody else's bytes. */
     block_copy((uint8_t *)buf, s->data);
+    bc_unlock();
     return 0;
 }
 
@@ -147,12 +192,15 @@ int vibeos_blockcache_write(vibeos_blockcache_t *bc, uint64_t lba, const void *b
     if (bc->dev->sectors != 0u && lba >= bc->dev->sectors) {
         return -1;
     }
+    bc_lock();
     s = fetch(bc, lba, 1);
     if (!s) {
+        bc_unlock();
         return -1;
     }
     block_copy(s->data, (const uint8_t *)buf);
     s->dirty = 1;
+    bc_unlock();
     return 0;
 }
 
@@ -166,6 +214,7 @@ int vibeos_blockcache_flush(vibeos_blockcache_t *bc) {
     /* Every dirty block is attempted even after one fails. Stopping at the
      * first error would leave later blocks dirty with no record of why, and
      * the caller cannot act on a partial result it cannot see. */
+    bc_lock();
     for (i = 0; i < bc->slot_count; i++) {
         if (writeback(bc, &bc->slots[i]) != 0) {
             rc = -1;
@@ -177,6 +226,7 @@ int vibeos_blockcache_flush(vibeos_blockcache_t *bc) {
     if (bc->dev->flush != 0 && bc->dev->flush(bc->dev->ctx) != 0) {
         rc = -1;
     }
+    bc_unlock();
     return rc;
 }
 
@@ -186,8 +236,10 @@ void vibeos_blockcache_invalidate(vibeos_blockcache_t *bc) {
     if (!bc) {
         return;
     }
+    bc_lock();
     for (i = 0; i < bc->slot_count; i++) {
         bc->slots[i].valid = 0;
         bc->slots[i].dirty = 0;
     }
+    bc_unlock();
 }

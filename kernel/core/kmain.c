@@ -161,6 +161,18 @@ static void kernel_cli_print_log(const vibeos_kernel_t *kernel) {
  * Zero is the honest answer here: a build with no disk and no network card had
  * no wait to time out. */
 __attribute__((weak)) uint64_t vibeos_x86_64_blk_timeouts(void) { return 0ull; }
+/* Zero is the honest answer for a link with no filesystem: nothing was cached
+ * because nothing was mounted. Weak and in the same translation unit as its
+ * caller, which is the one arrangement that works under PE/COFF. */
+__attribute__((weak)) void vibeos_x86_64_fat_cache_stats(uint64_t *hits,
+                                                         uint64_t *misses,
+                                                         uint64_t *evictions,
+                                                         uint64_t *evict_failed) {
+    if (hits) { *hits = 0ull; }
+    if (misses) { *misses = 0ull; }
+    if (evictions) { *evictions = 0ull; }
+    if (evict_failed) { *evict_failed = 0ull; }
+}
 __attribute__((weak)) uint64_t vibeos_x86_64_virtio_net_tx_timeouts(void) { return 0ull; }
 
 __attribute__((weak)) void vibeos_x86_64_console_interrupt(void) { }
@@ -765,6 +777,34 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
         vibeos_x86_64_serial_puts(" stuck_owner=0x");
         kernel_log_u64_hex((uint64_t)vibeos_x86_64_serial_stuck_owner());
         vibeos_x86_64_serial_puts("\n");
+
+        /* What the block cache did, as counts and as a ratio the gate can
+         * assert.
+         *
+         * A ratio rather than a presence check, and the reason is in this
+         * project's own history: the mm page cache shipped at 36% while
+         * "non-zero" passed happily, so the check said the cache was wired in
+         * and nothing about whether it was working. One hit satisfies
+         * "non-zero" on a boot that reads four thousand sectors.
+         *
+         * evict_failed belongs to the must-be-zero family instead: it means a
+         * block the caller was told had been written is still only in this
+         * cache. */
+        {
+            uint64_t h = 0, m = 0, ev = 0, ef = 0;
+            vibeos_x86_64_fat_cache_stats(&h, &m, &ev, &ef);
+            vibeos_x86_64_serial_puts("[IO] BLKCACHE hits=0x");
+            kernel_log_u64_hex(h);
+            vibeos_x86_64_serial_puts(" misses=0x");
+            kernel_log_u64_hex(m);
+            vibeos_x86_64_serial_puts(" evictions=0x");
+            kernel_log_u64_hex(ev);
+            vibeos_x86_64_serial_puts(" evict_failed=0x");
+            kernel_log_u64_hex(ef);
+            vibeos_x86_64_serial_puts(" hit_pct=0x");
+            kernel_log_u64_hex((h + m) ? (h * 100ull) / (h + m) : 0ull);
+            vibeos_x86_64_serial_puts("\n");
+        }
 
         vibeos_x86_64_serial_puts("[IO] WAITS blk_timeouts=0x");
         kernel_log_u64_hex(vibeos_x86_64_blk_timeouts());

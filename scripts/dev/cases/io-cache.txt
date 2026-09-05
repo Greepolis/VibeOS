@@ -1,0 +1,43 @@
+# Sabotage cases for the block cache below the filesystem (I2).
+#
+# Verification for this phase is repeat-boot.sh at 24, not a single boot: a
+# cache's failure mode is a hit that returns the wrong data, and that looks
+# like a working boot until a program is handed somebody else's bytes.
+
+case: a hit returns the wrong sector
+  in find(), drop the `bc->slots[i].lba == lba` term so any valid slot matches
+  expect: the boot fails, and probably not where the change is - a program gets
+    another file's bytes
+  why it matters: this is the failure this layer exists to not have, and it is
+    the one the mm page cache actually had: two cores placing entries at once
+    left one entry's frame beside another entry's key, so a lookup hit and
+    returned the pages of a different file. It took four attempts to find,
+    three of which produced confident wrong answers.
+
+case: hits are never recorded
+  in fetch(), delete `bc->hits++`
+  expect: invariant_failed:blockcache_never_hit
+  why it matters: a cache that never hits and a cache that is not wired in look
+    identical from outside, which is why this phase reports a ratio at all.
+
+case: the ratio check accepts anything
+  lower the gate's floor from 50 to 0
+  expect: a boot with fat.c's own one-sector cache restored still passes
+  why it matters: the floor was first set to 20 from a single measurement of
+    38% that came from a stale image, while the real number was 7%. A floor
+    chosen from one boot is not a floor. The 7% was itself a defect - two
+    caches in series - and a check that could not tell 7% from 93% would have
+    let it ship.
+
+case: the copy leaves the lock
+  in vibeos_blockcache_read, move block_copy after bc_unlock
+  expect: NOT OBSERVABLE ON A SINGLE-THREADED HOST TEST, and rare on a boot.
+    It needs another core to evict and refill the slot in the window between
+    the unlock and the copy. Recorded because it is the same shape as the page
+    cache's defect and because the window is real: fetch can evict.
+
+case: the cache is never locked
+  remove the vibeos_blockcache_set_lock call from arch_hw.c
+  expect: nothing, most boots. That is the point - it is why the lock is
+    registered by a call the build can be grepped for rather than left to
+    "remember to hold it".

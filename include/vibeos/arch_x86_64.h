@@ -85,6 +85,17 @@ uint64_t vibeos_x86_64_ahci_timeouts(void);
 uint64_t vibeos_x86_64_virtio_net_tx_timeouts(void);
 uint64_t vibeos_x86_64_blk_timeouts(void);
 
+/* What the block cache under the boot filesystem did.
+ *
+ * Numbers rather than the struct: vibeos_blockcache_t is an anonymous typedef
+ * and cannot be forward-declared, and kmain has no business with the cache's
+ * internals - only with what it did. All zero before the volume is mounted.
+ *
+ * Exposed at all because a cache that never hits and a cache that is not wired
+ * in look identical from outside, which is the whole reason phase I2 exists. */
+void vibeos_x86_64_fat_cache_stats(uint64_t *hits, uint64_t *misses,
+                                   uint64_t *evictions, uint64_t *evict_failed);
+
 /* Where a file's bytes physically are, for swap and for nothing else. See the
  * comment on the definition: `contiguous` is reported rather than assumed,
  * because a swap area that wrote through a gap would write into other files. */
