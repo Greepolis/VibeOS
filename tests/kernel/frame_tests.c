@@ -132,6 +132,45 @@ int test_frame(void) {
         goto fail;
     }
 
+    /* ---- ...and the same, from a descriptor table full of garbage ------
+     *
+     * The case above was correct about the property and could not see the
+     * defect, because setup() memsets the table first. The kernel does not: it
+     * hands this layer a slab from the bump allocator, contents unknown. Every
+     * descriptor whose stale flags byte happened to have the was-freed bit set
+     * came up claiming a release that never happened, and the poison check then
+     * read the frame's virgin contents as corruption - 3019 reported
+     * use-after-frees in a boot with none.
+     *
+     * It hid for months behind something that looks unrelated: the size of the
+     * exec staging buffers, which decides where in physical memory this table
+     * lands and therefore what garbage is in it. Shrinking them made a
+     * "memory-layout-sensitive corruption" appear on demand, and it was this.
+     *
+     * 0xFF rather than a chosen value, so the test does not encode which bit
+     * the layer happens to use. */
+    memset(g_table, 0xFF, sizeof(g_table));
+    vibeos_mm_stats_reset();
+    if (vibeos_frame_init(TEST_BASE, (uint64_t)TEST_FRAMES * 4096ull,
+                          g_table, TEST_FRAMES, test_map) != 0) { goto fail; }
+    memset(g_ram, 0x5A, (size_t)TEST_FRAMES * 4096u);
+    if (vibeos_frame_dirty_at_init() != TEST_FRAMES) {
+        printf("FAIL:dirty descriptors not counted\n");
+        goto fail;
+    }
+    if (vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED) == 0ull) { goto fail; }
+    if (vibeos_mm_stats()->poison_hits != 0ull) {
+        printf("FAIL:stale descriptor flags read as corruption\n");
+        goto fail;
+    }
+    /* The rest of the descriptor has to be sound too, or the failure just moves:
+     * a stale owner count is a frame handed out to a second holder. */
+    if (vibeos_mm_stats()->double_allocs != 0ull) {
+        printf("FAIL:stale descriptor owners read as a double allocation\n");
+        goto fail;
+    }
+    if (vibeos_frame_free_count() != TEST_FRAMES - 1u) { goto fail; }
+
     /* ---- reserve: takes a range out, and refuses after the first alloc - */
     if (setup() != 0) { goto fail; }
     if (vibeos_frame_reserve(TEST_BASE, 4096ull * 4ull) != 0) { goto fail; }

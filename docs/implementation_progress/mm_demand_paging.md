@@ -99,3 +99,17 @@ That is the use-after-free this subsystem has been chasing at roughly one boot
 in sixteen — now reproducible on demand, 3019 times a boot. Written up in
 [io_read_contract.md](io_read_contract.md), with the recipe recorded in
 `arch_hw.c` beside the constant somebody would change.
+
+
+---
+
+## Closed
+
+The windows are 64 KiB each and P4 step 3 is done. What held it up was not a
+use-after-free: `vibeos_frame_init` never initialised the descriptor flags, so
+the poison detector judged virgin frames and reported 3019 corruptions in a boot
+with none. The staging sizes only decided where that descriptor table landed in
+physical memory, which is why the symptom tracked them so convincingly.
+
+Written up in [mm_frame_init_flags.md](mm_frame_init_flags.md), with the
+measurement that settled it and the two tools that were wrong on the way.

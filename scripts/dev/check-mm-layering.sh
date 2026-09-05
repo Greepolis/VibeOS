@@ -51,12 +51,15 @@ fi
 # which is how the GUI back buffer came to be rendered over a process's memory
 # - with no detector firing, because nothing had been freed early.
 #
-# Three calls are legitimate and all are inside hw_pmm_bringup: the two staging
-# buffers and the descriptor table itself, each taken before the layer starts.
+# Four calls are legitimate and all are inside hw_pmm_bringup: the two staging
+# buffers, the descriptor table itself, and the reverse map's node pool - each
+# taken before the layer starts. The pool was the fourth and this number was not
+# raised with it, so the check sat red and unread; if a fifth is ever right,
+# raise it here deliberately rather than discovering it the same way.
 bad="$(grep -rnE 'vibeos_pmm_alloc[a-z_]*\(' --include=*.c kernel/ 2>/dev/null \
       | grep -v '^kernel/mm/' || true)"
 count="$(printf '%s' "$bad" | grep -c . || true)"
-if [ "$count" -gt 3 ]; then
+if [ "$count" -gt 4 ]; then
     echo "mm-layering: the bootstrap allocator is called in $count places;"
     echo "  only hw_pmm_bringup may, and only before the frame layer starts:"
     echo "$bad" | head -10

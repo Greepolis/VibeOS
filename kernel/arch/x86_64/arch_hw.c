@@ -1266,25 +1266,27 @@ static uint32_t g_pool_next;
  * execs. It is taken from the page allocator instead, once, at boot, and a
  * small static buffer remains as the fallback for the early paths that run
  * before the allocator exists. */
-/* Still four megabytes, and it no longer has to be.
+/* Six megabytes smaller than it was, and worth recording why it took so long.
  *
- * Nothing needs it: the parse takes a header window and the page fill reads
- * through the cache, both since I3. Setting this to 64 KiB works, boots, and
- * runs every program on the media - and turns the boot red with
- * mm_poison_hits=3019, deterministically, on every run.
+ * Nothing needs the old size: the parse takes a header window and the page
+ * fill reads through the cache, both since I3. But shrinking these two
+ * windows turned the boot red with mm_poison_hits=3019 on every run - which
+ * read as this project's long-running one-boot-in-sixteen use-after-free,
+ * finally reproducible, and held the shrink up for a phase.
  *
- * That is not this buffer's defect. Shrinking *either* window alone is clean;
- * only both together fail. And deliberately wasting the six megabytes the two
- * shrinks free - allocating them at boot and never using them - makes the
- * poison disappear while the windows stay small. So what the shrink changes is
- * which frames the allocator hands out, and something writes to a frame it has
- * already released.
+ * It was not a use-after-free at all. vibeos_frame_init never initialised the
+ * descriptors' flags byte, and frame_push_free preserves the was-freed mark by
+ * design - so on a table full of the bump allocator's leftovers, every frame
+ * whose stale byte had bit 0x10 set came up claiming a release that never
+ * happened, and the poison check judged its virgin contents. These sizes decide
+ * where that table lands in physical memory, which is the entire mechanism
+ * behind "shrinking either window alone is clean, both together fail".
  *
- * Which makes this the first deterministic reproduction of a defect this
- * project has been chasing at one boot in sixteen: set both windows to
- * 64u * 1024u and every boot reports it. The buffers stay large until that is
- * closed, because six megabytes of kernel memory is a smaller cost than a gate
- * nobody can trust.
+ * The detector was wrong and the memory manager was right, which is the
+ * opposite of what three earlier readings assumed. It was closed by making the
+ * report say which frame, which word, what value and who released it: the
+ * answer came back "all zero, released by nobody", and a frame nobody released
+ * is not a use-after-free.
  *
  * The original note follows.
  *
@@ -1301,7 +1303,7 @@ static uint32_t g_pool_next;
  * because the cost is now nothing and the failure mode of being too small is a
  * refusal to run a program - and refused *by name* rather than by truncation,
  * which is the distinction the whole phase is about. */
-#define VIBEOS_HW_EXEC_STAGE_BYTES (4u * 1024u * 1024u)
+#define VIBEOS_HW_EXEC_STAGE_BYTES (64u * 1024u)
 static uint8_t g_exec_elf_static[65536] __attribute__((aligned(16)));
 static uint8_t *g_exec_elf = g_exec_elf_static;
 static uint32_t g_exec_elf_cap = (uint32_t)sizeof(g_exec_elf_static);
@@ -1310,11 +1312,13 @@ static uint32_t g_exec_elf_cap = (uint32_t)sizeof(g_exec_elf_static);
  *
  * It cannot share the buffer above: loading a dynamic program means having
  * both images in memory at once, because the interpreter is mapped into the
- * same address space as the program that named it. musl's loader is its C
- * library and is about seven hundred kilobytes, so this is sized for a real
- * one rather than for a token. */
+ * same address space as the program that named it.
+ *
+ * It used to be two megabytes because musl's loader is its C library and is
+ * about seven hundred kilobytes - back when this held the image. It holds the
+ * interpreter's headers now, for the same reason as the window above. */
 /* Same reasoning as the exec window above. */
-#define VIBEOS_HW_INTERP_STAGE_BYTES (2u * 1024u * 1024u)
+#define VIBEOS_HW_INTERP_STAGE_BYTES (64u * 1024u)
 static uint8_t *g_interp_elf;
 static uint32_t g_interp_elf_cap;
 
@@ -1643,6 +1647,42 @@ static void hw_frame_release_watch(uint64_t phys) {
     vibeos_x86_64_serial_unlock();
 }
 
+/* A frame handed out with its poison broken: something wrote to it after it
+ * was freed.
+ *
+ * The first eight only. Three thousand of these would flood the log the gate
+ * reads and change the timing of the thing being looked at - and the first one
+ * is the one that matters, because after that the machine is already wrong.
+ *
+ * The tag is the pointer the release stored in word 1, which the probes never
+ * touch. Printed as an address rather than dereferenced: it points at a string
+ * literal in the kernel image, and addr2line turns it into a name safely from
+ * outside, whereas following it here would be this diagnostic taking the same
+ * risk as the defect it is reporting. */
+static uint32_t g_poison_reported;
+
+static void hw_frame_poison_watch(uint64_t phys, uint32_t word, uint64_t found,
+                                  uint64_t tag) {
+    if (g_poison_reported >= 8u) {
+        return;
+    }
+    g_poison_reported++;
+
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts("[MM] POISON_BROKEN frame=0x");
+    vibeos_x86_64_serial_print_hex(phys);
+    vibeos_x86_64_serial_puts(" word=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)word);
+    vibeos_x86_64_serial_puts(" found=0x");
+    vibeos_x86_64_serial_print_hex(found);
+    vibeos_x86_64_serial_puts(" freed_by=0x");
+    vibeos_x86_64_serial_print_hex(tag);
+    vibeos_x86_64_serial_puts(" owners=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)vibeos_frame_owners_locked(phys));
+    vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
+}
+
 static void hw_free_page_why(void *p, const char *why) {
     uint64_t phys = (uint64_t)(uintptr_t)p;
 
@@ -1907,7 +1947,10 @@ static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
                 <= VIBEOS_HW_IDENTITY_LIMIT) {
             g_exec_elf = (uint8_t *)stage;
             g_exec_elf_cap = VIBEOS_HW_EXEC_STAGE_BYTES;
-            vibeos_x86_64_serial_puts("[HW] exec staging buffer: 4 MiB\n");
+            vibeos_x86_64_serial_puts("[HW] exec staging buffer bytes=0x");
+            vibeos_x86_64_serial_print_hex(
+                (uint64_t)VIBEOS_HW_EXEC_STAGE_BYTES);
+            vibeos_x86_64_serial_puts("\n");
         } else {
             vibeos_x86_64_serial_puts("[HW] exec staging buffer stays at 64 KiB; "
                                      "large programs will not load\n");
@@ -1921,7 +1964,10 @@ static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
                 <= VIBEOS_HW_IDENTITY_LIMIT) {
             g_interp_elf = (uint8_t *)stage;
             g_interp_elf_cap = VIBEOS_HW_INTERP_STAGE_BYTES;
-            vibeos_x86_64_serial_puts("[HW] interpreter staging buffer: 2 MiB\n");
+            vibeos_x86_64_serial_puts("[HW] interpreter staging buffer bytes=0x");
+            vibeos_x86_64_serial_print_hex(
+                (uint64_t)VIBEOS_HW_INTERP_STAGE_BYTES);
+            vibeos_x86_64_serial_puts("\n");
         } else {
             /* Left null on purpose. A dynamic program is then refused with the
              * same message as before this existed, which is a truthful "cannot
@@ -1992,6 +2038,7 @@ static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
              * should not depend on that. */
             vibeos_frame_set_lock(hw_frame_lock, hw_frame_unlock);
             vibeos_frame_set_release_watch(hw_frame_release_watch);
+            vibeos_frame_set_poison_watch(hw_frame_poison_watch);
             vibeos_vma_set_lock(hw_frame_lock, hw_frame_unlock);
             vibeos_vma_pool_init(g_vma_pool, VIBEOS_HW_VMA_ENTRIES);
             vibeos_cache_set_lock(hw_cache_lock, hw_cache_unlock);

@@ -1,0 +1,31 @@
+# Sabotage cases for frame descriptor initialisation (kernel/mm/frame.c).
+#
+# Each one was applied, the host tests were confirmed to go red, and the tree
+# was confirmed to go green again afterwards.
+#
+# Run: apply the edit, rebuild vibeos_kernel_tests, look for "FAIL:test_frame".
+
+case: init trusts the caller's memory for the flags byte
+  in vibeos_frame_init's build loop, delete "g_table[index].flags = 0;"
+  expect: FAIL:stale descriptor flags read as corruption
+  why it matters: this is the defect itself. frame_push_free preserves the
+    was-freed mark on purpose, so on an uninitialised table it preserves
+    garbage, and every frame whose stale byte had bit 0x10 set came up claiming
+    a release that never happened. The poison check then judged its virgin
+    contents: 3019 reported use-after-frees in a boot with none. It tracked the
+    exec staging buffer sizes, because those decide where the descriptor table
+    lands in physical memory - so for a phase it read as an allocator-layout
+    memory bug rather than as a detector reading its own uninitialised state.
+  note: the pre-existing case above it - "a frame that has never been freed is
+    not judged by the poison" - stays green under this sabotage, because its
+    setup() memsets the table first. Right about the property, blind to the
+    defect. That is why the new case fills the table instead of clearing it.
+
+case: init trusts the caller's memory for the owner count
+  in the same loop, delete "g_table[index].owners = 0;"
+  expect: FAIL:stale descriptor owners read as a double allocation
+  why it matters: frame_take counts a hand-out with a non-zero owner as a double
+    allocation, so a dirty table would report one on every frame of the first
+    pass - and the boot gate asserts that count is zero. Same failure as the
+    flags, in a field where the consequence is a frame believed to have two
+    holders rather than one believed to have been freed.

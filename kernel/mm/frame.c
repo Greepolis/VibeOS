@@ -108,6 +108,14 @@ static void frame_fill(uint32_t index, uint64_t pattern) {
  */
 #define POISON_PROBES 16u
 
+static void (*g_poison_watch)(uint64_t phys, uint32_t word, uint64_t found,
+                              uint64_t tag);
+
+void vibeos_frame_set_poison_watch(void (*watch)(uint64_t phys, uint32_t word,
+                                                 uint64_t found, uint64_t tag)) {
+    g_poison_watch = watch;
+}
+
 static void frame_check_poison(uint32_t index) {
     const uint64_t *w;
     uint32_t i;
@@ -126,6 +134,12 @@ static void frame_check_poison(uint32_t index) {
     for (i = 0; i < POISON_PROBES; i++) {
         if (w[i * step] != FRAME_POISON) {
             vibeos_mm_stats()->poison_hits++;
+            if (g_poison_watch) {
+                /* Word 1 is where the release stored its tag, and the probes
+                 * never touch it - so unless the writer covered the whole
+                 * page, the frame still names who let go of it. */
+                g_poison_watch(frame_addr(index), i * step, w[i * step], w[1]);
+            }
             return;
         }
     }
@@ -141,6 +155,15 @@ static void frame_push_free(uint32_t index) {
     g_table[index].lru_next = g_free_head;
     g_free_head = index;
     g_free_count++;
+}
+
+/* How many descriptors arrived from the caller already claiming to have been
+ * released. Zero on a clean table; non-zero says the memory underneath was
+ * reused, which is legal - but the poison check must not read it as evidence. */
+static uint32_t g_dirty_at_init;
+
+uint32_t vibeos_frame_dirty_at_init(void) {
+    return g_dirty_at_init;
 }
 
 int vibeos_frame_init(uint64_t base, uint64_t len,
@@ -163,6 +186,7 @@ int vibeos_frame_init(uint64_t base, uint64_t len,
     g_free_head = FRAME_NONE;
     g_free_count = 0;
     g_allocated_yet = 0;
+    g_dirty_at_init = 0;
 
     /* Built back to front so the list comes out in ascending order, which makes
      * a boot's allocations land contiguously and a dump readable.
@@ -174,6 +198,30 @@ int vibeos_frame_init(uint64_t base, uint64_t len,
      * frames that have actually been released - see VIBEOS_FRAME_WAS_FREED. */
     for (i = g_entries; i > 0u; i--) {
         uint32_t index = i - 1u;
+        /* The caller hands us memory, not a clean table, and this layer owns
+         * what a descriptor means - so start every field from a known value
+         * here rather than trusting the bump allocator's leftovers.
+         *
+         * flags is why this exists. frame_push_free deliberately preserves the
+         * was-freed mark (`flags &= WAS_FREED`), which on an uninitialised
+         * table preserves *garbage*: every frame whose stale byte happened to
+         * have bit 0x10 set came up claiming it had been released, and the
+         * poison check then read its virgin contents as corruption. That is
+         * 3019 reported use-after-frees in a boot with none, and it moved with
+         * the staging-buffer sizes only because the sizes decide which physical
+         * memory this table lands on - which is what made it look for months
+         * like an allocator-layout-sensitive memory bug.
+         *
+         * The count of frames that arrived already marked is reported rather
+         * than silently cleared: it is the difference between "the table was
+         * clean" and "the table was dirty and we coped". */
+        if ((g_table[index].flags & VIBEOS_FRAME_WAS_FREED) != 0u) {
+            g_dirty_at_init++;
+        }
+        g_table[index].flags = 0;
+        g_table[index].owners = 0;
+        g_table[index].backing = 0;
+        g_table[index].lru_next = FRAME_NONE;
         g_table[index].lru_prev = FRAME_NONE;
         frame_push_free(index);
     }

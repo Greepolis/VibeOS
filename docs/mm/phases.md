@@ -671,3 +671,12 @@ now excluded by measurement - `fork_undercounted` reads zero across every boot -
 so the remaining candidates are `munmap`, the copy-on-write resolution and
 teardown. Three detectors watch for it every boot and the gate fails on any of
 them.
+
+## P4 step 3 — closed
+
+The exec and interpreter staging windows are 64 KiB each, down from 4 MiB and
+2 MiB. The blocker was not in this plan and not in this subsystem: the frame
+layer's poison detector was reading uninitialised descriptor flags and reporting
+3019 use-after-frees per boot, and the staging sizes only decided where that
+descriptor table landed in memory. See
+[mm_frame_init_flags.md](../implementation_progress/mm_frame_init_flags.md).

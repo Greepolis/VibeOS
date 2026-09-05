@@ -101,3 +101,16 @@ The buffers do not shrink, so mm's P4 step 3 stays open — but its blocker has
 moved. It was "the read contract conflates two numbers"; it is now "there is a
 use-after-free that only shows when the allocator's layout changes", which is a
 defect with a reproduction rather than a design problem.
+
+
+---
+
+## Correction
+
+This file recorded the staging shrink as having produced a deterministic
+reproduction of the project's intermittent use-after-free. It had not. The
+3019 poison hits were the frame layer's detector reading uninitialised
+descriptor flags, and the staging sizes mattered only because they decide where
+that descriptor table lands. The windows are 64 KiB now and the shrink this
+phase unblocked is done. See
+[mm_frame_init_flags.md](mm_frame_init_flags.md).

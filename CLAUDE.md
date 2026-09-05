@@ -642,6 +642,53 @@ recording as what it is rather than counting among the cases that pass - the
 same distinction the AHCI cases carry between "no case exists" and "this
 environment cannot tell".
 
+**A detector that reads uninitialised state invents the bug it was looking
+for.** The frame layer poisons a page on release and checks it on hand-out, and
+`frame_check_poison` correctly skips a frame that has never been freed - it
+asks the descriptor's `VIBEOS_FRAME_WAS_FREED` flag. But `vibeos_frame_init`
+never initialised `flags`, and `frame_push_free` preserves that one bit on
+purpose, so on a table full of the bump allocator's leftovers it preserved
+*garbage*: every frame whose stale byte had bit 0x10 set claimed a release that
+never happened, and the check then judged its virgin contents. 3019 reported
+use-after-frees in a boot with none.
+
+It cost a phase because the symptom moved with something that looks like a
+memory bug and is not. Shrinking the two exec staging buffers made it appear on
+every boot; shrinking either alone was clean; wasting the freed six megabytes
+made it vanish with the buffers still small. All true, and all explained by
+those sizes deciding where the descriptor table lands in physical memory. Three
+readings concluded "something writes to a frame it has already released", and
+that was written into the source beside the constant.
+
+What closed it was making the detector say *what* rather than *how often*. The
+counter reports a number; a watch reporting which frame, which word, what value
+and who released it answered on the first boot: `found=0 freed_by=0`, at
+`base + reserved_prefix` exactly - the pool's very first frames. A frame nobody
+released is not a use-after-free. **When a detector fires, the first question is
+whether the detector is right**, and it cannot be answered by a count.
+
+The existing test for this had the property exactly right and could not see the
+defect, because its `setup()` memsets the descriptor table and the kernel does
+not. Fourth instance of "right about the outcome, wrong about the mechanism".
+The new one fills the table with 0xFF instead - not with the bit the layer uses,
+so the test does not encode the implementation it is checking.
+
+Two smaller traps in the same session, both of which this file already warns
+about and both of which were walked into anyway: the diagnostic deadlocked the
+machine it was explaining, because a watch that runs inside a layer's lock
+called the public accessor that takes it (the boot stopped mid-line, at
+`owners=0x`); and `[HW] exec staging buffer: 4 MiB` was a string literal, so it
+kept saying 4 MiB with the constant set to 64 KiB, and the first run briefly
+read as "the built image did not boot". **A banner that names a number a
+constant decides will eventually name the wrong one** - print the constant.
+
+**A check that has been red since before you arrived is a check nobody is
+reading.** `check-mm-layering.sh` allows three calls to the bootstrap allocator.
+The reverse map's node pool was deliberately moved ahead of `vibeos_frame_init`
+a phase earlier, making it four, and the limit was never raised - so the guard
+sat failing and unread until a full `check.sh all`. Raise such a limit as a
+decision, in the same change that earns it.
+
 ## Verification that exists
 
 The boot gate (`scripts/qemu-cli-smoke-linux.py`) asserts state, not markers:

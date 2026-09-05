@@ -40,6 +40,31 @@ typedef void *(*vibeos_frame_map_fn)(uint64_t phys);
  * expensive to run on every release. */
 void vibeos_frame_set_release_watch(void (*watch)(uint64_t phys));
 
+/* Called when a frame is handed out and its poison is not intact - something
+ * wrote to it after it was freed.
+ *
+ * The counter alone says how often; this says *what*. `word` is which probe
+ * failed and `found` is what was there instead, which distinguishes a wild
+ * write from a structure somebody is still using; `tag` is the pointer the
+ * release stored in word 1, so the frame names who let go of it.
+ *
+ * A watch rather than a message because this layer is host-tested and has no
+ * console - the same arrangement as the release watch above. */
+/* How many frame descriptors were already marked was-freed when the table was
+ * handed to vibeos_frame_init - i.e. how much of the caller's memory was stale.
+ * The layer clears them; this says whether it had to. */
+uint32_t vibeos_frame_dirty_at_init(void);
+
+/* How many owners a frame has, for a caller that already holds this layer's
+ * lock - which in practice means the watch callbacks above, since they run
+ * inside the layer. vibeos_frame_owners is the one to call from anywhere else;
+ * calling it from a watch deadlocks, and did: the first poison report stopped
+ * the machine mid-line at "owners=0x". */
+uint32_t vibeos_frame_owners_locked(uint64_t phys);
+
+void vibeos_frame_set_poison_watch(void (*watch)(uint64_t phys, uint32_t word,
+                                                 uint64_t found, uint64_t tag));
+
 /* Serialise this layer against itself.
  *
  * The lock belongs here, not at the call sites. It used to be taken by the
