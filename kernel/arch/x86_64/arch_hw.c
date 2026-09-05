@@ -9290,13 +9290,15 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
                                vibeos_x86_64_virtio_blk_read,
                                vibeos_x86_64_virtio_blk_read_many,
                                vibeos_x86_64_virtio_blk_write,
-                               vibeos_x86_64_virtio_blk_sectors());
+                               vibeos_x86_64_virtio_blk_sectors(),
+                               vibeos_x86_64_virtio_blk_timeouts);
     } else if (vibeos_x86_64_ahci_init() == 0) {
         vibeos_x86_64_blk_bind("ahci",
                                vibeos_x86_64_ahci_read,
                                vibeos_x86_64_ahci_read_many,
                                vibeos_x86_64_ahci_write,
-                               vibeos_x86_64_ahci_sectors());
+                               vibeos_x86_64_ahci_sectors(),
+                               vibeos_x86_64_ahci_timeouts);
     }
     vibeos_x86_64_serial_puts("[BLK] disk driver: ");
     vibeos_x86_64_serial_puts(vibeos_x86_64_blk_name());

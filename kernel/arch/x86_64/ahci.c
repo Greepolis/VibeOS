@@ -302,6 +302,24 @@ int vibeos_x86_64_ahci_init(void) {
 
 /* ---- transfers ----------------------------------------------------------- */
 
+/* How many times a wait for the port hit its bound.
+ *
+ * Both of the waits below already had one - the busy check before a command is
+ * issued and the completion poll after it - and both then returned -1, the
+ * same value the device's own error bit produces. So "the disk took too long"
+ * and "the disk said no" arrived at the block layer as one thing, and
+ * VIBEOS_BLK_TIMEOUT, which the boot gate asserts is zero, was produced by
+ * nobody at all. A bound with no counter proves nothing about latency.
+ *
+ * Only these two are counted. The bounds in port_stop and port_start are
+ * bring-up, not reachable from a syscall, and P7's property is about the paths
+ * a program can wait on. */
+static uint64_t g_timeouts;
+
+uint64_t vibeos_x86_64_ahci_timeouts(void) {
+    return g_timeouts;
+}
+
 /* Build and run one command. Returns 0 on success. */
 /* One command, whatever it is.
  *
@@ -352,6 +370,7 @@ static int ahci_cmd(uint8_t command, uint64_t lba, uint32_t sectors,
     spin = 0;
     while ((port_read(PxTFD) & (ATA_DEV_BUSY | ATA_DEV_DRQ)) != 0u) {
         if (++spin > 1000000u) {
+            g_timeouts++;
             return -1;
         }
     }
@@ -371,6 +390,7 @@ static int ahci_cmd(uint8_t command, uint64_t lba, uint32_t sectors,
             return -1;
         }
         if (++spin > 20000000u) {
+            g_timeouts++;
             return -1;
         }
     }

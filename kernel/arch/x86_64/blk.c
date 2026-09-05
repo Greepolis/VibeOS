@@ -37,6 +37,7 @@ static int (*g_read_many)(uint64_t lba, void *buf, uint32_t sectors);
 static int (*g_write)(uint64_t lba, const void *buf);
 static const char *g_name = "none";
 static int g_device = -1;
+static uint64_t (*g_timeouts)(void);
 
 /* The old three functions, behind the one entry point the layer expects.
  *
@@ -44,8 +45,21 @@ static int g_device = -1;
  * a 2 MiB FAT read from something indistinguishable from a hang into an
  * ordinary read, and falling back to one sector at a time here would undo
  * that quietly. */
+/* Did the bound fire during this request?
+ *
+ * Sampled around the call rather than returned through it, because the driver
+ * entry points are int-returning and threading a reason through three of them
+ * in two drivers would be a wider change than the fact deserves. The counter
+ * only grows, so a move across the call means a bound fired.
+ *
+ * Under concurrency another core's timeout could be attributed to this
+ * request. That is accepted and worth stating: the counter the gate asserts is
+ * the driver's own and is exact, and mislabelling *which* request timed out
+ * matters far less than the alternative, which was not knowing that anything
+ * had. */
 static int adapt_submit(void *ctx, vibeos_blk_request_t *req) {
     uint32_t i;
+    uint64_t timeouts_before = g_timeouts ? g_timeouts() : 0ull;
 
     (void)ctx;
     if (req->write) {
@@ -57,6 +71,9 @@ static int adapt_submit(void *ctx, vibeos_blk_request_t *req) {
             const uint8_t *p = (const uint8_t *)req->buf + (uint64_t)i * 512ull;
             if (g_write(req->lba + i, p) != 0) {
                 req->sectors_done = i;
+                if (g_timeouts && g_timeouts() != timeouts_before) {
+                    req->result = VIBEOS_BLK_TIMEOUT;
+                }
                 return -1;
             }
         }
@@ -67,6 +84,9 @@ static int adapt_submit(void *ctx, vibeos_blk_request_t *req) {
     if (g_read_many) {
         if (g_read_many(req->lba, req->buf, req->sectors) != 0) {
             req->sectors_done = 0;
+            if (g_timeouts && g_timeouts() != timeouts_before) {
+                req->result = VIBEOS_BLK_TIMEOUT;
+            }
             return -1;
         }
         req->sectors_done = req->sectors;
@@ -80,6 +100,9 @@ static int adapt_submit(void *ctx, vibeos_blk_request_t *req) {
         uint8_t *p = (uint8_t *)req->buf + (uint64_t)i * 512ull;
         if (g_read(req->lba + i, p) != 0) {
             req->sectors_done = i;
+            if (g_timeouts && g_timeouts() != timeouts_before) {
+                req->result = VIBEOS_BLK_TIMEOUT;
+            }
             return -1;
         }
     }
@@ -91,7 +114,8 @@ void vibeos_x86_64_blk_bind(const char *name,
                             int (*read)(uint64_t, void *),
                             int (*read_many)(uint64_t, void *, uint32_t),
                             int (*write)(uint64_t, const void *),
-                            uint64_t sectors) {
+                            uint64_t sectors,
+                            uint64_t (*timeouts)(void)) {
     vibeos_blk_driver_t drv;
     uint32_t dev = 0;
 
@@ -102,6 +126,7 @@ void vibeos_x86_64_blk_bind(const char *name,
     g_read = read;
     g_read_many = read_many;
     g_write = write;
+    g_timeouts = timeouts;
 
     /* A device that would not say how big it is does not get registered, and
      * the machine says so rather than reading past the end of it later. This
@@ -115,6 +140,12 @@ void vibeos_x86_64_blk_bind(const char *name,
     if (vibeos_blk_register(&drv, &dev) == 0) {
         g_device = (int)dev;
     }
+}
+
+/* The bound driver's timeout count, or zero if no disk came up. One accessor
+ * so kmain does not have to know which driver won. */
+uint64_t vibeos_x86_64_blk_timeouts(void) {
+    return g_timeouts ? g_timeouts() : 0ull;
 }
 
 int vibeos_x86_64_blk_device(void) {

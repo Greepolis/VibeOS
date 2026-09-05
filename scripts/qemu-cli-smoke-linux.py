@@ -988,6 +988,31 @@ def main():
                 elif lost > 64:
                     problems.append(f"userland_frames_lost={lost}_ceiling=64")
 
+            # Every bounded wait a syscall can reach, asserted at zero.
+            #
+            # P7's latency property is two halves and only one of them was
+            # here. The bounds all existed - virtio-blk's completion poll,
+            # AHCI's busy check and completion poll, virtio-net's transmit, the
+            # TLB shootdown - but a bound with no counter proves nothing, and
+            # both disk drivers collapsed a timeout into the same -1 the
+            # device's own error bit produces. So VIBEOS_BLK_TIMEOUT, which the
+            # MUSTBEZERO line above asserts, was a result no driver could
+            # produce: an assertion that was green and could not go red.
+            # virtio-net counted its transmit timeouts and nothing read the
+            # number, which is this project's most-repeated defect.
+            #
+            # A missing line is a failure, not a pass. That distinction is the
+            # whole reason this check exists.
+            mw = re.search(r"\[IO\] WAITS blk_timeouts=0x([0-9a-f]{16}) "
+                           r"net_tx_timeouts=0x([0-9a-f]{16})", text)
+            if mw is None:
+                problems.append("io_wait_counters_missing")
+            else:
+                for name, group in (("blk_timeouts", 1), ("net_tx_timeouts", 2)):
+                    value = int(mw.group(group), 16)
+                    if value != 0:
+                        problems.append(f"io_{name}={value}")
+
             # What the disk did.
             #
             # The storage path carried no counters at all before I1, so "the

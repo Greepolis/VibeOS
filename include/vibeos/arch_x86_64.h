@@ -65,11 +65,19 @@ void vibeos_x86_64_log_dump_recent(uint32_t want);
  * registered, because a device with no size cannot have its requests
  * bounds-checked and an unchecked bound is the difference between an error and
  * a disk written at the wrong offset. */
+/* `timeouts` is how the bound firing gets a name. Without it a driver's
+ * timeout is a -1 like any other, VIBEOS_BLK_TIMEOUT is produced by nobody,
+ * and the gate's assertion that it is zero is one that cannot go red. */
 void vibeos_x86_64_blk_bind(const char *name,
                             int (*read)(uint64_t, void *),
                             int (*read_many)(uint64_t, void *, uint32_t),
                             int (*write)(uint64_t, const void *),
-                            uint64_t sectors);
+                            uint64_t sectors,
+                            uint64_t (*timeouts)(void));
+uint64_t vibeos_x86_64_virtio_blk_timeouts(void);
+uint64_t vibeos_x86_64_ahci_timeouts(void);
+uint64_t vibeos_x86_64_virtio_net_tx_timeouts(void);
+uint64_t vibeos_x86_64_blk_timeouts(void);
 const char *vibeos_x86_64_blk_name(void);
 int vibeos_x86_64_blk_present(void);
 int vibeos_x86_64_blk_read(uint64_t lba, void *buf);

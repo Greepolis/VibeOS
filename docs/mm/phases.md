@@ -700,3 +700,21 @@ defined, printed by kmain and asserted by the boot gate, and produced by no
 driver - every timeout collapses into a generic -1. The assertion is green and
 cannot go red. virtio-net's `g_tx_timeouts` is the same shape: incremented,
 read by nobody.
+
+## P7 — latency, closed. P7 is done.
+
+Every wait reachable from a syscall has a bound; each bound now increments a
+counter; the counters are reported in one bracketed line and the boot gate
+asserts they are zero, treating a missing line as a failure.
+
+The bounds were already there. What was missing was any way to tell one had
+fired: both disk drivers returned the same -1 for a bound firing as for the
+device's own error bit, so `VIBEOS_BLK_TIMEOUT` - defined, printed and asserted
+by the gate - was produced by nobody, and virtio-net's transmit timeouts were
+counted into a static nothing read. See
+[mm_latency.md](../implementation_progress/mm_latency.md).
+
+**All five properties of P7 now hold.** What is left in this plan is not a
+phase: it is that P5 has never run on the real machine, because the boot medium
+carries no swap area. The next step is a contiguous file on the existing FAT
+medium, then a partition.

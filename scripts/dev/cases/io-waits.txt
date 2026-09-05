@@ -1,0 +1,37 @@
+# Sabotage cases for the bounded-wait counters (P7's latency property).
+#
+# Each was applied, the boot was confirmed to report what the case expects, and
+# the tree was confirmed green again afterwards.
+#
+# Run: apply the edit, bash scripts/dev/check.sh build <dir>, then
+#      python3 scripts/qemu-cli-smoke-linux.py <dir> 120
+
+case: a driver's bound fires but the failure is not named a timeout
+  in virtio_blk.c's completion poll, change the bound to "++spins > 1ull"
+  expect: [IO] WAITS blk_timeouts=0x1 and [IO] MUSTBEZERO ... timeout=0x1
+  note: the boot fails for several other reasons as well - a disk that times
+    out on every read cannot boot - so read the two lines rather than the
+    verdict. What the case demonstrates is that the failure is *named*: before
+    this change the identical sabotage produced a generic error and left
+    timeout at zero, because both disk drivers returned the same -1 for a bound
+    firing as for the device's own error bit.
+  why it matters: VIBEOS_BLK_TIMEOUT was defined, named, printed and asserted
+    by the boot gate, and produced by no driver. The gate carried an assertion
+    that was green and could not go red - the mechanism and the reporting both
+    present and not connected to each other.
+
+case: the counters stop being reported
+  in kmain.c, guard the "[IO] WAITS" line with if (0)
+  expect: invariant_failed:io_wait_counters_missing
+  why it matters: a counter that stops being printed must not read as a counter
+    that stayed at zero. The gate treats the missing line as a failure for the
+    same reason every other MUSTBEZERO line here does.
+
+case: virtio-net's transmit timeout goes unread again
+  in virtio_net.c, delete vibeos_x86_64_virtio_net_tx_timeouts
+  expect: a link failure, which is the point
+  why it matters: g_tx_timeouts was incremented and read by nobody for as long
+    as it existed. Making the gate depend on the accessor is what stops it
+    quietly becoming a number nobody reads again - "configured and consulted by
+    nobody" is the defect this project produces most often, and the rule for it
+    is to write the assertion that fails if the caller disappears.

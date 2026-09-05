@@ -13,6 +13,19 @@
 
 /* ---- port I/O ------------------------------------------------------------ */
 
+/* How many times a wait for the device hit its bound.
+ *
+ * P7 wants every wait reachable from a syscall to have a bound *and*
+ * a counter a gate can assert on. The bound was here; the counter was
+ * not, so a timeout was indistinguishable from any other failure by
+ * the time it reached the block layer - and VIBEOS_BLK_TIMEOUT, which
+ * the boot gate asserts is zero, was produced by nobody. */
+static uint64_t g_timeouts;
+
+uint64_t vibeos_x86_64_virtio_blk_timeouts(void) {
+    return g_timeouts;
+}
+
 static inline void vb_outb(uint16_t p, uint8_t v)  { __asm__ __volatile__("outb %0,%1"::"a"(v),"Nd"(p)); }
 static inline void vb_outw(uint16_t p, uint16_t v) { __asm__ __volatile__("outw %0,%1"::"a"(v),"Nd"(p)); }
 static inline void vb_outl(uint16_t p, uint32_t v) { __asm__ __volatile__("outl %0,%1"::"a"(v),"Nd"(p)); }
@@ -281,6 +294,11 @@ static int virtio_blk_rw_n(uint64_t sector, void *buf, uint32_t sectors, int wri
         uint64_t spins = 0;
         while (g_used->idx == g_last_used) {
             if (++spins > 100000000ull) {
+                /* Counted, not only printed. The bound existing is half of
+                 * P7's latency property; the other half is a number a gate can
+                 * assert, and a serial line is not one - this project has a
+                 * rule about that. */
+                g_timeouts++;
                 /* Leaving the lock held here would turn one timed-out request
                  * into a machine that never reads a sector again. */
                 vibeos_x86_64_serial_puts("[VIRTIO] read timeout\n");

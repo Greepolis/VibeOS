@@ -146,6 +146,19 @@ static void kernel_cli_print_log(const vibeos_kernel_t *kernel) {
 /* The real one lives with the task table, which the host test binary does not
  * link. Weak, so the kernel build still gets the version that can signal a
  * process group and the tests get one that does nothing. */
+/* The wait counters, for a link that has no arch layer.
+ *
+ * Weak, and in the same translation unit as the caller - which is the one
+ * arrangement CLAUDE.md says is portable, because PE/COFF will not resolve a
+ * weak definition living in a different object and the Windows CI job builds
+ * this core with mingw. Every other weak stub in this kernel sits beside its
+ * caller for the same reason.
+ *
+ * Zero is the honest answer here: a build with no disk and no network card had
+ * no wait to time out. */
+__attribute__((weak)) uint64_t vibeos_x86_64_blk_timeouts(void) { return 0ull; }
+__attribute__((weak)) uint64_t vibeos_x86_64_virtio_net_tx_timeouts(void) { return 0ull; }
+
 __attribute__((weak)) void vibeos_x86_64_console_interrupt(void) { }
 
 /* The host test binary links kmain without the arch layer, and has no
@@ -678,6 +691,20 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
         kernel_log_u64_hex(io->results[VIBEOS_BLK_OUT_OF_RANGE]);
         vibeos_x86_64_serial_puts(" register_refused=0x");
         kernel_log_u64_hex(io->register_refused);
+        vibeos_x86_64_serial_puts("\n");
+
+        /* The waits, on their own line and in the must-be-zero family.
+         *
+         * P7 asks that no path reachable from a syscall waits for another core
+         * or a device without a bound, and that the bound is asserted. The
+         * bounds were all there; what was missing was any way to tell one had
+         * fired. virtio-net counted its transmit timeouts and nothing read the
+         * number, and neither disk driver counted at all - so the timeout the
+         * gate asserts to be zero was a result no driver could produce. */
+        vibeos_x86_64_serial_puts("[IO] WAITS blk_timeouts=0x");
+        kernel_log_u64_hex(vibeos_x86_64_blk_timeouts());
+        vibeos_x86_64_serial_puts(" net_tx_timeouts=0x");
+        kernel_log_u64_hex(vibeos_x86_64_virtio_net_tx_timeouts());
         vibeos_x86_64_serial_puts("\n");
 
         vibeos_x86_64_serial_puts("[IO] BLK reads=0x");

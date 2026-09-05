@@ -266,7 +266,17 @@ static volatile int g_tx_lock;
 /* Transmits that gave up waiting. Zero on a healthy boot, and the difference
  * between a slow network and a wedged machine now that one is tellable from
  * the other. */
+/* Read by the boot gate through kmain since P7's latency property.
+ *
+ * It was incremented and read by nobody for as long as it existed, which is
+ * the defect this project produces most often - a number written and never
+ * read. Transmit is reachable from a syscall (a socket write), so the bound
+ * being asserted is exactly what the property asks for. */
 static uint64_t g_tx_timeouts;
+
+uint64_t vibeos_x86_64_virtio_net_tx_timeouts(void) {
+    return g_tx_timeouts;
+}
 
 static void tx_lock(void) {
     while (__sync_lock_test_and_set(&g_tx_lock, 1)) {
