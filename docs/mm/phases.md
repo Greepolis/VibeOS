@@ -718,3 +718,29 @@ counted into a static nothing read. See
 phase: it is that P5 has never run on the real machine, because the boot medium
 carries no swap area. The next step is a contiguous file on the existing FAT
 medium, then a partition.
+
+## P5 — swap has somewhere to write
+
+An 8 MiB contiguous file on the boot volume, 2048 slots. The file is staged by
+`scripts/make-swapfile.py`; `vibeos_x86_64_fat_file_extent` resolves it to
+sectors and reports whether the chain is one run, and a fragmented file is
+refused rather than written through.
+
+Nothing in `kernel/mm/` had to change. What was missing was every connection to
+it: the vmspace backend's two swap hooks were null, the fault handler did not
+know what a swapped entry was, and no code anywhere decided which page should
+go - so `vibeos_reclaim_set_anon_source` was called by nobody.
+`kernel/mm/anon.c` is that caller.
+
+The boot check has two halves and only the second one earns its keep: writing a
+page through the area and reading it back would bless an area pointed anywhere,
+because a write and a read that use the same wrong address agree perfectly. The
+bytes are therefore looked for at the front of SWAPFILE.BIN *through the
+filesystem*, which resolves the file's own chain. Shifting the area by eight
+sectors passes the first half and fails the second.
+
+**The remaining gap is named rather than glossed:** `freed_anon` is zero on
+every boot, because nothing runs this machine short of memory. The area is
+real, it points at the file, and a page survives the trip to the disk and back
+- all gated. The eviction path under pressure is not yet proved. See
+[mm_swap_file.md](../implementation_progress/mm_swap_file.md).

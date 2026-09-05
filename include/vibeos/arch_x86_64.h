@@ -78,6 +78,16 @@ uint64_t vibeos_x86_64_virtio_blk_timeouts(void);
 uint64_t vibeos_x86_64_ahci_timeouts(void);
 uint64_t vibeos_x86_64_virtio_net_tx_timeouts(void);
 uint64_t vibeos_x86_64_blk_timeouts(void);
+
+/* Where a file's bytes physically are, for swap and for nothing else. See the
+ * comment on the definition: `contiguous` is reported rather than assumed,
+ * because a swap area that wrote through a gap would write into other files. */
+int vibeos_x86_64_fat_file_extent(const char *path, uint64_t *out_first_lba,
+                                  uint64_t *out_sectors, int *out_contiguous);
+int vibeos_x86_64_fat_open(const char *path, uint32_t *out_cluster,
+                           uint32_t *out_size);
+long vibeos_x86_64_fat_read_at(uint32_t first_cluster, uint32_t size,
+                               uint32_t off, void *buf, uint32_t len);
 const char *vibeos_x86_64_blk_name(void);
 int vibeos_x86_64_blk_present(void);
 int vibeos_x86_64_blk_read(uint64_t lba, void *buf);

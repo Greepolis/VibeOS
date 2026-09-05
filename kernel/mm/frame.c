@@ -507,6 +507,13 @@ void vibeos_frame_survey_locked(uint64_t *by_state, uint64_t *largest_free_run) 
     }
 }
 
+uint64_t vibeos_frame_phys_at(uint32_t index) {
+    if (index >= g_entries) {
+        return 0ull;
+    }
+    return frame_addr(index);
+}
+
 uint64_t vibeos_frame_total(void) {
     return g_entries;
 }

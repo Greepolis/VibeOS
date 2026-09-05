@@ -213,6 +213,14 @@ void vibeos_frame_survey(uint64_t *by_state, uint64_t *largest_free_run);
 
 /* Totals, for meminfo and the boot gate. */
 uint64_t vibeos_frame_total(void);
+
+/* The address of the nth frame this layer describes, or 0 past the end.
+ *
+ * The one primitive a scanner needs. Reclaim's anonymous tier has to look at
+ * frames it has no other handle on - nothing hands it a list of candidates -
+ * and computing `base + n * 4096` at the caller would put this layer's
+ * addressing arithmetic in a second place. */
+uint64_t vibeos_frame_phys_at(uint32_t index);
 uint64_t vibeos_frame_free_count(void);
 
 #endif /* VIBEOS_FRAME_H */

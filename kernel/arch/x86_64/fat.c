@@ -921,6 +921,80 @@ static void fs_unlock(void) {
     __sync_lock_release(&g_fs_lock);
 }
 
+/* Where a file's bytes physically are, and whether they are one unbroken run.
+ *
+ * Swap needs this and nothing else does. The swap map moves 4 KiB into a slot
+ * by sector number; it has no idea what a filesystem is, and it must not
+ * acquire one. So this is the whole of the translation: resolve a path, walk
+ * its chain, and report the first sector, the length, and whether the walk
+ * ever jumped.
+ *
+ * Contiguity is *reported*, not assumed. A swap area that believed a
+ * fragmented file was one run would write pages of somebody's memory into
+ * whatever lies between its extents - which on this volume is other files -
+ * and the damage would surface at the next boot as a corrupted program with no
+ * event to point at. vibeos_swaparea_configure refuses a file that is not
+ * contiguous and counts the refusal; this function's job is to tell it the
+ * truth, and returning "contiguous" for a chain it could not fully walk would
+ * be the one lie that matters here.
+ *
+ * The length reported is the whole clusters the chain actually covers, not the
+ * size in the directory entry. Those differ - the last cluster is usually
+ * partly unused - and a swap area sized from the declared length would run
+ * past the end of the allocation. This project has already had one defect from
+ * trusting a directory's declared size over what was really read.
+ *
+ * Returns 0 on success. `contiguous` is 0 or 1 and is meaningful even then:
+ * a fragmented file resolves fine and is simply not usable as swap. */
+int vibeos_x86_64_fat_file_extent(const char *path, uint64_t *out_first_lba,
+                                  uint64_t *out_sectors, int *out_contiguous) {
+    uint32_t cluster = 0, size = 0;
+    uint32_t cl, prev;
+    uint64_t clusters = 0;
+    int contiguous = 1;
+    int rc = -1;
+
+    if (!path || !out_first_lba || !out_sectors || !out_contiguous) {
+        return -1;
+    }
+    *out_first_lba = 0;
+    *out_sectors = 0;
+    *out_contiguous = 0;
+
+    fs_lock();
+    if (fat_open_locked(path, &cluster, &size) != 0 || cluster < 2u) {
+        fs_unlock();
+        return -1;
+    }
+    g_fat_chain_error = 0;
+    prev = cluster;
+    cl = cluster;
+    while (!fat_chain_end(cl) && cl >= 2u && cl - 2u < g_fat.max_clusters) {
+        if (clusters != 0ull && cl != prev + 1u) {
+            contiguous = 0;
+        }
+        clusters++;
+        if (clusters > (uint64_t)g_fat.max_clusters) {
+            break;                 /* a chain that loops is not a file */
+        }
+        prev = cl;
+        cl = fat_next_cluster(cl);
+    }
+    /* A table read that failed reports the end-of-chain marker, which is the
+     * same value a healthy last cluster returns - the trap this file already
+     * carries a comment about. A short walk must not be reported as a short
+     * contiguous file. */
+    if (!g_fat_chain_error && clusters > 0ull) {
+        *out_first_lba = (uint64_t)fat_cluster_lba(cluster);
+        *out_sectors = clusters * (uint64_t)g_fat.sectors_per_cluster;
+        *out_contiguous = contiguous;
+        rc = 0;
+    }
+    (void)size;
+    fs_unlock();
+    return rc;
+}
+
 int vibeos_x86_64_fat_mount(void) {
     int r;
     fs_lock();

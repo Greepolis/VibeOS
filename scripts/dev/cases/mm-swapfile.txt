@@ -1,0 +1,47 @@
+# Sabotage cases for the swap area on a file, and for the boot round trip.
+#
+# Each was applied, the boot was confirmed to report what the case expects, and
+# the tree was confirmed green afterwards.
+#
+# Run: apply the edit, bash scripts/dev/check.sh build <dir>, then
+#      python3 scripts/qemu-cli-smoke-linux.py <dir> 120
+
+case: the area is pointed somewhere that is not the swap file
+  in hw_swap_bringup, set area.first_sector = first + 8u
+  expect: [MM] SWAP_ROUNDTRIP swap round trip FAILED: area is not the file
+          reason=invariant_failed:swap_roundtrip:...area_is_not_the_file
+  why it matters: this is the case that justifies the second half of the round
+    trip, and it is worth being precise about. The write-then-read-back half
+    *passes* this sabotage - a write and a read that use the same wrong address
+    agree perfectly. Only reading the bytes back through the filesystem, which
+    resolves the file's own chain and never consults area.first_sector, catches
+    it. Without that half the check would bless an area writing pages of memory
+    over another file.
+
+case: a fragmented file is accepted as swap
+  in hw_swap_bringup, delete the !contiguous branch
+  expect: NOT OBSERVABLE IN THIS ENVIRONMENT.
+    The staged swap file is written in one go and comes out as a single run on
+    every medium tried, so the refusal never fires and removing it changes
+    nothing visible. The case is kept because it is the most dangerous path in
+    this layer, not because this environment can exercise it - the same
+    distinction the AHCI cases carry. To exercise it, fragment SWAPFILE.BIN on
+    the medium by hand and confirm the boot reports "swap file is fragmented;
+    refused" with slots=0.
+
+case: the swap area stops being configured
+  in scripts/make-swapfile.py, return 0 without writing the file
+  expect: invariant_failed:swap_area_not_configured
+  why it matters: for a phase the answer here was "there is no swap area" and
+    everything above it sat unreachable with every boot green. The gate asserts
+    the area exists so that state cannot come back silently.
+
+case: the swapped-entry test runs after the copy-on-write test
+  in hw_handle_cow_fault, move the (error_code & 0x1u) == 0u block below the
+  (error_code & 0x3u) != 0x3u early return
+  expect: NOT OBSERVABLE UNTIL EVICTION RUNS.
+    No boot currently evicts an anonymous page - freed_anon is zero, because
+    nothing runs the machine short of memory - so no fault ever reaches a
+    swapped entry and the ordering cannot be wrong in practice yet. Recorded
+    now because the failure it causes is a task killed for touching memory it
+    legitimately owns, which is a long way from its cause.

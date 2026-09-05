@@ -28,6 +28,9 @@
 #include "vibeos/pageinfo.h"
 #include "vibeos/rmap.h"
 #include "vibeos/reclaim.h"
+#include "vibeos/blkdev.h"
+#include "vibeos/swapmap.h"
+#include "vibeos/anon.h"
 #include "vibeos/swaparea.h"
 
 #define VIBEOS_HW_KERNEL_CS 0x08u
@@ -1902,6 +1905,19 @@ static const uint64_t *hw_vmspace_shared_pd(uint32_t gib) {
     return &g_pd[gib][0];
 }
 
+/* ---- the swap bridges ----------------------------------------------------
+ *
+ * vmspace does the page-table work and swapmap owns the slots; these two lines
+ * are all that connects them, and they are here rather than in either layer
+ * because neither may depend on the other. */
+static int hw_swap_write_page(uint32_t slot, void *page) {
+    return vibeos_swap_write(slot, page);
+}
+
+static int hw_swap_read_page(uint32_t slot, void *page) {
+    return vibeos_swap_read(slot, page);
+}
+
 /* The kernel reaches every frame through the identity map, so "addressable" and
  * "below the identity limit" are the same question. The frame layer asks this
  * before poisoning or zeroing a frame; null means it counts the frame without
@@ -2102,49 +2118,15 @@ static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
                 vibeos_reclaim_set_clean_source(vibeos_cache_reclaim);
             }
 
-            /* Where swap lives, asked rather than assumed.
+            /* Swap is configured later, and it has to be.
              *
-             * This machine has no swap area: the boot media is one FAT volume
-             * with no spare partition, and nothing has carved a file for it.
-             * So the answer today is NONE, and the point of asking anyway is
-             * that the shape is here - a partition or a contiguous file, both
-             * described the same way, both translated by one function that
-             * checks its bounds.
-             *
-             * Configuring one later means filling this in and nothing else:
-             * the map, page-out, page-in and reclaim's anonymous tier are
-             * built and tested above it. What is deliberately absent until
-             * then is the anonymous source, so reclaim keeps counting in
-             * skipped_no_swap exactly what having no swap costs, rather than
-             * appearing to work. */
-            {
-                vibeos_swap_area_t area;
-                uint32_t slots;
-
-                {
-                    uint8_t *z = (uint8_t *)&area;
-                    unsigned k;
-                    for (k = 0; k < sizeof(area); k++) {
-                        z[k] = 0;
-                    }
-                }
-                area.kind = VIBEOS_SWAP_NONE;
-                area.origin = "not configured on this media";
-                slots = vibeos_swaparea_configure(&area, 0, 0,
-                                                  g_swap_bitmap,
-                                                  (uint32_t)sizeof(g_swap_bitmap));
-
-                /* Bracketed by the console lock, so the line cannot be cut
-                 * in half by another core - the rule this project learned the
-                 * hard way, twice. */
-                vibeos_x86_64_serial_lock();
-                vibeos_x86_64_serial_puts("[MM] SWAP_AREA slots=0x");
-                vibeos_x86_64_serial_print_hex((uint64_t)slots);
-                vibeos_x86_64_serial_puts(" (none configured on this media)\n");
-                vibeos_x86_64_serial_unlock();
-            }
-            {
-            }
+             * It used to be answered here, unconditionally NONE, under a
+             * comment saying somebody would fill it in. It could never have
+             * been filled in *here*: this runs during memory bring-up and the
+             * disk driver does not bind until much further down
+             * hw_early_init, so there is no device to name yet. The only
+             * honest answer at this point in the boot is "not yet". See
+             * hw_swap_bringup, called once the volume is mounted. */
 
             g_frame_layer_ready = 1;
 
@@ -2176,6 +2158,16 @@ static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
                  * core inside a system call cannot answer the IPI. The layer
                  * asks; what the architecture does about it stays here. */
                 vb.shootdown = hw_tlb_shootdown;
+                /* The two hooks that make page-out and page-in real.
+                 *
+                 * They were left null and the whole of P5 sat above them:
+                 * built, host-tested against a memory-backed device, and never
+                 * once run on this machine. vibeos_vmspace_swap_out checks for
+                 * a null swap_write and gives up quietly, so the absence was
+                 * not an error anywhere - it was a subsystem that could not be
+                 * reached. */
+                vb.swap_write = hw_swap_write_page;
+                vb.swap_read = hw_swap_read_page;
                 if (vibeos_vmspace_init(&vb) != 0) {
                     ok = 0;
                 }
@@ -5669,6 +5661,39 @@ static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code,
     vibeos_vmspace_t v;
     int handled;
 
+    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+        return 0;
+    }
+    t = &g_tasks[g_current_task];
+
+    /* A page that is not present may be one this kernel sent to swap, and it
+     * is checked before the copy-on-write test rather than after it. A swapped
+     * entry has no present bit, so the present-and-write condition below would
+     * reject it and the task would be killed for touching memory it owns.
+     *
+     * Read or write - either faults - so nothing is asked of the error code
+     * beyond the page not being present. */
+    if ((error_code & 0x1u) == 0u) {
+        vibeos_vmspace_t sv = hw_vm(&t->proc.as);
+        if (vibeos_vmspace_swap_slot(&sv, fault_va) >= 0) {
+            /* Privileged, deliberately. This allocation is what brings a page
+             * back; refusing it at the low watermark would leave a process
+             * unable to touch memory it already owns, and reclaim would be
+             * preventing the very thing it reclaimed for. */
+            void *page = hw_alloc_page();
+            if (page &&
+                vibeos_vmspace_swap_in(&sv, fault_va,
+                                       (uint64_t)(uintptr_t)page) == 0) {
+                return 1;
+            }
+            if (page) {
+                hw_free_page_why(page, "swap_in_failed");
+            }
+            /* Falls through on failure rather than retrying: a retry on the
+             * same entry faults again forever, and the path below reports it. */
+        }
+    }
+
     /* Present and write. The originating privilege level is deliberately not
      * required to be user: the kernel writes into user memory on a process's
      * behalf - read() filling a buffer, a syscall storing a result - and with
@@ -5679,10 +5704,6 @@ static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code,
     if ((error_code & 0x3u) != 0x3u) {
         return 0;
     }
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
-        return 0;
-    }
-    t = &g_tasks[g_current_task];
 
     /* The decision, the copy, the reference arithmetic and the shootdown all
      * live in L1 now, where a host test can drive them. What stays here is what
@@ -9150,6 +9171,231 @@ uint64_t vibeos_mm_bytes_reserved(void) {
 }
 
 /* Entry point invoked from entry.s before vibeos_kmain. */
+/* ---- swap ---------------------------------------------------------------- */
+
+/* The block move the swap area is given, and the only way it reaches a disk.
+ *
+ * Routed through vibeos_blk_read/write rather than the driver, so a swap
+ * transfer is bounds-checked against the device exactly like every other
+ * request and shows up in the same counters. A swap path with its own private
+ * road to the hardware would be a second definition of what a block request
+ * means, which is how this project got its worst bugs. */
+static int hw_swap_block(void *ctx, uint32_t device, uint64_t lba,
+                         uint32_t count, void *buf, int write) {
+    (void)ctx;
+    /* The wrappers return 0 or -1; the reason lands in the io stats, which the
+     * boot gate already asserts. Nothing is added here, deliberately - a swap
+     * transfer that failed is not a different kind of failure from any other
+     * block request, and giving it its own vocabulary would be a second
+     * definition of what a block error means. */
+    if (write) {
+        return vibeos_blk_write(device, lba, count, buf) == 0 ? 0 : -1;
+    }
+    return vibeos_blk_read(device, lba, count, buf) == 0 ? 0 : -1;
+}
+
+/* Give swap somewhere to write, if this medium has anywhere.
+ *
+ * Called after the volume is mounted, because until then there is no device
+ * and no way to resolve a path. The whole of P5 - the swap map, page-out,
+ * page-in, reclaim's anonymous tier - was built, host-tested and
+ * sabotage-verified above this, and had never once run on a booting machine.
+ *
+ * Every step here can decline, and each declines differently on purpose:
+ * "there is no swap file" and "there is a swap file and it is unusable" are
+ * different states, and only one of them is somebody's mistake.
+ *
+ * The refusal that matters is fragmentation. The swap file lives on the same
+ * volume as everything else, so an area that spanned a gap in the chain would
+ * not fail - it would write a page of some process's memory over another
+ * file's data, and the damage would surface at the next boot as a program that
+ * is quietly wrong. vibeos_x86_64_fat_file_extent reports whether the chain is
+ * one run and this refuses it if it is not, rather than hoping. */
+static void hw_swap_bringup(void) {
+    vibeos_swap_area_t area;
+    uint64_t first = 0, sectors = 0;
+    int contiguous = 0;
+    uint32_t slots = 0;
+    const char *why = "no swap file on this medium";
+    int dev = vibeos_x86_64_blk_device();
+
+    {
+        uint8_t *z = (uint8_t *)&area;
+        unsigned k;
+        for (k = 0; k < sizeof(area); k++) {
+            z[k] = 0;
+        }
+    }
+    area.kind = VIBEOS_SWAP_NONE;
+    area.origin = "EFI/BOOT/SWAPFILE.BIN";
+
+    if (dev >= 0 &&
+        vibeos_x86_64_fat_file_extent("EFI/BOOT/SWAPFILE.BIN",
+                                      &first, &sectors, &contiguous) == 0) {
+        if (!contiguous) {
+            /* Declined, not worked around. Following an extent list belongs in
+             * the swap area layer and is a later change; guessing here would
+             * put the guess in the one place that must not have one. */
+            why = "swap file is fragmented; refused";
+        } else {
+            area.kind = VIBEOS_SWAP_FILE;
+            area.device = (uint32_t)dev;
+            area.first_sector = first;
+            area.sectors = sectors;
+            area.contiguous = 1;
+            why = "swap file accepted";
+        }
+    }
+
+    slots = vibeos_swaparea_configure(&area, hw_swap_block, 0, g_swap_bitmap,
+                                      (uint32_t)sizeof(g_swap_bitmap));
+    if (slots == 0u && area.kind != VIBEOS_SWAP_NONE) {
+        why = "swap area refused by the swap layer";
+    }
+    if (slots > 0u) {
+        /* Does a page actually survive the trip?
+         *
+         * Everything below here was host-tested against a memory-backed
+         * device, which proves the arithmetic and proves nothing about this
+         * machine's disk. The interesting failures are the ones a model cannot
+         * have: a driver that reports a write it did not do, a medium that
+         * reads back zeroes, an area pointed somewhere it does not own.
+         *
+         * Two checks, and the second is the one that matters.
+         *
+         * One slot is taken, filled with a pattern that includes its own
+         * offset - a constant would survive a read that returned the wrong
+         * sector, as long as that sector had been written too - sent out, read
+         * back into a different page, and compared.
+         *
+         * That alone would be a weak check, and saying so is the point: a
+         * write and a read that use the same wrong address agree perfectly.
+         * An area whose first sector is off by a cluster passes it, while
+         * quietly writing pages of memory over another file.
+         *
+         * So the bytes are then looked for through the *filesystem* - the file
+         * is read by name, which resolves its own chain and never consults
+         * area.first_sector. If the pattern is not at the front of
+         * SWAPFILE.BIN, the area is not pointing at the swap file, whatever
+         * the round trip said. That is the check that would have caught the
+         * defect this layer's header says it exists to prevent.
+         *
+         * A boot check rather than a host test because the point is the parts a
+         * host test cannot reach, and it is cheap: two 4 KiB transfers, once.
+         *
+         * "Gate the mechanism when you cannot gate the bug": reclaim's
+         * anonymous tier only runs under memory pressure, which an ordinary
+         * boot never reaches, so without this the entire swap path could stop
+         * working and every boot would stay green. */
+        void *out = hw_alloc_page();
+        void *back = hw_alloc_page();
+        uint32_t slot = 0;
+        const char *verdict = "swap round trip not attempted";
+
+        if (out && back && vibeos_swap_alloc(&slot) == 0) {
+            uint64_t *w = (uint64_t *)out;
+            const uint64_t *r = (const uint64_t *)back;
+            uint32_t i;
+            int bad = -1;
+
+            for (i = 0; i < 4096u / 8u; i++) {
+                w[i] = 0x5761705465737430ull ^ ((uint64_t)i << 8);
+            }
+            for (i = 0; i < 4096u / 8u; i++) {
+                ((uint64_t *)back)[i] = 0ull;
+            }
+            if (vibeos_swap_write(slot, out) != 0) {
+                verdict = "swap round trip FAILED: write";
+            } else if (vibeos_swap_read(slot, back) != 0) {
+                verdict = "swap round trip FAILED: read";
+            } else {
+                for (i = 0; i < 4096u / 8u; i++) {
+                    if (r[i] != (0x5761705465737430ull ^ ((uint64_t)i << 8))) {
+                        bad = (int)i;
+                        break;
+                    }
+                }
+                verdict = (bad < 0) ? "swap round trip OK"
+                                    : "swap round trip FAILED: contents";
+            }
+            /* The independent half. Read through the filesystem, which
+             * walks the chain from the directory entry and knows nothing about
+             * where the swap area thinks it is.
+             *
+             * Only meaningful on a first read of this file: a cached copy from
+             * earlier in the boot would be stale, because the swap write went
+             * straight to the block layer. Nothing reads SWAPFILE.BIN before
+             * this, and if anything ever does, this check has to move ahead of
+             * it rather than be believed. */
+            if (bad < 0) {
+                /* A positional read, because vibeos_fs_read_file reads a whole
+                 * file and this one is eight megabytes. The first version
+                 * asked for the whole thing into a 4 KiB page and reported
+                 * "file unreadable", which was true and was about the buffer
+                 * rather than about swap. */
+                uint32_t fc = 0, fsz = 0;
+                long n = -1;
+
+                if (vibeos_x86_64_fat_open("EFI/BOOT/SWAPFILE.BIN", &fc, &fsz) == 0) {
+                    n = vibeos_x86_64_fat_read_at(fc, fsz, 0u, back, 4096u);
+                }
+                if (n < 4096) {
+                    verdict = "swap round trip FAILED: file unreadable";
+                } else {
+                    for (i = 0; i < 4096u / 8u; i++) {
+                        if (r[i] != (0x5761705465737430ull ^ ((uint64_t)i << 8))) {
+                            bad = (int)i;
+                            break;
+                        }
+                    }
+                    if (bad >= 0) {
+                        verdict = "swap round trip FAILED: area is not the file";
+                    }
+                }
+            }
+            (void)vibeos_swap_free(slot);
+        }
+        if (out) {
+            hw_free_page_why(out, "swap_selftest");
+        }
+        if (back) {
+            hw_free_page_why(back, "swap_selftest");
+        }
+        vibeos_x86_64_serial_lock();
+        vibeos_x86_64_serial_puts("[MM] SWAP_ROUNDTRIP ");
+        vibeos_x86_64_serial_puts(verdict);
+        vibeos_x86_64_serial_puts("\n");
+        vibeos_x86_64_serial_unlock();
+
+        /* Only now, and this is the whole point of the phase.
+         *
+         * Registering the anonymous tier without an area would give reclaim a
+         * source that can never succeed, and `skipped_no_swap` would stop
+         * counting what having no swap costs - a number going quiet because
+         * the thing it measures became invisible, not because it stopped
+         * happening. With no area, no source: reclaim keeps saying so. */
+        vibeos_anon_set_map(hw_frame_identity_map);
+        vibeos_reclaim_set_anon_source(vibeos_anon_reclaim);
+    }
+
+    /* One call under the console lock: a line built from several is several
+     * critical sections, and this project has had a gate report failures that
+     * were a marker cut in half. */
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts("[MM] SWAP_AREA slots=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)slots);
+    vibeos_x86_64_serial_puts(" first_lba=0x");
+    vibeos_x86_64_serial_print_hex(area.first_sector);
+    vibeos_x86_64_serial_puts(" sectors=0x");
+    vibeos_x86_64_serial_print_hex(area.sectors);
+    vibeos_x86_64_serial_puts(" contiguous=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)area.contiguous);
+    vibeos_x86_64_serial_puts(" (");
+    vibeos_x86_64_serial_puts(why);
+    vibeos_x86_64_serial_puts(")\n");
+    vibeos_x86_64_serial_unlock();
+}
+
 /* Boot stages, in one format, on the serial line and in the kernel log.
  *
  * Every stage of the boot says its own name as it completes. This is not
@@ -9307,6 +9553,7 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
 
     if (vibeos_x86_64_blk_present() &&
         vibeos_x86_64_fat_vfs_mount(&g_rootfs) == 0) {
+        hw_swap_bringup();
         long n = vibeos_fs_read_file(&g_rootfs, "EFI/BOOT/INIT.ELF",
                                       g_disk_init_elf, sizeof(g_disk_init_elf));
         if (n > 0) {

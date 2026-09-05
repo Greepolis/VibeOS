@@ -988,6 +988,45 @@ def main():
                 elif lost > 64:
                     problems.append(f"userland_frames_lost={lost}_ceiling=64")
 
+            # Swap, on a machine that now has some.
+            #
+            # For most of this project's life the answer here was "there is no
+            # swap area", and the whole of P5 - swap map, page-out, page-in,
+            # reclaim's anonymous tier - sat above it host-tested and
+            # unreachable. So the first assertion is that the area exists at
+            # all: a boot that silently stopped having one would otherwise put
+            # the subsystem straight back where it was, with everything green.
+            #
+            # The round trip is the part a host test cannot do. It writes a
+            # page through the area, reads it back, and then looks for the same
+            # bytes at the front of SWAPFILE.BIN *through the filesystem* -
+            # which resolves the file's own chain and never consults the area's
+            # first sector. Without that second half the check would pass an
+            # area pointed at the wrong place entirely, since a write and a
+            # read that use the same wrong address agree perfectly.
+            ms = re.search(r"\[MM\] SWAP_AREA slots=0x([0-9a-f]{16})", text)
+            if ms is None:
+                problems.append("swap_area_line_missing")
+            elif int(ms.group(1), 16) == 0:
+                problems.append("swap_area_not_configured")
+            elif "[MM] SWAP_ROUNDTRIP swap round trip OK" not in text:
+                mr = re.search(r"\[MM\] SWAP_ROUNDTRIP ([^\n]*)", text)
+                problems.append("swap_roundtrip:" +
+                                (mr.group(1).strip().replace(" ", "_")
+                                 if mr else "line_missing"))
+
+            msz = re.search(r"\[MM\] SWAP MUSTBEZERO double_free=0x([0-9a-f]{16}) "
+                            r"out_of_range=0x([0-9a-f]{16}) "
+                            r"slot_leaked=0x([0-9a-f]{16})", text)
+            if msz is None:
+                problems.append("swap_mustbezero_missing")
+            else:
+                for name, group in (("double_free", 1), ("out_of_range", 2),
+                                    ("slot_leaked", 3)):
+                    value = int(msz.group(group), 16)
+                    if value != 0:
+                        problems.append(f"swap_{name}={value}")
+
             # Every bounded wait a syscall can reach, asserted at zero.
             #
             # P7's latency property is two halves and only one of them was

@@ -6,6 +6,10 @@
 #include "vibeos/backing.h"
 #include "vibeos/rmap.h"
 #include "vibeos/io_stats.h"
+#include "vibeos/swapmap.h"
+#include "vibeos/swaparea.h"
+#include "vibeos/anon.h"
+#include "vibeos/reclaim.h"
 #include <stddef.h>
 
 static int kernel_bootinfo_validate(const vibeos_boot_info_t *boot_info) {
@@ -701,6 +705,59 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
          * fired. virtio-net counted its transmit timeouts and nothing read the
          * number, and neither disk driver counted at all - so the timeout the
          * gate asserts to be zero was a result no driver could produce. */
+        /* Swap, in two lines: what must be zero, and what happened.
+         *
+         * Split that way on purpose. slot_leaked, double_free and out_of_range
+         * are defects - a leaked slot is swap space no reboot gets back, and
+         * out_of_range is a transfer that would have landed on somebody else's
+         * file. The rest are a description of a boot, and a boot with no
+         * memory pressure legitimately shows zeroes throughout. Asserting on
+         * those would be asserting that this machine ran short of memory. */
+        {
+            const vibeos_swap_stats_t *sw = vibeos_swap_stats();
+            const vibeos_swaparea_stats_t *ar = vibeos_swaparea_stats();
+            const vibeos_anon_stats_t *an = vibeos_anon_stats();
+            const vibeos_reclaim_stats_t *rc = vibeos_reclaim_stats();
+
+            vibeos_x86_64_serial_puts("[MM] SWAP MUSTBEZERO double_free=0x");
+            kernel_log_u64_hex(sw->double_free);
+            vibeos_x86_64_serial_puts(" out_of_range=0x");
+            kernel_log_u64_hex(ar->out_of_range);
+            vibeos_x86_64_serial_puts(" slot_leaked=0x");
+            kernel_log_u64_hex(an->slot_leaked);
+            vibeos_x86_64_serial_puts("\n");
+
+            vibeos_x86_64_serial_puts("[MM] SWAP slots=0x");
+            kernel_log_u64_hex((uint64_t)vibeos_swap_slots());
+            vibeos_x86_64_serial_puts(" allocated=0x");
+            kernel_log_u64_hex(sw->allocated);
+            vibeos_x86_64_serial_puts(" peak=0x");
+            kernel_log_u64_hex(sw->peak);
+            vibeos_x86_64_serial_puts(" full=0x");
+            kernel_log_u64_hex(sw->full);
+            vibeos_x86_64_serial_puts(" sectors_written=0x");
+            kernel_log_u64_hex(ar->sectors_written);
+            vibeos_x86_64_serial_puts(" sectors_read=0x");
+            kernel_log_u64_hex(ar->sectors_read);
+            vibeos_x86_64_serial_puts("\n");
+
+            vibeos_x86_64_serial_puts("[MM] RECLAIM scans=0x");
+            kernel_log_u64_hex(rc->scans);
+            vibeos_x86_64_serial_puts(" freed_clean=0x");
+            kernel_log_u64_hex(rc->freed_clean);
+            vibeos_x86_64_serial_puts(" freed_anon=0x");
+            kernel_log_u64_hex(rc->freed_anon);
+            vibeos_x86_64_serial_puts(" skipped_no_swap=0x");
+            kernel_log_u64_hex(rc->skipped_no_swap);
+            vibeos_x86_64_serial_puts(" anon_scanned=0x");
+            kernel_log_u64_hex(an->scanned);
+            vibeos_x86_64_serial_puts(" anon_evicted=0x");
+            kernel_log_u64_hex(an->evicted);
+            vibeos_x86_64_serial_puts(" anon_refused=0x");
+            kernel_log_u64_hex(an->refused);
+            vibeos_x86_64_serial_puts("\n");
+        }
+
         vibeos_x86_64_serial_puts("[IO] WAITS blk_timeouts=0x");
         kernel_log_u64_hex(vibeos_x86_64_blk_timeouts());
         vibeos_x86_64_serial_puts(" net_tx_timeouts=0x");

@@ -24,6 +24,24 @@ file(MAKE_DIRECTORY "${EFI_BOOT_DIR}")
 
 # Real EFI filesystem layout (QEMU OVMF-compatible virtual FAT tree)
 file(COPY_FILE "${BOOTLOADER_EFI}" "${EFI_BOOTX64}" ONLY_IF_DIFFERENT)
+
+# Somewhere for swap to write. See scripts/make-swapfile.py for why it is a
+# file, why it is written in one go, and why nothing may assume it came out
+# contiguous - the kernel checks and refuses it if it did not.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    execute_process(
+        COMMAND ${Python3_EXECUTABLE}
+                "${CMAKE_CURRENT_LIST_DIR}/../scripts/make-swapfile.py"
+                "${EFI_BOOT_DIR}/SWAPFILE.BIN" 8388608
+        RESULT_VARIABLE _swapfile_rc)
+    if(NOT _swapfile_rc EQUAL 0)
+        message(WARNING "swap file not staged (rc=${_swapfile_rc}); "
+                        "the boot will report SWAP_AREA slots=0")
+    endif()
+else()
+    message(WARNING "python3 not found: swap file not staged")
+endif()
 file(COPY_FILE "${KERNEL_ELF}" "${EFI_KERNEL}" ONLY_IF_DIFFERENT)
 file(WRITE "${EFI_STARTUP_NSH}"
     "fs0:\\EFI\\BOOT\\BOOTX64.EFI\n"
