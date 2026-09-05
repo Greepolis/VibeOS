@@ -75,3 +75,35 @@ region is reused by transactions of different lengths.
 ## Next checkpoint
 - Route FAT metadata updates through the journal, then re-run the power-cut
   sweep against a real FAT volume rather than a synthetic target set.
+
+---
+
+## What runs, and what only compiles
+
+Written while planning the I/O refactor, from a survey rather than from the
+file names — and it corrects a claim this file's own table row was making.
+
+**Only FAT is mounted on a booting machine.** ext2, NTFS, ISO9660, exFAT, the
+journal, the partition reader and the block cache are host-tested and have
+never touched a real disk. That is about 2400 lines with no runtime evidence,
+and this project already has the lesson written down from the AHCI gap: the
+driver nobody runs is the one that ships broken.
+
+**FAT bypasses the block cache.** It reads sectors directly through
+`vibeos_x86_64_blk_read` into two static buffers of its own, so the only
+filesystem that runs is the one that does not use the only cache there is.
+There are three parallel read paths and they share nothing.
+
+**Nothing writes.** `vibeos_fs_write_file`, `unlink` and `mkdir` exist and are
+host-tested; no booting machine calls any of them. The journal's power-loss
+recovery is verified the same way - a host test, not a machine that lost power.
+Both claims are true and neither is about the running kernel, which is the
+distinction the table row was losing.
+
+**An error has no reason.** `blk_read` returns int. A timeout, an absent
+device, a medium error and a request never issued are indistinguishable at
+every layer above.
+
+**There are no I/O counters at all.** Not few - none.
+
+The plan that addresses all of this is [docs/io/](../io/README.md).

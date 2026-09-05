@@ -78,23 +78,32 @@ def main():
                 rel = f"implementation_progress/{f}"
                 lines.append(f"- [{title_of(os.path.join(docs, rel))}]({rel})")
 
-    # docs/mm/ - the memory management plan, split one concern per file. The
-    # README is listed first because it is the index; the rest follow it in a
-    # deliberate reading order rather than alphabetically, because "phases"
-    # after "observability" is a sequence and P0 before architecture is not.
-    mm = os.path.join(docs, "mm")
-    if os.path.isdir(mm):
+    # The plan directories, each split one concern per file.
+    #
+    # Listed in a deliberate reading order rather than alphabetically, because
+    # "phases" after "observability" is a sequence and P0 before architecture
+    # is not. The README comes first because it is the index.
+    #
+    # Driven by a table rather than by one hardcoded block per plan, which is
+    # what it was: docs/io/ existed for an hour before anybody noticed it was
+    # not in the book, and a detail file that is not in SUMMARY.md exists only
+    # for whoever finds it by accident. Adding a plan is now one row.
+    for plan_dir, plan_title in (("mm", "Memory management plan"),
+                                 ("io", "Storage and I/O plan")):
+        plan = os.path.join(docs, plan_dir)
+        if not os.path.isdir(plan):
+            continue
         order = ["README.md", "architecture.md", "observability.md",
                  "maintainability.md", "phases.md", "decisions.md"]
-        present = [f for f in order if os.path.exists(os.path.join(mm, f))]
-        present += sorted(f for f in os.listdir(mm)
+        present = [f for f in order if os.path.exists(os.path.join(plan, f))]
+        present += sorted(f for f in os.listdir(plan)
                           if f.endswith(".md") and f not in order)
         if present:
             lines.append("")
-            lines.append("# Memory management plan")
+            lines.append("# " + plan_title)
             lines.append("")
             for f in present:
-                rel = f"mm/{f}"
+                rel = f"{plan_dir}/{f}"
                 lines.append(f"- [{title_of(os.path.join(docs, rel))}]({rel})")
 
     adrs = os.path.join(docs, "adrs")
