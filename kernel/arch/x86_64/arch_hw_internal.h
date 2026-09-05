@@ -101,6 +101,18 @@ typedef struct {
 typedef struct {
     volatile int locked;
     uint64_t flags;   /* caller's RFLAGS, restored on release */
+    /* Who holds it, for when nobody lets go.
+     *
+     * A spin loop that never gives up turns a deadlock into silence, and
+     * silence is the most expensive failure this project has: the machine
+     * stops, the log stops, and the evidence is a wedge report naming whatever
+     * static function happened to precede the address. Two of those cost days.
+     *
+     * These are written after the lock is taken and cleared before it is
+     * released, so the bound below can say which lock, whose it is, and what
+     * they were doing - which turns a wedge into a panic with a name. */
+    volatile int owner_cpu;
+    const char *volatile owner_fn;
 } hw_lock_t;
 
 typedef struct {

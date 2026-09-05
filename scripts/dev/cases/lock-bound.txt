@@ -1,0 +1,28 @@
+# Sabotage cases for the spinlock deadlock bound.
+#
+# Run: apply the edit, bash scripts/dev/check.sh build <dir>, then
+#      python3 scripts/qemu-cli-smoke-linux.py <dir> 120
+
+case: a lock is taken twice on the same core
+  in any hw_spin_lock_named caller, take the same lock again before releasing
+  (hw_frame_lock is the easy one: call it twice from hw_swap_bringup)
+  expect: [LOCK] DEADLOCK lock=0x... waiter_cpu=... waiting_in=hw_frame_lock
+          held_by_cpu=... taken_in=hw_frame_lock, then a panic
+  why it matters: this is the failure the bound exists to name. Without it the
+    machine stops with no output at all, and the wedge report resolves the spin
+    address to whichever static function precedes it - which in this file is
+    frequently the wrong one. Two wedges this week were reported as
+    `hw_task_slots`, a function that returns a constant.
+  note: the bound is 400 million spins, so under TCG expect to wait a while
+    before the panic arrives. That is deliberate: the number has to be far
+    above any legitimate wait, and execve under emulation is the long one.
+
+case: the owner is cleared after the release instead of before
+  in hw_spin_unlock, move the owner_fn/owner_cpu stores below
+  __sync_lock_release
+  expect: NOT RELIABLY OBSERVABLE.
+    It needs another core to take the lock in the window between the release
+    and the clear, and then to deadlock, so the report names the wrong holder.
+    Recorded because the failure is a diagnostic that lies, which is worse than
+    one that is absent - and because this kernel has already been bitten by the
+    same publish-then-write ordering in task exit and in the reaper.

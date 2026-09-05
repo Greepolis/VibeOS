@@ -251,19 +251,70 @@ int hw_current_task(void) {
  * declaration and then fails confusingly. */
 static volatile int g_sched_running;
 
-void hw_spin_lock(hw_lock_t *lock) {
+/* How long a wait for a lock is allowed to be before it is called a deadlock.
+ *
+ * Not a timeout in any real sense: no critical section in this kernel is
+ * anywhere near this long, and under TCG the slowest one - execve reading two
+ * megabytes - is orders of magnitude below it. It is the line between "slow"
+ * and "never", and it exists because the alternative to crossing it is
+ * silence.
+ *
+ * That alternative has been paid for repeatedly. A machine that deadlocks stops
+ * with no output, no panic and no trap dump, and what is left is a wedge report
+ * naming whichever static function precedes the spin address - which in this
+ * one-translation-unit kernel is frequently the wrong one. Both of the wedges
+ * examined this week reported `hw_task_slots`, a function that returns a
+ * constant.
+ *
+ * Crossing it panics, which parks every core and prints a backtrace. A machine
+ * that says "cpu 2 waited on the lock cpu 0 took in hw_mmap_anon" is a machine
+ * somebody can fix. */
+#define VIBEOS_HW_LOCK_SPIN_LIMIT 400000000ull
+
+/* Declared here and defined beside hw_panic, which it calls. This is one
+ * translation unit and a helper used above its definition compiles as an
+ * implicit declaration and then fails with a confusing "static declaration
+ * follows non-static declaration" - a trap CLAUDE.md names outright. */
+static void hw_lock_deadlock(hw_lock_t *lock, const char *waiter,
+                             const char *holder, int holder_cpu);
+
+void hw_spin_lock_named(hw_lock_t *lock, const char *fn) {
     uint64_t flags;
+    uint64_t spins = 0;
+
     __asm__ __volatile__("pushfq\n\tpopq %0\n\tcli" : "=r"(flags) : : "memory");
     while (__sync_lock_test_and_set(&lock->locked, 1)) {
         while (lock->locked) {
+            if (++spins > VIBEOS_HW_LOCK_SPIN_LIMIT) {
+                /* Read before panicking: hw_panic parks the other cores, and
+                 * the holder's identity is the whole point of the message. */
+                const char *held_by = lock->owner_fn;
+                int held_cpu = lock->owner_cpu;
+
+                hw_lock_deadlock(lock, fn, held_by, held_cpu);
+                spins = 0;   /* reached only if the panic ever returns */
+            }
             __asm__ __volatile__("pause" ::: "memory");
         }
     }
     lock->flags = flags;
+    lock->owner_cpu = (int)vibeos_x86_64_cpu_id();
+    lock->owner_fn = fn;
+}
+
+void hw_spin_lock(hw_lock_t *lock) {
+    hw_spin_lock_named(lock, "unnamed");
 }
 
 void hw_spin_unlock(hw_lock_t *lock) {
     uint64_t flags = lock->flags;
+    /* Cleared before the release, not after: a core that takes the lock the
+     * instant it is freed would otherwise have its owner overwritten by the
+     * previous holder's tidying, and the deadlock report would name the wrong
+     * one. Same shape as the exit ordering this kernel already carries a long
+     * comment about. */
+    lock->owner_fn = 0;
+    lock->owner_cpu = -1;
     __sync_lock_release(&lock->locked);
     if (flags & 0x200ull) {   /* only re-enable if the caller had them on */
         __asm__ __volatile__("sti" ::: "memory");
@@ -917,6 +968,7 @@ static void hw_backtrace(uint64_t rbp, uint64_t rip) {
  * returns was stuck with or without this. */
 static volatile int g_panicked;
 
+
 /* Decision T7: no lock may be held across a scheduling point.
  *
  * The classic priority inversion - a low-priority task holding a lock a
@@ -999,6 +1051,34 @@ static void hw_panic(const char *why) {
         __asm__ __volatile__("cli; hlt");
     }
 }
+/* A lock nobody released, reported instead of waited on forever.
+ *
+ * Everything is read from the lock before the panic, because hw_panic parks
+ * every other core and the holder's identity is the whole message.
+ *
+ * The names are function names captured at acquisition rather than addresses.
+ * Almost everything in this file is static, so an address resolves to whichever
+ * symbol happens to precede it, and a confidently wrong name is worse than a
+ * number: both of the wedges examined this week reported `hw_task_slots`, a
+ * function that returns a constant. */
+static void hw_lock_deadlock(hw_lock_t *lock, const char *waiter,
+                             const char *holder, int holder_cpu) {
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts("[LOCK] DEADLOCK lock=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)(uintptr_t)lock);
+    vibeos_x86_64_serial_puts(" waiter_cpu=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)vibeos_x86_64_cpu_id());
+    vibeos_x86_64_serial_puts(" waiting_in=");
+    vibeos_x86_64_serial_puts(waiter ? waiter : "?");
+    vibeos_x86_64_serial_puts(" held_by_cpu=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)(holder_cpu < 0 ? 255 : holder_cpu));
+    vibeos_x86_64_serial_puts(" taken_in=");
+    vibeos_x86_64_serial_puts(holder ? holder : "(released, or never named)");
+    vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
+    hw_panic("spinlock held too long: deadlock");
+}
+
 
 /* Linux x86-64 syscall front end; defined after the task/address-space code
  * because it validates user pointers against the calling task's page tables. */
@@ -1776,7 +1856,7 @@ static void *hw_alloc_page_admitted(int privileged) {
     {
         uint8_t *p;
         uint32_t i;
-        hw_spin_lock(&g_mm_lock);
+        hw_spin_lock_named(&g_mm_lock, __func__);
         if (g_pool_next >= VIBEOS_HW_POOL_PAGES) {
             hw_spin_unlock(&g_mm_lock);
             return 0;
@@ -1822,7 +1902,7 @@ static void *hw_alloc_pages_contig(uint32_t count) {
  * Interrupts are masked for the duration, which is what hw_spin_lock does and
  * why nothing under this lock may be slow. */
 static void hw_frame_lock(void) {
-    hw_spin_lock(&g_mm_lock);
+    hw_spin_lock_named(&g_mm_lock, __func__);
 }
 
 /* The page cache gets a lock of its own rather than the frame layer's.
@@ -1838,7 +1918,7 @@ static void hw_frame_lock(void) {
 static hw_lock_t g_cache_lock;
 
 static void hw_cache_lock(void) {
-    hw_spin_lock(&g_cache_lock);
+    hw_spin_lock_named(&g_cache_lock, __func__);
 }
 
 static void hw_cache_unlock(void) {
@@ -1852,7 +1932,7 @@ static void hw_cache_unlock(void) {
 static hw_lock_t g_rmap_lock;
 
 static void hw_rmap_lock(void) {
-    hw_spin_lock(&g_rmap_lock);
+    hw_spin_lock_named(&g_rmap_lock, __func__);
 }
 
 static void hw_rmap_unlock(void) {
@@ -3580,7 +3660,7 @@ static int hw_task_alloc_guarded(int guarded, int privileged, uint32_t parent_pi
     if (out_verdict) {
         *out_verdict = VIBEOS_FORK_OK;
     }
-    hw_spin_lock(&g_sched_lock);
+    hw_spin_lock_named(&g_sched_lock, __func__);
     if (guarded) {
         uint32_t in_use = 0, kids = 0;
         vibeos_fork_verdict_t v;
@@ -3926,7 +4006,7 @@ void vibeos_x86_64_console_interrupt(void) {
 /* Wake every task blocked in read() on stdin (called from the keyboard IRQ). */
 static void hw_keyboard_wake(void) {
     int i;
-    hw_spin_lock(&g_sched_lock);
+    hw_spin_lock_named(&g_sched_lock, __func__);
     for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
         if (g_tasks[i].state == HW_TASK_BLOCKED && g_tasks[i].wait_input) {
             g_tasks[i].wait_input = 0;
@@ -4181,7 +4261,7 @@ static void hw_schedule(vibeos_x86_64_isr_frame_t *frame) {
         cpu->slice_left = 0;   /* the slice is over, whatever is left of it */
     }
 
-    hw_spin_lock(&g_sched_lock);
+    hw_spin_lock_named(&g_sched_lock, __func__);
     cur = cpu->current_task;
     next = hw_pick_next(cpu);
     if (next < 0 || next == cur) {
@@ -4437,7 +4517,7 @@ void hw_task_exit(uint64_t code) {
     if (dying >= 0) {
         int fd;
         if (g_net_up) {
-            hw_spin_lock(&g_net_lock);
+            hw_spin_lock_named(&g_net_lock, __func__);
             (void)vibeos_inet_release_owner_sockets(&g_net, g_tasks[dying].tgid);
             hw_spin_unlock(&g_net_lock);
         }
@@ -4479,7 +4559,7 @@ void hw_task_exit(uint64_t code) {
          * new process keeps running on a CR3 whose top-level page has gone
          * back to the allocator, and the next core to install it stops on the
          * instruction that loads it, with no kernel mapped to report from. */
-        hw_spin_lock(&g_sched_lock);
+        hw_spin_lock_named(&g_sched_lock, __func__);
         g_tasks[dying].exit_code = code;
         hw_spin_unlock(&g_sched_lock);
         vibeos_x86_64_serial_lock();
@@ -4520,7 +4600,7 @@ void hw_task_exit(uint64_t code) {
         g_tasks[dying].clear_child_tid = 0;
     }
 
-    hw_spin_lock(&g_sched_lock);
+    hw_spin_lock_named(&g_sched_lock, __func__);
     next = hw_pick_next(cpu);
     if (next < 0) {
         next = cpu->idle_task;
@@ -4553,7 +4633,7 @@ void hw_task_exit(uint64_t code) {
          * out of order is counted and the boot gate asserts the count. */
         vibeos_teardown_reset((uint32_t)dying);
 
-        hw_spin_lock(&g_sched_lock);
+        hw_spin_lock_named(&g_sched_lock, __func__);
         last = !hw_aspace_still_shared(dying);
         if (!last) {
             /* A sibling is still running in here. Give up the reference
@@ -4589,7 +4669,7 @@ void hw_task_exit(uint64_t code) {
      * hw_task_load_cpu_state would catch that, but not being wrong beats
      * being told. */
     if (dying >= 0) {
-        hw_spin_lock(&g_sched_lock);
+        hw_spin_lock_named(&g_sched_lock, __func__);
         g_tasks[dying].cr3 = 0;
 
         /* A thread has no reaper, so it must not become a zombie.
@@ -4890,7 +4970,7 @@ static void hw_pipe_release(hw_fd_t *f) {
         return;
     }
     pp = &g_pipes[f->pipe];
-    hw_spin_lock(&g_pipe_lock);
+    hw_spin_lock_named(&g_pipe_lock, __func__);
     if (f->writable) {
         if (pp->writers > 0u) {
             pp->writers--;
@@ -4918,7 +4998,7 @@ static long hw_pipe_read(hw_fd_t *f, uint64_t buf, uint64_t len) {
     for (;;) {
         uint64_t copied = 0;
 
-        hw_spin_lock(&g_pipe_lock);
+        hw_spin_lock_named(&g_pipe_lock, __func__);
         while (copied < len && pp->count > 0u) {
             dst[copied++] = pp->buf[pp->head];
             pp->head = (pp->head + 1u) % VIBEOS_HW_PIPE_BYTES;
@@ -4957,7 +5037,7 @@ static long hw_pipe_write(hw_fd_t *f, uint64_t buf, uint64_t len) {
             }
             return written > 0u ? (long)written : -VIBEOS_EPIPE;
         }
-        hw_spin_lock(&g_pipe_lock);
+        hw_spin_lock_named(&g_pipe_lock, __func__);
         while (written < len && pp->count < VIBEOS_HW_PIPE_BYTES) {
             pp->buf[pp->tail] = src[written++];
             pp->tail = (pp->tail + 1u) % VIBEOS_HW_PIPE_BYTES;
@@ -4989,7 +5069,7 @@ static long hw_sys_pipe2(uint64_t fds_uptr, uint64_t flags) {
     }
     t = &g_tasks[g_current_task];
 
-    hw_spin_lock(&g_pipe_lock);
+    hw_spin_lock_named(&g_pipe_lock, __func__);
     for (i = 0; i < VIBEOS_HW_MAX_PIPES; i++) {
         if (!g_pipes[i].used) {
             g_pipes[i].used = 1;
@@ -5029,7 +5109,7 @@ static long hw_sys_pipe2(uint64_t fds_uptr, uint64_t flags) {
         }
     }
     if (rfd < 0 || wfd < 0) {
-        hw_spin_lock(&g_pipe_lock);
+        hw_spin_lock_named(&g_pipe_lock, __func__);
         g_pipes[slot].used = 0;
         hw_spin_unlock(&g_pipe_lock);
         if (rfd >= 0) {
@@ -5075,7 +5155,7 @@ static long hw_sys_dup2(uint64_t oldfd, uint64_t newfd) {
         }
         *dst = *src;
         if (dst->pipe >= 0) {
-            hw_spin_lock(&g_pipe_lock);
+            hw_spin_lock_named(&g_pipe_lock, __func__);
             if (dst->writable) {
                 g_pipes[dst->pipe].writers++;
             } else {
@@ -5091,7 +5171,7 @@ static long hw_sys_dup2(uint64_t oldfd, uint64_t newfd) {
     hw_pipe_release(&t->std_redirect[newfd]);
     t->std_redirect[newfd] = *src;
     if (t->std_redirect[newfd].pipe >= 0) {
-        hw_spin_lock(&g_pipe_lock);
+        hw_spin_lock_named(&g_pipe_lock, __func__);
         if (t->std_redirect[newfd].writable) {
             g_pipes[t->std_redirect[newfd].pipe].writers++;
         } else {
@@ -5376,7 +5456,7 @@ static long hw_sys_close(uint64_t fd) {
         return 0;
     }
     if (f->net_sock >= 0) {
-        hw_spin_lock(&g_net_lock);
+        hw_spin_lock_named(&g_net_lock, __func__);
         (void)vibeos_inet_close(&g_net, f->net_sock);
         hw_spin_unlock(&g_net_lock);
         f->net_sock = -1;
@@ -6164,7 +6244,7 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
         /* Every inherited pipe end gains an owner. Missing this is the other
          * way a pipeline hangs: the reader waits for an end of file that never
          * arrives because a count went wrong. */
-        hw_spin_lock(&g_pipe_lock);
+        hw_spin_lock_named(&g_pipe_lock, __func__);
         for (fi = 0; fi < VIBEOS_HW_MAX_FDS; fi++) {
             const hw_fd_t *cf = &child->fds[fi];
             if (cf->used && cf->pipe >= 0) {
@@ -6330,7 +6410,7 @@ static long hw_sys_clone_thread(const vibeos_x86_64_isr_frame_t *frame,
         for (fi = 0; fi < 3; fi++) {
             child->std_redirect[fi] = parent->std_redirect[fi];
         }
-        hw_spin_lock(&g_pipe_lock);
+        hw_spin_lock_named(&g_pipe_lock, __func__);
         for (fi = 0; fi < VIBEOS_HW_MAX_FDS; fi++) {
             const hw_fd_t *cf = &child->fds[fi];
             if (cf->used && cf->pipe >= 0) {
@@ -6403,7 +6483,7 @@ static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr) {
         int have_children = 0;
 
         __asm__ __volatile__("cli");
-        hw_spin_lock(&g_sched_lock);
+        hw_spin_lock_named(&g_sched_lock, __func__);
         for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
             hw_task_t *t = &g_tasks[i];
             if (t->ppid != mypid || t->state == HW_TASK_FREE) {
@@ -6706,7 +6786,7 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
          * for; exec never did, which is the whole defect. Not destroying is
          * safe: the last sibling to exit takes the same path and frees them
          * then. */
-        hw_spin_lock(&g_sched_lock);
+        hw_spin_lock_named(&g_sched_lock, __func__);
         shared = hw_aspace_shared_by_other(old_as.pml4, (int)(t - g_tasks));
         hw_spin_unlock(&g_sched_lock);
 
@@ -7738,14 +7818,14 @@ static long hw_futex_wake(uint64_t addr, uint32_t count) {
     if (addr == 0u) {
         return 0;
     }
-    hw_spin_lock(&g_futex_lock);
+    hw_spin_lock_named(&g_futex_lock, __func__);
     for (i = 0; i < VIBEOS_HW_MAX_FUTEX_WAITERS && (uint32_t)woke < count; i++) {
         if (!g_futex_waiters[i].used || g_futex_waiters[i].addr != addr) {
             continue;
         }
         g_futex_waiters[i].addr = 0;   /* no second wake for this waiter */
         g_futex_waiters[i].woken = 1;
-        hw_spin_lock(&g_sched_lock);
+        hw_spin_lock_named(&g_sched_lock, __func__);
         if (g_tasks[g_futex_waiters[i].task].state == HW_TASK_BLOCKED) {
             (void)hw_task_set_state(g_futex_waiters[i].task, HW_TASK_READY, __func__);
             HW_TASK_MARK(g_futex_waiters[i].task, ready_by, "futex_wake");
@@ -7766,7 +7846,7 @@ static long hw_futex_wait(uint64_t addr, uint32_t expected) {
         return -VIBEOS_EINVAL;
     }
 
-    hw_spin_lock(&g_futex_lock);
+    hw_spin_lock_named(&g_futex_lock, __func__);
     /* The compare and the enqueue are one step. Reading the word first and
      * enqueuing after would leave a window in which a waker sees no waiter and
      * the waiter then sleeps on a value that has already changed - the lost
@@ -7791,7 +7871,7 @@ static long hw_futex_wait(uint64_t addr, uint32_t expected) {
     g_futex_waiters[slot].task = me;
     g_futex_waiters[slot].woken = 0;
 
-    hw_spin_lock(&g_sched_lock);
+    hw_spin_lock_named(&g_sched_lock, __func__);
     (void)hw_task_set_state(me, HW_TASK_BLOCKED, __func__);
     hw_spin_unlock(&g_sched_lock);
     hw_spin_unlock(&g_futex_lock);
@@ -7808,7 +7888,7 @@ static long hw_futex_wait(uint64_t addr, uint32_t expected) {
         __asm__ __volatile__("sti; hlt" ::: "memory");
     }
 
-    hw_spin_lock(&g_futex_lock);
+    hw_spin_lock_named(&g_futex_lock, __func__);
     g_futex_waiters[slot].addr = 0;
     g_futex_waiters[slot].used = 0;   /* released by its owner, and only here */
     hw_spin_unlock(&g_futex_lock);
@@ -8636,7 +8716,7 @@ static void hw_net_pump(void) {
     if (!g_net_up) {
         return;
     }
-    hw_spin_lock(&g_net_lock);
+    hw_spin_lock_named(&g_net_lock, __func__);
     while (budget-- > 0) {
         n = vibeos_x86_64_virtio_net_recv(g_net_rxframe, (uint32_t)sizeof(g_net_rxframe));
         if (n <= 0) {
@@ -8682,7 +8762,7 @@ static void hw_net_bringup(void) {
 
     vibeos_x86_64_serial_puts("[NET] requesting a DHCP lease\n");
     /* Under the lock: this transmits, and the timer's pump is already live. */
-    hw_spin_lock(&g_net_lock);
+    hw_spin_lock_named(&g_net_lock, __func__);
     (void)vibeos_inet_dhcp_start(&g_net);
     hw_spin_unlock(&g_net_lock);
 
@@ -8694,7 +8774,7 @@ static void hw_net_bringup(void) {
         hw_net_pump();
         {
             int bound_now;
-            hw_spin_lock(&g_net_lock);
+            hw_spin_lock_named(&g_net_lock, __func__);
             bound_now = vibeos_inet_dhcp_bound(&g_net);
             hw_spin_unlock(&g_net_lock);
             if (bound_now) {
@@ -8716,7 +8796,7 @@ static void hw_net_bringup(void) {
         int bound;
         uint32_t ip, gw, dns;
 
-        hw_spin_lock(&g_net_lock);
+        hw_spin_lock_named(&g_net_lock, __func__);
         bound = vibeos_inet_dhcp_bound(&g_net);
         ip = g_net.ip;
         gw = g_net.gateway;
@@ -8739,7 +8819,7 @@ static void hw_net_bringup(void) {
     }
     /* No DHCP server answered: fall back to QEMU's user-mode defaults so the
      * stack is still usable, and say so plainly. */
-    hw_spin_lock(&g_net_lock);
+    hw_spin_lock_named(&g_net_lock, __func__);
     vibeos_inet_set_addr(&g_net, 0x0A000210u, 0xFFFFFF00u, 0x0A000202u, 0x0A000203u);
     hw_spin_unlock(&g_net_lock);
 
