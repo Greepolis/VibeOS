@@ -112,6 +112,20 @@ static volatile int g_serial_depth;
 static volatile uint64_t g_serial_bad_unlocks;
 static uint64_t g_serial_flags;   /* saved by the outermost acquire */
 
+/* How often the acquire above gave up waiting and took the lock anyway, and
+ * who was holding it when that happened. Both should be zero; the boot gate
+ * fails if the count is not. */
+static volatile uint64_t g_serial_stuck;
+static volatile uint32_t g_serial_stuck_owner;
+
+uint64_t vibeos_x86_64_serial_stuck(void) {
+    return g_serial_stuck;
+}
+
+uint32_t vibeos_x86_64_serial_stuck_owner(void) {
+    return g_serial_stuck_owner;
+}
+
 /* Recursion is keyed to the CPU, so the holder must not move while it holds
  * the lock - and a task does move. With interrupts left enabled, the timer
  * could preempt a task inside the critical section and resume it on another
@@ -133,11 +147,40 @@ void vibeos_x86_64_serial_lock(void) {
         g_serial_depth++;
         return;
     }
-    while (__sync_lock_test_and_set(&g_serial_lock, 1)) {
-        while (g_serial_lock) {
-            __asm__ __volatile__("pause" ::: "memory");
+    {
+        /* A bound, because the alternative here is silence.
+         *
+         * Every other lock in this kernel panics when its bound fires. This
+         * one cannot: a panic prints, and printing goes through the very lock
+         * whose state is in question - the comment on bad_unlocks below makes
+         * the same point. So it takes the lock instead, records that it did,
+         * and lets the machine carry on talking.
+         *
+         * That trades a correct line for a possibly interleaved one, and it is
+         * the right trade twice over. Interleaving is *detected*: the boot
+         * gate's first check is interleaved_lines, so a garbled line is caught
+         * and named. Silence is not detectable at all - it is the failure this
+         * project has spent the most time on, and the one where every piece of
+         * evidence is missing rather than wrong.
+         *
+         * The count is asserted zero by the gate, like bad_unlocks. A machine
+         * that says "the console lock was stuck, held by cpu 2" is one
+         * somebody can fix; a machine that says nothing is where four
+         * investigations have ended. */
+        uint64_t spins = 0;
+
+        while (__sync_lock_test_and_set(&g_serial_lock, 1)) {
+            while (g_serial_lock) {
+                if (++spins > 200000000ull) {
+                    g_serial_stuck++;
+                    g_serial_stuck_owner = g_serial_owner;
+                    goto taken;
+                }
+                __asm__ __volatile__("pause" ::: "memory");
+            }
         }
     }
+taken:
     g_serial_owner = me;
     g_serial_depth = 1;
     g_serial_flags = flags;

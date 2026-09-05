@@ -1027,6 +1027,27 @@ def main():
                     if value != 0:
                         problems.append(f"swap_{name}={value}")
 
+            # The console lock, which is the one that cannot report itself.
+            #
+            # Every other lock here panics when its bound fires. This one takes
+            # the lock and carries on instead, because a panic prints and
+            # printing goes through the very lock in question - so the only way
+            # it can tell anyone is a counter somebody else asserts. That is
+            # this. A stuck console is how this machine goes silent, and
+            # silence is the failure where all the evidence is missing rather
+            # than wrong.
+            mc = re.search(r"\[CONSOLE\] MUSTBEZERO bad_unlocks=0x([0-9a-f]{16}) "
+                           r"stuck=0x([0-9a-f]{16}) stuck_owner=0x([0-9a-f]{16})",
+                           text)
+            if mc is None:
+                problems.append("console_counters_missing")
+            else:
+                if int(mc.group(1), 16) != 0:
+                    problems.append(f"console_bad_unlocks={int(mc.group(1), 16)}")
+                if int(mc.group(2), 16) != 0:
+                    problems.append(f"console_lock_stuck={int(mc.group(2), 16)}"
+                                    f"_held_by_cpu={int(mc.group(3), 16)}")
+
             # Every bounded wait a syscall can reach, asserted at zero.
             #
             # P7's latency property is two halves and only one of them was

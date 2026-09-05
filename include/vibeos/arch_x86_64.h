@@ -49,6 +49,12 @@ void vibeos_x86_64_lapic_ipi_one(uint32_t lapic_id, uint8_t vector);
 /* Console-lock hygiene: unlock calls from a core that did not hold it. */
 uint64_t vibeos_x86_64_serial_bad_unlocks(void);
 
+/* How often the console lock's wait gave up and took the lock anyway, and who
+ * held it then. This lock cannot panic - a panic prints, and printing goes
+ * through it - so it counts and carries on, and the gate asserts the count. */
+uint64_t vibeos_x86_64_serial_stuck(void);
+uint32_t vibeos_x86_64_serial_stuck_owner(void);
+
 /* Print the most recent ring-3 crash: registers, fault address, stack. */
 void vibeos_x86_64_crash_dump(void);
 

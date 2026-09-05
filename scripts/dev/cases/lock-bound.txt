@@ -26,3 +26,16 @@ case: the owner is cleared after the release instead of before
     Recorded because the failure is a diagnostic that lies, which is worse than
     one that is absent - and because this kernel has already been bitten by the
     same publish-then-write ordering in task exit and in the reaper.
+
+case: the console lock waits forever again
+  in vibeos_x86_64_serial_lock, delete the spins bound and the goto taken
+  expect: NOT OBSERVABLE ON A HEALTHY BOOT, and that is the point.
+    Nothing on a green boot holds the console long enough. What it changes is
+    what a *broken* boot looks like: with the bound, svc-press produces a
+    hw_ctx_check report naming a task with a zeroed context; without it, the
+    same run is completely silent. Reproduce with svc-press added to the boot
+    script and the bound lowered to ten million.
+  why it matters: this is the one lock that cannot panic - a panic prints, and
+    printing goes through it - so a counter somebody else asserts is the only
+    way it can tell anyone. Silence is the failure where all the evidence is
+    missing rather than wrong.

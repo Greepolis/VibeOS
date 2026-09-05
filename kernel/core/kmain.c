@@ -758,6 +758,14 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
             vibeos_x86_64_serial_puts("\n");
         }
 
+        vibeos_x86_64_serial_puts("[CONSOLE] MUSTBEZERO bad_unlocks=0x");
+        kernel_log_u64_hex(vibeos_x86_64_serial_bad_unlocks());
+        vibeos_x86_64_serial_puts(" stuck=0x");
+        kernel_log_u64_hex(vibeos_x86_64_serial_stuck());
+        vibeos_x86_64_serial_puts(" stuck_owner=0x");
+        kernel_log_u64_hex((uint64_t)vibeos_x86_64_serial_stuck_owner());
+        vibeos_x86_64_serial_puts("\n");
+
         vibeos_x86_64_serial_puts("[IO] WAITS blk_timeouts=0x");
         kernel_log_u64_hex(vibeos_x86_64_blk_timeouts());
         vibeos_x86_64_serial_puts(" net_tx_timeouts=0x");
