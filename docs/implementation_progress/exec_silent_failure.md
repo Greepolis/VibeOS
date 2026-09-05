@@ -67,9 +67,48 @@ caught only because the script prints the constant before and after. CLAUDE.md's
 rule about a sabotage run that proves nothing is worth applying to the edit
 itself, not only to the harness.
 
-## What this does not explain
+## It named itself on the first occurrence
 
-**Why the copy failed.** The fix makes the next occurrence name itself; it does
-not say what went wrong. The suspicion is the argv vector, which lives in
-init's `.bss` and is copy-on-write immediately after a fork, but that is a
-guess and is written here as one. The next 4/6 run will say.
+The eight-boot run after the fix hit it once, and the failure that used to read
+
+```
+reason=invariant_failed:stress_seed_not_reported,stress_run_did_not_finish
+```
+
+now reads
+
+```
+reason=invariant_failed:exec_unexpected_refusal=bad-args,stress_seed_not_reported,...
+[EXEC] refused reason=bad-args path=EFI/BOOT/SVC_STRS.ELF at=argv
+```
+
+with the chain complete and legible in three lines:
+
+```
+SVC_START svc-stress 10
+[EXEC] refused reason=bad-args path=EFI/BOOT/SVC_STRS.ELF at=argv
+SVC_EXIT svc-stress 10 127
+```
+
+Two things narrow it a long way. The **path** copied fine - it is in the
+message - so the failure is specific to the argv vector, not to reading user
+memory in general. And `svc_argv` lives in init's `.bss`: the child of the fork
+writes `argv[0]` and `argv[1]` into it, which is a **copy-on-write write**, and
+execve then reads that same page back.
+
+So the shape is a page the child has just faulted copy-on-write, read by the
+kernel a moment later.
+
+## What is still open
+
+*Which* of the range check's reasons applies. "bad-args" says a vector could not
+be read and not why, and the check has a `why` for exactly this - "not
+accessible without a reason is a dead end" is already written down beside it.
+The refusal now carries it: the detail reads `argv:pdpt_absent_or_not_user` or
+`argv:leaf_not_writable` or whichever level of the walk failed, because an
+absent PML4 entry and a leaf that is present but not user-accessible are
+completely different bugs.
+
+That distinction is what decides between a stale TLB entry after the
+copy-on-write fault and a page-table level that was never installed. The next
+occurrence answers it.

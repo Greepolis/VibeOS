@@ -395,6 +395,24 @@ static void hw_cache_audit(uint64_t *out_checked, uint64_t *out_bad);
 #define HW_RANGE_LEAF        6u   /* the 4 KiB entry itself */
 #define HW_RANGE_READONLY    7u
 
+/* The codes as words, because a number in a log has to be looked up and a
+ * reason that has to be looked up is one people stop reading. Which level of
+ * the walk failed is the whole diagnostic here: an absent PML4 entry and a leaf
+ * that is present but not user-accessible are completely different bugs. */
+static const char *hw_range_why_name(uint32_t why) {
+    switch (why) {
+        case HW_RANGE_OK:       return "ok";
+        case HW_RANGE_NO_TASK:  return "no_current_user_task";
+        case HW_RANGE_WRAP:     return "address_wrapped";
+        case HW_RANGE_LEVEL0:   return "pml4_absent_or_not_user";
+        case HW_RANGE_LEVEL1:   return "pdpt_absent_or_not_user";
+        case HW_RANGE_LEVEL2:   return "pd_absent_or_not_user";
+        case HW_RANGE_LEAF:     return "leaf_absent_or_not_user";
+        case HW_RANGE_READONLY: return "leaf_not_writable";
+        default:                return "?";
+    }
+}
+
 int hw_user_range_ok(uint64_t va, uint64_t len, int need_write);
 static int hw_user_range_why(uint64_t va, uint64_t len, int need_write,
                              uint32_t *why);
@@ -6657,11 +6675,22 @@ typedef struct {
     char store[VIBEOS_HW_ARG_BYTES];
 } hw_argv_t;
 
+/* Why the last argv copy failed, for the exec refusal to quote.
+ *
+ * "bad-args" alone says a vector could not be read and not which of the range
+ * check's several reasons applied - and that check has a why for exactly this
+ * situation, because "not accessible" without a reason is a dead end. The
+ * distinction that matters here: a page that is not mapped and a page that is
+ * mapped but refused are different bugs, and the argv vector lives in a page
+ * the child has just written through a copy-on-write fault. */
+static const char *g_argv_fail_why = "-";
+
 static long hw_copy_user_argv(uint64_t uvec, hw_argv_t *out) {
     uint32_t count = 0;
     uint32_t used = 0;
 
     out->slot[0] = 0;
+    g_argv_fail_why = "-";
     if (uvec == 0u) {
         return 0;
     }
@@ -6670,20 +6699,29 @@ static long hw_copy_user_argv(uint64_t uvec, hw_argv_t *out) {
         int len;
 
         if (count == VIBEOS_HW_MAX_ARGV) {
+            g_argv_fail_why = "too_many_entries";
             return -VIBEOS_E2BIG;
         }
-        if (!hw_user_range_ok(uvec + (uint64_t)count * 8u, 8, 0)) {
-            return -VIBEOS_EFAULT;
+        {
+            uint32_t why = HW_RANGE_OK;
+            if (!hw_user_range_why(uvec + (uint64_t)count * 8u, 8, 0, &why)) {
+                g_argv_fail_why = hw_range_why_name(why);
+                return -VIBEOS_EFAULT;
+            }
         }
         ptr = *(const uint64_t *)(uintptr_t)(uvec + (uint64_t)count * 8u);
         if (ptr == 0u) {
             break;
         }
         if (used >= VIBEOS_HW_ARG_BYTES) {
+            g_argv_fail_why = "arg_bytes_exhausted";
             return -VIBEOS_E2BIG;
         }
         if (hw_copy_user_string(ptr, &out->store[used],
                                 (int)(VIBEOS_HW_ARG_BYTES - used)) != 0) {
+            uint32_t why = HW_RANGE_OK;
+            (void)hw_user_range_why(ptr, 1, 0, &why);
+            g_argv_fail_why = hw_range_why_name(why);
             return -VIBEOS_EFAULT;
         }
         out->slot[count] = &out->store[used];
@@ -6740,8 +6778,23 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
             /* Which vector, because argv and envp fail for different reasons:
              * a program with too many arguments and a program handed a bad
              * environment pointer are not the same bug. */
-            (void)hw_exec_refuse(VIBEOS_EXEC_BAD_ARGS, path,
-                                 (na < 0) ? "argv" : "envp");
+            {
+                /* One string, so the line stays one fact: which vector and
+                 * why. Two fields printed separately from two cores come back
+                 * interleaved and read as a contradiction. */
+                char detail[48];
+                const char *which = (na < 0) ? "argv:" : "envp:";
+                const char *why = g_argv_fail_why;
+                uint32_t w = 0, k;
+                for (k = 0; which[k] && w < sizeof(detail) - 1u; k++) {
+                    detail[w++] = which[k];
+                }
+                for (k = 0; why && why[k] && w < sizeof(detail) - 1u; k++) {
+                    detail[w++] = why[k];
+                }
+                detail[w] = 0;
+                (void)hw_exec_refuse(VIBEOS_EXEC_BAD_ARGS, path, detail);
+            }
             hw_spin_unlock_preemptible(&g_exec_lock);
             return (na < 0) ? na : ne;
         }
