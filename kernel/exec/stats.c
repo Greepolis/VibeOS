@@ -51,6 +51,7 @@ const char *vibeos_exec_fail_name(vibeos_exec_fail_t why) {
         case VIBEOS_EXEC_NO_MEMORY:       return "no-memory";
         case VIBEOS_EXEC_ARGS_TOO_LARGE:  return "args-too-large";
         case VIBEOS_EXEC_NO_ASPACE:       return "no-address-space";
+        case VIBEOS_EXEC_BAD_ARGS:        return "bad-args";
         default:                          return "?";
     }
 }

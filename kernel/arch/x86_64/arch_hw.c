@@ -6679,8 +6679,20 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
     if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
         return -VIBEOS_EINVAL;
     }
+    /* Named, not just returned.
+     *
+     * These copies from user memory were the only exec failures that said
+     * nothing at all - no line, no tally - so a child that died on one of them
+     * left an exit code of 127 and a log with no reason in it anywhere. That
+     * is what happened to svc-stress on two boots out of six, with every
+     * memory counter reporting clean, and working out that 127 even meant
+     * "execve failed" took reading init's source.
+     *
+     * The reason lands in the same tally as every other refusal, and the boot
+     * gate asserts the *set* of refusals seen is only "not-found" - so one of
+     * these turns a boot red instead of leaving a service quietly missing. */
     if (hw_copy_user_string(path_uptr, path, sizeof(path)) != 0) {
-        return -VIBEOS_EFAULT;
+        return hw_exec_refuse(VIBEOS_EXEC_BAD_ARGS, "-", "path");
     }
     fallback_argv[0] = path;
     fallback_argv[1] = 0;
@@ -6692,6 +6704,11 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
         long na = hw_copy_user_argv(argv_uptr, &g_exec_argv);
         long ne = hw_copy_user_argv(envp_uptr, &g_exec_envp);
         if (na < 0 || ne < 0) {
+            /* Which vector, because argv and envp fail for different reasons:
+             * a program with too many arguments and a program handed a bad
+             * environment pointer are not the same bug. */
+            (void)hw_exec_refuse(VIBEOS_EXEC_BAD_ARGS, path,
+                                 (na < 0) ? "argv" : "envp");
             hw_spin_unlock_preemptible(&g_exec_lock);
             return (na < 0) ? na : ne;
         }

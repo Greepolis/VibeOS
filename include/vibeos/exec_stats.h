@@ -35,6 +35,15 @@ typedef enum vibeos_exec_fail {
     VIBEOS_EXEC_NO_MEMORY,        /* an allocation or a mapping failed        */
     VIBEOS_EXEC_ARGS_TOO_LARGE,   /* argv and envp exceed the stack mapped    */
     VIBEOS_EXEC_NO_ASPACE,        /* could not create an address space        */
+    /* The kernel could not read the path, the argv vector or a string in it.
+     *
+     * Added because these were the exec failures that said *nothing*. Every
+     * other refusal here prints a line and lands in this tally; the three
+     * paths that copy from user memory returned a bare -EFAULT or -E2BIG, so
+     * an execve that failed on one of them left a child exiting 127 and a log
+     * with no reason in it anywhere. That is how a service failed to start on
+     * two boots out of six with the whole memory subsystem reporting clean. */
+    VIBEOS_EXEC_BAD_ARGS,
     VIBEOS_EXEC_REASON_COUNT
 } vibeos_exec_fail_t;
 

@@ -1,0 +1,26 @@
+# Sabotage cases for exec refusal reporting.
+#
+# Run: apply the edit, bash scripts/dev/check.sh build <dir>, then
+#      python3 scripts/qemu-cli-smoke-linux.py <dir> 180
+#
+# Check the constant actually changed before believing a result. The first run
+# of the case below used sed against the wrong value, did not apply, and came
+# back green having proved nothing.
+
+case: an argv the kernel cannot copy is refused silently
+  set VIBEOS_HW_MAX_ARGV to 1, so init's two-entry argv no longer fits
+  expect: [EXEC] refused reason=bad-args path=... at=argv, and the boot fails
+  why it matters: the three copies from user memory - path, argv, envp - used
+    to return a bare -EFAULT or -E2BIG with no line and no tally, so an execve
+    that failed on one was indistinguishable from one that was never called.
+    A service failed to start on two boots out of six that way, with every
+    memory counter clean, and the only trace was a child exiting 127 - which
+    means nothing until you read init's source.
+
+case: the refusal is printed but not counted
+  in hw_exec_refuse, call vibeos_exec_fail_name instead of vibeos_exec_refuse
+  expect: the line still appears and the tally stays empty, so the gate's
+    set-of-reasons check passes on a boot where execs are failing
+  why it matters: this is the shape the not-found path was already fixed for -
+    "a sentence in the log is not a reason anything can assert on" - and the
+    case exists so the fix cannot quietly come undone.

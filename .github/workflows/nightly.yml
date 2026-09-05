@@ -88,6 +88,68 @@ jobs:
             qemu-cli-summary.txt
           if-no-files-found: ignore
 
+  memory-soak:
+    name: Memory + Swap Soak (long run)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 qemu-utils ninja-build build-essential ovmf musl-tools busybox-static
+
+      # Two boots at two round counts, because one figure cannot tell a fixed
+      # startup cost from a per-round leak - and those are the same number with
+      # opposite consequences on a machine that stays up. The comparison is the
+      # test; scripts/dev/soak-report.py holds the verdict, and the local
+      # scripts/dev/soak.sh calls the same one so there is a single definition
+      # of what a soak asserts.
+      #
+      # It also carries swap: this is the only job where the swap area, the
+      # round trip through the disk and the reclaim counters are read after a
+      # long run rather than after a boot that barely allocates anything.
+      - name: Boot at 120 rounds
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DVIBEOS_BUILD_TESTS=ON -DVIBEOS_BUILD_KERNEL_IMAGE=ON \
+            -DVIBEOS_REQUIRE_TLS=ON -DVIBEOS_STRESS_ROUNDS=120
+          cmake --build build --parallel
+          cmake --build build --target vibeos_image
+          python3 scripts/qemu-cli-smoke-linux.py build 1800 || true
+          cp qemu-cli-serial.log soak-low.log
+
+      - name: Boot at 12000 rounds
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DVIBEOS_BUILD_TESTS=ON -DVIBEOS_BUILD_KERNEL_IMAGE=ON \
+            -DVIBEOS_REQUIRE_TLS=ON -DVIBEOS_STRESS_ROUNDS=12000
+          cmake --build build --parallel
+          cmake --build build --target vibeos_image
+          python3 scripts/qemu-cli-smoke-linux.py build 1800 || true
+          cp qemu-cli-serial.log soak-high.log
+
+      # The boots above are allowed to fail; this is what decides. A wedged
+      # boot still produces a log, and a log that cannot support a verdict is
+      # reported as exactly that rather than as a pass.
+      - name: Did the loss grow with the work?
+        run: python3 scripts/dev/soak-report.py soak-low.log soak-high.log
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: nightly-soak-logs
+          path: |
+            soak-low.log
+            soak-high.log
+            qemu-cli-summary.txt
+          if-no-files-found: ignore
+
   memory-manager:
     name: Memory Manager Torture (model + sanitizers)
     runs-on: ubuntu-latest
