@@ -45,19 +45,49 @@ anonymous mmap:
   256 KiB block, reaching about seven thousand against a pool of two hundred
   and fifteen thousand.
 
-## What is left
+## What is left, and a wrong turn worth recording
 
-`rip=0x800000013d`, and `.text` in that program starts at `0x8000000160`. The
-program is executing bytes *before its own code* — its ELF header, mapped
-executable by the first `PT_LOAD` — and the first thing those bytes do is write
-to address zero. Control flow went somewhere it was never sent.
+The first version of this file said the remaining lead was a ring-3 page fault
+at `rip=0x800000013d`, a program executing bytes before its own `.text`.
 
-That is a much narrower question than "the machine wedges", and it is the next
-one. Recorded here rather than folded into a guess, because three of this
-project's longest investigations ended at a plausible pointer with no mechanism
-behind it.
+**That fault was not `svc-press`.** It is `svc-crash`, the service whose entire
+purpose is to dereference null so the boot can prove the kernel survives a
+crashing program, and it appears on every healthy boot. The identical fault
+shows up with `svc-press` not running at all, which is what settled it, and the
+crash record says so outright: `exe=/EFI/BOOT/SVC_CRSH.ELF`.
 
-One thing to fix on the way: the trap line says `action=PANIC` and the line
-after it says `ring3 fault: killing task, not the machine`. Both cannot be
-true, and a log that contradicts itself is the thing this project checks for
-first.
+CLAUDE.md names this exact mistake - "check which program the task was running
+before believing an address" - and it was made anyway, on a project where every
+VibeOS-native program links at the same base. The crash recorder existed the
+whole time and answers it in one line.
+
+So the honest state of the `svc-press` wedge is that four explanations are now
+excluded and none has replaced them:
+
+* not a deadlock;
+* not memory exhaustion;
+* not reverse-map exhaustion;
+* **and no fault of its own** - it goes quiet with nothing at all.
+
+A second calibration was needed before the first of those could be claimed. The
+bound is four hundred million spins, and the boot gate gives up after
+forty-five seconds of silence: under TCG the bound might simply never have been
+reached, in which case "it did not fire" would mean nothing. Rebuilding with
+twenty million - reachable well inside the gate's patience, since virtio's
+two-million bound fires there routinely - and rerunning `svc-press` produced no
+deadlock either. That is what makes the exclusion real rather than a guess
+about timing.
+
+## A log that contradicted itself
+
+Found while reading the same output. The trap dump printed the *trap model's*
+decision, and the model has no notion of privilege level, so it answers PANIC
+for a page fault. A branch a few lines later overrides that for a ring-3 fault
+and kills the task instead. So a boot that correctly killed one program logged
+`action=PANIC` and then, on the next line, `killing task, not the machine`.
+
+Two statements, one false, and the false one is the one a reader reaches first
+- which is precisely how `action=PANIC` was read as "the machine died here" for
+a whole investigation. The override is decided before the line is written now,
+and the model's answer is kept alongside it as `model=PANIC`, because a fault
+the model would have panicked on and one it would not are different situations.

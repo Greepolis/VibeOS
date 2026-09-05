@@ -1247,11 +1247,43 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
         hw_panic("trap dispatch failed");
     }
 
-    vibeos_x86_64_serial_puts(" -> action=");
-    vibeos_x86_64_serial_puts(hw_action_name(decision.action));
-    vibeos_x86_64_serial_puts(" count=0x");
-    vibeos_x86_64_serial_print_hex(g_arch_trap_state.trap_count);
-    vibeos_x86_64_serial_puts("\n");
+    /* What is about to happen, not what the model proposed.
+     *
+     * These are not the same, and for a while this line said so without anyone
+     * reading it. The trap model has no notion of privilege level, so it
+     * answers PANIC for a page fault; the branch below then overrides that for
+     * a ring-3 fault and kills the task instead. The dump printed the model's
+     * answer, so a boot that correctly killed one program logged
+     * `action=PANIC` and then, on the next line, `killing task, not the
+     * machine`. Two statements, one of them false, and the false one is the
+     * one a reader reaches first.
+     *
+     * That mattered: chasing the svc-press failure, `action=PANIC` was read as
+     * "the machine died here" for a whole investigation, when the machine had
+     * done exactly the right thing and the wedge came later and elsewhere.
+     *
+     * The override is decided here, before the line is written, so the line is
+     * true when it is printed rather than corrected afterwards. */
+    {
+        int ring3 = ((frame->cs & 3u) == 3u);
+        const char *acted =
+            (decision.action == VIBEOS_TRAP_ACTION_CONTINUE) ? "CONTINUE"
+            : ring3 ? "KILL_CURRENT" : "PANIC";
+
+        vibeos_x86_64_serial_puts(" -> action=");
+        vibeos_x86_64_serial_puts(acted);
+        if (ring3 && decision.action != VIBEOS_TRAP_ACTION_CONTINUE) {
+            /* The model's answer is kept too. A fault the model would have
+             * panicked on and a fault it would not are different situations,
+             * and collapsing them would lose the distinction the override
+             * exists to make. */
+            vibeos_x86_64_serial_puts(" model=");
+            vibeos_x86_64_serial_puts(hw_action_name(decision.action));
+        }
+        vibeos_x86_64_serial_puts(" count=0x");
+        vibeos_x86_64_serial_print_hex(g_arch_trap_state.trap_count);
+        vibeos_x86_64_serial_puts("\n");
+    }
     vibeos_x86_64_serial_unlock();
 
     if (decision.action == VIBEOS_TRAP_ACTION_CONTINUE) {
