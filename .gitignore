@@ -67,3 +67,7 @@ wedge-serial*.log
 SUMMARY.md
 build-asan/
 repeat-fail-*
+
+# Soak run output (scripts/dev/soak.sh, and the nightly).
+soak-low.log
+soak-high.log

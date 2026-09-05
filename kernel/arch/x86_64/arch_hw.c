@@ -1060,22 +1060,55 @@ static void hw_panic(const char *why) {
  * Almost everything in this file is static, so an address resolves to whichever
  * symbol happens to precede it, and a confidently wrong name is worse than a
  * number: both of the wedges examined this week reported `hw_task_slots`, a
- * function that returns a constant. */
+ * function that returns a constant.
+ *
+ * ## Written without taking the console lock, deliberately
+ *
+ * The first version of this used serial_puts, which locks. That deadlocked the
+ * deadlock reporter: under svc-press the console lock is one of the jammed
+ * ones, so the core that had detected the problem sat in
+ * vibeos_x86_64_serial_lock and the message never appeared. The wedge report
+ * caught it in the act - CPU#3 stopped inside this function.
+ *
+ * So it writes raw bytes. The output can interleave with another core's, and
+ * that is the correct trade for the same reason the console lock's own bound
+ * takes the lock rather than waiting: interleaving is detected by the boot
+ * gate's first check, and silence is the failure where every piece of evidence
+ * is missing rather than wrong. A lock reporter that can only speak when the
+ * locks are healthy reports nothing on exactly the boots it exists for. */
+static void hw_raw_puts(const char *s) {
+    if (!s) {
+        return;
+    }
+    while (*s) {
+        if (*s == '\n') {
+            vibeos_x86_64_serial_putc('\r');
+        }
+        vibeos_x86_64_serial_putc(*s++);
+    }
+}
+
+static void hw_raw_hex(uint64_t v) {
+    const char *d = "0123456789abcdef";
+    int i;
+    for (i = 60; i >= 0; i -= 4) {
+        vibeos_x86_64_serial_putc(d[(v >> i) & 0xFull]);
+    }
+}
+
 static void hw_lock_deadlock(hw_lock_t *lock, const char *waiter,
                              const char *holder, int holder_cpu) {
-    vibeos_x86_64_serial_lock();
-    vibeos_x86_64_serial_puts("[LOCK] DEADLOCK lock=0x");
-    vibeos_x86_64_serial_print_hex((uint64_t)(uintptr_t)lock);
-    vibeos_x86_64_serial_puts(" waiter_cpu=0x");
-    vibeos_x86_64_serial_print_hex((uint64_t)vibeos_x86_64_cpu_id());
-    vibeos_x86_64_serial_puts(" waiting_in=");
-    vibeos_x86_64_serial_puts(waiter ? waiter : "?");
-    vibeos_x86_64_serial_puts(" held_by_cpu=0x");
-    vibeos_x86_64_serial_print_hex((uint64_t)(holder_cpu < 0 ? 255 : holder_cpu));
-    vibeos_x86_64_serial_puts(" taken_in=");
-    vibeos_x86_64_serial_puts(holder ? holder : "(released, or never named)");
-    vibeos_x86_64_serial_puts("\n");
-    vibeos_x86_64_serial_unlock();
+    hw_raw_puts("\n[LOCK] DEADLOCK lock=0x");
+    hw_raw_hex((uint64_t)(uintptr_t)lock);
+    hw_raw_puts(" waiter_cpu=0x");
+    hw_raw_hex((uint64_t)vibeos_x86_64_cpu_id());
+    hw_raw_puts(" waiting_in=");
+    hw_raw_puts(waiter ? waiter : "?");
+    hw_raw_puts(" held_by_cpu=0x");
+    hw_raw_hex((uint64_t)(holder_cpu < 0 ? 255 : holder_cpu));
+    hw_raw_puts(" taken_in=");
+    hw_raw_puts(holder ? holder : "(released, or never named)");
+    hw_raw_puts("\n");
     hw_panic("spinlock held too long: deadlock");
 }
 
