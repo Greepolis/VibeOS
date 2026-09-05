@@ -19,6 +19,7 @@ set(VIBEOS_KERNEL_CORE_SOURCES
     kernel/mm/rmap.c
     kernel/mm/reclaim.c
     kernel/mm/swapmap.c
+    kernel/mm/swaparea.c
     kernel/sched/stats.c
     kernel/sched/task.c
     kernel/sched/runq.c

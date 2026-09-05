@@ -28,6 +28,7 @@
 #include "vibeos/pageinfo.h"
 #include "vibeos/rmap.h"
 #include "vibeos/reclaim.h"
+#include "vibeos/swaparea.h"
 
 #define VIBEOS_HW_KERNEL_CS 0x08u
 #define VIBEOS_HW_KERNEL_DS 0x10u
@@ -1404,6 +1405,14 @@ static vibeos_vma_t g_vma_pool[VIBEOS_HW_VMA_ENTRIES];
  * than that thrashes: the first size tried was 768 and every program evicted
  * the last one, so the hit count stayed in single figures. */
 #define VIBEOS_HW_CACHE_ENTRIES 3072u
+
+/* The swap map's bitmap, sized for the largest area this kernel would accept.
+ * Static because the swap layers never allocate - they are called when memory
+ * is short, and a layer that allocates on that path fails exactly when it is
+ * needed. 8192 slots is 32 MiB of swap, which is a starting point rather than
+ * a limit: it is one kilobyte of bitmap. */
+#define VIBEOS_HW_SWAP_SLOTS 8192u
+static uint8_t g_swap_bitmap[(VIBEOS_HW_SWAP_SLOTS + 7u) / 8u];
 static vibeos_cache_entry_t g_cache_table[VIBEOS_HW_CACHE_ENTRIES];
 
 /* A path's identity, as a number the cache can key on.
@@ -2008,6 +2017,50 @@ static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
                 }
                 (void)vibeos_reclaim_set_marks(low, min);
                 vibeos_reclaim_set_clean_source(vibeos_cache_reclaim);
+            }
+
+            /* Where swap lives, asked rather than assumed.
+             *
+             * This machine has no swap area: the boot media is one FAT volume
+             * with no spare partition, and nothing has carved a file for it.
+             * So the answer today is NONE, and the point of asking anyway is
+             * that the shape is here - a partition or a contiguous file, both
+             * described the same way, both translated by one function that
+             * checks its bounds.
+             *
+             * Configuring one later means filling this in and nothing else:
+             * the map, page-out, page-in and reclaim's anonymous tier are
+             * built and tested above it. What is deliberately absent until
+             * then is the anonymous source, so reclaim keeps counting in
+             * skipped_no_swap exactly what having no swap costs, rather than
+             * appearing to work. */
+            {
+                vibeos_swap_area_t area;
+                uint32_t slots;
+
+                {
+                    uint8_t *z = (uint8_t *)&area;
+                    unsigned k;
+                    for (k = 0; k < sizeof(area); k++) {
+                        z[k] = 0;
+                    }
+                }
+                area.kind = VIBEOS_SWAP_NONE;
+                area.origin = "not configured on this media";
+                slots = vibeos_swaparea_configure(&area, 0, 0,
+                                                  g_swap_bitmap,
+                                                  (uint32_t)sizeof(g_swap_bitmap));
+
+                /* Bracketed by the console lock, so the line cannot be cut
+                 * in half by another core - the rule this project learned the
+                 * hard way, twice. */
+                vibeos_x86_64_serial_lock();
+                vibeos_x86_64_serial_puts("[MM] SWAP_AREA slots=0x");
+                vibeos_x86_64_serial_print_hex((uint64_t)slots);
+                vibeos_x86_64_serial_puts(" (none configured on this media)\n");
+                vibeos_x86_64_serial_unlock();
+            }
+            {
             }
 
             g_frame_layer_ready = 1;

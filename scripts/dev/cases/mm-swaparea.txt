@@ -1,0 +1,59 @@
+# Sabotage cases for the swap area (kernel/mm/swaparea.c).
+#
+# This layer is the only code that turns a slot number into a block address,
+# and swap sits on the same device as the filesystem. An area that miscomputes
+# its bounds does not fail - it writes a page of somebody's memory over a
+# directory, and the damage is found when the machine next boots. So four of
+# these five are about the bound.
+#
+# Run: apply, rebuild vibeos_kernel_tests, look for "FAIL:test_swaparea".
+
+case: the area base is forgotten
+  in area_io, drop g_area.first_sector from the lba computation
+  expect: swaparea: FAIL nothing below the area was touched / every sector
+    outside the area is untouched
+  why it matters: every page written lands in the first sectors of the device,
+    which on a real machine is the partition table and the boot sector. The
+    test asserts on the range of LBAs the fake device was asked for, not on the
+    return value, because every one of those writes succeeds.
+
+case: the partial slot at the end is rounded up
+  change the slot count to round up instead of down
+  expect: swaparea: FAIL the partial slot at the end is dropped, not rounded up
+  why it matters: half a slot outside the area is the same defect as a slot
+    past the end, arrived at by arithmetic instead of by an index.
+
+case: a fragmented file is accepted
+  change the !contiguous test to if (0)
+  expect: swaparea: FAIL refused / counted / and nothing is configured
+  why it matters: a page written across a gap between extents goes into
+    whatever lies between them, which on a filesystem is somebody's data.
+
+case: a too-small bitmap is accepted
+  change the bitmap size test to if (0)
+  expect: swaparea: FAIL refused / counted
+  why it matters: the swap map would believe it has fewer slots than the area,
+    which is harmless on its own - and is exactly the kind of asymmetry that
+    gets "fixed" later by trusting whichever number is larger.
+
+# Not a case, and said so rather than counted:
+#
+#   "the out-of-range check in area_io is removed" (change slot >= g_slots to
+#   if (0))
+#
+# It cannot be turned red here. The check guards against the swap map handing
+# out a slot the area does not have, and vibeos_swaparea_configure sets both
+# counts from the same division - so through the public API they cannot
+# disagree, and no arrangement these tests can build reaches it.
+#
+# The guard stays: it is one comparison, and it is what would catch a future
+# caller that re-initialises the map without reconfiguring the area. But it is
+# defence in depth rather than a property this suite proves, and the difference
+# is worth writing down. Same distinction as the compaction window guard in
+# mm-compact.txt and the AHCI cases.
+#
+# Note also what was *not* done: the bound compares against the slot count
+# rather than recomputing the end sector. Recomputing would make this case
+# testable, at the cost of a second piece of arithmetic that has to agree with
+# the first - which is how two structures come to disagree about the same fact.
+# One source of truth was judged worth more than one more red case.

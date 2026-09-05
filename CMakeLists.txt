@@ -146,6 +146,7 @@ if(VIBEOS_BUILD_TESTS)
         tests/kernel/compact_tests.c
         tests/kernel/swap_tests.c
         tests/kernel/acceptance_tests.c
+        tests/kernel/swaparea_tests.c
         tests/kernel/task_tests.c
         tests/kernel/runq_tests.c
         tests/kernel/lifetime_tests.c

@@ -164,10 +164,82 @@ configuration rather than a gap, and it is visible rather than silent:
 test asserts that it does. A gate reading zero there would be reading a
 machine that had nothing to reclaim, not one that is working.
 
-Giving it a real area means carving one on the block device and sizing it,
-which is arch work of its own and is not started. Everything above it — the
-map, page-out, page-in, the tier and the chain — is built and tested against a
-memory-backed device.
+# Where swap lives — the structure for configuring it
+
+The swap map hands out slots and moves 4 KiB in and out of one. It deliberately
+does not know where a slot *is*: that is a configuration question, and the
+answer differs between a machine with a spare partition and one that has to
+borrow space inside a filesystem. `kernel/mm/swaparea.c` is the translation,
+and it is the only code that turns a slot number into a block address.
+
+## The property it exists to guarantee
+
+**A transfer never touches a block outside the area.**
+
+Everything else there is arithmetic. That one is safety: swap sits on the same
+device as the filesystem, so an area that miscomputes its bounds does not fail
+— it writes a page of somebody's memory over a directory, and the damage is
+found when the machine next boots.
+
+A driver cannot catch it. A driver that refuses an out-of-range LBA protects
+the *disk*; it cannot protect the filesystem, because the filesystem's blocks
+are perfectly valid addresses. This layer is the only place it can be stopped.
+
+The tests are weighted accordingly: the fake device records every LBA it is
+asked for, and the assertions are on the *range touched* and on the sectors
+outside the area still holding what they held — not on return values, because
+every one of those writes would succeed.
+
+## Two kinds, described the same way
+
+A **partition** is a range of sectors belonging to nothing else: slot n is at
+`first_sector + n * 8`, one multiplication, and the area cannot move underneath
+itself.
+
+A **file** is space borrowed from a filesystem, which is what a machine with no
+spare partition has. Its cost is that a file need not be contiguous, and a swap
+that assumed it was would write pages into whatever lies between its extents.
+So a fragmented area is **refused and counted** — a restriction that can be
+checked rather than a race that has to be reasoned about. Following an extent
+list is a later change and it belongs here, not in the swap map.
+
+Both are described by first sector and length rather than by name and offset.
+By the time this layer is configured somebody has already resolved the file to
+the blocks it occupies; carrying a path would mean this layer had to know about
+filesystems in order to answer "which sector is slot 12". The path is kept only
+so a diagnostic can say where the area came from.
+
+## Configuring one later
+
+Fill in the descriptor and nothing else. The map, page-out, page-in and
+reclaim's anonymous tier are built and tested above it. The kernel already asks
+at boot and prints the answer:
+
+```
+[MM] SWAP_AREA slots=0x0000000000000000 (none configured on this media)
+```
+
+`NONE` is a state rather than a failure, and it is counted separately from an
+area that was offered and rejected — only one of those is somebody's mistake.
+The anonymous source stays unregistered until an area exists, so reclaim keeps
+counting in `skipped_no_swap` exactly what having no swap costs, rather than
+appearing to work.
+
+## Verified
+
+Eight host-test groups and four sabotage cases confirmed red. A fifth is
+recorded in `scripts/dev/cases/mm-swaparea.txt` as **unverifiable here**:
+removing the out-of-range check in `area_io` does not turn the tests red,
+because `configure` sets the slot count and the map's slot count from the same
+division, so through the public API they cannot disagree.
+
+The guard stays — one comparison, and it is what would catch a future caller
+that re-initialises the map without reconfiguring the area — but it is defence
+in depth rather than something this suite proves. Making it testable would mean
+recomputing the end sector independently, at the cost of a second piece of
+arithmetic that has to agree with the first, which is how two structures come
+to disagree about the same fact. One source of truth was judged worth more than
+one more red case.
 
 ## Verified
 
