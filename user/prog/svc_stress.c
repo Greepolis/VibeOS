@@ -156,7 +156,21 @@ static void say_mismatch(const char *what, uint64_t off, uint8_t got, uint8_t wa
 
 
 
-#define ROUNDS 120u
+/* How many rounds a run does.
+ *
+ * 120 is what a boot pays for. The plan's soak property wants two orders of
+ * magnitude more, and the difference is the whole point: a leak of one frame
+ * per fork is invisible in 120 rounds and unmissable in 12000, because the
+ * boot gate's frame accounting compares a fixed cost against a per-round one.
+ *
+ * Two ways to raise it, and they answer different questions. The build define
+ * is what scripts/dev/soak.sh sets, so the round count is baked into the media
+ * and init needs no argument. The second argument is for a human replaying a
+ * specific failure - `SVC_STRS.ELF <seed> <rounds>` - where the seed alone is
+ * not enough because the round it died on was past 120. */
+#ifndef VIBEOS_STRESS_ROUNDS
+#define VIBEOS_STRESS_ROUNDS 120u
+#endif
 
 static int op_map_touch_unmap(uint64_t r) {
     uint64_t pages = 1ull + (r % 4ull);
@@ -516,9 +530,16 @@ static int op_pipe(uint64_t r) {
 int vibeos_main(int argc, char **argv, char **envp) {
     uint64_t seed;
     uint32_t round;
+    uint32_t rounds = (uint32_t)VIBEOS_STRESS_ROUNDS;
 
     (void)envp;
 
+    if (argc > 2 && argv[2]) {
+        uint64_t n = parse_u64(argv[2]);
+        if (n > 0ull && n <= 0xFFFFFFFFull) {
+            rounds = (uint32_t)n;
+        }
+    }
     if (argc > 1 && argv[1]) {
         seed = parse_u64(argv[1]);        /* replaying a failure */
     } else {
@@ -555,7 +576,7 @@ int vibeos_main(int argc, char **argv, char **envp) {
      * thing needed to reproduce it. */
     say("STRESS_SEED ", seed, 1);
 
-    for (round = 0; round < ROUNDS; round++) {
+    for (round = 0; round < rounds; round++) {
         uint64_t r = next_random();
         int rc;
 
@@ -567,11 +588,15 @@ int vibeos_main(int argc, char **argv, char **envp) {
         }
         if (rc != 0) {
             say("STRESS_FAIL: round ", (uint64_t)round, 1);
+            /* The round count goes in the replay line too: a failure at
+             * round 9000 cannot be reproduced by a default 120-round run, and
+             * a replay recipe that does not reproduce is worse than none. */
             say("STRESS_FAIL: replay with EFI/BOOT/SVC_STRS.ELF ", seed, 1);
+            say("STRESS_FAIL: rounds ", (uint64_t)rounds, 1);
             sys3(SYS_exit, 1, 0, 0);
         }
     }
 
-    say("STRESS_OK rounds=", (uint64_t)ROUNDS, 1);
+    say("STRESS_OK rounds=", (uint64_t)rounds, 1);
     return 0;
 }

@@ -224,6 +224,50 @@ assert interleaved_lines(_OPEN_LINE) == [], "flags a ring-3 write left open"
 assert interleaved_lines(_CLEAN) == [], "flags a healthy line"
 
 
+def frame_accounting_premise_broken(text):
+    """Did the frame accounting get sampled while userland was still running?
+
+    The comparison of frames free on the way in against frames free on the way
+    out means something only under one premise, which the kernel states in its
+    own comment: every user process that started has exited by this point.
+
+    That premise was false and nothing noticed. The wait loop treated only
+    READY and RUNNING as alive, so a moment when every user task happened to be
+    blocked - in waitpid after a fork, on a pipe, on a futex - read as "all
+    retired". The machine went on to the console and sampled the counters from
+    a machine still forking. It stayed hidden because an ordinary boot's
+    programs are short; raising the stress service to 12000 rounds opened the
+    window on nearly every boot, and the mid-flight numbers looked like a leak
+    that grew with the workload.
+
+    Checked by ordering, and only when the stress service ran: its completion
+    line is the last thing userland does that takes real time, so a
+    FRAMES_AT_USERLAND_DONE printed before it is proof the premise broke.
+
+    Asserted rather than assumed, because the failure is silent by
+    construction - a mid-flight sample still produces two plausible numbers.
+    """
+    if "STRESS_OK" not in text or "FRAMES_AT_USERLAND_DONE" not in text:
+        return False
+    return text.index("STRESS_OK") > text.index("FRAMES_AT_USERLAND_DONE")
+
+
+# Self-tested for the same reason interleaved_lines is: the sabotage that
+# breaks the kernel side of this only opens the window on some boots, so a
+# single red run cannot prove the check fires and a single green one cannot
+# prove it does not. These can.
+_PREMISE_OK = ("[HW][SYS] write(ring3): STRESS_OK rounds=120\n"
+               "[MM] FRAMES_AT_USERLAND_DONE=0x0 cache_resident=0x0\n")
+_PREMISE_BROKEN = ("[MM] FRAMES_AT_USERLAND_DONE=0x0 cache_resident=0x0\n"
+                   "[HW][SYS] write(ring3): STRESS_OK rounds=12000\n")
+_PREMISE_NO_STRESS = "[MM] FRAMES_AT_USERLAND_DONE=0x0 cache_resident=0x0\n"
+
+assert not frame_accounting_premise_broken(_PREMISE_OK), "flags a healthy ordering"
+assert frame_accounting_premise_broken(_PREMISE_BROKEN), "misses a mid-flight sample"
+assert not frame_accounting_premise_broken(_PREMISE_NO_STRESS), \
+    "flags a boot the stress service never ran in"
+
+
 def tail_text(text, lines=40):
     return "|".join(text.replace("\r", " ").splitlines()[-lines:])
 
@@ -924,6 +968,9 @@ def main():
             # Asserted as a ceiling rather than as equality for the same reason
             # the cache is asserted as a ratio: a check that fails on every
             # boot is a check people route around.
+            if frame_accounting_premise_broken(text):
+                problems.append("frame_accounting_sampled_before_userland_finished")
+
             fs = re.search(r"FRAMES_AT_USERLAND_START=0x([0-9a-f]{16})", text)
             fd = re.search(r"FRAMES_AT_USERLAND_DONE=0x([0-9a-f]{16}) "
                            r"cache_resident=0x([0-9a-f]{16})", text)

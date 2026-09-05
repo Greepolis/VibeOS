@@ -680,3 +680,23 @@ layer's poison detector was reading uninitialised descriptor flags and reporting
 3019 use-after-frees per boot, and the staging sizes only decided where that
 descriptor table landed in memory. See
 [mm_frame_init_flags.md](../implementation_progress/mm_frame_init_flags.md).
+
+## P7 — soak, closed
+
+The frame loss does not grow with the work: 26 at 120 stress rounds, 28 at
+12000, twice. The round count is a build knob and `scripts/dev/soak.sh` runs
+the comparison, because one measurement cannot tell a fixed cost from a
+per-round leak.
+
+What it took was fixing the machine rather than the counter. The wait for
+userland to finish treated a blocked task as retired, so on a long run the
+accounting was sampled while the stress service was still forking - and the
+mid-flight numbers looked like a leak that scaled. The gate now asserts the
+premise the accounting depends on. See
+[mm_soak.md](../implementation_progress/mm_soak.md).
+
+**Latency remains**, with a defect already named: `VIBEOS_BLK_TIMEOUT` is
+defined, printed by kmain and asserted by the boot gate, and produced by no
+driver - every timeout collapses into a generic -1. The assertion is green and
+cannot go red. virtio-net's `g_tx_timeouts` is the same shape: incremented,
+read by nobody.

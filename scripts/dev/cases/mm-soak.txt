@@ -1,0 +1,37 @@
+# Sabotage cases for the userland-finished premise and the soak measurement.
+#
+# Read the note on the first case before running these: unlike every other case
+# file here, one of them cannot be settled by a single boot.
+
+case: a blocked task does not count as alive
+  in hw_sched_bringup's wait loop, delete the HW_TASK_BLOCKED term
+  expect: frame_accounting_sampled_before_userland_finished
+  environment: NOT RELIABLY OBSERVABLE IN ONE BOOT.
+    The window only opens if every user task is blocked at the same instant, so
+    an ordinary 120-round boot almost never sees it and a 12000-round boot
+    usually does. One sabotage run at 12000 rounds came back green having
+    proved nothing. Build with -DVIBEOS_STRESS_ROUNDS=12000 and expect it to
+    need several runs - or rely on the self-tests below, which is why they
+    exist.
+  why it matters: this was a real defect and it was silent by construction. The
+    machine printed "all user tasks retired" with tasks still forking, and
+    kmain then sampled the frame accounting whose comment states that every
+    user process has exited by that point. The mid-flight numbers are plausible
+    - two counts that still partition - and they grew with the workload, which
+    reads as a leak that scales. It is not; it is a measurement of a running
+    machine.
+
+case: the gate's ordering check does not compare
+  in frame_accounting_premise_broken, replace the return with "return False"
+  expect: AssertionError: misses a mid-flight sample, at import
+  why it matters: this is the case the one above cannot be. The self-tests are
+    deterministic where the boot is not, and they are the reason the check is a
+    function with three synthetic logs rather than two lines inline.
+
+case: the gate's ordering check flags a healthy boot
+  in frame_accounting_premise_broken, replace the return with "return True"
+  expect: AssertionError: flags a healthy ordering, at import
+  why it matters: a detector that reports healthy behaviour is one people learn
+    to ignore - the lesson the interleaved-lines check carries its own
+    "must not flag" case for. A boot where the stress service never ran must
+    also pass, which is the third self-test.

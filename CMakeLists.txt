@@ -266,6 +266,15 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         )
     endforeach()
 
+    # The soak run of the plan's P7, which is the ordinary stress service with
+    # its round count raised by two orders of magnitude. A cache variable rather
+    # than a separate program, so the soak exercises exactly the code a normal
+    # boot does - a second copy would be a second thing to keep true.
+    if(VIBEOS_STRESS_ROUNDS)
+        target_compile_definitions(vibeos_user_svc_stress PRIVATE
+            VIBEOS_STRESS_ROUNDS=${VIBEOS_STRESS_ROUNDS}u)
+    endif()
+
     add_executable(vibeos_user_init user/prog/init.c user/prog/crt0.S)
     target_compile_options(vibeos_user_init PRIVATE
         -ffreestanding -fno-stack-protector -fno-pic -mno-red-zone

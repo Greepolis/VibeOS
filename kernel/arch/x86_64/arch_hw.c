@@ -9037,13 +9037,35 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
     /* Wait for the spawned tasks to finish before the kernel task goes on to
      * the console (init-style child reaping). The kernel task is preempted
      * while it waits, so the user tasks make progress; hlt idles until the next
-     * timer tick instead of spinning. */
+     * timer tick instead of spinning.
+     *
+     * BLOCKED counts as alive, and leaving it out was a defect with a long
+     * reach. This asked only for READY or RUNNING, so a moment when every user
+     * task happened to be waiting - in waitpid after a fork, on a pipe, on a
+     * futex - read as "nothing is running, we are done". The machine then
+     * printed "all user tasks retired" with tasks very much not retired, went
+     * on to the console, and kmain sampled the frame accounting whose comment
+     * states outright that every user process has exited by this point.
+     *
+     * It hid because the ordinary boot's programs are short: the window has to
+     * open while something is still blocked, and at 120 stress rounds the run
+     * is usually over first. Raising that to 12000 for the plan's soak made it
+     * fire on nearly every boot - the log shows fork after fork retiring after
+     * the CLI is already up - and the frame numbers reported from mid-flight
+     * looked like a leak that grew with the workload. It was not a leak; it
+     * was a measurement taken while the thing being measured was still running.
+     *
+     * ZOMBIE is deliberately not alive: it holds a slot, not an address space,
+     * and something has to reap it - which is what this loop's caller goes on
+     * to do. */
     for (;;) {
         int i;
         int alive = 0;
         for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
             if (g_tasks[i].is_user &&
-                (g_tasks[i].state == HW_TASK_READY || g_tasks[i].state == HW_TASK_RUNNING)) {
+                (g_tasks[i].state == HW_TASK_READY ||
+                 g_tasks[i].state == HW_TASK_RUNNING ||
+                 g_tasks[i].state == HW_TASK_BLOCKED)) {
                 alive = 1;
             }
         }
