@@ -61,6 +61,33 @@ int vibeos_elf_parse(const void *image, uint64_t len,
     return vibeos_elf_parse_ex(image, len, 0, min_allowed, end_allowed, 0, out);
 }
 
+int vibeos_elf_header_extent(const void *image, uint64_t len, uint64_t *out) {
+    const uint8_t *b = (const uint8_t *)image;
+    uint64_t phoff;
+    uint32_t phentsize, phnum;
+
+    if (!image || !out || len < 64ull) {
+        return -1;
+    }
+    if (b[0] != 0x7F || b[1] != 'E' || b[2] != 'L' || b[3] != 'F') {
+        return -1;
+    }
+    phoff = rd64(b + 32);
+    phentsize = rd16(b + 54);
+    phnum = rd16(b + 56);
+    if (phentsize == 0u || phnum == 0u) {
+        return -1;
+    }
+    /* Overflow is checked rather than assumed away: e_phnum is sixteen bits
+     * and e_phoff is sixty-four, so a malformed header can name an extent that
+     * wraps, and a wrapped extent compares as small. */
+    if (phoff > 0xFFFFFFFFFFFF0000ull) {
+        return -1;
+    }
+    *out = phoff + (uint64_t)phentsize * (uint64_t)phnum;
+    return 0;
+}
+
 int vibeos_elf_parse_ex(const void *image, uint64_t len,
                         uint64_t load_bias,
                         uint64_t min_allowed, uint64_t end_allowed,

@@ -94,11 +94,20 @@ driver nobody runs is the one that ships broken.
 filesystem that runs is the one that does not use the only cache there is.
 There are three parallel read paths and they share nothing.
 
-**Nothing writes.** `vibeos_fs_write_file`, `unlink` and `mkdir` exist and are
-host-tested; no booting machine calls any of them. The journal's power-loss
-recovery is verified the same way - a host test, not a machine that lost power.
-Both claims are true and neither is about the running kernel, which is the
-distinction the table row was losing.
+**Writes reach the medium and nothing checks them.** This entry first said
+nothing writes at all. That was wrong, and the counter added in I1 disproved it
+within minutes of existing: a boot performs thirty sector writes, because the
+shell's `mkdir DOCS` reaches `vibeos_fs_mkdir`, which reaches FAT, which
+rewrites both copies of the table.
+
+The accurate statement is narrower and still worth acting on: nothing verifies
+that what was written is what comes back - no read-back, no comparison, and
+nothing at all across a reboot, which is the only check that separates a write
+that reached the disk from one that reached a cache.
+
+The journal's power-loss recovery is verified in a host test, not by a machine
+that lost power. That claim is true and is not about the running kernel, which
+is the distinction the table row was losing.
 
 **An error has no reason.** `blk_read` returns int. A timeout, an absent
 device, a medium error and a request never issued are indistinguishable at

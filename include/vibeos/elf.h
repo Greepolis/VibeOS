@@ -136,6 +136,19 @@ int vibeos_elf_parse(const void *image, uint64_t len,
 typedef int (*vibeos_elf_read_fn)(void *ctx, uint64_t off, uint32_t len,
                                   void *buf);
 
+/* How many bytes from the start of the file the parser needs in order to read
+ * the ELF header and the program headers.
+ *
+ * A caller that stages only a window has to know whether its window is big
+ * enough, and the alternative to asking is duplicating the header layout at
+ * the call site - which is how two pieces of code come to disagree about where
+ * a program header table starts.
+ *
+ * Returns 0 and fills `out` when the first 64 bytes are a plausible ELF
+ * header. The interpreter path is *not* included: it lives at an arbitrary
+ * offset and is fetched through the reader. */
+int vibeos_elf_header_extent(const void *image, uint64_t len, uint64_t *out);
+
 int vibeos_elf_parse_ex(const void *image, uint64_t len,
                         uint64_t load_bias,
                         uint64_t min_allowed, uint64_t end_allowed,

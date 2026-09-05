@@ -1266,6 +1266,41 @@ static uint32_t g_pool_next;
  * execs. It is taken from the page allocator instead, once, at boot, and a
  * small static buffer remains as the fallback for the early paths that run
  * before the allocator exists. */
+/* Still four megabytes, and it no longer has to be.
+ *
+ * Nothing needs it: the parse takes a header window and the page fill reads
+ * through the cache, both since I3. Setting this to 64 KiB works, boots, and
+ * runs every program on the media - and turns the boot red with
+ * mm_poison_hits=3019, deterministically, on every run.
+ *
+ * That is not this buffer's defect. Shrinking *either* window alone is clean;
+ * only both together fail. And deliberately wasting the six megabytes the two
+ * shrinks free - allocating them at boot and never using them - makes the
+ * poison disappear while the windows stay small. So what the shrink changes is
+ * which frames the allocator hands out, and something writes to a frame it has
+ * already released.
+ *
+ * Which makes this the first deterministic reproduction of a defect this
+ * project has been chasing at one boot in sixteen: set both windows to
+ * 64u * 1024u and every boot reports it. The buffers stay large until that is
+ * closed, because six megabytes of kernel memory is a smaller cost than a gate
+ * nobody can trust.
+ *
+ * The original note follows.
+ *
+ * A header window, not a copy of the program.
+ *
+ * This was four megabytes because hw_read_file_cached would not proceed
+ * without room for the whole file - a refusal about the buffer applied to a
+ * file the cache did not need a buffer for. With the length separated from the
+ * staged byte count, what has to be here is the ELF header and the program
+ * headers, and nothing else: the page fill and the interpreter path both read
+ * through the cache.
+ *
+ * 64 KiB against a real extent of a few hundred bytes. Sized generously
+ * because the cost is now nothing and the failure mode of being too small is a
+ * refusal to run a program - and refused *by name* rather than by truncation,
+ * which is the distinction the whole phase is about. */
 #define VIBEOS_HW_EXEC_STAGE_BYTES (4u * 1024u * 1024u)
 static uint8_t g_exec_elf_static[65536] __attribute__((aligned(16)));
 static uint8_t *g_exec_elf = g_exec_elf_static;
@@ -1278,6 +1313,7 @@ static uint32_t g_exec_elf_cap = (uint32_t)sizeof(g_exec_elf_static);
  * same address space as the program that named it. musl's loader is its C
  * library and is about seven hundred kilobytes, so this is sized for a real
  * one rather than for a token. */
+/* Same reasoning as the exec window above. */
 #define VIBEOS_HW_INTERP_STAGE_BYTES (2u * 1024u * 1024u)
 static uint8_t *g_interp_elf;
 static uint32_t g_interp_elf_cap;
@@ -2227,6 +2263,17 @@ static uint32_t hw_file_id(const char *path) {
  * pages would have come from different places. Two sources of truth for "which
  * file is this" is how a process ends up with the pages of one file and the
  * headers of another. */
+/* Read a file into the cache, and as much of it as fits into `buf`.
+ *
+ * Returns the length of the *file*, which is not the number of bytes staged.
+ * Those were one number until I3 of docs/io/, and separating them is what lets
+ * execve keep a header window instead of a buffer large enough for any program
+ * it might ever be asked to run.
+ *
+ * A caller that needs the whole file in the buffer compares the return value
+ * against its capacity. A caller that only needs the headers does not have to
+ * care, because everything past its window is in the cache and reachable a
+ * page at a time. */
 static long hw_read_file_cached(const char *path, void *buf, uint32_t cap,
                                 uint32_t *out_id) {
     uint32_t id = hw_file_id(path);
@@ -2240,9 +2287,20 @@ static long hw_read_file_cached(const char *path, void *buf, uint32_t cap,
         return vibeos_fs_read_file(&g_rootfs, path, buf, cap);
     }
     size = g_cached_files[id - 1u].node.size;
-    if (size > (uint64_t)cap) {
-        return -1;
-    }
+
+    /* The whole file goes into the cache; only what fits goes into the buffer.
+     *
+     * These were one thing and the conflation is what this phase exists to
+     * end. `size > cap` used to refuse the read outright - a refusal about the
+     * *buffer*, applied to a file the cache did not need a buffer for. That is
+     * why execve carried a four-megabyte staging area: not because anything
+     * needed the bytes contiguously, but because this function would not
+     * proceed without room for all of them.
+     *
+     * The loop still walks every page, because that is what populates the
+     * cache, and the cache is what the page fill and the interpreter path read
+     * through. What changed is that the copy stops at the caller's window and
+     * the return value keeps describing the file. */
     for (off = 0; off < size; off += 4096ull) {
         uint64_t phys = 0;
         uint64_t take = size - off < 4096ull ? size - off : 4096ull;
@@ -2253,8 +2311,21 @@ static long hw_read_file_cached(const char *path, void *buf, uint32_t cap,
             /* Whatever went wrong, the file itself is still readable the old
              * way. Falling back is the difference between a slower boot and a
              * machine that cannot exec - and out_id stays 0, so a caller that
-             * was going to map cache pages knows not to. */
+             * was going to map cache pages knows not to.
+             *
+             * The fallback needs the whole file in the buffer, so it can only
+             * be taken when the buffer could hold it. A window-sized caller
+             * that gets here is told no rather than handed a prefix. */
+            if (size > (uint64_t)cap) {
+                return -1;
+            }
             return vibeos_fs_read_file(&g_rootfs, path, buf, cap);
+        }
+        if (off >= (uint64_t)cap) {
+            continue;   /* cached, and past the caller's window */
+        }
+        if (off + take > (uint64_t)cap) {
+            take = (uint64_t)cap - off;
         }
         src = (const uint8_t *)(uintptr_t)phys;
         for (k = 0; k < take; k++) {
@@ -2906,7 +2977,13 @@ static const char *hw_interp_path_substitute(const char *path) {
     return path;
 }
 
+/* `len` is how long the file is. `staged` is how many of its bytes are behind
+ * `elf`. They were the same number until I3 of docs/io/, and the signature says
+ * so now rather than leaving a caller to assume: one caller has the whole image
+ * in memory, the other has a 64 KiB header window and the rest in the page
+ * cache. */
 static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
+                          uint64_t staged,
                           const char *const *argv, const char *const *envp,
                           const char *path, uint32_t file_id) {
     vibeos_elf_image_t img;
@@ -2990,6 +3067,31 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
 
         hdr_reader.file_id = file_id;
         hdr_reader.file_len = len;
+
+        /* The window has to cover what the parser will read from it.
+         *
+         * Everything the parser touches is in the first few kilobytes except
+         * the interpreter path, which goes through the reader - so the check
+         * is against the header extent, asked of the ELF layer rather than
+         * recomputed here. Duplicating the header layout at this call site is
+         * how two pieces of code come to disagree about where a program header
+         * table starts.
+         *
+         * Refused by name. A truncation here would hand the parser a partial
+         * header table and it would describe a program that does not exist,
+         * which is the same shape as the short read that once made execve
+         * parse the previous program's bytes. */
+        {
+            uint64_t extent = 0;
+            uint64_t window = (len < staged) ? len : staged;
+
+            if (vibeos_elf_header_extent(elf, window, &extent) == 0 &&
+                extent > window) {
+                rc = hw_exec_refuse(VIBEOS_EXEC_BAD_HEADER, path,
+                                    "headers_past_window");
+                goto fail;
+            }
+        }
         parse_rc = vibeos_elf_parse_read(elf, len, 0, 0,
                                      VIBEOS_HW_USER_STACK_TOP,
                                      VIBEOS_ELF_ALLOW_DYN |
@@ -4176,7 +4278,9 @@ static int hw_task_spawn_user(const unsigned char *elf, uint64_t len,
         return -1;
     }
     /* An embedded image: no path, and no file behind it to map pages from. */
-    if (hw_proc_create(&g_tasks[i].proc, elf, len, argv, 0, 0, 0u) != 0) {
+    /* The whole image is in memory here - a program built into the kernel,
+     * not one read through the cache - so staged and len are the same. */
+    if (hw_proc_create(&g_tasks[i].proc, elf, len, len, argv, 0, 0, 0u) != 0) {
         hw_task_release(i);
         return -1;
     }
@@ -6469,7 +6573,8 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
         hw_spin_unlock_preemptible(&g_exec_lock);
         return -VIBEOS_ENOENT;
     }
-    if (hw_proc_create(&np, g_exec_elf, (uint64_t)n, argv,
+    if (hw_proc_create(&np, g_exec_elf, (uint64_t)n,
+                       (uint64_t)g_exec_elf_cap, argv,
                        g_exec_envp.slot[0] ? g_exec_envp.slot : 0, path,
                        g_exec_cached_id) != 0) {
         hw_log(VIBEOS_LOG_ERROR, 4u, (uint64_t)n, 0,

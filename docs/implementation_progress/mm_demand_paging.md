@@ -74,3 +74,28 @@ What this phase leaves behind is that the *dependency* is gone: the staging
 buffer is an optimisation now, not a requirement. When the I/O layer can say
 "the file is N bytes, I gave you M of them", both buffers can shrink to a
 header window and the refusal for a file whose headers exceed it is one line.
+
+---
+
+## Update, after I3 of docs/io/
+
+The I/O layer can say it now: the read reports the file's length and stages
+only what fits, `vibeos_elf_header_extent` says how much of a file the parser
+needs, and `hw_proc_create` takes both numbers with the signature saying which
+is which. The refusal for a file whose headers exceed the window is one line,
+as predicted.
+
+**The buffers still do not shrink, and the reason changed.** It is no longer a
+design problem; it is a defect with a reproduction.
+
+Setting both windows to 64 KiB works and runs every program on the media, and
+turns the gate red with `mm_poison_hits=3019` deterministically. Shrinking
+either window alone is clean; only both together fail; and wasting the six
+megabytes the two shrinks free makes the poison disappear while the windows
+stay small. So the shrink changes only *which frames the allocator hands out*,
+and something writes to a frame it has already released.
+
+That is the use-after-free this subsystem has been chasing at roughly one boot
+in sixteen — now reproducible on demand, 3019 times a boot. Written up in
+[io_read_contract.md](io_read_contract.md), with the recipe recorded in
+`arch_hw.c` beside the constant somebody would change.
