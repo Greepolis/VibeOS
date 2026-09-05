@@ -76,6 +76,7 @@ static void pci_write32(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off, uint3
 #define ATA_CMD_READ_DMA_EX  0x25u
 #define ATA_CMD_WRITE_DMA_EX 0x35u
 #define ATA_CMD_FLUSH_EX     0xEAu
+#define ATA_CMD_IDENTIFY     0xECu
 #define ATA_DEV_BUSY 0x80u
 #define ATA_DEV_DRQ  0x08u
 
@@ -302,7 +303,15 @@ int vibeos_x86_64_ahci_init(void) {
 /* ---- transfers ----------------------------------------------------------- */
 
 /* Build and run one command. Returns 0 on success. */
-static int ahci_xfer(uint64_t lba, uint32_t sectors, int write) {
+/* One command, whatever it is.
+ *
+ * Generalised from a read/write-only version so that IDENTIFY does not have to
+ * duplicate forty lines of FIS construction. Two things this file has already
+ * learned the hard way are in that construction - the PRDT byte count is one
+ * less than the bytes, and the error bit has to be checked inside the wait
+ * rather than after it - and a second copy would have to learn them again. */
+static int ahci_cmd(uint8_t command, uint64_t lba, uint32_t sectors,
+                    int write, uint32_t bytes) {
     hba_cmd_header_t *hdr = &g_cmd_list[0];
     hba_cmd_table_t *tbl = &g_cmd_table;
     uint8_t *fis = tbl->cfis;
@@ -324,11 +333,11 @@ static int ahci_xfer(uint64_t lba, uint32_t sectors, int write) {
     /* The count is bytes minus one, and a driver that writes the plain byte
      * count transfers one byte too many - which on a 512-byte read means the
      * sector after it, silently. */
-    tbl->prdt[0].dbc = (sectors * 512u) - 1u;
+    tbl->prdt[0].dbc = bytes - 1u;
 
     fis[0] = 0x27;                       /* register FIS, host to device */
     fis[1] = 0x80;                       /* C: this is a command         */
-    fis[2] = write ? (uint8_t)ATA_CMD_WRITE_DMA_EX : (uint8_t)ATA_CMD_READ_DMA_EX;
+    fis[2] = command;
     fis[4] = (uint8_t)(lba & 0xFFu);
     fis[5] = (uint8_t)((lba >> 8) & 0xFFu);
     fis[6] = (uint8_t)((lba >> 16) & 0xFFu);
@@ -369,6 +378,65 @@ static int ahci_xfer(uint64_t lba, uint32_t sectors, int write) {
         return -1;
     }
     return 0;
+}
+
+static int ahci_xfer(uint64_t lba, uint32_t sectors, int write) {
+    return ahci_cmd(write ? (uint8_t)ATA_CMD_WRITE_DMA_EX
+                          : (uint8_t)ATA_CMD_READ_DMA_EX,
+                    lba, sectors, write, sectors * 512u);
+}
+
+/* How big the disk is, or 0 if the device would not say.
+ *
+ * Nothing asked until now, and that is the defect rather than an omission:
+ * every AHCI read has been unbounded, so an LBA past the end of the medium
+ * went straight to the controller. The block layer refuses to register a
+ * device that cannot state its size, because a device with no size cannot
+ * have its requests bounds-checked - and an unchecked bound is the difference
+ * between an error and a disk written at the wrong offset.
+ *
+ * LBA48 first, LBA28 second, and both are read rather than assuming the
+ * first: word 83 bit 10 says whether the 48-bit fields mean anything, and a
+ * driver that reads them unconditionally gets a plausible number from a disk
+ * that never filled them in. */
+static uint64_t ahci_identify_sectors(void) {
+    const uint8_t *id = g_bounce;
+    uint64_t lba48;
+    uint32_t lba28;
+    uint32_t i;
+
+    for (i = 0; i < 512u; i++) {
+        g_bounce[i] = 0;
+    }
+    if (ahci_cmd((uint8_t)ATA_CMD_IDENTIFY, 0, 0, 0, 512u) != 0) {
+        return 0;
+    }
+
+    /* Little-endian 16-bit words, assembled by hand: this runs before
+     * anything has established that the structure is aligned or that the
+     * compiler will not widen a load across a word boundary. */
+    if ((((uint32_t)id[83 * 2] | ((uint32_t)id[83 * 2 + 1] << 8)) & (1u << 10))
+            != 0u) {
+        lba48 = 0;
+        for (i = 0; i < 8u; i++) {
+            lba48 |= (uint64_t)id[100 * 2 + i] << (8u * i);
+        }
+        if (lba48 != 0ull) {
+            return lba48;
+        }
+    }
+    lba28 = 0;
+    for (i = 0; i < 4u; i++) {
+        lba28 |= (uint32_t)id[60 * 2 + i] << (8u * i);
+    }
+    return (uint64_t)lba28;
+}
+
+uint64_t vibeos_x86_64_ahci_sectors(void) {
+    if (!g_ready) {
+        return 0;
+    }
+    return ahci_identify_sectors();
 }
 
 int vibeos_x86_64_ahci_read_many(uint64_t lba, void *buf, uint32_t sectors) {

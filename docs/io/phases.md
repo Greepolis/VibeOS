@@ -140,9 +140,15 @@ express that.
 to the wrong LBA; lose the last sector of a multi-sector write; report a
 write-back failure as success.
 
-**Why this is high on the list.** The write path today has the same standing as
-the seven unmounted filesystems: it exists, it is host-tested, and no evidence
-exists that it works. A filesystem that can only read is a demo.
+**Why this is high on the list.** Writes already reach the medium - a boot
+does thirty sector writes, through the shell's `mkdir` - and *nothing checks
+them*. That is worse than not writing at all: the machine is modifying a disk
+with no evidence that what it wrote is what comes back, and a defect there is
+silent until the next boot cannot mount.
+
+The across-reboot check is the one that matters most, because it is the only
+one that distinguishes a write that reached the medium from one that reached a
+cache and was never flushed.
 
 ---
 

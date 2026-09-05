@@ -89,7 +89,8 @@ def main():
     # not in the book, and a detail file that is not in SUMMARY.md exists only
     # for whoever finds it by accident. Adding a plan is now one row.
     for plan_dir, plan_title in (("mm", "Memory management plan"),
-                                 ("io", "Storage and I/O plan")):
+                                 ("io", "Storage and I/O plan"),
+                                 ("devices", "Devices and peripherals")):
         plan = os.path.join(docs, plan_dir)
         if not os.path.isdir(plan):
             continue

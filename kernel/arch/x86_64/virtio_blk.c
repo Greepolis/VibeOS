@@ -107,6 +107,13 @@ static int g_ready;
  * bad table into an accepted one. */
 static uint64_t g_capacity;
 
+/* What the device said it holds. Exposed so the block layer can bounds-check
+ * requests against it - a device with no size cannot have its requests
+ * checked, and the layer refuses to register one. */
+uint64_t vibeos_x86_64_virtio_blk_sectors(void) {
+    return g_capacity;
+}
+
 static uint64_t align_up(uint64_t v, uint64_t a) { return (v + a - 1u) & ~(a - 1u); }
 
 /* One request is in flight at a time, and everything describing it is a single

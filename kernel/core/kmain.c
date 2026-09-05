@@ -5,6 +5,7 @@
 #include "vibeos/exec_stats.h"
 #include "vibeos/backing.h"
 #include "vibeos/rmap.h"
+#include "vibeos/io_stats.h"
 #include <stddef.h>
 
 static int kernel_bootinfo_validate(const vibeos_boot_info_t *boot_info) {
@@ -648,6 +649,52 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
         vibeos_x86_64_serial_puts(" cache_resident=0x");
         kernel_log_u64_hex((uint64_t)vibeos_cache_resident());
         vibeos_x86_64_serial_puts("\n");
+    }
+    /* What the disk did, in one line under the console lock.
+     *
+     * The storage path carried no counters at all until now, so "the disk is
+     * slow", "the disk is retrying" and "the disk is fine" were the same
+     * silence. The results are printed by reason rather than as a total,
+     * because an absent device and a broken one are different states and only
+     * one of them is a defect.
+     *
+     * One call, bracketed: a line assembled from several is several critical
+     * sections, and this project has had a gate report failures that were a
+     * marker cut in half. */
+    {
+        const vibeos_io_stats_t *io = vibeos_io_stats();
+        uint32_t r;
+
+        vibeos_x86_64_serial_lock();
+        vibeos_x86_64_serial_puts("[IO] MUSTBEZERO medium=0x");
+        kernel_log_u64_hex(io->results[VIBEOS_BLK_MEDIUM]);
+        vibeos_x86_64_serial_puts(" short=0x");
+        kernel_log_u64_hex(io->results[VIBEOS_BLK_SHORT]);
+        vibeos_x86_64_serial_puts(" timeout=0x");
+        kernel_log_u64_hex(io->results[VIBEOS_BLK_TIMEOUT]);
+        vibeos_x86_64_serial_puts(" bad_request=0x");
+        kernel_log_u64_hex(io->results[VIBEOS_BLK_BAD_REQUEST]);
+        vibeos_x86_64_serial_puts(" out_of_range=0x");
+        kernel_log_u64_hex(io->results[VIBEOS_BLK_OUT_OF_RANGE]);
+        vibeos_x86_64_serial_puts(" register_refused=0x");
+        kernel_log_u64_hex(io->register_refused);
+        vibeos_x86_64_serial_puts("\n");
+
+        vibeos_x86_64_serial_puts("[IO] BLK reads=0x");
+        kernel_log_u64_hex(io->reads);
+        vibeos_x86_64_serial_puts(" writes=0x");
+        kernel_log_u64_hex(io->writes);
+        vibeos_x86_64_serial_puts(" sectors_read=0x");
+        kernel_log_u64_hex(io->sectors_read);
+        vibeos_x86_64_serial_puts(" sectors_written=0x");
+        kernel_log_u64_hex(io->sectors_written);
+        vibeos_x86_64_serial_puts(" devices=0x");
+        kernel_log_u64_hex(io->devices_registered);
+        vibeos_x86_64_serial_puts(" no_device=0x");
+        kernel_log_u64_hex(io->results[VIBEOS_BLK_NO_DEVICE]);
+        vibeos_x86_64_serial_puts("\n");
+        (void)r;
+        vibeos_x86_64_serial_unlock();
     }
     vibeos_x86_64_serial_puts("[BOOT] USERLAND_DONE\n");
     vibeos_x86_64_serial_puts("[BOOT] VibeOS kernel ready for user-space\n");

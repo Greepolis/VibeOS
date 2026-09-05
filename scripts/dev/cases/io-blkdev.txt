@@ -1,0 +1,37 @@
+# Sabotage cases for the block layer on a running machine (I1).
+#
+# The host-test cases for the contract itself are in io-contract.txt. These are
+# about the layer being load-bearing on a boot: the adapter in
+# kernel/arch/x86_64/blk.c, and the gate assertions that read its counters.
+#
+# Run: apply, rebuild, boot, look at the gate's reason line.
+
+case: one malformed request at bind time
+  in vibeos_x86_64_blk_bind, submit a request with a null buffer after
+  registering
+  expect: reason=invariant_failed:io_bad_request=1
+  why it matters: this is the case that proves the gate reads the counters at
+    all. It was chosen over breaking a transfer because a broken transfer stops
+    the machine before the assertion is reached - the boot wedges in
+    busybox_cat and the reason line never mentions I/O. A sabotage that
+    destroys the thing it is testing proves nothing about the test.
+
+case: the adapter reports one sector fewer than it moved
+  in adapt_submit's read_many path, set sectors_done to sectors - 1
+  expect: the boot wedges rather than reporting io_short
+  NOTE: recorded as it behaves, not as intended. Every read becomes a short
+    transfer, so FAT cannot read anything and the machine never reaches the
+    point where the counters are printed. The layer *does* catch it - that is
+    what io-contract.txt's short-transfer case proves in a host test, where it
+    can be isolated. Here it is indistinguishable from a broken disk, which is
+    arguably the honest outcome: a disk that loses a sector from every read is
+    a broken disk.
+
+case: a driver is registered without its size
+  pass 0 as the sectors argument to vibeos_x86_64_blk_bind
+  expect: reason contains io_register_refused, and the machine boots without a
+    disk
+  why it matters: the refusal is the point. A device that cannot say how big it
+    is cannot have its requests bounds-checked, and until I1 the AHCI driver
+    was exactly that - it never issued IDENTIFY, so every AHCI read was
+    unbounded.

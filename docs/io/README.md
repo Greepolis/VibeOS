@@ -47,9 +47,23 @@ now carries roughly twenty, most of them asserted by the boot gate; the storage
 path carries none, so "the disk is slow", "the disk is retrying" and "the disk
 is fine" are the same silence.
 
-**No write is ever exercised.** `vibeos_fs_write_file`, `unlink` and `mkdir`
-exist and are host-tested. Nothing on a booting machine calls any of them, so
-the write path has the same standing as the seven unmounted filesystems.
+**Writes happen and nothing checks them.**
+
+This entry originally said no write is ever exercised. That was wrong, and the
+counter added in I1 disproved it within minutes of existing: a boot performs
+**thirty sector writes**. The shell's `mkdir DOCS` reaches `vibeos_fs_mkdir`,
+which reaches FAT, which writes both copies of the table.
+
+The accurate statement is narrower and still worth acting on: writes reach the
+medium, and **nothing verifies that what was written is what comes back**. No
+read-back, no comparison, no assertion, and nothing at all across a reboot -
+which is the only check that distinguishes a write that reached the disk from
+one that reached a cache. I4 is about that, not about making writes happen.
+
+Worth keeping as a note on method: this was a claim made from reading the code
+and grepping for callers, and it survived being written into a plan. What
+caught it was a number. That is the argument for the observability this plan
+asks for, demonstrated on the plan itself.
 
 **An error has no reason.** `blk_read` returns `int`. Zero or not zero. A
 timeout, a device that is absent, a sector the medium cannot return and a

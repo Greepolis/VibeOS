@@ -941,6 +941,53 @@ def main():
                 elif lost > 64:
                     problems.append(f"userland_frames_lost={lost}_ceiling=64")
 
+            # What the disk did.
+            #
+            # The storage path carried no counters at all before I1, so "the
+            # disk is slow", "the disk is retrying" and "the disk is fine" were
+            # the same silence. These are the ones that are assertions rather
+            # than diagnostics: a boot that reads nothing has not booted, and a
+            # medium error, a short transfer or a timeout on a healthy boot is
+            # a defect rather than weather.
+            #
+            # NO_DEVICE is deliberately not here. A machine with no disk is a
+            # configuration, not a failure, and asserting it would make the
+            # gate fail on a machine that is working as configured.
+            iz = re.search(r"\[IO\] MUSTBEZERO medium=0x([0-9a-f]{16}) "
+                           r"short=0x([0-9a-f]{16}) "
+                           r"timeout=0x([0-9a-f]{16}) "
+                           r"bad_request=0x([0-9a-f]{16}) "
+                           r"out_of_range=0x([0-9a-f]{16}) "
+                           r"register_refused=0x([0-9a-f]{16})", text)
+            if iz is None:
+                problems.append("io_counters_missing")
+            else:
+                for name, group in (("medium", 1), ("short", 2),
+                                    ("timeout", 3), ("bad_request", 4),
+                                    ("out_of_range", 5),
+                                    ("register_refused", 6)):
+                    value = int(iz.group(group), 16)
+                    if value != 0:
+                        problems.append(f"io_{name}={value}")
+
+            ib = re.search(r"\[IO\] BLK reads=0x([0-9a-f]{16}) "
+                           r"writes=0x([0-9a-f]{16}) "
+                           r"sectors_read=0x([0-9a-f]{16})", text)
+            if ib is None:
+                problems.append("io_blk_counters_missing")
+            else:
+                if int(ib.group(1), 16) == 0:
+                    problems.append("io_read_nothing")
+                if int(ib.group(3), 16) == 0:
+                    problems.append("io_read_no_sectors")
+                # Writes are asserted non-zero because this boot does them -
+                # the shell's mkdir reaches FAT, which writes both copies of
+                # the table. Thirty sectors on a normal boot. A boot that
+                # stopped writing would mean the shell stopped running, which
+                # is worth failing on.
+                if int(ib.group(2), 16) == 0:
+                    problems.append("io_wrote_nothing")
+
             # The page cache, asserted as a ratio rather than as "not zero".
             #
             # Non-zero is satisfied by a cache that works once and thrashes

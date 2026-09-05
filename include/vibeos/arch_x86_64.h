@@ -61,15 +61,28 @@ void vibeos_x86_64_log_dump_recent(uint32_t want);
 
 /* The block device the filesystem talks to. Bound by whichever driver came up;
  * see kernel/arch/x86_64/blk.c for why this indirection exists. */
+/* `sectors` is how big the device is. A driver that cannot say is not
+ * registered, because a device with no size cannot have its requests
+ * bounds-checked and an unchecked bound is the difference between an error and
+ * a disk written at the wrong offset. */
 void vibeos_x86_64_blk_bind(const char *name,
                             int (*read)(uint64_t, void *),
                             int (*read_many)(uint64_t, void *, uint32_t),
-                            int (*write)(uint64_t, const void *));
+                            int (*write)(uint64_t, const void *),
+                            uint64_t sectors);
 const char *vibeos_x86_64_blk_name(void);
 int vibeos_x86_64_blk_present(void);
 int vibeos_x86_64_blk_read(uint64_t lba, void *buf);
 int vibeos_x86_64_blk_read_many(uint64_t lba, void *buf, uint32_t sectors);
 int vibeos_x86_64_blk_write(uint64_t lba, const void *buf);
+
+/* How many sectors each driver's device holds, or 0 if it would not say. */
+uint64_t vibeos_x86_64_virtio_blk_sectors(void);
+uint64_t vibeos_x86_64_ahci_sectors(void);
+
+/* Which device index the bound driver was given in the block layer. Negative
+ * when nothing bound. */
+int vibeos_x86_64_blk_device(void);
 
 /* AHCI (SATA): what VirtualBox, VMware and real machines provide. */
 int vibeos_x86_64_ahci_init(void);
