@@ -1,0 +1,62 @@
+# Sabotage cases for the block-device contract (kernel/io/blkdev.c), I0.
+#
+# The layer is validate, dispatch, and check what came back against what was
+# asked for. Only the third is new, and it is where these cases concentrate:
+# a driver that moves four sectors of eight and returns success is reporting a
+# success that lost half the data, and every caller above would believe it.
+#
+# Run: apply, rebuild vibeos_kernel_tests, look for "FAIL:test_blkdev".
+
+case: a short transfer is reported as ok
+  in vibeos_blk_submit, change the sectors_done comparison to if (0)
+  expect: blkdev: FAIL refused / and named as short / not counted as a read
+  why it matters: this is the shape of a defect this project has already had.
+    fat_next_cluster reported a failed table read as the end-of-chain marker -
+    the same value a healthy last cluster returns - so a flaky sector produced
+    a short file that said it was complete, and execve parsed the previous
+    program's bytes.
+
+case: a silent driver failure becomes a success
+  wrap the "non-zero return with no reason" branch in if (0)
+  expect: blkdev: FAIL reported as a medium error
+  why it matters: a driver that fails without saying so is still a failure the
+    caller must see. Silence is not a success and it is not the caller's job
+    to guess.
+
+case: the range check is dropped
+  change the lba/sectors bound to if (0)
+  expect: blkdev: FAIL refused / named / and the driver was never asked
+  why it matters: the bound is here rather than in each driver because a
+    driver that checks its own bounds protects the *device* and cannot protect
+    a neighbouring partition, whose sectors are perfectly valid addresses. The
+    test also asserts the driver was never reached: on a real device the
+    transfer would have started before anything noticed.
+
+case: the range check is off by one
+  change the comparison to >=
+  expect: blkdev: FAIL the last sectors are reachable
+  why it matters: it silently loses the last sector of every device.
+
+case: a request keeps whatever the caller left in it
+  delete the "req->result = VIBEOS_BLK_NOT_ISSUED" at the top of submit
+  expect: blkdev: FAIL the silent failure is a medium error, not the caller's
+    old timeout / and nothing was counted as a timeout
+  NOTE: this case is the reason count_result() exists. The first version of
+    the layer indexed the statistics array with the driver's result directly,
+    so an uninitialised result wrote past the end of it and the suite
+    *segfaulted* instead of failing an assertion - a real defect in the layer,
+    found by a sabotage aimed at something else. A driver is not trusted to
+    return a value from this enum.
+  NOTE 2: the first version of the *test* did not reach this either. Every
+    refusal path sets a reason explicitly, so removing the reset changed
+    nothing they looked at. The path that needs it is a driver failing
+    silently, where the layer decides "did the driver say why?" by asking
+    whether the result is still NOT_ISSUED.
+
+case: a device with no size is registered anyway
+  drop the sector_bytes/sectors half of the register guard
+  expect: blkdev: FAIL no length refused / no sector size refused / nothing
+    was registered
+  why it matters: a device that cannot say how big it is cannot have its
+    requests bounds-checked, and guessing a size would make every check after
+    it a guess.
