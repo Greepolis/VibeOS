@@ -907,6 +907,40 @@ def main():
                     if value != 0:
                         problems.append(f"mm_{name}={value}")
 
+            # What userland cost, in frames that never came back.
+            #
+            # Every user process that started has exited by the time userland
+            # finishes, so free-on-the-way-out plus what the page cache is
+            # deliberately holding should equal free-on-the-way-in.
+            #
+            # It does not, quite: a boot leaves about twenty-six frames
+            # unaccounted for. That number is a known open defect, not a
+            # tolerance anybody is comfortable with, and the ceiling here
+            # exists to stop it *growing* rather than to bless it. A leak of
+            # one frame per fork is invisible in any single figure - meminfo
+            # looks healthy and the totals still partition - and only shows up
+            # hours later on a machine with no event to point at.
+            #
+            # Asserted as a ceiling rather than as equality for the same reason
+            # the cache is asserted as a ratio: a check that fails on every
+            # boot is a check people route around.
+            fs = re.search(r"FRAMES_AT_USERLAND_START=0x([0-9a-f]{16})", text)
+            fd = re.search(r"FRAMES_AT_USERLAND_DONE=0x([0-9a-f]{16}) "
+                           r"cache_resident=0x([0-9a-f]{16})", text)
+            if fs is None or fd is None:
+                problems.append("userland_frame_accounting_missing")
+            else:
+                started = int(fs.group(1), 16)
+                ended = int(fd.group(1), 16)
+                cached = int(fd.group(2), 16)
+                lost = started - (ended + cached)
+                # Negative would mean frames appeared, which is a different
+                # defect - something released twice - and is never acceptable.
+                if lost < 0:
+                    problems.append(f"userland_frames_gained={-lost}")
+                elif lost > 64:
+                    problems.append(f"userland_frames_lost={lost}_ceiling=64")
+
             # The page cache, asserted as a ratio rather than as "not zero".
             #
             # Non-zero is satisfied by a cache that works once and thrashes

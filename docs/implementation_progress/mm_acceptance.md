@@ -49,12 +49,30 @@ follow it and write into memory that now belongs to something else.
 
 ## What is not proved here
 
-**Soak.** The plan asks for the stress service with its round count raised by
-two orders of magnitude, and `frames_free` matching its value at
-`USERLAND_START`. The measurement exists — both numbers are printed, with the
-page cache's resident count named alongside so the arithmetic is honest — and a
-boot currently shows twenty-six frames unaccounted for. Raising the round count
-needs a boot budget this gate does not have.
+**Soak, half of it.** The plan asks for the stress service with its round
+count raised by two orders of magnitude, *and* `frames_free` matching its value
+at `USERLAND_START`. The second half is now asserted on every boot; the first
+still needs a boot budget this gate does not have.
+
+The arithmetic is: free on the way in, against free on the way out plus what
+the page cache is deliberately holding. A boot leaves **twenty-six frames
+unaccounted for**, and that number has been stable across every boot measured.
+
+It is asserted as a **ceiling of sixty-four rather than as equality**, and the
+distinction is the point. Twenty-six is a known open defect, not a tolerance
+anybody is comfortable with; the ceiling exists to stop it growing rather than
+to bless it. Equality would fail on every boot, and a check that fails on every
+boot is a check people route around — the same reasoning as asserting the cache
+as a ratio rather than as "not zero".
+
+A *negative* result is refused outright: frames appearing means something was
+released twice, which is a different defect and never acceptable.
+
+Verified by leaking one frame in sixty-four during teardown, which gives
+`userland_frames_lost=80_ceiling=64`. A leak of one frame per fork is invisible
+in any single figure — meminfo looks healthy, the totals still partition — and
+shows up hours later on a machine with no event to point at. This is the check
+that would catch it on the boot that introduced it.
 
 **Latency.** "No path reachable from a syscall waits for another core without a
 bound." Several bounds exist and are asserted — the TLB shootdown's
