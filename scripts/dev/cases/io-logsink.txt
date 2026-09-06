@@ -101,3 +101,50 @@ case: the medium refuses every write
   expect: logsink_write_failed
   why it matters: a boot that cannot write its log should say so at the moment
     it finds out, not at the crash where the log turns out to be empty.
+
+# ---- the nightly torture (I5b) --------------------------------------------
+#
+# Run: cmake --build <dir> --target vibeos_logsink_torture
+#      ./<dir>/vibeos_logsink_torture <seed> <rounds>
+#
+# The model keeps its own account of the ring from the operations alone and
+# never reads the sink's state, which is what makes a disagreement a question
+# rather than the subsystem agreeing with itself.
+
+case: the reader stops checking it got the record it asked for
+  in vibeos_logsink_read, drop the `got != want` comparison
+  expect: caught on 30 of 30 seeds, "came back and should not have"
+
+case: attach forgets what the medium already held
+  in vibeos_logsink_attach, set g_next_seq to 0 unconditionally
+  expect: caught on 30 of 30 seeds, "was lost" after a reset
+
+case: the ring is one slot shorter than the reader believes
+  in vibeos_logsink_write, take the slot modulo capacity - 1
+  expect: caught on 30 of 30 seeds
+  why it matters: writer and reader disagreeing about the size of the ring is
+    the defect a fixed set of unit tests is least likely to construct, and it
+    corrupts nothing visible until the ring wraps.
+
+# What the torture found on its first run, in both directions:
+#
+# In the sink: an empty medium started at sequence 1, not 0. `highest` is
+# initialised to 0 and a record with sequence 0 is perfectly valid, so attach
+# could not tell "nothing here" from "one record, number zero" and burned
+# sequence 0 for the life of the disk. Harmless, and exactly the sort of thing
+# only an independent account of the operations notices.
+#
+# In the model, twice, which is the more useful half to record:
+#   - a refused write was treated as destroying the slot it would have used.
+#     The write never reached the medium, so the older record in that slot is
+#     still there and still readable; the model claimed a live record should be
+#     gone.
+#   - the model only ever raised its sequence to match the sink after a reset.
+#     A reattach can legitimately land *below* the model's running count,
+#     because a refused write consumes a number that never reaches the medium -
+#     so the model reported the sink as having gone backwards when the sink was
+#     right. What must not go backwards is the last sequence that actually
+#     landed and is still inside the ring, and that is what is asserted now.
+#
+# Two model bugs to one real one. When a detector fires, the first question is
+# whether the detector is right, and here it was wrong more often than the code.

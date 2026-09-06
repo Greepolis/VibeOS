@@ -134,6 +134,7 @@ int vibeos_logsink_attach(const vibeos_logsink_dev_t *dev) {
     static uint8_t batch[LOG_SCAN_BATCH][VIBEOS_LOGSINK_SECTOR];
     uint8_t sec[VIBEOS_LOGSINK_SECTOR];
     uint64_t highest = 0;
+    int found_any = 0;
     uint64_t i;
 
     g_ready = 0;
@@ -182,6 +183,13 @@ int vibeos_logsink_attach(const vibeos_logsink_dev_t *dev) {
                 }
                 continue;
             }
+            /* `found_any` rather than `highest != 0`: a medium holding
+             * exactly one record, whose sequence is 0, is indistinguishable
+             * from an empty one otherwise - so an empty medium started at 1
+             * and burned sequence 0 for the life of the disk. Harmless, and
+             * found on the first run of the torture, which is what an
+             * independent model is for. */
+            found_any = 1;
             if (seq > highest) {
                 highest = seq;
             }
@@ -192,7 +200,7 @@ int vibeos_logsink_attach(const vibeos_logsink_dev_t *dev) {
     /* Sequence numbers are never reused, across reboots included. That is what
      * lets a reader order records over a wrap and over a reset, and tell "the
      * machine stopped" from "the log wrapped". */
-    g_next_seq = highest + 1ull;
+    g_next_seq = found_any ? highest + 1ull : 0ull;
     g_ready = 1;
     return 0;
 }

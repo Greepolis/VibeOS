@@ -1,0 +1,71 @@
+# The transaction layer (I5c), and a torture that was written and withdrawn.
+#
+# Host tests: bash scripts/dev/check.sh tests build-gcc-Release
+#   test_journal sweeps the power-off point across every write of one fixed
+#   transaction, on a drive model whose cache reorders inside a flush.
+#
+# The module moved from kernel/fs/ to kernel/txn/ in I5c. It lived in fs/ and
+# that said it was a filesystem concern; it is not - ext2 wants a journal, FAT
+# has none, and "these writes happen together or not at all" has nothing to do
+# with what a directory looks like.
+
+case: the commit record is written without flushing the data first
+  in vibeos_journal_commit, remove the flush before phase two
+  expect: NOTHING FROM THE TORTURE, and the reason is the interesting part.
+    The commit record carries a Fletcher-32 over the data region, so a commit
+    that survived while its data did not is rejected at recovery and the
+    transaction is discarded - which leaves the volume all-old, which is a
+    legal outcome. The ordering is belt; the checksum is braces. Exactly the
+    same shape as the GPT finding in io-gpt.txt, where the ordering between a
+    header and its array turned out not to be what protects the reader.
+    The header comment in journal.c already says this: the checksum exists for
+    "the one corruption the ordering rules alone cannot rule out on a device
+    that reorders inside a flush".
+
+case: recovery stops checking the data region against the commit checksum
+  at journal.c line ~159, replace the comparison with 0
+  expect: NOTHING FROM THE TORTURE - and this one is not a finding about the
+    journal, it is the verdict on the torture.
+
+case: recovery stops checking that the commit record names this descriptor
+  at journal.c line ~144, replace the comparison with 0
+  expect: NOTHING FROM THE TORTURE.
+
+# ---- why the torture was deleted ------------------------------------------
+#
+# tests/kernel/journal_torture.c ran thousands of randomised transactions -
+# varying how many targets, which blocks, the contents, and the flush order -
+# with the power cut at a random point inside each. It passed on every seed,
+# and all three sabotages above were caught on ZERO of thirty seeds.
+#
+# A test that cannot fail is not a test. Shipping it as the intensive nightly
+# check for kernel/txn would have been worse than having none, because the gap
+# would have stopped being visible - which is precisely what
+# check-nightly-coverage.py exists to prevent, so satisfying that checker with
+# it would have been gaming it. The baseline was raised by one instead, with
+# the reason written into the script.
+#
+# Two harness bugs were found and fixed before that verdict, and both are worth
+# knowing for whoever writes the next attempt:
+#
+#   - the model cleared only the *drive's* cache on a simulated power cut, and
+#     re-init ran over block-cache slot memory still holding dirty blocks from
+#     before the cut. The next flush then wrote out exactly the writes the cut
+#     was supposed to destroy. Every seed reported a mixture and the journal was
+#     innocent. A real machine comes back with empty RAM.
+#
+#   - the flush order was k * (stride | 1) + stride, which is a permutation
+#     only when the stride is coprime with the number of pending writes. For
+#     most counts it wrote some blocks twice and never wrote others, and then
+#     reported the missing ones as the journal leaving a mixture. Use a
+#     rotation.
+#
+# So of the three things that went wrong while building this, two were in the
+# harness and the third was the harness being unable to see anything. That is
+# the same tally this project keeps getting, and it is why the rule is to
+# sabotage before believing a green run.
+#
+# What a working torture probably needs: the power cut placed *between* the
+# journal's own phases rather than at a random write index, and a way to
+# corrupt the data region independently of the commit record, so that the two
+# checksums are actually put in a position to matter.

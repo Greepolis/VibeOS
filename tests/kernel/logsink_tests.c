@@ -124,14 +124,24 @@ static int test_logsink_survives_a_reset(void) {
         return 0;
     }
     /* And the previous boot's last sequence number was recovered, so this
-     * boot's records sort after it rather than colliding with it. */
-    if (vibeos_logsink_stats()->highest_seq_seen == 0ull) {
-        return 0;
+     * boot's records sort after it rather than colliding with it.
+     *
+     * Asserted as "the next record sorts after the last one" rather than as
+     * "highest_seq_seen is non-zero", which is what it used to say. That was
+     * encoding a defect: an empty medium started at sequence 1, because attach
+     * could not tell "nothing here" from "one record numbered zero". It starts
+     * at 0 now, so the old assertion would fail on a perfectly good sink. The
+     * torture found the defect; this test had been agreeing with it. */
+    {
+        uint64_t before = r.seq;
+        if (lt_say("after the reset") != 0) {
+            return 0;
+        }
+        if (vibeos_logsink_read(0, &r) != 0 || r.seq <= before) {
+            return 0;
+        }
     }
-    if (lt_say("after the reset") != 0) {
-        return 0;
-    }
-    if (vibeos_logsink_read(0, &r) != 0 || !lt_is(&r, "after the reset")) {
+    if (!lt_is(&r, "after the reset")) {
         return 0;
     }
     return vibeos_logsink_read(1, &r) == 0 && lt_is(&r, "before the reset");

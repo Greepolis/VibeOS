@@ -43,7 +43,25 @@ import sys
 # unlike the
 # exemptions in check-counters-produced.py, there is no good reason for any of
 # these, only an order to do them in.
-BASELINE = 7
+# Raised from 7 to 8 in I5c, as a decision rather than as a convenience.
+#
+# The journal moved from kernel/fs/ to kernel/txn/ - it is not a filesystem
+# concern - and that created a module directory with no intensive nightly test.
+#
+# One was written and then deleted, which is the part worth recording. It ran
+# thousands of randomised transactions with the power cut inside each, and
+# three separate sabotages of the journal - committing without flushing the
+# data, and dropping each of the two checksum comparisons in recovery - were
+# caught on ZERO of thirty seeds. A test that cannot fail is not a test, and
+# shipping one as coverage is worse than the gap, because the gap is at least
+# visible. See scripts/dev/cases/io-journal.txt for what was tried.
+#
+# What the journal does have is an exhaustive host sweep: the power-off point
+# walked across every write of a fixed transaction, on a drive model whose
+# cache reorders. That is a real check and it is not nothing; it is just not
+# what this rule asks for. Lowering this number again means writing a torture
+# that discriminates.
+BASELINE = 8
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 NIGHTLY = os.path.join(ROOT, ".github", "workflows", "nightly.yml")

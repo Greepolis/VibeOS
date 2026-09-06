@@ -1,7 +1,9 @@
 # Filesystem Layer Progress
 
 Status: In Progress (five filesystems behind one VFS; journalled writes verified
-against power loss; the kernel's own root is still FAT)
+against power loss *in a host test with a modelled drive cache*, which
+is not the same claim as any machine having survived it; the kernel's
+own root is still FAT)
 Last review: 2026-08-26
 
 ## Shape of the layer

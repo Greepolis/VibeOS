@@ -23,6 +23,7 @@ set(VIBEOS_KERNEL_CORE_SOURCES
     kernel/mm/swaparea.c
     kernel/io/blkdev.c
     kernel/io/logsink.c
+    kernel/txn/journal.c
     kernel/io/parttab.c
     kernel/sched/stats.c
     kernel/sched/task.c
@@ -45,7 +46,6 @@ set(VIBEOS_KERNEL_CORE_SOURCES
     kernel/fs/iso9660.c
     kernel/fs/exfat.c
     kernel/fs/ntfs.c
-    kernel/fs/journal.c
     kernel/fs/storage.c
     kernel/mm/pmm.c
     kernel/net/inet.c

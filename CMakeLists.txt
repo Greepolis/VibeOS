@@ -179,6 +179,14 @@ if(VIBEOS_BUILD_TESTS)
     target_include_directories(vibeos_sched_torture PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     add_test(NAME vibeos-sched-torture COMMAND vibeos_sched_torture 1 4000)
 
+    # The on-disk log against an independent account of what the medium ought
+    # to hold. The ring here is deliberately tiny, so a run wraps thousands of
+    # times: a torture on a ring big enough never to wrap tortures nothing.
+    add_executable(vibeos_logsink_torture tests/kernel/logsink_torture.c)
+    target_link_libraries(vibeos_logsink_torture PRIVATE vibeos_kernel_core)
+    target_include_directories(vibeos_logsink_torture PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    add_test(NAME vibeos-logsink-torture COMMAND vibeos_logsink_torture 1 4000)
+
     add_executable(vibeos_mm_torture tests/kernel/mm_torture.c)
     target_link_libraries(vibeos_mm_torture PRIVATE vibeos_kernel_core)
     target_include_directories(vibeos_mm_torture PRIVATE /include)

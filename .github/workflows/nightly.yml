@@ -205,6 +205,58 @@ jobs:
             ./build-asan/vibeos_sched_torture "$s" 400000
           done
 
+  storage-durability:
+    name: On-disk Log Torture (model + sanitizers)
+    # module: io
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build build-essential
+
+      - name: Build (sanitized)
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DVIBEOS_BUILD_TESTS=ON \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g"
+          cmake --build build-asan --parallel --target vibeos_logsink_torture
+
+      # The log has to survive the machine, so the operation that matters is
+      # the power cut, and it happens at moments no case file would have
+      # thought of. The model keeps its own account of the ring and never reads
+      # the sink's state, so a disagreement is a real question rather than the
+      # subsystem agreeing with itself.
+      - name: Torture the log sink (300 seeds, sanitized)
+        run: |
+          set -uo pipefail
+          fails=0
+          for s in $(seq 1 300); do
+            if ! ./build-asan/vibeos_logsink_torture "$s" 5000 > /tmp/lt.log 2>&1; then
+              fails=$((fails + 1))
+              echo "::group::seed $s"
+              cat /tmp/lt.log
+              echo "::endgroup::"
+            fi
+          done
+          echo "failing seeds: $fails of 300"
+          test "$fails" -eq 0
+
+      # A long run wraps the ring tens of thousands of times, which is where a
+      # sequence that drifts by one shows up.
+      - name: Torture the log sink (long runs)
+        run: |
+          set -euo pipefail
+          for s in 1 5 11 23; do
+            ./build-asan/vibeos_logsink_torture "$s" 300000
+          done
+
   memory-manager:
     name: Memory Manager Torture (model + sanitizers)
     # module: mm
