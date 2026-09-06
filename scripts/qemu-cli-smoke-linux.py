@@ -1076,6 +1076,25 @@ def main():
                                 (mp.group(1).strip().replace(" ", "_")
                                  if mp else "unreadable"))
 
+            # Putting a filesystem on a volume (I4c step 3).
+            #
+            # Checked by probing the result, not by mounting it: this driver's
+            # state is a single global, so mounting the scratch volume would
+            # unmount the one the machine is running from. Probing proves the
+            # bytes on the medium are a FAT16 volume a reader will recognise,
+            # which is what a format op is responsible for.
+            #
+            # The probe is the one the volume scan uses, with no shared state
+            # with the formatter - a formatter checked by its own idea of what
+            # it wrote proves nothing.
+            if "[IO] FORMAT" not in text:
+                problems.append("format_exercise_missing")
+            elif "result=OK" not in text:
+                mf = re.search(r"\[IO\] FORMAT [^\n]*result=([^\n]*)", text)
+                problems.append("format:" +
+                                (mf.group(1).strip().replace(" ", "_")
+                                 if mf else "unreadable"))
+
             # The mount table (I4b step 4).
             #
             # There was one global mount, and that was the structural reason

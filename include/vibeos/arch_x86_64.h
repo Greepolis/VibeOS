@@ -107,6 +107,14 @@ vibeos_blockcache_t *vibeos_x86_64_fat_cache(void);
  * direct call, because kernel/fs must not depend on kernel/arch. */
 void vibeos_x86_64_fat_register_driver(void);
 
+/* The probe and the formatter, for the boot exercise that partitions a scratch
+ * device. Exposed rather than reached for: the exercise lives in arch_hw.c and
+ * fat_vfs.c owns these, and a second copy of "what a FAT volume looks like" is
+ * the thing the format op exists to prevent. */
+extern int (*g_fat_driver_probe)(vibeos_blockcache_t *cache, uint64_t first_lba);
+extern int (*g_fat_driver_format)(vibeos_blockcache_t *cache, uint64_t first_lba,
+                                  uint64_t sectors);
+
 void vibeos_x86_64_fat_cache_stats(uint64_t *hits, uint64_t *misses,
                                    uint64_t *evictions, uint64_t *evict_failed);
 

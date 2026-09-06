@@ -216,9 +216,167 @@ static int fat_scan_mount(vibeos_fsmount_t *out, vibeos_blockcache_t *cache,
     return vibeos_x86_64_fat_vfs_mount(out);
 }
 
+
+
+
+
+/* ---- format (I4c step 3) --------------------------------------------------
+ *
+ * An empty FAT16 volume: a boot sector, two copies of the table, and a root
+ * directory of zeroes.
+ *
+ * ## Why FAT16 and not FAT12 or FAT32
+ *
+ * The three are the *same* format with the same header; which one a reader
+ * uses is decided by the cluster count and by nothing else - under 4085 is
+ * FAT12, under 65525 is FAT16. That means a formatter that picks its geometry
+ * carelessly produces a volume of a different kind from the one it intended,
+ * and every field still looks right. So the geometry here is chosen to land
+ * comfortably inside FAT16 and the code refuses a volume too small to get
+ * there, rather than silently producing FAT12.
+ *
+ * ## What is deliberately absent
+ *
+ * No boot code. The first three bytes are a jump to nothing, which is what
+ * every tool writes for a data volume, and pretending otherwise would put a
+ * bootloader on a partition nobody asked to boot from.
+ */
+#define FAT_FMT_RESERVED     1u
+#define FAT_FMT_FATS         2u
+#define FAT_FMT_ROOT_ENTRIES 512u
+#define FAT_FMT_MIN_CLUSTERS 4085u   /* below this a reader sees FAT12 */
+
+static void fat_fmt_wr16(uint8_t *p, uint16_t v) {
+    p[0] = (uint8_t)(v & 0xFFu);
+    p[1] = (uint8_t)((v >> 8) & 0xFFu);
+}
+
+static void fat_fmt_wr32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)(v & 0xFFu);
+    p[1] = (uint8_t)((v >> 8) & 0xFFu);
+    p[2] = (uint8_t)((v >> 16) & 0xFFu);
+    p[3] = (uint8_t)((v >> 24) & 0xFFu);
+}
+
+static int fat_format(vibeos_blockcache_t *cache, uint64_t first_lba,
+                      uint64_t sectors) {
+    uint8_t sec[VIBEOS_BLOCK_SIZE];
+    uint32_t root_sectors = (FAT_FMT_ROOT_ENTRIES * 32u) / VIBEOS_BLOCK_SIZE;
+    uint32_t spf, clusters;
+    uint32_t i, f;
+
+    if (!cache || sectors < 64ull || sectors > 0xFFFFull) {
+        /* The 16-bit total-sectors field bounds this. A larger volume needs
+         * the 32-bit field and a different set of checks, and quietly
+         * truncating would produce a filesystem that claims to be smaller than
+         * the partition it sits in - which reads fine and loses the tail. */
+        return -1;
+    }
+
+    /* Solve for sectors-per-FAT. Two bytes per cluster, so a FAT sector holds
+     * 256 entries. It converges immediately; the loop is here because the
+     * table's size depends on the cluster count which depends on the table's
+     * size, and writing that as a closed form would be a place to be subtly
+     * wrong. */
+    spf = 1u;
+    for (i = 0; i < 8u; i++) {
+        uint32_t overhead = FAT_FMT_RESERVED + FAT_FMT_FATS * spf + root_sectors;
+        uint32_t next;
+        if ((uint64_t)overhead >= sectors) {
+            return -1;
+        }
+        clusters = (uint32_t)(sectors - overhead);
+        next = (clusters + 255u) / 256u;
+        if (next == spf) {
+            break;
+        }
+        spf = next;
+    }
+    if (clusters < FAT_FMT_MIN_CLUSTERS) {
+        /* Refused rather than written. A volume this size is FAT12, and a
+         * formatter that produced one while its caller asked for FAT16 would
+         * be handing back a filesystem of a kind nobody chose. */
+        return -1;
+    }
+
+    /* ---- the boot sector ------------------------------------------------ */
+    for (i = 0; i < VIBEOS_BLOCK_SIZE; i++) {
+        sec[i] = 0;
+    }
+    sec[0] = 0xEBu; sec[1] = 0x3Cu; sec[2] = 0x90u;   /* jmp short; nop */
+    sec[3] = 'V'; sec[4] = 'I'; sec[5] = 'B'; sec[6] = 'E';
+    sec[7] = 'O'; sec[8] = 'S'; sec[9] = ' '; sec[10] = ' ';
+    fat_fmt_wr16(&sec[11], (uint16_t)VIBEOS_BLOCK_SIZE);
+    sec[13] = 1u;                                     /* sectors per cluster */
+    fat_fmt_wr16(&sec[14], (uint16_t)FAT_FMT_RESERVED);
+    sec[16] = (uint8_t)FAT_FMT_FATS;
+    fat_fmt_wr16(&sec[17], (uint16_t)FAT_FMT_ROOT_ENTRIES);
+    fat_fmt_wr16(&sec[19], (uint16_t)sectors);
+    sec[21] = 0xF8u;                                  /* fixed disk */
+    fat_fmt_wr16(&sec[22], (uint16_t)spf);
+    fat_fmt_wr16(&sec[24], 32u);                      /* sectors per track */
+    fat_fmt_wr16(&sec[26], 2u);                       /* heads */
+    fat_fmt_wr32(&sec[28], (uint32_t)first_lba);      /* hidden sectors */
+    sec[38] = 0x29u;                                  /* extended signature */
+    fat_fmt_wr32(&sec[39], 0x56424F53u);              /* volume id */
+    for (i = 0; i < 11u; i++) {
+        sec[43 + i] = ' ';
+    }
+    sec[54] = 'F'; sec[55] = 'A'; sec[56] = 'T'; sec[57] = '1'; sec[58] = '6';
+    sec[59] = ' '; sec[60] = ' '; sec[61] = ' ';
+    fat_fmt_wr16(&sec[510], 0xAA55u);
+    if (vibeos_blockcache_write(cache, first_lba, sec) != 0) {
+        return -1;
+    }
+
+    /* ---- the tables ----------------------------------------------------- */
+    for (f = 0; f < FAT_FMT_FATS; f++) {
+        uint64_t base = first_lba + FAT_FMT_RESERVED + (uint64_t)f * spf;
+        for (i = 0; i < spf; i++) {
+            uint32_t k;
+            for (k = 0; k < VIBEOS_BLOCK_SIZE; k++) {
+                sec[k] = 0;
+            }
+            if (i == 0u) {
+                /* Entry 0 carries the media descriptor, entry 1 the
+                 * end-of-chain marker. Both are conventions a reader checks,
+                 * and a table of pure zeroes is one many tools call corrupt. */
+                sec[0] = 0xF8u; sec[1] = 0xFFu;
+                sec[2] = 0xFFu; sec[3] = 0xFFu;
+            }
+            if (vibeos_blockcache_write(cache, base + i, sec) != 0) {
+                return -1;
+            }
+        }
+    }
+
+    /* ---- the root directory --------------------------------------------- */
+    for (i = 0; i < VIBEOS_BLOCK_SIZE; i++) {
+        sec[i] = 0;
+    }
+    for (i = 0; i < root_sectors; i++) {
+        uint64_t lba = first_lba + FAT_FMT_RESERVED +
+                       (uint64_t)FAT_FMT_FATS * spf + i;
+        if (vibeos_blockcache_write(cache, lba, sec) != 0) {
+            return -1;
+        }
+    }
+
+    /* Durable before the caller is told it worked. A format that is only in
+     * the cache is a volume the next boot will not find. */
+    return vibeos_blockcache_flush(cache);
+}
+
 static const vibeos_fs_driver_t g_fat_driver = {
-    "fat", fat_probe, fat_scan_mount
+    "fat", fat_probe, fat_scan_mount, fat_format
 };
+
+/* Handed out so the I4c boot exercise can drive them without a second copy of
+ * what a FAT volume looks like. */
+int (*g_fat_driver_probe)(vibeos_blockcache_t *cache, uint64_t first_lba) =
+    fat_probe;
+int (*g_fat_driver_format)(vibeos_blockcache_t *cache, uint64_t first_lba,
+                           uint64_t sectors) = fat_format;
 
 void vibeos_x86_64_fat_register_driver(void) {
     (void)vibeos_storage_register(&g_fat_driver);

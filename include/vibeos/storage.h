@@ -89,6 +89,16 @@ typedef struct {
     /* Only called after probe said yes. */
     int (*mount)(vibeos_fsmount_t *out, vibeos_blockcache_t *cache,
                  uint64_t first_lba);
+    /* Put an empty filesystem of this kind on the volume. May be NULL for a
+     * driver that cannot create one - iso9660 never will.
+     *
+     * Here, and not in the volume layer, because a volume layer that wrote a
+     * FAT boot sector would be a second place that has to be right about FAT.
+     * This project has spent whole phases removing second places, and the two
+     * that survived longest - the page cache's knowledge of frames, fat.c's
+     * own sector cache - were both found the expensive way. */
+    int (*format)(vibeos_blockcache_t *cache, uint64_t first_lba,
+                  uint64_t sectors);
 } vibeos_fs_driver_t;
 
 /* Registered drivers are tried after the compiled-in ones. A small fixed

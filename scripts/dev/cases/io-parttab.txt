@@ -53,3 +53,35 @@ case: the round trip stops being reported
     and by then the disk is somebody's. The round trip is the only thing that
     separates those, so a boot that stops performing it must not read as one
     that passed it.
+
+# ---- I4c step 3: format ----------------------------------------------------
+
+case: the formatter produces FAT12 while claiming FAT16
+  in fat_format, delete the clusters < FAT_FMT_MIN_CLUSTERS refusal and shrink
+  the scratch partition to 512 sectors
+  expect: format:FAILED:_the_probe_did_not_recognise_it, or a volume a FAT12
+    reader accepts and a FAT16 one does not
+  why it matters: FAT12, FAT16 and FAT32 are the same header, and a reader
+    tells them apart by cluster count alone. A formatter that picks its
+    geometry carelessly produces a filesystem of a different kind from the one
+    it intended, with every field still looking right.
+
+case: the table's first two entries are left zero
+  in fat_format, delete the media descriptor and end-of-chain marker
+  expect: many tools call the volume corrupt; the probe here still passes
+  note: THIS ENVIRONMENT CANNOT TELL. The probe checks the boot sector, not the
+    table, so it says yes either way. Recorded because the bytes matter to
+    every other reader on earth and this boot is not one of them - the same
+    distinction the AHCI cases carry between "no case exists" and "the case
+    exists and this environment cannot see it".
+
+case: the format is never flushed
+  in fat_format, return 0 instead of vibeos_blockcache_flush
+  expect: NOT OBSERVABLE ON THE SCRATCH DEVICE, which is RAM: the cache and the
+    medium are the same memory, so an unflushed format is still there. On a
+    real medium it is a volume the next boot does not find. It is the same gap
+    as I4 step 3 and needs the same thing to close it.
+
+case: the format exercise stops running
+  in hw_scratch_bringup, guard the [IO] FORMAT block with if (0)
+  expect: format_exercise_missing

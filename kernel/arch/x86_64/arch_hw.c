@@ -9610,7 +9610,15 @@ static void hw_write_proof(void) {
  * bounds-checked by the same code - which means the test exercises the path a
  * real disk would take rather than a shortcut built for it.
  */
-#define HW_SCRATCH_SECTORS 2048u        /* 1 MiB */
+/* 4 MiB.
+ *
+ * Sized by the format test rather than by the partition test. FAT12, FAT16 and
+ * FAT32 are the same header and a reader tells them apart by cluster count
+ * alone, so a partition small enough to land under 4085 clusters is silently a
+ * FAT12 volume however carefully the fields were filled in. Six thousand
+ * sectors puts it comfortably inside FAT16, and the formatter refuses anything
+ * that would not. */
+#define HW_SCRATCH_SECTORS 8192u
 
 static uint8_t g_scratch[HW_SCRATCH_SECTORS][512];
 static int g_scratch_device = -1;
@@ -9713,6 +9721,7 @@ static void hw_scratch_bringup(void) {
         vibeos_parttab_guard_t guard;
         uint32_t sum = 0;
         vibeos_parttab_result_t r;
+        int table_ok = 0;
 
         for (i = 0; i < sizeof(want); i++) {
             ((uint8_t *)&want)[i] = 0;
@@ -9734,9 +9743,9 @@ static void hw_scratch_bringup(void) {
         }
 
         want.count = 2;
-        want.entry[0].first_lba = 64;   want.entry[0].sector_count = 512;
-        want.entry[0].mbr_type = 0x0Cu;
-        want.entry[1].first_lba = 1024; want.entry[1].sector_count = 512;
+        want.entry[0].first_lba = 64;   want.entry[0].sector_count = 6000;
+        want.entry[0].mbr_type = 0x06u;   /* FAT16 */
+        want.entry[1].first_lba = 6144; want.entry[1].sector_count = 1024;
         want.entry[1].mbr_type = 0x0Cu;
 
         if (vibeos_parttab_checksum(&g_scratch_bc, HW_SCRATCH_SECTORS,
@@ -9757,9 +9766,9 @@ static void hw_scratch_bringup(void) {
                     vibeos_partition_parse_mbr(sec, &back, &protective) == 0) {
                     int entries_ok = (back.count == 2u) &&
                                      (back.entry[0].first_lba == 64ull) &&
-                                     (back.entry[0].sector_count == 512ull) &&
-                                     (back.entry[1].first_lba == 1024ull) &&
-                                     (back.entry[1].sector_count == 512ull);
+                                     (back.entry[0].sector_count == 6000ull) &&
+                                     (back.entry[1].first_lba == 6144ull) &&
+                                     (back.entry[1].sector_count == 1024ull);
                     /* And the bytes the table does not own are untouched: a
                      * writer that rebuilds sector 0 makes a disk unbootable
                      * while doing exactly what it was asked. */
@@ -9780,9 +9789,47 @@ static void hw_scratch_bringup(void) {
                         verdict = "FAILED: the rest of sector 0 was destroyed";
                     } else {
                         verdict = "OK";
+                        table_ok = 1;
                     }
                 }
             }
+        }
+
+        /* Format the first partition, and check the result the way anything
+         * else would: by probing it.
+         *
+         * Not by mounting it. This driver's state is a single global, so
+         * mounting the scratch volume would unmount the one the machine is
+         * running from - which is the structural limit already recorded in
+         * io_mounts.md, and a much larger change than a formatter. Probing
+         * proves the bytes on the medium are a FAT16 volume that a reader will
+         * recognise, which is what the format op is responsible for; mounting
+         * and writing a file waits for the driver to stop being a singleton.
+         *
+         * The probe is the same one the volume scan uses, with no shared state
+         * with the formatter. A formatter checked by its own idea of what it
+         * wrote proves nothing. */
+        /* A flag, not the first letter of a message. The previous line of
+         * this function already had to stop deciding an outcome by inspecting
+         * the string it had set, because a reworded message would have changed
+         * the decision. */
+        if (table_ok) {
+            const char *fverdict = "not attempted";
+            if (!g_fat_driver_format) {
+                fverdict = "FAILED: no format op";
+            } else if (g_fat_driver_format(&g_scratch_bc, 64ull, 6000ull) != 0) {
+                fverdict = "FAILED: format refused";
+            } else if (!g_fat_driver_probe ||
+                       g_fat_driver_probe(&g_scratch_bc, 64ull) != 0) {
+                fverdict = "FAILED: the probe did not recognise it";
+            } else {
+                fverdict = "OK";
+            }
+            vibeos_x86_64_serial_lock();
+            vibeos_x86_64_serial_puts("[IO] FORMAT fs=fat first_lba=0x40 result=");
+            vibeos_x86_64_serial_puts(fverdict);
+            vibeos_x86_64_serial_puts("\n");
+            vibeos_x86_64_serial_unlock();
         }
 
         vibeos_x86_64_serial_lock();

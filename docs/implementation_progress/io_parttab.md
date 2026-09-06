@@ -77,15 +77,55 @@ It was found by running the sabotage and watching green, which is the third
 time this week that has been the only thing separating a working test from a
 decorative one.
 
+## Step 3: format
+
+An empty FAT16 volume — boot sector, two copies of the table, a root directory
+of zeroes — written by the *filesystem's* own operation. The volume layer never
+learns what a FAT boot sector looks like, which is the rule the plan states and
+the reason this project has spent whole phases removing second places that have
+to be right about the same thing.
+
+**FAT12, FAT16 and FAT32 are the same header.** A reader tells them apart by
+cluster count and by nothing else: under 4085 is FAT12, under 65525 is FAT16.
+So a formatter that picks its geometry carelessly produces a filesystem of a
+different kind from the one it intended, with every field still looking
+correct. This one solves for sectors-per-FAT — the table's size depends on the
+cluster count which depends on the table's size — and **refuses** a volume too
+small to reach FAT16 rather than quietly producing FAT12. The scratch device
+grew from 1 MiB to 4 MiB for that reason: sized by the format test, not the
+partition one.
+
+No boot code is written. The first three bytes are a jump to nothing, which is
+what every tool writes for a data volume; doing otherwise would put a
+bootloader on a partition nobody asked to boot from.
+
+```
+[IO] FORMAT fs=fat first_lba=0x40 result=OK
+```
+
+**Checked by probing, not by mounting**, and the reason is the limit recorded
+in [io_mounts.md](io_mounts.md): this driver's state is a single global, so
+mounting the scratch volume would unmount the one the machine is running from.
+Probing proves the bytes on the medium are a FAT16 volume a reader will
+recognise, which is what a format op is responsible for. The probe used is the
+one the volume scan uses, with no shared state with the formatter — a formatter
+checked by its own idea of what it wrote proves nothing.
+
 ## What is left in I4c
 
-**Step 3, `format`.** Putting a filesystem on a volume, through the
-filesystem's own operation — the volume layer must not know what a FAT boot
-sector looks like, or it becomes a second place that has to be right about FAT.
-There is no `format` op yet.
+**Mount, write a file, unmount, re-read.** Blocked on the same thing twice
+over: FAT's state is one global `g_fat`, with 77 references across 1200 lines.
+Making it per-instance is the change that unblocks both this and I4b's "mounts
+more than one", and it is a wide edit to the driver the machine boots from — so
+it belongs on its own, not folded into a phase about partition tables. Doing
+both here would be two risky changes verified by one result, which is exactly
+what the scratch device was chosen to avoid.
 
-**GPT writing**, with the backup written before the primary.
+**GPT writing**, with the backup written before the primary. The rule is stated
+in `parttab.h` where the writer will go, rather than only in a plan file, so
+whoever writes it finds it.
 
-Until both exist, the phase's "done when" — partition, format, mount, write a
-file, unmount, re-read — is not demonstrated, and the boot proves the first and
-last steps of it.
+**A format that survives a reboot.** The scratch device is RAM, so its cache
+and its medium are the same memory and an unflushed format is still there. Same
+gap as I4 step 3, and it needs the same thing to close: a medium that survives
+a boot.
