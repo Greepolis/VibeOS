@@ -1107,11 +1107,17 @@ def main():
             # and one driver that can claim it. "Mounts more than one" is the
             # phase's own wording and it needs a second volume, which is a
             # change to the image rather than to the kernel.
-            mm_ = re.findall(r"\[IO\] MOUNT at=(\S+) type=(\S+)", text)
+            mm_ = re.findall(r"\[IO\] MOUNTED at=(\S+) type=(\S+)", text)
             if not mm_:
                 problems.append("nothing_was_mounted_through_the_table")
             elif mm_[0][0] != "/":
                 problems.append(f"first_mount_is_not_the_root:{mm_[0][0]}")
+            elif len(mm_) < 2:
+                # The phase's own "done when": more than one. It became
+                # reachable when the FAT driver stopped being a singleton -
+                # before that, mounting a second volume would have unmounted
+                # the one the machine was running from.
+                problems.append(f"only_one_mount:{len(mm_)}")
 
             # The ordering primitive (I4 step 1b).
             #

@@ -9823,13 +9823,84 @@ static void hw_scratch_bringup(void) {
                        g_fat_driver_probe(&g_scratch_bc, 64ull) != 0) {
                 fverdict = "FAILED: the probe did not recognise it";
             } else {
-                fverdict = "OK";
+                /* Mount it, write a file, read it back. This is the phase's
+                 * own "done when", and until the driver stopped being a
+                 * singleton it could not be attempted: mounting this volume
+                 * would have unmounted the one the machine is running from.
+                 *
+                 * The read back goes through the mount table's resolver, not
+                 * through the mount handle directly, so what is proved is that
+                 * a path under /vol1 reaches this volume and not the root -
+                 * which is the property the table exists for and the one a
+                 * first-match resolver would get wrong. */
+                static vibeos_fsmount_t s_scratch_mnt;
+                void *vol = vibeos_x86_64_fat_mount_volume(&g_scratch_bc, 64u);
+
+                fverdict = "FAILED: mount";
+                if (vol && vibeos_fs_mount(&s_scratch_mnt, vibeos_x86_64_fat_ops(),
+                                           vol, "fat") == 0 &&
+                    vibeos_fs_attach("/vol1", &s_scratch_mnt) == 0) {
+                    static uint8_t s_wr[600];
+                    static uint8_t s_rd[600];
+                    vibeos_fsmount_t *m = 0;
+                    const char *tail = 0;
+                    uint32_t k;
+
+                    for (k = 0; k < sizeof(s_wr); k++) {
+                        s_wr[k] = (uint8_t)((k * 5u) ^ 0xA7u);
+                    }
+                    fverdict = "FAILED: write";
+                    if (vibeos_fs_write_file(&s_scratch_mnt, "HELLO.BIN",
+                                             s_wr, sizeof(s_wr)) ==
+                        (long)sizeof(s_wr)) {
+                        fverdict = "FAILED: resolve";
+                        if (vibeos_fs_resolve("/vol1/HELLO.BIN", &m, &tail) == 0 &&
+                            m == &s_scratch_mnt) {
+                            long got;
+                            for (k = 0; k < sizeof(s_rd); k++) {
+                                s_rd[k] = 0;
+                            }
+                            got = vibeos_fs_read_file(m, tail, s_rd,
+                                                      sizeof(s_rd));
+                            fverdict = "FAILED: read back";
+                            if (got == (long)sizeof(s_rd)) {
+                                int same = 1;
+                                for (k = 0; k < sizeof(s_rd); k++) {
+                                    if (s_rd[k] != s_wr[k]) {
+                                        same = 0;
+                                        break;
+                                    }
+                                }
+                                fverdict = same ? "OK"
+                                                : "FAILED: contents differ";
+                            }
+                        }
+                    }
+                }
             }
             vibeos_x86_64_serial_lock();
             vibeos_x86_64_serial_puts("[IO] FORMAT fs=fat first_lba=0x40 result=");
             vibeos_x86_64_serial_puts(fverdict);
             vibeos_x86_64_serial_puts("\n");
             vibeos_x86_64_serial_unlock();
+        }
+
+        /* The table, after everything has attached. The per-mount lines above
+         * are printed by the volume scan and run before this one exists, so a
+         * boot that only read those would report one mount and be wrong about
+         * the machine it is describing. */
+        {
+            uint32_t k;
+            for (k = 0; k < vibeos_fs_mount_count(); k++) {
+                vibeos_x86_64_serial_lock();
+                vibeos_x86_64_serial_puts("[IO] MOUNTED at=");
+                vibeos_x86_64_serial_puts(vibeos_fs_mount_path(k));
+                vibeos_x86_64_serial_puts(" type=");
+                vibeos_x86_64_serial_puts(
+                    vibeos_fs_type(vibeos_fs_mount_at(k)));
+                vibeos_x86_64_serial_puts("\n");
+                vibeos_x86_64_serial_unlock();
+            }
         }
 
         vibeos_x86_64_serial_lock();

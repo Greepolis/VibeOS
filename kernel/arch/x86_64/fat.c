@@ -15,6 +15,66 @@ extern int vibeos_x86_64_blk_write(uint64_t sector, const void *buf);
 
 #include "vibeos/blockdev.h"
 
+typedef struct {
+    uint32_t part_lba;        /* partition start sector           */
+    uint32_t fat_lba;         /* first FAT sector                 */
+    uint32_t root_lba;        /* FAT16 root dir sector (0 if F32) */
+    uint32_t data_lba;        /* first data sector                */
+    uint32_t sectors_per_fat;
+    uint32_t max_clusters;
+    uint32_t root_cluster;    /* FAT32 root cluster               */
+    uint16_t root_entries;    /* FAT16 root entry count           */
+    uint8_t  sectors_per_cluster;
+    uint8_t  is_fat32;
+    int      mounted;
+    /* Which cache - and so which device - this volume lives on.
+     *
+     * Was implicit: there was one volume and one cache and the code named the
+     * cache directly. A volume that does not know its own device cannot be the
+     * second one. */
+    vibeos_blockcache_t *cache;
+} fat_fs_t;
+
+/* Volumes, and the one the operation in hand is on.
+ *
+ * This driver had a single global, and that was the structural reason it could
+ * mount exactly one filesystem - not a missing feature, a missing *place to
+ * put* a second one. The same shape as the VFS mount table before I4b step 4,
+ * one layer down.
+ *
+ * A current-volume pointer rather than a `fat_fs_t *` threaded through thirty
+ * static functions. Both are correct; this one is a change that can be read in
+ * an afternoon and verified by a boot, and the alternative is a wide edit to
+ * the driver the machine boots from. The pointer is safe for exactly one
+ * reason and it is worth being explicit about it: **every public entry point
+ * here takes fs_lock for the whole operation**, so there is never more than
+ * one operation in flight and never a moment when the current volume is
+ * ambiguous.
+ *
+ * What that costs is real and is not a correctness problem: two volumes cannot
+ * be read at the same time. This driver already serialised everything through
+ * that one lock, so nothing got slower - but it is the limit to lift if a
+ * second volume ever carries real traffic, and lifting it means threading the
+ * parameter after all.
+ */
+#define FAT_MAX_VOLUMES 4u
+
+static fat_fs_t g_volumes[FAT_MAX_VOLUMES];
+static uint32_t g_volume_count;
+static fat_fs_t *g_fat_cur = &g_volumes[0];
+
+/* Make `vol` the one the next operation acts on; null means the boot volume.
+ * Called with the lock held, always.
+ *
+ * Every public entry point that takes fs_lock must call this. One that does
+ * not operates on whatever the previous caller left selected, silently and on
+ * the wrong volume - which is exactly what happened the first time a second
+ * volume existed: file_extent read the scratch volume and the swap area
+ * reported that this medium has no swap file. */
+static void fat_select(void *vol) {
+    g_fat_cur = vol ? (fat_fs_t *)vol : &g_volumes[0];
+}
+
 /* ---- one cache, not three (I2) --------------------------------------------
  *
  * Every single-sector read this filesystem does goes through
@@ -98,23 +158,39 @@ static void fat_cache_bringup(void) {
  * A wrapper rather than twenty edited call sites: the point of the phase is
  * that there is one road to the medium, and a wrapper makes that checkable by
  * grep instead of by remembering. */
+/* The cache this operation reads through.
+ *
+ * The current volume's, falling back to the boot device's. A volume that came
+ * from the scan carries the cache the scan was using; the boot volume carries
+ * this file's own. Naming the boot cache directly, as this did, is what made a
+ * second volume impossible - every read went to one device however the caller
+ * had mounted. */
+static vibeos_blockcache_t *fat_cache(void) {
+    if (g_fat_cur && g_fat_cur->cache) {
+        return g_fat_cur->cache;
+    }
+    return g_bc_ready ? &g_bc : 0;
+}
+
 static int fat_sector_read(uint64_t lba, void *buf) {
-    if (!g_bc_ready) {
+    vibeos_blockcache_t *bc = fat_cache();
+    if (!bc) {
         return vibeos_x86_64_blk_read(lba, buf);
     }
-    return vibeos_blockcache_read(&g_bc, lba, buf);
+    return vibeos_blockcache_read(bc, lba, buf);
 }
 
 static int fat_sector_write(uint64_t lba, const void *buf) {
-    if (!g_bc_ready) {
+    vibeos_blockcache_t *bc = fat_cache();
+    if (!bc) {
         return vibeos_x86_64_blk_write(lba, buf);
     }
     /* Through the cache, so a subsequent read sees it, and then straight out.
      * See the write-through note above. */
-    if (vibeos_blockcache_write(&g_bc, lba, buf) != 0) {
+    if (vibeos_blockcache_write(bc, lba, buf) != 0) {
         return -1;
     }
-    return vibeos_blockcache_flush(&g_bc);
+    return vibeos_blockcache_flush(bc);
 }
 
 /* The one cache, handed out so the volume scan reads through it rather than
@@ -142,21 +218,7 @@ void vibeos_x86_64_fat_cache_stats(uint64_t *hits, uint64_t *misses,
 
 #define SECTOR_SIZE 512u
 
-typedef struct {
-    uint32_t part_lba;        /* partition start sector           */
-    uint32_t fat_lba;         /* first FAT sector                 */
-    uint32_t root_lba;        /* FAT16 root dir sector (0 if F32) */
-    uint32_t data_lba;        /* first data sector                */
-    uint32_t sectors_per_fat;
-    uint32_t max_clusters;
-    uint32_t root_cluster;    /* FAT32 root cluster               */
-    uint16_t root_entries;    /* FAT16 root entry count           */
-    uint8_t  sectors_per_cluster;
-    uint8_t  is_fat32;
-    int      mounted;
-} fat_fs_t;
 
-static fat_fs_t g_fat;
 static uint8_t g_secbuf[SECTOR_SIZE] __attribute__((aligned(16)));
 
 static uint16_t rd16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
@@ -211,28 +273,48 @@ static const uint8_t *fat_table_sector(uint32_t lba) {
     return g_tablesec;
 }
 
-static int fat_mount_locked(void) {
-    uint32_t part_lba = 0;
+/* Mount `vol` from `bc`, at `at_lba`.
+ *
+ * `at_lba` of zero means "find it yourself", which is what the boot volume
+ * does: parse the MBR and take the first non-empty partition. A caller that
+ * already knows - the volume scan does, it read the table - says so, and that
+ * is the difference between a driver that can mount one partition and one that
+ * can mount the partition it was asked about.
+ *
+ * `bc` of null means the boot device's own cache, so the boot path is
+ * unchanged.
+ */
+static int fat_mount_on(fat_fs_t *vol, vibeos_blockcache_t *bc,
+                        uint32_t at_lba) {
+    uint32_t part_lba = at_lba;
     uint16_t reserved, bytes_per_sec;
     uint32_t total_sectors, root_dir_sectors;
 
-    g_fat.mounted = 0;
+    g_fat_cur = vol;
+    g_fat_cur->mounted = 0;
+    g_fat_cur->cache = bc;
 
     /* Before the first read below, and invalidating on a remount: a cache that
-     * outlived a mount would answer for a volume that is no longer there. */
-    fat_cache_bringup();
+     * outlived a mount would answer for a volume that is no longer there.
+     * Only for the boot device - a caller that brought its own cache owns it. */
+    if (!bc) {
+        fat_cache_bringup();
+    }
 
-    /* MBR: use the first non-empty partition; fall back to a bare superfloppy. */
-    if (fat_sector_read(0, g_secbuf) != 0) {
-        return -1;
-    }
-    if (rd16(&g_secbuf[510]) != 0xAA55u) {
-        return -1;
-    }
-    {
-        const uint8_t *pe = &g_secbuf[446];
-        if (pe[4] != 0 && rd32(&pe[8]) != 0) {
-            part_lba = rd32(&pe[8]);
+    if (part_lba == 0u) {
+        /* MBR: the first non-empty partition; fall back to a bare
+         * superfloppy. */
+        if (fat_sector_read(0, g_secbuf) != 0) {
+            return -1;
+        }
+        if (rd16(&g_secbuf[510]) != 0xAA55u) {
+            return -1;
+        }
+        {
+            const uint8_t *pe = &g_secbuf[446];
+            if (pe[4] != 0 && rd32(&pe[8]) != 0) {
+                part_lba = rd32(&pe[8]);
+            }
         }
     }
 
@@ -244,19 +326,19 @@ static int fat_mount_locked(void) {
     if (bytes_per_sec != SECTOR_SIZE) {
         return -1;
     }
-    g_fat.part_lba = part_lba;
-    g_fat.sectors_per_cluster = g_secbuf[13];
+    g_fat_cur->part_lba = part_lba;
+    g_fat_cur->sectors_per_cluster = g_secbuf[13];
     reserved = rd16(&g_secbuf[14]);
-    g_fat.root_entries = rd16(&g_secbuf[17]);
-    g_fat.sectors_per_fat = rd16(&g_secbuf[22]);
-    if (g_fat.sectors_per_fat == 0) {
-        g_fat.sectors_per_fat = rd32(&g_secbuf[36]);      /* FAT32 */
-        g_fat.root_cluster = rd32(&g_secbuf[44]);
-        g_fat.is_fat32 = 1;
+    g_fat_cur->root_entries = rd16(&g_secbuf[17]);
+    g_fat_cur->sectors_per_fat = rd16(&g_secbuf[22]);
+    if (g_fat_cur->sectors_per_fat == 0) {
+        g_fat_cur->sectors_per_fat = rd32(&g_secbuf[36]);      /* FAT32 */
+        g_fat_cur->root_cluster = rd32(&g_secbuf[44]);
+        g_fat_cur->is_fat32 = 1;
     } else {
-        g_fat.is_fat32 = 0;
+        g_fat_cur->is_fat32 = 0;
     }
-    if (g_fat.sectors_per_cluster == 0 || g_fat.sectors_per_fat == 0) {
+    if (g_fat_cur->sectors_per_cluster == 0 || g_fat_cur->sectors_per_fat == 0) {
         return -1;
     }
 
@@ -264,33 +346,33 @@ static int fat_mount_locked(void) {
     if (total_sectors == 0) {
         total_sectors = rd32(&g_secbuf[32]);
     }
-    root_dir_sectors = ((uint32_t)g_fat.root_entries * 32u + (SECTOR_SIZE - 1u)) / SECTOR_SIZE;
-    g_fat.fat_lba = part_lba + reserved;
-    g_fat.root_lba = g_fat.fat_lba + 2u * g_fat.sectors_per_fat;         /* FAT16 root */
-    g_fat.data_lba = g_fat.root_lba + root_dir_sectors;                  /* first data */
-    if (total_sectors <= g_fat.data_lba - part_lba) {
+    root_dir_sectors = ((uint32_t)g_fat_cur->root_entries * 32u + (SECTOR_SIZE - 1u)) / SECTOR_SIZE;
+    g_fat_cur->fat_lba = part_lba + reserved;
+    g_fat_cur->root_lba = g_fat_cur->fat_lba + 2u * g_fat_cur->sectors_per_fat;         /* FAT16 root */
+    g_fat_cur->data_lba = g_fat_cur->root_lba + root_dir_sectors;                  /* first data */
+    if (total_sectors <= g_fat_cur->data_lba - part_lba) {
         return -1;
     }
-    g_fat.max_clusters = (total_sectors - (g_fat.data_lba - part_lba)) /
-                         g_fat.sectors_per_cluster;
-    if (g_fat.max_clusters == 0u) {
+    g_fat_cur->max_clusters = (total_sectors - (g_fat_cur->data_lba - part_lba)) /
+                         g_fat_cur->sectors_per_cluster;
+    if (g_fat_cur->max_clusters == 0u) {
         return -1;
     }
 
     fat_cache_drop();
-    g_fat.mounted = 1;
+    g_fat_cur->mounted = 1;
     vibeos_x86_64_serial_puts("[FAT] mounted ");
-    vibeos_x86_64_serial_puts(g_fat.is_fat32 ? "FAT32" : "FAT16");
+    vibeos_x86_64_serial_puts(g_fat_cur->is_fat32 ? "FAT32" : "FAT16");
     vibeos_x86_64_serial_puts(" part_lba=0x");
     vibeos_x86_64_serial_print_hex(part_lba);
     vibeos_x86_64_serial_puts(" data_lba=0x");
-    vibeos_x86_64_serial_print_hex(g_fat.data_lba);
+    vibeos_x86_64_serial_print_hex(g_fat_cur->data_lba);
     vibeos_x86_64_serial_puts("\n");
     return 0;
 }
 
 static uint32_t fat_cluster_lba(uint32_t cluster) {
-    return g_fat.data_lba + (cluster - 2u) * g_fat.sectors_per_cluster;
+    return g_fat_cur->data_lba + (cluster - 2u) * g_fat_cur->sectors_per_cluster;
 }
 
 /* Follow the FAT chain: return the next cluster, or >= EOC when the chain ends.
@@ -302,28 +384,28 @@ static uint32_t fat_cluster_lba(uint32_t cluster) {
  * the end of the device. fat_get_entry() has always made this check; the read
  * path did not. */
 static uint32_t fat_next_cluster(uint32_t cluster) {
-    uint32_t per_sec = g_fat.is_fat32 ? (SECTOR_SIZE / 4u) : (SECTOR_SIZE / 2u);
-    uint32_t eoc = g_fat.is_fat32 ? 0x0FFFFFFFu : 0xFFFFu;
+    uint32_t per_sec = g_fat_cur->is_fat32 ? (SECTOR_SIZE / 4u) : (SECTOR_SIZE / 2u);
+    uint32_t eoc = g_fat_cur->is_fat32 ? 0x0FFFFFFFu : 0xFFFFu;
     uint32_t sec_index = cluster / per_sec;
     const uint8_t *sec;
 
-    if (cluster < 2u || cluster - 2u >= g_fat.max_clusters ||
-        sec_index >= g_fat.sectors_per_fat) {
+    if (cluster < 2u || cluster - 2u >= g_fat_cur->max_clusters ||
+        sec_index >= g_fat_cur->sectors_per_fat) {
         g_fat_chain_error = 1;
         return eoc;
     }
-    sec = fat_table_sector(g_fat.fat_lba + sec_index);
+    sec = fat_table_sector(g_fat_cur->fat_lba + sec_index);
     if (!sec) {
         return eoc;
     }
-    if (g_fat.is_fat32) {
+    if (g_fat_cur->is_fat32) {
         return rd32(&sec[(cluster % per_sec) * 4u]) & 0x0FFFFFFFu;
     }
     return rd16(&sec[(cluster % per_sec) * 2u]);
 }
 
 static int fat_chain_end(uint32_t cluster) {
-    return g_fat.is_fat32 ? (cluster >= 0x0FFFFFF8u) : (cluster >= 0xFFF8u);
+    return g_fat_cur->is_fat32 ? (cluster >= 0x0FFFFFF8u) : (cluster >= 0xFFF8u);
 }
 
 /* Build the 11-byte 8.3 on-disk name from "NAME.EXT".
@@ -397,14 +479,14 @@ static int fat_dir_find(uint32_t dir_cluster, const uint8_t want[11],
     uint32_t cl;
     uint32_t steps = 0;
 
-    if (dir_cluster == 0 && !g_fat.is_fat32) {
-        uint32_t root_sectors = ((uint32_t)g_fat.root_entries * 32u + (SECTOR_SIZE - 1u)) / SECTOR_SIZE;
-        return fat_scan_sectors(g_fat.root_lba, root_sectors, want, out_cluster, out_size, out_attr);
+    if (dir_cluster == 0 && !g_fat_cur->is_fat32) {
+        uint32_t root_sectors = ((uint32_t)g_fat_cur->root_entries * 32u + (SECTOR_SIZE - 1u)) / SECTOR_SIZE;
+        return fat_scan_sectors(g_fat_cur->root_lba, root_sectors, want, out_cluster, out_size, out_attr);
     }
-    cl = (dir_cluster == 0) ? g_fat.root_cluster : dir_cluster;
-    while (!fat_chain_end(cl) && cl >= 2u && cl - 2u < g_fat.max_clusters &&
-           steps++ < g_fat.max_clusters) {
-        if (fat_scan_sectors(fat_cluster_lba(cl), g_fat.sectors_per_cluster,
+    cl = (dir_cluster == 0) ? g_fat_cur->root_cluster : dir_cluster;
+    while (!fat_chain_end(cl) && cl >= 2u && cl - 2u < g_fat_cur->max_clusters &&
+           steps++ < g_fat_cur->max_clusters) {
+        if (fat_scan_sectors(fat_cluster_lba(cl), g_fat_cur->sectors_per_cluster,
                              want, out_cluster, out_size, out_attr) == 0) {
             return 0;
         }
@@ -464,7 +546,7 @@ extern int vibeos_x86_64_blk_read_many(uint64_t sector, void *buf, uint32_t sect
 
 /* Resolve a path to its first cluster and size (a file "open"). */
 static int fat_open_locked(const char *path, uint32_t *out_cluster, uint32_t *out_size) {
-    if (!g_fat.mounted || !out_cluster || !out_size) {
+    if (!g_fat_cur->mounted || !out_cluster || !out_size) {
         return -1;
     }
     return fat_resolve(path, out_cluster, out_size);
@@ -477,7 +559,7 @@ static long fat_read_at_locked(uint32_t first_cluster, uint32_t size, uint32_t o
     uint32_t cluster_bytes, cluster, skip, done = 0;
     uint8_t *out = (uint8_t *)buf;
 
-    if (!g_fat.mounted || !buf) {
+    if (!g_fat_cur->mounted || !buf) {
         return -1;
     }
     if (off >= size) {
@@ -486,7 +568,7 @@ static long fat_read_at_locked(uint32_t first_cluster, uint32_t size, uint32_t o
     if (len > size - off) {
         len = size - off;
     }
-    cluster_bytes = (uint32_t)g_fat.sectors_per_cluster * SECTOR_SIZE;
+    cluster_bytes = (uint32_t)g_fat_cur->sectors_per_cluster * SECTOR_SIZE;
     cluster = first_cluster;
     g_fat_chain_error = 0;
     for (skip = off / cluster_bytes; skip > 0 && !fat_chain_end(cluster); skip--) {
@@ -496,7 +578,7 @@ static long fat_read_at_locked(uint32_t first_cluster, uint32_t size, uint32_t o
 
     while (done < len && !fat_chain_end(cluster) && cluster >= 2u) {
         uint32_t s;
-        for (s = off / SECTOR_SIZE; s < g_fat.sectors_per_cluster && done < len; s++) {
+        for (s = off / SECTOR_SIZE; s < g_fat_cur->sectors_per_cluster && done < len; s++) {
             uint32_t in_sec = off % SECTOR_SIZE;
             uint32_t n = SECTOR_SIZE - in_sec;
             uint32_t i;
@@ -530,7 +612,7 @@ static int fat_list_locked(const char *path, uint32_t idx, char *name, uint32_t 
                            int *out_is_dir) {
     uint32_t dir_cluster = 0, sectors, lba, s, e, seen = 0;
 
-    if (!g_fat.mounted || !name) {
+    if (!g_fat_cur->mounted || !name) {
         return -1;
     }
     if (path && path[0] && !(path[0] == '/' && path[1] == 0)) {
@@ -539,12 +621,12 @@ static int fat_list_locked(const char *path, uint32_t idx, char *name, uint32_t 
             return -1;
         }
     }
-    if (dir_cluster == 0 && !g_fat.is_fat32) {
-        lba = g_fat.root_lba;
-        sectors = ((uint32_t)g_fat.root_entries * 32u + (SECTOR_SIZE - 1u)) / SECTOR_SIZE;
+    if (dir_cluster == 0 && !g_fat_cur->is_fat32) {
+        lba = g_fat_cur->root_lba;
+        sectors = ((uint32_t)g_fat_cur->root_entries * 32u + (SECTOR_SIZE - 1u)) / SECTOR_SIZE;
     } else {
-        lba = fat_cluster_lba(dir_cluster == 0 ? g_fat.root_cluster : dir_cluster);
-        sectors = g_fat.sectors_per_cluster;
+        lba = fat_cluster_lba(dir_cluster == 0 ? g_fat_cur->root_cluster : dir_cluster);
+        sectors = g_fat_cur->sectors_per_cluster;
     }
 
     for (s = 0; s < sectors; s++) {
@@ -596,23 +678,23 @@ static uint8_t g_fatbuf[SECTOR_SIZE] __attribute__((aligned(16)));
 
 /* Write one FAT entry to every FAT copy. */
 static int fat_set_entry(uint32_t cluster, uint32_t value) {
-    uint32_t per_sec = g_fat.is_fat32 ? (SECTOR_SIZE / 4u) : (SECTOR_SIZE / 2u);
+    uint32_t per_sec = g_fat_cur->is_fat32 ? (SECTOR_SIZE / 4u) : (SECTOR_SIZE / 2u);
     uint32_t s = cluster / per_sec, i = cluster % per_sec, copy;
 
-    if (s >= g_fat.sectors_per_fat) {
+    if (s >= g_fat_cur->sectors_per_fat) {
         return -1;
     }
-    if (fat_sector_read(g_fat.fat_lba + s, g_fatbuf) != 0) {
+    if (fat_sector_read(g_fat_cur->fat_lba + s, g_fatbuf) != 0) {
         return -1;
     }
     fat_cache_drop();
-    if (g_fat.is_fat32) {
+    if (g_fat_cur->is_fat32) {
         wr32(&g_fatbuf[i * 4u], value & 0x0FFFFFFFu);
     } else {
         wr16(&g_fatbuf[i * 2u], (uint16_t)value);
     }
     for (copy = 0; copy < 2u; copy++) {
-        if (fat_sector_write(g_fat.fat_lba + copy * g_fat.sectors_per_fat + s,
+        if (fat_sector_write(g_fat_cur->fat_lba + copy * g_fat_cur->sectors_per_fat + s,
                                            g_fatbuf) != 0) {
             return -1;
         }
@@ -621,14 +703,14 @@ static int fat_set_entry(uint32_t cluster, uint32_t value) {
 }
 
 static uint32_t fat_get_entry(uint32_t cluster) {
-    uint32_t per_sec = g_fat.is_fat32 ? (SECTOR_SIZE / 4u) : (SECTOR_SIZE / 2u);
+    uint32_t per_sec = g_fat_cur->is_fat32 ? (SECTOR_SIZE / 4u) : (SECTOR_SIZE / 2u);
     uint32_t s = cluster / per_sec, i = cluster % per_sec;
 
-    if (s >= g_fat.sectors_per_fat ||
-        fat_sector_read(g_fat.fat_lba + s, g_fatbuf) != 0) {
-        return g_fat.is_fat32 ? 0x0FFFFFFFu : 0xFFFFu;
+    if (s >= g_fat_cur->sectors_per_fat ||
+        fat_sector_read(g_fat_cur->fat_lba + s, g_fatbuf) != 0) {
+        return g_fat_cur->is_fat32 ? 0x0FFFFFFFu : 0xFFFFu;
     }
-    return g_fat.is_fat32 ? (rd32(&g_fatbuf[i * 4u]) & 0x0FFFFFFFu) : rd16(&g_fatbuf[i * 2u]);
+    return g_fat_cur->is_fat32 ? (rd32(&g_fatbuf[i * 4u]) & 0x0FFFFFFFu) : rd16(&g_fatbuf[i * 2u]);
 }
 
 /* Release a whole cluster chain back to the free pool. */
@@ -644,10 +726,10 @@ static void fat_free_chain(uint32_t cluster) {
 
 /* Allocate `count` clusters and link them into one chain; 0 on failure. */
 static uint32_t fat_alloc_chain(uint32_t count) {
-    uint32_t per_sec = g_fat.is_fat32 ? (SECTOR_SIZE / 4u) : (SECTOR_SIZE / 2u);
-    uint32_t total = g_fat.sectors_per_fat * per_sec;
+    uint32_t per_sec = g_fat_cur->is_fat32 ? (SECTOR_SIZE / 4u) : (SECTOR_SIZE / 2u);
+    uint32_t total = g_fat_cur->sectors_per_fat * per_sec;
     uint32_t first = 0, prev = 0, cl = 2u, got = 0;
-    uint32_t eoc = g_fat.is_fat32 ? 0x0FFFFFFFu : 0xFFFFu;
+    uint32_t eoc = g_fat_cur->is_fat32 ? 0x0FFFFFFFu : 0xFFFFu;
 
     while (got < count && cl < total) {
         if (fat_get_entry(cl) != 0u) {
@@ -681,21 +763,21 @@ static uint32_t fat_alloc_chain(uint32_t count) {
 static int fat_dir_sector(uint32_t dir_cluster, uint32_t i, uint32_t *out_lba) {
     uint32_t cl;
 
-    if (dir_cluster == 0 && !g_fat.is_fat32) {
-        uint32_t root_sectors = ((uint32_t)g_fat.root_entries * 32u + (SECTOR_SIZE - 1u)) / SECTOR_SIZE;
+    if (dir_cluster == 0 && !g_fat_cur->is_fat32) {
+        uint32_t root_sectors = ((uint32_t)g_fat_cur->root_entries * 32u + (SECTOR_SIZE - 1u)) / SECTOR_SIZE;
         if (i >= root_sectors) {
             return -1;
         }
-        *out_lba = g_fat.root_lba + i;
+        *out_lba = g_fat_cur->root_lba + i;
         return 0;
     }
-    cl = (dir_cluster == 0) ? g_fat.root_cluster : dir_cluster;
-    while (i >= g_fat.sectors_per_cluster) {
+    cl = (dir_cluster == 0) ? g_fat_cur->root_cluster : dir_cluster;
+    while (i >= g_fat_cur->sectors_per_cluster) {
         cl = fat_get_entry(cl);
         if (cl < 2u || fat_chain_end(cl)) {
             return -1;
         }
-        i -= g_fat.sectors_per_cluster;
+        i -= g_fat_cur->sectors_per_cluster;
     }
     *out_lba = fat_cluster_lba(cl) + i;
     return 0;
@@ -808,7 +890,7 @@ static long fat_write_file_locked(const char *path, const void *buf, uint32_t le
     int slot;
 
     g_fat_write_why = "-";
-    if (!g_fat.mounted || !buf) {
+    if (!g_fat_cur->mounted || !buf) {
         g_fat_write_why = !buf ? "no_buffer" : "not_mounted";
         return -1;
     }
@@ -833,7 +915,7 @@ static long fat_write_file_locked(const char *path, const void *buf, uint32_t le
         }
     }
 
-    cluster_bytes = (uint32_t)g_fat.sectors_per_cluster * SECTOR_SIZE;
+    cluster_bytes = (uint32_t)g_fat_cur->sectors_per_cluster * SECTOR_SIZE;
     need = (len + cluster_bytes - 1u) / cluster_bytes;
     if (need > 0) {
         first = fat_alloc_chain(need);
@@ -847,7 +929,7 @@ static long fat_write_file_locked(const char *path, const void *buf, uint32_t le
     cl = first;
     while (wrote < len && cl >= 2u && !fat_chain_end(cl)) {
         uint32_t s;
-        for (s = 0; s < g_fat.sectors_per_cluster && wrote < len; s++) {
+        for (s = 0; s < g_fat_cur->sectors_per_cluster && wrote < len; s++) {
             uint32_t n = len - wrote, i;
             if (n > SECTOR_SIZE) {
                 n = SECTOR_SIZE;
@@ -895,7 +977,7 @@ static int fat_unlink_locked(const char *path) {
     uint8_t want[11];
     uint32_t dir_cluster = 0, lba = 0, off = 0, cluster;
 
-    if (!g_fat.mounted || fat_split_parent(path, &dir_cluster, want) != 0) {
+    if (!g_fat_cur->mounted || fat_split_parent(path, &dir_cluster, want) != 0) {
         return -1;
     }
     if (fat_dir_slot(dir_cluster, want, 0, &lba, &off) != 0) {
@@ -924,7 +1006,7 @@ static int fat_mkdir_locked(const char *path) {
     uint32_t dir_cluster = 0, lba = 0, off = 0, cluster;
     uint32_t s, i;
 
-    if (!g_fat.mounted || fat_split_parent(path, &dir_cluster, want) != 0) {
+    if (!g_fat_cur->mounted || fat_split_parent(path, &dir_cluster, want) != 0) {
         return -1;
     }
     if (fat_dir_slot(dir_cluster, want, 1, &lba, &off) != 1) {
@@ -935,7 +1017,7 @@ static int fat_mkdir_locked(const char *path) {
         return -1;
     }
     /* Zero the cluster, then lay down "." and "..". */
-    for (s = 0; s < g_fat.sectors_per_cluster; s++) {
+    for (s = 0; s < g_fat_cur->sectors_per_cluster; s++) {
         for (i = 0; i < SECTOR_SIZE; i++) {
             g_fatbuf[i] = 0;
         }
@@ -1026,14 +1108,14 @@ static long fat_read_file_locked(const char *path, void *buf, uint32_t bufcap) {
     vibeos_fat_chain_io_t io;
     long copied;
 
-    if (!g_fat.mounted || fat_resolve(path, &cluster, &size) != 0) {
+    if (!g_fat_cur->mounted || fat_resolve(path, &cluster, &size) != 0) {
         return -1;
     }
     if (size > bufcap) {
         return -1;
     }
     io.ctx = 0;
-    io.cluster_bytes = (uint32_t)g_fat.sectors_per_cluster * SECTOR_SIZE;
+    io.cluster_bytes = (uint32_t)g_fat_cur->sectors_per_cluster * SECTOR_SIZE;
     io.next_cluster = fat_io_next;
     io.chain_end = fat_io_end;
     io.cluster_lba = fat_io_lba;
@@ -1122,6 +1204,14 @@ int vibeos_x86_64_fat_file_extent(const char *path, uint64_t *out_first_lba,
     *out_contiguous = 0;
 
     fs_lock();
+    /* The boot volume, explicitly.
+     *
+     * It was implicit, which meant "whatever the last operation selected" -
+     * and the first time a second volume existed, this read that one instead
+     * and the swap area could not find its file. With a current-volume
+     * pointer, an entry point that does not select is an operation on the
+     * wrong volume, silently. */
+    fat_select(0);
     if (fat_open_locked(path, &cluster, &size) != 0 || cluster < 2u) {
         fs_unlock();
         return -1;
@@ -1129,12 +1219,12 @@ int vibeos_x86_64_fat_file_extent(const char *path, uint64_t *out_first_lba,
     g_fat_chain_error = 0;
     prev = cluster;
     cl = cluster;
-    while (!fat_chain_end(cl) && cl >= 2u && cl - 2u < g_fat.max_clusters) {
+    while (!fat_chain_end(cl) && cl >= 2u && cl - 2u < g_fat_cur->max_clusters) {
         if (clusters != 0ull && cl != prev + 1u) {
             contiguous = 0;
         }
         clusters++;
-        if (clusters > (uint64_t)g_fat.max_clusters) {
+        if (clusters > (uint64_t)g_fat_cur->max_clusters) {
             break;                 /* a chain that loops is not a file */
         }
         prev = cl;
@@ -1146,7 +1236,7 @@ int vibeos_x86_64_fat_file_extent(const char *path, uint64_t *out_first_lba,
      * contiguous file. */
     if (!g_fat_chain_error && clusters > 0ull) {
         *out_first_lba = (uint64_t)fat_cluster_lba(cluster);
-        *out_sectors = clusters * (uint64_t)g_fat.sectors_per_cluster;
+        *out_sectors = clusters * (uint64_t)g_fat_cur->sectors_per_cluster;
         *out_contiguous = contiguous;
         rc = 0;
     }
@@ -1158,64 +1248,143 @@ int vibeos_x86_64_fat_file_extent(const char *path, uint64_t *out_first_lba,
 int vibeos_x86_64_fat_mount(void) {
     int r;
     fs_lock();
-    r = fat_mount_locked();
+    /* Volume 0 is the boot volume, always. Everything above still reaches this
+     * driver through the no-argument entry points, and they operate on it. */
+    r = fat_mount_on(&g_volumes[0], 0, 0u);
+    if (r == 0 && g_volume_count == 0u) {
+        g_volume_count = 1u;
+    }
+    fs_unlock();
+    return r;
+}
+
+/* Mount another volume, from a device the caller names.
+ *
+ * Returns the handle the VFS ops carry back, or null. The handle is what makes
+ * the rest of this driver multi-volume: every operation selects the volume
+ * from it before doing anything, under the same lock.
+ */
+void *vibeos_x86_64_fat_mount_volume(vibeos_blockcache_t *bc,
+                                     uint32_t first_lba) {
+    fat_fs_t *vol;
+    int r;
+
+    if (!bc || first_lba == 0u) {
+        /* A second volume at sector 0 would be the whole device, which is the
+         * boot volume's job and not something to have two opinions about. */
+        return 0;
+    }
+    fs_lock();
+    if (g_volume_count == 0u) {
+        g_volume_count = 1u;      /* slot 0 is reserved for the boot volume */
+    }
+    if (g_volume_count >= FAT_MAX_VOLUMES) {
+        fs_unlock();
+        return 0;
+    }
+    vol = &g_volumes[g_volume_count];
+    r = fat_mount_on(vol, bc, first_lba);
+    if (r != 0) {
+        /* Left out of the count, so a failed mount does not consume a slot and
+         * does not leave a half-built volume something could select. */
+        g_fat_cur = &g_volumes[0];
+        fs_unlock();
+        return 0;
+    }
+    g_volume_count++;
+    g_fat_cur = &g_volumes[0];
+    fs_unlock();
+    return vol;
+}
+
+
+int vibeos_x86_64_fat_open_on(void *vol, const char *path,
+                              uint32_t *out_cluster, uint32_t *out_size) {
+    int r;
+    fs_lock();
+    fat_select(vol);
+    r = fat_open_locked(path, out_cluster, out_size);
     fs_unlock();
     return r;
 }
 
 int vibeos_x86_64_fat_open(const char *path, uint32_t *out_cluster, uint32_t *out_size) {
-    int r;
+    return vibeos_x86_64_fat_open_on(0, path, out_cluster, out_size);
+}
+
+long vibeos_x86_64_fat_read_at_on(void *vol, uint32_t first_cluster, uint32_t size,
+                                  uint32_t off, void *buf, uint32_t len) {
+    long r;
     fs_lock();
-    r = fat_open_locked(path, out_cluster, out_size);
+    fat_select(vol);
+    r = fat_read_at_locked(first_cluster, size, off, buf, len);
     fs_unlock();
     return r;
 }
 
 long vibeos_x86_64_fat_read_at(uint32_t first_cluster, uint32_t size, uint32_t off,
                                void *buf, uint32_t len) {
-    long r;
+    return vibeos_x86_64_fat_read_at_on(0, first_cluster, size, off, buf, len);
+}
+
+int vibeos_x86_64_fat_list_on(void *vol, const char *path, uint32_t idx, char *name,
+                              uint32_t *out_size, int *out_is_dir) {
+    int r;
     fs_lock();
-    r = fat_read_at_locked(first_cluster, size, off, buf, len);
+    fat_select(vol);
+    r = fat_list_locked(path, idx, name, out_size, out_is_dir);
     fs_unlock();
     return r;
 }
 
 int vibeos_x86_64_fat_list(const char *path, uint32_t idx, char *name, uint32_t *out_size,
                            int *out_is_dir) {
-    int r;
-    fs_lock();
-    r = fat_list_locked(path, idx, name, out_size, out_is_dir);
-    fs_unlock();
-    return r;
+    return vibeos_x86_64_fat_list_on(0, path, idx, name, out_size, out_is_dir);
 }
 
-long vibeos_x86_64_fat_write_file(const char *path, const void *buf, uint32_t len) {
+long vibeos_x86_64_fat_write_file_on(void *vol, const char *path, const void *buf, uint32_t len) {
     long r;
     fs_lock();
+    fat_select(vol);
     r = fat_write_file_locked(path, buf, len);
     fs_unlock();
     return r;
 }
 
-int vibeos_x86_64_fat_unlink(const char *path) {
+long vibeos_x86_64_fat_write_file(const char *path, const void *buf, uint32_t len) {
+    return vibeos_x86_64_fat_write_file_on(0, path, buf, len);
+}
+
+int vibeos_x86_64_fat_unlink_on(void *vol, const char *path) {
     int r;
     fs_lock();
+    fat_select(vol);
     r = fat_unlink_locked(path);
     fs_unlock();
     return r;
 }
 
-int vibeos_x86_64_fat_mkdir(const char *path) {
+int vibeos_x86_64_fat_unlink(const char *path) {
+    return vibeos_x86_64_fat_unlink_on(0, path);
+}
+
+int vibeos_x86_64_fat_mkdir_on(void *vol, const char *path) {
     int r;
     fs_lock();
+    fat_select(vol);
     r = fat_mkdir_locked(path);
     fs_unlock();
     return r;
 }
 
+int vibeos_x86_64_fat_mkdir(const char *path) {
+    return vibeos_x86_64_fat_mkdir_on(0, path);
+}
+
 long vibeos_x86_64_fat_read_file(const char *path, void *buf, uint32_t bufcap) {
     long r;
     fs_lock();
+    fat_select(0);
     r = fat_read_file_locked(path, buf, bufcap);
     fs_unlock();
     return r;

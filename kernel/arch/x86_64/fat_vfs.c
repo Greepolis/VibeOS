@@ -11,34 +11,27 @@
 #include "vibeos/vfs.h"
 #include "vibeos/arch_x86_64.h"
 
-extern int vibeos_x86_64_fat_mount(void);
-extern int vibeos_x86_64_fat_open(const char *path, uint32_t *out_cluster,
-                                  uint32_t *out_size);
-extern long vibeos_x86_64_fat_read_at(uint32_t first_cluster, uint32_t size,
-                                      uint32_t off, void *buf, uint32_t len);
-extern int vibeos_x86_64_fat_list(const char *path, uint32_t idx, char *name,
-                                  uint32_t *out_size, int *out_is_dir);
-extern long vibeos_x86_64_fat_write_file(const char *path, const void *buf,
-                                         uint32_t len);
-extern int vibeos_x86_64_fat_unlink(const char *path);
-extern int vibeos_x86_64_fat_mkdir(const char *path);
+/* Declared in vibeos/arch_x86_64.h, which this file includes. There was a
+ * second set of externs here, and it drifted the moment the entry points
+ * grew a volume argument - a second place to keep true is a second place
+ * to be wrong. */
 
 /* A directory has no size of its own in FAT, and the existing open() reports
  * zero for one. Whether a path is a directory is answered the way the rest of
  * the kernel already answers it: a path that can be enumerated is a directory.
  * Keeping that here rather than in the syscall layer is the reason this file
  * exists - it is a FAT fact, not a filesystem fact. */
-static int fat_is_directory(const char *path) {
+static int fat_is_directory(void *fs, const char *path) {
     char probe[16];
     uint32_t probe_size = 0;
     int probe_dir = 0;
-    return vibeos_x86_64_fat_list(path, 0, probe, &probe_size, &probe_dir) == 0;
+    return vibeos_x86_64_fat_list_on(fs, path, 0, probe, &probe_size,
+                                     &probe_dir) == 0;
 }
 
 static int fat_vfs_lookup(void *fs, const char *path, vibeos_fs_node_t *out) {
     uint32_t cluster = 0, size = 0;
 
-    (void)fs;
     /* The volume root, however it is spelled. */
     if ((path[0] == '/' && path[1] == 0) || (path[0] == '.' && path[1] == 0) ||
         path[0] == 0) {
@@ -47,7 +40,7 @@ static int fat_vfs_lookup(void *fs, const char *path, vibeos_fs_node_t *out) {
         out->is_dir = 1;
         return 0;
     }
-    if (vibeos_x86_64_fat_open(path, &cluster, &size) != 0) {
+    if (vibeos_x86_64_fat_open_on(fs, path, &cluster, &size) != 0) {
         return -1;
     }
     out->id = cluster;
@@ -57,13 +50,12 @@ static int fat_vfs_lookup(void *fs, const char *path, vibeos_fs_node_t *out) {
      * own: the lister accepts a file path and answers about its parent, which
      * made every ordinary file look like a directory - and a directory cannot
      * be read, so nothing loaded at all. */
-    out->is_dir = (size == 0u) && fat_is_directory(path);
+    out->is_dir = (size == 0u) && fat_is_directory(fs, path);
     return 0;
 }
 
 static long fat_vfs_read_at(void *fs, const vibeos_fs_node_t *node,
                             uint64_t offset, void *buf, uint32_t len) {
-    (void)fs;
     if (node->is_dir) {
         return -1;   /* directories are enumerated, not read as bytes */
     }
@@ -73,14 +65,13 @@ static long fat_vfs_read_at(void *fs, const vibeos_fs_node_t *node,
     if (offset > 0xFFFFFFFFull || node->size > 0xFFFFFFFFull) {
         return -1;
     }
-    return vibeos_x86_64_fat_read_at((uint32_t)node->id, (uint32_t)node->size,
+    return vibeos_x86_64_fat_read_at_on(fs, (uint32_t)node->id, (uint32_t)node->size,
                                      (uint32_t)offset, buf, len);
 }
 
 static long fat_vfs_write_file(void *fs, const char *path, const void *buf,
                                uint32_t len) {
-    (void)fs;
-    return vibeos_x86_64_fat_write_file(path, buf, len);
+        return vibeos_x86_64_fat_write_file_on(fs, path, buf, len);
 }
 
 static int fat_vfs_list(void *fs, const char *path, uint32_t index, char *name,
@@ -90,11 +81,10 @@ static int fat_vfs_list(void *fs, const char *path, uint32_t index, char *name,
     char local[VIBEOS_FS_NAME_MAX];
     uint32_t i;
 
-    (void)fs;
     if (name_cap == 0u) {
         return -1;
     }
-    if (vibeos_x86_64_fat_list(path, index, local, &size, &is_dir) != 0) {
+    if (vibeos_x86_64_fat_list_on(fs, path, index, local, &size, &is_dir) != 0) {
         return -1;
     }
     for (i = 0; i + 1u < name_cap && local[i]; i++) {
@@ -111,13 +101,11 @@ static int fat_vfs_list(void *fs, const char *path, uint32_t index, char *name,
 }
 
 static int fat_vfs_unlink(void *fs, const char *path) {
-    (void)fs;
-    return vibeos_x86_64_fat_unlink(path);
+        return vibeos_x86_64_fat_unlink_on(fs, path);
 }
 
 static int fat_vfs_mkdir(void *fs, const char *path) {
-    (void)fs;
-    return vibeos_x86_64_fat_mkdir(path);
+        return vibeos_x86_64_fat_mkdir_on(fs, path);
 }
 
 static const vibeos_fs_ops_t g_fat_ops = {
@@ -201,19 +189,30 @@ static int fat_probe(vibeos_blockcache_t *cache, uint64_t first_lba) {
 
 /* Mount, once the probe has said yes.
  *
- * `first_lba` is accepted and not used, and that is a real limitation rather
- * than an oversight: this driver finds its own partition during mount, by
- * parsing the MBR itself. It therefore only works for the volume it would have
- * chosen anyway - which on this medium is the same one the scan is asking
- * about, and on a disk with two FAT partitions would be the wrong answer for
- * the second. Taking the offset properly means threading it through fat.c's
- * globals, and that is a change worth making on its own rather than inside
- * this one. */
+ * The limitation this carried until the driver stopped being a singleton is
+ * gone: it took a first_lba and ignored it, because fat.c found its own
+ * partition by parsing the MBR itself, so it mounted the volume it would have
+ * chosen anyway - the right one on a disk with one FAT partition and the wrong
+ * one on a disk with two.
+ *
+ * A first_lba of zero still means "the boot volume", which is what the scan
+ * asks for when it is looking at a whole disk. Anything else mounts a second
+ * volume and hands back the handle every operation on it will carry. */
 static int fat_scan_mount(vibeos_fsmount_t *out, vibeos_blockcache_t *cache,
                           uint64_t first_lba) {
-    (void)cache;
-    (void)first_lba;
-    return vibeos_x86_64_fat_vfs_mount(out);
+    void *vol;
+
+    if (first_lba == 0ull) {
+        return vibeos_x86_64_fat_vfs_mount(out);
+    }
+    vol = vibeos_x86_64_fat_mount_volume(cache, (uint32_t)first_lba);
+    if (!vol) {
+        return -1;
+    }
+    /* The handle goes in as the mount's `fs`, which is the pointer every op
+     * gets back. That is the whole of what makes this multi-volume: the ops
+     * were already written to take it and were throwing it away. */
+    return vibeos_fs_mount(out, &g_fat_ops, vol, "fat");
 }
 
 
@@ -377,6 +376,11 @@ int (*g_fat_driver_probe)(vibeos_blockcache_t *cache, uint64_t first_lba) =
     fat_probe;
 int (*g_fat_driver_format)(vibeos_blockcache_t *cache, uint64_t first_lba,
                            uint64_t sectors) = fat_format;
+
+/* The ops table, for a caller that mounts a volume itself. */
+const vibeos_fs_ops_t *vibeos_x86_64_fat_ops(void) {
+    return &g_fat_ops;
+}
 
 void vibeos_x86_64_fat_register_driver(void) {
     (void)vibeos_storage_register(&g_fat_driver);

@@ -98,3 +98,23 @@ case: the first mount is not the root
     whose first mount is not "/" has a table that disagrees with the syscalls -
     two answers to "where is the filesystem", which is the shape of defect the
     mount table exists to remove rather than create.
+
+# ---- the FAT driver stops being a singleton -------------------------------
+
+case: an entry point forgets to select its volume
+  in vibeos_x86_64_fat_file_extent, delete the fat_select(0) call
+  expect: invariant_failed:swap_area_not_configured
+  why it matters: THIS HAPPENED. With a current-volume pointer, an entry point
+    that does not select operates on whatever the previous caller left - and
+    the first time a second volume existed, file_extent read the scratch volume
+    and the swap area reported that this medium has no swap file. Nothing about
+    that failure points at FAT: it looks like a swap problem. Every public
+    entry point that takes fs_lock must select, and the check for it is one
+    grep over the file.
+
+case: only one volume can be mounted
+  in fat_mount_volume, return 0 unconditionally
+  expect: only_one_mount:1
+  why it matters: this is the phase's own "done when", and it was unreachable
+    until the driver stopped being a singleton. Before that, mounting a second
+    volume would have unmounted the one the machine was running from.

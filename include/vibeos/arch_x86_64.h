@@ -2,6 +2,7 @@
 #define VIBEOS_ARCH_X86_64_H
 
 #include "vibeos/blockdev.h"
+#include "vibeos/vfs.h"
 #include <stdint.h>
 
 #define VIBEOS_X86_64_IDT_ENTRIES 256u
@@ -106,6 +107,49 @@ vibeos_blockcache_t *vibeos_x86_64_fat_cache(void);
 /* Let the portable volume scan see this driver. Registration rather than a
  * direct call, because kernel/fs must not depend on kernel/arch. */
 void vibeos_x86_64_fat_register_driver(void);
+
+/* Mount a second FAT volume, from a device the caller names.
+ *
+ * Returns an opaque handle, or null. Everything below takes that handle and
+ * acts on the volume it names; passing null means the boot volume, which is
+ * what the no-argument spellings above do.
+ *
+ * One operation at a time across all volumes: this driver serialises through a
+ * single lock and always has, so a handle selects a volume rather than making
+ * two of them concurrent. That is a limit worth knowing and not a correctness
+ * problem - see fat.c for what lifting it would take. */
+/* The FAT operations table, for a caller that mounts a volume itself rather
+ * than through the scan. Not a `g_` name: it is a function, and the prefix in
+ * this kernel means a global. */
+const vibeos_fs_ops_t *vibeos_x86_64_fat_ops(void);
+
+void *vibeos_x86_64_fat_mount_volume(vibeos_blockcache_t *bc,
+                                     uint32_t first_lba);
+
+/* The boot volume's spellings. Every one of these is the matching _on with a
+ * null handle, and they exist because everything above this driver still names
+ * the boot volume implicitly - the mount table knows about more than one, the
+ * syscalls do not yet. */
+int vibeos_x86_64_fat_mount(void);
+int vibeos_x86_64_fat_list(const char *path, uint32_t idx, char *name,
+                           uint32_t *out_size, int *out_is_dir);
+long vibeos_x86_64_fat_write_file(const char *path, const void *buf,
+                                  uint32_t len);
+int vibeos_x86_64_fat_unlink(const char *path);
+int vibeos_x86_64_fat_mkdir(const char *path);
+long vibeos_x86_64_fat_read_file(const char *path, void *buf, uint32_t bufcap);
+
+int vibeos_x86_64_fat_open_on(void *vol, const char *path,
+                              uint32_t *out_cluster, uint32_t *out_size);
+long vibeos_x86_64_fat_read_at_on(void *vol, uint32_t first_cluster,
+                                  uint32_t size, uint32_t off,
+                                  void *buf, uint32_t len);
+int vibeos_x86_64_fat_list_on(void *vol, const char *path, uint32_t idx,
+                              char *name, uint32_t *out_size, int *out_is_dir);
+long vibeos_x86_64_fat_write_file_on(void *vol, const char *path,
+                                     const void *buf, uint32_t len);
+int vibeos_x86_64_fat_unlink_on(void *vol, const char *path);
+int vibeos_x86_64_fat_mkdir_on(void *vol, const char *path);
 
 /* The probe and the formatter, for the boot exercise that partitions a scratch
  * device. Exposed rather than reached for: the exercise lives in arch_hw.c and

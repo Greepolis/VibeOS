@@ -97,3 +97,66 @@ Twice now, identically. Not a leaf permission problem: the **top-level** page
 table entry for the argv vector's address is absent, in the child of a fork
 reading its own `.bss` a moment after writing it through a copy-on-write fault.
 That is a stable signature and the next thing to chase in that subsystem.
+
+
+---
+
+## The singleton is gone, and both "done when"s close
+
+`fat.c` had one `fat_fs_t g_fat` with 84 references across 1200 lines, and that
+was the second structural reason only one filesystem could run — the first was
+the VFS mount table, one layer up. The boot now says:
+
+```
+[IO] MOUNTED at=/ type=fat
+[IO] MOUNTED at=/vol1 type=fat
+```
+
+Two volumes, on two devices, at once. `/vol1` is the scratch device that I4c
+partitions and formats, and the cycle the plan asks for — partition, format,
+mount, write a file, unmount, re-read — runs on every boot. The read back goes
+through the mount table's **resolver**, not through the mount handle, so what
+is proved is that a path under `/vol1` reaches that volume and not the root.
+
+## How it was done, and what it costs
+
+A current-volume pointer, not a `fat_fs_t *` threaded through thirty static
+functions. Both are correct; this one is a change that can be read in an
+afternoon and verified by a boot, and the alternative is a wide edit to the
+driver the machine boots from.
+
+The pointer is safe for exactly one reason, and it is worth stating rather than
+assuming: **every public entry point takes `fs_lock` for the whole operation**,
+so there is never more than one in flight and never a moment when the current
+volume is ambiguous.
+
+What it costs is real: two volumes cannot be read at the same time. This driver
+already serialised everything through that lock, so nothing got slower — but it
+is the limit to lift if a second volume ever carries traffic, and lifting it
+means threading the parameter after all.
+
+## The defect this design produces, produced immediately
+
+**An entry point that does not select operates on the wrong volume, silently.**
+
+`vibeos_x86_64_fat_file_extent` took the lock and did not select. The moment a
+second volume existed it read *that* one, and the swap area reported that this
+medium has no swap file — a failure that points at swap and has nothing to do
+with it.
+
+Three entry points were missing a select. They are all fixed, and the audit is
+one grep over the file: every function that calls `fs_lock` must call
+`fat_select`. There is a sabotage case for it, because this is the failure mode
+the design *has*, and a design with a known failure mode and no check for it is
+worse than the parameter it avoided.
+
+## Also on the way
+
+The definition-order trap three times in one change — `g_fat_cur` used above
+its declaration, `fat_select` used above its definition, and the driver table
+naming a formatter defined after it. This file's own comments warn about it,
+and it is still the thing that costs the most time in a 1200-line C file.
+
+And a second set of `extern` declarations in `fat_vfs.c` had drifted the moment
+the entry points grew a volume argument. They are gone: the header declares
+them, and a second place to keep true is a second place to be wrong.
