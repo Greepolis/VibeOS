@@ -9612,6 +9612,8 @@ static void hw_volumes_bringup(void) {
     if (!bc) {
         return;
     }
+    /* Before the scan, or the scan has nothing to offer this volume to. */
+    vibeos_x86_64_fat_register_driver();
     {
         vibeos_blk_driver_t info;
         int dev = vibeos_x86_64_blk_device();
@@ -9649,6 +9651,53 @@ static void hw_volumes_bringup(void) {
     vibeos_x86_64_serial_print_hex(sectors);
     vibeos_x86_64_serial_puts("\n");
     vibeos_x86_64_serial_unlock();
+
+    /* Every mounted volume goes in the table, and the first one is the root.
+     *
+     * The syscalls still take g_rootfs directly - moving them onto the
+     * resolver is the change that makes a second mount reachable, and doing it
+     * in the same step as building the table would mean neither is verified.
+     * What the table gives today is the ability to *say* what is mounted,
+     * which is what the phase's "done when" asks for and what a machine with
+     * one global mount could not do at all. */
+    for (i = 0; i < g_storage.volume_count && i < VIBEOS_STORAGE_MAX_VOLUMES; i++) {
+        char at[VIBEOS_FS_MOUNT_PATH_MAX];
+        uint32_t w = 0;
+
+        if (!vibeos_fs_is_mounted(&g_storage.volume[i].mount)) {
+            continue;
+        }
+        if (vibeos_fs_mount_count() == 0u) {
+            at[w++] = '/';
+        } else {
+            /* /vol1, /vol2, ... A name a person can type, and one this build
+             * can generate without a formatter. */
+            at[w++] = '/'; at[w++] = 'v'; at[w++] = 'o'; at[w++] = 'l';
+            at[w++] = (char)('0' + (i % 10u));
+        }
+        at[w] = 0;
+        if (vibeos_fs_attach(at, &g_storage.volume[i].mount) != 0) {
+            vibeos_x86_64_serial_lock();
+            vibeos_x86_64_serial_puts("[IO] MOUNT refused at ");
+            vibeos_x86_64_serial_puts(at);
+            vibeos_x86_64_serial_puts("\n");
+            vibeos_x86_64_serial_unlock();
+        }
+    }
+
+    {
+        uint32_t k;
+        for (k = 0; k < vibeos_fs_mount_count(); k++) {
+            vibeos_x86_64_serial_lock();
+            vibeos_x86_64_serial_puts("[IO] MOUNT at=");
+            vibeos_x86_64_serial_puts(vibeos_fs_mount_path(k));
+            vibeos_x86_64_serial_puts(" type=");
+            vibeos_x86_64_serial_puts(
+                vibeos_fs_type(vibeos_fs_mount_at(k)));
+            vibeos_x86_64_serial_puts("\n");
+            vibeos_x86_64_serial_unlock();
+        }
+    }
 
     /* One line per volume, each bracketed on its own: a run of them assembled
      * as one critical section would hold the console across several device

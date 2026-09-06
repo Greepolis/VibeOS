@@ -103,6 +103,10 @@ uint64_t vibeos_x86_64_blk_timeouts(void);
  * header for it is vibeos/blockdev.h. */
 vibeos_blockcache_t *vibeos_x86_64_fat_cache(void);
 
+/* Let the portable volume scan see this driver. Registration rather than a
+ * direct call, because kernel/fs must not depend on kernel/arch. */
+void vibeos_x86_64_fat_register_driver(void);
+
 void vibeos_x86_64_fat_cache_stats(uint64_t *hits, uint64_t *misses,
                                    uint64_t *evictions, uint64_t *evict_failed);
 

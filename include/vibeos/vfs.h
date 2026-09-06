@@ -90,6 +90,68 @@ int vibeos_fs_list(vibeos_fsmount_t *mnt, const char *path, uint32_t index,
 int vibeos_fs_unlink(vibeos_fsmount_t *mnt, const char *path);
 int vibeos_fs_mkdir(vibeos_fsmount_t *mnt, const char *path);
 
+/* ---- the mount table (I4b step 4) -----------------------------------------
+ *
+ * There was one global mount, and that was the structural reason only one
+ * filesystem could run: not a missing driver, a missing *place to put* a
+ * second one. Every syscall took a `vibeos_fsmount_t *` that only ever had one
+ * value.
+ *
+ * A small fixed array. No allocation on these paths - they are reached from
+ * syscalls and from the boot, and a table that allocates fails exactly when
+ * the machine is short of memory, which is when a program is most likely to be
+ * opening files.
+ *
+ * ## Resolution is longest-prefix, and the order it is stored in does not
+ * matter
+ *
+ * A path belongs to the mount with the longest matching prefix, so "/usr/lib"
+ * beats "/usr" beats "/". Scanning for the longest rather than the first is
+ * what makes the table order-independent - a resolver that took the first
+ * match would give different answers depending on the order things happened to
+ * mount in, which is the kind of defect that appears months later on a machine
+ * with one extra volume.
+ *
+ * ## Two mounts may not claim one path
+ *
+ * Refused, not overwritten. Overwriting would leave the first filesystem
+ * mounted and unreachable: its files still open, its blocks still dirty, and
+ * nothing able to name it to unmount it.
+ */
+#define VIBEOS_FS_MOUNTS_MAX 8u
+#define VIBEOS_FS_MOUNT_PATH_MAX 32u
+
+/* Attach a mounted volume at `path`. `path` must start with '/'.
+ *
+ * Returns 0, or negative when the path is taken, malformed, or the table is
+ * full. A full table is a configuration this build cannot express, not a
+ * transient failure, so it is reported rather than retried. */
+int vibeos_fs_attach(const char *path, vibeos_fsmount_t *mnt);
+
+/* Detach whatever is at `path`. Does not unmount: the caller owns the mount. */
+int vibeos_fs_detach(const char *path);
+
+/* Which mount owns `path`, and what is left of the path inside it.
+ *
+ * `out_tail` points into `path`; it is never allocated and never modified. A
+ * path that resolves to the root mount comes back with the whole path minus
+ * the mount prefix, so a driver always sees a path relative to its own root -
+ * which is what lets the same driver be mounted twice in different places.
+ *
+ * Returns 0 on a match. */
+int vibeos_fs_resolve(const char *path, vibeos_fsmount_t **out_mnt,
+                      const char **out_tail);
+
+/* How many mounts are attached, and the nth one's path. For reporting: a
+ * machine that cannot say what it has mounted cannot be asked to prove it
+ * mounted more than one thing. */
+uint32_t vibeos_fs_mount_count(void);
+const char *vibeos_fs_mount_path(uint32_t index);
+vibeos_fsmount_t *vibeos_fs_mount_at(uint32_t index);
+
+/* Forget every attachment. For tests. */
+void vibeos_fs_detach_all(void);
+
 /* Read a whole file by path. Common enough - exec, the boot loader - to be
  * worth expressing once rather than at each caller, and it is the one place
  * that has to insist a short read is a failure rather than a smaller file. */

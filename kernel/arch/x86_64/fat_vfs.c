@@ -136,3 +136,90 @@ int vibeos_x86_64_fat_vfs_mount(vibeos_fsmount_t *mnt) {
     }
     return vibeos_fs_mount(mnt, &g_fat_ops, 0, "fat");
 }
+
+/* ---- joining the volume scan (I4b step 3) ---------------------------------
+ *
+ * The scan lives in kernel/fs/ and cannot name this driver: it is in the arch
+ * layer, and kernel/fs depending on kernel/arch would invert the layering the
+ * whole storage refactor exists to establish. So this registers itself.
+ *
+ * That is the measurement from steps 1 and 2 being acted on rather than
+ * written down. The scan found a 504 MB volume, identified it correctly as
+ * FAT, and reported `fs=none`, because the only FAT driver on the machine was
+ * invisible to the code doing the identifying.
+ */
+
+#include "vibeos/blockdev.h"
+#include "vibeos/storage.h"
+
+/* Does this volume look like FAT?
+ *
+ * Reads the boot sector and nothing else, and answers without keeping
+ * anything. The three fields checked are the ones that are wrong on a volume
+ * that merely *resembles* FAT:
+ *
+ *  - the 0xAA55 signature, which every boot sector has and which alone proves
+ *    nothing;
+ *  - a bytes-per-sector that is a sane power of two, because exFAT stores a
+ *    log2 there and NTFS a different layout, so a plain 512 or 4096 is already
+ *    a discriminator;
+ *  - a non-zero sectors-per-cluster and a non-zero FAT count, which exFAT
+ *    leaves as zero precisely so a FAT driver does not claim it.
+ *
+ * The last of those is the one that matters and it is the reason the probe
+ * exists at all: a check of the jump instruction and the signature says yes to
+ * an exFAT volume, and a FAT driver that mounts one produces files full of
+ * nonsense rather than a refusal. exFAT and NTFS are probed before this for
+ * the same reason.
+ */
+static int fat_probe(vibeos_blockcache_t *cache, uint64_t first_lba) {
+    uint8_t sec[VIBEOS_BLOCK_SIZE];
+    uint32_t bytes_per_sector;
+
+    if (!cache) {
+        return -1;
+    }
+    if (vibeos_blockcache_read(cache, first_lba, sec) != 0) {
+        return -1;
+    }
+    if (sec[510] != 0x55u || sec[511] != 0xAAu) {
+        return -1;
+    }
+    bytes_per_sector = (uint32_t)sec[11] | ((uint32_t)sec[12] << 8);
+    if (bytes_per_sector != 512u && bytes_per_sector != 1024u &&
+        bytes_per_sector != 2048u && bytes_per_sector != 4096u) {
+        return -1;
+    }
+    if (sec[13] == 0u) {
+        return -1;            /* sectors per cluster; zero on exFAT */
+    }
+    if (sec[16] == 0u) {
+        return -1;            /* number of FATs; zero on exFAT      */
+    }
+    return 0;
+}
+
+/* Mount, once the probe has said yes.
+ *
+ * `first_lba` is accepted and not used, and that is a real limitation rather
+ * than an oversight: this driver finds its own partition during mount, by
+ * parsing the MBR itself. It therefore only works for the volume it would have
+ * chosen anyway - which on this medium is the same one the scan is asking
+ * about, and on a disk with two FAT partitions would be the wrong answer for
+ * the second. Taking the offset properly means threading it through fat.c's
+ * globals, and that is a change worth making on its own rather than inside
+ * this one. */
+static int fat_scan_mount(vibeos_fsmount_t *out, vibeos_blockcache_t *cache,
+                          uint64_t first_lba) {
+    (void)cache;
+    (void)first_lba;
+    return vibeos_x86_64_fat_vfs_mount(out);
+}
+
+static const vibeos_fs_driver_t g_fat_driver = {
+    "fat", fat_probe, fat_scan_mount
+};
+
+void vibeos_x86_64_fat_register_driver(void) {
+    (void)vibeos_storage_register(&g_fat_driver);
+}

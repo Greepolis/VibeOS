@@ -1055,6 +1055,24 @@ def main():
                     # the disk had one, since every GPT check is against a size.
                     problems.append("volume_scan_saw_a_disk_of_unknown_size")
 
+            # The mount table (I4b step 4).
+            #
+            # There was one global mount, and that was the structural reason
+            # only one filesystem could run - not a missing driver, a missing
+            # place to put a second one. A machine that cannot say what it has
+            # mounted cannot be asked to prove it mounted the right thing, so
+            # the boot names each mount and its type.
+            #
+            # Only one is asserted, and honestly: this medium has one partition
+            # and one driver that can claim it. "Mounts more than one" is the
+            # phase's own wording and it needs a second volume, which is a
+            # change to the image rather than to the kernel.
+            mm_ = re.findall(r"\[IO\] MOUNT at=(\S+) type=(\S+)", text)
+            if not mm_:
+                problems.append("nothing_was_mounted_through_the_table")
+            elif mm_[0][0] != "/":
+                problems.append(f"first_mount_is_not_the_root:{mm_[0][0]}")
+
             # The ordering primitive (I4 step 1b).
             #
             # Asked for at least once, because a barrier nothing calls is a

@@ -49,3 +49,52 @@ case: the scan runs and reports no volumes at all
     silently-broken table reader looks like from outside. A disk with no
     partition table is still one volume at LBA 0, so zero is never the honest
     answer for a disk that mounted.
+
+# ---- I4b steps 3 and 4: the probe, and the mount table --------------------
+
+case: the FAT probe says yes to an exFAT volume
+  in fat_probe (fat_vfs.c), delete the sec[13] and sec[16] checks, keeping only
+  the 0xAA55 signature
+  expect: NOT OBSERVABLE ON THIS MEDIUM, which holds no exFAT volume.
+    It is the reason the probe exists. exFAT's boot sector *is* a FAT boot
+    sector with different fields: the jump and the signature match, and
+    sectors-per-cluster and the FAT count are zero precisely so a FAT driver
+    does not claim it. A FAT driver that mounts an exFAT volume does not fail -
+    it produces files full of nonsense. exFAT and NTFS are probed first for the
+    same reason; reproduce with an exFAT image.
+
+case: nothing is mounted through the table
+  in hw_volumes_bringup, delete the vibeos_fs_attach loop
+  expect: nothing_was_mounted_through_the_table
+  why it matters: the boot mounting a volume and the boot being able to *say*
+    it mounted one are different facts, and the second is what a machine with
+    one global mount could not do at all.
+
+case: the resolver takes the first match instead of the longest
+  in vibeos_fs_resolve, change "if (best < 0 || n > best_len)" to "if (best < 0)"
+  expect: FAIL:test_mounttab
+  why it matters: it makes resolution depend on the order things happened to
+    mount in, so the same path answers differently on two boots. That is the
+    kind of defect that appears months later on the first machine with an extra
+    volume.
+
+case: a prefix matches without a boundary
+  in vibeos_fs_resolve, delete the "path[n] != '/'" guard
+  expect: FAIL:test_mounttab
+  why it matters: "/usrlocal" then resolves to a mount at "/usr". The answer is
+    wrong and reads perfectly reasonably in a log, which is the worst
+    combination this project knows.
+
+case: a second claim on one path overwrites the first
+  in vibeos_fs_attach, replace the refusal with an assignment
+  expect: FAIL:test_mounttab
+  why it matters: the first filesystem stays mounted and becomes unreachable -
+    files open, blocks dirty, and nothing able to name it to unmount it.
+
+case: the first mount is not the root
+  in hw_volumes_bringup, always generate /volN and never "/"
+  expect: first_mount_is_not_the_root:/vol0
+  why it matters: everything above still resolves through g_rootfs, so a boot
+    whose first mount is not "/" has a table that disagrees with the syscalls -
+    two answers to "where is the filesystem", which is the shape of defect the
+    mount table exists to remove rather than create.

@@ -52,6 +52,54 @@ typedef struct {
     uint32_t mounted_count;      /* of those, the ones a driver claimed */
 } vibeos_storage_t;
 
+/* A driver that does not live in kernel/fs/, joining the scan.
+ *
+ * The four compiled in here - ext2, ntfs, exfat, iso9660 - are named directly
+ * because this file can see them. FAT cannot be: it lives in the arch layer,
+ * and kernel/fs depending on kernel/arch would invert the layering the whole
+ * storage refactor is about. So it registers instead.
+ *
+ * That is not a workaround, it is the measurement from I4b steps 1 and 2 being
+ * acted on. The scan found a 504 MB volume, correctly identified it as FAT,
+ * and reported `fs=none` - because the only FAT driver on the machine was
+ * invisible to the code doing the identifying.
+ *
+ * ## probe and mount are separate, deliberately
+ *
+ * They were the same function: each driver's "probe" was its mount, and a
+ * volume was claimed by whoever mounted it first. Two things wrong with that.
+ * A driver that gets half way through a mount and then fails has left state
+ * behind that nobody unwinds, and every probe pays a full mount - which for
+ * ISO9660 is a real read a long way into the volume.
+ *
+ * A probe reads and answers. It must not write, and it must not keep anything.
+ *
+ * ## Order matters and is recorded
+ *
+ * NTFS and exFAT are tried before FAT, and that is not a preference. Both live
+ * in a boot sector that *is* a FAT boot sector with different fields, so a FAT
+ * probe checking only the jump instruction and the 0xAA55 signature says yes
+ * to an exFAT volume and mounts it wrong - which looks like a working mount
+ * until a file comes back as nonsense. The narrower probe goes first.
+ */
+typedef struct {
+    const char *name;
+    /* Does this volume look like ours? Reads only; keeps nothing. */
+    int (*probe)(vibeos_blockcache_t *cache, uint64_t first_lba);
+    /* Only called after probe said yes. */
+    int (*mount)(vibeos_fsmount_t *out, vibeos_blockcache_t *cache,
+                 uint64_t first_lba);
+} vibeos_fs_driver_t;
+
+/* Registered drivers are tried after the compiled-in ones. A small fixed
+ * table: this runs at boot on a path that must not allocate. */
+#define VIBEOS_STORAGE_MAX_REGISTERED 4u
+
+int vibeos_storage_register(const vibeos_fs_driver_t *drv);
+
+/* Forget every registered driver. For tests. */
+void vibeos_storage_reset_drivers(void);
+
 /* Read the partition table and mount what can be mounted.
  *
  * A disk with no partition table is not an error: plenty of images are a bare
