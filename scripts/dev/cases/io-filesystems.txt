@@ -1,0 +1,40 @@
+# Sabotage cases for the filesystems that had never run (I5).
+#
+# Run: apply the edit, bash scripts/dev/check.sh build <dir>, then
+#      python3 scripts/qemu-cli-smoke-linux.py <dir> 300
+
+case: the ext2 exercise stops running
+  in arch_hw.c, delete the hw_ext2_bringup call
+  expect: ext2_exercise_missing
+  why it matters: this driver existed for months and had never parsed
+    anything. A boot that stops exercising it puts it straight back in that
+    state, and the way it got there was nobody noticing.
+
+case: the image is built by this project instead of by mke2fs
+  in scripts/make-fs-image.py, write the superblock by hand
+  expect: NOT A CASE TO RUN - it is the case the design exists to avoid.
+    An image this project wrote would only prove the driver and the writer
+    agree with each other. The whole value of shelling out to the host's mkfs
+    is that it is the one artefact neither side of this test controls.
+
+case: the loop device serves a fragmented file
+  in vibeos_x86_64_loop_attach, drop the !contiguous refusal
+  expect: NOT OBSERVABLE ON THIS MEDIUM, where the staged image comes out as
+    one run. It is the most dangerous path here: a loop device that spanned a
+    gap would present another file's bytes as part of the filesystem it is
+    mounting, and the driver above would parse them - which is a mount that
+    succeeds and is wrong. Reproduce by fragmenting EXT2.IMG on the medium.
+
+case: the loop device accepts a write
+  in loop_submit, perform the write instead of refusing it
+  expect: nothing on a healthy boot, because nothing writes to it
+  why it matters: a device that accepts a write it does not perform tells the
+    caller the bytes are safe. The refusal is what makes "read-only" a fact
+    rather than a convention.
+
+case: the marker file is a constant instead of carrying its offset
+  in make-fs-image.py, fill content() with one byte value
+  expect: the test still passes, and stops being able to fail
+  why it matters: a constant survives a read that returned the wrong block, as
+    long as that block had been written too - which for a file that fills
+    several blocks is exactly the interesting failure.

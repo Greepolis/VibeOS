@@ -1095,6 +1095,29 @@ def main():
                                 (mf.group(1).strip().replace(" ", "_")
                                  if mf else "unreadable"))
 
+            # A filesystem that had never run (I5).
+            #
+            # ext2, mounted from an image the *host's* mke2fs built, and read
+            # from. An image this project wrote itself would only prove the
+            # driver and the writer agree with each other; an image made by the
+            # tool everybody else uses is the only kind that can say the driver
+            # is wrong.
+            #
+            # The absence of the image is reported, not asserted: a machine
+            # without e2fsprogs still boots and the build says so rather than
+            # failing somewhere a developer has to guess about. What is
+            # asserted is that when the image is there, it mounts and reads.
+            me2 = re.search(r"\[IO\] EXT2 sectors=0x([0-9a-f]{16}) result=([^\n]*)",
+                            text)
+            if me2 is None:
+                problems.append("ext2_exercise_missing")
+            else:
+                res = me2.group(2).strip()
+                if res.startswith("FAILED"):
+                    problems.append("ext2:" + res.replace(" ", "_"))
+                elif res != "OK" and "no image" not in res:
+                    problems.append("ext2:" + res.replace(" ", "_"))
+
             # The mount table (I4b step 4).
             #
             # There was one global mount, and that was the structural reason

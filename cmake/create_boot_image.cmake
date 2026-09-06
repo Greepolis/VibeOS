@@ -42,6 +42,22 @@ if(Python3_Interpreter_FOUND)
 else()
     message(WARNING "python3 not found: swap file not staged")
 endif()
+
+# A real ext2 image, made by the host's own mke2fs, for I5. Mounted through the
+# loop device rather than attached as a second disk - see
+# kernel/arch/x86_64/loopdev.c for why. Not fatal if e2fsprogs is missing: the
+# boot reports the image as absent rather than the build failing somewhere a
+# developer has to guess about.
+if(Python3_Interpreter_FOUND)
+    execute_process(
+        COMMAND ${Python3_EXECUTABLE}
+                "${CMAKE_CURRENT_LIST_DIR}/../scripts/make-fs-image.py"
+                ext2 "${EFI_BOOT_DIR}/EXT2.IMG" 2097152
+        RESULT_VARIABLE _ext2_rc)
+    if(NOT _ext2_rc EQUAL 0)
+        message(WARNING "ext2 image not staged (rc=${_ext2_rc})")
+    endif()
+endif()
 file(COPY_FILE "${KERNEL_ELF}" "${EFI_KERNEL}" ONLY_IF_DIFFERENT)
 file(WRITE "${EFI_STARTUP_NSH}"
     "fs0:\\EFI\\BOOT\\BOOTX64.EFI\n"

@@ -113,6 +113,7 @@ set(VIBEOS_ARCH_X86_64_SOURCES
     kernel/arch/x86_64/virtio_blk.c
     kernel/arch/x86_64/virtio_net.c
     kernel/arch/x86_64/fat.c
+    kernel/arch/x86_64/loopdev.c
     kernel/arch/x86_64/fat_vfs.c
     kernel/arch/x86_64/keyboard.c
     kernel/arch/x86_64/fb.c

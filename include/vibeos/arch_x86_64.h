@@ -123,6 +123,14 @@ void vibeos_x86_64_fat_register_driver(void);
  * this kernel means a global. */
 const vibeos_fs_ops_t *vibeos_x86_64_fat_ops(void);
 
+/* Attach a file on the boot volume as a read-only block device.
+ *
+ * The same extent resolution the swap area uses, for reading somebody else's
+ * filesystem instead of writing pages. A fragmented file is refused: a loop
+ * device that spanned a gap would present another file's bytes as part of the
+ * filesystem it is mounting, and the driver above would parse them. */
+int vibeos_x86_64_loop_attach(const char *path, uint64_t *out_sectors);
+
 void *vibeos_x86_64_fat_mount_volume(vibeos_blockcache_t *bc,
                                      uint32_t first_lba);
 
