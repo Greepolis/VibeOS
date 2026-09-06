@@ -1,6 +1,7 @@
 #ifndef VIBEOS_ARCH_X86_64_H
 #define VIBEOS_ARCH_X86_64_H
 
+#include "vibeos/blockdev.h"
 #include <stdint.h>
 
 #define VIBEOS_X86_64_IDT_ENTRIES 256u
@@ -95,6 +96,13 @@ uint64_t vibeos_x86_64_blk_timeouts(void);
  *
  * Exposed at all because a cache that never hits and a cache that is not wired
  * in look identical from outside, which is the whole reason phase I2 exists. */
+/* The one block cache, so a second reader of this disk uses it rather than
+ * standing up its own. Null before the volume is mounted.
+ *
+ * Declared with a struct pointer the caller must have the definition for; the
+ * header for it is vibeos/blockdev.h. */
+vibeos_blockcache_t *vibeos_x86_64_fat_cache(void);
+
 void vibeos_x86_64_fat_cache_stats(uint64_t *hits, uint64_t *misses,
                                    uint64_t *evictions, uint64_t *evict_failed);
 

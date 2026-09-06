@@ -52,6 +52,11 @@ typedef struct {
  * stop older tools from believing the disk is empty and offering to help.
  * Recognising that is how the caller knows to go read the GPT, so it is
  * reported through `out_protective` rather than as a partition. */
+/* The kind as a word. A boot line that says "kind=0x2" is a number somebody
+ * has to look up, and a reason that has to be looked up is one people stop
+ * reading. */
+const char *vibeos_partition_kind_name(vibeos_part_kind_t k);
+
 int vibeos_partition_parse_mbr(const void *sector0, vibeos_parttable_t *out,
                                int *out_protective);
 

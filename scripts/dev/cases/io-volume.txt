@@ -1,0 +1,51 @@
+# Sabotage cases for volumes and partition tables (I4b).
+#
+# Run: apply the edit, bash scripts/dev/check.sh build <dir>, then
+#      python3 scripts/qemu-cli-smoke-linux.py <dir> 300
+
+case: the protective MBR is accepted as a real table
+  in vibeos_partition_parse_mbr, treat type 0xEE as an ordinary partition
+  instead of setting out_protective
+  expect: on a GPT disk, [IO] VOLUMES table=mbr with one huge partition, and
+    the GPT never read
+  environment: NOT OBSERVABLE ON THIS MEDIUM, which is MBR-partitioned. It is
+    the single most dangerous case in this layer and this boot cannot reach it:
+    a GPT disk parses as a perfectly valid MBR describing one partition
+    covering the whole disk, so a reader that tries MBR first and stops on
+    success gets a *plausible wrong answer* rather than an error - and nothing
+    reports it. The host tests cover it; reproduce end to end with a
+    GPT-partitioned image.
+
+case: the volume scan is never called
+  in arch_hw.c, delete the hw_volumes_bringup call
+  expect: volume_scan_missing
+  why it matters: this is the state the code was in before I4b - written,
+    host-tested, sabotage-verified, and called by nobody. The gate asserts it
+    runs precisely because that is how it got there and stayed there.
+
+case: a partition that extends past the end of the disk is accepted
+  in vibeos_partition_parse_mbr, drop the check of first_lba + sector_count
+  against disk_sectors
+  expect: the host tests go red (test_partition)
+  why it matters: a partition table's whole job is to say where other people's
+    data begins. Being wrong about that writes over it, and a slice that runs
+    past the medium takes the block layer's bounds check with it - the volume's
+    own arithmetic is what turns an in-range device access into an out-of-range
+    one.
+
+case: the disk size is not passed to the scan
+  in hw_volumes_bringup, pass 0 for disk_sectors
+  expect: volume_scan_saw_a_disk_of_unknown_size
+  why it matters: zero means "unknown" and the scan then declines to parse a
+    GPT at all, because every one of its checks is against a size. A machine
+    that quietly fell back to MBR on a GPT disk would mount the protective
+    entry - see the first case.
+
+case: the scan runs and reports no volumes at all
+  in vibeos_storage_scan, return 0 before examining anything
+  expect: volume_scan_found_nothing
+  why it matters: "the scan ran" and "the scan found something" are different
+    facts, and a scan that completes over an empty result is exactly what a
+    silently-broken table reader looks like from outside. A disk with no
+    partition table is still one volume at LBA 0, so zero is never the honest
+    answer for a disk that mounted.

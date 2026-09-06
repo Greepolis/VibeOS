@@ -1027,6 +1027,34 @@ def main():
                     if value != 0:
                         problems.append(f"swap_{name}={value}")
 
+            # What is on the disk (I4b steps 1 and 2).
+            #
+            # The partition reader, the GPT parser and the volume scan were
+            # written, host-tested and sabotage-verified, and had never
+            # executed a line on a booting machine - vibeos_storage_scan was
+            # defined and called by nobody. This asserts that it runs and finds
+            # something, because the whole of kernel/fs/ was in that state and
+            # the way it got there was nobody noticing.
+            #
+            # `mounted` is deliberately NOT asserted non-zero. The volume this
+            # disk holds is FAT, and the portable driver set is exfat, ext2,
+            # ntfs and iso9660 - none of them is the one the machine boots
+            # from. That is a real gap and it is step 3's, not this line's; a
+            # gate that demanded a mount here would be demanding a driver that
+            # does not exist.
+            mv = re.search(r"\[IO\] VOLUMES table=(\w+) partitions=0x([0-9a-f]{16}) "
+                           r"volumes=0x([0-9a-f]{16}) mounted=0x([0-9a-f]{16}) "
+                           r"disk_sectors=0x([0-9a-f]{16})", text)
+            if mv is None:
+                problems.append("volume_scan_missing")
+            else:
+                if int(mv.group(3), 16) == 0:
+                    problems.append("volume_scan_found_nothing")
+                if int(mv.group(5), 16) == 0:
+                    # A zero here means the scan could not parse a GPT even if
+                    # the disk had one, since every GPT check is against a size.
+                    problems.append("volume_scan_saw_a_disk_of_unknown_size")
+
             # The ordering primitive (I4 step 1b).
             #
             # Asked for at least once, because a barrier nothing calls is a

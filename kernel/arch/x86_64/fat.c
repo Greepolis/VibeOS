@@ -117,6 +117,13 @@ static int fat_sector_write(uint64_t lba, const void *buf) {
     return vibeos_blockcache_flush(&g_bc);
 }
 
+/* The one cache, handed out so the volume scan reads through it rather than
+ * standing up a second one. Two caches over one device is the arrangement I2
+ * spent its whole phase removing. Null before the volume is mounted. */
+vibeos_blockcache_t *vibeos_x86_64_fat_cache(void) {
+    return g_bc_ready ? &g_bc : 0;
+}
+
 void vibeos_x86_64_fat_cache_stats(uint64_t *hits, uint64_t *misses,
                                    uint64_t *evictions, uint64_t *evict_failed) {
     if (hits) {

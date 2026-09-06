@@ -29,7 +29,10 @@
 #include "vibeos/rmap.h"
 #include "vibeos/reclaim.h"
 #include "vibeos/blkdev.h"
+#include "vibeos/io_stats.h"
 #include "vibeos/blockdev.h"
+#include "vibeos/partition.h"
+#include "vibeos/storage.h"
 #include "vibeos/swapmap.h"
 #include "vibeos/anon.h"
 #include "vibeos/swaparea.h"
@@ -9577,6 +9580,102 @@ static void hw_write_proof(void) {
     vibeos_x86_64_serial_unlock();
 }
 
+/* ---- volumes (I4b step 1 and 2) -------------------------------------------
+ *
+ * What is actually on this disk, read at boot and said out loud.
+ *
+ * The partition reader, the GPT parser and the volume scan were all written,
+ * host-tested and sabotage-verified, and had never executed a line on a
+ * booting machine - the same state the swap stack and the block cache were in
+ * before this week. `vibeos_storage_scan` was defined and called by nobody.
+ *
+ * It reads through the block cache the filesystem already uses, and not one of
+ * its own. Two caches over one device is precisely the arrangement I2 spent a
+ * phase removing, and standing a second one up here to avoid a two-line
+ * accessor would have put it straight back.
+ *
+ * ## What this does not do yet
+ *
+ * Mount anything. The scan will claim volumes for drivers that have never run
+ * on this machine either, and mounting a second filesystem needs the mount
+ * table of step 4 - there is one global mount today, which is the structural
+ * reason only one filesystem can run. So this reports and stops, which is the
+ * "done when" of steps 1 and 2 and honestly not of 3 and 4.
+ */
+static vibeos_storage_t g_storage;
+
+static void hw_volumes_bringup(void) {
+    vibeos_blockcache_t *bc = vibeos_x86_64_fat_cache();
+    uint64_t sectors = 0;
+    uint32_t i;
+
+    if (!bc) {
+        return;
+    }
+    {
+        vibeos_blk_driver_t info;
+        int dev = vibeos_x86_64_blk_device();
+        if (dev >= 0 && vibeos_blk_info((uint32_t)dev, &info) == 0) {
+            sectors = info.sectors;
+        }
+    }
+    /* Zero means the size is unknown, and the scan then declines to parse a
+     * GPT - correctly, because every one of its checks is against a size. The
+     * driver had to state its capacity to register at all since I1, so this
+     * should not happen; if it ever does, the line below says so by reporting
+     * an MBR-only result on a disk that has a GPT. */
+    if (vibeos_storage_scan(&g_storage, bc, sectors) != 0) {
+        vibeos_x86_64_serial_lock();
+        vibeos_x86_64_serial_puts("[IO] VOLUMES scan refused\n");
+        vibeos_x86_64_serial_unlock();
+        return;
+    }
+
+    vibeos_io_stats()->volumes_found += g_storage.volume_count;
+    vibeos_io_stats()->mounts += g_storage.mounted_count;
+    vibeos_io_stats()->probe_rejected +=
+        g_storage.volume_count - g_storage.mounted_count;
+
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts("[IO] VOLUMES table=");
+    vibeos_x86_64_serial_puts(g_storage.table.is_gpt ? "gpt" : "mbr");
+    vibeos_x86_64_serial_puts(" partitions=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)g_storage.table.count);
+    vibeos_x86_64_serial_puts(" volumes=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)g_storage.volume_count);
+    vibeos_x86_64_serial_puts(" mounted=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)g_storage.mounted_count);
+    vibeos_x86_64_serial_puts(" disk_sectors=0x");
+    vibeos_x86_64_serial_print_hex(sectors);
+    vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
+
+    /* One line per volume, each bracketed on its own: a run of them assembled
+     * as one critical section would hold the console across several device
+     * reads, and this project has a rule about how long a lock that masks
+     * interrupts may be held. */
+    for (i = 0; i < g_storage.volume_count && i < VIBEOS_PART_MAX; i++) {
+        const vibeos_partition_t *p = &g_storage.table.entry[i];
+        vibeos_x86_64_serial_lock();
+        vibeos_x86_64_serial_puts("[IO] VOLUME idx=0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)i);
+        vibeos_x86_64_serial_puts(" first_lba=0x");
+        vibeos_x86_64_serial_print_hex(g_storage.volume[i].first_lba);
+        vibeos_x86_64_serial_puts(" sectors=0x");
+        vibeos_x86_64_serial_print_hex(
+            (i < g_storage.table.count) ? p->sector_count : sectors);
+        vibeos_x86_64_serial_puts(" kind=");
+        vibeos_x86_64_serial_puts(
+            (i < g_storage.table.count)
+                ? vibeos_partition_kind_name(p->kind) : "whole-disk");
+        vibeos_x86_64_serial_puts(" fs=");
+        vibeos_x86_64_serial_puts(g_storage.volume[i].fs_name
+                                  ? g_storage.volume[i].fs_name : "none");
+        vibeos_x86_64_serial_puts("\n");
+        vibeos_x86_64_serial_unlock();
+    }
+}
+
 /* Give swap somewhere to write, if this medium has anywhere.
  *
  * Called after the volume is mounted, because until then there is no device
@@ -9940,6 +10039,7 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
 
     if (vibeos_x86_64_blk_present() &&
         vibeos_x86_64_fat_vfs_mount(&g_rootfs) == 0) {
+        hw_volumes_bringup();
         hw_swap_bringup();
         /* After the volume is mounted and before anything else uses it. The
          * file it leaves behind is small and is overwritten every boot. */

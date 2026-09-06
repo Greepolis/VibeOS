@@ -52,6 +52,17 @@ static vibeos_part_kind_t mbr_kind(uint8_t type) {
     }
 }
 
+const char *vibeos_partition_kind_name(vibeos_part_kind_t k) {
+    switch (k) {
+        case VIBEOS_PART_UNKNOWN:    return "unknown";
+        case VIBEOS_PART_FAT:        return "fat";
+        case VIBEOS_PART_EFI_SYSTEM: return "efi-system";
+        case VIBEOS_PART_LINUX:      return "linux";
+        case VIBEOS_PART_EXTENDED:   return "extended";
+        default:                     return "?";
+    }
+}
+
 int vibeos_partition_parse_mbr(const void *sector0, vibeos_parttable_t *out,
                                int *out_protective) {
     const uint8_t *s = (const uint8_t *)sector0;
