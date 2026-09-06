@@ -1,0 +1,53 @@
+# A disk that fails, swept across which request fails (I7, first item).
+#
+# Host tests: bash scripts/dev/check.sh tests build-gcc-Release
+#
+# Every other test of this layer asks what happens when the disk works. This
+# asks what the layer promises when it does not, and the promise is three
+# things at once - the caller is told it failed, the failure carries a reason,
+# and nothing is left in flight. They are checked together because a layer can
+# keep any two and break the third.
+
+case: the layer stops comparing sectors_done against sectors
+  in vibeos_blk_submit, replace the `req->sectors_done != req->sectors` test
+    with `if (0)`
+  expect: FAIL:blkfail "failed in the driver and the layer reported success"
+  why it matters: this is the check the FAT defect needed. There, a failed
+    table read came back as the end-of-chain marker and the reader returned the
+    size the directory claimed - a short file that said it was complete. A
+    driver that moves fewer sectors than asked and returns zero is the same
+    failure one layer down, and it is silent, which makes it worse than an
+    error.
+
+case: a failure is returned with no reason recorded
+  in vibeos_blk_submit, return -1 on a driver failure without the NOT_ISSUED
+    fallback or count_result
+  expect: FAIL:blkfail "the failure was counted under no reason"
+  why it matters: "the disk is missing" and "the disk is broken" become one
+    number, which is exactly what this layer was built to stop. A count with no
+    reason is a count nobody can act on.
+
+# The sweep is over three axes and each one earns its place:
+#
+#   which request fails - failing the first request of a run, one in the
+#     middle, and one after successes are three different states of the layer's
+#     own bookkeeping, and a single test picks one of them by accident;
+#
+#   how it fails - a driver that returns an error and a driver that returns
+#     success having moved too little are different code paths, and the second
+#     is the one that corrupts quietly;
+#
+#   how many sectors - a short transfer cannot be expressed by a one-sector
+#     request, so a sweep over one size only would never construct the case it
+#     was written for. That is the "right about the outcome, wrong about the
+#     mechanism" trap, avoided by construction rather than by luck.
+#
+# Position 4 of the sweep fails nothing: a run in which the failure never
+# happens is what proves the checks are not passing for the wrong reason.
+
+# ---- what this does NOT cover, and is the rest of I7 -----------------------
+#
+# A failure *during* a multi-sector transfer that has already moved some
+# sectors to the caller's buffer, a failure of the barrier rather than of a
+# transfer, and a failure while another core is submitting to the same device.
+# The last one needs the queue I6 introduces and cannot be written before it.

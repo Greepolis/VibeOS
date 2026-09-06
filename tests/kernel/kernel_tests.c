@@ -8837,6 +8837,7 @@ int test_mounttab(void);
 int test_parttab(void);
 int test_logsink(void);
 int test_gpt(void);
+int test_blkfail(void);
 int test_task(void);
 int test_runq(void);
 int test_lifetime(void);
@@ -8867,6 +8868,7 @@ int main(void) {
     RUN_TEST(test_parttab);
     RUN_TEST(test_logsink);
     RUN_TEST(test_gpt);
+    RUN_TEST(test_blkfail);
     RUN_TEST(test_task);
     RUN_TEST(test_runq);
     RUN_TEST(test_lifetime);
