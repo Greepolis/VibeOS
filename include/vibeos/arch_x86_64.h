@@ -96,6 +96,12 @@ uint64_t vibeos_x86_64_blk_timeouts(void);
 void vibeos_x86_64_fat_cache_stats(uint64_t *hits, uint64_t *misses,
                                    uint64_t *evictions, uint64_t *evict_failed);
 
+/* Why the last write to this filesystem refused. Every failure in that path
+ * used to be a bare -1, so a full disk, a name that is not 8.3, a directory
+ * with no free slot and a medium that would not take the sector arrived at the
+ * caller as one thing. */
+const char *vibeos_x86_64_fat_write_why(void);
+
 /* Where a file's bytes physically are, for swap and for nothing else. See the
  * comment on the definition: `contiguous` is reported rather than assumed,
  * because a swap area that wrote through a gap would write into other files. */

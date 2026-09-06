@@ -1,0 +1,44 @@
+# Sabotage cases for writes that are proved (I4).
+#
+# Run: apply the edit, bash scripts/dev/check.sh build <dir>, then
+#      python3 scripts/qemu-cli-smoke-linux.py <dir> 300
+
+case: a write is acknowledged that was never issued
+  in fat_write_file_locked, skip the data-sector loop and return (long)len
+  expect: write_proof:FAILED:_contents_differ, with a first_bad_offset of 0
+  why it matters: this is the failure the phase is named for. A boot writes
+    about thirty sectors through the shell's mkdir and nothing checked any of
+    them, so a write path that returned success without writing would have been
+    invisible until some later boot could not mount.
+
+case: the write lands one sector early
+  in the data loop, write to fat_cluster_lba(cl) + s - 1
+  expect: write_proof:FAILED:_contents_differ
+  why it matters: it is the case a constant pattern cannot catch. Every byte
+    carries its own offset precisely so a shifted write fails rather than
+    matching, and the report names the first offset that differs.
+
+case: the last sector of a multi-sector write is lost
+  in the data loop, stop one sector early when wrote + SECTOR_SIZE >= len
+  expect: write_proof:FAILED:_contents_differ with first_bad_offset near 0x400
+  note: the proof file is 1300 bytes on purpose - it crosses a sector boundary
+    and is not a multiple of one, so the tail is exercised. A file of exactly N
+    sectors never tests it, and the tail is where a length confused with a byte
+    count shows up. This project has had that defect once already, in the FAT
+    reader that returned the size the directory claimed.
+
+case: a write-back failure is reported as success
+  in fat_sector_write, ignore the return of vibeos_blockcache_flush
+  expect: NOT OBSERVABLE WHILE THE CACHE IS WRITE-THROUGH.
+    With I2's policy the medium is written on the same call, so losing the
+    flush result changes nothing that can be seen. The case belongs to I4 step
+    1, where write-back is turned on, and is written now so it is not forgotten
+    then.
+
+case: the proof stops being reported
+  in hw_write_proof, guard the final [IO] WRITE_PROOF line with if (0)
+  expect: write_proof_missing
+  why it matters: a check that stops running must not read as a check that
+    passed. This case exists because check-assertions-covered.py flagged the
+    assertion the moment it was added and before the phase was committed -
+    which is exactly what that check is for.

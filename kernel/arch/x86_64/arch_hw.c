@@ -3421,11 +3421,23 @@ static int hw_proc_create(hw_proc_t *p, const unsigned char *elf, uint64_t len,
         p->entry = interp.entry;
         p->interp_base = bias;
 
+        /* Bracketed, because it was not and CI caught it:
+         *
+         *   [EXEC] interpreter EFI/BOOT/LDMUSL.SO[HW][SYS] write(ring3): SVC_EXIT
+         *
+         * Five serial_puts calls are five critical sections, and this one runs
+         * inside execve while services are starting on other cores - so a
+         * ring-3 write walked into the middle of it and the boot gate's
+         * interleaved_lines check failed the run. The rule is already written
+         * down: anything meant to be read together has to be written in one
+         * call, or bracketed so it is one. */
+        vibeos_x86_64_serial_lock();
         vibeos_x86_64_serial_puts("[EXEC] interpreter ");
         vibeos_x86_64_serial_puts(interp_path);
         vibeos_x86_64_serial_puts(" at 0x");
         vibeos_x86_64_serial_print_hex(bias);
         vibeos_x86_64_serial_puts("\n");
+        vibeos_x86_64_serial_unlock();
     }
     for (i = 0; i < VIBEOS_HW_USER_STACK_PAGES; i++) {
         void *page = hw_alloc_page();
@@ -9443,6 +9455,122 @@ static int hw_swap_block(void *ctx, uint32_t device, uint64_t lba,
     return vibeos_blk_read(device, lba, count, buf) == 0 ? 0 : -1;
 }
 
+/* ---- writes that are proved (I4 step 2) -----------------------------------
+ *
+ * A boot writes to this disk - about thirty sectors, through the shell's
+ * `mkdir DOCS` - and until now *nothing checked any of it*. That is worse than
+ * not writing at all: the machine modifies a medium with no evidence that what
+ * it wrote is what comes back, and a defect there is silent until some later
+ * boot cannot mount.
+ *
+ * So: write a file, read it back, compare byte for byte.
+ *
+ * ## What the pattern is, and why it is not a constant
+ *
+ * Each byte carries its own offset. A constant survives every interesting
+ * failure this can have - a write that landed one sector early, a read that
+ * returned a neighbouring sector, a multi-sector transfer that lost its last
+ * sector and left the previous contents - because all of those hand back bytes
+ * that are equal to what was expected. An offset-dependent pattern fails all
+ * of them, and says *where*.
+ *
+ * The size crosses a sector boundary and is not a multiple of one. A file that
+ * is exactly N sectors never exercises the tail, and the tail is where a
+ * length confused with a byte count shows up - which this project has already
+ * had once, in the FAT reader that returned the size the directory claimed.
+ *
+ * ## What it does not prove
+ *
+ * That the bytes reached the *medium*. Everything here could be served from
+ * the block cache, and with I2's write-through policy the device was written
+ * too - but this check cannot tell the difference. Only a reboot can, and that
+ * is step 3.
+ */
+/* At the root, and not in a subdirectory, for a reason about the medium
+ * rather than about the kernel.
+ *
+ * This runs at mount time, and at mount time the root holds exactly EFI and
+ * STARTUP.NSH: the `docs` directory staged on the host is not presented to the
+ * guest at all, and DOCS/NOTES.TXT exists later only because the boot script
+ * creates it. The first version wrote to DOCS/ and was refused for the honest
+ * reason that the parent did not exist yet - which the refusal now says in
+ * those words.
+ *
+ * It is not a weaker test. The property being checked is that bytes written to
+ * this medium come back, and the root exercises the same allocation, the same
+ * chain walk and the same directory update. A subdirectory adds a second
+ * directory lookup and nothing else, and I4b brings the volume work that would
+ * make it worth testing separately. */
+#define HW_WRITE_PROOF_PATH  "WRPROOF.BIN"
+#define HW_WRITE_PROOF_BYTES 1300u
+
+static uint8_t g_write_proof[HW_WRITE_PROOF_BYTES];
+
+static uint8_t hw_write_proof_byte(uint32_t i) {
+    /* Two terms, so neither a shift of the whole file nor a swap of two
+     * sectors can produce a matching run. */
+    return (uint8_t)((i * 7u) ^ (i >> 8) ^ 0x5Au);
+}
+
+static void hw_write_proof(void) {
+    const char *verdict = "not attempted";
+    uint32_t i;
+    long n;
+
+    for (i = 0; i < HW_WRITE_PROOF_BYTES; i++) {
+        g_write_proof[i] = hw_write_proof_byte(i);
+    }
+    if (vibeos_fs_write_file(&g_rootfs, HW_WRITE_PROOF_PATH, g_write_proof,
+                             HW_WRITE_PROOF_BYTES) < 0) {
+        vibeos_x86_64_serial_lock();
+        vibeos_x86_64_serial_puts("[IO] WRITE_PROOF write refused: ");
+        vibeos_x86_64_serial_puts(vibeos_x86_64_fat_write_why());
+        vibeos_x86_64_serial_puts("\n");
+        vibeos_x86_64_serial_unlock();
+        verdict = "FAILED: write refused";
+    } else {
+        /* Cleared first, so a read that returns nothing at all cannot pass by
+         * leaving the buffer holding what was just written to it. */
+        for (i = 0; i < HW_WRITE_PROOF_BYTES; i++) {
+            g_write_proof[i] = 0;
+        }
+        n = vibeos_fs_read_file(&g_rootfs, HW_WRITE_PROOF_PATH, g_write_proof,
+                                HW_WRITE_PROOF_BYTES);
+        if (n != (long)HW_WRITE_PROOF_BYTES) {
+            verdict = "FAILED: read gave the wrong length";
+        } else {
+            int bad = -1;
+            for (i = 0; i < HW_WRITE_PROOF_BYTES; i++) {
+                if (g_write_proof[i] != hw_write_proof_byte(i)) {
+                    bad = (int)i;
+                    break;
+                }
+            }
+            verdict = (bad < 0) ? "OK" : "FAILED: contents differ";
+            if (bad >= 0) {
+                vibeos_x86_64_serial_lock();
+                vibeos_x86_64_serial_puts("[IO] WRITE_PROOF first_bad_offset=0x");
+                vibeos_x86_64_serial_print_hex((uint64_t)(uint32_t)bad);
+                vibeos_x86_64_serial_puts(" got=0x");
+                vibeos_x86_64_serial_print_hex((uint64_t)g_write_proof[bad]);
+                vibeos_x86_64_serial_puts(" want=0x");
+                vibeos_x86_64_serial_print_hex(
+                    (uint64_t)hw_write_proof_byte((uint32_t)bad));
+                vibeos_x86_64_serial_puts("\n");
+                vibeos_x86_64_serial_unlock();
+            }
+        }
+    }
+
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts("[IO] WRITE_PROOF bytes=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)HW_WRITE_PROOF_BYTES);
+    vibeos_x86_64_serial_puts(" ");
+    vibeos_x86_64_serial_puts(verdict);
+    vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
+}
+
 /* Give swap somewhere to write, if this medium has anywhere.
  *
  * Called after the volume is mounted, because until then there is no device
@@ -9803,6 +9931,9 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
     if (vibeos_x86_64_blk_present() &&
         vibeos_x86_64_fat_vfs_mount(&g_rootfs) == 0) {
         hw_swap_bringup();
+        /* After the volume is mounted and before anything else uses it. The
+         * file it leaves behind is small and is overwritten every boot. */
+        hw_write_proof();
         long n = vibeos_fs_read_file(&g_rootfs, "EFI/BOOT/INIT.ELF",
                                       g_disk_init_elf, sizeof(g_disk_init_elf));
         if (n > 0) {

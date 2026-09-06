@@ -780,6 +780,19 @@ static int fat_split_parent(const char *path, uint32_t *out_dir, uint8_t name83[
 
 /* Create or overwrite a file at `path` with `len` bytes (any directory, any
  * length that fits the volume). Returns bytes written. */
+/* Why the last write refused.
+ *
+ * Every failure below was a bare -1, so "the disk is full", "that name is not
+ * 8.3", "the directory has no free slot" and "the medium would not take the
+ * sector" arrived at the caller as one thing. A boot writes about thirty
+ * sectors and nothing checked any of them; the first check written (I4 step 2)
+ * came back "write refused" and could go no further. */
+static const char *g_fat_write_why = "-";
+
+const char *vibeos_x86_64_fat_write_why(void) {
+    return g_fat_write_why;
+}
+
 static long fat_write_file_locked(const char *path, const void *buf, uint32_t len) {
     uint8_t want[11];
     uint32_t dir_cluster = 0, lba = 0, off = 0, cluster_bytes, need, first = 0;
@@ -787,15 +800,23 @@ static long fat_write_file_locked(const char *path, const void *buf, uint32_t le
     const uint8_t *in = (const uint8_t *)buf;
     int slot;
 
+    g_fat_write_why = "-";
     if (!g_fat.mounted || !buf) {
+        g_fat_write_why = !buf ? "no_buffer" : "not_mounted";
         return -1;
     }
     if (fat_split_parent(path, &dir_cluster, want) != 0) {
+        /* Only one thing in fat_split_parent can fail: resolving the parent.
+         * The 8.3 conversion after it cannot. Saying so is worth a line,
+         * because the first version of this reason said "path or name" and
+         * sent an investigation looking at the name - which was fine. */
+        g_fat_write_why = "parent_directory_not_found";
         return -1;
     }
     slot = fat_dir_slot(dir_cluster, want, 1, &lba, &off);
     if (slot < 0) {
-        return -1; /* directory full */
+        g_fat_write_why = "no_free_directory_slot";
+        return -1;
     }
     if (slot == 0) { /* existing entry: drop its old contents */
         const uint8_t *d = &g_secbuf[off];
@@ -810,6 +831,7 @@ static long fat_write_file_locked(const char *path, const void *buf, uint32_t le
     if (need > 0) {
         first = fat_alloc_chain(need);
         if (first == 0) {
+            g_fat_write_why = "no_free_clusters";
             return -1;
         }
     }
@@ -827,6 +849,7 @@ static long fat_write_file_locked(const char *path, const void *buf, uint32_t le
                 g_fatbuf[i] = (i < n) ? in[wrote + i] : 0u;
             }
             if (fat_sector_write(fat_cluster_lba(cl) + s, g_fatbuf) != 0) {
+                g_fat_write_why = "medium_refused_a_data_sector";
                 return -1;
             }
             wrote += n;
@@ -853,6 +876,7 @@ static long fat_write_file_locked(const char *path, const void *buf, uint32_t le
         wr16(&d[26], (uint16_t)(first & 0xFFFFu));     /* cluster low          */
         wr32(&d[28], len);
         if (fat_sector_write(lba, g_secbuf) != 0) {
+            g_fat_write_why = "medium_refused_the_directory_sector";
             return -1;
         }
     }

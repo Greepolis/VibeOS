@@ -1027,6 +1027,30 @@ def main():
                     if value != 0:
                         problems.append(f"swap_{name}={value}")
 
+            # Writes that are proved (I4 step 2).
+            #
+            # A boot writes about thirty sectors through the shell's mkdir, and
+            # until this nothing checked any of them. That is worse than not
+            # writing: the machine modifies a medium with no evidence that what
+            # it wrote is what comes back, and a defect there is silent until
+            # some later boot cannot mount.
+            #
+            # The pattern carries its own offset, so a write that landed a
+            # sector early, a read that returned a neighbour, and a transfer
+            # that lost its last sector all fail it - a constant survives every
+            # one of those.
+            #
+            # What it does not prove is that the bytes reached the *medium*.
+            # Everything could be served from the block cache. Only a reboot
+            # tells those apart, and that is step 3.
+            if "[IO] WRITE_PROOF" not in text:
+                problems.append("write_proof_missing")
+            elif "[IO] WRITE_PROOF bytes=0x0000000000000514 OK" not in text:
+                mw = re.search(r"\[IO\] WRITE_PROOF bytes=\S+ ([^\n]*)", text)
+                problems.append("write_proof:" +
+                                (mw.group(1).strip().replace(" ", "_")
+                                 if mw else "unreadable"))
+
             # The block cache below the filesystem (I2).
             #
             # Asserted as a *ratio*, not as a presence, and this project has
