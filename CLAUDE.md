@@ -776,6 +776,65 @@ next Debug run reports torn and no mismatch, it was the detector; if it reports
 a mismatch with the owners held still, the defect is real and now says so.
 
 
+**A task exits standing on its own kernel stack.** The reaper freed that stack
+the moment it saw the zombie, and between publishing the zombie and switching
+away there are a handful of instructions - which push. So the frame was written
+after being poisoned, went back on the freelist, and was handed out again; in
+the run this was caught on it became a page table, and a core executed
+`0xdead0000dead0000`. From outside: a wedge at `busybox_cat` with cores queued
+on the console lock, pointing nowhere near exit.
+
+Publishing the slot last was already being done, deliberately, after an earlier
+bug of this family - and it is not enough, because the danger is not the slot.
+The stack is parked on the exiting core and freed by that core once it is
+provably on another, with a panic if a drain ever finds `rsp` inside the stack
+it is about to free.
+
+Three careful readings of the exit path missed it. What named it was the poison
+report's `freed_by` tag - **which is the address of a string literal**, the
+`__func__` of whoever released the frame. Read out of `.rodata` it says
+`hw_free_kstack_pages` outright; read with addr2line, as it was first, it names
+whatever function precedes that address and is simply wrong. The detector was
+right and was being read wrongly, which is worth remembering next time this
+file's own rule about suspecting the detector gets applied too eagerly.
+
+**Three times in one session the thing being protected was not the thing doing
+the protecting.** The GPT writer's header-before-array ordering: sabotaged,
+caught by nothing - the entry-array CRC is what protects a reader, and the
+ordering protects the relationship between the two *copies*. The journal's
+flush before the commit record: same, the commit checksum catches it. The log
+sink's checksum over the sequence number: it does not stop a stale slot after a
+wrap, as the comment claimed - the reader's own comparison does that - it stops
+a torn sequence being adopted at attach.
+
+Each time the sabotage came before the claim was written down, so none of them
+became folklore. That ordering is the whole technique: **write the sabotage
+first, then the sentence it justifies.**
+
+**A struct filled field by field silently gains a hole the day somebody adds a
+field.** `vibeos_logsink_dev_t` gained `read_many`; the test helper that built
+one by assigning each member was not updated, so that field held whatever was
+on the stack. gcc left zero, clang did not, and the host tests segfaulted in CI
+on a call through an uninitialised function pointer while every local run was
+green. Same shape as `interp_base`. Memset the struct, or write it with a
+designated initialiser.
+
+**A test runner that reports the wrong failure hides the right one.** The
+Windows job printed `CMake failed, attempting manual GCC fallback` and a wall of
+undefined references to every test symbol. CMake had not failed - it linked 119
+of 119. The test binary ran, returned non-zero, the script read that as a build
+failure, and the fallback compiles a hand-written file list that no longer
+matches the project. The undefined references belong to the fallback and they
+buried the one line that mattered.
+
+**Ask a refusal who was asking.** `at=argv:pml4_absent_or_not_user` was a stable
+signature that stayed open for a whole session, because the reason names a
+mechanism and not a situation: it cannot distinguish a kernel task that never
+had page tables from a user task whose mapping is missing for one address. One
+line carrying the task, whether it is a user task, and its cr3 settled the first
+half in a single reproduction. A reason is not a diagnosis.
+
+
 ## Verification that exists
 
 The boot gate (`scripts/qemu-cli-smoke-linux.py`) asserts state, not markers:

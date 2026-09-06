@@ -1,0 +1,56 @@
+# The argv vector that is a freed page (open).
+#
+# Boot gate: about one boot in six, as
+#   [EXEC] refused reason=bad-args path=EFI/BOOT/SVC_STRS.ELF
+#          at=argv:use_after_free:argv_is_poison task=09 user
+#          at=dead0000dead0000 cr3=00000000022cd000
+#
+# This is NOT fixed. What is fixed is that it says what it is.
+
+# ---- how it got a name ------------------------------------------------------
+#
+# It read `at=argv:pml4_absent_or_not_user` for a whole session and stayed open,
+# because that reason names a mechanism and not a situation. Three questions, in
+# order, each one line of instrumentation:
+#
+#   1. Who was asking?  ->  task=09 user cr3=...  A user task with a valid page
+#      table, so not "a kernel task that never had one". Half the ambiguity in
+#      the reason string was gone.
+#
+#   2. Which address?  ->  a top-level entry that is absent means the whole
+#      512 GiB region holding it is unmapped, which is what a wild pointer looks
+#      like and not what a paged-out stack looks like.
+#
+#   3. What was the value?  ->  0xdead0000dead0000. The free-page poison.
+#
+# So the argv vector is stored in memory that was released while exec still
+# referred to it. The range check is the only reason the machine does not follow
+# that pointer, which is why this shows up as a refusal rather than a crash -
+# and why it looked benign enough to leave open.
+
+case: the refusal stops recognising the poison
+  in hw_copy_user_argv, remove the two VIBEOS_FRAME_POISON comparisons
+  expect: at=argv:pml4_absent_or_not_user again - a true statement that hides
+    the fact that matters
+  why it matters: "this address is not mapped" and "this address is the value a
+    freed page is filled with" are the same observation at different altitudes,
+    and only the second one is a diagnosis. The first kept this open for a
+    session.
+
+case: the poison constant is duplicated instead of shared
+  define 0xDEAD0000DEAD0000 privately in arch_hw.c again
+  expect: nothing, until somebody changes it in frame.c and not here
+  why it matters: two files agreeing on a constant by coincidence is how they
+    stop agreeing. It is in include/vibeos/frame.h because the layer that fills
+    freed pages owns the value, and the layers that recognise it are customers.
+
+# ---- what is still unknown --------------------------------------------------
+#
+# Which allocation holds the argv vector, and who releases it. The candidates
+# are the exec staging path and the fork/COW path, and the way to tell them
+# apart is the same as it was for the kernel stack: make the release record who
+# did it, then read the tag out of .rodata rather than through addr2line.
+#
+# The kernel-stack lifetime fix earlier this session does not cover this - that
+# one was a stack being freed under its own core, and this is a page holding
+# user data. Same family, different object.

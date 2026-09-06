@@ -6927,6 +6927,10 @@ typedef struct {
  * Only read immediately after a call returned negative, so the last failure to
  * set it is the one being reported. */
 static const char *g_argv_fail_why = "-";
+/* The address the range check refused, beside the reason. Set wherever the
+ * reason is set, because a reason without the address it applies to cannot
+ * tell a garbage pointer from a page that is merely not resident. */
+static uint64_t g_argv_fail_addr;
 
 static long hw_copy_user_argv(uint64_t uvec, hw_argv_t *out) {
     uint32_t count = 0;
@@ -6948,6 +6952,10 @@ static long hw_copy_user_argv(uint64_t uvec, hw_argv_t *out) {
             uint32_t why = HW_RANGE_OK;
             if (!hw_user_range_why(uvec + (uint64_t)count * 8u, 8, 0, &why)) {
                 g_argv_fail_why = hw_range_why_name(why);
+                g_argv_fail_addr = uvec + (uint64_t)count * 8u;
+                if (uvec == VIBEOS_FRAME_POISON) {
+                    g_argv_fail_why = "use_after_free:argv_vector_is_poison";
+                }
                 return -VIBEOS_EFAULT;
             }
         }
@@ -6964,6 +6972,16 @@ static long hw_copy_user_argv(uint64_t uvec, hw_argv_t *out) {
             uint32_t why = HW_RANGE_OK;
             (void)hw_user_range_why(ptr, 1, 0, &why);
             g_argv_fail_why = hw_range_why_name(why);
+            g_argv_fail_addr = ptr;
+            /* A pointer that *is* the free-page poison is not a wild pointer.
+             * It means the memory holding this argv vector was released while
+             * something still referred to it, and the range check is the only
+             * reason the machine did not follow it. Named here so the next
+             * person does not have to recognise 0xdead0000dead0000 by eye -
+             * which is exactly what it took to find this one. */
+            if (ptr == VIBEOS_FRAME_POISON) {
+                g_argv_fail_why = "use_after_free:argv_is_poison";
+            }
             return -VIBEOS_EFAULT;
         }
         out->slot[count] = &out->store[used];
@@ -7024,7 +7042,7 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
                 /* One string, so the line stays one fact: which vector and
                  * why. Two fields printed separately from two cores come back
                  * interleaved and read as a contradiction. */
-                char detail[48];
+                char detail[96];
                 const char *which = (na < 0) ? "argv:" : "envp:";
                 const char *why = g_argv_fail_why;
                 uint32_t w = 0, k;
@@ -7033,6 +7051,76 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
                 }
                 for (k = 0; why && why[k] && w < sizeof(detail) - 1u; k++) {
                     detail[w++] = why[k];
+                }
+                /* Who was asking, and whether they had an address space.
+                 *
+                 * "pml4_absent_or_not_user" says a range check found no user
+                 * page tables; it does not say whether the caller was a kernel
+                 * task that never had any, or a user task whose tables went
+                 * missing under it. Those are completely different defects and
+                 * the reason alone cannot tell them apart, which is why this
+                 * refusal has been open all session on a stable signature.
+                 *
+                 * Appended to the same string rather than printed separately:
+                 * two fields from two cores come back interleaved and read as
+                 * a contradiction. */
+                {
+                    static const char hexd[] = "0123456789abcdef";
+                    int cur = g_current_task;
+                    uint64_t cr3 = (cur >= 0) ? g_tasks[cur].cr3 : 0ull;
+                    int is_user = (cur >= 0) ? g_tasks[cur].is_user : -1;
+                    int is_thread = (cur >= 0) ? g_tasks[cur].is_thread : -1;
+                    const char *tag = " task=";
+                    int j;
+
+                    for (k = 0; tag[k] && w < sizeof(detail) - 1u; k++) {
+                        detail[w++] = tag[k];
+                    }
+                    if (cur < 0 && w < sizeof(detail) - 1u) {
+                        detail[w++] = '-';
+                    } else {
+                        for (j = 1; j >= 0; j--) {
+                            if (w < sizeof(detail) - 1u) {
+                                detail[w++] =
+                                    hexd[((uint32_t)cur >> (j * 4)) & 0xFu];
+                            }
+                        }
+                    }
+                    tag = (is_user > 0) ? " user" : (is_user == 0 ? " kernel"
+                                                                  : " none");
+                    for (k = 0; tag[k] && w < sizeof(detail) - 1u; k++) {
+                        detail[w++] = tag[k];
+                    }
+                    if (is_thread > 0) {
+                        tag = " thread";
+                        for (k = 0; tag[k] && w < sizeof(detail) - 1u; k++) {
+                            detail[w++] = tag[k];
+                        }
+                    }
+                    /* And the address that was refused. A top-level entry
+                     * that is absent means the whole 512 GiB region holding
+                     * that address is unmapped, which is what a garbage
+                     * pointer looks like and is not what a paged-out stack
+                     * looks like - so the address separates the two. */
+                    tag = " at=";
+                    for (k = 0; tag[k] && w < sizeof(detail) - 1u; k++) {
+                        detail[w++] = tag[k];
+                    }
+                    for (j = 15; j >= 0; j--) {
+                        if (w < sizeof(detail) - 1u) {
+                            detail[w++] =
+                                hexd[(g_argv_fail_addr >> (j * 4)) & 0xFu];
+                        }
+                    }
+                    tag = " cr3=";
+                    for (k = 0; tag[k] && w < sizeof(detail) - 1u; k++) {
+                        detail[w++] = tag[k];
+                    }
+                    for (j = 15; j >= 0; j--) {
+                        if (w < sizeof(detail) - 1u) {
+                            detail[w++] = hexd[(cr3 >> (j * 4)) & 0xFu];
+                        }
+                    }
                 }
                 detail[w] = 0;
                 (void)hw_exec_refuse(VIBEOS_EXEC_BAD_ARGS, path, detail);

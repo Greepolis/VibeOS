@@ -28,7 +28,10 @@
 
 /* Read as a pointer this is non-canonical, so dereferencing a stale one faults
  * on the spot instead of quietly reaching a live page. */
-#define FRAME_POISON 0xDEAD0000DEAD0000ull
+/* The value itself is in the header now: other layers have to be able to
+ * recognise it, and two files agreeing on a constant by coincidence is how
+ * they stop agreeing. */
+#define FRAME_POISON VIBEOS_FRAME_POISON
 
 #define FRAME_NONE 0xFFFFFFFFu   /* end of the free list */
 

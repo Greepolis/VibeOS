@@ -89,3 +89,7 @@ case: the counter stops being reported
     counter as a mechanism that never ran - or, worse, a removed *assertion* as
     a passing one. That is the shape VIBEOS_BLK_TIMEOUT had: defined, printed,
     asserted, and produced by nobody.
+
+# Related and still open: the argv vector that is the free-page poison. Same
+# family, different object - see scripts/dev/cases/exec-argv-poison.txt. That
+# one is the dominant boot-gate failure now, at about one boot in six.
