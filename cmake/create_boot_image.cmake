@@ -57,6 +57,14 @@ if(Python3_Interpreter_FOUND)
     if(NOT _ext2_rc EQUAL 0)
         message(WARNING "ext2 image not staged (rc=${_ext2_rc})")
     endif()
+    execute_process(
+        COMMAND ${Python3_EXECUTABLE}
+                "${CMAKE_CURRENT_LIST_DIR}/../scripts/make-fs-image.py"
+                iso9660 "${EFI_BOOT_DIR}/ISO.IMG" 0
+        RESULT_VARIABLE _iso_rc)
+    if(NOT _iso_rc EQUAL 0)
+        message(WARNING "iso9660 image not staged (rc=${_iso_rc})")
+    endif()
 endif()
 file(COPY_FILE "${KERNEL_ELF}" "${EFI_KERNEL}" ONLY_IF_DIFFERENT)
 file(WRITE "${EFI_STARTUP_NSH}"

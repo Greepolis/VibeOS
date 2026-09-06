@@ -34,6 +34,7 @@
 #include "vibeos/partition.h"
 #include "vibeos/parttab.h"
 #include "vibeos/ext2.h"
+#include "vibeos/iso9660.h"
 #include "vibeos/storage.h"
 #include "vibeos/swapmap.h"
 #include "vibeos/anon.h"
@@ -9601,77 +9602,120 @@ static void hw_mount_report(void) {
     }
 }
 
-/* ---- a filesystem that has never run (I5) ---------------------------------
+/* ---- filesystems that had never run (I5) ----------------------------------
  *
- * ext2, mounted from an image the *host's* mke2fs built, and read from.
+ * ext2 and ISO9660, mounted from images the *host's* own mkfs tools built, and
+ * read from.
  *
- * The point of the phase is that this driver has never been given anything to
- * parse. An image this project wrote itself would only prove the driver and
- * the writer agree with each other; an image made by the tool everybody else
- * uses is the one worth reading, and it is the only kind that can say the
- * driver is wrong.
+ * The point of the phase is that these drivers had never been given anything
+ * to parse. An image this project wrote itself would only prove the driver and
+ * the writer agree with each other - and they would, because the same
+ * misreading of the layout goes into both. The one artefact neither side of
+ * the test controls is the one worth mounting.
  *
- * Attached through the loop device rather than as a second disk, because a
+ * Attached through the loop device rather than as second disks, because a
  * second physical device needs virtio-blk to stop being a singleton.
  *
- * The file it looks for carries its own offset in every byte, so a read that
+ * The file each image carries has its own offset in every byte, so a read that
  * returned the wrong block cannot match - which a file full of a constant
  * would.
+ *
+ * A table rather than one function per filesystem. The first version was one
+ * function, and the second filesystem would have been a copy of it with four
+ * names changed - which is how a check ends up asserted for one member of a
+ * family and not the others.
  */
-static uint8_t g_ext2_slot_data[8][512];
-static vibeos_block_slot_t g_ext2_slots[8];
-static vibeos_blockdev_t g_ext2_dev;
-static vibeos_blockcache_t g_ext2_bc;
+#define HW_FSIMAGE_SLOTS 8u
+
+typedef struct hw_fsimage {
+    const char *name;
+    const char *image;
+    const char *at;
+    const char *marker;
+    int (*mount)(struct hw_fsimage *e);
+    const vibeos_fs_ops_t *(*ops)(void);
+
+    uint8_t slot_data[HW_FSIMAGE_SLOTS][512];
+    vibeos_block_slot_t slots[HW_FSIMAGE_SLOTS];
+    vibeos_blockdev_t dev;
+    vibeos_blockcache_t bc;
+    vibeos_fsmount_t mnt;
+    int device;
+} hw_fsimage_t;
+
 static vibeos_ext2_t g_ext2;
-static vibeos_fsmount_t g_ext2_mount;
-static int g_ext2_device = -1;
+static vibeos_iso9660_t g_iso;
 
-static int hw_ext2_read(void *ctx, uint64_t lba, void *buf) {
-    (void)ctx;
-    return (g_ext2_device < 0)
-         ? -1 : vibeos_blk_read((uint32_t)g_ext2_device, lba, 1u, buf);
+static int hw_fsimage_read(void *ctx, uint64_t lba, void *buf) {
+    hw_fsimage_t *e = (hw_fsimage_t *)ctx;
+    return (e == 0 || e->device < 0)
+         ? -1 : vibeos_blk_read((uint32_t)e->device, lba, 1u, buf);
 }
 
-static int hw_ext2_write(void *ctx, uint64_t lba, const void *buf) {
+/* The loop device is read-only, and says so here rather than dropping the
+ * write. A device that accepts a write it does not perform tells the caller
+ * its bytes are safe. */
+static int hw_fsimage_write(void *ctx, uint64_t lba, const void *buf) {
     (void)ctx; (void)lba; (void)buf;
-    return -1;   /* the loop device is read-only, and says so here too */
+    return -1;
 }
 
-static void hw_ext2_bringup(void) {
+/* One wrapper each, rather than casting the mount functions to a common type:
+ * the three drivers take different filesystem structs, and a function-pointer
+ * cast that happens to work is exactly the kind of thing this file's own notes
+ * say goes wrong quietly. */
+static int hw_mount_ext2(hw_fsimage_t *e) {
+    return vibeos_ext2_mount(&g_ext2, &e->bc, 0ull);
+}
+
+static int hw_mount_iso9660(hw_fsimage_t *e) {
+    return vibeos_iso9660_mount(&g_iso, &e->bc, 0ull);
+}
+
+static void *hw_fsimage_fs(const hw_fsimage_t *e) {
+    return (e->mount == hw_mount_ext2) ? (void *)&g_ext2 : (void *)&g_iso;
+}
+
+static hw_fsimage_t g_fsimages[] = {
+    { "ext2",    "EFI/BOOT/EXT2.IMG", "/ext2", "HELLO.TXT",
+      hw_mount_ext2,    vibeos_ext2_ops,    {{0}}, {{0}}, {0}, {0}, {0}, -1 },
+    { "iso9660", "EFI/BOOT/ISO.IMG",  "/iso",  "HELLO.TXT",
+      hw_mount_iso9660, vibeos_iso9660_ops, {{0}}, {{0}}, {0}, {0}, {0}, -1 },
+};
+
+static void hw_fsimage_bringup(hw_fsimage_t *e) {
+    static uint8_t rd[4096];
     const char *verdict = "no image on this medium";
     uint64_t sectors = 0;
     int dev;
-    int ok = 0;
     uint32_t i;
 
-    dev = vibeos_x86_64_loop_attach("EFI/BOOT/EXT2.IMG", &sectors);
+    dev = vibeos_x86_64_loop_attach(e->image, &sectors);
     if (dev >= 0) {
-        g_ext2_device = dev;
-        for (i = 0; i < 8u; i++) {
-            g_ext2_slots[i].data = g_ext2_slot_data[i];
+        e->device = dev;
+        for (i = 0; i < HW_FSIMAGE_SLOTS; i++) {
+            e->slots[i].data = e->slot_data[i];
         }
-        g_ext2_dev.read = hw_ext2_read;
-        g_ext2_dev.write = hw_ext2_write;
-        g_ext2_dev.flush = 0;
-        g_ext2_dev.ctx = 0;
-        g_ext2_dev.sectors = sectors;
+        e->dev.read = hw_fsimage_read;
+        e->dev.write = hw_fsimage_write;
+        e->dev.flush = 0;
+        e->dev.ctx = e;
+        e->dev.sectors = sectors;
 
         verdict = "FAILED: cache";
-        if (vibeos_blockcache_init(&g_ext2_bc, &g_ext2_dev, g_ext2_slots,
-                                   8u) == 0) {
+        if (vibeos_blockcache_init(&e->bc, &e->dev, e->slots,
+                                   HW_FSIMAGE_SLOTS) == 0) {
             verdict = "FAILED: mount";
-            if (vibeos_ext2_mount(&g_ext2, &g_ext2_bc, 0ull) == 0 &&
-                vibeos_fs_mount(&g_ext2_mount, vibeos_ext2_ops(), &g_ext2,
-                                "ext2") == 0) {
-                static uint8_t rd[4096];
+            if (e->mount(e) == 0 &&
+                vibeos_fs_mount(&e->mnt, e->ops(), hw_fsimage_fs(e),
+                                e->name) == 0) {
                 long got;
 
                 verdict = "FAILED: read";
                 for (i = 0; i < sizeof(rd); i++) {
                     rd[i] = 0;
                 }
-                got = vibeos_fs_read_file(&g_ext2_mount, "HELLO.TXT", rd,
-                                          sizeof(rd));
+                got = vibeos_fs_read_file(&e->mnt, e->marker, rd, sizeof(rd));
                 if (got == (long)sizeof(rd)) {
                     int same = 1;
                     for (i = 0; i < sizeof(rd); i++) {
@@ -9682,22 +9726,30 @@ static void hw_ext2_bringup(void) {
                         }
                     }
                     verdict = same ? "OK" : "FAILED: contents differ";
-                    ok = same;
-                }
-                if (ok) {
-                    (void)vibeos_fs_attach("/ext2", &g_ext2_mount);
+                    if (same) {
+                        (void)vibeos_fs_attach(e->at, &e->mnt);
+                    }
                 }
             }
         }
     }
 
     vibeos_x86_64_serial_lock();
-    vibeos_x86_64_serial_puts("[IO] EXT2 sectors=0x");
+    vibeos_x86_64_serial_puts("[IO] FSIMAGE name=");
+    vibeos_x86_64_serial_puts(e->name);
+    vibeos_x86_64_serial_puts(" sectors=0x");
     vibeos_x86_64_serial_print_hex(sectors);
     vibeos_x86_64_serial_puts(" result=");
     vibeos_x86_64_serial_puts(verdict);
     vibeos_x86_64_serial_puts("\n");
     vibeos_x86_64_serial_unlock();
+}
+
+static void hw_fsimages_bringup(void) {
+    uint32_t i;
+    for (i = 0; i < sizeof(g_fsimages) / sizeof(g_fsimages[0]); i++) {
+        hw_fsimage_bringup(&g_fsimages[i]);
+    }
 }
 
 /* ---- a scratch device, and what it is for (I4c) ---------------------------
@@ -10526,7 +10578,7 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
         /* After the real volume is mounted, so the scratch device can never be
          * confused with it: it is registered second and named separately. */
         hw_scratch_bringup();
-        hw_ext2_bringup();
+        hw_fsimages_bringup();
         hw_mount_report();
         hw_swap_bringup();
         /* After the volume is mounted and before anything else uses it. The

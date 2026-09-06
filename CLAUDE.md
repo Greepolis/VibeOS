@@ -737,6 +737,45 @@ hoping for it took that to 150 of 150. The three picker properties in the same
 harness were caught 40 out of 40 - which is what made the fourth's silence
 worth chasing rather than dismissing.
 
+**A fixture this project writes can only prove the driver matches the fixture.**
+ISO9660's mount read the logical block size at offset 128 of the primary volume
+descriptor as a 32-bit little-endian number. That field is a both-endian pair of
+*16-bit* numbers - four bytes, two copies of one 16-bit value - so for the 2048
+every ISO uses it read 0x00080800 and refused the image. The driver had refused
+every ISO ever made, for months.
+
+There was a host test. It mounted, walked a directory, read a file and compared
+the bytes, and it passed - because the fixture wrote that field with the same
+32-bit helper. The two halves of the test shared one misreading of the format,
+and a fixture that shares the code's assumption cannot contradict it. What
+found this in one boot was an image built by the host's own `xorriso`: the one
+artefact neither side of the test controls.
+
+The comment two lines above the defect warns about the both-endian trap for the
+fields that really are 32-bit. The code below it walked into the 16-bit version.
+
+Fifth instance of "right about the outcome, wrong about the mechanism", and the
+rule that follows is narrower than the others: for anything with an external
+format - a filesystem, an executable, a partition table, a wire protocol - at
+least one test must use an artefact produced by somebody else's tool.
+
+**Two counters behind two locks are not one comparison.** The fork audit read
+`vibeos_rmap_count(phys)` and `vibeos_frame_owners(phys)` and reported a
+disagreement as `rmap_mismatch`. Those live behind different locks, so that is
+two samples at two instants, and between them a thread of the parent on another
+core can exec, exit, munmap or fork again and move both. The clang Debug job -
+the slow build, which is exactly what widens such a window - reported
+`rmap_mismatch=1` on a boot whose every other MUSTBEZERO counter was clean while
+both Release jobs were green.
+
+The audit now brackets the rmap read with two reads of the owner count and
+counts a moved sample as `rmap_audit_torn` instead. Which of the two the CI
+failure was is **not yet known**: four local Debug boots reported zero of both,
+so the change has been shown not to fire spuriously and nothing more. If the
+next Debug run reports torn and no mismatch, it was the detector; if it reports
+a mismatch with the owners held still, the defect is real and now says so.
+
+
 ## Verification that exists
 
 The boot gate (`scripts/qemu-cli-smoke-linux.py`) asserts state, not markers:

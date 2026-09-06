@@ -7,6 +7,10 @@
 
 #include "vibeos/iso9660.h"
 
+static uint32_t rd16le(const uint8_t *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8);
+}
+
 static uint32_t rd32le(const uint8_t *p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
            ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
@@ -47,7 +51,15 @@ int vibeos_iso9660_mount(vibeos_iso9660_t *fs, vibeos_blockcache_t *cache,
     /* Numbers are stored twice, little-endian then big-endian. Reading the
      * little-endian half is correct and reading the pair as one number is the
      * classic way to get an enormous wrong answer. */
-    if (rd32le(sec + 128) != VIBEOS_ISO_SECTOR) {
+    /* The logical block size is a both-endian *16-bit* pair, not a 32-bit one:
+     * four bytes at offset 128, but they are LE-then-BE of the same 16-bit
+     * number. Reading them as one little-endian 32-bit value gave 0x00080800
+     * for the 2048 every ISO in existence uses, so this mount refused every
+     * image ever handed to it - which nothing noticed, because until I5 no
+     * image ever was. The comment two lines up warned about exactly this trap
+     * for the fields that really are 32-bit, and the code below it walked into
+     * the 16-bit version. */
+    if (rd16le(sec + 128) != VIBEOS_ISO_SECTOR) {
         return -1;   /* a logical block size this driver does not handle */
     }
     /* The root directory record sits inside the descriptor at offset 156. */

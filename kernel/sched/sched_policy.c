@@ -159,7 +159,11 @@ int vibeos_sched_policy_set_nice(uint32_t slot, int nice) {
 }
 
 vibeos_sched_class_t vibeos_sched_policy_class(uint32_t slot) {
-    if (!g_task || slot >= g_slots || !g_task[slot].present) {
+    /* No `!g_task` here. It is an array, so its address is never null, and gcc
+     * says so under -Waddress in the Debug build: a guard that cannot fail
+     * reads as a check and is not one. slot_ok is what every other accessor in
+     * this file uses, and it checks the thing that can actually be wrong. */
+    if (!slot_ok(slot)) {
         return VIBEOS_SCHED_NORMAL;
     }
     return (vibeos_sched_class_t)g_task[slot].cls;

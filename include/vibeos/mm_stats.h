@@ -31,6 +31,7 @@ typedef struct vibeos_mm_stats {
     uint64_t free_while_mapped;  /* more mappers than owners. MUST BE ZERO    */
     uint64_t fork_undercounted;  /* shared frame with <2 owners. MUST BE ZERO */
     uint64_t rmap_mismatch;      /* holders != owners. MUST BE ZERO           */
+    uint64_t rmap_audit_torn;    /* the audit's two reads saw different worlds */
 
     /* Compaction. The first two say it works; the four refusals say what it
      * could not take and why - so "compaction did nothing" and "compaction was

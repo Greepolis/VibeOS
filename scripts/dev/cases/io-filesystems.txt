@@ -3,12 +3,28 @@
 # Run: apply the edit, bash scripts/dev/check.sh build <dir>, then
 #      python3 scripts/qemu-cli-smoke-linux.py <dir> 300
 
-case: the ext2 exercise stops running
-  in arch_hw.c, delete the hw_ext2_bringup call
-  expect: ext2_exercise_missing
-  why it matters: this driver existed for months and had never parsed
-    anything. A boot that stops exercising it puts it straight back in that
+case: a filesystem stops being exercised
+  in arch_hw.c, remove the iso9660 row from g_fsimages
+  expect: fsimage_missing:iso9660
+  why it matters: these drivers existed for months and had never parsed
+    anything. A boot that stops exercising one puts it straight back in that
     state, and the way it got there was nobody noticing.
+
+    The gate lists the expected names rather than counting them, because a
+    count cannot tell "iso9660 stopped running" from "ext2 ran twice". That is
+    also why the bring-up is a table: a second copy of the function with four
+    names changed is how a family ends up with one member asserted.
+
+case: the ISO9660 logical block size is read as a 32-bit field
+  in kernel/fs/iso9660.c, put rd32le back at offset 128
+  expect: iso9660:FAILED:_mount, and FAIL:test_iso_refusals in the host tests
+  why it matters: this was the real defect, and it is the whole argument for
+    the phase. The field is a both-endian *16-bit* pair; a 32-bit little-endian
+    read of it returns 0x00080800 for the 2048 every ISO uses, so the mount
+    refused every image ever made. The host test could not see it because the
+    fixture wrote the field the same wrong way - driver and fixture agreed with
+    each other for months. Both were fixed, and the corrected fixture was
+    confirmed to go red against the old driver before the driver was touched.
 
 case: the image is built by this project instead of by mke2fs
   in scripts/make-fs-image.py, write the superblock by hand

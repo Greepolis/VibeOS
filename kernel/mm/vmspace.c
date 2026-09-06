@@ -715,7 +715,32 @@ static int audit_one(vibeos_vmspace_t *as, uint64_t va, uint64_t *pte,
          * reporting that as a mismatch would turn a reported degradation into a
          * false defect. exhausted says when that has happened at all. */
         if (vibeos_rmap_stats()->exhausted == 0u) {
-            if (vibeos_rmap_count(phys) != (uint32_t)vibeos_frame_owners(phys)) {
+            /* The two quantities live behind two different locks, so a single
+             * sample of each is not a comparison - it is two comparisons made
+             * at two instants, and between them a thread of the parent on
+             * another core can exec, exit, munmap or fork again and move both.
+             *
+             * That is not a hypothesis. The clang Debug job reported
+             * rmap_mismatch=1 on a boot where every other MUSTBEZERO counter
+             * was clean and both Release jobs were green - Debug being the
+             * slow build is exactly what widens this window. A detector that
+             * cannot tell "these disagree at rest" from "the world moved under
+             * the read" reports the second as the first, and this file's own
+             * notes say the first question when a detector fires is whether
+             * the detector is right.
+             *
+             * So: bracket the rmap read with two reads of the owner count. If
+             * the owners moved, the sample was torn and says nothing; count
+             * that separately so a torn sample stays visible rather than being
+             * silently dropped. If they held still, the disagreement is real.
+             */
+            uint8_t before = vibeos_frame_owners(phys);
+            uint32_t holders = vibeos_rmap_count(phys);
+            uint8_t after = vibeos_frame_owners(phys);
+
+            if (before != after) {
+                vibeos_mm_stats()->rmap_audit_torn++;
+            } else if (holders != (uint32_t)before) {
                 vibeos_mm_stats()->rmap_mismatch++;
             }
         }

@@ -6980,6 +6980,19 @@ static void iso_w32both(uint8_t *p, uint32_t v) {
     p[6] = (uint8_t)(v >> 8); p[7] = (uint8_t)v;
 }
 
+/* The logical block size is a both-endian *16-bit* pair - four bytes, but two
+ * copies of a 16-bit number rather than one 32-bit one. This fixture used to
+ * write it with iso_w32both, and the driver used to read it with a 32-bit
+ * little-endian load, so the two agreed with each other and this test passed
+ * for months against a driver that refused every real ISO ever made. That is
+ * the whole argument for I5 mounting an image the host's own mkisofs built:
+ * a fixture this project writes can only prove the driver matches the fixture.
+ */
+static void iso_w16both(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 8); p[3] = (uint8_t)v;
+}
+
 /* One directory record. Returns its length. */
 static uint32_t iso_rec(uint8_t *at, uint32_t extent, uint32_t len, int is_dir,
                         const char *name) {
@@ -7021,7 +7034,7 @@ static void iso_build(void) {
     pvd = iso_sec(VIBEOS_ISO_PVD_SECTOR);
     pvd[0] = 1u;
     memcpy(pvd + 1, "CD001", 5);
-    iso_w32both(pvd + 128, VIBEOS_ISO_SECTOR);
+    iso_w16both(pvd + 128, VIBEOS_ISO_SECTOR);
     iso_rec(pvd + 156, 20u, VIBEOS_ISO_SECTOR, 1, "\x00");
     /* iso_rec wrote a one-character name; fix it up to the root's form. */
     pvd[156 + 32] = 1u;
@@ -7197,7 +7210,7 @@ static int test_iso_refusals(void) {
 
     /* A logical block size this driver does not handle. */
     iso_build();
-    iso_w32both(iso_sec(VIBEOS_ISO_PVD_SECTOR) + 128, 512u);
+    iso_w16both(iso_sec(VIBEOS_ISO_PVD_SECTOR) + 128, 512u);
     vibeos_blockcache_invalidate(&bc);
     if (vibeos_iso9660_mount(&fs, &bc, 0) == 0) {
         return -1;

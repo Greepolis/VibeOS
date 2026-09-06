@@ -61,23 +61,57 @@ def build_ext2(path, size_bytes):
     return None
 
 
+def build_iso9660(path, size_bytes):
+    # xorriso rather than genisoimage: it is what ships on a modern distro and
+    # what ships in the CI image. size_bytes is ignored - an ISO is whatever
+    # size its contents make it, which is why the staleness check below has to
+    # look at the marker file rather than at the length.
+    tool = shutil.which("xorriso")
+    if not tool:
+        return "xorriso not found"
+
+    workdir = path + ".d"
+    os.makedirs(workdir, exist_ok=True)
+    with open(os.path.join(workdir, MARKER), "wb") as f:
+        f.write(content())
+
+    # No Rock Ridge and no Joliet. Those are extensions; the driver under test
+    # reads plain ISO9660, and giving it an image whose real names live in an
+    # extension it does not implement would test the fallback rather than the
+    # filesystem.
+    cmd = [tool, "-as", "mkisofs", "-quiet", "-o", path, workdir]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    shutil.rmtree(workdir, ignore_errors=True)
+    if r.returncode != 0:
+        return "xorriso failed: " + (r.stderr or r.stdout).strip()[:200]
+    return None
+
+
+BUILDERS = {"ext2": build_ext2, "iso9660": build_iso9660}
+
+
 def main():
     if len(sys.argv) != 4:
         print("usage: make-fs-image.py <kind> <path> <bytes>", file=sys.stderr)
         return 2
     kind, path, size = sys.argv[1], sys.argv[2], int(sys.argv[3])
 
+    # ext2 is made at an exact size, so its length is a usable staleness check.
+    # An ISO is whatever size its contents make it, so for those the check is
+    # only "does a non-empty file exist" - which is enough, because the
+    # contents are a constant of this script.
     try:
-        if os.path.getsize(path) == size:
+        n = os.path.getsize(path)
+        if (n == size) if kind == "ext2" else (n > 0):
             return 0
     except OSError:
         pass
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
 
-    if kind != "ext2":
+    if kind not in BUILDERS:
         print("unknown filesystem kind: " + kind, file=sys.stderr)
         return 2
-    err = build_ext2(path, size)
+    err = BUILDERS[kind](path, size)
     if err:
         # Not fatal to the build. A machine without e2fsprogs still boots; it
         # just cannot run the ext2 half of I5, and the boot says so rather than

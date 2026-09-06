@@ -1095,28 +1095,35 @@ def main():
                                 (mf.group(1).strip().replace(" ", "_")
                                  if mf else "unreadable"))
 
-            # A filesystem that had never run (I5).
+            # The filesystems that had never run (I5).
             #
-            # ext2, mounted from an image the *host's* mke2fs built, and read
+            # Mounted from images the *host's* own mkfs tools built, and read
             # from. An image this project wrote itself would only prove the
             # driver and the writer agree with each other; an image made by the
             # tool everybody else uses is the only kind that can say the driver
             # is wrong.
             #
-            # The absence of the image is reported, not asserted: a machine
-            # without e2fsprogs still boots and the build says so rather than
-            # failing somewhere a developer has to guess about. What is
-            # asserted is that when the image is there, it mounts and reads.
-            me2 = re.search(r"\[IO\] EXT2 sectors=0x([0-9a-f]{16}) result=([^\n]*)",
-                            text)
-            if me2 is None:
-                problems.append("ext2_exercise_missing")
-            else:
-                res = me2.group(2).strip()
-                if res.startswith("FAILED"):
-                    problems.append("ext2:" + res.replace(" ", "_"))
+            # The expected names are listed here rather than counted, because a
+            # count cannot tell "iso9660 stopped being exercised" from "ext2
+            # ran twice". Every member of the family is asserted by name, which
+            # is the whole reason the bring-up became a table.
+            #
+            # The absence of an image is reported, not asserted: a machine
+            # without e2fsprogs or xorriso still boots and the build says so
+            # rather than failing somewhere a developer has to guess about.
+            seen_fs = {}
+            for m in re.finditer(
+                    r"\[IO\] FSIMAGE name=(\S+) sectors=0x[0-9a-f]{16} "
+                    r"result=([^\n]*)", text):
+                seen_fs[m.group(1)] = m.group(2).strip()
+            for want in ("ext2", "iso9660"):
+                res = seen_fs.get(want)
+                if res is None:
+                    problems.append("fsimage_missing:" + want)
+                elif res.startswith("FAILED"):
+                    problems.append(want + ":" + res.replace(" ", "_"))
                 elif res != "OK" and "no image" not in res:
-                    problems.append("ext2:" + res.replace(" ", "_"))
+                    problems.append(want + ":" + res.replace(" ", "_"))
 
             # The mount table (I4b step 4).
             #
