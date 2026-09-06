@@ -3,6 +3,7 @@
 #include "vibeos/anon.h"
 #include "vibeos/frame.h"
 #include "vibeos/mm_model.h"
+#include "vibeos/reclaim.h"
 #include "vibeos/rmap.h"
 #include "vibeos/swapmap.h"
 #include "vibeos/vmspace.h"
@@ -43,9 +44,18 @@ uint32_t vibeos_anon_reclaim(uint32_t want) {
         g_stats.scanned++;
 
         if (phys == 0ull ||
-            vibeos_frame_state(phys) != VIBEOS_FRAME_ALLOCATED ||
-            vibeos_frame_test_flag(phys, VIBEOS_FRAME_PINNED) ||
-            vibeos_frame_owners(phys) != 1u ||
+            vibeos_frame_state(phys) != VIBEOS_FRAME_ALLOCATED) {
+            continue;
+        }
+        /* Counted, not merely skipped. reclaim's skipped_pinned was declared
+         * for this and nothing wrote to it, so "reclaim found nothing to take"
+         * and "everything reclaim looked at was pinned" were the same silence -
+         * and one of those is the kernel holding memory it will not give back. */
+        if (vibeos_frame_test_flag(phys, VIBEOS_FRAME_PINNED)) {
+            vibeos_reclaim_stats()->skipped_pinned++;
+            continue;
+        }
+        if (vibeos_frame_owners(phys) != 1u ||
             vibeos_rmap_count(phys) != 1u) {
             continue;
         }

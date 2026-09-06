@@ -41,6 +41,15 @@ do_build() {
     # owns - is the whole of phase P2, and it is the kind that erodes one
     # reasonable-looking line at a time.
     bash scripts/dev/check-mm-layering.sh | tail -1
+    # Two checks about the checks.
+    #
+    # This kernel's detectors have been wrong more often than the code they
+    # watch, and the two most expensive shapes are both greppable: an assertion
+    # nobody ever proved can fire, and a counter nothing ever increments.
+    # VIBEOS_BLK_TIMEOUT was both at once - defined, printed, asserted, and
+    # produced by no driver - and it took reading the source to notice.
+    python3 scripts/dev/check-assertions-covered.py | tail -1
+    python3 scripts/dev/check-counters-produced.py | tail -1
     # The interpreter substitution, checked the same way and for the same
     # reason: a rule that lives only in a comment erodes one reasonable
     # looking line at a time.

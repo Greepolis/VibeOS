@@ -121,6 +121,7 @@ int vibeos_rmap_init(void *pool, uint64_t bytes, uint32_t frames) {
     g_stats.nodes_peak = 0;
     g_stats.exhausted = 0;
     g_stats.missing_remove = 0;
+    g_stats.cycles = 0;
     g_ready = 1;
     return 0;
 }
@@ -135,11 +136,31 @@ static int add_locked(uint32_t idx, uint64_t root_phys, uint64_t va) {
      * copy-on-write fault does it, and so does a second map of the same page -
      * and must not lengthen the list, or the count stops matching `owners` and
      * the invariant this layer is checked by becomes noise. */
-    while (cur != RMAP_NONE) {
-        if (g_nodes[cur].root_phys == root_phys && g_nodes[cur].va == va) {
-            return 0;
+    {
+        /* Bounded, and the bound is the whole reason `cycles` exists.
+         *
+         * A list can only be as long as the pool, so a walk that takes more
+         * steps than there are nodes is walking a loop. Unbounded, that is not
+         * a wrong answer - it is a core that never comes back, and this kernel
+         * has had exactly that: the node pool was carved after
+         * vibeos_frame_init, user pages overwrote the lists, and CPU#0 sat in
+         * vibeos_rmap_add for the rest of the boot.
+         *
+         * The counter was declared for this and nothing ever wrote to it, so
+         * the boot gate's assertion that rmap_cycles is zero was green by
+         * construction - the same defect as VIBEOS_BLK_TIMEOUT, and found the
+         * same way once there was a check for it. */
+        uint32_t steps = 0;
+        while (cur != RMAP_NONE) {
+            if (g_nodes[cur].root_phys == root_phys && g_nodes[cur].va == va) {
+                return 0;
+            }
+            if (++steps > g_node_count) {
+                g_stats.cycles++;
+                return -1;
+            }
+            cur = g_nodes[cur].next;
         }
-        cur = g_nodes[cur].next;
     }
 
     if (g_free_head == RMAP_NONE) {
@@ -199,19 +220,27 @@ int vibeos_rmap_remove(uint64_t frame_phys, uint64_t root_phys, uint64_t va) {
     }
     va &= ~0xFFFull;
     cur = g_head[idx];
-    while (cur != RMAP_NONE) {
-        if (g_nodes[cur].root_phys == root_phys && g_nodes[cur].va == va) {
-            if (prev == RMAP_NONE) {
-                g_head[idx] = g_nodes[cur].next;
-            } else {
-                g_nodes[prev].next = g_nodes[cur].next;
+    {
+        uint32_t steps = 0;
+        while (cur != RMAP_NONE) {
+            if (g_nodes[cur].root_phys == root_phys && g_nodes[cur].va == va) {
+                if (prev == RMAP_NONE) {
+                    g_head[idx] = g_nodes[cur].next;
+                } else {
+                    g_nodes[prev].next = g_nodes[cur].next;
+                }
+                release_node(cur);
+                rmap_unlock();
+                return 0;
             }
-            release_node(cur);
-            rmap_unlock();
-            return 0;
+            if (++steps > g_node_count) {
+                g_stats.cycles++;
+                rmap_unlock();
+                return -1;
+            }
+            prev = cur;
+            cur = g_nodes[cur].next;
         }
-        prev = cur;
-        cur = g_nodes[cur].next;
     }
     /* Counted, because it means the two sides disagree about what was mapped -
      * which is the same shape as the defect this subsystem keeps producing,
@@ -232,10 +261,20 @@ void vibeos_rmap_forget_frame(uint64_t frame_phys) {
     }
     cur = g_head[idx];
     g_head[idx] = RMAP_NONE;
-    while (cur != RMAP_NONE) {
-        uint32_t next = g_nodes[cur].next;
-        release_node(cur);
-        cur = next;
+    {
+        /* This one has to stop too, and stopping loses nodes - a loop cannot
+         * be returned to the free list without corrupting it further. A leak
+         * that is counted is better than a core that never returns. */
+        uint32_t steps = 0;
+        while (cur != RMAP_NONE) {
+            uint32_t next = g_nodes[cur].next;
+            if (++steps > g_node_count) {
+                g_stats.cycles++;
+                break;
+            }
+            release_node(cur);
+            cur = next;
+        }
     }
     rmap_unlock();
 }
