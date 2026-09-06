@@ -1157,6 +1157,48 @@ def main():
                 elif res != "OK" and "no image" not in res:
                     problems.append(want + ":" + res.replace(" ", "_"))
 
+            # The kernel own log, on a medium that outlives it (I5b).
+            #
+            # Two things are asserted, and only the second is interesting.
+            #
+            # The first is that the sink came up at all: a second disk that
+            # stops being attached, or an attach that fails, puts this straight
+            # back to where it was - a feature that exists and never runs.
+            #
+            # The second is the whole feature. A fresh medium legitimately has
+            # nothing on it, so "previous=none" cannot simply be banned. But
+            # once the medium carries records from an earlier machine -
+            # prev_seq is how the sink says so - the previous boot last line
+            # MUST come back. That is the conditional that makes this a test of
+            # persistence rather than of a write followed by a read: the gate
+            # keeps its log disk between runs on purpose, so the second run in
+            # any working directory exercises the interesting branch.
+            mlog = re.search(
+                r"\[IO\] LOGSINK result=(.*?) capacity=0x([0-9a-f]{16}) "
+                r"prev_seq=0x([0-9a-f]{16}) written=0x([0-9a-f]{16}) "
+                r"failed=0x([0-9a-f]{16}) bad=0x([0-9a-f]{16}) "
+                r"previous=(.*)", text)
+            if mlog is None:
+                problems.append("logsink_missing")
+            else:
+                verdict = mlog.group(1).strip()
+                prev_seq = int(mlog.group(3), 16)
+                written = int(mlog.group(4), 16)
+                failed = int(mlog.group(5), 16)
+                previous = mlog.group(7).strip()
+                if verdict != "OK":
+                    problems.append("logsink:" + verdict.replace(" ", "_"))
+                elif written == 0:
+                    problems.append("logsink_wrote_nothing")
+                elif failed != 0:
+                    problems.append("logsink_write_failed")
+                elif prev_seq > 0 and previous == "none":
+                    # A medium carrying an earlier machine records handed back
+                    # nothing. This is the failure the whole phase is about: a
+                    # log that loses its last line loses the only line anybody
+                    # wanted.
+                    problems.append("logsink_lost_the_previous_boot")
+
             # The mount table (I4b step 4).
             #
             # There was one global mount, and that was the structural reason

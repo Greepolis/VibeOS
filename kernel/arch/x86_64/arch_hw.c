@@ -35,6 +35,7 @@
 #include "vibeos/parttab.h"
 #include "vibeos/ext2.h"
 #include "vibeos/iso9660.h"
+#include "vibeos/logsink.h"
 #include "vibeos/storage.h"
 #include "vibeos/swapmap.h"
 #include "vibeos/anon.h"
@@ -9602,6 +9603,106 @@ static void hw_mount_report(void) {
     }
 }
 
+/* ---- the kernel log, on a medium that outlives the machine (I5b) ----------
+ *
+ * The second disk, not the boot one. A log that lives on the filesystem is
+ * unwritable exactly when it is most wanted, and that is not a hypothetical
+ * here: every hard defect in this project was diagnosed from a serial log, and
+ * on an appliance with no serial cable a wedge currently leaves nothing at all.
+ *
+ * Straight at the block layer, never through the block cache. A cache holding
+ * the last few lines when the power goes is the one failure this cannot have.
+ */
+static int g_logsink_dev = -1;
+
+static int hw_logsink_read(void *ctx, uint64_t lba, void *buf) {
+    (void)ctx;
+    return (g_logsink_dev < 0)
+         ? -1 : vibeos_blk_read((uint32_t)g_logsink_dev, lba, 1u, buf);
+}
+
+static int hw_logsink_read_many(void *ctx, uint64_t lba, void *buf,
+                                uint32_t sectors) {
+    (void)ctx;
+    return (g_logsink_dev < 0)
+         ? -1 : vibeos_blk_read((uint32_t)g_logsink_dev, lba, sectors, buf);
+}
+
+static int hw_logsink_write(void *ctx, uint64_t lba, const void *buf) {
+    (void)ctx;
+    return (g_logsink_dev < 0)
+         ? -1 : vibeos_blk_write((uint32_t)g_logsink_dev, lba, 1u, buf);
+}
+
+static void hw_logsink_bringup(void) {
+    const char *verdict = "no second disk on this machine";
+    vibeos_logsink_dev_t dev;
+    vibeos_logsink_record_t prev;
+    vibeos_blk_driver_t info;
+    int have_prev = 0;
+    int dev_no;
+
+    /* Adapter 1: the second disk that bound. Adapter 0 is the boot disk and is
+     * deliberately not eligible - a log on the medium the machine is running
+     * from is the arrangement this phase exists to stop. */
+    dev_no = (vibeos_x86_64_blk_adapter_count() > 1u)
+           ? vibeos_x86_64_blk_adapter_device(1u) : -1;
+    if (dev_no >= 0 && vibeos_blk_info((uint32_t)dev_no, &info) == 0) {
+        g_logsink_dev = dev_no;
+        vibeos_logsink_set_cpu_id(vibeos_x86_64_cpu_id);
+        dev.read = hw_logsink_read;
+        dev.read_many = hw_logsink_read_many;
+        dev.write = hw_logsink_write;
+        dev.ctx = 0;
+        dev.sectors = info.sectors;
+
+        verdict = "FAILED: attach";
+        if (vibeos_logsink_attach(&dev) == 0) {
+            /* What the previous machine left, read *before* this boot writes
+             * anything - otherwise the newest record is this boot own and the
+             * check proves only that a write followed by a read works. */
+            have_prev = (vibeos_logsink_read(0, &prev) == 0);
+
+            verdict = "FAILED: write";
+            if (vibeos_logsink_write("VIBEOS boot mark", 16u) == 0) {
+                verdict = "OK";
+            }
+        }
+    }
+
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts("[IO] LOGSINK result=");
+    vibeos_x86_64_serial_puts(verdict);
+    vibeos_x86_64_serial_puts(" capacity=0x");
+    vibeos_x86_64_serial_print_hex(vibeos_logsink_capacity());
+    vibeos_x86_64_serial_puts(" prev_seq=0x");
+    vibeos_x86_64_serial_print_hex(vibeos_logsink_stats()->highest_seq_seen);
+    vibeos_x86_64_serial_puts(" written=0x");
+    vibeos_x86_64_serial_print_hex(vibeos_logsink_stats()->records_written);
+    vibeos_x86_64_serial_puts(" failed=0x");
+    vibeos_x86_64_serial_print_hex(vibeos_logsink_stats()->write_failed);
+    vibeos_x86_64_serial_puts(" bad=0x");
+    vibeos_x86_64_serial_print_hex(vibeos_logsink_stats()->bad_records);
+    /* The previous boot last line, which is the entire point of the feature.
+     * "previous=none" on a fresh medium, and the gate reads the difference
+     * between the two runs rather than either one on its own. */
+    vibeos_x86_64_serial_puts(" previous=");
+    if (have_prev) {
+        uint32_t k;
+        for (k = 0; k < prev.len && k < 64u; k++) {
+            char c[2];
+            c[0] = (prev.text[k] >= 32u && prev.text[k] < 127u)
+                 ? (char)prev.text[k] : '.';
+            c[1] = 0;
+            vibeos_x86_64_serial_puts(c);
+        }
+    } else {
+        vibeos_x86_64_serial_puts("none");
+    }
+    vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
+}
+
 /* ---- filesystems that had never run (I5) ----------------------------------
  *
  * ext2 and ISO9660, mounted from images the *host's* own mkfs tools built, and
@@ -10606,6 +10707,7 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
         /* After the real volume is mounted, so the scratch device can never be
          * confused with it: it is registered second and named separately. */
         hw_scratch_bringup();
+        hw_logsink_bringup();
         hw_fsimages_bringup();
         hw_mount_report();
         hw_swap_bringup();

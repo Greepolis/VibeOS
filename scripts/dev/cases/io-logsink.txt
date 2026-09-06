@@ -1,0 +1,103 @@
+# Sabotage cases for the kernel's own log on disk (I5b).
+#
+# Host tests: bash scripts/dev/check.sh tests build-gcc-Release
+# Boot gate:  bash scripts/dev/check.sh build build-gcc-Release
+#             python3 scripts/qemu-cli-smoke-linux.py build-gcc-Release 300
+#
+# The second run in a working directory is the interesting one: the gate keeps
+# qemu-cli-logdisk.img between runs on purpose, so a fresh checkout exercises
+# the "nothing here yet" branch and every run after it exercises persistence.
+# A sabotage run that starts by deleting that file is testing the easy half.
+
+case: the sink stops being brought up
+  in arch_hw.c, remove the hw_logsink_bringup call
+  expect: logsink_missing
+  why it matters: this is the state the whole phase exists to leave. A feature
+    that is present and never runs is the defect this project produces most
+    often, and it looks exactly like a feature that works.
+
+case: the previous machine's records are not read back
+  in hw_logsink_bringup, read record 0 *after* writing the boot mark
+  expect: nothing on the gate, and that is the point of writing it down
+  why it matters: it would pass. The newest record would be this boot's own,
+    so the check would prove that a write followed by a read works and nothing
+    about persistence. The order in the bring-up is load-bearing and the
+    comment there says so.
+
+case: attach forgets what the medium already held
+  in vibeos_logsink_attach, set g_next_seq = 1 instead of highest + 1
+  expect: FAIL:logsink "survives a reset"; and on the gate,
+    logsink_lost_the_previous_boot on any run after the first
+  why it matters: sequence numbers that restart at every boot cannot order
+    records across a reset, which is the one ordering anybody needs after a
+    machine has stopped.
+
+case: the reader stops checking it got the record it asked for
+  in vibeos_logsink_read, drop the `got != want` comparison
+  expect: FAIL:logsink "a wrap keeps ordering"
+  why it matters: after a wrap the slot holds a *newer* record than the one
+    asked for. Returning it is worse than returning nothing - a log that
+    answers with the wrong line is not a log.
+
+case: the checksum stops covering the sequence number
+  in log_sum, skip bytes 4..11 as well as the checksum field
+  expect: FAIL:logsink "a torn sequence does not survive attach"
+  why it matters: and this case is here because the first version of it was
+    caught by NOTHING, and the comment in the module claiming the rule guarded
+    against stale slots was simply wrong - the reader's own comparison does
+    that. What the rule really guards is attach, which validates with no
+    sequence to compare against: one flipped high bit in a sequence field sets
+    the next sequence to something enormous for the rest of the life of the
+    medium. The test was written after the sabotage, not before it.
+
+case: records are allowed into sector 0
+  in vibeos_logsink_attach, use dev->sectors as the capacity and drop the +1
+  expect: FAIL:logsink "leaves sector zero alone"
+  why it matters: a module that writes to sector 0 of a disk will one day eat
+    somebody's partition table, and it will do it on the medium nobody was
+    watching.
+
+case: a failed write is counted as a record written
+  in vibeos_logsink_write, increment records_written on the failure path too
+  expect: FAIL:logsink "counts a failed write"
+  why it matters: a sink that silently absorbs a refusal is worse than no sink,
+    because it is believed. NOTE: the first attempt at this sabotage was a sed
+    that did not apply, and it came back green - which is indistinguishable
+    from the test not working. Check the edit landed before believing the
+    result. This is the third time that trap has been walked into here.
+
+case: the attach scan reads one sector at a time
+  in vibeos_logsink_attach, ignore dev->read_many
+  expect: nothing deterministic - but boots start wedging, about two in four on
+    a 4 MiB medium
+  why it matters: this happened. Eight thousand synchronous single-sector
+    transfers during bring-up do not look slow, they look stopped: the failures
+    were a wedge at busybox_cat and the known bad-args, neither of which points
+    anywhere near a log. It was identified by shrinking the medium to 512
+    sectors and watching four boots go green, and fixed by batching rather than
+    by keeping the medium small. The scan is the only batched path; the write
+    stays one sector, because batching there would be the write-back this
+    module exists to refuse.
+
+case: every core shares one staging buffer
+  in vibeos_logsink_write, use g_stage[0] instead of g_stage[log_cpu()]
+  expect: THE CASE EXISTS AND THIS ENVIRONMENT CANNOT TELL. The host tests are
+    single-threaded, so switching the reported cpu id proves the slot follows
+    the sequence number but cannot make two cores write at once. On the machine
+    the sink is written from bring-up only, so no boot exercises it either.
+    Same distinction the AHCI cases carry: "no case exists" and "the case
+    exists and cannot be decided here" are different things. It becomes
+    decidable when something logs from more than one core - which is the point
+    at which it must be re-run.
+
+case: the sink reports success having written nothing
+  in vibeos_logsink_write, return 0 before touching the medium
+  expect: logsink_wrote_nothing
+  why it matters: "it came up" and "it recorded something" are different
+    claims, and only the second one is worth making.
+
+case: the medium refuses every write
+  attach the sink to a device whose write always fails
+  expect: logsink_write_failed
+  why it matters: a boot that cannot write its log should say so at the moment
+    it finds out, not at the crash where the log turns out to be empty.
