@@ -32,14 +32,36 @@
 #include "vibeos/arch_x86_64.h"
 #include "vibeos/blkdev.h"
 
-static int (*g_read)(uint64_t lba, void *buf);
-static int (*g_read_many)(uint64_t lba, void *buf, uint32_t sectors);
-static int (*g_write)(uint64_t lba, const void *buf);
-static int (*g_write_many)(uint64_t lba, const void *buf, uint32_t sectors);
-static int (*g_barrier)(void);
-static const char *g_name = "none";
-static int g_device = -1;
-static uint64_t (*g_timeouts)(void);
+/* ---- and, since I5b, more than one of them ---------------------------------
+ *
+ * This adapter used to hold one set of function pointers and refuse the second
+ * driver outright: "first one to come up owns the disk". That was right while
+ * a machine had exactly one disk, and it is the reason I5's filesystem images
+ * had to be reached through a loop device rather than attached as real
+ * hardware - and it is a hard blocker for I5b, whose whole premise is a log on
+ * a medium that survives the machine.
+ *
+ * Each bind is now its own adapter with its own pointers, and its own device
+ * number from the block layer, which was always multi-device underneath. What
+ * does not change is which disk "the disk" means: the first to bind still owns
+ * that, because it is the one the machine booted from and every caller above
+ * assumes it.
+ */
+#define BLK_MAX_ADAPTERS 4u
+
+typedef struct {
+    int (*read)(uint64_t lba, void *buf);
+    int (*read_many)(uint64_t lba, void *buf, uint32_t sectors);
+    int (*write)(uint64_t lba, const void *buf);
+    int (*write_many)(uint64_t lba, const void *buf, uint32_t sectors);
+    int (*barrier)(void);
+    uint64_t (*timeouts)(void);
+    const char *name;
+    int device;
+} blk_adapter_t;
+
+static blk_adapter_t g_adapters[BLK_MAX_ADAPTERS];
+static uint32_t g_adapter_count;
 
 /* The old three functions, behind the one entry point the layer expects.
  *
@@ -60,19 +82,24 @@ static uint64_t (*g_timeouts)(void);
  * matters far less than the alternative, which was not knowing that anything
  * had. */
 static int adapt_submit(void *ctx, vibeos_blk_request_t *req) {
+    blk_adapter_t *a = (blk_adapter_t *)ctx;
     uint32_t i;
-    uint64_t timeouts_before = g_timeouts ? g_timeouts() : 0ull;
+    uint64_t timeouts_before;
 
-    (void)ctx;
+    if (a == 0) {
+        req->result = VIBEOS_BLK_NO_DEVICE;
+        return -1;
+    }
+    timeouts_before = a->timeouts ? a->timeouts() : 0ull;
     if (req->write) {
         /* Preferred when it exists, for the same reason read_many is: a run
          * done a sector at a time under a lock that masks interrupts was
          * indistinguishable from a hang on the read side, and there is no
          * reason to wait for the write side to teach the same lesson. */
-        if (g_write_many) {
-            if (g_write_many(req->lba, req->buf, req->sectors) != 0) {
+        if (a->write_many) {
+            if (a->write_many(req->lba, req->buf, req->sectors) != 0) {
                 req->sectors_done = 0;
-                if (g_timeouts && g_timeouts() != timeouts_before) {
+                if (a->timeouts && a->timeouts() != timeouts_before) {
                     req->result = VIBEOS_BLK_TIMEOUT;
                 }
                 return -1;
@@ -80,15 +107,15 @@ static int adapt_submit(void *ctx, vibeos_blk_request_t *req) {
             req->sectors_done = req->sectors;
             return 0;
         }
-        if (!g_write) {
+        if (!a->write) {
             req->result = VIBEOS_BLK_NO_DEVICE;
             return -1;
         }
         for (i = 0; i < req->sectors; i++) {
             const uint8_t *p = (const uint8_t *)req->buf + (uint64_t)i * 512ull;
-            if (g_write(req->lba + i, p) != 0) {
+            if (a->write(req->lba + i, p) != 0) {
                 req->sectors_done = i;
-                if (g_timeouts && g_timeouts() != timeouts_before) {
+                if (a->timeouts && a->timeouts() != timeouts_before) {
                     req->result = VIBEOS_BLK_TIMEOUT;
                 }
                 return -1;
@@ -98,10 +125,10 @@ static int adapt_submit(void *ctx, vibeos_blk_request_t *req) {
         return 0;
     }
 
-    if (g_read_many) {
-        if (g_read_many(req->lba, req->buf, req->sectors) != 0) {
+    if (a->read_many) {
+        if (a->read_many(req->lba, req->buf, req->sectors) != 0) {
             req->sectors_done = 0;
-            if (g_timeouts && g_timeouts() != timeouts_before) {
+            if (a->timeouts && a->timeouts() != timeouts_before) {
                 req->result = VIBEOS_BLK_TIMEOUT;
             }
             return -1;
@@ -109,15 +136,15 @@ static int adapt_submit(void *ctx, vibeos_blk_request_t *req) {
         req->sectors_done = req->sectors;
         return 0;
     }
-    if (!g_read) {
+    if (!a->read) {
         req->result = VIBEOS_BLK_NO_DEVICE;
         return -1;
     }
     for (i = 0; i < req->sectors; i++) {
         uint8_t *p = (uint8_t *)req->buf + (uint64_t)i * 512ull;
-        if (g_read(req->lba + i, p) != 0) {
+        if (a->read(req->lba + i, p) != 0) {
             req->sectors_done = i;
-            if (g_timeouts && g_timeouts() != timeouts_before) {
+            if (a->timeouts && a->timeouts() != timeouts_before) {
                 req->result = VIBEOS_BLK_TIMEOUT;
             }
             return -1;
@@ -128,8 +155,8 @@ static int adapt_submit(void *ctx, vibeos_blk_request_t *req) {
 }
 
 static int adapt_barrier(void *ctx) {
-    (void)ctx;
-    return g_barrier ? g_barrier() : -1;
+    blk_adapter_t *a = (blk_adapter_t *)ctx;
+    return (a && a->barrier) ? a->barrier() : -1;
 }
 
 void vibeos_x86_64_blk_bind(const char *name,
@@ -141,18 +168,27 @@ void vibeos_x86_64_blk_bind(const char *name,
                             uint64_t sectors,
                             uint64_t (*timeouts)(void)) {
     vibeos_blk_driver_t drv;
+    blk_adapter_t *a;
     uint32_t dev = 0;
 
-    if (g_read != 0) {
-        return;   /* first one to come up owns the disk */
+    /* A driver that cannot read is not a disk. Refused here rather than
+     * registered and discovered later, because the layer answers a null read
+     * with NO_DEVICE and that message names the wrong culprit. */
+    if (read == 0 && read_many == 0) {
+        return;
     }
-    g_name = name;
-    g_read = read;
-    g_read_many = read_many;
-    g_write = write;
-    g_write_many = write_many;
-    g_barrier = barrier;
-    g_timeouts = timeouts;
+    if (g_adapter_count >= BLK_MAX_ADAPTERS) {
+        return;
+    }
+    a = &g_adapters[g_adapter_count];
+    a->read = read;
+    a->read_many = read_many;
+    a->write = write;
+    a->write_many = write_many;
+    a->barrier = barrier;
+    a->timeouts = timeouts;
+    a->name = name;
+    a->device = -1;
 
     /* A device that would not say how big it is does not get registered, and
      * the machine says so rather than reading past the end of it later. This
@@ -166,28 +202,53 @@ void vibeos_x86_64_blk_bind(const char *name,
      * answered with a refusal by the layer, which is the honest answer for a
      * device that cannot order its own writes. */
     drv.barrier = barrier ? adapt_barrier : 0;
-    drv.ctx = 0;
+    drv.ctx = a;
     if (vibeos_blk_register(&drv, &dev) == 0) {
-        g_device = (int)dev;
+        a->device = (int)dev;
+        g_adapter_count++;   /* published last: the entry is complete first */
     }
 }
 
 /* The bound driver's timeout count, or zero if no disk came up. One accessor
  * so kmain does not have to know which driver won. */
+/* The boot disk's counters and identity. Adapter 0 is the first driver that
+ * came up, which is the one the machine booted from - every caller above this
+ * layer means that one when it says "the disk". */
+static blk_adapter_t *blk_boot(void) {
+    return (g_adapter_count > 0u) ? &g_adapters[0] : 0;
+}
+
 uint64_t vibeos_x86_64_blk_timeouts(void) {
-    return g_timeouts ? g_timeouts() : 0ull;
+    blk_adapter_t *a = blk_boot();
+    return (a && a->timeouts) ? a->timeouts() : 0ull;
+}
+
+/* How many disks came up, for a boot that wants to say so. */
+uint32_t vibeos_x86_64_blk_adapter_count(void) {
+    return g_adapter_count;
+}
+
+/* The block-layer device number of the nth disk that bound, or -1. */
+int vibeos_x86_64_blk_adapter_device(uint32_t n) {
+    return (n < g_adapter_count) ? g_adapters[n].device : -1;
+}
+
+const char *vibeos_x86_64_blk_adapter_name(uint32_t n) {
+    return (n < g_adapter_count) ? g_adapters[n].name : "none";
 }
 
 int vibeos_x86_64_blk_device(void) {
-    return g_device;
+    blk_adapter_t *a = blk_boot();
+    return a ? a->device : -1;
 }
 
 const char *vibeos_x86_64_blk_name(void) {
-    return g_name;
+    blk_adapter_t *a = blk_boot();
+    return a ? a->name : "none";
 }
 
 int vibeos_x86_64_blk_present(void) {
-    return g_read != 0;
+    return g_adapter_count > 0u;
 }
 
 /* The three the filesystem still calls, routed through the layer.
@@ -198,22 +259,28 @@ int vibeos_x86_64_blk_present(void) {
  * caught rather than believed, a reason recorded, and a counter moved. The
  * reason is not thrown away, it is simply not asked for here yet. */
 int vibeos_x86_64_blk_read(uint64_t lba, void *buf) {
-    if (g_device < 0) {
+    int dev = vibeos_x86_64_blk_device();
+
+    if (dev < 0) {
         return -1;
     }
-    return vibeos_blk_read((uint32_t)g_device, lba, 1u, buf);
+    return vibeos_blk_read((uint32_t)dev, lba, 1u, buf);
 }
 
 int vibeos_x86_64_blk_read_many(uint64_t lba, void *buf, uint32_t sectors) {
-    if (g_device < 0) {
+    int dev = vibeos_x86_64_blk_device();
+
+    if (dev < 0) {
         return -1;
     }
-    return vibeos_blk_read((uint32_t)g_device, lba, sectors, buf);
+    return vibeos_blk_read((uint32_t)dev, lba, sectors, buf);
 }
 
 int vibeos_x86_64_blk_write(uint64_t lba, const void *buf) {
-    if (g_device < 0) {
+    int dev = vibeos_x86_64_blk_device();
+
+    if (dev < 0) {
         return -1;
     }
-    return vibeos_blk_write((uint32_t)g_device, lba, 1u, buf);
+    return vibeos_blk_write((uint32_t)dev, lba, 1u, buf);
 }

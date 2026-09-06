@@ -10557,7 +10557,18 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
                                vibeos_x86_64_virtio_blk_barrier,
                                vibeos_x86_64_virtio_blk_sectors(),
                                vibeos_x86_64_virtio_blk_timeouts);
-    } else if (vibeos_x86_64_ahci_init() == 0) {
+    }
+    /* Not "else if" any more.
+     *
+     * It was, and that was right while the adapter beneath could only hold one
+     * driver: trying AHCI after virtio had won could only waste a probe. Now
+     * that each bind is its own device, a machine with both controllers gets
+     * both disks - which is what I5b's log needs, since a log that lives on the
+     * boot filesystem is unwritable exactly when it is most wanted.
+     *
+     * The order still decides which one is "the disk": virtio binds first and
+     * keeps that meaning for every caller above. */
+    if (vibeos_x86_64_ahci_init() == 0) {
         vibeos_x86_64_blk_bind("ahci",
                                vibeos_x86_64_ahci_read,
                                vibeos_x86_64_ahci_read_many,
@@ -10567,6 +10578,23 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
                                vibeos_x86_64_ahci_sectors(),
                                vibeos_x86_64_ahci_timeouts);
     }
+    {
+        uint32_t d;
+        vibeos_x86_64_serial_lock();
+        vibeos_x86_64_serial_puts("[BLK] disks=0x");
+        vibeos_x86_64_serial_print_hex(vibeos_x86_64_blk_adapter_count());
+        for (d = 0; d < vibeos_x86_64_blk_adapter_count(); d++) {
+            vibeos_x86_64_serial_puts(" disk=");
+            vibeos_x86_64_serial_puts(vibeos_x86_64_blk_adapter_name(d));
+            vibeos_x86_64_serial_puts(":0x");
+            vibeos_x86_64_serial_print_hex(
+                (uint64_t)vibeos_x86_64_blk_adapter_device(d));
+        }
+        vibeos_x86_64_serial_puts("\n");
+        vibeos_x86_64_serial_unlock();
+    }
+    /* Kept: the boot disk by name is what several existing checks read, and a
+     * line that changed shape would fail them for the wrong reason. */
     vibeos_x86_64_serial_puts("[BLK] disk driver: ");
     vibeos_x86_64_serial_puts(vibeos_x86_64_blk_name());
     vibeos_x86_64_serial_puts("\n");

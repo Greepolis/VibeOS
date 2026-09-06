@@ -71,3 +71,4 @@ repeat-fail-*
 # Soak run output (scripts/dev/soak.sh, and the nightly).
 soak-low.log
 soak-high.log
+qemu-cli-logdisk.img

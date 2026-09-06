@@ -84,6 +84,13 @@ void vibeos_x86_64_blk_bind(const char *name,
                             int (*barrier)(void),
                             uint64_t sectors,
                             uint64_t (*timeouts)(void));
+
+/* Every disk that bound, not just the boot one. The adapter used to refuse the
+ * second driver outright, which is why I5's images had to be reached through a
+ * loop device and why a log on its own medium was not possible at all. */
+uint32_t vibeos_x86_64_blk_adapter_count(void);
+int vibeos_x86_64_blk_adapter_device(uint32_t n);
+const char *vibeos_x86_64_blk_adapter_name(uint32_t n);
 uint64_t vibeos_x86_64_virtio_blk_timeouts(void);
 uint64_t vibeos_x86_64_ahci_timeouts(void);
 uint64_t vibeos_x86_64_virtio_net_tx_timeouts(void);

@@ -49,6 +49,24 @@ DISK_ARGS = {
     "ahci": ["-device", "ich9-ahci,id=ahci",
              "-device", "ide-hd,drive=esp,bus=ahci.0,bootindex=1"],
 }
+# A second disk, on the other controller, for I5b's log.
+#
+# It is a real raw file rather than a vvfat directory, because the whole point
+# of the log is that it survives the machine: the gate boots twice over the
+# same file and the second boot has to read what the first one wrote. vvfat
+# synthesises a filesystem from a host directory and is not a medium.
+#
+# On the other controller deliberately. Until this phase the arch block adapter
+# held one driver and refused the second - "first one to come up owns the
+# disk" - so a second disk on the *same* controller would have proved nothing
+# about the change that made this possible.
+LOG_DISK_SECTORS = 8192          # 4 MiB, addressed by sector, no filesystem
+LOG_DISK_ARGS = {
+    "virtio": ["-device", "ich9-ahci,id=ahci",
+               "-device", "ide-hd,drive=vlog,bus=ahci.0"],
+    "ahci": ["-device", "virtio-blk-pci,drive=vlog"],
+}
+
 if DISK not in DISK_ARGS:
     raise SystemExit(f"VIBEOS_SMOKE_DISK={DISK!r}: expected one of "
                      + ", ".join(sorted(DISK_ARGS)))
@@ -445,6 +463,12 @@ def main():
     # Not beside the other artefacts: on a Windows-mounted working directory a
     # unix socket cannot be created at all, and the failure is QEMU refusing to
     # start rather than anything to do with the guest.
+    # Deliberately not in the per-run temporary directory: this file is the one
+    # thing here that has to outlive a run, because "the machine was reset and
+    # the log survived" cannot be demonstrated by a medium that is recreated
+    # with the machine.
+    log_disk = os.path.abspath("qemu-cli-logdisk.img")
+
     monitor_path = os.path.join(tempfile.gettempdir(),
                                 f"vibeos-monitor{suffix}.sock")
     try:
@@ -521,6 +545,14 @@ def main():
             # and then could not read their own disk. Both paths have to be run
             # somewhere, or the one nobody runs is the one that ships.
             cmd += DISK_ARGS[DISK]
+            # And the log medium, on the other controller. Created once and
+            # kept: a second run over the same file is how "the machine was
+            # reset and the log survived" is demonstrated rather than argued.
+            if not os.path.exists(log_disk):
+                with open(log_disk, "wb") as f:
+                    f.truncate(LOG_DISK_SECTORS * 512)
+            cmd += ["-drive", f"if=none,id=vlog,format=raw,file={log_disk}"]
+            cmd += LOG_DISK_ARGS[DISK]
             qemu = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=err_fp)
 
             serial = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

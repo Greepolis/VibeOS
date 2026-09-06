@@ -14,7 +14,13 @@
  * a page fault reading an executable, and eventually a log written from a
  * panic handler - so the table is static and its size is a decision recorded
  * in docs/io/decisions.md rather than a limit discovered at runtime. */
-#define BLK_MAX_DEVICES 4u
+/* Raised from 4 in the change that earned it, which is the only way a limit
+ * here should move. A boot now registers five: the virtio boot disk, the AHCI
+ * log disk, the RAM scratch device, and the two loop devices behind I5's ext2
+ * and ISO9660 images. At four the fifth was refused, and the refusal is
+ * counted and asserted - which is how it was found, rather than by a device
+ * quietly not being there. */
+#define BLK_MAX_DEVICES 8u
 
 static vibeos_blk_driver_t g_dev[BLK_MAX_DEVICES];
 static uint32_t g_count;

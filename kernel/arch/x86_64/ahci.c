@@ -254,14 +254,22 @@ int vibeos_x86_64_ahci_init(void) {
         /* det 3: a device is there and the link is up. ipm 1: it is awake.
          * Anything else is a port that exists in the register and has nothing
          * usable behind it. */
+        /* Instrument rather than infer. "no SATA disk on any port" is an
+         * absence, and an absence cannot say which of the three reasons it
+         * was - a link that is down, a port asleep, or a signature that is not
+         * a disk. One line, written in one call so two cores cannot split it. */
+        vibeos_x86_64_serial_lock();
+        vibeos_x86_64_serial_puts("[AHCI] port=0x");
+        vibeos_x86_64_serial_print_hex(p);
+        vibeos_x86_64_serial_puts(" ssts=0x");
+        vibeos_x86_64_serial_print_hex(ssts);
+        vibeos_x86_64_serial_puts(" sig=0x");
+        vibeos_x86_64_serial_print_hex(port_read(PxSIG));
+        vibeos_x86_64_serial_puts("\n");
+        vibeos_x86_64_serial_unlock();
         if (det != 3u || ipm != 1u) {
             continue;
         }
-        sig = port_read(PxSIG);
-        if (sig != 0x00000101u) {
-            continue;   /* not a plain SATA disk (0xEB140101 is ATAPI) */
-        }
-
         if (port_stop() != 0) {
             continue;
         }
@@ -285,6 +293,49 @@ int vibeos_x86_64_ahci_init(void) {
         port_write(PxSERR, 0xFFFFFFFFu);   /* write-1-to-clear */
         port_write(PxIS, 0xFFFFFFFFu);
         port_start();
+
+        /* The signature, read *here* and not before the port was set up.
+         *
+         * It used to be read straight after PxSSTS, and that worked for the
+         * only case anybody ran: the disk the machine boots from, on a
+         * controller UEFI had already brought up, with the signature long
+         * since latched. Attaching a second disk to a controller the firmware
+         * never touches gave PxSIG = 0xFFFFFFFF - the register is only valid
+         * once the device has sent its first D2H FIS, which cannot happen
+         * before FIS receive is enabled. So the driver reported "controller
+         * found but no SATA disk on any port" for a port with det=3 and ipm=1,
+         * which is a link that is up with a disk on the end of it.
+         *
+         * Same shape as everything else this phase has turned up: the code was
+         * only ever exercised in the one arrangement where its assumption
+         * happened to hold, and the arrangement was doing the work.
+         *
+         * Bounded, and the bound is not a timeout worth counting - this is
+         * bring-up, not a path a syscall can wait on. */
+        {
+            uint32_t tries;
+            sig = 0xFFFFFFFFu;
+            for (tries = 0; tries < 100000u; tries++) {
+                sig = port_read(PxSIG);
+                if (sig != 0xFFFFFFFFu && sig != 0u) {
+                    break;
+                }
+            }
+        }
+        if (sig != 0x00000101u) {
+            /* Not a plain SATA disk (0xEB140101 is ATAPI). Say which, because
+             * "no disk" and "a disk this driver does not drive" are different
+             * facts and the old message could not tell them apart. */
+            vibeos_x86_64_serial_lock();
+            vibeos_x86_64_serial_puts("[AHCI] port=0x");
+            vibeos_x86_64_serial_print_hex(p);
+            vibeos_x86_64_serial_puts(" not a plain SATA disk sig=0x");
+            vibeos_x86_64_serial_print_hex(sig);
+            vibeos_x86_64_serial_puts("\n");
+            vibeos_x86_64_serial_unlock();
+            (void)port_stop();
+            continue;
+        }
 
         g_ready = 1;
         vibeos_x86_64_serial_puts("[AHCI] port ready: 0x");
