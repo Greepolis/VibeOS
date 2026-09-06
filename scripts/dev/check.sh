@@ -50,6 +50,8 @@ do_build() {
     # produced by no driver - and it took reading the source to notice.
     python3 scripts/dev/check-assertions-covered.py | tail -1
     python3 scripts/dev/check-counters-produced.py | tail -1
+    # And one about the tests: every module gets an intensive nightly run.
+    python3 scripts/dev/check-nightly-coverage.py | tail -1
     # The interpreter substitution, checked the same way and for the same
     # reason: a rule that lives only in a comment erodes one reasonable
     # looking line at a time.

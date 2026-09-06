@@ -1,0 +1,36 @@
+# Sabotage cases for the scheduler torture (kernel/sched/sched_policy.c).
+#
+# Each was applied, the seed sweep was confirmed to go red, and the tree was
+# confirmed green again afterwards. Run:
+#   cmake --build <dir> --target vibeos_sched_torture
+#   for s in $(seq 1 150); do ./<dir>/vibeos_sched_torture $s 4000 || echo $s; done
+
+case: class dominance removed from the picker
+  in vibeos_sched_policy_pick, change "if (g_task[i].cls != g_task[best].cls)"
+  to "if (0)"
+  expect: FAIL:sched_torture class_dominance_broken, on 40 of 40 seeds
+  why it matters: a class is a class and not a large weight precisely because
+    it is absolute. This kernel has had it broken for real - the class was
+    derived from is_idle, collapsing KERNEL into NORMAL, so a kernel task could
+    not outrank anything, and it stayed self-consistent for months.
+
+case: affinity ignored
+  in the same loop, drop the "|| !may_run_here(i, cpu)" term
+  expect: FAIL:sched_torture picked_an_ineligible_slot, on 40 of 40 seeds
+
+case: a slot the policy never heard of is scheduled
+  in the same loop, drop the "!g_task[i].present ||" term
+  expect: FAIL:sched_torture picked_an_ineligible_slot, on 40 of 40 seeds
+  why it matters: a picker that schedules something it knows nothing about
+    charges it nothing and then prefers it forever.
+
+case: the charge ignores the weight
+  in vibeos_sched_policy_charge, replace the weighted expression with
+  "g_task[slot].vruntime += ticks * VRUNTIME_SCALE"
+  expect: FAIL:sched_torture nice stopped mattering, on 150 of 150 seeds
+  note: THIS CASE WAS CAUGHT ON ZERO SEEDS by the first version of the test,
+    which asserted exactly the right property and waited for two slots to
+    arrive by chance with equal charges and different nice values. The
+    comparison is constructed now. It is the clearest example this project has
+    of a test being right about the outcome and blind to the mechanism, and the
+    only thing that found it was running this case and watching green.

@@ -16,6 +16,7 @@ on:
 jobs:
   boot-repeatability:
     name: Boot Smoke x5 (flakiness gate)
+    # module: arch core platform
     runs-on: ubuntu-latest
     timeout-minutes: 90
     # Only what the crash collector needs. Spelled out rather than inherited:
@@ -90,6 +91,7 @@ jobs:
 
   memory-soak:
     name: Memory + Swap Soak (long run)
+    # module: mm
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -150,8 +152,62 @@ jobs:
             qemu-cli-summary.txt
           if-no-files-found: ignore
 
+  scheduler-torture:
+    name: Scheduler Torture (priorities, classes, affinity)
+    # module: sched
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build build-essential
+
+      # Sanitized, because the model catches wrong arithmetic and the sanitizer
+      # catches walking off the slot table while doing it - the same division
+      # of labour the memory manager's torture uses.
+      - name: Build (sanitized)
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DVIBEOS_BUILD_TESTS=ON \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g"
+          cmake --build build-asan --parallel --target vibeos_sched_torture
+
+      # Many seeds, because the properties that matter here are about orderings
+      # nobody thought of. Each seed prints on the first line, so a failure is
+      # replayed by passing it back.
+      - name: Torture the scheduler (400 seeds, sanitized)
+        run: |
+          set -uo pipefail
+          fails=0
+          for s in $(seq 1 400); do
+            if ! ./build-asan/vibeos_sched_torture "$s" 6000 > /tmp/st.log 2>&1; then
+              fails=$((fails + 1))
+              echo "::group::seed $s"
+              cat /tmp/st.log
+              echo "::endgroup::"
+            fi
+          done
+          echo "failing seeds: $fails of 400"
+          test "$fails" -eq 0
+
+      # Longer runs on a handful of seeds: some orderings only appear deep into
+      # a sequence, and a short run on many seeds does not reach them.
+      - name: Torture the scheduler (long runs)
+        run: |
+          set -euo pipefail
+          for s in 1 7 13 29 61; do
+            ./build-asan/vibeos_sched_torture "$s" 400000
+          done
+
   memory-manager:
     name: Memory Manager Torture (model + sanitizers)
+    # module: mm
     runs-on: ubuntu-latest
     timeout-minutes: 60
     # The boot job answers "does the machine come up?". This answers the
@@ -213,6 +269,7 @@ jobs:
 
   fuzz-protocols:
     name: Fuzz the Receive Path
+    # module: net
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:

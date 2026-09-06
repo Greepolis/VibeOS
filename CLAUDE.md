@@ -689,6 +689,54 @@ a phase earlier, making it four, and the limit was never raised - so the guard
 sat failing and unread until a full `check.sh all`. Raise such a limit as a
 decision, in the same change that earns it.
 
+**Every module gets an intensive test in the nightly.** Not the host tests -
+every module has those and they check the cases somebody thought of. Intensive
+means long, randomised, and checked against something other than the code under
+test: many seeds against a reference model, a soak whose length is the point, a
+fuzzer.
+
+The reason is the same one that made both existing torture harnesses worth
+writing. A subsystem asked whether it is correct answers from the numbers it
+used to decide, so the defects that survive are the *self-consistent* ones -
+a frame the allocator believed nobody owned while a process ran from it, and a
+task class derived from `is_idle` that collapsed KERNEL into NORMAL and stayed
+consistent with itself for months. No amount of asserting a subsystem against
+itself finds those. A separate model does.
+
+`check-nightly-coverage.py` enforces it: a job declares what it covers with a
+`# module: <names>` comment, and the count of uncovered modules may only go
+down. Seven of thirteen had nothing when the rule was written.
+
+**Two more checks watch the checks**, for the two failure shapes that are
+mechanical rather than a matter of judgement. `check-assertions-covered.py`
+matches every name the boot gate can put in `reason=` against the sabotage
+cases; 115 assertions had 7 cases. `check-counters-produced.py` matches every
+reported counter against every `++` in the tree. Both exist because
+`VIBEOS_BLK_TIMEOUT` was defined, printed, asserted by the gate and produced by
+no driver - green by construction, and found only by reading. The second check
+found `rmap_cycles` in the same state on its first run, and the walks it was
+declared for turned out to be unbounded.
+
+**When a check you just wrote fires, suspect the check.** Three times in one
+session: the scheduler torture reported nine seeds of unfair weighting that
+were its own model holding a stale `nice`; the counter check reported
+`bc->clock` unproduced because it looked only for a postfix `++`; and a scan
+for unbracketed log messages reported forty-nine sites of which most were
+correctly bracketed, because it counted an `unlock` in an early-return branch
+as ending the critical section. Only the first question - "is the detector
+right?" - separates those from real defects, and it is never answered by a
+count.
+
+**A test that cannot fail is not a test, and only sabotage tells you which you
+have.** The scheduler torture's weighting check asserted exactly the right
+property and could not observe it: removing the weight from the charge
+entirely, so `nice` stopped mattering at all, was caught on **zero** seeds out
+of a hundred and fifty, because it waited for two slots to arrive by chance
+with equal charges and different nice. Constructing the comparison instead of
+hoping for it took that to 150 of 150. The three picker properties in the same
+harness were caught 40 out of 40 - which is what made the fourth's silence
+worth chasing rather than dismissing.
+
 ## Verification that exists
 
 The boot gate (`scripts/qemu-cli-smoke-linux.py`) asserts state, not markers:

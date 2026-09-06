@@ -164,6 +164,17 @@ if(VIBEOS_BUILD_TESTS)
     # model kept in plain arrays. Its own executable rather than a test case
     # because it takes a seed and a round count: the nightly runs many seeds
     # under a sanitizer, and a failure is replayed by passing its seed back.
+    # Randomised torture for the scheduler's policy, against a reference model
+    # in plain arrays. Same argument as the memory manager's: a scheduler asked
+    # whether it is being fair answers from the numbers it used to decide, so
+    # the defects that matter are the self-consistent ones. This kernel has had
+    # exactly that - a task's class was derived from is_idle, collapsing KERNEL
+    # into NORMAL, and stayed self-consistent for months.
+    add_executable(vibeos_sched_torture tests/kernel/sched_torture.c)
+    target_link_libraries(vibeos_sched_torture PRIVATE vibeos_kernel_core)
+    target_include_directories(vibeos_sched_torture PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    add_test(NAME vibeos-sched-torture COMMAND vibeos_sched_torture 1 4000)
+
     add_executable(vibeos_mm_torture tests/kernel/mm_torture.c)
     target_link_libraries(vibeos_mm_torture PRIVATE vibeos_kernel_core)
     target_include_directories(vibeos_mm_torture PRIVATE /include)
