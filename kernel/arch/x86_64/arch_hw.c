@@ -35,6 +35,8 @@
 #include "vibeos/parttab.h"
 #include "vibeos/ext2.h"
 #include "vibeos/iso9660.h"
+#include "vibeos/exfat.h"
+#include "vibeos/ntfs.h"
 #include "vibeos/logsink.h"
 #include "vibeos/storage.h"
 #include "vibeos/swapmap.h"
@@ -9732,9 +9734,17 @@ typedef struct hw_fsimage {
     const char *name;
     const char *image;
     const char *at;
+    /* The file to read back, or 0 when this filesystem image cannot be given
+     * one. exFAT is the case: exfatprogs ships no tool that writes into an
+     * image without mounting it, and mounting needs root and FUSE. Mounting a
+     * real mkfs.exfat volume and reading its root is still far more than that
+     * driver had ever done; claiming a byte comparison that did not happen
+     * would be worse than the gap, so the row says so and the boot reports
+     * "OK (no marker)" rather than "OK". */
     const char *marker;
     int (*mount)(struct hw_fsimage *e);
     const vibeos_fs_ops_t *(*ops)(void);
+    void *fs;
 
     uint8_t slot_data[HW_FSIMAGE_SLOTS][512];
     vibeos_block_slot_t slots[HW_FSIMAGE_SLOTS];
@@ -9746,6 +9756,8 @@ typedef struct hw_fsimage {
 
 static vibeos_ext2_t g_ext2;
 static vibeos_iso9660_t g_iso;
+static vibeos_ntfs_t g_ntfs;
+static vibeos_exfat_t g_exfat;
 
 static int hw_fsimage_read(void *ctx, uint64_t lba, void *buf) {
     hw_fsimage_t *e = (hw_fsimage_t *)ctx;
@@ -9773,25 +9785,52 @@ static int hw_mount_iso9660(hw_fsimage_t *e) {
     return vibeos_iso9660_mount(&g_iso, &e->bc, 0ull);
 }
 
-static void *hw_fsimage_fs(const hw_fsimage_t *e) {
-    return (e->mount == hw_mount_ext2) ? (void *)&g_ext2 : (void *)&g_iso;
+static int hw_mount_ntfs(hw_fsimage_t *e) {
+    return vibeos_ntfs_mount(&g_ntfs, &e->bc, 0ull);
+}
+
+static int hw_mount_exfat(hw_fsimage_t *e) {
+    return vibeos_exfat_mount(&g_exfat, &e->bc, 0ull);
 }
 
 static hw_fsimage_t g_fsimages[] = {
     { "ext2",    "EFI/BOOT/EXT2.IMG", "/ext2", "HELLO.TXT",
-      hw_mount_ext2,    vibeos_ext2_ops,    {{0}}, {{0}}, {0}, {0}, {0}, -1 },
+      hw_mount_ext2,    vibeos_ext2_ops,    &g_ext2,
+      {{0}}, {{0}}, {0}, {0}, {0}, -1 },
     { "iso9660", "EFI/BOOT/ISO.IMG",  "/iso",  "HELLO.TXT",
-      hw_mount_iso9660, vibeos_iso9660_ops, {{0}}, {{0}}, {0}, {0}, {0}, -1 },
+      hw_mount_iso9660, vibeos_iso9660_ops, &g_iso,
+      {{0}}, {{0}}, {0}, {0}, {0}, -1 },
+    { "ntfs",    "EFI/BOOT/NTFS.IMG", "/ntfs", "HELLO.TXT",
+      hw_mount_ntfs,    vibeos_ntfs_ops,    &g_ntfs,
+      {{0}}, {{0}}, {0}, {0}, {0}, -1 },
+    { "exfat",   "EFI/BOOT/EXFAT.IMG", "/exfat", 0,
+      hw_mount_exfat,   vibeos_exfat_ops,   &g_exfat,
+      {{0}}, {{0}}, {0}, {0}, {0}, -1 },
 };
+
+static long g_fsimage_got;
 
 static void hw_fsimage_bringup(hw_fsimage_t *e) {
     static uint8_t rd[4096];
-    const char *verdict = "no image on this medium";
+    const char *verdict = "no image";
     uint64_t sectors = 0;
     int dev;
     uint32_t i;
 
+    /* Cleared by the function that owns the contract, not at each place that
+     * sets it. The exFAT row never reads a file, so without this it reported
+     * the *previous* row byte count - a field written on one path and read on
+     * all of them, which is a trap this project has paid for before. */
+    g_fsimage_got = 0;
+
     dev = vibeos_x86_64_loop_attach(e->image, &sectors);
+    if (dev < 0) {
+        /* Say which refusal it was. The first version reported every one of
+         * them as "no image on this medium", and for a boot that sentence was
+         * false: two images were on the disk and the loop device had run out
+         * of slots. */
+        verdict = vibeos_x86_64_loop_why();
+    }
     if (dev >= 0) {
         e->device = dev;
         for (i = 0; i < HW_FSIMAGE_SLOTS; i++) {
@@ -9808,15 +9847,26 @@ static void hw_fsimage_bringup(hw_fsimage_t *e) {
                                    HW_FSIMAGE_SLOTS) == 0) {
             verdict = "FAILED: mount";
             if (e->mount(e) == 0 &&
-                vibeos_fs_mount(&e->mnt, e->ops(), hw_fsimage_fs(e),
-                                e->name) == 0) {
+                vibeos_fs_mount(&e->mnt, e->ops(), e->fs, e->name) == 0) {
                 long got;
 
+                if (e->marker == 0) {
+                    /* Mounted, and there is nothing to read back. Said
+                     * distinctly rather than folded into OK: the gate should
+                     * be able to tell a driver that parsed a superblock from
+                     * one that also returned a file. */
+                    verdict = "OK (no marker)";
+                    (void)vibeos_fs_attach(e->at, &e->mnt);
+                    goto report;
+                }
                 verdict = "FAILED: read";
                 for (i = 0; i < sizeof(rd); i++) {
                     rd[i] = 0;
                 }
                 got = vibeos_fs_read_file(&e->mnt, e->marker, rd, sizeof(rd));
+                /* A short read and a missing file are different failures and
+                 * used to arrive as the same word. */
+                g_fsimage_got = got;
                 if (got == (long)sizeof(rd)) {
                     int same = 1;
                     for (i = 0; i < sizeof(rd); i++) {
@@ -9835,11 +9885,14 @@ static void hw_fsimage_bringup(hw_fsimage_t *e) {
         }
     }
 
+report:
     vibeos_x86_64_serial_lock();
     vibeos_x86_64_serial_puts("[IO] FSIMAGE name=");
     vibeos_x86_64_serial_puts(e->name);
     vibeos_x86_64_serial_puts(" sectors=0x");
     vibeos_x86_64_serial_print_hex(sectors);
+    vibeos_x86_64_serial_puts(" got=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)g_fsimage_got);
     vibeos_x86_64_serial_puts(" result=");
     vibeos_x86_64_serial_puts(verdict);
     vibeos_x86_64_serial_puts("\n");

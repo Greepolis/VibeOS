@@ -32,6 +32,10 @@
 
 #define VIBEOS_NTFS_MFT_RECORD_MAX 4096u
 
+/* One index block. 4 KiB is what every mkntfs produces; a volume claiming
+ * more is refused rather than read into a buffer that cannot hold it. */
+#define VIBEOS_NTFS_INDEX_BLOCK_MAX 4096u
+
 typedef struct {
     vibeos_blockcache_t *cache;
     uint64_t part_lba;
@@ -42,6 +46,12 @@ typedef struct {
     uint32_t mft_record_bytes;
     uint64_t mft_lcn;           /* first cluster of the master file table */
     int mounted;
+
+    /* One index block, per mount rather than one static shared by every
+     * mount: this kernel attaches several filesystems at once now, and a
+     * shared buffer here would be the page cache defect again in a
+     * smaller shape. */
+    uint8_t index_block[VIBEOS_NTFS_INDEX_BLOCK_MAX];
 } vibeos_ntfs_t;
 
 int vibeos_ntfs_mount(vibeos_ntfs_t *fs, vibeos_blockcache_t *cache,

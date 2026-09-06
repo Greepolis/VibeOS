@@ -54,3 +54,62 @@ case: the marker file is a constant instead of carrying its offset
   why it matters: a constant survives a read that returned the wrong block, as
     long as that block had been written too - which for a file that fills
     several blocks is exactly the interesting failure.
+
+case: NTFS or exFAT stops being exercised
+  in arch_hw.c, remove that row from g_fsimages
+  expect: fsimage_missing:ntfs  /  fsimage_missing:exfat
+  why it matters: same reason as the first case in this file. Both drivers had
+    been in the tree for months without ever parsing a byte.
+
+case: exFAT is reported OK when it only mounted
+  in hw_fsimage_bringup, report "OK" instead of "OK (no marker)" for a row
+    with no marker
+  expect: nothing turns red, and that is exactly why the distinction exists
+  why it matters: exfatprogs ships no tool that writes into an image without
+    mounting it, and mounting needs root and FUSE - which neither a developer
+    machine nor a CI container reliably has. So the exFAT image carries no file
+    to read back, and the verdict says so. "Mounted a real volume" and "mounted
+    a real volume and read a file out of it" are different claims, and folding
+    the weaker one into the stronger is how a gap stops being visible. If a
+    tool ever appears that can stage into exFAT offline, this row gets a marker
+    and this case disappears.
+
+case: the NTFS marker is written by mounting the image
+  in make-fs-image.py, replace ntfscp with mount -o loop
+  expect: it works as root and fails everywhere else
+  why it matters: an image staged through `mount` is staged by the host
+    kernel's driver, which is a different objection from needing root. The
+    point of building these images with somebody else's mkfs is that no part of
+    the artefact comes from a driver either side of the test controls. ntfscp
+    writes into the image directly, which keeps that property and needs no
+    privileges.
+
+case: the NTFS index allocation is never walked
+  in ntfs_index_scan, return 0 as soon as the root misses
+  expect: ntfs:FAILED:_read on the gate, and the host tests STAY GREEN
+  why it matters: this is the case that justifies the whole phase in one line.
+    It is the driver's original behaviour: it refused any directory with an
+    $INDEX_ALLOCATION, which reads like a large-directory limitation and is
+    not - mkntfs gives the *root* directory one, because a fresh volume already
+    holds sixteen metadata files. So the driver could not read a single real
+    NTFS volume, and the host test could not tell, because its synthetic image
+    was the one shape the driver could handle. Only the image built by mkntfs
+    catches it.
+
+case: the index walker reads its offsets from the attribute instead of the header
+  in ntfs_index_walk, restore `off = 16u + rd32(base + 16)`
+  expect: FAIL:test_ntfs_list
+  why it matters: that is the mistake actually made while extracting the walker
+    so the root and an INDX block could share it, and the existing host test
+    caught it on the first run. Worth recording as the case where the synthetic
+    fixture *was* the right tool: a refactor that breaks the shape the fixture
+    covers is exactly what it is for.
+
+case: INDX fixups are not applied
+  in ntfs_index_scan, skip the ntfs_apply_fixups call on an index block
+  expect: ntfs:FAILED:_read, or a malformed-node refusal
+  why it matters: the last two bytes of every sector of an INDX block are a
+    sequence number, and the real bytes live in an array at the front. A reader
+    that skips the substitution gets two wrong bytes every 512, which here land
+    in the middle of entry lengths - so the walk does not fail, it walks into
+    the wrong place.

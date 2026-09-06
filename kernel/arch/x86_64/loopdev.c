@@ -36,7 +36,11 @@
 #include "vibeos/blkdev.h"
 #include "vibeos/blockdev.h"
 
-#define LOOP_MAX 2u
+/* Raised from 2 in the change that earned it. I5 attaches four filesystem
+ * images, and at 2 the third and fourth were refused - silently, and a silent
+ * refusal here is indistinguishable from the image not being on the medium,
+ * which is exactly how the two were confused for a boot. */
+#define LOOP_MAX 4u
 
 typedef struct {
     uint64_t first_lba;      /* on the backing device */
@@ -90,6 +94,23 @@ static int loop_submit(void *ctx, vibeos_blk_request_t *req) {
  * out to be, which the caller needs to size a cache and to know whether the
  * image is the one it staged.
  */
+/* Why the last attach failed.
+ *
+ * Every refusal here used to be a bare -1, so "the image is not on this
+ * medium", "there are no loop slots left" and "the file is fragmented" all
+ * arrived at the caller as the same thing - and the caller reported the first
+ * of them, because that is the likeliest. It was wrong for a whole boot: four
+ * images were staged, two attached, and the machine said the other two were
+ * absent while they were sitting on the disk.
+ *
+ * An absence is quieter than a failure, which is the whole reason this project
+ * keeps writing that sentence down. */
+static const char *g_loop_why = "not attempted";
+
+const char *vibeos_x86_64_loop_why(void) {
+    return g_loop_why;
+}
+
 int vibeos_x86_64_loop_attach(const char *path, uint64_t *out_sectors) {
     uint64_t first = 0, sectors = 0;
     int contiguous = 0;
@@ -98,13 +119,23 @@ int vibeos_x86_64_loop_attach(const char *path, uint64_t *out_sectors) {
     loop_t *l;
 
     if (g_loop_count >= LOOP_MAX) {
+        g_loop_why = "no loop device left";
         return -1;
     }
     if (vibeos_x86_64_fat_file_extent(path, &first, &sectors,
                                       &contiguous) != 0) {
+        g_loop_why = "no such file on this medium";
         return -1;
     }
-    if (!contiguous || sectors == 0ull) {
+    if (sectors == 0ull) {
+        g_loop_why = "the file is empty";
+        return -1;
+    }
+    if (!contiguous) {
+        /* The sharpest edge in this device. A loop that spanned a gap would
+         * hand the filesystem above it another file bytes, and that filesystem
+         * would parse them - a mount that succeeds and is wrong. */
+        g_loop_why = "the file is fragmented";
         return -1;
     }
     l = &g_loop[g_loop_count];
@@ -120,9 +151,11 @@ int vibeos_x86_64_loop_attach(const char *path, uint64_t *out_sectors) {
     drv.ctx = l;
     if (vibeos_blk_register(&drv, &device) != 0) {
         l->in_use = 0;
+        g_loop_why = "the block layer refused another device";
         return -1;
     }
     g_loop_count++;
+    g_loop_why = "ok";
     if (out_sectors) {
         *out_sectors = sectors;
     }

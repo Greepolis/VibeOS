@@ -137,6 +137,9 @@ const vibeos_fs_ops_t *vibeos_x86_64_fat_ops(void);
  * device that spanned a gap would present another file's bytes as part of the
  * filesystem it is mounting, and the driver above would parse them. */
 int vibeos_x86_64_loop_attach(const char *path, uint64_t *out_sectors);
+/* Why the last attach failed. "No such file" and "no loop device left" are
+ * different facts, and reporting the first for the second cost a boot. */
+const char *vibeos_x86_64_loop_why(void);
 
 void *vibeos_x86_64_fat_mount_volume(vibeos_blockcache_t *bc,
                                      uint32_t first_lba);

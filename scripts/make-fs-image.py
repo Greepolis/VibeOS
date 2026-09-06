@@ -87,7 +87,102 @@ def build_iso9660(path, size_bytes):
     return None
 
 
-BUILDERS = {"ext2": build_ext2, "iso9660": build_iso9660}
+def _mkfs_into(tool_names, argv_fn, path, size_bytes, stage_with):
+    """Make an image with somebody else's mkfs, then put the marker inside it.
+
+    ext2 and ISO9660 can be given their contents by the mkfs itself (-d, and a
+    source directory). NTFS and exFAT cannot: mkntfs and mkfs.exfat format and
+    nothing more. Copying a file in afterwards needs a *writing* driver for
+    that filesystem, and the ones in this kernel are read-only by design.
+
+    So `stage_with` names the tool that can write into the finished image -
+    ntfs-3g and its exfat counterpart both come with the packages that provide
+    the mkfs, but they need FUSE and a mount, which CI containers do not
+    reliably have. When it is not available the image is still built and the
+    marker is absent, and the caller says so rather than pretending.
+    """
+    tool = None
+    for name in tool_names:
+        tool = shutil.which(name)
+        if tool:
+            break
+    if not tool:
+        return " or ".join(tool_names) + " not found"
+
+    with open(path, "wb") as f:
+        f.truncate(size_bytes)
+    r = subprocess.run(argv_fn(tool, path), capture_output=True, text=True)
+    if r.returncode != 0:
+        return tool + " failed: " + (r.stderr or r.stdout).strip()[:200]
+
+    err = _stage_marker(stage_with, path)
+    if err:
+        print("fs image staged without a marker: " + err, file=sys.stderr)
+        # Not fatal. A formatted image with no marker still exercises the
+        # mount, the superblock and the geometry, which is most of what these
+        # drivers had never done. The boot says the marker was not found and
+        # the gate accepts that verdict distinctly from a failure.
+        return None
+    return None
+
+
+def _stage_marker(kind, path):
+    """Copy the marker into a finished image without mounting it.
+
+    Mounting would need root and FUSE, which neither a developer machine nor a
+    CI container reliably has, and an image staged by `mount` would also be
+    staged by the kernel's own driver rather than by the filesystem's tools -
+    which is the thing this whole file exists to avoid.
+
+    ntfsprogs ships ntfscp, which writes into an image directly. exfatprogs
+    ships no equivalent, so an exFAT image here carries no marker and the boot
+    says so: mounting a real mkfs.exfat volume and reading its root directory
+    is still far more than that driver had ever done, and claiming a file
+    comparison that did not happen would be worse than the gap.
+    """
+    if kind != "ntfs":
+        return "no tool can stage a marker into " + kind + " without mounting"
+    tool = shutil.which("ntfscp")
+    if not tool:
+        return "ntfscp not found"
+
+    src = path + ".marker"
+    with open(src, "wb") as f:
+        f.write(content())
+    r = subprocess.run([tool, path, src, MARKER], capture_output=True,
+                       text=True)
+    try:
+        os.remove(src)
+    except OSError:
+        pass
+    if r.returncode != 0:
+        return "ntfscp failed: " + (r.stderr or r.stdout).strip()[:200]
+    return None
+
+
+def build_ntfs(path, size_bytes):
+    # -F because the target is a plain file; -Q skips the surface scan and the
+    # zeroing, which on a 16 MiB image is the difference between instant and
+    # not. --no-indexing keeps the image to the shape this driver reads.
+    return _mkfs_into(
+        ["mkntfs", "mkfs.ntfs"],
+        lambda tool, p: [tool, "-F", "-Q", "-f", p],
+        path, size_bytes, "ntfs")
+
+
+def build_exfat(path, size_bytes):
+    return _mkfs_into(
+        ["mkfs.exfat"],
+        lambda tool, p: [tool, p],
+        path, size_bytes, "exfat")
+
+
+BUILDERS = {
+    "ext2": build_ext2,
+    "iso9660": build_iso9660,
+    "ntfs": build_ntfs,
+    "exfat": build_exfat,
+}
 
 
 def main():
@@ -102,7 +197,7 @@ def main():
     # contents are a constant of this script.
     try:
         n = os.path.getsize(path)
-        if (n == size) if kind == "ext2" else (n > 0):
+        if (n == size) if kind in ("ext2", "ntfs", "exfat") else (n > 0):
             return 0
     except OSError:
         pass

@@ -25,6 +25,7 @@ static uint64_t rd64(const uint8_t *p) {
 #define NTFS_ATTR_FILE_NAME 0x30u
 #define NTFS_ATTR_DATA      0x80u
 #define NTFS_ATTR_INDEX_ROOT 0x90u
+#define NTFS_ATTR_INDEX_ALLOCATION 0xA0u
 #define NTFS_ATTR_END       0xFFFFFFFFu
 #define NTFS_MFT_ROOT       5u          /* the root directory's record */
 #define NTFS_FLAG_DIRECTORY 0x0002u
@@ -368,34 +369,45 @@ static int ntfs_name_eq(const uint8_t *utf16, uint32_t chars,
 
 /* ---- directories ----------------------------------------------------------*/
 
-/* Walk the index entries in a directory's resident index root. Returns 1 when
- * the wanted name or index was found. */
-static int ntfs_index_scan(vibeos_ntfs_t *fs, const uint8_t *rec,
-                           const char *want, uint32_t want_len, uint32_t want_index,
+/* Walk one node of a directory index.
+ *
+ * `base` is the index header; entries start at its first-entry offset,
+ * measured from the header. That is true of the resident index root and of an
+ * INDX block alike, which is why this is a function rather than two copies of
+ * a loop.
+ *
+ * Returns 1 when found, 0 when this node did not contain it, -1 when the node
+ * is malformed. `seen` is carried across nodes so that listing by index runs
+ * over a whole directory rather than restarting in each node.
+ */
+static int ntfs_index_walk(const uint8_t *base, uint32_t value_len,
+                           const char *want, uint32_t want_len,
+                           uint32_t want_index, uint32_t *seen,
                            uint64_t *out_ref, char *out_name, uint32_t name_cap,
                            uint64_t *out_size, int *out_is_dir) {
-    const uint8_t *attr = ntfs_find_attr(rec, fs->mft_record_bytes,
-                                         NTFS_ATTR_INDEX_ROOT);
-    const uint8_t *root, *entry;
-    uint32_t value_len, off, seen = 0;
+    uint32_t off;
 
-    if (!attr || attr[8] != 0u) {
-        return -1;   /* absent, or non-resident: an index allocation */
+    if (value_len < 16u) {
+        return -1;
     }
-    value_len = rd32(attr + 0x10);
-    root = attr + rd16(attr + 0x14);
-
-    /* The index header sits at offset 16 of the root; entries start at its
-     * first-entry offset, relative to the header. */
-    off = 16u + rd32(root + 16);
+    /* From the header, not from the attribute value. The first version of this
+     * refactor kept the `16u +` that belonged to the old root-relative form
+     * and then read the first-entry offset from base + 16 as well - wrong
+     * twice, and the existing host test said so on the first run. Which is the
+     * argument for having had it. */
+    off = rd32(base);
+    {
+        uint32_t used = rd32(base + 4);
+        if (used >= 16u && used <= value_len) {
+            value_len = used;   /* the header knows better than the caller */
+        }
+    }
     while (off + 16u <= value_len) {
-        uint16_t entry_len;
+        const uint8_t *entry = base + off;
+        uint16_t entry_len = rd16(entry + 8);
+        uint32_t flags = rd32(entry + 12);
         uint8_t name_chars;
-        uint32_t flags;
 
-        entry = root + off;
-        entry_len = rd16(entry + 8);
-        flags = rd32(entry + 12);
         if (entry_len < 16u || off + entry_len > value_len) {
             return -1;
         }
@@ -413,10 +425,9 @@ static int ntfs_index_scan(vibeos_ntfs_t *fs, const uint8_t *rec,
             uint64_t fsize = rd64(entry + 64);
             int is_dir = (rd32(entry + 72) & 0x10000000u) ? 1 : 0;
 
-            /* The record for the root directory appears inside itself; every
-             * directory also lists a short-name duplicate of each entry, and
-             * reporting both would show every file twice. Names in DOS-only
-             * namespace are marked in the byte after the length. */
+            /* Every directory also lists a short-name duplicate of each entry,
+             * and reporting both would show every file twice. Names in the
+             * DOS-only namespace are marked in the byte after the length. */
             if (entry[81] == 2u) {
                 off += entry_len;
                 continue;
@@ -426,7 +437,7 @@ static int ntfs_index_scan(vibeos_ntfs_t *fs, const uint8_t *rec,
                     *out_ref = ref;
                     return 1;
                 }
-            } else if (seen == want_index) {
+            } else if (*seen == want_index) {
                 uint32_t i;
                 for (i = 0; i + 1u < name_cap && i < name_chars; i++) {
                     uint16_t wc = rd16(name + i * 2u);
@@ -442,10 +453,135 @@ static int ntfs_index_scan(vibeos_ntfs_t *fs, const uint8_t *rec,
                 *out_ref = ref;
                 return 1;
             } else {
-                seen++;
+                (*seen)++;
             }
         }
         off += entry_len;
+    }
+    return 0;
+}
+
+/* How many index blocks one directory may have.
+ *
+ * A bound rather than trust: a run list that loops, or one this reader has
+ * misparsed, would otherwise walk forever inside a filesystem call. 4096
+ * blocks of 4 KiB is a 16 MiB directory, far past anything this driver is
+ * asked to open.
+ */
+#define NTFS_MAX_INDEX_BLOCKS 4096u
+
+/* Walk a directory index: the root first, then its allocation.
+ *
+ * The allocation half is why this driver could not read a single real NTFS
+ * volume. It refused any directory with an $INDEX_ALLOCATION, which sounds
+ * like a large-directory limitation and is not: mkntfs gives the *root*
+ * directory one, because a fresh volume already holds sixteen metadata files.
+ * So every volume made by anything other than this project failed at the first
+ * lookup, and the synthetic image in the host test was the only shape it could
+ * read. Fifth time this phase has found code that worked only in the one
+ * arrangement it was written against.
+ *
+ * The allocation is scanned linearly rather than descended as the B-tree it
+ * is. That is correct - every entry appears in exactly one node - and costs a
+ * read per block on a directory this driver opens once. Descending needs the
+ * collation rules, which is a lot of code to make a bounded scan faster.
+ */
+static int ntfs_index_scan(vibeos_ntfs_t *fs, const uint8_t *rec,
+                           const char *want, uint32_t want_len,
+                           uint32_t want_index,
+                           uint64_t *out_ref, char *out_name, uint32_t name_cap,
+                           uint64_t *out_size, int *out_is_dir) {
+    const uint8_t *attr = ntfs_find_attr(rec, fs->mft_record_bytes,
+                                         NTFS_ATTR_INDEX_ROOT);
+    const uint8_t *root;
+    const uint8_t *alloc;
+    uint32_t value_len;
+    uint32_t seen = 0;
+    uint32_t block_bytes;
+    int r;
+
+    if (!attr || attr[8] != 0u) {
+        return -1;   /* absent, or non-resident: not a directory this reads */
+    }
+    value_len = rd32(attr + 0x10);
+    root = attr + rd16(attr + 0x14);
+    if (value_len < 16u) {
+        return -1;
+    }
+
+    /* The index block size is in the root value, ahead of the header. */
+    block_bytes = rd32(root + 8);
+
+    r = ntfs_index_walk(root + 16, value_len - 16u, want, want_len, want_index,
+                        &seen, out_ref, out_name, name_cap, out_size,
+                        out_is_dir);
+    if (r != 0) {
+        return r;
+    }
+
+    alloc = ntfs_find_attr(rec, fs->mft_record_bytes,
+                           NTFS_ATTR_INDEX_ALLOCATION);
+    if (!alloc || alloc[8] == 0u) {
+        return 0;    /* absent, or resident, which an allocation never is */
+    }
+    if (block_bytes == 0u || block_bytes > VIBEOS_NTFS_INDEX_BLOCK_MAX ||
+        (block_bytes % fs->bytes_per_sector) != 0u) {
+        return -1;
+    }
+
+    {
+        uint16_t runs_off = rd16(alloc + 0x20);
+        const uint8_t *runs = alloc + runs_off;
+        uint32_t attr_len = rd32(alloc + 4);
+        uint32_t runs_len;
+        uint64_t clusters_per_block;
+        uint32_t blk;
+
+        if (attr_len <= runs_off) {
+            return -1;
+        }
+        runs_len = attr_len - runs_off;
+        clusters_per_block = block_bytes / fs->cluster_bytes;
+        if (clusters_per_block == 0ull) {
+            clusters_per_block = 1ull;   /* a block smaller than a cluster */
+        }
+        for (blk = 0; blk < NTFS_MAX_INDEX_BLOCKS; blk++) {
+            uint64_t vcn = (uint64_t)blk * clusters_per_block;
+            int sparse = 0;
+            int64_t lcn = ntfs_map_vcn(runs, runs_len, vcn, &sparse);
+
+            if (lcn < 0) {
+                break;              /* past the end of the allocation */
+            }
+            if (sparse) {
+                continue;
+            }
+            if (ntfs_read_sectors(fs,
+                                  (uint64_t)lcn * fs->sectors_per_cluster,
+                                  fs->index_block,
+                                  block_bytes / fs->bytes_per_sector) != 0) {
+                return -1;
+            }
+            if (fs->index_block[0] != 'I' || fs->index_block[1] != 'N' ||
+                fs->index_block[2] != 'D' || fs->index_block[3] != 'X') {
+                continue;           /* an unused block in the allocation */
+            }
+            /* An INDX block carries fixups exactly as an MFT record does, and
+             * a reader that skips them gets two wrong bytes per sector - which
+             * here land in the middle of entry lengths. */
+            if (ntfs_apply_fixups(fs->index_block, block_bytes,
+                                  fs->bytes_per_sector) != 0) {
+                return -1;
+            }
+            /* The header sits at offset 24 of the block, and the walker
+             * measures everything from the header. */
+            r = ntfs_index_walk(fs->index_block + 24, block_bytes - 24u,
+                                want, want_len, want_index, &seen, out_ref,
+                                out_name, name_cap, out_size, out_is_dir);
+            if (r != 0) {
+                return r;
+            }
+        }
     }
     return 0;
 }

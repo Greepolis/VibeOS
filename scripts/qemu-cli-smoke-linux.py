@@ -1146,6 +1146,7 @@ def main():
             seen_fs = {}
             for m in re.finditer(
                     r"\[IO\] FSIMAGE name=(\S+) sectors=0x[0-9a-f]{16} "
+                    r"got=0x[0-9a-f]{16} "
                     r"result=([^\n]*)", text):
                 seen_fs[m.group(1)] = m.group(2).strip()
             for want in ("ext2", "iso9660"):
@@ -1154,7 +1155,7 @@ def main():
                     problems.append("fsimage_missing:" + want)
                 elif res.startswith("FAILED"):
                     problems.append(want + ":" + res.replace(" ", "_"))
-                elif res != "OK" and "no image" not in res:
+                elif res != "OK" and res != "no image":
                     problems.append(want + ":" + res.replace(" ", "_"))
 
             # The kernel own log, on a medium that outlives it (I5b).

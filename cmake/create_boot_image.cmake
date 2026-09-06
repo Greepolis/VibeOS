@@ -65,6 +65,25 @@ if(Python3_Interpreter_FOUND)
     if(NOT _iso_rc EQUAL 0)
         message(WARNING "iso9660 image not staged (rc=${_iso_rc})")
     endif()
+    # NTFS and exFAT. 16 MiB each: mkntfs refuses anything much smaller, and
+    # both are formatted by the tools everybody else uses for the same reason
+    # ext2 and ISO9660 are.
+    execute_process(
+        COMMAND ${Python3_EXECUTABLE}
+                "${CMAKE_CURRENT_LIST_DIR}/../scripts/make-fs-image.py"
+                ntfs "${EFI_BOOT_DIR}/NTFS.IMG" 16777216
+        RESULT_VARIABLE _ntfs_rc)
+    if(NOT _ntfs_rc EQUAL 0)
+        message(WARNING "ntfs image not staged (rc=${_ntfs_rc})")
+    endif()
+    execute_process(
+        COMMAND ${Python3_EXECUTABLE}
+                "${CMAKE_CURRENT_LIST_DIR}/../scripts/make-fs-image.py"
+                exfat "${EFI_BOOT_DIR}/EXFAT.IMG" 16777216
+        RESULT_VARIABLE _exfat_rc)
+    if(NOT _exfat_rc EQUAL 0)
+        message(WARNING "exfat image not staged (rc=${_exfat_rc})")
+    endif()
 endif()
 file(COPY_FILE "${KERNEL_ELF}" "${EFI_KERNEL}" ONLY_IF_DIFFERENT)
 file(WRITE "${EFI_STARTUP_NSH}"
