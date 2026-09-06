@@ -111,6 +111,9 @@ static uint32_t rnd(uint32_t *state) {
 static int attach(void) {
     vibeos_logsink_dev_t d;
 
+    /* Zeroed for the same reason logsink_tests.c is: a struct filled field by
+     * field silently gains a hole the day somebody adds a field. */
+    memset(&d, 0, sizeof(d));
     vibeos_logsink_reset();
     vibeos_logsink_set_cpu_id(lt_cpu);
     d.read = lt_read;

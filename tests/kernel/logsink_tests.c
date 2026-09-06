@@ -52,6 +52,16 @@ static uint32_t lt_cpu(void) { return g_cpu; }
 
 static vibeos_logsink_dev_t lt_dev(void) {
     vibeos_logsink_dev_t d;
+
+    /* Zeroed first, and that is not tidiness. This struct gained read_many
+     * after these tests were written, and filling it field by field left that
+     * one holding whatever was on the stack. gcc happened to leave zero and
+     * clang did not, so the suite passed locally and segfaulted in CI inside
+     * vibeos_logsink_attach - a call through an uninitialised function
+     * pointer. Same shape as interp_base, which this project has a rule about:
+     * a field written on one path and read on all of them leaks whatever was
+     * there. */
+    memset(&d, 0, sizeof(d));
     d.read = lt_read;
     d.write = lt_write;
     d.ctx = 0;
