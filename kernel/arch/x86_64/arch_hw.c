@@ -9528,6 +9528,12 @@ static void hw_write_proof(void) {
         vibeos_x86_64_serial_puts("\n");
         vibeos_x86_64_serial_unlock();
         verdict = "FAILED: write refused";
+    } else if (vibeos_blk_barrier((uint32_t)vibeos_x86_64_blk_device()) != 0) {
+        /* Asked for, and the answer believed. A barrier the device refused
+         * means the bytes may still be in its volatile cache, so a read that
+         * follows proves nothing about the medium - and reporting OK here
+         * would be the check lying about the one thing it exists to say. */
+        verdict = "FAILED: the device would not give a barrier";
     } else {
         /* Cleared first, so a read that returns nothing at all cannot pass by
          * leaving the buffer holding what was just written to it. */
@@ -9913,6 +9919,8 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
                                vibeos_x86_64_virtio_blk_read,
                                vibeos_x86_64_virtio_blk_read_many,
                                vibeos_x86_64_virtio_blk_write,
+                               vibeos_x86_64_virtio_blk_write_many,
+                               vibeos_x86_64_virtio_blk_barrier,
                                vibeos_x86_64_virtio_blk_sectors(),
                                vibeos_x86_64_virtio_blk_timeouts);
     } else if (vibeos_x86_64_ahci_init() == 0) {
@@ -9920,6 +9928,8 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
                                vibeos_x86_64_ahci_read,
                                vibeos_x86_64_ahci_read_many,
                                vibeos_x86_64_ahci_write,
+                               vibeos_x86_64_ahci_write_many,
+                               vibeos_x86_64_ahci_barrier,
                                vibeos_x86_64_ahci_sectors(),
                                vibeos_x86_64_ahci_timeouts);
     }

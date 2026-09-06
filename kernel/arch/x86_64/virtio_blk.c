@@ -343,6 +343,95 @@ int vibeos_x86_64_virtio_blk_read_many(uint64_t sector, void *buf, uint32_t sect
     return 0;
 }
 
+/* Write a run of consecutive sectors, in as few requests as the device allows.
+ *
+ * The mirror of read_many above, and it exists for the same reason that one
+ * did: a 2 MiB transfer done a sector at a time under a lock that masks
+ * interrupts was indistinguishable from a hang, and was reported as one. There
+ * was no equivalent on the write side because until I4 nothing wrote enough to
+ * notice - the whole of a boot's writing was about thirty sectors.
+ *
+ * `buf` is const here and not in the request struct below, because the block
+ * layer carries one buffer pointer for both directions. Casting it away at
+ * exactly one place, with the driver's own signature saying it does not write
+ * through it, is better than a union that has to be read correctly at each
+ * use. */
+int vibeos_x86_64_virtio_blk_write_many(uint64_t sector, const void *buf,
+                                        uint32_t sectors) {
+    const uint8_t *in = (const uint8_t *)buf;
+
+    while (sectors > 0u) {
+        uint32_t n = (sectors > VIRTIO_BLK_MAX_SECTORS) ? VIRTIO_BLK_MAX_SECTORS : sectors;
+        if (virtio_blk_rw_n(sector, (void *)(uintptr_t)in, n, 1) != 0) {
+            return -1;
+        }
+        sector += n;
+        in += (uint64_t)n * 512u;
+        sectors -= n;
+    }
+    return 0;
+}
+
+/* Tell the device to stop holding writes in its own volatile cache.
+ *
+ * VIRTIO_BLK_T_FLUSH is type 4, and unlike a read or a write it carries no
+ * data: the chain is the header and the status byte, with nothing between
+ * them. Building it out of virtio_blk_rw_n was not possible for that reason
+ * and the duplication is deliberate rather than a shortcut - a data descriptor
+ * with a length of zero is not the same request, and a device is entitled to
+ * refuse it.
+ *
+ * `sector` is required to be zero for a flush; sending anything else is a
+ * request the specification does not define. */
+int vibeos_x86_64_virtio_blk_barrier(void) {
+    uint16_t head;
+    uint64_t spins = 0;
+
+    if (!g_ready) {
+        return -1;
+    }
+    blk_lock();
+    g_req.type = 4u;             /* VIRTIO_BLK_T_FLUSH */
+    g_req.reserved = 0;
+    g_req.sector = 0;
+    g_status = 0xFF;
+
+    g_desc[0].addr = (uint64_t)(uintptr_t)&g_req;
+    g_desc[0].len = sizeof(struct virtio_blk_req);
+    g_desc[0].flags = VRING_DESC_F_NEXT;
+    g_desc[0].next = 1;
+    g_desc[1].addr = (uint64_t)(uintptr_t)&g_status;
+    g_desc[1].len = 1;
+    g_desc[1].flags = VRING_DESC_F_WRITE;
+    g_desc[1].next = 0;
+
+    head = g_avail->idx % g_qsz;
+    g_avail->ring[head] = 0;
+    __asm__ __volatile__("sfence" ::: "memory");
+    g_avail->idx++;
+    __asm__ __volatile__("sfence" ::: "memory");
+    vb_outw(g_io_base + VIRTIO_QUEUE_NOTIFY, 0);
+
+    while (g_used->idx == g_last_used) {
+        if (++spins > 100000000ull) {
+            /* Bounded like every other wait here, and counted in the same
+             * place: a barrier that hung would stop the machine at exactly the
+             * moment somebody was trying to make data durable. */
+            g_timeouts++;
+            blk_unlock();
+            return -1;
+        }
+        __asm__ __volatile__("pause" ::: "memory");
+    }
+    g_last_used = g_used->idx;
+    (void)vb_inb(g_io_base + VIRTIO_ISR);
+    {
+        int rc = (g_status == 0) ? 0 : -1;
+        blk_unlock();
+        return rc;
+    }
+}
+
 /* ---- the portable block-device view -------------------------------------- */
 
 /* The rest of the storage stack is written against vibeos_blockdev_t and knows

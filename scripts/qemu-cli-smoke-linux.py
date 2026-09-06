@@ -1027,6 +1027,21 @@ def main():
                     if value != 0:
                         problems.append(f"swap_{name}={value}")
 
+            # The ordering primitive (I4 step 1b).
+            #
+            # Asked for at least once, because a barrier nothing calls is a
+            # promise nobody has tested - and this one was added before the
+            # journal that will need it precisely so the write-back policy
+            # could be designed around a primitive that exists. Failures are a
+            # defect: a barrier the device refused means the bytes may still be
+            # in its volatile cache, and a caller told otherwise builds on
+            # something that is not there.
+            mba = re.search(r"\[IO\] BARRIERS asked=0x([0-9a-f]{16})", text)
+            if mba is None:
+                problems.append("barrier_counter_missing")
+            elif int(mba.group(1), 16) == 0:
+                problems.append("barrier_never_asked_for")
+
             # Writes that are proved (I4 step 2).
             #
             # A boot writes about thirty sectors through the shell's mkdir, and
@@ -1166,6 +1181,7 @@ def main():
                            r"timeout=0x([0-9a-f]{16}) "
                            r"bad_request=0x([0-9a-f]{16}) "
                            r"out_of_range=0x([0-9a-f]{16}) "
+                           r"barriers_failed=0x([0-9a-f]{16}) "
                            r"register_refused=0x([0-9a-f]{16})", text)
             if iz is None:
                 problems.append("io_counters_missing")
@@ -1173,7 +1189,12 @@ def main():
                 for name, group in (("medium", 1), ("short", 2),
                                     ("timeout", 3), ("bad_request", 4),
                                     ("out_of_range", 5),
-                                    ("register_refused", 6)):
+                                    # A barrier the device refused is an
+                                    # ordering the caller believes it has and
+                                    # does not - the failure a journal would
+                                    # build a corrupt medium on.
+                                    ("barriers_failed", 6),
+                                    ("register_refused", 7)):
                     value = int(iz.group(group), 16)
                     if value != 0:
                         problems.append(f"io_{name}={value}")

@@ -78,6 +78,8 @@ void vibeos_x86_64_blk_bind(const char *name,
                             int (*read)(uint64_t, void *),
                             int (*read_many)(uint64_t, void *, uint32_t),
                             int (*write)(uint64_t, const void *),
+                            int (*write_many)(uint64_t, const void *, uint32_t),
+                            int (*barrier)(void),
                             uint64_t sectors,
                             uint64_t (*timeouts)(void));
 uint64_t vibeos_x86_64_virtio_blk_timeouts(void);
@@ -101,6 +103,19 @@ void vibeos_x86_64_fat_cache_stats(uint64_t *hits, uint64_t *misses,
  * with no free slot and a medium that would not take the sector arrived at the
  * caller as one thing. */
 const char *vibeos_x86_64_fat_write_why(void);
+
+/* Multi-sector writes, the mirror of the read_many pair. Added at I4: until
+ * then nothing wrote enough sectors for the difference to be measurable, and a
+ * boot's entire writing was about thirty of them. */
+int vibeos_x86_64_virtio_blk_write_many(uint64_t sector, const void *buf,
+                                        uint32_t sectors);
+int vibeos_x86_64_ahci_write_many(uint64_t lba, const void *buf,
+                                  uint32_t sectors);
+
+/* Make everything already written durable on the medium. Not a cache flush of
+ * this kernel's own - see vibeos_blk_barrier for the distinction. */
+int vibeos_x86_64_virtio_blk_barrier(void);
+int vibeos_x86_64_ahci_barrier(void);
 
 /* Where a file's bytes physically are, for swap and for nothing else. See the
  * comment on the definition: `contiguous` is reported rather than assumed,

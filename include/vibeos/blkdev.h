@@ -74,6 +74,12 @@ typedef struct vibeos_blk_driver {
      * Returning non-zero without setting a result is treated as MEDIUM - a
      * driver that fails silently is still a failure the caller must see. */
     int  (*submit)(void *ctx, vibeos_blk_request_t *req);
+    /* Make everything already submitted durable on the medium. May be NULL for
+     * a device with no volatile cache of its own - and a NULL here is answered
+     * with NO_DEVICE rather than success, because a barrier that silently does
+     * nothing is worse than one that is refused: a journal would then trust an
+     * ordering it never got. */
+    int  (*barrier)(void *ctx);
     void *ctx;
 } vibeos_blk_driver_t;
 
@@ -104,6 +110,26 @@ int vibeos_blk_submit(vibeos_blk_request_t *req);
 
 /* The common cases, so callers do not assemble a struct for a one-sector read.
  * They are wrappers and nothing more; there is one path through the layer. */
+/* Everything submitted before this reaches the medium before anything
+ * submitted after it.
+ *
+ * **Not a flush.** A flush empties a cache; this only orders. The distinction
+ * matters because they belong to different layers: the block *cache* above can
+ * be emptied by vibeos_blockcache_flush, and what this does is tell the
+ * *device* to stop holding writes in its own volatile cache. A real drive
+ * acknowledges a write as soon as it reaches that cache, so a caller that has
+ * written and not called this has no ordering at all - after a power cut the
+ * drive may have kept the last write and dropped an earlier one.
+ *
+ * It is here rather than in the journal that will need it, deliberately: a
+ * write-back policy designed without an ordering primitive has to be rewritten
+ * when one arrives, and the partition-table writer needs the same primitive
+ * for the same reason. Two callers at different levels is what says it belongs
+ * at this one.
+ *
+ * Returns 0 only when the device confirmed. */
+int vibeos_blk_barrier(uint32_t device);
+
 int vibeos_blk_read(uint32_t device, uint64_t lba, uint32_t sectors, void *buf);
 int vibeos_blk_write(uint32_t device, uint64_t lba, uint32_t sectors,
                      const void *buf);

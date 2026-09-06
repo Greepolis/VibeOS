@@ -35,6 +35,8 @@
 static int (*g_read)(uint64_t lba, void *buf);
 static int (*g_read_many)(uint64_t lba, void *buf, uint32_t sectors);
 static int (*g_write)(uint64_t lba, const void *buf);
+static int (*g_write_many)(uint64_t lba, const void *buf, uint32_t sectors);
+static int (*g_barrier)(void);
 static const char *g_name = "none";
 static int g_device = -1;
 static uint64_t (*g_timeouts)(void);
@@ -63,6 +65,21 @@ static int adapt_submit(void *ctx, vibeos_blk_request_t *req) {
 
     (void)ctx;
     if (req->write) {
+        /* Preferred when it exists, for the same reason read_many is: a run
+         * done a sector at a time under a lock that masks interrupts was
+         * indistinguishable from a hang on the read side, and there is no
+         * reason to wait for the write side to teach the same lesson. */
+        if (g_write_many) {
+            if (g_write_many(req->lba, req->buf, req->sectors) != 0) {
+                req->sectors_done = 0;
+                if (g_timeouts && g_timeouts() != timeouts_before) {
+                    req->result = VIBEOS_BLK_TIMEOUT;
+                }
+                return -1;
+            }
+            req->sectors_done = req->sectors;
+            return 0;
+        }
         if (!g_write) {
             req->result = VIBEOS_BLK_NO_DEVICE;
             return -1;
@@ -110,10 +127,17 @@ static int adapt_submit(void *ctx, vibeos_blk_request_t *req) {
     return 0;
 }
 
+static int adapt_barrier(void *ctx) {
+    (void)ctx;
+    return g_barrier ? g_barrier() : -1;
+}
+
 void vibeos_x86_64_blk_bind(const char *name,
                             int (*read)(uint64_t, void *),
                             int (*read_many)(uint64_t, void *, uint32_t),
                             int (*write)(uint64_t, const void *),
+                            int (*write_many)(uint64_t, const void *, uint32_t),
+                            int (*barrier)(void),
                             uint64_t sectors,
                             uint64_t (*timeouts)(void)) {
     vibeos_blk_driver_t drv;
@@ -126,6 +150,8 @@ void vibeos_x86_64_blk_bind(const char *name,
     g_read = read;
     g_read_many = read_many;
     g_write = write;
+    g_write_many = write_many;
+    g_barrier = barrier;
     g_timeouts = timeouts;
 
     /* A device that would not say how big it is does not get registered, and
@@ -136,6 +162,10 @@ void vibeos_x86_64_blk_bind(const char *name,
     drv.sector_bytes = 512u;
     drv.sectors = sectors;
     drv.submit = adapt_submit;
+    /* Registered only when the driver actually has one. A null here is
+     * answered with a refusal by the layer, which is the honest answer for a
+     * device that cannot order its own writes. */
+    drv.barrier = barrier ? adapt_barrier : 0;
     drv.ctx = 0;
     if (vibeos_blk_register(&drv, &dev) == 0) {
         g_device = (int)dev;

@@ -705,6 +705,8 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
         kernel_log_u64_hex(io->results[VIBEOS_BLK_BAD_REQUEST]);
         vibeos_x86_64_serial_puts(" out_of_range=0x");
         kernel_log_u64_hex(io->results[VIBEOS_BLK_OUT_OF_RANGE]);
+        vibeos_x86_64_serial_puts(" barriers_failed=0x");
+        kernel_log_u64_hex(io->barriers_failed);
         vibeos_x86_64_serial_puts(" register_refused=0x");
         kernel_log_u64_hex(io->register_refused);
         vibeos_x86_64_serial_puts("\n");
@@ -810,6 +812,10 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
         kernel_log_u64_hex(vibeos_x86_64_blk_timeouts());
         vibeos_x86_64_serial_puts(" net_tx_timeouts=0x");
         kernel_log_u64_hex(vibeos_x86_64_virtio_net_tx_timeouts());
+        vibeos_x86_64_serial_puts("\n");
+
+        vibeos_x86_64_serial_puts("[IO] BARRIERS asked=0x");
+        kernel_log_u64_hex(io->barriers);
         vibeos_x86_64_serial_puts("\n");
 
         vibeos_x86_64_serial_puts("[IO] BLK reads=0x");

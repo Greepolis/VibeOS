@@ -56,6 +56,11 @@ typedef struct vibeos_io_stats {
     uint64_t write_back_pending;    /* diagnostic                            */
     uint64_t write_back_failed;     /* asserted zero: a silent write-back
                                      * failure is a lost file                */
+    /* Barriers asked for, and barriers the device would not give. A barrier
+     * that was refused and not counted is an ordering the caller believes it
+     * has and does not have. */
+    uint64_t barriers;              /* diagnostic                            */
+    uint64_t barriers_failed;       /* asserted zero                         */
 
     /* ---- B3: volumes (I4b) ---------------------------------------------- */
     uint64_t volumes_found;         /* asserted non-zero once I4b lands      */

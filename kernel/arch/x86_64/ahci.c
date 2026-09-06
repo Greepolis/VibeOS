@@ -491,6 +491,60 @@ int vibeos_x86_64_ahci_read(uint64_t lba, void *buf) {
     return vibeos_x86_64_ahci_read_many(lba, buf, 1u);
 }
 
+/* The mirror of read_many, through the same bounce buffer.
+ *
+ * The chunking is the bounce buffer's size and not the controller's: every
+ * transfer here is staged through g_bounce, so a run longer than it has to be
+ * split whatever the hardware could manage in one command. Splitting for a
+ * reason that is this kernel's rather than the device's is worth saying out
+ * loud - it is the number to raise if AHCI writes ever matter for speed. */
+int vibeos_x86_64_ahci_write_many(uint64_t lba, const void *buf,
+                                  uint32_t sectors) {
+    const uint8_t *in = (const uint8_t *)buf;
+    uint32_t done = 0;
+
+    if (!g_ready || sectors == 0u) {
+        return -1;
+    }
+    ahci_lock();
+    while (done < sectors) {
+        uint32_t chunk = sectors - done;
+        uint32_t i;
+
+        if (chunk > sizeof(g_bounce) / 512u) {
+            chunk = sizeof(g_bounce) / 512u;
+        }
+        for (i = 0; i < chunk * 512u; i++) {
+            g_bounce[i] = in[(uint64_t)done * 512ull + i];
+        }
+        if (ahci_xfer(lba + done, chunk, 1) != 0) {
+            ahci_unlock();
+            return -1;
+        }
+        done += chunk;
+    }
+    ahci_unlock();
+    return 0;
+}
+
+/* FLUSH CACHE EXT.
+ *
+ * The command was defined in this file from the beginning and never issued -
+ * one more of the declared-and-unused family this kernel keeps producing. It
+ * carries no data, so the byte count is zero and there is no PRDT entry.
+ */
+int vibeos_x86_64_ahci_barrier(void) {
+    int rc;
+
+    if (!g_ready) {
+        return -1;
+    }
+    ahci_lock();
+    rc = ahci_cmd((uint8_t)ATA_CMD_FLUSH_EX, 0, 0, 1, 0u);
+    ahci_unlock();
+    return rc;
+}
+
 int vibeos_x86_64_ahci_write(uint64_t lba, const void *buf) {
     const uint8_t *in = (const uint8_t *)buf;
     uint32_t i;

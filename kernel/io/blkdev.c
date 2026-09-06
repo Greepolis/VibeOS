@@ -54,6 +54,7 @@ void vibeos_blk_reset(void) {
     for (i = 0; i < BLK_MAX_DEVICES; i++) {
         g_dev[i].name = 0;
         g_dev[i].submit = 0;
+        g_dev[i].barrier = 0;
         g_dev[i].ctx = 0;
         g_dev[i].sector_bytes = 0;
         g_dev[i].sectors = 0;
@@ -208,6 +209,34 @@ int vibeos_blk_read(uint32_t device, uint64_t lba, uint32_t sectors,
     req.buf = buf;
     req.write = 0;
     return vibeos_blk_submit(&req);
+}
+
+int vibeos_blk_barrier(uint32_t device) {
+    const vibeos_blk_driver_t *d = (device < g_count) ? &g_dev[device] : 0;
+
+    if (!d) {
+        vibeos_io_stats()->results[VIBEOS_BLK_NO_DEVICE]++;
+        vibeos_io_stats()->barriers_failed++;
+        return -1;
+    }
+    vibeos_io_stats()->barriers++;
+    if (!d->barrier) {
+        /* Refused, not quietly granted. A device with no way to order its own
+         * writes cannot be given an ordering by pretending, and a caller told
+         * "yes" would build on something that is not there - which for a
+         * journal is the difference between a recoverable medium and a
+         * corrupt one. */
+        vibeos_io_stats()->barriers_failed++;
+        vibeos_io_stats()->results[VIBEOS_BLK_NO_DEVICE]++;
+        return -1;
+    }
+    if (d->barrier(d->ctx) != 0) {
+        vibeos_io_stats()->barriers_failed++;
+        vibeos_io_stats()->results[VIBEOS_BLK_MEDIUM]++;
+        return -1;
+    }
+    vibeos_io_stats()->results[VIBEOS_BLK_OK]++;
+    return 0;
 }
 
 int vibeos_blk_write(uint32_t device, uint64_t lba, uint32_t sectors,

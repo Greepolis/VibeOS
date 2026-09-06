@@ -42,3 +42,34 @@ case: the proof stops being reported
     passed. This case exists because check-assertions-covered.py flagged the
     assertion the moment it was added and before the phase was committed -
     which is exactly what that check is for.
+
+# ---- I4 step 1 and 1b: write_many and the barrier -------------------------
+
+case: the barrier is never asked for
+  in hw_write_proof, delete the vibeos_blk_barrier call
+  expect: barrier_never_asked_for
+  why it matters: a barrier nothing calls is a promise nobody has tested. It
+    was built before the journal that will need it precisely so the write-back
+    policy could be designed around a primitive that exists rather than one
+    that is assumed - and "configured and consulted by nobody" is the defect
+    this project produces most often.
+
+case: the barrier stops being reported
+  in kmain.c, guard the [IO] BARRIERS line with if (0)
+  expect: barrier_counter_missing
+  why it matters: same rule as every other counter here - a line that stops
+    being printed must not read as a count that stayed at zero.
+
+case: a device with no barrier is told it has one
+  in vibeos_blk_barrier, return 0 instead of -1 when d->barrier is null
+  expect: NOT OBSERVABLE ON THIS MEDIUM, because both drivers now have one.
+    Reproduce by passing 0 for the barrier argument of vibeos_x86_64_blk_bind;
+    the boot then reports barriers_failed=0 and asked=1 and passes, which is
+    the defect. What it costs is invisible here and total on a machine that
+    loses power: a journal would trust an ordering it never got.
+
+case: write_many loses the tail of a run
+  in virtio_blk_write_many, stop before the last chunk when sectors > 1
+  expect: write_proof:FAILED:_contents_differ
+  note: the proof file is three sectors, so a run that drops its last chunk is
+    reached. A single-sector file would not exercise write_many at all.
