@@ -105,10 +105,51 @@ one — a failed write also counted as written — was initially reported as
 uncaught because the `sed` that was meant to break it never applied. Third time
 that trap has been walked into here.
 
-## What this does not do yet
+## The second half: the log itself, and the panic
 
-The kernel's ordinary log lines do not go to the sink; only a boot mark does.
-Wiring `hw_log_emit` and the panic path into it is what makes the feature
-useful rather than demonstrated, and it is the point at which the shared
-staging buffer case above becomes decidable. A `log` command on the kernel
-console that prints the previous boot's tail is the other half.
+Every `hw_log` event now goes to the medium — every one, including those below
+the serial level, because the quiet lines nobody was printing are exactly what
+is wanted after a machine has stopped. A boot raises a few dozen, so the cost
+is a few dozen sector writes against the several thousand reads a boot already
+performs.
+
+The formatting is shared between the serial writer and the sink so the two
+cannot drift, and it neither allocates nor locks, because it runs from a panic
+handler. `hw_panic` writes its reason to the medium *first*, before anything
+else it does: every line after that is one more chance to stop before reaching
+the disk.
+
+A per-core re-entrancy flag guards the one loop that would otherwise exist: the
+sink writes through the block layer, and the block layer logs when a request is
+refused. One flag per core rather than a global — two cores logging at once are
+not recursion, and a global would silently drop the second one.
+
+`logdisk` on the console prints the tail, newest first. Deliberately not named
+`log`: that already prints the two in-memory rings, and two commands whose
+names differ by nothing would be read as the same thing. This one answers a
+different question — what survived the last machine.
+
+```
+[LOGDISK] seq=0x13ad [DEBUG] task exited (a0 = pid, a1 = code) ...
+[LOGDISK] seq=0x13ab [DEBUG] futex wake code=0x14 a0=0x8000800690 ...
+[LOGDISK] seq=0x13a9 [DEBUG] copy-on-write fault resolved ...
+```
+
+The gate drives the command and asserts *more than the boot mark* rather than
+merely non-zero: a sink holding only its own bring-up would satisfy a non-zero
+check, and that is precisely the state the first half of this phase left.
+
+## One thing that came out of this and is not explained
+
+Sabotaging the feed — removing the one call that hands a log event to the sink —
+wedged the machine on three boots out of three, before the console was reached.
+That is not the known intermittent, which is about one in six and does not
+repeat like that. Removing a disk write from the kernel log path should not stop
+the machine, so something on that path depends on the timing it provides.
+
+It means the kernel-side sabotage could not reach the new assertions, so those
+were confirmed by moving the gate thresholds instead — which proves the parse
+and the branches, and is weaker than breaking the code and watching it go red.
+Both facts are recorded as they are in `scripts/dev/cases/io-logsink.txt`.
+
+Worth chasing before I6: asynchrony will fold this into the noise.

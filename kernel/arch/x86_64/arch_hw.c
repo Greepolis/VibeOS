@@ -849,16 +849,89 @@ static void hw_log_emit(const vibeos_log_event_t *ev) {
     vibeos_x86_64_serial_unlock();
 }
 
+/* One line of a log event, formatted into a caller's buffer.
+ *
+ * Shared by the serial writer and the on-disk sink so the two cannot drift.
+ * Returns the length used. No allocation and no locks: this runs from a panic
+ * handler. */
+static uint32_t hw_log_format(const vibeos_log_event_t *ev, char *out,
+                              uint32_t cap) {
+    static const char hex[] = "0123456789abcdef";
+    uint32_t n = 0;
+    const char *p;
+    int i;
+
+    #define PUTC(c) do { if (n + 1u < cap) { out[n++] = (char)(c); } } while (0)
+    #define PUTS(str) do { const char *q_ = (str); \
+        while (q_ && *q_) { PUTC(*q_); q_++; } } while (0)
+    #define PUTX(v) do { uint64_t v_ = (uint64_t)(v); \
+        PUTC('0'); PUTC('x'); \
+        for (i = 15; i >= 0; i--) { PUTC(hex[(v_ >> (i * 4)) & 0xFu]); } \
+    } while (0)
+
+    PUTC('[');
+    p = vibeos_log_level_name((vibeos_log_level_t)ev->level);
+    PUTS(p);
+    PUTC(']');
+    PUTC(' ');
+    PUTS(ev->message);
+    if (ev->code != 0u || ev->arg0 != 0u || ev->arg1 != 0u) {
+        PUTS(" code=");
+        PUTX(ev->code);
+        PUTS(" a0=");
+        PUTX(ev->arg0);
+        PUTS(" a1=");
+        PUTX(ev->arg1);
+    }
+    #undef PUTC
+    #undef PUTS
+    #undef PUTX
+    return n;
+}
+
+/* Guard against a log event raised from inside the sink's own write path.
+ *
+ * The sink writes through the block layer, and the block layer logs when a
+ * request is refused - so an unlucky failure would log, which would write,
+ * which would log. One flag per core rather than a global: two cores logging
+ * at once are not recursion, and a global would silently drop the second
+ * one's record. */
+static uint8_t g_logsink_busy[VIBEOS_HW_MAX_CPUS];
+
+/* Every kernel log event, on the medium that outlives the machine.
+ *
+ * Every event, not only the ones the serial level lets through: the whole
+ * point of the sink is the quiet lines nobody was printing when the machine
+ * stopped. A boot raises a few dozen of these, so the cost is a few dozen
+ * sector writes against the several thousand reads a boot already does. */
+static void hw_log_to_sink(const vibeos_log_event_t *ev) {
+    uint32_t cpu = vibeos_x86_64_cpu_id();
+    char line[VIBEOS_LOGSINK_PAYLOAD];
+    uint32_t n;
+
+    if (cpu >= VIBEOS_HW_MAX_CPUS || g_logsink_busy[cpu]) {
+        return;
+    }
+    g_logsink_busy[cpu] = 1u;
+    n = hw_log_format(ev, line, sizeof(line));
+    if (n > 0u) {
+        (void)vibeos_logsink_write(line, n);
+    }
+    g_logsink_busy[cpu] = 0u;
+}
+
 void hw_log(vibeos_log_level_t level, uint32_t code, uint64_t a0,
                    uint64_t a1, const char *message) {
     vibeos_log_event_t ev;
 
     (void)vibeos_log_record(&g_kernel_log, level, code, a0, a1, message);
-    if ((uint32_t)level < g_log_serial_level) {
-        return;   /* recorded, not printed: it is still there after a panic */
-    }
     if (vibeos_log_latest(&g_kernel_log, &ev) == 0) {
-        hw_log_emit(&ev);
+        /* The medium first, and unconditionally. A line held back by the
+         * serial level is exactly the kind that is wanted after a crash. */
+        hw_log_to_sink(&ev);
+        if ((uint32_t)level >= g_log_serial_level) {
+            hw_log_emit(&ev);
+        }
     }
 }
 
@@ -1061,6 +1134,33 @@ static void hw_sched_point(const char *where) {
 }
 
 static void hw_panic(const char *why) {
+    /* The medium first, before anything else this function does.
+     *
+     * A panic is the one moment the on-disk log exists for, and it is also the
+     * moment when the least is working: another core may hold any lock and the
+     * scheduler is about to be parked. The sink takes no lock on its write
+     * path precisely so this line can be written from here - see
+     * kernel/io/logsink.c. It goes first because every line after it is one
+     * more chance to stop before reaching the disk. */
+    {
+        const char *r = why ? why : "panic with no reason";
+        uint32_t n = 0;
+        while (r[n] != 0 && n < VIBEOS_LOGSINK_PAYLOAD - 8u) {
+            n++;
+        }
+        {
+            char line[VIBEOS_LOGSINK_PAYLOAD];
+            uint32_t k;
+            for (k = 0; k < 7u; k++) {
+                line[k] = "PANIC: "[k];
+            }
+            for (k = 0; k < n; k++) {
+                line[7u + k] = r[k];
+            }
+            (void)vibeos_logsink_write(line, 7u + n);
+        }
+    }
+
     uint64_t rbp;
     uint64_t rip;
 
@@ -9679,6 +9779,61 @@ static void hw_write_proof(void) {
  * to run after all of them and the first version ran inside the scratch one -
  * which reported one mount on a machine that had two, and would have reported
  * two on a machine that has three. */
+/* The tail of the on-disk log, newest first.
+ *
+ * Printed rather than returned: the caller is a console command and the point
+ * is to be read by a person looking at a machine that has just come back.
+ *
+ * Records from *this* boot are shown too, because there is no clean line
+ * between them - the sequence numbers are continuous across a reset, which is
+ * the property that makes the medium worth having. The sequence is printed so
+ * a reader can see where one machine stopped and the next started. */
+void vibeos_x86_64_logdisk_tail(uint32_t want) {
+    vibeos_logsink_record_t r;
+    uint32_t i;
+    uint32_t shown = 0;
+
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts("[LOGDISK] newest first, capacity=0x");
+    vibeos_x86_64_serial_print_hex(vibeos_logsink_capacity());
+    vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
+
+    for (i = 0; i < want; i++) {
+        char text[VIBEOS_LOGSINK_PAYLOAD + 1u];
+        uint32_t k;
+
+        if (vibeos_logsink_read(i, &r) != 0) {
+            break;
+        }
+        for (k = 0; k < r.len && k < VIBEOS_LOGSINK_PAYLOAD; k++) {
+            text[k] = (r.text[k] >= 32u && r.text[k] < 127u)
+                    ? (char)r.text[k] : '.';
+        }
+        text[k] = 0;
+        vibeos_x86_64_serial_lock();
+        vibeos_x86_64_serial_puts("[LOGDISK] seq=0x");
+        vibeos_x86_64_serial_print_hex(r.seq);
+        vibeos_x86_64_serial_puts(" ");
+        vibeos_x86_64_serial_puts(text);
+        vibeos_x86_64_serial_puts("\n");
+        vibeos_x86_64_serial_unlock();
+        shown++;
+    }
+
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts("[LOGDISK] shown=0x");
+    vibeos_x86_64_serial_print_hex(shown);
+    vibeos_x86_64_serial_puts(" written=0x");
+    vibeos_x86_64_serial_print_hex(vibeos_logsink_stats()->records_written);
+    vibeos_x86_64_serial_puts(" failed=0x");
+    vibeos_x86_64_serial_print_hex(vibeos_logsink_stats()->write_failed);
+    vibeos_x86_64_serial_puts(" truncated=0x");
+    vibeos_x86_64_serial_print_hex(vibeos_logsink_stats()->truncated);
+    vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
+}
+
 static void hw_mount_report(void) {
     uint32_t k;
     for (k = 0; k < vibeos_fs_mount_count(); k++) {

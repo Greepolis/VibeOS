@@ -30,6 +30,10 @@ void vibeos_x86_64_serial_unlock(void);
 /* Identity of the calling CPU, used to make the console lock recursive.
  * Weakly defined as 0; the on-metal arch layer overrides it. */
 uint32_t vibeos_x86_64_cpu_id(void);
+
+/* The tail of the kernel log that lives on disk, newest first. What survived
+ * the previous machine, as opposed to what this one has done since. */
+void vibeos_x86_64_logdisk_tail(uint32_t want);
 /* Mask and restore interrupts around a console critical section. Weakly
  * defined as no-ops for host builds, which cannot execute cli. */
 uint64_t vibeos_x86_64_irq_save(void);

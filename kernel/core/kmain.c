@@ -92,7 +92,7 @@ static int kernel_boot_fail(vibeos_kernel_t *kernel, size_t code, const char *me
 }
 
 static void kernel_cli_print_help(void) {
-    vibeos_x86_64_serial_puts("[CLI] Commands: help, status, log, meminfo, tasks, exec, crash, echo <text>, halt, reboot\n");
+    vibeos_x86_64_serial_puts("[CLI] Commands: help, status, log, logdisk, meminfo, tasks, exec, crash, echo <text>, halt, reboot\n");
 }
 
 static void kernel_cli_print_status(const vibeos_kernel_t *kernel) {
@@ -182,6 +182,10 @@ __attribute__((weak)) void vibeos_x86_64_console_interrupt(void) { }
 __attribute__((weak)) void vibeos_x86_64_hw_start_userland(void) { }
 
 __attribute__((weak)) void vibeos_x86_64_log_dump_recent(uint32_t want) { (void)want; }
+/* Beside its caller, like every other stub here: a weak definition in a
+ * different object does not resolve under PE/COFF, and the Windows CI job
+ * builds this core with mingw. */
+__attribute__((weak)) void vibeos_x86_64_logdisk_tail(uint32_t want) { (void)want; }
 
 /* Same arrangement: the crash records live with the task table. */
 __attribute__((weak)) void vibeos_x86_64_crash_dump(void) {
@@ -427,6 +431,16 @@ static void kernel_cli_run(vibeos_kernel_t *kernel) {
         }
         if (kernel_str_eq(line, "meminfo")) {
             kernel_cli_print_meminfo();
+            continue;
+        }
+        if (kernel_str_eq(line, "logdisk")) {
+            /* The tail of the log on the medium, newest first.
+             *
+             * Deliberately not called `log`: that already prints the in-memory
+             * ring, and two commands whose names differ by nothing would be
+             * read as the same thing. This one answers a different question -
+             * what survived the last machine, not what this one has done. */
+            vibeos_x86_64_logdisk_tail(16u);
             continue;
         }
         if (kernel_str_eq(line, "crash")) {

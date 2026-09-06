@@ -613,14 +613,20 @@ def main():
                 # dereferences null earlier in every boot, so there is always
                 # one to print - and a dumper that only works when nothing has
                 # crashed would pass a test that never asked it for anything.
-                ("Commands: help, status, log, meminfo, tasks, exec, crash, echo <text>, halt, reboot", b"crash\r"),
+                ("Commands: help, status, log, logdisk, meminfo, tasks, exec, crash, echo <text>, halt, reboot", b"crash\r"),
                 ("[CRASH] end", b"log\r"),
                 # `log` shows two rings: the boot stages kmain records, and
                 # the arch ring holding what the machine actually did - fork,
                 # exec, exit, signals, copy-on-write, munmap. The second was
                 # not reachable from the console at all until now, and the
                 # gate never ran this command, so neither was exercised.
-                ("[LOG] arch ring: showing", b"meminfo\r"),
+                # The log that is on the medium, as opposed to the two rings
+                # in memory. Driven because a command nobody runs is a command
+                # that rots, and because the assertion below needs its output:
+                # this is the only place a boot says how many of its own log
+                # lines actually reached the disk.
+                ("[LOG] arch ring: showing", b"logdisk\r"),
+                ("[LOGDISK] shown=", b"meminfo\r"),
                 # meminfo is the memory picture a person asks for, and the three
                 # counters that must be zero are printed on one line so the gate
                 # can assert them without parsing the rest.
@@ -1221,6 +1227,33 @@ def main():
                 problems.append("dead_kstack_counter_missing")
             elif int(mks.group(1), 16) == 0:
                 problems.append("dead_kstacks_never_freed")
+
+            # The kernel own log lines, on the medium (I5b, second half).
+            #
+            # The first half only wrote a boot mark, which proved the sink
+            # worked and nothing about it being useful. Every hw_log event now
+            # goes there - every one, including the ones below the serial
+            # level, because the quiet lines nobody was printing are exactly
+            # what is wanted after a machine has stopped.
+            #
+            # Asserted as "more than the boot mark", not merely non-zero: a
+            # sink that recorded only its own bring-up would satisfy a
+            # non-zero check and still have none of the log in it.
+            mld = re.search(r"\[LOGDISK\] shown=0x([0-9a-f]{16}) "
+                            r"written=0x([0-9a-f]{16}) failed=0x([0-9a-f]{16}) "
+                            r"truncated=0x([0-9a-f]{16})", text)
+            if mld is None:
+                problems.append("logdisk_tail_missing")
+            else:
+                shown = int(mld.group(1), 16)
+                written = int(mld.group(2), 16)
+                failed = int(mld.group(3), 16)
+                if written < 2:
+                    problems.append("logdisk_holds_only_the_boot_mark")
+                elif shown == 0:
+                    problems.append("logdisk_tail_read_nothing_back")
+                elif failed != 0:
+                    problems.append("logdisk_writes_failed")
 
             # The mount table (I4b step 4).
             #

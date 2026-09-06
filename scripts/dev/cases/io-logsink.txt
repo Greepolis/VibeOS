@@ -148,3 +148,49 @@ case: the ring is one slot shorter than the reader believes
 #
 # Two model bugs to one real one. When a detector fires, the first question is
 # whether the detector is right, and here it was wrong more often than the code.
+
+# ---- the second half: the kernel's own log reaches the medium (I5b) --------
+
+case: log events stop being fed to the sink
+  in hw_log, remove the hw_log_to_sink call
+  expect: logdisk_holds_only_the_boot_mark
+  BUT WHAT ACTUALLY HAPPENS is stranger and is why this is written up rather
+    than ticked off: three boots out of three wedged before reaching the
+    console at all, so the assertion was never exercised. Removing a disk write
+    from the kernel log path reliably stops the machine. That is not the known
+    intermittent - the known one is about one boot in six and does not repeat
+    like this. Unexplained, and it means the log write is load-bearing for
+    timing somewhere it should not be. Worth chasing before I6, because
+    asynchrony will make it disappear into the noise.
+
+case: the assertion cannot tell a full log from a bare boot mark
+  in the gate, raise the `written < 2` threshold
+  expect: logdisk_holds_only_the_boot_mark - confirmed, it fires
+  why it matters: "non-zero" would be satisfied by a sink that recorded only
+    its own bring-up, which is exactly the state the first half of I5b left
+    and which looked like a working feature.
+
+case: the tail reads nothing back
+  in the gate, require shown to be large
+  expect: logdisk_tail_read_nothing_back - confirmed, it fires
+  why it matters: writing and reading are separate claims. A sink that accepts
+    records and cannot return them is a sink that will be discovered at the one
+    moment it is needed.
+
+# Both gate branches were confirmed to fire by moving the thresholds, since the
+# kernel-side sabotage above could not reach them. That is weaker than breaking
+# the code and watching the gate go red, and it is recorded as weaker.
+
+case: the logdisk command stops being reachable from the console
+  in kmain.c, remove the "logdisk" branch
+  expect: logdisk_tail_missing
+  why it matters: the sink can be perfectly correct and still useless if
+    nothing on a running machine can ask it what it holds. That is the state
+    the arch log ring was in until the `log` command learned to print it.
+
+case: a write to the medium is refused and the sink absorbs it
+  attach the sink to a device whose write fails after N records
+  expect: logdisk_writes_failed
+  why it matters: same argument as logsink_write_failed at bring-up, but for
+    the steady state - a medium that starts refusing halfway through a boot is
+    the case where the log is most wanted and least likely to be checked.
