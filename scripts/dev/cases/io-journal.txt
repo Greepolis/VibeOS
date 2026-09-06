@@ -69,3 +69,32 @@ case: recovery stops checking that the commit record names this descriptor
 # journal's own phases rather than at a random write index, and a way to
 # corrupt the data region independently of the commit record, so that the two
 # checksums are actually put in a position to matter.
+
+# ---- second attempt, also withdrawn, with a sharper reason -----------------
+#
+# The note above said a working torture probably needs "the power cut placed
+# between the journal's own phases, and a way to corrupt the data region
+# independently of the commit record". The second attempt did the corruption
+# half: run a transaction to completion, put the targets back to their old
+# contents, damage one block of the journal region, reattach, and require that
+# recovery refuse to replay.
+#
+# Its control case failed immediately: an INTACT committed transaction is not
+# replayed either. That is not a defect - it is the layer being right. commit()
+# performs the checkpoint and retires the region in the same call, so by the
+# time it returns there is no transaction left to replay. The state this test
+# wanted - a commit record standing beside targets that have not been updated -
+# cannot be produced from outside the API at all.
+#
+# So the sharper reason the first attempt caught nothing: the interesting states
+# of this layer exist only *inside* commit(), between its phases. A harness that
+# drives the public API and cuts power at write boundaries can only produce
+# "no commit record" (discarded for the easy reason) and "fully finished". The
+# existing host sweep reaches the inside because it fails the flush itself,
+# which is the only lever that exists - and a randomised version diluted that
+# lever rather than sharpening it.
+#
+# What a third attempt needs is therefore not more randomness. It is either a
+# journal that exposes its phases to a test, or a fault injector that fails the
+# Nth flush specifically rather than the Nth write. The second is small and is
+# the one to try.
