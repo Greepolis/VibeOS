@@ -164,6 +164,12 @@ int vibeos_blk_submit(vibeos_blk_request_t *req) {
      * the filesystem, one layer down. */
     if (req->lba > d->sectors ||
         (uint64_t)req->sectors > d->sectors - req->lba) {
+        if (g_stats.results[VIBEOS_BLK_OUT_OF_RANGE] == 0ull) {
+            g_stats.first_oor_device = req->device;
+            g_stats.first_oor_lba = req->lba;
+            g_stats.first_oor_sectors = req->sectors;
+            g_stats.first_oor_device_size = d->sectors;
+        }
         return finish(req, VIBEOS_BLK_OUT_OF_RANGE);
     }
 

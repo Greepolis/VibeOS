@@ -1200,6 +1200,28 @@ def main():
                     # wanted.
                     problems.append("logsink_lost_the_previous_boot")
 
+            # Kernel stacks handed over rather than freed under their own
+            # core.
+            #
+            # A task exits standing on its own kernel stack, so the stack
+            # cannot be freed by the exiting task and must not be freed by
+            # anybody else: the reaper on another core used to free it in the
+            # handful of instructions between the zombie being published and
+            # the switch away, and those instructions push. The frame was
+            # written after being freed and poisoned, handed out again as a
+            # page table, and a core executed 0xdead0000dead0000.
+            #
+            # It is parked on the core and freed once that core is provably on
+            # another stack. Asserted non-zero because a deferred free that
+            # never happens is a leak that looks exactly like a fix - this
+            # project has shipped that shape before, which is why the counter
+            # exists at all rather than just the mechanism.
+            mks = re.search(r"dead_kstacks_freed=0x([0-9a-f]{16})", text)
+            if mks is None:
+                problems.append("dead_kstack_counter_missing")
+            elif int(mks.group(1), 16) == 0:
+                problems.append("dead_kstacks_never_freed")
+
             # The mount table (I4b step 4).
             #
             # There was one global mount, and that was the structural reason

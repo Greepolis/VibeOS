@@ -716,6 +716,18 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
         kernel_log_u64_hex(io->barriers_failed);
         vibeos_x86_64_serial_puts(" register_refused=0x");
         kernel_log_u64_hex(io->register_refused);
+        /* What the first out-of-range refusal actually was. A count alone
+         * cost one investigation: the rate varied more between runs of the
+         * same binary than between the two things being compared, and there
+         * was nothing in the log to say which device or which sector. */
+        vibeos_x86_64_serial_puts(" oor_dev=0x");
+        kernel_log_u64_hex(io->first_oor_device);
+        vibeos_x86_64_serial_puts(" oor_lba=0x");
+        kernel_log_u64_hex(io->first_oor_lba);
+        vibeos_x86_64_serial_puts(" oor_n=0x");
+        kernel_log_u64_hex(io->first_oor_sectors);
+        vibeos_x86_64_serial_puts(" oor_devsz=0x");
+        kernel_log_u64_hex(io->first_oor_device_size);
         vibeos_x86_64_serial_puts("\n");
 
         /* The waits, on their own line and in the must-be-zero family.

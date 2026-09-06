@@ -46,6 +46,20 @@ typedef struct vibeos_io_stats {
     uint64_t register_refused;          /* asserted zero: a driver that
                                          * cannot describe itself is a bug   */
 
+    /* The first request this layer refused as out of range, kept so a boot can
+     * say *what* it refused rather than only how many.
+     *
+     * A count alone sent one investigation looking at the kernel-stack change
+     * that had just landed, on the strength of a rate that turned out to vary
+     * more between runs of the same binary than between the two arms. Which
+     * device, which sector, and how big the device is are three facts that
+     * settle it in one line. */
+    uint64_t first_oor_device;
+    uint64_t first_oor_lba;
+    uint64_t first_oor_sectors;
+    uint64_t first_oor_device_size;
+
+
     /* ---- B2: the block cache (I2) --------------------------------------- */
     uint64_t cache_hits;            /* asserted as a *ratio*, not non-zero   */
     uint64_t cache_misses;

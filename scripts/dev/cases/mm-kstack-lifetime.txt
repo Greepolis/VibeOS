@@ -1,0 +1,91 @@
+# The kernel stack a task exits on.
+#
+# Boot gate: bash scripts/dev/check.sh build build-gcc-Release
+#            python3 scripts/qemu-cli-smoke-linux.py build-gcc-Release 300
+#
+# This one was found the way this file's own notes say to find things: not by
+# reading the exit path - three careful readings of it missed this - but by
+# making the detector name the culprit. The frame poison fired, the report
+# carried a `freed_by` tag, and the tag is the address of a string literal (the
+# __func__ of whoever released the frame). Read out of .rodata it said
+# `hw_free_kstack_pages` outright.
+#
+# Read with addr2line, as it was the first time, it names whatever function
+# happens to precede that address in the layout and is simply wrong. The
+# detector was right; it was being read as if the tag were a return address.
+
+case: the reaper frees the kernel stack again
+  in hw_sys_waitpid, restore `kbase = t->kstack_base; kpages = t->kstack_pages;`
+    and the hw_free_kstack_pages call after the unlock
+  expect: [MM] POISON_BROKEN naming a frame, and a #GP at rip=0xdead0000dead0000
+    on some core - about one boot in six
+  why it matters: this is the defect. A task exits standing on its own kernel
+    stack. Between publishing the zombie and switching away there are a handful
+    of instructions, and those instructions push - so a reaper on another core
+    that frees the stack the moment it sees the zombie is freeing the ground
+    the dying core is standing on. The frame is then written after being
+    poisoned, goes back on the freelist, and is handed out again; in the run
+    this was caught on it became a page table, which is how a core ends up
+    executing the poison pattern itself.
+  what it looked like from outside: a wedge at busybox_cat with cores queued on
+    the console lock, which points nowhere near exit or the reaper. Publishing
+    the slot last - which the code already did, deliberately, after an earlier
+    bug of the same family - is not enough, because the danger is not the slot.
+
+case: the parked stack is never freed
+  in hw_task_exit, drop the two lines that park it on the cpu
+  expect: dead_kstacks_never_freed
+  why it matters: a deferred free that silently never happens is a leak that
+    looks exactly like a fix, and this project has shipped that shape before -
+    which is why there is a counter and not only a mechanism.
+
+case: the drain runs while the core is still on the parked stack
+  in hw_drain_dead_kstack, remove the rsp check
+  expect: nothing on a healthy boot, because the parking is correct
+  why it matters: it is the assertion that makes "this core is on another
+    stack" a checked fact rather than an argument in a comment. If a future
+    change parks a stack at the wrong moment, the machine panics with a
+    sentence instead of corrupting itself quietly and surfacing somewhere else
+    a week later. Confirmed reachable by parking the *current* stack on
+    purpose, which panics immediately.
+
+case: the drain is called from somewhere that is on the parked stack
+  call hw_drain_dead_kstack from inside hw_task_exit after task_enter
+  expect: NOT REACHABLE - task_enter does not return. Recorded because it is
+    the mistake the next person will consider: the obvious place to free the
+    stack is "after the switch", and there is no code there.
+
+# Measured: POISON_BROKEN on 0 of 26 boots after the fix, against 1 in 6 before.
+#
+# Separately and NOT fixed here: io_out_of_range appears intermittently, with
+# and without this change (0 of 10 with, 1 of 5 without), at a rate that varies
+# far more between runs than between arms. A 13-of-16 run and a 0-of-10 run
+# came from the same source. The suspicion is the vvfat medium rather than the
+# kernel - the loop devices resolve their extents from a FAT the gate is also
+# writing to - but that is a hypothesis with no evidence behind it yet.
+#
+# The refusal now records what it refused, and the first capture killed that
+# hypothesis outright:
+#
+#   oor_dev=0x0 oor_lba=0x00ffffff00ffffff oor_n=0x1 oor_devsz=0xfc000
+#
+# Device 0 is the boot disk. 0x00ffffff00ffffff is not a sector number and not
+# a cluster either - it is a 32-bit pattern repeated into 64 bits, which is
+# what uninitialised or pattern-filled memory looks like. So something asked
+# the boot disk to read a sector whose address came out of memory that had
+# never been written, and the bounds check in kernel/io/blkdev.c is what
+# stopped it. That check earning its keep is the good news.
+#
+# The same boot also had "FSIMAGE name=ntfs result=FAILED: mount", so the two
+# are likely one thing. Still open. What it needs next is the caller: the block
+# layer cannot name one, so the request needs to carry where it came from -
+# which is worth doing anyway, and is the shape I6 will need regardless.
+
+case: the counter stops being reported
+  in kernel/sched/view.c, remove the dead_kstacks_freed field from the line
+  expect: dead_kstack_counter_missing
+  why it matters: "the number is zero" and "there is no number" are different
+    failures, and a gate that could not tell them apart would read a removed
+    counter as a mechanism that never ran - or, worse, a removed *assertion* as
+    a passing one. That is the shape VIBEOS_BLK_TIMEOUT had: defined, printed,
+    asserted, and produced by nobody.

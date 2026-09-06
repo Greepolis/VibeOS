@@ -30,6 +30,11 @@ typedef struct vibeos_task_stats {
      * should ask, and a refusal that is invisible is a hang somebody will
      * investigate from the wrong end. */
     uint64_t slot_refused;       /* no free task slot                         */
+    /* Kernel stacks handed over by an exiting core and freed once that core
+     * was running on another one. Not a MUSTBEZERO field: it must be non-zero
+     * on any boot that exited a task, because a deferred free that silently
+     * never happens is a leak that looks exactly like a fix. */
+    uint64_t dead_kstacks_freed;
 
     /* The three that must be zero, and are asserted by the boot gate.
      *

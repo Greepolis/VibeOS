@@ -110,6 +110,22 @@ typedef struct hw_cpu {
     volatile int online;
     /* Ticks left in the current task's slice. See hw_schedule. */
     uint32_t slice_left;
+    /* A kernel stack whose task has exited but whose core has not yet left it.
+     *
+     * The stack a task exits on is the one it is standing on. It cannot be
+     * freed by the exiting task - there is nothing to run on afterwards - and
+     * it must not be freed by anybody else either, which is the defect this
+     * exists to close: the reaper on another core used to free it the instant
+     * it saw the zombie, while the dying core was still executing the handful
+     * of instructions between publishing the zombie and switching away. Those
+     * instructions push. So the frame was written after it had been freed and
+     * poisoned, and later handed out again - to a page table, in the run this
+     * was caught on, which is how a core ends up executing 0xdead0000dead0000.
+     *
+     * The stack is parked here instead, and freed by this core after it is
+     * demonstrably running on a different one. */
+    uint64_t dead_kstack_base;
+    uint32_t dead_kstack_pages;
     struct tss64 tss;
 } hw_cpu_t;
 
@@ -3647,11 +3663,54 @@ static uint64_t hw_alloc_kstack(uint64_t *out_base, uint32_t *out_pages) {
  * helper that writes back into the task invites doing so after the slot has
  * been published as reusable - which is exactly the bug this shape prevents.
  * The caller takes what it needs under the lock and frees afterwards. */
+/* Free a kernel stack parked by a task that exited on this core.
+ *
+ * Only ever called from a core that has already switched to another stack -
+ * the whole point - so the two call sites are chosen rather than convenient:
+ * the top of the scheduler, and the top of exit itself. Both are reached with
+ * rsp inside the *current* task stack, never the parked one.
+ *
+ * A core that exits a task and then never schedules again holds one stack
+ * until it does. That is bounded by one stack per core and is the cost of not
+ * freeing a stack somebody is standing on. */
+static void hw_drain_dead_kstack(void);
+
 static void hw_free_kstack_pages(uint64_t base, uint32_t pages) {
     uint32_t i;
     for (i = 0; i < pages; i++) {
         hw_free_page((void *)(uintptr_t)(base + (uint64_t)i * 4096ull));
     }
+}
+
+static void hw_drain_dead_kstack(void) {
+    hw_cpu_t *cpu = hw_this_cpu();
+    uint64_t base;
+    uint32_t pages;
+
+    if (cpu == 0 || cpu->dead_kstack_base == 0 || cpu->dead_kstack_pages == 0) {
+        return;
+    }
+    /* Taken out of the slot before the pages are freed. hw_free_page can
+     * schedule nothing and takes only the memory lock, but a slot still
+     * holding an address whose pages are on the freelist is a second chance to
+     * free them, and this is the one place that would ever get. */
+    base = cpu->dead_kstack_base;
+    pages = cpu->dead_kstack_pages;
+    cpu->dead_kstack_base = 0;
+    cpu->dead_kstack_pages = 0;
+
+    /* The one assertion worth making here: this core must not be standing on
+     * the stack it is about to free. If it is, the parking is wrong somewhere
+     * and the machine should say so rather than corrupt itself quietly. */
+    {
+        uint64_t rsp;
+        __asm__ __volatile__("mov %%rsp, %0" : "=r"(rsp));
+        if (rsp >= base && rsp < base + (uint64_t)pages * 4096ull) {
+            hw_panic("draining the kernel stack this core is standing on");
+        }
+    }
+    hw_free_kstack_pages(base, pages);
+    vibeos_task_stats()->dead_kstacks_freed++;
 }
 
 hw_task_t g_tasks[VIBEOS_HW_MAX_TASKS];
@@ -4356,6 +4415,11 @@ static void hw_schedule(vibeos_x86_64_isr_frame_t *frame) {
         return;
     }
 
+    /* A stack left behind by a task that exited on this core. Safe here for
+     * the reason the whole mechanism exists: this core is running on the
+     * current task's stack, which is never the parked one. */
+    hw_drain_dead_kstack();
+
     /* The quantum, finally consulted.
      *
      * Preemption used to happen on every timer tick, so the time slice was
@@ -4625,6 +4689,9 @@ void hw_task_exit(uint64_t code) {
     /* Exit is the scheduling point that never comes back, so a lock held here
      * is held by a task that will not exist to release it. */
     hw_sched_point("exit");
+    /* Whatever the previous task on this core left behind. Safe here: this
+     * task is running on its own stack, which is not the parked one. */
+    hw_drain_dead_kstack();
     hw_cpu_t *cpu = hw_this_cpu();
     int dying = cpu->current_task;
     int next, i;
@@ -4786,8 +4853,12 @@ void hw_task_exit(uint64_t code) {
          * is inside the branch that actually frees. */
         vibeos_vma_clear(&g_tasks[dying].proc.vmas);
         }
-        /* The kernel stack stays until the parent reaps us: we are still
-         * executing on it right now. */
+        /* The kernel stack is parked on this core, not left for the parent.
+         *
+         * We are still executing on it right now, and the parent may reap this
+         * slot the instant it sees the zombie - so a reaper that freed the
+         * stack would be freeing the one under our feet. See
+         * hw_cpu_t::dead_kstack_base. */
     }
 
     /* Now, and not before: the address space is gone, so a parent that reaps
@@ -4799,6 +4870,14 @@ void hw_task_exit(uint64_t code) {
     if (dying >= 0) {
         hw_spin_lock_named(&g_sched_lock, __func__);
         g_tasks[dying].cr3 = 0;
+
+        /* Park the stack before the slot is published in any form. Taken from
+         * the task under the same lock that publishes the state, so a reaper
+         * that sees the zombie can never also see a stack to free. */
+        cpu->dead_kstack_base = g_tasks[dying].kstack_base;
+        cpu->dead_kstack_pages = g_tasks[dying].kstack_pages;
+        g_tasks[dying].kstack_base = 0;
+        g_tasks[dying].kstack_pages = 0;
 
         /* A thread has no reaper, so it must not become a zombie.
          *
@@ -6646,11 +6725,19 @@ static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr) {
                  * The freeing happens outside the lock, from locals, because
                  * hw_free_page takes the memory lock and nesting the two would
                  * be a new ordering rule to get wrong. */
-                uint64_t kbase = t->kstack_base;
-                uint32_t kpages = t->kstack_pages;
-
-                t->kstack_base = 0;
-                t->kstack_pages = 0;
+                /* Nothing to take: the stack was parked on the core the
+                 * task exited on, and that core frees it once it is running on
+                 * a different one.
+                 *
+                 * This used to read kstack_base and kstack_pages here and free
+                 * them below, and it was wrong in a way three careful readings
+                 * of the exit path missed. Publishing the slot last was not
+                 * enough, because the danger is not the slot - it is that the
+                 * dying core is still standing on that stack when the reaper
+                 * runs. The window is a handful of instructions and it was hit
+                 * about one boot in six. */
+                uint64_t kbase = 0;
+                uint32_t kpages = 0;
                 (void)vibeos_teardown_step((uint32_t)(t - g_tasks),
                                            VIBEOS_TEARDOWN_HARVESTED);
                 vibeos_task_stats()->reaped++;
@@ -6658,7 +6745,7 @@ static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr) {
                                            VIBEOS_TEARDOWN_PUBLISHED);
                 (void)hw_task_set_state((int)(t - g_tasks), HW_TASK_FREE, __func__); /* reaped; nothing may touch t now */
                 hw_spin_unlock(&g_sched_lock);
-                hw_free_kstack_pages(kbase, kpages);
+                (void)kbase; (void)kpages;
                 __asm__ __volatile__("sti");
                 if (status_ptr != 0 && hw_user_range_ok(status_ptr, 4, 1)) {
                     /* The wait status word: a normal exit puts the code in the

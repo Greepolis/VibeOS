@@ -116,6 +116,12 @@ void vibeos_task_print_stats(void) {
     view_hex(s->execs);
     vibeos_x86_64_serial_puts(" slot_refused=0x");
     view_hex(s->slot_refused);
+    /* Kernel stacks handed over by an exiting core and freed once it was
+     * running on another one. Reported because a deferred free that silently
+     * never happens is a leak that looks exactly like a fix, and the gate
+     * asserts it is not zero on a boot that exited anything. */
+    vibeos_x86_64_serial_puts(" dead_kstacks_freed=0x");
+    view_hex(s->dead_kstacks_freed);
     vibeos_x86_64_serial_puts("\n");
     vibeos_x86_64_serial_unlock();
 
