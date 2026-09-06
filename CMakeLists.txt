@@ -151,6 +151,7 @@ if(VIBEOS_BUILD_TESTS)
         tests/kernel/mounttab_tests.c
         tests/kernel/parttab_tests.c
         tests/kernel/logsink_tests.c
+        tests/kernel/gpt_tests.c
         tests/kernel/task_tests.c
         tests/kernel/runq_tests.c
         tests/kernel/lifetime_tests.c

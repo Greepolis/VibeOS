@@ -104,4 +104,44 @@ vibeos_parttab_result_t vibeos_parttab_write_mbr(
     const vibeos_parttable_t *table, const vibeos_parttab_guard_t *guard,
     uint32_t expect_checksum);
 
+/* The same, as a GPT.
+ *
+ * Rule 4 in the notes at the top of this file is the whole reason this is a
+ * separate function rather than a flag: a GPT is not one sector, it is five
+ * regions, and the order they are written in decides whether an interrupted
+ * write leaves a disk a reader can reconcile.
+ *
+ * The order here is: backup entry array, backup header, primary entry array,
+ * primary header, protective MBR last. Every prefix of that sequence leaves
+ * either the original table intact and complete, or a newer backup beside an
+ * older primary - which is the case GPT was designed to recover from. The
+ * primary header goes down after the array it describes, for the same reason
+ * the journal writes its commit record last: a header is a claim about bytes
+ * that must already be there.
+ *
+ * Deliberately NOT wrapped in a transaction, and that decision is worth
+ * stating because the plan for this phase assumed it would be. GPT already
+ * carries its own recovery scheme - two copies, each with a CRC over the
+ * header and another over the entry array - and a reader that checks those
+ * can tell a good table from a torn one without help. Putting a journal
+ * underneath would add a second recovery mechanism that has to agree with the
+ * first, which is a second place that has to be right. What the journal is for
+ * is updates that have no such scheme of their own.
+ *
+ * `entries` is the caller's array, `entry_count` how many of them; 128 is what
+ * every other tool writes and what this refuses to go below, because a table
+ * smaller than the standard reserve is one that other tools will grow into.
+ */
+#define VIBEOS_PARTTAB_GPT_ENTRIES 128u
+#define VIBEOS_PARTTAB_GPT_ENTRY_BYTES 128u
+/* The entry array in sectors, and the total each copy occupies. */
+#define VIBEOS_PARTTAB_GPT_ARRAY_SECTORS \
+    ((VIBEOS_PARTTAB_GPT_ENTRIES * VIBEOS_PARTTAB_GPT_ENTRY_BYTES) / \
+     VIBEOS_BLOCK_SIZE)
+
+vibeos_parttab_result_t vibeos_parttab_write_gpt(
+    vibeos_blockcache_t *bc, uint64_t disk_sectors,
+    const vibeos_parttable_t *table, const vibeos_parttab_guard_t *guard,
+    const uint8_t disk_guid[16], uint32_t expect_checksum);
+
 #endif /* VIBEOS_PARTTAB_H */

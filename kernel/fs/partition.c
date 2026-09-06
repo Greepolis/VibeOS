@@ -23,9 +23,14 @@ static uint64_t rd64(const uint8_t *p) {
 
 /* CRC-32, the ordinary reflected one, computed without a table. A 256-entry
  * table would be faster and this runs a handful of times per boot. */
-uint32_t vibeos_partition_crc32(const void *data, uint32_t len) {
+/* The running form, for a CRC over more bytes than a caller can hold at once.
+ * A GPT entry array is 16 KiB and the writer builds it a sector at a time, so
+ * without this it would need either a 16 KiB buffer on a kernel stack or a
+ * second copy of this loop - and a second copy of a checksum is a second
+ * opinion about what the checksum is. */
+uint32_t vibeos_partition_crc32_update(uint32_t crc, const void *data,
+                                       uint32_t len) {
     const uint8_t *p = (const uint8_t *)data;
-    uint32_t crc = 0xFFFFFFFFu;
     uint32_t i, bit;
 
     for (i = 0; i < len; i++) {
@@ -34,7 +39,11 @@ uint32_t vibeos_partition_crc32(const void *data, uint32_t len) {
             crc = (crc >> 1) ^ (0xEDB88320u & (uint32_t)(-(int32_t)(crc & 1u)));
         }
     }
-    return crc ^ 0xFFFFFFFFu;
+    return crc;
+}
+
+uint32_t vibeos_partition_crc32(const void *data, uint32_t len) {
+    return vibeos_partition_crc32_update(0xFFFFFFFFu, data, len) ^ 0xFFFFFFFFu;
 }
 
 static vibeos_part_kind_t mbr_kind(uint8_t type) {

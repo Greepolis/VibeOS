@@ -72,6 +72,11 @@ int vibeos_partition_parse_gpt(const void *header, const void *entries,
 
 /* CRC-32 as GPT specifies it. Exposed because a caller building a table needs
  * the same function, and two implementations of one checksum is one too many. */
+/* Running and one-shot. The running form exists because a GPT entry array is
+ * 16 KiB and is built a sector at a time; the one-shot is written in terms of
+ * it so there is one loop rather than two opinions. */
+uint32_t vibeos_partition_crc32_update(uint32_t crc, const void *data,
+                                       uint32_t len);
 uint32_t vibeos_partition_crc32(const void *data, uint32_t len);
 
 #endif

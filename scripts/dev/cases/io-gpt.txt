@@ -1,0 +1,72 @@
+# Sabotage cases for writing a GPT (I4c, finished).
+#
+# Host tests: bash scripts/dev/check.sh tests build-gcc-Release
+#
+# The tests sweep the power-off point across every write of the transaction, in
+# three flush orders, on a device model whose cache reorders. What they assert
+# is narrower than "all or nothing", and stating it precisely is what made the
+# results below readable:
+#
+#   a GPT header that validates always describes an entry array that is
+#   actually on the disk.
+
+case: the backup header is never written
+  in vibeos_parttab_write_gpt, delete step 2
+  expect: FAIL:gpt "a primary landed without its backup"
+  why it matters: this is rule 4 from parttab.h, and it is the ordering that
+    actually buys something. Interrupt a write after the primary and before the
+    backup and the disk carries two tables that disagree with no way to say
+    which is newer. The other way round it carries its original primary and a
+    newer backup, which is the case a GPT keeps a backup for.
+
+case: sector 0 is rebuilt instead of edited
+  in the protective-MBR step, memset the whole sector rather than bytes 446..509
+  expect: FAIL:gpt "the write destroyed the boot code"
+  why it matters: a repartition that unbootables a disk it was only asked to
+    repartition. The same rule the MBR writer already carries, and it applies
+    to a GPT for the same reason.
+
+case: the primary header goes down before the array it names
+  in vibeos_parttab_write_gpt, move step 4 ahead of step 3
+  expect: NOTHING. THE CASE EXISTS AND THIS TEST CANNOT DECIDE IT - and the
+    reason is worth more than the case.
+
+    The sweep was written believing this was the central danger: a header is a
+    claim about bytes, and a claim written before the bytes is a table that
+    passes every check and points at rubbish. Sabotaging it caught nothing, and
+    on looking at why, the premise was wrong. The header carries a CRC over the
+    entry array. Written early, it describes an array that is not there yet, so
+    it does not validate, so a reader rejects it and falls back to the backup -
+    which is a recoverable state, not a lie. For the sabotage to produce a
+    lying header the *previous* contents of the array region would have to
+    satisfy the new header CRC, which is not a thing that happens.
+
+    So what protects the primary pair is the CRC, and what the ordering
+    protects is the relationship between the backup pair and the primary pair -
+    which is the case above, and which is caught. The ordering here is kept
+    because it costs nothing and is what the standard expects, not because a
+    test showed it was load-bearing. Third instance in this project of a test
+    being right about the outcome and wrong about the mechanism; the difference
+    is that this time the sabotage was run before the claim was written down.
+
+case: the sweep never reaches the interesting window
+  in test_gpt_backup_lands_before_the_primary, lower the cut range to 4
+  expect: FAIL:gpt "the sweep never reached the backup-only window"
+  why it matters: without that guard the test passes on a writer that never
+    gets far enough to have a backup at all - a check that cannot fail, which
+    this project has now built twice and caught twice.
+
+case: an entry is allowed over the table's own reserve
+  in vibeos_parttab_write_gpt, drop the first_usable / last_usable check
+  expect: FAIL:gpt "an entry over the primary array was accepted"
+  why it matters: a GPT reserves both ends of the disk, so an entry that would
+    be perfectly legal on an MBR can still land on the table itself. check_table
+    has no idea a GPT exists and cannot be asked to know.
+
+case: the entry array CRC is computed over one sector instead of all of them
+  in gpt_array_crc, return after the first iteration
+  expect: FAIL:gpt "the primary header does not validate"
+  why it matters: the array is 16 KiB and is built a sector at a time, which is
+    why vibeos_partition_crc32_update exists. A checksum computed over part of
+    what it claims to cover is worse than none, because it is checked and
+    passes.
