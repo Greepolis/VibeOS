@@ -1055,6 +1055,27 @@ def main():
                     # the disk had one, since every GPT check is against a size.
                     problems.append("volume_scan_saw_a_disk_of_unknown_size")
 
+            # Writing a partition table (I4c).
+            #
+            # On a scratch device that is nobody's disk, because the plan says
+            # at the top of its own section that this is the one phase that can
+            # lose a user's data. It is a RAM-backed block device registered
+            # like any other, so the write goes through the real partition
+            # writer, the real block layer and the real cache - only the medium
+            # is different, and the medium is the one part I4 already proves.
+            #
+            # The round trip is the assertion: a writer that produces a table
+            # only it can read is indistinguishable from a correct one until
+            # another tool looks at the disk, and by then the disk is
+            # somebody's.
+            if "[IO] PARTTAB" not in text:
+                problems.append("parttab_round_trip_missing")
+            elif "round_trip=OK" not in text:
+                mp = re.search(r"\[IO\] PARTTAB [^\n]*round_trip=([^\n]*)", text)
+                problems.append("parttab_round_trip:" +
+                                (mp.group(1).strip().replace(" ", "_")
+                                 if mp else "unreadable"))
+
             # The mount table (I4b step 4).
             #
             # There was one global mount, and that was the structural reason

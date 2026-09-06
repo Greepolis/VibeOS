@@ -149,6 +149,7 @@ if(VIBEOS_BUILD_TESTS)
         tests/kernel/swaparea_tests.c
         tests/kernel/blkdev_tests.c
         tests/kernel/mounttab_tests.c
+        tests/kernel/parttab_tests.c
         tests/kernel/task_tests.c
         tests/kernel/runq_tests.c
         tests/kernel/lifetime_tests.c

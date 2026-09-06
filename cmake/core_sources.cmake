@@ -22,6 +22,7 @@ set(VIBEOS_KERNEL_CORE_SOURCES
     kernel/mm/anon.c
     kernel/mm/swaparea.c
     kernel/io/blkdev.c
+    kernel/io/parttab.c
     kernel/sched/stats.c
     kernel/sched/task.c
     kernel/sched/runq.c

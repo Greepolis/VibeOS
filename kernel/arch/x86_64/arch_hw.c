@@ -32,6 +32,7 @@
 #include "vibeos/io_stats.h"
 #include "vibeos/blockdev.h"
 #include "vibeos/partition.h"
+#include "vibeos/parttab.h"
 #include "vibeos/storage.h"
 #include "vibeos/swapmap.h"
 #include "vibeos/anon.h"
@@ -9580,6 +9581,220 @@ static void hw_write_proof(void) {
     vibeos_x86_64_serial_unlock();
 }
 
+/* ---- a scratch device, and what it is for (I4c) ---------------------------
+ *
+ * I4c writes partition tables. The plan says, at the top of its own section,
+ * that this is the one phase that can lose a user's data - so it gets a device
+ * that is not anybody's disk.
+ *
+ * ## Why RAM and not a second disk
+ *
+ * A second QEMU disk was the first plan and it needs something else first:
+ * every piece of virtio-blk's state is a global - the queue, the descriptors,
+ * the request struct, the lock - so a second device means making that driver
+ * per-instance. That is a real refactor of *the driver the machine boots
+ * from*, and doing it inside a phase about writing partition tables would mean
+ * two risky changes verified by one result.
+ *
+ * A RAM-backed device gives the same coverage where it matters. What I4c has
+ * to prove is that the partition writer, the block layer and the cache do the
+ * right thing; the driver underneath only moves sectors, and I4 already proves
+ * that it moves them correctly. What this does *not* prove is that a real
+ * medium keeps a table across a power cut, and that was never in reach of a
+ * single boot anyway - it is the same gap I4 step 3 has.
+ *
+ * ## It is registered, so it is a real device
+ *
+ * Not a special case threaded through the writer. It goes through
+ * vibeos_blk_register like any driver, gets a device number, and is
+ * bounds-checked by the same code - which means the test exercises the path a
+ * real disk would take rather than a shortcut built for it.
+ */
+#define HW_SCRATCH_SECTORS 2048u        /* 1 MiB */
+
+static uint8_t g_scratch[HW_SCRATCH_SECTORS][512];
+static int g_scratch_device = -1;
+
+static int hw_scratch_submit(void *ctx, vibeos_blk_request_t *req) {
+    uint32_t i;
+
+    (void)ctx;
+    for (i = 0; i < req->sectors; i++) {
+        uint64_t lba = req->lba + i;
+        uint8_t *p = (uint8_t *)req->buf + (uint64_t)i * 512ull;
+        if (lba >= HW_SCRATCH_SECTORS) {
+            /* Reached only if the layer above let it through, which it does
+             * not - the check is here because a driver that trusts its caller
+             * is one bad caller away from writing past its own array. */
+            req->sectors_done = i;
+            req->result = VIBEOS_BLK_OUT_OF_RANGE;
+            return -1;
+        }
+        if (req->write) {
+            uint32_t k;
+            for (k = 0; k < 512u; k++) {
+                g_scratch[lba][k] = p[k];
+            }
+        } else {
+            uint32_t k;
+            for (k = 0; k < 512u; k++) {
+                p[k] = g_scratch[lba][k];
+            }
+        }
+    }
+    req->sectors_done = req->sectors;
+    return 0;
+}
+
+static int hw_scratch_read(void *ctx, uint64_t lba, void *buf) {
+    (void)ctx;
+    return (g_scratch_device < 0)
+         ? -1
+         : vibeos_blk_read((uint32_t)g_scratch_device, lba, 1u, buf);
+}
+
+static int hw_scratch_write(void *ctx, uint64_t lba, const void *buf) {
+    (void)ctx;
+    return (g_scratch_device < 0)
+         ? -1
+         : vibeos_blk_write((uint32_t)g_scratch_device, lba, 1u, buf);
+}
+
+static int hw_scratch_flush(void *ctx) {
+    (void)ctx;
+    return 0;   /* RAM has no volatile cache below it */
+}
+
+/* Partition the scratch device, read the table back, and say so.
+ *
+ * The round trip is the test: a writer that produces a table only it can read
+ * is indistinguishable from a correct one until another tool looks at the
+ * disk, and by then the disk is somebody's. So the write goes through
+ * vibeos_parttab_write_mbr and the read back through the ordinary
+ * vibeos_partition_parse_mbr, with no shared state between them.
+ */
+static uint8_t g_scratch_slot_data[8][512];
+static vibeos_block_slot_t g_scratch_slots[8];
+static vibeos_blockdev_t g_scratch_dev;
+static vibeos_blockcache_t g_scratch_bc;
+
+static void hw_scratch_bringup(void) {
+    vibeos_blk_driver_t drv;
+    uint32_t device = 0;
+    const char *verdict = "not attempted";
+    uint32_t i;
+
+    for (i = 0; i < 8u; i++) {
+        g_scratch_slots[i].data = g_scratch_slot_data[i];
+    }
+    drv.name = "scratch-ram";
+    drv.sector_bytes = 512u;
+    drv.sectors = HW_SCRATCH_SECTORS;
+    drv.submit = hw_scratch_submit;
+    drv.barrier = 0;      /* nothing below it holds writes */
+    drv.ctx = 0;
+    if (vibeos_blk_register(&drv, &device) != 0) {
+        return;
+    }
+    g_scratch_device = (int)device;
+
+    g_scratch_dev.read = hw_scratch_read;
+    g_scratch_dev.write = hw_scratch_write;
+    g_scratch_dev.flush = hw_scratch_flush;
+    g_scratch_dev.ctx = 0;
+    g_scratch_dev.sectors = HW_SCRATCH_SECTORS;
+    if (vibeos_blockcache_init(&g_scratch_bc, &g_scratch_dev,
+                               g_scratch_slots, 8u) != 0) {
+        return;
+    }
+
+    {
+        vibeos_parttable_t want;
+        vibeos_parttab_guard_t guard;
+        uint32_t sum = 0;
+        vibeos_parttab_result_t r;
+
+        for (i = 0; i < sizeof(want); i++) {
+            ((uint8_t *)&want)[i] = 0;
+        }
+        for (i = 0; i < sizeof(guard); i++) {
+            ((uint8_t *)&guard)[i] = 0;
+        }
+        /* A signature in the sector the table will share, so the round trip
+         * also proves the writer edited it rather than replacing it - the
+         * failure that quietly unbootables a disk it was asked to
+         * repartition. */
+        {
+            uint8_t sec[512];
+            for (i = 0; i < 512u; i++) {
+                sec[i] = (uint8_t)(i ^ 0x3Cu);
+            }
+            (void)vibeos_blockcache_write(&g_scratch_bc, 0, sec);
+            (void)vibeos_blockcache_flush(&g_scratch_bc);
+        }
+
+        want.count = 2;
+        want.entry[0].first_lba = 64;   want.entry[0].sector_count = 512;
+        want.entry[0].mbr_type = 0x0Cu;
+        want.entry[1].first_lba = 1024; want.entry[1].sector_count = 512;
+        want.entry[1].mbr_type = 0x0Cu;
+
+        if (vibeos_parttab_checksum(&g_scratch_bc, HW_SCRATCH_SECTORS,
+                                    &sum) != 0) {
+            verdict = "FAILED: no checksum";
+        } else {
+            r = vibeos_parttab_write_mbr(&g_scratch_bc, HW_SCRATCH_SECTORS,
+                                         &want, &guard, sum);
+            if (r != VIBEOS_PARTTAB_OK) {
+                verdict = vibeos_parttab_result_name(r);
+            } else {
+                vibeos_parttable_t back;
+                int protective = 0;
+                uint8_t sec[512];
+
+                verdict = "FAILED: sector 0 unreadable";
+                if (vibeos_blockcache_read(&g_scratch_bc, 0, sec) == 0 &&
+                    vibeos_partition_parse_mbr(sec, &back, &protective) == 0) {
+                    int entries_ok = (back.count == 2u) &&
+                                     (back.entry[0].first_lba == 64ull) &&
+                                     (back.entry[0].sector_count == 512ull) &&
+                                     (back.entry[1].first_lba == 1024ull) &&
+                                     (back.entry[1].sector_count == 512ull);
+                    /* And the bytes the table does not own are untouched: a
+                     * writer that rebuilds sector 0 makes a disk unbootable
+                     * while doing exactly what it was asked. */
+                    int rest_ok = 1;
+                    for (i = 0; i < 446u; i++) {
+                        if (sec[i] != (uint8_t)(i ^ 0x3Cu)) {
+                            rest_ok = 0;
+                            break;
+                        }
+                    }
+                    /* Three outcomes, decided by two flags rather than by
+                     * inspecting the string that was set last - which is what
+                     * the first version did, and which would have reported the
+                     * wrong one the moment a message was reworded. */
+                    if (!entries_ok) {
+                        verdict = "FAILED: the table read back differs";
+                    } else if (!rest_ok) {
+                        verdict = "FAILED: the rest of sector 0 was destroyed";
+                    } else {
+                        verdict = "OK";
+                    }
+                }
+            }
+        }
+
+        vibeos_x86_64_serial_lock();
+        vibeos_x86_64_serial_puts("[IO] PARTTAB scratch_device=0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)device);
+        vibeos_x86_64_serial_puts(" round_trip=");
+        vibeos_x86_64_serial_puts(verdict);
+        vibeos_x86_64_serial_puts("\n");
+        vibeos_x86_64_serial_unlock();
+    }
+}
+
 /* ---- volumes (I4b step 1 and 2) -------------------------------------------
  *
  * What is actually on this disk, read at boot and said out loud.
@@ -10089,6 +10304,9 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
     if (vibeos_x86_64_blk_present() &&
         vibeos_x86_64_fat_vfs_mount(&g_rootfs) == 0) {
         hw_volumes_bringup();
+        /* After the real volume is mounted, so the scratch device can never be
+         * confused with it: it is registered second and named separately. */
+        hw_scratch_bringup();
         hw_swap_bringup();
         /* After the volume is mounted and before anything else uses it. The
          * file it leaves behind is small and is overwritten every boot. */

@@ -8821,6 +8821,7 @@ int test_acceptance(void);
 int test_swaparea(void);
 int test_blkdev(void);
 int test_mounttab(void);
+int test_parttab(void);
 int test_task(void);
 int test_runq(void);
 int test_lifetime(void);
@@ -8848,6 +8849,7 @@ int main(void) {
     RUN_TEST(test_swaparea);
     RUN_TEST(test_blkdev);
     RUN_TEST(test_mounttab);
+    RUN_TEST(test_parttab);
     RUN_TEST(test_task);
     RUN_TEST(test_runq);
     RUN_TEST(test_lifetime);

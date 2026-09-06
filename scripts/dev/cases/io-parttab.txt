@@ -1,0 +1,55 @@
+# Sabotage cases for writing a partition table (I4c).
+#
+# READ THIS FIRST. Every other case file here breaks something that makes a
+# machine fail loudly. This one breaks something that destroys data - and not
+# this machine's data, somebody else's, silently, discovered later by them.
+#
+# Nothing in this file may be run against a disk that holds anything. The boot
+# exercise writes to a RAM-backed scratch device registered as device 1; the
+# host tests write to an array. Neither can reach a real medium, and that is
+# deliberate rather than incidental.
+#
+# Run: apply the edit, bash scripts/dev/check.sh tests <dir>, and for the boot
+#      cases also python3 scripts/qemu-cli-smoke-linux.py <dir> 300
+
+case: a stale view is allowed to write
+  in vibeos_parttab_write_mbr, change "if (now != expect_checksum)" to "if (0)"
+  expect: FAIL:parttab a stale view was allowed to write
+  why it matters: two things read the table, one writes, and the other's work
+    is silently discarded. On a partition table "the other's work" is where
+    somebody's filesystem begins.
+
+case: overlapping entries are accepted
+  in check_table, delete the inner overlap loop
+  expect: FAIL:parttab overlapping entries were accepted
+  why it matters: not a table that is slightly wrong - two filesystems each
+    believing they own the same blocks, discovered as corruption in one of them
+    long after the table was written.
+
+case: a mounted range is repartitioned
+  in check_table, delete the guard overlap check
+  expect: FAIL:parttab a mounted partition was grown underneath its filesystem
+  note: THIS CASE PASSED against the first version of the test. Two of the
+    three guard cases fell through to the *other* check - "no new entry covers
+    this range" - and were refused by that one instead, so the overlap check
+    could be deleted with nothing noticing. One check was masking the other.
+    The case that catches it grows a mounted partition in place: the coverage
+    rule is satisfied and only the overlap rule can refuse it. It was found by
+    running this sabotage and watching the tests stay green.
+
+case: sector 0 is rebuilt instead of edited
+  in vibeos_parttab_write_mbr, memset the sector instead of reading it
+  expect: FAIL:parttab the boot code was destroyed at byte 0, and on a boot,
+    parttab_round_trip:FAILED:_the_rest_of_sector_0_was_destroyed
+  why it matters: sector 0 holds boot code as well as the table. A writer that
+    replaces the whole sector makes a disk unbootable while doing exactly what
+    it was asked to do.
+
+case: the round trip stops being reported
+  in hw_scratch_bringup, guard the [IO] PARTTAB line with if (0)
+  expect: parttab_round_trip_missing
+  why it matters: a writer that produces a table only it can read is
+    indistinguishable from a correct one until another tool looks at the disk -
+    and by then the disk is somebody's. The round trip is the only thing that
+    separates those, so a boot that stops performing it must not read as one
+    that passed it.
