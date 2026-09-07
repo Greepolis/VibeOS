@@ -97,8 +97,30 @@ case: the interrupt fires
 #     does not parse the ACPI _PRT - delivers nothing either. So the mapping is
 #     not the remaining problem, or not only it.
 #
-# Not checked, and where to look next: whether the machine is in APIC mode at
-# all rather than PIC mode (the IMCR), and whether the redirection entry reads
-# back as written. Both are one print away. Three fixes were tried in a row
-# without a measurement between them, which is what this project's own notes
-# say not to do, and it is why this list exists instead of a conclusion.
+# Then those two were measured, with vibeos_x86_64_irq_probe, and both came
+# back clean:
+#
+#   [APIC] probe gsi=0xb redir_lo=0xa02b redir_hi=0x0 svr=0x1ff
+#          pic_mask=0xffff iso_count=0x5
+#
+# redir_lo 0xa02b is vector 43, level triggered, active low, unmasked, fixed
+# delivery, physical destination - exactly right. The local APIC is
+# software-enabled (svr bit 8). Both 8259s are fully masked. Vector 43 has an
+# IDT entry; 48 are wired.
+#
+# And the measurement that actually split the question: routing EVERY GSI 0..23
+# to vector 43 still produced zero interrupts. So it is not the mapping, not
+# the trigger mode, not the mask, not the IDT and not the local APIC.
+#
+#   *** The device is not raising an interrupt at all. ***
+#
+# That moves the next investigation to the other side of the wire, where it
+# should have started. Candidates: VIRTQ_AVAIL_F_NO_INTERRUPT in avail->flags -
+# this driver never writes that field and the queue lives in .bss, so it should
+# be zero, which is worth confirming rather than assuming, since assuming is
+# what cost the previous three attempts - and MSI-X, which QEMU's
+# virtio-blk-pci advertises by default and which changes how the device
+# signals.
+#
+# The probe stays. It answers three questions in one line and it is the reason
+# this entry ends with a fact instead of another guess.

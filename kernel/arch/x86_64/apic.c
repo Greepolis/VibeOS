@@ -311,6 +311,54 @@ void vibeos_x86_64_lapic_timer_start(uint32_t hz, uint32_t vector) {
 
 /* ---- IO-APIC ------------------------------------------------------------- */
 
+static uint32_t ioapic_read(uint32_t reg) {
+    mmio_write32(g_ioapic_base + 0x00, reg);
+    return mmio_read32(g_ioapic_base + 0x10);
+}
+
+/* The three facts an interrupt that never arrives needs, in one line.
+ *
+ * Written after three fixes were attempted in a row without a measurement
+ * between them - which is what this project's own notes say not to do, and
+ * which is why virtio-blk was routed, level-triggered, INTx-enabled and still
+ * silent with nothing to say why.
+ *
+ * One call, one line: the redirection entry as it *reads back* rather than as
+ * it was written, the local APIC's software-enable bit, and the legacy PIC's
+ * masks. A machine still listening to the 8259 and one whose IOAPIC entry did
+ * not take are different problems with the same symptom. */
+void vibeos_x86_64_irq_probe(uint8_t gsi) {
+    uint32_t reg;
+    uint32_t lo = 0, hi = 0;
+    uint32_t svr = 0;
+    uint8_t m1 = 0xFFu, m2 = 0xFFu;
+
+    if (g_ioapic_base != 0u && gsi >= g_ioapic_gsi_base) {
+        reg = 0x10u + (gsi - g_ioapic_gsi_base) * 2u;
+        lo = ioapic_read(reg);
+        hi = ioapic_read(reg + 1u);
+    }
+    svr = lapic_read(LAPIC_SVR);
+    m1 = ap_inb(0x21u);
+    m2 = ap_inb(0xA1u);
+
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts("[APIC] probe gsi=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)gsi);
+    vibeos_x86_64_serial_puts(" redir_lo=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)lo);
+    vibeos_x86_64_serial_puts(" redir_hi=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)hi);
+    vibeos_x86_64_serial_puts(" svr=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)svr);
+    vibeos_x86_64_serial_puts(" pic_mask=0x");
+    vibeos_x86_64_serial_print_hex(((uint64_t)m2 << 8) | (uint64_t)m1);
+    vibeos_x86_64_serial_puts(" iso_count=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)g_iso_count);
+    vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
+}
+
 static void ioapic_write(uint32_t reg, uint32_t val) {
     mmio_write32(g_ioapic_base + 0x00, reg);
     mmio_write32(g_ioapic_base + 0x10, val);

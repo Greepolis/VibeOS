@@ -135,6 +135,7 @@ static uint16_t g_last_used;
  * the implicit declaration with a warning while clang refuses it - which is a
  * trap this tree has been caught by before. */
 extern int vibeos_x86_64_ioapic_route_pci(uint8_t irq, uint8_t vector, uint32_t dest);
+extern void vibeos_x86_64_irq_probe(uint8_t gsi);
 
 static uint8_t g_irq_line;
 static uint8_t g_irq_pin;
@@ -364,11 +365,29 @@ int vibeos_x86_64_virtio_blk_init(void) {
      *     this kernel does not parse the ACPI _PRT - delivers nothing either.
      *     So the mapping is not the remaining problem, or not only it.
      *
-     * What has NOT been checked, and is where to look next: whether this
-     * machine is actually in APIC mode rather than PIC mode (the IMCR), and
-     * whether the redirection entry reads back as written. Both are one print
-     * away and neither was done, which is why this is a note and not a
-     * conclusion.
+     * Both of those were then checked, with vibeos_x86_64_irq_probe, and both
+     * came back clean:
+     *
+     *   [APIC] probe gsi=0xb redir_lo=0xa02b redir_hi=0x0 svr=0x1ff
+     *          pic_mask=0xffff iso_count=0x5
+     *
+     * redir_lo 0xa02b is vector 43, level triggered, active low, unmasked,
+     * fixed delivery, physical destination - exactly right. svr bit 8 is set,
+     * so the local APIC is software-enabled. Both 8259s are fully masked, so
+     * nothing is stealing the line. Vector 43 has an IDT entry: 48 are wired.
+     *
+     * And then the measurement that actually splits the question. Routing
+     * *every* GSI 0..23 to vector 43 still produced zero interrupts. So it is
+     * not the mapping, not the trigger mode, not the mask, not the IDT and not
+     * the local APIC: **the device is not raising an interrupt at all.**
+     *
+     * Which moves the next investigation to the other side of the wire, where
+     * it should have started: the virtqueue configuration. The candidates are
+     * VIRTQ_AVAIL_F_NO_INTERRUPT in avail->flags (this driver never writes
+     * that field and the queue is in .bss, so it should be zero - worth
+     * confirming rather than assuming, since assuming is what cost the last
+     * three attempts), and MSI-X, which QEMU's virtio-blk-pci advertises by
+     * default and which changes how the device signals.
      *
      * The driver is correct meanwhile: it polls, exactly as it did before, and
      * the counters below say so out loud rather than leaving it to be noticed.
@@ -377,6 +396,7 @@ int vibeos_x86_64_virtio_blk_init(void) {
         vibeos_x86_64_ioapic_route_pci(g_irq_line, 43u, 0u) == 0) {
         g_irq_ready = 1u;
     }
+    vibeos_x86_64_irq_probe(g_irq_line);
     vibeos_x86_64_serial_puts("[VIRTIO] blk irq line=0x");
     vibeos_x86_64_serial_print_hex((uint64_t)g_irq_line);
     vibeos_x86_64_serial_puts(" pin=0x");
