@@ -741,9 +741,16 @@ static void hw_panic_cpu_summary(void);   /* defined with the task table */
 /* How many owned mappings the last walk found. One is a lost reference; more
  * than one says how many were lost, which is the difference between "somebody
  * forgot a get" and "a whole fork's worth went missing". */
-static uint32_t g_frame_mappers;
+/* The mapper count was a global, written by whichever core happened to be
+ * inside this walk. Two cores checking a free at the same moment overwrote each
+ * other's count, so the report printed numbers that were not the ones it
+ * decided on - a line reading "mappers=0 owners=0" from a check that only fires
+ * when mappers exceeds owners. Rare while the check sampled one free in
+ * sixteen, and immediate once it looked at every one, which is how it was
+ * found. It is a local now, returned to the caller. */
 
-static int hw_frame_still_mapped(uint64_t phys, uint32_t *out_pid);
+static int hw_frame_still_mapped(uint64_t phys, uint32_t *out_pid,
+                                 uint32_t *out_mappers);
 /* Forward-declared for the same reason as the line above: this is one 5000-line
  * file, and a helper used before its definition compiles as an implicit
  * declaration and then fails with a confusing message about a static
@@ -1930,7 +1937,11 @@ static void hw_frame_release_watch(uint64_t phys) {
      * this is the third time in this subsystem that reading state twice and
      * reporting the second read has produced a confusing message. */
     uint32_t owners_at_check = 0;
+    uint32_t mappers = 0;
 
+    /* Sampled. Raised to every free for one investigation and put back: the
+     * walk is not free, and what that run established is written down rather
+     * than left as a setting. See scripts/dev/cases/mm-argv-poison.txt. */
     if ((++g_free_seq & 0x0Fu) != 0u) {
         return;
     }
@@ -1953,7 +1964,7 @@ static void hw_frame_release_watch(uint64_t phys) {
      * and is already excluded one layer down, and "a live space maps it",
      * which is the bug; one flag could not tell them apart and answered for
      * both. */
-    if (!hw_frame_still_mapped(phys, &pid)) {
+    if (!hw_frame_still_mapped(phys, &pid, &mappers)) {
         return;
     }
     /* Compare the two numbers that must agree, instead of asking whether the
@@ -1970,7 +1981,7 @@ static void hw_frame_release_watch(uint64_t phys) {
      * More mappings than references is the dangerous direction and the only one
      * worth a report: it means somebody holds a page nothing is counting. */
     owners_at_check = vibeos_frame_owners(phys);
-    if (g_frame_mappers <= owners_at_check) {
+    if (mappers <= owners_at_check) {
         return;
     }
     vibeos_mm_stats()->free_while_mapped++;
@@ -1985,7 +1996,7 @@ static void hw_frame_release_watch(uint64_t phys) {
     vibeos_x86_64_serial_puts(" during ");
     vibeos_x86_64_serial_puts(vibeos_vmspace_current_op());
     vibeos_x86_64_serial_puts(" mappers=0x");
-    vibeos_x86_64_serial_print_hex((uint64_t)g_frame_mappers);
+    vibeos_x86_64_serial_print_hex((uint64_t)mappers);
     vibeos_x86_64_serial_puts(" owners=0x");
     vibeos_x86_64_serial_print_hex((uint64_t)owners_at_check);
     vibeos_x86_64_serial_puts(" owners_now=0x");
@@ -2047,7 +2058,7 @@ void hw_free_page_why(void *p, const char *why) {
      * interrupts masked. */
     if (vibeos_frame_total() != 0ull && (++g_free_seq & 0x7u) == 0u) {
         uint32_t pid = 0;
-        if (hw_frame_still_mapped(phys, &pid)) {
+        if (hw_frame_still_mapped(phys, &pid, 0)) {
             hw_log(VIBEOS_LOG_ERROR, 46u, phys, (uint64_t)pid,
                    "freeing a frame that a live process still maps "
                    "(a0 = frame, a1 = pid)");
@@ -6986,6 +6997,8 @@ static const char *g_argv_fail_why = "-";
  * reason is set, because a reason without the address it applies to cannot
  * tell a garbage pointer from a page that is merely not resident. */
 static uint64_t g_argv_fail_addr;
+/* How many of the first 64 words of that page read as poison. */
+static uint32_t g_argv_poison_words;
 
 static long hw_copy_user_argv(uint64_t uvec, hw_argv_t *out) {
     uint32_t count = 0;
@@ -7035,7 +7048,35 @@ static long hw_copy_user_argv(uint64_t uvec, hw_argv_t *out) {
              * person does not have to recognise 0xdead0000dead0000 by eye -
              * which is exactly what it took to find this one. */
             if (ptr == VIBEOS_FRAME_POISON) {
-                g_argv_fail_why = "use_after_free:argv_is_poison";
+                /* How much of the page is poison, which separates two very
+                 * different faults that produce the same word.
+                 *
+                 * If the whole page reads as poison, this is a freshly
+                 * allocated frame whose copy-on-write copy never happened -
+                 * the page is pristine, nothing wrote to it after it was
+                 * freed, and no free-side detector would ever fire.
+                 *
+                 * If only some words are poison, something wrote the pattern
+                 * into a page that is still live, which is the opposite
+                 * problem and is the one the free-side detectors are for.
+                 *
+                 * Counted over the array itself rather than the whole page:
+                 * this runs inside a refusal on a path a program can reach, so
+                 * it must not become a loop over four thousand words. */
+                const uint64_t *w = (const uint64_t *)(uintptr_t)
+                                    (uvec & ~0xFFFull);
+                uint32_t poisoned = 0;
+                uint32_t probe;
+
+                for (probe = 0; probe < 64u; probe++) {
+                    if (w[probe] == VIBEOS_FRAME_POISON) {
+                        poisoned++;
+                    }
+                }
+                g_argv_poison_words = poisoned;
+                g_argv_fail_why = (poisoned >= 64u)
+                                ? "use_after_free:whole_page_is_poison"
+                                : "use_after_free:argv_is_poison";
             }
             return -VIBEOS_EFAULT;
         }
@@ -7165,6 +7206,16 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
                         if (w < sizeof(detail) - 1u) {
                             detail[w++] =
                                 hexd[(g_argv_fail_addr >> (j * 4)) & 0xFu];
+                        }
+                    }
+                    tag = " poisonw=";
+                    for (k = 0; tag[k] && w < sizeof(detail) - 1u; k++) {
+                        detail[w++] = tag[k];
+                    }
+                    for (j = 1; j >= 0; j--) {
+                        if (w < sizeof(detail) - 1u) {
+                            detail[w++] =
+                                hexd[(g_argv_poison_words >> (j * 4)) & 0xFu];
                         }
                     }
                     tag = " cr3=";
@@ -8483,7 +8534,9 @@ static const uint64_t *hw_walk_step(uint64_t entry) {
     return (const uint64_t *)(uintptr_t)next;
 }
 
-static int hw_frame_still_mapped(uint64_t phys, uint32_t *out_pid) {
+static int hw_frame_still_mapped(uint64_t phys, uint32_t *out_pid,
+                                 uint32_t *out_mappers) {
+    uint32_t mappers = 0;
     int t;
     /* Address spaces already walked.
      *
@@ -8495,7 +8548,6 @@ static int hw_frame_still_mapped(uint64_t phys, uint32_t *out_pid) {
     const uint64_t *seen[VIBEOS_HW_MAX_TASKS];
     int nseen = 0;
 
-    g_frame_mappers = 0;
 
     for (t = 0; t < (int)VIBEOS_HW_MAX_TASKS; t++) {
         const uint64_t *pml4;
@@ -8571,14 +8623,17 @@ static int hw_frame_still_mapped(uint64_t phys, uint32_t *out_pid) {
                             if (out_pid) {
                                 *out_pid = g_tasks[t].pid;
                             }
-                            g_frame_mappers++;
+                            mappers++;
                         }
                     }
                 }
             }
         }
     }
-    return g_frame_mappers != 0u;
+    if (out_mappers) {
+        *out_mappers = mappers;
+    }
+    return mappers != 0u;
 }
 
 static void hw_panic_cpu_summary(void) {

@@ -1,0 +1,83 @@
+# The argv vector that is not a pointer (open, and now narrowed to one family).
+#
+# Boot gate: about one boot in six, as
+#   [EXEC] refused reason=bad-args path=... at=argv:... task=NN user
+#          at=<value> poisonw=<n> cr3=...
+#
+# NOT FIXED. What follows is the chain of measurements, because the useful part
+# of this entry is which explanations are dead.
+
+# ---- what the value turned out to be ---------------------------------------
+#
+# Two distinct values, and the second one names the cause:
+#
+#   0xdead0000dead0000 - the free-page poison, so a page that was released
+#   0x00ffffff00ffffff - and this is not garbage at all
+#
+# 0x00FFFFFF is COL_TITLETXT and COL_CURSOR in kernel/arch/x86_64/gui.c. It is
+# a white pixel. Two adjacent white pixels read as one 64-bit word are exactly
+# 0x00FFFFFF00FFFFFF. The same value turned up hours earlier, from a completely
+# different direction, as an out-of-range sector number in the block layer:
+# oor_lba=0x00ffffff00ffffff. One source, two victims.
+#
+# So the desktop is painting over memory that belongs to something else.
+
+# ---- and the code already knows this can happen ----------------------------
+#
+# The comment above the back-buffer allocation in arch_hw.c describes this
+# defect from a previous occurrence, including its signature:
+#
+#   "The layer then handed the same frames to a process, and the desktop
+#    rendered over its memory. There was no poison hit and no free-while-mapped
+#    report, because nothing was freed early - the frames were simply given out
+#    twice."
+#
+# That is word for word what was measured today: every memory counter zero -
+# poison_hits, frames_double_put, free_while_mapped, fork_undercounted,
+# rmap_mismatch - on boots where argv read as white pixels. The detectors are
+# silent because nothing is being freed. It is a double hand-out.
+#
+# The previous fix moved the back buffer from the bump allocator to
+# hw_alloc_pages_contig and closed the bump allocator afterwards. The sizing is
+# right (px = w*h, pages = (px*4 + 4095)/4096) and the allocation does go
+# through the frame layer, so the next question - and where the next session
+# should start - is whether hw_alloc_pages_contig actually reserves every frame
+# in the run it returns, or returns a pointer to a run the frame table still
+# believes is free.
+
+# ---- two detector defects found on the way, both fixed ---------------------
+#
+# The mapper count was a global. hw_frame_still_mapped wrote g_frame_mappers,
+# and two cores checking a free at the same moment overwrote each other's
+# count - so the report printed numbers it had not decided on, including a line
+# reading "mappers=0 owners=0" from a check that only fires when mappers
+# exceeds owners. Rare while the check sampled one free in sixteen, immediate
+# once it looked at every one. It is a local now.
+#
+# The free-side check is sampled one in sixteen, and that was hiding the
+# question rather than answering it: a defect that happens once a boot has a
+# small chance of being seen by a check that looks at one free in sixteen, so
+# its zero was being read as evidence. Raising it to every free for the
+# duration of an investigation is the right move and is what found the racing
+# global. It is back at one in sixteen, deliberately - the walk is not free -
+# and this note exists so the next person raises it rather than trusting the
+# zero.
+
+case: the mapper count goes back to being a global
+  in hw_frame_still_mapped, write g_frame_mappers instead of a local
+  expect: with the free check at every free, FREE_WHILE_MAPPED lines whose own
+    numbers contradict the condition that produced them
+  why it matters: a detector that reports figures it did not decide on is worse
+    than one that reports nothing, because the figures get believed. This one
+    produced "mappers=0 owners=0" for a check that requires mappers > owners,
+    and that line was on its way into a diagnosis.
+
+case: the poison extent is not measured
+  in hw_copy_user_argv, report argv_is_poison without counting how much of the
+    page matches
+  expect: no gate failure, and the investigation loses its only way to tell a
+    freed page from a fresh one
+  why it matters: a whole page of poison is a frame whose copy-on-write copy
+    never happened - nothing wrote to it after it was freed, so no free-side
+    detector can ever fire. A few poisoned words is the opposite: something
+    wrote the pattern into a live page. Same word, opposite faults.
