@@ -89,7 +89,12 @@ static uint32_t bf_attach(void) {
 
 /* One sweep position. Returns 0 when the layer kept all three promises. */
 static int bf_one(uint32_t fail_at, int shortly, uint32_t sectors) {
-    static uint8_t buf[4][VIBEOS_BLOCK_SIZE];
+    /* Two sectors per slot, because the sweep issues multi-sector reads.
+     * The first version sized these at one sector and read two into them: a
+     * global buffer overflow that the plain host run did not notice and the
+     * sanitized nightly caught in eighteen seconds. Sized from the same
+     * constant the sweep uses, so the two cannot drift apart again. */
+    static uint8_t buf[4][2u * VIBEOS_BLOCK_SIZE];
     uint32_t dev;
     uint32_t i;
     int saw_failure = 0;

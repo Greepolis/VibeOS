@@ -25,7 +25,19 @@ if [[ ! -d "$EFI_ROOT" ]]; then
 fi
 
 echo "[VM-IMG] building ESP image..."
-python3 "$SCRIPT_DIR/make_esp_image.py" "$EFI_ROOT" "$ESP" 24 || exit 1
+# Sized from what is actually there, not from a number somebody chose once.
+#
+# It was a fixed 24 MB, and I5 put four filesystem test images on the medium -
+# NTFS and exFAT are 16 MiB each - so the tree outgrew it and this step failed
+# with nothing in the log that named the size. A constant that has to track the
+# contents of a directory will stop tracking it; measuring costs one du.
+ESP_MB=$(du -sm "$EFI_ROOT" | cut -f1)
+# Half again, and never below the old 24: FAT needs room for its own tables and
+# for the boot to write into, and the write-proof test does exactly that.
+ESP_MB=$(( ESP_MB + ESP_MB / 2 + 8 ))
+if [[ "$ESP_MB" -lt 24 ]]; then ESP_MB=24; fi
+echo "[VM-IMG] EFI root is $(du -sm "$EFI_ROOT" | cut -f1) MiB; ESP sized at ${ESP_MB} MiB"
+python3 "$SCRIPT_DIR/make_esp_image.py" "$EFI_ROOT" "$ESP" "$ESP_MB" || exit 1
 
 if command -v qemu-img >/dev/null 2>&1; then
   echo "[VM-IMG] converting to VirtualBox (.vdi) and VMware (.vmdk)..."

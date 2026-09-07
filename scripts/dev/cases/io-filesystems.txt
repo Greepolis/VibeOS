@@ -113,3 +113,24 @@ case: INDX fixups are not applied
     that skips the substitution gets two wrong bytes every 512, which here land
     in the middle of entry lengths - so the walk does not fail, it walks into
     the wrong place.
+
+case: the ESP is a fixed size again
+  in scripts/make-vm-images-linux.sh, pass a literal to make_esp_image.py
+  expect: "Build Importable VM Images" fails once the EFI root outgrows it,
+    with nothing in the log that names a size
+  why it matters: it was 24 MB, and this phase put four filesystem test images
+    on the medium - NTFS and exFAT are 16 MiB each. A constant that has to
+    track the contents of a directory will stop tracking it. It is measured
+    now, with half again for FAT's own tables and for the boot to write into,
+    which the write-proof test does.
+
+case: an absent image is treated as a defect
+  in the gate, compare the verdict against a single literal again
+  expect: every boot red on any CI job without e2fsprogs or xorriso -
+    "iso9660:no_such_file_on_this_medium" - which is what happened to the whole
+    nightly for a night
+  why it matters: the loop device names each refusal separately on purpose, and
+    only some of them are a machine this gate should fail. Not on the medium is
+    fine and is the message doing its job; out of loop slots and a fragmented
+    file are defects. The tolerated set is a list for that reason, and the list
+    has to grow when the messages get more specific.

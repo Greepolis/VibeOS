@@ -60,6 +60,17 @@ DISK_ARGS = {
 # held one driver and refused the second - "first one to come up owns the
 # disk" - so a second disk on the *same* controller would have proved nothing
 # about the change that made this possible.
+# The loop device names every refusal separately, and only some of them are a
+# machine this gate should pass. An image that is simply not on the medium is
+# fine - a CI job without e2fsprogs or xorriso still boots, and saying so is the
+# point of the message. Running out of loop slots, or a fragmented file, are
+# defects and must stay red.
+#
+# This list exists because the first version compared against one literal and
+# the reasons then got more specific, which turned every nightly boot red on a
+# job that had never had xorriso in the first place.
+ABSENT_IS_FINE = ("no image", "no such file on this medium")
+
 LOG_DISK_SECTORS = 8192          # 4 MiB, addressed by sector, no filesystem
 LOG_DISK_ARGS = {
     "virtio": ["-device", "ich9-ahci,id=ahci",
@@ -1161,7 +1172,8 @@ def main():
                     problems.append("fsimage_missing:" + want)
                 elif res.startswith("FAILED"):
                     problems.append(want + ":" + res.replace(" ", "_"))
-                elif res != "OK" and res != "no image":
+                elif (res != "OK" and not res.startswith("OK (") and
+                      res not in ABSENT_IS_FINE):
                     problems.append(want + ":" + res.replace(" ", "_"))
 
             # The kernel own log, on a medium that outlives it (I5b).
