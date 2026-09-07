@@ -6921,6 +6921,27 @@ static int test_ext2_refusals(void) {
         return -1;
     }
 
+    /* A first data block past the end of the volume. These are unsigned, so
+     * the subtraction that derives the group count does not go negative - it
+     * wraps, and every bound derived from it afterwards is a bound against a
+     * number that came out of a wrap. Refused at the source now rather than
+     * surviving to be refused by the block cache at the far end, which would
+     * be a refusal that says the wrong thing about why. */
+    e2_build();
+    e2_w32(e2_block(1) + 20, 0xFFFFFF00u);   /* s_first_data_block */
+    vibeos_blockcache_invalidate(&bc);
+    if (vibeos_ext2_mount(&fs, &bc, 0) == 0) {
+        return -1;
+    }
+
+    /* And a volume claiming no blocks at all. */
+    e2_build();
+    e2_w32(e2_block(1) + 4, 0u);             /* s_blocks_count */
+    vibeos_blockcache_invalidate(&bc);
+    if (vibeos_ext2_mount(&fs, &bc, 0) == 0) {
+        return -1;
+    }
+
     /* A block size this driver does not support is refused rather than
      * approximated. */
     e2_build();

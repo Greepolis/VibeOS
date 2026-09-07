@@ -82,6 +82,22 @@ int vibeos_ext2_mount(vibeos_ext2_t *fs, vibeos_blockcache_t *cache,
     if (fs->blocks_per_group == 0u || fs->inodes_per_group == 0u) {
         return -1;
     }
+    /* Checked before the subtraction, not after it.
+     *
+     * These are unsigned, so a superblock claiming a first data block past the
+     * end of the volume does not produce a negative group count - it produces
+     * an enormous one, and every later bound derived from it is then a bound
+     * against a number that came out of a wrap. A corrupt or hostile image is
+     * the only way to reach this, which is exactly the case a mount has to
+     * survive: the block cache refuses the reads further down, so nothing has
+     * gone wrong yet, but a refusal at the far end of a wrapped calculation is
+     * a refusal that says the wrong thing about why.
+     *
+     * s_first_data_block is 1 on a 1 KiB filesystem and 0 on every larger one,
+     * so it is always inside the volume on anything well-formed. */
+    if (blocks_count == 0u || fs->first_data_block >= blocks_count) {
+        return -1;
+    }
     fs->group_count = (blocks_count - fs->first_data_block + fs->blocks_per_group - 1u)
                       / fs->blocks_per_group;
     if (fs->group_count == 0u) {

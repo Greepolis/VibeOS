@@ -108,7 +108,6 @@ set(VIBEOS_ARCH_X86_64_SOURCES
     kernel/arch/x86_64/linux_socket.c
     kernel/arch/x86_64/linux_signal.c
     kernel/arch/x86_64/apic.c
-    kernel/arch/x86_64/elf_load.c
     kernel/arch/x86_64/blk.c
     kernel/arch/x86_64/ahci.c
     kernel/arch/x86_64/virtio_blk.c

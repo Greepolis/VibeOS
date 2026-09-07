@@ -388,13 +388,19 @@ extern uint64_t vibeos_isr_stub_table[VIBEOS_HW_WIRED_VECTORS];
 extern void vibeos_x86_64_ring3_enter(uint64_t user_rip, uint64_t user_rsp);
 extern void vibeos_x86_64_ring3_resume(void);
 
-/* ELF loader (elf_load.c) and the embedded user program (generated blob).
- * The loader hands each PT_LOAD segment to a callback so we can place it in a
- * process's private address space. */
-typedef int (*vibeos_elf_load_cb)(void *ctx, uint64_t vaddr, const unsigned char *data,
-                                  uint64_t filesz, uint64_t memsz, uint32_t flags);
-extern int vibeos_x86_64_elf_load(const unsigned char *elf, uint64_t len,
-                                  void *ctx, vibeos_elf_load_cb cb, uint64_t *out_entry);
+/* The embedded user program (generated blob).
+ *
+ * There was a second ELF loader here - kernel/arch/x86_64/elf_load.c, declared
+ * just below and called by nothing since it was written. It is deleted rather
+ * than repaired: a review found an integer overflow in its program-header
+ * check, and repairing dead code buys a fix for a path nobody can reach while
+ * leaving the reason it was dangerous - that it exists at all - in place.
+ *
+ * The loader this kernel actually uses is kernel/core/elf.c, which is
+ * host-tested and is what exec goes through. Two loaders is two places that
+ * have to be right about ELF, and this project has spent whole phases removing
+ * second places.
+ */
 extern const unsigned char vibeos_user_hello_elf[];
 extern const unsigned long vibeos_user_hello_elf_len;
 
