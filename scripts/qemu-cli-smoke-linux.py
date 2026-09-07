@@ -1279,6 +1279,15 @@ def main():
             # Asserted non-zero because that split makes the failure silent:
             # an interrupt that never arrives leaves the machine exactly as
             # slow as it was and nothing else would say so.
+            # AHCI, the same path taken second. It carries the log disk on
+            # every boot, so it does real work whichever controller the boot
+            # disk is on.
+            mah = re.search(r"ahci_irqs=0x([0-9a-f]{16})", text)
+            if mah is None:
+                problems.append("ahci_irq_counter_missing")
+            elif int(mah.group(1), 16) == 0:
+                problems.append("ahci_interrupt_never_fired")
+
             mirq = re.search(r"blk_irqs=0x([0-9a-f]{16}) "
                              r"blk_irq_completions=0x([0-9a-f]{16}) "
                              r"blk_poll_completions=0x([0-9a-f]{16})", text)

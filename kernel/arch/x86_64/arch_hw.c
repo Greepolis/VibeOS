@@ -1378,6 +1378,11 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
         if (frame->vector > 32u && frame->vector < 48u) {
             g_ioapic_irqs[frame->vector - 33u]++;
         }
+        if (frame->vector == 42u) { /* AHCI: a command finished */
+            vibeos_x86_64_ahci_irq();
+            hw_pic_send_eoi((uint32_t)frame->vector);
+            return;
+        }
         if (frame->vector == 43u) { /* virtio-blk: a transfer finished */
             vibeos_x86_64_virtio_blk_irq();
             hw_pic_send_eoi((uint32_t)frame->vector);

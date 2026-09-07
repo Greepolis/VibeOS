@@ -53,6 +53,48 @@ static void pci_write32(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off, uint3
 
 #define HBA_GHC      0x04u
 #define HBA_GHC_AE   0x80000000u
+/* Interrupt enable, in the global control register, and the port's own
+ * interrupt-enable and status registers. All three are zero out of reset, so a
+ * routed line with any of them clear delivers nothing. */
+#define HBA_GHC_IE   0x00000002u
+#define HBA_IS       0x08u
+#define PxIE         0x14u
+
+/* ---- I6: completion by interrupt ------------------------------------------
+ *
+ * Same shape as virtio-blk, and written second on purpose: that one proved the
+ * path, so this one is a port rather than an investigation.
+ *
+ * The controller's own status registers stay the single source of truth about
+ * what completed - the handler acknowledges and says that something did, and
+ * the waiter still reads PxCI. One consumer of the completion state, as there.
+ */
+/* Declared here rather than pulled from a header: this is the only thing this
+ * driver needs from the interrupt controller, and gcc accepts an implicit
+ * declaration with a warning while clang refuses it. */
+extern int vibeos_x86_64_ioapic_route_pci(uint8_t irq, uint8_t vector, uint32_t dest);
+
+static uint8_t g_irq_line;
+static uint8_t g_irq_ready;
+static volatile uint32_t g_irq_count;
+
+uint64_t vibeos_x86_64_ahci_irqs(void) {
+    return (uint64_t)g_irq_count;
+}
+
+
+/* May this core halt while it waits? The two conditions virtio-blk learned:
+ * the line must be routed, and interrupts must actually be enabled - during
+ * bring-up they are not, and halting there is a boot that never resumes. */
+static int ahci_may_halt(uint32_t spin) {
+    uint64_t flags;
+
+    if (!g_irq_ready || spin < 1024u) {
+        return 0;
+    }
+    __asm__ __volatile__("pushfq; pop %0" : "=r"(flags));
+    return (flags & 0x200ull) != 0ull;
+}
 #define HBA_PI       0x0Cu
 
 #define PORT_BASE(p) (0x100u + (uint32_t)(p) * 0x80u)
@@ -186,7 +228,14 @@ static uint64_t ahci_find(void) {
                  * controller reads no descriptors and simply never completes,
                  * which looks like a hang rather than a refusal. */
                 cmd = pci_read32((uint8_t)bus, (uint8_t)dev, fn, 0x04);
-                pci_write32((uint8_t)bus, (uint8_t)dev, fn, 0x04, cmd | 0x6u);
+                /* Memory space and bus mastering on, and Interrupt Disable
+                 * *off*. Bit 10 was being preserved from whatever UEFI left,
+                 * and UEFI leaves it set - the same defect virtio-blk had, in
+                 * the same shape, one file over. */
+                pci_write32((uint8_t)bus, (uint8_t)dev, fn, 0x04,
+                            (cmd | 0x6u) & ~0x400u);
+                g_irq_line = (uint8_t)(pci_read32((uint8_t)bus, (uint8_t)dev,
+                                                  fn, 0x3Cu) & 0xFFu);
 
                 bar5 = pci_read32((uint8_t)bus, (uint8_t)dev, fn, 0x24);
                 if ((bar5 & 1u) != 0u) {
@@ -292,7 +341,19 @@ int vibeos_x86_64_ahci_init(void) {
         port_write(PxFBU, 0);
         port_write(PxSERR, 0xFFFFFFFFu);   /* write-1-to-clear */
         port_write(PxIS, 0xFFFFFFFFu);
+        /* Ask the port to raise interrupts at all: PxIE is zero out of reset,
+         * so a routed line with this register clear delivers nothing - which
+         * is the same class of silence virtio-blk cost an hour on. DHRS bit 0
+         * is the device-to-host register FIS, which is what a finished DMA
+         * command produces. */
+        port_write(PxIE, 0x1u | 0x2u | 0x4u | 0x8u);
+        mmio_write(HBA_GHC, mmio_read(HBA_GHC) | HBA_GHC_IE);
         port_start();
+
+        if (g_irq_line != 0u && g_irq_line < 24u &&
+            vibeos_x86_64_ioapic_route_pci(g_irq_line, 42u, 0u) == 0) {
+            g_irq_ready = 1u;
+        }
 
         /* The signature, read *here* and not before the port was set up.
          *
@@ -365,7 +426,22 @@ int vibeos_x86_64_ahci_init(void) {
  * Only these two are counted. The bounds in port_stop and port_start are
  * bring-up, not reachable from a syscall, and P7's property is about the paths
  * a program can wait on. */
+/* Acknowledge, in the order the specification requires: the port's own
+ * interrupt status first, then the controller's bit for that port. Doing it
+ * the other way round leaves the controller believing the port is still
+ * asserting and it never raises another one - a hang that looks exactly like a
+ * device that stopped working. */
+void vibeos_x86_64_ahci_irq(void) {
+    if (g_abar == 0) {
+        return;
+    }
+    port_write(PxIS, port_read(PxIS));
+    mmio_write(HBA_IS, 1u << g_port);
+    g_irq_count++;
+}
+
 static uint64_t g_timeouts;
+
 
 uint64_t vibeos_x86_64_ahci_timeouts(void) {
     return g_timeouts;
@@ -443,6 +519,9 @@ static int ahci_cmd(uint8_t command, uint64_t lba, uint32_t sectors,
         if (++spin > 20000000u) {
             g_timeouts++;
             return -1;
+        }
+        if (ahci_may_halt(spin)) {
+            __asm__ __volatile__("hlt" ::: "memory");
         }
     }
     if ((port_read(PxTFD) & 0x01u) != 0u) {

@@ -176,6 +176,7 @@ __attribute__((weak)) void vibeos_x86_64_fat_cache_stats(uint64_t *hits,
 __attribute__((weak)) uint64_t vibeos_x86_64_virtio_net_tx_timeouts(void) { return 0ull; }
 /* Beside their caller, like every other stub here. */
 __attribute__((weak)) uint64_t vibeos_x86_64_ioapic_irq_count(uint32_t v) { (void)v; return 0ull; }
+__attribute__((weak)) uint64_t vibeos_x86_64_ahci_irqs(void) { return 0ull; }
 __attribute__((weak)) uint64_t vibeos_x86_64_virtio_blk_irqs(void) { return 0ull; }
 __attribute__((weak)) uint64_t vibeos_x86_64_virtio_blk_irq_completions(void) { return 0ull; }
 __attribute__((weak)) uint64_t vibeos_x86_64_virtio_blk_poll_completions(void) { return 0ull; }
@@ -857,6 +858,8 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
          * silently, which is the failure this counter exists to make loud. */
         vibeos_x86_64_serial_puts(" kbd_irqs=0x");
         kernel_log_u64_hex(vibeos_x86_64_ioapic_irq_count(33u));
+        vibeos_x86_64_serial_puts(" ahci_irqs=0x");
+        kernel_log_u64_hex(vibeos_x86_64_ahci_irqs());
         vibeos_x86_64_serial_puts(" blk_irqs=0x");
         kernel_log_u64_hex(vibeos_x86_64_virtio_blk_irqs());
         vibeos_x86_64_serial_puts(" blk_irq_completions=0x");

@@ -139,3 +139,34 @@ case: the interrupt stops arriving
 #
 # The probe stays. It answers three questions in one line and it is the reason
 # this entry ends with a fact instead of another guess.
+
+case: AHCI stops raising interrupts
+  in ahci.c, remove the PxIE write or the HBA_GHC_IE bit
+  expect: ahci_interrupt_never_fired
+  why it matters: PxIE and GHC.IE are both zero out of reset, so a routed line
+    with either clear delivers nothing - the same silence virtio-blk cost an
+    hour on, and the reason this driver was done second and as a port rather
+    than as an investigation. AHCI carries the log disk on every boot, so it
+    does real work whichever controller the boot disk is on.
+
+case: the AHCI handler acknowledges in the wrong order
+  in vibeos_x86_64_ahci_irq, clear HBA_IS before PxIS
+  expect: ahci_irqs stops at 1 - the first interrupt arrives and no more
+  why it matters: the controller re-asserts its own bit while the port is still
+    asserting, so clearing the controller first leaves it believing the port is
+    active and it never raises another. A hang that looks exactly like a device
+    that stopped working.
+
+case: the wait halts before interrupts are enabled
+  in ahci_may_halt, drop the RFLAGS.IF test
+  expect: the boot stops in kernel_early_init
+  why it matters: virtio-blk learned this one the hard way. Most disk reads
+    happen during bring-up, where there is no timer and interrupts are off, so
+    a halt there is a machine that never resumes.
+
+case: the AHCI counter stops being reported
+  in kmain.c, remove ahci_irqs from the WAITS line
+  expect: ahci_irq_counter_missing
+  why it matters: the same distinction as everywhere else here - "the number is
+    zero" and "there is no number" are different failures, and this
+    investigation spent an hour on exactly that confusion.
