@@ -7,6 +7,7 @@
  * and every caller above would believe it.
  */
 
+#include <string.h>
 #include "vibeos/blkdev.h"
 #include "vibeos/io_stats.h"
 
@@ -130,10 +131,128 @@ static void count_result(vibeos_blk_result_t r) {
     g_stats.results[r]++;
 }
 
+static void queue_lock(void);
+static void queue_unlock(void);
+
+/* Every exit from submit() goes through here, which is what makes "completed
+ * exactly once" a property of the code rather than of the reader's attention.
+ *
+ * The lock is taken and dropped around the bookkeeping and *not* around the
+ * callback: vibeos_blk_complete does that itself, for the reason written
+ * there. */
 static int finish(vibeos_blk_request_t *req, vibeos_blk_result_t r) {
-    req->result = r;
-    count_result(r);
+    uint32_t done = req->sectors_done;
+
+    queue_lock();
+    /* A request refused before it was ever in flight - a null buffer, an
+     * unknown device - has not been submitted to anything, so it is moved to
+     * IN_FLIGHT here purely so that the one completion path can retire it.
+     * The alternative is a second retirement path for refusals, which is a
+     * second place that has to be right about the state machine. */
+    if (req->state != VIBEOS_BLK_REQ_INFLIGHT) {
+        req->state = VIBEOS_BLK_REQ_INFLIGHT;
+    }
+    queue_unlock();
+    vibeos_blk_complete(req, r, done);
     return (r == VIBEOS_BLK_OK) ? 0 : -1;
+}
+
+/* ---- I6: the queue ---------------------------------------------------------
+ *
+ * There is deliberately no list here yet. Both drivers are still synchronous,
+ * so a request handed to enqueue is submitted and completed before enqueue
+ * returns, and a list would be a list with at most one entry in it - code
+ * that exists and is never exercised, which is the defect this project
+ * produces most often.
+ *
+ * What does exist now is the *contract*: a request has a state, it is
+ * completed exactly once, and the completion callback runs outside the lock.
+ * Those are the three things interrupt-driven completion will break if they
+ * are not established first, and they are all checkable today.
+ */
+static int g_queue_locked;      /* the lock, as a flag: see the note below */
+
+/* The lock is a flag rather than a hw_lock_t because kernel/io/ is portable
+ * and has no spinlock of its own - the arch layer registers one when a real
+ * queue needs it, exactly as the frame layer and the block cache do. Until
+ * then this exists to answer one question the tests need to ask: was the
+ * callback run while the layer considered itself locked? */
+static void queue_lock(void) { g_queue_locked = 1; }
+static void queue_unlock(void) { g_queue_locked = 0; }
+
+void vibeos_blk_complete(vibeos_blk_request_t *req, vibeos_blk_result_t r,
+                         uint32_t sectors_done) {
+    void (*done)(void *ctx, struct vibeos_blk_request *req);
+    void *ctx;
+
+    if (!req) {
+        return;
+    }
+    if (req->state == VIBEOS_BLK_REQ_DONE) {
+        /* Refused, not obeyed. By now the owner may have reused the request,
+         * so running its callback again would deliver somebody else's
+         * completion. */
+        g_stats.completed_twice++;
+        return;
+    }
+    if (req->state != VIBEOS_BLK_REQ_INFLIGHT) {
+        g_stats.completed_not_inflight++;
+        return;
+    }
+
+    req->result = r;
+    req->sectors_done = sectors_done;
+    req->state = VIBEOS_BLK_REQ_DONE;
+    count_result(r);
+    g_stats.completed++;
+
+    /* Taken out of the request before the lock is dropped, and called after.
+     *
+     * A completion callback typically submits the next request, and doing that
+     * from inside the lock that guards the queue is a deadlock the day the
+     * queue acquires a real lock. Counted as well as avoided, because "we do
+     * not do that" is not a property anybody checks. */
+    done = req->done;
+    ctx = req->done_ctx;
+    if (done) {
+        if (g_queue_locked) {
+            g_stats.callback_under_lock++;
+        }
+        done(ctx, req);
+    }
+}
+
+/* Set only while a request is on its way through enqueue().
+ *
+ * This is what stops vibeos_blk_submit from ever calling a callback it was not
+ * given. Every caller written before I6 builds its request field by field and
+ * knows nothing about `done`, so that field holds whatever was on the stack -
+ * and the first thing the layer did with the new code was call it. A host test
+ * segfaulted immediately, which is the good outcome; on a machine it would
+ * have been a jump to stack rubbish inside the block layer.
+ *
+ * The rule this follows is the one this project already wrote down after
+ * interp_base: clear the field in the function that owns the contract, not at
+ * every caller. The synchronous entry point owns "there is no callback", so it
+ * enforces it. */
+static int g_in_enqueue;
+
+int vibeos_blk_enqueue(vibeos_blk_request_t *req) {
+    int rc;
+
+    if (!req) {
+        return -1;
+    }
+    req->state = VIBEOS_BLK_REQ_QUEUED;
+    g_stats.enqueued++;
+    g_in_enqueue = 1;
+    rc = vibeos_blk_submit(req);
+    g_in_enqueue = 0;
+    /* submit completes the request itself while the drivers are synchronous.
+     * When one of them grows an interrupt, it will call complete() from there
+     * and submit() will return with the request still in flight - which is why
+     * this does not complete it here. */
+    return rc;
 }
 
 int vibeos_blk_submit(vibeos_blk_request_t *req) {
@@ -147,6 +266,16 @@ int vibeos_blk_submit(vibeos_blk_request_t *req) {
      * reason rather than whatever the caller left in the struct. */
     req->result = VIBEOS_BLK_NOT_ISSUED;
     req->sectors_done = 0;
+    if (!g_in_enqueue) {
+        /* Reached directly, so there is no callback and no queue state - and
+         * saying so beats trusting a caller that predates both fields. */
+        req->done = 0;
+        req->done_ctx = 0;
+    }
+    /* In flight from here: every exit below goes through finish(), which is
+     * what moves it to DONE. A request that left this function in any other
+     * state would be one the completion path cannot tell from a fresh one. */
+    req->state = VIBEOS_BLK_REQ_INFLIGHT;
 
     if (!req->buf || req->sectors == 0u) {
         return finish(req, VIBEOS_BLK_BAD_REQUEST);
@@ -215,6 +344,12 @@ int vibeos_blk_read(uint32_t device, uint64_t lba, uint32_t sectors,
                     void *buf) {
     vibeos_blk_request_t req;
 
+    /* Zeroed, not filled field by field. The request gained `done`, `done_ctx`
+     * and `state` for I6, and a helper that assigns each member would have
+     * left them holding whatever was on the stack - a callback pointer out of
+     * stack rubbish, called. That exact mistake cost a CI segfault in this
+     * tree three days ago with a different struct. */
+    memset(&req, 0, sizeof(req));
     req.device = device;
     req.lba = lba;
     req.sectors = sectors;
@@ -255,6 +390,12 @@ int vibeos_blk_write(uint32_t device, uint64_t lba, uint32_t sectors,
                      const void *buf) {
     vibeos_blk_request_t req;
 
+    /* Zeroed, not filled field by field. The request gained `done`, `done_ctx`
+     * and `state` for I6, and a helper that assigns each member would have
+     * left them holding whatever was on the stack - a callback pointer out of
+     * stack rubbish, called. That exact mistake cost a CI segfault in this
+     * tree three days ago with a different struct. */
+    memset(&req, 0, sizeof(req));
     req.device = device;
     req.lba = lba;
     req.sectors = sectors;

@@ -61,7 +61,28 @@ typedef struct vibeos_blk_request {
      * which is the check the FAT defect above would have needed. */
     vibeos_blk_result_t result;
     uint32_t sectors_done;
+
+    /* ---- I6: completion ---------------------------------------------------
+     *
+     * A request that can be completed later rather than only returned from.
+     * Filled by the caller when it wants a callback; left null by the
+     * synchronous entry points, which wait instead.
+     *
+     * `state` is not bookkeeping for its own sake. It is what makes "completed
+     * twice" and "completed without being submitted" detectable at the moment
+     * they happen rather than as corruption somewhere else: with an interrupt
+     * completing requests, the driver and the caller stop sharing a call stack
+     * and a lost or duplicated completion has nothing else to give it away. */
+    void (*done)(void *ctx, struct vibeos_blk_request *req);
+    void *done_ctx;
+    uint32_t state;
 } vibeos_blk_request_t;
+
+/* The states a request passes through, in this order and no other. */
+#define VIBEOS_BLK_REQ_IDLE     0u
+#define VIBEOS_BLK_REQ_QUEUED   1u
+#define VIBEOS_BLK_REQ_INFLIGHT 2u
+#define VIBEOS_BLK_REQ_DONE     3u
 
 /* A driver is a table. Never a weak symbol: the PE/COFF lesson in CLAUDE.md is
  * that a weak definition in a different object from its caller links on Linux
@@ -129,6 +150,34 @@ int vibeos_blk_submit(vibeos_blk_request_t *req);
  *
  * Returns 0 only when the device confirmed. */
 int vibeos_blk_barrier(uint32_t device);
+
+/* ---- I6: submit now, finish later -----------------------------------------
+ *
+ * `enqueue` hands a request to the layer and returns without waiting. The
+ * request's `done` callback runs when it finishes - today from inside the
+ * driver call, because both drivers are still synchronous; later from an
+ * interrupt, without any caller above having to change.
+ *
+ * That is the whole point of introducing the seam before the drivers need it:
+ * the plan puts asynchrony last because it makes every existing defect harder
+ * to see, so the queue arrives first, with the callers still synchronous and
+ * the properties still checkable in a host test.
+ *
+ * The caller owns the request until the callback runs and must not touch it
+ * before then. It is not copied: a queue that copied requests would be a queue
+ * that has to be sized, and a bounded queue that refuses is a new failure mode
+ * on a path that currently has none.
+ */
+int vibeos_blk_enqueue(vibeos_blk_request_t *req);
+
+/* Finish a request. Called by a driver - eventually from its interrupt
+ * handler - and never by the layer's own callers.
+ *
+ * Completing a request that was not in flight, or completing one twice, is
+ * counted and refused rather than obeyed: the second completion would run a
+ * callback against a request its owner may already have reused. */
+void vibeos_blk_complete(vibeos_blk_request_t *req, vibeos_blk_result_t r,
+                         uint32_t sectors_done);
 
 int vibeos_blk_read(uint32_t device, uint64_t lba, uint32_t sectors, void *buf);
 int vibeos_blk_write(uint32_t device, uint64_t lba, uint32_t sectors,

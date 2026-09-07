@@ -1,0 +1,60 @@
+# The queue and the completion contract (I6, first half).
+#
+# Host tests: bash scripts/dev/check.sh tests build-gcc-Release
+#
+# Nothing here is asynchronous yet, and that is deliberate. Both drivers are
+# still synchronous, so a request handed to enqueue() is completed before
+# enqueue returns. What arrives first is the *contract* - completed exactly
+# once, never when not in flight, callback outside the lock - because those are
+# the three things an interrupt-driven driver breaks if they are not already
+# established, and all three become invisible once the driver and the caller
+# stop sharing a call stack.
+#
+# There is deliberately no list. A queue with at most one entry in it would be
+# code that exists and is never exercised, which is the defect this project
+# produces most often.
+
+case: a second completion is delivered instead of refused
+  in vibeos_blk_complete, drop the VIBEOS_BLK_REQ_DONE check
+  expect: FAIL:blkqueue "a second completion was not counted"
+  why it matters: by the time a duplicate arrives the owner may have reused the
+    request, so the second callback delivers somebody else's completion against
+    a live request. With an interrupt in the picture there is nothing else to
+    give that away.
+
+case: a stray completion is accepted
+  in vibeos_blk_complete, drop the IN_FLIGHT check
+  expect: FAIL:blkqueue "a stray completion ran a callback"
+  why it matters: this is what an interrupt naming the wrong tag looks like
+    from the layer's side - a completion for a request nobody submitted.
+
+case: the callback runs holding the queue lock
+  in vibeos_blk_complete, take the lock around the callback
+  expect: FAIL:blkqueue "the completion callback ran holding the queue lock"
+  why it matters: the first thing a real completion callback does is submit the
+    next request. Doing that from inside the lock that guards the queue is a
+    deadlock on the day the queue acquires a real lock, and the day it acquires
+    one is not the day anybody will be looking for this.
+
+case: the synchronous entry point carries a callback
+  in vibeos_blk_submit, remove the `if (!g_in_enqueue)` clearing of done
+  expect: a SEGFAULT in the existing block-layer tests, not a clean failure
+  why it matters: this happened. Every caller written before I6 builds its
+    request field by field and knows nothing about `done`, so that field holds
+    whatever was on the stack - and the layer called it. The host tests crashed
+    immediately, which is the good outcome; on a machine it is a jump to stack
+    rubbish inside the block layer.
+
+    The fix is not to memset at every caller. The synchronous entry point owns
+    the claim "there is no callback here", so it enforces it - which is the
+    rule this project wrote down after interp_base: clear the field in the
+    function that owns the contract.
+
+# ---- what is NOT here yet ---------------------------------------------------
+#
+# Interrupt-driven completion for virtio-blk and AHCI, and therefore a real
+# queue with a real lock, requests in flight across a return, and completions
+# arriving on a different core than the submitter. Those are the second half of
+# I6. The cases above are the ones that can be written before that exists, and
+# writing them first is the point: they are the invariants the second half has
+# to preserve, stated while they are still cheap to check.

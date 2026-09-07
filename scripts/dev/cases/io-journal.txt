@@ -98,3 +98,35 @@ case: recovery stops checking that the commit record names this descriptor
 # journal that exposes its phases to a test, or a fault injector that fails the
 # Nth flush specifically rather than the Nth write. The second is small and is
 # the one to try.
+
+# ---- third attempt, withdrawn, and this reason closes the question ---------
+#
+# The second note said what to try next: "a fault injector that fails the Nth
+# flush rather than the Nth write". That was the right idea - commit() has three
+# phases and each ends with a flush, so failing flush N puts the power cut
+# exactly on a phase boundary instead of landing between them by luck. It was
+# built: three flushes swept, three cache write-back orders, with guards
+# requiring that both outcomes (all-old and all-new) actually occur so the
+# sweep cannot pass vacuously.
+#
+# It still caught nothing. Every sabotage tried against it - the commit record
+# written without flushing the data, each of the two checksum comparisons
+# dropped from recovery, and the checkpoint removed entirely - turns the suite
+# red through test_journal_refusals or the existing power-cut sweep, never
+# through the new one.
+#
+# The conclusion, after three attempts, is not "try harder" but a fact about
+# the layer: **it is over-determined against single faults.** The ordering, the
+# descriptor checksum, the commit checksum and the sequence comparison each
+# independently prevent a mixture, so breaking any one of them leaves the other
+# three still refusing. A test that discriminates would have to disable two at
+# once, which is a claim about two simultaneous faults and a much weaker thing
+# to know than it sounds.
+#
+# So: the all-or-nothing property is real, is already covered by the exhaustive
+# sweep in kernel_tests.c, and does not need a fourth harness. What kernel/txn
+# actually lacks for the every-module-gets-a-nightly rule is not another
+# power-cut test - it is a *model*: an independent account of which
+# transactions committed, checked against the platter over many seeds. That is
+# a different tool from a fault injector and is what a fourth attempt should
+# build, if anyone judges the rule worth satisfying here at all.

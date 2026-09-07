@@ -59,6 +59,17 @@ typedef struct vibeos_io_stats {
     uint64_t first_oor_sectors;
     uint64_t first_oor_device_size;
 
+    /* ---- I6: the queue --------------------------------------------------- */
+    uint64_t enqueued;              /* diagnostic: asserted non-zero once the
+                                     * queue is on the boot path            */
+    uint64_t completed;             /* diagnostic                            */
+    uint64_t completed_twice;       /* MUST BE ZERO                          */
+    uint64_t completed_not_inflight;/* MUST BE ZERO                          */
+    uint64_t callback_under_lock;   /* MUST BE ZERO: a completion callback
+                                     * must never run holding the queue lock,
+                                     * because the first thing a caller does
+                                     * in one is submit the next request     */
+
 
     /* ---- B2: the block cache (I2) --------------------------------------- */
     uint64_t cache_hits;            /* asserted as a *ratio*, not non-zero   */
