@@ -1,4 +1,7 @@
 #ifndef VIBEOS_FRAME_H
+
+#define VIBEOS_FRAME_H
+
 /* What a freed page is filled with.
  *
  * Published rather than private to kernel/mm/frame.c, because more than one
@@ -7,8 +10,6 @@
  * difference between a refusal somebody investigates and one they shrug at.
  * Non-canonical on purpose, so the first dereference faults. */
 #define VIBEOS_FRAME_POISON 0xDEAD0000DEAD0000ull
-
-#define VIBEOS_FRAME_H
 
 #include <stdint.h>
 

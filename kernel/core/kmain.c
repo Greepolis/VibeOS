@@ -868,6 +868,15 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
         kernel_log_u64_hex(vibeos_x86_64_virtio_blk_poll_completions());
         vibeos_x86_64_serial_puts("\n");
 
+        /* I7's last question, and the only one that needs the machine: were
+         * two requests ever inside the block layer at the same time? Every
+         * counter in there is updated without a lock, so the answer decides
+         * whether the layer needs one or whether the drivers' own locks have
+         * been serialising everything above them all along. */
+        vibeos_x86_64_serial_puts("[IO] CONCURRENCY in_flight_peak=0x");
+        kernel_log_u64_hex(io->requests_in_flight_peak);
+        vibeos_x86_64_serial_puts("\n");
+
         vibeos_x86_64_serial_puts("[IO] BARRIERS asked=0x");
         kernel_log_u64_hex(io->barriers);
         vibeos_x86_64_serial_puts("\n");

@@ -147,6 +147,16 @@ def main():
             # defect is the failure this project has spent the most time on.
             inc = (re.search(r"[->.]" + re.escape(field) + r"\s*(\+\+|\+=)", text)
                    or re.search(r"\+\+\s*[a-z_][a-z0-9_]*\s*(->|\.)\s*"
+                                + re.escape(field) + r"\b", text)
+                   # A counter written through an atomic helper rather than
+                   # with ++. The block layer's counters became atomic when I7
+                   # measured two requests inside it at once, and this check
+                   # went red for the right reason: it could no longer see them
+                   # being produced. Teaching it the new shape is the fix;
+                   # loosening it to "the name appears somewhere" would not be,
+                   # since the point is to tell a counter that is written from
+                   # one that is only declared.
+                   or re.search(r"BLK_COUNT\s*\([^,;]*[->.]"
                                 + re.escape(field) + r"\b", text))
             if inc:
                 continue

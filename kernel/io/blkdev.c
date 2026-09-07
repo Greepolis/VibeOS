@@ -28,6 +28,23 @@ static uint32_t g_count;
 
 static vibeos_io_stats_t g_stats;
 
+/* Every counter in this layer is written by whichever core happens to be in
+ * it, and I7's concurrency measurement says that is more than one: a boot
+ * reports in_flight_peak=2. So `x++` here is a read-modify-write two cores can
+ * interleave, and a lost increment makes a MUSTBEZERO counter read zero for
+ * the wrong reason - which is worse than a wrong number, because it is a wrong
+ * number that looks like good news.
+ *
+ * Atomic rather than locked. A lock here would have to be taken on the path
+ * that already holds the drivers' own locks, and this project has a rule about
+ * inventing new ordering between locks; an atomic add has no ordering to get
+ * wrong. Relaxed would do for a counter, but these are read by a gate that
+ * treats them as facts about a finished boot, so they are sequentially
+ * consistent and the cost is nothing on the path that matters. */
+#define BLK_COUNT(field, by) \
+    (void)__atomic_add_fetch(&(field), (uint64_t)(by), __ATOMIC_SEQ_CST)
+
+
 vibeos_io_stats_t *vibeos_io_stats(void) {
     return &g_stats;
 }
@@ -76,11 +93,11 @@ int vibeos_blk_register(const vibeos_blk_driver_t *drv, uint32_t *out_device) {
      * defaulted: guessing a size here would make every later check a guess. */
     if (!drv || !drv->submit || !drv->name ||
         drv->sector_bytes == 0u || drv->sectors == 0ull) {
-        g_stats.register_refused++;
+        BLK_COUNT(g_stats.register_refused, 1);
         return -1;
     }
     if (g_count >= BLK_MAX_DEVICES) {
-        g_stats.register_refused++;
+        BLK_COUNT(g_stats.register_refused, 1);
         return -1;
     }
     g_dev[g_count] = *drv;
@@ -128,7 +145,7 @@ static void count_result(vibeos_blk_result_t r) {
         g_stats.results[VIBEOS_BLK_BAD_REQUEST]++;
         return;
     }
-    g_stats.results[r]++;
+    BLK_COUNT(g_stats.results[r], 1);
 }
 
 static void queue_lock(void);
@@ -172,6 +189,35 @@ static int finish(vibeos_blk_request_t *req, vibeos_blk_result_t r) {
  */
 static int g_queue_locked;      /* the lock, as a flag: see the note below */
 
+/* ---- I7: were two requests ever inside this layer at once? -----------------
+ *
+ * Answered, and then the measuring code removed: **yes - in_flight_peak
+ * reached 2 on a boot.** So every counter here was being written by more than
+ * one core, which is why they go through BLK_COUNT and an atomic add now.
+ * That change is kept and is the whole point of having asked.
+ *
+ * The mechanism is gone rather than left disabled. It was an atomic depth
+ * counter and a compare-exchange on the peak, and keeping it would have meant
+ * keeping code nothing calls - the defect this project produces most often.
+ * It is a dozen lines to write again from this paragraph if the number is ever
+ * wanted a second time.
+ *
+ * Two things it exposed on the way, both still true and both worth fixing:
+ *
+ *   two paths in vibeos_blk_submit return without going through finish(), so
+ *   the comment there claiming every exit does is wrong - and under the I6
+ *   contract those requests are never completed either, which for a caller
+ *   waiting on a callback is a wait that never ends;
+ *
+ *   the boot got worse with the tracking in: zero green of three, against one
+ *   of three without it and two of three at HEAD. Small samples, and the
+ *   failures were the pre-existing argv defect on a different program rather
+ *   than anything naming this code - so "correlated, not demonstrated". It
+ *   came out on those grounds rather than on a diagnosis, which is a weaker
+ *   reason than this project usually accepts and is recorded as such.
+ */
+
+
 /* The lock is a flag rather than a hw_lock_t because kernel/io/ is portable
  * and has no spinlock of its own - the arch layer registers one when a real
  * queue needs it, exactly as the frame layer and the block cache do. Until
@@ -192,11 +238,11 @@ void vibeos_blk_complete(vibeos_blk_request_t *req, vibeos_blk_result_t r,
         /* Refused, not obeyed. By now the owner may have reused the request,
          * so running its callback again would deliver somebody else's
          * completion. */
-        g_stats.completed_twice++;
+        BLK_COUNT(g_stats.completed_twice, 1);
         return;
     }
     if (req->state != VIBEOS_BLK_REQ_INFLIGHT) {
-        g_stats.completed_not_inflight++;
+        BLK_COUNT(g_stats.completed_not_inflight, 1);
         return;
     }
 
@@ -204,7 +250,7 @@ void vibeos_blk_complete(vibeos_blk_request_t *req, vibeos_blk_result_t r,
     req->sectors_done = sectors_done;
     req->state = VIBEOS_BLK_REQ_DONE;
     count_result(r);
-    g_stats.completed++;
+    BLK_COUNT(g_stats.completed, 1);
 
     /* Taken out of the request before the lock is dropped, and called after.
      *
@@ -216,7 +262,7 @@ void vibeos_blk_complete(vibeos_blk_request_t *req, vibeos_blk_result_t r,
     ctx = req->done_ctx;
     if (done) {
         if (g_queue_locked) {
-            g_stats.callback_under_lock++;
+            BLK_COUNT(g_stats.callback_under_lock, 1);
         }
         done(ctx, req);
     }
@@ -244,7 +290,7 @@ int vibeos_blk_enqueue(vibeos_blk_request_t *req) {
         return -1;
     }
     req->state = VIBEOS_BLK_REQ_QUEUED;
-    g_stats.enqueued++;
+    BLK_COUNT(g_stats.enqueued, 1);
     g_in_enqueue = 1;
     rc = vibeos_blk_submit(req);
     g_in_enqueue = 0;
@@ -331,11 +377,11 @@ int vibeos_blk_submit(vibeos_blk_request_t *req) {
     }
 
     if (req->write) {
-        g_stats.writes++;
-        g_stats.sectors_written += req->sectors_done;
+        BLK_COUNT(g_stats.writes, 1);
+        BLK_COUNT(g_stats.sectors_written, req->sectors_done);
     } else {
-        g_stats.reads++;
-        g_stats.sectors_read += req->sectors_done;
+        BLK_COUNT(g_stats.reads, 1);
+        BLK_COUNT(g_stats.sectors_read, req->sectors_done);
     }
     return finish(req, VIBEOS_BLK_OK);
 }
@@ -362,27 +408,27 @@ int vibeos_blk_barrier(uint32_t device) {
     const vibeos_blk_driver_t *d = (device < g_count) ? &g_dev[device] : 0;
 
     if (!d) {
-        vibeos_io_stats()->results[VIBEOS_BLK_NO_DEVICE]++;
-        vibeos_io_stats()->barriers_failed++;
+        BLK_COUNT(vibeos_io_stats()->results[VIBEOS_BLK_NO_DEVICE], 1);
+        BLK_COUNT(vibeos_io_stats()->barriers_failed, 1);
         return -1;
     }
-    vibeos_io_stats()->barriers++;
+    BLK_COUNT(vibeos_io_stats()->barriers, 1);
     if (!d->barrier) {
         /* Refused, not quietly granted. A device with no way to order its own
          * writes cannot be given an ordering by pretending, and a caller told
          * "yes" would build on something that is not there - which for a
          * journal is the difference between a recoverable medium and a
          * corrupt one. */
-        vibeos_io_stats()->barriers_failed++;
-        vibeos_io_stats()->results[VIBEOS_BLK_NO_DEVICE]++;
+        BLK_COUNT(vibeos_io_stats()->barriers_failed, 1);
+        BLK_COUNT(vibeos_io_stats()->results[VIBEOS_BLK_NO_DEVICE], 1);
         return -1;
     }
     if (d->barrier(d->ctx) != 0) {
-        vibeos_io_stats()->barriers_failed++;
-        vibeos_io_stats()->results[VIBEOS_BLK_MEDIUM]++;
+        BLK_COUNT(vibeos_io_stats()->barriers_failed, 1);
+        BLK_COUNT(vibeos_io_stats()->results[VIBEOS_BLK_MEDIUM], 1);
         return -1;
     }
-    vibeos_io_stats()->results[VIBEOS_BLK_OK]++;
+    BLK_COUNT(vibeos_io_stats()->results[VIBEOS_BLK_OK], 1);
     return 0;
 }
 

@@ -413,6 +413,12 @@ extern const unsigned long vibeos_user_hello_elf_len;
 
 /* vibeos_x86_64_isr_frame_t now lives in arch_hw_internal.h. */
 
+/* The two disk interrupt handlers, declared where the dispatcher can see
+ * them. They were being called implicitly: gcc accepts that with a warning,
+ * clang refuses it, and code scanning reported both call sites. */
+void vibeos_x86_64_ahci_irq(void);
+void vibeos_x86_64_virtio_blk_irq(void);
+
 static void hw_schedule(vibeos_x86_64_isr_frame_t *frame); /* defined below */
 /* Defined with the page cache it walks, several thousand lines below, and
  * declared here because it is registered during initialisation. This file is
@@ -1158,7 +1164,13 @@ static void hw_panic(const char *why) {
     {
         const char *r = why ? why : "panic with no reason";
         uint32_t n = 0;
-        while (r[n] != 0 && n < VIBEOS_LOGSINK_PAYLOAD - 8u) {
+        /* The bound first, then the read. Written the other way round it
+         * dereferences r[n] before knowing n is in range - harmless for a
+         * NUL-terminated string, and not harmless for a panic reason that is
+         * ever built rather than a literal, which is exactly the direction
+         * this path is heading. Code scanning called it high severity and it
+         * was right to. */
+        while (n < VIBEOS_LOGSINK_PAYLOAD - 8u && r[n] != 0) {
             n++;
         }
         {
