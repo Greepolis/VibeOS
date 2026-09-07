@@ -318,6 +318,39 @@ static void ioapic_write(uint32_t reg, uint32_t val) {
 
 /* Route an ISA IRQ to `vector` on the CPU with `dest` local-APIC id, honouring
  * any ACPI interrupt source override for polarity/trigger and GSI remapping. */
+/* Route a PCI interrupt line.
+ *
+ * Separate from the ISA entry point below, and not a flag on it, because the
+ * two differ in a way that is easy to get silently wrong: an ISA IRQ is edge
+ * triggered and active high unless the MADT says otherwise, and a PCI INTx
+ * line is *always* level triggered and active low. There is normally no
+ * interrupt source override for a PCI line, so routing one through the ISA
+ * path programs it edge/high - and an edge-triggered entry on a level-driven
+ * line simply never delivers.
+ *
+ * That is not a hypothetical. virtio-blk was routed, reported itself routed,
+ * and raised exactly zero interrupts, which looked from every angle like a
+ * device that does not interrupt. */
+int vibeos_x86_64_ioapic_route_pci(uint8_t irq, uint8_t vector, uint32_t dest) {
+    uint32_t gsi = irq;
+    uint32_t low, high, reg;
+
+    if (g_ioapic_base == 0u) {
+        return -1;
+    }
+    if (gsi < g_ioapic_gsi_base) {
+        return -1;
+    }
+    reg = 0x10u + (gsi - g_ioapic_gsi_base) * 2u;
+
+    low = vector | 0x2000u | 0x8000u;   /* active low, level triggered */
+    high = dest << 24;
+
+    ioapic_write(reg + 1u, high);
+    ioapic_write(reg, low);
+    return 0;
+}
+
 int vibeos_x86_64_ioapic_route(uint8_t irq, uint8_t vector, uint32_t dest) {
     uint32_t gsi = irq;
     uint16_t flags = 0;

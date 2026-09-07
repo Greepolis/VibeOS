@@ -112,6 +112,100 @@ static struct virtq_desc *g_desc;
 static struct virtq_avail *g_avail;
 static struct virtq_used *g_used;
 static uint16_t g_last_used;
+
+/* ---- I6: completion by interrupt ------------------------------------------
+ *
+ * The device raises an interrupt when it has put something in the used ring.
+ * Until now nobody listened: both transfers spun on `g_used->idx` up to a
+ * hundred million times, which works and costs a core.
+ *
+ * What the interrupt buys is not correctness - the ring check was already
+ * correct - it is that the waiting core can stop. The wait halts now instead
+ * of spinning, and the interrupt is what wakes it. That makes the interrupt
+ * load-bearing for latency while leaving the ring as the single source of
+ * truth about what completed, which is the conservative half of the split:
+ * a missed interrupt costs a timer tick of latency, not a lost completion.
+ *
+ * Counted both ways, because "the interrupt is wired up" and "the interrupt
+ * does anything" are different claims and only the second is worth making. The
+ * gate asserts irq_completions is not zero: an interrupt that never fires
+ * leaves this exactly as slow as it was, silently. */
+/* Declared here rather than pulled in from a header: this is the only thing
+ * this driver needs from the interrupt controller, and gcc would have accepted
+ * the implicit declaration with a warning while clang refuses it - which is a
+ * trap this tree has been caught by before. */
+extern int vibeos_x86_64_ioapic_route_pci(uint8_t irq, uint8_t vector, uint32_t dest);
+
+static uint8_t g_irq_line;
+static uint8_t g_irq_pin;
+static uint32_t g_pci_cmd;
+static uint8_t g_irq_ready;
+static volatile uint32_t g_irq_count;
+static uint64_t g_irq_completions;
+static uint64_t g_poll_completions;
+
+/* May this core halt while it waits?
+ *
+ * Two conditions, and the first was the one I assumed rather than checked.
+ *
+ * Interrupts must actually be enabled. The comment above says the timer would
+ * wake this core even if the device never interrupted - that is true once the
+ * machine is running and false during bring-up, which is where most of the
+ * disk reads happen. Halting there stopped the boot dead in kernel_early_init:
+ * no timer yet, interrupts off, and nothing left that could ever wake it.
+ *
+ * And spin a little first. A transfer this device has already finished - most
+ * of them, on a host this fast - completes before the first check, so halting
+ * immediately would add an interrupt round trip to the common case in order to
+ * save nothing. The halt is for the rare slow transfer, which is also the only
+ * case where a hundred million spins cost anything. */
+static int blk_may_halt(uint64_t spins) {
+    uint64_t flags;
+
+    if (!g_irq_ready || spins < 1024ull) {
+        return 0;
+    }
+    __asm__ __volatile__("pushfq; pop %0" : "=r"(flags));
+    return (flags & 0x200ull) != 0ull;   /* IF */
+}
+
+
+/* How many interrupts this device has raised.
+ *
+ * Reported instead of "completions attributed to the interrupt", which was the
+ * first attempt and measured nothing: on a host this fast the transfer is
+ * finished before the wait loop makes its first check, so there is no window
+ * in which an interrupt can arrive *during* a wait. The first version therefore
+ * read 0 of 14744 and looked exactly like an interrupt that never fires.
+ *
+ * "Did it fire at all" is the claim worth making and the one the gate can
+ * assert. Whether it shortened any particular wait is a latency question, and
+ * the poll counter beside it is what will answer that on a machine slow enough
+ * for the difference to exist. */
+uint64_t vibeos_x86_64_virtio_blk_irqs(void) {
+    return (uint64_t)g_irq_count;
+}
+
+uint64_t vibeos_x86_64_virtio_blk_irq_completions(void) {
+    return g_irq_completions;
+}
+
+uint64_t vibeos_x86_64_virtio_blk_poll_completions(void) {
+    return g_poll_completions;
+}
+
+/* Called from the interrupt dispatcher. Acks the device and says that
+ * something arrived; it deliberately does not touch the used ring, so there is
+ * exactly one place that consumes completions and it is the waiter. Two
+ * consumers of one ring is the defect this driver already had once, when two
+ * cores raced over a single used index. */
+void vibeos_x86_64_virtio_blk_irq(void) {
+    if (g_io_base == 0u) {
+        return;
+    }
+    (void)vb_inb(g_io_base + VIRTIO_ISR);   /* ack; reading clears it */
+    g_irq_count++;
+}
 static int g_ready;
 
 /* Sector count, read from the device's own configuration space. Asking the
@@ -172,10 +266,29 @@ static uint16_t virtio_blk_find(void) {
             }
             /* Enable I/O space + bus mastering (DMA). */
             cmd = pci_read32((uint8_t)bus, (uint8_t)dev, 0, 0x04);
-            pci_write32((uint8_t)bus, (uint8_t)dev, 0, 0x04, cmd | 0x5u);
+            /* I/O space and bus mastering on, and INTx *off*-disable.
+             *
+             * Bit 10 of the command register is Interrupt Disable, and this
+             * line used to OR into whatever the firmware left there. UEFI
+             * leaves it set - it has no use for the device's interrupts - so
+             * the device raised none, the driver polled for every transfer,
+             * and nothing said so. Clearing it is the difference between an
+             * interrupt that is routed and one that arrives. */
+            pci_write32((uint8_t)bus, (uint8_t)dev, 0, 0x04,
+                        (cmd | 0x5u) & ~0x400u);
             bar0 = pci_read32((uint8_t)bus, (uint8_t)dev, 0, 0x10);
             if ((bar0 & 1u) == 0) {
                 continue; /* not an I/O BAR */
+            }
+            /* The interrupt line, from the same config space and at the same
+             * time. Read here rather than looked up later because "which
+             * device did we pick" is exactly the question a second scan gets
+             * wrong on a machine with two of them. */
+            {
+                uint32_t ints = pci_read32((uint8_t)bus, (uint8_t)dev, 0, 0x3Cu);
+                g_irq_line = (uint8_t)(ints & 0xFFu);
+                g_irq_pin = (uint8_t)((ints >> 8) & 0xFFu);
+                g_pci_cmd = pci_read32((uint8_t)bus, (uint8_t)dev, 0, 0x04u);
             }
             return (uint16_t)(bar0 & 0xFFFCu);
         }
@@ -231,6 +344,46 @@ int vibeos_x86_64_virtio_blk_init(void) {
 
     vb_outb(g_io_base + VIRTIO_STATUS,
             VIRTIO_STATUS_ACK | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_DRIVER_OK);
+
+    /* Route the device's interrupt to vector 43, next to the two the PS/2
+     * controller already uses. Failure is not fatal: the wait falls back to
+     * spinning exactly as it did before, and the counter says so - which is
+     * the difference between a degraded machine and a mysterious one. */
+    /* Routed, and it does not deliver. What is known, so the next attempt
+     * starts from evidence rather than from the top:
+     *
+     *   the device has an INTA pin (config 0x3D reads 1);
+     *   INTx is enabled - bit 10 of the command register is clear, and it was
+     *     not before, because this driver used to OR into whatever UEFI left
+     *     there and UEFI leaves it set. That fix is real and is kept;
+     *   the entry is programmed level-triggered and active low, which is what
+     *     a PCI line needs and what the ISA routing path did not do. Also real,
+     *     also kept, and it is why vibeos_x86_64_ioapic_route_pci exists;
+     *   the Line register says 11, and routing 11 delivers nothing. Routing
+     *     GSI 16..19 as well - the usual q35 mapping for PCI INTA..D, since
+     *     this kernel does not parse the ACPI _PRT - delivers nothing either.
+     *     So the mapping is not the remaining problem, or not only it.
+     *
+     * What has NOT been checked, and is where to look next: whether this
+     * machine is actually in APIC mode rather than PIC mode (the IMCR), and
+     * whether the redirection entry reads back as written. Both are one print
+     * away and neither was done, which is why this is a note and not a
+     * conclusion.
+     *
+     * The driver is correct meanwhile: it polls, exactly as it did before, and
+     * the counters below say so out loud rather than leaving it to be noticed.
+     */
+    if (g_irq_line != 0u && g_irq_line < 24u &&
+        vibeos_x86_64_ioapic_route_pci(g_irq_line, 43u, 0u) == 0) {
+        g_irq_ready = 1u;
+    }
+    vibeos_x86_64_serial_puts("[VIRTIO] blk irq line=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)g_irq_line);
+    vibeos_x86_64_serial_puts(" pin=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)g_irq_pin);
+    vibeos_x86_64_serial_puts(" cmd=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)g_pci_cmd);
+    vibeos_x86_64_serial_puts(g_irq_ready ? " routed\n" : " NOT routed\n");
 
     g_ready = 1;
     vibeos_x86_64_serial_puts("[VIRTIO] virtio-blk ready (io=0x");
@@ -292,6 +445,23 @@ static int virtio_blk_rw_n(uint64_t sector, void *buf, uint32_t sectors, int wri
     /* Poll for completion. */
     {
         uint64_t spins = 0;
+        uint32_t irq_before = g_irq_count;
+
+        /* Waits rather than spins.
+         *
+         * This loop used to burn up to a hundred million iterations of `pause`
+         * on the core that issued the transfer. The used ring is still the
+         * only thing that says *what* completed - two consumers of one used
+         * index is a defect this driver has already had, so the interrupt
+         * handler deliberately does not touch it - but the core no longer has
+         * to keep asking.
+         *
+         * `hlt` is safe here: this driver's lock leaves interrupts enabled,
+         * which was a deliberate decision when the lock was added, and the
+         * timer would wake this core even if the device's interrupt never
+         * arrived. A missed interrupt therefore costs a tick of latency and
+         * not a hang. The bound stays exactly as it was: a wait that can end
+         * for two reasons still needs one that ends it for certain. */
         while (g_used->idx == g_last_used) {
             if (++spins > 100000000ull) {
                 /* Counted, not only printed. The bound existing is half of
@@ -305,7 +475,19 @@ static int virtio_blk_rw_n(uint64_t sector, void *buf, uint32_t sectors, int wri
                 blk_unlock();
                 return -1;
             }
-            __asm__ __volatile__("pause" ::: "memory");
+            if (blk_may_halt(spins)) {
+                __asm__ __volatile__("hlt" ::: "memory");
+            } else {
+                __asm__ __volatile__("pause" ::: "memory");
+            }
+        }
+        /* Which of the two ended the wait. Counted outside the loop so that a
+         * transfer the device had already finished before the first check -
+         * which is most of them on a fast host - is still attributed. */
+        if (g_irq_count != irq_before) {
+            g_irq_completions++;
+        } else {
+            g_poll_completions++;
         }
     }
     g_last_used = g_used->idx;
@@ -421,7 +603,14 @@ int vibeos_x86_64_virtio_blk_barrier(void) {
             blk_unlock();
             return -1;
         }
-        __asm__ __volatile__("pause" ::: "memory");
+        /* Waits rather than spins, for the reason written at the transfer
+         * loop above: the ring stays the only thing that says what completed,
+         * and the interrupt only says that something did. */
+        if (blk_may_halt(spins)) {
+            __asm__ __volatile__("hlt" ::: "memory");
+        } else {
+            __asm__ __volatile__("pause" ::: "memory");
+        }
     }
     g_last_used = g_used->idx;
     (void)vb_inb(g_io_base + VIRTIO_ISR);

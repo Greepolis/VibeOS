@@ -174,6 +174,10 @@ __attribute__((weak)) void vibeos_x86_64_fat_cache_stats(uint64_t *hits,
     if (evict_failed) { *evict_failed = 0ull; }
 }
 __attribute__((weak)) uint64_t vibeos_x86_64_virtio_net_tx_timeouts(void) { return 0ull; }
+/* Beside their caller, like every other stub here. */
+__attribute__((weak)) uint64_t vibeos_x86_64_virtio_blk_irqs(void) { return 0ull; }
+__attribute__((weak)) uint64_t vibeos_x86_64_virtio_blk_irq_completions(void) { return 0ull; }
+__attribute__((weak)) uint64_t vibeos_x86_64_virtio_blk_poll_completions(void) { return 0ull; }
 
 __attribute__((weak)) void vibeos_x86_64_console_interrupt(void) { }
 
@@ -845,6 +849,17 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
         kernel_log_u64_hex(vibeos_x86_64_blk_timeouts());
         vibeos_x86_64_serial_puts(" net_tx_timeouts=0x");
         kernel_log_u64_hex(vibeos_x86_64_virtio_net_tx_timeouts());
+        /* How each disk wait ended (I6). "The interrupt is wired up" and "the
+         * interrupt does anything" are different claims and only the second is
+         * worth making, so the gate asserts irq is not zero. A device whose
+         * interrupt never arrives leaves the driver exactly as slow as it was,
+         * silently, which is the failure this counter exists to make loud. */
+        vibeos_x86_64_serial_puts(" blk_irqs=0x");
+        kernel_log_u64_hex(vibeos_x86_64_virtio_blk_irqs());
+        vibeos_x86_64_serial_puts(" blk_irq_completions=0x");
+        kernel_log_u64_hex(vibeos_x86_64_virtio_blk_irq_completions());
+        vibeos_x86_64_serial_puts(" blk_poll_completions=0x");
+        kernel_log_u64_hex(vibeos_x86_64_virtio_blk_poll_completions());
         vibeos_x86_64_serial_puts("\n");
 
         vibeos_x86_64_serial_puts("[IO] BARRIERS asked=0x");

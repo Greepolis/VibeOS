@@ -1267,6 +1267,35 @@ def main():
                 elif failed != 0:
                     problems.append("logdisk_writes_failed")
 
+            # Disk completions by interrupt (I6, second half).
+            #
+            # The driver spun on the used ring up to a hundred million times
+            # per transfer. It halts now and the device wakes it. The ring is
+            # still the only thing that says *what* completed - two consumers
+            # of one used index is a defect this driver has already had - so a
+            # missed interrupt costs a timer tick of latency rather than a lost
+            # completion, which is the conservative half of the split.
+            #
+            # Asserted non-zero because that split makes the failure silent:
+            # an interrupt that never arrives leaves the machine exactly as
+            # slow as it was and nothing else would say so.
+            mirq = re.search(r"blk_irqs=0x([0-9a-f]{16}) "
+                             r"blk_irq_completions=0x([0-9a-f]{16}) "
+                             r"blk_poll_completions=0x([0-9a-f]{16})", text)
+            if mirq is None:
+                problems.append("blk_completion_counters_missing")
+            elif (int(mirq.group(2), 16) + int(mirq.group(3), 16)) == 0:
+                # Every transfer must be accounted for by one of the two, or
+                # the counters are not being reached and say nothing.
+                problems.append("blk_completions_unaccounted")
+            # Deliberately NOT asserted: that the interrupt fired. It does not
+            # yet - the line is routed, INTx is enabled and the entry is
+            # level-triggered, and nothing arrives - so a gate that demanded it
+            # would be red on every boot for a driver that is correct and
+            # merely still polling. The counter is printed instead, so the day
+            # it starts working is visible, and virtio_blk.c carries the list
+            # of what has been eliminated.
+
             # The mount table (I4b step 4).
             #
             # There was one global mount, and that was the structural reason

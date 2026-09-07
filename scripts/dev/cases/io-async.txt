@@ -58,3 +58,47 @@ case: the synchronous entry point carries a callback
 # I6. The cases above are the ones that can be written before that exists, and
 # writing them first is the point: they are the invariants the second half has
 # to preserve, stated while they are still cheap to check.
+
+# ---- the interrupt, which is routed and does not arrive --------------------
+
+case: the completion counters stop being reported
+  in kmain.c, remove blk_irqs / blk_irq_completions / blk_poll_completions
+  expect: blk_completion_counters_missing
+  why it matters: "the number is zero" and "there is no number" are different
+    failures, and this driver is currently in the first state on purpose.
+
+case: neither counter is reached
+  in virtio_blk.c, remove the attribution after the wait loop
+  expect: blk_completions_unaccounted
+  why it matters: this happened. The first version of the attribution was
+    written by a script that died on an assertion *before* writing the file, so
+    the loop was never modified and both counters read zero - which is
+    indistinguishable from an interrupt that never fires, and is what sent the
+    next hour in the wrong direction. Every transfer must be accounted for by
+    one of the two or the counters are measuring nothing.
+
+case: the interrupt fires
+  expect: NOT ASSERTED, because it does not. Deliberately reported and not
+    demanded: the driver is correct and merely still polls, so a gate that
+    demanded delivery would be red on every boot for a defect that is not in
+    the driver.
+
+# What was eliminated, so the next attempt does not start from the top:
+#
+#   the device has an INTA pin (config 0x3D reads 1);
+#   INTx is now enabled - bit 10 of the command register is clear, and it was
+#     NOT before: this driver used to OR into whatever UEFI left there, and
+#     UEFI leaves Interrupt Disable set. A real fix, kept;
+#   the redirection entry is level-triggered and active low, which is what a
+#     PCI line needs and what the ISA routing path did not do. A real fix,
+#     kept, and the reason vibeos_x86_64_ioapic_route_pci now exists;
+#   the Line register says 11 and routing 11 delivers nothing. Routing GSI
+#     16..19 as well - the usual q35 mapping for PCI INTA..D, since this kernel
+#     does not parse the ACPI _PRT - delivers nothing either. So the mapping is
+#     not the remaining problem, or not only it.
+#
+# Not checked, and where to look next: whether the machine is in APIC mode at
+# all rather than PIC mode (the IMCR), and whether the redirection entry reads
+# back as written. Both are one print away. Three fixes were tried in a row
+# without a measurement between them, which is what this project's own notes
+# say not to do, and it is why this list exists instead of a conclusion.
