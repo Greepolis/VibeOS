@@ -1286,15 +1286,18 @@ def main():
                 problems.append("blk_completion_counters_missing")
             elif (int(mirq.group(2), 16) + int(mirq.group(3), 16)) == 0:
                 # Every transfer must be accounted for by one of the two, or
-                # the counters are not being reached and say nothing.
+                # the counters are not being reached and say nothing. This is
+                # not hypothetical: for most of the investigation both read
+                # zero because the dispatcher hook had never been added, and a
+                # counter nothing increments is indistinguishable from a device
+                # that does nothing.
                 problems.append("blk_completions_unaccounted")
-            # Deliberately NOT asserted: that the interrupt fired. It does not
-            # yet - the line is routed, INTx is enabled and the entry is
-            # level-triggered, and nothing arrives - so a gate that demanded it
-            # would be red on every boot for a driver that is correct and
-            # merely still polling. The counter is printed instead, so the day
-            # it starts working is visible, and virtio_blk.c carries the list
-            # of what has been eliminated.
+            elif int(mirq.group(1), 16) == 0:
+                # The device raised no interrupt at all. Asserted now that it
+                # demonstrably does: about twenty thousand a boot, ending some
+                # sixty per cent of the waits. A regression here puts the
+                # driver back to burning a core on every transfer, silently.
+                problems.append("blk_interrupt_never_fired")
 
             # The mount table (I4b step 4).
             #

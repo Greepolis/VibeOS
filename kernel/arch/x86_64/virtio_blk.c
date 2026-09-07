@@ -137,6 +137,8 @@ static uint16_t g_last_used;
 extern int vibeos_x86_64_ioapic_route_pci(uint8_t irq, uint8_t vector, uint32_t dest);
 extern void vibeos_x86_64_irq_probe(uint8_t gsi);
 
+static uint8_t g_bus;
+static uint8_t g_dev;
 static uint8_t g_irq_line;
 static uint8_t g_irq_pin;
 static uint32_t g_pci_cmd;
@@ -290,6 +292,8 @@ static uint16_t virtio_blk_find(void) {
                 g_irq_line = (uint8_t)(ints & 0xFFu);
                 g_irq_pin = (uint8_t)((ints >> 8) & 0xFFu);
                 g_pci_cmd = pci_read32((uint8_t)bus, (uint8_t)dev, 0, 0x04u);
+                g_bus = (uint8_t)bus;
+                g_dev = (uint8_t)dev;
             }
             return (uint16_t)(bar0 & 0xFFFCu);
         }
@@ -395,6 +399,40 @@ int vibeos_x86_64_virtio_blk_init(void) {
     if (g_irq_line != 0u && g_irq_line < 24u &&
         vibeos_x86_64_ioapic_route_pci(g_irq_line, 43u, 0u) == 0) {
         g_irq_ready = 1u;
+    }
+    /* The other side of the wire, now that the interrupt controller has been
+     * cleared of suspicion. Two facts:
+     *
+     *   avail->flags bit 0 is VIRTQ_AVAIL_F_NO_INTERRUPT - the driver telling
+     *     the device not to bother. Never written here, and the queue is in
+     *     .bss, so it should read zero. Confirming rather than assuming is the
+     *     whole lesson of the previous three attempts.
+     *
+     *   the MSI-X capability, if the device has one. QEMU advertises it on
+     *     virtio-blk-pci by default, and a device signalling through MSI-X
+     *     raises no INTx at all - which would explain every measurement so far
+     *     without anything being wrong with the routing.
+     */
+    {
+        uint8_t cap = (uint8_t)(pci_read32(g_bus, g_dev, 0, 0x34u) & 0xFFu);
+        uint32_t msix_ctrl = 0xFFFFFFFFu;
+        uint32_t guard = 0;
+
+        while (cap >= 0x40u && guard++ < 48u) {
+            uint32_t hdr = pci_read32(g_bus, g_dev, 0, cap);
+            if ((hdr & 0xFFu) == 0x11u) {        /* MSI-X */
+                msix_ctrl = hdr >> 16;
+                break;
+            }
+            cap = (uint8_t)((hdr >> 8) & 0xFFu);
+        }
+        vibeos_x86_64_serial_lock();
+        vibeos_x86_64_serial_puts("[VIRTIO] avail_flags=0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)g_avail->flags);
+        vibeos_x86_64_serial_puts(" msix_ctrl=0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)msix_ctrl);
+        vibeos_x86_64_serial_puts("\n");
+        vibeos_x86_64_serial_unlock();
     }
     vibeos_x86_64_irq_probe(g_irq_line);
     vibeos_x86_64_serial_puts("[VIRTIO] blk irq line=0x");

@@ -77,11 +77,26 @@ case: neither counter is reached
     next hour in the wrong direction. Every transfer must be accounted for by
     one of the two or the counters are measuring nothing.
 
-case: the interrupt fires
-  expect: NOT ASSERTED, because it does not. Deliberately reported and not
-    demanded: the driver is correct and merely still polls, so a gate that
-    demanded delivery would be red on every boot for a defect that is not in
-    the driver.
+case: the interrupt stops arriving
+  in arch_hw.c, remove the vector-43 branch from the interrupt dispatcher
+  expect: blk_interrupt_never_fired
+  why it matters: this is not a hypothetical case, it is what the whole
+    investigation was. The branch had never been added - the script that was
+    meant to add it died on an earlier assertion and wrote nothing - so
+    vibeos_x86_64_virtio_blk_irq was never called and every counter read zero.
+    Which is indistinguishable from a device that raises no interrupt, and sent
+    three fixes, four measurements and a full IOAPIC probe in the wrong
+    direction.
+
+    The interrupt had been arriving the whole time. The device raises about
+    twenty thousand a boot and ends roughly sixty per cent of the waits.
+
+    Second time in one investigation that a script died before writing and the
+    resulting zero was read as evidence. The lesson is not "check the script" -
+    it is that a counter which nothing increments and a counter which reports
+    nothing happening look identical, so a new counter needs one deliberate
+    check that it can be non-zero before any conclusion is drawn from its being
+    zero.
 
 # What was eliminated, so the next attempt does not start from the top:
 #

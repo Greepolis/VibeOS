@@ -129,6 +129,13 @@ typedef struct hw_cpu {
     struct tss64 tss;
 } hw_cpu_t;
 
+/* Vectors 33..47, as delivered. See the dispatcher. */
+static volatile uint64_t g_ioapic_irqs[15];
+
+uint64_t vibeos_x86_64_ioapic_irq_count(uint32_t vector) {
+    return (vector >= 33u && vector < 48u) ? g_ioapic_irqs[vector - 33u] : 0ull;
+}
+
 static hw_cpu_t g_cpus[VIBEOS_HW_MAX_CPUS];
 static uint32_t g_cpu_online_count = 1u;
 
@@ -1361,6 +1368,19 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
             if ((frame->cs & 3u) == 3u) {
                 (void)hw_signal_deliver(frame);
             }
+            return;
+        }
+        /* Every IOAPIC-delivered vector, counted once. The discriminating
+         * measurement for "the device raises no interrupt": if nothing above
+         * 32 but the timer ever arrives, delivery is broken for everything;
+         * if the keyboard's arrives, delivery works and the fault is the
+         * device's. */
+        if (frame->vector > 32u && frame->vector < 48u) {
+            g_ioapic_irqs[frame->vector - 33u]++;
+        }
+        if (frame->vector == 43u) { /* virtio-blk: a transfer finished */
+            vibeos_x86_64_virtio_blk_irq();
+            hw_pic_send_eoi((uint32_t)frame->vector);
             return;
         }
         if (frame->vector == 44u) { /* IRQ12: PS/2 mouse */
