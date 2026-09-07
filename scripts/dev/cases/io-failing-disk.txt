@@ -51,3 +51,35 @@ case: a failure is returned with no reason recorded
 # sectors to the caller's buffer, a failure of the barrier rather than of a
 # transfer, and a failure while another core is submitting to the same device.
 # The last one needs the queue I6 introduces and cannot be written before it.
+
+# ---- the rest of I7's first item -------------------------------------------
+
+case: a partial transfer is not compared against what was asked for
+  in vibeos_blk_submit, replace the sectors_done comparison with `if (0)`
+  expect: FAIL:blkfail "failed in the driver and the layer reported success"
+  why it matters: the device moved half the sectors into the caller's buffer
+    and then gave up. The bytes that arrived are real and the rest are stale,
+    and a caller told "success" has no way to tell which half is which. The
+    test asserts both directions - that the failure is reported *and* that the
+    sectors which did arrive are still there, because a layer that zeroed the
+    buffer on failure would pass the first check while throwing away data the
+    device had actually delivered.
+
+case: a refused barrier is reported as granted
+  in vibeos_blk_barrier, drop the check on the driver's return
+  expect: FAIL:blkfail "a refused barrier was reported as granted"
+  why it matters: the journal builds its entire recovery argument on the answer
+    to this call. "Yes" when the device said no is the difference between a
+    recoverable medium and a corrupt one, and nothing downstream can detect it.
+
+case: the layer is re-entered while a request is in flight
+  covered by test_bf_reentrant_submit, which submits from inside the driver
+  expect: the outer request still describes its own transfer and gets its own
+    data
+  NOTE, and it is a real limit: this is re-entrancy, not concurrency. A host
+    test has one thread. What it reproduces is the same globals touched in the
+    same order while an earlier request is unfinished, which is the shape of
+    another core submitting - but it cannot produce two cores genuinely inside
+    the layer at once. That needs the boot, and it is the part of I7 that stays
+    open. The test guards against passing vacuously: it fails if the re-entrant
+    submit never actually happened.

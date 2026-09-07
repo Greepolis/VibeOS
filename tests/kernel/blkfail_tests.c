@@ -33,6 +33,12 @@ static uint32_t g_requests;        /* submitted since the last reset */
 static uint32_t g_fail_at;         /* fail the request with this index */
 static int g_fail_short;           /* fail by transferring too little */
 static uint32_t g_in_driver;       /* driver entries not yet returned */
+static int g_fail_partial;         /* move some sectors, then fail */
+static int g_fail_barrier;         /* the barrier refuses */
+static uint64_t g_barriers;
+static int g_reenter;              /* submit again from inside submit */
+static uint32_t g_reenter_depth;
+static uint32_t g_reenter_max;
 
 static int bf_submit(void *ctx, vibeos_blk_request_t *req) {
     uint32_t index = g_requests++;
@@ -40,6 +46,49 @@ static int bf_submit(void *ctx, vibeos_blk_request_t *req) {
 
     (void)ctx;
     g_in_driver++;
+
+    if (g_reenter && g_reenter_depth == 0u) {
+        /* Submit again from inside the driver.
+         *
+         * This is not concurrency and the test does not claim it is: a host
+         * test has one thread. What it *is* is the layer being re-entered
+         * while a request is in flight, which is the same shape as another
+         * core submitting - the same globals touched in the same order, with
+         * the same question about whether the first request survives it.
+         * Real concurrency needs the boot, and is written up as still open. */
+        static uint8_t inner[VIBEOS_BLOCK_SIZE];
+        vibeos_blk_request_t sub;
+
+        g_reenter_depth++;
+        if (g_reenter_depth > g_reenter_max) {
+            g_reenter_max = g_reenter_depth;
+        }
+        memset(&sub, 0, sizeof(sub));
+        sub.device = req->device;
+        sub.lba = 20u;
+        sub.sectors = 1u;
+        sub.buf = inner;
+        (void)vibeos_blk_submit(&sub);
+        g_reenter_depth--;
+    }
+
+    if (index == g_fail_at && g_fail_partial) {
+        /* Half the transfer landed in the caller's buffer and then the device
+         * gave up. The sectors that did arrive are real; the rest is whatever
+         * was in the buffer before. A layer that reports this as anything but
+         * a failure hands the caller a buffer that is part stale and part
+         * fresh, with no way to tell which half is which. */
+        uint32_t moved = req->sectors / 2u;
+        uint32_t k;
+        for (k = 0; k < moved; k++) {
+            memcpy((uint8_t *)req->buf + (size_t)k * VIBEOS_BLOCK_SIZE,
+                   g_disk[req->lba + k], VIBEOS_BLOCK_SIZE);
+        }
+        req->sectors_done = moved;
+        req->result = VIBEOS_BLK_MEDIUM;
+        g_in_driver--;
+        return -1;
+    }
 
     if (index == g_fail_at) {
         if (g_fail_short) {
@@ -70,6 +119,12 @@ static int bf_submit(void *ctx, vibeos_blk_request_t *req) {
     return 0;
 }
 
+static int bf_barrier(void *ctx) {
+    (void)ctx;
+    g_barriers++;
+    return g_fail_barrier ? -1 : 0;
+}
+
 static uint32_t bf_attach(void) {
     vibeos_blk_driver_t drv;
     uint32_t dev = 0;
@@ -79,12 +134,30 @@ static uint32_t bf_attach(void) {
     drv.sector_bytes = VIBEOS_BLOCK_SIZE;
     drv.sectors = BF_SECTORS;
     drv.submit = bf_submit;
-    drv.barrier = 0;
+    drv.barrier = bf_barrier;
     drv.ctx = 0;
     if (vibeos_blk_register(&drv, &dev) != 0) {
         return 0xFFFFFFFFu;
     }
     return dev;
+}
+
+/* Everything the layer and the fake device carry between runs. Extracted when
+ * the three acceptance cases below needed the same setup as the sweep: two
+ * copies of it would have been two places to forget a new field. */
+static void bf_reset(void) {
+    vibeos_blk_reset();
+    memset(g_disk, 0x5A, sizeof(g_disk));
+    g_requests = 0;
+    g_in_driver = 0;
+    g_fail_at = 0xFFFFFFFFu;
+    g_fail_short = 0;
+    g_fail_partial = 0;
+    g_fail_barrier = 0;
+    g_barriers = 0;
+    g_reenter = 0;
+    g_reenter_depth = 0;
+    g_reenter_max = 0;
 }
 
 /* One sweep position. Returns 0 when the layer kept all three promises. */
@@ -99,10 +172,7 @@ static int bf_one(uint32_t fail_at, int shortly, uint32_t sectors) {
     uint32_t i;
     int saw_failure = 0;
 
-    vibeos_blk_reset();
-    memset(g_disk, 0x5A, sizeof(g_disk));
-    g_requests = 0;
-    g_in_driver = 0;
+    bf_reset();
     g_fail_at = fail_at;
     g_fail_short = shortly;
 
@@ -159,6 +229,133 @@ static int bf_one(uint32_t fail_at, int shortly, uint32_t sectors) {
     return 0;
 }
 
+/* A transfer that fails after moving some of the data. The bytes that arrived
+ * are real and the rest are stale, and the caller must be told both that it
+ * failed and how far it got - otherwise the only safe thing to do with the
+ * buffer is throw it away, which for a page cache means throwing away a page
+ * that is mostly correct. */
+static int test_bf_partial_transfer(void) {
+    static uint8_t buf[2u * VIBEOS_BLOCK_SIZE];
+    vibeos_blk_request_t req;
+    uint32_t dev;
+    uint64_t before;
+
+    bf_reset();
+    dev = bf_attach();
+    memset(g_disk[0], 0x11, VIBEOS_BLOCK_SIZE);
+    memset(g_disk[1], 0x22, VIBEOS_BLOCK_SIZE);
+    memset(buf, 0xEE, sizeof(buf));
+
+    g_fail_at = 0;
+    g_fail_partial = 1;
+    before = vibeos_io_stats()->results[VIBEOS_BLK_MEDIUM];
+
+    memset(&req, 0, sizeof(req));
+    req.device = dev;
+    req.lba = 0u;
+    req.sectors = 2u;
+    req.buf = buf;
+    if (vibeos_blk_submit(&req) == 0) {
+        printf("FAIL:blkfail a partial transfer was reported as success\n");
+        return -1;
+    }
+    if (req.sectors_done != 1u) {
+        printf("FAIL:blkfail a partial transfer did not say how far it got "
+               "(sectors_done=%u)\n", req.sectors_done);
+        return -1;
+    }
+    if (vibeos_io_stats()->results[VIBEOS_BLK_MEDIUM] == before) {
+        printf("FAIL:blkfail a partial transfer was counted under no reason\n");
+        return -1;
+    }
+    /* The first sector really did arrive, and the second really did not. Both
+     * halves are asserted: a layer that zeroed the buffer on failure would
+     * pass the first check and lose data the device had actually delivered. */
+    if (buf[0] != 0x11u) {
+        printf("FAIL:blkfail the sectors that arrived were discarded\n");
+        return -1;
+    }
+    if (buf[VIBEOS_BLOCK_SIZE] != 0xEEu) {
+        printf("FAIL:blkfail the buffer past the failure was written\n");
+        return -1;
+    }
+    return 0;
+}
+
+/* A barrier that the device refuses. The journal builds its entire recovery
+ * argument on the answer to this call, so "yes" when the device said no is the
+ * difference between a recoverable medium and a corrupt one. */
+static int test_bf_barrier_refused(void) {
+    uint32_t dev;
+    uint64_t failed_before;
+
+    bf_reset();
+    dev = bf_attach();
+
+    if (vibeos_blk_barrier(dev) != 0) {
+        printf("FAIL:blkfail a working barrier was refused\n");
+        return -1;
+    }
+    failed_before = vibeos_io_stats()->barriers_failed;
+    g_fail_barrier = 1;
+    if (vibeos_blk_barrier(dev) == 0) {
+        printf("FAIL:blkfail a refused barrier was reported as granted\n");
+        return -1;
+    }
+    if (vibeos_io_stats()->barriers_failed != failed_before + 1ull) {
+        printf("FAIL:blkfail a refused barrier was not counted\n");
+        return -1;
+    }
+    if (g_barriers < 2ull) {
+        printf("FAIL:blkfail the barrier never reached the driver\n");
+        return -1;
+    }
+    return 0;
+}
+
+/* The layer re-entered while a request is in flight. Not concurrency - a host
+ * test has one thread - but the same shape: the same globals touched in the
+ * same order while an earlier request is unfinished. The outer request must
+ * still complete correctly and describe its own transfer, not the inner one's.
+ */
+static int test_bf_reentrant_submit(void) {
+    static uint8_t buf[VIBEOS_BLOCK_SIZE];
+    vibeos_blk_request_t req;
+    uint32_t dev;
+    uint32_t i;
+
+    bf_reset();
+    dev = bf_attach();
+    memset(g_disk[5], 0x77, VIBEOS_BLOCK_SIZE);
+    g_reenter = 1;
+
+    memset(&req, 0, sizeof(req));
+    req.device = dev;
+    req.lba = 5u;
+    req.sectors = 1u;
+    req.buf = buf;
+    if (vibeos_blk_submit(&req) != 0) {
+        printf("FAIL:blkfail a re-entrant submit broke the outer request\n");
+        return -1;
+    }
+    if (g_reenter_max == 0u) {
+        printf("FAIL:blkfail the re-entrant submit never happened - the test "
+               "proves nothing\n");
+        return -1;
+    }
+    if (req.sectors_done != 1u || req.result != VIBEOS_BLK_OK) {
+        printf("FAIL:blkfail the outer request describes the wrong transfer\n");
+        return -1;
+    }
+    for (i = 0; i < VIBEOS_BLOCK_SIZE; i++) {
+        if (buf[i] != 0x77u) {
+            printf("FAIL:blkfail the outer request got the inner one's data\n");
+            return -1;
+        }
+    }
+    return 0;
+}
+
 int test_blkfail(void) {
     uint32_t fail_at;
     int shortly;
@@ -180,5 +377,8 @@ int test_blkfail(void) {
             }
         }
     }
+    if (test_bf_partial_transfer() != 0) { return -1; }
+    if (test_bf_barrier_refused() != 0) { return -1; }
+    if (test_bf_reentrant_submit() != 0) { return -1; }
     return 0;
 }
