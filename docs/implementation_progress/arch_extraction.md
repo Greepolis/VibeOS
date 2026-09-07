@@ -99,6 +99,43 @@ file - but they touch eleven globals including `g_cpus`, which would put
 with `hw_current_task()`. It needs an accessor pass first, so it waits
 rather than being taken at the wrong price.
 
+## Cut 3 — the storage and I/O bring-ups (done, 2026-09-07)
+
+**11166 -> 9995 lines.** And the first number is the point of this section.
+
+Between cut 2 and cut 3 the file went from 8359 to 11166 lines. Not because
+anybody decided to grow it: the I5 and I5b work - filesystem images, the log
+sink, the scratch device, the volume scan, the mount report - was written
+straight into it, one bring-up at a time, over three days in which this
+document sat here saying the length of the file is the completion criterion.
+
+That is the same failure this plan already records once ("a session dedicated
+to reducing the monolith grew it by 633 lines"), at four times the size, and by
+the person who had read the note. Writing it down again rather than quietly
+fixing the number, because the lesson is evidently not learned by being written
+once: **new code goes to its own file on the day it is written, not after.**
+
+What moved: `hw_swap_bringup`, `hw_write_proof`, the log sink bring-up and its
+console tail, `hw_fsimages_bringup` and the filesystem-image table,
+`hw_scratch_bringup`, `hw_volumes_bringup`, `hw_mount_report`. All of it runs
+once from the boot path and none of it is reachable from a syscall, which is
+why it separates cleanly.
+
+The seam measured eight names in and seven out - narrow for a monolith, and
+narrow *because the code was new*. It had not yet grown the incidental
+couplings that make the older sections hard to separate. That is an argument
+for cutting recent additions first: the seam is cheapest on the day the code
+lands and gets more expensive every week it sits there.
+
+Six statics had to stop being static (`g_rootfs`, `g_swap_bitmap`,
+`hw_alloc_page`, `hw_free_page_why`, `hw_frame_identity_map`, and the swap-slot
+constant moved to the header beside the array it sizes). They are grouped under
+one banner in `arch_hw_internal.h` so the next cut can see what this one cost:
+every line there is encapsulation given up to buy separation.
+
+Verified by the boot, not by the compiler: all six mounts, all four filesystem
+images and the log sink read back exactly as before.
+
 ## Next cuts, in the order they look worth doing
 
 Measured, not estimated from section banners - which is what cut 2 taught:

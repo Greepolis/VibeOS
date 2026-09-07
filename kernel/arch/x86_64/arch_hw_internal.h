@@ -16,6 +16,7 @@
  * a lot.
  */
 
+#include "vibeos/vfs.h"
 #include <stdint.h>
 
 #include "vibeos/inet.h"
@@ -341,6 +342,31 @@ long hw_sys_rt_sigreturn(vibeos_x86_64_isr_frame_t *frame);
 void hw_log(vibeos_log_level_t level, uint32_t code, uint64_t a0, uint64_t a1,
             const char *msg);
 void hw_task_exit(uint64_t code);
+
+/* ---- the seam with io_bringup.c ------------------------------------------
+ *
+ * Eight names it needs from arch_hw.c, and seven it provides. Kept together
+ * and named as a seam so that a future cut can see what this one cost: every
+ * line below is a static that had to stop being one, which is the real price
+ * of splitting a file where everything could reach everything.
+ */
+extern vibeos_fsmount_t g_rootfs;
+/* Moved out of arch_hw.c with the bitmap it sizes: a constant that describes a
+ * shared object belongs beside the declaration of that object, or the two
+ * files disagree about how big it is and only the linker notices. */
+#define VIBEOS_HW_SWAP_SLOTS 8192u
+extern uint8_t g_swap_bitmap[(VIBEOS_HW_SWAP_SLOTS + 7u) / 8u];
+void *hw_alloc_page(void);
+void hw_free_page_why(void *p, const char *why);
+void *hw_frame_identity_map(uint64_t phys);
+
+void hw_swap_bringup(void);
+void hw_write_proof(void);
+void hw_logsink_bringup(void);
+void hw_fsimages_bringup(void);
+void hw_scratch_bringup(void);
+void hw_volumes_bringup(void);
+void hw_mount_report(void);
 int hw_task_set_state(int slot, vibeos_task_state_t to, const char *why);
 int hw_signal_default_kills(uint32_t sig);
 
