@@ -1504,6 +1504,40 @@ def main():
                     if value != 0:
                         problems.append(f"io_{name}={value}")
 
+            # Which disk the boot volume was found on, and that it was found by
+            # looking rather than by assuming.
+            #
+            # The bug this watches: "the disk" used to mean whichever driver
+            # bound first, which is only the boot disk when there is one disk.
+            # With the ESP on AHCI and I5b's log on virtio-blk the machine
+            # mounted a blank 4 MiB file, and every exec for the rest of the
+            # boot said not-found. It was red in the AHCI job for days.
+            #
+            # Asserted on both runs, not just the AHCI one, because the failure
+            # this really guards against is the selection quietly going away:
+            # on the default machine the boot disk is adapter 0 anyway, so a
+            # regression there is invisible in the verdict and visible only in
+            # this line. Deliberately not asserting rejected>0 - that is true
+            # on AHCI and false on virtio, and an assertion that only holds in
+            # one configuration is one somebody will loosen.
+            bv = re.search(r"\[BLK\] boot volume on (\S+) "
+                           r"rejected=0x([0-9a-f]{16}) "
+                           r"disks=0x([0-9a-f]{16})", text)
+            if bv is None:
+                problems.append("boot_volume_not_reported")
+            else:
+                name, rejected, disks = (bv.group(1), int(bv.group(2), 16),
+                                         int(bv.group(3), 16))
+                if name == "none":
+                    problems.append("boot_volume_on_no_disk")
+                if disks == 0:
+                    problems.append("boot_volume_no_disks_present")
+                # More rejections than there are disks means the loop ran past
+                # the table, which the accessor should refuse.
+                if rejected >= disks and disks != 0:
+                    problems.append(
+                        f"boot_volume_rejected={rejected}_of_disks={disks}")
+
             ib = re.search(r"\[IO\] BLK reads=0x([0-9a-f]{16}) "
                            r"writes=0x([0-9a-f]{16}) "
                            r"sectors_read=0x([0-9a-f]{16})", text)

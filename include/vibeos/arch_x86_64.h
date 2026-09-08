@@ -225,6 +225,13 @@ uint64_t vibeos_x86_64_ahci_sectors(void);
 /* Which device index the bound driver was given in the block layer. Negative
  * when nothing bound. */
 int vibeos_x86_64_blk_device(void);
+/* Point the no-argument disk path at adapter `n` so a caller can try to mount
+ * it, and how many adapters were rejected before one mounted. The boot disk is
+ * whichever carries a mountable volume, not whichever bound first - see the
+ * note in blk.c. */
+int vibeos_x86_64_blk_set_boot(uint32_t n);
+uint64_t vibeos_x86_64_blk_boot_rejected(void);
+uint32_t vibeos_x86_64_blk_boot_adapter(void);
 
 /* AHCI (SATA): what VirtualBox, VMware and real machines provide. */
 int vibeos_x86_64_ahci_init(void);

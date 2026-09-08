@@ -1,0 +1,136 @@
+# Which disk is the boot disk (fixed).
+#
+# Symptom, from the AHCI job of the Filesystem Runtime Gate:
+#
+#   [QEMU-CLI] FAIL missing:VIBEOS_SELFTEST_DONE verdict=guest_wedged
+#              phase=kernel_cli_ready
+#
+# virtio-blk green, AHCI red, reproducible on the first local attempt with
+# VIBEOS_SMOKE_DISK=ahci. Not intermittent - this one is deterministic, which
+# is worth saying because most failures in this project are not.
+
+# ---- what the numbers said, and why none of them said "I/O error" ----------
+#
+#   [BLK] disks=0x2 disk=virtio-blk:0x0 disk=ahci:0x1
+#   [BLK] disk driver: virtio-blk
+#   [IO] BLK reads=0x1 writes=0x0 sectors_read=0x1 devices=0x2
+#   [IO] BLKCACHE hits=0x0 misses=0x1
+#   [IO] MUSTBEZERO medium=0 short=0 timeout=0 bad_request=0 out_of_range=0 ...
+#   [COMPAT] linux syscalls translated=0x0 denied=0x33
+#   [SCHED] task pid=... exited code=0x7f          (127, twice)
+#   [EXEC] refused reason=not-found path=EFI/BOOT/SVC_BOMB.ELF at=read_file
+#
+# One read. One sector. The entire boot. Every must-be-zero counter in the block
+# layer read zero and every one of them was right: the read *succeeded*. It was
+# simply not a filesystem.
+#
+# That is the part worth keeping. A machine that reads the wrong disk perfectly
+# has nothing to report, so no detector in the I/O stack could have fired. What
+# named it was one line - `disk driver: virtio-blk` while the ESP was on AHCI -
+# and that line was itself printed before anything was mounted, so it was
+# announcing the bug in the field people read to check for it.
+
+# ---- the cause was a sentence that stopped being true ----------------------
+#
+# blk.c, above blk_boot():
+#
+#   "Adapter 0 is the first driver that came up, which is the one the machine
+#    booted from - every caller above this layer means that one when it says
+#    'the disk'."
+#
+# True for exactly as long as the machine had one disk. I5b added a second one,
+# deliberately on the *other* controller, so that a log disk is writable when
+# the boot filesystem is not. With VIBEOS_SMOKE_DISK=ahci the ESP is on AHCI and
+# the log is on virtio-blk, so adapter 0 is a blank 4 MiB raw file.
+#
+# The same commit that made the sentence false also restated it, in the bring-up
+# comment: "The order still decides which one is 'the disk': virtio binds first
+# and keeps that meaning for every caller above." Written as a deliberate
+# choice, with the case that breaks it introduced four lines earlier.
+#
+# Fixed by asking the question that can actually be answered: the boot disk is
+# whichever carries a mountable volume. Each adapter is tried in turn; bind
+# order decides nothing. One sector read per rejected disk, once per boot.
+
+case: the boot disk is adapter 0 again
+  in vibeos_x86_64_blk_set_boot, return 0 without assigning g_boot
+  RUN: red, with the CI failure's exact signature -
+    status=fail
+    reason=missing:VIBEOS_SELFTEST_DONE verdict=guest_wedged elapsed=50s
+           quiet_for=45s phase=kernel_cli_ready
+    [BLK] boot volume on none rejected=0x1 disks=0x2
+  The default virtio run stays green, which is the whole point: this is a case
+    only the second controller can see.
+  why it matters: it is the defect exactly as it shipped, and it was red in CI
+    for days without being read. A case that reproduces it is the difference
+    between that and noticing.
+
+case: the selection loop stops at the first adapter
+  in the bring-up loop, break after the first vibeos_x86_64_fat_vfs_mount call
+    whatever it returned
+  expect: identical to the case above
+  why it matters: separates "the loop exists" from "the loop is load-bearing".
+    A loop that always succeeds on its first iteration is indistinguishable from
+    no loop at all on the machine CI runs by default, and this project has
+    shipped three checks that could not fail.
+
+case: the disk-driver line is printed before the mount again
+  move the "[BLK] disk driver:" print back above the selection
+  expect: no gate failure at all, and the line reports virtio-blk on an AHCI
+    boot that is working correctly
+  why it matters: the reason this cost days. The field a human reads to check
+    which disk was used was being written before that was decided, so it could
+    not report anything but bind order. It is not a cosmetic move - a
+    diagnostic sampled before the decision it describes is a diagnostic that
+    can only ever confirm the assumption.
+
+# ---- and the assertions the fix added, each with the case that raises it ----
+
+case: the boot volume line is never printed
+  in the bring-up, delete the "[BLK] boot volume on" report
+  expect: reason=boot_volume_not_reported, on both controllers
+  why it matters: the selection is invisible from outside without it. The
+    previous version of this code reported "[BLK] disk driver:" *before*
+    anything was mounted, so the only field naming the boot disk could not
+    report anything except bind order - it was structurally incapable of
+    showing the bug it was being read to rule out.
+
+case: no disk carries a mountable volume
+  boot with the ESP removed from the command line, or make fat_mount_on always
+    return -1
+  expect: reason=boot_volume_on_no_disk, and the machine reaches the CLI rather
+    than wedging
+  why it matters: "no bootable disk" and "the wrong disk" produced identical
+    behaviour before - both were silence followed by not-found. They are
+    different faults and the machine now says which.
+
+case: the machine has no disk at all
+  boot with no -drive for the ESP, or make both driver inits return non-zero
+  expect: reason=boot_volume_no_disks_present alongside boot_volume_on_no_disk,
+    and the kernel reaches its CLI instead of wedging
+  why it matters: removing the blk_present() guard was part of this fix - the
+    selection loop simply does nothing when there are no adapters - so "no disk"
+    and "no bootable disk" now travel the same path and have to be told apart by
+    what the line says rather than by which branch was taken. This is also the
+    assertion check-assertions-covered.py caught arriving without a case, on the
+    same commit that added it, which is exactly the job it was written for.
+
+case: the rejection count runs past the table
+  in vibeos_x86_64_blk_set_boot, drop the `n >= g_adapter_count` refusal
+  expect: reason=boot_volume_rejected=N_of_disks=M with N >= M
+  why it matters: the loop's bound and the accessor's bound are two statements
+    of the same limit, and this is the one that catches them disagreeing.
+    Counting a rejection the table cannot have had is the tell.
+
+# ---- one thing the run showed that the plan for it did not ------------------
+#
+# Under sabotage the report reads "boot volume on none", so the gate's new
+# boot_volume_on_no_disk assertion describes the state correctly - and never
+# fires, because the wedge is detected first and short-circuits the invariant
+# checks. The assertion is therefore covered by the case above only in the weak
+# sense that the case makes it *true*; nothing here has yet observed it turn a
+# boot red on its own.
+#
+# Recorded rather than glossed, because this project's own rule is that "the
+# case exists and this environment cannot tell" and "no case exists" are
+# different things, and so is "the case exists and something else fails first".

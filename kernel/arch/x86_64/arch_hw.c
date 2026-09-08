@@ -604,6 +604,10 @@ extern int vibeos_x86_64_virtio_blk_write(uint64_t sector, const void *buf);
 /* The one mounted volume. Everything below reaches the filesystem through
  * this, so no syscall in this file knows which driver is underneath it. */
 vibeos_fsmount_t g_rootfs;
+/* Whether any disk carried a mountable boot volume. A flag rather than a longer
+ * condition at the use site, because the loop that sets it already has to break
+ * out of itself. */
+static int g_boot_disk_mounted;
 extern int vibeos_x86_64_fat_vfs_mount(vibeos_fsmount_t *mnt);
 
 extern void vibeos_x86_64_keyboard_irq(void);
@@ -10017,15 +10021,54 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
         vibeos_x86_64_serial_puts("\n");
         vibeos_x86_64_serial_unlock();
     }
-    /* Kept: the boot disk by name is what several existing checks read, and a
-     * line that changed shape would fail them for the wrong reason. */
-    vibeos_x86_64_serial_puts("[BLK] disk driver: ");
-    vibeos_x86_64_serial_puts(vibeos_x86_64_blk_name());
-    vibeos_x86_64_serial_puts("\n");
     hw_boot_stage("block_device");
 
-    if (vibeos_x86_64_blk_present() &&
-        vibeos_x86_64_fat_vfs_mount(&g_rootfs) == 0) {
+    /* Which of the disks is the boot disk, decided by mounting rather than by
+     * bind order.
+     *
+     * The order used to decide, and the comment above says so as a deliberate
+     * choice. It was right with one disk. With the ESP on AHCI and I5b's log
+     * disk on virtio-blk - which is exactly the AHCI CI configuration, and what
+     * every desktop hypervisor offers - adapter 0 is a blank 4 MiB file: the
+     * mount read its sector 0, found no signature, and every exec for the rest
+     * of the boot returned not-found. The whole boot did one read. Nothing in
+     * the block layer had anything to report, correctly - reading the wrong
+     * disk succeeds.
+     *
+     * So each adapter is tried until one carries a mountable volume. The cost
+     * is one sector read per rejected disk, once. */
+    {
+        uint32_t d, n = vibeos_x86_64_blk_adapter_count();
+        for (d = 0; d < n; d++) {
+            if (vibeos_x86_64_blk_set_boot(d) != 0) {
+                continue;
+            }
+            if (vibeos_x86_64_fat_vfs_mount(&g_rootfs) == 0) {
+                g_boot_disk_mounted = 1;
+                break;
+            }
+        }
+        vibeos_x86_64_serial_lock();
+        vibeos_x86_64_serial_puts("[BLK] boot volume on ");
+        vibeos_x86_64_serial_puts(g_boot_disk_mounted
+                                  ? vibeos_x86_64_blk_name() : "none");
+        vibeos_x86_64_serial_puts(" rejected=0x");
+        vibeos_x86_64_serial_print_hex(vibeos_x86_64_blk_boot_rejected());
+        vibeos_x86_64_serial_puts(" disks=0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)n);
+        /* Kept, and moved: the boot disk by name is what several existing
+         * checks read. It used to be printed before anything was mounted, so
+         * it named whichever driver bound first - which is the very thing that
+         * was wrong, announced in the line people read to check it. Bracketed
+         * into this critical section rather than three of its own, for the
+         * reason the console lock exists. */
+        vibeos_x86_64_serial_puts("\n[BLK] disk driver: ");
+        vibeos_x86_64_serial_puts(g_boot_disk_mounted
+                                  ? vibeos_x86_64_blk_name() : "none");
+        vibeos_x86_64_serial_puts("\n");
+        vibeos_x86_64_serial_unlock();
+    }
+    if (g_boot_disk_mounted) {
         hw_volumes_bringup();
         /* After the real volume is mounted, so the scratch device can never be
          * confused with it: it is registered second and named separately. */

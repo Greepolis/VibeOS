@@ -304,11 +304,26 @@ void hw_logsink_bringup(void) {
     int have_prev = 0;
     int dev_no;
 
-    /* Adapter 1: the second disk that bound. Adapter 0 is the boot disk and is
-     * deliberately not eligible - a log on the medium the machine is running
-     * from is the arrangement this phase exists to stop. */
-    dev_no = (vibeos_x86_64_blk_adapter_count() > 1u)
-           ? vibeos_x86_64_blk_adapter_device(1u) : -1;
+    /* The first disk that is not the boot disk. A log on the medium the machine
+     * is running from is the arrangement this phase exists to stop.
+     *
+     * This used to be adapter 1, on the same assumption blk.c used to make -
+     * that adapter 0 is the boot disk. Both were wrong in the same
+     * configuration and for the same reason, one file apart: with the ESP on
+     * AHCI, adapter 1 *is* the boot disk, so the log sink wrote over it. QEMU's
+     * vvfat said "Tried to write to protected bootsector" and the boot came
+     * back with io_medium=73 - a fault whose message names a bootsector and
+     * whose cause is a hardcoded 1 in a log. Ask which one it is. */
+    {
+        uint32_t i, boot = vibeos_x86_64_blk_boot_adapter();
+        dev_no = -1;
+        for (i = 0; i < vibeos_x86_64_blk_adapter_count(); i++) {
+            if (i != boot) {
+                dev_no = vibeos_x86_64_blk_adapter_device(i);
+                break;
+            }
+        }
+    }
     if (dev_no >= 0 && vibeos_blk_info((uint32_t)dev_no, &info) == 0) {
         g_logsink_dev = dev_no;
         vibeos_logsink_set_cpu_id(vibeos_x86_64_cpu_id);

@@ -9,9 +9,10 @@
  * an absence, which is quieter.
  *
  * So the filesystem asks for "the disk" and this decides which one that is.
- * There is deliberately no probing here: a driver that came up binds itself,
- * and the first one to bind wins. Ordering lives at the call site in
- * arch_hw.c, where it can be read.
+ * A driver that came up binds itself; which of the bound ones is the *boot*
+ * disk is settled afterwards by trying to mount each, because bind order
+ * cannot tell a boot volume from a blank medium and once got it wrong for
+ * days. See blk_boot below.
  */
 
 /* ---- and, since I1, an adapter onto the real block layer -------------------
@@ -42,10 +43,12 @@
  * a medium that survives the machine.
  *
  * Each bind is now its own adapter with its own pointers, and its own device
- * number from the block layer, which was always multi-device underneath. What
- * does not change is which disk "the disk" means: the first to bind still owns
- * that, because it is the one the machine booted from and every caller above
- * assumes it.
+ * number from the block layer, which was always multi-device underneath.
+ *
+ * The sentence that used to end this comment - "the first to bind still owns
+ * that, because it is the one the machine booted from" - is the defect this
+ * file now carries a long note about. It was true with one disk and this change
+ * is what made it false, in the same commit, unread.
  */
 #define BLK_MAX_ADAPTERS 4u
 
@@ -209,13 +212,66 @@ void vibeos_x86_64_blk_bind(const char *name,
     }
 }
 
-/* The bound driver's timeout count, or zero if no disk came up. One accessor
- * so kmain does not have to know which driver won. */
-/* The boot disk's counters and identity. Adapter 0 is the first driver that
- * came up, which is the one the machine booted from - every caller above this
- * layer means that one when it says "the disk". */
+/* Which adapter is "the disk".
+ *
+ * It used to be adapter 0, on the reasoning that the first driver to come up is
+ * the one the machine booted from. That was true for exactly as long as there
+ * was one disk. I5b put the kernel log on a second one, deliberately on the
+ * *other* controller, and the assumption inverted without anybody re-reading
+ * it: with the ESP on AHCI and the log on virtio-blk, adapter 0 is a blank
+ * 4 MiB file with no filesystem on it.
+ *
+ * What that looked like from outside is worth recording, because none of it
+ * points here. The mount read sector 0, found no 0xAA55, and returned -1; every
+ * exec for the rest of the boot was `reason=not-found`; every task exited 127;
+ * and the whole boot did `reads=1 sectors_read=1`. Every MUSTBEZERO counter in
+ * the block layer read zero, correctly - the read *succeeded*. It simply was
+ * not a filesystem. A machine that reads the wrong disk perfectly has nothing
+ * to report.
+ *
+ * So the boot disk is now the one that carries a mountable boot volume, found
+ * by trying to mount each in turn (vibeos_x86_64_blk_set_boot below). Probe
+ * order decides nothing. */
+static uint32_t g_boot;
+
+/* How many adapters were tried and rejected before one mounted. Zero on every
+ * machine whose first disk is the boot disk, which is most of them - so it is
+ * not a MUSTBEZERO. It is the number that says the selection happened at all:
+ * with the old behaviour it cannot be anything but zero, which is what the
+ * sabotage case checks. */
+static uint64_t g_boot_rejected;
+
 static blk_adapter_t *blk_boot(void) {
-    return (g_adapter_count > 0u) ? &g_adapters[0] : 0;
+    return (g_boot < g_adapter_count) ? &g_adapters[g_boot] : 0;
+}
+
+/* Point the no-argument read/write path at adapter `n` so a caller can try to
+ * mount it. Returns 0 if `n` exists.
+ *
+ * Deliberately not "pick the boot disk for me": the block layer cannot tell a
+ * boot volume from a blank medium, and a layer guessing at something it cannot
+ * check is how the previous version of this got it wrong. The filesystem does
+ * know, so the filesystem chooses and this records the answer. */
+int vibeos_x86_64_blk_set_boot(uint32_t n) {
+    if (n >= g_adapter_count) {
+        return -1;
+    }
+    if (n != g_boot) {
+        g_boot_rejected++;
+    }
+    g_boot = n;
+    return 0;
+}
+
+/* Which adapter the boot volume is on. Callers that need "some disk that is
+ * not the one we are running from" ask this rather than assuming 0, which is
+ * the assumption this file exists to have stopped making. */
+uint32_t vibeos_x86_64_blk_boot_adapter(void) {
+    return g_boot;
+}
+
+uint64_t vibeos_x86_64_blk_boot_rejected(void) {
+    return g_boot_rejected;
 }
 
 uint64_t vibeos_x86_64_blk_timeouts(void) {
