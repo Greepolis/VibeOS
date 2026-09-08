@@ -1,0 +1,66 @@
+# SSE is enabled and never saved (root cause, fix not yet written).
+#
+#   fxsave / fxrstor / xsave, whole tree :     0
+#   XMM instructions in the kernel image :  6955
+#   XMM instructions in svc-stress       :   782
+#   CR4.OSFXSR | CR4.OSXMMEXCPT          :   set, in ap_boot.S
+#
+# A user task's XMM registers survive a syscall, an interrupt or a context
+# switch only by luck. This is not a narrow race: the kernel runs vectorised
+# code on the way in and hands the registers back with whatever it left there.
+
+# ---- the two defects it explains -------------------------------------------
+#
+# Sixteen NUL bytes at the start of a user buffer (mm-ring3-write-nul.txt).
+# clang stores 16-byte stack buffers with movdqa - svc_stress does exactly that
+# at 0x800000021e, `pxor %xmm0,%xmm0; movdqa %xmm0,0x20(%rsp)`. Preempt between
+# an XMM load and its store and the store writes what ran in between. Sixteen
+# bytes, always exactly sixteen, is one XMM register - and that width was the
+# signature nothing could explain while the search was in the memory manager.
+#
+# The zeros are not a fresh page. svc-stress forks ~100 children running the
+# same binary, and that binary opens with `pxor %xmm0,%xmm0`.
+#
+# And the argv vector that reads 0x00ffffff00ffffff (mm-argv-poison.txt).
+# COL_TITLETXT is 0x00FFFFFF; a vectorised pixel fill holds two of them in one
+# lane pair. The desktop paints from the kernel on timer and input interrupts,
+# which land on whatever user task is running. It was read as the desktop
+# painting over somebody's memory. It is the opposite: the desktop never touches
+# that memory - it leaves a value in a register and the process stores it there
+# itself.
+
+case: the fix is absent (today)
+  no change needed - this is the state of the tree
+  RUN: ring3_write_nul non-zero on three to five boots in ten, and the argv
+    refusal about one in six, historically
+  why it matters: the case that must go green when the fix lands, and the only
+    honest before-measurement. Anything that claims to fix this and does not
+    move these two numbers has not.
+
+case: fxsave without fxrstor
+  save the area on switch out and never load it back
+  expect: no change at all, and a 512-byte write per switch that nothing reads
+  why it matters: this project's most repeated defect is a mechanism configured
+    and consulted by nobody, three times in one session. Half of an FPU context
+    switch looks exactly like the whole of one from the outside.
+
+case: one shared save area instead of one per task
+  make the fxsave area a single global
+  expect: worse than no fix, and intermittently - every task restores the last
+    task's registers rather than its own
+  why it matters: it is the shape of a defect this kernel has had twice already,
+    a global written by whichever core happened to be inside a walk. A per-task
+    area is not an optimisation.
+
+case: a new task inherits an uninitialised area
+  allocate the area without setting an initial FPU state
+  expect: a new process starts with whatever the last tenant of that memory left
+  why it matters: same family as interp_base - a field written on one path and
+    read on all of them - which is written up in CLAUDE.md as costing an
+    execve's worth of uninitialised kernel stack.
+
+# ---- what would gate this deterministically --------------------------------
+#
+# A ring-3 program that fills XMM with a known pattern, makes syscalls, invites
+# preemption, and checks the registers still hold it. Three failures in ten is a
+# reproduction; a program that checks its own registers is a test.

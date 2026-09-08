@@ -1,4 +1,20 @@
-# The argv vector that is not a pointer (open, and now narrowed to one family).
+# The argv vector that is not a pointer.
+#
+# ** EXPLAINED. Root cause: the kernel enables SSE and never saves or restores
+#    XMM state. See mm-fpu-context.txt. The fix is not written yet, so this
+#    file stays open, but nothing below it is the place to look any more. **
+#
+# COL_TITLETXT is 0x00FFFFFF and the desktop paints from the kernel on timer
+# and input interrupts. A vectorised fill holds two white pixels in one XMM
+# lane pair; the interrupted task resumes with that register still loaded and
+# stores it into its own buffer. The desktop never touches that memory - which
+# is why every memory counter read zero and every one of them was right.
+#
+# The comment above the back-buffer allocation describes a real, different,
+# already-fixed defect with the same symptom, and it sent this investigation
+# into the allocator four separate times.
+#
+# (original notes follow)
 #
 # Boot gate: about one boot in six, as
 #   [EXEC] refused reason=bad-args path=... at=argv:... task=NN user

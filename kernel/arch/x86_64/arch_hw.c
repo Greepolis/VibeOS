@@ -2078,10 +2078,22 @@ static void hw_frame_release_watch(uint64_t phys) {
     uint32_t owners_at_check = 0;
     uint32_t mappers = 0;
 
-    /* Sampled. Raised to every free for one investigation and put back: the
-     * walk is not free, and what that run established is written down rather
-     * than left as a setting. See scripts/dev/cases/mm-argv-poison.txt. */
-    if ((++g_free_seq & 0x0Fu) != 0u) {
+    /* Sampled, and the rate is a named constant rather than a literal.
+     *
+     * It has been raised for an investigation and put back twice now, each time
+     * by editing the mask in place, which leaves no way to tell from the source
+     * whether a zero came from a full sweep or a sixteenth of one. A defect
+     * that happens once a boot has a small chance of being seen by a check that
+     * looks at one free in sixteen, so its zero is not evidence - and that
+     * sentence is in scripts/dev/cases/mm-argv-poison.txt precisely because
+     * somebody read it as evidence.
+     *
+     * 0 sweeps every free; 0x0F is one in sixteen and is the default, because
+     * the walk is not free. */
+#ifndef HW_FREE_CHECK_MASK
+#define HW_FREE_CHECK_MASK 0x0Fu
+#endif
+    if ((++g_free_seq & HW_FREE_CHECK_MASK) != 0u) {
         return;
     }
     /* Teardown is NOT skipped, and that is a change of mind worth explaining.
