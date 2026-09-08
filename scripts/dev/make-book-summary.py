@@ -90,12 +90,14 @@ def main():
     # for whoever finds it by accident. Adding a plan is now one row.
     for plan_dir, plan_title in (("mm", "Memory management plan"),
                                  ("io", "Storage and I/O plan"),
+                                 ("core", "Kernel core plan"),
                                  ("devices", "Devices and peripherals")):
         plan = os.path.join(docs, plan_dir)
         if not os.path.isdir(plan):
             continue
         order = ["README.md", "architecture.md", "observability.md",
-                 "maintainability.md", "phases.md", "decisions.md"]
+                 "maintainability.md", "invariants.md", "phases.md",
+                 "decisions.md"]
         present = [f for f in order if os.path.exists(os.path.join(plan, f))]
         present += sorted(f for f in os.listdir(plan)
                           if f.endswith(".md") and f not in order)
