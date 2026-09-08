@@ -143,6 +143,8 @@ static const char abi_mm[] = "abi: mmap/mprotect/munmap wrong\n";
 static const char abi_futex[] = "abi: futex did not check the value\n";
 static const char tls_kept[] = "tls survived context switches\n";
 static const char tls_lost[] = "abi: %fs lost across a context switch\n";
+static const char sse_kept[] = "sse survived context switches\n";
+static const char sse_lost[] = "abi: xmm lost across a context switch\n";
 static const char iov_a[] = "iov";
 static const char iov_b[] = "ec\n";
 
@@ -393,6 +395,61 @@ int vibeos_main(int argc, char **argv, char **envp) {
         } else {
             user_syscall3(SYS_write, 1, (long)(unsigned long)tls_lost,
                           sizeof(tls_lost) - 1);
+        }
+    }
+
+    /* The same question about the SSE registers, and it is not rhetorical.
+     *
+     * The kernel sets CR4.OSFXSR, compiles 6955 XMM instructions of its own,
+     * and contains no fxsave, fxrstor or xsave anywhere. So a task's vector
+     * registers survive a syscall or an interrupt by luck, and clang stores
+     * 16-byte stack buffers with movdqa - which is why a corrupted user buffer
+     * in this system loses exactly sixteen bytes, one register wide.
+     *
+     * The first version of this check passed on three boots out of three, and
+     * it was the check that was wrong rather than the kernel: it set the
+     * register, made 64 getpid calls from C, and read it back. Two things made
+     * the defect unable to show. getpid is cheap enough that all 64 can fall
+     * inside one time slice, so nothing was preempted; and between the two
+     * inline-asm statements the compiler is free to spill and reload xmm6
+     * itself, which would have measured the compiler rather than the kernel.
+     *
+     * Right about the property, wrong about the arrangement - the fifth time
+     * this project has recorded that shape, and the reason the sabotage
+     * discipline exists.
+     *
+     * So the whole thing is one asm block with no C in the middle, and the loop
+     * is long enough to span many timer ticks with other tasks running. xmm6
+     * rather than xmm0 because the compiler uses the low registers constantly,
+     * and a check on xmm0 would be measuring whether it happened to reload it.
+     *
+     * Expected to FAIL until the FPU context switch is written. It is written
+     * first on purpose: a fix whose test has never been red is a fix nobody has
+     * checked. */
+    {
+        unsigned long pair[2];
+        unsigned long want_lo = 0x0123456789ABCDEFul;
+        unsigned long want_hi = 0xFEDCBA9876543210ul;
+
+        pair[0] = want_lo;
+        pair[1] = want_hi;
+        __asm__ __volatile__(
+            "movdqu (%0), %%xmm6\n\t"
+            "movq $200000, %%rbx\n"
+            "1:\n\t"
+            "movq $39, %%rax\n\t"        /* getpid: does nothing else */
+            "syscall\n\t"
+            "decq %%rbx\n\t"
+            "jnz 1b\n\t"
+            "movdqu %%xmm6, (%0)\n\t"
+            :: "r"(pair)
+            : "rax", "rbx", "rcx", "r11", "xmm6", "memory");
+        if (pair[0] == want_lo && pair[1] == want_hi) {
+            user_syscall3(SYS_write, 1, (long)(unsigned long)sse_kept,
+                          sizeof(sse_kept) - 1);
+        } else {
+            user_syscall3(SYS_write, 1, (long)(unsigned long)sse_lost,
+                          sizeof(sse_lost) - 1);
         }
     }
 
