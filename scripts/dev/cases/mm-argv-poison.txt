@@ -81,3 +81,39 @@ case: the poison extent is not measured
     never happened - nothing wrote to it after it was freed, so no free-side
     detector can ever fire. A few poisoned words is the opposite: something
     wrote the pattern into a live page. Same word, opposite faults.
+
+# ---- four explanations closed, and the defect did not reproduce ------------
+#
+# Instrumented and measured rather than read. Each of these is now a permanent
+# answer rather than a thing to re-derive:
+#
+#   SHADOWS_USER=0   the desktop's buffer cannot overlap the low user window.
+#                    vibeos_pmm_reserve *truncates* the region, so pmm_base is
+#                    0x1780000 - above 0xC00000 entirely. The window is
+#                    unreachable by the frame layer, not merely unlikely.
+#   FB_IN_RAM=0      the firmware framebuffer is at 0x80000000; the region the
+#                    allocator manages ends at 0x1bb5d000.
+#   guard_broken=0   a canary page after the back buffer, intact on every boot
+#                    including failing ones: the desktop does not overrun.
+#   backbuf_shared=0 no frame of the back buffer has a second owner, and
+#   backbuf_lost=0   none lost its ALLOCATED state.
+#
+# And the question this file named as the next step - whether
+# hw_alloc_pages_contig reserves every frame in the run it returns - was already
+# answered by a counter nobody had connected to it. frame_take increments
+# double_allocs when it takes a frame that is not FREE or already owned; every
+# allocation goes through it, contig included; the gate asserts it; it reads
+# zero.
+#
+# The detector was wrong on its first run, and in this project's usual shape:
+# backbuf_shared asked for owners != 0 and reported 1000 frames of 1000, every
+# boot. frame_take sets owners to 1 when it hands a frame out, so one owner *is*
+# allocated. The test is > 1.
+#
+# **The defect did not reproduce in eighteen boots.** This file records about
+# one in six; the chance of none in eighteen at that rate is roughly 3.6%. Not
+# proof of absence and not treated as one - but it cannot be studied at this
+# rate, and what the same sweep did produce, three times in ten and
+# byte-identical, is in mm-ring3-write-nul.txt. That one is a user buffer the
+# kernel read as zeros, it has an exact signature, and it may well be this one
+# seen from a better angle.

@@ -1,0 +1,88 @@
+# A user buffer the kernel read as zeros (open, and far better characterised
+# than the argv defect it was found while chasing).
+#
+# Boot gate: three boots in ten, as
+#   reason=invariant_failed:stress_run_did_not_finish
+#
+# That reason is false. The stress run finished. It completed 120 rounds and
+# exited zero - `SVC_EXIT svc-stress 10 0` is in the same log. What went missing
+# was its marker.
+
+# ---- the signature, byte-identical on all three failures --------------------
+#
+#   [HW][SYS] write(ring3): ^@^@^@^@^@^@^@^@^@^@^@^@^@^@^@^@=120
+#
+# Sixteen NUL bytes, then "=120". The program calls
+#
+#   say("STRESS_OK rounds=", rounds, 1);
+#
+# and "STRESS_OK rounds" is exactly sixteen characters. So bytes 0..15 of the
+# buffer read as zero and bytes 16..20 read correctly.
+#
+# `say` builds its text in `char line[128]` - on the **user stack** - and passes
+# that address to write(2). So this is a user stack page whose first sixteen
+# bytes the kernel did not see.
+
+# ---- why the count matters here, when this project usually says it does not -
+#
+# Three boots, byte-identical. Random corruption is not identical three times,
+# and this project's own rule is to look for a signature present in one state
+# and absent in the other rather than reaching for a ratio. This is that
+# signature, and it reproduces at 3 in 10 - against the argv defect's 1 in 6
+# with a value that varies.
+
+# ---- what is known, and what is only a reading ------------------------------
+#
+# Known:
+#   - the process exited 0 and the machine stayed healthy through to the CLI
+#   - every memory MUSTBEZERO counter read zero, including double_allocs
+#   - the desktop's back buffer is not involved: its canary is intact, no
+#     process maps its frames, no frame of it lost ALLOCATED state, it does not
+#     overlap the low user window, and the framebuffer is at 0x80000000, outside
+#     the region the allocator manages
+#
+# A reading, not a measurement:
+#   frame_take hands a frame out zeroed. A page that reads zero where a process
+#   wrote is therefore a *fresh* frame, and the obvious way a process's page
+#   becomes a fresh frame is the copy-on-write copy. Sixteen bytes correct after
+#   sixteen bytes lost would then mean the copy happened between two stores -
+#   the earlier ones going to the frame that was abandoned, the later ones to
+#   the one that was kept.
+#
+#   That is consistent and unproved. The next step is to make the kernel say it
+#   rather than to reason about it: record, for the frame backing a refused or
+#   suspicious user read, whether it was copy-on-write resolved during this
+#   process's life and what the old and new physical addresses were. This
+#   project's rule about a reason naming a mechanism rather than a situation
+#   applies - "read as zero" is a situation.
+
+# ---- and the check that should have caught it, which did not ---------------
+#
+# interleaved_lines runs first, before every other assertion, precisely so that
+# nothing is concluded from an untrustworthy log. It reported nothing here.
+#
+# It is not at fault, and its docstring already says so: "a split that lands
+# inside a ring-3 write and truncates no number is not caught here." This is not
+# a split at all. A NUL in a text write is a different mechanism - the console
+# lock was never involved - and widening the interleaving check to cover it
+# would have conflated the two. It got its own check, ring3_writes_with_nul,
+# beside the other one and before everything downstream.
+
+case: the corrupted-write check is removed
+  delete the ring3_writes_with_nul call from the gate
+  expect: the same three-in-ten boots fail as stress_run_did_not_finish again -
+    green-looking evidence pointing at a program that did its job
+  why it matters: this is the whole reason the case file exists. The gate was
+    naming the wrong subsystem, and every investigation that started from
+    "the stress run hangs" would have been looking at svc_stress.c, which is
+    correct, for as long as it took to notice the marker was mangled rather
+    than absent.
+
+case: the check looks for NUL anywhere rather than in a ring-3 write
+  drop the "write(ring3):" guard
+  expect: no gate failure today, and a check that will fire on the first kernel
+    line that legitimately carries a zero byte
+  why it matters: the first version of interleaved_lines cried wolf on healthy
+    output and this file's own history says a detector that reports normal
+    behaviour is one people learn to ignore. The guard is what keeps this one
+    narrow enough to be believed.

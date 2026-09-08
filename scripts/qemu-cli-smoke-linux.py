@@ -253,6 +253,53 @@ assert interleaved_lines(_OPEN_LINE) == [], "flags a ring-3 write left open"
 assert interleaved_lines(_CLEAN) == [], "flags a healthy line"
 
 
+def ring3_writes_with_nul(text):
+    """Ring-3 writes the kernel copied wrongly.
+
+    No program here writes NUL bytes to stdout. A `write(ring3)` line carrying
+    them means the kernel read a user buffer and did not get what the process
+    put there - which is a memory-lifetime defect, and one that reports itself
+    as something else entirely.
+
+    It was found this way. Three boots in ten failed as
+    `stress_run_did_not_finish`, and the stress run had finished: it completed
+    120 rounds and exited zero. What went missing was its marker, and the log
+    held, byte-identical on all three,
+
+        [HW][SYS] write(ring3): \\0\\0\\0\\0\\0\\0\\0\\0\\0\\0\\0\\0\\0\\0\\0\\0=120
+
+    "STRESS_OK rounds" is exactly sixteen characters. The first sixteen bytes of
+    a user *stack* buffer read as zero and the rest was correct - and a freshly
+    allocated frame is handed out zeroed, so those bytes came from a page that
+    had been copied while the writes into it were lost.
+
+    The point of putting it here rather than in interleaved_lines: this is not
+    the console lock. That check's docstring already states the limit that let
+    this through - a split inside a ring-3 write that truncates no number - and
+    widening it would conflate two mechanisms. A NUL is not a split. It is the
+    kernel handing over memory that is not the process's.
+
+    Byte-identical repetition is what makes it worth its own assertion. Random
+    corruption is not identical three times.
+    """
+    out = []
+    for line in text.splitlines():
+        if "write(ring3):" not in line:
+            continue
+        if "\x00" in line:
+            out.append(line.replace("\x00", "\\0"))
+    return out
+
+
+_NUL_WRITE = "[HW][SYS] write(ring3): \x00\x00\x00\x00=120"
+_GOOD_WRITE = "[HW][SYS] write(ring3): STRESS_OK rounds=120"
+assert ring3_writes_with_nul(_NUL_WRITE) != [], "misses a NUL in a ring-3 write"
+assert ring3_writes_with_nul(_GOOD_WRITE) == [], "flags a healthy ring-3 write"
+# A NUL somewhere that is not a ring-3 write is not this check's business.
+assert ring3_writes_with_nul("[MM] frame layer online\x00") == [], \
+    "flags a line that is not a ring-3 write"
+
+
 def frame_accounting_premise_broken(text):
     """Did the frame accounting get sampled while userland was still running?
 
@@ -762,6 +809,18 @@ def main():
                 problems.append(f"serial_log_interleaved({len(split)}_lines)")
                 for line in split[:3]:
                     print(f"[QEMU-CLI] split line: {line[:160]}")
+
+            # And the other way a line can lie: the kernel copied a user buffer
+            # and did not get what the process wrote. Checked here, beside the
+            # interleaving check and before anything downstream, because the
+            # symptom is a *missing marker* somewhere else - three boots in ten
+            # were failing as stress_run_did_not_finish for a stress run that
+            # had finished and exited zero.
+            nul = ring3_writes_with_nul(text)
+            if nul:
+                problems.append(f"ring3_write_corrupted({len(nul)}_lines)")
+                for line in nul[:3]:
+                    print(f"[QEMU-CLI] corrupted ring-3 write: {line[:160]}")
 
             # The kernel's own complaints. It has been raising these all along
             # and nothing has ever failed a boot for one.

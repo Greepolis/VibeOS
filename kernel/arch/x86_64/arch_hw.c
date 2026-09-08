@@ -608,6 +608,21 @@ vibeos_fsmount_t g_rootfs;
  * condition at the use site, because the loop that sets it already has to break
  * out of itself. */
 static int g_boot_disk_mounted;
+
+/* The desktop's back-buffer canary. See the allocation in hw_early_init: the
+ * argv defect leaves every memory counter at zero, correctly, so the question
+ * that had to be made answerable is whether the desktop writes past the buffer
+ * it owns. Deliberately not the frame layer's poison value - if this word turns
+ * up somewhere it should not, it must be unambiguous which detector put it
+ * there, and this project has already read one detector's output as another's. */
+#define HW_GUI_GUARD 0xC0FFEE00C0FFEE00ull
+static uint64_t g_gui_guard;
+static uint64_t g_gui_guard_broken;
+/* The buffer itself, kept so the end-of-boot report can ask who else owns it. */
+static uint64_t g_gui_back_base;
+static uint64_t g_gui_back_end;
+static uint64_t g_gui_back_shared;
+static uint64_t g_gui_back_lost;
 extern int vibeos_x86_64_fat_vfs_mount(vibeos_fsmount_t *mnt);
 
 extern void vibeos_x86_64_keyboard_irq(void);
@@ -9907,6 +9922,69 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
         /* The hot paths. One critical section for the whole line: it is built
          * from ten calls that each take the console lock on their own, and a
          * line assembled from ten of those is ten critical sections. */
+        /* The desktop's canary, checked once at the end, after the GUI has been
+         * rendering for the whole boot. Counted rather than merely printed: a
+         * line nobody asserts on is decoration, and this project spent a
+         * session with a ring-3 self-test printing "wrong" into a green build. */
+        if (g_gui_guard != 0ull) {
+            const uint64_t *g = (const uint64_t *)(uintptr_t)g_gui_guard;
+            uint32_t w;
+            for (w = 0; w < 512u; w++) {
+                if (g[w] != HW_GUI_GUARD) {
+                    g_gui_guard_broken++;
+                }
+            }
+        }
+        /* Does anything else own a frame the desktop is rendering into?
+         *
+         * This is the hypothesis the case file actually states - that the
+         * frames are handed out twice - and it is the one neither the canary
+         * nor the poison can see, because a double hand-out frees nothing and
+         * corrupts no bookkeeping. It is asked directly: for every frame in the
+         * back buffer, how many page-table entries point at it? The desktop
+         * does not map its buffer into any address space, so the honest answer
+         * is zero for all of them, and anything else names a process sharing
+         * memory with the screen.
+         *
+         * Outside the frame layer's lock, deliberately: vibeos_frame_owners
+         * takes it, and a diagnostic that calls a public accessor from inside
+         * the lock it needs is how a previous investigation deadlocked the
+         * machine it was explaining, mid-line, at "owners=0x". */
+        if (g_gui_back_base != 0ull) {
+            uint64_t p;
+            for (p = g_gui_back_base; p < g_gui_back_end; p += 4096ull) {
+                /* Greater than one, not non-zero.
+                 *
+                 * The first version of this asked for owners != 0 and reported
+                 * 1000 of 1000 frames shared on every boot, which is the same
+                 * shape as the 3019 use-after-frees that cost a phase: a
+                 * detector that fires on everything is reporting its own
+                 * baseline. frame_take sets owners to 1 when it hands a frame
+                 * out, so one owner *is* the allocated state. A second owner is
+                 * a page-table entry somebody else installed. */
+                if (vibeos_frame_owners(p) > 1u) {
+                    g_gui_back_shared++;
+                }
+                /* And the other half of the same question. Owners counts page
+                 * tables pointing at the frame, which is the process case; a
+                 * frame the layer believes is FREE is the kernel case, and it
+                 * is the one that lets the *next* allocation - a block buffer,
+                 * an argv page - be handed the screen. Neither the poison nor
+                 * the canary can see it: nothing was freed early and nothing
+                 * overran, the layer simply lost track. */
+                if (vibeos_frame_state(p) != VIBEOS_FRAME_ALLOCATED) {
+                    g_gui_back_lost++;
+                }
+            }
+        }
+        vibeos_x86_64_serial_puts("\n[GUI] MUSTBEZERO guard_broken=0x");
+        vibeos_x86_64_serial_print_hex(g_gui_guard_broken);
+        vibeos_x86_64_serial_puts(" backbuf_shared=0x");
+        vibeos_x86_64_serial_print_hex(g_gui_back_shared);
+        vibeos_x86_64_serial_puts(" backbuf_lost=0x");
+        vibeos_x86_64_serial_print_hex(g_gui_back_lost);
+        vibeos_x86_64_serial_puts(" guard_at=0x");
+        vibeos_x86_64_serial_print_hex(g_gui_guard);
         vibeos_x86_64_serial_puts("\n[PERF] syscalls=0x");
         vibeos_x86_64_serial_print_hex(g_perf_syscall.count);
         vibeos_x86_64_serial_puts(" syscall_cycles=0x");
@@ -10063,7 +10141,94 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
          * nothing was freed early - the frames were simply given out twice.
          * That is the failure mode of having two allocators, and it is why the
          * bump allocator is closed below rather than left available. */
-        void *back = hw_alloc_pages_contig((uint32_t)pages);
+        /* One page more than the desktop needs, filled with a pattern nothing
+         * else writes, and checked at the end of the boot.
+         *
+         * The open defect is that a process's argv reads as two white pixels -
+         * COL_TITLETXT, twice - with every memory counter at zero. Zero is
+         * correct for all of them: nothing was freed early and nothing was
+         * double-allocated, so no detector in the memory manager can see this.
+         * The remaining explanations are that the desktop writes somewhere it
+         * was not given, or that something else writes into what it was.
+         *
+         * A canary distinguishes those two, which four sessions of reading did
+         * not. If it is damaged, the desktop overran its buffer; if it is
+         * intact while argv still reads white, the desktop is writing to an
+         * address it computed rather than past the end of one it owns - and
+         * those need completely different fixes. */
+        void *back = hw_alloc_pages_contig((uint32_t)pages + 1u);
+
+        if (back) {
+            uint64_t *guard = (uint64_t *)(uintptr_t)
+                              ((uint64_t)(uintptr_t)back + pages * 4096ull);
+            uint32_t w;
+            for (w = 0; w < 512u; w++) {
+                guard[w] = HW_GUI_GUARD;
+            }
+            g_gui_guard = (uint64_t)(uintptr_t)guard;
+            g_gui_back_base = (uint64_t)(uintptr_t)back;
+            g_gui_back_end = g_gui_back_base + pages * 4096ull;
+        }
+
+        /* Where the back buffer actually landed, against the window a Linux
+         * program is identity-mapped into.
+         *
+         * The comment above says the frames were once given out twice and
+         * blames the bump allocator, which was closed. This line exists to
+         * check the successor of that claim: the frame layer is initialised
+         * over the whole PMM region and reserves exactly two things - the
+         * prefix the bump allocator already consumed, and everything above the
+         * identity limit. The low user window is reserved in the *PMM* and the
+         * frame layer is never told, so a first-fit run can land in it.
+         *
+         * One call, because a line assembled from a dozen is a dozen critical
+         * sections and this one has to be read as one fact. */
+        {
+            uint64_t lo = (uint64_t)(uintptr_t)back;
+            uint64_t hi = lo + pages * 4096ull;
+            int overlaps = back && lo < VIBEOS_HW_LOW_USER_LIMIT &&
+                           hi > VIBEOS_HW_LOW_USER_BASE;
+            vibeos_x86_64_serial_lock();
+            vibeos_x86_64_serial_puts("[GUI] backbuf=0x");
+            vibeos_x86_64_serial_print_hex(lo);
+            vibeos_x86_64_serial_puts("..0x");
+            vibeos_x86_64_serial_print_hex(hi);
+            vibeos_x86_64_serial_puts(" pages=0x");
+            vibeos_x86_64_serial_print_hex(pages);
+            vibeos_x86_64_serial_puts(" lowuser=0x");
+            vibeos_x86_64_serial_print_hex(VIBEOS_HW_LOW_USER_BASE);
+            vibeos_x86_64_serial_puts("..0x");
+            vibeos_x86_64_serial_print_hex(VIBEOS_HW_LOW_USER_LIMIT);
+            vibeos_x86_64_serial_puts(" pmm_base=0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)g_hw_pmm.base);
+            vibeos_x86_64_serial_puts(" pmm_prefix=0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)g_hw_pmm.offset_bytes);
+            vibeos_x86_64_serial_puts(" SHADOWS_USER=0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)overlaps);
+            /* And the front buffer, which is firmware-provided and was never
+             * checked against the region the allocator hands out of. If a GOP
+             * framebuffer sits inside RAM the frame layer manages, every blit
+             * writes over somebody's frames - which would produce exactly white
+             * pixels in a process's memory with every allocator counter at
+             * zero, because nothing was allocated twice or freed early. */
+            vibeos_x86_64_serial_puts(" fb=0x");
+            vibeos_x86_64_serial_print_hex(boot_info->framebuffer_base);
+            vibeos_x86_64_serial_puts("..0x");
+            vibeos_x86_64_serial_print_hex(boot_info->framebuffer_base +
+                                           px * 4ull);
+            vibeos_x86_64_serial_puts(" pmm_end=0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)g_hw_pmm.base +
+                                           (uint64_t)g_hw_pmm.size_bytes);
+            vibeos_x86_64_serial_puts(" FB_IN_RAM=0x");
+            vibeos_x86_64_serial_print_hex(
+                (uint64_t)(boot_info->framebuffer_base <
+                               (uint64_t)g_hw_pmm.base +
+                               (uint64_t)g_hw_pmm.size_bytes &&
+                           boot_info->framebuffer_base + px * 4ull >
+                               (uint64_t)g_hw_pmm.base));
+            vibeos_x86_64_serial_puts("\n");
+            vibeos_x86_64_serial_unlock();
+        }
 
         if (vibeos_x86_64_mouse_init(boot_info->framebuffer_width,
                                      boot_info->framebuffer_height) == 0) {
