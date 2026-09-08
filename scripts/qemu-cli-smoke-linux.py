@@ -37,7 +37,13 @@ ECHO_PORT = 7777
 SKIP_ECHO = SMOKE_ID != 0
 
 # The guest is booted with this many vCPUs; every one of them must come online.
-EXPECTED_CPUS = 4
+# How many cores the guest gets. Four is what CI runs and what every assertion
+# here was written against; the knob exists because a defect that needs two
+# cores in one window and one that does not are different defects, and the
+# cheapest way to tell them apart is to take the second core away. Used that way
+# it is an experiment, not a configuration - a one-core boot fails other
+# assertions honestly and the counters are still printed.
+EXPECTED_CPUS = int(os.environ.get("VIBEOS_SMOKE_CPUS", "4"))
 
 
 # The disk controller under test. "virtio" is QEMU's own and is what the
@@ -579,7 +585,7 @@ def main():
                 "-machine", "q35",
                 "-m", "512M",
                 # Four cores: the kernel is SMP, so the smoke must exercise it.
-                "-smp", "4",
+                "-smp", str(EXPECTED_CPUS),
                 "-display", "none",
                 # A monitor rather than none: a wedged guest cannot
                 # report on itself, and this is the only way to ask

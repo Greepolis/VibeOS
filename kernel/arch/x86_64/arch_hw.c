@@ -623,6 +623,21 @@ static uint64_t g_gui_back_base;
 static uint64_t g_gui_back_end;
 static uint64_t g_gui_back_shared;
 static uint64_t g_gui_back_lost;
+/* Ring-3 text writes whose leading bytes read as NUL. See hw_sys_write. */
+static uint64_t g_ring3_write_nul;
+
+/* The last few copy-on-write faults, kept so a corrupted user buffer can be
+ * reported together with the faults on its own page. Power of two: the slot is
+ * a masked atomic increment, so several cores record without a lock. */
+#define HW_COW_RING 16u
+typedef struct {
+    uint64_t va, rip, err, pid, handled, cpu;
+} hw_cow_rec_t;
+static hw_cow_rec_t g_cow_ring[HW_COW_RING];
+static uint64_t g_cow_ring_at;
+/* Copy-on-write resolutions after which the page's contents changed.
+ * A copy that is a copy leaves this at zero. */
+static uint64_t g_cow_copy_changed;
 extern int vibeos_x86_64_fat_vfs_mount(vibeos_fsmount_t *mnt);
 
 extern void vibeos_x86_64_keyboard_irq(void);
@@ -5726,6 +5741,79 @@ static long hw_sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
     if (fd != 1u && fd != 2u) {
         return -VIBEOS_EBADF;
     }
+    /* A text write whose leading bytes read as NUL, reported at the moment it
+     * happens rather than reconstructed afterwards.
+     *
+     * Three boots in ten produced `write(ring3): <16 NULs>=120` where the
+     * program had written "STRESS_OK rounds=120" from a buffer on its own
+     * stack. The kernel reads that buffer directly - there is no copy to blame
+     * - so the page it can see holds zeros where the process wrote.
+     *
+     * Two very different defects produce that, and nothing recorded so far
+     * separates them: either the process's store went to a frame this mapping
+     * no longer points at, or the store never landed. So the bytes are read a
+     * second time. A difference means the page is moving under the kernel; the
+     * same zeros twice means they were already zero when the syscall began.
+     *
+     * Deliberately not a range check on the whole buffer: the signature is
+     * leading NULs followed by real text, and a detector that fires on any NUL
+     * anywhere would catch every program that writes a binary byte. This
+     * project has a rule about detectors that report healthy behaviour. */
+    if (len >= 8u && p[0] == 0 && p[len - 1u] != 0) {
+        uint64_t a = 0ull, b = 0ull;
+        uint32_t k;
+        for (k = 0; k < 8u; k++) {
+            a |= (uint64_t)(uint8_t)p[k] << (k * 8u);
+        }
+        for (k = 0; k < 8u; k++) {
+            b |= (uint64_t)(uint8_t)p[k] << (k * 8u);
+        }
+        g_ring3_write_nul++;
+        vibeos_x86_64_serial_lock();
+        vibeos_x86_64_serial_puts("[MM] RING3_WRITE_NUL task=0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)(int64_t)g_current_task);
+        vibeos_x86_64_serial_puts(" va=0x");
+        vibeos_x86_64_serial_print_hex(buf);
+        vibeos_x86_64_serial_puts(" len=0x");
+        vibeos_x86_64_serial_print_hex(len);
+        vibeos_x86_64_serial_puts(" first8=0x");
+        vibeos_x86_64_serial_print_hex(a);
+        vibeos_x86_64_serial_puts(" again=0x");
+        vibeos_x86_64_serial_print_hex(b);
+        vibeos_x86_64_serial_puts(" cpu=0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)vibeos_x86_64_cpu_id());
+        vibeos_x86_64_serial_puts(" cr3=0x");
+        vibeos_x86_64_serial_print_hex(hw_read_cr3());
+        vibeos_x86_64_serial_puts(" tail=0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)(uint8_t)p[len - 1u]);
+        /* Every copy-on-write fault this boot took on the corrupted page, in
+         * the same critical section as the line above: the two are one fact,
+         * and a diagnostic split across calls comes back interleaved from
+         * different cores and reads as a contradiction. */
+        {
+            uint64_t page = buf & ~0xFFFull;
+            uint32_t k2;
+            for (k2 = 0; k2 < HW_COW_RING; k2++) {
+                if (g_cow_ring[k2].va == 0ull ||
+                    (g_cow_ring[k2].va & ~0xFFFull) != page) {
+                    continue;
+                }
+                vibeos_x86_64_serial_puts(" | fault err=0x");
+                vibeos_x86_64_serial_print_hex(g_cow_ring[k2].err);
+                vibeos_x86_64_serial_puts(" rip=0x");
+                vibeos_x86_64_serial_print_hex(g_cow_ring[k2].rip);
+                vibeos_x86_64_serial_puts(" pid=0x");
+                vibeos_x86_64_serial_print_hex(g_cow_ring[k2].pid);
+                vibeos_x86_64_serial_puts(" ok=0x");
+                vibeos_x86_64_serial_print_hex(g_cow_ring[k2].handled);
+                vibeos_x86_64_serial_puts(" cpu=0x");
+                vibeos_x86_64_serial_print_hex(g_cow_ring[k2].cpu);
+            }
+        }
+        vibeos_x86_64_serial_puts("\n");
+        vibeos_x86_64_serial_unlock();
+    }
+
     /* User output goes to both consoles: the serial line (logs, CI) and the
      * display framebuffer (what a user in front of the machine sees). */
     vibeos_x86_64_serial_lock();
@@ -6293,7 +6381,56 @@ static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code,
      * is genuinely architectural: reading the error code, knowing which task
      * faulted, and saying so in the log. */
     v = hw_vm(&t->proc.as);
-    handled = vibeos_vmspace_fault(&v, fault_va, 1);
+    /* Is the copy faithful?
+     *
+     * A user buffer that loses its first sixteen bytes while keeping the rest
+     * is either a store that never landed or a copy that dropped it, and
+     * nothing recorded so far separates those. A fold of the whole page before
+     * and after the resolution does: the page is readable throughout - the
+     * fault is a write-protection fault on a present page - so the same bytes
+     * can be read twice, once through the shared mapping and once through
+     * whatever this call installed.
+     *
+     * A fold rather than a byte sample, because guessing which offset matters
+     * is how a detector ends up measuring its own assumption. If the folds
+     * differ, the copy is not a copy. If they agree, the data was already gone
+     * and the store is the thing to chase.
+     *
+     * 512 reads twice per fault, on a path that runs a few hundred times a
+     * boot. Left unconditional deliberately: this is cheap next to the copy it
+     * checks, and a check that has to be turned on is one that is off when the
+     * defect happens. */
+    {
+        const uint64_t *pg = (const uint64_t *)(uintptr_t)(fault_va & ~0xFFFull);
+        uint64_t fold_before = 0ull, fold_after = 0ull;
+        uint32_t q;
+
+        for (q = 0; q < 512u; q++) {
+            fold_before = (fold_before * 31ull) ^ pg[q];
+        }
+        handled = vibeos_vmspace_fault(&v, fault_va, 1);
+        if (handled) {
+            for (q = 0; q < 512u; q++) {
+                fold_after = (fold_after * 31ull) ^ pg[q];
+            }
+            if (fold_after != fold_before) {
+                g_cow_copy_changed++;
+                vibeos_x86_64_serial_lock();
+                vibeos_x86_64_serial_puts("[MM] COW_COPY_CHANGED va=0x");
+                vibeos_x86_64_serial_print_hex(fault_va);
+                vibeos_x86_64_serial_puts(" rip=0x");
+                vibeos_x86_64_serial_print_hex(rip);
+                vibeos_x86_64_serial_puts(" pid=0x");
+                vibeos_x86_64_serial_print_hex((uint64_t)t->pid);
+                vibeos_x86_64_serial_puts(" before=0x");
+                vibeos_x86_64_serial_print_hex(fold_before);
+                vibeos_x86_64_serial_puts(" after=0x");
+                vibeos_x86_64_serial_print_hex(fold_after);
+                vibeos_x86_64_serial_puts("\n");
+                vibeos_x86_64_serial_unlock();
+            }
+        }
+    }
     /* Off by default, and on when a run is chasing this.
      *
      * A line per copy-on-write fault is hundreds of lines in a boot: it floods
@@ -6313,6 +6450,31 @@ static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code,
      * the outcome can answer that on its own, and a diagnostic split across
      * several calls comes back interleaved from different cores and reads as a
      * contradiction. */
+    /* Kept whether or not it is printed.
+     *
+     * The trace above floods - hundreds of lines a boot - and its own comment
+     * says it changes the timing of the defect it is looking for. So every
+     * fault is recorded into a small ring instead, and the ring is dumped by
+     * whoever finds a corrupted user buffer, filtered to the page that was
+     * corrupted. That is this project's rule about taking the state at the
+     * crash rather than going back for it: by the time a write reports zeros,
+     * the fault that produced them is long over.
+     *
+     * Sixteen entries, oldest overwritten. The question it exists to answer is
+     * how many times the page under a lost store faulted and with what error
+     * code - a not-present fault and a write-protection fault are different
+     * defects and the address alone cannot tell them apart. */
+    {
+        uint32_t slot = (uint32_t)(__sync_fetch_and_add(&g_cow_ring_at, 1ull) &
+                                   (HW_COW_RING - 1u));
+        g_cow_ring[slot].va = fault_va;
+        g_cow_ring[slot].rip = rip;
+        g_cow_ring[slot].err = error_code;
+        g_cow_ring[slot].pid = (uint64_t)t->pid;
+        g_cow_ring[slot].handled = (uint64_t)handled;
+        g_cow_ring[slot].cpu = (uint64_t)vibeos_x86_64_cpu_id();
+    }
+
     if (VIBEOS_COW_FAULT_TRACE || !handled) {
         vibeos_x86_64_serial_lock();
         vibeos_x86_64_serial_puts("[MM] COW_FAULT va=0x");
@@ -9983,6 +10145,10 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
         vibeos_x86_64_serial_print_hex(g_gui_back_shared);
         vibeos_x86_64_serial_puts(" backbuf_lost=0x");
         vibeos_x86_64_serial_print_hex(g_gui_back_lost);
+        vibeos_x86_64_serial_puts(" ring3_write_nul=0x");
+        vibeos_x86_64_serial_print_hex(g_ring3_write_nul);
+        vibeos_x86_64_serial_puts(" cow_copy_changed=0x");
+        vibeos_x86_64_serial_print_hex(g_cow_copy_changed);
         vibeos_x86_64_serial_puts(" guard_at=0x");
         vibeos_x86_64_serial_print_hex(g_gui_guard);
         vibeos_x86_64_serial_puts("\n[PERF] syscalls=0x");
