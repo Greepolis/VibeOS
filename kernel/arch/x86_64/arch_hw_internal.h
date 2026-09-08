@@ -237,6 +237,19 @@ typedef struct {
      * Kept apart from fds[] because the console is not a table entry and a
      * shell redirects the standard three far more often than anything else. */
     hw_fd_t std_redirect[3];
+    /* The x87/SSE register file, saved and restored across a context switch.
+     *
+     * Until this existed the kernel set CR4.OSFXSR, compiled thousands of XMM
+     * instructions of its own, and contained no fxsave anywhere - so a task's
+     * vector registers survived a syscall or an interrupt only by luck. clang
+     * stores 16-byte stack buffers with movdqa, which is why a corrupted user
+     * buffer in this system lost exactly sixteen bytes, one register wide.
+     *
+     * 512 bytes and 16-byte aligned because fxsave requires both; fxsave faults
+     * on a misaligned destination rather than fixing it up. Per task, never
+     * shared: a single global area would restore the previous task's registers
+     * into this one, which is worse than not saving at all and quieter. */
+    unsigned char fpu[512] __attribute__((aligned(16)));
 } hw_task_t;
 
 /* ---- what the lifted files may reach back for ---------------------------- */

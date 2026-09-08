@@ -52,6 +52,32 @@ target_compile_options(vibeos_kernel_core PRIVATE
     -mno-red-zone
 )
 
+# The same sources again, compiled for the machine rather than for the host.
+#
+# The image links the portable half, so every function in kernel/core,
+# kernel/mm, kernel/io and kernel/fs runs in the kernel and shares the register
+# file with whatever ring-3 task it interrupted. Putting -mno-sse only on the
+# arch target took the corruption from three boots in ten to one in twelve and
+# stopped there - a large improvement that is not a fix, and the number that
+# would have been reported as one had the sweep been five boots instead of
+# twelve.
+#
+# A second library rather than a flag on the first, because the first is linked
+# into the host tests, where it becomes part of an ordinary Linux binary whose
+# ABI passes floating point in XMM. Disabling SSE there is not a safety measure,
+# it is a different ABI.
+#
+# The first attempt at this was one library with `if(IMAGE AND NOT TESTS)`
+# around the flags - and both are on in every real build, so it would have
+# compiled to nothing while looking like a fix. That is this project's most
+# repeated defect and it very nearly went in.
+add_library(vibeos_kernel_core_image STATIC ${VIBEOS_KERNEL_CORE_SOURCES})
+target_include_directories(vibeos_kernel_core_image PUBLIC
+    $<TARGET_PROPERTY:vibeos_kernel_core,INTERFACE_INCLUDE_DIRECTORIES>)
+target_compile_options(vibeos_kernel_core_image PRIVATE
+    -Wall -Wextra -Wpedantic -ffreestanding -fno-stack-protector -mno-red-zone
+    -mno-sse -mno-sse2 -mno-mmx -mno-80387)
+
 
 
 set(VIBEOS_TLS_ACTIVE OFF)
@@ -238,6 +264,27 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         -ffreestanding
         -fno-stack-protector
         -mno-red-zone
+        # No vector registers in the kernel, which is what Linux does and for
+        # the same reason. The kernel shares the register file with whatever
+        # ring-3 task it interrupted, so every XMM instruction it executes
+        # destroys that task's state unless something saves it - and for a
+        # syscall that does not switch tasks, nothing does. The context switch
+        # now saves and restores, and that closed the scheduler half; this
+        # closes the other one, which is every kernel entry.
+        #
+        # It was found by measurement rather than by review: with the context
+        # switch fixed and this flag absent, the corruption dropped from three
+        # boots in ten to one in five and did not stop. Two criteria were
+        # checked and only one had gone green, which is the whole reason the
+        # deterministic test was written before the fix.
+        #
+        # The cost is that memcpy and memset lose their vector forms. The
+        # alternative is saving 512 bytes on every kernel entry, which is far
+        # worse on a path that runs thousands of times a boot.
+        -mno-sse
+        -mno-sse2
+        -mno-mmx
+        -mno-80387
         # Keep the frame pointer. A release build drops it, and without the
         # chain a panic can report where the machine stopped but nothing about
         # how it got there - which for a fault inside one of two hundred static
@@ -500,7 +547,7 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
     )
     target_sources(vibeos_kernel PRIVATE "${VIBEOS_TASK_BLOB}")
 
-    target_link_libraries(vibeos_kernel PRIVATE vibeos_kernel_core vibeos_user_core)
+    target_link_libraries(vibeos_kernel PRIVATE vibeos_kernel_core_image vibeos_user_core)
     
     # Linker settings for kernel executable
     target_link_options(vibeos_kernel PRIVATE

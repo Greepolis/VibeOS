@@ -4158,6 +4158,15 @@ int hw_task_set_state(int slot, vibeos_task_state_t to, const char *why) {
  *
  * Returns the slot, or negative. `*out_verdict` says why, so a caller can
  * report which rule refused rather than "no memory". */
+/* Forward-declared for the reason this file's own notes give: it is one 10000
+ * line translation unit, and a helper used above its definition compiles as an
+ * implicit declaration under gcc and fails under clang with a message about a
+ * static declaration following a non-static one, which names neither the helper
+ * nor the caller. Defined with the rest of the context-switch code below. */
+static void hw_fpu_init_area(unsigned char *area);
+static void hw_fpu_save(unsigned char *area);
+static void hw_fpu_restore(const unsigned char *area);
+
 static int hw_task_alloc_guarded(int guarded, int privileged, uint32_t parent_pid,
                                  vibeos_fork_verdict_t *out_verdict) {
     int i;
@@ -4241,6 +4250,10 @@ static int hw_task_alloc_guarded(int guarded, int privileged, uint32_t parent_pi
              * and leaving it blank made the guard's report ambiguous between
              * "the space was destroyed" and "the slot was handed out again". */
             g_tasks[i].aspace_killed_by = "task_alloc_clear";
+            /* A defined FPU state, not the previous tenant's. Same family as
+             * interp_base: a field written on one path and read on all of them
+             * hands out whatever was there. */
+            hw_fpu_init_area(g_tasks[i].fpu);
             g_tasks[i].alloc_seq = (uint32_t)__sync_add_and_fetch(&g_alloc_seq, 1u);
             g_tasks[i].proc.as.pml4 = 0;
             g_tasks[i].is_thread = 0;
@@ -4530,6 +4543,51 @@ static void hw_keyboard_wake(void) {
  * visible at the point of the mistake: the task simply reads through whatever
  * base the previous occupant of the CPU left behind, which is a fault if that
  * was zero and someone else's thread state if it was not. */
+/* ---- the x87/SSE register file across a context switch --------------------
+ *
+ * The kernel enabled SSE and never saved it. See
+ * docs/implementation_progress/mm_no_fpu_context.md: a task's vector registers
+ * survived a syscall or an interrupt by luck, and because clang stores 16-byte
+ * stack buffers with movdqa, a user buffer that lost a store lost exactly
+ * sixteen bytes - one register - which is the width that had no explanation
+ * while the search was in the memory manager.
+ *
+ * Eager, not lazy. CR0.TS with a trap on first use is the classic optimisation
+ * and it is deliberately not taken here: it needs a fault handler, a per-core
+ * notion of who owns the registers, and cross-core invalidation when a task
+ * migrates - three mechanisms, on the path this kernel has the most defects in.
+ * fxsave and fxrstor are about a hundred cycles each on a switch that already
+ * costs far more, and C0's histogram is there to say if that is wrong.
+ */
+static void hw_fpu_save(unsigned char *area) {
+    __asm__ __volatile__("fxsave (%0)" :: "r"(area) : "memory");
+}
+
+static void hw_fpu_restore(const unsigned char *area) {
+    __asm__ __volatile__("fxrstor (%0)" :: "r"(area) : "memory");
+}
+
+/* The state a task starts with, built by hand rather than by fxsave.
+ *
+ * Zeroing the area is not enough and the reason is easy to miss: MXCSR lives at
+ * offset 24, and zero there unmasks every SSE exception, so the first floating
+ * point operation in a fresh program faults. 0x1F80 is the reset value - all
+ * exceptions masked - and 0x037F at offset 0 is the x87 control word's.
+ *
+ * By hand rather than fxsave-ing a freshly initialised unit, because doing that
+ * would mean disturbing the FPU of whatever task happens to be running when a
+ * new one is created. */
+static void hw_fpu_init_area(unsigned char *area) {
+    uint32_t i;
+
+    for (i = 0; i < 512u; i++) {
+        area[i] = 0u;
+    }
+    area[0] = 0x7Fu;  area[1] = 0x03u;   /* FCW  = 0x037F */
+    area[24] = 0x80u; area[25] = 0x1Fu;  /* MXCSR = 0x1F80 */
+    area[28] = 0xFFu; area[29] = 0xFFu;  /* MXCSR_MASK = 0xFFFF */
+}
+
 static void hw_task_load_cpu_state(int idx) {
     /* Counted, not timed. This function *is* the switch - it ends by installing
      * cr3 and returning into the next task - so there is no second point at
@@ -4787,6 +4845,10 @@ static void hw_schedule(vibeos_x86_64_isr_frame_t *frame) {
     }
     if (cur >= 0) {
         g_tasks[cur].ctx = *frame;
+        /* Beside the integer context, and for the same reason it is here: after
+         * on_cpu is cleared another core may take this task, and it must find
+         * every register it left behind. */
+        hw_fpu_save(g_tasks[cur].fpu);
         if (g_tasks[cur].state == HW_TASK_RUNNING) {
             (void)hw_task_set_state(cur, HW_TASK_READY, __func__);
             HW_TASK_MARK(cur, ready_by, "preempted");
@@ -4801,6 +4863,7 @@ static void hw_schedule(vibeos_x86_64_isr_frame_t *frame) {
     vibeos_account_switch(hw_this_cpu()->index, next, g_tasks[next].ready_at);
     hw_this_cpu()->slice_left = hw_slice_for(next);
     *frame = g_tasks[next].ctx;
+    hw_fpu_restore(g_tasks[next].fpu);
     hw_spin_unlock(&g_sched_lock);
 
     /* The ordinary switch, and the one that matters most: this frame is about
@@ -5141,6 +5204,11 @@ void hw_task_exit(uint64_t code) {
     vibeos_account_switch(hw_this_cpu()->index, next, g_tasks[next].ready_at);
     hw_this_cpu()->slice_left = hw_slice_for(next);
     hw_spin_unlock(&g_sched_lock);
+    /* No save: the outgoing task is dying and its registers go with it. The
+     * restore is not optional though - without it the next task inherits
+     * whatever the dying one left, which is the defect this whole mechanism
+     * exists to stop, arriving by a different door. */
+    hw_fpu_restore(g_tasks[next].fpu);
     hw_task_load_cpu_state(next);
     /* Now on the next task's CR3; the dying user address space is still
      * reachable through the shared kernel identity map, so free it. */
@@ -6898,6 +6966,15 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
     child->cr3 = hw_proc_cr3(&child->proc);
     child->cr3_set_by = "fork";
     child->ctx = *frame;   /* resume exactly where the parent is */
+    /* Including the vector registers. "Exactly where the parent is" was only
+     * ever true of the integer ones, and a child that resumes mid-expression
+     * with somebody else's xmm is the same defect as not saving them at all. */
+    {
+        uint32_t fi;
+        for (fi = 0; fi < 512u; fi++) {
+            child->fpu[fi] = parent->fpu[fi];
+        }
+    }
     child->ctx.rax = 0;    /* ... but fork() returns 0 in the child */
     child->pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
     hw_log(VIBEOS_LOG_DEBUG, 44u, (uint64_t)parent->pid, (uint64_t)child->pid,
@@ -7065,6 +7142,11 @@ static long hw_sys_clone_thread(const vibeos_x86_64_isr_frame_t *frame,
     child->ctx.rax = 0;            /* the child's return from clone() */
     child->ctx.rsp = child_stack;  /* on the stack the library gave it */
     child->ctx.rbp = 0;            /* no caller frame: this is a stack top */
+    /* A clean FP environment, not the creator's. A new thread begins at a
+     * function entry, so there is no partly-built vector value to inherit -
+     * and inheriting one would mean two threads sharing a register file they
+     * each believe is theirs. */
+    hw_fpu_init_area(child->fpu);
 
     child->pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
     child->tgid = parent->tgid;    /* same process */
@@ -10268,6 +10350,20 @@ static void hw_boot_stage(const char *name) {
 }
 
 void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
+    /* SSE on, explicitly, on this core too.
+     *
+     * ap_boot.S sets OSFXSR and OSXMMEXCPT for every application processor and
+     * nothing ever set them for the boot processor - which has worked only
+     * because UEFI leaves them on, EDK2 using SSE itself. This kernel compiles
+     * thousands of XMM instructions and now runs fxsave on every context
+     * switch, and fxsave without OSFXSR is #UD. Inheriting that from firmware
+     * is not a decision, it is a coincidence that has held. */
+    {
+        uint64_t cr4;
+        __asm__ __volatile__("movq %%cr4, %0" : "=r"(cr4));
+        cr4 |= 0x600ull;                 /* OSFXSR | OSXMMEXCPT */
+        __asm__ __volatile__("movq %0, %%cr4" :: "r"(cr4));
+    }
     vibeos_x86_64_serial_puts("[HW] early init: loading GDT\n");
     hw_load_gdt(0);
     vibeos_x86_64_serial_puts("[HW] GDT loaded (CS=0x08 DS=0x10)\n");

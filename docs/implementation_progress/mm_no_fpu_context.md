@@ -1,4 +1,4 @@
-# SSE is enabled and never saved
+# SSE was enabled and never saved (fixed)
 
 The root cause of the lost store, of the argv vector that reads as white pixels,
 and very likely of a good part of this project's "one boot in N" family.
@@ -100,26 +100,65 @@ evidence — a page reading zero where a process wrote — pointed at memory so
 strongly that ten separate mechanisms were checked before anybody asked what
 else is exactly sixteen bytes wide.
 
-## What has to happen
+## Done, and it took two halves
 
-Save and restore FPU/SSE state per task. The shape is standard and none of it is
-subtle:
+**One: the context switch saves and restores.** A 512-byte 16-byte-aligned area
+per task, `fxsave` beside the line that already saved the integer context and
+`fxrstor` beside the one that loaded it. Eager, not lazy: `CR0.TS` with a trap on
+first use needs a fault handler, a per-core notion of who owns the registers, and
+cross-core invalidation on migration — three mechanisms on the path this kernel
+has the most defects in, against about a hundred cycles on a switch that already
+costs far more.
 
-- a 512-byte, 16-byte-aligned `fxsave` area per task;
-- `fxsave` on the way out of a task and `fxrstor` on the way in, in
-  `hw_task_load_cpu_state` and its counterpart;
-- an initial state for a new task, so it does not inherit its predecessor's
-  registers;
-- a decision about laziness. Eager save on every switch is simple and correct
-  and costs ~100 cycles; `CR0.TS` with a trap on first use is the classic
-  optimisation and is worth measuring against the C0 baseline rather than
-  assuming.
+The initial state is built by hand rather than zeroed, because `MXCSR` lives at
+offset 24 and zero there unmasks every SSE exception: the first floating-point
+operation in a fresh program would fault. `fork` copies the parent's area — "resume
+exactly where the parent is" was only ever true of the integer registers — and a
+new thread gets a clean one. The exit path restores without saving, since the
+dying task's registers go with it but its successor must not inherit them.
 
-**This is not written as done.** It is a real change to the context switch, the
-single most dangerous function in this kernel, and it deserves its own phase
-with its own sabotage cases — starting with the one that already exists in
-effect: `ring3_write_nul`, which is non-zero three to five boots in ten today
-and must read zero afterwards.
+`CR4.OSFXSR` is now set on the boot processor too. Only `ap_boot.S` ever set it,
+so the BSP had it because UEFI leaves it on — a coincidence that had held, and
+`fxsave` without it is `#UD`.
+
+**Two: the kernel stops using vector registers at all**, which is what Linux does
+and for the same reason. A syscall that returns to the same process never reaches
+the scheduler, so nothing saves anything, and every XMM instruction the kernel
+runs on that path destroys the caller's state regardless.
+
+That half was found by measurement, not review. With only the context switch
+fixed, the corruption went from three boots in ten to **one in twelve** — a large
+improvement that is not a fix, and the number that would have been reported as
+one had the sweep been five boots. The deterministic XMM test was already green
+at that point, because it uses `getpid`, which is too trivial to touch XMM. Two
+criteria, one green and one not, is what stopped the work at the halfway mark
+being called finished.
+
+The portable half needed it too, and that took a second round: `-mno-sse` on the
+arch target alone left `kernel/core`, `kernel/mm`, `kernel/io` and `kernel/fs`
+compiling with SSE, and they run in the kernel. They are a second library now
+rather than a flag on the shared one, because the shared one is linked into the
+host tests where the ABI passes floating point in XMM.
+
+**The near-miss worth recording:** the first attempt was one library with
+`if(IMAGE AND NOT TESTS)` around the flags. Both are on in every real build, so
+it would have compiled to nothing while looking like a fix, under a comment
+explaining why it was necessary. That is this project's most repeated defect —
+configured and consulted by nobody — and it was caught by asking when the
+condition is true rather than by re-reading the code inside it.
+
+## Verified
+
+| | before | after |
+|---|---|---|
+| `abi: xmm lost across a context switch` | 3 boots of 3 | **0 of 22** |
+| corrupted ring-3 writes | 3–5 boots in 10 | **0 of 22** |
+| host tests, clang build, boot gate | green | green |
+
+One boot in the sweep panicked in `THREADS.ELF` with three cores on one address
+space. The same failure, same phase, same signature appeared earlier the same day
+on the unmodified kernel, so it is pre-existing and separate — recorded rather
+than folded in.
 
 ## What to gate
 
