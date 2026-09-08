@@ -23,7 +23,7 @@ stack**, and `STRESS_OK rounds` is exactly sixteen characters.
 |---|---|---|
 | Is the page moving while the kernel reads it? | No | the same eight bytes read twice in `write`: `first8 == again` |
 | Does the buffer cross a page boundary? | No | page offset `0xc60`, 21 bytes — one page |
-| Does the copy-on-write copy lose data? | **No** | a fold of the whole page before and after the resolution: `cow_copy_changed=0`, on every boot including corrupted ones |
+| Does the copy-on-write copy lose data **on this page**? | **No** | a fold of the whole page before and after the resolution: `cow_copy_changed=0`, on every boot including corrupted ones — sensitivity measured below, and it is not what it looks like |
 | Does the page fault only once? | **No** | the fault ring shows svc-stress itself faulting on that page four times |
 | Are frames handed out twice? | No | `double_allocs=0`, `backbuf_shared=0`, `backbuf_lost=0` |
 | **Does it need more than one core?** | **Yes** | eight boots at `-smp 1`: zero corrupted writes, `STRESS_OK` every time |
@@ -93,14 +93,55 @@ this is a list to test, not a conclusion:
   copy that is faithful to *some* state and not to the one the fold compares -
   the fold reads the page through the mapping after the resolution, so it cannot
   see a source that changed during the copy.
-- **the fold itself.** It compares the page before and after through the same
-  virtual address. If the defect is that the process ends up reading a
-  *different frame* than the one it wrote, the fold would agree and still be
-  measuring the wrong thing. This is the first question to settle, because it
-  decides whether `cow_copy_changed=0` means what it appears to.
+- **the fold itself** — settled, and the answer is uncomfortable. See below.
 
-That last point is the one to take first, and it is this project's own rule:
-when a detector reports zero, ask whether it could have reported anything else.
+## What the fold can actually see
+
+`copy_frame` was sabotaged - `d[0] = 0`, one quadword the copy does not carry,
+the same shape as the real defect - and the fold **does** fire: 40
+`COW_COPY_CHANGED` lines in one boot. So the detector is not blind, which is the
+first thing that had to be established.
+
+The ratio is the uncomfortable part:
+
+```
+cow_resolved      = 362      every resolution
+copied            = 182      those that actually copied a frame
+cow_copy_changed  =  40      caught, with every single copy corrupted
+```
+
+Two things make it miss:
+
+- **180 of 362 resolutions never copy.** The sole-owner fast path grants write
+  on the *same* frame, so the fold compares a frame with itself. Zero there is
+  an arithmetic identity, not a result.
+- **Of the 182 that do copy, 22% were caught.** Zeroing the first quadword only
+  moves the fold when that quadword was not already zero, and most freshly
+  faulted pages are largely empty.
+
+So `cow_copy_changed=0` on a clean build is **much weaker aggregate evidence than
+it appears**, and the earlier statement that "the copy is faithful" was claimed
+at a strength the instrument does not support.
+
+**The inference about this defect survives, for a different reason than
+sensitivity.** The bytes lost on the page in question are `STRESS_OK rounds` -
+definitively non-zero text. Had the resolution dropped them, `fold_before` would
+have carried them and `fold_after` would not, and the fold would have fired on
+that page whatever its average sensitivity is. It did not. So the resolution did
+not lose them *there*. That is a claim about one page and one fault, and it is
+all the fold can support.
+
+### And a coverage hole worth more than the measurement
+
+**The boot passed green with `copy_frame` sabotaged.** Every copy-on-write copy
+in the system losing its first eight bytes, and the gate reported
+`cli_and_network_verified`. Forty corrupted pages went by without a single
+assertion noticing.
+
+That is a bigger finding than anything above: the machine has no check that
+copy-on-write preserves what it copies. `cow_copy_changed` is now that check,
+and it is the reason to keep it rather than treat it as investigation
+scaffolding.
 
 ## Two things this corrected in the tree
 

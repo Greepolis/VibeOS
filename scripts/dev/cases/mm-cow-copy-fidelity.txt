@@ -1,0 +1,74 @@
+# Does copy-on-write copy what it says it copies?
+#
+# Nothing in this machine checked. A sabotage that makes every copy-on-write
+# copy drop its first eight bytes booted **green** - cli_and_network_verified,
+# every existing assertion satisfied, forty corrupted pages unremarked.
+#
+# That is the gap this file exists for, and it is larger than the defect it was
+# found while chasing.
+
+# ---- the instrument --------------------------------------------------------
+#
+# A fold of the whole page, read through the faulting virtual address before and
+# after vibeos_vmspace_fault resolves it. Before the resolution the address
+# reaches the shared frame; after, it reaches whatever the resolution installed.
+# If those differ, the resolution changed the page's contents, which a copy must
+# not do.
+#
+# A fold rather than a byte sample. Guessing which offset matters is how a
+# detector ends up measuring its own assumption - the same session had a frame
+# ownership probe that asked for `owners != 0` and reported 1000 frames of 1000,
+# because frame_take sets one owner when it hands a frame out.
+
+# ---- what it can and cannot see, measured rather than assumed --------------
+#
+# With copy_frame sabotaged so that *every* copy drops its first quadword:
+#
+#   cow_resolved      = 362   resolutions of any kind
+#   copied            = 182   those that actually copied a frame
+#   cow_copy_changed  =  40   caught
+#
+# 180 resolutions never copy at all: the sole-owner fast path grants write on
+# the same frame, so the fold compares a frame with itself and is zero by
+# construction. Of the 182 real copies, 22% were caught - zeroing the first
+# quadword only moves the fold when that quadword was not already zero, and a
+# freshly faulted page is mostly zeros.
+#
+# So a zero here is weak aggregate evidence and must not be read as "the copy is
+# faithful". It is strong for a *specific* page whose lost bytes are known to be
+# non-zero, and that is the only way this detector was used to conclude
+# anything: see mm_lost_store_smp.md.
+
+case: copy_frame drops a quadword
+  in kernel/mm/vmspace.c, add `d[0] = 0ull;` after the copy loop
+  RUN: 40 COW_COPY_CHANGED lines in one boot, cow_copy_changed=0x28 - and the
+    boot still reports status=pass, because nothing else in the machine checks
+    this. That is the case's whole point.
+  why it matters: it is the only demonstration that this detector can fire.
+    Without it, cow_copy_changed=0 and a counter nothing increments are
+    indistinguishable, which is exactly the state VIBEOS_BLK_TIMEOUT was in for
+    as long as it existed.
+
+case: copy_frame does not copy at all
+  replace the copy loop body with nothing
+  expect: far more than 40 - every copied page differs wherever it held data -
+    and, once cow_copy_changed is asserted, a red boot
+  why it matters: separates "the copy is wrong" from "the copy is subtly wrong".
+    The first should be unmissable and currently is not.
+
+case: the fold is taken only after the resolution
+  drop the fold_before loop and compare fold_after against zero
+  expect: it fires on essentially every fault, which reads as a catastrophic
+    defect and is the detector describing a page's ordinary contents
+  why it matters: a detector that fires on everything is reporting its own
+    baseline, and this project has lost a phase to exactly that - 3019
+    use-after-frees in a boot with none. The before/after pair is what makes
+    the number mean something.
+
+# ---- not yet asserted, deliberately ----------------------------------------
+#
+# cow_copy_changed is reported and not in the gate's must-be-zero set yet. It
+# reads zero today, so asserting it would be safe - but the boot it has to
+# survive is one where ring3_write_nul is non-zero three to five times in ten,
+# and adding a second assertion to an investigation still in flight makes the
+# next failure ambiguous. It goes in with the fix.

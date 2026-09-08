@@ -638,6 +638,8 @@ static uint64_t g_cow_ring_at;
 /* Copy-on-write resolutions after which the page's contents changed.
  * A copy that is a copy leaves this at zero. */
 static uint64_t g_cow_copy_changed;
+/* Copy-on-write faults resolved, of any kind. See the fold. */
+static uint64_t g_cow_resolved;
 extern int vibeos_x86_64_fat_vfs_mount(vibeos_fsmount_t *mnt);
 
 extern void vibeos_x86_64_keyboard_irq(void);
@@ -6413,6 +6415,16 @@ static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code,
             for (q = 0; q < 512u; q++) {
                 fold_after = (fold_after * 31ull) ^ pg[q];
             }
+            /* Every resolution, so the fold's zero can be read against how
+             * many of them could have moved it.
+             *
+             * The sole-owner fast path grants write on the *same* frame - no
+             * copy at all - and there the fold compares a frame with itself
+             * and is zero by construction. mm_stats already counts the copies
+             * (`copied` on the COW_STATS line); this counts the resolutions.
+             * The difference between the two is the number of faults for which
+             * cow_copy_changed could never have been anything but zero. */
+            __sync_fetch_and_add(&g_cow_resolved, 1ull);
             if (fold_after != fold_before) {
                 g_cow_copy_changed++;
                 vibeos_x86_64_serial_lock();
@@ -10149,6 +10161,8 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
         vibeos_x86_64_serial_print_hex(g_ring3_write_nul);
         vibeos_x86_64_serial_puts(" cow_copy_changed=0x");
         vibeos_x86_64_serial_print_hex(g_cow_copy_changed);
+        vibeos_x86_64_serial_puts(" cow_resolved=0x");
+        vibeos_x86_64_serial_print_hex(g_cow_resolved);
         vibeos_x86_64_serial_puts(" guard_at=0x");
         vibeos_x86_64_serial_print_hex(g_gui_guard);
         vibeos_x86_64_serial_puts("\n[PERF] syscalls=0x");
