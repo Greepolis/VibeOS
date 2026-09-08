@@ -1504,6 +1504,70 @@ def main():
                     if value != 0:
                         problems.append(f"io_{name}={value}")
 
+            # The three hot paths (core plan C0).
+            #
+            # This kernel had no performance measurement of any kind until now,
+            # so the refactor that adds indirect calls to the syscall, fault and
+            # switch paths could not have been shown not to cost anything.
+            #
+            # Asserted: the counts are non-zero. That is deliberately weak and
+            # it is the assertion this project keeps needing - VIBEOS_BLK_TIMEOUT
+            # was defined, printed, asserted and produced by nothing, and a disk
+            # interrupt counter read zero for an hour because its hook had never
+            # been added. A counter nothing increments and a counter reporting
+            # nothing happening are indistinguishable, so before any of these
+            # numbers can be reasoned about, something has to establish they can
+            # move at all.
+            #
+            # Nothing else is asserted yet, and the reason is a measurement
+            # rather than caution. The counts were expected to be deterministic
+            # and to be the ratchetable half; two boots gave 1416/1381 syscalls,
+            # 396/378 faults, 516/497 switches. They move three to four per cent
+            # because service interleaving decides what the machine does. So a
+            # ratchet needs a band, and a band needs a characterised spread -
+            # which is the mistake the memory manager's P2 made from the other
+            # direction, judging a change against a background nobody had
+            # measured. The numbers are printed every run so that spread can be
+            # collected; the threshold is a separate decision, made here, in the
+            # change that earns it.
+            pf = re.search(r"\[PERF\] syscalls=0x([0-9a-f]{16}) "
+                           r"syscall_cycles=0x([0-9a-f]{16}) "
+                           r"syscall_min=0x([0-9a-f]{16}) "
+                           r"faults=0x([0-9a-f]{16}) "
+                           r"fault_cycles=0x([0-9a-f]{16}) "
+                           r"fault_min=0x([0-9a-f]{16}) "
+                           r"switches=0x([0-9a-f]{16})", text)
+            if pf is None:
+                problems.append("perf_counters_missing")
+            else:
+                (syscalls, syscycles, sysmin, faults, faultcycles, faultmin,
+                 switches) = (int(pf.group(i), 16) for i in range(1, 8))
+                for name, value in (("syscalls", syscalls),
+                                    ("faults", faults),
+                                    ("switches", switches)):
+                    if value == 0:
+                        problems.append(f"perf_{name}_never_counted")
+                # Cycles without events, or events with no cycles, means one of
+                # the two reads is not happening - the pair is what makes a mean
+                # meaningful, and half of it is worse than neither.
+                if syscalls != 0 and syscycles == 0:
+                    problems.append("perf_syscall_cycles_never_accumulated")
+                if faults != 0 and faultcycles == 0:
+                    problems.append("perf_fault_cycles_never_accumulated")
+                # Printed rather than asserted. The mean is not a baseline: a
+                # syscall that blocks is timed across the block, so this number
+                # is dominated by waitpid and read rather than by dispatch cost.
+                # The minimum on the same line is the robust one - the fastest
+                # observed traversal of the path, which is what an added lookup
+                # would move and what a blocked task cannot inflate.
+                print("[QEMU-CLI] perf syscalls=%d min=%d mean=%d | "
+                      "faults=%d min=%d mean=%d | switches=%d"
+                      % (syscalls, sysmin, syscycles // syscalls if syscalls
+                         else 0,
+                         faults, faultmin, faultcycles // faults if faults
+                         else 0,
+                         switches), flush=True)
+
             # Which disk the boot volume was found on, and that it was found by
             # looking rather than by assuming.
             #

@@ -1,0 +1,60 @@
+# The three hot paths, counted and timed (core plan C0).
+#
+# There was no performance measurement in this kernel of any kind before this -
+# no benchmark, no timing, no budget, no gate. The counters exist so that the
+# core refactor, which adds indirect calls to the syscall, fault and switch
+# paths, can be shown not to have cost anything. Without them any such claim,
+# including a reassuring one, would be invented.
+#
+# Six boots of baseline are in docs/implementation_progress/core_perf_baseline.md
+# and the short version is that the spread is wide: syscalls 4.7%, faults 18%,
+# switches 21%, and the syscall minimum itself 41%. Nothing here carries a tight
+# ratchet yet, and that is a measurement rather than caution.
+
+case: a hot path is counted but never timed
+  in hw_perf_add, drop the cycles accumulation and keep the count
+  expect: reason=perf_syscall_cycles_never_accumulated
+  why it matters: half a pair is worse than neither. A count with no cycles
+    still produces a mean - zero - and a zero mean reads as a very fast path
+    rather than as a missing measurement.
+
+case: the fault path is counted but never timed
+  in the vector-14 call site, call hw_perf_add only when the fault was *not*
+    resolved, so g_perf_fault gains a count with no cycles behind it
+  expect: reason=perf_fault_cycles_never_accumulated
+  why it matters: the same defect as the syscall case above, and it needs its
+    own entry rather than being assumed covered by it - the two paths are
+    instrumented at different kinds of site, one wrapping a call and one inside
+    a branch, so a mistake in one says nothing about the other. This one was
+    caught by check-assertions-covered.py on the commit that added it, which is
+    the second time in two commits that check has earned its place.
+
+case: the syscall counter is never incremented
+  remove the hw_perf_add call from vibeos_x86_64_syscall_dispatch
+  expect: reason=perf_syscalls_never_counted
+  why it matters: this is VIBEOS_BLK_TIMEOUT's shape, and the shape of the disk
+    interrupt counter that read zero for an hour because its dispatcher hook had
+    never been added - which sent four measurements in the wrong direction. A
+    counter nothing increments and a counter reporting nothing happening are
+    indistinguishable, and this is the case that tells them apart.
+
+case: the PERF line is not printed
+  delete the [PERF] block from the end-of-boot report
+  expect: reason=perf_counters_missing
+  why it matters: the numbers are only useful if something outside the kernel
+    reads them. The boot gate has been recording phase_history since it existed
+    and nothing has ever read it; that is the failure this case exists to keep
+    from repeating with a second set of numbers.
+
+case: the minimum is a plain compare-and-store
+  in hw_perf_add, replace the compare-exchange loop with `if (took < p->min)
+    p->min = took;`
+  expect: no gate failure, and a minimum that silently reports another core's
+    sample under load
+  why it matters: four cores are in that function. This is the copy-on-write
+    refcount defect in miniature - a lost update on a shared word - and it is
+    recorded as a case this environment cannot turn red rather than as one that
+    works, because a race that rarely fires cannot be asserted on in one boot.
+    The distinction between "no case exists" and "the case exists and this
+    environment cannot tell" is one this project already keeps for the AHCI
+    register cases.

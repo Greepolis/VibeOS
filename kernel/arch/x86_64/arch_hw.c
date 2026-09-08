@@ -1293,6 +1293,98 @@ static void hw_lock_deadlock(hw_lock_t *lock, const char *waiter,
 }
 
 
+/* ---- the three hot paths, counted and timed (core plan C0) -----------------
+ *
+ * This kernel had no performance measurement of any kind. Not a benchmark, not
+ * a timing, not a budget - so every statement anybody could make about its
+ * speed, including a reassuring one, was invented. The core refactor adds
+ * indirect calls to paths that run thousands of times a boot, and without a
+ * baseline it could not be shown *not* to have cost anything.
+ *
+ * What the first two measured boots actually showed, which is not what this
+ * comment said before they were taken:
+ *
+ *   syscalls 1416 / 1381   faults 396 / 378   switches 516 / 497
+ *
+ * The counts were going to be described here as deterministic, and ratcheted on
+ * that basis. They are not - they move three to four per cent boot to boot,
+ * because what the machine does depends on how the services interleave. So
+ * neither the counts nor the cycles can be ratcheted from a single sample, and
+ * the gate asserts only that they are non-zero until the spread is known. That
+ * is the same mistake the memory manager's P2 made, caught this time by taking
+ * a second measurement before writing the criterion rather than after.
+ *
+ * The **cycles** are noisier still, and the mean is not a baseline at all: a
+ * syscall that blocks is timed across the block, so the first boot read 46
+ * million cycles per syscall and was reporting how long waitpid waited. The
+ * minimum is the usable one - 728 cycles for a syscall, against a mean sixty
+ * thousand times larger. A blocked task cannot lower a minimum, and an added
+ * lookup or lock on the path raises it.
+ *
+ * The fault minimum came out at 808,000 cycles, which is large enough to be
+ * worth a note rather than an explanation: the copy-on-write fault sends a TLB
+ * shootdown IPI and waits for the acknowledgements, so most of that is likely
+ * the round trip. Likely, not measured - under TCG the emulated cost of an IPI
+ * bears no fixed relation to a real one, and this is exactly the kind of number
+ * this project has a rule against reasoning about without a second source.
+ *
+ * Cost of the instrumentation itself: two rdtsc and one atomic add per event.
+ * Under TCG that is far below the cost of the event being measured. On metal it
+ * would be worth revisiting, and this comment is the note saying so. */
+typedef struct {
+    uint64_t count;
+    uint64_t cycles;
+    /* The fastest traversal seen, and the only one of these three that is a
+     * baseline.
+     *
+     * The mean is not: a syscall that blocks is timed across the block, so on
+     * the first measured boot it read 46 million cycles per syscall and was
+     * reporting how long waitpid waited rather than what dispatch costs. That
+     * number would have moved with anything that changed scheduling, which is
+     * the opposite of what a performance ratchet is for.
+     *
+     * The minimum cannot be inflated by a blocked task, and an added lookup or
+     * lock on the path moves it. Both are kept: the mean is still worth reading
+     * next to the minimum, because the two diverging is itself information. */
+    uint64_t min;
+} hw_perf_t;
+
+static hw_perf_t g_perf_syscall;
+static hw_perf_t g_perf_fault;
+static hw_perf_t g_perf_switch;
+
+static inline uint64_t hw_tsc(void) {
+    uint32_t lo, hi;
+    __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+/* Atomic because all four cores take syscalls and faults. A lost increment here
+ * would be the same defect the copy-on-write refcounts had, with a much smaller
+ * blast radius - but a counter that is wrong is worse than no counter, because
+ * this project's whole method is believing them. */
+static inline void hw_perf_add(hw_perf_t *p, uint64_t started) {
+    uint64_t took = hw_tsc() - started;
+    uint64_t seen;
+
+    __sync_fetch_and_add(&p->count, 1ull);
+    __sync_fetch_and_add(&p->cycles, took);
+    /* Compare-exchange rather than a read and a store: four cores are in here,
+     * and a lost minimum is a number that silently reports somebody else's
+     * sample. The loop retries only when another core lowered it in between,
+     * which by construction cannot spin for long - each iteration means the
+     * value strictly decreased. */
+    for (;;) {
+        seen = p->min;
+        if (seen != 0ull && took >= seen) {
+            break;
+        }
+        if (__sync_bool_compare_and_swap(&p->min, seen, took)) {
+            break;
+        }
+    }
+}
+
 /* Linux x86-64 syscall front end; defined after the task/address-space code
  * because it validates user pointers against the calling task's page tables. */
 long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame, uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3);
@@ -1430,9 +1522,20 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
      * leaves both processes pointing at the same read-only frame, and this is
      * where the copy actually happens. Resolved faults must be handled before
      * anything is reported, or every fork would look like a crash. */
-    if (frame->vector == 14u && hw_handle_cow_fault(fault_address, frame->error_code,
-                                                    frame->rip)) {
-        return;
+    if (frame->vector == 14u) {
+        /* Timed and counted here rather than inside hw_handle_cow_fault, which
+         * has five returns: at the call site the measurement is one pair of
+         * reads and cannot miss an exit path. Counted only when the fault was
+         * *resolved* - an unresolved one ends in a kill or a panic, and folding
+         * those into the same number would make the mean drift with how often
+         * the machine crashed rather than with how fast it faults. */
+        uint64_t t0 = hw_tsc();
+        int resolved = hw_handle_cow_fault(fault_address, frame->error_code,
+                                           frame->rip);
+        if (resolved) {
+            hw_perf_add(&g_perf_fault, t0);
+            return;
+        }
     }
 
     /* A fault report is many small writes; keep another core from splitting it. */
@@ -4384,6 +4487,14 @@ static void hw_keyboard_wake(void) {
  * base the previous occupant of the CPU left behind, which is a fault if that
  * was zero and someone else's thread state if it was not. */
 static void hw_task_load_cpu_state(int idx) {
+    /* Counted, not timed. This function *is* the switch - it ends by installing
+     * cr3 and returning into the next task - so there is no second point at
+     * which to stop a clock: the cycles after the cr3 write belong to whoever
+     * runs next. A count is still the number that matters here, because what
+     * the refactor could change is how often the machine switches, and that is
+     * deterministic. */
+    __sync_fetch_and_add(&g_perf_switch.count, 1ull);
+
     /* Refuse to install an address space that no longer maps the kernel.
      *
      * This is the check that turned the intermittent wedge from a mystery into
@@ -9248,8 +9359,13 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
 /* Entry point for the `syscall` trampoline (isr.S): pull the Linux ABI
  * arguments out of the trapframe and store the result back into rax. */
 void vibeos_x86_64_syscall_dispatch(vibeos_x86_64_isr_frame_t *frame) {
+    /* Timed here rather than inside vibeos_x86_64_linux_syscall, because what
+     * the refactor will change is the *dispatch* - the classify/marshal step an
+     * ABI translator adds - and measuring only the handler would miss it. */
+    uint64_t t0 = hw_tsc();
     long result = vibeos_x86_64_linux_syscall(frame, frame->rax, frame->rdi,
                                               frame->rsi, frame->rdx);
+    hw_perf_add(&g_perf_syscall, t0);
     /* rt_sigreturn has already rewritten the whole frame, including rax, to
      * the state the handler interrupted. Overwriting it with a return value
      * would discard exactly what the call exists to restore. */
@@ -9788,6 +9904,23 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
         vibeos_x86_64_serial_print_hex(translated);
         vibeos_x86_64_serial_puts(" denied=0x");
         vibeos_x86_64_serial_print_hex(denied);
+        /* The hot paths. One critical section for the whole line: it is built
+         * from ten calls that each take the console lock on their own, and a
+         * line assembled from ten of those is ten critical sections. */
+        vibeos_x86_64_serial_puts("\n[PERF] syscalls=0x");
+        vibeos_x86_64_serial_print_hex(g_perf_syscall.count);
+        vibeos_x86_64_serial_puts(" syscall_cycles=0x");
+        vibeos_x86_64_serial_print_hex(g_perf_syscall.cycles);
+        vibeos_x86_64_serial_puts(" syscall_min=0x");
+        vibeos_x86_64_serial_print_hex(g_perf_syscall.min);
+        vibeos_x86_64_serial_puts(" faults=0x");
+        vibeos_x86_64_serial_print_hex(g_perf_fault.count);
+        vibeos_x86_64_serial_puts(" fault_cycles=0x");
+        vibeos_x86_64_serial_print_hex(g_perf_fault.cycles);
+        vibeos_x86_64_serial_puts(" fault_min=0x");
+        vibeos_x86_64_serial_print_hex(g_perf_fault.min);
+        vibeos_x86_64_serial_puts(" switches=0x");
+        vibeos_x86_64_serial_print_hex(g_perf_switch.count);
         vibeos_x86_64_serial_puts("\n");
     }
 }
