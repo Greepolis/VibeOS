@@ -2706,6 +2706,14 @@ static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
                 if (vibeos_vmspace_init(&vb) != 0) {
                     ok = 0;
                 }
+                /* So the layer's "which operation is this core inside" field
+                 * is per core rather than a global every core overwrites. It
+                 * was a global, and a CI failure was read through it this week
+                 * - the value may have been another core's. Registered here
+                 * beside the backend, because a layer that reports per-core
+                 * facts and is never told which core it is on reports slot 0
+                 * for everybody, which is worse than reporting nothing. */
+                vibeos_vmspace_set_cpu_id(vibeos_x86_64_cpu_id);
             }
             /* The bump allocator is closed, not merely unused.
              *

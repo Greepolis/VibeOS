@@ -32,12 +32,40 @@
 
 static vibeos_vmspace_backend_t g_be;
 
-/* See vibeos_vmspace_current_op. One store per entry point; no lock, because a
- * lock here would change the very timing being investigated. */
-static const char *g_op = "none";
+/* Which operation this core is inside, for the diagnostics that report a frame
+ * being released under a live mapping.
+ *
+ * Per core, and that is not tidiness. It was one global written by ten entry
+ * points from every core, so `FREE_WHILE_MAPPED ... during cow-fault` named
+ * whatever operation *some* core had most recently begun. A CI failure was read
+ * with that field this week and the reading may simply have been another core's
+ * word - which is the same defect as the mapper count that two cores overwrote,
+ * in the same subsystem, in a diagnostic rather than in the kernel.
+ *
+ * The core identity is registered rather than assumed, as the log sink's is:
+ * this file is portable and has no business knowing how a CPU says who it is.
+ * Before anything registers, everything lands in slot 0, which is correct on
+ * the boot processor and honest everywhere else. */
+#define VMSPACE_MAX_CPUS 8u
+static const char *g_op_by_cpu[VMSPACE_MAX_CPUS] = {"none"};
+static uint32_t (*g_cpu_id)(void);
+
+void vibeos_vmspace_set_cpu_id(uint32_t (*fn)(void)) {
+    g_cpu_id = fn;
+}
+
+static uint32_t vm_cpu(void) {
+    uint32_t id = g_cpu_id ? g_cpu_id() : 0u;
+    return (id < VMSPACE_MAX_CPUS) ? id : 0u;
+}
+
+static void vm_op(const char *what) {
+    g_op_by_cpu[vm_cpu()] = what;
+}
 
 const char *vibeos_vmspace_current_op(void) {
-    return g_op ? g_op : "none";
+    const char *op = g_op_by_cpu[vm_cpu()];
+    return op ? op : "none";
 }
 static int g_ready;
 
@@ -295,7 +323,7 @@ static void release_pd(uint64_t *pd, const uint64_t *shared) {
 
 int vibeos_vmspace_destroy(vibeos_vmspace_t *as) {
     uint32_t slot, gi;
-    g_op = "destroy";
+    vm_op("destroy");
 
     if (!g_ready || !as || !as->root) {
         return -1;
@@ -370,7 +398,7 @@ int vibeos_vmspace_map(vibeos_vmspace_t *as, uint64_t va, uint64_t pa,
 int vibeos_vmspace_map_raw(vibeos_vmspace_t *as, uint64_t va, uint64_t pa,
                            uint64_t leaf) {
     uint64_t *pte = 0;
-    g_op = "map";
+    vm_op("map");
 
     if (!g_ready || !as || !as->root || (va & 0xFFFull) || (pa & 0xFFFull)) {
         return -1;
@@ -466,8 +494,8 @@ int vibeos_vmspace_map_raw(vibeos_vmspace_t *as, uint64_t va, uint64_t pa,
 int vibeos_vmspace_protect(vibeos_vmspace_t *as, uint64_t va,
                            vibeos_prot_t prot) {
     uint64_t *pte;
-    g_op = "protect";
-    uint64_t before;
+    vm_op("protect");
+    uint64_t before, installed = 0;
 
     if (!g_ready || !as || !as->root) {
         return -1;
@@ -476,21 +504,48 @@ int vibeos_vmspace_protect(vibeos_vmspace_t *as, uint64_t va,
     if (!pte || (*pte & PTE_PRESENT) == 0u) {
         return -1;   /* not mapped: a permission change is not a mapping */
     }
-    before = *pte;
+    /* Compare-exchange, not read-modify-write.
+     *
+     * This used to be four plain accesses - read `before`, clear two bits, set
+     * two more - and every one of them raced a copy-on-write fault on another
+     * core. The permission bits are the small half of that. The large half is
+     * that a fault installs a *different physical address*, so a store built
+     * from a value read before it lands puts the old frame back into the entry:
+     * the mapping then points at a frame the fault has already released, which
+     * is a page reclaimed while a live process maps it.
+     *
+     * The copy-on-write bit is re-read each attempt for the same reason. It was
+     * sampled once into `before` and consulted afterwards, so a page that
+     * became shared during the call could be granted write and stop being
+     * copy-on-write without anything copying it.
+     *
+     * The loop cannot spin: each turn either wins or observes a value another
+     * core stored, and the paths that store here are bounded per fault. */
+    for (;;) {
+        uint64_t desired;
 
-    /* Reachability and writability are two separate bits and this decides both.
-     * Only the write bit used to be touched, on the assumption that anything
-     * mapped was already reachable from ring 3 - which stopped being true when
-     * a PROT_NONE region became a real mapping with PTE_USER deliberately
-     * clear. The page then stayed present and unreachable, and a thread that
-     * had just been given a stack faulted on its first write to it. */
-    *pte &= ~(PTE_USER | PTE_WRITE);
-    if (prot != VIBEOS_PROT_NONE) {
-        if (prot & VIBEOS_PROT_USER) {
-            *pte |= PTE_USER;
+        before = __atomic_load_n(pte, __ATOMIC_ACQUIRE);
+        if ((before & PTE_PRESENT) == 0u) {
+            return -1;   /* unmapped under us: not a permission change */
         }
-        if ((prot & VIBEOS_PROT_WRITE) && (before & PTE_COW_BIT) == 0u) {
-            *pte |= PTE_WRITE;
+        desired = before & ~(PTE_USER | PTE_WRITE);
+        if (prot != VIBEOS_PROT_NONE) {
+            if (prot & VIBEOS_PROT_USER) {
+                desired |= PTE_USER;
+            }
+            if ((prot & VIBEOS_PROT_WRITE) && (before & PTE_COW_BIT) == 0u) {
+                desired |= PTE_WRITE;
+            }
+        }
+        if (__atomic_compare_exchange_n(pte, &before, desired, 0,
+                                        __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+            /* The exchange installed `desired`; nothing else may be stored
+             * here. A "confirming" store after a winning compare-exchange is
+             * the original defect wearing a fix's clothes - it overwrites
+             * whatever another core did in between - and it was written into
+             * this function before being caught on the next read. */
+            installed = desired;
+            break;
         }
     }
 
@@ -500,8 +555,12 @@ int vibeos_vmspace_protect(vibeos_vmspace_t *as, uint64_t va,
     /* Narrowing needs the other cores told; widening does not, because a stale
      * entry that is more restrictive only costs a spurious fault, and the fault
      * handler recognises an already-permitted access and simply invalidates. */
+    /* Against what this call installed, not against a fresh read of the entry.
+     * Re-reading asks "is it narrower than before *now*", which another core
+     * can have changed again - and the question that decides whether the other
+     * cores must be told is whether *this* change narrowed anything. */
     if (g_be.shootdown && (before & (PTE_USER | PTE_WRITE)) &
-                          ~(*pte & (PTE_USER | PTE_WRITE))) {
+                          ~(installed & (PTE_USER | PTE_WRITE))) {
         g_be.shootdown(as->root_phys);
     }
     return 0;
@@ -510,7 +569,7 @@ int vibeos_vmspace_protect(vibeos_vmspace_t *as, uint64_t va,
 int vibeos_vmspace_unmap(vibeos_vmspace_t *as, uint64_t va) {
     uint64_t *pte;
     uint64_t entry;
-    g_op = "unmap";
+    vm_op("unmap");
 
     if (!g_ready || !as || !as->root) {
         return -1;
@@ -636,30 +695,50 @@ static int clone_one(vibeos_vmspace_t *src, uint64_t va, uint64_t *pte, void *ct
      * the third case drops the mark, and the page becomes permanently
      * unwritable for everyone - a shell that runs two commands and dies on the
      * third. */
-    if (entry & PTE_WRITE) {
-        uint64_t expected = entry;
-        uint64_t desired = (entry & ~PTE_WRITE) | PTE_COW_BIT;
+    /* Retry until the entry this child is built from is one this call put
+     * there, or one it does not need to change.
+     *
+     * The failure branch used to *adopt* whatever the losing exchange found and
+     * carry on. That is correct only if the new value is still shareable, and
+     * the value the fault path installs most often is not: the sole-owner fast
+     * path makes the entry writable and private, with no copy-on-write mark.
+     * Adopting that maps the child read-only and **unmarked** on a frame the
+     * parent now writes freely, which breaks the guarantee fork exists to make
+     * in two directions at once -
+     *
+     *   the parent's stores land in memory the child can see, and
+     *   the child's first store faults on an entry with no COW bit, which the
+     *   fault handler correctly reads as a protection violation and kills it
+     *   for touching memory it owns.
+     *
+     * Looping instead converts that entry to copy-on-write like any other, so
+     * parent and child leave here marked the same way.
+     *
+     * It terminates: each turn either wins the exchange or observes a value
+     * another core stored, and the stores that reach this entry are bounded by
+     * the faults in flight on it. An entry that stops being present is left
+     * alone - unmapped under a fork is not this function's to resolve. */
+    for (;;) {
+        uint64_t desired;
 
-        flags |= PTE_COW_BIT;
-        if (!__atomic_compare_exchange_n(pte, &expected, desired, 0,
-                                         __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
-            /* Another core changed this entry between the read and here - a
-             * thread of the same process resolving its own fault on it. Take
-             * what is there now rather than storing a stale value back, which
-             * would reinstate a frame the other core has already stopped
-             * pointing at and released. */
-            entry = expected;
-            phys = entry & PTE_ADDR_MASK;
-            flags = entry & (PTE_PRESENT | PTE_USER);
-            if (entry & PTE_COW_BIT) {
-                flags |= PTE_COW_BIT;
-            }
+        if ((entry & PTE_PRESENT) == 0u || (entry & PTE_WRITE) == 0u) {
+            break;   /* nothing to convert: shared as it stands */
         }
+        desired = (entry & ~PTE_WRITE) | PTE_COW_BIT;
+        if (__atomic_compare_exchange_n(pte, &entry, desired, 0,
+                                        __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+            entry = desired;
+            break;
+        }
+        /* `entry` now holds what is really there; decide again against it. */
+    }
+    phys = entry & PTE_ADDR_MASK;
+    flags = entry & (PTE_PRESENT | PTE_USER);
+    if (entry & PTE_COW_BIT) {
+        flags |= PTE_COW_BIT;
         if (g_be.invlpg) {
             g_be.invlpg(va);
         }
-    } else if (entry & PTE_COW_BIT) {
-        flags |= PTE_COW_BIT;
     }
 
     /* The reference is taken by the mapping, as it is everywhere else. There is
@@ -749,7 +828,7 @@ static int audit_one(vibeos_vmspace_t *as, uint64_t va, uint64_t *pte,
 }
 
 int vibeos_vmspace_clone_cow(vibeos_vmspace_t *dst, vibeos_vmspace_t *src) {
-    g_op = "fork";
+    vm_op("fork");
     if (!g_ready || !dst || !src || !dst->root || !src->root) {
         return -1;
     }
@@ -793,6 +872,7 @@ static int copy_frame(uint64_t dst, uint64_t src) {
 
 static void (*g_race_hook)(uint64_t phys);
 
+
 void vibeos_vmspace_set_race_hook(void (*fn)(uint64_t phys)) {
     g_race_hook = fn;
 }
@@ -801,7 +881,7 @@ int vibeos_vmspace_fault(vibeos_vmspace_t *as, uint64_t va, int write) {
     uint64_t *pte;
     uint64_t entry, expected, desired, phys, fresh;
 
-    g_op = "cow-fault";
+    vm_op("cow-fault");
     if (!g_ready || !as || !as->root || !write) {
         return 0;
     }
@@ -987,7 +1067,7 @@ int64_t vibeos_vmspace_swap_slot(vibeos_vmspace_t *as, uint64_t va) {
 int vibeos_vmspace_swap_out(vibeos_vmspace_t *as, uint64_t va, uint32_t slot) {
     uint64_t *pte, entry, phys, desired;
 
-    g_op = "swap-out";
+    vm_op("swap-out");
     if (!g_ready || !as || !as->root) {
         return -1;
     }
@@ -1057,7 +1137,7 @@ int vibeos_vmspace_swap_in(vibeos_vmspace_t *as, uint64_t va, uint64_t frame) {
     uint64_t *pte, entry, desired;
     uint32_t slot;
 
-    g_op = "swap-in";
+    vm_op("swap-in");
     if (!g_ready || !as || !as->root || frame == 0ull) {
         return -1;
     }
@@ -1107,7 +1187,7 @@ int vibeos_vmspace_move_frame(uint64_t old_phys, uint64_t new_phys) {
     vibeos_rmap_holder_t holders[MOVE_MAX_HOLDERS];
     uint32_t n, i, total;
 
-    g_op = "compact";
+    vm_op("compact");
     if (!g_ready || old_phys == new_phys) {
         return -1;
     }

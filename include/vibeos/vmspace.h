@@ -112,6 +112,16 @@ int vibeos_vmspace_init(const vibeos_vmspace_backend_t *backend);
  * right costs one store and beats a correct silence. */
 const char *vibeos_vmspace_current_op(void);
 
+/* Who this core is, for the line above.
+ *
+ * Registered rather than assumed: this layer is portable and has no business
+ * knowing how a CPU reports its own identity. Registration rather than a weak
+ * symbol, because a weak definition does not resolve across objects under
+ * PE/COFF and the Windows job proved it. Until something registers, every core
+ * answers 0 - correct on the boot processor, and honest rather than wrong
+ * elsewhere. */
+void vibeos_vmspace_set_cpu_id(uint32_t (*fn)(void));
+
 /* A fresh address space sharing the kernel's identity map. */
 int vibeos_vmspace_create(vibeos_vmspace_t *out);
 
@@ -275,6 +285,7 @@ int64_t vibeos_vmspace_swap_slot(vibeos_vmspace_t *as, uint64_t va);
  * here because the alternative is asserting on a race through boot counts, and
  * this project has already learned what that costs. */
 void vibeos_vmspace_set_race_hook(void (*fn)(uint64_t phys));
+
 
 int vibeos_vmspace_fault(vibeos_vmspace_t *as, uint64_t va, int write);
 

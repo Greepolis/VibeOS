@@ -6,6 +6,20 @@ static uintptr_t align_up(uintptr_t value, size_t align) {
         return value;
     }
     mask = (uintptr_t)(align - 1u);
+    /* Saturate rather than wrap.
+     *
+     * The values here come from a UEFI memory map, so they are somebody else's
+     * numbers and the top of the address space is a legal thing for one of them
+     * to name. `value + mask` wrapping turns a high address into a low one, and
+     * a low one is not refused anywhere below - it is a region base the
+     * allocator would hand out. The ELF parser already treats its input this
+     * way; the memory map is no less external.
+     *
+     * Returning UINTPTR_MAX makes every later size and bound computation
+     * refuse, which is the direction this subsystem chooses on purpose. */
+    if (value > (uintptr_t)(~(uintptr_t)0) - mask) {
+        return (uintptr_t)(~(uintptr_t)0);
+    }
     return (value + mask) & ~mask;
 }
 
