@@ -1,0 +1,48 @@
+# Every security check declares how many call sites it has (core plan C1).
+#
+# These are choke points *because* they are called from one place per path and
+# defined once. Every security-relevant defect review has found in this project
+# was in arch_hw.c, and that is a consequence of its size rather than a
+# coincidence: in one scope with no boundaries, a check that should apply
+# everywhere is easy to forget in one place and nothing notices.
+#
+# C4 moves 4,169 lines of syscall handlers out of that file - the operation that
+# turns one choke point into two, where the second one forgets a case.
+
+# ---- asserted in both directions, and the second one is the point ----------
+#
+# Up is the obvious failure: a handler is copied, its guard is copied, the two
+# drift.
+#
+# Down is the likely one. hw_user_range_ok has 44 sites because every syscall
+# taking a user pointer validates through it, and a syscall that quietly stops
+# validating is a hole rather than a tidy-up. Nothing else in the tree sees it.
+
+case: a hw_user_range_ok call site disappears
+  in linux_socket.c, replace one call with a constant true
+  RUN: red - "44 call sites, declared 45 - FEWER than declared", naming the
+    guard and why it matters
+  why it matters: it is the shape of a real hole. A syscall that stops checking
+    a user pointer looks like working code and reads like a simplification.
+
+case: a second hw_signal_permitted call site appears
+  add any function that calls it
+  RUN: red - "6 call sites, declared 5 - more than declared"
+  why it matters: two call sites are two places to forget a case, and this is
+    the file where every security defect here has been found. The check does not
+    forbid the second site; it makes somebody write down that they meant it.
+
+case: the declared count is edited to match instead of the change being examined
+  update the number in check-chokepoints.py without looking at what moved
+  expect: green, and the check has been turned off for that guard
+  why it matters: the honest failure mode of every ratchet in this project, and
+    the reason the failure message says "in the same commit". A number raised as
+    a reflex is the mm-layering allowance sitting red and unread for a phase.
+
+# ---- what it cannot judge, stated rather than worked around ----------------
+#
+# It counts textual occurrences, not calls: a name in a comment counts, a call
+# through a function pointer does not. Every guard here is called by name today.
+# A tool that guessed would produce the confidently wrong answer this project
+# distrusts - the same reason check-reachable.py asks "is it named anywhere"
+# rather than building a call graph it would have to fake.

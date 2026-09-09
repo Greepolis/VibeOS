@@ -786,7 +786,7 @@ static void hw_panic_cpu_summary(void);   /* defined with the task table */
  * found. It is a local now, returned to the caller. */
 
 static int hw_frame_still_mapped(uint64_t phys, uint32_t *out_pid,
-                                 uint32_t *out_mappers);
+                                 uint32_t *out_mappers, uint64_t *out_va);
 /* Forward-declared for the same reason as the line above: this is one 5000-line
  * file, and a helper used before its definition compiles as an implicit
  * declaration and then fails with a confusing message about a static
@@ -2077,6 +2077,7 @@ static void hw_frame_release_watch(uint64_t phys) {
      * reporting the second read has produced a confusing message. */
     uint32_t owners_at_check = 0;
     uint32_t mappers = 0;
+    uint64_t mapped_va = 0;
 
     /* Sampled, and the rate is a named constant rather than a literal.
      *
@@ -2115,7 +2116,7 @@ static void hw_frame_release_watch(uint64_t phys) {
      * and is already excluded one layer down, and "a live space maps it",
      * which is the bug; one flag could not tell them apart and answered for
      * both. */
-    if (!hw_frame_still_mapped(phys, &pid, &mappers)) {
+    if (!hw_frame_still_mapped(phys, &pid, &mappers, &mapped_va)) {
         return;
     }
     /* Compare the two numbers that must agree, instead of asking whether the
@@ -2152,6 +2153,11 @@ static void hw_frame_release_watch(uint64_t phys) {
     vibeos_x86_64_serial_print_hex((uint64_t)owners_at_check);
     vibeos_x86_64_serial_puts(" owners_now=0x");
     vibeos_x86_64_serial_print_hex((uint64_t)vibeos_frame_owners(phys));
+    /* Where the surviving mapper holds it. A lost reference on a stack page, on
+     * a program's text and on a page table are three different defects, and
+     * this line is read long after the machine that produced it is gone. */
+    vibeos_x86_64_serial_puts(" at_va=0x");
+    vibeos_x86_64_serial_print_hex(mapped_va);
     vibeos_x86_64_serial_puts("\n");
     vibeos_x86_64_serial_unlock();
 }
@@ -2209,7 +2215,7 @@ void hw_free_page_why(void *p, const char *why) {
      * interrupts masked. */
     if (vibeos_frame_total() != 0ull && (++g_free_seq & 0x7u) == 0u) {
         uint32_t pid = 0;
-        if (hw_frame_still_mapped(phys, &pid, 0)) {
+        if (hw_frame_still_mapped(phys, &pid, 0, 0)) {
             hw_log(VIBEOS_LOG_ERROR, 46u, phys, (uint64_t)pid,
                    "freeing a frame that a live process still maps "
                    "(a0 = frame, a1 = pid)");
@@ -8932,8 +8938,15 @@ static const uint64_t *hw_walk_step(uint64_t entry) {
     return (const uint64_t *)(uintptr_t)next;
 }
 
+/* out_va: the virtual address the surviving mapper holds it at.
+ *
+ * "A frame is still mapped" says a reference was lost; *where* says by whom and
+ * as what. A CI failure carrying `during cow-fault mappers=1 owners=0` could be
+ * a stack page, a program's text, or a page table, and those are three different
+ * defects - the address is what separates them, and the run that produced it is
+ * gone by the time anybody reads the log. */
 static int hw_frame_still_mapped(uint64_t phys, uint32_t *out_pid,
-                                 uint32_t *out_mappers) {
+                                 uint32_t *out_mappers, uint64_t *out_va) {
     uint32_t mappers = 0;
     int t;
     /* Address spaces already walked.
@@ -9020,6 +9033,14 @@ static int hw_frame_still_mapped(uint64_t phys, uint32_t *out_pid,
                         if ((pt[k] & 0x000FFFFFFFFFF000ull) == phys) {
                             if (out_pid) {
                                 *out_pid = g_tasks[t].pid;
+                            }
+                            if (out_va) {
+                                /* Rebuilt from the walk's own indices: slot
+                                 * selects the user window, then pdpt/pd/pt. */
+                                *out_va = ((uint64_t)slot << 39) |
+                                          ((uint64_t)i << 30) |
+                                          ((uint64_t)j << 21) |
+                                          ((uint64_t)k << 12);
                             }
                             mappers++;
                         }

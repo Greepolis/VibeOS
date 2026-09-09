@@ -52,6 +52,15 @@ do_build() {
     python3 scripts/dev/check-counters-produced.py | tail -1
     # And one about the tests: every module gets an intensive nightly run.
     python3 scripts/dev/check-nightly-coverage.py | tail -1
+    # Which of the portable kernel's functions nothing reaches.
+    #
+    # Written two days before it was wired in here, and unwired for both of
+    # them - which is this project's most repeated defect committed inside the
+    # plan that names it. A check nothing runs and a check that passes are the
+    # same thing from outside.
+    python3 scripts/dev/check-reachable.py | tail -1
+    # Every security check has one call site, and a second one is noticed.
+    python3 scripts/dev/check-chokepoints.py | tail -1
     # The interpreter substitution, checked the same way and for the same
     # reason: a rule that lives only in a comment erodes one reasonable
     # looking line at a time.
