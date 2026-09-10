@@ -79,7 +79,7 @@ days; lowering it is a decision, and this is the commit that earns it.
 |---|---:|---|
 | `kernel/core/syscall.c` | 1502 | **C3's decision** — this is where the ABI vocabulary might live |
 | `kernel/proc/process.c` | 1142 | same call |
-| `kernel/core/kmain.c` | 914 | trim: `vibeos_kmain` is live, the other 17 functions are not |
+| `kernel/core/kmain.c` | 914 | **this claim was wrong** - see the second increment below |
 
 `kernel_tests.c` is 9,028 lines and still holds roughly 330 references to that
 half — most of the largest test file exercises the kernel that does not run,
@@ -87,3 +87,51 @@ which is part of why it is always green.
 
 C3 says the choice between deleting and integrating is made by asking which
 produces the smaller diff in C4. The measurement for that now exists.
+
+# Second increment: kmain.c, and the claim it corrected
+
+The previous section said `kmain.c` has "17 dead functions around one live entry
+point". **That was wrong**, and it was wrong by the exact method this file had
+just finished criticising.
+
+It came from grepping which of its functions the arch layer names. Only
+`vibeos_kmain` matched, and the conclusion drawn was that the other seventeen
+were dead. But `vibeos_kmain` *calls* them. The question "who does the arch
+layer name" answers reachability only for the first hop.
+
+A transitive closure seeded from `vibeos_kmain` alone reaches **16 of the 18**.
+`kmain.c` holds the kernel CLI - the `vibeos>` prompt, `status`, `meminfo`,
+`log` - the boot log, and the boot-failure path. All of it runs.
+
+Acting on the earlier claim would have deleted the CLI.
+
+## What was actually unreached: two functions, 47 lines of 915
+
+**`vibeos_kernel_dispatch_trap`** wrapped `vibeos_trap_dispatch_ex` and added a
+`KILL_CURRENT -> vibeos_proc_terminate` step. The arch layer calls
+`vibeos_trap_dispatch_ex` directly and kills through
+`hw_fault_kill_current_user`, so this duplicated live functionality and no fault
+on the machine could reach it. It is also where the third review's process-slot
+finding lived.
+
+**`vibeos_kernel_boot_health`** was an accessor for `boot_health_flags`. Checked
+before removing it, because the CLI prints `health=` on every boot and breaking
+that line would have been a silent regression in something visible: the CLI
+reads the field directly at `kernel_cli_print_status`, not through the accessor.
+
+Their tests went with them - one whole test function that drove a path no fault
+can take, and one call replaced by the field it was reading.
+
+## The point, which is not the 47 lines
+
+621 lines came out of the first increment and 47 out of this one, and the
+difference between them is entirely in the analysis. The same file looked like
+"834 lines of dead code" under the weak question and is "two functions" under
+the right one.
+
+That is the argument for the transitive walk recorded in
+`check-reachable.py` as its next improvement, stated more precisely than it was
+there: the weak question is not merely *incomplete*, it errs in **both**
+directions. It missed `vm.c` and `interrupts.c` entirely - two subsystems built
+on every boot and consulted by nobody - and it would have condemned a live
+command-line interface.

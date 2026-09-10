@@ -484,9 +484,11 @@ static int test_kmain(void) {
     if (!vibeos_event_is_signaled(&kernel.boot_event)) {
         return -1;
     }
-    if (vibeos_kernel_boot_health(&kernel, &health_flags, &fatal_failure) != 0) {
-        return -1;
-    }
+    /* Read straight off the struct. vibeos_kernel_boot_health was an
+     * accessor nothing reachable called - the CLI's status line reads the
+     * field directly - so it went with the trap wrapper. */
+    health_flags = kernel.boot_health_flags;
+    fatal_failure = (uint32_t)kernel.boot_failure_fatal;
     if ((health_flags & VIBEOS_BOOT_HEALTH_BOOT_EVENT_SIGNALLED) == 0 || fatal_failure != 0) {
         return -1;
     }
@@ -3090,59 +3092,10 @@ static int test_trap_debug_resumable(void) {
     }
     return 0;
 }
-
-static int test_kernel_trap_fault_handling(void) {
-    vibeos_kernel_t kernel;
-    vibeos_trap_frame_t frame;
-    vibeos_trap_decision_t decision;
-    vibeos_process_state_t proc_state;
-    vibeos_log_event_t latest;
-    uint32_t pid = 0;
-    uint32_t tid = 0;
-
-    memset(&kernel, 0, sizeof(kernel));
-    if (vibeos_log_init(&kernel.log) != 0 || vibeos_trap_state_init(&kernel.trap_state) != 0 || vibeos_proc_init(&kernel.proc_table) != 0) {
-        return -1;
-    }
-    if (vibeos_proc_spawn(&kernel.proc_table, 0, &pid) != 0 || vibeos_thread_create(&kernel.proc_table, pid, &tid) != 0) {
-        return -1;
-    }
-
-    memset(&frame, 0, sizeof(frame));
-    frame.rip = 0x401000;
-    frame.rsp = 0x7fff0000;
-    frame.rflags = 0x202;
-    frame.cs = VIBEOS_TRAP_X86_USER_CPL;
-    frame.fault_address = 0xcafebabe;
-    frame.vector = VIBEOS_TRAP_VECTOR_PAGE_FAULT;
-
-    if (vibeos_kernel_dispatch_trap(&kernel, &frame, pid, &decision) != 0) {
-        return -1;
-    }
-    if (decision.action != VIBEOS_TRAP_ACTION_KILL_CURRENT || kernel.boot_failure_fatal != 0) {
-        return -1;
-    }
-    if (vibeos_proc_state(&kernel.proc_table, pid, &proc_state) != 0 || proc_state != VIBEOS_PROCESS_STATE_TERMINATED) {
-        return -1;
-    }
-    if (vibeos_log_latest(&kernel.log, &latest) != 0 || latest.level != VIBEOS_LOG_WARN || strcmp(latest.message, "trap_user_process_terminated") != 0) {
-        return -1;
-    }
-
-    frame.cs = 0;
-    frame.vector = VIBEOS_TRAP_VECTOR_GP_FAULT;
-    frame.fault_address = 0;
-    if (vibeos_kernel_dispatch_trap(&kernel, &frame, 0, &decision) != 0) {
-        return -1;
-    }
-    if (decision.action != VIBEOS_TRAP_ACTION_PANIC || kernel.boot_failure_fatal != 1 || kernel.boot_state.last_error_code != 1201) {
-        return -1;
-    }
-    if (vibeos_log_latest(&kernel.log, &latest) != 0 || latest.level != VIBEOS_LOG_FATAL || strcmp(latest.message, "trap_kernel_panic") != 0) {
-        return -1;
-    }
-    return 0;
-}
+/* test_kernel_trap_fault_handling is gone with vibeos_kernel_dispatch_trap.
+ * It drove a wrapper the arch layer never called - faults go through
+ * vibeos_trap_dispatch_ex and are killed by hw_fault_kill_current_user - so
+ * the test was exercising a path no fault on the machine could take. */
 
 static int test_ipc_handle_transfer(void) {
     vibeos_handle_table_t sender;
@@ -8797,7 +8750,6 @@ int main(void) {
     RUN_TEST(test_trap_dispatch);
     RUN_TEST(test_trap_fault_decisions);
     RUN_TEST(test_trap_debug_resumable);
-    RUN_TEST(test_kernel_trap_fault_handling);
     RUN_TEST(test_ipc_handle_transfer);
     RUN_TEST(test_handle_lifecycle_hooks);
     RUN_TEST(test_cross_process_handle_dup_policy);
