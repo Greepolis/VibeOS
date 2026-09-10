@@ -3480,7 +3480,13 @@ static int hw_exec_refuse(vibeos_exec_fail_t why, const char *path,
  * and the file is what they are supposed to be. Slow, and run once from the
  * console at the end of a boot, which is when it is worth knowing.
  *
- * Reported as a count, and the boot gate asserts it is zero. */
+ * Reported as a count. That count is asserted zero by the boot gate *now* -
+ * this sentence used to say so while it was false, for as long as the audit
+ * had existed. The line was printed on every boot, 1821 pages compared against
+ * their files, and nothing read the answer. A guarantee documented in the
+ * source and provided by nobody is worse than an undocumented gap, because the
+ * sentence is what the next reader trusts instead of checking. The counter
+ * carries MUSTBEZERO now so check-mustbezero-asserted.py holds it there. */
 static uint8_t g_cache_audit_page[4096] __attribute__((aligned(16)));
 
 static void hw_cache_audit(uint64_t *out_checked, uint64_t *out_bad) {

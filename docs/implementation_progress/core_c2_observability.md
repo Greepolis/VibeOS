@@ -81,3 +81,76 @@ on the module's tag, assert it, and **demonstrate it can be non-zero** before
 concluding anything from a zero. `check-subsystem.py` gains the must-be-zero
 property at the end of that, not before it — a check shipped red against thirty
 modules is the state `check-mm-layering.sh` sat in for a phase.
+
+
+# Second finding, and this one had a comment vouching for it
+
+`hw_cache_audit` compares every resident page-cache page against the bytes its
+file actually holds, and reports `cache_audit_checked` / `cache_audit_changed`
+on the `[EXEC]` line. It runs on every boot. On the boot this was found it
+compared **1821** pages.
+
+The boot gate did not read the result — and the comment above the function said:
+
+> "Reported as a count, and the boot gate asserts it is zero."
+
+**A guarantee documented in the source and provided by nobody is worse than an
+undocumented gap**, because the sentence is what the next reader trusts instead
+of checking. That is a different defect from the GUI counter found an hour
+earlier: that one was silent, this one was vouched for.
+
+## Why the check added an hour earlier could not see it
+
+`check-mustbezero-asserted.py` knows counters that carry the word `MUSTBEZERO`.
+This one did not carry it. So the check written specifically for this shape,
+against a tree that contained a second instance of the shape, reported ok.
+
+That is worth stating plainly rather than filing as bad luck: **the check
+mechanises a word, not a property.** A counter opts into the guarantee by
+spelling it, and one that never spells it is exactly as unwatched as before. The
+fix for this instance is to spell it — `cache_audit_changed` carries the word
+now, so both the check and the gate hold it — but the general gap remains, and
+naming it is more useful than pretending the check closed it.
+
+## Why the harm is the worst class this project has had
+
+Once a read-only image page is mapped from the cache instead of copied, one
+frame is the text of *every* process running that program. A stray write reaches
+all of them, and surfaces as an unrelated program misbehaving far from whatever
+wrote. That is the family that took four attempts and produced three confident
+wrong answers.
+
+The audit compares against the **file**, not a checksum taken at fill time — a
+checksum only proves the bytes have not changed since the kernel last looked.
+
+## What was asserted, and the second assertion that matters more
+
+Two, not one:
+
+- `cache_audit_changed` must be zero.
+- `cache_audit_checked` must be **non-zero**.
+
+The second is the one this project has been taught to add. An audit that
+examined nothing reports `changed=0`, which is byte-for-byte the healthy answer;
+`VIBEOS_BLK_TIMEOUT` was asserted for months in exactly that state. Both were
+sabotaged and both went red on metal:
+
+| case | result |
+|---|---|
+| force one entry to differ | `reason=invariant_failed:exec_cache_page_changed=1`, with a witness naming file, offset, phys, byte index and both values |
+| make the audit return immediately | `reason=invariant_failed:exec_cache_audit_checked_nothing` |
+| remove the `MUSTBEZERO` word | check stays green at `counters=6`, gate goes red with `exec_cache_audit_missing` |
+
+The third is the interesting one. The check does not fail when a counter leaves
+its view — it just stops counting it. The gate is what covers that here, and
+that asymmetry is recorded in `exec-cache-audit.txt` rather than smoothed over.
+
+## And a note on writing this file
+
+The case file was first written with `ran: yes` on all four cases **before any
+of them had been run**. They were then run, and two of the four descriptions
+turned out to be wrong: case 3 does not fail the way it was written, and case 4
+proves something narrower than claimed. Both are corrected in place. The
+sequence is the one this project keeps insisting on and it keeps being
+necessary: write the sabotage first, run it, *then* write the sentence it
+justifies.

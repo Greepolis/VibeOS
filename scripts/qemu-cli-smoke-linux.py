@@ -1878,6 +1878,38 @@ def main():
                         f"exec_copies_more_than_it_maps from_cache={from_cache}"
                         f"_copied={copied}")
 
+            # Every resident cache page still holds what its file holds.
+            #
+            # This detector was written, wired, and run on every boot - 1821
+            # pages compared against the file on the boot this assertion was
+            # added - and the gate never read the result. The comment above
+            # hw_cache_audit said "Reported as a count, and the boot gate
+            # asserts it is zero", which was false: a guarantee documented in
+            # the source and provided by nobody, which is worse than an
+            # undocumented gap because the sentence is what a reader trusts
+            # instead of checking.
+            #
+            # The harm it watches is the worst class this project has had. Once
+            # a read-only image page is mapped from the cache rather than
+            # copied, one frame is the text of every process running that
+            # program, so a single stray write reaches all of them and surfaces
+            # as some unrelated program misbehaving. That is the family that
+            # took four attempts and produced three confident wrong answers.
+            #
+            # checked is asserted non-zero as well: an audit that examined
+            # nothing reports changed=0, and this project has already shipped
+            # one counter that was never anything but zero.
+            ca = re.search(r"cache_audit_checked=0x([0-9a-f]+) "
+                           r"MUSTBEZERO cache_audit_changed=0x([0-9a-f]+)", text)
+            if ca is None:
+                problems.append("exec_cache_audit_missing")
+            else:
+                if int(ca.group(1), 16) == 0:
+                    problems.append("exec_cache_audit_checked_nothing")
+                changed = int(ca.group(2), 16)
+                if changed != 0:
+                    problems.append("exec_cache_page_changed=%d" % changed)
+
             em = re.search(r"\[EXEC\] loaded=0x([0-9a-f]+).*? refused:(.*)", text)
             if em is None:
                 problems.append("exec_counters_missing")

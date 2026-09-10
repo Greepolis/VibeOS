@@ -1,0 +1,91 @@
+exec-cache-audit - a detector that ran on every boot and answered nobody
+
+`hw_cache_audit` compares every resident page-cache page against the bytes the
+file actually holds, and reports `cache_audit_checked` / `cache_audit_changed`
+on the `[EXEC]` line. On the boot this case was written it compared **1821**
+pages. The boot gate did not read the result.
+
+The comment above the function said:
+
+  "Reported as a count, and the boot gate asserts it is zero."
+
+That was false for as long as the audit had existed. **A guarantee documented in
+the source and provided by nobody is worse than an undocumented gap**, because
+the sentence is what the next reader trusts instead of checking - and this file
+is written for the next reader.
+
+`check-mustbezero-asserted.py`, added one commit earlier for exactly this shape,
+could not see it: it only knows counters carrying the word `MUSTBEZERO`, and
+this one did not carry it. It does now, which is what puts it under a check
+rather than under a sentence.
+
+## Why the harm is the worst class this project has had
+
+Once a read-only image page is mapped from the cache instead of copied, one
+frame is the text of *every* process running that program. A single stray write
+reaches all of them, and it reaches them as some unrelated program misbehaving
+a long way from whatever did the writing. That is the family that took four
+attempts to find and produced three confident wrong answers on the way.
+
+The audit is checked against the **file**, not against a checksum taken at fill
+time. A checksum only proves the bytes have not changed since the kernel last
+looked; the file is what they are supposed to be.
+
+---
+
+case 1: a cached page no longer matches its file
+  break:   in kernel/arch/x86_64/arch_hw.c, after the cache page is filled,
+           flip one byte of a resident cache frame - e.g. in hw_cache_audit
+           itself, force `differs = 1` for the first entry examined.
+  expect:  [EXEC] CACHE_PAGE_CHANGED file=0x... offset=0x... byte=0x...
+           reason=invariant_failed:exec_cache_page_changed=1
+  ran:     yes. Forcing one entry to differ took the boot from pass to
+           reason=invariant_failed:exec_cache_page_changed=1, and the
+           CACHE_PAGE_CHANGED witness line named the file, offset, physical
+           address, the byte index and both values. A count says how often; a
+           witness says what.
+
+---
+
+case 2: the audit examines nothing and reports zero
+  break:   make hw_cache_audit return without looping - e.g. `return` at the
+           top of the function body.
+  expect:  reason=invariant_failed:exec_cache_audit_checked_nothing
+  ran:     yes.
+  why it exists: an audit that checked nothing reports changed=0, which is
+           byte-for-byte the healthy answer. This project has already shipped a
+           counter that was never anything but zero and asserted it for months
+           (VIBEOS_BLK_TIMEOUT, produced by no driver). Asserting `checked`
+           non-zero is what separates "nothing is wrong" from "nothing looked".
+
+---
+
+case 3: the whole line disappears
+  break:   remove the cache_audit fields from kernel/exec/view.c.
+  expect:  reason=invariant_failed:exec_cache_audit_missing
+  ran:     yes, though not by removing the fields - case 4's run produces this
+           reason, because the gate's regex names the word and requires both
+           fields adjacent. So the demonstrated claim is narrower than the case
+           as written: any edit that breaks the shape of that line is a
+           failure, not a silent skip. That is deliberate - `re.search`
+           returning None is the default way an assertion evaporates, and this
+           project has had a gate whose whole verdict was a stale file.
+
+---
+
+case 4: the MUSTBEZERO word is removed again
+  check:   check-mustbezero-asserted.py
+  break:   delete `MUSTBEZERO ` from the cache_audit_changed print in
+           kernel/exec/view.c.
+  expect:  the check stays green and the gate goes red instead
+           (exec_cache_audit_missing), because the gate's regex names the word.
+  ran:     yes. check-mustbezero-asserted.py stayed green at counters=6 - it
+           simply stopped tracking a counter it can no longer see - and the
+           boot went red with exec_cache_audit_missing.
+           It is worth stating what that proves and what it does not. The word
+           is load-bearing in two places at once now, so removing it cannot be
+           silent. It does *not* prove the check would have caught the original
+           defect: the original was invisible to that check by construction,
+           which is the whole reason this case file exists. A check going green
+           while a counter vanishes from its view is the shape to keep an eye
+           on - the gate is what covers it here, not the check.

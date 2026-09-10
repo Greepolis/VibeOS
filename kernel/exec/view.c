@@ -24,7 +24,14 @@ void vibeos_exec_print_stats(void) {
     vibeos_x86_64_serial_print_hex(s->pages_copied);
     vibeos_x86_64_serial_puts(" cache_audit_checked=0x");
     vibeos_x86_64_serial_print_hex(s->cache_audit_checked);
-    vibeos_x86_64_serial_puts(" cache_audit_changed=0x");
+    /* MUSTBEZERO, and carrying the word on purpose.
+     *
+     * It was a plain counter for as long as the audit existed, printed every
+     * boot and read by nobody, while a comment above hw_cache_audit claimed
+     * the gate asserted it. check-mustbezero-asserted.py only sees counters
+     * that carry this word, so the word is what puts this one under a check
+     * rather than under a sentence somebody wrote once. */
+    vibeos_x86_64_serial_puts(" MUSTBEZERO cache_audit_changed=0x");
     vibeos_x86_64_serial_print_hex(s->cache_audit_changed);
     /* The refusals are announced, not just appended.
      *
