@@ -1,0 +1,80 @@
+core-contract - the C1 checks, broken on purpose
+
+Two checks landed in this phase. Neither is worth anything until its red has
+been seen, which is the category VIBEOS_BLK_TIMEOUT sat in: defined, printed,
+asserted, produced by nobody, green by construction.
+
+Run each case, confirm the stated line appears, then restore.
+
+---
+
+case 1: a module's state gets a name another file can write
+  check:   check-subsystem.py
+  break:   add a non-static file-scope variable to any module, e.g. at the top
+           of kernel/mm/rmap.c:
+               unsigned long vibeos_rmap_sabotage_state;
+           then rebuild the kernel core so nm sees it.
+  expect:  kernel/mm/rmap.c   exported_state [vibeos_rmap_sabotage_state]
+           subsystem=FAIL exported_state=1/0
+  ran:     yes, red, and it named the symbol.
+  note:    this is the one property the tree already satisfies everywhere - 0
+           of 50 modules - which is why it is the case worth having. A property
+           that is green across the board is indistinguishable from a property
+           nothing measures.
+
+---
+
+case 2: an extension point costs one more file than it did
+  check:   check-blast-radius.py
+  break:   name a witness symbol from a file that does not name it today, e.g.
+           in kernel/io/logsink.c:
+               /* vibeos_x86_64_gui_present */
+  expect:  display: radius 4, up from the declared 3
+           blast-radius=FAIL moved=1
+  ran:     yes, red.
+  note:    the sabotage is a *comment*, and it counts. That is stated in the
+           check's own docstring rather than worked around: it counts textual
+           occurrence, not reference. A tool that tried to be cleverer here
+           would need to resolve function pointers, and every registration seam
+           in this tree is a function pointer.
+
+---
+
+case 3: the radius goes DOWN and nothing notices
+  check:   check-blast-radius.py
+  break:   this is the failure the check exists to prevent in the other
+           direction - somebody moves a driver onto a seam, the radius drops,
+           and the declared number is never updated, so the improvement is
+           invisible and the next regression back to the old number passes.
+  expect:  <point>: radius N, DOWN from the declared M
+  ran:     not yet. The check asserts equality, so this is the same code path
+           as case 2 with the comparison reversed, and saying "the same branch
+           therefore it works" is exactly the reasoning this directory exists
+           to refuse. It is recorded as untested rather than counted as passing.
+
+---
+
+case 4: a module loses its lock
+  check:   check-subsystem.py, state_without_lock
+  break:   remove every mention of a lock from a module that has mutable
+           file-scope statics.
+  expect:  state_without_lock rises above its baseline of 3.
+  ran:     not yet.
+  note:    the three at baseline are real and worth reading: kernel/fs/vfs.c
+           holds the mount table, kernel/mm/anon.c holds a clock hand, and
+           kernel/sched/forkguard.c holds the fork budget - none of them names
+           a lock. backing.c was this exact shape and was correct for months on
+           the accident of having one caller; the second caller returned one
+           file's pages under another file's key. These three are not claimed
+           to be defects. They are claimed to be three places where "is this
+           serialised?" currently has no answer in the file.
+
+---
+
+what these cases do NOT cover, and who does
+
+The must-be-zero property - part 4 of the seven - is not checked by
+check-subsystem.py at all. That is C2's step 3, which adds the counters first
+and extends the check afterwards. Writing the check now would ship it red
+against thirty modules, and a check red since before you arrived is a check
+nobody reads: check-mm-layering.sh sat in that state for a phase.

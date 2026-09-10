@@ -99,14 +99,30 @@ invented separately, none named.
 
 **Steps.**
 
-1. **`check-subsystem.py`** — for each module directory: one header, state
-   confined to one `.c`, a registered lock, a stats struct with at least one
-   must-be-zero, an init that returns a reason, and a case file. Ratcheted:
-   today's violations are the baseline and may only go down.
-2. **`check-blast-radius.py`** — for each extension point, the files a new
-   implementation must touch. Storage is 1 and block is 1 today; character,
-   input, network, display, syscall and ABI are all `arch_hw.c`. Those numbers
-   are the baseline and this plan's real progress metric.
+1. **`check-subsystem.py`** — **done**, for the four parts a script can judge.
+   50 modules: `exported_state=0` (every module already confines its state — the
+   one part of the contract this tree got right without being told), plus
+   baselines `no_header=15`, `no_case=35`, `state_without_lock=3`.
+
+   Two of the seven are deliberately left out and the file says so rather than
+   implying coverage: the **must-be-zero counter** is C2's step 3, which adds the
+   counters before the check that demands them — writing it now would ship a
+   check red against thirty modules, which is the state `check-mm-layering.sh`
+   sat in for a phase. **An init that names its reason** stays in review.
+
+   The lock property was narrowed after its first run: asking "has a registered
+   lock" called `blkdev.c` unlocked while it holds its own, 29 false positives.
+   It asks "has mutable file-scope state and names no lock anywhere" now, which
+   is 3 — `vfs.c` (the mount table), `anon.c` (a clock hand), `forkguard.c` (the
+   fork budget). `backing.c` was that exact shape, and it was right for months on
+   the accident of having one caller.
+2. **`check-blast-radius.py`** — **done**, and it corrected the step that asked
+   for it. This said "storage is 1 and block is 1 today". Measured: **4, 4, 4,
+   4, 3, 2** across six points, total 21. Nothing is 1; the floor is 2; and the
+   one filesystem that uses the registry costs the same as the four that are
+   hardcoded into `g_probes[]`. The baseline is the measurement, and the target
+   it implies is sharper than the one this plan started with: a seam a driver
+   joins without anybody editing a bring-up path.
 3. **`check-chokepoints.py`** — each security check declares how many call
    sites it has. A second site is not forbidden, it is *noticed*: the failure
    guarded against is one choke point silently becoming two that drift.

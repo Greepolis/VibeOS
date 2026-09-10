@@ -78,6 +78,17 @@ do_build() {
     python3 scripts/dev/check-rmap-crosscheck.py | tail -1
     # Every security check has one call site, and a second one is noticed.
     python3 scripts/dev/check-chokepoints.py | tail -1
+    # The seven parts of a module, for the four parts a script can judge. The
+    # must-be-zero part is deliberately absent: it is C2's, which adds the
+    # counters before the check that demands them, so this does not ship red
+    # against thirty modules the way check-mm-layering.sh once did.
+    python3 scripts/dev/check-subsystem.py "$d" | tail -1
+    # How many existing files an extension costs. docs/core/ calls this the
+    # plan's real progress metric, and it is here because line count was the
+    # stated criterion twice and failed twice - a number you cannot satisfy by
+    # moving code. Its first run contradicted the table it was written to
+    # enforce, which is the best thing a new check can do.
+    python3 scripts/dev/check-blast-radius.py | tail -1
     # The interpreter substitution, checked the same way and for the same
     # reason: a rule that lives only in a comment erodes one reasonable
     # looking line at a time.

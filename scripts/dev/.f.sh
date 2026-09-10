@@ -4,13 +4,18 @@
 cd /mnt/c/Users/Stefa/Documents/Progetti/VibeOS
 bad=0
 out=$(bash scripts/dev/check.sh all build-clang-Release 2>&1)
-echo "$out" | grep -E '^rc=|^warnings=|^clang-|^host-tests|^bootloader-tests|assertions-covered|counters-produced|mm-layering|nightly-coverage|reachable=|chokepoints=|rmap-crosscheck=|ALL_TESTS|error:'
+echo "$out" | grep -E '^rc=|^warnings=|^clang-|^host-tests|^bootloader-tests|assertions-covered|counters-produced|mm-layering|nightly-coverage|reachable=|chokepoints=|subsystem=|blast-radius=|rmap-crosscheck=|ALL_TESTS|error:'
 echo "$out" | grep -qE '^rc=0$'          || bad=1
 echo "$out" | grep -qE '^clang-rc=0$'    || bad=1
 echo "$out" | grep -qE '^warnings=0$'    || bad=1
 echo "$out" | grep -qE '^clang-warnings=0$' || bad=1
 echo "$out" | grep -qE '^host-tests=pass' || bad=1
 echo "$out" | grep -qE '^bootloader-tests=pass' || bad=1
+# subsystem= can print "skip" when the build has no objects, and a skip that
+# reads like a pass is the whole reason these lines are asserted rather than
+# printed. Require ok, not not-FAIL.
+echo "$out" | grep -qE 'subsystem=ok'    || bad=1
+echo "$out" | grep -qE 'blast-radius=ok' || bad=1
 for i in 1 2 3; do
   python3 scripts/qemu-cli-smoke-linux.py build-clang-Release 300 >/dev/null 2>&1
   line=$(head -1 qemu-cli-summary.txt)

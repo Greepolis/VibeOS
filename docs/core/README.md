@@ -36,6 +36,12 @@ criterion sat unchanged in the repository. A file grows until adding to it
 stops being easiest. That is why this plan's success criterion is not a line
 count. It is blast radius: how many files you must edit to add one thing.
 
+It is **21 across six extension points** today, measured rather than asserted —
+and the first measurement contradicted this plan, which had claimed two of those
+points already cost one file. Nothing costs one file. The one driver that uses a
+registry costs the same as the four that are hardcoded, because it still needs a
+bring-up call. See `architecture.md`.
+
 **2. Almost nothing reports whether it is healthy.** The kernel prints 25
 distinct report tags and has **five** must-be-zero counters in the entire tree.
 Every hard defect in this project's history was found by a counter or a

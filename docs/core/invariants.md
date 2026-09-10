@@ -64,12 +64,24 @@ does not grow.
 **Why it is new, and why it is the plan's real metric.** Line count has been the
 stated completion criterion twice and failed twice: both times the file grew
 while the document naming its length sat unchanged. Blast radius is the property
-that was actually wanted. It is already 1 for storage and block — four
-filesystems and four drivers arrived without their layers being touched — and
-`arch_hw.c` for everything else.
+that was actually wanted, and unlike a line count it cannot be satisfied by
+moving code.
 
-**Watched by.** `check-blast-radius.py` (C1), ratcheted. The baseline is today's
-table and may only go down.
+**What it measures today, which is not what this file first claimed.** This
+invariant was written saying the radius "is already 1 for storage and block".
+The first run of the check that enforces it said **4, 4, 4, 4, 3, 2** — nothing
+is 1, the floor is 2, and the registered filesystem costs exactly as much as the
+four that are hardcoded. The claim came from the existence of two registries
+rather than from a measurement, which is the failure mode this whole document is
+about, committed here.
+
+**So the invariant has a sharper form now.** A seam whose members still need a
+bring-up call is not a seam. The target is an extension point where adding an
+implementation edits the source list and nothing else.
+
+**Watched by.** `check-blast-radius.py` (C1), ratcheted at 21 across six points,
+sabotaged and confirmed red. The number may only go down; it goes down by moving
+an implementation onto a seam, never by editing the declaration.
 
 ---
 

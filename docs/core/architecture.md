@@ -38,34 +38,56 @@ wrong**, and it decomposes into three quantities that can each be measured:
 
 ### Blast radius is the one that matters most
 
-It is already excellent in one place and terrible everywhere else, which makes
-it a controlled experiment rather than a theory:
+This section used to open by saying blast radius was "already excellent in one
+place and terrible everywhere else", and gave this table:
 
-| To add... | Files edited today |
-|---|---|
-| a filesystem | **1** — `vibeos_storage_register` |
-| a block driver | **1** — `vibeos_blk_register` |
-| a character device | `arch_hw.c` |
-| an input device | `arch_hw.c` |
-| a network interface | `arch_hw.c` |
-| a display | `arch_hw.c` |
-| a syscall | `arch_hw.c` |
-| a second ABI | `arch_hw.c`, extensively |
+> | a filesystem | **1** — `vibeos_storage_register` |
+> | a block driver | **1** — `vibeos_blk_register` |
+> | everything else | `arch_hw.c` |
 
-Four filesystems and four block devices arrived without their layers being
-touched. Everything else arrives by making the monolith bigger. That is the
-whole finding, and it was rediscovered independently **eight times** — there are
-eight registration seams in the tree today (`vibeos_frame_set_lock`,
+**That was wrong, and it was wrong in the document that calls this the plan's
+real progress metric.** It was written from the existence of two registries, not
+from a measurement. `check-blast-radius.py` was then written to enforce it and
+contradicted it on its first run.
+
+| To add... | Files edited today | which |
+|---|---:|---|
+| a filesystem, the way four of the five arrived | **4** | `storage.c`, `storage.h`, `io_bringup.c`, the source list |
+| a filesystem through the registry (FAT, the only one) | **4** | `arch_hw.c`, `arch_x86_64.h`, `io_bringup.c`, the source list |
+| a block driver | **4** | `arch_hw.c`, `arch_x86_64.h`, `kmain.c`, the source list |
+| a network interface | **4** | `arch_hw.c`, `arch_x86_64.h`, `kmain.c`, the source list |
+| a display | **3** | `arch_hw.c`, `serial.c`, the source list |
+| an input device | **2** | `arch_hw.c`, the source list |
+
+Three things follow, and none of them was visible before the number existed.
+
+**Nothing measures 1.** The floor across the whole tree is 2.
+
+**The registry buys nothing yet.** FAT is the one driver that registers, and it
+costs the same 4 as the four filesystems that do not: somebody still calls the
+register function, declares it, and mounts through it. *A registry whose members
+need a bring-up call has the same blast radius as no registry at all.* That is
+the sentence C6 has to falsify, and it is a much sharper target than "move code
+out of `arch_hw.c`".
+
+**The four filesystems were never evidence.** ext2, ntfs, exfat and iso9660 are
+named directly in `g_probes[]` in `kernel/fs/storage.c`, each with a mount
+wrapper there and a member in `vibeos_volume_t`. They did not arrive without
+their layer being touched; they arrived by editing it, four files at a time.
+
+What survives from the old paragraph is the observation underneath it: there are
+eight registration seams in this tree (`vibeos_frame_set_lock`,
 `vibeos_rmap_set_lock`, `vibeos_cache_set_lock`, `vibeos_blockcache_set_lock`,
 `vibeos_swapmap_set_lock`, `vibeos_task_view_set_source`, and the two
-registries), each invented separately by somebody solving one problem, and
-never named as a rule.
+registries), each invented separately by somebody solving one problem, and never
+named as a rule.
 
-> **A subsystem is extended by registering into it, never by editing it.**
+> **A subsystem is extended by registering into it, never by editing it** — and
+> registering must not require an edit either, or the seam is decoration.
 
 `check-blast-radius.py` turns that from advice into a number: for each extension
 point it names the files a new implementation touches, and the count may only go
-down.
+down. It is ratcheted at today's measurement — 21 across six points.
 
 ### Time to red
 
