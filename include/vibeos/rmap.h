@@ -102,7 +102,44 @@ typedef struct vibeos_rmap_stats {
     uint64_t exhausted;       /* an add that found no free node. SHOULD BE 0  */
     uint64_t missing_remove;  /* a remove that found nothing. MUST BE ZERO    */
     uint64_t cycles;          /* a holder list that loops. MUST BE ZERO       */
+    uint64_t untracked;       /* an add for a frame this layer does not
+                               * describe. Counted because it used to be the
+                               * one failure branch that incremented nothing:
+                               * the mapping is simply not recorded and no
+                               * number said how often. Not a MUST BE ZERO -
+                               * a frame outside the pool is a legitimate
+                               * thing to map - but it is how much of the
+                               * invariant below does not apply.            */
 } vibeos_rmap_stats_t;
+
+
+/* ---- what this layer promises, and what it does not -----------------------
+ *
+ * The reverse map is **best effort**. `vibeos_rmap_add` can fail - the node
+ * pool is finite, and a frame outside the region this layer describes has no
+ * list at all - and every caller ignores the result on purpose. The mapping is
+ * published, the reference count is taken, and the holder is simply not
+ * recorded. `arch_hw.c` states that choice at the allocation site: an unusual
+ * workload should degrade reclaim rather than fail a mapping.
+ *
+ * That is only safe because of a property nothing used to write down:
+ *
+ *     **No decision rests on `vibeos_rmap_count` alone.** Every consumer
+ *     compares it against `vibeos_frame_owners` first, and refuses when the two
+ *     disagree.
+ *
+ * `owners` is taken by the mapping itself and knows nothing about this pool, so
+ * an under-recorded holder makes the two disagree and the operation refuses. A
+ * page that should be swapped out is not; a frame that could be compacted is
+ * not. Reclaim degrades, and `exhausted` and `nodes_peak` say why.
+ *
+ * Trusting `rmap_count` on its own turns that into corruption: swap-out would
+ * evict a frame a second address space still maps, and compaction would move
+ * one and leave the other mapping pointing at the old address. Both of those
+ * consumers exist today and both cross-check. `check-rmap-crosscheck.py`
+ * enforces it, because a rule that lives only in a comment erodes one
+ * reasonable-looking line at a time.
+ */
 
 vibeos_rmap_stats_t *vibeos_rmap_stats(void);
 

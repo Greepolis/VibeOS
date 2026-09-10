@@ -302,6 +302,12 @@ static void kernel_cli_print_meminfo(void) {
     kernel_log_u64_hex(vibeos_rmap_stats()->nodes_peak);
     vibeos_x86_64_serial_puts(" rmap_exhausted=0x");
     kernel_log_u64_hex(vibeos_rmap_stats()->exhausted);
+    /* How many mappings this layer was never asked to describe. Not a
+     * MUSTBEZERO either - a frame outside its region is a legitimate thing to
+     * map - but it is the size of the gap in "owners equals holders", and it
+     * used to be invisible because that branch incremented nothing. */
+    vibeos_x86_64_serial_puts(" rmap_untracked=0x");
+    kernel_log_u64_hex(vibeos_rmap_stats()->untracked);
     /* Not a MUSTBEZERO field, despite the company it keeps on this line: a
      * torn sample means the fork audit's two reads saw different worlds, which
      * is a fact about concurrency and not a defect. It is printed so that a

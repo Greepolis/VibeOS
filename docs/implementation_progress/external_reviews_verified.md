@@ -163,3 +163,64 @@ reads. The two counters disagreed and the noisier one is the one seen first.
 Both filters now match, and a clean build reads `warnings=0`. `CLAUDE.md`
 already says to treat a moving warning count the way `rc=` is treated; that only
 works if the count is telling the truth.
+
+## Review four
+
+One finding, and the sharpest of the set: `vibeos_vmspace_map_raw` ignores the
+return of `vibeos_rmap_add`, the node pool is finite, so a mapping can be
+published with its holder unrecorded. Reachable by creating enough concurrent
+mappings.
+
+All of that is true. The review then asked the question the previous three did
+not: **what depends on the map being complete?**
+
+The answer is nothing, and for a reason that was written down nowhere. Every
+consumer cross-checks against `vibeos_frame_owners`, which is taken by the
+mapping itself and knows nothing about the node pool:
+
+```
+anon.c:59       swap-out    owners != 1 || rmap_count != 1  -> skip
+vmspace.c:1126  swap-out    the same pair                   -> refuse
+vmspace.c:1257  compaction  owners != rmap_count            -> refuse
+```
+
+So an under-recorded holder makes the two disagree and the operation refuses.
+Reclaim degrades; nothing is corrupted. `exhausted`, `untracked` and
+`nodes_peak` say how much. The pool is sized at two nodes per frame — about
+208,000 against an observed peak of 1,709 — so exhaustion needs a far more
+forked workload than anything here produces.
+
+Trusting `rmap_count` alone is what turns that into corruption: swap-out would
+evict a frame a second address space still maps, and compaction would move one
+and leave the other mapping pointing at the old address.
+
+That property is stated in `include/vibeos/rmap.h` now and enforced by
+`check-rmap-crosscheck.py`, validated by removing the cross-check in `anon.c`
+and watching it go red.
+
+### The check was wrong on its first run, and the fix was not to widen it
+
+It flagged `vmspace.c:1237`, `total = vibeos_rmap_count(old_phys)`. That read
+decides nothing — it bounds an array, and an under-recorded count makes the
+bound *more* permissive while the real cross-check twenty lines later still
+refuses. A false positive.
+
+Widening the window to reach the guard would have swallowed the property: a bare
+use twenty lines from a cross-check on a different frame would then pass. So the
+site carries a `rmap-bare-ok:` marker with prose saying why instead. A second
+bare use is not forbidden — it is *noticed*, and somebody has to write down why
+it is safe, which is the trade `check-chokepoints.py` already makes.
+
+### And the branch none of the four reviews found
+
+`vibeos_rmap_add` has two failure modes and only one was counted. Pool
+exhaustion increments `exhausted`. A frame outside the region this layer
+describes returned −1 in silence, so that mapping went unrecorded and no number
+said how often. It increments `untracked` now.
+
+It reads zero, and that zero is qualified rather than banked: every frame this
+machine maps lies inside the region, so the branch is genuinely not taken. What
+does not exist yet is a run in which it is deliberately non-zero, so it is
+weaker evidence than the counters beside it — which is the distinction this
+project keeps between a counter that reports nothing happening and one that
+nothing increments.

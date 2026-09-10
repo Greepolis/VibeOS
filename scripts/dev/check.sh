@@ -69,6 +69,13 @@ do_build() {
     # plan that names it. A check nothing runs and a check that passes are the
     # same thing from outside.
     python3 scripts/dev/check-reachable.py | tail -1
+    # No decision rests on the reverse map alone. It is best effort by design -
+    # a finite node pool, and no list at all for a frame outside its region -
+    # and that is safe only because every consumer cross-checks against
+    # vibeos_frame_owners. An external review found the ignored return value
+    # and asked what depends on the map being complete; this is the answer,
+    # made checkable.
+    python3 scripts/dev/check-rmap-crosscheck.py | tail -1
     # Every security check has one call site, and a second one is noticed.
     python3 scripts/dev/check-chokepoints.py | tail -1
     # The interpreter substitution, checked the same way and for the same

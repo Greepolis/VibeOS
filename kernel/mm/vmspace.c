@@ -1234,6 +1234,11 @@ int vibeos_vmspace_move_frame(uint64_t old_phys, uint64_t new_phys) {
         return -1;
     }
 
+    /* rmap-bare-ok: this read decides nothing, it only bounds the array below.
+     * The reverse map is best effort, so an under-recorded holder makes `total`
+     * smaller and this bound passes more often - and the cross-check against
+     * vibeos_frame_owners a few lines down still refuses the move. See
+     * include/vibeos/rmap.h for why no decision may rest on the count alone. */
     total = vibeos_rmap_count(old_phys);
     if (total > MOVE_MAX_HOLDERS) {
         vibeos_mm_stats()->compact_refused_many++;

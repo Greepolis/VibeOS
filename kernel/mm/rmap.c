@@ -201,6 +201,12 @@ int vibeos_rmap_add(uint64_t frame_phys, uint64_t root_phys, uint64_t va) {
     rmap_lock();
     idx = frame_index(frame_phys);
     if (idx == RMAP_NONE) {
+        /* A frame this layer does not describe - outside the region it was
+         * initialised over. Legitimate, and until now the one failure branch
+         * that incremented nothing: the holder went unrecorded and no number
+         * said how often, so "the invariant holds" and "the invariant was never
+         * checked here" were the same silence. */
+        g_stats.untracked++;
         rmap_unlock();
         return -1;
     }

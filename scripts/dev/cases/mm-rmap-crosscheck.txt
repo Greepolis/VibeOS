@@ -1,0 +1,72 @@
+# No decision rests on the reverse map alone.
+#
+# The map is best effort by design. vibeos_rmap_add can fail - the node pool is
+# finite, and a frame outside the region this layer describes has no list at all
+# - and every caller ignores the result on purpose. arch_hw.c states that choice
+# at the allocation site: an unusual workload should degrade reclaim rather than
+# fail a mapping.
+#
+# An external review found the ignored return value and asked the right
+# question: what depends on the map being complete? The answer is that nothing
+# may, and until now nothing said so.
+
+# ---- what makes it safe ----------------------------------------------------
+#
+# owners is taken by the mapping itself and knows nothing about the node pool.
+# So an under-recorded holder makes owners and rmap_count disagree, and every
+# consumer refuses on that disagreement:
+#
+#   anon.c:59       swap-out: owners != 1 || rmap_count != 1  -> skip
+#   vmspace.c:1126  swap-out: same pair                       -> refuse
+#   vmspace.c:1257  compaction: owners != rmap_count          -> refuse
+#
+# Reclaim degrades. Nothing is corrupted. exhausted, untracked and nodes_peak
+# say how much.
+#
+# Trusting rmap_count alone turns that into corruption: swap-out would evict a
+# frame a second address space still maps, and compaction would move one and
+# leave the other mapping pointing at the old address.
+
+case: a consumer stops cross-checking
+  in kernel/mm/anon.c, replace `vibeos_frame_owners(phys) != 1u ||` with `0 ||`
+  RUN: red - "rmap-crosscheck=FAIL bare=2 of 7", naming the file and line and
+    pointing at include/vibeos/rmap.h
+  why it matters: it is the shape that turns a designed degradation into a
+    corruption path, and it looks like removing a redundant condition. Both
+    reads say 1; only one of them knows about the node pool.
+
+case: a bare read appears with no marker and no guard
+  add `if (vibeos_rmap_count(p) == 1u) { ... }` anywhere in kernel/mm/
+  expect: red, with that line named
+  why it matters: the check does not forbid a bare read - vmspace.c:1237 has one
+    - it forbids an *unexplained* one. A second use is noticed and somebody has
+    to write down why it is safe in the change that adds it.
+
+case: the marker is used to silence a real decision
+  put `rmap-bare-ok:` above a read whose result actually decides something
+  expect: green, and the check has been turned off for that site
+  why it matters: the honest failure mode of every escape hatch here, and the
+    reason the marker requires prose rather than a bare token. The same trap as
+    editing a declared chokepoint count to match instead of looking at what
+    moved.
+
+# ---- and the branch that counted nothing -----------------------------------
+#
+# vibeos_rmap_add has two failure modes and only one was counted. Pool
+# exhaustion increments `exhausted`; a frame outside the region returned -1
+# silently, so that mapping went unrecorded and no number said how often. It
+# increments `untracked` now and is reported on the [MEM] line - not a
+# MUSTBEZERO, because mapping such a frame is legitimate, but it is the size of
+# the gap in "owners equals holders" and it was invisible.
+
+case: untracked reads zero, and that is a result rather than a silence
+  no change - this is the state of the tree
+  RUN: rmap_untracked=0x0 on every boot
+  why it matters: this project's own rule is that a counter nothing increments
+    and a counter reporting nothing happening are indistinguishable, so the zero
+    needs its meaning stated. Every frame this machine maps lies inside the
+    region the reverse map was initialised over, so the branch is genuinely not
+    taken - the counter exists to make an *unusual* configuration visible, not
+    this one. check-counters-produced.py confirms the increment exists in the
+    tree; what has not been done is a run in which it is deliberately non-zero,
+    and until that exists this zero is weaker evidence than the ones beside it.
