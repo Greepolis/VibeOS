@@ -118,8 +118,39 @@ static void race_take_a_reference(uint64_t phys) {
     }
 }
 
+/* Stands in for a copy-on-write fault resolving on another core while fork is
+ * partway through cloning the same entry.
+ *
+ * It stores what the fault's sole-owner fast path stores: present, writable,
+ * user, and *no* copy-on-write mark. That is the value clone_one used to adopt
+ * when its exchange lost - which mapped the child read-only and unmarked on a
+ * frame the parent then wrote freely.
+ *
+ * Fires once. The kernel retries and re-reads, so a hook that kept re-arming
+ * the writable entry would spin forever - a property of the test, not of the
+ * fix. */
+static int g_fork_race_armed;
+static uint64_t g_fork_race_frame;
+
+static void fork_race_make_writable_private(uint64_t *pte) {
+    if (!g_fork_race_armed) {
+        return;
+    }
+    g_fork_race_armed = 0;
+    /* A *different* frame, which is what the fault's copy path installs.
+     *
+     * The first two versions stored the same frame back with the same
+     * permissions, so clone_one's exchange had nothing to lose against and the
+     * sabotaged kernel behaved exactly like the fixed one. A test that cannot
+     * tell the two apart is not a test, and only breaking the code on purpose
+     * showed which of the two this was. */
+    *pte = (g_fork_race_frame & 0x000FFFFFFFFFF000ull)
+         | 1ull | (1ull << 1) | (1ull << 2) | VIBEOS_PTE_OWNED;
+}
+
 int test_vmspace(void) {
     vibeos_vmspace_t as;
+    vibeos_vmspace_t only;
     uint64_t f1, f2;
     uint64_t free_before;
 
@@ -567,6 +598,80 @@ int test_vmspace(void) {
         if (vibeos_mm_stats()->frames_leaked != 0ull ||
             vibeos_mm_stats()->frames_double_put != 0ull) { goto fail; }
     }
+
+    /* Its own address space and its own pool: the block below creates a third
+     * set of page tables, and the harness has 512 frames in total. The first
+     * version shared the running one and clone_cow failed for want of a table,
+     * which is the harness running out rather than the layer refusing. */
+    if (setup(0) != 0) { goto fail; }
+    if (vibeos_vmspace_create(&only) != 0) { goto fail; }
+    /* Fork losing its exchange to a fault resolving on another core.
+     *
+     * The old code adopted whatever the losing exchange found. When that is
+     * the fault's writable-private entry, the result breaks the one
+     * guarantee fork makes, in two directions at once: the parent keeps a
+     * writable mapping of a frame the child shares, so its stores land in
+     * the child's memory; and the child's entry carries no copy-on-write
+     * mark, so the child's first store is read - correctly - as a
+     * protection violation and kills it for touching memory it owns.
+     *
+     * Both are asserted, because a fix producing only one of them would be
+     * half a fix and would look like a whole one. */
+    {
+        vibeos_vmspace_t forked;
+        uint64_t page = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+        const uint64_t va = 0x8000004000ull;
+        uint64_t *pe, *ce;
+
+        if (!page) { goto fail; }
+        if (vibeos_vmspace_map(&only, va, page,
+                               VIBEOS_PROT_READ | VIBEOS_PROT_WRITE |
+                               VIBEOS_PROT_USER) != 0) { goto fail; }
+
+        /* clone_cow requires a created destination - it refuses a null root
+         * rather than creating one - and passing an uninitialised vmspace is
+         * what made the first version of this test fail in the fix's name. */
+        if (vibeos_vmspace_create(&forked) != 0) { goto fail; }
+        g_fork_race_frame = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+        if (!g_fork_race_frame) { goto fail; }
+        g_fork_race_armed = 1;
+        vibeos_vmspace_set_fork_race_hook(fork_race_make_writable_private);
+        if (vibeos_vmspace_clone_cow(&forked, &only) != 0) { goto fail; }
+        vibeos_vmspace_set_fork_race_hook(0);
+
+        pe = vibeos_vmspace_entry(&only, va);
+        ce = vibeos_vmspace_entry(&forked, va);
+        if (!pe || !ce) { goto fail; }
+
+        if (*pe & (1ull << 1)) {
+            printf("FAIL:fork left the parent writable on a shared frame\n");
+            goto fail;
+        }
+        if ((*pe & (1ull << 9)) == 0ull) {
+            printf("FAIL:fork left the parent unmarked on a shared frame\n");
+            goto fail;
+        }
+        if ((*ce & (1ull << 9)) == 0ull) {
+            printf("FAIL:the child got a share with no copy-on-write mark\n");
+            goto fail;
+        }
+        if ((*pe & ~0xFFFull) != (*ce & ~0xFFFull)) {
+            printf("FAIL:parent and child ended up on different frames\n");
+            goto fail;
+        }
+        /* And the child can still write it: a mark the fault handler
+         * resolves, not one that kills the task. */
+        if (vibeos_vmspace_fault(&forked, va, 1) != 1) {
+            printf("FAIL:the child could not resolve its own fault\n");
+            goto fail;
+        }
+        if (vibeos_vmspace_destroy(&forked) != 0) { goto fail; }
+        if (vibeos_vmspace_unmap(&only, va) != 1) { goto fail; }
+        (void)vibeos_frame_put(page);
+    }
+
+
+    if (vibeos_vmspace_destroy(&only) != 0) { goto fail; }
 
     free(g_ram);
     g_ram = 0;

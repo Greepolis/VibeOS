@@ -286,6 +286,12 @@ int64_t vibeos_vmspace_swap_slot(vibeos_vmspace_t *as, uint64_t va);
  * this project has already learned what that costs. */
 void vibeos_vmspace_set_race_hook(void (*fn)(uint64_t phys));
 
+/* Fires inside fork's per-entry clone, before it converts a writable entry to
+ * copy-on-write, with the entry's address. A test uses it to store what a fault
+ * resolving on another core would have stored - an interleaving a few
+ * instructions wide, which a harness cannot otherwise reach. */
+void vibeos_vmspace_set_fork_race_hook(void (*fn)(uint64_t *pte));
+
 
 int vibeos_vmspace_fault(vibeos_vmspace_t *as, uint64_t va, int write);
 

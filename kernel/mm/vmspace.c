@@ -669,6 +669,27 @@ static int foreach_owned(vibeos_vmspace_t *as,
     return 0;
 }
 
+/* Fork's injection point, for an interleaving a harness cannot produce.
+ *
+ * clone_one's exchange can lose to a copy-on-write fault resolving on another
+ * core, and what it does with the value it finds is the whole of the defect
+ * fixed in ab5d7f4. The window is a few instructions wide, so a test stores
+ * into the entry here instead, at exactly the point a fault would have.
+ *
+ * Declared above its user rather than beside the fault's hook, because this is
+ * one long translation unit and a helper used above its definition compiles as
+ * an implicit declaration under gcc and fails under clang with a message that
+ * names neither. That happened to this very hook on its first build.
+ *
+ * Compiled in, like the fault's hook: an injection point that exists only in a
+ * build nobody runs proves nothing about the build everybody runs. Null unless
+ * a test sets it. */
+static void (*g_fork_race_hook)(uint64_t *pte);
+
+void vibeos_vmspace_set_fork_race_hook(void (*fn)(uint64_t *pte)) {
+    g_fork_race_hook = fn;
+}
+
 static int clone_one(vibeos_vmspace_t *src, uint64_t va, uint64_t *pte, void *ctx) {
     vibeos_vmspace_t *dst = (vibeos_vmspace_t *)ctx;
     /* Read once, atomically, and act on that value.
@@ -718,6 +739,17 @@ static int clone_one(vibeos_vmspace_t *src, uint64_t va, uint64_t *pte, void *ct
      * another core stored, and the stores that reach this entry are bounded by
      * the faults in flight on it. An entry that stops being present is left
      * alone - unmapped under a fork is not this function's to resolve. */
+    /* Deliberately without re-reading `entry` afterwards.
+     *
+     * The point is to make the exchange *lose*, which needs the entry to change
+     * between clone_one's load and its compare-exchange. The first version of
+     * this hook re-loaded, so the exchange always won and the sabotaged and
+     * fixed kernels behaved identically - a test asserting the right property
+     * about an arrangement in which the defect cannot appear, which is the
+     * sixth time this project has recorded that shape. */
+    if (g_fork_race_hook) {
+        g_fork_race_hook(pte);
+    }
     for (;;) {
         uint64_t desired;
 
