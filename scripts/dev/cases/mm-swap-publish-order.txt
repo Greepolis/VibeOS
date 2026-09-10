@@ -1,0 +1,68 @@
+# The swapped entry is published before the data reaches the disk (open).
+#
+# Found by the fifth external review, and the first finding in five that is both
+# real and in code the arch layer calls.
+
+# ---- the order, from vibeos_vmspace_swap_out ------------------------------
+#
+#   1. compare-exchange the entry to  slot | PTE_SWAPPED     <- published
+#   2. invlpg, then shootdown
+#   3. swap_write(slot, page)                                <- the data
+#
+# Between 1 and 3 the entry says the page is in slot N and slot N does not hold
+# it yet. A fault on that address, on any core, takes the swap-in path, reads
+# slot N and gets whatever was there before - another page's contents, or zeros.
+#
+# The comment above step 1 says "a store after this point faults, and the fault
+# finds an entry that says swapped - so it is delayed rather than lost". That is
+# right about the *store* and wrong about the *read*: the fault is not delayed,
+# it swaps in the wrong data and resumes.
+#
+# The recovery has the same shape. On a write failure the entry is exchanged
+# back, but if a concurrent swap-in already replaced it the exchange fails and
+# the result is discarded with (void) - so the process keeps a mapping to a
+# frame that was filled from a stale slot.
+
+# ---- why it has never happened --------------------------------------------
+#
+#   swap_outs=0x0   freed_anon=0x0   anon_evicted=0x0
+#
+# vibeos_vmspace_swap_out has never completed on this machine. The eviction path
+# does not run - nothing here runs short of memory - and the 8 sectors on the
+# SWAP line are I5b's write proof, not a page-out.
+#
+# So this is not the "unreachable second kernel" category: the arch layer calls
+# it, and it will execute the first time reclaim is driven. It is a defect
+# waiting for its caller rather than a defect nobody can reach.
+
+case: publish before the write (today)
+  no change - this is the state of the tree
+  expect: nothing, until something drives eviction. That is the point: the
+    counter that would show it, swap_outs, reads zero, so no boot can currently
+    tell this defect from its absence.
+  why it matters: the fix must land with, or before, whatever first makes
+    reclaim run. A correctness bug whose caller does not exist yet is still a
+    correctness bug, and it will arrive already merged.
+
+case: the write completes but a concurrent swap-in was faster
+  drive swap_out from the host harness with a swap_write backend that performs a
+    swap_in for the same address before returning
+  expect: the swapped-in page holds the slot's previous contents rather than the
+    page's, and swap_out then reports success
+  why it matters: this is the whole defect, and the harness can produce it
+    deterministically - swap_write is a backend callback the test supplies, so
+    the concurrent access can be made to happen from inside the window rather
+    than hoped for. That test does not exist yet.
+
+# ---- the fix, stated but not taken ----------------------------------------
+#
+# Publish the data before the entry, or publish an intermediate state a fault
+# must not resolve from. The straightforward ordering - write first, then
+# exchange - has its own problem: the frame is still mapped during the write, so
+# a store lands after the copy and the disk image is stale.
+#
+# What is correct is three states rather than two: make the entry non-present
+# and *not yet swapped* so a fault has nothing to read, write, then publish
+# SWAPPED. That needs a bit and a fault-handler branch, and it needs the test
+# above first - a fix to a path with no caller and no test is a fix nobody has
+# checked.
