@@ -122,9 +122,13 @@ def main():
             print("  %s: %d call sites, declared %d - %s than declared"
                   % (name, got, want, direction))
             print("      %s" % why)
-        print("chokepoints=FAIL moved=%d" % len(bad))
+        # Advice first, verdict last: check.sh reads this with `| tail -1`, so
+        # anything printed after the verdict replaces it in the summary. This
+        # file had the wrong order from the day it was written and never showed
+        # it, because it has never gone red inside check.sh.
         print("      If the change is deliberate, update the count in "
               "scripts/dev/check-chokepoints.py in the same commit.")
+        print("chokepoints=FAIL moved=%d" % len(bad))
         return 1
     print("chokepoints=ok watched=%d" % len(CHOKEPOINTS))
     return 0

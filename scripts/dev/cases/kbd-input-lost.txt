@@ -1,0 +1,77 @@
+kbd-input-lost - the keyboard had no counter of any kind
+
+Two places drop a keystroke, and until C2 both were a bare `return`.
+
+  vibeos_x86_64_keyboard_irq     ring full when an interrupt arrived
+  vibeos_x86_64_keyboard_inject  ring full when the self-test seeded input
+
+They are **not the same harm**, and the counters are deliberately not treated
+the same way.
+
+`kbd_dropped` is reported and NOT must-be-zero. A full ring under a fast typist
+is how a ring behaves. It is printed because on a CI boot nobody types, so a
+non-zero value there would mean something is injecting into the console that
+should not be.
+
+`kbd_inject_truncated` **is** must-be-zero, and it is the interesting one. The
+boot self-test injects a fixed script into a ring that is empty by
+construction, so `read()` can be exercised on a console with no human. If that
+injection is cut short, the self-test goes on to check a *prefix* of what it
+meant to check, and passes.
+
+That is not hypothetical here. The comment above `KBD_RING` records it
+happening: the ring was 512, the script outgrew it, and the symptom was **the
+last command silently never running, which looked like the shell hanging rather
+than like input being dropped**. The fix at the time was to enlarge the ring.
+Nothing was added that would say so next time.
+
+---
+
+case 1: the counter moves, and the gate refuses the boot
+  break:   force the accessor to report a non-zero value, e.g.
+               return g_inject_truncated + 3ull;
+  expect:  kbd_dropped=0x...0 MUSTBEZERO kbd_inject_truncated=0x...3
+           reason=invariant_failed:kbd_inject_truncated=3
+  ran:     yes. The value carried through the accessor, the report line, the
+           gate's regex and into the reason, arriving as 3.
+  what it proves, exactly: the plumbing end to end - counter, print, parse,
+           assertion, reason. It does **not** prove the ring's truncation path
+           reaches this counter; see case 2 for why that is stated separately
+           rather than assumed.
+
+---
+
+case 2: the ring is genuinely too small
+  break:   #define KBD_RING 4u
+  expect:  a non-zero kbd_inject_truncated on the report line.
+  ran:     yes, and it did NOT produce that. The boot failed earlier with
+           reason=missing:CLI_READY, and none of the late report lines printed
+           at all - not the WAITS line, not [IO] MUSTBEZERO, not
+           FRAMES_AT_USERLAND_DONE. With no input the machine never reaches the
+           point where it reports.
+
+  So the real harm, at full strength, is **not observable through this
+  counter**: the counter is printed by a path that a working console is a
+  precondition for. That is worth writing down rather than filing as a failed
+  attempt, because it bounds what the assertion can catch:
+
+    - a *partial* truncation, where enough of the script survives to reach the
+      report - which is the case that used to look like a hanging shell, and
+      the case this counter exists for - is caught.
+    - a *total* loss of input is caught by CLI_READY instead, loudly.
+
+  The gap between them is untested: no run here has produced a partial
+  truncation on purpose, because the script length and the ring size are both
+  fixed and the boot fails before the report at every size small enough to
+  truncate. Recorded as untested rather than counted as covered.
+
+---
+
+case 3: the counters disappear from the report
+  check:   the gate's own regex
+  break:   remove kbd_dropped / kbd_inject_truncated from kernel/core/kmain.c.
+  expect:  reason=invariant_failed:kbd_counters_missing
+  ran:     not yet.
+  note:    the same shape as exec-cache-audit case 3. A missing line must be a
+           failure and not a silent skip, because `re.search` returning None is
+           the ordinary way an assertion evaporates here.

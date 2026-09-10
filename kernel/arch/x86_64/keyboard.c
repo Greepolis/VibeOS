@@ -45,6 +45,27 @@ static int g_ctrl_down;
 #define KBD_SC_LCTRL 0x1Du
 #define KBD_SC_C     0x2Eu
 
+/* Two ways a keystroke disappears here, and they are not the same harm.
+ *
+ * g_dropped: the ring was full when an interrupt arrived. That is a property
+ * of how fast somebody types against the ring, not a defect, so it is
+ * reported and NOT must-be-zero. It has never been anything but zero in CI,
+ * where nobody types - which is exactly why it is worth printing: if it is
+ * ever non-zero on a boot with no human present, something is injecting.
+ *
+ * g_inject_truncated: MUSTBEZERO. The boot self-test injects a fixed string
+ * into a ring that is empty by construction, to exercise read() on a console
+ * with no human. If that injection is truncated, the self-test goes on to
+ * check a *prefix* of what it meant to check, and passes. This project has
+ * six recorded instances of a test that was right about the outcome and wrong
+ * about the mechanism; a silently shortened input is how a seventh would
+ * arrive, and nothing else in the tree could see it. */
+static uint64_t g_dropped;
+static uint64_t g_inject_truncated;
+
+uint64_t vibeos_x86_64_keyboard_dropped(void) { return g_dropped; }
+uint64_t vibeos_x86_64_keyboard_inject_truncated(void) { return g_inject_truncated; }
+
 void vibeos_x86_64_keyboard_irq(void) {
     uint8_t sc = kbd_inb(KBD_DATA);
     char c;
@@ -75,9 +96,11 @@ void vibeos_x86_64_keyboard_irq(void) {
         return;
     }
     next = (g_head + 1u) % KBD_RING;
-    if (next != g_tail) { /* drop on overflow */
+    if (next != g_tail) {
         g_ring[g_head] = c;
         g_head = next;
+    } else {
+        g_dropped++; /* the ring was full; the keystroke is gone */
     }
 }
 
@@ -88,6 +111,12 @@ void vibeos_x86_64_keyboard_inject(const char *s) {
     while (*s) {
         next = (g_head + 1u) % KBD_RING;
         if (next == g_tail) {
+            /* Count what was left, not that it happened: "the self-test's
+             * input was cut short by one character" and "by forty" are
+             * different sizes of lie about what the test covered. */
+            while (*s++) {
+                g_inject_truncated++;
+            }
             return;
         }
         g_ring[g_head] = *s++;

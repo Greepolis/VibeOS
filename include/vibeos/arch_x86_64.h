@@ -100,6 +100,13 @@ uint64_t vibeos_x86_64_ahci_timeouts(void);
 uint64_t vibeos_x86_64_virtio_net_tx_timeouts(void);
 uint64_t vibeos_x86_64_blk_timeouts(void);
 
+/* Keystrokes that never reached a reader. Two counters because they are two
+ * harms: dropped is the ring overflowing under a fast typist, which is not a
+ * defect; inject_truncated is the boot self-test's input being cut short,
+ * which makes a green self-test a claim about a prefix. */
+uint64_t vibeos_x86_64_keyboard_dropped(void);
+uint64_t vibeos_x86_64_keyboard_inject_truncated(void);
+
 /* What the block cache under the boot filesystem did.
  *
  * Numbers rather than the struct: vibeos_blockcache_t is an anonymous typedef

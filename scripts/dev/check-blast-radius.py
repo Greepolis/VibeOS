@@ -109,9 +109,22 @@ POINTS = {
         "no registry at all - arch_hw.c names the driver directly."),
     "input device": (
         "kernel/arch/x86_64/keyboard.c",
-        r"vibeos_x86_64_keyboard_[A-Za-z0-9_]+", 2,
-        "no registry; arch_hw.c names it. Low only because there is exactly "
-        "one keyboard and nothing has ever tried to add a second."),
+        r"vibeos_x86_64_keyboard_[A-Za-z0-9_]+", 4,
+        "no registry; arch_hw.c names it. Was 2, and went UP to 4 in C2 - "
+        "which is a decision with an argument, recorded here rather than an "
+        "edit to make the check quiet.\n"
+        "      Giving the keyboard its first must-be-zero counter cost two "
+        "files that had nothing to do with the keyboard: an accessor declared "
+        "in arch_x86_64.h and a print in kmain.c. That is not a keyboard "
+        "problem. **Observability itself has a blast radius here, and it is 2 "
+        "per module** - there is no seam a module registers its statistics "
+        "into, so every counter C2 adds makes the structure C6 has to fix "
+        "slightly worse.\n"
+        "      Raising the number is the honest move because the cost is real. "
+        "The check did its job: it named a structural regression within hours "
+        "of being written, in a change whose entire purpose was to improve "
+        "the thing it measures. A stats registration seam would take this row "
+        "back to 2 and take the next thirty counters with it."),
     "display": (
         "kernel/arch/x86_64/gui.c", r"vibeos_x86_64_gui_[A-Za-z0-9_]+", 3,
         "no registry; arch_hw.c and serial.c both name it. The serial one is "
@@ -181,10 +194,15 @@ def main():
             print("  %s: radius %d, %s the declared %d" % (point, got, direction, want))
             print("      %s" % why)
             print("      files: %s" % " ".join(touched))
-        print("blast-radius=FAIL moved=%d" % len(bad))
+        # Advice first, verdict last. check.sh reads these with `| tail -1`, so
+        # a verdict with anything printed after it is a verdict that does not
+        # reach the summary - which is how this check's first real failure
+        # showed up as an advice line and a RED with no reason beside it. All
+        # four checks in this family had the shape; all four were fixed.
         print("      A radius going down is the point of the refactor - update "
               "the number here in the same commit. A radius going up needs an "
               "argument, not an edit.")
+        print("blast-radius=FAIL moved=%d" % len(bad))
         return 1
     total = sum(POINTS[p][2] for p in POINTS)
     print("blast-radius=ok points=%d total=%d" % (len(POINTS), total))

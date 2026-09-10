@@ -176,6 +176,8 @@ __attribute__((weak)) void vibeos_x86_64_fat_cache_stats(uint64_t *hits,
 __attribute__((weak)) uint64_t vibeos_x86_64_virtio_net_tx_timeouts(void) { return 0ull; }
 /* Beside their caller, like every other stub here. */
 __attribute__((weak)) uint64_t vibeos_x86_64_ioapic_irq_count(uint32_t v) { (void)v; return 0ull; }
+__attribute__((weak)) uint64_t vibeos_x86_64_keyboard_dropped(void) { return 0ull; }
+__attribute__((weak)) uint64_t vibeos_x86_64_keyboard_inject_truncated(void) { return 0ull; }
 __attribute__((weak)) uint64_t vibeos_x86_64_ahci_irqs(void) { return 0ull; }
 __attribute__((weak)) uint64_t vibeos_x86_64_virtio_blk_irqs(void) { return 0ull; }
 __attribute__((weak)) uint64_t vibeos_x86_64_virtio_blk_irq_completions(void) { return 0ull; }
@@ -834,6 +836,23 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
          * silently, which is the failure this counter exists to make loud. */
         vibeos_x86_64_serial_puts(" kbd_irqs=0x");
         kernel_log_u64_hex(vibeos_x86_64_ioapic_irq_count(33u));
+        /* Keystrokes that never reached a reader.
+         *
+         * kbd_dropped is NOT must-be-zero: a full ring under a fast typist is
+         * how a ring behaves. It is printed because on a CI boot
+         * nobody types, so a non-zero value there means something is injecting
+         * into the console that should not be.
+         *
+         * kbd_inject_truncated IS. The boot self-test injects a fixed string
+         * into a ring that is empty by construction; if that is cut short, the
+         * self-test checks a prefix of what it meant to and passes. Six times
+         * in this project's history a test has been right about the outcome
+         * and wrong about the mechanism, and a silently shortened input is how
+         * the seventh would arrive. */
+        vibeos_x86_64_serial_puts(" kbd_dropped=0x");
+        kernel_log_u64_hex(vibeos_x86_64_keyboard_dropped());
+        vibeos_x86_64_serial_puts(" MUSTBEZERO kbd_inject_truncated=0x");
+        kernel_log_u64_hex(vibeos_x86_64_keyboard_inject_truncated());
         vibeos_x86_64_serial_puts(" ahci_irqs=0x");
         kernel_log_u64_hex(vibeos_x86_64_ahci_irqs());
         vibeos_x86_64_serial_puts(" blk_irqs=0x");

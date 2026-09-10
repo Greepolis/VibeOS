@@ -154,3 +154,127 @@ proves something narrower than claimed. Both are corrected in place. The
 sequence is the one this project keeps insisting on and it keeps being
 necessary: write the sabotage first, run it, *then* write the sentence it
 justifies.
+
+
+# Step 2 begins: the keyboard, and a counter that cannot report its own worst case
+
+The sweep before this one is worth recording because it came out **negative**.
+254 `name=0x` fields are printed under `kernel/`; 100 of them are not read by
+the gate. That looks like a hundred defects and is not. Most are *witness*
+fields - `rax`, `pml4`, `fault_addr`, `freed_by`, `oor_lba` - which exist to say
+*what* when a count says *how often*, and asserting them is meaningless. Several
+others carry comments stating deliberately that they are not must-be-zero:
+`rmap_untracked` (a frame outside its region is legitimately unmapped),
+`rmap_audit_torn` (a fact about concurrency, not a defect).
+
+Building a check on that list would have repeated the mistake the lock property
+made an hour earlier, at three times the scale. **A check whose first run
+reports a hundred things is reporting its own design.**
+
+One idea from that sweep died on inspection, which is the better outcome than
+dying after being committed. The gate detects a TLB shootdown timeout by
+matching a *log string*, not the counter, and `log_dropped` is printed and
+unread — so "a dropped log line can hide a real timeout" looked like a strong
+finding. It is false: `hw_log_emit` writes straight to the serial port and the
+portable ring is a separate copy, so a drop there hides nothing from the gate.
+And a ring that overwrites when full is behaving correctly, so asserting
+`log_dropped == 0` would have been wrong twice over.
+
+## The keyboard, which had no counter of any kind
+
+Two bare `return`s dropped keystrokes: the IRQ path when the ring is full, and
+`vibeos_x86_64_keyboard_inject` when the boot self-test's script does not fit.
+
+They are different harms and are counted differently.
+
+`kbd_dropped` — reported, **not** must-be-zero. A full ring under a fast typist
+is how a ring behaves. It is printed because nobody types on a CI boot, so a
+non-zero value there means something is injecting into the console.
+
+`kbd_inject_truncated` — **must-be-zero**, and the reason is already in the
+source. The comment above `KBD_RING` records this happening: the ring was 512,
+the self-test script outgrew it, and the symptom was *the last command silently
+never running, which looked like the shell hanging rather than like input being
+dropped*. The ring was enlarged. Nothing was added that would say so next time.
+
+A truncated injection means the self-test checks a prefix of what it meant to
+check and passes — the seventh instance of this project's "right about the
+outcome, wrong about the mechanism", arriving through the one path where the
+input *is* the test fixture.
+
+## And the honest limit, which is the part worth keeping
+
+The plan says: demonstrate the counter can be non-zero before concluding
+anything from a zero. Two demonstrations were run and they establish different
+things.
+
+**Forcing the accessor** to return a non-zero value took the boot to
+`reason=invariant_failed:kbd_inject_truncated=3`, with the value 3 carried
+intact through accessor, report line, regex, assertion and reason. That proves
+the plumbing.
+
+**Shrinking the ring to 4** — the real harm at full strength — did *not* produce
+a non-zero counter. The boot failed earlier with `reason=missing:CLI_READY`, and
+none of the late report lines printed at all. With no input the machine never
+reaches the point where it reports.
+
+So: **this counter is printed by a path that a working console is a
+precondition for.** That bounds what it can catch, precisely:
+
+- a *partial* truncation, where enough script survives to reach the report — the
+  case that once looked like a hanging shell, and the case the counter exists
+  for — is caught.
+- a *total* loss of input is caught by `CLI_READY` instead, loudly.
+- the gap between them is **untested**, because the script length and ring size
+  are both fixed and every ring small enough to truncate is small enough to
+  break the boot first.
+
+That last line is recorded as untested rather than counted as covered. It is the
+same distinction the AHCI cases already carry between "no case exists" and "the
+case exists and this environment cannot tell".
+
+
+# The keyboard counters made the plan's headline metric worse, and the check said so
+
+`check-blast-radius.py`, written the same day, went red on the keyboard commit.
+
+**input device: 2 -> 4.** Giving the keyboard its first must-be-zero counter
+cost two files that have nothing to do with keyboards: an accessor declared in
+`arch_x86_64.h`, and a print in `kmain.c`. Total across six points: **21 -> 23**.
+
+That is a structural regression caused by an observability change, caught within
+hours by a check written to measure exactly that, in the one direction nobody
+would have looked — the change made things *better* by C2's measure and *worse*
+by C1's.
+
+## The finding underneath it
+
+This is not a keyboard problem, and it does not go away by being careful.
+
+> **Observability itself has a blast radius here, and it is 2 per module.**
+
+There is no seam a module registers its statistics into. Every counter C2 adds —
+and there are roughly thirty modules left — pays the same two files, so C2 as
+planned would raise the total by about sixty and hand C6 a worse tree than it
+found.
+
+The number is raised to 4 with that argument recorded in the check, which is
+what the plan asks for: *a radius going up needs an argument, not an edit*. A
+stats registration seam takes this row back to 2 and takes the next thirty
+counters with it, and that now has a measured justification rather than being a
+matter of taste.
+
+## And a defect in all four checks of this family
+
+The failure arrived as `VERDICT=RED` with no reason beside it: the
+`blast-radius=` line was missing from the summary entirely.
+
+`check.sh` reads each check with `| tail -1`, and all four of these checks
+printed their advice line **after** the verdict. So on failure the summary got
+the advice and the verdict vanished — the line that matters printed and not
+read, for the fourth time today, this time in the tooling built to stop that.
+
+`check-chokepoints.py` had the same order from the day it was written and had
+never shown it, because it has never gone red inside `check.sh`. Fixed in all
+four: advice first, verdict last, and confirmed by breaking a baseline and
+watching `tail -1` produce `subsystem=FAIL`.

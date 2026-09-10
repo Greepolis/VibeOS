@@ -1534,6 +1534,29 @@ def main():
                     if value != 0:
                         problems.append(f"io_{name}={value}")
 
+            # The keyboard, which had no counter of any kind before C2.
+            #
+            # Only the second is asserted. kbd_dropped is the ring overflowing
+            # under a fast typist, which is how a ring behaves and not
+            # a defect - it is parsed here so a rename is noticed, and left
+            # unasserted deliberately.
+            #
+            # kbd_inject_truncated is a real must-be-zero. The boot self-test
+            # injects a fixed string into a ring that is empty by construction
+            # so read() can be exercised on a console with no human. If that
+            # injection is cut short, the self-test checks a prefix of what it
+            # meant to check and passes - the seventh instance of this
+            # project's "right about the outcome, wrong about the mechanism",
+            # arriving through the one path where the input itself is the test
+            # fixture.
+            kb = re.search(r"kbd_dropped=0x([0-9a-f]{16}) "
+                           r"MUSTBEZERO kbd_inject_truncated=0x([0-9a-f]{16})",
+                           text)
+            if kb is None:
+                problems.append("kbd_counters_missing")
+            elif int(kb.group(2), 16) != 0:
+                problems.append("kbd_inject_truncated=%d" % int(kb.group(2), 16))
+
             # What the disk did.
             #
             # The storage path carried no counters at all before I1, so "the

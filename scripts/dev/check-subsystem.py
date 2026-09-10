@@ -192,11 +192,12 @@ def main():
     if bad:
         for k, got, want in bad:
             print("  %s: %d modules, baseline %d" % (k, got, want))
+        # Advice first, verdict last: check.sh reads this with `| tail -1`.
+        print("      Raise a baseline in this file only as a decision, in the "
+              "same commit that earns it.")
         print("subsystem=FAIL " +
               " ".join("%s=%d/%d" % (k, counts[k], BASELINE[k])
                        for k in sorted(counts)))
-        print("      Raise a baseline in this file only as a decision, in the "
-              "same commit that earns it.")
         return 1
     print("subsystem=ok modules=%d " % len(modules()) +
           " ".join("%s=%d" % (k, counts[k]) for k in sorted(counts)))

@@ -95,11 +95,12 @@ def main():
     if missing:
         for n in missing:
             print("  %s printed by %s and asserted by nobody" % (n, emit[n]))
-        print("mustbezero-asserted=FAIL unread=%d" % len(missing))
+        # Advice first, verdict last: check.sh reads this with `| tail -1`.
         print("      MUSTBEZERO means the gate fails if it is not zero. A "
               "counter carrying the word and read by nobody is worse than one "
               "without it: the word is what a reader trusts instead of "
               "checking.")
+        print("mustbezero-asserted=FAIL unread=%d" % len(missing))
         return 1
     print("mustbezero-asserted=ok counters=%d" % len(emit))
     return 0
