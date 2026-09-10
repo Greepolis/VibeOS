@@ -607,7 +607,20 @@ int vibeos_vmspace_unmap(vibeos_vmspace_t *as, uint64_t va) {
             g_be.invlpg(va);
         }
         (void)vibeos_rmap_remove(entry & PTE_ADDR_MASK, as->root_phys, va);
-        (void)vibeos_frame_put(entry & PTE_ADDR_MASK);
+        /* invlpg above covered this core. It says nothing about the others, and
+         * a thread of the same process on another core can still hold the old
+         * translation - so releasing the frame here hands it to the allocator
+         * while somebody can still write through the stale entry.
+         *
+         * When a backend supplies release_deferred, the frame goes to it and is
+         * released once every core has provably dropped the translation. When
+         * none is supplied - a host test, a uniprocessor - the immediate put is
+         * correct and is what happens. */
+        if (g_be.release_deferred) {
+            g_be.release_deferred(entry & PTE_ADDR_MASK);
+        } else {
+            (void)vibeos_frame_put(entry & PTE_ADDR_MASK);
+        }
         vibeos_mm_stats()->unmaps++;
     }
     return 1;

@@ -104,6 +104,16 @@ uint64_t vibeos_x86_64_blk_timeouts(void);
  * harms: dropped is the ring overflowing under a fast typist, which is not a
  * defect; inject_truncated is the boot self-test's input being cut short,
  * which makes a green self-test a claim about a prefix. */
+/* The unmap quarantine: frames parked until every other core has flushed.
+ *
+ * deferred is the mechanism working; overflow is the residual gap, a frame
+ * released the old racy way because the quarantine was full. live_peak sizes
+ * the table against reality rather than against a guess. */
+uint64_t vibeos_x86_64_tlbq_deferred(void);
+uint64_t vibeos_x86_64_tlbq_released(void);
+uint64_t vibeos_x86_64_tlbq_overflow(void);
+uint64_t vibeos_x86_64_tlbq_live_peak(void);
+
 uint64_t vibeos_x86_64_keyboard_dropped(void);
 uint64_t vibeos_x86_64_keyboard_inject_truncated(void);
 

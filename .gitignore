@@ -73,3 +73,4 @@ soak-low.log
 soak-high.log
 qemu-cli-logdisk.img
 argv-hunt/
+.boot-evidence/

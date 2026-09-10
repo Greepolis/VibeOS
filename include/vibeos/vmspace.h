@@ -98,6 +98,25 @@ typedef struct vibeos_vmspace_backend {
      * host test supplies neither. */
     void (*invlpg)(uint64_t va);
     void (*shootdown)(uint64_t root_phys);
+
+    /* Release a frame that has just been unmapped, when releasing it *now*
+     * would be unsafe.
+     *
+     * unmap clears the entry, invalidates this core's translation and puts the
+     * frame back. On one core that is complete. On four it is not: a thread of
+     * the same process on another core can still hold the old translation, so
+     * it can write into a frame that has already been handed to somebody else.
+     *
+     * A synchronous shootdown is the obvious answer and was measured to be the
+     * wrong one - `syscall` clears IF, so a core inside a syscall cannot answer
+     * the IPI, and munmap runs far more often than fork. Two runs in
+     * twenty-four failed with acknowledgements short.
+     *
+     * So the frame is handed to whoever supplies this instead, to be released
+     * once every core has demonstrably dropped the translation. Null means
+     * release immediately, which is correct for a uniprocessor and for a host
+     * test, and is what this layer did before the hook existed. */
+    void (*release_deferred)(uint64_t phys);
 } vibeos_vmspace_backend_t;
 
 int vibeos_vmspace_init(const vibeos_vmspace_backend_t *backend);

@@ -126,6 +126,14 @@ typedef struct hw_cpu {
      * demonstrably running on a different one. */
     uint64_t dead_kstack_base;
     uint32_t dead_kstack_pages;
+    /* How many times this core has loaded CR3.
+     *
+     * With neither PCID nor global pages - and this kernel enables neither -
+     * writing CR3 flushes this core's entire TLB. So a core whose count has
+     * moved since some moment cannot still hold any translation from before it,
+     * which is the whole quiescence argument the unmap quarantine rests on.
+     * Both of those facts are load-bearing; see hw_tlb_quarantine_put. */
+    volatile uint64_t cr3_generation;
     struct tss64 tss;
 } hw_cpu_t;
 
@@ -762,6 +770,13 @@ static void hw_pic_send_eoi(uint32_t vector) {
  * TLB shootdown IPI, which arrives long before that point in the file. */
 static uint64_t hw_read_cr3(void);
 static void hw_write_cr3(uint64_t value);
+/* The unmap quarantine, drained from the timer - which is here, far above where
+ * the quarantine itself is defined. Declaration order in this file is not a
+ * style question: a helper used above its definition compiles as an implicit
+ * declaration under gcc and is rejected outright by the clang CI job. */
+static void hw_tlbq_drain(void);
+static void hw_tlbq_put(uint64_t phys);
+static void hw_tlbq_help_quiesce(void);
 static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code,
                                uint64_t rip);
 /* Defined with the rest of the signal code, far below; the timer path needs it
@@ -1471,9 +1486,21 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
             }
         }
         if (frame->vector == VIBEOS_HW_IRQ_TIMER) {
+            /* Every core, before the clock-owner test: a core that keeps
+             * running the same task never reloads CR3 on its own, and that is
+             * the core most likely to be holding the stale translation. */
+            hw_tlbq_help_quiesce();
             /* Every core's LAPIC timer lands here; only one may own the clock. */
             if (!g_apic_mode || hw_this_cpu()->index == 0u) {
                 g_timer_ticks++;
+                /* Give back the frames whose stale translations have expired.
+                 *
+                 * On the clock owner only, and deliberately: this walks 512
+                 * slots, and doing it on four cores buys nothing - the frames
+                 * become releasable when *other* cores advance, which they do
+                 * whether or not anybody is looking. munmap drains too, so a
+                 * machine that is unmapping hard does not wait for a tick. */
+                hw_tlbq_drain();
             }
             /* Accounting is charged by *every* core, unlike the clock above.
              *
@@ -1995,7 +2022,179 @@ static uint64_t hw_read_cr3(void) {
 
 static void hw_write_cr3(uint64_t pml4_phys) {
     __asm__ __volatile__("mov %0, %%cr3" : : "r"(pml4_phys) : "memory");
+    /* After the write, not before: the count means "this core has flushed",
+     * and a reader that sees the new value must be able to conclude the flush
+     * already happened. */
+    {
+        uint32_t me = vibeos_x86_64_cpu_id();
+        if (me < VIBEOS_HW_MAX_CPUS) {
+            __atomic_add_fetch(&g_cpus[me].cr3_generation, 1ull,
+                               __ATOMIC_RELEASE);
+        }
+    }
 }
+
+/* ---- deferred release of unmapped frames --------------------------------
+ *
+ * The defect this closes, stated plainly: munmap clears the entry, invalidates
+ * *this* core's translation, and puts the frame back on the free list. A thread
+ * of the same process on another core can still hold the old translation, so it
+ * can write into a frame the allocator has already handed to somebody else.
+ *
+ * A synchronous shootdown is the obvious fix and was measured to be the wrong
+ * one. It was tried here and made the boot worse: two runs in twenty-four
+ * failed with `tlb_acks below shootdowns`, a core that never answered.
+ * `syscall` clears IF (SFMASK is 0x200), so a core inside a syscall cannot take
+ * the IPI until it returns to ring 3, and munmap is called far more often than
+ * fork - the stress run alone calls it a hundred and twenty times. Trading a
+ * rare correctness gap for a frequent stall is the wrong trade.
+ *
+ * So this waits instead of asking. It needs no IPI, no rendezvous and no stall:
+ *
+ *   - the unmapping core has already done invlpg, so it is quiescent at once;
+ *   - any *other* core that loads CR3 flushes its whole TLB, because this
+ *     kernel enables neither PCID nor global pages - both checked, and both
+ *     recorded on cr3_generation because the argument dies if either changes;
+ *   - every context switch loads CR3 unconditionally in hw_task_load_cpu_state,
+ *     and the timer preempts, so every core's generation advances on its own.
+ *
+ * A frame is therefore released once every other core's generation has moved
+ * past the value it had when the frame was unmapped. That is the same shape as
+ * dead_kstack_base above - a resource parked until the core that could still be
+ * using it demonstrably is not - which is why this is a pattern here rather
+ * than an invention.
+ *
+ * On overflow the frame is released immediately, which is exactly what happened
+ * before this existed. That is deliberate: this is never worse than the status
+ * quo, and the overflow is counted so the residual gap is a number rather than
+ * a hope. */
+#define HW_TLBQ_SLOTS 512u
+
+typedef struct {
+    uint64_t phys;
+    uint64_t gen[VIBEOS_HW_MAX_CPUS];
+    uint32_t owner;               /* the core that unmapped; already quiescent */
+    uint32_t used;
+} hw_tlbq_entry_t;
+
+static hw_lock_t g_tlbq_lock;
+static hw_tlbq_entry_t g_tlbq[HW_TLBQ_SLOTS];
+/* How many frames are waiting, as an atomic, so the timer can ask without
+ * taking the lock in an interrupt handler.
+ *
+ * It exists because of a hole the first version of this had, and the hole was
+ * in exactly the case the defect lives in. hw_schedule returns early when the
+ * next task is the current one, so a core running a single thread never
+ * reloads CR3 and never becomes quiescent - and a sibling thread spinning on
+ * another core is *both* the thing holding the stale translation and the thing
+ * that would never advance. Frames would pile up until the quarantine
+ * overflowed and fell back to the racy release, precisely under the workload
+ * this was written for.
+ *
+ * So when anything is waiting, every core flushes on its next tick. The cost is
+ * paid only while frames are actually parked, and a TLB flush per tick is what
+ * a context switch already does on a kernel with no PCID. */
+static volatile uint64_t g_tlbq_live;
+static uint64_t g_tlbq_deferred;      /* frames that took the safe path */
+static uint64_t g_tlbq_released;      /* frames the drain has since freed */
+static uint64_t g_tlbq_overflow;      /* frames freed at once, gap still open */
+static uint64_t g_tlbq_live_peak;
+
+/* Has every core except `owner` flushed since the snapshot was taken? */
+static int hw_tlbq_quiescent(const hw_tlbq_entry_t *e) {
+    uint32_t c;
+    for (c = 0; c < VIBEOS_HW_MAX_CPUS; c++) {
+        if (c == e->owner || !g_cpus[c].online) {
+            continue;
+        }
+        if (__atomic_load_n(&g_cpus[c].cr3_generation, __ATOMIC_ACQUIRE)
+            == e->gen[c]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Release everything that has become safe. Called from the unmap path and from
+ * the timer, so a quiet machine still drains. */
+static void hw_tlbq_drain(void) {
+    uint32_t i;
+    uint64_t ready[32];
+    uint32_t n = 0;
+
+    hw_spin_lock(&g_tlbq_lock);
+    for (i = 0; i < HW_TLBQ_SLOTS && n < 32u; i++) {
+        if (g_tlbq[i].used && hw_tlbq_quiescent(&g_tlbq[i])) {
+            ready[n++] = g_tlbq[i].phys;
+            g_tlbq[i].used = 0;
+        }
+    }
+    g_tlbq_released += n;
+    hw_spin_unlock(&g_tlbq_lock);
+    if (n) {
+        __atomic_sub_fetch(&g_tlbq_live, (uint64_t)n, __ATOMIC_RELEASE);
+    }
+
+    /* Outside the lock. vibeos_frame_put takes the frame layer's lock, and a
+     * diagnostic that called a public accessor from inside its own lock is how
+     * a previous investigation deadlocked the machine it was explaining. */
+    for (i = 0; i < n; i++) {
+        (void)vibeos_frame_put(ready[i]);
+    }
+}
+
+static void hw_tlbq_put(uint64_t phys) {
+    uint32_t i, c, live = 0;
+    int placed = 0;
+
+    hw_spin_lock(&g_tlbq_lock);
+    for (i = 0; i < HW_TLBQ_SLOTS; i++) {
+        if (g_tlbq[i].used) {
+            live++;
+            continue;
+        }
+        if (placed) {
+            continue;
+        }
+        for (c = 0; c < VIBEOS_HW_MAX_CPUS; c++) {
+            g_tlbq[i].gen[c] =
+                __atomic_load_n(&g_cpus[c].cr3_generation, __ATOMIC_ACQUIRE);
+        }
+        g_tlbq[i].phys = phys;
+        g_tlbq[i].owner = vibeos_x86_64_cpu_id();
+        g_tlbq[i].used = 1;
+        placed = 1;
+        live++;
+    }
+    if (placed) {
+        g_tlbq_deferred++;
+        __atomic_add_fetch(&g_tlbq_live, 1ull, __ATOMIC_RELEASE);
+    } else {
+        g_tlbq_overflow++;
+    }
+    if ((uint64_t)live > g_tlbq_live_peak) {
+        g_tlbq_live_peak = (uint64_t)live;
+    }
+    hw_spin_unlock(&g_tlbq_lock);
+
+    if (!placed) {
+        (void)vibeos_frame_put(phys);   /* status quo: the old, racy release */
+    }
+}
+
+/* Called from every core's timer tick. If anything is parked, flush - see the
+ * note on g_tlbq_live for why a core that keeps running one thread would
+ * otherwise never become quiescent, in exactly the case that matters. */
+static void hw_tlbq_help_quiesce(void) {
+    if (__atomic_load_n(&g_tlbq_live, __ATOMIC_ACQUIRE) != 0ull) {
+        hw_write_cr3(hw_read_cr3());
+    }
+}
+
+uint64_t vibeos_x86_64_tlbq_deferred(void) { return g_tlbq_deferred; }
+uint64_t vibeos_x86_64_tlbq_released(void) { return g_tlbq_released; }
+uint64_t vibeos_x86_64_tlbq_overflow(void) { return g_tlbq_overflow; }
+uint64_t vibeos_x86_64_tlbq_live_peak(void) { return g_tlbq_live_peak; }
 
 /* The free list used to live here, threaded through the first word of every
  * reclaimed page. It is in kernel/mm/frame.c now, threaded through the frame
@@ -2693,6 +2892,12 @@ static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
                  * core inside a system call cannot answer the IPI. The layer
                  * asks; what the architecture does about it stays here. */
                 vb.shootdown = hw_tlb_shootdown;
+                /* And what munmap does instead of that barrier: park the
+                 * frame until every other core has loaded CR3, which flushes
+                 * its whole TLB because this kernel enables neither PCID nor
+                 * global pages. No IPI, no rendezvous, no stall - the timer
+                 * makes every core quiescent on its own. */
+                vb.release_deferred = hw_tlbq_put;
                 /* The two hooks that make page-out and page-in real.
                  *
                  * They were left null and the whole of P5 sat above them:
@@ -6409,7 +6614,41 @@ static void hw_tlb_shootdown(uint64_t cr3) {
             vibeos_mm_stats()->tlb_timeouts++;
             hw_log(VIBEOS_LOG_ERROR, 30u, (uint64_t)targets, cr3,
                    "TLB shootdown timed out; a core did not acknowledge");
-            return;
+            /* And then it *returned*, and the caller carried on.
+             *
+             * That is what an external review found, and it was right. This
+             * function is not an optimisation: every caller has already
+             * narrowed a permission or removed a mapping, and is relying on
+             * this to make the change true on the other cores. Returning
+             * quietly means a core keeps writing through a permission that has
+             * been revoked - straight into a page a fork has just shared, with
+             * no copy-on-write fault, and the damage surfacing later in
+             * whichever program the page ends up serving.
+             *
+             * There was no way for a caller to know, either: the backend hook
+             * is `void (*shootdown)(uint64_t)`, so none of its five call sites
+             * in kernel/mm/vmspace.c *could* have checked.
+             *
+             * Nothing can be rolled back here. The entry was written before the
+             * shootdown was asked for - it has to be, or there is nothing to
+             * invalidate - so "do not complete the operation" is not available
+             * by the time this is reached. The deferred reclamation that closed
+             * the munmap gap does not transfer either: there a frame could be
+             * parked until every core was quiescent, and here the resource in
+             * danger is not a frame but a permission that is already narrowed.
+             *
+             * So the only honest choices are to keep waiting or to stop, and a
+             * core that has not answered in two hundred million spins is not
+             * about to. Stopping is this project's stated position, in its own
+             * words: the difference between a machine that stops and a machine
+             * that says why. A silent memory-corruption path is strictly worse
+             * than a named halt.
+             *
+             * If this ever fires in practice, the fix is not to soften it. It
+             * is the one the munmap comment already names: stop masking
+             * interrupts for the whole of a syscall, so a target can answer. */
+            hw_panic("TLB shootdown timed out: a core still holds a "
+                     "translation the caller has already revoked");
         }
     }
 }
@@ -6876,26 +7115,30 @@ static long hw_sys_munmap(uint64_t addr, uint64_t len) {
             }
         }
     }
-    /* A shootdown belongs here too, and is deliberately absent.
+    /* A shootdown still does not belong here, and the gap it left is closed a
+     * different way.
      *
-     * The need is real: a thread of this process on another core still has the
-     * old translation for an address whose frame has just been handed back, so
-     * it can write into memory that now belongs to somebody else. fork does
-     * shoot down for exactly that reason.
+     * The need was real and this comment used to end by admitting it was
+     * unmet: a thread of this process on another core still holds the old
+     * translation for an address whose frame has just been handed back, so it
+     * can write into memory that now belongs to somebody else. An external
+     * review found the admission and was right to call it a defect rather than
+     * a note.
      *
-     * It was tried here and made the boot worse rather than better - two runs
-     * in twenty-four failed with `tlb_acks below shootdowns`, a core that never
-     * answered. The mechanism cannot meet a synchronous barrier at this call
-     * rate: `syscall` clears IF (SFMASK is 0x200), so a target cannot take the
-     * IPI until it returns to ring 3, and munmap is called far more often than
-     * fork - the stress run alone calls it a hundred and twenty times.
+     * A synchronous barrier is still the wrong answer, for the measured reason:
+     * it was tried, and two runs in twenty-four failed with `tlb_acks below
+     * shootdowns`. `syscall` clears IF, so a target cannot take the IPI until
+     * it returns to ring 3, and munmap runs far more often than fork.
      *
-     * Trading a rare correctness gap for a frequent stall is the wrong trade,
-     * and papering over the timeout would be worse than either. The honest fix
-     * is for the syscall path to stop masking interrupts for its whole
-     * duration, which is a larger change than this one; it is recorded in
-     * docs/implementation_progress/diagnostics.md rather than left here as a
-     * silent omission. */
+     * What changed is that asking is not the only option. The frame is parked
+     * instead - vb.release_deferred - and released once every other core has
+     * loaded CR3, which flushes its whole TLB. Nobody waits for anybody; the
+     * timer makes every core quiescent on its own. The same shape as the dead
+     * kernel stack a core parks until it is provably running on another.
+     *
+     * Drained here as well as on the timer so a machine doing nothing but
+     * unmapping still gives frames back. */
+    hw_tlbq_drain();
     return 0;
 }
 

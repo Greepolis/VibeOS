@@ -1549,6 +1549,34 @@ def main():
             # project's "right about the outcome, wrong about the mechanism",
             # arriving through the one path where the input itself is the test
             # fixture.
+            # The unmap quarantine, which closes a stale-TLB window an external
+            # review found - and which the source used to admit was open.
+            #
+            # deferred is asserted NON-ZERO. The defect is a stale translation
+            # on another core; that cannot be observed in one boot, and every
+            # earlier claim in this project that such a thing was "fixed"
+            # rested on a handful of green boots. What a boot *can* assert is
+            # that munmap took the safe path at all. A quarantine that silently
+            # stopped running would leave every boot green with the defect
+            # exactly as it was - the same failure tlb_shootdowns is gated
+            # against, and the same argument.
+            #
+            # overflow is NOT asserted zero. Falling back is precisely what the
+            # kernel did before the quarantine existed, so it is never worse
+            # than the status quo; the number says how much of the window is
+            # still open, which is worth reporting and wrong to fail on.
+            tq = re.search(r"tlbq_deferred=0x([0-9a-f]{16}) "
+                           r"tlbq_released=0x([0-9a-f]{16}) "
+                           r"tlbq_overflow=0x([0-9a-f]{16}) "
+                           r"tlbq_live_peak=0x([0-9a-f]{16})", text)
+            if tq is None:
+                problems.append("tlb_quarantine_counters_missing")
+            else:
+                if int(tq.group(1), 16) == 0:
+                    problems.append("munmap_never_deferred_a_frame")
+                if int(tq.group(2), 16) == 0:
+                    problems.append("tlb_quarantine_never_released_anything")
+
             kb = re.search(r"kbd_dropped=0x([0-9a-f]{16}) "
                            r"MUSTBEZERO kbd_inject_truncated=0x([0-9a-f]{16})",
                            text)

@@ -1,0 +1,131 @@
+mm-tlb-quarantine - munmap used to hand back a frame other cores could still reach
+
+The defect, which the source admitted in a comment for as long as it existed:
+
+  munmap clears the entry, invalidates *this* core's translation, and puts the
+  frame back on the free list. A thread of the same process on another core can
+  still hold the old translation, so it can write into a frame the allocator has
+  already given to somebody else.
+
+An external review found the admission and was right to call it a defect rather
+than a note. Its line numbers pointed at the copy-on-write fault handler rather
+than munmap, and its mechanism was exactly right.
+
+## Why the obvious fix stays rejected
+
+A synchronous shootdown was tried and measured: **two runs in twenty-four**
+failed with `tlb_acks below shootdowns`, a core that never answered. `syscall`
+clears IF (SFMASK is 0x200), so a core inside a system call cannot take the IPI
+until it returns to ring 3, and munmap runs far more often than fork.
+
+## What replaced it, and the two facts it rests on
+
+The frame is parked and released once every *other* core has loaded CR3.
+
+  1. This kernel enables **no PCID** and marks **no page global** - both checked
+     by grep, both recorded on hw_cpu_t.cr3_generation - so writing CR3 flushes
+     that core's entire TLB.
+  2. Every context switch loads CR3 unconditionally in hw_task_load_cpu_state.
+
+If either stops being true the argument collapses silently, which is why they
+are named in the source rather than assumed.
+
+---
+
+case 1: the quarantine stops running
+  break:   `vb.release_deferred = 0;` at the backend registration.
+  expect:  reason=invariant_failed:munmap_never_deferred_a_frame,
+           tlb_quarantine_never_released_anything
+  ran:     yes, both. This is the case the assertion exists for: the bug is a
+           stale translation on another core and cannot be observed in one
+           boot, so what is gated is that munmap took the safe path *at all*.
+           Every earlier claim in this project that such a thing was fixed
+           rested on a handful of green boots; a mechanism that silently
+           stopped would leave them all green with the defect untouched. Same
+           argument as tlb_shootdowns.
+
+---
+
+case 2: the counters vanish from the report
+  break:   remove the tlbq_ fields from kernel/core/kmain.c.
+  expect:  reason=invariant_failed:tlb_quarantine_counters_missing
+  ran:     not yet. Same shape as exec-cache-audit case 3.
+
+---
+
+case 3: a core that never becomes quiescent
+  This is not a sabotage case, it is a hole the first version had, and it is
+  recorded because it was in exactly the situation the defect lives in.
+
+  `hw_schedule` returns early when the next task is the current one, so a core
+  running a single thread never reloads CR3 on its own. A sibling thread
+  spinning on another core is therefore **both** the thing holding the stale
+  translation **and** the thing that would never advance - frames would pile up
+  until the quarantine overflowed and fell back to the racy release, precisely
+  under the workload this was written for.
+
+  Closed by having every core flush on its next timer tick while anything is
+  parked. Measured: the live peak fell from 175 slots to about 45.
+
+  It is worth keeping as a lesson rather than a case: the first version was
+  correct in the easy situation and degraded to the old behaviour in the hard
+  one, and nothing in a green boot would have distinguished the two.
+
+---
+
+what these do NOT prove
+
+None of this observes the original defect. A stale-TLB write is a race that a
+handful of boots cannot produce on demand, and no case here claims otherwise.
+What is established is:
+
+  - the safe path is taken (deferred non-zero, asserted);
+  - everything parked is given back (deferred == released across every boot
+    measured; frames_leaked stays zero, which is a separate assertion);
+  - the residual window is a number rather than a hope (overflow, reported,
+    measured 0 on every boot so far and deliberately NOT asserted zero, because
+    falling back is exactly what the kernel did before this existed and is
+    never worse).
+
+---
+
+case 4: the shootdown times out and the caller carries on
+  what it was: hw_tlb_shootdown counted the timeout, logged it, and RETURNED.
+           Every caller has already narrowed a permission or removed a mapping
+           by then and is relying on this to make the change true on the other
+           cores, so returning quietly means a core keeps writing through a
+           permission that has been revoked - into a page a fork has just
+           shared, with no copy-on-write fault.
+
+           No caller could have known, either. The backend hook is
+           `void (*shootdown)(uint64_t)`, so none of its five call sites in
+           kernel/mm/vmspace.c *could* have checked. Found by an external
+           review; distinct from the munmap gap and unaffected by the deferred
+           reclamation that closed it.
+
+  why not rolled back instead: the entry is written before the shootdown is
+           asked for - it has to be, or there is nothing to invalidate - so
+           "do not complete the operation" is not available by the time the
+           timeout is reached. And the parking trick does not transfer: there
+           the resource in danger was a frame, here it is a permission that is
+           already narrowed.
+
+  now:     hw_panic, naming the reason. A core that has not answered in two
+           hundred million spins is not about to, and a silent
+           memory-corruption path is strictly worse than a named halt - which
+           is this project's own stated position.
+
+  ran:     not yet. Making a core genuinely fail to answer an IPI for two
+           hundred million spins is not something this harness can arrange on
+           demand, and lowering the bound to force it would test a different
+           machine. Recorded as untested rather than counted as covered.
+
+  measured: tlb_timeouts is zero on every boot of this tree. The counter has
+           been non-zero historically - about three boots in thirty-two, when
+           the shootdown broadcast to every core instead of only those running
+           the address space - so it is a number that has moved, not one that
+           has only ever been zero.
+
+  if it fires: do not soften this. The fix it is pointing at is the one the
+           munmap comment already names - stop masking interrupts for the whole
+           of a syscall, so a target can answer.

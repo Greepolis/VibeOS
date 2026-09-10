@@ -176,6 +176,10 @@ __attribute__((weak)) void vibeos_x86_64_fat_cache_stats(uint64_t *hits,
 __attribute__((weak)) uint64_t vibeos_x86_64_virtio_net_tx_timeouts(void) { return 0ull; }
 /* Beside their caller, like every other stub here. */
 __attribute__((weak)) uint64_t vibeos_x86_64_ioapic_irq_count(uint32_t v) { (void)v; return 0ull; }
+__attribute__((weak)) uint64_t vibeos_x86_64_tlbq_deferred(void) { return 0ull; }
+__attribute__((weak)) uint64_t vibeos_x86_64_tlbq_released(void) { return 0ull; }
+__attribute__((weak)) uint64_t vibeos_x86_64_tlbq_overflow(void) { return 0ull; }
+__attribute__((weak)) uint64_t vibeos_x86_64_tlbq_live_peak(void) { return 0ull; }
 __attribute__((weak)) uint64_t vibeos_x86_64_keyboard_dropped(void) { return 0ull; }
 __attribute__((weak)) uint64_t vibeos_x86_64_keyboard_inject_truncated(void) { return 0ull; }
 __attribute__((weak)) uint64_t vibeos_x86_64_ahci_irqs(void) { return 0ull; }
@@ -849,6 +853,28 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
          * in this project's history a test has been right about the outcome
          * and wrong about the mechanism, and a silently shortened input is how
          * the seventh would arrive. */
+        /* The unmap quarantine.
+         *
+         * deferred is asserted NON-ZERO, which is the point. The bug it closes
+         * is a stale TLB entry on another core, and that cannot be observed in
+         * one boot - but "did munmap take the safe path at all" can, and a
+         * mechanism that silently stops running would otherwise leave every
+         * boot green with the defect exactly as it was. That is the same
+         * argument that put tlb_shootdowns under the gate.
+         *
+         * overflow is the residual gap: the quarantine was full, so the frame
+         * went back the old racy way. Not must-be-zero, because falling back is
+         * strictly what happened before this existed and is never worse - but
+         * it is the number that says how much of the defect is still open, so
+         * it is printed and watched rather than hidden. */
+        vibeos_x86_64_serial_puts(" tlbq_deferred=0x");
+        kernel_log_u64_hex(vibeos_x86_64_tlbq_deferred());
+        vibeos_x86_64_serial_puts(" tlbq_released=0x");
+        kernel_log_u64_hex(vibeos_x86_64_tlbq_released());
+        vibeos_x86_64_serial_puts(" tlbq_overflow=0x");
+        kernel_log_u64_hex(vibeos_x86_64_tlbq_overflow());
+        vibeos_x86_64_serial_puts(" tlbq_live_peak=0x");
+        kernel_log_u64_hex(vibeos_x86_64_tlbq_live_peak());
         vibeos_x86_64_serial_puts(" kbd_dropped=0x");
         kernel_log_u64_hex(vibeos_x86_64_keyboard_dropped());
         vibeos_x86_64_serial_puts(" MUSTBEZERO kbd_inject_truncated=0x");
