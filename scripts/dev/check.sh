@@ -60,6 +60,11 @@ do_build() {
     # produced by no driver - and it took reading the source to notice.
     python3 scripts/dev/check-assertions-covered.py | tail -1
     python3 scripts/dev/check-counters-produced.py | tail -1
+    # And the axis neither of those two covers: a counter that carries the word
+    # MUSTBEZERO - which means "the gate fails if this is not zero" - and that
+    # the gate never reads. The GUI's guard canary was in that state for the
+    # whole of C0, printed every boot, green by construction.
+    python3 scripts/dev/check-mustbezero-asserted.py | tail -1
     # And one about the tests: every module gets an intensive nightly run.
     python3 scripts/dev/check-nightly-coverage.py | tail -1
     # Which of the portable kernel's functions nothing reaches.

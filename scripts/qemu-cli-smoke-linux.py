@@ -2016,6 +2016,22 @@ def main():
                 elif int(gui.group(2), 16) == 0:
                     problems.append("gui_terminal_empty")
 
+            # The desktop's canary, which was printed as MUSTBEZERO and read by
+            # nobody for the whole of C0 - added in the session that had just
+            # quoted "a line in the serial log is not a check", and missed by
+            # both existing checks-on-checks: it has a `++` so
+            # check-counters-produced.py was satisfied, and it never appears in
+            # a reason= so check-assertions-covered.py had nothing to match.
+            # check-mustbezero-asserted.py exists for that gap and found this.
+            #
+            # Unconditional, unlike the two above: guard_broken is printed
+            # whenever the framebuffer report runs, and a build with no desktop
+            # prints no line at all, so absence is not a failure but a non-zero
+            # value always is.
+            guard = re.search(r"\[GUI\] MUSTBEZERO guard_broken=0x([0-9a-f]+)", text)
+            if guard is not None and int(guard.group(1), 16) != 0:
+                problems.append("gui_guard_broken=%d" % int(guard.group(1), 16))
+
             # A position-independent executable is placed by the loader, not
             # by the file. Checking argv as well as the greeting is what
             # separates "it ran" from "it ran and could still see the stack

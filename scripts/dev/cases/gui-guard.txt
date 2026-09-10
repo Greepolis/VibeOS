@@ -1,0 +1,61 @@
+gui-guard - the desktop's canary, and the year it was green by construction
+
+The GUI paints into a back buffer whose frames are bracketed by a guard word.
+`g_gui_guard_broken` counts how many of those words came back wrong, and the
+line is printed as:
+
+  [GUI] MUSTBEZERO guard_broken=0x... backbuf_shared=0x... backbuf_lost=0x...
+
+`MUSTBEZERO` is the strongest claim this kernel makes about itself: the word
+means the boot gate fails if the number is not zero.
+
+**It did not.** The counter was added during C0's GUI work, printed on every
+boot, and read by nobody - by the same person, in the same session, who had
+just quoted CLAUDE.md's "a line in the serial log is not a check". Neither
+check-on-checks could see it: it has a `++`, so check-counters-produced.py was
+satisfied, and it never appears in a `reason=`, so check-assertions-covered.py
+had nothing to match. `check-mustbezero-asserted.py` was written for that gap
+and reported it on its first run.
+
+---
+
+case 1: the guard word is broken and the boot stays green
+  break:   in kernel/arch/x86_64/arch_hw.c, corrupt one guard word after the
+           desktop is up - e.g. immediately after the guard is written, store
+           anything that is not HW_GUI_GUARD into g[0].
+  expect:  reason=invariant_failed:gui_guard_broken=1
+  ran:     yes, on metal. One guard word of the back buffer written as zero
+           instead of HW_GUI_GUARD, at kernel/arch/x86_64/arch_hw.c:10483:
+               guard[w] = (w == 0u) ? 0ull : HW_GUI_GUARD;
+           The boot went from pass to
+               reason=invariant_failed:gui_guard_broken=1
+           - red for the right reason, and counting exactly the one word that
+           was broken rather than a whole buffer.
+
+---
+
+case 2: a MUSTBEZERO is printed and nothing reads it
+  check:   check-mustbezero-asserted.py
+  break:   delete the `guard_broken` assertion from
+           scripts/qemu-cli-smoke-linux.py, leaving the kernel printing it.
+  expect:  guard_broken printed by kernel/arch/x86_64/arch_hw.c and asserted
+           by nobody
+           mustbezero-asserted=FAIL unread=1
+  ran:     yes - this was the tree's real state, not a simulation. The check
+           was written first and the defect it found was already there.
+
+---
+
+known and not fixed here: the line is not bracketed
+
+The report is assembled from twelve separate `serial_puts` calls with no
+`serial_lock` around them, which by this project's own rule is twelve critical
+sections and not one line. CLAUDE.md records the cost of exactly that: a hex
+field cut off after its `0x`, and two investigations into crashes that were a
+marker cut in half.
+
+It has not misread yet because the report runs late, when little else is
+printing. That is an accident of timing and not a property, which is the same
+sentence this project has already written about a page cache with one caller.
+Recorded here rather than fixed, because bracketing it is a change to the log
+path and belongs with C2's observability work, not with an assertion fix.
