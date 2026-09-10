@@ -579,13 +579,13 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
     kernel_boot_log(kernel, VIBEOS_LOG_INFO, 100, kernel->pmm.page_size, vibeos_pmm_remaining(&kernel->pmm), "pmm_ready");
     vibeos_x86_64_serial_puts("[BOOT] Memory manager initialized\n");
     
-    /* Virtual memory on top of the frame allocator. */
-    if (vibeos_vm_init(&kernel->kernel_aspace) != 0) {
-        return kernel_boot_fail(kernel, 1003, "vm_init failed");
-    }
-    kernel->boot_health_flags |= VIBEOS_BOOT_HEALTH_VM_READY;
-    kernel_boot_log(kernel, VIBEOS_LOG_INFO, 101, 0, 0, "vm_ready");
-    vibeos_x86_64_serial_puts("[BOOT] Virtual memory initialized\n");
+    /* The portable address-space model used to be initialised here and was
+     * never consulted again. kernel/mm/vmspace.c is what the machine's page
+     * tables actually go through, and nothing outside kernel/mm/vm.c ever named
+     * one of its functions - so it was constructed and consulted by nobody, at
+     * the scale of a subsystem. It is gone, and so is the health flag that
+     * reported it ready: a flag for a subsystem that does not exist is the same
+     * defect one size smaller. */
     
     if (vibeos_handle_table_init(&kernel->handles) != 0) {
         return kernel_boot_fail(kernel, 1008, "handle_table_init failed");
@@ -618,7 +618,6 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
     if (vibeos_timer_init(&kernel->timer, 1000) != 0) {
         return kernel_boot_fail(kernel, 1004, "timer_init failed");
     }
-    vibeos_intc_init(&kernel->intc);
     if (vibeos_x86_64_idt_init(&kernel->idt) != 0) {
         return kernel_boot_fail(kernel, 1005, "idt_init failed");
     }
@@ -629,9 +628,10 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
         return kernel_boot_fail(kernel, 1006, "idt_set failed");
     }
     timer_irq = (uint32_t)vibeos_x86_64_timer_vector();
-    if (vibeos_intc_bind_timer_irq(&kernel->intc, &kernel->timer, timer_irq) != 0) {
-        return kernel_boot_fail(kernel, 1013, "intc_bind_timer_irq failed");
-    }
+    /* The portable interrupt controller was constructed and bound here, and
+     * vibeos_intc_dispatch was never called from anywhere - so the handler this
+     * registered could not fire. The arch layer's IDT, initialised a few lines
+     * above, is the one that runs. */
     kernel->boot_health_flags |= VIBEOS_BOOT_HEALTH_IRQ_READY;
     kernel->boot_state.stage = VIBEOS_BOOT_STAGE_SCHED_READY;
     kernel_boot_log(kernel, VIBEOS_LOG_INFO, 103, kernel->boot_health_flags, timer_irq, "scheduler_stage_ready");

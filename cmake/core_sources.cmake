@@ -50,7 +50,6 @@ set(VIBEOS_KERNEL_CORE_SOURCES
     kernel/mm/pmm.c
     kernel/net/inet.c
     kernel/net/net_policy.c
-    kernel/mm/vm.c
     kernel/object/handle_table.c
     kernel/proc/process.c
     kernel/sched/scheduler.c
@@ -58,7 +57,6 @@ set(VIBEOS_KERNEL_CORE_SOURCES
     kernel/ipc/channel.c
     kernel/ipc/handle_transfer.c
     kernel/ipc/waitset.c
-    kernel/core/interrupts.c
     kernel/core/log.c
     kernel/core/policy.c
     kernel/core/syscall_policy.c

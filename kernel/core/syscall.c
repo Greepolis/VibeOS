@@ -719,29 +719,15 @@ int64_t vibeos_syscall_dispatch(struct vibeos_kernel *kernel, vibeos_syscall_fra
             return 0;
         }
 
-        /* Virtual memory: map, unmap and protection changes on the caller's
-         address space. */
-        case VIBEOS_SYSCALL_VM_MAP:
-            if (vibeos_vm_map(&kernel->kernel_aspace, (uintptr_t)frame->arg0, (uintptr_t)frame->arg1, (size_t)frame->arg2, VIBEOS_VM_PERM_READ | VIBEOS_VM_PERM_WRITE) != 0) {
-                frame->result = -1;
-                return -1;
-            }
-            frame->result = 0;
-            return 0;
-        case VIBEOS_SYSCALL_VM_UNMAP:
-            if (vibeos_vm_unmap(&kernel->kernel_aspace, (uintptr_t)frame->arg0, (size_t)frame->arg1) != 0) {
-                frame->result = -1;
-                return -1;
-            }
-            frame->result = 0;
-            return 0;
-        case VIBEOS_SYSCALL_VM_PROTECT:
-            if (vibeos_vm_protect(&kernel->kernel_aspace, (uintptr_t)frame->arg0, (size_t)frame->arg1, (uint32_t)frame->arg2) != 0) {
-                frame->result = -1;
-                return -1;
-            }
-            frame->result = 0;
-            return 0;
+        /* VM_MAP, VM_UNMAP and VM_PROTECT are gone with kernel/mm/vm.c.
+         *
+         * They operated on `kernel->kernel_aspace`, an abstract maps[] array
+         * that was never the machine's page tables - so these three syscalls
+         * could not have changed any mapping a process runs on, whatever they
+         * returned. The real ones live in the arch layer's Linux syscall table,
+         * against kernel/mm/vmspace.c. Removing the model rather than leaving
+         * three handlers that report success for nothing.
+         */
 
         /* Process audit trail: retention policy and event readback. */
         case VIBEOS_SYSCALL_PROC_AUDIT_COUNT:

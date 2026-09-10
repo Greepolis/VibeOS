@@ -3,7 +3,6 @@
 
 #include "vibeos/boot.h"
 #include "vibeos/arch_x86_64.h"
-#include "vibeos/interrupts.h"
 #include "vibeos/ipc.h"
 #include "vibeos/log.h"
 #include "vibeos/mm.h"
@@ -14,7 +13,6 @@
 #include "vibeos/security_model.h"
 #include "vibeos/timer.h"
 #include "vibeos/trap.h"
-#include "vibeos/vm.h"
 
 #define VIBEOS_BOOT_HEALTH_PMM_READY (1u << 0)
 #define VIBEOS_BOOT_HEALTH_VM_READY (1u << 1)
@@ -31,7 +29,6 @@ typedef struct vibeos_kernel {
     uint32_t boot_health_flags;
     uint32_t boot_failure_fatal;
     vibeos_pmm_t pmm;
-    vibeos_address_space_t kernel_aspace;
     vibeos_handle_table_t handles;
     vibeos_policy_state_t policy;
     vibeos_security_token_t kernel_token;
@@ -39,7 +36,6 @@ typedef struct vibeos_kernel {
     vibeos_log_t log;
     vibeos_process_table_t proc_table;
     vibeos_scheduler_t scheduler;
-    vibeos_interrupt_controller_t intc;
     vibeos_timer_t timer;
     vibeos_x86_64_idt_t idt;
     vibeos_trap_state_t trap_state;

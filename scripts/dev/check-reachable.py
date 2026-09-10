@@ -20,6 +20,21 @@ task view as unreachable, which is exactly the kind of confidently wrong answer
 that makes people ignore a check. "Nobody names it" is coarse, is almost never
 wrong when it fires, and catches every case this project has actually had.
 
+## What it cost, once, and what would fix it
+
+kernel/mm/vm.c and kernel/core/interrupts.c were constructed by the live
+vibeos_kmain on every boot and consulted by nothing - two whole subsystems in
+the shape this project names as its most repeated defect - and **this check
+never said a word**, because they *were* named outside their own files: by
+kmain.c and by syscall.c, both of which are themselves unreached. The question
+"is it named anywhere" cannot see "named only by code that is itself dead".
+
+The stronger version is a transitive walk seeded from the arch layer's entry
+points, treating any function whose address is taken as reached so the
+registration seams stay safe. That is the next improvement to this file, and it
+is written down here rather than in a plan because this is where somebody
+looking at the number will be.
+
 Ratcheted, like the nightly coverage check: the count may go down and not up.
 A new unreachable function is a new second kernel, and this is the check that
 says so on the day it is written rather than months later.
@@ -53,7 +68,7 @@ SEARCH = ("kernel", "include", "tests", "user", "bootloader")
 # carries three known defects and is C1's whole subject. The rest are mostly
 # accessors written for a caller that has not arrived yet; each is a small bet
 # that it will.
-BASELINE = 27
+BASELINE = 12
 
 
 def c_files(dirs):

@@ -31,7 +31,6 @@
 #include "vibeos/net_policy.h"
 #include "vibeos/trap.h"
 #include "vibeos/user_api.h"
-#include "vibeos/vm.h"
 #include "vibeos/waitset.h"
 #include "vibeos/ipc_transfer.h"
 
@@ -545,204 +544,6 @@ static int test_kmain(void) {
     }
     return 0;
 }
-
-static int test_vm(void) {
-    vibeos_address_space_t aspace;
-    vibeos_address_space_t cloned;
-    const vibeos_vm_map_t *found;
-    uint32_t merged = 0;
-    uintptr_t gap = 0;
-    if (vibeos_vm_init(&aspace) != 0) {
-        return -1;
-    }
-    if (vibeos_vm_map(&aspace, 0x400000, 0x100000, 0x2000, VIBEOS_VM_PERM_READ | VIBEOS_VM_PERM_WRITE) != 0) {
-        return -1;
-    }
-    found = vibeos_vm_lookup(&aspace, 0x400010);
-    if (!found || found->pa != 0x100000) {
-        return -1;
-    }
-    if (vibeos_vm_map_count(&aspace) != 1 || vibeos_vm_total_mapped(&aspace) != 0x2000) {
-        return -1;
-    }
-    if (vibeos_vm_validate(&aspace) != 0) {
-        return -1;
-    }
-    if (vibeos_vm_protect(&aspace, 0x400000, 0x2000, VIBEOS_VM_PERM_READ) != 0) {
-        return -1;
-    }
-    found = vibeos_vm_lookup(&aspace, 0x400010);
-    if (!found || found->perms != VIBEOS_VM_PERM_READ) {
-        return -1;
-    }
-    if (vibeos_vm_unmap_range(&aspace, 0x401000, 0x800) != 0) {
-        return -1;
-    }
-    if (vibeos_vm_map_count(&aspace) != 2 || vibeos_vm_total_mapped(&aspace) != 0x1800) {
-        return -1;
-    }
-    if (vibeos_vm_clone_readonly(&cloned, &aspace) != 0) {
-        return -1;
-    }
-    found = vibeos_vm_lookup(&cloned, 0x400010);
-    if (!found || (found->perms & VIBEOS_VM_PERM_WRITE) != 0) {
-        return -1;
-    }
-    if (vibeos_vm_unmap(&aspace, 0x400000, 0x1000) != 0) {
-        return -1;
-    }
-    if (vibeos_vm_unmap(&aspace, 0x401800, 0x800) != 0) {
-        return -1;
-    }
-    if (vibeos_vm_map_count(&aspace) != 0) {
-        return -1;
-    }
-    if (vibeos_vm_map(&aspace, 0x500000, 0x200000, 0x1000, VIBEOS_VM_PERM_READ) != 0) {
-        return -1;
-    }
-    if (vibeos_vm_map(&aspace, 0x501000, 0x201000, 0x1000, VIBEOS_VM_PERM_READ) != 0) {
-        return -1;
-    }
-    if (vibeos_vm_compact(&aspace, &merged) != 0 || merged != 1) {
-        return -1;
-    }
-    if (vibeos_vm_map_count(&aspace) != 1 || vibeos_vm_total_mapped(&aspace) != 0x2000) {
-        return -1;
-    }
-    if (vibeos_vm_map(&aspace, UINTPTR_MAX - 0x100, 0x300000, 0x1000, VIBEOS_VM_PERM_READ) == 0) {
-        return -1;
-    }
-    if (vibeos_vm_find_gap(&aspace, 0x500000, 0x1000, 0x1000, &gap) != 0 || gap != 0x502000) {
-        return -1;
-    }
-    if (vibeos_vm_find_gap(&aspace, 0x500000, 0x1000, 0x300, &gap) == 0) {
-        return -1;
-    }
-    return 0;
-}
-
-static int test_vm_user_address_space_contract(void) {
-    vibeos_address_space_t user_aspace;
-    vibeos_address_space_t next_aspace;
-    vibeos_vm_context_t ctx;
-    uintptr_t kernel_va = VIBEOS_VM_KERNEL_BASE;
-
-    if (vibeos_address_space_create(&user_aspace) != 0 || vibeos_address_space_create(&next_aspace) != 0) {
-        return -1;
-    }
-    if (vibeos_vm_map_user(&user_aspace, 0x400000, 0x200000, VIBEOS_VM_PAGE_SIZE * 2u, VIBEOS_VM_PERM_READ | VIBEOS_VM_PERM_WRITE) != 0) {
-        return -1;
-    }
-    if (vibeos_vm_validate_user_range(&user_aspace, 0x400000, 16, VIBEOS_VM_PERM_READ) != 0) {
-        return -1;
-    }
-    if (vibeos_vm_validate_user_range(&user_aspace, 0x401000, VIBEOS_VM_PAGE_SIZE, VIBEOS_VM_PERM_WRITE) != 0) {
-        return -1;
-    }
-    if (vibeos_vm_validate_user_range(&user_aspace, 0x402000, 1, VIBEOS_VM_PERM_READ) == 0) {
-        return -1;
-    }
-    if (vibeos_vm_validate_user_range(&user_aspace, 0x400000, 16, VIBEOS_VM_PERM_EXEC) == 0) {
-        return -1;
-    }
-    if (vibeos_vm_map_user(&user_aspace, kernel_va, 0x300000, VIBEOS_VM_PAGE_SIZE, VIBEOS_VM_PERM_READ) == 0) {
-        return -1;
-    }
-    if (vibeos_vm_map_user(&user_aspace, 0x500000, 0x300000, VIBEOS_VM_PAGE_SIZE, VIBEOS_VM_PERM_WRITE | VIBEOS_VM_PERM_EXEC) == 0) {
-        return -1;
-    }
-    if (vibeos_vm_map_kernel(&user_aspace, kernel_va, 0x400000, VIBEOS_VM_PAGE_SIZE, VIBEOS_VM_PERM_READ) != 0) {
-        return -1;
-    }
-    if (vibeos_vm_validate_user_range(&user_aspace, kernel_va, 8, VIBEOS_VM_PERM_READ) == 0) {
-        return -1;
-    }
-    if (vibeos_vm_map_user(&next_aspace, 0x600000, 0x500000, VIBEOS_VM_PAGE_SIZE, VIBEOS_VM_PERM_READ | VIBEOS_VM_PERM_EXEC) != 0) {
-        return -1;
-    }
-    if (vibeos_vm_context_init(&ctx, &user_aspace) != 0) {
-        return -1;
-    }
-    if (vibeos_vm_switch_address_space(&ctx, &next_aspace) != 0 || ctx.current != &next_aspace || ctx.switch_count != 1) {
-        return -1;
-    }
-    if (vibeos_vm_switch_address_space(&ctx, &next_aspace) != 0 || ctx.switch_count != 1) {
-        return -1;
-    }
-    return 0;
-}
-
-static int test_interrupts(void) {
-    vibeos_interrupt_controller_t intc;
-    uint32_t acc = 0;
-    uint64_t denied_bad = 0;
-    uint64_t denied_unhandled = 0;
-    uint64_t denied_masked = 0;
-    uint64_t denied_disabled = 0;
-    vibeos_intc_init(&intc);
-    if (vibeos_intc_register(&intc, 32, irq_handler, &acc) != 0) {
-        return -1;
-    }
-    if (vibeos_intc_dispatch(&intc, 32) != 0) {
-        return -1;
-    }
-    if (vibeos_intc_dispatch(&intc, 33) == 0) {
-        return -1;
-    }
-    if (vibeos_intc_mask(&intc, 32) != 0 || vibeos_intc_is_masked(&intc, 32) != 1) {
-        return -1;
-    }
-    if (vibeos_intc_dispatch(&intc, 32) == 0) {
-        return -1;
-    }
-    if (vibeos_intc_unmask(&intc, 32) != 0 || vibeos_intc_is_masked(&intc, 32) != 0) {
-        return -1;
-    }
-    if (vibeos_intc_set_enabled(&intc, 0) != 0) {
-        return -1;
-    }
-    if (vibeos_intc_dispatch(&intc, 32) == 0) {
-        return -1;
-    }
-    if (vibeos_intc_set_enabled(&intc, 1) != 0) {
-        return -1;
-    }
-    if (vibeos_intc_dispatch(&intc, 999) == 0) {
-        return -1;
-    }
-    if (vibeos_intc_dispatch(&intc, 32) != 0) {
-        return -1;
-    }
-    if (acc != 64 || vibeos_intc_counter(&intc, 32) != 2) {
-        return -1;
-    }
-    if (vibeos_intc_denied_counters(&intc, &denied_bad, &denied_unhandled, &denied_masked, &denied_disabled) != 0) {
-        return -1;
-    }
-    if (denied_bad != 1 || denied_unhandled != 1 || denied_masked != 1 || denied_disabled != 1) {
-        return -1;
-    }
-    if (vibeos_intc_counters_reset(&intc) != 0) {
-        return -1;
-    }
-    if (vibeos_intc_counter(&intc, 32) != 0) {
-        return -1;
-    }
-    return 0;
-}
-
-/* Exercises the syscall dispatcher end to end: ABI version negotiation,
- * handle allocation and closing, waitset operations and their statistics, and
- * the error paths for bad ids, bad arguments and policy denials.
- *
- * This is an integration-style contract test for syscall dispatch behavior,
- * not a unit test of any single syscall implementation. The body is organized
- * in phases that validate:
- *   1) successful calls and expected side effects,
- *   2) rejection paths (invalid ids/arguments),
- *   3) ownership and policy enforcement checks,
- *   4) observable accounting/statistics consistency.
- */
 static int test_syscalls(void) {
     vibeos_kernel_t kernel;
     vibeos_syscall_frame_t frame;
@@ -1085,22 +886,10 @@ static int test_syscalls(void) {
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
         return -1;
     }
-    /* Virtual memory: mapping and protection through the syscall path. */
-    vibeos_syscall_make_vm_map(&frame, 0x800000, 0x300000, 0x1000);
-    if (vibeos_vm_init(&kernel.kernel_aspace) != 0) {
-        return -1;
-    }
-    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
-        return -1;
-    }
-    vibeos_syscall_make_vm_protect(&frame, 0x800000, 0x1000, VIBEOS_VM_PERM_READ);
-    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
-        return -1;
-    }
-    vibeos_syscall_make_vm_unmap(&frame, 0x800000, 0x1000);
-    if (vibeos_syscall_dispatch(&kernel, &frame) != 0) {
-        return -1;
-    }
+    /* The VM_MAP / VM_PROTECT / VM_UNMAP syscalls went with kernel/mm/vm.c.
+     * They operated on an abstract maps[] array that was never the machine's
+     * page tables, so what they returned said nothing about any mapping a
+     * process runs on. The real ones are in the arch layer's Linux table. */
     vibeos_syscall_make_handle_alloc(&frame, VIBEOS_HANDLE_RIGHT_SIGNAL, pid1);
     if (vibeos_syscall_dispatch(&kernel, &frame) != 0 || frame.result <= 0) {
         return -1;
@@ -2261,7 +2050,6 @@ static int test_bootloader_firmware_tags_and_pe_plan(void) {
 
 static int test_timer_and_idt(void) {
     vibeos_timer_t timer;
-    vibeos_interrupt_controller_t intc;
     vibeos_x86_64_idt_t idt;
     vibeos_timer_backend_t backend;
     uint32_t irq_vector = 0;
@@ -2297,8 +2085,8 @@ static int test_timer_and_idt(void) {
     if (!idt.present[timer_vec]) {
         return -1;
     }
-    vibeos_intc_init(&intc);
-    if (vibeos_intc_bind_timer_irq(&intc, &timer, (uint32_t)timer_vec) != 0) {
+    if (vibeos_timer_bind_backend(&timer, VIBEOS_TIMER_BACKEND_IRQ,
+                                  (uint32_t)timer_vec, 1) != 0) {
         return -1;
     }
     if (vibeos_timer_backend_info(&timer, &backend, &irq_vector, &irq_divider) != 0) {
@@ -2310,13 +2098,23 @@ static int test_timer_and_idt(void) {
     if (vibeos_timer_bind_backend(&timer, VIBEOS_TIMER_BACKEND_IRQ, (uint32_t)timer_vec, 2) != 0) {
         return -1;
     }
-    if (vibeos_intc_dispatch(&intc, (uint32_t)timer_vec) != 0) {
+    /* Driven straight at the timer. It used to go through the portable
+     * interrupt controller, which was removed because nothing ever called
+     * vibeos_intc_dispatch outside its own file - so the handler it bound
+     * could not fire on the machine. vibeos_timer_on_irq is what that
+     * handler called, and it is what the timer's own contract is about. */
+    /* Less than zero, not non-zero: vibeos_timer_on_irq returns 1 when the
+     * divider is satisfied and it ticks, 0 when it only accumulates. The
+     * handler this replaced discarded the value with (void) and the test
+     * checked vibeos_intc_dispatch instead, so the three-valued return was
+     * never anyone's problem until it became the call being made. */
+    if (vibeos_timer_on_irq(&timer, (uint32_t)timer_vec) < 0) {
         return -1;
     }
     if (vibeos_timer_ticks(&timer) != 2) {
         return -1;
     }
-    if (vibeos_intc_dispatch(&intc, (uint32_t)timer_vec) != 0) {
+    if (vibeos_timer_on_irq(&timer, (uint32_t)timer_vec) < 0) {
         return -1;
     }
     if (vibeos_timer_ticks(&timer) != 3) {
@@ -8937,9 +8735,6 @@ int main(void) {
     RUN_TEST(test_ipc);
     RUN_TEST(test_kernel_log);
     RUN_TEST(test_kmain);
-    RUN_TEST(test_vm);
-    RUN_TEST(test_vm_user_address_space_contract);
-    RUN_TEST(test_interrupts);
     RUN_TEST(test_syscalls);
     RUN_TEST(test_services);
     RUN_TEST(test_servicemgr_and_drivers);
