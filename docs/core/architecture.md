@@ -201,6 +201,39 @@ vibeos_abi_t {
 }
 ```
 
+### The shape C4 starts from, lifted out of the code before it was deleted
+
+`kernel/core/syscall_policy.c` held twenty lines that are exactly this idea,
+and it was deleted with the dispatcher that was its only caller. The idea is
+worth more than the file, so it is here instead:
+
+```c
+vibeos_syscall_policy_t vibeos_syscall_policy_for(vibeos_syscall_id_t id) {
+    switch (id) {
+        case VIBEOS_SYSCALL_EVENT_SIGNAL:
+        case VIBEOS_SYSCALL_WAITSET_ADD_EVENT:
+            return (policy){ .requires_handle = 1,
+                             .required_rights = HANDLE_RIGHT_SIGNAL };
+        case VIBEOS_SYSCALL_HANDLE_CLOSE:
+            return (policy){ .requires_handle = 1,
+                             .required_rights = HANDLE_RIGHT_MANAGE };
+        default:
+            return (policy){ 0 };
+    }
+}
+```
+
+One function mapping a syscall id to the checks that apply to it, with the
+checks named rather than called - which is what lets a test assert that the
+declared set is the set actually run. C4 needs that whether or not the code it
+came from survives.
+
+**And the thing the live kernel does not have at all.** Grepping the arch layer
+for `vibeos_sec_*` returns nothing: there is no capability model, no handle
+rights and no policy check on the path that actually serves ring 3. The design
+existed only in the half nothing reached. C4 is where it becomes real, and this
+is the note that stops it being reinvented from scratch.
+
 The kernel keeps **one** vocabulary of syscalls, with the permission checks
 attached to that vocabulary and to nothing else. A process records the ABI it
 was created under; the dispatcher translates on entry and on exit. A second ABI

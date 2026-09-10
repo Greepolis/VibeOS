@@ -135,3 +135,103 @@ there: the weak question is not merely *incomplete*, it errs in **both**
 directions. It missed `vm.c` and `interrupts.c` entirely - two subsystems built
 on every boot and consulted by nobody - and it would have condemned a live
 command-line interface.
+
+# Third increment: syscall.c, and a capability model that was never there
+
+`kernel/core/syscall.c` (1502 lines) and `kernel/core/syscall_policy.c` (23) are
+gone, with `test_syscalls` (687), four functions in `user/lib/user_api.c` (52)
+and 18 lines of surgical edits elsewhere. 2282 lines.
+
+## Why this one needed a decision rather than a grep
+
+The first two increments removed code that was *unreachable*. This one is
+different: C3 asks whether the portable syscall layer should be **deleted or
+integrated**, and the rule for answering is which choice produces the smaller
+diff in C4 - where the Linux ABI stops being 41% of `arch_hw.c`.
+
+So the measurement came first, and it went against integrating:
+
+| | |
+|---|---|
+| `kernel/core/syscall.c` | a `switch`, dispatching on VibeOS syscall numbers |
+| `arch_hw.c`'s Linux table | a `switch`, dispatching on Linux syscall numbers |
+
+Two switches. C4 wants a **table** - a syscall id mapped to the checks that
+apply to it - and neither of these is one. Integrating would have meant carrying
+1502 lines of the wrong shape into the change that is supposed to fix the shape.
+
+## The 23 lines that were worth keeping, and are kept as prose
+
+`syscall_policy.c` *was* the right shape: `vibeos_syscall_policy_for(id)`
+returning the checks a syscall requires. It is now written into
+`docs/core/architecture.md` as C4's starting form, because a 23-line file
+consulted by nobody is worth less than a paragraph read by whoever does C4.
+
+That is the trade this increment makes explicit: **a design does not have to be
+compiled to survive.**
+
+## What the removal established, which is the actual finding
+
+Chasing the callers of `syscall_policy` produced a fact worth more than the
+2282 lines: `vibeos_sec_*` appears **zero times in the arch layer**.
+
+The kernel that boots has **no capability model at all**. The one in
+`kernel/core/` was a complete, correct, tested model that nothing on the machine
+consulted - the project's most-repeated defect, again, at the scale of a
+security subsystem.
+
+C4 is therefore not "move the policy layer down". It is "there is no policy
+layer on the metal; write one". Deleting the file is what made that sentence
+sayable.
+
+## Two failures on the way out, both of the same family
+
+The tests went red, and both reasons were more interesting than the removal.
+
+**A capability flag outlived its implementation.**
+`vibeos_user_api_capabilities()` still reported `supports_boot_event_signal`,
+`supports_process_security_label`, `supports_process_interaction_check` and
+`supports_policy_summary` as 1 after the functions behind them were removed.
+This is *"configured and consulted by nobody"* inverted: not a mechanism nothing
+reads, but a **declaration nothing implements** - and a capability flag is read
+precisely to decide whether a function exists.
+
+The assertion was **inverted, not deleted**: it now fails if any of the four
+comes back non-zero. A removed feature that still advertises itself is a defect
+whether or not anything currently believes it.
+
+**An assertion on the effect of a removed function.**
+`test_user_api_and_bootloader` asserted `vibeos_event_is_signaled(&kernel.boot_event)`
+- the effect of `vibeos_user_signal_boot_event`, which had just gone. Nothing
+signals that event now, so the assertion was not lost coverage; it was an
+assertion about a function that no longer exists. Removed.
+
+## What is left
+
+| | lines | |
+|---|---:|---|
+| `kernel/proc/process.c` | 1142 | **deliberately not touched** |
+
+`process.c` is the subject of C5 - "one owner of what a task is". Deleting it
+now would decide C5 sideways, in a dead-code commit, without the comparison C5
+exists to make. The choice between it and `hw_task_*` is the phase, not a
+cleanup.
+
+## And the removal was reported finished twice before it was
+
+Both times the evidence was a binary rather than the tree.
+
+The stale assertion above was described as removed while it was still on line
+884. What appeared to confirm that was running `build-gcc-Release/vibeos_kernel_tests`
+by hand: it printed `ALL_TESTS_PASS`, and it was **built from an older tree** -
+the verification script builds clang only, so the gcc binary beside it had never
+seen the change. Third instance here of *"a green build is not a build"*, and
+the first where the stale artefact was reached for deliberately, as a
+second opinion.
+
+The wrapper made it easy. It printed `host-tests=FAIL kernel=1` on line 11 and
+`[exited with code 0]` on line 18, because the script's own exit status was the
+last `echo`. A summary whose verdict contradicts its exit code is a summary
+nobody reads carefully twice. It now checks every line it prints, ends with
+`VERDICT=green|RED`, and exits non-zero - the same rule `check.sh` already
+follows with `rc=`, applied one level up.

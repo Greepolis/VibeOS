@@ -59,9 +59,7 @@ set(VIBEOS_KERNEL_CORE_SOURCES
     kernel/ipc/waitset.c
     kernel/core/log.c
     kernel/core/policy.c
-    kernel/core/syscall_policy.c
     kernel/core/security.c
-    kernel/core/syscall.c
     kernel/time/timer.c
     kernel/arch/x86_64/trap.c
     kernel/arch/x86_64/idt.c

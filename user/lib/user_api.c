@@ -25,61 +25,19 @@ int vibeos_user_api_capabilities(vibeos_user_api_caps_t *out_caps) {
     if (!out_caps) {
         return -1;
     }
-    out_caps->supports_boot_event_signal = 1;
-    out_caps->supports_process_security_label = 1;
-    out_caps->supports_process_interaction_check = 1;
-    out_caps->supports_policy_summary = 1;
+    /* Zero, because the functions that implemented these went with the
+     * dispatcher they called. An API that advertises a capability it no
+     * longer has is the mirror of this project's most repeated defect: not
+     * a mechanism nobody consults, but a claim nothing backs. The test that
+     * asserted these were 1 is what caught it. */
+    out_caps->supports_boot_event_signal = 0;
+    out_caps->supports_process_security_label = 0;
+    out_caps->supports_process_interaction_check = 0;
+    out_caps->supports_policy_summary = 0;
     return 0;
 }
-
-int vibeos_user_signal_boot_event(void *kernel_ptr, uint32_t signal_handle) {
-    vibeos_syscall_frame_t frame;
-    vibeos_kernel_t *kernel = (vibeos_kernel_t *)kernel_ptr;
-    if (!kernel) {
-        return -1;
-    }
-    frame.id = VIBEOS_SYSCALL_EVENT_SIGNAL;
-    frame.arg0 = signal_handle;
-    frame.arg1 = 0;
-    frame.arg2 = 0;
-    frame.result = -1;
-    return (int)vibeos_syscall_dispatch(kernel, &frame);
-}
-
-int vibeos_user_get_process_security_label(void *kernel_ptr, uint32_t caller_pid, uint32_t target_pid, uint32_t *out_label) {
-    vibeos_syscall_frame_t frame;
-    vibeos_kernel_t *kernel = (vibeos_kernel_t *)kernel_ptr;
-    if (!kernel || !out_label) {
-        return -1;
-    }
-    vibeos_syscall_make_process_security_label_get(&frame, target_pid, caller_pid);
-    if (vibeos_syscall_dispatch(kernel, &frame) != 0) {
-        return -1;
-    }
-    *out_label = (uint32_t)frame.result;
-    return 0;
-}
-
-int vibeos_user_set_process_security_label(void *kernel_ptr, uint32_t caller_pid, uint32_t target_pid, uint32_t label) {
-    vibeos_syscall_frame_t frame;
-    vibeos_kernel_t *kernel = (vibeos_kernel_t *)kernel_ptr;
-    if (!kernel) {
-        return -1;
-    }
-    vibeos_syscall_make_process_security_label_set(&frame, target_pid, label, caller_pid);
-    return (int)vibeos_syscall_dispatch(kernel, &frame);
-}
-
-int vibeos_user_check_process_interaction(void *kernel_ptr, uint32_t caller_pid, uint32_t target_pid, uint32_t *out_allowed) {
-    vibeos_syscall_frame_t frame;
-    vibeos_kernel_t *kernel = (vibeos_kernel_t *)kernel_ptr;
-    if (!kernel || !out_allowed) {
-        return -1;
-    }
-    vibeos_syscall_make_process_interact_check(&frame, target_pid, caller_pid);
-    if (vibeos_syscall_dispatch(kernel, &frame) != 0) {
-        return -1;
-    }
-    *out_allowed = (uint32_t)frame.result;
-    return 0;
-}
+/* The half of this API that called vibeos_syscall_dispatch went with the
+ * dispatcher. It reached the portable kernel by calling into it in-process,
+ * which is not how a syscall works and not a path any ring-3 program took -
+ * the live kernel links this library only for the ELF blobs it embeds.
+ * Removed: vibeos_user_signal_boot_event, vibeos_user_get_process_security_label, vibeos_user_set_process_security_label, vibeos_user_check_process_interaction. */
