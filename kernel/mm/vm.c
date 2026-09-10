@@ -1,3 +1,31 @@
+/* NOT REACHED BY THE RUNNING KERNEL.
+ *
+ * An abstract address-space model over a maps[] array. It is not the page
+ * table code - that is kernel/mm/vmspace.c, which is reached and is where
+ * hardware enforcement actually lives. Reading this as the memory manager
+ * is a mistake a review made in exactly those words.
+ *
+ * The machine runs kernel/arch/x86_64/arch_hw.c. Nothing in the arch layer
+ * names anything in this file, so every line below executes only under
+ * tests/kernel/. Verify it rather than trusting this comment:
+ *
+ *     grep -c 'vibeos_vm_' kernel/arch/x86_64/arch_hw.c
+ *     python3 scripts/dev/check-reachable.py --list
+ *
+ * This banner exists because **three independent code reviews in a row** read
+ * this file as live kernel code and rated defects in it HIGH, one of them
+ * explicitly titling its table "verified and reachable". Two of the defects
+ * they found were already written down in docs/core/README.md; the reviewers
+ * had no way to know none of it runs, because the file did not say so.
+ *
+ * That is not a reason to relax. docs/core/phases.md C3 makes it a gate:
+ *
+ *     Nothing here may become reachable from ring 3 before its known defects
+ *     are closed. Not afterwards. Not in the same change.
+ *
+ * The danger this banner guards against is the opposite of complacency - it is
+ * somebody wiring this up because it looks finished.
+ */
 #include "vibeos/vm.h"
 
 static int map_overlap(const vibeos_vm_map_t *a, const vibeos_vm_map_t *b) {

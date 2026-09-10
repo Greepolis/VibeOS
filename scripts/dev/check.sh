@@ -28,9 +28,19 @@ do_build() {
     cmake --build "$d" -j"$(nproc)" > /tmp/vibeos-build.log 2>&1
     echo "rc=$?"
     grep -E 'error:|error ' /tmp/vibeos-build.log | head -5
-    # The build-id note warning comes from linking a freestanding image and is
-    # expected; counting it would hide the ones that are not.
-    echo "warnings=$(grep 'warning:' /tmp/vibeos-build.log | grep -vc build-id)"
+    # Two kinds of expected noise, filtered so the number means something.
+    #
+    # build-id: comes from linking a freestanding image.
+    # unused-command-line-argument: clang is handed the C flags when it
+    #   assembles entry.s and says so, eight times, on every clean build.
+    #
+    # Filtering the second one is not cosmetic. It was unfiltered, so a clean
+    # build always printed warnings=8 - and a counter that is never zero is a
+    # counter nobody reads. Four -Wcomment warnings from a real mistake were
+    # dismissed three times in one session as "transient", precisely because
+    # the number was already noise. The clang counter below has always filtered
+    # this; the two disagreed, and the noisier one is the one people saw first.
+    echo "warnings=$(grep 'warning:' /tmp/vibeos-build.log | grep -vc 'build-id\|unused-command-line-argument')"
     # A deliberate fault planted to test the panic path once got committed,
     # because removing it was a separate step that a change of plan skipped.
     # Verifying a crash handler means planting crashes, so this will be done

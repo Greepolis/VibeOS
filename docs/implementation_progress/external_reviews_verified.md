@@ -1,8 +1,10 @@
-# The second external review, checked against the code
+# The external reviews, checked against the code
 
-Eight findings. Every one was verified before being accepted or dismissed,
-because a review is a detector and the first question about a detector is
-whether it is right.
+Three reviews so far. Every finding was verified before being accepted or
+dismissed, because a review is a detector and the first question about a
+detector is whether it is right.
+
+## Review two
 
 ## The result, and the thing that reframes half of it
 
@@ -95,3 +97,69 @@ fix restored:
 Without the sabotage this would have shipped green in both states, and
 yesterday's fix would have stayed "verified" by something that could not tell
 the difference.
+
+## Review three
+
+Four findings, in a table titled **"verified and reachable"**. All four are
+real. None of them is reachable.
+
+| ID | Claim | Verdict |
+|---|---|---|
+| VOS-001 | `THREAD_CREATE` has no ownership check | Real — **and already in `docs/core/README.md`** |
+| VOS-002 | process slots leak after terminate | Real — **also already there** |
+| VOS-003 | the global waitset is unsynchronised | Real — the same as review two's S-001 |
+| VOS-004 | `kernel/mm/vm.c` is a model, not page tables | **Correct**, and it classifies itself correctly |
+
+```
+vibeos_syscall_dispatch   called from the arch layer: 0
+vibeos_thread_create                                : 0
+vibeos_proc_terminate                               : 0
+vibeos_vm_map / vibeos_vm_create                    : 0
+```
+
+One case needed care rather than a grep. `kmain.c` **is** entered — it prints
+`BOOT_OK` — and it calls `vibeos_proc_terminate`. But that call sits inside
+`vibeos_kernel_dispatch_trap`, and the arch layer never calls *that*, so the
+path stays dead. "The file runs" and "this function in it runs" are different
+questions.
+
+VOS-001 and VOS-002 are word for word two of the three defects the core plan has
+listed for weeks. An independent reviewer rediscovering them is genuine
+confirmation that they exist. Labelling them reachable is the fourth independent
+misreading of the same structural fact.
+
+## What that produced, which is worth more than the findings
+
+Three reviews in a row read `kernel/core/syscall.c` and `kernel/proc/process.c`
+as live kernel code and rated defects in them HIGH. `check-reachable.py` knew,
+`docs/core/` said so, and **a person opening the file had no way to find out**.
+
+Those four files now open with a banner saying they are not reached, carrying
+the command that verifies it rather than asking to be believed, and carrying the
+reason it is not an invitation to relax:
+
+> The danger this banner guards against is the opposite of complacency — it is
+> somebody wiring this up because it looks finished.
+
+C3's gate is unchanged and its list has grown from three defects to six.
+
+## And a defect in the checks, found while clearing the banners
+
+The banners are comments, so they cannot change behaviour — proved rather than
+asserted, by comparing the compiled `.text` with and without them: byte
+identical.
+
+What they did do was raise four `-Wcomment` warnings, because the banner
+contained `kernel/arch/x86_64/*.c` and that is a `/*` inside a block comment.
+Those warnings were dismissed as "transient" **three times in one session**.
+
+The reason they could be is the real finding. `warnings=` filtered only
+`build-id`, while `clang-warnings=` also filtered
+`unused-command-line-argument` - which clang emits eight times on every clean
+build, assembling `entry.s` with C flags. So the gcc-side counter read 8 on
+every clean build, always, and a counter that is never zero is a counter nobody
+reads. The two counters disagreed and the noisier one is the one seen first.
+
+Both filters now match, and a clean build reads `warnings=0`. `CLAUDE.md`
+already says to treat a moving warning count the way `rc=` is treated; that only
+works if the count is telling the truth.
