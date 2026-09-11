@@ -7090,6 +7090,14 @@ static long hw_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot,
     if (g_current_task < 0 || !g_tasks[g_current_task].is_user || len == 0u) {
         return -VIBEOS_EINVAL;
     }
+    /* Both branches below round with (len + 0xFFF) / 4096, and for a length
+     * within a page of 2^64 that sum wraps to a page count of zero: nothing was
+     * claimed, nothing mapped, and the call returned success with the base the
+     * next caller would also get (M-006, verified). Refused before the sum, with
+     * the answer Linux gives when the aligned length is zero. */
+    if (len > ~0ull - 0xFFFull) {
+        return -VIBEOS_ENOMEM;
+    }
     /* Established here, before anything reads it. The reservation branch below
      * used it one statement too early and handed back a base of zero, which a
      * C library then mprotected at address 0x2000 - a thread stack placed on
@@ -7225,7 +7233,13 @@ static long hw_sys_mprotect(uint64_t addr, uint64_t len, uint64_t prot) {
     if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
         return -VIBEOS_EINVAL;
     }
-    if ((addr & 0xFFFull) != 0u || len == 0u || addr + len < addr) {
+    /* `addr + len < addr` was the whole check, and it is one page short: the
+     * aligned end below adds 0xFFF more, so a range ending in the last page of
+     * the address space wrapped to end = 0. mprotect then did nothing and
+     * reported success; munmap handed the region list 2^64 - addr as a length
+     * and dropped every region above addr with the pages still mapped (found
+     * beside M-006). The bound covers both sums. */
+    if ((addr & 0xFFFull) != 0u || len == 0u || len > ~0ull - 0xFFFull - addr) {
         return -VIBEOS_EINVAL;
     }
     proc = &g_tasks[g_current_task].proc;
@@ -7322,7 +7336,13 @@ static long hw_sys_munmap(uint64_t addr, uint64_t len) {
     if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
         return -VIBEOS_EINVAL;
     }
-    if ((addr & 0xFFFull) != 0u || len == 0u || addr + len < addr) {
+    /* `addr + len < addr` was the whole check, and it is one page short: the
+     * aligned end below adds 0xFFF more, so a range ending in the last page of
+     * the address space wrapped to end = 0. mprotect then did nothing and
+     * reported success; munmap handed the region list 2^64 - addr as a length
+     * and dropped every region above addr with the pages still mapped (found
+     * beside M-006). The bound covers both sums. */
+    if ((addr & 0xFFFull) != 0u || len == 0u || len > ~0ull - 0xFFFull - addr) {
         return -VIBEOS_EINVAL;
     }
     proc = &g_tasks[g_current_task].proc;

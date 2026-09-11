@@ -78,3 +78,30 @@ accident, because the mapping cursor was not advanced on the failure path and th
 next mmap mapped over them. C5 claims the range before anything is mapped, so
 nothing would ever map over them again - without a rollback they become a leak.
 Both loops unwind now, in the C5 change.
+
+## M-006: a length that wraps when rounded to a page (fixed 2026-09-11)
+
+`hw_sys_mmap` rounded with `pages = (len + 0xFFF) / 4096`. For a length within
+a page of 2^64 the sum wraps and `pages` is zero: `hw_mmap_claim` saw no
+overflow in `base + 0`, claimed nothing, and the call returned that base as a
+success - with nothing mapped, and the same base handed to the next caller. Both
+branches, the ordinary one and PROT_NONE, had the arithmetic. It is refused before
+the sum now, with ENOMEM, which is what Linux answers when the aligned length is
+zero.
+
+The same shape was one page further on in munmap and mprotect, found while
+checking every `+ 0xFFF` in the file. Both refused `addr + len < addr`, but the
+aligned end adds 0xFFF more, so a range ending in the last page of the address
+space wrapped to `end = 0`. mprotect then changed nothing and reported success.
+munmap was worse: it handed the region list `end - addr`, which is 2^64 - addr,
+so every region above `addr` was removed while its pages stayed mapped - and the
+region list is what munmap consults to decide what to release. The bound is now
+`len > ~0 - 0xFFF - addr`, covering both sums. brk was checked and is safe: its
+address is already capped below the mmap arena.
+
+The test is in the ring-3 ABI self-test (`user/prog/hello.c`), under the message
+the gate already asserts on. Red first. Because the four new checks share one
+message, the fix was then applied in halves: with only the mmap half the boot
+stayed red, which proves the munmap and mprotect checks fail by themselves and
+are not riding on the mmap ones. Both halves: `linux abi ok`. `check.sh all`
+green, twelve boots: 11 pass, 1 fail - task_illegal_transition (running->running by hw_task_exit) in THREADS' exit_group stage, a scheduler-exit signature this change does not touch and seen for the first time today; recorded with the exit-window evidence as its likeliest cause, H-007's locked exit_group loop not yet ruled out.

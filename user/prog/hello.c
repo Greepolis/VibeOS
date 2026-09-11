@@ -244,6 +244,28 @@ static const char *check_linux_abi(void) {
     if (user_syscall3(SYS_mprotect, page, 4096, 3) == 0) {
         return abi_mm;
     }
+    /* A length that wraps when rounded up to a page (M-006). mmap computed
+     * pages = (len + 0xFFF) / 4096, which for a length near 2^64 is zero - so
+     * it claimed nothing, mapped nothing, and returned success with the same
+     * base the next call would get. Linux answers ENOMEM, in both branches:
+     * PROT_NONE is a separate path with the same arithmetic. */
+    if (user_syscall6(SYS_mmap, 0, (long)~0ul, 3, 0x22, -1, 0) != -12 /*ENOMEM*/) {
+        return abi_mm;
+    }
+    if (user_syscall6(SYS_mmap, 0, (long)~0ul, 0 /*NONE*/, 0x22, -1, 0) != -12) {
+        return abi_mm;
+    }
+    /* The same rounding in munmap and mprotect: addr + len does not wrap, the
+     * page-aligned end does, and becomes 0. munmap then handed the region list
+     * a length of 2^64 - addr and dropped every region above addr while its
+     * pages stayed mapped; mprotect changed nothing and said it had. Both must
+     * refuse. Anything non-negative is the defect. */
+    if (user_syscall3(SYS_munmap, page, (long)(~0ul - (unsigned long)page), 0) >= 0) {
+        return abi_mm;
+    }
+    if (user_syscall3(SYS_mprotect, page, (long)(~0ul - (unsigned long)page), 3) >= 0) {
+        return abi_mm;
+    }
     /* FUTEX_WAIT must compare before it sleeps.
      *
      * That comparison is the whole contract: it is what makes a wake that
