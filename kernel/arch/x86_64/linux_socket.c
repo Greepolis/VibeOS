@@ -220,6 +220,15 @@ long hw_sys_accept(uint64_t fd, uint64_t addr_uptr) {
     return 3 + nfd;
 }
 
+/* Where socket data waits between the stack and user memory (H-010).
+ *
+ * The portable stack copies straight into whatever pointer it is given, and it
+ * cannot use the fault-tolerant copy - that is assembly in the arch layer. So
+ * receives go into this buffer and are then copied out, and sends are copied in
+ * first. Both halves happen under g_net_lock, which serialises every user of it.
+ * One receive buffer's worth: a socket never holds more than that. */
+static uint8_t g_net_bounce[VIBEOS_INET_RXBUF];
+
 /* Blocking stream receive: returns 0 at end of stream, like Linux. */
 long hw_net_recv(hw_fd_t *f, uint64_t buf, uint64_t len) {
     uint64_t deadline = g_timer_ticks + VIBEOS_HW_NET_TIMEOUT_TICKS;
@@ -229,9 +238,17 @@ long hw_net_recv(hw_fd_t *f, uint64_t buf, uint64_t len) {
     }
     for (;;) {
         long n;
+        int faulted = 0;
         hw_spin_lock(&g_net_lock);
-        n = vibeos_inet_recv(&g_net, f->net_sock, (void *)(uintptr_t)buf, (uint32_t)len);
+        n = vibeos_inet_recv(&g_net, f->net_sock, g_net_bounce,
+                             (uint32_t)(len < sizeof(g_net_bounce) ? len : sizeof(g_net_bounce)));
+        if (n > 0 && vibeos_uaccess_copy((void *)(uintptr_t)buf, g_net_bounce, (uint64_t)n) != 0) {
+            faulted = 1;
+        }
         hw_spin_unlock(&g_net_lock);
+        if (faulted) {
+            return -VIBEOS_EFAULT;
+        }
         if (n >= 0) {
             return n;
         }
@@ -253,8 +270,15 @@ long hw_net_send(hw_fd_t *f, uint64_t buf, uint64_t len) {
     if (!hw_user_range_ok(buf, len, 0)) {
         return -VIBEOS_EFAULT;
     }
+    if (len > sizeof(g_net_bounce)) {
+        len = sizeof(g_net_bounce);   /* a short send, which a stream allows */
+    }
     hw_spin_lock(&g_net_lock);
-    n = vibeos_inet_send(&g_net, f->net_sock, (const void *)(uintptr_t)buf, (uint32_t)len);
+    if (vibeos_uaccess_copy(g_net_bounce, (const void *)(uintptr_t)buf, len) != 0) {
+        hw_spin_unlock(&g_net_lock);
+        return -VIBEOS_EFAULT;
+    }
+    n = vibeos_inet_send(&g_net, f->net_sock, g_net_bounce, (uint32_t)len);
     hw_spin_unlock(&g_net_lock);
     if (n < 0) {
         return (n == -VIBEOS_INET_EAGAIN) ? 0 : -VIBEOS_EIO;
@@ -280,9 +304,15 @@ long hw_sys_sendto(uint64_t fd, uint64_t buf, uint64_t len, uint64_t addr_uptr) 
     if (!hw_user_range_ok(buf, len, 0)) {
         return -VIBEOS_EFAULT;
     }
+    if (len > sizeof(g_net_bounce)) {
+        return -VIBEOS_EINVAL;   /* a datagram is not split */
+    }
     hw_spin_lock(&g_net_lock);
-    n = vibeos_inet_sendto(&g_net, f->net_sock, (const void *)(uintptr_t)buf,
-                           (uint32_t)len, ip, port);
+    if (vibeos_uaccess_copy(g_net_bounce, (const void *)(uintptr_t)buf, len) != 0) {
+        hw_spin_unlock(&g_net_lock);
+        return -VIBEOS_EFAULT;
+    }
+    n = vibeos_inet_sendto(&g_net, f->net_sock, g_net_bounce, (uint32_t)len, ip, port);
     hw_spin_unlock(&g_net_lock);
     return (n < 0) ? -VIBEOS_EIO : n;
 }
@@ -396,10 +426,18 @@ long hw_sys_recvfrom(uint64_t fd, uint64_t buf, uint64_t len, uint64_t addr_uptr
         long n;
         uint32_t ip = 0;
         uint16_t port = 0;
+        int faulted = 0;
         hw_spin_lock(&g_net_lock);
-        n = vibeos_inet_recvfrom(&g_net, f->net_sock, (void *)(uintptr_t)buf,
-                                 (uint32_t)len, &ip, &port);
+        n = vibeos_inet_recvfrom(&g_net, f->net_sock, g_net_bounce,
+                                 (uint32_t)(len < sizeof(g_net_bounce) ? len : sizeof(g_net_bounce)),
+                                 &ip, &port);
+        if (n > 0 && vibeos_uaccess_copy((void *)(uintptr_t)buf, g_net_bounce, (uint64_t)n) != 0) {
+            faulted = 1;
+        }
         hw_spin_unlock(&g_net_lock);
+        if (faulted) {
+            return -VIBEOS_EFAULT;
+        }
         if (n >= 0) {
             (void)hw_write_sockaddr(addr_uptr, ip, port);
             return n;

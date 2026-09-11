@@ -22,7 +22,7 @@ Earlier reviews are closed and written up: the sixth
 |---|---|---|---|---|
 | M-001 | M | brk shrink never unmapped | fixed `1dc5b67` | [mm_brk_mmap_leaks.md](mm_brk_mmap_leaks.md) |
 | M-002 | M | mmap failure left pages mapped (both loops) | fixed `1dc5b67` + C5 | second loop found later; same file |
-| H-003 | H | futex validates a user pointer, then reads it after a spinning lock | **verified-open** | a ring-0 fault panics. Exception-table attempt reverted - [uaccess_recovery_open.md](uaccess_recovery_open.md). Same fix as H-010 |
+| H-003 | H | futex validates a user pointer, then reads it after a spinning lock | fixed (commit "core: a user copy that faults returns an error instead of panicking") | assembly copy with a recovery point in the trap handler; futex read and the exit join-word write use it. [uaccess_recovery_open.md](uaccess_recovery_open.md) |
 | H-004 | H | two region-list heads into one pool across threads | fixed `ffa8463` | [core_c5_process_state.md](core_c5_process_state.md) |
 | H-005 | H | exit_group ended only the calling thread | fixed `ffa8463` | same file |
 | M-003 (a) | M | signal dispositions copied per thread | fixed `ffa8463` | same file |
@@ -35,7 +35,7 @@ Earlier reviews are closed and written up: the sixth
 | H-008 | H | TCP ISN = clock (`0x1000 + now_ms`, listen `0x2000 + now_ms`) | fixed (commit "net: TCP initial sequence numbers come from a secret") | RFC 6528 with SipHash over one stack secret; host test red first. **The secret is weak under QEMU TCG**: no RDRAND, so it comes from the TSC mix and the boot log says so. Real entropy is its own open item |
 | H-009 | H | DHCP: predictable xid; ACK not bound to the chosen server, offer or chaddr; renewals from anyone | fixed (commit "net: a DHCP reply belongs to this client's transaction with its server") | xid from the stack secret; server port, chaddr, server id; ACK only from the chosen server for the offered address, renewals for the address in use; **a NAK from anyone used to drop the lease** and now must come from the server. Red twice (as written, and with the xid check off). Not closable by a client: an on-segment attacker answering the broadcast DISCOVER first |
 | M-007 | M | DNS: predictable id, fixed source port 0xC353, no server/port/question check | fixed (commit "net: a DNS answer is believed only if it answers the query sent") | server, port 53, response bit, id and the single question checked; id and port from the stack secret per query. Host test red first - **the first version was red for the wrong reason** (it captured an ARP request) and was corrected and re-proved red at the right step |
-| H-010 | H | read() on a pipe, recv(), recvfrom() validate the buffer, block, then write it after wake-up; a sibling's munmap makes it a ring-0 fault -> panic | **verified-open** | `hw_pipe_read` (write inside the blocking loop), `hw_net_recv`, `hw_sys_recvfrom`; **also the console read** (same shape, not in the report). Same class as H-003: needs fault-safe copy_to/from_user |
+| H-010 | H | read() on a pipe, recv(), recvfrom() validate the buffer, block, then write it after wake-up; a sibling's munmap makes it a ring-0 fault -> panic | **verified-open** | `hw_pipe_read` (write inside the blocking loop), `hw_net_recv`, `hw_sys_recvfrom`; **also the console read** (same shape, not in the report). Fixed with H-003, same commit: pipe read/write, console read, recv/recvfrom/send/sendto through the fault-tolerant copy (socket data via a kernel bounce buffer). Boot probe asserted by the gate; sabotage of the recovery branch turns it red |
 | M-008 | M | any ARP overwrites the cache entry, gateway included | **verified-open** | `arp_input` calls `arp_insert` unconditionally. ARP has no authentication: limit unsolicited updates, protect the gateway entry |
 | M-009 | M | exFAT contiguous file: `first + index` wraps in 32 bits to a valid cluster; `first_cluster` from the entry never range-checked | **verified-open** | `exfat_nth_cluster` (`return first + index`), parse takes `rd32(stream + 20)` as is, `exfat_read_cluster` checks only the wrapped value. **Also, not in the report:** `read_at` truncates `(offset + done) / cluster_bytes` to 32 bits, so a large declared size wraps the index even with a valid first cluster. Host exFAT tests exist, so the red test is deterministic |
 | audit | M | exFAT, ext2, ISO9660 and NTFS `read_at`: `offset + len > node->size` after `offset < size` | **verified-open** | found by the H-011 audit. Reachable only with a size declared near 2^64 and an offset within 4 GiB of it; then `len` is not trimmed and the read runs past the declared end (in exFAT, straight into M-009's index truncation). Fix with M-009/M-010: `len > size - offset` |
@@ -65,9 +65,7 @@ dropped:
    M-009 and M-010 as one filesystem-bounds change.
 0b. H-012 is done.
 1. The network findings H-008, M-007 and H-009 are done, and so is the exit-window fix - which did not end the four-worker crash family; that family is open again.
-2. **H-010 + H-003 together**: a fault-safe user copy is the one fix for both,
-   and it is also C5's "real exception table" item. The first attempt failed on
-   `&&label` losing its base; see uaccess_recovery_open.md before retrying.
+2. H-010 + H-003 are done - and with them C5's "real exception table" item.
 3. M-008, M-009 (exFAT), M-010 (NTFS), M-003 (b) pipes.
 4. Core plan C5, remaining: fork not atomic against its own threads
    (address-space lock); descriptors per thread; a must-be-zero check for

@@ -378,6 +378,10 @@ long hw_sys_rt_sigreturn(vibeos_x86_64_isr_frame_t *frame);
 void hw_log(vibeos_log_level_t level, uint32_t code, uint64_t a0, uint64_t a1,
             const char *msg);
 void hw_task_exit(uint64_t code);
+/* Copy `len` bytes where one side is user memory. 0, or -1 if the user side
+ * faulted - which a sibling thread's munmap can cause at any moment after the
+ * range was validated (H-003, H-010). */
+int vibeos_uaccess_copy(void *dst, const void *src, uint64_t len);
 
 /* ---- the seam with io_bringup.c ------------------------------------------
  *

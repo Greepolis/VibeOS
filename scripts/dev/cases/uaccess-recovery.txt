@@ -1,0 +1,23 @@
+The user-access recovery: a copy that faults on user memory returns an error.
+
+H-003 (futex) and H-010 (pipe read, recv, recvfrom, console read) are one defect:
+a user range is validated, and by the time it is copied a sibling thread's
+munmap can have removed it, so the kernel takes a ring-0 page fault and panics.
+The fix is a copy routine whose faulting instruction the trap handler
+recognises, resuming at a recovery point that returns -1.
+
+case 1: the boot probe
+  test:    "[HW] uaccess recovery ok" printed by bring-up
+  reason:  uaccess_recovery_not_proven
+  expect on the defect: the probe's copy from an unmapped user address takes a
+           ring-0 page fault and the machine panics; the line never prints.
+  sabotage: remove the trap handler's recovery branch, or make the copy routine a
+           plain C loop again.
+  ran:     yes, twice, and the first run was red for the wrong reason. On the
+           unfixed kernel the probe's copy was a plain C loop into a buffer
+           nothing read, the compiler removed the loop, and the probe printed
+           "uaccess recovery WRONG: an unmapped user read succeeded" - red,
+           with no read at all. The real red is the sabotage above, on the
+           fixed kernel: the probe's copy takes a ring-0 page fault (vector 0xe, cs 0x8, rip 0x4000413 inside uaccess.S) and the gate reports guest_panicked (.boot-evidence/sabotage-uaccess.log).
+           Unsabotaged: "uaccess recovery ok", check.sh all green, twelve
+           boots 12/12.

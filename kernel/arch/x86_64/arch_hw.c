@@ -471,6 +471,12 @@ static int hw_user_range_why(uint64_t va, uint64_t len, int need_write,
                              uint32_t *why);
 static long hw_futex_wake(const hw_procstate_t *ps, uint64_t addr,
                           uint32_t count);
+/* The fault-tolerant copy's faulting range and recovery point (uaccess.S). */
+extern const char vibeos_uaccess_copy_begin[];
+extern const char vibeos_uaccess_copy_end[];
+extern void vibeos_uaccess_copy_fixup(void);
+static int hw_user_addr_ok(uint64_t va);
+static uint64_t g_uaccess_recovered;
 void hw_task_exit(uint64_t code);                   /* defined below */
 static void hw_keyboard_wake(void);                        /* defined below */
 static void hw_net_pump(void);                             /* defined below */
@@ -1595,6 +1601,19 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
                                            frame->rip);
         if (resolved) {
             hw_perf_add(&g_perf_fault, t0);
+            return;
+        }
+        /* A user copy that faulted (H-003, H-010): the range was valid when it
+         * was checked and is not now. Resume at the copy's recovery point, which
+         * returns -1 to its caller. Only for the one instruction that copies,
+         * only from ring 0, and only on a user address - a kernel address
+         * faulting there is a kernel bug and still panics below. */
+        if ((frame->cs & 3u) == 0u &&
+            frame->rip >= (uint64_t)(uintptr_t)vibeos_uaccess_copy_begin &&
+            frame->rip < (uint64_t)(uintptr_t)vibeos_uaccess_copy_end &&
+            hw_user_addr_ok(fault_address)) {
+            g_uaccess_recovered++;
+            frame->rip = (uint64_t)(uintptr_t)&vibeos_uaccess_copy_fixup;
             return;
         }
     }
@@ -5506,8 +5525,9 @@ void hw_task_exit(uint64_t code) {
         uint64_t addr = g_tasks[dying].clear_child_tid;
         uint32_t why = HW_RANGE_OK;
 
-        if (hw_user_range_why(addr, 4u, 1, &why)) {
-            *(volatile uint32_t *)(uintptr_t)addr = 0u;
+        uint32_t zero = 0;
+        if (hw_user_range_why(addr, 4u, 1, &why) &&
+            vibeos_uaccess_copy((void *)(uintptr_t)addr, &zero, 4u) == 0) {
             /* The dying thread's process, which is still attached here: this
              * block runs before hw_procstate_put further down. Keep it that
              * way. With the reference already given back, ps would be 0, no
@@ -5958,14 +5978,33 @@ static long hw_pipe_read(hw_fd_t *f, uint64_t buf, uint64_t len) {
 
     for (;;) {
         uint64_t copied = 0;
+        int faulted = 0;
 
+        /* In contiguous runs of the ring, each through the fault-tolerant copy,
+         * and consumed only once copied: the caller may have slept below with
+         * the buffer validated, and a sibling can have unmapped it since
+         * (H-010). */
         hw_spin_lock_named(&g_pipe_lock, __func__);
         while (copied < len && pp->count > 0u) {
-            dst[copied++] = pp->buf[pp->head];
-            pp->head = (pp->head + 1u) % VIBEOS_HW_PIPE_BYTES;
-            pp->count--;
+            uint64_t run = VIBEOS_HW_PIPE_BYTES - pp->head;
+            if (run > pp->count) {
+                run = pp->count;
+            }
+            if (run > len - copied) {
+                run = len - copied;
+            }
+            if (vibeos_uaccess_copy(dst + copied, &pp->buf[pp->head], run) != 0) {
+                faulted = 1;
+                break;
+            }
+            copied += run;
+            pp->head = (uint32_t)((pp->head + run) % VIBEOS_HW_PIPE_BYTES);
+            pp->count -= (uint32_t)run;
         }
         hw_spin_unlock(&g_pipe_lock);
+        if (faulted && copied == 0u) {
+            return -VIBEOS_EFAULT;
+        }
         if (copied > 0u) {
             hw_keyboard_wake();   /* a blocked writer may now have room */
             return (long)copied;
@@ -6003,13 +6042,34 @@ static long hw_pipe_write(hw_fd_t *f, uint64_t buf, uint64_t len) {
             }
             return written > 0u ? (long)written : -VIBEOS_EPIPE;
         }
-        hw_spin_lock_named(&g_pipe_lock, __func__);
-        while (written < len && pp->count < VIBEOS_HW_PIPE_BYTES) {
-            pp->buf[pp->tail] = src[written++];
-            pp->tail = (pp->tail + 1u) % VIBEOS_HW_PIPE_BYTES;
-            pp->count++;
+        {
+            int faulted = 0;
+
+            /* The same, in the other direction: a writer that blocked on a full
+             * pipe reads its buffer again after waking (H-010). */
+            hw_spin_lock_named(&g_pipe_lock, __func__);
+            while (written < len && pp->count < VIBEOS_HW_PIPE_BYTES) {
+                uint64_t room = VIBEOS_HW_PIPE_BYTES - pp->count;
+                uint64_t run = VIBEOS_HW_PIPE_BYTES - pp->tail;
+                if (run > room) {
+                    run = room;
+                }
+                if (run > len - written) {
+                    run = len - written;
+                }
+                if (vibeos_uaccess_copy(&pp->buf[pp->tail], src + written, run) != 0) {
+                    faulted = 1;
+                    break;
+                }
+                written += run;
+                pp->tail = (uint32_t)((pp->tail + run) % VIBEOS_HW_PIPE_BYTES);
+                pp->count += (uint32_t)run;
+            }
+            hw_spin_unlock(&g_pipe_lock);
+            if (faulted) {
+                return written > 0u ? (long)written : -VIBEOS_EFAULT;
+            }
         }
-        hw_spin_unlock(&g_pipe_lock);
         if (written > before) {
             hw_keyboard_wake();   /* a blocked reader now has data */
             continue;
@@ -6349,7 +6409,16 @@ static long hw_sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
                     c = vibeos_x86_64_keyboard_getc();
                     continue;
                 }
-                dst[copied++] = (uint8_t)c;
+                {
+                    /* The line waits in this loop for keystrokes; the buffer
+                     * can be unmapped under it (H-010). */
+                    uint8_t ch = (uint8_t)c;
+                    if (vibeos_uaccess_copy(dst + copied, &ch, 1u) != 0) {
+                        __asm__ __volatile__("sti");
+                        return copied > 0u ? (long)copied : -VIBEOS_EFAULT;
+                    }
+                    copied++;
+                }
                 /* Under the console lock, like every other writer. Echoing
                  * without it lets a character land in the middle of another
                  * core's write() - which does not merely look untidy: it
@@ -9722,6 +9791,7 @@ static long hw_futex_wake(const hw_procstate_t *ps, uint64_t addr,
 
 static long hw_futex_wait(uint64_t addr, uint32_t expected) {
     uint32_t slot;
+    uint32_t cur = 0;
     int me = g_current_task;
 
     if (me < 0 || addr == 0u || !hw_user_range_ok(addr, 4u, 0)) {
@@ -9733,7 +9803,13 @@ static long hw_futex_wait(uint64_t addr, uint32_t expected) {
      * enqueuing after would leave a window in which a waker sees no waiter and
      * the waiter then sleeps on a value that has already changed - the lost
      * wakeup, which presents as a program that stops for no reason. */
-    if (*(volatile uint32_t *)(uintptr_t)addr != expected) {
+    /* Through the fault-tolerant copy: the check above and this read are two
+     * instants, and g_futex_lock can spin between them (H-003). */
+    if (vibeos_uaccess_copy(&cur, (const void *)(uintptr_t)addr, 4u) != 0) {
+        hw_spin_unlock(&g_futex_lock);
+        return -VIBEOS_EFAULT;
+    }
+    if (cur != expected) {
         hw_spin_unlock(&g_futex_lock);
         hw_log(VIBEOS_LOG_DEBUG, 21u, addr, (uint64_t)expected,
                "futex wait: value already moved");
@@ -9759,7 +9835,7 @@ static long hw_futex_wait(uint64_t addr, uint32_t expected) {
     hw_spin_unlock(&g_sched_lock);
     hw_spin_unlock(&g_futex_lock);
     hw_log(VIBEOS_LOG_DEBUG, 22u, addr,
-           (uint64_t)(*(volatile uint32_t *)(uintptr_t)addr) |
+           (uint64_t)cur |
            ((uint64_t)g_tasks[me].pid << 32),
            "futex wait: sleeping (a1 = value | tid<<32)");
 
@@ -11121,6 +11197,24 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
      * discovered, and if a workload ever needs more the place to argue about it
      * is here. */
     (void)vibeos_forkguard_init((uint32_t)VIBEOS_HW_MAX_TASKS, 4u, 8u);
+
+    /* The user-access recovery, exercised on every boot (H-003, H-010).
+     *
+     * A copy from a user address that nothing maps must come back as an error,
+     * not stop the machine - that is the whole contract, and the last attempt
+     * at it measured green for three boots while never once being exercised,
+     * because its only caller always had the page. So it is forced here: the
+     * top of the high user window, from the kernel's own address space, before
+     * any task runs. */
+    {
+        uint8_t probe[8];
+        int r = vibeos_uaccess_copy(probe,
+                                    (const void *)(uintptr_t)(VIBEOS_HW_USER_BASE + 0x7F00000000ull),
+                                    sizeof(probe));
+        vibeos_x86_64_serial_puts(r != 0
+            ? "[HW] uaccess recovery ok: an unmapped user read returned an error\n"
+            : "[HW] uaccess recovery WRONG: an unmapped user read succeeded\n");
+    }
     g_sched_running = 1;
     __asm__ __volatile__("sti");
 

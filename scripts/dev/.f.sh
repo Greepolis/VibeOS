@@ -17,6 +17,11 @@ echo "$out" | grep -qE '^bootloader-tests=pass' || bad=1
 echo "$out" | grep -qE 'subsystem=ok'    || bad=1
 echo "$out" | grep -qE 'blast-radius=ok' || bad=1
 echo "$out" | grep -qE 'mustbezero-asserted=ok' || bad=1
+# Printed and never asserted, until the uaccess change moved a chokepoint count
+# and this script still said VERDICT=green. Every check it prints, it asserts.
+for k in mm-layering assertions-covered counters-produced nightly-coverage reachable rmap-crosscheck chokepoints; do
+  echo "$out" | grep -qE "^$k=ok" || bad=1
+done
 # A failed boot's log is kept, named for the run. This loop used to print only
 # the status line, and the next boot overwrote qemu-cli-serial.log - so a
 # failure in boot 1 of the H-011 check left nothing to read at all.

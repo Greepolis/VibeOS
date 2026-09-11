@@ -251,6 +251,7 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         kernel/arch/x86_64/entry.s
         kernel/arch/x86_64/isr.S
         kernel/arch/x86_64/ap_boot.S
+        kernel/arch/x86_64/uaccess.S
         ${VIBEOS_ARCH_X86_64_SOURCES}
         # Freestanding mem* runtime: the kernel image links -nostdlib, and some
         # compilers (notably Clang) lower struct copies to memcpy/memset calls

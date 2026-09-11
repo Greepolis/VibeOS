@@ -67,11 +67,13 @@ CHOKEPOINTS = {
         "the same check with a reason attached. A refusal that names a "
         "mechanism instead of a situation cost a session once."),
     "hw_user_addr_ok": (
-        2,
+        4,
         "address policy for the two user windows. VibeOS programs link at "
         "0x8000000000 and Linux ones at 0x400000, inside the kernel's identity "
         "map, so 'is this a user address' is not a range test anybody should "
-        "write twice."),
+        "write twice. 2 -> 4 with the user-access recovery (H-003, H-010): a "
+        "forward declaration, and the trap handler asking it before it resumes "
+        "a faulted copy - recovery only ever applies to a user address."),
     "hw_task_alloc_guarded": (
         3,
         "the fork guard. A task table that can be exhausted by a loop is a "

@@ -2285,6 +2285,13 @@ def main():
             if "linux abi ok" not in text:
                 problems.append("linux_abi_selftest_failed")
 
+            # The user-access recovery (H-003, H-010): a copy from an unmapped
+            # user address must return an error rather than panic the kernel.
+            # The kernel forces one every boot and says so; a missing line means
+            # it either panicked or never ran the probe.
+            if "uaccess recovery ok" not in text:
+                problems.append("uaccess_recovery_not_proven")
+
             dyn = os.path.join(efi_root, "EFI", "BOOT", "DYN.ELF")
             if os.path.exists(dyn):
                 if "DYN_OK" not in text:
