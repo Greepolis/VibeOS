@@ -10703,6 +10703,53 @@ static void hw_net_bringup(void) {
         vibeos_x86_64_serial_puts("[NET] stack init failed\n");
         return;
     }
+    /* The secret the stack derives its unguessable identifiers from (H-008).
+     *
+     * RDRAND when the processor has it. Otherwise the timestamp mix that
+     * AT_RANDOM already uses - which that function's own comment calls what it
+     * is: it differs between boots and is not an entropy source. The line
+     * below says which one this boot got, because a secret whose quality is
+     * not stated is one somebody will later assume is good. QEMU's default
+     * TCG CPU does not advertise RDRAND, so under the gate this is the weak one. */
+    {
+        uint32_t eax, ebx, ecx, edx;
+        uint64_t k[2] = {0, 0};
+        int from_rdrand = 0;
+
+        __asm__ __volatile__("cpuid"
+                             : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+                             : "a"(1u), "c"(0u));
+        if (ecx & (1u << 30)) {
+            int i, tries;
+            from_rdrand = 1;
+            for (i = 0; i < 2; i++) {
+                uint64_t v = 0, ok = 0;
+                for (tries = 0; tries < 10 && !ok; tries++) {
+                    __asm__ __volatile__("xorl %%edx, %%edx; rdrand %%rax; setc %%dl"
+                                         : "=a"(v), "=d"(ok));
+                }
+                if (!ok) {
+                    from_rdrand = 0;   /* a failing RDRAND is not a source */
+                }
+                k[i] = v;
+            }
+        }
+        if (!from_rdrand) {
+            uint8_t seed[16];
+            int i;
+            hw_seed_at_random(seed);
+            k[0] = 0;
+            k[1] = 0;
+            for (i = 0; i < 8; i++) {
+                k[0] |= (uint64_t)seed[i] << (8 * i);
+                k[1] |= (uint64_t)seed[8 + i] << (8 * i);
+            }
+        }
+        vibeos_inet_set_secret(&g_net, k[0], k[1]);
+        vibeos_x86_64_serial_puts(from_rdrand
+            ? "[NET] stack secret from rdrand\n"
+            : "[NET] stack secret from tsc mix (weak: no entropy source on this cpu)\n");
+    }
     g_net_up = 1;
 
     vibeos_x86_64_serial_puts("[NET] requesting a DHCP lease\n");

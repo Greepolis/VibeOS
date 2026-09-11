@@ -3999,6 +3999,94 @@ static int test_inet_tcp_rst_needs_sequence(void) {
     return 0;
 }
 
+/* H-008: an initial sequence number must not be computable from the clock.
+ *
+ * connect() used ISN = 0x1000 + now_ms and a listening socket 0x2000 + now_ms,
+ * so anybody who could forge a packet could also forge the ACK that completes
+ * a handshake - and then knew the sequence number the stack would accept data
+ * at. RFC 6528: ISN = timer + F(connection 4-tuple, secret key).
+ *
+ * What a test can assert about that without asserting randomness:
+ *   - the same key, time and tuple give the same ISN, so the checks below are
+ *     about the inputs and not noise;
+ *   - a different key gives a different ISN - the secret actually matters;
+ *   - a different tuple gives a different ISN;
+ *   - it is not the bare clock value any more.
+ * Both directions: connect, and the SYN|ACK a listening socket answers with. */
+static uint32_t inet_isn_after_connect(vibeos_inet_t *net, inet_capture_t *cap,
+                                       uint64_t k0, uint64_t k1, uint16_t rport) {
+    int s;
+
+    memset(cap, 0, sizeof(*cap));
+    if (vibeos_inet_init(net, inet_test_local_mac, inet_capture_tx, cap) != 0) {
+        return 0;
+    }
+    vibeos_inet_set_addr(net, 0x0A00020Fu, 0xFFFFFF00u, 0x0A000202u, 0x0A000203u);
+    vibeos_inet_set_secret(net, k0, k1);
+    inet_seed_arp(net);
+    net->now_ms = 5000u;
+    s = vibeos_inet_socket(net, VIBEOS_INET_SOCK_TCP);
+    if (s < 0 || vibeos_inet_bind(net, s, 5555) != 0) {
+        return 0;
+    }
+    cap->count = 0;
+    if (vibeos_inet_connect(net, s, 0x0A000202u, rport) != 0 || cap->count != 1) {
+        return 0;
+    }
+    return inet_rd32(cap->frame[0] + 14 + 20 + 4);
+}
+
+static uint32_t inet_isn_after_syn(vibeos_inet_t *net, inet_capture_t *cap,
+                                   uint64_t k0, uint64_t k1) {
+    int srv;
+
+    memset(cap, 0, sizeof(*cap));
+    if (vibeos_inet_init(net, inet_test_local_mac, inet_capture_tx, cap) != 0) {
+        return 0;
+    }
+    vibeos_inet_set_addr(net, 0x0A00020Fu, 0xFFFFFF00u, 0x0A000202u, 0x0A000203u);
+    vibeos_inet_set_secret(net, k0, k1);
+    inet_seed_arp(net);
+    net->now_ms = 5000u;
+    srv = vibeos_inet_socket(net, VIBEOS_INET_SOCK_TCP);
+    if (srv < 0 || vibeos_inet_bind(net, srv, 8080) != 0 || vibeos_inet_listen(net, srv) != 0) {
+        return 0;
+    }
+    cap->count = 0;
+    inet_deliver_tcp(net, 0x0A000202u, 40000, 8080, 0x900u, 0, 0x02, 0, 0);
+    if (cap->count != 1 || (cap->frame[0][14 + 20 + 13] & 0x12) != 0x12) {
+        return 0;
+    }
+    return inet_rd32(cap->frame[0] + 14 + 20 + 4);
+}
+
+static int test_inet_tcp_isn_depends_on_secret(void) {
+    static vibeos_inet_t net;
+    static inet_capture_t cap;
+    uint32_t a, a_again, other_key, other_port, syn_a, syn_b;
+
+    a = inet_isn_after_connect(&net, &cap, 0x0123456789ABCDEFull, 0x1122334455667788ull, 80);
+    a_again = inet_isn_after_connect(&net, &cap, 0x0123456789ABCDEFull, 0x1122334455667788ull, 80);
+    other_key = inet_isn_after_connect(&net, &cap, 0xFEDCBA9876543210ull, 0x8877665544332211ull, 80);
+    other_port = inet_isn_after_connect(&net, &cap, 0x0123456789ABCDEFull, 0x1122334455667788ull, 81);
+    if (a == 0u || a_again != a) {
+        return -1;   /* not deterministic in its inputs, or the setup failed */
+    }
+    if (a == 0x1000u + 5000u) {
+        return -1;   /* the bare clock */
+    }
+    if (other_key == a || other_port == a) {
+        return -1;
+    }
+
+    syn_a = inet_isn_after_syn(&net, &cap, 0x0123456789ABCDEFull, 0x1122334455667788ull);
+    syn_b = inet_isn_after_syn(&net, &cap, 0xFEDCBA9876543210ull, 0x8877665544332211ull);
+    if (syn_a == 0u || syn_b == 0u || syn_a == syn_b || syn_a == 0x2000u + 5000u) {
+        return -1;
+    }
+    return 0;
+}
+
 static int test_inet_tcp_close_reclaims_socket(void) {
     static vibeos_inet_t net;
     static inet_capture_t cap;
@@ -8142,6 +8230,7 @@ int main(void) {
     RUN_TEST(test_inet_udp_datagram_queue);
     RUN_TEST(test_inet_tcp_out_of_order);
     RUN_TEST(test_inet_tcp_rst_needs_sequence);
+    RUN_TEST(test_inet_tcp_isn_depends_on_secret);
     RUN_TEST(test_inet_tcp_close_reclaims_socket);
     RUN_TEST(test_inet_dhcp_lease_lifecycle);
     RUN_TEST(test_inet_dns_timeout_and_negative_cache);

@@ -161,6 +161,90 @@ void vibeos_inet_set_addr(vibeos_inet_t *net, uint32_t ip, uint32_t netmask,
     net->dns = dns;
 }
 
+void vibeos_inet_set_secret(vibeos_inet_t *net, uint64_t k0, uint64_t k1) {
+    if (!net) {
+        return;
+    }
+    net->secret[0] = k0;
+    net->secret[1] = k1;
+}
+
+/* SipHash-2-4: a keyed hash, so an identifier derived from it cannot be computed
+ * by anybody who does not hold the secret. Chosen because it is small, has no
+ * tables, and is what the RFCs that want "a keyed pseudorandom function" in a
+ * network stack are usually given. */
+static uint64_t sip_rotl(uint64_t x, unsigned b) {
+    return (x << b) | (x >> (64u - b));
+}
+
+static uint64_t siphash24(uint64_t k0, uint64_t k1, const uint8_t *m, uint32_t len) {
+    uint64_t v0 = 0x736f6d6570736575ull ^ k0;
+    uint64_t v1 = 0x646f72616e646f6dull ^ k1;
+    uint64_t v2 = 0x6c7967656e657261ull ^ k0;
+    uint64_t v3 = 0x7465646279746573ull ^ k1;
+    uint64_t b = (uint64_t)len << 56;
+    uint32_t i, r, full = len - (len % 8u);
+
+#define SIPROUND do { \
+        v0 += v1; v1 = sip_rotl(v1, 13); v1 ^= v0; v0 = sip_rotl(v0, 32); \
+        v2 += v3; v3 = sip_rotl(v3, 16); v3 ^= v2; \
+        v0 += v3; v3 = sip_rotl(v3, 21); v3 ^= v0; \
+        v2 += v1; v1 = sip_rotl(v1, 17); v1 ^= v2; v2 = sip_rotl(v2, 32); \
+    } while (0)
+    for (i = 0; i < full; i += 8u) {
+        uint64_t mi = 0;
+        for (r = 0; r < 8u; r++) {
+            mi |= (uint64_t)m[i + r] << (8u * r);
+        }
+        v3 ^= mi;
+        SIPROUND;
+        SIPROUND;
+        v0 ^= mi;
+    }
+    for (r = 0; i + r < len; r++) {
+        b |= (uint64_t)m[i + r] << (8u * r);
+    }
+    v3 ^= b;
+    SIPROUND;
+    SIPROUND;
+    v0 ^= b;
+    v2 ^= 0xFFu;
+    SIPROUND;
+    SIPROUND;
+    SIPROUND;
+    SIPROUND;
+#undef SIPROUND
+    return v0 ^ v1 ^ v2 ^ v3;
+}
+
+/* A TCP initial sequence number (H-008, verified).
+ *
+ * It was 0x1000 + now_ms for connect and 0x2000 + now_ms for a listening
+ * socket, so anybody who could forge a packet could also forge the ACK that
+ * completes the handshake, and then knew the sequence number data would be
+ * accepted at. RFC 6528: ISN = M + F(4-tuple, secret), M a timer so a reused
+ * tuple still moves forward, F a keyed hash so the offset cannot be computed.
+ *
+ * What this does not do: an attacker who can *see* the traffic reads the ISN
+ * off the wire whatever it is. This closes the off-path guess, which is the
+ * attack the finding describes; on-path needs authentication above TCP. And it
+ * is exactly as strong as the secret, which the platform supplies - see where
+ * vibeos_inet_set_secret is called for what that source is on this machine. */
+static uint32_t tcp_isn(const vibeos_inet_t *net, uint16_t local_port,
+                        uint32_t remote_ip, uint16_t remote_port) {
+    uint8_t m[12];
+    uint32_t lip = net->ip;
+
+    m[0] = (uint8_t)(lip >> 24); m[1] = (uint8_t)(lip >> 16);
+    m[2] = (uint8_t)(lip >> 8);  m[3] = (uint8_t)lip;
+    m[4] = (uint8_t)(remote_ip >> 24); m[5] = (uint8_t)(remote_ip >> 16);
+    m[6] = (uint8_t)(remote_ip >> 8);  m[7] = (uint8_t)remote_ip;
+    m[8] = (uint8_t)(local_port >> 8);  m[9] = (uint8_t)local_port;
+    m[10] = (uint8_t)(remote_port >> 8); m[11] = (uint8_t)remote_port;
+    return (uint32_t)(net->now_ms / 4u) +
+           (uint32_t)siphash24(net->secret[0], net->secret[1], m, 12u);
+}
+
 void vibeos_inet_set_policy(vibeos_inet_t *net, vibeos_net_policy_t *policy) {
     if (net) {
         net->policy = policy;
@@ -1066,7 +1150,7 @@ int vibeos_inet_connect(vibeos_inet_t *net, int sock, uint32_t ip, uint16_t port
     }
     s->remote_ip = ip;
     s->remote_port = port;
-    s->snd_una = 0x1000u + (uint32_t)net->now_ms;   /* initial sequence number */
+    s->snd_una = tcp_isn(net, s->local_port, ip, port);   /* RFC 6528; see tcp_isn */
     s->snd_nxt = s->snd_una;
     s->state = VIBEOS_TCP_SYN_SENT;
     s->retries = 0;
@@ -1422,7 +1506,7 @@ static void tcp_input(vibeos_inet_t *net, uint32_t src, uint32_t dst,
         cs->remote_port = sport;
         cs->remote_ip = src;
         cs->rcv_nxt = seq + 1u;
-        cs->snd_una = 0x2000u + (uint32_t)net->now_ms;
+        cs->snd_una = tcp_isn(net, dport, src, sport);   /* RFC 6528; see tcp_isn */
         cs->snd_nxt = cs->snd_una;
         cs->state = VIBEOS_TCP_SYN_RECEIVED;
         cs->parent = idx;

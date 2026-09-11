@@ -32,7 +32,7 @@ Earlier reviews are closed and written up: the sixth
 | H-007 | H | pid resolved to a slot index, used unlocked (ABA); lookups matched slots being built | fixed `da50ce6` | **no red test**: the window does not reproduce in a boot; stated in the commit |
 | M-005 | M | TCP RST accepted without a sequence check; also closed listeners | fixed `b4a65ad` | RFC 5961 3.2; host test red first |
 | M-006 | M | mmap `len + 0xFFF` wraps to zero pages; munmap/mprotect aligned end wraps | fixed `a40aab0` | red in the ABI self-test, split-verified |
-| H-008 | H | TCP ISN = clock (`0x1000 + now_ms`, listen `0x2000 + now_ms`) | **in progress** | red test + fix written: one stack secret, SipHash, RFC 6528. Kernel has no entropy source - RDRAND if present, else logged as weak |
+| H-008 | H | TCP ISN = clock (`0x1000 + now_ms`, listen `0x2000 + now_ms`) | fixed (commit "net: TCP initial sequence numbers come from a secret") | RFC 6528 with SipHash over one stack secret; host test red first. **The secret is weak under QEMU TCG**: no RDRAND, so it comes from the TSC mix and the boot log says so. Real entropy is its own open item |
 | H-009 | H | DHCP: predictable xid; ACK not bound to the chosen server, offer or chaddr; renewals from anyone | **verified-open** | after H-008 (shares the secret). Client can narrow, not close: DISCOVER is broadcast |
 | M-007 | M | DNS: predictable id, fixed source port 0xC353, no server/port/question check | **verified-open** | after H-008. `udp_input` does not pass src/sport to `dns_input` |
 | H-010 | H | read() on a pipe, recv(), recvfrom() validate the buffer, block, then write it after wake-up; a sibling's munmap makes it a ring-0 fault -> panic | **verified-open** | `hw_pipe_read` (write inside the blocking loop), `hw_net_recv`, `hw_sys_recvfrom`; **also the console read** (same shape, not in the report). Same class as H-003: needs fault-safe copy_to/from_user |
@@ -55,7 +55,7 @@ closed), and `ARCH_SET_GS` is refused because `%gs` holds per-CPU kernel state.
 Incoming findings first - the user's stated priority - and the core plan is not
 dropped:
 
-1. H-008, M-007, H-009 (one stack secret). The exit-window fix is done.
+1. M-007, H-009 (on the stack secret H-008 added). The exit-window fix and H-008 are done.
 2. **H-010 + H-003 together**: a fault-safe user copy is the one fix for both,
    and it is also C5's "real exception table" item. The first attempt failed on
    `&&label` losing its base; see uaccess_recovery_open.md before retrying.

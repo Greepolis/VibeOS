@@ -195,6 +195,11 @@ typedef struct vibeos_inet {
     uint64_t arp_replies;
     uint64_t tcp_retransmits;
 
+    /* The secret every identifier a reply is matched on is derived from - TCP
+     * initial sequence numbers (H-008), the DHCP xid (H-009), the DNS id and
+     * source port (M-007). Zero until the platform supplies one. */
+    uint64_t secret[2];
+
     uint8_t scratch[VIBEOS_INET_MTU];
 } vibeos_inet_t;
 
@@ -204,6 +209,10 @@ int vibeos_inet_init(vibeos_inet_t *net, const uint8_t mac[6],
                      vibeos_inet_tx_fn tx, void *tx_ctx);
 void vibeos_inet_set_addr(vibeos_inet_t *net, uint32_t ip, uint32_t netmask,
                           uint32_t gateway, uint32_t dns);
+/* The secret the stack derives unguessable identifiers from. It has no
+ * entropy of its own - it is portable code - so the platform supplies this once
+ * after init, from the best source it has. */
+void vibeos_inet_set_secret(vibeos_inet_t *net, uint64_t k0, uint64_t k1);
 void vibeos_inet_set_policy(vibeos_inet_t *net, vibeos_net_policy_t *policy);
 
 /* Feed one received Ethernet frame. Returns 0 if it was consumed. */

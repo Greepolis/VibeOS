@@ -73,6 +73,37 @@ What this does not cover: an attacker who can see the traffic reads `rcv_nxt`
 off the wire. Sequence checks stop blind injection; on-path needs authentication
 above TCP.
 
+### H-008: the initial sequence number was the clock (fixed 2026-09-11)
+
+`connect` used `0x1000 + now_ms` and a listening socket `0x2000 + now_ms`.
+Whoever could forge a packet could also forge the ACK that completes a
+handshake, and then knew the sequence number data would be accepted at - so a
+blind attacker could both establish a connection and inject into it.
+
+Now RFC 6528: `ISN = now_ms/4 + SipHash-2-4(local ip, remote ip, local port,
+remote port; secret)`, in `tcp_isn`, used by both paths. The secret is one per
+stack, `vibeos_inet_set_secret`, because this portable layer has no entropy of
+its own; M-007 and H-009 will derive their identifiers from the same secret.
+
+`test_inet_tcp_isn_depends_on_secret` was written first and failed on the old
+code. It cannot assert randomness, so it asserts the properties that matter:
+the same key, time and tuple give the same ISN (the test is about inputs, not
+noise); a different key or a different tuple gives a different one; and it is
+not the bare clock value. Both directions are tested.
+
+**The secret is only as good as its source, and under the boot gate it is not
+good.** The arch layer takes it from RDRAND when CPUID advertises it and
+otherwise from the TSC mix that AT_RANDOM already uses, which that function's
+comment calls what it is. QEMU's default TCG CPU has no RDRAND, and every gate
+boot logs `[NET] stack secret from tsc mix (weak: no entropy source on this
+cpu)`. The structure is right and a real source slots in at one call; the
+kernel still has no entropy source, and that is its own open item.
+
+Also not covered, as for any ISN scheme: an attacker on the path reads the ISN
+off the wire.
+
+Host tests green, `check.sh all` green, twelve boots: 12 pass, 0 fail.
+
 ## Deferred: Waves 2-5 (not started)
 These are recorded so the scope is explicit, not because work has begun. Status
 stays `In Progress` until the Wave 5 gates pass, per the plan's own rule.
