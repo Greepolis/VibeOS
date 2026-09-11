@@ -671,3 +671,37 @@ Code in the kernel cannot observe this without changing it. The next step is to
 look from outside: have the gate ask the QEMU monitor for every core's state at
 the moment a THREADS fault is reported, the way `wedge_report.py` already does for
 a silent guest.
+
+## Sharpened, and why in-kernel probing stopped (2026-09-11)
+
+A probe that runs *only* at the ring-3 fault - so it cannot touch the window
+before it - reproduced the family (four in thirty-six) and printed nothing: the
+faulting thread never reaches `hw_fault_kill_current_user`. Reading the two
+traps that arrive together settles what is happening.
+
+- The thread's fault is a **write to a text page**: `COW_FAULT va=0x406f00
+  rip=0x405b72`, musl's `start` doing `lock cmpxchg %edx,0x10(%rdi)` with `rdi`
+  pointing inside `__clone` (0x406cd1). A new thread's argument pointer is a code
+  address, not its stack - the sign recorded above.
+- On another core, at the same moment, **task 0x8 is entered with a garbage
+  context**: `rip=0xffffffff`, `cs=0`, and `rsp`/`ss` that decode as ASCII
+  (`TMP.`, `ES.TXT`) - file-name-buffer bytes. A task's saved registers, or the
+  kernel stack they sit on, were freed and handed out as a file buffer and then
+  scheduled. That is the halting `free-page poison` panic.
+
+Both point at the same window: a thread's **first schedule**. That is exactly
+where the earlier probe did its one piece of work (a page walk when a task is
+loaded from its initial context), and slowing it there was enough to make the
+family vanish for seventy boots - so the defect is in context save/restore
+around a thread starting, not in exit (the interrupt-window fix, real, did not
+touch it) or in reclaim.
+
+**Why the investigation stops here rather than guessing.** Every in-kernel probe
+tried changes the timing enough to hide the defect - the family runs about one
+boot in twelve to eighteen and disappears under any added work on that path. A
+fix written without a confirmed mechanism would be indistinguishable from the
+probe: it would make the crash rarer and prove nothing. The next tool is
+external: have the gate ask the QEMU monitor for every core's registers and
+stack at the instant a THREADS fault is reported, the way `wedge_report.py`
+already does for a silent guest - observation that adds no guest-side work.
+Kept apart from the review findings, which are all closed; this one is not.
