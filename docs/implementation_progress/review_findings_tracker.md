@@ -37,6 +37,7 @@ Earlier reviews are closed and written up: the sixth
 | M-007 | M | DNS: predictable id, fixed source port 0xC353, no server/port/question check | **verified-open** | after H-008. `udp_input` does not pass src/sport to `dns_input` |
 | H-010 | H | read() on a pipe, recv(), recvfrom() validate the buffer, block, then write it after wake-up; a sibling's munmap makes it a ring-0 fault -> panic | **verified-open** | `hw_pipe_read` (write inside the blocking loop), `hw_net_recv`, `hw_sys_recvfrom`; **also the console read** (same shape, not in the report). Same class as H-003: needs fault-safe copy_to/from_user |
 | M-008 | M | any ARP overwrites the cache entry, gateway included | **verified-open** | `arp_input` calls `arp_insert` unconditionally. ARP has no authentication: limit unsolicited updates, protect the gateway entry |
+| M-009 | M | exFAT contiguous file: `first + index` wraps in 32 bits to a valid cluster; `first_cluster` from the entry never range-checked | **verified-open** | `exfat_nth_cluster` (`return first + index`), parse takes `rd32(stream + 20)` as is, `exfat_read_cluster` checks only the wrapped value. **Also, not in the report:** `read_at` truncates `(offset + done) / cluster_bytes` to 32 bits, so a large declared size wraps the index even with a valid first cluster. Host exFAT tests exist, so the red test is deterministic |
 
 Checked by the reviewer and **not** promoted, recorded so nobody re-reports them:
 the futex waiter slot is kept until its own waiter returns (the earlier ABA is
@@ -59,7 +60,7 @@ dropped:
 2. **H-010 + H-003 together**: a fault-safe user copy is the one fix for both,
    and it is also C5's "real exception table" item. The first attempt failed on
    `&&label` losing its base; see uaccess_recovery_open.md before retrying.
-3. M-008, M-003 (b) pipes.
+3. M-008, M-009 (exFAT), M-003 (b) pipes.
 4. Core plan C5, remaining: fork not atomic against its own threads
    (address-space lock); descriptors per thread; a must-be-zero check for
    `hw_procstate_t`.
