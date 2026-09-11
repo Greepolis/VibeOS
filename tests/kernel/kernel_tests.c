@@ -3385,7 +3385,7 @@ static int test_inet_dhcp_and_dns(void) {
     inet_wr32(dns + o, 60); o += 4;
     inet_wr16(dns + o, 4); o += 2;
     inet_wr32(dns + o, answer_ip); o += 4;
-    inet_deliver_udp(&net, net.dns, 53, 0xC353u, dns, o);
+    inet_deliver_udp(&net, net.dns, 53, net.dns_port, dns, o);
     if (vibeos_inet_resolve_result(&net, &answer_ip) != 0 || answer_ip != 0xC0000201u) {
         return -1;
     }
@@ -4082,6 +4082,119 @@ static int test_inet_tcp_isn_depends_on_secret(void) {
     syn_a = inet_isn_after_syn(&net, &cap, 0x0123456789ABCDEFull, 0x1122334455667788ull);
     syn_b = inet_isn_after_syn(&net, &cap, 0xFEDCBA9876543210ull, 0x8877665544332211ull);
     if (syn_a == 0u || syn_b == 0u || syn_a == syn_b || syn_a == 0x2000u + 5000u) {
+        return -1;
+    }
+    return 0;
+}
+
+/* M-007: a DNS answer is believed only if it answers the query that was sent.
+ *
+ * dns_input accepted any datagram to the fixed local port 0xC353 whose id
+ * matched, and the id advanced by a constant - so an attacker who could put a
+ * packet on the path, from anywhere, could answer before the server did and
+ * the address went into the cache. udp_input did not even pass the source.
+ *
+ * The id and port are read from the query as captured on the wire, the way a
+ * server - or an attacker - would see them, not from the stack's own fields. */
+static uint32_t inet_dns_reply(uint8_t *dns, uint16_t id, const char *l1, const char *l2,
+                               uint32_t answer) {
+    uint32_t o = 12;
+    uint32_t n1 = (uint32_t)strlen(l1), n2 = (uint32_t)strlen(l2);
+
+    memset(dns, 0, 128);
+    inet_wr16(dns + 0, id);
+    inet_wr16(dns + 2, 0x8180u);
+    inet_wr16(dns + 4, 1);
+    inet_wr16(dns + 6, 1);
+    dns[o++] = (uint8_t)n1; memcpy(dns + o, l1, n1); o += n1;
+    dns[o++] = (uint8_t)n2; memcpy(dns + o, l2, n2); o += n2;
+    dns[o++] = 0;
+    inet_wr16(dns + o, 1); o += 2;
+    inet_wr16(dns + o, 1); o += 2;
+    dns[o++] = 0xC0; dns[o++] = 0x0C;
+    inet_wr16(dns + o, 1); o += 2;
+    inet_wr16(dns + o, 1); o += 2;
+    inet_wr32(dns + o, 60); o += 4;
+    inet_wr16(dns + o, 4); o += 2;
+    inet_wr32(dns + o, answer); o += 4;
+    return o;
+}
+
+static int inet_dns_query_ids(vibeos_inet_t *net, inet_capture_t *cap, uint64_t k0,
+                              uint64_t k1, uint16_t *id, uint16_t *port) {
+    memset(cap, 0, sizeof(*cap));
+    if (vibeos_inet_init(net, inet_test_local_mac, inet_capture_tx, cap) != 0) {
+        return -1;
+    }
+    /* The DNS server is the gateway here, because that is the one address
+     * inet_seed_arp teaches the stack. With a separate server the one frame
+     * captured was the ARP request for it, the "id" and "port" read from it
+     * were zero, and the first version of this test was red for that reason
+     * rather than for the defect. The frame is checked below so it cannot be
+     * again. */
+    vibeos_inet_set_addr(net, 0x0A00020Fu, 0xFFFFFF00u, 0x0A000202u, 0x0A000202u);
+    vibeos_inet_set_secret(net, k0, k1);
+    inet_seed_arp(net);
+    net->now_ms = 5000u;
+    cap->count = 0;
+    if (vibeos_inet_resolve(net, "example.test") != 0 || cap->count != 1) {
+        return -1;
+    }
+    if (inet_rd16(cap->frame[0] + 12) != 0x0800u || cap->frame[0][14 + 9] != 17u ||
+        inet_rd16(cap->frame[0] + 14 + 20 + 2) != 53u) {
+        return -1;   /* not a UDP datagram to port 53: not the query */
+    }
+    *port = inet_rd16(cap->frame[0] + 14 + 20 + 0);
+    *id = inet_rd16(cap->frame[0] + 14 + 20 + 8);
+    return 0;
+}
+
+static int test_inet_dns_reply_must_match_query(void) {
+    static vibeos_inet_t net;
+    static inet_capture_t cap;
+    uint8_t dns[128];
+    uint32_t n, ip = 0;
+    uint16_t id, port, id2, port2;
+
+    if (inet_dns_query_ids(&net, &cap, 0x0123456789ABCDEFull, 0x1122334455667788ull,
+                           &id, &port) != 0) {
+        return -1;
+    }
+
+    /* Right id and port, wrong sender. */
+    n = inet_dns_reply(dns, id, "example", "test", 0x06060606u);
+    inet_deliver_udp(&net, 0x0A000209u, 53, port, dns, n);
+    if (vibeos_inet_resolve_result(&net, &ip) != -VIBEOS_INET_EAGAIN) {
+        return -1;
+    }
+    /* Right sender, not from port 53. */
+    inet_deliver_udp(&net, 0x0A000202u, 5353, port, dns, n);
+    if (vibeos_inet_resolve_result(&net, &ip) != -VIBEOS_INET_EAGAIN) {
+        return -1;
+    }
+    /* Right sender and port, an answer to a different question. */
+    n = inet_dns_reply(dns, id, "attacker", "test", 0x06060606u);
+    inet_deliver_udp(&net, 0x0A000202u, 53, port, dns, n);
+    if (vibeos_inet_resolve_result(&net, &ip) != -VIBEOS_INET_EAGAIN) {
+        return -1;
+    }
+    /* The genuine answer: sender, port, id and question all match. */
+    n = inet_dns_reply(dns, id, "example", "test", 0xC0000201u);
+    inet_deliver_udp(&net, 0x0A000202u, 53, port, dns, n);
+    if (vibeos_inet_resolve_result(&net, &ip) != 0 || ip != 0xC0000201u) {
+        return -1;
+    }
+
+    /* Id and port come from the secret: another key, same name and time, gives
+     * a different pair. The old scheme gave 0x1235 from 0xC353 every boot. */
+    if (inet_dns_query_ids(&net, &cap, 0xFEDCBA9876543210ull, 0x8877665544332211ull,
+                           &id2, &port2) != 0) {
+        return -1;
+    }
+    if (id2 == id && port2 == port) {
+        return -1;
+    }
+    if (port == 0xC353u && id == 0x1235u) {
         return -1;
     }
     return 0;
@@ -8231,6 +8344,7 @@ int main(void) {
     RUN_TEST(test_inet_tcp_out_of_order);
     RUN_TEST(test_inet_tcp_rst_needs_sequence);
     RUN_TEST(test_inet_tcp_isn_depends_on_secret);
+    RUN_TEST(test_inet_dns_reply_must_match_query);
     RUN_TEST(test_inet_tcp_close_reclaims_socket);
     RUN_TEST(test_inet_dhcp_lease_lifecycle);
     RUN_TEST(test_inet_dns_timeout_and_negative_cache);

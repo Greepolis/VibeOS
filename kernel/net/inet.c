@@ -121,7 +121,6 @@ static uint16_t l4_checksum(uint32_t src, uint32_t dst, uint8_t proto,
 
 #define DHCP_LOCAL_PORT 68u
 #define DHCP_SERVER_PORT 67u
-#define DNS_LOCAL_PORT 0xC353u
 #define DNS_PORT 53u
 
 /* A queued UDP datagram is framed [len:2][src ip:4][src port:2] then payload,
@@ -920,8 +919,48 @@ static int dns_send_query(vibeos_inet_t *net) {
     wr16(q + n + 2u, 1u);   /* IN    */
     n += 4u;
     net->dns_retry_ms = net->now_ms + 1000ull;
-    (void)udp_send(net, net->dns, DNS_LOCAL_PORT, DNS_PORT, q, n);
+    (void)udp_send(net, net->dns, net->dns_port, DNS_PORT, q, n);
     return 0;
+}
+
+/* Is a UDP socket bound to this local port? A query must not be sent from one:
+ * its replies would be taken by the resolver before the socket saw them. */
+static int udp_port_bound(const vibeos_inet_t *net, uint16_t port) {
+    uint32_t i;
+    for (i = 0; i < VIBEOS_INET_MAX_SOCKETS; i++) {
+        if (net->sockets[i].used && net->sockets[i].type == VIBEOS_INET_SOCK_UDP &&
+            net->sockets[i].local_port == port) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* The id and source port for a new query, from the stack secret over the name,
+ * a query counter and the time. The old id advanced by 0x1235 from the same
+ * start every boot and the port was always 0xC353 - nothing to guess. Two
+ * unguessable fields give a blind spoofer about 30 bits to hit instead of 0. */
+static void dns_new_query_ids(vibeos_inet_t *net) {
+    uint8_t m[72];
+    uint32_t i, n = 0;
+    uint64_t h;
+    uint16_t port;
+
+    for (i = 0; i < 64u && net->dns_name[i]; i++) {
+        m[n++] = (uint8_t)net->dns_name[i];
+    }
+    m[n++] = (uint8_t)(net->dns_query_seq >> 24); m[n++] = (uint8_t)(net->dns_query_seq >> 16);
+    m[n++] = (uint8_t)(net->dns_query_seq >> 8);  m[n++] = (uint8_t)net->dns_query_seq;
+    m[n++] = (uint8_t)(net->now_ms >> 24); m[n++] = (uint8_t)(net->now_ms >> 16);
+    m[n++] = (uint8_t)(net->now_ms >> 8);  m[n++] = (uint8_t)net->now_ms;
+    net->dns_query_seq++;
+    h = siphash24(net->secret[0], net->secret[1], m, n);
+    net->dns_id = (uint16_t)h;
+    port = (uint16_t)(49152u + (uint32_t)((h >> 16) % 16384u));
+    for (i = 0; i < 16u && udp_port_bound(net, port); i++) {
+        port = (port == 65535u) ? 49152u : (uint16_t)(port + 1u);
+    }
+    net->dns_port = port;
 }
 
 int vibeos_inet_resolve(vibeos_inet_t *net, const char *name) {
@@ -945,7 +984,7 @@ int vibeos_inet_resolve(vibeos_inet_t *net, const char *name) {
         }
     }
 
-    net->dns_id = (uint16_t)(net->dns_id + 0x1234u + 1u);
+    dns_new_query_ids(net);
     net->dns_pending = 1;
     net->dns_done = 0;
     net->dns_result = 0;
@@ -983,18 +1022,85 @@ static uint32_t dns_skip_name(const uint8_t *b, uint32_t len, uint32_t o) {
     return len;
 }
 
-static void dns_input(vibeos_inet_t *net, const uint8_t *b, uint32_t len) {
+/* Offset just past the question if it is exactly the one sent - the name being
+ * resolved, type A, class IN - or 0. Labels are compared case-insensitively, as
+ * names are. The question is what the server echoes back, so it is not
+ * compressed; a pointer there is refused rather than followed. */
+static uint32_t dns_question_matches(const vibeos_inet_t *net, const uint8_t *b,
+                                     uint32_t len) {
+    uint32_t o = 12u, n = 0, k;
+
+    for (;;) {
+        uint8_t l;
+        if (o >= len) {
+            return 0;
+        }
+        l = b[o++];
+        if (l == 0u) {
+            break;
+        }
+        if ((l & 0xC0u) != 0u || o + l > len) {
+            return 0;
+        }
+        if (n != 0u) {
+            if (n >= sizeof(net->dns_name) - 1u || net->dns_name[n] != '.') {
+                return 0;
+            }
+            n++;
+        }
+        for (k = 0; k < l; k++, n++) {
+            char c = (char)b[o + k];
+            char d;
+            if (n >= sizeof(net->dns_name) - 1u) {
+                return 0;
+            }
+            d = net->dns_name[n];
+            if (c >= 'A' && c <= 'Z') {
+                c = (char)(c + 32);
+            }
+            if (d >= 'A' && d <= 'Z') {
+                d = (char)(d + 32);
+            }
+            if (d == 0 || c != d) {
+                return 0;
+            }
+        }
+        o += l;
+    }
+    if (n >= sizeof(net->dns_name) || net->dns_name[n] != 0) {
+        return 0;
+    }
+    if (o + 4u > len || rd16(b + o) != 1u || rd16(b + o + 2u) != 1u) {
+        return 0;
+    }
+    return o + 4u;
+}
+
+/* A DNS answer is believed only if it answers the query that was sent (M-007).
+ *
+ * This accepted any datagram to the fixed local port whose id matched, from any
+ * sender, for any question, with the id advancing by a constant: an attacker who
+ * could put one packet on the path answered first and the address was cached.
+ * Now the sender must be the configured server, from port 53, the datagram must
+ * be a response, the id must match, and the single question must be the name
+ * asked. The id and the source port are drawn from the stack secret per query -
+ * see dns_new_query_ids - so a blind attacker has both to guess. */
+static void dns_input(vibeos_inet_t *net, uint32_t src, uint16_t sport,
+                      const uint8_t *b, uint32_t len) {
     uint32_t qd, an, o, i;
 
-    if (!net->dns_pending || len < 12u || rd16(b) != net->dns_id) {
+    if (!net->dns_pending || len < 12u || src != net->dns || sport != DNS_PORT ||
+        rd16(b) != net->dns_id || (b[2] & 0x80u) == 0u) {
         return;
     }
     qd = rd16(b + 4);
     an = rd16(b + 6);
-    o = 12u;
-    for (i = 0; i < qd && o < len; i++) {
-        o = dns_skip_name(b, len, o);
-        o += 4u;   /* qtype + qclass */
+    if (qd != 1u) {
+        return;
+    }
+    o = dns_question_matches(net, b, len);
+    if (o == 0u) {
+        return;
     }
     for (i = 0; i < an && o + 10u <= len; i++) {
         uint16_t rtype, rdlen;
@@ -1054,8 +1160,8 @@ static void udp_input(vibeos_inet_t *net, uint32_t src, uint32_t dst,
         dhcp_input(net, data, dlen);
         return;
     }
-    if (dport == DNS_LOCAL_PORT) {
-        dns_input(net, data, dlen);
+    if (net->dns_pending && dport == net->dns_port) {
+        dns_input(net, src, sport, data, dlen);
         return;
     }
 

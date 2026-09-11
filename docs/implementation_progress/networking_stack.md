@@ -104,6 +104,48 @@ off the wire.
 
 Host tests green, `check.sh all` green, twelve boots: 12 pass, 0 fail.
 
+### M-007: a DNS answer from anybody, for anything (fixed 2026-09-11)
+
+`dns_input` accepted any datagram to the fixed local port `0xC353` whose id
+matched the pending query. `udp_input` did not pass it the sender, so it could
+not have checked one; the question in the answer was skipped, not compared; and
+the id advanced by `0x1235` from the same start every boot. An attacker who
+could put one packet on the path answered first, and the address went into the
+cache for its TTL.
+
+Now an answer is believed only if it comes from the configured server, from port
+53, has the response bit, carries the pending id, and has exactly one question
+that is the name being resolved, type A, class IN (labels compared without
+case). The id and the source port are drawn per query from SipHash over the
+stack secret, the name, a query counter and the time; the port avoids any bound
+UDP socket, whose datagrams the resolver would otherwise take. A blind spoofer
+now has about 30 bits to hit instead of none - and, as the H-008 section says,
+the secret under TCG comes from the weak source.
+
+The test, `test_inet_dns_reply_must_match_query`, reads the id and port from the
+query as captured on the wire, the way a server or an attacker sees them, and
+checks the wrong sender, the wrong port and the wrong question separately
+before the genuine answer. An older test answered to the fixed port and now
+answers to the port the query came from.
+
+**Two things went wrong on the way, and both are worth knowing.** The first
+version of the test was red for the wrong reason. The DNS server it configured
+was not the address `inet_seed_arp` teaches, so the one frame captured was the
+ARP request for it; the "id" and "port" read from that frame were zero, every
+reply went to port 0, and the test failed at the genuine answer on the old and
+the new code alike. A step-numbered run showed it. The server is the gateway in
+that test now, and the test checks that the captured frame is a UDP datagram to
+port 53 before reading from it. Re-run on the unfixed code it fails where it
+should - the wrong sender accepted, `id=0x1235 port=0xc353` - and passes on the
+fixed code.
+
+The second: restoring the fixed `inet.c` with a file copy kept the copy's older
+timestamp, the build judged the object up to date, and the "fixed" run measured
+the red code. The step numbers gave it away - the old identifiers were still
+there. The sources were touched and the run repeated.
+
+Host tests green, `check.sh all` green, twelve boots: 12 pass, 0 fail.
+
 ## Deferred: Waves 2-5 (not started)
 These are recorded so the scope is explicit, not because work has begun. Status
 stays `In Progress` until the Wave 5 gates pass, per the plan's own rule.

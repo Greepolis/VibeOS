@@ -179,6 +179,8 @@ typedef struct vibeos_inet {
 
     /* One in-flight DNS query, with bounded retries. */
     uint16_t dns_id;
+    uint16_t dns_port;       /* local port the pending query was sent from   */
+    uint32_t dns_query_seq;  /* queries issued; an input to the next id      */
     uint8_t dns_pending;
     uint8_t dns_done;
     uint8_t dns_retries;
