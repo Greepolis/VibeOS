@@ -227,6 +227,11 @@ static void report_child_bounded(const char *stage, pid_t pid, int want_code,
     fflush(stdout);
 }
 
+/* C5_FUTEX_XPROC: a word at the same address in two processes. Every Linux
+ * program here links at 0x400000 and a forked child has its parent's layout
+ * exactly, so this global sits at one virtual address in both. */
+static volatile int xproc_word;
+
 int main(void)
 {
     pthread_t t;
@@ -453,6 +458,56 @@ int main(void)
             }
         }
         report_child_bounded("C5_EXIT_GROUP_BLOCKED", pid, 42, 400);
+    }
+
+    /* C5_FUTEX_XPROC. The child waits on its own copy of xproc_word. The parent
+     * wakes the same virtual address in its own memory - which a kernel that
+     * keys waiters by address alone matches to the child. Then the parent ends
+     * the child with SIGKILL, which reaches a blocked waiter now that waits
+     * notice signals.
+     *
+     * Two signs of the defect, either enough: the parent's wake reports one
+     * waiter woken when it has none of its own, or the child wakes and exits 5.
+     * A slow child can only hide the defect - if it is not yet waiting when the
+     * wake happens, nothing is matched - never invent it, so this stage can pass
+     * wrongly but cannot fail wrongly. */
+    {
+        pid_t pid = fork();
+
+        if (pid == 0) {
+            xproc_word = 0;
+            if (syscall(SYS_futex, &xproc_word, 0 /* FUTEX_WAIT */, 0, 0, 0, 0) == 0) {
+                _exit(5);   /* woken, and nobody in this process woke us */
+            }
+            _exit(6);       /* the wait refused or was interrupted: not the question */
+        }
+        if (pid < 0) {
+            printf("THREADS_C5_FUTEX_XPROC_FAIL: fork\n");
+        } else {
+            int n, status = 0;
+            long woke;
+
+            for (n = 0; n < 50; n++) {   /* let the child reach its wait */
+                sched_yield();
+            }
+            woke = syscall(SYS_futex, &xproc_word, 1 /* FUTEX_WAKE */, 1, 0, 0, 0);
+            for (n = 0; n < 20; n++) {
+                sched_yield();
+            }
+            (void)kill(pid, SIGKILL);
+            (void)waitpid(pid, &status, 0);
+            if (woke != 0) {
+                printf("THREADS_C5_FUTEX_XPROC_FAIL: a wake in this process woke %ld waiter(s) in another\n",
+                       woke);
+            } else if (WIFEXITED(status) && WEXITSTATUS(status) == 5) {
+                printf("THREADS_C5_FUTEX_XPROC_FAIL: the child was woken by the parent's wake\n");
+            } else if (WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL) {
+                printf("THREADS_C5_FUTEX_XPROC_OK\n");
+            } else {
+                printf("THREADS_C5_FUTEX_XPROC_FAIL: child ended with status 0x%x\n", status);
+            }
+        }
+        fflush(stdout);
     }
     return 0;
 }

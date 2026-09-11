@@ -469,7 +469,8 @@ static const char *hw_range_why_name(uint32_t why) {
 int hw_user_range_ok(uint64_t va, uint64_t len, int need_write);
 static int hw_user_range_why(uint64_t va, uint64_t len, int need_write,
                              uint32_t *why);
-static long hw_futex_wake(uint64_t addr, uint32_t count);
+static long hw_futex_wake(const hw_procstate_t *ps, uint64_t addr,
+                          uint32_t count);
 void hw_task_exit(uint64_t code);                   /* defined below */
 static void hw_keyboard_wake(void);                        /* defined below */
 static void hw_net_pump(void);                             /* defined below */
@@ -5507,7 +5508,12 @@ void hw_task_exit(uint64_t code) {
 
         if (hw_user_range_why(addr, 4u, 1, &why)) {
             *(volatile uint32_t *)(uintptr_t)addr = 0u;
-            hw_futex_wake(addr, 0x7FFFFFFF);
+            /* The dying thread's process, which is still attached here: this
+             * block runs before hw_procstate_put further down. Keep it that
+             * way. With the reference already given back, ps would be 0, no
+             * waiter would match, and every pthread_join on this thread would
+             * sleep forever - with nothing failing to compile. */
+            hw_futex_wake(g_tasks[dying].ps, addr, 0x7FFFFFFF);
         } else {
             hw_log(VIBEOS_LOG_WARN, 28u, addr,
                    (uint64_t)why | ((uint64_t)g_tasks[dying].pid << 8),
@@ -9453,6 +9459,13 @@ typedef struct {
      * every wake passing it by. */
     uint8_t used;
     uint64_t addr;     /* 0 once woken: no further wake should match */
+    /* Whose address. A futex word is named by a user virtual address, and a
+     * virtual address means nothing without its process: every Linux program
+     * here links at 0x400000, and a forked child has its parent's layout
+     * exactly. The table was keyed by address alone, so a wake in one process
+     * ended a wait in another - THREADS_C5_FUTEX_XPROC, red first. There are no
+     * shared mappings in this kernel, so the process is the whole key. */
+    const hw_procstate_t *ps;
     int task;
     volatile int woken;
 } hw_futex_waiter_t;
@@ -9463,7 +9476,8 @@ static hw_lock_t g_futex_lock;
 /* Wake up to `count` waiters on `addr`. Returns how many were woken, which is
  * what the caller is told: a library uses it to decide whether it needs to
  * wake anybody else. */
-static long hw_futex_wake(uint64_t addr, uint32_t count) {
+static long hw_futex_wake(const hw_procstate_t *ps, uint64_t addr,
+                          uint32_t count) {
     long woke = 0;
     uint32_t i;
 
@@ -9472,7 +9486,8 @@ static long hw_futex_wake(uint64_t addr, uint32_t count) {
     }
     hw_spin_lock_named(&g_futex_lock, __func__);
     for (i = 0; i < VIBEOS_HW_MAX_FUTEX_WAITERS && (uint32_t)woke < count; i++) {
-        if (!g_futex_waiters[i].used || g_futex_waiters[i].addr != addr) {
+        if (!g_futex_waiters[i].used || g_futex_waiters[i].addr != addr ||
+            g_futex_waiters[i].ps != ps) {
             continue;
         }
         g_futex_waiters[i].addr = 0;   /* no second wake for this waiter */
@@ -9520,6 +9535,7 @@ static long hw_futex_wait(uint64_t addr, uint32_t expected) {
     }
     g_futex_waiters[slot].used = 1;
     g_futex_waiters[slot].addr = addr;
+    g_futex_waiters[slot].ps = g_tasks[me].ps;
     g_futex_waiters[slot].task = me;
     g_futex_waiters[slot].woken = 0;
 
@@ -9586,7 +9602,8 @@ static long hw_futex_wait(uint64_t addr, uint32_t expected) {
 static long hw_sys_futex(uint64_t addr, uint64_t op, uint64_t val) {
     switch (op & FUTEX_CMD_MASK) {
         case FUTEX_WAKE:
-            return hw_futex_wake(addr, (uint32_t)val);
+            return hw_futex_wake(g_current_task >= 0 ? g_tasks[g_current_task].ps : 0,
+                                 addr, (uint32_t)val);
         case FUTEX_WAIT:
             return hw_futex_wait(addr, (uint32_t)val);
         default:

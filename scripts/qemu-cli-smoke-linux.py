@@ -2211,7 +2211,10 @@ def main():
                          "threads_c5_tkill_did_not_report"),
                         ("C5_EXIT_GROUP_BLOCKED",
                          "thread_blocked_sibling_survived_exit_group",
-                         "threads_c5_exit_group_blocked_did_not_report")):
+                         "threads_c5_exit_group_blocked_did_not_report"),
+                        ("C5_FUTEX_XPROC",
+                         "futex_wake_crossed_processes",
+                         "threads_c5_futex_xproc_did_not_report")):
                     if f"THREADS_{stage}_OK" in text:
                         continue
                     if f"THREADS_{stage}_FAIL" in text:

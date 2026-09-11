@@ -165,3 +165,30 @@ case 7: a blocked sibling survives exit_group
            missing:CLI_READY ... stage_failures=THREADS_C5_EXIT_GROUP_BLOCKED_FAIL.
   and green, after the fix: THREADS_C5_EXIT_GROUP_BLOCKED_OK;
            check.sh all VERDICT=green; twelve boots: 11 pass, 1 fail.
+
+---
+
+case 8: a futex wake crosses processes
+  test:    THREADS_C5_FUTEX_XPROC
+  reason:  futex_wake_crossed_processes
+  defect:  the waiter table is keyed by user virtual address alone -
+           hw_futex_waiter_t holds used, addr, task and woken, and
+           hw_futex_wake matches `addr` - while every Linux program links at
+           0x400000 and a forked child has its parent's layout exactly. A wake
+           in one process can end a wait in another.
+  not claimed: that this causes the stack-poison crash in the four-worker
+           stage. musl's primitives re-check their condition after every
+           wakeup, so a spurious wake alone does not make pthread_join return
+           early. It is a defect on its own terms.
+  expect on the defect: the parent's FUTEX_WAKE reports a waiter woken, and
+           the child exits 5.
+  can pass wrongly: if the child is not yet waiting when the parent wakes,
+           nothing is matched and the child is simply killed. A slow child hides
+           the defect; it never invents it.
+  ran:     yes, against the kernel before the fix, and red through the
+           stronger of its two signs - the parent, with no waiter of its own on
+           that address, was told its wake had woken one:
+               THREADS_C5_FUTEX_XPROC_FAIL: a wake in this process woke 1 waiter(s) in another
+  and green, after the fix: THREADS_C5_FUTEX_XPROC_OK - the wake matched
+           nothing and the child died by SIGKILL; check.sh all VERDICT=green;
+           twelve boots: 10 pass, 2 (both the known four-worker family: the same unhandled write inside THREADS as fail-7 before the fix, shifted by the new stage's 0x320 bytes) fail.

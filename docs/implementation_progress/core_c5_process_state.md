@@ -190,6 +190,22 @@ core, and reading it afterwards could copy a stranger's dispositions.
   ignores wait4's result and a spurious EINTR would stop it waiting for its
   child; SIGCHLD is never raised today, which is exactly why that cannot be left
   to chance. Red first (`THREADS_C5_EXIT_GROUP_BLOCKED_FAIL: the process never ended`), green after; twelve boots: 11 pass, 1 fail.
+
+  **A futex word has an owner too.** Found while reading `hw_futex_wake` to
+  explain a crash it turned out not to explain: the waiter table was keyed by
+  user virtual address alone, and a virtual address means nothing without its
+  process - every Linux program here links at `0x400000`, and a forked child has
+  its parent's layout exactly. A wake in one process could end a wait in another.
+  Not claimed as the cause of the stack-poison crash in the four-worker stage:
+  musl re-checks its condition after every wakeup, so a spurious one alone does
+  not return `pthread_join` early. Waiters now record the `hw_procstate_t` they
+  belong to, and a wake matches the process and the address; there are no shared
+  mappings in this kernel, so the process is the whole key. The exit path's wake
+  of `clear_child_tid` passes the dying thread's process, which is still attached
+  there because that block runs before `hw_procstate_put` - an ordering the
+  comment beside it now defends, because the other order would hang every
+  `pthread_join` with nothing failing to compile. Red first (`THREADS_C5_FUTEX_XPROC_FAIL: a wake in this process woke 1 waiter(s) in another`),
+  green after; twelve boots: 10 pass, 2 (both the known four-worker family: the same unhandled write inside THREADS as fail-7 before the fix, shifted by the new stage's 0x320 bytes) fail.
 - **No must-be-zero counter for the new structure.** One was designed - a
   reference dropped below zero - and not added, because a counter nothing reads is
   this project's most repeated defect, and reading it means touching the portable
