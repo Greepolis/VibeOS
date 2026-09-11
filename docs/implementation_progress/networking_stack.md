@@ -40,6 +40,39 @@ Last review: 2026-08-26
 - Ring-3 TLS service integration: entropy source, trust store, TCP callbacks and QEMU TLS handshake validation are intentionally pending; the current adapter is not a guest TLS implementation.
 - Packet-path performance instrumentation, queueing policy and concurrency hardening.
 
+## Security findings
+
+### M-005: a RST without a sequence check (fixed 2026-09-11)
+
+`tcp_input` found the socket by address and ports and, on RST, closed it - with
+no look at the sequence number. Anybody able to put a packet on the path could
+end a connection without knowing where its byte stream was. And `tcp_lookup`
+also matches a listening socket, so a RST to a listening port closed the
+listener itself.
+
+The rule now is RFC 5961 section 3.2, in `tcp_input_rst`:
+
+- LISTEN: nothing to reset; ignored.
+- SYN_SENT: acceptable only if it acknowledges our SYN. That is how a connect to
+  a closed port is refused, so that case still ends at once.
+- otherwise: `seq == rcv_nxt` resets; anywhere else in the receive window gets a
+  challenge ACK naming `rcv_nxt` (a genuine peer answers with the exact RST);
+  outside it is dropped silently. The window is the free receive buffer, and the
+  offset is unsigned modular arithmetic, so a number just behind `rcv_nxt` wraps
+  to a large offset and is dropped instead of read as in-window.
+
+The RST decision also moved ahead of the send-window update: a segment that is
+not believed changes nothing.
+
+`test_inet_tcp_rst_needs_sequence` was written first and failed on the old code.
+It asserts the state *and* what was sent at each step, because "still
+established" alone passes a stack that ignores every RST. Host tests green,
+`check.sh all` green, twelve boots: 11 pass, 1 fail - task_illegal_transition (running->running by hw_task_exit) in THREADS' exit_group stage, a scheduler-exit signature this change does not touch and seen for the first time today; recorded with the exit-window evidence as its likeliest cause, H-007's locked exit_group loop not yet ruled out.
+
+What this does not cover: an attacker who can see the traffic reads `rcv_nxt`
+off the wire. Sequence checks stop blind injection; on-path needs authentication
+above TCP.
+
 ## Deferred: Waves 2-5 (not started)
 These are recorded so the scope is explicit, not because work has begun. Status
 stays `In Progress` until the Wave 5 gates pass, per the plan's own rule.

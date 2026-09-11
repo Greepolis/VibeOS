@@ -1276,6 +1276,49 @@ static void tcp_hold_ooo(vibeos_inet_socket_t *s, uint32_t seq,
     }
 }
 
+/* A RST, believed only when it could have come from the peer (M-005).
+ *
+ * This used to close any connection a RST matched by address and ports, so
+ * anybody able to put a packet on the path could end a connection without
+ * knowing where its byte stream was. The rule is RFC 5961 section 3.2:
+ *
+ *   - LISTEN: there is no connection to reset. A RST to a listening port used
+ *     to close the listening socket itself.
+ *   - SYN_SENT: acceptable only if it acknowledges our SYN - which is how a
+ *     connect to a closed port is refused, so that case still ends at once.
+ *   - otherwise: exactly rcv_nxt resets; anywhere else in the receive window is
+ *     answered with an ACK naming rcv_nxt, which a genuine peer answers with the
+ *     exact RST; outside the window it is dropped silently.
+ *
+ * The window is the free space in the receive buffer. The offset is unsigned
+ * modular arithmetic, so a sequence number just *behind* rcv_nxt wraps to a huge
+ * offset and is dropped rather than read as in-window. */
+static void tcp_input_rst(vibeos_inet_t *net, vibeos_inet_socket_t *s,
+                          uint32_t seq, uint32_t ack, uint32_t flags) {
+    uint32_t off, wnd;
+
+    if (s->state == VIBEOS_TCP_LISTEN) {
+        return;
+    }
+    if (s->state == VIBEOS_TCP_SYN_SENT) {
+        if ((flags & TCP_ACK) && ack == s->snd_nxt) {
+            s->reset = 1;
+            s->state = VIBEOS_TCP_CLOSED;
+        }
+        return;
+    }
+    if (seq == s->rcv_nxt) {
+        s->reset = 1;
+        s->state = VIBEOS_TCP_CLOSED;
+        return;
+    }
+    off = seq - s->rcv_nxt;
+    wnd = VIBEOS_INET_RXBUF - s->rx_len;
+    if (off < wnd) {
+        (void)tcp_send_seg(net, s, TCP_ACK, s->snd_nxt, 0, 0);
+    }
+}
+
 /* Deliver every held segment that now starts exactly at rcv_nxt, repeatedly:
  * releasing one can make the next one contiguous too. */
 static void tcp_drain_ooo(vibeos_inet_socket_t *s) {
@@ -1353,15 +1396,14 @@ static void tcp_input(vibeos_inet_t *net, uint32_t src, uint32_t dst,
         net->rx_dropped++;
         return;
     }
+    if (flags & TCP_RST) {
+        tcp_input_rst(net, s, seq, ack, flags);
+        return;
+    }
+
     s->snd_wnd = rd16(t + 14);
     if (s->snd_wnd == 0u) {
         s->snd_wnd = 1u;   /* keep a one-byte probe possible */
-    }
-
-    if (flags & TCP_RST) {
-        s->reset = 1;
-        s->state = VIBEOS_TCP_CLOSED;
-        return;
     }
 
     /* A SYN to a listening socket opens a new connection. */

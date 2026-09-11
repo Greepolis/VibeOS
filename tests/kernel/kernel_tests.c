@@ -3889,6 +3889,116 @@ static int test_inet_tcp_out_of_order(void) {
     return 0;
 }
 
+/* M-005: a RST is believed only when it could have come from the peer.
+ *
+ * tcp_input closed any connection a RST matched by address and ports, so anybody
+ * able to put a packet on the path could end a connection without knowing where
+ * its byte stream was. RFC 5961 section 3.2 is the rule used: in a synchronized
+ * state a RST whose sequence number is exactly the next byte expected resets the
+ * connection; one elsewhere in the receive window is answered with an ACK (a
+ * genuine peer then sends the exact RST), and one outside it is dropped. In
+ * SYN_SENT the RST must acknowledge our SYN. A listening socket has no
+ * connection to reset, and used to be closed by any RST to its port.
+ *
+ * Each step asserts the state *and* what was sent, because "still established"
+ * alone passes a stack that ignores every RST. */
+static int test_inet_tcp_rst_needs_sequence(void) {
+    static vibeos_inet_t net;
+    static inet_capture_t cap;
+    int s, srv;
+    uint32_t our_isn, peer_isn = 0x60000000u;
+    uint16_t our_port;
+
+    memset(&cap, 0, sizeof(cap));
+    if (vibeos_inet_init(&net, inet_test_local_mac, inet_capture_tx, &cap) != 0) {
+        return -1;
+    }
+    vibeos_inet_set_addr(&net, 0x0A00020Fu, 0xFFFFFF00u, 0x0A000202u, 0x0A000203u);
+    inet_seed_arp(&net);
+
+    s = vibeos_inet_socket(&net, VIBEOS_INET_SOCK_TCP);
+    cap.count = 0;
+    if (s < 0 || vibeos_inet_connect(&net, s, 0x0A000202u, 80) != 0) {
+        return -1;
+    }
+    our_isn = inet_rd32(cap.frame[0] + 14 + 20 + 4);
+    our_port = inet_rd16(cap.frame[0] + 14 + 20 + 0);
+
+    /* SYN_SENT: a RST|ACK acknowledging something other than our SYN is not an
+     * answer to it. */
+    cap.count = 0;
+    inet_deliver_tcp(&net, 0x0A000202u, 80, our_port, 0, our_isn + 99, 0x14, 0, 0);
+    if (vibeos_inet_socket_state(&net, s) != VIBEOS_TCP_SYN_SENT || cap.count != 0) {
+        return -1;
+    }
+
+    inet_deliver_tcp(&net, 0x0A000202u, 80, our_port, peer_isn, our_isn + 1, 0x12, 0, 0);
+    if (vibeos_inet_socket_state(&net, s) != VIBEOS_TCP_ESTABLISHED) {
+        return -1;
+    }
+    /* rcv_nxt is now peer_isn + 1. */
+
+    /* Far outside the window: dropped, and nothing sent. */
+    cap.count = 0;
+    inet_deliver_tcp(&net, 0x0A000202u, 80, our_port, peer_isn + 1 + 0x40000000u,
+                     our_isn + 1, 0x04, 0, 0);
+    if (vibeos_inet_socket_state(&net, s) != VIBEOS_TCP_ESTABLISHED || cap.count != 0) {
+        return -1;
+    }
+
+    /* Behind rcv_nxt - a wrapped difference must not read as "in window". */
+    cap.count = 0;
+    inet_deliver_tcp(&net, 0x0A000202u, 80, our_port, peer_isn, our_isn + 1, 0x04, 0, 0);
+    if (vibeos_inet_socket_state(&net, s) != VIBEOS_TCP_ESTABLISHED || cap.count != 0) {
+        return -1;
+    }
+
+    /* In the window but not exact: a challenge ACK naming the byte expected. */
+    cap.count = 0;
+    inet_deliver_tcp(&net, 0x0A000202u, 80, our_port, peer_isn + 1 + 10,
+                     our_isn + 1, 0x04, 0, 0);
+    if (vibeos_inet_socket_state(&net, s) != VIBEOS_TCP_ESTABLISHED || cap.count != 1) {
+        return -1;
+    }
+    if ((cap.frame[0][14 + 20 + 13] & 0x14) != 0x10 ||
+        inet_rd32(cap.frame[0] + 14 + 20 + 8) != peer_isn + 1) {
+        return -1;
+    }
+
+    /* Exactly rcv_nxt: the connection is reset. */
+    inet_deliver_tcp(&net, 0x0A000202u, 80, our_port, peer_isn + 1, our_isn + 1, 0x04, 0, 0);
+    if (vibeos_inet_socket_state(&net, s) != VIBEOS_TCP_CLOSED) {
+        return -1;
+    }
+
+    /* SYN_SENT again: a RST|ACK that does acknowledge our SYN is the refusal it
+     * looks like - this is how a connect to a closed port ends. */
+    s = vibeos_inet_socket(&net, VIBEOS_INET_SOCK_TCP);
+    cap.count = 0;
+    if (s < 0 || vibeos_inet_connect(&net, s, 0x0A000202u, 81) != 0) {
+        return -1;
+    }
+    our_isn = inet_rd32(cap.frame[0] + 14 + 20 + 4);
+    our_port = inet_rd16(cap.frame[0] + 14 + 20 + 0);
+    inet_deliver_tcp(&net, 0x0A000202u, 81, our_port, 0, our_isn + 1, 0x14, 0, 0);
+    if (vibeos_inet_socket_state(&net, s) != VIBEOS_TCP_CLOSED) {
+        return -1;
+    }
+
+    /* A listening socket: nothing to reset. */
+    srv = vibeos_inet_socket(&net, VIBEOS_INET_SOCK_TCP);
+    if (srv < 0 || vibeos_inet_bind(&net, srv, 8080) != 0 ||
+        vibeos_inet_listen(&net, srv) != 0) {
+        return -1;
+    }
+    cap.count = 0;
+    inet_deliver_tcp(&net, 0x0A000202u, 40000, 8080, 0x1234u, 0, 0x04, 0, 0);
+    if (vibeos_inet_socket_state(&net, srv) != VIBEOS_TCP_LISTEN || cap.count != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 static int test_inet_tcp_close_reclaims_socket(void) {
     static vibeos_inet_t net;
     static inet_capture_t cap;
@@ -8031,6 +8141,7 @@ int main(void) {
     RUN_TEST(test_inet_tcp_listen_accept);
     RUN_TEST(test_inet_udp_datagram_queue);
     RUN_TEST(test_inet_tcp_out_of_order);
+    RUN_TEST(test_inet_tcp_rst_needs_sequence);
     RUN_TEST(test_inet_tcp_close_reclaims_socket);
     RUN_TEST(test_inet_dhcp_lease_lifecycle);
     RUN_TEST(test_inet_dns_timeout_and_negative_cache);
