@@ -3337,6 +3337,7 @@ static int test_inet_dhcp_and_dns(void) {
     memset(offer, 0, sizeof(offer));
     offer[0] = 2; offer[1] = 1; offer[2] = 6;
     inet_wr32(offer + 4, net.dhcp_xid);
+    memcpy(offer + 28, inet_test_local_mac, 6);   /* chaddr: this client */
     inet_wr32(offer + 16, 0x0A00020Fu);
     inet_wr32(offer + 236, 0x63825363u);
     o = 240;
@@ -3351,6 +3352,7 @@ static int test_inet_dhcp_and_dns(void) {
     memset(ack, 0, sizeof(ack));
     ack[0] = 2; ack[1] = 1; ack[2] = 6;
     inet_wr32(ack + 4, net.dhcp_xid);
+    memcpy(ack + 28, inet_test_local_mac, 6);
     inet_wr32(ack + 16, 0x0A00020Fu);
     inet_wr32(ack + 236, 0x63825363u);
     o = 240;
@@ -3358,6 +3360,9 @@ static int test_inet_dhcp_and_dns(void) {
     ack[o++] = 1; ack[o++] = 4; inet_wr32(ack + o, 0xFFFFFF00u); o += 4;
     ack[o++] = 3; ack[o++] = 4; inet_wr32(ack + o, 0x0A000202u); o += 4;
     ack[o++] = 6; ack[o++] = 4; inet_wr32(ack + o, 0x0A000203u); o += 4;
+    /* RFC 2131 requires the server identifier in an ACK; this test omitted it,
+     * which only worked because the client did not check whose ACK it was. */
+    ack[o++] = 54; ack[o++] = 4; inet_wr32(ack + o, 0x0A000202u); o += 4;
     ack[o++] = 255;
     inet_deliver_udp(&net, 0x0A000202u, 67, 68, ack, o);
     if (!vibeos_inet_dhcp_bound(&net) || net.ip != 0x0A00020Fu || net.dns != 0x0A000203u) {
@@ -3596,6 +3601,7 @@ static void inet_deliver_dhcp(vibeos_inet_t *net, uint8_t msg_type,
     body[1] = 1;
     body[2] = 6;
     inet_wr32(body + 4, net->dhcp_xid);
+    memcpy(body + 28, net->mac, 6);    /* chaddr: the client being answered */
     inet_wr32(body + 16, yiaddr);      /* yiaddr                          */
     inet_wr32(body + 236, 0x63825363u);/* magic cookie                    */
 
@@ -4195,6 +4201,124 @@ static int test_inet_dns_reply_must_match_query(void) {
         return -1;
     }
     if (port == 0xC353u && id == 0x1235u) {
+        return -1;
+    }
+    return 0;
+}
+
+/* H-009: a DHCP reply is believed only if it belongs to this client's
+ * transaction with the server it chose.
+ *
+ * The xid was 0x56494245 mixed with two bytes of the MAC, and dhcp_input
+ * checked only that, the magic cookie and the state. Any host on the segment
+ * could answer the DISCOVER, or send an ACK to a renewing client from nowhere,
+ * and set the address, gateway and DNS; a NAK from anyone dropped the lease.
+ *
+ * The xid is read off the captured DISCOVER, as a server or an attacker would.
+ * What a client cannot stop, and this does not pretend to: an attacker on the
+ * segment sees the broadcast DISCOVER and can answer first with an OFFER that
+ * is otherwise valid. The checks narrow the attack to that race. */
+static uint32_t inet_dhcp_msg(uint8_t *b, uint32_t xid, uint8_t type, uint32_t yiaddr,
+                              const uint8_t *chaddr, uint32_t server) {
+    uint32_t o = 240u;
+
+    memset(b, 0, 300);
+    b[0] = 2; b[1] = 1; b[2] = 6;
+    inet_wr32(b + 4, xid);
+    inet_wr32(b + 16, yiaddr);
+    memcpy(b + 28, chaddr, 6);
+    inet_wr32(b + 236, 0x63825363u);
+    b[o++] = 53; b[o++] = 1; b[o++] = type;
+    if (server != 0u) {
+        b[o++] = 54; b[o++] = 4; inet_wr32(b + o, server); o += 4;
+    }
+    b[o++] = 1; b[o++] = 4; inet_wr32(b + o, 0xFFFFFF00u); o += 4;
+    b[o++] = 3; b[o++] = 4; inet_wr32(b + o, 0x0A000202u); o += 4;
+    b[o++] = 255;
+    return o;
+}
+
+static uint32_t inet_dhcp_start_xid(vibeos_inet_t *net, inet_capture_t *cap,
+                                    uint64_t k0, uint64_t k1) {
+    memset(cap, 0, sizeof(*cap));
+    if (vibeos_inet_init(net, inet_test_local_mac, inet_capture_tx, cap) != 0) {
+        return 0;
+    }
+    vibeos_inet_set_secret(net, k0, k1);
+    net->now_ms = 5000u;
+    cap->count = 0;
+    if (vibeos_inet_dhcp_start(net) != 0 || cap->count != 1u) {
+        return 0;
+    }
+    if (inet_rd16(cap->frame[0] + 14 + 20 + 2) != 67u) {
+        return 0;   /* not the DISCOVER */
+    }
+    return inet_rd32(cap->frame[0] + 14 + 20 + 8 + 4);
+}
+
+static int test_inet_dhcp_reply_must_match_transaction(void) {
+    static vibeos_inet_t net;
+    static inet_capture_t cap;
+    static const uint8_t other_mac[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x99};
+    uint8_t b[300];
+    uint32_t n, xid, xid2;
+    const uint32_t srv = 0x0A000202u, rogue = 0x0A000299u;
+
+    xid2 = inet_dhcp_start_xid(&net, &cap, 0xFEDCBA9876543210ull, 0x8877665544332211ull);
+    xid = inet_dhcp_start_xid(&net, &cap, 0x0123456789ABCDEFull, 0x1122334455667788ull);
+    if (xid == 0u || xid2 == 0u || xid == xid2) {
+        return -1;   /* the xid must depend on the secret */
+    }
+
+    /* OFFERs that are not for this client, not from a server port, or name no
+     * server: ignored. */
+    n = inet_dhcp_msg(b, xid, 2, 0x0A00020Fu, other_mac, srv);
+    inet_deliver_udp(&net, srv, 67, 68, b, n);
+    if (net.dhcp_state != 1u) {
+        return -1;
+    }
+    n = inet_dhcp_msg(b, xid, 2, 0x0A00020Fu, inet_test_local_mac, srv);
+    inet_deliver_udp(&net, srv, 5555, 68, b, n);
+    if (net.dhcp_state != 1u) {
+        return -1;
+    }
+    n = inet_dhcp_msg(b, xid, 2, 0x0A00020Fu, inet_test_local_mac, 0u);
+    inet_deliver_udp(&net, srv, 67, 68, b, n);
+    if (net.dhcp_state != 1u) {
+        return -1;
+    }
+
+    /* The genuine OFFER. */
+    n = inet_dhcp_msg(b, xid, 2, 0x0A00020Fu, inet_test_local_mac, srv);
+    inet_deliver_udp(&net, srv, 67, 68, b, n);
+    if (net.dhcp_state != 2u) {
+        return -1;
+    }
+
+    /* An ACK from a server that was not chosen, and one for an address that was
+     * not offered: neither binds. */
+    n = inet_dhcp_msg(b, xid, 5, 0x0A00020Fu, inet_test_local_mac, rogue);
+    inet_deliver_udp(&net, rogue, 67, 68, b, n);
+    if (vibeos_inet_dhcp_bound(&net)) {
+        return -1;
+    }
+    n = inet_dhcp_msg(b, xid, 5, 0x0A000263u, inet_test_local_mac, srv);
+    inet_deliver_udp(&net, srv, 67, 68, b, n);
+    if (vibeos_inet_dhcp_bound(&net)) {
+        return -1;
+    }
+
+    /* The genuine ACK. */
+    n = inet_dhcp_msg(b, xid, 5, 0x0A00020Fu, inet_test_local_mac, srv);
+    inet_deliver_udp(&net, srv, 67, 68, b, n);
+    if (!vibeos_inet_dhcp_bound(&net) || net.ip != 0x0A00020Fu) {
+        return -1;
+    }
+
+    /* A NAK from somebody else must not drop the lease. */
+    n = inet_dhcp_msg(b, xid, 6, 0u, inet_test_local_mac, rogue);
+    inet_deliver_udp(&net, rogue, 67, 68, b, n);
+    if (!vibeos_inet_dhcp_bound(&net) || net.ip != 0x0A00020Fu) {
         return -1;
     }
     return 0;
@@ -8448,6 +8572,7 @@ int main(void) {
     RUN_TEST(test_inet_tcp_rst_needs_sequence);
     RUN_TEST(test_inet_tcp_isn_depends_on_secret);
     RUN_TEST(test_inet_dns_reply_must_match_query);
+    RUN_TEST(test_inet_dhcp_reply_must_match_transaction);
     RUN_TEST(test_inet_tcp_close_reclaims_socket);
     RUN_TEST(test_inet_dhcp_lease_lifecycle);
     RUN_TEST(test_inet_dns_timeout_and_negative_cache);

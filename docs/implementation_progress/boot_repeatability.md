@@ -608,3 +608,18 @@ One slip on the way, recorded because the file already warns about it: the
 first build of the probe had a syntax error, `.c5red.sh` printed `build-rc=1`
 and booted anyway, and twelve boots measured the previous kernel. It stops on a
 failed build now, and checks that the kernel image is newer than `arch_hw.c`.
+
+## The four-worker family recurred after the exit-window fix (2026-09-11)
+
+The section above said the exit-window fix was not yet shown to end this family.
+It did not end it. Boot 7 of the series that verified H-009 (`.boot-evidence/fail-20260911-154006-boot7.log`)
+has the whole signature: THREADS after `THREADS_STAGE1_OK`, the unhandled write
+at `rip=0x405b72` in musl's `start`, then "this task's stack is the free-page
+poison" and the machine stopped. `exit_switch_irq_on` was zero on that kernel.
+
+So the window was a real defect and stays closed, and it was not the cause of
+this family - or not the only cause. What is still known about the mechanism:
+a new thread's first instruction finds a return address where its argument
+should be; no live sibling shares its stack frame; once, an initial context was
+re-entered without the thread crashing. The family is open again in the review
+tracker.

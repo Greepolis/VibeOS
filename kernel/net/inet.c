@@ -703,11 +703,32 @@ static void dhcp_send(vibeos_inet_t *net, uint8_t msg_type, uint32_t req, uint32
     net->dhcp_retry_ms = net->now_ms + 1000ull;
 }
 
+/* A new DHCP transaction id, from the stack secret over the MAC, the previous
+ * id and the time (H-009). It was 0x56494245 mixed with two bytes of the MAC:
+ * the same for this machine on every boot and computable by anyone who had
+ * seen its address. A hidden xid does not stop an attacker on the segment, who
+ * sees the broadcast DISCOVER - it stops everyone else. */
+static uint32_t dhcp_new_xid(const vibeos_inet_t *net) {
+    uint8_t m[18];
+    uint32_t i;
+
+    for (i = 0; i < 6u; i++) {
+        m[i] = net->mac[i];
+    }
+    for (i = 0; i < 4u; i++) {
+        m[6u + i] = (uint8_t)(net->dhcp_xid >> (8u * i));
+    }
+    for (i = 0; i < 8u; i++) {
+        m[10u + i] = (uint8_t)(net->now_ms >> (8u * i));
+    }
+    return (uint32_t)siphash24(net->secret[0], net->secret[1], m, 18u);
+}
+
 int vibeos_inet_dhcp_start(vibeos_inet_t *net) {
     if (!net) {
         return -VIBEOS_INET_EINVAL;
     }
-    net->dhcp_xid = 0x56494245u ^ ((uint32_t)net->mac[4] << 8) ^ net->mac[5];
+    net->dhcp_xid = dhcp_new_xid(net);
     net->dhcp_state = 1;
     net->ip = 0;
     net->netmask = 0;
@@ -720,14 +741,35 @@ int vibeos_inet_dhcp_bound(const vibeos_inet_t *net) {
     return (net && net->dhcp_state == 3u) ? 1 : 0;
 }
 
-static void dhcp_input(vibeos_inet_t *net, const uint8_t *b, uint32_t len) {
+/* A DHCP reply is believed only if it belongs to this client's transaction with
+ * the server it is dealing with (H-009).
+ *
+ * This checked the xid - which was predictable - the cookie and the state, and
+ * nothing else: any host that could put a datagram on the segment set the
+ * address, gateway and DNS, or dropped the lease with a NAK. Now:
+ *   - from the server port, a reply, carrying this client's hardware address;
+ *   - an OFFER only while discovering, and only naming its server;
+ *   - the ACK to a REQUEST only from the server chosen, for the address offered;
+ *   - a renewal ACK from the server holding the lease (any server while
+ *     rebinding, as RFC 2131 has it), and only for the address in use;
+ *   - a NAK only from the server being dealt with.
+ * What remains is what DHCP cannot close without authentication: an attacker on
+ * the segment answering the broadcast DISCOVER first with a well-formed OFFER. */
+static void dhcp_input(vibeos_inet_t *net, uint16_t sport, const uint8_t *b, uint32_t len) {
     uint32_t o = 240u;
     uint8_t msg_type = 0;
     uint32_t mask = 0, router = 0, dns = 0, server = 0;
     uint32_t lease = 0, t1 = 0, t2 = 0;
+    uint32_t i;
 
-    if (len < 241u || b[0] != 2u || rd32(b + 4) != net->dhcp_xid) {
+    if (sport != DHCP_SERVER_PORT || len < 241u || b[0] != 2u ||
+        rd32(b + 4) != net->dhcp_xid) {
         return;
+    }
+    for (i = 0; i < 6u; i++) {
+        if (b[28u + i] != net->mac[i]) {
+            return;   /* chaddr: an answer to somebody else */
+        }
     }
     if (rd32(b + 236) != 0x63825363u) {
         return;
@@ -760,14 +802,19 @@ static void dhcp_input(vibeos_inet_t *net, const uint8_t *b, uint32_t len) {
         o += 2u + olen;
     }
 
-    if (msg_type == 2u && net->dhcp_state == 1u) {          /* OFFER */
+    if (msg_type == 2u && net->dhcp_state == 1u && server != 0u) {   /* OFFER */
         net->dhcp_offer_ip = rd32(b + 16);                  /* yiaddr */
         net->dhcp_server = server;
         net->dhcp_state = 2;
         dhcp_send(net, 3 /* REQUEST */, net->dhcp_offer_ip, server);
-    } else if (msg_type == 5u &&
-               (net->dhcp_state == 2u || net->dhcp_state == 4u || net->dhcp_state == 5u)) {
-        /* ACK: a fresh lease, or a renewal of the one we hold. */
+    } else if (msg_type == 5u && server != 0u &&
+               ((net->dhcp_state == 2u && server == net->dhcp_server &&
+                 rd32(b + 16) == net->dhcp_offer_ip) ||
+                (net->dhcp_state == 4u && server == net->dhcp_server &&
+                 rd32(b + 16) == net->ip) ||
+                (net->dhcp_state == 5u && rd32(b + 16) == net->ip))) {
+        /* ACK: a fresh lease, or a renewal of the one we hold - each from the
+         * server it may come from, for the address it may name. */
         uint32_t yiaddr = rd32(b + 16);
         if (net->dhcp_state != 2u) {
             net->dhcp_renewals++;
@@ -800,7 +847,8 @@ static void dhcp_input(vibeos_inet_t *net, const uint8_t *b, uint32_t len) {
         net->dhcp_t2_ms = net->now_ms + (uint64_t)t2 * 1000ull;
         net->dhcp_expire_ms = net->now_ms + (uint64_t)net->dhcp_lease_secs * 1000ull;
         net->dhcp_state = 3;
-    } else if (msg_type == 6u && net->dhcp_state != 0u) {   /* NAK */
+    } else if (msg_type == 6u && net->dhcp_state != 0u &&
+               (net->dhcp_state == 1u || server == net->dhcp_server)) {   /* NAK */
         /* The server refused: drop everything and start over rather than keep
          * using an address it does not agree we hold. */
         net->ip = 0;
@@ -808,6 +856,7 @@ static void dhcp_input(vibeos_inet_t *net, const uint8_t *b, uint32_t len) {
         net->gateway = 0;
         net->dhcp_offer_ip = 0;
         net->dhcp_state = 1;
+        net->dhcp_xid = dhcp_new_xid(net);   /* a new transaction */
         dhcp_send(net, 1 /* DISCOVER */, 0, 0);
     }
 }
@@ -1157,7 +1206,7 @@ static void udp_input(vibeos_inet_t *net, uint32_t src, uint32_t dst,
     dlen -= 8u;
 
     if (dport == DHCP_LOCAL_PORT) {
-        dhcp_input(net, data, dlen);
+        dhcp_input(net, sport, data, dlen);
         return;
     }
     if (net->dns_pending && dport == net->dns_port) {

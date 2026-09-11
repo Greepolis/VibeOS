@@ -146,6 +146,42 @@ there. The sources were touched and the run repeated.
 
 Host tests green, `check.sh all` green, twelve boots: 12 pass, 0 fail.
 
+### H-009: a DHCP reply from anybody (fixed 2026-09-11)
+
+The xid was `0x56494245` mixed with two bytes of the MAC, and `dhcp_input`
+checked it, the magic cookie and the state - nothing else. Any host that could
+put a datagram on the segment could answer the DISCOVER, send an ACK to a
+renewing client out of nowhere, and set the address, gateway and DNS. Worse than
+reported: a NAK from anybody, in any state, dropped the lease and restarted
+discovery - one datagram took the machine off the network.
+
+Now the xid comes from the stack secret, anew for each transaction, and a reply
+must come from the server port, be a reply, and carry this client's hardware
+address. An OFFER is taken only while discovering and only if it names its
+server. The ACK to a REQUEST must come from the server chosen and give the
+address offered; a renewal ACK must come from the server holding the lease
+(any server while rebinding, as RFC 2131 allows) and give the address in use. A
+NAK must come from the server being dealt with.
+
+What no client can close without authentication, and this does not claim to:
+an attacker on the same segment sees the broadcast DISCOVER - xid included - and
+can answer first with an OFFER that passes every check. The change narrows the
+attack to that race and removes it for anyone not on the segment.
+
+`test_inet_dhcp_reply_must_match_transaction` reads the xid off the captured
+DISCOVER. It was run red twice: as written, where it fails at the first check
+because two stacks with different secrets produced the same xid; and with that
+check switched off, where it still fails, on an OFFER addressed to another
+client being accepted - so the transaction checks can fail on their own. Two
+existing tests gained what RFC 2131 requires of a server and they had left out:
+the client's hardware address in every reply, and the server identifier in the
+ACK. They pass on the old code as well.
+
+Host tests green, `check.sh all` green, and the gate's DHCP lease came up as
+before (`ip=10.0.2.15 gw=10.0.2.2 dns=10.0.2.3`). Twelve boots: 11 pass, 1 fail
+- the THREADS four-worker crash family, nothing to do with DHCP; recorded in
+boot_repeatability.md because it recurred after the exit-window fix.
+
 ## Deferred: Waves 2-5 (not started)
 These are recorded so the scope is explicit, not because work has begun. Status
 stays `In Progress` until the Wave 5 gates pass, per the plan's own rule.

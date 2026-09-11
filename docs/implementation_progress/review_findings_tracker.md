@@ -33,7 +33,7 @@ Earlier reviews are closed and written up: the sixth
 | M-005 | M | TCP RST accepted without a sequence check; also closed listeners | fixed `b4a65ad` | RFC 5961 3.2; host test red first |
 | M-006 | M | mmap `len + 0xFFF` wraps to zero pages; munmap/mprotect aligned end wraps | fixed `a40aab0` | red in the ABI self-test, split-verified |
 | H-008 | H | TCP ISN = clock (`0x1000 + now_ms`, listen `0x2000 + now_ms`) | fixed (commit "net: TCP initial sequence numbers come from a secret") | RFC 6528 with SipHash over one stack secret; host test red first. **The secret is weak under QEMU TCG**: no RDRAND, so it comes from the TSC mix and the boot log says so. Real entropy is its own open item |
-| H-009 | H | DHCP: predictable xid; ACK not bound to the chosen server, offer or chaddr; renewals from anyone | **verified-open** | after H-008 (shares the secret). Client can narrow, not close: DISCOVER is broadcast |
+| H-009 | H | DHCP: predictable xid; ACK not bound to the chosen server, offer or chaddr; renewals from anyone | fixed (commit "net: a DHCP reply belongs to this client's transaction with its server") | xid from the stack secret; server port, chaddr, server id; ACK only from the chosen server for the offered address, renewals for the address in use; **a NAK from anyone used to drop the lease** and now must come from the server. Red twice (as written, and with the xid check off). Not closable by a client: an on-segment attacker answering the broadcast DISCOVER first |
 | M-007 | M | DNS: predictable id, fixed source port 0xC353, no server/port/question check | fixed (commit "net: a DNS answer is believed only if it answers the query sent") | server, port 53, response bit, id and the single question checked; id and port from the stack secret per query. Host test red first - **the first version was red for the wrong reason** (it captured an ARP request) and was corrected and re-proved red at the right step |
 | H-010 | H | read() on a pipe, recv(), recvfrom() validate the buffer, block, then write it after wake-up; a sibling's munmap makes it a ring-0 fault -> panic | **verified-open** | `hw_pipe_read` (write inside the blocking loop), `hw_net_recv`, `hw_sys_recvfrom`; **also the console read** (same shape, not in the report). Same class as H-003: needs fault-safe copy_to/from_user |
 | M-008 | M | any ARP overwrites the cache entry, gateway included | **verified-open** | `arp_input` calls `arp_insert` unconditionally. ARP has no authentication: limit unsolicited updates, protect the gateway entry |
@@ -51,7 +51,8 @@ closed), and `ARCH_SET_GS` is refused because `%gs` holds per-CPU kernel state.
 
 | What | Status | Evidence / next step |
 |---|---|---|
-| hw_task_exit makes `next` current with interrupts possibly on; a timer there saves the dying task's kernel frame as next's context | fixed (commit "core: exit switches tasks with interrupts off") | must-be-zero counter `exit_switch_irq_on` red at 4 per boot, 0 with `cli`; twelve boots 12/12. Whether it was the cause of the four-worker crash family and of the running->running transition is **not yet shown** - that family ran about one boot in eight to ten. [boot_repeatability.md](boot_repeatability.md) |
+| hw_task_exit makes `next` current with interrupts possibly on; a timer there saves the dying task's kernel frame as next's context | fixed (commit "core: exit switches tasks with interrupts off") | must-be-zero counter `exit_switch_irq_on` red at 4 per boot, 0 with `cli`; twelve boots 12/12. **It was not the cause of the four-worker crash family, or not the only one: the same signature recurred after the fix** (`.boot-evidence/fail-20260911-154006-boot7.log`, rip `0x405b72`, free-page-poison panic). The window was real and stays closed; the family is open again. [boot_repeatability.md](boot_repeatability.md) |
+| THREADS four-worker crash family (new thread faults in musl `start`, stack is the free-page poison) | **open again** | recurred after the exit-window fix; see the row above and [boot_repeatability.md](boot_repeatability.md). The probes so far: no stack frame shared between live siblings; one initial-context re-entry that did not crash |
 | Boot gate hung 48 minutes on a guest that had panicked | **open** | `wait_for` and `wedge_report` are both bounded; cause unknown. Wedge report kept in `.boot-evidence/wedge-probe-boot5.txt`, boot log lost |
 | `rmap_mismatch=1` with `rmap_audit_torn=0` on a Release boot | **open** | by CLAUDE.md's rule a real mismatch, not the detector. `.boot-evidence/probe-20260911-133143-boot3.log` |
 
@@ -63,7 +64,7 @@ dropped:
 0. H-011 is done, and its audit found the read-path row above - to be fixed with
    M-009 and M-010 as one filesystem-bounds change.
 0b. H-012 is done.
-1. H-009 (on the stack secret H-008 added). The exit-window fix, H-008 and M-007 are done.
+1. The network findings H-008, M-007 and H-009 are done, and so is the exit-window fix - which did not end the four-worker crash family; that family is open again.
 2. **H-010 + H-003 together**: a fault-safe user copy is the one fix for both,
    and it is also C5's "real exception table" item. The first attempt failed on
    `&&label` losing its base; see uaccess_recovery_open.md before retrying.
