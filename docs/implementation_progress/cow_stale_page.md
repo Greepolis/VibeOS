@@ -334,3 +334,24 @@ The *other* defect is untouched by all of this: a frame released while an
 address space still maps it, seen as `mappers=2 owners=1` at a destroy and as a
 page of zeroes handed to a live process. That one is real, it is the kernel's,
 and it is what the memory-manager rewrite exists for.
+
+## Seen again, 2026-09-11
+
+Boot 3 of the twelve-boot series that verified interruptible waits:
+
+```
+[MM] FREE_WHILE_MAPPED frame=0x22ba000 still mapped by pid=0x14
+     during destroy mappers=0x2 owners=0x1 owners_now=0x1 at_va=0x80003ff000
+```
+
+The same path and the same counters as the signature above, during svc_bomb's
+fork storm. Not attributed to that change: it touched blocking waits, not fork,
+reference counts or teardown. The rate on that series - one in twelve - says
+nothing either way against the one in sixteen recorded here.
+
+What the recurrence adds is `at_va`, which the original did not carry. The frame
+is the top page of a native program's stack, in the 0x8000000000 window. That
+narrows "a page-table entry written without going through map_raw" to whatever
+builds or copies a native program's stack. It is a direction to instrument, not
+a finding.
+

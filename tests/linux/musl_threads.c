@@ -177,6 +177,56 @@ static void *tkill_worker(void *arg)
     return 0;
 }
 
+/* C5_EXIT_GROUP_BLOCKED: exit_group must end a sibling that is blocked in
+ * the kernel, not only one running in user space. */
+static pthread_mutex_t never_m = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t never_c = PTHREAD_COND_INITIALIZER;
+
+static void *exit_group_later(void *arg)
+{
+    int n;
+
+    (void)arg;
+    for (n = 0; n < 20; n++) {      /* let main reach its wait first */
+        sched_yield();
+    }
+    syscall(SYS_exit_group, 42);
+    return 0;
+}
+
+/* report_child, but it cannot hang: on a kernel where the child never ends,
+ * a blocking waitpid would stall this program and every later line of the
+ * boot script. Polls with WNOHANG, which is why this stage came after the
+ * WNOHANG fix and not before it. */
+static void report_child_bounded(const char *stage, pid_t pid, int want_code,
+                                 int yields)
+{
+    int status = 0, n;
+
+    if (pid < 0) {
+        printf("THREADS_%s_FAIL: fork\n", stage);
+        fflush(stdout);
+        return;
+    }
+    for (n = 0; n < yields; n++) {
+        if (waitpid(pid, &status, WNOHANG) == pid) {
+            break;
+        }
+        sched_yield();
+    }
+    if (n == yields) {
+        printf("THREADS_%s_FAIL: the process never ended\n", stage);
+    } else if (WIFSIGNALED(status)) {
+        printf("THREADS_%s_FAIL: killed by signal %d\n", stage, WTERMSIG(status));
+    } else if (WEXITSTATUS(status) != want_code) {
+        printf("THREADS_%s_FAIL: exited %d, expected %d\n", stage,
+               WEXITSTATUS(status), want_code);
+    } else {
+        printf("THREADS_%s_OK\n", stage);
+    }
+    fflush(stdout);
+}
+
 int main(void)
 {
     pthread_t t;
@@ -380,6 +430,29 @@ int main(void)
             }
         }
         fflush(stdout);
+    }
+
+    /* C5_EXIT_GROUP_BLOCKED. The leader has to be the blocked one. If the
+     * caller of exit_group were the leader it would exit 42 itself, the parent
+     * would reap 42, and a stuck worker would go unnoticed - a stage that
+     * passes on the defect. And the wait is a condition nobody signals, not
+     * pthread_join: the exiting thread's own clear_child_tid would wake a join
+     * and hide the defect. */
+    {
+        pid_t pid = fork();
+
+        if (pid == 0) {
+            pthread_t lt;
+
+            if (pthread_create(&lt, 0, exit_group_later, 0) != 0) {
+                _exit(3);
+            }
+            pthread_mutex_lock(&never_m);
+            for (;;) {
+                pthread_cond_wait(&never_c, &never_m);
+            }
+        }
+        report_child_bounded("C5_EXIT_GROUP_BLOCKED", pid, 42, 400);
     }
     return 0;
 }

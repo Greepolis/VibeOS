@@ -131,3 +131,34 @@ case 6: a thread id addresses nothing
   and green, after the fix: THREADS_C5_TKILL_OK on the first build - both
            pthread_kill(thread, 0) and raise() inside the thread;
            check.sh all VERDICT=green; twelve boots: 11 pass, 1 fail.
+
+---
+
+case 7: a blocked sibling survives exit_group
+  test:    THREADS_C5_EXIT_GROUP_BLOCKED
+  reason:  thread_blocked_sibling_survived_exit_group
+  defect:  SIGKILL is delivered on the way back to ring 3, and no blocking wait
+           in the kernel reads sig_pending - futex, pipes, waitpid and console
+           read all go straight back to sleep when a signal wakes them. So
+           exit_group ends a sibling running in user space, and one in
+           pthread_join on the exiting thread (whose clear_child_tid wakes it),
+           but not one waiting on anything else.
+  expect on the defect: THREADS_C5_EXIT_GROUP_BLOCKED_FAIL: the process never
+           ended - and the stuck child is left holding a task slot for the rest
+           of that boot, which the fix removes.
+  why the leader and not a worker: a blocked worker with the leader calling
+           exit_group lets the leader exit 42 and be reaped; the stage would
+           pass on the defect.
+  why bounded: polled with WNOHANG, so the stage came after the WNOHANG fix.
+  ran:     yes, against the kernel before the fix, and red:
+               THREADS_C5_EXIT_GROUP_BLOCKED_FAIL: the process never ended
+           The prediction about the stuck child was half right. It disturbed
+           no later stage - the boot script ran to VIBEOS_SELFTEST_DONE and init
+           reported every service - but the kernel only leaves userland once
+           every user task has retired, and this one never would. So the gate
+           reported missing:CLI_READY, and the named failure was only in the
+           log: missing: reasons are raised while driving the CLI, before the
+           invariants are evaluated. Worth knowing for every red stage: a
+           defect that leaves a process alive hides its own diagnosis.
+  and green, after the fix: THREADS_C5_EXIT_GROUP_BLOCKED_OK;
+           check.sh all VERDICT=green; twelve boots: 11 pass, 1 fail.

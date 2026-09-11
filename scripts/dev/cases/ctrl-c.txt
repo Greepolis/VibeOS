@@ -15,3 +15,10 @@
 # The case was written, run, and came back NOT RED. It is recorded here rather
 # than deleted, because the next person to add it will otherwise rediscover
 # the same thing by hand.
+
+# 2026-09-11: delivery of a signal to a task blocked in the kernel has now been
+# observed, though not through Ctrl-C. THREADS_C5_EXIT_GROUP_BLOCKED leaves the
+# leader in a futex wait nobody will end and kills it from a sibling; it was red
+# until blocking waits started asking hw_signal_interrupts, and every one of them
+# had ignored signals until then - console read included. So the absence this
+# file records was not only a gap in the gate: there was nothing to observe.

@@ -175,6 +175,21 @@ core, and reading it afterwards could copy a stranger's dispositions.
   as `tkill(gettid())` - failed in every thread but the first. Both had red
   stages first (`waited for the child to exit`, `pthread_kill on a live thread
   returned 3`); both green on the first build; twelve boots: 11 pass, 1 fail.
+
+  **And the four waits, closed after that.** Every blocking wait asks
+  `hw_signal_interrupts` now. Three decisions carry it, each forced by something
+  read rather than assumed. `hw_task_set_state` takes no lock and
+  `hw_signal_raise` wakes a task without `g_sched_lock`, so each wait sets BLOCKED
+  **first** and asks second - the other order has an interleaving in which the
+  signal lands between the question and the block, raise sees a running task and
+  wakes nothing, and the task parks with the signal pending. `futex_wait` decides
+  "woken or interrupted" under `g_futex_lock`, or a concurrent FUTEX_WAKE would
+  be counted as delivered to a waiter that returned EINTR and the thread it was
+  meant for would never be told. And a signal that would be discarded - ignored,
+  or a default that ignores - interrupts nothing, because the native shell
+  ignores wait4's result and a spurious EINTR would stop it waiting for its
+  child; SIGCHLD is never raised today, which is exactly why that cannot be left
+  to chance. Red first (`THREADS_C5_EXIT_GROUP_BLOCKED_FAIL: the process never ended`), green after; twelve boots: 11 pass, 1 fail.
 - **No must-be-zero counter for the new structure.** One was designed - a
   reference dropped below zero - and not added, because a counter nothing reads is
   this project's most repeated defect, and reading it means touching the portable

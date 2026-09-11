@@ -35,6 +35,7 @@
 #define VIBEOS_ENOENT 2
 #define VIBEOS_ECHILD 10
 #define VIBEOS_EAGAIN 11
+#define VIBEOS_EINTR  4
 #define VIBEOS_ENOTTY 25
 #define VIBEOS_EPERM  1
 #define VIBEOS_ESRCH  3

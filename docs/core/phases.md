@@ -275,9 +275,9 @@ So C5 now has a **step 0**, done first: process state is referenced, not copied
 tests were written before the kernel was touched and failed on it. The move below
 is unchanged and still comes after C4.
 
-Still open inside step 0, in the order they should be taken (WNOHANG and tkill are
-closed): no blocking wait notices a signal; fork is not atomic against its own
-process's other threads (all four mm calls, not only brk); exec in a threaded process does not end the siblings;
+Still open inside step 0, in the order they should be taken (WNOHANG, tkill and
+the blocking waits are closed): fork is not atomic against its own process's other
+threads (all four mm calls, not only brk); exec in a threaded process does not end the siblings;
 a leader that exits before its threads can be reaped early; descriptors are still
 per thread.
 

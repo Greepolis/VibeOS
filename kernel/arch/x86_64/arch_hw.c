@@ -784,6 +784,7 @@ static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code,
  * back to ring 3 rather than at the next syscall. */
 int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame);
 static int hw_signal_raise(int task_index, uint32_t sig);
+static int hw_signal_interrupts(int task);
 /* Defined with the task code, because it needs the signal numbers that are
  * #defined a thousand lines below here and C only reads the file once. */
 static void hw_panic_cpu_summary(void);   /* defined with the task table */
@@ -5948,7 +5949,12 @@ static long hw_pipe_read(hw_fd_t *f, uint64_t buf, uint64_t len) {
             return 0;   /* end of file: nobody can ever write again */
         }
         /* Nothing yet, and somebody could still write. Park instead of
-         * spinning, so the writer actually gets a chance to run. */
+         * spinning, so the writer actually gets a chance to run - unless a
+         * signal needs acting on. This wait never marks the task BLOCKED, so
+         * the timer returns it here each tick and the check cannot be missed. */
+        if (g_current_task >= 0 && hw_signal_interrupts(g_current_task)) {
+            return -VIBEOS_EINTR;
+        }
         hw_sched_point("block");
         __asm__ __volatile__("sti; hlt" ::: "memory");
     }
@@ -5982,6 +5988,12 @@ static long hw_pipe_write(hw_fd_t *f, uint64_t buf, uint64_t len) {
         if (written > before) {
             hw_keyboard_wake();   /* a blocked reader now has data */
             continue;
+        }
+        /* Full, and a signal needs acting on: report what was written, or
+         * EINTR if nothing was. Same shape as the read side, and the same
+         * reason the check cannot be missed. */
+        if (g_current_task >= 0 && hw_signal_interrupts(g_current_task)) {
+            return written > 0u ? (long)written : -VIBEOS_EINTR;
         }
         hw_sched_point("block");
         __asm__ __volatile__("sti; hlt" ::: "memory");
@@ -6336,6 +6348,16 @@ static long hw_sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
         if (g_current_task >= 0) {
             g_tasks[g_current_task].wait_input = 1;
             (void)hw_task_set_state(g_current_task, HW_TASK_BLOCKED, __func__);
+            /* Blocked first and asked second, so a signal raised in between
+             * finds the task BLOCKED and wakes it. hw_signal_raise already
+             * cleared wait_input for this, and nothing ever read it here. */
+            if (hw_signal_interrupts(g_current_task)) {
+                g_tasks[g_current_task].wait_input = 0;
+                (void)hw_task_set_state(g_current_task, HW_TASK_READY, __func__);
+                HW_TASK_MARK(g_current_task, ready_by, "read_interrupted");
+                __asm__ __volatile__("sti");
+                return -VIBEOS_EINTR;
+            }
         }
         hw_sched_point("block");
         __asm__ __volatile__("sti; hlt" ::: "memory");
@@ -7832,8 +7854,17 @@ static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr,
             __asm__ __volatile__("sti");
             return 0;
         }
-        /* Block until a child exit sets us READY again (see hw_task_exit). */
+        /* Block until a child exit sets us READY again (see hw_task_exit) -
+         * or until a signal needs acting on. Blocked first, then asked, still
+         * under the lock, for the same reason as the futex and console waits. */
         (void)hw_task_set_state(g_current_task, HW_TASK_BLOCKED, __func__);
+        if (hw_signal_interrupts(g_current_task)) {
+            (void)hw_task_set_state(g_current_task, HW_TASK_READY, __func__);
+            HW_TASK_MARK(g_current_task, ready_by, "waitpid_interrupted");
+            hw_spin_unlock(&g_sched_lock);
+            __asm__ __volatile__("sti");
+            return -VIBEOS_EINTR;
+        }
         hw_spin_unlock(&g_sched_lock);
         hw_sched_point("block");
         __asm__ __volatile__("sti; hlt" ::: "memory");
@@ -8586,6 +8617,60 @@ int hw_signal_default_kills(uint32_t sig) {
         default:
             return 1;
     }
+}
+
+/* Should a task waiting in the kernel stop waiting?
+ *
+ * No wait here asked this, and a signal is only delivered on the way back to
+ * user space - so a task blocked in a futex, on a pipe, in waitpid or in a
+ * console read was moved to READY by hw_signal_raise, ran, and went straight
+ * back to sleep. kill -9 could not end a process waiting on a pipe, and
+ * exit_group could not end a sibling waiting on anything but the exiting
+ * thread's own join. The Ctrl-C case file had already recorded that delivery
+ * to a blocked process had never been observed by any test.
+ *
+ * A signal interrupts a wait only if acting on it does something: SIGKILL and
+ * SIGSTOP always, and any other unblocked one unless it would be discarded -
+ * ignored, or left at a default that ignores. A wait interrupted by a signal
+ * that is then thrown away is a spurious EINTR, and a caller that ignores its
+ * wait4 result - the native shell does - would stop waiting for its child.
+ * SIGCHLD is never raised today, which is exactly why that case must not be
+ * left to chance. */
+static int hw_signal_interrupts(int task) {
+    const hw_task_t *t;
+    const hw_procstate_t *ps;
+    uint64_t ready;
+    uint32_t sig;
+
+    if (task < 0 || task >= VIBEOS_HW_MAX_TASKS) {
+        return 0;
+    }
+    t = &g_tasks[task];
+    ready = (t->sig_pending & ~t->sig_blocked) |
+            (t->sig_pending & ((1ull << VIBEOS_SIGKILL) | (1ull << VIBEOS_SIGSTOP)));
+    if (ready == 0u) {
+        return 0;
+    }
+    ps = t->ps;
+    for (sig = 1; sig < VIBEOS_HW_NSIG; sig++) {
+        uint64_t handler;
+
+        if ((ready & (1ull << sig)) == 0u) {
+            continue;
+        }
+        if (sig == VIBEOS_SIGKILL || sig == VIBEOS_SIGSTOP) {
+            return 1;
+        }
+        handler = ps ? ps->sig_handler[sig] : SIG_DFL_ADDR;
+        if (handler == SIG_IGN_ADDR) {
+            continue;
+        }
+        if (handler == SIG_DFL_ADDR && !hw_signal_default_kills(sig)) {
+            continue;
+        }
+        return 1;
+    }
+    return 0;
 }
 
 /* Raise a signal against a task. Does not deliver it: delivery happens on the
@@ -9449,16 +9534,50 @@ static long hw_futex_wait(uint64_t addr, uint32_t expected) {
 
     /* Yield until somebody wakes us. The scheduler runs from the timer, so
      * this is a wait and not a spin: the core is given away on the first
-     * interrupt and this task is not runnable again until a wake says so. */
+     * interrupt and this task is not runnable again until a wake says so.
+     *
+     * Or until a signal that must be acted on is pending. The task was made
+     * BLOCKED before this loop, so a signal raised after that finds it BLOCKED
+     * and makes it runnable, and a signal raised before it is seen by the check
+     * on the first pass. Checking before blocking would leave a window in which
+     * neither happens. */
     while (!g_futex_waiters[slot].woken) {
+        if (hw_signal_interrupts(me)) {
+            break;
+        }
         hw_sched_point("block");
         __asm__ __volatile__("sti; hlt" ::: "memory");
     }
 
-    hw_spin_lock_named(&g_futex_lock, __func__);
-    g_futex_waiters[slot].addr = 0;
-    g_futex_waiters[slot].used = 0;   /* released by its owner, and only here */
-    hw_spin_unlock(&g_futex_lock);
+    {
+        int interrupted;
+
+        /* Woken or interrupted is decided under the lock a waker takes. Read
+         * outside it, a FUTEX_WAKE landing between the loop and here would count
+         * this waiter as woken while it returned EINTR - and the thread that
+         * wake was meant for would never be told. A wake that got in first
+         * wins: the call returns 0 and the signal is delivered on the way out
+         * all the same. */
+        hw_spin_lock_named(&g_futex_lock, __func__);
+        interrupted = !g_futex_waiters[slot].woken;
+        g_futex_waiters[slot].addr = 0;
+        g_futex_waiters[slot].used = 0;   /* released by its owner, and only here */
+        hw_spin_unlock(&g_futex_lock);
+        if (interrupted) {
+            /* The signal may have been raised before this task was BLOCKED, in
+             * which case nothing made it runnable again. It is running now;
+             * say so, the same transition hw_signal_raise uses. */
+            hw_spin_lock_named(&g_sched_lock, __func__);
+            if (g_tasks[me].state == HW_TASK_BLOCKED) {
+                (void)hw_task_set_state(me, HW_TASK_READY, __func__);
+                HW_TASK_MARK(me, ready_by, "futex_wait_interrupted");
+            }
+            hw_spin_unlock(&g_sched_lock);
+            hw_log(VIBEOS_LOG_DEBUG, 23u, addr, (uint64_t)g_tasks[me].pid,
+                   "futex wait: interrupted by a signal");
+            return -VIBEOS_EINTR;
+        }
+    }
     hw_log(VIBEOS_LOG_DEBUG, 23u, addr, (uint64_t)g_tasks[me].pid,
            "futex wait: woken");
     return 0;
