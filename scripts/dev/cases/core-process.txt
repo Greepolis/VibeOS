@@ -1,0 +1,86 @@
+core-process - threads that are not one process
+
+C5's first step, and the reason it came before the plan said it would. Four
+external findings and one found while reading them are one defect:
+`hw_sys_clone_thread` copies `hw_proc_t` by value (`child->proc = parent->proc`),
+so everything that belongs to a process becomes a private copy per thread.
+
+  H-004  the region list: two heads into one pool, freed nodes reused
+  H-005  exit_group ends only the calling thread
+  M-003  signal dispositions: sigaction in one thread does not reach another
+  new    the mmap cursor: two threads map at the same base, and the second
+         mapping silently replaces the first thread's pages
+  known  descriptors: copied, and the source already says so
+
+The tests are stages of tests/linux/musl_threads.c. They were written before
+the kernel was touched and each was run against the unchanged kernel first.
+
+---
+
+case 1: a thread's mapping cursor is private
+  test:    THREADS_C5_MMAP
+  reason:  thread_mmap_reused_a_base
+  expect on the defect: main's mmap returns the base the thread already used
+  ran:     yes, against the unchanged kernel, and red:
+               THREADS_C5_MMAP_FAIL: main was given the thread's base 0x80040d2000
+           Deterministic - no concurrency is needed, because the thread has
+           already exited by the time main maps. Main's cursor simply never
+           moved.
+
+---
+
+case 2: signal dispositions are per thread
+  test:    THREADS_C5_SIGACTION
+  reason:  thread_sigaction_not_shared
+  expect on the defect: the forked child dies by SIGUSR1 (10), because main
+           never saw the handler its thread installed. SIGUSR1's default
+           action here is to kill - checked in hw_signal_default_kills before
+           this was written, since a default of "ignore" would have made this
+           stage unable to fail.
+  ran:     yes, against the unchanged kernel, and red:
+               THREADS_C5_SIGACTION_FAIL: killed by signal 10
+
+---
+
+case 3: exit_group ends one thread
+  test:    THREADS_C5_EXIT_GROUP
+  reason:  thread_exit_group_left_siblings
+  expect on the defect: the child exits 7, from main finishing its bounded
+           spin, instead of 42.
+  and the wrong fix: an exit_group built by SIGKILLing the siblings reports
+           "killed by signal 9" for the leader, because waitpid builds the
+           status from the leader's exit_code and exit_signal. The stage
+           requires 42 so that fix cannot pass.
+  ran:     yes, against the unchanged kernel, and red:
+               THREADS_C5_EXIT_GROUP_FAIL: exited 7, expected 42
+
+---
+
+the run that established all three
+  One boot, build rc=0, musl_threads newer than its source, serial log newer
+  than its source - checked, because a stale THREADS.ELF prints no C5 lines and
+  would have read as three did_not_report failures proving nothing. The three
+  stages that already existed stayed OK on the same boot, which is the point:
+  they cannot see this defect.
+
+the run that turned them green
+  After hw_procstate_t: all three stages OK on the first build, then
+  check.sh all build-clang-Release VERDICT=green (rc=0, warnings=0, clang 0/0,
+  host tests pass, every check ok, 3/3 boots), then twelve boots with the
+  failure logs kept outside /tmp - 12 pass, 0 fail, tlb quarantine overflow 0
+  on every one. The three older THREADS stages stayed OK throughout.
+
+  Not re-sabotaged afterwards, deliberately: the stronger direction was already
+  shown - each stage red on the unchanged kernel, for the reason it was written
+  for - and breaking the fix again would reproduce exactly that.
+
+---
+
+case 4: a stage that prints nothing
+  reasons: threads_c5_mmap_did_not_report, threads_c5_sigaction_did_not_report,
+           threads_c5_exit_group_did_not_report
+  why:     a missing marker is a failure, not a pass. THREADS.ELF is one line
+           of a sequential boot script, so a stage that hangs would otherwise
+           read as every later command having failed - which is why every wait
+           in these stages is bounded.
+  ran:     not yet

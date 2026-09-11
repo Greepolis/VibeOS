@@ -259,9 +259,26 @@ per call and confirm the perf ratchet fires.
 **Objective.** The task table has a single definition; the arch layer keeps only
 what a context switch needs. 1,363 lines, of which most leave.
 
-**Why after C4.** It is the structure everything reaches into, so moving it
-early means every later phase edits it again. C4 settles what a process is from
-the syscall side; C5 then moves the structure once.
+**Why after C4 - and why it was taken before it.** It is the structure everything
+reaches into, so moving it early means every later phase edits it again. C4 settles
+what a process is from the syscall side; C5 then moves the structure once.
+
+That ordering assumed the structure was *shaped* right and only in the wrong
+place. It was not. Five external findings in two days - the mapping cursor, the
+region list, signal dispositions, exit_group, and descriptors - were one defect:
+`clone` copied `hw_proc_t` by value, so everything that belongs to a process was a
+private copy per thread. Moving a structure with the wrong ownership model only
+relocates the defect, and C4's handlers would have been written against it.
+
+So C5 now has a **step 0**, done first: process state is referenced, not copied
+(`hw_procstate_t`; see `implementation_progress/core_c5_process_state.md`). Its
+tests were written before the kernel was touched and failed on it. The move below
+is unchanged and still comes after C4.
+
+Still open inside step 0, in the order they should be taken: fork snapshots the
+break without holding it; exec in a threaded process does not end the siblings;
+a leader that exits before its threads can be reaped early; descriptors are still
+per thread.
 
 **Steps.** `vibeos_task_t` holds identity, state, parent, exit status,
 credentials and descriptors. `hw_task_t` keeps `ctx`, `kstack_*`, `cr3` and a

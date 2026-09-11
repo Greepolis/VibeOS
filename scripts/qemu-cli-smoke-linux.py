@@ -2149,6 +2149,34 @@ def main():
                 elif "tls=ok" not in text:
                     problems.append("thread_local_storage_shared")
 
+                # Whether the threads are one *process*. The three checks above
+                # cannot see it: every thread there is created by main and no
+                # worker touches process state, so a kernel that gives each
+                # thread a private copy of the process passes them. These
+                # stages were run against such a kernel and failed on it.
+                #
+                # A stage that printed nothing is a failure, not a pass -
+                # `in text` is the easiest way for an assertion to evaporate.
+                #
+                # Every reason is spelled out rather than assembled: the first
+                # version built the did_not_report names with an f-string, and
+                # check-assertions-covered.py cannot match a name it cannot
+                # read, so three assertions left its view on the day they were
+                # written.
+                for stage, reason, silent in (
+                        ("C5_MMAP", "thread_mmap_reused_a_base",
+                         "threads_c5_mmap_did_not_report"),
+                        ("C5_SIGACTION", "thread_sigaction_not_shared",
+                         "threads_c5_sigaction_did_not_report"),
+                        ("C5_EXIT_GROUP", "thread_exit_group_left_siblings",
+                         "threads_c5_exit_group_did_not_report")):
+                    if f"THREADS_{stage}_OK" in text:
+                        continue
+                    if f"THREADS_{stage}_FAIL" in text:
+                        problems.append(reason)
+                    else:
+                        problems.append(silent)
+
             # PID 1 is a native ring-3 init, and it is the parent of the
             # bring-up workload rather than being it. Asserted because the
             # difference is invisible from everything else in this log: the

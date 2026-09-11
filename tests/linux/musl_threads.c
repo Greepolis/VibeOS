@@ -15,9 +15,37 @@
  * The counter is asserted, not printed. "The threads ran" and "the threads ran
  * and lost no increment" are different claims, and a kernel can produce the
  * first while failing the second.
+ *
+ * Three more stages ask whether the threads belong to one *process*, which
+ * the first two cannot see: both only ever create threads from main, and no
+ * worker touches process state, so a kernel that gives each thread a private
+ * copy of the process passes them. These were written before the kernel was
+ * changed and failed on it - that is how they are known to be able to.
+ *
+ *  - C5_MMAP: a thread maps memory, then main maps memory. One process has
+ *    one mapping cursor; a thread that copied it hands main the same base,
+ *    and main's fresh pages silently replace the thread's.
+ *  - C5_SIGACTION: a thread installs a handler, then main raises the signal.
+ *    Dispositions are the process's; a private copy leaves main on the
+ *    default action, which for SIGUSR1 is to die.
+ *  - C5_EXIT_GROUP: a thread calls exit_group(42) while main keeps running.
+ *    The whole process ends and the parent sees 42 - not 7 from main
+ *    finishing on its own, and not "killed by signal 9", which is what an
+ *    exit_group built by killing the siblings would report.
+ *
+ * The last two run in a forked child, because failing them kills or strands
+ * the process that fails, and every wait in them is bounded: this program is
+ * one line of a sequential boot script, and a hang here would read as every
+ * command after it having failed.
  */
 #include <pthread.h>
+#include <signal.h>
 #include <stdio.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 static __thread int mine;   /* thread-local: the child must see its own */
 
@@ -47,6 +75,74 @@ static void *child(void *arg)
 {
     mine = (int)(long)arg;
     return (void *)(long)mine;
+}
+
+#define C5_LEN (64 * 1024)
+
+/* Map, fill, and hand the address back through join, so main can map after
+ * this thread has already advanced whatever cursor it holds. */
+static void *mmap_worker(void *arg)
+{
+    unsigned char *p;
+
+    (void)arg;
+    p = mmap(0, C5_LEN, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) {
+        return 0;
+    }
+    memset(p, 0xA5, C5_LEN);
+    return p;
+}
+
+static volatile sig_atomic_t usr1_seen;
+
+static void on_usr1(int sig)
+{
+    (void)sig;
+    usr1_seen = 1;
+}
+
+static void *sigaction_worker(void *arg)
+{
+    struct sigaction sa;
+
+    (void)arg;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_usr1;
+    sigemptyset(&sa.sa_mask);
+    return (void *)(long)sigaction(SIGUSR1, &sa, 0);
+}
+
+static volatile int exit_group_go;
+
+static void *exit_group_worker(void *arg)
+{
+    (void)arg;
+    while (!exit_group_go) {
+        sched_yield();
+    }
+    syscall(SYS_exit_group, 42);   /* the raw call: no atexit, no stdio flush */
+    return 0;
+}
+
+/* Wait for a forked stage child and say what became of it. */
+static void report_child(const char *stage, pid_t pid, int want_code)
+{
+    int status = 0;
+
+    if (pid < 0) {
+        printf("THREADS_%s_FAIL: fork\n", stage);
+    } else if (waitpid(pid, &status, 0) != pid) {
+        printf("THREADS_%s_FAIL: waitpid\n", stage);
+    } else if (WIFSIGNALED(status)) {
+        printf("THREADS_%s_FAIL: killed by signal %d\n", stage, WTERMSIG(status));
+    } else if (WEXITSTATUS(status) != want_code) {
+        printf("THREADS_%s_FAIL: exited %d, expected %d\n", stage,
+               WEXITSTATUS(status), want_code);
+    } else {
+        printf("THREADS_%s_OK\n", stage);
+    }
+    fflush(stdout);
 }
 
 int main(void)
@@ -106,6 +202,85 @@ int main(void)
         printf("THREADS_OK: %d threads, counter=%ld expected=%d tls=%s\n",
                WORKERS, counter, WORKERS * BUMPS, tls_ok ? "ok" : "shared");
         fflush(stdout);
+    }
+
+    /* C5_MMAP. No failure returns early from here on: each stage reports,
+     * because a kernel that fails one of these usually fails the others for
+     * the same reason and the three lines together say which. */
+    {
+        pthread_t mt;
+        void *r = 0;
+        unsigned char *theirs, *ours;
+        long i, intact = 1;
+
+        if (pthread_create(&mt, 0, mmap_worker, 0) != 0 ||
+            pthread_join(mt, &r) != 0 || r == 0) {
+            printf("THREADS_C5_MMAP_FAIL: the thread could not map\n");
+        } else {
+            theirs = r;
+            ours = mmap(0, C5_LEN, PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+            if (ours == MAP_FAILED) {
+                printf("THREADS_C5_MMAP_FAIL: main could not map\n");
+            } else {
+                memset(ours, 0x5A, C5_LEN);
+                for (i = 0; i < C5_LEN; i++) {
+                    if (theirs[i] != 0xA5) {
+                        intact = 0;
+                        break;
+                    }
+                }
+                if (ours == theirs) {
+                    printf("THREADS_C5_MMAP_FAIL: main was given the thread's base %p\n",
+                           (void *)ours);
+                } else if (!intact) {
+                    printf("THREADS_C5_MMAP_FAIL: the thread's pages changed at +%ld\n", i);
+                } else {
+                    printf("THREADS_C5_MMAP_OK\n");
+                }
+            }
+        }
+        fflush(stdout);
+    }
+
+    /* C5_SIGACTION, in a child: with the defect, the raise kills it. */
+    {
+        pid_t pid = fork();
+
+        if (pid == 0) {
+            pthread_t st;
+            void *r = (void *)1L;
+
+            if (pthread_create(&st, 0, sigaction_worker, 0) != 0 ||
+                pthread_join(st, &r) != 0 || r != 0) {
+                _exit(3);
+            }
+            raise(SIGUSR1);
+            _exit(usr1_seen ? 0 : 4);
+        }
+        report_child("C5_SIGACTION", pid, 0);
+    }
+
+    /* C5_EXIT_GROUP, in a child. Main spins a bounded number of yields - each
+     * is one timer tick, so this is about two seconds - and only exits 7 if
+     * nothing ended it first. */
+    {
+        pid_t pid = fork();
+
+        if (pid == 0) {
+            pthread_t et;
+            int n;
+
+            if (pthread_create(&et, 0, exit_group_worker, 0) != 0) {
+                _exit(3);
+            }
+            exit_group_go = 1;
+            for (n = 0; n < 200; n++) {
+                sched_yield();
+            }
+            syscall(SYS_exit_group, 7);
+        }
+        report_child("C5_EXIT_GROUP", pid, 42);
     }
     return 0;
 }

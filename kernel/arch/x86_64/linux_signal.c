@@ -73,7 +73,9 @@ int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame) {
         }
         t->sig_pending &= ~(1ull << sig);
 
-        handler = t->sig_handler[sig];
+        /* A user task whose process reference is already gone is exiting;
+         * the default is the only disposition it has left. */
+        handler = t->ps ? t->ps->sig_handler[sig] : SIG_DFL_ADDR;
         if (sig == VIBEOS_SIGKILL || sig == VIBEOS_SIGSTOP) {
             handler = SIG_DFL_ADDR;   /* uncatchable */
         }
@@ -87,6 +89,16 @@ int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame) {
                 HW_TASK_MARK(hw_current_task(), ready_by, "sigstop");
                 vibeos_x86_64_serial_puts("[SIG] task stopped by SIGSTOP\n");
                 return 0;
+            }
+            if (sig == VIBEOS_SIGKILL && t->ps != 0 &&
+                __atomic_load_n(&t->ps->exit_group, __ATOMIC_ACQUIRE) != 0u) {
+                /* Ended by exit_group, not by a signal from outside. The
+                 * parent builds the wait status from the leader, so a leader
+                 * that died here as "killed by 9" would report exactly what an
+                 * exit_group built from SIGKILL alone reports - and Linux
+                 * reports the group's code. */
+                t->exit_signal = 0;
+                hw_task_exit(t->ps->exit_group_code);   /* does not return */
             }
             if (hw_signal_default_kills(sig)) {
                 t->exit_signal = sig;
@@ -136,16 +148,16 @@ int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame) {
     /* The return address is the C library's trampoline, which issues
      * rt_sigreturn. Without SA_RESTORER there is nothing to return to, and a
      * handler that returns would jump to whatever was on the stack. */
-    if ((t->sig_flags[sig] & VIBEOS_SA_RESTORER) == 0u || t->sig_restorer[sig] == 0u) {
+    if ((t->ps->sig_flags[sig] & VIBEOS_SA_RESTORER) == 0u || t->ps->sig_restorer[sig] == 0u) {
         hw_task_exit(128ull + sig);
         return 0;
     }
-    *(uint64_t *)(uintptr_t)sp = t->sig_restorer[sig];
+    *(uint64_t *)(uintptr_t)sp = t->ps->sig_restorer[sig];
 
     /* While the handler runs, this signal is blocked, plus whatever the
      * program asked to block along with it - otherwise a repeating signal
      * re-enters the handler until the stack is gone. */
-    t->sig_blocked |= (1ull << sig) | t->sig_mask[sig];
+    t->sig_blocked |= (1ull << sig) | t->ps->sig_mask[sig];
 
     frame->rip = handler;
     frame->rsp = sp;

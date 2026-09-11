@@ -55,3 +55,26 @@ The leftover pages are mapped `PTE_PRESENT` with no `PTE_USER`, and
 `hw_user_range_ok` walks the page tables rather than the region list, so ring 3
 cannot reach them. This is consumed memory, not a semantic hole - narrower than
 the review stated, and stated here as measured rather than as reported.
+
+# Correction, the same day: the fix covered one of two loops
+
+The section above says mmap's leftover pages "are mapped `PTE_PRESENT` with no
+`PTE_USER`" and that ring 3 cannot reach them. **That was true of one loop and
+false of the one that matters.**
+
+`hw_sys_mmap` has two allocation loops. The rollback committed here went into
+the first - the reservation branch, which maps guard pages without `PTE_USER`.
+The second is the ordinary anonymous path that every `malloc` reaches, it maps
+`PTE_PRESENT | PTE_USER` (plus `PTE_WRITE` when asked), and it still ended in a
+bare `return -VIBEOS_ENOMEM` with no rollback at all. On that path the leftover
+pages *are* reachable from ring 3, with no region describing them.
+
+It was found while rewriting the same function for C5, not by any check. The
+review's M-002 had described the second loop's shape; the fix was matched
+against the first place that shape appeared and stopped there.
+
+It matters more after C5 than before. The leftovers used to be recoverable by
+accident, because the mapping cursor was not advanced on the failure path and the
+next mmap mapped over them. C5 claims the range before anything is mapped, so
+nothing would ever map over them again - without a rollback they become a leak.
+Both loops unwind now, in the C5 change.

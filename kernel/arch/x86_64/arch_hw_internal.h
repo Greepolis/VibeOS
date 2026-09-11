@@ -86,18 +86,40 @@ typedef struct {
      * The interpreter relocates itself from this, so it is not a diagnostic:
      * without it a dynamic program faults on its first relocation. */
     uint64_t interp_base;
-    uint64_t brk_cur;   /* current program break            */
-    /* What this process asked for, as opposed to what happens to be mapped.
-     * munmap and mprotect consult this; the page tables are the consequence,
-     * not the record. See kernel/mm/vma.c. */
-    vibeos_vma_list_t vmas;
-    uint64_t mmap_cur;  /* next free anonymous mmap address  */
+    /* The program break, the mapping cursor and the region list used to live
+     * here, and clone copied them along with the rest of this struct - so every
+     * thread had its own. They belong to the process and live in
+     * hw_procstate_t now. */
     uint64_t user_sp;   /* entry rsp, atop the startup block */
     /* What execve was given. A program that wants to find itself reads
      * /proc/self/exe, and answering from the real path is the difference
      * between a correct answer and a plausible one. */
     char exe_path[64];
 } hw_proc_t;
+
+/* What belongs to a process rather than to one of its threads.
+ *
+ * Referenced, never copied: fork and exec create one, a thread takes a
+ * reference, and exit gives it back. See g_procstate in arch_hw.c for the
+ * five defects that copying produced. */
+typedef struct hw_procstate {
+    volatile uint32_t refs;      /* tasks pointing here; 0 means free        */
+    volatile uint32_t brk_busy;  /* one brk at a time per process            */
+    uint64_t brk_cur;            /* current program break                    */
+    volatile uint64_t mmap_cur;  /* next anonymous address, claimed by CAS   */
+    /* What this process asked for, as opposed to what happens to be mapped.
+     * munmap and mprotect consult this; the page tables are the consequence,
+     * not the record. See kernel/mm/vma.c. */
+    vibeos_vma_list_t vmas;
+    uint64_t sig_handler[VIBEOS_HW_NSIG];
+    uint64_t sig_restorer[VIBEOS_HW_NSIG];
+    uint64_t sig_flags[VIBEOS_HW_NSIG];
+    uint64_t sig_mask[VIBEOS_HW_NSIG];
+    /* exit_group: claimed by the first caller, whose code the leader reports. */
+    volatile uint32_t exit_group_claimed;
+    volatile uint32_t exit_group;
+    uint64_t exit_group_code;
+} hw_procstate_t;
 
 typedef struct {
     volatile int locked;
@@ -141,6 +163,7 @@ typedef struct {
 typedef struct {
     vibeos_x86_64_isr_frame_t ctx;
     hw_proc_t proc;
+    hw_procstate_t *ps;   /* shared by every thread of this process; 0 = none */
     uint64_t cr3;
     const char *cr3_set_by;      /* diagnostics only; see HW_TASK_MARK */
     const char *ready_by;
@@ -216,10 +239,9 @@ typedef struct {
      * rather than of a separate table that could disagree with it. */
     uint64_t sig_pending;
     uint64_t sig_blocked;
-    uint64_t sig_handler[VIBEOS_HW_NSIG];
-    uint64_t sig_restorer[VIBEOS_HW_NSIG];
-    uint64_t sig_flags[VIBEOS_HW_NSIG];
-    uint64_t sig_mask[VIBEOS_HW_NSIG];
+    /* The handlers, flags, restorers and per-signal masks are the process's and
+     * live in hw_procstate_t. Pending and blocked stay here because they are the
+     * thread's, which is the Linux model. */
     /* %fs base for this task, set by arch_prctl(ARCH_SET_FS). Restored on
      * every switch: leaving the previous task's value loaded would let one
      * program read and write another's thread-local state. */
