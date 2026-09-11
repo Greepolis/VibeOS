@@ -4093,6 +4093,20 @@ static int hw_map_user_pages(vibeos_hw_aspace_t *as, uint64_t va, uint64_t pages
         void *page = hw_alloc_page();
         if (!page || hw_map_page(as, va + i * 4096ull, (uint64_t)(uintptr_t)page,
                                  PTE_PRESENT | PTE_WRITE | PTE_USER) != 0) {
+            /* The same two leaks mmap had, in the function brk grows through.
+             * A frame allocated and not mapped had no owner to release it, and
+             * a partial mapping was left for a caller just told the whole
+             * operation failed. */
+            uint64_t j;
+            vibeos_vmspace_t v = hw_vm(as);
+
+            if (page) {
+                hw_page_put((uint64_t)(uintptr_t)page);
+            }
+            for (j = 0; j < i; j++) {
+                (void)vibeos_vmspace_unmap(&v, va + j * 4096ull);
+            }
+            hw_tlbq_drain();
             return -1;
         }
         hw_page_put((uint64_t)(uintptr_t)page);   /* D9: the mapping owns it now */
@@ -6494,7 +6508,31 @@ static long hw_sys_brk(uint64_t addr) {
                                                 VIBEOS_PROT_USER),
                                 VIBEOS_BACKING_ANON, 0, 0);
     } else if (new_brk < proc->brk_cur) {
+        /* Shrinking used to remove the region and stop there.
+         *
+         * The page-table entries stayed present and the frames stayed
+         * allocated, so memory the program had handed back to the kernel was
+         * still mapped and still readable through the pages it had just
+         * released. Found by an external review; the region list and the page
+         * tables are the two sources of truth here and this left them
+         * disagreeing, which is the same shape as the defect that let munmap
+         * free frames belonging to somebody else.
+         *
+         * Removed from the list first, then unmapped - a region must never be
+         * described after it has stopped existing, the same publish-last rule
+         * munmap follows a few lines down. */
+        uint64_t va;
+        vibeos_vmspace_t v = hw_vm(&proc->as);
+
         (void)vibeos_vma_remove(&proc->vmas, new_brk, proc->brk_cur - new_brk);
+        for (va = new_brk; va < proc->brk_cur; va += 4096ull) {
+            (void)vibeos_vmspace_unmap(&v, va);
+        }
+        /* And the frames go through the same quarantine munmap uses: the
+         * unmap path releases through vb.release_deferred, so a sibling
+         * thread holding a stale translation cannot be handed the frame
+         * underneath it. Draining here for the same reason munmap does. */
+        hw_tlbq_drain();
     }
     proc->brk_cur = new_brk;
     return (long)proc->brk_cur;
@@ -6927,6 +6965,22 @@ static long hw_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot,
             if (!page || hw_map_page(&proc->as, base + i * 4096ull,
                                      (uint64_t)(uintptr_t)page,
                                      PTE_PRESENT) != 0) {
+                /* Two leaks lived here and only one was obvious. `page` is
+                 * non-null when hw_map_page is what failed, and nothing gave
+                 * it back. The pages already mapped stayed mapped with no
+                 * region describing them - recoverable only because mmap_cur
+                 * is not advanced on this path, which is an accident on a path
+                 * taken when memory has just run out, not a design. */
+                uint64_t j;
+                vibeos_vmspace_t v = hw_vm(&proc->as);
+
+                if (page) {
+                    hw_page_put((uint64_t)(uintptr_t)page);
+                }
+                for (j = 0; j < i; j++) {
+                    (void)vibeos_vmspace_unmap(&v, base + j * 4096ull);
+                }
+                hw_tlbq_drain();
                 return -VIBEOS_ENOMEM;
             }
             hw_page_put((uint64_t)(uintptr_t)page);   /* D9 */
