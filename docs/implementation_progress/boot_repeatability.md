@@ -468,3 +468,46 @@ two predicates it had before were wrong in opposite directions.
   name at the moment of the fault.
 - `repeat-boot.sh` keeps the serial log of every failed boot, so a run leaves
   evidence rather than a count.
+
+# A second intermittent family, found on 2026-09-11: the kernel runs garbage during THREADS
+
+Recorded apart from the signatures above because it is not one of them, and
+mixing two intermittent failures into one rate is how this file once spent a
+day on the wrong defect.
+
+## What the failing boot showed
+
+Boot 7 of a twelve-boot series, `reason=missing:unrecoverable`. Read from the
+kept log rather than counted:
+
+- A kernel-mode trap on cpu 2 with a frame that is not a frame:
+  `rip=0xffffffff cs=0`, and `rsp`/`ss` that decode as ASCII - `TMP.` and
+  `ES.TXT`, file names from the boot's own self-test script. The core took an
+  exception on a kernel stack holding the contents of a file-name buffer.
+- A second trap executing at `rip=0x3030303030303030`: the string `00000000`.
+  A return address overwritten with text.
+- Three cores on `THREADS.ELF`, one address space. `THREADS_STAGE1_OK` printed,
+  `THREADS_OK` not - so it died in the stage where four workers contend a mutex
+  and exit, and the last lines before the panic are `munmap` releasing their
+  thread stacks.
+- The ring-3 fault at `rip=0x800000016b` earlier in the same log is `svc-crash`
+  faulting on purpose. It is in every boot, green ones included, and is not the
+  cause. It was mistaken for one once already today.
+
+## Why it is recorded as pre-existing
+
+`argv-hunt/serial-9.log`, dated 2026-09-08 - three days before the process-state
+change and everything after it - has the same shape: a kernel-mode fault
+executing a garbage address (`rip=0x44`), three cores on `THREADS.ELF` sharing
+one cr3, `THREADS_STAGE1_OK` reached and `THREADS_OK` not. The stage it dies in
+exercises neither `wait4` nor `tkill`, which were the change under test.
+
+## What is not known
+
+The mechanism. The shape - a kernel stack whose contents became file data, in a
+stage full of thread exits and stack unmaps - is the shape of a kernel stack
+page reused while still in use, which is the family `dead_kstack_base` closed
+once already. That is a direction to instrument, not a finding. Rate: one in
+twelve on this series; the three-day-old log says it was there before, not how
+often.
+

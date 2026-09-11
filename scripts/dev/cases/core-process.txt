@@ -84,3 +84,50 @@ case 4: a stage that prints nothing
            read as every later command having failed - which is why every wait
            in these stages is bounded.
   ran:     not yet
+
+---
+
+case 5: wait4 ignores its options
+  test:    THREADS_C5_WNOHANG
+  reason:  wait4_ignored_wnohang
+  defect:  `case LSYS_wait4` calls hw_sys_waitpid(a1, a2); the options argument
+           never arrives and WNOHANG appears nowhere in the kernel.
+  expect on the defect: the WNOHANG call blocks until the child exits and
+           returns its pid.
+  why it cannot stall the boot: the child exits on its own after about a
+           second, so the defect produces a failure line, not a hung script.
+  why it goes first: every bounded wait in a later test depends on it. init and
+           svc_bomb pass options 0 - checked - so the fix does not change the
+           supervisor. BusyBox's shell may pass WNOHANG, so its stages are the
+           ones to watch after the fix.
+  ran:     yes, against the kernel before the fix, and red:
+               THREADS_C5_WNOHANG_FAIL: waited for the child to exit
+           The three step-0 stages stayed OK on the same boot, and the boot did
+           not stall - the bound held.
+  and green, after the fix: THREADS_C5_WNOHANG_OK on the first build, with the
+           BusyBox stages - the ones that could pass WNOHANG - still passing;
+           check.sh all VERDICT=green; twelve boots: 11 pass, 1 fail.
+
+---
+
+case 6: a thread id addresses nothing
+  test:    THREADS_C5_TKILL
+  reason:  tkill_missed_a_live_thread
+  defect:  hw_task_by_tid is `return hw_task_by_pid(tid);`, which matches tgid.
+           A non-leader's tid matches no tgid, so tkill and tgkill answer ESRCH
+           for a thread that exists. For the leader's own tid it returns the
+           first member of the group in slot order, which can be a thread - so
+           tgkill's `pid != tgid` check can refuse even the leader.
+  and the everyday consequence: raise() in musl is tkill(gettid()), so raise()
+           from any thread but the leader fails.
+  expect on the defect: pthread_kill(live thread, 0) returns ESRCH (3).
+  why signal 0 and a spinning worker: signal 0 tests existence without
+           delivery, and the worker waits by spinning - a blocked wait on this
+           kernel does not notice signals, which is a separate defect that must
+           not decide this stage.
+  ran:     yes, against the kernel before the fix, and red:
+               THREADS_C5_TKILL_FAIL: pthread_kill on a live thread returned 3
+           3 is ESRCH: the thread existed and the lookup could not find it.
+  and green, after the fix: THREADS_C5_TKILL_OK on the first build - both
+           pthread_kill(thread, 0) and raise() inside the thread;
+           check.sh all VERDICT=green; twelve boots: 11 pass, 1 fail.

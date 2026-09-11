@@ -16,10 +16,10 @@
  * and lost no increment" are different claims, and a kernel can produce the
  * first while failing the second.
  *
- * Three more stages ask whether the threads belong to one *process*, which
- * the first two cannot see: both only ever create threads from main, and no
- * worker touches process state, so a kernel that gives each thread a private
- * copy of the process passes them. These were written before the kernel was
+ * Five more stages ask whether the threads belong to one *process*, which the
+ * first two cannot see: both only ever create threads from main, and no worker
+ * touches process state, so a kernel that gives each thread a private copy of
+ * the process passes them. Every one of them was written before the kernel was
  * changed and failed on it - that is how they are known to be able to.
  *
  *  - C5_MMAP: a thread maps memory, then main maps memory. One process has
@@ -32,11 +32,17 @@
  *    The whole process ends and the parent sees 42 - not 7 from main
  *    finishing on its own, and not "killed by signal 9", which is what an
  *    exit_group built by killing the siblings would report.
+ *  - C5_WNOHANG: waitpid(WNOHANG) on a child that is still running answers 0
+ *    at once. A kernel that drops wait4's options blocks until the child
+ *    exits; the child ends on its own, so that failure cannot stall the boot.
+ *  - C5_TKILL: a thread's id addresses that thread. pthread_kill(thread, 0)
+ *    must find it, and raise() inside it - tkill(gettid()) - must reach its
+ *    handler. A lookup that matches thread-group ids answers ESRCH.
  *
- * The last two run in a forked child, because failing them kills or strands
- * the process that fails, and every wait in them is bounded: this program is
- * one line of a sequential boot script, and a hang here would read as every
- * command after it having failed.
+ * C5_SIGACTION and C5_EXIT_GROUP run in a forked child, because failing them
+ * kills or strands the process that fails, and every wait in every stage is
+ * bounded: this program is one line of a sequential boot script, and a hang
+ * here would read as every command after it having failed.
  */
 #include <pthread.h>
 #include <signal.h>
@@ -143,6 +149,32 @@ static void report_child(const char *stage, pid_t pid, int want_code)
         printf("THREADS_%s_OK\n", stage);
     }
     fflush(stdout);
+}
+
+/* C5_TKILL: a signal addressed to a thread, not to its process. */
+static volatile sig_atomic_t usr2_seen;
+
+static void on_usr2(int sig)
+{
+    (void)sig;
+    usr2_seen = 1;
+}
+
+static volatile int tkill_release;
+
+/* raise() in musl is tkill(gettid()), so this is the smallest program that
+ * addresses a signal to a thread that is not the leader. It then waits for
+ * main by spinning rather than on a futex: a blocked wait here would not
+ * notice a signal on this kernel, which is a different defect and must not
+ * decide this stage. */
+static void *tkill_worker(void *arg)
+{
+    (void)arg;
+    raise(SIGUSR2);
+    while (!tkill_release) {
+        sched_yield();
+    }
+    return 0;
 }
 
 int main(void)
@@ -281,6 +313,73 @@ int main(void)
             syscall(SYS_exit_group, 7);
         }
         report_child("C5_EXIT_GROUP", pid, 42);
+    }
+
+    /* C5_WNOHANG. A child that lives about a second and exits on its own.
+     * WNOHANG asked immediately must answer 0 - no child has changed state -
+     * and not wait. On a kernel that ignores the option the call blocks until
+     * the child exits and returns its pid: a failure that is deterministic and
+     * bounded by the child's own lifetime, so it cannot stall the boot. If this
+     * ever flakes, lengthen the child rather than loosening the assertion. */
+    {
+        pid_t pid = fork();
+
+        if (pid == 0) {
+            int n;
+            for (n = 0; n < 100; n++) {
+                sched_yield();
+            }
+            _exit(0);
+        }
+        if (pid < 0) {
+            printf("THREADS_C5_WNOHANG_FAIL: fork\n");
+        } else {
+            int status = 0;
+            pid_t r = waitpid(pid, &status, WNOHANG);
+
+            if (r == 0) {
+                (void)waitpid(pid, &status, 0);   /* reap it for real */
+                printf("THREADS_C5_WNOHANG_OK\n");
+            } else if (r == pid) {
+                printf("THREADS_C5_WNOHANG_FAIL: waited for the child to exit\n");
+            } else {
+                printf("THREADS_C5_WNOHANG_FAIL: returned %d\n", (int)r);
+            }
+        }
+        fflush(stdout);
+    }
+
+    /* C5_TKILL. A thread's id must address that thread. Two checks, both
+     * deterministic: pthread_kill with signal 0 asks only whether the thread
+     * exists, and raise() inside the thread must reach the handler. */
+    {
+        struct sigaction sa;
+        pthread_t kt;
+        int n, r;
+
+        memset(&sa, 0, sizeof sa);
+        sa.sa_handler = on_usr2;
+        sigemptyset(&sa.sa_mask);
+        (void)sigaction(SIGUSR2, &sa, 0);
+
+        if (pthread_create(&kt, 0, tkill_worker, 0) != 0) {
+            printf("THREADS_C5_TKILL_FAIL: create\n");
+        } else {
+            for (n = 0; n < 20; n++) {
+                sched_yield();
+            }
+            r = pthread_kill(kt, 0);
+            tkill_release = 1;
+            (void)pthread_join(kt, 0);
+            if (r != 0) {
+                printf("THREADS_C5_TKILL_FAIL: pthread_kill on a live thread returned %d\n", r);
+            } else if (!usr2_seen) {
+                printf("THREADS_C5_TKILL_FAIL: raise() in a thread never reached it\n");
+            } else {
+                printf("THREADS_C5_TKILL_OK\n");
+            }
+        }
+        fflush(stdout);
     }
     return 0;
 }

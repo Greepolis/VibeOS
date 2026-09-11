@@ -7725,13 +7725,29 @@ static long hw_sys_clone_thread(const vibeos_x86_64_isr_frame_t *frame,
  * scheduler stops running it) until a child exit wakes it, instead of spinning.
  * The check-and-block is done under cli so a child exit cannot slip in between
  * (lost wakeup); `sti; hlt` then parks the task with interrupts enabled. */
-static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr) {
+static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr,
+                           uint64_t options) {
     uint32_t mypid;
 
     if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
         return -VIBEOS_EINVAL;
     }
     mypid = g_tasks[g_current_task].tgid;
+
+    /* The options used to be dropped by the dispatcher before they got here,
+     * so WNOHANG blocked. A shell reaping background jobs stalls on the first
+     * one still running, and every bounded poll in a test is not bounded at all.
+     *
+     * WNOHANG is honoured. WUNTRACED, WCONTINUED and Linux's __WALL, __WCLONE
+     * and __WNOTHREAD are accepted and have no effect: this kernel reports
+     * neither stopped nor continued children, and it has no thread-group wait
+     * distinctions to make. Refusing them would be more precise and would
+     * break BusyBox's shell, which passes WUNTRACED for job control. Any other
+     * bit is refused, as Linux refuses it. */
+    if (options & ~(uint64_t)(0x00000001u | 0x00000002u | 0x00000008u |
+                              0x20000000u | 0x40000000u | 0x80000000u)) {
+        return -VIBEOS_EINVAL;
+    }
 
     for (;;) {
         int i;
@@ -7810,6 +7826,11 @@ static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr) {
             hw_spin_unlock(&g_sched_lock);
             __asm__ __volatile__("sti");
             return -VIBEOS_ECHILD;
+        }
+        if (options & 0x00000001u) {   /* WNOHANG: children, none changed */
+            hw_spin_unlock(&g_sched_lock);
+            __asm__ __volatile__("sti");
+            return 0;
         }
         /* Block until a child exit sets us READY again (see hw_task_exit). */
         (void)hw_task_set_state(g_current_task, HW_TASK_BLOCKED, __func__);
@@ -8659,11 +8680,28 @@ static int hw_task_by_pid(uint32_t pid) {
     return -1;
 }
 
-/* There is currently one thread per process, so Linux tid and pid are equal.
- * Keep this lookup separate from kill(2), because tkill/tgkill address a
- * thread rather than a process group. */
+/* Find a task by thread id.
+ *
+ * This used to be `return hw_task_by_pid(tid);`, under a comment saying there
+ * was one thread per process so tid and pid were equal. That stopped being true
+ * when clone(CLONE_THREAD) started giving each thread its own id, and the lookup
+ * went on matching thread-group ids: a thread that was not the leader matched
+ * nothing and tkill answered ESRCH for a thread that existed, while the leader's
+ * own id matched whichever member of the group sat in the lowest slot - so
+ * tgkill's identity check could refuse even the leader. raise() in a C library
+ * is tkill(gettid()), so it failed in every thread but the first.
+ *
+ * The comment described the kernel at the moment it was written, and nothing
+ * made it wrong except the kernel changing around it. */
 static int hw_task_by_tid(uint32_t tid) {
-    return hw_task_by_pid(tid);
+    int i;
+    for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+        if (g_tasks[i].is_user && g_tasks[i].state != HW_TASK_FREE &&
+            g_tasks[i].pid == tid) {
+            return i;
+        }
+    }
+    return -1;
 }
 
 /* May the calling task send a signal to `target`?
@@ -8921,7 +8959,7 @@ static long hw_sys_tgkill(uint64_t target_tgid, uint64_t target_tid,
     if (target >= 0 && !hw_signal_permitted(target)) {
         return -VIBEOS_EPERM;   /* same rule as kill; see hw_signal_permitted */
     }
-    if (target < 0 || g_tasks[target].pid != (uint32_t)target_tgid) {
+    if (target < 0 || g_tasks[target].tgid != (uint32_t)target_tgid) {
         return -VIBEOS_ESRCH;
     }
     if (sig == 0u) {
@@ -10000,7 +10038,7 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
         case LSYS_mkdir:
             return hw_sys_mkdir(a1);
         case LSYS_wait4:
-            return hw_sys_waitpid(a1, a2);
+            return hw_sys_waitpid(a1, a2, a3);
         case LSYS_write:
             return hw_sys_write(a1, a2, a3);
         case LSYS_read:
@@ -10162,8 +10200,9 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
              * process that is the same destination. */
             return hw_sys_tkill(a1, a2);
         case LSYS_tgkill:
-            /* tgkill(tgid, tid, sig): one thread per process, so the thread id
-             * is the process id and this is kill with an extra argument. */
+            /* tgkill(tgid, tid, sig): the thread named by tid, provided it
+             * still belongs to tgid - the check that stops a recycled thread id
+             * from reaching a different process. */
             return hw_sys_tgkill(a1, a2, a3);
         case LSYS_sendfile:
             /* Every caller of sendfile has to cope with it failing, and does:

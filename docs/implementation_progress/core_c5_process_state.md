@@ -126,15 +126,16 @@ core, and reading it afterwards could copy a stranger's dispositions.
   reap early. Linux waits for the whole group. Not changed, not tested.
 - **Descriptors stay per thread.** The source already said so, and it is the next
   row of the same table.
-- **fork reads the break without holding it.** The leftover scan after the change
-  found every access going through the shared process and the mapping cursor
-  touched only atomically - with one exception. `fork` copies the parent's
-  `brk_cur` and clones its regions without claiming `brk_busy`, so if another
-  thread of the parent is moving the break at that instant, the child can start
-  with a break and a region list that disagree. Linux holds the address-space
-  lock across fork. Three lines, and not made here: the full verification was
-  already running, and changing the kernel under a run in flight is how this
-  project has invalidated three of them.
+- **fork is not atomic against its own process's other threads.** This was first
+  written down as "fork reads the break without holding it - three lines", and
+  the estimate was wrong in scope, found while writing those three lines. `fork`
+  copies the pages (`hw_aspace_copy_user`) well before it clones the regions and
+  copies the break, and no address-space lock covers that stretch - so a sibling
+  running `mmap`, `munmap`, `mprotect` or `brk` during a fork can leave the child
+  with pages and regions that disagree, not just a stale break. A guard on brk
+  alone would be a partial fix presented as a whole one. Linux holds one
+  address-space lock across fork and all of those calls; that is the shape of the
+  fix, and it is larger than a line.
 - **exit_group cannot end a sibling that is blocked in the kernel.** Found while
   preparing the next step, after this change was already green. SIGKILL is
   delivered on the way back to ring 3, and **no blocking wait in this kernel reads
@@ -163,6 +164,17 @@ core, and reading it afterwards could copy a stranger's dispositions.
   arrives, so `WNOHANG` is ignored and a "bounded" poll blocks exactly like an
   unbounded wait. A shell reaping background jobs depends on that option too, so
   it is a defect in its own right, and it goes first of all.
+
+  **Closed, with tkill, in the next commit.** WNOHANG is honoured; WUNTRACED,
+  WCONTINUED and Linux's `__W` bits are accepted and have no effect - refusing
+  them would break BusyBox's shell - and unknown bits are refused.
+  `hw_task_by_tid` had been `return hw_task_by_pid(tid);` under a comment saying
+  a thread id and a process id were the same number, which stopped being true
+  when `clone(CLONE_THREAD)` gave threads their own ids: a non-leader's id matched
+  nothing and tkill answered ESRCH, and `raise()` - which a C library implements
+  as `tkill(gettid())` - failed in every thread but the first. Both had red
+  stages first (`waited for the child to exit`, `pthread_kill on a live thread
+  returned 3`); both green on the first build; twelve boots: 11 pass, 1 fail.
 - **No must-be-zero counter for the new structure.** One was designed - a
   reference dropped below zero - and not added, because a counter nothing reads is
   this project's most repeated defect, and reading it means touching the portable

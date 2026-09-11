@@ -2169,7 +2169,11 @@ def main():
                         ("C5_SIGACTION", "thread_sigaction_not_shared",
                          "threads_c5_sigaction_did_not_report"),
                         ("C5_EXIT_GROUP", "thread_exit_group_left_siblings",
-                         "threads_c5_exit_group_did_not_report")):
+                         "threads_c5_exit_group_did_not_report"),
+                        ("C5_WNOHANG", "wait4_ignored_wnohang",
+                         "threads_c5_wnohang_did_not_report"),
+                        ("C5_TKILL", "tkill_missed_a_live_thread",
+                         "threads_c5_tkill_did_not_report")):
                     if f"THREADS_{stage}_OK" in text:
                         continue
                     if f"THREADS_{stage}_FAIL" in text:
