@@ -644,3 +644,30 @@ few chunks. Validated three ways: the gate compiles, its self-tests pass, and a
 copy with the budget check removed hangs at import (killed after ten seconds).
 The series that verified it included a crashed boot (`.boot-evidence/fail-20260911-162643-boot12.log`) that
 the gate ended in about a minute.
+
+## The probe that hid the defect it was looking for (2026-09-11)
+
+A probe for the four-worker family recorded, at clone, the frame behind each new
+thread's stack top; counted how often a thread was loaded from its initial
+context; and printed one line at a probed thread's ring-3 fault saying which of
+three stories it was - the stack page replaced after clone, the thread started
+twice, or another thread writing its stack.
+
+It never printed that line, because with it in the kernel the crash did not
+happen: 24 boots, then 36 more with a quieter version that logged nothing on the
+normal path. Without it, on the same kernel, 36 boots gave two crashes with the
+full signature (`probe-20260911-174620-boot1` and `-boot35`: `rip=0x405b72`,
+`va=0x406f00`). Seventy clean boots at a rate of one in eighteen would happen by
+luck about 2% of the time - (17/18)^70.
+
+That is a result rather than a failure. The quiet probe did two things on the
+path a crash needs: it added 28 bytes to every task, and - when a thread was
+loaded with its initial context - it walked the page tables to read the word at
+the stack top. Logging was not the perturbation. Slowing a thread's **first start**
+is enough to close the window, which puts the defect there and not in exit or
+in reclaim.
+
+Code in the kernel cannot observe this without changing it. The next step is to
+look from outside: have the gate ask the QEMU monitor for every core's state at
+the moment a THREADS fault is reported, the way `wedge_report.py` already does for
+a silent guest.
