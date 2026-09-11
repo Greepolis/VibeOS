@@ -705,3 +705,27 @@ external: have the gate ask the QEMU monitor for every core's registers and
 stack at the instant a THREADS fault is reported, the way `wedge_report.py`
 already does for a silent guest - observation that adds no guest-side work.
 Kept apart from the review findings, which are all closed; this one is not.
+
+## Observing the four-worker family from outside (2026-09-11)
+
+Since every in-guest probe masks this family, the gate now watches the serial
+stream for its marker - `free-page poison`, or the frame-level `POISON_BROKEN`,
+which appear only when a page was reused while still mapped, and never on a
+healthy boot (the null-deref `svc-crash` fault every boot carries is deliberately
+not a trigger). The instant the marker appears, and once per run, it asks the
+QEMU monitor for every core's registers and frame walk - the same
+`wedge_report.py` used for a silent guest - and files them in the summary's
+`wedge_report=` field, tagged `THREAD-FAULT`.
+
+Because the poison panic parks every core, the snapshot is each core essentially
+at the fault, not the parked `hlt` state 45 seconds later that a timeout-driven
+report would show. It adds nothing to the guest: the one thing that reliably
+changes this family's timing is guest-side work on the thread-load path, and a
+monitor read is outside the guest entirely.
+
+`thread_fault_signature` is a pure function with self-tests, including one that a
+detector keyed on the benign fault would trip. Verified: 24 boots through the changed gate were all green (no crash this run), so the snapshot has not yet fired on a real fault; the detector's self-tests are the standing proof, and it captures on the next crash.
+
+Next, when a snapshot is in hand: the faulting thread's registers, and which
+task each core was running, at the fault - enough to say whether a sibling was
+mid-context-switch on the freed stack, without a single guest-side instruction.

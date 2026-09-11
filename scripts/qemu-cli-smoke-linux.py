@@ -213,6 +213,37 @@ drain_available(_always_empty, _drained.append)
 assert _drained == [], "the serial drain invented data from an empty socket"
 
 
+# The marker of the THREADS four-worker crash family, taken live so the monitor
+# can be read at the fault rather than at the parked hlt state 45 s later.
+_THREAD_FAULT_MARKERS = ("free-page poison", "POISON_BROKEN")
+
+
+def thread_fault_signature(text):
+    """The marker of the four-worker crash family in `text`, or None.
+
+    Keyed on the free-page-poison panic and the frame-level POISON_BROKEN
+    report: both mean a page was reused while still in use, which is this
+    family and nothing healthy. Deliberately NOT keyed on a NOT-handled
+    COW_FAULT - svc-crash dereferences null on every good boot and produces
+    one, so keying on it would fire every time and snapshot a healthy machine.
+    """
+    for m in _THREAD_FAULT_MARKERS:
+        if m in text:
+            return m
+    return None
+
+
+assert thread_fault_signature(
+    "[MM] COW_FAULT va=0x800000016b err=0x7 NOT-handled\n"
+    "[CRASH] recorded pid=0x9 exe=/EFI/BOOT/SVC_CRSH.ELF") is None, \
+    "fires on the benign svc-crash fault"
+assert thread_fault_signature(
+    "[CRASH] this task's stack is the free-page poison: reclaimed while running") \
+    == "free-page poison", "misses the poison panic"
+assert thread_fault_signature("[MM] POISON_BROKEN frame=0x243e000 word=0x140") \
+    == "POISON_BROKEN", "misses the frame poison report"
+
+
 def start_echo_server(stop_event, state):
     """Accept one connection at a time and echo whatever arrives."""
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -722,6 +753,33 @@ def main():
             last_rx = started
             deadline = started + timeout_sec
 
+            fault_snapshot_taken = [False]
+
+            def capture_thread_fault_snapshot(marker):
+                # A THREADS thread has faulted and the machine is halting on the
+                # free-page poison, which parks every core - so the monitor now
+                # shows each core essentially at the fault. Taken once, the
+                # instant the marker appears, not at the end when the parked hlt
+                # state is all that is left, and from the monitor, so nothing is
+                # added to the guest: an in-guest probe on this path masks the
+                # family (boot_repeatability.md, the four-worker crash).
+                if fault_snapshot_taken[0]:
+                    return
+                fault_snapshot_taken[0] = True
+                header = ("THREAD-FAULT snapshot marker=%r t=%.1fs"
+                          % (marker, time.monotonic() - started))
+                print("[QEMU-CLI] " + header)
+                serial_extra.append(header)
+                try:
+                    sys.path.insert(0, os.path.join(
+                        os.path.dirname(os.path.abspath(__file__)), "dev"))
+                    import wedge_report
+                    for wl in wedge_report.report(monitor_path, kernel):
+                        print("[QEMU-CLI] THREAD-FAULT " + wl)
+                        serial_extra.append("THREAD-FAULT " + wl)
+                except Exception as exc:      # never mask the verdict
+                    print("[QEMU-CLI] thread-fault snapshot failed: %s" % exc)
+
             def on_serial_chunk(chunk):
                 nonlocal serial_text, last_rx, last_guest_phase, last_serial_timestamp
                 serial_text += chunk.decode("utf-8", errors="replace")
@@ -736,6 +794,10 @@ def main():
                 # serial line still active is a budget problem, one that has
                 # been silent for a long time is a hang.
                 last_rx = time.monotonic()
+                if not fault_snapshot_taken[0]:
+                    marker = thread_fault_signature(serial_text)
+                    if marker:
+                        capture_thread_fault_snapshot(marker)
 
             def pump():
                 # Bounded: a guest printing without pause used to keep this loop
