@@ -135,3 +135,50 @@ Host tests green. `check.sh all` was **red once**: one of its three boots failed
 its log was overwritten by the next boot, because the check loop kept no
 evidence - so that failure could not be read. The loop keeps failed logs now.
 Twelve boots on the same kernel, every failure kept: 12 pass, 0 fail.
+
+## M-009, M-010 and the read-path audit: arithmetic from a volume (fixed 2026-09-11)
+
+Three defects of one kind - a number read from the volume used in arithmetic
+that wraps or is undefined before anything checks it.
+
+**M-009, exFAT.** A contiguous file's cluster was `first + index` in 32 bits,
+with `first` taken from the stream entry unchecked: `0xFFFFFFFE + 4` is 2, a
+cluster the volume has, and `exfat_read_cluster` only ever saw the wrapped
+value. `exfat_nth_cluster` now checks the first cluster against the volume and
+the index against the clusters left after it, before the sum. Found beside it:
+`read_at` truncated the cluster index to 32 bits, so a declared size past 2^32
+clusters read the file's own start again; the index is computed in 64 bits and
+refused past 2^32.
+
+**M-010, NTFS.** `ntfs_next_run` took each field size from a header nibble -
+up to 15 bytes - and shifted byte `i` by `8 * i` into a 64-bit value, past the
+width of the type from the ninth byte. Sizes above 8 are refused. More than was
+reported: the sign extension `-((int64_t)1 << (8 * off_size))` was already
+undefined at the largest legal size, and shifting a byte into the sign bit of
+an `int64_t` is undefined too; the offset is assembled and extended in unsigned
+arithmetic now, and the running start is summed unsigned as well, since a
+signed sum of volume-supplied deltas can overflow. The review's second
+candidate, `vcn < seen + run.length` in `ntfs_map_vcn`, is `vcn - seen <
+length` now, with the running total refused before it could wrap.
+
+**The read-path row from the H-011 audit.** exFAT, ext2, ISO9660 and NTFS
+`read_at` trimmed with `offset + len > size` after `offset < size`; for a size
+declared near 2^64 the sum wraps and the length is not trimmed. All four use
+`len > size - offset`.
+
+`test_exfat_cluster_arithmetic_bounds` reads a forged node three ways - a first
+cluster that wraps onto cluster 2, an index past 2^32 clusters, and an offset
+whose sum with the length wraps - and each must return nothing.
+`test_ntfs_run_header_sizes` lengthens BIG.BIN's run attribute and gives its
+first run a nine-byte length field; it must not decode. Both were red on the old
+code and are green. Two limits on what that red proves: the exFAT test stops at
+its first failing case, so the three cases were not each shown to fail on their
+own; and the NTFS defect is undefined behaviour, so its red shows what this
+compiler made of it, not what any compiler would. Before either ran, two test
+bugs were caught in review: the exFAT test would have overwritten the root
+directory it then read, and the NTFS test fitted twelve run bytes into an
+attribute holding eight, so the old "do the bytes fit" check would have refused
+the header and the test would have passed on the defect.
+
+Host tests green, `check.sh all` green (three boots; the boot volume is FAT and
+these drivers are not on its path).

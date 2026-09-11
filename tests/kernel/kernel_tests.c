@@ -6940,6 +6940,66 @@ static int xf_mount(vibeos_exfat_t *fs, vibeos_blockcache_t *bc,
     return vibeos_exfat_mount(fs, bc, 0);
 }
 
+/* M-009 and the read-path half of the H-011 audit, on exFAT.
+ *
+ * A contiguous file's cluster was `first + index` in 32 bits, with the first
+ * cluster taken from the stream entry unchecked: 0xFFFFFFFE plus 4 is 2, a
+ * cluster this volume really has, so the bytes of cluster 2 came back as the
+ * file's. And read_at truncated the cluster index to 32 bits, so a file whose
+ * declared size is past 2^32 clusters read cluster 0 of itself again at an
+ * offset of 2^32 clusters - even with a valid first cluster.
+ *
+ * Each case is a read that must return nothing - an error or zero bytes - and
+ * must never return a cluster's contents. */
+static int test_exfat_cluster_arithmetic_bounds(void) {
+    vibeos_exfat_t fs;
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    vibeos_fsmount_t mnt;
+    vibeos_fs_node_t node;
+    uint8_t buf[VIBEOS_BLOCK_SIZE];
+    long got;
+
+    if (xf_mount(&fs, &bc, &dev) != 0 ||
+        vibeos_fs_mount(&mnt, vibeos_exfat_ops(), &fs, "exfat") != 0 ||
+        vibeos_fs_lookup(&mnt, "contig.bin", &node) != 0) {
+        return -1;
+    }
+
+    /* A contiguous file whose first cluster wraps onto cluster 2 at index 4. */
+    {
+        vibeos_fs_node_t forged = node;
+        forged.id = (uint64_t)0xFFFFFFFEu | (1ull << 32);
+        forged.size = 5u * VIBEOS_BLOCK_SIZE;
+        got = vibeos_fs_read_at(&mnt, &forged, 4u * VIBEOS_BLOCK_SIZE, buf, sizeof(buf));
+        if (got > 0) {
+            return -1;
+        }
+    }
+    /* A valid first cluster, and an index past 2^32 clusters that truncates
+     * back to the file's own start. */
+    {
+        vibeos_fs_node_t forged = node;
+        forged.size = ~0ull - 0xFFFull;
+        got = vibeos_fs_read_at(&mnt, &forged, (1ull << 32) * VIBEOS_BLOCK_SIZE,
+                                buf, sizeof(buf));
+        if (got > 0) {
+            return -1;
+        }
+    }
+    /* offset + len wrapping past a size declared near 2^64: the length is not
+     * trimmed, and the read runs past the declared end. */
+    {
+        vibeos_fs_node_t forged = node;
+        forged.size = ~0ull;
+        got = vibeos_fs_read_at(&mnt, &forged, ~0ull - 4u, buf, sizeof(buf));
+        if (got > 4) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
 static int test_exfat_lookup_and_read(void) {
     vibeos_exfat_t fs;
     vibeos_blockcache_t bc;
@@ -7526,6 +7586,58 @@ static int test_ntfs_attr_length_wrap(void) {
     }
     got = vibeos_fs_read_at(&mnt, &node, 0, buf, sizeof(buf));
     if (got > (long)NT_RECORD) {
+        return -1;
+    }
+    return 0;
+}
+
+/* M-010: an NTFS run header cannot ask for more than eight bytes of a field.
+ *
+ * ntfs_next_run took the length and offset field sizes from the header nibbles,
+ * up to 15 bytes each, and shifted each byte by 8 * i into a 64-bit value - a
+ * shift past the width of the type from the ninth byte on, which is undefined.
+ * The sign extension was already undefined at the largest legal size, 8. A run
+ * list whose first header claims a nine-byte length must be refused, not
+ * decoded into whatever the shifts happened to produce. */
+static int test_ntfs_run_header_sizes(void) {
+    vibeos_ntfs_t fs;
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    vibeos_fsmount_t mnt;
+    vibeos_fs_node_t node;
+    static uint8_t buf[VIBEOS_BLOCK_SIZE * 4u];
+    uint8_t *runs;
+    long got;
+
+    if (nt_mount(&fs, &bc, &dev) != 0) {
+        return -1;
+    }
+    /* Record 7 is BIG.BIN; its run list starts at attribute + 64. Replace the
+     * first run with a header claiming a nine-byte length and a one-byte offset,
+     * all bytes present inside the attribute. */
+    runs = nt_record(7) + 64 + 64;
+    runs[0] = 0x19u;
+    memset(runs + 1, 0x01u, 9);
+    runs[10] = 100u;
+    runs[11] = 0x00u;
+    /* The attribute held eight run bytes; these are twelve. Lengthen it and move
+     * the terminator, or the old "do the bytes fit" check refuses the header
+     * for the wrong reason and the test passes on the defect. */
+    nt_w32(nt_record(7) + 64 + 4, 64u + 12u);
+    nt_w32(nt_record(7) + 64 + 64 + 12, 0xFFFFFFFFu);
+    vibeos_blockcache_invalidate(&bc);
+    if (vibeos_ntfs_mount(&fs, &bc, 0) != 0 ||
+        vibeos_fs_mount(&mnt, vibeos_ntfs_ops(), &fs, "ntfs") != 0) {
+        return -1;
+    }
+    if (vibeos_fs_lookup(&mnt, "BIG.BIN", &node) != 0) {
+        return 0;   /* refused at lookup */
+    }
+    got = vibeos_fs_read_at(&mnt, &node, 0, buf, VIBEOS_BLOCK_SIZE);
+    if (got > 0 && buf[0] == 0xE0u) {
+        return -1;   /* decoded into cluster 100 through undefined shifts */
+    }
+    if (got > 0) {
         return -1;
     }
     return 0;
@@ -8512,10 +8624,12 @@ int main(void) {
     RUN_TEST(test_exfat_lookup_and_read);
     RUN_TEST(test_exfat_list);
     RUN_TEST(test_exfat_refusals);
+    RUN_TEST(test_exfat_cluster_arithmetic_bounds);
     RUN_TEST(test_ntfs_mount_and_read);
     RUN_TEST(test_ntfs_list);
     RUN_TEST(test_ntfs_refusals);
     RUN_TEST(test_ntfs_attr_length_wrap);
+    RUN_TEST(test_ntfs_run_header_sizes);
     RUN_TEST(test_journal_commit);
     RUN_TEST(test_journal_power_cut);
     RUN_TEST(test_journal_stale_commit);

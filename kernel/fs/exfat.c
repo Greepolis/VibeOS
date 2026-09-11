@@ -95,6 +95,14 @@ static uint32_t exfat_nth_cluster(vibeos_exfat_t *fs, uint32_t first, int contig
     uint32_t i;
 
     if (contiguous) {
+        /* The first cluster comes from the stream entry and the index from the
+         * caller; `first + index` in 32 bits wrapped onto a real cluster -
+         * 0xFFFFFFFE + 4 is 2 - and exfat_read_cluster only ever saw the wrapped
+         * value (M-009). Both are checked against the volume before the sum. */
+        if (first < 2u || first - 2u >= fs->cluster_count ||
+            index > (fs->cluster_count - 1u) - (first - 2u)) {
+            return 0;
+        }
         return first + index;
     }
     for (i = 0; i < index; i++) {
@@ -325,11 +333,15 @@ static long exfat_op_read_at(void *fsv, const vibeos_fs_node_t *node,
     if (offset >= node->size) {
         return 0;
     }
-    if (offset + len > node->size) {
+    /* Not offset + len > size: offset is below size here, but a size near
+     * 2^64 from the volume makes the sum wrap and the length stay untrimmed
+     * (found by the H-011 audit). The difference cannot wrap. */
+    if (len > node->size - offset) {
         len = (uint32_t)(node->size - offset);
     }
     while (done < len) {
-        uint32_t index = (uint32_t)((offset + done) / fs->cluster_bytes);
+        uint64_t index64 = (offset + done) / fs->cluster_bytes;
+        uint32_t index;
         uint32_t within = (uint32_t)((offset + done) % fs->cluster_bytes);
         uint32_t chunk = fs->cluster_bytes - within;
         uint32_t c, i;
@@ -337,6 +349,13 @@ static long exfat_op_read_at(void *fsv, const vibeos_fs_node_t *node,
         if (chunk > len - done) {
             chunk = len - done;
         }
+        /* The index was truncated to 32 bits, so a declared size past 2^32
+         * clusters read the file's own first clusters again (M-009). A volume
+         * has at most 2^32 clusters; an index past that is not in it. */
+        if (index64 > 0xFFFFFFFFull) {
+            return (done > 0u) ? (long)done : -1;
+        }
+        index = (uint32_t)index64;
         c = exfat_nth_cluster(fs, EXFAT_ID_CLUSTER(node->id),
                               (int)EXFAT_ID_CONTIG(node->id), index);
         if (c == 0u || exfat_read_cluster(fs, c, cluster) != 0) {

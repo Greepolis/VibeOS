@@ -290,7 +290,7 @@ static int ntfs_next_run(const uint8_t *runs, uint32_t len, uint32_t *off,
     uint8_t header;
     uint32_t len_size, off_size, i;
     uint64_t run_len = 0;
-    int64_t run_off = 0;
+    uint64_t run_off = 0;
 
     if (*off >= len) {
         return 0;
@@ -301,7 +301,11 @@ static int ntfs_next_run(const uint8_t *runs, uint32_t len, uint32_t *off,
     }
     len_size = header & 0x0Fu;
     off_size = (header >> 4) & 0x0Fu;
-    if (len_size == 0u || *off + 1u + len_size + off_size > len) {
+    /* Each field is at most eight bytes: a 64-bit value holds no more, and the
+     * header nibbles allow fifteen. Shifting a ninth byte by 8 * i is past the
+     * width of the type, which is undefined (M-010). */
+    if (len_size == 0u || len_size > 8u || off_size > 8u ||
+        *off + 1u + len_size + off_size > len) {
         return 0;
     }
     for (i = 0; i < len_size; i++) {
@@ -315,14 +319,19 @@ static int ntfs_next_run(const uint8_t *runs, uint32_t len, uint32_t *off,
         out->start = 0;
     } else {
         for (i = 0; i < off_size; i++) {
-            run_off |= (int64_t)runs[*off + 1u + len_size + i] << (8u * i);
+            run_off |= (uint64_t)runs[*off + 1u + len_size + i] << (8u * i);
         }
         /* The offset is signed and stored in as few bytes as it fits, so the
-         * sign bit is the top bit of the last byte, not of a 64-bit word. */
-        if (runs[*off + 1u + len_size + off_size - 1u] & 0x80u) {
-            run_off |= -((int64_t)1 << (8 * off_size));
+         * sign bit is the top bit of the last byte, not of a 64-bit word.
+         * Extended in unsigned arithmetic: `(int64_t)1 << 64` at the largest
+         * legal size was undefined, and so was shifting a byte into the sign
+         * bit of an int64_t (M-010). An eight-byte field needs no extension. */
+        if (off_size < 8u && (runs[*off + 1u + len_size + off_size - 1u] & 0x80u)) {
+            run_off |= ~0ull << (8u * off_size);
         }
-        *prev_start += run_off;
+        /* The running start, also unsigned: a signed sum of volume-supplied
+         * deltas can overflow, and a signed overflow is undefined. */
+        *prev_start = (int64_t)((uint64_t)*prev_start + run_off);
         out->sparse = 0;
         out->start = *prev_start;
     }
@@ -341,9 +350,14 @@ static int64_t ntfs_map_vcn(const uint8_t *runs, uint32_t runs_len, uint64_t vcn
     ntfs_run_t run;
 
     while (ntfs_next_run(runs, runs_len, &off, &prev, &run)) {
-        if (vcn < seen + run.length) {
+        /* vcn >= seen here, so the difference is exact; `vcn < seen + length`
+         * wrapped on a crafted length (the review's second NTFS candidate). */
+        if (vcn - seen < run.length) {
             *sparse = run.sparse;
-            return run.sparse ? 0 : (run.start + (int64_t)(vcn - seen));
+            return run.sparse ? 0 : (int64_t)((uint64_t)run.start + (vcn - seen));
+        }
+        if (run.length > ~0ull - seen) {
+            return -1;   /* a run list longer than any volume */
         }
         seen += run.length;
     }
@@ -672,7 +686,10 @@ static long ntfs_op_read_at(void *fsv, const vibeos_fs_node_t *node,
     if (offset >= node->size) {
         return 0;
     }
-    if (offset + len > node->size) {
+    /* Not offset + len > size: offset is below size here, but a size near
+     * 2^64 from the volume makes the sum wrap and the length stay untrimmed
+     * (found by the H-011 audit). The difference cannot wrap. */
+    if (len > node->size - offset) {
         len = (uint32_t)(node->size - offset);
     }
     if (ntfs_read_record(fs, node->id, rec) != 0) {

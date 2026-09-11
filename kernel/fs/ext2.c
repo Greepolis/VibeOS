@@ -341,7 +341,9 @@ static long ext2_op_read_at(void *fsv, const vibeos_fs_node_t *node,
     if (offset >= size) {
         return 0;   /* end of file, which is not a failure */
     }
-    if (offset + len > size) {
+    /* len > size - offset, not offset + len > size: the sum wraps for a
+     * size near 2^64 (H-011 audit). */
+    if (len > size - offset) {
         len = (uint32_t)(size - offset);
     }
     while (done < len) {

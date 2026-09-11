@@ -232,7 +232,10 @@ static long iso_op_read_at(void *fsv, const vibeos_fs_node_t *node,
     if (offset >= node->size) {
         return 0;
     }
-    if (offset + len > node->size) {
+    /* Not offset + len > size: offset is below size here, but a size near
+     * 2^64 from the volume makes the sum wrap and the length stay untrimmed
+     * (found by the H-011 audit). The difference cannot wrap. */
+    if (len > node->size - offset) {
         len = (uint32_t)(node->size - offset);
     }
     while (done < len) {
