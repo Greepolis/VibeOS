@@ -39,6 +39,7 @@ Earlier reviews are closed and written up: the sixth
 | M-008 | M | any ARP overwrites the cache entry, gateway included | **verified-open** | `arp_input` calls `arp_insert` unconditionally. ARP has no authentication: limit unsolicited updates, protect the gateway entry |
 | M-009 | M | exFAT contiguous file: `first + index` wraps in 32 bits to a valid cluster; `first_cluster` from the entry never range-checked | **verified-open** | `exfat_nth_cluster` (`return first + index`), parse takes `rd32(stream + 20)` as is, `exfat_read_cluster` checks only the wrapped value. **Also, not in the report:** `read_at` truncates `(offset + done) / cluster_bytes` to 32 bits, so a large declared size wraps the index even with a valid first cluster. Host exFAT tests exist, so the red test is deterministic |
 | M-010 | M | NTFS run-list: `len_size`/`off_size` up to 15 bytes, shifted `<< (8 * i)` into 64-bit types - undefined behaviour | **verified-open** | `ntfs_next_run` checks only that the bytes fit. **More than reported:** the sign extension `-((int64_t)1 << (8 * off_size))` is already undefined at `off_size == 8`, the largest *legal* size; shifting a byte into the sign bit of `int64_t` is undefined too. The reviewer's second candidate is also real: `vcn < seen + run.length` overflows on a crafted length |
+| H-011 | H | NTFS `off + attr_len > size` wraps in 32 bits, so a huge resident `$DATA` value is accepted and `read_at` copies past `rec[]` - **kernel stack contents to user space** | **verified-open, next** | `ntfs_find_attr` (`off + attr_len`), `ntfs_data_attr` (`at + attr_len`); the value checks then trust that length; `rec[VIBEOS_NTFS_MFT_RECORD_MAX]` is a local in lookup, read_at and a third function; `read_at` copies `attr.value[offset + i]`. Host NTFS tests exist. Fix `len > size - off` after `off <= size`, then **audit every filesystem parser for `offset + length > size`** |
 
 Checked by the reviewer and **not** promoted, recorded so nobody re-reports them:
 the futex waiter slot is kept until its own waiter returns (the earlier ABA is
@@ -57,6 +58,8 @@ closed), and `ARCH_SET_GS` is refused because `%gs` holds per-CPU kernel state.
 Incoming findings first - the user's stated priority - and the core plan is not
 dropped:
 
+0. **H-011 first**: it discloses kernel memory, and its fix is a pattern to sweep
+   through every filesystem parser, M-009 and M-010 included.
 1. H-009 (on the stack secret H-008 added). The exit-window fix, H-008 and M-007 are done.
 2. **H-010 + H-003 together**: a fault-safe user copy is the one fix for both,
    and it is also C5's "real exception table" item. The first attempt failed on
