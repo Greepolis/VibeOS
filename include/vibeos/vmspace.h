@@ -117,6 +117,15 @@ typedef struct vibeos_vmspace_backend {
      * release immediately, which is correct for a uniprocessor and for a host
      * test, and is what this layer did before the hook existed. */
     void (*release_deferred)(uint64_t phys);
+
+    /* How many references to `phys` release_deferred is holding right now.
+     *
+     * Unmapping removes the reverse-map entry at once and hands the reference to
+     * release_deferred, which gives it back only once every core has dropped the
+     * translation. For that long a frame has one more owner than holders, by
+     * design - and fork's audit, comparing the two, called it a mismatch. Null
+     * means nothing is ever held. */
+    uint32_t (*quarantined)(uint64_t phys);
 } vibeos_vmspace_backend_t;
 
 int vibeos_vmspace_init(const vibeos_vmspace_backend_t *backend);

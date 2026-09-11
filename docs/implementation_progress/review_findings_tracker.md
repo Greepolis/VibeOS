@@ -54,7 +54,7 @@ closed), and `ARCH_SET_GS` is refused because `%gs` holds per-CPU kernel state.
 | hw_task_exit makes `next` current with interrupts possibly on; a timer there saves the dying task's kernel frame as next's context | fixed (commit "core: exit switches tasks with interrupts off") | must-be-zero counter `exit_switch_irq_on` red at 4 per boot, 0 with `cli`; twelve boots 12/12. **It was not the cause of the four-worker crash family, or not the only one: the same signature recurred after the fix** (`.boot-evidence/fail-20260911-154006-boot7.log`, rip `0x405b72`, free-page-poison panic). The window was real and stays closed; the family is open again. [boot_repeatability.md](boot_repeatability.md) |
 | THREADS four-worker crash family (new thread faults in musl `start`, stack is the free-page poison) | **open again** | recurred after the exit-window fix; see the row above and [boot_repeatability.md](boot_repeatability.md). The probes so far: no stack frame shared between live siblings; one initial-context re-entry that did not crash |
 | Boot gate hung 48 minutes on a guest that had panicked | fixed (commit "gate: the serial pump returns while a guest is still printing") | the serial pump looped until the socket was empty, so a guest printing without pause - faulting in its own panic path - kept it from returning, and the deadline and silence budget, checked outside it, never ran. `drain_available` returns after 0.25 s; its self-test hangs with the budget removed |
-| `rmap_mismatch=1` with `rmap_audit_torn=0` on a Release boot | **open** | by CLAUDE.md's rule a real mismatch, not the detector. `.boot-evidence/probe-20260911-133143-boot3.log` |
+| `rmap_mismatch=1` with `rmap_audit_torn=0` on a Release boot | fixed for the mechanism found (commit "mm: fork's audit counts the references the TLB quarantine holds") | an unmap removes the holder at once and the owner only when the quarantine drains, so a still-mapped frame has one owner more than holders, with the owner count still. The audit now adds references the quarantine actually holds; any other disagreement still counts. Host test red first. **Not claimed:** the earlier CI Debug report predates the quarantine and is not explained by this |
 
 ## Order of work
 
@@ -66,7 +66,7 @@ dropped:
 0b. H-012 is done.
 1. The network findings H-008, M-007 and H-009 are done, and so is the exit-window fix - which did not end the four-worker crash family; that family is open again.
 2. H-010 + H-003 are done - and with them C5's "real exception table" item.
-3. Every review finding is closed. What remains open is internal: the four-worker crash family and rmap_mismatch.
+3. Every review finding is closed. What remains open is internal: the four-worker crash family.
 4. Core plan C5, remaining: fork not atomic against its own threads
    (address-space lock); descriptors per thread; a must-be-zero check for
    `hw_procstate_t`.

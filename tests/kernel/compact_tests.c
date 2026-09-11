@@ -802,6 +802,73 @@ static void test_no_swap_area_is_reported(void) {
           "and all six are counted as out of reach");
 }
 
+/* rmap_mismatch: a reference held by the TLB quarantine is not a mismatch.
+ *
+ * Found reading the audit after a Release boot reported rmap_mismatch=1 with
+ * rmap_audit_torn=0. vibeos_vmspace_unmap removes the reverse-map entry
+ * immediately and gives the frame's reference to release_deferred, which keeps it
+ * until every core has flushed. A frame still mapped elsewhere therefore has one
+ * owner more than holders for that whole time - with the owner count perfectly
+ * still, so the audit's torn-sample bracket cannot see it - and a fork in that
+ * window counted a mismatch that is the design working.
+ *
+ * Here the quarantine never drains, so the window is held open deterministically:
+ * map a frame in two spaces, unmap it from one, fork the other. */
+static uint64_t g_q_held[16];
+static unsigned g_q_n;
+
+static void cp_quarantine_hold(uint64_t phys) {
+    if (g_q_n < 16u) {
+        g_q_held[g_q_n++] = phys;
+    }
+}
+
+static uint32_t cp_quarantine_count(uint64_t phys) {
+    uint32_t n = 0;
+    unsigned i;
+    for (i = 0; i < g_q_n; i++) {
+        if (g_q_held[i] == phys) {
+            n++;
+        }
+    }
+    return n;
+}
+
+static void test_fork_audit_counts_quarantined_references(void) {
+    vibeos_vmspace_t as, other, child;
+    vibeos_vmspace_backend_t be;
+    uint64_t f;
+
+    if (cp_setup() != 0) {
+        printf("  compact: FAIL setup\n"); g_fail++; return;
+    }
+    memset(&be, 0, sizeof(be));
+    be.map_phys = cp_map;
+    be.alloc_table = cp_alloc_table;
+    be.free_table = cp_free_table;
+    be.shootdown = cp_shootdown;
+    be.release_deferred = cp_quarantine_hold;
+    be.quarantined = cp_quarantine_count;
+    g_q_n = 0;
+    if (vibeos_vmspace_init(&be) != 0 || vibeos_vmspace_create(&as) != 0 ||
+        vibeos_vmspace_create(&other) != 0 || vibeos_vmspace_create(&child) != 0) {
+        printf("  compact: FAIL setup\n"); g_fail++; return;
+    }
+    f = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+    CHECK(f != 0u, "a frame");
+    CHECK(map_as_kernel_does(&as, VA_A, f, VIBEOS_PROT_READ | VIBEOS_PROT_USER) == 0, "map");
+    CHECK(vibeos_vmspace_clone_cow(&other, &as) == 0, "share it");
+    CHECK(vibeos_vmspace_unmap(&other, VA_A) == 1, "unmap one side");
+    CHECK(g_q_n == 1u && vibeos_rmap_count(f) == 1u && vibeos_frame_owners(f) == 2u,
+          "the quarantine holds the reference, the reverse map does not");
+
+    vibeos_mm_stats()->rmap_mismatch = 0;
+    vibeos_mm_stats()->rmap_audit_torn = 0;
+    CHECK(vibeos_vmspace_clone_cow(&child, &as) == 0, "fork");
+    CHECK(vibeos_mm_stats()->rmap_mismatch == 0u,
+          "a reference in quarantine was reported as a mismatch");
+}
+
 int test_compact(void) {
     g_fail = 0;
 
@@ -812,6 +879,7 @@ int test_compact(void) {
     }
 
     test_move_carries_contents_and_mapping();
+    test_fork_audit_counts_quarantined_references();
     test_move_follows_every_holder();
     test_refuses_pinned();
     test_refuses_writable();

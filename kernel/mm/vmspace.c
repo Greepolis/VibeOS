@@ -860,11 +860,18 @@ static int audit_one(vibeos_vmspace_t *as, uint64_t va, uint64_t *pte,
              */
             uint8_t before = vibeos_frame_owners(phys);
             uint32_t holders = vibeos_rmap_count(phys);
+            /* And the references the TLB quarantine is holding. An unmap
+             * removes the holder at once and the owner only when every core has
+             * flushed, so for that long one owner has no holder - with the
+             * owner count still, which the bracket cannot tell from a real
+             * mismatch. Only references actually held are added: a frame the
+             * quarantine does not hold is judged exactly as before. */
+            uint32_t held = g_be.quarantined ? g_be.quarantined(phys) : 0u;
             uint8_t after = vibeos_frame_owners(phys);
 
             if (before != after) {
                 vibeos_mm_stats()->rmap_audit_torn++;
-            } else if (holders != (uint32_t)before) {
+            } else if (holders + held != (uint32_t)before) {
                 vibeos_mm_stats()->rmap_mismatch++;
             }
         }

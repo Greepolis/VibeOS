@@ -144,3 +144,30 @@ A bound on the list walk was drafted as a safety net and then not kept -
 bounding the symptom would have made the real defect survivable and quiet,
 which is the opposite of what this subsystem needs. `rmap_cycles` exists for a
 cycle that arrives some other way.
+
+## rmap_mismatch, and the reference the TLB quarantine holds (2026-09-11)
+
+A Release boot reported `rmap_mismatch=1` with `rmap_audit_torn=0` - by this
+project's rule a disagreement at rest, not a torn sample. Reading the audit next
+to the unmap path gave a mechanism that fits and needs no defect.
+
+`vibeos_vmspace_unmap` removes the reverse-map entry at once and hands the
+frame's reference to `release_deferred`, the TLB quarantine, which gives it back
+only when every core has flushed. For that whole time a frame still mapped
+somewhere else has one owner more than holders - and the owner count does not
+move, so the audit's bracket of two owner reads cannot tell it from a real
+mismatch. A fork landing in that window counted the design working.
+
+The backend has a `quarantined(phys)` hook now, counting the references the
+quarantine holds, and the audit compares `holders + held` with the owners. Only
+references actually held are added: a frame the quarantine does not hold is
+judged exactly as before, so a real missing holder still counts.
+
+`test_fork_audit_counts_quarantined_references` holds the window open with a
+quarantine that never drains - a frame mapped in two spaces, unmapped from one,
+the other forked - and was red on the old audit. Host tests green, `check.sh
+all` green, twelve boots 12/12.
+
+What this does not explain: the clang Debug CI report described in CLAUDE.md
+came before the quarantine existed. The torn-sample bracket was the response to
+that one; whether anything else was behind it is not known.

@@ -2164,6 +2164,22 @@ static void hw_tlbq_drain(void) {
     }
 }
 
+/* How many references to `phys` the quarantine holds - the vmspace audit's
+ * `quarantined` hook. Under the quarantine's own lock; nothing it calls takes
+ * another. */
+static uint32_t hw_tlbq_count(uint64_t phys) {
+    uint32_t i, n = 0;
+
+    hw_spin_lock(&g_tlbq_lock);
+    for (i = 0; i < HW_TLBQ_SLOTS; i++) {
+        if (g_tlbq[i].used && g_tlbq[i].phys == phys) {
+            n++;
+        }
+    }
+    hw_spin_unlock(&g_tlbq_lock);
+    return n;
+}
+
 static void hw_tlbq_put(uint64_t phys) {
     uint32_t i, c, live = 0;
     int placed = 0;
@@ -2919,6 +2935,7 @@ static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
                  * global pages. No IPI, no rendezvous, no stall - the timer
                  * makes every core quiescent on its own. */
                 vb.release_deferred = hw_tlbq_put;
+                vb.quarantined = hw_tlbq_count;
                 /* The two hooks that make page-out and page-in real.
                  *
                  * They were left null and the whole of P5 sat above them:
