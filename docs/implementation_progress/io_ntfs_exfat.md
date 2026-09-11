@@ -98,3 +98,40 @@ These filesystems did not cause that. They changed the timing and the
 allocation pattern enough to make it more likely, which is the only role they
 play in it. It is recorded here rather than in a filesystem commit because it
 belongs to the memory manager, and it is open.
+
+## H-011: an attribute length that wrapped the record open (fixed 2026-09-11)
+
+`ntfs_find_attr` bounded an attribute with `off + attr_len > size` and
+`ntfs_data_attr` with `at + attr_len > size`, both in `uint32_t`. An attribute
+length from the volume wraps that sum: `0xFFFFFFF0` at offset 64 adds up to 48
+and passes. The resident-value checks after it are correct only if `attr_len`
+is, so a value longer than the whole record was accepted.
+
+What made that worse than a wrong read: the MFT record is a local array on the
+kernel stack in lookup, in `read_at` and in one more function, and `read_at`
+copies the resident value to its caller. The bytes after the array - whatever
+the kernel stack held - went to user space.
+
+Every bound in both functions is now `length > size - offset`, once `offset <=
+size` is known. That is the rule for any length read from a volume: the sum
+wraps, the difference cannot once the offset is inside.
+
+`test_ntfs_attr_length_wrap` edits record 9 of the host test image - a resident
+`$DATA` holding "inner" - to that length and a 4096-byte value, remounts, and
+looks the file up. Refusing it is a correct answer; if it is found, neither its
+size nor a read may exceed the record. Red on the old code, green on the new.
+It does not depend on what the stack happens to contain.
+
+The finding asked for the same sweep through every filesystem parser, and it
+was done. Record walks with 8- or 16-bit lengths over small offsets - ext2
+directory entries, ISO9660 records, NTFS index entries and run headers - cannot
+wrap 32 bits. The four `read_at` paths (exFAT, ext2, ISO9660, NTFS) use
+`offset + len > node->size` after establishing `offset < size`: that wraps
+only with a size declared within 4 GiB of 2^64 and an offset in that range,
+and then `len` is not trimmed. Much harder to reach, still wrong, and recorded
+in the review tracker to be fixed with M-009 and M-010.
+
+Host tests green. `check.sh all` was **red once**: one of its three boots failed, and
+its log was overwritten by the next boot, because the check loop kept no
+evidence - so that failure could not be read. The loop keeps failed logs now.
+Twelve boots on the same kernel, every failure kept: 12 pass, 0 fail.

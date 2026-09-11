@@ -115,11 +115,18 @@ static int ntfs_data_attr(const uint8_t *rec, uint32_t size,
         return -1;
     }
     at = (uint32_t)(attr - rec);
-    if (at + 8u > size) {
+    /* Every bound here is `length > size - offset` once `offset <= size` is
+     * known, never `offset + length > size`: the sum is 32-bit, and an
+     * attribute length from the volume wraps it (H-011). A length of
+     * 0xFFFFFFF0 at offset 64 summed to 48 and passed, and the resident value
+     * checks below then trusted it - a value longer than the record was
+     * accepted, and read_at copied the bytes after the record, which is a
+     * local array on the kernel stack, to user space. */
+    if (at > size || size - at < 8u) {
         return -1;
     }
     attr_len = rd32(attr + 4);
-    if (attr_len < 8u || at + attr_len > size) {
+    if (attr_len < 8u || attr_len > size - at) {
         return -1;   /* find_attr promised this; not trusting it costs nothing */
     }
 
@@ -178,7 +185,7 @@ static int ntfs_data_attr(const uint8_t *rec, uint32_t size,
 static const uint8_t *ntfs_find_attr(const uint8_t *rec, uint32_t size, uint32_t type) {
     uint32_t off = rd16(rec + 0x14);
 
-    while (off + 8u <= size) {
+    while (off <= size && size - off >= 8u) {
         uint32_t attr_type = rd32(rec + off);
         uint32_t attr_len;
 
@@ -188,7 +195,7 @@ static const uint8_t *ntfs_find_attr(const uint8_t *rec, uint32_t size, uint32_t
         attr_len = rd32(rec + off + 4);
         /* A zero or overlong length would loop forever or read past the
          * record; a corrupt record must end the walk. */
-        if (attr_len < 8u || off + attr_len > size) {
+        if (attr_len < 8u || attr_len > size - off) {   /* not off + attr_len: it wraps (H-011) */
             return 0;
         }
         if (attr_type == type) {

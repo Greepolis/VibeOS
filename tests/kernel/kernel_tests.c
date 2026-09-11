@@ -7305,6 +7305,51 @@ static int test_ntfs_list(void) {
     return 0;
 }
 
+/* H-011: an attribute length that wraps must not open the record up.
+ *
+ * ntfs_find_attr and ntfs_data_attr both checked `offset + attr_len > size` in
+ * 32 bits. A length of 0xFFFFFFF0 at offset 64 sums to 48, passes, and makes
+ * every later check that trusts attr_len meaningless - so a resident value of
+ * 4096 bytes was accepted from a record of NT_RECORD bytes. The record is a
+ * local array on the kernel stack in lookup and read_at, and read_at copies
+ * the value to the caller: the bytes after the array went to user space.
+ *
+ * Asserted without depending on what the stack holds: refusing the file is a
+ * correct answer, and if it is found, neither its size nor a read may exceed
+ * what the record can contain. */
+static int test_ntfs_attr_length_wrap(void) {
+    vibeos_ntfs_t fs;
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    vibeos_fsmount_t mnt;
+    vibeos_fs_node_t node;
+    static uint8_t buf[VIBEOS_BLOCK_SIZE * 16u];
+    long got;
+
+    if (nt_mount(&fs, &bc, &dev) != 0) {
+        return -1;
+    }
+    /* Record 9 is /sub/inner.dat: a resident $DATA at offset 64 holding "inner". */
+    nt_w32(nt_record(9) + 64 + 4, 0xFFFFFFF0u);     /* attr_len: 64 + this wraps to 48 */
+    nt_w32(nt_record(9) + 64 + 0x10, 4096u);        /* value_len: longer than the record */
+    vibeos_blockcache_invalidate(&bc);
+    if (vibeos_ntfs_mount(&fs, &bc, 0) != 0 ||
+        vibeos_fs_mount(&mnt, vibeos_ntfs_ops(), &fs, "ntfs") != 0) {
+        return -1;
+    }
+    if (vibeos_fs_lookup(&mnt, "/sub/inner.dat", &node) != 0) {
+        return 0;   /* refused outright */
+    }
+    if (node.size > NT_RECORD) {
+        return -1;
+    }
+    got = vibeos_fs_read_at(&mnt, &node, 0, buf, sizeof(buf));
+    if (got > (long)NT_RECORD) {
+        return -1;
+    }
+    return 0;
+}
+
 static int test_ntfs_refusals(void) {
     vibeos_ntfs_t fs;
     vibeos_blockcache_t bc;
@@ -8289,6 +8334,7 @@ int main(void) {
     RUN_TEST(test_ntfs_mount_and_read);
     RUN_TEST(test_ntfs_list);
     RUN_TEST(test_ntfs_refusals);
+    RUN_TEST(test_ntfs_attr_length_wrap);
     RUN_TEST(test_journal_commit);
     RUN_TEST(test_journal_power_cut);
     RUN_TEST(test_journal_stale_commit);

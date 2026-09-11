@@ -17,11 +17,23 @@ echo "$out" | grep -qE '^bootloader-tests=pass' || bad=1
 echo "$out" | grep -qE 'subsystem=ok'    || bad=1
 echo "$out" | grep -qE 'blast-radius=ok' || bad=1
 echo "$out" | grep -qE 'mustbezero-asserted=ok' || bad=1
+# A failed boot's log is kept, named for the run. This loop used to print only
+# the status line, and the next boot overwrote qemu-cli-serial.log - so a
+# failure in boot 1 of the H-011 check left nothing to read at all.
+RUN=$(date +%Y%m%d-%H%M%S)
+mkdir -p .boot-evidence
 for i in 1 2 3; do
   python3 scripts/qemu-cli-smoke-linux.py build-clang-Release 300 >/dev/null 2>&1
   line=$(head -1 qemu-cli-summary.txt)
-  echo "  boot$i $line"
-  case "$line" in *status=pass*) ;; *) bad=1 ;; esac
+  reason=$(grep -o 'reason=[^ ]*' qemu-cli-summary.txt | head -1)
+  echo "  boot$i $line $reason"
+  case "$line" in
+    *status=pass*) ;;
+    *) bad=1
+       cp qemu-cli-serial.log ".boot-evidence/check-fail-$RUN-boot$i.log"
+       cp qemu-cli-summary.txt ".boot-evidence/check-fail-$RUN-boot$i.summary"
+       echo "  (kept: .boot-evidence/check-fail-$RUN-boot$i.log)" ;;
+  esac
 done
 echo "VERDICT=$([ $bad -eq 0 ] && echo green || echo RED)"
 exit $bad
