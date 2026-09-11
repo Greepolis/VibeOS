@@ -5979,6 +5979,7 @@ static long hw_pipe_read(hw_fd_t *f, uint64_t buf, uint64_t len) {
     for (;;) {
         uint64_t copied = 0;
         int faulted = 0;
+        int eof = 0;
 
         /* In contiguous runs of the ring, each through the fault-tolerant copy,
          * and consumed only once copied: the caller may have slept below with
@@ -6001,6 +6002,12 @@ static long hw_pipe_read(hw_fd_t *f, uint64_t buf, uint64_t len) {
             pp->head = (uint32_t)((pp->head + run) % VIBEOS_HW_PIPE_BYTES);
             pp->count -= (uint32_t)run;
         }
+        /* End of file is decided here, in the same critical section that found
+         * the buffer empty (M-003, the read half). It used to be decided after
+         * the unlock, reading `writers` unguarded: a writer could enqueue and
+         * close in between, and the reader returned end-of-file with those bytes
+         * still in the buffer - the shape of `ls | wc -l` in the boot script. */
+        eof = (copied == 0u && !faulted && pp->writers == 0u);
         hw_spin_unlock(&g_pipe_lock);
         if (faulted && copied == 0u) {
             return -VIBEOS_EFAULT;
@@ -6009,8 +6016,8 @@ static long hw_pipe_read(hw_fd_t *f, uint64_t buf, uint64_t len) {
             hw_keyboard_wake();   /* a blocked writer may now have room */
             return (long)copied;
         }
-        if (pp->writers == 0u) {
-            return 0;   /* end of file: nobody can ever write again */
+        if (eof) {
+            return 0;   /* end of file: empty, and nobody can ever write again */
         }
         /* Nothing yet, and somebody could still write. Park instead of
          * spinning, so the writer actually gets a chance to run - unless a
@@ -6032,22 +6039,27 @@ static long hw_pipe_write(hw_fd_t *f, uint64_t buf, uint64_t len) {
     while (written < len) {
         uint64_t before = written;
 
-        if (pp->readers == 0u) {
-            /* Writing into a pipe nobody will read. Linux raises SIGPIPE and
-             * returns EPIPE; with no handler the default action ends the
-             * process, which is what stops a pipeline from filling memory
-             * after its reader has gone. */
-            if (g_current_task >= 0) {
-                (void)hw_signal_raise(g_current_task, VIBEOS_SIGPIPE);
-            }
-            return written > 0u ? (long)written : -VIBEOS_EPIPE;
-        }
         {
             int faulted = 0;
 
             /* The same, in the other direction: a writer that blocked on a full
              * pipe reads its buffer again after waking (H-010). */
             hw_spin_lock_named(&g_pipe_lock, __func__);
+            /* Writing into a pipe nobody will read. Linux raises SIGPIPE and
+             * returns EPIPE; with no handler the default action ends the
+             * process, which is what stops a pipeline from filling memory
+             * after its reader has gone.
+             *
+             * Tested under the lock that enqueues (M-003, the write half): it
+             * was tested before taking it, so the last reader could close in
+             * between and the bytes were accepted for nobody, with no signal. */
+            if (pp->readers == 0u) {
+                hw_spin_unlock(&g_pipe_lock);
+                if (g_current_task >= 0) {
+                    (void)hw_signal_raise(g_current_task, VIBEOS_SIGPIPE);
+                }
+                return written > 0u ? (long)written : -VIBEOS_EPIPE;
+            }
             while (written < len && pp->count < VIBEOS_HW_PIPE_BYTES) {
                 uint64_t room = VIBEOS_HW_PIPE_BYTES - pp->count;
                 uint64_t run = VIBEOS_HW_PIPE_BYTES - pp->tail;

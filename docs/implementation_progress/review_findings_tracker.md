@@ -26,7 +26,7 @@ Earlier reviews are closed and written up: the sixth
 | H-004 | H | two region-list heads into one pool across threads | fixed `ffa8463` | [core_c5_process_state.md](core_c5_process_state.md) |
 | H-005 | H | exit_group ended only the calling thread | fixed `ffa8463` | same file |
 | M-003 (a) | M | signal dispositions copied per thread | fixed `ffa8463` | same file |
-| M-003 (b) | M | pipe write tests `readers` outside `g_pipe_lock`; read half worse | **verified-open** | [pipe_eof_race_open.md](pipe_eof_race_open.md). Deferred until C5 settles |
+| M-003 (b) | M | pipe write tests `readers` outside `g_pipe_lock`; read half worse | fixed (commit "core: a pipe decides end of file under the lock that holds its data") | both decisions moved into the critical section with the data they depend on. **No red test**: the windows are a few instructions between two cores. [pipe_eof_race_open.md](pipe_eof_race_open.md) |
 | H-006 | H | exec from a thread left siblings running and the wrong id | fixed `8a3903c` | THREADS_C5_EXEC, red first |
 | M-004 | M | tkill/tgkill could not reach non-leader threads | fixed `d6d6b1b` | reported again later; already closed |
 | H-007 | H | pid resolved to a slot index, used unlocked (ABA); lookups matched slots being built | fixed `da50ce6` | **no red test**: the window does not reproduce in a boot; stated in the commit |
@@ -66,7 +66,7 @@ dropped:
 0b. H-012 is done.
 1. The network findings H-008, M-007 and H-009 are done, and so is the exit-window fix - which did not end the four-worker crash family; that family is open again.
 2. H-010 + H-003 are done - and with them C5's "real exception table" item.
-3. M-003 (b) pipes. M-008, M-009, M-010 and the read-path audit are done.
+3. Every review finding is closed. What remains open is internal: the four-worker crash family and rmap_mismatch.
 4. Core plan C5, remaining: fork not atomic against its own threads
    (address-space lock); descriptors per thread; a must-be-zero check for
    `hw_procstate_t`.

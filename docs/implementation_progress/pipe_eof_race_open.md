@@ -1,63 +1,42 @@
-# Pipes decide end-of-file outside their lock
+# Pipes decided end-of-file outside their lock
 
-**Status: OPEN.** Verified against the source, not yet fixed. Deferred on purpose
-until C5 lands, so that a failure in either change can be attributed to one of
-them rather than to both.
+**Status: FIXED (2026-09-11).** An external review reported the write half; the
+read half, which it mentioned only as "ideally", was the more serious.
 
-An external review reported the write half. It is real, and the read half -
-which the review mentioned only as "ideally" - is the more serious of the two.
+## The write half
 
-## The write half, as reported
+`hw_pipe_write` tested `pp->readers == 0` before taking `g_pipe_lock`, while
+`hw_pipe_release` decrements `readers` under it. A writer could read one reader,
+the last reader close on another core, and the writer then enqueue anyway:
+`write` returned the full length with no `SIGPIPE` and no `EPIPE`, for bytes
+nobody could read.
 
-`hw_pipe_write` tests `pp->readers == 0` **before** taking `g_pipe_lock`, while
-`hw_pipe_release` decrements `readers` under that lock. So a writer can read
-`readers = 1`, the last reader closes on another core, and the writer then takes
-the lock and enqueues anyway.
+## The read half, which was worse
 
-The effect is a semantic violation rather than corruption. If everything fits in
-that one locked pass, `write` returns the full length with no `SIGPIPE` and no
-`EPIPE`, for bytes nobody can ever read. The buffer is not recycled under the
-writer's feet - `hw_pipe_release` frees a pipe only when readers *and* writers
-are both zero, and the writer still holds its end - so the bytes simply sit there
-until the writer closes.
+`hw_pipe_read` found the buffer empty under the lock, released it, and only then
+tested `writers == 0` - unlocked - to decide end of file. A writer could enqueue
+and close in between, and the reader returned end of file with those bytes still
+in the buffer: lost, silently, in the shape of an ordinary pipeline such as the
+boot script's `ls /EFI/BOOT | wc -l`.
 
-## The read half, which is worse
+## The fix
 
-`hw_pipe_read` takes the lock, finds `count == 0`, releases it, and only then
-tests `pp->writers == 0` - unlocked - to decide end-of-file:
+Each decision is made in the critical section that holds the data it depends on,
+with no new lock. The reader computes end of file - nothing copied, nothing
+faulted, no writers - before it unlocks. The writer tests `readers` right after
+taking the lock and before enqueuing, raising `SIGPIPE` after unlocking.
 
-```
-reader                              writer
-lock; count == 0; unlock
-                                    lock; enqueue; unlock
-                                    close -> writers = 0
-writers == 0 -> return 0 (EOF)
-```
+A missed wakeup between the reader's unlock and its `sti; hlt` is still possible
+and still harmless: `hlt` returns on the next timer tick, so it costs at most one
+tick of latency.
 
-The reader reports end-of-file **with data still in the buffer**. Not a late
-signal: bytes written before the close, lost without a trace. The reader still
-holds its end, so the pipe is not recycled - but a program that reads EOF closes,
-and that close is what finally discards them.
+## What was not done
 
-That is the shape of an ordinary pipeline, where the writer writes and exits, and
-the boot script itself runs one: `ls /EFI/BOOT | wc -l`. A rare short count there
-would present as an intermittent failure somewhere in the boot, not as a pipe.
+No red test. Both windows are a few instructions between two cores, and a loop
+racing a short write against a close would pass nearly every time - a test that
+cannot fail proves nothing, and the case file would have to say so. The fix is
+structural and is argued from the code.
 
-## Also present, and harmless
-
-Between the reader's unlock and its `sti; hlt`, a writer can enqueue and call
-`hw_keyboard_wake` before the reader sleeps. That is a missed wakeup, but `hlt`
-also returns on the next timer tick, so it costs up to one tick of latency rather
-than a hang.
-
-## The fix, when it is taken
-
-Both decisions move inside `g_pipe_lock` and are made together with the data they
-depend on: the writer tests `readers` in the same critical section that enqueues,
-and the reader tests `writers` in the same one that found the buffer empty.
-Neither needs a new lock.
-
-A test for the read half has to produce the interleaving on demand, and a loop
-that races a short write against a close will only do that some of the time. The
-case file should say which of those it managed, rather than counting a green run
-as coverage.
+`check.sh all` green with the boot's pipelines (`BUSYBOX_SH_OK`, `PIPE_OK`).
+Twelve boots: 11 pass, 1 fail - the THREADS four-worker crash family
+(`.boot-evidence/fail-20260911-162643-boot12.log`, rip 0x405b72, panic), not a pipe.
