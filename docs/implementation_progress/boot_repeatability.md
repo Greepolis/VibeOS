@@ -545,3 +545,25 @@ handed out twice, or a physical frame behind it reclaimed early - the
 does establish is that the kernel stack garbage is downstream: the first thing
 to go wrong is visible in ring 3, one instruction into a new thread.
 
+## Two probes for the user-side sign, and what they did not find
+
+Both lived in the tree only for the measurement; the second is kept as
+`.boot-evidence/probe-thread-stack-v2.diff`.
+
+- **Is a new thread's stack top a frame a live sibling also uses?** Recorded at
+  clone and compared across the thread group. Zero hits. One lesson from the
+  first run of it: a probe line at WARN makes the gate fail every boot as
+  `kernel_reported_problems` - eleven of twelve "failures" in that run were the
+  probe's own lines. Probe at DEBUG or at ERROR only for what should fail.
+- **Is a thread entered from its initial context after it has already run?**
+  Checked in `hw_task_load_cpu_state`: rsp and rip still the clone values, and
+  the word at the stack top already the return address `__clone` pushes. Ten
+  boots (`probe-20260911-130736`, every log kept): one hit, boot 5, pid 0x55 on
+  its second entry. That thread did **not** crash and exited 0 - a thread truly
+  restarted there would have taken the return address as its argument and
+  faulted exactly as the signature does. So that load was most likely never
+  returned to, and the mechanism is still not known. `ctx` is written in only
+  three places: preemption in `hw_schedule`, and fork and clone.
+
+The family recurred once more in the H-007 series with the same instruction
+(`0x405b72` in that build, the same `start` as before) and the same panic.

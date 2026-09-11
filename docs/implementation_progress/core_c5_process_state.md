@@ -224,6 +224,33 @@ core, and reading it afterwards could copy a stranger's dispositions.
   address belongs to the image that set it, and was left for the new image's
   exit to zero, on every exec. Red first (`THREADS_C5_EXEC_FAIL: exited 7, expected 23` - the leader
   outlived the exec), green after; twelve boots: 12 pass, 0 fail.
+
+  **A slot index is not a reference** (H-007, verified). The syscalls that name a
+  task by id - kill, tkill, tgkill, setpgid, getsid, setsid - resolved it to a
+  `g_tasks` index and then used the index without a lock, and so did the sibling
+  loops of exit_group and exec. A slot is reused as soon as its task is reaped,
+  so between the two a fork could take it: `kill(old_pid, SIGKILL)` would land on
+  the new tenant, whose permission check was the one made. pids are never reused,
+  so the index is safe exactly while `g_sched_lock` is held - every allocation and
+  every publish to FREE (thread exit, waitpid's reap, exec releasing a zombie
+  leader) happens under it - and lookup, check and act are now one critical
+  section. exit_group's loop matched on `ps`, which does not help: the
+  `hw_procstate_t` pool is reused too.
+
+  A second half turned up while reading it: allocation clears the address space,
+  descriptors and thread flags but leaves `is_user`, `pid`, `tgid`, `sid` and
+  `pgid` until fork or clone rewrites them, so a slot still being built answered
+  to a dead process's id. Lookups skip RESERVED now.
+
+  Two comments said `hw_signal_raise` could not run under `g_sched_lock` because
+  it reaches `hw_task_set_state`. That function takes no lock, and `hw_schedule`
+  already calls it under this one; one of the two comments was written for
+  H-006 earlier the same day and repeated the other without checking.
+
+  No red test, and that is a statement rather than an omission: the window is a
+  few instructions between two cores, and a stage that cannot fail would prove
+  nothing. The existing signal stages are the regression. `check.sh all` green;
+  twelve boots: 11 pass, 1 fail - the four-worker THREADS family, same unhandled write at the same instruction (0x405b72 in this build), ending in the free-page-poison panic.
 - **No must-be-zero counter for the new structure.** One was designed - a
   reference dropped below zero - and not added, because a counter nothing reads is
   this project's most repeated defect, and reading it means touching the portable

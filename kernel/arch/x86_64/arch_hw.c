@@ -8301,20 +8301,22 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
                 g_tasks[i].is_thread = 1;
             }
         }
-        hw_spin_unlock(&g_sched_lock);
 
-        /* Not under g_sched_lock: hw_signal_raise can reach hw_task_set_state,
-         * the same reason exit_group and kill iterate without it. And not
-         * through exit_group's flag: nothing that dies here should report a
-         * group exit code - they are all threads now, and threads report
-         * nothing. */
+        /* Still under g_sched_lock: slots found by tgid can be reused the moment
+         * the lock is dropped (H-007). This used to drop it first, under a note
+         * that hw_signal_raise reaches hw_task_set_state - which takes no lock.
+         * And not through exit_group's flag: nothing that dies here should
+         * report a group exit code - they are all threads now, and threads
+         * report nothing. */
         for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
             if (i != me && g_tasks[i].is_user && g_tasks[i].tgid == tgid &&
                 g_tasks[i].state != HW_TASK_FREE &&
+                g_tasks[i].state != HW_TASK_RESERVED &&
                 g_tasks[i].state != HW_TASK_ZOMBIE) {
                 (void)hw_signal_raise(i, VIBEOS_SIGKILL);
             }
         }
+        hw_spin_unlock(&g_sched_lock);
 
         /* Wait until they are gone, sleeping. Unbounded on purpose: a sibling in
          * a syscall finishes it and dies on the way out, and one blocked in a
@@ -8830,9 +8832,12 @@ static int hw_signal_raise(int task_index, uint32_t sig) {
  * otherwise report "killed by 9" - which is what an exit_group built from
  * SIGKILL alone produces, and not what Linux reports.
  *
- * The first caller's code wins, as on Linux. Not done under g_sched_lock:
- * hw_signal_raise can take it through hw_task_set_state, the same reason
- * kill() iterates without it. */
+ * The first caller's code wins, as on Linux. The loop runs under g_sched_lock:
+ * it matches slots on ps, and both slots and hw_procstate_t are reused, so an
+ * unlocked match can be a new tenant (H-007). An earlier version of this comment
+ * said the lock could not be held because hw_signal_raise reaches
+ * hw_task_set_state; that function takes no lock, and hw_schedule calls it
+ * under this one. */
 static void hw_task_exit_group(uint64_t code) {
     int me = g_current_task;
     hw_procstate_t *ps;
@@ -8853,12 +8858,15 @@ static void hw_task_exit_group(uint64_t code) {
         }
         code = ps->exit_group_code;
     }
+    hw_spin_lock_named(&g_sched_lock, __func__);
     for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
         if (i != me && g_tasks[i].ps == ps && g_tasks[i].state != HW_TASK_FREE &&
+            g_tasks[i].state != HW_TASK_RESERVED &&
             g_tasks[i].state != HW_TASK_ZOMBIE) {
             (void)hw_signal_raise(i, VIBEOS_SIGKILL);
         }
     }
+    hw_spin_unlock(&g_sched_lock);
     g_tasks[me].exit_signal = 0;
     hw_task_exit(code);
 }
@@ -8866,10 +8874,24 @@ static void hw_task_exit_group(uint64_t code) {
 /* Find a task by thread-group id: kill(pid) names a process, and any of its
  * threads will do as the place to record a pending signal. Threads are looked
  * up by hw_task_by_tid instead, which matches the thread id. */
+/* An index, not a reference - H-007, verified. A slot is reused the moment
+ * its task is reaped, so an index a syscall found a few instructions ago can
+ * name a different task by the time it is used: kill(old_pid, SIGKILL) then
+ * lands on whoever forked into the slot. pids are never reused, so what makes
+ * the index safe is holding g_sched_lock from the lookup to the use - every
+ * allocation and every publish to FREE is done under it. Callers that act on
+ * the result take it; hw_signal_raise is safe under it, since
+ * hw_task_set_state takes no lock of its own and hw_schedule already calls it
+ * there.
+ *
+ * RESERVED is skipped for the second half of the same finding: allocation
+ * leaves the previous tenant's pid, tgid, sid and pgid in place until fork or
+ * clone rewrites them, so a slot being built answers to a dead process's id. */
 static int hw_task_by_pid(uint32_t pid) {
     int i;
     for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
         if (g_tasks[i].is_user && g_tasks[i].state != HW_TASK_FREE &&
+            g_tasks[i].state != HW_TASK_RESERVED &&
             g_tasks[i].tgid == pid) {
             return i;
         }
@@ -8894,6 +8916,7 @@ static int hw_task_by_tid(uint32_t tid) {
     int i;
     for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
         if (g_tasks[i].is_user && g_tasks[i].state != HW_TASK_FREE &&
+            g_tasks[i].state != HW_TASK_RESERVED &&
             g_tasks[i].pid == tid) {
             return i;
         }
@@ -9006,6 +9029,7 @@ static long hw_sys_kill(uint64_t target_pid, uint64_t sig) {
     int target;
     int delivered = 0;
     int64_t signed_pid = (int64_t)target_pid;
+    long r;
 
     if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
         return -VIBEOS_EINVAL;
@@ -9013,6 +9037,8 @@ static long hw_sys_kill(uint64_t target_pid, uint64_t sig) {
     if (sig >= VIBEOS_HW_NSIG) {
         return -VIBEOS_EINVAL;
     }
+    /* Every branch below resolves ids to slots and acts on them, so every one
+     * holds g_sched_lock from the lookup to the act. See hw_task_by_pid. */
     if (sig == 0u) {
         if (signed_pid <= 0) {
             signed_pid = g_tasks[g_current_task].tgid;
@@ -9021,66 +9047,81 @@ static long hw_sys_kill(uint64_t target_pid, uint64_t sig) {
          * negative that used to be here could never run. CodeQL called it what
          * it was - a comparison whose result is always the same - and a dead
          * branch in a signal path is worth removing rather than explaining. */
+        hw_spin_lock_named(&g_sched_lock, __func__);
         target = hw_task_by_pid((uint32_t)signed_pid);
         if (target < 0) {
-            return -VIBEOS_ESRCH;
+            r = -VIBEOS_ESRCH;
+        } else {
+            r = hw_signal_permitted(target) ? 0 : -VIBEOS_EPERM;
         }
-        return hw_signal_permitted(target) ? 0 : -VIBEOS_EPERM;
+        hw_spin_unlock(&g_sched_lock);
+        return r;
     }
     if (signed_pid < 0 || signed_pid == 0) {
         uint32_t group = signed_pid < 0 ? (uint32_t)(-signed_pid) : g_tasks[g_current_task].pgid;
         int i;
+        hw_spin_lock_named(&g_sched_lock, __func__);
         for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
             if (g_tasks[i].is_user && g_tasks[i].state != HW_TASK_FREE &&
+                g_tasks[i].state != HW_TASK_RESERVED &&
                 g_tasks[i].pgid == group && g_tasks[i].sid == g_tasks[g_current_task].sid) {
                 if (hw_signal_raise(i, (uint32_t)sig) == 0) {
                     delivered++;
                 }
             }
         }
+        hw_spin_unlock(&g_sched_lock);
         return delivered == 0 ? -VIBEOS_ESRCH : 0;
     }
+    hw_spin_lock_named(&g_sched_lock, __func__);
     target = hw_task_by_pid((uint32_t)signed_pid);
     if (target < 0) {
-        return -VIBEOS_ESRCH;
-    }
-    if (!hw_signal_permitted(target)) {
+        r = -VIBEOS_ESRCH;
+    } else if (!hw_signal_permitted(target)) {
         /* EPERM and not ESRCH: the caller is being refused, not lied to about
          * whether the process exists. Hiding existence would be a different
          * decision, and this kernel's group branch does not make it either. */
-        return -VIBEOS_EPERM;
+        r = -VIBEOS_EPERM;
+    } else {
+        r = (hw_signal_raise(target, (uint32_t)sig) == 0) ? 0 : -VIBEOS_EINVAL;
     }
-    return (hw_signal_raise(target, (uint32_t)sig) == 0) ? 0 : -VIBEOS_EINVAL;
+    hw_spin_unlock(&g_sched_lock);
+    return r;
 }
 
 static long hw_sys_setpgid(uint64_t requested_pid, uint64_t requested_pgid) {
     uint32_t pid;
     int target;
+    int leader_slot;
     int leader;
+    long r;
     if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
         return -VIBEOS_EINVAL;
     }
     pid = requested_pid == 0 ? g_tasks[g_current_task].tgid : (uint32_t)requested_pid;
-    target = hw_task_by_pid(pid);
-    if (target < 0) {
-        return -VIBEOS_ESRCH;
-    }
-    if (g_tasks[target].sid != g_tasks[g_current_task].sid) {
-        return -VIBEOS_EPERM;
-    }
     /* Both arms cast to int explicitly. `pid` is uint32_t, so the conditional
      * otherwise takes the unsigned type and converts back on assignment - the
      * guard below still works, but the reader has to prove that, and the
      * compiler warns rather than take it on faith. */
     leader = requested_pgid == 0 ? (int)pid : (int)requested_pgid;
-    if (leader <= 0 || hw_task_by_pid((uint32_t)leader) < 0) {
-        return -VIBEOS_ESRCH;
+    /* Two lookups and a write to one of the slots found: under g_sched_lock,
+     * or the write can land on a task that took the slot in between (H-007). */
+    hw_spin_lock_named(&g_sched_lock, __func__);
+    target = hw_task_by_pid(pid);
+    if (target < 0) {
+        r = -VIBEOS_ESRCH;
+    } else if (g_tasks[target].sid != g_tasks[g_current_task].sid) {
+        r = -VIBEOS_EPERM;
+    } else if (leader <= 0 || (leader_slot = hw_task_by_pid((uint32_t)leader)) < 0) {
+        r = -VIBEOS_ESRCH;
+    } else if (g_tasks[leader_slot].sid != g_tasks[target].sid) {
+        r = -VIBEOS_EPERM;
+    } else {
+        g_tasks[target].pgid = (uint32_t)leader;
+        r = 0;
     }
-    if (g_tasks[hw_task_by_pid((uint32_t)leader)].sid != g_tasks[target].sid) {
-        return -VIBEOS_EPERM;
-    }
-    g_tasks[target].pgid = (uint32_t)leader;
-    return 0;
+    hw_spin_unlock(&g_sched_lock);
+    return r;
 }
 
 static long hw_sys_setsid(void) {
@@ -9095,45 +9136,65 @@ static long hw_sys_setsid(void) {
     }
     current->sid = current->tgid;
     current->pgid = current->tgid;
+    /* Writes into other slots found by id: under g_sched_lock (H-007). */
+    hw_spin_lock_named(&g_sched_lock, __func__);
     for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
         if (i != g_current_task && g_tasks[i].is_user &&
-            g_tasks[i].state != HW_TASK_FREE && g_tasks[i].tgid == current->tgid) {
+            g_tasks[i].state != HW_TASK_FREE &&
+            g_tasks[i].state != HW_TASK_RESERVED &&
+            g_tasks[i].tgid == current->tgid) {
             g_tasks[i].sid = current->sid;
             g_tasks[i].pgid = current->pgid;
         }
     }
+    hw_spin_unlock(&g_sched_lock);
     return (long)current->sid;
 }
 
 static long hw_sys_getsid(uint64_t requested_pid) {
     int target;
     uint32_t pid;
+    long r;
     if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
         return -VIBEOS_EINVAL;
     }
     pid = requested_pid == 0 ? g_tasks[g_current_task].tgid : (uint32_t)requested_pid;
+    /* The sid is read from the slot the lookup found, so the two are one
+     * critical section: otherwise the answer can be another process's (H-007). */
+    hw_spin_lock_named(&g_sched_lock, __func__);
     target = hw_task_by_pid(pid);
-    return target < 0 ? -VIBEOS_ESRCH : (long)g_tasks[target].sid;
+    r = target < 0 ? -VIBEOS_ESRCH : (long)g_tasks[target].sid;
+    hw_spin_unlock(&g_sched_lock);
+    return r;
 }
 
 static long hw_sys_tkill(uint64_t target_tid, uint64_t sig) {
     int target;
+    long r;
 
     if (g_current_task < 0 || !g_tasks[g_current_task].is_user ||
         sig >= VIBEOS_HW_NSIG) {
         return -VIBEOS_EINVAL;
     }
+    /* Lookup, check and raise as one critical section (H-007). */
+    hw_spin_lock_named(&g_sched_lock, __func__);
     target = hw_task_by_tid((uint32_t)target_tid);
     if (target >= 0 && !hw_signal_permitted(target)) {
-        return -VIBEOS_EPERM;   /* same rule as kill; see hw_signal_permitted */
+        r = -VIBEOS_EPERM;   /* same rule as kill; see hw_signal_permitted */
+    } else if (target < 0) {
+        r = -VIBEOS_ESRCH;
+    } else if (sig == 0u) {
+        r = 0;
+    } else {
+        r = (hw_signal_raise(target, (uint32_t)sig) == 0) ? 0 : -VIBEOS_EINVAL;
     }
-    if (target < 0) {
-        return -VIBEOS_ESRCH;
+    hw_spin_unlock(&g_sched_lock);
+    if (sig == 0u || r != 0) {
+        return r;
     }
-    if (sig == 0u) {
-        return 0;
-    }
-    /* One line, one critical section: puts and print_hex each take the console lock on their own. */
+    /* After the lock, not inside it: the console lock is never taken under
+     * g_sched_lock by choice here. One line, one critical section: puts and
+     * print_hex each take the console lock on their own. */
     vibeos_x86_64_serial_lock();
     vibeos_x86_64_serial_puts("[SIG] tkill tid=0x");
     vibeos_x86_64_serial_print_hex((uint64_t)(uint32_t)target_tid);
@@ -9141,28 +9202,37 @@ static long hw_sys_tkill(uint64_t target_tid, uint64_t sig) {
     vibeos_x86_64_serial_print_hex(sig);
     vibeos_x86_64_serial_puts("\n");
     vibeos_x86_64_serial_unlock();
-    return (hw_signal_raise(target, (uint32_t)sig) == 0) ? 0 : -VIBEOS_EINVAL;
+    return 0;
 }
 
 static long hw_sys_tgkill(uint64_t target_tgid, uint64_t target_tid,
                           uint64_t sig) {
     int target;
+    long r;
 
     if (g_current_task < 0 || !g_tasks[g_current_task].is_user ||
         sig >= VIBEOS_HW_NSIG) {
         return -VIBEOS_EINVAL;
     }
+    /* Lookup, identity check and raise as one critical section (H-007): the
+     * tgid comparison protects nothing if the slot can change after it. */
+    hw_spin_lock_named(&g_sched_lock, __func__);
     target = hw_task_by_tid((uint32_t)target_tid);
     if (target >= 0 && !hw_signal_permitted(target)) {
-        return -VIBEOS_EPERM;   /* same rule as kill; see hw_signal_permitted */
+        r = -VIBEOS_EPERM;   /* same rule as kill; see hw_signal_permitted */
+    } else if (target < 0 || g_tasks[target].tgid != (uint32_t)target_tgid) {
+        r = -VIBEOS_ESRCH;
+    } else if (sig == 0u) {
+        r = 0;
+    } else {
+        r = (hw_signal_raise(target, (uint32_t)sig) == 0) ? 0 : -VIBEOS_EINVAL;
     }
-    if (target < 0 || g_tasks[target].tgid != (uint32_t)target_tgid) {
-        return -VIBEOS_ESRCH;
+    hw_spin_unlock(&g_sched_lock);
+    if (sig == 0u || r != 0) {
+        return r;
     }
-    if (sig == 0u) {
-        return 0;
-    }
-    /* One line, one critical section: puts and print_hex each take the console lock on their own. */
+    /* After the lock; see tkill. One line, one critical section: puts and
+     * print_hex each take the console lock on their own. */
     vibeos_x86_64_serial_lock();
     vibeos_x86_64_serial_puts("[SIG] tgkill tgid=0x");
     vibeos_x86_64_serial_print_hex((uint64_t)(uint32_t)target_tgid);
@@ -9172,7 +9242,7 @@ static long hw_sys_tgkill(uint64_t target_tgid, uint64_t target_tid,
     vibeos_x86_64_serial_print_hex(sig);
     vibeos_x86_64_serial_puts("\n");
     vibeos_x86_64_serial_unlock();
-    return (hw_signal_raise(target, (uint32_t)sig) == 0) ? 0 : -VIBEOS_EINVAL;
+    return 0;
 }
 
 /* rt_sigaction(): install, or report, the disposition of one signal. */
