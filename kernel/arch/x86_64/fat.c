@@ -22,6 +22,7 @@ typedef struct {
     uint32_t data_lba;        /* first data sector                */
     uint32_t sectors_per_fat;
     uint32_t max_clusters;
+    uint32_t part_sectors;    /* partition length, from the BPB   */
     uint32_t root_cluster;    /* FAT32 root cluster               */
     uint16_t root_entries;    /* FAT16 root entry count           */
     uint8_t  sectors_per_cluster;
@@ -353,6 +354,7 @@ static int fat_mount_on(fat_fs_t *vol, vibeos_blockcache_t *bc,
     if (total_sectors <= g_fat_cur->data_lba - part_lba) {
         return -1;
     }
+    g_fat_cur->part_sectors = total_sectors;
     g_fat_cur->max_clusters = (total_sectors - (g_fat_cur->data_lba - part_lba)) /
                          g_fat_cur->sectors_per_cluster;
     if (g_fat_cur->max_clusters == 0u) {
@@ -372,7 +374,23 @@ static int fat_mount_on(fat_fs_t *vol, vibeos_blockcache_t *bc,
 }
 
 static uint32_t fat_cluster_lba(uint32_t cluster) {
-    return g_fat_cur->data_lba + (cluster - 2u) * g_fat_cur->sectors_per_cluster;
+    vibeos_fat_geometry_t g;
+    uint32_t lba = 0;
+
+    g.data_lba = g_fat_cur->data_lba;
+    g.sectors_per_cluster = g_fat_cur->sectors_per_cluster;
+    g.max_clusters = g_fat_cur->max_clusters;
+    g.part_lba = g_fat_cur->part_lba;
+    g.part_sectors = g_fat_cur->part_sectors;
+    /* 0 for a cluster this volume does not have (H-012). Sector 0 cannot be a
+     * data sector - the reserved sectors come first - so every caller can test
+     * for it. The chain error is set as well, for the paths that already
+     * report through it. */
+    if (vibeos_fat_cluster_sector(&g, cluster, &lba) != 0) {
+        g_fat_chain_error = 1;
+        return 0;
+    }
+    return lba;
 }
 
 /* Follow the FAT chain: return the next cluster, or >= EOC when the chain ends.
@@ -582,7 +600,8 @@ static long fat_read_at_locked(uint32_t first_cluster, uint32_t size, uint32_t o
             uint32_t in_sec = off % SECTOR_SIZE;
             uint32_t n = SECTOR_SIZE - in_sec;
             uint32_t i;
-            if (fat_sector_read(fat_cluster_lba(cluster) + s, g_secbuf) != 0) {
+            uint32_t clba = fat_cluster_lba(cluster);
+            if (clba == 0u || fat_sector_read(clba + s, g_secbuf) != 0) {
                 return -1;
             }
             if (n > len - done) {
@@ -627,6 +646,9 @@ static int fat_list_locked(const char *path, uint32_t idx, char *name, uint32_t 
     } else {
         lba = fat_cluster_lba(dir_cluster == 0 ? g_fat_cur->root_cluster : dir_cluster);
         sectors = g_fat_cur->sectors_per_cluster;
+        if (lba == 0u) {
+            return -1;
+        }
     }
 
     for (s = 0; s < sectors; s++) {
@@ -779,7 +801,13 @@ static int fat_dir_sector(uint32_t dir_cluster, uint32_t i, uint32_t *out_lba) {
         }
         i -= g_fat_cur->sectors_per_cluster;
     }
-    *out_lba = fat_cluster_lba(cl) + i;
+    /* The sector a directory entry will be rewritten into, so the one place a
+     * crafted subdirectory cluster turned into a write elsewhere (H-012). */
+    *out_lba = fat_cluster_lba(cl);
+    if (*out_lba == 0u) {
+        return -1;
+    }
+    *out_lba += i;
     return 0;
 }
 
@@ -937,7 +965,8 @@ static long fat_write_file_locked(const char *path, const void *buf, uint32_t le
             for (i = 0; i < SECTOR_SIZE; i++) {
                 g_fatbuf[i] = (i < n) ? in[wrote + i] : 0u;
             }
-            if (fat_sector_write(fat_cluster_lba(cl) + s, g_fatbuf) != 0) {
+            if (fat_cluster_lba(cl) == 0u ||
+                fat_sector_write(fat_cluster_lba(cl) + s, g_fatbuf) != 0) {
                 g_fat_write_why = "medium_refused_a_data_sector";
                 return -1;
             }
@@ -1034,7 +1063,8 @@ static int fat_mkdir_locked(const char *path) {
             g_fatbuf[43] = 0x10;
             wr16(&g_fatbuf[58], (uint16_t)dir_cluster);
         }
-        if (fat_sector_write(fat_cluster_lba(cluster) + s, g_fatbuf) != 0) {
+        if (fat_cluster_lba(cluster) == 0u ||
+            fat_sector_write(fat_cluster_lba(cluster) + s, g_fatbuf) != 0) {
             return -1;
         }
     }
@@ -1235,10 +1265,13 @@ int vibeos_x86_64_fat_file_extent(const char *path, uint64_t *out_first_lba,
      * carries a comment about. A short walk must not be reported as a short
      * contiguous file. */
     if (!g_fat_chain_error && clusters > 0ull) {
-        *out_first_lba = (uint64_t)fat_cluster_lba(cluster);
-        *out_sectors = clusters * (uint64_t)g_fat_cur->sectors_per_cluster;
-        *out_contiguous = contiguous;
-        rc = 0;
+        uint32_t first_lba = fat_cluster_lba(cluster);
+        if (first_lba != 0u) {
+            *out_first_lba = (uint64_t)first_lba;
+            *out_sectors = clusters * (uint64_t)g_fat_cur->sectors_per_cluster;
+            *out_contiguous = contiguous;
+            rc = 0;
+        }
     }
     (void)size;
     fs_unlock();

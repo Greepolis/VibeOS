@@ -4554,6 +4554,63 @@ static int fatt_case(const uint32_t *chain, uint32_t n, uint32_t spc, uint32_t s
     return 0;
 }
 
+/* H-012: a cluster number from the disk names a sector of this partition, or
+ * nothing.
+ *
+ * The driver computed data_lba + (cluster - 2) * sectors_per_cluster in 32 bits
+ * for any cluster a directory entry held. Only chain links were range-checked;
+ * a first cluster, or a subdirectory's, was used as it came. The block layer
+ * bounds a request by the whole device, so a crafted entry read - and, through
+ * a directory sector rewritten on create - wrote sectors of other partitions. */
+static int test_fat_cluster_sector_bounds(void) {
+    vibeos_fat_geometry_t g;
+    uint32_t lba = 0;
+
+    /* 1000 clusters of one sector each, right after 48 sectors of metadata. */
+    g.data_lba = 2048u;
+    g.sectors_per_cluster = 1u;
+    g.max_clusters = 1000u;
+    g.part_lba = 2000u;
+    g.part_sectors = 48u + 1000u;
+
+    if (vibeos_fat_cluster_sector(&g, 2u, &lba) != 0 || lba != 2048u) {
+        return -1;
+    }
+    if (vibeos_fat_cluster_sector(&g, 1001u, &lba) != 0 || lba != 3047u) {
+        return -1;   /* the last cluster this volume has */
+    }
+    if (vibeos_fat_cluster_sector(&g, 1002u, &lba) == 0) {
+        return -1;   /* one past it */
+    }
+    if (vibeos_fat_cluster_sector(&g, 0u, &lba) == 0 ||
+        vibeos_fat_cluster_sector(&g, 1u, &lba) == 0) {
+        return -1;   /* 0 and 1 are not clusters; 1 - 2 wraps */
+    }
+    if (vibeos_fat_cluster_sector(&g, 2u + 1000000u, &lba) == 0) {
+        return -1;   /* the reviewer's case: another partition's sectors */
+    }
+
+    /* A 32-bit wrap on its own: with a cluster count that does not refuse it,
+     * 0x2000000 clusters of 128 sectors is 2^32 sectors, which wraps to the
+     * first data sector. */
+    g.sectors_per_cluster = 128u;
+    g.max_clusters = 0x0FFFFFFFu;
+    g.part_sectors = 0xFFFFF000u;
+    if (vibeos_fat_cluster_sector(&g, 2u + 0x2000000u, &lba) == 0) {
+        return -1;
+    }
+
+    /* The partition bound on its own: a boot sector whose cluster count is
+     * larger than its partition. */
+    g.sectors_per_cluster = 1u;
+    g.max_clusters = 1000u;
+    g.part_sectors = 500u;
+    if (vibeos_fat_cluster_sector(&g, 900u, &lba) == 0) {
+        return -1;
+    }
+    return 0;
+}
+
 static int test_fat_chain_layouts(void) {
     uint32_t chain[8];
     uint32_t spcs[3] = {1u, 2u, 8u};
@@ -8397,6 +8454,7 @@ int main(void) {
     RUN_TEST(test_fat_chain_layouts);
     RUN_TEST(test_fat_chain_coalescing);
     RUN_TEST(test_fat_chain_short_and_failed);
+    RUN_TEST(test_fat_cluster_sector_bounds);
     RUN_TEST(test_elf_parse_valid);
     RUN_TEST(test_elf_shared_page);
     RUN_TEST(test_elf_rejects_malformed);

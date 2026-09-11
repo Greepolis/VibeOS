@@ -38,6 +38,33 @@ static uint32_t fat_run_bytes(uint32_t run, uint32_t cluster_bytes, uint32_t rem
     return (held < remaining) ? held : remaining;
 }
 
+int vibeos_fat_cluster_sector(const vibeos_fat_geometry_t *g, uint32_t cluster,
+                              uint32_t *out_lba) {
+    uint64_t first, end;
+
+    if (!g || !out_lba || g->sectors_per_cluster == 0u) {
+        return -1;
+    }
+    /* A cluster this volume has: 2 .. max_clusters + 1. Checked on the value
+     * from the disk, before any arithmetic - `cluster - 2` wraps for 0 and 1. */
+    if (cluster < 2u || cluster - 2u >= g->max_clusters) {
+        return -1;
+    }
+    /* In 64 bits, so a product past 2^32 is seen rather than wrapped onto a
+     * valid-looking sector. */
+    first = (uint64_t)g->data_lba + (uint64_t)(cluster - 2u) * g->sectors_per_cluster;
+    end = first + g->sectors_per_cluster;
+    /* And inside the partition, whatever the cluster count claims. The block
+     * layer bounds a request by the whole device, not by this volume, so this
+     * is the only place that knows where the volume ends. */
+    if (first < g->part_lba || end > (uint64_t)g->part_lba + g->part_sectors ||
+        end > 0xFFFFFFFFull) {
+        return -1;
+    }
+    *out_lba = (uint32_t)first;
+    return 0;
+}
+
 long vibeos_fat_chain_read(const vibeos_fat_chain_io_t *io, uint32_t first_cluster,
                            uint32_t size, uint8_t *out) {
     uint32_t cluster, copied = 0;
@@ -66,6 +93,12 @@ long vibeos_fat_chain_read(const vibeos_fat_chain_io_t *io, uint32_t first_clust
         uint32_t next = io->next_cluster(io->ctx, cluster);
         uint32_t lba = io->cluster_lba(io->ctx, first);
         uint32_t run_bytes, whole, tail;
+
+        /* Sector 0 is how a driver says it refused the cluster: it is never a
+         * data sector, because reserved sectors always precede the data. */
+        if (lba == 0u) {
+            return -1;
+        }
 
         /* Extend the run while the chain stays consecutive and the file still
          * has clusters to fill. A fragmented chain simply stops here with

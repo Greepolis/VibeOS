@@ -52,4 +52,19 @@ typedef struct vibeos_fat_chain_io {
 long vibeos_fat_chain_read(const vibeos_fat_chain_io_t *io, uint32_t first_cluster,
                            uint32_t size, uint8_t *out);
 
+/* Where a volume's clusters are. Everything the cluster-to-sector translation
+ * needs, so it can be tested without a device. */
+typedef struct vibeos_fat_geometry {
+    uint32_t data_lba;             /* first sector of cluster 2          */
+    uint32_t sectors_per_cluster;
+    uint32_t max_clusters;         /* clusters 2 .. max_clusters + 1      */
+    uint32_t part_lba;             /* first sector of the partition      */
+    uint32_t part_sectors;         /* its length, as the boot sector says */
+} vibeos_fat_geometry_t;
+
+/* The first sector of `cluster` into *out_lba, returning 0 - or -1 for a
+ * cluster this volume does not have. */
+int vibeos_fat_cluster_sector(const vibeos_fat_geometry_t *g, uint32_t cluster,
+                              uint32_t *out_lba);
+
 #endif /* VIBEOS_FAT_CHAIN_H */

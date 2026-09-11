@@ -118,3 +118,43 @@ every layer above.
 **There are no I/O counters at all.** Not few - none.
 
 The plan that addresses all of this is [docs/io/](../io/README.md).
+
+## H-012: a FAT cluster from the disk could name any sector of the device (fixed 2026-09-11)
+
+`fat_cluster_lba` computed `data_lba + (cluster - 2) * sectors_per_cluster` in
+32 bits for whatever cluster it was given, and only the chain walk in
+`fat_next_cluster` checked a cluster against the volume. A file's *first*
+cluster, and a subdirectory's, came straight from a directory entry. The block
+layer bounds a request by the whole device, not by the partition - the boot
+sector's total-sectors field was a local of the mount and never stored - so a
+crafted entry reached sectors outside the volume, by offset or by 32-bit wrap.
+
+The review reported the read. The write is the worse half: a parent
+directory's cluster comes from `fat_resolve` unchecked, `fat_dir_sector` turns
+it into a sector, and creating a file, unlinking one or making a directory
+reads that sector and **writes it back** with one 32-byte entry changed. A
+crafted subdirectory turned "create a file here" into a write to another
+partition. File data writes were never affected: they go to clusters just
+allocated from the FAT.
+
+The translation now lives in `kernel/fs/fat_chain.c` as
+`vibeos_fat_cluster_sector`, where the host tests reach it. It refuses a
+cluster outside `2 .. max_clusters + 1` before any arithmetic, computes the
+sector in 64 bits, and refuses a cluster whose sectors are not inside the
+partition, which the mount now records. `fat_cluster_lba` returns 0 for a
+refused cluster - sector 0 is never a data sector, because the reserved
+sectors come first - and sets the chain error; the read, list and
+directory-sector paths, both write paths and the extent query stop on it, and
+`vibeos_fat_chain_read` treats a sector of 0 as a refusal.
+
+Red first, with a caveat about what red proves here. The driver is not built
+into the host tests, so the arithmetic was first moved into the new function
+unchanged and `test_fat_cluster_sector_bounds` written against it: it failed
+on today's arithmetic and passes with the checks. It covers the last valid
+cluster, one past it, clusters 0 and 1, the reviewer's far cluster, a 32-bit
+wrap on its own and the partition bound on its own. That the driver's paths
+stop on a refused cluster follows from the calls changed, not from a test that
+drives them - a crafted FAT image in the boot gate would, and it does not exist.
+
+Host tests green, `check.sh all` green, twelve boots: 12 pass, 0 fail - the
+machine boots from a FAT volume through the changed path.
