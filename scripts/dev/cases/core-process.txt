@@ -160,5 +160,8 @@ case 7: a blocked sibling survives exit_group
            log: missing: reasons are raised while driving the CLI, before the
            invariants are evaluated. Worth knowing for every red stage: a
            defect that leaves a process alive hides its own diagnosis.
+           Since then the gate appends stage_failures= to a missing-marker
+           reason, so the same run would now report
+           missing:CLI_READY ... stage_failures=THREADS_C5_EXIT_GROUP_BLOCKED_FAIL.
   and green, after the fix: THREADS_C5_EXIT_GROUP_BLOCKED_OK;
            check.sh all VERDICT=green; twelve boots: 11 pass, 1 fail.

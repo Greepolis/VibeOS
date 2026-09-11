@@ -128,6 +128,36 @@ assert unexpected_complaints("[LOG][ERROR] something nobody expected") != []
 assert unexpected_complaints("[HW][SYS] write(ring3): all fine") == []
 
 
+# Stage failures a program has already printed, found anywhere in the log.
+#
+# Only for annotating a reason, never for deciding one: the named invariants
+# below still decide pass or fail. What this fixes is a stall hiding its own
+# diagnosis. A missing: reason is raised while the CLI is being driven, before
+# any invariant runs, so a defect that leaves a process alive - the kernel only
+# leaves userland once every user task has retired - reported missing:CLI_READY
+# while THREADS_C5_EXIT_GROUP_BLOCKED_FAIL sat in the log, unread.
+#
+# NAME_FAIL as a whole word, upper case with underscores. Deliberately not
+# FAILED: init prints "FAILED svc-flap" and "SVC_FAILED" for services that fail
+# by design, and a detector that reports healthy behaviour is one people learn
+# to ignore.
+_STAGE_FAIL = re.compile(r"\b([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*_FAIL)\b")
+
+
+def stage_failures(text):
+    """Distinct NAME_FAIL markers in the log, sorted."""
+    return sorted(set(_STAGE_FAIL.findall(text)))
+
+
+assert stage_failures("write(ring3): THREADS_C5_EXIT_GROUP_BLOCKED_FAIL: the process never ended") \
+    == ["THREADS_C5_EXIT_GROUP_BLOCKED_FAIL"], "misses a stage failure"
+assert stage_failures("STRESS_FAIL: wait4 returned the wrong pid") == ["STRESS_FAIL"], \
+    "misses a single-word stage failure"
+assert stage_failures("[HW][SYS] write(ring3): FAILED svc-flap") == [], "flags a designed failure"
+assert stage_failures("[HW][SYS] write(ring3): SVC_FAILED svc-flap") == [], "flags SVC_FAILED"
+assert stage_failures("[LOG] nothing to see _FAIL here, or a_fail") == [], "flags a fragment"
+
+
 def start_echo_server(stop_event, state):
     """Accept one connection at a time and echo whatever arrives."""
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -759,6 +789,11 @@ def main():
                               f" quiet_budget={quiet_budget(serial_text)}s"
                               f" phase={detect_guest_phase(serial_text)}"
                               f" budget={timeout_sec}s")
+                    # What a stall would otherwise hide: a stage that already
+                    # said it failed. See stage_failures.
+                    already_failed = stage_failures(serial_text)
+                    if already_failed:
+                        reason += " stage_failures=" + ",".join(already_failed[:8])
                     # A wedged guest is exactly the case where none of the
                     # in-guest logging runs: nothing panicked, so no backtrace
                     # and no log dump. Ask the emulator instead, while the
