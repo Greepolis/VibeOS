@@ -81,3 +81,25 @@ image" - but neither should be read as more than it is.
 The remaining filesystems (NTFS, ISO9660, exFAT) get the same treatment, one at
 a time. One that cannot be given a real image in CI should be deleted rather
 than kept: an unrunnable driver is the state this file exists to record.
+
+## H-013: a block pointer past the volume (fixed 2026-09-11)
+
+`ext2_read_block` turned any block number into `part_lba + block * sectors`, and
+the mount did not keep `blocks_count`, so nothing could have bounded it. Every
+block number the driver reads comes from the volume: direct and indirect
+pointers in an inode, and - not in the report - the inode table's location in a
+group descriptor, so a lookup alone could read past the volume. The block layer
+bounds a read by the device, not by the partition, so a pointer past the volume
+but inside the device returned another partition's sectors to user space.
+
+The mount keeps `blocks_count`, and `ext2_read_block` refuses a block at or past
+it. Every read goes through that function, so one check covers every path.
+
+`test_ext2_block_pointer_outside_volume` declares a volume half the size of its
+device and points a file's block into the other half, filled with a marker; the
+read must return nothing. Red on the old code, green now. The half-size volume
+is what makes the test honest: the host image's volume fills its device, and a
+pointer past it would have been refused by the device and passed for the wrong
+reason.
+
+Host tests green, `check.sh all` green.

@@ -40,6 +40,7 @@ typedef struct {
     uint32_t group_count;
     uint32_t first_data_block;
     uint32_t group_desc_block;
+    uint32_t blocks_count;        /* the volume's length in blocks: every block read is bounded by it */
     int mounted;
 } vibeos_ext2_t;
 

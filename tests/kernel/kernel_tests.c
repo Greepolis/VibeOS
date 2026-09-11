@@ -6390,6 +6390,48 @@ static int e2_mount(vibeos_ext2_t *fs, vibeos_blockcache_t *bc,
     return vibeos_ext2_mount(fs, bc, 0);
 }
 
+/* H-013: an ext2 block pointer names a block of this volume, or nothing.
+ *
+ * ext2_read_block turned any block number into part_lba + block * sectors, and
+ * the mount did not even keep blocks_count, so nothing could have checked it.
+ * The block layer bounds a read by the device, not by the volume - so a pointer
+ * past the volume but inside the device read another partition's sectors.
+ *
+ * The test image's volume is exactly as large as its device, which would make a
+ * pointer past the volume fail at the device and pass this test for the wrong
+ * reason. So the superblock here declares half the device, and "small" points at
+ * a block in the other half, filled with a marker. */
+static int test_ext2_block_pointer_outside_volume(void) {
+    vibeos_ext2_t fs;
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    vibeos_fs_node_t node;
+    vibeos_fsmount_t mnt;
+    uint8_t buf[E2_BLOCK];
+    long n;
+
+    if (e2_mount(&fs, &bc, &dev) != 0) {
+        return -1;
+    }
+    e2_w32(e2_block(1) + 4, E2_BLOCKS / 2u);        /* the volume: 40 blocks   */
+    memset(e2_block(50), 0x5A, E2_BLOCK);            /* past it, on the device  */
+    e2_w32(e2_inode(11) + 40, 50u);                  /* "small" points there    */
+    vibeos_blockcache_invalidate(&bc);
+    if (vibeos_ext2_mount(&fs, &bc, 0) != 0 ||
+        vibeos_fs_mount(&mnt, vibeos_ext2_ops(), &fs, "ext2") != 0) {
+        return -1;
+    }
+    if (vibeos_fs_lookup(&mnt, "/small", &node) != 0) {
+        return -1;   /* the file itself is inside the volume and must be found */
+    }
+    memset(buf, 0, sizeof(buf));
+    n = vibeos_fs_read_at(&mnt, &node, 0, buf, 100u);
+    if (n > 0 || buf[0] == 0x5Au) {
+        return -1;   /* read a block that is not part of this volume */
+    }
+    return 0;
+}
+
 static int test_ext2_mount_and_lookup(void) {
     vibeos_ext2_t fs;
     vibeos_blockcache_t bc;
@@ -8705,6 +8747,7 @@ int main(void) {
     RUN_TEST(test_ext2_read);
     RUN_TEST(test_ext2_list);
     RUN_TEST(test_ext2_refusals);
+    RUN_TEST(test_ext2_block_pointer_outside_volume);
     RUN_TEST(test_iso_lookup_and_read);
     RUN_TEST(test_iso_list);
     RUN_TEST(test_iso_refusals);

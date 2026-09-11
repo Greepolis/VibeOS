@@ -24,7 +24,13 @@ static int ext2_read_block(vibeos_ext2_t *fs, uint32_t block, uint8_t *out) {
     uint32_t sectors = fs->block_size / VIBEOS_BLOCK_SIZE;
     uint32_t i;
 
-    if (fs->block_size == 0u || sectors == 0u) {
+    /* A block this volume has, or nothing (H-013). Every read goes through here -
+     * direct and indirect pointers from an inode, the inode table from a group
+     * descriptor - and every one of those numbers comes from the volume. The
+     * block layer bounds a read by the device, not the partition, so a pointer
+     * past blocks_count but inside the device used to read another partition's
+     * sectors. The mount keeps blocks_count for exactly this check. */
+    if (fs->block_size == 0u || sectors == 0u || block >= fs->blocks_count) {
         return -1;
     }
     for (i = 0; i < sectors; i++) {
@@ -73,6 +79,7 @@ int vibeos_ext2_mount(vibeos_ext2_t *fs, vibeos_blockcache_t *cache,
     fs->inodes_per_group = rd32(sb + 40);
     fs->first_data_block = rd32(sb + 20);
     blocks_count = rd32(sb + 4);
+    fs->blocks_count = blocks_count;
 
     /* s_inode_size only exists from revision 1; revision 0 always used 128. */
     fs->inode_size = (rd32(sb + 76) >= 1u) ? rd16(sb + 88) : 128u;
