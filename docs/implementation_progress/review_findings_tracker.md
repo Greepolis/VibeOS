@@ -1,0 +1,66 @@
+# Review findings tracker
+
+One place for every external-review finding and its state, so none is lost
+between sessions. Updated whenever a finding arrives, is verified, or closes.
+
+**Read the key first.** Reviewers number from 001 in every review, so `H-001`
+names different defects in different files. A finding is identified here by
+**review + ID**, and the IDs below are the reviewer's own, even where they collide.
+
+Status words: **fixed** (commit named, red test first unless the row says why
+not), **in progress**, **verified-open** (confirmed against the code, not yet
+fixed), **false** (checked and refuted - evidence linked).
+
+Earlier reviews are closed and written up: the sixth
+([review_sixth_verified.md](review_sixth_verified.md)), the seventh
+([review_seventh_verified.md](review_seventh_verified.md)) and those before
+([external_reviews_verified.md](external_reviews_verified.md)).
+
+## Eighth review (2026-09-10 onward, arriving one finding at a time)
+
+| ID | Sev | Finding | Status | Evidence / next step |
+|---|---|---|---|---|
+| M-001 | M | brk shrink never unmapped | fixed `1dc5b67` | [mm_brk_mmap_leaks.md](mm_brk_mmap_leaks.md) |
+| M-002 | M | mmap failure left pages mapped (both loops) | fixed `1dc5b67` + C5 | second loop found later; same file |
+| H-003 | H | futex validates a user pointer, then reads it after a spinning lock | **verified-open** | a ring-0 fault panics. Exception-table attempt reverted - [uaccess_recovery_open.md](uaccess_recovery_open.md). Same fix as H-010 |
+| H-004 | H | two region-list heads into one pool across threads | fixed `ffa8463` | [core_c5_process_state.md](core_c5_process_state.md) |
+| H-005 | H | exit_group ended only the calling thread | fixed `ffa8463` | same file |
+| M-003 (a) | M | signal dispositions copied per thread | fixed `ffa8463` | same file |
+| M-003 (b) | M | pipe write tests `readers` outside `g_pipe_lock`; read half worse | **verified-open** | [pipe_eof_race_open.md](pipe_eof_race_open.md). Deferred until C5 settles |
+| H-006 | H | exec from a thread left siblings running and the wrong id | fixed `8a3903c` | THREADS_C5_EXEC, red first |
+| M-004 | M | tkill/tgkill could not reach non-leader threads | fixed `d6d6b1b` | reported again later; already closed |
+| H-007 | H | pid resolved to a slot index, used unlocked (ABA); lookups matched slots being built | fixed `da50ce6` | **no red test**: the window does not reproduce in a boot; stated in the commit |
+| M-005 | M | TCP RST accepted without a sequence check; also closed listeners | fixed `b4a65ad` | RFC 5961 3.2; host test red first |
+| M-006 | M | mmap `len + 0xFFF` wraps to zero pages; munmap/mprotect aligned end wraps | fixed `a40aab0` | red in the ABI self-test, split-verified |
+| H-008 | H | TCP ISN = clock (`0x1000 + now_ms`, listen `0x2000 + now_ms`) | **in progress** | red test + fix written: one stack secret, SipHash, RFC 6528. Kernel has no entropy source - RDRAND if present, else logged as weak |
+| H-009 | H | DHCP: predictable xid; ACK not bound to the chosen server, offer or chaddr; renewals from anyone | **verified-open** | after H-008 (shares the secret). Client can narrow, not close: DISCOVER is broadcast |
+| M-007 | M | DNS: predictable id, fixed source port 0xC353, no server/port/question check | **verified-open** | after H-008. `udp_input` does not pass src/sport to `dns_input` |
+| H-010 | H | read() on a pipe, recv(), recvfrom() validate the buffer, block, then write it after wake-up; a sibling's munmap makes it a ring-0 fault -> panic | **verified-open** | `hw_pipe_read` (write inside the blocking loop), `hw_net_recv`, `hw_sys_recvfrom`; **also the console read** (same shape, not in the report). Same class as H-003: needs fault-safe copy_to/from_user |
+| M-008 | M | any ARP overwrites the cache entry, gateway included | **verified-open** | `arp_input` calls `arp_insert` unconditionally. ARP has no authentication: limit unsolicited updates, protect the gateway entry |
+
+Checked by the reviewer and **not** promoted, recorded so nobody re-reports them:
+the futex waiter slot is kept until its own waiter returns (the earlier ABA is
+closed), and `ARCH_SET_GS` is refused because `%gs` holds per-CPU kernel state.
+
+## Found internally while verifying the above
+
+| What | Status | Evidence / next step |
+|---|---|---|
+| hw_task_exit makes `next` current with interrupts possibly on; a timer there saves the dying task's kernel frame as next's context | **in progress** | probe fired 4x per boot; suspected cause of the THREADS four-worker crash family and of the first `task_illegal_transition` (running->running) seen 2026-09-11. Must-be-zero counter `exit_switch_irq_on` (red) + `cli` fix under test. [boot_repeatability.md](boot_repeatability.md) |
+| Boot gate hung 48 minutes on a guest that had panicked | **open** | `wait_for` and `wedge_report` are both bounded; cause unknown. Wedge report kept in `.boot-evidence/wedge-probe-boot5.txt`, boot log lost |
+| `rmap_mismatch=1` with `rmap_audit_torn=0` on a Release boot | **open** | by CLAUDE.md's rule a real mismatch, not the detector. `.boot-evidence/probe-20260911-133143-boot3.log` |
+
+## Order of work
+
+Incoming findings first - the user's stated priority - and the core plan is not
+dropped:
+
+1. exit-window fix (in progress), then H-008, M-007, H-009 (one stack secret).
+2. **H-010 + H-003 together**: a fault-safe user copy is the one fix for both,
+   and it is also C5's "real exception table" item. The first attempt failed on
+   `&&label` losing its base; see uaccess_recovery_open.md before retrying.
+3. M-008, M-003 (b) pipes.
+4. Core plan C5, remaining: fork not atomic against its own threads
+   (address-space lock); descriptors per thread; a must-be-zero check for
+   `hw_procstate_t`.
+5. The two open tooling/defect rows above.
