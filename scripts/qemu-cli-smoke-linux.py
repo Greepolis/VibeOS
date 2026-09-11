@@ -158,6 +158,61 @@ assert stage_failures("[HW][SYS] write(ring3): SVC_FAILED svc-flap") == [], "fla
 assert stage_failures("[LOG] nothing to see _FAIL here, or a_fail") == [], "flags a fragment"
 
 
+def drain_available(recv, on_chunk, budget_s=0.25, clock=None):
+    """Hand every chunk a non-blocking socket has to on_chunk - for at most
+    budget_s seconds, even if more keeps arriving.
+
+    The serial pump used to loop until recv raised BlockingIOError, which is
+    to say until the guest stopped talking. A guest that faults inside its own
+    panic path reprints trap lines as fast as the port carries them, so the
+    pump never returned, and the deadline and the silence budget - both checked
+    by the caller - never ran. That is how one boot held a run for 48 minutes
+    with every core parked in the panic and fault paths. Returning on a budget
+    gives the caller its turn; the bytes still waiting are read next time.
+    """
+    if clock is None:
+        clock = time.monotonic
+    start = clock()
+    while True:
+        try:
+            chunk = recv(4096)
+        except BlockingIOError:
+            return
+        if not chunk:
+            return
+        on_chunk(chunk)
+        if clock() - start >= budget_s:
+            return
+
+
+# A socket that is never empty, and a clock that moves 0.1 s per reading: the
+# drain must stop after a few chunks. Without the budget this does not fail, it
+# hangs at import - the defect itself, and not something anyone can mistake for
+# a pass.
+_drain_clock = [0.0]
+
+
+def _drain_tick():
+    _drain_clock[0] += 0.1
+    return _drain_clock[0]
+
+
+def _never_dry(_n):
+    return b"trap line\n"
+
+
+def _always_empty(_n):
+    raise BlockingIOError()
+
+
+_drained = []
+drain_available(_never_dry, _drained.append, 0.25, _drain_tick)
+assert 1 <= len(_drained) <= 4, "the serial drain did not stop on its budget"
+_drained = []
+drain_available(_always_empty, _drained.append)
+assert _drained == [], "the serial drain invented data from an empty socket"
+
+
 def start_echo_server(stop_event, state):
     """Accept one connection at a time and echo whatever arrives."""
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -667,27 +722,25 @@ def main():
             last_rx = started
             deadline = started + timeout_sec
 
-            def pump():
+            def on_serial_chunk(chunk):
                 nonlocal serial_text, last_rx, last_guest_phase, last_serial_timestamp
-                while True:
-                    try:
-                        chunk = serial.recv(4096)
-                    except BlockingIOError:
-                        return
-                    if not chunk:
-                        return
-                    serial_text += chunk.decode("utf-8", errors="replace")
-                    last_serial_timestamp = time.monotonic() - started
-                    new_phase = detect_guest_phase(serial_text)
-                    if new_phase != last_guest_phase:
-                        last_guest_phase = new_phase
-                        phase_history.append(f"{last_serial_timestamp:.3f}:{new_phase}")
-                        print(f"[QEMU-CLI] phase={new_phase} elapsed={last_serial_timestamp:.1f}s")
-                    # When output last arrived is what separates "the guest is
-                    # wedged" from "the guest is just slow": a failure with the
-                    # serial line still active is a budget problem, one that has
-                    # been silent for a long time is a hang.
-                    last_rx = time.monotonic()
+                serial_text += chunk.decode("utf-8", errors="replace")
+                last_serial_timestamp = time.monotonic() - started
+                new_phase = detect_guest_phase(serial_text)
+                if new_phase != last_guest_phase:
+                    last_guest_phase = new_phase
+                    phase_history.append(f"{last_serial_timestamp:.3f}:{new_phase}")
+                    print(f"[QEMU-CLI] phase={new_phase} elapsed={last_serial_timestamp:.1f}s")
+                # When output last arrived is what separates "the guest is
+                # wedged" from "the guest is just slow": a failure with the
+                # serial line still active is a budget problem, one that has
+                # been silent for a long time is a hang.
+                last_rx = time.monotonic()
+
+            def pump():
+                # Bounded: a guest printing without pause used to keep this loop
+                # from ever returning. See drain_available.
+                drain_available(serial.recv, on_serial_chunk)
 
             def buffer():
                 pump()

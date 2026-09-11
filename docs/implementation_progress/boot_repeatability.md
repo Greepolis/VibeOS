@@ -623,3 +623,24 @@ a new thread's first instruction finds a return address where its argument
 should be; no live sibling shares its stack frame; once, an initial context was
 re-entered without the thread crashing. The family is open again in the review
 tracker.
+
+## The gate that hung for 48 minutes (fixed 2026-09-11)
+
+A boot in a probe run held the whole series for 48 minutes on a guest that had
+panicked. The wedge report taken from the still-running emulator had every core
+in the panic, fault or serial path. `wait_for` and the wedge report are both
+bounded, which is why the cause took a second reading to find: it was the loop
+underneath them.
+
+The serial pump read the socket until `recv` raised `BlockingIOError` - until the
+guest went quiet. A guest faulting inside its own panic path reprints trap lines
+as fast as the port carries them, so the pump never returned, and the deadline
+and the silence budget, both checked by its caller, never ran.
+
+`drain_available` hands chunks on for at most 0.25 s and returns; what is still
+waiting is read on the next call. A module-level self-test feeds it a socket that
+is never empty with a clock that moves 0.1 s per read, and it must stop after a
+few chunks. Validated three ways: the gate compiles, its self-tests pass, and a
+copy with the budget check removed hangs at import (killed after ten seconds).
+The series that verified it included a crashed boot (`.boot-evidence/fail-20260911-162643-boot12.log`) that
+the gate ended in about a minute.
