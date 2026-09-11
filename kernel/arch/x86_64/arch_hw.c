@@ -8267,6 +8267,106 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
     hw_spin_unlock_preemptible(&g_exec_lock);
 
     t = &g_tasks[g_current_task];
+
+    /* An exec ends every other thread of the process, and the thread that
+     * called it becomes the process. H-006, verified: none of that happened.
+     * The siblings kept running the old image, and a thread that was not the
+     * leader kept its own id and is_thread = 1 - so the program it loaded ran
+     * as a thread, and a thread's exit is released at once instead of left as
+     * a zombie. Its exit code could never reach the parent.
+     *
+     * Here and not earlier: only now has the new image loaded. An exec that
+     * fails must leave the process with every thread it had.
+     *
+     * Siblings are found by thread-group id, not by process reference. A leader
+     * that already exited - pthread_exit from main - gave its reference back
+     * on the way out, so it no longer points at this process; its tgid is all
+     * that still says whose it was. */
+    {
+        int me = (int)(t - g_tasks);
+        uint32_t tgid = t->tgid;
+        int i, any;
+
+        /* The leader must die quietly. hw_task_exit reads is_thread under
+         * g_sched_lock to choose between "released" and "zombie, wake the
+         * parent", so setting it under the same lock is decided before that
+         * choice or not at all. A leader that is already a zombie is handled
+         * in the wait below. */
+        hw_spin_lock_named(&g_sched_lock, __func__);
+        for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+            if (i != me && g_tasks[i].is_user && g_tasks[i].tgid == tgid &&
+                g_tasks[i].pid == tgid &&
+                g_tasks[i].state != HW_TASK_FREE &&
+                g_tasks[i].state != HW_TASK_ZOMBIE) {
+                g_tasks[i].is_thread = 1;
+            }
+        }
+        hw_spin_unlock(&g_sched_lock);
+
+        /* Not under g_sched_lock: hw_signal_raise can reach hw_task_set_state,
+         * the same reason exit_group and kill iterate without it. And not
+         * through exit_group's flag: nothing that dies here should report a
+         * group exit code - they are all threads now, and threads report
+         * nothing. */
+        for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+            if (i != me && g_tasks[i].is_user && g_tasks[i].tgid == tgid &&
+                g_tasks[i].state != HW_TASK_FREE &&
+                g_tasks[i].state != HW_TASK_ZOMBIE) {
+                (void)hw_signal_raise(i, VIBEOS_SIGKILL);
+            }
+        }
+
+        /* Wait until they are gone, sleeping. Unbounded on purpose: a sibling in
+         * a syscall finishes it and dies on the way out, and one blocked in a
+         * wait is interrupted since waits notice signals. A bound would only
+         * turn a slow exec into a half-done one; if this ever hangs, the wait
+         * that ignored a signal is the defect. */
+        for (;;) {
+            any = 0;
+            hw_spin_lock_named(&g_sched_lock, __func__);
+            for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+                if (i == me || !g_tasks[i].is_user || g_tasks[i].tgid != tgid ||
+                    g_tasks[i].state == HW_TASK_FREE) {
+                    continue;
+                }
+                if (g_tasks[i].state == HW_TASK_ZOMBIE && g_tasks[i].pid == tgid) {
+                    /* A leader that exited before this exec. Its id is the one
+                     * this task is about to take, so the slot cannot stay: a
+                     * parent reaping it afterwards would see the process end
+                     * while the new image runs. Released under the lock waitpid
+                     * reaps under, with the same final step the thread branch of
+                     * hw_task_exit uses. */
+                    hw_task_release(i);
+                    continue;
+                }
+                any = 1;
+            }
+            hw_spin_unlock(&g_sched_lock);
+            if (!any) {
+                break;
+            }
+            if (hw_signal_interrupts(me)) {
+                /* Something must be acted on here first - a SIGKILL from a
+                 * sibling's exit_group, say. The new image is not committed:
+                 * give back what was built for it and let the signal be
+                 * delivered on the way out. */
+                hw_aspace_destroy_why(&np.as, "exec_interrupted");
+                hw_procstate_put(nps);
+                return -VIBEOS_EINTR;
+            }
+            hw_sched_point("block");
+            __asm__ __volatile__("sti; hlt" ::: "memory");
+        }
+
+        /* Alone now, and the old leader's slot is gone, so no two tasks ever
+         * hold pid == tgid at once. ppid is already the leader's: threads
+         * inherit their creator's parent. */
+        if (t->pid != tgid) {
+            t->pid = tgid;
+            HW_TASK_MARK(me, ready_by, "exec_took_leader_id");
+        }
+        t->is_thread = 0;
+    }
     /* Stored with a leading slash even when the caller used a relative path.
      * /proc/self/exe is defined to be absolute, and a C runtime does not merely
      * prefer that: glibc asserts on it during startup and aborts the process,
@@ -8315,6 +8415,12 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
          * RELRO the C library performs on its own image during startup. */
         t->proc = np;
         t->ps = nps;
+        /* The address a thread asked to have zeroed on exit belongs to the image
+         * that asked. Left set, the new image's exit would write zero into
+         * whatever now lives at that address - found while writing H-006, and
+         * true of every exec, not only a threaded one. A C library sets it
+         * again at startup if it wants it. */
+        t->clear_child_tid = 0;
         t->cr3 = hw_proc_cr3(&t->proc);
         t->cr3_set_by = "execve";
         hw_write_cr3(t->cr3);

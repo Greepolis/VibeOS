@@ -511,3 +511,37 @@ once already. That is a direction to instrument, not a finding. Rate: one in
 twelve on this series; the three-day-old log says it was there before, not how
 often.
 
+## A user-side sign, found later the same day
+
+The twelve boots after the futex change failed twice, and both logs carry a
+line the first reading passed over, a user write the fault handler refused just
+before the trouble starts:
+
+    COW_FAULT va=0x406d10 rip=0x405982 err=0x7 NOT-handled   (THREADS.ELF)
+
+Boot 9 stopped there - the thread was killed, `THREADS_OK` still printed, and
+the boot ended `missing:CLI_READY` after a `POISON_BROKEN` report. Boot 1 went on
+to the kernel garbage above. `fail-7.log`, from before the futex change, has the
+same line at `va=0x4069f0 rip=0x405662`: both addresses exactly `0x320` lower,
+the size of the stage added in between. One instruction, three failures.
+
+Resolved against the binary that ran (`scripts/dev/.resolve-threads.sh`):
+
+- `rip` is musl's `start` in `pthread_create`, `lock cmpxchg %edx,0x10(%rdi)` -
+  the new thread's first touch of the argument block its creator placed on the
+  new stack. So `rdi` was `0x406d00`.
+- `0x406d00` is inside `__clone`: the instruction after `call *%r9`. `__clone`
+  hands the child `rdi` with `pop %rdi` off the new stack top.
+
+So the child popped a **return address** - one pushed by a thread that had
+already started on that same stack and called its start function. When this
+thread began, the frame at its stack top was not the block its creator wrote
+but one another thread had left there.
+
+That is a finding about the user side and a direction for the kernel side, not
+yet a mechanism: a thread stack mapped over memory still in use (an mmap range
+handed out twice, or a physical frame behind it reclaimed early - the
+`POISON_BROKEN` line in boot 9 points at the second) would produce it. What it
+does establish is that the kernel stack garbage is downstream: the first thing
+to go wrong is visible in ring 3, one instruction into a new thread.
+

@@ -232,8 +232,28 @@ static void report_child_bounded(const char *stage, pid_t pid, int want_code,
  * exactly, so this global sits at one virtual address in both. */
 static volatile int xproc_word;
 
-int main(void)
+/* C5_EXEC: a thread that execs. The image it loads is this program again,
+ * with an argument that makes it answer one question and exit. */
+static void *exec_worker(void *arg)
 {
+    char *const args[] = { (char *)"EFI/BOOT/THREADS.ELF",
+                           (char *)"exec-probe", 0 };
+
+    (void)arg;
+    execv(args[0], args);
+    return (void *)1L;   /* only if execv failed */
+}
+
+int main(int argc, char **argv)
+{
+    /* Run as the image an exec'ing thread loaded. 23 when this image is its own
+     * process - getpid() equals gettid() - and 24 when it is still running as
+     * the thread it was, which is what a kernel that does not take over the
+     * leader's identity produces. */
+    if (argc > 1 && strcmp(argv[1], "exec-probe") == 0) {
+        return getpid() == (pid_t)syscall(SYS_gettid) ? 23 : 24;
+    }
+
     pthread_t t;
     void *ret = 0;
 
@@ -508,6 +528,33 @@ int main(void)
             }
         }
         fflush(stdout);
+    }
+
+    /* C5_EXEC. A thread execs while the leader spins a bounded number of
+     * yields and exits 7 only if nothing ended it. Linux ends every other
+     * thread on exec and the exec'ing one becomes the process, so the parent
+     * sees the new image's answer, 23. The wrong answers are distinct:
+     *   7   the leader survived the exec
+     *   24  the image runs, but still as the old thread
+     *   killed by 9: the leader's death reached the parent as the process's
+     * Bounded with WNOHANG: on the defect the exec'd image runs as a thread and
+     * a thread's exit never reaches the parent at all. */
+    {
+        pid_t pid = fork();
+
+        if (pid == 0) {
+            pthread_t xt;
+            int n;
+
+            if (pthread_create(&xt, 0, exec_worker, 0) != 0) {
+                _exit(3);
+            }
+            for (n = 0; n < 200; n++) {
+                sched_yield();
+            }
+            syscall(SYS_exit_group, 7);
+        }
+        report_child_bounded("C5_EXEC", pid, 23, 600);
     }
     return 0;
 }

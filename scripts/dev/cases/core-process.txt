@@ -192,3 +192,27 @@ case 8: a futex wake crosses processes
   and green, after the fix: THREADS_C5_FUTEX_XPROC_OK - the wake matched
            nothing and the child died by SIGKILL; check.sh all VERDICT=green;
            twelve boots: 10 pass, 2 (both the known four-worker family: the same unhandled write inside THREADS as fail-7 before the fix, shifted by the new stage's 0x320 bytes) fail.
+
+---
+
+case 9: exec from a thread (H-006)
+  test:    THREADS_C5_EXEC
+  reason:  thread_exec_left_siblings_or_identity
+  defect:  execve replaced the calling task's process and address space and
+           touched nothing else: the siblings kept running the old image, and
+           pid, tgid and is_thread stayed as they were. For a non-leader that
+           means the exec'd program runs with is_thread = 1, and a thread's exit
+           is released at once instead of left as a zombie - so its exit code
+           can never reach the parent.
+  expect on the defect: exited 7 - the leader keeps running the old image, and
+           the new image's exit is invisible.
+  and the two wrong fixes the code 23 rules out:
+           24: siblings ended, but getpid() != gettid() in the new image;
+           killed by 9: the leader's SIGKILL surfaced to the parent as the
+           process dying, while the new image had only just started.
+  bounded: WNOHANG, 600 yields.
+  ran:     yes, red on the kernel before the fix - the new image loaded and
+           the leader was still there to exit 7:
+               THREADS_C5_EXEC_FAIL: exited 7, expected 23
+           green after: THREADS_C5_EXEC_OK; check.sh all VERDICT=green;
+           twelve boots: 12 pass, 0 fail.

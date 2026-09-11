@@ -206,6 +206,24 @@ core, and reading it afterwards could copy a stranger's dispositions.
   comment beside it now defends, because the other order would hang every
   `pthread_join` with nothing failing to compile. Red first (`THREADS_C5_FUTEX_XPROC_FAIL: a wake in this process woke 1 waiter(s) in another`),
   green after; twelve boots: 10 pass, 2 (both the known four-worker family: the same unhandled write inside THREADS as fail-7 before the fix, shifted by the new stage's 0x320 bytes) fail.
+
+  **An exec from a thread ends the process's other threads, and the caller
+  becomes the process** (H-006, verified). Neither happened: the siblings kept
+  running the old image, and a thread that was not the leader kept its own id
+  and `is_thread = 1`, so the program it loaded ran as a thread - released at
+  exit instead of left as a zombie, its exit code unreachable by the parent.
+  Now, only once the new image has loaded (a failed exec must leave every thread
+  in place): the leader is marked a thread under `g_sched_lock`, so its exit is
+  decided quietly; every sibling, found by thread-group id rather than by process
+  reference because an already-exited leader has given its reference back, gets
+  SIGKILL; exec sleeps until they are gone, releasing a leader that was already a
+  zombie; then takes `pid = tgid` and clears `is_thread`. If a signal must be
+  acted on during that wait, the uncommitted image is destroyed and exec returns
+  EINTR. The wait is unbounded on purpose: waits notice signals now, so a hang
+  there names a wait that ignored one. Exec also clears `clear_child_tid` - the
+  address belongs to the image that set it, and was left for the new image's
+  exit to zero, on every exec. Red first (`THREADS_C5_EXEC_FAIL: exited 7, expected 23` - the leader
+  outlived the exec), green after; twelve boots: 12 pass, 0 fail.
 - **No must-be-zero counter for the new structure.** One was designed - a
   reference dropped below zero - and not added, because a counter nothing reads is
   this project's most repeated defect, and reading it means touching the portable
