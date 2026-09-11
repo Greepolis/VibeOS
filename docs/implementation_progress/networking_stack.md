@@ -182,6 +182,34 @@ before (`ip=10.0.2.15 gw=10.0.2.2 dns=10.0.2.3`). Twelve boots: 11 pass, 1 fail
 - the THREADS four-worker crash family, nothing to do with DHCP; recorded in
 boot_repeatability.md because it recurred after the exit-window fix.
 
+### M-008: any ARP packet could repoint the gateway (fixed 2026-09-11)
+
+`arp_input` inserted every sender it saw, and `arp_insert` overwrote an entry
+it already had. One gratuitous ARP from any host on the segment claiming the
+gateway's address, and every packet to the outside went to that host.
+
+ARP has no authentication, so a host cannot know who is right; it can refuse
+traffic nobody asked for. `arp_request` now records the address asked for and
+accepts a reply to it for two seconds. A reply to that request may add or
+change an entry. A request addressed to this host may add an entry the stack
+does not have - answering the request needs it - and never change one it has.
+Everything else is ignored. So that a neighbour whose hardware address really
+changes is still relearned, an expired entry is used and refreshed with a
+request on the next send, and traffic never waits for the answer.
+
+What remains, stated: an attacker who answers a request before the real host
+does, and one that teaches the cache a host before that host has spoken.
+
+`test_inet_arp_cache_not_overwritten` checks where traffic actually goes - the
+destination MAC of a ping through the gateway - after a gratuitous ARP, an
+unsolicited reply, and a request sent in the gateway's name, and that a
+solicited reply for a new host is still learned. Red on the old code at the
+gratuitous ARP. The test seed `inet_seed_arp` was an unsolicited reply, which
+the fix rightly ignores; it is a request from the gateway for this host now.
+
+Host tests green, `check.sh all` green, the gate's DHCP and TCP work as before,
+twelve boots: 12 pass, 0 fail.
+
 ## Deferred: Waves 2-5 (not started)
 These are recorded so the scope is explicit, not because work has begun. Status
 stays `In Progress` until the Wave 5 gates pass, per the plan's own rule.

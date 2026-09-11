@@ -345,6 +345,8 @@ static void arp_request(vibeos_inet_t *net, uint32_t target) {
     wr32(a + 14, net->ip);
     bzero_n(a + 18, 6);
     wr32(a + 24, target);
+    net->arp_pending_ip = target;
+    net->arp_pending_until_ms = net->now_ms + 2000ull;
     (void)eth_send(net, g_broadcast_mac, ETH_TYPE_ARP, 28u);
 }
 
@@ -408,6 +410,21 @@ static int ip_send_from(vibeos_inet_t *net, uint32_t src, uint32_t dst, uint8_t 
         if (!mac) {
             arp_request(net, hop);
             return -VIBEOS_INET_EAGAIN;
+        }
+        /* A stale entry is used and refreshed at once, not dropped: the reply to
+         * this request is the only thing that may change it now (M-008), so a
+         * neighbour whose hardware address really changed is still relearned,
+         * and traffic never waits for it. One request per pending window. */
+        {
+            uint32_t i;
+            for (i = 0; i < VIBEOS_INET_ARP_ENTRIES; i++) {
+                if (net->arp[i].valid && net->arp[i].ip == hop &&
+                    net->now_ms >= net->arp[i].expires_ms &&
+                    !(net->arp_pending_ip == hop && net->now_ms < net->arp_pending_until_ms)) {
+                    arp_request(net, hop);
+                    break;
+                }
+            }
         }
     }
     return eth_send(net, mac, ETH_TYPE_IP, total);
@@ -1762,7 +1779,31 @@ static void arp_input(vibeos_inet_t *net, const uint8_t *a, uint32_t len) {
     spa = rd32(a + 14);
     tpa = rd32(a + 24);
 
-    arp_insert(net, spa, a + 8);
+    /* Who may teach the cache what (M-008). This inserted every sender and
+     * overwrote what it knew, so a gratuitous ARP from any host made it the
+     * gateway. ARP has no authentication; what a host can do is refuse traffic
+     * nobody asked for:
+     *   - a reply to the request the stack sent, for that address, may add or
+     *     change an entry;
+     *   - a request addressed to this host may add an entry it does not have,
+     *     which answering it needs - never change one it has;
+     *   - anything else is ignored.
+     * An attacker who races the real reply to a request remains possible, and
+     * so does one learning a host before the host speaks: the change removes
+     * rewriting a neighbour that is already known. */
+    {
+        int solicited = (op == 2u && net->ip != 0u && tpa == net->ip &&
+                         spa == net->arp_pending_ip && spa != 0u &&
+                         net->now_ms < net->arp_pending_until_ms);
+        int known = (arp_find(net, spa) != 0);
+
+        if (solicited) {
+            arp_insert(net, spa, a + 8);
+            net->arp_pending_ip = 0;
+        } else if (op == 1u && net->ip != 0u && tpa == net->ip && !known && spa != 0u) {
+            arp_insert(net, spa, a + 8);
+        }
+    }
 
     if (op == 1u && net->ip != 0u && tpa == net->ip) {   /* request for us */
         uint8_t *o = net->scratch + ETH_HDR;

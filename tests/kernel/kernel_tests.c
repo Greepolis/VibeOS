@@ -3566,7 +3566,12 @@ static int test_network_policy_data_path(void) {
     return 0;
 }
 
-/* Teach a stack the peer's MAC, so a test is not held up by ARP. */
+/* Teach a stack the peer's MAC, so a test is not held up by ARP.
+ *
+ * A request from the gateway asking for this host, rather than a reply nobody
+ * asked for: since M-008 an unsolicited reply does not enter the cache, and a
+ * request addressed to us is the legitimate way to learn a neighbour unasked.
+ * The stack answers it; callers reset the capture afterwards. */
 static void inet_seed_arp(vibeos_inet_t *net) {
     uint8_t arp[28];
     uint8_t f[64];
@@ -3574,7 +3579,7 @@ static void inet_seed_arp(vibeos_inet_t *net) {
     inet_wr16(arp + 2, 0x0800);
     arp[4] = 6;
     arp[5] = 4;
-    inet_wr16(arp + 6, 2);                    /* reply */
+    inet_wr16(arp + 6, 1);                    /* request, for us */
     memcpy(arp + 8, inet_test_peer_mac, 6);
     inet_wr32(arp + 14, 0x0A000202u);
     memcpy(arp + 18, inet_test_local_mac, 6);
@@ -4319,6 +4324,88 @@ static int test_inet_dhcp_reply_must_match_transaction(void) {
     n = inet_dhcp_msg(b, xid, 6, 0u, inet_test_local_mac, rogue);
     inet_deliver_udp(&net, rogue, 67, 68, b, n);
     if (!vibeos_inet_dhcp_bound(&net) || net.ip != 0x0A00020Fu) {
+        return -1;
+    }
+    return 0;
+}
+
+/* M-008: nobody can repoint a neighbour the stack already knows.
+ *
+ * arp_input inserted every sender it saw and arp_insert overwrote an existing
+ * entry, so a gratuitous ARP from any host on the segment made itself the
+ * gateway: every packet to the outside went to it. Now an entry's hardware
+ * address changes only through a reply to a request the stack sent; a new
+ * entry is learned from such a reply or from a request addressed to this host.
+ *
+ * The check is where the traffic actually goes: the destination MAC of the next
+ * packet sent through the gateway. */
+static void inet_arp_frame(vibeos_inet_t *net, uint16_t op, const uint8_t *sha,
+                           uint32_t spa, uint32_t tpa) {
+    uint8_t f[64];
+    memset(f, 0, sizeof(f));
+    memcpy(f, inet_test_local_mac, 6);
+    memcpy(f + 6, sha, 6);
+    inet_wr16(f + 12, 0x0806);
+    inet_wr16(f + 14, 1);
+    inet_wr16(f + 16, 0x0800);
+    f[18] = 6;
+    f[19] = 4;
+    inet_wr16(f + 20, op);
+    memcpy(f + 22, sha, 6);
+    inet_wr32(f + 28, spa);
+    inet_wr32(f + 38, tpa);
+    (void)vibeos_inet_input(net, f, 14 + 28);
+}
+
+static int inet_ping_mac_is(vibeos_inet_t *net, inet_capture_t *cap, uint32_t dst,
+                            const uint8_t *mac) {
+    cap->count = 0;
+    (void)vibeos_inet_ping(net, dst);
+    if (cap->count < 1) {
+        return 0;
+    }
+    return memcmp(cap->frame[cap->count - 1], mac, 6) == 0 &&
+           inet_rd16(cap->frame[cap->count - 1] + 12) == 0x0800u;
+}
+
+static int test_inet_arp_cache_not_overwritten(void) {
+    static vibeos_inet_t net;
+    static inet_capture_t cap;
+    static const uint8_t attacker[6] = {0x02, 0xBA, 0xDB, 0xAD, 0x00, 0x01};
+    static const uint8_t host77[6] = {0x02, 0x77, 0x77, 0x77, 0x77, 0x77};
+
+    memset(&cap, 0, sizeof(cap));
+    if (vibeos_inet_init(&net, inet_test_local_mac, inet_capture_tx, &cap) != 0) {
+        return -1;
+    }
+    vibeos_inet_set_addr(&net, 0x0A00020Fu, 0xFFFFFF00u, 0x0A000202u, 0x0A000203u);
+    inet_seed_arp(&net);
+    if (!inet_ping_mac_is(&net, &cap, 0x08080808u, inet_test_peer_mac)) {
+        return -1;   /* the seed did not take: the test would prove nothing */
+    }
+
+    /* A gratuitous ARP claiming the gateway's address. */
+    inet_arp_frame(&net, 2, attacker, 0x0A000202u, 0x0A000202u);
+    if (!inet_ping_mac_is(&net, &cap, 0x08080808u, inet_test_peer_mac)) {
+        return -1;
+    }
+    /* An unsolicited reply to this host claiming it. */
+    inet_arp_frame(&net, 2, attacker, 0x0A000202u, 0x0A00020Fu);
+    if (!inet_ping_mac_is(&net, &cap, 0x08080808u, inet_test_peer_mac)) {
+        return -1;
+    }
+    /* A request for this host, sent in the gateway's name. */
+    inet_arp_frame(&net, 1, attacker, 0x0A000202u, 0x0A00020Fu);
+    if (!inet_ping_mac_is(&net, &cap, 0x08080808u, inet_test_peer_mac)) {
+        return -1;
+    }
+
+    /* The legitimate path still works: ask for a new on-link host, get the
+     * answer, and use it. */
+    cap.count = 0;
+    (void)vibeos_inet_ping(&net, 0x0A00024Du);      /* 10.0.2.77: unknown, sends a request */
+    inet_arp_frame(&net, 2, host77, 0x0A00024Du, 0x0A00020Fu);
+    if (!inet_ping_mac_is(&net, &cap, 0x0A00024Du, host77)) {
         return -1;
     }
     return 0;
@@ -8687,6 +8774,7 @@ int main(void) {
     RUN_TEST(test_inet_tcp_isn_depends_on_secret);
     RUN_TEST(test_inet_dns_reply_must_match_query);
     RUN_TEST(test_inet_dhcp_reply_must_match_transaction);
+    RUN_TEST(test_inet_arp_cache_not_overwritten);
     RUN_TEST(test_inet_tcp_close_reclaims_socket);
     RUN_TEST(test_inet_dhcp_lease_lifecycle);
     RUN_TEST(test_inet_dns_timeout_and_negative_cache);

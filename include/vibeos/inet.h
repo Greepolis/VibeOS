@@ -152,6 +152,11 @@ typedef struct vibeos_inet {
     uint16_t ip_id;
 
     vibeos_arp_entry_t arp[VIBEOS_INET_ARP_ENTRIES];
+    /* The address the last ARP request asked for, and until when a reply to it
+     * is accepted. Only a reply to a request the stack sent may change the
+     * hardware address of a neighbour it already knows (M-008). */
+    uint32_t arp_pending_ip;
+    uint64_t arp_pending_until_ms;
     vibeos_inet_socket_t sockets[VIBEOS_INET_MAX_SOCKETS];
 
     /* One in-flight ICMP echo, so `ping` can report a round trip. */
