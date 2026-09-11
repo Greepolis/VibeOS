@@ -567,3 +567,44 @@ Both lived in the tree only for the measurement; the second is kept as
 
 The family recurred once more in the H-007 series with the same instruction
 (`0x405b72` in that build, the same `start` as before) and the same panic.
+
+## The exit switch ran with interrupts on (fixed 2026-09-11)
+
+What the probes above were circling. `hw_task_exit` chooses `next`, sets it
+RUNNING, marks it `on_cpu` and makes it the core's current task - and then keeps
+running the *dying* task's code for a while: address-space teardown, the
+process reference, the locks those take and release. Only after that does it
+jump into `next`.
+
+If a timer interrupt lands in that stretch, `hw_schedule` sees `next` as the
+current task and does what it does for any preempted task: saves the interrupted
+frame as `next`'s context, marks it READY and `on_cpu = 0`. That frame is the
+dying task's, on a kernel stack already parked for release. Another core then
+picks `next` up and resumes the dying task's exit code on that stack, while the
+first core's drain frees it. Every piece of the four-worker family fits: "this
+task's stack is the free-page poison", kernel frames made of ASCII, a core whose
+current task is a slot already reclaimed as SETUP, and - once - a
+`running -> running` transition by `hw_task_exit`.
+
+The one question was whether interrupts could be on there, since `syscall` clears
+IF. They can: a task killed out of a wait that did `sti; hlt` reaches the exit
+with the flag still set. A probe at the switch counted **4 per boot**, every one
+a process ended by SIGKILL or exit_group while blocked.
+
+Gated as a mechanism, because the crash cannot be produced on demand: a
+must-be-zero counter, `exit_switch_irq_on`, on the `[TASKS] MUSTBEZERO` line and
+asserted by the gate. Red first - `task_exit_switch_irq_on=4` on the unchanged
+kernel. The fix is one `cli` before the choice; nothing below turns interrupts
+back on, and the `iretq` into `next` restores its own flags. Counter 0,
+`check.sh all` green, twelve boots 12/12.
+
+**What is not yet shown:** that this was the cause of the four-worker family.
+That family ran about one boot in eight to ten, so twelve clean boots is
+consistent with it and proves nothing about it. The counter proves the window
+is closed and will say so if it reopens; the series from here on will say
+whether the crashes stopped.
+
+One slip on the way, recorded because the file already warns about it: the
+first build of the probe had a syntax error, `.c5red.sh` printed `build-rc=1`
+and booted anyway, and twelve boots measured the previous kernel. It stops on a
+failed build now, and checks that the kernel image is newer than `arch_hw.c`.

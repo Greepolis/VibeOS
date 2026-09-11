@@ -48,6 +48,7 @@ typedef struct vibeos_task_stats {
     uint64_t tenancy_mismatch;   /* a reference whose generation had moved on */
     uint64_t cr3_without_owner;
   /* a task about to run on unowned tables     */
+    uint64_t exit_switch_irq_on; /* exit chose the next task, interrupts on   */
 } vibeos_task_stats_t;
 
 vibeos_task_stats_t *vibeos_task_stats(void);

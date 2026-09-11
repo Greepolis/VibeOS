@@ -184,6 +184,8 @@ void vibeos_task_print_stats(void) {
     view_hex(s->tenancy_mismatch);
     vibeos_x86_64_serial_puts(" cr3_without_owner=0x");
     view_hex(s->cr3_without_owner);
+    vibeos_x86_64_serial_puts(" exit_switch_irq_on=0x");
+    view_hex(s->exit_switch_irq_on);
     vibeos_x86_64_serial_puts("\n");
     vibeos_x86_64_serial_unlock();
 }

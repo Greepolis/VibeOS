@@ -5523,6 +5523,25 @@ void hw_task_exit(uint64_t code) {
         g_tasks[dying].clear_child_tid = 0;
     }
 
+    /* Off, and not turned back on by anything below: the iretq at the end of
+     * vibeos_x86_64_task_enter restores the flags from next's own saved frame.
+     * Everything between - the teardown, the locks it takes and releases -
+     * saves and restores the interrupt state it found, which is now off. */
+    __asm__ __volatile__("cli");
+    /* From here to vibeos_x86_64_task_enter this core has made `next` current
+     * while still running the dying task's code. A timer interrupt in that
+     * stretch makes hw_schedule save this frame - the dying task's, on a kernel
+     * stack already parked for release - as next's context, and hand next to
+     * another core. The interrupt flag is not guaranteed off here: a task
+     * killed out of a wait that did `sti; hlt` arrives with it set. Counted,
+     * and the boot gate asserts the count is zero. */
+    {
+        uint64_t fl;
+        __asm__ __volatile__("pushfq; popq %0" : "=r"(fl) : : "memory");
+        if ((fl & 0x200ull) != 0u) {
+            vibeos_task_stats()->exit_switch_irq_on++;
+        }
+    }
     hw_spin_lock_named(&g_sched_lock, __func__);
     next = hw_pick_next(cpu);
     if (next < 0) {

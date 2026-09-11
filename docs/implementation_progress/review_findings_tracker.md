@@ -46,7 +46,7 @@ closed), and `ARCH_SET_GS` is refused because `%gs` holds per-CPU kernel state.
 
 | What | Status | Evidence / next step |
 |---|---|---|
-| hw_task_exit makes `next` current with interrupts possibly on; a timer there saves the dying task's kernel frame as next's context | **in progress** | probe fired 4x per boot; suspected cause of the THREADS four-worker crash family and of the first `task_illegal_transition` (running->running) seen 2026-09-11. Must-be-zero counter `exit_switch_irq_on` (red) + `cli` fix under test. [boot_repeatability.md](boot_repeatability.md) |
+| hw_task_exit makes `next` current with interrupts possibly on; a timer there saves the dying task's kernel frame as next's context | fixed (commit "core: exit switches tasks with interrupts off") | must-be-zero counter `exit_switch_irq_on` red at 4 per boot, 0 with `cli`; twelve boots 12/12. Whether it was the cause of the four-worker crash family and of the running->running transition is **not yet shown** - that family ran about one boot in eight to ten. [boot_repeatability.md](boot_repeatability.md) |
 | Boot gate hung 48 minutes on a guest that had panicked | **open** | `wait_for` and `wedge_report` are both bounded; cause unknown. Wedge report kept in `.boot-evidence/wedge-probe-boot5.txt`, boot log lost |
 | `rmap_mismatch=1` with `rmap_audit_torn=0` on a Release boot | **open** | by CLAUDE.md's rule a real mismatch, not the detector. `.boot-evidence/probe-20260911-133143-boot3.log` |
 
@@ -55,7 +55,7 @@ closed), and `ARCH_SET_GS` is refused because `%gs` holds per-CPU kernel state.
 Incoming findings first - the user's stated priority - and the core plan is not
 dropped:
 
-1. exit-window fix (in progress), then H-008, M-007, H-009 (one stack secret).
+1. H-008, M-007, H-009 (one stack secret). The exit-window fix is done.
 2. **H-010 + H-003 together**: a fault-safe user copy is the one fix for both,
    and it is also C5's "real exception table" item. The first attempt failed on
    `&&label` losing its base; see uaccess_recovery_open.md before retrying.
