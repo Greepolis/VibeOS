@@ -275,11 +275,15 @@ So C5 now has a **step 0**, done first: process state is referenced, not copied
 tests were written before the kernel was touched and failed on it. The move below
 is unchanged and still comes after C4.
 
-Still open inside step 0, in the order they should be taken (WNOHANG, tkill and
-the blocking waits are closed): fork is not atomic against its own process's other
-threads (all four mm calls, not only brk); exec in a threaded process does not end the siblings;
-a leader that exits before its threads can be reaped early; descriptors are still
-per thread.
+Closed in step 0 (2026-09): WNOHANG, tkill, the blocking waits; exec in a
+threaded process ends the siblings and takes the leader's id (H-006, `8a3903c`);
+a leader that exited before its threads is released when exec takes its slot;
+and `hw_procstate_t` has a must-be-zero - `procstate_double_put`, a process
+reference given back that nobody held, on the `[TASKS] MUSTBEZERO` line and
+asserted by the gate.
+
+Still open inside step 0: fork is not atomic against its own process's other
+threads (all four mm calls, not only brk); descriptors are still per thread.
 
 **Steps.** `vibeos_task_t` holds identity, state, parent, exit status,
 credentials and descriptors. `hw_task_t` keeps `ctx`, `kstack_*`, `cr3` and a

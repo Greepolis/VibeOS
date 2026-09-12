@@ -4380,6 +4380,12 @@ static void hw_procstate_put(hw_procstate_t *ps) {
     for (;;) {
         r = __atomic_load_n(&ps->refs, __ATOMIC_ACQUIRE);
         if (r == 0u) {
+            /* A reference given back that nobody held - the process-state
+             * analogue of frames_double_put. Every put must match a new() or a
+             * clone's increment, so this is always zero in a healthy boot; the
+             * boot gate asserts it on the [TASKS] MUSTBEZERO line. Counted
+             * rather than panicked so a whole boot can be judged at once. */
+            vibeos_task_stats()->procstate_double_put++;
             return;   /* never taken, or already given back */
         }
         if (r == 1u) {

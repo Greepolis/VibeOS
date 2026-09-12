@@ -225,6 +225,15 @@ core, and reading it afterwards could copy a stranger's dispositions.
   exit to zero, on every exec. Red first (`THREADS_C5_EXEC_FAIL: exited 7, expected 23` - the leader
   outlived the exec), green after; twelve boots: 12 pass, 0 fail.
 
+  **The shared process block cannot be given back twice.** `hw_procstate_t` is
+  refcounted - threads share it, fork and exec make new ones, and exit gives one
+  back - so a reference returned that nobody held is the process-state analogue
+  of a double free of a frame. `hw_procstate_put` counts that case
+  (`procstate_double_put`) on the `[TASKS] MUSTBEZERO` line, and the boot gate
+  fails if it is not zero. It closes the C5 step-0 item that asked for a
+  must-be-zero here. Proved able to fire: with a deliberate second put of every
+  dying process's state, the gate reported reason=invariant_failed:task_procstate_double_put=119 and went red; reverted, the restored tree is green.
+
   **A slot index is not a reference** (H-007, verified). The syscalls that name a
   task by id - kill, tkill, tgkill, setpgid, getsid, setsid - resolved it to a
   `g_tasks` index and then used the index without a lock, and so did the sibling
