@@ -285,25 +285,21 @@ asserted by the gate.
 Partly closed: there is now one per-process address-space lock (`hw_mm_lock`,
 `mm_busy`), bounded so a missed release is a named panic not a hang. brk takes
 it, and fork takes it across its read of the parent's page tables and region
-list; munmap takes it too. Still open: mmap and mprotect do not take it yet, and
-each has a hazard that stopped a rushed conversion:
+list; munmap and mmap take it too (mmap's mutation was extracted into
+`hw_mmap_locked` so one lock/unlock covers its six returns). Still open:
 
-- **mprotect** narrows permissions, and narrowing does a TLB shootdown that
-  waits for the other cores running this address space to acknowledge. Held
-  under `mm_busy`, a sibling thread spinning in `hw_mm_lock` (inside its own mm
-  syscall, so with interrupts masked) is one of those cores: it cannot take the
-  shootdown IPI until it leaves the spin, and it will not leave until mprotect
-  releases - a circular wait that ends in the shootdown's timeout panic. So the
-  lock must not be held across the shootdown: either release before the
-  narrowing pass, or make the `hw_mm_lock` spin service the IPI (enable
-  interrupts while spinning - safe, the spin holds nothing).
-- **mmap** does no shootdown (it maps fresh pages; its rollback unmaps through
-  deferred reclaim), so holding the lock is safe - but it has six returns past
-  the mutation, in two branches. Extract the mutation into a helper returning
-  the result, and take one lock/unlock around the single call, rather than
-  threading an unlock through six paths.
-
-descriptors are still per thread.
+- **mprotect** does not take it yet, and here is the hazard that must be
+  respected. mprotect narrows permissions, and narrowing does a TLB shootdown
+  that waits for the other cores running this address space to acknowledge.
+  Held under `mm_busy`, a sibling thread spinning in `hw_mm_lock` (inside its
+  own mm syscall, so with interrupts masked) is one of those cores: it cannot
+  take the shootdown IPI until it leaves the spin, and it will not leave until
+  mprotect releases - a circular wait that ends in the shootdown's timeout
+  panic. So the lock must not be held across the shootdown: release before the
+  narrowing pass (the region-list update is what fork races; the shootdown is
+  about other cores' TLBs, not the list), or make the `hw_mm_lock` spin service
+  the IPI (enable interrupts while spinning - safe, the spin holds nothing).
+- descriptors are still per thread.
 
 **Steps.** `vibeos_task_t` holds identity, state, parent, exit status,
 credentials and descriptors. `hw_task_t` keeps `ctx`, `kstack_*`, `cr3` and a

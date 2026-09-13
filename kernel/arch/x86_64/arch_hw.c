@@ -7220,45 +7220,9 @@ static vibeos_prot_t hw_prot_of(uint64_t prot) {
     return p;
 }
 
-static long hw_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot,
-                        uint64_t flags, uint64_t fd) {
-    hw_proc_t *proc;
-    hw_procstate_t *ps;
+static long hw_mmap_locked(hw_procstate_t *ps, hw_proc_t *proc,
+                           uint64_t len, uint64_t prot) {
     uint64_t pages, base, leaf;
-
-    hw_log(VIBEOS_LOG_DEBUG, 12u, len, prot | (flags << 32), "mmap");
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user || len == 0u) {
-        return -VIBEOS_EINVAL;
-    }
-    /* Both branches below round with (len + 0xFFF) / 4096, and for a length
-     * within a page of 2^64 that sum wraps to a page count of zero: nothing was
-     * claimed, nothing mapped, and the call returned success with the base the
-     * next caller would also get (M-006, verified). Refused before the sum, with
-     * the answer Linux gives when the aligned length is zero. */
-    if (len > ~0ull - 0xFFFull) {
-        return -VIBEOS_ENOMEM;
-    }
-    /* Established here, before anything reads it. The reservation branch below
-     * used it one statement too early and handed back a base of zero, which a
-     * C library then mprotected at address 0x2000 - a thread stack placed on
-     * top of nothing. */
-    proc = &g_tasks[g_current_task].proc;
-    ps = g_tasks[g_current_task].ps;
-    if (!ps) {
-        return -VIBEOS_EINVAL;
-    }
-    if (flags & MAP_FIXED) {
-        hw_log(VIBEOS_LOG_WARN, 10u, addr, flags, "mmap refused: MAP_FIXED");
-        return -VIBEOS_EINVAL;
-    }
-    /* File-backed mappings need a page cache this kernel does not have. Say so
-     * instead of returning anonymous zeroes, which would look like a file full
-     * of NULs. */
-    if ((flags & MAP_ANONYMOUS) == 0 || VIBEOS_ARG_INT(fd) >= 0) {
-        hw_log(VIBEOS_LOG_WARN, 11u, flags, fd,
-               "mmap refused: file-backed mapping");
-        return -VIBEOS_ENOSYS;
-    }
     if (prot == PROT_NONE) {
         /* A mapping with no access, which is how a thread stack is made: a C
          * library asks for stack plus guard as one PROT_NONE region and then
@@ -7357,6 +7321,56 @@ static long hw_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot,
     (void)vibeos_vma_insert(&ps->vmas, base, pages * 4096ull,
                             hw_prot_of(prot), VIBEOS_BACKING_ANON, 0, 0);
     return (long)base;
+}
+
+static long hw_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot,
+                        uint64_t flags, uint64_t fd) {
+    hw_proc_t *proc;
+    hw_procstate_t *ps;
+
+    hw_log(VIBEOS_LOG_DEBUG, 12u, len, prot | (flags << 32), "mmap");
+    if (g_current_task < 0 || !g_tasks[g_current_task].is_user || len == 0u) {
+        return -VIBEOS_EINVAL;
+    }
+    /* Both branches below round with (len + 0xFFF) / 4096, and for a length
+     * within a page of 2^64 that sum wraps to a page count of zero: nothing was
+     * claimed, nothing mapped, and the call returned success with the base the
+     * next caller would also get (M-006, verified). Refused before the sum, with
+     * the answer Linux gives when the aligned length is zero. */
+    if (len > ~0ull - 0xFFFull) {
+        return -VIBEOS_ENOMEM;
+    }
+    /* Established here, before anything reads it. The reservation branch below
+     * used it one statement too early and handed back a base of zero, which a
+     * C library then mprotected at address 0x2000 - a thread stack placed on
+     * top of nothing. */
+    proc = &g_tasks[g_current_task].proc;
+    ps = g_tasks[g_current_task].ps;
+    if (!ps) {
+        return -VIBEOS_EINVAL;
+    }
+    if (flags & MAP_FIXED) {
+        hw_log(VIBEOS_LOG_WARN, 10u, addr, flags, "mmap refused: MAP_FIXED");
+        return -VIBEOS_EINVAL;
+    }
+    /* File-backed mappings need a page cache this kernel does not have. Say so
+     * instead of returning anonymous zeroes, which would look like a file full
+     * of NULs. */
+    if ((flags & MAP_ANONYMOUS) == 0 || VIBEOS_ARG_INT(fd) >= 0) {
+        hw_log(VIBEOS_LOG_WARN, 11u, flags, fd,
+               "mmap refused: file-backed mapping");
+        return -VIBEOS_ENOSYS;
+    }
+    /* The mapping runs under the process address-space lock, so a fork
+     * cloning the tables and region list, or a sibling brk/munmap, cannot
+     * see it half-built. mmap does no shootdown, so holding the lock is
+     * safe here (mprotect, which does, is the exception). */
+    hw_mm_lock(ps);
+    {
+        long r = hw_mmap_locked(ps, proc, len, prot);
+        hw_mm_unlock(ps);
+        return r;
+    }
 }
 
 /* mprotect(): change permissions on pages that are already mapped.
