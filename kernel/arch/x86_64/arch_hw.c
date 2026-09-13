@@ -7487,6 +7487,10 @@ static long hw_sys_munmap(uint64_t addr, uint64_t len) {
     }
     proc = &g_tasks[g_current_task].proc;
     end = (addr + len + 0xFFFull) & ~0xFFFull;
+    /* One mutation of this process's address space at a time: a fork cloning
+     * the tables and the region list, or a sibling's brk, must not see this
+     * range half-removed. Single exit below, so one release. See hw_mm_lock. */
+    hw_mm_lock(g_tasks[g_current_task].ps);
     /* The list decides what this range contains; the page tables are then made
      * to agree. That order is the phase: the tables record what the hardware
      * currently does, and asking *them* what to release is what let munmap free
@@ -7547,6 +7551,7 @@ static long hw_sys_munmap(uint64_t addr, uint64_t len) {
      * Drained here as well as on the timer so a machine doing nothing but
      * unmapping still gives frames back. */
     hw_tlbq_drain();
+    hw_mm_unlock(g_tasks[g_current_task].ps);
     return 0;
 }
 

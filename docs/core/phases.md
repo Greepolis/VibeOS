@@ -285,9 +285,8 @@ asserted by the gate.
 Partly closed: there is now one per-process address-space lock (`hw_mm_lock`,
 `mm_busy`), bounded so a missed release is a named panic not a hang. brk takes
 it, and fork takes it across its read of the parent's page tables and region
-list - so fork is atomic against a sibling's brk. Still open: mmap, munmap and
-mprotect do not take it yet (one conversion per commit); descriptors are still
-per thread.
+list; munmap takes it too. Still open: mmap and mprotect do not take it yet (one
+conversion per commit); descriptors are still per thread.
 
 **Steps.** `vibeos_task_t` holds identity, state, parent, exit status,
 credentials and descriptors. `hw_task_t` keeps `ctx`, `kstack_*`, `cr3` and a
