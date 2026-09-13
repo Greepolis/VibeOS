@@ -286,19 +286,20 @@ Partly closed: there is now one per-process address-space lock (`hw_mm_lock`,
 `mm_busy`), bounded so a missed release is a named panic not a hang. brk takes
 it, and fork takes it across its read of the parent's page tables and region
 list; munmap and mmap take it too (mmap's mutation was extracted into
-`hw_mmap_locked` so one lock/unlock covers its six returns). Still open:
+`hw_mmap_locked` so one lock/unlock covers its six returns). mprotect takes it
+across its region-list update (`vibeos_vma_protect`) and releases before its
+page-table narrowing pass - because that pass does a TLB shootdown, and holding
+the lock across the shootdown would deadlock a sibling spinning in `hw_mm_lock`
+(it cannot ack the IPI until it leaves the spin, and will not until mprotect
+releases) into the shootdown's timeout panic. So fork is now atomic against all
+four mm calls on the *region list*. Still open:
 
-- **mprotect** does not take it yet, and here is the hazard that must be
-  respected. mprotect narrows permissions, and narrowing does a TLB shootdown
-  that waits for the other cores running this address space to acknowledge.
-  Held under `mm_busy`, a sibling thread spinning in `hw_mm_lock` (inside its
-  own mm syscall, so with interrupts masked) is one of those cores: it cannot
-  take the shootdown IPI until it leaves the spin, and it will not leave until
-  mprotect releases - a circular wait that ends in the shootdown's timeout
-  panic. So the lock must not be held across the shootdown: release before the
-  narrowing pass (the region-list update is what fork races; the shootdown is
-  about other cores' TLBs, not the list), or make the `hw_mm_lock` spin service
-  the IPI (enable interrupts while spinning - safe, the spin holds nothing).
+- **mprotect's page-table race with fork.** Because mprotect releases the lock
+  before narrowing, fork's `copy_user` can still read a PTE mprotect is
+  narrowing - the same window as before the lock, no worse, but not closed. To
+  close it, the `hw_mm_lock` spin must service the shootdown IPI (enable
+  interrupts while spinning - safe, the spin holds nothing), after which
+  mprotect could hold the lock across the narrowing too.
 - descriptors are still per thread.
 
 **Steps.** `vibeos_task_t` holds identity, state, parent, exit status,

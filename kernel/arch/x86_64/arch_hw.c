@@ -7425,12 +7425,22 @@ static long hw_sys_mprotect(uint64_t addr, uint64_t len, uint64_t prot) {
      * the page tables knew about, which is why "is this address reserved?" and
      * "is this address mapped?" were the same question and the ABI self-test
      * caught mprotect accepting an address it had to refuse. */
+    /* The region-list update is what a fork's vibeos_vma_clone races; take the
+     * lock across it, and only across it. The page-table pass below does a TLB
+     * shootdown, and holding the lock across that shootdown would deadlock a
+     * sibling spinning in hw_mm_lock - it cannot ack the IPI until it leaves the
+     * spin, and it will not until this releases - into the shootdown's timeout
+     * panic. So the list race with fork is closed here; the page-table race is
+     * not, and stays until the spin can service the IPI (phases.md). */
+    hw_mm_lock(g_tasks[g_current_task].ps);
     if (vibeos_vma_protect(&g_tasks[g_current_task].ps->vmas, addr, end - addr,
                            hw_prot_of(prot)) != 0) {
+        hw_mm_unlock(g_tasks[g_current_task].ps);
         hw_log(VIBEOS_LOG_WARN, 15u, addr, len,
                "mprotect refused: the range is not one this process asked for");
         return -VIBEOS_EFAULT;
     }
+    hw_mm_unlock(g_tasks[g_current_task].ps);
 
     for (va = addr; va < end; va += 4096ull) {
         uint64_t *pte = hw_pte_lookup(&proc->as, va);
