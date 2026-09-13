@@ -4345,7 +4345,7 @@ static hw_procstate_t *hw_procstate_new(void) {
                                          __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
             continue;
         }
-        __atomic_store_n(&ps->brk_busy, 0u, __ATOMIC_RELEASE);
+        __atomic_store_n(&ps->mm_busy, 0u, __ATOMIC_RELEASE);
         ps->brk_cur = 0;
         __atomic_store_n(&ps->mmap_cur, 0ull, __ATOMIC_RELEASE);
         ps->vmas.head = 0;
@@ -6751,7 +6751,7 @@ static uint64_t hw_mmap_claim(hw_procstate_t *ps, uint64_t pages) {
 }
 
 /* brk(0) reports the break; brk(addr) moves it, mapping fresh pages or giving
- * them back. Runs with the process's brk_busy claimed; see hw_sys_brk. */
+ * them back. Runs with the process's mm_busy claimed; see hw_sys_brk. */
 static long hw_sys_brk_locked(hw_proc_t *proc, hw_procstate_t *ps, uint64_t addr) {
     uint64_t new_brk, pages;
 
@@ -6804,32 +6804,49 @@ static long hw_sys_brk_locked(hw_proc_t *proc, hw_procstate_t *ps, uint64_t addr
     return (long)ps->brk_cur;
 }
 
+/* One address-space mutation at a time per process. A compare-exchange flag,
+ * not a spinlock: the work under it can be many pages, and a spinlock would
+ * hold them all with the timer off. Every thread of a process shares the ps,
+ * so this serialises brk against fork's read of the same tables and list -
+ * and mmap, munmap and mprotect as each is converted to take it.
+ *
+ * Bounded, because the failure mode of a lock is a hang, and a hang here is a
+ * silent machine. A holder that never releases - a return path that forgot to
+ * unlock - becomes a named panic instead. The bound is the shootdown's, chosen
+ * for the same reason: far beyond any honest wait between two cores. */
+static void hw_mm_lock(hw_procstate_t *ps) {
+    uint64_t spins = 0;
+    for (;;) {
+        uint32_t zero = 0;
+        if (__atomic_compare_exchange_n(&ps->mm_busy, &zero, 1u, 0,
+                                        __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+            return;
+        }
+        __asm__ __volatile__("pause" ::: "memory");
+        if (++spins > 200000000ull) {
+            hw_panic("mm lock held too long: a mutation did not release it");
+        }
+    }
+}
+
+static void hw_mm_unlock(hw_procstate_t *ps) {
+    __atomic_store_n(&ps->mm_busy, 0u, __ATOMIC_RELEASE);
+}
+
 static long hw_sys_brk(uint64_t addr) {
     hw_procstate_t *ps;
-    uint32_t zero;
     long r;
 
     if (g_current_task < 0 || !g_tasks[g_current_task].is_user ||
         (ps = g_tasks[g_current_task].ps) == 0) {
         return -VIBEOS_EINVAL;
     }
-    /* The break is the process's, and two threads can move it at once - one
-     * shrinking while another grows would unmap pages the other has just
-     * mapped. So brk runs one at a time per process. Claimed with a
-     * compare-exchange rather than a spinlock, because the mapping can be many
-     * pages and a spinlock would hold all of them with the timer off. A C
-     * library already serialises its own calls, so this is almost never
-     * contended; it has to be correct, not fast. */
-    for (;;) {
-        zero = 0;
-        if (__atomic_compare_exchange_n(&ps->brk_busy, &zero, 1u, 0,
-                                        __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
-            break;
-        }
-        __asm__ __volatile__("pause" ::: "memory");
-    }
+    /* One at a time per process, and now against fork too: two threads moving
+     * the break at once, or a fork reading the tables while one moves it, are
+     * the same hazard. See hw_mm_lock. */
+    hw_mm_lock(ps);
     r = hw_sys_brk_locked(&g_tasks[g_current_task].proc, ps, addr);
-    __atomic_store_n(&ps->brk_busy, 0u, __ATOMIC_RELEASE);
+    hw_mm_unlock(ps);
     return r;
 }
 
@@ -7586,18 +7603,25 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
     child = &g_tasks[idx];
     my_tenancy = child->alloc_seq;
 
+    /* From here to the vma clone below reads the parent's address space - the
+     * page tables and the region list - which a sibling thread's brk (and,
+     * once converted, mmap/munmap/mprotect) mutates. Held so fork sees one
+     * consistent state, not a walk racing a half-finished mapping. */
+    hw_mm_lock(parent->ps);
     if (hw_aspace_create(&child->proc.as) != 0 ||
         hw_aspace_copy_user(&child->proc.as, &parent->proc.as) != 0) {
         /* Give the tables back before the slot is published as reusable.
          * Publishing first leaves an address space nothing will ever free -
          * the next tenant overwrites the pointer - and it leaves a FREE slot
          * naming live tables, which is a question the sharing test skips. */
+        hw_mm_unlock(parent->ps);
         hw_aspace_destroy(&child->proc.as);
         (void)hw_task_set_state((int)(child - g_tasks), HW_TASK_FREE, __func__);
         return -VIBEOS_ENOMEM;
     }
     child->kstack_top = hw_alloc_kstack(&child->kstack_base, &child->kstack_pages);
     if (child->kstack_top == 0) {
+        hw_mm_unlock(parent->ps);
         hw_aspace_destroy(&child->proc.as);
         (void)hw_task_set_state((int)(child - g_tasks), HW_TASK_FREE, __func__);
         return -VIBEOS_ENOMEM;
@@ -7608,12 +7632,16 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
      * have unlinked descriptors out from under the other. */
     child->ps = hw_procstate_new();
     if (!child->ps || vibeos_vma_clone(&child->ps->vmas, &parent->ps->vmas) != 0) {
+        hw_mm_unlock(parent->ps);
         hw_procstate_put(child->ps);
         child->ps = 0;
         hw_aspace_destroy(&child->proc.as);
         (void)hw_task_set_state((int)(child - g_tasks), HW_TASK_FREE, __func__);
         return -VIBEOS_ENOMEM;
     }
+    /* The parent's tables and list have both been read; release before the
+     * child-only setup below. */
+    hw_mm_unlock(parent->ps);
     vibeos_task_stats()->forks++;
     child->proc.entry = parent->proc.entry;
     child->ps->brk_cur = parent->ps->brk_cur;

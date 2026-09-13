@@ -282,8 +282,12 @@ and `hw_procstate_t` has a must-be-zero - `procstate_double_put`, a process
 reference given back that nobody held, on the `[TASKS] MUSTBEZERO` line and
 asserted by the gate.
 
-Still open inside step 0: fork is not atomic against its own process's other
-threads (all four mm calls, not only brk); descriptors are still per thread.
+Partly closed: there is now one per-process address-space lock (`hw_mm_lock`,
+`mm_busy`), bounded so a missed release is a named panic not a hang. brk takes
+it, and fork takes it across its read of the parent's page tables and region
+list - so fork is atomic against a sibling's brk. Still open: mmap, munmap and
+mprotect do not take it yet (one conversion per commit); descriptors are still
+per thread.
 
 **Steps.** `vibeos_task_t` holds identity, state, parent, exit status,
 credentials and descriptors. `hw_task_t` keeps `ctx`, `kstack_*`, `cr3` and a

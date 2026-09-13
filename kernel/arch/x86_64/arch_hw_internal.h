@@ -105,7 +105,8 @@ typedef struct {
  * five defects that copying produced. */
 typedef struct hw_procstate {
     volatile uint32_t refs;      /* tasks pointing here; 0 means free        */
-    volatile uint32_t brk_busy;  /* one brk at a time per process            */
+    volatile uint32_t mm_busy;   /* one address-space mutation at a time:     */
+                                 /* brk, and fork's walk of this process      */
     uint64_t brk_cur;            /* current program break                    */
     volatile uint64_t mmap_cur;  /* next anonymous address, claimed by CAS   */
     /* What this process asked for, as opposed to what happens to be mapped.
