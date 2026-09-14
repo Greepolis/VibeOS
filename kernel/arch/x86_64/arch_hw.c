@@ -9511,6 +9511,16 @@ static long hw_sys_rt_sigaction(uint64_t sig, uint64_t act_uptr, uint64_t old_up
                                 sizeof(act)) != 0) {
             return -VIBEOS_EFAULT;   /* H-016 */
         }
+        /* The handler becomes frame->rip at delivery, and iretq to a
+         * non-canonical rip faults in ring 0 - a kernel panic a program could
+         * trigger with sigaction + a signal (H-017). A canonical handler that
+         * is unmapped only faults in ring 3 and kills the task, so canonicality
+         * and the user window are what must be checked. The two sentinels are
+         * dispositions (default, ignore), not addresses. */
+        if (act[0] != SIG_DFL_ADDR && act[0] != SIG_IGN_ADDR &&
+            !hw_user_addr_ok(act[0])) {
+            return -VIBEOS_EINVAL;
+        }
         t->ps->sig_handler[sig] = act[0];
         t->ps->sig_flags[sig] = act[1];
         t->ps->sig_restorer[sig] = act[2];
@@ -10579,6 +10589,14 @@ long hw_sys_rt_sigreturn(vibeos_x86_64_isr_frame_t *frame) {
         restored.cs = VIBEOS_HW_USER_CODE_SEL;
         restored.ss = VIBEOS_HW_USER_DATA_SEL;
         restored.rflags = (restored.rflags & 0x0000000000000CD5ull) | 0x202ull;
+        /* rip comes from a user-writable frame; a non-canonical rip reaches
+         * iretq and #GPs in ring 0 (H-018). cs/ss/rflags are forced above, so
+         * this is the remaining ring-0 fault vector. rsp is left unchecked - a
+         * bad rsp faults in ring 3 on the next push, killing the task safely. */
+        if (!hw_user_addr_ok(restored.rip)) {
+            hw_task_exit(128ull + VIBEOS_SIGSEGV);
+            return 0;
+        }
         *frame = restored;
     }
     return (long)frame->rax;

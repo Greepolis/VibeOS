@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -38,6 +39,22 @@ int main(void) {
     sigset_t block, old;
     volatile long witness = 0x5A5A5A5A;
     int ok = 1;
+
+    /* H-017: the kernel must refuse a handler that is not a canonical user
+     * address. At delivery the handler becomes the return rip, and iretq to a
+     * non-canonical rip faults in ring 0 - a kernel panic reachable from ring 3
+     * with sigaction + raise. Installed through the raw syscall because a C
+     * library would object first; refused means the fix is in. If it is
+     * accepted this must NOT raise it - reporting the acceptance is the red. */
+    {
+        unsigned long bad[4] = { 0xdead000000000000UL, 0UL, 0UL, 0UL };
+        long r = syscall(SYS_rt_sigaction, SIGUSR1, bad, (void *)0, 8UL);
+        if (r == 0) {
+            printf("SIG_FAIL: a non-canonical handler was accepted\n");
+            fflush(stdout);
+            return 1;
+        }
+    }
 
     printf("SIG_PHASE: sigaction\n");
     fflush(stdout);
