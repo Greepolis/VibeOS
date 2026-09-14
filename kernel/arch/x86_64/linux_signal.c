@@ -60,7 +60,6 @@ int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame) {
     hw_task_t *t;
     uint32_t sig;
     uint64_t handler, sp;
-    hw_sigframe_t *sf;
 
     if (hw_current_task() < 0 || !g_tasks[hw_current_task()].is_user) {
         return 0;
@@ -140,19 +139,35 @@ int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame) {
         return 0;
     }
 
-    sf = (hw_sigframe_t *)(uintptr_t)(sp + 8ull);
-    sf->magic = HW_SIGFRAME_MAGIC;
-    sf->blocked = t->sig_blocked;
-    sf->frame = *frame;
-
     /* The return address is the C library's trampoline, which issues
      * rt_sigreturn. Without SA_RESTORER there is nothing to return to, and a
-     * handler that returns would jump to whatever was on the stack. */
-    if ((t->ps->sig_flags[sig] & VIBEOS_SA_RESTORER) == 0u || t->ps->sig_restorer[sig] == 0u) {
+     * handler that returns would jump to whatever was on the stack. Checked
+     * first, before the stack is touched. */
+    if ((t->ps->sig_flags[sig] & VIBEOS_SA_RESTORER) == 0u ||
+        t->ps->sig_restorer[sig] == 0u) {
         hw_task_exit(128ull + sig);
         return 0;
     }
-    *(uint64_t *)(uintptr_t)sp = t->ps->sig_restorer[sig];
+
+    /* Built in the kernel and copied out fault-safely: a sibling thread can
+     * munmap the stack page between the range check and these writes, and
+     * building the frame in place would fault in ring 0 (H-023). On a fault the
+     * frame is not left half-written - the task takes SIGSEGV, its default
+     * action, rather than the kernel taking the fault. */
+    {
+        hw_sigframe_t kf;
+        uint64_t ret = t->ps->sig_restorer[sig];
+
+        kf.magic = HW_SIGFRAME_MAGIC;
+        kf.blocked = t->sig_blocked;
+        kf.frame = *frame;
+        if (vibeos_uaccess_copy((void *)(uintptr_t)(sp + 8ull), &kf,
+                                sizeof(kf)) != 0 ||
+            vibeos_uaccess_copy((void *)(uintptr_t)sp, &ret, sizeof(ret)) != 0) {
+            hw_task_exit(128ull + VIBEOS_SIGSEGV);
+            return 0;
+        }
+    }
 
     /* While the handler runs, this signal is blocked, plus whatever the
      * program asked to block along with it - otherwise a repeating signal
