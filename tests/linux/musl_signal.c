@@ -56,6 +56,19 @@ int main(void) {
         }
     }
 
+    /* M-017: signal 64 has no bit in the 64-bit pending/blocked mask (the mask
+     * is keyed by signal number, and bit 64 does not exist in a uint64_t), so
+     * the kernel must refuse it rather than accept it and lose it. Through the
+     * raw syscall because a C library clamps to its own NSIG first. */
+    {
+        long r = syscall(SYS_kill, getpid(), 64);
+        if (r == 0) {
+            printf("SIG_FAIL: signal 64 accepted but unrepresentable\n");
+            fflush(stdout);
+            return 1;
+        }
+    }
+
     printf("SIG_PHASE: sigaction\n");
     fflush(stdout);
     memset(&sa, 0, sizeof(sa));

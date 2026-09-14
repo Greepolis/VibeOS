@@ -9018,7 +9018,7 @@ static int hw_signal_interrupts(int task) {
  * signal frame can safely be built. Raising can happen from an interrupt, from
  * another CPU, or from the task itself, and none of those own that stack. */
 static int hw_signal_raise(int task_index, uint32_t sig) {
-    if (task_index < 0 || task_index >= VIBEOS_HW_MAX_TASKS || sig == 0u || sig >= VIBEOS_HW_NSIG) {
+    if (task_index < 0 || task_index >= VIBEOS_HW_MAX_TASKS || sig == 0u || sig > VIBEOS_HW_SIG_MAX) {
         return -1;
     }
     if (!g_tasks[task_index].is_user || g_tasks[task_index].state == HW_TASK_FREE ||
@@ -9260,7 +9260,7 @@ static long hw_sys_kill(uint64_t target_pid, uint64_t sig) {
     if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
         return -VIBEOS_EINVAL;
     }
-    if (sig >= VIBEOS_HW_NSIG) {
+    if (sig > VIBEOS_HW_SIG_MAX) {
         return -VIBEOS_EINVAL;
     }
     /* Every branch below resolves ids to slots and acts on them, so every one
@@ -9399,7 +9399,7 @@ static long hw_sys_tkill(uint64_t target_tid, uint64_t sig) {
     long r;
 
     if (g_current_task < 0 || !g_tasks[g_current_task].is_user ||
-        sig >= VIBEOS_HW_NSIG) {
+        sig > VIBEOS_HW_SIG_MAX) {
         return -VIBEOS_EINVAL;
     }
     /* Lookup, check and raise as one critical section (H-007). */
@@ -9437,7 +9437,7 @@ static long hw_sys_tgkill(uint64_t target_tgid, uint64_t target_tid,
     long r;
 
     if (g_current_task < 0 || !g_tasks[g_current_task].is_user ||
-        sig >= VIBEOS_HW_NSIG) {
+        sig > VIBEOS_HW_SIG_MAX) {
         return -VIBEOS_EINVAL;
     }
     /* Lookup, identity check and raise as one critical section (H-007): the
@@ -9475,7 +9475,7 @@ static long hw_sys_tgkill(uint64_t target_tgid, uint64_t target_tid,
 static long hw_sys_rt_sigaction(uint64_t sig, uint64_t act_uptr, uint64_t old_uptr) {
     hw_task_t *t;
 
-    if (g_current_task < 0 || sig == 0u || sig >= VIBEOS_HW_NSIG) {
+    if (g_current_task < 0 || sig == 0u || sig > VIBEOS_HW_SIG_MAX) {
         return -VIBEOS_EINVAL;
     }
     if (sig == VIBEOS_SIGKILL || sig == VIBEOS_SIGSTOP) {

@@ -66,6 +66,12 @@ typedef struct vibeos_hw_aspace {
 #define VIBEOS_HW_MAX_TASKS 32  /* kernel + user processes + one idle task per CPU */
 #define VIBEOS_HW_MAX_FDS 4
 #define VIBEOS_HW_NSIG 65
+/* The pending/blocked masks are uint64_t keyed by signal number, so bit 63
+ * (signal 63) is the highest that exists - bit 64 does not, and 1ull << 64
+ * is undefined. The kernel therefore supports signals 1..63 and refuses 64
+ * rather than accept it into a bit that cannot hold it (M-017). The arrays
+ * above stay sized NSIG; only signal-number validation uses this. */
+#define VIBEOS_HW_SIG_MAX 63u
 
 /* Frame pushed by the ISR stubs, in ascending memory order. */
 typedef struct vibeos_x86_64_isr_frame {
