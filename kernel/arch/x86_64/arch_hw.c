@@ -7951,13 +7951,19 @@ static long hw_sys_clone_thread(const vibeos_x86_64_isr_frame_t *frame,
     child->sig_pending = 0;
     child->sig_blocked = parent->sig_blocked;
 
+    /* Written through the fault-safe copy: a sibling thread can munmap the page
+     * between the range check and the store, faulting in ring 0 (H-021). A
+     * failed write is dropped - the thread is created either way, as it is on
+     * Linux when these optional stores fault. */
     if ((flags & CLONE_PARENT_SETTID) && ptid != 0u &&
         hw_user_range_ok(ptid, 4u, 1)) {
-        *(volatile uint32_t *)(uintptr_t)ptid = child->pid;
+        uint32_t v = child->pid;
+        (void)vibeos_uaccess_copy((void *)(uintptr_t)ptid, &v, sizeof(v));
     }
     if ((flags & CLONE_CHILD_SETTID) && ctid != 0u &&
         hw_user_range_ok(ctid, 4u, 1)) {
-        *(volatile uint32_t *)(uintptr_t)ctid = child->pid;
+        uint32_t v = child->pid;
+        (void)vibeos_uaccess_copy((void *)(uintptr_t)ctid, &v, sizeof(v));
     }
 
     if (child->alloc_seq != my_tenancy || child->state != HW_TASK_RESERVED) {
@@ -8064,8 +8070,16 @@ static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr,
                     /* The wait status word: a normal exit puts the code in the
                      * high byte and leaves the low seven bits clear; a signal
                      * death puts the signal number in those low bits. That is
-                     * what WIFEXITED and WIFSIGNALED read. */
-                    *(volatile int *)(uintptr_t)status_ptr = status;
+                     * what WIFEXITED and WIFSIGNALED read.
+                     *
+                     * Written through the fault-safe copy: the reap has already
+                     * published the slot FREE and released the lock, so a
+                     * sibling can munmap this page before the store (H-022). The
+                     * child stays consumed if it faults - the pid is returned
+                     * regardless, as Linux does after EFAULT here. */
+                    int st = status;
+                    (void)vibeos_uaccess_copy((void *)(uintptr_t)status_ptr,
+                                              &st, sizeof(st));
                 }
                 return (long)child_pid;
             }
