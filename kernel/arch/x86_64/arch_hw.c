@@ -6815,14 +6815,35 @@ static long hw_sys_brk_locked(hw_proc_t *proc, hw_procstate_t *ps, uint64_t addr
  * unlock - becomes a named panic instead. The bound is the shootdown's, chosen
  * for the same reason: far beyond any honest wait between two cores. */
 static void hw_mm_lock(hw_procstate_t *ps) {
-    uint64_t spins = 0;
+    uint64_t rflags, spins = 0;
+
+    /* The caller's interrupt state, restored on acquire. Callers are syscalls,
+     * so this is masked - but the spin below must unmask, so it is captured. */
+    __asm__ __volatile__("pushfq; popq %0" : "=r"(rflags));
     for (;;) {
         uint32_t zero = 0;
         if (__atomic_compare_exchange_n(&ps->mm_busy, &zero, 1u, 0,
                                         __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+            if (rflags & 0x200ull) {
+                __asm__ __volatile__("sti" ::: "memory");
+            }
             return;
         }
-        __asm__ __volatile__("pause" ::: "memory");
+        /* Open a window for interrupts before trying again, because a core
+         * spinning here must be able to acknowledge a TLB shootdown IPI. The
+         * lock holder can be inside a shootdown that targets this very core: a
+         * fork holds this lock across clone_cow, which revokes the parent's
+         * write permission and shoots down every core running the address
+         * space, and mmap/munmap/mprotect of a sibling thread contend the same
+         * lock on such a core. A syscall runs with interrupts masked, so
+         * without this window that core could not answer until it left the
+         * spin, and it would not leave until the holder released - the
+         * shootdown's timeout panic, a deadlock. The spin holds no lock, so a
+         * timer taken here is a safe preemption, and g_current_task is per-CPU
+         * so identity survives it. Masked again before the next attempt, so
+         * acquisition and the mutation run with interrupts as the caller had
+         * them. */
+        __asm__ __volatile__("sti; pause; cli" ::: "memory");
         if (++spins > 200000000ull) {
             hw_panic("mm lock held too long: a mutation did not release it");
         }

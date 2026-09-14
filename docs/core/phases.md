@@ -288,18 +288,25 @@ it, and fork takes it across its read of the parent's page tables and region
 list; munmap and mmap take it too (mmap's mutation was extracted into
 `hw_mmap_locked` so one lock/unlock covers its six returns). mprotect takes it
 across its region-list update (`vibeos_vma_protect`) and releases before its
-page-table narrowing pass - because that pass does a TLB shootdown, and holding
-the lock across the shootdown would deadlock a sibling spinning in `hw_mm_lock`
-(it cannot ack the IPI until it leaves the spin, and will not until mprotect
-releases) into the shootdown's timeout panic. So fork is now atomic against all
-four mm calls on the *region list*. Still open:
+page-table narrowing pass. So fork is now atomic against all four mm calls on
+the *region list*.
 
-- **mprotect's page-table race with fork.** Because mprotect releases the lock
-  before narrowing, fork's `copy_user` can still read a PTE mprotect is
-  narrowing - the same window as before the lock, no worse, but not closed. To
-  close it, the `hw_mm_lock` spin must service the shootdown IPI (enable
-  interrupts while spinning - safe, the spin holds nothing), after which
-  mprotect could hold the lock across the narrowing too.
+**The shootdown-under-lock deadlock is closed.** fork holds the lock across
+`clone_cow`, which itself does a TLB shootdown - so the very hazard first noted
+for mprotect was already live in fork (`d6fe3bc`): a sibling spinning in
+`hw_mm_lock` is a shootdown target that cannot ack with interrupts masked, and
+will not leave the spin until fork releases - the shootdown's timeout panic.
+`hw_mm_lock`'s spin now opens an interrupt window each iteration (`sti; pause;
+cli`) so it can service the shootdown IPI; the spin holds no lock, so a timer
+there is a safe preemption, and `g_current_task` is per-CPU so identity
+survives it. Interrupts are restored to the caller's state on acquire.
+
+Still open:
+
+- **mprotect's page-table race with fork.** mprotect still releases the lock
+  before narrowing, so fork's `copy_user` can read a PTE mprotect is narrowing -
+  no worse than before, but not closed. Now that the spin services the IPI,
+  mprotect *could* hold the lock across the narrowing too; a small follow-up.
 - descriptors are still per thread.
 
 **Steps.** `vibeos_task_t` holds identity, state, parent, exit status,
