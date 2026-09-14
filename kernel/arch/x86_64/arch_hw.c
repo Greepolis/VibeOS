@@ -9673,7 +9673,12 @@ static long hw_sys_arch_prctl(uint64_t code, uint64_t addr) {
             if (!hw_user_range_ok(addr, 8, 1)) {
                 return -VIBEOS_EFAULT;
             }
-            *(uint64_t *)(uintptr_t)addr = t->fs_base;
+            /* Fault-safe: a sibling thread can munmap the page between the
+             * range check and here (H-024). */
+            if (vibeos_uaccess_copy((void *)(uintptr_t)addr, &t->fs_base,
+                                    sizeof(t->fs_base)) != 0) {
+                return -VIBEOS_EFAULT;
+            }
             return 0;
         case ARCH_SET_GS:
         case ARCH_GET_GS:
@@ -9696,7 +9701,12 @@ static long hw_sys_ioctl(uint64_t fd, uint64_t req, uint64_t arg) {
         if (!hw_user_range_ok(arg, sizeof(uint32_t), 1) || g_current_task < 0) {
             return -VIBEOS_EFAULT;
         }
-        *(uint32_t *)(uintptr_t)arg = g_console_foreground_pgid;
+        {
+            uint32_t v = g_console_foreground_pgid;
+            if (vibeos_uaccess_copy((void *)(uintptr_t)arg, &v, sizeof(v)) != 0) {
+                return -VIBEOS_EFAULT;   /* H-025 */
+            }
+        }
         return 0;
     }
     if (fd < 3u && req == VIBEOS_TIOCSPGRP) {
@@ -9705,7 +9715,10 @@ static long hw_sys_ioctl(uint64_t fd, uint64_t req, uint64_t arg) {
         if (!hw_user_range_ok(arg, sizeof(uint32_t), 0) || g_current_task < 0) {
             return -VIBEOS_EFAULT;
         }
-        pgid = *(const uint32_t *)(uintptr_t)arg;
+        if (vibeos_uaccess_copy(&pgid, (const void *)(uintptr_t)arg,
+                                sizeof(pgid)) != 0) {
+            return -VIBEOS_EFAULT;   /* H-025 */
+        }
         group = hw_task_by_pid(pgid);
         if (group < 0 || g_tasks[group].sid != g_tasks[g_current_task].sid) {
             return -VIBEOS_EPERM;

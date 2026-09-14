@@ -54,8 +54,8 @@ Earlier reviews are closed and written up: the sixth
 | H-021 | H | clone() writes CLONE_PARENT_SETTID/CLONE_CHILD_SETTID through a user pointer after the range check; a sibling munmap faults in ring 0 | fixed (`188ec0f`) | `hw_sys_clone_thread` ptid/ctid stores. Same validate-then-use class; fix with `vibeos_uaccess_copy`, dropped on fault (the thread is created either way) |
 | H-022 | H | waitpid() writes status_ptr directly after publishing the task FREE, releasing the lock and re-enabling interrupts; a sibling munmap between check and store faults in ring 0 | fixed (`188ec0f`) | `hw_sys_waitpid`. The reap is already complete, so a faulted write is dropped and the pid still returned, as Linux does after EFAULT there |
 | H-023 | H | signal delivery builds the sigframe directly on the user stack after the range check (magic/blocked/frame and the return address); a sibling munmap faults in ring 0 | fixed | `hw_signal_deliver`. Built in a kernel buffer and copied out via `vibeos_uaccess_copy`; on fault no partial frame, task takes SIGSEGV |
-| H-024 | H | arch_prctl(ARCH_GET_FS) writes `t->fs_base` to the user pointer after the range check | **fixing** | `hw_sys_arch_prctl`. `vibeos_uaccess_copy` |
-| H-025 | H | ioctl TIOCGPGRP/TIOCSPGRP deref the user pointer directly after the check (write pgid, read pgid) | **fixing** | `hw_sys_ioctl`. `vibeos_uaccess_copy` both directions |
+| H-024 | H | arch_prctl(ARCH_GET_FS) writes `t->fs_base` to the user pointer after the range check | fixed | `hw_sys_arch_prctl`. `vibeos_uaccess_copy` |
+| H-025 | H | ioctl TIOCGPGRP/TIOCSPGRP deref the user pointer directly after the check (write pgid, read pgid) | fixed | `hw_sys_ioctl`. `vibeos_uaccess_copy` both directions |
 
 **H-015..H-020 and M-017 arrived 2026-09-14, one at a time, all verified against
 the code.** Four of them (H-016, H-018-read, H-019, H-020) are the "dozens of
