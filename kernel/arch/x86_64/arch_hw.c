@@ -2214,9 +2214,16 @@ static void hw_tlbq_put(uint64_t phys) {
     }
     hw_spin_unlock(&g_tlbq_lock);
 
-    if (!placed) {
-        (void)vibeos_frame_put(phys);   /* status quo: the old, racy release */
-    }
+    /* On overflow the frame is leaked, not released (H-015). The old code called
+     * vibeos_frame_put here - the racy release the quarantine exists to replace:
+     * another core can still hold a stale TLB entry for this page, so recycling
+     * it now is a use-after-free. A frame never reclaimed is never handed out,
+     * so leaking is safe in every caller context regardless of the cr3 loaded.
+     * The count above (g_tlbq_overflow) is the measure of it, and the boot gate
+     * asserts it is zero - so normal operation loses nothing, and only an
+     * adversarial munmap of more than HW_TLBQ_SLOTS not-yet-quiescent pages
+     * reaches this, losing memory rather than corrupting it. A dynamic
+     * quarantine that avoids even the leak is the follow-up. */
 }
 
 /* Called from every core's timer tick. If anything is parked, flush - see the
