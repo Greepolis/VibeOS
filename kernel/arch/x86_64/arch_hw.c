@@ -8105,7 +8105,12 @@ int hw_copy_user_string(uint64_t uptr, char *dst, int max) {
         if (!hw_user_range_ok(uptr + (uint64_t)i, 1, 0)) {
             return -1;
         }
-        dst[i] = *(const char *)(uintptr_t)(uptr + (uint64_t)i);
+        /* Fault-safe: the range check and the read are two instants, and a
+         * sibling thread can munmap the page between them (H-019). */
+        if (vibeos_uaccess_copy(&dst[i],
+                (const void *)(uintptr_t)(uptr + (uint64_t)i), 1u) != 0) {
+            return -1;
+        }
         if (dst[i] == 0) {
             return 0;
         }
@@ -9486,17 +9491,26 @@ static long hw_sys_rt_sigaction(uint64_t sig, uint64_t act_uptr, uint64_t old_up
         if (!hw_user_range_ok(old_uptr, 32, 1)) {
             return -VIBEOS_EFAULT;
         }
-        ((uint64_t *)(uintptr_t)old_uptr)[0] = t->ps->sig_handler[sig];
-        ((uint64_t *)(uintptr_t)old_uptr)[1] = t->ps->sig_flags[sig];
-        ((uint64_t *)(uintptr_t)old_uptr)[2] = t->ps->sig_restorer[sig];
-        ((uint64_t *)(uintptr_t)old_uptr)[3] = t->ps->sig_mask[sig] >> 1;
+        uint64_t old[4];
+        old[0] = t->ps->sig_handler[sig];
+        old[1] = t->ps->sig_flags[sig];
+        old[2] = t->ps->sig_restorer[sig];
+        old[3] = t->ps->sig_mask[sig] >> 1;
+        /* Written through the fault-safe copy: a sibling munmap between the
+         * range check and here would fault in ring 0 otherwise (H-016). */
+        if (vibeos_uaccess_copy((void *)(uintptr_t)old_uptr, old, sizeof(old)) != 0) {
+            return -VIBEOS_EFAULT;
+        }
     }
     if (act_uptr != 0u) {
-        const uint64_t *act;
+        uint64_t act[4];
         if (!hw_user_range_ok(act_uptr, 32, 0)) {
             return -VIBEOS_EFAULT;
         }
-        act = (const uint64_t *)(uintptr_t)act_uptr;
+        if (vibeos_uaccess_copy(act, (const void *)(uintptr_t)act_uptr,
+                                sizeof(act)) != 0) {
+            return -VIBEOS_EFAULT;   /* H-016 */
+        }
         t->ps->sig_handler[sig] = act[0];
         t->ps->sig_flags[sig] = act[1];
         t->ps->sig_restorer[sig] = act[2];
@@ -9532,7 +9546,11 @@ static long hw_sys_rt_sigprocmask(uint64_t how, uint64_t set_uptr, uint64_t old_
         if (!hw_user_range_ok(old_uptr, 8, 1)) {
             return -VIBEOS_EFAULT;
         }
-        *(uint64_t *)(uintptr_t)old_uptr = hw_sigset_to_user(t->sig_blocked);
+        uint64_t out = hw_sigset_to_user(t->sig_blocked);
+        if (vibeos_uaccess_copy((void *)(uintptr_t)old_uptr, &out,
+                                sizeof(out)) != 0) {
+            return -VIBEOS_EFAULT;   /* H-016 */
+        }
     }
     if (set_uptr == 0u) {
         return 0;
@@ -9540,7 +9558,14 @@ static long hw_sys_rt_sigprocmask(uint64_t how, uint64_t set_uptr, uint64_t old_
     if (!hw_user_range_ok(set_uptr, 8, 0)) {
         return -VIBEOS_EFAULT;
     }
-    set = hw_sigset_from_user(*(const uint64_t *)(uintptr_t)set_uptr);
+    {
+        uint64_t raw;
+        if (vibeos_uaccess_copy(&raw, (const void *)(uintptr_t)set_uptr,
+                                sizeof(raw)) != 0) {
+            return -VIBEOS_EFAULT;   /* H-016 */
+        }
+        set = hw_sigset_from_user(raw);
+    }
     switch (how) {
         case 0: t->sig_blocked |= set; break;
         case 1: t->sig_blocked &= ~set; break;
@@ -9679,18 +9704,24 @@ static long hw_sys_writev(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt) {
         return -VIBEOS_EFAULT;
     }
     for (i = 0; i < iovcnt; i++) {
-        const hw_iovec_t *v = (const hw_iovec_t *)(uintptr_t)
-                              (iov_uptr + i * sizeof(hw_iovec_t));
+        hw_iovec_t v;
         long n;
-        if (v->len == 0u) {
+        /* Each descriptor copied into the kernel before base/len are read: the
+         * array-wide range check and these reads are two instants, and a
+         * sibling munmap of the array page faults in ring 0 otherwise (H-020). */
+        if (vibeos_uaccess_copy(&v, (const void *)(uintptr_t)
+                (iov_uptr + i * sizeof(hw_iovec_t)), sizeof(v)) != 0) {
+            return total > 0 ? total : -VIBEOS_EFAULT;
+        }
+        if (v.len == 0u) {
             continue;
         }
-        n = hw_sys_write(fd, v->base, v->len);
+        n = hw_sys_write(fd, v.base, v.len);
         if (n < 0) {
             return total > 0 ? total : n;
         }
         total += n;
-        if ((uint64_t)n < v->len) {
+        if ((uint64_t)n < v.len) {
             break;   /* a short write ends the call, as it does on Linux */
         }
     }
@@ -9708,18 +9739,22 @@ static long hw_sys_readv(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt) {
         return -VIBEOS_EFAULT;
     }
     for (i = 0; i < iovcnt; i++) {
-        const hw_iovec_t *v = (const hw_iovec_t *)(uintptr_t)
-                              (iov_uptr + i * sizeof(hw_iovec_t));
+        hw_iovec_t v;
         long n;
-        if (v->len == 0u) {
+        /* See writev: the iovec is copied in before base/len are read (H-020). */
+        if (vibeos_uaccess_copy(&v, (const void *)(uintptr_t)
+                (iov_uptr + i * sizeof(hw_iovec_t)), sizeof(v)) != 0) {
+            return total > 0 ? total : -VIBEOS_EFAULT;
+        }
+        if (v.len == 0u) {
             continue;
         }
-        n = hw_sys_read(fd, v->base, v->len);
+        n = hw_sys_read(fd, v.base, v.len);
         if (n < 0) {
             return total > 0 ? total : n;
         }
         total += n;
-        if ((uint64_t)n < v->len) {
+        if ((uint64_t)n < v.len) {
             break;
         }
     }
@@ -10506,6 +10541,7 @@ void vibeos_x86_64_crash_dump(void) {
 long hw_sys_rt_sigreturn(vibeos_x86_64_isr_frame_t *frame) {
     hw_task_t *t;
     const hw_sigframe_t *sf;
+    hw_sigframe_t kf;
     uint64_t base;
 
     if (g_current_task < 0) {
@@ -10519,7 +10555,14 @@ long hw_sys_rt_sigreturn(vibeos_x86_64_isr_frame_t *frame) {
         hw_task_exit(128ull + VIBEOS_SIGSEGV);
         return 0;
     }
-    sf = (const hw_sigframe_t *)(uintptr_t)base;
+    /* Copied into the kernel before anything is read: the range check and the
+     * reads below are two instants, and a sibling munmap of the frame page in
+     * between would fault in ring 0 (H-018). */
+    if (vibeos_uaccess_copy(&kf, (const void *)(uintptr_t)base, sizeof(kf)) != 0) {
+        hw_task_exit(128ull + VIBEOS_SIGSEGV);
+        return 0;
+    }
+    sf = &kf;
     if (sf->magic != HW_SIGFRAME_MAGIC) {
         /* Somebody called rt_sigreturn without a frame, or overwrote it.
          * Resuming from whatever is on the stack would hand ring 3 a chance to
