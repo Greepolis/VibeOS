@@ -1,0 +1,128 @@
+name: Finding to discussion
+
+# Receives a security-review finding from outside and appends it as a comment on
+# a single running Discussion ("Security review findings", category General).
+#
+# The "webhook" is GitHub's repository_dispatch: POST a JSON payload to
+#   POST /repos/Greepolis/VibeOS/dispatches
+# with event_type "finding" (see scripts/dev/post-finding.sh). repository_dispatch
+# only fires workflows that live on the DEFAULT branch, so this file must be on
+# main for the dispatch to reach it.
+#
+# workflow_dispatch is also wired up so the same job can be run by hand from the
+# Actions tab (or `gh workflow run`) without needing a token to POST - handy for
+# testing.
+
+on:
+  repository_dispatch:
+    types: [finding]
+  workflow_dispatch:
+    inputs:
+      id:
+        description: "Finding ID (e.g. H-030)"
+        required: true
+      severity:
+        description: "Severity: H / M / L"
+        required: false
+        default: ""
+      problema:
+        description: "Problema (short title of the problem)"
+        required: true
+      descrizione:
+        description: "Descrizione"
+        required: false
+        default: ""
+      posizione:
+        description: "Posizione (file / function / line)"
+        required: false
+        default: ""
+      fix:
+        description: "Fix proposto"
+        required: false
+        default: ""
+
+# The built-in GITHUB_TOKEN writes the discussion; no personal token is needed
+# inside the workflow. The POST that triggers it does need one (see the script).
+permissions:
+  discussions: write
+  contents: read
+
+# Serialise runs so two findings arriving together cannot each create the master
+# discussion (a find-or-create race would otherwise make duplicates).
+concurrency:
+  group: finding-to-discussion
+  cancel-in-progress: false
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      OWNER: ${{ github.repository_owner }}
+      REPO: ${{ github.event.repository.name }}
+      DISCUSSION_TITLE: "Security review findings"
+      CATEGORY_NAME: "General"
+      # Untrusted caller input. It is read ONLY through these env vars and only
+      # ever passed to GraphQL as a bound variable (-f b=...), never spliced into
+      # a query or a jq program - so a value cannot inject either.
+      IN_ID: ${{ github.event.client_payload.id || github.event.inputs.id }}
+      IN_SEV: ${{ github.event.client_payload.severity || github.event.inputs.severity }}
+      IN_PROB: ${{ github.event.client_payload.problema || github.event.inputs.problema }}
+      IN_DESC: ${{ github.event.client_payload.descrizione || github.event.inputs.descrizione }}
+      IN_POS: ${{ github.event.client_payload.posizione || github.event.inputs.posizione }}
+      IN_FIX: ${{ github.event.client_payload.fix || github.event.inputs.fix }}
+      # Optional: a pre-formatted markdown block used verbatim instead of the fields.
+      IN_MD: ${{ github.event.client_payload.markdown }}
+    steps:
+      - name: Resolve repository and category ids
+        run: |
+          set -euo pipefail
+          repo_id=$(gh api graphql \
+            -f query='query($o:String!,$n:String!){repository(owner:$o,name:$n){id}}' \
+            -f o="$OWNER" -f n="$REPO" --jq '.data.repository.id')
+          cat_id=$(gh api graphql \
+            -f query='query($o:String!,$n:String!){repository(owner:$o,name:$n){discussionCategories(first:25){nodes{id name}}}}' \
+            -f o="$OWNER" -f n="$REPO" \
+            --jq ".data.repository.discussionCategories.nodes[] | select(.name==\"$CATEGORY_NAME\") | .id")
+          if [ -z "$repo_id" ] || [ -z "$cat_id" ]; then
+            echo "Could not resolve repo id ($repo_id) or category '$CATEGORY_NAME' ($cat_id)"; exit 1
+          fi
+          {
+            echo "REPO_ID=$repo_id"
+            echo "CAT_ID=$cat_id"
+          } >> "$GITHUB_ENV"
+
+      - name: Find or create the master discussion
+        run: |
+          set -euo pipefail
+          did=$(gh api graphql \
+            -f query='query($o:String!,$n:String!){repository(owner:$o,name:$n){discussions(first:100){nodes{id title}}}}' \
+            -f o="$OWNER" -f n="$REPO" \
+            --jq ".data.repository.discussions.nodes[] | select(.title==\"$DISCUSSION_TITLE\") | .id" | head -n1)
+          if [ -z "$did" ]; then
+            intro=$'Thread automatico per le finding della security review.\n\nOgni finding arriva come commento, inviato dall'\''esterno via `repository_dispatch` (event_type `finding`).'
+            did=$(gh api graphql \
+              -f query='mutation($r:ID!,$c:ID!,$t:String!,$b:String!){createDiscussion(input:{repositoryId:$r,categoryId:$c,title:$t,body:$b}){discussion{id url}}}' \
+              -f r="$REPO_ID" -f c="$CAT_ID" -f t="$DISCUSSION_TITLE" -f b="$intro" \
+              --jq '.data.createDiscussion.discussion.id')
+            echo "Created master discussion: $did"
+          fi
+          echo "DISCUSSION_ID=$did" >> "$GITHUB_ENV"
+
+      - name: Compose and post the finding as a comment
+        run: |
+          set -euo pipefail
+          if [ -n "${IN_MD:-}" ]; then
+            body="$IN_MD"
+          else
+            body=$(printf '### %s · severità %s\n\n**Problema:** %s\n\n**Descrizione:** %s\n\n**Posizione:** %s\n\n**Fix proposto:** %s\n\n---\n_Aggiunto via repository_dispatch il %s_' \
+              "${IN_ID:-?}" "${IN_SEV:-?}" "${IN_PROB:-}" "${IN_DESC:-}" "${IN_POS:-}" "${IN_FIX:-}" \
+              "$(date -u +'%Y-%m-%d %H:%M UTC')")
+          fi
+          url=$(gh api graphql \
+            -f query='mutation($d:ID!,$b:String!){addDiscussionComment(input:{discussionId:$d,body:$b}){comment{url}}}' \
+            -f d="$DISCUSSION_ID" -f b="$body" \
+            --jq '.data.addDiscussionComment.comment.url')
+          echo "Posted finding comment: $url"
+          echo "### Finding posted" >> "$GITHUB_STEP_SUMMARY"
+          echo "$url" >> "$GITHUB_STEP_SUMMARY"
