@@ -31,6 +31,7 @@
 
 typedef struct {
     uint64_t first_lba;
+    uint64_t sector_count;       /* the partition's length; bounds every read */
     const char *fs_name;         /* 0 when nothing recognised the volume */
     vibeos_fsmount_t mount;
 

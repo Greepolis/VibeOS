@@ -38,6 +38,13 @@ static uint64_t rd64(const uint8_t *p) {
 #define EXFAT_ID_CONTIG(id) (((id) >> 32) & 1ull)
 
 static int exfat_read_sector(vibeos_exfat_t *fs, uint64_t sector, uint8_t *out) {
+    /* Bounded by the partition, not just the device (H-029). The block cache
+     * checks only the whole disk, so without this an image whose cluster heap
+     * or an extent points past its own partition reads a neighbour's sectors.
+     * 0 means no partition table, so unbounded. */
+    if (fs->part_sectors != 0u && sector >= fs->part_sectors) {
+        return -1;
+    }
     return vibeos_blockcache_read(fs->cache, fs->part_lba + sector, out);
 }
 
@@ -124,6 +131,7 @@ int vibeos_exfat_mount(vibeos_exfat_t *fs, vibeos_blockcache_t *cache,
     }
     fs->cache = cache;
     fs->part_lba = part_lba;
+    fs->part_sectors = 0u;   /* set by the storage layer after mount */
     fs->mounted = 0;
 
     if (vibeos_blockcache_read(cache, part_lba, sec) != 0) {

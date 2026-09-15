@@ -26,6 +26,8 @@
 typedef struct {
     vibeos_blockcache_t *cache;
     uint64_t part_lba;
+    uint64_t part_sectors;   /* partition length in 512B sectors, from the
+                             * table; 0 = unbounded (no table). H-029. */
 
     uint32_t bytes_per_sector;
     uint32_t sectors_per_cluster;

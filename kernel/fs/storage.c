@@ -30,6 +30,7 @@ static int storage_try_exfat(vibeos_volume_t *v, vibeos_blockcache_t *bc)
     if (vibeos_exfat_mount(&v->exfat, bc, v->first_lba) != 0) {
         return -1;
     }
+    v->exfat.part_sectors = v->sector_count;   /* the authoritative bound (H-029) */
     return vibeos_fs_mount(&v->mount, vibeos_exfat_ops(), &v->exfat, "exfat");
 }
 
@@ -38,6 +39,7 @@ static int storage_try_iso(vibeos_volume_t *v, vibeos_blockcache_t *bc)
     if (vibeos_iso9660_mount(&v->iso, bc, v->first_lba) != 0) {
         return -1;
     }
+    v->iso.part_sectors = v->sector_count;   /* the authoritative bound (H-029) */
     return vibeos_fs_mount(&v->mount, vibeos_iso9660_ops(), &v->iso, "iso9660");
 }
 
@@ -187,6 +189,7 @@ int vibeos_storage_scan(vibeos_storage_t *st, vibeos_blockcache_t *cache,
     if (st->table.count == 0u) {
         st->volume_count = 1;
         st->volume[0].first_lba = 0;
+        st->volume[0].sector_count = disk_sectors;
         storage_probe_volume(&st->volume[0], cache);
     } else {
         for (i = 0; i < st->table.count && i < VIBEOS_STORAGE_MAX_VOLUMES; i++) {
@@ -197,6 +200,7 @@ int vibeos_storage_scan(vibeos_storage_t *st, vibeos_blockcache_t *cache,
                 continue;
             }
             st->volume[st->volume_count].first_lba = st->table.entry[i].first_lba;
+            st->volume[st->volume_count].sector_count = st->table.entry[i].sector_count;
             storage_probe_volume(&st->volume[st->volume_count], cache);
             st->volume_count++;
         }

@@ -20,8 +20,13 @@ static uint32_t rd32le(const uint8_t *p) {
 static int iso_read_sector(vibeos_iso9660_t *fs, uint32_t lb, uint8_t *out) {
     uint32_t i;
     for (i = 0; i < VIBEOS_ISO_SECTOR / VIBEOS_BLOCK_SIZE; i++) {
-        uint64_t lba = fs->part_lba + (uint64_t)lb * (VIBEOS_ISO_SECTOR / VIBEOS_BLOCK_SIZE) + i;
-        if (vibeos_blockcache_read(fs->cache, lba, out + i * VIBEOS_BLOCK_SIZE) != 0) {
+        uint64_t rel = (uint64_t)lb * (VIBEOS_ISO_SECTOR / VIBEOS_BLOCK_SIZE) + i;
+        /* Bounded by the partition, not just the device (H-029): an extent from
+         * the image must not read past the volume into a neighbour. */
+        if (fs->part_sectors != 0u && rel >= fs->part_sectors) {
+            return -1;
+        }
+        if (vibeos_blockcache_read(fs->cache, fs->part_lba + rel, out + i * VIBEOS_BLOCK_SIZE) != 0) {
             return -1;
         }
     }
@@ -37,6 +42,7 @@ int vibeos_iso9660_mount(vibeos_iso9660_t *fs, vibeos_blockcache_t *cache,
     }
     fs->cache = cache;
     fs->part_lba = part_lba;
+    fs->part_sectors = 0u;   /* set by the storage layer after mount */
     fs->mounted = 0;
 
     if (iso_read_sector(fs, VIBEOS_ISO_PVD_SECTOR, sec) != 0) {

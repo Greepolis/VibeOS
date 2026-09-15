@@ -7080,6 +7080,32 @@ static int xf_mount(vibeos_exfat_t *fs, vibeos_blockcache_t *bc,
  *
  * Each case is a read that must return nothing - an error or zero bytes - and
  * must never return a cluster's contents. */
+/* H-029: a file's sectors must stay inside the partition, not just the device.
+ * The image is 128 sectors but the partition is set to 18; the root (sector 16)
+ * is inside it, CONTIG.BIN's data (cluster 5 -> sector 19) is past it. A read of
+ * that file must return nothing, not the sectors of whatever lies beyond. */
+static int test_exfat_partition_bound(void) {
+    vibeos_exfat_t fs;
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    vibeos_fsmount_t mnt;
+    vibeos_fs_node_t node;
+    uint8_t buf[VIBEOS_BLOCK_SIZE];
+
+    if (xf_mount(&fs, &bc, &dev) != 0 ||
+        vibeos_fs_mount(&mnt, vibeos_exfat_ops(), &fs, "exfat") != 0) {
+        return -1;
+    }
+    fs.part_sectors = XF_HEAP_SEC + 2u;   /* 18: root readable, cluster 5 not */
+    if (vibeos_fs_lookup(&mnt, "contig.bin", &node) != 0) {
+        return -1;   /* the file is inside the volume; lookup must still work */
+    }
+    if (vibeos_fs_read_at(&mnt, &node, 0, buf, sizeof(buf)) > 0) {
+        return -1;   /* read a sector past the partition */
+    }
+    return 0;
+}
+
 static int test_exfat_cluster_arithmetic_bounds(void) {
     vibeos_exfat_t fs;
     vibeos_blockcache_t bc;
@@ -8755,6 +8781,7 @@ int main(void) {
     RUN_TEST(test_exfat_list);
     RUN_TEST(test_exfat_refusals);
     RUN_TEST(test_exfat_cluster_arithmetic_bounds);
+    RUN_TEST(test_exfat_partition_bound);
     RUN_TEST(test_ntfs_mount_and_read);
     RUN_TEST(test_ntfs_list);
     RUN_TEST(test_ntfs_refusals);
