@@ -8214,7 +8214,14 @@ static long hw_copy_user_argv(uint64_t uvec, hw_argv_t *out) {
                 return -VIBEOS_EFAULT;
             }
         }
-        ptr = *(const uint64_t *)(uintptr_t)(uvec + (uint64_t)count * 8u);
+        /* Fault-safe: a sibling execing or unmapping can pull this page out
+         * between the check above and the read. */
+        if (vibeos_uaccess_copy(&ptr, (const void *)(uintptr_t)
+                (uvec + (uint64_t)count * 8u), 8u) != 0) {
+            g_argv_fail_why = "fault_reading_argv_vector";
+            g_argv_fail_addr = uvec + (uint64_t)count * 8u;
+            return -VIBEOS_EFAULT;
+        }
         if (ptr == 0u) {
             break;
         }
@@ -8250,13 +8257,14 @@ static long hw_copy_user_argv(uint64_t uvec, hw_argv_t *out) {
                  * Counted over the array itself rather than the whole page:
                  * this runs inside a refusal on a path a program can reach, so
                  * it must not become a loop over four thousand words. */
-                const uint64_t *w = (const uint64_t *)(uintptr_t)
-                                    (uvec & ~0xFFFull);
                 uint32_t poisoned = 0;
                 uint32_t probe;
 
                 for (probe = 0; probe < 64u; probe++) {
-                    if (w[probe] == VIBEOS_FRAME_POISON) {
+                    uint64_t word;
+                    if (vibeos_uaccess_copy(&word, (const void *)(uintptr_t)
+                            ((uvec & ~0xFFFull) + (uint64_t)probe * 8u), 8u) == 0 &&
+                        word == VIBEOS_FRAME_POISON) {
                         poisoned++;
                     }
                 }
@@ -9844,15 +9852,19 @@ static long hw_sys_uname(uint64_t buf) {
  * accuracy it does not possess. */
 static long hw_sys_clock_gettime(uint64_t clk, uint64_t ts_uptr) {
     uint64_t ticks = g_timer_ticks;
-    uint64_t *ts;
+    uint64_t kts[2];
 
     (void)clk;   /* monotonic and realtime are one clock here: uptime */
     if (!hw_user_range_ok(ts_uptr, 16, 1)) {
         return -VIBEOS_EFAULT;
     }
-    ts = (uint64_t *)(uintptr_t)ts_uptr;
-    ts[0] = ticks / VIBEOS_HW_TIMER_HZ;
-    ts[1] = (ticks % VIBEOS_HW_TIMER_HZ) * (1000000000ull / VIBEOS_HW_TIMER_HZ);
+    kts[0] = ticks / VIBEOS_HW_TIMER_HZ;
+    kts[1] = (ticks % VIBEOS_HW_TIMER_HZ) * (1000000000ull / VIBEOS_HW_TIMER_HZ);
+    /* Built in the kernel and copied out: a sibling munmap between the check
+     * and the write would fault in ring 0 (H-026). */
+    if (vibeos_uaccess_copy((void *)(uintptr_t)ts_uptr, kts, sizeof(kts)) != 0) {
+        return -VIBEOS_EFAULT;
+    }
     return 0;
 }
 
@@ -9863,7 +9875,9 @@ static long hw_sys_time(uint64_t tptr) {
         if (!hw_user_range_ok(tptr, 8, 1)) {
             return -VIBEOS_EFAULT;
         }
-        *(uint64_t *)(uintptr_t)tptr = secs;
+        if (vibeos_uaccess_copy((void *)(uintptr_t)tptr, &secs, sizeof(secs)) != 0) {
+            return -VIBEOS_EFAULT;
+        }
     }
     return (long)secs;
 }
@@ -10460,7 +10474,12 @@ static void hw_fault_kill_current_user(const vibeos_x86_64_isr_frame_t *frame,
             if (!hw_user_range_ok(addr, 8u, 0)) {
                 break;
             }
-            rec->stack[i] = *(const uint64_t *)(uintptr_t)addr;
+            /* Fault-safe on purpose: this runs inside the trap handler, so a
+             * direct deref that faulted would nest a fault and panic. */
+            if (vibeos_uaccess_copy(&rec->stack[i], (const void *)(uintptr_t)addr,
+                                    8u) != 0) {
+                break;
+            }
             rec->stack_words++;
         }
         g_crash_next = (g_crash_next + 1u) % HW_CRASH_RECORDS;
