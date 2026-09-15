@@ -526,6 +526,9 @@ static int sock_alloc(vibeos_inet_t *net, int type) {
             s->parent = -1;
             s->snd_wnd = 4096u;
             s->rto_ms = TCP_RTO_MIN;
+            /* Stamp after the bzero so a recycled slot never keeps the previous
+             * tenant's generation; start at 1 so 0 stays "never allocated". */
+            s->gen = ++net->sock_gen_seq;
             return (int)i;
         }
     }
@@ -1682,6 +1685,7 @@ static void tcp_input(vibeos_inet_t *net, uint32_t src, uint32_t dst,
         cs->snd_nxt = cs->snd_una;
         cs->state = VIBEOS_TCP_SYN_RECEIVED;
         cs->parent = idx;
+        cs->parent_gen = s->gen;   /* pin the identity, not just the slot (H-028) */
         (void)tcp_send_seg(net, cs, TCP_SYN | TCP_ACK, cs->snd_nxt, 0, 0);
         cs->snd_nxt++;
         cs->rto_deadline_ms = net->now_ms + cs->rto_ms;
@@ -1708,7 +1712,16 @@ static void tcp_input(vibeos_inet_t *net, uint32_t src, uint32_t dst,
                 s->rto_deadline_ms = 0;
                 if (s->parent >= 0) {
                     vibeos_inet_socket_t *p = &net->sockets[s->parent];
-                    if (p->used && p->backlog_len < VIBEOS_INET_BACKLOG) {
+                    /* The listener may have been closed and its slot handed to
+                     * an unrelated socket while this handshake was in flight;
+                     * `used` alone would deliver the child to that stranger's
+                     * accept queue. Require the slot to still hold the very
+                     * listener that accepted the SYN - same generation, still a
+                     * listening TCP socket - or drop the child (H-028). */
+                    if (p->used && p->type == VIBEOS_INET_SOCK_TCP &&
+                        p->state == VIBEOS_TCP_LISTEN &&
+                        p->gen == s->parent_gen &&
+                        p->backlog_len < VIBEOS_INET_BACKLOG) {
                         p->backlog[p->backlog_len++] = idx;
                     }
                 }

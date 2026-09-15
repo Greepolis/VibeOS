@@ -127,10 +127,17 @@ typedef struct vibeos_inet_socket {
     uint16_t last_src_port;
     uint32_t udp_dropped;    /* datagrams discarded because the queue was full */
 
+    /* Unique per allocation (from net->sock_gen_seq); 0 means never allocated.
+     * Distinguishes this socket from a later tenant of the same slot (H-028). */
+    uint32_t gen;
+
     /* Listening sockets hand completed connections to accept(). */
     int backlog[VIBEOS_INET_BACKLOG];
     uint32_t backlog_len;
     int parent;              /* index of the listening socket, or -1         */
+    uint32_t parent_gen;     /* the listener's `gen` when the SYN arrived; the
+                              * final ACK requires the parent slot to still hold
+                              * that same listener before queueing (H-028)      */
 } vibeos_inet_socket_t;
 
 /* Frame transmit hook, provided by the driver. Returns 0 on success. */
@@ -150,6 +157,12 @@ typedef struct vibeos_inet {
     uint64_t now_ms;
     uint16_t next_ephemeral;
     uint16_t ip_id;
+    /* Monotonic allocation stamp handed to every socket at sock_alloc, so a
+     * slot index alone can no longer identify a socket across reuse: a child in
+     * SYN_RECEIVED remembers its listener's stamp and rechecks it on the final
+     * ACK, defeating the ABA where the listener is closed and its slot taken by
+     * an unrelated socket before the handshake completes (H-028). */
+    uint32_t sock_gen_seq;
 
     vibeos_arp_entry_t arp[VIBEOS_INET_ARP_ENTRIES];
     /* The address the last ARP request asked for, and until when a reply to it

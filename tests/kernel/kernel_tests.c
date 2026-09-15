@@ -3790,6 +3790,67 @@ static int test_inet_tcp_listen_accept(void) {
     return 0;
 }
 
+/* H-028: a child in SYN_RECEIVED remembers its listener by slot index only. If
+ * the listener is closed and its slot handed to an unrelated socket before the
+ * final ACK arrives, the completed connection must NOT be delivered to that
+ * stranger's accept queue. The old `used`-only check on the slot did exactly
+ * that, letting one process accept a connection another had listened for. */
+static int test_inet_tcp_accept_aba(void) {
+    static vibeos_inet_t net;
+    static inet_capture_t cap;
+    int srv, victim;
+    uint32_t child_isn;
+
+    memset(&cap, 0, sizeof(cap));
+    if (vibeos_inet_init(&net, inet_test_local_mac, inet_capture_tx, &cap) != 0) {
+        return -1;
+    }
+    vibeos_inet_set_addr(&net, 0x0A00020Fu, 0xFFFFFF00u, 0x0A000202u, 0x0A000203u);
+    inet_seed_arp(&net);
+
+    srv = vibeos_inet_socket(&net, VIBEOS_INET_SOCK_TCP);
+    if (srv < 0 || vibeos_inet_bind(&net, srv, 8080) != 0 ||
+        vibeos_inet_listen(&net, srv) != 0) {
+        return -1;
+    }
+
+    /* A SYN opens a child in SYN_RECEIVED whose parent is srv's slot. */
+    cap.count = 0;
+    inet_deliver_tcp(&net, 0x0A000202u, 40000, 8080, 0x900u, 0, 0x02, 0, 0);
+    if (cap.count != 1 || (cap.frame[0][14 + 20 + 13] & 0x12) != 0x12) {
+        return -1;
+    }
+    child_isn = inet_rd32(cap.frame[0] + 14 + 20 + 4);
+
+    /* Close the listener and open a new one on a different port. sock_alloc
+     * scans low-to-high, so the new listener takes srv's just-freed slot - the
+     * ABA the child's stale parent index now points straight at. */
+    if (vibeos_inet_close(&net, srv) != 0) {
+        return -1;
+    }
+    victim = vibeos_inet_socket(&net, VIBEOS_INET_SOCK_TCP);
+    if (victim != srv) {
+        return -1;   /* the test's whole point is that the slot is reused */
+    }
+    if (vibeos_inet_bind(&net, victim, 9999u) != 0 ||
+        vibeos_inet_listen(&net, victim) != 0) {
+        return -1;
+    }
+
+    /* The final ACK completes the orphaned child's handshake. */
+    inet_deliver_tcp(&net, 0x0A000202u, 40000, 8080, 0x901u, child_isn + 1, 0x10, 0, 0);
+    /* It reached ESTABLISHED, so the ACK was processed - an empty victim
+     * backlog is the parent-identity check firing, not a lost segment. The
+     * child lives at slot 1: srv at 0, the child allocated next. */
+    if (vibeos_inet_socket_state(&net, 1) != VIBEOS_TCP_ESTABLISHED) {
+        return -1;
+    }
+    if (vibeos_inet_accept(&net, victim) != -VIBEOS_INET_EAGAIN) {
+        return -1;   /* RED without the fix: victim accepts a stranger's socket */
+    }
+    return 0;
+}
+
 
 /* ---- Wave 1 reliability ---------------------------------------------------
  * Each of these covers a limit the stack used to have: one datagram per socket,
@@ -8860,6 +8921,7 @@ int main(void) {
     RUN_TEST(test_network_policy_data_path);
     RUN_TEST(test_inet_tcp_connection);
     RUN_TEST(test_inet_tcp_listen_accept);
+    RUN_TEST(test_inet_tcp_accept_aba);
     RUN_TEST(test_inet_udp_datagram_queue);
     RUN_TEST(test_inet_tcp_out_of_order);
     RUN_TEST(test_inet_tcp_rst_needs_sequence);
