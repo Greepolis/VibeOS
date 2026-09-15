@@ -8823,7 +8823,8 @@ static long hw_sys_fstat(uint64_t fd, uint64_t ubuf) {
 static long hw_sys_newfstatat(uint64_t dirfd, uint64_t path_uptr, uint64_t ubuf,
                               uint64_t flags) {
     char path[64];
-    uint32_t cluster = 0, size = 0;
+    uint32_t cluster = 0;
+    uint64_t size = 0;   /* st_size is 64-bit; do not narrow node.size (M-018) */
 
     if (hw_copy_user_string(path_uptr, path, sizeof(path)) != 0) {
         return -VIBEOS_EFAULT;
@@ -8852,7 +8853,7 @@ static long hw_sys_newfstatat(uint64_t dirfd, uint64_t path_uptr, uint64_t ubuf,
             return -VIBEOS_ENOENT;
         }
         cluster = (uint32_t)node.id;
-        size = (uint32_t)node.size;
+        size = node.size;
         if (node.is_dir) {
             return hw_write_stat(ubuf, S_IFDIR | 0755u, 0, cluster ? cluster : 2u);
         }
