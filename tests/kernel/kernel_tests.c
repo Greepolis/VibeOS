@@ -6789,6 +6789,27 @@ static int iso_mount(vibeos_iso9660_t *fs, vibeos_blockcache_t *bc,
     return vibeos_iso9660_mount(fs, bc, 0);
 }
 
+/* M-019: a root length near UINT32_MAX makes the 32-bit sector count
+ * (length + 2047) / 2048 wrap to 0, so the directory reads as empty and a file
+ * that is really in its first sector vanishes. It must still be found. */
+static int test_iso_dir_length_wrap(void) {
+    vibeos_iso9660_t fs;
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    vibeos_fsmount_t mnt;
+    vibeos_fs_node_t node;
+
+    if (iso_mount(&fs, &bc, &dev) != 0 ||
+        vibeos_fs_mount(&mnt, vibeos_iso9660_ops(), &fs, "iso9660") != 0) {
+        return -1;
+    }
+    fs.root_length = 0xFFFFFFFEu;   /* (0xFFFFFFFE + 2047) wraps -> sectors 0 */
+    if (vibeos_fs_lookup(&mnt, "/readme.txt", &node) != 0) {
+        return -1;   /* readme.txt is in the first root sector; it must be found */
+    }
+    return 0;
+}
+
 static int test_iso_lookup_and_read(void) {
     vibeos_iso9660_t fs;
     vibeos_blockcache_t bc;
@@ -8775,6 +8796,7 @@ int main(void) {
     RUN_TEST(test_ext2_refusals);
     RUN_TEST(test_ext2_block_pointer_outside_volume);
     RUN_TEST(test_iso_lookup_and_read);
+    RUN_TEST(test_iso_dir_length_wrap);
     RUN_TEST(test_iso_list);
     RUN_TEST(test_iso_refusals);
     RUN_TEST(test_exfat_lookup_and_read);

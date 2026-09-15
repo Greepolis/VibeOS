@@ -121,7 +121,7 @@ static int iso_dir_find(vibeos_iso9660_t *fs, uint32_t extent, uint32_t length,
                         const char *want, uint32_t want_len,
                         uint32_t *out_extent, uint32_t *out_len, int *out_is_dir) {
     uint8_t sec[VIBEOS_ISO_SECTOR];
-    uint32_t sectors = (length + VIBEOS_ISO_SECTOR - 1u) / VIBEOS_ISO_SECTOR;
+    uint64_t sectors = ((uint64_t)length + VIBEOS_ISO_SECTOR - 1u) / VIBEOS_ISO_SECTOR;   /* 64-bit: length near UINT32_MAX must not wrap to 0 (M-019) */
     uint32_t s;
 
     for (s = 0; s < sectors; s++) {
@@ -277,7 +277,7 @@ static int iso_op_list(void *fsv, const char *path, uint32_t index, char *name,
     if (iso_resolve(fs, path, &extent, &length, &is_dir) != 0 || !is_dir) {
         return -1;
     }
-    sectors = (length + VIBEOS_ISO_SECTOR - 1u) / VIBEOS_ISO_SECTOR;
+    sectors = (uint32_t)(((uint64_t)length + VIBEOS_ISO_SECTOR - 1u) / VIBEOS_ISO_SECTOR);   /* 64-bit sum, no wrap (M-019) */
     for (s = 0; s < sectors; s++) {
         uint32_t off = 0;
         if (iso_read_sector(fs, extent + s, sec) != 0) {
