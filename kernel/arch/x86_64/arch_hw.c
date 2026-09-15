@@ -9387,13 +9387,18 @@ static long hw_sys_setsid(void) {
         return -VIBEOS_EINVAL;
     }
     current = &g_tasks[g_current_task];
+    /* The check and the whole transition under g_sched_lock, so the "not a
+     * group leader" test cannot race the assignment that follows it and no
+     * sibling - setpgid, getsid, kill's group resolution, all of which read
+     * these fields under the lock - observes pgid/sid mid-change (H-027, the
+     * same reasoning as H-007). */
+    hw_spin_lock_named(&g_sched_lock, __func__);
     if (current->pgid == current->tgid) {
+        hw_spin_unlock(&g_sched_lock);
         return -VIBEOS_EPERM;
     }
     current->sid = current->tgid;
     current->pgid = current->tgid;
-    /* Writes into other slots found by id: under g_sched_lock (H-007). */
-    hw_spin_lock_named(&g_sched_lock, __func__);
     for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
         if (i != g_current_task && g_tasks[i].is_user &&
             g_tasks[i].state != HW_TASK_FREE &&
@@ -9404,7 +9409,7 @@ static long hw_sys_setsid(void) {
         }
     }
     hw_spin_unlock(&g_sched_lock);
-    return (long)current->sid;
+    return (long)current->tgid;
 }
 
 static long hw_sys_getsid(uint64_t requested_pid) {
