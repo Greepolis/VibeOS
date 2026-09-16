@@ -38,10 +38,20 @@ Every site the two findings named goes through it, and a few they did not:
   straight into whatever pointer it is given and cannot use an arch-layer
   routine, so data goes through a kernel bounce buffer under `g_net_lock`.
 
-Other validate-then-use sites remain - there are dozens - and each has the same
-theoretical window against a concurrent munmap. They do not block, so the
-window is a few instructions; they are the next place to apply the routine,
-not a claim that the class is gone.
+The syscall table's own write-out sites were swept in two batches. First
+(`6a94a32`) clock_gettime, execve's argv vector walk and poison probe, time(),
+and the crash-recorder stack read. Then the ones that batch's grep missed
+because they are not a single `*(T*)` deref: pipe2's two-fd write (which now
+rolls the pipe and both fds back on a faulting copy-out rather than leaking
+them), hw_write_stat (assembled in a kernel buffer and copied out once instead
+of filled field by field), getcwd, readlinkat, and prctl PR_SET_NAME (a
+copy-in) / PR_GET_NAME. Each keeps `hw_user_range_ok` as the address-policy
+check and adds the fault-safe copy for the race.
+
+Other validate-then-use sites remain - there are dozens across the wider kernel -
+and each has the same theoretical window against a concurrent munmap. They do
+not block, so the window is a few instructions; they are the next place to apply
+the routine, not a claim that the class is gone.
 
 ## How it is known to work
 

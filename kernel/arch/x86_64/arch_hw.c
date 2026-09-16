@@ -6191,8 +6191,23 @@ static long hw_sys_pipe2(uint64_t fds_uptr, uint64_t flags) {
         }
         return -VIBEOS_EMFILE;
     }
-    ((int *)(uintptr_t)fds_uptr)[0] = rfd;
-    ((int *)(uintptr_t)fds_uptr)[1] = wfd;
+    {
+        int kfds[2];
+        kfds[0] = rfd;
+        kfds[1] = wfd;
+        /* Copied out fault-safe: a sibling munmap between the range check and
+         * this write would fault in ring 0. On fault the pipe and both fds are
+         * already allocated, so roll them back rather than leak them (uaccess
+         * follow-up to 6a94a32). */
+        if (vibeos_uaccess_copy((void *)(uintptr_t)fds_uptr, kfds, sizeof(kfds)) != 0) {
+            t->fds[rfd - 3].used = 0;
+            t->fds[wfd - 3].used = 0;
+            hw_spin_lock_named(&g_pipe_lock, __func__);
+            g_pipes[slot].used = 0;
+            hw_spin_unlock(&g_pipe_lock);
+            return -VIBEOS_EFAULT;
+        }
+    }
     return 0;
 }
 
@@ -8784,22 +8799,31 @@ static void hw_stat_wr32(uint64_t base, uint32_t off, uint32_t v) {
  * regular file for a directory does not fail here - it fails later, inside the
  * program, doing something that made sense given what it was told. */
 static long hw_write_stat(uint64_t ubuf, uint32_t mode, uint64_t size, uint64_t ino) {
+    uint8_t kbuf[STAT_SIZE];
+    uint64_t kbase = (uint64_t)(uintptr_t)kbuf;
     uint32_t i;
 
     if (!hw_user_range_ok(ubuf, STAT_SIZE, 1)) {
         return -VIBEOS_EFAULT;
     }
+    /* Assemble the whole struct in the kernel and copy it out once. Filling the
+     * user buffer field by field would fault in ring 0 if a sibling munmaps it
+     * between the range check and any of these writes (uaccess follow-up to
+     * 6a94a32, same class as H-026). */
     for (i = 0; i < STAT_SIZE; i++) {
-        ((uint8_t *)(uintptr_t)ubuf)[i] = 0;
+        kbuf[i] = 0;
     }
-    hw_stat_wr64(ubuf, STAT_OFF_INO, ino);
-    hw_stat_wr64(ubuf, STAT_OFF_NLINK, 1);
-    hw_stat_wr32(ubuf, STAT_OFF_MODE, mode);
-    hw_stat_wr32(ubuf, STAT_OFF_UID, 0);
-    hw_stat_wr32(ubuf, STAT_OFF_GID, 0);
-    hw_stat_wr64(ubuf, STAT_OFF_SIZE, size);
-    hw_stat_wr64(ubuf, STAT_OFF_BLKSIZE, 512);
-    hw_stat_wr64(ubuf, STAT_OFF_BLOCKS, (size + 511ull) / 512ull);
+    hw_stat_wr64(kbase, STAT_OFF_INO, ino);
+    hw_stat_wr64(kbase, STAT_OFF_NLINK, 1);
+    hw_stat_wr32(kbase, STAT_OFF_MODE, mode);
+    hw_stat_wr32(kbase, STAT_OFF_UID, 0);
+    hw_stat_wr32(kbase, STAT_OFF_GID, 0);
+    hw_stat_wr64(kbase, STAT_OFF_SIZE, size);
+    hw_stat_wr64(kbase, STAT_OFF_BLKSIZE, 512);
+    hw_stat_wr64(kbase, STAT_OFF_BLOCKS, (size + 511ull) / 512ull);
+    if (vibeos_uaccess_copy((void *)(uintptr_t)ubuf, kbuf, STAT_SIZE) != 0) {
+        return -VIBEOS_EFAULT;
+    }
     return 0;
 }
 
@@ -8887,8 +8911,16 @@ static long hw_sys_getcwd(uint64_t ubuf, uint64_t size) {
     if (!hw_user_range_ok(ubuf, 2, 1)) {
         return -VIBEOS_EFAULT;
     }
-    ((char *)(uintptr_t)ubuf)[0] = '/';
-    ((char *)(uintptr_t)ubuf)[1] = 0;
+    {
+        /* Fault-safe copy out: a sibling munmap between the check and the write
+         * would fault in ring 0 (uaccess follow-up to 6a94a32). */
+        char kcwd[2];
+        kcwd[0] = '/';
+        kcwd[1] = 0;
+        if (vibeos_uaccess_copy((void *)(uintptr_t)ubuf, kcwd, 2) != 0) {
+            return -VIBEOS_EFAULT;
+        }
+    }
     return 2;   /* Linux returns the length including the terminator */
 }
 
@@ -8928,11 +8960,10 @@ static long hw_sys_readlinkat(uint64_t dirfd, uint64_t path_uptr, uint64_t ubuf,
     if (!hw_user_range_ok(ubuf, n, 1)) {
         return -VIBEOS_EFAULT;
     }
-    {
-        uint64_t i;
-        for (i = 0; i < n; i++) {
-            ((char *)(uintptr_t)ubuf)[i] = self[i];
-        }
+    /* self is a kernel string; copy out fault-safe so a sibling munmap between
+     * the check and the write cannot fault in ring 0 (uaccess follow-up). */
+    if (vibeos_uaccess_copy((void *)(uintptr_t)ubuf, self, n) != 0) {
+        return -VIBEOS_EFAULT;
     }
     return (long)n;   /* not terminated, as Linux does not terminate it */
 }
@@ -8949,11 +8980,17 @@ static long hw_sys_prctl(uint64_t op, uint64_t arg) {
     }
     t = &g_tasks[g_current_task];
     if (op == PR_SET_NAME) {
+        char kname[16];
         if (!hw_user_range_ok(arg, 16, 0)) {
             return -VIBEOS_EFAULT;
         }
+        /* Copy in fault-safe, then terminate: a sibling munmap between the
+         * check and the read would fault in ring 0 (uaccess follow-up). */
+        if (vibeos_uaccess_copy(kname, (const void *)(uintptr_t)arg, 16) != 0) {
+            return -VIBEOS_EFAULT;
+        }
         for (i = 0; i < 15u; i++) {
-            t->comm[i] = ((const char *)(uintptr_t)arg)[i];
+            t->comm[i] = kname[i];
             if (t->comm[i] == 0) {
                 break;
             }
@@ -8965,8 +9002,8 @@ static long hw_sys_prctl(uint64_t op, uint64_t arg) {
         if (!hw_user_range_ok(arg, 16, 1)) {
             return -VIBEOS_EFAULT;
         }
-        for (i = 0; i < 16u; i++) {
-            ((char *)(uintptr_t)arg)[i] = t->comm[i];
+        if (vibeos_uaccess_copy((void *)(uintptr_t)arg, t->comm, 16) != 0) {
+            return -VIBEOS_EFAULT;
         }
         return 0;
     }
