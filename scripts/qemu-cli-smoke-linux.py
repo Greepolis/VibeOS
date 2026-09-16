@@ -217,6 +217,13 @@ assert _drained == [], "the serial drain invented data from an empty socket"
 # can be read at the fault rather than at the parked hlt state 45 s later.
 _THREAD_FAULT_MARKERS = ("free-page poison", "POISON_BROKEN")
 
+# The free-page poison value itself (frame.h VIBEOS_FRAME_POISON). It never
+# appears on a healthy boot - nothing prints the constant, and it is checked
+# across 12 clean logs as absent - so its presence in a trap or panic line means
+# a poisoned page's contents were executed or loaded as an address: the same
+# family, arriving without the "free-page poison" string.
+_POISON_VALUE = "dead0000dead0000"
+
 
 def thread_fault_signature(text):
     """The marker of the four-worker crash family in `text`, or None.
@@ -226,10 +233,19 @@ def thread_fault_signature(text):
     family and nothing healthy. Deliberately NOT keyed on a NOT-handled
     COW_FAULT - svc-crash dereferences null on every good boot and produces
     one, so keying on it would fire every time and snapshot a healthy machine.
+
+    Also keyed on the raw poison value: a page freed and poisoned while still
+    live as a kernel stack or page table leaves 0xdead0000dead0000 as a return
+    address or a PTE, and a core executes or loads it - a trap/panic that never
+    prints the "free-page poison" string. boot3 of .boot-evidence 2026-09-16 was
+    exactly this: kernel_fault_panic a1=0xdead0000dead0000, rip the same value,
+    cr3=0. The earlier trigger missed it and captured no snapshot.
     """
     for m in _THREAD_FAULT_MARKERS:
         if m in text:
             return m
+    if _POISON_VALUE in text.lower():
+        return "poison-value"
     return None
 
 
@@ -242,6 +258,15 @@ assert thread_fault_signature(
     == "free-page poison", "misses the poison panic"
 assert thread_fault_signature("[MM] POISON_BROKEN frame=0x243e000 word=0x140") \
     == "POISON_BROKEN", "misses the frame poison report"
+assert thread_fault_signature(
+    "[LOG][FATAL] kernel_fault_panic code=0x5454464b a0=0xd a1=0xdead0000dead0000") \
+    == "poison-value", "misses the poison value executed in a panic"
+assert thread_fault_signature(
+    "[HW][TRAP] cpu=0x2 vector=0xd rip=0xdead0000dead0000 cs=0x8 cr3=0x0") \
+    == "poison-value", "misses the poison value as a faulting rip"
+assert thread_fault_signature(
+    "[HW][SYS] write(ring3): THREADS_STAGE1_OK\n[MM] mmap ok") is None, \
+    "fires on a healthy boot line"
 
 
 def start_echo_server(stop_event, state):
