@@ -1,8 +1,12 @@
 # The argv vector that is not a pointer.
 #
-# ** EXPLAINED. Root cause: the kernel enables SSE and never saves or restores
-#    XMM state. See mm-fpu-context.txt. The fix is not written yet, so this
-#    file stays open, but nothing below it is the place to look any more. **
+# ** EXPLAINED AND FIXED. Root cause: the kernel enabled SSE and never saved or
+#    restored XMM state. The fix (per-task fxsave/fxrstor on the switch, plus the
+#    kernel recompiled -mno-sse so it never touches XMM between entry and iretq)
+#    is in the tree; see docs/implementation_progress/mm_no_fpu_context.md.
+#    Verified 0/22 there and re-measured 0 argv refusals over 12 boots on
+#    2026-09-16. Nothing below this line is the place to look any more; it is
+#    kept as the record of ten hypotheses this closed. **
 #
 # COL_TITLETXT is 0x00FFFFFF and the desktop paints from the kernel on timer
 # and input interrupts. A vectorised fill holds two white pixels in one XMM

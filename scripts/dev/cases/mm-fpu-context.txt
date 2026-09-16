@@ -1,4 +1,12 @@
-# SSE is enabled and never saved (root cause, fix not yet written).
+# SSE was enabled and never saved (root cause - FIXED).
+#
+# The fix is in the tree: per-task fxsave/fxrstor on the context switch, and the
+# kernel recompiled -mno-sse (a library separate from the host-test one) so it
+# never runs a vector instruction between kernel entry and iretq. Write-up in
+# docs/implementation_progress/mm_no_fpu_context.md; verified 0/22 there and
+# re-measured 0 ring3_write_nul / 0 argv refusals over 12 boots on 2026-09-16.
+# The sabotage cases below stay: they are the four ways to get the fix wrong,
+# and are the tests that keep it honest.
 #
 #   fxsave / fxrstor / xsave, whole tree :     0
 #   XMM instructions in the kernel image :  6955
@@ -29,13 +37,14 @@
 # that memory - it leaves a value in a register and the process stores it there
 # itself.
 
-case: the fix is absent (today)
-  no change needed - this is the state of the tree
-  RUN: ring3_write_nul non-zero on three to five boots in ten, and the argv
-    refusal about one in six, historically
-  why it matters: the case that must go green when the fix lands, and the only
-    honest before-measurement. Anything that claims to fix this and does not
-    move these two numbers has not.
+case: the fix is absent (the historical before-state, no longer the tree)
+  this described the tree before the fix landed; it is kept as the honest
+  before-measurement the fix had to move
+  RUN (before the fix): ring3_write_nul non-zero on three to five boots in ten,
+    and the argv refusal about one in six
+  after the fix: both zero - 0/22 in the write-up, 0 over 12 boots on 2026-09-16
+  why it matters: the case that had to go green when the fix landed. Anything
+    that claims to fix this and does not move these two numbers has not.
 
 case: fxsave without fxrstor
   save the area on switch out and never load it back
