@@ -729,3 +729,61 @@ detector keyed on the benign fault would trip. Verified: 24 boots through the ch
 Next, when a snapshot is in hand: the faulting thread's registers, and which
 task each core was running, at the fault - enough to say whether a sibling was
 mid-context-switch on the freed stack, without a single guest-side instruction.
+
+## The four-worker family, found and fixed (2026-09-17)
+
+Closed at last, and the shape of it was not where three sessions of reading had
+looked. It is not the exit teardown freeing a stack, not the kstack drain, not
+reclaim. It is a task that runs on a core while its scheduler state says READY.
+
+**The reproducer that broke the stalemate.** Every in-kernel probe masked this
+family because any added work on the thread-load path widened the window shut.
+The way past that was not another probe but a *reproducer*: `musl_threads.c`
+wraps its four-worker create/join round in a loop, `THR_4WORKER_REPS` (one by
+default, so the boot gate is unchanged; built at 30 for the hunt). Repeating the
+crashing path faithfully - not adding unrelated work - took the rate from about
+one boot in fifteen, and maskable, to two in five. From there the mechanism was
+caught in an afternoon instead of chased for a session.
+
+**The three detectors, and what each said.** A guard in `hw_free_kstack_pages`
+that panics if any core's `syscall_kstack_top`/`rsp0` is inside the range being
+freed; a guard in `hw_task_release` that panics if any core still has the slot
+as `current_task`; and the pre-existing `hw_task_load_cpu_state` cr3 guard
+(`address space freed while still schedulable`). All three fired on the same
+event: a core running a thread whose slot was being released and torn down under
+it, consistently `ready_by=futex_wake`. The clean caller, printed on the
+cores-quiesced path in `hw_panic_cpu_summary` rather than the interleaved raw
+one, was `hw_task_exit` releasing the dying slot while `next == dying` - the
+scheduler had picked the exiting task as the next to run.
+
+**The mechanism.** A task blocked in `hw_futex_wait` is BLOCKED and still
+`on_cpu` until its first reschedule. A `FUTEX_WAKE` in that window sets it READY,
+and because it is still on its core it resumes *in place* - the `hlt` loop
+breaks and it keeps running - without going back through `hw_schedule`, which is
+the only thing that would have set it RUNNING again. So it runs with state
+READY. When it then calls `hw_task_exit`, the exit clears its `on_cpu` before it
+switches away (it keeps executing on its own stack until `task_enter`), and a
+READY, `!on_cpu` task is exactly what `hw_pick_next` returns - to this core as
+`next == dying`, or to another core outright. Two cores on one task, one of them
+freeing its stack, its address space and its slot. That is every signature this
+family ever produced.
+
+**The fix.** One invariant, reasserted where it was broken: a task running on a
+core is RUNNING, never READY. `hw_task_exit` sets the exiting task RUNNING under
+`g_sched_lock` at entry, so it is never a scheduling candidate while it tears
+itself down. Verified with the reproducer: at `THR_4WORKER_REPS=30`, before the
+fix the family hit most boots and the guards fired; after it, **48 boots, zero
+crashes, zero guard fires** - the guards going silent is mechanism-level proof,
+not a ratio. The `hw_task_release` guard is kept as a permanent gate: it is a
+cheap eight-core scan, it never fires on a healthy boot, and this class had just
+failed the gcc/Release CI smoke (`address space freed while still schedulable`,
+2026-09-17), so a regression of it should stop the machine with the culprit
+named rather than surface as a one-in-fifteen wedge again.
+
+**Found in passing, fixed separately:** the futex waiter table had a slot-index
+ABA of its own (H-007's class). A waiter records its task's slot; `hw_futex_wake`
+woke `g_tasks[slot]` after only a `state == BLOCKED` check, so a waiter reaped
+and its slot reused could have a wake land on the new tenant. Waiters now record
+`alloc_seq` and a wake requires it to still match. Not the four-worker cause -
+that was the READY-while-running invariant above - but a real defect the hunt
+surfaced.

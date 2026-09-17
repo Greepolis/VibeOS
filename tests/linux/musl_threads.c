@@ -284,26 +284,39 @@ int main(int argc, char **argv)
     /* Now several at once, which is a different question: threads that
      * overlap, contend for a lock, and exit while others are still being
      * created. */
+    /* Repeat count for the create-4/join-4 round. One by default, so the boot
+     * gate sees exactly the stage it always has. Set high (e.g. -DTHR_4WORKER_REPS=30
+     * at build) to multiply the number of thread first-schedules per boot when
+     * hunting the four-worker crash: it repeats the crashing path faithfully
+     * rather than adding unrelated work, which is the amplification that raises
+     * the rate without masking the window. */
+#ifndef THR_4WORKER_REPS
+#define THR_4WORKER_REPS 1
+#endif
     {
         pthread_t many[WORKERS];
         long i, tls_ok = 1;
+        int rep;
 
-        for (i = 0; i < WORKERS; i++) {
-            if (pthread_create(&many[i], 0, worker, (void *)i) != 0) {
-                printf("THREADS_FAIL: create %ld\n", i);
-                fflush(stdout);
-                return 1;
+        for (rep = 0; rep < THR_4WORKER_REPS; rep++) {
+            counter = 0;   /* per-round, so the final check still equals WORKERS*BUMPS */
+            for (i = 0; i < WORKERS; i++) {
+                if (pthread_create(&many[i], 0, worker, (void *)i) != 0) {
+                    printf("THREADS_FAIL: create %ld\n", i);
+                    fflush(stdout);
+                    return 1;
+                }
             }
-        }
-        for (i = 0; i < WORKERS; i++) {
-            void *r = 0;
-            if (pthread_join(many[i], &r) != 0) {
-                printf("THREADS_FAIL: join %ld\n", i);
-                fflush(stdout);
-                return 1;
-            }
-            if ((long)r != i) {
-                tls_ok = 0;   /* a thread saw another thread's thread-local */
+            for (i = 0; i < WORKERS; i++) {
+                void *r = 0;
+                if (pthread_join(many[i], &r) != 0) {
+                    printf("THREADS_FAIL: join %ld\n", i);
+                    fflush(stdout);
+                    return 1;
+                }
+                if ((long)r != i) {
+                    tls_ok = 0;   /* a thread saw another thread's thread-local */
+                }
             }
         }
         printf("THREADS_OK: %d threads, counter=%ld expected=%d tls=%s\n",

@@ -4317,6 +4317,16 @@ static void hw_drain_dead_kstack(void) {
 
 hw_task_t g_tasks[VIBEOS_HW_MAX_TASKS];
 
+/* Recorded by hw_task_release when it finds a core still current on the slot it
+ * is about to free, and printed by hw_panic_cpu_summary - which runs with the
+ * cores quiesced, so the line comes out intact instead of interleaved with the
+ * other cores' simultaneous panic the way the raw print did. */
+static volatile uint64_t g_relrace_rip;
+static volatile int g_relrace_curcpu = -1;
+static volatile int g_relrace_relcpu = -1;
+static volatile int g_relrace_slot = -1;
+
+
 /* What a process owns, shared by every thread in it.
  *
  * clone(CLONE_VM|CLONE_THREAD) used to copy hw_proc_t by value, so each thread
@@ -4687,6 +4697,29 @@ static int hw_task_alloc_for_user(const char *what) {
 
 /* Give a reserved slot back after a failed creation. */
 static void hw_task_release(int i) {
+    /* No core may still call this slot its current task. The releasing core has
+     * already made `next` current (hw_schedule/the exit path set current_task
+     * before this), so it never matches; a *different* core that does is running
+     * on a slot about to go FREE and have its kernel stack reclaimed - the
+     * four-worker use-after-free, named at its source rather than later at the
+     * kstack free. */
+    if (i >= 0 && i < VIBEOS_HW_MAX_TASKS) {
+        uint32_t c;
+        for (c = 0; c < VIBEOS_HW_MAX_CPUS; c++) {
+            if (g_cpus[c].current_task != i) {
+                continue;
+            }
+            /* hw_task_release runs under g_sched_lock, so the console lock would
+             * deadlock here; record the culprit in globals instead and let
+             * hw_panic_cpu_summary print them once the cores are quiesced -
+             * intact, and with the caller of hw_task_release named. */
+            g_relrace_rip = (uint64_t)(uintptr_t)__builtin_return_address(0);
+            g_relrace_curcpu = (int)c;
+            g_relrace_relcpu = (int)hw_this_cpu()->index;
+            g_relrace_slot = i;
+            hw_panic("releasing a slot a cpu is still current on");
+        }
+    }
     /* Forgotten before the slot is published, not after: a slot the policy
      * still knows about is one it will schedule the moment somebody else
      * claims it, charging the new tenant's time to the old one's history. */
@@ -5467,6 +5500,24 @@ void hw_task_exit(uint64_t code) {
     hw_cpu_t *cpu = hw_this_cpu();
     int dying = cpu->current_task;
     int next, i;
+
+    /* A task running on this core must be RUNNING, never READY - otherwise it is
+     * a scheduling candidate while it is already executing. A futex_wait that was
+     * woken in place breaks that: the waker set the task READY, and because the
+     * task was still on_cpu it resumed here without going back through
+     * hw_schedule, which is the only thing that would have set it RUNNING again.
+     * It then reaches this exit as a READY task; the moment on_cpu is cleared
+     * below, another core's hw_pick_next (or this one's, at 5745) returns it, and
+     * two cores end up on one task while it is torn down - the four-worker crash,
+     * whose signature was exactly ready_by=futex_wake on a slot being freed under
+     * a running core. Reassert the invariant here, under the scheduler lock. */
+    if (dying >= 0) {
+        hw_spin_lock_named(&g_sched_lock, __func__);
+        if (g_tasks[dying].state == HW_TASK_READY) {
+            (void)hw_task_set_state(dying, HW_TASK_RUNNING, __func__);
+        }
+        hw_spin_unlock(&g_sched_lock);
+    }
 
     if (dying >= 0 && g_runtime_supervisor_ready && g_tasks[dying].service_id != 0) {
         vibeos_process_exit_reason_t reason = g_tasks[dying].exit_signal != 0
@@ -10000,6 +10051,13 @@ typedef struct {
      * shared mappings in this kernel, so the process is the whole key. */
     const hw_procstate_t *ps;
     int task;
+    /* Which tenancy of `task` enqueued. The slot index alone is an ABA: a
+     * blocked waiter can be reaped and its slot handed to a new task, and a wake
+     * matching by address would then set the wrong tenant READY - once, a task
+     * that had already exited, scheduled onto a kernel stack being freed under
+     * it (ready_by=futex_wake, the four-worker crash). A wake requires this to
+     * still equal g_tasks[task].alloc_seq, the same tenancy check H-007 uses. */
+    uint32_t seq;
     volatile int woken;
 } hw_futex_waiter_t;
 
@@ -10023,10 +10081,19 @@ static long hw_futex_wake(const hw_procstate_t *ps, uint64_t addr,
             g_futex_waiters[i].ps != ps) {
             continue;
         }
+        /* The slot must still hold the very task that enqueued: a reaped-and-
+         * reused slot is a different tenant, and waking it by a stale entry is
+         * the ABA that scheduled an exited thread onto a stack being freed
+         * (H-007, here in the futex table). alloc_seq is stable for the life of
+         * a tenancy and changes on every reuse. */
+        if (g_tasks[g_futex_waiters[i].task].alloc_seq != g_futex_waiters[i].seq) {
+            continue;   /* stale entry; the enqueuer is long gone */
+        }
         g_futex_waiters[i].addr = 0;   /* no second wake for this waiter */
         g_futex_waiters[i].woken = 1;
         hw_spin_lock_named(&g_sched_lock, __func__);
-        if (g_tasks[g_futex_waiters[i].task].state == HW_TASK_BLOCKED) {
+        if (g_tasks[g_futex_waiters[i].task].state == HW_TASK_BLOCKED &&
+            g_tasks[g_futex_waiters[i].task].alloc_seq == g_futex_waiters[i].seq) {
             (void)hw_task_set_state(g_futex_waiters[i].task, HW_TASK_READY, __func__);
             HW_TASK_MARK(g_futex_waiters[i].task, ready_by, "futex_wake");
         }
@@ -10068,6 +10135,13 @@ static long hw_futex_wait(uint64_t addr, uint32_t expected) {
         if (!g_futex_waiters[slot].used) {
             break;
         }
+        /* Reclaim an entry whose enqueuer's slot has since been reused: the
+         * wake's tenancy check will never match it again, so it is only holding
+         * a table slot. This is what bounds the table against a thread reaped
+         * while blocked, which never runs the cleanup below. */
+        if (g_tasks[g_futex_waiters[slot].task].alloc_seq != g_futex_waiters[slot].seq) {
+            break;
+        }
     }
     if (slot == VIBEOS_HW_MAX_FUTEX_WAITERS) {
         hw_spin_unlock(&g_futex_lock);
@@ -10077,6 +10151,7 @@ static long hw_futex_wait(uint64_t addr, uint32_t expected) {
     g_futex_waiters[slot].addr = addr;
     g_futex_waiters[slot].ps = g_tasks[me].ps;
     g_futex_waiters[slot].task = me;
+    g_futex_waiters[slot].seq = g_tasks[me].alloc_seq;
     g_futex_waiters[slot].woken = 0;
 
     hw_spin_lock_named(&g_sched_lock, __func__);
@@ -10338,6 +10413,17 @@ static void hw_panic_cpu_summary(void) {
      * of thing that hangs instead of reporting. A slightly stale line is worth
      * more than no line. */
     uint32_t i;
+    if (g_relrace_curcpu >= 0) {
+        vibeos_x86_64_serial_puts("[PANIC] release-race: caller_rip=0x");
+        vibeos_x86_64_serial_print_hex(g_relrace_rip);
+        vibeos_x86_64_serial_puts(" cur_cpu=0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)(int64_t)g_relrace_curcpu);
+        vibeos_x86_64_serial_puts(" releasing_cpu=0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)(int64_t)g_relrace_relcpu);
+        vibeos_x86_64_serial_puts(" slot=0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)(int64_t)g_relrace_slot);
+        vibeos_x86_64_serial_puts("\n");
+    }
     {
         for (i = 0; i < VIBEOS_HW_MAX_CPUS; i++) {
             int t;
