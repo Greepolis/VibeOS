@@ -1859,6 +1859,25 @@ def main():
                          else 0,
                          switches), flush=True)
 
+                # The ratchet, on the one robust number of the three. syscall_min
+                # is the fastest dispatch actually observed: a blocked task cannot
+                # inflate it (that is the mean's problem, argued above), and an
+                # added lookup, lock or copy on the entry path raises it. The
+                # ceiling is deliberately generous. The minimum was characterised
+                # at 208 cycles on a clean boot and up to ~440 on a stressed one
+                # under TCG - a 3-4% band the counts already showed - so 5000 is
+                # set to catch a gross regression (a path made an order of
+                # magnitude slower) without firing on that jitter. It is a
+                # ceiling, not a band: a path getting *faster* is never a
+                # failure. core-perf.txt slows the path on purpose and confirms
+                # this goes red, because a ratchet nobody has seen fire is a
+                # ratchet with no evidence behind it (docs/core/phases.md, C0).
+                SYSCALL_MIN_CEIL = 5000
+                if syscalls != 0 and sysmin > SYSCALL_MIN_CEIL:
+                    problems.append(
+                        "perf_syscall_min_regressed(%d>%d)" % (sysmin,
+                                                               SYSCALL_MIN_CEIL))
+
             # Which disk the boot volume was found on, and that it was found by
             # looking rather than by assuming.
             #
