@@ -868,11 +868,26 @@ static int audit_one(vibeos_vmspace_t *as, uint64_t va, uint64_t *pte,
              * quarantine does not hold is judged exactly as before. */
             uint32_t held = g_be.quarantined ? g_be.quarantined(phys) : 0u;
             uint8_t after = vibeos_frame_owners(phys);
+            /* Bracket the holder side too, not only the owners. The first
+             * version watched owners alone, so a holder or quarantine reference
+             * that moved between its read and here - with owners netting back to
+             * the same value - read as a mismatch when it was another torn
+             * sample. All three quantities must have held still for the
+             * disagreement to be about the world at rest rather than in motion.
+             * rmap-bare-ok: this second read is not a decision - it is compared
+             * against the first `holders` only to catch a torn sample, and the
+             * real cross-check against owners is the `holders + held` line below. */
+            uint32_t holders2 = vibeos_rmap_count(phys);
+            uint32_t held2 = g_be.quarantined ? g_be.quarantined(phys) : 0u;
 
-            if (before != after) {
+            if (before != after || holders != holders2 || held != held2) {
                 vibeos_mm_stats()->rmap_audit_torn++;
             } else if (holders + held != (uint32_t)before) {
                 vibeos_mm_stats()->rmap_mismatch++;
+                vibeos_mm_stats()->rmap_mm_phys = phys;
+                vibeos_mm_stats()->rmap_mm_holders = holders;
+                vibeos_mm_stats()->rmap_mm_held = held;
+                vibeos_mm_stats()->rmap_mm_owners = (uint32_t)before;
             }
         }
     }

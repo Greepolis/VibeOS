@@ -32,6 +32,13 @@ typedef struct vibeos_mm_stats {
     uint64_t fork_undercounted;  /* shared frame with <2 owners. MUST BE ZERO */
     uint64_t rmap_mismatch;      /* holders != owners. MUST BE ZERO           */
     uint64_t rmap_audit_torn;    /* the audit's two reads saw different worlds */
+    /* The last frame that tripped rmap_mismatch, and the three counts that did
+     * not add up, so a single-boot fire says which frame and by how much rather
+     * than only that it happened. Instrument for the open rmap_mismatch defect. */
+    uint64_t rmap_mm_phys;
+    uint64_t rmap_mm_holders;
+    uint64_t rmap_mm_held;
+    uint64_t rmap_mm_owners;
 
     /* Compaction. The first two say it works; the four refusals say what it
      * could not take and why - so "compaction did nothing" and "compaction was

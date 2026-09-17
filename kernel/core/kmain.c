@@ -321,6 +321,16 @@ static void kernel_cli_print_meminfo(void) {
      * look at anything. */
     vibeos_x86_64_serial_puts(" rmap_audit_torn=0x");
     kernel_log_u64_hex(st->rmap_audit_torn);
+    if (st->rmap_mismatch != 0u) {
+        vibeos_x86_64_serial_puts(" rmap_mm_phys=0x");
+        kernel_log_u64_hex(st->rmap_mm_phys);
+        vibeos_x86_64_serial_puts(" rmap_mm_holders=0x");
+        kernel_log_u64_hex(st->rmap_mm_holders);
+        vibeos_x86_64_serial_puts(" rmap_mm_held=0x");
+        kernel_log_u64_hex(st->rmap_mm_held);
+        vibeos_x86_64_serial_puts(" rmap_mm_owners=0x");
+        kernel_log_u64_hex(st->rmap_mm_owners);
+    }
     vibeos_x86_64_serial_puts("\n");
 
     vibeos_x86_64_serial_puts("[MEM] cache_hits=0x");
