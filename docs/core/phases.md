@@ -83,6 +83,19 @@ case that puts the defect back once it is found. `core-perf.txt` — slow a hot
 path on purpose and confirm the ratchet fires. Do that one *first*: a ratchet
 nobody has seen go red is a ratchet with no evidence behind it.
 
+**Done (2026-09-17).** The open defect turned out to be two, both closed. The
+argv-poison/white-pixel corruption was SSE/XMM state never saved
+(`mm_no_fpu_context.md`); the intermittent THREADS crash was a task running with
+scheduler state READY after an in-place futex wake, then picked while it exited
+(`boot_repeatability.md`, "found and fixed"). `rmap_mismatch` was the audit
+bracketing only the owner count, not the holder side - completed, and a real one
+now arrives named. The baseline is `core-perf.txt`: the boot gate ratchets
+`syscall_min` (cycles, the machine-speed-independent number) against a
+characterised ceiling and `boot_wall_s` (kernel_early_init to kernel_boot)
+loosely; both were confirmed to fire before being trusted. A p99 histogram was
+deliberately not built - the design chose the minimum over the mean and the p99
+for the reason argued at `hw_perf_t`, and the minimum is the ratchetable one.
+
 ---
 
 ## C1 — the contract, and the checks that watch it

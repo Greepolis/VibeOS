@@ -24,6 +24,12 @@
 # none) trips perf_syscall_cycles_never_accumulated or
 # perf_fault_cycles_never_accumulated. The spin above exercises the ratchet;
 # these are the same instrument's other failure modes, gated together here.
+#
+# The boot-wall-time ratchet (boot_wall_regressed) belongs to the same C0
+# baseline: kernel_early_init to kernel_boot, ceiling 8s. It is loose by design
+# (wall-clock seconds move with host load, unlike syscall_min's cycles), and was
+# confirmed to fire by lowering the ceiling below the observed 1.1s on a normal
+# boot - the gate reported boot_wall_regressed - rather than by delaying bring-up.
 
 ### the syscall dispatch is timed with an order-of-magnitude spin on the path
 --- old

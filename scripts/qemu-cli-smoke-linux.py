@@ -1878,6 +1878,33 @@ def main():
                         "perf_syscall_min_regressed(%d>%d)" % (sysmin,
                                                                SYSCALL_MIN_CEIL))
 
+            # Boot wall time: kernel_early_init to kernel_boot, the kernel's own
+            # bring-up before any user task runs. C0's step 1 - the timestamps
+            # were recorded in phase_history since the gate existed and never
+            # read. Ratcheted loosely on purpose: this is wall-clock seconds, not
+            # rdtsc cycles, so it moves with how loaded the emulating host is -
+            # syscall_min above is the tight, machine-speed-independent baseline.
+            # The ceiling only catches a bring-up that ballooned (a hang, or a
+            # path an order of magnitude slower), which shows in seconds even on a
+            # slow runner. Observed 1.1-1.2s; the ceiling is 8s.
+            def _phase_ts(name):
+                for e in phase_history:
+                    if e.endswith(":" + name):
+                        try:
+                            return float(e.split(":", 1)[0])
+                        except ValueError:
+                            return None
+                return None
+            _early = _phase_ts("kernel_early_init")
+            _kboot = _phase_ts("kernel_boot")
+            if _early is not None and _kboot is not None:
+                boot_wall = _kboot - _early
+                print("[QEMU-CLI] boot_wall_s=%.3f" % boot_wall, flush=True)
+                BOOT_WALL_CEIL = 8.0
+                if boot_wall > BOOT_WALL_CEIL:
+                    problems.append("boot_wall_regressed(%.3f>%.1f)"
+                                    % (boot_wall, BOOT_WALL_CEIL))
+
             # Which disk the boot volume was found on, and that it was found by
             # looking rather than by assuming.
             #
