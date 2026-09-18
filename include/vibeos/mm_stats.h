@@ -39,6 +39,14 @@ typedef struct vibeos_mm_stats {
     uint64_t rmap_mm_holders;
     uint64_t rmap_mm_held;
     uint64_t rmap_mm_owners;
+    /* Whether two of the frame's rmap holders name the same (root, va). If they
+     * do, the reverse map double-counted one mapping and holders>owners is the
+     * detector over-counting, not a lost owner reference; if not, three distinct
+     * address-space mappings really do share a frame owners says two of - a real
+     * leak. Plus the first holder, for context. Pins which of the two it is. */
+    uint64_t rmap_mm_dup;
+    uint64_t rmap_mm_h0_root;
+    uint64_t rmap_mm_h0_va;
 
     /* Compaction. The first two say it works; the four refusals say what it
      * could not take and why - so "compaction did nothing" and "compaction was

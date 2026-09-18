@@ -330,6 +330,12 @@ static void kernel_cli_print_meminfo(void) {
         kernel_log_u64_hex(st->rmap_mm_held);
         vibeos_x86_64_serial_puts(" rmap_mm_owners=0x");
         kernel_log_u64_hex(st->rmap_mm_owners);
+        vibeos_x86_64_serial_puts(" rmap_mm_dup=0x");
+        kernel_log_u64_hex(st->rmap_mm_dup);
+        vibeos_x86_64_serial_puts(" rmap_mm_h0_root=0x");
+        kernel_log_u64_hex(st->rmap_mm_h0_root);
+        vibeos_x86_64_serial_puts(" rmap_mm_h0_va=0x");
+        kernel_log_u64_hex(st->rmap_mm_h0_va);
     }
     vibeos_x86_64_serial_puts("\n");
 

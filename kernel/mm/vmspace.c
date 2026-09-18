@@ -888,6 +888,28 @@ static int audit_one(vibeos_vmspace_t *as, uint64_t va, uint64_t *pte,
                 vibeos_mm_stats()->rmap_mm_holders = holders;
                 vibeos_mm_stats()->rmap_mm_held = held;
                 vibeos_mm_stats()->rmap_mm_owners = (uint32_t)before;
+                /* Enumerate the holders and ask the one question that decides
+                 * whether this is the reverse map over-counting a single
+                 * mapping or a genuinely lost owner reference: are two of them
+                 * the same (root, va)? */
+                {
+                    vibeos_rmap_holder_t hs[8];
+                    uint32_t n = vibeos_rmap_holders(phys, hs, 8u);
+                    uint32_t a, b, dup = 0u;
+                    for (a = 0u; a < n; a++) {
+                        for (b = a + 1u; b < n; b++) {
+                            if (hs[a].root_phys == hs[b].root_phys &&
+                                hs[a].va == hs[b].va) {
+                                dup = 1u;
+                            }
+                        }
+                    }
+                    vibeos_mm_stats()->rmap_mm_dup = dup;
+                    if (n > 0u) {
+                        vibeos_mm_stats()->rmap_mm_h0_root = hs[0].root_phys;
+                        vibeos_mm_stats()->rmap_mm_h0_va = hs[0].va;
+                    }
+                }
             }
         }
     }

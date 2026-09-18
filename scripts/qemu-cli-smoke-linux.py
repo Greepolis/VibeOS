@@ -1240,6 +1240,30 @@ def main():
                     if value != 0:
                         problems.append(f"mm_{name}={value}")
 
+                # rmap_mismatch is intermittent and its cause lives in the
+                # detail, not the count. Surface the detail into the job log so
+                # every occurrence is diagnosed from `gh run view` alone, not by
+                # fishing the serial artifact out after the fact. dup=1 means the
+                # reverse map double-counted one mapping (a detector fault);
+                # dup=0 with holders>owners is a genuinely lost owner reference.
+                # A print, not an assertion - the count above is the assertion.
+                if int(mz.group(7), 16) != 0:
+                    dt = re.search(r"rmap_mm_phys=0x([0-9a-f]+) "
+                                   r"rmap_mm_holders=0x([0-9a-f]+) "
+                                   r"rmap_mm_held=0x([0-9a-f]+) "
+                                   r"rmap_mm_owners=0x([0-9a-f]+) "
+                                   r"rmap_mm_dup=0x([0-9a-f]+) "
+                                   r"rmap_mm_h0_root=0x([0-9a-f]+) "
+                                   r"rmap_mm_h0_va=0x([0-9a-f]+)", text)
+                    if dt:
+                        print("[QEMU-CLI] rmap_mismatch_detail phys=0x%s "
+                              "holders=%d held=%d owners=%d dup=%d "
+                              "h0_root=0x%s h0_va=0x%s"
+                              % (dt.group(1), int(dt.group(2), 16),
+                                 int(dt.group(3), 16), int(dt.group(4), 16),
+                                 int(dt.group(5), 16), dt.group(6), dt.group(7)),
+                              flush=True)
+
             # What userland cost, in frames that never came back.
             #
             # Every user process that started has exited by the time userland
