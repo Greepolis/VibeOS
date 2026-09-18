@@ -1708,6 +1708,22 @@ def main():
                     problems.append(f"console_lock_stuck={int(mc.group(2), 16)}"
                                     f"_held_by_cpu={int(mc.group(3), 16)}")
 
+            # The network stack's must-be-zero: both a slot-index ABA the stack
+            # is supposed to catch. sock_stale_parent is a TCP child whose
+            # listener slot was reused mid-handshake (H-028); sock_fd_aba is a
+            # blocking accept/connect/recvfrom whose descriptor was closed and
+            # reused by a sibling thread while it slept (M-020). Either non-zero
+            # means a connection or its data could have reached the wrong socket.
+            nz = re.search(r"\[NET\] MUSTBEZERO sock_stale_parent=0x([0-9a-f]{16}) "
+                           r"sock_fd_aba=0x([0-9a-f]{16})", text)
+            if nz is None:
+                problems.append("net_counters_missing")
+            else:
+                if int(nz.group(1), 16) != 0:
+                    problems.append(f"net_sock_stale_parent={int(nz.group(1), 16)}")
+                if int(nz.group(2), 16) != 0:
+                    problems.append(f"net_sock_fd_aba={int(nz.group(2), 16)}")
+
             # Every bounded wait a syscall can reach, asserted at zero.
             #
             # P7's latency property is two halves and only one of them was

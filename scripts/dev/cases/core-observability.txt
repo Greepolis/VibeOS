@@ -1,0 +1,33 @@
+# C2 - every module says whether it is broken, and the ways that goes wrong.
+#
+# The three observability failures docs/core/phases.md names, each of which this
+# project has shipped at least once, and each caught by a check rather than the
+# boot gate:
+#
+#  - a counter declared and never incremented. VIBEOS_BLK_TIMEOUT was defined,
+#    printed, asserted by the gate and produced by no driver - green by
+#    construction. check-counters-produced.py matches every reported counter
+#    against every ++ in the tree; removing the `net->sock_fd_aba++` or the
+#    `net->sock_stale_parent++` increment is that failure, and it catches it.
+#
+#  - a must-be-zero printed and not asserted. The ring-3 ABI line said
+#    "mmap/mprotect/munmap wrong" for a session while the gate stayed green,
+#    because the line was collected and never asserted on. check-mustbezero-
+#    asserted.py holds every [X] MUSTBEZERO field to an assertion; dropping the
+#    gate's net_sock_stale_parent / net_sock_fd_aba / net_counters_missing
+#    checks is that failure.
+#
+#  - a witness that reports a count instead of an object. A count says how
+#    often; found=0 freed_by=0 stayed unexplained for a phase because the poison
+#    report gave a number, not which frame, which word, and who freed it. The
+#    rmap audit's rmap_mm_dup / rmap_mm_h0_root / rmap_mm_h0_va is the witness
+#    that answered "over-count or lost reference?" on sight.
+#
+# The network module's must-be-zero, added in this phase, is two slot-index ABA
+# counters the stack must keep at zero: sock_stale_parent (a TCP child whose
+# listener slot was reused mid-handshake, H-028) and sock_fd_aba (a blocking
+# accept/connect/recvfrom whose descriptor a sibling thread closed and reused,
+# M-020). Both are demonstrated able to be non-zero rather than trusted:
+# test_inet_tcp_accept_aba drives sock_stale_parent, and reverting the
+# hw_sock_stable re-verify makes sock_fd_aba reachable from two POSIX threads
+# sharing a descriptor table.

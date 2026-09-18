@@ -137,12 +137,36 @@ long hw_sys_listen(uint64_t fd) {
     return (r == 0) ? 0 : -VIBEOS_EINVAL;
 }
 
+/* A blocking socket call re-reads its descriptor on every wake, and a sibling
+ * thread can close it and reuse the slot for a new socket while it sleeps -
+ * M-020's slot-index ABA in the FD table, the same shape as H-007 and H-028.
+ * Capture the socket index and the socket's generation before blocking, and on
+ * every wake confirm the descriptor still names that socket and it is still the
+ * same tenant. Returns the stable socket index, or -1 (and counts the ABA) when
+ * the descriptor was closed (f->used clear), pointed at a different socket
+ * (net_sock changed), or that socket slot was reused (generation changed). */
+static int hw_sock_stable(const hw_fd_t *f, int sock, uint32_t gen) {
+    uint32_t cur;
+    if (!f->used || f->net_sock != sock) {
+        g_net.sock_fd_aba++;
+        return -1;
+    }
+    hw_spin_lock(&g_net_lock);
+    cur = g_net.sockets[sock].gen;
+    hw_spin_unlock(&g_net_lock);
+    if (cur != gen) {
+        g_net.sock_fd_aba++;
+        return -1;
+    }
+    return sock;
+}
+
 long hw_sys_connect(uint64_t fd, uint64_t addr_uptr) {
     hw_fd_t *f = hw_fd_get(fd);
-    uint32_t ip;
+    uint32_t ip, gen;
     uint16_t port;
     uint64_t deadline;
-    int r;
+    int r, sock;
 
     if (!f || f->net_sock < 0) {
         return -VIBEOS_EBADF;
@@ -150,8 +174,10 @@ long hw_sys_connect(uint64_t fd, uint64_t addr_uptr) {
     if (hw_read_sockaddr(addr_uptr, &ip, &port) != 0) {
         return -VIBEOS_EFAULT;
     }
+    sock = f->net_sock;
     hw_spin_lock(&g_net_lock);
-    r = vibeos_inet_connect(&g_net, f->net_sock, ip, port);
+    gen = g_net.sockets[sock].gen;
+    r = vibeos_inet_connect(&g_net, sock, ip, port);
     hw_spin_unlock(&g_net_lock);
     if (r != 0) {
         return -VIBEOS_EINVAL;
@@ -160,8 +186,11 @@ long hw_sys_connect(uint64_t fd, uint64_t addr_uptr) {
     deadline = g_timer_ticks + VIBEOS_HW_NET_TIMEOUT_TICKS;
     for (;;) {
         int st;
+        if (hw_sock_stable(f, sock, gen) < 0) {
+            return -VIBEOS_EBADF;
+        }
         hw_spin_lock(&g_net_lock);
-        st = vibeos_inet_socket_state(&g_net, f->net_sock);
+        st = vibeos_inet_socket_state(&g_net, sock);
         hw_spin_unlock(&g_net_lock);
         if (st == VIBEOS_TCP_ESTABLISHED) {
             return 0;
@@ -180,15 +209,23 @@ long hw_sys_accept(uint64_t fd, uint64_t addr_uptr) {
     hw_fd_t *f = hw_fd_get(fd);
     hw_task_t *t;
     int child = -1;
-    int nfd;
+    int nfd, sock;
+    uint32_t gen;
 
     if (!f || f->net_sock < 0 || hw_current_task() < 0) {
         return -VIBEOS_EBADF;
     }
     t = &g_tasks[hw_current_task()];
+    sock = f->net_sock;
+    hw_spin_lock(&g_net_lock);
+    gen = g_net.sockets[sock].gen;
+    hw_spin_unlock(&g_net_lock);
     for (;;) {
+        if (hw_sock_stable(f, sock, gen) < 0) {
+            return -VIBEOS_EBADF;
+        }
         hw_spin_lock(&g_net_lock);
-        child = vibeos_inet_accept(&g_net, f->net_sock);
+        child = vibeos_inet_accept(&g_net, sock);
         hw_spin_unlock(&g_net_lock);
         if (child >= 0) {
             break;
@@ -232,15 +269,27 @@ static uint8_t g_net_bounce[VIBEOS_INET_RXBUF];
 /* Blocking stream receive: returns 0 at end of stream, like Linux. */
 long hw_net_recv(hw_fd_t *f, uint64_t buf, uint64_t len) {
     uint64_t deadline = g_timer_ticks + VIBEOS_HW_NET_TIMEOUT_TICKS;
+    int sock;
+    uint32_t gen;
 
+    if (!f || f->net_sock < 0) {
+        return -VIBEOS_EBADF;
+    }
     if (!hw_user_range_ok(buf, len, 1)) {
         return -VIBEOS_EFAULT;
     }
+    sock = f->net_sock;
+    hw_spin_lock(&g_net_lock);
+    gen = g_net.sockets[sock].gen;
+    hw_spin_unlock(&g_net_lock);
     for (;;) {
         long n;
         int faulted = 0;
+        if (hw_sock_stable(f, sock, gen) < 0) {
+            return -VIBEOS_EBADF;
+        }
         hw_spin_lock(&g_net_lock);
-        n = vibeos_inet_recv(&g_net, f->net_sock, g_net_bounce,
+        n = vibeos_inet_recv(&g_net, sock, g_net_bounce,
                              (uint32_t)(len < sizeof(g_net_bounce) ? len : sizeof(g_net_bounce)));
         if (n > 0 && vibeos_uaccess_copy((void *)(uintptr_t)buf, g_net_bounce, (uint64_t)n) != 0) {
             faulted = 1;

@@ -11723,6 +11723,10 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
         vibeos_x86_64_serial_print_hex(g_cow_resolved);
         vibeos_x86_64_serial_puts(" guard_at=0x");
         vibeos_x86_64_serial_print_hex(g_gui_guard);
+        vibeos_x86_64_serial_puts("\n[NET] MUSTBEZERO sock_stale_parent=0x");
+        vibeos_x86_64_serial_print_hex(g_net.sock_stale_parent);
+        vibeos_x86_64_serial_puts(" sock_fd_aba=0x");
+        vibeos_x86_64_serial_print_hex(g_net.sock_fd_aba);
         vibeos_x86_64_serial_puts("\n[PERF] syscalls=0x");
         vibeos_x86_64_serial_print_hex(g_perf_syscall.count);
         vibeos_x86_64_serial_puts(" syscall_cycles=0x");

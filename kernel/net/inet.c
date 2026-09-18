@@ -1723,6 +1723,15 @@ static void tcp_input(vibeos_inet_t *net, uint32_t src, uint32_t dst,
                         p->gen == s->parent_gen &&
                         p->backlog_len < VIBEOS_INET_BACKLOG) {
                         p->backlog[p->backlog_len++] = idx;
+                    } else if (p->used &&
+                               (p->gen != s->parent_gen ||
+                                p->type != VIBEOS_INET_SOCK_TCP ||
+                                p->state != VIBEOS_TCP_LISTEN)) {
+                        /* The slot is in use but by a different socket than the
+                         * listener that accepted the SYN: the ABA the guard
+                         * exists for. A parent that is simply gone (slot free)
+                         * is an orphaned child, expected and not counted. */
+                        net->sock_stale_parent++;
                     }
                 }
             }

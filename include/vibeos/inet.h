@@ -214,6 +214,22 @@ typedef struct vibeos_inet {
     uint64_t rx_dropped;
     uint64_t arp_replies;
     uint64_t tcp_retransmits;
+    /* MUST BE ZERO. A completed TCP handshake whose parent listener slot was,
+     * by the time of the final ACK, holding a *different* socket - the listener
+     * closed and its slot reused mid-handshake (H-028's slot-index ABA). The
+     * guard drops the child instead of queueing it onto the stranger's accept
+     * queue, and this counts the drops that were the ABA rather than a listener
+     * that simply went away. Zero on any honest boot; test_inet_tcp_accept_aba
+     * drives it non-zero on purpose. */
+    uint64_t sock_stale_parent;
+    /* MUST BE ZERO. A blocking socket syscall - accept, connect, recvfrom -
+     * whose file descriptor was closed and its slot reused by another thread of
+     * the process while it slept, so the descriptor named a different socket on
+     * wake than the one the call was made for (M-020, the slot-index ABA in the
+     * FD table). The syscall returns EBADF instead of acting on the stranger;
+     * this counts those. Zero unless a thread pulls a descriptor out from under
+     * a sibling's blocking call. */
+    uint64_t sock_fd_aba;
 
     /* The secret every identifier a reply is matched on is derived from - TCP
      * initial sequence numbers (H-008), the DHCP xid (H-009), the DNS id and

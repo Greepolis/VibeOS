@@ -3848,6 +3848,11 @@ static int test_inet_tcp_accept_aba(void) {
     if (vibeos_inet_accept(&net, victim) != -VIBEOS_INET_EAGAIN) {
         return -1;   /* RED without the fix: victim accepts a stranger's socket */
     }
+    /* The drop is counted: sock_stale_parent is the net module's must-be-zero,
+     * and this is the run that demonstrates it can be non-zero (C2). */
+    if (net.sock_stale_parent == 0u) {
+        return -1;
+    }
     return 0;
 }
 
