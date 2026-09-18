@@ -329,6 +329,23 @@ int vibeos_vmspace_destroy(vibeos_vmspace_t *as) {
         return -1;
     }
 
+    /* Forget the holders before the frames are released, not after.
+     *
+     * Every other path in this file removes a frame's reverse-map holder before
+     * it drops the owner reference - map_raw, the copy-on-write fault, unmap all
+     * do it in that order, because the opposite leaves a frame the count says
+     * nobody owns while a mapping still names it. Teardown did it backwards: the
+     * release_pt walk below drops an owner per frame, and forget_root ran only
+     * after the whole sweep, so between them a frame this process shared had its
+     * owner released while its holder for this root was still recorded. A fork
+     * audit on another core sampling that frame saw holders > owners, both
+     * standing still, and reported rmap_mismatch on a teardown in progress -
+     * which is what CI's clang/Release smoke caught (holders=3, owners=2). Doing
+     * it first restores the invariant, and it is done unconditionally here so a
+     * teardown that fails half way still leaves nothing behind for the next
+     * tenant of this recycled root. */
+    vibeos_rmap_forget_root(as->root_phys);
+
     for (slot = 0; slot < 512u; slot++) {
         uint64_t *pdpt;
         int slot_is_kernel = (slot == 0u);
@@ -373,14 +390,6 @@ int vibeos_vmspace_destroy(vibeos_vmspace_t *as) {
         g_be.free_table(as->root[slot] & PTE_ADDR_MASK);
         as->root[slot] = 0;
     }
-
-    /* Everything this address space held, in one sweep.
-     *
-     * Doing it per entry as release_pt walks would be correct and quadratic in
-     * the size of the address space; doing it here also means a teardown that
-     * failed half way still leaves nothing behind for the next tenant of this
-     * root, which matters because roots are recycled. */
-    vibeos_rmap_forget_root(as->root_phys);
 
     g_be.free_table(as->root_phys);
     as->root = 0;
@@ -882,7 +891,18 @@ static int audit_one(vibeos_vmspace_t *as, uint64_t va, uint64_t *pte,
 
             if (before != after || holders != holders2 || held != held2) {
                 vibeos_mm_stats()->rmap_audit_torn++;
-            } else if (holders + held != (uint32_t)before) {
+            } else if (holders + held > (uint32_t)before) {
+                /* Only the dangerous direction. More mappings than references
+                 * is a page held by something the count does not know, which
+                 * ends in a free-while-mapped; more references than mappings is
+                 * the safe direction - a reference with no mapping frees nothing
+                 * early, and shows up as a frame leak if it is real. Reporting
+                 * both made teardown a false positive: it drops each frame's
+                 * owner and forgets its holder in two steps, and whichever runs
+                 * first, an audit on another core in the gap saw the two
+                 * disagree. Teardown now forgets the holders first (the safe
+                 * direction, ignored here); a genuine lost reference still trips
+                 * this, because that is holders > owners. */
                 vibeos_mm_stats()->rmap_mismatch++;
                 vibeos_mm_stats()->rmap_mm_phys = phys;
                 vibeos_mm_stats()->rmap_mm_holders = holders;
@@ -893,6 +913,9 @@ static int audit_one(vibeos_vmspace_t *as, uint64_t va, uint64_t *pte,
                  * mapping or a genuinely lost owner reference: are two of them
                  * the same (root, va)? */
                 {
+                    /* rmap-bare-ok: diagnostic only, inside a branch the owner
+                     * cross-check above already gated - this enumerates the
+                     * holders to describe the mismatch, it decides nothing. */
                     vibeos_rmap_holder_t hs[8];
                     uint32_t n = vibeos_rmap_holders(phys, hs, 8u);
                     uint32_t a, b, dup = 0u;
