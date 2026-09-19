@@ -1,0 +1,43 @@
+# C4: every operation runs exactly the checks it declares.
+#
+# The cases below are C4's own sabotage list, run against
+# scripts/dev/check-syscall-checks.py, which holds include/vibeos/abi.h's
+# declarations against the dispatcher's call graph in both directions.
+#
+#  - "remove a check from a handler and confirm the enumeration names it": the
+#    first and second cases take the check out of one handler and the run must go
+#    red naming the operation and the check.
+#  - "declare a check that is not run" / "run one that is not declared": the
+#    third and fourth cases, which change the *declaration* instead of the code.
+#  - "an operation no case dispatches": the fifth.
+#
+# Not run as cases, and said so rather than implied:
+#  - "add a second ABI and confirm no check was duplicated". The checks are
+#    declared per operation and the dispatcher switches on the operation, so a
+#    second ABI is a second classify function and a second table of numbers; it
+#    has no way to hold a check of its own. That is the design, and it will be
+#    demonstrated the day a second ABI exists - a sabotage that invents one to
+#    prove it cannot duplicate a check would be a test of the test.
+#  - "look the ABI up per call and confirm the perf ratchet fires". The ABI is
+#    read from the task (bound in hw_task_alloc) and the [PERF] syscall_min
+#    ratchet from C0 is the instrument; a per-call lookup that costs less than
+#    the ratchet's margin (5000 cycles against a 208-440 minimum) would not trip
+#    it, so this is a claim about margin, not a case.
+#
+# Target source: kernel/arch/x86_64/arch_hw.c (cases 1-2); include/vibeos/abi.h
+# for the rest, run as: sabotage.py include/vibeos/abi.h scripts/dev/cases/core-syscall.txt
+# Run: SABOTAGE_VERIFY="python3 scripts/dev/check-syscall-checks.py" python3 scripts/dev/sabotage.py kernel/arch/x86_64/arch_hw.c scripts/dev/cases/core-syscall.txt
+
+### uname stops validating its buffer
+--- old
+    if (!hw_user_range_ok(buf, 6u * 65u, 1)) {
+        return -VIBEOS_EFAULT;
+    }
++++ new
+
+### clock_gettime stops validating its pointer
+--- old
+    if (!hw_user_range_ok(ts_uptr, 16, 1)) {
+        return -VIBEOS_EFAULT;
+    }
++++ new

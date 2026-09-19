@@ -107,6 +107,22 @@ POINTS = {
         "kernel/arch/x86_64/virtio_net.c",
         r"vibeos_x86_64_virtio_net_[A-Za-z0-9_]+", 4,
         "no registry at all - arch_hw.c names the driver directly."),
+    "syscall": (
+        "kernel/abi/pageinfo.c",
+        r"VIBEOS_OP_PAGEINFO|X\(PAGEINFO|LSYS_pageinfo|hw_sys_pageinfo", 4,
+        "the last operation added, as the witness (a stand-in path; only its "
+        "basename and include/vibeos/pageinfo.h are excluded). abi.h "
+        "declares it and its checks, abi_linux.h holds the number, "
+        "abi_linux.c maps the number, and arch_hw.c has the handler and its "
+        "case.\n"
+        "      **This is 4, and before C4 it was 1 (arch_hw.c) - a regression "
+        "in file count, taken on purpose.** The one file used to hold the "
+        "handler, the case and the number, and *nothing said which checks the "
+        "call performs*. The extra three edits are the declaration "
+        "(check-syscall-checks.py holds it against the code) and the "
+        "translation. The plan's target is 1; the honest path there is to "
+        "make one row carry number, operation and checks, which is what "
+        "moving the handlers behind the ABI (the rest of C4) is for."),
     "input device": (
         "kernel/arch/x86_64/keyboard.c",
         r"vibeos_x86_64_keyboard_[A-Za-z0-9_]+", 4,

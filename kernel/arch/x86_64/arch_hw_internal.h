@@ -218,6 +218,11 @@ typedef struct {
      * waits on this word, so a thread that exits without clearing it is a
      * join that never returns. */
     uint64_t clear_child_tid;
+    /* The syscall ABI this task speaks, bound when the slot is allocated and
+     * never looked up per call (C4). Set in hw_task_alloc, which every way of
+     * making a task passes through, so a fork or a thread inherits nothing by
+     * accident and gets exactly what a new process gets. */
+    const struct vibeos_abi *abi;
     /* Written from interrupt/syscall context (preemption, task exit) and read
      * by the kernel task, so it must not be cached across a wait loop. */
     volatile int state;

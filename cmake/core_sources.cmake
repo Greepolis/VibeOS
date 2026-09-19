@@ -59,6 +59,8 @@ set(VIBEOS_KERNEL_CORE_SOURCES
     kernel/ipc/waitset.c
     kernel/core/log.c
     kernel/core/mbz.c
+    kernel/abi/abi.c
+    kernel/abi/abi_linux.c
     kernel/core/policy.c
     kernel/core/security.c
     kernel/time/timer.c

@@ -24,6 +24,8 @@
 #include "vibeos/ext2.h"
 #include "vibeos/mbz.h"
 #include "vibeos/ceildiv.h"
+#include "vibeos/abi.h"
+#include "vibeos/abi_linux.h"
 #include "vibeos/iso9660.h"
 #include "vibeos/exfat.h"
 #include "vibeos/ntfs.h"
@@ -9028,6 +9030,92 @@ static int test_mbz_sched_requeue_failed(void) {
     return vibeos_mbz_count(VIBEOS_MBZ_SCHED_REQUEUE_FAILED) > before ? 0 : -1;
 }
 
+/* C4: the syscall vocabulary and the Linux translator. The properties that make
+ * "adding a syscall" one declaration: every id is declared with a name and its
+ * checks, the names are unique, every number the Linux ABI accepts lands on a
+ * declared id, and the numbers it does not implement land on NONE (which the
+ * dispatcher answers with ENOSYS and counts on [ABI] MUSTBEZERO). */
+static int test_abi_vocabulary_and_linux(void) {
+    const vibeos_abi_t *linux_abi = vibeos_abi_linux();
+    uint32_t id, k;
+    uint64_t nr;
+    uint32_t mapped = 0;
+
+    if (!linux_abi || !linux_abi->classify || strcmp(linux_abi->name, "linux-x86_64") != 0) {
+        return -1;
+    }
+    if (vibeos_op_entry(VIBEOS_OP_NONE) != NULL ||
+        vibeos_op_entry(VIBEOS_OP_COUNT) != NULL ||
+        vibeos_op_entry((vibeos_op_id_t)9999u) != NULL) {
+        return -1;
+    }
+    for (id = 1; id < (uint32_t)VIBEOS_OP_COUNT; id++) {
+        const vibeos_op_entry_t *e = vibeos_op_entry((vibeos_op_id_t)id);
+        if (!e || e->id != (vibeos_op_id_t)id || !e->name || e->name[0] == '\0') {
+            printf("abi: id %u has no declaration\n", id);
+            return -1;   /* RED if the table lags the list */
+        }
+        if ((e->checks & ~(VIBEOS_CHECK_USER_MEMORY | VIBEOS_CHECK_SIGNAL_PERMIT |
+                           VIBEOS_CHECK_TASK_GUARD)) != 0u) {
+            return -1;   /* a check that names nothing the kernel has */
+        }
+        for (k = id + 1u; k < (uint32_t)VIBEOS_OP_COUNT; k++) {
+            if (strcmp(e->name, vibeos_op_entry((vibeos_op_id_t)k)->name) == 0) {
+                printf("abi: name %s declared twice\n", e->name);
+                return -1;
+            }
+        }
+    }
+
+    /* Every Linux number: either NONE, or a declared id. */
+    for (nr = 0; nr < 2048u; nr++) {
+        vibeos_op_id_t got = linux_abi->classify(nr, 0u);
+        if (got != VIBEOS_OP_NONE) {
+            if (!vibeos_op_entry(got)) {
+                return -1;
+            }
+            mapped++;
+        }
+    }
+    /* 72 numbers are defined; clone is decided by its flags, so with flags 0 it
+     * is a fork and is counted here too. */
+    if (mapped != 72u) {
+        printf("abi: %u numbers map, expected 72\n", mapped);
+        return -1;
+    }
+
+    /* Aliases meaning one operation. */
+    if (linux_abi->classify(LSYS_fork, 0) != VIBEOS_OP_FORK ||
+        linux_abi->classify(LSYS_vfork, 0) != VIBEOS_OP_FORK ||
+        linux_abi->classify(LSYS_getuid, 0) != VIBEOS_OP_IDENTITY_GET ||
+        linux_abi->classify(LSYS_getegid, 0) != VIBEOS_OP_IDENTITY_GET ||
+        linux_abi->classify(LSYS_setgid, 0) != VIBEOS_OP_IDENTITY_SET) {
+        return -1;
+    }
+    /* clone: the flags decide, and the two combinations that would only look
+     * like what they claim are refused. */
+    if (linux_abi->classify(LSYS_clone, CLONE_VM | CLONE_THREAD) != VIBEOS_OP_THREAD_CREATE ||
+        linux_abi->classify(LSYS_clone, 0x11u) != VIBEOS_OP_FORK ||
+        linux_abi->classify(LSYS_clone, CLONE_THREAD) != VIBEOS_OP_NONE ||
+        linux_abi->classify(LSYS_clone, CLONE_VM) != VIBEOS_OP_NONE) {
+        return -1;
+    }
+    /* VibeOS's own calls, and numbers nobody implements. */
+    if (linux_abi->classify(LSYS_netctl, 0) != VIBEOS_OP_NETCTL ||
+        linux_abi->classify(LSYS_pageinfo, 0) != VIBEOS_OP_PAGEINFO ||
+        linux_abi->classify(VIBEOS_ABI_PROBE_NR, 0) != VIBEOS_OP_NONE ||
+        linux_abi->classify(511u, 0) != VIBEOS_OP_NONE ||
+        linux_abi->classify(~0ull, 0) != VIBEOS_OP_NONE) {
+        return -1;
+    }
+    /* The declarations the security argument rests on. */
+    if ((vibeos_op_entry(VIBEOS_OP_KILL)->checks & VIBEOS_CHECK_SIGNAL_PERMIT) == 0u ||
+        (vibeos_op_entry(VIBEOS_OP_FORK)->checks & VIBEOS_CHECK_TASK_GUARD) == 0u) {
+        return -1;
+    }
+    return 0;
+}
+
 /* C2: every must-be-zero id has been seen non-zero. A counter that reads zero
  * proves nothing until it has been seen to move, and the ids here sit on damaged
  * -input refusals the suite exercises on purpose - so by the time this runs, at
@@ -9224,6 +9312,7 @@ int main(void) {
     RUN_TEST(test_handle_revocation_scoped);
     RUN_TEST(test_handle_revocation_audit);
     RUN_TEST(test_proc_audit_retention_policy);
+    RUN_TEST(test_abi_vocabulary_and_linux);
     RUN_TEST(test_ceil_div_no_wrap);
     RUN_TEST(test_mbz_fat_chain_refused_cluster);
     RUN_TEST(test_mbz_iso_corrupt_record);

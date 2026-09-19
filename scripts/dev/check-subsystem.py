@@ -65,7 +65,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 # kernel/arch/ is excluded on purpose: arch_hw.c is the *subject* of this
 # refactor, not a module that has failed to become one. Measuring it here would
 # add one enormous violation that says nothing the plan does not already say.
-AREAS = ("core", "exec", "fs", "io", "ipc", "mm", "net", "object", "proc",
+AREAS = ("abi", "core", "exec", "fs", "io", "ipc", "mm", "net", "object", "proc",
          "sched", "time", "txn")
 
 # Today's measurement. Each number is a debt, not a permission.
@@ -106,6 +106,8 @@ ELSEWHERE = {
     "fs/blockcache": "blockcache_evict_failed",   # a block the caller was told was written
     "mm/swaparea": "out_of_range",                # a slot outside the swap area
     "sched/lifetime": "use_after_publish",        # teardown steps out of order
+    "abi/abi": "abi_unimplemented_syscall_nr",      # a number that classifies to NONE
+    "abi/abi_linux": "abi_unimplemented_syscall_nr",
     "mm/backing": "cache_audit_changed",          # a cached page that no longer matches its file
 }
 

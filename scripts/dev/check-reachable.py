@@ -64,7 +64,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 
 # Where the portable kernel lives. The architecture layer is excluded on
 # purpose: it is full of functions the assembly calls, which no C file names.
-SCOPE = ("kernel/core", "kernel/proc", "kernel/sched", "kernel/mm",
+SCOPE = ("kernel/abi", "kernel/core", "kernel/proc", "kernel/sched", "kernel/mm",
          "kernel/io", "kernel/fs", "kernel/txn", "kernel/net", "kernel/ipc",
          "kernel/object", "kernel/time")
 

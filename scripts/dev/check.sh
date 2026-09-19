@@ -83,6 +83,9 @@ do_build() {
     python3 scripts/dev/check-rmap-crosscheck.py | tail -1
     # Every security check has one call site, and a second one is noticed.
     python3 scripts/dev/check-chokepoints.py | tail -1
+    # Every operation runs exactly the checks it declares (C4): a check declared
+    # and not run, run and not declared, or an operation no case dispatches.
+    python3 scripts/dev/check-syscall-checks.py | tail -1
     # The seven parts of a module, for the four parts a script can judge. The
     # must-be-zero part is deliberately absent: it is C2's, which adds the
     # counters before the check that demands them, so this does not ship red

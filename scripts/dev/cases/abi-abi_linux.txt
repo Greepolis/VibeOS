@@ -1,0 +1,23 @@
+# C4: the syscall vocabulary (abi.c) and the Linux translator (abi_linux.c).
+#
+# The properties are held by test_abi_vocabulary_and_linux in the host suite:
+# every id declared with a name and checks, names unique, every Linux number
+# lands on a declared id or on NONE, aliases (fork/vfork, the uid family) and the
+# clone() flag decision. scripts/dev/check-syscall-checks.py holds the
+# *declarations* against the code in both directions; its sabotage cases are in
+# core-syscall.txt.
+#
+# Target source: kernel/abi/abi_linux.c
+# Run: SABOTAGE_VERIFY="<host test run>" python3 scripts/dev/sabotage.py kernel/abi/abi_linux.c scripts/dev/cases/abi-abi_linux.txt
+
+### clone with a private address space and a thread flag is no longer refused
+--- old
+            return ((a1 & CLONE_VM) != 0u) ? VIBEOS_SYS_THREAD_CREATE : VIBEOS_SYS_NONE;
++++ new
+            return VIBEOS_SYS_THREAD_CREATE;
+
+### vfork stops meaning fork
+--- old
+    [LSYS_vfork] = (uint8_t)VIBEOS_SYS_FORK,
++++ new
+    [LSYS_vfork] = (uint8_t)VIBEOS_SYS_NONE,

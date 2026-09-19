@@ -29,6 +29,8 @@
 #include "vibeos/rmap.h"
 #include "vibeos/reclaim.h"
 #include "vibeos/mbz.h"
+#include "vibeos/abi.h"
+#include "vibeos/abi_linux.h"
 #include "vibeos/ceildiv.h"
 #include "vibeos/blkdev.h"
 #include "vibeos/io_stats.h"
@@ -674,7 +676,6 @@ extern void vibeos_x86_64_mouse_selftest(void);
  * believing something worked. The boot asks for VIBEOS_ABI_PROBE_NR on purpose
  * (user/prog/hello.c) so the count is seen moving; the gate asserts
  * unimplemented == probes, and last_nr names the number when it is not. */
-#define VIBEOS_ABI_PROBE_NR 1999u
 static volatile uint64_t g_abi_unimplemented;
 static volatile uint64_t g_abi_probes;
 static volatile uint64_t g_abi_last_nr;
@@ -4676,6 +4677,7 @@ static int hw_task_alloc_guarded(int guarded, int privileged, uint32_t parent_pi
             g_tasks[i].ran_once = 0;
             g_tasks[i].service_id = 0;
             g_tasks[i].clear_child_tid = 0;
+            g_tasks[i].abi = vibeos_abi_linux();   /* bound once, here (C4) */
             (void)hw_task_set_state(i, HW_TASK_RESERVED, __func__);
             /* Admitted here because this is the only place a slot is claimed,
              * so no way of making a task can forget to. The class is corrected
@@ -5810,106 +5812,23 @@ void hw_task_exit(uint64_t code) {
 
 /* ---- Linux syscall layer ------------------------------------------------- */
 
-#include "vibeos/compat.h"
 
 /* The Linux errno values are in arch_hw_internal.h. */
 #define VIBEOS_TIOCGPGRP 0x540Fu
 #define VIBEOS_TIOCSPGRP 0x5410u
 
 /* Linux x86-64 syscall numbers we implement. */
-#define LSYS_read   0
-#define LSYS_write  1
-#define LSYS_brk    12
-#define LSYS_mmap   9
-#define LSYS_getpid 39
-#define LSYS_exit   60
-#define LSYS_exit_group 231
-#define LSYS_fork   57
-#define LSYS_vfork  58
-#define LSYS_wait4  61
-#define LSYS_execve 59
-#define LSYS_open   2
-#define LSYS_close  3
-#define LSYS_lseek  8
-#define LSYS_getdents64 217
-#define LSYS_unlink 87
-#define LSYS_mkdir  83
-#define LSYS_socket   41
-#define LSYS_connect  42
-#define LSYS_accept   43
-#define LSYS_sendto   44
-#define LSYS_recvfrom 45
-#define LSYS_bind     49
-#define LSYS_listen   50
 /* VibeOS-specific: network control. Deliberately outside the Linux number
  * space, so it can never collide with a real syscall we implement later. */
-#define LSYS_netctl   1000
-#define LSYS_pageinfo 1001
 
 /* Numbers a real C runtime reaches for before it runs any of the program.
  * Taken from arch/x86/entry/syscalls/syscall_64.tbl, not from memory. */
-#define LSYS_mprotect       10
-#define LSYS_munmap         11
-#define LSYS_rt_sigaction   13
-#define LSYS_rt_sigprocmask 14
-#define LSYS_ioctl          16
-#define LSYS_readv          19
-#define LSYS_writev         20
-#define LSYS_sched_yield    24
-#define LSYS_uname          63
-#define LSYS_getuid        102
-#define LSYS_getgid        104
-#define LSYS_geteuid       107
-#define LSYS_getegid       108
-#define LSYS_arch_prctl    158
-#define LSYS_gettid        186
-#define LSYS_futex         202
-#define LSYS_set_tid_address 218
-#define LSYS_clock_gettime 228
-#define LSYS_set_robust_list 273
-#define LSYS_prlimit64     302
-#define LSYS_getrandom     318
-#define LSYS_rseq          334
 
 /* What a real program needs once it is past startup and doing work. Taken from
  * a strace of BusyBox running echo, cat, ls, pwd and wc - see
  * scripts/dev/trace-linux-binary.sh. */
-#define LSYS_fstat           5
-#define LSYS_sendfile       40
-#define LSYS_getcwd         79
-#define LSYS_setuid        105
-#define LSYS_setgid        106
-#define LSYS_prctl         157
-#define LSYS_openat        257
-#define LSYS_newfstatat    262
-#define LSYS_readlinkat    267
-#define LSYS_kill           62
-#define LSYS_tgkill        234
-#define LSYS_tkill         200
-#define LSYS_dup            32
-#define LSYS_dup2           33
-#define LSYS_pipe           22
-#define LSYS_pipe2         293
-#define LSYS_time          201
-#define LSYS_clone          56
-#define LSYS_getppid       110
-#define LSYS_setpgid       109
-#define LSYS_getpgrp       111
-#define LSYS_setsid        112
-#define LSYS_getsid        124
-#define LSYS_rt_sigreturn   15
 
 /* clone() flags that decide whether this is a fork or a thread. */
-#define CLONE_VM     0x00000100u
-#define CLONE_FS     0x00000200u
-#define CLONE_FILES  0x00000400u
-#define CLONE_SIGHAND 0x00000800u
-#define CLONE_THREAD 0x00010000u
-#define CLONE_SYSVSEM 0x00040000u
-#define CLONE_SETTLS 0x00080000u
-#define CLONE_PARENT_SETTID  0x00100000u
-#define CLONE_CHILD_CLEARTID 0x00200000u
-#define CLONE_CHILD_SETTID   0x01000000u
 
 /* openat/newfstatat interpret a relative path against this directory fd. There
  * is no per-process working directory here, so it is the only value accepted.
@@ -5965,7 +5884,6 @@ void hw_task_exit(uint64_t code) {
 #define FUTEX_WAKE 1
 #define FUTEX_CMD_MASK 0x7F
 
-static vibeos_compat_runtime_t g_compat_rt;
 
 /* Validate that [va, va+len) is mapped in the *calling task's* address space
  * and reachable from ring 3. Without this the kernel would happily dereference
@@ -10857,89 +10775,92 @@ long hw_sys_rt_sigreturn(vibeos_x86_64_isr_frame_t *frame) {
  * accounts for every real syscall. */
 long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
                                  uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3) {
-    uint32_t native = 0;
+    /* The ABI was bound to this task when it was created; it is not looked up
+     * per call. A task with no ABI recorded (there is none on the live path) is
+     * treated as Linux, the only one there is. */
+    const vibeos_abi_t *abi = (g_current_task >= 0 && g_tasks[g_current_task].abi)
+                                  ? g_tasks[g_current_task].abi
+                                  : vibeos_abi_linux();
+    vibeos_op_id_t id = abi->classify(nr, a1);
 
-    (void)vibeos_linux_translate_syscall(&g_compat_rt, (uint32_t)nr, &native);
-
-    switch (nr) {
-        case LSYS_fork:
-            return hw_sys_fork(frame);
-        case LSYS_vfork:
-            /* ash uses vfork for the short child->exec path. A real vfork
+    switch (id) {
+        case VIBEOS_OP_FORK:
+            /* Reached by fork, by vfork and by a clone() whose flags mean fork.
+             * ash uses vfork for the short child->exec path. A real vfork
              * shares the parent's address space until exec, but returning a
              * private fork here preserves the observable contract while
              * avoiding a parent that can be modified by a still-running child.
              * The child is constrained by the same exec/exit ABI as vfork's
              * supported use in this personality. */
             return hw_sys_fork(frame);
-        case LSYS_execve:
+        case VIBEOS_OP_EXEC:
             return hw_sys_execve(frame, a1, a2, a3);
-        case LSYS_open:
+        case VIBEOS_OP_OPEN:
             return hw_sys_open(a1, a2);
-        case LSYS_close:
+        case VIBEOS_OP_CLOSE:
             return hw_sys_close(a1);
-        case LSYS_lseek:
+        case VIBEOS_OP_LSEEK:
             return hw_sys_lseek(a1, a2, a3);
-        case LSYS_getdents64:
+        case VIBEOS_OP_GETDENTS:
             return hw_sys_getdents64(a1, a2, a3);
-        case LSYS_unlink:
+        case VIBEOS_OP_UNLINK:
             return hw_sys_unlink(a1);
-        case LSYS_mkdir:
+        case VIBEOS_OP_MKDIR:
             return hw_sys_mkdir(a1);
-        case LSYS_wait4:
+        case VIBEOS_OP_WAIT:
             return hw_sys_waitpid(a1, a2, a3);
-        case LSYS_write:
+        case VIBEOS_OP_WRITE:
             return hw_sys_write(a1, a2, a3);
-        case LSYS_read:
+        case VIBEOS_OP_READ:
             return hw_sys_read(a1, a2, a3);
-        case LSYS_brk:
+        case VIBEOS_OP_BRK:
             return hw_sys_brk(a1);
-        case LSYS_mmap:
+        case VIBEOS_OP_MAP:
             /* addr, len, prot in the first three; flags and fd are in r10 and
              * r8, which the trapframe carries. */
             return hw_sys_mmap(a1, a2, a3, frame->r10, frame->r8);
-        case LSYS_mprotect:
+        case VIBEOS_OP_PROTECT:
             return hw_sys_mprotect(a1, a2, a3);
-        case LSYS_munmap:
+        case VIBEOS_OP_UNMAP:
             return hw_sys_munmap(a1, a2);
-        case LSYS_getpid:
+        case VIBEOS_OP_GETPID:
             /* The thread group, not the thread. Every thread of a program
              * gets the same answer here, which is the whole point of the
              * distinction: getpid() names the process. */
             return (g_current_task >= 0) ? (long)g_tasks[g_current_task].tgid : 1;
-        case LSYS_setpgid:
+        case VIBEOS_OP_SETPGID:
             return hw_sys_setpgid(a1, a2);
-        case LSYS_getpgrp:
+        case VIBEOS_OP_GETPGRP:
             return (g_current_task >= 0 && g_tasks[g_current_task].is_user) ?
                 (long)g_tasks[g_current_task].pgid : -VIBEOS_EINVAL;
-        case LSYS_setsid:
+        case VIBEOS_OP_SETSID:
             return hw_sys_setsid();
-        case LSYS_getsid:
+        case VIBEOS_OP_GETSID:
             return hw_sys_getsid(a1);
 
         /* The opening sequence of a real C runtime. */
-        case LSYS_arch_prctl:
+        case VIBEOS_OP_ARCH_PRCTL:
             return hw_sys_arch_prctl(a1, a2);
-        case LSYS_ioctl:
+        case VIBEOS_OP_IOCTL:
             return hw_sys_ioctl(a1, a2, a3);
-        case LSYS_writev:
+        case VIBEOS_OP_WRITEV:
             return hw_sys_writev(a1, a2, a3);
-        case LSYS_readv:
+        case VIBEOS_OP_READV:
             return hw_sys_readv(a1, a2, a3);
-        case LSYS_uname:
+        case VIBEOS_OP_UNAME:
             return hw_sys_uname(a1);
-        case LSYS_clock_gettime:
+        case VIBEOS_OP_CLOCK_GETTIME:
             return hw_sys_clock_gettime(a1, a2);
-        case LSYS_prlimit64:
+        case VIBEOS_OP_PRLIMIT:
             return hw_sys_prlimit64(a2, a3, frame->r10);
-        case LSYS_futex:
+        case VIBEOS_OP_FUTEX:
             return hw_sys_futex(a1, a2, a3);
-        case LSYS_gettid:
+        case VIBEOS_OP_GETTID:
             /* The thread id proper. Equal to getpid() for a single-threaded
              * program, which is what Linux reports too, and different for
              * every thread of a program that has several. */
             return (g_current_task >= 0) ? (long)g_tasks[g_current_task].pid : 1;
-        case LSYS_set_tid_address:
+        case VIBEOS_OP_SET_TID_ADDRESS:
             /* Where to write zero and wake when this thread exits. A joiner
              * sleeps on that word, so recording it is half of what makes
              * pthread_join return; the other half is exit doing the writing. */
@@ -10948,44 +10869,44 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
                 return (long)g_tasks[g_current_task].pid;
             }
             return 1;
-        case LSYS_set_robust_list:
+        case VIBEOS_OP_SET_ROBUST_LIST:
             /* The list is walked by the kernel when a thread dies holding a
              * robust mutex. No threads, no robust mutexes, nothing to walk. */
             return 0;
-        case LSYS_rseq:
+        case VIBEOS_OP_RSEQ:
             /* Restartable sequences are an optimisation with a mandatory
              * fallback. Reporting ENOSYS makes the libc take that fallback;
              * claiming success would make it run a fast path this kernel does
              * not implement. */
             return -VIBEOS_ENOSYS;
-        case LSYS_getrandom:
+        case VIBEOS_OP_GETRANDOM:
             /* There is no entropy source here yet. Returning predictable bytes
              * from the syscall a program uses for keys is worse than refusing:
              * ENOSYS is visible, weak randomness is not. */
             return -VIBEOS_ENOSYS;
-        case LSYS_rt_sigaction:
+        case VIBEOS_OP_SIG_ACTION:
             return hw_sys_rt_sigaction(a1, a2, a3);
-        case LSYS_rt_sigprocmask:
+        case VIBEOS_OP_SIG_PROCMASK:
             return hw_sys_rt_sigprocmask(a1, a2, a3);
-        case LSYS_sched_yield:
+        case VIBEOS_OP_YIELD:
             /* Give up the rest of this slice honestly: hlt parks the CPU until
              * the next timer interrupt, which is where the switch happens. */
             __asm__ __volatile__("sti; hlt");
             return 0;
         /* What a program does once it is running. */
-        case LSYS_fstat:
+        case VIBEOS_OP_FSTAT:
             return hw_sys_fstat(a1, a2);
-        case LSYS_newfstatat:
+        case VIBEOS_OP_STAT_AT:
             return hw_sys_newfstatat(a1, a2, a3, frame->r10);
-        case LSYS_openat:
+        case VIBEOS_OP_OPEN_AT:
             return hw_sys_openat(a1, a2, a3);
-        case LSYS_pipe:
+        case VIBEOS_OP_PIPE:
             return hw_sys_pipe2(a1, 0);
-        case LSYS_pipe2:
+        case VIBEOS_OP_PIPE2:
             return hw_sys_pipe2(a1, a2);
-        case LSYS_dup2:
+        case VIBEOS_OP_DUP2:
             return hw_sys_dup2(a1, a2);
-        case LSYS_dup: {
+        case VIBEOS_OP_DUP: {
             /* dup() is dup2() onto the lowest free descriptor. */
             hw_task_t *dt;
             int i;
@@ -11000,60 +10921,39 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
             }
             return -VIBEOS_EMFILE;
         }
-        case LSYS_getcwd:
+        case VIBEOS_OP_GETCWD:
             return hw_sys_getcwd(a1, a2);
-        case LSYS_readlinkat:
+        case VIBEOS_OP_READLINK_AT:
             return hw_sys_readlinkat(a1, a2, a3, frame->r10);
-        case LSYS_prctl:
+        case VIBEOS_OP_PRCTL:
             return hw_sys_prctl(a1, a2);
-        case LSYS_setuid:
-        case LSYS_setgid:
+        case VIBEOS_OP_IDENTITY_SET:   /* setuid, setgid */
             return hw_sys_setresid(a1);
-        case LSYS_time:
+        case VIBEOS_OP_TIME:
             return hw_sys_time(a1);
-        case LSYS_clone:
-            /* A C library does not call fork(); it calls clone() with the
-             * flags that happen to mean fork - a new address space, a new
-             * process, SIGCHLD to the parent. Anything sharing the address
-             * space is a thread, which this kernel does not have, and saying
-             * ENOSYS is better than handing back something that looks like a
-             * thread and is not. */
-            /* Sharing the address space means a thread; a new one means a
-             * process. Both arrive here because a C library does not call
-             * fork(), it calls clone() with the flags that happen to mean
-             * fork. */
-            if ((a1 & CLONE_THREAD) != 0u) {
-                if ((a1 & CLONE_VM) == 0u) {
-                    /* A thread of the same process with a private address
-                     * space is not something this kernel can produce, and
-                     * approximating it would produce a process that believes
-                     * it is a thread. */
-                    return -VIBEOS_ENOSYS;
-                }
-                return hw_sys_clone_thread(frame, a1, a2, a3,
-                                           frame->r10, frame->r8);
-            }
-            if ((a1 & CLONE_VM) != 0u) {
-                return -VIBEOS_ENOSYS;   /* vfork-like sharing: not supported */
-            }
-            return hw_sys_fork(frame);
-        case LSYS_getppid:
+        case VIBEOS_OP_THREAD_CREATE:
+            /* Which flag combinations are a thread, and which are refused, is
+             * the Linux ABI's decision (abi_linux.c classify); this is only the
+             * operation. */
+            return hw_sys_clone_thread(frame, a1, a2, a3,
+                                       frame->r10, frame->r8);
+        case VIBEOS_OP_GETPPID:
             return (g_current_task >= 0) ? (long)g_tasks[g_current_task].ppid : 0;
-        case LSYS_rt_sigreturn:
+        case VIBEOS_OP_SIG_RETURN:
             return hw_sys_rt_sigreturn(frame);
-        case LSYS_kill:
+        case VIBEOS_OP_KILL:
             return hw_sys_kill(a1, a2);
-        case LSYS_tkill:
+        case VIBEOS_OP_TKILL:
             /* raise() goes through tkill, not kill: a library raising a signal
              * in itself targets its own thread, and with one thread per
              * process that is the same destination. */
             return hw_sys_tkill(a1, a2);
-        case LSYS_tgkill:
+        case VIBEOS_OP_TGKILL:
             /* tgkill(tgid, tid, sig): the thread named by tid, provided it
              * still belongs to tgid - the check that stops a recycled thread id
              * from reaching a different process. */
             return hw_sys_tgkill(a1, a2, a3);
-        case LSYS_sendfile:
+        case VIBEOS_OP_SENDFILE:
             /* Every caller of sendfile has to cope with it failing, and does:
              * a read-and-write loop is the documented fallback. Refusing is
              * therefore free, while serving it would mean a second copy of the
@@ -11061,38 +10961,36 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
              * buffers. */
             return -VIBEOS_ENOSYS;
 
-        case LSYS_getuid:
-        case LSYS_geteuid:
-        case LSYS_getgid:
-        case LSYS_getegid:
+        case VIBEOS_OP_IDENTITY_GET:   /* getuid, geteuid, getgid, getegid */
             /* Everything runs as the one identity this system has. */
             return 0;
         /* Sockets. The Linux ABI passes the 4th, 5th and 6th arguments in r10,
          * r8 and r9; the trapframe has them, so read them straight from it. */
-        case LSYS_socket:
+        case VIBEOS_OP_SOCKET:
             return hw_sys_socket(a1, a2);
-        case LSYS_connect:
+        case VIBEOS_OP_CONNECT:
             return hw_sys_connect(a1, a2);
-        case LSYS_accept:
+        case VIBEOS_OP_ACCEPT:
             return hw_sys_accept(a1, a2);
-        case LSYS_sendto:
+        case VIBEOS_OP_SENDTO:
             return hw_sys_sendto(a1, a2, a3, frame->r8);
-        case LSYS_recvfrom:
+        case VIBEOS_OP_RECVFROM:
             return hw_sys_recvfrom(a1, a2, a3, frame->r8);
-        case LSYS_bind:
+        case VIBEOS_OP_BIND:
             return hw_sys_bind(a1, a2);
-        case LSYS_listen:
+        case VIBEOS_OP_LISTEN:
             return hw_sys_listen(a1);
-        case LSYS_netctl:
+        case VIBEOS_OP_NETCTL:
             return hw_sys_netctl(a1, a2);
-        case LSYS_pageinfo:
+        case VIBEOS_OP_PAGEINFO:
             return hw_sys_pageinfo(a1, a2);
-        case LSYS_exit:
+        case VIBEOS_OP_EXIT:
             hw_task_exit(a1); /* retires this task and switches away; no return */
             return 0;
-        case LSYS_exit_group:
+        case VIBEOS_OP_EXIT_GROUP:
             hw_task_exit_group(a1); /* the whole process; no return */
             return 0;
+        case VIBEOS_OP_NONE:
         default:
             __sync_fetch_and_add(&g_abi_unimplemented, 1u);
             g_abi_last_nr = nr;   /* the witness: which number, not just how many */
@@ -11511,7 +11409,6 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
     const unsigned char *init_elf = vibeos_user_hello_elf;
     uint64_t init_len = vibeos_user_hello_elf_len;
     int hello_id, a_id, b_id, kern_id;
-    uint64_t translated = 0, denied = 0;
     /* Argument vectors for the first processes. The two scheduler-demo tasks
      * differ only by argv[0], which is how they pick the letter they print. */
     static const char *const init_argv[] = {"init", 0};
@@ -11535,8 +11432,6 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
 
     /* Bring up the Linux personality so the portable translation model sees
      * every syscall the on-metal front end serves. */
-    (void)vibeos_compat_init(&g_compat_rt);
-    (void)vibeos_compat_enable(&g_compat_rt, VIBEOS_COMPAT_TARGET_LINUX, 1);
 
     /* Keyboard is live (IRQ1 unmasked). Seed a test line so the blocking read()
      * path is exercised on the non-interactive CI console; real keystrokes fill
@@ -11705,7 +11600,7 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
         vibeos_x86_64_serial_print_hex(vibeos_x86_64_gui_term_chars());
         vibeos_x86_64_serial_puts("\n");
     }
-    if (vibeos_compat_stats(&g_compat_rt, &translated, &denied) == 0) {
+    {
         vibeos_x86_64_serial_puts("[MM] COW_STATS exclusive_lost=0x");
         vibeos_x86_64_serial_print_hex(vibeos_mm_stats()->cow_exclusive_lost);
         vibeos_x86_64_serial_puts(" shared=0x");
@@ -11719,10 +11614,10 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
         vibeos_x86_64_serial_puts(" bad_unlocks=0x");
         vibeos_x86_64_serial_print_hex(vibeos_x86_64_serial_bad_unlocks());
         vibeos_x86_64_serial_puts("\n");
-        vibeos_x86_64_serial_puts("[COMPAT] linux syscalls translated=0x");
-        vibeos_x86_64_serial_print_hex(translated);
-        vibeos_x86_64_serial_puts(" denied=0x");
-        vibeos_x86_64_serial_print_hex(denied);
+        vibeos_x86_64_serial_puts("[ABI] abi=");
+        vibeos_x86_64_serial_puts(vibeos_abi_linux()->name);
+        vibeos_x86_64_serial_puts(" vocabulary=0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)VIBEOS_OP_COUNT - 1u);
         /* The hot paths. One critical section for the whole line: it is built
          * from ten calls that each take the console lock on their own, and a
          * line assembled from ten of those is ten critical sections. */

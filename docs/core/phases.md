@@ -326,6 +326,56 @@ enumeration names it; declare a check that is not run; run one that is not
 declared; add a second ABI and confirm no check was duplicated; look the ABI up
 per call and confirm the perf ratchet fires.
 
+**Status (2026-09-19): stage 1 of 3 done - the vocabulary, the declarations and
+the enforcement. The 4,169 lines have not moved.**
+
+*What exists now.* `include/vibeos/abi.h` declares each operation once, with its
+checks, in an X-macro list (enum, names and check table cannot drift, and a line
+without its checks does not compile). `kernel/abi/abi_linux.c` is the Linux ABI as
+a translator: a constant `nr -> operation` table plus `clone()`'s flag decision,
+which is why `classify` takes the first argument. The dispatcher switches on the
+operation, not on Linux numbers; the ABI is bound to a task in `hw_task_alloc`,
+the one place a slot is claimed, and read from the task per call - not looked up.
+`scripts/dev/check-syscall-checks.py` (in `check.sh`) holds every declaration
+against the dispatcher's call graph in both directions: declared-not-run,
+run-not-declared, declared-never-dispatched. Its first run corrected three of my
+own declarations - `exit`, `exit_group` and `prctl` do touch user memory (the
+join word, a name string) and I had written NONE. Sabotage:
+`core-syscall.txt`, `core-syscall-decl.txt` - five cases, all red with the
+operation and check named.
+
+*Measured.* `[PERF] syscall_min` is 229 cycles against a historical 208-440 and a
+5,000 ceiling. The mean is not evidence (blocking inflates it - see C0).
+
+*What the first run also found.* `vibeos_linux_translate_syscall` was being called
+on every syscall, its result stored in a variable nothing read - "configured and
+consulted by nobody" running on every call - and its `[COMPAT] translated=` counter
+printed a number that meant nothing. Both gone. The `[MM] COW_STATS` block was
+nested inside `if (vibeos_compat_stats(...) == 0)`, so the memory counters printed
+only if a compat accounting call succeeded; that coupling is gone too.
+`include/vibeos/syscall.h` still holds the *deleted* dispatcher's
+`vibeos_syscall_id`, read now only by `user/lib/user_api.c` and a host test, which
+is why the new vocabulary is named `vibeos_op_id`, not reused. It is a candidate
+for deletion.
+
+*Not done, and the two remaining stages.*
+
+- **Blast radius for "add a syscall" is 4, not the plan's 1** (it was 1 file before,
+  with no declaration at all): abi.h, abi_linux.h, abi_linux.c and the handler plus
+  its case in arch_hw.c. The regression is deliberate and recorded in
+  `check-blast-radius.py`; getting to 1-2 means one row carrying number, operation
+  and checks, which needs the handlers to leave arch_hw.c.
+- **The checks are still inside the handlers.** The plan's step 2 has the
+  *dispatcher* call them, so that "one site per check" is one site. Today
+  `hw_user_range_ok` has 46 call sites; the enumeration proves each operation
+  reaches one, not that it validates the right pointer. Moving them needs each
+  operation to declare its pointer arguments (which argument, how long, in which
+  direction), which is a per-syscall rewrite of 44 sites and the riskiest part of
+  this phase. Stage 2.
+- **The four ABI sections stay in `arch_hw.c`.** Stage 3, and it should follow
+  stage 2, not precede it: moving the handlers first would move the 46 call sites
+  with them and make the later extraction touch every file twice.
+
 ---
 
 ## C5 — one owner for "what is a task"

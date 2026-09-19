@@ -1,0 +1,21 @@
+# C4, the declaration side: the same enumeration held against include/vibeos/abi.h.
+# Run: SABOTAGE_VERIFY="python3 scripts/dev/check-syscall-checks.py" python3 scripts/dev/sabotage.py include/vibeos/abi.h scripts/dev/cases/core-syscall-decl.txt
+
+### lseek declares a memory check nothing runs
+--- old
+    X(LSEEK,           "lseek",           VIBEOS_CHECK_NONE) \
++++ new
+    X(LSEEK,           "lseek",           VIBEOS_CHECK_USER_MEMORY) \
+
+### read stops declaring the memory check it runs
+--- old
+    X(READ,            "read",            VIBEOS_CHECK_USER_MEMORY) \
++++ new
+    X(READ,            "read",            VIBEOS_CHECK_NONE) \
+
+### an operation is declared that no case dispatches
+--- old
+    X(RSEQ,            "rseq",            VIBEOS_CHECK_NONE) \
++++ new
+    X(RSEQ,            "rseq",            VIBEOS_CHECK_NONE) \
+    X(NEVER_DISPATCHED, "never_dispatched", VIBEOS_CHECK_NONE) \
