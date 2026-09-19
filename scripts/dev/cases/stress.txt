@@ -1,3 +1,5 @@
+# Target source: user/prog/svc_stress.c
+
 ### the stress run never reports the seed it used
 --- old
     say("STRESS_SEED ", seed, 1);
@@ -6,11 +8,11 @@
 ### copy-on-write is not checked from the parent's side
 --- old
         if (mem[i] != before) {
-            say("STRESS_FAIL: the child's writes reached the parent at ", i, 1);
+            say("STRESS_FAIL: the child's writes reached the parent", 0, 0);
+            say_mismatch("STRESS_FAIL: the parent's page", i, mem[i], before);
             return -1;
         }
 +++ new
-
 # The second case is the interesting one and it is honest about its limits: it
 # removes a check rather than breaking the kernel, so it goes red only if the
 # kernel is *also* wrong about copy-on-write. On a healthy tree it stays green,

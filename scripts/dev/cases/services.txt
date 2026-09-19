@@ -1,3 +1,5 @@
+# Target source: user/prog/init.c
+
 ### only one service is started, so init knows a program rather than a manifest
 --- old
 #define SERVICE_COUNT (int)(sizeof(services) / sizeof(services[0]))
@@ -37,5 +39,5 @@
 
 ### the crashing service never runs at all
 --- old
-    {"svc-crash", "EFI/BOOT/SVC_CRSH.ELF", 0, 0, 0, -1, SVC_STOPPED},
+    {"svc-crash", "EFI/BOOT/SVC_CRSH.ELF", 0, 0, 0, 0, -1, SVC_STOPPED},
 +++ new

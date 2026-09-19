@@ -70,10 +70,9 @@ an anchor to break. Moving 4,000 lines makes stale anchors certain, and
 `sabotage.py` only reports one when somebody runs it. First run: **20 cases with
 nothing left to break.** Four were this phase's (two anchors that moved, two written
 against names renamed in the same change and never run - now run and red).
-**Sixteen were stale before C4 began**: `mm-vmspace` (seven), `threads` (two),
+**Sixteen were stale before C4 began - and are repaired**: `mm-vmspace` (seven), `threads` (two),
 `tlb-shootdown`, `stress`, `journal`, `ahci`, `ring3-fault`, `services`,
-`storage`. They are recorded as a ratcheted baseline and handed to a follow-up
-task; each needs its sabotage re-run to confirm it still goes red.
+`storage`. Each was re-run, which found three that mattered more than their anchors (a shootdown counter that stopped isolating fork, an untested stale-TLB guard, an AHCI sabotage OVMF had already defeated); see check-sabotage-anchors.py. Unresolved is now ratcheted at zero.
 
 ## Not done
 

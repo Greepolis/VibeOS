@@ -65,6 +65,20 @@ static const uint64_t *vs_shared_pd(uint32_t gib) {
     return (gib == 0u) ? shared_pd0() : 0;
 }
 
+/* Records every shootdown the layer asks for. fork must ask for one for the
+ * *source* address space: the parent's entries have just lost write permission,
+ * and a thread of it on another core can still hold a writable translation. The
+ * boot gate used to be the only thing that noticed this went missing, through a
+ * counter that munmap and mprotect now also move - so removing fork's call left
+ * the boot green (the sabotage case for it stopped being red). */
+static uint64_t g_vs_shootdowns;
+static uint64_t g_vs_shootdown_last;
+
+static void vs_shootdown(uint64_t root_phys) {
+    g_vs_shootdowns++;
+    g_vs_shootdown_last = root_phys;
+}
+
 static int setup(int with_low_window) {
     unsigned i;
 
@@ -92,6 +106,7 @@ static int setup(int with_low_window) {
         be.map_phys = vs_map;
         be.alloc_table = vs_alloc_table;
         be.free_table = vs_free_table;
+        be.shootdown = vs_shootdown;
         if (with_low_window) {
             /* Slot 0 of every address space starts as the kernel's shared
              * PDPT, which is what create() installs and what destroy()
@@ -315,6 +330,31 @@ int test_vmspace(void) {
         if ((*e & 0x000FFFFFFFFFF000ull) != f1) { goto fail; }
     }
     if (vibeos_vmspace_destroy(&as) != 0) { goto fail; }
+
+    /* ---- a write fault on a page that is already writable is a stale TLB ---- *
+     * Threads make it real: one core resolves a copy-on-write fault and another,
+     * holding the old translation, faults on a page that is now plainly
+     * writable. The handler has to recognise that and just invalidate - killing
+     * the task for a violation it did not commit cost a session once - and a
+     * page that really is read-only must still be refused. No test covered the
+     * first half until sabotage found the guard removable (case "the fault
+     * treats a stale-TLB write as a protection violation"). */
+    if (setup(0) != 0) { goto fail; }
+    if (vibeos_vmspace_create(&as) != 0) { goto fail; }
+    f1 = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+    if (vibeos_vmspace_map(&as, 0x8000000000ull, f1,
+                           VIBEOS_PROT_READ | VIBEOS_PROT_WRITE | VIBEOS_PROT_USER) != 0) { goto fail; }
+    if (vibeos_vmspace_fault(&as, 0x8000000000ull, 1) != 1) {
+        printf("FAIL:a write fault on an already-writable page was not treated as a stale TLB\n");
+        goto fail;
+    }
+    if (vibeos_vmspace_protect(&as, 0x8000000000ull,
+                               VIBEOS_PROT_READ | VIBEOS_PROT_USER) != 0) { goto fail; }
+    if (vibeos_vmspace_fault(&as, 0x8000000000ull, 1) != 0) {
+        printf("FAIL:a write to a genuinely read-only page was resolved as a stale TLB\n");
+        goto fail;
+    }
+    if (vibeos_vmspace_destroy(&as) != 0) { goto fail; }
     /* ---- protect changes access and nothing else ------------------------ */
     if (setup(0) != 0) { goto fail; }
     if (vibeos_vmspace_create(&as) != 0) { goto fail; }
@@ -413,7 +453,14 @@ int test_vmspace(void) {
         if (vibeos_vmspace_map(&as, 0x400000ull, guard, VIBEOS_PROT_NONE) != 0) { goto fail; }
 
         if (vibeos_vmspace_create(&child) != 0) { goto fail; }
+        g_vs_shootdowns = 0;
         if (vibeos_vmspace_clone_cow(&child, &as) != 0) { goto fail; }
+        /* fork asks for a shootdown of the SOURCE address space, once. */
+        if (g_vs_shootdowns < 1u || g_vs_shootdown_last != as.root_phys) {
+            printf("FAIL:fork did not shoot down the parent's TLBs (%llu requests)\n",
+                   (unsigned long long)g_vs_shootdowns);
+            goto fail;
+        }
 
         /* All three pages, in both address spaces, with two owners each. */
         if (vibeos_vmspace_owned_count(&child) != 3ull) {

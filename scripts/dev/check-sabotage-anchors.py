@@ -24,7 +24,7 @@ resolved if its anchor is in **any** of them.
 A case file that names no target is checked more weakly: its anchors are searched
 for in the *whole* source tree. An anchor that moved to a different file still
 resolves there, but one that exists nowhere - a rewritten or deleted line - is
-found. Twenty-one files pre-date the convention; naming their targets is how that
+found. Twelve files still pre-date the convention; naming their targets is how that
 weaker search becomes the exact one.
 
 ## What the first run found
@@ -36,9 +36,21 @@ Twenty cases with nothing left to break. Sixteen were already stale before C4:
 The other four were this phase's own: two whose anchors moved with the handlers,
 and two written against names renamed in the same change and never run.
 
-Ratcheted: the number of unresolved cases and of case files with no declared
-target may go down and not up. The sixteen are recorded as debt, not fixed here -
-each needs the sabotage re-run against its new anchor to confirm it still goes red.
+All sixteen were then repaired, and **each was re-run**, because an anchor that
+resolves says nothing about whether the case still goes red. Three were not red
+for a reason that mattered more than the anchor:
+
+- `tlb-shootdown`: removing fork's shootdown left the boot green, because munmap
+  and mprotect had since started issuing shootdowns and the boot's counter no
+  longer isolated fork. Now a host test requires a shootdown of the source
+  address space.
+- `mm-vmspace` "stale-TLB write": no test covered the guard at all. One does now.
+- `ahci` bus mastering: the sabotage only *omitted* the bit, and OVMF had already
+  set it, so it looked like a requirement QEMU does not enforce. Clearing the bit
+  wedges the boot before BOOT_OK. (`stress` is red-less by design, as its file says.)
+
+Ratcheted: unresolved cases must stay at zero; case files with no declared target
+may go down and not up.
 
 Usage: check-sabotage-anchors.py [--list]
 """
@@ -51,8 +63,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 CASES = os.path.join(ROOT, "scripts", "dev", "cases")
 
 # Today's measurement. Each is a debt, not a permission.
-BASELINE_UNRESOLVED = 16   # found by this check on its first run, all older than C4 (see docs/core/phases.md)
-BASELINE_NO_TARGET = 21   # files with no declared target; each is a place a move can hide
+BASELINE_UNRESOLVED = 0
+BASELINE_NO_TARGET = 12   # files with no declared target; each is a place a move can hide
 
 
 def read(path):

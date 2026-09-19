@@ -1,3 +1,5 @@
+# Target source: kernel/txn/journal.c
+
 ### targets not durable before the descriptor is retired
 --- old
     /* The targets must be durable before the descriptor is retired, or a crash
@@ -23,6 +25,7 @@
 ### staged data not checksummed at recovery
 --- old
     if (sum != rd32(commit + 16)) {
+        vibeos_mbz_hit(VIBEOS_MBZ_JOURNAL_BAD_RECORD, rd64(desc + 8));
         return journal_retire(j);
     }
 +++ new

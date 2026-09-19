@@ -1,7 +1,9 @@
+# Target source: kernel/arch/x86_64/arch_hw.c
+
 ### a ring-3 fault halts the machine instead of killing the task
 --- old
     if ((frame->cs & 3u) == 3u) {
-        hw_fault_kill_current_user(frame->vector);   /* no return, if it can */
+        hw_fault_kill_current_user(frame, fault_address);  /* no return, if it can */
     }
 +++ new
 

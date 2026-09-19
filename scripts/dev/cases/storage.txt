@@ -1,3 +1,5 @@
+# Target source: kernel/fs/storage.c
+
 ### partition offset ignored, volume probed at sector zero
 --- old
             st->volume[st->volume_count].first_lba = st->table.entry[i].first_lba;
@@ -9,6 +11,7 @@
     if (st->table.count == 0u) {
         st->volume_count = 1;
         st->volume[0].first_lba = 0;
+        st->volume[0].sector_count = disk_sectors;
         storage_probe_volume(&st->volume[0], cache);
     } else {
 +++ new

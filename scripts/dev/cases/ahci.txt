@@ -1,12 +1,23 @@
+# Target source: kernel/arch/x86_64/ahci.c
+
 # Run these with VIBEOS_SMOKE_DISK=ahci, or every case passes by testing the
 # virtio driver instead - which is the exact shape of failure this driver was
 # written to fix.
 
+# The first case CLEARS bit 2 rather than merely not setting it, and that is the
+# whole point of how it is written: OVMF has already enabled bus mastering on the
+# controller by the time the kernel runs, so a sabotage that only omits `| 0x4`
+# leaves the bit on and the boot passes - which is how this case scored "NOT RED"
+# and looked like one of the three requirements QEMU does not enforce. It is not:
+# with the bit cleared the boot wedges before BOOT_OK.
+
 ### bus mastering is never enabled, so the controller can fetch no descriptors
 --- old
-                pci_write32((uint8_t)bus, (uint8_t)dev, fn, 0x04, cmd | 0x6u);
+                pci_write32((uint8_t)bus, (uint8_t)dev, fn, 0x04,
+                            (cmd | 0x6u) & ~0x400u);
 +++ new
-                pci_write32((uint8_t)bus, (uint8_t)dev, fn, 0x04, cmd | 0x2u);
+                pci_write32((uint8_t)bus, (uint8_t)dev, fn, 0x04,
+                            (cmd | 0x2u) & ~0x404u);
 
 ### the port's command engine is never started
 --- old
