@@ -64,27 +64,9 @@
 #define PIT_BASE_HZ 1193182u
 #define VIBEOS_HW_IRQ_BASE 32u
 #define VIBEOS_HW_IRQ_TIMER 32u
-/* VIBEOS_HW_TIMER_HZ is in arch_hw_internal.h. */
-
 /* ---- GDT + TSS ---------------------------------------------------------- */
 
-/* SYSRET requires user data (SS) to precede user code (CS) in the GDT, so the
- * user segments are ordered data-then-code: index 3 = data, index 4 = code. */
-#define VIBEOS_HW_USER_DATA_SEL 0x1Bu   /* GDT index 3, RPL 3 */
-#define VIBEOS_HW_USER_CODE_SEL 0x23u   /* GDT index 4, RPL 3 */
 #define VIBEOS_HW_TSS_SEL 0x28u         /* GDT index 5 */
-
-struct tss64 {
-    uint32_t reserved0;
-    uint64_t rsp0;
-    uint64_t rsp1;
-    uint64_t rsp2;
-    uint64_t reserved1;
-    uint64_t ist[7];
-    uint64_t reserved2;
-    uint16_t reserved3;
-    uint16_t iomap_base;
-} __attribute__((packed));
 
 #define VIBEOS_HW_MAX_CPUS 8u
 
@@ -93,53 +75,8 @@ struct tss64 {
 static uint64_t g_gdt[5u + 2u * VIBEOS_HW_MAX_CPUS];
 
 #define VIBEOS_HW_TSS_SEL_FOR(cpu) ((uint16_t)((5u + 2u * (cpu)) * 8u))
-
 /* ---- per-CPU state ------------------------------------------------------- */
 
-/* One of these per core, reached through GS.base. The first two fields are read
- * and written by the `syscall` trampoline in isr.S at fixed offsets 0 and 8 -
- * do not reorder them.
- *
- * GS.base is programmed once per CPU and never swapped: user code cannot change
- * it (CR4.FSGSBASE stays clear and ring-3 programs never load %gs), so the
- * kernel entry paths can rely on it without a swapgs dance. */
-typedef struct hw_cpu {
-    uint64_t syscall_kstack_top;  /* offset 0  - isr.S loads rsp from here */
-    uint64_t user_saved_rsp;      /* offset 8  - isr.S stashes the user rsp */
-    struct hw_cpu *self;          /* offset 16 - so C can find its own block */
-    uint32_t lapic_id;
-    uint32_t index;
-    int current_task;             /* index into g_tasks, -1 before bring-up */
-    int idle_task;                /* this core's idle task, -1 on the BSP */
-    volatile int online;
-    /* Ticks left in the current task's slice. See hw_schedule. */
-    uint32_t slice_left;
-    /* A kernel stack whose task has exited but whose core has not yet left it.
-     *
-     * The stack a task exits on is the one it is standing on. It cannot be
-     * freed by the exiting task - there is nothing to run on afterwards - and
-     * it must not be freed by anybody else either, which is the defect this
-     * exists to close: the reaper on another core used to free it the instant
-     * it saw the zombie, while the dying core was still executing the handful
-     * of instructions between publishing the zombie and switching away. Those
-     * instructions push. So the frame was written after it had been freed and
-     * poisoned, and later handed out again - to a page table, in the run this
-     * was caught on, which is how a core ends up executing 0xdead0000dead0000.
-     *
-     * The stack is parked here instead, and freed by this core after it is
-     * demonstrably running on a different one. */
-    uint64_t dead_kstack_base;
-    uint32_t dead_kstack_pages;
-    /* How many times this core has loaded CR3.
-     *
-     * With neither PCID nor global pages - and this kernel enables neither -
-     * writing CR3 flushes this core's entire TLB. So a core whose count has
-     * moved since some moment cannot still hold any translation from before it,
-     * which is the whole quiescence argument the unmap quarantine rests on.
-     * Both of those facts are load-bearing; see hw_tlb_quarantine_put. */
-    volatile uint64_t cr3_generation;
-    struct tss64 tss;
-} hw_cpu_t;
 
 /* Vectors 33..47, as delivered. See the dispatcher. */
 static volatile uint64_t g_ioapic_irqs[15];
@@ -175,17 +112,11 @@ static uint8_t g_ap_boot_stack[VIBEOS_HW_MAX_CPUS][16384] __attribute__((aligned
  * interrupts, so this stack can never be re-entered on the same core. */
 static uint8_t g_timer_ist_stack[VIBEOS_HW_MAX_CPUS][16384] __attribute__((aligned(16)));
 
-static hw_cpu_t *hw_this_cpu(void) {
+hw_cpu_t *hw_this_cpu(void) {
     hw_cpu_t *p;
     __asm__ __volatile__("movq %%gs:16, %0" : "=r"(p));
     return p;
 }
-
-/* The scheduler state below is shared by every core; `g_current_task` is not.
- * Making it a macro over the per-CPU block keeps every existing use site
- * (syscalls, exit, fork) correct on SMP without threading a CPU argument
- * through the whole syscall layer. */
-#define g_current_task (hw_this_cpu()->current_task)
 
 /* The same value, for the files lifted out of here; see arch_hw_internal.h. */
 int hw_current_task(void);
@@ -246,9 +177,8 @@ void vibeos_x86_64_irq_restore(uint64_t flags) {
 /* hw_lock_t now lives in arch_hw_internal.h, so the files lifted out
  * of here can see it. */
 
-static hw_lock_t g_sched_lock;
+hw_lock_t g_sched_lock;
 static hw_lock_t g_mm_lock;
-static hw_lock_t g_exec_lock;
 
 /* The TCP/IP stack is entered both from syscalls and from the timer interrupt
  * that pumps the device, so it lives behind its own lock. Declared here because
@@ -274,7 +204,7 @@ int g_net_up;
  * Safe only for a lock no interrupt handler ever takes: with interrupts left
  * enabled, a handler wanting this lock would spin forever against the code it
  * interrupted. g_exec_lock qualifies - execve is its only user. */
-static void hw_spin_lock_preemptible(hw_lock_t *lock) {
+void hw_spin_lock_preemptible(hw_lock_t *lock) {
     while (__sync_lock_test_and_set(&lock->locked, 1)) {
         while (lock->locked) {
             __asm__ __volatile__("pause" ::: "memory");
@@ -283,7 +213,7 @@ static void hw_spin_lock_preemptible(hw_lock_t *lock) {
     lock->flags = 0;
 }
 
-static void hw_spin_unlock_preemptible(hw_lock_t *lock) {
+void hw_spin_unlock_preemptible(hw_lock_t *lock) {
     __sync_lock_release(&lock->locked);
 }
 
@@ -439,50 +369,13 @@ static void hw_schedule(vibeos_x86_64_isr_frame_t *frame); /* defined below */
  * declaration following a non-static one. */
 static void hw_cache_audit(uint64_t *out_checked, uint64_t *out_bad);
 
-/* Both defined further down, and both needed above their definitions: this is
- * one 5000-line file, and a helper used before it is declared compiles as an
- * implicit declaration and then fails confusingly at the definition. */
-/* Reasons a range is refused, so a caller can say which one it hit. */
-#define HW_RANGE_OK          0u
-#define HW_RANGE_NO_TASK     1u   /* no current task, or not a user one */
-#define HW_RANGE_WRAP        2u
-#define HW_RANGE_LEVEL0      3u   /* PML4 entry absent or not user */
-#define HW_RANGE_LEVEL1      4u
-#define HW_RANGE_LEVEL2      5u
-#define HW_RANGE_LEAF        6u   /* the 4 KiB entry itself */
-#define HW_RANGE_READONLY    7u
-
-/* The codes as words, because a number in a log has to be looked up and a
- * reason that has to be looked up is one people stop reading. Which level of
- * the walk failed is the whole diagnostic here: an absent PML4 entry and a leaf
- * that is present but not user-accessible are completely different bugs. */
-static const char *hw_range_why_name(uint32_t why) {
-    switch (why) {
-        case HW_RANGE_OK:       return "ok";
-        case HW_RANGE_NO_TASK:  return "no_current_user_task";
-        case HW_RANGE_WRAP:     return "address_wrapped";
-        case HW_RANGE_LEVEL0:   return "pml4_absent_or_not_user";
-        case HW_RANGE_LEVEL1:   return "pdpt_absent_or_not_user";
-        case HW_RANGE_LEVEL2:   return "pd_absent_or_not_user";
-        case HW_RANGE_LEAF:     return "leaf_absent_or_not_user";
-        case HW_RANGE_READONLY: return "leaf_not_writable";
-        default:                return "?";
-    }
-}
-
 int hw_user_range_ok(uint64_t va, uint64_t len, int need_write);
-static int hw_user_range_why(uint64_t va, uint64_t len, int need_write,
-                             uint32_t *why);
-static long hw_futex_wake(const hw_procstate_t *ps, uint64_t addr,
-                          uint32_t count);
 /* The fault-tolerant copy's faulting range and recovery point (uaccess.S). */
 extern const char vibeos_uaccess_copy_begin[];
 extern const char vibeos_uaccess_copy_end[];
 extern void vibeos_uaccess_copy_fixup(void);
-static int hw_user_addr_ok(uint64_t va);
 static uint64_t g_uaccess_recovered;
 void hw_task_exit(uint64_t code);                   /* defined below */
-static void hw_keyboard_wake(void);                        /* defined below */
 static void hw_net_pump(void);                             /* defined below */
 
 /* Load the shared GDT on this CPU, install its private TSS, and point GS.base
@@ -643,16 +536,8 @@ static uint64_t g_gui_back_end;
 static uint64_t g_gui_back_shared;
 static uint64_t g_gui_back_lost;
 /* Ring-3 text writes whose leading bytes read as NUL. See hw_sys_write. */
-static uint64_t g_ring3_write_nul;
-
-/* The last few copy-on-write faults, kept so a corrupted user buffer can be
- * reported together with the faults on its own page. Power of two: the slot is
- * a masked atomic increment, so several cores record without a lock. */
-#define HW_COW_RING 16u
-typedef struct {
-    uint64_t va, rip, err, pid, handled, cpu;
-} hw_cow_rec_t;
-static hw_cow_rec_t g_cow_ring[HW_COW_RING];
+uint64_t g_ring3_write_nul;
+hw_cow_rec_t g_cow_ring[HW_COW_RING];
 static uint64_t g_cow_ring_at;
 /* Copy-on-write resolutions after which the page's contents changed.
  * A copy that is a copy leaves this at zero. */
@@ -676,20 +561,18 @@ extern void vibeos_x86_64_mouse_selftest(void);
  * believing something worked. The boot asks for VIBEOS_ABI_PROBE_NR on purpose
  * (user/prog/hello.c) so the count is seen moving; the gate asserts
  * unimplemented == probes, and last_nr names the number when it is not. */
-static volatile uint64_t g_abi_unimplemented;
-static volatile uint64_t g_abi_probes;
-static volatile uint64_t g_abi_last_nr;
+volatile uint64_t g_abi_unimplemented;
+volatile uint64_t g_abi_probes;
+volatile uint64_t g_abi_last_nr;
 extern int vibeos_x86_64_gui_init(uint64_t fb_base, uint32_t width, uint32_t height,
                                   void *back_buffer);
 extern void vibeos_x86_64_gui_tick(void);
 extern int vibeos_x86_64_gui_active(void);
 extern uint32_t vibeos_x86_64_gui_frames(void);
 extern uint32_t vibeos_x86_64_gui_term_chars(void);
-extern int vibeos_x86_64_keyboard_getc(void);
 extern void vibeos_x86_64_keyboard_inject(const char *s);
 extern int vibeos_x86_64_fb_init(uint64_t base, uint32_t width, uint32_t height);
 extern int vibeos_x86_64_fb_ready(void);
-extern void vibeos_x86_64_fb_putc(char c);
 extern void vibeos_x86_64_fb_puts(const char *s);
 
 /* Init program read from the on-disk filesystem, if present. */
@@ -789,16 +672,6 @@ static void hw_pic_send_eoi(uint32_t vector) {
     }
     hw_outb(PIC1_CMD, PIC_EOI);
 }
-
-/* Defined with the paging code below; the trap dispatcher needs them for the
- * TLB shootdown IPI, which arrives long before that point in the file. */
-static uint64_t hw_read_cr3(void);
-static void hw_write_cr3(uint64_t value);
-/* The unmap quarantine, drained from the timer - which is here, far above where
- * the quarantine itself is defined. Declaration order in this file is not a
- * style question: a helper used above its definition compiles as an implicit
- * declaration under gcc and is rejected outright by the clang CI job. */
-static void hw_tlbq_drain(void);
 static void hw_tlbq_put(uint64_t phys);
 static void hw_tlbq_help_quiesce(void);
 static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code,
@@ -807,8 +680,6 @@ static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code,
  * here so a signal raised while a task was running is delivered on the way
  * back to ring 3 rather than at the next syscall. */
 int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame);
-static int hw_signal_raise(int task_index, uint32_t sig);
-static int hw_signal_interrupts(int task);
 /* Defined with the task code, because it needs the signal numbers that are
  * #defined a thousand lines below here and C only reads the file once. */
 static void hw_panic_cpu_summary(void);   /* defined with the task table */
@@ -827,11 +698,6 @@ static void hw_panic_cpu_summary(void);   /* defined with the task table */
 
 static int hw_frame_still_mapped(uint64_t phys, uint32_t *out_pid,
                                  uint32_t *out_mappers, uint64_t *out_va);
-/* Forward-declared for the same reason as the line above: this is one 5000-line
- * file, and a helper used before its definition compiles as an implicit
- * declaration and then fails with a confusing message about a static
- * declaration following a non-static one. */
-static void hw_invlpg(uint64_t va);
 static void hw_tlb_shootdown(uint64_t cr3);
 /* Same reason again: the memory bring-up installs this as the cache's
  * read-through, and it is defined with the rest of the cache a few hundred
@@ -1208,7 +1074,7 @@ static volatile int g_panicked;
  * Counted rather than fatal, for the reason the transition table gives: a count
  * can be asserted across a whole boot, and a panic can only be met once, on
  * somebody else's investigation. */
-static void hw_sched_point(const char *where) {
+void hw_sched_point(const char *where) {
     (void)where;
     /* Not implemented yet, and the first attempt is why.
      *
@@ -1235,7 +1101,7 @@ static void hw_sched_point(const char *where) {
      * missing is the check that would notice if something started. */
 }
 
-static void hw_panic(const char *why) {
+void hw_panic(const char *why) {
     /* The medium first, before anything else this function does.
      *
      * A panic is the one moment the on-disk log exists for, and it is also the
@@ -1456,10 +1322,6 @@ static inline void hw_perf_add(hw_perf_t *p, uint64_t started) {
         }
     }
 }
-
-/* Linux x86-64 syscall front end; defined after the task/address-space code
- * because it validates user pointers against the calling task's page tables. */
-long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame, uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3);
 void vibeos_x86_64_syscall_dispatch(vibeos_x86_64_isr_frame_t *frame);
 
 /* Called from the assembly common stub with a pointer to the saved frame. */
@@ -1748,22 +1610,11 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
     }
     hw_panic("unrecoverable CPU exception");
 }
-
 /* ---- Paging ------------------------------------------------------------- */
 
-#define PTE_PRESENT 0x001ull
-#define PTE_WRITE   0x002ull
-#define PTE_USER    0x004ull            /* ring-3 accessible */
 #define PTE_PWT     0x008ull            /* write-through */
 #define PTE_PCD     0x010ull            /* cache disable; with PWT gives UC- */
 #define PTE_PS      0x080ull            /* 2 MiB page at PD level */
-/* Bits 9 through 11 are ignored by the hardware and belong to the OS. This one
- * marks a page that is shared after fork and must be duplicated before it is
- * written. Without it a read-only page is indistinguishable from a page the
- * program was never allowed to write, and a genuine protection fault would be
- * silently turned into a successful write. */
-#define PTE_NX      (1ull << 63)       /* no-execute; needs EFER.NXE (hw_enable_syscall) */
-#define PTE_COW     0x200ull
 
 /* x86-64 leaves bits 9, 10 and 11 of a page-table entry to software, and this
  * kernel now uses two of them for different questions: PTE_COW says this page
@@ -1852,8 +1703,8 @@ static uint32_t g_pool_next;
  * which is the distinction the whole phase is about. */
 #define VIBEOS_HW_EXEC_STAGE_BYTES (64u * 1024u)
 static uint8_t g_exec_elf_static[65536] __attribute__((aligned(16)));
-static uint8_t *g_exec_elf = g_exec_elf_static;
-static uint32_t g_exec_elf_cap = (uint32_t)sizeof(g_exec_elf_static);
+uint8_t *g_exec_elf = g_exec_elf_static;
+uint32_t g_exec_elf_cap = (uint32_t)sizeof(g_exec_elf_static);
 
 /* And a second one, for a dynamic program's interpreter.
  *
@@ -1868,47 +1719,6 @@ static uint32_t g_exec_elf_cap = (uint32_t)sizeof(g_exec_elf_static);
 #define VIBEOS_HW_INTERP_STAGE_BYTES (64u * 1024u)
 static uint8_t *g_interp_elf;
 static uint32_t g_interp_elf_cap;
-
-/* Which image the staging buffer currently holds.
- *
- * A shell runs the same binary over and over - every external command in a
- * BusyBox system is the same two megabytes - and re-reading it from the
- * filesystem each time is the single most expensive thing an exec does. The
- * buffer is already there and already holds exactly those bytes, so the read
- * can be skipped when the path has not changed.
- *
- * Correctness rests on the whole thing living under g_exec_lock, and on any
- * write to the volume dropping the cache: a program that has been rewritten
- * must not keep running as its old self. */
-static char g_exec_cached[128];
-static long g_exec_cached_len;
-/* Which cache identity the bytes in the staging buffer came from, or 0 if they
- * did not come from the cache. Kept beside the path and the length because it
- * describes the same thing they do: what is currently staged. On a staging hit
- * the bytes are the previous read of this same path, so this stays valid. */
-static uint32_t g_exec_cached_id;
-
-static void hw_exec_cache_drop(void) {
-    g_exec_cached[0] = 0;
-    g_exec_cached_len = 0;
-    g_exec_cached_id = 0;
-}
-
-static int hw_exec_cache_hit(const char *path) {
-    uint32_t i;
-    if (g_exec_cached_len <= 0) {
-        return 0;
-    }
-    for (i = 0; i < sizeof(g_exec_cached); i++) {
-        if (g_exec_cached[i] != path[i]) {
-            return 0;
-        }
-        if (path[i] == 0) {
-            return 1;
-        }
-    }
-    return 0;
-}
 
 /* How many address spaces map each physical frame.
  *
@@ -1961,7 +1771,7 @@ static int hw_exec_cache_hit(const char *path) {
  * at the same moment corrupted the free list. The boot wedged silently.
  * "Remember to hold the memory lock" is not a property a compiler checks, and
  * a layer several cores can drive has to defend itself. */
-static int hw_page_put(uint64_t phys) {
+int hw_page_put(uint64_t phys) {
     return vibeos_frame_put(phys);
 }
 
@@ -2023,10 +1833,6 @@ static vibeos_pmm_t g_hw_pmm;
  * tidiness one. */
 static int g_hw_pmm_ready;
 
-/* User virtual layout: PML4 slot 1 (512 GiB). VibeOS programs are linked at
- * VIBEOS_HW_USER_BASE (user/prog/user.ld); their stack sits above the image. */
-#define VIBEOS_HW_USER_BASE 0x8000000000ull
-
 /* A second, much smaller user window down in the first GiB.
  *
  * This exists for one reason: a Linux executable is linked at 0x400000 and
@@ -2044,22 +1850,15 @@ static int g_hw_pmm_ready;
 #define VIBEOS_HW_LOW_USER_LIMIT 0x00C00000ull   /* 8 MiB */
 #define VIBEOS_HW_USER_STACK_TOP (VIBEOS_HW_USER_BASE + 0x00400000ull) /* +4 MiB */
 
-/* Programs no longer start on a bare stack: hw_proc_create builds the System V
- * startup block (argc, argv, envp, auxv) in the topmost stack page and reports
- * the stack pointer to enter on, which is 16-byte aligned as the ABI requires.
- * `_start` is written in assembly (user/prog/crt0.S) precisely so that state is
- * consumed correctly instead of being reinterpreted as a function frame. */
-#define VIBEOS_HW_USER_STACK_PAGES 4u
-
 /* vibeos_hw_aspace_t now lives in arch_hw_internal.h. */
 
-static uint64_t hw_read_cr3(void) {
+uint64_t hw_read_cr3(void) {
     uint64_t v;
     __asm__ __volatile__("mov %%cr3, %0" : "=r"(v));
     return v;
 }
 
-static void hw_write_cr3(uint64_t pml4_phys) {
+void hw_write_cr3(uint64_t pml4_phys) {
     __asm__ __volatile__("mov %0, %%cr3" : : "r"(pml4_phys) : "memory");
     /* After the write, not before: the count means "this core has flushed",
      * and a reader that sees the new value must be able to conclude the flush
@@ -2156,7 +1955,7 @@ static int hw_tlbq_quiescent(const hw_tlbq_entry_t *e) {
 
 /* Release everything that has become safe. Called from the unmap path and from
  * the timer, so a quiet machine still drains. */
-static void hw_tlbq_drain(void) {
+void hw_tlbq_drain(void) {
     uint32_t i;
     uint64_t ready[32];
     uint32_t n = 0;
@@ -2577,7 +2376,7 @@ void *hw_alloc_page(void) {
 
 /* And the door for a page a user process asked for, which is what the reserve
  * is being held back from. */
-static void *hw_alloc_user_page(void) {
+void *hw_alloc_user_page(void) {
     return hw_alloc_page_admitted(0);
 }
 
@@ -3124,7 +2923,7 @@ static uint32_t hw_file_id(const char *path) {
  * against its capacity. A caller that only needs the headers does not have to
  * care, because everything past its window is in the cache and reachable a
  * page at a time. */
-static long hw_read_file_cached(const char *path, void *buf, uint32_t cap,
+long hw_read_file_cached(const char *path, void *buf, uint32_t cap,
                                 uint32_t *out_id) {
     uint32_t id = hw_file_id(path);
     uint64_t size, off;
@@ -3196,7 +2995,7 @@ static long hw_read_file_cached(const char *path, void *buf, uint32_t cap,
  * be built on the spot rather than stored. Keeping vibeos_hw_aspace_t as it was
  * means the hundred places that read `as->pml4` or load it into CR3 are
  * untouched by this phase. */
-static vibeos_vmspace_t hw_vm(const vibeos_hw_aspace_t *as) {
+vibeos_vmspace_t hw_vm(const vibeos_hw_aspace_t *as) {
     vibeos_vmspace_t v;
     v.root_phys = (uint64_t)(uintptr_t)as->pml4;
     v.root = as->pml4;
@@ -3215,7 +3014,7 @@ static vibeos_vmspace_t hw_vm(const vibeos_hw_aspace_t *as) {
  * The flags are passed through rather than translated, because fork installs
  * mappings carrying PTE_COW and the portable protection type has no word for
  * it. The ownership bit is still added by the layer and nowhere else. */
-static int hw_map_page(vibeos_hw_aspace_t *as, uint64_t va, uint64_t pa,
+int hw_map_page(vibeos_hw_aspace_t *as, uint64_t va, uint64_t pa,
                        uint64_t leaf_flags) {
     vibeos_vmspace_t v = hw_vm(as);
     return vibeos_vmspace_map_raw(&v, va, pa, leaf_flags);
@@ -3473,7 +3272,7 @@ static int hw_map_elf_image(vibeos_hw_aspace_t *as, vibeos_vma_list_t *vmas,
     return 0;
 }
 
-static int hw_aspace_create(vibeos_hw_aspace_t *as) {
+int hw_aspace_create(vibeos_hw_aspace_t *as) {
     vibeos_vmspace_t v;
 
     if (vibeos_vmspace_create(&v) != 0) {
@@ -3496,7 +3295,7 @@ static const char *g_last_destroy_why;
 static uint64_t g_last_destroy_pml4;
 static uint32_t g_last_destroy_cpu;
 
-static void hw_aspace_destroy_why(vibeos_hw_aspace_t *as, const char *why) {
+void hw_aspace_destroy_why(vibeos_hw_aspace_t *as, const char *why) {
     vibeos_vmspace_t v;
 
     if (!as->pml4) {
@@ -3530,8 +3329,6 @@ static void hw_aspace_destroy_why(vibeos_hw_aspace_t *as, const char *why) {
     g_aspace_being_destroyed = 0;
     as->pml4 = 0;
 }
-
-#define hw_aspace_destroy(as) hw_aspace_destroy_why((as), __func__)
 
 /* Build the kernel's page tables: identity-map the first N GiB with 2 MiB
  * supervisor pages (US=0) and switch CR3 to them. */
@@ -3623,10 +3420,6 @@ static void hw_enable_timer_irq(void) {
 #define MSR_STAR   0xC0000081u
 #define MSR_LSTAR  0xC0000082u
 #define MSR_SFMASK 0xC0000084u
-/* Thread-local storage base. A C runtime reaches its own thread state through
- * %fs on x86-64 - errno, the stack guard, locale - so this MSR is per task,
- * not per CPU, and has to be reloaded on every context switch. */
-#define MSR_FS_BASE 0xC0000100u
 
 extern void vibeos_x86_64_syscall_entry(void); /* trampoline in isr.S */
 
@@ -3636,7 +3429,7 @@ static uint64_t hw_rdmsr(uint32_t msr) {
     return ((uint64_t)hi << 32) | lo;
 }
 
-static void hw_wrmsr(uint32_t msr, uint64_t value) {
+void hw_wrmsr(uint32_t msr, uint64_t value) {
     __asm__ __volatile__("wrmsr"
                          : : "c"(msr), "a"((uint32_t)value), "d"((uint32_t)(value >> 32)));
 }
@@ -3665,17 +3458,8 @@ static void hw_enable_syscall(void) {
         vibeos_x86_64_serial_puts("[HW] syscall/sysret enabled (LSTAR set)\n");
     }
 }
-
 /* ---- Process creation (ELF -> private address space) --------------------- */
 
-/* User address-space layout (all inside the process's own PML4 slot):
- *   [USER_BASE ..]            program image (linked address)
- *   [.. USER_STACK_TOP]       stack (grows down)
- *   [USER_HEAP_BASE ..]       brk heap (grows up)
- *   [USER_MMAP_BASE ..]       anonymous mmap arena (grows up)
- */
-#define VIBEOS_HW_USER_HEAP_BASE (VIBEOS_HW_USER_BASE + 0x00800000ull) /* +8 MiB  */
-#define VIBEOS_HW_USER_MMAP_BASE (VIBEOS_HW_USER_BASE + 0x04000000ull) /* +64 MiB */
 
 /* hw_proc_t now lives in arch_hw_internal.h. */
 
@@ -3730,7 +3514,7 @@ static void hw_seed_at_random(uint8_t out[16]) {
  * that never happened.
  *
  * The counter is portable and separate so a host test can assert it too. */
-static int hw_exec_refuse(vibeos_exec_fail_t why, const char *path,
+int hw_exec_refuse(vibeos_exec_fail_t why, const char *path,
                           const char *detail) {
     const char *name = vibeos_exec_refuse(why);
 
@@ -3853,7 +3637,7 @@ static const char *hw_interp_path_substitute(const char *path) {
  * so now rather than leaving a caller to assume: one caller has the whole image
  * in memory, the other has a 64 KiB header window and the rest in the page
  * cache. */
-static int hw_proc_create(hw_proc_t *p, hw_procstate_t *ps,
+int hw_proc_create(hw_proc_t *p, hw_procstate_t *ps,
                           const unsigned char *elf, uint64_t len,
                           uint64_t staged,
                           const char *const *argv, const char *const *envp,
@@ -4166,7 +3950,7 @@ fail:
 }
 
 /* Map `pages` fresh zeroed user pages at `va` in an address space. */
-static int hw_map_user_pages(vibeos_hw_aspace_t *as, uint64_t va, uint64_t pages) {
+int hw_map_user_pages(vibeos_hw_aspace_t *as, uint64_t va, uint64_t pages) {
     uint64_t i;
     for (i = 0; i < pages; i++) {
         void *page = hw_alloc_page();
@@ -4193,54 +3977,14 @@ static int hw_map_user_pages(vibeos_hw_aspace_t *as, uint64_t va, uint64_t pages
     return 0;
 }
 
-static uint64_t hw_proc_cr3(const hw_proc_t *p) {
+uint64_t hw_proc_cr3(const hw_proc_t *p) {
     return (uint64_t)(uintptr_t)p->as.pml4;
 }
-
 /* ---- Task table + preemptive scheduler ---------------------------------- */
 
-/* VIBEOS_HW_MAX_TASKS is in arch_hw_internal.h. */
 
-/* Open-file table entry. Reads stream straight off the filesystem; writes are
- * buffered and committed to disk on close (the FAT writer stores whole files). */
-/* VIBEOS_HW_MAX_FDS is in arch_hw_internal.h. */
-#define VIBEOS_HW_MAX_DIR_ENTRIES 4096u
-/* VIBEOS_HW_WBUF is in arch_hw_internal.h. */
-
-/* Pipes.
- *
- * A pipe is a ring buffer with two ends, and what makes it a pipe rather than
- * a buffer is what happens at the edges: a reader with nothing to read waits
- * for a writer, a writer with no room waits for a reader, and a reader whose
- * writers have all closed gets end of file rather than waiting forever. Those
- * three rules are the entire difference between `ls | wc -l` printing a number
- * and hanging.
- *
- * The ends are counted, not flagged, because a descriptor can be duplicated
- * and inherited: `ls | wc` gives the write end to a child, and the parent must
- * close its own copy or the reader never sees end of file. That is the classic
- * way a shell pipeline hangs, and it is a refcount bug, not a pipe bug. */
-#define VIBEOS_HW_MAX_PIPES 8
-#define VIBEOS_HW_PIPE_BYTES 4096u
-
-typedef struct {
-    int used;
-    uint32_t readers;
-    uint32_t writers;
-    uint32_t head;      /* next byte to read  */
-    uint32_t tail;      /* next byte to write */
-    uint32_t count;     /* bytes currently held */
-    uint8_t buf[VIBEOS_HW_PIPE_BYTES];
-} hw_pipe_t;
-
-static hw_pipe_t g_pipes[VIBEOS_HW_MAX_PIPES];
-static hw_lock_t g_pipe_lock;
-
-/* hw_fd_t now lives in arch_hw_internal.h, so the files lifted out
- * of here can see it. */
-
-/* Defined with the pipe code below; the task-exit path above needs it. */
-static void hw_pipe_release(hw_fd_t *f);
+hw_pipe_t g_pipes[VIBEOS_HW_MAX_PIPES];
+hw_lock_t g_pipe_lock;
 
 /* Signals 1..64; index 0 is unused so the numbering matches Linux. */
 /* VIBEOS_HW_NSIG is in arch_hw_internal.h. */
@@ -4266,7 +4010,7 @@ static void hw_set_kernel_stack(uint64_t top) {
 
 /* Two contiguous pages when the PMM can give them, one otherwise. Reports the
  * base and page count so the stack can be reclaimed when the task exits. */
-static uint64_t hw_alloc_kstack(uint64_t *out_base, uint32_t *out_pages) {
+uint64_t hw_alloc_kstack(uint64_t *out_base, uint32_t *out_pages) {
     uint8_t *p = 0;
     uint64_t size = 8192ull;
     uint32_t pages = 2u;
@@ -4384,7 +4128,7 @@ static hw_procstate_t g_procstate[HW_PROCSTATE_SLOTS];
 /* A fresh process with refs = 1 and nothing in it, or 0 if the pool is full.
  * Dispositions start zeroed; the caller sets them, because spawn, fork and exec
  * each start from something different. */
-static hw_procstate_t *hw_procstate_new(void) {
+hw_procstate_t *hw_procstate_new(void) {
     uint32_t i, sg;
 
     for (i = 0; i < HW_PROCSTATE_SLOTS; i++) {
@@ -4421,7 +4165,7 @@ static hw_procstate_t *hw_procstate_new(void) {
  * Clearing while refs is still 1 is safe because the only thing that raises a
  * count is clone, and clone is run by a live thread of this same process - and
  * the holder of the last reference is the thread that is exiting. */
-static void hw_procstate_put(hw_procstate_t *ps) {
+void hw_procstate_put(hw_procstate_t *ps) {
     uint32_t r;
 
     if (!ps) {
@@ -4449,8 +4193,8 @@ static void hw_procstate_put(hw_procstate_t *ps) {
 }
 static uint32_t g_alloc_seq;
 /* Defined near the spinlocks, which read it. */
-static uint32_t g_next_pid = 1;
-static uint32_t g_console_foreground_pgid;
+uint32_t g_next_pid = 1;
+uint32_t g_console_foreground_pgid;
 static vibeos_service_supervisor_t g_runtime_supervisor;
 static uint8_t g_runtime_supervisor_ready;
 
@@ -4558,28 +4302,6 @@ int hw_task_set_state(int slot, vibeos_task_state_t to, const char *why) {
     }
     return 0;
 }
-
-/* Take a task slot, optionally subject to the fork guard.
- *
- * The guard and the allocation are one critical section, and that is the whole
- * point of the parameter. The first version asked the guard, dropped the lock,
- * and then allocated - so two cores forking at once both read the same
- * under-threshold snapshot, both got permission, and both allocated. The
- * reserve eroded in proportion to how many forks raced.
- *
- * `guarded` is 0 for the paths that create the kernel's own tasks and the idle
- * tasks, which exist before there is anything to protect them from.
- * `privileged` is init and the kernel: the tasks that must still be able to act
- * once a program has taken everything it is allowed to.
- *
- * Returns the slot, or negative. `*out_verdict` says why, so a caller can
- * report which rule refused rather than "no memory". */
-/* Forward-declared for the reason this file's own notes give: it is one 10000
- * line translation unit, and a helper used above its definition compiles as an
- * implicit declaration under gcc and fails under clang with a message about a
- * static declaration following a non-static one, which names neither the helper
- * nor the caller. Defined with the rest of the context-switch code below. */
-static void hw_fpu_init_area(unsigned char *area);
 static void hw_fpu_save(unsigned char *area);
 static void hw_fpu_restore(const unsigned char *area);
 
@@ -4709,7 +4431,7 @@ static int hw_task_alloc(void) {
  * table including the reserve that was supposed to keep the machine
  * administrable. One entry point, so a third way to make a task cannot forget
  * to ask. */
-static int hw_task_alloc_for_user(const char *what) {
+int hw_task_alloc_for_user(const char *what) {
     vibeos_fork_verdict_t v = VIBEOS_FORK_OK;
     uint32_t pid = (g_current_task >= 0) ? g_tasks[g_current_task].tgid : 0u;
     int privileged = (g_current_task >= 0) && g_tasks[g_current_task].pid <= 1u;
@@ -4730,7 +4452,7 @@ static int hw_task_alloc_for_user(const char *what) {
 }
 
 /* Give a reserved slot back after a failed creation. */
-static void hw_task_release(int i) {
+void hw_task_release(int i) {
     /* No core may still call this slot its current task. The releasing core has
      * already made `next` current (hw_schedule/the exit path set current_task
      * before this), so it never matches; a *different* core that does is running
@@ -4958,7 +4680,24 @@ void vibeos_x86_64_console_interrupt(void) {
 }
 
 /* Wake every task blocked in read() on stdin (called from the keyboard IRQ). */
-static void hw_keyboard_wake(void) {
+/* The console as the syscall layer sees it: a byte in, a byte echoed. The Linux ABI
+ * layer used to name the keyboard and the framebuffer directly, which was invisible
+ * inside one 12,000-line file and became a dependency of its own the moment the
+ * handlers moved out (check-blast-radius counted an "input device" edit in fs.c).
+ * What a read() from the console needs is these two, and which device supplies
+ * them is the architecture layer's business. */
+extern int vibeos_x86_64_keyboard_getc(void);
+extern void vibeos_x86_64_fb_putc(char c);
+
+int hw_console_getc(void) {
+    return vibeos_x86_64_keyboard_getc();
+}
+
+void hw_console_echo(char c) {
+    vibeos_x86_64_fb_putc(c);
+}
+
+void hw_keyboard_wake(void) {
     int i;
     hw_spin_lock_named(&g_sched_lock, __func__);
     for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
@@ -5014,7 +4753,7 @@ static void hw_fpu_restore(const unsigned char *area) {
  * By hand rather than fxsave-ing a freshly initialised unit, because doing that
  * would mean disturbing the FPU of whatever task happens to be running when a
  * new one is created. */
-static void hw_fpu_init_area(unsigned char *area) {
+void hw_fpu_init_area(unsigned char *area) {
     uint32_t i;
 
     for (i = 0; i < 512u; i++) {
@@ -5485,7 +5224,7 @@ static int hw_task_spawn_user(const unsigned char *elf, uint64_t len,
  * be freed. Both callers share this so the two can never answer differently.
  *
  * The caller holds g_sched_lock. */
-static int hw_aspace_shared_by_other(const uint64_t *pml4, int except) {
+int hw_aspace_shared_by_other(const uint64_t *pml4, int except) {
     int i;
 
     if (pml4 == 0) {
@@ -5809,80 +5548,17 @@ void hw_task_exit(uint64_t code) {
     hw_ctx_check(next, "schedule");
     vibeos_x86_64_task_enter(&g_tasks[next].ctx); /* does not return */
 }
-
-/* ---- Linux syscall layer ------------------------------------------------- */
-
-
-/* The Linux errno values are in arch_hw_internal.h. */
-#define VIBEOS_TIOCGPGRP 0x540Fu
-#define VIBEOS_TIOCSPGRP 0x5410u
-
-/* Linux x86-64 syscall numbers we implement. */
-/* VibeOS-specific: network control. Deliberately outside the Linux number
- * space, so it can never collide with a real syscall we implement later. */
-
-/* Numbers a real C runtime reaches for before it runs any of the program.
- * Taken from arch/x86/entry/syscalls/syscall_64.tbl, not from memory. */
-
-/* What a real program needs once it is past startup and doing work. Taken from
- * a strace of BusyBox running echo, cat, ls, pwd and wc - see
- * scripts/dev/trace-linux-binary.sh. */
-
-/* clone() flags that decide whether this is a fork or a thread. */
-
-/* openat/newfstatat interpret a relative path against this directory fd. There
- * is no per-process working directory here, so it is the only value accepted.
+/* ---- shared with the Linux ABI layer (kernel/abi/linux) ---------------------
  *
- * Reading it needs care. Arguments the Linux ABI types as `int` arrive in the
- * low half of a register, and writing a 32-bit register zeroes the upper half:
- * a caller doing `mov $-100, %edi` delivers 0x00000000ffffff9c, not
- * 0xffffffffffffff9c. Comparing the full 64 bits against -100 therefore never
- * matches, and every relative open fails with ENOSYS - which is exactly what
- * BusyBox reported as "can't open: Function not implemented". Read the low 32
- * bits and sign-extend, as the kernel this ABI belongs to does. */
-#define AT_FDCWD           (-100)
-#define VIBEOS_ARG_INT(v)  ((int)(uint32_t)(v))
-#define AT_EMPTY_PATH      0x1000
+ * The syscall handlers moved to kernel/abi/linux (C4 stage 3). What is left in
+ * this stretch is what they and the trap handlers both stand on: user-memory
+ * validation, the descriptor table's plumbing, page-table primitives, the
+ * copy-on-write fault, the architecture half of signals, task lookup and exit,
+ * the crash dumper. Each is declared in arch_hw_internal.h, which is the whole
+ * size of the seam. */
 
-/* struct stat, x86-64 layout. Byte offsets rather than a struct definition
- * because the layout is the ABI: it is fixed by Linux, not by this compiler. */
-#define STAT_SIZE          144u
-#define STAT_OFF_MODE       24u
-#define STAT_OFF_NLINK      16u
-#define STAT_OFF_UID        28u
-#define STAT_OFF_GID        32u
-#define STAT_OFF_SIZE       48u
-#define STAT_OFF_BLKSIZE    56u
-#define STAT_OFF_BLOCKS     64u
-#define STAT_OFF_INO         8u
-
-#define S_IFREG 0100000u
-#define S_IFDIR 0040000u
-#define S_IFCHR 0020000u
-
-/* prctl operations. PR_SET_NAME is the one a real program actually uses. */
-#define PR_SET_NAME 15
-#define PR_GET_NAME 16
-
-/* arch_prctl subfunctions. */
-#define ARCH_SET_GS 0x1001
-#define ARCH_SET_FS 0x1002
-#define ARCH_GET_FS 0x1003
-#define ARCH_GET_GS 0x1004
-
-/* mmap flags and protection bits (asm-generic/mman-common.h). */
-#define PROT_NONE  0x0
 #define PROT_READ  0x1
-#define PROT_WRITE 0x2
-#define PROT_EXEC  0x4
 #define MAP_PRIVATE   0x02
-#define MAP_FIXED     0x10
-#define MAP_ANONYMOUS 0x20
-
-/* futex operations we can answer honestly. */
-#define FUTEX_WAIT 0
-#define FUTEX_WAKE 1
-#define FUTEX_CMD_MASK 0x7F
 
 
 /* Validate that [va, va+len) is mapped in the *calling task's* address space
@@ -5893,7 +5569,7 @@ int hw_user_range_ok(uint64_t va, uint64_t len, int need_write) {
     return hw_user_range_why(va, len, need_write, &why);
 }
 
-static int hw_user_range_why(uint64_t va, uint64_t len, int need_write,
+int hw_user_range_why(uint64_t va, uint64_t len, int need_write,
                              uint32_t *why) {
     static const uint32_t shifts[3] = {39u, 30u, 21u};
     const hw_task_t *t;
@@ -5952,26 +5628,10 @@ static int hw_user_range_why(uint64_t va, uint64_t len, int need_write,
 
 int hw_copy_user_string(uint64_t uptr, char *dst, int max); /* defined below */
 
-/* Per-process open-file table helpers. fds 0-2 are the console; 3+ are files. */
-hw_fd_t *hw_fd_get(uint64_t fd) {
-    if (g_current_task < 0 || fd < 3u || fd >= 3u + VIBEOS_HW_MAX_FDS) {
-        return 0;
-    }
-    {
-        hw_fd_t *f = &g_tasks[g_current_task].fds[fd - 3u];
-        return f->used ? f : 0;
-    }
-}
-
-/* Socket-backed descriptors are served by these (defined with the socket
- * syscalls below), so read/write work on a connection like any other stream. */
-long hw_net_recv(hw_fd_t *f, uint64_t buf, uint64_t len);
-long hw_net_send(hw_fd_t *f, uint64_t buf, uint64_t len);
-
 /* Let go of one end of a pipe. The pipe itself lives until both ends are
  * gone, because a reader may still have data to drain after every writer has
  * closed. */
-static void hw_pipe_release(hw_fd_t *f) {
+void hw_pipe_release(hw_fd_t *f) {
     hw_pipe_t *pp;
 
     if (!f || f->pipe < 0 || f->pipe >= VIBEOS_HW_MAX_PIPES) {
@@ -5999,595 +5659,6 @@ static void hw_pipe_release(hw_fd_t *f) {
     hw_keyboard_wake();
 }
 
-static long hw_pipe_read(hw_fd_t *f, uint64_t buf, uint64_t len) {
-    hw_pipe_t *pp = &g_pipes[f->pipe];
-    uint8_t *dst = (uint8_t *)(uintptr_t)buf;
-
-    for (;;) {
-        uint64_t copied = 0;
-        int faulted = 0;
-        int eof = 0;
-
-        /* In contiguous runs of the ring, each through the fault-tolerant copy,
-         * and consumed only once copied: the caller may have slept below with
-         * the buffer validated, and a sibling can have unmapped it since
-         * (H-010). */
-        hw_spin_lock_named(&g_pipe_lock, __func__);
-        while (copied < len && pp->count > 0u) {
-            uint64_t run = VIBEOS_HW_PIPE_BYTES - pp->head;
-            if (run > pp->count) {
-                run = pp->count;
-            }
-            if (run > len - copied) {
-                run = len - copied;
-            }
-            if (vibeos_uaccess_copy(dst + copied, &pp->buf[pp->head], run) != 0) {
-                faulted = 1;
-                break;
-            }
-            copied += run;
-            pp->head = (uint32_t)((pp->head + run) % VIBEOS_HW_PIPE_BYTES);
-            pp->count -= (uint32_t)run;
-        }
-        /* End of file is decided here, in the same critical section that found
-         * the buffer empty (M-003, the read half). It used to be decided after
-         * the unlock, reading `writers` unguarded: a writer could enqueue and
-         * close in between, and the reader returned end-of-file with those bytes
-         * still in the buffer - the shape of `ls | wc -l` in the boot script. */
-        eof = (copied == 0u && !faulted && pp->writers == 0u);
-        hw_spin_unlock(&g_pipe_lock);
-        if (faulted && copied == 0u) {
-            return -VIBEOS_EFAULT;
-        }
-        if (copied > 0u) {
-            hw_keyboard_wake();   /* a blocked writer may now have room */
-            return (long)copied;
-        }
-        if (eof) {
-            return 0;   /* end of file: empty, and nobody can ever write again */
-        }
-        /* Nothing yet, and somebody could still write. Park instead of
-         * spinning, so the writer actually gets a chance to run - unless a
-         * signal needs acting on. This wait never marks the task BLOCKED, so
-         * the timer returns it here each tick and the check cannot be missed. */
-        if (g_current_task >= 0 && hw_signal_interrupts(g_current_task)) {
-            return -VIBEOS_EINTR;
-        }
-        hw_sched_point("block");
-        __asm__ __volatile__("sti; hlt" ::: "memory");
-    }
-}
-
-static long hw_pipe_write(hw_fd_t *f, uint64_t buf, uint64_t len) {
-    hw_pipe_t *pp = &g_pipes[f->pipe];
-    const uint8_t *src = (const uint8_t *)(uintptr_t)buf;
-    uint64_t written = 0;
-
-    while (written < len) {
-        uint64_t before = written;
-
-        {
-            int faulted = 0;
-
-            /* The same, in the other direction: a writer that blocked on a full
-             * pipe reads its buffer again after waking (H-010). */
-            hw_spin_lock_named(&g_pipe_lock, __func__);
-            /* Writing into a pipe nobody will read. Linux raises SIGPIPE and
-             * returns EPIPE; with no handler the default action ends the
-             * process, which is what stops a pipeline from filling memory
-             * after its reader has gone.
-             *
-             * Tested under the lock that enqueues (M-003, the write half): it
-             * was tested before taking it, so the last reader could close in
-             * between and the bytes were accepted for nobody, with no signal. */
-            if (pp->readers == 0u) {
-                hw_spin_unlock(&g_pipe_lock);
-                if (g_current_task >= 0) {
-                    (void)hw_signal_raise(g_current_task, VIBEOS_SIGPIPE);
-                }
-                return written > 0u ? (long)written : -VIBEOS_EPIPE;
-            }
-            while (written < len && pp->count < VIBEOS_HW_PIPE_BYTES) {
-                uint64_t room = VIBEOS_HW_PIPE_BYTES - pp->count;
-                uint64_t run = VIBEOS_HW_PIPE_BYTES - pp->tail;
-                if (run > room) {
-                    run = room;
-                }
-                if (run > len - written) {
-                    run = len - written;
-                }
-                if (vibeos_uaccess_copy(&pp->buf[pp->tail], src + written, run) != 0) {
-                    faulted = 1;
-                    break;
-                }
-                written += run;
-                pp->tail = (uint32_t)((pp->tail + run) % VIBEOS_HW_PIPE_BYTES);
-                pp->count += (uint32_t)run;
-            }
-            hw_spin_unlock(&g_pipe_lock);
-            if (faulted) {
-                return written > 0u ? (long)written : -VIBEOS_EFAULT;
-            }
-        }
-        if (written > before) {
-            hw_keyboard_wake();   /* a blocked reader now has data */
-            continue;
-        }
-        /* Full, and a signal needs acting on: report what was written, or
-         * EINTR if nothing was. Same shape as the read side, and the same
-         * reason the check cannot be missed. */
-        if (g_current_task >= 0 && hw_signal_interrupts(g_current_task)) {
-            return written > 0u ? (long)written : -VIBEOS_EINTR;
-        }
-        hw_sched_point("block");
-        __asm__ __volatile__("sti; hlt" ::: "memory");
-    }
-    return (long)written;
-}
-
-/* pipe2(): two descriptors onto one buffer, read end first. */
-static long hw_sys_pipe2(uint64_t fds_uptr, uint64_t flags) {
-    hw_task_t *t;
-    int slot = -1, rfd = -1, wfd = -1;
-    int i;
-
-    (void)flags;   /* O_CLOEXEC has no meaning without an exec-close list */
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
-        return -VIBEOS_EINVAL;
-    }
-    if (!hw_user_range_ok(fds_uptr, 8, 1)) {
-        return -VIBEOS_EFAULT;
-    }
-    t = &g_tasks[g_current_task];
-
-    hw_spin_lock_named(&g_pipe_lock, __func__);
-    for (i = 0; i < VIBEOS_HW_MAX_PIPES; i++) {
-        if (!g_pipes[i].used) {
-            g_pipes[i].used = 1;
-            g_pipes[i].readers = 1;
-            g_pipes[i].writers = 1;
-            g_pipes[i].head = 0;
-            g_pipes[i].tail = 0;
-            g_pipes[i].count = 0;
-            slot = i;
-            break;
-        }
-    }
-    hw_spin_unlock(&g_pipe_lock);
-    if (slot < 0) {
-        return -VIBEOS_EMFILE;
-    }
-
-    for (i = 0; i < VIBEOS_HW_MAX_FDS && (rfd < 0 || wfd < 0); i++) {
-        if (t->fds[i].used) {
-            continue;
-        }
-        {
-            hw_fd_t *f = &t->fds[i];
-            uint32_t z;
-            for (z = 0; z < (uint32_t)sizeof(*f); z++) {
-                ((uint8_t *)(void *)f)[z] = 0;
-            }
-            f->net_sock = -1;
-            f->pipe = slot;
-            f->writable = (rfd < 0) ? 0 : 1;
-            f->used = 1;
-        }
-        if (rfd < 0) {
-            rfd = 3 + i;
-        } else {
-            wfd = 3 + i;
-        }
-    }
-    if (rfd < 0 || wfd < 0) {
-        hw_spin_lock_named(&g_pipe_lock, __func__);
-        g_pipes[slot].used = 0;
-        hw_spin_unlock(&g_pipe_lock);
-        if (rfd >= 0) {
-            t->fds[rfd - 3].used = 0;
-        }
-        return -VIBEOS_EMFILE;
-    }
-    {
-        int kfds[2];
-        kfds[0] = rfd;
-        kfds[1] = wfd;
-        /* Copied out fault-safe: a sibling munmap between the range check and
-         * this write would fault in ring 0. On fault the pipe and both fds are
-         * already allocated, so roll them back rather than leak them (uaccess
-         * follow-up to 6a94a32). */
-        if (vibeos_uaccess_copy((void *)(uintptr_t)fds_uptr, kfds, sizeof(kfds)) != 0) {
-            t->fds[rfd - 3].used = 0;
-            t->fds[wfd - 3].used = 0;
-            hw_spin_lock_named(&g_pipe_lock, __func__);
-            g_pipes[slot].used = 0;
-            hw_spin_unlock(&g_pipe_lock);
-            return -VIBEOS_EFAULT;
-        }
-    }
-    return 0;
-}
-
-/* dup2(): make newfd refer to whatever oldfd refers to.
- *
- * This is how a shell attaches a pipe to a program's standard input or output
- * without the program knowing. Only descriptors 0, 1 and 2 can be targets
- * here: the console is not an entry in the table, so redirecting one means
- * remembering that the entry now stands in for it. */
-static long hw_sys_dup2(uint64_t oldfd, uint64_t newfd) {
-    hw_task_t *t;
-    hw_fd_t *src;
-
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
-        return -VIBEOS_EINVAL;
-    }
-    t = &g_tasks[g_current_task];
-    if (oldfd == newfd) {
-        return (long)newfd;
-    }
-    src = hw_fd_get(oldfd);
-    if (!src) {
-        return -VIBEOS_EBADF;
-    }
-    if (newfd >= 3u) {
-        hw_fd_t *dst = (newfd < 3u + VIBEOS_HW_MAX_FDS)
-                       ? &t->fds[newfd - 3u] : 0;
-        if (!dst) {
-            return -VIBEOS_EBADF;
-        }
-        if (dst->used) {
-            hw_pipe_release(dst);
-            dst->used = 0;
-        }
-        *dst = *src;
-        if (dst->pipe >= 0) {
-            hw_spin_lock_named(&g_pipe_lock, __func__);
-            if (dst->writable) {
-                g_pipes[dst->pipe].writers++;
-            } else {
-                g_pipes[dst->pipe].readers++;
-            }
-            hw_spin_unlock(&g_pipe_lock);
-        }
-        return (long)newfd;
-    }
-    /* Redirecting a standard descriptor: the branch above returned for every
-     * other value, so newfd is 0, 1 or 2 here and re-checking that only looks
-     * like a bound. */
-    hw_pipe_release(&t->std_redirect[newfd]);
-    t->std_redirect[newfd] = *src;
-    if (t->std_redirect[newfd].pipe >= 0) {
-        hw_spin_lock_named(&g_pipe_lock, __func__);
-        if (t->std_redirect[newfd].writable) {
-            g_pipes[t->std_redirect[newfd].pipe].writers++;
-        } else {
-            g_pipes[t->std_redirect[newfd].pipe].readers++;
-        }
-        hw_spin_unlock(&g_pipe_lock);
-    }
-    return (long)newfd;
-}
-
-static long hw_sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
-    const char *p = (const char *)(uintptr_t)buf;
-    uint64_t i;
-
-    if (!hw_user_range_ok(buf, len, 0)) {
-        return -VIBEOS_EFAULT;
-    }
-    if (fd < 3u && g_current_task >= 0 &&
-        g_tasks[g_current_task].std_redirect[fd].used) {
-        hw_fd_t *r = &g_tasks[g_current_task].std_redirect[fd];
-        if (r->pipe >= 0) {
-            return hw_pipe_write(r, buf, len);
-        }
-    }
-    if (fd >= 3u) { /* a file: buffer the bytes, committed on close */
-        hw_fd_t *f = hw_fd_get(fd);
-        uint64_t i2;
-        if (!f) {
-            return -VIBEOS_EBADF;
-        }
-        if (f->pipe >= 0) {
-            return hw_pipe_write(f, buf, len);
-        }
-        if (f->net_sock >= 0) {
-            return hw_net_send(f, buf, len);
-        }
-        if (!f->writable) {
-            return -VIBEOS_EBADF;
-        }
-        for (i2 = 0; i2 < len; i2++) {
-            if (f->wlen >= VIBEOS_HW_WBUF) {
-                break;
-            }
-            f->wbuf[f->wlen++] = (uint8_t)p[i2];
-        }
-        f->dirty = 1;
-        return (long)i2;
-    }
-    if (fd != 1u && fd != 2u) {
-        return -VIBEOS_EBADF;
-    }
-    /* A text write whose leading bytes read as NUL, reported at the moment it
-     * happens rather than reconstructed afterwards.
-     *
-     * Three boots in ten produced `write(ring3): <16 NULs>=120` where the
-     * program had written "STRESS_OK rounds=120" from a buffer on its own
-     * stack. The kernel reads that buffer directly - there is no copy to blame
-     * - so the page it can see holds zeros where the process wrote.
-     *
-     * Two very different defects produce that, and nothing recorded so far
-     * separates them: either the process's store went to a frame this mapping
-     * no longer points at, or the store never landed. So the bytes are read a
-     * second time. A difference means the page is moving under the kernel; the
-     * same zeros twice means they were already zero when the syscall began.
-     *
-     * Deliberately not a range check on the whole buffer: the signature is
-     * leading NULs followed by real text, and a detector that fires on any NUL
-     * anywhere would catch every program that writes a binary byte. This
-     * project has a rule about detectors that report healthy behaviour. */
-    if (len >= 8u && p[0] == 0 && p[len - 1u] != 0) {
-        uint64_t a = 0ull, b = 0ull;
-        uint32_t k;
-        for (k = 0; k < 8u; k++) {
-            a |= (uint64_t)(uint8_t)p[k] << (k * 8u);
-        }
-        for (k = 0; k < 8u; k++) {
-            b |= (uint64_t)(uint8_t)p[k] << (k * 8u);
-        }
-        g_ring3_write_nul++;
-        vibeos_x86_64_serial_lock();
-        vibeos_x86_64_serial_puts("[MM] RING3_WRITE_NUL task=0x");
-        vibeos_x86_64_serial_print_hex((uint64_t)(int64_t)g_current_task);
-        vibeos_x86_64_serial_puts(" va=0x");
-        vibeos_x86_64_serial_print_hex(buf);
-        vibeos_x86_64_serial_puts(" len=0x");
-        vibeos_x86_64_serial_print_hex(len);
-        vibeos_x86_64_serial_puts(" first8=0x");
-        vibeos_x86_64_serial_print_hex(a);
-        vibeos_x86_64_serial_puts(" again=0x");
-        vibeos_x86_64_serial_print_hex(b);
-        vibeos_x86_64_serial_puts(" cpu=0x");
-        vibeos_x86_64_serial_print_hex((uint64_t)vibeos_x86_64_cpu_id());
-        vibeos_x86_64_serial_puts(" cr3=0x");
-        vibeos_x86_64_serial_print_hex(hw_read_cr3());
-        vibeos_x86_64_serial_puts(" tail=0x");
-        vibeos_x86_64_serial_print_hex((uint64_t)(uint8_t)p[len - 1u]);
-        /* Every copy-on-write fault this boot took on the corrupted page, in
-         * the same critical section as the line above: the two are one fact,
-         * and a diagnostic split across calls comes back interleaved from
-         * different cores and reads as a contradiction. */
-        {
-            uint64_t page = buf & ~0xFFFull;
-            uint32_t k2;
-            for (k2 = 0; k2 < HW_COW_RING; k2++) {
-                if (g_cow_ring[k2].va == 0ull ||
-                    (g_cow_ring[k2].va & ~0xFFFull) != page) {
-                    continue;
-                }
-                vibeos_x86_64_serial_puts(" | fault err=0x");
-                vibeos_x86_64_serial_print_hex(g_cow_ring[k2].err);
-                vibeos_x86_64_serial_puts(" rip=0x");
-                vibeos_x86_64_serial_print_hex(g_cow_ring[k2].rip);
-                vibeos_x86_64_serial_puts(" pid=0x");
-                vibeos_x86_64_serial_print_hex(g_cow_ring[k2].pid);
-                vibeos_x86_64_serial_puts(" ok=0x");
-                vibeos_x86_64_serial_print_hex(g_cow_ring[k2].handled);
-                vibeos_x86_64_serial_puts(" cpu=0x");
-                vibeos_x86_64_serial_print_hex(g_cow_ring[k2].cpu);
-            }
-        }
-        vibeos_x86_64_serial_puts("\n");
-        vibeos_x86_64_serial_unlock();
-    }
-
-    /* User output goes to both consoles: the serial line (logs, CI) and the
-     * display framebuffer (what a user in front of the machine sees). */
-    vibeos_x86_64_serial_lock();
-    vibeos_x86_64_serial_puts("[HW][SYS] write(ring3): ");
-    for (i = 0; i < len; i++) {
-        char c = p[i];
-        if (c == '\n') {
-            vibeos_x86_64_serial_putc('\r');
-        }
-        vibeos_x86_64_serial_putc(c);
-        vibeos_x86_64_fb_putc(c);
-    }
-    vibeos_x86_64_serial_unlock();
-    return (long)len;
-}
-
-/* read(0, ...): blocking keyboard read. Returns after at least one character;
- * blocks (BLOCKED + wait_input) until the keyboard IRQ enqueues input and wakes
- * us. The cli window makes the check-and-block race-free against the IRQ. */
-static long hw_sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
-    uint8_t *dst = (uint8_t *)(uintptr_t)buf;
-
-    if (len == 0u) {
-        return 0;
-    }
-    if (!hw_user_range_ok(buf, len, 1)) {
-        return -VIBEOS_EFAULT;
-    }
-    if (fd < 3u && g_current_task >= 0 &&
-        g_tasks[g_current_task].std_redirect[fd].used) {
-        hw_fd_t *r = &g_tasks[g_current_task].std_redirect[fd];
-        if (r->pipe >= 0) {
-            return hw_pipe_read(r, buf, len);
-        }
-    }
-    if (fd >= 3u) { /* a file: stream from the filesystem */
-        hw_fd_t *f = hw_fd_get(fd);
-        long n;
-        if (!f) {
-            return -VIBEOS_EBADF;
-        }
-        if (f->pipe >= 0) {
-            return hw_pipe_read(f, buf, len);
-        }
-        if (f->net_sock >= 0) {
-            return hw_net_recv(f, buf, len);
-        }
-        {
-            vibeos_fs_node_t node;
-            node.id = f->cluster;
-            node.size = f->size;
-            node.is_dir = f->isdir;
-            n = vibeos_fs_read_at(&g_rootfs, &node, f->pos, dst, (uint32_t)len);
-        }
-        if (n > 0) {
-            f->pos += (uint64_t)n;
-        }
-        return n;
-    }
-    if (fd != 0u) {
-        return -VIBEOS_EBADF;
-    }
-    for (;;) {
-        uint64_t copied = 0;
-        int c;
-
-        __asm__ __volatile__("cli");
-        c = vibeos_x86_64_keyboard_getc();
-        if (c >= 0) {
-            /* Line discipline: echo what was typed and let backspace erase the
-             * previous character before the line is handed to the program. */
-            while (copied < len && c >= 0) {
-                if (c == '\b' || c == 127) {
-                    if (copied > 0) {
-                        copied--;
-                        vibeos_x86_64_serial_puts("\b \b");
-                        vibeos_x86_64_fb_putc('\b');
-                    }
-                    c = vibeos_x86_64_keyboard_getc();
-                    continue;
-                }
-                {
-                    /* The line waits in this loop for keystrokes; the buffer
-                     * can be unmapped under it (H-010). */
-                    uint8_t ch = (uint8_t)c;
-                    if (vibeos_uaccess_copy(dst + copied, &ch, 1u) != 0) {
-                        __asm__ __volatile__("sti");
-                        return copied > 0u ? (long)copied : -VIBEOS_EFAULT;
-                    }
-                    copied++;
-                }
-                /* Under the console lock, like every other writer. Echoing
-                 * without it lets a character land in the middle of another
-                 * core's write() - which does not merely look untidy: it
-                 * splits the markers the boot gate matches on, so a passing
-                 * run reports a failure that never happened. */
-                vibeos_x86_64_serial_lock();
-                if (c == '\n') {
-                    vibeos_x86_64_serial_putc('\r');
-                }
-                vibeos_x86_64_serial_putc((char)c);
-                vibeos_x86_64_serial_unlock();
-                vibeos_x86_64_fb_putc((char)c);
-                if ((uint8_t)c == '\n') {
-                    break; /* line-oriented: stop at newline */
-                }
-                c = vibeos_x86_64_keyboard_getc();
-            }
-            __asm__ __volatile__("sti");
-            return (long)copied;
-        }
-        if (g_current_task >= 0) {
-            g_tasks[g_current_task].wait_input = 1;
-            (void)hw_task_set_state(g_current_task, HW_TASK_BLOCKED, __func__);
-            /* Blocked first and asked second, so a signal raised in between
-             * finds the task BLOCKED and wakes it. hw_signal_raise already
-             * cleared wait_input for this, and nothing ever read it here. */
-            if (hw_signal_interrupts(g_current_task)) {
-                g_tasks[g_current_task].wait_input = 0;
-                (void)hw_task_set_state(g_current_task, HW_TASK_READY, __func__);
-                HW_TASK_MARK(g_current_task, ready_by, "read_interrupted");
-                __asm__ __volatile__("sti");
-                return -VIBEOS_EINTR;
-            }
-        }
-        hw_sched_point("block");
-        __asm__ __volatile__("sti; hlt" ::: "memory");
-    }
-}
-
-/* open(path, flags): resolve a file (or directory) and take an fd. With a write
- * flag the file is created/truncated on close from the buffered bytes. */
-static long hw_sys_open(uint64_t path_uptr, uint64_t flags) {
-    char path[64];
-    hw_task_t *t;
-    int i, k;
-
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
-        return -VIBEOS_EINVAL;
-    }
-    if (hw_copy_user_string(path_uptr, path, sizeof(path)) != 0) {
-        return -VIBEOS_EFAULT;
-    }
-    t = &g_tasks[g_current_task];
-    for (i = 0; i < VIBEOS_HW_MAX_FDS; i++) {
-        if (!t->fds[i].used) {
-            break;
-        }
-    }
-    if (i == VIBEOS_HW_MAX_FDS) {
-        return -VIBEOS_EMFILE;
-    }
-    {
-        hw_fd_t *f = &t->fds[i];
-        int writable = ((flags & 1u) != 0u) || ((flags & 0100u) != 0u); /* O_WRONLY|O_CREAT */
-        uint32_t cluster = 0;
-        uint64_t size = 0;
-        vibeos_fs_node_t node;
-        int node_is_dir = 0;
-
-        if (!writable) {
-            if (vibeos_fs_lookup(&g_rootfs, path, &node) != 0) {
-                return -VIBEOS_ENOENT;
-            }
-            cluster = (uint32_t)node.id;
-            size = node.size;
-            node_is_dir = node.is_dir;
-        }
-        for (k = 0; k < (int)sizeof(f->name) - 1 && path[k]; k++) {
-            f->name[k] = path[k];
-        }
-        f->name[k] = 0;
-        f->cluster = cluster;
-        f->size = size;
-        f->pos = 0;
-        f->dir_index = 0;
-        /* Not a pipe. The field has to be set explicitly: descriptor slots are
-         * recycled, so an uninitialised value here is whatever the previous
-         * occupant left, and a stale pipe index sends every read and write on
-         * this file into the pipe path - where it waits for a writer that does
-         * not exist. */
-        f->pipe = -1;
-        /* The filesystem already answered this during lookup; asking twice
-         * would put a FAT-specific question back in the syscall layer. */
-        f->isdir = node_is_dir;
-        f->wlen = 0;
-        f->dirty = 0;
-        f->writable = writable;
-        f->net_sock = -1;
-        f->used = 1;
-    }
-    return 3 + i;
-}
-
-/* ---- socket syscalls ------------------------------------------------------
- *
- * Sockets share the process file-descriptor table with files, so read/write/
- * close work on them unchanged and a program can treat a connection like any
- * other stream.
- *
- * The socket calls that wait - connect, accept, recv - block the calling task
- * the same way read(0) does: mark it BLOCKED and hlt. The network keeps moving
- * because the stack is pumped from the timer interrupt. */
-
-/* VIBEOS_HW_NET_TIMEOUT_TICKS is in arch_hw_internal.h. */
-
 /* Claim a free descriptor slot in the calling process. */
 int hw_fd_alloc(hw_task_t *t) {
     int i;
@@ -6606,295 +5677,10 @@ int hw_fd_alloc(hw_task_t *t) {
     return -1;
 }
 
-/* The socket syscalls moved to linux_socket.c. None of what they do is
- * architecture: reading a sockaddr out of user memory and blocking until a
- * connection arrives is Linux ABI translation over kernel/net/inet.c, and it
- * sat beside the GDT only because that is where this file started. */
-
-
-/* close(fd): commit buffered writes to the filesystem and release the slot. */
-static long hw_sys_close(uint64_t fd) {
-    hw_fd_t *f = hw_fd_get(fd);
-    long rc = 0;
-
-    if (fd < 3u && g_current_task >= 0) {
-        /* Closing a redirected standard descriptor drops the redirection. */
-        hw_task_t *t = &g_tasks[g_current_task];
-        if (t->std_redirect[fd].used) {
-            hw_pipe_release(&t->std_redirect[fd]);
-            t->std_redirect[fd].used = 0;
-            return 0;
-        }
-    }
-    if (!f) {
-        return -VIBEOS_EBADF;
-    }
-    if (f->pipe >= 0) {
-        hw_pipe_release(f);
-        f->used = 0;
-        return 0;
-    }
-    if (f->net_sock >= 0) {
-        hw_spin_lock_named(&g_net_lock, __func__);
-        (void)vibeos_inet_close(&g_net, f->net_sock);
-        hw_spin_unlock(&g_net_lock);
-        f->net_sock = -1;
-        f->used = 0;
-        return 0;
-    }
-    if (f->writable && f->dirty) {
-        /* The volume changed, so a staged image may no longer match the file
-         * it came from. Dropping it here is the whole basis for trusting the
-         * cache: a rewritten program must not keep running as its old self. */
-        hw_exec_cache_drop();
-        if (vibeos_fs_write_file(&g_rootfs, f->name, f->wbuf, f->wlen) < 0) {
-            rc = -VIBEOS_EIO;
-        }
-    }
-    f->used = 0;
-    return rc;
-}
-
-static long hw_sys_lseek(uint64_t fd, uint64_t off, uint64_t whence) {
-    hw_fd_t *f = hw_fd_get(fd);
-    uint64_t base;
-
-    if (!f) {
-        return -VIBEOS_EBADF;
-    }
-    base = (whence == 1u) ? f->pos : ((whence == 2u) ? f->size : 0u);
-    f->pos = base + off;
-    return (long)f->pos;
-}
-
-/* getdents64(fd, buf, len): fill Linux dirent64 records from the directory the
- * fd was opened on, so user space can list a directory. */
-static long hw_sys_getdents64(uint64_t fd, uint64_t buf, uint64_t len) {
-    hw_fd_t *f = hw_fd_get(fd);
-    uint8_t *out = (uint8_t *)(uintptr_t)buf;
-    uint64_t used = 0;
-    uint32_t records = 0;
-
-    if (!f) {
-        return -VIBEOS_EBADF;
-    }
-    if (!f->isdir) {
-        return -VIBEOS_ENOTDIR;
-    }
-    if (!hw_user_range_ok(buf, len, 1)) {
-        return -VIBEOS_EFAULT;
-    }
-    /* A bounded syscall must not spin forever if a filesystem backend returns
-     * a cyclic directory stream or fails to advance its cursor. */
-    while (records < 256u && f->dir_index < VIBEOS_HW_MAX_DIR_ENTRIES) {
-        char name[16];
-        uint32_t fsize = 0;
-        int is_dir = 0, n = 0;
-        uint16_t reclen;
-
-        {
-            uint64_t entry_size = 0;
-            if (vibeos_fs_list(&g_rootfs, f->name, f->dir_index, name,
-                                sizeof(name), &entry_size, &is_dir) != 0) {
-                break; /* end of directory */
-            }
-            fsize = (uint32_t)entry_size;
-            (void)fsize;   /* getdents64 reports names and kinds, not sizes */
-        }
-        while (name[n]) {
-            n++;
-        }
-        reclen = (uint16_t)((19 + n + 1 + 7) & ~7); /* 8+8+2+1 header, 8-aligned */
-        if (used + reclen > len) {
-            break;
-        }
-        {
-            uint8_t *rec = out + used;
-            int k;
-            for (k = 0; k < reclen; k++) {
-                rec[k] = 0;
-            }
-            rec[16] = (uint8_t)(reclen & 0xFFu);
-            rec[17] = (uint8_t)(reclen >> 8);
-            rec[18] = is_dir ? 4u : 8u; /* DT_DIR / DT_REG */
-            for (k = 0; k < n; k++) {
-                rec[19 + k] = (uint8_t)name[k];
-            }
-        }
-        used += reclen;
-        f->dir_index++;
-        records++;
-    }
-    return (long)used;
-}
-
-/* unlink(path) / mkdir(path): filesystem mutations from user space. */
-static long hw_sys_unlink(uint64_t path_uptr) {
-    char path[64];
-    if (hw_copy_user_string(path_uptr, path, sizeof(path)) != 0) {
-        return -VIBEOS_EFAULT;
-    }
-    return (vibeos_fs_unlink(&g_rootfs, path) == 0) ? 0 : -VIBEOS_ENOENT;
-}
-
-static long hw_sys_mkdir(uint64_t path_uptr) {
-    char path[64];
-    if (hw_copy_user_string(path_uptr, path, sizeof(path)) != 0) {
-        return -VIBEOS_EFAULT;
-    }
-    return (vibeos_fs_mkdir(&g_rootfs, path) == 0) ? 0 : -VIBEOS_EIO;
-}
-
-/* Claim `pages` of anonymous address space for the calling process, or 0.
- *
- * The cursor is the process's, so two threads can reach it at once. What this
- * replaced was worse than a race: each thread held a private copy, so a
- * thread's mmap never moved main's cursor and main was handed the same base
- * every time. A compare-exchange claims the range before anything is mapped,
- * so no two callers are given the same pages and nobody holds a lock across the
- * mapping. A range whose mapping later fails stays a hole - address space, not
- * memory. */
-static uint64_t hw_mmap_claim(hw_procstate_t *ps, uint64_t pages) {
-    uint64_t base;
-
-    for (;;) {
-        base = __atomic_load_n(&ps->mmap_cur, __ATOMIC_ACQUIRE);
-        if (base + pages * 4096ull < base) {
-            return 0u;
-        }
-        if (__atomic_compare_exchange_n(&ps->mmap_cur, &base,
-                                        base + pages * 4096ull, 0,
-                                        __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
-            return base;
-        }
-    }
-}
-
-/* brk(0) reports the break; brk(addr) moves it, mapping fresh pages or giving
- * them back. Runs with the process's mm_busy claimed; see hw_sys_brk. */
-static long hw_sys_brk_locked(hw_proc_t *proc, hw_procstate_t *ps, uint64_t addr) {
-    uint64_t new_brk, pages;
-
-    if (addr == 0u) {
-        return (long)ps->brk_cur;
-    }
-    if (addr < VIBEOS_HW_USER_HEAP_BASE || addr >= VIBEOS_HW_USER_MMAP_BASE) {
-        return (long)ps->brk_cur; /* out of the heap arena: unchanged */
-    }
-    new_brk = (addr + 0xFFFull) & ~0xFFFull;
-    if (new_brk > ps->brk_cur) {
-        pages = (new_brk - ps->brk_cur) / 4096ull;
-        if (hw_map_user_pages(&proc->as, ps->brk_cur, pages) != 0) {
-            return -VIBEOS_ENOMEM;
-        }
-        (void)vibeos_vma_insert(&ps->vmas, ps->brk_cur,
-                                new_brk - ps->brk_cur,
-                                (vibeos_prot_t)(VIBEOS_PROT_READ |
-                                                VIBEOS_PROT_WRITE |
-                                                VIBEOS_PROT_USER),
-                                VIBEOS_BACKING_ANON, 0, 0);
-    } else if (new_brk < ps->brk_cur) {
-        /* Shrinking used to remove the region and stop there.
-         *
-         * The page-table entries stayed present and the frames stayed
-         * allocated, so memory the program had handed back to the kernel was
-         * still mapped and still readable through the pages it had just
-         * released. Found by an external review; the region list and the page
-         * tables are the two sources of truth here and this left them
-         * disagreeing, which is the same shape as the defect that let munmap
-         * free frames belonging to somebody else.
-         *
-         * Removed from the list first, then unmapped - a region must never be
-         * described after it has stopped existing, the same publish-last rule
-         * munmap follows a few lines down. */
-        uint64_t va;
-        vibeos_vmspace_t v = hw_vm(&proc->as);
-
-        (void)vibeos_vma_remove(&ps->vmas, new_brk, ps->brk_cur - new_brk);
-        for (va = new_brk; va < ps->brk_cur; va += 4096ull) {
-            (void)vibeos_vmspace_unmap(&v, va);
-        }
-        /* And the frames go through the same quarantine munmap uses: the
-         * unmap path releases through vb.release_deferred, so a sibling
-         * thread holding a stale translation cannot be handed the frame
-         * underneath it. Draining here for the same reason munmap does. */
-        hw_tlbq_drain();
-    }
-    ps->brk_cur = new_brk;
-    return (long)ps->brk_cur;
-}
-
-/* One address-space mutation at a time per process. A compare-exchange flag,
- * not a spinlock: the work under it can be many pages, and a spinlock would
- * hold them all with the timer off. Every thread of a process shares the ps,
- * so this serialises brk against fork's read of the same tables and list -
- * and mmap, munmap and mprotect as each is converted to take it.
- *
- * Bounded, because the failure mode of a lock is a hang, and a hang here is a
- * silent machine. A holder that never releases - a return path that forgot to
- * unlock - becomes a named panic instead. The bound is the shootdown's, chosen
- * for the same reason: far beyond any honest wait between two cores. */
-static void hw_mm_lock(hw_procstate_t *ps) {
-    uint64_t rflags, spins = 0;
-
-    /* The caller's interrupt state, restored on acquire. Callers are syscalls,
-     * so this is masked - but the spin below must unmask, so it is captured. */
-    __asm__ __volatile__("pushfq; popq %0" : "=r"(rflags));
-    for (;;) {
-        uint32_t zero = 0;
-        if (__atomic_compare_exchange_n(&ps->mm_busy, &zero, 1u, 0,
-                                        __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
-            if (rflags & 0x200ull) {
-                __asm__ __volatile__("sti" ::: "memory");
-            }
-            return;
-        }
-        /* Open a window for interrupts before trying again, because a core
-         * spinning here must be able to acknowledge a TLB shootdown IPI. The
-         * lock holder can be inside a shootdown that targets this very core: a
-         * fork holds this lock across clone_cow, which revokes the parent's
-         * write permission and shoots down every core running the address
-         * space, and mmap/munmap/mprotect of a sibling thread contend the same
-         * lock on such a core. A syscall runs with interrupts masked, so
-         * without this window that core could not answer until it left the
-         * spin, and it would not leave until the holder released - the
-         * shootdown's timeout panic, a deadlock. The spin holds no lock, so a
-         * timer taken here is a safe preemption, and g_current_task is per-CPU
-         * so identity survives it. Masked again before the next attempt, so
-         * acquisition and the mutation run with interrupts as the caller had
-         * them. */
-        __asm__ __volatile__("sti; pause; cli" ::: "memory");
-        if (++spins > 200000000ull) {
-            hw_panic("mm lock held too long: a mutation did not release it");
-        }
-    }
-}
-
-static void hw_mm_unlock(hw_procstate_t *ps) {
-    __atomic_store_n(&ps->mm_busy, 0u, __ATOMIC_RELEASE);
-}
-
-static long hw_sys_brk(uint64_t addr) {
-    hw_procstate_t *ps;
-    long r;
-
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user ||
-        (ps = g_tasks[g_current_task].ps) == 0) {
-        return -VIBEOS_EINVAL;
-    }
-    /* One at a time per process, and now against fork too: two threads moving
-     * the break at once, or a fork reading the tables while one moves it, are
-     * the same hazard. See hw_mm_lock. */
-    hw_mm_lock(ps);
-    r = hw_sys_brk_locked(&g_tasks[g_current_task].proc, ps, addr);
-    hw_mm_unlock(ps);
-    return r;
-}
-
 /* Find the leaf page-table entry for `va`, or NULL if nothing maps it.
  * Deliberately does not create tables: callers are changing or removing an
  * existing mapping, and silently materialising one would hide a bad address. */
-static uint64_t *hw_pte_lookup(vibeos_hw_aspace_t *as, uint64_t va) {
+uint64_t *hw_pte_lookup(vibeos_hw_aspace_t *as, uint64_t va) {
     static const uint32_t shifts[3] = {39u, 30u, 21u};
     uint64_t *tbl = as->pml4;
     uint32_t level;
@@ -6918,7 +5704,7 @@ static uint64_t *hw_pte_lookup(vibeos_hw_aspace_t *as, uint64_t va) {
 /* Drop one page from the TLB. Changing a PTE without this leaves the old
  * translation cached, so a revoked write permission is not actually revoked
  * until something else happens to flush it. */
-static void hw_invlpg(uint64_t va) {
+void hw_invlpg(uint64_t va) {
     __asm__ __volatile__("invlpg (%0)" : : "r"((void *)(uintptr_t)va) : "memory");
 }
 
@@ -7238,397 +6024,6 @@ static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code,
     return handled;
 }
 
-/* Anonymous mmap: bump the per-process arena and map zeroed pages.
- *
- * The address hint is ignored - the arena is bump-allocated, so honouring a
- * fixed address would require a real VMA tree. MAP_FIXED is therefore refused
- * rather than quietly ignored: a program that asks for a specific address and
- * silently gets another one corrupts itself later, far from here. */
-/* The syscall's protection bits as this kernel's own type. One place, because
- * mmap and mprotect must agree about what a region's protection means or the
- * list and the tables drift apart - which is the drift this layer exists to
- * end. */
-static vibeos_prot_t hw_prot_of(uint64_t prot) {
-    vibeos_prot_t p = VIBEOS_PROT_NONE;
-
-    if (prot == PROT_NONE) {
-        return p;   /* a guard: mapped, owned, and reachable by nobody */
-    }
-    p = (vibeos_prot_t)(VIBEOS_PROT_READ | VIBEOS_PROT_USER);
-    if (prot & PROT_WRITE) {
-        p = (vibeos_prot_t)(p | VIBEOS_PROT_WRITE);
-    }
-    if (prot & PROT_EXEC) {
-        p = (vibeos_prot_t)(p | VIBEOS_PROT_EXEC);
-    }
-    return p;
-}
-
-static long hw_mmap_locked(hw_procstate_t *ps, hw_proc_t *proc,
-                           uint64_t len, uint64_t prot) {
-    uint64_t pages, base, leaf;
-    if (prot == PROT_NONE) {
-        /* A mapping with no access, which is how a thread stack is made: a C
-         * library asks for stack plus guard as one PROT_NONE region and then
-         * mprotects the usable part readable and writable, so a thread that
-         * overruns its stack lands on the guard instead of on another
-         * thread's memory. Refusing this - which this did, calling it
-         * "nothing sensible to map" - is why pthread_create failed before it
-         * ever reached clone().
-         *
-         * The pages are allocated, not merely promised. Handing back address
-         * space and populating it later in mprotect was the first attempt, and
-         * it could not tell a reservation from a range that munmap had just
-         * freed: both are "unmapped inside the arena", so mprotect started
-         * accepting an address the ABI self-test requires it to refuse. One
-         * bit in the page table answers the question that two ranges could
-         * not, at the cost of a frame per guard page.
-         *
-         * No PTE_USER, so ring 3 faults on it exactly as a guard should. */
-        uint64_t i;
-
-        pages = (len + 0xFFFull) / 4096ull;
-        base = hw_mmap_claim(ps, pages);
-        if (base == 0u) {
-            return -VIBEOS_ENOMEM;
-        }
-        for (i = 0; i < pages; i++) {
-            void *page = hw_alloc_user_page();
-
-            if (!page || hw_map_page(&proc->as, base + i * 4096ull,
-                                     (uint64_t)(uintptr_t)page,
-                                     PTE_PRESENT) != 0) {
-                /* Two leaks lived here and only one was obvious. `page` is
-                 * non-null when hw_map_page is what failed, and nothing gave
-                 * it back. The pages already mapped stayed mapped with no
-                 * region describing them. They used to be recoverable by
-                 * accident, because the cursor was not advanced on this path;
-                 * it is claimed before anything is mapped now, so nothing would
-                 * ever map over them again and this rollback is the only thing
-                 * that leaves no trace. */
-                uint64_t j;
-                vibeos_vmspace_t v = hw_vm(&proc->as);
-
-                if (page) {
-                    hw_page_put((uint64_t)(uintptr_t)page);
-                }
-                for (j = 0; j < i; j++) {
-                    (void)vibeos_vmspace_unmap(&v, base + j * 4096ull);
-                }
-                hw_tlbq_drain();
-                return -VIBEOS_ENOMEM;
-            }
-            hw_page_put((uint64_t)(uintptr_t)page);   /* D9 */
-        }
-        (void)vibeos_vma_insert(&ps->vmas, base, pages * 4096ull,
-                                hw_prot_of(prot), VIBEOS_BACKING_ANON, 0, 0);
-        return (long)base;
-    }
-
-    pages = (len + 0xFFFull) / 4096ull;
-    base = hw_mmap_claim(ps, pages);
-    if (base == 0u) {
-        return -VIBEOS_ENOMEM;
-    }
-    leaf = PTE_PRESENT | PTE_USER;
-    if (prot & PROT_WRITE) {
-        leaf |= PTE_WRITE;
-    }
-    if (!(prot & PROT_EXEC)) {
-        leaf |= PTE_NX;   /* executable only when asked for (M-036) */
-    }
-    {
-        uint64_t i;
-        for (i = 0; i < pages; i++) {
-            void *page = hw_alloc_user_page();
-            if (!page || hw_map_page(&proc->as, base + i * 4096ull,
-                                     (uint64_t)(uintptr_t)page, leaf) != 0) {
-                /* This loop - the one an ordinary malloc reaches - had no
-                 * rollback at all. The fix for the review's M-002 went into the
-                 * reservation loop above and missed this one, and the note that
-                 * the leftovers could not be reached from ring 3 was true only
-                 * there: these pages are PTE_USER. With the cursor now claimed
-                 * before mapping they would never be mapped over again either,
-                 * so without this they are a leak. */
-                uint64_t j;
-                vibeos_vmspace_t v = hw_vm(&proc->as);
-
-                if (page) {
-                    hw_page_put((uint64_t)(uintptr_t)page);
-                }
-                for (j = 0; j < i; j++) {
-                    (void)vibeos_vmspace_unmap(&v, base + j * 4096ull);
-                }
-                hw_tlbq_drain();
-                return -VIBEOS_ENOMEM;
-            }
-            hw_page_put((uint64_t)(uintptr_t)page);   /* D9 */
-        }
-    }
-    (void)vibeos_vma_insert(&ps->vmas, base, pages * 4096ull,
-                            hw_prot_of(prot), VIBEOS_BACKING_ANON, 0, 0);
-    return (long)base;
-}
-
-static long hw_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot,
-                        uint64_t flags, uint64_t fd) {
-    hw_proc_t *proc;
-    hw_procstate_t *ps;
-
-    hw_log(VIBEOS_LOG_DEBUG, 12u, len, prot | (flags << 32), "mmap");
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user || len == 0u) {
-        return -VIBEOS_EINVAL;
-    }
-    /* Both branches below round with (len + 0xFFF) / 4096, and for a length
-     * within a page of 2^64 that sum wraps to a page count of zero: nothing was
-     * claimed, nothing mapped, and the call returned success with the base the
-     * next caller would also get (M-006, verified). Refused before the sum, with
-     * the answer Linux gives when the aligned length is zero. */
-    if (len > ~0ull - 0xFFFull) {
-        return -VIBEOS_ENOMEM;
-    }
-    /* Established here, before anything reads it. The reservation branch below
-     * used it one statement too early and handed back a base of zero, which a
-     * C library then mprotected at address 0x2000 - a thread stack placed on
-     * top of nothing. */
-    proc = &g_tasks[g_current_task].proc;
-    ps = g_tasks[g_current_task].ps;
-    if (!ps) {
-        return -VIBEOS_EINVAL;
-    }
-    if (flags & MAP_FIXED) {
-        hw_log(VIBEOS_LOG_WARN, 10u, addr, flags, "mmap refused: MAP_FIXED");
-        return -VIBEOS_EINVAL;
-    }
-    /* File-backed mappings need a page cache this kernel does not have. Say so
-     * instead of returning anonymous zeroes, which would look like a file full
-     * of NULs. */
-    if ((flags & MAP_ANONYMOUS) == 0 || VIBEOS_ARG_INT(fd) >= 0) {
-        hw_log(VIBEOS_LOG_WARN, 11u, flags, fd,
-               "mmap refused: file-backed mapping");
-        return -VIBEOS_ENOSYS;
-    }
-    /* The mapping runs under the process address-space lock, so a fork
-     * cloning the tables and region list, or a sibling brk/munmap, cannot
-     * see it half-built. mmap does no shootdown, so holding the lock is
-     * safe here (mprotect, which does, is the exception). */
-    hw_mm_lock(ps);
-    {
-        long r = hw_mmap_locked(ps, proc, len, prot);
-        hw_mm_unlock(ps);
-        return r;
-    }
-}
-
-/* mprotect(): change permissions on pages that are already mapped.
- *
- * Applied to the real page-table entries rather than recorded and ignored. A
- * libc uses this for RELRO - it maps its relocated data writable, then takes
- * write away - and a kernel that returns success without revoking anything
- * leaves the program less protected than it believes itself to be. */
-static long hw_sys_mprotect(uint64_t addr, uint64_t len, uint64_t prot) {
-    hw_log(VIBEOS_LOG_DEBUG, 14u, addr, len, "mprotect");
-    hw_proc_t *proc;
-    uint64_t va, end;
-
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
-        return -VIBEOS_EINVAL;
-    }
-    /* `addr + len < addr` was the whole check, and it is one page short: the
-     * aligned end below adds 0xFFF more, so a range ending in the last page of
-     * the address space wrapped to end = 0. mprotect then did nothing and
-     * reported success; munmap handed the region list 2^64 - addr as a length
-     * and dropped every region above addr with the pages still mapped (found
-     * beside M-006). The bound covers both sums. */
-    if ((addr & 0xFFFull) != 0u || len == 0u || len > ~0ull - 0xFFFull - addr) {
-        return -VIBEOS_EINVAL;
-    }
-    proc = &g_tasks[g_current_task].proc;
-    end = (addr + len + 0xFFFull) & ~0xFFFull;
-
-    /* Check the whole range first: a partial application would leave the
-     * address space in a state the caller never asked for.
-     *
-     * "Mapped" is the question, not "mapped and reachable from ring 3": a
-     * PROT_NONE region is mapped with no user access, and mprotect turning
-     * that into a usable stack is the entire point of the pattern. A page
-     * munmap has freed is not mapped at all, and stays a fault - which is what
-     * the ABI self-test checks, and what the first version of this broke. */
-    for (va = addr; va < end; va += 4096ull) {
-        uint64_t *pte = hw_pte_lookup(&proc->as, va);
-        if (!pte || (*pte & PTE_PRESENT) == 0) {
-            hw_log(VIBEOS_LOG_WARN, 13u, va, len,
-                   "mprotect refused: page not mapped");
-            return -VIBEOS_EFAULT;
-        }
-    }
-
-    /* The list is the authority on whether the range is mapped, and it refuses
-     * the whole request rather than applying part of it. The page-table pass
-     * below then carries the decision out.
-     *
-     * A PROT_NONE region is a region like any other here - that is the point of
-     * describing what was asked for. It used to be a mapping trick that only
-     * the page tables knew about, which is why "is this address reserved?" and
-     * "is this address mapped?" were the same question and the ABI self-test
-     * caught mprotect accepting an address it had to refuse. */
-    /* The region-list update is what a fork's vibeos_vma_clone races; take the
-     * lock across it, and only across it. The page-table pass below does a TLB
-     * shootdown, and holding the lock across that shootdown would deadlock a
-     * sibling spinning in hw_mm_lock - it cannot ack the IPI until it leaves the
-     * spin, and it will not until this releases - into the shootdown's timeout
-     * panic. So the list race with fork is closed here; the page-table race is
-     * not, and stays until the spin can service the IPI (phases.md). */
-    hw_mm_lock(g_tasks[g_current_task].ps);
-    if (vibeos_vma_protect(&g_tasks[g_current_task].ps->vmas, addr, end - addr,
-                           hw_prot_of(prot)) != 0) {
-        hw_mm_unlock(g_tasks[g_current_task].ps);
-        hw_log(VIBEOS_LOG_WARN, 15u, addr, len,
-               "mprotect refused: the range is not one this process asked for");
-        return -VIBEOS_EFAULT;
-    }
-    hw_mm_unlock(g_tasks[g_current_task].ps);
-
-    for (va = addr; va < end; va += 4096ull) {
-        uint64_t *pte = hw_pte_lookup(&proc->as, va);
-        /* The pass above established that every page in the range is mapped,
-         * so this cannot be NULL - but checking there and not here is the kind
-         * of asymmetry that survives a later edit to one loop and not the
-         * other, and the cost of being consistent is one branch. */
-        if (!pte) {
-            continue;
-        }
-        /* Reachability and writability are two bits, and mprotect decides
-         * both. Only the write bit used to be touched, on the assumption that
-         * anything mapped was already reachable from ring 3 - which stopped
-         * being true when a PROT_NONE region became a real mapping with
-         * PTE_USER deliberately clear. The page then stayed present and
-         * unreachable, and the thread that had just been given a stack faulted
-         * on its first write to it: present, user, write - error code 7. */
-        {
-            /* Through L1, which does the read-modify-write and preserves
-             * everything the entry records that a permission change does not
-             * alter: the frame, the ownership mark, the copy-on-write mark.
-             *
-             * One behaviour changes, and it is a fix rather than a
-             * consequence. This used to grant PTE_WRITE on request even to a
-             * page marked copy-on-write, which let a forked process write
-             * straight into a page its parent was still reading - the exact
-             * corruption fork's sharing exists to prevent, reachable from a
-             * program simply calling mprotect on its own memory. The layer
-             * leaves such a page read-only; the write then faults, the fault
-             * makes the copy, and the program gets what it asked for one fault
-             * later without anybody else's memory changing. */
-            vibeos_vmspace_t v = hw_vm(&proc->as);
-            vibeos_prot_t p = VIBEOS_PROT_NONE;
-
-            if (prot != PROT_NONE) {
-                p = (vibeos_prot_t)(VIBEOS_PROT_READ | VIBEOS_PROT_USER);
-                if (prot & PROT_WRITE) {
-                    p = (vibeos_prot_t)(p | VIBEOS_PROT_WRITE);
-                }
-                if (prot & PROT_EXEC) {
-                    p = (vibeos_prot_t)(p | VIBEOS_PROT_EXEC);
-                }
-            }
-            (void)vibeos_vmspace_protect(&v, va, p);
-        }
-        hw_invlpg(va);
-    }
-    return 0;
-}
-
-/* munmap(): remove mappings and give the frames back.
- *
- * The arena is a bump allocator, so the address space is not reclaimed for
- * reuse - but the pages are unmapped for real, so a use-after-unmap faults
- * here exactly as it would on Linux instead of quietly still working. */
-static long hw_sys_munmap(uint64_t addr, uint64_t len) {
-    hw_proc_t *proc;
-    uint64_t va, end;
-
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
-        return -VIBEOS_EINVAL;
-    }
-    /* `addr + len < addr` was the whole check, and it is one page short: the
-     * aligned end below adds 0xFFF more, so a range ending in the last page of
-     * the address space wrapped to end = 0. mprotect then did nothing and
-     * reported success; munmap handed the region list 2^64 - addr as a length
-     * and dropped every region above addr with the pages still mapped (found
-     * beside M-006). The bound covers both sums. */
-    if ((addr & 0xFFFull) != 0u || len == 0u || len > ~0ull - 0xFFFull - addr) {
-        return -VIBEOS_EINVAL;
-    }
-    proc = &g_tasks[g_current_task].proc;
-    end = (addr + len + 0xFFFull) & ~0xFFFull;
-    /* One mutation of this process's address space at a time: a fork cloning
-     * the tables and the region list, or a sibling's brk, must not see this
-     * range half-removed. Single exit below, so one release. See hw_mm_lock. */
-    hw_mm_lock(g_tasks[g_current_task].ps);
-    /* The list decides what this range contains; the page tables are then made
-     * to agree. That order is the phase: the tables record what the hardware
-     * currently does, and asking *them* what to release is what let munmap free
-     * frames that belonged to somebody else.
-     *
-     * Removed first, so a region is never described after it has stopped
-     * existing - the same publish-last rule as everywhere else in here. */
-    (void)vibeos_vma_remove(&g_tasks[g_current_task].ps->vmas, addr, end - addr);
-    {
-        vibeos_vmspace_t v = hw_vm(&proc->as);
-
-        for (va = addr; va < end; va += 4096ull) {
-            /* One call, and it is the last page-table write that lived outside
-             * kernel/mm/vmspace.c.
-             *
-             * The two rules this used to get wrong are now properties of the
-             * layer rather than of this loop. It freed the frame outright,
-             * which is correct only for a page nobody else has - and after a
-             * fork that is the rare case, so unmapping a copy-on-write page put
-             * it back on the free list while another process was still running
-             * from it. And it decided ownership by asking whether the page was
-             * present and user-reachable, the same inference that freed the
-             * kernel's identity map from teardown; munmap had simply never been
-             * pointed at a low-window address by anything that mattered.
-             *
-             * That premature free was chased three times from the far end and
-             * presented as something different each time: a musl program
-             * tripping over its own malloc bins, init printing a pointer where
-             * a pid belonged, a forked child reading back something it had not
-             * written. */
-            if (vibeos_vmspace_unmap(&v, va) == 1) {
-                hw_log(VIBEOS_LOG_DEBUG, 45u, va, 0,
-                       "munmap released a page (a0 = address)");
-            }
-        }
-    }
-    /* A shootdown still does not belong here, and the gap it left is closed a
-     * different way.
-     *
-     * The need was real and this comment used to end by admitting it was
-     * unmet: a thread of this process on another core still holds the old
-     * translation for an address whose frame has just been handed back, so it
-     * can write into memory that now belongs to somebody else. An external
-     * review found the admission and was right to call it a defect rather than
-     * a note.
-     *
-     * A synchronous barrier is still the wrong answer, for the measured reason:
-     * it was tried, and two runs in twenty-four failed with `tlb_acks below
-     * shootdowns`. `syscall` clears IF, so a target cannot take the IPI until
-     * it returns to ring 3, and munmap runs far more often than fork.
-     *
-     * What changed is that asking is not the only option. The frame is parked
-     * instead - vb.release_deferred - and released once every other core has
-     * loaded CR3, which flushes its whole TLB. Nobody waits for anybody; the
-     * timer makes every core quiescent on its own. The same shape as the dead
-     * kernel stack a core parks until it is provably running on another.
-     *
-     * Drained here as well as on the timer so a machine doing nothing but
-     * unmapping still gives frames back. */
-    hw_tlbq_drain();
-    hw_mm_unlock(g_tasks[g_current_task].ps);
-    return 0;
-}
-
 /* fork, in one call.
  *
  * What used to be here was three functions and about a hundred and forty lines:
@@ -7644,501 +6039,11 @@ static long hw_sys_munmap(uint64_t addr, uint64_t len) {
  * is the same walk the inspection count uses so the two cannot drift. The
  * sharing rules, the parent's revoked write permission and the single
  * shootdown at the end all moved with it, into code a host test can drive. */
-static int hw_aspace_copy_user(vibeos_hw_aspace_t *dst, vibeos_hw_aspace_t *src) {
+int hw_aspace_copy_user(vibeos_hw_aspace_t *dst, vibeos_hw_aspace_t *src) {
     vibeos_vmspace_t d = hw_vm(dst);
     vibeos_vmspace_t sp = hw_vm(src);
 
     return vibeos_vmspace_clone_cow(&d, &sp);
-}
-
-/* fork(): duplicate the calling task, address space and all. The child resumes
- * at the same instruction with a 0 return value. */
-static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
-    hw_task_t *parent;
-    hw_task_t *child;
-    int idx;
-    uint32_t my_tenancy;
-
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
-        return -VIBEOS_EINVAL;
-    }
-
-    /* The guard and the allocation, one critical section. EAGAIN rather than
-     * ENOMEM: the refusal is temporary by nature, since a child exiting undoes
-     * it, and that is what a C library turns into "resource temporarily
-     * unavailable" and what a shell retries on. */
-    idx = hw_task_alloc_for_user("fork");
-    if (idx < 0) {
-        /* DEBUG, not WARN. hw_task_alloc_for_user already prints a line
-         * naming which rule refused, which is strictly more than this said -
-         * and a warning that a service provokes on purpose is a warning people
-         * learn to scroll past. It stays in the ring for a failure that turns
-         * out to be about one of these. */
-        hw_log(VIBEOS_LOG_DEBUG, 7u, 0, 0,
-               "fork refused: guard or no free task slot");
-        return -VIBEOS_EAGAIN;
-    }
-    parent = &g_tasks[g_current_task];
-    child = &g_tasks[idx];
-    my_tenancy = child->alloc_seq;
-
-    /* From here to the vma clone below reads the parent's address space - the
-     * page tables and the region list - which a sibling thread's brk (and,
-     * once converted, mmap/munmap/mprotect) mutates. Held so fork sees one
-     * consistent state, not a walk racing a half-finished mapping. */
-    hw_mm_lock(parent->ps);
-    if (hw_aspace_create(&child->proc.as) != 0 ||
-        hw_aspace_copy_user(&child->proc.as, &parent->proc.as) != 0) {
-        /* Give the tables back before the slot is published as reusable.
-         * Publishing first leaves an address space nothing will ever free -
-         * the next tenant overwrites the pointer - and it leaves a FREE slot
-         * naming live tables, which is a question the sharing test skips. */
-        hw_mm_unlock(parent->ps);
-        hw_aspace_destroy(&child->proc.as);
-        (void)hw_task_set_state((int)(child - g_tasks), HW_TASK_FREE, __func__);
-        return -VIBEOS_ENOMEM;
-    }
-    child->kstack_top = hw_alloc_kstack(&child->kstack_base, &child->kstack_pages);
-    if (child->kstack_top == 0) {
-        hw_mm_unlock(parent->ps);
-        hw_aspace_destroy(&child->proc.as);
-        (void)hw_task_set_state((int)(child - g_tasks), HW_TASK_FREE, __func__);
-        return -VIBEOS_ENOMEM;
-    }
-    /* The child's regions are its own from the first instruction. Copying the
-     * proc struct copied the list *head*, which would have left two processes
-     * sharing one chain of descriptors - and the first munmap in either would
-     * have unlinked descriptors out from under the other. */
-    child->ps = hw_procstate_new();
-    if (!child->ps || vibeos_vma_clone(&child->ps->vmas, &parent->ps->vmas) != 0) {
-        hw_mm_unlock(parent->ps);
-        hw_procstate_put(child->ps);
-        child->ps = 0;
-        hw_aspace_destroy(&child->proc.as);
-        (void)hw_task_set_state((int)(child - g_tasks), HW_TASK_FREE, __func__);
-        return -VIBEOS_ENOMEM;
-    }
-    /* The parent's tables and list have both been read; release before the
-     * child-only setup below. */
-    hw_mm_unlock(parent->ps);
-    vibeos_task_stats()->forks++;
-    child->proc.entry = parent->proc.entry;
-    child->ps->brk_cur = parent->ps->brk_cur;
-    __atomic_store_n(&child->ps->mmap_cur,
-                     __atomic_load_n(&parent->ps->mmap_cur, __ATOMIC_ACQUIRE),
-                     __ATOMIC_RELEASE);
-    child->cr3 = hw_proc_cr3(&child->proc);
-    child->cr3_set_by = "fork";
-    child->ctx = *frame;   /* resume exactly where the parent is */
-    /* Including the vector registers. "Exactly where the parent is" was only
-     * ever true of the integer ones, and a child that resumes mid-expression
-     * with somebody else's xmm is the same defect as not saving them at all. */
-    {
-        uint32_t fi;
-        for (fi = 0; fi < 512u; fi++) {
-            child->fpu[fi] = parent->fpu[fi];
-        }
-    }
-    child->ctx.rax = 0;    /* ... but fork() returns 0 in the child */
-    child->pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
-    hw_log(VIBEOS_LOG_DEBUG, 44u, (uint64_t)parent->pid, (uint64_t)child->pid,
-           "fork produced a child (a0 = parent, a1 = child)");
-    /* fork makes a process, so the child heads its own thread group. Its
-     * parent is the *group*, not the thread that happened to call fork:
-     * wait() is a process relationship. */
-    child->tgid = child->pid;
-    child->ppid = parent->tgid;
-    child->pgid = parent->pgid;
-    child->sid = parent->sid;
-    child->signal_stopped = 0;
-    child->is_thread = 0;
-    child->clear_child_tid = 0;
-    child->fs_base = parent->fs_base;   /* the copied image expects its TLS */
-    {
-        uint32_t sg;
-        /* Open descriptors are inherited. This is not a refinement: a shell
-         * builds a pipeline by creating the pipe, forking, and having the
-         * child move an inherited end onto its standard output. Without
-         * inheritance the child has no such descriptor, the redirection fails,
-         * and its output goes to the console while the reader waits forever.
-         *
-         * Task slots are recycled, so the child's table is whatever the
-         * previous occupant left; it must be overwritten, not added to. */
-        int fi;
-        for (fi = 0; fi < VIBEOS_HW_MAX_FDS; fi++) {
-            child->fds[fi] = parent->fds[fi];
-        }
-        for (fi = 0; fi < 3; fi++) {
-            child->std_redirect[fi] = parent->std_redirect[fi];
-        }
-        /* Every inherited pipe end gains an owner. Missing this is the other
-         * way a pipeline hangs: the reader waits for an end of file that never
-         * arrives because a count went wrong. */
-        hw_spin_lock_named(&g_pipe_lock, __func__);
-        for (fi = 0; fi < VIBEOS_HW_MAX_FDS; fi++) {
-            const hw_fd_t *cf = &child->fds[fi];
-            if (cf->used && cf->pipe >= 0) {
-                if (cf->writable) {
-                    g_pipes[cf->pipe].writers++;
-                } else {
-                    g_pipes[cf->pipe].readers++;
-                }
-            }
-        }
-        for (fi = 0; fi < 3; fi++) {
-            const hw_fd_t *cf = &child->std_redirect[fi];
-            if (cf->used && cf->pipe >= 0) {
-                if (cf->writable) {
-                    g_pipes[cf->pipe].writers++;
-                } else {
-                    g_pipes[cf->pipe].readers++;
-                }
-            }
-        }
-        hw_spin_unlock(&g_pipe_lock);
-
-        child->exit_signal = 0;
-        child->sig_pending = 0;   /* pending signals are not inherited */
-        child->sig_blocked = parent->sig_blocked;
-        for (sg = 0; sg < VIBEOS_HW_NSIG; sg++) {
-            child->ps->sig_handler[sg] = parent->ps->sig_handler[sg];
-            child->ps->sig_restorer[sg] = parent->ps->sig_restorer[sg];
-            child->ps->sig_flags[sg] = parent->ps->sig_flags[sg];
-            child->ps->sig_mask[sg] = parent->ps->sig_mask[sg];
-        }
-    }
-    child->is_user = 1;
-    child->exit_code = 0;
-    /* The slot must still be the one this fork was given.
-     *
-     * Everything above writes into g_tasks[idx] without the scheduler lock,
-     * on the strength of hw_task_alloc having marked it RESERVED. If that ever
-     * fails to hold, two owners fill one slot and the loser's half-written
-     * task is what gets scheduled - which is exactly the shape of the wedge
-     * this is hunting. Saying so out loud beats inferring it from wreckage. */
-    if (child->alloc_seq != my_tenancy || child->state != HW_TASK_RESERVED) {
-        /* One line, one critical section: puts and print_hex each take the console lock on their own. */
-        vibeos_x86_64_serial_lock();
-        vibeos_x86_64_serial_puts("[SCHED] fork lost its slot: idx=0x");
-        vibeos_x86_64_serial_print_hex((uint64_t)idx);
-        vibeos_x86_64_serial_puts(" mine=0x");
-        vibeos_x86_64_serial_print_hex((uint64_t)my_tenancy);
-        vibeos_x86_64_serial_puts(" now=0x");
-        vibeos_x86_64_serial_print_hex((uint64_t)child->alloc_seq);
-        vibeos_x86_64_serial_puts(" state=0x");
-        vibeos_x86_64_serial_print_hex((uint64_t)child->state);
-        vibeos_x86_64_serial_puts("\n");
-        vibeos_x86_64_serial_unlock();
-        hw_panic("two owners filled one task slot");
-    }
-    (void)hw_task_set_state((int)(child - g_tasks), HW_TASK_READY, __func__);
-    child->ready_by = "fork";
-    return (long)child->pid;
-}
-
-/* clone() with CLONE_VM|CLONE_THREAD: another thread in this process.
- *
- * The difference from fork is what is *not* copied. The address space is
- * shared rather than duplicated, which means the new task carries the same
- * page tables and the same cr3 - not a copy of them - and exit must therefore
- * not tear that space down while siblings are still running in it.
- *
- * What the new thread does have of its own: a kernel stack, so it can block in
- * a syscall independently; a user stack, which the caller supplies because a C
- * library allocates it; and a TLS base, because thread-local storage is the
- * one thing threads must not share.
- *
- * It resumes at the same instruction the caller returns to, with rax zero -
- * the same trick fork uses - so the C library's clone wrapper sees a return of
- * 0 in the child and the tid in the parent, and branches on that.
- */
-static long hw_sys_clone_thread(const vibeos_x86_64_isr_frame_t *frame,
-                                uint64_t flags, uint64_t child_stack,
-                                uint64_t ptid, uint64_t ctid, uint64_t tls) {
-    hw_task_t *parent;
-    hw_task_t *child;
-    int idx;
-    uint32_t my_tenancy;
-
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
-        return -VIBEOS_EINVAL;
-    }
-    /* A thread with no stack of its own would run on its creator's, which is
-     * not a degraded thread but two threads writing to one stack. */
-    if (child_stack == 0u || !hw_user_range_ok(child_stack - 8u, 8u, 1)) {
-        hw_log(VIBEOS_LOG_WARN, 6u, child_stack, flags,
-               "clone refused: unusable thread stack");
-        return -VIBEOS_EINVAL;
-    }
-
-    /* The same door fork uses.
-     *
-     * This path had no guard at all, so a thread bomb - pthread_create in a
-     * loop, which is all it takes - filled the task table including the
-     * reserve that was supposed to keep the machine administrable. The guard
-     * was written for fork and clone was left open beside it, which is why
-     * there is now one entry point rather than a rule to remember. */
-    idx = hw_task_alloc_for_user("clone");
-    if (idx < 0) {
-        hw_log(VIBEOS_LOG_WARN, 7u, flags, 0,
-               "clone refused: no free task slot");
-        return -VIBEOS_ENOMEM;
-    }
-    parent = &g_tasks[g_current_task];
-    child = &g_tasks[idx];
-    my_tenancy = child->alloc_seq;
-
-    child->kstack_top = hw_alloc_kstack(&child->kstack_base, &child->kstack_pages);
-    if (child->kstack_top == 0) {
-        (void)hw_task_set_state((int)(child - g_tasks), HW_TASK_FREE, __func__);
-        return -VIBEOS_ENOMEM;
-    }
-
-    /* The same address space, by sharing the description rather than copying
-     * the tables. hw_aspace_create is deliberately not called: two sets of
-     * page tables would be two processes wearing one name. */
-    vibeos_task_stats()->threads++;
-    child->proc = parent->proc;
-    /* And the same process: a reference, not a copy. See g_procstate. */
-    child->ps = parent->ps;
-    (void)__atomic_add_fetch(&child->ps->refs, 1u, __ATOMIC_ACQ_REL);
-    child->cr3 = parent->cr3;
-    child->cr3_set_by = "clone_thread";
-
-    child->ctx = *frame;
-    child->ctx.rax = 0;            /* the child's return from clone() */
-    child->ctx.rsp = child_stack;  /* on the stack the library gave it */
-    child->ctx.rbp = 0;            /* no caller frame: this is a stack top */
-    /* A clean FP environment, not the creator's. A new thread begins at a
-     * function entry, so there is no partly-built vector value to inherit -
-     * and inheriting one would mean two threads sharing a register file they
-     * each believe is theirs. */
-    hw_fpu_init_area(child->fpu);
-
-    child->pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
-    child->tgid = parent->tgid;    /* same process */
-    child->ppid = parent->ppid;    /* threads share their creator's parent */
-    child->pgid = parent->pgid;
-    child->sid = parent->sid;
-    child->signal_stopped = 0;
-    child->is_thread = 1;
-    child->is_user = 1;
-    child->exit_code = 0;
-    child->exit_signal = 0;
-
-    /* Thread-local storage. Without this every thread reads the creator's
-     * errno and its own stack guard, which is the kind of sharing that looks
-     * like memory corruption from user space. */
-    child->fs_base = (flags & CLONE_SETTLS) ? tls : parent->fs_base;
-
-    child->clear_child_tid = (flags & CLONE_CHILD_CLEARTID) ? ctid : 0;
-
-    /* Descriptors are copied, not shared. Linux shares them under CLONE_FILES
-     * and a C library asks for that; here each thread gets its own table with
-     * the same entries, so opening a file in one thread is invisible to the
-     * others. Pipe ownership stays balanced because the copy takes a
-     * reference and exit releases it. Recorded as a difference rather than
-     * hidden: it is wrong for a program that passes descriptors between its
-     * own threads. */
-    {
-        int fi;
-        for (fi = 0; fi < VIBEOS_HW_MAX_FDS; fi++) {
-            child->fds[fi] = parent->fds[fi];
-        }
-        for (fi = 0; fi < 3; fi++) {
-            child->std_redirect[fi] = parent->std_redirect[fi];
-        }
-        hw_spin_lock_named(&g_pipe_lock, __func__);
-        for (fi = 0; fi < VIBEOS_HW_MAX_FDS; fi++) {
-            const hw_fd_t *cf = &child->fds[fi];
-            if (cf->used && cf->pipe >= 0) {
-                if (cf->writable) {
-                    g_pipes[cf->pipe].writers++;
-                } else {
-                    g_pipes[cf->pipe].readers++;
-                }
-            }
-        }
-        for (fi = 0; fi < 3; fi++) {
-            const hw_fd_t *cf = &child->std_redirect[fi];
-            if (cf->used && cf->pipe >= 0) {
-                if (cf->writable) {
-                    g_pipes[cf->pipe].writers++;
-                } else {
-                    g_pipes[cf->pipe].readers++;
-                }
-            }
-        }
-        hw_spin_unlock(&g_pipe_lock);
-    }
-
-    /* Signal dispositions are the process's. That sentence used to sit above
-     * a loop that copied them, so a handler installed in one thread was never
-     * seen by another - verified by THREADS_C5_SIGACTION, which died by
-     * SIGUSR1. They are shared through child->ps now. The mask and the pending
-     * set stay per thread, which is the Linux model. */
-    child->sig_pending = 0;
-    child->sig_blocked = parent->sig_blocked;
-
-    /* Written through the fault-safe copy: a sibling thread can munmap the page
-     * between the range check and the store, faulting in ring 0 (H-021). A
-     * failed write is dropped - the thread is created either way, as it is on
-     * Linux when these optional stores fault. */
-    if ((flags & CLONE_PARENT_SETTID) && ptid != 0u &&
-        hw_user_range_ok(ptid, 4u, 1)) {
-        uint32_t v = child->pid;
-        (void)vibeos_uaccess_copy((void *)(uintptr_t)ptid, &v, sizeof(v));
-    }
-    if ((flags & CLONE_CHILD_SETTID) && ctid != 0u &&
-        hw_user_range_ok(ctid, 4u, 1)) {
-        uint32_t v = child->pid;
-        (void)vibeos_uaccess_copy((void *)(uintptr_t)ctid, &v, sizeof(v));
-    }
-
-    if (child->alloc_seq != my_tenancy || child->state != HW_TASK_RESERVED) {
-        hw_panic("two owners filled one task slot");
-    }
-    (void)hw_task_set_state((int)(child - g_tasks), HW_TASK_READY, __func__);
-    child->ready_by = "clone_thread";
-    hw_log(VIBEOS_LOG_DEBUG, 8u, (uint64_t)child->pid, child->fs_base,
-           "thread created (a1 = its TLS base)");
-    return (long)child->pid;
-}
-
-/* waitpid(): reap a finished child. Blocks the caller (state BLOCKED, so the
- * scheduler stops running it) until a child exit wakes it, instead of spinning.
- * The check-and-block is done under cli so a child exit cannot slip in between
- * (lost wakeup); `sti; hlt` then parks the task with interrupts enabled. */
-static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr,
-                           uint64_t options) {
-    uint32_t mypid;
-
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
-        return -VIBEOS_EINVAL;
-    }
-    mypid = g_tasks[g_current_task].tgid;
-
-    /* The options used to be dropped by the dispatcher before they got here,
-     * so WNOHANG blocked. A shell reaping background jobs stalls on the first
-     * one still running, and every bounded poll in a test is not bounded at all.
-     *
-     * WNOHANG is honoured. WUNTRACED, WCONTINUED and Linux's __WALL, __WCLONE
-     * and __WNOTHREAD are accepted and have no effect: this kernel reports
-     * neither stopped nor continued children, and it has no thread-group wait
-     * distinctions to make. Refusing them would be more precise and would
-     * break BusyBox's shell, which passes WUNTRACED for job control. Any other
-     * bit is refused, as Linux refuses it. */
-    if (options & ~(uint64_t)(0x00000001u | 0x00000002u | 0x00000008u |
-                              0x20000000u | 0x40000000u | 0x80000000u)) {
-        return -VIBEOS_EINVAL;
-    }
-
-    for (;;) {
-        int i;
-        int have_children = 0;
-
-        __asm__ __volatile__("cli");
-        hw_spin_lock_named(&g_sched_lock, __func__);
-        for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
-            hw_task_t *t = &g_tasks[i];
-            if (t->ppid != mypid || t->state == HW_TASK_FREE) {
-                continue;
-            }
-            if (want_pid != (uint64_t)-1 && t->tgid != (uint32_t)want_pid) {
-                continue;
-            }
-            if (t->state == HW_TASK_ZOMBIE) {
-                uint32_t child_pid = t->tgid;
-                uint64_t code = t->exit_code;
-                uint32_t exit_signal = t->exit_signal;
-                /* One encoding, defined once. A wait status is not an exit
-                 * code, and an init that read only the code byte reported a
-                 * segfault as a clean stop - the crashing service came back
-                 * STOPPED. Producer and consumer now share the function. */
-                int status = vibeos_wait_status_make((uint32_t)code, exit_signal);
-                /* Publishing the slot as FREE is the last thing done to it,
-                 * and everything still needed from it is taken first.
-                 *
-                 * It used to set FREE, drop the lock, and only then call
-                 * hw_free_kstack(t) - which both frees pages and writes to the
-                 * task. In between, another core allocating a task slot sees
-                 * this one free and starts a fork into it, and the two owners
-                 * interleave: the reaper then frees the kernel stack the fork
-                 * has just allocated, those pages go back on the freelist, and
-                 * the allocator hands them out again as page tables. That is
-                 * how a live process ends up with a PML4 whose entry zero is a
-                 * freelist pointer instead of the kernel - and a core loading
-                 * that CR3 stops mid-instruction with no way to report why.
-                 *
-                 * The freeing happens outside the lock, from locals, because
-                 * hw_free_page takes the memory lock and nesting the two would
-                 * be a new ordering rule to get wrong. */
-                /* Nothing to take: the stack was parked on the core the
-                 * task exited on, and that core frees it once it is running on
-                 * a different one.
-                 *
-                 * This used to read kstack_base and kstack_pages here and free
-                 * them below, and it was wrong in a way three careful readings
-                 * of the exit path missed. Publishing the slot last was not
-                 * enough, because the danger is not the slot - it is that the
-                 * dying core is still standing on that stack when the reaper
-                 * runs. The window is a handful of instructions and it was hit
-                 * about one boot in six. */
-                uint64_t kbase = 0;
-                uint32_t kpages = 0;
-                (void)vibeos_teardown_step((uint32_t)(t - g_tasks),
-                                           VIBEOS_TEARDOWN_HARVESTED);
-                vibeos_task_stats()->reaped++;
-                (void)vibeos_teardown_step((uint32_t)(t - g_tasks),
-                                           VIBEOS_TEARDOWN_PUBLISHED);
-                (void)hw_task_set_state((int)(t - g_tasks), HW_TASK_FREE, __func__); /* reaped; nothing may touch t now */
-                hw_spin_unlock(&g_sched_lock);
-                (void)kbase; (void)kpages;
-                __asm__ __volatile__("sti");
-                if (status_ptr != 0 && hw_user_range_ok(status_ptr, 4, 1)) {
-                    /* The wait status word: a normal exit puts the code in the
-                     * high byte and leaves the low seven bits clear; a signal
-                     * death puts the signal number in those low bits. That is
-                     * what WIFEXITED and WIFSIGNALED read.
-                     *
-                     * Written through the fault-safe copy: the reap has already
-                     * published the slot FREE and released the lock, so a
-                     * sibling can munmap this page before the store (H-022). The
-                     * child stays consumed if it faults - the pid is returned
-                     * regardless, as Linux does after EFAULT here. */
-                    int st = status;
-                    (void)vibeos_uaccess_copy((void *)(uintptr_t)status_ptr,
-                                              &st, sizeof(st));
-                }
-                return (long)child_pid;
-            }
-            have_children = 1;
-        }
-        if (!have_children) {
-            hw_spin_unlock(&g_sched_lock);
-            __asm__ __volatile__("sti");
-            return -VIBEOS_ECHILD;
-        }
-        if (options & 0x00000001u) {   /* WNOHANG: children, none changed */
-            hw_spin_unlock(&g_sched_lock);
-            __asm__ __volatile__("sti");
-            return 0;
-        }
-        /* Block until a child exit sets us READY again (see hw_task_exit) -
-         * or until a signal needs acting on. Blocked first, then asked, still
-         * under the lock, for the same reason as the futex and console waits. */
-        (void)hw_task_set_state(g_current_task, HW_TASK_BLOCKED, __func__);
-        if (hw_signal_interrupts(g_current_task)) {
-            (void)hw_task_set_state(g_current_task, HW_TASK_READY, __func__);
-            HW_TASK_MARK(g_current_task, ready_by, "waitpid_interrupted");
-            hw_spin_unlock(&g_sched_lock);
-            __asm__ __volatile__("sti");
-            return -VIBEOS_EINTR;
-        }
-        hw_spin_unlock(&g_sched_lock);
-        hw_sched_point("block");
-        __asm__ __volatile__("sti; hlt" ::: "memory");
-    }
 }
 
 /* Copy a NUL-terminated string from user space, validating each byte's page. */
@@ -8161,862 +6066,6 @@ int hw_copy_user_string(uint64_t uptr, char *dst, int max) {
     dst[max - 1] = 0;
     return 0;
 }
-
-
-/* execve(): replace the current process image with an ELF read from the
- * filesystem. On success the trapframe is rewritten to the new program's entry
- * and CR3 switched, so the syscall return path resumes into the new image. The
- * old address space is not reclaimed yet (no PMM free), which is a known leak. */
-/* Copy an argument vector out of user memory.
- *
- * It has to be copied, not pointed at: the strings live in the address space
- * that execve is about to destroy. Both the vector and every string it names
- * are attacker-controlled, so each pointer is validated before it is followed
- * and the whole thing is bounded - a program that asks for more arguments than
- * fit gets E2BIG rather than a kernel that walks off the end of an array. */
-#define VIBEOS_HW_MAX_ARGV 16
-#define VIBEOS_HW_ARG_BYTES 512
-
-typedef struct {
-    const char *slot[VIBEOS_HW_MAX_ARGV + 1];
-    char store[VIBEOS_HW_ARG_BYTES];
-} hw_argv_t;
-
-/* Why the last argv copy failed, for the exec refusal to quote.
- *
- * "bad-args" alone says a vector could not be read and not which of the range
- * check's several reasons applied - and that check has a why for exactly this
- * situation, because "not accessible" without a reason is a dead end. The
- * distinction that matters here: a page that is not mapped and a page that is
- * mapped but refused are different bugs, and the argv vector lives in a page
- * the child has just written through a copy-on-write fault. */
-/* Set on failure and never cleared, which is deliberate and was learned the
- * short way.
- *
- * The first version cleared it on entry. execve calls this twice - argv then
- * envp - so when argv failed and envp then succeeded, envp's entry wiped the
- * reason argv had just recorded and the refusal printed `at=argv:-`. The
- * diagnostic erased its own evidence, and it took two boots out of twenty-four
- * to find out, because the failure it explains is intermittent.
- *
- * Only read immediately after a call returned negative, so the last failure to
- * set it is the one being reported. */
-static const char *g_argv_fail_why = "-";
-/* The address the range check refused, beside the reason. Set wherever the
- * reason is set, because a reason without the address it applies to cannot
- * tell a garbage pointer from a page that is merely not resident. */
-static uint64_t g_argv_fail_addr;
-/* How many of the first 64 words of that page read as poison. */
-static uint32_t g_argv_poison_words;
-
-static long hw_copy_user_argv(uint64_t uvec, hw_argv_t *out) {
-    uint32_t count = 0;
-    uint32_t used = 0;
-
-    out->slot[0] = 0;
-    if (uvec == 0u) {
-        return 0;
-    }
-    for (;;) {
-        uint64_t ptr;
-        int len;
-
-        if (count == VIBEOS_HW_MAX_ARGV) {
-            g_argv_fail_why = "too_many_entries";
-            return -VIBEOS_E2BIG;
-        }
-        {
-            uint32_t why = HW_RANGE_OK;
-            if (!hw_user_range_why(uvec + (uint64_t)count * 8u, 8, 0, &why)) {
-                g_argv_fail_why = hw_range_why_name(why);
-                g_argv_fail_addr = uvec + (uint64_t)count * 8u;
-                if (uvec == VIBEOS_FRAME_POISON) {
-                    g_argv_fail_why = "use_after_free:argv_vector_is_poison";
-                }
-                return -VIBEOS_EFAULT;
-            }
-        }
-        /* Fault-safe: a sibling execing or unmapping can pull this page out
-         * between the check above and the read. */
-        if (vibeos_uaccess_copy(&ptr, (const void *)(uintptr_t)
-                (uvec + (uint64_t)count * 8u), 8u) != 0) {
-            g_argv_fail_why = "fault_reading_argv_vector";
-            g_argv_fail_addr = uvec + (uint64_t)count * 8u;
-            return -VIBEOS_EFAULT;
-        }
-        if (ptr == 0u) {
-            break;
-        }
-        if (used >= VIBEOS_HW_ARG_BYTES) {
-            g_argv_fail_why = "arg_bytes_exhausted";
-            return -VIBEOS_E2BIG;
-        }
-        if (hw_copy_user_string(ptr, &out->store[used],
-                                (int)(VIBEOS_HW_ARG_BYTES - used)) != 0) {
-            uint32_t why = HW_RANGE_OK;
-            (void)hw_user_range_why(ptr, 1, 0, &why);
-            g_argv_fail_why = hw_range_why_name(why);
-            g_argv_fail_addr = ptr;
-            /* A pointer that *is* the free-page poison is not a wild pointer.
-             * It means the memory holding this argv vector was released while
-             * something still referred to it, and the range check is the only
-             * reason the machine did not follow it. Named here so the next
-             * person does not have to recognise 0xdead0000dead0000 by eye -
-             * which is exactly what it took to find this one. */
-            if (ptr == VIBEOS_FRAME_POISON) {
-                /* How much of the page is poison, which separates two very
-                 * different faults that produce the same word.
-                 *
-                 * If the whole page reads as poison, this is a freshly
-                 * allocated frame whose copy-on-write copy never happened -
-                 * the page is pristine, nothing wrote to it after it was
-                 * freed, and no free-side detector would ever fire.
-                 *
-                 * If only some words are poison, something wrote the pattern
-                 * into a page that is still live, which is the opposite
-                 * problem and is the one the free-side detectors are for.
-                 *
-                 * Counted over the array itself rather than the whole page:
-                 * this runs inside a refusal on a path a program can reach, so
-                 * it must not become a loop over four thousand words. */
-                uint32_t poisoned = 0;
-                uint32_t probe;
-
-                for (probe = 0; probe < 64u; probe++) {
-                    uint64_t word;
-                    if (vibeos_uaccess_copy(&word, (const void *)(uintptr_t)
-                            ((uvec & ~0xFFFull) + (uint64_t)probe * 8u), 8u) == 0 &&
-                        word == VIBEOS_FRAME_POISON) {
-                        poisoned++;
-                    }
-                }
-                g_argv_poison_words = poisoned;
-                g_argv_fail_why = (poisoned >= 64u)
-                                ? "use_after_free:whole_page_is_poison"
-                                : "use_after_free:argv_is_poison";
-            }
-            return -VIBEOS_EFAULT;
-        }
-        out->slot[count] = &out->store[used];
-        for (len = 0; out->store[used + (uint32_t)len]; len++) {
-            /* measure */
-        }
-        used += (uint32_t)len + 1u;
-        count++;
-    }
-    out->slot[count] = 0;
-    return (long)count;
-}
-
-static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
-                          uint64_t argv_uptr, uint64_t envp_uptr) {
-    char path[128];
-    hw_proc_t np;
-    hw_procstate_t *nps, *ops;
-    hw_task_t *t;
-    long n;
-    uint32_t k;
-    static hw_argv_t g_exec_argv;   /* under g_exec_lock, like the image buffer */
-    static hw_argv_t g_exec_envp;
-    const char *fallback_argv[2];
-    const char *const *argv;
-
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
-        return -VIBEOS_EINVAL;
-    }
-    /* Named, not just returned.
-     *
-     * These copies from user memory were the only exec failures that said
-     * nothing at all - no line, no tally - so a child that died on one of them
-     * left an exit code of 127 and a log with no reason in it anywhere. That
-     * is what happened to svc-stress on two boots out of six, with every
-     * memory counter reporting clean, and working out that 127 even meant
-     * "execve failed" took reading init's source.
-     *
-     * The reason lands in the same tally as every other refusal, and the boot
-     * gate asserts the *set* of refusals seen is only "not-found" - so one of
-     * these turns a boot red instead of leaving a service quietly missing. */
-    if (hw_copy_user_string(path_uptr, path, sizeof(path)) != 0) {
-        return hw_exec_refuse(VIBEOS_EXEC_BAD_ARGS, "-", "path");
-    }
-    fallback_argv[0] = path;
-    fallback_argv[1] = 0;
-    /* g_exec_elf is a single shared staging buffer, so the read and the load out
-     * of it have to be one critical section: two cores exec'ing at once would
-     * otherwise each load the other's image. */
-    hw_spin_lock_preemptible(&g_exec_lock);
-    {
-        long na = hw_copy_user_argv(argv_uptr, &g_exec_argv);
-        long ne = hw_copy_user_argv(envp_uptr, &g_exec_envp);
-        if (na < 0 || ne < 0) {
-            /* Which vector, because argv and envp fail for different reasons:
-             * a program with too many arguments and a program handed a bad
-             * environment pointer are not the same bug. */
-            {
-                /* One string, so the line stays one fact: which vector and
-                 * why. Two fields printed separately from two cores come back
-                 * interleaved and read as a contradiction. */
-                char detail[96];
-                const char *which = (na < 0) ? "argv:" : "envp:";
-                const char *why = g_argv_fail_why;
-                uint32_t w = 0, k;
-                for (k = 0; which[k] && w < sizeof(detail) - 1u; k++) {
-                    detail[w++] = which[k];
-                }
-                for (k = 0; why && why[k] && w < sizeof(detail) - 1u; k++) {
-                    detail[w++] = why[k];
-                }
-                /* Who was asking, and whether they had an address space.
-                 *
-                 * "pml4_absent_or_not_user" says a range check found no user
-                 * page tables; it does not say whether the caller was a kernel
-                 * task that never had any, or a user task whose tables went
-                 * missing under it. Those are completely different defects and
-                 * the reason alone cannot tell them apart, which is why this
-                 * refusal has been open all session on a stable signature.
-                 *
-                 * Appended to the same string rather than printed separately:
-                 * two fields from two cores come back interleaved and read as
-                 * a contradiction. */
-                {
-                    static const char hexd[] = "0123456789abcdef";
-                    int cur = g_current_task;
-                    uint64_t cr3 = (cur >= 0) ? g_tasks[cur].cr3 : 0ull;
-                    int is_user = (cur >= 0) ? g_tasks[cur].is_user : -1;
-                    int is_thread = (cur >= 0) ? g_tasks[cur].is_thread : -1;
-                    const char *tag = " task=";
-                    int j;
-
-                    for (k = 0; tag[k] && w < sizeof(detail) - 1u; k++) {
-                        detail[w++] = tag[k];
-                    }
-                    if (cur < 0 && w < sizeof(detail) - 1u) {
-                        detail[w++] = '-';
-                    } else {
-                        for (j = 1; j >= 0; j--) {
-                            if (w < sizeof(detail) - 1u) {
-                                detail[w++] =
-                                    hexd[((uint32_t)cur >> (j * 4)) & 0xFu];
-                            }
-                        }
-                    }
-                    tag = (is_user > 0) ? " user" : (is_user == 0 ? " kernel"
-                                                                  : " none");
-                    for (k = 0; tag[k] && w < sizeof(detail) - 1u; k++) {
-                        detail[w++] = tag[k];
-                    }
-                    if (is_thread > 0) {
-                        tag = " thread";
-                        for (k = 0; tag[k] && w < sizeof(detail) - 1u; k++) {
-                            detail[w++] = tag[k];
-                        }
-                    }
-                    /* And the address that was refused. A top-level entry
-                     * that is absent means the whole 512 GiB region holding
-                     * that address is unmapped, which is what a garbage
-                     * pointer looks like and is not what a paged-out stack
-                     * looks like - so the address separates the two. */
-                    tag = " at=";
-                    for (k = 0; tag[k] && w < sizeof(detail) - 1u; k++) {
-                        detail[w++] = tag[k];
-                    }
-                    for (j = 15; j >= 0; j--) {
-                        if (w < sizeof(detail) - 1u) {
-                            detail[w++] =
-                                hexd[(g_argv_fail_addr >> (j * 4)) & 0xFu];
-                        }
-                    }
-                    tag = " poisonw=";
-                    for (k = 0; tag[k] && w < sizeof(detail) - 1u; k++) {
-                        detail[w++] = tag[k];
-                    }
-                    for (j = 1; j >= 0; j--) {
-                        if (w < sizeof(detail) - 1u) {
-                            detail[w++] =
-                                hexd[(g_argv_poison_words >> (j * 4)) & 0xFu];
-                        }
-                    }
-                    tag = " cr3=";
-                    for (k = 0; tag[k] && w < sizeof(detail) - 1u; k++) {
-                        detail[w++] = tag[k];
-                    }
-                    for (j = 15; j >= 0; j--) {
-                        if (w < sizeof(detail) - 1u) {
-                            detail[w++] = hexd[(cr3 >> (j * 4)) & 0xFu];
-                        }
-                    }
-                }
-                detail[w] = 0;
-                (void)hw_exec_refuse(VIBEOS_EXEC_BAD_ARGS, path, detail);
-            }
-            hw_spin_unlock_preemptible(&g_exec_lock);
-            return (na < 0) ? na : ne;
-        }
-        /* A caller that passes no argv still gets an argv[0]: the path it was
-         * started from, which is what a program prints as its own name - and
-         * what BusyBox uses to decide which applet it is. */
-        argv = (na > 0) ? g_exec_argv.slot : (const char *const *)fallback_argv;
-    }
-    if (hw_exec_cache_hit(path)) {
-        n = g_exec_cached_len;   /* already staged, byte for byte */
-    } else {
-        hw_exec_cache_drop();
-        n = hw_read_file_cached(path, g_exec_elf, g_exec_elf_cap,
-                                &g_exec_cached_id);
-        if (n > 0) {
-            uint32_t i;
-            for (i = 0; i < sizeof(g_exec_cached) - 1u && path[i]; i++) {
-                g_exec_cached[i] = path[i];
-            }
-            g_exec_cached[i] = 0;
-            g_exec_cached_len = n;
-            /* Clear whatever the previous program left beyond this one.
-             *
-             * The staging buffer is shared by every exec, so a read that
-             * stops short leaves the tail of the last image in place - and
-             * the result is not obviously broken, it is a plausible ELF made
-             * of two programs. That parses far enough to fail somewhere
-             * confusing. Zeroing costs one pass over memory on a path that
-             * already read the file, and turns a subtle corruption into a
-             * clean parse failure. */
-            {
-                uint32_t z;
-                for (z = (uint32_t)n; z < g_exec_elf_cap; z++) {
-                    g_exec_elf[z] = 0;
-                }
-            }
-        }
-    }
-    if (n <= 0) {
-        /* Which of the two it was matters: a file that cannot be read and a
-         * file that reads but does not parse are different bugs, and the shell
-         * prints the same "cannot exec" for both. */
-        /* DEBUG, not ERROR. A shell resolving a bare command name tries it as
-         * a path first, and a C runtime asks for /proc/self/exe, which this
-         * filesystem does not have. Both miss on every healthy boot, and an
-         * error that fires every time teaches you to ignore errors. It is
-         * still recorded, so it is in the ring dump if a failure turns out to
-         * be about one of these. */
-        hw_log(VIBEOS_LOG_DEBUG, 3u, (uint64_t)n, 0,
-               "execve could not read the program image");
-        /* Counted as well as printed. This one had a message of its own, which
-         * is exactly how it stayed outside the tally: a sentence in the log is
-         * not a reason anything can assert on. It is also the *expected*
-         * refusal on a healthy boot - a shell resolving a bare command name
-         * tries it as a path first, and a C runtime asks for /proc/self/exe -
-         * so the gate's expected set is not empty, and a set that must contain
-         * this and nothing else is a much stronger assertion than a count. */
-        (void)hw_exec_refuse(VIBEOS_EXEC_NOT_FOUND, path, "read_file");
-        hw_spin_unlock_preemptible(&g_exec_lock);
-        return -VIBEOS_ENOENT;
-    }
-    /* The new image gets a new process. The program break, the mapping cursor,
-     * the regions and the dispositions all describe the old image, and a
-     * sibling thread still running that image keeps the old process. Built
-     * before the old one is let go, which is why the pool has room for an exec
-     * per core. */
-    if (g_tasks[g_current_task].ps == 0) {
-        hw_spin_unlock_preemptible(&g_exec_lock);
-        return -VIBEOS_EINVAL;
-    }
-    nps = hw_procstate_new();
-    if (!nps) {
-        hw_spin_unlock_preemptible(&g_exec_lock);
-        return -VIBEOS_ENOMEM;
-    }
-    if (hw_proc_create(&np, nps, g_exec_elf, (uint64_t)n,
-                       (uint64_t)g_exec_elf_cap, argv,
-                       g_exec_envp.slot[0] ? g_exec_envp.slot : 0, path,
-                       g_exec_cached_id) != 0) {
-        hw_procstate_put(nps);
-        hw_log(VIBEOS_LOG_ERROR, 4u, (uint64_t)n, 0,
-               "execve rejected the program image");
-        vibeos_x86_64_serial_lock();
-        vibeos_x86_64_serial_puts("[EXEC] image rejected: ");
-        vibeos_x86_64_serial_puts(path);
-        vibeos_x86_64_serial_puts(" bytes=0x");
-        vibeos_x86_64_serial_print_hex((uint64_t)n);
-        vibeos_x86_64_serial_puts("\n");
-        vibeos_x86_64_serial_unlock();
-        hw_spin_unlock_preemptible(&g_exec_lock);
-        return -VIBEOS_ENOMEM;
-    }
-    hw_spin_unlock_preemptible(&g_exec_lock);
-
-    t = &g_tasks[g_current_task];
-
-    /* An exec ends every other thread of the process, and the thread that
-     * called it becomes the process. H-006, verified: none of that happened.
-     * The siblings kept running the old image, and a thread that was not the
-     * leader kept its own id and is_thread = 1 - so the program it loaded ran
-     * as a thread, and a thread's exit is released at once instead of left as
-     * a zombie. Its exit code could never reach the parent.
-     *
-     * Here and not earlier: only now has the new image loaded. An exec that
-     * fails must leave the process with every thread it had.
-     *
-     * Siblings are found by thread-group id, not by process reference. A leader
-     * that already exited - pthread_exit from main - gave its reference back
-     * on the way out, so it no longer points at this process; its tgid is all
-     * that still says whose it was. */
-    {
-        int me = (int)(t - g_tasks);
-        uint32_t tgid = t->tgid;
-        int i, any;
-
-        /* The leader must die quietly. hw_task_exit reads is_thread under
-         * g_sched_lock to choose between "released" and "zombie, wake the
-         * parent", so setting it under the same lock is decided before that
-         * choice or not at all. A leader that is already a zombie is handled
-         * in the wait below. */
-        hw_spin_lock_named(&g_sched_lock, __func__);
-        for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
-            if (i != me && g_tasks[i].is_user && g_tasks[i].tgid == tgid &&
-                g_tasks[i].pid == tgid &&
-                g_tasks[i].state != HW_TASK_FREE &&
-                g_tasks[i].state != HW_TASK_ZOMBIE) {
-                g_tasks[i].is_thread = 1;
-            }
-        }
-
-        /* Still under g_sched_lock: slots found by tgid can be reused the moment
-         * the lock is dropped (H-007). This used to drop it first, under a note
-         * that hw_signal_raise reaches hw_task_set_state - which takes no lock.
-         * And not through exit_group's flag: nothing that dies here should
-         * report a group exit code - they are all threads now, and threads
-         * report nothing. */
-        for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
-            if (i != me && g_tasks[i].is_user && g_tasks[i].tgid == tgid &&
-                g_tasks[i].state != HW_TASK_FREE &&
-                g_tasks[i].state != HW_TASK_RESERVED &&
-                g_tasks[i].state != HW_TASK_ZOMBIE) {
-                (void)hw_signal_raise(i, VIBEOS_SIGKILL);
-            }
-        }
-        hw_spin_unlock(&g_sched_lock);
-
-        /* Wait until they are gone, sleeping. Unbounded on purpose: a sibling in
-         * a syscall finishes it and dies on the way out, and one blocked in a
-         * wait is interrupted since waits notice signals. A bound would only
-         * turn a slow exec into a half-done one; if this ever hangs, the wait
-         * that ignored a signal is the defect. */
-        for (;;) {
-            any = 0;
-            hw_spin_lock_named(&g_sched_lock, __func__);
-            for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
-                if (i == me || !g_tasks[i].is_user || g_tasks[i].tgid != tgid ||
-                    g_tasks[i].state == HW_TASK_FREE) {
-                    continue;
-                }
-                if (g_tasks[i].state == HW_TASK_ZOMBIE && g_tasks[i].pid == tgid) {
-                    /* A leader that exited before this exec. Its id is the one
-                     * this task is about to take, so the slot cannot stay: a
-                     * parent reaping it afterwards would see the process end
-                     * while the new image runs. Released under the lock waitpid
-                     * reaps under, with the same final step the thread branch of
-                     * hw_task_exit uses. */
-                    hw_task_release(i);
-                    continue;
-                }
-                any = 1;
-            }
-            hw_spin_unlock(&g_sched_lock);
-            if (!any) {
-                break;
-            }
-            if (hw_signal_interrupts(me)) {
-                /* Something must be acted on here first - a SIGKILL from a
-                 * sibling's exit_group, say. The new image is not committed:
-                 * give back what was built for it and let the signal be
-                 * delivered on the way out. */
-                hw_aspace_destroy_why(&np.as, "exec_interrupted");
-                hw_procstate_put(nps);
-                return -VIBEOS_EINTR;
-            }
-            hw_sched_point("block");
-            __asm__ __volatile__("sti; hlt" ::: "memory");
-        }
-
-        /* Alone now, and the old leader's slot is gone, so no two tasks ever
-         * hold pid == tgid at once. ppid is already the leader's: threads
-         * inherit their creator's parent. */
-        if (t->pid != tgid) {
-            t->pid = tgid;
-            HW_TASK_MARK(me, ready_by, "exec_took_leader_id");
-        }
-        t->is_thread = 0;
-    }
-    /* Stored with a leading slash even when the caller used a relative path.
-     * /proc/self/exe is defined to be absolute, and a C runtime does not merely
-     * prefer that: glibc asserts on it during startup and aborts the process,
-     * which is how the relative form was found. */
-    {
-        uint32_t w = 0;
-        if (path[0] != '/') {
-            np.exe_path[w++] = '/';
-        }
-        for (k = 0; w < (uint32_t)sizeof(np.exe_path) - 1u && path[k]; k++) {
-            np.exe_path[w++] = path[k];
-        }
-        np.exe_path[w] = 0;
-    }
-    {
-        vibeos_hw_aspace_t old_as = t->proc.as; /* reclaim after switching CR3 */
-
-        /* Caught signals revert to their default in the new image, because
-         * the handler addresses point into the one that is going away. Ignored
-         * stays ignored and the per-signal masks carry over, which is what
-         * execve is defined to do.
-         *
-         * Derived here, from the outgoing process, and not after the commit:
-         * the reference to it is given back below, and once the last one is
-         * gone its slot can be handed to an exec or a fork on another core -
-         * so reading it afterwards could copy a stranger's dispositions. */
-        ops = t->ps;
-        {
-            uint32_t sg;
-            for (sg = 0; sg < VIBEOS_HW_NSIG; sg++) {
-                nps->sig_handler[sg] = (ops->sig_handler[sg] == SIG_IGN_ADDR)
-                                       ? SIG_IGN_ADDR : SIG_DFL_ADDR;
-                nps->sig_restorer[sg] = 0;
-                nps->sig_flags[sg] = 0;
-                nps->sig_mask[sg] = ops->sig_mask[sg];
-            }
-        }
-
-        vibeos_task_stats()->execs++;
-        int shared;
-
-        /* nps already carries the regions the loader built for the new image,
-         * and the outgoing regions stay with the outgoing process. Clearing the
-         * list here - which the first version did - throws away the description
-         * of the program that is about to run, and mprotect then refuses the
-         * RELRO the C library performs on its own image during startup. */
-        t->proc = np;
-        t->ps = nps;
-        /* The address a thread asked to have zeroed on exit belongs to the image
-         * that asked. Left set, the new image's exit would write zero into
-         * whatever now lives at that address - found while writing H-006, and
-         * true of every exec, not only a threaded one. A C library sets it
-         * again at startup if it wants it. */
-        t->clear_child_tid = 0;
-        t->cr3 = hw_proc_cr3(&t->proc);
-        t->cr3_set_by = "execve";
-        hw_write_cr3(t->cr3);
-
-        /* Only if nobody else is running in there.
-         *
-         * This used to free the old tables unconditionally, and a threaded
-         * process that execs shares them with its siblings: their PML4 went
-         * back to the allocator, was handed to some other allocation, and was
-         * written over while they were still executing. The symptom is a
-         * ring-3 instruction fetch that faults with cr2 equal to rip on a page
-         * the process was already running from, and a walk that stops at level
-         * one with a PML4 entry holding a kernel pointer instead of a table.
-         *
-         * hw_task_exit has asked this question since the wedge it was written
-         * for; exec never did, which is the whole defect. Not destroying is
-         * safe: the last sibling to exit takes the same path and frees them
-         * then. */
-        hw_spin_lock_named(&g_sched_lock, __func__);
-        shared = hw_aspace_shared_by_other(old_as.pml4, (int)(t - g_tasks));
-        hw_spin_unlock(&g_sched_lock);
-
-        if (shared) {
-            HW_TASK_MARK((int)(t - g_tasks), aspace_killed_by,
-                         "execve_kept_shared");
-        } else {
-            hw_aspace_destroy(&old_as);         /* old CR3 no longer active */
-        }
-        /* The outgoing regions go with the last reference to the outgoing
-         * process: now, for a single-threaded exec, and when the last sibling
-         * still running the old image exits, for a threaded one. That is the
-         * same moment the address space above is freed or kept, because the
-         * siblings hold both. */
-        hw_procstate_put(ops);
-    }
-
-    for (k = 0; k < (uint32_t)sizeof(*frame); k++) {
-        ((uint8_t *)(void *)frame)[k] = 0;
-    }
-    /* The old image is gone and its thread-local storage with it. Clear the
-     * base here and in the register, because exec returns straight to user
-     * space without passing through the scheduler's restore. */
-    t->fs_base = 0;
-    hw_wrmsr(MSR_FS_BASE, 0);
-    /* The dispositions were derived into the new process before the commit,
-     * while the outgoing one still existed. Pending signals do not survive an
-     * exec: they were raised against the old image. */
-    t->sig_pending = 0;
-
-    frame->rip = np.entry;
-    frame->cs = VIBEOS_HW_USER_CODE_SEL;
-    frame->rflags = 0x202;
-    frame->rsp = np.user_sp;
-    frame->ss = VIBEOS_HW_USER_DATA_SEL;
-    /* One line per exec: what was loaded, how big it was, and where it
-      * starts. Enough to tell a failed load from a failed program without
-      * being enough to drown the log. */
-    /* One line, one critical section. puts and print_hex each take the
-     * lock on their own, so an unbracketed multi-part message is several
-     * critical sections and another core lands in the middle of it. The
-     * boot gate's log-integrity check found this by seeing a hex field
-     * cut off right after its "0x". */
-    hw_log(VIBEOS_LOG_DEBUG, 41u, (uint64_t)n, np.entry,
-           "execve loaded a program (a0 = bytes, a1 = entry)");
-    vibeos_x86_64_serial_lock();
-    vibeos_x86_64_serial_puts("[EXEC] ");
-    vibeos_x86_64_serial_puts(path);
-    vibeos_x86_64_serial_puts(" bytes=0x");
-    vibeos_x86_64_serial_print_hex((uint64_t)n);
-    vibeos_x86_64_serial_puts(" entry=0x");
-    vibeos_x86_64_serial_print_hex(np.entry);
-    vibeos_x86_64_serial_puts("\n");
-    vibeos_x86_64_serial_unlock();
-    return 0; /* frame replaced; syscall return enters the new image */
-}
-
-/* ---- what a program needs once it is running ------------------------------
- *
- * Startup gets a libc to main. These are what the program does afterwards:
- * look at files, read directories, ask who it is. The list came from tracing
- * BusyBox rather than from reasoning about it.
- */
-
-static void hw_stat_wr64(uint64_t base, uint32_t off, uint64_t v) {
-    uint8_t *p = (uint8_t *)(uintptr_t)(base + off);
-    uint32_t i;
-    for (i = 0; i < 8u; i++) {
-        p[i] = (uint8_t)(v >> (8u * i));
-    }
-}
-
-static void hw_stat_wr32(uint64_t base, uint32_t off, uint32_t v) {
-    uint8_t *p = (uint8_t *)(uintptr_t)(base + off);
-    uint32_t i;
-    for (i = 0; i < 4u; i++) {
-        p[i] = (uint8_t)(v >> (8u * i));
-    }
-}
-
-/* Fill a struct stat the caller can believe.
- *
- * The mode matters more than it looks: a libc decides how to buffer a stream
- * from it, and a program decides whether to recurse from it. Reporting a
- * regular file for a directory does not fail here - it fails later, inside the
- * program, doing something that made sense given what it was told. */
-static long hw_write_stat(uint64_t ubuf, uint32_t mode, uint64_t size, uint64_t ino) {
-    uint8_t kbuf[STAT_SIZE];
-    uint64_t kbase = (uint64_t)(uintptr_t)kbuf;
-    uint32_t i;
-
-    if (!hw_user_range_ok(ubuf, STAT_SIZE, 1)) {
-        return -VIBEOS_EFAULT;
-    }
-    /* Assemble the whole struct in the kernel and copy it out once. Filling the
-     * user buffer field by field would fault in ring 0 if a sibling munmaps it
-     * between the range check and any of these writes (uaccess follow-up to
-     * 6a94a32, same class as H-026). */
-    for (i = 0; i < STAT_SIZE; i++) {
-        kbuf[i] = 0;
-    }
-    hw_stat_wr64(kbase, STAT_OFF_INO, ino);
-    hw_stat_wr64(kbase, STAT_OFF_NLINK, 1);
-    hw_stat_wr32(kbase, STAT_OFF_MODE, mode);
-    hw_stat_wr32(kbase, STAT_OFF_UID, 0);
-    hw_stat_wr32(kbase, STAT_OFF_GID, 0);
-    hw_stat_wr64(kbase, STAT_OFF_SIZE, size);
-    hw_stat_wr64(kbase, STAT_OFF_BLKSIZE, 512);
-    hw_stat_wr64(kbase, STAT_OFF_BLOCKS, vibeos_ceil_div_u64(size, 512ull));
-    if (vibeos_uaccess_copy((void *)(uintptr_t)ubuf, kbuf, STAT_SIZE) != 0) {
-        return -VIBEOS_EFAULT;
-    }
-    return 0;
-}
-
-static long hw_sys_fstat(uint64_t fd, uint64_t ubuf) {
-    hw_fd_t *f;
-
-    if (fd < 3u) {
-        /* The console. Character device, and deliberately not a terminal -
-         * the same answer ioctl gives. */
-        return hw_write_stat(ubuf, S_IFCHR | 0620u, 0, fd + 1u);
-    }
-    f = hw_fd_get(fd);
-    if (!f) {
-        return -VIBEOS_EBADF;
-    }
-    if (f->net_sock >= 0) {
-        return hw_write_stat(ubuf, S_IFCHR | 0600u, 0, fd + 1u);
-    }
-    if (f->isdir) {
-        return hw_write_stat(ubuf, S_IFDIR | 0755u, 0,
-                             f->cluster ? f->cluster : fd + 1u);
-    }
-    return hw_write_stat(ubuf, S_IFREG | 0644u, f->size, f->cluster ? f->cluster : fd + 1u);
-}
-
-/* newfstatat(dirfd, path, buf, flags): stat by name, or by fd when the path is
- * empty and AT_EMPTY_PATH is set. Relative paths resolve against the volume
- * root, which is the only directory there is. */
-static long hw_sys_newfstatat(uint64_t dirfd, uint64_t path_uptr, uint64_t ubuf,
-                              uint64_t flags) {
-    char path[64];
-    uint32_t cluster = 0;
-    uint64_t size = 0;   /* st_size is 64-bit; do not narrow node.size (M-018) */
-
-    if (hw_copy_user_string(path_uptr, path, sizeof(path)) != 0) {
-        return -VIBEOS_EFAULT;
-    }
-    if (path[0] == 0) {
-        if ((flags & AT_EMPTY_PATH) == 0) {
-            return -VIBEOS_ENOENT;
-        }
-        return hw_sys_fstat(dirfd, ubuf);
-    }
-    if (VIBEOS_ARG_INT(dirfd) != AT_FDCWD && dirfd < 3u) {
-        return -VIBEOS_EBADF;
-    }
-    /* The root of the volume, however it is spelled. */
-    if ((path[0] == '/' && path[1] == 0) || (path[0] == '.' && path[1] == 0)) {
-        return hw_write_stat(ubuf, S_IFDIR | 0755u, 0, 1);
-    }
-    {
-        /* Directory or file? The answer changes what a program does, not just
-         * what it prints: ls given a directory lists it and given a file names
-         * it, so reporting the wrong one produces a plausible wrong result
-         * rather than an error. The filesystem decides; how it decides is its
-         * business. */
-        vibeos_fs_node_t node;
-        if (vibeos_fs_lookup(&g_rootfs, path, &node) != 0) {
-            return -VIBEOS_ENOENT;
-        }
-        cluster = (uint32_t)node.id;
-        size = node.size;
-        if (node.is_dir) {
-            return hw_write_stat(ubuf, S_IFDIR | 0755u, 0, cluster ? cluster : 2u);
-        }
-    }
-    return hw_write_stat(ubuf, S_IFREG | 0644u, size, cluster ? cluster : 2u);
-}
-
-/* openat(): the modern spelling of open. Only AT_FDCWD is accepted, because a
- * directory fd would have to mean something and here it cannot. */
-static long hw_sys_openat(uint64_t dirfd, uint64_t path_uptr, uint64_t flags) {
-    if (VIBEOS_ARG_INT(dirfd) != AT_FDCWD) {
-        return -VIBEOS_ENOSYS;
-    }
-    return hw_sys_open(path_uptr, flags);
-}
-
-/* getcwd(): there is one directory. Saying so is accurate; inventing a path
- * would make a program build filenames that do not resolve. */
-static long hw_sys_getcwd(uint64_t ubuf, uint64_t size) {
-    if (size < 2u) {
-        return -VIBEOS_ERANGE;
-    }
-    if (!hw_user_range_ok(ubuf, 2, 1)) {
-        return -VIBEOS_EFAULT;
-    }
-    {
-        /* Fault-safe copy out: a sibling munmap between the check and the write
-         * would fault in ring 0 (uaccess follow-up to 6a94a32). */
-        char kcwd[2];
-        kcwd[0] = '/';
-        kcwd[1] = 0;
-        if (vibeos_uaccess_copy((void *)(uintptr_t)ubuf, kcwd, 2) != 0) {
-            return -VIBEOS_EFAULT;
-        }
-    }
-    return 2;   /* Linux returns the length including the terminator */
-}
-
-/* readlinkat(): the only symlink that exists here is the one a program uses to
- * find itself, and it is answered from what execve was actually given rather
- * than from a made-up path. Everything else is not a link, which is what
- * EINVAL means. */
-static long hw_sys_readlinkat(uint64_t dirfd, uint64_t path_uptr, uint64_t ubuf,
-                              uint64_t bufsz) {
-    char path[64];
-    const char *self;
-    uint64_t n = 0;
-
-    (void)dirfd;
-    if (hw_copy_user_string(path_uptr, path, sizeof(path)) != 0) {
-        return -VIBEOS_EFAULT;
-    }
-    if (!(path[0] == '/' && path[1] == 'p' && path[2] == 'r' && path[3] == 'o' &&
-          path[4] == 'c' && path[5] == '/' && path[6] == 's' && path[7] == 'e' &&
-          path[8] == 'l' && path[9] == 'f' && path[10] == '/' && path[11] == 'e' &&
-          path[12] == 'x' && path[13] == 'e' && path[14] == 0)) {
-        return -VIBEOS_EINVAL;
-    }
-    if (g_current_task < 0) {
-        return -VIBEOS_EINVAL;
-    }
-    self = g_tasks[g_current_task].proc.exe_path;
-    while (self[n]) {
-        n++;
-    }
-    if (n == 0) {
-        return -VIBEOS_ENOENT;
-    }
-    if (n > bufsz) {
-        n = bufsz;
-    }
-    if (!hw_user_range_ok(ubuf, n, 1)) {
-        return -VIBEOS_EFAULT;
-    }
-    /* self is a kernel string; copy out fault-safe so a sibling munmap between
-     * the check and the write cannot fault in ring 0 (uaccess follow-up). */
-    if (vibeos_uaccess_copy((void *)(uintptr_t)ubuf, self, n) != 0) {
-        return -VIBEOS_EFAULT;
-    }
-    return (long)n;   /* not terminated, as Linux does not terminate it */
-}
-
-/* prctl(): the process name is the operation programs actually use, and it is
- * stored rather than acknowledged - it costs sixteen bytes and makes the
- * scheduler's log say which program a pid is. */
-static long hw_sys_prctl(uint64_t op, uint64_t arg) {
-    hw_task_t *t;
-    uint32_t i;
-
-    if (g_current_task < 0) {
-        return -VIBEOS_EINVAL;
-    }
-    t = &g_tasks[g_current_task];
-    if (op == PR_SET_NAME) {
-        char kname[16];
-        if (!hw_user_range_ok(arg, 16, 0)) {
-            return -VIBEOS_EFAULT;
-        }
-        /* Copy in fault-safe, then terminate: a sibling munmap between the
-         * check and the read would fault in ring 0 (uaccess follow-up). */
-        if (vibeos_uaccess_copy(kname, (const void *)(uintptr_t)arg, 16) != 0) {
-            return -VIBEOS_EFAULT;
-        }
-        for (i = 0; i < 15u; i++) {
-            t->comm[i] = kname[i];
-            if (t->comm[i] == 0) {
-                break;
-            }
-        }
-        t->comm[15] = 0;
-        return 0;
-    }
-    if (op == PR_GET_NAME) {
-        if (!hw_user_range_ok(arg, 16, 1)) {
-            return -VIBEOS_EFAULT;
-        }
-        if (vibeos_uaccess_copy((void *)(uintptr_t)arg, t->comm, 16) != 0) {
-            return -VIBEOS_EFAULT;
-        }
-        return 0;
-    }
-    return -VIBEOS_EINVAL;
-}
-
 /* What happens to a signal nobody handles.
  *
  * Getting this table wrong is not a small error: an ignored SIGCHLD that kills
@@ -9050,7 +6099,7 @@ int hw_signal_default_kills(uint32_t sig) {
  * wait4 result - the native shell does - would stop waiting for its child.
  * SIGCHLD is never raised today, which is exactly why that case must not be
  * left to chance. */
-static int hw_signal_interrupts(int task) {
+int hw_signal_interrupts(int task) {
     const hw_task_t *t;
     const hw_procstate_t *ps;
     uint64_t ready;
@@ -9091,7 +6140,7 @@ static int hw_signal_interrupts(int task) {
  * way back to user space, on that task's own stack, which is the only place a
  * signal frame can safely be built. Raising can happen from an interrupt, from
  * another CPU, or from the task itself, and none of those own that stack. */
-static int hw_signal_raise(int task_index, uint32_t sig) {
+int hw_signal_raise(int task_index, uint32_t sig) {
     if (task_index < 0 || task_index >= VIBEOS_HW_MAX_TASKS || sig == 0u || sig > VIBEOS_HW_SIG_MAX) {
         return -1;
     }
@@ -9138,7 +6187,7 @@ static int hw_signal_raise(int task_index, uint32_t sig) {
  * said the lock could not be held because hw_signal_raise reaches
  * hw_task_set_state; that function takes no lock, and hw_schedule calls it
  * under this one. */
-static void hw_task_exit_group(uint64_t code) {
+void hw_task_exit_group(uint64_t code) {
     int me = g_current_task;
     hw_procstate_t *ps;
     uint32_t zero = 0;
@@ -9187,7 +6236,7 @@ static void hw_task_exit_group(uint64_t code) {
  * RESERVED is skipped for the second half of the same finding: allocation
  * leaves the previous tenant's pid, tgid, sid and pgid in place until fork or
  * clone rewrites them, so a slot being built answers to a dead process's id. */
-static int hw_task_by_pid(uint32_t pid) {
+int hw_task_by_pid(uint32_t pid) {
     int i;
     for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
         if (g_tasks[i].is_user && g_tasks[i].state != HW_TASK_FREE &&
@@ -9212,7 +6261,7 @@ static int hw_task_by_pid(uint32_t pid) {
  *
  * The comment described the kernel at the moment it was written, and nothing
  * made it wrong except the kernel changing around it. */
-static int hw_task_by_tid(uint32_t tid) {
+int hw_task_by_tid(uint32_t tid) {
     int i;
     for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
         if (g_tasks[i].is_user && g_tasks[i].state != HW_TASK_FREE &&
@@ -9224,834 +6273,24 @@ static int hw_task_by_tid(uint32_t tid) {
     return -1;
 }
 
-/* May the calling task send a signal to `target`?
- *
- * The rule was already here and applied to half the cases. kill's
- * process-group branch filtered on `sid == the caller's sid`; its single-pid
- * branch, and tkill and tgkill, checked nothing at all - so any unprivileged
- * program could SIGKILL any process on the machine by pid: another session's
- * shell, or a supervised service, repeatedly, until init's restart budget was
- * spent and the service was permanently down.
- *
- * Written as one function rather than three copies of a condition, for the
- * reason the fork guard ended up with one entry point: the version with the
- * check in some places and not others is exactly what shipped.
- *
- * Session, not parent, because that is the relationship this kernel already
- * uses to decide the same question for a group, and inventing a second rule
- * would mean two answers to "may I signal this".
- *
- * init and the kernel are exempt: init supervises services and stopping them is
- * its job. */
-static int hw_signal_permitted(int target) {
-    hw_task_t *me;
-
-    if (g_current_task < 0 || target < 0 || target >= VIBEOS_HW_MAX_TASKS) {
-        return 0;
-    }
-    me = &g_tasks[g_current_task];
-    if (me->pid <= 1u) {
-        return 1;
-    }
-    /* Its own thread group, always: a program may signal itself and its
-     * threads whatever else is true. */
-    if (g_tasks[target].tgid == me->tgid) {
-        return 1;
-    }
-    return g_tasks[target].sid == me->sid;
-}
-
-/* Describe the page backing one address of the caller's own address space.
- *
- * Only its own: the walk starts from the current task's page tables and there
- * is no way to name another. A process learning how its own memory is shared is
- * not a disclosure - it is the information it would have had if the kernel had
- * not been the one holding it.
- *
- * What it reports is an *identity* and not a physical address. The frame index
- * is stable within a boot and comparable between samples, which is all a
- * diagnosis needs, and it says nothing about where memory physically lives.
- * Handing ring 3 the layout of the machine to make debugging easier is the kind
- * of trade that outlives the bug it was made for.
- *
- * It exists because one symptom - "the bytes are not what I wrote" - has three
- * causes that a program cannot tell apart: the copy never happened, the copy
- * was made and then lost, or the page is private and somebody wrote it anyway.
- * Every report of the third kind has been investigated as if it might be the
- * first. */
-static long hw_sys_pageinfo(uint64_t va, uint64_t out_uptr) {
-    vibeos_pageinfo_t info;
-    uint64_t *pte;
-    uint64_t entry;
-
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
-        return -VIBEOS_EINVAL;
-    }
-    if (!hw_user_range_ok(out_uptr, sizeof(info), 1)) {
-        return -VIBEOS_EFAULT;
-    }
-
-    info.frame = 0;
-    info.flags = 0;
-    info.owners = 0;
-    info.first_word = 0;
-
-    pte = hw_pte_lookup(&g_tasks[g_current_task].proc.as, va);
-    if (pte) {
-        entry = __atomic_load_n(pte, __ATOMIC_ACQUIRE);
-        if (entry & PTE_PRESENT) {
-            uint64_t phys = entry & 0x000FFFFFFFFFF000ull;
-            uint32_t id = vibeos_frame_id(phys);
-
-            info.flags |= VIBEOS_PAGE_PRESENT;
-            if (entry & PTE_WRITE)         { info.flags |= VIBEOS_PAGE_WRITE; }
-            if (entry & PTE_USER)          { info.flags |= VIBEOS_PAGE_USER; }
-            if (entry & PTE_COW)           { info.flags |= VIBEOS_PAGE_COW; }
-            if (entry & VIBEOS_PTE_OWNED)  { info.flags |= VIBEOS_PAGE_OWNED; }
-            if (entry & PTE_NX)           { info.flags |= VIBEOS_PAGE_NX; }
-            /* Everything below describes one frame, so it is all read from the
-             * same pinned instant (M-038). A sibling thread can munmap the page,
-             * the frame can be released and handed to another process, and a
-             * bare read through the address taken from an entry this function
-             * does not own returns that process's first eight bytes - and an
-             * identity and an owner count taken at different moments describe
-             * different frames.
-             *
-             * Pin the frame first - try_get refuses one nobody owns - and then
-             * confirm the entry still names it: had the frame been freed and
-             * reused before the pin, the entry would have changed. Only then are
-             * the identity, the count and the word this caller's own page's.
-             * If the page is gone, the flags from the entry stay and the rest
-             * reports nothing, which is the truth.
-             *
-             * A frame the allocator does not describe - the reserved low
-             * identity window - reports no identity rather than a wrong one, and
-             * has no owner to race with, so it is read as before. The word is
-             * read through the kernel's identity map deliberately, not through
-             * the caller's translation: the value of this field is that it does
-             * not use the mapping under suspicion. */
-            if (id == 0xFFFFFFFFu) {
-                info.first_word = *(const volatile uint64_t *)(uintptr_t)phys;
-            } else if (vibeos_frame_try_get(phys)) {
-                if (__atomic_load_n(pte, __ATOMIC_ACQUIRE) == entry) {
-                    info.frame = (uint64_t)id + 1ull;   /* 0 stays "nothing" */
-                    /* Our own pin is one of the owners; the caller asked about
-                     * the mappings that were there. */
-                    info.owners = vibeos_frame_owners(phys) - 1u;
-                    info.first_word = *(const volatile uint64_t *)(uintptr_t)phys;
-                }
-                (void)vibeos_frame_put(phys);
-            }
-        }
-    }
-
-    /* Through the fault-tolerant copy: the range was checked above, but a
-     * sibling's munmap of the output buffer can land after the check. */
-    if (vibeos_uaccess_copy((void *)(uintptr_t)out_uptr, &info, sizeof(info)) != 0) {
-        return -VIBEOS_EFAULT;
-    }
-    return 0;
-}
-
-static long hw_sys_kill(uint64_t target_pid, uint64_t sig) {
-    int target;
-    int delivered = 0;
-    int64_t signed_pid = (int64_t)target_pid;
-    long r;
-
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
-        return -VIBEOS_EINVAL;
-    }
-    if (sig > VIBEOS_HW_SIG_MAX) {
-        return -VIBEOS_EINVAL;
-    }
-    /* Every branch below resolves ids to slots and acts on them, so every one
-     * holds g_sched_lock from the lookup to the act. See hw_task_by_pid. */
-    if (sig == 0u) {
-        if (signed_pid <= 0) {
-            signed_pid = g_tasks[g_current_task].tgid;
-        }
-        /* Positive by construction after the line above, so the negate-if-
-         * negative that used to be here could never run. CodeQL called it what
-         * it was - a comparison whose result is always the same - and a dead
-         * branch in a signal path is worth removing rather than explaining. */
-        hw_spin_lock_named(&g_sched_lock, __func__);
-        target = hw_task_by_pid((uint32_t)signed_pid);
-        if (target < 0) {
-            r = -VIBEOS_ESRCH;
-        } else {
-            r = hw_signal_permitted(target) ? 0 : -VIBEOS_EPERM;
-        }
-        hw_spin_unlock(&g_sched_lock);
-        return r;
-    }
-    if (signed_pid < 0 || signed_pid == 0) {
-        uint32_t group = signed_pid < 0 ? (uint32_t)(-signed_pid) : g_tasks[g_current_task].pgid;
-        int i;
-        hw_spin_lock_named(&g_sched_lock, __func__);
-        for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
-            if (g_tasks[i].is_user && g_tasks[i].state != HW_TASK_FREE &&
-                g_tasks[i].state != HW_TASK_RESERVED &&
-                g_tasks[i].pgid == group && g_tasks[i].sid == g_tasks[g_current_task].sid) {
-                if (hw_signal_raise(i, (uint32_t)sig) == 0) {
-                    delivered++;
-                }
-            }
-        }
-        hw_spin_unlock(&g_sched_lock);
-        return delivered == 0 ? -VIBEOS_ESRCH : 0;
-    }
-    hw_spin_lock_named(&g_sched_lock, __func__);
-    target = hw_task_by_pid((uint32_t)signed_pid);
-    if (target < 0) {
-        r = -VIBEOS_ESRCH;
-    } else if (!hw_signal_permitted(target)) {
-        /* EPERM and not ESRCH: the caller is being refused, not lied to about
-         * whether the process exists. Hiding existence would be a different
-         * decision, and this kernel's group branch does not make it either. */
-        r = -VIBEOS_EPERM;
-    } else {
-        r = (hw_signal_raise(target, (uint32_t)sig) == 0) ? 0 : -VIBEOS_EINVAL;
-    }
-    hw_spin_unlock(&g_sched_lock);
-    return r;
-}
-
-static long hw_sys_setpgid(uint64_t requested_pid, uint64_t requested_pgid) {
-    uint32_t pid;
-    int target;
-    int leader_slot;
-    int leader;
-    long r;
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
-        return -VIBEOS_EINVAL;
-    }
-    pid = requested_pid == 0 ? g_tasks[g_current_task].tgid : (uint32_t)requested_pid;
-    /* Both arms cast to int explicitly. `pid` is uint32_t, so the conditional
-     * otherwise takes the unsigned type and converts back on assignment - the
-     * guard below still works, but the reader has to prove that, and the
-     * compiler warns rather than take it on faith. */
-    leader = requested_pgid == 0 ? (int)pid : (int)requested_pgid;
-    /* Two lookups and a write to one of the slots found: under g_sched_lock,
-     * or the write can land on a task that took the slot in between (H-007). */
-    hw_spin_lock_named(&g_sched_lock, __func__);
-    target = hw_task_by_pid(pid);
-    if (target < 0) {
-        r = -VIBEOS_ESRCH;
-    } else if (g_tasks[target].sid != g_tasks[g_current_task].sid) {
-        r = -VIBEOS_EPERM;
-    } else if (leader <= 0 || (leader_slot = hw_task_by_pid((uint32_t)leader)) < 0) {
-        r = -VIBEOS_ESRCH;
-    } else if (g_tasks[leader_slot].sid != g_tasks[target].sid) {
-        r = -VIBEOS_EPERM;
-    } else {
-        g_tasks[target].pgid = (uint32_t)leader;
-        r = 0;
-    }
-    hw_spin_unlock(&g_sched_lock);
-    return r;
-}
-
-static long hw_sys_setsid(void) {
-    int i;
-    hw_task_t *current;
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
-        return -VIBEOS_EINVAL;
-    }
-    current = &g_tasks[g_current_task];
-    /* The check and the whole transition under g_sched_lock, so the "not a
-     * group leader" test cannot race the assignment that follows it and no
-     * sibling - setpgid, getsid, kill's group resolution, all of which read
-     * these fields under the lock - observes pgid/sid mid-change (H-027, the
-     * same reasoning as H-007). */
-    hw_spin_lock_named(&g_sched_lock, __func__);
-    if (current->pgid == current->tgid) {
-        hw_spin_unlock(&g_sched_lock);
-        return -VIBEOS_EPERM;
-    }
-    current->sid = current->tgid;
-    current->pgid = current->tgid;
-    for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
-        if (i != g_current_task && g_tasks[i].is_user &&
-            g_tasks[i].state != HW_TASK_FREE &&
-            g_tasks[i].state != HW_TASK_RESERVED &&
-            g_tasks[i].tgid == current->tgid) {
-            g_tasks[i].sid = current->sid;
-            g_tasks[i].pgid = current->pgid;
-        }
-    }
-    hw_spin_unlock(&g_sched_lock);
-    return (long)current->tgid;
-}
-
-static long hw_sys_getsid(uint64_t requested_pid) {
-    int target;
-    uint32_t pid;
-    long r;
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
-        return -VIBEOS_EINVAL;
-    }
-    pid = requested_pid == 0 ? g_tasks[g_current_task].tgid : (uint32_t)requested_pid;
-    /* The sid is read from the slot the lookup found, so the two are one
-     * critical section: otherwise the answer can be another process's (H-007). */
-    hw_spin_lock_named(&g_sched_lock, __func__);
-    target = hw_task_by_pid(pid);
-    r = target < 0 ? -VIBEOS_ESRCH : (long)g_tasks[target].sid;
-    hw_spin_unlock(&g_sched_lock);
-    return r;
-}
-
-static long hw_sys_tkill(uint64_t target_tid, uint64_t sig) {
-    int target;
-    long r;
-
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user ||
-        sig > VIBEOS_HW_SIG_MAX) {
-        return -VIBEOS_EINVAL;
-    }
-    /* Lookup, check and raise as one critical section (H-007). */
-    hw_spin_lock_named(&g_sched_lock, __func__);
-    target = hw_task_by_tid((uint32_t)target_tid);
-    if (target >= 0 && !hw_signal_permitted(target)) {
-        r = -VIBEOS_EPERM;   /* same rule as kill; see hw_signal_permitted */
-    } else if (target < 0) {
-        r = -VIBEOS_ESRCH;
-    } else if (sig == 0u) {
-        r = 0;
-    } else {
-        r = (hw_signal_raise(target, (uint32_t)sig) == 0) ? 0 : -VIBEOS_EINVAL;
-    }
-    hw_spin_unlock(&g_sched_lock);
-    if (sig == 0u || r != 0) {
-        return r;
-    }
-    /* After the lock, not inside it: the console lock is never taken under
-     * g_sched_lock by choice here. One line, one critical section: puts and
-     * print_hex each take the console lock on their own. */
-    vibeos_x86_64_serial_lock();
-    vibeos_x86_64_serial_puts("[SIG] tkill tid=0x");
-    vibeos_x86_64_serial_print_hex((uint64_t)(uint32_t)target_tid);
-    vibeos_x86_64_serial_puts(" sig=0x");
-    vibeos_x86_64_serial_print_hex(sig);
-    vibeos_x86_64_serial_puts("\n");
-    vibeos_x86_64_serial_unlock();
-    return 0;
-}
-
-static long hw_sys_tgkill(uint64_t target_tgid, uint64_t target_tid,
-                          uint64_t sig) {
-    int target;
-    long r;
-
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user ||
-        sig > VIBEOS_HW_SIG_MAX) {
-        return -VIBEOS_EINVAL;
-    }
-    /* Lookup, identity check and raise as one critical section (H-007): the
-     * tgid comparison protects nothing if the slot can change after it. */
-    hw_spin_lock_named(&g_sched_lock, __func__);
-    target = hw_task_by_tid((uint32_t)target_tid);
-    if (target >= 0 && !hw_signal_permitted(target)) {
-        r = -VIBEOS_EPERM;   /* same rule as kill; see hw_signal_permitted */
-    } else if (target < 0 || g_tasks[target].tgid != (uint32_t)target_tgid) {
-        r = -VIBEOS_ESRCH;
-    } else if (sig == 0u) {
-        r = 0;
-    } else {
-        r = (hw_signal_raise(target, (uint32_t)sig) == 0) ? 0 : -VIBEOS_EINVAL;
-    }
-    hw_spin_unlock(&g_sched_lock);
-    if (sig == 0u || r != 0) {
-        return r;
-    }
-    /* After the lock; see tkill. One line, one critical section: puts and
-     * print_hex each take the console lock on their own. */
-    vibeos_x86_64_serial_lock();
-    vibeos_x86_64_serial_puts("[SIG] tgkill tgid=0x");
-    vibeos_x86_64_serial_print_hex((uint64_t)(uint32_t)target_tgid);
-    vibeos_x86_64_serial_puts(" tid=0x");
-    vibeos_x86_64_serial_print_hex((uint64_t)(uint32_t)target_tid);
-    vibeos_x86_64_serial_puts(" sig=0x");
-    vibeos_x86_64_serial_print_hex(sig);
-    vibeos_x86_64_serial_puts("\n");
-    vibeos_x86_64_serial_unlock();
-    return 0;
-}
-
-/* rt_sigaction(): install, or report, the disposition of one signal. */
-static long hw_sys_rt_sigaction(uint64_t sig, uint64_t act_uptr, uint64_t old_uptr) {
-    hw_task_t *t;
-
-    if (g_current_task < 0 || sig == 0u || sig > VIBEOS_HW_SIG_MAX) {
-        return -VIBEOS_EINVAL;
-    }
-    if (sig == VIBEOS_SIGKILL || sig == VIBEOS_SIGSTOP) {
-        return -VIBEOS_EINVAL;   /* neither can be caught */
-    }
-    t = &g_tasks[g_current_task];
-    if (t->ps == 0) {
-        return -VIBEOS_EINVAL;
-    }
-
-    /* struct sigaction: handler at 0, flags at 8, restorer at 16, mask at 24. */
-    if (old_uptr != 0u) {
-        if (!hw_user_range_ok(old_uptr, 32, 1)) {
-            return -VIBEOS_EFAULT;
-        }
-        uint64_t old[4];
-        old[0] = t->ps->sig_handler[sig];
-        old[1] = t->ps->sig_flags[sig];
-        old[2] = t->ps->sig_restorer[sig];
-        old[3] = t->ps->sig_mask[sig] >> 1;
-        /* Written through the fault-safe copy: a sibling munmap between the
-         * range check and here would fault in ring 0 otherwise (H-016). */
-        if (vibeos_uaccess_copy((void *)(uintptr_t)old_uptr, old, sizeof(old)) != 0) {
-            return -VIBEOS_EFAULT;
-        }
-    }
-    if (act_uptr != 0u) {
-        uint64_t act[4];
-        if (!hw_user_range_ok(act_uptr, 32, 0)) {
-            return -VIBEOS_EFAULT;
-        }
-        if (vibeos_uaccess_copy(act, (const void *)(uintptr_t)act_uptr,
-                                sizeof(act)) != 0) {
-            return -VIBEOS_EFAULT;   /* H-016 */
-        }
-        /* The handler becomes frame->rip at delivery, and iretq to a
-         * non-canonical rip faults in ring 0 - a kernel panic a program could
-         * trigger with sigaction + a signal (H-017). A canonical handler that
-         * is unmapped only faults in ring 3 and kills the task, so canonicality
-         * and the user window are what must be checked. The two sentinels are
-         * dispositions (default, ignore), not addresses. */
-        if (act[0] != SIG_DFL_ADDR && act[0] != SIG_IGN_ADDR &&
-            !hw_user_addr_ok(act[0])) {
-            return -VIBEOS_EINVAL;
-        }
-        t->ps->sig_handler[sig] = act[0];
-        t->ps->sig_flags[sig] = act[1];
-        t->ps->sig_restorer[sig] = act[2];
-        t->ps->sig_mask[sig] = act[3] << 1;
-    }
-    return 0;
-}
-
-/* rt_sigprocmask(): SIG_BLOCK 0, SIG_UNBLOCK 1, SIG_SETMASK 2. */
-/* A Linux sigset_t numbers its bits from zero: bit 0 is signal 1. This kernel
- * numbers them by signal, so bit 9 is signal 9, which keeps every comparison
- * against a signal constant readable. The two representations are converted at
- * the boundary, and only here - getting it wrong shifts every mask by one, so
- * a program blocking SIGUSR2 actually blocks SIGSEGV and its own blocked
- * signal is delivered anyway. */
-static uint64_t hw_sigset_from_user(uint64_t user_set) {
-    return user_set << 1;
-}
-
-static uint64_t hw_sigset_to_user(uint64_t kernel_set) {
-    return kernel_set >> 1;
-}
-
-static long hw_sys_rt_sigprocmask(uint64_t how, uint64_t set_uptr, uint64_t old_uptr) {
-    hw_task_t *t;
-    uint64_t set = 0;
-
-    if (g_current_task < 0) {
-        return -VIBEOS_EINVAL;
-    }
-    t = &g_tasks[g_current_task];
-    if (old_uptr != 0u) {
-        if (!hw_user_range_ok(old_uptr, 8, 1)) {
-            return -VIBEOS_EFAULT;
-        }
-        uint64_t out = hw_sigset_to_user(t->sig_blocked);
-        if (vibeos_uaccess_copy((void *)(uintptr_t)old_uptr, &out,
-                                sizeof(out)) != 0) {
-            return -VIBEOS_EFAULT;   /* H-016 */
-        }
-    }
-    if (set_uptr == 0u) {
-        return 0;
-    }
-    if (!hw_user_range_ok(set_uptr, 8, 0)) {
-        return -VIBEOS_EFAULT;
-    }
-    {
-        uint64_t raw;
-        if (vibeos_uaccess_copy(&raw, (const void *)(uintptr_t)set_uptr,
-                                sizeof(raw)) != 0) {
-            return -VIBEOS_EFAULT;   /* H-016 */
-        }
-        set = hw_sigset_from_user(raw);
-    }
-    switch (how) {
-        case 0: t->sig_blocked |= set; break;
-        case 1: t->sig_blocked &= ~set; break;
-        case 2: t->sig_blocked = set; break;
-        default: return -VIBEOS_EINVAL;
-    }
-    /* Blocking these would make a process unkillable, so the request is
-     * accepted and the two bits are dropped, exactly as Linux does. */
-    t->sig_blocked &= ~((1ull << VIBEOS_SIGKILL) | (1ull << VIBEOS_SIGSTOP));
-    return 0;
-}
-
-/* setuid()/setgid(): there is one identity and it is root. Becoming it again
- * succeeds; becoming anyone else is refused rather than pretended. */
-static long hw_sys_setresid(uint64_t id) {
-    return (id == 0u) ? 0 : -VIBEOS_EPERM;
-}
-
-/* ---- what a C runtime asks for before it runs the program ----------------
- *
- * These are not conveniences. A static libc executes a fixed opening sequence
- * and dies if any of it fails: it installs thread-local storage, registers a
- * thread id, asks whether its output is a terminal, and only then reaches
- * main. Each one below either does the real thing or returns the error Linux
- * returns, because a syscall that reports a success it did not perform makes
- * the program fail later, somewhere unrelated, with nothing pointing back
- * here.
- */
-
-/* arch_prctl(): the one everything else depends on.
- *
- * On x86-64 a C runtime addresses its thread state through %fs - errno, the
- * stack-protector cookie, the locale pointer. The base of that segment lives
- * in a model-specific register, so setting it is privileged and a program
- * cannot do it itself. Until this works, a libc faults on its first line. */
 /* Is this an address a process is allowed to own? There are two user windows -
  * the high one VibeOS programs are linked into and the low one a Linux
  * executable is linked into - and the answer lives in one place so a new
  * caller cannot accidentally know about only one of them. */
-static int hw_user_addr_ok(uint64_t va) {
+int hw_user_addr_ok(uint64_t va) {
     if (va >= VIBEOS_HW_USER_BASE && va < VIBEOS_HW_USER_BASE + 0x8000000000ull) {
         return 1;
     }
     return va >= VIBEOS_HW_LOW_USER_BASE && va < VIBEOS_HW_LOW_USER_LIMIT;
 }
 
-static long hw_sys_arch_prctl(uint64_t code, uint64_t addr) {
-    hw_task_t *t;
-
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
-        return -VIBEOS_EINVAL;
-    }
-    t = &g_tasks[g_current_task];
-
-    switch (code) {
-        case ARCH_SET_FS:
-            /* A non-canonical address in this MSR faults on the wrmsr itself,
-             * in ring 0 - user space must not be able to reach that. So the
-             * base is checked before the write.
-             *
-             * It has to accept both user windows, and getting that wrong is
-             * not a subtle failure: a static musl binary keeps its thread
-             * pointer in its own .bss, down in the low window, and reacts to a
-             * refusal by executing hlt on purpose. The kernel then reports a
-             * general-protection fault in ring 3 with nothing to say that a
-             * bounds check three functions away was the cause. */
-            if (!hw_user_addr_ok(addr)) {
-                return -VIBEOS_EPERM;
-            }
-            t->fs_base = addr;
-            hw_wrmsr(MSR_FS_BASE, addr);
-            return 0;
-        case ARCH_GET_FS:
-            if (!hw_user_range_ok(addr, 8, 1)) {
-                return -VIBEOS_EFAULT;
-            }
-            /* Fault-safe: a sibling thread can munmap the page between the
-             * range check and here (H-024). */
-            if (vibeos_uaccess_copy((void *)(uintptr_t)addr, &t->fs_base,
-                                    sizeof(t->fs_base)) != 0) {
-                return -VIBEOS_EFAULT;
-            }
-            return 0;
-        case ARCH_SET_GS:
-        case ARCH_GET_GS:
-            /* %gs holds this CPU's per-CPU block. Handing it to a program
-             * would let ring 3 relocate the kernel's own state. */
-            return -VIBEOS_EPERM;
-        default:
-            return -VIBEOS_EINVAL;
-    }
-}
-
-/* ioctl(): there is no terminal device here. ENOTTY is not a shortcut, it is
- * the truthful answer - and it is the answer a libc uses to decide that
- * stdout is a file or a pipe and should be block buffered. */
-static long hw_sys_ioctl(uint64_t fd, uint64_t req, uint64_t arg) {
-    if (fd >= 3u && !hw_fd_get(fd)) {
-        return -VIBEOS_EBADF;
-    }
-    if (fd < 3u && req == VIBEOS_TIOCGPGRP) {
-        if (!hw_user_range_ok(arg, sizeof(uint32_t), 1) || g_current_task < 0) {
-            return -VIBEOS_EFAULT;
-        }
-        {
-            uint32_t v = g_console_foreground_pgid;
-            if (vibeos_uaccess_copy((void *)(uintptr_t)arg, &v, sizeof(v)) != 0) {
-                return -VIBEOS_EFAULT;   /* H-025 */
-            }
-        }
-        return 0;
-    }
-    if (fd < 3u && req == VIBEOS_TIOCSPGRP) {
-        uint32_t pgid;
-        int group;
-        if (!hw_user_range_ok(arg, sizeof(uint32_t), 0) || g_current_task < 0) {
-            return -VIBEOS_EFAULT;
-        }
-        if (vibeos_uaccess_copy(&pgid, (const void *)(uintptr_t)arg,
-                                sizeof(pgid)) != 0) {
-            return -VIBEOS_EFAULT;   /* H-025 */
-        }
-        group = hw_task_by_pid(pgid);
-        if (group < 0 || g_tasks[group].sid != g_tasks[g_current_task].sid) {
-            return -VIBEOS_EPERM;
-        }
-        g_console_foreground_pgid = g_tasks[group].pgid;
-        return 0;
-    }
-    return -VIBEOS_ENOTTY;
-}
-
-/* writev()/readv(): scatter-gather over the existing single-buffer paths. The
- * iovec array is itself user memory, so it is validated like any other user
- * pointer before being walked. */
-typedef struct {
-    uint64_t base;
-    uint64_t len;
-} hw_iovec_t;
-
-static long hw_sys_writev(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt) {
-    long total = 0;
-    uint64_t i;
-
-    if (iovcnt > 1024u) {
-        return -VIBEOS_EINVAL;   /* Linux caps this at UIO_MAXIOV */
-    }
-    if (!hw_user_range_ok(iov_uptr, iovcnt * sizeof(hw_iovec_t), 0)) {
-        return -VIBEOS_EFAULT;
-    }
-    for (i = 0; i < iovcnt; i++) {
-        hw_iovec_t v;
-        long n;
-        /* Each descriptor copied into the kernel before base/len are read: the
-         * array-wide range check and these reads are two instants, and a
-         * sibling munmap of the array page faults in ring 0 otherwise (H-020). */
-        if (vibeos_uaccess_copy(&v, (const void *)(uintptr_t)
-                (iov_uptr + i * sizeof(hw_iovec_t)), sizeof(v)) != 0) {
-            return total > 0 ? total : -VIBEOS_EFAULT;
-        }
-        if (v.len == 0u) {
-            continue;
-        }
-        n = hw_sys_write(fd, v.base, v.len);
-        if (n < 0) {
-            return total > 0 ? total : n;
-        }
-        total += n;
-        if ((uint64_t)n < v.len) {
-            break;   /* a short write ends the call, as it does on Linux */
-        }
-    }
-    return total;
-}
-
-static long hw_sys_readv(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt) {
-    long total = 0;
-    uint64_t i;
-
-    if (iovcnt > 1024u) {
-        return -VIBEOS_EINVAL;
-    }
-    if (!hw_user_range_ok(iov_uptr, iovcnt * sizeof(hw_iovec_t), 0)) {
-        return -VIBEOS_EFAULT;
-    }
-    for (i = 0; i < iovcnt; i++) {
-        hw_iovec_t v;
-        long n;
-        /* See writev: the iovec is copied in before base/len are read (H-020). */
-        if (vibeos_uaccess_copy(&v, (const void *)(uintptr_t)
-                (iov_uptr + i * sizeof(hw_iovec_t)), sizeof(v)) != 0) {
-            return total > 0 ? total : -VIBEOS_EFAULT;
-        }
-        if (v.len == 0u) {
-            continue;
-        }
-        n = hw_sys_read(fd, v.base, v.len);
-        if (n < 0) {
-            return total > 0 ? total : n;
-        }
-        total += n;
-        if ((uint64_t)n < v.len) {
-            break;
-        }
-    }
-    return total;
-}
-
-/* uname(): six fixed 65-byte fields, in order. Programs branch on the release
- * string, so it carries a real version number rather than a placeholder. */
-static long hw_sys_uname(uint64_t buf) {
-    static const char *const fields[6] = {
-        "Linux",            /* sysname: the ABI implemented here, which is    */
-                            /* what the question is actually about            */
-        "vibeos",           /* nodename   */
-        "6.1.0-vibeos",     /* release    */
-        "VibeOS",           /* version    */
-        "x86_64",           /* machine    */
-        "(none)"            /* domainname */
-    };
-    uint32_t f, i;
-
-    if (!hw_user_range_ok(buf, 6u * 65u, 1)) {
-        return -VIBEOS_EFAULT;
-    }
-    for (f = 0; f < 6u; f++) {
-        char *dst = (char *)(uintptr_t)(buf + (uint64_t)f * 65u);
-        const char *src = fields[f];
-        for (i = 0; i < 65u; i++) {
-            dst[i] = (i < 64u) ? src[i] : 0;
-            if (!dst[i]) {
-                break;
-            }
-        }
-        for (; i < 65u; i++) {
-            dst[i] = 0;
-        }
-    }
-    return 0;
-}
-
-/* clock_gettime(): derived from the timer tick, so it advances at the
- * resolution the timer really has rather than pretending to a nanosecond
- * accuracy it does not possess. */
-static long hw_sys_clock_gettime(uint64_t clk, uint64_t ts_uptr) {
-    uint64_t ticks = g_timer_ticks;
-    uint64_t kts[2];
-
-    (void)clk;   /* monotonic and realtime are one clock here: uptime */
-    if (!hw_user_range_ok(ts_uptr, 16, 1)) {
-        return -VIBEOS_EFAULT;
-    }
-    kts[0] = ticks / VIBEOS_HW_TIMER_HZ;
-    kts[1] = (ticks % VIBEOS_HW_TIMER_HZ) * (1000000000ull / VIBEOS_HW_TIMER_HZ);
-    /* Built in the kernel and copied out: a sibling munmap between the check
-     * and the write would fault in ring 0 (H-026). */
-    if (vibeos_uaccess_copy((void *)(uintptr_t)ts_uptr, kts, sizeof(kts)) != 0) {
-        return -VIBEOS_EFAULT;
-    }
-    return 0;
-}
-
-static long hw_sys_time(uint64_t tptr) {
-    uint64_t secs = g_timer_ticks / VIBEOS_HW_TIMER_HZ;
-
-    if (tptr != 0u) {
-        if (!hw_user_range_ok(tptr, 8, 1)) {
-            return -VIBEOS_EFAULT;
-        }
-        if (vibeos_uaccess_copy((void *)(uintptr_t)tptr, &secs, sizeof(secs)) != 0) {
-            return -VIBEOS_EFAULT;
-        }
-    }
-    return (long)secs;
-}
-
-/* prlimit64(): report the limits that are real here. The stack is the one a
- * runtime acts on - some size a guard region from it. */
-static long hw_sys_prlimit64(uint64_t resource, uint64_t new_uptr, uint64_t old_uptr) {
-    if (new_uptr != 0u) {
-        return -VIBEOS_EPERM;   /* the limits here are fixed by the layout */
-    }
-    if (old_uptr == 0u) {
-        return 0;
-    }
-    if (!hw_user_range_ok(old_uptr, 16, 1)) {
-        return -VIBEOS_EFAULT;
-    }
-    {
-        uint64_t *rl = (uint64_t *)(uintptr_t)old_uptr;
-        switch (resource) {
-            case 3: /* RLIMIT_STACK */
-                rl[0] = (uint64_t)VIBEOS_HW_USER_STACK_PAGES * 4096ull;
-                rl[1] = rl[0];
-                break;
-            case 7: /* RLIMIT_NOFILE */
-                rl[0] = 3u + VIBEOS_HW_MAX_FDS;
-                rl[1] = rl[0];
-                break;
-            default:
-                rl[0] = 0xFFFFFFFFFFFFFFFFull;   /* RLIM64_INFINITY */
-                rl[1] = rl[0];
-                break;
-        }
-    }
-    return 0;
-}
-
-/* futex(): one thread per process here, so there is never another thread to
- * wake or to wait for. WAKE woke nobody, which is 0. WAIT would deadlock, and
- * EAGAIN is what Linux returns when the value already moved - an outcome every
- * caller is written to handle. Real futexes belong with real threads, not
- * before them. */
-/* futex: the primitive every thread library builds its waiting on.
- *
- * The contract is deliberately odd and the oddity is the point. WAIT says
- * "sleep, but only if this word still holds the value I last saw"; the check
- * and the sleep happen together, under a lock, so a wake that arrives between
- * a thread reading the word and deciding to sleep cannot be lost. Without
- * that, a mutex hands out a lock to a thread that will never be told, which is
- * a hang and not a slowdown.
- *
- * Uncontended locks never come here at all - a library takes those with an
- * atomic instruction - so this is the path for contention and for joins.
- *
- * Waiters are matched on the address alone. Every thread that can share a
- * futex shares an address space, so the same virtual address is the same word;
- * two processes waiting on the same address in their own spaces would be
- * confused with each other, and that is a real limitation, written down rather
- * than papered over. Shared futexes across processes are not implemented.
- */
-#define VIBEOS_HW_MAX_FUTEX_WAITERS VIBEOS_HW_MAX_TASKS
-
-typedef struct {
-    /* `used` and `addr` are not the same question, and conflating them was a
-     * bug worth keeping the distinction for. A woken waiter still owns its
-     * slot until it returns - it is reading `woken` out of it - so the waker
-     * clears `addr`, which stops further wakes from matching, and leaves
-     * `used` alone. Freeing on the waker's side let a new waiter take the slot
-     * while the old one was still in it: the old one then cleared the new
-     * one's registration on its way out, and that thread slept forever with
-     * every wake passing it by. */
-    uint8_t used;
-    uint64_t addr;     /* 0 once woken: no further wake should match */
-    /* Whose address. A futex word is named by a user virtual address, and a
-     * virtual address means nothing without its process: every Linux program
-     * here links at 0x400000, and a forked child has its parent's layout
-     * exactly. The table was keyed by address alone, so a wake in one process
-     * ended a wait in another - THREADS_C5_FUTEX_XPROC, red first. There are no
-     * shared mappings in this kernel, so the process is the whole key. */
-    const hw_procstate_t *ps;
-    int task;
-    /* Which tenancy of `task` enqueued. The slot index alone is an ABA: a
-     * blocked waiter can be reaped and its slot handed to a new task, and a wake
-     * matching by address would then set the wrong tenant READY - once, a task
-     * that had already exited, scheduled onto a kernel stack being freed under
-     * it (ready_by=futex_wake, the four-worker crash). A wake requires this to
-     * still equal g_tasks[task].alloc_seq, the same tenancy check H-007 uses. */
-    uint32_t seq;
-    volatile int woken;
-} hw_futex_waiter_t;
-
-static hw_futex_waiter_t g_futex_waiters[VIBEOS_HW_MAX_FUTEX_WAITERS];
-static hw_lock_t g_futex_lock;
+hw_futex_waiter_t g_futex_waiters[VIBEOS_HW_MAX_FUTEX_WAITERS];
+hw_lock_t g_futex_lock;
 
 /* Wake up to `count` waiters on `addr`. Returns how many were woken, which is
  * what the caller is told: a library uses it to decide whether it needs to
  * wake anybody else. */
-static long hw_futex_wake(const hw_procstate_t *ps, uint64_t addr,
+long hw_futex_wake(const hw_procstate_t *ps, uint64_t addr,
                           uint32_t count) {
     long woke = 0;
     uint32_t i;
@@ -10087,132 +6326,6 @@ static long hw_futex_wake(const hw_procstate_t *ps, uint64_t addr,
     hw_spin_unlock(&g_futex_lock);
     hw_log(VIBEOS_LOG_DEBUG, 20u, addr, (uint64_t)woke, "futex wake");
     return woke;
-}
-
-static long hw_futex_wait(uint64_t addr, uint32_t expected) {
-    uint32_t slot;
-    uint32_t cur = 0;
-    int me = g_current_task;
-
-    if (me < 0 || addr == 0u || !hw_user_range_ok(addr, 4u, 0)) {
-        return -VIBEOS_EINVAL;
-    }
-
-    hw_spin_lock_named(&g_futex_lock, __func__);
-    /* The compare and the enqueue are one step. Reading the word first and
-     * enqueuing after would leave a window in which a waker sees no waiter and
-     * the waiter then sleeps on a value that has already changed - the lost
-     * wakeup, which presents as a program that stops for no reason. */
-    /* Through the fault-tolerant copy: the check above and this read are two
-     * instants, and g_futex_lock can spin between them (H-003). */
-    if (vibeos_uaccess_copy(&cur, (const void *)(uintptr_t)addr, 4u) != 0) {
-        hw_spin_unlock(&g_futex_lock);
-        return -VIBEOS_EFAULT;
-    }
-    if (cur != expected) {
-        hw_spin_unlock(&g_futex_lock);
-        hw_log(VIBEOS_LOG_DEBUG, 21u, addr, (uint64_t)expected,
-               "futex wait: value already moved");
-        return -VIBEOS_EAGAIN;
-    }
-    for (slot = 0; slot < VIBEOS_HW_MAX_FUTEX_WAITERS; slot++) {
-        if (!g_futex_waiters[slot].used) {
-            break;
-        }
-        /* Reclaim an entry whose enqueuer's slot has since been reused: the
-         * wake's tenancy check will never match it again, so it is only holding
-         * a table slot. This is what bounds the table against a thread reaped
-         * while blocked, which never runs the cleanup below. */
-        if (g_tasks[g_futex_waiters[slot].task].alloc_seq != g_futex_waiters[slot].seq) {
-            break;
-        }
-    }
-    if (slot == VIBEOS_HW_MAX_FUTEX_WAITERS) {
-        hw_spin_unlock(&g_futex_lock);
-        return -VIBEOS_ENOMEM;
-    }
-    g_futex_waiters[slot].used = 1;
-    g_futex_waiters[slot].addr = addr;
-    g_futex_waiters[slot].ps = g_tasks[me].ps;
-    g_futex_waiters[slot].task = me;
-    g_futex_waiters[slot].seq = g_tasks[me].alloc_seq;
-    g_futex_waiters[slot].woken = 0;
-
-    hw_spin_lock_named(&g_sched_lock, __func__);
-    (void)hw_task_set_state(me, HW_TASK_BLOCKED, __func__);
-    hw_spin_unlock(&g_sched_lock);
-    hw_spin_unlock(&g_futex_lock);
-    hw_log(VIBEOS_LOG_DEBUG, 22u, addr,
-           (uint64_t)cur |
-           ((uint64_t)g_tasks[me].pid << 32),
-           "futex wait: sleeping (a1 = value | tid<<32)");
-
-    /* Yield until somebody wakes us. The scheduler runs from the timer, so
-     * this is a wait and not a spin: the core is given away on the first
-     * interrupt and this task is not runnable again until a wake says so.
-     *
-     * Or until a signal that must be acted on is pending. The task was made
-     * BLOCKED before this loop, so a signal raised after that finds it BLOCKED
-     * and makes it runnable, and a signal raised before it is seen by the check
-     * on the first pass. Checking before blocking would leave a window in which
-     * neither happens. */
-    while (!g_futex_waiters[slot].woken) {
-        if (hw_signal_interrupts(me)) {
-            break;
-        }
-        hw_sched_point("block");
-        __asm__ __volatile__("sti; hlt" ::: "memory");
-    }
-
-    {
-        int interrupted;
-
-        /* Woken or interrupted is decided under the lock a waker takes. Read
-         * outside it, a FUTEX_WAKE landing between the loop and here would count
-         * this waiter as woken while it returned EINTR - and the thread that
-         * wake was meant for would never be told. A wake that got in first
-         * wins: the call returns 0 and the signal is delivered on the way out
-         * all the same. */
-        hw_spin_lock_named(&g_futex_lock, __func__);
-        interrupted = !g_futex_waiters[slot].woken;
-        g_futex_waiters[slot].addr = 0;
-        g_futex_waiters[slot].used = 0;   /* released by its owner, and only here */
-        hw_spin_unlock(&g_futex_lock);
-        if (interrupted) {
-            /* The signal may have been raised before this task was BLOCKED, in
-             * which case nothing made it runnable again. It is running now;
-             * say so, the same transition hw_signal_raise uses. */
-            hw_spin_lock_named(&g_sched_lock, __func__);
-            if (g_tasks[me].state == HW_TASK_BLOCKED) {
-                (void)hw_task_set_state(me, HW_TASK_READY, __func__);
-                HW_TASK_MARK(me, ready_by, "futex_wait_interrupted");
-            }
-            hw_spin_unlock(&g_sched_lock);
-            hw_log(VIBEOS_LOG_DEBUG, 23u, addr, (uint64_t)g_tasks[me].pid,
-                   "futex wait: interrupted by a signal");
-            return -VIBEOS_EINTR;
-        }
-    }
-    hw_log(VIBEOS_LOG_DEBUG, 23u, addr, (uint64_t)g_tasks[me].pid,
-           "futex wait: woken");
-    return 0;
-}
-
-static long hw_sys_futex(uint64_t addr, uint64_t op, uint64_t val) {
-    switch (op & FUTEX_CMD_MASK) {
-        case FUTEX_WAKE:
-            return hw_futex_wake(g_current_task >= 0 ? g_tasks[g_current_task].ps : 0,
-                                 addr, (uint32_t)val);
-        case FUTEX_WAIT:
-            return hw_futex_wait(addr, (uint32_t)val);
-        default:
-            /* Loudly, because this is how a thread library silently stops
-             * working: it asks for an operation, is told it does not exist,
-             * and carries on believing the wakeup it requested happened. */
-            hw_log(VIBEOS_LOG_WARN, 25u, addr, op,
-                   "futex: unsupported operation");
-            return -VIBEOS_ENOSYS;
-    }
 }
 
 /* Signal delivery and rt_sigreturn moved to linux_signal.c. Building a
@@ -10711,301 +6824,6 @@ void vibeos_x86_64_crash_dump(void) {
     }
     vibeos_x86_64_serial_puts("[CRASH] end\n");
     vibeos_x86_64_serial_unlock();
-}
-
-/* rt_sigreturn(): put back everything the handler interrupted. */
-long hw_sys_rt_sigreturn(vibeos_x86_64_isr_frame_t *frame) {
-    hw_task_t *t;
-    const hw_sigframe_t *sf;
-    hw_sigframe_t kf;
-    uint64_t base;
-
-    if (g_current_task < 0) {
-        return -VIBEOS_EINVAL;
-    }
-    t = &g_tasks[g_current_task];
-    /* The handler has returned, so rsp points just past the return address
-     * that the trampoline popped. */
-    base = frame->rsp - 8ull + 8ull;
-    if (!hw_user_range_ok(base, sizeof(hw_sigframe_t), 0)) {
-        hw_task_exit(128ull + VIBEOS_SIGSEGV);
-        return 0;
-    }
-    /* Copied into the kernel before anything is read: the range check and the
-     * reads below are two instants, and a sibling munmap of the frame page in
-     * between would fault in ring 0 (H-018). */
-    if (vibeos_uaccess_copy(&kf, (const void *)(uintptr_t)base, sizeof(kf)) != 0) {
-        hw_task_exit(128ull + VIBEOS_SIGSEGV);
-        return 0;
-    }
-    sf = &kf;
-    if (sf->magic != HW_SIGFRAME_MAGIC) {
-        /* Somebody called rt_sigreturn without a frame, or overwrote it.
-         * Resuming from whatever is on the stack would hand ring 3 a chance to
-         * pick its own cs and rflags. */
-        hw_task_exit(128ull + VIBEOS_SIGSEGV);
-        return 0;
-    }
-    {
-        vibeos_x86_64_isr_frame_t restored = sf->frame;
-        t->sig_blocked = sf->blocked;
-        /* Only user state is restored, and the segment selectors are forced
-         * back to the user ones: the frame is in memory the program can write,
-         * so nothing read out of it may decide privilege. */
-        restored.cs = VIBEOS_HW_USER_CODE_SEL;
-        restored.ss = VIBEOS_HW_USER_DATA_SEL;
-        restored.rflags = (restored.rflags & 0x0000000000000CD5ull) | 0x202ull;
-        /* rip comes from a user-writable frame; a non-canonical rip reaches
-         * iretq and #GPs in ring 0 (H-018). cs/ss/rflags are forced above, so
-         * this is the remaining ring-0 fault vector. rsp is left unchecked - a
-         * bad rsp faults in ring 3 on the next push, killing the task safely. */
-        if (!hw_user_addr_ok(restored.rip)) {
-            hw_task_exit(128ull + VIBEOS_SIGSEGV);
-            return 0;
-        }
-        *frame = restored;
-    }
-    return (long)frame->rax;
-}
-
-/* Linux ABI entry: nr in rax, args in rdi/rsi/rdx, with the full trapframe
- * available (fork needs it). Reached from both the native `syscall` trampoline
- * and the int 0x80 gate. Each number is offered to the Linux personality
- * (user/compat/linux) so the portable, host-tested translation model sees and
- * accounts for every real syscall. */
-long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
-                                 uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3) {
-    /* The ABI was bound to this task when it was created; it is not looked up
-     * per call. A task with no ABI recorded (there is none on the live path) is
-     * treated as Linux, the only one there is. */
-    const vibeos_abi_t *abi = (g_current_task >= 0 && g_tasks[g_current_task].abi)
-                                  ? g_tasks[g_current_task].abi
-                                  : vibeos_abi_linux();
-    vibeos_op_id_t id = abi->classify(nr, a1);
-
-    switch (id) {
-        case VIBEOS_OP_FORK:
-            /* Reached by fork, by vfork and by a clone() whose flags mean fork.
-             * ash uses vfork for the short child->exec path. A real vfork
-             * shares the parent's address space until exec, but returning a
-             * private fork here preserves the observable contract while
-             * avoiding a parent that can be modified by a still-running child.
-             * The child is constrained by the same exec/exit ABI as vfork's
-             * supported use in this personality. */
-            return hw_sys_fork(frame);
-        case VIBEOS_OP_EXEC:
-            return hw_sys_execve(frame, a1, a2, a3);
-        case VIBEOS_OP_OPEN:
-            return hw_sys_open(a1, a2);
-        case VIBEOS_OP_CLOSE:
-            return hw_sys_close(a1);
-        case VIBEOS_OP_LSEEK:
-            return hw_sys_lseek(a1, a2, a3);
-        case VIBEOS_OP_GETDENTS:
-            return hw_sys_getdents64(a1, a2, a3);
-        case VIBEOS_OP_UNLINK:
-            return hw_sys_unlink(a1);
-        case VIBEOS_OP_MKDIR:
-            return hw_sys_mkdir(a1);
-        case VIBEOS_OP_WAIT:
-            return hw_sys_waitpid(a1, a2, a3);
-        case VIBEOS_OP_WRITE:
-            return hw_sys_write(a1, a2, a3);
-        case VIBEOS_OP_READ:
-            return hw_sys_read(a1, a2, a3);
-        case VIBEOS_OP_BRK:
-            return hw_sys_brk(a1);
-        case VIBEOS_OP_MAP:
-            /* addr, len, prot in the first three; flags and fd are in r10 and
-             * r8, which the trapframe carries. */
-            return hw_sys_mmap(a1, a2, a3, frame->r10, frame->r8);
-        case VIBEOS_OP_PROTECT:
-            return hw_sys_mprotect(a1, a2, a3);
-        case VIBEOS_OP_UNMAP:
-            return hw_sys_munmap(a1, a2);
-        case VIBEOS_OP_GETPID:
-            /* The thread group, not the thread. Every thread of a program
-             * gets the same answer here, which is the whole point of the
-             * distinction: getpid() names the process. */
-            return (g_current_task >= 0) ? (long)g_tasks[g_current_task].tgid : 1;
-        case VIBEOS_OP_SETPGID:
-            return hw_sys_setpgid(a1, a2);
-        case VIBEOS_OP_GETPGRP:
-            return (g_current_task >= 0 && g_tasks[g_current_task].is_user) ?
-                (long)g_tasks[g_current_task].pgid : -VIBEOS_EINVAL;
-        case VIBEOS_OP_SETSID:
-            return hw_sys_setsid();
-        case VIBEOS_OP_GETSID:
-            return hw_sys_getsid(a1);
-
-        /* The opening sequence of a real C runtime. */
-        case VIBEOS_OP_ARCH_PRCTL:
-            return hw_sys_arch_prctl(a1, a2);
-        case VIBEOS_OP_IOCTL:
-            return hw_sys_ioctl(a1, a2, a3);
-        case VIBEOS_OP_WRITEV:
-            return hw_sys_writev(a1, a2, a3);
-        case VIBEOS_OP_READV:
-            return hw_sys_readv(a1, a2, a3);
-        case VIBEOS_OP_UNAME:
-            return hw_sys_uname(a1);
-        case VIBEOS_OP_CLOCK_GETTIME:
-            return hw_sys_clock_gettime(a1, a2);
-        case VIBEOS_OP_PRLIMIT:
-            return hw_sys_prlimit64(a2, a3, frame->r10);
-        case VIBEOS_OP_FUTEX:
-            return hw_sys_futex(a1, a2, a3);
-        case VIBEOS_OP_GETTID:
-            /* The thread id proper. Equal to getpid() for a single-threaded
-             * program, which is what Linux reports too, and different for
-             * every thread of a program that has several. */
-            return (g_current_task >= 0) ? (long)g_tasks[g_current_task].pid : 1;
-        case VIBEOS_OP_SET_TID_ADDRESS:
-            /* Where to write zero and wake when this thread exits. A joiner
-             * sleeps on that word, so recording it is half of what makes
-             * pthread_join return; the other half is exit doing the writing. */
-            if (g_current_task >= 0) {
-                g_tasks[g_current_task].clear_child_tid = a1;
-                return (long)g_tasks[g_current_task].pid;
-            }
-            return 1;
-        case VIBEOS_OP_SET_ROBUST_LIST:
-            /* The list is walked by the kernel when a thread dies holding a
-             * robust mutex. No threads, no robust mutexes, nothing to walk. */
-            return 0;
-        case VIBEOS_OP_RSEQ:
-            /* Restartable sequences are an optimisation with a mandatory
-             * fallback. Reporting ENOSYS makes the libc take that fallback;
-             * claiming success would make it run a fast path this kernel does
-             * not implement. */
-            return -VIBEOS_ENOSYS;
-        case VIBEOS_OP_GETRANDOM:
-            /* There is no entropy source here yet. Returning predictable bytes
-             * from the syscall a program uses for keys is worse than refusing:
-             * ENOSYS is visible, weak randomness is not. */
-            return -VIBEOS_ENOSYS;
-        case VIBEOS_OP_SIG_ACTION:
-            return hw_sys_rt_sigaction(a1, a2, a3);
-        case VIBEOS_OP_SIG_PROCMASK:
-            return hw_sys_rt_sigprocmask(a1, a2, a3);
-        case VIBEOS_OP_YIELD:
-            /* Give up the rest of this slice honestly: hlt parks the CPU until
-             * the next timer interrupt, which is where the switch happens. */
-            __asm__ __volatile__("sti; hlt");
-            return 0;
-        /* What a program does once it is running. */
-        case VIBEOS_OP_FSTAT:
-            return hw_sys_fstat(a1, a2);
-        case VIBEOS_OP_STAT_AT:
-            return hw_sys_newfstatat(a1, a2, a3, frame->r10);
-        case VIBEOS_OP_OPEN_AT:
-            return hw_sys_openat(a1, a2, a3);
-        case VIBEOS_OP_PIPE:
-            return hw_sys_pipe2(a1, 0);
-        case VIBEOS_OP_PIPE2:
-            return hw_sys_pipe2(a1, a2);
-        case VIBEOS_OP_DUP2:
-            return hw_sys_dup2(a1, a2);
-        case VIBEOS_OP_DUP: {
-            /* dup() is dup2() onto the lowest free descriptor. */
-            hw_task_t *dt;
-            int i;
-            if (g_current_task < 0) {
-                return -VIBEOS_EINVAL;
-            }
-            dt = &g_tasks[g_current_task];
-            for (i = 0; i < VIBEOS_HW_MAX_FDS; i++) {
-                if (!dt->fds[i].used) {
-                    return hw_sys_dup2(a1, (uint64_t)(3 + i));
-                }
-            }
-            return -VIBEOS_EMFILE;
-        }
-        case VIBEOS_OP_GETCWD:
-            return hw_sys_getcwd(a1, a2);
-        case VIBEOS_OP_READLINK_AT:
-            return hw_sys_readlinkat(a1, a2, a3, frame->r10);
-        case VIBEOS_OP_PRCTL:
-            return hw_sys_prctl(a1, a2);
-        case VIBEOS_OP_IDENTITY_SET:   /* setuid, setgid */
-            return hw_sys_setresid(a1);
-        case VIBEOS_OP_TIME:
-            return hw_sys_time(a1);
-        case VIBEOS_OP_THREAD_CREATE:
-            /* Which flag combinations are a thread, and which are refused, is
-             * the Linux ABI's decision (abi_linux.c classify); this is only the
-             * operation. */
-            return hw_sys_clone_thread(frame, a1, a2, a3,
-                                       frame->r10, frame->r8);
-        case VIBEOS_OP_GETPPID:
-            return (g_current_task >= 0) ? (long)g_tasks[g_current_task].ppid : 0;
-        case VIBEOS_OP_SIG_RETURN:
-            return hw_sys_rt_sigreturn(frame);
-        case VIBEOS_OP_KILL:
-            return hw_sys_kill(a1, a2);
-        case VIBEOS_OP_TKILL:
-            /* raise() goes through tkill, not kill: a library raising a signal
-             * in itself targets its own thread, and with one thread per
-             * process that is the same destination. */
-            return hw_sys_tkill(a1, a2);
-        case VIBEOS_OP_TGKILL:
-            /* tgkill(tgid, tid, sig): the thread named by tid, provided it
-             * still belongs to tgid - the check that stops a recycled thread id
-             * from reaching a different process. */
-            return hw_sys_tgkill(a1, a2, a3);
-        case VIBEOS_OP_SENDFILE:
-            /* Every caller of sendfile has to cope with it failing, and does:
-             * a read-and-write loop is the documented fallback. Refusing is
-             * therefore free, while serving it would mean a second copy of the
-             * file and console paths purely to move bytes between kernel
-             * buffers. */
-            return -VIBEOS_ENOSYS;
-
-        case VIBEOS_OP_IDENTITY_GET:   /* getuid, geteuid, getgid, getegid */
-            /* Everything runs as the one identity this system has. */
-            return 0;
-        /* Sockets. The Linux ABI passes the 4th, 5th and 6th arguments in r10,
-         * r8 and r9; the trapframe has them, so read them straight from it. */
-        case VIBEOS_OP_SOCKET:
-            return hw_sys_socket(a1, a2);
-        case VIBEOS_OP_CONNECT:
-            return hw_sys_connect(a1, a2);
-        case VIBEOS_OP_ACCEPT:
-            return hw_sys_accept(a1, a2);
-        case VIBEOS_OP_SENDTO:
-            return hw_sys_sendto(a1, a2, a3, frame->r8);
-        case VIBEOS_OP_RECVFROM:
-            return hw_sys_recvfrom(a1, a2, a3, frame->r8);
-        case VIBEOS_OP_BIND:
-            return hw_sys_bind(a1, a2);
-        case VIBEOS_OP_LISTEN:
-            return hw_sys_listen(a1);
-        case VIBEOS_OP_NETCTL:
-            return hw_sys_netctl(a1, a2);
-        case VIBEOS_OP_PAGEINFO:
-            return hw_sys_pageinfo(a1, a2);
-        case VIBEOS_OP_EXIT:
-            hw_task_exit(a1); /* retires this task and switches away; no return */
-            return 0;
-        case VIBEOS_OP_EXIT_GROUP:
-            hw_task_exit_group(a1); /* the whole process; no return */
-            return 0;
-        case VIBEOS_OP_NONE:
-        default:
-            __sync_fetch_and_add(&g_abi_unimplemented, 1u);
-            g_abi_last_nr = nr;   /* the witness: which number, not just how many */
-            if (nr == VIBEOS_ABI_PROBE_NR) {
-                __sync_fetch_and_add(&g_abi_probes, 1u);
-                return -VIBEOS_ENOSYS;   /* asked for on purpose; no log line */
-            }
-            /* One line, one critical section: puts and print_hex each take the console lock on their own. */
-            vibeos_x86_64_serial_lock();
-            vibeos_x86_64_serial_puts("[HW][SYS] unimplemented Linux syscall nr=0x");
-            vibeos_x86_64_serial_print_hex(nr);
-            vibeos_x86_64_serial_puts("\n");
-            vibeos_x86_64_serial_unlock();
-            return -VIBEOS_ENOSYS;
-    }
 }
 
 /* Entry point for the `syscall` trampoline (isr.S): pull the Linux ABI

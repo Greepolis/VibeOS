@@ -9,7 +9,7 @@
  * file, with the crash dumper and half the syscall table between them.
  */
 
-#include "arch_hw_internal.h"
+#include "linux_internal.h"
 
 /* The console. gcc let this file call it on an implicit declaration and only
  * warned; clang treats that as the error it is. A lifted file has to say what

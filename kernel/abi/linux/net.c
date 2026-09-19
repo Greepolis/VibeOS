@@ -17,7 +17,7 @@
  * watch: a later cut that needs thirty is not a cut, it is a rename.
  */
 
-#include "arch_hw_internal.h"
+#include "linux_internal.h"
 
 /* Read a struct sockaddr_in out of user memory: family (host order), port and
  * address (both network order on the wire). */

@@ -16,6 +16,43 @@
  * a lot.
  */
 
+#include "vibeos/arch_x86_64.h"
+#include "vibeos/trap.h"
+#include "vibeos/boot.h"
+#include "vibeos/mm.h"
+#include "vibeos/elf.h"
+#include "vibeos/services.h"
+#include "vibeos/exec_stats.h"
+#include "vibeos/account.h"
+#include "vibeos/forkguard.h"
+#include "vibeos/sched_policy.h"
+#include "vibeos/pageinfo.h"
+#include "vibeos/rmap.h"
+#include "vibeos/reclaim.h"
+#include "vibeos/mbz.h"
+#include "vibeos/abi.h"
+#include "vibeos/abi_linux.h"
+#include "vibeos/ceildiv.h"
+#include "vibeos/blkdev.h"
+#include "vibeos/io_stats.h"
+#include "vibeos/blockdev.h"
+#include "vibeos/partition.h"
+#include "vibeos/parttab.h"
+#include "vibeos/ext2.h"
+#include "vibeos/iso9660.h"
+#include "vibeos/exfat.h"
+#include "vibeos/ntfs.h"
+#include "vibeos/logsink.h"
+#include "vibeos/storage.h"
+#include "vibeos/swapmap.h"
+#include "vibeos/anon.h"
+#include "vibeos/swaparea.h"
+#include "vibeos/frame.h"
+#include "vibeos/vmspace.h"
+#include "vibeos/backing.h"
+#include "vibeos/task_stats.h"
+#include "vibeos/runq.h"
+#include "vibeos/lifetime.h"
 #include "vibeos/vfs.h"
 #include <stdint.h>
 
@@ -422,4 +459,278 @@ void hw_mount_report(void);
 int hw_task_set_state(int slot, vibeos_task_state_t to, const char *why);
 int hw_signal_default_kills(uint32_t sig);
 
-#endif /* VIBEOS_ARCH_HW_INTERNAL_H */
+/* ---- shared with the Linux ABI layer (kernel/abi/linux) ---------------------
+ *
+ * Things arch_hw.c owns that the syscall handlers need. They used to be file-scope
+ * statics in one 12,000-line file; lifting the handlers out made each of these a
+ * named dependency, which is the honest size of the seam. */
+
+/* VIBEOS_HW_TIMER_HZ is in arch_hw_internal.h. */
+
+
+
+/* SYSRET requires user data (SS) to precede user code (CS) in the GDT, so the
+ * user segments are ordered data-then-code: index 3 = data, index 4 = code. */
+#define VIBEOS_HW_USER_DATA_SEL 0x1Bu   /* GDT index 3, RPL 3 */
+#define VIBEOS_HW_USER_CODE_SEL 0x23u   /* GDT index 4, RPL 3 */
+struct tss64 {
+    uint32_t reserved0;
+    uint64_t rsp0;
+    uint64_t rsp1;
+    uint64_t rsp2;
+    uint64_t reserved1;
+    uint64_t ist[7];
+    uint64_t reserved2;
+    uint16_t reserved3;
+    uint16_t iomap_base;
+} __attribute__((packed));
+/* One of these per core, reached through GS.base. The first two fields are read
+ * and written by the `syscall` trampoline in isr.S at fixed offsets 0 and 8 -
+ * do not reorder them.
+ *
+ * GS.base is programmed once per CPU and never swapped: user code cannot change
+ * it (CR4.FSGSBASE stays clear and ring-3 programs never load %gs), so the
+ * kernel entry paths can rely on it without a swapgs dance. */
+typedef struct hw_cpu {
+    uint64_t syscall_kstack_top;  /* offset 0  - isr.S loads rsp from here */
+    uint64_t user_saved_rsp;      /* offset 8  - isr.S stashes the user rsp */
+    struct hw_cpu *self;          /* offset 16 - so C can find its own block */
+    uint32_t lapic_id;
+    uint32_t index;
+    int current_task;             /* index into g_tasks, -1 before bring-up */
+    int idle_task;                /* this core's idle task, -1 on the BSP */
+    volatile int online;
+    /* Ticks left in the current task's slice. See hw_schedule. */
+    uint32_t slice_left;
+    /* A kernel stack whose task has exited but whose core has not yet left it.
+     *
+     * The stack a task exits on is the one it is standing on. It cannot be
+     * freed by the exiting task - there is nothing to run on afterwards - and
+     * it must not be freed by anybody else either, which is the defect this
+     * exists to close: the reaper on another core used to free it the instant
+     * it saw the zombie, while the dying core was still executing the handful
+     * of instructions between publishing the zombie and switching away. Those
+     * instructions push. So the frame was written after it had been freed and
+     * poisoned, and later handed out again - to a page table, in the run this
+     * was caught on, which is how a core ends up executing 0xdead0000dead0000.
+     *
+     * The stack is parked here instead, and freed by this core after it is
+     * demonstrably running on a different one. */
+    uint64_t dead_kstack_base;
+    uint32_t dead_kstack_pages;
+    /* How many times this core has loaded CR3.
+     *
+     * With neither PCID nor global pages - and this kernel enables neither -
+     * writing CR3 flushes this core's entire TLB. So a core whose count has
+     * moved since some moment cannot still hold any translation from before it,
+     * which is the whole quiescence argument the unmap quarantine rests on.
+     * Both of those facts are load-bearing; see hw_tlb_quarantine_put. */
+    volatile uint64_t cr3_generation;
+    struct tss64 tss;
+} hw_cpu_t;
+/* The scheduler state below is shared by every core; `g_current_task` is not.
+ * Making it a macro over the per-CPU block keeps every existing use site
+ * (syscalls, exit, fork) correct on SMP without threading a CPU argument
+ * through the whole syscall layer. */
+#define g_current_task (hw_this_cpu()->current_task)
+/* Both defined further down, and both needed above their definitions: this is
+ * one 5000-line file, and a helper used before it is declared compiles as an
+ * implicit declaration and then fails confusingly at the definition. */
+/* Reasons a range is refused, so a caller can say which one it hit. */
+#define HW_RANGE_OK          0u
+#define HW_RANGE_NO_TASK     1u   /* no current task, or not a user one */
+#define HW_RANGE_WRAP        2u
+#define HW_RANGE_LEVEL0      3u   /* PML4 entry absent or not user */
+#define HW_RANGE_LEAF        6u   /* the 4 KiB entry itself */
+#define HW_RANGE_READONLY    7u
+/* The last few copy-on-write faults, kept so a corrupted user buffer can be
+ * reported together with the faults on its own page. Power of two: the slot is
+ * a masked atomic increment, so several cores record without a lock. */
+#define HW_COW_RING 16u
+typedef struct {
+    uint64_t va, rip, err, pid, handled, cpu;
+} hw_cow_rec_t;
+#define PTE_PRESENT 0x001ull
+#define PTE_WRITE   0x002ull
+#define PTE_USER    0x004ull            /* ring-3 accessible */
+/* Bits 9 through 11 are ignored by the hardware and belong to the OS. This one
+ * marks a page that is shared after fork and must be duplicated before it is
+ * written. Without it a read-only page is indistinguishable from a page the
+ * program was never allowed to write, and a genuine protection fault would be
+ * silently turned into a successful write. */
+#define PTE_NX      (1ull << 63)       /* no-execute; needs EFER.NXE (hw_enable_syscall) */
+#define PTE_COW     0x200ull
+/* User virtual layout: PML4 slot 1 (512 GiB). VibeOS programs are linked at
+ * VIBEOS_HW_USER_BASE (user/prog/user.ld); their stack sits above the image. */
+#define VIBEOS_HW_USER_BASE 0x8000000000ull
+/* Programs no longer start on a bare stack: hw_proc_create builds the System V
+ * startup block (argc, argv, envp, auxv) in the topmost stack page and reports
+ * the stack pointer to enter on, which is 16-byte aligned as the ABI requires.
+ * `_start` is written in assembly (user/prog/crt0.S) precisely so that state is
+ * consumed correctly instead of being reinterpreted as a function frame. */
+#define VIBEOS_HW_USER_STACK_PAGES 4u
+#define hw_aspace_destroy(as) hw_aspace_destroy_why((as), __func__)
+/* Thread-local storage base. A C runtime reaches its own thread state through
+ * %fs on x86-64 - errno, the stack guard, locale - so this MSR is per task,
+ * not per CPU, and has to be reloaded on every context switch. */
+#define MSR_FS_BASE 0xC0000100u
+/* User address-space layout (all inside the process's own PML4 slot):
+ *   [USER_BASE ..]            program image (linked address)
+ *   [.. USER_STACK_TOP]       stack (grows down)
+ *   [USER_HEAP_BASE ..]       brk heap (grows up)
+ *   [USER_MMAP_BASE ..]       anonymous mmap arena (grows up)
+ */
+#define VIBEOS_HW_USER_HEAP_BASE (VIBEOS_HW_USER_BASE + 0x00800000ull) /* +8 MiB  */
+#define VIBEOS_HW_USER_MMAP_BASE (VIBEOS_HW_USER_BASE + 0x04000000ull) /* +64 MiB */
+/* VIBEOS_HW_WBUF is in arch_hw_internal.h. */
+
+/* Pipes.
+ *
+ * A pipe is a ring buffer with two ends, and what makes it a pipe rather than
+ * a buffer is what happens at the edges: a reader with nothing to read waits
+ * for a writer, a writer with no room waits for a reader, and a reader whose
+ * writers have all closed gets end of file rather than waiting forever. Those
+ * three rules are the entire difference between `ls | wc -l` printing a number
+ * and hanging.
+ *
+ * The ends are counted, not flagged, because a descriptor can be duplicated
+ * and inherited: `ls | wc` gives the write end to a child, and the parent must
+ * close its own copy or the reader never sees end of file. That is the classic
+ * way a shell pipeline hangs, and it is a refcount bug, not a pipe bug. */
+#define VIBEOS_HW_MAX_PIPES 8
+#define VIBEOS_HW_PIPE_BYTES 4096u
+typedef struct {
+    int used;
+    uint32_t readers;
+    uint32_t writers;
+    uint32_t head;      /* next byte to read  */
+    uint32_t tail;      /* next byte to write */
+    uint32_t count;     /* bytes currently held */
+    uint8_t buf[VIBEOS_HW_PIPE_BYTES];
+} hw_pipe_t;
+/* futex(): one thread per process here, so there is never another thread to
+ * wake or to wait for. WAKE woke nobody, which is 0. WAIT would deadlock, and
+ * EAGAIN is what Linux returns when the value already moved - an outcome every
+ * caller is written to handle. Real futexes belong with real threads, not
+ * before them. */
+/* futex: the primitive every thread library builds its waiting on.
+ *
+ * The contract is deliberately odd and the oddity is the point. WAIT says
+ * "sleep, but only if this word still holds the value I last saw"; the check
+ * and the sleep happen together, under a lock, so a wake that arrives between
+ * a thread reading the word and deciding to sleep cannot be lost. Without
+ * that, a mutex hands out a lock to a thread that will never be told, which is
+ * a hang and not a slowdown.
+ *
+ * Uncontended locks never come here at all - a library takes those with an
+ * atomic instruction - so this is the path for contention and for joins.
+ *
+ * Waiters are matched on the address alone. Every thread that can share a
+ * futex shares an address space, so the same virtual address is the same word;
+ * two processes waiting on the same address in their own spaces would be
+ * confused with each other, and that is a real limitation, written down rather
+ * than papered over. Shared futexes across processes are not implemented.
+ */
+#define VIBEOS_HW_MAX_FUTEX_WAITERS VIBEOS_HW_MAX_TASKS
+typedef struct {
+    /* `used` and `addr` are not the same question, and conflating them was a
+     * bug worth keeping the distinction for. A woken waiter still owns its
+     * slot until it returns - it is reading `woken` out of it - so the waker
+     * clears `addr`, which stops further wakes from matching, and leaves
+     * `used` alone. Freeing on the waker's side let a new waiter take the slot
+     * while the old one was still in it: the old one then cleared the new
+     * one's registration on its way out, and that thread slept forever with
+     * every wake passing it by. */
+    uint8_t used;
+    uint64_t addr;     /* 0 once woken: no further wake should match */
+    /* Whose address. A futex word is named by a user virtual address, and a
+     * virtual address means nothing without its process: every Linux program
+     * here links at 0x400000, and a forked child has its parent's layout
+     * exactly. The table was keyed by address alone, so a wake in one process
+     * ended a wait in another - THREADS_C5_FUTEX_XPROC, red first. There are no
+     * shared mappings in this kernel, so the process is the whole key. */
+    const hw_procstate_t *ps;
+    int task;
+    /* Which tenancy of `task` enqueued. The slot index alone is an ABA: a
+     * blocked waiter can be reaped and its slot handed to a new task, and a wake
+     * matching by address would then set the wrong tenant READY - once, a task
+     * that had already exited, scheduled onto a kernel stack being freed under
+     * it (ready_by=futex_wake, the four-worker crash). A wake requires this to
+     * still equal g_tasks[task].alloc_seq, the same tenancy check H-007 uses. */
+    uint32_t seq;
+    volatile int woken;
+} hw_futex_waiter_t;
+
+
+hw_cpu_t *hw_this_cpu(void);
+uint32_t vibeos_x86_64_cpu_id(void);
+extern hw_lock_t g_sched_lock;
+void hw_spin_lock_preemptible(hw_lock_t *lock);
+void hw_spin_unlock_preemptible(hw_lock_t *lock);
+void hw_spin_lock_named(hw_lock_t *lock, const char *fn);
+extern uint64_t g_ring3_write_nul;
+extern hw_cow_rec_t g_cow_ring[HW_COW_RING];
+extern volatile uint64_t g_abi_unimplemented;
+extern volatile uint64_t g_abi_probes;
+extern volatile uint64_t g_abi_last_nr;
+void hw_sched_point(const char *where);
+void hw_panic(const char *why);
+extern uint8_t *g_exec_elf;
+extern uint32_t g_exec_elf_cap;
+int hw_page_put(uint64_t phys);
+uint64_t hw_read_cr3(void);
+void hw_write_cr3(uint64_t pml4_phys);
+void hw_tlbq_drain(void);
+void *hw_alloc_user_page(void);
+long hw_read_file_cached(const char *path, void *buf, uint32_t cap,
+                                uint32_t *out_id);
+vibeos_vmspace_t hw_vm(const vibeos_hw_aspace_t *as);
+int hw_map_page(vibeos_hw_aspace_t *as, uint64_t va, uint64_t pa,
+                       uint64_t leaf_flags);
+int hw_aspace_create(vibeos_hw_aspace_t *as);
+void hw_aspace_destroy_why(vibeos_hw_aspace_t *as, const char *why);
+void hw_wrmsr(uint32_t msr, uint64_t value);
+int hw_exec_refuse(vibeos_exec_fail_t why, const char *path,
+                          const char *detail);
+int hw_proc_create(hw_proc_t *p, hw_procstate_t *ps,
+                          const unsigned char *elf, uint64_t len,
+                          uint64_t staged,
+                          const char *const *argv, const char *const *envp,
+                          const char *path, uint32_t file_id);
+int hw_map_user_pages(vibeos_hw_aspace_t *as, uint64_t va, uint64_t pages);
+uint64_t hw_proc_cr3(const hw_proc_t *p);
+extern hw_pipe_t g_pipes[VIBEOS_HW_MAX_PIPES];
+extern hw_lock_t g_pipe_lock;
+uint64_t hw_alloc_kstack(uint64_t *out_base, uint32_t *out_pages);
+hw_procstate_t *hw_procstate_new(void);
+void hw_procstate_put(hw_procstate_t *ps);
+extern uint32_t g_next_pid;
+extern uint32_t g_console_foreground_pgid;
+int hw_task_alloc_for_user(const char *what);
+void hw_task_release(int i);
+void hw_keyboard_wake(void);
+int hw_console_getc(void);          /* next console byte, or -1 if none yet */
+void hw_console_echo(char c);        /* echo one byte to the screen */
+void hw_fpu_init_area(unsigned char *area);
+int hw_aspace_shared_by_other(const uint64_t *pml4, int except);
+int hw_user_range_why(uint64_t va, uint64_t len, int need_write,
+                             uint32_t *why);
+void hw_pipe_release(hw_fd_t *f);
+uint64_t *hw_pte_lookup(vibeos_hw_aspace_t *as, uint64_t va);
+void hw_invlpg(uint64_t va);
+int hw_aspace_copy_user(vibeos_hw_aspace_t *dst, vibeos_hw_aspace_t *src);
+int hw_signal_interrupts(int task);
+int hw_signal_raise(int task_index, uint32_t sig);
+void hw_task_exit_group(uint64_t code);
+int hw_task_by_pid(uint32_t pid);
+int hw_task_by_tid(uint32_t tid);
+int hw_user_addr_ok(uint64_t va);
+extern hw_futex_waiter_t g_futex_waiters[VIBEOS_HW_MAX_FUTEX_WAITERS];
+extern hw_lock_t g_futex_lock;
+long hw_futex_wake(const hw_procstate_t *ps, uint64_t addr,
+                          uint32_t count);
+long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
+                                 uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3);
+
+
+#endif

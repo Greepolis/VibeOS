@@ -24,9 +24,9 @@
 #    the ratchet's margin (5000 cycles against a 208-440 minimum) would not trip
 #    it, so this is a claim about margin, not a case.
 #
-# Target source: kernel/arch/x86_64/arch_hw.c (cases 1-2); include/vibeos/abi.h
+# Target source: kernel/abi/linux/misc.c (cases 1-2); include/vibeos/abi.h
 # for the rest, run as: sabotage.py include/vibeos/abi.h scripts/dev/cases/core-syscall.txt
-# Run: SABOTAGE_VERIFY="python3 scripts/dev/check-syscall-checks.py" python3 scripts/dev/sabotage.py kernel/arch/x86_64/arch_hw.c scripts/dev/cases/core-syscall.txt
+# Run: SABOTAGE_VERIFY="python3 scripts/dev/check-syscall-checks.py" python3 scripts/dev/sabotage.py kernel/abi/linux/misc.c scripts/dev/cases/core-syscall.txt
 
 ### uname stops validating its buffer
 --- old

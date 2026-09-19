@@ -12,12 +12,12 @@
 
 ### clone with a private address space and a thread flag is no longer refused
 --- old
-            return ((a1 & CLONE_VM) != 0u) ? VIBEOS_SYS_THREAD_CREATE : VIBEOS_SYS_NONE;
+            return ((a1 & CLONE_VM) != 0u) ? VIBEOS_OP_THREAD_CREATE : VIBEOS_OP_NONE;
 +++ new
-            return VIBEOS_SYS_THREAD_CREATE;
+            return VIBEOS_OP_THREAD_CREATE;
 
 ### vfork stops meaning fork
 --- old
-    [LSYS_vfork] = (uint8_t)VIBEOS_SYS_FORK,
+    [LSYS_vfork] = (uint8_t)VIBEOS_OP_FORK,
 +++ new
-    [LSYS_vfork] = (uint8_t)VIBEOS_SYS_NONE,
+    [LSYS_vfork] = (uint8_t)VIBEOS_OP_NONE,

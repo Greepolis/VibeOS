@@ -86,6 +86,9 @@ do_build() {
     # Every operation runs exactly the checks it declares (C4): a check declared
     # and not run, run and not declared, or an operation no case dispatches.
     python3 scripts/dev/check-syscall-checks.py | tail -1
+    # Every sabotage case still has an anchor to break. Moving code breaks them
+    # silently; this finds it the same day.
+    python3 scripts/dev/check-sabotage-anchors.py | tail -1
     # The seven parts of a module, for the four parts a script can judge. The
     # must-be-zero part is deliberately absent: it is C2's, which adds the
     # counters before the check that demands them, so this does not ship red

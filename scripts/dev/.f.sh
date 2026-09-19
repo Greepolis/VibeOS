@@ -4,7 +4,7 @@
 cd /mnt/c/Users/Stefa/Documents/Progetti/VibeOS
 bad=0
 out=$(bash scripts/dev/check.sh all build-clang-Release 2>&1)
-echo "$out" | grep -E '^rc=|^warnings=|^clang-|^host-tests|^bootloader-tests|assertions-covered|counters-produced|mm-layering|nightly-coverage|reachable=|chokepoints=|syscall-checks=|subsystem=|blast-radius=|mustbezero-asserted=|rmap-crosscheck=|ALL_TESTS|error:'
+echo "$out" | grep -E '^rc=|^warnings=|^clang-|^host-tests|^bootloader-tests|assertions-covered|counters-produced|mm-layering|nightly-coverage|reachable=|chokepoints=|syscall-checks=|sabotage-anchors=|subsystem=|blast-radius=|mustbezero-asserted=|rmap-crosscheck=|ALL_TESTS|error:'
 echo "$out" | grep -qE '^rc=0$'          || bad=1
 echo "$out" | grep -qE '^clang-rc=0$'    || bad=1
 echo "$out" | grep -qE '^warnings=0$'    || bad=1
@@ -19,7 +19,7 @@ echo "$out" | grep -qE 'blast-radius=ok' || bad=1
 echo "$out" | grep -qE 'mustbezero-asserted=ok' || bad=1
 # Printed and never asserted, until the uaccess change moved a chokepoint count
 # and this script still said VERDICT=green. Every check it prints, it asserts.
-for k in mm-layering assertions-covered counters-produced nightly-coverage reachable rmap-crosscheck chokepoints syscall-checks; do
+for k in mm-layering assertions-covered counters-produced nightly-coverage reachable rmap-crosscheck chokepoints syscall-checks sabotage-anchors; do
   echo "$out" | grep -qE "^$k=ok" || bad=1
 done
 # A failed boot's log is kept, named for the run. This loop used to print only

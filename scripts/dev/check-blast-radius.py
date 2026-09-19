@@ -109,20 +109,22 @@ POINTS = {
         "no registry at all - arch_hw.c names the driver directly."),
     "syscall": (
         "kernel/abi/pageinfo.c",
-        r"VIBEOS_OP_PAGEINFO|X\(PAGEINFO|LSYS_pageinfo|hw_sys_pageinfo", 4,
+        r"VIBEOS_OP_PAGEINFO|X\(PAGEINFO|LSYS_pageinfo|hw_sys_pageinfo", 6,
         "the last operation added, as the witness (a stand-in path; only its "
-        "basename and include/vibeos/pageinfo.h are excluded). abi.h "
-        "declares it and its checks, abi_linux.h holds the number, "
-        "abi_linux.c maps the number, and arch_hw.c has the handler and its "
-        "case.\n"
-        "      **This is 4, and before C4 it was 1 (arch_hw.c) - a regression "
-        "in file count, taken on purpose.** The one file used to hold the "
-        "handler, the case and the number, and *nothing said which checks the "
-        "call performs*. The extra three edits are the declaration "
-        "(check-syscall-checks.py holds it against the code) and the "
-        "translation. The plan's target is 1; the honest path there is to "
-        "make one row carry number, operation and checks, which is what "
-        "moving the handlers behind the ABI (the rest of C4) is for."),
+        "basename and include/vibeos/pageinfo.h are excluded). abi.h declares "
+        "it and its checks, abi_linux.h holds the number, abi_linux.c maps the "
+        "number, dispatch.c has the case, mm.c has the handler and "
+        "linux_internal.h declares it to the dispatcher.\n"
+        "      **This is 6; it was 1 before C4 and 4 after stage 1, and this is "
+        "an argument, not an edit.** Stage 3 moved the handlers out of the "
+        "file the dispatcher lives in, so the case and the handler are now two "
+        "files and the handler needs a declaration between them. That is the "
+        "honest price of the cut and it is *meant* to be temporary: stage 2 "
+        "makes each handler file carry a table of {Linux number, operation, "
+        "handler} rows that the dispatcher reads, which removes dispatch.c, "
+        "linux_internal.h and abi_linux.c from the count and takes it to 2 - "
+        "the declaration in abi.h and one row beside the handler. If it is "
+        "still 6 when stage 2 is done, stage 2 failed."),
     "input device": (
         "kernel/arch/x86_64/keyboard.c",
         r"vibeos_x86_64_keyboard_[A-Za-z0-9_]+", 4,

@@ -105,8 +105,15 @@ set(VIBEOS_TLS_SOURCES
 set(VIBEOS_ARCH_X86_64_SOURCES
     kernel/arch/x86_64/arch_hw.c
     kernel/arch/x86_64/io_bringup.c
-    kernel/arch/x86_64/linux_socket.c
-    kernel/arch/x86_64/linux_signal.c
+    kernel/abi/linux/net.c
+    kernel/abi/linux/common.c
+    kernel/abi/linux/dispatch.c
+    kernel/abi/linux/fs.c
+    kernel/abi/linux/misc.c
+    kernel/abi/linux/mm.c
+    kernel/abi/linux/proc.c
+    kernel/abi/linux/sig.c
+    kernel/abi/linux/signal.c
     kernel/arch/x86_64/apic.c
     kernel/arch/x86_64/blk.c
     kernel/arch/x86_64/ahci.c

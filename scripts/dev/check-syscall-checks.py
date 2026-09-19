@@ -18,7 +18,7 @@ nobody. This script reads it against the code, in both directions:
 
 The dispatcher (`vibeos_x86_64_linux_syscall`) is a `switch` on the operation.
 For each `case VIBEOS_OP_X:` this takes the body, then follows every function it
-names through the arch layer's own definitions - handlers call helpers that call
+names through the arch and Linux-ABI layers' own definitions - handlers call helpers that call
 the choke points - and asks which choke points are reachable:
 
   USER_MEMORY   hw_user_range_ok, hw_user_range_why, hw_user_addr_ok
@@ -43,7 +43,8 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 HEADER = os.path.join(ROOT, "include", "vibeos", "abi.h")
-ARCH_DIR = os.path.join(ROOT, "kernel", "arch", "x86_64")
+HANDLER_DIRS = (os.path.join(ROOT, "kernel", "arch", "x86_64"),
+                os.path.join(ROOT, "kernel", "abi", "linux"))
 DISPATCHER = "vibeos_x86_64_linux_syscall"
 
 CHOKEPOINTS = {
@@ -82,12 +83,14 @@ def declared():
 
 
 def function_bodies():
-    """name -> body text, for every function defined in the arch layer."""
+    """name -> body text, for every function defined in the arch layer and the Linux ABI layer."""
     bodies = {}
-    for name in sorted(os.listdir(ARCH_DIR)):
-        if not name.endswith(".c"):
-            continue
-        text = read(os.path.join(ARCH_DIR, name))
+    files = []
+    for d in HANDLER_DIRS:
+        if os.path.isdir(d):
+            files += [os.path.join(d, n) for n in sorted(os.listdir(d)) if n.endswith(".c")]
+    for path in files:
+        text = read(path)
         for m in FUNC.finditer(text):
             fn = m.group(1)
             if fn in ("if", "for", "while", "switch", "return", "sizeof"):

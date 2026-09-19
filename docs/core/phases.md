@@ -326,8 +326,15 @@ enumeration names it; declare a check that is not run; run one that is not
 declared; add a second ABI and confirm no check was duplicated; look the ABI up
 per call and confirm the perf ratchet fires.
 
-**Status (2026-09-19): stage 1 of 3 done - the vocabulary, the declarations and
-the enforcement. The 4,169 lines have not moved.**
+**Status (2026-09-19): stages 1 and 3 done; stage 2 (the dispatcher runs the
+checks, handlers register rows) is next.** Stage 1 is the vocabulary, the
+declarations and their enforcement; stage 3 moved about 4,000 lines out of
+`arch_hw.c` into `kernel/abi/linux/` (12,174 to about 7,800), cut by reference
+graph rather than by line range, with the details in
+`docs/implementation_progress/core_c4_abi.md`. Stage 3 was done before stage 2 on
+purpose - see the reversal below - and it moved two metrics: "input device" went
+4 to 5 (the handlers named the keyboard directly; fixed with a two-function
+console seam) and "add a syscall" is a deliberate **6** until stage 2 lands.
 
 *What exists now.* `include/vibeos/abi.h` declares each operation once, with its
 checks, in an X-macro list (enum, names and check table cannot drift, and a line
@@ -372,9 +379,11 @@ for deletion.
   operation to declare its pointer arguments (which argument, how long, in which
   direction), which is a per-syscall rewrite of 44 sites and the riskiest part of
   this phase. Stage 2.
-- **The four ABI sections stay in `arch_hw.c`.** Stage 3, and it should follow
-  stage 2, not precede it: moving the handlers first would move the 46 call sites
-  with them and make the later extraction touch every file twice.
+- **The four ABI sections** were to follow stage 2 (so the 46 call sites would
+  not be touched twice). **Reversed by the user's instruction and, on reflection,
+  for the better:** the move is mechanical and compiler-verified, and stage 2 now
+  edits smaller files it can hold in its head. The 46 call sites did travel, and
+  stage 2 will touch them once, in their new home.
 
 ---
 
