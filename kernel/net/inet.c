@@ -1468,6 +1468,36 @@ uint32_t vibeos_inet_release_owner_sockets(vibeos_inet_t *net, uint32_t owner_pi
     return released;
 }
 
+/* Give a kernel-owned TCP child back to the table. A child made by a SYN is
+ * owned by nobody until accept() hands it out, so nothing else will ever free
+ * it: the retry timer used to only mark it CLOSED (H-030, a remote SYN flood
+ * filled the table) and a child whose listener vanished mid-handshake stayed
+ * ESTABLISHED forever (M-023). One routine so both ends do the same thing. */
+static void tcp_abort_socket(vibeos_inet_t *net, int idx) {
+    vibeos_inet_socket_t *s = &net->sockets[idx];
+    int i;
+    uint32_t j;
+    for (i = 0; i < (int)VIBEOS_INET_MAX_SOCKETS; i++) {
+        vibeos_inet_socket_t *p = &net->sockets[i];
+        if (!p->used || p->state != VIBEOS_TCP_LISTEN) {
+            continue;
+        }
+        for (j = 0; j < p->backlog_len; j++) {
+            if (p->backlog[j] == idx) {
+                for (; j + 1u < p->backlog_len; j++) {
+                    p->backlog[j] = p->backlog[j + 1u];
+                }
+                p->backlog_len--;
+                break;
+            }
+        }
+    }
+    s->used = 0;
+    s->state = VIBEOS_TCP_CLOSED;
+    s->rto_deadline_ms = 0;
+    s->close_deadline_ms = 0;
+}
+
 /* Find the socket a segment belongs to: an exact four-tuple match first, then a
  * listening socket on the destination port. */
 static vibeos_inet_socket_t *tcp_lookup(vibeos_inet_t *net, uint32_t src, uint16_t sport,
@@ -1708,9 +1738,10 @@ static void tcp_input(vibeos_inet_t *net, uint32_t src, uint32_t dst,
         case VIBEOS_TCP_SYN_RECEIVED:
             if ((flags & TCP_ACK) && ack == s->snd_nxt) {
                 s->snd_una = ack;
-                s->state = VIBEOS_TCP_ESTABLISHED;
-                s->rto_deadline_ms = 0;
-                if (s->parent >= 0) {
+                if (s->parent < 0) {
+                    s->state = VIBEOS_TCP_ESTABLISHED;
+                    s->rto_deadline_ms = 0;
+                } else {
                     vibeos_inet_socket_t *p = &net->sockets[s->parent];
                     /* The listener may have been closed and its slot handed to
                      * an unrelated socket while this handshake was in flight;
@@ -1722,16 +1753,25 @@ static void tcp_input(vibeos_inet_t *net, uint32_t src, uint32_t dst,
                         p->state == VIBEOS_TCP_LISTEN &&
                         p->gen == s->parent_gen &&
                         p->backlog_len < VIBEOS_INET_BACKLOG) {
+                        s->state = VIBEOS_TCP_ESTABLISHED;
+                        s->rto_deadline_ms = 0;
                         p->backlog[p->backlog_len++] = idx;
-                    } else if (p->used &&
-                               (p->gen != s->parent_gen ||
-                                p->type != VIBEOS_INET_SOCK_TCP ||
-                                p->state != VIBEOS_TCP_LISTEN)) {
-                        /* The slot is in use but by a different socket than the
-                         * listener that accepted the SYN: the ABA the guard
-                         * exists for. A parent that is simply gone (slot free)
-                         * is an orphaned child, expected and not counted. */
-                        net->sock_stale_parent++;
+                    } else {
+                        if (p->used &&
+                            (p->gen != s->parent_gen ||
+                             p->type != VIBEOS_INET_SOCK_TCP ||
+                             p->state != VIBEOS_TCP_LISTEN)) {
+                            /* The slot is in use but by a different socket than
+                             * the listener that accepted the SYN: the ABA the
+                             * guard exists for. A parent that is simply gone
+                             * (slot free) is an orphaned child, expected and
+                             * not counted. */
+                            net->sock_stale_parent++;
+                        }
+                        /* Nobody can ever accept this child: free it rather
+                         * than leave it ESTABLISHED with no owner (M-023). */
+                        tcp_abort_socket(net, idx);
+                        return;
                     }
                 }
             }
@@ -2021,6 +2061,12 @@ void vibeos_inet_poll(vibeos_inet_t *net, uint64_t now_ms) {
             continue;
         }
         if (s->retries >= TCP_MAX_RETRIES) {
+            if (s->state == VIBEOS_TCP_SYN_RECEIVED && s->owner_pid == 0u) {
+                /* A half-open child nobody has been handed: reclaim it fully
+                 * or a SYN flood exhausts the table (H-030). */
+                tcp_abort_socket(net, (int)i);
+                continue;
+            }
             s->state = VIBEOS_TCP_CLOSED;
             s->reset = 1;
             s->rto_deadline_ms = 0;

@@ -216,6 +216,10 @@ long hw_sys_accept(uint64_t fd, uint64_t addr_uptr) {
         return -VIBEOS_EBADF;
     }
     t = &g_tasks[hw_current_task()];
+    /* Refuse a bad peer-address pointer before a connection is consumed (M-032). */
+    if (addr_uptr != 0u && !hw_user_range_ok(addr_uptr, 16, 1)) {
+        return -VIBEOS_EFAULT;
+    }
     sock = f->net_sock;
     hw_spin_lock(&g_net_lock);
     gen = g_net.sockets[sock].gen;
@@ -251,8 +255,20 @@ long hw_sys_accept(uint64_t fd, uint64_t addr_uptr) {
         hw_spin_lock(&g_net_lock);
         ip = g_net.sockets[child].remote_ip;
         port = g_net.sockets[child].remote_port;
+        /* The child was made by the stack and is owned by nobody; without an
+         * owner, process exit never releases it (M-031). */
+        (void)vibeos_inet_socket_set_owner(&g_net, child, t->tgid);
         hw_spin_unlock(&g_net_lock);
-        (void)hw_write_sockaddr(addr_uptr, ip, port);
+        if (hw_write_sockaddr(addr_uptr, ip, port) != 0) {
+            /* The pointer went bad after the pre-check: undo the accept
+             * rather than hand back a connection with no way to learn of it. */
+            t->fds[nfd].used = 0;
+            t->fds[nfd].net_sock = -1;
+            hw_spin_lock(&g_net_lock);
+            (void)vibeos_inet_close(&g_net, child);
+            hw_spin_unlock(&g_net_lock);
+            return -VIBEOS_EFAULT;
+        }
     }
     return 3 + nfd;
 }
@@ -470,6 +486,11 @@ long hw_sys_recvfrom(uint64_t fd, uint64_t buf, uint64_t len, uint64_t addr_uptr
     if (!hw_user_range_ok(buf, len, 1)) {
         return -VIBEOS_EFAULT;
     }
+    /* Check the source-address pointer before the datagram is dequeued, or a
+     * bad pointer loses the datagram with no error (M-032). */
+    if (addr_uptr != 0u && !hw_user_range_ok(addr_uptr, 16, 1)) {
+        return -VIBEOS_EFAULT;
+    }
     deadline = g_timer_ticks + VIBEOS_HW_NET_TIMEOUT_TICKS;
     for (;;) {
         long n;
@@ -488,7 +509,9 @@ long hw_sys_recvfrom(uint64_t fd, uint64_t buf, uint64_t len, uint64_t addr_uptr
             return -VIBEOS_EFAULT;
         }
         if (n >= 0) {
-            (void)hw_write_sockaddr(addr_uptr, ip, port);
+            if (hw_write_sockaddr(addr_uptr, ip, port) != 0) {
+                return -VIBEOS_EFAULT;
+            }
             return n;
         }
         if (n != -VIBEOS_INET_EAGAIN) {

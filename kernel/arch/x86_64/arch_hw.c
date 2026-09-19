@@ -6491,7 +6491,7 @@ static long hw_sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
             n = vibeos_fs_read_at(&g_rootfs, &node, f->pos, dst, (uint32_t)len);
         }
         if (n > 0) {
-            f->pos += (uint32_t)n;
+            f->pos += (uint64_t)n;
         }
         return n;
     }
@@ -6591,7 +6591,8 @@ static long hw_sys_open(uint64_t path_uptr, uint64_t flags) {
     {
         hw_fd_t *f = &t->fds[i];
         int writable = ((flags & 1u) != 0u) || ((flags & 0100u) != 0u); /* O_WRONLY|O_CREAT */
-        uint32_t cluster = 0, size = 0;
+        uint32_t cluster = 0;
+        uint64_t size = 0;
         vibeos_fs_node_t node;
         int node_is_dir = 0;
 
@@ -6600,7 +6601,7 @@ static long hw_sys_open(uint64_t path_uptr, uint64_t flags) {
                 return -VIBEOS_ENOENT;
             }
             cluster = (uint32_t)node.id;
-            size = (uint32_t)node.size;
+            size = node.size;
             node_is_dir = node.is_dir;
         }
         for (k = 0; k < (int)sizeof(f->name) - 1 && path[k]; k++) {
@@ -6710,13 +6711,13 @@ static long hw_sys_close(uint64_t fd) {
 
 static long hw_sys_lseek(uint64_t fd, uint64_t off, uint64_t whence) {
     hw_fd_t *f = hw_fd_get(fd);
-    uint32_t base;
+    uint64_t base;
 
     if (!f) {
         return -VIBEOS_EBADF;
     }
     base = (whence == 1u) ? f->pos : ((whence == 2u) ? f->size : 0u);
-    f->pos = base + (uint32_t)off;
+    f->pos = base + off;
     return (long)f->pos;
 }
 

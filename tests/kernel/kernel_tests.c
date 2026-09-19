@@ -1353,6 +1353,23 @@ static int test_bootloader_firmware_tags_and_pe_plan(void) {
     if (vibeos_bootloader_plan_elf_image(elf_invalid, sizeof(elf_invalid), &plan) == 0) {
         return -1;
     }
+
+    /* M-034: a valid segment table with an entry point outside every
+     * executable segment must be refused, not jumped to. */
+    memcpy(elf_invalid, elf_image, sizeof(elf_invalid));
+    elf_invalid[26] = 0x50;   /* e_entry = 0x501000, segment is 0x401000+0x40 */
+    if (vibeos_bootloader_plan_elf_image(elf_invalid, sizeof(elf_invalid), &plan) == 0) {
+        return -1;
+    }
+    memcpy(elf_invalid, elf_image, sizeof(elf_invalid));
+    elf_invalid[68] = 0x04;   /* segment loses PF_X: entry no longer executable */
+    if (vibeos_bootloader_plan_elf_image(elf_invalid, sizeof(elf_invalid), &plan) == 0) {
+        return -1;
+    }
+    image[0xA9] = 0x90;       /* PE entry rva 0x9000, outside the .text section */
+    if (vibeos_bootloader_plan_pe_image(image, sizeof(image), &plan) == 0) {
+        return -1;
+    }
     return 0;
 }
 
@@ -3839,10 +3856,9 @@ static int test_inet_tcp_accept_aba(void) {
 
     /* The final ACK completes the orphaned child's handshake. */
     inet_deliver_tcp(&net, 0x0A000202u, 40000, 8080, 0x901u, child_isn + 1, 0x10, 0, 0);
-    /* It reached ESTABLISHED, so the ACK was processed - an empty victim
-     * backlog is the parent-identity check firing, not a lost segment. The
-     * child lives at slot 1: srv at 0, the child allocated next. */
-    if (vibeos_inet_socket_state(&net, 1) != VIBEOS_TCP_ESTABLISHED) {
+    /* The orphan is refused and, since nothing can ever accept it, freed (M-023):
+     * the child lived at slot 1 (srv at 0, the child allocated next). */
+    if (vibeos_inet_socket_state(&net, 1) >= 0) {
         return -1;
     }
     if (vibeos_inet_accept(&net, victim) != -VIBEOS_INET_EAGAIN) {
@@ -3856,6 +3872,83 @@ static int test_inet_tcp_accept_aba(void) {
     return 0;
 }
 
+
+/* M-023: the final ACK arrives after the listener is gone. The child can never
+ * be accepted, and nothing else frees a kernel-owned socket, so it must be given
+ * back rather than left ESTABLISHED forever. Repeated, the leak fills the table. */
+static int test_inet_tcp_orphan_child_freed(void) {
+    static vibeos_inet_t net;
+    static inet_capture_t cap;
+    int srv, round;
+    uint32_t child_isn;
+
+    memset(&cap, 0, sizeof(cap));
+    if (vibeos_inet_init(&net, inet_test_local_mac, inet_capture_tx, &cap) != 0) {
+        return -1;
+    }
+    vibeos_inet_set_addr(&net, 0x0A00020Fu, 0xFFFFFF00u, 0x0A000202u, 0x0A000203u);
+    inet_seed_arp(&net);
+
+    for (round = 0; round < (int)VIBEOS_INET_MAX_SOCKETS * 2; round++) {
+        srv = vibeos_inet_socket(&net, VIBEOS_INET_SOCK_TCP);
+        if (srv < 0 || vibeos_inet_bind(&net, srv, 8080) != 0 ||
+            vibeos_inet_listen(&net, srv) != 0) {
+            return -1;   /* RED without the fix: the table fills with orphans */
+        }
+        cap.count = 0;
+        inet_deliver_tcp(&net, 0x0A000202u, 40000, 8080, 0x900u, 0, 0x02, 0, 0);
+        if (cap.count != 1) {
+            return -1;
+        }
+        child_isn = inet_rd32(cap.frame[0] + 14 + 20 + 4);
+        if (vibeos_inet_close(&net, srv) != 0) {
+            return -1;
+        }
+        inet_deliver_tcp(&net, 0x0A000202u, 40000, 8080, 0x901u, child_isn + 1, 0x10, 0, 0);
+        /* Both the listener and the orphan are back in the table. */
+        if (vibeos_inet_socket_state(&net, srv + 1) >= 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* H-030: SYNs that never complete. Each makes a kernel-owned SYN_RECEIVED child;
+ * when its retries run out the slot must be freed, or a remote sender that never
+ * finishes a handshake exhausts VIBEOS_INET_MAX_SOCKETS and no TCP works. */
+static int test_inet_tcp_half_open_reclaimed(void) {
+    static vibeos_inet_t net;
+    static inet_capture_t cap;
+    int srv, i, probe;
+    uint64_t now;
+
+    memset(&cap, 0, sizeof(cap));
+    if (vibeos_inet_init(&net, inet_test_local_mac, inet_capture_tx, &cap) != 0) {
+        return -1;
+    }
+    vibeos_inet_set_addr(&net, 0x0A00020Fu, 0xFFFFFF00u, 0x0A000202u, 0x0A000203u);
+    inet_seed_arp(&net);
+    srv = vibeos_inet_socket(&net, VIBEOS_INET_SOCK_TCP);
+    if (srv < 0 || vibeos_inet_bind(&net, srv, 8080) != 0 ||
+        vibeos_inet_listen(&net, srv) != 0) {
+        return -1;
+    }
+    for (i = 0; i < (int)VIBEOS_INET_MAX_SOCKETS; i++) {
+        inet_deliver_tcp(&net, 0x0A000202u, (uint16_t)(40000 + i), 8080, 0x900u, 0, 0x02, 0, 0);
+    }
+    /* The table is full of half-open children: nothing else can be opened. */
+    if (vibeos_inet_socket(&net, VIBEOS_INET_SOCK_TCP) >= 0) {
+        return -1;
+    }
+    for (now = 10000u; now < 10000u + 20u * 10000u; now += 10000u) {
+        vibeos_inet_poll(&net, now);
+    }
+    probe = vibeos_inet_socket(&net, VIBEOS_INET_SOCK_TCP);
+    if (probe < 0) {
+        return -1;   /* RED without the fix: the slots stay used, CLOSED, forever */
+    }
+    return 0;
+}
 
 /* ---- Wave 1 reliability ---------------------------------------------------
  * Each of these covers a limit the stack used to have: one datagram per socket,
@@ -6649,6 +6742,40 @@ static int test_ext2_list(void) {
     return 0;
 }
 
+/* M-022: the directory size comes straight from the image, high half included.
+ * (size + block - 1) / block wraps to zero for a size near 2^64, so a directory
+ * whose size field says "enormous" scanned as empty and every name in it was
+ * gone. The real blocks are still there and must still be found. */
+static int test_ext2_dir_size_wrap(void) {
+    vibeos_ext2_t fs;
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    vibeos_fs_node_t node;
+    vibeos_fsmount_t mnt;
+    char name[VIBEOS_FS_NAME_MAX];
+    uint64_t size = 0;
+    int is_dir = 0;
+
+    if (e2_mount(&fs, &bc, &dev) != 0) {
+        return -1;
+    }
+    e2_w32(e2_inode(2) + 4, 0xFFFFFFFFu);       /* i_size                */
+    e2_w32(e2_inode(2) + 108, 0xFFFFFFFFu);     /* i_dir_acl: high half  */
+    vibeos_blockcache_invalidate(&bc);
+    if (vibeos_ext2_mount(&fs, &bc, 0) != 0 ||
+        vibeos_fs_mount(&mnt, vibeos_ext2_ops(), &fs, "ext2") != 0) {
+        return -1;
+    }
+    if (vibeos_fs_lookup(&mnt, "/small", &node) != 0) {
+        return -1;   /* RED without the fix: nblocks wrapped to 0 */
+    }
+    if (vibeos_fs_list(&mnt, "/", 2, name, sizeof(name), &size, &is_dir) != 0 ||
+        strcmp(name, "small") != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 static int test_ext2_refusals(void) {
     vibeos_ext2_t fs;
     vibeos_blockcache_t bc;
@@ -8859,6 +8986,7 @@ int main(void) {
     RUN_TEST(test_ext2_mount_and_lookup);
     RUN_TEST(test_ext2_read);
     RUN_TEST(test_ext2_list);
+    RUN_TEST(test_ext2_dir_size_wrap);
     RUN_TEST(test_ext2_refusals);
     RUN_TEST(test_ext2_block_pointer_outside_volume);
     RUN_TEST(test_iso_lookup_and_read);
@@ -8927,6 +9055,8 @@ int main(void) {
     RUN_TEST(test_inet_tcp_connection);
     RUN_TEST(test_inet_tcp_listen_accept);
     RUN_TEST(test_inet_tcp_accept_aba);
+    RUN_TEST(test_inet_tcp_orphan_child_freed);
+    RUN_TEST(test_inet_tcp_half_open_reclaimed);
     RUN_TEST(test_inet_udp_datagram_queue);
     RUN_TEST(test_inet_tcp_out_of_order);
     RUN_TEST(test_inet_tcp_rst_needs_sequence);

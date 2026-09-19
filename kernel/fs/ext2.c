@@ -226,12 +226,24 @@ static int inode_is_dir(const uint8_t *inode) {
     return (rd16(inode) & 0xF000u) == 0x4000u;
 }
 
+/* Blocks a directory of `size` bytes spans, without the overflow. The classic
+ * (size + bs - 1) / bs wraps to 0 for a size near UINT64_MAX and the whole
+ * directory then scans as empty (M-022); and a directory cannot own more blocks
+ * than the filesystem has, so a corrupt size also stops bounding a long scan. */
+static uint32_t ext2_dir_nblocks(const vibeos_ext2_t *fs, uint64_t size) {
+    uint64_t n = size / fs->block_size + ((size % fs->block_size) != 0u ? 1u : 0u);
+    if (n > fs->blocks_count) {
+        n = fs->blocks_count;
+    }
+    return (uint32_t)n;
+}
+
 /* Find `name` in a directory inode. Returns the inode number, or 0. */
 static uint32_t ext2_dir_find(vibeos_ext2_t *fs, const uint8_t *dir,
                               const char *name, uint32_t name_len) {
     uint8_t block[EXT2_MAX_BLOCK];
     uint64_t size = inode_size(dir);
-    uint32_t nblocks = (uint32_t)((size + fs->block_size - 1u) / fs->block_size);
+    uint32_t nblocks = ext2_dir_nblocks(fs, size);
     uint32_t bi;
 
     for (bi = 0; bi < nblocks; bi++) {
@@ -401,7 +413,7 @@ static int ext2_op_list(void *fsv, const char *path, uint32_t index, char *name,
         return -1;
     }
     size = inode_size(dir);
-    nblocks = (uint32_t)((size + fs->block_size - 1u) / fs->block_size);
+    nblocks = ext2_dir_nblocks(fs, size);
     for (bi = 0; bi < nblocks; bi++) {
         uint32_t phys = 0, off = 0;
         if (ext2_map_block(fs, dir, bi, &phys) != 0 || phys == 0u) {

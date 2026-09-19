@@ -58,7 +58,7 @@ CHOKEPOINTS = {
         "who may signal whom. Four callers and a definition; a fifth caller "
         "that forgot the check is a process signalling one it does not own."),
     "hw_user_range_ok": (
-        44,
+        46,   # +2: accept and recvfrom validate the peer-address pointer before consuming (M-032)
         "every syscall that takes a user pointer validates through it. This "
         "number going *down* is the failure that matters - a syscall that "
         "stopped checking - and nothing else in the tree would see it."),

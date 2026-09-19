@@ -154,8 +154,8 @@ typedef struct {
      * `writable` then says which end. */
     int pipe;
     uint32_t cluster;
-    uint32_t size;
-    uint32_t pos;
+    uint64_t size;        /* 64-bit: a >4 GiB file must not wrap in fstat/lseek (M-033) */
+    uint64_t pos;
     int net_sock;         /* index into the TCP/IP stack, or -1 for a file */
     uint32_t dir_index;   /* for getdents64 on a directory fd */
     /* Whether this descriptor names a directory. Determined when it is opened

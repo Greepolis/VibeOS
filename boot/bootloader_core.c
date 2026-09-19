@@ -471,6 +471,7 @@ int vibeos_bootloader_plan_elf_image(const uint8_t *image, uint64_t image_size, 
     uint16_t ph_count;
     uint64_t image_base = UINT64_MAX;
     uint64_t i;
+    int entry_ok = 0;
 
     if (!image || !out_plan || image_size < 64u) {
         return -1;
@@ -552,12 +553,23 @@ int vibeos_bootloader_plan_elf_image(const uint8_t *image, uint64_t image_size, 
             seg->flags |= VIBEOS_BOOT_IMAGE_SEGMENT_EXEC;
         }
 
+        if ((p_flags & 0x1u) != 0 &&
+            ((out_plan->entry_point >= load_addr && out_plan->entry_point - load_addr < p_memsz) ||
+             (out_plan->entry_point >= p_vaddr && out_plan->entry_point - p_vaddr < p_memsz))) {
+            entry_ok = 1;
+        }
+
         if (load_addr < image_base) {
             image_base = load_addr;
         }
     }
 
     if (out_plan->segment_count == 0) {
+        return -1;
+    }
+    /* The loader jumps to e_entry after ExitBootServices; an entry outside every
+     * executable segment is a crash with no message, so reject it here (M-034). */
+    if (!entry_ok) {
         return -1;
     }
     out_plan->image_base = (image_base == UINT64_MAX) ? 0 : image_base;
@@ -643,6 +655,23 @@ int vibeos_bootloader_plan_pe_image(const uint8_t *image, uint64_t image_size, v
     }
     if (out_plan->segment_count == 0) {
         return -1;
+    }
+    /* Same rule as the ELF path: the entry must land inside an executable
+     * section, or the jump after ExitBootServices goes nowhere (M-034). */
+    {
+        uint32_t k;
+        int entry_ok = 0;
+        for (k = 0; k < out_plan->segment_count; k++) {
+            const vibeos_boot_image_segment_t *sg = &out_plan->segments[k];
+            if ((sg->flags & VIBEOS_BOOT_IMAGE_SEGMENT_EXEC) != 0 &&
+                out_plan->entry_point >= sg->image_address &&
+                out_plan->entry_point - sg->image_address < sg->mem_size) {
+                entry_ok = 1;
+            }
+        }
+        if (!entry_ok) {
+            return -1;
+        }
     }
     return 0;
 }
