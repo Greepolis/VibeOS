@@ -38,7 +38,7 @@ rather than implying it covers all seven.
 
 ## What is deliberately not checked, and by whom instead
 
-- **A must-be-zero counter per module.** That is C2's step 3, which enumerates
+- (now checked, see no_mustbezero below) A must-be-zero counter per module; C2 step 3 enumerated
   the modules that have none and adds them before the check exists. Writing the
   check first would mean shipping it red against thirty modules, which is the
   state `check-mm-layering.sh` sat in for a phase - "a check red since before
@@ -57,6 +57,7 @@ Usage: check-subsystem.py [--list] [<build-dir>]
 
 import os
 import subprocess
+import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -78,7 +79,37 @@ BASELINE = {
     "exported_state": 0,
     "state_without_lock": 3,
     "no_case": 35,
+    # C2 step 3. Measured 36 of 50 when the property was added; the counters that
+    # exist are named in docs/core/phases.md. Each module that gains one lowers
+    # this, and it may not rise.
+    "no_mustbezero": 36,
 }
+
+# A module counts as having a must-be-zero when it, or its header, says so - or
+# when its counter lives in a shared stats struct, which is where several of the
+# oldest ones ended up. Listed by hand: guessing "the area has one" would mark
+# every module beside frame.c as covered by frame.c's counter.
+SHARED_STATS = {
+    "mm/frame": "mm_stats.h",       # frames_leaked, frames_double_put
+    "sched/task": "task_stats.h",    # procstate_double_put
+}
+MUSTBEZERO_RE = re.compile(r"must[ -]?be[ -]?zero|MUSTBEZERO", re.I)
+
+
+def has_mustbezero(area, name, src):
+    if MUSTBEZERO_RE.search(src):
+        return True
+    paths = [os.path.join(ROOT, "include", "vibeos", name + ".h")]
+    if "%s/%s" % (area, name) in SHARED_STATS:
+        paths.append(os.path.join(ROOT, "include", "vibeos",
+                                  SHARED_STATS["%s/%s" % (area, name)]))
+    for p in paths:
+        try:
+            if MUSTBEZERO_RE.search(open(p, encoding="utf-8", errors="replace").read()):
+                return True
+        except OSError:
+            pass
+    return False
 
 
 def modules():
@@ -176,6 +207,9 @@ def main():
 
         if not has_case(cases, area, name):
             problems.append("no_case")
+
+        if not has_mustbezero(area, name, src):
+            problems.append("no_mustbezero")
 
         for p in problems:
             counts[p] += 1

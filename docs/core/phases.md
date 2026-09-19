@@ -181,6 +181,20 @@ defects were found by counters and witnesses, never by review.
 **Done when.** `check-subsystem.py`'s must-be-zero baseline is zero violations,
 and each new counter has one recorded run in which it was non-zero on purpose.
 
+**Status (2026-09-19): steps 1-3 done, step 4 largely done; "done when" not met.**
+Every module on the step-1 list now has a must-be-zero: GUI, console, keyboard,
+IO (already), network (`sock_stale_parent`, `sock_fd_aba`), mouse (`desync`,
+demonstrated non-zero at every boot by a self-test the gate requires, `proved=1`)
+and the ABI surface (`unexpected_unimplemented`, with `last_nr` as witness and a
+deliberate ring-3 probe the gate requires). `check-subsystem.py` carries
+`no_mustbezero`, ratcheted at **36 of 50** kernel modules; the sabotage that makes
+it fire (baseline lowered) was run. That number is the honest remainder of the
+"done when": the baseline is not zero, and most of the 36 are filesystem, ipc and
+scheduler modules whose harm has not been named yet. The property is a textual
+heuristic (the module, its header, or a listed shared stats header mentions
+must-be-zero), so it says a counter is *declared*, not that it is asserted;
+`check-mustbezero-asserted.py` covers the second half.
+
 **Sabotage.** `core-observability.txt` — a counter declared and never
 incremented; a must-be-zero printed and not asserted; a witness that reports a
 count instead of an object.

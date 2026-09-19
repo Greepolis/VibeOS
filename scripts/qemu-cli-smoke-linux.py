@@ -1724,6 +1724,30 @@ def main():
                 if int(nz.group(2), 16) != 0:
                     problems.append(f"net_sock_fd_aba={int(nz.group(2), 16)}")
 
+            # The mouse decoder and the ABI surface. Both counters were only ever
+            # trusted at zero: proved=1 says the boot fed the decoder a bad byte
+            # and saw the counter move; probes>=1 says a real ring-3 program asked
+            # for a syscall number nobody implements and the kernel counted it.
+            # Without those two a zero would mean "the counter cannot fire".
+            mz = re.search(r"\[MOUSE\] MUSTBEZERO desync=0x([0-9a-f]{16}) "
+                           r"proved=0x([0-9a-f]{16})", text)
+            if mz is None:
+                problems.append("mouse_counters_missing")
+            else:
+                if int(mz.group(1), 16) != 0:
+                    problems.append(f"mouse_desync={int(mz.group(1), 16)}")
+                if int(mz.group(2), 16) != 1:
+                    problems.append("mouse_desync_unproven")
+            az = re.search(r"\[ABI\] MUSTBEZERO unexpected_unimplemented=0x([0-9a-f]{16}) "
+                           r"probes=0x([0-9a-f]{16}) last_nr=0x([0-9a-f]{16})", text)
+            if az is None:
+                problems.append("abi_counters_missing")
+            else:
+                if int(az.group(1), 16) != 0:
+                    problems.append(f"abi_unimplemented_syscall_nr={int(az.group(3), 16)}")
+                if int(az.group(2), 16) < 1:
+                    problems.append("abi_counter_unproven")
+
             # Every bounded wait a syscall can reach, asserted at zero.
             #
             # P7's latency property is two halves and only one of them was

@@ -141,6 +141,7 @@ static const char abi_clock[] = "abi: clock_gettime wrong\n";
 static const char abi_iov[] = "abi: writev wrong\n";
 static const char abi_mm[] = "abi: mmap/mprotect/munmap wrong\n";
 static const char abi_futex[] = "abi: futex did not check the value\n";
+static const char abi_nosys[] = "abi: an unimplemented syscall did not return ENOSYS\n";
 static const char tls_kept[] = "tls survived context switches\n";
 static const char tls_lost[] = "abi: %fs lost across a context switch\n";
 static const char sse_kept[] = "sse survived context switches\n";
@@ -188,6 +189,12 @@ static const char *check_linux_abi(void) {
         return abi_fs;
     }
 
+    /* A number no kernel implements must come back as -ENOSYS (38): it is what a
+     * libc probes with, and what the kernel counts on its [ABI] MUSTBEZERO line
+     * so the count is seen moving on every boot. */
+    if (user_syscall3(1999, 0, 0, 0) != -38) {
+        return abi_nosys;
+    }
     if (user_syscall3(SYS_uname, (long)(unsigned long)un, 0, 0) != 0) {
         return abi_uname;
     }

@@ -91,6 +91,14 @@ static int g_ready;
 static uint8_t g_packet[3];
 static uint32_t g_phase;
 
+/* MUST BE ZERO in a healthy boot: a stream byte that was not the first byte of a
+ * packet (resync), or a packet the device flagged as overflowed. Either means
+ * the pointer state was fed something it had to throw away. Nothing moves the
+ * mouse in the boot gate, so any count is a real desync, not input. */
+static volatile uint64_t g_desync_resync, g_desync_overflow;
+static uint64_t g_selftest_proved;
+static void mouse_feed(uint8_t byte);
+
 /* Provided by the interrupt layer; weak so this file also builds alone. */
 __attribute__((weak)) uint64_t vibeos_x86_64_irq_save(void) { return 0; }
 __attribute__((weak)) void vibeos_x86_64_irq_restore(uint64_t flags) { (void)flags; }
@@ -176,10 +184,16 @@ void vibeos_x86_64_mouse_irq(void) {
     if (!g_ready) {
         return;
     }
+    mouse_feed(byte);
+}
 
+/* Decode one byte of the packet stream. Split from the interrupt so the
+ * boot can drive it and prove the desync counter can move. */
+static void mouse_feed(uint8_t byte) {
     /* Bit 3 of the first byte is always set. Using it to resynchronise is what
      * keeps a single dropped byte from corrupting every packet that follows. */
     if (g_phase == 0u && (byte & 0x08u) == 0u) {
+        g_desync_resync++;   /* a byte the stream had no room for */
         return;
     }
     g_packet[g_phase++] = byte;
@@ -197,6 +211,7 @@ void vibeos_x86_64_mouse_irq(void) {
          * meaningless, so the packet is dropped rather than turned into a
          * large jump in an arbitrary direction. */
         if ((flags & 0xC0u) != 0u) {
+            g_desync_overflow++;
             return;
         }
         /* The sign lives in the flags byte, not in the data byte. */
@@ -245,4 +260,38 @@ void vibeos_x86_64_mouse_state(int32_t *out_x, int32_t *out_y, uint32_t *out_but
 
 uint32_t vibeos_x86_64_mouse_packets(void) {
     return g_packets;
+}
+
+uint64_t vibeos_x86_64_mouse_desync(void) {
+    return g_desync_resync + g_desync_overflow;
+}
+
+uint64_t vibeos_x86_64_mouse_desync_proved(void) {
+    return g_selftest_proved;
+}
+
+/* A counter that reads zero proves nothing until it has been seen non-zero. Feed
+ * the decoder one out-of-frame byte and one overflowed packet, require both to
+ * move the counter, then take them back out so the must-be-zero reads what the
+ * hardware did, not what this did. Interrupts are masked so a real IRQ12 cannot
+ * land in the middle of the fake packet. Position and buttons are untouched:
+ * both inputs are dropped before they reach them. */
+void vibeos_x86_64_mouse_selftest(void) {
+    uint64_t flags = vibeos_x86_64_irq_save();
+    uint64_t saved_resync = g_desync_resync;
+    uint64_t saved_overflow = g_desync_overflow;
+    uint64_t before = saved_resync + saved_overflow;
+    uint32_t saved_phase = g_phase;
+    g_phase = 0;
+    mouse_feed(0x00u);                       /* first byte without bit 3 */
+    mouse_feed(0xC8u);                       /* flags: both overflow bits, bit 3 set */
+    mouse_feed(0x01u);
+    mouse_feed(0x01u);
+    if (g_desync_resync + g_desync_overflow == before + 2u) {
+        g_selftest_proved = 1;
+    }
+    g_desync_resync = saved_resync;      /* what the hardware did, not what this did */
+    g_desync_overflow = saved_overflow;
+    g_phase = saved_phase;
+    vibeos_x86_64_irq_restore(flags);
 }

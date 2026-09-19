@@ -31,3 +31,27 @@
 # test_inet_tcp_accept_aba drives sock_stale_parent, and reverting the
 # hw_sock_stable re-verify makes sock_fd_aba reachable from two POSIX threads
 # sharing a descriptor table.
+#
+# The mouse and the ABI surface, the last two modules of C2's list.
+#
+#  - The mouse decoder counts a stream byte that was not the first byte of a
+#    packet, and a packet the device flagged as overflowed: either means the
+#    pointer state was fed something it had to throw away. Nothing moves the
+#    mouse in the gate, so any count is a real desync (mouse_desync). It is
+#    demonstrated non-zero at every boot - vibeos_x86_64_mouse_selftest feeds one
+#    bad byte and one overflowed packet, requires the counter to move, then
+#    restores it - and the gate requires proved=1 (mouse_desync_unproven), so a
+#    counter that can no longer fire cannot pass as a clean zero. Removing the
+#    `g_desync_resync++` or `g_desync_overflow++` increment turns the boot red
+#    with mouse_desync_unproven; the line disappearing trips
+#    mouse_counters_missing.
+#
+#  - The ABI surface counts a syscall number the kernel does not implement,
+#    with a witness (last_nr names the number). ring 3 asks for number 1999 on
+#    purpose in the self-test, so probes>=1 shows the counter moving through a
+#    real syscall (abi_counter_unproven); an unexpected number trips
+#    abi_unimplemented_syscall_nr, naming it; the line missing trips
+#    abi_counters_missing. Removing the probe from user/prog/hello.c turns the
+#    boot red with abi_counter_unproven, and the self-test itself refuses a
+#    kernel that stops returning ENOSYS (abi: an unimplemented syscall did not
+#    return ENOSYS).

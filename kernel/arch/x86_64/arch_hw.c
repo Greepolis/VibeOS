@@ -662,6 +662,20 @@ extern void vibeos_x86_64_mouse_irq(void);
 extern int vibeos_x86_64_mouse_init(uint32_t width, uint32_t height);
 extern int vibeos_x86_64_mouse_ready(void);
 extern uint32_t vibeos_x86_64_mouse_packets(void);
+extern uint64_t vibeos_x86_64_mouse_desync(void);
+extern uint64_t vibeos_x86_64_mouse_desync_proved(void);
+extern void vibeos_x86_64_mouse_selftest(void);
+
+/* The ABI surface's must-be-zero: a syscall number the kernel does not
+ * implement. musl probes some and tolerates ENOSYS, but nothing the boot runs
+ * should reach one, and a program that does gets -ENOSYS and carries on
+ * believing something worked. The boot asks for VIBEOS_ABI_PROBE_NR on purpose
+ * (user/prog/hello.c) so the count is seen moving; the gate asserts
+ * unimplemented == probes, and last_nr names the number when it is not. */
+#define VIBEOS_ABI_PROBE_NR 1999u
+static volatile uint64_t g_abi_unimplemented;
+static volatile uint64_t g_abi_probes;
+static volatile uint64_t g_abi_last_nr;
 extern int vibeos_x86_64_gui_init(uint64_t fb_base, uint32_t width, uint32_t height,
                                   void *back_buffer);
 extern void vibeos_x86_64_gui_tick(void);
@@ -11029,6 +11043,12 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
             hw_task_exit_group(a1); /* the whole process; no return */
             return 0;
         default:
+            __sync_fetch_and_add(&g_abi_unimplemented, 1u);
+            g_abi_last_nr = nr;   /* the witness: which number, not just how many */
+            if (nr == VIBEOS_ABI_PROBE_NR) {
+                __sync_fetch_and_add(&g_abi_probes, 1u);
+                return -VIBEOS_ENOSYS;   /* asked for on purpose; no log line */
+            }
             /* One line, one critical section: puts and print_hex each take the console lock on their own. */
             vibeos_x86_64_serial_lock();
             vibeos_x86_64_serial_puts("[HW][SYS] unimplemented Linux syscall nr=0x");
@@ -11728,6 +11748,18 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
         vibeos_x86_64_serial_print_hex(g_net.sock_stale_parent);
         vibeos_x86_64_serial_puts(" sock_fd_aba=0x");
         vibeos_x86_64_serial_print_hex(g_net.sock_fd_aba);
+        /* The mouse and the ABI surface, the two modules that had none. */
+        vibeos_x86_64_mouse_selftest();
+        vibeos_x86_64_serial_puts("\n[MOUSE] MUSTBEZERO desync=0x");
+        vibeos_x86_64_serial_print_hex(vibeos_x86_64_mouse_desync());
+        vibeos_x86_64_serial_puts(" proved=0x");
+        vibeos_x86_64_serial_print_hex(vibeos_x86_64_mouse_desync_proved());
+        vibeos_x86_64_serial_puts("\n[ABI] MUSTBEZERO unexpected_unimplemented=0x");
+        vibeos_x86_64_serial_print_hex(g_abi_unimplemented - g_abi_probes);
+        vibeos_x86_64_serial_puts(" probes=0x");
+        vibeos_x86_64_serial_print_hex(g_abi_probes);
+        vibeos_x86_64_serial_puts(" last_nr=0x");
+        vibeos_x86_64_serial_print_hex(g_abi_last_nr);
         vibeos_x86_64_serial_puts("\n[PERF] syscalls=0x");
         vibeos_x86_64_serial_print_hex(g_perf_syscall.count);
         vibeos_x86_64_serial_puts(" syscall_cycles=0x");
