@@ -8,6 +8,7 @@
  */
 
 #include "vibeos/exfat.h"
+#include "vibeos/mbz.h"
 
 static uint16_t rd16(const uint8_t *p) {
     return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
@@ -58,6 +59,7 @@ static uint64_t exfat_cluster_sector(vibeos_exfat_t *fs, uint32_t cluster) {
 static int exfat_read_cluster(vibeos_exfat_t *fs, uint32_t cluster, uint8_t *out) {
     uint32_t i;
     if (cluster < 2u || cluster - 2u >= fs->cluster_count) {
+        vibeos_mbz_hit(VIBEOS_MBZ_EXFAT_BAD_METADATA, cluster);
         return -1;
     }
     for (i = 0; i < fs->sectors_per_cluster; i++) {
@@ -108,6 +110,7 @@ static uint32_t exfat_nth_cluster(vibeos_exfat_t *fs, uint32_t first, int contig
          * value (M-009). Both are checked against the volume before the sum. */
         if (first < 2u || first - 2u >= fs->cluster_count ||
             index > (fs->cluster_count - 1u) - (first - 2u)) {
+            vibeos_mbz_hit(VIBEOS_MBZ_EXFAT_BAD_METADATA, first);
             return 0;
         }
         return first + index;

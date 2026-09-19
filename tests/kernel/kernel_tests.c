@@ -22,6 +22,7 @@
 #include "vibeos/blockdev.h"
 #include "vibeos/partition.h"
 #include "vibeos/ext2.h"
+#include "vibeos/mbz.h"
 #include "vibeos/iso9660.h"
 #include "vibeos/exfat.h"
 #include "vibeos/ntfs.h"
@@ -8943,6 +8944,105 @@ int test_account(void);
 int test_sched_policy(void);
 int test_forkguard(void);
 
+/* C2: the three must-be-zero ids the suite reached last. Each drives its module
+ * into the refusal on purpose - test_mbz_all_demonstrated fails if one is not. */
+static uint32_t fatt_zero_lba(void *ctx, uint32_t cluster) {
+    (void)ctx; (void)cluster;
+    return 0;   /* how a driver says it refused the cluster */
+}
+
+static int test_mbz_fat_chain_refused_cluster(void) {
+    vibeos_fat_chain_io_t io;
+    uint32_t chain[2] = { 3u, 4u };
+    uint64_t before = vibeos_mbz_count(VIBEOS_MBZ_FAT_CHAIN_BAD);
+
+    fatt_build(chain, 2u, 1u);
+    fatt_io(&io);
+    io.cluster_lba = fatt_zero_lba;
+    if (vibeos_fat_chain_read(&io, chain[0], 1024u, fatt_got) != -1) {
+        return -1;
+    }
+    return vibeos_mbz_count(VIBEOS_MBZ_FAT_CHAIN_BAD) == before + 1u ? 0 : -1;
+}
+
+static int test_mbz_iso_corrupt_record(void) {
+    vibeos_iso9660_t fs;
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    vibeos_fsmount_t mnt;
+    vibeos_fs_node_t node;
+    uint64_t before = vibeos_mbz_count(VIBEOS_MBZ_ISO9660_BAD_METADATA);
+
+    if (iso_mount(&fs, &bc, &dev) != 0 ||
+        vibeos_fs_mount(&mnt, vibeos_iso9660_ops(), &fs, "iso9660") != 0) {
+        return -1;
+    }
+    iso_sec(20)[68] = 10u;   /* the first real record: nonzero, shorter than any record can be */
+    (void)vibeos_fs_lookup(&mnt, "/readme.txt", &node);
+    return vibeos_mbz_count(VIBEOS_MBZ_ISO9660_BAD_METADATA) > before ? 0 : -1;
+}
+
+static int test_mbz_sched_requeue_failed(void) {
+    vibeos_scheduler_t sched;
+    vibeos_thread_t t1 = { .id = 61, .cpu_hint = 0, .klass = VIBEOS_THREAD_NORMAL, .timeslice_ticks = 3 };
+    uint32_t cpu = 0;
+    uint64_t before = vibeos_mbz_count(VIBEOS_MBZ_SCHED_REQUEUE_FAILED);
+
+    if (vibeos_sched_init(&sched, 2) != 0 || vibeos_sched_enqueue(&sched, &t1) != 0) {
+        return -1;
+    }
+    if (vibeos_sched_wait_begin(&sched, t1.id, 0) != 0) {
+        return -1;
+    }
+    /* The run queue is sized to the thread table, so no public sequence can fill
+     * it and this refusal is a broken invariant, not load. Break it by hand: a
+     * queue that claims to be full leaves nowhere to put a woken thread, which is
+     * exactly the thread that would then never run again. */
+    memset(sched.runqueues[0].slots, 0, sizeof(sched.runqueues[0].slots));   /* init leaves the stack's old bytes there */
+    sched.runqueues[0].count = VIBEOS_MAX_THREADS;
+    if (vibeos_sched_wait_end(&sched, t1.id, 0, &cpu) == 0) {
+        return -1;
+    }
+    return vibeos_mbz_count(VIBEOS_MBZ_SCHED_REQUEUE_FAILED) > before ? 0 : -1;
+}
+
+/* C2: every must-be-zero id has been seen non-zero. A counter that reads zero
+ * proves nothing until it has been seen to move, and the ids here sit on damaged
+ * -input refusals the suite exercises on purpose - so by the time this runs, at
+ * the end, each one has been hit by a test that fed its module a bad image. An id
+ * still at zero means the hook was removed, moved, or the test that reached it
+ * stopped reaching it. The message names which. */
+static int test_mbz_all_demonstrated(void) {
+    uint32_t id;
+    int missing = 0;
+
+    for (id = 0; id < (uint32_t)VIBEOS_MBZ_COUNT; id++) {
+        if (vibeos_mbz_count((vibeos_mbz_id_t)id) == 0u) {
+            printf("mbz: %s was never hit by the suite\n",
+                   vibeos_mbz_name((vibeos_mbz_id_t)id));
+            missing++;
+        }
+    }
+    if (vibeos_mbz_total() == 0u || vibeos_mbz_first() == VIBEOS_MBZ_COUNT) {
+        return -1;
+    }
+    /* The registry itself: a hit moves the count and the witness, and an id out
+     * of range is ignored rather than written past the table. */
+    {
+        uint64_t before = vibeos_mbz_count(VIBEOS_MBZ_ELF_MALFORMED);
+        vibeos_mbz_hit(VIBEOS_MBZ_ELF_MALFORMED, 0xABCDu);
+        if (vibeos_mbz_count(VIBEOS_MBZ_ELF_MALFORMED) != before + 1u ||
+            vibeos_mbz_witness(VIBEOS_MBZ_ELF_MALFORMED) != 0xABCDu) {
+            return -1;
+        }
+        vibeos_mbz_hit(VIBEOS_MBZ_COUNT, 1u);
+        if (vibeos_mbz_count(VIBEOS_MBZ_COUNT) != 0u) {
+            return -1;
+        }
+    }
+    return missing == 0 ? 0 : -1;
+}
+
 int main(void) {
     int failures = 0;
     /* Run each test and accumulate failures while preserving full execution. */
@@ -9102,6 +9202,10 @@ int main(void) {
     RUN_TEST(test_handle_revocation_scoped);
     RUN_TEST(test_handle_revocation_audit);
     RUN_TEST(test_proc_audit_retention_policy);
+    RUN_TEST(test_mbz_fat_chain_refused_cluster);
+    RUN_TEST(test_mbz_iso_corrupt_record);
+    RUN_TEST(test_mbz_sched_requeue_failed);
+    RUN_TEST(test_mbz_all_demonstrated);   /* last: it reads what every test before it did */
 #undef RUN_TEST
 
     /* Emit a stable summary line and process exit code for automation. */

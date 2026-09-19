@@ -6,6 +6,7 @@
  */
 
 #include "vibeos/iso9660.h"
+#include "vibeos/mbz.h"
 
 static uint32_t rd16le(const uint8_t *p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8);
@@ -140,6 +141,7 @@ static int iso_dir_find(vibeos_iso9660_t *fs, uint32_t extent, uint32_t length,
                 break;
             }
             if (off + rec_len > VIBEOS_ISO_SECTOR || rec_len < 33u) {
+                vibeos_mbz_hit(VIBEOS_MBZ_ISO9660_BAD_METADATA, rec_len);
                 break;   /* corrupt: end the scan rather than walk out */
             }
             name_len = sec[off + 32];
@@ -291,6 +293,7 @@ static int iso_op_list(void *fsv, const char *path, uint32_t index, char *name,
                 break;
             }
             if (off + rec_len > VIBEOS_ISO_SECTOR || rec_len < 33u) {
+                vibeos_mbz_hit(VIBEOS_MBZ_ISO9660_BAD_METADATA, rec_len);
                 break;
             }
             name_len = sec[off + 32];

@@ -2,6 +2,7 @@
  * that make it safe and why this is not in partition.c. */
 
 #include "vibeos/parttab.h"
+#include "vibeos/mbz.h"
 
 #include <string.h>
 
@@ -86,17 +87,20 @@ static vibeos_parttab_result_t check_table(const vibeos_parttable_t *table,
         if (p->first_lba == 0ull) {
             /* Sector 0 is the table itself. A partition that starts there
              * would be overwritten by the very write that creates it. */
+            vibeos_mbz_hit(VIBEOS_MBZ_PARTTAB_BAD_TABLE, p->first_lba);
             return VIBEOS_PARTTAB_OVERLAP;
         }
         if (disk_sectors != 0ull &&
             (p->first_lba + p->sector_count > disk_sectors ||
              p->first_lba + p->sector_count < p->first_lba)) {
+            vibeos_mbz_hit(VIBEOS_MBZ_PARTTAB_BAD_TABLE, p->first_lba);
             return VIBEOS_PARTTAB_PAST_END;
         }
         for (j = i + 1u; j < table->count; j++) {
             if (overlaps(p->first_lba, p->sector_count,
                          table->entry[j].first_lba,
                          table->entry[j].sector_count)) {
+                vibeos_mbz_hit(VIBEOS_MBZ_PARTTAB_BAD_TABLE, p->first_lba);
                 return VIBEOS_PARTTAB_OVERLAP;
             }
         }

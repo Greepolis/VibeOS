@@ -7,6 +7,7 @@
  */
 
 #include "vibeos/partition.h"
+#include "vibeos/mbz.h"
 
 static uint16_t rd16(const uint8_t *p) {
     return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
@@ -187,6 +188,7 @@ int vibeos_partition_parse_gpt(const void *header, const void *entries,
      * Bounding it matters: a crafted header claiming a huge size would other-
      * wise read past the sector it lives in. */
     if (header_size < 92u || header_size > sizeof(copy)) {
+        vibeos_mbz_hit(VIBEOS_MBZ_PARTITION_BAD_TABLE, header_size);
         return -1;
     }
     stored_crc = rd32(h + 16);
@@ -195,6 +197,7 @@ int vibeos_partition_parse_gpt(const void *header, const void *entries,
     }
     copy[16] = 0; copy[17] = 0; copy[18] = 0; copy[19] = 0;
     if (vibeos_partition_crc32(copy, header_size) != stored_crc) {
+        vibeos_mbz_hit(VIBEOS_MBZ_PARTITION_BAD_TABLE, stored_crc);
         return -1;
     }
 

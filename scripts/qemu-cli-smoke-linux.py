@@ -1748,6 +1748,17 @@ def main():
                 if int(az.group(2), 16) < 1:
                     problems.append("abi_counter_unproven")
 
+            # The must-be-zero registry (kernel/core/mbz.c): the parsers, the
+            # journal, the log sink and the scheduler's requeue. `first` and
+            # `witness` are printed on the same line as the count so a failure
+            # names the harm and the value that tripped it, not just "non-zero".
+            mb = re.search(r"\[MBZ\] MUSTBEZERO total=0x([0-9a-f]{16}) "
+                           r"first=([a-z0-9_]+) witness=0x([0-9a-f]{16})", text)
+            if mb is None:
+                problems.append("mbz_counters_missing")
+            elif int(mb.group(1), 16) != 0:
+                problems.append(f"mbz_{mb.group(2)}_witness={int(mb.group(3), 16)}")
+
             # Every bounded wait a syscall can reach, asserted at zero.
             #
             # P7's latency property is two halves and only one of them was

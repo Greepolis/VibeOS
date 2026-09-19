@@ -8,6 +8,7 @@
  */
 
 #include "vibeos/ext2.h"
+#include "vibeos/mbz.h"
 
 static uint16_t rd16(const uint8_t *p) {
     return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
@@ -31,6 +32,7 @@ static int ext2_read_block(vibeos_ext2_t *fs, uint32_t block, uint8_t *out) {
      * past blocks_count but inside the device used to read another partition's
      * sectors. The mount keeps blocks_count for exactly this check. */
     if (fs->block_size == 0u || sectors == 0u || block >= fs->blocks_count) {
+        vibeos_mbz_hit(VIBEOS_MBZ_EXT2_BAD_METADATA, block);   /* a pointer off the volume */
         return -1;
     }
     for (i = 0; i < sectors; i++) {
@@ -265,6 +267,7 @@ static uint32_t ext2_dir_find(vibeos_ext2_t *fs, const uint8_t *dir,
              * it makes the test suite hang - which is the whole reason it
              * lives here rather than being left to the caller. */
             if (reclen < 8u || (reclen & 3u) != 0u || off + reclen > fs->block_size) {
+                vibeos_mbz_hit(VIBEOS_MBZ_EXT2_BAD_METADATA, reclen);
                 break;
             }
             if (ino != 0u && nlen == name_len && off + 8u + nlen <= fs->block_size) {
@@ -428,6 +431,7 @@ static int ext2_op_list(void *fsv, const char *path, uint32_t index, char *name,
             uint8_t nlen = block[off + 6u];
 
             if (reclen < 8u || (reclen & 3u) != 0u || off + reclen > fs->block_size) {
+                vibeos_mbz_hit(VIBEOS_MBZ_EXT2_BAD_METADATA, reclen);
                 break;
             }
             if (ino != 0u && nlen > 0u) {

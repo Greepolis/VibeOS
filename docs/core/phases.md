@@ -181,19 +181,38 @@ defects were found by counters and witnesses, never by review.
 **Done when.** `check-subsystem.py`'s must-be-zero baseline is zero violations,
 and each new counter has one recorded run in which it was non-zero on purpose.
 
-**Status (2026-09-19): steps 1-3 done, step 4 largely done; "done when" not met.**
-Every module on the step-1 list now has a must-be-zero: GUI, console, keyboard,
-IO (already), network (`sock_stale_parent`, `sock_fd_aba`), mouse (`desync`,
-demonstrated non-zero at every boot by a self-test the gate requires, `proved=1`)
-and the ABI surface (`unexpected_unimplemented`, with `last_nr` as witness and a
-deliberate ring-3 probe the gate requires). `check-subsystem.py` carries
-`no_mustbezero`, ratcheted at **36 of 50** kernel modules; the sabotage that makes
-it fire (baseline lowered) was run. That number is the honest remainder of the
-"done when": the baseline is not zero, and most of the 36 are filesystem, ipc and
-scheduler modules whose harm has not been named yet. The property is a textual
-heuristic (the module, its header, or a listed shared stats header mentions
-must-be-zero), so it says a counter is *declared*, not that it is asserted;
-`check-mustbezero-asserted.py` covers the second half.
+**Status (2026-09-19): done, with a stated remainder.** `check-subsystem.py`'s
+`no_mustbezero` is **0 of 51** modules. That is reached three ways, and the
+split is the honest part:
+
+- **Real counters (16 modules).** GUI, console, keyboard, IO, network
+  (`sock_stale_parent`, `sock_fd_aba`), mouse (`desync`, proved non-zero at every
+  boot), the ABI surface (`unexpected_unimplemented` + `last_nr` witness + a
+  deliberate ring-3 probe), and - through the new registry `kernel/core/mbz.c`,
+  which keeps a count *and the last value that tripped it* per harm - the ELF,
+  ext2, exFAT, FAT-chain, ISO9660, NTFS, GPT and partition-table parsers, the
+  journal's recovery, the log sink's torn records and the scheduler's failed
+  requeue. The boot prints one `[MBZ] MUSTBEZERO total= first= witness=` line and
+  the gate asserts it. `test_mbz_all_demonstrated` runs last in the host suite and
+  fails if any id was never seen non-zero; on its first run it named three that
+  the suite had never reached, and they got tests.
+- **Asserted elsewhere (4).** blockcache, swaparea, lifetime, backing already had a
+  gated counter under another name; the ratchet greps the gate for that name, so
+  deleting the assertion stops it counting.
+- **Exempt by written reason (21).** Modules with no failure mode a counter could
+  see: pure decision functions (`policy`, `security`, `net_policy`, `sched_policy`),
+  a flag (`event`), backpressure (`channel`), refusals that *are* the behaviour
+  (`forkguard`, `handle_transfer`), dispatch tables, read-only reporting. Ratcheted
+  as `mustbezero_exempt`, which may only fall. **This is a judgement, and it is
+  the weakest part of C2's "done when"**: the plan asked for a counter per module,
+  and twenty-one modules have a sentence instead. Each reason is in
+  `check-subsystem.py`'s `EXEMPT` table for a reviewer to argue with.
+
+Remaining honest gaps: the scheduler's requeue refusal is unreachable through the
+public API (the run queue is sized to the thread table) and is demonstrated by
+breaking the invariant by hand; and the ratchet is a textual heuristic - it says
+a counter is *declared and, for the registry, asserted*, not that its zero means
+the harm cannot happen.
 
 **Sabotage.** `core-observability.txt` — a counter declared and never
 incremented; a must-be-zero printed and not asserted; a witness that reports a

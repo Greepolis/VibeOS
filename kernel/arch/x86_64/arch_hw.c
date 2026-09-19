@@ -28,6 +28,7 @@
 #include "vibeos/pageinfo.h"
 #include "vibeos/rmap.h"
 #include "vibeos/reclaim.h"
+#include "vibeos/mbz.h"
 #include "vibeos/blkdev.h"
 #include "vibeos/io_stats.h"
 #include "vibeos/blockdev.h"
@@ -11760,6 +11761,17 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
         vibeos_x86_64_serial_print_hex(g_abi_probes);
         vibeos_x86_64_serial_puts(" last_nr=0x");
         vibeos_x86_64_serial_print_hex(g_abi_last_nr);
+        /* The registry the parsers, the journal, the log sink and the scheduler
+         * report through (kernel/core/mbz.c): total, and which one and what it
+         * saw first. One line so the witness cannot be separated from the count. */
+        vibeos_x86_64_serial_puts("\n[MBZ] MUSTBEZERO total=0x");
+        vibeos_x86_64_serial_print_hex(vibeos_mbz_total());
+        vibeos_x86_64_serial_puts(" first=");
+        vibeos_x86_64_serial_puts(vibeos_mbz_first() == VIBEOS_MBZ_COUNT
+                                      ? "none" : vibeos_mbz_name(vibeos_mbz_first()));
+        vibeos_x86_64_serial_puts(" witness=0x");
+        vibeos_x86_64_serial_print_hex(vibeos_mbz_first() == VIBEOS_MBZ_COUNT
+                                           ? 0u : vibeos_mbz_witness(vibeos_mbz_first()));
         vibeos_x86_64_serial_puts("\n[PERF] syscalls=0x");
         vibeos_x86_64_serial_print_hex(g_perf_syscall.count);
         vibeos_x86_64_serial_puts(" syscall_cycles=0x");

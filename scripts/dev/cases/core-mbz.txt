@@ -1,0 +1,22 @@
+# The must-be-zero registry (kernel/core/mbz.c) and what it reports for.
+#
+# One id per harm, a count and a witness: the parsers (ELF, ext2, exFAT, FAT
+# chains, ISO9660, NTFS, GPT, partition-table writer), the journal's recovery,
+# the log sink's torn records and the scheduler's failed requeue. Each id is a
+# line a healthy boot never reaches; the boot gate asserts the total is zero
+# (mbz_<id>_witness=<value> names the first offender and what it saw, and
+# mbz_counters_missing means the line stopped being printed).
+#
+# Demonstrated able to be non-zero rather than trusted: the host suite feeds
+# each of them damaged input on purpose, and test_mbz_all_demonstrated fails if
+# any id was never seen non-zero in the whole run. Removing a vibeos_mbz_hit call
+# therefore turns the host suite red, not the boot - the boot only ever sees the
+# zero.
+#
+# Target source: kernel/fs/ext2.c
+# Run: SABOTAGE_VERIFY="<host test run that must fail>" python3 scripts/dev/sabotage.py kernel/fs/ext2.c scripts/dev/cases/core-mbz.txt
+
+### ext2: a pointer off the volume is no longer counted
+--- old
+        vibeos_mbz_hit(VIBEOS_MBZ_EXT2_BAD_METADATA, block);   /* a pointer off the volume */
++++ new

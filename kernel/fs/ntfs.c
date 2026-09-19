@@ -8,6 +8,7 @@
  */
 
 #include "vibeos/ntfs.h"
+#include "vibeos/mbz.h"
 
 static uint16_t rd16(const uint8_t *p) {
     return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
@@ -54,6 +55,7 @@ static int ntfs_apply_fixups(uint8_t *rec, uint32_t size, uint32_t sector_size) 
     uint32_t i;
 
     if (usa_count == 0u || usa_off + (uint32_t)usa_count * 2u > size) {
+        vibeos_mbz_hit(VIBEOS_MBZ_NTFS_BAD_METADATA, usa_count);
         return -1;
     }
     /* The count includes the sequence number itself, so there is one entry per
@@ -65,6 +67,7 @@ static int ntfs_apply_fixups(uint8_t *rec, uint32_t size, uint32_t sector_size) 
     for (i = 1; i < usa_count; i++) {
         uint8_t *tail = rec + i * sector_size - 2u;
         if (rd16(tail) != seq) {
+            vibeos_mbz_hit(VIBEOS_MBZ_NTFS_BAD_METADATA, i);   /* a torn record */
             return -1;   /* this sector was not written with the rest */
         }
         tail[0] = rec[usa_off + i * 2u];
@@ -196,6 +199,7 @@ static const uint8_t *ntfs_find_attr(const uint8_t *rec, uint32_t size, uint32_t
         /* A zero or overlong length would loop forever or read past the
          * record; a corrupt record must end the walk. */
         if (attr_len < 8u || attr_len > size - off) {   /* not off + attr_len: it wraps (H-011) */
+            vibeos_mbz_hit(VIBEOS_MBZ_NTFS_BAD_METADATA, attr_len);
             return 0;
         }
         if (attr_type == type) {

@@ -41,6 +41,7 @@
  */
 
 #include "vibeos/logsink.h"
+#include "vibeos/mbz.h"
 
 #define LOG_MAGIC 0x564C4F47u   /* "VLOG" */
 
@@ -180,6 +181,7 @@ int vibeos_logsink_attach(const vibeos_logsink_dev_t *dev) {
             if (!log_valid(p, &seq, 0)) {
                 if (get32(p) == LOG_MAGIC) {
                     g_stats.bad_records++;
+                    vibeos_mbz_hit(VIBEOS_MBZ_LOGSINK_BAD_RECORD, i + 1ull + k);   /* the sector */
                 }
                 continue;
             }

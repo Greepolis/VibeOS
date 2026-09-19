@@ -18,6 +18,7 @@
  * arranged the way they are. */
 
 #include "vibeos/journal.h"
+#include "vibeos/mbz.h"
 
 #include <string.h>
 
@@ -128,6 +129,7 @@ static int journal_recover(vibeos_journal_t *j)
         /* A descriptor that cannot be believed. It was never committed - a
          * commit record is only written after this block is durable - so the
          * volume still holds the old contents and the region can be dropped. */
+        vibeos_mbz_hit(VIBEOS_MBZ_JOURNAL_BAD_RECORD, count);
         return journal_retire(j);
     }
 
@@ -144,7 +146,9 @@ static int journal_recover(vibeos_journal_t *j)
         rd32(commit + 20) != journal_sum(0xFFFFFFFFu, desc, VIBEOS_BLOCK_SIZE)) {
         /* Descriptor without a matching commit: the crash landed before the
          * transaction became real. Every target still holds its old contents,
-         * which is a state the caller asked for. */
+         * which is a state the caller asked for. Still a boot that found a
+         * transaction in flight, which a clean shutdown never leaves. */
+        vibeos_mbz_hit(VIBEOS_MBZ_JOURNAL_BAD_RECORD, rd64(desc + 8));
         return journal_retire(j);
     }
 
@@ -157,6 +161,7 @@ static int journal_recover(vibeos_journal_t *j)
         sum = journal_sum(sum, block, VIBEOS_BLOCK_SIZE);
     }
     if (sum != rd32(commit + 16)) {
+        vibeos_mbz_hit(VIBEOS_MBZ_JOURNAL_BAD_RECORD, rd64(desc + 8));
         return journal_retire(j);
     }
 

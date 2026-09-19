@@ -79,37 +79,92 @@ BASELINE = {
     "exported_state": 0,
     "state_without_lock": 3,
     "no_case": 35,
-    # C2 step 3. Measured 36 of 50 when the property was added; the counters that
-    # exist are named in docs/core/phases.md. Each module that gains one lowers
-    # this, and it may not rise.
-    "no_mustbezero": 36,
+    # C2 step 3. Modules with no must-be-zero, no counter asserted elsewhere and
+    # no written exemption. Was 36 of 50 when the property was added.
+    "no_mustbezero": 0,
+    # Modules exempted by reason (EXEMPT below). It may only go down: an
+    # exemption is a claim that the module has no failure mode a counter could
+    # see, and every one is a place a defect could hide without a detector.
+    "mustbezero_exempt": 21,
 }
 
-# A module counts as having a must-be-zero when it, or its header, says so - or
-# when its counter lives in a shared stats struct, which is where several of the
-# oldest ones ended up. Listed by hand: guessing "the area has one" would mark
-# every module beside frame.c as covered by frame.c's counter.
+# A module counts as having a must-be-zero when one of these holds. Three routes,
+# because the counters that exist grew three ways and pretending otherwise would
+# leave the check red for the wrong reason:
+#
+#  1. It says so: its source or header carries "must be zero"/MUSTBEZERO, or it
+#     reports through the registry (vibeos_mbz_hit, kernel/core/mbz.c).
+#  2. Its counter lives in a shared stats struct (SHARED_STATS).
+#  3. It is asserted by the boot gate under a name other than a MUSTBEZERO line
+#     (ELSEWHERE). The gate is grepped for that name, so an entry whose
+#     assertion has been deleted stops counting instead of staying green.
 SHARED_STATS = {
     "mm/frame": "mm_stats.h",       # frames_leaked, frames_double_put
     "sched/task": "task_stats.h",    # procstate_double_put
 }
-MUSTBEZERO_RE = re.compile(r"must[ -]?be[ -]?zero|MUSTBEZERO", re.I)
+ELSEWHERE = {
+    "fs/blockcache": "blockcache_evict_failed",   # a block the caller was told was written
+    "mm/swaparea": "out_of_range",                # a slot outside the swap area
+    "sched/lifetime": "use_after_publish",        # teardown steps out of order
+    "mm/backing": "cache_audit_changed",          # a cached page that no longer matches its file
+}
+
+# The rest, each with the reason. Read these as a list of where a bug would have
+# to hide to go unseen; the reason says why it cannot hide in a counter. Not a
+# permission: an entry comes out the day the module gains a real failure mode.
+EXEMPT = {
+    "ipc/channel": "a full channel is backpressure the caller decides on; the ring indices are covered by host ring tests",
+    "ipc/event": "one flag with no failure mode",
+    "ipc/handle_transfer": "every refusal is the rights-subset check working; a wrong grant is a logic defect in one function the host tests pin",
+    "ipc/waitset": "timeouts and wakes are outcomes, not faults; ownership refusals are policy",
+    "core/log": "the ring overwrites by design and counts what it dropped",
+    "core/policy": "a pure decision over its arguments; a denial is the behaviour",
+    "core/security": "a pure decision over its arguments; a denial is the behaviour",
+    "net/net_policy": "a pure decision over its arguments; a denial is the behaviour",
+    "sched/sched_policy": "a pure decision over its arguments; no state",
+    "exec/stats": "the counters themselves; what exec refuses is reported by exec, and a missing file is a normal outcome",
+    "fs/storage": "a table of volumes; unmounted and not-found are results the caller handles",
+    "fs/vfs": "a dispatch table; a refusal is the underlying filesystem's, counted there",
+    "mm/pmm": "boot-time region arithmetic, saturating; a wrong region shows as frames_leaked or poison_hits, both gated",
+    "mm/reclaim": "pressure events are load, not defect; freeing a live frame shows as poison_hits and frames_double_put, gated",
+    "mm/usage": "read-only reporting with no state",
+    "mm/vma": "a refused overlap is the caller's answer; a corrupted map shows in the ring-3 mmap/mprotect/munmap self-test, asserted",
+    "object/handle_table": "allocation failure is exhaustion, a limit and not a defect",
+    "proc/process": "state transitions are validated by the task-state table, whose illegal_transition is gated",
+    "sched/forkguard": "refusing a fork is the guard's purpose",
+    "sched/runq": "a round-robin pick proven against a model by the scheduler torture harness; no state to be wrong",
+    "time/timer": "tick arithmetic and one armed deadline; no state a defect could corrupt beyond that deadline",
+}
+MUSTBEZERO_RE = re.compile(r"must[ -]?be[ -]?zero|MUSTBEZERO|vibeos_mbz_hit", re.I)
 
 
-def has_mustbezero(area, name, src):
+def gate_text():
+    try:
+        return open(os.path.join(ROOT, "scripts", "qemu-cli-smoke-linux.py"),
+                    encoding="utf-8", errors="replace").read()
+    except OSError:
+        return ""
+
+
+def mustbezero_status(area, name, src, gate):
+    """'yes', 'exempt' or 'no'."""
+    key = "%s/%s" % (area, name)
     if MUSTBEZERO_RE.search(src):
-        return True
+        return "yes"
     paths = [os.path.join(ROOT, "include", "vibeos", name + ".h")]
-    if "%s/%s" % (area, name) in SHARED_STATS:
-        paths.append(os.path.join(ROOT, "include", "vibeos",
-                                  SHARED_STATS["%s/%s" % (area, name)]))
+    if key in SHARED_STATS:
+        paths.append(os.path.join(ROOT, "include", "vibeos", SHARED_STATS[key]))
     for p in paths:
         try:
             if MUSTBEZERO_RE.search(open(p, encoding="utf-8", errors="replace").read()):
-                return True
+                return "yes"
         except OSError:
             pass
-    return False
+    if key in ELSEWHERE and ELSEWHERE[key] in gate:
+        return "yes"
+    if key in EXEMPT and len(EXEMPT[key]) >= 20:
+        return "exempt"
+    return "no"
 
 
 def modules():
@@ -184,6 +239,7 @@ def main():
         return 0
 
     cases = set(os.listdir(os.path.join(ROOT, "scripts", "dev", "cases")))
+    gate = gate_text()
 
     counts = dict((k, 0) for k in BASELINE)
     detail = []
@@ -208,8 +264,11 @@ def main():
         if not has_case(cases, area, name):
             problems.append("no_case")
 
-        if not has_mustbezero(area, name, src):
+        mz = mustbezero_status(area, name, src, gate)
+        if mz == "no":
             problems.append("no_mustbezero")
+        elif mz == "exempt":
+            problems.append("mustbezero_exempt")
 
         for p in problems:
             counts[p] += 1

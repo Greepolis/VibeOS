@@ -10,6 +10,7 @@
  */
 
 #include "vibeos/elf.h"
+#include "vibeos/mbz.h"
 
 #define PT_LOAD 1u
 #define PT_INTERP 3u
@@ -97,7 +98,7 @@ int vibeos_elf_parse_ex(const void *image, uint64_t len,
                                  end_allowed, opts, 0, 0, out);
 }
 
-int vibeos_elf_parse_read(const void *image, uint64_t len,
+static int elf_parse_read_inner(const void *image, uint64_t len,
                           uint64_t load_bias,
                           uint64_t min_allowed, uint64_t end_allowed,
                           uint32_t opts,
@@ -316,6 +317,26 @@ uint32_t vibeos_elf_page_flags(const vibeos_elf_image_t *img, uint64_t page_va) 
         }
     }
     return flags;
+}
+
+/* The public entry, so one place decides what counts as a defect. Wrong magic,
+ * the wrong machine, and a dynamic image the caller forbade are the file being
+ * the wrong *kind* - exactly what a refusal is for. A header that overlaps
+ * itself, overflows or names an extent outside the image is a file no linker
+ * produced, and a healthy boot's media does not contain one (C2). */
+int vibeos_elf_parse_read(const void *image, uint64_t len,
+                          uint64_t load_bias,
+                          uint64_t min_allowed, uint64_t end_allowed,
+                          uint32_t opts,
+                          vibeos_elf_read_fn read, void *read_ctx,
+                          vibeos_elf_image_t *out) {
+    int rc = elf_parse_read_inner(image, len, load_bias, min_allowed, end_allowed,
+                                  opts, read, read_ctx, out);
+    if (rc == VIBEOS_ELF_EMALFORMED || rc == VIBEOS_ELF_ERANGE ||
+        rc == VIBEOS_ELF_ETOOMANY) {
+        vibeos_mbz_hit(VIBEOS_MBZ_ELF_MALFORMED, (uint64_t)rc);
+    }
+    return rc;
 }
 
 int vibeos_elf_page_file_offset(const vibeos_elf_image_t *img, uint64_t page_va,

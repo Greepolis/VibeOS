@@ -1,4 +1,5 @@
 #include "vibeos/scheduler.h"
+#include "vibeos/mbz.h"
 
 static int runqueue_push(vibeos_runqueue_t *rq, vibeos_thread_t *thread) {
     if (rq->count >= VIBEOS_MAX_THREADS) {
@@ -623,11 +624,13 @@ int vibeos_sched_wait_end(vibeos_scheduler_t *sched, uint32_t tid, uint32_t pref
     previous_cpu = slot->cpu_id;
     if (sched_pick_allowed_cpu_and_note(sched, slot, preferred_cpu_id, &target_cpu) != 0) {
         sched->wait_requeue_failures++;
+        vibeos_mbz_hit(VIBEOS_MBZ_SCHED_REQUEUE_FAILED, tid);
         return -1;
     }
     if (!runqueue_contains_tid(&sched->runqueues[target_cpu], tid)) {
         if (runqueue_push(&sched->runqueues[target_cpu], slot->thread) != 0) {
             sched->wait_requeue_failures++;
+            vibeos_mbz_hit(VIBEOS_MBZ_SCHED_REQUEUE_FAILED, tid);
             return -1;
         }
         sched->wait_requeues++;

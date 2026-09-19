@@ -1,6 +1,7 @@
 /* Reading a file along a FAT cluster chain. See include/vibeos/fat_chain.h. */
 
 #include "vibeos/fat_chain.h"
+#include "vibeos/mbz.h"
 
 #define FAT_SECTOR_SIZE 512u
 
@@ -97,6 +98,7 @@ long vibeos_fat_chain_read(const vibeos_fat_chain_io_t *io, uint32_t first_clust
         /* Sector 0 is how a driver says it refused the cluster: it is never a
          * data sector, because reserved sectors always precede the data. */
         if (lba == 0u) {
+            vibeos_mbz_hit(VIBEOS_MBZ_FAT_CHAIN_BAD, cluster);
             return -1;
         }
 
@@ -114,6 +116,7 @@ long vibeos_fat_chain_read(const vibeos_fat_chain_io_t *io, uint32_t first_clust
         /* whole is bounded by the run's own sectors, so a request never
          * reaches into a cluster the file does not own. */
         if (whole > run * sectors_per_cluster) {
+            vibeos_mbz_hit(VIBEOS_MBZ_FAT_CHAIN_BAD, whole);
             return -1;
         }
         if (whole > 0u && io->read_sectors(io->ctx, lba, out + copied, whole) != 0) {
