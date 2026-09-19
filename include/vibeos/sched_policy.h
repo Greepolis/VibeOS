@@ -67,6 +67,9 @@ int vibeos_sched_policy_nice(uint32_t slot);
  * the defect behind it was that a KERNEL task could not outrank anything,
  * because nothing could ever be seen to be in the KERNEL class. */
 vibeos_sched_class_t vibeos_sched_policy_class(uint32_t slot);
+
+/* Does a runnable slot outrank `current` by class? See sched_policy.c. */
+int vibeos_sched_policy_should_preempt(uint32_t cpu, int current, uint64_t runnable);
 int vibeos_sched_policy_set_affinity(uint32_t slot, uint32_t cpu_mask);
 
 /* Charge `ticks` of CPU to a slot. Weighted: a favourable nice makes a tick

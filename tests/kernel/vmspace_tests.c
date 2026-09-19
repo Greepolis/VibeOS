@@ -282,6 +282,39 @@ int test_vmspace(void) {
     if (vibeos_vmspace_destroy(&as) != 0) { goto fail; }
     if (vibeos_frame_owners(f1) != 1u) { goto fail; }
 
+
+    /* ---- M-036: execute permission is a grant ----------------------------- *
+     * Every user page used to be executable whatever was asked for: the entry
+     * was built without NX. The bit must be set unless PROT_EXEC was requested,
+     * must follow protect in both directions, and must survive everything that
+     * rebuilds an entry - a fork's copy-on-write, and a swap round trip. */
+    if (setup(0) != 0) { goto fail; }
+    if (vibeos_vmspace_create(&as) != 0) { goto fail; }
+    f1 = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+    if (vibeos_vmspace_map(&as, 0x8000000000ull, f1,
+                           VIBEOS_PROT_READ | VIBEOS_PROT_WRITE | VIBEOS_PROT_USER) != 0) { goto fail; }
+    {
+        uint64_t *e = vibeos_vmspace_entry(&as, 0x8000000000ull);
+        const uint64_t nx = 1ull << 63;
+        if (!e || (*e & nx) == 0ull) {
+            printf("FAIL:a user page without PROT_EXEC was executable\n");
+            goto fail;
+        }
+        if (vibeos_vmspace_protect(&as, 0x8000000000ull,
+                                   VIBEOS_PROT_READ | VIBEOS_PROT_EXEC | VIBEOS_PROT_USER) != 0) { goto fail; }
+        if ((*e & nx) != 0ull) {
+            printf("FAIL:protect(+EXEC) left NX set\n");
+            goto fail;
+        }
+        if (vibeos_vmspace_protect(&as, 0x8000000000ull,
+                                   VIBEOS_PROT_READ | VIBEOS_PROT_USER) != 0) { goto fail; }
+        if ((*e & nx) == 0ull) {
+            printf("FAIL:protect(-EXEC) left the page executable\n");
+            goto fail;
+        }
+        if ((*e & 0x000FFFFFFFFFF000ull) != f1) { goto fail; }
+    }
+    if (vibeos_vmspace_destroy(&as) != 0) { goto fail; }
     /* ---- protect changes access and nothing else ------------------------ */
     if (setup(0) != 0) { goto fail; }
     if (vibeos_vmspace_create(&as) != 0) { goto fail; }
@@ -302,7 +335,7 @@ int test_vmspace(void) {
             printf("FAIL:protect dropped the ownership mark\n");
             goto fail;
         }
-        if ((*e & ~0xFFFull) != f1) {
+        if ((*e & 0x000FFFFFFFFFF000ull) != f1) {
             printf("FAIL:protect moved the page to a different frame\n");
             goto fail;
         }
@@ -469,19 +502,23 @@ int test_vmspace(void) {
         pe = vibeos_vmspace_entry(&as, 0x8000000000ull);
         ce = vibeos_vmspace_entry(&child, 0x8000000000ull);
         if (!pe || !ce) { goto fail; }
-        if ((*pe & ~0xFFFull) == shared) {
+        if ((*pe & 0x000FFFFFFFFFF000ull) == shared) {
             printf("FAIL:the copy-on-write fault did not copy\n");
             goto fail;
         }
         if ((*pe & 2ull) == 0ull) { goto fail; }              /* now writable */
+        if ((*pe & (1ull << 63)) == 0ull || (*ce & (1ull << 63)) == 0ull) {
+            printf("FAIL:a copy-on-write copy or clone lost NX and became executable\n");
+            goto fail;
+        }
         if ((*pe & VIBEOS_PTE_OWNED) == 0ull) { goto fail; }
-        if ((*ce & ~0xFFFull) != shared) { goto fail; }       /* child unmoved */
+        if ((*ce & 0x000FFFFFFFFFF000ull) != shared) { goto fail; }       /* child unmoved */
         if (vibeos_frame_owners(shared) != 2u) { goto fail; } /* one let go */
 
         /* The copy carries the data, not zeroes. A fault handler that hands
          * back a blank page passes every reference-count check ever written
          * and destroys the program's memory. */
-        bytes = (unsigned char *)vs_map(*pe & ~0xFFFull);
+        bytes = (unsigned char *)vs_map(*pe & 0x000FFFFFFFFFF000ull);
         if (bytes[0] != 0xABu || bytes[4095] != 0xCDu) {
             printf("FAIL:the copy-on-write copy lost the page contents\n");
             goto fail;
@@ -494,11 +531,15 @@ int test_vmspace(void) {
         if (vibeos_frame_owners(shared) != 1u) { goto fail; }
         if (vibeos_vmspace_fault(&child, 0x8000000000ull, 1) != 1) { goto fail; }
         ce = vibeos_vmspace_entry(&child, 0x8000000000ull);
-        if (!ce || (*ce & ~0xFFFull) != shared) {
+        if (!ce || (*ce & 0x000FFFFFFFFFF000ull) != shared) {
             printf("FAIL:the sole owner copied instead of taking write back\n");
             goto fail;
         }
         if ((*ce & 2ull) == 0ull) { goto fail; }
+        if ((*ce & (1ull << 63)) == 0ull) {
+            printf("FAIL:the sole-owner write path dropped NX\n");
+            goto fail;
+        }
 
         /* ---- a fork that lands in the exclusivity window ------------------
          *
@@ -556,7 +597,7 @@ int test_vmspace(void) {
             }
             /* The whole point. The frame the hook took a reference to must not
              * be the frame this address space can now write. */
-            if ((*e & ~0xFFFull) == page) {
+            if ((*e & 0x000FFFFFFFFFF000ull) == page) {
                 printf("FAIL:a frame shared during the fault was made writable in place\n");
                 goto fail;
             }
@@ -655,7 +696,7 @@ int test_vmspace(void) {
             printf("FAIL:the child got a share with no copy-on-write mark\n");
             goto fail;
         }
-        if ((*pe & ~0xFFFull) != (*ce & ~0xFFFull)) {
+        if ((*pe & 0x000FFFFFFFFFF000ull) != (*ce & 0x000FFFFFFFFFF000ull)) {
             printf("FAIL:parent and child ended up on different frames\n");
             goto fail;
         }

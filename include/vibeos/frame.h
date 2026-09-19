@@ -132,6 +132,10 @@ uint64_t vibeos_frame_alloc_contig(uint32_t count, vibeos_frame_state_t state);
  * different one. */
 void vibeos_frame_get(uint64_t phys);
 
+/* Take a reference only if the frame already has an owner (M-038). Returns 1
+ * with the reference held, 0 having changed nothing. See frame.c. */
+int vibeos_frame_try_get(uint64_t phys);
+
 /* One fewer owner. Returns non-zero when that was the last one and the frame
  * has been returned to the free list, poisoned.
  *

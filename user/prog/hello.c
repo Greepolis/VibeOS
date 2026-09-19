@@ -70,6 +70,7 @@ static long user_syscall6(long nr, long a1, long a2, long a3,
 #define SYS_uname    63
 #define SYS_arch_prctl 158
 #define SYS_clock_gettime 228
+#define SYS_pageinfo 1001
 
 static const char message[] = "Hello from a real user ELF (loaded by the kernel)\n";
 static const char ok_heap[] = "heap+mmap ok\n";
@@ -142,6 +143,7 @@ static const char abi_iov[] = "abi: writev wrong\n";
 static const char abi_mm[] = "abi: mmap/mprotect/munmap wrong\n";
 static const char abi_futex[] = "abi: futex did not check the value\n";
 static const char abi_nosys[] = "abi: an unimplemented syscall did not return ENOSYS\n";
+static const char abi_nx[] = "abi: PROT_EXEC is not enforced (page executable without it)\n";
 static const char tls_kept[] = "tls survived context switches\n";
 static const char tls_lost[] = "abi: %fs lost across a context switch\n";
 static const char sse_kept[] = "sse survived context switches\n";
@@ -237,6 +239,33 @@ static const char *check_linux_abi(void) {
     *(volatile unsigned char *)(unsigned long)page = 0x5A;
     if (*(volatile unsigned char *)(unsigned long)page != 0x5A) {
         return abi_mm;
+    }
+    /* W^X (M-036): the page table, not the API, is what forbids running data.
+     * pageinfo reports the entry's NX bit. A writable page must have it; asking
+     * for PROT_EXEC must clear it; taking PROT_EXEC away must set it again. */
+    {
+        unsigned long info[3];   /* frame, flags | owners << 32, first_word */
+        info[1] = 0;
+        if (user_syscall3(SYS_pageinfo, page, (long)(unsigned long)info, 0) != 0 ||
+            (info[1] & 0x20u) == 0u) {
+            return abi_nx;   /* RW, no PROT_EXEC: must be NX */
+        }
+        if (user_syscall3(SYS_mprotect, page, 4096, 5 /*READ|EXEC*/) != 0) {
+            return abi_mm;
+        }
+        info[1] = 0xFFu;
+        if (user_syscall3(SYS_pageinfo, page, (long)(unsigned long)info, 0) != 0 ||
+            (info[1] & 0x20u) != 0u) {
+            return abi_nx;   /* PROT_EXEC granted: NX must be clear */
+        }
+        if (user_syscall3(SYS_mprotect, page, 4096, 1 /*READ*/) != 0) {
+            return abi_mm;
+        }
+        info[1] = 0;
+        if (user_syscall3(SYS_pageinfo, page, (long)(unsigned long)info, 0) != 0 ||
+            (info[1] & 0x20u) == 0u) {
+            return abi_nx;   /* PROT_EXEC revoked: NX must be set again */
+        }
     }
     if (user_syscall3(SYS_mprotect, page, 4096, 1 /*READ*/) != 0) {
         return abi_mm;

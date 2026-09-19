@@ -200,5 +200,33 @@ int test_sched_policy(void) {
     expect(vibeos_sched_policy_pick(2, 0x1ull) < 0, "a forgotten slot was still scheduled");
     expect(vibeos_sched_policy_set_nice(0, 0) != 0, "a forgotten slot accepted a renice");
 
+    /* ---- a higher class preempts a lower one (M-035) --------------------- */
+    if (!expect(vibeos_sched_policy_init(SLOTS) == 0, "re-init for preemption")) { return -1; }
+    (void)vibeos_sched_policy_admit(0, VIBEOS_SCHED_NORMAL, 0, 0);
+    (void)vibeos_sched_policy_admit(1, VIBEOS_SCHED_KERNEL, 0, 0);
+    (void)vibeos_sched_policy_admit(2, VIBEOS_SCHED_IDLE, 0, 0);
+    (void)vibeos_sched_policy_admit(3, VIBEOS_SCHED_NORMAL, -10, 0);
+    expect(vibeos_sched_policy_should_preempt(0, 0, 1ull << 1) == 1,
+           "a KERNEL task did not preempt a running NORMAL one");   /* the defect */
+    expect(vibeos_sched_policy_should_preempt(0, 2, 1ull << 0) == 1,
+           "a NORMAL task did not preempt IDLE");
+    expect(vibeos_sched_policy_should_preempt(0, 2, 1ull << 1) == 1,
+           "a KERNEL task did not preempt IDLE");
+    expect(vibeos_sched_policy_should_preempt(0, 1, (1ull << 0) | (1ull << 2)) == 0,
+           "something preempted the top class");
+    expect(vibeos_sched_policy_should_preempt(0, 0, 1ull << 2) == 0,
+           "IDLE preempted NORMAL");
+    expect(vibeos_sched_policy_should_preempt(0, 0, 1ull << 3) == 0,
+           "a better-weighted task in the SAME class preempted mid-slice");
+    expect(vibeos_sched_policy_should_preempt(0, 0, 0ull) == 0,
+           "preempted with nothing else runnable");
+    /* The adopted kernel task is never admitted to the policy. It is NORMAL, as
+     * policy_class says - not "unknown, so preempt it", which made it lose the
+     * core every tick and broke the quantum. */
+    expect(vibeos_sched_policy_should_preempt(0, 6, 1ull << 2) == 0,
+           "an unadmitted slot was preempted by IDLE");
+    expect(vibeos_sched_policy_should_preempt(0, 6, 1ull << 1) == 1,
+           "an unadmitted slot (NORMAL) was not preempted by KERNEL");
+
     return g_fail ? -1 : 0;
 }

@@ -261,3 +261,40 @@ uint64_t vibeos_sched_policy_max_lag(uint64_t runnable) {
     }
     return worst;
 }
+
+/* Would the picker, asked right now, take a core away from `current`?
+ *
+ * Only a class comparison, on purpose: preempting for a better-*weighted* task
+ * in the same class would make the slice meaningless, and weights are honoured
+ * when the next task is chosen. A class is a promise that higher work runs
+ * first, and one that waits for a slice boundary is a promise with an asterisk.
+ *
+ * This is the whole rule, so the arch layer cannot half-implement it - it used
+ * to test only "current is IDLE", which left a KERNEL task waiting behind a
+ * NORMAL one for the rest of its slice (M-035) while the picker's own ordering
+ * said KERNEL wins. Written as candidate < mine, a class added later is handled
+ * without another special case. */
+int vibeos_sched_policy_should_preempt(uint32_t cpu, int current, uint64_t runnable) {
+    uint32_t i;
+    uint8_t mine;
+
+    if (current < 0) {
+        return 1;   /* no task to protect: let the picker decide */
+    }
+    /* A slot the policy was never told about is NORMAL, as vibeos_sched_policy_class
+     * says. The adopted kernel task is one: it is never admitted, and treating
+     * "unknown" as "preempt me" made it lose the core every tick. */
+    mine = (uint8_t)vibeos_sched_policy_class((uint32_t)current);
+    for (i = 0; i < g_slots; i++) {
+        if ((int)i == current || (runnable & (1ull << i)) == 0ull) {
+            continue;
+        }
+        if (!g_task[i].present || !may_run_here(i, cpu)) {
+            continue;
+        }
+        if (g_task[i].cls < mine) {
+            return 1;
+        }
+    }
+    return 0;
+}

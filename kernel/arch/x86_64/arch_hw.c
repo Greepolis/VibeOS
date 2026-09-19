@@ -29,6 +29,7 @@
 #include "vibeos/rmap.h"
 #include "vibeos/reclaim.h"
 #include "vibeos/mbz.h"
+#include "vibeos/ceildiv.h"
 #include "vibeos/blkdev.h"
 #include "vibeos/io_stats.h"
 #include "vibeos/blockdev.h"
@@ -1760,6 +1761,7 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
  * written. Without it a read-only page is indistinguishable from a page the
  * program was never allowed to write, and a genuine protection fault would be
  * silently turned into a successful write. */
+#define PTE_NX      (1ull << 63)       /* no-execute; needs EFER.NXE (hw_enable_syscall) */
 #define PTE_COW     0x200ull
 
 /* x86-64 leaves bits 9, 10 and 11 of a page-table entry to software, and this
@@ -3343,6 +3345,9 @@ static int hw_map_elf_image(vibeos_hw_aspace_t *as, vibeos_vma_list_t *vmas,
         if (flags & VIBEOS_ELF_W) {
             leaf |= PTE_WRITE;
         }
+        if (!(flags & VIBEOS_ELF_X)) {
+            leaf |= PTE_NX;   /* data, bss, rodata: never code (M-036) */
+        }
         /* The page the file already holds, when this page is entirely the
          * file's and nothing may write it.
          *
@@ -3639,7 +3644,19 @@ static void hw_wrmsr(uint32_t msr, uint64_t value) {
  * SYSCALL loads kernel CS=0x08 (SS=0x10); SYSRET loads user CS=0x20|3 and
  * SS=0x18|3 from base 0x10 - which matches the data-then-code user GDT order. */
 static void hw_enable_syscall(void) {
-    hw_wrmsr(MSR_EFER, hw_rdmsr(MSR_EFER) | 1ull);                 /* SCE */
+    /* NXE as well as SCE (M-036). PTE_NX in a user leaf is a reserved bit - a
+     * page fault on first touch - unless the core has it enabled, and firmware
+     * leaves it enabled on the bootstrap processor but the application-processor
+     * trampoline does not. Every core comes through here before it loads an
+     * address space that carries the bit. */
+    {
+        uint32_t eax = 0x80000001u, ebx = 0, ecx = 0, edx = 0;
+        __asm__ __volatile__("cpuid" : "+a"(eax), "=b"(ebx), "+c"(ecx), "=d"(edx));
+        if ((edx & (1u << 20)) == 0u) {
+            hw_panic("cpu has no NX: cannot enforce PROT_EXEC");
+        }
+    }
+    hw_wrmsr(MSR_EFER, hw_rdmsr(MSR_EFER) | 1ull | (1ull << 11));     /* SCE | NXE */
     hw_wrmsr(MSR_STAR, ((uint64_t)0x10 << 48) | ((uint64_t)0x08 << 32));
     hw_wrmsr(MSR_LSTAR, (uint64_t)(uintptr_t)vibeos_x86_64_syscall_entry);
     hw_wrmsr(MSR_SFMASK, 0x200ull);                                /* clear IF on entry */
@@ -4073,7 +4090,7 @@ static int hw_proc_create(hw_proc_t *p, hw_procstate_t *ps,
          * addresses in one function should not share a name. */
         uint64_t stack_va = VIBEOS_HW_USER_STACK_TOP - ((uint64_t)(i + 1u) * 4096ull);
         if (!page || hw_map_page(&p->as, stack_va, (uint64_t)(uintptr_t)page,
-                                 PTE_PRESENT | PTE_WRITE | PTE_USER) != 0) {
+                                 PTE_PRESENT | PTE_WRITE | PTE_USER | PTE_NX) != 0) {
             { rc = hw_exec_refuse(VIBEOS_EXEC_NO_MEMORY, path, "user_stack"); goto fail; }
         }
         hw_page_put((uint64_t)(uintptr_t)page);   /* D9: the mapping owns it now */
@@ -4153,7 +4170,7 @@ static int hw_map_user_pages(vibeos_hw_aspace_t *as, uint64_t va, uint64_t pages
     for (i = 0; i < pages; i++) {
         void *page = hw_alloc_page();
         if (!page || hw_map_page(as, va + i * 4096ull, (uint64_t)(uintptr_t)page,
-                                 PTE_PRESENT | PTE_WRITE | PTE_USER) != 0) {
+                                 PTE_PRESENT | PTE_WRITE | PTE_USER | PTE_NX) != 0) {
             /* The same two leaks mmap had, in the function brk grows through.
              * A frame allocated and not mapped had no owner to release it, and
              * a partial mapping was left for a caller just told the whole
@@ -4806,24 +4823,20 @@ static uint32_t hw_slice_for(int slot) {
  * a promise with an asterisk. */
 static int hw_higher_class_runnable(hw_cpu_t *cpu, int current) {
     uint32_t i;
-    uint8_t mine;
+    uint64_t runnable = 0;
 
     if (current < 0 || current >= VIBEOS_HW_MAX_TASKS) {
         return 1;
     }
-    mine = (uint8_t)vibeos_sched_policy_class((uint32_t)current);
-    if (mine == (uint8_t)VIBEOS_SCHED_KERNEL) {
-        return 0;   /* nothing outranks the top class */
-    }
     for (i = 0; i < (uint32_t)VIBEOS_HW_MAX_TASKS; i++) {
-        if ((int)i == current || !hw_task_runnable(0, i, (uint32_t)cpu->index)) {
-            continue;
-        }
-        if (!g_tasks[i].is_idle && mine == (uint8_t)VIBEOS_SCHED_IDLE) {
-            return 1;
+        if ((int)i != current && hw_task_runnable(0, i, (uint32_t)cpu->index)) {
+            runnable |= 1ull << i;
         }
     }
-    return 0;
+    /* The rule itself lives with the policy, so this cannot half-implement it:
+     * this function tested only "current is IDLE", and a KERNEL task waited
+     * behind a NORMAL one for the rest of its slice (M-035). */
+    return vibeos_sched_policy_should_preempt((uint32_t)cpu->index, current, runnable);
 }
 
 static int hw_pick_next(hw_cpu_t *cpu) {
@@ -7327,6 +7340,9 @@ static vibeos_prot_t hw_prot_of(uint64_t prot) {
     if (prot & PROT_WRITE) {
         p = (vibeos_prot_t)(p | VIBEOS_PROT_WRITE);
     }
+    if (prot & PROT_EXEC) {
+        p = (vibeos_prot_t)(p | VIBEOS_PROT_EXEC);
+    }
     return p;
 }
 
@@ -7399,6 +7415,9 @@ static long hw_mmap_locked(hw_procstate_t *ps, hw_proc_t *proc,
     leaf = PTE_PRESENT | PTE_USER;
     if (prot & PROT_WRITE) {
         leaf |= PTE_WRITE;
+    }
+    if (!(prot & PROT_EXEC)) {
+        leaf |= PTE_NX;   /* executable only when asked for (M-036) */
     }
     {
         uint64_t i;
@@ -7589,6 +7608,9 @@ static long hw_sys_mprotect(uint64_t addr, uint64_t len, uint64_t prot) {
                 p = (vibeos_prot_t)(VIBEOS_PROT_READ | VIBEOS_PROT_USER);
                 if (prot & PROT_WRITE) {
                     p = (vibeos_prot_t)(p | VIBEOS_PROT_WRITE);
+                }
+                if (prot & PROT_EXEC) {
+                    p = (vibeos_prot_t)(p | VIBEOS_PROT_EXEC);
                 }
             }
             (void)vibeos_vmspace_protect(&v, va, p);
@@ -8887,7 +8909,7 @@ static long hw_write_stat(uint64_t ubuf, uint32_t mode, uint64_t size, uint64_t 
     hw_stat_wr32(kbase, STAT_OFF_GID, 0);
     hw_stat_wr64(kbase, STAT_OFF_SIZE, size);
     hw_stat_wr64(kbase, STAT_OFF_BLKSIZE, 512);
-    hw_stat_wr64(kbase, STAT_OFF_BLOCKS, (size + 511ull) / 512ull);
+    hw_stat_wr64(kbase, STAT_OFF_BLOCKS, vibeos_ceil_div_u64(size, 512ull));
     if (vibeos_uaccess_copy((void *)(uintptr_t)ubuf, kbuf, STAT_SIZE) != 0) {
         return -VIBEOS_EFAULT;
     }
@@ -9368,20 +9390,48 @@ static long hw_sys_pageinfo(uint64_t va, uint64_t out_uptr) {
             if (entry & PTE_USER)          { info.flags |= VIBEOS_PAGE_USER; }
             if (entry & PTE_COW)           { info.flags |= VIBEOS_PAGE_COW; }
             if (entry & VIBEOS_PTE_OWNED)  { info.flags |= VIBEOS_PAGE_OWNED; }
-            /* A frame the allocator does not describe - the low identity
-             * window, say - reports no identity rather than a wrong one. */
-            if (id != 0xFFFFFFFFu) {
-                info.frame = (uint64_t)id + 1ull;   /* 0 stays "nothing" */
-                info.owners = vibeos_frame_owners(phys);
+            if (entry & PTE_NX)           { info.flags |= VIBEOS_PAGE_NX; }
+            /* Everything below describes one frame, so it is all read from the
+             * same pinned instant (M-038). A sibling thread can munmap the page,
+             * the frame can be released and handed to another process, and a
+             * bare read through the address taken from an entry this function
+             * does not own returns that process's first eight bytes - and an
+             * identity and an owner count taken at different moments describe
+             * different frames.
+             *
+             * Pin the frame first - try_get refuses one nobody owns - and then
+             * confirm the entry still names it: had the frame been freed and
+             * reused before the pin, the entry would have changed. Only then are
+             * the identity, the count and the word this caller's own page's.
+             * If the page is gone, the flags from the entry stay and the rest
+             * reports nothing, which is the truth.
+             *
+             * A frame the allocator does not describe - the reserved low
+             * identity window - reports no identity rather than a wrong one, and
+             * has no owner to race with, so it is read as before. The word is
+             * read through the kernel's identity map deliberately, not through
+             * the caller's translation: the value of this field is that it does
+             * not use the mapping under suspicion. */
+            if (id == 0xFFFFFFFFu) {
+                info.first_word = *(const volatile uint64_t *)(uintptr_t)phys;
+            } else if (vibeos_frame_try_get(phys)) {
+                if (__atomic_load_n(pte, __ATOMIC_ACQUIRE) == entry) {
+                    info.frame = (uint64_t)id + 1ull;   /* 0 stays "nothing" */
+                    /* Our own pin is one of the owners; the caller asked about
+                     * the mappings that were there. */
+                    info.owners = vibeos_frame_owners(phys) - 1u;
+                    info.first_word = *(const volatile uint64_t *)(uintptr_t)phys;
+                }
+                (void)vibeos_frame_put(phys);
             }
-            /* Read through the kernel's identity map, deliberately not through
-             * the caller's translation - the whole value of this field is that
-             * it does not use the mapping under suspicion. */
-            info.first_word = *(const volatile uint64_t *)(uintptr_t)phys;
         }
     }
 
-    *(volatile vibeos_pageinfo_t *)(uintptr_t)out_uptr = info;
+    /* Through the fault-tolerant copy: the range was checked above, but a
+     * sibling's munmap of the output buffer can land after the check. */
+    if (vibeos_uaccess_copy((void *)(uintptr_t)out_uptr, &info, sizeof(info)) != 0) {
+        return -VIBEOS_EFAULT;
+    }
     return 0;
 }
 

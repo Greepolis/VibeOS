@@ -216,6 +216,20 @@ int test_frame(void) {
      * which is the half of "changes nothing" that a partial scan breaks. */
     if (vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED) == 0ull) { goto fail; }
 
+    /* ---- try_get: a reference only to a frame somebody already owns (M-038) -
+     * pageinfo found a frame through a page-table entry it did not own and read
+     * it after a sibling had unmapped it. Pinning has to refuse a frame nobody
+     * owns, or it would resurrect one the allocator is about to hand out. */
+    if (setup() != 0) { goto fail; }
+    a = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+    if (a == 0ull || vibeos_frame_owners(a) != 1u) { goto fail; }
+    if (vibeos_frame_try_get(a) != 1 || vibeos_frame_owners(a) != 2u) { goto fail; }
+    if (vibeos_frame_put(a) != 0 || vibeos_frame_owners(a) != 1u) { goto fail; }
+    if (vibeos_frame_put(a) != 1) { goto fail; }          /* last owner: freed */
+    if (vibeos_frame_try_get(a) != 0) { goto fail; }      /* RED if it resurrects */
+    if (vibeos_frame_owners(a) != 0u) { goto fail; }
+    if (vibeos_frame_try_get(0x1ull) != 0) { goto fail; } /* not a frame the table has */
+
     free(g_ram);
     g_ram = 0;
     return 0;

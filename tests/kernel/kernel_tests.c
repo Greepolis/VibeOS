@@ -23,6 +23,7 @@
 #include "vibeos/partition.h"
 #include "vibeos/ext2.h"
 #include "vibeos/mbz.h"
+#include "vibeos/ceildiv.h"
 #include "vibeos/iso9660.h"
 #include "vibeos/exfat.h"
 #include "vibeos/ntfs.h"
@@ -8944,6 +8945,27 @@ int test_account(void);
 int test_sched_policy(void);
 int test_forkguard(void);
 
+/* M-037: st_blocks is ceil(size / 512) and must not wrap for a size a volume
+ * can declare. The old (size + 511) / 512 gave 0 at UINT64_MAX. */
+static int test_ceil_div_no_wrap(void) {
+    if (vibeos_ceil_div_u64(0u, 512u) != 0u || vibeos_ceil_div_u64(1u, 512u) != 1u ||
+        vibeos_ceil_div_u64(512u, 512u) != 1u || vibeos_ceil_div_u64(513u, 512u) != 2u) {
+        return -1;
+    }
+    if (vibeos_ceil_div_u64(UINT64_MAX, 512u) != (UINT64_MAX / 512u) + 1u) {
+        return -1;   /* RED with (n + 511) / 512: the sum wraps to 510, giving 0 */
+    }
+    if (vibeos_ceil_div_u64(UINT64_MAX - 510u, 512u) != (UINT64_MAX / 512u) + 1u &&
+        vibeos_ceil_div_u64(UINT64_MAX - 510u, 512u) != (UINT64_MAX / 512u)) {
+        return -1;
+    }
+    /* UINT64_MAX - 510 is 2^64 - 511: exactly 2^55 blocks, no remainder. */
+    if (vibeos_ceil_div_u64(UINT64_MAX - 510u, 512u) != (1ull << 55)) {
+        return -1;
+    }
+    return vibeos_ceil_div_u64(7u, 0u) == 0u ? 0 : -1;
+}
+
 /* C2: the three must-be-zero ids the suite reached last. Each drives its module
  * into the refusal on purpose - test_mbz_all_demonstrated fails if one is not. */
 static uint32_t fatt_zero_lba(void *ctx, uint32_t cluster) {
@@ -9202,6 +9224,7 @@ int main(void) {
     RUN_TEST(test_handle_revocation_scoped);
     RUN_TEST(test_handle_revocation_audit);
     RUN_TEST(test_proc_audit_retention_policy);
+    RUN_TEST(test_ceil_div_no_wrap);
     RUN_TEST(test_mbz_fat_chain_refused_cluster);
     RUN_TEST(test_mbz_iso_corrupt_record);
     RUN_TEST(test_mbz_sched_requeue_failed);

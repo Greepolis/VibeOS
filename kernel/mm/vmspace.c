@@ -94,6 +94,15 @@ uint64_t vibeos_vmspace_leaf_flags(vibeos_prot_t prot) {
     if (prot & VIBEOS_PROT_USER) {
         f |= PTE_USER;
     }
+    /* Execute permission is a grant, not a default (M-036). The entry used to be
+     * built without PTE_NX whatever was asked for, so every user page - the
+     * stack, the heap, a PROT_READ mapping - was executable and write-xor-
+     * execute was a property of the API and not of the CPU. NX is set unless
+     * PROT_EXEC was requested; it needs EFER.NXE, which the arch layer enables
+     * on every core before any address space carries the bit. */
+    if (!(prot & VIBEOS_PROT_EXEC)) {
+        f |= PTE_NX;
+    }
     return f;
 }
 
@@ -537,7 +546,10 @@ int vibeos_vmspace_protect(vibeos_vmspace_t *as, uint64_t va,
         if ((before & PTE_PRESENT) == 0u) {
             return -1;   /* unmapped under us: not a permission change */
         }
-        desired = before & ~(PTE_USER | PTE_WRITE);
+        desired = before & ~(PTE_USER | PTE_WRITE | PTE_NX);
+        if (!(prot & VIBEOS_PROT_EXEC)) {
+            desired |= PTE_NX;   /* PROT_NONE too: nothing to execute either */
+        }
         if (prot != VIBEOS_PROT_NONE) {
             if (prot & VIBEOS_PROT_USER) {
                 desired |= PTE_USER;
@@ -723,7 +735,7 @@ static int clone_one(vibeos_vmspace_t *src, uint64_t va, uint64_t *pte, void *ct
      * spends the rest of its length avoiding. */
     uint64_t entry = __atomic_load_n(pte, __ATOMIC_ACQUIRE);
     uint64_t phys = entry & PTE_ADDR_MASK;
-    uint64_t flags = entry & (PTE_PRESENT | PTE_USER);
+    uint64_t flags = entry & (PTE_PRESENT | PTE_USER | PTE_NX);
 
     /* Three cases, and conflating the last two is a silent disaster.
      *
@@ -787,7 +799,7 @@ static int clone_one(vibeos_vmspace_t *src, uint64_t va, uint64_t *pte, void *ct
         /* `entry` now holds what is really there; decide again against it. */
     }
     phys = entry & PTE_ADDR_MASK;
-    flags = entry & (PTE_PRESENT | PTE_USER);
+    flags = entry & (PTE_PRESENT | PTE_USER | PTE_NX);
     if (entry & PTE_COW_BIT) {
         flags |= PTE_COW_BIT;
         if (g_be.invlpg) {
@@ -1036,7 +1048,8 @@ int vibeos_vmspace_fault(vibeos_vmspace_t *as, uint64_t va, int write) {
      * would waste a page and a copy for nothing. */
     if (vibeos_frame_owners(phys) <= 1u) {
         expected = entry;
-        desired = phys | PTE_PRESENT | PTE_WRITE | PTE_USER | VIBEOS_PTE_OWNED;
+        desired = phys | PTE_PRESENT | PTE_WRITE | PTE_USER | VIBEOS_PTE_OWNED |
+                  (entry & PTE_NX);   /* the copy keeps the original's execute permission */
         if (g_race_hook) {
             g_race_hook(phys);
         }
@@ -1114,7 +1127,7 @@ copy:
      * was never ours to release. */
     expected = entry;
     desired = (fresh & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITE | PTE_USER |
-              VIBEOS_PTE_OWNED;
+              VIBEOS_PTE_OWNED | (entry & PTE_NX);
     if (!__atomic_compare_exchange_n(pte, &expected, desired, 0,
                                      __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
         (void)vibeos_frame_put(fresh);
@@ -1212,7 +1225,9 @@ int vibeos_vmspace_swap_out(vibeos_vmspace_t *as, uint64_t va, uint32_t slot) {
      * finds an entry that says "swapped" - so it is delayed rather than lost,
      * which is the difference between a window that is narrow and one that is
      * correct. */
-    desired = ((uint64_t)slot << 12) | PTE_SWAPPED;
+    /* NX rides along in a not-present entry, where the hardware ignores it, so a
+     * page swapped out and back in is not quietly made executable. */
+    desired = ((uint64_t)slot << 12) | PTE_SWAPPED | (entry & PTE_NX);
     if (!__atomic_compare_exchange_n(pte, &entry, desired, 0,
                                      __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
         return -1;   /* somebody else changed it; theirs to deal with */
@@ -1272,7 +1287,7 @@ int vibeos_vmspace_swap_in(vibeos_vmspace_t *as, uint64_t va, uint64_t frame) {
      * writable when it left. Restoring it read-only would fault the moment the
      * program touched it again and there would be nothing to resolve. */
     desired = (frame & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITE | PTE_USER |
-              VIBEOS_PTE_OWNED;
+              VIBEOS_PTE_OWNED | (entry & PTE_NX);
     vibeos_frame_get(frame);
     if (!__atomic_compare_exchange_n(pte, &entry, desired, 0,
                                      __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {

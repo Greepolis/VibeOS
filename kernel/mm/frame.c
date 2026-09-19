@@ -582,6 +582,29 @@ void vibeos_frame_get(uint64_t phys) {
     frame_unlock();
 }
 
+/* Take a reference only if somebody already has one. A frame with no owner is
+ * free (or about to be handed out), and giving it an owner from the outside
+ * would resurrect it. Returns 1 with the reference held, or 0 having changed
+ * nothing. This is what lets a reader that found a frame through a page-table
+ * entry it does not own (pageinfo, M-038) pin it before looking inside; the
+ * caller must then confirm the entry still names the frame, because the frame
+ * may have been released and reused between reading the entry and this call. */
+int vibeos_frame_try_get(uint64_t phys) {
+    uint32_t index;
+    int got = 0;
+
+    frame_lock();
+    index = frame_index(phys);
+    if (index != FRAME_NONE && g_table[index].owners != 0u) {
+        if (g_table[index].owners < 0xFFFFu) {
+            g_table[index].owners++;
+        }
+        got = 1;
+    }
+    frame_unlock();
+    return got;
+}
+
 int vibeos_frame_put_why(uint64_t phys, const void *tag) {
     int r;
 
