@@ -15,6 +15,18 @@ KNOWN_DIRECT_LOADER_ERRORS=(
   "Error loading uncompressed kernel"
 )
 
+# The guest ran, did something the emulator refuses, and QEMU stopped itself with
+# "qemu: fatal: ...". That is what booting an image on a direct loader it was not
+# built for looks like when the image's first instructions are executed anyway:
+# an outcome of the probe, not a failure of it. Anything that stops QEMU *without*
+# saying why is still an error - and now prints what QEMU wrote, which the probe
+# used to send to a file nobody read (an "Aborted" from the shell was the only
+# thing CI showed, and "Aborted" is bash's word, not QEMU's).
+KNOWN_GUEST_FAULT_ERRORS=(
+  "qemu: fatal:"
+  "Trying to execute code outside RAM or ROM"
+)
+
 if ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
   echo "[QEMU-SMOKE] qemu-system-x86_64 not found; skipping direct-loader probe"
   exit 0
@@ -32,7 +44,21 @@ unsupported_count=0
 timeout_count=0
 no_token_count=0
 unknown_fail_count=0
+guest_fault_count=0
 total_count=0
+
+first_matching_line() {
+  local err_file="$1"
+  shift
+  local needle
+  for needle in "$@"; do
+    if grep -Fq "${needle}" "${err_file}"; then
+      grep -F -m1 "${needle}" "${err_file}"
+      return 0
+    fi
+  done
+  return 1
+}
 
 contains_known_loader_error() {
   local err_file="$1"
@@ -80,6 +106,12 @@ for machine in "${MACHINES[@]}"; do
       continue
     fi
 
+    if fault_line="$(first_matching_line "${err_log}" "${KNOWN_GUEST_FAULT_ERRORS[@]}")"; then
+      echo "[QEMU-SMOKE] WARN machine=${machine} image=${image} the guest faulted and QEMU stopped (rc=${rc}): ${fault_line}"
+      guest_fault_count=$((guest_fault_count + 1))
+      continue
+    fi
+
     if [[ "${rc}" -eq 124 ]]; then
       echo "[QEMU-SMOKE] WARN machine=${machine} image=${image} timeout without boot token"
       timeout_count=$((timeout_count + 1))
@@ -93,6 +125,15 @@ for machine in "${MACHINES[@]}"; do
     fi
 
     echo "[QEMU-SMOKE] ERROR machine=${machine} image=${image} unexpected qemu failure (rc=${rc})" >&2
+    # Say what QEMU said. rc > 128 is a signal: 134 is SIGABRT, and an abort with
+    # nothing on stderr is a QEMU defect rather than a guest one.
+    if [[ "${rc}" -gt 128 ]]; then
+      echo "[QEMU-SMOKE]   killed by signal $((rc - 128)) ($(kill -l $((rc - 128)) 2>/dev/null || echo '?'))" >&2
+    fi
+    echo "[QEMU-SMOKE]   stderr (first 12 lines of ${err_log}):" >&2
+    sed -n '1,12p' "${err_log}" | sed 's/^/[QEMU-SMOKE]     /' >&2
+    echo "[QEMU-SMOKE]   serial (last 5 lines of ${serial_log}):" >&2
+    tail -n 5 "${serial_log}" | sed 's/^/[QEMU-SMOKE]     /' >&2
     unknown_fail_count=$((unknown_fail_count + 1))
   done
 done
@@ -103,6 +144,7 @@ done
   echo "unsupported_direct_loader=${unsupported_count}"
   echo "timeout=${timeout_count}"
   echo "no_token=${no_token_count}"
+  echo "guest_fault=${guest_fault_count}"
   echo "unknown_fail=${unknown_fail_count}"
 } > qemu-smoke-summary.txt
 
