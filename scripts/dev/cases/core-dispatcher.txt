@@ -1,0 +1,25 @@
+# C3: the second dispatcher was deleted, and the gate on what is left is absolute.
+#
+# docs/core/phases.md, C3: "Nothing here may become reachable from ring 3 before
+# those three defects are closed. Not afterwards. Not in the same change." The
+# dispatcher (kernel/core/syscall.c) is gone; kernel/proc/process.c, which carries
+# the process-slot and caller-identity model those defects lived in, is not - it
+# is C5's. check-reachable.py's fence names it: no symbol it defines may appear
+# in kernel/arch (the code ring 3 enters through), the bootloader, or user space.
+#
+# A baseline that only goes down cannot say this: giving process.c a caller
+# *lowers* the unreached count, and the ratchet is pleased. That is why the fence
+# is a separate, absolute check, and this case is the proof it fires.
+#
+# The case makes the arch layer name vibeos_proc_init - the smallest possible
+# step from "a second model exists" to "a syscall can reach it".
+#
+# Target source: kernel/arch/x86_64/arch_hw.c
+# Run: SABOTAGE_VERIFY="python3 scripts/dev/check-reachable.py" python3 scripts/dev/sabotage.py kernel/arch/x86_64/arch_hw.c scripts/dev/cases/core-dispatcher.txt
+
+### the arch layer names a symbol from the fenced process model
+--- old
+#include "vibeos/ceildiv.h"
++++ new
+#include "vibeos/ceildiv.h"
+static void *g_fence_probe_never_used = (void *)0 + (unsigned long)&vibeos_proc_init;

@@ -253,6 +253,36 @@ the answer down here before starting C4.
 process, exhaust the slot table, lie about the caller id. If deleted: confirm
 `check-reachable.py`'s baseline drops and that nothing references it.
 
+**Status (2026-09-19): done - by deletion, with the gate now enforced.**
+
+*The decision, written down as the plan requires before C4 starts.* Deleted,
+not fixed (commit `4462174`, 2026-09-10). The rule was "which produces the
+smaller diff in C4", and measuring it went against integrating: both dispatchers
+were `switch` statements, C4 wants a table (a syscall id mapped to the checks
+that apply), so integrating meant carrying 1,502 lines of the wrong shape into
+the change meant to fix the shape. The twenty-three lines that *were* the right
+shape are kept as prose in `docs/core/architecture.md`. The deletion also
+established that `vibeos_sec_*` appears zero times in the arch layer: **the
+kernel that boots has no capability model at all**, so C4 is "there is none on
+the metal", not "move the policy layer down". `check-reachable.py`'s baseline
+went 27 to 12 with it.
+
+*What this phase added today.* The gate is absolute ("nothing here may become
+reachable from ring 3... not in the same change") and nothing enforced it: a
+baseline that only goes down is *pleased* when a new caller appears, because
+the unreached count falls. `check-reachable.py` now has a **fence**: no symbol
+defined in `kernel/proc/process.c` - the second process model that still carries
+the slot and caller-identity defects, and is C5's subject - may be named by
+`kernel/arch`, `boot` or `user`. `kmain.c` and `waitset.c` name a few of them and
+are allowed to: that is the portable kernel building and consulting its own table
+at boot, not a path a syscall takes. `scripts/dev/cases/core-dispatcher.txt` makes
+the arch layer name `vibeos_proc_init`; the run goes red with `fenced: ...
+names vibeos_proc_init` and passes again when restored. The fence lifts in C5.
+
+Not done, and stated: the three defects themselves are still in `process.c`
+(closed by deletion for `syscall.c`, but `process.c` is kept). They are
+unreachable from ring 3, which the fence now guarantees rather than assumes.
+
 ---
 
 ## C4 — one syscall vocabulary, ABIs as translators, and 41% of the file leaves
