@@ -1,22 +1,28 @@
-# The must-be-zero registry (kernel/core/mbz.c) and what it reports for.
+# The must-be-zero registry's hooks: each module's call into it, proven by removing it.
 #
-# One id per harm, a count and a witness: the parsers (ELF, ext2, exFAT, FAT
-# chains, ISO9660, NTFS, GPT, partition-table writer), the journal's recovery,
-# the log sink's torn records and the scheduler's failed requeue. Each id is a
-# line a healthy boot never reaches; the boot gate asserts the total is zero
-# (mbz_<id>_witness=<value> names the first offender and what it saw, and
-# mbz_counters_missing means the line stopped being printed).
-#
-# Demonstrated able to be non-zero rather than trusted: the host suite feeds
-# each of them damaged input on purpose, and test_mbz_all_demonstrated fails if
-# any id was never seen non-zero in the whole run. Removing a vibeos_mbz_hit call
-# therefore turns the host suite red, not the boot - the boot only ever sees the
+# One id per harm, a count and a witness (kernel/core/mbz.c). The host suite feeds
+# each module damaged input on purpose and test_mbz_all_demonstrated - which runs
+# last - fails if any id was never seen non-zero. Removing a vibeos_mbz_hit call
+# therefore turns the HOST suite red, not the boot: the boot only ever sees the
 # zero.
 #
-# Target source: kernel/fs/ext2.c
-# Run: SABOTAGE_VERIFY="<host test run that must fail>" python3 scripts/dev/sabotage.py kernel/fs/ext2.c scripts/dev/cases/core-mbz.txt
+# **The granularity limit, said plainly.** The test asks about an *id*, not a
+# call site. ext2, exFAT, NTFS, ISO9660, FAT-chain, the partition table and the
+# journal each report one id from two or three sites, so removing one site leaves
+# the others hitting and the suite stays green - the first version of this file did
+# exactly that (it removed one of ext2's three sites and scored NOT RED). A case
+# here therefore has to remove the **only** site of an id, which is why it targets
+# the ELF parser's single wrapper. For a multi-site id the honest statement is that
+# at least one site is covered, not that each is; closing that needs a per-site
+# counter, and every site would have to be exercised by a test - a larger job than
+# this phase, recorded rather than implied.
+#
+# Target source: kernel/core/elf.c
+# Run: python3 scripts/dev/sabotage.py kernel/core/elf.c scripts/dev/cases/core-mbz.txt build-clang-Release
+# (core-mbz-logsink.txt is the same argument for a second single-site id.)
 
-### ext2: a pointer off the volume is no longer counted
+### the ELF parser stops reporting a structurally impossible image
 --- old
-        vibeos_mbz_hit(VIBEOS_MBZ_EXT2_BAD_METADATA, block);   /* a pointer off the volume */
+        vibeos_mbz_hit(VIBEOS_MBZ_ELF_MALFORMED, (uint64_t)rc);
 +++ new
+        (void)rc;

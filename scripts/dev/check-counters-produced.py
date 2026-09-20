@@ -51,6 +51,7 @@ WATCHED = [
     ("include/vibeos/rmap.h", "vibeos_rmap_stats"),
     ("include/vibeos/blockdev.h", "vibeos_blockcache"),
     ("include/vibeos/exec_stats.h", "vibeos_exec_stats"),
+    ("include/vibeos/inet.h", "vibeos_inet"),
 ]
 
 SOURCE_DIRS = ["kernel", "include"]

@@ -1,0 +1,9 @@
+# A second single-site id for core-mbz.txt's argument: the log sink's torn record.
+#
+# Target source: kernel/io/logsink.c
+# Run: python3 scripts/dev/sabotage.py kernel/io/logsink.c scripts/dev/cases/core-mbz-logsink.txt build-clang-Release
+
+### the log sink stops reporting a record that carried the magic and failed its checksum
+--- old
+                    vibeos_mbz_hit(VIBEOS_MBZ_LOGSINK_BAD_RECORD, i + 1ull + k);   /* the sector */
++++ new

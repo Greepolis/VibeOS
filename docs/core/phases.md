@@ -214,6 +214,34 @@ breaking the invariant by hand; and the ratchet is a textual heuristic - it says
 a counter is *declared and, for the registry, asserted*, not that its zero means
 the harm cannot happen.
 
+**Sabotage, finally run (2026-09-20).** The plan's `core-observability.txt` said
+what would be caught and contained *no cases*: three claims nobody had made fail.
+It has them now, and running them found two things the file had been asserting
+falsely or hiding.
+
+- *"A counter declared and never incremented"* was **not caught** for the network
+  stack: `check-counters-produced.py` watched nine structs and `vibeos_inet` was
+  not one of them, so removing the only increment of `sock_stale_parent` left every
+  check green - while the file's own comment said the check would catch it. Now
+  watched; the case names `vibeos_inet.sock_stale_parent`.
+- *"Printed and not asserted"* and *"a witness that says how often, not which"* are
+  red (`mustbezero-asserted`, and `mbz_counters_missing` when the witness leaves
+  the `[MBZ]` line). The registry itself is broken two ways in
+  `core-mbz-registry.txt`, both red.
+- The per-module must-be-zeros (network, mouse, ABI) each have two boot cases in
+  `core-observability-modules.txt` - non-zero, and the line missing - all nine run
+  and red with the intended reason. **Running them found a witness naming the
+  wrong object:** the ABI's `last_nr` was overwritten by the deliberate probe, so an
+  accidental call for 1998 was reported as `1999`. It now records only unexpected
+  numbers, and the case reports `1998`. A witness that names the wrong thing is
+  worse than a bare count, because it looks like an answer.
+- **A limit in the registry's own proof, recorded rather than hidden:**
+  `test_mbz_all_demonstrated` asks about an *id*, not a call site, so removing one
+  of a multi-site id's hooks stays green (the first sabotage of it did exactly that
+  and scored NOT RED). It is covered for the single-site ids (ELF, log sink) and
+  for at least one site of the rest. A per-site counter would close it and every
+  site would need a test.
+
 **Sabotage.** `core-observability.txt` — a counter declared and never
 incremented; a must-be-zero printed and not asserted; a witness that reports a
 count instead of an object.

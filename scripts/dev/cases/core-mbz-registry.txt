@@ -1,0 +1,25 @@
+# The must-be-zero registry itself (kernel/core/mbz.c), proven by breaking it.
+#
+# core-mbz.txt removes one *hook* (a module's call into the registry). These break
+# the registry, which every hook depends on: a hit that stops recording, and a
+# total that stops summing. Both must turn the host suite red through
+# test_mbz_all_demonstrated - which is the whole reason it runs last and asserts
+# every id was seen non-zero - and neither is visible to the boot, which only ever
+# reads a zero.
+#
+# Target source: kernel/core/mbz.c
+# Run: python3 scripts/dev/sabotage.py kernel/core/mbz.c scripts/dev/cases/core-mbz-registry.txt build-clang-Release
+
+### a hit is accepted and never counted
+--- old
+    __sync_fetch_and_add(&g_count[id], 1u);
++++ new
+    (void)id;
+
+### the total reads as zero whatever was hit
+--- old
+    for (i = 0; i < (uint32_t)VIBEOS_MBZ_COUNT; i++) {
+        sum += g_count[i];
+    }
++++ new
+    (void)i;

@@ -1,0 +1,100 @@
+# C2's per-module must-be-zeros, each proven able to turn the boot gate red.
+#
+# core-observability.txt holds the three *kinds* of observability failure. This
+# file holds the modules that arrived with a must-be-zero in C2 - the network
+# stack, the mouse and the ABI surface - and for each of them two things the gate
+# has to do: go red when the counter is non-zero, and go red when the line that
+# carries it stops being printed. A zero that cannot be told from a missing line is
+# the failure this whole phase exists to prevent.
+#
+#  - Network: sock_stale_parent (a TCP child whose listener slot was reused
+#    mid-handshake, H-028) and sock_fd_aba (a blocking accept/connect/recvfrom whose
+#    descriptor a sibling closed and reused, M-020). The gate reasons are
+#    net_sock_stale_parent, net_sock_fd_aba and net_counters_missing.
+#    sock_stale_parent is driven non-zero by test_inet_tcp_accept_aba on the host;
+#    sock_fd_aba is driven here, on the boot, by counting every stability check.
+#
+#  - Mouse: the decoder counts a stream byte that was not the first byte of a packet
+#    and a packet the device flagged as overflowed. Nothing moves the mouse in the
+#    gate, so any count is a real desync (mouse_desync). It is demonstrated non-zero
+#    at every boot - vibeos_x86_64_mouse_selftest feeds one bad byte and one
+#    overflowed packet, requires the counter to move, then restores it - and the gate
+#    requires proved=1 (mouse_desync_unproven), so a counter that can no longer fire
+#    cannot pass as a clean zero. The line disappearing trips mouse_counters_missing.
+#
+#  - ABI surface: a syscall number the kernel does not implement, with last_nr as the
+#    witness. Ring 3 asks for number 1999 on purpose, so probes>=1 shows the counter
+#    moving through a real syscall (abi_counter_unproven); an unexpected number trips
+#    abi_unimplemented_syscall_nr, naming it; the line missing trips
+#    abi_counters_missing. The ring-3 self-test additionally refuses a kernel that
+#    maps a page without NX (linux_abi_selftest_failed) - the last case.
+#
+# Target source: scripts/qemu-cli-smoke-linux.py is NOT touched here; every case
+# breaks the kernel or the guest program and the boot must go red.
+# Target source: kernel/arch/x86_64/arch_hw.c (the printed lines), kernel/abi/linux/net.c (fd_aba), kernel/arch/x86_64/mouse.c, user/prog/hello.c, kernel/abi/linux/mm.c
+# Run one: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh build-clang-Release" python3 scripts/dev/sabotage.py <its target> <one-case file> build-clang-Release
+
+### the network line loses its MUSTBEZERO tag and the gate no longer finds it
+--- old
+        vibeos_x86_64_serial_puts("\n[NET] MUSTBEZERO sock_stale_parent=0x");
++++ new
+        vibeos_x86_64_serial_puts("\n[NET] sock_stale_parent=0x");
+
+### every blocking socket call is counted as an ABA
+--- old
+static int hw_sock_stable(const hw_fd_t *f, int sock, uint32_t gen) {
+    uint32_t cur;
++++ new
+static int hw_sock_stable(const hw_fd_t *f, int sock, uint32_t gen) {
+    uint32_t cur;
+    g_net.sock_fd_aba++;
+
+### the mouse line loses its MUSTBEZERO tag and the gate no longer finds it
+--- old
+        vibeos_x86_64_serial_puts("\n[MOUSE] MUSTBEZERO desync=0x");
++++ new
+        vibeos_x86_64_serial_puts("\n[MOUSE] desync=0x");
+
+### the mouse decoder stops counting a byte that was not the start of a packet
+--- old
+        g_desync_resync++;   /* a byte the stream had no room for */
++++ new
+        /* not counted */
+
+### the self-test leaves its own fake desync in the counter
+--- old
+    g_desync_resync = saved_resync;      /* what the hardware did, not what this did */
+    g_desync_overflow = saved_overflow;
++++ new
+    (void)saved_resync;
+    (void)saved_overflow;
+
+### the ABI line loses its MUSTBEZERO tag and the gate no longer finds it
+--- old
+        vibeos_x86_64_serial_puts("\n[ABI] MUSTBEZERO unexpected_unimplemented=0x");
++++ new
+        vibeos_x86_64_serial_puts("\n[ABI] unexpected_unimplemented=0x");
+
+### the guest never asks for the number the counter is proved with
+--- old
+    if (user_syscall3(1999, 0, 0, 0) != -38) {
+        return abi_nosys;
+    }
++++ new
+
+### the guest asks for a syscall nobody implements, by accident
+--- old
+    if (user_syscall3(1999, 0, 0, 0) != -38) {
+        return abi_nosys;
+    }
++++ new
+    (void)user_syscall3(1998, 0, 0, 0);
+    if (user_syscall3(1999, 0, 0, 0) != -38) {
+        return abi_nosys;
+    }
+
+### an anonymous mapping is executable without asking for PROT_EXEC
+--- old
+        leaf |= PTE_NX;   /* executable only when asked for (M-036) */
++++ new
+        /* NX omitted */

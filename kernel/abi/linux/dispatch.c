@@ -230,11 +230,15 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
         case VIBEOS_OP_NONE:
         default:
             __sync_fetch_and_add(&g_abi_unimplemented, 1u);
-            g_abi_last_nr = nr;   /* the witness: which number, not just how many */
             if (nr == VIBEOS_ABI_PROBE_NR) {
                 __sync_fetch_and_add(&g_abi_probes, 1u);
                 return -VIBEOS_ENOSYS;   /* asked for on purpose; no log line */
             }
+            /* The witness: which number, not just how many - and only ever an
+             * *unexpected* one. It used to be written before the probe test, so the
+             * deliberate call for 1999 overwrote an accidental call for another
+             * number and the report named the probe instead of the culprit. */
+            g_abi_last_nr = nr;
             /* One line, one critical section: puts and print_hex each take the console lock on their own. */
             vibeos_x86_64_serial_lock();
             vibeos_x86_64_serial_puts("[HW][SYS] unimplemented Linux syscall nr=0x");
