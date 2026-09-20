@@ -9,9 +9,9 @@ built, what it measured, and what it found on the way.
 - `include/vibeos/abi.h` declares every kernel *operation* once, with the checks
   that apply to it, in an X-macro list. The enum, the name table and the check
   table cannot drift, and a line without its checks does not compile. It is named
-  `op`, not `syscall`: `include/vibeos/syscall.h` still holds the
-  `vibeos_syscall_id` of the dispatcher C3 deleted, and reusing that word would
-  have made two vocabularies with one name.
+  `op`, not `syscall`: the dispatcher C3 deleted had left its own
+  vocabulary behind (`syscall.h`, `syscall_abi.h`, `syscall_policy.h`, 1,023 lines
+  nothing used), which was removed on 2026-09-20 - one vocabulary now.
 - `kernel/abi/abi_linux.c` is the Linux ABI as a translator: a constant
   `number -> operation` table plus `clone()`'s decision by flags (which is why
   `classify` takes the first argument). The ABI is bound to a task in

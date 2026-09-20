@@ -1,3 +1,5 @@
+# Target source: kernel/sched/task.c
+
 ### a running task can be released, which is the silent wedge
 --- old
     /* RUNNING */   {  0,   1,    0,   1,   1,    0 },

@@ -5,10 +5,10 @@
 
 /* The kernel's own operations, and the ABIs that translate onto them.
  *
- * Named "op", not "syscall": include/vibeos/syscall.h still holds the
- * vibeos_syscall_id enum of the dispatcher C3 deleted, and reusing that name
- * would have been two vocabularies with one word. That enum is now read only by
- * user/lib/user_api.c and a host test - a candidate for deletion, not for reuse.
+ * Named "op", not "syscall", because the word already belonged to the dispatcher
+ * C3 deleted: its vocabulary (syscall.h, syscall_abi.h, syscall_policy.h) outlived
+ * it as 1,000 lines nobody used, and was removed with C3's last increment. There
+ * is one vocabulary now, and this is it.
  *
  * docs/core/phases.md, C4. Until now the only vocabulary was Linux's numbers:
  * the dispatcher switched on them, and *which checks a call performs* was a

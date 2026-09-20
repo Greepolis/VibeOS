@@ -1,3 +1,5 @@
+# Target source: kernel/sched/runq.c
+
 ### the queue picks a slot without asking whether it may run
 --- old
         if (q->runnable(q->ctx, slot, cpu)) {

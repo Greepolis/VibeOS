@@ -1,3 +1,5 @@
+# Target source: user/prog/init.c
+
 ### init never announces itself
 --- old
     say("NATIVE_INIT_READY", 0, -1, -1);

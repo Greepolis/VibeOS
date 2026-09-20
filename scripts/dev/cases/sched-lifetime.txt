@@ -1,3 +1,5 @@
+# Target source: kernel/sched/lifetime.c
+
 ### a signal death is reported as a clean exit
 --- old
     if (signal != 0u) {

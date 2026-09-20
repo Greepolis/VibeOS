@@ -1,3 +1,5 @@
+# Target source: kernel/core/kmain.c
+
 ### Ctrl-C on the serial console is discarded as an ordinary control byte
 --- old
         if (ch == 3) {

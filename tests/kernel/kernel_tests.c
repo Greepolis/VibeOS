@@ -12,8 +12,6 @@
 #include "vibeos/security_model.h"
 #include "vibeos/service_ipc.h"
 #include "vibeos/policy.h"
-#include "vibeos/syscall.h"
-#include "vibeos/syscall_abi.h"
 #include "vibeos/timer.h"
 #include "vibeos/net.h"
 #include "vibeos/inet.h"

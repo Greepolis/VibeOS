@@ -24,8 +24,8 @@ resolved if its anchor is in **any** of them.
 A case file that names no target is checked more weakly: its anchors are searched
 for in the *whole* source tree. An anchor that moved to a different file still
 resolves there, but one that exists nowhere - a rewritten or deleted line - is
-found. Twelve files still pre-date the convention; naming their targets is how that
-weaker search becomes the exact one.
+found. No file pre-dates the convention any more (twelve did, and were named); the
+whole-tree fallback stays for a new file that forgets, and is ratcheted at zero.
 
 ## What the first run found
 
@@ -49,8 +49,8 @@ for a reason that mattered more than the anchor:
   set it, so it looked like a requirement QEMU does not enforce. Clearing the bit
   wedges the boot before BOOT_OK. (`stress` is red-less by design, as its file says.)
 
-Ratcheted: unresolved cases must stay at zero; case files with no declared target
-may go down and not up.
+Ratcheted: unresolved cases and case files with no declared target must both stay
+at zero.
 
 Usage: check-sabotage-anchors.py [--list]
 """
@@ -64,7 +64,7 @@ CASES = os.path.join(ROOT, "scripts", "dev", "cases")
 
 # Today's measurement. Each is a debt, not a permission.
 BASELINE_UNRESOLVED = 0
-BASELINE_NO_TARGET = 12   # files with no declared target; each is a place a move can hide
+BASELINE_NO_TARGET = 0    # every case file names its target: the exact check applies everywhere
 
 
 def read(path):

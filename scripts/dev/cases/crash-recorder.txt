@@ -1,3 +1,5 @@
+# Target source: kernel/arch/x86_64/arch_hw.c
+
 ### a ring-3 fault is killed without its state ever being captured
 --- old
         rec->used = 1;

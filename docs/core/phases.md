@@ -253,7 +253,13 @@ the answer down here before starting C4.
 process, exhaust the slot table, lie about the caller id. If deleted: confirm
 `check-reachable.py`'s baseline drops and that nothing references it.
 
-**Status (2026-09-19): done - by deletion, with the gate now enforced.**
+**Status (2026-09-20): done - by deletion, the gate enforced, and the dispatcher's
+orphaned vocabulary removed.** The three headers left behind by the deletion
+(1,023 lines, included by two files that used nothing from them) went on
+2026-09-20; before that C3 was done in the sense of its own criterion but left
+a second, dead vocabulary with a misleading name.
+
+*(Earlier status line, 2026-09-19:)* **done - by deletion, with the gate now enforced.**
 
 *The decision, written down as the plan requires before C4 starts.* Deleted,
 not fixed (commit `4462174`, 2026-09-10). The rule was "which produces the
@@ -360,10 +366,10 @@ consulted by nobody" running on every call - and its `[COMPAT] translated=` coun
 printed a number that meant nothing. Both gone. The `[MM] COW_STATS` block was
 nested inside `if (vibeos_compat_stats(...) == 0)`, so the memory counters printed
 only if a compat accounting call succeeded; that coupling is gone too.
-`include/vibeos/syscall.h` still holds the *deleted* dispatcher's
-`vibeos_syscall_id`, read now only by `user/lib/user_api.c` and a host test, which
-is why the new vocabulary is named `vibeos_op_id`, not reused. It is a candidate
-for deletion.
+`include/vibeos/syscall.h`, `syscall_abi.h` and `syscall_policy.h` still held the
+*deleted* dispatcher's vocabulary - 1,023 lines that `user/lib/user_api.c` and a
+host test included and used **no symbol of**. Deleted (C3's last increment); the
+new vocabulary is named `vibeos_op_id` because the old word was taken.
 
 *Not done, and the two remaining stages.*
 

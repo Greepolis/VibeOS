@@ -1,6 +1,4 @@
 #include "vibeos/kernel.h"
-#include "vibeos/syscall.h"
-#include "vibeos/syscall_abi.h"
 #include "vibeos/user_api.h"
 
 int vibeos_user_context_init(vibeos_user_context_t *ctx, uint32_t pid, uint32_t tid) {

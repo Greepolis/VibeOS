@@ -1,3 +1,5 @@
+# Target source: include/vibeos/abi.h
+
 # C4, the declaration side: the same enumeration held against include/vibeos/abi.h.
 # Run: SABOTAGE_VERIFY="python3 scripts/dev/check-syscall-checks.py" python3 scripts/dev/sabotage.py include/vibeos/abi.h scripts/dev/cases/core-syscall-decl.txt
 
