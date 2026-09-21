@@ -9,7 +9,7 @@
 
 ### the fault is swallowed and the task keeps running on a bad state
 --- old
-    g_tasks[g_current_task].exit_signal = sig;
+    g_tasks[g_current_task].id.exit_signal = sig;
     hw_task_exit(128ull + sig);   /* switches away; does not return */
 +++ new
     (void)sig;

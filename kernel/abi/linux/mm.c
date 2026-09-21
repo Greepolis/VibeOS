@@ -99,7 +99,7 @@ static long hw_sys_brk(uint64_t addr) {
     hw_procstate_t *ps;
     long r;
 
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user ||
+    if (g_current_task < 0 || !g_tasks[g_current_task].id.is_user ||
         (ps = g_tasks[g_current_task].ps) == 0) {
         return -VIBEOS_EINVAL;
     }
@@ -250,7 +250,7 @@ static long hw_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot,
     hw_procstate_t *ps;
 
     hw_log(VIBEOS_LOG_DEBUG, 12u, len, prot | (flags << 32), "mmap");
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user || len == 0u) {
+    if (g_current_task < 0 || !g_tasks[g_current_task].id.is_user || len == 0u) {
         return -VIBEOS_EINVAL;
     }
     /* Both branches below round with (len + 0xFFF) / 4096, and for a length
@@ -305,7 +305,7 @@ static long hw_sys_mprotect(uint64_t addr, uint64_t len, uint64_t prot) {
     hw_proc_t *proc;
     uint64_t va, end;
 
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+    if (g_current_task < 0 || !g_tasks[g_current_task].id.is_user) {
         return -VIBEOS_EINVAL;
     }
     /* `addr + len < addr` was the whole check, and it is one page short: the
@@ -421,7 +421,7 @@ static long hw_sys_munmap(uint64_t addr, uint64_t len) {
     hw_proc_t *proc;
     uint64_t va, end;
 
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+    if (g_current_task < 0 || !g_tasks[g_current_task].id.is_user) {
         return -VIBEOS_EINVAL;
     }
     /* `addr + len < addr` was the whole check, and it is one page short: the
@@ -526,7 +526,7 @@ static long hw_sys_pageinfo(uint64_t va, uint64_t out_uptr) {
     uint64_t *pte;
     uint64_t entry;
 
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+    if (g_current_task < 0 || !g_tasks[g_current_task].id.is_user) {
         return -VIBEOS_EINVAL;
     }
 

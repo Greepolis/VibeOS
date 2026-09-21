@@ -1409,7 +1409,7 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
                 if (cur < 0 || cur >= VIBEOS_HW_MAX_TASKS) {
                     cur = -1;
                 } else {
-                    idle = g_tasks[cur].is_idle;
+                    idle = g_tasks[cur].id.is_idle;
                 }
                 vibeos_account_tick(acpu->index, cur, idle);
             }
@@ -4242,11 +4242,11 @@ static int hw_task_describe(uint32_t slot, vibeos_task_desc_t *out) {
     out->generation = t->alloc_seq;
     out->state = (uint32_t)t->state;
     out->state_name = hw_task_state_name(t->state);
-    out->pid = t->pid;
-    out->tgid = t->tgid;
-    out->ppid = t->ppid;
-    out->is_user = t->is_user;
-    out->is_thread = t->is_thread;
+    out->pid = t->id.pid;
+    out->tgid = t->id.tgid;
+    out->ppid = t->id.ppid;
+    out->is_user = t->id.is_user;
+    out->is_thread = t->id.is_thread;
     out->on_cpu = t->on_cpu;
     out->cr3 = t->cr3;
     out->cr3_set_by = t->cr3_set_by;
@@ -4337,9 +4337,7 @@ static int hw_task_alloc_guarded(int guarded, int privileged, uint32_t parent_pi
              * the ones that fail half way, and this table is twenty-four
              * entries long. Zombies count, because a zombie still holds a
              * slot. */
-            if (g_tasks[i].ppid == parent_pid) {
-                kids++;
-            } else if (g_tasks[i].tgid == parent_pid && g_tasks[i].is_thread) {
+            if (vibeos_task_accountable_to(&g_tasks[i].id, parent_pid)) {
                 kids++;
             }
         }
@@ -4395,10 +4393,11 @@ static int hw_task_alloc_guarded(int guarded, int privileged, uint32_t parent_pi
             g_tasks[i].alloc_seq = (uint32_t)__sync_add_and_fetch(&g_alloc_seq, 1u);
             g_tasks[i].proc.as.pml4 = 0;
             g_tasks[i].ps = 0;
-            g_tasks[i].is_thread = 0;
+            /* Every identity field, not the three that happened to be remembered:
+             * a recycled slot otherwise starts with the previous tenant's pending
+             * signals, exit status and name. */
+            vibeos_task_identity_reset(&g_tasks[i].id);
             g_tasks[i].ran_once = 0;
-            g_tasks[i].service_id = 0;
-            g_tasks[i].clear_child_tid = 0;
             g_tasks[i].abi = vibeos_abi_linux();   /* bound once, here (C4) */
             (void)hw_task_set_state(i, HW_TASK_RESERVED, __func__);
             /* Admitted here because this is the only place a slot is claimed,
@@ -4433,8 +4432,8 @@ static int hw_task_alloc(void) {
  * to ask. */
 int hw_task_alloc_for_user(const char *what) {
     vibeos_fork_verdict_t v = VIBEOS_FORK_OK;
-    uint32_t pid = (g_current_task >= 0) ? g_tasks[g_current_task].tgid : 0u;
-    int privileged = (g_current_task >= 0) && g_tasks[g_current_task].pid <= 1u;
+    uint32_t pid = (g_current_task >= 0) ? g_tasks[g_current_task].id.tgid : 0u;
+    int privileged = (g_current_task >= 0) && g_tasks[g_current_task].id.pid <= 1u;
     int idx = hw_task_alloc_guarded(1, privileged, pid, &v);
 
     if (idx < 0 && v != VIBEOS_FORK_OK) {
@@ -4506,7 +4505,7 @@ static int hw_task_runnable(void *ctx, uint32_t slot, uint32_t cpu) {
         return 0;
     }
     return vibeos_task_state(slot) == VIBEOS_TASK_READY &&
-           !g_tasks[slot].is_idle && !g_tasks[slot].on_cpu;
+           !g_tasks[slot].id.is_idle && !g_tasks[slot].on_cpu;
 }
 
 static vibeos_runq_t g_runq;
@@ -4616,14 +4615,14 @@ void vibeos_x86_64_console_interrupt(void) {
     uint32_t best = 0;
 
     for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
-        if (!g_tasks[i].is_user || g_tasks[i].state == HW_TASK_FREE ||
+        if (!g_tasks[i].id.is_user || g_tasks[i].state == HW_TASK_FREE ||
             g_tasks[i].state == HW_TASK_ZOMBIE ||
             (g_console_foreground_pgid != 0 &&
-             g_tasks[i].pgid != g_console_foreground_pgid)) {
+             g_tasks[i].id.pgid != g_console_foreground_pgid)) {
             continue;
         }
-        if (newest < 0 || g_tasks[i].pid > best) {
-            best = g_tasks[i].pid;
+        if (newest < 0 || g_tasks[i].id.pid > best) {
+            best = g_tasks[i].id.pid;
             newest = i;
         }
     }
@@ -4633,20 +4632,20 @@ void vibeos_x86_64_console_interrupt(void) {
      * path rather than silently dropping Ctrl-C. */
     if (newest < 0 && g_console_foreground_pgid != 0) {
         for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
-            if (!g_tasks[i].is_user || g_tasks[i].state == HW_TASK_FREE ||
+            if (!g_tasks[i].id.is_user || g_tasks[i].state == HW_TASK_FREE ||
                 g_tasks[i].state == HW_TASK_ZOMBIE ||
-                (newest >= 0 && g_tasks[i].pid <= best)) {
+                (newest >= 0 && g_tasks[i].id.pid <= best)) {
                 continue;
             }
-            best = g_tasks[i].pid;
+            best = g_tasks[i].id.pid;
             newest = i;
         }
     }
     if (g_console_foreground_pgid != 0) {
         for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
-            if (!g_tasks[i].is_user || g_tasks[i].state == HW_TASK_FREE ||
+            if (!g_tasks[i].id.is_user || g_tasks[i].state == HW_TASK_FREE ||
                 g_tasks[i].state == HW_TASK_ZOMBIE ||
-                g_tasks[i].pgid != g_console_foreground_pgid) {
+                g_tasks[i].id.pgid != g_console_foreground_pgid) {
                 continue;
             }
             if (hw_signal_raise(i, VIBEOS_SIGINT) == 0) {
@@ -4701,8 +4700,8 @@ void hw_keyboard_wake(void) {
     int i;
     hw_spin_lock_named(&g_sched_lock, __func__);
     for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
-        if (g_tasks[i].state == HW_TASK_BLOCKED && g_tasks[i].wait_input) {
-            g_tasks[i].wait_input = 0;
+        if (g_tasks[i].state == HW_TASK_BLOCKED && g_tasks[i].id.wait_input) {
+            g_tasks[i].id.wait_input = 0;
             (void)hw_task_set_state(i, HW_TASK_READY, __func__);
             HW_TASK_MARK(i, ready_by, "keyboard_wake");
         }
@@ -4803,7 +4802,7 @@ static void hw_task_load_cpu_state(int idx) {
                                       " task=0x");
             vibeos_x86_64_serial_print_hex((uint64_t)idx);
             vibeos_x86_64_serial_puts(" pid=0x");
-            vibeos_x86_64_serial_print_hex(g_tasks[idx].pid);
+            vibeos_x86_64_serial_print_hex(g_tasks[idx].id.pid);
             vibeos_x86_64_serial_puts(" cr3=0x");
             vibeos_x86_64_serial_print_hex(g_tasks[idx].cr3);
             vibeos_x86_64_serial_puts(" pml4[0]=0x");
@@ -4817,13 +4816,13 @@ static void hw_task_load_cpu_state(int idx) {
             vibeos_x86_64_serial_puts(" state=0x");
             vibeos_x86_64_serial_print_hex((uint64_t)g_tasks[idx].state);
             vibeos_x86_64_serial_puts(" user=0x");
-            vibeos_x86_64_serial_print_hex((uint64_t)g_tasks[idx].is_user);
+            vibeos_x86_64_serial_print_hex((uint64_t)g_tasks[idx].id.is_user);
             vibeos_x86_64_serial_puts(" idle=0x");
-            vibeos_x86_64_serial_print_hex((uint64_t)g_tasks[idx].is_idle);
+            vibeos_x86_64_serial_print_hex((uint64_t)g_tasks[idx].id.is_idle);
             vibeos_x86_64_serial_puts(" on_cpu=0x");
             vibeos_x86_64_serial_print_hex((uint64_t)g_tasks[idx].on_cpu);
             vibeos_x86_64_serial_puts(" ppid=0x");
-            vibeos_x86_64_serial_print_hex((uint64_t)g_tasks[idx].ppid);
+            vibeos_x86_64_serial_print_hex((uint64_t)g_tasks[idx].id.ppid);
             vibeos_x86_64_serial_puts(" pml4=0x");
             vibeos_x86_64_serial_print_hex(
                 (uint64_t)(uintptr_t)g_tasks[idx].proc.as.pml4);
@@ -4845,19 +4844,19 @@ static void hw_task_load_cpu_state(int idx) {
             vibeos_x86_64_serial_print_hex((uint64_t)g_last_destroy_cpu);
             vibeos_x86_64_serial_puts("\n");
             hw_log(VIBEOS_LOG_FATAL, 5u, g_tasks[idx].cr3,
-                   (uint64_t)g_tasks[idx].pid,
+                   (uint64_t)g_tasks[idx].id.pid,
                    "scheduler asked to install a freed address space");
             hw_panic("address space freed while still schedulable");
         }
     }
-    if (g_tasks[idx].is_thread && !g_tasks[idx].ran_once) {
+    if (g_tasks[idx].id.is_thread && !g_tasks[idx].ran_once) {
         g_tasks[idx].ran_once = 1;
-        hw_log(VIBEOS_LOG_DEBUG, 24u, (uint64_t)g_tasks[idx].pid,
+        hw_log(VIBEOS_LOG_DEBUG, 24u, (uint64_t)g_tasks[idx].id.pid,
                g_tasks[idx].ctx.rip, "thread scheduled for the first time");
     }
     hw_write_cr3(g_tasks[idx].cr3);
     hw_set_kernel_stack(g_tasks[idx].kstack_top);
-    if (g_tasks[idx].is_user) {
+    if (g_tasks[idx].id.is_user) {
         hw_wrmsr(MSR_FS_BASE, g_tasks[idx].fs_base);
     }
 }
@@ -4936,7 +4935,7 @@ static void hw_ctx_check(int slot, const char *where) {
     vibeos_x86_64_serial_puts(" on_cpu=0x");
     vibeos_x86_64_serial_print_hex((uint64_t)g_tasks[slot].on_cpu);
     vibeos_x86_64_serial_puts(" pid=0x");
-    vibeos_x86_64_serial_print_hex((uint64_t)g_tasks[slot].pid);
+    vibeos_x86_64_serial_print_hex((uint64_t)g_tasks[slot].id.pid);
     vibeos_x86_64_serial_puts(" cr3=0x");
     vibeos_x86_64_serial_print_hex(g_tasks[slot].cr3);
     vibeos_x86_64_serial_puts(" cr3_by=");
@@ -5003,7 +5002,7 @@ static void hw_schedule(vibeos_x86_64_isr_frame_t *frame) {
     if (cpu->slice_left > 0u) {
         int c = cpu->current_task;
 
-        if (c >= 0 && c < VIBEOS_HW_MAX_TASKS && !g_tasks[c].is_idle &&
+        if (c >= 0 && c < VIBEOS_HW_MAX_TASKS && !g_tasks[c].id.is_idle &&
             vibeos_task_state((uint32_t)c) == VIBEOS_TASK_RUNNING &&
             !hw_higher_class_runnable(cpu, c)) {
             cpu->slice_left--;
@@ -5077,11 +5076,11 @@ static int hw_task_adopt_kernel(void) {
     }
     (void)hw_task_set_state(i, HW_TASK_RUNNING, __func__);
     g_tasks[i].on_cpu = 1;          /* it is this CPU, right now */
-    g_tasks[i].is_user = 0;
-    g_tasks[i].pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
-    g_tasks[i].tgid = g_tasks[i].pid;
-    g_tasks[i].pgid = g_tasks[i].pid;
-    g_tasks[i].sid = g_tasks[i].pid;
+    g_tasks[i].id.is_user = 0;
+    g_tasks[i].id.pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
+    g_tasks[i].id.tgid = g_tasks[i].id.pid;
+    g_tasks[i].id.pgid = g_tasks[i].id.pid;
+    g_tasks[i].id.sid = g_tasks[i].id.pid;
     g_tasks[i].kstack_top = hw_this_cpu()->syscall_kstack_top;
     g_tasks[i].cr3 = (uint64_t)(uintptr_t)&g_pml4[0];
     HW_TASK_MARK(i, cr3_set_by, "adopt_kernel");
@@ -5129,14 +5128,14 @@ static int hw_task_create_idle(hw_cpu_t *cpu) {
     HW_TASK_MARK(i, cr3_set_by, "create_idle");
     (void)hw_task_set_state(i, HW_TASK_READY, __func__);
     HW_TASK_MARK(i, ready_by, "create_idle");
-    g_tasks[i].is_user = 0;
-    g_tasks[i].is_idle = 1;
+    g_tasks[i].id.is_user = 0;
+    g_tasks[i].id.is_idle = 1;
     /* An idle task is a class, not a flag the picker special-cases. */
     (void)vibeos_sched_policy_admit((uint32_t)i, VIBEOS_SCHED_IDLE, 19, 0u);
-    g_tasks[i].pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
-    g_tasks[i].tgid = g_tasks[i].pid;
-    g_tasks[i].pgid = g_tasks[i].pid;
-    g_tasks[i].sid = g_tasks[i].pid;
+    g_tasks[i].id.pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
+    g_tasks[i].id.tgid = g_tasks[i].id.pid;
+    g_tasks[i].id.pgid = g_tasks[i].id.pid;
+    g_tasks[i].id.sid = g_tasks[i].id.pid;
     cpu->idle_task = i;
     /* The queue needs to know the fallback too, or a CPU with nothing runnable
      * is told to keep running a task that has stopped. */
@@ -5184,9 +5183,9 @@ static int hw_task_spawn_user(const unsigned char *elf, uint64_t len,
     g_tasks[i].fs_base = 0;
     {
         uint32_t sg;
-        g_tasks[i].exit_signal = 0;
-        g_tasks[i].sig_pending = 0;
-        g_tasks[i].sig_blocked = 0;
+        g_tasks[i].id.exit_signal = 0;
+        g_tasks[i].id.sig_pending = 0;
+        g_tasks[i].id.sig_blocked = 0;
         for (sg = 0; sg < VIBEOS_HW_NSIG; sg++) {
             g_tasks[i].ps->sig_handler[sg] = SIG_DFL_ADDR;
             g_tasks[i].ps->sig_restorer[sg] = 0;
@@ -5195,12 +5194,12 @@ static int hw_task_spawn_user(const unsigned char *elf, uint64_t len,
         }
     }
     (void)hw_task_set_state(i, HW_TASK_READY, __func__);
-    g_tasks[i].is_user = 1;
-    g_tasks[i].pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
-    g_tasks[i].tgid = g_tasks[i].pid;
-    g_tasks[i].pgid = g_tasks[i].pid;
-    g_tasks[i].sid = g_tasks[i].pid;
-    g_tasks[i].signal_stopped = 0;
+    g_tasks[i].id.is_user = 1;
+    g_tasks[i].id.pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
+    g_tasks[i].id.tgid = g_tasks[i].id.pid;
+    g_tasks[i].id.pgid = g_tasks[i].id.pid;
+    g_tasks[i].id.sid = g_tasks[i].id.pid;
+    g_tasks[i].id.signal_stopped = 0;
     return i;
 }
 
@@ -5288,13 +5287,13 @@ void hw_task_exit(uint64_t code) {
         hw_spin_unlock(&g_sched_lock);
     }
 
-    if (dying >= 0 && g_runtime_supervisor_ready && g_tasks[dying].service_id != 0) {
-        vibeos_process_exit_reason_t reason = g_tasks[dying].exit_signal != 0
+    if (dying >= 0 && g_runtime_supervisor_ready && g_tasks[dying].id.service_id != 0) {
+        vibeos_process_exit_reason_t reason = g_tasks[dying].id.exit_signal != 0
             ? VIBEOS_PROCESS_EXIT_SIGNAL : VIBEOS_PROCESS_EXIT_NORMAL;
         (void)vibeos_service_supervisor_report_exit_pid(&g_runtime_supervisor,
-                                                        g_tasks[dying].pid,
+                                                        g_tasks[dying].id.pid,
                                                         (uint32_t)code, reason);
-        g_tasks[dying].service_id = 0;
+        g_tasks[dying].id.service_id = 0;
     }
 
     /* A process owns its sockets: releasing them here is what stops a task that
@@ -5305,7 +5304,7 @@ void hw_task_exit(uint64_t code) {
         int fd;
         if (g_net_up) {
             hw_spin_lock_named(&g_net_lock, __func__);
-            (void)vibeos_inet_release_owner_sockets(&g_net, g_tasks[dying].tgid);
+            (void)vibeos_inet_release_owner_sockets(&g_net, g_tasks[dying].id.tgid);
             hw_spin_unlock(&g_net_lock);
         }
         for (fd = 0; fd < VIBEOS_HW_MAX_FDS; fd++) {
@@ -5347,13 +5346,13 @@ void hw_task_exit(uint64_t code) {
          * back to the allocator, and the next core to install it stops on the
          * instruction that loads it, with no kernel mapped to report from. */
         hw_spin_lock_named(&g_sched_lock, __func__);
-        g_tasks[dying].exit_code = code;
+        g_tasks[dying].id.exit_code = code;
         hw_spin_unlock(&g_sched_lock);
         vibeos_x86_64_serial_lock();
-        hw_log(VIBEOS_LOG_DEBUG, 40u, (uint64_t)g_tasks[dying].pid, code,
+        hw_log(VIBEOS_LOG_DEBUG, 40u, (uint64_t)g_tasks[dying].id.pid, code,
                "task exited (a0 = pid, a1 = code)");
         vibeos_x86_64_serial_puts("[SCHED] task pid=0x");
-        vibeos_x86_64_serial_print_hex(g_tasks[dying].pid);
+        vibeos_x86_64_serial_print_hex(g_tasks[dying].id.pid);
         vibeos_x86_64_serial_puts(" exited code=0x");
         vibeos_x86_64_serial_print_hex(code);
         vibeos_x86_64_serial_puts("\n");
@@ -5371,8 +5370,8 @@ void hw_task_exit(uint64_t code) {
      *
      * The word lives in the dying task's address space, so it can only be
      * written while that space is still the one loaded. */
-    if (dying >= 0 && g_tasks[dying].clear_child_tid != 0u) {
-        uint64_t addr = g_tasks[dying].clear_child_tid;
+    if (dying >= 0 && g_tasks[dying].id.clear_child_tid != 0u) {
+        uint64_t addr = g_tasks[dying].id.clear_child_tid;
         uint32_t why = HW_RANGE_OK;
 
         uint32_t zero = 0;
@@ -5386,11 +5385,11 @@ void hw_task_exit(uint64_t code) {
             hw_futex_wake(g_tasks[dying].ps, addr, 0x7FFFFFFF);
         } else {
             hw_log(VIBEOS_LOG_WARN, 28u, addr,
-                   (uint64_t)why | ((uint64_t)g_tasks[dying].pid << 8),
+                   (uint64_t)why | ((uint64_t)g_tasks[dying].id.pid << 8),
                    "exit: join word not writable, nobody will be woken "
                    "(a1 = reason | tid<<8)");
         }
-        g_tasks[dying].clear_child_tid = 0;
+        g_tasks[dying].id.clear_child_tid = 0;
     }
 
     /* Off, and not turned back on by anything below: the iretq at the end of
@@ -5441,7 +5440,7 @@ void hw_task_exit(uint64_t code) {
     hw_task_load_cpu_state(next);
     /* Now on the next task's CR3; the dying user address space is still
      * reachable through the shared kernel identity map, so free it. */
-    if (dying >= 0 && g_tasks[dying].is_user) {
+    if (dying >= 0 && g_tasks[dying].id.is_user) {
         int last;
 
         /* The order this subsystem learned the hard way, declared rather than
@@ -5523,7 +5522,7 @@ void hw_task_exit(uint64_t code) {
          *
          * Released here rather than at exit because this is after the context
          * switch: the stack it was running on is no longer in use. */
-        if (g_tasks[dying].is_thread) {
+        if (g_tasks[dying].id.is_thread) {
             /* Through ZOMBIE, not straight to FREE. The transition table
              * refuses running->free outright, and it was right to: the first
              * version of this called hw_task_release directly, the table logged
@@ -5537,7 +5536,7 @@ void hw_task_exit(uint64_t code) {
         (void)hw_task_set_state(dying, HW_TASK_ZOMBIE, __func__);
         for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
             if (g_tasks[i].state == HW_TASK_BLOCKED &&
-                g_tasks[i].pid == g_tasks[dying].ppid) {
+                g_tasks[i].id.pid == g_tasks[dying].id.ppid) {
                 (void)hw_task_set_state(i, HW_TASK_READY, __func__);
                 HW_TASK_MARK(i, ready_by, "parent_woken_by_child_exit");
             }
@@ -5583,7 +5582,7 @@ int hw_user_range_why(uint64_t va, uint64_t len, int need_write,
         *why = HW_RANGE_WRAP;
         return 0;
     }
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+    if (g_current_task < 0 || !g_tasks[g_current_task].id.is_user) {
         *why = HW_RANGE_NO_TASK;
         return 0;
     }
@@ -5850,7 +5849,7 @@ static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code,
     vibeos_vmspace_t v;
     int handled;
 
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+    if (g_current_task < 0 || !g_tasks[g_current_task].id.is_user) {
         return 0;
     }
     t = &g_tasks[g_current_task];
@@ -5949,7 +5948,7 @@ static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code,
                 vibeos_x86_64_serial_puts(" rip=0x");
                 vibeos_x86_64_serial_print_hex(rip);
                 vibeos_x86_64_serial_puts(" pid=0x");
-                vibeos_x86_64_serial_print_hex((uint64_t)t->pid);
+                vibeos_x86_64_serial_print_hex((uint64_t)t->id.pid);
                 vibeos_x86_64_serial_puts(" before=0x");
                 vibeos_x86_64_serial_print_hex(fold_before);
                 vibeos_x86_64_serial_puts(" after=0x");
@@ -5998,7 +5997,7 @@ static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code,
         g_cow_ring[slot].va = fault_va;
         g_cow_ring[slot].rip = rip;
         g_cow_ring[slot].err = error_code;
-        g_cow_ring[slot].pid = (uint64_t)t->pid;
+        g_cow_ring[slot].pid = (uint64_t)t->id.pid;
         g_cow_ring[slot].handled = (uint64_t)handled;
         g_cow_ring[slot].cpu = (uint64_t)vibeos_x86_64_cpu_id();
     }
@@ -6012,7 +6011,7 @@ static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code,
         vibeos_x86_64_serial_puts(" err=0x");
         vibeos_x86_64_serial_print_hex(error_code);
         vibeos_x86_64_serial_puts(" pid=0x");
-        vibeos_x86_64_serial_print_hex((uint64_t)t->pid);
+        vibeos_x86_64_serial_print_hex((uint64_t)t->id.pid);
         vibeos_x86_64_serial_puts(handled ? " handled\n" : " NOT-handled\n");
         vibeos_x86_64_serial_unlock();
     }
@@ -6109,8 +6108,8 @@ int hw_signal_interrupts(int task) {
         return 0;
     }
     t = &g_tasks[task];
-    ready = (t->sig_pending & ~t->sig_blocked) |
-            (t->sig_pending & ((1ull << VIBEOS_SIGKILL) | (1ull << VIBEOS_SIGSTOP)));
+    ready = (t->id.sig_pending & ~t->id.sig_blocked) |
+            (t->id.sig_pending & ((1ull << VIBEOS_SIGKILL) | (1ull << VIBEOS_SIGSTOP)));
     if (ready == 0u) {
         return 0;
     }
@@ -6144,12 +6143,12 @@ int hw_signal_raise(int task_index, uint32_t sig) {
     if (task_index < 0 || task_index >= VIBEOS_HW_MAX_TASKS || sig == 0u || sig > VIBEOS_HW_SIG_MAX) {
         return -1;
     }
-    if (!g_tasks[task_index].is_user || g_tasks[task_index].state == HW_TASK_FREE ||
+    if (!g_tasks[task_index].id.is_user || g_tasks[task_index].state == HW_TASK_FREE ||
         g_tasks[task_index].ps == 0) {
         return -1;   /* no process left to hold a disposition: it is exiting */
     }
-    if (sig == VIBEOS_SIGCONT && g_tasks[task_index].signal_stopped) {
-        g_tasks[task_index].signal_stopped = 0;
+    if (sig == VIBEOS_SIGCONT && g_tasks[task_index].id.signal_stopped) {
+        g_tasks[task_index].id.signal_stopped = 0;
         (void)hw_task_set_state(task_index, HW_TASK_READY, __func__);
         HW_TASK_MARK(task_index, ready_by, "sigcont");
     }
@@ -6159,10 +6158,10 @@ int hw_signal_raise(int task_index, uint32_t sig) {
         g_tasks[task_index].ps->sig_handler[sig] == SIG_IGN_ADDR) {
         return 0;   /* explicitly ignored: raised and discarded, as Linux does */
     }
-    __sync_fetch_and_or(&g_tasks[task_index].sig_pending, 1ull << sig);
+    __sync_fetch_and_or(&g_tasks[task_index].id.sig_pending, 1ull << sig);
     /* A task asleep in read() has to wake up to notice. */
     if (g_tasks[task_index].state == HW_TASK_BLOCKED) {
-        g_tasks[task_index].wait_input = 0;
+        g_tasks[task_index].id.wait_input = 0;
         (void)hw_task_set_state(task_index, HW_TASK_READY, __func__);
         HW_TASK_MARK(task_index, ready_by, "signal_wake");
     }
@@ -6216,7 +6215,7 @@ void hw_task_exit_group(uint64_t code) {
         }
     }
     hw_spin_unlock(&g_sched_lock);
-    g_tasks[me].exit_signal = 0;
+    g_tasks[me].id.exit_signal = 0;
     hw_task_exit(code);
 }
 
@@ -6239,9 +6238,9 @@ void hw_task_exit_group(uint64_t code) {
 int hw_task_by_pid(uint32_t pid) {
     int i;
     for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
-        if (g_tasks[i].is_user && g_tasks[i].state != HW_TASK_FREE &&
+        if (g_tasks[i].id.is_user && g_tasks[i].state != HW_TASK_FREE &&
             g_tasks[i].state != HW_TASK_RESERVED &&
-            g_tasks[i].tgid == pid) {
+            g_tasks[i].id.tgid == pid) {
             return i;
         }
     }
@@ -6264,9 +6263,9 @@ int hw_task_by_pid(uint32_t pid) {
 int hw_task_by_tid(uint32_t tid) {
     int i;
     for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
-        if (g_tasks[i].is_user && g_tasks[i].state != HW_TASK_FREE &&
+        if (g_tasks[i].id.is_user && g_tasks[i].state != HW_TASK_FREE &&
             g_tasks[i].state != HW_TASK_RESERVED &&
-            g_tasks[i].pid == tid) {
+            g_tasks[i].id.pid == tid) {
             return i;
         }
     }
@@ -6404,7 +6403,7 @@ static int hw_frame_still_mapped(uint64_t phys, uint32_t *out_pid,
         const uint64_t *pml4;
         uint32_t slot;
 
-        if (!g_tasks[t].is_user || g_tasks[t].state == HW_TASK_FREE ||
+        if (!g_tasks[t].id.is_user || g_tasks[t].state == HW_TASK_FREE ||
             g_tasks[t].state == HW_TASK_ZOMBIE) {
             continue;
         }
@@ -6472,7 +6471,7 @@ static int hw_frame_still_mapped(uint64_t phys, uint32_t *out_pid,
                         }
                         if ((pt[k] & 0x000FFFFFFFFFF000ull) == phys) {
                             if (out_pid) {
-                                *out_pid = g_tasks[t].pid;
+                                *out_pid = g_tasks[t].id.pid;
                             }
                             if (out_va) {
                                 /* Rebuilt from the walk's own indices: slot
@@ -6536,7 +6535,7 @@ static void hw_panic_cpu_summary(void) {
             vibeos_x86_64_serial_print_hex((uint64_t)(int64_t)t);
             if (t >= 0 && t < (int)VIBEOS_HW_MAX_TASKS) {
                 vibeos_x86_64_serial_puts(" pid=0x");
-                vibeos_x86_64_serial_print_hex((uint64_t)g_tasks[t].pid);
+                vibeos_x86_64_serial_print_hex((uint64_t)g_tasks[t].id.pid);
                 vibeos_x86_64_serial_puts(" state=0x");
                 vibeos_x86_64_serial_print_hex((uint64_t)g_tasks[t].state);
                 vibeos_x86_64_serial_puts(" cr3=0x");
@@ -6640,7 +6639,7 @@ static void hw_fault_kill_current_user(const vibeos_x86_64_isr_frame_t *frame,
     uint64_t vector = frame->vector;
     uint32_t sig;
 
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+    if (g_current_task < 0 || !g_tasks[g_current_task].id.is_user) {
         return;   /* nothing to kill: the caller panics instead */
     }
     switch (vector) {
@@ -6679,7 +6678,7 @@ static void hw_fault_kill_current_user(const vibeos_x86_64_isr_frame_t *frame,
         uint32_t i;
 
         rec->used = 1;
-        rec->pid = t->pid;
+        rec->pid = t->id.pid;
         rec->sig = sig;
         rec->vector = vector;
         rec->error_code = frame->error_code;
@@ -6752,7 +6751,7 @@ static void hw_fault_kill_current_user(const vibeos_x86_64_isr_frame_t *frame,
         vibeos_x86_64_serial_unlock();
     }
 
-    g_tasks[g_current_task].exit_signal = sig;
+    g_tasks[g_current_task].id.exit_signal = sig;
     hw_task_exit(128ull + sig);   /* switches away; does not return */
 }
 
@@ -7304,11 +7303,11 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
     }
     hw_runtime_supervisor_init();
     if (g_runtime_supervisor_ready) {
-        g_tasks[hello_id].service_id = 1u;
+        g_tasks[hello_id].id.service_id = 1u;
         (void)vibeos_service_supervisor_bind_pid(&g_runtime_supervisor, 1u,
-                                                 g_tasks[hello_id].pid);
+                                                 g_tasks[hello_id].id.pid);
     }
-    g_console_foreground_pgid = g_tasks[hello_id].pgid;
+    g_console_foreground_pgid = g_tasks[hello_id].id.pgid;
 
     /* Printed before the scheduler is armed, so this line cannot be split by a
      * preemption. */
@@ -7390,7 +7389,7 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
         int i;
         int alive = 0;
         for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
-            if (g_tasks[i].is_user &&
+            if (g_tasks[i].id.is_user &&
                 (g_tasks[i].state == HW_TASK_READY ||
                  g_tasks[i].state == HW_TASK_RUNNING ||
                  g_tasks[i].state == HW_TASK_BLOCKED)) {

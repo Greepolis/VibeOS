@@ -17,6 +17,7 @@
  */
 
 #include "vibeos/arch_x86_64.h"
+#include "vibeos/task_ident.h"
 #include "vibeos/trap.h"
 #include "vibeos/boot.h"
 #include "vibeos/mm.h"
@@ -214,47 +215,19 @@ typedef struct {
     const char *ready_by;
     const char *aspace_killed_by;
     uint32_t alloc_seq;          /* which tenancy of this slot this is */
-    uint64_t exit_code;
-    /* Non-zero when this task was killed by a signal rather than exiting.
-     * wait() encodes the two cases differently, and a parent that cannot tell
-     * them apart reads a signal death as an ordinary exit with a large status
-     * - which is how a crashed child looks like a successful one. */
-    uint32_t exit_signal;
     uint64_t kstack_top;  /* private ring-0 stack: lets a task block in a syscall */
-    /* `pid` is the thread id: unique per task, which is what Linux calls a
-     * tid. `tgid` is the thread group - the number a program thinks of as its
-     * process id, shared by every thread in it. For a single-threaded process
-     * the two are equal, which is why everything worked while `pid` was the
-     * only one of them.
-     *
-     * getpid() returns tgid and gettid() returns pid. Getting that backwards
-     * is not a cosmetic error: a C library uses the pair to decide whether it
-     * is signalling itself or another thread. */
-    uint32_t pid;
-    uint32_t tgid;
-    uint32_t ppid;
-    uint32_t pgid;
-    uint32_t sid;
-    uint32_t service_id;
+    /* Who this task is - ids, parentage, how it ended, its name, its pending signals:
+     * the portable half (include/vibeos/task_ident.h), cleared in one place by
+     * vibeos_task_identity_reset. What is left in this structure is what a context
+     * switch, an address space and a descriptor table need. */
+    vibeos_task_t id;
 
-    /* A thread shares its creator's address space rather than owning one, so
-     * exit must not tear that space down while siblings are still running in
-     * it. Whether this task is the last of its group is asked of the task
-     * table, not tracked in a counter: the table is what the scheduler already
-     * believes, and a second count of the same thing is a second thing that
-     * can be wrong. */
-    uint8_t is_thread;
     /* Whether this task has ever been scheduled. One branch per context
      * switch, and it answered the question that moved the thread
      * investigation furthest: a thread that is created but never runs and a
      * thread that runs and exits immediately look identical from outside. */
     uint8_t ran_once;
 
-    /* CLONE_CHILD_CLEARTID: the address to zero and wake when this thread
-     * exits. It is how pthread_join learns the thread is gone - the joiner
-     * waits on this word, so a thread that exits without clearing it is a
-     * join that never returns. */
-    uint64_t clear_child_tid;
     /* The syscall ABI this task speaks, bound when the slot is allocated and
      * never looked up per call (C4). Set in hw_task_alloc, which every way of
      * making a task passes through, so a fork or a thread inherits nothing by
@@ -269,26 +242,6 @@ typedef struct {
      * third core would pick it up and two CPUs would run one task,
      * sharing its kernel stack. */
     volatile int on_cpu;
-    int is_user;
-    int is_idle;      /* per-CPU idle task: only run when nothing else is ready */
-    int wait_input;   /* blocked in read() on stdin */
-    uint8_t signal_stopped; /* stopped by SIGSTOP until SIGCONT */
-    /* Set by prctl(PR_SET_NAME); reported back by PR_GET_NAME. */
-    char comm[16];
-    /* Signals.
-     *
-     * pending is a bitmask of signals raised but not yet delivered; blocked is
-     * the mask the process asked to defer. Delivery happens on the way back to
-     * user space, never at the point the signal is raised - raising can happen
-     * from an interrupt or from another CPU, and building a signal frame on a
-     * stack that is not currently in use would corrupt it.
-     *
-     * handler[] holds one user address per signal, plus the flags and the
-     * restorer trampoline the C library supplied. SIG_DFL and SIG_IGN are
-     * stored as they arrive so the default action is a property of the entry
-     * rather than of a separate table that could disagree with it. */
-    uint64_t sig_pending;
-    uint64_t sig_blocked;
     /* The handlers, flags, restorers and per-signal masks are the process's and
      * live in hw_procstate_t. Pending and blocked stay here because they are the
      * thread's, which is the Linux model. */

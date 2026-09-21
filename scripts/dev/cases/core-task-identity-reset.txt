@@ -1,0 +1,10 @@
+# C5: the identity reset (kernel/sched/task_ident.c) must clear the whole object.
+#
+# Target source: kernel/sched/task_ident.c
+# Run: python3 scripts/dev/sabotage.py kernel/sched/task_ident.c scripts/dev/cases/core-task-identity-reset.txt build-clang-Release
+
+### the reset clears only the leading half, so later fields keep the previous tenant's values
+--- old
+    for (i = 0; i < (uint32_t)sizeof(*t); i++) {
++++ new
+    for (i = 0; i < (uint32_t)sizeof(*t) / 2u; i++) {

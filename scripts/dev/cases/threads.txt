@@ -2,12 +2,12 @@
 
 ### the join word is cleared after the context switch, so nobody is woken
 --- old
-    if (dying >= 0 && g_tasks[dying].clear_child_tid != 0u) {
-        uint64_t addr = g_tasks[dying].clear_child_tid;
+    if (dying >= 0 && g_tasks[dying].id.clear_child_tid != 0u) {
+        uint64_t addr = g_tasks[dying].id.clear_child_tid;
         uint32_t why = HW_RANGE_OK;
 +++ new
     if (0) {
-        uint64_t addr = g_tasks[dying].clear_child_tid;
+        uint64_t addr = g_tasks[dying].id.clear_child_tid;
         uint32_t why = HW_RANGE_OK;
 
 ### a thread gets its creator's TLS instead of its own

@@ -89,7 +89,7 @@
  * dispatcher runs them in the order written, so list them as the handler used to. */
 #define PTR_(a, fl, la, n, cp, wa, wv) \
     { (uint8_t)(a), (uint8_t)((fl) | VIBEOS_PTR_LIVE), (uint8_t)(la), (uint8_t)(wa), \
-      (uint32_t)(n), (uint32_t)(cp), (uint64_t)(wv) }
+      (uint32_t)(n), (uint32_t)(cp), (uint64_t)(wv), 0, 0 }
 #define OUT(a, n)              PTR_(a, VIBEOS_PTR_WRITE, 0, n, 0, 0, 0)
 #define IN(a, n)               PTR_(a, 0, 0, n, 0, 0, 0)
 #define OUT_OPT(a, n)          PTR_(a, VIBEOS_PTR_WRITE | VIBEOS_PTR_OPT, 0, n, 0, 0, 0)

@@ -81,7 +81,7 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
     int idx;
     uint32_t my_tenancy;
 
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+    if (g_current_task < 0 || !g_tasks[g_current_task].id.is_user) {
         return -VIBEOS_EINVAL;
     }
 
@@ -162,19 +162,19 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
         }
     }
     child->ctx.rax = 0;    /* ... but fork() returns 0 in the child */
-    child->pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
-    hw_log(VIBEOS_LOG_DEBUG, 44u, (uint64_t)parent->pid, (uint64_t)child->pid,
+    child->id.pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
+    hw_log(VIBEOS_LOG_DEBUG, 44u, (uint64_t)parent->id.pid, (uint64_t)child->id.pid,
            "fork produced a child (a0 = parent, a1 = child)");
     /* fork makes a process, so the child heads its own thread group. Its
      * parent is the *group*, not the thread that happened to call fork:
      * wait() is a process relationship. */
-    child->tgid = child->pid;
-    child->ppid = parent->tgid;
-    child->pgid = parent->pgid;
-    child->sid = parent->sid;
-    child->signal_stopped = 0;
-    child->is_thread = 0;
-    child->clear_child_tid = 0;
+    child->id.tgid = child->id.pid;
+    child->id.ppid = parent->id.tgid;
+    child->id.pgid = parent->id.pgid;
+    child->id.sid = parent->id.sid;
+    child->id.signal_stopped = 0;
+    child->id.is_thread = 0;
+    child->id.clear_child_tid = 0;
     child->fs_base = parent->fs_base;   /* the copied image expects its TLS */
     {
         uint32_t sg;
@@ -219,9 +219,9 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
         }
         hw_spin_unlock(&g_pipe_lock);
 
-        child->exit_signal = 0;
-        child->sig_pending = 0;   /* pending signals are not inherited */
-        child->sig_blocked = parent->sig_blocked;
+        child->id.exit_signal = 0;
+        child->id.sig_pending = 0;   /* pending signals are not inherited */
+        child->id.sig_blocked = parent->id.sig_blocked;
         for (sg = 0; sg < VIBEOS_HW_NSIG; sg++) {
             child->ps->sig_handler[sg] = parent->ps->sig_handler[sg];
             child->ps->sig_restorer[sg] = parent->ps->sig_restorer[sg];
@@ -229,8 +229,8 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
             child->ps->sig_mask[sg] = parent->ps->sig_mask[sg];
         }
     }
-    child->is_user = 1;
-    child->exit_code = 0;
+    child->id.is_user = 1;
+    child->id.exit_code = 0;
     /* The slot must still be the one this fork was given.
      *
      * Everything above writes into g_tasks[idx] without the scheduler lock,
@@ -255,7 +255,7 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
     }
     (void)hw_task_set_state((int)(child - g_tasks), HW_TASK_READY, __func__);
     child->ready_by = "fork";
-    return (long)child->pid;
+    return (long)child->id.pid;
 }
 
 /* clone() with CLONE_VM|CLONE_THREAD: another thread in this process.
@@ -282,7 +282,7 @@ static long hw_sys_clone_thread(const vibeos_x86_64_isr_frame_t *frame,
     int idx;
     uint32_t my_tenancy;
 
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+    if (g_current_task < 0 || !g_tasks[g_current_task].id.is_user) {
         return -VIBEOS_EINVAL;
     }
     /* A thread with no stack of its own would run on its creator's, which is
@@ -337,23 +337,23 @@ static long hw_sys_clone_thread(const vibeos_x86_64_isr_frame_t *frame,
      * each believe is theirs. */
     hw_fpu_init_area(child->fpu);
 
-    child->pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
-    child->tgid = parent->tgid;    /* same process */
-    child->ppid = parent->ppid;    /* threads share their creator's parent */
-    child->pgid = parent->pgid;
-    child->sid = parent->sid;
-    child->signal_stopped = 0;
-    child->is_thread = 1;
-    child->is_user = 1;
-    child->exit_code = 0;
-    child->exit_signal = 0;
+    child->id.pid = (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u);
+    child->id.tgid = parent->id.tgid;    /* same process */
+    child->id.ppid = parent->id.ppid;    /* threads share their creator's parent */
+    child->id.pgid = parent->id.pgid;
+    child->id.sid = parent->id.sid;
+    child->id.signal_stopped = 0;
+    child->id.is_thread = 1;
+    child->id.is_user = 1;
+    child->id.exit_code = 0;
+    child->id.exit_signal = 0;
 
     /* Thread-local storage. Without this every thread reads the creator's
      * errno and its own stack guard, which is the kind of sharing that looks
      * like memory corruption from user space. */
     child->fs_base = (flags & CLONE_SETTLS) ? tls : parent->fs_base;
 
-    child->clear_child_tid = (flags & CLONE_CHILD_CLEARTID) ? ctid : 0;
+    child->id.clear_child_tid = (flags & CLONE_CHILD_CLEARTID) ? ctid : 0;
 
     /* Descriptors are copied, not shared. Linux shares them under CLONE_FILES
      * and a C library asks for that; here each thread gets its own table with
@@ -399,8 +399,8 @@ static long hw_sys_clone_thread(const vibeos_x86_64_isr_frame_t *frame,
      * seen by another - verified by THREADS_C5_SIGACTION, which died by
      * SIGUSR1. They are shared through child->ps now. The mask and the pending
      * set stay per thread, which is the Linux model. */
-    child->sig_pending = 0;
-    child->sig_blocked = parent->sig_blocked;
+    child->id.sig_pending = 0;
+    child->id.sig_blocked = parent->id.sig_blocked;
 
     /* Written through the fault-safe copy: a sibling thread can munmap the page
      * between the range check and the store, faulting in ring 0 (H-021). A
@@ -408,12 +408,12 @@ static long hw_sys_clone_thread(const vibeos_x86_64_isr_frame_t *frame,
      * Linux when these optional stores fault. */
     if ((flags & CLONE_PARENT_SETTID) && ptid != 0u &&
         linux_user_ok(ptid, 4u, 1)) {
-        uint32_t v = child->pid;
+        uint32_t v = child->id.pid;
         (void)vibeos_uaccess_copy((void *)(uintptr_t)ptid, &v, sizeof(v));
     }
     if ((flags & CLONE_CHILD_SETTID) && ctid != 0u &&
         linux_user_ok(ctid, 4u, 1)) {
-        uint32_t v = child->pid;
+        uint32_t v = child->id.pid;
         (void)vibeos_uaccess_copy((void *)(uintptr_t)ctid, &v, sizeof(v));
     }
 
@@ -422,9 +422,9 @@ static long hw_sys_clone_thread(const vibeos_x86_64_isr_frame_t *frame,
     }
     (void)hw_task_set_state((int)(child - g_tasks), HW_TASK_READY, __func__);
     child->ready_by = "clone_thread";
-    hw_log(VIBEOS_LOG_DEBUG, 8u, (uint64_t)child->pid, child->fs_base,
+    hw_log(VIBEOS_LOG_DEBUG, 8u, (uint64_t)child->id.pid, child->fs_base,
            "thread created (a1 = its TLS base)");
-    return (long)child->pid;
+    return (long)child->id.pid;
 }
 
 /* waitpid(): reap a finished child. Blocks the caller (state BLOCKED, so the
@@ -435,10 +435,10 @@ static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr,
                            uint64_t options) {
     uint32_t mypid;
 
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+    if (g_current_task < 0 || !g_tasks[g_current_task].id.is_user) {
         return -VIBEOS_EINVAL;
     }
-    mypid = g_tasks[g_current_task].tgid;
+    mypid = g_tasks[g_current_task].id.tgid;
 
     /* The options used to be dropped by the dispatcher before they got here,
      * so WNOHANG blocked. A shell reaping background jobs stalls on the first
@@ -463,16 +463,16 @@ static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr,
         hw_spin_lock_named(&g_sched_lock, __func__);
         for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
             hw_task_t *t = &g_tasks[i];
-            if (t->ppid != mypid || t->state == HW_TASK_FREE) {
+            if (t->id.ppid != mypid || t->state == HW_TASK_FREE) {
                 continue;
             }
-            if (want_pid != (uint64_t)-1 && t->tgid != (uint32_t)want_pid) {
+            if (want_pid != (uint64_t)-1 && t->id.tgid != (uint32_t)want_pid) {
                 continue;
             }
             if (t->state == HW_TASK_ZOMBIE) {
-                uint32_t child_pid = t->tgid;
-                uint64_t code = t->exit_code;
-                uint32_t exit_signal = t->exit_signal;
+                uint32_t child_pid = t->id.tgid;
+                uint64_t code = t->id.exit_code;
+                uint32_t exit_signal = t->id.exit_signal;
                 /* One encoding, defined once. A wait status is not an exit
                  * code, and an init that read only the code byte reported a
                  * segfault as a clean stop - the crashing service came back
@@ -724,7 +724,7 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
     const char *fallback_argv[2];
     const char *const *argv;
 
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+    if (g_current_task < 0 || !g_tasks[g_current_task].id.is_user) {
         return -VIBEOS_EINVAL;
     }
     /* Named, not just returned.
@@ -785,8 +785,8 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
                     static const char hexd[] = "0123456789abcdef";
                     int cur = g_current_task;
                     uint64_t cr3 = (cur >= 0) ? g_tasks[cur].cr3 : 0ull;
-                    int is_user = (cur >= 0) ? g_tasks[cur].is_user : -1;
-                    int is_thread = (cur >= 0) ? g_tasks[cur].is_thread : -1;
+                    int is_user = (cur >= 0) ? g_tasks[cur].id.is_user : -1;
+                    int is_thread = (cur >= 0) ? g_tasks[cur].id.is_thread : -1;
                     const char *tag = " task=";
                     int j;
 
@@ -964,7 +964,7 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
      * that still says whose it was. */
     {
         int me = (int)(t - g_tasks);
-        uint32_t tgid = t->tgid;
+        uint32_t tgid = t->id.tgid;
         int i, any;
 
         /* The leader must die quietly. hw_task_exit reads is_thread under
@@ -974,11 +974,11 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
          * in the wait below. */
         hw_spin_lock_named(&g_sched_lock, __func__);
         for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
-            if (i != me && g_tasks[i].is_user && g_tasks[i].tgid == tgid &&
-                g_tasks[i].pid == tgid &&
+            if (i != me && g_tasks[i].id.is_user && g_tasks[i].id.tgid == tgid &&
+                g_tasks[i].id.pid == tgid &&
                 g_tasks[i].state != HW_TASK_FREE &&
                 g_tasks[i].state != HW_TASK_ZOMBIE) {
-                g_tasks[i].is_thread = 1;
+                g_tasks[i].id.is_thread = 1;
             }
         }
 
@@ -989,7 +989,7 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
          * report a group exit code - they are all threads now, and threads
          * report nothing. */
         for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
-            if (i != me && g_tasks[i].is_user && g_tasks[i].tgid == tgid &&
+            if (i != me && g_tasks[i].id.is_user && g_tasks[i].id.tgid == tgid &&
                 g_tasks[i].state != HW_TASK_FREE &&
                 g_tasks[i].state != HW_TASK_RESERVED &&
                 g_tasks[i].state != HW_TASK_ZOMBIE) {
@@ -1007,11 +1007,11 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
             any = 0;
             hw_spin_lock_named(&g_sched_lock, __func__);
             for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
-                if (i == me || !g_tasks[i].is_user || g_tasks[i].tgid != tgid ||
+                if (i == me || !g_tasks[i].id.is_user || g_tasks[i].id.tgid != tgid ||
                     g_tasks[i].state == HW_TASK_FREE) {
                     continue;
                 }
-                if (g_tasks[i].state == HW_TASK_ZOMBIE && g_tasks[i].pid == tgid) {
+                if (g_tasks[i].state == HW_TASK_ZOMBIE && g_tasks[i].id.pid == tgid) {
                     /* A leader that exited before this exec. Its id is the one
                      * this task is about to take, so the slot cannot stay: a
                      * parent reaping it afterwards would see the process end
@@ -1043,11 +1043,11 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
         /* Alone now, and the old leader's slot is gone, so no two tasks ever
          * hold pid == tgid at once. ppid is already the leader's: threads
          * inherit their creator's parent. */
-        if (t->pid != tgid) {
-            t->pid = tgid;
+        if (t->id.pid != tgid) {
+            t->id.pid = tgid;
             HW_TASK_MARK(me, ready_by, "exec_took_leader_id");
         }
-        t->is_thread = 0;
+        t->id.is_thread = 0;
     }
     /* Stored with a leading slash even when the caller used a relative path.
      * /proc/self/exe is defined to be absolute, and a C runtime does not merely
@@ -1102,7 +1102,7 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
          * whatever now lives at that address - found while writing H-006, and
          * true of every exec, not only a threaded one. A C library sets it
          * again at startup if it wants it. */
-        t->clear_child_tid = 0;
+        t->id.clear_child_tid = 0;
         t->cr3 = hw_proc_cr3(&t->proc);
         t->cr3_set_by = "execve";
         hw_write_cr3(t->cr3);
@@ -1150,7 +1150,7 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
     /* The dispositions were derived into the new process before the commit,
      * while the outgoing one still existed. Pending signals do not survive an
      * exec: they were raised against the old image. */
-    t->sig_pending = 0;
+    t->id.sig_pending = 0;
 
     frame->rip = np.entry;
     frame->cs = VIBEOS_HW_USER_CODE_SEL;
@@ -1184,7 +1184,6 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
  * scheduler's log say which program a pid is. */
 static long hw_sys_prctl(uint64_t op, uint64_t arg) {
     hw_task_t *t;
-    uint32_t i;
 
     if (g_current_task < 0) {
         return -VIBEOS_EINVAL;
@@ -1197,17 +1196,11 @@ static long hw_sys_prctl(uint64_t op, uint64_t arg) {
         if (vibeos_uaccess_copy(kname, (const void *)(uintptr_t)arg, 16) != 0) {
             return -VIBEOS_EFAULT;
         }
-        for (i = 0; i < 15u; i++) {
-            t->comm[i] = kname[i];
-            if (t->comm[i] == 0) {
-                break;
-            }
-        }
-        t->comm[15] = 0;
+        vibeos_task_set_comm(&t->id, kname, sizeof(kname));
         return 0;
     }
     if (op == PR_GET_NAME) {
-        if (vibeos_uaccess_copy((void *)(uintptr_t)arg, t->comm, 16) != 0) {
+        if (vibeos_uaccess_copy((void *)(uintptr_t)arg, t->id.comm, 16) != 0) {
             return -VIBEOS_EFAULT;
         }
         return 0;
@@ -1221,10 +1214,10 @@ static long hw_sys_setpgid(uint64_t requested_pid, uint64_t requested_pgid) {
     int leader_slot;
     int leader;
     long r;
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+    if (g_current_task < 0 || !g_tasks[g_current_task].id.is_user) {
         return -VIBEOS_EINVAL;
     }
-    pid = requested_pid == 0 ? g_tasks[g_current_task].tgid : (uint32_t)requested_pid;
+    pid = requested_pid == 0 ? g_tasks[g_current_task].id.tgid : (uint32_t)requested_pid;
     /* Both arms cast to int explicitly. `pid` is uint32_t, so the conditional
      * otherwise takes the unsigned type and converts back on assignment - the
      * guard below still works, but the reader has to prove that, and the
@@ -1236,14 +1229,14 @@ static long hw_sys_setpgid(uint64_t requested_pid, uint64_t requested_pgid) {
     target = hw_task_by_pid(pid);
     if (target < 0) {
         r = -VIBEOS_ESRCH;
-    } else if (g_tasks[target].sid != g_tasks[g_current_task].sid) {
+    } else if (g_tasks[target].id.sid != g_tasks[g_current_task].id.sid) {
         r = -VIBEOS_EPERM;
     } else if (leader <= 0 || (leader_slot = hw_task_by_pid((uint32_t)leader)) < 0) {
         r = -VIBEOS_ESRCH;
-    } else if (g_tasks[leader_slot].sid != g_tasks[target].sid) {
+    } else if (g_tasks[leader_slot].id.sid != g_tasks[target].id.sid) {
         r = -VIBEOS_EPERM;
     } else {
-        g_tasks[target].pgid = (uint32_t)leader;
+        g_tasks[target].id.pgid = (uint32_t)leader;
         r = 0;
     }
     hw_spin_unlock(&g_sched_lock);
@@ -1253,7 +1246,7 @@ static long hw_sys_setpgid(uint64_t requested_pid, uint64_t requested_pgid) {
 static long hw_sys_setsid(void) {
     int i;
     hw_task_t *current;
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+    if (g_current_task < 0 || !g_tasks[g_current_task].id.is_user) {
         return -VIBEOS_EINVAL;
     }
     current = &g_tasks[g_current_task];
@@ -1263,38 +1256,38 @@ static long hw_sys_setsid(void) {
      * these fields under the lock - observes pgid/sid mid-change (H-027, the
      * same reasoning as H-007). */
     hw_spin_lock_named(&g_sched_lock, __func__);
-    if (current->pgid == current->tgid) {
+    if (current->id.pgid == current->id.tgid) {
         hw_spin_unlock(&g_sched_lock);
         return -VIBEOS_EPERM;
     }
-    current->sid = current->tgid;
-    current->pgid = current->tgid;
+    current->id.sid = current->id.tgid;
+    current->id.pgid = current->id.tgid;
     for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
-        if (i != g_current_task && g_tasks[i].is_user &&
+        if (i != g_current_task && g_tasks[i].id.is_user &&
             g_tasks[i].state != HW_TASK_FREE &&
             g_tasks[i].state != HW_TASK_RESERVED &&
-            g_tasks[i].tgid == current->tgid) {
-            g_tasks[i].sid = current->sid;
-            g_tasks[i].pgid = current->pgid;
+            g_tasks[i].id.tgid == current->id.tgid) {
+            g_tasks[i].id.sid = current->id.sid;
+            g_tasks[i].id.pgid = current->id.pgid;
         }
     }
     hw_spin_unlock(&g_sched_lock);
-    return (long)current->tgid;
+    return (long)current->id.tgid;
 }
 
 static long hw_sys_getsid(uint64_t requested_pid) {
     int target;
     uint32_t pid;
     long r;
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+    if (g_current_task < 0 || !g_tasks[g_current_task].id.is_user) {
         return -VIBEOS_EINVAL;
     }
-    pid = requested_pid == 0 ? g_tasks[g_current_task].tgid : (uint32_t)requested_pid;
+    pid = requested_pid == 0 ? g_tasks[g_current_task].id.tgid : (uint32_t)requested_pid;
     /* The sid is read from the slot the lookup found, so the two are one
      * critical section: otherwise the answer can be another process's (H-007). */
     hw_spin_lock_named(&g_sched_lock, __func__);
     target = hw_task_by_pid(pid);
-    r = target < 0 ? -VIBEOS_ESRCH : (long)g_tasks[target].sid;
+    r = target < 0 ? -VIBEOS_ESRCH : (long)g_tasks[target].id.sid;
     hw_spin_unlock(&g_sched_lock);
     return r;
 }
@@ -1314,7 +1307,7 @@ static long hw_sys_setresid(uint64_t id) {
 static long hw_sys_arch_prctl(uint64_t code, uint64_t addr) {
     hw_task_t *t;
 
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+    if (g_current_task < 0 || !g_tasks[g_current_task].id.is_user) {
         return -VIBEOS_EINVAL;
     }
     t = &g_tasks[g_current_task];
@@ -1439,7 +1432,7 @@ static long hw_futex_wait(uint64_t addr, uint32_t expected) {
     hw_spin_unlock(&g_futex_lock);
     hw_log(VIBEOS_LOG_DEBUG, 22u, addr,
            (uint64_t)cur |
-           ((uint64_t)g_tasks[me].pid << 32),
+           ((uint64_t)g_tasks[me].id.pid << 32),
            "futex wait: sleeping (a1 = value | tid<<32)");
 
     /* Yield until somebody wakes us. The scheduler runs from the timer, so
@@ -1483,12 +1476,12 @@ static long hw_futex_wait(uint64_t addr, uint32_t expected) {
                 HW_TASK_MARK(me, ready_by, "futex_wait_interrupted");
             }
             hw_spin_unlock(&g_sched_lock);
-            hw_log(VIBEOS_LOG_DEBUG, 23u, addr, (uint64_t)g_tasks[me].pid,
+            hw_log(VIBEOS_LOG_DEBUG, 23u, addr, (uint64_t)g_tasks[me].id.pid,
                    "futex wait: interrupted by a signal");
             return -VIBEOS_EINTR;
         }
     }
-    hw_log(VIBEOS_LOG_DEBUG, 23u, addr, (uint64_t)g_tasks[me].pid,
+    hw_log(VIBEOS_LOG_DEBUG, 23u, addr, (uint64_t)g_tasks[me].id.pid,
            "futex wait: woken");
     return 0;
 }
@@ -1518,23 +1511,23 @@ static long hw_sys_futex(uint64_t addr, uint64_t op, uint64_t val) {
  * answer here, which is the whole point of the distinction: getpid() names the
  * process. */
 static long linux_sys_getpid(void) {
-    return (g_current_task >= 0) ? (long)g_tasks[g_current_task].tgid : 1;
+    return (g_current_task >= 0) ? (long)g_tasks[g_current_task].id.tgid : 1;
 }
 
 /* The thread id proper. Equal to getpid() for a single-threaded program, which is
  * what Linux reports too, and different for every thread of a program that has
  * several. */
 static long linux_sys_gettid(void) {
-    return (g_current_task >= 0) ? (long)g_tasks[g_current_task].pid : 1;
+    return (g_current_task >= 0) ? (long)g_tasks[g_current_task].id.pid : 1;
 }
 
 static long linux_sys_getppid(void) {
-    return (g_current_task >= 0) ? (long)g_tasks[g_current_task].ppid : 0;
+    return (g_current_task >= 0) ? (long)g_tasks[g_current_task].id.ppid : 0;
 }
 
 static long linux_sys_getpgrp(void) {
-    return (g_current_task >= 0 && g_tasks[g_current_task].is_user) ?
-        (long)g_tasks[g_current_task].pgid : -VIBEOS_EINVAL;
+    return (g_current_task >= 0 && g_tasks[g_current_task].id.is_user) ?
+        (long)g_tasks[g_current_task].id.pgid : -VIBEOS_EINVAL;
 }
 
 /* Where to write zero and wake when this thread exits. A joiner sleeps on that
@@ -1542,8 +1535,8 @@ static long linux_sys_getpgrp(void) {
  * is exit doing the writing. */
 static long linux_sys_set_tid_address(uint64_t addr) {
     if (g_current_task >= 0) {
-        g_tasks[g_current_task].clear_child_tid = addr;
-        return (long)g_tasks[g_current_task].pid;
+        g_tasks[g_current_task].id.clear_child_tid = addr;
+        return (long)g_tasks[g_current_task].id.pid;
     }
     return 1;
 }

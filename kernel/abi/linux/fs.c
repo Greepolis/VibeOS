@@ -224,7 +224,7 @@ static long hw_sys_pipe2(uint64_t fds_uptr, uint64_t flags) {
     int i;
 
     (void)flags;   /* O_CLOEXEC has no meaning without an exec-close list */
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+    if (g_current_task < 0 || !g_tasks[g_current_task].id.is_user) {
         return -VIBEOS_EINVAL;
     }
     t = &g_tasks[g_current_task];
@@ -307,7 +307,7 @@ static long hw_sys_dup2(uint64_t oldfd, uint64_t newfd) {
     hw_task_t *t;
     hw_fd_t *src;
 
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+    if (g_current_task < 0 || !g_tasks[g_current_task].id.is_user) {
         return -VIBEOS_EINVAL;
     }
     t = &g_tasks[g_current_task];
@@ -577,13 +577,13 @@ static long hw_sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
             return (long)copied;
         }
         if (g_current_task >= 0) {
-            g_tasks[g_current_task].wait_input = 1;
+            g_tasks[g_current_task].id.wait_input = 1;
             (void)hw_task_set_state(g_current_task, HW_TASK_BLOCKED, __func__);
             /* Blocked first and asked second, so a signal raised in between
              * finds the task BLOCKED and wakes it. hw_signal_raise already
              * cleared wait_input for this, and nothing ever read it here. */
             if (hw_signal_interrupts(g_current_task)) {
-                g_tasks[g_current_task].wait_input = 0;
+                g_tasks[g_current_task].id.wait_input = 0;
                 (void)hw_task_set_state(g_current_task, HW_TASK_READY, __func__);
                 HW_TASK_MARK(g_current_task, ready_by, "read_interrupted");
                 __asm__ __volatile__("sti");
@@ -602,7 +602,7 @@ static long hw_sys_open(uint64_t path_uptr, uint64_t flags) {
     hw_task_t *t;
     int i, k;
 
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+    if (g_current_task < 0 || !g_tasks[g_current_task].id.is_user) {
         return -VIBEOS_EINVAL;
     }
     if (hw_copy_user_string(path_uptr, path, sizeof(path)) != 0) {
@@ -1011,10 +1011,10 @@ static long hw_sys_ioctl(uint64_t fd, uint64_t req, uint64_t arg) {
             return -VIBEOS_EFAULT;   /* H-025 */
         }
         group = hw_task_by_pid(pgid);
-        if (group < 0 || g_tasks[group].sid != g_tasks[g_current_task].sid) {
+        if (group < 0 || g_tasks[group].id.sid != g_tasks[g_current_task].id.sid) {
             return -VIBEOS_EPERM;
         }
-        g_console_foreground_pgid = g_tasks[group].pgid;
+        g_console_foreground_pgid = g_tasks[group].id.pgid;
         return 0;
     }
     return -VIBEOS_ENOTTY;

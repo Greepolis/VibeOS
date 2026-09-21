@@ -8938,6 +8938,7 @@ int test_gpt(void);
 int test_blkfail(void);
 int test_blkqueue(void);
 int test_task(void);
+int test_task_ident(void);
 int test_runq(void);
 int test_lifetime(void);
 int test_loader(void);
@@ -9228,6 +9229,7 @@ int main(void) {
     RUN_TEST(test_blkfail);
     RUN_TEST(test_blkqueue);
     RUN_TEST(test_task);
+    RUN_TEST(test_task_ident);
     RUN_TEST(test_runq);
     RUN_TEST(test_lifetime);
     RUN_TEST(test_loader);

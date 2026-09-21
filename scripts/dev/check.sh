@@ -100,6 +100,9 @@ do_build() {
     # moving code. Its first run contradicted the table it was written to
     # enforce, which is the best thing a new check can do.
     python3 scripts/dev/check-blast-radius.py | tail -1
+    # C5: one definition of what a task is, and a ratchet on how far the arch layer
+    # still reaches into it.
+    python3 scripts/dev/check-task-identity.py | tail -1
     # The interpreter substitution, checked the same way and for the same
     # reason: a rule that lives only in a comment erodes one reasonable
     # looking line at a time.

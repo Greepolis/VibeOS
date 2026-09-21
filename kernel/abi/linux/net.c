@@ -65,7 +65,7 @@ static long hw_sys_socket(uint64_t domain, uint64_t type) {
     int fd, s;
     int kind;
 
-    if (!g_net_up || hw_current_task() < 0 || !g_tasks[hw_current_task()].is_user) {
+    if (!g_net_up || hw_current_task() < 0 || !g_tasks[hw_current_task()].id.is_user) {
         return -VIBEOS_EINVAL;
     }
     if (domain != 2u) {                       /* AF_INET only */
@@ -86,7 +86,7 @@ static long hw_sys_socket(uint64_t domain, uint64_t type) {
     }
     hw_spin_lock(&g_net_lock);
     s = vibeos_inet_socket(&g_net, kind);
-    if (s >= 0 && vibeos_inet_socket_set_owner(&g_net, s, t->tgid) != 0) {
+    if (s >= 0 && vibeos_inet_socket_set_owner(&g_net, s, t->id.tgid) != 0) {
         (void)vibeos_inet_close(&g_net, s);
         s = -1;
     }
@@ -249,7 +249,7 @@ static long hw_sys_accept(uint64_t fd, uint64_t addr_uptr) {
         port = g_net.sockets[child].remote_port;
         /* The child was made by the stack and is owned by nobody; without an
          * owner, process exit never releases it (M-031). */
-        (void)vibeos_inet_socket_set_owner(&g_net, child, t->tgid);
+        (void)vibeos_inet_socket_set_owner(&g_net, child, t->id.tgid);
         hw_spin_unlock(&g_net_lock);
         if (hw_write_sockaddr(addr_uptr, ip, port) != 0) {
             /* The pointer went bad after the pre-check: undo the accept

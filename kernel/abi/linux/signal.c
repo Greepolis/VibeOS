@@ -38,11 +38,11 @@
  * blocked. Lowest first is what Linux does, and it puts the fatal ones - which
  * are the low numbers - ahead of the informational ones. */
 static uint32_t hw_signal_next(hw_task_t *t) {
-    uint64_t ready = t->sig_pending & ~t->sig_blocked;
+    uint64_t ready = t->id.sig_pending & ~t->id.sig_blocked;
     uint32_t sig;
 
     /* SIGKILL and SIGSTOP ignore the mask entirely. */
-    ready |= t->sig_pending & ((1ull << VIBEOS_SIGKILL) | (1ull << VIBEOS_SIGSTOP));
+    ready |= t->id.sig_pending & ((1ull << VIBEOS_SIGKILL) | (1ull << VIBEOS_SIGSTOP));
     if (ready == 0u) {
         return 0;
     }
@@ -61,7 +61,7 @@ int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame) {
     uint32_t sig;
     uint64_t handler, sp;
 
-    if (hw_current_task() < 0 || !g_tasks[hw_current_task()].is_user) {
+    if (hw_current_task() < 0 || !g_tasks[hw_current_task()].id.is_user) {
         return 0;
     }
     t = &g_tasks[hw_current_task()];
@@ -70,7 +70,7 @@ int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame) {
         if (sig == 0u) {
             return 0;
         }
-        t->sig_pending &= ~(1ull << sig);
+        t->id.sig_pending &= ~(1ull << sig);
 
         /* A user task whose process reference is already gone is exiting;
          * the default is the only disposition it has left. */
@@ -83,7 +83,7 @@ int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame) {
         }
         if (handler == SIG_DFL_ADDR) {
             if (sig == VIBEOS_SIGSTOP) {
-                t->signal_stopped = 1;
+                t->id.signal_stopped = 1;
                 (void)hw_task_set_state((int)(t - g_tasks), HW_TASK_BLOCKED, __func__);
                 HW_TASK_MARK(hw_current_task(), ready_by, "sigstop");
                 vibeos_x86_64_serial_puts("[SIG] task stopped by SIGSTOP\n");
@@ -96,11 +96,11 @@ int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame) {
                  * that died here as "killed by 9" would report exactly what an
                  * exit_group built from SIGKILL alone reports - and Linux
                  * reports the group's code. */
-                t->exit_signal = 0;
+                t->id.exit_signal = 0;
                 hw_task_exit(t->ps->exit_group_code);   /* does not return */
             }
             if (hw_signal_default_kills(sig)) {
-                t->exit_signal = sig;
+                t->id.exit_signal = sig;
                 hw_task_exit(128ull + sig);   /* does not return */
             }
             continue;   /* default is to ignore it */
@@ -159,7 +159,7 @@ int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame) {
         uint64_t ret = t->ps->sig_restorer[sig];
 
         kf.magic = HW_SIGFRAME_MAGIC;
-        kf.blocked = t->sig_blocked;
+        kf.blocked = t->id.sig_blocked;
         kf.frame = *frame;
         if (vibeos_uaccess_copy((void *)(uintptr_t)(sp + 8ull), &kf,
                                 sizeof(kf)) != 0 ||
@@ -172,7 +172,7 @@ int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame) {
     /* While the handler runs, this signal is blocked, plus whatever the
      * program asked to block along with it - otherwise a repeating signal
      * re-enters the handler until the stack is gone. */
-    t->sig_blocked |= (1ull << sig) | t->ps->sig_mask[sig];
+    t->id.sig_blocked |= (1ull << sig) | t->ps->sig_mask[sig];
 
     frame->rip = handler;
     frame->rsp = sp;

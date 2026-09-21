@@ -31,15 +31,15 @@ static int hw_signal_permitted(int target) {
         return 0;
     }
     me = &g_tasks[g_current_task];
-    if (me->pid <= 1u) {
+    if (me->id.pid <= 1u) {
         return 1;
     }
     /* Its own thread group, always: a program may signal itself and its
      * threads whatever else is true. */
-    if (g_tasks[target].tgid == me->tgid) {
+    if (g_tasks[target].id.tgid == me->id.tgid) {
         return 1;
     }
-    return g_tasks[target].sid == me->sid;
+    return g_tasks[target].id.sid == me->id.sid;
 }
 
 static long hw_sys_kill(uint64_t target_pid, uint64_t sig) {
@@ -48,7 +48,7 @@ static long hw_sys_kill(uint64_t target_pid, uint64_t sig) {
     int64_t signed_pid = (int64_t)target_pid;
     long r;
 
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
+    if (g_current_task < 0 || !g_tasks[g_current_task].id.is_user) {
         return -VIBEOS_EINVAL;
     }
     if (sig > VIBEOS_HW_SIG_MAX) {
@@ -58,7 +58,7 @@ static long hw_sys_kill(uint64_t target_pid, uint64_t sig) {
      * holds g_sched_lock from the lookup to the act. See hw_task_by_pid. */
     if (sig == 0u) {
         if (signed_pid <= 0) {
-            signed_pid = g_tasks[g_current_task].tgid;
+            signed_pid = g_tasks[g_current_task].id.tgid;
         }
         /* Positive by construction after the line above, so the negate-if-
          * negative that used to be here could never run. CodeQL called it what
@@ -75,13 +75,13 @@ static long hw_sys_kill(uint64_t target_pid, uint64_t sig) {
         return r;
     }
     if (signed_pid < 0 || signed_pid == 0) {
-        uint32_t group = signed_pid < 0 ? (uint32_t)(-signed_pid) : g_tasks[g_current_task].pgid;
+        uint32_t group = signed_pid < 0 ? (uint32_t)(-signed_pid) : g_tasks[g_current_task].id.pgid;
         int i;
         hw_spin_lock_named(&g_sched_lock, __func__);
         for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
-            if (g_tasks[i].is_user && g_tasks[i].state != HW_TASK_FREE &&
+            if (g_tasks[i].id.is_user && g_tasks[i].state != HW_TASK_FREE &&
                 g_tasks[i].state != HW_TASK_RESERVED &&
-                g_tasks[i].pgid == group && g_tasks[i].sid == g_tasks[g_current_task].sid) {
+                g_tasks[i].id.pgid == group && g_tasks[i].id.sid == g_tasks[g_current_task].id.sid) {
                 if (hw_signal_raise(i, (uint32_t)sig) == 0) {
                     delivered++;
                 }
@@ -110,7 +110,7 @@ static long hw_sys_tkill(uint64_t target_tid, uint64_t sig) {
     int target;
     long r;
 
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user ||
+    if (g_current_task < 0 || !g_tasks[g_current_task].id.is_user ||
         sig > VIBEOS_HW_SIG_MAX) {
         return -VIBEOS_EINVAL;
     }
@@ -148,7 +148,7 @@ static long hw_sys_tgkill(uint64_t target_tgid, uint64_t target_tid,
     int target;
     long r;
 
-    if (g_current_task < 0 || !g_tasks[g_current_task].is_user ||
+    if (g_current_task < 0 || !g_tasks[g_current_task].id.is_user ||
         sig > VIBEOS_HW_SIG_MAX) {
         return -VIBEOS_EINVAL;
     }
@@ -158,7 +158,7 @@ static long hw_sys_tgkill(uint64_t target_tgid, uint64_t target_tid,
     target = hw_task_by_tid((uint32_t)target_tid);
     if (target >= 0 && !hw_signal_permitted(target)) {
         r = -VIBEOS_EPERM;   /* same rule as kill; see hw_signal_permitted */
-    } else if (target < 0 || g_tasks[target].tgid != (uint32_t)target_tgid) {
+    } else if (target < 0 || g_tasks[target].id.tgid != (uint32_t)target_tgid) {
         r = -VIBEOS_ESRCH;
     } else if (sig == 0u) {
         r = 0;
@@ -259,7 +259,7 @@ static long hw_sys_rt_sigprocmask(uint64_t how, uint64_t set_uptr, uint64_t old_
     }
     t = &g_tasks[g_current_task];
     if (old_uptr != 0u) {
-        uint64_t out = hw_sigset_to_user(t->sig_blocked);
+        uint64_t out = hw_sigset_to_user(t->id.sig_blocked);
         if (vibeos_uaccess_copy((void *)(uintptr_t)old_uptr, &out,
                                 sizeof(out)) != 0) {
             return -VIBEOS_EFAULT;   /* H-016 */
@@ -277,14 +277,14 @@ static long hw_sys_rt_sigprocmask(uint64_t how, uint64_t set_uptr, uint64_t old_
         set = hw_sigset_from_user(raw);
     }
     switch (how) {
-        case 0: t->sig_blocked |= set; break;
-        case 1: t->sig_blocked &= ~set; break;
-        case 2: t->sig_blocked = set; break;
+        case 0: t->id.sig_blocked |= set; break;
+        case 1: t->id.sig_blocked &= ~set; break;
+        case 2: t->id.sig_blocked = set; break;
         default: return -VIBEOS_EINVAL;
     }
     /* Blocking these would make a process unkillable, so the request is
      * accepted and the two bits are dropped, exactly as Linux does. */
-    t->sig_blocked &= ~((1ull << VIBEOS_SIGKILL) | (1ull << VIBEOS_SIGSTOP));
+    t->id.sig_blocked &= ~((1ull << VIBEOS_SIGKILL) | (1ull << VIBEOS_SIGSTOP));
     return 0;
 }
 
@@ -323,7 +323,7 @@ static long hw_sys_rt_sigreturn(vibeos_x86_64_isr_frame_t *frame) {
     }
     {
         vibeos_x86_64_isr_frame_t restored = sf->frame;
-        t->sig_blocked = sf->blocked;
+        t->id.sig_blocked = sf->blocked;
         /* Only user state is restored, and the segment selectors are forced
          * back to the user ones: the frame is in memory the program can write,
          * so nothing read out of it may decide privilege. */

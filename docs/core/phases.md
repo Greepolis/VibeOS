@@ -473,6 +473,12 @@ cli`) so it can service the shootdown IPI; the spin holds no lock, so a timer
 there is a safe preemption, and `g_current_task` is per-CPU so identity
 survives it. Interrupts are restored to the caller's state on acquire.
 
+**Step 1 (2026-09-21): the identity is `vibeos_task_t`.** Seventeen fields of "who a
+task is" left `hw_task_t` for a portable, host-tested type with one reset; the
+descriptors and the rest of the done-condition below are still open (arch_hw.c names
+identity on 92 lines, ratcheted by `check-task-identity.py`). See
+`implementation_progress/core_c5_task_identity.md`.
+
 Still open:
 
 - **mprotect's page-table race with fork.** mprotect still releases the lock
