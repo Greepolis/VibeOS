@@ -94,14 +94,24 @@ against names renamed in the same change and never run - now run and red).
   The registry refuses a descriptor that names an argument the call does not have.
 - `hw_user_range_ok` has **one call site** (`linux_user_ok`, dispatch.c); it was 46.
   `check-chokepoints.py` reports 4 for it (definition, two declarations, that call)
-  and watches `linux_user_ok` at 16, where the old "a syscall stopped checking"
+  and watches `linux_user_ok` at 15, where the old "a syscall stopped checking"
   alarm lives now.
-- **What stays in the handlers (13 sites), and why it cannot be a descriptor:**
-  an iovec element's own base (read out of user memory a moment earlier), readlink's
-  length (the link target's), clone's stack and the two tid words and wait's status
-  word (stores that are skipped silently, not refused), futex (answers EINVAL, not
-  EFAULT), the signal frame and sigreturn (a rsp, not an argument), and the kernel's
-  own reads of user memory (a string, the crash dump).
+- **What stays in the handlers (12 sites), and why each is not a descriptor.** Each was
+  weighed for moving; futex was the one that could, and did (a descriptor can carry its
+  own error and a mask on the argument that selects it). The rest:
+  - *an iovec element's own base (2):* the descriptor would validate the array up
+    front and the handler would read it again later; a sibling thread can change or
+    unmap it in between (H-020). The check has to be next to the use, so it stays.
+  - *readlink's length (1):* it is min(buffer, link target), known only after the
+    lookup. Declaring the whole buffer would answer EFAULT to a call Linux allows.
+  - *clone's stack (1):* it is thread-creation policy with a diagnostic line, at an
+    offset from the argument (`child_stack - 8`), only when the flags ask for a thread.
+  - *clone's two tid words and wait's status word (3):* optional stores that are
+    skipped silently when invalid, not refused. A descriptor refuses; these must not.
+  - *the signal frame and sigreturn (2):* a stack pointer taken from the trapframe,
+    not from an argument.
+  - *the kernel's own reads (3):* a user string, the crash dump's two probes. No
+    syscall names them.
 - **Error precedence changed, deliberately, and this is the price.** A call that has a
   bad pointer *and* another error now reports EFAULT where the handler used to report
   the other one first: read on a bad fd with a bad buffer (was EBADF), getdents on a

@@ -64,7 +64,7 @@ CHOKEPOINTS = {
         "that is the criterion C4 was written to reach. A second call is a "
         "handler that decided for itself what a valid pointer is."),
     "linux_user_ok": (
-        16,   # definition, the descriptor engine's call, one declaration, and 13 that cannot be descriptors
+        15,   # definition, the engine's call, one declaration, and 12 that cannot be descriptors
         "who asks the dispatcher to judge a user pointer. **This is where the old "
         "'a syscall that stopped checking' alarm lives now.** The pointer arguments of "
         "every syscall are declared in its row (PTRS) and checked by the engine in "

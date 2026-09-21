@@ -99,6 +99,8 @@
 #define IN_VEC(a, la, scale, cp) PTR_(a, 0, (la) + 1, scale, cp, 0, 0)
 #define OUT_IF(wa, wv, a, n)   PTR_(a, VIBEOS_PTR_WRITE, 0, n, 0, (wa) + 1, wv)
 #define IN_IF(wa, wv, a, n)    PTR_(a, 0, 0, n, 0, (wa) + 1, wv)
+/* Applies when (argument wa & mask) == wv, and refuses with `e` instead of EFAULT. */
+#define IN_IFM_ERR(wa, mask, wv, a, n, e)     { (uint8_t)(a), (uint8_t)(VIBEOS_PTR_LIVE), 0, (uint8_t)((wa) + 1),       (uint32_t)(n), 0, (uint64_t)(wv), (uint64_t)(mask), (uint32_t)(e) }
 #define PTRS(...)              { __VA_ARGS__ }
 #define NOPTR                  { { 0 } }
 

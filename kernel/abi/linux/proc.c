@@ -1389,8 +1389,8 @@ static long hw_futex_wait(uint64_t addr, uint32_t expected) {
     uint32_t cur = 0;
     int me = g_current_task;
 
-    if (me < 0 || addr == 0u || !linux_user_ok(addr, 4u, 0)) {
-        return -VIBEOS_EINVAL;
+    if (me < 0 || addr == 0u) {
+        return -VIBEOS_EINVAL;   /* the address is the row's: IN_IFM_ERR, EINVAL */
     }
 
     hw_spin_lock_named(&g_futex_lock, __func__);
@@ -1628,7 +1628,7 @@ static long linux_sys_clone(const vibeos_call_t *c) {
     X(157, prctl,            PRCTL,           PTRS(IN_IF(0, PR_SET_NAME, 1, 16), OUT_IF(0, PR_GET_NAME, 1, 16)), hw_sys_prctl(ARG(0), ARG(1))) \
     X(158, arch_prctl,       ARCH_PRCTL,      PTRS(OUT_IF(0, ARCH_GET_FS, 1, 8)), hw_sys_arch_prctl(ARG(0), ARG(1))) \
     X(186, gettid,           GETTID,          NOPTR, linux_sys_gettid()) \
-    X(202, futex,            FUTEX,           NOPTR, hw_sys_futex(ARG(0), ARG(1), ARG(2))) \
+    X(202, futex,            FUTEX,           PTRS(IN_IFM_ERR(1, FUTEX_CMD_MASK, FUTEX_WAIT, 0, 4, VIBEOS_EINVAL)), hw_sys_futex(ARG(0), ARG(1), ARG(2))) \
     X(218, set_tid_address,  SET_TID_ADDRESS, NOPTR, linux_sys_set_tid_address(ARG(0))) \
     X(231, exit_group,       EXIT_GROUP,      NOPTR, linux_sys_exit_group(ARG(0))) \
     X(273, set_robust_list,  SET_ROBUST_LIST, NOPTR, 0) \

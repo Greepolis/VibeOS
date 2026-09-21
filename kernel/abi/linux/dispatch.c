@@ -56,8 +56,14 @@ static long check_pointers(const vibeos_row_t *row, const vibeos_call_t *call) {
         if (!(d->flags & VIBEOS_PTR_LIVE)) {
             continue;
         }
-        if (d->when_arg && call->a[d->when_arg - 1u] != d->when_val) {
-            continue;
+        if (d->when_arg) {
+            uint64_t v = call->a[d->when_arg - 1u];
+            if (d->when_mask) {
+                v &= d->when_mask;
+            }
+            if (v != d->when_val) {
+                continue;
+            }
         }
         if ((d->flags & VIBEOS_PTR_OPT) && call->a[d->arg] == 0u) {
             continue;
@@ -72,7 +78,7 @@ static long check_pointers(const vibeos_row_t *row, const vibeos_call_t *call) {
             len = d->len;
         }
         if (!linux_user_ok(call->a[d->arg], len, (d->flags & VIBEOS_PTR_WRITE) ? 1 : 0)) {
-            return -VIBEOS_EFAULT;
+            return d->err ? -(long)d->err : -VIBEOS_EFAULT;
         }
     }
     return 0;

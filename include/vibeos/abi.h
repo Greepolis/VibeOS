@@ -154,7 +154,12 @@ typedef long (*vibeos_handler_t)(const vibeos_call_t *call);
  *             its own error, which is not EFAULT.
  *   when_arg  1-based index of an argument that must equal when_val for this
  *             descriptor to apply (0: always) - a request code that decides
- *             whether arg is a pointer at all (ioctl, prctl, netctl).
+ *             whether arg is a pointer at all (ioctl, prctl, netctl). When when_mask
+ *             is non-zero the argument is masked first: futex's operation carries
+ *             flag bits beside the command.
+ *   err       the error a refused range answers, as a positive errno; 0 is EFAULT.
+ *             futex(WAIT) answers EINVAL for a bad address, and a descriptor that
+ *             could only say EFAULT would have changed what a program is told.
  *
  * What a descriptor cannot say stays in the handler and asks linux_user_ok: a
  * range whose length is read out of user memory (an iovec's own base), one that
@@ -173,6 +178,8 @@ typedef struct vibeos_ptr {
     uint32_t len;
     uint32_t cap;
     uint64_t when_val;
+    uint64_t when_mask;
+    uint32_t err;
 } vibeos_ptr_t;
 
 typedef struct vibeos_row {
