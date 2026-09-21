@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "vibeos/account.h"
 #include "vibeos/task.h"
 
 int test_task(void);
@@ -125,6 +126,36 @@ int test_task(void) {
     /* ---- out of range is refused, not counted as a defect ---------------- */
     if (!expect(vibeos_task_transition(SLOTS, VIBEOS_TASK_SETUP, "bad") != 0,
                 "a slot outside the table was accepted")) { goto fail; }
+
+    /* ---- the tick a task became runnable: stamped by the transition ------------- */
+    vibeos_task_stats_reset();
+    if (vibeos_task_table_init(SLOTS) != 0 || vibeos_account_init(SLOTS, 1u) != 0) { goto fail; }
+    vibeos_account_tick(0, 0, 1);
+    vibeos_account_tick(0, 0, 1);
+    vibeos_account_tick(0, 0, 1);   /* three ticks have been seen */
+    if (vibeos_task_transition(1, VIBEOS_TASK_SETUP, "alloc") != 0) { goto fail; }
+    if (!expect(vibeos_task_ready_at(1) == 0u, "a slot still being set up has no ready time")) { goto fail; }
+    if (vibeos_task_transition(1, VIBEOS_TASK_READY, "spawn") != 0) { goto fail; }
+    if (!expect(vibeos_task_ready_at(1) == 3u,
+                "becoming READY stamps the tick (a path that forgot to would read as no wait)")) { goto fail; }
+    vibeos_account_tick(0, 0, 1);
+    if (vibeos_task_transition(1, VIBEOS_TASK_RUNNING, "sched") != 0) { goto fail; }
+    if (!expect(vibeos_task_ready_at(1) == 3u, "running does not restamp it: the wait is measured to the pick")) { goto fail; }
+    if (vibeos_task_transition(1, VIBEOS_TASK_READY, "preempt") != 0) { goto fail; }
+    if (!expect(vibeos_task_ready_at(1) == 4u, "each return to READY stamps again")) { goto fail; }
+    if (!expect(vibeos_task_ready_at(SLOTS) == 0u, "a slot outside the table has no ready time")) { goto fail; }
+
+    /* ---- has it ever run: true once per tenancy ---------------------------------- */
+    if (!expect(vibeos_task_first_run(1) == 1, "the first ask says yes")) { goto fail; }
+    if (!expect(vibeos_task_first_run(1) == 0, "the second says no")) { goto fail; }
+    if (vibeos_task_transition(1, VIBEOS_TASK_RUNNING, "sched") != 0 ||
+        vibeos_task_transition(1, VIBEOS_TASK_ZOMBIE, "exit") != 0 ||
+        vibeos_task_transition(1, VIBEOS_TASK_FREE, "reap") != 0 ||
+        vibeos_task_transition(1, VIBEOS_TASK_SETUP, "alloc") != 0) { goto fail; }
+    if (!expect(vibeos_task_first_run(1) == 1,
+                "a new tenancy has not run: a recycled slot must not inherit the last one's answer")) { goto fail; }
+    if (!expect(vibeos_task_ready_at(1) == 0u, "and has no ready time of the last tenant's")) { goto fail; }
+    if (!expect(vibeos_task_first_run(SLOTS) == 0, "a slot outside the table has not run")) { goto fail; }
 
     return 0;
 

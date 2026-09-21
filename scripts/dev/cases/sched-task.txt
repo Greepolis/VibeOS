@@ -23,10 +23,14 @@
 --- old
     if (from == VIBEOS_TASK_FREE && to == VIBEOS_TASK_SETUP) {
         g_generation[slot]++;
+        g_ran[slot] = 0;
+        g_ready_at[slot] = 0;
     }
 +++ new
     if (from == VIBEOS_TASK_ZOMBIE && to == VIBEOS_TASK_FREE) {
         g_generation[slot]++;
+        g_ran[slot] = 0;
+        g_ready_at[slot] = 0;
     }
 
 ### a reference to a released slot is accepted at the right generation

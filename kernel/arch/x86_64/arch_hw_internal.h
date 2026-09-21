@@ -206,20 +206,11 @@ typedef struct {
      * switch, an address space and a descriptor table need. */
     vibeos_task_t id;
 
-    /* Whether this task has ever been scheduled. One branch per context
-     * switch, and it answered the question that moved the thread
-     * investigation furthest: a thread that is created but never runs and a
-     * thread that runs and exits immediately look identical from outside. */
-    uint8_t ran_once;
-
     /* The syscall ABI this task speaks, bound when the slot is allocated and
      * never looked up per call (C4). Set in hw_task_alloc, which every way of
      * making a task passes through, so a fork or a thread inherits nothing by
      * accident and gets exactly what a new process gets. */
     const struct vibeos_abi *abi;
-    /* Written from interrupt/syscall context (preemption, task exit) and read
-     * by the kernel task, so it must not be cached across a wait loop. */
-    volatile int state;
     /* Set while some CPU is executing this task, cleared only once its
      * context has been saved. A waker on another core can flip state to
      * READY while the task is still running here; without this flag a
@@ -233,11 +224,6 @@ typedef struct {
      * every switch: leaving the previous task's value loaded would let one
      * program read and write another's thread-local state. */
     uint64_t fs_base;
-    /* The tick at which this task last became runnable. Half of "how long did
-     * it wait"; the other half is recorded when it is picked. Zero means
-     * unknown, which the accounting reads as no wait rather than as a wait
-     * since boot - the difference between a fresh task and a starved one. */
-    uint64_t ready_at;
     uint64_t kstack_base;  /* for reclamation on exit */
     uint32_t kstack_pages;
     /* Open files: the table (fd 3 up) and what 0, 1 and 2 are redirected to.
@@ -262,6 +248,18 @@ typedef struct {
 /* ---- what the lifted files may reach back for ---------------------------- */
 
 extern hw_task_t g_tasks[];
+
+/* A task's state is the task layer's (include/vibeos/task.h), not a field of this
+ * structure: there used to be a copy here and a second opinion is how two cores once
+ * ran one task. These are the two ways to ask - by slot, and by the pointer most
+ * callers hold. */
+static inline vibeos_task_state_t hw_slot_state(int slot) {
+    return vibeos_task_state((uint32_t)slot);
+}
+
+static inline vibeos_task_state_t hw_task_state(const hw_task_t *t) {
+    return vibeos_task_state((uint32_t)(t - g_tasks));
+}
 extern vibeos_inet_t g_net;
 extern hw_lock_t g_net_lock;
 extern int g_net_up;

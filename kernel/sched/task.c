@@ -5,10 +5,16 @@
  */
 
 #include "vibeos/task.h"
+#include "vibeos/account.h"
 
 #define VIBEOS_TASK_MAX_SLOTS 64u
 
-static uint8_t g_state[VIBEOS_TASK_MAX_SLOTS];
+/* volatile: read by other cores while a transition writes it, and the one copy of the
+ * truth - the architecture used to keep a second, and two opinions about what READY
+ * means is how two cores once ran one task. */
+static volatile uint8_t g_state[VIBEOS_TASK_MAX_SLOTS];
+static uint64_t g_ready_at[VIBEOS_TASK_MAX_SLOTS];
+static volatile uint8_t g_ran[VIBEOS_TASK_MAX_SLOTS];
 static uint32_t g_generation[VIBEOS_TASK_MAX_SLOTS];
 static const char *g_why[VIBEOS_TASK_MAX_SLOTS];
 static uint32_t g_slots;
@@ -77,6 +83,8 @@ int vibeos_task_table_init(uint32_t slots) {
     g_slots = slots;
     for (i = 0; i < slots; i++) {
         g_state[i] = (uint8_t)VIBEOS_TASK_FREE;
+        g_ready_at[i] = 0;
+        g_ran[i] = 0;
         g_generation[i] = 0;
         g_why[i] = "init";
     }
@@ -88,6 +96,18 @@ vibeos_task_state_t vibeos_task_state(uint32_t slot) {
         return VIBEOS_TASK_FREE;
     }
     return (vibeos_task_state_t)g_state[slot];
+}
+
+uint64_t vibeos_task_ready_at(uint32_t slot) {
+    return (slot < g_slots) ? g_ready_at[slot] : 0u;
+}
+
+int vibeos_task_first_run(uint32_t slot) {
+    if (slot >= g_slots) {
+        return 0;
+    }
+    /* Atomic: two cores can both see the task the moment it first runs. */
+    return __sync_lock_test_and_set(&g_ran[slot], 1u) == 0u;
 }
 
 uint32_t vibeos_task_generation(uint32_t slot) {
@@ -125,6 +145,11 @@ int vibeos_task_transition(uint32_t slot, vibeos_task_state_t to,
      * generation exists to catch. */
     if (from == VIBEOS_TASK_FREE && to == VIBEOS_TASK_SETUP) {
         g_generation[slot]++;
+        g_ran[slot] = 0;
+        g_ready_at[slot] = 0;
+    }
+    if (to == VIBEOS_TASK_READY) {
+        g_ready_at[slot] = vibeos_account_ticks();
     }
 
     g_state[slot] = (uint8_t)to;

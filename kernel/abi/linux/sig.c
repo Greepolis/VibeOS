@@ -79,8 +79,8 @@ static long hw_sys_kill(uint64_t target_pid, uint64_t sig) {
         int i;
         hw_spin_lock_named(&g_sched_lock, __func__);
         for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
-            if (g_tasks[i].id.is_user && g_tasks[i].state != HW_TASK_FREE &&
-                g_tasks[i].state != HW_TASK_RESERVED &&
+            if (g_tasks[i].id.is_user && hw_slot_state(i) != HW_TASK_FREE &&
+                hw_slot_state(i) != HW_TASK_RESERVED &&
                 g_tasks[i].id.pgid == group && g_tasks[i].id.sid == g_tasks[g_current_task].id.sid) {
                 if (hw_signal_raise(i, (uint32_t)sig) == 0) {
                     delivered++;

@@ -207,7 +207,7 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
      * fails to hold, two owners fill one slot and the loser's half-written
      * task is what gets scheduled - which is exactly the shape of the wedge
      * this is hunting. Saying so out loud beats inferring it from wreckage. */
-    if (child->alloc_seq != my_tenancy || child->state != HW_TASK_RESERVED) {
+    if (child->alloc_seq != my_tenancy || hw_task_state(child) != HW_TASK_RESERVED) {
         /* One line, one critical section: puts and print_hex each take the console lock on their own. */
         vibeos_x86_64_serial_lock();
         vibeos_x86_64_serial_puts("[SCHED] fork lost its slot: idx=0x");
@@ -217,7 +217,7 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
         vibeos_x86_64_serial_puts(" now=0x");
         vibeos_x86_64_serial_print_hex((uint64_t)child->alloc_seq);
         vibeos_x86_64_serial_puts(" state=0x");
-        vibeos_x86_64_serial_print_hex((uint64_t)child->state);
+        vibeos_x86_64_serial_print_hex((uint64_t)hw_task_state(child));
         vibeos_x86_64_serial_puts("\n");
         vibeos_x86_64_serial_unlock();
         hw_panic("two owners filled one task slot");
@@ -358,7 +358,7 @@ static long hw_sys_clone_thread(const vibeos_x86_64_isr_frame_t *frame,
         (void)vibeos_uaccess_copy((void *)(uintptr_t)ctid, &v, sizeof(v));
     }
 
-    if (child->alloc_seq != my_tenancy || child->state != HW_TASK_RESERVED) {
+    if (child->alloc_seq != my_tenancy || hw_task_state(child) != HW_TASK_RESERVED) {
         hw_panic("two owners filled one task slot");
     }
     (void)hw_task_set_state((int)(child - g_tasks), HW_TASK_READY, __func__);
@@ -404,13 +404,13 @@ static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr,
         hw_spin_lock_named(&g_sched_lock, __func__);
         for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
             hw_task_t *t = &g_tasks[i];
-            if (t->id.ppid != mypid || t->state == HW_TASK_FREE) {
+            if (t->id.ppid != mypid || hw_task_state(t) == HW_TASK_FREE) {
                 continue;
             }
             if (want_pid != (uint64_t)-1 && t->id.tgid != (uint32_t)want_pid) {
                 continue;
             }
-            if (t->state == HW_TASK_ZOMBIE) {
+            if (hw_task_state(t) == HW_TASK_ZOMBIE) {
                 uint32_t child_pid = t->id.tgid;
                 uint64_t code = t->id.exit_code;
                 uint32_t exit_signal = t->id.exit_signal;
@@ -917,8 +917,8 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
         for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
             if (i != me && g_tasks[i].id.is_user && g_tasks[i].id.tgid == tgid &&
                 g_tasks[i].id.pid == tgid &&
-                g_tasks[i].state != HW_TASK_FREE &&
-                g_tasks[i].state != HW_TASK_ZOMBIE) {
+                hw_slot_state(i) != HW_TASK_FREE &&
+                hw_slot_state(i) != HW_TASK_ZOMBIE) {
                 g_tasks[i].id.is_thread = 1;
             }
         }
@@ -931,9 +931,9 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
          * report nothing. */
         for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
             if (i != me && g_tasks[i].id.is_user && g_tasks[i].id.tgid == tgid &&
-                g_tasks[i].state != HW_TASK_FREE &&
-                g_tasks[i].state != HW_TASK_RESERVED &&
-                g_tasks[i].state != HW_TASK_ZOMBIE) {
+                hw_slot_state(i) != HW_TASK_FREE &&
+                hw_slot_state(i) != HW_TASK_RESERVED &&
+                hw_slot_state(i) != HW_TASK_ZOMBIE) {
                 (void)hw_signal_raise(i, VIBEOS_SIGKILL);
             }
         }
@@ -949,10 +949,10 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
             hw_spin_lock_named(&g_sched_lock, __func__);
             for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
                 if (i == me || !g_tasks[i].id.is_user || g_tasks[i].id.tgid != tgid ||
-                    g_tasks[i].state == HW_TASK_FREE) {
+                    hw_slot_state(i) == HW_TASK_FREE) {
                     continue;
                 }
-                if (g_tasks[i].state == HW_TASK_ZOMBIE && g_tasks[i].id.pid == tgid) {
+                if (hw_slot_state(i) == HW_TASK_ZOMBIE && g_tasks[i].id.pid == tgid) {
                     /* A leader that exited before this exec. Its id is the one
                      * this task is about to take, so the slot cannot stay: a
                      * parent reaping it afterwards would see the process end
@@ -1205,8 +1205,8 @@ static long hw_sys_setsid(void) {
     current->id.pgid = current->id.tgid;
     for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
         if (i != g_current_task && g_tasks[i].id.is_user &&
-            g_tasks[i].state != HW_TASK_FREE &&
-            g_tasks[i].state != HW_TASK_RESERVED &&
+            hw_slot_state(i) != HW_TASK_FREE &&
+            hw_slot_state(i) != HW_TASK_RESERVED &&
             g_tasks[i].id.tgid == current->id.tgid) {
             g_tasks[i].id.sid = current->id.sid;
             g_tasks[i].id.pgid = current->id.pgid;
@@ -1412,7 +1412,7 @@ static long hw_futex_wait(uint64_t addr, uint32_t expected) {
              * which case nothing made it runnable again. It is running now;
              * say so, the same transition hw_signal_raise uses. */
             hw_spin_lock_named(&g_sched_lock, __func__);
-            if (g_tasks[me].state == HW_TASK_BLOCKED) {
+            if (hw_slot_state(me) == HW_TASK_BLOCKED) {
                 (void)hw_task_set_state(me, HW_TASK_READY, __func__);
                 HW_TASK_MARK(me, ready_by, "futex_wait_interrupted");
             }

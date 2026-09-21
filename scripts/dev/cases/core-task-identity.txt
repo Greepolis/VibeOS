@@ -20,3 +20,10 @@
 +++ new
     vibeos_task_t id;
     hw_fd_t fds[4];
+
+### hw_task_t keeps its own copy of the task state
+--- old
+    vibeos_task_t id;
++++ new
+    vibeos_task_t id;
+    volatile int state;

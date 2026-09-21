@@ -473,7 +473,7 @@ cli`) so it can service the shootdown IPI; the spin holds no lock, so a timer
 there is a safe preemption, and `g_current_task` is per-CPU so identity
 survives it. Interrupts are restored to the caller's state on acquire.
 
-**Step 1 and 2 (2026-09-21): the identity is `vibeos_task_t`, the descriptors are `vibeos_fdtable_t`.** Seventeen fields of "who a
+**Steps 1-4 (2026-09-21): the identity is `vibeos_task_t`, the descriptors `vibeos_fdtable_t`, pipes a module, the state the task layer's alone.** Seventeen fields of "who a
 task is" left `hw_task_t` for a portable, host-tested type with one reset; the
 descriptors and the rest of the done-condition below are still open (arch_hw.c names
 identity on 92 lines, ratcheted by `check-task-identity.py`). See

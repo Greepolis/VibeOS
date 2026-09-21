@@ -1,0 +1,31 @@
+# C5: the task layer owns "has it run" and "when did it become runnable"
+# (kernel/sched/task.c), proved by the host test.
+#
+#  1. a new tenancy inherits the last one's "has run": a recycled slot's first
+#     schedule is never noticed, which is the blind spot that cost a session on the
+#     thread investigation;
+#  2. becoming READY does not stamp the tick: the wait accounting reads it as no wait,
+#     and a starved task looks like a fresh one;
+#  3. "has run" is not once per tenancy: the first-schedule line is printed every time.
+#
+# Target source: kernel/sched/task.c
+# Run: python3 scripts/dev/sabotage.py kernel/sched/task.c scripts/dev/cases/sched-task-state.txt build-clang-Release
+
+### a new tenancy keeps the previous one's answer to "has it run"
+--- old
+        g_ran[slot] = 0;
+        g_ready_at[slot] = 0;
++++ new
+        g_ready_at[slot] = 0;
+
+### becoming READY does not record the tick
+--- old
+        g_ready_at[slot] = vibeos_account_ticks();
++++ new
+        g_ready_at[slot] = 0;
+
+### "has it run" answers yes every time
+--- old
+    return __sync_lock_test_and_set(&g_ran[slot], 1u) == 0u;
++++ new
+    return 1;

@@ -73,6 +73,19 @@ vibeos_task_ref_t vibeos_task_ref(uint32_t slot);
  * should not. */
 int vibeos_task_ref_valid(vibeos_task_ref_t ref);
 
+/* The tick at which this slot last became READY - half of "how long did it wait"; the
+ * other half is recorded when it is picked. Stamped by the transition itself, so no
+ * path that makes a task runnable can forget to. Zero means unknown, which the
+ * accounting reads as no wait rather than as a wait since boot: the difference between
+ * a fresh task and a starved one. */
+uint64_t vibeos_task_ready_at(uint32_t slot);
+
+/* True exactly once per tenancy: the first time it is asked for a slot. One branch
+ * per context switch, and it answered the question that moved the thread investigation
+ * furthest - a thread that is created but never runs and one that runs and exits
+ * immediately look identical from outside. A new tenancy starts unrun. */
+int vibeos_task_first_run(uint32_t slot);
+
 /* Who last changed this slot's state. */
 const char *vibeos_task_last_why(uint32_t slot);
 

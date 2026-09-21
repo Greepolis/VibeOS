@@ -79,6 +79,10 @@ def main():
         bad.append("arch_hw.c reaches into task identity on %d lines, DOWN from the ratchet %d - "
                    "lower ARCH_IDENTITY_LINES in the same commit" % (lines, ARCH_IDENTITY_LINES))
 
+    for f in ("state", "ready_at", "ran_once"):
+        if re.search(r"\b%s\b\s*;" % f, body):
+            bad.append("hw_task_t declares `%s` again - it is the task layer's (task.h): "
+                       "a second copy is a second opinion about what a task is doing" % f)
     for f in ("fds", "std_redirect"):
         if re.search(r"\b%s\b\s*(\[[^\]]*\])?\s*;" % f, body):
             bad.append("hw_task_t declares `%s` again - descriptors are vibeos_fdtable_t's (fdtable.h)" % f)
