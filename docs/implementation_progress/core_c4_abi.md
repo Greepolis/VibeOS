@@ -110,6 +110,12 @@ against names renamed in the same change and never run - now run and red).
   ioctl cases for descriptors above 2. Linux itself mostly reports EBADF first; no
   program here depends on the order and the boot's ABI self-test passes, but it is a
   behaviour change and is recorded as one.
+- **Decision (2026-09-21): EFAULT-first stays; Linux's EBADF-first is not reproduced.**
+  Doing it would make the engine look up file descriptors - a filesystem dependency
+  (the console's fd < 3, sockets) inside the one generic place - and would make every
+  future row declare which check precedes its pointer. That is permanent surface for
+  an order nothing here depends on. It is reversible: the choice lives only in
+  `check_pointers` and in this note. Revisit if a real program relies on the order.
 - **The engine is gated for the first time.** The ring-3 program writes from a kernel
   address and prints a line only if it was refused; nothing asserted that line until
   now, so an engine that validated nothing would have booted green. The gate has
