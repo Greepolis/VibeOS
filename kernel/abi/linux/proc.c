@@ -75,7 +75,7 @@ static int hw_exec_cache_hit(const char *path) {
 
 /* fork(): duplicate the calling task, address space and all. The child resumes
  * at the same instruction with a 0 return value. */
-long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
+static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
     hw_task_t *parent;
     hw_task_t *child;
     int idx;
@@ -274,7 +274,7 @@ long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
  * the same trick fork uses - so the C library's clone wrapper sees a return of
  * 0 in the child and the tid in the parent, and branches on that.
  */
-long hw_sys_clone_thread(const vibeos_x86_64_isr_frame_t *frame,
+static long hw_sys_clone_thread(const vibeos_x86_64_isr_frame_t *frame,
                                 uint64_t flags, uint64_t child_stack,
                                 uint64_t ptid, uint64_t ctid, uint64_t tls) {
     hw_task_t *parent;
@@ -431,7 +431,7 @@ long hw_sys_clone_thread(const vibeos_x86_64_isr_frame_t *frame,
  * scheduler stops running it) until a child exit wakes it, instead of spinning.
  * The check-and-block is done under cli so a child exit cannot slip in between
  * (lost wakeup); `sti; hlt` then parks the task with interrupts enabled. */
-long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr,
+static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr,
                            uint64_t options) {
     uint32_t mypid;
 
@@ -711,7 +711,7 @@ static long hw_copy_user_argv(uint64_t uvec, hw_argv_t *out) {
     return (long)count;
 }
 
-long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
+static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
                           uint64_t argv_uptr, uint64_t envp_uptr) {
     char path[128];
     hw_proc_t np;
@@ -1182,7 +1182,7 @@ long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
 /* prctl(): the process name is the operation programs actually use, and it is
  * stored rather than acknowledged - it costs sixteen bytes and makes the
  * scheduler's log say which program a pid is. */
-long hw_sys_prctl(uint64_t op, uint64_t arg) {
+static long hw_sys_prctl(uint64_t op, uint64_t arg) {
     hw_task_t *t;
     uint32_t i;
 
@@ -1221,7 +1221,7 @@ long hw_sys_prctl(uint64_t op, uint64_t arg) {
     return -VIBEOS_EINVAL;
 }
 
-long hw_sys_setpgid(uint64_t requested_pid, uint64_t requested_pgid) {
+static long hw_sys_setpgid(uint64_t requested_pid, uint64_t requested_pgid) {
     uint32_t pid;
     int target;
     int leader_slot;
@@ -1256,7 +1256,7 @@ long hw_sys_setpgid(uint64_t requested_pid, uint64_t requested_pgid) {
     return r;
 }
 
-long hw_sys_setsid(void) {
+static long hw_sys_setsid(void) {
     int i;
     hw_task_t *current;
     if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
@@ -1288,7 +1288,7 @@ long hw_sys_setsid(void) {
     return (long)current->tgid;
 }
 
-long hw_sys_getsid(uint64_t requested_pid) {
+static long hw_sys_getsid(uint64_t requested_pid) {
     int target;
     uint32_t pid;
     long r;
@@ -1307,7 +1307,7 @@ long hw_sys_getsid(uint64_t requested_pid) {
 
 /* setuid()/setgid(): there is one identity and it is root. Becoming it again
  * succeeds; becoming anyone else is refused rather than pretended. */
-long hw_sys_setresid(uint64_t id) {
+static long hw_sys_setresid(uint64_t id) {
     return (id == 0u) ? 0 : -VIBEOS_EPERM;
 }
 
@@ -1317,7 +1317,7 @@ long hw_sys_setresid(uint64_t id) {
  * stack-protector cookie, the locale pointer. The base of that segment lives
  * in a model-specific register, so setting it is privileged and a program
  * cannot do it itself. Until this works, a libc faults on its first line. */
-long hw_sys_arch_prctl(uint64_t code, uint64_t addr) {
+static long hw_sys_arch_prctl(uint64_t code, uint64_t addr) {
     hw_task_t *t;
 
     if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
@@ -1366,7 +1366,7 @@ long hw_sys_arch_prctl(uint64_t code, uint64_t addr) {
 
 /* prlimit64(): report the limits that are real here. The stack is the one a
  * runtime acts on - some size a guard region from it. */
-long hw_sys_prlimit64(uint64_t resource, uint64_t new_uptr, uint64_t old_uptr) {
+static long hw_sys_prlimit64(uint64_t resource, uint64_t new_uptr, uint64_t old_uptr) {
     if (new_uptr != 0u) {
         return -VIBEOS_EPERM;   /* the limits here are fixed by the layout */
     }
@@ -1505,7 +1505,7 @@ static long hw_futex_wait(uint64_t addr, uint32_t expected) {
     return 0;
 }
 
-long hw_sys_futex(uint64_t addr, uint64_t op, uint64_t val) {
+static long hw_sys_futex(uint64_t addr, uint64_t op, uint64_t val) {
     switch (op & FUTEX_CMD_MASK) {
         case FUTEX_WAKE:
             return hw_futex_wake(g_current_task >= 0 ? g_tasks[g_current_task].ps : 0,
@@ -1521,3 +1521,131 @@ long hw_sys_futex(uint64_t addr, uint64_t op, uint64_t val) {
             return -VIBEOS_ENOSYS;
     }
 }
+
+/* ---- the calls that were a few lines inside the dispatcher --------------------
+ *
+ * They are functions now so that a row can name them like any other handler. */
+
+/* The thread group, not the thread. Every thread of a program gets the same
+ * answer here, which is the whole point of the distinction: getpid() names the
+ * process. */
+static long linux_sys_getpid(void) {
+    return (g_current_task >= 0) ? (long)g_tasks[g_current_task].tgid : 1;
+}
+
+/* The thread id proper. Equal to getpid() for a single-threaded program, which is
+ * what Linux reports too, and different for every thread of a program that has
+ * several. */
+static long linux_sys_gettid(void) {
+    return (g_current_task >= 0) ? (long)g_tasks[g_current_task].pid : 1;
+}
+
+static long linux_sys_getppid(void) {
+    return (g_current_task >= 0) ? (long)g_tasks[g_current_task].ppid : 0;
+}
+
+static long linux_sys_getpgrp(void) {
+    return (g_current_task >= 0 && g_tasks[g_current_task].is_user) ?
+        (long)g_tasks[g_current_task].pgid : -VIBEOS_EINVAL;
+}
+
+/* Where to write zero and wake when this thread exits. A joiner sleeps on that
+ * word, so recording it is half of what makes pthread_join return; the other half
+ * is exit doing the writing. */
+static long linux_sys_set_tid_address(uint64_t addr) {
+    if (g_current_task >= 0) {
+        g_tasks[g_current_task].clear_child_tid = addr;
+        return (long)g_tasks[g_current_task].pid;
+    }
+    return 1;
+}
+
+/* Give up the rest of this slice honestly: hlt parks the CPU until the next timer
+ * interrupt, which is where the switch happens. */
+static long linux_sys_yield(void) {
+    __asm__ __volatile__("sti; hlt");
+    return 0;
+}
+
+static long linux_sys_exit(uint64_t code) {
+    hw_task_exit(code);   /* retires this task and switches away; no return */
+    return 0;
+}
+
+static long linux_sys_exit_group(uint64_t code) {
+    hw_task_exit_group(code);   /* the whole process; no return */
+    return 0;
+}
+
+/* A C library does not call fork(); it calls clone() with the flags that happen to
+ * mean fork - a new address space, a new process, SIGCHLD to the parent. Sharing
+ * the address space *and* being a thread is a thread; a private address space is a
+ * process. The other two combinations are refused rather than approximated: a
+ * thread with a private address space, or a vfork-like sharing without being a
+ * thread, would be something that only looks like what it claims to be. */
+static long linux_sys_clone(const vibeos_call_t *c) {
+    uint64_t flags = ARG(0);
+
+    if ((flags & CLONE_THREAD) != 0u) {
+        if ((flags & CLONE_VM) == 0u) {
+            return -VIBEOS_ENOSYS;
+        }
+        return hw_sys_clone_thread(FRAME, ARG(0), ARG(1), ARG(2), ARG(3), ARG(4));
+    }
+    if ((flags & CLONE_VM) != 0u) {
+        return -VIBEOS_ENOSYS;   /* vfork-like sharing: not supported */
+    }
+    return hw_sys_fork(FRAME);
+}
+
+/* ---- the syscalls this file implements ---------------------------------------
+ *
+ * Notes that belong to a row rather than to a handler:
+ *   vfork    a real vfork shares the parent's address space until exec; a private
+ *            fork keeps the observable contract without a parent that a
+ *            still-running child can modify. ash uses it for the short child->exec
+ *            path, and it is bound by the same exec/exit ABI as vfork's supported
+ *            use in this personality.
+ *   clone    the op says THREAD_CREATE because that is the one that needs the most
+ *            checks; a clone that means fork takes the fork path inside.
+ *   uids     everything runs as the one identity this system has.
+ *   rseq     an optimisation with a mandatory fallback: ENOSYS makes the libc take
+ *            the fallback, where claiming success would make it run a fast path
+ *            this kernel does not implement.
+ *   getrandom  there is no entropy source yet, and predictable bytes from the
+ *            syscall a program uses for keys are worse than refusing: ENOSYS is
+ *            visible, weak randomness is not.
+ *   set_robust_list  walked only when a thread dies holding a robust mutex; no
+ *            such thing exists here, so there is nothing to walk. */
+#define LINUX_PROC_SYSCALLS(X) \
+    X(24,  sched_yield,      YIELD,           linux_sys_yield()) \
+    X(39,  getpid,           GETPID,          linux_sys_getpid()) \
+    X(56,  clone,            THREAD_CREATE,   linux_sys_clone(c)) \
+    X(57,  fork,             FORK,            hw_sys_fork(FRAME)) \
+    X(58,  vfork,            FORK,            hw_sys_fork(FRAME)) \
+    X(59,  execve,           EXEC,            hw_sys_execve(FRAME, ARG(0), ARG(1), ARG(2))) \
+    X(60,  exit,             EXIT,            linux_sys_exit(ARG(0))) \
+    X(61,  wait4,            WAIT,            hw_sys_waitpid(ARG(0), ARG(1), ARG(2))) \
+    X(102, getuid,           IDENTITY_GET,    0) \
+    X(104, getgid,           IDENTITY_GET,    0) \
+    X(105, setuid,           IDENTITY_SET,    hw_sys_setresid(ARG(0))) \
+    X(106, setgid,           IDENTITY_SET,    hw_sys_setresid(ARG(0))) \
+    X(107, geteuid,          IDENTITY_GET,    0) \
+    X(108, getegid,          IDENTITY_GET,    0) \
+    X(109, setpgid,          SETPGID,         hw_sys_setpgid(ARG(0), ARG(1))) \
+    X(110, getppid,          GETPPID,         linux_sys_getppid()) \
+    X(111, getpgrp,          GETPGRP,         linux_sys_getpgrp()) \
+    X(112, setsid,           SETSID,          hw_sys_setsid()) \
+    X(124, getsid,           GETSID,          hw_sys_getsid(ARG(0))) \
+    X(157, prctl,            PRCTL,           hw_sys_prctl(ARG(0), ARG(1))) \
+    X(158, arch_prctl,       ARCH_PRCTL,      hw_sys_arch_prctl(ARG(0), ARG(1))) \
+    X(186, gettid,           GETTID,          linux_sys_gettid()) \
+    X(202, futex,            FUTEX,           hw_sys_futex(ARG(0), ARG(1), ARG(2))) \
+    X(218, set_tid_address,  SET_TID_ADDRESS, linux_sys_set_tid_address(ARG(0))) \
+    X(231, exit_group,       EXIT_GROUP,      linux_sys_exit_group(ARG(0))) \
+    X(273, set_robust_list,  SET_ROBUST_LIST, 0) \
+    X(302, prlimit64,        PRLIMIT,         hw_sys_prlimit64(ARG(1), ARG(2), ARG(3))) \
+    X(318, getrandom,        GETRANDOM,       -VIBEOS_ENOSYS) \
+    X(334, rseq,             RSEQ,            -VIBEOS_ENOSYS)
+
+LINUX_DEFINE_SYSCALLS(proc, LINUX_PROC_SYSCALLS)

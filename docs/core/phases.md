@@ -360,15 +360,17 @@ enumeration names it; declare a check that is not run; run one that is not
 declared; add a second ABI and confirm no check was duplicated; look the ABI up
 per call and confirm the perf ratchet fires.
 
-**Status (2026-09-19): stages 1 and 3 done; stage 2 (the dispatcher runs the
-checks, handlers register rows) is next.** Stage 1 is the vocabulary, the
+**Status (2026-09-21): stages 1, 3 and 2a done (handlers register rows in their
+own files; "add a syscall" is 2 files, down from 6); 2b (the dispatcher runs the
+pointer checks) is open.** Stage 1 is the vocabulary, the
 declarations and their enforcement; stage 3 moved about 4,000 lines out of
 `arch_hw.c` into `kernel/abi/linux/` (12,174 to about 7,800), cut by reference
 graph rather than by line range, with the details in
 `docs/implementation_progress/core_c4_abi.md`. Stage 3 was done before stage 2 on
 purpose - see the reversal below - and it moved two metrics: "input device" went
 4 to 5 (the handlers named the keyboard directly; fixed with a two-function
-console seam) and "add a syscall" is a deliberate **6** until stage 2 lands.
+console seam) and "add a syscall" was a deliberate **6** until stage 2a landed
+(now **2**).
 
 *What exists now.* `include/vibeos/abi.h` declares each operation once, with its
 checks, in an X-macro list (enum, names and check table cannot drift, and a line

@@ -54,66 +54,42 @@
 #include "vibeos/lifetime.h"
 #include "vibeos/vfs.h"
 
+/* ---- declaring a syscall ------------------------------------------------------
+ *
+ * A syscall is one line in a list at the bottom of the file that holds its handler:
+ *
+ *     X(0, read, READ, hw_sys_read(ARG(0), ARG(1), ARG(2)))
+ *
+ * the Linux number, a name, the kernel operation (declared, with its checks, in
+ * include/vibeos/abi.h) and the call that runs it. ARG(i) is the i-th argument in
+ * the order the ABI passes them - rdi, rsi, rdx, r10, r8, r9 - and FRAME is the
+ * trapframe for the calls that need it. Writing the marshalling out in the row
+ * is the point: which register becomes which parameter is right there, and is
+ * what a reader checks against the manual.
+ *
+ * LINUX_DEFINE_SYSCALLS turns the list into an adapter per row and the table of
+ * rows the dispatcher registers. Adding a syscall to an existing file is therefore
+ * a line in abi.h and a line here. */
+#define ARG(i) (c->a[(i)])
+#define FRAME ((vibeos_x86_64_isr_frame_t *)c->frame)
+
+#define LINUX_ADAPTER(nr, name, op, expr) \
+    static long linux_h_##name(const vibeos_call_t *c) { (void)c; return (long)(expr); }
+#define LINUX_ROW(nr, name, op, expr) { (nr), #name, VIBEOS_OP_##op, linux_h_##name },
+#define LINUX_DEFINE_SYSCALLS(topic, LIST) \
+    LIST(LINUX_ADAPTER) \
+    const vibeos_row_t linux_##topic##_rows[] = { LIST(LINUX_ROW) }; \
+    const uint32_t linux_##topic##_row_count = \
+        (uint32_t)(sizeof(linux_##topic##_rows) / sizeof(linux_##topic##_rows[0]));
+
 #define VIBEOS_ARG_INT(v)  ((int)(uint32_t)(v))
 
 extern char g_exec_cached[128];
 extern long g_exec_cached_len;
 extern uint32_t g_exec_cached_id;
 void hw_exec_cache_drop(void);
-long hw_sys_pipe2(uint64_t fds_uptr, uint64_t flags);
-long hw_sys_dup2(uint64_t oldfd, uint64_t newfd);
-long hw_sys_write(uint64_t fd, uint64_t buf, uint64_t len);
-long hw_sys_read(uint64_t fd, uint64_t buf, uint64_t len);
-long hw_sys_open(uint64_t path_uptr, uint64_t flags);
-long hw_sys_close(uint64_t fd);
-long hw_sys_lseek(uint64_t fd, uint64_t off, uint64_t whence);
-long hw_sys_getdents64(uint64_t fd, uint64_t buf, uint64_t len);
-long hw_sys_unlink(uint64_t path_uptr);
-long hw_sys_mkdir(uint64_t path_uptr);
 void hw_mm_lock(hw_procstate_t *ps);
 void hw_mm_unlock(hw_procstate_t *ps);
-long hw_sys_brk(uint64_t addr);
-long hw_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot,
-                        uint64_t flags, uint64_t fd);
-long hw_sys_mprotect(uint64_t addr, uint64_t len, uint64_t prot);
-long hw_sys_munmap(uint64_t addr, uint64_t len);
-long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame);
-long hw_sys_clone_thread(const vibeos_x86_64_isr_frame_t *frame,
-                                uint64_t flags, uint64_t child_stack,
-                                uint64_t ptid, uint64_t ctid, uint64_t tls);
-long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr,
-                           uint64_t options);
-long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
-                          uint64_t argv_uptr, uint64_t envp_uptr);
-long hw_sys_fstat(uint64_t fd, uint64_t ubuf);
-long hw_sys_newfstatat(uint64_t dirfd, uint64_t path_uptr, uint64_t ubuf,
-                              uint64_t flags);
-long hw_sys_openat(uint64_t dirfd, uint64_t path_uptr, uint64_t flags);
-long hw_sys_getcwd(uint64_t ubuf, uint64_t size);
-long hw_sys_readlinkat(uint64_t dirfd, uint64_t path_uptr, uint64_t ubuf,
-                              uint64_t bufsz);
-long hw_sys_prctl(uint64_t op, uint64_t arg);
-long hw_sys_pageinfo(uint64_t va, uint64_t out_uptr);
-long hw_sys_kill(uint64_t target_pid, uint64_t sig);
-long hw_sys_setpgid(uint64_t requested_pid, uint64_t requested_pgid);
-long hw_sys_setsid(void);
-long hw_sys_getsid(uint64_t requested_pid);
-long hw_sys_tkill(uint64_t target_tid, uint64_t sig);
-long hw_sys_tgkill(uint64_t target_tgid, uint64_t target_tid,
-                          uint64_t sig);
-long hw_sys_rt_sigaction(uint64_t sig, uint64_t act_uptr, uint64_t old_uptr);
-long hw_sys_rt_sigprocmask(uint64_t how, uint64_t set_uptr, uint64_t old_uptr);
-long hw_sys_setresid(uint64_t id);
-long hw_sys_arch_prctl(uint64_t code, uint64_t addr);
-long hw_sys_ioctl(uint64_t fd, uint64_t req, uint64_t arg);
-long hw_sys_writev(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt);
-long hw_sys_readv(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt);
-long hw_sys_uname(uint64_t buf);
-long hw_sys_clock_gettime(uint64_t clk, uint64_t ts_uptr);
-long hw_sys_time(uint64_t tptr);
-long hw_sys_prlimit64(uint64_t resource, uint64_t new_uptr, uint64_t old_uptr);
-long hw_sys_futex(uint64_t addr, uint64_t op, uint64_t val);
-long hw_sys_rt_sigreturn(vibeos_x86_64_isr_frame_t *frame);
 long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
                                  uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3);
 

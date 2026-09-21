@@ -218,7 +218,7 @@ static long hw_pipe_write(hw_fd_t *f, uint64_t buf, uint64_t len) {
 }
 
 /* pipe2(): two descriptors onto one buffer, read end first. */
-long hw_sys_pipe2(uint64_t fds_uptr, uint64_t flags) {
+static long hw_sys_pipe2(uint64_t fds_uptr, uint64_t flags) {
     hw_task_t *t;
     int slot = -1, rfd = -1, wfd = -1;
     int i;
@@ -306,7 +306,7 @@ long hw_sys_pipe2(uint64_t fds_uptr, uint64_t flags) {
  * without the program knowing. Only descriptors 0, 1 and 2 can be targets
  * here: the console is not an entry in the table, so redirecting one means
  * remembering that the entry now stands in for it. */
-long hw_sys_dup2(uint64_t oldfd, uint64_t newfd) {
+static long hw_sys_dup2(uint64_t oldfd, uint64_t newfd) {
     hw_task_t *t;
     hw_fd_t *src;
 
@@ -360,7 +360,7 @@ long hw_sys_dup2(uint64_t oldfd, uint64_t newfd) {
     return (long)newfd;
 }
 
-long hw_sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
+static long hw_sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
     const char *p = (const char *)(uintptr_t)buf;
     uint64_t i;
 
@@ -493,7 +493,7 @@ long hw_sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
 /* read(0, ...): blocking keyboard read. Returns after at least one character;
  * blocks (BLOCKED + wait_input) until the keyboard IRQ enqueues input and wakes
  * us. The cli window makes the check-and-block race-free against the IRQ. */
-long hw_sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
+static long hw_sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
     uint8_t *dst = (uint8_t *)(uintptr_t)buf;
 
     if (len == 0u) {
@@ -606,7 +606,7 @@ long hw_sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
 
 /* open(path, flags): resolve a file (or directory) and take an fd. With a write
  * flag the file is created/truncated on close from the buffered bytes. */
-long hw_sys_open(uint64_t path_uptr, uint64_t flags) {
+static long hw_sys_open(uint64_t path_uptr, uint64_t flags) {
     char path[64];
     hw_task_t *t;
     int i, k;
@@ -675,7 +675,7 @@ long hw_sys_open(uint64_t path_uptr, uint64_t flags) {
 
 
 /* close(fd): commit buffered writes to the filesystem and release the slot. */
-long hw_sys_close(uint64_t fd) {
+static long hw_sys_close(uint64_t fd) {
     hw_fd_t *f = hw_fd_get(fd);
     long rc = 0;
 
@@ -717,7 +717,7 @@ long hw_sys_close(uint64_t fd) {
     return rc;
 }
 
-long hw_sys_lseek(uint64_t fd, uint64_t off, uint64_t whence) {
+static long hw_sys_lseek(uint64_t fd, uint64_t off, uint64_t whence) {
     hw_fd_t *f = hw_fd_get(fd);
     uint64_t base;
 
@@ -731,7 +731,7 @@ long hw_sys_lseek(uint64_t fd, uint64_t off, uint64_t whence) {
 
 /* getdents64(fd, buf, len): fill Linux dirent64 records from the directory the
  * fd was opened on, so user space can list a directory. */
-long hw_sys_getdents64(uint64_t fd, uint64_t buf, uint64_t len) {
+static long hw_sys_getdents64(uint64_t fd, uint64_t buf, uint64_t len) {
     hw_fd_t *f = hw_fd_get(fd);
     uint8_t *out = (uint8_t *)(uintptr_t)buf;
     uint64_t used = 0;
@@ -791,7 +791,7 @@ long hw_sys_getdents64(uint64_t fd, uint64_t buf, uint64_t len) {
 }
 
 /* unlink(path) / mkdir(path): filesystem mutations from user space. */
-long hw_sys_unlink(uint64_t path_uptr) {
+static long hw_sys_unlink(uint64_t path_uptr) {
     char path[64];
     if (hw_copy_user_string(path_uptr, path, sizeof(path)) != 0) {
         return -VIBEOS_EFAULT;
@@ -799,7 +799,7 @@ long hw_sys_unlink(uint64_t path_uptr) {
     return (vibeos_fs_unlink(&g_rootfs, path) == 0) ? 0 : -VIBEOS_ENOENT;
 }
 
-long hw_sys_mkdir(uint64_t path_uptr) {
+static long hw_sys_mkdir(uint64_t path_uptr) {
     char path[64];
     if (hw_copy_user_string(path_uptr, path, sizeof(path)) != 0) {
         return -VIBEOS_EFAULT;
@@ -858,7 +858,7 @@ static long hw_write_stat(uint64_t ubuf, uint32_t mode, uint64_t size, uint64_t 
     return 0;
 }
 
-long hw_sys_fstat(uint64_t fd, uint64_t ubuf) {
+static long hw_sys_fstat(uint64_t fd, uint64_t ubuf) {
     hw_fd_t *f;
 
     if (fd < 3u) {
@@ -883,7 +883,7 @@ long hw_sys_fstat(uint64_t fd, uint64_t ubuf) {
 /* newfstatat(dirfd, path, buf, flags): stat by name, or by fd when the path is
  * empty and AT_EMPTY_PATH is set. Relative paths resolve against the volume
  * root, which is the only directory there is. */
-long hw_sys_newfstatat(uint64_t dirfd, uint64_t path_uptr, uint64_t ubuf,
+static long hw_sys_newfstatat(uint64_t dirfd, uint64_t path_uptr, uint64_t ubuf,
                               uint64_t flags) {
     char path[64];
     uint32_t cluster = 0;
@@ -926,7 +926,7 @@ long hw_sys_newfstatat(uint64_t dirfd, uint64_t path_uptr, uint64_t ubuf,
 
 /* openat(): the modern spelling of open. Only AT_FDCWD is accepted, because a
  * directory fd would have to mean something and here it cannot. */
-long hw_sys_openat(uint64_t dirfd, uint64_t path_uptr, uint64_t flags) {
+static long hw_sys_openat(uint64_t dirfd, uint64_t path_uptr, uint64_t flags) {
     if (VIBEOS_ARG_INT(dirfd) != AT_FDCWD) {
         return -VIBEOS_ENOSYS;
     }
@@ -935,7 +935,7 @@ long hw_sys_openat(uint64_t dirfd, uint64_t path_uptr, uint64_t flags) {
 
 /* getcwd(): there is one directory. Saying so is accurate; inventing a path
  * would make a program build filenames that do not resolve. */
-long hw_sys_getcwd(uint64_t ubuf, uint64_t size) {
+static long hw_sys_getcwd(uint64_t ubuf, uint64_t size) {
     if (size < 2u) {
         return -VIBEOS_ERANGE;
     }
@@ -959,7 +959,7 @@ long hw_sys_getcwd(uint64_t ubuf, uint64_t size) {
  * find itself, and it is answered from what execve was actually given rather
  * than from a made-up path. Everything else is not a link, which is what
  * EINVAL means. */
-long hw_sys_readlinkat(uint64_t dirfd, uint64_t path_uptr, uint64_t ubuf,
+static long hw_sys_readlinkat(uint64_t dirfd, uint64_t path_uptr, uint64_t ubuf,
                               uint64_t bufsz) {
     char path[64];
     const char *self;
@@ -1002,7 +1002,7 @@ long hw_sys_readlinkat(uint64_t dirfd, uint64_t path_uptr, uint64_t ubuf,
 /* ioctl(): there is no terminal device here. ENOTTY is not a shortcut, it is
  * the truthful answer - and it is the answer a libc uses to decide that
  * stdout is a file or a pipe and should be block buffered. */
-long hw_sys_ioctl(uint64_t fd, uint64_t req, uint64_t arg) {
+static long hw_sys_ioctl(uint64_t fd, uint64_t req, uint64_t arg) {
     if (fd >= 3u && !hw_fd_get(fd)) {
         return -VIBEOS_EBADF;
     }
@@ -1046,7 +1046,7 @@ typedef struct {
     uint64_t len;
 } hw_iovec_t;
 
-long hw_sys_writev(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt) {
+static long hw_sys_writev(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt) {
     long total = 0;
     uint64_t i;
 
@@ -1081,7 +1081,7 @@ long hw_sys_writev(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt) {
     return total;
 }
 
-long hw_sys_readv(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt) {
+static long hw_sys_readv(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt) {
     long total = 0;
     uint64_t i;
 
@@ -1113,3 +1113,52 @@ long hw_sys_readv(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt) {
     }
     return total;
 }
+
+/* dup() is dup2() onto the lowest free descriptor. */
+static long linux_sys_dup(uint64_t oldfd) {
+    hw_task_t *dt;
+    int i;
+
+    if (g_current_task < 0) {
+        return -VIBEOS_EINVAL;
+    }
+    dt = &g_tasks[g_current_task];
+    for (i = 0; i < VIBEOS_HW_MAX_FDS; i++) {
+        if (!dt->fds[i].used) {
+            return hw_sys_dup2(oldfd, (uint64_t)(3 + i));
+        }
+    }
+    return -VIBEOS_EMFILE;
+}
+
+/* ---- the syscalls this file implements ---------------------------------------
+ *
+ *   sendfile  every caller has to cope with it failing, and does: a read-and-write
+ *             loop is the documented fallback. Refusing is therefore free, while
+ *             serving it would mean a second copy of the file and console paths
+ *             purely to move bytes between kernel buffers.
+ *   pipe      is pipe2 with no flags. */
+#define LINUX_FS_SYSCALLS(X) \
+    X(0,   read,       READ,        hw_sys_read(ARG(0), ARG(1), ARG(2))) \
+    X(1,   write,      WRITE,       hw_sys_write(ARG(0), ARG(1), ARG(2))) \
+    X(2,   open,       OPEN,        hw_sys_open(ARG(0), ARG(1))) \
+    X(3,   close,      CLOSE,       hw_sys_close(ARG(0))) \
+    X(5,   fstat,      FSTAT,       hw_sys_fstat(ARG(0), ARG(1))) \
+    X(8,   lseek,      LSEEK,       hw_sys_lseek(ARG(0), ARG(1), ARG(2))) \
+    X(16,  ioctl,      IOCTL,       hw_sys_ioctl(ARG(0), ARG(1), ARG(2))) \
+    X(19,  readv,      READV,       hw_sys_readv(ARG(0), ARG(1), ARG(2))) \
+    X(20,  writev,     WRITEV,      hw_sys_writev(ARG(0), ARG(1), ARG(2))) \
+    X(22,  pipe,       PIPE,        hw_sys_pipe2(ARG(0), 0)) \
+    X(32,  dup,        DUP,         linux_sys_dup(ARG(0))) \
+    X(33,  dup2,       DUP2,        hw_sys_dup2(ARG(0), ARG(1))) \
+    X(40,  sendfile,   SENDFILE,    -VIBEOS_ENOSYS) \
+    X(79,  getcwd,     GETCWD,      hw_sys_getcwd(ARG(0), ARG(1))) \
+    X(83,  mkdir,      MKDIR,       hw_sys_mkdir(ARG(0))) \
+    X(87,  unlink,     UNLINK,      hw_sys_unlink(ARG(0))) \
+    X(217, getdents64, GETDENTS,    hw_sys_getdents64(ARG(0), ARG(1), ARG(2))) \
+    X(257, openat,     OPEN_AT,     hw_sys_openat(ARG(0), ARG(1), ARG(2))) \
+    X(262, newfstatat, STAT_AT,     hw_sys_newfstatat(ARG(0), ARG(1), ARG(2), ARG(3))) \
+    X(267, readlinkat, READLINK_AT, hw_sys_readlinkat(ARG(0), ARG(1), ARG(2), ARG(3))) \
+    X(293, pipe2,      PIPE2,       hw_sys_pipe2(ARG(0), ARG(1)))
+
+LINUX_DEFINE_SYSCALLS(fs, LINUX_FS_SYSCALLS)

@@ -1,23 +1,38 @@
-# C4: the syscall vocabulary (abi.c) and the Linux translator (abi_linux.c).
+# C4: the Linux registry (kernel/abi/abi_linux.c), proven by breaking it.
 #
-# The properties are held by test_abi_vocabulary_and_linux in the host suite:
-# every id declared with a name and checks, names unique, every Linux number
-# lands on a declared id or on NONE, aliases (fork/vfork, the uid family) and the
-# clone() flag decision. scripts/dev/check-syscall-checks.py holds the
-# *declarations* against the code in both directions; its sabotage cases are in
-# core-syscall.txt.
+# The properties are held by test_abi_vocabulary_and_linux in the host suite: a
+# number claimed twice - inside one table or across two - is refused and leaves the
+# registry untouched; a row with no handler is refused; and a declared operation
+# with no row is named by vibeos_abi_linux_missing. The rows of the *real* tables
+# are held by check-syscall-checks.py, whose sabotage cases are in core-syscall.txt.
 #
 # Target source: kernel/abi/abi_linux.c
-# Run: SABOTAGE_VERIFY="<host test run>" python3 scripts/dev/sabotage.py kernel/abi/abi_linux.c scripts/dev/cases/abi-abi_linux.txt
+# Run: python3 scripts/dev/sabotage.py kernel/abi/abi_linux.c scripts/dev/cases/abi-abi_linux.txt build-clang-Release
 
-### clone with a private address space and a thread flag is no longer refused
+### a number claimed by an earlier table is accepted
 --- old
-            return ((a1 & CLONE_VM) != 0u) ? VIBEOS_OP_THREAD_CREATE : VIBEOS_OP_NONE;
+        if (find_row(rows[i].nr)) {
+            return -1;
+        }
 +++ new
-            return VIBEOS_OP_THREAD_CREATE;
 
-### vfork stops meaning fork
+### a number claimed twice inside one table is accepted
 --- old
-    [LSYS_vfork] = (uint8_t)VIBEOS_OP_FORK,
+        for (j = 0; j < i; j++) {
+            if (rows[j].nr == rows[i].nr) {
+                return -1;
+            }
+        }
 +++ new
-    [LSYS_vfork] = (uint8_t)VIBEOS_OP_NONE,
+
+### a row with no handler is accepted
+--- old
+        if (!rows[i].handler || (uint32_t)rows[i].op >= (uint32_t)VIBEOS_OP_COUNT ||
++++ new
+        if ((uint32_t)rows[i].op >= (uint32_t)VIBEOS_OP_COUNT ||
+
+### an operation implemented by a row is not counted as implemented
+--- old
+        g_rows_for_op[rows[i].op]++;
++++ new
+        (void)g_rows_for_op;

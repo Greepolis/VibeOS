@@ -1,0 +1,85 @@
+# Linux x86-64 syscall numbers this kernel implements, and the names they carry.
+#
+# The authority for check-syscall-checks.py: every row in kernel/abi/linux/*.c must
+# carry the number its name has here. A typo in a row's number is a *different
+# syscall*, and nothing else in the tree would notice - the handler compiles, the
+# table registers, and a program calling the right number gets ENOSYS.
+#
+# The numbers are from arch/x86/entry/syscalls/syscall_64.tbl, not from memory. The
+# two at 1000 and above are VibeOS's own, outside the Linux number space on purpose,
+# so they can never collide with a real syscall implemented later.
+#
+# Adding a syscall means adding its line here as well as its row: two independent
+# statements of the same number, checked against each other.
+0 read
+1 write
+2 open
+3 close
+5 fstat
+8 lseek
+9 mmap
+10 mprotect
+11 munmap
+12 brk
+13 rt_sigaction
+14 rt_sigprocmask
+15 rt_sigreturn
+16 ioctl
+19 readv
+20 writev
+22 pipe
+24 sched_yield
+32 dup
+33 dup2
+39 getpid
+40 sendfile
+41 socket
+42 connect
+43 accept
+44 sendto
+45 recvfrom
+49 bind
+50 listen
+56 clone
+57 fork
+58 vfork
+59 execve
+60 exit
+61 wait4
+62 kill
+63 uname
+79 getcwd
+83 mkdir
+87 unlink
+102 getuid
+104 getgid
+105 setuid
+106 setgid
+107 geteuid
+108 getegid
+109 setpgid
+110 getppid
+111 getpgrp
+112 setsid
+124 getsid
+157 prctl
+158 arch_prctl
+186 gettid
+200 tkill
+201 time
+202 futex
+217 getdents64
+218 set_tid_address
+228 clock_gettime
+231 exit_group
+234 tgkill
+257 openat
+262 newfstatat
+267 readlinkat
+273 set_robust_list
+293 pipe2
+302 prlimit64
+318 getrandom
+334 rseq
+1000 netctl
+1001 pageinfo

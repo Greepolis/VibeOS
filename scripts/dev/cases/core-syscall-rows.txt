@@ -1,0 +1,44 @@
+# C4 stage 2: the syscall rows, held by check-syscall-checks.py.
+#
+# A syscall is one line - number, name, operation, call - in the file that holds its
+# handler. The rows are architecture code, built only into the kernel image, so the
+# host suite cannot register them; check-syscall-checks.py reads them against
+# scripts/dev/linux-syscall-numbers.txt and against abi.h's declarations. These cases
+# are the proof that each thing it says it checks can fail.
+#
+#  1. a row with the wrong number: a *different syscall* - it compiles, it
+#     registers, and a program calling the right number gets ENOSYS;
+#  2. a number claimed by two rows: the ABI would be ambiguous (the registry refuses
+#     it at boot as well);
+#  3. an implemented syscall whose row is gone: listed in the numbers file, declared
+#     in abi.h, and no row runs it;
+#  4. a row whose call stops validating anything: the operation declares
+#     USER_MEMORY and nothing reachable from its call runs the check.
+#
+# Target source: kernel/abi/linux/proc.c
+# Run: SABOTAGE_VERIFY="python3 scripts/dev/check-syscall-checks.py" python3 scripts/dev/sabotage.py kernel/abi/linux/proc.c scripts/dev/cases/core-syscall-rows.txt
+
+### sched_yield is given the number of a neighbouring call
+--- old
+    X(24,  sched_yield,      YIELD,           linux_sys_yield()) \
++++ new
+    X(25,  sched_yield,      YIELD,           linux_sys_yield()) \
+
+### vfork claims fork's number
+--- old
+    X(58,  vfork,            FORK,            hw_sys_fork(FRAME)) \
++++ new
+    X(57,  vfork,            FORK,            hw_sys_fork(FRAME)) \
+
+### the last row is deleted although the syscall is listed as implemented
+--- old
+    X(318, getrandom,        GETRANDOM,       -VIBEOS_ENOSYS) \
+    X(334, rseq,             RSEQ,            -VIBEOS_ENOSYS)
++++ new
+    X(318, getrandom,        GETRANDOM,       -VIBEOS_ENOSYS)
+
+### execve's row no longer calls anything that validates user memory
+--- old
+    X(59,  execve,           EXEC,            hw_sys_execve(FRAME, ARG(0), ARG(1), ARG(2))) \
++++ new
+    X(59,  execve,           EXEC,            -VIBEOS_ENOSYS) \

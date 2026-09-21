@@ -349,14 +349,6 @@ hw_fd_t *hw_fd_get(uint64_t fd);
 
 /* ---- the socket syscalls, now in linux_socket.c -------------------------- */
 
-long hw_sys_socket(uint64_t domain, uint64_t type);
-long hw_sys_bind(uint64_t fd, uint64_t addr_uptr);
-long hw_sys_listen(uint64_t fd);
-long hw_sys_connect(uint64_t fd, uint64_t addr_uptr);
-long hw_sys_accept(uint64_t fd, uint64_t addr_uptr);
-long hw_sys_sendto(uint64_t fd, uint64_t buf, uint64_t len, uint64_t addr_uptr);
-long hw_sys_recvfrom(uint64_t fd, uint64_t buf, uint64_t len, uint64_t addr_uptr);
-long hw_sys_netctl(uint64_t op, uint64_t arg);
 long hw_net_recv(hw_fd_t *f, uint64_t buf, uint64_t len);
 long hw_net_send(hw_fd_t *f, uint64_t buf, uint64_t len);
 
@@ -420,7 +412,6 @@ typedef struct {
 /* ---- signal delivery, now in linux_signal.c ------------------------------ */
 
 int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame);
-long hw_sys_rt_sigreturn(vibeos_x86_64_isr_frame_t *frame);
 
 /* What it reaches back for. hw_task_exit is here because a signal whose default
  * action is death ends the task from inside the delivery path. */
@@ -709,6 +700,7 @@ extern uint32_t g_console_foreground_pgid;
 int hw_task_alloc_for_user(const char *what);
 void hw_task_release(int i);
 void hw_keyboard_wake(void);
+void vibeos_linux_abi_init(void);      /* kernel/abi/linux/dispatch.c: register the syscall tables */
 int hw_console_getc(void);          /* next console byte, or -1 if none yet */
 void hw_console_echo(char c);        /* echo one byte to the screen */
 void hw_fpu_init_area(unsigned char *area);

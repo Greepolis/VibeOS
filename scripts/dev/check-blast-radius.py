@@ -109,22 +109,22 @@ POINTS = {
         "no registry at all - arch_hw.c names the driver directly."),
     "syscall": (
         "kernel/abi/pageinfo.c",
-        r"VIBEOS_OP_PAGEINFO|X\(PAGEINFO|LSYS_pageinfo|hw_sys_pageinfo", 6,
+        r"VIBEOS_OP_PAGEINFO|X\(PAGEINFO|hw_sys_pageinfo", 2,
         "the last operation added, as the witness (a stand-in path; only its "
         "basename and include/vibeos/pageinfo.h are excluded). abi.h declares "
-        "it and its checks, abi_linux.h holds the number, abi_linux.c maps the "
-        "number, dispatch.c has the case, mm.c has the handler and "
-        "linux_internal.h declares it to the dispatcher.\n"
-        "      **This is 6; it was 1 before C4 and 4 after stage 1, and this is "
-        "an argument, not an edit.** Stage 3 moved the handlers out of the "
-        "file the dispatcher lives in, so the case and the handler are now two "
-        "files and the handler needs a declaration between them. That is the "
-        "honest price of the cut and it is *meant* to be temporary: stage 2 "
-        "makes each handler file carry a table of {Linux number, operation, "
-        "handler} rows that the dispatcher reads, which removes dispatch.c, "
-        "linux_internal.h and abi_linux.c from the count and takes it to 2 - "
-        "the declaration in abi.h and one row beside the handler. If it is "
-        "still 6 when stage 2 is done, stage 2 failed."),
+        "the operation and its checks; the file that holds the handler carries "
+        "the row that registers it (number, name, operation, call) beside the "
+        "handler.\n"
+        "      **This is 2, and it was 1 before C4 (with no declaration at all), "
+        "4 after stage 1 and a deliberate 6 after stage 3.** Stage 2 took it "
+        "from 6 to 2 by making a syscall a *row in the file that implements it* "
+        "instead of a case in a central dispatcher plus a declaration between "
+        "the two: nothing else names it. A third edit exists that this count "
+        "cannot see because it is not kernel code - its line in "
+        "scripts/dev/linux-syscall-numbers.txt, the independent statement of the "
+        "number that check-syscall-checks.py holds every row against. That is "
+        "deliberate: the number is stated twice so that a typo cannot pass "
+        "unnoticed."),
     "input device": (
         "kernel/arch/x86_64/keyboard.c",
         r"vibeos_x86_64_keyboard_[A-Za-z0-9_]+", 4,

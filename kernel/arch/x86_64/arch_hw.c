@@ -7626,6 +7626,12 @@ static void hw_boot_stage(const char *name) {
 }
 
 void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
+    /* The Linux syscall registry, before anything that could make a syscall. It
+     * refuses a number claimed twice and an operation with no handler, so a
+     * malformed table stops the boot with the reason instead of answering some
+     * call wrongly for the life of the machine. */
+    vibeos_linux_abi_init();
+
     /* SSE on, explicitly, on this core too.
      *
      * ap_boot.S sets OSFXSR and OSXMMEXCPT for every application processor and

@@ -95,7 +95,7 @@ static long hw_sys_brk_locked(hw_proc_t *proc, hw_procstate_t *ps, uint64_t addr
     return (long)ps->brk_cur;
 }
 
-long hw_sys_brk(uint64_t addr) {
+static long hw_sys_brk(uint64_t addr) {
     hw_procstate_t *ps;
     long r;
 
@@ -244,7 +244,7 @@ static long hw_mmap_locked(hw_procstate_t *ps, hw_proc_t *proc,
     return (long)base;
 }
 
-long hw_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot,
+static long hw_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot,
                         uint64_t flags, uint64_t fd) {
     hw_proc_t *proc;
     hw_procstate_t *ps;
@@ -300,7 +300,7 @@ long hw_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot,
  * libc uses this for RELRO - it maps its relocated data writable, then takes
  * write away - and a kernel that returns success without revoking anything
  * leaves the program less protected than it believes itself to be. */
-long hw_sys_mprotect(uint64_t addr, uint64_t len, uint64_t prot) {
+static long hw_sys_mprotect(uint64_t addr, uint64_t len, uint64_t prot) {
     hw_log(VIBEOS_LOG_DEBUG, 14u, addr, len, "mprotect");
     hw_proc_t *proc;
     uint64_t va, end;
@@ -417,7 +417,7 @@ long hw_sys_mprotect(uint64_t addr, uint64_t len, uint64_t prot) {
  * The arena is a bump allocator, so the address space is not reclaimed for
  * reuse - but the pages are unmapped for real, so a use-after-unmap faults
  * here exactly as it would on Linux instead of quietly still working. */
-long hw_sys_munmap(uint64_t addr, uint64_t len) {
+static long hw_sys_munmap(uint64_t addr, uint64_t len) {
     hw_proc_t *proc;
     uint64_t va, end;
 
@@ -521,7 +521,7 @@ long hw_sys_munmap(uint64_t addr, uint64_t len) {
  * was made and then lost, or the page is private and somebody wrote it anyway.
  * Every report of the third kind has been investigated as if it might be the
  * first. */
-long hw_sys_pageinfo(uint64_t va, uint64_t out_uptr) {
+static long hw_sys_pageinfo(uint64_t va, uint64_t out_uptr) {
     vibeos_pageinfo_t info;
     uint64_t *pte;
     uint64_t entry;
@@ -594,3 +594,13 @@ long hw_sys_pageinfo(uint64_t va, uint64_t out_uptr) {
     }
     return 0;
 }
+
+/* ---- the syscalls this file implements --------------------------------------- */
+#define LINUX_MM_SYSCALLS(X) \
+    X(9,    mmap,     MAP,      hw_sys_mmap(ARG(0), ARG(1), ARG(2), ARG(3), ARG(4))) \
+    X(10,   mprotect, PROTECT,  hw_sys_mprotect(ARG(0), ARG(1), ARG(2))) \
+    X(11,   munmap,   UNMAP,    hw_sys_munmap(ARG(0), ARG(1))) \
+    X(12,   brk,      BRK,      hw_sys_brk(ARG(0))) \
+    X(1001, pageinfo, PAGEINFO, hw_sys_pageinfo(ARG(0), ARG(1)))
+
+LINUX_DEFINE_SYSCALLS(mm, LINUX_MM_SYSCALLS)

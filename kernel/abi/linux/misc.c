@@ -7,7 +7,7 @@
 
 /* uname(): six fixed 65-byte fields, in order. Programs branch on the release
  * string, so it carries a real version number rather than a placeholder. */
-long hw_sys_uname(uint64_t buf) {
+static long hw_sys_uname(uint64_t buf) {
     static const char *const fields[6] = {
         "Linux",            /* sysname: the ABI implemented here, which is    */
                             /* what the question is actually about            */
@@ -41,7 +41,7 @@ long hw_sys_uname(uint64_t buf) {
 /* clock_gettime(): derived from the timer tick, so it advances at the
  * resolution the timer really has rather than pretending to a nanosecond
  * accuracy it does not possess. */
-long hw_sys_clock_gettime(uint64_t clk, uint64_t ts_uptr) {
+static long hw_sys_clock_gettime(uint64_t clk, uint64_t ts_uptr) {
     uint64_t ticks = g_timer_ticks;
     uint64_t kts[2];
 
@@ -59,7 +59,7 @@ long hw_sys_clock_gettime(uint64_t clk, uint64_t ts_uptr) {
     return 0;
 }
 
-long hw_sys_time(uint64_t tptr) {
+static long hw_sys_time(uint64_t tptr) {
     uint64_t secs = g_timer_ticks / VIBEOS_HW_TIMER_HZ;
 
     if (tptr != 0u) {
@@ -72,3 +72,11 @@ long hw_sys_time(uint64_t tptr) {
     }
     return (long)secs;
 }
+
+/* ---- the syscalls this file implements --------------------------------------- */
+#define LINUX_MISC_SYSCALLS(X) \
+    X(63,  uname,         UNAME,         hw_sys_uname(ARG(0))) \
+    X(201, time,          TIME,          hw_sys_time(ARG(0))) \
+    X(228, clock_gettime, CLOCK_GETTIME, hw_sys_clock_gettime(ARG(0), ARG(1)))
+
+LINUX_DEFINE_SYSCALLS(misc, LINUX_MISC_SYSCALLS)

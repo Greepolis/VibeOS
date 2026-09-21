@@ -66,7 +66,7 @@ static void hw_net_wait_tick(void) {
     __asm__ __volatile__("sti; hlt" ::: "memory");
 }
 
-long hw_sys_socket(uint64_t domain, uint64_t type) {
+static long hw_sys_socket(uint64_t domain, uint64_t type) {
     hw_task_t *t;
     int fd, s;
     int kind;
@@ -106,7 +106,7 @@ long hw_sys_socket(uint64_t domain, uint64_t type) {
     return 3 + fd;
 }
 
-long hw_sys_bind(uint64_t fd, uint64_t addr_uptr) {
+static long hw_sys_bind(uint64_t fd, uint64_t addr_uptr) {
     hw_fd_t *f = hw_fd_get(fd);
     uint32_t ip;
     uint16_t port;
@@ -124,7 +124,7 @@ long hw_sys_bind(uint64_t fd, uint64_t addr_uptr) {
     return (r == 0) ? 0 : -VIBEOS_EINVAL;
 }
 
-long hw_sys_listen(uint64_t fd) {
+static long hw_sys_listen(uint64_t fd) {
     hw_fd_t *f = hw_fd_get(fd);
     int r;
 
@@ -161,7 +161,7 @@ static int hw_sock_stable(const hw_fd_t *f, int sock, uint32_t gen) {
     return sock;
 }
 
-long hw_sys_connect(uint64_t fd, uint64_t addr_uptr) {
+static long hw_sys_connect(uint64_t fd, uint64_t addr_uptr) {
     hw_fd_t *f = hw_fd_get(fd);
     uint32_t ip, gen;
     uint16_t port;
@@ -205,7 +205,7 @@ long hw_sys_connect(uint64_t fd, uint64_t addr_uptr) {
     }
 }
 
-long hw_sys_accept(uint64_t fd, uint64_t addr_uptr) {
+static long hw_sys_accept(uint64_t fd, uint64_t addr_uptr) {
     hw_fd_t *f = hw_fd_get(fd);
     hw_task_t *t;
     int child = -1;
@@ -351,7 +351,7 @@ long hw_net_send(hw_fd_t *f, uint64_t buf, uint64_t len) {
     return n;
 }
 
-long hw_sys_sendto(uint64_t fd, uint64_t buf, uint64_t len, uint64_t addr_uptr) {
+static long hw_sys_sendto(uint64_t fd, uint64_t buf, uint64_t len, uint64_t addr_uptr) {
     hw_fd_t *f = hw_fd_get(fd);
     uint32_t ip;
     uint16_t port;
@@ -391,7 +391,7 @@ long hw_sys_sendto(uint64_t fd, uint64_t buf, uint64_t len, uint64_t addr_uptr) 
  *   op 2  resolve the name at `arg`, returns the address
  *   op 3  write {tx_frames, rx_frames, rx_dropped, tcp_retransmits} as four u64
  */
-long hw_sys_netctl(uint64_t op, uint64_t arg) {
+static long hw_sys_netctl(uint64_t op, uint64_t arg) {
     uint64_t deadline;
 
     if (!g_net_up) {
@@ -476,7 +476,7 @@ long hw_sys_netctl(uint64_t op, uint64_t arg) {
     }
 }
 
-long hw_sys_recvfrom(uint64_t fd, uint64_t buf, uint64_t len, uint64_t addr_uptr) {
+static long hw_sys_recvfrom(uint64_t fd, uint64_t buf, uint64_t len, uint64_t addr_uptr) {
     hw_fd_t *f = hw_fd_get(fd);
     uint64_t deadline;
 
@@ -524,3 +524,18 @@ long hw_sys_recvfrom(uint64_t fd, uint64_t buf, uint64_t len, uint64_t addr_uptr
     }
 }
 
+/* ---- the syscalls this file implements ---------------------------------------
+ *
+ * The Linux ABI passes the 4th, 5th and 6th arguments in r10, r8 and r9, which is
+ * why sendto and recvfrom read ARG(4): the peer address is the fifth argument. */
+#define LINUX_NET_SYSCALLS(X) \
+    X(41,   socket,   SOCKET,   hw_sys_socket(ARG(0), ARG(1))) \
+    X(42,   connect,  CONNECT,  hw_sys_connect(ARG(0), ARG(1))) \
+    X(43,   accept,   ACCEPT,   hw_sys_accept(ARG(0), ARG(1))) \
+    X(44,   sendto,   SENDTO,   hw_sys_sendto(ARG(0), ARG(1), ARG(2), ARG(4))) \
+    X(45,   recvfrom, RECVFROM, hw_sys_recvfrom(ARG(0), ARG(1), ARG(2), ARG(4))) \
+    X(49,   bind,     BIND,     hw_sys_bind(ARG(0), ARG(1))) \
+    X(50,   listen,   LISTEN,   hw_sys_listen(ARG(0))) \
+    X(1000, netctl,   NETCTL,   hw_sys_netctl(ARG(0), ARG(1)))
+
+LINUX_DEFINE_SYSCALLS(net, LINUX_NET_SYSCALLS)

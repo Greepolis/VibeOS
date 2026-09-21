@@ -128,18 +128,50 @@ typedef struct vibeos_op_entry {
 /* The declaration for an id, or NULL for NONE / out of range. */
 const vibeos_op_entry_t *vibeos_op_entry(vibeos_op_id_t id);
 
-/* An ABI: how a foreign syscall number becomes the kernel's vocabulary.
- * `classify` decides which of the kernel's operations a call means; it may look at
- * the first argument, because Linux's clone() is a process or a thread by its
- * flags. Argument marshalling stays with the
- * ABI's dispatcher for now, and moves behind `marshal` when a second ABI needs
- * it, not before. */
+/* What an ABI hands a handler: the six arguments in the order the ABI passes them,
+ * and the trapframe for the few calls that need the whole register state (fork
+ * copies it, execve rewrites it, sigreturn restores it). The frame is opaque here
+ * - this header is portable - and the architecture's handlers cast it back. */
+typedef struct vibeos_call {
+    uint64_t a[6];
+    void *frame;
+} vibeos_call_t;
+
+typedef long (*vibeos_handler_t)(const vibeos_call_t *call);
+
+/* One syscall of an ABI: its number, the kernel operation it is, and the function
+ * that runs it. The row is the whole registration - there is no second place that
+ * has to be told a syscall exists - and it lives beside the handler it names. */
+typedef struct vibeos_row {
+    uint32_t nr;
+    const char *name;
+    vibeos_op_id_t op;
+    vibeos_handler_t handler;
+} vibeos_row_t;
+
+/* An ABI: how a foreign syscall number becomes a kernel operation and a handler.
+ * Bound to a task when it is created (never looked up per call), and read-only
+ * after boot. */
 typedef struct vibeos_abi {
     const char *name;
-    vibeos_op_id_t (*classify)(uint64_t nr, uint64_t a1);
+    const vibeos_row_t *(*lookup)(uint64_t nr);
 } vibeos_abi_t;
 
 /* The Linux x86-64 ABI, the first and today only translator. */
 const vibeos_abi_t *vibeos_abi_linux(void);
+
+/* The Linux registry. Tables of rows are registered once at boot, before any user
+ * task exists. Registration refuses what would make the ABI ambiguous: a number
+ * claimed twice. `vibeos_abi_linux_missing` then names the first kernel operation
+ * that has no row at all - an operation declared in abi.h that no handler
+ * implements - or VIBEOS_OP_NONE when every operation is reachable.
+ *
+ * Both are also run by the host suite against the real tables, so a declared
+ * operation with no handler fails a test rather than a boot. */
+int vibeos_abi_linux_register(const vibeos_row_t *rows, uint32_t count);
+vibeos_op_id_t vibeos_abi_linux_missing(void);
+uint32_t vibeos_abi_linux_row_count(void);
+const vibeos_row_t *vibeos_abi_linux_row(uint32_t index);
+void vibeos_abi_linux_reset(void);   /* tests only */
 
 #endif

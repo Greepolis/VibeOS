@@ -42,7 +42,7 @@ static int hw_signal_permitted(int target) {
     return g_tasks[target].sid == me->sid;
 }
 
-long hw_sys_kill(uint64_t target_pid, uint64_t sig) {
+static long hw_sys_kill(uint64_t target_pid, uint64_t sig) {
     int target;
     int delivered = 0;
     int64_t signed_pid = (int64_t)target_pid;
@@ -106,7 +106,7 @@ long hw_sys_kill(uint64_t target_pid, uint64_t sig) {
     return r;
 }
 
-long hw_sys_tkill(uint64_t target_tid, uint64_t sig) {
+static long hw_sys_tkill(uint64_t target_tid, uint64_t sig) {
     int target;
     long r;
 
@@ -143,7 +143,7 @@ long hw_sys_tkill(uint64_t target_tid, uint64_t sig) {
     return 0;
 }
 
-long hw_sys_tgkill(uint64_t target_tgid, uint64_t target_tid,
+static long hw_sys_tgkill(uint64_t target_tgid, uint64_t target_tid,
                           uint64_t sig) {
     int target;
     long r;
@@ -184,7 +184,7 @@ long hw_sys_tgkill(uint64_t target_tgid, uint64_t target_tid,
 }
 
 /* rt_sigaction(): install, or report, the disposition of one signal. */
-long hw_sys_rt_sigaction(uint64_t sig, uint64_t act_uptr, uint64_t old_uptr) {
+static long hw_sys_rt_sigaction(uint64_t sig, uint64_t act_uptr, uint64_t old_uptr) {
     hw_task_t *t;
 
     if (g_current_task < 0 || sig == 0u || sig > VIBEOS_HW_SIG_MAX) {
@@ -256,7 +256,7 @@ static uint64_t hw_sigset_to_user(uint64_t kernel_set) {
     return kernel_set >> 1;
 }
 
-long hw_sys_rt_sigprocmask(uint64_t how, uint64_t set_uptr, uint64_t old_uptr) {
+static long hw_sys_rt_sigprocmask(uint64_t how, uint64_t set_uptr, uint64_t old_uptr) {
     hw_task_t *t;
     uint64_t set = 0;
 
@@ -301,7 +301,7 @@ long hw_sys_rt_sigprocmask(uint64_t how, uint64_t set_uptr, uint64_t old_uptr) {
 }
 
 /* rt_sigreturn(): put back everything the handler interrupted. */
-long hw_sys_rt_sigreturn(vibeos_x86_64_isr_frame_t *frame) {
+static long hw_sys_rt_sigreturn(vibeos_x86_64_isr_frame_t *frame) {
     hw_task_t *t;
     const hw_sigframe_t *sf;
     hw_sigframe_t kf;
@@ -354,3 +354,20 @@ long hw_sys_rt_sigreturn(vibeos_x86_64_isr_frame_t *frame) {
     }
     return (long)frame->rax;
 }
+
+/* ---- the syscalls this file implements ---------------------------------------
+ *
+ *   tkill   raise() goes through tkill, not kill: a library raising a signal in
+ *           itself targets its own thread, and with one thread per process that is
+ *           the same destination.
+ *   tgkill  the thread named by tid, provided it still belongs to tgid - the check
+ *           that stops a recycled thread id from reaching a different process. */
+#define LINUX_SIG_SYSCALLS(X) \
+    X(13,  rt_sigaction,   SIG_ACTION,   hw_sys_rt_sigaction(ARG(0), ARG(1), ARG(2))) \
+    X(14,  rt_sigprocmask, SIG_PROCMASK, hw_sys_rt_sigprocmask(ARG(0), ARG(1), ARG(2))) \
+    X(15,  rt_sigreturn,   SIG_RETURN,   hw_sys_rt_sigreturn(FRAME)) \
+    X(62,  kill,           KILL,         hw_sys_kill(ARG(0), ARG(1))) \
+    X(200, tkill,          TKILL,        hw_sys_tkill(ARG(0), ARG(1))) \
+    X(234, tgkill,         TGKILL,       hw_sys_tgkill(ARG(0), ARG(1), ARG(2)))
+
+LINUX_DEFINE_SYSCALLS(sig, LINUX_SIG_SYSCALLS)

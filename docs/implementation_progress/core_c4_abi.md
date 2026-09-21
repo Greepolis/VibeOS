@@ -1,6 +1,6 @@
 # C4 - one operation vocabulary, and the Linux ABI leaves `arch_hw.c`
 
-Status, 2026-09-19: **stages 1 and 3 done, stage 2 next.** The plan
+Status, 2026-09-21: **stages 1, 3 and 2a done; 2b (checks hoisted into the dispatcher) open.** The plan
 (`docs/core/phases.md`) is the authority on intent; this file records what was
 built, what it measured, and what it found on the way.
 
@@ -76,11 +76,23 @@ against names renamed in the same change and never run - now run and red).
 
 ## Not done
 
-- **Stage 2:** the dispatcher does not yet call the checks - `hw_user_range_ok` is
-  still called from 46 sites inside handlers - and the handlers are still reached
-  through a central `switch`, not registered by the file that holds them. Both go
-  together: a row per syscall in its own file, carrying number, operation, handler
-  and its pointer-argument descriptors.
+- **Stage 2b:** the dispatcher does not yet call the checks - `hw_user_range_ok` is
+  still called from 46 sites inside handlers. Needs pointer-argument descriptors on
+  the rows; must not change error precedence (EFAULT vs EBADF) silently.
+
+## Stage 2a: rows registered by the file that holds the handler (2026-09-21)
+
+- Each of fs/proc/mm/sig/misc/net.c ends with an X-macro list of rows (number, name,
+  operation, call) and `LINUX_DEFINE_SYSCALLS`, which generates the adapters and the
+  table. `dispatch.c` looks the number up in the registry; the central `switch` is gone.
+- The registry (`abi_linux.c`) validates a whole table before taking it and refuses a
+  duplicate number, a NULL handler and an operation NONE or out of range.
+- **"Add a syscall" is 2 files** (abi.h and the file that holds the handler), from 6.
+  The number is stated a second time in `scripts/dev/linux-syscall-numbers.txt` on
+  purpose, and `check-syscall-checks.py` holds every row against it.
+- Sabotage: `cases/core-syscall-rows.txt` (wrong number, duplicate number, deleted row,
+  row that no longer validates memory) and four registry cases in `abi-abi_linux.txt`;
+  all red. Full check green, 3/3 boots, clang and gcc warnings 0.
 - The linkage from `linux_internal.h` to `arch_hw_internal.h` is a relative
   include. The Linux layer still reaches x86-64 objects (a task, its address
   space, its descriptor table) directly; abstracting that is the day a second
