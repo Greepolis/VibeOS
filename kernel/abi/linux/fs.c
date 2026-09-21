@@ -79,10 +79,7 @@ hw_fd_t *hw_fd_get(uint64_t fd) {
     if (g_current_task < 0 || fd < 3u || fd >= 3u + VIBEOS_HW_MAX_FDS) {
         return 0;
     }
-    {
-        hw_fd_t *f = &g_tasks[g_current_task].fds[fd - 3u];
-        return f->used ? f : 0;
-    }
+    return vibeos_fdtable_get(&g_tasks[g_current_task].files, fd);
 }
 
 /* Socket-backed descriptors are served by these (defined with the socket
@@ -248,11 +245,11 @@ static long hw_sys_pipe2(uint64_t fds_uptr, uint64_t flags) {
     }
 
     for (i = 0; i < VIBEOS_HW_MAX_FDS && (rfd < 0 || wfd < 0); i++) {
-        if (t->fds[i].used) {
+        if (t->files.fds[i].used) {
             continue;
         }
         {
-            hw_fd_t *f = &t->fds[i];
+            hw_fd_t *f = &t->files.fds[i];
             uint32_t z;
             for (z = 0; z < (uint32_t)sizeof(*f); z++) {
                 ((uint8_t *)(void *)f)[z] = 0;
@@ -273,7 +270,7 @@ static long hw_sys_pipe2(uint64_t fds_uptr, uint64_t flags) {
         g_pipes[slot].used = 0;
         hw_spin_unlock(&g_pipe_lock);
         if (rfd >= 0) {
-            t->fds[rfd - 3].used = 0;
+            t->files.fds[rfd - 3].used = 0;
         }
         return -VIBEOS_EMFILE;
     }
@@ -286,8 +283,8 @@ static long hw_sys_pipe2(uint64_t fds_uptr, uint64_t flags) {
          * already allocated, so roll them back rather than leak them (uaccess
          * follow-up to 6a94a32). */
         if (vibeos_uaccess_copy((void *)(uintptr_t)fds_uptr, kfds, sizeof(kfds)) != 0) {
-            t->fds[rfd - 3].used = 0;
-            t->fds[wfd - 3].used = 0;
+            t->files.fds[rfd - 3].used = 0;
+            t->files.fds[wfd - 3].used = 0;
             hw_spin_lock_named(&g_pipe_lock, __func__);
             g_pipes[slot].used = 0;
             hw_spin_unlock(&g_pipe_lock);
@@ -320,7 +317,7 @@ static long hw_sys_dup2(uint64_t oldfd, uint64_t newfd) {
     }
     if (newfd >= 3u) {
         hw_fd_t *dst = (newfd < 3u + VIBEOS_HW_MAX_FDS)
-                       ? &t->fds[newfd - 3u] : 0;
+                       ? &t->files.fds[newfd - 3u] : 0;
         if (!dst) {
             return -VIBEOS_EBADF;
         }
@@ -343,14 +340,14 @@ static long hw_sys_dup2(uint64_t oldfd, uint64_t newfd) {
     /* Redirecting a standard descriptor: the branch above returned for every
      * other value, so newfd is 0, 1 or 2 here and re-checking that only looks
      * like a bound. */
-    hw_pipe_release(&t->std_redirect[newfd]);
-    t->std_redirect[newfd] = *src;
-    if (t->std_redirect[newfd].pipe >= 0) {
+    hw_pipe_release(&t->files.std[newfd]);
+    t->files.std[newfd] = *src;
+    if (t->files.std[newfd].pipe >= 0) {
         hw_spin_lock_named(&g_pipe_lock, __func__);
-        if (t->std_redirect[newfd].writable) {
-            g_pipes[t->std_redirect[newfd].pipe].writers++;
+        if (t->files.std[newfd].writable) {
+            g_pipes[t->files.std[newfd].pipe].writers++;
         } else {
-            g_pipes[t->std_redirect[newfd].pipe].readers++;
+            g_pipes[t->files.std[newfd].pipe].readers++;
         }
         hw_spin_unlock(&g_pipe_lock);
     }
@@ -361,9 +358,8 @@ static long hw_sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
     const char *p = (const char *)(uintptr_t)buf;
     uint64_t i;
 
-    if (fd < 3u && g_current_task >= 0 &&
-        g_tasks[g_current_task].std_redirect[fd].used) {
-        hw_fd_t *r = &g_tasks[g_current_task].std_redirect[fd];
+    if (g_current_task >= 0 && vibeos_fdtable_redirect(&g_tasks[g_current_task].files, fd)) {
+        hw_fd_t *r = vibeos_fdtable_redirect(&g_tasks[g_current_task].files, fd);
         if (r->pipe >= 0) {
             return hw_pipe_write(r, buf, len);
         }
@@ -493,9 +489,8 @@ static long hw_sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
     if (len == 0u) {
         return 0;
     }
-    if (fd < 3u && g_current_task >= 0 &&
-        g_tasks[g_current_task].std_redirect[fd].used) {
-        hw_fd_t *r = &g_tasks[g_current_task].std_redirect[fd];
+    if (g_current_task >= 0 && vibeos_fdtable_redirect(&g_tasks[g_current_task].files, fd)) {
+        hw_fd_t *r = vibeos_fdtable_redirect(&g_tasks[g_current_task].files, fd);
         if (r->pipe >= 0) {
             return hw_pipe_read(r, buf, len);
         }
@@ -609,16 +604,12 @@ static long hw_sys_open(uint64_t path_uptr, uint64_t flags) {
         return -VIBEOS_EFAULT;
     }
     t = &g_tasks[g_current_task];
-    for (i = 0; i < VIBEOS_HW_MAX_FDS; i++) {
-        if (!t->fds[i].used) {
-            break;
-        }
-    }
-    if (i == VIBEOS_HW_MAX_FDS) {
+    i = vibeos_fdtable_free_index(&t->files);
+    if (i < 0) {
         return -VIBEOS_EMFILE;
     }
     {
-        hw_fd_t *f = &t->fds[i];
+        hw_fd_t *f = &t->files.fds[i];
         int writable = ((flags & 1u) != 0u) || ((flags & 0100u) != 0u); /* O_WRONLY|O_CREAT */
         uint32_t cluster = 0;
         uint64_t size = 0;
@@ -672,10 +663,10 @@ static long hw_sys_close(uint64_t fd) {
 
     if (fd < 3u && g_current_task >= 0) {
         /* Closing a redirected standard descriptor drops the redirection. */
-        hw_task_t *t = &g_tasks[g_current_task];
-        if (t->std_redirect[fd].used) {
-            hw_pipe_release(&t->std_redirect[fd]);
-            t->std_redirect[fd].used = 0;
+        hw_fd_t *r = vibeos_fdtable_redirect(&g_tasks[g_current_task].files, fd);
+        if (r) {
+            hw_pipe_release(r);
+            r->used = 0;
             return 0;
         }
     }
@@ -1096,6 +1087,30 @@ static long hw_sys_readv(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt) {
     return total;
 }
 
+/* A child inherits its parent's descriptors: the table is copied, and every pipe end
+ * in it gains an owner. Missing that is the other way a pipeline hangs - the reader
+ * waits for an end of file that never arrives because a count went wrong. fork and
+ * clone both did this by hand, two copies of the same twenty lines. */
+void hw_fds_inherit(hw_task_t *child, const hw_task_t *parent) {
+    uint32_t i;
+
+    /* Task slots are recycled, so the child's table is whatever the previous
+     * occupant left; it is overwritten, not added to. */
+    vibeos_fdtable_copy(&child->files, &parent->files);
+    hw_spin_lock_named(&g_pipe_lock, __func__);
+    for (i = 0; i < vibeos_fdtable_count(); i++) {
+        const hw_fd_t *cf = vibeos_fdtable_entry(&child->files, i);
+        if (cf->used && cf->pipe >= 0) {
+            if (cf->writable) {
+                g_pipes[cf->pipe].writers++;
+            } else {
+                g_pipes[cf->pipe].readers++;
+            }
+        }
+    }
+    hw_spin_unlock(&g_pipe_lock);
+}
+
 /* dup() is dup2() onto the lowest free descriptor. */
 static long linux_sys_dup(uint64_t oldfd) {
     hw_task_t *dt;
@@ -1105,12 +1120,11 @@ static long linux_sys_dup(uint64_t oldfd) {
         return -VIBEOS_EINVAL;
     }
     dt = &g_tasks[g_current_task];
-    for (i = 0; i < VIBEOS_HW_MAX_FDS; i++) {
-        if (!dt->fds[i].used) {
-            return hw_sys_dup2(oldfd, (uint64_t)(3 + i));
-        }
+    i = vibeos_fdtable_free_index(&dt->files);
+    if (i < 0) {
+        return -VIBEOS_EMFILE;
     }
-    return -VIBEOS_EMFILE;
+    return hw_sys_dup2(oldfd, (uint64_t)(VIBEOS_FD_FIRST + (uint32_t)i));
 }
 
 /* ---- the syscalls this file implements ---------------------------------------

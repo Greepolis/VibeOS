@@ -18,6 +18,7 @@
 
 #include "vibeos/arch_x86_64.h"
 #include "vibeos/task_ident.h"
+#include "vibeos/fdtable.h"
 #include "vibeos/trap.h"
 #include "vibeos/boot.h"
 #include "vibeos/mm.h"
@@ -85,7 +86,7 @@
 #define VIBEOS_EIO    5
 #define VIBEOS_ENOTDIR 20
 
-#define VIBEOS_HW_WBUF 512
+#define VIBEOS_HW_WBUF VIBEOS_FD_WBUF
 
 typedef struct vibeos_hw_aspace {
     uint64_t *pml4;
@@ -102,7 +103,7 @@ typedef struct vibeos_hw_aspace {
 #define VIBEOS_HW_NET_TIMEOUT_TICKS (VIBEOS_HW_TIMER_HZ * 10u)   /* 10 seconds */
 
 #define VIBEOS_HW_MAX_TASKS 32  /* kernel + user processes + one idle task per CPU */
-#define VIBEOS_HW_MAX_FDS 4
+#define VIBEOS_HW_MAX_FDS ((int)VIBEOS_FD_SLOTS)
 #define VIBEOS_HW_NSIG 65
 /* The pending/blocked masks are uint64_t keyed by signal number, so bit 63
  * (signal 63) is the highest that exists - bit 64 does not, and 1ull << 64
@@ -184,27 +185,9 @@ typedef struct {
     const char *volatile owner_fn;
 } hw_lock_t;
 
-typedef struct {
-    int used;
-    int writable;
-    int dirty;
-    /* Index into g_pipes, or -1. A descriptor is a pipe end when this is set;
-     * `writable` then says which end. */
-    int pipe;
-    uint32_t cluster;
-    uint64_t size;        /* 64-bit: a >4 GiB file must not wrap in fstat/lseek (M-033) */
-    uint64_t pos;
-    int net_sock;         /* index into the TCP/IP stack, or -1 for a file */
-    uint32_t dir_index;   /* for getdents64 on a directory fd */
-    /* Whether this descriptor names a directory. Determined when it is opened
-     * rather than guessed later: opendir() opens the path and then fstats the
-     * descriptor, and a descriptor that claims to be a regular file is refused
-     * with ENOTDIR no matter what stat said about the path a moment earlier. */
-    int isdir;
-    char name[24];
-    uint8_t wbuf[VIBEOS_HW_WBUF];
-    uint32_t wlen;
-} hw_fd_t;
+/* A descriptor is `vibeos_fd_t` (include/vibeos/fdtable.h); the old name stays so
+ * the ~60 places that say hw_fd_t are not rewritten for a rename. */
+typedef vibeos_fd_t hw_fd_t;
 
 typedef struct {
     vibeos_x86_64_isr_frame_t ctx;
@@ -256,12 +239,10 @@ typedef struct {
     uint64_t ready_at;
     uint64_t kstack_base;  /* for reclamation on exit */
     uint32_t kstack_pages;
-    hw_fd_t fds[VIBEOS_HW_MAX_FDS];
-    /* What descriptors 0, 1 and 2 currently mean. Unused entries mean the
-     * console, which is where they point when nothing has redirected them.
-     * Kept apart from fds[] because the console is not a table entry and a
-     * shell redirects the standard three far more often than anything else. */
-    hw_fd_t std_redirect[3];
+    /* Open files: the table (fd 3 up) and what 0, 1 and 2 are redirected to.
+     * vibeos_fdtable_t (include/vibeos/fdtable.h) owns the layout and the rules;
+     * the entries are plain data, so fork copies the table by value. */
+    vibeos_fdtable_t files;
     /* The x87/SSE register file, saved and restored across a context switch.
      *
      * Until this existed the kernel set CR4.OSFXSR, compiled thousands of XMM
@@ -301,6 +282,9 @@ int hw_user_range_ok(uint64_t base, uint64_t len, int write);
  * kernel/abi/linux/dispatch.c) - so "who validates user memory" has one answer
  * and check-chokepoints.py can count it. */
 int linux_user_ok(uint64_t base, uint64_t len, int write);
+
+/* Give a child its parent's open files (fork and clone); defined in kernel/abi/linux/fs.c. */
+void hw_fds_inherit(hw_task_t *child, const hw_task_t *parent);
 int hw_copy_user_string(uint64_t uptr, char *dst, int max);
 int hw_fd_alloc(hw_task_t *t);
 hw_fd_t *hw_fd_get(uint64_t fd);

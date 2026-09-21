@@ -4352,23 +4352,13 @@ static int hw_task_alloc_guarded(int guarded, int privileged, uint32_t parent_pi
     }
     for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
         if (g_tasks[i].state == HW_TASK_FREE) {
-            int fi;
             /* Slots are recycled, so the descriptor tables hold whatever the
              * previous occupant left. Clearing them here covers every way a
              * task comes into existence - spawn, fork, the idle tasks - which
              * is the only way to be sure none of them starts out believing a
              * stale entry. An uninitialised redirection sends a write into a
              * pipe that does not exist, and the task waits there forever. */
-            for (fi = 0; fi < VIBEOS_HW_MAX_FDS; fi++) {
-                g_tasks[i].fds[fi].used = 0;
-                g_tasks[i].fds[fi].pipe = -1;
-                g_tasks[i].fds[fi].net_sock = -1;
-            }
-            for (fi = 0; fi < 3; fi++) {
-                g_tasks[i].std_redirect[fi].used = 0;
-                g_tasks[i].std_redirect[fi].pipe = -1;
-                g_tasks[i].std_redirect[fi].net_sock = -1;
-            }
+            vibeos_fdtable_reset(&g_tasks[i].files);
             /* A recycled slot must not keep the previous tenant's address
              * space. Leaving cr3 behind is not a tidiness problem: the page it
              * names has been freed and handed back to the allocator, so a slot
@@ -5307,8 +5297,8 @@ void hw_task_exit(uint64_t code) {
             (void)vibeos_inet_release_owner_sockets(&g_net, g_tasks[dying].id.tgid);
             hw_spin_unlock(&g_net_lock);
         }
-        for (fd = 0; fd < VIBEOS_HW_MAX_FDS; fd++) {
-            hw_fd_t *f = &g_tasks[dying].fds[fd];
+        for (fd = 0; fd < (int)vibeos_fdtable_count(); fd++) {
+            hw_fd_t *f = vibeos_fdtable_entry(&g_tasks[dying].files, (uint32_t)fd);
             if (!f->used) {
                 continue;
             }
@@ -5319,16 +5309,10 @@ void hw_task_exit(uint64_t code) {
              * the reader at the other end is waiting for its writers to reach
              * zero, and a program that produced its output and exited without
              * closing is the normal case. Leaving the count high is how
-             * ls | wc -l prints nothing and hangs. */
+             * ls | wc -l prints nothing and hangs. The redirections of 0-2 are
+             * released the same way. */
             hw_pipe_release(f);
             f->used = 0;
-        }
-        for (fd = 0; fd < 3; fd++) {
-            hw_fd_t *f = &g_tasks[dying].std_redirect[fd];
-            if (f->used) {
-                hw_pipe_release(f);
-                f->used = 0;
-            }
         }
     }
 
@@ -5660,20 +5644,7 @@ void hw_pipe_release(hw_fd_t *f) {
 
 /* Claim a free descriptor slot in the calling process. */
 int hw_fd_alloc(hw_task_t *t) {
-    int i;
-    for (i = 0; i < VIBEOS_HW_MAX_FDS; i++) {
-        if (!t->fds[i].used) {
-            hw_fd_t *f = &t->fds[i];
-            uint32_t k;
-            for (k = 0; k < (uint32_t)sizeof(*f); k++) {
-                ((uint8_t *)(void *)f)[k] = 0;
-            }
-            f->net_sock = -1;
-            f->used = 1;
-            return i;
-        }
-    }
-    return -1;
+    return vibeos_fdtable_claim(&t->files);
 }
 
 /* Find the leaf page-table entry for `va`, or NULL if nothing maps it.

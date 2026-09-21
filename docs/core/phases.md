@@ -473,7 +473,7 @@ cli`) so it can service the shootdown IPI; the spin holds no lock, so a timer
 there is a safe preemption, and `g_current_task` is per-CPU so identity
 survives it. Interrupts are restored to the caller's state on acquire.
 
-**Step 1 (2026-09-21): the identity is `vibeos_task_t`.** Seventeen fields of "who a
+**Step 1 and 2 (2026-09-21): the identity is `vibeos_task_t`, the descriptors are `vibeos_fdtable_t`.** Seventeen fields of "who a
 task is" left `hw_task_t` for a portable, host-tested type with one reset; the
 descriptors and the rest of the done-condition below are still open (arch_hw.c names
 identity on 92 lines, ratcheted by `check-task-identity.py`). See
@@ -485,7 +485,7 @@ Still open:
   before narrowing, so fork's `copy_user` can read a PTE mprotect is narrowing -
   no worse than before, but not closed. Now that the spin services the IPI,
   mprotect *could* hold the lock across the narrowing too; a small follow-up.
-- descriptors are still per thread.
+- descriptors are still per thread (the table is now one portable type, `vibeos_fdtable_t`, but a thread still copies it rather than sharing it).
 
 **Steps.** `vibeos_task_t` holds identity, state, parent, exit status,
 credentials and descriptors. `hw_task_t` keeps `ctx`, `kstack_*`, `cr3` and a

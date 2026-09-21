@@ -1,0 +1,33 @@
+# C5: the descriptor table (kernel/fs/fdtable.c), proved by the host test.
+#
+# Each case breaks one rule the table states once, and the run must go red on the
+# host test that names it:
+#  1. the bound is off by one: the entry after the last is reachable, and in the real
+#     task structure that is the first redirection of fd 0;
+#  2. claim does not clear: a new descriptor inherits the previous holder's position,
+#     pipe and socket;
+#  3. copy skips the redirections: a forked child loses `cmd > file` and writes to the
+#     console.
+#
+# Target source: kernel/fs/fdtable.c
+# Run: python3 scripts/dev/sabotage.py kernel/fs/fdtable.c scripts/dev/cases/fs-fdtable.txt build-clang-Release
+
+### the table's bound is off by one
+--- old
+    if (!t || fd < VIBEOS_FD_FIRST || fd >= VIBEOS_FD_FIRST + VIBEOS_FD_SLOTS) {
++++ new
+    if (!t || fd < VIBEOS_FD_FIRST || fd > VIBEOS_FD_FIRST + VIBEOS_FD_SLOTS) {
+
+### claiming an entry does not clear it
+--- old
+    vibeos_fd_clear(&t->fds[i]);
+    t->fds[i].used = 1;
++++ new
+    t->fds[i].used = 1;
+
+### copying a table leaves the redirections behind
+--- old
+    for (i = 0; i < VIBEOS_FD_STD; i++) {
+        dst->std[i] = src->std[i];
+    }
++++ new

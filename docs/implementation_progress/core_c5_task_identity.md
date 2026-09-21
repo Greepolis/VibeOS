@@ -1,6 +1,6 @@
 # C5 - what a task is, apart from what a CPU needs to run it
 
-Status, 2026-09-21: **step 1 done (identity extracted); the phase is not finished.**
+Status, 2026-09-21: **steps 1 (identity) and 2 (descriptors) done; the phase is not finished.**
 Step 0 (process state referenced, not copied) is `core_c5_process_state.md`.
 
 ## What moved
@@ -37,16 +37,42 @@ line and column - which a small tool rewrote in place (`.pid` to `.id.pid`), rou
 after round until the build had no such error. Only accesses to `hw_task_t` can fail
 that way, so nothing else was touched.
 
+## Step 2: the descriptors
+
+`hw_fd_t` was already plain data (a pipe or socket is an index, not a pointer), so it
+moved as it was: `vibeos_fd_t` and `vibeos_fdtable_t` (`include/vibeos/fdtable.h`,
+`kernel/fs/fdtable.c`), embedded in `hw_task_t` as `files`; `hw_fd_t` remains as an
+alias so the ~60 places that name it are not renamed. The table states the ABI's split
+once - `fds[]` is descriptor 3 onwards, `std[]` is what 0, 1 and 2 have been redirected
+to - and provides `reset`, `get`, `redirect`, `free_index`, `claim`, `copy` and an
+index walk. What it replaced:
+
+- **fork and clone each copied the table by hand and then walked it to give every
+  pipe end an owner** - two copies of about twenty lines. It is `hw_fds_inherit` now,
+  once. A change to how inheritance counts a pipe end used to need making twice, and
+  the case that is missed hangs a pipeline.
+- the reset in `hw_task_alloc` (two loops) is `vibeos_fdtable_reset`; exit walks
+  every entry once instead of the table and the redirections separately;
+  `hw_fd_alloc`, `hw_fd_get`, open and dup use `claim`, `get` and `free_index`.
+- a latent sign mismatch surfaced when `VIBEOS_HW_MAX_FDS` became unsigned (gcc
+  `-Wsign-compare` in pipe); fixed by keeping the constant an int.
+
+Sabotage `cases/fs-fdtable.txt`: an off-by-one bound, a claim that does not clear, a
+copy that skips the redirections - each red on a named host test. The first version of
+the bound test would not have caught the off-by-one (in the real structure the entry
+past the last is `std[0]`, which is unused, so it answered NULL by luck); the test now
+marks it used first. That is this project's usual lesson, met again.
+
 ## What this does not finish
 
 The phase's done-condition is that `arch_hw.c` names no task field that is not part of
 a context switch. **It is not met**: arch_hw.c reaches into identity on 92 lines and
 the Linux layer on ~126. `check-task-identity.py` states the two properties that can be
 stated - `hw_task_t` may not declare an identity field again, and the 92 may only go
-down - and is in `check.sh`. The descriptors (`fds`, `std_redirect`), the process
-pointer, `state`, `on_cpu` and the scheduling timestamps are still `hw_task_t`'s; the
-descriptors are the next move (they need `hw_fd_t` to become a portable type first,
-which drags the pipe and socket references with it).
+down - and is in `check.sh`. The process
+pointer (`ps`), `state`, `on_cpu`, the scheduling timestamps and the fork of a whole
+task are still `hw_task_t`'s. 20 lines still index the table by hand (pipe, dup2 and
+socket code that arithmetics on `fd - 3`); `check-task-identity.py` ratchets them.
 
 Gates: host test (`task_ident_tests.c`), `check-task-identity.py`, sabotage
 `cases/core-task-identity.txt` (a second `pid`) and `core-task-identity-reset.txt`

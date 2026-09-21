@@ -28,6 +28,9 @@ IDENT = os.path.join(ROOT, "include", "vibeos", "task_ident.h")
 
 # Lines of arch_hw.c that reach into a task's identity (`.id.` / `->id.`).
 ARCH_IDENTITY_LINES = 92
+# Lines anywhere in the arch layer or the Linux ABI that index the descriptor table
+# themselves (`files.fds` / `files.std`) instead of asking vibeos_fdtable_*.
+FILES_INDEX_LINES = 20
 
 
 def read(p):
@@ -75,6 +78,26 @@ def main():
     elif lines < ARCH_IDENTITY_LINES:
         bad.append("arch_hw.c reaches into task identity on %d lines, DOWN from the ratchet %d - "
                    "lower ARCH_IDENTITY_LINES in the same commit" % (lines, ARCH_IDENTITY_LINES))
+
+    for f in ("fds", "std_redirect"):
+        if re.search(r"\b%s\b\s*(\[[^\]]*\])?\s*;" % f, body):
+            bad.append("hw_task_t declares `%s` again - descriptors are vibeos_fdtable_t's (fdtable.h)" % f)
+    if not re.search(r"\bvibeos_fdtable_t\s+files\s*;", body):
+        bad.append("hw_task_t does not embed vibeos_fdtable_t as `files`")
+    idx = 0
+    for d in (os.path.join(ROOT, "kernel", "arch", "x86_64"), os.path.join(ROOT, "kernel", "abi", "linux")):
+        for name in sorted(os.listdir(d)):
+            if name.endswith(".c"):
+                idx += sum(1 for l in read(os.path.join(d, name)).splitlines()
+                           if re.search(r"files\.(fds|std)\b", l))
+    if "--list" in sys.argv:
+        print("  lines indexing the descriptor table directly: %d (ratchet %d)" % (idx, FILES_INDEX_LINES))
+    if idx > FILES_INDEX_LINES:
+        bad.append("%d lines index the descriptor table directly, ratchet is %d - ask vibeos_fdtable_*"
+                   % (idx, FILES_INDEX_LINES))
+    elif idx < FILES_INDEX_LINES:
+        bad.append("%d lines index the descriptor table directly, DOWN from %d - lower FILES_INDEX_LINES"
+                   % (idx, FILES_INDEX_LINES))
 
     if bad:
         for b in bad:

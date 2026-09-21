@@ -186,38 +186,7 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
          *
          * Task slots are recycled, so the child's table is whatever the
          * previous occupant left; it must be overwritten, not added to. */
-        int fi;
-        for (fi = 0; fi < VIBEOS_HW_MAX_FDS; fi++) {
-            child->fds[fi] = parent->fds[fi];
-        }
-        for (fi = 0; fi < 3; fi++) {
-            child->std_redirect[fi] = parent->std_redirect[fi];
-        }
-        /* Every inherited pipe end gains an owner. Missing this is the other
-         * way a pipeline hangs: the reader waits for an end of file that never
-         * arrives because a count went wrong. */
-        hw_spin_lock_named(&g_pipe_lock, __func__);
-        for (fi = 0; fi < VIBEOS_HW_MAX_FDS; fi++) {
-            const hw_fd_t *cf = &child->fds[fi];
-            if (cf->used && cf->pipe >= 0) {
-                if (cf->writable) {
-                    g_pipes[cf->pipe].writers++;
-                } else {
-                    g_pipes[cf->pipe].readers++;
-                }
-            }
-        }
-        for (fi = 0; fi < 3; fi++) {
-            const hw_fd_t *cf = &child->std_redirect[fi];
-            if (cf->used && cf->pipe >= 0) {
-                if (cf->writable) {
-                    g_pipes[cf->pipe].writers++;
-                } else {
-                    g_pipes[cf->pipe].readers++;
-                }
-            }
-        }
-        hw_spin_unlock(&g_pipe_lock);
+        hw_fds_inherit(child, parent);
 
         child->id.exit_signal = 0;
         child->id.sig_pending = 0;   /* pending signals are not inherited */
@@ -363,35 +332,7 @@ static long hw_sys_clone_thread(const vibeos_x86_64_isr_frame_t *frame,
      * hidden: it is wrong for a program that passes descriptors between its
      * own threads. */
     {
-        int fi;
-        for (fi = 0; fi < VIBEOS_HW_MAX_FDS; fi++) {
-            child->fds[fi] = parent->fds[fi];
-        }
-        for (fi = 0; fi < 3; fi++) {
-            child->std_redirect[fi] = parent->std_redirect[fi];
-        }
-        hw_spin_lock_named(&g_pipe_lock, __func__);
-        for (fi = 0; fi < VIBEOS_HW_MAX_FDS; fi++) {
-            const hw_fd_t *cf = &child->fds[fi];
-            if (cf->used && cf->pipe >= 0) {
-                if (cf->writable) {
-                    g_pipes[cf->pipe].writers++;
-                } else {
-                    g_pipes[cf->pipe].readers++;
-                }
-            }
-        }
-        for (fi = 0; fi < 3; fi++) {
-            const hw_fd_t *cf = &child->std_redirect[fi];
-            if (cf->used && cf->pipe >= 0) {
-                if (cf->writable) {
-                    g_pipes[cf->pipe].writers++;
-                } else {
-                    g_pipes[cf->pipe].readers++;
-                }
-            }
-        }
-        hw_spin_unlock(&g_pipe_lock);
+        hw_fds_inherit(child, parent);
     }
 
     /* Signal dispositions are the process's. That sentence used to sit above
