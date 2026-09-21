@@ -87,3 +87,17 @@ Gates: host test (`task_ident_tests.c`), `check-task-identity.py`, sabotage
 - `check-subsystem.py`'s `mustbezero_exempt` went 21 to 22 with `sched/task_ident`
   (pure functions over a caller's struct; no state to be wrong). That baseline "may
   only go down", so it is recorded as a decision beside the number rather than edited.
+
+## Decision: exemptions, not counters (2026-09-21)
+
+`mustbezero_exempt` rose 21 to 23 (`sched/task_ident`, `fs/fdtable`). A real must-be-zero
+was weighed and declined: both modules are pure functions over a struct the caller
+owns, so a counter inside them could only report on its own arguments, and the
+defects that live here (a field the reset forgot, an off-by-one bound, a copy that
+skips the redirections) are what the host tests and the fill-with-a-pattern check
+catch deterministically. A counter earns its place where state is shared and mutated
+at runtime. The one such place this phase touches is the pipe-end count that
+`hw_fds_inherit`, close and exit all adjust; the pipe table is not a module yet, and
+its detector (a `writers`/`readers` count that goes negative or disagrees with the
+descriptors that name it) belongs with it when it becomes one. Revisit then; the
+baseline should go back down, not up again.
