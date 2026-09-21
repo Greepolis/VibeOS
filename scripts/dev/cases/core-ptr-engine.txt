@@ -1,0 +1,25 @@
+# C4 stage 2b: the descriptor engine itself (check_pointers in dispatch.c).
+#
+# Every row's pointer arguments are only as good as the loop that reads them. The
+# ring-3 test program writes from a kernel address (0x4000000) and prints "kernel
+# pointer correctly rejected" only if the kernel refused; the boot gate asserts that
+# line (reason kernel_pointer_not_rejected). Before this change nothing asserted it.
+#
+# 1. the engine judges nothing: every descriptor passes;
+# 2. the engine skips every descriptor whose length comes from another argument
+#    (write, read, sendto ... - the buffers), so the bad write passes untouched.
+#
+# Target source: kernel/abi/linux/dispatch.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/linux/dispatch.c scripts/dev/cases/core-ptr-engine.txt
+
+### the engine never refuses a range
+--- old
+        if (!linux_user_ok(call->a[d->arg], len, (d->flags & VIBEOS_PTR_WRITE) ? 1 : 0)) {
++++ new
+        if (0 && !linux_user_ok(call->a[d->arg], len, (d->flags & VIBEOS_PTR_WRITE) ? 1 : 0)) {
+
+### the engine skips every descriptor that carries a length argument
+--- old
+            if (n == 0u || (d->cap && n > d->cap)) {
++++ new
+            if (1) {

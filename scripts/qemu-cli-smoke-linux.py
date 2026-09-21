@@ -2552,6 +2552,14 @@ def main():
             if "linux abi ok" not in text:
                 problems.append("linux_abi_selftest_failed")
 
+            # A write from a kernel address must be refused. The row declares the
+            # buffer and the dispatcher's descriptor engine refuses it before the
+            # handler runs; the program prints this line only if it was refused.
+            # Until now nothing asserted it, so an engine that validated nothing
+            # would have booted green.
+            if "kernel pointer correctly rejected" not in text:
+                problems.append("kernel_pointer_not_rejected")
+
             # The user-access recovery (H-003, H-010): a copy from an unmapped
             # user address must return an error rather than panic the kernel.
             # The kernel forces one every boot and says so; a missing line means

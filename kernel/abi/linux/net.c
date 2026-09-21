@@ -23,9 +23,6 @@
  * address (both network order on the wire). */
 static int hw_read_sockaddr(uint64_t uptr, uint32_t *out_ip, uint16_t *out_port) {
     const uint8_t *p;
-    if (!linux_user_ok(uptr, 8, 0)) {
-        return -1;
-    }
     p = (const uint8_t *)(uintptr_t)uptr;
     if (((uint16_t)p[0] | ((uint16_t)p[1] << 8)) != 2u) {   /* AF_INET */
         return -1;
@@ -40,9 +37,6 @@ static int hw_write_sockaddr(uint64_t uptr, uint32_t ip, uint16_t port) {
     uint8_t *p;
     if (uptr == 0u) {
         return 0;
-    }
-    if (!linux_user_ok(uptr, 16, 1)) {
-        return -1;
     }
     p = (uint8_t *)(uintptr_t)uptr;
     p[0] = 2; p[1] = 0;
@@ -216,10 +210,8 @@ static long hw_sys_accept(uint64_t fd, uint64_t addr_uptr) {
         return -VIBEOS_EBADF;
     }
     t = &g_tasks[hw_current_task()];
-    /* Refuse a bad peer-address pointer before a connection is consumed (M-032). */
-    if (addr_uptr != 0u && !linux_user_ok(addr_uptr, 16, 1)) {
-        return -VIBEOS_EFAULT;
-    }
+    /* A bad peer-address pointer is refused by the row, before a connection is
+     * consumed (M-032). */
     sock = f->net_sock;
     hw_spin_lock(&g_net_lock);
     gen = g_net.sockets[sock].gen;
@@ -291,9 +283,6 @@ long hw_net_recv(hw_fd_t *f, uint64_t buf, uint64_t len) {
     if (!f || f->net_sock < 0) {
         return -VIBEOS_EBADF;
     }
-    if (!linux_user_ok(buf, len, 1)) {
-        return -VIBEOS_EFAULT;
-    }
     sock = f->net_sock;
     hw_spin_lock(&g_net_lock);
     gen = g_net.sockets[sock].gen;
@@ -332,9 +321,6 @@ long hw_net_recv(hw_fd_t *f, uint64_t buf, uint64_t len) {
 
 long hw_net_send(hw_fd_t *f, uint64_t buf, uint64_t len) {
     long n;
-    if (!linux_user_ok(buf, len, 0)) {
-        return -VIBEOS_EFAULT;
-    }
     if (len > sizeof(g_net_bounce)) {
         len = sizeof(g_net_bounce);   /* a short send, which a stream allows */
     }
@@ -364,9 +350,6 @@ static long hw_sys_sendto(uint64_t fd, uint64_t buf, uint64_t len, uint64_t addr
         return hw_net_send(f, buf, len);
     }
     if (hw_read_sockaddr(addr_uptr, &ip, &port) != 0) {
-        return -VIBEOS_EFAULT;
-    }
-    if (!linux_user_ok(buf, len, 0)) {
         return -VIBEOS_EFAULT;
     }
     if (len > sizeof(g_net_bounce)) {
@@ -400,9 +383,6 @@ static long hw_sys_netctl(uint64_t op, uint64_t arg) {
     switch (op) {
         case 0: {
             uint32_t *out;
-            if (!linux_user_ok(arg, 20, 1)) {
-                return -VIBEOS_EFAULT;
-            }
             out = (uint32_t *)(uintptr_t)arg;
             hw_spin_lock(&g_net_lock);
             out[0] = g_net.ip;
@@ -459,9 +439,6 @@ static long hw_sys_netctl(uint64_t op, uint64_t arg) {
         }
         case 3: {
             uint64_t *out;
-            if (!linux_user_ok(arg, 32, 1)) {
-                return -VIBEOS_EFAULT;
-            }
             out = (uint64_t *)(uintptr_t)arg;
             hw_spin_lock(&g_net_lock);
             out[0] = g_net.tx_frames;
@@ -483,14 +460,8 @@ static long hw_sys_recvfrom(uint64_t fd, uint64_t buf, uint64_t len, uint64_t ad
     if (!f || f->net_sock < 0) {
         return -VIBEOS_EBADF;
     }
-    if (!linux_user_ok(buf, len, 1)) {
-        return -VIBEOS_EFAULT;
-    }
-    /* Check the source-address pointer before the datagram is dequeued, or a
-     * bad pointer loses the datagram with no error (M-032). */
-    if (addr_uptr != 0u && !linux_user_ok(addr_uptr, 16, 1)) {
-        return -VIBEOS_EFAULT;
-    }
+    /* The buffer and the source-address pointer are refused by the row, before the
+     * datagram is dequeued - or a bad pointer loses it with no error (M-032). */
     deadline = g_timer_ticks + VIBEOS_HW_NET_TIMEOUT_TICKS;
     for (;;) {
         long n;
@@ -529,13 +500,13 @@ static long hw_sys_recvfrom(uint64_t fd, uint64_t buf, uint64_t len, uint64_t ad
  * The Linux ABI passes the 4th, 5th and 6th arguments in r10, r8 and r9, which is
  * why sendto and recvfrom read ARG(4): the peer address is the fifth argument. */
 #define LINUX_NET_SYSCALLS(X) \
-    X(41,   socket,   SOCKET,   hw_sys_socket(ARG(0), ARG(1))) \
-    X(42,   connect,  CONNECT,  hw_sys_connect(ARG(0), ARG(1))) \
-    X(43,   accept,   ACCEPT,   hw_sys_accept(ARG(0), ARG(1))) \
-    X(44,   sendto,   SENDTO,   hw_sys_sendto(ARG(0), ARG(1), ARG(2), ARG(4))) \
-    X(45,   recvfrom, RECVFROM, hw_sys_recvfrom(ARG(0), ARG(1), ARG(2), ARG(4))) \
-    X(49,   bind,     BIND,     hw_sys_bind(ARG(0), ARG(1))) \
-    X(50,   listen,   LISTEN,   hw_sys_listen(ARG(0))) \
-    X(1000, netctl,   NETCTL,   hw_sys_netctl(ARG(0), ARG(1)))
+    X(41,   socket,   SOCKET,   NOPTR, hw_sys_socket(ARG(0), ARG(1))) \
+    X(42,   connect,  CONNECT,  PTRS(IN(1, 8)), hw_sys_connect(ARG(0), ARG(1))) \
+    X(43,   accept,   ACCEPT,   PTRS(OUT_OPT(1, 16)), hw_sys_accept(ARG(0), ARG(1))) \
+    X(44,   sendto,   SENDTO,   PTRS(IN_BUF(1, 2), IN_OPT(4, 8)), hw_sys_sendto(ARG(0), ARG(1), ARG(2), ARG(4))) \
+    X(45,   recvfrom, RECVFROM, PTRS(OUT_BUF(1, 2), OUT_OPT(4, 16)), hw_sys_recvfrom(ARG(0), ARG(1), ARG(2), ARG(4))) \
+    X(49,   bind,     BIND,     PTRS(IN(1, 8)), hw_sys_bind(ARG(0), ARG(1))) \
+    X(50,   listen,   LISTEN,   NOPTR, hw_sys_listen(ARG(0))) \
+    X(1000, netctl,   NETCTL,   PTRS(OUT_IF(0, 0, 1, 20), OUT_IF(0, 3, 1, 32)), hw_sys_netctl(ARG(0), ARG(1)))
 
 LINUX_DEFINE_SYSCALLS(net, LINUX_NET_SYSCALLS)

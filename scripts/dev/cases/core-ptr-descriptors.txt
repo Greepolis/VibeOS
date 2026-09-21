@@ -1,0 +1,35 @@
+# C4 stage 2b: the pointer descriptors on the rows of fs.c.
+#
+# Every syscall argument that is a user pointer is declared in its row and checked
+# by the dispatcher; the handlers no longer check. So a row that loses its
+# descriptor is a syscall that writes or reads a pointer nobody validated, and
+# check-syscall-checks.py must name the operation. read and getdents are the two whose
+# only check was the descriptor; ioctl's are the conditional ones (a request code
+# decides whether the argument is a pointer at all).
+#
+# Target source: kernel/abi/linux/fs.c
+# Run: SABOTAGE_VERIFY="python3 scripts/dev/check-syscall-checks.py" python3 scripts/dev/sabotage.py kernel/abi/linux/fs.c scripts/dev/cases/core-ptr-descriptors.txt
+
+### getcwd stops declaring its buffer
+--- old
+PTRS(OUT(0, 2)), hw_sys_getcwd
++++ new
+NOPTR, hw_sys_getcwd
+
+### pipe stops declaring its result array
+--- old
+PTRS(OUT(0, 8)), hw_sys_pipe2(ARG(0), 0)
++++ new
+NOPTR, hw_sys_pipe2(ARG(0), 0)
+
+### getdents64 stops declaring its buffer
+--- old
+PTRS(OUT_BUF(1, 2)), hw_sys_getdents64
++++ new
+NOPTR, hw_sys_getdents64
+
+### fstat stops declaring its stat buffer
+--- old
+PTRS(OUT(1, STAT_SIZE)), hw_sys_fstat
++++ new
+NOPTR, hw_sys_fstat

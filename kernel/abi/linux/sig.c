@@ -200,9 +200,6 @@ static long hw_sys_rt_sigaction(uint64_t sig, uint64_t act_uptr, uint64_t old_up
 
     /* struct sigaction: handler at 0, flags at 8, restorer at 16, mask at 24. */
     if (old_uptr != 0u) {
-        if (!linux_user_ok(old_uptr, 32, 1)) {
-            return -VIBEOS_EFAULT;
-        }
         uint64_t old[4];
         old[0] = t->ps->sig_handler[sig];
         old[1] = t->ps->sig_flags[sig];
@@ -216,9 +213,6 @@ static long hw_sys_rt_sigaction(uint64_t sig, uint64_t act_uptr, uint64_t old_up
     }
     if (act_uptr != 0u) {
         uint64_t act[4];
-        if (!linux_user_ok(act_uptr, 32, 0)) {
-            return -VIBEOS_EFAULT;
-        }
         if (vibeos_uaccess_copy(act, (const void *)(uintptr_t)act_uptr,
                                 sizeof(act)) != 0) {
             return -VIBEOS_EFAULT;   /* H-016 */
@@ -265,9 +259,6 @@ static long hw_sys_rt_sigprocmask(uint64_t how, uint64_t set_uptr, uint64_t old_
     }
     t = &g_tasks[g_current_task];
     if (old_uptr != 0u) {
-        if (!linux_user_ok(old_uptr, 8, 1)) {
-            return -VIBEOS_EFAULT;
-        }
         uint64_t out = hw_sigset_to_user(t->sig_blocked);
         if (vibeos_uaccess_copy((void *)(uintptr_t)old_uptr, &out,
                                 sizeof(out)) != 0) {
@@ -276,9 +267,6 @@ static long hw_sys_rt_sigprocmask(uint64_t how, uint64_t set_uptr, uint64_t old_
     }
     if (set_uptr == 0u) {
         return 0;
-    }
-    if (!linux_user_ok(set_uptr, 8, 0)) {
-        return -VIBEOS_EFAULT;
     }
     {
         uint64_t raw;
@@ -363,11 +351,11 @@ static long hw_sys_rt_sigreturn(vibeos_x86_64_isr_frame_t *frame) {
  *   tgkill  the thread named by tid, provided it still belongs to tgid - the check
  *           that stops a recycled thread id from reaching a different process. */
 #define LINUX_SIG_SYSCALLS(X) \
-    X(13,  rt_sigaction,   SIG_ACTION,   hw_sys_rt_sigaction(ARG(0), ARG(1), ARG(2))) \
-    X(14,  rt_sigprocmask, SIG_PROCMASK, hw_sys_rt_sigprocmask(ARG(0), ARG(1), ARG(2))) \
-    X(15,  rt_sigreturn,   SIG_RETURN,   hw_sys_rt_sigreturn(FRAME)) \
-    X(62,  kill,           KILL,         hw_sys_kill(ARG(0), ARG(1))) \
-    X(200, tkill,          TKILL,        hw_sys_tkill(ARG(0), ARG(1))) \
-    X(234, tgkill,         TGKILL,       hw_sys_tgkill(ARG(0), ARG(1), ARG(2)))
+    X(13,  rt_sigaction,   SIG_ACTION,   PTRS(OUT_OPT(2, 32), IN_OPT(1, 32)), hw_sys_rt_sigaction(ARG(0), ARG(1), ARG(2))) \
+    X(14,  rt_sigprocmask, SIG_PROCMASK, PTRS(OUT_OPT(2, 8), IN_OPT(1, 8)), hw_sys_rt_sigprocmask(ARG(0), ARG(1), ARG(2))) \
+    X(15,  rt_sigreturn,   SIG_RETURN,   NOPTR, hw_sys_rt_sigreturn(FRAME)) \
+    X(62,  kill,           KILL,         NOPTR, hw_sys_kill(ARG(0), ARG(1))) \
+    X(200, tkill,          TKILL,        NOPTR, hw_sys_tkill(ARG(0), ARG(1))) \
+    X(234, tgkill,         TGKILL,       NOPTR, hw_sys_tgkill(ARG(0), ARG(1), ARG(2)))
 
 LINUX_DEFINE_SYSCALLS(sig, LINUX_SIG_SYSCALLS)

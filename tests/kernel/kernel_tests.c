@@ -9109,6 +9109,25 @@ static int test_abi_vocabulary_and_linux(void) {
         if (vibeos_abi_linux_register(twice_across, 1u) == 0) { return -1; }
         if (vibeos_abi_linux_register(no_handler, 1u) == 0) { return -1; }
         if (vibeos_abi_linux_register(no_op, 1u) == 0) { return -1; }
+        {
+            /* A descriptor that names an argument the call does not have would read
+             * past its six - refused at registration, not discovered at first use. */
+            vibeos_row_t bad_arg[1] = { { 11, "eleven", VIBEOS_OP_READ, abi_test_handler } };
+            vibeos_row_t bad_len[1] = { { 12, "twelve", VIBEOS_OP_READ, abi_test_handler } };
+            vibeos_row_t ok_ptr[1] = { { 13, "thirteen", VIBEOS_OP_READ, abi_test_handler } };
+            bad_arg[0].ptr[0].flags = VIBEOS_PTR_LIVE;
+            bad_arg[0].ptr[0].arg = 6;
+            bad_len[0].ptr[0].flags = VIBEOS_PTR_LIVE;
+            bad_len[0].ptr[0].len_arg = 7;
+            ok_ptr[0].ptr[0].flags = VIBEOS_PTR_LIVE;
+            ok_ptr[0].ptr[0].arg = 5;
+            ok_ptr[0].ptr[0].len_arg = 6;
+            if (vibeos_abi_linux_register(bad_arg, 1u) == 0) { return -1; }
+            if (vibeos_abi_linux_register(bad_len, 1u) == 0) { return -1; }
+            if (vibeos_abi_linux_register(ok_ptr, 1u) != 0) { return -1; }
+            vibeos_abi_linux_reset();
+            if (vibeos_abi_linux_register(good, 2u) != 0) { return -1; }
+        }
         if (vibeos_abi_linux_row_count() != 2u || vibeos_abi_linux_row(2u) != NULL) { return -1; }
         /* Two rows cover two operations; the first one without a row is named. */
         if (vibeos_abi_linux_missing() == VIBEOS_OP_NONE) { return -1; }

@@ -77,6 +77,15 @@ int vibeos_abi_linux_register(const vibeos_row_t *rows, uint32_t count) {
         if (find_row(rows[i].nr)) {
             return -1;
         }
+        /* A descriptor naming an argument that does not exist would read whatever
+         * lies past the call's six - refuse it here, at boot, not at first use. */
+        for (j = 0; j < VIBEOS_PTR_MAX; j++) {
+            const vibeos_ptr_t *d = &rows[i].ptr[j];
+            if ((d->flags & VIBEOS_PTR_LIVE) &&
+                (d->arg >= 6u || d->len_arg > 6u || d->when_arg > 6u)) {
+                return -1;
+            }
+        }
         for (j = 0; j < i; j++) {
             if (rows[j].nr == rows[i].nr) {
                 return -1;

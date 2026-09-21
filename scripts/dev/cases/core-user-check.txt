@@ -1,24 +1,23 @@
 # C4 stage 2b: user memory is judged in one place.
 #
-# hw_user_range_ok has one call site (linux_user_ok, dispatch.c) and linux_user_ok
-# is what every handler and every row asks. Two ways to break that, each of which
-# must turn check-chokepoints.py red:
-#  1. a handler stops validating - the count of linux_user_ok goes DOWN, the
-#     failure the old 46 was watched for;
+# hw_user_range_ok has one call site (linux_user_ok, dispatch.c). Two ways to break
+# the chokepoints, each of which must turn check-chokepoints.py red:
+#  1. a handler stops validating a range it validates itself - the count of
+#     linux_user_ok goes DOWN (the iovec element's base, which no descriptor can say);
 #  2. a handler decides for itself again - hw_user_range_ok gets a second site.
 #
 # Target source: kernel/abi/linux/fs.c
 # Run: SABOTAGE_VERIFY="python3 scripts/dev/check-chokepoints.py" python3 scripts/dev/sabotage.py kernel/abi/linux/fs.c scripts/dev/cases/core-user-check.txt
 
-### getcwd stops validating its buffer
+### readv stops validating each element's own buffer
 --- old
-    if (!linux_user_ok(ubuf, 2, 1)) {
-        return -VIBEOS_EFAULT;
-    }
+        if (!linux_user_ok(v.base, v.len, 1)) {
+            return total > 0 ? total : -VIBEOS_EFAULT;
+        }
 +++ new
 
 ### a handler calls the low-level check itself
 --- old
-    if (!linux_user_ok(ubuf, 2, 1)) {
+        if (!linux_user_ok(v.base, v.len, 0)) {
 +++ new
-    if (!hw_user_range_ok(ubuf, 2, 1)) {
+        if (!hw_user_range_ok(v.base, v.len, 0)) {

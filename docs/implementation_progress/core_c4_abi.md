@@ -1,6 +1,6 @@
 # C4 - one operation vocabulary, and the Linux ABI leaves `arch_hw.c`
 
-Status, 2026-09-21: **stages 1, 3, 2a and 2b done (2b hoists only the checks that are safe to hoist).** The plan
+Status, 2026-09-21: **stages 1, 3, 2a and 2b done.** The plan
 (`docs/core/phases.md`) is the authority on intent; this file records what was
 built, what it measured, and what it found on the way.
 
@@ -82,30 +82,41 @@ against names renamed in the same change and never run - now run and red).
   space, its descriptor table) directly; abstracting that is the day a second
   architecture exists, not before.
 
-## Stage 2b: pointer checks written in the row (2026-09-21)
+## Stage 2b: the pointer arguments are declared in the row (2026-09-21)
 
-- `USER_OUT` / `USER_IN` / `USER_OUT_OPT` (`linux_internal.h`) wrap a row's call and
-  validate the pointer before the handler runs: -EFAULT, same answer as before.
-  Moved: uname, clock_gettime, time. Their handlers no longer check.
-- `check-syscall-checks.py` counts the wrappers as USER_MEMORY, so a row that drops
-  one is named by the operation, as a handler that dropped its check was.
-- **The criterion is met: `hw_user_range_ok` has one call site.** It was 46. Every
-  user-pointer judgement now goes through `linux_user_ok` (`dispatch.c`), which is
-  the only caller of the low-level check; `check-chokepoints.py` reports 4 (the
-  definition, two declarations, that one call). The 46 sites became: 3 row wrappers,
-  and ~40 handler and kernel-internal calls to `linux_user_ok`.
-- **What that does and does not mean, stated plainly.** Only three rows (uname, time,
-  clock_gettime) validate *before* the handler runs. The rest still ask from inside
-  the handler, because the range depends on something read first, or an EBADF/EINVAL
-  must come first (hoisting would change which error a program sees), or the helper
-  is shared (write, from writev). They no longer decide *what a valid pointer is* -
-  one function does - but the decision of *when* is still theirs.
-- **The alarm moved.** The old "a syscall that stopped checking" guard was the count of
-  `hw_user_range_ok`; that count is now 4 by design, so the same guard is
-  `linux_user_ok` at 45, in both directions. `cases/core-user-check.txt`: a handler
-  that stops validating and a handler that calls the low-level check again - both red.
-- Sabotage: `cases/core-syscall-hoist.txt`, three cases, all red. The two old
-  handler-anchored cases in `core-syscall.txt` were replaced by them.
+- A row's fourth column is `NOPTR` or `PTRS(...)`: which arguments are user pointers,
+  how long, read or write, optional, and - for a request code that decides whether
+  the argument is a pointer at all (ioctl, prctl, arch_prctl, netctl) - the value of
+  the argument it depends on. `vibeos_ptr_t` (abi.h) holds it; the constructors
+  (`OUT`, `IN`, `OUT_BUF`, `IN_VEC`, `*_OPT`, `*_IF`) are in `linux_internal.h`.
+- The dispatcher's `check_pointers` validates them **before the handler runs** and
+  answers -EFAULT. 22 rows carry descriptors and about 30 handler checks are gone.
+  The registry refuses a descriptor that names an argument the call does not have.
+- `hw_user_range_ok` has **one call site** (`linux_user_ok`, dispatch.c); it was 46.
+  `check-chokepoints.py` reports 4 for it (definition, two declarations, that call)
+  and watches `linux_user_ok` at 16, where the old "a syscall stopped checking"
+  alarm lives now.
+- **What stays in the handlers (13 sites), and why it cannot be a descriptor:**
+  an iovec element's own base (read out of user memory a moment earlier), readlink's
+  length (the link target's), clone's stack and the two tid words and wait's status
+  word (stores that are skipped silently, not refused), futex (answers EINVAL, not
+  EFAULT), the signal frame and sigreturn (a rsp, not an argument), and the kernel's
+  own reads of user memory (a string, the crash dump).
+- **Error precedence changed, deliberately, and this is the price.** A call that has a
+  bad pointer *and* another error now reports EFAULT where the handler used to report
+  the other one first: read on a bad fd with a bad buffer (was EBADF), getdents on a
+  non-directory (was ENOTDIR), getcwd with size 1 (was ERANGE), pipe2 with a bad
+  pointer and bad flags, sigaction with a bad signal number and a bad pointer, the
+  ioctl cases for descriptors above 2. Linux itself mostly reports EBADF first; no
+  program here depends on the order and the boot's ABI self-test passes, but it is a
+  behaviour change and is recorded as one.
+- **The engine is gated for the first time.** The ring-3 program writes from a kernel
+  address and prints a line only if it was refused; nothing asserted that line until
+  now, so an engine that validated nothing would have booted green. The gate has
+  `kernel_pointer_not_rejected`, and `cases/core-ptr-engine.txt` shows both engine
+  sabotages turn the boot red with that reason.
+- Sabotage: `core-ptr-engine.txt` (2, boot), `core-ptr-descriptors.txt` (4),
+  `core-syscall-hoist.txt` (3), `core-user-check.txt` (2, chokepoints).
 
 ## Stage 2a: rows registered by the file that holds the handler (2026-09-21)
 

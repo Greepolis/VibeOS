@@ -142,11 +142,45 @@ typedef long (*vibeos_handler_t)(const vibeos_call_t *call);
 /* One syscall of an ABI: its number, the kernel operation it is, and the function
  * that runs it. The row is the whole registration - there is no second place that
  * has to be told a syscall exists - and it lives beside the handler it names. */
+/* A pointer argument, declared by the row that owns it. The dispatcher validates it
+ * before the handler runs; a range that is not valid is -EFAULT and the handler is
+ * never entered. Which argument, how long, in which direction:
+ *
+ *   arg       0-based index of the pointer argument
+ *   len       the length in bytes - or, with len_arg, the scale applied to it
+ *   len_arg   1-based index of the argument holding the length (0: `len` is fixed).
+ *             A length that is zero is not checked (nothing is touched), and a
+ *             count above `cap` is not checked either: the handler refuses it with
+ *             its own error, which is not EFAULT.
+ *   when_arg  1-based index of an argument that must equal when_val for this
+ *             descriptor to apply (0: always) - a request code that decides
+ *             whether arg is a pointer at all (ioctl, prctl, netctl).
+ *
+ * What a descriptor cannot say stays in the handler and asks linux_user_ok: a
+ * range whose length is read out of user memory (an iovec's own base), one that
+ * depends on data the handler has only just fetched, and the kernel's reads of
+ * user memory that no syscall argument names. */
+#define VIBEOS_PTR_MAX   3u
+#define VIBEOS_PTR_LIVE  1u    /* the slot is used (an all-zero slot is not) */
+#define VIBEOS_PTR_WRITE 2u    /* the kernel writes it; otherwise it only reads */
+#define VIBEOS_PTR_OPT   4u    /* a null pointer is allowed and is not checked */
+
+typedef struct vibeos_ptr {
+    uint8_t arg;
+    uint8_t flags;
+    uint8_t len_arg;
+    uint8_t when_arg;
+    uint32_t len;
+    uint32_t cap;
+    uint64_t when_val;
+} vibeos_ptr_t;
+
 typedef struct vibeos_row {
     uint32_t nr;
     const char *name;
     vibeos_op_id_t op;
     vibeos_handler_t handler;
+    vibeos_ptr_t ptr[VIBEOS_PTR_MAX];
 } vibeos_row_t;
 
 /* An ABI: how a foreign syscall number becomes a kernel operation and a handler.

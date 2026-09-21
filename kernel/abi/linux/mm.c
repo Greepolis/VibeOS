@@ -529,9 +529,6 @@ static long hw_sys_pageinfo(uint64_t va, uint64_t out_uptr) {
     if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
         return -VIBEOS_EINVAL;
     }
-    if (!linux_user_ok(out_uptr, sizeof(info), 1)) {
-        return -VIBEOS_EFAULT;
-    }
 
     info.frame = 0;
     info.flags = 0;
@@ -597,10 +594,10 @@ static long hw_sys_pageinfo(uint64_t va, uint64_t out_uptr) {
 
 /* ---- the syscalls this file implements --------------------------------------- */
 #define LINUX_MM_SYSCALLS(X) \
-    X(9,    mmap,     MAP,      hw_sys_mmap(ARG(0), ARG(1), ARG(2), ARG(3), ARG(4))) \
-    X(10,   mprotect, PROTECT,  hw_sys_mprotect(ARG(0), ARG(1), ARG(2))) \
-    X(11,   munmap,   UNMAP,    hw_sys_munmap(ARG(0), ARG(1))) \
-    X(12,   brk,      BRK,      hw_sys_brk(ARG(0))) \
-    X(1001, pageinfo, PAGEINFO, hw_sys_pageinfo(ARG(0), ARG(1)))
+    X(9,    mmap,     MAP,      NOPTR, hw_sys_mmap(ARG(0), ARG(1), ARG(2), ARG(3), ARG(4))) \
+    X(10,   mprotect, PROTECT,  NOPTR, hw_sys_mprotect(ARG(0), ARG(1), ARG(2))) \
+    X(11,   munmap,   UNMAP,    NOPTR, hw_sys_munmap(ARG(0), ARG(1))) \
+    X(12,   brk,      BRK,      NOPTR, hw_sys_brk(ARG(0))) \
+    X(1001, pageinfo, PAGEINFO, PTRS(OUT(1, sizeof(vibeos_pageinfo_t))), hw_sys_pageinfo(ARG(0), ARG(1)))
 
 LINUX_DEFINE_SYSCALLS(mm, LINUX_MM_SYSCALLS)

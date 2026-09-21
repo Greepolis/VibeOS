@@ -66,8 +66,8 @@ static long hw_sys_time(uint64_t tptr) {
 
 /* ---- the syscalls this file implements --------------------------------------- */
 #define LINUX_MISC_SYSCALLS(X) \
-    X(63,  uname,         UNAME,         USER_OUT(ARG(0), 6u * 65u, hw_sys_uname(ARG(0)))) \
-    X(201, time,          TIME,          USER_OUT_OPT(ARG(0), 8, hw_sys_time(ARG(0)))) \
-    X(228, clock_gettime, CLOCK_GETTIME, USER_OUT(ARG(1), 16, hw_sys_clock_gettime(ARG(0), ARG(1))))
+    X(63,  uname,         UNAME,         PTRS(OUT(0, 6u * 65u)), hw_sys_uname(ARG(0))) \
+    X(201, time,          TIME,          PTRS(OUT_OPT(0, 8)), hw_sys_time(ARG(0))) \
+    X(228, clock_gettime, CLOCK_GETTIME, PTRS(OUT(1, 16)), hw_sys_clock_gettime(ARG(0), ARG(1)))
 
 LINUX_DEFINE_SYSCALLS(misc, LINUX_MISC_SYSCALLS)

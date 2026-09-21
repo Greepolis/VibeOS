@@ -1,29 +1,28 @@
-# C4 stage 2b: pointer checks written in the row, run before the handler.
+# C4 stage 2b: pointer arguments declared in the row, validated before the handler.
 #
-# uname, time and clock_gettime no longer check their pointer themselves; the row
-# does (USER_OUT / USER_OUT_OPT, linux_internal.h). So removing the wrapper leaves a
-# handler that writes a user pointer nobody validated - check-syscall-checks.py
-# must see USER_MEMORY vanish from the operation, and the boot's ABI self-test
-# (a bad pointer to clock_gettime/uname) must see EFAULT. The third case breaks the
-# macro itself, which every hoisted row shares.
+# uname, time and clock_gettime keep no check of their own; the row's PTRS(...) is
+# all there is. So removing the descriptor leaves a handler that writes a user
+# pointer nobody validated - check-syscall-checks.py must see USER_MEMORY vanish from
+# the operation. (core-ptr-descriptors.txt does the same for the rest of the rows,
+# and core-ptr-engine.txt breaks the engine itself.)
 #
 # Target source: kernel/abi/linux/misc.c
 # Run: SABOTAGE_VERIFY="python3 scripts/dev/check-syscall-checks.py" python3 scripts/dev/sabotage.py kernel/abi/linux/misc.c scripts/dev/cases/core-syscall-hoist.txt
 
-### uname's row stops validating its buffer
+### uname's row stops declaring its buffer
 --- old
-USER_OUT(ARG(0), 6u * 65u, hw_sys_uname(ARG(0)))
+PTRS(OUT(0, 6u * 65u)), hw_sys_uname(ARG(0))
 +++ new
-hw_sys_uname(ARG(0))
+NOPTR, hw_sys_uname(ARG(0))
 
-### clock_gettime's row stops validating its timespec
+### clock_gettime's row stops declaring its timespec
 --- old
-USER_OUT(ARG(1), 16, hw_sys_clock_gettime(ARG(0), ARG(1)))
+PTRS(OUT(1, 16)), hw_sys_clock_gettime(ARG(0), ARG(1))
 +++ new
-hw_sys_clock_gettime(ARG(0), ARG(1))
+NOPTR, hw_sys_clock_gettime(ARG(0), ARG(1))
 
-### time's row stops validating its optional pointer
+### time's row stops declaring its optional pointer
 --- old
-USER_OUT_OPT(ARG(0), 8, hw_sys_time(ARG(0)))
+PTRS(OUT_OPT(0, 8)), hw_sys_time(ARG(0))
 +++ new
-hw_sys_time(ARG(0))
+NOPTR, hw_sys_time(ARG(0))

@@ -1192,9 +1192,6 @@ static long hw_sys_prctl(uint64_t op, uint64_t arg) {
     t = &g_tasks[g_current_task];
     if (op == PR_SET_NAME) {
         char kname[16];
-        if (!linux_user_ok(arg, 16, 0)) {
-            return -VIBEOS_EFAULT;
-        }
         /* Copy in fault-safe, then terminate: a sibling munmap between the
          * check and the read would fault in ring 0 (uaccess follow-up). */
         if (vibeos_uaccess_copy(kname, (const void *)(uintptr_t)arg, 16) != 0) {
@@ -1210,9 +1207,6 @@ static long hw_sys_prctl(uint64_t op, uint64_t arg) {
         return 0;
     }
     if (op == PR_GET_NAME) {
-        if (!linux_user_ok(arg, 16, 1)) {
-            return -VIBEOS_EFAULT;
-        }
         if (vibeos_uaccess_copy((void *)(uintptr_t)arg, t->comm, 16) != 0) {
             return -VIBEOS_EFAULT;
         }
@@ -1344,9 +1338,6 @@ static long hw_sys_arch_prctl(uint64_t code, uint64_t addr) {
             hw_wrmsr(MSR_FS_BASE, addr);
             return 0;
         case ARCH_GET_FS:
-            if (!linux_user_ok(addr, 8, 1)) {
-                return -VIBEOS_EFAULT;
-            }
             /* Fault-safe: a sibling thread can munmap the page between the
              * range check and here (H-024). */
             if (vibeos_uaccess_copy((void *)(uintptr_t)addr, &t->fs_base,
@@ -1372,9 +1363,6 @@ static long hw_sys_prlimit64(uint64_t resource, uint64_t new_uptr, uint64_t old_
     }
     if (old_uptr == 0u) {
         return 0;
-    }
-    if (!linux_user_ok(old_uptr, 16, 1)) {
-        return -VIBEOS_EFAULT;
     }
     {
         uint64_t *rl = (uint64_t *)(uintptr_t)old_uptr;
@@ -1618,34 +1606,34 @@ static long linux_sys_clone(const vibeos_call_t *c) {
  *   set_robust_list  walked only when a thread dies holding a robust mutex; no
  *            such thing exists here, so there is nothing to walk. */
 #define LINUX_PROC_SYSCALLS(X) \
-    X(24,  sched_yield,      YIELD,           linux_sys_yield()) \
-    X(39,  getpid,           GETPID,          linux_sys_getpid()) \
-    X(56,  clone,            THREAD_CREATE,   linux_sys_clone(c)) \
-    X(57,  fork,             FORK,            hw_sys_fork(FRAME)) \
-    X(58,  vfork,            FORK,            hw_sys_fork(FRAME)) \
-    X(59,  execve,           EXEC,            hw_sys_execve(FRAME, ARG(0), ARG(1), ARG(2))) \
-    X(60,  exit,             EXIT,            linux_sys_exit(ARG(0))) \
-    X(61,  wait4,            WAIT,            hw_sys_waitpid(ARG(0), ARG(1), ARG(2))) \
-    X(102, getuid,           IDENTITY_GET,    0) \
-    X(104, getgid,           IDENTITY_GET,    0) \
-    X(105, setuid,           IDENTITY_SET,    hw_sys_setresid(ARG(0))) \
-    X(106, setgid,           IDENTITY_SET,    hw_sys_setresid(ARG(0))) \
-    X(107, geteuid,          IDENTITY_GET,    0) \
-    X(108, getegid,          IDENTITY_GET,    0) \
-    X(109, setpgid,          SETPGID,         hw_sys_setpgid(ARG(0), ARG(1))) \
-    X(110, getppid,          GETPPID,         linux_sys_getppid()) \
-    X(111, getpgrp,          GETPGRP,         linux_sys_getpgrp()) \
-    X(112, setsid,           SETSID,          hw_sys_setsid()) \
-    X(124, getsid,           GETSID,          hw_sys_getsid(ARG(0))) \
-    X(157, prctl,            PRCTL,           hw_sys_prctl(ARG(0), ARG(1))) \
-    X(158, arch_prctl,       ARCH_PRCTL,      hw_sys_arch_prctl(ARG(0), ARG(1))) \
-    X(186, gettid,           GETTID,          linux_sys_gettid()) \
-    X(202, futex,            FUTEX,           hw_sys_futex(ARG(0), ARG(1), ARG(2))) \
-    X(218, set_tid_address,  SET_TID_ADDRESS, linux_sys_set_tid_address(ARG(0))) \
-    X(231, exit_group,       EXIT_GROUP,      linux_sys_exit_group(ARG(0))) \
-    X(273, set_robust_list,  SET_ROBUST_LIST, 0) \
-    X(302, prlimit64,        PRLIMIT,         hw_sys_prlimit64(ARG(1), ARG(2), ARG(3))) \
-    X(318, getrandom,        GETRANDOM,       -VIBEOS_ENOSYS) \
-    X(334, rseq,             RSEQ,            -VIBEOS_ENOSYS)
+    X(24,  sched_yield,      YIELD,           NOPTR, linux_sys_yield()) \
+    X(39,  getpid,           GETPID,          NOPTR, linux_sys_getpid()) \
+    X(56,  clone,            THREAD_CREATE,   NOPTR, linux_sys_clone(c)) \
+    X(57,  fork,             FORK,            NOPTR, hw_sys_fork(FRAME)) \
+    X(58,  vfork,            FORK,            NOPTR, hw_sys_fork(FRAME)) \
+    X(59,  execve,           EXEC,            NOPTR, hw_sys_execve(FRAME, ARG(0), ARG(1), ARG(2))) \
+    X(60,  exit,             EXIT,            NOPTR, linux_sys_exit(ARG(0))) \
+    X(61,  wait4,            WAIT,            NOPTR, hw_sys_waitpid(ARG(0), ARG(1), ARG(2))) \
+    X(102, getuid,           IDENTITY_GET,    NOPTR, 0) \
+    X(104, getgid,           IDENTITY_GET,    NOPTR, 0) \
+    X(105, setuid,           IDENTITY_SET,    NOPTR, hw_sys_setresid(ARG(0))) \
+    X(106, setgid,           IDENTITY_SET,    NOPTR, hw_sys_setresid(ARG(0))) \
+    X(107, geteuid,          IDENTITY_GET,    NOPTR, 0) \
+    X(108, getegid,          IDENTITY_GET,    NOPTR, 0) \
+    X(109, setpgid,          SETPGID,         NOPTR, hw_sys_setpgid(ARG(0), ARG(1))) \
+    X(110, getppid,          GETPPID,         NOPTR, linux_sys_getppid()) \
+    X(111, getpgrp,          GETPGRP,         NOPTR, linux_sys_getpgrp()) \
+    X(112, setsid,           SETSID,          NOPTR, hw_sys_setsid()) \
+    X(124, getsid,           GETSID,          NOPTR, hw_sys_getsid(ARG(0))) \
+    X(157, prctl,            PRCTL,           PTRS(IN_IF(0, PR_SET_NAME, 1, 16), OUT_IF(0, PR_GET_NAME, 1, 16)), hw_sys_prctl(ARG(0), ARG(1))) \
+    X(158, arch_prctl,       ARCH_PRCTL,      PTRS(OUT_IF(0, ARCH_GET_FS, 1, 8)), hw_sys_arch_prctl(ARG(0), ARG(1))) \
+    X(186, gettid,           GETTID,          NOPTR, linux_sys_gettid()) \
+    X(202, futex,            FUTEX,           NOPTR, hw_sys_futex(ARG(0), ARG(1), ARG(2))) \
+    X(218, set_tid_address,  SET_TID_ADDRESS, NOPTR, linux_sys_set_tid_address(ARG(0))) \
+    X(231, exit_group,       EXIT_GROUP,      NOPTR, linux_sys_exit_group(ARG(0))) \
+    X(273, set_robust_list,  SET_ROBUST_LIST, NOPTR, 0) \
+    X(302, prlimit64,        PRLIMIT,         PTRS(OUT_OPT(3, 16)), hw_sys_prlimit64(ARG(1), ARG(2), ARG(3))) \
+    X(318, getrandom,        GETRANDOM,       NOPTR, -VIBEOS_ENOSYS) \
+    X(334, rseq,             RSEQ,            NOPTR, -VIBEOS_ENOSYS)
 
 LINUX_DEFINE_SYSCALLS(proc, LINUX_PROC_SYSCALLS)

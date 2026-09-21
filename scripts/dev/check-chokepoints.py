@@ -64,13 +64,17 @@ CHOKEPOINTS = {
         "that is the criterion C4 was written to reach. A second call is a "
         "handler that decided for itself what a valid pointer is."),
     "linux_user_ok": (
-        45,   # 3 macros in the rows, 1 definition, 1 declaration, 40 in handlers and the kernel's own reads
-        "who asks the dispatcher to judge a user pointer: the rows' USER_* "
-        "wrappers, the handlers whose range depends on data they only just "
-        "read (iovec bases, strings, sockaddrs), and the kernel's own reads of "
-        "user memory. **This is where the old 'a syscall that stopped checking' "
-        "alarm lives now**: the number going down is a handler that no longer "
-        "validates, and nothing else in the tree would notice."),
+        16,   # definition, the descriptor engine's call, one declaration, and 13 that cannot be descriptors
+        "who asks the dispatcher to judge a user pointer. **This is where the old "
+        "'a syscall that stopped checking' alarm lives now.** The pointer arguments of "
+        "every syscall are declared in its row (PTRS) and checked by the engine in "
+        "dispatch.c; what is left here is what a descriptor cannot say: an iovec "
+        "element's own base and readlink's length (read out of user or kernel data "
+        "only just fetched), clone's stack and tid words and wait's status word "
+        "(stores that are skipped silently, not refused), futex (EINVAL, not "
+        "EFAULT), the signal frame and its return, and the kernel's own reads (a "
+        "user string, the crash dump). A number going down is a check that vanished; "
+        "going up is a handler deciding for itself again."),
     "hw_user_range_why": (
         6,
         "the same check with a reason attached. A refusal that names a "

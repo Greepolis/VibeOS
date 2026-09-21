@@ -58,10 +58,11 @@
  *
  * A syscall is one line in a list at the bottom of the file that holds its handler:
  *
- *     X(0, read, READ, hw_sys_read(ARG(0), ARG(1), ARG(2)))
+ *     X(0, read, READ, PTRS(OUT_BUF(1, 2)), hw_sys_read(ARG(0), ARG(1), ARG(2)))
  *
  * the Linux number, a name, the kernel operation (declared, with its checks, in
- * include/vibeos/abi.h) and the call that runs it. ARG(i) is the i-th argument in
+ * include/vibeos/abi.h), its pointer arguments (below; NOPTR for none) and the call
+ * that runs it. ARG(i) is the i-th argument in
  * the order the ABI passes them - rdi, rsi, rdx, r10, r8, r9 - and FRAME is the
  * trapframe for the calls that need it. Writing the marshalling out in the row
  * is the point: which register becomes which parameter is right there, and is
@@ -73,29 +74,38 @@
 #define ARG(i) (c->a[(i)])
 #define FRAME ((vibeos_x86_64_isr_frame_t *)c->frame)
 
-/* ---- checking a pointer argument in the row ------------------------------------
+/* ---- declaring a pointer argument ---------------------------------------------
  *
- * A row may wrap its call in USER_OUT / USER_IN / USER_OUT_OPT to have the user
- * pointer validated *before* the handler runs, so the handler (and anything that
- * reaches it) can assume the range is good:
+ * The fourth column of a row is NOPTR, or PTRS(...) listing the pointer arguments
+ * the kernel will touch (see vibeos_ptr_t in abi.h):
  *
- *     X(63, uname, UNAME, USER_OUT(ARG(0), 390, hw_sys_uname(ARG(0))))
+ *     X(0, read, READ, PTRS(OUT_BUF(1, 2)), hw_sys_read(ARG(0), ARG(1), ARG(2)))
  *
- * OUT is a range the kernel will write, IN one it only reads, OPT accepts a null
- * pointer (the handler then skips it). A refusal is -EFAULT, the same answer the
- * handler gave, at the same point: only a check that was the first thing a
- * handler did, with nothing before it that could return a different error, is
- * hoisted, because moving one past an EBADF or EINVAL changes which error a
- * program sees. A handler another handler also calls (write, from writev) keeps
- * its own check. The check is written out in the row, so a reader sees what the
- * syscall promises about its arguments without opening the handler. */
-#define USER_OUT(ptr, len, call)     (linux_user_ok((ptr), (len), 1) ? (long)(call) : (long)-VIBEOS_EFAULT)
-#define USER_IN(ptr, len, call)     (linux_user_ok((ptr), (len), 0) ? (long)(call) : (long)-VIBEOS_EFAULT)
-#define USER_OUT_OPT(ptr, len, call)     (((ptr) == 0u || linux_user_ok((ptr), (len), 1)) ? (long)(call) : (long)-VIBEOS_EFAULT)
+ * OUT / IN are a range of fixed size the kernel writes / reads; the _BUF forms take
+ * their length from another argument; the _OPT forms let a null pointer through; IN_VEC
+ * is an array of `scale`-byte records whose count is an argument, with a cap above
+ * which the handler's own EINVAL applies; the _IF forms apply only when argument
+ * `wa` equals `wv`. Arguments are numbered from 0, in the order of ARG(). The
+ * dispatcher runs them in the order written, so list them as the handler used to. */
+#define PTR_(a, fl, la, n, cp, wa, wv) \
+    { (uint8_t)(a), (uint8_t)((fl) | VIBEOS_PTR_LIVE), (uint8_t)(la), (uint8_t)(wa), \
+      (uint32_t)(n), (uint32_t)(cp), (uint64_t)(wv) }
+#define OUT(a, n)              PTR_(a, VIBEOS_PTR_WRITE, 0, n, 0, 0, 0)
+#define IN(a, n)               PTR_(a, 0, 0, n, 0, 0, 0)
+#define OUT_OPT(a, n)          PTR_(a, VIBEOS_PTR_WRITE | VIBEOS_PTR_OPT, 0, n, 0, 0, 0)
+#define IN_OPT(a, n)           PTR_(a, VIBEOS_PTR_OPT, 0, n, 0, 0, 0)
+#define OUT_BUF(a, la)         PTR_(a, VIBEOS_PTR_WRITE, (la) + 1, 1, 0, 0, 0)
+#define IN_BUF(a, la)          PTR_(a, 0, (la) + 1, 1, 0, 0, 0)
+#define IN_VEC(a, la, scale, cp) PTR_(a, 0, (la) + 1, scale, cp, 0, 0)
+#define OUT_IF(wa, wv, a, n)   PTR_(a, VIBEOS_PTR_WRITE, 0, n, 0, (wa) + 1, wv)
+#define IN_IF(wa, wv, a, n)    PTR_(a, 0, 0, n, 0, (wa) + 1, wv)
+#define PTRS(...)              { __VA_ARGS__ }
+#define NOPTR                  { { 0 } }
 
-#define LINUX_ADAPTER(nr, name, op, expr) \
+#define LINUX_ADAPTER(nr, name, op, ptrs, expr) \
     static long linux_h_##name(const vibeos_call_t *c) { (void)c; return (long)(expr); }
-#define LINUX_ROW(nr, name, op, expr) { (nr), #name, VIBEOS_OP_##op, linux_h_##name },
+#define LINUX_ROW(nr, name, op, ptrs, expr) \
+    { (nr), #name, VIBEOS_OP_##op, linux_h_##name, ptrs },
 #define LINUX_DEFINE_SYSCALLS(topic, LIST) \
     LIST(LINUX_ADAPTER) \
     const vibeos_row_t linux_##topic##_rows[] = { LIST(LINUX_ROW) }; \

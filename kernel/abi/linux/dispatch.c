@@ -42,6 +42,42 @@ int linux_user_ok(uint64_t base, uint64_t len, int write) {
     return hw_user_range_ok(base, len, write);
 }
 
+/* Validate the pointer arguments a row declares, before its handler is entered.
+ * Returns 0, or -EFAULT for the first range that is not valid; the handler then
+ * never runs, so nothing it does first (a lookup, a lock, a dequeue) has happened
+ * to a call that was going to fail anyway. */
+static long check_pointers(const vibeos_row_t *row, const vibeos_call_t *call) {
+    uint32_t i;
+
+    for (i = 0; i < VIBEOS_PTR_MAX; i++) {
+        const vibeos_ptr_t *d = &row->ptr[i];
+        uint64_t len;
+
+        if (!(d->flags & VIBEOS_PTR_LIVE)) {
+            continue;
+        }
+        if (d->when_arg && call->a[d->when_arg - 1u] != d->when_val) {
+            continue;
+        }
+        if ((d->flags & VIBEOS_PTR_OPT) && call->a[d->arg] == 0u) {
+            continue;
+        }
+        if (d->len_arg) {
+            uint64_t n = call->a[d->len_arg - 1u];
+            if (n == 0u || (d->cap && n > d->cap)) {
+                continue;
+            }
+            len = n * (uint64_t)d->len;
+        } else {
+            len = d->len;
+        }
+        if (!linux_user_ok(call->a[d->arg], len, (d->flags & VIBEOS_PTR_WRITE) ? 1 : 0)) {
+            return -VIBEOS_EFAULT;
+        }
+    }
+    return 0;
+}
+
 /* Register every table, once, before the first user task exists. A number claimed
  * twice, or a kernel operation declared in abi.h that no file implements, is a
  * kernel that would answer some syscall wrongly for the rest of its life, so it
@@ -87,6 +123,12 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
         call.a[4] = frame->r8;
         call.a[5] = frame->r9;
         call.frame = frame;
+        {
+            long refused = check_pointers(row, &call);
+            if (refused) {
+                return refused;
+            }
+        }
         return row->handler(&call);
     }
 

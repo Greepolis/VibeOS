@@ -227,9 +227,6 @@ static long hw_sys_pipe2(uint64_t fds_uptr, uint64_t flags) {
     if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
         return -VIBEOS_EINVAL;
     }
-    if (!linux_user_ok(fds_uptr, 8, 1)) {
-        return -VIBEOS_EFAULT;
-    }
     t = &g_tasks[g_current_task];
 
     hw_spin_lock_named(&g_pipe_lock, __func__);
@@ -364,9 +361,6 @@ static long hw_sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
     const char *p = (const char *)(uintptr_t)buf;
     uint64_t i;
 
-    if (!linux_user_ok(buf, len, 0)) {
-        return -VIBEOS_EFAULT;
-    }
     if (fd < 3u && g_current_task >= 0 &&
         g_tasks[g_current_task].std_redirect[fd].used) {
         hw_fd_t *r = &g_tasks[g_current_task].std_redirect[fd];
@@ -498,9 +492,6 @@ static long hw_sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
 
     if (len == 0u) {
         return 0;
-    }
-    if (!linux_user_ok(buf, len, 1)) {
-        return -VIBEOS_EFAULT;
     }
     if (fd < 3u && g_current_task >= 0 &&
         g_tasks[g_current_task].std_redirect[fd].used) {
@@ -743,9 +734,6 @@ static long hw_sys_getdents64(uint64_t fd, uint64_t buf, uint64_t len) {
     if (!f->isdir) {
         return -VIBEOS_ENOTDIR;
     }
-    if (!linux_user_ok(buf, len, 1)) {
-        return -VIBEOS_EFAULT;
-    }
     /* A bounded syscall must not spin forever if a filesystem backend returns
      * a cyclic directory stream or fails to advance its cursor. */
     while (records < 256u && f->dir_index < VIBEOS_HW_MAX_DIR_ENTRIES) {
@@ -834,9 +822,6 @@ static long hw_write_stat(uint64_t ubuf, uint32_t mode, uint64_t size, uint64_t 
     uint64_t kbase = (uint64_t)(uintptr_t)kbuf;
     uint32_t i;
 
-    if (!linux_user_ok(ubuf, STAT_SIZE, 1)) {
-        return -VIBEOS_EFAULT;
-    }
     /* Assemble the whole struct in the kernel and copy it out once. Filling the
      * user buffer field by field would fault in ring 0 if a sibling munmaps it
      * between the range check and any of these writes (uaccess follow-up to
@@ -939,9 +924,6 @@ static long hw_sys_getcwd(uint64_t ubuf, uint64_t size) {
     if (size < 2u) {
         return -VIBEOS_ERANGE;
     }
-    if (!linux_user_ok(ubuf, 2, 1)) {
-        return -VIBEOS_EFAULT;
-    }
     {
         /* Fault-safe copy out: a sibling munmap between the check and the write
          * would fault in ring 0 (uaccess follow-up to 6a94a32). */
@@ -1007,7 +989,7 @@ static long hw_sys_ioctl(uint64_t fd, uint64_t req, uint64_t arg) {
         return -VIBEOS_EBADF;
     }
     if (fd < 3u && req == VIBEOS_TIOCGPGRP) {
-        if (!linux_user_ok(arg, sizeof(uint32_t), 1) || g_current_task < 0) {
+        if (g_current_task < 0) {
             return -VIBEOS_EFAULT;
         }
         {
@@ -1021,7 +1003,7 @@ static long hw_sys_ioctl(uint64_t fd, uint64_t req, uint64_t arg) {
     if (fd < 3u && req == VIBEOS_TIOCSPGRP) {
         uint32_t pgid;
         int group;
-        if (!linux_user_ok(arg, sizeof(uint32_t), 0) || g_current_task < 0) {
+        if (g_current_task < 0) {
             return -VIBEOS_EFAULT;
         }
         if (vibeos_uaccess_copy(&pgid, (const void *)(uintptr_t)arg,
@@ -1053,9 +1035,6 @@ static long hw_sys_writev(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt) {
     if (iovcnt > 1024u) {
         return -VIBEOS_EINVAL;   /* Linux caps this at UIO_MAXIOV */
     }
-    if (!linux_user_ok(iov_uptr, iovcnt * sizeof(hw_iovec_t), 0)) {
-        return -VIBEOS_EFAULT;
-    }
     for (i = 0; i < iovcnt; i++) {
         hw_iovec_t v;
         long n;
@@ -1068,6 +1047,9 @@ static long hw_sys_writev(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt) {
         }
         if (v.len == 0u) {
             continue;
+        }
+        if (!linux_user_ok(v.base, v.len, 0)) {
+            return total > 0 ? total : -VIBEOS_EFAULT;
         }
         n = hw_sys_write(fd, v.base, v.len);
         if (n < 0) {
@@ -1088,9 +1070,6 @@ static long hw_sys_readv(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt) {
     if (iovcnt > 1024u) {
         return -VIBEOS_EINVAL;
     }
-    if (!linux_user_ok(iov_uptr, iovcnt * sizeof(hw_iovec_t), 0)) {
-        return -VIBEOS_EFAULT;
-    }
     for (i = 0; i < iovcnt; i++) {
         hw_iovec_t v;
         long n;
@@ -1101,6 +1080,9 @@ static long hw_sys_readv(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt) {
         }
         if (v.len == 0u) {
             continue;
+        }
+        if (!linux_user_ok(v.base, v.len, 1)) {
+            return total > 0 ? total : -VIBEOS_EFAULT;
         }
         n = hw_sys_read(fd, v.base, v.len);
         if (n < 0) {
@@ -1139,26 +1121,26 @@ static long linux_sys_dup(uint64_t oldfd) {
  *             purely to move bytes between kernel buffers.
  *   pipe      is pipe2 with no flags. */
 #define LINUX_FS_SYSCALLS(X) \
-    X(0,   read,       READ,        hw_sys_read(ARG(0), ARG(1), ARG(2))) \
-    X(1,   write,      WRITE,       hw_sys_write(ARG(0), ARG(1), ARG(2))) \
-    X(2,   open,       OPEN,        hw_sys_open(ARG(0), ARG(1))) \
-    X(3,   close,      CLOSE,       hw_sys_close(ARG(0))) \
-    X(5,   fstat,      FSTAT,       hw_sys_fstat(ARG(0), ARG(1))) \
-    X(8,   lseek,      LSEEK,       hw_sys_lseek(ARG(0), ARG(1), ARG(2))) \
-    X(16,  ioctl,      IOCTL,       hw_sys_ioctl(ARG(0), ARG(1), ARG(2))) \
-    X(19,  readv,      READV,       hw_sys_readv(ARG(0), ARG(1), ARG(2))) \
-    X(20,  writev,     WRITEV,      hw_sys_writev(ARG(0), ARG(1), ARG(2))) \
-    X(22,  pipe,       PIPE,        hw_sys_pipe2(ARG(0), 0)) \
-    X(32,  dup,        DUP,         linux_sys_dup(ARG(0))) \
-    X(33,  dup2,       DUP2,        hw_sys_dup2(ARG(0), ARG(1))) \
-    X(40,  sendfile,   SENDFILE,    -VIBEOS_ENOSYS) \
-    X(79,  getcwd,     GETCWD,      hw_sys_getcwd(ARG(0), ARG(1))) \
-    X(83,  mkdir,      MKDIR,       hw_sys_mkdir(ARG(0))) \
-    X(87,  unlink,     UNLINK,      hw_sys_unlink(ARG(0))) \
-    X(217, getdents64, GETDENTS,    hw_sys_getdents64(ARG(0), ARG(1), ARG(2))) \
-    X(257, openat,     OPEN_AT,     hw_sys_openat(ARG(0), ARG(1), ARG(2))) \
-    X(262, newfstatat, STAT_AT,     hw_sys_newfstatat(ARG(0), ARG(1), ARG(2), ARG(3))) \
-    X(267, readlinkat, READLINK_AT, hw_sys_readlinkat(ARG(0), ARG(1), ARG(2), ARG(3))) \
-    X(293, pipe2,      PIPE2,       hw_sys_pipe2(ARG(0), ARG(1)))
+    X(0,   read,       READ,        PTRS(OUT_BUF(1, 2)), hw_sys_read(ARG(0), ARG(1), ARG(2))) \
+    X(1,   write,      WRITE,       PTRS(IN_BUF(1, 2)), hw_sys_write(ARG(0), ARG(1), ARG(2))) \
+    X(2,   open,       OPEN,        NOPTR, hw_sys_open(ARG(0), ARG(1))) \
+    X(3,   close,      CLOSE,       NOPTR, hw_sys_close(ARG(0))) \
+    X(5,   fstat,      FSTAT,       PTRS(OUT(1, STAT_SIZE)), hw_sys_fstat(ARG(0), ARG(1))) \
+    X(8,   lseek,      LSEEK,       NOPTR, hw_sys_lseek(ARG(0), ARG(1), ARG(2))) \
+    X(16,  ioctl,      IOCTL,       PTRS(OUT_IF(1, VIBEOS_TIOCGPGRP, 2, sizeof(uint32_t)), IN_IF(1, VIBEOS_TIOCSPGRP, 2, sizeof(uint32_t))), hw_sys_ioctl(ARG(0), ARG(1), ARG(2))) \
+    X(19,  readv,      READV,       PTRS(IN_VEC(1, 2, sizeof(hw_iovec_t), 1024)), hw_sys_readv(ARG(0), ARG(1), ARG(2))) \
+    X(20,  writev,     WRITEV,      PTRS(IN_VEC(1, 2, sizeof(hw_iovec_t), 1024)), hw_sys_writev(ARG(0), ARG(1), ARG(2))) \
+    X(22,  pipe,       PIPE,        PTRS(OUT(0, 8)), hw_sys_pipe2(ARG(0), 0)) \
+    X(32,  dup,        DUP,         NOPTR, linux_sys_dup(ARG(0))) \
+    X(33,  dup2,       DUP2,        NOPTR, hw_sys_dup2(ARG(0), ARG(1))) \
+    X(40,  sendfile,   SENDFILE,    NOPTR, -VIBEOS_ENOSYS) \
+    X(79,  getcwd,     GETCWD,      PTRS(OUT(0, 2)), hw_sys_getcwd(ARG(0), ARG(1))) \
+    X(83,  mkdir,      MKDIR,       NOPTR, hw_sys_mkdir(ARG(0))) \
+    X(87,  unlink,     UNLINK,      NOPTR, hw_sys_unlink(ARG(0))) \
+    X(217, getdents64, GETDENTS,    PTRS(OUT_BUF(1, 2)), hw_sys_getdents64(ARG(0), ARG(1), ARG(2))) \
+    X(257, openat,     OPEN_AT,     NOPTR, hw_sys_openat(ARG(0), ARG(1), ARG(2))) \
+    X(262, newfstatat, STAT_AT,     PTRS(OUT(2, STAT_SIZE)), hw_sys_newfstatat(ARG(0), ARG(1), ARG(2), ARG(3))) \
+    X(267, readlinkat, READLINK_AT, NOPTR, hw_sys_readlinkat(ARG(0), ARG(1), ARG(2), ARG(3))) \
+    X(293, pipe2,      PIPE2,       PTRS(OUT(0, 8)), hw_sys_pipe2(ARG(0), ARG(1)))
 
 LINUX_DEFINE_SYSCALLS(fs, LINUX_FS_SYSCALLS)
