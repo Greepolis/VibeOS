@@ -19,9 +19,6 @@ static long hw_sys_uname(uint64_t buf) {
     };
     uint32_t f, i;
 
-    if (!hw_user_range_ok(buf, 6u * 65u, 1)) {
-        return -VIBEOS_EFAULT;
-    }
     for (f = 0; f < 6u; f++) {
         char *dst = (char *)(uintptr_t)(buf + (uint64_t)f * 65u);
         const char *src = fields[f];
@@ -46,9 +43,6 @@ static long hw_sys_clock_gettime(uint64_t clk, uint64_t ts_uptr) {
     uint64_t kts[2];
 
     (void)clk;   /* monotonic and realtime are one clock here: uptime */
-    if (!hw_user_range_ok(ts_uptr, 16, 1)) {
-        return -VIBEOS_EFAULT;
-    }
     kts[0] = ticks / VIBEOS_HW_TIMER_HZ;
     kts[1] = (ticks % VIBEOS_HW_TIMER_HZ) * (1000000000ull / VIBEOS_HW_TIMER_HZ);
     /* Built in the kernel and copied out: a sibling munmap between the check
@@ -63,9 +57,6 @@ static long hw_sys_time(uint64_t tptr) {
     uint64_t secs = g_timer_ticks / VIBEOS_HW_TIMER_HZ;
 
     if (tptr != 0u) {
-        if (!hw_user_range_ok(tptr, 8, 1)) {
-            return -VIBEOS_EFAULT;
-        }
         if (vibeos_uaccess_copy((void *)(uintptr_t)tptr, &secs, sizeof(secs)) != 0) {
             return -VIBEOS_EFAULT;
         }
@@ -75,8 +66,8 @@ static long hw_sys_time(uint64_t tptr) {
 
 /* ---- the syscalls this file implements --------------------------------------- */
 #define LINUX_MISC_SYSCALLS(X) \
-    X(63,  uname,         UNAME,         hw_sys_uname(ARG(0))) \
-    X(201, time,          TIME,          hw_sys_time(ARG(0))) \
-    X(228, clock_gettime, CLOCK_GETTIME, hw_sys_clock_gettime(ARG(0), ARG(1)))
+    X(63,  uname,         UNAME,         USER_OUT(ARG(0), 6u * 65u, hw_sys_uname(ARG(0)))) \
+    X(201, time,          TIME,          USER_OUT_OPT(ARG(0), 8, hw_sys_time(ARG(0)))) \
+    X(228, clock_gettime, CLOCK_GETTIME, USER_OUT(ARG(1), 16, hw_sys_clock_gettime(ARG(0), ARG(1))))
 
 LINUX_DEFINE_SYSCALLS(misc, LINUX_MISC_SYSCALLS)

@@ -73,6 +73,26 @@
 #define ARG(i) (c->a[(i)])
 #define FRAME ((vibeos_x86_64_isr_frame_t *)c->frame)
 
+/* ---- checking a pointer argument in the row ------------------------------------
+ *
+ * A row may wrap its call in USER_OUT / USER_IN / USER_OUT_OPT to have the user
+ * pointer validated *before* the handler runs, so the handler (and anything that
+ * reaches it) can assume the range is good:
+ *
+ *     X(63, uname, UNAME, USER_OUT(ARG(0), 390, hw_sys_uname(ARG(0))))
+ *
+ * OUT is a range the kernel will write, IN one it only reads, OPT accepts a null
+ * pointer (the handler then skips it). A refusal is -EFAULT, the same answer the
+ * handler gave, at the same point: only a check that was the first thing a
+ * handler did, with nothing before it that could return a different error, is
+ * hoisted, because moving one past an EBADF or EINVAL changes which error a
+ * program sees. A handler another handler also calls (write, from writev) keeps
+ * its own check. The check is written out in the row, so a reader sees what the
+ * syscall promises about its arguments without opening the handler. */
+#define USER_OUT(ptr, len, call)     (hw_user_range_ok((ptr), (len), 1) ? (long)(call) : (long)-VIBEOS_EFAULT)
+#define USER_IN(ptr, len, call)     (hw_user_range_ok((ptr), (len), 0) ? (long)(call) : (long)-VIBEOS_EFAULT)
+#define USER_OUT_OPT(ptr, len, call)     (((ptr) == 0u || hw_user_range_ok((ptr), (len), 1)) ? (long)(call) : (long)-VIBEOS_EFAULT)
+
 #define LINUX_ADAPTER(nr, name, op, expr) \
     static long linux_h_##name(const vibeos_call_t *c) { (void)c; return (long)(expr); }
 #define LINUX_ROW(nr, name, op, expr) { (nr), #name, VIBEOS_OP_##op, linux_h_##name },

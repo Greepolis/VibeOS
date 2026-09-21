@@ -5,10 +5,10 @@
 # declarations against the dispatcher's call graph in both directions.
 #
 #  - "remove a check from a handler and confirm the enumeration names it": the
-#    first and second cases take the check out of one handler and the run must go
-#    red naming the operation and the check.
+#    two cases that took a check out of uname and clock_gettime lived here until
+#    stage 2b moved those checks into the rows; they are core-syscall-hoist.txt now.
 #  - "declare a check that is not run" / "run one that is not declared": the
-#    third and fourth cases, which change the *declaration* instead of the code.
+#    cases below, which change the *declaration* instead of the code.
 #  - "an operation no case dispatches": the fifth.
 #
 # Not run as cases, and said so rather than implied:
@@ -24,20 +24,6 @@
 #    the ratchet's margin (5000 cycles against a 208-440 minimum) would not trip
 #    it, so this is a claim about margin, not a case.
 #
-# Target source: kernel/abi/linux/misc.c (cases 1-2); include/vibeos/abi.h
-# for the rest, run as: sabotage.py include/vibeos/abi.h scripts/dev/cases/core-syscall.txt
-# Run: SABOTAGE_VERIFY="python3 scripts/dev/check-syscall-checks.py" python3 scripts/dev/sabotage.py kernel/abi/linux/misc.c scripts/dev/cases/core-syscall.txt
-
-### uname stops validating its buffer
---- old
-    if (!hw_user_range_ok(buf, 6u * 65u, 1)) {
-        return -VIBEOS_EFAULT;
-    }
-+++ new
-
-### clock_gettime stops validating its pointer
---- old
-    if (!hw_user_range_ok(ts_uptr, 16, 1)) {
-        return -VIBEOS_EFAULT;
-    }
-+++ new
+# This file now holds no case of its own - it is the record of the two that were
+# not run. The runnable ones are core-syscall-hoist.txt (checks in the rows),
+# core-syscall-decl.txt (the declarations) and core-syscall-rows.txt (the rows).

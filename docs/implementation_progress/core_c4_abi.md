@@ -1,6 +1,6 @@
 # C4 - one operation vocabulary, and the Linux ABI leaves `arch_hw.c`
 
-Status, 2026-09-21: **stages 1, 3 and 2a done; 2b (checks hoisted into the dispatcher) open.** The plan
+Status, 2026-09-21: **stages 1, 3, 2a and 2b done (2b hoists only the checks that are safe to hoist).** The plan
 (`docs/core/phases.md`) is the authority on intent; this file records what was
 built, what it measured, and what it found on the way.
 
@@ -76,9 +76,30 @@ against names renamed in the same change and never run - now run and red).
 
 ## Not done
 
-- **Stage 2b:** the dispatcher does not yet call the checks - `hw_user_range_ok` is
-  still called from 46 sites inside handlers. Needs pointer-argument descriptors on
-  the rows; must not change error precedence (EFAULT vs EBADF) silently.
+- **Stage 2b, the rest:** about 43 `hw_user_range_ok` sites stay in handlers, and that
+  is deliberate: they are conditional on another argument (null allowed, a length that
+  is zero), come after an EBADF/EINVAL return, size the range from a value read
+  earlier (iovecs, strings, argv), or sit in a helper other handlers call (write, from
+  writev). Hoisting those would change which error a program sees. Only
+  unconditional-first checks move.
+
+- The linkage from `linux_internal.h` to `arch_hw_internal.h` is a relative
+  include. The Linux layer still reaches x86-64 objects (a task, its address
+  space, its descriptor table) directly; abstracting that is the day a second
+  architecture exists, not before.
+
+## Stage 2b: pointer checks written in the row (2026-09-21)
+
+- `USER_OUT` / `USER_IN` / `USER_OUT_OPT` (`linux_internal.h`) wrap a row's call and
+  validate the pointer before the handler runs: -EFAULT, same answer as before.
+  Moved: uname, clock_gettime, time. Their handlers no longer check.
+- `check-syscall-checks.py` counts the wrappers as USER_MEMORY, so a row that drops
+  one is named by the operation, as a handler that dropped its check was.
+- **Chokepoint count stays 46**: three handler sites left, three macro sites arrived.
+  It no longer means "every handler validates itself"; it means the sites that
+  validate. Recorded as a decision rather than an edit to the number.
+- Sabotage: `cases/core-syscall-hoist.txt`, three cases, all red. The two old
+  handler-anchored cases in `core-syscall.txt` were replaced by them.
 
 ## Stage 2a: rows registered by the file that holds the handler (2026-09-21)
 
@@ -93,7 +114,3 @@ against names renamed in the same change and never run - now run and red).
 - Sabotage: `cases/core-syscall-rows.txt` (wrong number, duplicate number, deleted row,
   row that no longer validates memory) and four registry cases in `abi-abi_linux.txt`;
   all red. Full check green, 3/3 boots, clang and gcc warnings 0.
-- The linkage from `linux_internal.h` to `arch_hw_internal.h` is a relative
-  include. The Linux layer still reaches x86-64 objects (a task, its address
-  space, its descriptor table) directly; abstracting that is the day a second
-  architecture exists, not before.
