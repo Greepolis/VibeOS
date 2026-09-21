@@ -21,6 +21,8 @@ static const char *const g_name[VIBEOS_MBZ_COUNT] = {
     "journal_bad_record",
     "logsink_bad_record",
     "sched_requeue_failed",
+    "pipe_end_underflow",
+    "pipe_bad_slot",
 };
 
 void vibeos_mbz_hit(vibeos_mbz_id_t id, uint64_t witness) {

@@ -1,0 +1,66 @@
+# C5: the pipe module (kernel/ipc/pipe.c), proved by the host test.
+#
+# A pipe hangs a shell when a count is wrong, and it corrupts a stream when the ring
+# is. Each case breaks one rule and the run must go red on the host test that names it:
+#  1. end of file is reported whenever the pipe is empty, without asking whether a
+#     writer remains: `ls | wc -l` would print nothing;
+#  2. a pipe is freed when *either* end is gone: a reader loses bytes a writer wrote
+#     just before it closed;
+#  3. a release with nothing to release is clamped away, as the old code did, instead
+#     of counted: the wrong count stays invisible until a pipeline hangs;
+#  4. writing with no reader is accepted: the bytes are taken for nobody and no
+#     SIGPIPE is raised.
+#
+# Target source: kernel/ipc/pipe.c
+# Run: python3 scripts/dev/sabotage.py kernel/ipc/pipe.c scripts/dev/cases/ipc-pipe.txt build-clang-Release
+
+### an empty pipe is end of file whether or not a writer remains
+--- old
+        } else if (p->writers == 0u) {
+            st = VIBEOS_PIPE_EOF;
++++ new
+        } else if (1) {
+            st = VIBEOS_PIPE_EOF;
+
+### a pipe is freed as soon as either end is gone
+--- old
+        if (p->readers == 0u && p->writers == 0u) {
+            p->used = 0;
+            p->count = 0;
+            p->head = 0;
+            p->tail = 0;
+        }
+    }
+    unlock();
+}
+
+void vibeos_pipe_end_acquire
++++ new
+        if (p->readers == 0u || p->writers == 0u) {
+            p->used = 0;
+            p->count = 0;
+            p->head = 0;
+            p->tail = 0;
+        }
+    }
+    unlock();
+}
+
+void vibeos_pipe_end_acquire
+
+### releasing an end that is not held is clamped instead of counted
+--- old
+            vibeos_mbz_hit(VIBEOS_MBZ_PIPE_END_UNDERFLOW, (uint64_t)slot);
++++ new
+            (void)slot;
+
+### writing with no reader is accepted
+--- old
+    if (p->readers == 0u) {
+        unlock();
+        if (status) {
+            *status = VIBEOS_PIPE_NO_READER;
+        }
+        return 0;
+    }
++++ new

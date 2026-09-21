@@ -3983,8 +3983,22 @@ uint64_t hw_proc_cr3(const hw_proc_t *p) {
 /* ---- Task table + preemptive scheduler ---------------------------------- */
 
 
-hw_pipe_t g_pipes[VIBEOS_HW_MAX_PIPES];
-hw_lock_t g_pipe_lock;
+static hw_lock_t g_pipe_lock;
+
+/* The pipe module serialises itself with this lock (vibeos_pipe_set_lock, registered
+ * at boot). It is the architecture's because a spin lock that masks interrupts is. */
+static void hw_pipe_lock(void) {
+    hw_spin_lock_named(&g_pipe_lock, "vibeos_pipe");
+}
+
+static void hw_pipe_unlock(void) {
+    hw_spin_unlock(&g_pipe_lock);
+}
+
+void hw_pipe_init(void) {
+    vibeos_pipe_set_lock(hw_pipe_lock, hw_pipe_unlock);
+    vibeos_pipe_reset();
+}
 
 /* Signals 1..64; index 0 is unused so the numbering matches Linux. */
 /* VIBEOS_HW_NSIG is in arch_hw_internal.h. */
@@ -5615,28 +5629,10 @@ int hw_copy_user_string(uint64_t uptr, char *dst, int max); /* defined below */
  * gone, because a reader may still have data to drain after every writer has
  * closed. */
 void hw_pipe_release(hw_fd_t *f) {
-    hw_pipe_t *pp;
-
-    if (!f || f->pipe < 0 || f->pipe >= VIBEOS_HW_MAX_PIPES) {
+    if (!f || f->pipe < 0) {
         return;
     }
-    pp = &g_pipes[f->pipe];
-    hw_spin_lock_named(&g_pipe_lock, __func__);
-    if (f->writable) {
-        if (pp->writers > 0u) {
-            pp->writers--;
-        }
-    } else if (pp->readers > 0u) {
-        pp->readers--;
-    }
-    if (pp->readers == 0u && pp->writers == 0u) {
-        pp->used = 0;
-        pp->count = 0;
-        pp->head = 0;
-        pp->tail = 0;
-    }
-    hw_spin_unlock(&g_pipe_lock);
-    f->pipe = -1;
+    vibeos_pipe_end_release(f);
     /* Somebody may be waiting for the data or the space that just became
      * possible - or for the end of file that just became true. */
     hw_keyboard_wake();
@@ -7600,6 +7596,7 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
      * refuses a number claimed twice and an operation with no handler, so a
      * malformed table stops the boot with the reason instead of answering some
      * call wrongly for the life of the machine. */
+    hw_pipe_init();
     vibeos_linux_abi_init();
 
     /* SSE on, explicitly, on this core too.

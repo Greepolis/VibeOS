@@ -71,7 +71,7 @@ the Linux layer on ~126. `check-task-identity.py` states the two properties that
 stated - `hw_task_t` may not declare an identity field again, and the 92 may only go
 down - and is in `check.sh`. The process
 pointer (`ps`), `state`, `on_cpu`, the scheduling timestamps and the fork of a whole
-task are still `hw_task_t`'s. 20 lines still index the table by hand (pipe, dup2 and
+task are still `hw_task_t`'s. 17 lines still index the table by hand (pipe, dup2 and
 socket code that arithmetics on `fd - 3`); `check-task-identity.py` ratchets them.
 
 Gates: host test (`task_ident_tests.c`), `check-task-identity.py`, sabotage
@@ -99,5 +99,6 @@ catch deterministically. A counter earns its place where state is shared and mut
 at runtime. The one such place this phase touches is the pipe-end count that
 `hw_fds_inherit`, close and exit all adjust; the pipe table is not a module yet, and
 its detector (a `writers`/`readers` count that goes negative or disagrees with the
-descriptors that name it) belongs with it when it becomes one. Revisit then; the
-baseline should go back down, not up again.
+descriptors that name it) belongs with it when it becomes one. **Done: see
+`core_c5_pipes.md`** - the pipe table is a module now with two real counters. The two
+exemptions stay, since they were about pure functions, and the baseline is not raised again.

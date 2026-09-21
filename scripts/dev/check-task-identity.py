@@ -30,7 +30,7 @@ IDENT = os.path.join(ROOT, "include", "vibeos", "task_ident.h")
 ARCH_IDENTITY_LINES = 92
 # Lines anywhere in the arch layer or the Linux ABI that index the descriptor table
 # themselves (`files.fds` / `files.std`) instead of asking vibeos_fdtable_*.
-FILES_INDEX_LINES = 20
+FILES_INDEX_LINES = 17
 
 
 def read(p):

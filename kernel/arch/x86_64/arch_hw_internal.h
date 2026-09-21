@@ -19,6 +19,7 @@
 #include "vibeos/arch_x86_64.h"
 #include "vibeos/task_ident.h"
 #include "vibeos/fdtable.h"
+#include "vibeos/pipe.h"
 #include "vibeos/trap.h"
 #include "vibeos/boot.h"
 #include "vibeos/mm.h"
@@ -530,17 +531,7 @@ typedef struct {
  * and inherited: `ls | wc` gives the write end to a child, and the parent must
  * close its own copy or the reader never sees end of file. That is the classic
  * way a shell pipeline hangs, and it is a refcount bug, not a pipe bug. */
-#define VIBEOS_HW_MAX_PIPES 8
-#define VIBEOS_HW_PIPE_BYTES 4096u
-typedef struct {
-    int used;
-    uint32_t readers;
-    uint32_t writers;
-    uint32_t head;      /* next byte to read  */
-    uint32_t tail;      /* next byte to write */
-    uint32_t count;     /* bytes currently held */
-    uint8_t buf[VIBEOS_HW_PIPE_BYTES];
-} hw_pipe_t;
+/* Pipes are include/vibeos/pipe.h; the architecture supplies its lock. */
 /* futex(): one thread per process here, so there is never another thread to
  * wake or to wait for. WAKE woke nobody, which is 0. WAIT would deadlock, and
  * EAGAIN is what Linux returns when the value already moved - an outcome every
@@ -632,8 +623,7 @@ int hw_proc_create(hw_proc_t *p, hw_procstate_t *ps,
                           const char *path, uint32_t file_id);
 int hw_map_user_pages(vibeos_hw_aspace_t *as, uint64_t va, uint64_t pages);
 uint64_t hw_proc_cr3(const hw_proc_t *p);
-extern hw_pipe_t g_pipes[VIBEOS_HW_MAX_PIPES];
-extern hw_lock_t g_pipe_lock;
+void hw_pipe_init(void);
 uint64_t hw_alloc_kstack(uint64_t *out_base, uint32_t *out_pages);
 hw_procstate_t *hw_procstate_new(void);
 void hw_procstate_put(hw_procstate_t *ps);

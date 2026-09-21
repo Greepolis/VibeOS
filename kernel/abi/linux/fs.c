@@ -89,50 +89,18 @@ long hw_net_recv(hw_fd_t *f, uint64_t buf, uint64_t len);
 long hw_net_send(hw_fd_t *f, uint64_t buf, uint64_t len);
 
 static long hw_pipe_read(hw_fd_t *f, uint64_t buf, uint64_t len) {
-    hw_pipe_t *pp = &g_pipes[f->pipe];
-    uint8_t *dst = (uint8_t *)(uintptr_t)buf;
-
     for (;;) {
-        uint64_t copied = 0;
-        int faulted = 0;
-        int eof = 0;
+        vibeos_pipe_status_t st;
+        long n = vibeos_pipe_read(f->pipe, (void *)(uintptr_t)buf, len, vibeos_uaccess_copy, &st);
 
-        /* In contiguous runs of the ring, each through the fault-tolerant copy,
-         * and consumed only once copied: the caller may have slept below with
-         * the buffer validated, and a sibling can have unmapped it since
-         * (H-010). */
-        hw_spin_lock_named(&g_pipe_lock, __func__);
-        while (copied < len && pp->count > 0u) {
-            uint64_t run = VIBEOS_HW_PIPE_BYTES - pp->head;
-            if (run > pp->count) {
-                run = pp->count;
-            }
-            if (run > len - copied) {
-                run = len - copied;
-            }
-            if (vibeos_uaccess_copy(dst + copied, &pp->buf[pp->head], run) != 0) {
-                faulted = 1;
-                break;
-            }
-            copied += run;
-            pp->head = (uint32_t)((pp->head + run) % VIBEOS_HW_PIPE_BYTES);
-            pp->count -= (uint32_t)run;
+        if (n > 0) {
+            hw_keyboard_wake();   /* a blocked writer may now have room */
+            return n;
         }
-        /* End of file is decided here, in the same critical section that found
-         * the buffer empty (M-003, the read half). It used to be decided after
-         * the unlock, reading `writers` unguarded: a writer could enqueue and
-         * close in between, and the reader returned end-of-file with those bytes
-         * still in the buffer - the shape of `ls | wc -l` in the boot script. */
-        eof = (copied == 0u && !faulted && pp->writers == 0u);
-        hw_spin_unlock(&g_pipe_lock);
-        if (faulted && copied == 0u) {
+        if (st == VIBEOS_PIPE_FAULT) {
             return -VIBEOS_EFAULT;
         }
-        if (copied > 0u) {
-            hw_keyboard_wake();   /* a blocked writer may now have room */
-            return (long)copied;
-        }
-        if (eof) {
+        if (st == VIBEOS_PIPE_EOF) {
             return 0;   /* end of file: empty, and nobody can ever write again */
         }
         /* Nothing yet, and somebody could still write. Park instead of
@@ -148,63 +116,33 @@ static long hw_pipe_read(hw_fd_t *f, uint64_t buf, uint64_t len) {
 }
 
 static long hw_pipe_write(hw_fd_t *f, uint64_t buf, uint64_t len) {
-    hw_pipe_t *pp = &g_pipes[f->pipe];
-    const uint8_t *src = (const uint8_t *)(uintptr_t)buf;
     uint64_t written = 0;
 
     while (written < len) {
-        uint64_t before = written;
+        vibeos_pipe_status_t st;
+        long n = vibeos_pipe_write(f->pipe, (const void *)(uintptr_t)(buf + written), len - written,
+                                   vibeos_uaccess_copy, &st);
 
-        {
-            int faulted = 0;
-
-            /* The same, in the other direction: a writer that blocked on a full
-             * pipe reads its buffer again after waking (H-010). */
-            hw_spin_lock_named(&g_pipe_lock, __func__);
-            /* Writing into a pipe nobody will read. Linux raises SIGPIPE and
-             * returns EPIPE; with no handler the default action ends the
-             * process, which is what stops a pipeline from filling memory
-             * after its reader has gone.
-             *
-             * Tested under the lock that enqueues (M-003, the write half): it
-             * was tested before taking it, so the last reader could close in
-             * between and the bytes were accepted for nobody, with no signal. */
-            if (pp->readers == 0u) {
-                hw_spin_unlock(&g_pipe_lock);
-                if (g_current_task >= 0) {
-                    (void)hw_signal_raise(g_current_task, VIBEOS_SIGPIPE);
-                }
-                return written > 0u ? (long)written : -VIBEOS_EPIPE;
-            }
-            while (written < len && pp->count < VIBEOS_HW_PIPE_BYTES) {
-                uint64_t room = VIBEOS_HW_PIPE_BYTES - pp->count;
-                uint64_t run = VIBEOS_HW_PIPE_BYTES - pp->tail;
-                if (run > room) {
-                    run = room;
-                }
-                if (run > len - written) {
-                    run = len - written;
-                }
-                if (vibeos_uaccess_copy(&pp->buf[pp->tail], src + written, run) != 0) {
-                    faulted = 1;
-                    break;
-                }
-                written += run;
-                pp->tail = (uint32_t)((pp->tail + run) % VIBEOS_HW_PIPE_BYTES);
-                pp->count += (uint32_t)run;
-            }
-            hw_spin_unlock(&g_pipe_lock);
-            if (faulted) {
-                return written > 0u ? (long)written : -VIBEOS_EFAULT;
-            }
-        }
-        if (written > before) {
+        if (n > 0) {
+            written += (uint64_t)n;
             hw_keyboard_wake();   /* a blocked reader now has data */
             continue;
         }
-        /* Full, and a signal needs acting on: report what was written, or
-         * EINTR if nothing was. Same shape as the read side, and the same
-         * reason the check cannot be missed. */
+        /* Writing into a pipe nobody will read. Linux raises SIGPIPE and returns
+         * EPIPE; with no handler the default action ends the process, which is what
+         * stops a pipeline from filling memory after its reader has gone. */
+        if (st == VIBEOS_PIPE_NO_READER) {
+            if (g_current_task >= 0) {
+                (void)hw_signal_raise(g_current_task, VIBEOS_SIGPIPE);
+            }
+            return written > 0u ? (long)written : -VIBEOS_EPIPE;
+        }
+        if (st == VIBEOS_PIPE_FAULT) {
+            return written > 0u ? (long)written : -VIBEOS_EFAULT;
+        }
+        /* Full, and a signal needs acting on: report what was written, or EINTR if
+         * nothing was. Same shape as the read side, and the same reason the check
+         * cannot be missed. */
         if (g_current_task >= 0 && hw_signal_interrupts(g_current_task)) {
             return written > 0u ? (long)written : -VIBEOS_EINTR;
         }
@@ -226,20 +164,7 @@ static long hw_sys_pipe2(uint64_t fds_uptr, uint64_t flags) {
     }
     t = &g_tasks[g_current_task];
 
-    hw_spin_lock_named(&g_pipe_lock, __func__);
-    for (i = 0; i < VIBEOS_HW_MAX_PIPES; i++) {
-        if (!g_pipes[i].used) {
-            g_pipes[i].used = 1;
-            g_pipes[i].readers = 1;
-            g_pipes[i].writers = 1;
-            g_pipes[i].head = 0;
-            g_pipes[i].tail = 0;
-            g_pipes[i].count = 0;
-            slot = i;
-            break;
-        }
-    }
-    hw_spin_unlock(&g_pipe_lock);
+    slot = vibeos_pipe_create();
     if (slot < 0) {
         return -VIBEOS_EMFILE;
     }
@@ -266,9 +191,7 @@ static long hw_sys_pipe2(uint64_t fds_uptr, uint64_t flags) {
         }
     }
     if (rfd < 0 || wfd < 0) {
-        hw_spin_lock_named(&g_pipe_lock, __func__);
-        g_pipes[slot].used = 0;
-        hw_spin_unlock(&g_pipe_lock);
+        vibeos_pipe_abandon(slot);
         if (rfd >= 0) {
             t->files.fds[rfd - 3].used = 0;
         }
@@ -285,9 +208,7 @@ static long hw_sys_pipe2(uint64_t fds_uptr, uint64_t flags) {
         if (vibeos_uaccess_copy((void *)(uintptr_t)fds_uptr, kfds, sizeof(kfds)) != 0) {
             t->files.fds[rfd - 3].used = 0;
             t->files.fds[wfd - 3].used = 0;
-            hw_spin_lock_named(&g_pipe_lock, __func__);
-            g_pipes[slot].used = 0;
-            hw_spin_unlock(&g_pipe_lock);
+            vibeos_pipe_abandon(slot);
             return -VIBEOS_EFAULT;
         }
     }
@@ -326,15 +247,7 @@ static long hw_sys_dup2(uint64_t oldfd, uint64_t newfd) {
             dst->used = 0;
         }
         *dst = *src;
-        if (dst->pipe >= 0) {
-            hw_spin_lock_named(&g_pipe_lock, __func__);
-            if (dst->writable) {
-                g_pipes[dst->pipe].writers++;
-            } else {
-                g_pipes[dst->pipe].readers++;
-            }
-            hw_spin_unlock(&g_pipe_lock);
-        }
+        vibeos_pipe_end_acquire(dst);
         return (long)newfd;
     }
     /* Redirecting a standard descriptor: the branch above returned for every
@@ -342,15 +255,7 @@ static long hw_sys_dup2(uint64_t oldfd, uint64_t newfd) {
      * like a bound. */
     hw_pipe_release(&t->files.std[newfd]);
     t->files.std[newfd] = *src;
-    if (t->files.std[newfd].pipe >= 0) {
-        hw_spin_lock_named(&g_pipe_lock, __func__);
-        if (t->files.std[newfd].writable) {
-            g_pipes[t->files.std[newfd].pipe].writers++;
-        } else {
-            g_pipes[t->files.std[newfd].pipe].readers++;
-        }
-        hw_spin_unlock(&g_pipe_lock);
-    }
+    vibeos_pipe_end_acquire(&t->files.std[newfd]);
     return (long)newfd;
 }
 
@@ -1097,18 +1002,9 @@ void hw_fds_inherit(hw_task_t *child, const hw_task_t *parent) {
     /* Task slots are recycled, so the child's table is whatever the previous
      * occupant left; it is overwritten, not added to. */
     vibeos_fdtable_copy(&child->files, &parent->files);
-    hw_spin_lock_named(&g_pipe_lock, __func__);
     for (i = 0; i < vibeos_fdtable_count(); i++) {
-        const hw_fd_t *cf = vibeos_fdtable_entry(&child->files, i);
-        if (cf->used && cf->pipe >= 0) {
-            if (cf->writable) {
-                g_pipes[cf->pipe].writers++;
-            } else {
-                g_pipes[cf->pipe].readers++;
-            }
-        }
+        vibeos_pipe_end_acquire(vibeos_fdtable_entry(&child->files, i));
     }
-    hw_spin_unlock(&g_pipe_lock);
 }
 
 /* dup() is dup2() onto the lowest free descriptor. */
