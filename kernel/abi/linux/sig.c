@@ -200,7 +200,7 @@ static long hw_sys_rt_sigaction(uint64_t sig, uint64_t act_uptr, uint64_t old_up
 
     /* struct sigaction: handler at 0, flags at 8, restorer at 16, mask at 24. */
     if (old_uptr != 0u) {
-        if (!hw_user_range_ok(old_uptr, 32, 1)) {
+        if (!linux_user_ok(old_uptr, 32, 1)) {
             return -VIBEOS_EFAULT;
         }
         uint64_t old[4];
@@ -216,7 +216,7 @@ static long hw_sys_rt_sigaction(uint64_t sig, uint64_t act_uptr, uint64_t old_up
     }
     if (act_uptr != 0u) {
         uint64_t act[4];
-        if (!hw_user_range_ok(act_uptr, 32, 0)) {
+        if (!linux_user_ok(act_uptr, 32, 0)) {
             return -VIBEOS_EFAULT;
         }
         if (vibeos_uaccess_copy(act, (const void *)(uintptr_t)act_uptr,
@@ -265,7 +265,7 @@ static long hw_sys_rt_sigprocmask(uint64_t how, uint64_t set_uptr, uint64_t old_
     }
     t = &g_tasks[g_current_task];
     if (old_uptr != 0u) {
-        if (!hw_user_range_ok(old_uptr, 8, 1)) {
+        if (!linux_user_ok(old_uptr, 8, 1)) {
             return -VIBEOS_EFAULT;
         }
         uint64_t out = hw_sigset_to_user(t->sig_blocked);
@@ -277,7 +277,7 @@ static long hw_sys_rt_sigprocmask(uint64_t how, uint64_t set_uptr, uint64_t old_
     if (set_uptr == 0u) {
         return 0;
     }
-    if (!hw_user_range_ok(set_uptr, 8, 0)) {
+    if (!linux_user_ok(set_uptr, 8, 0)) {
         return -VIBEOS_EFAULT;
     }
     {
@@ -314,7 +314,7 @@ static long hw_sys_rt_sigreturn(vibeos_x86_64_isr_frame_t *frame) {
     /* The handler has returned, so rsp points just past the return address
      * that the trampoline popped. */
     base = frame->rsp - 8ull + 8ull;
-    if (!hw_user_range_ok(base, sizeof(hw_sigframe_t), 0)) {
+    if (!linux_user_ok(base, sizeof(hw_sigframe_t), 0)) {
         hw_task_exit(128ull + VIBEOS_SIGSEGV);
         return 0;
     }

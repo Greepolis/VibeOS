@@ -361,8 +361,9 @@ declared; add a second ABI and confirm no check was duplicated; look the ABI up
 per call and confirm the perf ratchet fires.
 
 **Status (2026-09-21): stages 1, 3 and 2a done (handlers register rows in their
-own files; "add a syscall" is 2 files, down from 6); 2b done (the row runs the
-pointer check where it was the handler's first act; the conditional ones stay, on purpose).** Stage 1 is the vocabulary, the
+own files; "add a syscall" is 2 files, down from 6); 2b done (`hw_user_range_ok`
+has one call site, `linux_user_ok`; three rows validate before their handler runs, the
+rest ask from inside it - see core_c4_abi.md).** Stage 1 is the vocabulary, the
 declarations and their enforcement; stage 3 moved about 4,000 lines out of
 `arch_hw.c` into `kernel/abi/linux/` (12,174 to about 7,800), cut by reference
 graph rather than by line range, with the details in

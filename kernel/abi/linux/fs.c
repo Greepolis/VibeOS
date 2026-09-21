@@ -227,7 +227,7 @@ static long hw_sys_pipe2(uint64_t fds_uptr, uint64_t flags) {
     if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
         return -VIBEOS_EINVAL;
     }
-    if (!hw_user_range_ok(fds_uptr, 8, 1)) {
+    if (!linux_user_ok(fds_uptr, 8, 1)) {
         return -VIBEOS_EFAULT;
     }
     t = &g_tasks[g_current_task];
@@ -364,7 +364,7 @@ static long hw_sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
     const char *p = (const char *)(uintptr_t)buf;
     uint64_t i;
 
-    if (!hw_user_range_ok(buf, len, 0)) {
+    if (!linux_user_ok(buf, len, 0)) {
         return -VIBEOS_EFAULT;
     }
     if (fd < 3u && g_current_task >= 0 &&
@@ -499,7 +499,7 @@ static long hw_sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
     if (len == 0u) {
         return 0;
     }
-    if (!hw_user_range_ok(buf, len, 1)) {
+    if (!linux_user_ok(buf, len, 1)) {
         return -VIBEOS_EFAULT;
     }
     if (fd < 3u && g_current_task >= 0 &&
@@ -743,7 +743,7 @@ static long hw_sys_getdents64(uint64_t fd, uint64_t buf, uint64_t len) {
     if (!f->isdir) {
         return -VIBEOS_ENOTDIR;
     }
-    if (!hw_user_range_ok(buf, len, 1)) {
+    if (!linux_user_ok(buf, len, 1)) {
         return -VIBEOS_EFAULT;
     }
     /* A bounded syscall must not spin forever if a filesystem backend returns
@@ -834,7 +834,7 @@ static long hw_write_stat(uint64_t ubuf, uint32_t mode, uint64_t size, uint64_t 
     uint64_t kbase = (uint64_t)(uintptr_t)kbuf;
     uint32_t i;
 
-    if (!hw_user_range_ok(ubuf, STAT_SIZE, 1)) {
+    if (!linux_user_ok(ubuf, STAT_SIZE, 1)) {
         return -VIBEOS_EFAULT;
     }
     /* Assemble the whole struct in the kernel and copy it out once. Filling the
@@ -939,7 +939,7 @@ static long hw_sys_getcwd(uint64_t ubuf, uint64_t size) {
     if (size < 2u) {
         return -VIBEOS_ERANGE;
     }
-    if (!hw_user_range_ok(ubuf, 2, 1)) {
+    if (!linux_user_ok(ubuf, 2, 1)) {
         return -VIBEOS_EFAULT;
     }
     {
@@ -988,7 +988,7 @@ static long hw_sys_readlinkat(uint64_t dirfd, uint64_t path_uptr, uint64_t ubuf,
     if (n > bufsz) {
         n = bufsz;
     }
-    if (!hw_user_range_ok(ubuf, n, 1)) {
+    if (!linux_user_ok(ubuf, n, 1)) {
         return -VIBEOS_EFAULT;
     }
     /* self is a kernel string; copy out fault-safe so a sibling munmap between
@@ -1007,7 +1007,7 @@ static long hw_sys_ioctl(uint64_t fd, uint64_t req, uint64_t arg) {
         return -VIBEOS_EBADF;
     }
     if (fd < 3u && req == VIBEOS_TIOCGPGRP) {
-        if (!hw_user_range_ok(arg, sizeof(uint32_t), 1) || g_current_task < 0) {
+        if (!linux_user_ok(arg, sizeof(uint32_t), 1) || g_current_task < 0) {
             return -VIBEOS_EFAULT;
         }
         {
@@ -1021,7 +1021,7 @@ static long hw_sys_ioctl(uint64_t fd, uint64_t req, uint64_t arg) {
     if (fd < 3u && req == VIBEOS_TIOCSPGRP) {
         uint32_t pgid;
         int group;
-        if (!hw_user_range_ok(arg, sizeof(uint32_t), 0) || g_current_task < 0) {
+        if (!linux_user_ok(arg, sizeof(uint32_t), 0) || g_current_task < 0) {
             return -VIBEOS_EFAULT;
         }
         if (vibeos_uaccess_copy(&pgid, (const void *)(uintptr_t)arg,
@@ -1053,7 +1053,7 @@ static long hw_sys_writev(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt) {
     if (iovcnt > 1024u) {
         return -VIBEOS_EINVAL;   /* Linux caps this at UIO_MAXIOV */
     }
-    if (!hw_user_range_ok(iov_uptr, iovcnt * sizeof(hw_iovec_t), 0)) {
+    if (!linux_user_ok(iov_uptr, iovcnt * sizeof(hw_iovec_t), 0)) {
         return -VIBEOS_EFAULT;
     }
     for (i = 0; i < iovcnt; i++) {
@@ -1088,7 +1088,7 @@ static long hw_sys_readv(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt) {
     if (iovcnt > 1024u) {
         return -VIBEOS_EINVAL;
     }
-    if (!hw_user_range_ok(iov_uptr, iovcnt * sizeof(hw_iovec_t), 0)) {
+    if (!linux_user_ok(iov_uptr, iovcnt * sizeof(hw_iovec_t), 0)) {
         return -VIBEOS_EFAULT;
     }
     for (i = 0; i < iovcnt; i++) {

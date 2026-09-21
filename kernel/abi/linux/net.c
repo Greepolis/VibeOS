@@ -23,7 +23,7 @@
  * address (both network order on the wire). */
 static int hw_read_sockaddr(uint64_t uptr, uint32_t *out_ip, uint16_t *out_port) {
     const uint8_t *p;
-    if (!hw_user_range_ok(uptr, 8, 0)) {
+    if (!linux_user_ok(uptr, 8, 0)) {
         return -1;
     }
     p = (const uint8_t *)(uintptr_t)uptr;
@@ -41,7 +41,7 @@ static int hw_write_sockaddr(uint64_t uptr, uint32_t ip, uint16_t port) {
     if (uptr == 0u) {
         return 0;
     }
-    if (!hw_user_range_ok(uptr, 16, 1)) {
+    if (!linux_user_ok(uptr, 16, 1)) {
         return -1;
     }
     p = (uint8_t *)(uintptr_t)uptr;
@@ -217,7 +217,7 @@ static long hw_sys_accept(uint64_t fd, uint64_t addr_uptr) {
     }
     t = &g_tasks[hw_current_task()];
     /* Refuse a bad peer-address pointer before a connection is consumed (M-032). */
-    if (addr_uptr != 0u && !hw_user_range_ok(addr_uptr, 16, 1)) {
+    if (addr_uptr != 0u && !linux_user_ok(addr_uptr, 16, 1)) {
         return -VIBEOS_EFAULT;
     }
     sock = f->net_sock;
@@ -291,7 +291,7 @@ long hw_net_recv(hw_fd_t *f, uint64_t buf, uint64_t len) {
     if (!f || f->net_sock < 0) {
         return -VIBEOS_EBADF;
     }
-    if (!hw_user_range_ok(buf, len, 1)) {
+    if (!linux_user_ok(buf, len, 1)) {
         return -VIBEOS_EFAULT;
     }
     sock = f->net_sock;
@@ -332,7 +332,7 @@ long hw_net_recv(hw_fd_t *f, uint64_t buf, uint64_t len) {
 
 long hw_net_send(hw_fd_t *f, uint64_t buf, uint64_t len) {
     long n;
-    if (!hw_user_range_ok(buf, len, 0)) {
+    if (!linux_user_ok(buf, len, 0)) {
         return -VIBEOS_EFAULT;
     }
     if (len > sizeof(g_net_bounce)) {
@@ -366,7 +366,7 @@ static long hw_sys_sendto(uint64_t fd, uint64_t buf, uint64_t len, uint64_t addr
     if (hw_read_sockaddr(addr_uptr, &ip, &port) != 0) {
         return -VIBEOS_EFAULT;
     }
-    if (!hw_user_range_ok(buf, len, 0)) {
+    if (!linux_user_ok(buf, len, 0)) {
         return -VIBEOS_EFAULT;
     }
     if (len > sizeof(g_net_bounce)) {
@@ -400,7 +400,7 @@ static long hw_sys_netctl(uint64_t op, uint64_t arg) {
     switch (op) {
         case 0: {
             uint32_t *out;
-            if (!hw_user_range_ok(arg, 20, 1)) {
+            if (!linux_user_ok(arg, 20, 1)) {
                 return -VIBEOS_EFAULT;
             }
             out = (uint32_t *)(uintptr_t)arg;
@@ -459,7 +459,7 @@ static long hw_sys_netctl(uint64_t op, uint64_t arg) {
         }
         case 3: {
             uint64_t *out;
-            if (!hw_user_range_ok(arg, 32, 1)) {
+            if (!linux_user_ok(arg, 32, 1)) {
                 return -VIBEOS_EFAULT;
             }
             out = (uint64_t *)(uintptr_t)arg;
@@ -483,12 +483,12 @@ static long hw_sys_recvfrom(uint64_t fd, uint64_t buf, uint64_t len, uint64_t ad
     if (!f || f->net_sock < 0) {
         return -VIBEOS_EBADF;
     }
-    if (!hw_user_range_ok(buf, len, 1)) {
+    if (!linux_user_ok(buf, len, 1)) {
         return -VIBEOS_EFAULT;
     }
     /* Check the source-address pointer before the datagram is dequeued, or a
      * bad pointer loses the datagram with no error (M-032). */
-    if (addr_uptr != 0u && !hw_user_range_ok(addr_uptr, 16, 1)) {
+    if (addr_uptr != 0u && !linux_user_ok(addr_uptr, 16, 1)) {
         return -VIBEOS_EFAULT;
     }
     deadline = g_timer_ticks + VIBEOS_HW_NET_TIMEOUT_TICKS;

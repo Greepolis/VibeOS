@@ -34,6 +34,14 @@ static const struct {
     { "net",  linux_net_rows,  &linux_net_row_count },
 };
 
+/* The single call site of hw_user_range_ok. Rows declare their pointer arguments
+ * with USER_OUT / USER_IN / USER_OUT_OPT (linux_internal.h) and handlers whose
+ * range depends on data they have only just read (an iovec base, a string, a
+ * sockaddr) ask here; nothing else in the kernel calls the check itself. */
+int linux_user_ok(uint64_t base, uint64_t len, int write) {
+    return hw_user_range_ok(base, len, write);
+}
+
 /* Register every table, once, before the first user task exists. A number claimed
  * twice, or a kernel operation declared in abi.h that no file implements, is a
  * kernel that would answer some syscall wrongly for the rest of its life, so it

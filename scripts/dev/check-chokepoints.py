@@ -58,10 +58,19 @@ CHOKEPOINTS = {
         "who may signal whom. Four callers and a definition; a fifth caller "
         "that forgot the check is a process signalling one it does not own."),
     "hw_user_range_ok": (
-        46,   # +2: accept and recvfrom validate the peer-address pointer before consuming (M-032)
-        "every syscall that takes a user pointer validates through it. This "
-        "number going *down* is the failure that matters - a syscall that "
-        "stopped checking - and nothing else in the tree would see it."),
+        4,   # definition + two declarations + the one call, in linux_user_ok (C4 stage 2b)
+        "the low-level range check has ONE call site, linux_user_ok in "
+        "kernel/abi/linux/dispatch.c. It was 46, spread over every handler; "
+        "that is the criterion C4 was written to reach. A second call is a "
+        "handler that decided for itself what a valid pointer is."),
+    "linux_user_ok": (
+        45,   # 3 macros in the rows, 1 definition, 1 declaration, 40 in handlers and the kernel's own reads
+        "who asks the dispatcher to judge a user pointer: the rows' USER_* "
+        "wrappers, the handlers whose range depends on data they only just "
+        "read (iovec bases, strings, sockaddrs), and the kernel's own reads of "
+        "user memory. **This is where the old 'a syscall that stopped checking' "
+        "alarm lives now**: the number going down is a handler that no longer "
+        "validates, and nothing else in the tree would notice."),
     "hw_user_range_why": (
         6,
         "the same check with a reason attached. A refusal that names a "

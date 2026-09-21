@@ -89,9 +89,9 @@
  * program sees. A handler another handler also calls (write, from writev) keeps
  * its own check. The check is written out in the row, so a reader sees what the
  * syscall promises about its arguments without opening the handler. */
-#define USER_OUT(ptr, len, call)     (hw_user_range_ok((ptr), (len), 1) ? (long)(call) : (long)-VIBEOS_EFAULT)
-#define USER_IN(ptr, len, call)     (hw_user_range_ok((ptr), (len), 0) ? (long)(call) : (long)-VIBEOS_EFAULT)
-#define USER_OUT_OPT(ptr, len, call)     (((ptr) == 0u || hw_user_range_ok((ptr), (len), 1)) ? (long)(call) : (long)-VIBEOS_EFAULT)
+#define USER_OUT(ptr, len, call)     (linux_user_ok((ptr), (len), 1) ? (long)(call) : (long)-VIBEOS_EFAULT)
+#define USER_IN(ptr, len, call)     (linux_user_ok((ptr), (len), 0) ? (long)(call) : (long)-VIBEOS_EFAULT)
+#define USER_OUT_OPT(ptr, len, call)     (((ptr) == 0u || linux_user_ok((ptr), (len), 1)) ? (long)(call) : (long)-VIBEOS_EFAULT)
 
 #define LINUX_ADAPTER(nr, name, op, expr) \
     static long linux_h_##name(const vibeos_call_t *c) { (void)c; return (long)(expr); }

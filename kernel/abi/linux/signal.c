@@ -131,7 +131,7 @@ int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame) {
     sp &= ~15ull;
     sp -= 8ull;   /* room for the return address */
 
-    if (!hw_user_range_ok(sp, sizeof(hw_sigframe_t) + 8ull, 1)) {
+    if (!linux_user_ok(sp, sizeof(hw_sigframe_t) + 8ull, 1)) {
         /* No usable stack to deliver on. A program cannot be asked to handle
          * that, so the signal takes its default action instead of being
          * silently dropped. */

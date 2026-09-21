@@ -76,12 +76,6 @@ against names renamed in the same change and never run - now run and red).
 
 ## Not done
 
-- **Stage 2b, the rest:** about 43 `hw_user_range_ok` sites stay in handlers, and that
-  is deliberate: they are conditional on another argument (null allowed, a length that
-  is zero), come after an EBADF/EINVAL return, size the range from a value read
-  earlier (iovecs, strings, argv), or sit in a helper other handlers call (write, from
-  writev). Hoisting those would change which error a program sees. Only
-  unconditional-first checks move.
 
 - The linkage from `linux_internal.h` to `arch_hw_internal.h` is a relative
   include. The Linux layer still reaches x86-64 objects (a task, its address
@@ -95,9 +89,21 @@ against names renamed in the same change and never run - now run and red).
   Moved: uname, clock_gettime, time. Their handlers no longer check.
 - `check-syscall-checks.py` counts the wrappers as USER_MEMORY, so a row that drops
   one is named by the operation, as a handler that dropped its check was.
-- **Chokepoint count stays 46**: three handler sites left, three macro sites arrived.
-  It no longer means "every handler validates itself"; it means the sites that
-  validate. Recorded as a decision rather than an edit to the number.
+- **The criterion is met: `hw_user_range_ok` has one call site.** It was 46. Every
+  user-pointer judgement now goes through `linux_user_ok` (`dispatch.c`), which is
+  the only caller of the low-level check; `check-chokepoints.py` reports 4 (the
+  definition, two declarations, that one call). The 46 sites became: 3 row wrappers,
+  and ~40 handler and kernel-internal calls to `linux_user_ok`.
+- **What that does and does not mean, stated plainly.** Only three rows (uname, time,
+  clock_gettime) validate *before* the handler runs. The rest still ask from inside
+  the handler, because the range depends on something read first, or an EBADF/EINVAL
+  must come first (hoisting would change which error a program sees), or the helper
+  is shared (write, from writev). They no longer decide *what a valid pointer is* -
+  one function does - but the decision of *when* is still theirs.
+- **The alarm moved.** The old "a syscall that stopped checking" guard was the count of
+  `hw_user_range_ok`; that count is now 4 by design, so the same guard is
+  `linux_user_ok` at 45, in both directions. `cases/core-user-check.txt`: a handler
+  that stops validating and a handler that calls the low-level check again - both red.
 - Sabotage: `cases/core-syscall-hoist.txt`, three cases, all red. The two old
   handler-anchored cases in `core-syscall.txt` were replaced by them.
 

@@ -287,7 +287,7 @@ static long hw_sys_clone_thread(const vibeos_x86_64_isr_frame_t *frame,
     }
     /* A thread with no stack of its own would run on its creator's, which is
      * not a degraded thread but two threads writing to one stack. */
-    if (child_stack == 0u || !hw_user_range_ok(child_stack - 8u, 8u, 1)) {
+    if (child_stack == 0u || !linux_user_ok(child_stack - 8u, 8u, 1)) {
         hw_log(VIBEOS_LOG_WARN, 6u, child_stack, flags,
                "clone refused: unusable thread stack");
         return -VIBEOS_EINVAL;
@@ -407,12 +407,12 @@ static long hw_sys_clone_thread(const vibeos_x86_64_isr_frame_t *frame,
      * failed write is dropped - the thread is created either way, as it is on
      * Linux when these optional stores fault. */
     if ((flags & CLONE_PARENT_SETTID) && ptid != 0u &&
-        hw_user_range_ok(ptid, 4u, 1)) {
+        linux_user_ok(ptid, 4u, 1)) {
         uint32_t v = child->pid;
         (void)vibeos_uaccess_copy((void *)(uintptr_t)ptid, &v, sizeof(v));
     }
     if ((flags & CLONE_CHILD_SETTID) && ctid != 0u &&
-        hw_user_range_ok(ctid, 4u, 1)) {
+        linux_user_ok(ctid, 4u, 1)) {
         uint32_t v = child->pid;
         (void)vibeos_uaccess_copy((void *)(uintptr_t)ctid, &v, sizeof(v));
     }
@@ -517,7 +517,7 @@ static long hw_sys_waitpid(uint64_t want_pid, uint64_t status_ptr,
                 hw_spin_unlock(&g_sched_lock);
                 (void)kbase; (void)kpages;
                 __asm__ __volatile__("sti");
-                if (status_ptr != 0 && hw_user_range_ok(status_ptr, 4, 1)) {
+                if (status_ptr != 0 && linux_user_ok(status_ptr, 4, 1)) {
                     /* The wait status word: a normal exit puts the code in the
                      * high byte and leaves the low seven bits clear; a signal
                      * death puts the signal number in those low bits. That is
@@ -1192,7 +1192,7 @@ static long hw_sys_prctl(uint64_t op, uint64_t arg) {
     t = &g_tasks[g_current_task];
     if (op == PR_SET_NAME) {
         char kname[16];
-        if (!hw_user_range_ok(arg, 16, 0)) {
+        if (!linux_user_ok(arg, 16, 0)) {
             return -VIBEOS_EFAULT;
         }
         /* Copy in fault-safe, then terminate: a sibling munmap between the
@@ -1210,7 +1210,7 @@ static long hw_sys_prctl(uint64_t op, uint64_t arg) {
         return 0;
     }
     if (op == PR_GET_NAME) {
-        if (!hw_user_range_ok(arg, 16, 1)) {
+        if (!linux_user_ok(arg, 16, 1)) {
             return -VIBEOS_EFAULT;
         }
         if (vibeos_uaccess_copy((void *)(uintptr_t)arg, t->comm, 16) != 0) {
@@ -1344,7 +1344,7 @@ static long hw_sys_arch_prctl(uint64_t code, uint64_t addr) {
             hw_wrmsr(MSR_FS_BASE, addr);
             return 0;
         case ARCH_GET_FS:
-            if (!hw_user_range_ok(addr, 8, 1)) {
+            if (!linux_user_ok(addr, 8, 1)) {
                 return -VIBEOS_EFAULT;
             }
             /* Fault-safe: a sibling thread can munmap the page between the
@@ -1373,7 +1373,7 @@ static long hw_sys_prlimit64(uint64_t resource, uint64_t new_uptr, uint64_t old_
     if (old_uptr == 0u) {
         return 0;
     }
-    if (!hw_user_range_ok(old_uptr, 16, 1)) {
+    if (!linux_user_ok(old_uptr, 16, 1)) {
         return -VIBEOS_EFAULT;
     }
     {
@@ -1401,7 +1401,7 @@ static long hw_futex_wait(uint64_t addr, uint32_t expected) {
     uint32_t cur = 0;
     int me = g_current_task;
 
-    if (me < 0 || addr == 0u || !hw_user_range_ok(addr, 4u, 0)) {
+    if (me < 0 || addr == 0u || !linux_user_ok(addr, 4u, 0)) {
         return -VIBEOS_EINVAL;
     }
 

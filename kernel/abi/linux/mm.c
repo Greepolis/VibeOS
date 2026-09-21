@@ -529,7 +529,7 @@ static long hw_sys_pageinfo(uint64_t va, uint64_t out_uptr) {
     if (g_current_task < 0 || !g_tasks[g_current_task].is_user) {
         return -VIBEOS_EINVAL;
     }
-    if (!hw_user_range_ok(out_uptr, sizeof(info), 1)) {
+    if (!linux_user_ok(out_uptr, sizeof(info), 1)) {
         return -VIBEOS_EFAULT;
     }
 

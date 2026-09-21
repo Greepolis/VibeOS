@@ -65,7 +65,7 @@ HANDLER_DIRS = (os.path.join(ROOT, "kernel", "arch", "x86_64"), ABI_DIR)
 
 CHOKEPOINTS = {
     "USER_MEMORY": ("hw_user_range_ok", "hw_user_range_why", "hw_user_addr_ok",
-                    "USER_OUT", "USER_IN", "USER_OUT_OPT"),
+                    "linux_user_ok", "USER_OUT", "USER_IN", "USER_OUT_OPT"),
     "SIGNAL_PERMIT": ("hw_signal_permitted",),
     "TASK_GUARD": ("hw_task_alloc_guarded",),
 }

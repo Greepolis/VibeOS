@@ -343,6 +343,11 @@ int hw_current_task(void);
 void hw_spin_lock(hw_lock_t *l);
 void hw_spin_unlock(hw_lock_t *l);
 int hw_user_range_ok(uint64_t base, uint64_t len, int write);
+/* The one place a user pointer is judged. Every syscall's pointer arguments, and
+ * the kernel's own reads of user memory, go through it (defined in
+ * kernel/abi/linux/dispatch.c) - so "who validates user memory" has one answer
+ * and check-chokepoints.py can count it. */
+int linux_user_ok(uint64_t base, uint64_t len, int write);
 int hw_copy_user_string(uint64_t uptr, char *dst, int max);
 int hw_fd_alloc(hw_task_t *t);
 hw_fd_t *hw_fd_get(uint64_t fd);

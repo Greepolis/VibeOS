@@ -6050,7 +6050,7 @@ int hw_aspace_copy_user(vibeos_hw_aspace_t *dst, vibeos_hw_aspace_t *src) {
 int hw_copy_user_string(uint64_t uptr, char *dst, int max) {
     int i;
     for (i = 0; i < max - 1; i++) {
-        if (!hw_user_range_ok(uptr + (uint64_t)i, 1, 0)) {
+        if (!linux_user_ok(uptr + (uint64_t)i, 1, 0)) {
             return -1;
         }
         /* Fault-safe: the range check and the read are two instants, and a
@@ -6696,7 +6696,7 @@ static void hw_fault_kill_current_user(const vibeos_x86_64_isr_frame_t *frame,
         rec->stack_words = 0;
         for (i = 0; i < HW_CRASH_STACK_WORDS; i++) {
             uint64_t addr = frame->rsp + (uint64_t)i * 8ull;
-            if (!hw_user_range_ok(addr, 8u, 0)) {
+            if (!linux_user_ok(addr, 8u, 0)) {
                 break;
             }
             /* Fault-safe on purpose: this runs inside the trap handler, so a
@@ -6735,7 +6735,7 @@ static void hw_fault_kill_current_user(const vibeos_x86_64_isr_frame_t *frame,
             uint64_t page = frame->rsp & ~0xFFFull;
             const char *freed_by = 0;
 
-            if (hw_user_range_ok(page, 16u, 0)) {
+            if (linux_user_ok(page, 16u, 0)) {
                 freed_by = (const char *)(uintptr_t)((const uint64_t *)(uintptr_t)page)[1];
             }
             vibeos_x86_64_serial_puts("[CRASH] this task's stack is the free-page "
