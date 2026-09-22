@@ -107,6 +107,7 @@ set(VIBEOS_TLS_SOURCES
 # the two lists do not fail loudly when they disagree.
 set(VIBEOS_ARCH_X86_64_SOURCES
     kernel/arch/x86_64/arch_hw.c
+    kernel/arch/x86_64/task_life.c
     kernel/arch/x86_64/io_bringup.c
     kernel/abi/linux/net.c
     kernel/abi/linux/common.c

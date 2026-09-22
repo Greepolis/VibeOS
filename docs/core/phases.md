@@ -474,12 +474,21 @@ there is a safe preemption, and `g_current_task` is per-CPU so identity
 survives it. Interrupts are restored to the caller's state on acquire.
 
 **Steps 1-4 (2026-09-21): the identity is `vibeos_task_t`, the descriptors `vibeos_fdtable_t`, pipes a module, the state the task layer's alone.** Seventeen fields of "who a
-task is" left `hw_task_t` for a portable, host-tested type with one reset; the
-descriptors and the rest of the done-condition below are still open (arch_hw.c names
-identity on 92 lines, ratcheted by `check-task-identity.py`). See
-`implementation_progress/core_c5_task_identity.md`.
+task is" left `hw_task_t` for a portable, host-tested type with one reset. See
+`implementation_progress/core_c5_task_identity.md`, `core_c5_pipes.md`,
+`core_c5_task_state.md`.
 
-Still open:
+**Done (2026-09-22).** The 92 lines that named identity outside the fields were code,
+not just fields - creating, describing, signalling and ending a task, spread through
+`arch_hw.c` beside the context switch. That code left, whole, for
+`kernel/arch/x86_64/task_life.c` (1,643 lines); `check-task-identity.py` now reads
+`arch_hw.c` function by function and only the five that *are* the context switch may
+name `.id.` at all (12 lines, ratcheted). See `core_c5_task_state.md`'s closing
+section for what that found, including two checks (`check-chokepoints.py`'s count and
+`check-exec-layering.sh`, which had a real bug of its own and no case) fixed on the
+way. `arch_hw.c` is 6,220 lines, down from 12,174 before C4.
+
+Still open, and out of C5's scope as stated (recorded, not forgotten):
 
 - **mprotect's page-table race with fork.** mprotect still releases the lock
   before narrowing, so fork's `copy_user` can read a PTE mprotect is narrowing -

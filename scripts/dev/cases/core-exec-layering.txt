@@ -1,0 +1,21 @@
+# X-P4: exactly one function may name an interpreter path (check-exec-layering.sh).
+#
+# The check had no case of its own, and it had a real bug: a boot-log example quoted
+# in a comment two thousand lines from the function ("[EXEC] interpreter
+# EFI/BOOT/LDMUSL.SO...") failed the build for a docstring, confirmed by running the
+# unmodified check against the tree at HEAD before this fix - it was already red and
+# nobody had run it. Fixed by skipping comment lines; this case is the proof in both
+# directions: a second *code* path outside the function must still fail, and the
+# existing log-example comment must not.
+#
+# Target source: kernel/arch/x86_64/task_life.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/check-exec-layering.sh" python3 scripts/dev/sabotage.py kernel/arch/x86_64/task_life.c scripts/dev/cases/core-exec-layering.txt
+
+### a second hard-coded interpreter path appears outside the function, as code
+--- old
+        /* Start there, and tell it where it was put. */
+        p->entry = interp.entry;
++++ new
+        /* Start there, and tell it where it was put. */
+        if (hw_streq(path, "/lib/ld-musl-x86_64.so.1")) { p->entry = interp.entry; }
+        p->entry = interp.entry;

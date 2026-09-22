@@ -1,4 +1,4 @@
-# Target source: kernel/abi/linux/proc.c (futex), kernel/abi/linux/mm.c (mprotect), kernel/arch/x86_64/arch_hw.c (the rest)
+# Target source: kernel/abi/linux/proc.c (futex), kernel/abi/linux/mm.c (mprotect), kernel/arch/x86_64/arch_hw.c (the rest); kernel/arch/x86_64/task_life.c (the join word, which moved with exit)
 
 ### the join word is cleared after the context switch, so nobody is woken
 --- old

@@ -15,7 +15,9 @@
 # script goes with it.
 set -u
 
-src=kernel/arch/x86_64/arch_hw.c
+# Moved with the task lifecycle (C5, task_life.c) - execve is part of it, not of the
+# context switch. Repointed rather than left to fail silently against a stale path.
+src=kernel/arch/x86_64/task_life.c
 fail=0
 
 # The function's line range: from its signature to the first line that closes a
@@ -41,9 +43,20 @@ while IFS= read -r hit; do
     file=${hit%%:*}
     rest=${hit#*:}
     line=${rest%%:*}
+    content=${rest#*:}
     if [ "$file" = "$src" ] && [ "$line" -ge "$lo" ] && [ "$line" -le "$hi" ]; then
         continue    # inside the one function that is allowed to know
     fi
+    # A comment line - a block-comment continuation ("*   ...") or a "//" line - is
+    # not a second place a path is *named in code*; it is documentation, and this
+    # project's own log-example comments quote the substituted name on purpose (see
+    # hw_interp_path_substitute's own bracketing comment). Caught once, on a comment
+    # reproducing a boot log two thousand lines from the function: the check would
+    # have failed the build for a docstring, which is not what it exists to catch.
+    trimmed=$(printf '%s' "$content" | sed -e 's/^[[:space:]]*//')
+    case "$trimmed" in
+        '*'*|'//'*) continue ;;
+    esac
     if [ "$bad" -eq 0 ]; then
         echo "exec-layering=FAIL an interpreter path is named outside hw_interp_path_substitute"
     fi
@@ -64,5 +77,10 @@ fi
 
 if [ "$fail" -eq 0 ]; then
     echo "exec-layering=ok"
+    exit 0
 fi
-exit 0
+# check.sh reads the printed line, not this - but a tool that trusts the exit code
+# (sabotage.py's SABOTAGE_VERIFY, among others) saw success on every failure this
+# script has ever reported, because this always returned 0. Found running the first
+# sabotage case ever written against it.
+exit 1

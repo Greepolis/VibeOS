@@ -1,0 +1,15 @@
+# C5: arch_hw.c names a task's identity only in the context switch.
+#
+# The lifecycle left arch_hw.c for task_life.c and the diagnostics ask hw_task_pid_of; the
+# check reads the file function by function. Putting identity back into a function that
+# is not part of the switch - here the slot allocator - must turn it red, naming it.
+#
+# Target source: kernel/arch/x86_64/arch_hw.c
+# Run: SABOTAGE_VERIFY="python3 scripts/dev/check-task-identity.py" python3 scripts/dev/sabotage.py kernel/arch/x86_64/arch_hw.c scripts/dev/cases/core-task-identity-arch.txt
+
+### the slot allocator names a task's pid
+--- old
+            hw_fpu_init_area(g_tasks[i].fpu);
++++ new
+            hw_fpu_init_area(g_tasks[i].fpu);
+            (void)g_tasks[i].id.pid;

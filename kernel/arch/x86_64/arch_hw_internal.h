@@ -16,6 +16,7 @@
  * a lot.
  */
 
+
 #include "vibeos/arch_x86_64.h"
 #include "vibeos/task_ident.h"
 #include "vibeos/fdtable.h"
@@ -654,5 +655,151 @@ long hw_futex_wake(const hw_procstate_t *ps, uint64_t addr,
 long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
                                  uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3);
 
+/* ---- shared with the task lifecycle (task_life.c) ---------------------------
+ *
+ * The lifecycle - creating, describing, signalling and ending tasks - used to sit in
+ * this file beside the context switch. These are what each still needs of the other, and
+ * the list is the honest size of that seam. */
+
+#define VIBEOS_HW_KERNEL_CS 0x08u
+#define VIBEOS_HW_MAX_CPUS 8u
+#define HW_CRASH_RECORDS 4u
+#define HW_CRASH_STACK_WORDS 16u
+typedef struct {
+    uint32_t used;
+    uint32_t pid;
+    uint32_t sig;
+    uint64_t vector;
+    uint64_t error_code;
+    uint64_t fault_addr;
+    vibeos_x86_64_isr_frame_t regs;
+    uint64_t stack[HW_CRASH_STACK_WORDS];
+    uint32_t stack_words;      /* how many were readable; the rest is off-map */
+    char exe[64];
+} hw_crash_t;
+#define VIBEOS_HW_IDENTITY_LIMIT 0x100000000ull
+/* A path's identity, as a number the cache can key on.
+ *
+ * Small and fixed: the alternative is hashing the path, and two paths that
+ * collide would serve each other's contents with nothing reporting an error -
+ * the one failure in a cache that is completely silent. A table compares the
+ * whole path and simply runs out instead. */
+#define VIBEOS_HW_CACHE_FILES 32u
+typedef struct {
+    char path[64];
+    vibeos_fs_node_t node;
+} hw_cached_file_t;
+/* A second, much smaller user window down in the first GiB.
+ *
+ * This exists for one reason: a Linux executable is linked at 0x400000 and
+ * cannot be asked to move. That address is inside the region the kernel
+ * identity-maps for itself, so mapping user pages there means shadowing the
+ * kernel's own view of those physical addresses while that process is current.
+ * The window is therefore kept small and, crucially, the same physical range
+ * is reserved out of the page allocator at boot (vibeos_pmm_reserve), so no
+ * kernel object can ever live at an address a process is able to shadow.
+ *
+ * Only the program image goes here. Its stack, heap and mmap arena stay in the
+ * high window, where there is no such interaction - nothing in the Linux ABI
+ * requires those to be at any particular address. */
+#define VIBEOS_HW_LOW_USER_BASE  0x00400000ull
+#define VIBEOS_HW_LOW_USER_LIMIT 0x00C00000ull   /* 8 MiB */
+/* Place one parsed image into an address space, a page at a time.
+ *
+ * A page at a time is what makes a page shared between two segments come out
+ * right: allocated once, carrying the permissions of both and holding the
+ * bytes of both. Separated from process creation because a dynamic program
+ * needs this done twice - once for the program and once for the interpreter
+ * it names - into the same address space. */
+/* Phase X-P2 of docs/exec/, and memory plan P4 step 3.
+ *
+ * `file_id` is the page cache's name for the file this image came from, or 0
+ * when there is none - an embedded image, or a file the cache declined. When it
+ * is non-zero, a page that is read-only and comes wholly from the file is
+ * mapped *from the cache* rather than copied into a fresh frame.
+ *
+ * The copy it replaces was a copy of a copy: the cache already holds the file's
+ * page, and the loader was allocating a second frame to memcpy it into. For
+ * BusyBox that is two megabytes of text per exec, and BusyBox execs twenty
+ * times in a boot.
+ *
+ * This is safe under the frame layer's ownership contract, and the contract is
+ * the whole reason it is safe. Eviction releases only *the cache's* reference
+ * (`vibeos_frame_put` in cache_evict), so a frame a process still maps survives
+ * being evicted; the cache then re-reads the file into a different frame, and
+ * the process keeps the one it was given, whose contents are identical because
+ * nothing may write it. The mapping is read-only, and that is load-bearing
+ * rather than incidental: a writable shared mapping of a cache page would let
+ * one process edit another's text.
+ *
+ * Writable pages, pages with a .bss tail, and pages shared by two segments
+ * still get a private frame. `vibeos_elf_page_file_offset` is what draws that
+ * line, and it refuses every case it is not certain about.
+ */
+/* Serve an arbitrary file range out of the page cache.
+ *
+ * This is what makes the staging buffer unnecessary for the pages exec has to
+ * *copy*. The cache is already holding the file - X-P2 maps most image pages
+ * straight out of it - so the bytes a writable page needs are a lookup away
+ * rather than a four-megabyte read away.
+ *
+ * A range can straddle two cache pages, so the loop is not decoration: a
+ * segment's file offset has no reason to be page-aligned, and a version that
+ * assumed one lookup per read would corrupt every page whose data crossed a
+ * boundary - which is most of them, and only for some programs. */
+typedef struct hw_elf_cache_reader {
+    uint32_t file_id;
+    uint64_t file_len;
+} hw_elf_cache_reader_t;
+
+/* Signals 1..64; index 0 is unused so the numbering matches Linux. */
+/* VIBEOS_HW_NSIG is in arch_hw_internal.h. */
+
+/* SIG_DFL_ADDR is in arch_hw_internal.h. */
+/* SIG_IGN_ADDR, HW_TASK_MARK and the HW_TASK_* names are in arch_hw_internal.h. */
+
+extern void vibeos_x86_64_task_enter(vibeos_x86_64_isr_frame_t *task);
+
+extern hw_crash_t g_crashes[HW_CRASH_RECORDS];
+extern uint32_t g_crash_next;
+extern volatile uint64_t g_crash_count;
+extern uint64_t g_pml4[512] __attribute__((aligned(4096)));
+extern uint8_t *g_interp_elf;
+extern uint32_t g_interp_elf_cap;
+extern hw_cached_file_t g_cached_files[VIBEOS_HW_CACHE_FILES];
+extern uint32_t g_cached_file_count;
+int hw_elf_read_cached(void *ctx, uint64_t off, uint32_t len, void *buf);
+int hw_map_elf_image(vibeos_hw_aspace_t *as, vibeos_vma_list_t *vmas,
+                            const vibeos_elf_image_t *img, const void *elf,
+                            uint32_t file_id, uint64_t file_len);
+void hw_seed_at_random(uint8_t out[16]);
+void hw_drain_dead_kstack(void);
+extern vibeos_service_supervisor_t g_runtime_supervisor;
+extern uint8_t g_runtime_supervisor_ready;
+const char *hw_task_state_name(int state);
+int hw_task_alloc_guarded(int guarded, int privileged, uint32_t parent_pid,
+                                 vibeos_fork_verdict_t *out_verdict);
+int hw_task_alloc(void);
+extern vibeos_runq_t g_runq;
+uint32_t hw_slice_for(int slot);
+int hw_pick_next(hw_cpu_t *cpu);
+void hw_fpu_restore(const unsigned char *area);
+void hw_task_load_cpu_state(int idx);
+void hw_ctx_check(int slot, const char *where);
+int hw_aspace_still_shared(int me);
+void hw_dump_vanished(uint64_t va);
+int hw_task_adopt_kernel(void);
+int hw_task_create_idle(hw_cpu_t *cpu);
+int hw_task_spawn_user(const unsigned char *elf, uint64_t len,
+                              const char *const *argv);
+int hw_task_describe(uint32_t slot, vibeos_task_desc_t *out);
+void hw_fault_kill_current_user(const vibeos_x86_64_isr_frame_t *frame,
+                                       uint64_t fault_address);
+
+/* Who a task is, for the code that is not the context switch (defined in task_life.c). */
+uint32_t hw_task_pid_of(const hw_task_t *t);
+uint32_t hw_task_pgid_of(const hw_task_t *t);
+int hw_task_is_user_of(const hw_task_t *t);
+void hw_task_set_service(int slot, uint32_t service_id);
 
 #endif

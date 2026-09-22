@@ -90,7 +90,9 @@ CHOKEPOINTS = {
         "restored sigreturn rip (H-018) canonical before either can reach "
         "iretq, where a non-canonical rip faults in ring 0."),
     "hw_task_alloc_guarded": (
-        3,
+        4,   # 3 -> 4 when C5 moved the task lifecycle to task_life.c (fork's caller):
+             # the function crossed a file, so it stopped being static and gained a
+             # header declaration. Same two callers as before, one more site to say so.
         "the fork guard. A task table that can be exhausted by a loop is a "
         "denial of service with no privilege required."),
 }

@@ -1,4 +1,4 @@
-# Target source: kernel/arch/x86_64/arch_hw.c
+# Target source: kernel/arch/x86_64/arch_hw.c (case 1); kernel/arch/x86_64/task_life.c (case 2, the fault handler moved with the lifecycle)
 
 ### a ring-3 fault halts the machine instead of killing the task
 --- old

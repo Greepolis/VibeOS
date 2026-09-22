@@ -8,12 +8,10 @@ Two properties, both of which the type system cannot state:
    must not declare one of them again: a second copy is the defect C5 exists to end,
    and it compiles happily (the compiler sees two unrelated members).
 
-2. **A ratchet on how much of the arch layer reaches into identity.** The phase's
-   done-condition is that arch_hw.c names no task field that is not part of a context
-   switch. That is not true yet - it names identity 92 times - so the number is
-   recorded and may only go DOWN, by moving a caller onto a function of the portable
-   type (`vibeos_task_accountable_to`, `vibeos_task_set_comm`, ...). It goes up only
-   as a decision, in the change that earns it.
+2. **arch_hw.c names identity only in the context switch.** The phase's
+   done-condition: arch_hw.c names no task field that is not part of a context switch.
+   The check reads the file function by function; identity outside the five that make
+   the switch is a failure, and the lines inside them may only go down.
 
 Usage: check-task-identity.py [--list]
 """
@@ -26,8 +24,15 @@ HEADER = os.path.join(ROOT, "kernel", "arch", "x86_64", "arch_hw_internal.h")
 ARCH = os.path.join(ROOT, "kernel", "arch", "x86_64", "arch_hw.c")
 IDENT = os.path.join(ROOT, "include", "vibeos", "task_ident.h")
 
-# Lines of arch_hw.c that reach into a task's identity (`.id.` / `->id.`).
-ARCH_IDENTITY_LINES = 92
+# The functions of arch_hw.c that may name a task's identity: they *are* the context
+# switch - deciding whether a task is idle or a user task, and reporting who it was when
+# the switch refuses. Everything else in that file asks (hw_task_pid_of, ...) or lives in
+# task_life.c. Done-condition of C5, as a check.
+SWITCH_FUNCTIONS = {"vibeos_x86_64_isr_handler", "hw_task_runnable", "hw_task_load_cpu_state",
+                    "hw_ctx_check", "hw_schedule"}
+# Lines they name it on. It was 92 across the file before the lifecycle moved out; it may
+# only go DOWN from here.
+ARCH_IDENTITY_LINES = 12
 # Lines anywhere in the arch layer or the Linux ABI that index the descriptor table
 # themselves (`files.fds` / `files.std`) instead of asking vibeos_fdtable_*.
 FILES_INDEX_LINES = 17
@@ -67,16 +72,43 @@ def main():
     if not re.search(r"\bvibeos_task_t\s+id\s*;", body):
         bad.append("hw_task_t does not embed vibeos_task_t as `id`")
 
-    lines = sum(1 for l in read(ARCH).splitlines() if re.search(r"(?:\.|->)id\.", l))
+    # Where in arch_hw.c does code name a task's identity? Per function, because the
+    # done-condition is about *which* code may: the context switch and nothing else.
+    lines = 0
+    outside = {}
+    cur = None
+    head = None   # the name of a function whose signature is still being read over several lines
+    for l in read(ARCH).splitlines():
+        m = re.match(r"^[A-Za-z_][^;=]*?\b(\w+)\s*\([^;]*\)\s*\{\s*$", l)
+        h = re.match(r"^[A-Za-z_][^;=(]*?\b(\w+)\s*\([^)]*$", l)
+        if h:
+            head = h.group(1)
+        if m:
+            cur = m.group(1)
+            head = None
+        elif head and re.match(r"^\s+[^;]*\)\s*\{\s*$", l):
+            cur = head
+            head = None
+        elif l.startswith("}"):
+            cur = None
+        if re.search(r"(?:\.|->)id\.", l):
+            lines += 1
+            if cur not in SWITCH_FUNCTIONS:
+                outside[cur] = outside.get(cur, 0) + 1
     if "--list" in sys.argv:
         print("  identity fields: %s" % " ".join(fields))
-        print("  arch_hw.c lines reaching into identity: %d (ratchet %d)" % (lines, ARCH_IDENTITY_LINES))
+        print("  arch_hw.c lines naming identity: %d in the context switch (ratchet %d), %d elsewhere"
+              % (lines - sum(outside.values()), ARCH_IDENTITY_LINES, sum(outside.values())))
+    for fn, n in sorted(outside.items(), key=lambda kv: str(kv[0])):
+        bad.append("arch_hw.c names a task's identity in %s (%d lines), which is not part of the "
+                   "context switch - ask hw_task_*_of / a vibeos_task_* function, or move it to task_life.c"
+                   % (fn, n))
     if lines > ARCH_IDENTITY_LINES:
-        bad.append("arch_hw.c reaches into task identity on %d lines, ratchet is %d - "
+        bad.append("arch_hw.c names task identity on %d lines, ratchet is %d - "
                    "go through a vibeos_task_* function, or record why it grew"
                    % (lines, ARCH_IDENTITY_LINES))
     elif lines < ARCH_IDENTITY_LINES:
-        bad.append("arch_hw.c reaches into task identity on %d lines, DOWN from the ratchet %d - "
+        bad.append("arch_hw.c names task identity on %d lines, DOWN from the ratchet %d - "
                    "lower ARCH_IDENTITY_LINES in the same commit" % (lines, ARCH_IDENTITY_LINES))
 
     for f in ("state", "ready_at", "ran_once"):

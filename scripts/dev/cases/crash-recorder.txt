@@ -1,4 +1,4 @@
-# Target source: kernel/arch/x86_64/arch_hw.c
+# Target source: kernel/arch/x86_64/task_life.c (the crash recorder moved there with the task lifecycle)
 
 ### a ring-3 fault is killed without its state ever being captured
 --- old
