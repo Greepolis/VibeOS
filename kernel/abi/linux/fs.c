@@ -284,11 +284,23 @@ static long hw_sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
         if (!f->writable) {
             return -VIBEOS_EBADF;
         }
-        for (i2 = 0; i2 < len; i2++) {
-            if (f->wlen >= VIBEOS_HW_WBUF) {
-                break;
+        /* Fault-safe: the dispatcher's row validates [buf, buf+len) is mapped
+         * before this handler runs, and that check and this copy are two
+         * instants. A sibling thread of the same process can munmap the
+         * buffer in between (H-010's family), and a raw p[i2] read then
+         * faults with no user task privileged to take it - a kernel panic a
+         * program could trigger against itself with a second thread and a
+         * race, where every other buffered path in this file already uses
+         * vibeos_uaccess_copy. */
+        i2 = 0u;
+        if (f->wlen < VIBEOS_HW_WBUF) {
+            uint64_t room = (uint64_t)(VIBEOS_HW_WBUF - f->wlen);
+            i2 = (len < room) ? len : room;
+            if (i2 > 0u &&
+                vibeos_uaccess_copy(&f->wbuf[f->wlen], p, i2) != 0) {
+                return -VIBEOS_EFAULT;
             }
-            f->wbuf[f->wlen++] = (uint8_t)p[i2];
+            f->wlen += (uint32_t)i2;
         }
         f->dirty = 1;
         return (long)i2;
