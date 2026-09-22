@@ -4456,7 +4456,8 @@ static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code,
      * beyond the page not being present. */
     if ((error_code & 0x1u) == 0u) {
         vibeos_vmspace_t sv = hw_vm(&t->proc.as);
-        if (vibeos_vmspace_swap_slot(&sv, fault_va) >= 0) {
+        int64_t slot = vibeos_vmspace_swap_slot(&sv, fault_va);
+        if (slot >= 0) {
             /* Privileged, deliberately. This allocation is what brings a page
              * back; refusing it at the low watermark would leave a process
              * unable to touch memory it already owns, and reclaim would be
@@ -4465,6 +4466,16 @@ static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code,
             if (page &&
                 vibeos_vmspace_swap_in(&sv, fault_va,
                                        (uint64_t)(uintptr_t)page) == 0) {
+                /* vmspace.c must not depend on swapmap (anon.c's own comment
+                 * on the layer below it says why: it cannot ask for a slot,
+                 * so it cannot give one back either), which makes this the
+                 * only place that knows both that the bring-back succeeded
+                 * and which slot it emptied. Left uncalled, every page a
+                 * process ever touched back into memory cost the swap area a
+                 * slot it never got back - a leak with no reboot recovery,
+                 * found by inspection rather than by exhausting swap in a
+                 * boot. */
+                (void)vibeos_swap_free((uint32_t)slot);
                 return 1;
             }
             if (page) {
