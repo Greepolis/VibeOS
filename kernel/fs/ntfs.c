@@ -520,6 +520,8 @@ static int ntfs_index_scan(vibeos_ntfs_t *fs, const uint8_t *rec,
                                          NTFS_ATTR_INDEX_ROOT);
     const uint8_t *root;
     const uint8_t *alloc;
+    uint32_t attr_len;
+    uint32_t value_off;
     uint32_t value_len;
     uint32_t seen = 0;
     uint32_t block_bytes;
@@ -528,8 +530,28 @@ static int ntfs_index_scan(vibeos_ntfs_t *fs, const uint8_t *rec,
     if (!attr || attr[8] != 0u) {
         return -1;   /* absent, or non-resident: not a directory this reads */
     }
+    /* Bounded the same way ntfs_data_attr bounds $DATA (H-011): value_off and
+     * value_len are volume-controlled fields that were being read and used
+     * straight from the attribute header, with nothing checking either fits
+     * inside it. `root` then pointed wherever the volume said, and value_len
+     * said how far past it ntfs_index_walk was allowed to read - `rec` is a
+     * local array in every caller, so this was a stack disclosure reachable
+     * from an ordinary lookup or directory listing (M-039). attr_len is
+     * find_attr's own bound, recomputed here rather than threaded through -
+     * cheap, and not trusting it costs nothing. */
+    attr_len = rd32(attr + 4);
+    if (attr_len < 0x18u) {
+        return -1;   /* below this, the offset and length fields are not part of it */
+    }
+    value_off = rd16(attr + 0x14);
     value_len = rd32(attr + 0x10);
-    root = attr + rd16(attr + 0x14);
+    if (value_off < 0x18u || value_off > attr_len) {
+        return -1;
+    }
+    if (value_len > attr_len - value_off) {
+        return -1;   /* the value claims to run past its own attribute */
+    }
+    root = attr + value_off;
     if (value_len < 16u) {
         return -1;
     }

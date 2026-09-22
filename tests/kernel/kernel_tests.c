@@ -7962,6 +7962,76 @@ static int test_ntfs_attr_length_wrap(void) {
     return 0;
 }
 
+/* M-039: $INDEX_ROOT's value_off/value_len must be checked against the
+ * attribute the way ntfs_data_attr already checks them for $DATA (H-011) -
+ * ntfs_index_scan read both straight from the attribute header and used them
+ * to build the pointer and the length it hands to ntfs_index_walk. Reached by
+ * any lookup or listing under a directory whose $INDEX_ROOT is corrupt: a
+ * mounted volume, not a privileged path.
+ *
+ * Deliberately not an out-of-bounds pointer: value_off is 16 bits, at most
+ * 65535 bytes past the attribute, which on a process with an 8 MiB stack may
+ * or may not leave the mapped region depending on call depth - the first
+ * version of this test relied on that and was not deterministic (it crashed
+ * once under AddressSanitizer, then passed clean on an unrelated run with the
+ * defect still in place). Instead a second, well-formed index blob is planted
+ * later in the *same* record, still inside the buffer, well past where the
+ * real $INDEX_ROOT attribute ends - so this proves the narrower and
+ * sufficient claim: the driver must not read bytes that belong to no
+ * attribute at all as if they were this one's. A fixed driver refuses
+ * value_off past the attribute's own length before ever reaching that blob;
+ * an unfixed one lists "HACKED", which is exactly the cross-attribute read
+ * M-039 is. (The uncorrupted case - a normal listing still works - is already
+ * covered by test_ntfs_list; this test only needs to show the corrupted one
+ * is refused.) */
+static int test_ntfs_index_root_wrap(void) {
+    vibeos_ntfs_t fs;
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    vibeos_fsmount_t mnt;
+    uint8_t *rec, *attr, *decoy;
+    char name[VIBEOS_FS_NAME_MAX];
+    uint64_t size = 0;
+    int is_dir = 0;
+
+    if (nt_mount(&fs, &bc, &dev) != 0) {
+        return -1;
+    }
+    /* Record 5 is the root directory; its $INDEX_ROOT is at offset 64, and its
+     * real content (header + four entries + end marker) ends well before
+     * offset 300 in a 1024-byte record. The decoy at 700 is a second,
+     * unrelated index blob - not part of any attribute - naming a file
+     * "HACKED" that points at record 6 (a real, resident file). */
+    rec = nt_record(5);
+    attr = rec + 64;
+    decoy = rec + 700;
+    nt_w32(decoy + 16, 16u);                          /* first entry, from the header */
+    {
+        uint32_t off = 16u + 16u;
+        off += nt_index_entry(decoy + off, 6u, "HACKED", 12u, 0, 0);
+        {
+            uint8_t *end = decoy + off;
+            memset(end, 0, 16);
+            nt_w16(end + 8, 16u);
+            nt_w32(end + 12, 0x02u);   /* the end entry: no name, flag bit 1 set */
+        }
+    }
+    /* Point $INDEX_ROOT's value at the decoy instead of its own content -
+     * still inside the record, past the real attribute's own length. */
+    nt_w16(attr + 0x14, (uint16_t)(700u - 64u));   /* value offset */
+    nt_w32(attr + 0x10, 200u);                     /* value length: covers the decoy */
+    vibeos_blockcache_invalidate(&bc);
+    if (vibeos_ntfs_mount(&fs, &bc, 0) != 0 ||
+        vibeos_fs_mount(&mnt, vibeos_ntfs_ops(), &fs, "ntfs") != 0) {
+        return -1;
+    }
+    if (vibeos_fs_list(&mnt, "/", 0, name, sizeof(name), &size, &is_dir) == 0) {
+        printf("FAIL:ntfs listed \"%s\" from bytes outside $INDEX_ROOT's own attribute\n", name);
+        return -1;
+    }
+    return 0;
+}
+
 /* M-010: an NTFS run header cannot ask for more than eight bytes of a field.
  *
  * ntfs_next_run took the length and offset field sizes from the header nibbles,
@@ -9268,6 +9338,7 @@ int main(void) {
     RUN_TEST(test_ntfs_list);
     RUN_TEST(test_ntfs_refusals);
     RUN_TEST(test_ntfs_attr_length_wrap);
+    RUN_TEST(test_ntfs_index_root_wrap);
     RUN_TEST(test_ntfs_run_header_sizes);
     RUN_TEST(test_journal_commit);
     RUN_TEST(test_journal_power_cut);

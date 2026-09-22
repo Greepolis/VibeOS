@@ -1,0 +1,34 @@
+# M-039: $INDEX_ROOT's value_off/value_len bounded against its own attribute,
+# the same way ntfs_data_attr already bounds $DATA (H-011).
+#
+# Removing the check reopens the cross-attribute read test_ntfs_index_root_wrap
+# demonstrates: a corrupted value_off pointing at an unrelated, well-formed index
+# blob elsewhere in the same record is read and listed ("HACKED") instead of
+# refused. (A build under AddressSanitizer additionally aborts on this same
+# defect with a genuinely out-of-bounds value_off - stack-use-after-return in
+# rd32 - confirmed once by hand; not part of this gate, since that offset is not
+# reliably out of the stack's mapped region from run to run.)
+#
+# Target source: kernel/fs/ntfs.c
+# Run: python3 scripts/dev/sabotage.py kernel/fs/ntfs.c scripts/dev/cases/fs-ntfs-index-root.txt build-clang-Release
+
+### value_off/value_len go unchecked against the attribute again
+--- old
+    attr_len = rd32(attr + 4);
+    if (attr_len < 0x18u) {
+        return -1;   /* below this, the offset and length fields are not part of it */
+    }
+    value_off = rd16(attr + 0x14);
+    value_len = rd32(attr + 0x10);
+    if (value_off < 0x18u || value_off > attr_len) {
+        return -1;
+    }
+    if (value_len > attr_len - value_off) {
+        return -1;   /* the value claims to run past its own attribute */
+    }
+    root = attr + value_off;
+    if (value_len < 16u) {
++++ new
+    value_len = rd32(attr + 0x10);
+    root = attr + rd16(attr + 0x14);
+    if (value_len < 16u) {
