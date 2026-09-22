@@ -535,6 +535,18 @@ that already exists.
 unbracketed; a sink that drops a line silently. The first two are defects this
 project has had, and one of them invented crashes that never happened.
 
+**Done (2026-09-22).** `kernel/diag/klog.c` owns the ring, its lock, the one line
+builder and the sinks; `kernel/diag/crash.c` owns the crash ring and its dump. The
+UART and the disk are registered sinks; the arch keeps the UART, the backtrace, the
+core parking and the capture. A sink gets one complete line per call, so an
+unbracketed multi-part line is not expressible; a refused line is `klog_line_lost`;
+a line the device dropped while reporting success is a gap in the serial sink's
+`ln=` numbers, which the gate checks. Moving it found that neither ring had ever
+been locked, and that the trap model wrote a false FATAL into the ring on every
+ring-3 fault. The cases are `diag-klog.txt`, `diag-crash.txt` and `diag-sink.txt`
+(`check-subsystem.py` pairs cases with modules by area). See
+`implementation_progress/core_c6_diag.md`.
+
 ---
 
 ## C7 — the registries the next refactor needs
