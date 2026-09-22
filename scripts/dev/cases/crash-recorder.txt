@@ -1,11 +1,20 @@
 # Target source: kernel/arch/x86_64/task_life.c (the crash recorder moved there with the task lifecycle)
+#
+# C6: the capture stays here, where a trap frame means something; keeping the
+# record moved to kernel/diag/crash.c. The first case used to set `used = 0` on
+# the arch's own ring. There is no arch ring now, so it breaks the hand-over
+# instead: the state is captured and never kept, and `crash` on the console says
+# nothing has faulted. Observed red as `missing:[CRASH] end`: the gate drives the
+# console and waits for the dump's last line before its next command, and a
+# console with nothing to dump never prints it.
+#
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/arch/x86_64/task_life.c scripts/dev/cases/crash-recorder.txt
 
-### a ring-3 fault is killed without its state ever being captured
+### a ring-3 fault is killed without its state ever being kept
 --- old
-        rec->used = 1;
+        (void)vibeos_crash_record(rec);
 +++ new
-        rec->used = 0;
-        return;
+        (void)rec;
 
 ### the dump forgets which program was running
 --- old

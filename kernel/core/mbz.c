@@ -23,6 +23,7 @@ static const char *const g_name[VIBEOS_MBZ_COUNT] = {
     "sched_requeue_failed",
     "pipe_end_underflow",
     "pipe_bad_slot",
+    "klog_line_lost",
 };
 
 void vibeos_mbz_hit(vibeos_mbz_id_t id, uint64_t witness) {

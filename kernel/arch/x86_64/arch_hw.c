@@ -485,6 +485,8 @@ extern int vibeos_x86_64_virtio_blk_read(uint64_t sector, void *buf);
 extern int vibeos_x86_64_virtio_blk_read_many(uint64_t sector, void *buf, uint32_t sectors);
 extern int vibeos_x86_64_virtio_blk_write(uint64_t sector, const void *buf);
 #include "vibeos/log.h"
+#include "vibeos/klog.h"
+#include "vibeos/crash.h"
 #include "vibeos/mm_model.h"
 #include "vibeos/frame.h"
 #include "vibeos/vmspace.h"
@@ -698,25 +700,6 @@ static void hw_tlb_shootdown(uint64_t cr3);
  * lines below. */
 static int hw_cache_read(void *ctx, uint32_t file_id, uint64_t offset,
                          uint64_t phys);
-/* ---- crash records --------------------------------------------------------
- *
- * A process that dies from a fault used to leave two numbers behind, rip and
- * cr2, printed once and gone. That is enough to know *that* something died and
- * almost never enough to know why: every hard bug in this kernel has been
- * diagnosed by going back for the registers, the stack, and which program the
- * task was actually running - and by then the process no longer exists.
- *
- * So the state is taken at the moment of the fault, while it is all still
- * there, and kept. `crash` on the kernel console prints the last one in full.
- *
- * A ring of four, not one: services restart, and the interesting crash is
- * frequently not the most recent. */
-
-
-hw_crash_t g_crashes[HW_CRASH_RECORDS];
-uint32_t g_crash_next;
-volatile uint64_t g_crash_count;
-
 static void hw_log_field(const char *name, uint64_t value) {
     vibeos_x86_64_serial_puts(name);
     vibeos_x86_64_serial_puts("=0x");
@@ -740,206 +723,70 @@ static const char *hw_action_name(vibeos_trap_action_t action) {
     }
 }
 
-/* ---- the kernel log ------------------------------------------------------
+/* ---- the kernel log's device --------------------------------------------
  *
- * There has been a structured log with levels in kernel/core/log.c since early
- * on, and the running kernel never used it: the trap dispatcher was handed a
- * null pointer for it, and everything that mattered was printed with bare
- * serial_puts calls carrying no level at all. So there was no way to ask for
- * more detail, no way to ask for less, and nothing at all to show after a
- * machine went quiet.
+ * The log itself - the ring, its lock, the formatting, the sinks and the dumps -
+ * is kernel/diag/klog.c (C6). What stays here is what is different on another
+ * machine: the UART it writes to, and the spin lock it is serialised with.
  *
- * Two things are wanted from a log here and they pull in opposite directions.
- * A failure in CI should print the last thing that happened, which argues for
- * writing everything to the serial line. But the serial line is slow enough
- * under emulation to change the timing of the bug being hunted, and this
- * kernel has an intermittent wedge that is plainly timing-sensitive. So events
- * are always recorded into a ring in memory, which costs a memcpy, and only
- * those at or above a threshold are also written out. When the machine dies,
- * the ring is dumped - including everything that was too quiet to print at the
- * time, which is usually the part worth reading. */
+ * Events are always recorded into the ring, which costs a memcpy, and only
+ * those at or above INFO are also written to the serial line: the line is slow
+ * enough under emulation to change the timing of the bug being hunted. When the
+ * machine dies the ring is dumped, including everything that was too quiet to
+ * print at the time, which is usually the part worth reading. */
 
-static vibeos_log_t g_kernel_log;
-static uint32_t g_log_serial_level = VIBEOS_LOG_INFO;
+static hw_lock_t g_klog_lock;
 
-static void hw_log_emit(const vibeos_log_event_t *ev) {
-    /* This function has always ended with serial_unlock() and never taken the
-     * lock. Two separate defects came out of that one missing line.
-     *
-     * The log line itself was interleavable, because puts and print_hex each
-     * lock and release on their own - so a line assembled from eight of them
-     * is eight critical sections, not one.
-     *
-     * Worse, the unmatched release handed away a lock this core did not hold.
-     * When another core was mid-line, __sync_lock_release freed *its* lock, a
-     * third writer walked straight in, and irq_restore re-enabled interrupts
-     * inside somebody else's critical section. Output then interleaved
-     * mid-word and split the markers the boot gate matches on, so the gate
-     * reported failures that had not happened - about one boot in fourteen,
-     * which is expensive to chase precisely because the evidence is a lie. */
-    vibeos_x86_64_serial_lock();
-    vibeos_x86_64_serial_puts("[LOG][");
-    vibeos_x86_64_serial_puts(vibeos_log_level_name((vibeos_log_level_t)ev->level));
-    vibeos_x86_64_serial_puts("] ");
-    vibeos_x86_64_serial_puts(ev->message);
-    if (ev->code != 0u || ev->arg0 != 0u || ev->arg1 != 0u) {
-        vibeos_x86_64_serial_puts(" code=0x");
-        vibeos_x86_64_serial_print_hex(ev->code);
-        vibeos_x86_64_serial_puts(" a0=0x");
-        vibeos_x86_64_serial_print_hex(ev->arg0);
-        vibeos_x86_64_serial_puts(" a1=0x");
-        vibeos_x86_64_serial_print_hex(ev->arg1);
-    }
-    vibeos_x86_64_serial_puts("\n");
-    vibeos_x86_64_serial_unlock();
+static void hw_klog_lock(void) {
+    hw_spin_lock_named(&g_klog_lock, "vibeos_klog");
 }
 
-/* One line of a log event, formatted into a caller's buffer.
- *
- * Shared by the serial writer and the on-disk sink so the two cannot drift.
- * Returns the length used. No allocation and no locks: this runs from a panic
- * handler. */
-static uint32_t hw_log_format(const vibeos_log_event_t *ev, char *out,
-                              uint32_t cap) {
-    static const char hex[] = "0123456789abcdef";
-    uint32_t n = 0;
-    const char *p;
-    int i;
-
-    #define PUTC(c) do { if (n + 1u < cap) { out[n++] = (char)(c); } } while (0)
-    #define PUTS(str) do { const char *q_ = (str); \
-        while (q_ && *q_) { PUTC(*q_); q_++; } } while (0)
-    #define PUTX(v) do { uint64_t v_ = (uint64_t)(v); \
-        PUTC('0'); PUTC('x'); \
-        for (i = 15; i >= 0; i--) { PUTC(hex[(v_ >> (i * 4)) & 0xFu]); } \
-    } while (0)
-
-    PUTC('[');
-    p = vibeos_log_level_name((vibeos_log_level_t)ev->level);
-    PUTS(p);
-    PUTC(']');
-    PUTC(' ');
-    PUTS(ev->message);
-    if (ev->code != 0u || ev->arg0 != 0u || ev->arg1 != 0u) {
-        PUTS(" code=");
-        PUTX(ev->code);
-        PUTS(" a0=");
-        PUTX(ev->arg0);
-        PUTS(" a1=");
-        PUTX(ev->arg1);
-    }
-    #undef PUTC
-    #undef PUTS
-    #undef PUTX
-    return n;
+static void hw_klog_unlock(void) {
+    hw_spin_unlock(&g_klog_lock);
 }
 
-/* Guard against a log event raised from inside the sink's own write path.
+/* One complete line, in one call to serial_puts - which is one critical section
+ * on the console lock. There is nothing to bracket, so nothing to forget to
+ * bracket: that is the defect this sink exists not to be able to have. Its
+ * predecessor, hw_log_emit, built each line from eight writes and ended with an
+ * unlock it had never taken - see "An unmatched unlock" in CLAUDE.md.
  *
- * The sink writes through the block layer, and the block layer logs when a
- * request is refused - so an unlucky failure would log, which would write,
- * which would log. One flag per core rather than a global: two cores logging
- * at once are not recursion, and a global would silently drop the second
- * one's record. */
-static uint8_t g_logsink_busy[VIBEOS_HW_MAX_CPUS];
+ * It never logs from inside itself, so its `reentered` count must be zero and
+ * the gate says so: a non-zero one is lines this sink never got - for instance
+ * a task preempted between the module's reentrancy flag and this write, and
+ * moved to another core, leaving the flag set on the core it left. */
+static int hw_serial_sink_write(void *ctx, const char *line, uint32_t len) {
+    (void)ctx;
+    (void)len;
+    vibeos_x86_64_serial_puts(line);
+    return 0;
+}
 
-/* Every kernel log event, on the medium that outlives the machine.
- *
- * Every event, not only the ones the serial level lets through: the whole
- * point of the sink is the quiet lines nobody was printing when the machine
- * stopped. A boot raises a few dozen of these, so the cost is a few dozen
- * sector writes against the several thousand reads a boot already does. */
-static void hw_log_to_sink(const vibeos_log_event_t *ev) {
-    uint32_t cpu = vibeos_x86_64_cpu_id();
-    char line[VIBEOS_LOGSINK_PAYLOAD];
-    uint32_t n;
+static const vibeos_klog_sink_t g_serial_sink = {
+    "serial", VIBEOS_LOG_INFO, "[LOG]", 1, 1, hw_serial_sink_write, 0
+};
 
-    if (cpu >= VIBEOS_HW_MAX_CPUS || g_logsink_busy[cpu]) {
-        return;
+static void hw_klog_init(void) {
+    vibeos_klog_set_lock(hw_klog_lock, hw_klog_unlock);
+    vibeos_klog_set_cpu_id(vibeos_x86_64_cpu_id);
+    vibeos_klog_reset();
+    if (vibeos_klog_add_sink(&g_serial_sink) < 0) {
+        hw_panic("kernel log: the serial sink did not register");
     }
-    g_logsink_busy[cpu] = 1u;
-    n = hw_log_format(ev, line, sizeof(line));
-    if (n > 0u) {
-        (void)vibeos_logsink_write(line, n);
-    }
-    g_logsink_busy[cpu] = 0u;
 }
 
 void hw_log(vibeos_log_level_t level, uint32_t code, uint64_t a0,
                    uint64_t a1, const char *message) {
-    vibeos_log_event_t ev;
-
-    (void)vibeos_log_record(&g_kernel_log, level, code, a0, a1, message);
-    if (vibeos_log_latest(&g_kernel_log, &ev) == 0) {
-        /* The medium first, and unconditionally. A line held back by the
-         * serial level is exactly the kind that is wanted after a crash. */
-        hw_log_to_sink(&ev);
-        if ((uint32_t)level >= g_log_serial_level) {
-            hw_log_emit(&ev);
-        }
-    }
+    vibeos_klog(level, code, a0, a1, message);
 }
 
-/* Everything the ring still holds, oldest first. Called when the machine is
- * about to stop, which is the only moment the quiet events are worth their
- * transmission time. */
-/* The arch ring, on demand, newest `want` entries. Exposed because the console
- * had been showing the *other* log: kmain records boot stages into
- * vibeos_kernel_t.log while everything the machine actually does - fork, exec,
- * exit, signals, copy-on-write, munmap - goes into this one. `log` on the
- * console printed eight boot stages and none of the history, which is the
- * opposite of useful when something has just gone wrong. */
+/* The ring, on demand, newest `want` entries, for the console's `log` command.
+ * Bracketed as a whole so the listing arrives unbroken; the module takes its own
+ * lock inside, one event at a time, which is the lock order it documents. */
 void vibeos_x86_64_log_dump_recent(uint32_t want) {
-    uint32_t count = 0;
-    uint32_t i, start;
-
-    if (vibeos_log_count(&g_kernel_log, &count) != 0) {
-        vibeos_x86_64_serial_puts("[LOG] arch ring unavailable\n");
-        return;
-    }
-    start = (want == 0u || count <= want) ? 0u : count - want;
     vibeos_x86_64_serial_lock();
-    vibeos_x86_64_serial_puts("[LOG] arch ring: showing 0x");
-    vibeos_x86_64_serial_print_hex((uint64_t)(count - start));
-    vibeos_x86_64_serial_puts(" of 0x");
-    vibeos_x86_64_serial_print_hex((uint64_t)count);
-    vibeos_x86_64_serial_puts("\n");
-    for (i = start; i < count; i++) {
-        vibeos_log_event_t ev;
-        if (vibeos_log_get(&g_kernel_log, i, &ev) == 0) {
-            hw_log_emit(&ev);
-        }
-    }
+    vibeos_klog_dump_recent(want, hw_serial_sink_write, 0);
     vibeos_x86_64_serial_unlock();
-}
-
-static void hw_log_dump(void) {
-    uint32_t count = 0;
-    uint32_t dropped = 0;
-    uint32_t i;
-
-    if (vibeos_log_count(&g_kernel_log, &count) != 0) {
-        return;
-    }
-    (void)vibeos_log_dropped(&g_kernel_log, &dropped);
-
-    vibeos_x86_64_serial_puts("[LOG] dump count=0x");
-    vibeos_x86_64_serial_print_hex(count);
-    vibeos_x86_64_serial_puts(" dropped=0x");
-    vibeos_x86_64_serial_print_hex(dropped);
-    vibeos_x86_64_serial_puts("\n");
-
-    for (i = 0; i < count; i++) {
-        vibeos_log_event_t ev;
-
-        if (vibeos_log_get(&g_kernel_log, i, &ev) != 0) {
-            continue;
-        }
-        vibeos_x86_64_serial_puts("[LOG] #");
-        vibeos_x86_64_serial_print_hex(ev.seq);
-        vibeos_x86_64_serial_puts(" ");
-        hw_log_emit(&ev);
-    }
 }
 
 /* Walk the saved frame pointers and print the return addresses.
@@ -1083,34 +930,11 @@ void hw_panic(const char *why) {
      *
      * A panic is the one moment the on-disk log exists for, and it is also the
      * moment when the least is working: another core may hold any lock and the
-     * scheduler is about to be parked. The sink takes no lock on its write
-     * path precisely so this line can be written from here - see
-     * kernel/io/logsink.c. It goes first because every line after it is one
-     * more chance to stop before reaching the disk. */
-    {
-        const char *r = why ? why : "panic with no reason";
-        uint32_t n = 0;
-        /* The bound first, then the read. Written the other way round it
-         * dereferences r[n] before knowing n is in range - harmless for a
-         * NUL-terminated string, and not harmless for a panic reason that is
-         * ever built rather than a literal, which is exactly the direction
-         * this path is heading. Code scanning called it high severity and it
-         * was right to. */
-        while (n < VIBEOS_LOGSINK_PAYLOAD - 8u && r[n] != 0) {
-            n++;
-        }
-        {
-            char line[VIBEOS_LOGSINK_PAYLOAD];
-            uint32_t k;
-            for (k = 0; k < 7u; k++) {
-                line[k] = "PANIC: "[k];
-            }
-            for (k = 0; k < n; k++) {
-                line[7u + k] = r[k];
-            }
-            (void)vibeos_logsink_write(line, 7u + n);
-        }
-    }
+     * scheduler is about to be parked. vibeos_klog_panic takes no lock - see
+     * kernel/diag/klog.c - so this line can be written from here. It goes first
+     * because every line after it is one more chance to stop before reaching
+     * the disk. */
+    vibeos_klog_panic(why);
 
     uint64_t rbp;
     uint64_t rip;
@@ -1131,7 +955,7 @@ void hw_panic(const char *why) {
     vibeos_x86_64_serial_unlock();
 
     hw_backtrace(rbp, rip);
-    hw_log_dump();
+    vibeos_klog_dump_unlocked(hw_serial_sink_write, 0);
 
     /* Announced after the dump, so the evidence is out before anything else
      * stops, and on one line because three other cores may still be writing. */
@@ -1512,7 +1336,13 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
     tf.fault_address = fault_address;
     tf.vector = (uint32_t)frame->vector;
 
-    if (vibeos_trap_dispatch_ex(&g_arch_trap_state, &tf, &g_kernel_log,
+    /* No log is handed to the model. It used to write into the ring directly,
+     * which bypassed the ring's lock and every sink, and - because it is asked
+     * with pid 0 and knows nothing of privilege - recorded `kernel_fault_panic`
+     * at FATAL for every ring-3 fault the branch below then correctly survives.
+     * One false FATAL per svc-crash, every boot, in the ring a panic dumps. What
+     * the machine actually does is logged below, when it does it. */
+    if (vibeos_trap_dispatch_ex(&g_arch_trap_state, &tf, 0,
                                 0, &decision) != 0) {
         hw_panic("trap dispatch failed");
     }
@@ -1585,6 +1415,11 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
     if ((frame->cs & 3u) == 3u) {
         hw_fault_kill_current_user(frame, fault_address);  /* no return, if it can */
     }
+    /* The code is the one the trap model used ('TTFK'), so a dump reads the
+     * same as it always has; a1 is the faulting rip, which is where the gate
+     * looks for the free-page poison executed. */
+    hw_log(VIBEOS_LOG_FATAL, 0x5454464bu, frame->vector, frame->rip,
+           "kernel_fault_panic");
     hw_panic("unrecoverable CPU exception");
 }
 /* ---- Paging ------------------------------------------------------------- */
@@ -4992,69 +4827,8 @@ void hw_dump_vanished(uint64_t va) {
  * `crash` command; safe to call at any time, including when nothing has
  * crashed - saying so plainly is more useful than printing an empty record. */
 void vibeos_x86_64_crash_dump(void) {
-    const hw_crash_t *rec;
-    uint32_t i;
-
     vibeos_x86_64_serial_lock();
-    if (g_crash_count == 0ull) {
-        vibeos_x86_64_serial_puts("[CRASH] no process has faulted since boot\n");
-        vibeos_x86_64_serial_unlock();
-        return;
-    }
-    rec = &g_crashes[(g_crash_next + HW_CRASH_RECORDS - 1u) % HW_CRASH_RECORDS];
-
-    vibeos_x86_64_serial_puts("[CRASH] total=0x");
-    vibeos_x86_64_serial_print_hex(g_crash_count);
-    vibeos_x86_64_serial_puts(" pid=0x");
-    vibeos_x86_64_serial_print_hex((uint64_t)rec->pid);
-    vibeos_x86_64_serial_puts(" sig=0x");
-    vibeos_x86_64_serial_print_hex((uint64_t)rec->sig);
-    vibeos_x86_64_serial_puts(" exe=");
-    vibeos_x86_64_serial_puts(rec->exe[0] ? rec->exe : "(unknown)");
-    vibeos_x86_64_serial_puts("\n[CRASH] vector=0x");
-    vibeos_x86_64_serial_print_hex(rec->vector);
-    vibeos_x86_64_serial_puts(" err=0x");
-    vibeos_x86_64_serial_print_hex(rec->error_code);
-    vibeos_x86_64_serial_puts(" fault_addr=0x");
-    vibeos_x86_64_serial_print_hex(rec->fault_addr);
-    vibeos_x86_64_serial_puts("\n[CRASH] rip=0x");
-    vibeos_x86_64_serial_print_hex(rec->regs.rip);
-    vibeos_x86_64_serial_puts(" rsp=0x");
-    vibeos_x86_64_serial_print_hex(rec->regs.rsp);
-    vibeos_x86_64_serial_puts(" rbp=0x");
-    vibeos_x86_64_serial_print_hex(rec->regs.rbp);
-    vibeos_x86_64_serial_puts(" rflags=0x");
-    vibeos_x86_64_serial_print_hex(rec->regs.rflags);
-    vibeos_x86_64_serial_puts("\n[CRASH] rax=0x");
-    vibeos_x86_64_serial_print_hex(rec->regs.rax);
-    vibeos_x86_64_serial_puts(" rbx=0x");
-    vibeos_x86_64_serial_print_hex(rec->regs.rbx);
-    vibeos_x86_64_serial_puts(" rcx=0x");
-    vibeos_x86_64_serial_print_hex(rec->regs.rcx);
-    vibeos_x86_64_serial_puts(" rdx=0x");
-    vibeos_x86_64_serial_print_hex(rec->regs.rdx);
-    vibeos_x86_64_serial_puts("\n[CRASH] rsi=0x");
-    vibeos_x86_64_serial_print_hex(rec->regs.rsi);
-    vibeos_x86_64_serial_puts(" rdi=0x");
-    vibeos_x86_64_serial_print_hex(rec->regs.rdi);
-    vibeos_x86_64_serial_puts(" r8=0x");
-    vibeos_x86_64_serial_print_hex(rec->regs.r8);
-    vibeos_x86_64_serial_puts(" r9=0x");
-    vibeos_x86_64_serial_print_hex(rec->regs.r9);
-    vibeos_x86_64_serial_puts("\n");
-    for (i = 0; i < rec->stack_words; i++) {
-        vibeos_x86_64_serial_puts("[CRASH] stack+0x");
-        vibeos_x86_64_serial_print_hex((uint64_t)i * 8ull);
-        vibeos_x86_64_serial_puts(" = 0x");
-        vibeos_x86_64_serial_print_hex(rec->stack[i]);
-        vibeos_x86_64_serial_puts("\n");
-    }
-    if (rec->stack_words < HW_CRASH_STACK_WORDS) {
-        /* Said out loud: a short dump is a fact about the process's stack,
-         * not a bug in the dumper. */
-        vibeos_x86_64_serial_puts("[CRASH] stack truncated: the next word is not readable\n");
-    }
-    vibeos_x86_64_serial_puts("[CRASH] end\n");
+    vibeos_crash_dump(hw_serial_sink_write, 0);
     vibeos_x86_64_serial_unlock();
 }
 
@@ -5767,6 +5541,34 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
         vibeos_x86_64_serial_puts(" witness=0x");
         vibeos_x86_64_serial_print_hex(vibeos_mbz_first() == VIBEOS_MBZ_COUNT
                                            ? 0u : vibeos_mbz_witness(vibeos_mbz_first()));
+        /* The log's sinks: how many lines each was given, how many it refused
+         * (klog_line_lost in the registry above) and how many were raised from
+         * inside its own write. The gate reads serial_lines and checks every
+         * ln= from one to it is in the log - which is how a device that dropped
+         * a line and said it had not is seen from outside it. */
+        vibeos_x86_64_serial_puts("\n[KLOG] sinks=0x");
+        vibeos_x86_64_serial_print_hex(vibeos_klog_sink_count());
+        {
+            uint32_t k;
+            for (k = 0; k < vibeos_klog_sink_count(); k++) {
+                vibeos_klog_sink_stats_t ks;
+                if (vibeos_klog_sink_stats(k, &ks) != 0) {
+                    continue;
+                }
+                vibeos_x86_64_serial_puts(" ");
+                vibeos_x86_64_serial_puts(ks.name);
+                vibeos_x86_64_serial_puts("_lines=0x");
+                vibeos_x86_64_serial_print_hex(ks.offered);
+                vibeos_x86_64_serial_puts(" ");
+                vibeos_x86_64_serial_puts(ks.name);
+                vibeos_x86_64_serial_puts("_lost=0x");
+                vibeos_x86_64_serial_print_hex(ks.lost);
+                vibeos_x86_64_serial_puts(" ");
+                vibeos_x86_64_serial_puts(ks.name);
+                vibeos_x86_64_serial_puts("_reentered=0x");
+                vibeos_x86_64_serial_print_hex(ks.reentered);
+            }
+        }
         vibeos_x86_64_serial_puts("\n[PERF] syscalls=0x");
         vibeos_x86_64_serial_print_hex(g_perf_syscall.count);
         vibeos_x86_64_serial_puts(" syscall_cycles=0x");
@@ -5852,7 +5654,7 @@ static void hw_boot_stage(const char *name) {
     vibeos_x86_64_serial_unlock();
     /* The ring only exists from the "log" stage onwards; before that the
      * serial line is the only record there is, which is why both are used. */
-    if (g_kernel_log.initialized) {
+    if (vibeos_klog_ready()) {
         hw_log(VIBEOS_LOG_INFO, 200u, 0, 0, name);
     }
 }
@@ -6064,7 +5866,8 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
         vibeos_x86_64_serial_puts("[FB] no framebuffer; console is serial-only\n");
     }
 
-    (void)vibeos_log_init(&g_kernel_log);
+    hw_klog_init();
+    hw_crash_init();
     hw_log(VIBEOS_LOG_INFO, 0, 0, 0, "kernel log ready");
     hw_boot_stage("log");
 

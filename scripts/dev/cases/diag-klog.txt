@@ -1,0 +1,123 @@
+# C6: the kernel log (kernel/diag/klog.c), proved by the host test.
+#
+# The three docs/core/phases.md names for C6 - an unmatched unlock, a multi-part
+# message left unbracketed, a sink that drops a line silently - plus the defects
+# that moving the log out of arch_hw.c found and closed. Each breaks one rule and
+# the run must go red on the host test that names it:
+#  1. an unlock with no lock behind it: on the console lock this freed another
+#     core's line mid-word and the gate reported crashes that had not happened;
+#  2. a line handed to a sink in two writes: two critical sections, and the
+#     marker between them gets cut;
+#  3. a sink's refusal ignored: the line is gone and nothing says so;
+#  4. the ring recorded without its lock: two cores claim one slot;
+#  5. the event printed is "the latest" asked for after the lock is dropped: with
+#     two cores logging, one line twice and the other never - what hw_log did;
+#  6. a sink written under the ring's lock: every logging core waits on the UART;
+#  7. the reentrancy guard gone: a disk sink whose block layer logs would recurse;
+#  8. one line counter shared by all sinks: a gap in one hides behind the other.
+#
+# The serial sink's own honesty - that it wrote what it said it wrote - cannot be
+# seen from here; diag-sink.txt breaks it and the boot gate's ln= check
+# catches it.
+#
+# Target source: kernel/diag/klog.c
+# Run: python3 scripts/dev/sabotage.py kernel/diag/klog.c scripts/dev/cases/diag-klog.txt build-clang-Release
+
+### an unmatched unlock
+--- old
+    lock();
+    rc = (count ? vibeos_log_count(&g_ring, count) : 0) |
+         (dropped ? vibeos_log_dropped(&g_ring, dropped) : 0);
+    unlock();
++++ new
+    lock();
+    rc = (count ? vibeos_log_count(&g_ring, count) : 0) |
+         (dropped ? vibeos_log_dropped(&g_ring, dropped) : 0);
+    unlock();
+    unlock();
+
+### a multi-part message left unbracketed: the prefix is its own write
+--- old
+    put_s(&b, s->prefix);
+    put_event(&b, ev);
+    if (numbered) {
++++ new
+    {
+        uint32_t k = 0;
+        while (s->prefix && s->prefix[k]) {
+            k++;
+        }
+        if (k) {
+            (void)s->write(s->ctx, s->prefix, k);
+        }
+    }
+    put_event(&b, ev);
+    if (numbered) {
+
+### a sink that drops a line silently: its refusal is ignored
+--- old
+    if (s->write(s->ctx, line, n) != 0) {
+        __atomic_fetch_add(&g_lost[i], 1ull, __ATOMIC_RELAXED);
++++ new
+    (void)s->write(s->ctx, line, n);
+    if (0) {
+        __atomic_fetch_add(&g_lost[i], 1ull, __ATOMIC_RELAXED);
+
+### the ring is recorded without its lock
+--- old
+    lock();
+    ok = vibeos_log_record(&g_ring, level, code, arg0, arg1, message) == 0 &&
+         vibeos_log_latest(&g_ring, &ev) == 0;
+    unlock();
++++ new
+    ok = vibeos_log_record(&g_ring, level, code, arg0, arg1, message) == 0 &&
+         vibeos_log_latest(&g_ring, &ev) == 0;
+
+### the event printed is the latest, asked for after the lock is dropped
+--- old
+    ok = vibeos_log_record(&g_ring, level, code, arg0, arg1, message) == 0 &&
+         vibeos_log_latest(&g_ring, &ev) == 0;
+    unlock();
++++ new
+    ok = vibeos_log_record(&g_ring, level, code, arg0, arg1, message) == 0;
+    unlock();
+    ok = ok && vibeos_log_latest(&g_ring, &ev) == 0;
+
+### sinks are written under the ring's lock
+--- old
+         vibeos_log_latest(&g_ring, &ev) == 0;
+    unlock();
+    if (!ok) {
+        return;
+    }
+    n = vibeos_klog_sink_count();
+    for (i = 0; i < n; i++) {
+        offer(i, &ev);
+    }
++++ new
+         vibeos_log_latest(&g_ring, &ev) == 0;
+    if (!ok) {
+        unlock();
+        return;
+    }
+    n = g_nsinks;
+    for (i = 0; i < n; i++) {
+        offer(i, &ev);
+    }
+    unlock();
+
+### no reentrancy guard
+--- old
+    if (g_busy[i][cpu]) {
++++ new
+    if (0) {
+
+### one line counter shared by every sink
+--- old
+    ln = __atomic_add_fetch(&g_offered[i], 1ull, __ATOMIC_RELAXED);
++++ new
+    {
+        static uint64_t shared;
+        (void)__atomic_add_fetch(&g_offered[i], 1ull, __ATOMIC_RELAXED);
+        ln = ++shared;
+    }

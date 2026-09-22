@@ -184,6 +184,8 @@ if(VIBEOS_BUILD_TESTS)
         tests/kernel/task_ident_tests.c
         tests/kernel/fdtable_tests.c
         tests/kernel/pipe_tests.c
+        tests/kernel/klog_tests.c
+        tests/kernel/crash_tests.c
         tests/kernel/runq_tests.c
         tests/kernel/lifetime_tests.c
         tests/kernel/loader_tests.c

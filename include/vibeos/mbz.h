@@ -31,6 +31,7 @@ typedef enum {
     VIBEOS_MBZ_SCHED_REQUEUE_FAILED,
     VIBEOS_MBZ_PIPE_END_UNDERFLOW,  /* a pipe end released with none held: a count that was wrong */
     VIBEOS_MBZ_PIPE_BAD_SLOT,       /* a descriptor named a pipe that does not exist or is free  */
+    VIBEOS_MBZ_KLOG_LINE_LOST,      /* a log sink refused a line: evidence missing, not wrong      */
     VIBEOS_MBZ_COUNT
 } vibeos_mbz_id_t;
 

@@ -27,6 +27,7 @@
 #include "vibeos/frame.h"
 #include "vibeos/io_stats.h"
 #include "vibeos/iso9660.h"
+#include "vibeos/klog.h"
 #include "vibeos/logsink.h"
 #include "vibeos/ntfs.h"
 #include "vibeos/parttab.h"
@@ -296,6 +297,21 @@ static int hw_logsink_write(void *ctx, uint64_t lba, const void *buf) {
          ? -1 : vibeos_blk_write((uint32_t)g_logsink_dev, lba, 1u, buf);
 }
 
+/* The disk as a sink of the kernel log (kernel/diag/klog.c): every event, not
+ * only the ones the serial level lets through - the point of the medium is the
+ * quiet lines nobody was printing when the machine stopped. A boot raises a few
+ * dozen, so the cost is a few dozen sector writes against the thousands of reads
+ * a boot already does. The module keeps a write from logging into itself: the
+ * block layer logs when it refuses a request. */
+static int hw_disk_sink_write(void *ctx, const char *line, uint32_t len) {
+    (void)ctx;
+    return vibeos_logsink_write(line, len);
+}
+
+static const vibeos_klog_sink_t g_disk_sink = {
+    "disk", VIBEOS_LOG_DEBUG, 0, 0, 0, hw_disk_sink_write, 0
+};
+
 void hw_logsink_bringup(void) {
     const char *verdict = "no second disk on this machine";
     vibeos_logsink_dev_t dev;
@@ -342,7 +358,11 @@ void hw_logsink_bringup(void) {
 
             verdict = "FAILED: write";
             if (vibeos_logsink_write("VIBEOS boot mark", 16u) == 0) {
-                verdict = "OK";
+                /* Registered only once the medium has taken a line: before
+                 * that it would refuse every one, and each refusal is a
+                 * must-be-zero. */
+                verdict = (vibeos_klog_add_sink(&g_disk_sink) >= 0)
+                        ? "OK" : "FAILED: register";
             }
         }
     }

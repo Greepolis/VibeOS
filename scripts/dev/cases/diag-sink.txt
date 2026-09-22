@@ -1,0 +1,77 @@
+# C6: the kernel log's serial sink, proved by the boot gate.
+#
+# diag-klog.txt proves the module counts a line a sink *refuses*. This is the
+# other half, which no host test can see: a device that drops a line and reports
+# success. The module numbers every line it hands the serial sink (ln=0x...),
+# prints how many on the [KLOG] line, and the gate requires every number from one
+# to that count to be in the log.
+#
+#  1. the sink drops the fifth line it is given and says it wrote it:
+#     expect klog_line_missing. One line, early, because that is the hardest
+#     loss to notice. The first version dropped one line in sixteen and went
+#     NOT RED: a boot hands the serial sink about a dozen live lines, and the
+#     sixteenth call was a *replay* (the console's `crash` or `log` dump), which
+#     carries no ln= and so cannot leave a gap. That is a real limit of the
+#     detector, recorded rather than tuned away: ln= covers the live lines; a
+#     lost replay line is seen, if at all, by the markers the gate waits for on
+#     those commands ("[CRASH] end", "kernel ring: showing");
+#  4. the sink logs from inside its own write: expect klog_serial_reentered.
+#     The module refuses to offer that event back, correctly, and counts it -
+#     and for the serial sink that count is lines it never received;
+#  2. the [KLOG] line stops being printed: expect klog_counters_missing - a
+#     counter that disappears must not read as one that stayed at zero;
+#  3. the sink is registered too quiet to be offered anything: expect
+#     klog_serial_unproven - a gap check over no lines is green by construction.
+#
+# Not a case here, deliberately: the serial sink writing one line in two pieces.
+# It would only fail a boot on which another core happened to write in between,
+# which is a coin toss, not a gate. The module hands a sink one complete line in
+# one call and diag-klog.txt proves that on the host; the sink passes it to one
+# serial_puts, which is one critical section.
+#
+# Target source: kernel/arch/x86_64/arch_hw.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/arch/x86_64/arch_hw.c scripts/dev/cases/diag-sink.txt
+
+### the serial sink drops a line and says it did not
+--- old
+    (void)ctx;
+    (void)len;
+    vibeos_x86_64_serial_puts(line);
+    return 0;
++++ new
+    static uint32_t drop;
+    (void)ctx;
+    (void)len;
+    if (++drop != 5u) {
+        vibeos_x86_64_serial_puts(line);
+    }
+    return 0;
+
+### the serial sink logs from inside its own write
+--- old
+    (void)ctx;
+    (void)len;
+    vibeos_x86_64_serial_puts(line);
+    return 0;
++++ new
+    static int once;
+    (void)ctx;
+    (void)len;
+    vibeos_x86_64_serial_puts(line);
+    if (!once) {
+        once = 1;
+        hw_log(VIBEOS_LOG_INFO, 0, 0, 0, "logged from inside the serial sink");
+    }
+    return 0;
+
+### the [KLOG] line is not printed
+--- old
+        vibeos_x86_64_serial_puts("\n[KLOG] sinks=0x");
++++ new
+        vibeos_x86_64_serial_puts("\n[KLOX] sinks=0x");
+
+### the serial sink is offered nothing
+--- old
+    "serial", VIBEOS_LOG_INFO, "[LOG]", 1, 1, hw_serial_sink_write, 0
++++ new
+    "serial", VIBEOS_LOG_FATAL, "[LOG]", 1, 1, hw_serial_sink_write, 0

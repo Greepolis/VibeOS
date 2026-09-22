@@ -400,6 +400,41 @@ assert interleaved_lines(_OPEN_LINE) == [], "flags a ring-3 write left open"
 assert interleaved_lines(_CLEAN) == [], "flags a healthy line"
 
 
+_KLOG_LN = re.compile(r"\[LOG\]\[[A-Z]+\] [^\r\n]*? ln=0x([0-9a-f]{16})")
+
+
+def klog_missing_lines(text, offered):
+    """Serial log line numbers 1..offered that the log does not contain.
+
+    The kernel log numbers every line it hands the serial sink (kernel/diag/
+    klog.c), so a line the device dropped while reporting success leaves a gap
+    here. A refused line is counted by the kernel itself; a line lost *without*
+    a refusal is the case only something outside the device can see, and this
+    is that something.
+
+    Only numbers up to `offered`, the count printed on the [KLOG] line, are
+    required: a line numbered after it may still be on its way when QEMU is
+    stopped. Replays - the console's `log` command, a panic's dump - carry no
+    number and are ignored."""
+    seen = set(int(m, 16) for m in _KLOG_LN.findall(text))
+    return [n for n in range(1, offered + 1) if n not in seen]
+
+
+assert klog_missing_lines(
+    "[LOG][INFO] a ln=0x0000000000000001\n"
+    "[LOG][WARN] b code=0x0000000000000001 a0=0x0000000000000000 "
+    "a1=0x0000000000000000 ln=0x0000000000000002\n", 2) == [], \
+    "flags a complete sequence"
+assert klog_missing_lines(
+    "[LOG][INFO] a ln=0x0000000000000001\n[LOG][INFO] c ln=0x0000000000000003\n",
+    3) == [2], "misses a dropped line"
+assert klog_missing_lines("[LOG][INFO] a ln=0x0000000000000001\n", 2) == [2], \
+    "misses a dropped last line"
+assert klog_missing_lines(
+    "[LOG] #0000000000000002 [LOG][INFO] replay\n[LOG][INFO] replay\n", 1) == [1], \
+    "counts a replay as the live line"
+
+
 def ring3_writes_with_nul(text):
     """Ring-3 writes the kernel copied wrongly.
 
@@ -859,7 +894,7 @@ def main():
                 # that rots, and because the assertion below needs its output:
                 # this is the only place a boot says how many of its own log
                 # lines actually reached the disk.
-                ("[LOG] arch ring: showing", b"logdisk\r"),
+                ("[LOG] kernel ring: showing", b"logdisk\r"),
                 ("[LOGDISK] shown=", b"meminfo\r"),
                 # meminfo is the memory picture a person asks for, and the three
                 # counters that must be zero are printed on one line so the gate
@@ -1186,7 +1221,7 @@ def main():
             # The console can actually show the history. A log nobody
             # can read is the same as no log, which is most of why the
             # last two days went the way they did.
-            ring = re.search(r"arch ring: showing 0x([0-9a-f]{16})", text)
+            ring = re.search(r"kernel ring: showing 0x([0-9a-f]{16})", text)
             if ring is None:
                 problems.append("console_cannot_show_the_arch_log")
             elif int(ring.group(1), 16) == 0:
@@ -1758,6 +1793,35 @@ def main():
                 problems.append("mbz_counters_missing")
             elif int(mb.group(1), 16) != 0:
                 problems.append(f"mbz_{mb.group(2)}_witness={int(mb.group(3), 16)}")
+
+            # The kernel log's sinks (kernel/diag/klog.c). A refused line is in
+            # the registry above as klog_line_lost; this is the other half, a
+            # line the serial device lost while saying it had not. Every number
+            # the log gave out up to this line must be somewhere in the log.
+            mk = re.search(r"\[KLOG\] sinks=0x([0-9a-f]{16}) serial_lines=0x([0-9a-f]{16}) "
+                           r"serial_lost=0x([0-9a-f]{16}) "
+                           r"serial_reentered=0x([0-9a-f]{16})", text)
+            if mk is None:
+                problems.append("klog_counters_missing")
+            else:
+                offered = int(mk.group(2), 16)
+                # The serial sink never logs from inside its own write, so an
+                # event it was not offered because it was "busy" is a line it
+                # never got - a task moved to another core mid-write leaves the
+                # flag set on the core it left. Counted by the kernel; this is
+                # where the count stops being a number nobody reads.
+                if int(mk.group(4), 16) != 0:
+                    problems.append(f"klog_serial_reentered={int(mk.group(4), 16)}")
+                if offered == 0:
+                    # A boot writes dozens of log lines. None means the serial
+                    # sink was never offered one, and a gap check over nothing
+                    # is green by construction.
+                    problems.append("klog_serial_unproven")
+                else:
+                    missing = klog_missing_lines(text, offered)
+                    if missing:
+                        problems.append(f"klog_line_missing={missing[0]}"
+                                        f"_of_{len(missing)}")
 
             # Every bounded wait a syscall can reach, asserted at zero.
             #

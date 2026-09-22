@@ -65,8 +65,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 # kernel/arch/ is excluded on purpose: arch_hw.c is the *subject* of this
 # refactor, not a module that has failed to become one. Measuring it here would
 # add one enormous violation that says nothing the plan does not already say.
-AREAS = ("abi", "core", "exec", "fs", "io", "ipc", "mm", "net", "object", "proc",
-         "sched", "time", "txn")
+AREAS = ("abi", "core", "diag", "exec", "fs", "io", "ipc", "mm", "net", "object",
+         "proc", "sched", "time", "txn")
 
 # Today's measurement. Each number is a debt, not a permission.
 #
@@ -85,7 +85,7 @@ BASELINE = {
     # Modules exempted by reason (EXEMPT below). It may only go down: an
     # exemption is a claim that the module has no failure mode a counter could
     # see, and every one is a place a defect could hide without a detector.
-    "mustbezero_exempt": 23,   # was 21; +1 sched/task_ident, +1 fs/fdtable (C5): pure functions over a caller-owned struct, decided not reflexed
+    "mustbezero_exempt": 24,   # was 21; +1 sched/task_ident, +1 fs/fdtable (C5): pure functions over a caller-owned struct, decided not reflexed; +1 diag/crash (C6), see its entry
 }
 
 # A module counts as having a must-be-zero when one of these holds. Three routes,
@@ -137,6 +137,7 @@ EXEMPT = {
     "fs/fdtable": "pure functions over a table the caller owns; an exhausted table is -1 and a limit, not a defect - the layout rules are proved by the host test and fs-fdtable.txt",
     "sched/task_ident": "pure functions over a struct the caller owns; no state and no refusal - the reset is proved byte-for-byte by the host test",
     "sched/runq": "a round-robin pick proven against a model by the scheduler torture harness; no state to be wrong",
+    "diag/crash": "a ring of four under its own lock, copied whole in and out; overwriting the oldest is the design, and the capture itself is the arch's, proved on every boot by svc-crash and crash-recorder.txt",
     "time/timer": "tick arithmetic and one armed deadline; no state a defect could corrupt beyond that deadline",
 }
 MUSTBEZERO_RE = re.compile(r"must[ -]?be[ -]?zero|MUSTBEZERO|vibeos_mbz_hit", re.I)

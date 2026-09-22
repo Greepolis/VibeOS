@@ -1,0 +1,40 @@
+# C6: crash records (kernel/diag/crash.c), proved by the host test.
+#
+#  1. the slot claimed, filled and published outside the lock: two processes
+#     faulting at once on two cores wrote one record over the other - the defect
+#     this module closed when it left task_life.c;
+#  2. the cursor not advanced: every crash overwrites the last, and the ring of
+#     four is a ring of one;
+#  3. a record's register count trusted: a capture that overstates it runs the
+#     dump off the end of the array;
+#  4. the "stack truncated" line never printed: a short dump reads as a whole
+#     stack, and a reader goes looking for a bug in the program's stack instead
+#     of in what could be read of it.
+#
+# Target source: kernel/diag/crash.c
+# Run: python3 scripts/dev/sabotage.py kernel/diag/crash.c scripts/dev/cases/diag-crash.txt build-clang-Release
+
+### a record is kept without the lock
+--- old
+    lock();
+    g_ring[g_next] = *rec;
++++ new
+    g_ring[g_next] = *rec;
+
+### the cursor does not advance
+--- old
+    g_next = (g_next + 1u) % VIBEOS_CRASH_RECORDS;
++++ new
+    g_next = g_next % VIBEOS_CRASH_RECORDS;
+
+### the register count is trusted
+--- old
+    if (g_ring[g_next].nregs > VIBEOS_CRASH_REGS) {
++++ new
+    if (0) {
+
+### a short stack is never called short
+--- old
+    if (rec.stack_words < VIBEOS_CRASH_STACK_WORDS) {
++++ new
+    if (0) {

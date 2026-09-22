@@ -61,6 +61,8 @@ set(VIBEOS_KERNEL_CORE_SOURCES
     kernel/ipc/handle_transfer.c
     kernel/ipc/waitset.c
     kernel/core/log.c
+    kernel/diag/klog.c
+    kernel/diag/crash.c
     kernel/core/mbz.c
     kernel/abi/abi.c
     kernel/abi/abi_linux.c

@@ -663,20 +663,6 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
 
 #define VIBEOS_HW_KERNEL_CS 0x08u
 #define VIBEOS_HW_MAX_CPUS 8u
-#define HW_CRASH_RECORDS 4u
-#define HW_CRASH_STACK_WORDS 16u
-typedef struct {
-    uint32_t used;
-    uint32_t pid;
-    uint32_t sig;
-    uint64_t vector;
-    uint64_t error_code;
-    uint64_t fault_addr;
-    vibeos_x86_64_isr_frame_t regs;
-    uint64_t stack[HW_CRASH_STACK_WORDS];
-    uint32_t stack_words;      /* how many were readable; the rest is off-map */
-    char exe[64];
-} hw_crash_t;
 #define VIBEOS_HW_IDENTITY_LIMIT 0x100000000ull
 /* A path's identity, as a number the cache can key on.
  *
@@ -760,9 +746,9 @@ typedef struct hw_elf_cache_reader {
 
 extern void vibeos_x86_64_task_enter(vibeos_x86_64_isr_frame_t *task);
 
-extern hw_crash_t g_crashes[HW_CRASH_RECORDS];
-extern uint32_t g_crash_next;
-extern volatile uint64_t g_crash_count;
+/* The crash ring's lock, registered at boot (kernel/diag/crash.c keeps the
+ * records; the capture is task_life.c's). */
+void hw_crash_init(void);
 extern uint64_t g_pml4[512] __attribute__((aligned(4096)));
 extern uint8_t *g_interp_elf;
 extern uint32_t g_interp_elf_cap;

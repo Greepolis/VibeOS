@@ -6,6 +6,7 @@
  * arch_hw_internal.h. */
 
 #include "arch_hw_internal.h"
+#include "vibeos/crash.h"
 
 #define VIBEOS_HW_KERNEL_DS 0x10u
 
@@ -1532,19 +1533,27 @@ void hw_fault_kill_current_user(const vibeos_x86_64_isr_frame_t *frame,
     vibeos_x86_64_serial_puts("\n");
     vibeos_x86_64_serial_unlock();
 
-    /* Take the whole picture before anything is torn down. */
+    /* Take the whole picture before anything is torn down. Filled here, where a
+     * trap frame means something, and kept by kernel/diag/crash.c, which takes
+     * the copy under its own lock. */
     {
-        hw_crash_t *rec = &g_crashes[g_crash_next];
+        vibeos_crash_t local;
+        vibeos_crash_t *rec = &local;
         const hw_task_t *t = &g_tasks[g_current_task];
         uint32_t i;
 
-        rec->used = 1;
         rec->pid = t->id.pid;
         rec->sig = sig;
         rec->vector = vector;
         rec->error_code = frame->error_code;
         rec->fault_addr = fault_address;
-        rec->regs = *frame;
+        rec->nregs = 0;
+#define HW_CRASH_REG(r) do { rec->regs[rec->nregs].name = #r; \
+        rec->regs[rec->nregs].value = frame->r; rec->nregs++; } while (0)
+        HW_CRASH_REG(rip); HW_CRASH_REG(rsp); HW_CRASH_REG(rbp); HW_CRASH_REG(rflags);
+        HW_CRASH_REG(rax); HW_CRASH_REG(rbx); HW_CRASH_REG(rcx); HW_CRASH_REG(rdx);
+        HW_CRASH_REG(rsi); HW_CRASH_REG(rdi); HW_CRASH_REG(r8);  HW_CRASH_REG(r9);
+#undef HW_CRASH_REG
         for (i = 0; i < sizeof(rec->exe) - 1u && t->proc.exe_path[i]; i++) {
             rec->exe[i] = t->proc.exe_path[i];
         }
@@ -1554,7 +1563,7 @@ void hw_fault_kill_current_user(const vibeos_x86_64_isr_frame_t *frame,
          * unreadable one is the honest thing: a dump that invents the rest is
          * worse than a short dump. */
         rec->stack_words = 0;
-        for (i = 0; i < HW_CRASH_STACK_WORDS; i++) {
+        for (i = 0; i < VIBEOS_CRASH_STACK_WORDS; i++) {
             uint64_t addr = frame->rsp + (uint64_t)i * 8ull;
             if (!linux_user_ok(addr, 8u, 0)) {
                 break;
@@ -1567,8 +1576,7 @@ void hw_fault_kill_current_user(const vibeos_x86_64_isr_frame_t *frame,
             }
             rec->stack_words++;
         }
-        g_crash_next = (g_crash_next + 1u) % HW_CRASH_RECORDS;
-        __atomic_fetch_add(&g_crash_count, 1ull, __ATOMIC_RELAXED);
+        (void)vibeos_crash_record(rec);
 
         vibeos_x86_64_serial_lock();
         vibeos_x86_64_serial_puts("[CRASH] recorded pid=0x");
@@ -1614,6 +1622,21 @@ void hw_fault_kill_current_user(const vibeos_x86_64_isr_frame_t *frame,
 
     g_tasks[g_current_task].id.exit_signal = sig;
     hw_task_exit(128ull + sig);   /* switches away; does not return */
+}
+
+static hw_lock_t g_crash_lock;
+
+static void hw_crash_lock(void) {
+    hw_spin_lock_named(&g_crash_lock, "vibeos_crash");
+}
+
+static void hw_crash_unlock(void) {
+    hw_spin_unlock(&g_crash_lock);
+}
+
+void hw_crash_init(void) {
+    vibeos_crash_set_lock(hw_crash_lock, hw_crash_unlock);
+    vibeos_crash_reset();
 }
 
 /* ---- asking a task who it is ------------------------------------------------------
