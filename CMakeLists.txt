@@ -220,6 +220,14 @@ if(VIBEOS_BUILD_TESTS)
     target_include_directories(vibeos_logsink_torture PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     add_test(NAME vibeos-logsink-torture COMMAND vibeos_logsink_torture 1 4000)
 
+    # The kernel log and the crash records against a model that formats every
+    # expected line itself, with snprintf: a log asked whether it wrote the right
+    # line answers from the code that wrote it, so the model shares none of it.
+    add_executable(vibeos_diag_torture tests/kernel/diag_torture.c)
+    target_link_libraries(vibeos_diag_torture PRIVATE vibeos_kernel_core)
+    target_include_directories(vibeos_diag_torture PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    add_test(NAME vibeos-diag-torture COMMAND vibeos_diag_torture 1 4000)
+
     add_executable(vibeos_mm_torture tests/kernel/mm_torture.c)
     target_link_libraries(vibeos_mm_torture PRIVATE vibeos_kernel_core)
     target_include_directories(vibeos_mm_torture PRIVATE /include)
