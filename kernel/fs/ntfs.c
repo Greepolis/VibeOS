@@ -579,15 +579,18 @@ static int ntfs_index_scan(vibeos_ntfs_t *fs, const uint8_t *rec,
     {
         uint16_t runs_off = rd16(alloc + 0x20);
         const uint8_t *runs = alloc + runs_off;
-        uint32_t attr_len = rd32(alloc + 4);
+        /* $INDEX_ALLOCATION's length, not $INDEX_ROOT's: it had the same name as
+         * the outer attr_len, which in a parser of an external format is how
+         * one attribute's bound gets checked against the other's. */
+        uint32_t alloc_len = rd32(alloc + 4);
         uint32_t runs_len;
         uint64_t clusters_per_block;
         uint32_t blk;
 
-        if (attr_len <= runs_off) {
+        if (alloc_len <= runs_off) {
             return -1;
         }
-        runs_len = attr_len - runs_off;
+        runs_len = alloc_len - runs_off;
         clusters_per_block = block_bytes / fs->cluster_bytes;
         if (clusters_per_block == 0ull) {
             clusters_per_block = 1ull;   /* a block smaller than a cluster */

@@ -208,7 +208,13 @@ const vibeos_abi_t *vibeos_abi_linux(void);
  * implements - or VIBEOS_OP_NONE when every operation is reachable.
  *
  * Both are also run by the host suite against the real tables, so a declared
- * operation with no handler fails a test rather than a boot. */
+ * operation with no handler fails a test rather than a boot.
+ *
+ * The registry keeps the pointer, not a copy: `rows` must live as long as the
+ * registry does - a static table. Code scanning flagged the host test for handing
+ * it arrays on the stack, which left the registry pointing at a dead frame until
+ * the next reset; nothing read it in that window, and the next test to do so
+ * would have read whatever the stack held by then. */
 int vibeos_abi_linux_register(const vibeos_row_t *rows, uint32_t count);
 vibeos_op_id_t vibeos_abi_linux_missing(void);
 uint32_t vibeos_abi_linux_row_count(void);
