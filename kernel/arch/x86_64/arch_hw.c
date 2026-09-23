@@ -751,10 +751,9 @@ static void hw_klog_unlock(void) {
  * predecessor, hw_log_emit, built each line from eight writes and ended with an
  * unlock it had never taken - see "An unmatched unlock" in CLAUDE.md.
  *
- * It never logs from inside itself, so its `reentered` count must be zero and
- * the gate says so: a non-zero one is lines this sink never got - for instance
- * a task preempted between the module's reentrancy flag and this write, and
- * moved to another core, leaving the flag set on the core it left. */
+ * It never logs from inside itself, so it is registered with no reentrancy
+ * guard (below) and its `reentered` count is zero by construction; the gate
+ * asserts it anyway, so turning the guard back on for it would be seen. */
 static int hw_serial_sink_write(void *ctx, const char *line, uint32_t len) {
     (void)ctx;
     (void)len;
@@ -762,13 +761,51 @@ static int hw_serial_sink_write(void *ctx, const char *line, uint32_t len) {
     return 0;
 }
 
+/* No reentrancy guard: serial_puts never logs, so this sink cannot be re-entered,
+ * and a sink with no guard is never skipped. The guard used to be on for every
+ * sink and keyed by core, which could skip serial lines for a reason that did
+ * not apply to it. Designated, because a positional initialiser silently shifts
+ * the day the struct gains a field - it just did. */
 static const vibeos_klog_sink_t g_serial_sink = {
-    "serial", VIBEOS_LOG_INFO, "[LOG]", 1, 1, hw_serial_sink_write, 0
+    .name = "serial",
+    .min_level = VIBEOS_LOG_INFO,
+    .prefix = "[LOG]",
+    .numbered = 1,
+    .newline = 1,
+    .guard_reentry = 0,
+    .write = hw_serial_sink_write,
+    .ctx = 0,
 };
+
+/* Who is logging, for the module's reentrancy guard: the running task, which
+ * stays the same when the scheduler moves it to another core and which an
+ * interrupt nested in it shares (a write nested in a write is recursion). Before
+ * this core's per-CPU block exists - GS.base is still zero - or before it runs a
+ * task, one number per core past the task slots.
+ *
+ * GS.base is read from the MSR rather than dereferenced, because an application
+ * processor logs before its block is installed, and following a zero GS there
+ * is how a previous diagnostic wrote through garbage into low memory. */
+_Static_assert(VIBEOS_HW_MAX_TASKS + VIBEOS_HW_MAX_CPUS <= VIBEOS_KLOG_MAX_CONTEXTS,
+               "the kernel log's reentrancy guard must tell every context apart");
+
+static uint32_t hw_klog_context(void) {
+    uint32_t lo, hi;
+    uint32_t cpu = vibeos_x86_64_cpu_id() % VIBEOS_HW_MAX_CPUS;
+
+    __asm__ __volatile__("rdmsr" : "=a"(lo), "=d"(hi) : "c"(0xC0000101u));
+    if (lo != 0u || hi != 0u) {
+        int t = hw_this_cpu()->current_task;
+        if (t >= 0 && t < VIBEOS_HW_MAX_TASKS) {
+            return (uint32_t)t;
+        }
+    }
+    return (uint32_t)VIBEOS_HW_MAX_TASKS + cpu;
+}
 
 static void hw_klog_init(void) {
     vibeos_klog_set_lock(hw_klog_lock, hw_klog_unlock);
-    vibeos_klog_set_cpu_id(vibeos_x86_64_cpu_id);
+    vibeos_klog_set_context(hw_klog_context);
     vibeos_klog_reset();
     if (vibeos_klog_add_sink(&g_serial_sink) < 0) {
         hw_panic("kernel log: the serial sink did not register");

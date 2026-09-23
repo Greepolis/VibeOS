@@ -44,7 +44,8 @@
  * the console lock or calls a sink while holding its own. */
 
 #define VIBEOS_KLOG_MAX_SINKS 4u
-#define VIBEOS_KLOG_MAX_CPUS 8u
+/* Execution contexts the reentrancy guard tells apart; see vibeos_klog_set_context. */
+#define VIBEOS_KLOG_MAX_CONTEXTS 80u
 /* A whole line: prefix, level, a 96-byte message, three 18-character fields and
  * the line number, with room to spare. Longer is truncated, never overrun. */
 #define VIBEOS_KLOG_LINE 256u
@@ -59,6 +60,11 @@ typedef struct {
     const char *prefix;            /* written before the level, e.g. "[LOG]"; may be 0 */
     int numbered;                  /* append " ln=0x<n>", one sequence per sink */
     int newline;                   /* end the line with '\n' */
+    /* The write can log (the disk's block layer logs a refusal), so an event
+     * raised inside it must not be offered back. A sink whose write cannot log
+     * leaves this off: then nothing is ever skipped for it, which is the only
+     * arrangement in which "never skipped" is true by construction. */
+    int guard_reentry;
     vibeos_klog_write_fn write;
     void *ctx;
 } vibeos_klog_sink_t;
@@ -69,17 +75,29 @@ typedef struct {
     uint64_t lost;       /* of those, refused by the device - must be zero         */
     uint64_t reentered;  /* events raised from inside this sink's own write, and so
                           * not offered to it: a disk sink whose block layer logs a
-                          * refusal would otherwise log, write, log, forever       */
+                          * refusal would otherwise log, write, log, forever.
+                          * Always zero for a sink without guard_reentry.         */
 } vibeos_klog_sink_stats_t;
 
-/* The lock the ring is serialised with, and who is asking - the reentrancy guard
- * is per core, because two cores logging at once are not recursion. Either may be
- * left unset for a single-threaded host test. */
+/* The lock the ring is serialised with. May be left unset for a single-threaded
+ * host test. */
 void vibeos_klog_set_lock(void (*lock)(void), void (*unlock)(void));
-void vibeos_klog_set_cpu_id(uint32_t (*cpu_id)(void));
+
+/* Who is asking, for the reentrancy guard: a number below
+ * VIBEOS_KLOG_MAX_CONTEXTS that stays with an execution context wherever it runs.
+ *
+ * It was the core, and a core is the wrong key twice over. A task preempted
+ * between the guard being set and the write, and resumed on another core, left
+ * the flag set on the core it had left - so every other context there had its
+ * lines skipped as "reentered" until the task came back. And two contexts on one
+ * core that are not nested are not recursion. The architecture answers with the
+ * running task (an interrupt nested in a task is that task: a nested write *is*
+ * recursion), and with a per-core number before there are tasks. Unset, every
+ * caller is context 0. */
+void vibeos_klog_set_context(uint32_t (*context)(void));
 
 /* Boot and tests: the ring empty, no sinks, every count zero. Leaves the lock and
- * cpu id registered. Nothing is recorded before this has run. */
+ * the context registered. Nothing is recorded before this has run. */
 void vibeos_klog_reset(void);
 int vibeos_klog_ready(void);
 

@@ -2,6 +2,7 @@
 #include <string.h>
 
 #include "vibeos/kernel.h"
+#include "vibeos/klog.h"
 #include "vibeos/bootloader.h"
 #include "vibeos/driver_host.h"
 #include "vibeos/drivers.h"
@@ -477,6 +478,14 @@ static int test_kmain(void) {
     boot.framebuffer_width = 0;
     boot.framebuffer_height = 0;
 
+    /* On the machine the architecture creates the kernel log and has already
+     * logged into it by the time kmain runs. Stand in for that, so the test
+     * can see kmain keep it instead of starting a log of its own. */
+    vibeos_klog_set_lock(0, 0);
+    vibeos_klog_set_context(0);
+    vibeos_klog_reset();
+    vibeos_klog(VIBEOS_LOG_INFO, 0, 0, 0, "logged by the architecture first");
+
     if (vibeos_kmain(&kernel, &boot) != 0) {
         return -1;
     }
@@ -497,7 +506,15 @@ static int test_kmain(void) {
     if ((health_flags & VIBEOS_BOOT_HEALTH_LOG_READY) == 0) {
         return -1;
     }
-    if (vibeos_log_count(&kernel.log, &log_count) != 0 || log_count < 5u) {
+    if (vibeos_klog_count(&log_count, 0) != 0 || log_count < 6u) {
+        return -1;
+    }
+    /* kmain logs into the one kernel log and keeps what was there: resetting a
+     * log that exists would throw away the boot so far and unregister the
+     * serial port. */
+    if (vibeos_klog_get(0, &latest) != 0 ||
+        strcmp(latest.message, "logged by the architecture first") != 0) {
+        printf("FAIL:kmain reset the kernel log the architecture had created\n");
         return -1;
     }
     /* The boot order, asserted here rather than only in a serial log.
@@ -513,7 +530,7 @@ static int test_kmain(void) {
      * now kernel first, then userland, and this is the cheapest place to keep
      * it that way - a host test, with no machine to boot.
      */
-    if (vibeos_log_latest(&kernel.log, &latest) != 0 ||
+    if (vibeos_klog_get(log_count - 1u, &latest) != 0 ||
         strcmp(latest.message, "userland_finished") != 0) {
         return -1;
     }
@@ -525,7 +542,7 @@ static int test_kmain(void) {
 
         for (i = 0; i < log_count; i++) {
             vibeos_log_event_t ev;
-            if (vibeos_log_get(&kernel.log, i, &ev) != 0) {
+            if (vibeos_klog_get(i, &ev) != 0) {
                 return -1;
             }
             if (strcmp(ev.message, "core_stage_ready") == 0) {

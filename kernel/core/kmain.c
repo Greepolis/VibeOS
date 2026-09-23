@@ -1,5 +1,6 @@
 #include "vibeos/kernel.h"
 #include "vibeos/arch_x86_64.h"
+#include "vibeos/klog.h"
 #include "vibeos/mm_model.h"
 #include "vibeos/task_stats.h"
 #include "vibeos/exec_stats.h"
@@ -72,11 +73,14 @@ static void kernel_log_u64_hex(uint64_t value) {
     }
 }
 
+/* Into the kernel log (kernel/diag/klog.c), the same ring and the same sinks as
+ * everything the machine does. kmain used to keep a second ring of its own in
+ * vibeos_kernel_t for its eight boot stages: the console's `status` counted one
+ * log and `log` printed both, and a panic dump - which replays klog - never
+ * showed a boot stage at all. */
 static void kernel_boot_log(vibeos_kernel_t *kernel, vibeos_log_level_t level, uint32_t code, uint64_t arg0, uint64_t arg1, const char *message) {
-    if (!kernel || !kernel->log.initialized) {
-        return;
-    }
-    (void)vibeos_log_record(&kernel->log, level, code, arg0, arg1, message);
+    (void)kernel;
+    vibeos_klog(level, code, arg0, arg1, message);
 }
 
 static int kernel_boot_fail(vibeos_kernel_t *kernel, size_t code, const char *message) {
@@ -104,47 +108,13 @@ static void kernel_cli_print_status(const vibeos_kernel_t *kernel) {
     kernel_log_u32_hex(kernel->boot_health_flags);
     vibeos_x86_64_serial_puts(" fatal=");
     vibeos_x86_64_serial_putc(kernel->boot_failure_fatal ? '1' : '0');
-    if (vibeos_log_count(&kernel->log, &log_count) == 0 && vibeos_log_dropped(&kernel->log, &log_dropped) == 0) {
+    if (vibeos_klog_count(&log_count, &log_dropped) == 0) {
         vibeos_x86_64_serial_puts(" log_count=0x");
         kernel_log_u32_hex(log_count);
         vibeos_x86_64_serial_puts(" log_dropped=0x");
         kernel_log_u32_hex(log_dropped);
     }
     vibeos_x86_64_serial_puts("\n");
-}
-
-static void kernel_cli_print_log(const vibeos_kernel_t *kernel) {
-    uint32_t count = 0;
-    uint32_t dropped = 0;
-    uint32_t start = 0;
-    uint32_t i;
-    if (!kernel || vibeos_log_count(&kernel->log, &count) != 0 || vibeos_log_dropped(&kernel->log, &dropped) != 0) {
-        vibeos_x86_64_serial_puts("[CLI] log unavailable\n");
-        return;
-    }
-    vibeos_x86_64_serial_puts("[CLI] log_count=0x");
-    kernel_log_u32_hex(count);
-    vibeos_x86_64_serial_puts(" dropped=0x");
-    kernel_log_u32_hex(dropped);
-    vibeos_x86_64_serial_puts("\n");
-    if (count > 5u) {
-        start = count - 5u;
-    }
-    for (i = start; i < count; i++) {
-        vibeos_log_event_t event;
-        if (vibeos_log_get(&kernel->log, i, &event) != 0) {
-            continue;
-        }
-        vibeos_x86_64_serial_puts("[CLI] log seq=0x");
-        kernel_log_u64_hex(event.seq);
-        vibeos_x86_64_serial_puts(" level=");
-        vibeos_x86_64_serial_puts(vibeos_log_level_name((vibeos_log_level_t)event.level));
-        vibeos_x86_64_serial_puts(" code=0x");
-        kernel_log_u32_hex(event.code);
-        vibeos_x86_64_serial_puts(" msg=");
-        vibeos_x86_64_serial_puts(event.message);
-        vibeos_x86_64_serial_puts("\n");
-    }
 }
 
 /* The real one lives with the task table, which the host test binary does not
@@ -433,11 +403,9 @@ static void kernel_cli_run(vibeos_kernel_t *kernel) {
             continue;
         }
         if (kernel_str_eq(line, "log")) {
-            kernel_cli_print_log(kernel);
-            /* And the ring that holds what the machine actually did. These are
-             * two different logs: the one above records boot stages, this one
-             * records fork, exec, exit, signals and memory. Showing only the
-             * first was showing the table of contents and not the book. */
+            /* One log: boot stages and everything the machine did since, in
+             * the order it happened. There used to be two - kmain's own ring
+             * of boot stages printed first, then this one. */
             vibeos_x86_64_log_dump_recent(24u);
             continue;
         }
@@ -550,9 +518,18 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
     kernel->boot_health_flags = 0;
     kernel->boot_failure_fatal = 0;
     /* Logging first: every later step reports through it, so a failure
-     * after this point is visible rather than silent. */
-    if (vibeos_log_init(&kernel->log) != 0) {
-        vibeos_x86_64_serial_puts("[BOOT] FATAL: log_init failed\n");
+     * after this point is visible rather than silent.
+     *
+     * On the machine the log already exists, with its lock and sinks - the
+     * architecture creates it before anything else runs - and resetting it here
+     * would throw away everything the boot has said so far and unregister the
+     * serial port. Only a caller with no architecture underneath (the host
+     * tests) finds it missing. */
+    if (!vibeos_klog_ready()) {
+        vibeos_klog_reset();
+    }
+    if (!vibeos_klog_ready()) {
+        vibeos_x86_64_serial_puts("[BOOT] FATAL: kernel log unavailable\n");
         return -1;
     }
     kernel->boot_health_flags |= VIBEOS_BOOT_HEALTH_LOG_READY;

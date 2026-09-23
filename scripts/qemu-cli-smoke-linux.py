@@ -435,6 +435,74 @@ assert klog_missing_lines(
     "counts a replay as the live line"
 
 
+_RING_HEAD = re.compile(r"\[LOG\] kernel ring: showing 0x([0-9a-f]{16}) of 0x[0-9a-f]{16}")
+_PANIC_HEAD = re.compile(r"\[LOG\] dump count=0x([0-9a-f]{16}) dropped=")
+_CRASH_END = re.compile(r"\[CRASH\] end lines=0x([0-9a-f]{16})")
+
+
+def replay_incomplete(text):
+    """Replays that do not have the lines they announced.
+
+    ln= numbers only the live lines, so a line lost from a replay - the
+    console's `log` and `crash`, a panic's dump of the ring - left no gap to
+    find. Each replay says how long it is: `log` and the panic dump in their
+    header, `crash` in its last line. Each is printed under the console lock,
+    so its lines are contiguous and can be counted. Returns one name per
+    incomplete replay."""
+    lines = text.splitlines()
+    bad = []
+    for i, line in enumerate(lines):
+        m = _RING_HEAD.search(line)
+        if m:
+            n = int(m.group(1), 16)
+            body = lines[i + 1:i + 1 + n]
+            if len(body) < n or any(not b.startswith("[LOG]") or " ln=0x" in b
+                                    for b in body):
+                bad.append("kernel_ring")
+            continue
+        m = _PANIC_HEAD.search(line)
+        if m:
+            n = int(m.group(1), 16)
+            body = lines[i + 1:i + 1 + n]
+            if len(body) < n or any(not b.startswith("[LOG] #") for b in body):
+                bad.append("panic_dump")
+            continue
+        if "[CRASH] total=" in line:
+            for j in range(i + 1, min(len(lines), i + 64)):
+                m = _CRASH_END.search(lines[j])
+                if m:
+                    if j - i != int(m.group(1), 16):
+                        bad.append("crash_dump")
+                    break
+                if not lines[j].startswith("[CRASH] "):
+                    bad.append("crash_dump")
+                    break
+            else:
+                bad.append("crash_dump")
+    return bad
+
+
+_R_HEAD = "[LOG] kernel ring: showing 0x0000000000000002 of 0x0000000000000009"
+assert replay_incomplete(_R_HEAD + "\n[LOG][INFO] a\n[LOG][WARN] b\n$ ") == [], \
+    "flags a complete ring replay"
+assert replay_incomplete(_R_HEAD + "\n[LOG][INFO] a\n$ ") == ["kernel_ring"], \
+    "misses a ring replay one line short"
+assert replay_incomplete(
+    _R_HEAD + "\n[LOG][INFO] a ln=0x0000000000000004\n[LOG][WARN] b\n") == \
+    ["kernel_ring"], "counts a live line as part of a replay"
+_C_OK = ("[CRASH] total=0x1 pid=0x9 sig=0xb exe=/X\n[CRASH] vector=0xe\n"
+         "[CRASH] end lines=0x0000000000000002\n")
+assert replay_incomplete(_C_OK) == [], "flags a complete crash dump"
+assert replay_incomplete(_C_OK.replace("[CRASH] vector=0xe\n", "")) == ["crash_dump"], \
+    "misses a crash dump one line short"
+assert replay_incomplete("[CRASH] total=0x1 pid=0x9\n[CRASH] rip=0x1\n") == \
+    ["crash_dump"], "misses a crash dump with no end"
+assert replay_incomplete(
+    "[LOG] dump count=0x0000000000000002 dropped=0x0000000000000000\n"
+    "[LOG] #0000000000000001 [LOG][INFO] a\n") == ["panic_dump"], \
+    "misses a panic dump one line short"
+
+
 def ring3_writes_with_nul(text):
     """Ring-3 writes the kernel copied wrongly.
 
@@ -1822,6 +1890,10 @@ def main():
                     if missing:
                         problems.append(f"klog_line_missing={missing[0]}"
                                         f"_of_{len(missing)}")
+            # The other half of the same question: replays carry no ln=, so a
+            # line lost from one is counted against the length it announced.
+            for which in replay_incomplete(text):
+                problems.append(f"replay_incomplete={which}")
 
             # Every bounded wait a syscall can reach, asserted at zero.
             #

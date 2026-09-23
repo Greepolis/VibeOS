@@ -309,7 +309,14 @@ static int hw_disk_sink_write(void *ctx, const char *line, uint32_t len) {
 }
 
 static const vibeos_klog_sink_t g_disk_sink = {
-    "disk", VIBEOS_LOG_DEBUG, 0, 0, 0, hw_disk_sink_write, 0
+    .name = "disk",
+    .min_level = VIBEOS_LOG_DEBUG,
+    .prefix = 0,
+    .numbered = 0,
+    .newline = 0,
+    .guard_reentry = 1,   /* the block layer logs a refused request */
+    .write = hw_disk_sink_write,
+    .ctx = 0,
 };
 
 void hw_logsink_bringup(void) {

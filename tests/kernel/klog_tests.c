@@ -53,9 +53,18 @@ typedef struct {
     int calls;
     int fail;         /* refuse every line */
     int reenter;      /* log from inside the write, once */
+    int other_context; /* ...and do it as a different execution context */
 } t_sink_t;
 
 static t_sink_t g_a, g_b;
+
+/* The execution context the module is told is running; see vibeos_klog_set_context. */
+static uint32_t g_context_now;
+static int g_add_guard;
+
+static uint32_t t_context(void) {
+    return g_context_now;
+}
 
 static int t_write(void *ctx, const char *line, uint32_t len) {
     t_sink_t *s = (t_sink_t *)ctx;
@@ -70,7 +79,11 @@ static int t_write(void *ctx, const char *line, uint32_t len) {
     s->calls++;
     if (s->reenter) {
         s->reenter = 0;
+        if (s->other_context) {
+            g_context_now = 1u;
+        }
         vibeos_klog(VIBEOS_LOG_WARN, 0, 0, 0, "from inside the sink");
+        g_context_now = 0u;
     }
     return s->fail ? -1 : 0;
 }
@@ -88,6 +101,20 @@ static int t_dump(void *ctx, const char *line, uint32_t len) {
         g_dump[g_dump_len] = 0;
     }
     g_dump_calls++;
+    return 0;
+}
+
+/* The same device, with another core logging between two lines of the dump:
+ * `g_dump_noise` events after every line. */
+static uint32_t g_dump_noise;
+
+static int t_dump_busy(void *ctx, const char *line, uint32_t len) {
+    uint32_t k;
+
+    (void)t_dump(ctx, line, len);
+    for (k = 0; k < g_dump_noise; k++) {
+        vibeos_klog(VIBEOS_LOG_DEBUG, 0, 0, 0, "noise");
+    }
     return 0;
 }
 
@@ -114,7 +141,9 @@ static void fresh(void) {
     g_locks = g_unlocks = g_held = 0;
     g_on_unlock = 0;
     vibeos_klog_set_lock(t_lock, t_unlock);
-    vibeos_klog_set_cpu_id(0);
+    g_context_now = 0u;
+    g_add_guard = 0;
+    vibeos_klog_set_context(t_context);
     vibeos_klog_reset();
 }
 
@@ -128,6 +157,7 @@ static int add(const char *name, vibeos_log_level_t min, const char *prefix,
     s.prefix = prefix;
     s.numbered = numbered;
     s.newline = newline;
+    s.guard_reentry = g_add_guard;
     s.write = t_write;
     s.ctx = ctx;
     return vibeos_klog_add_sink(&s);
@@ -227,7 +257,9 @@ int test_klog(void) {
 
     /* ---- a sink that logs from its own write does not recurse ---------------------- */
     fresh();
+    g_add_guard = 1;
     (void)add("disk", VIBEOS_LOG_DEBUG, 0, 0, 0, &g_a);
+    g_add_guard = 0;
     (void)add("serial", VIBEOS_LOG_INFO, 0, 0, 0, &g_b);
     g_a.reenter = 1;
     vibeos_klog(VIBEOS_LOG_INFO, 0, 0, 0, "outer");
@@ -241,6 +273,32 @@ int test_klog(void) {
     /* The guard is cleared afterwards: the next event reaches the disk again. */
     vibeos_klog(VIBEOS_LOG_INFO, 0, 0, 0, "after");
     if (!expect(g_a.calls == 2, "the reentrancy guard is released after the write")) { return -1; }
+
+    /* ---- the guard is keyed by who is running, not by where ----------------------- */
+    /* A different context logging while this one is mid-write is not recursion.
+     * Keyed by core, a task preempted mid-write and resumed elsewhere left the
+     * flag set on the core it left, and every other context there lost its lines
+     * to that sink as "reentered" until the task came back. */
+    fresh();
+    g_add_guard = 1;
+    (void)add("disk", VIBEOS_LOG_DEBUG, 0, 0, 0, &g_a);
+    g_a.reenter = 1;
+    g_a.other_context = 1;
+    vibeos_klog(VIBEOS_LOG_INFO, 0, 0, 0, "outer");
+    if (!expect(g_a.calls == 2 && vibeos_klog_sink_stats(0, &st) == 0 && st.reentered == 0u,
+                "an event from another context while a write is in progress is written, "
+                "not skipped as reentry")) { return -1; }
+
+    /* ---- a sink without the guard is never skipped -------------------------------- */
+    /* The serial sink cannot recurse (serial_puts never logs), so it has no guard,
+     * and "never skipped" is then true by construction instead of by argument. */
+    fresh();
+    (void)add("serial", VIBEOS_LOG_INFO, 0, 0, 0, &g_a);
+    g_a.reenter = 1;
+    vibeos_klog(VIBEOS_LOG_INFO, 0, 0, 0, "outer");
+    if (!expect(g_a.calls == 2 && vibeos_klog_sink_stats(0, &st) == 0 && st.reentered == 0u,
+                "an unguarded sink is offered every event, even one raised inside its "
+                "own write")) { return -1; }
 
     /* ---- a line that does not fit is cut, and still ends its line ------------------ */
     fresh();
@@ -283,6 +341,47 @@ int test_klog(void) {
                 strstr(g_dump, "[LOG] #0000000000000003 [LOG][ERROR] c\n") &&
                 g_dump_calls == 4,
                 "dump_unlocked: every event with its sequence number")) {
+        printf("  got:\n%s", g_dump);
+        return -1;
+    }
+
+    /* ---- a dump shows what it announced, whatever is logged meanwhile ------------- */
+    /* With the ring full, every event logged during a dump pushes the oldest out
+     * and moves every index by one. The dump read by index, one lock at a time,
+     * so a single event logged between two of its lines made it show a
+     * neighbour instead - the same event twice, one skipped, nothing said. */
+    fresh();
+    {
+        uint32_t k;
+        char msg[16];
+        for (k = 1; k <= VIBEOS_LOG_CAPACITY; k++) {
+            snprintf(msg, sizeof(msg), "e%u", k);
+            vibeos_klog(VIBEOS_LOG_INFO, 0, 0, 0, msg);
+        }
+    }
+    g_dump_len = 0; g_dump_calls = 0; g_dump[0] = 0;
+    g_dump_noise = 1;
+    vibeos_klog_dump_recent(3, t_dump_busy, 0);
+    g_dump_noise = 0;
+    if (!expect(strcmp(g_dump,
+                       "[LOG] kernel ring: showing 0x0000000000000003 of 0x0000000000000800\n"
+                       "[LOG][INFO] e2046\n[LOG][INFO] e2047\n[LOG][INFO] e2048\n") == 0,
+                "a dump shows the events it announced even while the full ring moves "
+                "under it")) {
+        printf("  got:\n%s", g_dump);
+        return -1;
+    }
+    /* And an announced event overwritten before its turn is said to be, so the
+     * dump still has exactly the lines its header promised - the gate counts
+     * them. */
+    g_dump_len = 0; g_dump_calls = 0; g_dump[0] = 0;
+    g_dump_noise = VIBEOS_LOG_CAPACITY;
+    vibeos_klog_dump_recent(2, t_dump_busy, 0);
+    g_dump_noise = 0;
+    if (!expect(g_dump_calls == 3 &&
+                strstr(g_dump, " overwritten before it could be shown\n") != 0,
+                "an event overwritten during the dump is named, and the line count "
+                "stays the one announced")) {
         printf("  got:\n%s", g_dump);
         return -1;
     }

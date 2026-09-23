@@ -6,7 +6,7 @@
 
 static void (*g_lock)(void);
 static void (*g_unlock)(void);
-static uint32_t (*g_cpu_id)(void);
+static uint32_t (*g_context)(void);
 
 static vibeos_log_t g_ring;
 
@@ -17,7 +17,9 @@ static volatile uint32_t g_nsinks;
 static volatile uint64_t g_offered[VIBEOS_KLOG_MAX_SINKS];
 static volatile uint64_t g_lost[VIBEOS_KLOG_MAX_SINKS];
 static volatile uint64_t g_reentered[VIBEOS_KLOG_MAX_SINKS];
-static volatile uint8_t g_busy[VIBEOS_KLOG_MAX_SINKS][VIBEOS_KLOG_MAX_CPUS];
+/* Written only by the context it belongs to - a task runs on one core at a time -
+ * so a plain byte is enough. */
+static volatile uint8_t g_busy[VIBEOS_KLOG_MAX_SINKS][VIBEOS_KLOG_MAX_CONTEXTS];
 
 static void lock(void) {
     if (g_lock) {
@@ -31,9 +33,12 @@ static void unlock(void) {
     }
 }
 
-static uint32_t this_cpu(void) {
-    uint32_t id = g_cpu_id ? g_cpu_id() : 0u;
-    return (id < VIBEOS_KLOG_MAX_CPUS) ? id : 0u;
+/* Out of range cannot happen on the machine - the architecture asserts its
+ * numbering fits at compile time - and would merge two contexts if it did, which
+ * errs toward skipping a line, never toward recursing. */
+static uint32_t this_context(void) {
+    uint32_t id = g_context ? g_context() : 0u;
+    return (id < VIBEOS_KLOG_MAX_CONTEXTS) ? id : VIBEOS_KLOG_MAX_CONTEXTS - 1u;
 }
 
 void vibeos_klog_set_lock(void (*l)(void), void (*u)(void)) {
@@ -41,8 +46,8 @@ void vibeos_klog_set_lock(void (*l)(void), void (*u)(void)) {
     g_unlock = u;
 }
 
-void vibeos_klog_set_cpu_id(uint32_t (*fn)(void)) {
-    g_cpu_id = fn;
+void vibeos_klog_set_context(uint32_t (*fn)(void)) {
+    g_context = fn;
 }
 
 void vibeos_klog_reset(void) {
@@ -55,7 +60,7 @@ void vibeos_klog_reset(void) {
         g_offered[i] = 0;
         g_lost[i] = 0;
         g_reentered[i] = 0;
-        for (c = 0; c < VIBEOS_KLOG_MAX_CPUS; c++) {
+        for (c = 0; c < VIBEOS_KLOG_MAX_CONTEXTS; c++) {
             g_busy[i][c] = 0;
         }
     }
@@ -201,21 +206,26 @@ static void write_line(uint32_t i, const char *line, uint32_t n) {
  * way a lie from the device can be seen from outside it. */
 static void offer(uint32_t i, const vibeos_log_event_t *ev) {
     const vibeos_klog_sink_t *s = &g_sinks[i];
-    uint32_t cpu = this_cpu();
     char line[VIBEOS_KLOG_LINE];
+    uint32_t ctx = 0;
     uint64_t ln;
 
     if (ev->level < (uint32_t)s->min_level) {
         return;
     }
-    if (g_busy[i][cpu]) {
-        __atomic_fetch_add(&g_reentered[i], 1ull, __ATOMIC_RELAXED);
-        return;
+    if (s->guard_reentry) {
+        ctx = this_context();
+        if (g_busy[i][ctx]) {
+            __atomic_fetch_add(&g_reentered[i], 1ull, __ATOMIC_RELAXED);
+            return;
+        }
+        g_busy[i][ctx] = 1u;
     }
-    g_busy[i][cpu] = 1u;
     ln = __atomic_add_fetch(&g_offered[i], 1ull, __ATOMIC_RELAXED);
     write_line(i, line, build_line(s, ev, s->numbered, ln, line));
-    g_busy[i][cpu] = 0u;
+    if (s->guard_reentry) {
+        g_busy[i][ctx] = 0u;
+    }
 }
 
 void vibeos_klog(vibeos_log_level_t level, uint32_t code, uint64_t arg0,
@@ -292,42 +302,79 @@ int vibeos_klog_get(uint32_t index, vibeos_log_event_t *out) {
     return rc;
 }
 
+/* Event number `seq`, if the ring still holds it. Under the lock, so the index it
+ * computes and the event it reads belong to the same state of the ring. */
+static int get_by_seq(uint64_t seq, vibeos_log_event_t *out) {
+    vibeos_log_event_t newest;
+    uint32_t count = 0;
+    int rc = -1;
+
+    lock();
+    if (vibeos_log_count(&g_ring, &count) == 0 && count != 0u &&
+        vibeos_log_latest(&g_ring, &newest) == 0 &&
+        seq <= newest.seq && newest.seq - seq < (uint64_t)count &&
+        vibeos_log_get(&g_ring, count - 1u - (uint32_t)(newest.seq - seq), out) == 0 &&
+        out->seq == seq) {
+        rc = 0;
+    }
+    unlock();
+    return rc;
+}
+
 void vibeos_klog_dump_recent(uint32_t want, vibeos_klog_write_fn out, void *ctx) {
-    uint32_t count = 0, i, start;
+    vibeos_log_event_t newest;
+    uint32_t count = 0, shown, k;
+    uint64_t first;
     char line[VIBEOS_KLOG_LINE];
     buf_t b;
+    int ok;
 
     if (!out) {
         return;
     }
-    if (vibeos_klog_count(&count, 0) != 0) {
+    /* What to show is fixed here, as a range of sequence numbers, in one
+     * critical section. It used to be a range of *indices*, re-read one lock at a
+     * time: with the ring full, every event another core logged during the dump
+     * moved them all by one, and the dump showed a neighbour twice or skipped one
+     * with nothing to say so. */
+    lock();
+    ok = vibeos_log_count(&g_ring, &count) == 0 &&
+         (count == 0u || vibeos_log_latest(&g_ring, &newest) == 0);
+    unlock();
+    if (!ok) {
         static const char msg[] = "[LOG] kernel ring unavailable\n";
         (void)out(ctx, msg, (uint32_t)(sizeof(msg) - 1u));
         return;
     }
-    start = (want == 0u || count <= want) ? 0u : count - want;
+    shown = (want == 0u || count <= want) ? count : want;
+    first = count ? newest.seq - shown + 1u : 0u;
 
     b.out = line;
     b.cap = sizeof(line);
     b.n = 0;
     put_s(&b, "[LOG] kernel ring: showing ");
-    put_x(&b, (uint64_t)(count - start));
+    put_x(&b, (uint64_t)shown);
     put_s(&b, " of ");
     put_x(&b, (uint64_t)count);
     put_c(&b, '\n');
     line[b.n] = 0;
     (void)out(ctx, line, b.n);
 
-    for (i = start; i < count; i++) {
+    /* Exactly `shown` lines follow the header, whatever happens meanwhile - the
+     * gate counts them. An event overwritten before its turn says so. */
+    for (k = 0; k < shown; k++) {
         vibeos_log_event_t ev;
 
-        /* One event per critical section, and never a device call inside one. */
-        if (vibeos_klog_get(i, &ev) != 0) {
-            continue;
-        }
         b.n = 0;
-        put_s(&b, "[LOG]");
-        put_event(&b, &ev);
+        /* One event per critical section, and never a device call inside one. */
+        if (get_by_seq(first + k, &ev) == 0) {
+            put_s(&b, "[LOG]");
+            put_event(&b, &ev);
+        } else {
+            put_s(&b, "[LOG] #");
+            put_h(&b, first + k);
+            put_s(&b, " overwritten before it could be shown");
+        }
         put_c(&b, '\n');
         line[b.n] = 0;
         (void)out(ctx, line, b.n);

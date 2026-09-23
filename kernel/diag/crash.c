@@ -86,6 +86,7 @@ int vibeos_crash_get(uint32_t back, vibeos_crash_t *out) {
 typedef struct {
     char s[160];
     uint32_t n;
+    uint32_t emitted;   /* lines handed to the device so far */
 } line_t;
 
 static void put_c(line_t *l, char c) {
@@ -115,6 +116,7 @@ static void emit(line_t *l, vibeos_crash_write_fn out, void *ctx) {
     l->s[l->n] = 0;
     (void)out(ctx, l->s, l->n);
     l->n = 0;
+    l->emitted++;
 }
 
 void vibeos_crash_dump(vibeos_crash_write_fn out, void *ctx) {
@@ -127,6 +129,7 @@ void vibeos_crash_dump(vibeos_crash_write_fn out, void *ctx) {
         return;
     }
     l.n = 0;
+    l.emitted = 0;
     /* The count and the record in one critical section, so the total printed is
      * the one this record belongs to. */
     lock();
@@ -186,6 +189,10 @@ void vibeos_crash_dump(vibeos_crash_write_fn out, void *ctx) {
         put_s(&l, "[CRASH] stack truncated: the next word is not readable");
         emit(&l, out, ctx);
     }
-    put_s(&l, "[CRASH] end");
+    /* How many lines came before this one, so a line the device lost in the
+     * middle of the dump is a count that does not match rather than a register
+     * nobody noticed was missing. The gate counts them. */
+    put_s(&l, "[CRASH] end lines=");
+    put_x(&l, l.emitted);
     emit(&l, out, ctx);
 }

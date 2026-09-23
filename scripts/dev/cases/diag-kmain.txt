@@ -1,0 +1,31 @@
+# C6: kmain logs into the one kernel log (kernel/core/kmain.c), proved by the host test.
+#
+# kmain used to keep a ring of its own in vibeos_kernel_t for its boot stages, so
+# the console had two logs and a panic dump never showed a boot stage. It now
+# logs into kernel/diag/klog.c, which the architecture has already created -
+# with its lock, its serial and disk sinks, and everything the boot has said.
+#
+#  1. kmain resets the log unconditionally, as its old vibeos_log_init did: on
+#     the machine that throws away the boot so far and unregisters the serial
+#     port, and the console goes silent;
+#  2. kmain's boot stages go nowhere: the boot-order assertion (core stage, then
+#     userland starting, then userland finished) has nothing to read.
+#
+# Target source: kernel/core/kmain.c
+# Run: python3 scripts/dev/sabotage.py kernel/core/kmain.c scripts/dev/cases/diag-kmain.txt
+
+### kmain resets the log the architecture created
+--- old
+    if (!vibeos_klog_ready()) {
+        vibeos_klog_reset();
+    }
++++ new
+    vibeos_klog_reset();
+
+### kmain's boot stages are not logged
+--- old
+    (void)kernel;
+    vibeos_klog(level, code, arg0, arg1, message);
++++ new
+    (void)kernel;
+    (void)level; (void)code; (void)arg0; (void)arg1; (void)message;

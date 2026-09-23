@@ -11,17 +11,21 @@
 #     loss to notice. The first version dropped one line in sixteen and went
 #     NOT RED: a boot hands the serial sink about a dozen live lines, and the
 #     sixteenth call was a *replay* (the console's `crash` or `log` dump), which
-#     carries no ln= and so cannot leave a gap. That is a real limit of the
-#     detector, recorded rather than tuned away: ln= covers the live lines; a
-#     lost replay line is seen, if at all, by the markers the gate waits for on
-#     those commands ("[CRASH] end", "kernel ring: showing");
-#  4. the sink logs from inside its own write: expect klog_serial_reentered.
-#     The module refuses to offer that event back, correctly, and counts it -
-#     and for the serial sink that count is lines it never received;
-#  2. the [KLOG] line stops being printed: expect klog_counters_missing - a
+#     carries no ln= and so cannot leave a gap. ln= covers live lines only; the
+#     replays are covered by case 5;
+#  2. the sink is registered with the reentrancy guard it deliberately lacks,
+#     and something logs from inside its write: expect klog_serial_reentered.
+#     With the guard, the module refuses to offer that event back and counts
+#     it - for the serial sink those are lines it never received. Without the
+#     guard the inner line is simply written, which is why the guard is off;
+#  3. the [KLOG] line stops being printed: expect klog_counters_missing - a
 #     counter that disappears must not read as one that stayed at zero;
-#  3. the sink is registered too quiet to be offered anything: expect
-#     klog_serial_unproven - a gap check over no lines is green by construction.
+#  4. the sink is registered too quiet to be offered anything: expect
+#     klog_serial_unproven - a gap check over no lines is green by construction;
+#  5. the sink drops one line of the `crash` dump - a replay, with no ln= - and
+#     says it wrote it: expect replay_incomplete=crash_dump. Each replay now
+#     states its own length (`log` and the panic dump in their header, `crash`
+#     as "[CRASH] end lines=0x..") and the gate counts the lines against it.
 #
 # Not a case here, deliberately: the serial sink writing one line in two pieces.
 # It would only fail a boot on which another core happened to write in between,
@@ -47,12 +51,26 @@
     }
     return 0;
 
-### the serial sink logs from inside its own write
+### the serial sink is given the reentrancy guard back, and logs from inside
 --- old
     (void)ctx;
     (void)len;
     vibeos_x86_64_serial_puts(line);
     return 0;
+}
+
+/* No reentrancy guard: serial_puts never logs, so this sink cannot be re-entered,
+ * and a sink with no guard is never skipped. The guard used to be on for every
+ * sink and keyed by core, which could skip serial lines for a reason that did
+ * not apply to it. Designated, because a positional initialiser silently shifts
+ * the day the struct gains a field - it just did. */
+static const vibeos_klog_sink_t g_serial_sink = {
+    .name = "serial",
+    .min_level = VIBEOS_LOG_INFO,
+    .prefix = "[LOG]",
+    .numbered = 1,
+    .newline = 1,
+    .guard_reentry = 0,
 +++ new
     static int once;
     (void)ctx;
@@ -61,6 +79,34 @@
     if (!once) {
         once = 1;
         hw_log(VIBEOS_LOG_INFO, 0, 0, 0, "logged from inside the serial sink");
+    }
+    return 0;
+}
+
+static const vibeos_klog_sink_t g_serial_sink = {
+    .name = "serial",
+    .min_level = VIBEOS_LOG_INFO,
+    .prefix = "[LOG]",
+    .numbered = 1,
+    .newline = 1,
+    .guard_reentry = 1,
+
+### the serial sink drops a replay line and says it did not
+--- old
+    (void)ctx;
+    (void)len;
+    vibeos_x86_64_serial_puts(line);
+    return 0;
++++ new
+    static const char victim[] = "[CRASH] rip=";
+    uint32_t k = 0;
+    (void)ctx;
+    (void)len;
+    while (victim[k] != 0 && line[k] == victim[k]) {
+        k++;
+    }
+    if (victim[k] != 0) {
+        vibeos_x86_64_serial_puts(line);
     }
     return 0;
 
@@ -72,6 +118,8 @@
 
 ### the serial sink is offered nothing
 --- old
-    "serial", VIBEOS_LOG_INFO, "[LOG]", 1, 1, hw_serial_sink_write, 0
+    .name = "serial",
+    .min_level = VIBEOS_LOG_INFO,
 +++ new
-    "serial", VIBEOS_LOG_FATAL, "[LOG]", 1, 1, hw_serial_sink_write, 0
+    .name = "serial",
+    .min_level = VIBEOS_LOG_FATAL,

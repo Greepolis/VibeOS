@@ -14,7 +14,14 @@
 #     two cores logging, one line twice and the other never - what hw_log did;
 #  6. a sink written under the ring's lock: every logging core waits on the UART;
 #  7. the reentrancy guard gone: a disk sink whose block layer logs would recurse;
-#  8. one line counter shared by all sinks: a gap in one hides behind the other.
+#  8. one line counter shared by all sinks: a gap in one hides behind the other;
+#  9. the console's dump reading by index again: with the ring full, one event
+#     logged mid-dump shifts every line by one, silently;
+# 10. a sink registered without the guard skipped anyway: the serial sink has
+#     no guard precisely so that nothing can ever skip it;
+# 11. every context reported as the same one - the guard keyed by core, as it
+#     was: a task moved mid-write leaves every other context on its old core
+#     skipped.
 #
 # The serial sink's own honesty - that it wrote what it said it wrote - cannot be
 # seen from here; diag-sink.txt breaks it and the boot gate's ln= check
@@ -108,9 +115,31 @@
 
 ### no reentrancy guard
 --- old
-    if (g_busy[i][cpu]) {
+        if (g_busy[i][ctx]) {
 +++ new
-    if (0) {
+        if (0) {
+
+### the dump reads by index again, one lock at a time
+--- old
+        if (get_by_seq(first + k, &ev) == 0) {
++++ new
+        if (vibeos_klog_get(count - shown + k, &ev) == 0) {
+
+### a sink without the guard is skipped anyway
+--- old
+    if (s->guard_reentry) {
+        ctx = this_context();
+        if (g_busy[i][ctx]) {
++++ new
+    if (1) {
+        ctx = this_context();
+        if (g_busy[i][ctx]) {
+
+### the guard is keyed by core again: every context is the same one
+--- old
+    uint32_t id = g_context ? g_context() : 0u;
++++ new
+    uint32_t id = 0u;
 
 ### one line counter shared by every sink
 --- old

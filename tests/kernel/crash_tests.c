@@ -107,7 +107,7 @@ int test_crash(void) {
         "[CRASH] stack+0x0000000000000000 = 0x00000000000000a0\n"
         "[CRASH] stack+0x0000000000000008 = 0x00000000000000a1\n"
         "[CRASH] stack truncated: the next word is not readable\n"
-        "[CRASH] end\n") == 0,
+        "[CRASH] end lines=0x0000000000000008\n") == 0,
         "the dump names the program, the fault, every register and the readable stack")) {
         printf("  got:\n%s", g_out);
         return -1;

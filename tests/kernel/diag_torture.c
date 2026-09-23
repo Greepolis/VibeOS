@@ -97,6 +97,7 @@ static int m_locks_at[M_DEPTH + 2];
  * the other core's, which is what hw_log used to do. */
 static int g_second_core_armed;
 static int g_in_second_core;
+static uint32_t g_ctx_now;   /* the execution context the module is told is running */
 static int m_in_panic;
 static void log_one(int nested);
 
@@ -116,8 +117,11 @@ static void t_unlock(void) {
     g_held--;
     if (g_second_core_armed && !g_in_second_core && !m_in_panic &&
         m_depth > 0 && m_depth < M_DEPTH && below(6) == 0) {
+        uint32_t was = g_ctx_now;
         g_in_second_core = 1;
+        g_ctx_now = was ^ 1u;          /* another core runs another context */
         log_one(1);
+        g_ctx_now = was;
         g_in_second_core = 0;
     }
 }
@@ -147,12 +151,21 @@ typedef struct {
     int newline;
     uint32_t fail_one_in;     /* 0: never refuses */
     uint32_t reenter_one_in;  /* 0: never logs from inside */
+    int guard;                /* registered with guard_reentry */
     uint64_t offered, lost, reentered;
 } m_sink_t;
 
 static m_sink_t m_sinks[VIBEOS_KLOG_MAX_SINKS];
 static uint32_t m_nsinks;
-static int m_busy[VIBEOS_KLOG_MAX_SINKS];
+/* Mid-write, per sink and per execution context: the module's guard is keyed by
+ * who is running, not by where. Only guarded sinks ever skip. */
+#define M_CTX 4u
+static int m_busy[VIBEOS_KLOG_MAX_SINKS][M_CTX];
+
+
+static uint32_t t_context(void) {
+    return g_ctx_now;
+}
 
 /* The events in progress, innermost last, and which sinks each has written. */
 static m_event_t m_stack[M_DEPTH];
@@ -166,17 +179,49 @@ static const char *level_name(uint32_t l) {
     return l < 5u ? n[l] : "UNKNOWN";
 }
 
+/* Append to buf, which holds *n bytes of cap, and never past its end.
+ *
+ * `n += snprintf(buf + n, cap - n, ...)` - the shape this file first used - adds
+ * the length snprintf *would* have written, so after one truncation n passes cap
+ * and the next `cap - n` wraps to an enormous size_t: a write past the buffer.
+ * Code scanning called it high severity, and it was right about the mechanism
+ * even though no expected line here came near its buffer. A model whose text
+ * was cut would also compare the wrong string, so a cut is a failure, not a
+ * silent clamp. */
+static void app(char *buf, size_t cap, size_t *n, const char *fmt, ...)
+    __attribute__((format(printf, 4, 5)));
+
+static void app(char *buf, size_t cap, size_t *n, const char *fmt, ...) {
+    va_list ap;
+    int r;
+
+    if (*n + 1u >= cap) {
+        fail("the model's expected text does not fit its %lu-byte buffer",
+             (unsigned long)cap);
+        return;
+    }
+    va_start(ap, fmt);
+    r = vsnprintf(buf + *n, cap - *n, fmt, ap);
+    va_end(ap);
+    if (r < 0 || (size_t)r >= cap - *n) {
+        *n = cap - 1u;
+        buf[*n] = 0;
+        fail("the model's expected text does not fit its %lu-byte buffer",
+             (unsigned long)cap);
+        return;
+    }
+    *n += (size_t)r;
+}
+
 /* The body of a line, independently: "[LEVEL] msg" and the fields when any is
  * non-zero, exactly as the serial writer has always printed them. */
-static int m_body(char *out, size_t cap, const m_event_t *e) {
-    int n = snprintf(out, cap, "[%s] %s", level_name(e->level), e->msg);
+static void m_body(char *out, size_t cap, size_t *n, const m_event_t *e) {
+    app(out, cap, n, "[%s] %s", level_name(e->level), e->msg);
     if (e->code || e->a0 || e->a1) {
-        n += snprintf(out + n, cap - (size_t)n,
-                      " code=0x%016llx a0=0x%016llx a1=0x%016llx",
-                      (unsigned long long)e->code, (unsigned long long)e->a0,
-                      (unsigned long long)e->a1);
+        app(out, cap, n, " code=0x%016llx a0=0x%016llx a1=0x%016llx",
+            (unsigned long long)e->code, (unsigned long long)e->a0,
+            (unsigned long long)e->a1);
     }
-    return n;
 }
 
 /* What the sink must receive: prefix, body, number, then the cut to the line
@@ -184,13 +229,13 @@ static int m_body(char *out, size_t cap, const m_event_t *e) {
 static size_t m_line(char *out, const m_sink_t *s, const m_event_t *e, uint64_t ln,
                      int numbered, int newline) {
     static char full[2048];
-    size_t n;
+    size_t n = 0;
 
-    n = (size_t)snprintf(full, sizeof(full), "%s", s->has_prefix ? s->prefix : "");
-    n += (size_t)m_body(full + n, sizeof(full) - n, e);
+    full[0] = 0;
+    app(full, sizeof(full), &n, "%s", s->has_prefix ? s->prefix : "");
+    m_body(full, sizeof(full), &n, e);
     if (numbered) {
-        n += (size_t)snprintf(full + n, sizeof(full) - n, " ln=0x%016llx",
-                              (unsigned long long)ln);
+        app(full, sizeof(full), &n, " ln=0x%016llx", (unsigned long long)ln);
     }
     if (n > VIBEOS_KLOG_LINE - 1u) {
         n = VIBEOS_KLOG_LINE - 1u;
@@ -266,8 +311,8 @@ static int t_write(void *ctx, const char *line, uint32_t len) {
     }
     {
         const m_event_t *e = &m_stack[m_depth - 1];
-        if (m_busy[j]) {
-            fail("sink %u written while it is already mid-write", j);
+        if (s->guard && m_busy[j][g_ctx_now]) {
+            fail("guarded sink %u written from inside its own write", j);
         }
         if ((int)e->level < s->min_level) {
             fail("sink %u given a level-%u event below its minimum %d", j, e->level,
@@ -290,9 +335,17 @@ static int t_write(void *ctx, const char *line, uint32_t len) {
     }
     /* Log from inside the write, which the disk sink's block layer really does. */
     if (s->reenter_one_in && below(s->reenter_one_in) == 0 && m_depth < M_DEPTH) {
-        m_busy[j] = 1;
+        uint32_t was = g_ctx_now;
+        int prev = m_busy[j][was];
+        m_busy[j][was] = 1;
+        /* Sometimes it is another context that logs while this write is in
+         * progress - a different task, which is not recursion. */
+        if (below(3) == 0) {
+            g_ctx_now = (was + 1u + below(M_CTX - 1u)) % M_CTX;
+        }
         log_one(1);
-        m_busy[j] = 0;
+        g_ctx_now = was;
+        m_busy[j][was] = prev;
     }
     return refuse ? -1 : 0;
 }
@@ -313,6 +366,7 @@ static void log_one(int nested) {
     char msg[160];
     m_event_t e;
     uint32_t j;
+    uint32_t ctx = g_ctx_now;
     int d;
 
     memset(&e, 0, sizeof(e));
@@ -355,7 +409,7 @@ static void log_one(int nested) {
             }
             continue;
         }
-        if (m_busy[j]) {
+        if (s->guard && m_busy[j][ctx]) {
             s->reentered++;
             if (m_written[d][j]) {
                 fail("sink %u given an event raised inside its own write", j);
@@ -407,6 +461,94 @@ static void check_counters(uint64_t mbz_base) {
     }
 }
 
+/* dump_recent, line by line as it arrives, while "another core" logs into the
+ * ring between lines - sometimes in a burst big enough to overwrite events the
+ * dump has already announced.
+ *
+ * The dump fixes what it will show as a range of sequence numbers when it
+ * starts. It used to fix a range of indices and re-read them one lock at a
+ * time; with the ring full, each event logged meanwhile moved every index by
+ * one and the dump showed a neighbour instead. This is what makes that visible:
+ * each line is checked against the model *by sequence number*, at the moment
+ * the line is written. */
+static uint64_t d_first;
+static uint32_t d_shown, d_seen;
+static uint64_t d_overwritten;   /* announced lines the ring had lost by their turn */
+static int d_header_seen;
+static char d_header[128];
+
+/* The model's event `seq`, or 0 when the ring has already overwritten it. */
+static const m_event_t *m_by_seq(uint64_t seq) {
+    uint64_t held = m_total < M_CAP ? m_total : M_CAP;
+    if (seq == 0u || seq > m_total || m_total - seq >= held) {
+        return 0;
+    }
+    return &m_ring[(seq - 1u) % M_CAP];
+}
+
+static int t_dump_check(void *ctx, const char *line, uint32_t len) {
+    char want[600];
+    (void)ctx;
+
+    if (!d_header_seen) {
+        d_header_seen = 1;
+        if (strcmp(line, d_header) != 0) {
+            fail("dump header\n  want '%s'  got  '%s'", d_header, line);
+        }
+    } else {
+        uint64_t seq = d_first + d_seen;
+        const m_event_t *e = m_by_seq(seq);
+        if (d_seen >= d_shown) {
+            fail("dump wrote more lines than its header announced");
+        } else if (e) {
+            size_t n = 0;
+            want[0] = 0;
+            app(want, sizeof(want), &n, "[LOG]");
+            m_body(want, sizeof(want), &n, e);
+            app(want, sizeof(want), &n, "\n");
+        } else {
+            size_t n = 0;
+            d_overwritten++;
+            want[0] = 0;
+            app(want, sizeof(want), &n,
+                "[LOG] #%016llx overwritten before it could be shown\n",
+                (unsigned long long)seq);
+        }
+        if (d_seen < d_shown && strcmp(line, want) != 0) {
+            fail("dump line %u (seq %llu)\n  want '%s'  got  '%s'", d_seen,
+                 (unsigned long long)seq, want, line);
+        }
+        d_seen++;
+    }
+    if (strlen(line) != len) {
+        fail("dump line length %u is not the line's", len);
+    }
+    /* Another core logs between two lines of the dump. */
+    if (below(3) == 0 && m_depth == 0) {
+        uint32_t k, burst = below(400) == 0 ? below(M_CAP + 64u) : 1u + below(3);
+        for (k = 0; k < burst && g_failed == 0; k++) {
+            log_one(1);
+        }
+    }
+    return 0;
+}
+
+static void check_dump(uint32_t count) {
+    uint32_t want = below(12);
+
+    d_shown = (want == 0u || count <= want) ? count : want;
+    d_first = count ? m_total - d_shown + 1u : 0u;
+    d_seen = 0;
+    d_header_seen = 0;
+    snprintf(d_header, sizeof(d_header),
+             "[LOG] kernel ring: showing 0x%016llx of 0x%016llx\n",
+             (unsigned long long)d_shown, (unsigned long long)count);
+    vibeos_klog_dump_recent(want, t_dump_check, 0);
+    if (d_seen != d_shown) {
+        fail("dump_recent(%u) announced %u lines and wrote %u", want, d_shown, d_seen);
+    }
+}
+
 static void check_ring(void) {
     uint32_t count = 0, dropped = 0, want_count, i, k;
     vibeos_log_event_t ev;
@@ -430,32 +572,7 @@ static void check_ring(void) {
                  m->msg);
         }
     }
-    /* A dump of random depth, line for line. */
-    {
-        uint32_t want = below(12);
-        uint32_t start = (want == 0u || count <= want) ? 0u : count - want;
-        static char expect[sizeof(g_dump)];
-        size_t n;
-
-        g_dump_len = 0;
-        g_dump[0] = 0;
-        vibeos_klog_dump_recent(want, t_dump, 0);
-        if (want == 0u) {
-            return;   /* the whole ring: too long to build here, checked by depth */
-        }
-        n = (size_t)snprintf(expect, sizeof(expect),
-                             "[LOG] kernel ring: showing 0x%016llx of 0x%016llx\n",
-                             (unsigned long long)(count - start),
-                             (unsigned long long)count);
-        for (i = start; i < count; i++) {
-            char body[512];
-            m_body(body, sizeof(body), &m_ring[(m_total - count + i) % M_CAP]);
-            n += (size_t)snprintf(expect + n, sizeof(expect) - n, "[LOG]%s\n", body);
-        }
-        if (strcmp(expect, g_dump) != 0) {
-            fail("dump_recent(%u)\n  want:\n%s  got:\n%s", want, expect, g_dump);
-        }
-    }
+    check_dump(count);
 }
 
 /* ---- crash records -------------------------------------------------------------- */
@@ -543,9 +660,9 @@ static void crash_round(void) {
      * to be wrong, when dumping it can only turn a named failure into a crash. */
     if (below(4) == 0 && g_failed == 0) {
         static char expect[4096];
-        size_t n;
+        size_t n = 0;
 
-        n = (size_t)snprintf(expect, sizeof(expect),
+        app(expect, sizeof(expect), &n,
             "[CRASH] total=0x%016llx pid=0x%016llx sig=0x%016llx exe=%s\n"
             "[CRASH] vector=0x%016llx err=0x%016llx fault_addr=0x%016llx\n",
             (unsigned long long)c_total, (unsigned long long)r.pid,
@@ -553,22 +670,29 @@ static void crash_round(void) {
             (unsigned long long)r.vector, (unsigned long long)r.error_code,
             (unsigned long long)r.fault_addr);
         for (i = 0; i < r.nregs; i++) {
-            n += (size_t)snprintf(expect + n, sizeof(expect) - n, "%s %s=0x%016llx%s",
-                                  i % 4u == 0u ? "[CRASH]" : "", r.regs[i].name,
-                                  (unsigned long long)r.regs[i].value,
-                                  (i % 4u == 3u || i + 1u == r.nregs) ? "\n" : "");
+            app(expect, sizeof(expect), &n, "%s %s=0x%016llx%s",
+                i % 4u == 0u ? "[CRASH]" : "", r.regs[i].name,
+                (unsigned long long)r.regs[i].value,
+                (i % 4u == 3u || i + 1u == r.nregs) ? "\n" : "");
         }
         for (i = 0; i < r.stack_words; i++) {
-            n += (size_t)snprintf(expect + n, sizeof(expect) - n,
-                                  "[CRASH] stack+0x%016llx = 0x%016llx\n",
-                                  (unsigned long long)i * 8ull,
-                                  (unsigned long long)r.stack[i]);
+            app(expect, sizeof(expect), &n, "[CRASH] stack+0x%016llx = 0x%016llx\n",
+                (unsigned long long)i * 8ull, (unsigned long long)r.stack[i]);
         }
         if (r.stack_words < VIBEOS_CRASH_STACK_WORDS) {
-            n += (size_t)snprintf(expect + n, sizeof(expect) - n,
-                                  "[CRASH] stack truncated: the next word is not readable\n");
+            app(expect, sizeof(expect), &n,
+                "[CRASH] stack truncated: the next word is not readable\n");
         }
-        snprintf(expect + n, sizeof(expect) - n, "[CRASH] end\n");
+        {
+            /* The trailer counts the lines before it; counted here from the
+             * expected text, not from anything the module reports. */
+            unsigned long long lines = 0;
+            size_t c;
+            for (c = 0; c < n; c++) {
+                lines += expect[c] == '\n';
+            }
+            app(expect, sizeof(expect), &n, "[CRASH] end lines=0x%016llx\n", lines);
+        }
         g_dump_len = 0;
         g_dump[0] = 0;
         vibeos_crash_dump(t_dump, 0);
@@ -589,7 +713,8 @@ static void configure(void) {
     m_depth = 0;
     m_lost_total = 0;
     vibeos_klog_set_lock(t_lock, t_unlock);
-    vibeos_klog_set_cpu_id(0);
+    g_ctx_now = 0u;
+    vibeos_klog_set_context(t_context);
     vibeos_klog_reset();
 
     m_nsinks = 1u + below(VIBEOS_KLOG_MAX_SINKS);
@@ -611,6 +736,7 @@ static void configure(void) {
         s->newline = (int)below(2);
         s->fail_one_in = below(3) == 0 ? 2u + below(10) : 0u;
         s->reenter_one_in = below(3) == 0 ? 2u + below(8) : 0u;
+        s->guard = (int)below(2);
 
         memset(&k, 0, sizeof(k));
         k.name = "t";
@@ -618,6 +744,7 @@ static void configure(void) {
         k.prefix = s->has_prefix ? s->prefix : 0;
         k.numbered = s->numbered;
         k.newline = s->newline;
+        k.guard_reentry = s->guard;
         k.write = t_write;
         k.ctx = (void *)(uintptr_t)j;
         if (vibeos_klog_add_sink(&k) != (int)j) {
@@ -690,6 +817,12 @@ int main(int argc, char **argv) {
         fail("a long run never wrapped the ring (at most %llu events on one machine)",
              (unsigned long long)m_most);
     }
+    /* The same for the path dump_recent takes when an event it announced is
+     * overwritten before its turn: a long run that never took it proved nothing
+     * about the by-sequence fix. */
+    if (rounds >= 50000u && d_overwritten == 0u) {
+        fail("a long run never overwrote an event a dump had announced");
+    }
 
     if (g_failed) {
         printf("diag torture FAILED seed=%llu (%d failures)\n", (unsigned long long)seed,
@@ -697,7 +830,8 @@ int main(int argc, char **argv) {
         return 1;
     }
     printf("diag torture ok seed=%llu most_events_one_machine=%llu ring_wraps=%llu "
-           "crashes=%llu\n", (unsigned long long)seed, (unsigned long long)m_most,
-           (unsigned long long)(m_most / M_CAP), (unsigned long long)c_total);
+           "dump_lines_overwritten=%llu crashes=%llu\n", (unsigned long long)seed,
+           (unsigned long long)m_most, (unsigned long long)(m_most / M_CAP),
+           (unsigned long long)d_overwritten, (unsigned long long)c_total);
     return 0;
 }

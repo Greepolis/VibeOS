@@ -33,7 +33,6 @@ typedef struct vibeos_kernel {
     vibeos_policy_state_t policy;
     vibeos_security_token_t kernel_token;
     vibeos_security_audit_log_t sec_audit;
-    vibeos_log_t log;
     vibeos_process_table_t proc_table;
     vibeos_scheduler_t scheduler;
     vibeos_timer_t timer;
