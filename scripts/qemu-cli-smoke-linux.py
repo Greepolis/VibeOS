@@ -1013,6 +1013,14 @@ def main():
                         # seconds later - which is how the silent-wedge family
                         # stayed unexplained for as long as it did.
                         kind = "guest_panicked"
+                    elif "BOOT_VOLUME_FAIL:" in serial_text:
+                        # No disk the kernel can read carries a volume. The
+                        # machine carries on from its built-in init to an idle
+                        # prompt, and the wait here is for a self-test that
+                        # lives on the missing disk - so this used to be
+                        # reported as a wedge, and wedge_report went looking
+                        # for a hung core in a machine that had simply finished.
+                        kind = "boot_volume_missing"
                     elif idle >= quiet_budget(serial_text):
                         kind = "guest_wedged"          # gave up early on purpose
                     elif idle > 20:

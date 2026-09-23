@@ -6079,6 +6079,20 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
         vibeos_x86_64_serial_puts(g_boot_disk_mounted
                                   ? vibeos_x86_64_blk_name() : "none");
         vibeos_x86_64_serial_puts("\n");
+        /* A boot with no volume carries on - the built-in init and the kernel
+         * console still work, and that is worth having on a machine whose disk
+         * this kernel cannot read. But it runs none of the machine's programs,
+         * and "boot volume on none" alone was read by nobody: the boot gate
+         * waited for a self-test that lived on the missing disk and called the
+         * idle prompt a wedge. Said as a stage failure, so it is a failure by
+         * name. `tried`, not `rejected`: rejected counts the disks passed over
+         * on the way to one that mounted, so with none it is one short. */
+        if (!g_boot_disk_mounted) {
+            vibeos_x86_64_serial_puts("[BLK] BOOT_VOLUME_FAIL: no disk carries a "
+                                      "mountable volume tried=0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)n);
+            vibeos_x86_64_serial_puts("; userland runs from the built-in image only\n");
+        }
         vibeos_x86_64_serial_unlock();
     }
     if (g_boot_disk_mounted) {

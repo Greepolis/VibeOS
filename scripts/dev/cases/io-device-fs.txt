@@ -5,7 +5,8 @@
 #
 #  1. the driver does not declare itself: nothing registers FAT, the boot volume
 #     has no driver to mount it and the boot must go red rather than run on
-#     without a root;
+#     without a root. Expect verdict=boot_volume_missing (it was a "wedge"
+#     until the kernel said BOOT_VOLUME_FAIL - see io-device-boot.txt case 4);
 #  2. the driver's mount ignores the volume it is given and mounts the boot
 #     volume: the formatting exercise now reaches FAT through the registry
 #     rather than through fat_ops and fat_mount_volume, and a path under /vol1

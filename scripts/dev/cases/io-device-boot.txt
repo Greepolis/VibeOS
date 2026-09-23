@@ -3,16 +3,24 @@
 # routing and the wake-up that the registry now drives.
 #
 #  1. the table the linker collected is ignored - a kernel with no devices.
-#     Red as a wedge (missing:CLI_READY): with no keyboard the boot's own script
-#     is never typed, and the boot stops before the counters that would name it
-#     (device_table_short) are printed;
+#     Expect missing:CLI_READY verdict=boot_volume_missing: with no disk driver
+#     there is no boot volume, which the kernel now says (BOOT_VOLUME_FAIL), and
+#     with no keyboard the boot's own script is never typed, so the boot stops
+#     before the counters that would name the table (device_table_short) are
+#     printed. It was verdict=guest_wedged until the kernel said so;
 #  2. an input interrupt no longer wakes whoever is blocked reading the console:
 #     expect input_irq_wake_unproven;
 #  3. the legacy lines are not routed, so the keyboard and the mouse never
 #     interrupt: expect kbd_irq_unproven.
 #  4. only the first disk is bound (step 3): the log disk and the boot disk
 #     are on different controllers, so the loop stopping after one loses a
-#     medium the boot needs.
+#     medium the boot needs. Expect verdict=boot_volume_missing with
+#     stage_failures=BOOT_VOLUME_FAIL. It first went red as a wedge
+#     (missing:VIBEOS_SELFTEST_DONE verdict=guest_wedged), and the log showed it
+#     was not one: the kernel said "boot volume on none", ran the built-in init
+#     and sat at its prompt, while the gate waited for a self-test that lives
+#     on the missing disk. The kernel now says BOOT_VOLUME_FAIL and the gate
+#     names the verdict.
 #
 # The first run of 2 and 3 went NOT RED. Nobody types in CI - the boot's script
 # is injected into the keyboard's ring, which raises no interrupt - so the IRQ1
