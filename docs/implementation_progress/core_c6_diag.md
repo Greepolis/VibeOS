@@ -50,7 +50,8 @@ it; what was actually left was about 470 lines of log section plus the crash rin
   the `[KLOG]` line reports how many were given out; the gate requires every number
   from one to that count to be in the log (`klog_line_missing`,
   `klog_counters_missing`, `klog_serial_unproven`).
-- **Reentrancy** is the module's, per sink and per core: an event raised inside a
+- **Reentrancy** is the module's, for the sinks that ask for it and keyed by
+  execution context (see "The limits it shipped with", below): an event raised inside a
   sink's own write (the block layer logs when it refuses a request) is recorded and
   reaches the other sinks, is not offered back to the sink that raised it, and is
   counted as `reentered`.
@@ -143,26 +144,72 @@ The plan names the file `core-diag.txt`; `check-subsystem.py` pairs a module wit
 its cases by area, so they are `diag-klog.txt`, `diag-crash.txt` and
 `diag-sink.txt`.
 
-## Open, and recorded rather than forgotten
+## The limits it shipped with, closed (2026-09-23)
 
-- **The reentrancy guard is per core, and a task can move.** Between the module
-  setting a sink's busy flag and the sink's write, interrupts are on (the ring's
-  lock is already released), so a task preempted there and resumed on another core
-  leaves the flag set on the core it left; that core's lines to that sink are then
-  counted as `reentered` and not written. The old disk guard had the same shape.
-  Masking interrupts across a disk write is not the fix - a core with IF clear
-  cannot answer a TLB shootdown (CLAUDE.md). What was done instead is to make it
-  visible: the serial sink never logs from inside itself, so its `reentered` must
-  be zero and the gate asserts it (`klog_serial_reentered`). If it ever fires,
-  this is the paragraph to read.
+The first version of this file listed three limits as open. All three are closed;
+closing them found one more defect.
 
-- **There are still two logs.** `kmain` keeps `vibeos_kernel_t.log` for its eight
-  boot stages; everything the machine does is in the klog ring. The console's `log`
-  prints kmain's last five and then the klog ring's last 24; `status` counts only
-  kmain's. Folding kmain's into
-  klog is the right end state and belongs with the ordering problem CLAUDE.md
-  describes (the portable kernel is initialised after the machine has done its
-  work) rather than with this move.
-- The panic line reaches every sink, so the serial log now carries
+- **The reentrancy guard was per core, and a task can move.** Between the module
+  setting a sink's busy flag and the sink's write, interrupts are on, and kernel
+  tasks are preempted and migrated; a task moved there left the flag set on the
+  core it had left, and every other context on that core had its lines to that
+  sink skipped as `reentered`. Masking interrupts across a disk write was not an
+  option - a core with IF clear cannot answer a TLB shootdown. Two changes instead:
+  the guard is **opt-in per sink** (`guard_reentry`: on for the disk, whose block
+  layer logs; off for the serial port, which cannot recurse - so nothing can ever
+  skip a serial line), and it is **keyed by execution context**
+  (`vibeos_klog_set_context`): the arch answers with the running task's slot, read
+  through the per-CPU block only once GS.base is installed, and one number per core
+  before that. A migrated task takes its flag with it; an interrupt nested in a
+  task is that task, so a nested write is still caught. The gate still asserts the
+  serial sink's `reentered` is zero.
+- **Replays had no detector.** `ln=` covers live lines only. Each replay now states
+  its length - `log` and the panic dump already did in their header; `crash` now
+  ends `[CRASH] end lines=0x..` - and the gate's `replay_incomplete` counts the
+  lines against it (`diag-sink.txt` drops one line of the `crash` dump: red as
+  `replay_incomplete=crash_dump`).
+- **There were two logs.** kmain kept a ring of its own for its boot stages, so
+  `status` counted one log, `log` printed both, and a panic dump never showed a
+  boot stage. kmain now logs into klog, which on the machine the architecture has
+  already created (`entry.s` runs `hw_early_init`, whose "log" stage creates it,
+  before `vibeos_kmain`); kmain only creates it when it is missing, which is the
+  host tests. `vibeos_kernel_t.log` is gone. The host boot test logs one event
+  "as the architecture" first and fails if kmain throws it away
+  (`diag-kmain.txt`).
+
+**Found while closing them: the console's `log` showed the wrong events under
+load.** `dump_recent` fixed what to show as a range of ring *indices* and re-read
+them one lock at a time. With the ring full - every boot past 2,048 events - each
+event another core logged during the dump pushed the oldest out and moved every
+index by one, so the dump showed a neighbour instead: the same event twice, one
+skipped, nothing said. It now fixes a range of sequence numbers under one lock and
+fetches each by number; an event overwritten before its turn prints as
+`[LOG] #<seq> overwritten before it could be shown`, so the line count is still the
+one the header announced. A host test fills the ring and logs during the dump; the
+torture does the same with bursts large enough to overwrite announced events, and
+requires a long run to have done so.
+
+## Code scanning
+
+The nightly torture's first version built its expected lines with
+`n += snprintf(buf + n, cap - n, ...)`, three alerts at high severity. The analysis
+was right about the mechanism: snprintf returns the length it *would* have written,
+so after one truncation `n` passes `cap` and the next `cap - n` wraps to an
+enormous size_t. No expected line came near its buffer, so it never fired - and
+nothing stopped the next longer dump from overwriting the torture's stack. One
+bounded `app()` helper replaces every such call, and a model text that does not
+fit is a test failure rather than a silent cut.
+
+Triaged in the same pass: the ABI registry test registered stack arrays with a
+registry that keeps the pointer (the tables are `static` now, and `abi.h` states
+the lifetime contract); `ntfs.c` named `$INDEX_ALLOCATION`'s length `attr_len`
+inside a function whose outer `attr_len` is `$INDEX_ROOT`'s - renamed
+`alloc_len`, because in a parser that is how one attribute's bound gets checked
+against the other's.
+
+## Still open
+
+- The panic line reaches every sink, so the serial log carries
   `[LOG][FATAL] PANIC: <why>` just before the existing ` FATAL: <why>, halting`
   line. The gate reads the second; the first is what the disk has always received.
+  Recorded, not a defect.
