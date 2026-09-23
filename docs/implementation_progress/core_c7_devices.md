@@ -97,9 +97,9 @@ section that loses its entries is named either way.
   outside it, for absent devices too; the input class in table order, the pointer
   only from a present device; report lines whole and newline-terminated.
 - `scripts/dev/cases/io-device.txt` (13 cases, host; 9-10 from step 2, 11-13 from step 3a): all red by name.
-- `scripts/dev/cases/io-device-boot.txt` (4 cases, boot; the fourth from step 3a): an empty table (red as
-  a wedge: with no keyboard the boot's own script is never typed, and the boot
-  stops before the counters that would name it); no wake; no routing.
+- `scripts/dev/cases/io-device-boot.txt` (4 cases, boot; the fourth from step 3a): an empty table
+  (`verdict=boot_volume_missing`: no disk driver, so no volume; it was a
+  "wedge" until the kernel said so); no wake; no routing.
 - `core-observability-modules.txt`: the three mouse cases, re-pointed at the
   driver, red by name.
 
@@ -177,11 +177,33 @@ boot, every case red:
   `ahci_irq_counter_missing`.
 - `io-device-block-vblk.txt` (virtio-blk, 2 cases): `blk_interrupt_never_fired`
   and `blk_completion_counters_missing`.
-- `io-device-boot.txt` case 4, the bind loop stopping after the first disk: red,
-  **but as a wedge** (`missing:VIBEOS_SELFTEST_DONE`), not by name. With only
-  AHCI bound the boot volume is never found, and the machine goes quiet instead
-  of saying so. Recorded as what it is, like case 1: the gate goes red, the
-  kernel does not explain itself.
+- `io-device-boot.txt` case 4, the bind loop stopping after the first disk:
+  `verdict=boot_volume_missing`. It first went red as a wedge - see below.
+
+### "Wedged" was a machine that had finished
+
+That case first went red as `missing:VIBEOS_SELFTEST_DONE verdict=guest_wedged`,
+and so did the other two ways of losing the boot volume (case 1, an empty
+device table; `io-device-fs.txt` case 1, a FAT driver that does not declare
+itself). The serial log says otherwise. With only AHCI bound the kernel printed
+`[BLK] boot volume on none`, ran the built-in init, finished userland at once and
+sat at `vibeos>`. Nothing was hung. The gate was waiting for a self-test that
+lives on the disk that was not there, and after 45 seconds of an idle prompt it
+called the quiet a wedge and sent `wedge_report` to look for a hung core.
+
+Carrying on without a volume is kept on purpose: the built-in init and the
+kernel console are worth having on a machine whose disk this kernel cannot read,
+which is the VirtualBox story in CLAUDE.md. What changed is that the kernel says
+so as a stage failure,
+`[BLK] BOOT_VOLUME_FAIL: no disk carries a mountable volume tried=..`, and the
+gate turns that into its own verdict, `boot_volume_missing`, ahead of
+`guest_wedged` and without the wedge report. All three cases now go red with
+that verdict. The same sabotage without the marker is `guest_wedged`, which is
+the before.
+
+`tried`, not the existing `rejected`: `rejected` counts adapters passed over on
+the way to one that mounted, so when none mounts it is one short - the failing
+boot printed `rejected=0x0` with one disk tried.
 
 ## Step 3b: the registered filesystem, without its init call
 
@@ -204,8 +226,8 @@ and ISO9660, compiled into `storage.c`'s probe table - is still 4.
 Proved by a host test the registry never had (`test_storage_driver_registry`:
 whole-name lookup, a driver with no mount refused, reset) with two cases in
 `storage.txt`, and on the boot by `io-device-fs.txt`: the driver not declaring
-itself is red as a wedge, like the other ways of losing the boot volume (a task
-is open for making that say so); a mount that ignores the volume it is given is
+itself is `verdict=boot_volume_missing` (it was a "wedge"; see step 3a); a
+mount that ignores the volume it is given is
 red by name, `format:FAILED:_also_on_the_root` - after two fixes, below.
 
 ### What the sabotage found: a check that had been blind for seventeen days
