@@ -114,9 +114,6 @@ uint64_t vibeos_x86_64_tlbq_released(void);
 uint64_t vibeos_x86_64_tlbq_overflow(void);
 uint64_t vibeos_x86_64_tlbq_live_peak(void);
 
-uint64_t vibeos_x86_64_keyboard_dropped(void);
-uint64_t vibeos_x86_64_keyboard_inject_truncated(void);
-
 /* What the block cache under the boot filesystem did.
  *
  * Numbers rather than the struct: vibeos_blockcache_t is an anonymous typedef

@@ -19,6 +19,17 @@ SECTIONS
     .rodata ALIGN(4096) : {
         *(.rodata)
         *(.rodata.*)
+        /* Every driver's descriptor pointer (VIBEOS_DEVICE, include/vibeos/
+         * device.h), between two symbols arch_hw.c walks. Nothing names the
+         * entries - that is the point. KEEP does nothing today, because the
+         * image is not linked with --gc-sections; it is here for the day it is,
+         * when an unreferenced section is exactly what the linker drops, and the
+         * kernel would boot with no devices. The boot prints `[DEV] registered=`
+         * so that day is visible either way. */
+        . = ALIGN(8);
+        __start_vibeos_devices = .;
+        KEEP(*(vibeos_devices))
+        __stop_vibeos_devices = .;
     } :rodata
 
     .data ALIGN(4096) : {

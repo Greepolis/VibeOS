@@ -17,7 +17,7 @@
 #  - Mouse: the decoder counts a stream byte that was not the first byte of a packet
 #    and a packet the device flagged as overflowed. Nothing moves the mouse in the
 #    gate, so any count is a real desync (mouse_desync). It is demonstrated non-zero
-#    at every boot - vibeos_x86_64_mouse_selftest feeds one bad byte and one
+#    at every boot - the driver's self-test (run by the device registry, C7) feeds one bad byte and one
 #    overflowed packet, requires the counter to move, then restores it - and the gate
 #    requires proved=1 (mouse_desync_unproven), so a counter that can no longer fire
 #    cannot pass as a clean zero. The line disappearing trips mouse_counters_missing.
@@ -31,7 +31,7 @@
 #
 # Target source: scripts/qemu-cli-smoke-linux.py is NOT touched here; every case
 # breaks the kernel or the guest program and the boot must go red.
-# Target source: kernel/arch/x86_64/arch_hw.c (the printed lines), kernel/abi/linux/net.c (fd_aba), kernel/arch/x86_64/mouse.c, user/prog/hello.c, kernel/abi/linux/mm.c
+# Target source: kernel/arch/x86_64/arch_hw.c (the printed lines; the mouse's moved into its driver in C7), kernel/abi/linux/net.c (fd_aba), kernel/arch/x86_64/mouse.c, user/prog/hello.c, kernel/abi/linux/mm.c
 # Run one: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh build-clang-Release" python3 scripts/dev/sabotage.py <its target> <one-case file> build-clang-Release
 
 ### the network line loses its MUSTBEZERO tag and the gate no longer finds it
@@ -51,9 +51,9 @@ static int hw_sock_stable(const hw_fd_t *f, int sock, uint32_t gen) {
 
 ### the mouse line loses its MUSTBEZERO tag and the gate no longer finds it
 --- old
-        vibeos_x86_64_serial_puts("\n[MOUSE] MUSTBEZERO desync=0x");
+    vibeos_devline_start(&l, "[MOUSE] MUSTBEZERO desync=");
 +++ new
-        vibeos_x86_64_serial_puts("\n[MOUSE] desync=0x");
+    vibeos_devline_start(&l, "[MOUSE] desync=");
 
 ### the mouse decoder stops counting a byte that was not the start of a packet
 --- old

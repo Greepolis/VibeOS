@@ -1971,6 +1971,30 @@ def main():
             elif int(kb.group(2), 16) != 0:
                 problems.append("kbd_inject_truncated=%d" % int(kb.group(2), 16))
 
+            # The interrupt path, end to end (C7). Nobody types in CI: the
+            # boot's script is injected, which raises no interrupt, so IRQ1's
+            # routing, the device registry's dispatch and the wake-up of a
+            # blocked reader ran in no boot at all - and sabotaging either went
+            # green. The keyboard's probe now makes the controller raise IRQ1;
+            # irq_proved says it arrived, input_irq_wakes that the dispatch
+            # woke readers because of it. registered counts the drivers the
+            # linker collected: keyboard and mouse are always built, so fewer
+            # than two is a section that lost its entries.
+            kp = re.search(r"\[KBD\] .* irq_proved=0x([0-9a-f]{16})", text)
+            if kp is None:
+                problems.append("kbd_counters_missing")
+            elif int(kp.group(1), 16) != 1:
+                problems.append("kbd_irq_unproven")
+            dv = re.search(r"\[DEV\] registered=0x([0-9a-f]{16}) "
+                           r"input_irq_wakes=0x([0-9a-f]{16})", text)
+            if dv is None:
+                problems.append("device_counters_missing")
+            else:
+                if int(dv.group(1), 16) < 2:
+                    problems.append("device_table_short=%d" % int(dv.group(1), 16))
+                if int(dv.group(2), 16) == 0:
+                    problems.append("input_irq_wake_unproven")
+
             # What the disk did.
             #
             # The storage path carried no counters at all before I1, so "the

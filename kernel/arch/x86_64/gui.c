@@ -22,12 +22,11 @@
 #include <stdint.h>
 
 #include "vibeos/arch_x86_64.h"
+#include "vibeos/device.h"
 
 #define GUI_MAX_W 1920u
 #define GUI_MAX_H 1200u
 
-extern void vibeos_x86_64_mouse_state(int32_t *x, int32_t *y, uint32_t *buttons);
-extern int vibeos_x86_64_mouse_ready(void);
 
 /* Palette. Flat colours on purpose: gradients need blending and blending needs
  * a pixel format contract this code deliberately does not assume beyond
@@ -302,7 +301,9 @@ void vibeos_x86_64_gui_tick(void) {
     int32_t cx = 0, cy = 0;
     uint32_t buttons = 0;
 
-    if (!g_active || !vibeos_x86_64_mouse_ready()) {
+    /* Whichever input device provides a pointer; the display does not know or
+     * care that it is a PS/2 mouse. No pointer, nothing to repaint for. */
+    if (!g_active || vibeos_input_pointer(0, 0, 0) != 0) {
         return;
     }
     /* Repaint the text before the pointer, so the pointer is drawn on top of
@@ -314,7 +315,7 @@ void vibeos_x86_64_gui_tick(void) {
         g_last_cx = -1;   /* whatever was under the pointer is gone */
     }
 
-    vibeos_x86_64_mouse_state(&cx, &cy, &buttons);
+    (void)vibeos_input_pointer(&cx, &cy, &buttons);
     if (cx == g_last_cx && cy == g_last_cy) {
         return;
     }

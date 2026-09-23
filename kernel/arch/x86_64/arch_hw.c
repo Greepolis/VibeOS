@@ -76,6 +76,12 @@ static uint64_t g_gdt[5u + 2u * VIBEOS_HW_MAX_CPUS];
 /* Vectors 33..47, as delivered. See the dispatcher. */
 static volatile uint64_t g_ioapic_irqs[15];
 
+/* Readers of the console woken because an input device's interrupt said so.
+ * Asserted non-zero by the gate: nobody types in CI, so until the keyboard's
+ * probe raised IRQ1 on purpose this path - routing, dispatch, wake - ran in no
+ * boot at all, and breaking it was invisible (C7). */
+static volatile uint64_t g_input_irq_wakes;
+
 uint64_t vibeos_x86_64_ioapic_irq_count(uint32_t vector) {
     return (vector >= 33u && vector < 48u) ? g_ioapic_irqs[vector - 33u] : 0ull;
 }
@@ -487,6 +493,7 @@ extern int vibeos_x86_64_virtio_blk_write(uint64_t sector, const void *buf);
 #include "vibeos/log.h"
 #include "vibeos/klog.h"
 #include "vibeos/crash.h"
+#include "vibeos/device.h"
 #include "vibeos/mm_model.h"
 #include "vibeos/frame.h"
 #include "vibeos/vmspace.h"
@@ -542,14 +549,6 @@ static uint64_t g_cow_copy_changed;
 static uint64_t g_cow_resolved;
 extern int vibeos_x86_64_fat_vfs_mount(vibeos_fsmount_t *mnt);
 
-extern void vibeos_x86_64_keyboard_irq(void);
-extern void vibeos_x86_64_mouse_irq(void);
-extern int vibeos_x86_64_mouse_init(uint32_t width, uint32_t height);
-extern int vibeos_x86_64_mouse_ready(void);
-extern uint32_t vibeos_x86_64_mouse_packets(void);
-extern uint64_t vibeos_x86_64_mouse_desync(void);
-extern uint64_t vibeos_x86_64_mouse_desync_proved(void);
-extern void vibeos_x86_64_mouse_selftest(void);
 
 /* The ABI surface's must-be-zero: a syscall number the kernel does not
  * implement. musl probes some and tolerates ENOSYS, but nothing the boot runs
@@ -566,7 +565,6 @@ extern void vibeos_x86_64_gui_tick(void);
 extern int vibeos_x86_64_gui_active(void);
 extern uint32_t vibeos_x86_64_gui_frames(void);
 extern uint32_t vibeos_x86_64_gui_term_chars(void);
-extern void vibeos_x86_64_keyboard_inject(const char *s);
 extern int vibeos_x86_64_fb_init(uint64_t base, uint32_t width, uint32_t height);
 extern int vibeos_x86_64_fb_ready(void);
 extern void vibeos_x86_64_fb_puts(const char *s);
@@ -1287,14 +1285,13 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
             hw_pic_send_eoi((uint32_t)frame->vector);
             return;
         }
-        if (frame->vector == 44u) { /* IRQ12: PS/2 mouse */
-            vibeos_x86_64_mouse_irq();
-        }
-        if (frame->vector == 33u) { /* IRQ1: keyboard */
-            vibeos_x86_64_keyboard_irq();
+        /* A legacy line, to every device registered on it (C7). This used to
+         * be one branch per driver, each naming it - the mouse on 44, the
+         * keyboard on 33 - so a new input device meant editing this handler. */
+        if (frame->vector >= 32u && frame->vector < 48u &&
+            (vibeos_device_irq((int)frame->vector - 32) & VIBEOS_DEV_IRQ_INPUT)) {
+            g_input_irq_wakes++;
             hw_keyboard_wake();
-            hw_pic_send_eoi((uint32_t)frame->vector);
-            return;
         }
         hw_pic_send_eoi((uint32_t)frame->vector);
         return;
@@ -3656,11 +3653,10 @@ int hw_pick_next(hw_cpu_t *cpu) {
  * handlers moved out (check-blast-radius counted an "input device" edit in fs.c).
  * What a read() from the console needs is these two, and which device supplies
  * them is the architecture layer's business. */
-extern int vibeos_x86_64_keyboard_getc(void);
 extern void vibeos_x86_64_fb_putc(char c);
 
 int hw_console_getc(void) {
-    return vibeos_x86_64_keyboard_getc();
+    return vibeos_input_getc();
 }
 
 void hw_console_echo(char c) {
@@ -5163,11 +5159,22 @@ static void hw_apic_bringup(const vibeos_boot_info_t *boot_info) {
     g_cpus[0].online = 1;
 
     vibeos_x86_64_pic_disable();   /* no double delivery from the 8259s */
-    if (vibeos_x86_64_ioapic_route(12u, 44u, bsp_id) != 0) {
-        vibeos_x86_64_serial_puts("[APIC] failed to route the mouse IRQ\n");
-    }
-    if (vibeos_x86_64_ioapic_route(1u, 33u, bsp_id) != 0) {
-        vibeos_x86_64_serial_puts("[APIC] failed to route the keyboard IRQ\n");
+    /* Every legacy line a registered device declared, to vector 32 + line -
+     * before anything is probed, because a probe that talks to its device
+     * raises the line (the mouse's ACKs do) and an unrouted interrupt is lost. */
+    {
+        int lines[16];
+        uint32_t i, n = vibeos_device_isa_lines(lines, 16u);
+        for (i = 0; i < n; i++) {
+            if (vibeos_x86_64_ioapic_route((uint8_t)lines[i],
+                                           (uint8_t)(32 + lines[i]), bsp_id) != 0) {
+                vibeos_x86_64_serial_lock();
+                vibeos_x86_64_serial_puts("[APIC] failed to route legacy IRQ 0x");
+                vibeos_x86_64_serial_print_hex((uint64_t)lines[i]);
+                vibeos_x86_64_serial_puts("\n");
+                vibeos_x86_64_serial_unlock();
+            }
+        }
     }
     vibeos_x86_64_lapic_timer_start(VIBEOS_HW_TIMER_HZ, VIBEOS_HW_IRQ_TIMER);
     g_apic_mode = 1;
@@ -5298,7 +5305,7 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
      * path is exercised on the non-interactive CI console; real keystrokes fill
      * the same ring on hardware. */
     vibeos_x86_64_serial_puts("[KBD] keyboard armed (IRQ1); seeding read() self-test input\n");
-    vibeos_x86_64_keyboard_inject("vibeos\n"
+    (void)vibeos_input_inject("vibeos\n"
                                   "mkdir DOCS\n"
                                   "write DOCS/NOTES.TXT persistent hello\n"
                                   "cat DOCS/NOTES.TXT\n"
@@ -5555,18 +5562,21 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
         vibeos_x86_64_serial_print_hex(g_net.sock_stale_parent);
         vibeos_x86_64_serial_puts(" sock_fd_aba=0x");
         vibeos_x86_64_serial_print_hex(g_net.sock_fd_aba);
-        /* The mouse and the ABI surface, the two modules that had none. */
-        vibeos_x86_64_mouse_selftest();
-        vibeos_x86_64_serial_puts("\n[MOUSE] MUSTBEZERO desync=0x");
-        vibeos_x86_64_serial_print_hex(vibeos_x86_64_mouse_desync());
-        vibeos_x86_64_serial_puts(" proved=0x");
-        vibeos_x86_64_serial_print_hex(vibeos_x86_64_mouse_desync_proved());
+        /* The ABI surface, which had no counter. (The mouse's line, which sat
+         * here, is the driver's own report now - see kernel/io/device.c.) */
         vibeos_x86_64_serial_puts("\n[ABI] MUSTBEZERO unexpected_unimplemented=0x");
         vibeos_x86_64_serial_print_hex(g_abi_unimplemented - g_abi_probes);
         vibeos_x86_64_serial_puts(" probes=0x");
         vibeos_x86_64_serial_print_hex(g_abi_probes);
         vibeos_x86_64_serial_puts(" last_nr=0x");
         vibeos_x86_64_serial_print_hex(g_abi_last_nr);
+        /* The device registry (C7): how many drivers the linker collected, and
+         * whether an input interrupt ever woke a reader. Both asserted: an empty
+         * table used to show up only as a wedge, and the wake as nothing. */
+        vibeos_x86_64_serial_puts("\n[DEV] registered=0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)vibeos_device_count());
+        vibeos_x86_64_serial_puts(" input_irq_wakes=0x");
+        vibeos_x86_64_serial_print_hex(g_input_irq_wakes);
         /* The registry the parsers, the journal, the log sink and the scheduler
          * report through (kernel/core/mbz.c): total, and which one and what it
          * saw first. One line so the witness cannot be separated from the count. */
@@ -5696,6 +5706,38 @@ static void hw_boot_stage(const char *name) {
     }
 }
 
+/* ---- devices (C7) ----------------------------------------------------------
+ *
+ * The drivers' descriptors, collected by kernel.ld from every object that used
+ * VIBEOS_DEVICE(). Nothing here names a driver: a new one is a file and its
+ * line in the build. */
+extern const vibeos_device_t *const __start_vibeos_devices[];
+extern const vibeos_device_t *const __stop_vibeos_devices[];
+
+static hw_lock_t g_device_lock;
+
+static void hw_device_lock(void) {
+    hw_spin_lock_named(&g_device_lock, "vibeos_device");
+}
+
+static void hw_device_unlock(void) {
+    hw_spin_unlock(&g_device_lock);
+}
+
+static void hw_device_table(void) {
+    uint32_t n = (uint32_t)(__stop_vibeos_devices - __start_vibeos_devices);
+
+    vibeos_device_set_lock(hw_device_lock, hw_device_unlock);
+    if (vibeos_device_set_table(__start_vibeos_devices, n) != 0) {
+        hw_panic("device table refused: too many drivers, or an empty entry");
+    }
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts("[DEV] registered=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)n);
+    vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
+}
+
 void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
     /* The Linux syscall registry, before anything that could make a syscall. It
      * refuses a number claimed twice and an operation with no handler, so a
@@ -5747,6 +5789,7 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
 
     /* Move off the legacy PIC/PIT onto the local + IO APIC pair (per-CPU timer,
      * IO-APIC interrupt routing) now that basic IRQ delivery is proven. */
+    hw_device_table();
     hw_apic_bringup(boot_info);
     hw_boot_stage("apic_smp");
 
@@ -5872,12 +5915,6 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
             vibeos_x86_64_serial_unlock();
         }
 
-        if (vibeos_x86_64_mouse_init(boot_info->framebuffer_width,
-                                     boot_info->framebuffer_height) == 0) {
-            vibeos_x86_64_serial_puts("[MOUSE] PS/2 mouse ready on IRQ12\n");
-        } else {
-            vibeos_x86_64_serial_puts("[MOUSE] no PS/2 mouse\n");
-        }
         if (back && ((uint64_t)(uintptr_t)back + px * 4ull) <= VIBEOS_HW_IDENTITY_LIMIT &&
             vibeos_x86_64_gui_init(boot_info->framebuffer_base,
                                    boot_info->framebuffer_width,
@@ -5901,6 +5938,19 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
         vibeos_x86_64_fb_puts("VibeOS console\n");
     } else {
         vibeos_x86_64_serial_puts("[FB] no framebuffer; console is serial-only\n");
+    }
+
+    /* Every registered device, now that the screen's size is known (a pointer
+     * clamps to it). The mouse used to be initialised by name inside the
+     * framebuffer setup just above; its probe keeps the same condition. */
+    {
+        vibeos_dev_env_t env = { 0, 0, 0 };
+        if (boot_info && boot_info->framebuffer_base != 0u) {
+            env.fb_base = boot_info->framebuffer_base;
+            env.fb_width = boot_info->framebuffer_width;
+            env.fb_height = boot_info->framebuffer_height;
+        }
+        (void)vibeos_device_probe_all(&env);
     }
 
     hw_klog_init();

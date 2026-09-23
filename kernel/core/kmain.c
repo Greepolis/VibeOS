@@ -1,6 +1,7 @@
 #include "vibeos/kernel.h"
 #include "vibeos/arch_x86_64.h"
 #include "vibeos/klog.h"
+#include "vibeos/device.h"
 #include "vibeos/mm_model.h"
 #include "vibeos/task_stats.h"
 #include "vibeos/exec_stats.h"
@@ -71,6 +72,15 @@ static void kernel_log_u64_hex(uint64_t value) {
         uint64_t nibble = (value >> (uint32_t)shift) & 0xfu;
         vibeos_x86_64_serial_putc((char)(nibble < 10u ? ('0' + nibble) : ('a' + nibble - 10u)));
     }
+}
+
+/* One complete line to the console, for the device reports: one serial_puts,
+ * which is one critical section on the console lock. */
+static int kernel_serial_line(void *ctx, const char *line, uint32_t len) {
+    (void)ctx;
+    (void)len;
+    vibeos_x86_64_serial_puts(line);
+    return 0;
 }
 
 /* Into the kernel log (kernel/diag/klog.c), the same ring and the same sinks as
@@ -150,8 +160,6 @@ __attribute__((weak)) uint64_t vibeos_x86_64_tlbq_deferred(void) { return 0ull; 
 __attribute__((weak)) uint64_t vibeos_x86_64_tlbq_released(void) { return 0ull; }
 __attribute__((weak)) uint64_t vibeos_x86_64_tlbq_overflow(void) { return 0ull; }
 __attribute__((weak)) uint64_t vibeos_x86_64_tlbq_live_peak(void) { return 0ull; }
-__attribute__((weak)) uint64_t vibeos_x86_64_keyboard_dropped(void) { return 0ull; }
-__attribute__((weak)) uint64_t vibeos_x86_64_keyboard_inject_truncated(void) { return 0ull; }
 __attribute__((weak)) uint64_t vibeos_x86_64_ahci_irqs(void) { return 0ull; }
 __attribute__((weak)) uint64_t vibeos_x86_64_virtio_blk_irqs(void) { return 0ull; }
 __attribute__((weak)) uint64_t vibeos_x86_64_virtio_blk_irq_completions(void) { return 0ull; }
@@ -868,10 +876,6 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
         kernel_log_u64_hex(vibeos_x86_64_tlbq_overflow());
         vibeos_x86_64_serial_puts(" tlbq_live_peak=0x");
         kernel_log_u64_hex(vibeos_x86_64_tlbq_live_peak());
-        vibeos_x86_64_serial_puts(" kbd_dropped=0x");
-        kernel_log_u64_hex(vibeos_x86_64_keyboard_dropped());
-        vibeos_x86_64_serial_puts(" MUSTBEZERO kbd_inject_truncated=0x");
-        kernel_log_u64_hex(vibeos_x86_64_keyboard_inject_truncated());
         vibeos_x86_64_serial_puts(" ahci_irqs=0x");
         kernel_log_u64_hex(vibeos_x86_64_ahci_irqs());
         vibeos_x86_64_serial_puts(" blk_irqs=0x");
@@ -881,6 +885,12 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
         vibeos_x86_64_serial_puts(" blk_poll_completions=0x");
         kernel_log_u64_hex(vibeos_x86_64_virtio_blk_poll_completions());
         vibeos_x86_64_serial_puts("\n");
+
+        /* Every registered device's own counters, each on its own line - the
+         * keyboard's used to be in the middle of the line above and the mouse's
+         * in arch_hw.c, and each counter a driver gained cost an accessor in
+         * arch_x86_64.h and a weak default and a print here (C7). */
+        vibeos_device_report_all(kernel_serial_line, 0);
 
         /* I7's last question, and the only one that needs the machine: were
          * two requests ever inside the block layer at the same time? Every

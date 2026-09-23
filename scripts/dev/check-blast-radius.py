@@ -127,8 +127,15 @@ POINTS = {
         "unnoticed."),
     "input device": (
         "kernel/arch/x86_64/keyboard.c",
-        r"vibeos_x86_64_keyboard_[A-Za-z0-9_]+", 4,
-        "no registry; arch_hw.c names it. Was 2, and went UP to 4 in C2 - "
+        r"vibeos_x86_64_keyboard_[A-Za-z0-9_]+", 1,
+        "**1 since C7**: the driver is a descriptor in its own file, collected "
+        "from a linker section (VIBEOS_DEVICE, include/vibeos/device.h); the "
+        "registry routes its line, probes it, dispatches its interrupts, runs "
+        "its self-test, prints its counters and serves getc/inject/pointer to "
+        "the console and the display. What is left is the file's line in the "
+        "build. The keyboard exports nothing; neither does the mouse.\n"
+        "      History, kept because it is the argument for the registry: no "
+        "registry; arch_hw.c named it. Was 2, and went UP to 4 in C2 - "
         "which is a decision with an argument, recorded here rather than an "
         "edit to make the check quiet.\n"
         "      Giving the keyboard its first must-be-zero counter cost two "

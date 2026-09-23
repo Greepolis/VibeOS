@@ -22,6 +22,7 @@ set(VIBEOS_KERNEL_CORE_SOURCES
     kernel/mm/anon.c
     kernel/mm/swaparea.c
     kernel/io/blkdev.c
+    kernel/io/device.c
     kernel/io/logsink.c
     kernel/txn/journal.c
     kernel/io/parttab.c

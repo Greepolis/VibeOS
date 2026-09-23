@@ -1,0 +1,87 @@
+# C7: the device registry (kernel/io/device.c), proved by the host test.
+#
+# Each case breaks one rule the registry exists to keep, and the run must go red
+# on the host test that names it:
+#  1. an interrupt reaches only devices that passed their probe: a PS/2 mouse
+#     that failed its probe no longer takes its byte off the port, and the
+#     controller stops delivering to the keyboard too;
+#  2. a self-test runs only for present devices: the mouse's proof that its
+#     desync counter can move ran unconditionally before it was registered, and
+#     would quietly vanish on a machine with no mouse;
+#  3. the table can be replaced after the seal: interrupt handlers read it with
+#     no lock, on the promise that it no longer changes;
+#  4. a table with an empty entry is taken in part: half the drivers silently
+#     missing is what a registry exists to make impossible;
+#  5. the pointer is taken from a device that failed its probe;
+#  6. reports are written under the lock: the device is the serial port;
+#  7. only present devices' lines are routed: the probe itself raises the line,
+#     and an unrouted interrupt is lost - the mouse's ACKs were exactly that;
+#  8. probes run under the module's lock: the lock masks interrupts, and the
+#     keyboard's probe waits for the IRQ1 it makes the controller raise.
+#
+# Target source: kernel/io/device.c
+# Run: python3 scripts/dev/sabotage.py kernel/io/device.c scripts/dev/cases/io-device.txt
+
+### an interrupt reaches only present devices
+--- old
+        if (g_table[i]->isa_irq == line && g_table[i]->irq) {
++++ new
+        if (g_table[i]->isa_irq == line && g_table[i]->irq && g_present[i]) {
+
+### self-tests run only for present devices
+--- old
+        if (g_table[i]->selftest) {
++++ new
+        if (g_present[i] && g_table[i]->selftest) {
+
+### the table can be replaced after the seal
+--- old
+    if (g_table_set || g_sealed || g_probing) {
++++ new
+    if (0) {
+
+### a table with an empty entry is taken in part
+--- old
+        if (!table[i] || !table[i]->name) {
+            unlock();
+            return -1;
+        }
++++ new
+        if (!table[i] || !table[i]->name) {
+            count = i;
+            break;
+        }
+
+### the pointer is taken from an absent device
+--- old
+    if (g_table[i]->cls != VIBEOS_DEV_INPUT || !g_present[i]) {
++++ new
+    if (g_table[i]->cls != VIBEOS_DEV_INPUT) {
+
+### reports are written under the lock
+--- old
+            g_table[i]->selftest();
+        }
+    }
+    unlock();
++++ new
+            g_table[i]->selftest();
+        }
+    }
+
+### probes run under the lock, where no interrupt can reach them
+--- old
+    g_probing = 1;
+    unlock();
++++ new
+    g_probing = 1;
+
+### only present devices' lines are routed
+--- old
+        if (line < 0) {
+            continue;
+        }
++++ new
+        if (line < 0 || !g_present[i]) {
+            continue;
+        }

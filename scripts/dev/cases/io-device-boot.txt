@@ -1,0 +1,41 @@
+# C7: the device registry on the machine (kernel/arch/x86_64/arch_hw.c), proved by
+# the boot gate. What no host test can see: the linker section, the interrupt
+# routing and the wake-up that the registry now drives.
+#
+#  1. the table the linker collected is ignored - a kernel with no devices.
+#     Red as a wedge (missing:CLI_READY): with no keyboard the boot's own script
+#     is never typed, and the boot stops before the counters that would name it
+#     (device_table_short) are printed;
+#  2. an input interrupt no longer wakes whoever is blocked reading the console:
+#     expect input_irq_wake_unproven;
+#  3. the legacy lines are not routed, so the keyboard and the mouse never
+#     interrupt: expect kbd_irq_unproven.
+#
+# The first run of 2 and 3 went NOT RED. Nobody types in CI - the boot's script
+# is injected into the keyboard's ring, which raises no interrupt - so the IRQ1
+# path ran in no boot at all. The keyboard's probe now makes the PS/2 controller
+# raise IRQ1 (command 0xD2, a key-release byte the driver ignores) and the gate
+# asserts that it arrived and woke a reader. device_counters_missing is the
+# [DEV] line disappearing.
+#
+# Target source: kernel/arch/x86_64/arch_hw.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/arch/x86_64/arch_hw.c scripts/dev/cases/io-device-boot.txt
+
+### the kernel boots with an empty device table
+--- old
+    uint32_t n = (uint32_t)(__stop_vibeos_devices - __start_vibeos_devices);
++++ new
+    uint32_t n = 0u;
+
+### an input interrupt wakes nobody
+--- old
+            (vibeos_device_irq((int)frame->vector - 32) & VIBEOS_DEV_IRQ_INPUT)) {
++++ new
+            (vibeos_device_irq((int)frame->vector - 32) & 0)) {
+
+### the legacy lines are not routed
+--- old
+        uint32_t i, n = vibeos_device_isa_lines(lines, 16u);
++++ new
+        uint32_t i, n = 0u;
+        (void)vibeos_device_isa_lines;

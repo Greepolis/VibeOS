@@ -20,6 +20,7 @@
 #include <stdint.h>
 
 #include "vibeos/arch_x86_64.h"
+#include "vibeos/device.h"
 
 #define PS2_DATA 0x60u
 #define PS2_CMD  0x64u
@@ -103,7 +104,7 @@ static void mouse_feed(uint8_t byte);
 __attribute__((weak)) uint64_t vibeos_x86_64_irq_save(void) { return 0; }
 __attribute__((weak)) void vibeos_x86_64_irq_restore(uint64_t flags) { (void)flags; }
 
-int vibeos_x86_64_mouse_init(uint32_t width, uint32_t height) {
+static int mouse_init(uint32_t width, uint32_t height) {
     uint8_t status;
     /* The whole sequence runs with interrupts masked.
      *
@@ -169,22 +170,23 @@ int vibeos_x86_64_mouse_init(uint32_t width, uint32_t height) {
     return 0;
 }
 
-/* Called from the IRQ12 handler. */
-void vibeos_x86_64_mouse_irq(void) {
+/* Called for every IRQ12, ready or not: the byte has to come off the port. */
+static int mouse_irq(void) {
     uint8_t status = ms_inb(PS2_STATUS);
     uint8_t byte;
 
     if ((status & PS2_STATUS_OUTPUT_FULL) == 0u) {
-        return;
+        return 0;
     }
     byte = ms_inb(PS2_DATA);
     if ((status & PS2_STATUS_FROM_AUX) == 0u) {
-        return;   /* keyboard byte arriving on the mouse vector; not ours */
+        return 0;   /* keyboard byte arriving on the mouse vector; not ours */
     }
     if (!g_ready) {
-        return;
+        return 0;
     }
     mouse_feed(byte);
+    return 0;   /* the pointer is polled by the display, nobody waits on it */
 }
 
 /* Decode one byte of the packet stream. Split from the interrupt so the
@@ -242,11 +244,10 @@ static void mouse_feed(uint8_t byte) {
     }
 }
 
-int vibeos_x86_64_mouse_ready(void) {
-    return g_ready;
-}
-
-void vibeos_x86_64_mouse_state(int32_t *out_x, int32_t *out_y, uint32_t *out_buttons) {
+static int mouse_pointer(int32_t *out_x, int32_t *out_y, uint32_t *out_buttons) {
+    if (!g_ready) {
+        return -1;
+    }
     if (out_x) {
         *out_x = g_x;
     }
@@ -256,18 +257,7 @@ void vibeos_x86_64_mouse_state(int32_t *out_x, int32_t *out_y, uint32_t *out_but
     if (out_buttons) {
         *out_buttons = g_buttons;
     }
-}
-
-uint32_t vibeos_x86_64_mouse_packets(void) {
-    return g_packets;
-}
-
-uint64_t vibeos_x86_64_mouse_desync(void) {
-    return g_desync_resync + g_desync_overflow;
-}
-
-uint64_t vibeos_x86_64_mouse_desync_proved(void) {
-    return g_selftest_proved;
+    return 0;
 }
 
 /* A counter that reads zero proves nothing until it has been seen non-zero. Feed
@@ -276,7 +266,7 @@ uint64_t vibeos_x86_64_mouse_desync_proved(void) {
  * hardware did, not what this did. Interrupts are masked so a real IRQ12 cannot
  * land in the middle of the fake packet. Position and buttons are untouched:
  * both inputs are dropped before they reach them. */
-void vibeos_x86_64_mouse_selftest(void) {
+static void mouse_selftest(void) {
     uint64_t flags = vibeos_x86_64_irq_save();
     uint64_t saved_resync = g_desync_resync;
     uint64_t saved_overflow = g_desync_overflow;
@@ -295,3 +285,51 @@ void vibeos_x86_64_mouse_selftest(void) {
     g_phase = saved_phase;
     vibeos_x86_64_irq_restore(flags);
 }
+
+/* A pointer is only brought up when there is a screen for it to point at, as it
+ * always was - arch_hw.c used to call the init from inside its framebuffer
+ * setup. The two messages are the ones it printed. */
+static int mouse_probe(const vibeos_dev_env_t *env) {
+    if (env->fb_width == 0u || env->fb_height == 0u) {
+        return -1;
+    }
+    if (mouse_init(env->fb_width, env->fb_height) == 0) {
+        vibeos_x86_64_serial_puts("[MOUSE] PS/2 mouse ready on IRQ12\n");
+        return 0;
+    }
+    vibeos_x86_64_serial_puts("[MOUSE] no PS/2 mouse\n");
+    return -1;
+}
+
+/* desync is the must-be-zero; proved says the self-test saw it move, and the
+ * gate requires both. packets had been counted and read by nobody since the
+ * driver was written - it is on the line now. */
+static void mouse_report(vibeos_dev_write_fn out, void *ctx) {
+    vibeos_devline_t l;
+
+    vibeos_devline_start(&l, "[MOUSE] MUSTBEZERO desync=");
+    vibeos_devline_hex(&l, g_desync_resync + g_desync_overflow);
+    vibeos_devline_str(&l, " proved=");
+    vibeos_devline_hex(&l, g_selftest_proved);
+    vibeos_devline_str(&l, " packets=");
+    vibeos_devline_hex(&l, g_packets);
+    vibeos_devline_end(&l, out, ctx);
+}
+
+static const vibeos_input_ops_t g_mouse_ops = {
+    .getc = 0,
+    .inject = 0,
+    .pointer = mouse_pointer,
+};
+
+static const vibeos_device_t g_mouse_device = {
+    .name = "ps2-mouse",
+    .cls = VIBEOS_DEV_INPUT,
+    .isa_irq = 12,
+    .probe = mouse_probe,
+    .irq = mouse_irq,
+    .selftest = mouse_selftest,
+    .report = mouse_report,
+    .ops = &g_mouse_ops,
+};
+VIBEOS_DEVICE(g_mouse_device);

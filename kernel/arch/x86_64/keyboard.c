@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 #include "vibeos/arch_x86_64.h"
+#include "vibeos/device.h"
 
 #define KBD_DATA 0x60u
 
@@ -33,7 +34,7 @@ static volatile char g_ring[KBD_RING];
 static volatile uint32_t g_head; /* producer (IRQ) */
 static volatile uint32_t g_tail; /* consumer (read) */
 
-/* Called from the IRQ1 handler: read the scancode and enqueue any ASCII. */
+
 /* Raised by the console when the interrupt key is typed. Weak so this file
  * still links where there is no process to signal. */
 __attribute__((weak)) void vibeos_x86_64_console_interrupt(void) { }
@@ -63,11 +64,25 @@ static int g_ctrl_down;
 static uint64_t g_dropped;
 static uint64_t g_inject_truncated;
 
-uint64_t vibeos_x86_64_keyboard_dropped(void) { return g_dropped; }
-uint64_t vibeos_x86_64_keyboard_inject_truncated(void) { return g_inject_truncated; }
+/* Interrupts taken, and whether the boot proved one can arrive at all.
+ *
+ * Nobody types in CI. The boot's own script is *injected* into the ring, which
+ * raises no interrupt - so the whole IRQ1 path, the line's routing, the
+ * registry's dispatch and the wake-up of whoever is blocked in read(), was
+ * never exercised by any boot. Two sabotages (drop the routing; drop the wake)
+ * went green because of it. The probe below makes the controller raise IRQ1 for
+ * real, and the gate asserts it arrived. */
+static volatile uint32_t g_irqs;
+static uint64_t g_irq_proved;
 
-void vibeos_x86_64_keyboard_irq(void) {
+static inline void kbd_outb(uint16_t p, uint8_t v) {
+    __asm__ __volatile__("outb %0,%1" : : "a"(v), "Nd"(p));
+}
+
+static int kbd_irq(void) {
     uint8_t sc = kbd_inb(KBD_DATA);
+
+    g_irqs++;
     char c;
     uint32_t next;
 
@@ -75,25 +90,25 @@ void vibeos_x86_64_keyboard_irq(void) {
         if ((sc & 0x7Fu) == KBD_SC_LCTRL) {
             g_ctrl_down = 0;
         }
-        return; /* break code (key release) */
+        return VIBEOS_DEV_IRQ_INPUT; /* break code (key release) */
     }
     if (sc == KBD_SC_LCTRL) {
         g_ctrl_down = 1;
-        return;
+        return VIBEOS_DEV_IRQ_INPUT;
     }
     if (g_ctrl_down && sc == KBD_SC_C) {
         /* Control-C is not a character. Putting it in the input ring would
          * hand the shell a byte to echo; it has to become a signal, which is
          * the whole difference between a terminal and a pipe. */
         vibeos_x86_64_console_interrupt();
-        return;
+        return VIBEOS_DEV_IRQ_INPUT;
     }
     if (sc >= 0x3Au) {
-        return; /* outside the simple map */
+        return VIBEOS_DEV_IRQ_INPUT; /* outside the simple map */
     }
     c = g_map[sc];
     if (c == 0) {
-        return;
+        return VIBEOS_DEV_IRQ_INPUT;
     }
     next = (g_head + 1u) % KBD_RING;
     if (next != g_tail) {
@@ -102,11 +117,12 @@ void vibeos_x86_64_keyboard_irq(void) {
     } else {
         g_dropped++; /* the ring was full; the keystroke is gone */
     }
+    return VIBEOS_DEV_IRQ_INPUT;
 }
 
 /* Inject characters as if typed - used by the boot self-test so the read path
  * can be exercised on the non-interactive CI console. */
-void vibeos_x86_64_keyboard_inject(const char *s) {
+static int kbd_inject(const char *s) {
     uint32_t next;
     while (*s) {
         next = (g_head + 1u) % KBD_RING;
@@ -117,15 +133,16 @@ void vibeos_x86_64_keyboard_inject(const char *s) {
             while (*s++) {
                 g_inject_truncated++;
             }
-            return;
+            return -1;
         }
         g_ring[g_head] = *s++;
         g_head = next;
     }
+    return 0;
 }
 
 /* Non-blocking: pop one buffered character, or -1 if the buffer is empty. */
-int vibeos_x86_64_keyboard_getc(void) {
+static int kbd_getc(void) {
     char c;
     if (g_tail == g_head) {
         return -1;
@@ -134,3 +151,90 @@ int vibeos_x86_64_keyboard_getc(void) {
     g_tail = (g_tail + 1u) % KBD_RING;
     return (int)(unsigned char)c;
 }
+
+/* The two counters, on a line of their own. They used to be the middle of a
+ * line kmain.c printed, next to the disk drivers' - which is how giving the
+ * keyboard its first counter cost two files that had nothing to do with it
+ * (check-blast-radius.py, "input device"). The gate's pattern is not anchored to
+ * what surrounds it, so the move changes no assertion. */
+static void kbd_report(vibeos_dev_write_fn out, void *ctx) {
+    vibeos_devline_t l;
+
+    vibeos_devline_start(&l, "[KBD] kbd_dropped=");
+    vibeos_devline_hex(&l, g_dropped);
+    vibeos_devline_str(&l, " MUSTBEZERO kbd_inject_truncated=");
+    vibeos_devline_hex(&l, g_inject_truncated);
+    vibeos_devline_str(&l, " irqs=");
+    vibeos_devline_hex(&l, g_irqs);
+    vibeos_devline_str(&l, " irq_proved=");
+    vibeos_devline_hex(&l, g_irq_proved);
+    vibeos_devline_end(&l, out, ctx);
+}
+
+#define KBD_STATUS 0x64u
+#define KBD_STATUS_OUTPUT_FULL 0x01u
+#define KBD_STATUS_INPUT_FULL  0x02u
+/* Controller command: put the next data byte in the output buffer as though the
+ * keyboard had sent it - which raises IRQ1 exactly as a keystroke does. */
+#define KBD_CCMD_WRITE_OBUF 0xD2u
+/* Space, released: a break code the driver reads and ignores, so the proof
+ * leaves no character in the ring and no modifier state behind. */
+#define KBD_SC_SPACE_RELEASE 0xB9u
+
+static int kbd_wait_writable(void) {
+    uint32_t spins;
+    for (spins = 0; spins < 1000000u; spins++) {
+        if ((kbd_inb(KBD_STATUS) & KBD_STATUS_INPUT_FULL) == 0u) {
+            return 0;
+        }
+    }
+    return -1;
+}
+
+/* Present regardless - the legacy controller is assumed, as it always has been.
+ * What the probe finds out is whether an interrupt from it can reach this
+ * driver, and it records the answer for the gate rather than acting on it.
+ *
+ * Runs after the lines are routed and interrupts are on. Bounded: a line that
+ * never fires costs a moment of boot, not the boot. If nothing arrived the byte
+ * is still in the controller's buffer, and it is taken off here - otherwise the
+ * mouse's probe, next, reads a keyboard byte as its own acknowledgement. */
+static int kbd_probe(const vibeos_dev_env_t *env) {
+    uint32_t before = g_irqs;
+    uint32_t spins;
+
+    (void)env;
+    if (kbd_wait_writable() == 0) {
+        kbd_outb(KBD_STATUS, KBD_CCMD_WRITE_OBUF);
+        if (kbd_wait_writable() == 0) {
+            kbd_outb(KBD_DATA, KBD_SC_SPACE_RELEASE);
+        }
+    }
+    for (spins = 0; spins < 50000000u && g_irqs == before; spins++) {
+        __asm__ __volatile__("pause" ::: "memory");
+    }
+    g_irq_proved = (g_irqs != before) ? 1u : 0u;
+    if (!g_irq_proved && (kbd_inb(KBD_STATUS) & KBD_STATUS_OUTPUT_FULL) != 0u) {
+        (void)kbd_inb(KBD_DATA);
+    }
+    return 0;
+}
+
+static const vibeos_input_ops_t g_kbd_ops = {
+    .getc = kbd_getc,
+    .inject = kbd_inject,
+    .pointer = 0,
+};
+
+/* IRQ1. The probe always succeeds; it exists to prove the interrupt path. */
+static const vibeos_device_t g_kbd_device = {
+    .name = "ps2-keyboard",
+    .cls = VIBEOS_DEV_INPUT,
+    .isa_irq = 1,
+    .probe = kbd_probe,
+    .irq = kbd_irq,
+    .selftest = 0,
+    .report = kbd_report,
+    .ops = &g_kbd_ops,
+};
+VIBEOS_DEVICE(g_kbd_device);
