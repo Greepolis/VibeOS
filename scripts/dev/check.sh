@@ -107,6 +107,10 @@ do_build() {
     # reason: a rule that lives only in a comment erodes one reasonable
     # looking line at a time.
     bash scripts/dev/check-exec-layering.sh | tail -1
+    # User memory only through the fault-safe copy (M-050..M-052): the same
+    # race-to-panic had been fixed one site at a time, and one review found
+    # eight more. A rule nothing enforces is found again by the next reviewer.
+    python3 scripts/dev/check-user-access.py | tail -1
     if grep -rn 'TEMPORARY' kernel/ --include=*.c > /dev/null 2>&1; then
         echo "LEFTOVER-DEBUG-CODE:"
         grep -rn 'TEMPORARY' kernel/ --include=*.c | head -3

@@ -17,10 +17,14 @@ static long hw_sys_uname(uint64_t buf) {
         "x86_64",           /* machine    */
         "(none)"            /* domainname */
     };
+    /* Built in the kernel and copied out once (M-052): the fields were written
+     * into the user's buffer directly, which faults in ring 0 if a sibling
+     * unmaps it after the dispatcher's range check. */
+    char out[6u * 65u];
     uint32_t f, i;
 
     for (f = 0; f < 6u; f++) {
-        char *dst = (char *)(uintptr_t)(buf + (uint64_t)f * 65u);
+        char *dst = out + f * 65u;
         const char *src = fields[f];
         for (i = 0; i < 65u; i++) {
             dst[i] = (i < 64u) ? src[i] : 0;
@@ -32,7 +36,8 @@ static long hw_sys_uname(uint64_t buf) {
             dst[i] = 0;
         }
     }
-    return 0;
+    return vibeos_uaccess_copy((void *)(uintptr_t)buf, out, sizeof(out)) == 0
+               ? 0 : -VIBEOS_EFAULT;
 }
 
 /* clock_gettime(): derived from the timer tick, so it advances at the

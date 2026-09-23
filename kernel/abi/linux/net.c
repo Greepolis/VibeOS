@@ -21,9 +21,20 @@
 
 /* Read a struct sockaddr_in out of user memory: family (host order), port and
  * address (both network order on the wire). */
+/*
+ * Both helpers go through vibeos_uaccess_copy, into and out of a local copy
+ * (M-050). They dereferenced the user pointer directly: the dispatcher checks the
+ * range before the handler runs, and that check and these accesses are two
+ * instants - in accept() and recvfrom() separated by a blocking wait of any
+ * length - so a sibling thread's munmap in between made the kernel take the
+ * fault in ring 0, outside the one instruction that can recover, and panic.
+ * H-010's family again; M-040 closed the same shape in write(). */
 static int hw_read_sockaddr(uint64_t uptr, uint32_t *out_ip, uint16_t *out_port) {
-    const uint8_t *p;
-    p = (const uint8_t *)(uintptr_t)uptr;
+    uint8_t p[8];
+
+    if (vibeos_uaccess_copy(p, (const void *)(uintptr_t)uptr, sizeof(p)) != 0) {
+        return -1;
+    }
     if (((uint16_t)p[0] | ((uint16_t)p[1] << 8)) != 2u) {   /* AF_INET */
         return -1;
     }
@@ -34,11 +45,12 @@ static int hw_read_sockaddr(uint64_t uptr, uint32_t *out_ip, uint16_t *out_port)
 }
 
 static int hw_write_sockaddr(uint64_t uptr, uint32_t ip, uint16_t port) {
-    uint8_t *p;
+    uint8_t p[16];
+    int k;
+
     if (uptr == 0u) {
         return 0;
     }
-    p = (uint8_t *)(uintptr_t)uptr;
     p[0] = 2; p[1] = 0;
     p[2] = (uint8_t)(port >> 8);
     p[3] = (uint8_t)(port & 0xFFu);
@@ -46,13 +58,12 @@ static int hw_write_sockaddr(uint64_t uptr, uint32_t ip, uint16_t port) {
     p[5] = (uint8_t)((ip >> 16) & 0xFFu);
     p[6] = (uint8_t)((ip >> 8) & 0xFFu);
     p[7] = (uint8_t)(ip & 0xFFu);
-    {
-        int k;
-        for (k = 8; k < 16; k++) {
-            p[k] = 0;
-        }
+    for (k = 8; k < 16; k++) {
+        p[k] = 0;
     }
-    return 0;
+    /* The one fallible step, and the callers' undo paths were written for it:
+     * until now it could not fail, so they had never run. */
+    return vibeos_uaccess_copy((void *)(uintptr_t)uptr, p, sizeof(p)) == 0 ? 0 : -1;
 }
 
 /* Give up the CPU until the next tick; the network is pumped from there. */
@@ -382,8 +393,11 @@ static long hw_sys_netctl(uint64_t op, uint64_t arg) {
     }
     switch (op) {
         case 0: {
-            uint32_t *out;
-            out = (uint32_t *)(uintptr_t)arg;
+            /* Gathered under the lock, written after it (M-050): a user store
+             * that faults under g_net_lock is a panic with the network lock
+             * held, and the row's range check before the handler does not
+             * survive a sibling's munmap. */
+            uint32_t out[5];
             hw_spin_lock(&g_net_lock);
             out[0] = g_net.ip;
             out[1] = g_net.netmask;
@@ -391,7 +405,8 @@ static long hw_sys_netctl(uint64_t op, uint64_t arg) {
             out[3] = g_net.dns;
             out[4] = (uint32_t)vibeos_inet_dhcp_bound(&g_net);
             hw_spin_unlock(&g_net_lock);
-            return 0;
+            return vibeos_uaccess_copy((void *)(uintptr_t)arg, out, sizeof(out)) == 0
+                       ? 0 : -VIBEOS_EFAULT;
         }
         case 1: {
             hw_spin_lock(&g_net_lock);
@@ -438,15 +453,15 @@ static long hw_sys_netctl(uint64_t op, uint64_t arg) {
             }
         }
         case 3: {
-            uint64_t *out;
-            out = (uint64_t *)(uintptr_t)arg;
+            uint64_t out[4];   /* as op 0: gathered under the lock, written after */
             hw_spin_lock(&g_net_lock);
             out[0] = g_net.tx_frames;
             out[1] = g_net.rx_frames;
             out[2] = g_net.rx_dropped;
             out[3] = g_net.tcp_retransmits;
             hw_spin_unlock(&g_net_lock);
-            return 0;
+            return vibeos_uaccess_copy((void *)(uintptr_t)arg, out, sizeof(out)) == 0
+                       ? 0 : -VIBEOS_EFAULT;
         }
         default:
             return -VIBEOS_EINVAL;

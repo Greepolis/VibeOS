@@ -260,7 +260,6 @@ static long hw_sys_dup2(uint64_t oldfd, uint64_t newfd) {
 }
 
 static long hw_sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
-    const char *p = (const char *)(uintptr_t)buf;
     uint64_t i;
 
     if (g_current_task >= 0 && vibeos_fdtable_redirect(&g_tasks[g_current_task].files, fd)) {
@@ -297,7 +296,7 @@ static long hw_sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
             uint64_t room = (uint64_t)(VIBEOS_HW_WBUF - f->wlen);
             i2 = (len < room) ? len : room;
             if (i2 > 0u &&
-                vibeos_uaccess_copy(&f->wbuf[f->wlen], p, i2) != 0) {
+                vibeos_uaccess_copy(&f->wbuf[f->wlen], (const void *)(uintptr_t)buf, i2) != 0) {
                 return -VIBEOS_EFAULT;
             }
             f->wlen += (uint32_t)i2;
@@ -326,14 +325,31 @@ static long hw_sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
      * leading NULs followed by real text, and a detector that fires on any NUL
      * anywhere would catch every program that writes a binary byte. This
      * project has a rule about detectors that report healthy behaviour. */
-    if (len >= 8u && p[0] == 0 && p[len - 1u] != 0) {
+    /* Every read of the user's buffer below goes through vibeos_uaccess_copy
+     * (M-052): M-040 made the file branch above fault-safe and left this one,
+     * stdout and stderr, reading the buffer directly - the path every program uses. The
+     * range was checked before the handler ran; a sibling's munmap since then
+     * made the read fault in ring 0, under the console lock, and panic. */
+    uint8_t head[8], tail = 0;
+    if (len >= 8u &&
+        (vibeos_uaccess_copy(head, (const void *)(uintptr_t)buf, 8u) != 0 ||
+         vibeos_uaccess_copy(&tail, (const void *)(uintptr_t)(buf + len - 1u), 1u) != 0)) {
+        return -VIBEOS_EFAULT;
+    }
+    if (len >= 8u && head[0] == 0 && tail != 0) {
         uint64_t a = 0ull, b = 0ull;
+        uint8_t again[8];
         uint32_t k;
         for (k = 0; k < 8u; k++) {
-            a |= (uint64_t)(uint8_t)p[k] << (k * 8u);
+            a |= (uint64_t)head[k] << (k * 8u);
+        }
+        /* Read a second time, from the user's page: a difference is the page
+         * moving under the kernel, which is the question this asks. */
+        if (vibeos_uaccess_copy(again, (const void *)(uintptr_t)buf, 8u) != 0) {
+            return -VIBEOS_EFAULT;
         }
         for (k = 0; k < 8u; k++) {
-            b |= (uint64_t)(uint8_t)p[k] << (k * 8u);
+            b |= (uint64_t)again[k] << (k * 8u);
         }
         g_ring3_write_nul++;
         vibeos_x86_64_serial_lock();
@@ -352,7 +368,7 @@ static long hw_sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
         vibeos_x86_64_serial_puts(" cr3=0x");
         vibeos_x86_64_serial_print_hex(hw_read_cr3());
         vibeos_x86_64_serial_puts(" tail=0x");
-        vibeos_x86_64_serial_print_hex((uint64_t)(uint8_t)p[len - 1u]);
+        vibeos_x86_64_serial_print_hex((uint64_t)tail);
         /* Every copy-on-write fault this boot took on the corrupted page, in
          * the same critical section as the line above: the two are one fact,
          * and a diagnostic split across calls comes back interleaved from
@@ -383,15 +399,32 @@ static long hw_sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
 
     /* User output goes to both consoles: the serial line (logs, CI) and the
      * display framebuffer (what a user in front of the machine sees). */
+    /* One critical section for the whole line, as before, with the bytes copied
+     * in chunks inside it. That is safe under the console lock: a copy that
+     * faults resumes at its recovery point before the trap handler prints
+     * anything, so the fault path never asks for the lock this core holds. */
     vibeos_x86_64_serial_lock();
     vibeos_x86_64_serial_puts("[HW][SYS] write(ring3): ");
-    for (i = 0; i < len; i++) {
-        char c = p[i];
-        if (c == '\n') {
-            vibeos_x86_64_serial_putc('\r');
+    for (i = 0; i < len; ) {
+        char chunk[128];
+        uint64_t n = len - i, k;
+        if (n > sizeof(chunk)) {
+            n = sizeof(chunk);
         }
-        vibeos_x86_64_serial_putc(c);
-        hw_console_echo(c);
+        if (vibeos_uaccess_copy(chunk, (const void *)(uintptr_t)(buf + i), n) != 0) {
+            vibeos_x86_64_serial_puts("\n");
+            vibeos_x86_64_serial_unlock();
+            return (i > 0u) ? (long)i : -VIBEOS_EFAULT;
+        }
+        for (k = 0; k < n; k++) {
+            char c = chunk[k];
+            if (c == '\n') {
+                vibeos_x86_64_serial_putc('\r');
+            }
+            vibeos_x86_64_serial_putc(c);
+            hw_console_echo(c);
+        }
+        i += n;
     }
     vibeos_x86_64_serial_unlock();
     return (long)len;
@@ -401,7 +434,6 @@ static long hw_sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
  * blocks (BLOCKED + wait_input) until the keyboard IRQ enqueues input and wakes
  * us. The cli window makes the check-and-block race-free against the IRQ. */
 static long hw_sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
-    uint8_t *dst = (uint8_t *)(uintptr_t)buf;
 
     if (len == 0u) {
         return 0;
@@ -424,15 +456,59 @@ static long hw_sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
         if (f->net_sock >= 0) {
             return hw_net_recv(f, buf, len);
         }
+        /* Through a kernel buffer, then vibeos_uaccess_copy (M-051). The
+         * filesystem used to copy straight into the user's buffer: the dispatcher checks the
+         * range before the handler runs, and a sibling thread's munmap between
+         * that check and the driver's memcpy faulted in ring 0, outside the one
+         * instruction that can recover - a panic any threaded program could
+         * cause. The same shape M-040 closed in write().
+         *
+         * A page, not a small stack buffer: the FAT reader walks the cluster
+         * chain from the start on every call, so small chunks make a large read
+         * quadratic, and a kernel stack here is 8 KiB or less. If no page is
+         * free the read still works, 512 bytes at a time. */
         {
             vibeos_fs_node_t node;
+            uint8_t small[512];
+            uint8_t *bounce = (uint8_t *)hw_alloc_page();
+            uint32_t chunk = bounce ? 4096u : (uint32_t)sizeof(small);
+            uint64_t done = 0;
+
+            if (!bounce) {
+                bounce = small;
+            }
             node.id = f->cluster;
             node.size = f->size;
             node.is_dir = f->isdir;
-            n = vibeos_fs_read_at(&g_rootfs, &node, f->pos, dst, (uint32_t)len);
-        }
-        if (n > 0) {
-            f->pos += (uint64_t)n;
+            n = 0;
+            while (done < len) {
+                uint64_t want = len - done;
+                long got;
+
+                if (want > chunk) {
+                    want = chunk;
+                }
+                got = vibeos_fs_read_at(&g_rootfs, &node, f->pos, bounce, (uint32_t)want);
+                if (got <= 0) {
+                    n = (done > 0u) ? 0 : got;   /* an error only if nothing was read */
+                    break;
+                }
+                if (vibeos_uaccess_copy((void *)(uintptr_t)(buf + done), bounce, (uint64_t)got) != 0) {
+                    n = (done > 0u) ? 0 : -VIBEOS_EFAULT;
+                    break;
+                }
+                done += (uint64_t)got;
+                f->pos += (uint64_t)got;
+                if ((uint64_t)got < want) {
+                    break;   /* end of file */
+                }
+            }
+            if (bounce != small) {
+                hw_free_page_why(bounce, "read() bounce buffer");
+            }
+            if (done > 0u) {
+                return (long)done;
+            }
         }
         return n;
     }
@@ -462,7 +538,7 @@ static long hw_sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
                     /* The line waits in this loop for keystrokes; the buffer
                      * can be unmapped under it (H-010). */
                     uint8_t ch = (uint8_t)c;
-                    if (vibeos_uaccess_copy(dst + copied, &ch, 1u) != 0) {
+                    if (vibeos_uaccess_copy((void *)(uintptr_t)(buf + copied), &ch, 1u) != 0) {
                         __asm__ __volatile__("sti");
                         return copied > 0u ? (long)copied : -VIBEOS_EFAULT;
                     }
@@ -632,7 +708,6 @@ static long hw_sys_lseek(uint64_t fd, uint64_t off, uint64_t whence) {
  * fd was opened on, so user space can list a directory. */
 static long hw_sys_getdents64(uint64_t fd, uint64_t buf, uint64_t len) {
     hw_fd_t *f = hw_fd_get(fd);
-    uint8_t *out = (uint8_t *)(uintptr_t)buf;
     uint64_t used = 0;
     uint32_t records = 0;
 
@@ -667,7 +742,11 @@ static long hw_sys_getdents64(uint64_t fd, uint64_t buf, uint64_t len) {
             break;
         }
         {
-            uint8_t *rec = out + used;
+            /* Built here and copied out whole (M-052): filling the user's
+             * buffer byte by byte faulted in ring 0 if a sibling unmapped it
+             * after the range check. A record is at most 19 + 15 + 1 bytes
+             * rounded to 8. */
+            uint8_t rec[48];
             int k;
             for (k = 0; k < reclen; k++) {
                 rec[k] = 0;
@@ -677,6 +756,9 @@ static long hw_sys_getdents64(uint64_t fd, uint64_t buf, uint64_t len) {
             rec[18] = is_dir ? 4u : 8u; /* DT_DIR / DT_REG */
             for (k = 0; k < n; k++) {
                 rec[19 + k] = (uint8_t)name[k];
+            }
+            if (vibeos_uaccess_copy((void *)(uintptr_t)(buf + used), rec, reclen) != 0) {
+                return (used > 0u) ? (long)used : -VIBEOS_EFAULT;
             }
         }
         used += reclen;
@@ -703,16 +785,16 @@ static long hw_sys_mkdir(uint64_t path_uptr) {
     return (vibeos_fs_mkdir(&g_rootfs, path) == 0) ? 0 : -VIBEOS_EIO;
 }
 
-static void hw_stat_wr64(uint64_t base, uint32_t off, uint64_t v) {
-    uint8_t *p = (uint8_t *)(uintptr_t)(base + off);
+static void hw_stat_wr64(uint8_t *base, uint32_t off, uint64_t v) {
+    uint8_t *p = base + off;
     uint32_t i;
     for (i = 0; i < 8u; i++) {
         p[i] = (uint8_t)(v >> (8u * i));
     }
 }
 
-static void hw_stat_wr32(uint64_t base, uint32_t off, uint32_t v) {
-    uint8_t *p = (uint8_t *)(uintptr_t)(base + off);
+static void hw_stat_wr32(uint8_t *base, uint32_t off, uint32_t v) {
+    uint8_t *p = base + off;
     uint32_t i;
     for (i = 0; i < 4u; i++) {
         p[i] = (uint8_t)(v >> (8u * i));
@@ -727,7 +809,7 @@ static void hw_stat_wr32(uint64_t base, uint32_t off, uint32_t v) {
  * program, doing something that made sense given what it was told. */
 static long hw_write_stat(uint64_t ubuf, uint32_t mode, uint64_t size, uint64_t ino) {
     uint8_t kbuf[STAT_SIZE];
-    uint64_t kbase = (uint64_t)(uintptr_t)kbuf;
+    uint8_t *kbase = kbuf;
     uint32_t i;
 
     /* Assemble the whole struct in the kernel and copy it out once. Filling the

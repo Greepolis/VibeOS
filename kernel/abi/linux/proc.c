@@ -1299,7 +1299,10 @@ static long hw_sys_prlimit64(uint64_t resource, uint64_t new_uptr, uint64_t old_
         return 0;
     }
     {
-        uint64_t *rl = (uint64_t *)(uintptr_t)old_uptr;
+        /* Filled here and copied out (M-052), not written into the user's
+         * struct directly: a sibling's munmap after the range check made that
+         * store fault in ring 0. */
+        uint64_t rl[2];
         switch (resource) {
             case 3: /* RLIMIT_STACK */
                 rl[0] = (uint64_t)VIBEOS_HW_USER_STACK_PAGES * 4096ull;
@@ -1313,6 +1316,9 @@ static long hw_sys_prlimit64(uint64_t resource, uint64_t new_uptr, uint64_t old_
                 rl[0] = 0xFFFFFFFFFFFFFFFFull;   /* RLIM64_INFINITY */
                 rl[1] = rl[0];
                 break;
+        }
+        if (vibeos_uaccess_copy((void *)(uintptr_t)old_uptr, rl, sizeof(rl)) != 0) {
+            return -VIBEOS_EFAULT;
         }
     }
     return 0;

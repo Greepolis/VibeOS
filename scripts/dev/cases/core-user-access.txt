@@ -1,0 +1,41 @@
+# check-user-access.py must go red when a Linux ABI handler touches user memory
+# other than through the fault-safe copy (M-050..M-052).
+#
+# The race these guard against - a sibling thread's munmap between the
+# dispatcher's range check and the handler's access - does not reproduce on
+# demand, so the check is the gate: it holds the mechanism, and these cases hold
+# the check. Each puts back one of the shapes the review found.
+#
+#  1. accept()'s address written through a raw pointer again (net.c);
+#  2. read() of a file handing the user's buffer to the filesystem again (fs.c);
+#  3. uname's fields written into the user's buffer directly (misc.c).
+#
+# Case 1 is in net.c, case 2 in fs.c, case 3 in misc.c; run the file once against
+# each - the cases whose anchor is elsewhere are skipped.
+# Target source: kernel/abi/linux/net.c, kernel/abi/linux/fs.c, kernel/abi/linux/misc.c
+# Run: SABOTAGE_VERIFY="python3 scripts/dev/check-user-access.py" python3 scripts/dev/sabotage.py <one of them> scripts/dev/cases/core-user-access.txt
+
+### a socket address is written through a raw pointer
+--- old
+    return vibeos_uaccess_copy((void *)(uintptr_t)uptr, p, sizeof(p)) == 0 ? 0 : -1;
++++ new
+    {
+        uint8_t *u = (uint8_t *)(uintptr_t)uptr;
+        for (k = 0; k < 16; k++) {
+            u[k] = p[k];
+        }
+    }
+    return 0;
+
+### read() hands the user's buffer to the filesystem
+--- old
+                got = vibeos_fs_read_at(&g_rootfs, &node, f->pos, bounce, (uint32_t)want);
++++ new
+                got = vibeos_fs_read_at(&g_rootfs, &node, f->pos,
+                                        (uint8_t *)(uintptr_t)(buf + done), (uint32_t)want);
+
+### uname writes the user's buffer directly
+--- old
+        char *dst = out + f * 65u;
++++ new
+        char *dst = (char *)(uintptr_t)(buf + (uint64_t)f * 65u);
