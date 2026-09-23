@@ -1,7 +1,8 @@
 # C7 - the registries the next refactor needs
 
-Status, 2026-09-23: **in progress - steps 1, 2 and 3a of 4 done** (the registry,
-proved on the input devices; the network interface; the disk drivers).
+Status, 2026-09-23: **in progress - steps 1, 2 and 3 of 4 done** (the registry,
+proved on the input devices; the network interface; the disk drivers and the
+registered filesystem).
 
 The plan (`docs/core/phases.md`): character, input, network and display devices
 register the way block devices do, `check-blast-radius.py` reports **1** for
@@ -182,8 +183,50 @@ boot, every case red:
   of saying so. Recorded as what it is, like case 1: the gate goes red, the
   kernel does not explain itself.
 
-## Next
+## Step 3b: the registered filesystem, without its init call
 
-3b. **Filesystems**: the registered FAT driver without its init call.
+FAT had a registry - `vibeos_storage_register` - and still cost four files:
+`io_bringup.c` called a register function by name, `arch_x86_64.h` declared it
+beside an ops accessor and two exported function pointers (the probe and the
+formatter, for the I4c exercise), and `arch_hw.c` declared the boot-volume mount
+`extern`. Now the driver declares itself with `VIBEOS_FS_DRIVER` into a linker
+section of its own; `arch_hw.c` registers whatever is there, once, at boot,
+before anything is mounted; and every caller reaches it through the table -
+`vibeos_storage_driver(name)` for the two that choose a filesystem rather than
+scan for one (the boot volume, which UEFI requires to be FAT, and the exercise
+that formats one), the scan for everything else. The storage core still takes
+registrations rather than walking the section, because PE/COFF has no
+`__start_`/`__stop_` symbols and the Windows job builds that core.
+
+**Filesystem (registered): 4 -> 1.** "Filesystem (direct)" - ext2, NTFS, exFAT
+and ISO9660, compiled into `storage.c`'s probe table - is still 4.
+
+Proved by a host test the registry never had (`test_storage_driver_registry`:
+whole-name lookup, a driver with no mount refused, reset) with two cases in
+`storage.txt`, and on the boot by `io-device-fs.txt`: the driver not declaring
+itself is red as a wedge, like the other ways of losing the boot volume (a task
+is open for making that say so); a mount that ignores the volume it is given is
+red by name, `format:FAILED:_also_on_the_root` - after two fixes, below.
+
+### What the sabotage found: a check that had been blind for seventeen days
+
+The second case went NOT RED, and the reason was two defects stacked.
+
+1. **The exercise could not see it.** It formats a scratch volume, mounts it at
+   `/vol1`, writes a file and reads it back through the resolver - which proves
+   `/vol1` reaches *the scratch mount* and that the mount round-trips. A mount of
+   the boot volume does both, so the file went onto the disk the machine runs
+   from and came back intact. It now also checks that the file is *not* visible
+   at `/`, and says `FAILED: also on the root`.
+2. **The gate could not see that.** Instrumented, the sabotaged boot printed
+   `result=FAILED: also on the root` and the gate still passed: the assertion was
+   `"result=OK" not in text`, anywhere in the log, and `[IO] LOGSINK result=OK`
+   is on every boot. Both lines date from 2026-09-06 - the FORMAT check in I4c
+   step 3, the log sink in I5b later the same day - so from then on no FORMAT
+   failure could be reported. The gate reads the FORMAT line's own verdict now.
+   The other two whole-log `..=OK` tokens the gate uses (`round_trip=OK`,
+   `tls=ok`) were checked against a log and appear on one line each.
+
+## Next
 4. **Display**: the GUI registered, with its own lock, counters, a must-be-zero
    and a case file - the "done when" of the phase.

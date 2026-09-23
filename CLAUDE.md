@@ -870,6 +870,14 @@ core logs moves every index by one, and the dump shows a neighbour instead,
 silently. Fix the range by sequence number under one lock and fetch by number;
 say when one was overwritten.
 
+**A token searched for anywhere in the log is not a check on a line.** The
+gate asked whether `"result=OK"` appeared in the serial log to decide whether
+the FAT format exercise passed. Later the same day, the log sink started printing
+`[IO] LOGSINK result=OK` on every boot, and from then on no format failure could
+reach the gate. That lasted seventeen days. A C7 sabotage found it: the exercise
+printed `result=FAILED: also on the root` and the boot passed. Read the verdict
+off the line that carries it.
+
 **`n += snprintf(buf + n, cap - n, ...)` is an overflow waiting for a long
 line.** snprintf returns what it *would* have written, so after one truncation
 `n` passes `cap` and `cap - n` wraps to an enormous size_t. Code scanning called

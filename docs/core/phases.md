@@ -566,14 +566,13 @@ parts: its own lock, its counters, a must-be-zero, and a case file. It is the
 subsystem with none of those today and the prime suspect for corrupting another
 process's memory, which is the whole argument in miniature.
 
-**In progress (2026-09-23): steps 1, 2 and 3a of 4 done.** A driver is a descriptor in its
+**In progress (2026-09-23): steps 1, 2 and 3 of 4 done.** A driver is a descriptor in its
 own file, collected from a linker section (`include/vibeos/device.h`,
 `kernel/io/device.c`); the registry routes, probes, dispatches interrupts, runs
 self-tests, prints counters and serves the input class. Keyboard and mouse moved;
-**input device 4 -> 1**; virtio-net moved, **network interface 4 -> 1**; AHCI and virtio-blk moved, with interrupt vectors handed out by the registry instead of chosen by hand, **block driver 4 -> 1**. Building it found that no boot had ever exercised the
+**input device 4 -> 1**; virtio-net moved, **network interface 4 -> 1**; AHCI and virtio-blk moved, with interrupt vectors handed out by the registry instead of chosen by hand, **block driver 4 -> 1**; the FAT driver declares itself, **filesystem (registered) 4 -> 1**. Building it found that no boot had ever exercised the
 keyboard's interrupt path - nobody types in CI - so the keyboard's probe now makes
-the controller raise IRQ1 and the gate asserts it arrived. Next: the FAT
-driver without its init call, then the display. See `implementation_progress/core_c7_devices.md`.
+the controller raise IRQ1 and the gate asserts it arrived. Next: the display. See `implementation_progress/core_c7_devices.md`.
 
 ---
 
