@@ -1,7 +1,7 @@
 # C7 - the registries the next refactor needs
 
-Status, 2026-09-23: **in progress - step 1 of 4 done** (the registry, proved on
-the input devices).
+Status, 2026-09-23: **in progress - steps 1 and 2 of 4 done** (the registry, proved on
+the input devices; the network interface).
 
 The plan (`docs/core/phases.md`): character, input, network and display devices
 register the way block devices do, `check-blast-radius.py` reports **1** for
@@ -95,19 +95,36 @@ section that loses its entries is named either way.
   and to nobody on an undeclared one; self-tests under the lock and reports
   outside it, for absent devices too; the input class in table order, the pointer
   only from a present device; report lines whole and newline-terminated.
-- `scripts/dev/cases/io-device.txt` (8 cases, host): all red by name.
+- `scripts/dev/cases/io-device.txt` (10 cases, host, the last two from step 2): all red by name.
 - `scripts/dev/cases/io-device-boot.txt` (3 cases, boot): an empty table (red as
   a wedge: with no keyboard the boot's own script is never typed, and the boot
   stops before the counters that would name it); no wake; no routing.
 - `core-observability-modules.txt`: the three mouse cases, re-pointed at the
   driver, red by name.
 
+## Step 2: the network interface
+
+A `NET` class (`vibeos_net_ops_t`: `mac`, `send`, `recv`) and
+`vibeos_net_device()`, which hands the stack the first *present* network device
+with every operation - not one whose probe failed (no queues: every frame
+swallowed) and not one without `recv`. virtio-net's init is its probe, and
+`hw_net_bringup` asks the registry for the result instead of naming the driver.
+
+**Network interface: 4 -> 1.** What it had been: `arch_hw.c` declared six of the
+driver's functions and called four; `kmain.c` printed its timeout count through a
+weak default; and two accessors - the transmit/receive frame counts and `ready` -
+were declared and called by nobody. The frame counts are on the driver's own
+`[VNET]` line now (a boot sends about ten and receives about nine), next to
+`net_tx_timeouts`, which left kmain's `[IO] WAITS` line; the gate reads each
+where it is and still calls either one missing `io_wait_counters_missing`.
+
+Proved by the host test (a failed or incomplete network device is never handed
+out; `io-device.txt` cases 9-10) and on the boot (`io-device-net.txt`: the
+timeout leaving the report line is `io_wait_counters_missing`; a device reported
+absent takes the lease and the TCP round trip down with it, by name).
+
 ## Next
 
-2. **Network**: a `NET` class (`mac`, `send`, `recv`), virtio-net's init as its
-   probe, and `hw_net_bringup` taking the first present network device.
-   `net_tx_timeouts` sits in kmain's `[IO] WAITS` line, where the gate expects it
-   beside `blk_timeouts`; moving it moves that pattern too.
 3. **Block and filesystems**: AHCI and virtio-blk onto descriptors (their
    interrupts are PCI lines, not legacy ones - the descriptor needs a way to say
    so), and the registered FAT driver without its init call.
