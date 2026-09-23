@@ -29,10 +29,12 @@ reached through a function pointer does not. Both are stated rather than worked
 around - a tool that guessed would produce the confidently wrong answer this
 project distrusts, and every symbol here is named directly today.
 
-It also cannot tell a *necessary* edit from an incidental one. `serial.c` names
-a GUI symbol because the console draws to the framebuffer, which is a real
-dependency and not a registration failure. The number's job is to move when the
-structure changes, not to be a verdict.
+It also cannot tell a *necessary* edit from an incidental one. `serial.c` used
+to name a GUI symbol because the console draws to the framebuffer, and this file
+called that a real dependency rather than a registration failure. C7 showed it
+was both: the dependency is on *a display*, and the console now writes through
+the registry's display class without naming which. The number's job is to move
+when the structure changes, not to be a verdict.
 
 ## What the first run found
 
@@ -166,9 +168,17 @@ POINTS = {
         "the thing it measures. A stats registration seam would take this row "
         "back to 2 and take the next thirty counters with it."),
     "display": (
-        "kernel/arch/x86_64/gui.c", r"vibeos_x86_64_gui_[A-Za-z0-9_]+", 3,
-        "no registry; arch_hw.c and serial.c both name it. The serial one is "
-        "a real dependency - the console draws to the framebuffer."),
+        "kernel/io/gui.c", r"vibeos_x86_64_gui_[A-Za-z0-9_]+|vibeos_gui_[A-Za-z0-9_]+", 1,
+        "**1 since C7 step 4**: the GUI is a DISPLAY-class descriptor in "
+        "kernel/io, with its own header, lock, counters and canary. The console "
+        "writes through vibeos_display_putc and the timer repaints through "
+        "vibeos_display_tick; its lock comes from the lock operations the "
+        "machine registers once for every driver, and its font is a header. "
+        "Was 3 - arch_hw.c declared five of its functions, initialised it, "
+        "repainted it, printed its counters and kept its canary, and serial.c "
+        "named its putc through a weak default. The line in the build is in "
+        "VIBEOS_KERNEL_DRIVER_SOURCES, and only there: a registered driver in "
+        "the core archive is referenced by nothing and is not linked."),
 }
 
 

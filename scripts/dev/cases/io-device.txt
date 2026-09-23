@@ -28,6 +28,8 @@
 #     its neighbour's handler, and its own waits for a timeout;
 # 13. a device on a legacy line answers on the vector it was handed and does
 #     not use: a stray becomes a keyboard read of port 0x60.
+# 14. a display with no repaint is handed to the console (step 4): the text
+#     would reach its grid and never the screen.
 #
 # Target source: kernel/io/device.c
 # Run: python3 scripts/dev/sabotage.py kernel/io/device.c scripts/dev/cases/io-device.txt
@@ -125,3 +127,9 @@
     if (i >= g_count || !g_table[i]->irq || g_table[i]->isa_irq >= 0) {
 +++ new
     if (i >= g_count || !g_table[i]->irq) {
+
+### a display with no repaint is handed out
+--- old
+        if (op && op->putc && op->tick) {
++++ new
+        if (op && op->putc) {

@@ -104,6 +104,23 @@ set(VIBEOS_TLS_SOURCES
     user/net/tls_adapter.c
 )
 
+# Drivers that register themselves (VIBEOS_DEVICE) and are portable enough to
+# be host-tested. Two lists would be wrong in opposite ways:
+#
+# - in VIBEOS_KERNEL_CORE_SOURCES alone they reach the image through a static
+#   archive, and an archive member is linked only when something references it.
+#   A driver that registers is referenced by nothing - that is the point of the
+#   registry - so the linker leaves it out, silently. The GUI did exactly that
+#   the day it moved to kernel/io (C7): the boot came up with five devices, the
+#   text console took the framebuffer, and only gui_counters_missing said why;
+# - in VIBEOS_ARCH_X86_64_SOURCES alone the host tests cannot link them.
+#
+# So both: the host library links them for the tests, and the image compiles
+# them directly, where every object is linked whether or not it is named.
+set(VIBEOS_KERNEL_DRIVER_SOURCES
+    kernel/io/gui.c
+)
+
 # The freestanding half of the kernel image: hardware bring-up that host tests
 # never link. Kept here for the same reason as the lists above - it was written
 # out by hand in CMakeLists.txt, which made it a second place to remember, and
@@ -132,7 +149,6 @@ set(VIBEOS_ARCH_X86_64_SOURCES
     kernel/arch/x86_64/keyboard.c
     kernel/arch/x86_64/fb.c
     kernel/arch/x86_64/mouse.c
-    kernel/arch/x86_64/gui.c
 )
 
 # The receive path, as the fuzzer must link it. net_policy.c belongs here

@@ -1997,9 +1997,10 @@ def main():
             # green. The keyboard's probe now makes the controller raise IRQ1;
             # irq_proved says it arrived, input_irq_wakes that the dispatch
             # woke readers because of it. registered counts the drivers the
-            # linker collected: keyboard, mouse, virtio-net, AHCI and
-            # virtio-blk are always built, so fewer than five is a section that
-            # lost its entries. stray_vectors is an interrupt on a registry
+            # linker collected: keyboard, mouse, virtio-net, AHCI, virtio-blk
+            # and the GUI are always built, so fewer than six is a driver that
+            # never reached the image - which is what happened to the GUI the
+            # day it moved into the core archive, where nothing referenced it. stray_vectors is an interrupt on a registry
             # vector no device owns - a driver routing its line somewhere it
             # was not given, acknowledged and otherwise forgotten.
             kp = re.search(r"\[KBD\] .* irq_proved=0x([0-9a-f]{16})", text)
@@ -2013,7 +2014,7 @@ def main():
             if dv is None:
                 problems.append("device_counters_missing")
             else:
-                if int(dv.group(1), 16) < 5:
+                if int(dv.group(1), 16) < 6:
                     problems.append("device_table_short=%d" % int(dv.group(1), 16))
                 if int(dv.group(2), 16) == 0:
                     problems.append("input_irq_wake_unproven")
@@ -2587,6 +2588,16 @@ def main():
             # checked when a desktop came up at all, since a build without a
             # framebuffer is not a failing one.
             gui = re.search(r"GUI_STATS frames=0x([0-9a-f]+) termchars=0x([0-9a-f]+)", text)
+            # A framebuffer the desktop did not take. Every check below is
+            # conditional on the desktop having come up, so until C7 a GUI
+            # that refused - or was never linked, which is what happened the
+            # day it moved into the core archive - passed the gate with the
+            # text console standing in for it. The GUI names its reason in
+            # its own report now, and that is what the failure carries.
+            if "[FB] framebuffer console ready" in text:
+                why = re.search(r"GUI_STATS [^\n]* init=([^\r\n]*)", text)
+                problems.append("gui_refused:" + (why.group(1).strip().replace(" ", "_")
+                                                  if why else "not_registered"))
             if "[GUI] desktop up" in text:
                 if gui is None:
                     problems.append("gui_reported_nothing")
@@ -2608,6 +2619,36 @@ def main():
             guard = re.search(r"\[GUI\] MUSTBEZERO guard_broken=0x([0-9a-f]+)", text)
             if guard is not None and int(guard.group(1), 16) != 0:
                 problems.append("gui_guard_broken=%d" % int(guard.group(1), 16))
+
+            # The GUI as a registered display (C7): its own report, from the
+            # device registry, on every boot whether or not a desktop came up.
+            # term_overrun is a grid write the GUI refused because it fell
+            # outside the grid - which before its lock existed was two cores
+            # in putc writing a row past the end of the array, silently.
+            # guard_checks says the canary above is examined on the repaint
+            # and not only at the end: a check that never runs reads as zero.
+            gz = re.search(r"\[GUI\] MUSTBEZERO guard_broken=0x([0-9a-f]{16}) "
+                           r"MUSTBEZERO term_overrun=0x([0-9a-f]{16}) "
+                           r"guard_checks=0x([0-9a-f]{16})", text)
+            if gz is None:
+                problems.append("gui_counters_missing")
+            else:
+                if int(gz.group(2), 16) != 0:
+                    problems.append("gui_term_overrun=%d" % int(gz.group(2), 16))
+                if "[GUI] desktop up" in text and int(gz.group(3), 16) == 0:
+                    problems.append("gui_guard_never_checked")
+            # The back buffer's frames, asked of the frame layer at the end of
+            # the boot. Printed as must-be-zero since the argv investigation
+            # and asserted by nobody: guard_broken led the line, and
+            # check-mustbezero-asserted.py reads only the first name after the
+            # word. Moving guard_broken to the GUI's own line exposed it.
+            bb = re.search(r"\[GUI\] MUSTBEZERO backbuf_shared=0x([0-9a-f]{16}) "
+                           r"MUSTBEZERO backbuf_lost=0x([0-9a-f]{16})", text)
+            if bb is not None:
+                if int(bb.group(1), 16) != 0:
+                    problems.append("gui_backbuf_shared=%d" % int(bb.group(1), 16))
+                if int(bb.group(2), 16) != 0:
+                    problems.append("gui_backbuf_lost=%d" % int(bb.group(2), 16))
 
             # A position-independent executable is placed by the loader, not
             # by the file. Checking argv as well as the greeting is what

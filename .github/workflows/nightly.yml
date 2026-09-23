@@ -309,6 +309,61 @@ jobs:
             ./build-asan/vibeos_diag_torture "$s" 200000
           done
 
+  gui-torture:
+    name: Graphical Shell Torture (model + ThreadSanitizer)
+    # module: io
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build build-essential
+
+      # Two builds, because the two sanitizers cannot share one: address and
+      # undefined for the single-threaded model, where a write outside a
+      # buffer is the defect being looked for; thread for the writers and the
+      # repaints, where a race is reported whether or not it happened to
+      # corrupt anything on this run. The GUI had no lock before C7 and two of
+      # its three callers run on any core.
+      - name: Build (sanitized)
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DVIBEOS_BUILD_TESTS=ON \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g"
+          cmake --build build-asan --parallel --target vibeos_gui_torture
+          cmake -S . -B build-tsan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DVIBEOS_BUILD_TESTS=ON \
+            -DCMAKE_C_FLAGS="-fsanitize=thread -fno-omit-frame-pointer -g"
+          cmake --build build-tsan --parallel --target vibeos_gui_torture
+
+      - name: Torture the terminal and the geometry (200 seeds, ASan+UBSan)
+        run: |
+          set -uo pipefail
+          fails=0
+          for s in $(seq 1 200); do
+            if ! ./build-asan/vibeos_gui_torture "$s" 2000 0 > /tmp/gt.log 2>&1; then
+              fails=$((fails + 1))
+              echo "::group::seed $s"
+              cat /tmp/gt.log
+              echo "::endgroup::"
+            fi
+          done
+          echo "failing seeds: $fails of 200"
+          test "$fails" -eq 0
+
+      - name: Torture the lock (threads, ThreadSanitizer)
+        run: |
+          set -euo pipefail
+          for s in 1 3 7 11 19; do
+            TSAN_OPTIONS="halt_on_error=1" ./build-tsan/vibeos_gui_torture "$s" 50 8
+          done
+
   memory-manager:
     name: Memory Manager Torture (model + sanitizers)
     # module: mm

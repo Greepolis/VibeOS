@@ -1,0 +1,67 @@
+# C7 step 4: the GUI against the torture's model and under real threads
+# (tests/kernel/gui_torture.c).
+#
+#  1. the GUI has no lock - its state before C7. The single-threaded phase
+#     cannot see this (nothing is concurrent there), so it is the thread
+#     phase's case: two writers pass `row < ROWS` together and the counters
+#     lose increments. Expect "N characters sent, M counted".
+#     The first version of this case removed only the lock in putc and left
+#     the unlock; it went red on "released unheld" in the single-threaded
+#     phase, which proved the pairing check and not the threads. Removing
+#     both is the real shape;
+#  2. the pointer fragment, restored: after the text is repainted the old
+#     pointer position is forgotten, so a pointer out on the desktop is never
+#     erased. Expect "screen differs from the composition" - the torture found
+#     this on its first run, in code that predates C7;
+#  3. the pointer is not redrawn after the text is: the window blit erases a
+#     pointer inside it. Expect "the pointer is not on the screen" - the check
+#     added because "the screen is the composition except under the pointer" is
+#     also true of a pointer that is not there;
+#  4. a scroll is not counted: expect the model's scrolls to disagree.
+#
+# Target source: kernel/io/gui.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-gui-torture.sh" python3 scripts/dev/sabotage.py kernel/io/gui.c scripts/dev/cases/io-gui-torture.txt
+
+### the GUI has no lock
+--- old
+static int gui_lock(void) {
+    return vibeos_dev_lock(&g_lock) == 0;
+}
+
+static void gui_unlock(void) {
+    vibeos_dev_unlock(&g_lock);
+}
++++ new
+static int gui_lock(void) {
+    (void)&g_lock;
+    return 1;
+}
+
+static void gui_unlock(void) {
+}
+
+### the pointer fragment, restored
+--- old
+    if (took) {
+        compose_terminal(g_snap);
+        blit_rect(g_win_x, g_win_y, g_win_w, g_win_h);
+    }
++++ new
+    if (took) {
+        compose_terminal(g_snap);
+        blit_rect(g_win_x, g_win_y, g_win_w, g_win_h);
+        g_last_cx = -1;
+    }
+
+### the pointer is not redrawn after the text is
+--- old
+        (took || cx != g_last_cx || cy != g_last_cy)) {
++++ new
+        (cx != g_last_cx || cy != g_last_cy)) {
+
+### a scroll is not counted
+--- old
+    g_term_col = 0;
+    g_stats.scrolls++;
++++ new
+    g_term_col = 0;

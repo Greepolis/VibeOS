@@ -132,10 +132,13 @@ do_tests() {
     # where the seeds get deep enough to matter, but a change that breaks the
     # memory manager outright should fail on the machine that made it.
     "./$d/vibeos_mm_torture" 1 2000 >/dev/null 2>&1 || t=1
+    # The GUI's too (C7): the thread phase is the only thing that can see its
+    # lock go missing, short of the nightly's ThreadSanitizer.
+    "./$d/vibeos_gui_torture" 1 300 4 >/dev/null 2>&1 || t=1
     if [ "$k" -eq 0 ] && [ "$b" -eq 0 ] && [ "$t" -eq 0 ]; then
         echo "host-tests=pass"
     else
-        echo "host-tests=FAIL kernel=$k bootloader=$b mm-torture=$t"
+        echo "host-tests=FAIL kernel=$k bootloader=$b torture=$t"
     fi
 }
 

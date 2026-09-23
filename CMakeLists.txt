@@ -36,7 +36,8 @@ set(VIBEOS_BUILD_TYPE "debug" CACHE STRING "Build type: debug, release, hardened
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/core_sources.cmake)
 
-add_library(vibeos_kernel_core STATIC ${VIBEOS_KERNEL_CORE_SOURCES})
+add_library(vibeos_kernel_core STATIC ${VIBEOS_KERNEL_CORE_SOURCES}
+    ${VIBEOS_KERNEL_DRIVER_SOURCES})
 
 target_include_directories(vibeos_kernel_core
     PUBLIC
@@ -187,6 +188,7 @@ if(VIBEOS_BUILD_TESTS)
         tests/kernel/klog_tests.c
         tests/kernel/crash_tests.c
         tests/kernel/device_tests.c
+        tests/kernel/gui_tests.c
         tests/kernel/runq_tests.c
         tests/kernel/lifetime_tests.c
         tests/kernel/loader_tests.c
@@ -229,6 +231,20 @@ if(VIBEOS_BUILD_TESTS)
     target_include_directories(vibeos_diag_torture PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     add_test(NAME vibeos-diag-torture COMMAND vibeos_diag_torture 1 4000)
 
+    # The graphical shell against a model of its terminal, with every buffer it
+    # is given fenced, and then under real threads. The threads are the point:
+    # before C7 the GUI had no lock and two of its callers ran on any core. Not
+    # on Windows, where the tests are built with no pthreads to hand; the
+    # single-threaded model runs everywhere.
+    add_executable(vibeos_gui_torture tests/kernel/gui_torture.c)
+    target_link_libraries(vibeos_gui_torture PRIVATE vibeos_kernel_core)
+    target_include_directories(vibeos_gui_torture PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    if(NOT WIN32)
+        find_package(Threads REQUIRED)
+        target_link_libraries(vibeos_gui_torture PRIVATE Threads::Threads)
+    endif()
+    add_test(NAME vibeos-gui-torture COMMAND vibeos_gui_torture 1 400 4)
+
     add_executable(vibeos_mm_torture tests/kernel/mm_torture.c)
     target_link_libraries(vibeos_mm_torture PRIVATE vibeos_kernel_core)
     target_include_directories(vibeos_mm_torture PRIVATE /include)
@@ -267,6 +283,8 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         kernel/arch/x86_64/ap_boot.S
         kernel/arch/x86_64/uaccess.S
         ${VIBEOS_ARCH_X86_64_SOURCES}
+        # Registered drivers, compiled in rather than archived - see the list.
+        ${VIBEOS_KERNEL_DRIVER_SOURCES}
         # Freestanding mem* runtime: the kernel image links -nostdlib, and some
         # compilers (notably Clang) lower struct copies to memcpy/memset calls
         # that GCC inlines. Provide the implementations so the image links on

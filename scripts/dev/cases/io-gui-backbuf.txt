@@ -1,0 +1,28 @@
+# C7 step 4: the back buffer's frames, audited by the arch at the end of the
+# boot (kernel/arch/x86_64/arch_hw.c), read by the boot gate.
+#
+# backbuf_shared and backbuf_lost were printed as must-be-zero from the argv
+# investigation onwards and asserted by nobody: guard_broken led the line, and
+# check-mustbezero-asserted.py reads only the first name after the word. Moving
+# the canary into the GUI's own report left backbuf_shared first, and the check
+# named it at once.
+#
+#  1. the audit counts a frame's own allocation as a second owner - the first
+#     version of this detector, which reported 1000 frames of 1000 shared on
+#     every boot: expect gui_backbuf_shared;
+#  2. the audit calls every allocated frame lost: expect gui_backbuf_lost.
+#
+# Target source: kernel/arch/x86_64/arch_hw.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/arch/x86_64/arch_hw.c scripts/dev/cases/io-gui-backbuf.txt
+
+### a frame's own allocation counts as a second owner
+--- old
+                if (vibeos_frame_owners(p) > 1u) {
++++ new
+                if (vibeos_frame_owners(p) > 0u) {
+
+### every allocated frame is called lost
+--- old
+                if (vibeos_frame_state(p) != VIBEOS_FRAME_ALLOCATED) {
++++ new
+                if (vibeos_frame_state(p) == VIBEOS_FRAME_ALLOCATED) {

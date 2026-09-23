@@ -182,6 +182,64 @@ int vibeos_device_irq_vector(uint32_t vector) {
     return g_table[i]->irq();
 }
 
+/* ---- locks for drivers ------------------------------------------------------ */
+
+static int (*g_dev_lock_op)(vibeos_dev_lock_t *l);
+static void (*g_dev_unlock_op)(vibeos_dev_lock_t *l);
+
+void vibeos_device_set_lock_ops(int (*lock)(vibeos_dev_lock_t *l),
+                                void (*unlock)(vibeos_dev_lock_t *l)) {
+    g_dev_lock_op = lock;
+    g_dev_unlock_op = unlock;
+}
+
+int vibeos_dev_lock(vibeos_dev_lock_t *l) {
+    return g_dev_lock_op ? g_dev_lock_op(l) : 0;
+}
+
+void vibeos_dev_unlock(vibeos_dev_lock_t *l) {
+    if (g_dev_unlock_op) {
+        g_dev_unlock_op(l);
+    }
+}
+
+/* Present, and able to do both things a display is asked for. Lock-free, like
+ * every other reader: the console writes through this from any core, and from
+ * inside interrupts. */
+static const vibeos_display_ops_t *display_ops(void) {
+    uint32_t i;
+
+    for (i = 0; i < g_count; i++) {
+        const vibeos_display_ops_t *op;
+        if (g_table[i]->cls != VIBEOS_DEV_DISPLAY || !g_present[i]) {
+            continue;
+        }
+        op = (const vibeos_display_ops_t *)g_table[i]->ops;
+        if (op && op->putc && op->tick) {
+            return op;
+        }
+    }
+    return 0;
+}
+
+int vibeos_display_present(void) {
+    return display_ops() != 0;
+}
+
+void vibeos_display_putc(char c) {
+    const vibeos_display_ops_t *op = display_ops();
+    if (op) {
+        op->putc(c);
+    }
+}
+
+void vibeos_display_tick(void) {
+    const vibeos_display_ops_t *op = display_ops();
+    if (op) {
+        op->tick();
+    }
+}
+
 void vibeos_device_report_all(vibeos_dev_write_fn out, void *ctx) {
     uint32_t i;
 

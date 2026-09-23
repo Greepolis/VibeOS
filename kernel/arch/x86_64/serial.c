@@ -3,6 +3,7 @@
  */
 
 #include "vibeos/arch_x86_64.h"
+#include "vibeos/device.h"
 
 #define VIBEOS_X86_64_COM1_BASE 0x3F8
 
@@ -63,16 +64,17 @@ int vibeos_x86_64_serial_init(void) {
     return 0;
 }
 
-/* The graphical console, when there is one. Weak so this file still links in
- * builds and tests that have no framebuffer at all. */
-__attribute__((weak)) void vibeos_x86_64_gui_putc(char c) { (void)c; }
-
 void vibeos_x86_64_serial_putc(char c) {
     /* Everything the system says on the serial line also appears in the
      * on-screen terminal, so a machine with a monitor and no serial cable
      * shows the same thing. Done here rather than at each call site: there is
-     * one console, and it should not be possible to write to half of it. */
-    vibeos_x86_64_gui_putc(c);
+     * one console, and it should not be possible to write to half of it.
+     *
+     * Whichever display is registered (C7). This named the GUI through a weak
+     * default, which resolved only because the two happened to be linked
+     * together - and with no display at all it is the registry that says so,
+     * not a stub. */
+    vibeos_display_putc(c);
 
     if (!vibeos_x86_64_serial_can_io()) {
         return;

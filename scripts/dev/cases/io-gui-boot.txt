@@ -1,0 +1,62 @@
+# C7 step 4: the GUI's report, read by the boot gate (kernel/io/gui.c).
+#
+#  1. the must-be-zero line is renamed: expect gui_counters_missing - a report
+#     line that stops being printed must not read as counters that stayed at
+#     zero;
+#  2. the canary check is never counted: expect gui_guard_never_checked - a
+#     detector that does not run reads as zero;
+#  3. every newline counts as a refused grid write: expect gui_term_overrun;
+#  4. the probe refuses: the text console takes the framebuffer and every other
+#     GUI check is conditional on the desktop being up, so this passed the gate
+#     until C7. Expect gui_refused, carrying the GUI's own reason;
+#  5. the statistics line is renamed: expect gui_reported_nothing;
+#  6. term_chars always reads zero: expect gui_terminal_empty.
+#
+# The first real run of 4 was not a sabotage: moving gui.c into the core
+# archive left it out of the image (nothing references a registered driver),
+# and the gate said gui_counters_missing with registered=5.
+#
+# Target source: kernel/io/gui.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/io/gui.c scripts/dev/cases/io-gui-boot.txt
+
+### the must-be-zero line is renamed
+--- old
+    vibeos_devline_start(&l, "[GUI] MUSTBEZERO guard_broken=");
++++ new
+    vibeos_devline_start(&l, "[GUI] MUSTBEZERO guard_brokne=");
+
+### the canary check is never counted
+--- old
+        g_stats.guard_checks++;
++++ new
+
+### every newline counts as a refused grid write
+--- old
+    if (c == '\n') {
+        g_term_col = 0;
+        g_term_row++;
++++ new
+    if (c == '\n') {
+        g_stats.term_overrun++;
+        g_term_col = 0;
+        g_term_row++;
+
+### the probe refuses
+--- old
+    return vibeos_gui_init(env->fb_base, env->fb_width, env->fb_height,
+                           env->fb_back, env->fb_back_bytes);
++++ new
+    return vibeos_gui_init(env->fb_base, env->fb_width, env->fb_height,
+                           env->fb_back, 0u);
+
+### the statistics line is renamed
+--- old
+    vibeos_devline_start(&l, "[GUI] GUI_STATS frames=");
++++ new
+    vibeos_devline_start(&l, "[GUI] GUI_STATZ frames=");
+
+### term_chars always reads zero
+--- old
+    g_stats.term_chars = n;
++++ new
+    g_stats.term_chars = 0u * n;

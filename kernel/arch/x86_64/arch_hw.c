@@ -524,16 +524,12 @@ vibeos_fsmount_t g_rootfs;
  * out of itself. */
 static int g_boot_disk_mounted;
 
-/* The desktop's back-buffer canary. See the allocation in hw_early_init: the
- * argv defect leaves every memory counter at zero, correctly, so the question
- * that had to be made answerable is whether the desktop writes past the buffer
- * it owns. Deliberately not the frame layer's poison value - if this word turns
- * up somewhere it should not, it must be unambiguous which detector put it
- * there, and this project has already read one detector's output as another's. */
-#define HW_GUI_GUARD 0xC0FFEE00C0FFEE00ull
-static uint64_t g_gui_guard;
-static uint64_t g_gui_guard_broken;
-/* The buffer itself, kept so the end-of-boot report can ask who else owns it. */
+/* The desktop's back buffer, kept so the end-of-boot report can ask who else
+ * owns its frames. The canary that used to sit here, written and checked by
+ * this file, belongs to the GUI since C7 (kernel/io/gui.c): it writes it
+ * directly after the pixels it composes into and checks it on every repaint. */
+static void *g_gui_back;
+static uint64_t g_gui_back_bytes;
 static uint64_t g_gui_back_base;
 static uint64_t g_gui_back_end;
 static uint64_t g_gui_back_shared;
@@ -558,12 +554,6 @@ static uint64_t g_cow_resolved;
 volatile uint64_t g_abi_unimplemented;
 volatile uint64_t g_abi_probes;
 volatile uint64_t g_abi_last_nr;
-extern int vibeos_x86_64_gui_init(uint64_t fb_base, uint32_t width, uint32_t height,
-                                  void *back_buffer);
-extern void vibeos_x86_64_gui_tick(void);
-extern int vibeos_x86_64_gui_active(void);
-extern uint32_t vibeos_x86_64_gui_frames(void);
-extern uint32_t vibeos_x86_64_gui_term_chars(void);
 extern int vibeos_x86_64_fb_init(uint64_t base, uint32_t width, uint32_t height);
 extern int vibeos_x86_64_fb_ready(void);
 extern void vibeos_x86_64_fb_puts(const char *s);
@@ -1253,9 +1243,10 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
              * core would just contend on the same lock. */
             if (!g_apic_mode || hw_this_cpu()->index == 0u) {
                 hw_net_pump();
-                /* Repaint the pointer. Cheap by construction: it touches only
-                 * the two small rectangles that can have changed. */
-                vibeos_x86_64_gui_tick();
+                /* Repaint the display, whichever one is registered. Cheap by
+                 * construction: the pointer's two small rectangles, and the
+                 * text window when its contents changed. */
+                vibeos_display_tick();
             }
             hw_schedule(frame); /* may rewrite the frame to switch tasks */
             /* Only when returning to ring 3: a signal frame goes on the user
@@ -5464,18 +5455,6 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
     }
     vibeos_x86_64_serial_puts("[SCHED] all user tasks retired; kernel task continues\n");
 
-    /* The graphical shell cannot be checked from a log - a log can only say a
-     * desktop was composed. What it can report is whether the pieces beneath
-     * it did work. Keep this marker independent from the compatibility stats:
-     * a compat accounting failure must not erase evidence that the GUI itself
-     * was initialized and rendered. */
-    if (vibeos_x86_64_gui_active()) {
-        vibeos_x86_64_serial_puts("[GUI] GUI_STATS frames=0x");
-        vibeos_x86_64_serial_print_hex(vibeos_x86_64_gui_frames());
-        vibeos_x86_64_serial_puts(" termchars=0x");
-        vibeos_x86_64_serial_print_hex(vibeos_x86_64_gui_term_chars());
-        vibeos_x86_64_serial_puts("\n");
-    }
     {
         vibeos_x86_64_serial_puts("[MM] COW_STATS exclusive_lost=0x");
         vibeos_x86_64_serial_print_hex(vibeos_mm_stats()->cow_exclusive_lost);
@@ -5497,19 +5476,6 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
         /* The hot paths. One critical section for the whole line: it is built
          * from ten calls that each take the console lock on their own, and a
          * line assembled from ten of those is ten critical sections. */
-        /* The desktop's canary, checked once at the end, after the GUI has been
-         * rendering for the whole boot. Counted rather than merely printed: a
-         * line nobody asserts on is decoration, and this project spent a
-         * session with a ring-3 self-test printing "wrong" into a green build. */
-        if (g_gui_guard != 0ull) {
-            const uint64_t *g = (const uint64_t *)(uintptr_t)g_gui_guard;
-            uint32_t w;
-            for (w = 0; w < 512u; w++) {
-                if (g[w] != HW_GUI_GUARD) {
-                    g_gui_guard_broken++;
-                }
-            }
-        }
         /* Does anything else own a frame the desktop is rendering into?
          *
          * This is the hypothesis the case file actually states - that the
@@ -5552,11 +5518,12 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                 }
             }
         }
-        vibeos_x86_64_serial_puts("\n[GUI] MUSTBEZERO guard_broken=0x");
-        vibeos_x86_64_serial_print_hex(g_gui_guard_broken);
-        vibeos_x86_64_serial_puts(" backbuf_shared=0x");
+        /* guard_broken used to lead this line; it is the GUI's own report now.
+         * Which left backbuf_shared first after the word, printed as a
+         * must-be-zero for a phase and asserted by nobody. */
+        vibeos_x86_64_serial_puts("\n[GUI] MUSTBEZERO backbuf_shared=0x");
         vibeos_x86_64_serial_print_hex(g_gui_back_shared);
-        vibeos_x86_64_serial_puts(" backbuf_lost=0x");
+        vibeos_x86_64_serial_puts(" MUSTBEZERO backbuf_lost=0x");
         vibeos_x86_64_serial_print_hex(g_gui_back_lost);
         vibeos_x86_64_serial_puts(" ring3_write_nul=0x");
         vibeos_x86_64_serial_print_hex(g_ring3_write_nul);
@@ -5564,8 +5531,6 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
         vibeos_x86_64_serial_print_hex(g_cow_copy_changed);
         vibeos_x86_64_serial_puts(" cow_resolved=0x");
         vibeos_x86_64_serial_print_hex(g_cow_resolved);
-        vibeos_x86_64_serial_puts(" guard_at=0x");
-        vibeos_x86_64_serial_print_hex(g_gui_guard);
         vibeos_x86_64_serial_puts("\n[NET] MUSTBEZERO sock_stale_parent=0x");
         vibeos_x86_64_serial_print_hex(g_net.sock_stale_parent);
         vibeos_x86_64_serial_puts(" sock_fd_aba=0x");
@@ -5750,10 +5715,40 @@ static void hw_fs_drivers(void) {
     }
 }
 
+/* Locks for drivers (C7): the storage is the driver's, the operations are
+ * these, registered once for all of them. hw spinlocks mask interrupts, which
+ * a driver's lock has to - a display's repaint runs from the timer - and they
+ * name their holder when a wait is too long, which is why the lock carries a
+ * name. Before this, each driver that wanted a lock had it
+ * registered here by name, which put the driver back in this file. */
+_Static_assert(sizeof(hw_lock_t) <= sizeof(((vibeos_dev_lock_t *)0)->opaque),
+               "a driver's lock storage must hold an hw_lock_t");
+
+static int hw_dev_lock(vibeos_dev_lock_t *l) {
+    hw_lock_t *h = (hw_lock_t *)(void *)l->opaque;
+
+    /* The one wait that cannot end: this CPU holds it already. owner_cpu is
+     * written only by the holder, after taking the lock, and cleared before it
+     * lets go, so only the holder can find its own number there - except in a
+     * lock nobody has taken yet, which is zeroed storage and so says "cpu 0".
+     * owner_fn is written after owner_cpu and cleared before it, and starts
+     * null, so a non-null one means the owner_cpu beside it is a holder's. */
+    if (h->locked && h->owner_fn && h->owner_cpu == (int)vibeos_x86_64_cpu_id()) {
+        return -1;
+    }
+    hw_spin_lock_named(h, l->name ? l->name : "driver");
+    return 0;
+}
+
+static void hw_dev_unlock(vibeos_dev_lock_t *l) {
+    hw_spin_unlock((hw_lock_t *)(void *)l->opaque);
+}
+
 static void hw_device_table(void) {
     uint32_t n = (uint32_t)(__stop_vibeos_devices - __start_vibeos_devices);
 
     vibeos_device_set_lock(hw_device_lock, hw_device_unlock);
+    vibeos_device_set_lock_ops(hw_dev_lock, hw_dev_unlock);
     if (vibeos_device_set_table(__start_vibeos_devices, n) != 0) {
         hw_panic("device table refused: too many drivers, or an empty entry");
     }
@@ -5870,14 +5865,14 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
          * those need completely different fixes. */
         void *back = hw_alloc_pages_contig((uint32_t)pages + 1u);
 
-        if (back) {
-            uint64_t *guard = (uint64_t *)(uintptr_t)
-                              ((uint64_t)(uintptr_t)back + pages * 4096ull);
-            uint32_t w;
-            for (w = 0; w < 512u; w++) {
-                guard[w] = HW_GUI_GUARD;
-            }
-            g_gui_guard = (uint64_t)(uintptr_t)guard;
+        /* Handed to the display's probe (C7). The extra page holds the GUI's
+         * canary, which it writes itself directly after the pixels. The
+         * identity-map limit is this file's to check: the GUI writes through
+         * the pointer it is given and cannot know what is mapped. */
+        if (back && ((uint64_t)(uintptr_t)back + (pages + 1ull) * 4096ull) <=
+                        VIBEOS_HW_IDENTITY_LIMIT) {
+            g_gui_back = back;
+            g_gui_back_bytes = (pages + 1ull) * 4096ull;
             g_gui_back_base = (uint64_t)(uintptr_t)back;
             g_gui_back_end = g_gui_back_base + pages * 4096ull;
         }
@@ -5942,29 +5937,6 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
             vibeos_x86_64_serial_unlock();
         }
 
-        if (back && ((uint64_t)(uintptr_t)back + px * 4ull) <= VIBEOS_HW_IDENTITY_LIMIT &&
-            vibeos_x86_64_gui_init(boot_info->framebuffer_base,
-                                   boot_info->framebuffer_width,
-                                   boot_info->framebuffer_height, back) == 0) {
-            vibeos_x86_64_serial_puts("[GUI] desktop up: 0x");
-            vibeos_x86_64_serial_print_hex(boot_info->framebuffer_width);
-            vibeos_x86_64_serial_puts("x0x");
-            vibeos_x86_64_serial_print_hex(boot_info->framebuffer_height);
-            vibeos_x86_64_serial_puts("\n");
-        }
-    }
-    if (boot_info && !vibeos_x86_64_gui_active() &&
-        vibeos_x86_64_fb_init(boot_info->framebuffer_base,
-                                           boot_info->framebuffer_width,
-                                           boot_info->framebuffer_height) == 0) {
-        vibeos_x86_64_serial_puts("[FB] framebuffer console ready: 0x");
-        vibeos_x86_64_serial_print_hex(boot_info->framebuffer_width);
-        vibeos_x86_64_serial_puts(" x 0x");
-        vibeos_x86_64_serial_print_hex(boot_info->framebuffer_height);
-        vibeos_x86_64_serial_puts("\n");
-        vibeos_x86_64_fb_puts("VibeOS console\n");
-    } else {
-        vibeos_x86_64_serial_puts("[FB] no framebuffer; console is serial-only\n");
     }
 
     hw_klog_init();
@@ -5977,13 +5949,40 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
      * used to be initialised by name inside the framebuffer setup above and the
      * disks just below; their probes keep the same conditions. */
     {
-        vibeos_dev_env_t env = { 0, 0, 0, 0 };
+        vibeos_dev_env_t env = { 0 };
         if (boot_info && boot_info->framebuffer_base != 0u) {
             env.fb_base = boot_info->framebuffer_base;
             env.fb_width = boot_info->framebuffer_width;
             env.fb_height = boot_info->framebuffer_height;
+            env.fb_back = g_gui_back;
+            env.fb_back_bytes = g_gui_back_bytes;
         }
         (void)vibeos_device_probe_all(&env);
+    }
+
+    /* The text console, only on a framebuffer no display took. It used to be
+     * decided before the display existed, and its "else" said "no
+     * framebuffer; console is serial-only" on every boot that had a desktop -
+     * the one line about the screen, wrong whenever there was one. Three
+     * cases, three lines. */
+    if (vibeos_display_present()) {
+        vibeos_x86_64_serial_puts("[GUI] desktop up: 0x");
+        vibeos_x86_64_serial_print_hex(boot_info->framebuffer_width);
+        vibeos_x86_64_serial_puts("x0x");
+        vibeos_x86_64_serial_print_hex(boot_info->framebuffer_height);
+        vibeos_x86_64_serial_puts("\n");
+    } else if (boot_info && boot_info->framebuffer_base != 0u &&
+               vibeos_x86_64_fb_init(boot_info->framebuffer_base,
+                                     boot_info->framebuffer_width,
+                                     boot_info->framebuffer_height) == 0) {
+        vibeos_x86_64_serial_puts("[FB] framebuffer console ready: 0x");
+        vibeos_x86_64_serial_print_hex(boot_info->framebuffer_width);
+        vibeos_x86_64_serial_puts(" x 0x");
+        vibeos_x86_64_serial_print_hex(boot_info->framebuffer_height);
+        vibeos_x86_64_serial_puts("\n");
+        vibeos_x86_64_fb_puts("VibeOS console\n");
+    } else {
+        vibeos_x86_64_serial_puts("[FB] no framebuffer; console is serial-only\n");
     }
 
     /* Real storage: find a disk, mount the FAT filesystem, and load the init

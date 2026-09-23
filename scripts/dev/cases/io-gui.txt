@@ -1,0 +1,72 @@
+# C7 step 4: the GUI as a module (kernel/io/gui.c), proved by the host test
+# (tests/kernel/gui_tests.c). The randomised model and the threads are
+# io-gui-torture.txt; the boot gate's GUI assertions are io-gui-boot.txt.
+#
+#  1. the minimum screen is not enforced: a 30-pixel-high screen is accepted.
+#     Expect the refusal-by-name test. With the clamps now comparing before
+#     they add, the fill no longer runs off the buffer - see the note below;
+#  2. the canary is never written: expect the first repaint to find all 512
+#     words broken;
+#  3. the canary is not examined on the repaint: expect guard_checks and the
+#     flipped-word test;
+#  4. the wrap on the last row writes before it scrolls - the behaviour before
+#     C7, which dropped the character: expect the wrap test, and term_overrun,
+#     because the write now lands one row past the grid and is refused;
+#  5. a lock the caller already holds is treated as taken: expect the
+#     reentrancy test - a panic printing from inside the GUI would wait on its
+#     own core;
+#  6. putc before init is accepted into the grid: expect the "ignored" test.
+#
+# Not a case, and why: reverting clip() to the old `x + w > g_w` clamp goes
+# NOT RED here, because init now refuses every geometry on which the
+# subtraction underflows. The two are defences in depth for the same defect;
+# the case that removes the first (1) is the one that can be observed. Removing
+# both reproduces the pre-C7 state, which the torture's small-screen rounds
+# would see as a fence write - recorded rather than run, since it proves the
+# old defect rather than either defence.
+#
+# Target source: kernel/io/gui.c
+# Run: python3 scripts/dev/sabotage.py kernel/io/gui.c scripts/dev/cases/io-gui.txt
+
+### the minimum screen is not enforced
+--- old
+    if (width < VIBEOS_GUI_MIN_W || height < VIBEOS_GUI_MIN_H) {
++++ new
+    if (width < 1u || height < 1u) {
+
+### the canary is never written
+--- old
+        g_guard[i] = GUI_GUARD;
++++ new
+        (void)i;
+
+### the canary is not examined on the repaint
+--- old
+    broken = guard_count_broken();
++++ new
+    broken = 0;
+    (void)guard_count_broken;
+
+### the wrap on the last row writes before it scrolls
+--- old
+            if (g_term_row >= TERM_ROWS) {
+                term_scroll();
+            }
+        }
+        term_set(g_term_row, g_term_col, c);
++++ new
+        }
+        term_set(g_term_row, g_term_col, c);
+
+### a lock the caller already holds is treated as taken
+--- old
+    return vibeos_dev_lock(&g_lock) == 0;
++++ new
+    (void)vibeos_dev_lock(&g_lock);
+    return 1;
+
+### putc before init is accepted into the grid
+--- old
+    if (!vibeos_gui_active() || c == '\r') {
++++ new
+    if (c == '\r') {
