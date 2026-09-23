@@ -300,9 +300,13 @@ registration function instead, as `vibeos_frame_set_lock` and
 `vibeos_task_view_set_source` do: it is portable, and it says who supplies
 what rather than leaving it to link order.
 
-**Definition order bites repeatedly.** This is one 5000-line C file; a helper
-used above its definition compiles as an implicit declaration and then fails
-with a confusing "static declaration follows non-static declaration".
+**Definition order bites repeatedly.** `arch_hw.c` is still one 6000-line C
+file (it was twice that before C4); a helper used above its definition compiles
+as an implicit declaration and then fails with a confusing "static declaration
+follows non-static declaration". The same goes for a variable: a torture used a
+global forty lines above its declaration, the build failed, and the stale binary
+from the previous build ran and passed - which is "a green build is not a
+build" again, one directory over.
 
 **A service that exits is not a service that crashes.** The supervisor's
 manifest had a service that exits zero and one that exits non-zero every time,
@@ -546,24 +550,30 @@ free-page poison: the page was reclaimed while still mapped here". The fix was
 one call. That is the argument for building detectors before chasing the next
 rare bug by hand.
 
-**BOOT_OK is printed after userland has finished, not before it starts.**
-`entry.s` calls `vibeos_x86_64_hw_early_init`, and despite the name that
-function runs the whole machine - descriptor tables, paging, SMP, drivers,
-filesystem, init, every service, the shell - and only then is `vibeos_kmain`
-entered to bring up the portable subsystems and print `BOOT_OK`.
+**BOOT_OK used to be printed after userland had finished, not before it
+started.** `entry.s` calls `vibeos_x86_64_hw_early_init`, and despite the name
+that function used to run the whole machine - descriptor tables, paging, SMP,
+drivers, filesystem, init, every service, the shell - and only then was
+`vibeos_kmain` entered to bring up the portable subsystems and print `BOOT_OK`.
 
-The cost of not knowing this is high and was paid in full: the boot gate waits
+The cost of not knowing this was high and was paid in full: the boot gate waits
 for `BOOT_OK`, so until it arrives the reported phase stays at the last
-*bootloader* marker. A hang anywhere in userland therefore reads as
+*bootloader* marker. A hang anywhere in userland therefore read as
 `phase=bootloader_exit_boot_services`, and a whole session went into looking
 for a firmware bug that did not exist. `phase=busybox_cat` was the same
 illusion - the guest was stuck in `ping`, several commands later.
 
-The gate now has `kernel_early_init`, `userland_running` and
-`userland_finished` phases. The ordering itself is still wrong: the portable
-kernel in `kernel/core/` is initialised after the machine has already done all
-its work on the arch layer's structures, which is also why it can be
-host-tested and yet have no runtime role.
+The order is fixed now, and this paragraph described the old one for a while
+after it was: `hw_early_init` brings up the machine and stops; `vibeos_kmain`
+prints `BOOT_OK` and *then* calls `vibeos_x86_64_hw_start_userland`, logging
+`userland_starting` and `userland_finished` around it. The host test
+`test_kmain` asserts that order, and the gate has `kernel_early_init`,
+`userland_running` and `userland_finished` phases. What is still true: most of
+what `kmain` initialises in `kernel/core/` - the process table, the scheduler
+model, the security policy - shadows structures the arch layer actually uses,
+which is why it can be host-tested and have no runtime role. The kernel log is
+the exception since C6: the arch creates it before `kmain` runs and `kmain`
+logs into it.
 
 **A thread has no reaper, so it must not be left as a zombie.** `waitpid`
 matches on `ppid`, and a thread inherits its *creator's* parent rather than
@@ -834,6 +844,38 @@ had page tables from a user task whose mapping is missing for one address. One
 line carrying the task, whether it is a user task, and its cr3 settled the first
 half in a single reproduction. A reason is not a diagnosis.
 
+**The instruments were never locked.** Moving the kernel log and the crash
+records into `kernel/diag` (C6) found that neither ring had a lock. `hw_log`
+recorded from every core and then asked the ring for "the latest" event to print
+- which, with two cores logging, is the other core's: one line printed twice, one
+never. The crash ring claimed, filled and advanced its slot in three steps. Two
+more instances of "a layer serialised by accident", and the two every other
+phase was verified *with*. A log is state with many writers like any other, and
+the day it is the evidence is the day it is least trusted to be wrong.
+
+**A sabotage that goes NOT RED is evidence too - read why before tuning it.**
+Twice in C6 the answer was not "the test is weak". "The serial sink drops one
+line in sixteen" went green because a boot hands that sink about a dozen live
+lines and the sixteenth call was a console *replay*, which the `ln=` detector
+does not number: a real blind spot, closed with its own check
+(`replay_incomplete`) rather than by moving the sabotage until it hit.
+"Leave an aborted TCP child in its listener's backlog" went green because no
+path ever aborts a queued child: the code is unreachable, and that is written
+beside it now. Tuning a sabotage until it fires teaches nothing about either.
+
+**A ring read by index while others write to it shows the wrong events.** The
+console's `log` fixed a range of ring indices and re-read them one lock at a
+time. Once the ring is full - every boot past 2,048 events - each event another
+core logs moves every index by one, and the dump shows a neighbour instead,
+silently. Fix the range by sequence number under one lock and fetch by number;
+say when one was overwritten.
+
+**`n += snprintf(buf + n, cap - n, ...)` is an overflow waiting for a long
+line.** snprintf returns what it *would* have written, so after one truncation
+`n` passes `cap` and `cap - n` wraps to an enormous size_t. Code scanning called
+it high severity in a test harness where no line came near its buffer, and it was
+right: nothing stopped the next longer one. Append through one bounded helper.
+
 
 ## Verification that exists
 
@@ -841,6 +883,13 @@ The boot gate (`scripts/qemu-cli-smoke-linux.py`) asserts state, not markers:
 DHCP lease non-zero, four cores online, no unexpected fault, a TCP round trip
 to a host echo server, the unmodified Linux binary ran, BusyBox dispatched an
 applet and did file work, the interactive shell ran, signals were delivered.
+
+It also checks the log it reads everything else from. The first check is
+`interleaved_lines`; then every live serial log line carries `ln=0x..` and every
+number up to the `[KLOG]` count must be present (`klog_line_missing`), every
+console replay must have the lines it announced (`replay_incomplete`), and a line
+a sink refused is `klog_line_lost` in the must-be-zero registry. A gate whose
+evidence can silently lose lines is asserting on a sample.
 
 It waits for `VIBEOS_SELFTEST_DONE` before driving the kernel CLI, because the
 two run concurrently and a slower build used to get its script cut short.
