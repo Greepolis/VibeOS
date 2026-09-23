@@ -37,13 +37,6 @@
 #include "vibeos/waitset.h"
 #include "vibeos/ipc_transfer.h"
 
-static void irq_handler(uint32_t irq, void *ctx) {
-    uint32_t *acc = (uint32_t *)ctx;
-    if (acc) {
-        *acc += irq;
-    }
-}
-
 typedef struct handle_hook_stats {
     uint32_t alloc_events;
     uint32_t close_events;

@@ -703,12 +703,12 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
                 char detail[96];
                 const char *which = (na < 0) ? "argv:" : "envp:";
                 const char *why = g_argv_fail_why;
-                uint32_t w = 0, k;
-                for (k = 0; which[k] && w < sizeof(detail) - 1u; k++) {
-                    detail[w++] = which[k];
+                uint32_t w = 0, ci;
+                for (ci = 0; which[ci] && w < sizeof(detail) - 1u; ci++) {
+                    detail[w++] = which[ci];
                 }
-                for (k = 0; why && why[k] && w < sizeof(detail) - 1u; k++) {
-                    detail[w++] = why[k];
+                for (ci = 0; why && why[ci] && w < sizeof(detail) - 1u; ci++) {
+                    detail[w++] = why[ci];
                 }
                 /* Who was asking, and whether they had an address space.
                  *
@@ -731,8 +731,8 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
                     const char *tag = " task=";
                     int j;
 
-                    for (k = 0; tag[k] && w < sizeof(detail) - 1u; k++) {
-                        detail[w++] = tag[k];
+                    for (ci = 0; tag[ci] && w < sizeof(detail) - 1u; ci++) {
+                        detail[w++] = tag[ci];
                     }
                     if (cur < 0 && w < sizeof(detail) - 1u) {
                         detail[w++] = '-';
@@ -746,13 +746,13 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
                     }
                     tag = (is_user > 0) ? " user" : (is_user == 0 ? " kernel"
                                                                   : " none");
-                    for (k = 0; tag[k] && w < sizeof(detail) - 1u; k++) {
-                        detail[w++] = tag[k];
+                    for (ci = 0; tag[ci] && w < sizeof(detail) - 1u; ci++) {
+                        detail[w++] = tag[ci];
                     }
                     if (is_thread > 0) {
                         tag = " thread";
-                        for (k = 0; tag[k] && w < sizeof(detail) - 1u; k++) {
-                            detail[w++] = tag[k];
+                        for (ci = 0; tag[ci] && w < sizeof(detail) - 1u; ci++) {
+                            detail[w++] = tag[ci];
                         }
                     }
                     /* And the address that was refused. A top-level entry
@@ -761,8 +761,8 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
                      * pointer looks like and is not what a paged-out stack
                      * looks like - so the address separates the two. */
                     tag = " at=";
-                    for (k = 0; tag[k] && w < sizeof(detail) - 1u; k++) {
-                        detail[w++] = tag[k];
+                    for (ci = 0; tag[ci] && w < sizeof(detail) - 1u; ci++) {
+                        detail[w++] = tag[ci];
                     }
                     for (j = 15; j >= 0; j--) {
                         if (w < sizeof(detail) - 1u) {
@@ -771,8 +771,8 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
                         }
                     }
                     tag = " poisonw=";
-                    for (k = 0; tag[k] && w < sizeof(detail) - 1u; k++) {
-                        detail[w++] = tag[k];
+                    for (ci = 0; tag[ci] && w < sizeof(detail) - 1u; ci++) {
+                        detail[w++] = tag[ci];
                     }
                     for (j = 1; j >= 0; j--) {
                         if (w < sizeof(detail) - 1u) {
@@ -781,8 +781,8 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
                         }
                     }
                     tag = " cr3=";
-                    for (k = 0; tag[k] && w < sizeof(detail) - 1u; k++) {
-                        detail[w++] = tag[k];
+                    for (ci = 0; tag[ci] && w < sizeof(detail) - 1u; ci++) {
+                        detail[w++] = tag[ci];
                     }
                     for (j = 15; j >= 0; j--) {
                         if (w < sizeof(detail) - 1u) {

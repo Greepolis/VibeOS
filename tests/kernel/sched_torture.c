@@ -110,7 +110,7 @@ static int check_pick(unsigned round, uint32_t cpu, uint64_t runnable, int got) 
     if (got < 0) {
         return fail("picked_nobody_while_work_waited", round, -1, best);
     }
-    if (got < 0 || (unsigned)got >= SLOTS) {
+    if ((unsigned)got >= SLOTS) {
         return fail("picked_out_of_range", round, got, (int)SLOTS);
     }
     if (!m_admitted[got]) {
@@ -132,9 +132,8 @@ static int check_pick(unsigned round, uint32_t cpu, uint64_t runnable, int got) 
 int main(int argc, char **argv) {
     unsigned rounds = 20000u;
     unsigned round;
-    unsigned i;
 
-    g_rng = (argc > 1) ? strtoull(argv[1], 0, 0) : 1u;
+    g_rng =(argc > 1) ? strtoull(argv[1], 0, 0) : 1u;
     if (argc > 2) {
         rounds = (unsigned)strtoul(argv[2], 0, 0);
     }

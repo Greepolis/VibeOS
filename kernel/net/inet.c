@@ -1476,21 +1476,34 @@ uint32_t vibeos_inet_release_owner_sockets(vibeos_inet_t *net, uint32_t owner_pi
 static void tcp_abort_socket(vibeos_inet_t *net, int idx) {
     vibeos_inet_socket_t *s = &net->sockets[idx];
     int i;
-    uint32_t j;
+    uint32_t j, at;
     for (i = 0; i < (int)VIBEOS_INET_MAX_SOCKETS; i++) {
         vibeos_inet_socket_t *p = &net->sockets[i];
         if (!p->used || p->state != VIBEOS_TCP_LISTEN) {
             continue;
         }
-        for (j = 0; j < p->backlog_len; j++) {
-            if (p->backlog[j] == idx) {
-                for (; j + 1u < p->backlog_len; j++) {
-                    p->backlog[j] = p->backlog[j + 1u];
-                }
-                p->backlog_len--;
-                break;
-            }
+        /* Find the child, then close the gap with a counter of its own. The
+         * shift used to reuse the search loop's counter and was correct only
+         * because a `break` followed it - one line added after the shift would
+         * have gone on searching from a position the shift had moved.
+         *
+         * Nothing reaches this today, and no test can: a child joins a backlog
+         * only on becoming ESTABLISHED, and this routine is called for
+         * SYN_RECEIVED children (H-030) and for children whose listener is gone
+         * (M-023) - neither is queued. Breaking it goes unnoticed, which was
+         * checked. It stays because it is the one place a child is given back,
+         * and the first caller that aborts a queued ESTABLISHED child (a RST
+         * before accept, say) would otherwise leave accept() a freed slot; that
+         * caller should bring the host test this loop does not have. */
+        for (at = 0; at < p->backlog_len && p->backlog[at] != idx; at++) {
         }
+        if (at == p->backlog_len) {
+            continue;
+        }
+        for (j = at; j + 1u < p->backlog_len; j++) {
+            p->backlog[j] = p->backlog[j + 1u];
+        }
+        p->backlog_len--;
     }
     s->used = 0;
     s->state = VIBEOS_TCP_CLOSED;
