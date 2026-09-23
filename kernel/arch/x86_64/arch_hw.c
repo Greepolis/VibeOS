@@ -478,13 +478,8 @@ extern void vibeos_x86_64_pic_disable(void);
 extern int vibeos_x86_64_apic_available(void);
 extern volatile uint32_t vibeos_x86_64_ap_alive;
 
-/* Network interface (virtio_net.c). */
-extern int vibeos_x86_64_virtio_net_init(void);
-extern const uint8_t *vibeos_x86_64_virtio_net_mac(void);
-extern int vibeos_x86_64_virtio_net_ready(void);
-extern int vibeos_x86_64_virtio_net_send(const void *frame, uint32_t len);
-extern int vibeos_x86_64_virtio_net_recv(void *out, uint32_t cap);
-extern void vibeos_x86_64_virtio_net_stats(uint64_t *out_tx, uint64_t *out_rx);
+/* The network interface is whichever device registered one (C7,
+ * include/vibeos/device.h); see hw_net_bringup. */
 
 extern int vibeos_x86_64_virtio_blk_init(void);
 extern int vibeos_x86_64_virtio_blk_read(uint64_t sector, void *buf);
@@ -4900,9 +4895,14 @@ static uint64_t hw_net_now_ms(void) {
     return g_timer_ticks * (1000ull / VIBEOS_HW_TIMER_HZ);
 }
 
+/* The interface the stack drives: the first network device the registry found
+ * present. arch_hw.c used to name virtio-net's functions directly, so a second
+ * network driver meant editing this file (C7). Set once, before g_net_up. */
+static const vibeos_net_ops_t *g_netdev;
+
 static int hw_net_tx(void *ctx, const void *frame, uint32_t len) {
     (void)ctx;
-    return vibeos_x86_64_virtio_net_send(frame, len);
+    return g_netdev->send(frame, len);
 }
 
 /* Drain the receive queue into the stack and advance its timers. Called from
@@ -4922,7 +4922,7 @@ static void hw_net_pump(void) {
     }
     hw_spin_lock_named(&g_net_lock, __func__);
     while (budget-- > 0) {
-        n = vibeos_x86_64_virtio_net_recv(g_net_rxframe, (uint32_t)sizeof(g_net_rxframe));
+        n = g_netdev->recv(g_net_rxframe, (uint32_t)sizeof(g_net_rxframe));
         if (n <= 0) {
             break;
         }
@@ -4954,11 +4954,14 @@ static void hw_net_print_ip(uint32_t ip) {
 static void hw_net_bringup(void) {
     uint32_t spins;
 
-    if (vibeos_x86_64_virtio_net_init() != 0) {
+    /* The driver was brought up by the device registry's probe; this asks
+     * for the result rather than naming the driver. */
+    g_netdev = vibeos_net_device();
+    if (!g_netdev) {
         vibeos_x86_64_serial_puts("[NET] no network interface; networking disabled\n");
         return;
     }
-    if (vibeos_inet_init(&g_net, vibeos_x86_64_virtio_net_mac(), hw_net_tx, 0) != 0) {
+    if (vibeos_inet_init(&g_net, g_netdev->mac(), hw_net_tx, 0) != 0) {
         vibeos_x86_64_serial_puts("[NET] stack init failed\n");
         return;
     }

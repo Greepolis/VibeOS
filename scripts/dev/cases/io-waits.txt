@@ -28,10 +28,12 @@ case: the counters stop being reported
     same reason every other MUSTBEZERO line here does.
 
 case: virtio-net's transmit timeout goes unread again
-  in virtio_net.c, delete vibeos_x86_64_virtio_net_tx_timeouts
-  expect: a link failure, which is the point
+  in virtio_net.c, drop net_tx_timeouts from vnet_report's line
+  expect: invariant_failed:io_wait_counters_missing
   why it matters: g_tx_timeouts was incremented and read by nobody for as long
-    as it existed. Making the gate depend on the accessor is what stops it
-    quietly becoming a number nobody reads again - "configured and consulted by
-    nobody" is the defect this project produces most often, and the rule for it
-    is to write the assertion that fails if the caller disappears.
+    as it existed. The gate depended on its accessor until C7; since the device
+    registry, the number is on the driver's own report line and the gate reads it
+    there, so dropping it from the line is the same failure the accessor's
+    absence used to be - "configured and consulted by nobody" is the defect this
+    project produces most often, and the rule for it is to write the assertion
+    that fails if the caller disappears.

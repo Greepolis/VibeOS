@@ -139,6 +139,23 @@ static const vibeos_device_t d_kbd2 = {
 static const vibeos_device_t d_net = {
     "net", VIBEOS_DEV_NET, VIBEOS_DEVICE_NO_IRQ, 0, 0, 0, 0, 0 };
 
+/* Network devices: one that fails its probe, one missing an operation, one whole. */
+static const uint8_t g_mac_a[6] = { 2, 0, 0, 0, 0, 0xA };
+static const uint8_t g_mac_b[6] = { 2, 0, 0, 0, 0, 0xB };
+static const uint8_t *mac_a(void) { return g_mac_a; }
+static const uint8_t *mac_b(void) { return g_mac_b; }
+static int net_send(const void *f, uint32_t n) { (void)f; (void)n; return 0; }
+static int net_recv(void *o, uint32_t c) { (void)o; (void)c; return 0; }
+static const vibeos_net_ops_t ops_net_a = { mac_a, net_send, net_recv };
+static const vibeos_net_ops_t ops_net_partial = { mac_b, net_send, 0 };
+static const vibeos_net_ops_t ops_net_b = { mac_b, net_send, net_recv };
+static const vibeos_device_t d_net_absent = {
+    "net-absent", VIBEOS_DEV_NET, VIBEOS_DEVICE_NO_IRQ, probe_absent, 0, 0, 0, &ops_net_a };
+static const vibeos_device_t d_net_partial = {
+    "net-partial", VIBEOS_DEV_NET, VIBEOS_DEVICE_NO_IRQ, 0, 0, 0, 0, &ops_net_partial };
+static const vibeos_device_t d_net_ok = {
+    "net-ok", VIBEOS_DEV_NET, VIBEOS_DEVICE_NO_IRQ, probe_ok, 0, 0, 0, &ops_net_b };
+
 static char g_out[512];
 static int t_out(void *ctx, const char *line, uint32_t len) {
     (void)ctx;
@@ -261,9 +278,28 @@ int test_device(void) {
                 "the pointer is the first *present* device's - the absent mouse's "
                 "answer is never used")) { return -1; }
 
+    /* ---- the network class ------------------------------------------------------- */
+    /* d_net above is present with no operations at all: not an interface. */
+    if (!expect(vibeos_net_device() == 0,
+                "a network device with no operations is not handed out")) { return -1; }
+    vibeos_device_reset();
+    {
+        const vibeos_device_t *nets[] = { &d_net_absent, &d_net_partial, &d_net_ok };
+        const vibeos_net_ops_t *nd;
+        if (!expect(vibeos_device_set_table(nets, 3u) == 0 &&
+                    vibeos_device_probe_all(&env) == 2u, "three network devices, two present")) {
+            return -1;
+        }
+        nd = vibeos_net_device();
+        if (!expect(nd == &ops_net_b && nd->mac()[5] == 0xBu,
+                    "the interface is the first present one with every operation - not "
+                    "the one that failed its probe (no queues to send on) and not one "
+                    "missing recv (a stack that can never receive)")) { return -1; }
+    }
+
     /* ---- nothing registered ------------------------------------------------------ */
     vibeos_device_reset();
-    if (!expect(vibeos_input_getc() == -1 && vibeos_input_inject("x") == -1 &&
+    if (!expect(vibeos_input_getc() == -1 && vibeos_input_inject("x") == -1 && vibeos_net_device() == 0 &&
                 vibeos_input_pointer(0, 0, 0) == -1 && vibeos_device_irq(1) == 0,
                 "with no table every service says so rather than inventing a device")) { return -1; }
     {

@@ -1,0 +1,28 @@
+# C7 step 2: virtio-net as a registered device (kernel/arch/x86_64/virtio_net.c),
+# proved by the boot gate.
+#
+#  1. the transmit timeout leaves the driver's report line: expect
+#     io_wait_counters_missing - the number was read by nobody for as long as it
+#     existed, and a counter that stops being printed must not read as one that
+#     stayed at zero;
+#  2. the probe says the device is absent although it came up: the stack is
+#     never given an interface, and the gate's network assertions (lease, TCP
+#     round trip) must go red rather than the boot quietly running offline.
+#
+# Target source: kernel/arch/x86_64/virtio_net.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/arch/x86_64/virtio_net.c scripts/dev/cases/io-device-net.txt
+
+### the transmit timeout leaves the report line
+--- old
+    vibeos_devline_str(&l, " net_tx_timeouts=");
+    vibeos_devline_hex(&l, g_tx_timeouts);
++++ new
+
+### a device that came up is reported absent
+--- old
+    (void)env;
+    return vnet_init();
++++ new
+    (void)env;
+    (void)vnet_init();
+    return -1;

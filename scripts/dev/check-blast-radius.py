@@ -105,8 +105,13 @@ POINTS = {
         "entry. The registry works; the bring-up does not."),
     "network interface": (
         "kernel/arch/x86_64/virtio_net.c",
-        r"vibeos_x86_64_virtio_net_[A-Za-z0-9_]+", 4,
-        "no registry at all - arch_hw.c names the driver directly."),
+        r"vibeos_x86_64_virtio_net_[A-Za-z0-9_]+", 1,
+        "**1 since C7 step 2**: virtio-net is a NET-class descriptor; its init "
+        "is its probe, its counters its own report line, and the stack drives "
+        "whichever interface vibeos_net_device() returns. Was 4 - arch_hw.c "
+        "declared six of its functions and called four, kmain.c printed its "
+        "timeout count through a weak default, and two accessors (the frame "
+        "counts, `ready`) were declared and called by nobody."),
     "syscall": (
         "kernel/abi/pageinfo.c",
         r"VIBEOS_OP_PAGEINFO|X\(PAGEINFO|hw_sys_pageinfo", 2,

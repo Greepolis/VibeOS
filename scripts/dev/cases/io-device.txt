@@ -17,7 +17,11 @@
 #  7. only present devices' lines are routed: the probe itself raises the line,
 #     and an unrouted interrupt is lost - the mouse's ACKs were exactly that;
 #  8. probes run under the module's lock: the lock masks interrupts, and the
-#     keyboard's probe waits for the IRQ1 it makes the controller raise.
+#     keyboard's probe waits for the IRQ1 it makes the controller raise;
+#  9. the stack is handed a network device whose probe failed - no queues to
+#     send on, so every frame is swallowed;
+# 10. the stack is handed one without recv - a network that can send and never
+#     hear anything back.
 #
 # Target source: kernel/io/device.c
 # Run: python3 scripts/dev/sabotage.py kernel/io/device.c scripts/dev/cases/io-device.txt
@@ -68,6 +72,18 @@
             g_table[i]->selftest();
         }
     }
+
+### a network device that failed its probe is handed to the stack
+--- old
+        if (g_table[i]->cls == VIBEOS_DEV_NET && g_present[i] &&
++++ new
+        if (g_table[i]->cls == VIBEOS_DEV_NET &&
+
+### a network device missing an operation is handed to the stack
+--- old
+            op && op->mac && op->send && op->recv) {
++++ new
+            op && op->mac && op->send) {
 
 ### probes run under the lock, where no interrupt can reach them
 --- old

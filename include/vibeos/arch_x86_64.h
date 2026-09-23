@@ -97,13 +97,8 @@ int vibeos_x86_64_blk_adapter_device(uint32_t n);
 const char *vibeos_x86_64_blk_adapter_name(uint32_t n);
 uint64_t vibeos_x86_64_virtio_blk_timeouts(void);
 uint64_t vibeos_x86_64_ahci_timeouts(void);
-uint64_t vibeos_x86_64_virtio_net_tx_timeouts(void);
 uint64_t vibeos_x86_64_blk_timeouts(void);
 
-/* Keystrokes that never reached a reader. Two counters because they are two
- * harms: dropped is the ring overflowing under a fast typist, which is not a
- * defect; inject_truncated is the boot self-test's input being cut short,
- * which makes a green self-test a claim about a prefix. */
 /* The unmap quarantine: frames parked until every other core has flushed.
  *
  * deferred is the mechanism working; overflow is the residual gap, a frame

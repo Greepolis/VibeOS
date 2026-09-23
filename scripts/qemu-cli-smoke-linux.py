@@ -1910,13 +1910,17 @@ def main():
             #
             # A missing line is a failure, not a pass. That distinction is the
             # whole reason this check exists.
-            mw = re.search(r"\[IO\] WAITS blk_timeouts=0x([0-9a-f]{16}) "
-                           r"net_tx_timeouts=0x([0-9a-f]{16})", text)
-            if mw is None:
+            # Two lines since C7: the disk's in kmain's WAITS line, the network
+            # card's in its driver's own report ([VNET]), because the registry
+            # prints a driver's counters rather than kmain naming them. Either
+            # missing is the same failure it always was.
+            mw = re.search(r"\[IO\] WAITS blk_timeouts=0x([0-9a-f]{16})", text)
+            mn = re.search(r"\[VNET\] .*net_tx_timeouts=0x([0-9a-f]{16})", text)
+            if mw is None or mn is None:
                 problems.append("io_wait_counters_missing")
             else:
-                for name, group in (("blk_timeouts", 1), ("net_tx_timeouts", 2)):
-                    value = int(mw.group(group), 16)
+                for name, m in (("blk_timeouts", mw), ("net_tx_timeouts", mn)):
+                    value = int(m.group(1), 16)
                     if value != 0:
                         problems.append(f"io_{name}={value}")
 

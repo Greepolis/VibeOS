@@ -60,6 +60,13 @@ typedef struct {
     int (*pointer)(int32_t *x, int32_t *y, uint32_t *buttons);  /* 0 = present; may be 0 */
 } vibeos_input_ops_t;
 
+/* A network interface: an Ethernet frame in, an Ethernet frame out. */
+typedef struct {
+    const uint8_t *(*mac)(void);                    /* six bytes                  */
+    int (*send)(const void *frame, uint32_t len);   /* 0 when the device took it  */
+    int (*recv)(void *out, uint32_t cap);           /* a frame's length, 0 = none */
+} vibeos_net_ops_t;
+
 typedef struct vibeos_device {
     const char *name;
     vibeos_dev_class_t cls;
@@ -77,7 +84,8 @@ typedef struct vibeos_device {
     void (*selftest)(void);
     /* The driver's counters, as complete lines. May be 0. */
     void (*report)(vibeos_dev_write_fn out, void *ctx);
-    /* Class operations: a vibeos_input_ops_t for VIBEOS_DEV_INPUT. */
+    /* Class operations: a vibeos_input_ops_t for VIBEOS_DEV_INPUT, a
+     * vibeos_net_ops_t for VIBEOS_DEV_NET. */
     const void *ops;
 } vibeos_device_t;
 
@@ -114,6 +122,11 @@ void vibeos_device_report_all(vibeos_dev_write_fn out, void *ctx);
 int vibeos_input_getc(void);
 int vibeos_input_inject(const char *s);   /* -1 when nothing accepts injected input */
 int vibeos_input_pointer(int32_t *x, int32_t *y, uint32_t *buttons);  /* -1: no pointer */
+
+/* The network class: the first present network device, or 0 when there is none.
+ * One interface is what the stack drives today; the registry does not decide
+ * that, the caller does. */
+const vibeos_net_ops_t *vibeos_net_device(void);
 
 /* Building a report line without a C library: text and 16-digit hex, always
  * terminated, never overrun. */

@@ -14,6 +14,7 @@
 #include <stdint.h>
 
 #include "vibeos/arch_x86_64.h"
+#include "vibeos/device.h"
 
 /* ---- port I/O ------------------------------------------------------------ */
 
@@ -175,7 +176,7 @@ static void vnet_rx_publish(uint16_t i) {
     g_rx.avail->idx++;
 }
 
-int vibeos_x86_64_virtio_net_init(void) {
+static int vnet_init(void) {
     uint32_t host_features, guest_features;
     uint16_t i;
 
@@ -236,12 +237,8 @@ int vibeos_x86_64_virtio_net_init(void) {
     return 0;
 }
 
-const uint8_t *vibeos_x86_64_virtio_net_mac(void) {
+static const uint8_t *vnet_mac(void) {
     return g_mac;
-}
-
-int vibeos_x86_64_virtio_net_ready(void) {
-    return g_net_ready;
 }
 
 /* One virtqueue, one descriptor, one staging buffer - and, until now, no lock.
@@ -266,17 +263,14 @@ static volatile int g_tx_lock;
 /* Transmits that gave up waiting. Zero on a healthy boot, and the difference
  * between a slow network and a wedged machine now that one is tellable from
  * the other. */
-/* Read by the boot gate through kmain since P7's latency property.
+/* Asserted zero by the boot gate since P7's latency property, from this
+ * driver's own report line now (C7) rather than through kmain.
  *
  * It was incremented and read by nobody for as long as it existed, which is
  * the defect this project produces most often - a number written and never
  * read. Transmit is reachable from a syscall (a socket write), so the bound
  * being asserted is exactly what the property asks for. */
 static uint64_t g_tx_timeouts;
-
-uint64_t vibeos_x86_64_virtio_net_tx_timeouts(void) {
-    return g_tx_timeouts;
-}
 
 static void tx_lock(void) {
     while (__sync_lock_test_and_set(&g_tx_lock, 1)) {
@@ -292,7 +286,7 @@ static void tx_unlock(void) {
 
 /* Transmit one Ethernet frame. Blocks until the device consumes the descriptor,
  * which under QEMU is immediate. */
-int vibeos_x86_64_virtio_net_send(const void *frame, uint32_t len) {
+static int vnet_send(const void *frame, uint32_t len) {
     uint16_t slot;
     uint32_t i;
     uint64_t spins = 0;
@@ -365,7 +359,7 @@ int vibeos_x86_64_virtio_net_send(const void *frame, uint32_t len) {
 
 /* Pull one received frame, if any. Returns its length, 0 when the queue is
  * empty. The virtio-net header is stripped. */
-int vibeos_x86_64_virtio_net_recv(void *out, uint32_t cap) {
+static int vnet_recv(void *out, uint32_t cap) {
     struct vq_used_elem *e;
     uint16_t slot, id;
     uint32_t len, i;
@@ -404,11 +398,44 @@ int vibeos_x86_64_virtio_net_recv(void *out, uint32_t cap) {
     return (int)len;
 }
 
-void vibeos_x86_64_virtio_net_stats(uint64_t *out_tx, uint64_t *out_rx) {
-    if (out_tx) {
-        *out_tx = g_tx_frames;
-    }
-    if (out_rx) {
-        *out_rx = g_rx_frames;
-    }
+/* The frame counts had been kept since the driver was written and read by
+ * nobody - an accessor existed, arch_hw.c declared it, and nothing called it. On
+ * the driver's own line now, beside the must-be-zero the gate reads. Printed
+ * whether or not the device answered its probe: a missing line is a failure the
+ * gate names, and a machine without the device reports zeros. */
+static void vnet_report(vibeos_dev_write_fn out, void *ctx) {
+    vibeos_devline_t l;
+
+    vibeos_devline_start(&l, "[VNET] frames_tx=");
+    vibeos_devline_hex(&l, g_tx_frames);
+    vibeos_devline_str(&l, " frames_rx=");
+    vibeos_devline_hex(&l, g_rx_frames);
+    vibeos_devline_str(&l, " net_tx_timeouts=");
+    vibeos_devline_hex(&l, g_tx_timeouts);
+    vibeos_devline_end(&l, out, ctx);
 }
+
+/* The probe is the init: find the device on PCI, set the queues up. Polled, so
+ * no interrupt line - the stack is pumped from the timer. */
+static int vnet_probe(const vibeos_dev_env_t *env) {
+    (void)env;
+    return vnet_init();
+}
+
+static const vibeos_net_ops_t g_vnet_ops = {
+    .mac = vnet_mac,
+    .send = vnet_send,
+    .recv = vnet_recv,
+};
+
+static const vibeos_device_t g_vnet_device = {
+    .name = "virtio-net",
+    .cls = VIBEOS_DEV_NET,
+    .isa_irq = VIBEOS_DEVICE_NO_IRQ,
+    .probe = vnet_probe,
+    .irq = 0,
+    .selftest = 0,
+    .report = vnet_report,
+    .ops = &g_vnet_ops,
+};
+VIBEOS_DEVICE(g_vnet_device);

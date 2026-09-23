@@ -138,8 +138,8 @@ static void kernel_cli_print_status(const vibeos_kernel_t *kernel) {
  * this core with mingw. Every other weak stub in this kernel sits beside its
  * caller for the same reason.
  *
- * Zero is the honest answer here: a build with no disk and no network card had
- * no wait to time out. */
+ * Zero is the honest answer here: a build with no disk had no wait to time out.
+ * (The network card's timeouts are its driver's own report line since C7.) */
 __attribute__((weak)) uint64_t vibeos_x86_64_blk_timeouts(void) { return 0ull; }
 /* Zero is the honest answer for a link with no filesystem: nothing was cached
  * because nothing was mounted. Weak and in the same translation unit as its
@@ -153,7 +153,6 @@ __attribute__((weak)) void vibeos_x86_64_fat_cache_stats(uint64_t *hits,
     if (evictions) { *evictions = 0ull; }
     if (evict_failed) { *evict_failed = 0ull; }
 }
-__attribute__((weak)) uint64_t vibeos_x86_64_virtio_net_tx_timeouts(void) { return 0ull; }
 /* Beside their caller, like every other stub here. */
 __attribute__((weak)) uint64_t vibeos_x86_64_ioapic_irq_count(uint32_t v) { (void)v; return 0ull; }
 __attribute__((weak)) uint64_t vibeos_x86_64_tlbq_deferred(void) { return 0ull; }
@@ -832,8 +831,6 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
 
         vibeos_x86_64_serial_puts("[IO] WAITS blk_timeouts=0x");
         kernel_log_u64_hex(vibeos_x86_64_blk_timeouts());
-        vibeos_x86_64_serial_puts(" net_tx_timeouts=0x");
-        kernel_log_u64_hex(vibeos_x86_64_virtio_net_tx_timeouts());
         /* How each disk wait ended (I6). "The interrupt is wired up" and "the
          * interrupt does anything" are different claims and only the second is
          * worth making, so the gate asserts irq is not zero. A device whose

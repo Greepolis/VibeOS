@@ -236,6 +236,23 @@ int vibeos_input_pointer(int32_t *x, int32_t *y, uint32_t *buttons) {
     return -1;
 }
 
+/* ---- the network class ---------------------------------------------------- */
+
+const vibeos_net_ops_t *vibeos_net_device(void) {
+    uint32_t i;
+
+    for (i = 0; i < g_count; i++) {
+        const vibeos_net_ops_t *op = (const vibeos_net_ops_t *)g_table[i]->ops;
+        /* A device that failed its probe has no queues to send on: handing it
+         * out would give the stack an interface that swallows every frame. */
+        if (g_table[i]->cls == VIBEOS_DEV_NET && g_present[i] &&
+            op && op->mac && op->send && op->recv) {
+            return op;
+        }
+    }
+    return 0;
+}
+
 /* ---- report lines --------------------------------------------------------- */
 
 static void put_c(vibeos_devline_t *l, char c) {
