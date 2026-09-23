@@ -1,8 +1,10 @@
 # C7 - the registries the next refactor needs
 
-Status, 2026-09-23: **in progress - steps 1, 2 and 3 of 4 done** (the registry,
-proved on the input devices; the network interface; the disk drivers and the
-registered filesystem).
+Status, 2026-09-23: **done** - the registry, proved on the input devices; the
+network interface; the disk drivers and the registered filesystem; the display.
+The "done when" - the GUI registered with its own lock, counters, a must-be-zero
+and a case file - is met. The blast-radius objective is met for every device
+row and not for two others; see the table at the end.
 
 The plan (`docs/core/phases.md`): character, input, network and display devices
 register the way block devices do, `check-blast-radius.py` reports **1** for
@@ -249,6 +251,154 @@ The second case went NOT RED, and the reason was two defects stacked.
    The other two whole-log `..=OK` tokens the gate uses (`round_trip=OK`,
    `tls=ok`) were checked against a log and appear on one line each.
 
-## Next
-4. **Display**: the GUI registered, with its own lock, counters, a must-be-zero
-   and a case file - the "done when" of the phase.
+## Step 4: the display - the phase's "done when"
+
+Before C7 the GUI was wired in: `arch_hw.c` declared five of its functions,
+initialised it from the framebuffer setup, repainted it from the timer, printed
+its counters and kept its canary, and `serial.c` named its putc through a weak
+default. It had **no lock**, and two of its three callers run on any core: the
+timer's repaint, and putc from the console write path - which is not always
+under the console lock (kmain's hex printer writes a character at a time with
+none). Two cores in putc could both pass `row < ROWS` before either scrolled,
+and the second wrote a row past the end of the grid, into whatever the linker
+put after it. The phase calls it the prime suspect for corrupting another
+process's memory; whether it ever did is not known, and now cannot happen
+silently.
+
+It is `kernel/io/gui.c` now, a DISPLAY-class device, with the seven parts of
+`docs/core/architecture.md`:
+
+1. **A header**, `include/vibeos/gui.h`.
+2. **All of its state in one file**, in two kinds with one rule each: the
+   terminal grid and the counters under the lock, every access; the back
+   buffer, the screen and the pointer's last position owned by whoever holds
+   `g_ticking`, which only the repaint takes, by exchange. The repaint copies
+   the grid under the lock and draws from the copy outside it, so a console
+   write never waits for a window to be blitted with interrupts off.
+3. **Its own lock**, a `vibeos_dev_lock_t`. The lock *operations* are
+   registered once, by the machine, for every driver
+   (`vibeos_device_set_lock_ops`): a portable driver cannot build a lock, and
+   registering each driver's lock by name from the arch would have put the
+   driver back in `arch_hw.c`. The provider has one extra duty: `lock` returns
+   -1 instead of waiting when the caller already holds it - the machine answers
+   from the spinlock's owning CPU - so a panic printing from inside the GUI is
+   dropped and counted (`reentered`) instead of waiting on its own core.
+4. **Counters with two must-be-zeros**: `term_overrun` (a grid write out of
+   bounds, refused) and `guard_broken` (the canary). The canary is the GUI's
+   own now, written directly after the pixels and examined on **every
+   repaint**, not once at the end of the boot; `guard_checks` says it ran.
+5. **An init that refuses by name**: no framebuffer; too large; too small; a
+   back buffer with no room for the canary; already active.
+6. **The registry's DISPLAY class**: the console writes through
+   `vibeos_display_putc` and the timer repaints through `vibeos_display_tick`;
+   neither names a driver.
+7. **Case files**: `io-gui.txt` (host), `io-gui-torture.txt` (the model and
+   threads), `io-gui-boot.txt` and `io-gui-backbuf.txt` (the gate).
+
+The font became `include/vibeos/font8x8.h`, a header: a constant table has no
+state, and as a `.c` module it would be judged by `check-subsystem` for a lock
+and a must-be-zero it has no use for.
+
+**Display: 3 -> 1.** Nothing outside `gui.c` and its header names the GUI.
+
+### What building it found
+
+- **A screen under about 30 pixels high wrote off the end of the buffer.** The
+  text area's height is `window - 26`; on a 30-pixel screen that is `25 - 26`,
+  which is 0xFFFFFFFF, and the clamp `if (y + h > g_h)` wrapped `y + h` back
+  under the screen - so the fill ran on. Width had the same shape below 10
+  pixels. No real screen is that small; `init` accepted any. It refuses them by
+  name now, and every clamp compares before it adds.
+- **The character that wrapped the last row was lost.** The old putc wrapped,
+  found the row past the end, skipped the write and scrolled afterwards.
+- **A machine with no mouse never showed console text**: the repaint returned
+  before the text when there was no pointer.
+- **The pointer left fragments on the desktop.** After a text repaint the old
+  code forgot the pointer's position ("whatever was under the pointer is
+  gone"), which is true only inside the text window. The torture's first run
+  found it, comparing the screen with the composition pixel by pixel; its
+  sabotage case puts the old line back.
+- **A registered driver in a static archive is not linked.** Moving `gui.c` to
+  `kernel/io` put it in the core library the image links as an archive, and an
+  archive member is extracted only when something references it - which, for a
+  driver that registers, nothing does. The boot came up with
+  `registered=0x5`, the text console took the framebuffer, and the gate said
+  `gui_counters_missing`. Such drivers are listed in
+  `VIBEOS_KERNEL_DRIVER_SOURCES`, compiled into the image directly and into the
+  host library for the tests; the gate's floor is six devices.
+- **A GUI that refused passed the gate.** Every GUI check was conditional on
+  `[GUI] desktop up`. The gate now fails `gui_refused:<reason>` when the text
+  console had to take the framebuffer.
+- **`[FB] no framebuffer; console is serial-only`** was printed on every boot
+  that had a desktop - the text console's "else" was reached whenever the GUI
+  had taken the screen. Three cases, three lines.
+- **`backbuf_shared` and `backbuf_lost` were must-be-zero and asserted by
+  nobody.** `guard_broken` led their line and `check-mustbezero-asserted`
+  reads only the first name after the word; moving the canary exposed them.
+
+### How it is proved
+
+- `tests/kernel/gui_tests.c`, in the host suite: the refusals by name with
+  nothing written, the canary written and checked on the repaint and counted
+  once, the terminal's rows, wrap and scroll, the wrap on the last row, the
+  pointer drawn and not baked into the composition, reentrancy, the lock
+  paired, and the display class choosing the first present display with both
+  operations.
+- `tests/kernel/gui_torture.c` (`vibeos_gui_torture <seed> [rounds]
+  [threads]`): geometry at the edges of what init accepts, with both buffers
+  fenced; the terminal against a model that keeps a list of lines rather than a
+  grid; the screen against the composition, and the pointer visible; a flipped
+  canary word; a print from inside the lock; then writers and two racing
+  repaints on real threads, with every character accounted for. A short run in
+  `check.sh`; the nightly job `gui-torture` runs 200 seeds under ASan and
+  UBSan and the threads under ThreadSanitizer.
+- The gate: `gui_counters_missing`, `gui_term_overrun`,
+  `gui_guard_never_checked`, `gui_refused`, `gui_backbuf_shared`,
+  `gui_backbuf_lost`, and `device_table_short` at six.
+
+Every case red, and all but one by name:
+
+- `io-gui.txt` (6, host): each by the test that names it. Removing the
+  minimum screen accepted a 30-pixel screen and did **not** overrun: the
+  clamps now compare before they add, so the two defences each hold alone.
+- `io-gui-torture.txt` (4): no lock at all - the GUI as it was - is
+  `71094 characters sent, 37897 counted` from the thread phase; the pointer
+  fragment is "screen differs from the composition"; a pointer not redrawn is
+  "not on the screen"; an uncounted scroll disagrees with the model. The first
+  version of the no-lock case removed the lock and kept the unlock, and went red
+  on the single-threaded pairing check instead - which proved the wrong thing,
+  so it was rewritten.
+- `io-gui-boot.txt` (6) and `io-gui-backbuf.txt` (2): `gui_counters_missing`,
+  `gui_guard_never_checked`, `gui_term_overrun=483`,
+  `gui_refused:back_buffer_missing_or_too_small_for_the_screen_and_its_canary`,
+  `gui_reported_nothing`, `gui_terminal_empty`, `gui_backbuf_shared=1000`,
+  `gui_backbuf_lost=1000`.
+- `io-device.txt` case 14, a display with no repaint handed out: red by name.
+  Its first run was red as a crash - the test called the repaint before
+  checking which display it had - and the test was reordered.
+
+Not yet run: the Windows (mingw) build of the core now contains the first
+VIBEOS_DEVICE descriptor in the portable library (`gui.c`); the section
+attribute there is untested on PE/COFF until CI runs it. The ThreadSanitizer
+nightly job is new and has not run either.
+
+`check.sh all` green, warnings 0 on gcc and clang, repeat-boot 6/6.
+
+## Where C7 leaves the rows
+
+| Extension point | Before C7 | Now |
+|---|---|---|
+| input device | 4 | 1 |
+| network interface | 4 | 1 |
+| block driver | 4 | 1 |
+| filesystem (registered) | 4 | 1 |
+| display | 3 | 1 |
+| filesystem (direct) | 4 | 4 |
+| syscall | 2 | 2 |
+
+The objective said every row. Two are not 1, and neither is a device: ext2,
+NTFS, exFAT and ISO9660 are compiled into `storage.c`'s probe table with a
+member each in `vibeos_volume_t`, and a syscall is 2 by a recorded decision (its
+row, and its declaration in `abi.h`). Moving the four filesystems onto
+`VIBEOS_FS_DRIVER` is the same work step 3b did for FAT, times four; it is left
+for the refactor that needs it rather than folded into this one.
