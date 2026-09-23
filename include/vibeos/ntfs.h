@@ -39,6 +39,11 @@
 typedef struct {
     vibeos_blockcache_t *cache;
     uint64_t part_lba;
+    /* The volume's extent, from the partition table; 0 = no table. Set by
+     * storage.c after the mount, as for exFAT and ISO9660 (H-029). M-047. */
+    uint64_t part_sectors;
+    /* The size the volume declares for itself (boot sector 0x28); 0 = none. */
+    uint64_t vol_sectors;
 
     uint32_t bytes_per_sector;
     uint32_t sectors_per_cluster;

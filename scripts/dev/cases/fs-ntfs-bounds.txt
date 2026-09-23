@@ -1,0 +1,54 @@
+# NTFS reads held to the volume (M-047) and an index walker that cannot wrap
+# (M-048), proved by the host tests.
+#
+#  1. no bound at all - the state M-047 found: a run past the partition reads
+#     the neighbour's sectors;
+#  2. only the partition table's bound: a volume mounted with no table, or one
+#     whose own size is smaller, is unbounded again;
+#  3. the walker's loop check written as a sum again. Red by crashing the suite,
+#     not by an assertion: the only offsets that wrap point four gigabytes away,
+#     and there is no in-bounds way to observe them on a 64-bit host;
+#  4. the first-entry offset refused in silence, as "nothing here": a malformed
+#     node reads as an empty one and nothing counts it.
+#
+# Target source: kernel/fs/ntfs.c
+# Run: python3 scripts/dev/sabotage.py kernel/fs/ntfs.c scripts/dev/cases/fs-ntfs-bounds.txt
+
+### a run past the volume is read
+--- old
+    if (limit != 0u && (sector >= limit || (uint64_t)count > limit - sector)) {
++++ new
+    if (0) {
+
+### only the partition table bounds a read
+--- old
+    if (fs->vol_sectors != 0u && (limit == 0u || fs->vol_sectors < limit)) {
++++ new
+    if (0) {
+
+### the walker's loop bound is a sum that wraps, as it was
+--- old
+    if (off > value_len || value_len - off < 16u) {
+        vibeos_mbz_hit(VIBEOS_MBZ_NTFS_BAD_METADATA, off);
+        return -1;
+    }
+    /* Every bound below is `need > len - off` after `off <= len`, never
+     * `off + need > len` (M-048). `off` starts as a volume-controlled field:
+     * within sixteen of 2^32 the sum wraps to a small number, the check passes,
+     * and the entry is read from four gigabytes past the node. This walker
+     * serves the resident root and every INDX block, so both had it - M-039
+     * bounded the root's value, not the offsets inside it. */
+    while (off <= value_len && value_len - off >= 16u) {
++++ new
+    while (off + 16u <= value_len) {
+
+### an impossible first entry reads as an empty node
+--- old
+    if (off > value_len || value_len - off < 16u) {
+        vibeos_mbz_hit(VIBEOS_MBZ_NTFS_BAD_METADATA, off);
+        return -1;
+    }
++++ new
+    if (off > value_len || value_len - off < 16u) {
+        return 0;
+    }

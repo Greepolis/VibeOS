@@ -270,7 +270,14 @@ static uint32_t ext2_dir_find(vibeos_ext2_t *fs, const uint8_t *dir,
                 vibeos_mbz_hit(VIBEOS_MBZ_EXT2_BAD_METADATA, reclen);
                 break;
             }
-            if (ino != 0u && nlen == name_len && off + 8u + nlen <= fs->block_size) {
+            /* Bounded by the record, as readdir is (M-049): the block was the
+             * bound here, which kept a comparison inside the buffer but let it
+             * run into the next record. */
+            if (nlen > reclen - 8u) {
+                vibeos_mbz_hit(VIBEOS_MBZ_EXT2_BAD_METADATA, nlen);
+                break;
+            }
+            if (ino != 0u && nlen == name_len) {
                 uint32_t i;
                 for (i = 0; i < nlen; i++) {
                     if (block[off + 8u + i] != (uint8_t)name[i]) {
@@ -432,6 +439,15 @@ static int ext2_op_list(void *fsv, const char *path, uint32_t index, char *name,
 
             if (reclen < 8u || (reclen & 3u) != 0u || off + reclen > fs->block_size) {
                 vibeos_mbz_hit(VIBEOS_MBZ_EXT2_BAD_METADATA, reclen);
+                break;
+            }
+            /* The name lives inside its own record (M-049). This path had no
+             * bound on it at all - ext2_dir_find checked the block - so a
+             * name_len larger than the record copied the next records and, at
+             * the end of a block, up to 254 bytes of this function's stack past
+             * the block into an ordinary readdir(). */
+            if (nlen > reclen - 8u) {
+                vibeos_mbz_hit(VIBEOS_MBZ_EXT2_BAD_METADATA, nlen);
                 break;
             }
             if (ino != 0u && nlen > 0u) {

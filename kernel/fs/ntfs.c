@@ -31,9 +31,28 @@ static uint64_t rd64(const uint8_t *p) {
 #define NTFS_MFT_ROOT       5u          /* the root directory's record */
 #define NTFS_FLAG_DIRECTORY 0x0002u
 
+/* Every sector this driver reads comes through here, so this is where a read is
+ * held to the volume (M-047). exFAT and ISO9660 were bounded by their partition
+ * in H-029; NTFS was not even given a field to hold the bound, and the block
+ * cache checks only the whole disk - so a run list pointing past the partition
+ * read the neighbouring one's sectors through an ordinary open() and read().
+ *
+ * Two limits, the tighter one wins: the partition table's (storage.c sets it
+ * after the mount) and the size the volume declares for itself, which covers a
+ * volume mounted with no table. Checked as `count > limit - sector` after
+ * `sector < limit`, never as a sum that can wrap. */
 static int ntfs_read_sectors(vibeos_ntfs_t *fs, uint64_t sector, uint8_t *out,
                              uint32_t count) {
+    uint64_t limit = fs->part_sectors;
     uint32_t i;
+
+    if (fs->vol_sectors != 0u && (limit == 0u || fs->vol_sectors < limit)) {
+        limit = fs->vol_sectors;
+    }
+    if (limit != 0u && (sector >= limit || (uint64_t)count > limit - sector)) {
+        vibeos_mbz_hit(VIBEOS_MBZ_NTFS_BAD_METADATA, sector);
+        return -1;
+    }
     for (i = 0; i < count; i++) {
         if (vibeos_blockcache_read(fs->cache, fs->part_lba + sector + i,
                                    out + i * VIBEOS_BLOCK_SIZE) != 0) {
@@ -238,6 +257,8 @@ int vibeos_ntfs_mount(vibeos_ntfs_t *fs, vibeos_blockcache_t *cache,
     }
     fs->cache = cache;
     fs->part_lba = part_lba;
+    fs->part_sectors = 0;   /* storage.c sets it from the partition table */
+    fs->vol_sectors = 0;
     fs->mounted = 0;
 
     if (vibeos_blockcache_read(cache, part_lba, sec) != 0) {
@@ -257,6 +278,13 @@ int vibeos_ntfs_mount(vibeos_ntfs_t *fs, vibeos_blockcache_t *cache,
     }
     fs->cluster_bytes = fs->bytes_per_sector * fs->sectors_per_cluster;
     fs->mft_lcn = rd64(sec + 0x30);
+    /* The volume's own size. The count excludes the backup boot sector, which
+     * sits in the volume's last sector - so the volume is one sector more. 0
+     * means the field was not set, and then only the partition bounds it. */
+    fs->vol_sectors = rd64(sec + 0x28);
+    if (fs->vol_sectors != 0u && fs->vol_sectors != ~0ull) {
+        fs->vol_sectors += 1u;
+    }
 
     /* A positive value counts clusters per record; a negative one is a power
      * of two in bytes. Reading it as unsigned gives 246 clusters per record
@@ -427,21 +455,40 @@ static int ntfs_index_walk(const uint8_t *base, uint32_t value_len,
             value_len = used;   /* the header knows better than the caller */
         }
     }
-    while (off + 16u <= value_len) {
+    /* A first entry that cannot fit in the node is a malformed node, said as
+     * such - not a node that happens to hold nothing, which is what the loop
+     * below would otherwise conclude in silence. */
+    if (off > value_len || value_len - off < 16u) {
+        vibeos_mbz_hit(VIBEOS_MBZ_NTFS_BAD_METADATA, off);
+        return -1;
+    }
+    /* Every bound below is `need > len - off` after `off <= len`, never
+     * `off + need > len` (M-048). `off` starts as a volume-controlled field:
+     * within sixteen of 2^32 the sum wraps to a small number, the check passes,
+     * and the entry is read from four gigabytes past the node. This walker
+     * serves the resident root and every INDX block, so both had it - M-039
+     * bounded the root's value, not the offsets inside it. */
+    while (off <= value_len && value_len - off >= 16u) {
         const uint8_t *entry = base + off;
         uint16_t entry_len = rd16(entry + 8);
         uint32_t flags = rd32(entry + 12);
         uint8_t name_chars;
 
-        if (entry_len < 16u || off + entry_len > value_len) {
+        if (entry_len < 16u || entry_len > value_len - off) {
+            vibeos_mbz_hit(VIBEOS_MBZ_NTFS_BAD_METADATA, entry_len);
             return -1;
         }
         /* Bit 1 marks the end entry, which has no name. */
         if (flags & 0x02u) {
             break;
         }
+        if (value_len - off < 82u) {
+            vibeos_mbz_hit(VIBEOS_MBZ_NTFS_BAD_METADATA, off);
+            return -1;
+        }
         name_chars = entry[80];
-        if (off + 82u + (uint32_t)name_chars * 2u > value_len) {
+        if ((uint32_t)name_chars * 2u > value_len - off - 82u) {
+            vibeos_mbz_hit(VIBEOS_MBZ_NTFS_BAD_METADATA, name_chars);
             return -1;
         }
         {

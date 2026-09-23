@@ -1,0 +1,27 @@
+# An ext2 directory entry's name stays inside its own record (M-049), proved by
+# the host test.
+#
+#  1. readdir without the bound - the state M-049 found: a name_len larger than
+#     the record copies the records after it and, at the end of a block, up to
+#     254 bytes of the kernel stack into an ordinary readdir();
+#  2. the bound checked against the block instead of the record, which is what
+#     lookup did: inside the buffer, and still into the next record.
+#
+# Target source: kernel/fs/ext2.c
+# Run: python3 scripts/dev/sabotage.py kernel/fs/ext2.c scripts/dev/cases/fs-ext2-names.txt
+
+### readdir copies a name longer than its record
+--- old
+             * the block into an ordinary readdir(). */
+            if (nlen > reclen - 8u) {
++++ new
+             * the block into an ordinary readdir(). */
+            if (0) {
+
+### readdir bounds a name by the block, not by its record
+--- old
+             * the block into an ordinary readdir(). */
+            if (nlen > reclen - 8u) {
++++ new
+             * the block into an ordinary readdir(). */
+            if (off + 8u + nlen > fs->block_size) {

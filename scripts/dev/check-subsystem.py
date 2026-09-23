@@ -78,7 +78,7 @@ BASELINE = {
     "no_header": 15,
     "exported_state": 0,
     "state_without_lock": 3,
-    "no_case": 35,
+    "no_case": 33,   # was 35 (34 measured); fs/ext2 gained a case file with M-049
     # C2 step 3. Modules with no must-be-zero, no counter asserted elsewhere and
     # no written exemption. Was 36 of 50 when the property was added.
     "no_mustbezero": 0,

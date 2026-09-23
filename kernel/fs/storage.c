@@ -22,6 +22,7 @@ static int storage_try_ntfs(vibeos_volume_t *v, vibeos_blockcache_t *bc)
     if (vibeos_ntfs_mount(&v->ntfs, bc, v->first_lba) != 0) {
         return -1;
     }
+    v->ntfs.part_sectors = v->sector_count;   /* the authoritative bound (H-029, M-047) */
     return vibeos_fs_mount(&v->mount, vibeos_ntfs_ops(), &v->ntfs, "ntfs");
 }
 

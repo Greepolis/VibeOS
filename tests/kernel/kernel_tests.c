@@ -6754,6 +6754,46 @@ static int test_ext2_list(void) {
     return 0;
 }
 
+/* M-049: readdir copies no more of a name than its record holds.
+ *
+ * ext2_dir_find checks `off + 8 + name_len` against the block; ext2_op_list, the
+ * readdir path, did not, so a record whose name_len claims more than its own
+ * record copied the bytes after it - the next records and, at the end of a
+ * block, up to 254 bytes of the kernel stack array past it - into an ordinary
+ * readdir(). Here "small"'s 16-byte record gets an 8-character name and a
+ * name_len of 12: the four extra bytes are the next record's inode number, all
+ * inside the block, so the unfixed driver returns a nine-character name
+ * deterministically instead of depending on what the stack held. */
+static int test_ext2_list_name_bounded(void) {
+    vibeos_ext2_t fs;
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    vibeos_fsmount_t mnt;
+    char name[VIBEOS_FS_NAME_MAX];
+    uint64_t size = 0;
+    int is_dir = 0;
+    uint8_t *rec;
+
+    if (e2_mount(&fs, &bc, &dev) != 0) {
+        return -1;
+    }
+    rec = e2_block(4) + 24;          /* "small": inode 11, record 16 bytes */
+    rec[6] = 12u;                    /* name_len: four more than the record holds */
+    memcpy(rec + 8, "abcdefgh", 8);  /* the name fills the record exactly */
+    vibeos_blockcache_invalidate(&bc);
+    if (vibeos_ext2_mount(&fs, &bc, 0) != 0 ||
+        vibeos_fs_mount(&mnt, vibeos_ext2_ops(), &fs, "ext2") != 0) {
+        return -1;
+    }
+    if (vibeos_fs_list(&mnt, "/", 2, name, sizeof(name), &size, &is_dir) == 0 &&
+        strlen(name) > 8u) {
+        printf("FAIL:ext2 readdir returned %u bytes of a name whose record holds 8\n",
+               (unsigned)strlen(name));
+        return -1;
+    }
+    return 0;
+}
+
 /* M-022: the directory size comes straight from the image, high half included.
  * (size + block - 1) / block wraps to zero for a size near 2^64, so a directory
  * whose size field says "enormous" scanned as empty and every name in it was
@@ -8037,6 +8077,97 @@ static int test_ntfs_index_root_wrap(void) {
     }
     if (vibeos_fs_list(&mnt, "/", 0, name, sizeof(name), &size, &is_dir) == 0) {
         printf("FAIL:ntfs listed \"%s\" from bytes outside $INDEX_ROOT's own attribute\n", name);
+        return -1;
+    }
+    return 0;
+}
+
+/* M-047: an NTFS read stays inside its volume.
+ *
+ * exFAT and ISO9660 were bounded by their partition in H-029; NTFS was not given
+ * even a field to hold the bound, so a run list pointing past the partition read
+ * the neighbouring partition's sectors through an ordinary open() and read().
+ * BIG.BIN's first run starts at cluster 100 and its fourth cluster is at 50 (the
+ * backwards run): a bound of 80 sectors must refuse the first and still serve
+ * the second, so an over-eager bound fails this too. Both limits are checked -
+ * the partition table's, and the size the volume declares for itself. */
+static int test_ntfs_read_bounded_by_volume(void) {
+    vibeos_ntfs_t fs;
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    vibeos_fsmount_t mnt;
+    vibeos_fs_node_t node;
+    uint8_t buf[16];
+    int pass;
+
+    for (pass = 0; pass < 2; pass++) {
+        if (nt_mount(&fs, &bc, &dev) != 0) {
+            return -1;
+        }
+        if (pass == 1) {
+            /* The volume's own size, from its boot sector, with no table. */
+            nt_w64(nt_sec(0) + 0x28, 80u);
+            vibeos_blockcache_invalidate(&bc);
+            if (vibeos_ntfs_mount(&fs, &bc, 0) != 0) {
+                return -1;
+            }
+        } else {
+            fs.part_sectors = 80u;   /* what storage.c takes from the table */
+        }
+        if (vibeos_fs_mount(&mnt, vibeos_ntfs_ops(), &fs, "ntfs") != 0 ||
+            vibeos_fs_lookup(&mnt, "BIG.BIN", &node) != 0) {
+            return -1;
+        }
+        if (vibeos_fs_read_at(&mnt, &node, 0, buf, sizeof(buf)) > 0) {
+            printf("FAIL:ntfs read cluster 100 of a %s bounded at 80 sectors\n",
+                   pass ? "volume" : "partition");
+            return -1;
+        }
+        if (vibeos_fs_read_at(&mnt, &node, 4u * VIBEOS_BLOCK_SIZE, buf, sizeof(buf)) != 16 ||
+            buf[0] != 0xE5u) {
+            printf("FAIL:ntfs the bound refused cluster 50, inside it\n");
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* M-048: an index header's first-entry offset cannot wrap the walker.
+ *
+ * ntfs_index_walk checked `off + 16u <= value_len` with `off` read straight
+ * from the index header: an offset within sixteen of 2^32 wraps the sum to a
+ * small number, the check passes, and the entry is read from four gigabytes
+ * past the node. The walker serves the resident root and every INDX block, so
+ * both branches had it; M-039 bounded the root's value, not the offsets inside
+ * it.
+ *
+ * There is no in-bounds way to see this: the only offsets that wrap point four
+ * gigabytes away. Unfixed, this test does not fail - it crashes the suite, which
+ * is red, and is the one way the defect can show on a 64-bit host. */
+static int test_ntfs_index_offset_wrap(void) {
+    vibeos_ntfs_t fs;
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    vibeos_fsmount_t mnt;
+    vibeos_fs_node_t node;
+    uint64_t before;
+
+    if (nt_mount(&fs, &bc, &dev) != 0) {
+        return -1;
+    }
+    /* Record 5's $INDEX_ROOT: value at 64 + 32, header 16 bytes into it. */
+    nt_w32(nt_record(5) + 64 + 32 + 16, 0xFFFFFFF8u);
+    vibeos_blockcache_invalidate(&bc);
+    before = vibeos_mbz_count(VIBEOS_MBZ_NTFS_BAD_METADATA);
+    if (vibeos_ntfs_mount(&fs, &bc, 0) != 0 ||
+        vibeos_fs_mount(&mnt, vibeos_ntfs_ops(), &fs, "ntfs") != 0) {
+        return -1;
+    }
+    if (vibeos_fs_lookup(&mnt, "BIG.BIN", &node) == 0) {
+        return -1;
+    }
+    if (vibeos_mbz_count(VIBEOS_MBZ_NTFS_BAD_METADATA) == before) {
+        printf("FAIL:ntfs an impossible index offset was refused without being counted\n");
         return -1;
     }
     return 0;
@@ -9338,6 +9469,7 @@ int main(void) {
     RUN_TEST(test_ext2_mount_and_lookup);
     RUN_TEST(test_ext2_read);
     RUN_TEST(test_ext2_list);
+    RUN_TEST(test_ext2_list_name_bounded);
     RUN_TEST(test_ext2_dir_size_wrap);
     RUN_TEST(test_ext2_refusals);
     RUN_TEST(test_ext2_block_pointer_outside_volume);
@@ -9355,6 +9487,8 @@ int main(void) {
     RUN_TEST(test_ntfs_refusals);
     RUN_TEST(test_ntfs_attr_length_wrap);
     RUN_TEST(test_ntfs_index_root_wrap);
+    RUN_TEST(test_ntfs_read_bounded_by_volume);
+    RUN_TEST(test_ntfs_index_offset_wrap);
     RUN_TEST(test_ntfs_run_header_sizes);
     RUN_TEST(test_journal_commit);
     RUN_TEST(test_journal_power_cut);
