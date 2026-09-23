@@ -1503,10 +1503,17 @@ def main():
             # The probe is the one the volume scan uses, with no shared state
             # with the formatter - a formatter checked by its own idea of what
             # it wrote proves nothing.
+            #
+            # The verdict is read off the FORMAT line itself. This used to ask
+            # whether "result=OK" appeared anywhere in the log - and
+            # `[IO] LOGSINK result=OK` is on every boot, so no FORMAT failure
+            # could ever be reported. Found in C7, when a FAT mount that ignored
+            # its volume printed `result=FAILED: also on the root` and the gate
+            # passed it.
+            mf = re.search(r"\[IO\] FORMAT [^\n]*result=([^\n]*)", text)
             if "[IO] FORMAT" not in text:
                 problems.append("format_exercise_missing")
-            elif "result=OK" not in text:
-                mf = re.search(r"\[IO\] FORMAT [^\n]*result=([^\n]*)", text)
+            elif mf is None or mf.group(1).strip() != "OK":
                 problems.append("format:" +
                                 (mf.group(1).strip().replace(" ", "_")
                                  if mf else "unreadable"))

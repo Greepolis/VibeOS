@@ -30,6 +30,12 @@ SECTIONS
         __start_vibeos_devices = .;
         KEEP(*(vibeos_devices))
         __stop_vibeos_devices = .;
+        /* The filesystem drivers' descriptors (VIBEOS_FS_DRIVER,
+         * include/vibeos/storage.h), the same arrangement. */
+        . = ALIGN(8);
+        __start_vibeos_fs_drivers = .;
+        KEEP(*(vibeos_fs_drivers))
+        __stop_vibeos_fs_drivers = .;
     } :rodata
 
     .data ALIGN(4096) : {

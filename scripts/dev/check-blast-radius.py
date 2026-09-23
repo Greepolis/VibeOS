@@ -92,12 +92,17 @@ POINTS = {
         "filesystems took, and the one the plan claimed cost 1 file."),
     "filesystem (registered)": (
         "kernel/arch/x86_64/fat_vfs.c",
-        r"vibeos_x86_64_fat_(?:vfs_[A-Za-z0-9_]+|ops|register_driver)", 4,
-        "the seam exists and exactly one driver uses it - and it still costs "
-        "4, because somebody has to call the register function (arch_hw.c), "
-        "declare it (arch_x86_64.h), mount through it (io_bringup.c) and list "
-        "the file. A registry whose members still need an init call has a "
-        "floor no lower than one that has no registry at all."),
+        r"vibeos_x86_64_fat_(?:vfs_[A-Za-z0-9_]+|ops|register_driver)"
+        r"|g_fat_driver_[A-Za-z0-9_]+|fat_vfs_mount_boot", 1,
+        "**1 since C7 step 3b**: the driver declares itself with "
+        "VIBEOS_FS_DRIVER and arch_hw.c registers whatever the linker "
+        "collected. Was 4 - a register function io_bringup.c called by name, "
+        "declared in arch_x86_64.h beside an ops accessor and two exported "
+        "function pointers, and a boot-volume mount arch_hw.c declared extern. "
+        "Two callers still ask for it by the *string* \"fat\" - the boot "
+        "volume (UEFI requires the ESP to be FAT) and the exercise that "
+        "formats one - which a symbol count does not see and is a choice of "
+        "filesystem, not a dependency on a driver."),
     "block driver": (
         "kernel/arch/x86_64/ahci.c",
         r"vibeos_x86_64_ahci_[A-Za-z0-9_]+|ahci_dev_[A-Za-z0-9_]+", 1,

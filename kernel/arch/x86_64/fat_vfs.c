@@ -117,8 +117,9 @@ static const vibeos_fs_ops_t g_fat_ops = {
     fat_vfs_mkdir
 };
 
-/* Mount the boot volume. Returns 0 on success. */
-int vibeos_x86_64_fat_vfs_mount(vibeos_fsmount_t *mnt) {
+/* Mount the boot volume. Returns 0 on success. Reached as the driver's mount
+ * with a first_lba of zero - see fat_scan_mount. */
+static int fat_vfs_mount_boot(vibeos_fsmount_t *mnt) {
     if (vibeos_x86_64_fat_mount() != 0) {
         return -1;
     }
@@ -203,7 +204,7 @@ static int fat_scan_mount(vibeos_fsmount_t *out, vibeos_blockcache_t *cache,
     void *vol;
 
     if (first_lba == 0ull) {
-        return vibeos_x86_64_fat_vfs_mount(out);
+        return fat_vfs_mount_boot(out);
     }
     vol = vibeos_x86_64_fat_mount_volume(cache, (uint32_t)first_lba);
     if (!vol) {
@@ -366,22 +367,11 @@ static int fat_format(vibeos_blockcache_t *cache, uint64_t first_lba,
     return vibeos_blockcache_flush(cache);
 }
 
+/* The whole of what the rest of the kernel knows about this driver (C7). The
+ * boot volume, the I4c formatting exercise and the volume scan all reach it
+ * through vibeos_storage_driver("fat") or the scan; there used to be a register
+ * function, an ops accessor and two exported function pointers, one for each. */
 static const vibeos_fs_driver_t g_fat_driver = {
     "fat", fat_probe, fat_scan_mount, fat_format
 };
-
-/* Handed out so the I4c boot exercise can drive them without a second copy of
- * what a FAT volume looks like. */
-int (*g_fat_driver_probe)(vibeos_blockcache_t *cache, uint64_t first_lba) =
-    fat_probe;
-int (*g_fat_driver_format)(vibeos_blockcache_t *cache, uint64_t first_lba,
-                           uint64_t sectors) = fat_format;
-
-/* The ops table, for a caller that mounts a volume itself. */
-const vibeos_fs_ops_t *vibeos_x86_64_fat_ops(void) {
-    return &g_fat_ops;
-}
-
-void vibeos_x86_64_fat_register_driver(void) {
-    (void)vibeos_storage_register(&g_fat_driver);
-}
+VIBEOS_FS_DRIVER(g_fat_driver);

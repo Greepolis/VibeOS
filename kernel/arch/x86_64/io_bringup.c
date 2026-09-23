@@ -40,13 +40,6 @@
 
 #include "arch_hw_internal.h"
 
-/* Supplied by fat_vfs.c, which registers the FAT driver. Declared here rather
- * than in the shared header because only this file uses them, and a name in a
- * shared header is a name every future file has to reason about. */
-extern int (*g_fat_driver_probe)(vibeos_blockcache_t *cache, uint64_t first_lba);
-extern int (*g_fat_driver_format)(vibeos_blockcache_t *cache, uint64_t first_lba,
-                                  uint64_t sectors);
-
 /* ---- swap ---------------------------------------------------------------- */
 
 /* The block move the swap area is given, and the only way it reaches a disk.
@@ -842,12 +835,14 @@ void hw_scratch_bringup(void) {
          * the decision. */
         if (table_ok) {
             const char *fverdict = "not attempted";
-            if (!g_fat_driver_format) {
+            /* The driver the scan would pick, asked for by name: the exercise
+             * formats FAT, so it is not scanning for a filesystem (C7). */
+            const vibeos_fs_driver_t *fat = vibeos_storage_driver("fat");
+            if (!fat || !fat->format) {
                 fverdict = "FAILED: no format op";
-            } else if (g_fat_driver_format(&g_scratch_bc, 64ull, 6000ull) != 0) {
+            } else if (fat->format(&g_scratch_bc, 64ull, 6000ull) != 0) {
                 fverdict = "FAILED: format refused";
-            } else if (!g_fat_driver_probe ||
-                       g_fat_driver_probe(&g_scratch_bc, 64ull) != 0) {
+            } else if (fat->probe(&g_scratch_bc, 64ull) != 0) {
                 fverdict = "FAILED: the probe did not recognise it";
             } else {
                 /* Mount it, write a file, read it back. This is the phase's
@@ -861,11 +856,9 @@ void hw_scratch_bringup(void) {
                  * which is the property the table exists for and the one a
                  * first-match resolver would get wrong. */
                 static vibeos_fsmount_t s_scratch_mnt;
-                void *vol = vibeos_x86_64_fat_mount_volume(&g_scratch_bc, 64u);
 
                 fverdict = "FAILED: mount";
-                if (vol && vibeos_fs_mount(&s_scratch_mnt, vibeos_x86_64_fat_ops(),
-                                           vol, "fat") == 0 &&
+                if (fat->mount(&s_scratch_mnt, &g_scratch_bc, 64ull) == 0 &&
                     vibeos_fs_attach("/vol1", &s_scratch_mnt) == 0) {
                     static uint8_t s_wr[600];
                     static uint8_t s_rd[600];
@@ -900,6 +893,23 @@ void hw_scratch_bringup(void) {
                                 }
                                 fverdict = same ? "OK"
                                                 : "FAILED: contents differ";
+                                /* And not on the root. Everything above proves
+                                 * /vol1 reaches this *mount*, and that the mount
+                                 * round-trips - which a mount of the boot volume
+                                 * does too. A FAT driver whose mount ignored the
+                                 * volume it was given passed this exercise while
+                                 * writing HELLO.BIN onto the disk the machine
+                                 * runs from (C7, io-device-fs.txt case 2). */
+                                if (same) {
+                                    vibeos_fsmount_t *rm = 0;
+                                    const char *rt = 0;
+                                    if (vibeos_fs_resolve("/HELLO.BIN", &rm, &rt) == 0 &&
+                                        rm != &s_scratch_mnt &&
+                                        vibeos_fs_read_file(rm, rt, s_rd,
+                                                            sizeof(s_rd)) >= 0) {
+                                        fverdict = "FAILED: also on the root";
+                                    }
+                                }
                             }
                         }
                     }
@@ -954,8 +964,6 @@ void hw_volumes_bringup(void) {
     if (!bc) {
         return;
     }
-    /* Before the scan, or the scan has nothing to offer this volume to. */
-    vibeos_x86_64_fat_register_driver();
     {
         vibeos_blk_driver_t info;
         int dev = vibeos_x86_64_blk_device();

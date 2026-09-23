@@ -56,3 +56,15 @@
         return &st->volume[i].mount;
     }
     return 0;
+
+### a driver is found by a prefix of its name (C7)
+--- old
+        if (n[k] == 0 && name[k] == 0) {
++++ new
+        if (n[k] == 0) {
+
+### a driver the scan could not mount through is registered (C7)
+--- old
+    if (drv == 0 || drv->name == 0 || drv->probe == 0 || drv->mount == 0) {
++++ new
+    if (drv == 0 || drv->name == 0 || drv->probe == 0) {

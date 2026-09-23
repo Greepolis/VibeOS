@@ -122,10 +122,6 @@ uint64_t vibeos_x86_64_tlbq_live_peak(void);
  * header for it is vibeos/blockdev.h. */
 vibeos_blockcache_t *vibeos_x86_64_fat_cache(void);
 
-/* Let the portable volume scan see this driver. Registration rather than a
- * direct call, because kernel/fs must not depend on kernel/arch. */
-void vibeos_x86_64_fat_register_driver(void);
-
 /* Mount a second FAT volume, from a device the caller names.
  *
  * Returns an opaque handle, or null. Everything below takes that handle and
@@ -136,11 +132,6 @@ void vibeos_x86_64_fat_register_driver(void);
  * single lock and always has, so a handle selects a volume rather than making
  * two of them concurrent. That is a limit worth knowing and not a correctness
  * problem - see fat.c for what lifting it would take. */
-/* The FAT operations table, for a caller that mounts a volume itself rather
- * than through the scan. Not a `g_` name: it is a function, and the prefix in
- * this kernel means a global. */
-const vibeos_fs_ops_t *vibeos_x86_64_fat_ops(void);
-
 /* Attach a file on the boot volume as a read-only block device.
  *
  * The same extent resolution the swap area uses, for reading somebody else's
@@ -179,14 +170,6 @@ long vibeos_x86_64_fat_write_file_on(void *vol, const char *path,
                                      const void *buf, uint32_t len);
 int vibeos_x86_64_fat_unlink_on(void *vol, const char *path);
 int vibeos_x86_64_fat_mkdir_on(void *vol, const char *path);
-
-/* The probe and the formatter, for the boot exercise that partitions a scratch
- * device. Exposed rather than reached for: the exercise lives in arch_hw.c and
- * fat_vfs.c owns these, and a second copy of "what a FAT volume looks like" is
- * the thing the format op exists to prevent. */
-extern int (*g_fat_driver_probe)(vibeos_blockcache_t *cache, uint64_t first_lba);
-extern int (*g_fat_driver_format)(vibeos_blockcache_t *cache, uint64_t first_lba,
-                                  uint64_t sectors);
 
 void vibeos_x86_64_fat_cache_stats(uint64_t *hits, uint64_t *misses,
                                    uint64_t *evictions, uint64_t *evict_failed);

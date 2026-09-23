@@ -77,6 +77,24 @@ int vibeos_storage_register(const vibeos_fs_driver_t *drv)
     return 0;
 }
 
+const vibeos_fs_driver_t *vibeos_storage_driver(const char *name)
+{
+    uint32_t i, k;
+
+    if (name == 0) {
+        return 0;
+    }
+    for (i = 0; i < g_registered_count; i++) {
+        const char *n = g_registered[i]->name;
+        for (k = 0; n[k] != 0 && n[k] == name[k]; k++) {
+        }
+        if (n[k] == 0 && name[k] == 0) {
+            return g_registered[i];
+        }
+    }
+    return 0;
+}
+
 void vibeos_storage_reset_drivers(void)
 {
     g_registered_count = 0;

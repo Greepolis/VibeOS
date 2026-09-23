@@ -9030,6 +9030,39 @@ static int st_scan(vibeos_storage_t *st, vibeos_blockcache_t *bc,
     return vibeos_storage_scan(st, bc, ST_SECTORS);
 }
 
+/* The storage driver table (C7): what the boot volume and the formatting
+ * exercise ask for by name, and what the arch layer fills from a linker
+ * section. A driver the scan could not call is refused whole. */
+static int st_reg_probe(vibeos_blockcache_t *c, uint64_t l) { (void)c; (void)l; return -1; }
+static int st_reg_mount(vibeos_fsmount_t *o, vibeos_blockcache_t *c, uint64_t l)
+{
+    (void)o; (void)c; (void)l;
+    return -1;
+}
+
+static int test_storage_driver_registry(void)
+{
+    static const vibeos_fs_driver_t fat = { "fat", st_reg_probe, st_reg_mount, 0 };
+    static const vibeos_fs_driver_t fatx = { "fatx", st_reg_probe, st_reg_mount, 0 };
+    static const vibeos_fs_driver_t no_mount = { "nomount", st_reg_probe, 0, 0 };
+    int ok = 1;
+
+    vibeos_storage_reset_drivers();
+    ok &= vibeos_storage_register(&no_mount) == -1;
+    ok &= vibeos_storage_driver("nomount") == 0;
+    ok &= vibeos_storage_register(&fatx) == 0;
+    ok &= vibeos_storage_register(&fat) == 0;
+    /* Whole names: "fat" is not a prefix match for "fatx", nor the reverse. */
+    ok &= vibeos_storage_driver("fat") == &fat;
+    ok &= vibeos_storage_driver("fatx") == &fatx;
+    ok &= vibeos_storage_driver("fa") == 0;
+    ok &= vibeos_storage_driver("fatxy") == 0;
+    ok &= vibeos_storage_driver(0) == 0;
+    vibeos_storage_reset_drivers();
+    ok &= vibeos_storage_driver("fat") == 0;
+    return ok ? 0 : -1;
+}
+
 static int test_storage_partitioned(void)
 {
     static vibeos_storage_t st;
@@ -9496,6 +9529,7 @@ int main(void) {
     RUN_TEST(test_journal_commit_magic);
     RUN_TEST(test_journal_absurd_count);
     RUN_TEST(test_journal_refusals);
+    RUN_TEST(test_storage_driver_registry);
     RUN_TEST(test_storage_partitioned);
     RUN_TEST(test_storage_unpartitioned);
     RUN_TEST(test_storage_claims_nothing);

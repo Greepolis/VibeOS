@@ -1,0 +1,31 @@
+# C7 step 3b: FAT as a filesystem driver that declares itself
+# (kernel/arch/x86_64/fat_vfs.c, VIBEOS_FS_DRIVER), proved by the boot gate.
+# The storage table's own rules - whole-name lookup, a driver without a mount
+# refused - are host cases in storage.txt.
+#
+#  1. the driver does not declare itself: nothing registers FAT, the boot volume
+#     has no driver to mount it and the boot must go red rather than run on
+#     without a root;
+#  2. the driver's mount ignores the volume it is given and mounts the boot
+#     volume: the formatting exercise now reaches FAT through the registry
+#     rather than through fat_ops and fat_mount_volume, and a path under /vol1
+#     reading back the root is exactly what its read-back exists to catch.
+#
+# Target source: kernel/arch/x86_64/fat_vfs.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/arch/x86_64/fat_vfs.c scripts/dev/cases/io-device-fs.txt
+
+### the driver does not declare itself
+--- old
+VIBEOS_FS_DRIVER(g_fat_driver);
++++ new
+static const vibeos_fs_driver_t *const g_fat_unused __attribute__((used)) = &g_fat_driver;
+
+### a mount at an offset mounts the boot volume
+--- old
+    if (first_lba == 0ull) {
+        return fat_vfs_mount_boot(out);
+    }
++++ new
+    if (first_lba == 0ull || cache != 0) {
+        return fat_vfs_mount_boot(out);
+    }

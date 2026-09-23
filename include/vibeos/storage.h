@@ -108,6 +108,24 @@ typedef struct {
 
 int vibeos_storage_register(const vibeos_fs_driver_t *drv);
 
+/* A filesystem driver declares itself, in its own file, the way a device does
+ * (VIBEOS_DEVICE, include/vibeos/device.h): a pointer in a linker section the
+ * arch layer walks and registers at boot. FAT used to need a register function
+ * that io_bringup.c called by name, declared in arch_x86_64.h, next to an ops
+ * accessor and two exported function pointers for the one caller that mounts a
+ * volume itself - four files for a driver that had a registry (C7).
+ *
+ * ELF only: PE/COFF has no __start_/__stop_ symbols, which is why the portable
+ * core takes registrations and never walks the section itself. */
+#define VIBEOS_FS_DRIVER(desc) \
+    static const vibeos_fs_driver_t *const vibeos_fs_driver_ptr_##desc \
+        __attribute__((used, section("vibeos_fs_drivers"))) = &(desc)
+
+/* The registered driver with this name, or null. For a caller that has to
+ * choose a filesystem rather than scan for one - the boot volume, which UEFI
+ * requires to be FAT, and a volume the boot formats itself. */
+const vibeos_fs_driver_t *vibeos_storage_driver(const char *name);
+
 /* Forget every registered driver. For tests. */
 void vibeos_storage_reset_drivers(void);
 

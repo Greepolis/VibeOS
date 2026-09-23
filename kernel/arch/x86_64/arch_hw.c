@@ -547,7 +547,6 @@ static uint64_t g_cow_ring_at;
 static uint64_t g_cow_copy_changed;
 /* Copy-on-write faults resolved, of any kind. See the fold. */
 static uint64_t g_cow_resolved;
-extern int vibeos_x86_64_fat_vfs_mount(vibeos_fsmount_t *mnt);
 
 
 /* The ABI surface's must-be-zero: a syscall number the kernel does not
@@ -5735,6 +5734,22 @@ static void hw_device_unlock(void) {
     hw_spin_unlock(&g_device_lock);
 }
 
+/* The filesystem drivers, the same way (VIBEOS_FS_DRIVER). Registered once, at
+ * boot, before any volume is mounted or scanned - single-threaded, so the
+ * storage table needs no lock for as long as this is its only writer. */
+extern const vibeos_fs_driver_t *const __start_vibeos_fs_drivers[];
+extern const vibeos_fs_driver_t *const __stop_vibeos_fs_drivers[];
+
+static void hw_fs_drivers(void) {
+    const vibeos_fs_driver_t *const *d;
+
+    for (d = __start_vibeos_fs_drivers; d < __stop_vibeos_fs_drivers; d++) {
+        if (vibeos_storage_register(*d) != 0) {
+            hw_panic("filesystem driver refused: incomplete, or too many");
+        }
+    }
+}
+
 static void hw_device_table(void) {
     uint32_t n = (uint32_t)(__stop_vibeos_devices - __start_vibeos_devices);
 
@@ -5801,6 +5816,7 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
     /* Move off the legacy PIC/PIT onto the local + IO APIC pair (per-CPU timer,
      * IO-APIC interrupt routing) now that basic IRQ delivery is proven. */
     hw_device_table();
+    hw_fs_drivers();
     hw_apic_bringup(boot_info);
     hw_boot_stage("apic_smp");
 
@@ -6036,7 +6052,11 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
             if (vibeos_x86_64_blk_set_boot(d) != 0) {
                 continue;
             }
-            if (vibeos_x86_64_fat_vfs_mount(&g_rootfs) == 0) {
+            /* By name, and not by scanning: the machine boots from the EFI
+             * system partition, which UEFI requires to be FAT. A first_lba of
+             * zero is that driver's "the boot volume" (C7). */
+            const vibeos_fs_driver_t *fat = vibeos_storage_driver("fat");
+            if (fat && fat->mount(&g_rootfs, 0, 0ull) == 0) {
                 g_boot_disk_mounted = 1;
                 break;
             }
