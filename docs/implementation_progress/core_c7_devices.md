@@ -1,7 +1,7 @@
 # C7 - the registries the next refactor needs
 
-Status, 2026-09-23: **in progress - steps 1 and 2 of 4 done** (the registry, proved on
-the input devices; the network interface).
+Status, 2026-09-23: **in progress - steps 1, 2 and 3a of 4 done** (the registry,
+proved on the input devices; the network interface; the disk drivers).
 
 The plan (`docs/core/phases.md`): character, input, network and display devices
 register the way block devices do, `check-blast-radius.py` reports **1** for
@@ -95,8 +95,8 @@ section that loses its entries is named either way.
   and to nobody on an undeclared one; self-tests under the lock and reports
   outside it, for absent devices too; the input class in table order, the pointer
   only from a present device; report lines whole and newline-terminated.
-- `scripts/dev/cases/io-device.txt` (10 cases, host, the last two from step 2): all red by name.
-- `scripts/dev/cases/io-device-boot.txt` (3 cases, boot): an empty table (red as
+- `scripts/dev/cases/io-device.txt` (13 cases, host; 9-10 from step 2, 11-13 from step 3a): all red by name.
+- `scripts/dev/cases/io-device-boot.txt` (4 cases, boot; the fourth from step 3a): an empty table (red as
   a wedge: with no keyboard the boot's own script is never typed, and the boot
   stops before the counters that would name it); no wake; no routing.
 - `core-observability-modules.txt`: the three mouse cases, re-pointed at the
@@ -123,10 +123,67 @@ out; `io-device.txt` cases 9-10) and on the boot (`io-device-net.txt`: the
 timeout leaving the report line is `io_wait_counters_missing`; a device reported
 absent takes the lease and the TCP round trip down with it, by name).
 
+## Step 3a: the disk drivers
+
+A `BLOCK` class (`vibeos_block_ops_t`: `read`, `read_many`, `write`,
+`write_many`, `barrier`, `sectors`, `timeouts`). AHCI and virtio-blk are
+descriptors; their init is their probe, and `arch_hw.c` binds every present
+block device in table order through one loop instead of initialising each by
+name and spelling out seven of its functions.
+
+**Interrupt vectors are handed out, not chosen.** A PCI device has no legacy
+line to declare, so the descriptor's `isa_irq` is `VIBEOS_DEVICE_NO_IRQ` and
+the registry gives each table slot a vector of its own - slot *i* gets
+`VIBEOS_DEVICE_VECTOR_BASE + i` (48..63), passed to the probe in
+`env->vector`, one stub each in `isr.S`. The disks used to route their lines to
+42 and 43, literals chosen by hand *inside the legacy range*, each with its own
+branch in the interrupt handler. `vibeos_device_irq_vector` dispatches to the
+slot; anything it cannot place is `stray_vectors` on the `[DEV]` line, a
+must-be-zero the gate asserts (`device_stray_vector`). Two rules in that
+dispatch, each with a host test and a sabotage case:
+
+- it does **not** require the device to be present: a disk's probe is its init,
+  which routes the line and then issues commands that complete by interrupt -
+  before the probe has returned and the slot is marked;
+- a device on a legacy line is never dispatched a vector: it was handed one it
+  does not use, and a stray would otherwise become a keyboard read of port 0x60.
+
+The probes moved after the kernel log exists (the disk drivers log). The
+counters left kmain's `tlbq` line - four weak defaults and four prints - for
+each driver's own report line, `[AHCI] ahci_irqs=.. timeouts=..` and
+`[VBLK] blk_irqs=.. blk_irq_completions=.. blk_poll_completions=.. timeouts=..`;
+the gate's patterns were never anchored to the line, so they read the new ones
+unchanged. `[DEV] registered=` must now be at least 5 (keyboard, mouse,
+virtio-net and both disks are always built).
+
+**Block driver: 4 -> 1.** One visible change: the adapters now bind in link order,
+AHCI first (`[BLK] disks=.. disk=ahci:0 disk=virtio-blk:1`). That was checked
+rather than assumed: which disk the machine boots from has been decided by
+mounting since I5, not by bind order, and the boot gate is green on both
+controllers.
+
+Proved by the host test (`env.vector == BASE + slot`; a vector reaches that slot
+and no other; strays past the table, without a handler, on a legacy line and
+either side of the range call nobody; `io-device.txt` cases 11-13) and on the
+boot, every case red:
+
+- `io-device-block.txt` (AHCI, 3 cases): its line routed to a registry vector
+  nobody was given is `device_stray_vector` - about 5.9 million of them, because
+  a level-triggered line whose handler never runs is never acknowledged - and
+  `ahci_interrupt_never_fired`; the vector ignored (the driver polls, and the
+  disk still works, which is exactly why only the counter can say so) is
+  `ahci_interrupt_never_fired`; the count leaving its line is
+  `ahci_irq_counter_missing`.
+- `io-device-block-vblk.txt` (virtio-blk, 2 cases): `blk_interrupt_never_fired`
+  and `blk_completion_counters_missing`.
+- `io-device-boot.txt` case 4, the bind loop stopping after the first disk: red,
+  **but as a wedge** (`missing:VIBEOS_SELFTEST_DONE`), not by name. With only
+  AHCI bound the boot volume is never found, and the machine goes quiet instead
+  of saying so. Recorded as what it is, like case 1: the gate goes red, the
+  kernel does not explain itself.
+
 ## Next
 
-3. **Block and filesystems**: AHCI and virtio-blk onto descriptors (their
-   interrupts are PCI lines, not legacy ones - the descriptor needs a way to say
-   so), and the registered FAT driver without its init call.
+3b. **Filesystems**: the registered FAT driver without its init call.
 4. **Display**: the GUI registered, with its own lock, counters, a must-be-zero
    and a case file - the "done when" of the phase.
