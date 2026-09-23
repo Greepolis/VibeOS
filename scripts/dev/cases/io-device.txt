@@ -22,6 +22,12 @@
 #     send on, so every frame is swallowed;
 # 10. the stack is handed one without recv - a network that can send and never
 #     hear anything back.
+# 11. every probe is handed the same vector: two disks routing their lines to
+#     one vector, and each completion delivered to whichever slot owns it;
+# 12. a registry vector is dispatched one slot off - the disk's completion runs
+#     its neighbour's handler, and its own waits for a timeout;
+# 13. a device on a legacy line answers on the vector it was handed and does
+#     not use: a stray becomes a keyboard read of port 0x60.
 #
 # Target source: kernel/io/device.c
 # Run: python3 scripts/dev/sabotage.py kernel/io/device.c scripts/dev/cases/io-device.txt
@@ -101,3 +107,21 @@
         if (line < 0 || !g_present[i]) {
             continue;
         }
+
+### every probe is handed the same vector
+--- old
+            mine.vector = (i < VIBEOS_DEVICE_VECTORS) ? VIBEOS_DEVICE_VECTOR_BASE + i : 0u;
++++ new
+            mine.vector = (i < VIBEOS_DEVICE_VECTORS) ? VIBEOS_DEVICE_VECTOR_BASE : 0u;
+
+### a registry vector is dispatched one slot off
+--- old
+    i = vector - VIBEOS_DEVICE_VECTOR_BASE;
++++ new
+    i = vector - VIBEOS_DEVICE_VECTOR_BASE + 1u;
+
+### a device on a legacy line answers on a vector
+--- old
+    if (i >= g_count || !g_table[i]->irq || g_table[i]->isa_irq >= 0) {
++++ new
+    if (i >= g_count || !g_table[i]->irq) {

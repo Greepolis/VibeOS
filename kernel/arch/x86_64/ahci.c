@@ -20,6 +20,7 @@
 #include <stdint.h>
 
 #include "vibeos/arch_x86_64.h"
+#include "vibeos/device.h"
 
 /* ---- PCI config space ---------------------------------------------------- */
 
@@ -75,10 +76,13 @@ static void pci_write32(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off, uint3
 extern int vibeos_x86_64_ioapic_route_pci(uint8_t irq, uint8_t vector, uint32_t dest);
 
 static uint8_t g_irq_line;
+/* The interrupt vector the device registry gave this device (C7); 0 when
+ * none, and then the driver polls. It used to be a literal chosen by hand. */
+static uint32_t g_vector;
 static uint8_t g_irq_ready;
 static volatile uint32_t g_irq_count;
 
-uint64_t vibeos_x86_64_ahci_irqs(void) {
+static uint64_t ahci_dev_irqs(void) {
     return (uint64_t)g_irq_count;
 }
 
@@ -270,7 +274,7 @@ static void port_start(void) {
     port_write(PxCMD, port_read(PxCMD) | PxCMD_ST);
 }
 
-int vibeos_x86_64_ahci_init(void) {
+static int ahci_dev_init(void) {
     uint64_t abar = ahci_find();
     uint32_t ports, p;
 
@@ -350,8 +354,8 @@ int vibeos_x86_64_ahci_init(void) {
         mmio_write(HBA_GHC, mmio_read(HBA_GHC) | HBA_GHC_IE);
         port_start();
 
-        if (g_irq_line != 0u && g_irq_line < 24u &&
-            vibeos_x86_64_ioapic_route_pci(g_irq_line, 42u, 0u) == 0) {
+        if (g_vector != 0u && g_irq_line != 0u && g_irq_line < 24u &&
+            vibeos_x86_64_ioapic_route_pci(g_irq_line, (uint8_t)g_vector, 0u) == 0) {
             g_irq_ready = 1u;
         }
 
@@ -431,7 +435,7 @@ int vibeos_x86_64_ahci_init(void) {
  * the other way round leaves the controller believing the port is still
  * asserting and it never raises another one - a hang that looks exactly like a
  * device that stopped working. */
-void vibeos_x86_64_ahci_irq(void) {
+static void ahci_dev_irq(void) {
     if (g_abar == 0) {
         return;
     }
@@ -443,7 +447,7 @@ void vibeos_x86_64_ahci_irq(void) {
 static uint64_t g_timeouts;
 
 
-uint64_t vibeos_x86_64_ahci_timeouts(void) {
+static uint64_t ahci_dev_timeouts(void) {
     return g_timeouts;
 }
 
@@ -582,14 +586,14 @@ static uint64_t ahci_identify_sectors(void) {
     return (uint64_t)lba28;
 }
 
-uint64_t vibeos_x86_64_ahci_sectors(void) {
+static uint64_t ahci_dev_sectors(void) {
     if (!g_ready) {
         return 0;
     }
     return ahci_identify_sectors();
 }
 
-int vibeos_x86_64_ahci_read_many(uint64_t lba, void *buf, uint32_t sectors) {
+static int ahci_dev_read_many(uint64_t lba, void *buf, uint32_t sectors) {
     uint8_t *out = (uint8_t *)buf;
     uint32_t done = 0;
 
@@ -617,8 +621,8 @@ int vibeos_x86_64_ahci_read_many(uint64_t lba, void *buf, uint32_t sectors) {
     return 0;
 }
 
-int vibeos_x86_64_ahci_read(uint64_t lba, void *buf) {
-    return vibeos_x86_64_ahci_read_many(lba, buf, 1u);
+static int ahci_dev_read(uint64_t lba, void *buf) {
+    return ahci_dev_read_many(lba, buf, 1u);
 }
 
 /* The mirror of read_many, through the same bounce buffer.
@@ -628,7 +632,7 @@ int vibeos_x86_64_ahci_read(uint64_t lba, void *buf) {
  * split whatever the hardware could manage in one command. Splitting for a
  * reason that is this kernel's rather than the device's is worth saying out
  * loud - it is the number to raise if AHCI writes ever matter for speed. */
-int vibeos_x86_64_ahci_write_many(uint64_t lba, const void *buf,
+static int ahci_dev_write_many(uint64_t lba, const void *buf,
                                   uint32_t sectors) {
     const uint8_t *in = (const uint8_t *)buf;
     uint32_t done = 0;
@@ -663,7 +667,7 @@ int vibeos_x86_64_ahci_write_many(uint64_t lba, const void *buf,
  * one more of the declared-and-unused family this kernel keeps producing. It
  * carries no data, so the byte count is zero and there is no PRDT entry.
  */
-int vibeos_x86_64_ahci_barrier(void) {
+static int ahci_dev_barrier(void) {
     int rc;
 
     if (!g_ready) {
@@ -675,7 +679,7 @@ int vibeos_x86_64_ahci_barrier(void) {
     return rc;
 }
 
-int vibeos_x86_64_ahci_write(uint64_t lba, const void *buf) {
+static int ahci_dev_write(uint64_t lba, const void *buf) {
     const uint8_t *in = (const uint8_t *)buf;
     uint32_t i;
     int rc;
@@ -691,3 +695,55 @@ int vibeos_x86_64_ahci_write(uint64_t lba, const void *buf) {
     ahci_unlock();
     return rc;
 }
+
+/* Its counters, on its own line (C7): ahci_irqs was an accessor kmain.c called
+ * through a weak default, beside the other disk's. The gate reads the name, not
+ * the line it sits on. */
+static void ahci_dev_report(vibeos_dev_write_fn out, void *ctx) {
+    vibeos_devline_t l;
+
+    vibeos_devline_start(&l, "[AHCI] ahci_irqs=");
+    vibeos_devline_hex(&l, ahci_dev_irqs());
+    vibeos_devline_str(&l, " timeouts=");
+    vibeos_devline_hex(&l, g_timeouts);
+    vibeos_devline_end(&l, out, ctx);
+}
+
+static int ahci_dev_irq_entry(void) {
+    ahci_dev_irq();
+    return 0;
+}
+
+/* The probe is the init, with the vector the registry assigned. */
+static int ahci_dev_probe(const vibeos_dev_env_t *env) {
+    g_vector = env->vector;
+    return ahci_dev_init();
+}
+
+static uint64_t ahci_dev_sectors_now(void) {
+    return ahci_dev_sectors();
+}
+
+static const vibeos_block_ops_t g_ahci_dev_ops = {
+    .read = ahci_dev_read,
+    .read_many = ahci_dev_read_many,
+    .write = ahci_dev_write,
+    .write_many = ahci_dev_write_many,
+    .barrier = ahci_dev_barrier,
+    .sectors = ahci_dev_sectors_now,
+    .timeouts = ahci_dev_timeouts,
+};
+
+/* A PCI device: its interrupt is the line it routes to env->vector, so no
+ * legacy line is declared. */
+static const vibeos_device_t g_ahci_dev_device = {
+    .name = "ahci",
+    .cls = VIBEOS_DEV_BLOCK,
+    .isa_irq = VIBEOS_DEVICE_NO_IRQ,
+    .probe = ahci_dev_probe,
+    .irq = ahci_dev_irq_entry,
+    .selftest = 0,
+    .report = ahci_dev_report,
+    .ops = &g_ahci_dev_ops,
+};
+VIBEOS_DEVICE(g_ahci_dev_device);

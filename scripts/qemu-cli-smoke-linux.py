@@ -1982,22 +1982,28 @@ def main():
             # green. The keyboard's probe now makes the controller raise IRQ1;
             # irq_proved says it arrived, input_irq_wakes that the dispatch
             # woke readers because of it. registered counts the drivers the
-            # linker collected: keyboard and mouse are always built, so fewer
-            # than two is a section that lost its entries.
+            # linker collected: keyboard, mouse, virtio-net, AHCI and
+            # virtio-blk are always built, so fewer than five is a section that
+            # lost its entries. stray_vectors is an interrupt on a registry
+            # vector no device owns - a driver routing its line somewhere it
+            # was not given, acknowledged and otherwise forgotten.
             kp = re.search(r"\[KBD\] .* irq_proved=0x([0-9a-f]{16})", text)
             if kp is None:
                 problems.append("kbd_counters_missing")
             elif int(kp.group(1), 16) != 1:
                 problems.append("kbd_irq_unproven")
             dv = re.search(r"\[DEV\] registered=0x([0-9a-f]{16}) "
-                           r"input_irq_wakes=0x([0-9a-f]{16})", text)
+                           r"input_irq_wakes=0x([0-9a-f]{16}) "
+                           r"MUSTBEZERO stray_vectors=0x([0-9a-f]{16})", text)
             if dv is None:
                 problems.append("device_counters_missing")
             else:
-                if int(dv.group(1), 16) < 2:
+                if int(dv.group(1), 16) < 5:
                     problems.append("device_table_short=%d" % int(dv.group(1), 16))
                 if int(dv.group(2), 16) == 0:
                     problems.append("input_irq_wake_unproven")
+                if int(dv.group(3), 16) != 0:
+                    problems.append("device_stray_vector=%d" % int(dv.group(3), 16))
 
             # What the disk did.
             #

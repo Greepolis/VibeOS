@@ -10,6 +10,9 @@
 #     expect input_irq_wake_unproven;
 #  3. the legacy lines are not routed, so the keyboard and the mouse never
 #     interrupt: expect kbd_irq_unproven.
+#  4. only the first disk is bound (step 3): the log disk and the boot disk
+#     are on different controllers, so the loop stopping after one loses a
+#     medium the boot needs.
 #
 # The first run of 2 and 3 went NOT RED. Nobody types in CI - the boot's script
 # is injected into the keyboard's ring, which raises no interrupt - so the IRQ1
@@ -39,3 +42,14 @@
 +++ new
         uint32_t i, n = 0u;
         (void)vibeos_device_isa_lines;
+
+### only the first disk is bound
+--- old
+                                   op->timeouts);
+        }
+    }
++++ new
+                                   op->timeouts);
+            break;
+        }
+    }

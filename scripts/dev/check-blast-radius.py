@@ -99,10 +99,15 @@ POINTS = {
         "the file. A registry whose members still need an init call has a "
         "floor no lower than one that has no registry at all."),
     "block driver": (
-        "kernel/arch/x86_64/ahci.c", r"vibeos_x86_64_ahci_[A-Za-z0-9_]+", 4,
-        "vibeos_blk_register is a real seam, and the driver still needs an "
-        "init call from arch_hw.c, a declaration in arch_x86_64.h and a CMake "
-        "entry. The registry works; the bring-up does not."),
+        "kernel/arch/x86_64/ahci.c",
+        r"vibeos_x86_64_ahci_[A-Za-z0-9_]+|ahci_dev_[A-Za-z0-9_]+", 1,
+        "**1 since C7 step 3**: AHCI and virtio-blk are BLOCK-class "
+        "descriptors; the probe is the init, the operations go over in a "
+        "vibeos_block_ops_t that arch_hw.c binds in table order, the interrupt "
+        "vector is handed out by the registry, and the counters are the "
+        "driver's own report line. Was 4 - an init call and seven functions "
+        "spelled out in arch_hw.c, a declaration block in arch_x86_64.h, and "
+        "kmain.c printing their counters through weak defaults."),
     "network interface": (
         "kernel/arch/x86_64/virtio_net.c",
         r"vibeos_x86_64_virtio_net_[A-Za-z0-9_]+", 1,

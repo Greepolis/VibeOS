@@ -99,7 +99,11 @@ uint32_t vibeos_device_probe_all(const vibeos_dev_env_t *env) {
      * caller while it runs. */
     for (i = 0; i < g_count; i++) {
         if (g_table[i]->probe) {
-            g_present[i] = (g_table[i]->probe(env ? env : &none) == 0) ? 1u : 0u;
+            /* Each probe gets the machine's description and its own vector:
+             * the slot's, handed out here so no driver chooses one. */
+            vibeos_dev_env_t mine = env ? *env : none;
+            mine.vector = (i < VIBEOS_DEVICE_VECTORS) ? VIBEOS_DEVICE_VECTOR_BASE + i : 0u;
+            g_present[i] = (g_table[i]->probe(&mine) == 0) ? 1u : 0u;
         }
         present += g_present[i];
     }
@@ -158,6 +162,24 @@ int vibeos_device_irq(int line) {
         }
     }
     return flags;
+}
+
+int vibeos_device_irq_vector(uint32_t vector) {
+    uint32_t i;
+
+    if (vector < VIBEOS_DEVICE_VECTOR_BASE ||
+        vector >= VIBEOS_DEVICE_VECTOR_BASE + VIBEOS_DEVICE_VECTORS) {
+        return -1;
+    }
+    i = vector - VIBEOS_DEVICE_VECTOR_BASE;
+    /* Not "present": a disk's probe is its init, which routes the line and then
+     * issues commands that complete by interrupt - before the probe has
+     * returned and the slot has been marked. A device on a legacy line was
+     * handed a vector it does not use, so anything arriving there is a stray. */
+    if (i >= g_count || !g_table[i]->irq || g_table[i]->isa_irq >= 0) {
+        return -1;
+    }
+    return g_table[i]->irq();
 }
 
 void vibeos_device_report_all(vibeos_dev_write_fn out, void *ctx) {

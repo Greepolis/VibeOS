@@ -159,10 +159,6 @@ __attribute__((weak)) uint64_t vibeos_x86_64_tlbq_deferred(void) { return 0ull; 
 __attribute__((weak)) uint64_t vibeos_x86_64_tlbq_released(void) { return 0ull; }
 __attribute__((weak)) uint64_t vibeos_x86_64_tlbq_overflow(void) { return 0ull; }
 __attribute__((weak)) uint64_t vibeos_x86_64_tlbq_live_peak(void) { return 0ull; }
-__attribute__((weak)) uint64_t vibeos_x86_64_ahci_irqs(void) { return 0ull; }
-__attribute__((weak)) uint64_t vibeos_x86_64_virtio_blk_irqs(void) { return 0ull; }
-__attribute__((weak)) uint64_t vibeos_x86_64_virtio_blk_irq_completions(void) { return 0ull; }
-__attribute__((weak)) uint64_t vibeos_x86_64_virtio_blk_poll_completions(void) { return 0ull; }
 
 __attribute__((weak)) void vibeos_x86_64_console_interrupt(void) { }
 
@@ -873,20 +869,12 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
         kernel_log_u64_hex(vibeos_x86_64_tlbq_overflow());
         vibeos_x86_64_serial_puts(" tlbq_live_peak=0x");
         kernel_log_u64_hex(vibeos_x86_64_tlbq_live_peak());
-        vibeos_x86_64_serial_puts(" ahci_irqs=0x");
-        kernel_log_u64_hex(vibeos_x86_64_ahci_irqs());
-        vibeos_x86_64_serial_puts(" blk_irqs=0x");
-        kernel_log_u64_hex(vibeos_x86_64_virtio_blk_irqs());
-        vibeos_x86_64_serial_puts(" blk_irq_completions=0x");
-        kernel_log_u64_hex(vibeos_x86_64_virtio_blk_irq_completions());
-        vibeos_x86_64_serial_puts(" blk_poll_completions=0x");
-        kernel_log_u64_hex(vibeos_x86_64_virtio_blk_poll_completions());
         vibeos_x86_64_serial_puts("\n");
 
         /* Every registered device's own counters, each on its own line - the
-         * keyboard's used to be in the middle of the line above and the mouse's
-         * in arch_hw.c, and each counter a driver gained cost an accessor in
-         * arch_x86_64.h and a weak default and a print here (C7). */
+         * keyboard's and both disks' used to be in the middle of the line above
+         * and the mouse's in arch_hw.c, and each counter a driver gained cost an
+         * accessor in arch_x86_64.h and a weak default and a print here (C7). */
         vibeos_device_report_all(kernel_serial_line, 0);
 
         /* I7's last question, and the only one that needs the machine: were

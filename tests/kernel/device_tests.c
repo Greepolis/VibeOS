@@ -66,6 +66,7 @@ static int probe_absent(const vibeos_dev_env_t *env) {
 static int irq_a(void) { trace("Ia"); return VIBEOS_DEV_IRQ_INPUT; }
 static int irq_b(void) { trace("Ib"); return 0; }
 static int irq_c(void) { trace("Ic"); return 0; }
+static int irq_v(void) { trace("Iv"); return 0; }
 
 static void selftest_a(void) { g_selftest_held = g_held; trace("Sa"); }
 static void selftest_b(void) { trace("Sb"); }
@@ -127,7 +128,8 @@ static const vibeos_input_ops_t ops_ptr9 = { 0, 0, pointer_nine };
  * absent mouse: probe fails, line 12, has a pointer that must not be used.
  * mouse: probe succeeds, line 12, pointer.
  * keyboard2: no probe, line 1, no irq handler.
- * net: not input, no irq, present. */
+ * net: not input, no irq, present.
+ * disk: no legacy line, a handler for its vector, present. */
 static const vibeos_device_t d_kbd = {
     "kbd", VIBEOS_DEV_INPUT, 1, 0, irq_a, selftest_a, report_a, &ops_keys };
 static const vibeos_device_t d_absent = {
@@ -138,6 +140,9 @@ static const vibeos_device_t d_kbd2 = {
     "kbd2", VIBEOS_DEV_INPUT, 1, 0, 0, 0, 0, &ops_keys2 };
 static const vibeos_device_t d_net = {
     "net", VIBEOS_DEV_NET, VIBEOS_DEVICE_NO_IRQ, 0, 0, 0, 0, 0 };
+/* A PCI-style device: no legacy line, its interrupt arrives on its vector. */
+static const vibeos_device_t d_disk = {
+    "disk", VIBEOS_DEV_BLOCK, VIBEOS_DEVICE_NO_IRQ, 0, irq_v, 0, 0, 0 };
 
 /* Network devices: one that fails its probe, one missing an operation, one whole. */
 static const uint8_t g_mac_a[6] = { 2, 0, 0, 0, 0, 0xA };
@@ -166,7 +171,7 @@ static int t_out(void *ctx, const char *line, uint32_t len) {
 }
 
 int test_device(void) {
-    const vibeos_device_t *table[] = { &d_kbd, &d_absent, &d_mouse, &d_kbd2, &d_net };
+    const vibeos_device_t *table[] = { &d_kbd, &d_absent, &d_mouse, &d_kbd2, &d_net, &d_disk };
     const vibeos_device_t *holey[] = { &d_kbd, 0 };
     static const vibeos_device_t *many[VIBEOS_DEVICE_MAX + 1u];
     vibeos_dev_env_t env;
@@ -191,7 +196,7 @@ int test_device(void) {
                 "more drivers than the registry holds are refused, not truncated")) { return -1; }
 
     /* ---- the table, and who is present before anything is probed -------------- */
-    if (!expect(vibeos_device_set_table(table, 5u) == 0 && vibeos_device_count() == 5u,
+    if (!expect(vibeos_device_set_table(table, 6u) == 0 && vibeos_device_count() == 6u,
                 "the table is taken")) { return -1; }
     if (!expect(vibeos_device_present(0) && !vibeos_device_present(2) &&
                 vibeos_device_present(4),
@@ -209,8 +214,9 @@ int test_device(void) {
     env.fb_width = 1280u;
     env.fb_height = 800u;
     g_trace[0] = 0;
-    if (!expect(vibeos_device_probe_all(&env) == 4u,
-                "four present: two without a probe, the mouse that answered, the net")) { return -1; }
+    if (!expect(vibeos_device_probe_all(&env) == 5u,
+                "five present: two without a probe, the mouse that answered, the net, "
+                "the disk")) { return -1; }
     if (!expect(strcmp(g_trace, "P-P+") == 0 && g_seen_env.fb_width == 1280u,
                 "every device with a probe is asked, in table order, and sees the "
                 "machine's description")) { return -1; }
@@ -222,7 +228,7 @@ int test_device(void) {
 
     /* ---- sealed: late registration and a second probe are refused and counted - */
     sealed_before = vibeos_mbz_count(VIBEOS_MBZ_DEVICE_AFTER_SEAL);
-    if (!expect(vibeos_device_set_table(table, 1u) == -1 && vibeos_device_count() == 5u,
+    if (!expect(vibeos_device_set_table(table, 1u) == -1 && vibeos_device_count() == 6u,
                 "the table cannot be replaced once readers run without a lock")) { return -1; }
     if (!expect(vibeos_device_probe_all(&env) == 0u,
                 "a second probe is refused")) { return -1; }
@@ -238,6 +244,25 @@ int test_device(void) {
     if (!expect(vibeos_device_irq(1) == VIBEOS_DEV_IRQ_INPUT && strcmp(g_trace, "Ia") == 0,
                 "the handlers' flags come back, and a device with no handler is "
                 "skipped")) { return -1; }
+
+    /* ---- vectors ------------------------------------------------------------------ */
+    if (!expect(g_seen_env.vector == VIBEOS_DEVICE_VECTOR_BASE + 2u,
+                "a probe is handed its slot's vector - the mouse is slot 2 - so no "
+                "driver picks one by hand")) { return -1; }
+    g_trace[0] = 0;
+    if (!expect(vibeos_device_irq_vector(VIBEOS_DEVICE_VECTOR_BASE + 5u) == 0 &&
+                strcmp(g_trace, "Iv") == 0,
+                "a registry vector reaches the device in that slot and no other")) { return -1; }
+    g_trace[0] = 0;
+    if (!expect(vibeos_device_irq_vector(VIBEOS_DEVICE_VECTOR_BASE + 6u) == -1 &&
+                vibeos_device_irq_vector(VIBEOS_DEVICE_VECTOR_BASE + 3u) == -1 &&
+                vibeos_device_irq_vector(VIBEOS_DEVICE_VECTOR_BASE + 0u) == -1 &&
+                vibeos_device_irq_vector(VIBEOS_DEVICE_VECTOR_BASE - 1u) == -1 &&
+                vibeos_device_irq_vector(VIBEOS_DEVICE_VECTOR_BASE + VIBEOS_DEVICE_VECTORS) == -1 &&
+                g_trace[0] == 0,
+                "a stray says so: past the table, a device with no handler, a device "
+                "on a legacy line (its vector is not its interrupt), and either side "
+                "of the range - and calls nobody")) { return -1; }
     g_trace[0] = 0;
     if (!expect(vibeos_device_irq(5) == 0 && g_trace[0] == 0,
                 "a line nobody declared reaches nobody")) { return -1; }

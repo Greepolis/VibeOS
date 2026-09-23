@@ -95,8 +95,6 @@ void vibeos_x86_64_blk_bind(const char *name,
 uint32_t vibeos_x86_64_blk_adapter_count(void);
 int vibeos_x86_64_blk_adapter_device(uint32_t n);
 const char *vibeos_x86_64_blk_adapter_name(uint32_t n);
-uint64_t vibeos_x86_64_virtio_blk_timeouts(void);
-uint64_t vibeos_x86_64_ahci_timeouts(void);
 uint64_t vibeos_x86_64_blk_timeouts(void);
 
 /* The unmap quarantine: frames parked until every other core has flushed.
@@ -199,18 +197,10 @@ void vibeos_x86_64_fat_cache_stats(uint64_t *hits, uint64_t *misses,
  * caller as one thing. */
 const char *vibeos_x86_64_fat_write_why(void);
 
-/* Multi-sector writes, the mirror of the read_many pair. Added at I4: until
- * then nothing wrote enough sectors for the difference to be measurable, and a
- * boot's entire writing was about thirty of them. */
-int vibeos_x86_64_virtio_blk_write_many(uint64_t sector, const void *buf,
-                                        uint32_t sectors);
-int vibeos_x86_64_ahci_write_many(uint64_t lba, const void *buf,
-                                  uint32_t sectors);
-
-/* Make everything already written durable on the medium. Not a cache flush of
- * this kernel's own - see vibeos_blk_barrier for the distinction. */
-int vibeos_x86_64_virtio_blk_barrier(void);
-int vibeos_x86_64_ahci_barrier(void);
+/* The disk drivers' own functions - read, write, the multi-sector pair, the
+ * barrier, their size - used to be declared here, one set per driver. Since C7
+ * a disk driver is a registered device (include/vibeos/device.h) and hands them
+ * over in a vibeos_block_ops_t; nothing outside its file names them. */
 
 /* Where a file's bytes physically are, for swap and for nothing else. See the
  * comment on the definition: `contiguous` is reported rather than assumed,
@@ -227,10 +217,6 @@ int vibeos_x86_64_blk_read(uint64_t lba, void *buf);
 int vibeos_x86_64_blk_read_many(uint64_t lba, void *buf, uint32_t sectors);
 int vibeos_x86_64_blk_write(uint64_t lba, const void *buf);
 
-/* How many sectors each driver's device holds, or 0 if it would not say. */
-uint64_t vibeos_x86_64_virtio_blk_sectors(void);
-uint64_t vibeos_x86_64_ahci_sectors(void);
-
 /* Which device index the bound driver was given in the block layer. Negative
  * when nothing bound. */
 int vibeos_x86_64_blk_device(void);
@@ -241,11 +227,5 @@ int vibeos_x86_64_blk_device(void);
 int vibeos_x86_64_blk_set_boot(uint32_t n);
 uint64_t vibeos_x86_64_blk_boot_rejected(void);
 uint32_t vibeos_x86_64_blk_boot_adapter(void);
-
-/* AHCI (SATA): what VirtualBox, VMware and real machines provide. */
-int vibeos_x86_64_ahci_init(void);
-int vibeos_x86_64_ahci_read(uint64_t lba, void *buf);
-int vibeos_x86_64_ahci_read_many(uint64_t lba, void *buf, uint32_t sectors);
-int vibeos_x86_64_ahci_write(uint64_t lba, const void *buf);
 
 #endif

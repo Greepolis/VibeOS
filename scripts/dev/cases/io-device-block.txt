@@ -1,0 +1,36 @@
+# C7 step 3: AHCI as a registered block device (kernel/arch/x86_64/ahci.c),
+# proved by the boot gate. virtio-blk has the same shape and its own file,
+# io-device-block-vblk.txt.
+#
+#  1. the driver routes its line to a registry vector it was not given (the
+#     last one, which no device owns): expect device_stray_vector - an
+#     interrupt the dispatch would otherwise acknowledge and forget;
+#  2. the driver ignores the vector it was handed and polls: expect
+#     ahci_interrupt_never_fired. The disk still works, which is the point: a
+#     driver that silently stopped taking interrupts is exactly as correct and
+#     exactly as slow as before, and only the counter says so;
+#  3. its counters leave its report line: expect ahci_irq_counter_missing - the
+#     line moved out of kmain.c in this step, and a counter that stops being
+#     printed must not read as one that stayed at zero.
+#
+# Target source: kernel/arch/x86_64/ahci.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/arch/x86_64/ahci.c scripts/dev/cases/io-device-block.txt
+
+### the line is routed to a vector nobody was given
+--- old
+            vibeos_x86_64_ioapic_route_pci(g_irq_line, (uint8_t)g_vector, 0u) == 0) {
++++ new
+            vibeos_x86_64_ioapic_route_pci(g_irq_line, (uint8_t)(VIBEOS_DEVICE_VECTOR_BASE + VIBEOS_DEVICE_VECTORS - 1u), 0u) == 0) {
+
+### the vector handed out is ignored
+--- old
+    g_vector = env->vector;
++++ new
+    g_vector = 0u;
+    (void)env;
+
+### the interrupt count leaves the report line
+--- old
+    vibeos_devline_start(&l, "[AHCI] ahci_irqs=");
++++ new
+    vibeos_devline_start(&l, "[AHCI] ahci_irqz=");

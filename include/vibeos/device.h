@@ -32,6 +32,15 @@
 #define VIBEOS_DEVICE_MAX 32u
 #define VIBEOS_DEVICE_NO_IRQ (-1)
 
+/* Interrupt vectors the registry hands out, one per table slot: slot i gets
+ * VIBEOS_DEVICE_VECTOR_BASE + i, passed to its probe in env->vector. For a
+ * device whose interrupt is a PCI line the driver routes itself, rather than a
+ * legacy ISA line. Before C7 each driver hard-coded one - AHCI 42, virtio-blk 43,
+ * inside the range the legacy lines use - and a second AHCI controller would have
+ * had nowhere to go. Slots past the range get vector 0: no interrupt, polled. */
+#define VIBEOS_DEVICE_VECTOR_BASE 48u
+#define VIBEOS_DEVICE_VECTORS 16u
+
 typedef enum {
     VIBEOS_DEV_INPUT = 1,
     VIBEOS_DEV_NET,
@@ -45,6 +54,9 @@ typedef struct {
     uint64_t fb_base;
     uint32_t fb_width;
     uint32_t fb_height;
+    /* This device's interrupt vector (see VIBEOS_DEVICE_VECTOR_BASE), set by
+     * the registry for each probe; 0 when it has none. */
+    uint32_t vector;
 } vibeos_dev_env_t;
 
 /* One complete line, as every other writer in the kernel takes them. */
@@ -67,6 +79,18 @@ typedef struct {
     int (*recv)(void *out, uint32_t cap);           /* a frame's length, 0 = none */
 } vibeos_net_ops_t;
 
+/* A disk: sectors of 512 bytes. What vibeos_x86_64_blk_bind takes, gathered so
+ * the architecture binds every registered disk without naming a driver. */
+typedef struct {
+    int (*read)(uint64_t lba, void *buf);
+    int (*read_many)(uint64_t lba, void *buf, uint32_t sectors);
+    int (*write)(uint64_t lba, const void *buf);
+    int (*write_many)(uint64_t lba, const void *buf, uint32_t sectors);
+    int (*barrier)(void);
+    uint64_t (*sectors)(void);
+    uint64_t (*timeouts)(void);
+} vibeos_block_ops_t;
+
 typedef struct vibeos_device {
     const char *name;
     vibeos_dev_class_t cls;
@@ -85,7 +109,8 @@ typedef struct vibeos_device {
     /* The driver's counters, as complete lines. May be 0. */
     void (*report)(vibeos_dev_write_fn out, void *ctx);
     /* Class operations: a vibeos_input_ops_t for VIBEOS_DEV_INPUT, a
-     * vibeos_net_ops_t for VIBEOS_DEV_NET. */
+     * vibeos_net_ops_t for VIBEOS_DEV_NET, a vibeos_block_ops_t for
+     * VIBEOS_DEV_BLOCK. */
     const void *ops;
 } vibeos_device_t;
 
@@ -113,6 +138,11 @@ uint32_t vibeos_device_isa_lines(int *lines, uint32_t cap);
 
 /* An interrupt arrived on legacy line `line`. The OR of the handlers' flags. */
 int vibeos_device_irq(int line);
+
+/* An interrupt arrived on a vector the registry handed out. The handler's
+ * flags, or -1 when no registered device owns that vector - a stray the caller
+ * should count rather than ignore. */
+int vibeos_device_irq_vector(uint32_t vector);
 
 /* Self-tests, then reports, of every registered device - present or not; the
  * driver decides what it has to say when absent - in table order. */

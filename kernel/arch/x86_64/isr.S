@@ -84,6 +84,26 @@ vibeos_isr_\num:
     ISR_NOERR 46   /* IRQ14                       */
     ISR_NOERR 47   /* IRQ15                       */
 
+    /* 0x30-0x3F: vectors the device registry hands out, one per table slot,
+     * for PCI interrupt lines the drivers route themselves (C7,
+     * VIBEOS_DEVICE_VECTOR_BASE in include/vibeos/device.h). */
+    ISR_NOERR 48
+    ISR_NOERR 49
+    ISR_NOERR 50
+    ISR_NOERR 51
+    ISR_NOERR 52
+    ISR_NOERR 53
+    ISR_NOERR 54
+    ISR_NOERR 55
+    ISR_NOERR 56
+    ISR_NOERR 57
+    ISR_NOERR 58
+    ISR_NOERR 59
+    ISR_NOERR 60
+    ISR_NOERR 61
+    ISR_NOERR 62
+    ISR_NOERR 63
+
     ISR_NOERR 128  /* 0x80 software syscall       */
     ISR_NOERR 254  /* 0xFE TLB shootdown IPI      */
     ISR_NOERR 255  /* 0xFF local-APIC spurious    */
@@ -310,6 +330,10 @@ vibeos_isr_stub_table:
     .quad vibeos_isr_36, vibeos_isr_37, vibeos_isr_38, vibeos_isr_39
     .quad vibeos_isr_40, vibeos_isr_41, vibeos_isr_42, vibeos_isr_43
     .quad vibeos_isr_44, vibeos_isr_45, vibeos_isr_46, vibeos_isr_47
+    .quad vibeos_isr_48, vibeos_isr_49, vibeos_isr_50, vibeos_isr_51
+    .quad vibeos_isr_52, vibeos_isr_53, vibeos_isr_54, vibeos_isr_55
+    .quad vibeos_isr_56, vibeos_isr_57, vibeos_isr_58, vibeos_isr_59
+    .quad vibeos_isr_60, vibeos_isr_61, vibeos_isr_62, vibeos_isr_63
 
 /* Mark stack as non-executable to silence the linker warning. */
     .section .note.GNU-stack,"",@progbits

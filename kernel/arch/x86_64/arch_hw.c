@@ -48,7 +48,9 @@
 #include "vibeos/swaparea.h"
 #define VIBEOS_HW_IDT_GATES 256u
 #define VIBEOS_HW_GATE_INTERRUPT 0x8Eu /* present, DPL=0, 64-bit interrupt gate */
-#define VIBEOS_HW_WIRED_VECTORS 48u    /* 0-31 CPU exceptions + 32-47 PIC IRQs */
+/* 0-31 CPU exceptions, 32-47 the legacy lines, 48-63 the vectors the device
+ * registry hands out (C7). One stub each in isr.S. */
+#define VIBEOS_HW_WIRED_VECTORS 64u
 
 /* 8259 PIC and 8253/8254 PIT ports. */
 #define PIC1_CMD 0x20u
@@ -81,6 +83,11 @@ static volatile uint64_t g_ioapic_irqs[15];
  * probe raised IRQ1 on purpose this path - routing, dispatch, wake - ran in no
  * boot at all, and breaking it was invisible (C7). */
 static volatile uint64_t g_input_irq_wakes;
+
+/* An interrupt on a registry vector that no device owns. Must be zero: a
+ * device raising one would be a driver routing its line to a vector it was not
+ * given, and it would otherwise be acknowledged and forgotten. */
+static volatile uint64_t g_device_stray_irqs;
 
 uint64_t vibeos_x86_64_ioapic_irq_count(uint32_t vector) {
     return (vector >= 33u && vector < 48u) ? g_ioapic_irqs[vector - 33u] : 0ull;
@@ -359,8 +366,6 @@ extern const unsigned long vibeos_user_hello_elf_len;
 /* The two disk interrupt handlers, declared where the dispatcher can see
  * them. They were being called implicitly: gcc accepts that with a warning,
  * clang refuses it, and code scanning reported both call sites. */
-void vibeos_x86_64_ahci_irq(void);
-void vibeos_x86_64_virtio_blk_irq(void);
 
 static void hw_schedule(vibeos_x86_64_isr_frame_t *frame); /* defined below */
 /* Defined with the page cache it walks, several thousand lines below, and
@@ -481,14 +486,14 @@ extern volatile uint32_t vibeos_x86_64_ap_alive;
 /* The network interface is whichever device registered one (C7,
  * include/vibeos/device.h); see hw_net_bringup. */
 
-extern int vibeos_x86_64_virtio_blk_init(void);
-extern int vibeos_x86_64_virtio_blk_read(uint64_t sector, void *buf);
-extern int vibeos_x86_64_virtio_blk_read_many(uint64_t sector, void *buf, uint32_t sectors);
-extern int vibeos_x86_64_virtio_blk_write(uint64_t sector, const void *buf);
 #include "vibeos/log.h"
 #include "vibeos/klog.h"
 #include "vibeos/crash.h"
 #include "vibeos/device.h"
+
+_Static_assert(VIBEOS_DEVICE_VECTOR_BASE + VIBEOS_DEVICE_VECTORS <= VIBEOS_HW_WIRED_VECTORS,
+               "every vector the registry hands out needs a stub in isr.S");
+
 #include "vibeos/mm_model.h"
 #include "vibeos/frame.h"
 #include "vibeos/vmspace.h"
@@ -1270,13 +1275,14 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
         if (frame->vector > 32u && frame->vector < 48u) {
             g_ioapic_irqs[frame->vector - 33u]++;
         }
-        if (frame->vector == 42u) { /* AHCI: a command finished */
-            vibeos_x86_64_ahci_irq();
-            hw_pic_send_eoi((uint32_t)frame->vector);
-            return;
-        }
-        if (frame->vector == 43u) { /* virtio-blk: a transfer finished */
-            vibeos_x86_64_virtio_blk_irq();
+        /* A vector the device registry handed out: to the device in that slot.
+         * The disks used to route their PCI lines to 42 and 43, chosen by hand
+         * inside the legacy range, and each had its own branch here (C7). */
+        if (frame->vector >= VIBEOS_DEVICE_VECTOR_BASE &&
+            frame->vector < VIBEOS_DEVICE_VECTOR_BASE + VIBEOS_DEVICE_VECTORS) {
+            if (vibeos_device_irq_vector((uint32_t)frame->vector) < 0) {
+                g_device_stray_irqs++;
+            }
             hw_pic_send_eoi((uint32_t)frame->vector);
             return;
         }
@@ -5580,6 +5586,8 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
         vibeos_x86_64_serial_print_hex((uint64_t)vibeos_device_count());
         vibeos_x86_64_serial_puts(" input_irq_wakes=0x");
         vibeos_x86_64_serial_print_hex(g_input_irq_wakes);
+        vibeos_x86_64_serial_puts(" MUSTBEZERO stray_vectors=0x");
+        vibeos_x86_64_serial_print_hex(g_device_stray_irqs);
         /* The registry the parsers, the journal, the log sink and the scheduler
          * report through (kernel/core/mbz.c): total, and which one and what it
          * saw first. One line so the witness cannot be separated from the count. */
@@ -5943,11 +5951,17 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
         vibeos_x86_64_serial_puts("[FB] no framebuffer; console is serial-only\n");
     }
 
-    /* Every registered device, now that the screen's size is known (a pointer
-     * clamps to it). The mouse used to be initialised by name inside the
-     * framebuffer setup just above; its probe keeps the same condition. */
+    hw_klog_init();
+    hw_crash_init();
+    hw_log(VIBEOS_LOG_INFO, 0, 0, 0, "kernel log ready");
+    hw_boot_stage("log");
+
+    /* Every registered device, once the screen's size is known (a pointer
+     * clamps to it) and the kernel log exists (the disk drivers log). The mouse
+     * used to be initialised by name inside the framebuffer setup above and the
+     * disks just below; their probes keep the same conditions. */
     {
-        vibeos_dev_env_t env = { 0, 0, 0 };
+        vibeos_dev_env_t env = { 0, 0, 0, 0 };
         if (boot_info && boot_info->framebuffer_base != 0u) {
             env.fb_base = boot_info->framebuffer_base;
             env.fb_width = boot_info->framebuffer_width;
@@ -5955,11 +5969,6 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
         }
         (void)vibeos_device_probe_all(&env);
     }
-
-    hw_klog_init();
-    hw_crash_init();
-    hw_log(VIBEOS_LOG_INFO, 0, 0, 0, "kernel log ready");
-    hw_boot_stage("log");
 
     /* Real storage: find a disk, mount the FAT filesystem, and load the init
      * program straight from it (EFI/BOOT/INIT.ELF -> INIT.ELF at root).
@@ -5970,35 +5979,25 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
      * appliances booted and then could not read their own disk - the
      * bootloader hid it, because UEFI does the reading up to ExitBootServices
      * and after that there was simply no device. */
-    if (vibeos_x86_64_virtio_blk_init() == 0) {
-        vibeos_x86_64_blk_bind("virtio-blk",
-                               vibeos_x86_64_virtio_blk_read,
-                               vibeos_x86_64_virtio_blk_read_many,
-                               vibeos_x86_64_virtio_blk_write,
-                               vibeos_x86_64_virtio_blk_write_many,
-                               vibeos_x86_64_virtio_blk_barrier,
-                               vibeos_x86_64_virtio_blk_sectors(),
-                               vibeos_x86_64_virtio_blk_timeouts);
-    }
-    /* Not "else if" any more.
-     *
-     * It was, and that was right while the adapter beneath could only hold one
-     * driver: trying AHCI after virtio had won could only waste a probe. Now
-     * that each bind is its own device, a machine with both controllers gets
-     * both disks - which is what I5b's log needs, since a log that lives on the
-     * boot filesystem is unwritable exactly when it is most wanted.
-     *
-     * The order still decides which one is "the disk": virtio binds first and
-     * keeps that meaning for every caller above. */
-    if (vibeos_x86_64_ahci_init() == 0) {
-        vibeos_x86_64_blk_bind("ahci",
-                               vibeos_x86_64_ahci_read,
-                               vibeos_x86_64_ahci_read_many,
-                               vibeos_x86_64_ahci_write,
-                               vibeos_x86_64_ahci_write_many,
-                               vibeos_x86_64_ahci_barrier,
-                               vibeos_x86_64_ahci_sectors(),
-                               vibeos_x86_64_ahci_timeouts);
+    /* Every disk the device registry found, bound in table order (C7). The
+     * drivers used to be initialised and bound here by name - virtio-blk, then
+     * AHCI, each with seven of its functions spelled out - so a third disk
+     * driver meant editing this function. Which disk is the boot disk is
+     * decided by mounting, just below, not by this order; see there for why
+     * bind order stopped deciding it. */
+    {
+        uint32_t i;
+        for (i = 0; i < vibeos_device_count(); i++) {
+            const vibeos_device_t *d = vibeos_device_at(i);
+            const vibeos_block_ops_t *op;
+            if (d->cls != VIBEOS_DEV_BLOCK || !vibeos_device_present(i) || !d->ops) {
+                continue;
+            }
+            op = (const vibeos_block_ops_t *)d->ops;
+            vibeos_x86_64_blk_bind(d->name, op->read, op->read_many, op->write,
+                                   op->write_many, op->barrier, op->sectors(),
+                                   op->timeouts);
+        }
     }
     {
         uint32_t d;

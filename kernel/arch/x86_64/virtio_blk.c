@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 #include "vibeos/arch_x86_64.h"
+#include "vibeos/device.h"
 #include "vibeos/blockdev.h"
 
 /* ---- port I/O ------------------------------------------------------------ */
@@ -22,7 +23,7 @@
  * the boot gate asserts is zero, was produced by nobody. */
 static uint64_t g_timeouts;
 
-uint64_t vibeos_x86_64_virtio_blk_timeouts(void) {
+static uint64_t vblk_dev_timeouts(void) {
     return g_timeouts;
 }
 
@@ -140,6 +141,9 @@ extern void vibeos_x86_64_irq_probe(uint8_t gsi);
 static uint8_t g_bus;
 static uint8_t g_dev;
 static uint8_t g_irq_line;
+/* The interrupt vector the device registry gave this device (C7); 0 when
+ * none, and then the driver polls. It used to be a literal chosen by hand. */
+static uint32_t g_vector;
 static uint8_t g_irq_pin;
 static uint32_t g_pci_cmd;
 static uint8_t g_irq_ready;
@@ -185,15 +189,15 @@ static int blk_may_halt(uint64_t spins) {
  * assert. Whether it shortened any particular wait is a latency question, and
  * the poll counter beside it is what will answer that on a machine slow enough
  * for the difference to exist. */
-uint64_t vibeos_x86_64_virtio_blk_irqs(void) {
+static uint64_t vblk_dev_irqs(void) {
     return (uint64_t)g_irq_count;
 }
 
-uint64_t vibeos_x86_64_virtio_blk_irq_completions(void) {
+static uint64_t vblk_dev_irq_completions(void) {
     return g_irq_completions;
 }
 
-uint64_t vibeos_x86_64_virtio_blk_poll_completions(void) {
+static uint64_t vblk_dev_poll_completions(void) {
     return g_poll_completions;
 }
 
@@ -202,7 +206,7 @@ uint64_t vibeos_x86_64_virtio_blk_poll_completions(void) {
  * exactly one place that consumes completions and it is the waiter. Two
  * consumers of one ring is the defect this driver already had once, when two
  * cores raced over a single used index. */
-void vibeos_x86_64_virtio_blk_irq(void) {
+static void vblk_dev_irq(void) {
     if (g_io_base == 0u) {
         return;
     }
@@ -220,7 +224,7 @@ static uint64_t g_capacity;
 /* What the device said it holds. Exposed so the block layer can bounds-check
  * requests against it - a device with no size cannot have its requests
  * checked, and the layer refuses to register one. */
-uint64_t vibeos_x86_64_virtio_blk_sectors(void) {
+static uint64_t vblk_dev_sectors(void) {
     return g_capacity;
 }
 
@@ -301,7 +305,7 @@ static uint16_t virtio_blk_find(void) {
     return 0;
 }
 
-int vibeos_x86_64_virtio_blk_init(void) {
+static int vblk_dev_init(void) {
     uint64_t desc_off, avail_off, used_off;
     uint32_t i;
 
@@ -396,8 +400,8 @@ int vibeos_x86_64_virtio_blk_init(void) {
      * The driver is correct meanwhile: it polls, exactly as it did before, and
      * the counters below say so out loud rather than leaving it to be noticed.
      */
-    if (g_irq_line != 0u && g_irq_line < 24u &&
-        vibeos_x86_64_ioapic_route_pci(g_irq_line, 43u, 0u) == 0) {
+    if (g_vector != 0u && g_irq_line != 0u && g_irq_line < 24u &&
+        vibeos_x86_64_ioapic_route_pci(g_irq_line, (uint8_t)g_vector, 0u) == 0) {
         g_irq_ready = 1u;
     }
     /* The other side of the wire, now that the interrupt controller has been
@@ -558,17 +562,17 @@ static int virtio_blk_rw_n(uint64_t sector, void *buf, uint32_t sectors, int wri
     }
 }
 
-int vibeos_x86_64_virtio_blk_read(uint64_t sector, void *buf) {
+static int vblk_dev_read(uint64_t sector, void *buf) {
     return virtio_blk_rw_n(sector, buf, 1u, 0);
 }
 
-int vibeos_x86_64_virtio_blk_write(uint64_t sector, const void *buf) {
+static int vblk_dev_write(uint64_t sector, const void *buf) {
     return virtio_blk_rw_n(sector, (void *)(uintptr_t)buf, 1u, 1);
 }
 
 /* Read a run of consecutive sectors in as few requests as the device allows.
  * `buf` must have room for `sectors` * 512 bytes. */
-int vibeos_x86_64_virtio_blk_read_many(uint64_t sector, void *buf, uint32_t sectors) {
+static int vblk_dev_read_many(uint64_t sector, void *buf, uint32_t sectors) {
     uint8_t *out = (uint8_t *)buf;
 
     while (sectors > 0u) {
@@ -596,7 +600,7 @@ int vibeos_x86_64_virtio_blk_read_many(uint64_t sector, void *buf, uint32_t sect
  * exactly one place, with the driver's own signature saying it does not write
  * through it, is better than a union that has to be read correctly at each
  * use. */
-int vibeos_x86_64_virtio_blk_write_many(uint64_t sector, const void *buf,
+static int vblk_dev_write_many(uint64_t sector, const void *buf,
                                         uint32_t sectors) {
     const uint8_t *in = (const uint8_t *)buf;
 
@@ -623,7 +627,7 @@ int vibeos_x86_64_virtio_blk_write_many(uint64_t sector, const void *buf,
  *
  * `sector` is required to be zero for a flush; sending anything else is a
  * request the specification does not define. */
-int vibeos_x86_64_virtio_blk_barrier(void) {
+static int vblk_dev_barrier(void) {
     uint16_t head;
     uint64_t spins = 0;
 
@@ -679,34 +683,57 @@ int vibeos_x86_64_virtio_blk_barrier(void) {
     }
 }
 
-/* ---- the portable block-device view -------------------------------------- */
+/* Its counters, on its own line (C7): three accessors kmain.c called through
+ * weak defaults. The gate reads the three names in this order, not the line. */
+static void vblk_dev_report(vibeos_dev_write_fn out, void *ctx) {
+    vibeos_devline_t l;
 
-/* The rest of the storage stack is written against vibeos_blockdev_t and knows
- * nothing about virtio, which is what lets it be tested on the host against an
- * array. This is the one function that joins the two, and it is deliberately
- * the only place in the kernel that does. */
-
-static int blk_dev_read(void *ctx, uint64_t lba, void *buf) {
-    (void)ctx;
-    return virtio_blk_rw_n(lba, buf, 1u, 0);
+    vibeos_devline_start(&l, "[VBLK] blk_irqs=");
+    vibeos_devline_hex(&l, vblk_dev_irqs());
+    vibeos_devline_str(&l, " blk_irq_completions=");
+    vibeos_devline_hex(&l, vblk_dev_irq_completions());
+    vibeos_devline_str(&l, " blk_poll_completions=");
+    vibeos_devline_hex(&l, vblk_dev_poll_completions());
+    vibeos_devline_str(&l, " timeouts=");
+    vibeos_devline_hex(&l, vblk_dev_timeouts());
+    vibeos_devline_end(&l, out, ctx);
 }
 
-static int blk_dev_write(void *ctx, uint64_t lba, const void *buf) {
-    (void)ctx;
-    return virtio_blk_rw_n(lba, (void *)(uintptr_t)buf, 1u, 1);
+static int vblk_dev_irq_entry(void) {
+    vblk_dev_irq();
+    return 0;
 }
 
-void vibeos_x86_64_virtio_blk_device(vibeos_blockdev_t *out) {
-    if (!out) {
-        return;
-    }
-    out->read = blk_dev_read;
-    out->write = blk_dev_write;
-    /* No flush: this device completes a request when the used ring says so,
-     * with no cache of its own to empty. Claiming a barrier it does not
-     * provide would be worse than admitting there is none - the journal reads
-     * a missing flush as "nothing to do", not as "already durable". */
-    out->flush = 0;
-    out->ctx = 0;
-    out->sectors = g_capacity;
+/* The probe is the init, with the vector the registry assigned. */
+static int vblk_dev_probe(const vibeos_dev_env_t *env) {
+    g_vector = env->vector;
+    return vblk_dev_init();
 }
+
+static uint64_t vblk_dev_sectors_now(void) {
+    return vblk_dev_sectors();
+}
+
+static const vibeos_block_ops_t g_vblk_dev_ops = {
+    .read = vblk_dev_read,
+    .read_many = vblk_dev_read_many,
+    .write = vblk_dev_write,
+    .write_many = vblk_dev_write_many,
+    .barrier = vblk_dev_barrier,
+    .sectors = vblk_dev_sectors_now,
+    .timeouts = vblk_dev_timeouts,
+};
+
+/* A PCI device: its interrupt is the line it routes to env->vector, so no
+ * legacy line is declared. */
+static const vibeos_device_t g_vblk_dev_device = {
+    .name = "virtio-blk",
+    .cls = VIBEOS_DEV_BLOCK,
+    .isa_irq = VIBEOS_DEVICE_NO_IRQ,
+    .probe = vblk_dev_probe,
+    .irq = vblk_dev_irq_entry,
+    .selftest = 0,
+    .report = vblk_dev_report,
+    .ops = &g_vblk_dev_ops,
+};
+VIBEOS_DEVICE(g_vblk_dev_device);
