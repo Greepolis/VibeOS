@@ -377,10 +377,22 @@ Every case red, and all but one by name:
   Its first run was red as a crash - the test called the repaint before
   checking which display it had - and the test was reordered.
 
-Not yet run: the Windows (mingw) build of the core now contains the first
-VIBEOS_DEVICE descriptor in the portable library (`gui.c`); the section
-attribute there is untested on PE/COFF until CI runs it. The ThreadSanitizer
-nightly job is new and has not run either.
+### What CI found on the first push
+
+The Windows job built the first VIBEOS_DEVICE descriptor in the portable library
+without complaint, and the nightly's new job - 200 seeds under ASan and UBSan,
+the threads under ThreadSanitizer - passed. **The clang Debug job did not**:
+UBSan stopped on `store to misaligned address ... uint64_t` in the canary. The
+canary sat straight after the pixels, and a screen with an odd pixel count puts
+that on a 4-byte boundary. gcc's UBSan, in the nightly, ran the same code and
+said nothing; one sanitizer's silence is not the other's.
+
+It starts at the pixel count rounded up to even now, the size the caller owes is
+one macro (`VIBEOS_GUI_BACK_BYTES`), and init refuses a buffer that is not
+8-byte aligned. The host test's screen is 201x151, so the odd case runs on every
+build rather than only on the torture's random screens. `io-gui-ubsan.txt` puts
+the old placement back and `verify-host-sanitized.sh` - the CI job's own
+configuration - reports the same error CI did (M-053).
 
 `check.sh all` green, warnings 0 on gcc and clang, repeat-boot 6/6.
 
