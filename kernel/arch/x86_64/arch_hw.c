@@ -379,6 +379,9 @@ int hw_user_range_ok(uint64_t va, uint64_t len, int need_write);
 /* The fault-tolerant copy's faulting range and recovery point (uaccess.S). */
 extern const char vibeos_uaccess_copy_begin[];
 extern const char vibeos_uaccess_copy_end[];
+/* kernel.ld: the whole loaded image, text through bss, page-aligned. */
+extern const char __kernel_image_start[];
+extern const char __kernel_image_end[];
 extern void vibeos_uaccess_copy_fixup(void);
 static uint64_t g_uaccess_recovered;
 static void hw_net_pump(void);                             /* defined below */
@@ -2368,6 +2371,35 @@ static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
     if (vibeos_pmm_init_from_boot_info(&g_hw_pmm, boot_info, 4096) != 0) {
         vibeos_x86_64_serial_puts("[HW] PMM init failed: falling back to the static page pool\n");
         return;
+    }
+    /* The kernel's own image must never be handed out. It is loader memory, so a
+     * correct map already excludes it - but for as long as the loader passed the
+     * map it took before loading the kernel, the largest free region contained
+     * the image, and a load that allocated about 40 MiB reached the page holding
+     * the IDT and the timer's interrupt stack and zeroed them (M-060). Every
+     * symptom was a core faulting at a garbage rip inside the timer interrupt.
+     * Reserve it regardless, and say whether the map needed correcting: the boot
+     * gate asserts that it did not. */
+    {
+        uintptr_t img = (uintptr_t)__kernel_image_start;
+        uintptr_t img_end = (uintptr_t)__kernel_image_end;
+        int in_pool = !(img_end <= g_hw_pmm.base ||
+                        img >= g_hw_pmm.base + g_hw_pmm.size_bytes);
+
+        vibeos_x86_64_serial_lock();
+        vibeos_x86_64_serial_puts("[HW] kernel image 0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)img);
+        vibeos_x86_64_serial_puts("-0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)img_end);
+        vibeos_x86_64_serial_puts(" in_free_map=");
+        vibeos_x86_64_serial_puts(in_pool ? "1" : "0");
+        vibeos_x86_64_serial_puts("\n");
+        vibeos_x86_64_serial_unlock();
+        if (vibeos_pmm_reserve(&g_hw_pmm, img, (size_t)(img_end - img)) != 0) {
+            vibeos_x86_64_serial_puts("[HW] PMM cannot reserve the kernel image; "
+                                     "falling back to the static page pool\n");
+            return;
+        }
     }
     /* Nothing of the kernel's may live where a process can shadow it. See
      * VIBEOS_HW_LOW_USER_BASE and vibeos_pmm_reserve for why this is a

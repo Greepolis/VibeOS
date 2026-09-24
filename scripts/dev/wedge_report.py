@@ -158,6 +158,80 @@ def symbolize(kernel, addrs):
     return res
 
 
+def kernel_symbols(kernel):
+    """name -> address for every symbol in the image, statics included.
+
+    The kernel is identity-mapped, so an address here is also the physical
+    address `xp` reads. nm rather than a parse of the ELF: it is already a
+    dependency of the tools beside this one."""
+    try:
+        out = subprocess.run(["nm", kernel], capture_output=True, text=True,
+                             check=False).stdout
+    except OSError:
+        return {}
+    syms = {}
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 3:
+            try:
+                syms[parts[2]] = int(parts[0], 16)
+            except ValueError:
+                pass
+    return syms
+
+
+def mm_stats_fields():
+    """The field names of vibeos_mm_stats_t, in order. Every field is a
+    uint64_t - vibeos_mm_stats_reset clears the struct as an array of them - so
+    the order is the layout."""
+    import os
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    try:
+        text = open(os.path.join(root, "include", "vibeos", "mm_stats.h"),
+                    encoding="utf-8").read()
+    except OSError:
+        return []
+    body = re.search(r"typedef struct[^{]*\{(.*?)\}\s*vibeos_mm_stats_t", text, re.S)
+    if not body:
+        return []
+    fields = []
+    for line in body.group(1).splitlines():
+        m = re.match(r"\s*uint64_t\s+([a-z_0-9]+)\s*;", line)
+        if m:
+            fields.append(m.group(1))
+    return fields
+
+
+def black_box(monitor_path, kernel):
+    """What the memory detectors recorded, read out of a guest that can no longer
+    print it (M-060).
+
+    The detectors count and record whether or not the machine survives to
+    report; the report is what needs the console, and a machine whose console
+    lock is held by a dead core prints nothing. The records are still in
+    memory, and the monitor reads memory."""
+    lines = []
+    syms = kernel_symbols(kernel)
+    fields = mm_stats_fields()
+    if "g_mm_stats" in syms and fields:
+        words = read_words(monitor_path, syms["g_mm_stats"], len(fields))
+        nonzero = ["%s=%d" % (f, v) for f, v in zip(fields, words) if v]
+        lines.append("[BLACKBOX] mm_stats nonzero: " + (" ".join(nonzero) or "none"))
+    else:
+        lines.append("[BLACKBOX] mm_stats not found (symbol or header)")
+    if "g_poison_reported" in syms and "g_poison_rec" in syms:
+        n = read_words(monitor_path, syms["g_poison_reported"] & ~7, 1)
+        count = (n[0] >> (8 * (syms["g_poison_reported"] & 7))) & 0xFFFFFFFF if n else 0
+        lines.append("[BLACKBOX] poison records: %d" % count)
+        if count:
+            recs = read_words(monitor_path, syms["g_poison_rec"], 5 * min(count, 8))
+            for i in range(0, len(recs) - 4, 5):
+                phys, word, found, tag, owners = recs[i:i + 5]
+                lines.append("[BLACKBOX]   frame=0x%x word=0x%x found=0x%x freed_by=0x%x owners=%d"
+                             % (phys, word, found, tag, owners))
+    return lines
+
+
 def report(monitor_path, kernel):
     lines = []
     dump = monitor(monitor_path, "info registers -a", settle=2.0)
@@ -218,6 +292,7 @@ def report(monitor_path, kernel):
         if not chains.get(num):
             lines.append("[WEDGE]    (no frame chain: idle, or stopped in "
                          "assembly with no frame set up)")
+    lines.extend(black_box(monitor_path, kernel))
     return lines
 
 

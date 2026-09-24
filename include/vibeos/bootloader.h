@@ -41,6 +41,7 @@ typedef struct vibeos_boot_image_plan {
 
 int vibeos_bootloader_build_boot_info(vibeos_boot_info_t *boot_info, vibeos_memory_region_t *region_buffer, uint64_t region_count);
 int vibeos_bootloader_build_boot_info_sanitized(vibeos_boot_info_t *boot_info, const vibeos_memory_region_t *input_regions, uint64_t input_count, vibeos_memory_region_t *scratch_buffer, uint64_t scratch_capacity, uint64_t *out_sanitized_count);
+int vibeos_bootloader_refresh_memory_map(vibeos_boot_info_t *boot_info, const vibeos_memory_region_t *input_regions, uint64_t input_count, uint64_t capacity);
 int vibeos_bootloader_validate_boot_info(const vibeos_boot_info_t *boot_info);
 int vibeos_bootloader_memory_summary(const vibeos_boot_info_t *boot_info, uint64_t *out_total_bytes, uint64_t *out_usable_bytes);
 int vibeos_bootloader_count_region_type(const vibeos_boot_info_t *boot_info, uint32_t region_type, uint64_t *out_count);

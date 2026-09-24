@@ -10,6 +10,7 @@ PHDRS
 SECTIONS
 {
     . = 0x4000000;
+    __kernel_image_start = .;
 
     .text ALIGN(4096) : {
         KEEP(*(.text))
@@ -48,6 +49,8 @@ SECTIONS
         *(.bss)
         *(.bss.*)
     } :data
+    . = ALIGN(4096);
+    __kernel_image_end = .;
 
     /DISCARD/ : {
         *(.comment)

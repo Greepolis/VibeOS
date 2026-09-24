@@ -1,0 +1,24 @@
+# Target source: boot/bootloader_core.c
+#
+# M-060's refresh, proved by test_bootloader_refresh_memory_map. The sanitizer
+# it reuses rebuilds boot_info from scratch, so every field it does not own has
+# to be put back.
+#
+#  1. initrd is not put back. The kernel would boot with no INIT.ELF and run its
+#     built-in program - a boot that "works", with the wrong userland.
+#  2. the sanitizer is given the input count as the capacity, so a map longer
+#     than the array is written past its end. Expect the refusal check.
+
+### the refresh forgets the initrd
+--- old
+    boot_info->initrd_base = kept.initrd_base;
+    boot_info->initrd_size = kept.initrd_size;
++++ new
+
+### the refresh trusts the input to fit the array
+--- old
+                                                    capacity,
+                                                    &sanitized_count) != 0) {
++++ new
+                                                    input_count,
+                                                    &sanitized_count) != 0) {

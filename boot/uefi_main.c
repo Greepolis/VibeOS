@@ -274,6 +274,36 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         uefi_serial_puts("[WARN] framebuffer rejected by boot_info; console stays serial-only\n");
     }
 
+    /* The map in boot_info was taken in phase 2, before the kernel's segments,
+     * boot_info and INIT.ELF were allocated, so it calls all of them free. Take
+     * it again now that the loader has allocated everything it will (M-060):
+     * nothing between here and ExitBootServices allocates, and a firmware
+     * allocation in that window would be boot-services memory, which is the
+     * kernel's to reuse anyway. Failing is fatal - handing over a map that calls
+     * the kernel free is how the kernel ends up giving away its own IDT. */
+    {
+        vibeos_memory_region_t fb_region;
+
+        fb_region.base = fb_base;
+        fb_region.length = 0;
+        fb_region.type = VIBEOS_MEMORY_REGION_MMIO;
+        fb_region.reserved = 0;
+        if (fb_base != 0) {
+            uint64_t i;
+            for (i = 0; i < memory_count; i++) {
+                if (memory_regions[i].base == fb_base &&
+                    memory_regions[i].type == VIBEOS_MEMORY_REGION_MMIO) {
+                    fb_region.length = memory_regions[i].length;
+                }
+            }
+        }
+        if (uefi_boot_info_refresh_memory_map(SystemTable, boot_info, memory_regions,
+                                              BOOT_INFO_MAX_REGIONS, &fb_region) != 0) {
+            uefi_serial_puts("[ERROR] Could not refresh the memory map after loading\n");
+            return EFI_VIBEOS_ERR_BOOTINFO_ALLOC;
+        }
+    }
+
     /* Finalize and validate boot_info */
     if (uefi_boot_info_finalize(kernel_struct, boot_info) != 0) {
         uefi_serial_puts("[WARN] Boot info finalization had issues\n");

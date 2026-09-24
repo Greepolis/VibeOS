@@ -1,0 +1,27 @@
+# Target source: boot/uefi_main.c
+#
+# M-060: the loader handed over the memory map it took in phase 2, before it
+# allocated the kernel's segments, boot_info and INIT.ELF - so all of those were
+# "usable", and the kernel image sat inside the frame allocator's pool. About
+# 40 MiB of allocation reached the page holding the IDT and the timer's IST and
+# zeroed it; every core then faulted at a garbage rip inside the timer
+# interrupt, and nothing in the kernel's C could see it happen.
+#
+# Run with SABOTAGE_VERIFY=scripts/dev/verify-boot.sh.
+#
+#  1. the refresh is skipped. The kernel still reserves its image, so the boot
+#     survives - and the gate goes red on kernel_image_in_free_map, which is the
+#     point: the reservation is a second line, and a map that needs it is wrong.
+#
+# The kernel's own reservation (hw_pmm_bringup) has no case here: with the
+# refresh in place the image is never in the pool, so removing the reservation
+# changes nothing a boot can see. It was shown the other way - both removed,
+# with svc-press started from init, reproduces the M-060 wedge; the refresh
+# alone, or the reservation alone, does not.
+
+### the loader hands over the map it took before loading anything
+--- old
+        if (uefi_boot_info_refresh_memory_map(SystemTable, boot_info, memory_regions,
+                                              BOOT_INFO_MAX_REGIONS, &fb_region) != 0) {
++++ new
+        if (0) {

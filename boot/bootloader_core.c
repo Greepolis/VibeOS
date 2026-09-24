@@ -345,6 +345,47 @@ int vibeos_bootloader_build_boot_info_sanitized(vibeos_boot_info_t *boot_info, c
     return vibeos_bootloader_validate_boot_info(boot_info);
 }
 
+/* Replace boot_info's memory map with a newer one, in the array it already
+ * points at, and keep every other field.
+ *
+ * The map has to describe memory as it is when boot services end, not as it was
+ * when the loader started: everything the loader allocates in between - the
+ * kernel's own segments, boot_info, the map array, INIT.ELF - is loader memory
+ * the kernel must never hand out, and a map taken before those allocations calls
+ * all of it free. That is M-060: the frame allocator reached the kernel image
+ * and gave away the pages holding the IDT and the timer's interrupt stack.
+ *
+ * `capacity` is the number of entries the existing array can hold. Returns 0
+ * on success; on failure the map may be half-written and must not be used. */
+int vibeos_bootloader_refresh_memory_map(vibeos_boot_info_t *boot_info, const vibeos_memory_region_t *input_regions, uint64_t input_count, uint64_t capacity) {
+    vibeos_boot_info_t kept;
+    uint64_t sanitized_count = 0;
+
+    if (!boot_info || !boot_info->memory_map || !input_regions || input_count == 0 || capacity == 0) {
+        return -1;
+    }
+    kept = *boot_info;
+    /* The sanitizer rebuilds boot_info from scratch and clears every field it
+     * does not own; put back the ones it does not own afterwards. The array is
+     * const only to the kernel that reads it; the loader allocated it and is the
+     * one writer it has. */
+    if (vibeos_bootloader_build_boot_info_sanitized(boot_info, input_regions, input_count,
+                                                    (vibeos_memory_region_t *)(uintptr_t)kept.memory_map,
+                                                    capacity,
+                                                    &sanitized_count) != 0) {
+        return -1;
+    }
+    boot_info->flags = kept.flags;
+    boot_info->acpi_rsdp = kept.acpi_rsdp;
+    boot_info->smbios_entry = kept.smbios_entry;
+    boot_info->initrd_base = kept.initrd_base;
+    boot_info->initrd_size = kept.initrd_size;
+    boot_info->framebuffer_base = kept.framebuffer_base;
+    boot_info->framebuffer_width = kept.framebuffer_width;
+    boot_info->framebuffer_height = kept.framebuffer_height;
+    return 0;
+}
+
 int vibeos_bootloader_set_firmware_tables(vibeos_boot_info_t *boot_info, uint64_t acpi_rsdp, uint64_t smbios_entry) {
     if (!boot_info) {
         return -1;

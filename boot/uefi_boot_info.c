@@ -1,10 +1,19 @@
 #include "uefi_boot_info.h"
 #include "uefi_serial.h"
+#include "uefi_memory.h"
 
 #define UEFI_PAGE_SIZE 4096ull
 #define UEFI_KERNEL_STRUCT_PREFERRED 0x200000ull
 #define UEFI_BOOT_INFO_PREFERRED 0x201000ull
 #define UEFI_BOOT_MAP_PREFERRED 0x202000ull
+
+/* The map array is sized for the early map plus this many entries, because the
+ * map refreshed before handoff is longer: every allocation the loader makes
+ * after the first map splits a free region. */
+#define UEFI_BOOT_MAP_SLACK 64u
+
+/* Entries the published map array can hold; the refresh must not exceed it. */
+static uint64_t g_boot_map_capacity;
 
 static void uefi_zero_pages(void *base, uint64_t pages) {
     uint8_t *ptr = (uint8_t *)base;
@@ -107,7 +116,7 @@ int uefi_boot_info_allocate(EFI_SYSTEM_TABLE *st,
 
     /* Size the memory-map allocation from the region count, rounded up to
      * whole pages: this array is what boot_info->memory_map points at. */
-    memory_map_pages = (((uint64_t)memory_count * sizeof(vibeos_memory_region_t)) + (UEFI_PAGE_SIZE - 1ull)) / UEFI_PAGE_SIZE;
+    memory_map_pages = ((((uint64_t)memory_count + UEFI_BOOT_MAP_SLACK) * sizeof(vibeos_memory_region_t)) + (UEFI_PAGE_SIZE - 1ull)) / UEFI_PAGE_SIZE;
     if (memory_map_pages == 0) {
         memory_map_pages = 1;
     }
@@ -170,6 +179,7 @@ int uefi_boot_info_allocate(EFI_SYSTEM_TABLE *st,
      * firmware map so the kernel never sees overlapping or unordered
      * regions. Failure here releases everything allocated above. */
     memory_map_entries_capacity = (memory_map_pages * UEFI_PAGE_SIZE) / sizeof(vibeos_memory_region_t);
+    g_boot_map_capacity = memory_map_entries_capacity;
     if (vibeos_bootloader_build_boot_info_sanitized(boot_info,
                                                     memory_regions,
                                                     memory_count,
@@ -221,6 +231,44 @@ int uefi_boot_info_allocate(EFI_SYSTEM_TABLE *st,
     
     *out_kernel = kernel;
     *out_boot_info = boot_info;
+    return 0;
+}
+
+int uefi_boot_info_refresh_memory_map(EFI_SYSTEM_TABLE *st,
+                                      vibeos_boot_info_t *boot_info,
+                                      vibeos_memory_region_t *scratch,
+                                      uint64_t scratch_capacity,
+                                      const vibeos_memory_region_t *extra_region) {
+    uint64_t count = 0;
+
+    if (!st || !boot_info || !scratch || scratch_capacity < 2u || g_boot_map_capacity == 0) {
+        return -1;
+    }
+    if (uefi_memory_map_acquire(st, scratch, scratch_capacity - 1u, &count) != 0) {
+        return -1;
+    }
+    /* The firmware map does not list the framebuffer; the loader adds it, and
+     * validation refuses a framebuffer the map does not account for. */
+    if (extra_region && extra_region->length != 0) {
+        scratch[count++] = *extra_region;
+    }
+    if (vibeos_bootloader_refresh_memory_map(boot_info, scratch, count, g_boot_map_capacity) != 0) {
+        return -1;
+    }
+    uefi_serial_puts("[BOOT] memory map refreshed after loading: ");
+    {
+        char digits[24];
+        int j = 0;
+        uint64_t n = boot_info->memory_map_entries;
+        do {
+            digits[j++] = (char)('0' + (n % 10u));
+            n /= 10u;
+        } while (n > 0 && j < (int)sizeof(digits));
+        while (j > 0) {
+            uefi_serial_putc(digits[--j]);
+        }
+    }
+    uefi_serial_puts(" regions\n");
     return 0;
 }
 

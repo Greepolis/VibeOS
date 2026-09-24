@@ -135,6 +135,58 @@ the next step is to make those report at the moment they fire without taking
 the console lock (the poison watch now records under the frame lock and prints
 later, which is half of that).
 
+### Found: the kernel was in its own frame pool
+
+The next step was taken - `scripts/dev/wedge_report.py` now reads `g_mm_stats`
+and the poison records out of the stopped guest through QEMU's monitor, which
+needs no console - and it said nothing was wrong: no poison hit, no double
+allocation, 97,116 frames free. What it did give was `frames_allocated=8552`.
+
+With the frame pool's base (0x1780000) and its reserved prefix (1,817 frames),
+8,552 allocations reach frame index 10,369. The kernel is linked at 0x4000000,
+which is index **10,368**. The machine stopped on the allocation that reached
+the kernel's first page, and a zeroed kernel page is the IDT and the timer's
+IST - which is every symptom above, and why no guard in the kernel's C could
+fire: the CPU faulted on the way *into* the handler.
+
+The loader took the firmware memory map in phase 2 and handed that copy over.
+The kernel's segments, boot_info, the map array and INIT.ELF are all allocated
+after it, as loader memory the map would have called reserved - but the copy
+called all of it free, and the largest free region, which becomes the frame
+pool, contained the kernel. Only the key was refreshed before
+ExitBootServices, never the regions. Nothing allocated 40 MiB before svc-press,
+so no boot ever reached it.
+
+Fixed in two places, deliberately:
+
+- **The loader refreshes the map** as its last step before handoff
+  (`vibeos_bootloader_refresh_memory_map`, host-tested; the array is allocated
+  with slack for the longer map). Failing to refresh is fatal - handing over a
+  map that calls the kernel free is worse than not booting.
+- **The kernel reserves its own image** (`__kernel_image_start/_end` from
+  kernel.ld) regardless, and prints `[HW] kernel image ... in_free_map=`. The
+  gate asserts 0: the reservation is a second line, and a map that needs it is
+  a wrong map.
+
+Shown both ways with svc-press started from init: both halves removed stops the
+machine at 112 blocks, the original signature; the reservation alone, with the
+refresh removed, runs it to 256 blocks and `PRESS_OK` while the gate goes red on
+`kernel_image_in_free_map`. The earlier episode at
+80 blocks with binary in the log is very probably the same defect with a
+different layout - not reproduced, so not claimed.
+
+### What svc-press found next (M-061)
+
+With the machine surviving, svc-press unmaps its 64 MiB in a loop, and the gate
+goes red on `userland_frames_lost=2486`. `tlbq_overflow=2478` in the same log:
+a burst of munmap fills the TLB quarantine's 512 slots faster than the other
+cores flush, and an overflowing frame is leaked on purpose (H-015 - leaking is
+safe, recycling is not). That was the known follow-up of H-015, unreachable
+until now. It is what stands between svc-press and the gate. Note also that
+256 blocks were all granted: 64 MiB of a ~420 MiB pool never reaches the
+watermarks, so a load that forces reclaim has to be larger, or the machine
+smaller.
+
 Found and fixed on the way, both real and neither this defect:
 
 - **The page cache handed out bare addresses.** `vibeos_cache_get` returned a

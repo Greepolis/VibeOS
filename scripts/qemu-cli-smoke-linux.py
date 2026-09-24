@@ -1404,6 +1404,20 @@ def main():
             if frame_accounting_premise_broken(text):
                 problems.append("frame_accounting_sampled_before_userland_finished")
 
+            # The map the loader hands over must describe memory after the
+            # loader's own allocations, the kernel image among them (M-060).
+            # For as long as it did not, the frame allocator reached the image
+            # after about 40 MiB of allocation and zeroed the IDT - invisible in
+            # every boot that allocated less, which was every boot. The kernel
+            # reserves its image regardless; in_free_map=1 says the map was
+            # wrong and the reservation is all that stood in the way.
+            ki = re.search(r"\[HW\] kernel image 0x[0-9a-f]{16}-0x[0-9a-f]{16} "
+                           r"in_free_map=([01])", text)
+            if ki is None:
+                problems.append("kernel_image_line_missing")
+            elif ki.group(1) != "0":
+                problems.append("kernel_image_in_free_map")
+
             fs = re.search(r"FRAMES_AT_USERLAND_START=0x([0-9a-f]{16})", text)
             fd = re.search(r"FRAMES_AT_USERLAND_DONE=0x([0-9a-f]{16}) "
                            r"cache_resident=0x([0-9a-f]{16})", text)

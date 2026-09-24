@@ -885,6 +885,20 @@ it high severity in a test harness where no line came near its buffer, and it wa
 right: nothing stopped the next longer one. Append through one bounded helper.
 
 
+**A memory map is a snapshot, and the loader was handing over the first one.**
+The UEFI map was taken before the loader allocated the kernel's segments,
+boot_info and INIT.ELF, so all of them were listed as free - and the largest
+free region, which becomes the frame pool, contained the kernel. Nothing
+allocated the ~40 MiB it took to reach the image, until a load did: the
+allocator handed out the page holding the IDT and the timer's interrupt stack,
+and every core faulted at a garbage rip inside the timer interrupt. Five guards
+in the timer path did not fire, because the CPU faulted on the way *into* it.
+
+What cracked it was arithmetic, not another guard: `frames_allocated` from the
+stopped guest's memory, plus the pool base, landed on the frame index of the
+kernel's first page exactly. When a machine dies after a fixed amount of
+allocation, work out *what is at that address*.
+
 ## Verification that exists
 
 The boot gate (`scripts/qemu-cli-smoke-linux.py`) asserts state, not markers:

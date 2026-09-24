@@ -1166,6 +1166,62 @@ static int test_bootloader_sanitized_map(void) {
     return 0;
 }
 
+/* M-060: the map the kernel gets must be the one taken after the loader's own
+ * allocations. A refresh has to replace the regions - here a usable range the
+ * loader has since taken part of - and keep every other field the loader set. */
+static int test_bootloader_refresh_memory_map(void) {
+    vibeos_memory_region_t early[1];
+    vibeos_memory_region_t late[3];
+    vibeos_memory_region_t array[4];
+    vibeos_boot_info_t boot_info;
+    uint64_t sanitized_count = 0;
+    uint32_t region_type = 0;
+
+    memset(&boot_info, 0, sizeof(boot_info));
+    memset(early, 0, sizeof(early));
+    memset(late, 0, sizeof(late));
+    memset(array, 0, sizeof(array));
+
+    early[0].base = 0x100000;
+    early[0].length = 0x800000;
+    early[0].type = VIBEOS_MEMORY_REGION_USABLE;
+    if (vibeos_bootloader_build_boot_info_sanitized(&boot_info, early, 1, array, 4, &sanitized_count) != 0) {
+        return -1;
+    }
+    boot_info.initrd_base = 0x500000;
+    boot_info.initrd_size = 0x1000;
+    boot_info.flags = 0x5u;
+
+    /* The loader has since put a kernel at 0x400000 and INIT.ELF at 0x500000. */
+    late[0].base = 0x100000;
+    late[0].length = 0x300000;
+    late[0].type = VIBEOS_MEMORY_REGION_USABLE;
+    late[1].base = 0x400000;
+    late[1].length = 0x200000;
+    late[1].type = VIBEOS_MEMORY_REGION_RESERVED;
+    late[2].base = 0x600000;
+    late[2].length = 0x300000;
+    late[2].type = VIBEOS_MEMORY_REGION_USABLE;
+    if (vibeos_bootloader_refresh_memory_map(&boot_info, late, 3, 4) != 0) {
+        return -1;
+    }
+    if (boot_info.memory_map != array || boot_info.memory_map_entries != 3) {
+        return -1;
+    }
+    if (vibeos_bootloader_find_region_type_for_range(&boot_info, 0x400000, 0x1000, &region_type) != 0 ||
+        region_type != VIBEOS_MEMORY_REGION_RESERVED) {
+        return -1;
+    }
+    if (boot_info.initrd_base != 0x500000 || boot_info.initrd_size != 0x1000 || boot_info.flags != 0x5u) {
+        return -1;
+    }
+    /* An array too small for the new map is refused, not overrun. */
+    if (vibeos_bootloader_refresh_memory_map(&boot_info, late, 3, 2) == 0) {
+        return -1;
+    }
+    return 0;
+}
+
 static int test_bootloader_handoff_metadata(void) {
     vibeos_memory_region_t regions[3];
     vibeos_boot_info_t boot_info;
@@ -9551,6 +9607,7 @@ int main(void) {
     RUN_TEST(test_process_groups_and_sessions);
     RUN_TEST(test_process_orphan_adoption);
     RUN_TEST(test_bootloader_sanitized_map);
+    RUN_TEST(test_bootloader_refresh_memory_map);
     RUN_TEST(test_bootloader_handoff_metadata);
     RUN_TEST(test_bootloader_firmware_tags_and_pe_plan);
     RUN_TEST(test_timer_and_idt);
