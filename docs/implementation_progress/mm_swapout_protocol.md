@@ -107,6 +107,10 @@ wait, `hw_user_range_ok` - is therefore correct by review and by the host tests,
 not by a run. A workload that drives the machine into reclaim is what would
 change that, and it is the next thing this area needs.
 
+It is blocked (2026-09-24): svc-press, the load that would do it, still stops
+the machine at 28 MiB - long before reclaim starts - on a defect of its own,
+written up in `mm_reclaim.md`.
+
 Found by reading the soak's own output for the counters this change added,
 which read zero; the soak's verdict line has no field for reclaim and was green
 throughout.

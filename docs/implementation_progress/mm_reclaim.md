@@ -89,3 +89,64 @@ Two things to do next, in this order: find what corrupts the console at that
 point — it is the only lead that explains binary in the log rather than a
 refusal — and then decide whether the region pool should grow or whether mmap
 should record a range as one region instead of one per page.
+
+## 2026-09-24: the defect is still there, and what it is not
+
+Picked up because nothing on a machine has ever reclaimed an anonymous page
+(`mm_swapout_protocol.md`) and svc-press is the obvious load to change that.
+It cannot yet: started from init, it still stops the machine - now at **112
+blocks, 28 MiB**, not 80, and with a clean log rather than binary (the console
+has been fixed several times since). 28 MiB is far above the low watermark, so
+**reclaim is not running when it happens**; this is not a reclaim defect.
+
+What the evidence says, from QEMU's exception log (`VIBEOS_QEMU_TRACE=<file>`,
+added to the gate for this - every exception with the full CPU state, which a
+machine whose console lock is held by a dead core cannot print):
+
+- The first bad event is always a ring-0 fault at a garbage address - `0x0`,
+  `0x2`, `0x3001`, the padding between two functions, or a stack address - on
+  a core that was **inside the timer interrupt, on the timer's IST**.
+- The clearest one: a `pop %rbp; ret` on the timer's IST read this tick's own
+  interrupt-frame values - the saved RFLAGS (`0x202`) as the frame pointer and
+  the interrupted RSP as the return address - and executed seven bytes of the
+  interrupted stack before faulting. Another core resumed a context whose rip
+  was a user *stack* address with a kernel code selector.
+
+Ruled out by guards that were added and did not fire (the probes are kept as
+`scripts/dev/patches/press-hunt-instrumentation.patch`, applied on top of
+arch_hw.c and kernel.ld):
+
+1. the timer re-entered on the same core (a per-core depth counter);
+2. the timer path running off the bottom of its 16 KiB IST slice (a guard band
+   checked on entry and exit of every tick);
+3. interrupts left enabled anywhere on the timer path (RFLAGS.IF checked after
+   each of its seven steps);
+4. a task interrupted while running on the timer's IST (checked when the
+   context is saved);
+5. a kernel-mode context whose rip is not kernel code, saved or loaded through
+   the scheduler (`__kernel_text_start/_end`).
+
+None fired, and nothing printed. That leaves the IST slice being written by
+something other than its own core's timer path, or state the timer path reads
+being corrupted before it runs - the obvious candidate for both is a frame that
+svc-press is handed while the kernel still uses it. `double_allocs` and the
+free-page poison would say so, but the machine stops before either is printed;
+the next step is to make those report at the moment they fire without taking
+the console lock (the poison watch now records under the frame lock and prints
+later, which is half of that).
+
+Found and fixed on the way, both real and neither this defect:
+
+- **The page cache handed out bare addresses.** `vibeos_cache_get` returned a
+  frame with the cache's lock already released, and the loader mapped it and
+  the exec reader copied from it; an eviction in between frees the frame, and
+  the mapping then takes its reference on somebody else's page.
+  `vibeos_cache_get_ref` takes the reference under the lock.
+- **The clean tier never reported a frame freed.** It told an eviction from an
+  empty slot by looking at the entry, and the eviction empties the entry it
+  frees - so a page just given back looked like a free slot, and the loop
+  stopped at its first success having counted nothing. `freed_clean=0` in every
+  log this project has is that, not an idle tier.
+- **The poison watch printed under the frame lock**, taking the console lock
+  inside it - the trap CLAUDE.md records for a watch that called a locking
+  accessor. It records now and the allocating core prints outside the lock.
