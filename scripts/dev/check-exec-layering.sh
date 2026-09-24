@@ -26,7 +26,12 @@ fail=0
 first=$(grep -n 'hw_interp_path_substitute(const char \*path)' "$src" | head -1 | cut -d: -f1)
 if [ -z "$first" ]; then
     echo "exec-layering=FAIL hw_interp_path_substitute is gone; the substitution moved somewhere"
-    exit 0
+    # 1, like every other failure below. This one path kept `exit 0` after the
+    # rest were fixed for the reason given at the bottom of the file, so the one
+    # failure that means "the thing being guarded is no longer where the guard
+    # looks" was the one an exit-code reader could not see (external review,
+    # 2026-09-24).
+    exit 1
 fi
 # The window starts at the top of the comment block attached to the signature,
 # found by walking up to the nearest blank line rather than by guessing a number

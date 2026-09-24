@@ -8,6 +8,12 @@
 # directions: a second *code* path outside the function must still fail, and the
 # existing log-example comment must not.
 #
+# A second case (2026-09-24): the function the check guards is renamed, so the
+# check can no longer find what it guards. It printed FAIL and exited 0 on that
+# one path, so to this file's own verifier - which reads the exit code - it was a
+# pass. An external review found it; the case goes NOT RED on the old script and
+# red on the fixed one.
+#
 # Target source: kernel/arch/x86_64/task_life.c
 # Run: SABOTAGE_VERIFY="bash scripts/dev/check-exec-layering.sh" python3 scripts/dev/sabotage.py kernel/arch/x86_64/task_life.c scripts/dev/cases/core-exec-layering.txt
 
@@ -19,3 +25,9 @@
         /* Start there, and tell it where it was put. */
         if (hw_streq(path, "/lib/ld-musl-x86_64.so.1")) { p->entry = interp.entry; }
         p->entry = interp.entry;
+
+### the function the check guards is renamed
+--- old
+static const char *hw_interp_path_substitute(const char *path) {
++++ new
+static const char *hw_interp_path_substitute_moved(const char *path) {

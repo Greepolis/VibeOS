@@ -1,0 +1,21 @@
+# M-037: st_blocks, and every other "how many units hold n bytes", through
+# vibeos_ceil_div_u64 (include/vibeos/ceildiv.h), proved by the host test.
+#
+#  1. the helper goes back to the form fstat used: `(n + unit - 1) / unit`. For a
+#     size within 511 of 2^64 the sum wraps, and st_blocks comes out 0 for a
+#     file whose st_size is correct - a size an exFAT, NTFS or ext2 image can
+#     declare. Expect the test at UINT64_MAX and UINT64_MAX - 510.
+#
+# The finding was re-reported on 2026-09-24 with the location it had before the
+# syscall handlers left arch_hw.c; it had been fixed and tracked since, and this
+# case is what was missing - the tracker row said "red with the old form" and
+# no file held the sabotage that showed it.
+#
+# Target source: include/vibeos/ceildiv.h
+# Run: python3 scripts/dev/sabotage.py include/vibeos/ceildiv.h scripts/dev/cases/core-ceildiv.txt
+
+### the rounding adds before it divides
+--- old
+    return n / unit + ((n % unit) != 0u ? 1u : 0u);
++++ new
+    return (n + unit - 1u) / unit;

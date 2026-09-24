@@ -4,7 +4,7 @@
 cd /mnt/c/Users/Stefa/Documents/Progetti/VibeOS
 bad=0
 out=$(bash scripts/dev/check.sh all build-clang-Release 2>&1)
-echo "$out" | grep -E '^rc=|^warnings=|^clang-|^host-tests|^bootloader-tests|assertions-covered|counters-produced|mm-layering|nightly-coverage|reachable=|chokepoints=|syscall-checks=|sabotage-anchors=|subsystem=|blast-radius=|mustbezero-asserted=|rmap-crosscheck=|ALL_TESTS|error:'
+echo "$out" | grep -E '^rc=|^warnings=|^clang-|^fuzz-rc|^host-tests|^bootloader-tests|assertions-covered|counters-produced|mm-layering|nightly-coverage|reachable=|chokepoints=|syscall-checks=|sabotage-anchors=|subsystem=|blast-radius=|mustbezero-asserted=|rmap-crosscheck=|task-identity=|exec-layering=|user-access=|net-stable=|ALL_TESTS|error:'
 echo "$out" | grep -qE '^rc=0$'          || bad=1
 echo "$out" | grep -qE '^clang-rc=0$'    || bad=1
 echo "$out" | grep -qE '^warnings=0$'    || bad=1
@@ -19,7 +19,12 @@ echo "$out" | grep -qE 'blast-radius=ok' || bad=1
 echo "$out" | grep -qE 'mustbezero-asserted=ok' || bad=1
 # Printed and never asserted, until the uaccess change moved a chokepoint count
 # and this script still said VERDICT=green. Every check it prints, it asserts.
-for k in mm-layering assertions-covered counters-produced nightly-coverage reachable rmap-crosscheck chokepoints syscall-checks sabotage-anchors; do
+# task-identity and exec-layering were printed by check.sh and missing from this
+# list - the same gap as the comment above describes, found by an external review
+# (2026-09-24); user-access and net-stable arrived after the list was written.
+# fuzz-rc likewise: the fuzz build is the one CI job whose failure nothing here saw.
+echo "$out" | grep -qE '^fuzz-rc=0$' || bad=1
+for k in mm-layering assertions-covered counters-produced nightly-coverage reachable rmap-crosscheck chokepoints syscall-checks sabotage-anchors task-identity exec-layering user-access net-stable; do
   echo "$out" | grep -qE "^$k=ok" || bad=1
 done
 # A failed boot's log is kept, named for the run. This loop used to print only
