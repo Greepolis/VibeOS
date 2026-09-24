@@ -42,8 +42,17 @@
 #define VIBEOS_GUI_MIN_H 120u
 
 /* Bytes of canary the GUI writes directly after the pixels it composes into.
- * The caller's buffer must hold width * height * 4 plus this. */
+ *
+ * The canary is written in 8-byte words, so it starts at the pixel count
+ * rounded up to an even number: straight after the pixels, a screen with an
+ * odd pixel count put it on a 4-byte boundary, and UBSan in the clang Debug job
+ * stopped on the first store (C7). The buffer itself must be 8-byte aligned,
+ * which init checks. VIBEOS_GUI_BACK_BYTES is the whole size the caller owes -
+ * one expression, so the GUI, the arch and the tests cannot disagree about it. */
 #define VIBEOS_GUI_GUARD_BYTES 4096u
+#define VIBEOS_GUI_GUARD_PIXEL(w, h) ((((uint64_t)(w) * (h)) + 1u) & ~(uint64_t)1u)
+#define VIBEOS_GUI_BACK_BYTES(w, h) \
+    (VIBEOS_GUI_GUARD_PIXEL(w, h) * 4u + VIBEOS_GUI_GUARD_BYTES)
 
 typedef struct {
     uint64_t frames;           /* pointer repaints                              */
@@ -74,7 +83,7 @@ typedef struct {
  * it as `reentered` instead of waiting on its own core. */
 
 /* Bring the desktop up on a framebuffer. `back` is the caller's buffer, at
- * least width * height * 4 + VIBEOS_GUI_GUARD_BYTES bytes: this file has no
+ * least VIBEOS_GUI_BACK_BYTES(width, height) bytes and 8-byte aligned: this file has no
  * allocator, and a screen-sized static array would be megabytes of .bss in
  * every image whether or not a screen exists. Returns 0, or -1 with the reason
  * in vibeos_gui_why(). */

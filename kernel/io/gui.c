@@ -348,7 +348,6 @@ void vibeos_gui_putc(char c) {
 
 int vibeos_gui_init(uint64_t fb_base, uint32_t width, uint32_t height,
                     void *back, uint64_t back_bytes) {
-    uint64_t pixels;
     uint32_t i;
 
     if (vibeos_gui_active()) {
@@ -367,14 +366,17 @@ int vibeos_gui_init(uint64_t fb_base, uint32_t width, uint32_t height,
         g_why = "screen smaller than the desktop can be laid out on";
         return -1;
     }
-    pixels = (uint64_t)width * height;
-    if (!back || back_bytes < pixels * 4u + VIBEOS_GUI_GUARD_BYTES) {
-        g_why = "back buffer missing or too small for the screen and its canary";
+    if (!back || ((uintptr_t)back & 7u) != 0u) {
+        g_why = "back buffer missing or not 8-byte aligned";
+        return -1;
+    }
+    if (back_bytes < VIBEOS_GUI_BACK_BYTES(width, height)) {
+        g_why = "back buffer too small for the screen and its canary";
         return -1;
     }
     g_fb = (uint32_t *)(uintptr_t)fb_base;
     g_back = (uint32_t *)back;
-    g_guard = (uint64_t *)(void *)(g_back + pixels);
+    g_guard = (uint64_t *)(void *)(g_back + VIBEOS_GUI_GUARD_PIXEL(width, height));
     for (i = 0; i < GUARD_WORDS; i++) {
         g_guard[i] = GUI_GUARD;
     }

@@ -334,7 +334,7 @@ static void one_round(uint32_t round) {
     fenced_t fb, back;
     uint32_t w = pick_dim(VIBEOS_GUI_MIN_W, VIBEOS_GUI_MAX_W, 480u);
     uint32_t h = pick_dim(VIBEOS_GUI_MIN_H, VIBEOS_GUI_MAX_H, 360u);
-    uint64_t need = (uint64_t)w * h * 4u + VIBEOS_GUI_GUARD_BYTES;
+    uint64_t need = VIBEOS_GUI_BACK_BYTES(w, h);
     uint64_t give;
     int no_fb = below(20u) == 0;
     int want_ok, got;
@@ -455,7 +455,7 @@ static void one_round(uint32_t round) {
         } else if (k < 97u) {
             /* The canary detector: one word flipped, found at the next
              * repaint, counted once, and put back. */
-            uint32_t *guard = back.p + (uint64_t)w * h;
+            uint32_t *guard = back.p + VIBEOS_GUI_GUARD_PIXEL(w, h);
             uint32_t word = below(VIBEOS_GUI_GUARD_BYTES / 4u);
             vibeos_gui_stats_t st;
             guard[word] ^= 0x10000u;
@@ -553,7 +553,7 @@ static void *ticker(void *arg) {
 static void threaded(uint32_t nthreads) {
     enum { TW = 640, TH = 480 };
     fenced_t fb, back;
-    uint64_t need = (uint64_t)TW * TH * 4u + VIBEOS_GUI_GUARD_BYTES;
+    uint64_t need = VIBEOS_GUI_BACK_BYTES(TW, TH);
     pthread_t th[16], tk[2];
     uint64_t expect_chars = 0;
     vibeos_gui_stats_t st;

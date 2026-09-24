@@ -138,12 +138,12 @@ static int row_is(uint32_t r, const char *want) {
     return vibeos_gui_term_row(r, buf) >= 0 && strcmp(buf, want) == 0;
 }
 
-#define W 200u
-#define H 150u
+#define W 201u
+#define H 151u
 
 int test_gui(void) {
     fenced_t fb, back;
-    uint64_t back_bytes = (uint64_t)W * H * 4u + VIBEOS_GUI_GUARD_BYTES;
+    uint64_t back_bytes = VIBEOS_GUI_BACK_BYTES(W, H);
     vibeos_gui_stats_t st;
     char line[VIBEOS_GUI_TERM_COLS + 8u];
     uint32_t i;
@@ -178,6 +178,14 @@ int test_gui(void) {
     ok &= expect(vibeos_gui_init((uint64_t)(uintptr_t)fb.p, W, H, back.p, back_bytes - 1u) == -1 &&
                  strstr(vibeos_gui_why(), "back buffer") != 0,
                  "a back buffer with no room for the canary is refused by name");
+    /* The canary is written in 8-byte words. A buffer that is not 8-byte
+     * aligned puts every one of them on a misaligned address - which UBSan in
+     * the clang Debug job reported, for a canary misplaced by an odd pixel
+     * count, before this refusal existed. */
+    ok &= expect(vibeos_gui_init((uint64_t)(uintptr_t)fb.p, W, H,
+                                 (uint8_t *)(void *)back.p + 4, back_bytes - 4u) == -1 &&
+                 strstr(vibeos_gui_why(), "aligned") != 0,
+                 "a back buffer that is not 8-byte aligned is refused by name");
     ok &= expect(!vibeos_gui_active() && fenced_untouched(&fb) && fenced_untouched(&back),
                  "a refused init writes nothing, to either buffer");
 
@@ -265,14 +273,14 @@ int test_gui(void) {
                  "a pointer that did not move is not redrawn; the canary is checked anyway");
 
     /* The canary, on the repaint - not only at the end of the boot. */
-    back.p[W * H + 5u] ^= 1u;
+    back.p[VIBEOS_GUI_GUARD_PIXEL(W, H) + 5u] ^= 1u;
     vibeos_gui_tick();
     vibeos_gui_stats(&st);
     ok &= expect(st.guard_broken == 1u, "one broken canary word is one, found at the next repaint");
     vibeos_gui_tick();
     vibeos_gui_stats(&st);
     ok &= expect(st.guard_broken == 1u, "and stays one: the worst seen, not a number that grows with uptime");
-    back.p[W * H + 5u] ^= 1u;
+    back.p[VIBEOS_GUI_GUARD_PIXEL(W, H) + 5u] ^= 1u;
 
     /* ---- reentrancy: a print from inside the lock is dropped and counted ---------- */
     g_reenter_on_lock = 1;

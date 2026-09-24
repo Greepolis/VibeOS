@@ -1,0 +1,20 @@
+# C7 step 4: the GUI under the sanitizers CI runs (kernel/io/gui.c).
+#
+#  1. the canary starts straight after the pixels, as it first did. On the host
+#     test's 201x151 screen - an odd pixel count, chosen for this - its 8-byte
+#     words land on a 4-byte boundary. Expect
+#     "runtime error: store to misaligned address ... uint64_t".
+#
+# Found by CI, not by a local run: the clang Debug job builds the host tests with
+# ASan and UBSan, and the first push of the GUI stopped there. Nothing checks
+# alignment without a sanitizer - x86 does not fault on it - so the host suite's
+# plain run cannot see this case, and the verifier here is that CI step.
+#
+# Target source: kernel/io/gui.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-sanitized.sh" python3 scripts/dev/sabotage.py kernel/io/gui.c scripts/dev/cases/io-gui-ubsan.txt
+
+### the canary starts straight after the pixels
+--- old
+    g_guard = (uint64_t *)(void *)(g_back + VIBEOS_GUI_GUARD_PIXEL(width, height));
++++ new
+    g_guard = (uint64_t *)(void *)(g_back + (uint64_t)width * height);
