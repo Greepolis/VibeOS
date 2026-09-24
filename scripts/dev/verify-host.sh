@@ -30,6 +30,12 @@ if ! out="$("./$BUILD/vibeos_mm_torture" 3 4000 2>&1)"; then
     echo "$out" | grep -E '^FAIL' | head -1
     rc=1
 fi
+# The GUI's torture too (C7): its thread phase is the only host-side check that
+# can see the GUI's lock go missing.
+if ! out="$("./$BUILD/vibeos_gui_torture" 1 300 4 2>&1)"; then
+    echo "$out" | grep -E '^FAIL' | head -1
+    rc=1
+fi
 if [ "$rc" -eq 0 ]; then
     echo "reason=host_tests_and_torture_pass"
 fi

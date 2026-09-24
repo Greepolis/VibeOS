@@ -114,9 +114,20 @@ def main():
         print("no cases parsed - check the ### / --- old / +++ new markers")
         return 2
 
+    backup = src + '.sabotage-backup'
+    # A backup that already exists means a run was interrupted with a case
+    # applied: the source holds the sabotage and the backup holds the original.
+    # Carrying on would read the sabotaged file as "original" and overwrite the
+    # only good copy with it - the sabotage would become the tree, silently.
+    # That was one keystroke away when a verification run was stopped mid-case
+    # (C7, 2026-09-23); refuse, and say how to put it right.
+    if os.path.exists(backup):
+        print("REFUSED: %s exists - an earlier run stopped with a case applied." % backup)
+        print("  Compare:  diff %s %s" % (backup, src))
+        print("  Restore:  cp %s %s && rm %s" % (backup, src, backup))
+        return 2
     with open(src, encoding='utf-8') as fh:
         original = fh.read()
-    backup = src + '.sabotage-backup'
     with open(backup, 'w', encoding='utf-8', newline='') as fh:
         fh.write(original)
 
