@@ -1,0 +1,41 @@
+# M-020: a socket syscall that waits re-verifies its socket after every wake
+# (kernel/abi/linux/net.c), proved by check-net-stable.py.
+#
+#  1. recvfrom stops re-verifying - the state an external review found it in on
+#     2026-09-24, a phase after the tracker called M-020 fixed: expect
+#     "hw_sys_recvfrom waits holding a descriptor and never calls hw_sock_stable";
+#  2. the same for accept, one of the three the original fix did reach.
+#
+# The race itself is not reproduced - it needs a sibling thread closing and
+# reusing the descriptor while the call waits. What is checked is the rule that
+# makes it impossible, at every site, which is what was missing: three sites had
+# it and the fourth was left to memory.
+#
+# Target source: kernel/abi/linux/net.c
+# Run: SABOTAGE_VERIFY="python3 scripts/dev/check-net-stable.py" python3 scripts/dev/sabotage.py kernel/abi/linux/net.c scripts/dev/cases/net-sock-stable.txt
+
+### recvfrom stops re-verifying its socket
+--- old
+        int faulted = 0;
+        if (hw_sock_stable(f, sock, gen) < 0) {
+            return -VIBEOS_EBADF;
+        }
+        hw_spin_lock(&g_net_lock);
+        n = vibeos_inet_recvfrom(&g_net, sock, g_net_bounce,
++++ new
+        int faulted = 0;
+        hw_spin_lock(&g_net_lock);
+        n = vibeos_inet_recvfrom(&g_net, sock, g_net_bounce,
+
+### accept stops re-verifying its socket
+--- old
+    for (;;) {
+        if (hw_sock_stable(f, sock, gen) < 0) {
+            return -VIBEOS_EBADF;
+        }
+        hw_spin_lock(&g_net_lock);
+        child = vibeos_inet_accept(&g_net, sock);
++++ new
+    for (;;) {
+        hw_spin_lock(&g_net_lock);
+        child = vibeos_inet_accept(&g_net, sock);

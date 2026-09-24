@@ -111,6 +111,9 @@ do_build() {
     # race-to-panic had been fixed one site at a time, and one review found
     # eight more. A rule nothing enforces is found again by the next reviewer.
     python3 scripts/dev/check-user-access.py | tail -1
+    # Every socket call that waits re-verifies its socket (M-020): the fix
+    # reached three of four sites and the fourth was found by a reviewer.
+    python3 scripts/dev/check-net-stable.py | tail -1
     if grep -rn 'TEMPORARY' kernel/ --include=*.c > /dev/null 2>&1; then
         echo "LEFTOVER-DEBUG-CODE:"
         grep -rn 'TEMPORARY' kernel/ --include=*.c | head -3

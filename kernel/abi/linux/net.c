@@ -471,10 +471,22 @@ static long hw_sys_netctl(uint64_t op, uint64_t arg) {
 static long hw_sys_recvfrom(uint64_t fd, uint64_t buf, uint64_t len, uint64_t addr_uptr) {
     hw_fd_t *f = hw_fd_get(fd);
     uint64_t deadline;
+    uint32_t gen;
+    int sock;
 
     if (!f || f->net_sock < 0) {
         return -VIBEOS_EBADF;
     }
+    /* The socket and its generation, taken once and re-verified on every pass
+     * (M-020). This loop waits, and it used to re-read f->net_sock each time
+     * round: a sibling thread that closed the descriptor and opened another
+     * socket into the same slot had this call receive on the new one. M-020's
+     * fix reached connect, accept and the stream read and missed this one,
+     * which check-net-stable.py now makes impossible to miss again. */
+    sock = f->net_sock;
+    hw_spin_lock(&g_net_lock);
+    gen = g_net.sockets[sock].gen;
+    hw_spin_unlock(&g_net_lock);
     /* The buffer and the source-address pointer are refused by the row, before the
      * datagram is dequeued - or a bad pointer loses it with no error (M-032). */
     deadline = g_timer_ticks + VIBEOS_HW_NET_TIMEOUT_TICKS;
@@ -483,8 +495,11 @@ static long hw_sys_recvfrom(uint64_t fd, uint64_t buf, uint64_t len, uint64_t ad
         uint32_t ip = 0;
         uint16_t port = 0;
         int faulted = 0;
+        if (hw_sock_stable(f, sock, gen) < 0) {
+            return -VIBEOS_EBADF;
+        }
         hw_spin_lock(&g_net_lock);
-        n = vibeos_inet_recvfrom(&g_net, f->net_sock, g_net_bounce,
+        n = vibeos_inet_recvfrom(&g_net, sock, g_net_bounce,
                                  (uint32_t)(len < sizeof(g_net_bounce) ? len : sizeof(g_net_bounce)),
                                  &ip, &port);
         if (n > 0 && vibeos_uaccess_copy((void *)(uintptr_t)buf, g_net_bounce, (uint64_t)n) != 0) {
