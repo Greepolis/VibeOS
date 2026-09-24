@@ -2016,28 +2016,69 @@ static void hw_frame_release_watch(uint64_t phys) {
  * literal in the kernel image, and addr2line turns it into a name safely from
  * outside, whereas following it here would be this diagnostic taking the same
  * risk as the defect it is reporting. */
-static uint32_t g_poison_reported;
+/* Recorded here, printed from outside the frame layer's lock.
+ *
+ * The watch runs inside that lock, and it used to print from there - taking the
+ * console lock with the frame lock held. Under memory pressure (svc-press, while
+ * the anonymous-reclaim workload was being built) the machine then went silent
+ * with one core in this function and the others queued on the console, and the
+ * one line that would have named the use-after-free was never printed: the
+ * diagnostic deadlocked the machine it was explaining, which CLAUDE.md records
+ * once already for a watch that called a locking accessor. The watch now only
+ * fills a record; the allocating core prints it once it has left the layer. */
+typedef struct {
+    uint64_t phys, word, found, tag, owners;
+} hw_poison_rec_t;
+
+static hw_poison_rec_t g_poison_rec[8];
+static uint32_t g_poison_reported;      /* records filled, under the frame lock */
+static uint32_t g_poison_printed;       /* records printed, claimed atomically  */
 
 static void hw_frame_poison_watch(uint64_t phys, uint32_t word, uint64_t found,
                                   uint64_t tag) {
-    if (g_poison_reported >= 8u) {
+    uint32_t n = __atomic_load_n(&g_poison_reported, __ATOMIC_RELAXED);
+    if (n >= 8u) {
         return;
     }
-    g_poison_reported++;
+    g_poison_rec[n].phys = phys;
+    g_poison_rec[n].word = (uint64_t)word;
+    g_poison_rec[n].found = found;
+    g_poison_rec[n].tag = tag;
+    g_poison_rec[n].owners = (uint64_t)vibeos_frame_owners_locked(phys);
+    __atomic_store_n(&g_poison_reported, n + 1u, __ATOMIC_RELEASE);
+}
 
-    vibeos_x86_64_serial_lock();
-    vibeos_x86_64_serial_puts("[MM] POISON_BROKEN frame=0x");
-    vibeos_x86_64_serial_print_hex(phys);
-    vibeos_x86_64_serial_puts(" word=0x");
-    vibeos_x86_64_serial_print_hex((uint64_t)word);
-    vibeos_x86_64_serial_puts(" found=0x");
-    vibeos_x86_64_serial_print_hex(found);
-    vibeos_x86_64_serial_puts(" freed_by=0x");
-    vibeos_x86_64_serial_print_hex(tag);
-    vibeos_x86_64_serial_puts(" owners=0x");
-    vibeos_x86_64_serial_print_hex((uint64_t)vibeos_frame_owners_locked(phys));
-    vibeos_x86_64_serial_puts("\n");
-    vibeos_x86_64_serial_unlock();
+/* Print what the watch recorded. Only from a place that holds no layer lock:
+ * the console lock is taken here, and the point of the record is that nobody
+ * takes it while holding the frame lock. */
+static void hw_poison_flush(void) {
+    for (;;) {
+        uint32_t done = __atomic_load_n(&g_poison_printed, __ATOMIC_ACQUIRE);
+        uint32_t have = __atomic_load_n(&g_poison_reported, __ATOMIC_ACQUIRE);
+        const hw_poison_rec_t *r;
+
+        if (done >= have) {
+            return;
+        }
+        if (!__atomic_compare_exchange_n(&g_poison_printed, &done, done + 1u, 0,
+                                         __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+            continue;   /* another core took this one */
+        }
+        r = &g_poison_rec[done];
+        vibeos_x86_64_serial_lock();
+        vibeos_x86_64_serial_puts("[MM] POISON_BROKEN frame=0x");
+        vibeos_x86_64_serial_print_hex(r->phys);
+        vibeos_x86_64_serial_puts(" word=0x");
+        vibeos_x86_64_serial_print_hex(r->word);
+        vibeos_x86_64_serial_puts(" found=0x");
+        vibeos_x86_64_serial_print_hex(r->found);
+        vibeos_x86_64_serial_puts(" freed_by=0x");
+        vibeos_x86_64_serial_print_hex(r->tag);
+        vibeos_x86_64_serial_puts(" owners=0x");
+        vibeos_x86_64_serial_print_hex(r->owners);
+        vibeos_x86_64_serial_puts("\n");
+        vibeos_x86_64_serial_unlock();
+    }
 }
 
 void hw_free_page_why(void *p, const char *why) {
@@ -2122,6 +2163,9 @@ static void *hw_alloc_page_admitted(int privileged) {
             return 0;
         }
         phys = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+        /* Out of the frame layer's lock now: anything its poison watch found
+         * during this allocation can be printed. */
+        hw_poison_flush();
         return (void *)(uintptr_t)phys;
     }
 
@@ -2715,13 +2759,16 @@ int hw_elf_read_cached(void *ctx, uint64_t off, uint32_t len, void *buf) {
         if (take > len - done) {
             take = len - done;
         }
-        if (vibeos_cache_get(r->file_id, page_off, &phys) != 0 || phys == 0u) {
+        /* Held while it is copied: the cache's own reference is not ours to
+         * rely on, because memory pressure evicts on another core. */
+        if (vibeos_cache_get_ref(r->file_id, page_off, &phys) != 0 || phys == 0u) {
             return -1;
         }
         src = (const uint8_t *)(uintptr_t)phys;
         for (i = 0; i < take; i++) {
             d[done + i] = src[within + i];
         }
+        (void)vibeos_frame_put(phys);
         done += take;
     }
     return 0;
@@ -2794,19 +2841,22 @@ int hw_map_elf_image(vibeos_hw_aspace_t *as, vibeos_vma_list_t *vmas,
             uint64_t phys = 0;
 
             if (vibeos_elf_page_file_offset(img, va, &foff) &&
-                vibeos_cache_get(file_id, foff, &phys) == 0) {
+                vibeos_cache_get_ref(file_id, foff, &phys) == 0) {
                 int rc = (va < VIBEOS_HW_IDENTITY_LIMIT)
                     ? hw_map_low_user_page(as, va, phys, leaf)
                     : hw_map_page(as, va, phys, leaf);
 
+                /* Ours, taken under the cache's lock, and given back once the
+                 * mapping holds its own. This used to take none - "the cache
+                 * keeps the reference it has held since it read the page" -
+                 * and between the lookup and the mapping an eviction on
+                 * another core could free the frame, so the mapping took its
+                 * reference on a page already handed to somebody else, and
+                 * the process's exit later freed that somebody's page. */
+                (void)vibeos_frame_put(phys);
                 if (rc != 0) {
                     return -1;
                 }
-                /* No put here, and the asymmetry is deliberate. The branch
-                 * below allocated a frame and hands its reference to the
-                 * mapping; this one never took one - the mapping took its own
-                 * through vmspace, and the cache keeps the reference it has
-                 * held since it read the page. */
                 if (vmas) {
                     (void)vibeos_vma_insert(vmas, va, 4096ull,
                                             (vibeos_prot_t)(VIBEOS_PROT_READ |

@@ -137,7 +137,9 @@ long hw_read_file_cached(const char *path, void *buf, uint32_t cap,
         const uint8_t *src;
         uint64_t k;
 
-        if (vibeos_cache_get(id, off, &phys) != 0) {
+        /* With a reference, held across the copy below: another core under
+         * memory pressure may evict this page the instant the lookup returns. */
+        if (vibeos_cache_get_ref(id, off, &phys) != 0) {
             /* Whatever went wrong, the file itself is still readable the old
              * way. Falling back is the difference between a slower boot and a
              * machine that cannot exec - and out_id stays 0, so a caller that
@@ -152,6 +154,7 @@ long hw_read_file_cached(const char *path, void *buf, uint32_t cap,
             return vibeos_fs_read_file(&g_rootfs, path, buf, cap);
         }
         if (off >= (uint64_t)cap) {
+            (void)vibeos_frame_put(phys);
             continue;   /* cached, and past the caller's window */
         }
         if (off + take > (uint64_t)cap) {
@@ -161,6 +164,7 @@ long hw_read_file_cached(const char *path, void *buf, uint32_t cap,
         for (k = 0; k < take; k++) {
             out[off + k] = src[k];
         }
+        (void)vibeos_frame_put(phys);
     }
     if (out_id) {
         *out_id = id;   /* every page above came from this file's cache */

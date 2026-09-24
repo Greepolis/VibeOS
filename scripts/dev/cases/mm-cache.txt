@@ -55,3 +55,25 @@
         if (e->file_id == 0u) {
             continue;
         }
+
+### a page handed out for use carries no reference
+--- old
+    if (r == 0) {
+        /* Under the cache's lock, so no eviction can free the frame between
+         * finding it and holding it. The frame lock nests inside this one, as
+         * it already does for the allocation a miss makes. */
+        vibeos_frame_get(*out_phys);
+    }
++++ new
+
+### reclaim judges an eviction by the entry it emptied
+--- old
+        if (gave_back) {
+            freed++;
+        }
++++ new
+        (void)gave_back;
+        if (e->phys == 0u && e->file_id == 0u) {
+            break;
+        }
+        freed++;

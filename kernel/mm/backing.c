@@ -129,9 +129,13 @@ static vibeos_cache_entry_t *cache_lookup(uint32_t file_id, uint64_t offset) {
  * Not LRU. LRU needs a list to be kept on every hit, which is a write on the
  * hot path to buy an eviction decision that is barely better - and this table
  * has tens of entries, not thousands. */
-static vibeos_cache_entry_t *cache_evict(void) {
+/* `freed` says whether a frame went back. An entry this returns has been
+ * emptied either way - a slot that was already free, or one whose page was just
+ * evicted - so the entry itself cannot say which, and reclaim needs to know. */
+static vibeos_cache_entry_t *cache_evict(int *freed) {
     uint32_t spins;
 
+    *freed = 0;
     for (spins = 0; spins < g_entries * 2u; spins++) {
         vibeos_cache_entry_t *e = &g_table[g_hand];
         g_hand = (g_hand + 1u) % g_entries;
@@ -152,6 +156,7 @@ static vibeos_cache_entry_t *cache_evict(void) {
             g_resident--;
         }
         vibeos_mm_stats()->reclaim_freed++;
+        *freed = 1;
         return e;
     }
     return 0;
@@ -159,26 +164,36 @@ static vibeos_cache_entry_t *cache_evict(void) {
 
 uint32_t vibeos_cache_reclaim(uint32_t want) {
     uint32_t freed = 0;
+    uint32_t tries;
 
     cache_lock();
     /* cache_evict returns a slot it has already emptied, so each successful
      * call is one frame given back. It returns null when every entry has been
      * given its second chance and none was cold - which is a full cache of hot
-     * pages, and a legitimate answer of "nothing", not a failure. */
-    while (freed < want) {
-        vibeos_cache_entry_t *e = cache_evict();
+     * pages, and a legitimate answer of "nothing", not a failure.
+     *
+     * It also returns an empty slot when the hand reaches one, because that is
+     * what an insertion wants. That is not a frame reclaimed, and it is not the
+     * end of the cache either.
+     *
+     * This loop used to tell the two apart by looking at the entry - and
+     * cache_evict empties an entry it evicts, so a page just given back looked
+     * exactly like a slot that was already free. The loop stopped at its first
+     * successful eviction and counted it as nothing: the clean tier never
+     * reported a frame freed in any run (freed_clean=0 everywhere), whatever
+     * it did. Found by the first test that asked it for a page. The eviction
+     * says what it did now. Empty slots are skipped, with a bound, so a cache
+     * of nothing but empty slots and hot pages still ends. */
+    for (tries = 0; freed < want && tries < g_entries * 2u + 1u; tries++) {
+        int gave_back;
+        vibeos_cache_entry_t *e = cache_evict(&gave_back);
 
         if (!e) {
             break;
         }
-        /* An entry that was already free is not a frame reclaimed. Counting it
-         * would let a cache with spare slots report progress it never made,
-         * and a reclaim loop that believed it would spin instead of moving on
-         * to the next tier. */
-        if (e->phys == 0u && e->file_id == 0u) {
-            break;
+        if (gave_back) {
+            freed++;
         }
-        freed++;
     }
     cache_unlock();
     return freed;
@@ -232,9 +247,12 @@ static int cache_get_locked(uint32_t file_id, uint64_t offset,
      * read means a failed read leaves a key pointing at a frame holding
      * whatever was there - which the next hit would hand out as the file's
      * contents. */
-    if (!cache_evict()) {
-        (void)vibeos_frame_put(phys);
-        return -1;
+    {
+        int unused;
+        if (!cache_evict(&unused)) {
+            (void)vibeos_frame_put(phys);
+            return -1;
+        }
     }
     e = cache_place(file_id, offset);
     if (!e) {
@@ -258,6 +276,21 @@ int vibeos_cache_get(uint32_t file_id, uint64_t offset, uint64_t *out_phys) {
 
     cache_lock();
     r = cache_get_locked(file_id, offset, out_phys);
+    cache_unlock();
+    return r;
+}
+
+int vibeos_cache_get_ref(uint32_t file_id, uint64_t offset, uint64_t *out_phys) {
+    int r;
+
+    cache_lock();
+    r = cache_get_locked(file_id, offset, out_phys);
+    if (r == 0) {
+        /* Under the cache's lock, so no eviction can free the frame between
+         * finding it and holding it. The frame lock nests inside this one, as
+         * it already does for the allocation a miss makes. */
+        vibeos_frame_get(*out_phys);
+    }
     cache_unlock();
     return r;
 }

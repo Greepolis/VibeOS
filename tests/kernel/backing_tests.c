@@ -207,6 +207,33 @@ int test_backing(void) {
         }
     }
 
+    /* ---- a page held by reference survives eviction ---------------------- *
+     *
+     * What the loader and the exec reader need: memory pressure's clean tier
+     * evicts on another core, and a caller that is copying from or mapping the
+     * page must not have it freed underneath. The reference is taken under the
+     * cache's lock, so there is no instant at which the eviction wins. */
+    setup();
+    if (vibeos_cache_get_ref(1u, 0ull, &a) != 0) { goto fail; }
+    if (vibeos_cache_reclaim(1000u) == 0u) {
+        printf("FAIL:backing reclaim evicted nothing - the test proves nothing\n");
+        goto fail;
+    }
+    if (vibeos_cache_resident() != 0u) { goto fail; }
+    if (vibeos_frame_state(a) != VIBEOS_FRAME_CACHE || vibeos_frame_owners(a) != 1u) {
+        printf("FAIL:backing a referenced page was freed by eviction\n");
+        goto fail;
+    }
+    if (!holds(a, 1u, 0ull)) {
+        printf("FAIL:backing a referenced page changed under eviction\n");
+        goto fail;
+    }
+    (void)vibeos_frame_put(a);
+    if (vibeos_frame_owners(a) != 0u) {
+        printf("FAIL:backing the last reference did not free the page\n");
+        goto fail;
+    }
+
     free(g_ram);
     g_ram = 0;
     return 0;

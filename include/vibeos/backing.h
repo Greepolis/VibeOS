@@ -78,7 +78,27 @@ void vibeos_cache_init(vibeos_cache_entry_t *table, uint32_t entries,
  * concurrent and nothing said so. */
 void vibeos_cache_set_lock(void (*lock)(void), void (*unlock)(void));
 
+/* Which frame holds this page, read into the cache if it was not there.
+ *
+ * The frame is only as good as the moment it was returned: the cache's lock
+ * is released on the way out, and an eviction on another core - memory
+ * pressure's clean tier - can free the frame the next instant. So this is for
+ * questions about identity ("is it the same frame as before?") and nothing
+ * that reads, copies or maps the page. For those, vibeos_cache_get_ref. */
 int vibeos_cache_get(uint32_t file_id, uint64_t offset, uint64_t *out_phys);
+
+/* The same, with a reference on the frame taken under the cache's lock, which
+ * the caller gives back with vibeos_frame_put when it is done - after copying
+ * from it, or after mapping it (the mapping takes its own).
+ *
+ * Why it exists. Every caller that used the page got a bare address and used
+ * it with the lock already released. Nothing evicted in the meantime until
+ * something drove the machine into reclaim - svc-press, while the
+ * anonymous-reclaim workload was being built - and then the loader mapped, or
+ * the exec reader copied from, a frame the clean tier had already freed and the
+ * allocator had handed to somebody else. The machine went silent with cores at
+ * rip=0. */
+int vibeos_cache_get_ref(uint32_t file_id, uint64_t offset, uint64_t *out_phys);
 
 /* Drop everything belonging to a file - what a write or a delete must do, or
  * the next read returns what the file used to contain. */
