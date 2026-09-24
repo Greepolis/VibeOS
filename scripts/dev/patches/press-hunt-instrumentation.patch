@@ -1,0 +1,379 @@
+diff --git a/kernel/arch/x86_64/arch_hw.c b/kernel/arch/x86_64/arch_hw.c
+index d5e8008..ed0b379 100644
+--- a/kernel/arch/x86_64/arch_hw.c
++++ b/kernel/arch/x86_64/arch_hw.c
+@@ -120,6 +120,58 @@ static uint8_t g_ap_boot_stack[VIBEOS_HW_MAX_CPUS][16384] __attribute__((aligned
+  * interrupts, so this stack can never be re-entered on the same core. */
+ static uint8_t g_timer_ist_stack[VIBEOS_HW_MAX_CPUS][16384] __attribute__((aligned(16)));
+ 
++/* The kernel's code, from kernel.ld: a kernel-mode context resumes somewhere in
++ * here or it is not a context. */
++extern const char __kernel_text_start[];
++extern const char __kernel_text_end[];
++
++/* Both halves of that claim, checked on every tick rather than assumed.
++ *
++ * Under memory pressure (svc-press, 28 MiB in) three cores were found by QEMU's
++ * exception log faulting in ring 0 at garbage addresses with their stack
++ * pointers sixteen bytes below the top of their slice of this array - where the
++ * interrupt's own return frame lives - and a saved RFLAGS (0x246) in RBP. That
++ * is this stack's return frame overwritten, and there are two ways to do it:
++ * the timer entered again on the same core while still on this stack (so
++ * "interrupt gates mask interrupts" was not true somewhere on the path), or a
++ * core's timer path growing off the bottom of its slice into the top of the
++ * neighbour's. Nothing said which; this does, by name, at the tick it happens. */
++#define HW_IST_GUARD_WORDS 32u
++#define HW_IST_GUARD 0x157157157157157Full
++static volatile uint32_t g_timer_depth[VIBEOS_HW_MAX_CPUS];
++
++/* Interrupts must stay masked for the whole of the timer path: the stub pops
++ * the running tick's registers off this IST after the C handler returns, and a
++ * tick that arrives then restarts the stack at its top over them. Checked after
++ * every step, so the step that left them on is the one named. */
++static void hw_timer_if_check(const char *after) {
++    uint64_t rf;
++    __asm__ __volatile__("pushfq; popq %0" : "=r"(rf));
++    if (rf & 0x200ull) {
++        __asm__ __volatile__("cli" ::: "memory");
++        hw_panic(after);
++    }
++}
++
++static void hw_timer_ist_guard_init(uint32_t cpu) {
++    uint64_t *g = (uint64_t *)(void *)&g_timer_ist_stack[cpu][0];
++    uint32_t i;
++    for (i = 0; i < HW_IST_GUARD_WORDS; i++) {
++        g[i] = HW_IST_GUARD;
++    }
++}
++
++static int hw_timer_ist_guard_broken(uint32_t cpu) {
++    const uint64_t *g = (const uint64_t *)(const void *)&g_timer_ist_stack[cpu][0];
++    uint32_t i;
++    for (i = 0; i < HW_IST_GUARD_WORDS; i++) {
++        if (g[i] != HW_IST_GUARD) {
++            return 1;
++        }
++    }
++    return 0;
++}
++
+ hw_cpu_t *hw_this_cpu(void) {
+     hw_cpu_t *p;
+     __asm__ __volatile__("movq %%gs:16, %0" : "=r"(p));
+@@ -406,6 +458,7 @@ static void hw_load_gdt(uint32_t cpu_index) {
+     /* IST slot 1: the timer interrupt's own stack on this CPU (see above). */
+     cpu->tss.ist[0] =
+         (uint64_t)(uintptr_t)&g_timer_ist_stack[cpu_index][sizeof(g_timer_ist_stack[0])];
++    hw_timer_ist_guard_init(cpu_index);
+     cpu->tss.iomap_base = (uint16_t)sizeof(cpu->tss);
+     cpu->syscall_kstack_top = kstack_top;
+     cpu->self = cpu;
+@@ -1198,10 +1251,25 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
+             }
+         }
+         if (frame->vector == VIBEOS_HW_IRQ_TIMER) {
++            uint32_t tcpu = hw_this_cpu()->index;
++
++            /* The timer's stack, checked at the tick (see g_timer_depth). */
++            if (tcpu < VIBEOS_HW_MAX_CPUS) {
++                if (++g_timer_depth[tcpu] > 1u) {
++                    hw_panic("timer interrupt re-entered on the same cpu: something on "
++                             "the timer path enabled interrupts, and the IST restarted "
++                             "at its top over the running tick's frame");
++                }
++                if (hw_timer_ist_guard_broken(tcpu)) {
++                    hw_panic("timer IST overflowed: the timer path ran off the bottom "
++                             "of this cpu's 16 KiB stack");
++                }
++            }
+             /* Every core, before the clock-owner test: a core that keeps
+              * running the same task never reloads CR3 on its own, and that is
+              * the core most likely to be holding the stale translation. */
+             hw_tlbq_help_quiesce();
++            hw_timer_if_check("interrupts enabled on the timer IST after hw_tlbq_help_quiesce");
+             /* Every core's LAPIC timer lands here; only one may own the clock. */
+             if (!g_apic_mode || hw_this_cpu()->index == 0u) {
+                 g_timer_ticks++;
+@@ -1213,6 +1281,7 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
+                  * whether or not anybody is looking. munmap drains too, so a
+                  * machine that is unmapping hard does not wait for a tick. */
+                 hw_tlbq_drain();
++                hw_timer_if_check("interrupts enabled on the timer IST after hw_tlbq_drain");
+             }
+             /* Accounting is charged by *every* core, unlike the clock above.
+              *
+@@ -1237,23 +1306,35 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
+                     idle = g_tasks[cur].id.is_idle;
+                 }
+                 vibeos_account_tick(acpu->index, cur, idle);
++                hw_timer_if_check("interrupts enabled on the timer IST after vibeos_account_tick");
+             }
+             hw_pic_send_eoi((uint32_t)frame->vector);
+             /* One core owns the network clock: draining the device from every
+              * core would just contend on the same lock. */
+             if (!g_apic_mode || hw_this_cpu()->index == 0u) {
+                 hw_net_pump();
++                hw_timer_if_check("interrupts enabled on the timer IST after hw_net_pump");
+                 /* Repaint the display, whichever one is registered. Cheap by
+                  * construction: the pointer's two small rectangles, and the
+                  * text window when its contents changed. */
+                 vibeos_display_tick();
++                hw_timer_if_check("interrupts enabled on the timer IST after vibeos_display_tick");
+             }
+             hw_schedule(frame); /* may rewrite the frame to switch tasks */
++            hw_timer_if_check("interrupts enabled on the timer IST after hw_schedule");
+             /* Only when returning to ring 3: a signal frame goes on the user
+              * stack, and there is not one to build on if the interrupt hit
+              * kernel code. */
+             if ((frame->cs & 3u) == 3u) {
+                 (void)hw_signal_deliver(frame);
++                hw_timer_if_check("interrupts enabled on the timer IST after hw_signal_deliver");
++            }
++            if (tcpu < VIBEOS_HW_MAX_CPUS) {
++                if (hw_timer_ist_guard_broken(tcpu)) {
++                    hw_panic("timer IST overflowed during this tick: the timer path ran "
++                             "off the bottom of this cpu's 16 KiB stack");
++                }
++                g_timer_depth[tcpu]--;
+             }
+             return;
+         }
+@@ -2016,28 +2097,69 @@ static void hw_frame_release_watch(uint64_t phys) {
+  * literal in the kernel image, and addr2line turns it into a name safely from
+  * outside, whereas following it here would be this diagnostic taking the same
+  * risk as the defect it is reporting. */
+-static uint32_t g_poison_reported;
++/* Recorded here, printed from outside the frame layer's lock.
++ *
++ * The watch runs inside that lock, and it used to print from there - taking the
++ * console lock with the frame lock held. Under memory pressure (svc-press, while
++ * the anonymous-reclaim workload was being built) the machine then went silent
++ * with one core in this function and the others queued on the console, and the
++ * one line that would have named the use-after-free was never printed: the
++ * diagnostic deadlocked the machine it was explaining, which CLAUDE.md records
++ * once already for a watch that called a locking accessor. The watch now only
++ * fills a record; the allocating core prints it once it has left the layer. */
++typedef struct {
++    uint64_t phys, word, found, tag, owners;
++} hw_poison_rec_t;
++
++static hw_poison_rec_t g_poison_rec[8];
++static uint32_t g_poison_reported;      /* records filled, under the frame lock */
++static uint32_t g_poison_printed;       /* records printed, claimed atomically  */
+ 
+ static void hw_frame_poison_watch(uint64_t phys, uint32_t word, uint64_t found,
+                                   uint64_t tag) {
+-    if (g_poison_reported >= 8u) {
++    uint32_t n = __atomic_load_n(&g_poison_reported, __ATOMIC_RELAXED);
++    if (n >= 8u) {
+         return;
+     }
+-    g_poison_reported++;
++    g_poison_rec[n].phys = phys;
++    g_poison_rec[n].word = (uint64_t)word;
++    g_poison_rec[n].found = found;
++    g_poison_rec[n].tag = tag;
++    g_poison_rec[n].owners = (uint64_t)vibeos_frame_owners_locked(phys);
++    __atomic_store_n(&g_poison_reported, n + 1u, __ATOMIC_RELEASE);
++}
+ 
+-    vibeos_x86_64_serial_lock();
+-    vibeos_x86_64_serial_puts("[MM] POISON_BROKEN frame=0x");
+-    vibeos_x86_64_serial_print_hex(phys);
+-    vibeos_x86_64_serial_puts(" word=0x");
+-    vibeos_x86_64_serial_print_hex((uint64_t)word);
+-    vibeos_x86_64_serial_puts(" found=0x");
+-    vibeos_x86_64_serial_print_hex(found);
+-    vibeos_x86_64_serial_puts(" freed_by=0x");
+-    vibeos_x86_64_serial_print_hex(tag);
+-    vibeos_x86_64_serial_puts(" owners=0x");
+-    vibeos_x86_64_serial_print_hex((uint64_t)vibeos_frame_owners_locked(phys));
+-    vibeos_x86_64_serial_puts("\n");
+-    vibeos_x86_64_serial_unlock();
++/* Print what the watch recorded. Only from a place that holds no layer lock:
++ * the console lock is taken here, and the point of the record is that nobody
++ * takes it while holding the frame lock. */
++static void hw_poison_flush(void) {
++    for (;;) {
++        uint32_t done = __atomic_load_n(&g_poison_printed, __ATOMIC_ACQUIRE);
++        uint32_t have = __atomic_load_n(&g_poison_reported, __ATOMIC_ACQUIRE);
++        const hw_poison_rec_t *r;
++
++        if (done >= have) {
++            return;
++        }
++        if (!__atomic_compare_exchange_n(&g_poison_printed, &done, done + 1u, 0,
++                                         __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
++            continue;   /* another core took this one */
++        }
++        r = &g_poison_rec[done];
++        vibeos_x86_64_serial_lock();
++        vibeos_x86_64_serial_puts("[MM] POISON_BROKEN frame=0x");
++        vibeos_x86_64_serial_print_hex(r->phys);
++        vibeos_x86_64_serial_puts(" word=0x");
++        vibeos_x86_64_serial_print_hex(r->word);
++        vibeos_x86_64_serial_puts(" found=0x");
++        vibeos_x86_64_serial_print_hex(r->found);
++        vibeos_x86_64_serial_puts(" freed_by=0x");
++        vibeos_x86_64_serial_print_hex(r->tag);
++        vibeos_x86_64_serial_puts(" owners=0x");
++        vibeos_x86_64_serial_print_hex(r->owners);
++        vibeos_x86_64_serial_puts("\n");
++        vibeos_x86_64_serial_unlock();
++    }
+ }
+ 
+ void hw_free_page_why(void *p, const char *why) {
+@@ -2122,6 +2244,9 @@ static void *hw_alloc_page_admitted(int privileged) {
+             return 0;
+         }
+         phys = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
++        /* Out of the frame layer's lock now: anything its poison watch found
++         * during this allocation can be printed. */
++        hw_poison_flush();
+         return (void *)(uintptr_t)phys;
+     }
+ 
+@@ -2715,13 +2840,16 @@ int hw_elf_read_cached(void *ctx, uint64_t off, uint32_t len, void *buf) {
+         if (take > len - done) {
+             take = len - done;
+         }
+-        if (vibeos_cache_get(r->file_id, page_off, &phys) != 0 || phys == 0u) {
++        /* Held while it is copied: the cache's own reference is not ours to
++         * rely on, because memory pressure evicts on another core. */
++        if (vibeos_cache_get_ref(r->file_id, page_off, &phys) != 0 || phys == 0u) {
+             return -1;
+         }
+         src = (const uint8_t *)(uintptr_t)phys;
+         for (i = 0; i < take; i++) {
+             d[done + i] = src[within + i];
+         }
++        (void)vibeos_frame_put(phys);
+         done += take;
+     }
+     return 0;
+@@ -2794,19 +2922,22 @@ int hw_map_elf_image(vibeos_hw_aspace_t *as, vibeos_vma_list_t *vmas,
+             uint64_t phys = 0;
+ 
+             if (vibeos_elf_page_file_offset(img, va, &foff) &&
+-                vibeos_cache_get(file_id, foff, &phys) == 0) {
++                vibeos_cache_get_ref(file_id, foff, &phys) == 0) {
+                 int rc = (va < VIBEOS_HW_IDENTITY_LIMIT)
+                     ? hw_map_low_user_page(as, va, phys, leaf)
+                     : hw_map_page(as, va, phys, leaf);
+ 
++                /* Ours, taken under the cache's lock, and given back once the
++                 * mapping holds its own. This used to take none - "the cache
++                 * keeps the reference it has held since it read the page" -
++                 * and between the lookup and the mapping an eviction on
++                 * another core could free the frame, so the mapping took its
++                 * reference on a page already handed to somebody else, and
++                 * the process's exit later freed that somebody's page. */
++                (void)vibeos_frame_put(phys);
+                 if (rc != 0) {
+                     return -1;
+                 }
+-                /* No put here, and the asymmetry is deliberate. The branch
+-                 * below allocated a frame and hands its reference to the
+-                 * mapping; this one never took one - the mapping took its own
+-                 * through vmspace, and the cache keeps the reference it has
+-                 * held since it read the page. */
+                 if (vmas) {
+                     (void)vibeos_vma_insert(vmas, va, 4096ull,
+                                             (vibeos_prot_t)(VIBEOS_PROT_READ |
+@@ -3867,6 +3998,15 @@ void hw_ctx_check(int slot, const char *where) {
+     if (!bad && ((c->rsp >> 47) != 0ull && (c->rsp >> 47) != 0x1FFFFull)) {
+         bad = "rsp is not canonical";
+     }
++    /* A kernel-mode context resumes kernel code, so its rip is in kernel text.
++     * Canonical is not enough: under svc-press a context with cs=0x08 and a
++     * user stack address for rip passed every check above and the machine
++     * executed its own stack. */
++    if (!bad && c->cs == VIBEOS_HW_KERNEL_CS &&
++        (c->rip < (uint64_t)(uintptr_t)__kernel_text_start ||
++         c->rip >= (uint64_t)(uintptr_t)__kernel_text_end)) {
++        bad = "kernel-mode rip outside kernel text";
++    }
+     if (!bad && (c->rflags & 0x2ull) == 0ull) { bad = "rflags bit 1 clear"; }
+     if (!bad && (c->rflags & 0x200ull) == 0ull) { bad = "rflags has interrupts off"; }
+     if (!bad) {
+@@ -3977,6 +4117,63 @@ static void hw_schedule(vibeos_x86_64_isr_frame_t *frame) {
+         return; /* nothing else runnable: keep running the current task */
+     }
+     if (cur >= 0) {
++        /* A task must never be interrupted while running on the timer's IST:
++         * the next tick restarts that stack at its top, over whatever the task
++         * had on it, and when the task is resumed it returns into the wreck.
++         * QEMU's exception log put a kernel-mode context there - RSP inside
++         * g_timer_ist_stack - on three cores at once under svc-press. The rip
++         * saved here names the code that was running on it. */
++        if (frame->cs == VIBEOS_HW_KERNEL_CS &&
++            frame->rsp >= (uint64_t)(uintptr_t)&g_timer_ist_stack[0][0] &&
++            frame->rsp < (uint64_t)(uintptr_t)&g_timer_ist_stack[0][0] +
++                             sizeof(g_timer_ist_stack)) {
++            vibeos_x86_64_serial_lock();
++            vibeos_x86_64_serial_puts("[CTX] task interrupted on the timer IST: slot=0x");
++            vibeos_x86_64_serial_print_hex((uint64_t)cur);
++            vibeos_x86_64_serial_puts(" pid=0x");
++            vibeos_x86_64_serial_print_hex((uint64_t)g_tasks[cur].id.pid);
++            vibeos_x86_64_serial_puts(" idle=0x");
++            vibeos_x86_64_serial_print_hex((uint64_t)g_tasks[cur].id.is_idle);
++            vibeos_x86_64_serial_puts(" exe=");
++            vibeos_x86_64_serial_puts(g_tasks[cur].proc.exe_path[0] ?
++                                      g_tasks[cur].proc.exe_path : "-");
++            vibeos_x86_64_serial_puts(" rip=0x");
++            vibeos_x86_64_serial_print_hex(frame->rip);
++            vibeos_x86_64_serial_puts(" rsp=0x");
++            vibeos_x86_64_serial_print_hex(frame->rsp);
++            vibeos_x86_64_serial_puts(" kstack_top=0x");
++            vibeos_x86_64_serial_print_hex(g_tasks[cur].kstack_top);
++            vibeos_x86_64_serial_puts(" cpu=0x");
++            vibeos_x86_64_serial_print_hex((uint64_t)cpu->index);
++            vibeos_x86_64_serial_puts("\n");
++            vibeos_x86_64_serial_unlock();
++            hw_panic("a task was running on the timer's interrupt stack");
++        }
++        /* The same rule as hw_ctx_check's, when the context is saved rather
++         * than when it is next loaded: a frame that is already wrong here was
++         * corrupted on this core, before the switch; one that is right here and
++         * wrong at the load was overwritten in the task table in between. */
++        if (frame->cs == VIBEOS_HW_KERNEL_CS &&
++            (frame->rip < (uint64_t)(uintptr_t)__kernel_text_start ||
++             frame->rip >= (uint64_t)(uintptr_t)__kernel_text_end)) {
++            vibeos_x86_64_serial_lock();
++            vibeos_x86_64_serial_puts("[CTX] saving a kernel-mode context whose rip is not code: slot=0x");
++            vibeos_x86_64_serial_print_hex((uint64_t)cur);
++            vibeos_x86_64_serial_puts(" pid=0x");
++            vibeos_x86_64_serial_print_hex((uint64_t)g_tasks[cur].id.pid);
++            vibeos_x86_64_serial_puts(" exe=");
++            vibeos_x86_64_serial_puts(g_tasks[cur].proc.exe_path[0] ?
++                                      g_tasks[cur].proc.exe_path : "-");
++            vibeos_x86_64_serial_puts(" rip=0x");
++            vibeos_x86_64_serial_print_hex(frame->rip);
++            vibeos_x86_64_serial_puts(" rsp=0x");
++            vibeos_x86_64_serial_print_hex(frame->rsp);
++            vibeos_x86_64_serial_puts(" cpu=0x");
++            vibeos_x86_64_serial_print_hex((uint64_t)cpu->index);
++            vibeos_x86_64_serial_puts("\n");
++            vibeos_x86_64_serial_unlock();
++            hw_panic("saving a kernel-mode context whose rip is not kernel code");
++        }
+         g_tasks[cur].ctx = *frame;
+         /* Beside the integer context, and for the same reason it is here: after
+          * on_cpu is cleared another core may take this task, and it must find
+diff --git a/kernel/arch/x86_64/kernel.ld b/kernel/arch/x86_64/kernel.ld
+index d2f1e09..cb8c317 100644
+--- a/kernel/arch/x86_64/kernel.ld
++++ b/kernel/arch/x86_64/kernel.ld
+@@ -12,8 +12,10 @@ SECTIONS
+     . = 0x4000000;
+ 
+     .text ALIGN(4096) : {
++        __kernel_text_start = .;
+         KEEP(*(.text))
+         *(.text.*)
++        __kernel_text_end = .;
+     } :text
+ 
+     .rodata ALIGN(4096) : {

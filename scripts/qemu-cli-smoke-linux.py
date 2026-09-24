@@ -861,6 +861,15 @@ def main():
                     f.truncate(LOG_DISK_SECTORS * 512)
             cmd += ["-drive", f"if=none,id=vlog,format=raw,file={log_disk}"]
             cmd += LOG_DISK_ARGS[DISK]
+            # Every exception and interrupt, with the CPU state at each, into a
+            # file - for a guest that dies without printing. The trap dump is
+            # printed through the console, and a machine whose console lock is
+            # held by the core that died prints nothing at all; the emulator
+            # still sees the first fault. Large (every timer tick is in it), so
+            # only when asked for.
+            trace = os.environ.get("VIBEOS_QEMU_TRACE", "")
+            if trace:
+                cmd += ["-d", "int,guest_errors", "-D", os.path.abspath(trace)]
             qemu = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=err_fp)
 
             serial = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
