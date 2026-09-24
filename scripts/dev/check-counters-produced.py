@@ -158,6 +158,11 @@ def main():
                    # since the point is to tell a counter that is written from
                    # one that is only declared.
                    or re.search(r"BLK_COUNT\s*\([^,;]*[->.]"
+                                + re.escape(field) + r"\b", text)
+                   # And the compiler's atomic add, for the same reason: the
+                   # anonymous reclaim tier's counters became atomic when it
+                   # turned out to run on several cores at once (M-056).
+                   or re.search(r"__atomic_(?:fetch_add|add_fetch)\s*\(\s*&[^,;]*[->.]"
                                 + re.escape(field) + r"\b", text))
             if inc:
                 continue

@@ -87,6 +87,36 @@ void vibeos_rmap_forget_frame(uint64_t frame_phys);
  * if something failed half way. */
 void vibeos_rmap_forget_root(uint64_t root_phys);
 
+/* Claiming a holder: what keeps an address space's page tables alive while
+ * reclaim works inside them (M-056).
+ *
+ * Reclaim runs from the allocation path, on any core, and evicts a page from an
+ * address space that is not its own - holding none of that process's locks.
+ * Before claims existed, nothing stopped the owner from exiting in the middle:
+ * teardown freed the page tables that the eviction was walking, and the
+ * eviction's compare-exchange then wrote into a page the allocator had already
+ * taken back.
+ *
+ * claim_sole returns the frame's holder only when it has exactly one, and
+ * records a claim on that holder's root, under this layer's lock - the lock
+ * teardown takes first. forget_root, which teardown calls before it frees
+ * anything, removes the root's holders (so no new claim on it can succeed) and
+ * then waits for the claims already taken to be released. The wait goes through
+ * a hook, called with how many times this wait has spun so far, because what
+ * waiting means - and how long is too long - is the machine's to say: the
+ * machine turns a wait that never ends into a named panic, as it does for its
+ * locks. With no hook it spins.
+ *
+ * Returns 0 and fills `out`, or -1: not exactly one holder, or the claim table
+ * is full (counted as claim_full). */
+int vibeos_rmap_claim_sole(uint64_t frame_phys, vibeos_rmap_holder_t *out);
+void vibeos_rmap_unclaim(uint64_t root_phys);
+void vibeos_rmap_set_relax(void (*relax)(uint64_t spins));
+
+/* The claim table: one entry per root with a claim outstanding. More than
+ * enough for one reclaimer per core. */
+#define VIBEOS_RMAP_CLAIMS 16u
+
 /* How many mappings hold this frame. */
 uint32_t vibeos_rmap_count(uint64_t frame_phys);
 
@@ -110,6 +140,15 @@ typedef struct vibeos_rmap_stats {
                                * a frame outside the pool is a legitimate
                                * thing to map - but it is how much of the
                                * invariant below does not apply.            */
+    uint64_t claims;          /* holders claimed by reclaim                    */
+    uint64_t claim_waits;     /* teardowns that found a claim on their root and
+                               * waited for it - the race M-056 described,
+                               * happening and being handled                  */
+    uint64_t claim_full;      /* a claim refused for want of a table entry     */
+    uint64_t unclaim_missing; /* an unclaim of a root with no claim. MUST BE
+                               * ZERO: a claim released twice would let a
+                               * teardown through while a reclaimer is still
+                               * inside its tables                            */
 } vibeos_rmap_stats_t;
 
 

@@ -546,7 +546,10 @@ int vibeos_vmspace_protect(vibeos_vmspace_t *as, uint64_t va,
         if ((before & PTE_PRESENT) == 0u) {
             return -1;   /* unmapped under us: not a permission change */
         }
-        desired = before & ~(PTE_USER | PTE_WRITE | PTE_NX);
+        /* The swap-out marker goes too: it promises a write bit back to the
+         * next store, and after an mprotect that promise is this call's to
+         * make, not the swap-out's (M-056). */
+        desired = before & ~(PTE_USER | PTE_WRITE | PTE_NX | VIBEOS_PTE_SWAPOUT);
         if (!(prot & VIBEOS_PROT_EXEC)) {
             desired |= PTE_NX;   /* PROT_NONE too: nothing to execute either */
         }
@@ -787,10 +790,17 @@ static int clone_one(vibeos_vmspace_t *src, uint64_t va, uint64_t *pte, void *ct
     for (;;) {
         uint64_t desired;
 
-        if ((entry & PTE_PRESENT) == 0u || (entry & PTE_WRITE) == 0u) {
+        /* A page a swap-out has marked is a writable page whose write bit is
+         * away for the moment: shared as it stands, parent and child would both
+         * hold it read-only and without copy-on-write, and the child would be
+         * killed on its first legitimate store (M-056). Converting it also
+         * changes the parent's entry, so the swap-out's final exchange fails
+         * and it is abandoned. */
+        if ((entry & PTE_PRESENT) == 0u ||
+            ((entry & PTE_WRITE) == 0u && (entry & VIBEOS_PTE_SWAPOUT) == 0u)) {
             break;   /* nothing to convert: shared as it stands */
         }
-        desired = (entry & ~PTE_WRITE) | PTE_COW_BIT;
+        desired = (entry & ~(PTE_WRITE | VIBEOS_PTE_SWAPOUT)) | PTE_COW_BIT;
         if (__atomic_compare_exchange_n(pte, &entry, desired, 0,
                                         __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
             entry = desired;
@@ -1026,6 +1036,26 @@ int vibeos_vmspace_fault(vibeos_vmspace_t *as, uint64_t va, int write) {
         return 0;
     }
 
+    /* A swap-out is writing this page out and took its write bit to do it
+     * (M-056). The store wins: give the bit back and let the instruction run
+     * again. The swap-out's final exchange then finds the entry changed and
+     * gives up, so the store is never lost and the page never reaches swap with
+     * contents older than what the program has written. A lost exchange here
+     * means somebody else already changed the entry; retrying the instruction
+     * faults again against whatever they left, which is decided then. */
+    if ((entry & VIBEOS_PTE_SWAPOUT) && (entry & PTE_WRITE) == 0u) {
+        expected = entry;
+        desired = (entry | PTE_WRITE) & ~VIBEOS_PTE_SWAPOUT;
+        if (__atomic_compare_exchange_n(pte, &expected, desired, 0,
+                                        __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+            vibeos_mm_stats()->swap_out_cancelled++;
+        }
+        if (g_be.invlpg) {
+            g_be.invlpg(va);
+        }
+        return 1;
+    }
+
     /* Already writable: another thread resolved this page on another core and
      * this one faulted on a translation that had not caught up. Without this
      * the page looks like a plain read-only mapping - no copy-on-write mark,
@@ -1190,7 +1220,7 @@ int64_t vibeos_vmspace_swap_slot(vibeos_vmspace_t *as, uint64_t va) {
 }
 
 int vibeos_vmspace_swap_out(vibeos_vmspace_t *as, uint64_t va, uint32_t slot) {
-    uint64_t *pte, entry, phys, desired;
+    uint64_t *pte, entry, phys, desired, marked;
 
     vm_op("swap-out");
     if (!g_ready || !as || !as->root) {
@@ -1221,37 +1251,72 @@ int vibeos_vmspace_swap_out(vibeos_vmspace_t *as, uint64_t va, uint32_t slot) {
         return -1;
     }
 
-    /* The entry goes first. A store after this point faults, and the fault
-     * finds an entry that says "swapped" - so it is delayed rather than lost,
-     * which is the difference between a window that is narrow and one that is
-     * correct. */
-    /* NX rides along in a not-present entry, where the hardware ignores it, so a
-     * page swapped out and back in is not quietly made executable. */
-    desired = ((uint64_t)slot << 12) | PTE_SWAPPED | (entry & PTE_NX);
-    if (!__atomic_compare_exchange_n(pte, &entry, desired, 0,
-                                     __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
-        return -1;   /* somebody else changed it; theirs to deal with */
+    /* Stop the writers, not the readers (M-056).
+     *
+     * This used to mark the entry "swapped" first and write the page second, on
+     * the argument that a store in between would fault on "swapped" and be
+     * delayed rather than lost. It was not delayed: the fault found a swapped
+     * entry and read the slot - before the write had put anything in it. And a
+     * munmap in the same window freed a slot that was still being written into,
+     * for the next eviction to be handed.
+     *
+     * Now the entry stays present while the page is written. A writable page
+     * loses its write bit and gains the marker, and every core is told, so none
+     * can still store through a cached writable entry; a read-only page needs
+     * nothing, because nobody can store to it. */
+    marked = entry;
+    if (entry & PTE_WRITE) {
+        marked = (entry & ~PTE_WRITE) | VIBEOS_PTE_SWAPOUT;
+        if (!__atomic_compare_exchange_n(pte, &entry, marked, 0,
+                                         __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+            return -1;   /* somebody else changed it; theirs to deal with */
+        }
+        if (g_be.invlpg) {
+            g_be.invlpg(va);
+        }
+        if (g_be.shootdown) {
+            g_be.shootdown(as->root_phys);
+        }
     }
+
+    /* The contents, with every store now faulting - and cancelling this. */
+    if (g_be.swap_write && g_be.swap_write(slot, g_be.map_phys(phys)) != 0) {
+        /* Not on disk. Put the write bit back if the entry is still the one
+         * this call marked; if it is not, whoever changed it rebuilt it and the
+         * marker went with their change. */
+        uint64_t expect = marked;
+        if (marked != entry) {
+            (void)__atomic_compare_exchange_n(pte, &expect, entry, 0,
+                                              __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
+        }
+        vibeos_mm_stats()->swap_write_failed++;
+        return -1;
+    }
+
+    /* Commit, from exactly the entry this call left. NX rides along in a
+     * not-present entry, where the hardware ignores it, so a page swapped out
+     * and back in is not quietly made executable.
+     *
+     * The exchange is the whole guarantee: a store that cancelled, a munmap, a
+     * fork, an mprotect or a compaction all change the entry, and then this
+     * fails and the page stays where it is - its slot, written for nothing, is
+     * the caller's to give back. */
+    desired = ((uint64_t)slot << 12) | PTE_SWAPPED | (entry & PTE_NX);
+    {
+        uint64_t expect = marked;
+        if (!__atomic_compare_exchange_n(pte, &expect, desired, 0,
+                                         __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+            vibeos_mm_stats()->swap_out_raced++;
+            return -1;
+        }
+    }
+    /* No core may still read through a translation of the frame about to be
+     * released: the entry was present until the exchange. */
     if (g_be.invlpg) {
         g_be.invlpg(va);
     }
     if (g_be.shootdown) {
         g_be.shootdown(as->root_phys);
-    }
-
-    /* Now the contents, with nothing able to reach the frame through this
-     * address space any more. */
-    if (g_be.swap_write && g_be.swap_write(slot, g_be.map_phys(phys)) != 0) {
-        /* The page is not on disk and the entry no longer names the frame.
-         * Putting the mapping back is the only recovery that loses nothing:
-         * the frame still holds the contents, and the fault that follows will
-         * find a normal mapping again. */
-        uint64_t back = entry;
-        uint64_t expect = desired;
-        (void)__atomic_compare_exchange_n(pte, &expect, back, 0,
-                                          __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
-        vibeos_mm_stats()->swap_write_failed++;
-        return -1;
     }
 
     (void)vibeos_rmap_remove(phys, as->root_phys, va);

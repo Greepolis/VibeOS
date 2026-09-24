@@ -1,0 +1,70 @@
+# M-056: the swap-out protocol (kernel/mm/vmspace.c), proved by the host test's
+# swap-out groups in tests/kernel/compact_tests.c, whose in-memory disk runs
+# "another core" in the middle of the page's write.
+#
+# A swap-out keeps the page present and readable while it is written, takes a
+# writable page's write bit and marks it, and commits with one compare-exchange
+# from exactly that marked entry. Anything that touched the entry in between
+# makes the exchange fail and the swap-out is abandoned.
+#
+#  1. the commit is a plain store: a store that cancelled, an mprotect, an
+#     munmap and a fork are all overwritten - the page goes to swap with the
+#     cancelled store's write lost, or a freed entry is written over;
+#  2. the write bit is taken without the marker: a store in the middle is then
+#     a protection violation, and a program is killed for writing its own page;
+#  3. the fault does not cancel: the same, from the other side;
+#  4. mprotect keeps the marker: a page made read-only would have its write bit
+#     "given back" on the next store - the bit-9 defect CLAUDE.md records;
+#  5. fork shares a marked page as it stands: both copies read-only and not
+#     copy-on-write, and the child killed on its first store;
+#  6. a read-only page is marked too: the marker would promise a write bit it
+#     never had.
+#
+# Target source: kernel/mm/vmspace.c
+# Run: python3 scripts/dev/sabotage.py kernel/mm/vmspace.c scripts/dev/cases/mm-swapout-protocol.txt
+
+### the commit is a plain store
+--- old
+        uint64_t expect = marked;
+        if (!__atomic_compare_exchange_n(pte, &expect, desired, 0,
+                                         __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+            vibeos_mm_stats()->swap_out_raced++;
+            return -1;
+        }
++++ new
+        (void)marked;
+        __atomic_store_n(pte, desired, __ATOMIC_RELEASE);
+
+### the write bit is taken without the marker
+--- old
+        marked = (entry & ~PTE_WRITE) | VIBEOS_PTE_SWAPOUT;
++++ new
+        marked = entry & ~PTE_WRITE;
+
+### the fault does not cancel
+--- old
+    if ((entry & VIBEOS_PTE_SWAPOUT) && (entry & PTE_WRITE) == 0u) {
++++ new
+    if (0) {
+
+### mprotect keeps the marker
+--- old
+        desired = before & ~(PTE_USER | PTE_WRITE | PTE_NX | VIBEOS_PTE_SWAPOUT);
++++ new
+        desired = before & ~(PTE_USER | PTE_WRITE | PTE_NX);
+
+### fork shares a marked page as it stands
+--- old
+            ((entry & PTE_WRITE) == 0u && (entry & VIBEOS_PTE_SWAPOUT) == 0u)) {
++++ new
+            (entry & PTE_WRITE) == 0u) {
+
+### a read-only page is marked too
+--- old
+    marked = entry;
+    if (entry & PTE_WRITE) {
+        marked = (entry & ~PTE_WRITE) | VIBEOS_PTE_SWAPOUT;
++++ new
+    marked = entry;
+    if (1) {
+        marked = (entry & ~PTE_WRITE) | VIBEOS_PTE_SWAPOUT;

@@ -1,0 +1,27 @@
+# M-056: the anonymous reclaim tier holds a claim for exactly one eviction
+# (kernel/mm/anon.c), proved by test_anon_reclaim_claims in
+# tests/kernel/compact_tests.c - the first host test this file has had.
+#
+#  1. a successful eviction keeps its claim: the owner's teardown then waits for
+#     ever - on the machine, until the bound turns it into a named panic;
+#  2. a refused eviction keeps its claim: the same, for the common case - most
+#     candidates are refused. The test reclaims once with the swap disk failing
+#     its write, so the refusal path runs; before that line was added it never
+#     did, and this case could not have gone red.
+#
+# Target source: kernel/mm/anon.c
+# Run: python3 scripts/dev/sabotage.py kernel/mm/anon.c scripts/dev/cases/mm-anon-claims.txt
+
+### a refused eviction keeps its claim
+--- old
+            vibeos_rmap_unclaim(holder.root_phys);
+            /* Give the slot back.
++++ new
+            /* Give the slot back.
+
+### a successful eviction keeps its claim
+--- old
+        vibeos_rmap_unclaim(holder.root_phys);
+        __atomic_fetch_add(&g_stats.evicted, 1u, __ATOMIC_RELAXED);
++++ new
+        __atomic_fetch_add(&g_stats.evicted, 1u, __ATOMIC_RELAXED);

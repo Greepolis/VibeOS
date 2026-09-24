@@ -2230,6 +2230,19 @@ static void hw_rmap_unlock(void) {
     hw_spin_unlock(&g_rmap_lock);
 }
 
+/* A teardown waiting for a reclaimer to finish with its page tables (M-056).
+ * The reclaimer holds a claim across one page's disk write, so an honest wait
+ * is a write's length; the bound is the spinlocks' own, and crossing it means a
+ * claim was never released - which, left alone, is a core spinning in exit
+ * forever with nothing said. */
+static void hw_rmap_relax(uint64_t spins) {
+    if (spins > VIBEOS_HW_LOCK_SPIN_LIMIT) {
+        hw_panic("teardown waited too long for a reclaim claim on its address "
+                 "space: a claim was never released");
+    }
+    __asm__ __volatile__("pause" ::: "memory");
+}
+
 static void hw_frame_unlock(void) {
     hw_spin_unlock(&g_mm_lock);
 }
@@ -2440,6 +2453,7 @@ static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
              * this is called from inside the address-space layer while the
              * frame lock is held. */
             vibeos_rmap_set_lock(hw_rmap_lock, hw_rmap_unlock);
+            vibeos_rmap_set_relax(hw_rmap_relax);
             if (rmap_pool &&
                 ((uint64_t)(uintptr_t)rmap_pool + rmap_pages * 4096ull)
                     <= VIBEOS_HW_IDENTITY_LIMIT) {
@@ -4118,7 +4132,12 @@ int hw_user_range_why(uint64_t va, uint64_t len, int need_write,
          * permission, so refusing the buffer here rejects writes that are
          * perfectly legal - which made every read() into freshly forked
          * memory return EFAULT, and a shell report end of input. */
-        if (need_write && (e & PTE_WRITE) == 0 && (e & PTE_COW) == 0) {
+        /* A page a swap-out is writing is writable: a store faults and cancels
+         * the swap-out (M-056). Refused here, a syscall writing a buffer that
+         * reclaim happened to be evicting would get EFAULT for nothing - the
+         * second of the three places copy-on-write taught this file about. */
+        if (need_write && (e & PTE_WRITE) == 0 && (e & PTE_COW) == 0 &&
+            (e & VIBEOS_PTE_SWAPOUT) == 0) {
             *why = HW_RANGE_READONLY;
             return 0;
         }

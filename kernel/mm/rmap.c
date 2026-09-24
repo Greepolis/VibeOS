@@ -48,6 +48,17 @@ vibeos_rmap_stats_t *vibeos_rmap_stats(void) {
 
 static void (*g_lock)(void);
 static void (*g_unlock)(void);
+static void (*g_relax)(uint64_t spins);
+
+/* Roots with a claim outstanding (M-056), under the layer's lock. */
+static struct {
+    uint64_t root;
+    uint32_t n;
+} g_claims[VIBEOS_RMAP_CLAIMS];
+
+void vibeos_rmap_set_relax(void (*relax)(uint64_t spins)) {
+    g_relax = relax;
+}
 
 void vibeos_rmap_set_lock(void (*lock)(void), void (*unlock)(void)) {
     g_lock = lock;
@@ -117,11 +128,14 @@ int vibeos_rmap_init(void *pool, uint64_t bytes, uint32_t frames) {
     }
     g_free_head = (g_node_count != 0u) ? 0u : RMAP_NONE;
 
-    g_stats.nodes_used = 0;
-    g_stats.nodes_peak = 0;
-    g_stats.exhausted = 0;
-    g_stats.missing_remove = 0;
-    g_stats.cycles = 0;
+    /* The whole struct, not field by field: that list had already missed
+     * `untracked`, and the claim counters would have been the next hole - the
+     * shape CLAUDE.md records for vibeos_logsink_dev_t. */
+    g_stats = (vibeos_rmap_stats_t){ 0 };
+    for (i = 0; i < VIBEOS_RMAP_CLAIMS; i++) {
+        g_claims[i].root = 0;
+        g_claims[i].n = 0;
+    }
     g_ready = 1;
     return 0;
 }
@@ -285,8 +299,77 @@ void vibeos_rmap_forget_frame(uint64_t frame_phys) {
     rmap_unlock();
 }
 
+/* Claims on this root. Under the lock. */
+static uint32_t claims_on(uint64_t root_phys) {
+    uint32_t i;
+    for (i = 0; i < VIBEOS_RMAP_CLAIMS; i++) {
+        if (g_claims[i].n != 0u && g_claims[i].root == root_phys) {
+            return g_claims[i].n;
+        }
+    }
+    return 0;
+}
+
+int vibeos_rmap_claim_sole(uint64_t frame_phys, vibeos_rmap_holder_t *out) {
+    uint32_t idx, head, i, free_slot = VIBEOS_RMAP_CLAIMS;
+
+    if (!out) {
+        return -1;
+    }
+    rmap_lock();
+    idx = g_ready ? frame_index(frame_phys) : RMAP_NONE;
+    if (idx == RMAP_NONE) {
+        rmap_unlock();
+        return -1;
+    }
+    head = g_head[idx];
+    if (head == RMAP_NONE || g_nodes[head].next != RMAP_NONE) {
+        rmap_unlock();
+        return -1;          /* no holder, or more than one */
+    }
+    out->root_phys = g_nodes[head].root_phys;
+    out->va = g_nodes[head].va;
+    for (i = 0; i < VIBEOS_RMAP_CLAIMS; i++) {
+        if (g_claims[i].n != 0u && g_claims[i].root == out->root_phys) {
+            break;
+        }
+        if (g_claims[i].n == 0u && free_slot == VIBEOS_RMAP_CLAIMS) {
+            free_slot = i;
+        }
+    }
+    if (i == VIBEOS_RMAP_CLAIMS) {
+        if (free_slot == VIBEOS_RMAP_CLAIMS) {
+            g_stats.claim_full++;
+            rmap_unlock();
+            return -1;
+        }
+        i = free_slot;
+        g_claims[i].root = out->root_phys;
+    }
+    g_claims[i].n++;
+    g_stats.claims++;
+    rmap_unlock();
+    return 0;
+}
+
+void vibeos_rmap_unclaim(uint64_t root_phys) {
+    uint32_t i;
+
+    rmap_lock();
+    for (i = 0; i < VIBEOS_RMAP_CLAIMS; i++) {
+        if (g_claims[i].n != 0u && g_claims[i].root == root_phys) {
+            g_claims[i].n--;
+            rmap_unlock();
+            return;
+        }
+    }
+    g_stats.unclaim_missing++;
+    rmap_unlock();
+}
+
 void vibeos_rmap_forget_root(uint64_t root_phys) {
     uint32_t i;
+    uint64_t spins = 0;
 
     rmap_lock();
     if (!g_ready) {
@@ -312,6 +395,22 @@ void vibeos_rmap_forget_root(uint64_t root_phys) {
             }
             cur = next;
         }
+    }
+    /* The holders are gone, so no new claim on this root can succeed; wait for
+     * the ones already taken. The caller frees this address space's page
+     * tables as soon as this returns, and a reclaimer inside them is still
+     * walking and writing (M-056). The lock is dropped for the wait - the
+     * reclaimer needs it to let go. */
+    while (claims_on(root_phys) != 0u) {
+        if (spins == 0u) {
+            g_stats.claim_waits++;
+        }
+        rmap_unlock();
+        spins++;
+        if (g_relax) {
+            g_relax(spins);
+        }
+        rmap_lock();
     }
     rmap_unlock();
 }

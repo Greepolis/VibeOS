@@ -320,6 +320,26 @@ static void kernel_cli_print_meminfo(void) {
     kernel_log_u64_hex(st->swap_ins);
     vibeos_x86_64_serial_puts(" swap_outs=0x");
     kernel_log_u64_hex(st->swap_outs);
+    /* The swap-out protocol at work (M-056): abandoned because the entry
+     * changed while the page was being written, and how many of those were a
+     * store taking its page back. */
+    vibeos_x86_64_serial_puts(" swap_out_raced=0x");
+    kernel_log_u64_hex(st->swap_out_raced);
+    vibeos_x86_64_serial_puts(" swap_out_cancelled=0x");
+    kernel_log_u64_hex(st->swap_out_cancelled);
+    /* Reclaim's claims on the address spaces it evicts from, and the teardowns
+     * that had to wait for one. unclaim_missing is a claim released twice,
+     * which would let a teardown through while a reclaimer is still inside;
+     * it is asserted zero by the host tests, because the boot gate's boot
+     * never reclaims. */
+    vibeos_x86_64_serial_puts(" rmap_claims=0x");
+    kernel_log_u64_hex(vibeos_rmap_stats()->claims);
+    vibeos_x86_64_serial_puts(" rmap_claim_waits=0x");
+    kernel_log_u64_hex(vibeos_rmap_stats()->claim_waits);
+    vibeos_x86_64_serial_puts(" rmap_claim_full=0x");
+    kernel_log_u64_hex(vibeos_rmap_stats()->claim_full);
+    vibeos_x86_64_serial_puts(" rmap_unclaim_missing=0x");
+    kernel_log_u64_hex(vibeos_rmap_stats()->unclaim_missing);
     vibeos_x86_64_serial_puts("\n");
     vibeos_x86_64_serial_puts("[MEM] vmas_live=0x");
     kernel_log_u64_hex(st->vmas_live);

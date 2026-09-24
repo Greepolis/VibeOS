@@ -52,6 +52,29 @@
  * address that cannot be valid rather than at a plausible one. */
 #define VIBEOS_PTE_SWAPPED (1ull << 10)
 
+/* A swap-out is writing this page, and took its write permission to do it.
+ *
+ * Only on a present entry, and only on one that *was* writable: the marker says
+ * "restore the write bit if anybody stores here", and that is a lie about a page
+ * that was read-only - granting it would be the bit-9 defect above again. Bit
+ * 52, which the hardware ignores in a leaf entry and PTE_ADDR_MASK excludes.
+ *
+ * Why it exists (M-056). A swap-out used to mark the entry "swapped" *before*
+ * writing the page, so a fault in that window read a slot not yet written, and
+ * a munmap in it freed a slot still being written into. Now the entry stays
+ * present and readable while the page is written; a store faults and cancels
+ * the swap-out (vibeos_vmspace_fault restores the write bit); and only a final
+ * compare-exchange, from exactly this marked entry to the swapped one, commits
+ * it. Anything that touched the entry meanwhile - a cancelled store, munmap,
+ * fork, mprotect, compaction - makes that exchange fail and the swap-out is
+ * abandoned with nothing lost.
+ *
+ * Three places honour it, the same three copy-on-write needed: the fault
+ * handler (cancel, user or kernel mode), hw_user_range_ok (writable, not
+ * refused), and every path that rebuilds an entry (mprotect drops it; fork
+ * treats it as writable and shares copy-on-write). */
+#define VIBEOS_PTE_SWAPOUT (1ull << 52)
+
 typedef struct vibeos_vmspace {
     uint64_t root_phys;     /* what goes in CR3 */
     uint64_t *root;         /* the same table, through the backend's mapping */

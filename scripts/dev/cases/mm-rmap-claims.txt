@@ -1,0 +1,37 @@
+# M-056: reclaim's claims on the address spaces it evicts from
+# (kernel/mm/rmap.c), proved by test_claims in tests/kernel/rmap_tests.c.
+#
+# Reclaim evicts from an address space that is not its own and holds none of
+# that process's locks. A claim, taken under this layer's lock when the holder
+# is looked up, is what makes the owner's teardown wait before it frees the page
+# tables the eviction is walking and writing.
+#
+#  1. teardown does not wait for claims: the page tables are freed under a
+#     reclaimer, whose compare-exchange then writes into a page the allocator
+#     has already given to somebody else;
+#  2. a frame with two holders can be claimed: reclaim evicts a page a second
+#     address space still maps;
+#  3. an unmatched unclaim is not counted: a claim released twice lets a
+#     teardown through while a reclaimer is still inside, and nothing would say.
+#
+# Target source: kernel/mm/rmap.c
+# Run: python3 scripts/dev/sabotage.py kernel/mm/rmap.c scripts/dev/cases/mm-rmap-claims.txt
+
+### teardown does not wait for claims
+--- old
+    while (claims_on(root_phys) != 0u) {
++++ new
+    while (0) {
+
+### a frame with two holders can be claimed
+--- old
+    if (head == RMAP_NONE || g_nodes[head].next != RMAP_NONE) {
++++ new
+    if (head == RMAP_NONE) {
+
+### an unmatched unclaim is not counted
+--- old
+    g_stats.unclaim_missing++;
+    rmap_unlock();
++++ new
+    rmap_unlock();

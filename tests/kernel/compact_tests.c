@@ -25,6 +25,7 @@
 #include "vibeos/mm_model.h"
 #include "vibeos/reclaim.h"
 #include "vibeos/swapmap.h"
+#include "vibeos/anon.h"
 
 int test_compact(void);
 void vibeos_rmap_set_base(uint64_t base_phys);
@@ -67,6 +68,8 @@ static void cp_free_table(uint64_t phys) {
 static uint8_t g_swapbits[(CP_SLOTS + 7u) / 8u];
 static unsigned char g_swapdisk[CP_SLOTS][4096];
 static int g_swap_write_fails;
+/* What another core does while a page is being written to swap (M-056). */
+static void (*g_during_write)(void);
 
 static int cp_swap_io(void *ctx, uint32_t slot, void *page, int write) {
     (void)ctx;
@@ -74,6 +77,11 @@ static int cp_swap_io(void *ctx, uint32_t slot, void *page, int write) {
         return -1;
     }
     if (write) {
+        if (g_during_write) {
+            void (*fn)(void) = g_during_write;
+            g_during_write = 0;
+            fn();
+        }
         if (g_swap_write_fails) {
             return -1;
         }
@@ -117,6 +125,7 @@ static int cp_setup(void) {
     be.swap_read = vibeos_swap_read;
     memset(g_swapdisk, 0, sizeof(g_swapdisk));
     g_swap_write_fails = 0;
+    g_during_write = 0;
     if (vibeos_swapmap_init(g_swapbits, CP_SLOTS, cp_swap_io, 0) != 0) {
         return -1;
     }
@@ -869,6 +878,197 @@ static void test_fork_audit_counts_quarantined_references(void) {
           "a reference in quarantine was reported as a mismatch");
 }
 
+/* ---- M-056: the swap-out protocol, with another core in the middle ---------- */
+
+#define PTE_W        0x2ull
+#define PTE_P        0x1ull
+
+static vibeos_vmspace_t g_sw_as;
+static uint64_t g_sw_seen;         /* the entry as another core saw it mid-write */
+static int64_t g_sw_seen_slot;
+static int g_sw_fault_rc;
+
+static void sw_look(void) {
+    uint64_t *pte = vibeos_vmspace_entry(&g_sw_as, VA_A);
+    g_sw_seen = pte ? *pte : 0;
+    g_sw_seen_slot = vibeos_vmspace_swap_slot(&g_sw_as, VA_A);
+}
+
+static void sw_store(void) {            /* a store: the write fault */
+    sw_look();
+    g_sw_fault_rc = vibeos_vmspace_fault(&g_sw_as, VA_A, 1);
+}
+
+static void sw_mprotect_ro(void) {
+    (void)vibeos_vmspace_protect(&g_sw_as, VA_A,
+                                 (vibeos_prot_t)(VIBEOS_PROT_READ | VIBEOS_PROT_USER));
+}
+
+static void sw_munmap(void) {
+    (void)vibeos_vmspace_unmap(&g_sw_as, VA_A);
+}
+
+static vibeos_vmspace_t g_sw_child;
+static void sw_fork(void) {
+    (void)vibeos_vmspace_clone_cow(&g_sw_child, &g_sw_as);
+}
+
+static uint64_t sw_setup(vibeos_prot_t prot, unsigned char fill) {
+    uint64_t f;
+    if (cp_setup() != 0 || vibeos_vmspace_create(&g_sw_as) != 0) {
+        return 0;
+    }
+    f = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+    memset(cp_map(f), fill, 4096);
+    if (map_as_kernel_does(&g_sw_as, VA_A, f, prot) != 0) {
+        return 0;
+    }
+    return f;
+}
+
+#define RW_USER ((vibeos_prot_t)(VIBEOS_PROT_READ | VIBEOS_PROT_WRITE | VIBEOS_PROT_USER))
+#define RO_USER ((vibeos_prot_t)(VIBEOS_PROT_READ | VIBEOS_PROT_USER))
+
+static void test_swapout_readable_while_written(void) {
+    uint64_t f = sw_setup(RW_USER, 0x31);
+    uint32_t slot = 0;
+
+    CHECK(f != 0 && vibeos_swap_alloc(&slot) == 0, "setup");
+    g_during_write = sw_look;
+    CHECK(vibeos_vmspace_swap_out(&g_sw_as, VA_A, slot) == 0, "paged out");
+    CHECK((g_sw_seen & PTE_P) && !(g_sw_seen & PTE_W) &&
+          (g_sw_seen & VIBEOS_PTE_SWAPOUT),
+          "while the page was being written it was present, read-only and marked");
+    CHECK(g_sw_seen_slot == -1,
+          "and nothing could read its slot yet - the old order said 'swapped' "
+          "before the slot held anything");
+    CHECK(vibeos_vmspace_swap_slot(&g_sw_as, VA_A) == (int64_t)slot, "then swapped");
+    CHECK(g_swapdisk[slot][0] == 0x31 && g_swapdisk[slot][4095] == 0x31,
+          "with the contents on the disk");
+}
+
+static void test_swapout_store_cancels(void) {
+    uint64_t f = sw_setup(RW_USER, 0x32);
+    uint32_t slot = 0;
+    uint64_t *pte;
+
+    CHECK(f != 0 && vibeos_swap_alloc(&slot) == 0, "setup");
+    g_sw_fault_rc = -9;
+    g_during_write = sw_store;
+    CHECK(vibeos_vmspace_swap_out(&g_sw_as, VA_A, slot) != 0,
+          "a store in the middle abandons the swap-out");
+    CHECK(g_sw_fault_rc == 1, "the store's fault was resolved, not a violation");
+    pte = vibeos_vmspace_entry(&g_sw_as, VA_A);
+    CHECK(pte && (*pte & PTE_P) && (*pte & PTE_W) && !(*pte & VIBEOS_PTE_SWAPOUT) &&
+          (*pte & 0x000FFFFFFFFFF000ull) == f,
+          "the page is where it was, writable, unmarked");
+    CHECK(vibeos_frame_owners(f) == 1u && vibeos_rmap_count(f) == 1u,
+          "and still owned and recorded");
+    CHECK(vibeos_mm_stats()->swap_out_cancelled == 1u &&
+          vibeos_mm_stats()->swap_out_raced == 1u, "both counted");
+    CHECK(vibeos_mm_stats()->swap_outs == 0u, "nothing went out");
+}
+
+static void test_swapout_mprotect_drops_marker(void) {
+    uint64_t f = sw_setup(RW_USER, 0x33);
+    uint32_t slot = 0;
+    uint64_t *pte;
+
+    CHECK(f != 0 && vibeos_swap_alloc(&slot) == 0, "setup");
+    g_during_write = sw_mprotect_ro;
+    CHECK(vibeos_vmspace_swap_out(&g_sw_as, VA_A, slot) != 0,
+          "an mprotect in the middle abandons the swap-out");
+    pte = vibeos_vmspace_entry(&g_sw_as, VA_A);
+    CHECK(pte && (*pte & PTE_P) && !(*pte & PTE_W) && !(*pte & VIBEOS_PTE_SWAPOUT),
+          "read-only, and the marker gone with the rebuild");
+    CHECK(vibeos_vmspace_fault(&g_sw_as, VA_A, 1) == 0,
+          "so a store to the now read-only page is a violation, not a write "
+          "granted back by a marker that outlived its swap-out");
+}
+
+static void test_swapout_munmap_mid_write(void) {
+    uint64_t f = sw_setup(RW_USER, 0x34);
+    uint32_t slot = 0;
+
+    CHECK(f != 0 && vibeos_swap_alloc(&slot) == 0, "setup");
+    g_during_write = sw_munmap;
+    CHECK(vibeos_vmspace_swap_out(&g_sw_as, VA_A, slot) != 0,
+          "an munmap in the middle abandons the swap-out");
+    CHECK(vibeos_vmspace_swap_slot(&g_sw_as, VA_A) == -1,
+          "no entry names the slot - munmap never saw one to free");
+    CHECK(vibeos_mm_stats()->swap_outs == 0u, "nothing went out");
+}
+
+static void test_swapout_fork_mid_write(void) {
+    uint64_t f = sw_setup(RW_USER, 0x35);
+    uint32_t slot = 0;
+    uint64_t *pp, *cp;
+
+    CHECK(f != 0 && vibeos_swap_alloc(&slot) == 0 &&
+          vibeos_vmspace_create(&g_sw_child) == 0, "setup");
+    g_during_write = sw_fork;
+    CHECK(vibeos_vmspace_swap_out(&g_sw_as, VA_A, slot) != 0,
+          "a fork in the middle abandons the swap-out");
+    pp = vibeos_vmspace_entry(&g_sw_as, VA_A);
+    cp = vibeos_vmspace_entry(&g_sw_child, VA_A);
+    CHECK(pp && cp && (*pp & PTE_P) && (*cp & PTE_P), "both mapped");
+    CHECK(pp && cp && (*pp & 0x200ull) && (*cp & 0x200ull) &&
+          !(*pp & VIBEOS_PTE_SWAPOUT) && !(*cp & VIBEOS_PTE_SWAPOUT),
+          "both copy-on-write, neither marked - the marked page was a writable "
+          "page, not a read-only one to share as it stood");
+    CHECK(vibeos_vmspace_fault(&g_sw_child, VA_A, 1) == 1,
+          "so the child's first store is a copy, not a kill");
+}
+
+static void test_swapout_readonly_page(void) {
+    uint64_t f = sw_setup(RO_USER, 0x36);
+    uint32_t slot = 0;
+
+    CHECK(f != 0 && vibeos_swap_alloc(&slot) == 0, "setup");
+    g_during_write = sw_look;
+    CHECK(vibeos_vmspace_swap_out(&g_sw_as, VA_A, slot) == 0, "paged out");
+    CHECK((g_sw_seen & PTE_P) && !(g_sw_seen & VIBEOS_PTE_SWAPOUT),
+          "a read-only page is never marked - the marker would promise it a write "
+          "bit it never had");
+}
+
+/* Anonymous reclaim end to end, and its claims (M-056): every claim it takes is
+ * given back, so a teardown afterwards does not wait. */
+static uint64_t g_anon_relax_calls;
+static void anon_relax(uint64_t spins) {
+    g_anon_relax_calls++;
+    /* A claim that is never released would make the teardown below wait for
+     * ever, and a suite that hangs names nothing. Past a thousand spins this
+     * plays the reclaimer that finally lets go, and the assertion that no wait
+     * happened fails by name instead. */
+    if (spins > 1000u) {
+        vibeos_rmap_unclaim(g_sw_as.root_phys);
+    }
+}
+
+static void test_anon_reclaim_claims(void) {
+    uint64_t f = sw_setup(RW_USER, 0x37);
+
+    CHECK(f != 0, "setup");
+    vibeos_anon_set_map(cp_map);
+    g_anon_relax_calls = 0;
+    vibeos_rmap_set_relax(anon_relax);
+    /* Refused first - the disk will not take the page - which is the common
+     * path: most candidates are refused, and each refusal must give its claim
+     * back as surely as an eviction does. */
+    g_swap_write_fails = 1;
+    CHECK(vibeos_anon_reclaim(1u) == 0u, "a refused eviction");
+    g_swap_write_fails = 0;
+    CHECK(vibeos_anon_reclaim(1u) == 1u, "the page is evicted");
+    CHECK(vibeos_vmspace_swap_slot(&g_sw_as, VA_A) >= 0, "to swap");
+    CHECK(vibeos_rmap_stats()->claims >= 1u, "under a claim");
+    CHECK(vibeos_rmap_stats()->unclaim_missing == 0u, "released once");
+    CHECK(vibeos_vmspace_destroy(&g_sw_as) == 0, "the owner exits");
+    CHECK(g_anon_relax_calls == 0u,
+          "and its teardown did not wait: every claim was given back");
+    vibeos_rmap_set_relax(0);
+}
+
 int test_compact(void) {
     g_fail = 0;
 
@@ -895,12 +1095,19 @@ int test_compact(void) {
     test_swap_in_of_a_present_page();
     test_pressure_swaps_and_faults_back();
     test_no_swap_area_is_reported();
+    test_swapout_readable_while_written();
+    test_swapout_store_cancels();
+    test_swapout_mprotect_drops_marker();
+    test_swapout_munmap_mid_write();
+    test_swapout_fork_mid_write();
+    test_swapout_readonly_page();
+    test_anon_reclaim_claims();
 
     free(g_ram);
     g_ram = 0;
 
     if (g_fail == 0) {
-        printf("  compact: 16 groups ok\n");
+        printf("  compact: 23 groups ok\n");
     }
     return g_fail == 0 ? 0 : 1;
 }

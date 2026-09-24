@@ -205,6 +205,80 @@ static void test_out_of_range(void) {
     CHECK(vibeos_rmap_count(RM_BASE - 4096ull) == 0u, "count of nothing");
 }
 
+/* M-056: a claim keeps a root's page tables alive for reclaim. The other core
+ * is played by the relax hook - forget_root calls it while it waits, and it
+ * releases one claim on every third call, which is what a reclaimer finishing
+ * its write looks like from the waiting side. */
+static uint64_t g_relax_calls;
+static uint64_t g_relax_release_root;
+static uint64_t g_relax_last_spins;
+
+static void relax_releases_on_third(uint64_t spins) {
+    g_relax_calls++;
+    g_relax_last_spins = spins;
+    if (g_relax_calls % 3u == 0u) {
+        vibeos_rmap_unclaim(g_relax_release_root);
+    }
+}
+
+static void test_claims(void) {
+    vibeos_rmap_holder_t h;
+    uint32_t i;
+
+    rm_reset();
+    g_relax_calls = 0;
+    vibeos_rmap_set_relax(relax_releases_on_third);
+
+    /* Only a frame with exactly one holder can be claimed. */
+    CHECK(vibeos_rmap_claim_sole(FRAME(1), &h) != 0, "no holder: refused");
+    CHECK(vibeos_rmap_add(FRAME(2), 0x1000ull, 0x8000ull) == 0, "add");
+    CHECK(vibeos_rmap_add(FRAME(2), 0x2000ull, 0x9000ull) == 0, "add second");
+    CHECK(vibeos_rmap_claim_sole(FRAME(2), &h) != 0, "two holders: refused");
+    CHECK(vibeos_rmap_add(FRAME(3), 0x3000ull, 0xA000ull) == 0, "add single");
+    CHECK(vibeos_rmap_claim_sole(FRAME(3), &h) == 0 &&
+          h.root_phys == 0x3000ull && h.va == 0xA000ull,
+          "one holder: claimed, and named");
+    CHECK(vibeos_rmap_stats()->claims == 1u, "counted");
+
+    /* Teardown with no claim on its root does not wait at all. */
+    vibeos_rmap_forget_root(0x1000ull);
+    CHECK(g_relax_calls == 0u, "an unclaimed root is forgotten without waiting");
+
+    /* Teardown of a root with two claims outstanding - two reclaimers inside
+     * it - waits until both are released, not until the first is. */
+    CHECK(vibeos_rmap_claim_sole(FRAME(3), &h) == 0, "a second claim on the same root");
+    g_relax_release_root = 0x3000ull;
+    vibeos_rmap_forget_root(0x3000ull);
+    CHECK(g_relax_calls == 6u && g_relax_last_spins == 6u,
+          "the teardown waited, spinning, until the last of two claims was released");
+    CHECK(vibeos_rmap_stats()->claim_waits == 1u, "and the wait was counted once");
+    CHECK(vibeos_rmap_count(FRAME(3)) == 0u, "the holder is gone");
+    CHECK(vibeos_rmap_claim_sole(FRAME(3), &h) != 0,
+          "and nothing can claim a forgotten root");
+
+    /* A release with nothing to release is counted: done twice, it would let a
+     * teardown through while a reclaimer was still inside its tables. */
+    vibeos_rmap_unclaim(0x3000ull);
+    CHECK(vibeos_rmap_stats()->unclaim_missing == 1u, "an unmatched unclaim is counted");
+
+    /* The table is finite, and a full one refuses rather than overwrites. */
+    for (i = 0; i < VIBEOS_RMAP_CLAIMS + 1u; i++) {
+        CHECK(vibeos_rmap_add(FRAME(10u + i), 0x10000ull + (uint64_t)i * 0x1000ull,
+                              0x8000ull) == 0, "add distinct root");
+    }
+    for (i = 0; i < VIBEOS_RMAP_CLAIMS; i++) {
+        CHECK(vibeos_rmap_claim_sole(FRAME(10u + i), &h) == 0, "claim a distinct root");
+    }
+    CHECK(vibeos_rmap_claim_sole(FRAME(10u + VIBEOS_RMAP_CLAIMS), &h) != 0 &&
+          vibeos_rmap_stats()->claim_full == 1u,
+          "one root more than the table holds is refused and counted");
+    for (i = 0; i < VIBEOS_RMAP_CLAIMS; i++) {
+        vibeos_rmap_unclaim(0x10000ull + (uint64_t)i * 0x1000ull);
+    }
+    CHECK(vibeos_rmap_stats()->unclaim_missing == 1u, "every claim released exactly once");
+    vibeos_rmap_set_relax(0);
+}
+
 int test_rmap(void) {
     g_fail = 0;
 
@@ -217,9 +291,10 @@ int test_rmap(void) {
     test_nodes_returned();
     test_exhaustion_is_reported();
     test_out_of_range();
+    test_claims();
 
     if (g_fail == 0) {
-        printf("  rmap: 9 groups ok\n");
+        printf("  rmap: 10 groups ok\n");
     }
     return g_fail == 0 ? 0 : 1;
 }

@@ -67,6 +67,13 @@ typedef struct vibeos_mm_stats {
     uint64_t swap_refused_shared;
     uint64_t swap_write_failed;
     uint64_t swap_read_failed;
+    /* A swap-out abandoned because the entry changed while its page was being
+     * written - its final exchange lost (M-056) - and, of those, how many were
+     * a store cancelling it. Not failures: this is the protocol working. Zero
+     * for ever would say nothing races with reclaim, or that the exchange is
+     * not there. */
+    uint64_t swap_out_raced;
+    uint64_t swap_out_cancelled;
 
     /* L1 - address spaces. */
     uint64_t maps;               /* user PTEs created                         */
