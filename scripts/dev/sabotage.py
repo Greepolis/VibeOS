@@ -96,7 +96,12 @@ def build_and_test(build_dir, verify=None):
         return 'hung', ''
     if r.returncode == 0:
         return 'pass', r.stdout
-    fails = [l for l in r.stdout.splitlines() if l.startswith('FAIL')]
+    # The group verdict ("FAIL:test_compact") and the check inside it that
+    # failed ("  compact: FAIL the page is where it was..."). Only the first
+    # used to be kept, so eleven cases could each go red by group name and not
+    # one of them said whether it failed on its own check or on a neighbour's.
+    fails = [l.strip() for l in r.stdout.splitlines()
+             if l.startswith('FAIL') or ': FAIL ' in l]
     return 'red', '\n'.join(fails[:3])
 
 
