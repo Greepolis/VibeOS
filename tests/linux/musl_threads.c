@@ -51,6 +51,7 @@
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 static __thread int mine;   /* thread-local: the child must see its own */
@@ -197,24 +198,43 @@ static void *exit_group_later(void *arg)
 /* report_child, but it cannot hang: on a kernel where the child never ends,
  * a blocking waitpid would stall this program and every later line of the
  * boot script. Polls with WNOHANG, which is why this stage came after the
- * WNOHANG fix and not before it. */
-static void report_child_bounded(const char *stage, pid_t pid, int want_code,
-                                 int yields)
+ * WNOHANG fix and not before it.
+ *
+ * Bounded by time, not by a number of yields. It was 400 yields, which is a
+ * stand-in for time that holds only while the machine is otherwise idle: once
+ * svc-press ran beside it, touching and unmapping 64 MiB, the child that
+ * exit_group had correctly ended was reaped on the line *after* this printed
+ * "never ended" - two boots in eight. Ten seconds is far past any honest exit
+ * and well inside the boot gate's patience for a quiet guest. */
+static long elapsed_ms(const struct timespec *from)
 {
-    int status = 0, n;
+    struct timespec now;
+
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (long)(now.tv_sec - from->tv_sec) * 1000L +
+           (long)(now.tv_nsec - from->tv_nsec) / 1000000L;
+}
+
+static void report_child_bounded(const char *stage, pid_t pid, int want_code,
+                                 int seconds)
+{
+    int status = 0, ended = 0;
+    struct timespec start;
 
     if (pid < 0) {
         printf("THREADS_%s_FAIL: fork\n", stage);
         fflush(stdout);
         return;
     }
-    for (n = 0; n < yields; n++) {
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    while (elapsed_ms(&start) < (long)seconds * 1000L) {
         if (waitpid(pid, &status, WNOHANG) == pid) {
+            ended = 1;
             break;
         }
         sched_yield();
     }
-    if (n == yields) {
+    if (!ended) {
         printf("THREADS_%s_FAIL: the process never ended\n", stage);
     } else if (WIFSIGNALED(status)) {
         printf("THREADS_%s_FAIL: killed by signal %d\n", stage, WTERMSIG(status));
@@ -490,7 +510,7 @@ int main(int argc, char **argv)
                 pthread_cond_wait(&never_c, &never_m);
             }
         }
-        report_child_bounded("C5_EXIT_GROUP_BLOCKED", pid, 42, 400);
+        report_child_bounded("C5_EXIT_GROUP_BLOCKED", pid, 42, 10);
     }
 
     /* C5_FUTEX_XPROC. The child waits on its own copy of xproc_word. The parent
@@ -567,7 +587,7 @@ int main(int argc, char **argv)
             }
             syscall(SYS_exit_group, 7);
         }
-        report_child_bounded("C5_EXEC", pid, 23, 600);
+        report_child_bounded("C5_EXEC", pid, 23, 10);
     }
     return 0;
 }

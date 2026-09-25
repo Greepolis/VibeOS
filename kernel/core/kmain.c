@@ -159,6 +159,7 @@ __attribute__((weak)) uint64_t vibeos_x86_64_tlbq_deferred(void) { return 0ull; 
 __attribute__((weak)) uint64_t vibeos_x86_64_tlbq_released(void) { return 0ull; }
 __attribute__((weak)) uint64_t vibeos_x86_64_tlbq_overflow(void) { return 0ull; }
 __attribute__((weak)) uint64_t vibeos_x86_64_tlbq_live_peak(void) { return 0ull; }
+__attribute__((weak)) uint64_t vibeos_x86_64_tlbq_immediate(void) { return 0ull; }
 
 __attribute__((weak)) void vibeos_x86_64_console_interrupt(void) { }
 
@@ -877,10 +878,10 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
          * argument that put tlb_shootdowns under the gate.
          *
          * overflow is the residual gap: the quarantine was full, so the frame
-         * went back the old racy way. Not must-be-zero, because falling back is
-         * strictly what happened before this existed and is never worse - but
-         * it is the number that says how much of the defect is still open, so
-         * it is printed and watched rather than hidden. */
+         * was leaked (H-015) - safe, and memory the boot never gets back.
+         *
+         * immediate is every frame no other core could reach, released without
+         * parking (M-061). */
         vibeos_x86_64_serial_puts(" tlbq_deferred=0x");
         kernel_log_u64_hex(vibeos_x86_64_tlbq_deferred());
         vibeos_x86_64_serial_puts(" tlbq_released=0x");
@@ -889,6 +890,8 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
         kernel_log_u64_hex(vibeos_x86_64_tlbq_overflow());
         vibeos_x86_64_serial_puts(" tlbq_live_peak=0x");
         kernel_log_u64_hex(vibeos_x86_64_tlbq_live_peak());
+        vibeos_x86_64_serial_puts(" tlbq_immediate=0x");
+        kernel_log_u64_hex(vibeos_x86_64_tlbq_immediate());
         vibeos_x86_64_serial_puts("\n");
 
         /* Every registered device's own counters, each on its own line - the

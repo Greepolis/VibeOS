@@ -641,7 +641,7 @@ int vibeos_vmspace_unmap(vibeos_vmspace_t *as, uint64_t va) {
          * none is supplied - a host test, a uniprocessor - the immediate put is
          * correct and is what happens. */
         if (g_be.release_deferred) {
-            g_be.release_deferred(entry & PTE_ADDR_MASK);
+            g_be.release_deferred(as->root_phys, entry & PTE_ADDR_MASK);
         } else {
             (void)vibeos_frame_put(entry & PTE_ADDR_MASK);
         }

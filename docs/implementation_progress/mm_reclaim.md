@@ -182,7 +182,9 @@ goes red on `userland_frames_lost=2486`. `tlbq_overflow=2478` in the same log:
 a burst of munmap fills the TLB quarantine's 512 slots faster than the other
 cores flush, and an overflowing frame is leaked on purpose (H-015 - leaking is
 safe, recycling is not). That was the known follow-up of H-015, unreachable
-until now. It is what stands between svc-press and the gate. Note also that
+until now. Fixed the next day by parking only frames another core could still
+reach (`mm_tlb_quarantine.md`, "M-061"); svc-press now runs in every boot and
+the gate reads its verdict. Note also that
 256 blocks were all granted: 64 MiB of a ~420 MiB pool never reaches the
 watermarks, so a load that forces reclaim has to be larger, or the machine
 smaller.

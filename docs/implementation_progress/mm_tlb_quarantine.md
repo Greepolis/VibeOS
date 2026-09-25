@@ -98,6 +98,9 @@ catch the quarantine holding on to something.
 
 ## What is gated, and what is not
 
+*Superseded by M-061 below: the assertion described here is gone, because since
+then whether a boot parks anything depends on timing.*
+
 `munmap_never_deferred_a_frame` asserts `deferred` is **non-zero**. The defect is
 a race that a handful of boots cannot produce on demand, and every earlier claim
 in this project that such a thing was fixed rested on a handful of green boots.
@@ -117,6 +120,61 @@ And it caught an omission of its own on the way: the three new reasons had no
 case file, so `check-assertions-covered.py` went red at 111 against a baseline
 of 108 — the check that matches every reason the gate can emit against the
 sabotage cases, doing its job on the commit that added three.
+
+# M-061: parked only when somebody could still hold it
+
+The quarantine parked *every* unmapped frame until every other core had loaded
+CR3 - including frames of a single-threaded process that no other core had ever
+run. Nothing exposed that until svc-press (M-060) unmapped 64 MiB in a loop: the
+512 slots filled faster than the other cores flushed, and each frame past that
+was leaked on purpose (H-015). `tlbq_overflow=2478`, `userland_frames_lost=2486`
+- ten megabytes gone for the rest of the boot.
+
+Only a core that has the address space *loaded* can hold a translation from it.
+So each core now publishes what is in its CR3 (`hw_write_cr3`), in two fields,
+because the answer must be conservative in both directions:
+
+- `loading_cr3` is written **before** the load, with a full fence. The unmap
+  clears the entry (a locked compare-exchange) and then reads this; the loading
+  core writes it and then walks the tables. One of the two always sees the
+  other: either the quarantine sees the core coming, or the core's walk finds
+  the entry already gone.
+- `loaded_cr3` is written **after** the load. A core switching *away* is still
+  seen as holding the space until its flush has happened.
+
+A frame is released at once when no other core has the space in either field,
+and otherwise parked against only the cores that do - the drain no longer waits
+for cores that had nothing to flush.
+
+Measured: svc-press's 16,856 unmaps are released immediately apart from a
+couple of dozen, `tlbq_overflow=0`, frames lost 8 (ceiling 64). The thread tests
+still park 17-36 frames a boot, the case the quarantine was written for.
+
+## The gate had to change, and why
+
+Whether a boot parks anything now depends on whether a sibling thread happened
+to be running on another core at the instant of an unmap. Two boots in ten parked
+nothing - correctly - and `munmap_never_deferred_a_frame` failed them. An
+assertion on a timing property is a gate people learn to ignore, so it is gone.
+In its place, two things that do not depend on timing:
+
+- `munmap_bypassed_the_quarantine`: munmap reached the decision at all
+  (immediate + deferred + overflow is non-zero). svc-press unmaps 64 MiB every
+  boot, so zero means the hook has gone.
+- `TLBQ_SELFTEST`: after userland, the kernel releases one frame against a
+  space another core has loaded - it must park and then drain - and one against
+  a space nobody has loaded - it must go back at once. Both constructed on the
+  real per-core fields, so the decision is exercised every boot rather than
+  when the scheduler happens to arrange it.
+
+Cases: `scripts/dev/cases/mm-tlbq-holders.txt`.
+
+## What it does not prove
+
+The ordering of the two publications is not gated. Writing `loading` after the
+load, or `loaded` before it, opens a window of a few instructions in which a
+stale translation is missed - a race no boot produces on demand, which is the
+same limit the original defect had. It is argued in the source, not tested.
 
 # A second gap, in the mechanism that was supposed to close the first
 

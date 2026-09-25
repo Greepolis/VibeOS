@@ -1997,13 +1997,35 @@ def main():
                            r"tlbq_released=0x([0-9a-f]{16}) "
                            r"tlbq_overflow=0x([0-9a-f]{16}) "
                            r"tlbq_live_peak=0x([0-9a-f]{16})", text)
-            if tq is None:
+            #
+            # Since M-061 a frame is parked only when another core has the
+            # address space loaded, so whether a boot parks anything depends on
+            # timing: two boots in ten parked nothing, correctly, and the old
+            # "deferred is non-zero" assertion failed them. What is asserted
+            # instead is not timing-dependent:
+            #
+            #   - munmap reached the quarantine's decision at all. svc-press
+            #     unmaps 64 MiB every boot, so a zero here is the hook gone;
+            #   - the kernel's own self-test, which constructs both cases on
+            #     the real per-core fields: a held space parks and drains, a
+            #     space nobody holds is released at once.
+            tqi = re.search(r"tlbq_immediate=0x([0-9a-f]{16})", text)
+            if tq is None or tqi is None:
                 problems.append("tlb_quarantine_counters_missing")
+            elif (int(tq.group(1), 16) + int(tq.group(3), 16)
+                  + int(tqi.group(1), 16)) == 0:
+                problems.append("munmap_bypassed_the_quarantine")
+            st = re.search(r"TLBQ_SELFTEST held=(\w+) drained=([01]) unheld=(\w+)",
+                           text)
+            if st is None:
+                problems.append("tlbq_selftest_missing")
             else:
-                if int(tq.group(1), 16) == 0:
-                    problems.append("munmap_never_deferred_a_frame")
-                if int(tq.group(2), 16) == 0:
-                    problems.append("tlb_quarantine_never_released_anything")
+                if st.group(1) != "parked":
+                    problems.append("tlbq_selftest_held_space_not_parked")
+                elif st.group(2) != "1":
+                    problems.append("tlbq_selftest_parked_frame_never_drained")
+                if st.group(3) != "released":
+                    problems.append("tlbq_selftest_unheld_space_not_released")
 
             kb = re.search(r"kbd_dropped=0x([0-9a-f]{16}) "
                            r"MUSTBEZERO kbd_inject_truncated=0x([0-9a-f]{16})",
@@ -2401,6 +2423,20 @@ def main():
                 problems.append("fork_storm_did_not_finish_or_reap")
             if "SVC_BOMB_UNBOUNDED" in text:
                 problems.append("fork_storm_was_never_refused")
+
+            # Allocation pressure: svc-press takes 64 MiB in 256 KiB blocks,
+            # checks every page still holds what it wrote, gives it all back
+            # and allocates once more. Nothing had ever asked this machine for
+            # that much in a row, and the first time something did it found two
+            # defects: the kernel image inside the frame pool (M-060, a wedge)
+            # and the TLB quarantine leaking a burst of unmaps (M-061, caught by
+            # userland_frames_lost). The verdict is read off its own lines.
+            if "PRESS_START" not in text:
+                problems.append("press_never_ran")
+            elif re.search(r"^.*PRESS_FAIL", text, re.M):
+                problems.append("press_failed")
+            elif not re.search(r"PRESS_OK blocks=\d+", text):
+                problems.append("press_did_not_finish")
 
             # Exec refusals, by reason.
             #

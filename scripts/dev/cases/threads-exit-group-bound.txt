@@ -1,0 +1,26 @@
+# Target source: kernel/abi/linux/proc.c
+#
+# core-process.txt case 7, as a sabotage that runs: a futex wait that does not
+# notice a pending SIGKILL, so exit_group cannot end the blocked leader. Run
+# with SABOTAGE_VERIFY=scripts/dev/verify-boot.sh.
+#
+# Kept because the stage's bound changed from 400 yields to ten seconds, after
+# svc-press ran beside it and the correctly-ended child was reaped one line too
+# late (two boots in eight). A longer bound is a weaker test unless the defect
+# still turns it red.
+#
+# Ran 2026-09-25: the stage prints THREADS_C5_EXIT_GROUP_BLOCKED_FAIL: the
+# process never ended, ten seconds after it starts - the bound works. The gate's
+# reason is guest_wedged rather than thread_blocked_sibling_survived_exit_group,
+# because the next stage (C5_FUTEX_XPROC) SIGKILLs a futex waiter and reaps it
+# with a blocking waitpid, which on this defect never returns. Read the FAIL
+# line in the kept serial log, not the reason.
+
+### a futex wait sleeps through SIGKILL
+--- old
+        if (hw_signal_interrupts(me)) {
+            break;
+        }
+        hw_sched_point("block");
++++ new
+        hw_sched_point("block");

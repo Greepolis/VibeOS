@@ -658,7 +658,7 @@ static void hw_pic_send_eoi(uint32_t vector) {
     }
     hw_outb(PIC1_CMD, PIC_EOI);
 }
-static void hw_tlbq_put(uint64_t phys);
+static void hw_tlbq_put(uint64_t root, uint64_t phys);
 static void hw_tlbq_help_quiesce(void);
 static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code,
                                uint64_t rip);
@@ -1669,16 +1669,28 @@ uint64_t hw_read_cr3(void) {
 }
 
 void hw_write_cr3(uint64_t pml4_phys) {
+    uint32_t me = vibeos_x86_64_cpu_id();
+
+    /* Announce the table before loading it, with a full fence between: the
+     * quarantine clears an entry and then reads this, and this core publishes
+     * and then walks the tables, so one of the two always sees the other -
+     * either the quarantine sees this core coming, or this core's walk sees the
+     * entry already gone. */
+    if (me < VIBEOS_HW_MAX_CPUS) {
+        __atomic_store_n(&g_cpus[me].loading_cr3, pml4_phys & ~0xFFFull,
+                         __ATOMIC_SEQ_CST);
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    }
     __asm__ __volatile__("mov %0, %%cr3" : : "r"(pml4_phys) : "memory");
     /* After the write, not before: the count means "this core has flushed",
      * and a reader that sees the new value must be able to conclude the flush
-     * already happened. */
-    {
-        uint32_t me = vibeos_x86_64_cpu_id();
-        if (me < VIBEOS_HW_MAX_CPUS) {
-            __atomic_add_fetch(&g_cpus[me].cr3_generation, 1ull,
-                               __ATOMIC_RELEASE);
-        }
+     * already happened. `loaded` likewise - until here the old table's entries
+     * may still be cached. */
+    if (me < VIBEOS_HW_MAX_CPUS) {
+        __atomic_store_n(&g_cpus[me].loaded_cr3, pml4_phys & ~0xFFFull,
+                         __ATOMIC_RELEASE);
+        __atomic_add_fetch(&g_cpus[me].cr3_generation, 1ull,
+                           __ATOMIC_RELEASE);
     }
 }
 
@@ -1712,11 +1724,21 @@ void hw_write_cr3(uint64_t pml4_phys) {
  * using it demonstrably is not - which is why this is a pattern here rather
  * than an invention.
  *
- * On overflow the frame is released immediately, which is exactly what happened
- * before this existed. That is deliberate: this is never worse than the status
- * quo, and the overflow is counted so the residual gap is a number rather than
- * a hope. */
+ * Only a core that has the address space loaded can hold a translation from it,
+ * so a frame unmapped from a space no other core has loaded is released at once
+ * and never parked (M-061). That is nearly every unmap - a single-threaded
+ * process - and it matters: svc-press unmapping 64 MiB in a loop filled all
+ * 512 slots faster than the other cores flushed, and every frame past that was
+ * leaked, 2,486 of them. The quarantine is for the case it was written for, a
+ * sibling thread on another core, and waits only on the cores that had the
+ * space.
+ *
+ * On overflow the frame is leaked, not released (H-015) - see hw_tlbq_put. */
 #define HW_TLBQ_SLOTS 512u
+
+/* A core that had nothing of this space loaded when the frame was parked: it
+ * has nothing to flush, and the drain does not wait for it. */
+#define HW_TLBQ_NOT_HOLDING (~0ull)
 
 typedef struct {
     uint64_t phys;
@@ -1747,12 +1769,14 @@ static uint64_t g_tlbq_deferred;      /* frames that took the safe path */
 static uint64_t g_tlbq_released;      /* frames the drain has since freed */
 static uint64_t g_tlbq_overflow;      /* frames freed at once, gap still open */
 static uint64_t g_tlbq_live_peak;
+static uint64_t g_tlbq_immediate;     /* frames no other core could reach */
 
 /* Has every core except `owner` flushed since the snapshot was taken? */
 static int hw_tlbq_quiescent(const hw_tlbq_entry_t *e) {
     uint32_t c;
     for (c = 0; c < VIBEOS_HW_MAX_CPUS; c++) {
-        if (c == e->owner || !g_cpus[c].online) {
+        if (c == e->owner || !g_cpus[c].online ||
+            e->gen[c] == HW_TLBQ_NOT_HOLDING) {
             continue;
         }
         if (__atomic_load_n(&g_cpus[c].cr3_generation, __ATOMIC_ACQUIRE)
@@ -1807,9 +1831,48 @@ static uint32_t hw_tlbq_count(uint64_t phys) {
     return n;
 }
 
-static void hw_tlbq_put(uint64_t phys) {
+/* Could any core other than this one still hold a translation from `root`?
+ * Called after the entry has been cleared - the clear is a locked
+ * compare-exchange, a full barrier - so a core that has not announced the space
+ * by now will walk tables that no longer have the entry. */
+static int hw_tlbq_other_holders(uint64_t root, uint64_t gen[VIBEOS_HW_MAX_CPUS]) {
+    uint32_t c, me = vibeos_x86_64_cpu_id();
+    int holders = 0;
+
+    root &= ~0xFFFull;
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    for (c = 0; c < VIBEOS_HW_MAX_CPUS; c++) {
+        /* The generation first: a core that is seen holding the space must
+         * flush *after* this sample, and one seen not holding it needs none. */
+        uint64_t g = __atomic_load_n(&g_cpus[c].cr3_generation, __ATOMIC_ACQUIRE);
+
+        gen[c] = HW_TLBQ_NOT_HOLDING;
+        if (c == me || !g_cpus[c].online) {
+            continue;
+        }
+        if (__atomic_load_n(&g_cpus[c].loading_cr3, __ATOMIC_ACQUIRE) == root ||
+            __atomic_load_n(&g_cpus[c].loaded_cr3, __ATOMIC_ACQUIRE) == root) {
+            gen[c] = g;
+            holders++;
+        }
+    }
+    return holders;
+}
+
+/* Release `phys`, unmapped from `root`, as soon as that is safe. Returns 0 if
+ * it was released at once, 1 if parked, -1 if the quarantine was full and it
+ * was leaked. Counts nothing: hw_tlbq_put counts what munmap did, and the boot
+ * self-test calls this directly so its two frames are not mistaken for
+ * munmap's. */
+static int hw_tlbq_place(uint64_t root, uint64_t phys) {
     uint32_t i, c, live = 0;
     int placed = 0;
+    uint64_t gen[VIBEOS_HW_MAX_CPUS];
+
+    if (hw_tlbq_other_holders(root, gen) == 0) {
+        (void)vibeos_frame_put(phys);
+        return 0;
+    }
 
     hw_spin_lock(&g_tlbq_lock);
     for (i = 0; i < HW_TLBQ_SLOTS; i++) {
@@ -1821,8 +1884,7 @@ static void hw_tlbq_put(uint64_t phys) {
             continue;
         }
         for (c = 0; c < VIBEOS_HW_MAX_CPUS; c++) {
-            g_tlbq[i].gen[c] =
-                __atomic_load_n(&g_cpus[c].cr3_generation, __ATOMIC_ACQUIRE);
+            g_tlbq[i].gen[c] = gen[c];
         }
         g_tlbq[i].phys = phys;
         g_tlbq[i].owner = vibeos_x86_64_cpu_id();
@@ -1831,10 +1893,7 @@ static void hw_tlbq_put(uint64_t phys) {
         live++;
     }
     if (placed) {
-        g_tlbq_deferred++;
         __atomic_add_fetch(&g_tlbq_live, 1ull, __ATOMIC_RELEASE);
-    } else {
-        g_tlbq_overflow++;
     }
     if ((uint64_t)live > g_tlbq_live_peak) {
         g_tlbq_live_peak = (uint64_t)live;
@@ -1849,8 +1908,95 @@ static void hw_tlbq_put(uint64_t phys) {
      * The count above (g_tlbq_overflow) is the measure of it, and the boot gate
      * asserts it is zero - so normal operation loses nothing, and only an
      * adversarial munmap of more than HW_TLBQ_SLOTS not-yet-quiescent pages
-     * reaches this, losing memory rather than corrupting it. A dynamic
-     * quarantine that avoids even the leak is the follow-up. */
+     * reaches this, losing memory rather than corrupting it. Since M-061 that
+     * takes a burst of munmap by a process with a sibling thread running on
+     * another core - a single-threaded process never parks anything. */
+    return placed ? 1 : -1;
+}
+
+static void hw_tlbq_put(uint64_t root, uint64_t phys) {
+    int r = hw_tlbq_place(root, phys);
+
+    if (r == 0) {
+        __atomic_add_fetch(&g_tlbq_immediate, 1ull, __ATOMIC_RELAXED);
+    } else if (r > 0) {
+        __atomic_add_fetch(&g_tlbq_deferred, 1ull, __ATOMIC_RELAXED);
+    } else {
+        __atomic_add_fetch(&g_tlbq_overflow, 1ull, __ATOMIC_RELAXED);
+    }
+}
+
+/* Both halves of the quarantine's decision, constructed rather than hoped for.
+ *
+ * Whether munmap parks anything in a given boot depends on whether a sibling
+ * thread happened to be running on another core at that instant: two boots in
+ * ten parked nothing, correctly, and the gate that asserted a non-zero count
+ * went red on a machine doing the right thing (M-061). So the boot builds the
+ * two situations itself, on the real per-core fields:
+ *
+ *   - a frame released against a space another core has loaded must be
+ *     parked, and must drain once that core has flushed;
+ *   - a frame released against a space nobody has loaded must go back at once.
+ *
+ * Run after userland, when every other core has loaded a table through
+ * hw_write_cr3 and is idling with its timer on. */
+static void hw_tlbq_selftest(void) {
+    uint32_t c, me = vibeos_x86_64_cpu_id();
+    uint64_t held_root = 0, f, spins = 0;
+    int held = -2, unheld = -2, drained = 0, attempt;
+
+    for (attempt = 0; attempt < 8 && held != 1; attempt++) {
+        held_root = 0;
+        for (c = 0; c < VIBEOS_HW_MAX_CPUS; c++) {
+            if (c != me && g_cpus[c].online &&
+                __atomic_load_n(&g_cpus[c].loaded_cr3, __ATOMIC_ACQUIRE) != 0u) {
+                held_root = __atomic_load_n(&g_cpus[c].loaded_cr3, __ATOMIC_ACQUIRE);
+                break;
+            }
+        }
+        if (held_root == 0u) {
+            break;          /* nobody else has loaded anything: cannot run */
+        }
+        f = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+        if (f == 0u) {
+            break;
+        }
+        held = hw_tlbq_place(held_root, f);
+        if (held == 1) {
+            /* The drain releases it once the holder's generation moves, which
+             * its own timer tick does while anything is parked. */
+            while (hw_tlbq_count(f) != 0u && ++spins < 5000000ull) {
+                hw_tlbq_drain();
+                __asm__ __volatile__("pause" ::: "memory");
+            }
+            drained = (hw_tlbq_count(f) == 0u);
+        }
+    }
+
+    /* A root no core can have loaded: a frame that has never been a table. */
+    {
+        uint64_t never_a_root = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+
+        f = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+        if (never_a_root != 0u && f != 0u) {
+            unheld = hw_tlbq_place(never_a_root, f);
+        }
+        if (never_a_root != 0u) {
+            (void)vibeos_frame_put(never_a_root);
+        }
+    }
+
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts("[MM] TLBQ_SELFTEST held=");
+    vibeos_x86_64_serial_puts(held == 1 ? "parked" : held == 0 ? "released" :
+                              held == -1 ? "leaked" : "unavailable");
+    vibeos_x86_64_serial_puts(" drained=");
+    vibeos_x86_64_serial_puts(drained ? "1" : "0");
+    vibeos_x86_64_serial_puts(" unheld=");
+    vibeos_x86_64_serial_puts(unheld == 0 ? "released" : unheld == 1 ? "parked" :
+                              unheld == -1 ? "leaked" : "unavailable");
+    vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
 }
 
 /* Called from every core's timer tick. If anything is parked, flush - see the
@@ -1866,6 +2012,9 @@ uint64_t vibeos_x86_64_tlbq_deferred(void) { return g_tlbq_deferred; }
 uint64_t vibeos_x86_64_tlbq_released(void) { return g_tlbq_released; }
 uint64_t vibeos_x86_64_tlbq_overflow(void) { return g_tlbq_overflow; }
 uint64_t vibeos_x86_64_tlbq_live_peak(void) { return g_tlbq_live_peak; }
+uint64_t vibeos_x86_64_tlbq_immediate(void) {
+    return __atomic_load_n(&g_tlbq_immediate, __ATOMIC_RELAXED);
+}
 
 /* How many words of a reclaimed page to check before handing it out again.
  * Sampled rather than exhaustive: the loop that zeroes the page is already the
@@ -6254,4 +6403,5 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
  * every user task has retired. */
 void vibeos_x86_64_hw_start_userland(void) {
     hw_sched_bringup(g_saved_boot_info);
+    hw_tlbq_selftest();
 }

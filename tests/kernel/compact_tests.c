@@ -826,7 +826,8 @@ static void test_no_swap_area_is_reported(void) {
 static uint64_t g_q_held[16];
 static unsigned g_q_n;
 
-static void cp_quarantine_hold(uint64_t phys) {
+static void cp_quarantine_hold(uint64_t root_phys, uint64_t phys) {
+    (void)root_phys;
     if (g_q_n < 16u) {
         g_q_held[g_q_n++] = phys;
     }

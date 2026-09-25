@@ -1,0 +1,23 @@
+# Target source: user/prog/svc_press.c
+#
+# The allocation-pressure service's verdicts, as the gate reads them. The kernel
+# defects it found are proved in boot-memory-map.txt (M-060) and
+# mm-tlbq-holders.txt (M-061); this file proves the gate can hear svc-press say
+# something went wrong. Run with SABOTAGE_VERIFY=scripts/dev/verify-boot.sh.
+#
+#  1. the contents check expects the wrong byte, so every block "changed".
+#     Expect press_failed.
+#  2. it never says it finished. Expect press_did_not_finish.
+#
+# press_never_ran is in services-press.txt: it needs init.c, not this file.
+
+### the contents check expects a byte nobody wrote
+--- old
+            if (g_block[i][off] != (uint8_t)(i + 1u)) {
++++ new
+            if (g_block[i][off] != (uint8_t)(i + 2u)) {
+
+### svc-press never says it finished
+--- old
+    say("PRESS_OK blocks=", (uint64_t)got, 1);
++++ new

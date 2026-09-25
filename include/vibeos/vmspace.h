@@ -138,8 +138,12 @@ typedef struct vibeos_vmspace_backend {
      * So the frame is handed to whoever supplies this instead, to be released
      * once every core has demonstrably dropped the translation. Null means
      * release immediately, which is correct for a uniprocessor and for a host
-     * test, and is what this layer did before the hook existed. */
-    void (*release_deferred)(uint64_t phys);
+     * test, and is what this layer did before the hook existed.
+     *
+     * `root_phys` is the address space the frame was unmapped from. Only a core
+     * that has that space loaded can hold the old translation, so a backend
+     * that knows no other core does may release at once (M-061). */
+    void (*release_deferred)(uint64_t root_phys, uint64_t phys);
 
     /* How many references to `phys` release_deferred is holding right now.
      *

@@ -459,6 +459,18 @@ typedef struct hw_cpu {
      * which is the whole quiescence argument the unmap quarantine rests on.
      * Both of those facts are load-bearing; see hw_tlb_quarantine_put. */
     volatile uint64_t cr3_generation;
+    /* Which top-level table this core is about to load, and which it has
+     * loaded - the hardware's CR3, not the current task's, which is not the
+     * same thing while a switch is half done.
+     *
+     * The unmap quarantine asks these whether any other core can hold a
+     * translation from an address space at all (M-061). Two fields because the
+     * answer has to be conservative in both directions: `loading` is published
+     * before the write, so a core switching *to* the space is seen before it
+     * can walk the tables; `loaded` changes only after the write, so a core
+     * switching *away* is seen until its flush is done. See hw_write_cr3. */
+    volatile uint64_t loading_cr3;
+    volatile uint64_t loaded_cr3;
     struct tss64 tss;
 } hw_cpu_t;
 /* The scheduler state below is shared by every core; `g_current_task` is not.

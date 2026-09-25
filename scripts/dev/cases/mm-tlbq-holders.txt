@@ -1,0 +1,50 @@
+# Target source: kernel/arch/x86_64/arch_hw.c
+#
+# M-061: the TLB quarantine parks a frame only when another core has the
+# address space loaded. Run with SABOTAGE_VERIFY=scripts/dev/verify-boot.sh.
+#
+# Whether munmap parks anything in a boot depends on timing - a sibling thread
+# running on another core at that instant - so the gate does not count parked
+# frames any more (two boots in ten parked none, correctly). It asserts the
+# kernel's self-test, which constructs both cases on the real per-core fields,
+# and that munmap reached the decision at all.
+#
+#  1. nobody is ever a holder, so every frame is released at once - the defect
+#     the quarantine exists for, back. Expect
+#     tlbq_selftest_held_space_not_parked.
+#  2. every online core is a holder, the quarantine as it was before M-061.
+#     Expect tlbq_selftest_unheld_space_not_released, and svc-press's burst
+#     overflowing it as userland_frames_lost.
+#  3. munmap stops using the quarantine. Expect munmap_bypassed_the_quarantine.
+#  4. no parked frame ever becomes releasable. Expect
+#     tlbq_selftest_parked_frame_never_drained.
+#
+# Not a case: hw_write_cr3 publishing `loading` before the write and `loaded`
+# after it. Getting either backwards opens a window of a few instructions in
+# which a stale translation can be missed - a race no boot produces on demand,
+# the same limit mm-tlb-quarantine.txt records for the defect itself.
+
+### nobody is ever holding the space
+--- old
+    if (hw_tlbq_other_holders(root, gen) == 0) {
++++ new
+    if (1) {
+
+### every core is always holding the space
+--- old
+        if (__atomic_load_n(&g_cpus[c].loading_cr3, __ATOMIC_ACQUIRE) == root ||
+            __atomic_load_n(&g_cpus[c].loaded_cr3, __ATOMIC_ACQUIRE) == root) {
++++ new
+        if (1) {
+
+### munmap no longer asks the quarantine
+--- old
+                vb.release_deferred = hw_tlbq_put;
++++ new
+                vb.release_deferred = 0;
+
+### a parked frame never becomes releasable
+--- old
+            == e->gen[c]) {
++++ new
+            >= e->gen[c]) {
