@@ -1,0 +1,19 @@
+# Target source: kernel/mm/frame.c
+#
+# M-062: the frame's hand-out count, which lets the release watch tell a frame
+# freed while still mapped from a frame another core took, mapped, unmapped and
+# freed again while the watch was walking. Proved by the host test (test_frame).
+#
+#  1. a hand-out is not counted. Expect "a first hand-out is not counted".
+#
+# The watch's comparison itself (arch_hw.c, hw_frame_release_watch) is shown by
+# the reproduction in docs/implementation_progress/mm_reclaim.md: svc-press
+# exiting with 64 MiB mapped while svc-stress churns, every release checked -
+# four reports in one boot of three without it, none with it.
+
+### a hand-out is not counted
+--- old
+    g_table[index].lru_next = FRAME_NONE;
+    g_table[index].handouts++;
++++ new
+    g_table[index].lru_next = FRAME_NONE;

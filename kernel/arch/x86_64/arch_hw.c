@@ -2059,7 +2059,7 @@ static const uint64_t *g_aspace_being_destroyed;
  *
  * Sampled one release in sixteen. The walk is expensive; the bug appears about
  * four boots in ten, so one in sixteen still meets it within a run. */
-static void hw_frame_release_watch(uint64_t phys) {
+static void hw_frame_release_watch(uint64_t phys, uint32_t handouts) {
     uint32_t pid = 0;
     /* The count that triggered the report, kept.
      *
@@ -2128,6 +2128,16 @@ static void hw_frame_release_watch(uint64_t phys) {
      * worth a report: it means somebody holds a page nothing is counting. */
     owners_at_check = vibeos_frame_owners(phys);
     if (mappers <= owners_at_check) {
+        return;
+    }
+    /* Was the frame handed out while the walk ran? Then the mapping it found
+     * may be a new tenant's, since unmapped and freed again - owners back at
+     * zero, mapping seen a moment earlier. That is what svc-stress did to four
+     * frames of an exiting svc-press, and every report said owners_now=1
+     * (M-062). A frame nobody has taken since the release, still mapped by a
+     * live process, is the defect this exists for - and is still reported. */
+    if (vibeos_frame_handouts(phys) != handouts) {
+        vibeos_mm_stats()->free_watch_torn++;
         return;
     }
     vibeos_mm_stats()->free_while_mapped++;

@@ -32,6 +32,7 @@ typedef struct vibeos_mm_stats {
     uint64_t fork_undercounted;  /* shared frame with <2 owners. MUST BE ZERO */
     uint64_t rmap_mismatch;      /* holders != owners. MUST BE ZERO           */
     uint64_t rmap_audit_torn;    /* the audit's two reads saw different worlds */
+    uint64_t free_watch_torn;    /* the frame was handed out during the watch  */
     /* The last frame that tripped rmap_mismatch, and the three counts that did
      * not add up, so a single-boot fire says which frame and by how much rather
      * than only that it happened. Instrument for the open rmap_mismatch defect. */

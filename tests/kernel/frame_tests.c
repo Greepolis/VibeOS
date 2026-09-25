@@ -34,6 +34,17 @@ static void *test_map(uint64_t phys) {
 
 static vibeos_frame_t g_table[TEST_FRAMES];
 
+/* What the release watch was told, for the M-062 block below. */
+static uint64_t g_watch_phys;
+static uint32_t g_watch_handouts;
+static unsigned g_watch_calls;
+
+static void test_watch(uint64_t phys, uint32_t handouts) {
+    g_watch_phys = phys;
+    g_watch_handouts = handouts;
+    g_watch_calls++;
+}
+
 static int setup(void) {
     memset(g_table, 0, sizeof(g_table));
     vibeos_mm_stats_reset();
@@ -230,11 +241,45 @@ int test_frame(void) {
     if (vibeos_frame_owners(a) != 0u) { goto fail; }
     if (vibeos_frame_try_get(0x1ull) != 0) { goto fail; } /* not a frame the table has */
 
+    /* ---- M-062: the release watch can tell a new tenant ----------------
+     * The watch runs after the lock is dropped, so another core can take the
+     * frame, map it, unmap it and free it again before the watch looks. It is
+     * told the hand-out count at the release; a frame taken since has moved
+     * on from it, and one nobody has taken has not. */
+    if (setup() != 0) { goto fail; }
+    g_watch_calls = 0;
+    vibeos_frame_set_release_watch(test_watch);
+    a = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+    if (a == 0ull || vibeos_frame_handouts(a) != 1u) {
+        printf("FAIL:a first hand-out is not counted\n");
+        goto fail;
+    }
+    if (vibeos_frame_put(a) != 1 || g_watch_calls != 1u || g_watch_phys != a) {
+        goto fail;
+    }
+    if (vibeos_frame_handouts(a) != g_watch_handouts) {
+        printf("FAIL:the watch was told a count the frame does not have\n");
+        goto fail;
+    }
+    /* Take frames until `a` comes back, whatever order the free list keeps. */
+    for (i = 0; i < TEST_FRAMES; i++) {
+        if (vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED) == a) {
+            break;
+        }
+    }
+    if (i == TEST_FRAMES) { goto fail; }
+    if (vibeos_frame_handouts(a) == g_watch_handouts) {
+        printf("FAIL:a frame handed out again looks untouched to the watch\n");
+        goto fail;
+    }
+    vibeos_frame_set_release_watch(0);
+
     free(g_ram);
     g_ram = 0;
     return 0;
 
 fail:
+    vibeos_frame_set_release_watch(0);
     free(g_ram);
     g_ram = 0;
     return -1;

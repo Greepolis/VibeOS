@@ -60,8 +60,14 @@ typedef struct vibeos_frame {
     uint8_t  state;            /* vibeos_frame_state_t                        */
     uint8_t  flags;            /* PINNED | DIRTY | REFERENCED | SWAP_BACKED   */
     uint32_t backing;          /* backing-store handle, or 0 (P4/P5)          */
-    uint32_t lru_next;         /* reclaim lists, unused until P6              */
-    uint32_t lru_prev;
+    uint32_t lru_next;         /* the free list's link while free             */
+    /* How many times this frame has been handed out, wrapping. Read twice, it
+     * tells a frame's new tenant from a holder that should have let go: the
+     * release watch walks page tables after the lock is dropped, and in that
+     * time another core can take the frame, map it, unmap it and free it again
+     * - which looked exactly like a frame freed while still mapped (M-062).
+     * This was lru_prev, reserved for reclaim lists P6 built another way. */
+    uint32_t handouts;
 } vibeos_frame_t;
 
 #define VIBEOS_FRAME_PINNED       0x01u  /* never reclaimed                   */

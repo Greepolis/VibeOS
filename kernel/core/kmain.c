@@ -295,6 +295,9 @@ static void kernel_cli_print_meminfo(void) {
      * look at anything. */
     vibeos_x86_64_serial_puts(" rmap_audit_torn=0x");
     kernel_log_u64_hex(st->rmap_audit_torn);
+    /* The release watch's own torn sample (M-062), for the same reason. */
+    vibeos_x86_64_serial_puts(" free_watch_torn=0x");
+    kernel_log_u64_hex(st->free_watch_torn);
     if (st->rmap_mismatch != 0u) {
         vibeos_x86_64_serial_puts(" rmap_mm_phys=0x");
         kernel_log_u64_hex(st->rmap_mm_phys);

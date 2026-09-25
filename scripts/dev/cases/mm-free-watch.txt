@@ -1,0 +1,33 @@
+# Target source: kernel/mm/vmspace.c
+#
+# The release watch after M-062 still reports a real free-while-mapped. M-062
+# taught it to discount a frame handed out while it walked, which can only make
+# it report less - so this proves it still reports the defect it exists for.
+# Run with SABOTAGE_VERIFY=scripts/dev/verify-boot.sh.
+#
+#  1. fork's shared mapping gives its reference straight back, so a frame
+#     shared by fork has one owner for two mappings, and the first side to let
+#     go frees it under the other.
+#
+#     Ran 2026-09-25: the kept serial log carries FREE_WHILE_MAPPED lines with
+#     owners_now=0 - nobody took the frame, the signature the bracket keeps
+#     (the false reports it discounts all said owners_now=1 or 2). The gate's
+#     reason is guest_wedged, because a frame freed under a live process wrecks
+#     the machine before the summary is printed. Read the log, not the reason.
+#
+# Tried first and not kept: removing the reference from every mapping. The
+# machine wedged before any counter was printed, which proves nothing about
+# the watch.
+
+### fork's shared mapping gives its reference back
+--- old
+    if (vibeos_vmspace_map_raw(dst, va, phys, flags) != 0) {
+        return -1;
+    }
+    vibeos_mm_stats()->cow_shared++;
++++ new
+    if (vibeos_vmspace_map_raw(dst, va, phys, flags) != 0) {
+        return -1;
+    }
+    (void)vibeos_frame_put(phys);
+    vibeos_mm_stats()->cow_shared++;

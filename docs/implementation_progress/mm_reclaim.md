@@ -189,6 +189,19 @@ the gate reads its verdict. Note also that
 watermarks, so a load that forces reclaim has to be larger, or the machine
 smaller.
 
+### A detector that could not tell a new tenant (M-062)
+
+Sabotaging svc-press to exit without unmapping its 64 MiB raised
+`mm_free_while_mapped`. With every release checked it reproduced one boot in
+three: four frames, all in svc-stress, all reported with `owners=0` and
+`owners_now=1` or `2` a moment later. The watch runs after the frame lock is
+dropped, and in that time svc-stress had taken each frame, mapped it, unmapped
+it and freed it again - two samples at two instants, CLAUDE.md's rule about the
+rmap audit, in another detector. The frame layer now counts hand-outs per frame
+and the watch discounts a frame taken since its release: the same reproduction
+gives 7 `free_watch_torn` and no reports, while a real one - fork giving its
+reference back - is still reported, with `owners_now=0`.
+
 Found and fixed on the way, both real and neither this defect:
 
 - **The page cache handed out bare addresses.** `vibeos_cache_get` returned a

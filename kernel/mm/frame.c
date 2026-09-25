@@ -42,9 +42,9 @@ static uint32_t g_free_head = FRAME_NONE;
 static uint64_t g_free_count;
 static vibeos_frame_map_fn g_map;
 static int g_allocated_yet;      /* reserve() must come first */
-static void (*g_watch)(uint64_t phys);
+static void (*g_watch)(uint64_t phys, uint32_t handouts);
 
-void vibeos_frame_set_release_watch(void (*watch)(uint64_t phys)) {
+void vibeos_frame_set_release_watch(void (*watch)(uint64_t phys, uint32_t handouts)) {
     g_watch = watch;
 }
 
@@ -225,7 +225,7 @@ int vibeos_frame_init(uint64_t base, uint64_t len,
         g_table[index].owners = 0;
         g_table[index].backing = 0;
         g_table[index].lru_next = FRAME_NONE;
-        g_table[index].lru_prev = FRAME_NONE;
+        g_table[index].handouts = 0;
         frame_push_free(index);
     }
 
@@ -306,6 +306,7 @@ static void frame_take(uint32_t index, vibeos_frame_state_t state) {
     g_table[index].flags = 0;
     g_table[index].backing = 0;
     g_table[index].lru_next = FRAME_NONE;
+    g_table[index].handouts++;
 }
 
 /* Fault injection. See the header for why it is compiled in. */
@@ -605,26 +606,35 @@ int vibeos_frame_try_get(uint64_t phys) {
     return got;
 }
 
+static uint32_t frame_handouts_locked(uint64_t phys) {
+    uint32_t index = frame_index(phys);
+    return (index == FRAME_NONE) ? 0u : g_table[index].handouts;
+}
+
 int vibeos_frame_put_why(uint64_t phys, const void *tag) {
     int r;
+    uint32_t handouts;
 
     frame_lock();
     g_put_tag = tag;
     r = vibeos_frame_put_locked(phys);
+    handouts = frame_handouts_locked(phys);
     g_put_tag = 0;
     frame_unlock();
 
     if (r && g_watch) {
-        g_watch(phys);
+        g_watch(phys, handouts);
     }
     return r;
 }
 
 int vibeos_frame_put(uint64_t phys) {
     int r;
+    uint32_t handouts;
 
     frame_lock();
     r = vibeos_frame_put_locked(phys);
+    handouts = frame_handouts_locked(phys);
     frame_unlock();
 
     /* After the release, and only when the frame actually went back on the free
@@ -635,18 +645,29 @@ int vibeos_frame_put(uint64_t phys) {
      * must not do: eleven boots were failed by the detector after the defect it
      * was built for had been fixed.
      *
-     * Asking afterwards is unambiguous. The frame is on the free list; if a
-     * live process still maps it, that is wrong however it happened. Outside
-     * the lock because the check walks page tables, which is not work to do
-     * with interrupts masked. */
+     * Asking afterwards is unambiguous only if nobody took the frame in the
+     * meantime. Outside the lock because the check walks page tables, which
+     * is not work to do with interrupts masked - and outside the lock another
+     * core can take the frame, map it, unmap it and free it again before the
+     * walk is done, which reads as "freed while still mapped" (M-062). The
+     * hand-out count at this instant goes with it, so the watch can tell. */
     if (r && g_watch) {
-        g_watch(phys);
+        g_watch(phys, handouts);
     }
     return r;
 }
 
 uint32_t vibeos_frame_id(uint64_t phys) {
     return frame_index(phys);
+}
+
+uint32_t vibeos_frame_handouts(uint64_t phys) {
+    uint32_t r;
+
+    frame_lock();
+    r = frame_handouts_locked(phys);
+    frame_unlock();
+    return r;
 }
 
 uint32_t vibeos_frame_owners(uint64_t phys) {

@@ -48,7 +48,9 @@ typedef void *(*vibeos_frame_map_fn)(uint64_t phys);
  *
  * Sampled by the caller, not here - the check walks page tables and is far too
  * expensive to run on every release. */
-void vibeos_frame_set_release_watch(void (*watch)(uint64_t phys));
+/* `handouts` is the frame's hand-out count at the release, for comparing with
+ * vibeos_frame_handouts later - see vibeos_frame_t.handouts. */
+void vibeos_frame_set_release_watch(void (*watch)(uint64_t phys, uint32_t handouts));
 
 /* Called when a frame is handed out and its poison is not intact - something
  * wrote to it after it was freed.
@@ -162,6 +164,8 @@ int vibeos_frame_put_why(uint64_t phys, const void *tag);
 /* Queries, for the copy-on-write path and for inspection. An unknown frame
  * reports zero owners and state FREE. */
 uint32_t vibeos_frame_owners(uint64_t phys);
+/* How many times the frame has been handed out, wrapping; 0 outside the pool. */
+uint32_t vibeos_frame_handouts(uint64_t phys);
 
 /* This frame's index in the table, or UINT32_MAX when the address is not one
  * this layer describes.
