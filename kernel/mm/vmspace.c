@@ -1404,6 +1404,32 @@ int vibeos_vmspace_swap_out(vibeos_vmspace_t *as, uint64_t va, uint32_t slot) {
     return 0;
 }
 
+#define PTE_ACCESSED (1ull << 5)   /* set by the CPU on every access */
+
+int vibeos_vmspace_clear_young(vibeos_vmspace_t *as, uint64_t va) {
+    uint64_t *pte, entry;
+
+    if (!g_ready || !as || !as->root) {
+        return 0;
+    }
+    pte = walk(as, va, 0);
+    if (!pte) {
+        return 0;
+    }
+    for (;;) {
+        entry = __atomic_load_n(pte, __ATOMIC_ACQUIRE);
+        if ((entry & PTE_PRESENT) == 0u || (entry & PTE_ACCESSED) == 0u) {
+            return 0;
+        }
+        /* Compare-exchange, like every other change to an entry here: a fault
+         * or a swap-out on another core may be writing it. */
+        if (__atomic_compare_exchange_n(pte, &entry, entry & ~PTE_ACCESSED, 0,
+                                        __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+            return 1;
+        }
+    }
+}
+
 int vibeos_vmspace_swap_in(vibeos_vmspace_t *as, uint64_t va, uint64_t frame) {
     uint64_t *pte, entry, desired;
     uint32_t slot;

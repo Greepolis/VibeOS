@@ -70,6 +70,21 @@ uint32_t vibeos_anon_reclaim(uint32_t want) {
         if (vibeos_rmap_claim_sole(phys, &holder) != 0) {
             continue;
         }
+        as.root_phys = holder.root_phys;
+        as.root = g_map(holder.root_phys);
+
+        /* Used since the hand last came round? Then not this time: clear the
+         * mark and move on - the second chance that makes a clock a clock.
+         * Without it the tier took whatever single-owner page the hand reached,
+         * the one about to be touched as readily as one nobody would touch
+         * again. Under the reclaim load swap was full within one 256 KiB block
+         * of crossing the low watermark, and the pages it took were faulted
+         * straight back (M-069). */
+        if (as.root && vibeos_vmspace_clear_young(&as, holder.va)) {
+            vibeos_rmap_unclaim(holder.root_phys);
+            __atomic_fetch_add(&g_stats.young, 1u, __ATOMIC_RELAXED);
+            continue;
+        }
 
         /* A slot before the eviction, because vibeos_vmspace_swap_out needs
          * somewhere to write and cannot ask for one itself - it is the layer
@@ -80,8 +95,6 @@ uint32_t vibeos_anon_reclaim(uint32_t want) {
             break;              /* swap is full; the next candidate will be too */
         }
 
-        as.root_phys = holder.root_phys;
-        as.root = g_map(holder.root_phys);
         if (!as.root ||
             vibeos_vmspace_swap_out(&as, holder.va, slot) != 0) {
             vibeos_rmap_unclaim(holder.root_phys);

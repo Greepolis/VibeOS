@@ -834,6 +834,8 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
             kernel_log_u64_hex(an->evicted);
             vibeos_x86_64_serial_puts(" anon_refused=0x");
             kernel_log_u64_hex(an->refused);
+            vibeos_x86_64_serial_puts(" anon_young=0x");
+            kernel_log_u64_hex(an->young);
             vibeos_x86_64_serial_puts("\n");
         }
 

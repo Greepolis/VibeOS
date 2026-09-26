@@ -2570,7 +2570,32 @@ static int hw_swap_write_page(uint32_t slot, void *page) {
 }
 
 /* A swapped-out entry has gone away; its slot is free (M-063). */
+/* Which operation last gave each slot back, so a second release of the same
+ * slot can say who did the first. M-070 was one boot in 24 with only a count
+ * - swap_double_free=1 - and a count says nothing about who. */
+static const char *g_swap_freed_by[VIBEOS_HW_SWAP_SLOTS];
+
 static void hw_swap_release(uint32_t slot) {
+    const char *op = vibeos_vmspace_current_op();
+
+    if (slot < VIBEOS_HW_SWAP_SLOTS && !vibeos_swap_is_allocated(slot)) {
+        vibeos_x86_64_serial_lock();
+        vibeos_x86_64_serial_puts("[MM] SWAP_DOUBLE_RELEASE slot=0x");
+        vibeos_x86_64_serial_print_hex(slot);
+        vibeos_x86_64_serial_puts(" now_by=");
+        vibeos_x86_64_serial_puts(op ? op : "?");
+        vibeos_x86_64_serial_puts(" before_by=");
+        vibeos_x86_64_serial_puts(g_swap_freed_by[slot] ? g_swap_freed_by[slot]
+                                                        : "not-a-release");
+        vibeos_x86_64_serial_puts(" pid=0x");
+        vibeos_x86_64_serial_print_hex(g_current_task >= 0
+            ? (uint64_t)hw_task_pid_of(&g_tasks[g_current_task]) : 0ull);
+        vibeos_x86_64_serial_puts("\n");
+        vibeos_x86_64_serial_unlock();
+    }
+    if (slot < VIBEOS_HW_SWAP_SLOTS) {
+        g_swap_freed_by[slot] = op;
+    }
     (void)vibeos_swap_free(slot);
 }
 
@@ -5875,6 +5900,26 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
         __asm__ __volatile__("hlt" ::: "memory");
     }
     vibeos_x86_64_serial_puts("[SCHED] all user tasks retired; kernel task continues\n");
+    /* Every user slot that is not free, and its state, in one line (M-068). A
+     * boot announced this while svc-reclaim was still running; the wait counts
+     * READY, RUNNING and BLOCKED as alive, so whatever that task was, it was
+     * something else for the instant the wait looked. */
+    {
+        int i;
+
+        vibeos_x86_64_serial_lock();
+        vibeos_x86_64_serial_puts("[SCHED] RETIRED_SLOTS");
+        for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+            if (hw_task_is_user_of(&g_tasks[i]) && hw_slot_state(i) != HW_TASK_FREE) {
+                vibeos_x86_64_serial_puts(" slot=0x");
+                vibeos_x86_64_serial_print_hex((uint64_t)i);
+                vibeos_x86_64_serial_puts(":0x");
+                vibeos_x86_64_serial_print_hex((uint64_t)hw_slot_state(i));
+            }
+        }
+        vibeos_x86_64_serial_puts("\n");
+        vibeos_x86_64_serial_unlock();
+    }
 
     {
         vibeos_x86_64_serial_puts("[MM] COW_STATS exclusive_lost=0x");

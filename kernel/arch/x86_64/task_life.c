@@ -1534,6 +1534,17 @@ void hw_fault_kill_current_user(const vibeos_x86_64_isr_frame_t *frame,
     vibeos_x86_64_serial_print_hex(vector);
     vibeos_x86_64_serial_puts(" sig=0x");
     vibeos_x86_64_serial_print_hex(sig);
+    /* For a page fault, what the leaf entry held: a page lost with neither a
+     * frame nor a slot reads as 0, one sent to swap as a slot with bit 10, and
+     * a mapping the process should not touch as present. M-070 killed a task
+     * for a page it owned and said only the address. */
+    if (vector == 14u && g_current_task >= 0) {
+        vibeos_vmspace_t sv = hw_vm(&g_tasks[g_current_task].proc.as);
+        uint64_t *e = vibeos_vmspace_entry(&sv, fault_address);
+
+        vibeos_x86_64_serial_puts(" entry=0x");
+        vibeos_x86_64_serial_print_hex(e ? *e : 0xFFFFFFFFFFFFFFFFull);
+    }
     vibeos_x86_64_serial_puts("\n");
     vibeos_x86_64_serial_unlock();
 

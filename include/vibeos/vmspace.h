@@ -332,6 +332,12 @@ int vibeos_vmspace_swap_out(vibeos_vmspace_t *as, uint64_t va, uint32_t slot);
  * was. */
 int vibeos_vmspace_swap_in(vibeos_vmspace_t *as, uint64_t va, uint64_t frame);
 
+/* Was the page at `va` used since the last time this was asked? Returns 1 and
+ * clears the accessed bit if so, 0 if not or if nothing is resident there. The
+ * CPU sets the bit on every access; reading and clearing it is what makes a
+ * reclaim clock a clock (M-069). */
+int vibeos_vmspace_clear_young(vibeos_vmspace_t *as, uint64_t va);
+
 /* The slot a swapped-out entry names, or -1 if the entry is not swapped. */
 int64_t vibeos_vmspace_swap_slot(vibeos_vmspace_t *as, uint64_t va);
 

@@ -582,8 +582,20 @@ int main(int argc, char **argv)
             if (pthread_create(&xt, 0, exec_worker, 0) != 0) {
                 _exit(3);
             }
-            for (n = 0; n < 200; n++) {
-                sched_yield();
+            /* Bounded by time, not by yields - the same change as
+             * report_child_bounded's, for the same reason. It was 200 yields,
+             * and on a busy machine the leader used them up and exited 7
+             * before the worker reached execv at all: no [EXEC] line in the
+             * log, one boot in 25. Five seconds is past any honest exec and
+             * inside the ten the parent waits, so the defect this stage is for
+             * - an exec that leaves the leader running - still ends in 7. */
+            {
+                struct timespec t0;
+
+                clock_gettime(CLOCK_MONOTONIC, &t0);
+                for (n = 0; elapsed_ms(&t0) < 5000L; n++) {
+                    sched_yield();
+                }
             }
             syscall(SYS_exit_group, 7);
         }

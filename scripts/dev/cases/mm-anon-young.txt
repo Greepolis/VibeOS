@@ -1,0 +1,13 @@
+# Target source: kernel/mm/anon.c
+#
+# M-069: the anonymous tier's clock gives a page used since the hand last
+# passed a second chance. Proved by test_anon_reclaim_spares_the_young.
+#
+#  1. the accessed bit is ignored, as it was. Expect "a page just used is not
+#     taken".
+
+### the clock ignores whether a page was used
+--- old
+        if (as.root && vibeos_vmspace_clear_young(&as, holder.va)) {
++++ new
+        if (0) {

@@ -1,0 +1,27 @@
+# Target source: kernel/abi/linux/proc.c
+#
+# core-process.txt case 9, as a sabotage that runs: an exec from a thread that
+# does nothing about the thread's siblings - the defect H-006 was. Run with
+# SABOTAGE_VERIFY=scripts/dev/verify-boot.sh.
+#
+# Kept because the leader's wait in the C5_EXEC stage changed from 200 yields
+# to five seconds, after a busy boot used the yields up before the worker
+# reached execv at all - no [EXEC] line, one boot in 25. A longer bound is a
+# weaker test unless the defect still turns it red. Expect
+# thread_exec_left_siblings_or_identity.
+#
+# Tried first and NOT RED, which is worth knowing: removing only the SIGKILL
+# the exec sends its siblings. The exec then waits for them to be gone, the
+# leader runs out its five seconds and exits, the exec completes, and the
+# worker becomes the process and exits 23 - correct, five seconds late. The
+# kill is what makes the exec prompt; the wait is what makes it right.
+
+### exec does nothing about the other threads
+--- old
+    {
+        int me = (int)(t - g_tasks);
+        uint32_t tgid = t->id.tgid;
++++ new
+    if (0) {
+        int me = (int)(t - g_tasks);
+        uint32_t tgid = t->id.tgid;

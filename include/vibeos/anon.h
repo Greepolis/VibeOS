@@ -58,6 +58,7 @@ typedef struct vibeos_anon_stats {
     uint64_t evicted;        /* pages that reached swap                      */
     uint64_t no_slot;        /* swap was full                                */
     uint64_t refused;        /* the page-table layer declined the eviction   */
+    uint64_t young;          /* used since the hand last passed: spared once */
     uint64_t slot_leaked;    /* a slot taken and not freed after a refusal.
                               * MUST BE ZERO: a leaked slot is swap space no
                               * reboot gets back.                            */

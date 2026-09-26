@@ -1080,6 +1080,28 @@ static void anon_relax(uint64_t spins) {
     }
 }
 
+/* M-069: a page used since the hand last passed is spared once. The CPU sets
+ * the accessed bit; here the test sets it, which is the same fact. */
+static void test_anon_reclaim_spares_the_young(void) {
+    uint64_t f = sw_setup(RW_USER, 0x37);
+    uint64_t *e;
+
+    CHECK(f != 0, "setup");
+    vibeos_anon_set_map(cp_map);
+    e = vibeos_vmspace_entry(&g_sw_as, VA_A);
+    CHECK(e != 0, "the entry");
+    if (!e) {
+        return;
+    }
+    *e |= 0x20ull;   /* accessed */
+    CHECK(vibeos_anon_reclaim(1u) == 0u, "a page just used is not taken");
+    CHECK((*e & 0x20ull) == 0u, "but its mark is cleared");
+    CHECK(vibeos_anon_stats()->young >= 1u, "and counted");
+    CHECK(vibeos_anon_reclaim(1u) == 1u,
+          "and the next pass takes it, because nothing used it since");
+    CHECK(vibeos_rmap_stats()->unclaim_missing == 0u, "claims released once");
+}
+
 static void test_anon_reclaim_claims(void) {
     uint64_t f = sw_setup(RW_USER, 0x37);
 
@@ -1247,13 +1269,14 @@ int test_compact(void) {
     test_swapout_fork_mid_write();
     test_swapout_readonly_page();
     test_anon_reclaim_claims();
+    test_anon_reclaim_spares_the_young();
     test_swapped_entries_are_mappings();
 
     free(g_ram);
     g_ram = 0;
 
     if (g_fail == 0) {
-        printf("  compact: 24 groups ok\n");
+        printf("  compact: 25 groups ok\n");
     }
     return g_fail == 0 ? 0 : 1;
 }
