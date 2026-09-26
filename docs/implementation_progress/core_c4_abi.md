@@ -38,7 +38,7 @@ the helpers only they use now live in `kernel/abi/linux/`:
 | `mm.c` | brk, mmap, mprotect, munmap, pageinfo |
 | `sig.c`, `signal.c` | kill/tkill/tgkill/sigaction/sigprocmask; frame building and sigreturn |
 | `net.c` | the socket calls (was `arch/x86_64/linux_socket.c`) |
-| `misc.c` | uname, clock_gettime, time |
+| `misc.c` | uname, clock_gettime, time, sysinfo (added for the reclaim load) |
 | `common.c`, `linux_internal.h` | what several of the above share |
 
 **How it was cut.** Not by line range: the stretch was interleaved with

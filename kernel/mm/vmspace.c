@@ -304,6 +304,18 @@ static void release_pt(uint64_t *pt) {
             pt[i] = 0;
             (void)vibeos_frame_put(phys);
             vibeos_mm_stats()->unmaps++;
+        } else if ((pt[i] & PTE_PRESENT) == 0u && (pt[i] & VIBEOS_PTE_SWAPPED)) {
+            /* A page this space had sent to swap. Its slot is the space's as
+             * much as a frame is, and it used to stay allocated for the rest of
+             * the boot - one per swapped page of every process that exited
+             * (M-063). */
+            uint32_t slot = (uint32_t)((pt[i] & PTE_ADDR_MASK) >> 12);
+
+            pt[i] = 0;
+            if (g_be.swap_release) {
+                g_be.swap_release(slot);
+            }
+            vibeos_mm_stats()->swap_dropped++;
         }
     }
 }
@@ -519,7 +531,10 @@ int vibeos_vmspace_protect(vibeos_vmspace_t *as, uint64_t va,
         return -1;
     }
     pte = walk(as, va, 0);
-    if (!pte || (*pte & PTE_PRESENT) == 0u) {
+    /* A swapped-out page is mapped: its permissions live in the entry's
+     * ignored bits and come back with it (M-063). Refusing it made mprotect
+     * fail on a page that reclaim happened to have taken. */
+    if (!pte || (*pte & (PTE_PRESENT | VIBEOS_PTE_SWAPPED)) == 0u) {
         return -1;   /* not mapped: a permission change is not a mapping */
     }
     /* Compare-exchange, not read-modify-write.
@@ -543,7 +558,7 @@ int vibeos_vmspace_protect(vibeos_vmspace_t *as, uint64_t va,
         uint64_t desired;
 
         before = __atomic_load_n(pte, __ATOMIC_ACQUIRE);
-        if ((before & PTE_PRESENT) == 0u) {
+        if ((before & (PTE_PRESENT | VIBEOS_PTE_SWAPPED)) == 0u) {
             return -1;   /* unmapped under us: not a permission change */
         }
         /* The swap-out marker goes too: it promises a write bit back to the
@@ -603,6 +618,24 @@ int vibeos_vmspace_unmap(vibeos_vmspace_t *as, uint64_t va) {
         return 0;
     }
     entry = __atomic_load_n(pte, __ATOMIC_ACQUIRE);
+    if ((entry & PTE_PRESENT) == 0u && (entry & VIBEOS_PTE_SWAPPED)) {
+        /* A page in swap is unmapped like any other (M-063). It used to be
+         * skipped as "not present": the entry stayed, still naming its slot,
+         * the slot was never freed - and a later access to the unmapped
+         * address would have brought back a page from a slot that swap had
+         * since given to somebody else. */
+        uint64_t expected = entry;
+
+        if (!__atomic_compare_exchange_n(pte, &expected, 0ull, 0,
+                                         __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+            return 0;   /* brought back in, or unmapped, by somebody else */
+        }
+        if (g_be.swap_release) {
+            g_be.swap_release((uint32_t)((entry & PTE_ADDR_MASK) >> 12));
+        }
+        vibeos_mm_stats()->swap_dropped++;
+        return 1;
+    }
     if ((entry & PTE_PRESENT) == 0u) {
         return 0;
     }
@@ -656,9 +689,9 @@ int vibeos_vmspace_unmap(vibeos_vmspace_t *as, uint64_t va) {
  * at. Shared by fork and by the inspection count, so the two cannot disagree
  * about what "owned" means - and they are the two places most likely to drift,
  * because one is on a hot path and the other is not. */
-static int foreach_owned(vibeos_vmspace_t *as,
-                         int (*fn)(vibeos_vmspace_t *, uint64_t, uint64_t *, void *),
-                         void *ctx) {
+static int foreach_leaf(vibeos_vmspace_t *as, int swapped_too,
+                        int (*fn)(vibeos_vmspace_t *, uint64_t, uint64_t *, void *),
+                        void *ctx) {
     uint32_t slot, gi, pdi, i;
 
     for (slot = 0; slot < 512u; slot++) {
@@ -690,8 +723,9 @@ static int foreach_owned(vibeos_vmspace_t *as,
                 }
                 for (i = 0; i < 512u; i++) {
                     uint64_t va;
-                    if ((pt[i] & PTE_PRESENT) == 0u ||
-                        (pt[i] & VIBEOS_PTE_OWNED) == 0u) {
+                    if (!((pt[i] & PTE_PRESENT) && (pt[i] & VIBEOS_PTE_OWNED)) &&
+                        !(swapped_too && (pt[i] & PTE_PRESENT) == 0u &&
+                          (pt[i] & VIBEOS_PTE_SWAPPED))) {
                         continue;
                     }
                     va = ((uint64_t)slot << 39) | ((uint64_t)gi << 30) |
@@ -704,6 +738,15 @@ static int foreach_owned(vibeos_vmspace_t *as,
         }
     }
     return 0;
+}
+
+/* The entries this space owns and has resident. Fork alone also wants the ones
+ * it has in swap (M-063); everything else - the audit, the count - is about
+ * frames, and a page on disk has none. */
+static int foreach_owned(vibeos_vmspace_t *as,
+                         int (*fn)(vibeos_vmspace_t *, uint64_t, uint64_t *, void *),
+                         void *ctx) {
+    return foreach_leaf(as, 0, fn, ctx);
 }
 
 /* Fork's injection point, for an interleaving a harness cannot produce.
@@ -736,9 +779,32 @@ static int clone_one(vibeos_vmspace_t *src, uint64_t va, uint64_t *pte, void *ct
      * a reference on that frame and map it into the child. A plain load of a
      * word another core is compare-exchanging is exactly the read this file
      * spends the rest of its length avoiding. */
-    uint64_t entry = __atomic_load_n(pte, __ATOMIC_ACQUIRE);
-    uint64_t phys = entry & PTE_ADDR_MASK;
-    uint64_t flags = entry & (PTE_PRESENT | PTE_USER | PTE_NX);
+    uint64_t entry;
+    uint64_t phys;
+    uint64_t flags;
+    uint32_t tries = 0;
+
+again:
+    entry = __atomic_load_n(pte, __ATOMIC_ACQUIRE);
+    /* A page in swap has no frame to share. Bring it back first - and again if
+     * reclaim takes it before the share, which it may: a resident page with one
+     * owner is exactly what the anonymous tier looks for. The walk used to skip
+     * such entries, and the child got an address space with a hole where the
+     * page belonged (M-063). */
+    if ((entry & PTE_PRESENT) == 0u) {
+        if ((entry & VIBEOS_PTE_SWAPPED) == 0u) {
+            return 0;   /* unmapped under us: nothing to share */
+        }
+        if (!g_be.swap_bring_in || tries++ >= 8u ||
+            g_be.swap_bring_in(src, va) != 0) {
+            vibeos_mm_stats()->fork_swapped_failed++;
+            return -1;
+        }
+        vibeos_mm_stats()->fork_swapped_in++;
+        goto again;
+    }
+    phys = entry & PTE_ADDR_MASK;
+    flags = entry & (PTE_PRESENT | PTE_USER | PTE_NX);
 
     /* Three cases, and conflating the last two is a silent disaster.
      *
@@ -807,6 +873,12 @@ static int clone_one(vibeos_vmspace_t *src, uint64_t va, uint64_t *pte, void *ct
             break;
         }
         /* `entry` now holds what is really there; decide again against it. */
+    }
+    /* Swapped out while being converted: what the entry holds now is a slot
+     * number, not a frame, and sharing it would map the child onto whatever
+     * frame has that address. Start again, which brings it back. */
+    if ((entry & PTE_PRESENT) == 0u) {
+        goto again;
     }
     phys = entry & PTE_ADDR_MASK;
     flags = entry & (PTE_PRESENT | PTE_USER | PTE_NX);
@@ -966,7 +1038,7 @@ int vibeos_vmspace_clone_cow(vibeos_vmspace_t *dst, vibeos_vmspace_t *src) {
     if (!g_ready || !dst || !src || !dst->root || !src->root) {
         return -1;
     }
-    if (foreach_owned(src, clone_one, dst) != 0) {
+    if (foreach_leaf(src, 1, clone_one, dst) != 0) {
         return -1;
     }
     /* The first few forks only.
@@ -1301,7 +1373,14 @@ int vibeos_vmspace_swap_out(vibeos_vmspace_t *as, uint64_t va, uint32_t slot) {
      * fork, an mprotect or a compaction all change the entry, and then this
      * fails and the page stays where it is - its slot, written for nothing, is
      * the caller's to give back. */
-    desired = ((uint64_t)slot << 12) | PTE_SWAPPED | (entry & PTE_NX);
+    /* The permissions go with the page, in bits the CPU ignores while the
+     * entry is not present, and come back with it. Only NX used to, and
+     * swap-in made every page user-writable: a read-only page, or a PROT_NONE
+     * guard, came back from swap as ordinary writable memory (M-063).
+     * `entry` is the entry before the swap-out marked it, so its write bit is
+     * the page's own. */
+    desired = ((uint64_t)slot << 12) | PTE_SWAPPED |
+              (entry & (PTE_NX | PTE_USER | PTE_WRITE | PTE_COW_BIT));
     {
         uint64_t expect = marked;
         if (!__atomic_compare_exchange_n(pte, &expect, desired, 0,
@@ -1348,16 +1427,34 @@ int vibeos_vmspace_swap_in(vibeos_vmspace_t *as, uint64_t va, uint64_t frame) {
         return -1;   /* nothing changed: the entry still names the slot (I5) */
     }
 
-    /* Writable, because an anonymous page is what gets swapped and it was
-     * writable when it left. Restoring it read-only would fault the moment the
-     * program touched it again and there would be nothing to resolve. */
-    desired = (frame & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITE | PTE_USER |
-              VIBEOS_PTE_OWNED | (entry & PTE_NX);
-    vibeos_frame_get(frame);
+    /* With the permissions it left with, which swap-out kept in the entry's
+     * ignored bits. This used to restore every page writable and user, on the
+     * reasoning that an anonymous page was writable when it left - true of
+     * most, false of a read-only mapping and of a PROT_NONE guard, which came
+     * back as ordinary memory (M-063). */
+    desired = (frame & PTE_ADDR_MASK) | PTE_PRESENT | VIBEOS_PTE_OWNED |
+              (entry & (PTE_NX | PTE_USER | PTE_WRITE | PTE_COW_BIT));
+    /* The mapping takes over the reference the caller allocated the frame
+     * with; it does not take another. It used to - a vibeos_frame_get here on
+     * top of the allocation's reference, which the fault handler never gave
+     * back - so every page that came back from swap had two owners and one
+     * mapping, and outlived its process. The first load to force reclaim on a
+     * machine lost 764 frames in a boot that had brought 756 pages back. On
+     * failure nothing was taken, and the caller frees what it allocated. */
     if (!__atomic_compare_exchange_n(pte, &entry, desired, 0,
                                      __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
-        (void)vibeos_frame_put(frame);
         return -1;   /* another core brought it in first */
+    }
+    /* The slot this call consumed - the one it read, from the entry it just
+     * replaced - goes back here and nowhere else. The caller used to free a
+     * slot it had read from the entry *before* calling, and between the two
+     * reads a sibling thread can bring the page in and reclaim send it out
+     * again to another slot: the caller then freed the old slot a second time
+     * and the new one was never freed (a double free the swap map counted
+     * under load, M-063). Nobody outside knows which slot this was; nobody
+     * outside frees it. */
+    if (g_be.swap_release) {
+        g_be.swap_release(slot);
     }
     (void)vibeos_rmap_add(frame, as->root_phys, va);
     if (g_be.invlpg) {

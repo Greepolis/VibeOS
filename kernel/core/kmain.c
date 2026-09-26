@@ -315,6 +315,17 @@ static void kernel_cli_print_meminfo(void) {
         kernel_log_u64_hex(st->rmap_mm_h0_va);
     }
     vibeos_x86_64_serial_puts("\n");
+    if (vibeos_rmap_stats()->missing_remove != 0u) {
+        vibeos_x86_64_serial_puts("[MEM] RMAP_MISSING frame=0x");
+        kernel_log_u64_hex(vibeos_rmap_stats()->missing_phys);
+        vibeos_x86_64_serial_puts(" root=0x");
+        kernel_log_u64_hex(vibeos_rmap_stats()->missing_root);
+        vibeos_x86_64_serial_puts(" va=0x");
+        kernel_log_u64_hex(vibeos_rmap_stats()->missing_va);
+        vibeos_x86_64_serial_puts(" caller=0x");
+        kernel_log_u64_hex(vibeos_rmap_stats()->missing_caller);
+        vibeos_x86_64_serial_puts("\n");
+    }
 
     vibeos_x86_64_serial_puts("[MEM] cache_hits=0x");
     kernel_log_u64_hex(st->cache_hits);
@@ -322,6 +333,12 @@ static void kernel_cli_print_meminfo(void) {
     kernel_log_u64_hex(st->cache_misses);
     vibeos_x86_64_serial_puts(" swap_ins=0x");
     kernel_log_u64_hex(st->swap_ins);
+    vibeos_x86_64_serial_puts(" swap_dropped=0x");
+    kernel_log_u64_hex(st->swap_dropped);
+    vibeos_x86_64_serial_puts(" fork_swapped_in=0x");
+    kernel_log_u64_hex(st->fork_swapped_in);
+    vibeos_x86_64_serial_puts(" fork_swapped_failed=0x");
+    kernel_log_u64_hex(st->fork_swapped_failed);
     vibeos_x86_64_serial_puts(" swap_outs=0x");
     kernel_log_u64_hex(st->swap_outs);
     /* The swap-out protocol at work (M-056): abandoned because the entry
@@ -780,6 +797,13 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
             kernel_log_u64_hex(ar->out_of_range);
             vibeos_x86_64_serial_puts(" slot_leaked=0x");
             kernel_log_u64_hex(an->slot_leaked);
+            vibeos_x86_64_serial_puts("\n");
+
+            /* Every page-in compared with what was written to its slot. */
+            vibeos_x86_64_serial_puts("[MM] SWAP_CHECK MUSTBEZERO read_mismatch=0x");
+            kernel_log_u64_hex(vibeos_mm_stats()->swap_read_mismatch);
+            vibeos_x86_64_serial_puts(" checked=0x");
+            kernel_log_u64_hex(vibeos_mm_stats()->swap_read_checked);
             vibeos_x86_64_serial_puts("\n");
 
             vibeos_x86_64_serial_puts("[MM] SWAP slots=0x");

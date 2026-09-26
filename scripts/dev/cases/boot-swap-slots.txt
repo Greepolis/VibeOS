@@ -1,0 +1,22 @@
+# Target source: kernel/mm/vmspace.c
+#
+# M-063 on a machine: the host tests prove each operation on a swapped entry;
+# this proves the gate hears a slot left behind. Run with
+# SABOTAGE_VERIFY=scripts/dev/verify-boot.sh.
+#
+#  1. teardown forgets the slot of a page in swap, and munmap skips it. Expect
+#     swap_slots_leaked=N: svc-reclaim unmaps what it paged back, but every
+#     other process that exits with pages in swap leaves their slots.
+#
+# Not run as a boot case: fork_of_swapped_page_failed. It needs a fork to meet
+# a page in swap, and whether any does in a boot is up to reclaim's clock hand -
+# the first green boot had fork_swapped_in=0. The host test constructs it.
+# swap_counters_missing and swap_check_missing are the gate failing to find the
+# lines at all.
+
+### teardown and munmap forget pages in swap
+--- old
+            if (g_be.swap_release) {
+                g_be.swap_release(slot);
+            }
++++ new

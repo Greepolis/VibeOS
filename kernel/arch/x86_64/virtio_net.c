@@ -126,7 +126,21 @@ static uint16_t virtio_net_find(void) {
                 continue;   /* transitional virtio-net only */
             }
             cmd = vn_pci_read32((uint8_t)bus, (uint8_t)dev, 0, 0x04);
-            vn_pci_write32((uint8_t)bus, (uint8_t)dev, 0, 0x04, cmd | 0x5u); /* I/O + DMA */
+            /* I/O + DMA, and INTx *off* (bit 10). This driver polls and has no
+             * interrupt handler, but the command register came back from UEFI
+             * with the line enabled - and on QEMU it is line 11, the same one
+             * virtio-blk routes and handles. Every received frame then raised
+             * a level-triggered interrupt that only a transmit ever cleared,
+             * delivered to a handler that acknowledges a different device.
+             * AHCI and virtio-blk both had to learn about bit 10 already; this
+             * is the third driver, in the same shape. */
+            vn_pci_write32((uint8_t)bus, (uint8_t)dev, 0, 0x04,
+                           (cmd | 0x5u) | 0x400u);
+            vibeos_x86_64_serial_lock();
+            vibeos_x86_64_serial_puts("[VNET] irq line=0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)(vn_pci_read32((uint8_t)bus, (uint8_t)dev, 0, 0x3Cu) & 0xFFu));
+            vibeos_x86_64_serial_puts(" intx=off\n");
+            vibeos_x86_64_serial_unlock();
             bar0 = vn_pci_read32((uint8_t)bus, (uint8_t)dev, 0, 0x10);
             if ((bar0 & 1u) == 0u) {
                 continue;

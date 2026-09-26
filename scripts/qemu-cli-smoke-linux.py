@@ -50,6 +50,15 @@ EXPECTED_CPUS = int(os.environ.get("VIBEOS_SMOKE_CPUS", "4"))
 # default run uses; "ahci" is the standard SATA controller every desktop
 # hypervisor provides, and is how the AHCI driver gets exercised at all.
 DISK = os.environ.get("VIBEOS_SMOKE_DISK", "virtio")
+# What the boot disk is. "vvfat" is QEMU presenting efi_root as a FAT disk;
+# "image" is a real FAT image built from it by make_esp_image.py - the medium
+# the VM images use and the only one that behaves like a disk. vvfat translates
+# sector writes back into host files, and a write into the middle of an
+# existing file does not read back: swap, which writes pages into
+# SWAPFILE.BIN's sectors, got slot 0's contents back for every even slot and
+# slot 1's for every odd one - the first time anything wrote past the first
+# cluster.
+ESP = os.environ.get("VIBEOS_SMOKE_ESP", "image")
 DISK_ARGS = {
     "virtio": ["-device", "virtio-blk-pci,drive=esp,bootindex=1"],
     "ahci": ["-device", "ich9-ahci,id=ahci",
@@ -573,6 +582,15 @@ def frame_accounting_premise_broken(text):
     Asserted rather than assumed, because the failure is silent by
     construction - a mid-flight sample still produces two plausible numbers.
     """
+    if "FRAMES_AT_USERLAND_DONE" in text:
+        # The general form (M-068): any user task that exits after the kernel
+        # announced that all of them had is proof the announcement was early.
+        # A starved boot showed it with svc-reclaim - still paging, reported
+        # retired, and killed by the console's Ctrl-C a minute later.
+        retired = text.find("all user tasks retired")
+        if retired >= 0 and re.search(r"\[SCHED\] task pid=0x[0-9a-f]{16} exited",
+                                      text[retired:]):
+            return True
     if "STRESS_OK" not in text or "FRAMES_AT_USERLAND_DONE" not in text:
         return False
     return text.index("STRESS_OK") > text.index("FRAMES_AT_USERLAND_DONE")
@@ -776,6 +794,20 @@ def main():
     # the log survived" cannot be demonstrated by a medium that is recreated
     # with the machine.
     log_disk = os.path.abspath("qemu-cli-logdisk.img")
+    if ESP == "image":
+        # Rebuilt every run: a real medium keeps what the guest wrote, and the
+        # previous run's writes are not this run's starting point.
+        esp_img = os.path.abspath("qemu-cli-esp.img")
+        subprocess.run([sys.executable,
+                        os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     "make_esp_image.py"),
+                        efi_root, esp_img, "96"],
+                       check=True, stdout=subprocess.DEVNULL)
+        esp_drive = f"if=none,id=esp,format=raw,file={esp_img}"
+    elif ESP == "vvfat":
+        esp_drive = f"if=none,id=esp,format=raw,file=fat:rw:{efi_root}"
+    else:
+        raise SystemExit(f"VIBEOS_SMOKE_ESP={ESP!r}: expected vvfat or image")
 
     monitor_path = os.path.join(tempfile.gettempdir(),
                                 f"vibeos-monitor{suffix}.sock")
@@ -839,7 +871,7 @@ def main():
                 "-serial", "chardev:serial0",
                 "-drive", f"if=pflash,format=raw,readonly=on,file={ovmf_code}",
                 "-drive", f"if=pflash,format=raw,file={vars_path}",
-                "-drive", f"if=none,id=esp,format=raw,file=fat:rw:{efi_root}",
+                "-drive", esp_drive,
                 # A real NIC on QEMU's user-mode network: DHCP and DNS come
                 # from the built-in services, and 10.0.2.2 is the host.
                 "-netdev", "user,id=n0",
@@ -1227,12 +1259,15 @@ def main():
             # from a program that was never on the disk. Worth remembering when
             # a test fails everywhere except where it was written.
             tfork = os.path.join(efi_root, "EFI", "BOOT", "TFORK.ELF")
-            stats = re.search(r"tlb_shootdowns=0x([0-9a-f]{16}) tlb_acks=0x([0-9a-f]{16})", text)
+            stats = re.search(r"tlb_shootdowns=0x([0-9a-f]{16}) tlb_acks=0x([0-9a-f]{16}) "
+                              r"tlb_targets=0x([0-9a-f]{16}) tlb_flushed=0x([0-9a-f]{16})",
+                              text)
             if stats is None:
                 problems.append("no_tlb_shootdown_stats")
             else:
                 shootdowns = int(stats.group(1), 16)
-                acks = int(stats.group(2), 16)
+                targets = int(stats.group(3), 16)
+                flushed = int(stats.group(4), 16)
                 if shootdowns == 0 and os.path.exists(tfork):
                     # TFORK.ELF forks while one of its threads is still
                     # running, which is the only thing in this boot that
@@ -1242,10 +1277,13 @@ def main():
                     # and the first version of this assertion failed every
                     # boot for saying otherwise.
                     problems.append("threaded_fork_never_shot_down_other_tlbs")
-                elif acks < shootdowns:
-                    # Every shootdown waits for one acknowledgement per other
-                    # core, so acks below shootdowns means somebody gave up.
-                    problems.append(f"tlb_acks={acks}_below_shootdowns={shootdowns}")
+                elif flushed != targets:
+                    # Every core a shootdown asked must be seen to flush before
+                    # it returns. Counted per target: acknowledgements stopped
+                    # meaning this when two requests to one core became one
+                    # flush, and 261 acks for 262 shootdowns failed a healthy
+                    # boot.
+                    problems.append(f"tlb_flushed={flushed}_of_targets={targets}")
             # The copy-on-write exclusivity window.
             #
             # A page that looked exclusively one address space's, was widened to
@@ -1461,6 +1499,16 @@ def main():
                 problems.append("swap_roundtrip:" +
                                 (mr.group(1).strip().replace(" ", "_")
                                  if mr else "line_missing"))
+
+            # Every page-in compared with the hash of what was written to its
+            # slot. vvfat failed this on nearly every slot, silently, for as
+            # long as nothing paged in.
+            sc = re.search(r"\[MM\] SWAP_CHECK MUSTBEZERO read_mismatch=0x([0-9a-f]{16}) "
+                           r"checked=0x([0-9a-f]{16})", text)
+            if sc is None:
+                problems.append("swap_check_missing")
+            elif int(sc.group(1), 16) != 0:
+                problems.append(f"swap_read_mismatch={int(sc.group(1), 16)}")
 
             msz = re.search(r"\[MM\] SWAP MUSTBEZERO double_free=0x([0-9a-f]{16}) "
                             r"out_of_range=0x([0-9a-f]{16}) "
@@ -2431,6 +2479,38 @@ def main():
             # defects: the kernel image inside the frame pool (M-060, a wedge)
             # and the TLB quarantine leaking a burst of unmaps (M-061, caught by
             # userland_frames_lost). The verdict is read off its own lines.
+            # Reclaim, on a machine, end to end: svc-reclaim takes memory down
+            # to the low watermark and 12 MiB past it, reads every page back
+            # and checks it. The kernel's side has to show that it really went
+            # to swap and came back, that no slot was left behind, and that no
+            # fork of a page in swap failed (M-063).
+            if "RECLAIM_START" not in text:
+                problems.append("reclaim_load_never_ran")
+            elif re.search(r"^.*RECLAIM_FAIL", text, re.M):
+                problems.append("reclaim_load_failed")
+            elif not re.search(r"RECLAIM_OK blocks=\d+ past_low=\d+", text):
+                problems.append("reclaim_load_did_not_finish")
+            rcl = re.search(r"anon_evicted=0x([0-9a-f]{16})", text)
+            if rcl is None or int(rcl.group(1), 16) == 0:
+                problems.append("reclaim_never_evicted_an_anonymous_page")
+            sw = re.search(r"swap_ins=0x([0-9a-f]{16}) swap_dropped=0x([0-9a-f]{16}) "
+                           r"fork_swapped_in=0x([0-9a-f]{16}) "
+                           r"fork_swapped_failed=0x([0-9a-f]{16})", text)
+            if sw is None:
+                problems.append("swap_counters_missing")
+            else:
+                if int(sw.group(1), 16) == 0:
+                    problems.append("nothing_ever_came_back_from_swap")
+                if int(sw.group(4), 16) != 0:
+                    problems.append(f"fork_of_swapped_page_failed={int(sw.group(4), 16)}")
+            sl = re.search(r"\[MM\] SWAP slots=0x[0-9a-f]{16} allocated=0x([0-9a-f]{16})",
+                           text)
+            if sl is not None and int(sl.group(1), 16) != 0:
+                # Read after every process has gone: a slot still held belongs
+                # to nobody. Every swapped page of every exited process used to
+                # stay here for the rest of the boot.
+                problems.append(f"swap_slots_leaked={int(sl.group(1), 16)}")
+
             if "PRESS_START" not in text:
                 problems.append("press_never_ran")
             elif re.search(r"^.*PRESS_FAIL", text, re.M):

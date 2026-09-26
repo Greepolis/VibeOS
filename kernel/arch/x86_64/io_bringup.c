@@ -1235,6 +1235,50 @@ void hw_swap_bringup(void) {
                 }
             }
             (void)vibeos_swap_free(slot);
+            /* And eight slots at once, each with its own pattern, all written
+             * before any is read back.
+             *
+             * One slot proved nothing about the others, and on QEMU's vvfat -
+             * the gate's boot disk until then - it passed every boot while
+             * every slot past the second read back as slot 0 or slot 1. The
+             * first load to force reclaim paid for that with processes killed
+             * by each other's data. A medium that cannot hold eight distinct
+             * pages in eight places is refused rather than written to. */
+            if (bad < 0) {
+                uint32_t s8[8], k, j;
+                uint32_t got = 0;
+
+                for (k = 0; k < 8u; k++) {
+                    if (vibeos_swap_alloc(&s8[k]) != 0) {
+                        break;
+                    }
+                    got++;
+                }
+                for (k = 0; k < got; k++) {
+                    for (j = 0; j < 512u; j++) {
+                        w[j] = 0xC0DE000000000000ull | ((uint64_t)s8[k] << 16) | j;
+                    }
+                    if (vibeos_swap_write(s8[k], out) != 0) {
+                        bad = 0;
+                    }
+                }
+                for (k = 0; k < got && bad < 0; k++) {
+                    for (j = 0; j < 512u; j++) {
+                        ((uint64_t *)back)[j] = 0;
+                    }
+                    if (vibeos_swap_read(s8[k], back) != 0 ||
+                        r[0] != (0xC0DE000000000000ull | ((uint64_t)s8[k] << 16)) ||
+                        r[511] != (0xC0DE000000000000ull | ((uint64_t)s8[k] << 16) | 511u)) {
+                        bad = (int)k;
+                    }
+                }
+                for (k = 0; k < got; k++) {
+                    (void)vibeos_swap_free(s8[k]);
+                }
+                if (got < 8u || bad >= 0) {
+                    verdict = "swap round trip FAILED: slots do not hold what was written";
+                }
+            }
         }
         if (out) {
             hw_free_page_why(out, "swap_selftest");
@@ -1255,8 +1299,10 @@ void hw_swap_bringup(void) {
          * counting what having no swap costs - a number going quiet because
          * the thing it measures became invisible, not because it stopped
          * happening. With no area, no source: reclaim keeps saying so. */
-        vibeos_anon_set_map(hw_frame_identity_map);
-        vibeos_reclaim_set_anon_source(vibeos_anon_reclaim);
+        if (verdict[0] == 's' && verdict[16] == 'O') {   /* "swap round trip OK" */
+            vibeos_anon_set_map(hw_frame_identity_map);
+            vibeos_reclaim_set_anon_source(vibeos_anon_reclaim);
+        }
     }
 
     /* One call under the console lock: a line built from several is several

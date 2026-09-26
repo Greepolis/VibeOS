@@ -98,7 +98,9 @@ static uint32_t g_cpu_online_count = 1u;
 
 /* Outstanding acknowledgements for a TLB shootdown, so the core that changed a
  * mapping can wait until every other core has stopped believing the old one. */
-static volatile int g_tlb_shootdown_pending;
+/* How many flush requests are outstanding on the whole machine, so a spin loop
+ * can ask "is anybody waiting on me?" with one read and no per-CPU lookup. */
+static volatile uint32_t g_tlb_flush_live;
 /* Counted, because a shootdown that never fires and one that is not needed
  * look identical from outside - and the first would leave the bug this exists
  * to fix exactly as it was, with the boot still green. */
@@ -261,6 +263,32 @@ static volatile int g_sched_running;
 static void hw_lock_deadlock(hw_lock_t *lock, const char *waiter,
                              const char *holder, int holder_cpu);
 
+/* Answer a TLB flush request addressed to this core, if there is one.
+ *
+ * A shootdown waits for each target's CR3 generation to move, and a core
+ * spinning with interrupts off cannot take the IPI that would move it. Two such
+ * cores waiting on each other is a machine that stops: that is what the first
+ * load to force reclaim did (a swap-out waiting on a core that was waiting for
+ * the swap-out's claim), and the family of timeouts CLAUDE.md records from the
+ * broadcast days. So every spin that can wait with interrupts off asks here,
+ * and reloads its own CR3 if somebody is waiting on it. Reloading the CR3 that
+ * is already loaded is safe anywhere: the kernel is mapped the same way in
+ * every address space. */
+void hw_tlb_service_flush(void) {
+    hw_cpu_t *me;
+
+    if (__atomic_load_n(&g_tlb_flush_live, __ATOMIC_ACQUIRE) == 0u) {
+        return;
+    }
+    me = hw_this_cpu();
+    if (!me || __atomic_exchange_n(&me->flush_req, 0u, __ATOMIC_ACQ_REL) == 0u) {
+        return;
+    }
+    __atomic_sub_fetch(&g_tlb_flush_live, 1u, __ATOMIC_ACQ_REL);
+    hw_write_cr3(hw_read_cr3());
+    __atomic_fetch_add(&vibeos_mm_stats()->tlb_acks, 1ull, __ATOMIC_RELAXED);
+}
+
 void hw_spin_lock_named(hw_lock_t *lock, const char *fn) {
     uint64_t flags;
     uint64_t spins = 0;
@@ -277,6 +305,8 @@ void hw_spin_lock_named(hw_lock_t *lock, const char *fn) {
                 hw_lock_deadlock(lock, fn, held_by, held_cpu);
                 spins = 0;   /* reached only if the panic ever returns */
             }
+            /* The holder may be waiting for this core to flush. */
+            hw_tlb_service_flush();
             __asm__ __volatile__("pause" ::: "memory");
         }
     }
@@ -1177,9 +1207,9 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
      * non-global entry, which is heavier than invalidating one page and is
      * what makes it correct without the sender having to say which page. */
     if (frame->vector == 0xFEu) {
-        hw_write_cr3(hw_read_cr3());
-        __atomic_fetch_sub(&g_tlb_shootdown_pending, 1, __ATOMIC_ACQ_REL);
-        __atomic_fetch_add(&g_tlb_acks, 1ull, __ATOMIC_RELAXED);
+        /* The request may already have been answered by a spin loop on this
+         * core before the IPI landed; then there is nothing left to do. */
+        hw_tlb_service_flush();
         vibeos_x86_64_lapic_eoi();
         return;
     }
@@ -2446,6 +2476,10 @@ static void hw_rmap_relax(uint64_t spins) {
         hw_panic("teardown waited too long for a reclaim claim on its address "
                  "space: a claim was never released");
     }
+    /* The reclaimer holding the claim may be in a shootdown waiting for this
+     * very core - which, in a syscall, has interrupts off and cannot take the
+     * IPI. That wait is how the first reclaim load stopped the machine. */
+    hw_tlb_service_flush();
     __asm__ __volatile__("pause" ::: "memory");
 }
 
@@ -2500,12 +2534,95 @@ static const uint64_t *hw_vmspace_shared_pd(uint32_t gib) {
  * vmspace does the page-table work and swapmap owns the slots; these two lines
  * are all that connects them, and they are here rather than in either layer
  * because neither may depend on the other. */
+/* What each slot was given, as a hash, so what it gives back can be checked.
+ *
+ * Swap is the one place this kernel writes memory somewhere and trusts that
+ * the same bytes come back, and for its whole life nothing asked. The first
+ * load to force reclaim did, by accident: on QEMU's vvfat - the gate's boot
+ * disk, a host directory presented as FAT - every slot past the first two read
+ * back as slot 0 or slot 1, and the processes whose pages they were died with
+ * each other's data. That took a day of reading the wrong layers. A hash per
+ * slot names it on the first page-in. Must be zero; the gate asserts it. */
+static uint64_t g_swap_hash[VIBEOS_HW_SWAP_SLOTS];
+
+static uint64_t hw_swap_page_hash(const void *page) {
+    const uint64_t *w = (const uint64_t *)page;
+    uint64_t h = 0xcbf29ce484222325ull;
+    uint32_t i;
+
+    for (i = 0; i < 512u; i++) {
+        h ^= w[i];
+        h *= 0x100000001b3ull;
+    }
+    return h | 1ull;   /* never 0, so an unwritten slot never matches */
+}
+
 static int hw_swap_write_page(uint32_t slot, void *page) {
-    return vibeos_swap_write(slot, page);
+    /* Hashed before the write: the page is read-only to its owner by now (the
+     * swap-out marker), so this is what the device is given. */
+    uint64_t h = hw_swap_page_hash(page);
+    int rc = vibeos_swap_write(slot, page);
+
+    if (rc == 0 && slot < VIBEOS_HW_SWAP_SLOTS) {
+        __atomic_store_n(&g_swap_hash[slot], h, __ATOMIC_RELEASE);
+    }
+    return rc;
+}
+
+/* A swapped-out entry has gone away; its slot is free (M-063). */
+static void hw_swap_release(uint32_t slot) {
+    (void)vibeos_swap_free(slot);
+}
+
+/* Bring the page at `va` back from swap. Shared by the page fault and by fork,
+ * so there is one place that knows the order: a frame, the page-in, and only
+ * then the slot back to the map - which a failure must not do, because the
+ * entry still names it.
+ *
+ * Privileged, deliberately. This allocation is what brings a page back;
+ * refusing it at the low watermark would leave a process unable to touch
+ * memory it already owns, and reclaim would be preventing the very thing it
+ * reclaimed for. */
+static int hw_swap_bring_in(vibeos_vmspace_t *sv, uint64_t va) {
+    int64_t slot = vibeos_vmspace_swap_slot(sv, va);
+    void *page;
+
+    if (slot < 0) {
+        return -1;
+    }
+    page = hw_alloc_page();
+    if (!page) {
+        return -1;
+    }
+    if (vibeos_vmspace_swap_in(sv, va, (uint64_t)(uintptr_t)page) != 0) {
+        /* Nothing was taken: the frame is still this function's. */
+        hw_free_page_why(page, "swap_in_failed");
+        return -1;
+    }
+    /* The slot went back inside the page-in, through hw_swap_release: only it
+     * knows which slot it consumed. */
+    return 0;
 }
 
 static int hw_swap_read_page(uint32_t slot, void *page) {
-    return vibeos_swap_read(slot, page);
+    int rc = vibeos_swap_read(slot, page);
+
+    if (rc == 0 && slot < VIBEOS_HW_SWAP_SLOTS) {
+        uint64_t want = __atomic_load_n(&g_swap_hash[slot], __ATOMIC_ACQUIRE);
+
+        vibeos_mm_stats()->swap_read_checked++;
+        if (hw_swap_page_hash(page) != want) {
+            vibeos_mm_stats()->swap_read_mismatch++;
+            vibeos_x86_64_serial_lock();
+            vibeos_x86_64_serial_puts("[MM] SWAP_READ_MISMATCH slot=0x");
+            vibeos_x86_64_serial_print_hex(slot);
+            vibeos_x86_64_serial_puts(" first_word=0x");
+            vibeos_x86_64_serial_print_hex(((const uint64_t *)page)[0]);
+            vibeos_x86_64_serial_puts(" - the slot does not hold what was written to it\n");
+            vibeos_x86_64_serial_unlock();
+        }
+    }
+    return rc;
 }
 
 /* The kernel reaches every frame through the identity map, so "addressable" and
@@ -2791,6 +2908,11 @@ static void hw_pmm_bringup(const vibeos_boot_info_t *boot_info) {
                  * makes every core quiescent on its own. */
                 vb.release_deferred = hw_tlbq_put;
                 vb.quarantined = hw_tlbq_count;
+                /* What a swapped-out entry needs from outside the layer: a slot
+                 * given back when the entry goes away, and a page brought back
+                 * when fork has to share it (M-063). */
+                vb.swap_release = hw_swap_release;
+                vb.swap_bring_in = hw_swap_bring_in;
                 /* The two hooks that make page-out and page-in real.
                  *
                  * They were left null and the whole of P5 sat above them:
@@ -4362,7 +4484,11 @@ int hw_user_range_why(uint64_t va, uint64_t len, int need_write,
         }
         if ((e & PTE_PS) == 0) {
             e = tbl[(page >> 12) & 0x1FFu];
-            if ((e & PTE_PRESENT) == 0 || (e & PTE_USER) == 0) {
+            /* A page in swap is mapped: the copy that follows faults and the
+             * fault brings it back (M-063). Its permissions are in the entry's
+             * ignored bits, so the user and write tests below still hold. */
+            if (((e & PTE_PRESENT) == 0 && (e & VIBEOS_PTE_SWAPPED) == 0) ||
+                (e & PTE_USER) == 0) {
                 *why = HW_RANGE_LEAF;
                 return 0;
             }
@@ -4441,11 +4567,14 @@ static void hw_tlb_shootdown(uint64_t cr3) {
     int targets = 0;
     uint64_t spins = 0;
     uint32_t me;
+    uint32_t mask = 0;
+    uint64_t snap[VIBEOS_HW_MAX_CPUS];
 
     if (!g_apic_mode || g_cpu_online_count <= 1u) {
         return;   /* nobody else can be holding a stale entry */
     }
     me = hw_this_cpu()->index;
+    cr3 &= ~0xFFFull;
 
     /* Only the cores actually running this address space can hold a stale
      * entry for it, and only they need telling.
@@ -4459,46 +4588,85 @@ static void hw_tlb_shootdown(uint64_t cr3) {
      * it in stalls.
      *
      * A single-threaded fork, which is nearly all of them, now sends no IPI
-     * and waits for nothing. */
-    __atomic_store_n(&g_tlb_shootdown_pending, 0, __ATOMIC_RELEASE);
+     * and waits for nothing.
+     *
+     * "Running" means what is in the core's CR3, not what its current task
+     * says. The two differ while a task tears down its own address space from
+     * the kernel's tables: its slot still names the space, the core holds
+     * nothing of it, and it waits for a reclaim claim with interrupts off. The
+     * first load to force reclaim targeted exactly that core from a swap-out
+     * holding the claim, and the machine stopped. The same two fields the
+     * unmap quarantine reads (M-061), under the same ordering argument: the
+     * caller changed the entry before this, and a core that announces the
+     * space after this read walks tables that already have the change.
+     *
+     * Chosen once, recorded, and waited on per core. There used to be one
+     * machine-wide pending count, reset to zero by every shootdown - so two at
+     * once wiped each other's count, and one could return before its targets
+     * had flushed. Swap-out makes concurrent shootdowns ordinary. */
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
     for (i = 0; i < VIBEOS_HW_MAX_CPUS; i++) {
-        int t;
         if (i == me || !g_cpus[i].online) {
             continue;
         }
-        t = g_cpus[i].current_task;
-        if (t < 0 || t >= (int)VIBEOS_HW_MAX_TASKS) {
+        /* The generation first: a flush after this sample is a flush after
+         * the caller's change. */
+        snap[i] = __atomic_load_n(&g_cpus[i].cr3_generation, __ATOMIC_ACQUIRE);
+        if (__atomic_load_n(&g_cpus[i].loading_cr3, __ATOMIC_ACQUIRE) != cr3 &&
+            __atomic_load_n(&g_cpus[i].loaded_cr3, __ATOMIC_ACQUIRE) != cr3) {
             continue;
         }
-        if (g_tasks[t].cr3 != cr3) {
-            continue;
-        }
-        __atomic_fetch_add(&g_tlb_shootdown_pending, 1, __ATOMIC_ACQ_REL);
+        mask |= 1u << i;
         targets++;
     }
     if (targets == 0) {
         return;
     }
     __atomic_fetch_add(&g_tlb_shootdowns, 1ull, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&vibeos_mm_stats()->tlb_targets, (uint64_t)targets,
+                       __ATOMIC_RELAXED);
     for (i = 0; i < VIBEOS_HW_MAX_CPUS; i++) {
-        int t;
-        if (i == me || !g_cpus[i].online) {
+        if ((mask & (1u << i)) == 0u) {
             continue;
         }
-        t = g_cpus[i].current_task;
-        if (t < 0 || t >= (int)VIBEOS_HW_MAX_TASKS || g_tasks[t].cr3 != cr3) {
-            continue;
+        if (__atomic_exchange_n(&g_cpus[i].flush_req, 1u, __ATOMIC_ACQ_REL) == 0u) {
+            __atomic_add_fetch(&g_tlb_flush_live, 1u, __ATOMIC_ACQ_REL);
         }
         vibeos_x86_64_lapic_ipi_one(g_cpus[i].lapic_id, 0xFEu);
     }
 
     /* Bounded, and it says so if it gives up. A shootdown that hangs would be
      * a silent machine, which is strictly worse than the bug it is fixing -
-     * and a core that never answers is itself worth knowing about. */
-    while (__atomic_load_n(&g_tlb_shootdown_pending, __ATOMIC_ACQUIRE) > 0) {
+     * and a core that never answers is itself worth knowing about.
+     *
+     * Waiting with interrupts off, so while waiting this core answers anybody
+     * waiting on it - two cores shooting down at each other would otherwise
+     * wait forever. */
+    /* Counted per target as each is *seen* to have flushed, so a shootdown
+     * that stops waiting early reads as fewer flushes than targets. The
+     * acknowledgement count cannot say that any more: two requests to one core
+     * are answered by one flush. */
+    for (;;) {
+        uint32_t pending = 0;
+
+        for (i = 0; i < VIBEOS_HW_MAX_CPUS; i++) {
+            if ((mask & (1u << i)) == 0u) {
+                continue;
+            }
+            if (__atomic_load_n(&g_cpus[i].cr3_generation, __ATOMIC_ACQUIRE) == snap[i]) {
+                pending++;
+            } else {
+                mask &= ~(1u << i);
+                __atomic_fetch_add(&vibeos_mm_stats()->tlb_flushed, 1ull,
+                                   __ATOMIC_RELAXED);
+            }
+        }
+        if (pending == 0u) {
+            break;
+        }
+        hw_tlb_service_flush();
         __asm__ __volatile__("pause" ::: "memory");
         if (++spins > 200000000ull) {
-            __atomic_store_n(&g_tlb_shootdown_pending, 0, __ATOMIC_RELEASE);
             vibeos_mm_stats()->tlb_timeouts++;
             hw_log(VIBEOS_LOG_ERROR, 30u, (uint64_t)targets, cr3,
                    "TLB shootdown timed out; a core did not acknowledge");
@@ -4575,34 +4743,13 @@ static int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code,
      * beyond the page not being present. */
     if ((error_code & 0x1u) == 0u) {
         vibeos_vmspace_t sv = hw_vm(&t->proc.as);
-        int64_t slot = vibeos_vmspace_swap_slot(&sv, fault_va);
-        if (slot >= 0) {
-            /* Privileged, deliberately. This allocation is what brings a page
-             * back; refusing it at the low watermark would leave a process
-             * unable to touch memory it already owns, and reclaim would be
-             * preventing the very thing it reclaimed for. */
-            void *page = hw_alloc_page();
-            if (page &&
-                vibeos_vmspace_swap_in(&sv, fault_va,
-                                       (uint64_t)(uintptr_t)page) == 0) {
-                /* vmspace.c must not depend on swapmap (anon.c's own comment
-                 * on the layer below it says why: it cannot ask for a slot,
-                 * so it cannot give one back either), which makes this the
-                 * only place that knows both that the bring-back succeeded
-                 * and which slot it emptied. Left uncalled, every page a
-                 * process ever touched back into memory cost the swap area a
-                 * slot it never got back - a leak with no reboot recovery,
-                 * found by inspection rather than by exhausting swap in a
-                 * boot. */
-                (void)vibeos_swap_free((uint32_t)slot);
-                return 1;
-            }
-            if (page) {
-                hw_free_page_why(page, "swap_in_failed");
-            }
-            /* Falls through on failure rather than retrying: a retry on the
-             * same entry faults again forever, and the path below reports it. */
+
+        if (vibeos_vmspace_swap_slot(&sv, fault_va) >= 0 &&
+            hw_swap_bring_in(&sv, fault_va) == 0) {
+            return 1;
         }
+        /* Falls through on failure rather than retrying: a retry on the same
+         * entry faults again forever, and the path below reports it. */
     }
 
     /* Present and write. The originating privilege level is deliberately not
@@ -5581,6 +5728,20 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                   "EFI/BOOT/THREADS.ELF\n"
                                   "EFI/BOOT/TFORK.ELF\n"
                                   "EFI/BOOT/SIGNAL.ELF\n"
+                                  /* The reclaim load, alone: the commands here
+                                   * run one at a time. It holds the machine at
+                                   * its low watermark, where every other
+                                   * program's allocations may be refused -
+                                   * correctly - so started from init beside the
+                                   * thread tests it failed them one boot in
+                                   * two: pthread_create, a thread's mmap, an
+                                   * exec from a thread, all refused. A load
+                                   * that starves its neighbours tests them
+                                   * rather than reclaim. Not last, either: it
+                                   * empties the page cache, and the BusyBox
+                                   * commands after it are what give the exec
+                                   * cache audit something to compare. */
+                                  "EFI/BOOT/SVC_RECL.ELF\n"
                                   "EFI/BOOT/BUSYBOX.ELF echo BUSYBOX_ECHO_OK\n"
                                   "EFI/BOOT/BUSYBOX.ELF cat DOCS/NOTES.TXT\n"
                                   "EFI/BOOT/BUSYBOX.ELF ls EFI/BOOT\n"
@@ -5726,6 +5887,10 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
         vibeos_x86_64_serial_print_hex(g_tlb_shootdowns);
         vibeos_x86_64_serial_puts(" tlb_acks=0x");
         vibeos_x86_64_serial_print_hex(g_tlb_acks);
+        vibeos_x86_64_serial_puts(" tlb_targets=0x");
+        vibeos_x86_64_serial_print_hex(vibeos_mm_stats()->tlb_targets);
+        vibeos_x86_64_serial_puts(" tlb_flushed=0x");
+        vibeos_x86_64_serial_print_hex(vibeos_mm_stats()->tlb_flushed);
         vibeos_x86_64_serial_puts(" bad_unlocks=0x");
         vibeos_x86_64_serial_print_hex(vibeos_x86_64_serial_bad_unlocks());
         vibeos_x86_64_serial_puts("\n");

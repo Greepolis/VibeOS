@@ -1,0 +1,18 @@
+# Target source: kernel/arch/x86_64/io_bringup.c
+#
+# A swap area whose slots do not hold what is written to them is refused, and
+# reclaim then has no anonymous tier - rather than a tier that corrupts. The
+# boot test writes eight slots with eight patterns before reading any back,
+# because one slot passed on vvfat every boot while every slot past the second
+# aliased the first two (M-064). Run with SABOTAGE_VERIFY=scripts/dev/verify-boot.sh.
+#
+#  1. the eight-slot check reads a pattern nobody wrote, as an aliasing medium
+#     would. Expect swap_roundtrip:swap_round_trip_FAILED:_slots_do_not_hold_what_was_written,
+#     and reclaim_never_evicted_an_anonymous_page because the tier is not
+#     registered.
+
+### the eight-slot check expects the wrong pattern
+--- old
+                        r[0] != (0xC0DE000000000000ull | ((uint64_t)s8[k] << 16)) ||
++++ new
+                        r[0] != (0xC0DE000000000001ull | ((uint64_t)s8[k] << 16)) ||

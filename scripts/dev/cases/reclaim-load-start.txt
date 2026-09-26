@@ -1,0 +1,17 @@
+# Target source: kernel/arch/x86_64/arch_hw.c
+#
+# The reclaim load is the last command of the boot's self-test, typed at
+# BusyBox's shell, so nothing runs beside it (it holds the machine at its low
+# watermark, and started from init beside the thread tests it had their
+# allocations refused one boot in two). Run with
+# SABOTAGE_VERIFY=scripts/dev/verify-boot.sh.
+#
+#  1. the self-test no longer runs it. Expect reclaim_load_never_ran - and
+#     reclaim_never_evicted_an_anonymous_page and
+#     nothing_ever_came_back_from_swap, because nothing else in a boot takes the
+#     machine to its low watermark.
+
+### the self-test no longer runs svc-reclaim
+--- old
+                                  "EFI/BOOT/SVC_RECL.ELF\n"
++++ new

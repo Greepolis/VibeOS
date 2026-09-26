@@ -1,0 +1,77 @@
+# Target source: kernel/mm/vmspace.c
+#
+# M-063: a swapped-out entry is a mapping. Page-out and page-in were proved on
+# their own; nothing asked what munmap, teardown, mprotect or fork do to a page
+# that is on disk, and the first boot to force reclaim on a machine showed all
+# four ignoring it - and page-in making every page user-writable, and taking a
+# second reference that leaked one frame per page brought back (764 in a boot).
+# Proved by test_swapped_entries_are_mappings and test_swap_round_trip.
+#
+# Not a case: clone_one starting again when a page is swapped out *during* the
+# conversion loop. That is a race with reclaim on another core, which no host
+# test produces on demand.
+
+### teardown forgets the slot of a page in swap
+--- old
+            if (g_be.swap_release) {
+                g_be.swap_release(slot);
+            }
++++ new
+
+### munmap skips a page in swap
+--- old
+    if ((entry & PTE_PRESENT) == 0u && (entry & VIBEOS_PTE_SWAPPED)) {
++++ new
+    if (0) {
+
+### swap-out keeps only NX, as it used to
+--- old
+    desired = ((uint64_t)slot << 12) | PTE_SWAPPED |
+              (entry & (PTE_NX | PTE_USER | PTE_WRITE | PTE_COW_BIT));
++++ new
+    desired = ((uint64_t)slot << 12) | PTE_SWAPPED | (entry & PTE_NX);
+
+### swap-in makes every page user-writable, as it used to
+--- old
+    desired = (frame & PTE_ADDR_MASK) | PTE_PRESENT | VIBEOS_PTE_OWNED |
+              (entry & (PTE_NX | PTE_USER | PTE_WRITE | PTE_COW_BIT));
++++ new
+    desired = (frame & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITE | PTE_USER |
+              VIBEOS_PTE_OWNED | (entry & PTE_NX);
+
+### mprotect refuses a page in swap
+--- old
+    if (!pte || (*pte & (PTE_PRESENT | VIBEOS_PTE_SWAPPED)) == 0u) {
++++ new
+    if (!pte || (*pte & PTE_PRESENT) == 0u) {
+
+### fork skips a page in swap
+--- old
+        if (!g_be.swap_bring_in || tries++ >= 8u ||
++++ new
+        if (1 || tries++ >= 8u ||
+
+### swap-in takes a reference of its own as well
+--- old
+    if (!__atomic_compare_exchange_n(pte, &entry, desired, 0,
+                                     __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+        return -1;   /* another core brought it in first */
+    }
+    /* The slot this call consumed
++++ new
+    vibeos_frame_get(frame);
+    if (!__atomic_compare_exchange_n(pte, &entry, desired, 0,
+                                     __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+        (void)vibeos_frame_put(frame);
+        return -1;   /* another core brought it in first */
+    }
+    /* The slot this call consumed
+
+### the page-in keeps the slot it consumed
+--- old
+    if (g_be.swap_release) {
+        g_be.swap_release(slot);
+    }
+    (void)vibeos_rmap_add(frame, as->root_phys, va);
++++ new
+    (void)vibeos_rmap_add(frame, as->root_phys, va);

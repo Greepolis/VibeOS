@@ -9,13 +9,18 @@
 
 ### the shootdown is sent but nobody waits for it
 --- old
-    while (__atomic_load_n(&g_tlb_shootdown_pending, __ATOMIC_ACQUIRE) > 0) {
+        if (pending == 0u) {
+            break;
+        }
+        hw_tlb_service_flush();
 +++ new
-    while (0) {
+        break;
+        hw_tlb_service_flush();
 
 ### the shootdown goes to every core instead of the ones running this address space
 --- old
-        if (g_tasks[t].cr3 != cr3) {
+        if (__atomic_load_n(&g_cpus[i].loading_cr3, __ATOMIC_ACQUIRE) != cr3 &&
+            __atomic_load_n(&g_cpus[i].loaded_cr3, __ATOMIC_ACQUIRE) != cr3) {
             continue;
         }
 +++ new
@@ -34,3 +39,22 @@
 #     a syscall cannot answer until it returns to ring 3, and waiting on cores
 #     with no stake in the mapping was the first version of this code. It timed
 #     out about three boots in thirty-two.
+#
+# Since the first load that forced reclaim (M-063 era), the shootdown chooses
+# its targets by what is in each core's CR3 rather than by its current task,
+# waits per target on cr3_generation instead of a machine-wide count, and a core
+# waiting with interrupts off answers flush requests addressed to it. Two of
+# those are races with no deterministic case: a teardown waiting for a reclaim
+# claim on a core the swap-out targets (the deadlock that stopped the machine),
+# and two shootdowns wiping each other's count. They are argued in the source.
+# "Nobody waits" now reads as tlb_flushed below tlb_targets.
+#
+# "Goes to every core" is NOT RED now, and that is correct: broadcasting only
+# costs waiting on cores with nothing to flush. Its earlier red - faults and
+# swap_double_free=6 - was the page-in's stale-slot race (M-063), which the
+# broadcast's timing happened to open; with that fixed, the sabotage is slower
+# and not wrong, which is what this case always claimed.
+#
+# "Fork never tells the other cores" anchors in kernel/mm/vmspace.c and reads
+# "anchor not found" when this file is run against arch_hw.c; run it against
+# vmspace.c for that case.

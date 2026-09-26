@@ -100,6 +100,7 @@
     X(CLOCK_GETTIME,   "clock_gettime",   VIBEOS_CHECK_USER_MEMORY) \
     X(TIME,            "time",            VIBEOS_CHECK_USER_MEMORY) \
     X(UNAME,           "uname",           VIBEOS_CHECK_USER_MEMORY) \
+    X(SYSINFO,         "sysinfo",         VIBEOS_CHECK_USER_MEMORY) \
     X(GETRANDOM,       "getrandom",       VIBEOS_CHECK_NONE) \
     /* network */ \
     X(SOCKET,          "socket",          VIBEOS_CHECK_NONE) \

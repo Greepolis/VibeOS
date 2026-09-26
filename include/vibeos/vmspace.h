@@ -153,6 +153,20 @@ typedef struct vibeos_vmspace_backend {
      * design - and fork's audit, comparing the two, called it a mismatch. Null
      * means nothing is ever held. */
     uint32_t (*quarantined)(uint64_t phys);
+
+    /* A swapped-out entry is going away - munmap, or the address space being
+     * torn down - and nothing will read its slot again. This layer cannot free
+     * a slot itself (it must not depend on the swap map), so it says so here.
+     * Null means nothing is told, and the slot leaks: which is what happened to
+     * every swapped page of every process that exited, until M-063. */
+    void (*swap_release)(uint32_t slot);
+
+    /* Bring a swapped-out page back in, for an operation that needs it
+     * resident - fork, which shares frames and has no frame to share for a page
+     * that is on disk. 0 when the entry is present afterwards. Null means such
+     * an entry cannot be forked, and the fork fails rather than handing the
+     * child an address space with a hole in it (M-063). */
+    int (*swap_bring_in)(struct vibeos_vmspace *as, uint64_t va);
 } vibeos_vmspace_backend_t;
 
 int vibeos_vmspace_init(const vibeos_vmspace_backend_t *backend);
@@ -310,6 +324,12 @@ int vibeos_vmspace_move_frame(uint64_t old_phys, uint64_t new_phys);
  * it, so the pages a forking workload accumulates are visibly out of reach
  * rather than quietly skipped. */
 int vibeos_vmspace_swap_out(vibeos_vmspace_t *as, uint64_t va, uint32_t slot);
+/* `frame` is a frame the caller allocated; on success the mapping owns the
+ * reference the allocation gave, and the caller must not release it. On
+ * failure nothing was taken and the frame is still the caller's to free.
+ * On success the slot the page came from is released through the backend's
+ * swap_release - the caller does not free it, and could not know which it
+ * was. */
 int vibeos_vmspace_swap_in(vibeos_vmspace_t *as, uint64_t va, uint64_t frame);
 
 /* The slot a swapped-out entry names, or -1 if the entry is not swapped. */

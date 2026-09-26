@@ -1,4 +1,4 @@
-/* Linux ABI: uname, clock_gettime, time.
+/* Linux ABI: uname, clock_gettime, time, sysinfo.
  *
  * Lifted out of arch_hw.c (C4 stage 3). Nothing here is new: the handlers and the
  * helpers only they use, moved as they were. */
@@ -69,9 +69,37 @@ static long hw_sys_time(uint64_t tptr) {
     return (long)secs;
 }
 
+/* sysinfo(): how much memory there is and how much is free, in Linux's layout -
+ * 112 bytes on x86_64, written here as fourteen words.
+ *
+ * Added for svc-reclaim, which has to know where the low watermark is to reach
+ * it without running the machine into its minimum; BusyBox's `free` asks the
+ * same question the same way. Free is the frame layer's free count: the page
+ * cache is not counted as free, as Linux counts it in bufferram instead. */
+static long hw_sys_sysinfo(uint64_t buf) {
+    uint64_t w[14];
+    const vibeos_mm_stats_t *st = vibeos_mm_stats();
+    uint64_t slots = (uint64_t)vibeos_swap_slots();
+    uint64_t used = vibeos_swap_stats()->allocated;
+    uint32_t i;
+
+    for (i = 0; i < 14u; i++) {
+        w[i] = 0;
+    }
+    w[0] = g_timer_ticks / VIBEOS_HW_TIMER_HZ;          /* uptime, seconds   */
+    w[4] = st->frames_total * 4096ull;                  /* totalram          */
+    w[5] = st->frames_free * 4096ull;                   /* freeram           */
+    w[8] = slots * 4096ull;                             /* totalswap         */
+    w[9] = (used < slots ? slots - used : 0ull) * 4096ull; /* freeswap       */
+    w[13] = 1u;                                         /* mem_unit: bytes   */
+    return vibeos_uaccess_copy((void *)(uintptr_t)buf, w, sizeof(w)) == 0
+               ? 0 : -VIBEOS_EFAULT;
+}
+
 /* ---- the syscalls this file implements --------------------------------------- */
 #define LINUX_MISC_SYSCALLS(X) \
     X(63,  uname,         UNAME,         PTRS(OUT(0, 6u * 65u)), hw_sys_uname(ARG(0))) \
+    X(99,  sysinfo,       SYSINFO,       PTRS(OUT(0, 112)), hw_sys_sysinfo(ARG(0))) \
     X(201, time,          TIME,          PTRS(OUT_OPT(0, 8)), hw_sys_time(ARG(0))) \
     X(228, clock_gettime, CLOCK_GETTIME, PTRS(OUT(1, 16)), hw_sys_clock_gettime(ARG(0), ARG(1)))
 

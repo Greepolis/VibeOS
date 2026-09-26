@@ -131,6 +131,14 @@ typedef struct vibeos_rmap_stats {
     uint64_t nodes_peak;      /* high water mark, so the pool can be sized    */
     uint64_t exhausted;       /* an add that found no free node. SHOULD BE 0  */
     uint64_t missing_remove;  /* a remove that found nothing. MUST BE ZERO    */
+    /* The last one of those, so a single fire says which mapping and who asked
+     * rather than only that it happened: once in twelve boots with the reclaim
+     * load, and the count alone gave nothing to go on. `caller` is a return
+     * address into the kernel image, for addr2line against the build. */
+    uint64_t missing_phys;
+    uint64_t missing_root;
+    uint64_t missing_va;
+    uint64_t missing_caller;
     uint64_t cycles;          /* a holder list that loops. MUST BE ZERO       */
     uint64_t untracked;       /* an add for a frame this layer does not
                                * describe. Counted because it used to be the

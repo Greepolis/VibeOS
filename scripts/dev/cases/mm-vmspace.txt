@@ -90,11 +90,9 @@
 
 ### fork selects pages by user-reachability, as the low-window walk used to
 --- old
-                    if ((pt[i] & PTE_PRESENT) == 0u ||
-                        (pt[i] & VIBEOS_PTE_OWNED) == 0u) {
+                    if (!((pt[i] & PTE_PRESENT) && (pt[i] & VIBEOS_PTE_OWNED)) &&
 +++ new
-                    if ((pt[i] & PTE_PRESENT) == 0u ||
-                        (pt[i] & PTE_USER) == 0u) {
+                    if (!((pt[i] & PTE_PRESENT) && (pt[i] & PTE_USER)) &&
 
 ### fork treats an already-shared page as plain read-only, dropping the mark
 --- old

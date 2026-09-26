@@ -202,6 +202,53 @@ def mm_stats_fields():
     return fields
 
 
+def symbol_addresses(kernel, name):
+    """Every address `name` has in the image - a static defined in several
+    files appears once per file, which kernel_symbols' dictionary cannot say."""
+    try:
+        out = subprocess.run(["nm", kernel], capture_output=True, text=True,
+                             check=False).stdout
+    except OSError:
+        return []
+    found = []
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 3 and parts[2] == name:
+            try:
+                found.append(int(parts[0], 16))
+            except ValueError:
+                pass
+    return sorted(found)
+
+
+def irq_rates(monitor_path, kernel):
+    """Is a device's interrupt firing while the machine is stopped?
+
+    Each block driver keeps `g_irq_count` beside its `g_vector`. Read twice a
+    second apart: a line that nobody acknowledges fires as fast as the core can
+    take it, and the count moves by hundreds of thousands while everything else
+    stands still. A healthy wedged machine moves it by nothing."""
+    import time
+    counts = symbol_addresses(kernel, "g_irq_count")
+    vectors = symbol_addresses(kernel, "g_vector")
+    if not counts:
+        return ["[BLACKBOX] irq counters not found"]
+    first = [read_words(monitor_path, a & ~7, 1) for a in counts]
+    time.sleep(1.0)
+    second = [read_words(monitor_path, a & ~7, 1) for a in counts]
+    lines = []
+    for i, a in enumerate(counts):
+        # The vector is the g_vector nearest above this counter, in the same
+        # file's .bss - the two are declared together in both drivers.
+        vec = [v for v in vectors if 0 < v - a < 0x100]
+        vword = read_words(monitor_path, vec[0] & ~7, 1) if vec else []
+        v0 = first[i][0] if first[i] else 0
+        v1 = second[i][0] if second[i] else 0
+        lines.append("[BLACKBOX] irq_count@0x%x vector=0x%x count=%d moved=%d in 1s"
+                     % (a, (vword[0] & 0xFFFFFFFF) if vword else 0, v0, v1 - v0))
+    return lines
+
+
 def black_box(monitor_path, kernel):
     """What the memory detectors recorded, read out of a guest that can no longer
     print it (M-060).
@@ -293,6 +340,7 @@ def report(monitor_path, kernel):
             lines.append("[WEDGE]    (no frame chain: idle, or stopped in "
                          "assembly with no frame set up)")
     lines.extend(black_box(monitor_path, kernel))
+    lines.extend(irq_rates(monitor_path, kernel))
     return lines
 
 

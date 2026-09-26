@@ -189,6 +189,51 @@ the gate reads its verdict. Note also that
 watermarks, so a load that forces reclaim has to be larger, or the machine
 smaller.
 
+### 2026-09-25: the first load that forces reclaim, and what it found
+
+`svc-reclaim` asks the kernel how much memory is free (`sysinfo`, added for it),
+fills memory down to the low watermark and past it - enough to use up the clean
+page cache and push the anonymous tier into swap - then reads every page back
+and checks it, releasing each block as soon as it has been checked. It stops
+past the mark at 12 MiB or when three quarters of swap is in use, whichever
+comes first. It runs in the boot's self-test, between the signal test and the
+BusyBox commands, because those run one at a time: started from init beside the
+thread tests it had their allocations refused one boot in two, and run last it
+emptied the page cache the exec audit reads. The first version went the full 12 MiB, which
+is more than the clean cache and 8 MiB of swap can give back: a sabotage run
+that happened to leave svc-press out took it to the minimum, every other program
+was refused, and the machine starved with swap full. A load that forces reclaim
+has to stay inside what reclaim can return. It runs in every boot now, and a boot shows the thing this
+file said never happened: about two thousand anonymous pages written to swap
+and brought back, each compared with a hash of what was written, with no slot
+left allocated at the end.
+
+Getting there took five defects, none of them in reclaim itself:
+
+- **A shootdown deadlock (M-065).** A swap-out holding a claim waited for a core
+  it believed was running the victim's address space; that core was tearing the
+  space down from the kernel's tables, waiting for the claim with interrupts
+  off. The shootdown now targets what is in a core's CR3, waits per core, and a
+  waiting core answers flush requests itself - and a machine-wide pending count
+  that concurrent shootdowns wiped is gone.
+- **The gate's disk could not hold swap (M-064).** Processes died of each
+  other's data. A per-slot hash said the slots did not give back what they were
+  given; a raw write-then-read at one LBA, below the swap layer, said the same;
+  eight slots written at boot on one core said it deterministically - every slot
+  aliased slot 0 or 1. The disk was QEMU's vvfat, which is a host directory and
+  not a medium. The gate boots a real FAT image now, and the kernel refuses an
+  area whose slots alias.
+- **Page-in leaked a frame per page (M-063)** - two owners, one mapping. The
+  frame accounting said 764 lost against 756 pages brought back.
+- **A swapped-out entry was invisible to fork, munmap, teardown, mprotect and
+  the syscall range check, and came back with the wrong permissions (M-063).**
+  Found by reading, once the leak had pointed at the page-in path; each is a
+  host test now, and sabotaging each turns it red.
+- **virtio-net's interrupt line was live and nobody's (M-066).**
+
+Still open: two early boots on the real image wedged in the AHCI log disk's
+interrupt path (M-067), not reproduced since.
+
 ### A detector that could not tell a new tenant (M-062)
 
 Sabotaging svc-press to exit without unmapping its 64 MiB raised

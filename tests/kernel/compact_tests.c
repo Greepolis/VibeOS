@@ -99,6 +99,30 @@ static void cp_shootdown(uint64_t root_phys) {
     g_shootdowns++;
 }
 
+/* The two hooks a swapped-out entry needs from outside vmspace (M-063), as the
+ * kernel supplies them: a slot back to the map, and a page brought back in. */
+static void cp_swap_release(uint32_t slot) {
+    (void)vibeos_swap_free(slot);
+}
+
+static int cp_swap_bring_in(vibeos_vmspace_t *as, uint64_t va) {
+    int64_t slot = vibeos_vmspace_swap_slot(as, va);
+    uint64_t f;
+
+    if (slot < 0) {
+        return -1;
+    }
+    f = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+    if (f == 0u) {
+        return -1;
+    }
+    if (vibeos_vmspace_swap_in(as, va, f) != 0) {
+        (void)vibeos_frame_put(f);
+        return -1;
+    }
+    return 0;   /* the page-in gave the slot back itself */
+}
+
 static int cp_setup(void) {
     vibeos_vmspace_backend_t be;
 
@@ -123,6 +147,8 @@ static int cp_setup(void) {
     be.shootdown = cp_shootdown;
     be.swap_write = vibeos_swap_write;
     be.swap_read = vibeos_swap_read;
+    be.swap_release = cp_swap_release;
+    be.swap_bring_in = cp_swap_bring_in;
     memset(g_swapdisk, 0, sizeof(g_swapdisk));
     g_swap_write_fails = 0;
     g_during_write = 0;
@@ -528,6 +554,13 @@ static void test_swap_round_trip(void) {
         unsigned char *q = (unsigned char *)cp_map(back);
         CHECK(q[0] == 0x6B && q[4095] == 0x6B, "the contents came back");
         CHECK(vibeos_rmap_count(back) == 1u, "and the holder is recorded");
+        /* One mapping, one owner. Two meant a page that came back from swap
+         * outlived its process - 764 frames in the first boot that forced
+         * reclaim - and nothing here asked. */
+        CHECK(vibeos_frame_owners(back) == 1u,
+              "the mapping holds the allocation's reference, not a second one");
+        CHECK(!vibeos_swap_is_allocated(slot),
+              "and the page-in gave back the slot it came from");
     }
 }
 
@@ -1070,6 +1103,117 @@ static void test_anon_reclaim_claims(void) {
     vibeos_rmap_set_relax(0);
 }
 
+/* M-063: a swapped-out entry is a mapping, and every operation on a mapping
+ * has to know it.
+ *
+ * Page-out and page-in were proved here long before anything forced reclaim on
+ * a machine, and they were proved on their own: nothing asked what munmap,
+ * teardown, mprotect or fork do to a page that is on disk. The first boot that
+ * sent pages to swap answered - every one of them was invisible to all four,
+ * and page-in made each page user-writable whatever it had been. */
+#define T_PTE_PRESENT 0x001ull
+#define T_PTE_WRITE   0x002ull
+#define T_PTE_USER    0x004ull
+#define T_PTE_ADDR    0x000FFFFFFFFFF000ull
+
+static uint32_t cp_swap_one(vibeos_vmspace_t *as, uint64_t va) {
+    uint32_t slot = 0;
+
+    CHECK(vibeos_swap_alloc(&slot) == 0, "a slot");
+    CHECK(vibeos_vmspace_swap_out(as, va, slot) == 0, "paged out");
+    return slot;
+}
+
+static uint64_t cp_map_new(vibeos_vmspace_t *as, uint64_t va, vibeos_prot_t prot,
+                           unsigned char fill) {
+    uint64_t f = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+
+    CHECK(f != 0u, "a frame");
+    memset(cp_map(f), fill, 4096);
+    CHECK(map_as_kernel_does(as, va, f, prot) == 0, "map");
+    return f;
+}
+
+static void test_swapped_entries_are_mappings(void) {
+    const vibeos_prot_t rwu = (vibeos_prot_t)(VIBEOS_PROT_READ | VIBEOS_PROT_WRITE |
+                                              VIBEOS_PROT_USER);
+    const vibeos_prot_t ru = (vibeos_prot_t)(VIBEOS_PROT_READ | VIBEOS_PROT_USER);
+    vibeos_vmspace_t as, child;
+    uint64_t *e;
+    uint32_t slot;
+
+    /* munmap takes a page in swap, and gives its slot back. */
+    if (cp_setup() != 0 || vibeos_vmspace_create(&as) != 0) {
+        printf("  compact: FAIL setup\n"); g_fail++; return;
+    }
+    (void)cp_map_new(&as, VA_A, rwu, 0x11);
+    slot = cp_swap_one(&as, VA_A);
+    CHECK(vibeos_vmspace_unmap(&as, VA_A) == 1, "munmap takes a page that is in swap");
+    CHECK(!vibeos_swap_is_allocated(slot), "and gives its slot back");
+    CHECK(vibeos_vmspace_swap_slot(&as, VA_A) < 0,
+          "and the entry no longer names a slot swap may give to somebody else");
+
+    /* A dying address space gives its slots back. */
+    (void)cp_map_new(&as, VA_A, rwu, 0x22);
+    slot = cp_swap_one(&as, VA_A);
+    CHECK(vibeos_vmspace_destroy(&as) == 0, "teardown");
+    CHECK(!vibeos_swap_is_allocated(slot), "a dying space gives its swap slots back");
+
+    /* Permissions go to swap and come back - the ones a page has as well as
+     * the ones it lacks. The checks below only ask that a bit does *not* come
+     * back; a swap-out that kept nothing at all passed every one of them, and
+     * was caught only by sabotage. */
+    if (cp_setup() != 0 || vibeos_vmspace_create(&as) != 0) {
+        printf("  compact: FAIL setup\n"); g_fail++; return;
+    }
+    (void)cp_map_new(&as, VA_A + 0x3000u, rwu, 0x66);
+    (void)cp_swap_one(&as, VA_A + 0x3000u);
+    CHECK(cp_swap_bring_in(&as, VA_A + 0x3000u) == 0, "an ordinary page paged back in");
+    e = vibeos_vmspace_entry(&as, VA_A + 0x3000u);
+    CHECK(e && (*e & T_PTE_PRESENT) && (*e & T_PTE_WRITE) && (*e & T_PTE_USER),
+          "an ordinary page comes back writable and user");
+
+    (void)cp_map_new(&as, VA_A, ru, 0x33);
+    (void)cp_swap_one(&as, VA_A);
+    CHECK(cp_swap_bring_in(&as, VA_A) == 0, "paged back in");
+    e = vibeos_vmspace_entry(&as, VA_A);
+    CHECK(e && (*e & T_PTE_PRESENT) && (*e & T_PTE_WRITE) == 0u,
+          "a read-only page comes back read-only");
+
+    (void)cp_map_new(&as, VA_A + 0x1000u, VIBEOS_PROT_NONE, 0x44);
+    (void)cp_swap_one(&as, VA_A + 0x1000u);
+    CHECK(cp_swap_bring_in(&as, VA_A + 0x1000u) == 0, "a guard paged back in");
+    e = vibeos_vmspace_entry(&as, VA_A + 0x1000u);
+    CHECK(e && (*e & T_PTE_PRESENT) && (*e & T_PTE_USER) == 0u,
+          "a PROT_NONE guard comes back a guard, not user memory");
+
+    /* mprotect of a page in swap is a permission change like any other. */
+    (void)cp_map_new(&as, VA_A + 0x2000u, rwu, 0x55);
+    (void)cp_swap_one(&as, VA_A + 0x2000u);
+    CHECK(vibeos_vmspace_protect(&as, VA_A + 0x2000u, ru) == 0,
+          "mprotect of a page in swap succeeds");
+    CHECK(cp_swap_bring_in(&as, VA_A + 0x2000u) == 0, "and it comes back");
+    e = vibeos_vmspace_entry(&as, VA_A + 0x2000u);
+    CHECK(e && (*e & T_PTE_PRESENT) && (*e & T_PTE_WRITE) == 0u,
+          "with the permission mprotect gave it, not the one it left with");
+
+    /* fork shares a page in swap by bringing it back. */
+    if (cp_setup() != 0 || vibeos_vmspace_create(&as) != 0 ||
+        vibeos_vmspace_create(&child) != 0) {
+        printf("  compact: FAIL setup\n"); g_fail++; return;
+    }
+    (void)cp_map_new(&as, VA_A, rwu, 0x5A);
+    slot = cp_swap_one(&as, VA_A);
+    CHECK(vibeos_vmspace_clone_cow(&child, &as) == 0,
+          "fork of a space with a page in swap");
+    e = vibeos_vmspace_entry(&child, VA_A);
+    CHECK(e && (*e & T_PTE_PRESENT), "the child has the page");
+    CHECK(e && ((unsigned char *)cp_map(*e & T_PTE_ADDR))[0] == 0x5A,
+          "with its contents");
+    CHECK(vibeos_mm_stats()->fork_swapped_in == 1u, "brought back once to be shared");
+    CHECK(!vibeos_swap_is_allocated(slot), "and its slot given back");
+}
+
 int test_compact(void) {
     g_fail = 0;
 
@@ -1103,12 +1247,13 @@ int test_compact(void) {
     test_swapout_fork_mid_write();
     test_swapout_readonly_page();
     test_anon_reclaim_claims();
+    test_swapped_entries_are_mappings();
 
     free(g_ram);
     g_ram = 0;
 
     if (g_fail == 0) {
-        printf("  compact: 23 groups ok\n");
+        printf("  compact: 24 groups ok\n");
     }
     return g_fail == 0 ? 0 : 1;
 }

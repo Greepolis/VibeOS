@@ -158,8 +158,8 @@ static service_t services[] = {
      * loader handed over a memory map taken before it loaded the kernel
      * (M-060), and unmapping the 64 MiB afterwards leaked 2,486 frames through
      * the TLB quarantine (M-061). Both are what a boot now gates by running it.
-     * It does not reach the watermarks - a load that forces reclaim has to be
-     * larger than this, or the machine smaller. */
+     * It does not reach the watermarks; svc-reclaim does, run last in the
+     * boot's self-test rather than from here so that nothing runs beside it. */
     {"svc-press", "EFI/BOOT/SVC_PRES.ELF", 0, 0, 0, 0, -1, SVC_STOPPED},
     {"svc-bomb", "EFI/BOOT/SVC_BOMB.ELF", 0, 0, 0, 0, -1, SVC_STOPPED},
 };

@@ -170,17 +170,25 @@ static int g_ready;
 
 /* One controller, one command slot, one bounce buffer. virtio-blk shipped
  * without this and two cores did not race over a window, they overwrote each
- * other's requests and each returned the other's data, successfully. */
-static volatile int g_lock;
+ * other's requests and each returned the other's data, successfully.
+ *
+ * The registry's lock, which masks interrupts while it is held (M-067). This
+ * was a bare test-and-set with interrupts left on, and the wait for a command
+ * halted with them on - so the holder could be interrupted, or taken off its
+ * core by the scheduler, in the middle of a command. With the log disk on this
+ * controller, every core that logged then queued behind a holder that could not
+ * get a core back: four cores spinning here, nobody running the code that held
+ * it, and a machine that went quiet. Waits now poll, and the completion
+ * interrupt is still raised and counted - it is taken when the lock is let go.
+ * A core that already holds it is refused rather than left spinning on itself. */
+static vibeos_dev_lock_t g_lock = VIBEOS_DEV_LOCK("ahci");
 
-static void ahci_lock(void) {
-    while (__atomic_test_and_set(&g_lock, __ATOMIC_ACQUIRE)) {
-        __asm__ __volatile__("pause");
-    }
+static int ahci_lock(void) {
+    return vibeos_dev_lock(&g_lock);
 }
 
 static void ahci_unlock(void) {
-    __atomic_clear(&g_lock, __ATOMIC_RELEASE);
+    vibeos_dev_unlock(&g_lock);
 }
 
 static uint32_t mmio_read(uint32_t off) {
@@ -358,6 +366,16 @@ static int ahci_dev_init(void) {
             vibeos_x86_64_ioapic_route_pci(g_irq_line, (uint8_t)g_vector, 0u) == 0) {
             g_irq_ready = 1u;
         }
+        /* Which line, as virtio-blk says too: two PCI devices on one INTx line
+         * each need their own acknowledgement, and the question "who else is
+         * on this line" starts here. */
+        vibeos_x86_64_serial_lock();
+        vibeos_x86_64_serial_puts("[AHCI] irq line=0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)g_irq_line);
+        vibeos_x86_64_serial_puts(" vector=0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)g_vector);
+        vibeos_x86_64_serial_puts(g_irq_ready ? " routed\n" : " not routed\n");
+        vibeos_x86_64_serial_unlock();
 
         /* The signature, read *here* and not before the port was set up.
          *
@@ -600,7 +618,9 @@ static int ahci_dev_read_many(uint64_t lba, void *buf, uint32_t sectors) {
     if (!g_ready || sectors == 0u) {
         return -1;
     }
-    ahci_lock();
+    if (ahci_lock() != 0) {
+        return -1;
+    }
     while (done < sectors) {
         uint32_t chunk = sectors - done;
         uint32_t i;
@@ -640,7 +660,9 @@ static int ahci_dev_write_many(uint64_t lba, const void *buf,
     if (!g_ready || sectors == 0u) {
         return -1;
     }
-    ahci_lock();
+    if (ahci_lock() != 0) {
+        return -1;
+    }
     while (done < sectors) {
         uint32_t chunk = sectors - done;
         uint32_t i;
@@ -673,7 +695,9 @@ static int ahci_dev_barrier(void) {
     if (!g_ready) {
         return -1;
     }
-    ahci_lock();
+    if (ahci_lock() != 0) {
+        return -1;
+    }
     rc = ahci_cmd((uint8_t)ATA_CMD_FLUSH_EX, 0, 0, 1, 0u);
     ahci_unlock();
     return rc;
@@ -687,7 +711,9 @@ static int ahci_dev_write(uint64_t lba, const void *buf) {
     if (!g_ready) {
         return -1;
     }
-    ahci_lock();
+    if (ahci_lock() != 0) {
+        return -1;
+    }
     for (i = 0; i < 512u; i++) {
         g_bounce[i] = in[i];
     }

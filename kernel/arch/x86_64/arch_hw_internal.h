@@ -471,6 +471,11 @@ typedef struct hw_cpu {
      * switching *away* is seen until its flush is done. See hw_write_cr3. */
     volatile uint64_t loading_cr3;
     volatile uint64_t loaded_cr3;
+    /* Somebody has asked this core to flush its TLB and is waiting for
+     * cr3_generation to move. Answered by the 0xFE IPI - or, when this core is
+     * spinning with interrupts off and cannot take one, by the spin itself
+     * (hw_tlb_service_flush). */
+    volatile uint32_t flush_req;
     struct tss64 tss;
 } hw_cpu_t;
 /* The scheduler state below is shared by every core; `g_current_task` is not.
@@ -615,6 +620,7 @@ extern uint32_t g_exec_elf_cap;
 int hw_page_put(uint64_t phys);
 uint64_t hw_read_cr3(void);
 void hw_write_cr3(uint64_t pml4_phys);
+void hw_tlb_service_flush(void);
 void hw_tlbq_drain(void);
 void *hw_alloc_user_page(void);
 long hw_read_file_cached(const char *path, void *buf, uint32_t cap,

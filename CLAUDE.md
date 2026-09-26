@@ -899,6 +899,22 @@ stopped guest's memory, plus the pool base, landed on the frame index of the
 kernel's first page exactly. When a machine dies after a fixed amount of
 allocation, work out *what is at that address*.
 
+**vvfat is not a disk.** The gate's boot disk was QEMU presenting a host
+directory as FAT, and swap - which writes pages into the middle of an existing
+file - got slot 0's contents back for every even slot and slot 1's for every odd
+one. The boot's swap round trip used one slot and passed every boot for as long
+as nothing paged in. The first load that did cost a day in the wrong layers,
+because the symptom was processes killed by each other's data. What settled it
+was going down one layer at a time with the same question - does it give back
+what it was given? - until a raw write and read at one LBA, below everything the
+kernel does, still said no. The gate boots a real FAT image now.
+
+**A mechanism proved alone has not met the others.** Page-out and page-in were
+host-tested for weeks. Nobody asked what fork, munmap, teardown or mprotect did
+to a page that was on disk, and the answer to all four was "nothing" - found in
+the first hour of a load that sent pages there. When something new can happen
+to a page table entry, list every operation that walks one.
+
 ## Verification that exists
 
 The boot gate (`scripts/qemu-cli-smoke-linux.py`) asserts state, not markers:

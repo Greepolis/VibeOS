@@ -88,6 +88,8 @@ typedef struct vibeos_mm_stats {
     uint64_t cow_exclusive_lost;
     uint64_t tlb_shootdowns;     /* cross-core invalidations sent             */
     uint64_t tlb_acks;           /* ...and acknowledged                       */
+    uint64_t tlb_targets;        /* cores asked to flush, one per target      */
+    uint64_t tlb_flushed;        /* ...and seen to have flushed. EQUAL        */
     uint64_t tlb_timeouts;       /* a core never answered. MUST BE ZERO       */
     uint64_t faults_resolved;    /* page faults handled and resumed           */
     uint64_t faults_fatal;       /* page faults that killed a task            */
@@ -106,6 +108,11 @@ typedef struct vibeos_mm_stats {
     uint64_t cache_evictions;
     uint64_t cache_writebacks;
     uint64_t swap_ins;
+    uint64_t swap_dropped;        /* swapped entries munmap/teardown let go   */
+    uint64_t fork_swapped_in;     /* pages fork brought back to share them    */
+    uint64_t fork_swapped_failed; /* ...and could not: the fork failed        */
+    uint64_t swap_read_checked;   /* page-ins compared with what was written   */
+    uint64_t swap_read_mismatch;  /* ...that differed. MUST BE ZERO            */
     uint64_t swap_outs;
     uint64_t swap_used;
 

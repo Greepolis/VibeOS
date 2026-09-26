@@ -1,0 +1,21 @@
+# Target source: user/prog/svc_reclaim.c
+#
+# The reclaim load's verdicts, as the gate reads them. Run with
+# SABOTAGE_VERIFY=scripts/dev/verify-boot.sh.
+#
+#  1. the read-back expects a word nobody wrote: every page "changed".
+#     Expect reclaim_load_failed.
+#  2. it never says it finished. Expect reclaim_load_did_not_finish.
+#
+# reclaim_load_never_ran is in services-press.txt: it needs init.c.
+
+### the read-back expects a word nobody wrote
+--- old
+            if (w[0] != stamp(i, p) || w[256] != ~stamp(i, p)) {
++++ new
+            if (w[0] != stamp(i, p) + 1u || w[256] != ~stamp(i, p)) {
+
+### svc-reclaim never says it finished
+--- old
+    say4("RECLAIM_OK blocks=", got, " past_low=", past, 0, 0, 0, 0);
++++ new

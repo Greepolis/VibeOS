@@ -1,0 +1,16 @@
+# Target source: kernel/arch/x86_64/arch_hw.c
+#
+# The per-slot check on every page-in: a hash of what was written, compared with
+# what comes back. It exists because QEMU's vvfat - the gate's boot disk until
+# M-064 - returned slot 0 or slot 1 for every slot past the second, and nothing
+# noticed until processes died of each other's data. Run with
+# SABOTAGE_VERIFY=scripts/dev/verify-boot.sh.
+#
+#  1. the hash is recorded wrong, as a medium that does not keep what it is
+#     given would look. Expect swap_read_mismatch=N.
+
+### the slot's hash is not what was written
+--- old
+        __atomic_store_n(&g_swap_hash[slot], h, __ATOMIC_RELEASE);
++++ new
+        __atomic_store_n(&g_swap_hash[slot], h ^ 2u, __ATOMIC_RELEASE);

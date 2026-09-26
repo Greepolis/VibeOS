@@ -51,6 +51,7 @@
 79 getcwd
 83 mkdir
 87 unlink
+99 sysinfo
 102 getuid
 104 getgid
 105 setuid

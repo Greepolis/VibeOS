@@ -266,6 +266,10 @@ int vibeos_rmap_remove(uint64_t frame_phys, uint64_t root_phys, uint64_t va) {
      * which is the same shape as the defect this subsystem keeps producing,
      * seen from the other end. */
     g_stats.missing_remove++;
+    g_stats.missing_phys = frame_phys;
+    g_stats.missing_root = root_phys;
+    g_stats.missing_va = va;
+    g_stats.missing_caller = (uint64_t)(uintptr_t)__builtin_return_address(0);
     rmap_unlock();
     return -1;
 }
