@@ -9067,6 +9067,23 @@ static int st_dev_read(void *ctx, uint64_t lba, void *buf)
     return 0;
 }
 
+/* The four filesystems in kernel/fs/ declare themselves (VIBEOS_FS_DRIVER);
+ * the kernel collects them from a linker section, which a host test does not
+ * walk - so a test registers them, as the arch layer would. */
+const vibeos_fs_driver_t *vibeos_ext2_fs_driver(void);
+const vibeos_fs_driver_t *vibeos_ntfs_fs_driver(void);
+const vibeos_fs_driver_t *vibeos_exfat_fs_driver(void);
+const vibeos_fs_driver_t *vibeos_iso9660_fs_driver(void);
+
+static void st_register_filesystems(void)
+{
+    vibeos_storage_reset_drivers();
+    (void)vibeos_storage_register(vibeos_ext2_fs_driver());
+    (void)vibeos_storage_register(vibeos_ntfs_fs_driver());
+    (void)vibeos_storage_register(vibeos_exfat_fs_driver());
+    (void)vibeos_storage_register(vibeos_iso9660_fs_driver());
+}
+
 static int st_scan(vibeos_storage_t *st, vibeos_blockcache_t *bc,
                    vibeos_blockdev_t *dev, vibeos_block_slot_t *slots,
                    uint8_t *storage, uint32_t slot_count)
@@ -9086,14 +9103,31 @@ static int st_scan(vibeos_storage_t *st, vibeos_blockcache_t *bc,
     return vibeos_storage_scan(st, bc, ST_SECTORS);
 }
 
+static int st_scan_filesystems(vibeos_storage_t *st, vibeos_blockcache_t *bc,
+                               vibeos_blockdev_t *dev, vibeos_block_slot_t *slots,
+                               uint8_t *storage, uint32_t slot_count)
+{
+    st_register_filesystems();
+    return st_scan(st, bc, dev, slots, storage, slot_count);
+}
+
 /* The storage driver table (C7): what the boot volume and the formatting
  * exercise ask for by name, and what the arch layer fills from a linker
  * section. A driver the scan could not call is refused whole. */
 static int st_reg_probe(vibeos_blockcache_t *c, uint64_t l) { (void)c; (void)l; return -1; }
-static int st_reg_mount(vibeos_fsmount_t *o, vibeos_blockcache_t *c, uint64_t l)
+static int st_reg_mount(vibeos_fsmount_t *o, vibeos_blockcache_t *c, uint64_t l,
+                        uint64_t n, void *st)
 {
-    (void)o; (void)c; (void)l;
+    (void)o; (void)c; (void)l; (void)n; (void)st;
     return -1;
+}
+
+/* A driver that claims anything - for asking which of two is asked first. */
+static int st_claim_mount(vibeos_fsmount_t *o, vibeos_blockcache_t *c, uint64_t l,
+                          uint64_t n, void *st)
+{
+    (void)o; (void)c; (void)l; (void)n; (void)st;
+    return 0;
 }
 
 static int test_storage_driver_registry(void)
@@ -9116,6 +9150,30 @@ static int test_storage_driver_registry(void)
     ok &= vibeos_storage_driver(0) == 0;
     vibeos_storage_reset_drivers();
     ok &= vibeos_storage_driver("fat") == 0;
+
+    /* The scan's order is each driver's `order`, not the order they were
+     * registered in - the linker section they arrive in has none. Registered
+     * late-first, the early one must still be asked first: that is what keeps
+     * NTFS and exFAT ahead of FAT, whose probe would claim their volumes. */
+    {
+        static const vibeos_fs_driver_t late = { "late", 0, st_claim_mount, 0, 50u };
+        static const vibeos_fs_driver_t early = { "early", 0, st_claim_mount, 0, 10u };
+        static vibeos_storage_t st;
+        vibeos_blockcache_t bc;
+        vibeos_blockdev_t dev;
+        vibeos_block_slot_t slots[8];
+        static uint8_t mem[8][VIBEOS_BLOCK_SIZE];
+
+        ok &= vibeos_storage_register(&late) == 0;
+        ok &= vibeos_storage_register(&early) == 0;
+        g_st_partitioned = 0;
+        g_st_garbage = 1;
+        ok &= st_scan(&st, &bc, &dev, slots, &mem[0][0], 8u) == 0;
+        ok &= st.volume_count == 1u && st.volume[0].fs_name != 0 &&
+              strcmp(st.volume[0].fs_name, "early") == 0;
+        g_st_garbage = 0;
+        vibeos_storage_reset_drivers();
+    }
     return ok ? 0 : -1;
 }
 
@@ -9131,7 +9189,7 @@ static int test_storage_partitioned(void)
 
     g_st_partitioned = 1;
     g_st_garbage = 0;
-    if (st_scan(&st, &bc, &dev, slots, &mem[0][0], 8u) != 0) {
+    if (st_scan_filesystems(&st, &bc, &dev, slots, &mem[0][0], 8u) != 0) {
         return -1;
     }
     if (st.volume_count != 1u || st.mounted_count != 1u) {
@@ -9167,7 +9225,7 @@ static int test_storage_unpartitioned(void)
      * must not need a partition table to be found. */
     g_st_partitioned = 0;
     g_st_garbage = 0;
-    if (st_scan(&st, &bc, &dev, slots, &mem[0][0], 8u) != 0) {
+    if (st_scan_filesystems(&st, &bc, &dev, slots, &mem[0][0], 8u) != 0) {
         return -1;
     }
     if (st.volume_count != 1u || st.mounted_count != 1u) {
@@ -9194,7 +9252,7 @@ static int test_storage_claims_nothing(void)
      * it would look like a mounted volume returning wrong bytes. */
     g_st_partitioned = 0;
     g_st_garbage = 1;
-    if (st_scan(&st, &bc, &dev, slots, &mem[0][0], 8u) != 0) {
+    if (st_scan_filesystems(&st, &bc, &dev, slots, &mem[0][0], 8u) != 0) {
         return -1;   /* the scan itself must still complete */
     }
     if (st.mounted_count != 0u) {

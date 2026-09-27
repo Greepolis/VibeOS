@@ -9,71 +9,33 @@
  * multi-kilobyte stack buffer. */
 #define STORAGE_GPT_ENTRY_SECTORS 4u
 
-static int storage_try_ext2(vibeos_volume_t *v, vibeos_blockcache_t *bc)
-{
-    if (vibeos_ext2_mount(&v->ext2, bc, v->first_lba) != 0) {
-        return -1;
-    }
-    return vibeos_fs_mount(&v->mount, vibeos_ext2_ops(), &v->ext2, "ext2");
-}
-
-static int storage_try_ntfs(vibeos_volume_t *v, vibeos_blockcache_t *bc)
-{
-    if (vibeos_ntfs_mount(&v->ntfs, bc, v->first_lba) != 0) {
-        return -1;
-    }
-    v->ntfs.part_sectors = v->sector_count;   /* the authoritative bound (H-029, M-047) */
-    return vibeos_fs_mount(&v->mount, vibeos_ntfs_ops(), &v->ntfs, "ntfs");
-}
-
-static int storage_try_exfat(vibeos_volume_t *v, vibeos_blockcache_t *bc)
-{
-    if (vibeos_exfat_mount(&v->exfat, bc, v->first_lba) != 0) {
-        return -1;
-    }
-    v->exfat.part_sectors = v->sector_count;   /* the authoritative bound (H-029) */
-    return vibeos_fs_mount(&v->mount, vibeos_exfat_ops(), &v->exfat, "exfat");
-}
-
-static int storage_try_iso(vibeos_volume_t *v, vibeos_blockcache_t *bc)
-{
-    if (vibeos_iso9660_mount(&v->iso, bc, v->first_lba) != 0) {
-        return -1;
-    }
-    v->iso.part_sectors = v->sector_count;   /* the authoritative bound (H-029) */
-    return vibeos_fs_mount(&v->mount, vibeos_iso9660_ops(), &v->iso, "iso9660");
-}
-
-typedef int (*storage_probe_fn)(vibeos_volume_t *v, vibeos_blockcache_t *bc);
-
-static const struct {
-    const char *name;
-    storage_probe_fn probe;
-} g_probes[] = {
-    /* NTFS and exFAT first: both live in a FAT-shaped boot sector and are the
-     * two most likely to be mistaken for something else, so if either of them
-     * is going to claim a volume it should do it where the test can see it.
-     * ISO9660 last - its descriptor sits far enough into the volume that a
-     * probe costs a real read. */
-    { "ntfs", storage_try_ntfs },
-    { "exfat", storage_try_exfat },
-    { "ext2", storage_try_ext2 },
-    { "iso9660", storage_try_iso },
-};
-
-/* Drivers that live outside this file. See the header for why FAT is one. */
+/* Every filesystem driver, kept in `order`. */
 static const vibeos_fs_driver_t *g_registered[VIBEOS_STORAGE_MAX_REGISTERED];
 static uint32_t g_registered_count;
 
 int vibeos_storage_register(const vibeos_fs_driver_t *drv)
 {
-    if (drv == 0 || drv->name == 0 || drv->probe == 0 || drv->mount == 0) {
+    /* A probe is optional - a driver whose mount refuses anything it does not
+     * recognise needs none - but a mount is not: a driver the scan cannot
+     * mount through is refused whole. */
+    if (drv == 0 || drv->name == 0 || drv->mount == 0) {
         return -1;
     }
     if (g_registered_count >= VIBEOS_STORAGE_MAX_REGISTERED) {
         return -1;
     }
-    g_registered[g_registered_count++] = drv;
+    /* Inserted in order, after any of equal order, so the table is the scan's
+     * order whatever order the linker - or a test - registered them in. */
+    {
+        uint32_t at = g_registered_count;
+
+        while (at > 0u && g_registered[at - 1u]->order > drv->order) {
+            g_registered[at] = g_registered[at - 1u];
+            at--;
+        }
+        g_registered[at] = drv;
+        g_registered_count++;
+    }
     return 0;
 }
 
@@ -105,29 +67,32 @@ static void storage_probe_volume(vibeos_volume_t *v, vibeos_blockcache_t *bc)
     uint32_t i;
 
     v->fs_name = 0;
-    for (i = 0; i < sizeof(g_probes) / sizeof(g_probes[0]); i++) {
-        if (g_probes[i].probe(v, bc) == 0) {
-            v->fs_name = g_probes[i].name;
-            return;
-        }
-    }
-    /* Registered drivers last, and that ordering is the one thing about this
-     * loop that is a decision rather than an accident: NTFS and exFAT live in
-     * boot sectors that *are* FAT boot sectors with different fields, so a FAT
-     * probe that checks only the jump and the signature claims an exFAT volume
-     * and mounts it wrong. The narrower probe has to go first. */
+    /* In the table's order, which is each driver's `order`: NTFS and exFAT
+     * live in boot sectors that *are* FAT boot sectors with different fields,
+     * so a FAT probe that checks only the jump and the signature claims an
+     * exFAT volume and mounts it wrong. The narrower probe has to go first. */
     for (i = 0; i < g_registered_count; i++) {
-        if (g_registered[i]->probe(bc, v->first_lba) != 0) {
+        const vibeos_fs_driver_t *d = g_registered[i];
+
+        if (d->probe && d->probe(bc, v->first_lba) != 0) {
             continue;
         }
-        if (g_registered[i]->mount(&v->mount, bc, v->first_lba) == 0) {
-            v->fs_name = g_registered[i]->name;
+        /* Zeroed before every attempt: the drivers share this storage now,
+         * and a refused mount leaves whatever it had filled in - so the next
+         * driver would start from the last one's fields, which is the trap of
+         * a struct filled field by field. Each used to get a member of its
+         * own, zero from the start. */
+        memset(v->fs_state, 0, sizeof(v->fs_state));
+        if (d->mount(&v->mount, bc, v->first_lba, v->sector_count,
+                     v->fs_state) == 0) {
+            v->fs_name = d->name;
             return;
         }
-        /* Probed yes and would not mount. Worth separating from "nobody
-         * claimed it": one is a volume of a kind nothing here implements, the
-         * other is a driver that recognised its own filesystem and failed on
-         * it, which is a defect. */
+        /* A driver with a probe that said yes and then would not mount is
+         * worth separating from "nobody claimed it": one is a volume of a kind
+         * nothing here implements, the other a driver that recognised its own
+         * filesystem and failed on it, which is a defect. A driver with no
+         * probe refuses through its mount, and that is simply "not mine". */
         v->fs_name = 0;
     }
 }

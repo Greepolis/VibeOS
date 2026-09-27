@@ -200,8 +200,11 @@ static int fat_probe(vibeos_blockcache_t *cache, uint64_t first_lba) {
  * asks for when it is looking at a whole disk. Anything else mounts a second
  * volume and hands back the handle every operation on it will carry. */
 static int fat_scan_mount(vibeos_fsmount_t *out, vibeos_blockcache_t *cache,
-                          uint64_t first_lba) {
+                          uint64_t first_lba, uint64_t sectors, void *state) {
     void *vol;
+
+    (void)sectors;   /* FAT reads its own geometry and keeps its own volumes */
+    (void)state;
 
     if (first_lba == 0ull) {
         return fat_vfs_mount_boot(out);
@@ -372,6 +375,7 @@ static int fat_format(vibeos_blockcache_t *cache, uint64_t first_lba,
  * through vibeos_storage_driver("fat") or the scan; there used to be a register
  * function, an ops accessor and two exported function pointers, one for each. */
 static const vibeos_fs_driver_t g_fat_driver = {
-    "fat", fat_probe, fat_scan_mount, fat_format
+    "fat", fat_probe, fat_scan_mount, fat_format,
+    50u   /* after NTFS and exFAT, whose boot sectors look like FAT's */
 };
 VIBEOS_FS_DRIVER(g_fat_driver);

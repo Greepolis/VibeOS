@@ -1,0 +1,18 @@
+# Target source: kernel/fs/ext2.c
+#
+# A filesystem in kernel/fs/ reaches the machine only by declaring itself: it
+# is in VIBEOS_KERNEL_DRIVER_SOURCES, compiled into the image directly, and the
+# arch layer registers what the linker collected. Nothing names it. Run with
+# SABOTAGE_VERIFY=scripts/dev/verify-boot.sh.
+#
+#  1. ext2 does not declare itself. Expect ext2:FAILED:_mount - the loop-device
+#     image asks for the driver by name and there is none.
+#
+# The same thing happens, silently, to a driver left in the core *archive*: an
+# archive member is linked only when something references it, and a driver
+# that registers is referenced by nothing. That is why these four moved lists.
+
+### ext2 does not declare itself
+--- old
+VIBEOS_FS_DRIVER(g_ext2_driver);
++++ new

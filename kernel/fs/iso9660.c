@@ -5,6 +5,7 @@
  * driver is a fraction of the size.
  */
 
+#include "vibeos/storage.h"
 #include "vibeos/iso9660.h"
 #include "vibeos/mbz.h"
 
@@ -337,4 +338,38 @@ static const vibeos_fs_ops_t g_iso_ops = {
 
 const vibeos_fs_ops_t *vibeos_iso9660_ops(void) {
     return &g_iso_ops;
+}
+
+/* ---- the storage scan's view of this driver (C7) -------------------------
+ *
+ * This file is the whole of what adding iso9660 cost: the scan used to name it
+ * in a probe table of its own, with a mount wrapper and a member of
+ * vibeos_volume_t for its state. Now it declares itself, the volume supplies
+ * the state, and the order it is tried in is the number below. */
+_Static_assert(sizeof(vibeos_iso9660_t) <= VIBEOS_FS_STATE_BYTES,
+               "iso9660's state must fit the storage a volume supplies");
+
+static int iso9660_driver_mount(vibeos_fsmount_t *out, vibeos_blockcache_t *bc,
+                              uint64_t first_lba, uint64_t sectors, void *state)
+{
+    vibeos_iso9660_t *fs = (vibeos_iso9660_t *)state;
+
+    if (fs == 0 || vibeos_iso9660_mount(fs, bc, first_lba) != 0) {
+        return -1;
+    }
+    fs->part_sectors = sectors;   /* the authoritative bound (H-029) */
+    return vibeos_fs_mount(out, vibeos_iso9660_ops(), fs, "iso9660");
+}
+
+static const vibeos_fs_driver_t g_iso9660_driver = {
+    "iso9660", 0, iso9660_driver_mount, 0, 40u
+};
+VIBEOS_FS_DRIVER(g_iso9660_driver);
+
+/* For a host test, which does not walk the linker section and registers the
+ * drivers itself. A function rather than an exported object, so the
+ * descriptor stays this file's own state. */
+const vibeos_fs_driver_t *vibeos_iso9660_fs_driver(void)
+{
+    return &g_iso9660_driver;
 }

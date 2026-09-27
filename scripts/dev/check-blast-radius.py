@@ -88,10 +88,15 @@ SCOPE = (("kernel",), ("include",), ("cmake",))
 # recorded decision, in the change that earns it.
 POINTS = {
     "filesystem (direct)": (
-        "kernel/fs/ext2.c", r"vibeos_ext2_[A-Za-z0-9_]+", 4,
-        "named in g_probes[] in storage.c, with a mount wrapper there and a "
-        "member in vibeos_volume_t. This is the path four of the five "
-        "filesystems took, and the one the plan claimed cost 1 file."),
+        "kernel/fs/ext2.c", r"vibeos_ext2_[A-Za-z0-9_]+", 1,
+        "**1 since C7's last step**: ext2, ntfs, exfat and iso9660 declare "
+        "themselves with VIBEOS_FS_DRIVER, state their place in the scan as "
+        "an `order`, and keep their state in storage the volume supplies. "
+        "Was 4 - named in g_probes[] in storage.c with a mount wrapper there, "
+        "a member of vibeos_volume_t each, and io_bringup.c naming each "
+        "driver's state, mount and ops for the loop-device images. The row "
+        "keeps its name so the history reads; there is no longer a direct "
+        "path."),
     "filesystem (registered)": (
         "kernel/arch/x86_64/fat_vfs.c",
         r"vibeos_x86_64_fat_(?:vfs_[A-Za-z0-9_]+|ops|register_driver)"

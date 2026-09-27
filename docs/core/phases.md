@@ -572,8 +572,10 @@ dispatches interrupts, serves the input, network, block and display classes, and
 provides driver locks. Input device, network interface, block driver, registered
 filesystem and display all measure **1**. The GUI is `kernel/io/gui.c` with the
 seven parts, a torture against a model under real threads, and four case files.
-Not 1: filesystem (direct) at 4 - ext2, NTFS, exFAT and ISO9660 are still in
-`storage.c`'s probe table - and syscall at 2 by decision. See `implementation_progress/core_c7_devices.md`.
+Not 1: syscall at 2 by decision. Filesystem (direct) was 4 - ext2, NTFS, exFAT
+and ISO9660 in `storage.c`'s probe table - and is **1 since 2026-09-27**: each
+declares itself with `VIBEOS_FS_DRIVER` and an `order`, and the volume supplies
+its state. See `implementation_progress/core_c7_devices.md`.
 
 ---
 

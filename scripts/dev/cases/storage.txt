@@ -19,20 +19,11 @@
 
 ### a driver that refused the volume is recorded as having mounted it
 --- old
-    v->fs_name = 0;
-    for (i = 0; i < sizeof(g_probes) / sizeof(g_probes[0]); i++) {
-        if (g_probes[i].probe(v, bc) == 0) {
-            v->fs_name = g_probes[i].name;
-            return;
-        }
-    }
+        if (d->mount(&v->mount, bc, v->first_lba, v->sector_count,
+                     v->fs_state) == 0) {
 +++ new
-    v->fs_name = 0;
-    for (i = 0; i < sizeof(g_probes) / sizeof(g_probes[0]); i++) {
-        (void)g_probes[i].probe(v, bc);
-        v->fs_name = g_probes[i].name;
-        return;
-    }
+        if ((d->mount(&v->mount, bc, v->first_lba, v->sector_count,
+                     v->fs_state), 1)) {
 
 ### mounted volumes not counted
 --- old
@@ -65,6 +56,6 @@
 
 ### a driver the scan could not mount through is registered (C7)
 --- old
-    if (drv == 0 || drv->name == 0 || drv->probe == 0 || drv->mount == 0) {
+    if (drv == 0 || drv->name == 0 || drv->mount == 0) {
 +++ new
-    if (drv == 0 || drv->name == 0 || drv->probe == 0) {
+    if (drv == 0 || drv->name == 0) {

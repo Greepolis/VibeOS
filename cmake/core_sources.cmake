@@ -46,10 +46,6 @@ set(VIBEOS_KERNEL_CORE_SOURCES
     kernel/fs/fdtable.c
     kernel/ipc/pipe.c
     kernel/fs/partition.c
-    kernel/fs/ext2.c
-    kernel/fs/iso9660.c
-    kernel/fs/exfat.c
-    kernel/fs/ntfs.c
     kernel/fs/storage.c
     kernel/mm/pmm.c
     kernel/net/inet.c
@@ -119,6 +115,10 @@ set(VIBEOS_TLS_SOURCES
 # them directly, where every object is linked whether or not it is named.
 set(VIBEOS_KERNEL_DRIVER_SOURCES
     kernel/io/gui.c
+    kernel/fs/ext2.c
+    kernel/fs/iso9660.c
+    kernel/fs/exfat.c
+    kernel/fs/ntfs.c
 )
 
 # The freestanding half of the kernel image: hardware bring-up that host tests

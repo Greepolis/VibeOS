@@ -405,12 +405,50 @@ configuration - reports the same error CI did (M-053).
 | block driver | 4 | 1 |
 | filesystem (registered) | 4 | 1 |
 | display | 3 | 1 |
-| filesystem (direct) | 4 | 4 |
+| filesystem (direct) | 4 | 1 (2026-09-27) |
 | syscall | 2 | 2 |
 
-The objective said every row. Two are not 1, and neither is a device: ext2,
-NTFS, exFAT and ISO9660 are compiled into `storage.c`'s probe table with a
-member each in `vibeos_volume_t`, and a syscall is 2 by a recorded decision (its
-row, and its declaration in `abi.h`). Moving the four filesystems onto
-`VIBEOS_FS_DRIVER` is the same work step 3b did for FAT, times four; it is left
-for the refactor that needs it rather than folded into this one.
+The objective said every row. One is not 1, by a recorded decision: a syscall
+is 2 (its row, and its declaration in `abi.h`). The other - the four
+filesystems compiled into `storage.c` - was closed afterwards; see the last
+section.
+
+## The last row: the four filesystems (2026-09-27)
+
+ext2, NTFS, exFAT and ISO9660 declare themselves with `VIBEOS_FS_DRIVER`, as
+FAT did at step 3b, and nothing names them. They were named in four files:
+`storage.c`'s probe table with a mount wrapper each, a member each in
+`vibeos_volume_t`, and `io_bringup.c`, which mounted the loop-device images
+through each driver's state, mount and ops. Now:
+
+- **The volume supplies the state.** `vibeos_volume_t` has one opaque
+  `fs_state` (`VIBEOS_FS_STATE_BYTES`, sized by NTFS's 4160) instead of a member
+  per filesystem, and each driver asserts at compile time that its state fits.
+  The caller keeping the storage is the block layer's existing rule - a driver
+  with a pool of its own would have run out in the host tests, which scan more
+  than once.
+- **Each driver states its order.** NTFS 10, exFAT 20, ext2 30, ISO9660 40,
+  FAT 50. The linker section they arrive in has no order, and the order is a
+  correctness decision: NTFS and exFAT boot sectors *are* FAT boot sectors, and
+  FAT's probe would claim them. Registration inserts in order.
+- **The volume's length reaches the driver**, as `mount`'s `sectors` - the
+  authoritative bound of H-029, which the wrappers used to set on each
+  driver's struct.
+- **A probe is optional.** These four refuse through their mount; a refusing
+  mount is "not mine", not "mine and broken".
+- **They moved from the core archive to `VIBEOS_KERNEL_DRIVER_SOURCES`.** A
+  registered driver in an archive is linked only if something references it,
+  and nothing does - the GUI's lesson, again.
+
+Two things went wrong on the way and both are cases now: registration still
+refused a driver without a probe, so all four were refused (on a boot, a panic
+at registration); and the host tests had to register the four themselves,
+because they do not walk the linker section. The scan zeroes the shared state
+before each attempt, because a refused mount leaves its fields behind.
+
+`check-blast-radius.py`: filesystem (direct) **4 -> 1**, total 11 -> 8. Cases
+`fs-registry.txt` (host) and `fs-ext2-registers.txt` (boot).
+
+Noticed and left: the boot gate asserts the loop-device images of ext2 and
+ISO9660 by name, not NTFS's or exFAT's. They are mounted and reported every
+boot; nothing fails if they stop working.

@@ -20,14 +20,17 @@
 #include <stdint.h>
 
 #include "vibeos/blockdev.h"
-#include "vibeos/exfat.h"
-#include "vibeos/ext2.h"
-#include "vibeos/iso9660.h"
-#include "vibeos/ntfs.h"
 #include "vibeos/partition.h"
 #include "vibeos/vfs.h"
 
 #define VIBEOS_STORAGE_MAX_VOLUMES 8u
+
+/* Room for one mounted filesystem's own state, which the caller supplies - the
+ * volume, or whoever mounts a driver by name. The largest today is NTFS's,
+ * 4160 bytes because it carries a sector buffer; each driver asserts at compile
+ * time that its state fits, so growing one past this is a build error rather
+ * than an overrun. */
+#define VIBEOS_FS_STATE_BYTES 4608u
 
 typedef struct {
     uint64_t first_lba;
@@ -35,14 +38,10 @@ typedef struct {
     const char *fs_name;         /* 0 when nothing recognised the volume */
     vibeos_fsmount_t mount;
 
-    /* One driver's state per volume. Which member is live is decided by
-     * `fs_name`; they are kept apart rather than in a union so that a stray
-     * pointer into a dead driver's state is a bug that shows up as wrong data
-     * rather than as another driver's fields. */
-    vibeos_ext2_t ext2;
-    vibeos_ntfs_t ntfs;
-    vibeos_exfat_t exfat;
-    vibeos_iso9660_t iso;
+    /* The mounted driver's own state, whatever driver it is. This used to be
+     * one member per filesystem - ext2, ntfs, exfat and iso9660, each named
+     * here - which is why adding a filesystem edited this header (C7). */
+    uint64_t fs_state[VIBEOS_FS_STATE_BYTES / 8u];
 } vibeos_volume_t;
 
 typedef struct {
@@ -53,43 +52,33 @@ typedef struct {
     uint32_t mounted_count;      /* of those, the ones a driver claimed */
 } vibeos_storage_t;
 
-/* A driver that does not live in kernel/fs/, joining the scan.
+/* A filesystem driver, joining the scan.
  *
- * The four compiled in here - ext2, ntfs, exfat, iso9660 - are named directly
- * because this file can see them. FAT cannot be: it lives in the arch layer,
- * and kernel/fs depending on kernel/arch would invert the layering the whole
- * storage refactor is about. So it registers instead.
- *
- * That is not a workaround, it is the measurement from I4b steps 1 and 2 being
- * acted on. The scan found a 504 MB volume, correctly identified it as FAT,
- * and reported `fs=none` - because the only FAT driver on the machine was
- * invisible to the code doing the identifying.
- *
- * ## probe and mount are separate, deliberately
- *
- * They were the same function: each driver's "probe" was its mount, and a
- * volume was claimed by whoever mounted it first. Two things wrong with that.
- * A driver that gets half way through a mount and then fails has left state
- * behind that nobody unwinds, and every probe pays a full mount - which for
- * ISO9660 is a real read a long way into the volume.
- *
- * A probe reads and answers. It must not write, and it must not keep anything.
- *
- * ## Order matters and is recorded
+ * Every filesystem registers - ext2, ntfs, exfat, iso9660 and FAT alike - and
+ * nothing here names one. The four in kernel/fs/ used to be compiled into this
+ * file's probe table, each with a mount wrapper here and a member of its own in
+ * vibeos_volume_t, so adding a filesystem edited four files; FAT, which lives in
+ * the arch layer, was the only one that registered (C7).
  *
  * NTFS and exFAT are tried before FAT, and that is not a preference. Both live
  * in a boot sector that *is* a FAT boot sector with different fields, so a FAT
  * probe checking only the jump instruction and the 0xAA55 signature says yes
  * to an exFAT volume and mounts it wrong - which looks like a working mount
- * until a file comes back as nonsense. The narrower probe goes first.
+ * until a file comes back as nonsense. The narrower probe goes first, which is
+ * what each driver's `order` says.
  */
 typedef struct {
     const char *name;
-    /* Does this volume look like ours? Reads only; keeps nothing. */
+    /* Does this volume look like ours? Reads only; keeps nothing. May be null
+     * for a driver whose mount reads its own magic and refuses anything else -
+     * then a refusing mount means "not mine", not "mine and broken". */
     int (*probe)(vibeos_blockcache_t *cache, uint64_t first_lba);
-    /* Only called after probe said yes. */
+    /* Only called after probe said yes, when there is a probe. `sectors` is
+     * the volume's length - the authoritative bound on every read the driver
+     * makes (H-029) - and `state` is VIBEOS_FS_STATE_BYTES of storage the
+     * caller keeps for as long as the mount lives. */
     int (*mount)(vibeos_fsmount_t *out, vibeos_blockcache_t *cache,
-                 uint64_t first_lba);
+                 uint64_t first_lba, uint64_t sectors, void *state);
     /* Put an empty filesystem of this kind on the volume. May be NULL for a
      * driver that cannot create one - iso9660 never will.
      *
@@ -100,11 +89,16 @@ typedef struct {
      * own sector cache - were both found the expensive way. */
     int (*format)(vibeos_blockcache_t *cache, uint64_t first_lba,
                   uint64_t sectors);
+    /* Where in the scan this driver is tried; lower first. A decision, not a
+     * preference: NTFS and exFAT live in boot sectors that *are* FAT boot
+     * sectors, so they must be asked before FAT is. Stated by each driver
+     * because the linker section they arrive in has no order of its own. */
+    uint32_t order;
 } vibeos_fs_driver_t;
 
-/* Registered drivers are tried after the compiled-in ones. A small fixed
- * table: this runs at boot on a path that must not allocate. */
-#define VIBEOS_STORAGE_MAX_REGISTERED 4u
+/* Every driver the scan knows, in `order`. A small fixed table: this runs at
+ * boot on a path that must not allocate. */
+#define VIBEOS_STORAGE_MAX_REGISTERED 8u
 
 int vibeos_storage_register(const vibeos_fs_driver_t *drv);
 

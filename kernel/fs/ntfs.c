@@ -7,6 +7,7 @@
  * returning none, because a caller cannot tell which case it got.
  */
 
+#include "vibeos/storage.h"
 #include "vibeos/ntfs.h"
 #include "vibeos/mbz.h"
 
@@ -870,4 +871,38 @@ static const vibeos_fs_ops_t g_ntfs_ops = {
 
 const vibeos_fs_ops_t *vibeos_ntfs_ops(void) {
     return &g_ntfs_ops;
+}
+
+/* ---- the storage scan's view of this driver (C7) -------------------------
+ *
+ * This file is the whole of what adding ntfs cost: the scan used to name it
+ * in a probe table of its own, with a mount wrapper and a member of
+ * vibeos_volume_t for its state. Now it declares itself, the volume supplies
+ * the state, and the order it is tried in is the number below. */
+_Static_assert(sizeof(vibeos_ntfs_t) <= VIBEOS_FS_STATE_BYTES,
+               "ntfs's state must fit the storage a volume supplies");
+
+static int ntfs_driver_mount(vibeos_fsmount_t *out, vibeos_blockcache_t *bc,
+                              uint64_t first_lba, uint64_t sectors, void *state)
+{
+    vibeos_ntfs_t *fs = (vibeos_ntfs_t *)state;
+
+    if (fs == 0 || vibeos_ntfs_mount(fs, bc, first_lba) != 0) {
+        return -1;
+    }
+    fs->part_sectors = sectors;   /* the authoritative bound (H-029, M-047) */
+    return vibeos_fs_mount(out, vibeos_ntfs_ops(), fs, "ntfs");
+}
+
+static const vibeos_fs_driver_t g_ntfs_driver = {
+    "ntfs", 0, ntfs_driver_mount, 0, 10u
+};
+VIBEOS_FS_DRIVER(g_ntfs_driver);
+
+/* For a host test, which does not walk the linker section and registers the
+ * drivers itself. A function rather than an exported object, so the
+ * descriptor stays this file's own state. */
+const vibeos_fs_driver_t *vibeos_ntfs_fs_driver(void)
+{
+    return &g_ntfs_driver;
 }

@@ -7,6 +7,7 @@
  * worth noticing: the interface's node is carrying more meaning each time.
  */
 
+#include "vibeos/storage.h"
 #include "vibeos/exfat.h"
 #include "vibeos/mbz.h"
 
@@ -419,4 +420,38 @@ static const vibeos_fs_ops_t g_exfat_ops = {
 
 const vibeos_fs_ops_t *vibeos_exfat_ops(void) {
     return &g_exfat_ops;
+}
+
+/* ---- the storage scan's view of this driver (C7) -------------------------
+ *
+ * This file is the whole of what adding exfat cost: the scan used to name it
+ * in a probe table of its own, with a mount wrapper and a member of
+ * vibeos_volume_t for its state. Now it declares itself, the volume supplies
+ * the state, and the order it is tried in is the number below. */
+_Static_assert(sizeof(vibeos_exfat_t) <= VIBEOS_FS_STATE_BYTES,
+               "exfat's state must fit the storage a volume supplies");
+
+static int exfat_driver_mount(vibeos_fsmount_t *out, vibeos_blockcache_t *bc,
+                              uint64_t first_lba, uint64_t sectors, void *state)
+{
+    vibeos_exfat_t *fs = (vibeos_exfat_t *)state;
+
+    if (fs == 0 || vibeos_exfat_mount(fs, bc, first_lba) != 0) {
+        return -1;
+    }
+    fs->part_sectors = sectors;   /* the authoritative bound (H-029) */
+    return vibeos_fs_mount(out, vibeos_exfat_ops(), fs, "exfat");
+}
+
+static const vibeos_fs_driver_t g_exfat_driver = {
+    "exfat", 0, exfat_driver_mount, 0, 20u
+};
+VIBEOS_FS_DRIVER(g_exfat_driver);
+
+/* For a host test, which does not walk the linker section and registers the
+ * drivers itself. A function rather than an exported object, so the
+ * descriptor stays this file's own state. */
+const vibeos_fs_driver_t *vibeos_exfat_fs_driver(void)
+{
+    return &g_exfat_driver;
 }

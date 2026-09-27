@@ -6525,7 +6525,7 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
              * system partition, which UEFI requires to be FAT. A first_lba of
              * zero is that driver's "the boot volume" (C7). */
             const vibeos_fs_driver_t *fat = vibeos_storage_driver("fat");
-            if (fat && fat->mount(&g_rootfs, 0, 0ull) == 0) {
+            if (fat && fat->mount(&g_rootfs, 0, 0ull, 0ull, 0) == 0) {
                 g_boot_disk_mounted = 1;
                 break;
             }

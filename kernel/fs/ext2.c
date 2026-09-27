@@ -7,6 +7,7 @@
  * back with the wrong contents somewhere past the twelfth block.
  */
 
+#include "vibeos/storage.h"
 #include "vibeos/ext2.h"
 #include "vibeos/mbz.h"
 
@@ -489,4 +490,38 @@ static const vibeos_fs_ops_t g_ext2_ops = {
 
 const vibeos_fs_ops_t *vibeos_ext2_ops(void) {
     return &g_ext2_ops;
+}
+
+/* ---- the storage scan's view of this driver (C7) -------------------------
+ *
+ * This file is the whole of what adding ext2 cost: the scan used to name it
+ * in a probe table of its own, with a mount wrapper and a member of
+ * vibeos_volume_t for its state. Now it declares itself, the volume supplies
+ * the state, and the order it is tried in is the number below. */
+_Static_assert(sizeof(vibeos_ext2_t) <= VIBEOS_FS_STATE_BYTES,
+               "ext2's state must fit the storage a volume supplies");
+
+static int ext2_driver_mount(vibeos_fsmount_t *out, vibeos_blockcache_t *bc,
+                              uint64_t first_lba, uint64_t sectors, void *state)
+{
+    vibeos_ext2_t *fs = (vibeos_ext2_t *)state;
+
+    (void)sectors;
+    if (fs == 0 || vibeos_ext2_mount(fs, bc, first_lba) != 0) {
+        return -1;
+    }
+    return vibeos_fs_mount(out, vibeos_ext2_ops(), fs, "ext2");
+}
+
+static const vibeos_fs_driver_t g_ext2_driver = {
+    "ext2", 0, ext2_driver_mount, 0, 30u
+};
+VIBEOS_FS_DRIVER(g_ext2_driver);
+
+/* For a host test, which does not walk the linker section and registers the
+ * drivers itself. A function rather than an exported object, so the
+ * descriptor stays this file's own state. */
+const vibeos_fs_driver_t *vibeos_ext2_fs_driver(void)
+{
+    return &g_ext2_driver;
 }

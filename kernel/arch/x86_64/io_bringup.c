@@ -437,9 +437,9 @@ typedef struct hw_fsimage {
      * would be worse than the gap, so the row says so and the boot reports
      * "OK (no marker)" rather than "OK". */
     const char *marker;
-    int (*mount)(struct hw_fsimage *e);
-    const vibeos_fs_ops_t *(*ops)(void);
-    void *fs;
+    /* The mounted driver's state, which a mount by name needs the caller to
+     * keep - the same storage a volume gives it. */
+    uint64_t state[VIBEOS_FS_STATE_BYTES / 8u];
 
     uint8_t slot_data[HW_FSIMAGE_SLOTS][512];
     vibeos_block_slot_t slots[HW_FSIMAGE_SLOTS];
@@ -448,11 +448,6 @@ typedef struct hw_fsimage {
     vibeos_fsmount_t mnt;
     int device;
 } hw_fsimage_t;
-
-static vibeos_ext2_t g_ext2;
-static vibeos_iso9660_t g_iso;
-static vibeos_ntfs_t g_ntfs;
-static vibeos_exfat_t g_exfat;
 
 static int hw_fsimage_read(void *ctx, uint64_t lba, void *buf) {
     hw_fsimage_t *e = (hw_fsimage_t *)ctx;
@@ -468,38 +463,17 @@ static int hw_fsimage_write(void *ctx, uint64_t lba, const void *buf) {
     return -1;
 }
 
-/* One wrapper each, rather than casting the mount functions to a common type:
- * the three drivers take different filesystem structs, and a function-pointer
- * cast that happens to work is exactly the kind of thing this file's own notes
- * say goes wrong quietly. */
-static int hw_mount_ext2(hw_fsimage_t *e) {
-    return vibeos_ext2_mount(&g_ext2, &e->bc, 0ull);
-}
-
-static int hw_mount_iso9660(hw_fsimage_t *e) {
-    return vibeos_iso9660_mount(&g_iso, &e->bc, 0ull);
-}
-
-static int hw_mount_ntfs(hw_fsimage_t *e) {
-    return vibeos_ntfs_mount(&g_ntfs, &e->bc, 0ull);
-}
-
-static int hw_mount_exfat(hw_fsimage_t *e) {
-    return vibeos_exfat_mount(&g_exfat, &e->bc, 0ull);
-}
-
+/* Mounted by the driver's name, through the same table the volume scan uses
+ * (C7). This used to name each driver - its state, a mount wrapper and its ops
+ * - which made this file one of the four a new filesystem had to edit. */
 static hw_fsimage_t g_fsimages[] = {
-    { "ext2",    "EFI/BOOT/EXT2.IMG", "/ext2", "HELLO.TXT",
-      hw_mount_ext2,    vibeos_ext2_ops,    &g_ext2,
+    { "ext2",    "EFI/BOOT/EXT2.IMG",  "/ext2",  "HELLO.TXT", {0},
       {{0}}, {{0}}, {0}, {0}, {0}, -1 },
-    { "iso9660", "EFI/BOOT/ISO.IMG",  "/iso",  "HELLO.TXT",
-      hw_mount_iso9660, vibeos_iso9660_ops, &g_iso,
+    { "iso9660", "EFI/BOOT/ISO.IMG",   "/iso",   "HELLO.TXT", {0},
       {{0}}, {{0}}, {0}, {0}, {0}, -1 },
-    { "ntfs",    "EFI/BOOT/NTFS.IMG", "/ntfs", "HELLO.TXT",
-      hw_mount_ntfs,    vibeos_ntfs_ops,    &g_ntfs,
+    { "ntfs",    "EFI/BOOT/NTFS.IMG",  "/ntfs",  "HELLO.TXT", {0},
       {{0}}, {{0}}, {0}, {0}, {0}, -1 },
-    { "exfat",   "EFI/BOOT/EXFAT.IMG", "/exfat", 0,
-      hw_mount_exfat,   vibeos_exfat_ops,   &g_exfat,
+    { "exfat",   "EFI/BOOT/EXFAT.IMG", "/exfat", 0,           {0},
       {{0}}, {{0}}, {0}, {0}, {0}, -1 },
 };
 
@@ -541,8 +515,9 @@ static void hw_fsimage_bringup(hw_fsimage_t *e) {
         if (vibeos_blockcache_init(&e->bc, &e->dev, e->slots,
                                    HW_FSIMAGE_SLOTS) == 0) {
             verdict = "FAILED: mount";
-            if (e->mount(e) == 0 &&
-                vibeos_fs_mount(&e->mnt, e->ops(), e->fs, e->name) == 0) {
+            const vibeos_fs_driver_t *drv = vibeos_storage_driver(e->name);
+
+            if (drv && drv->mount(&e->mnt, &e->bc, 0ull, sectors, e->state) == 0) {
                 long got;
 
                 if (e->marker == 0) {
@@ -858,7 +833,7 @@ void hw_scratch_bringup(void) {
                 static vibeos_fsmount_t s_scratch_mnt;
 
                 fverdict = "FAILED: mount";
-                if (fat->mount(&s_scratch_mnt, &g_scratch_bc, 64ull) == 0 &&
+                if (fat->mount(&s_scratch_mnt, &g_scratch_bc, 64ull, 0ull, 0) == 0 &&
                     vibeos_fs_attach("/vol1", &s_scratch_mnt) == 0) {
                     static uint8_t s_wr[600];
                     static uint8_t s_rd[600];

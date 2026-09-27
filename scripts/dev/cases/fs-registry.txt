@@ -1,0 +1,35 @@
+# Target source: kernel/fs/storage.c
+#
+# C7's last step: every filesystem registers, and the scan tries them in each
+# driver's `order` - not in the order they were registered, which for drivers
+# collected from a linker section is no order at all. Proved by
+# test_storage_driver_registry, test_storage_partitioned and
+# test_storage_unpartitioned.
+#
+#  1. registration appends instead of keeping the table in order. Expect
+#     test_storage_driver_registry: the driver registered first wins the scan,
+#     which on a machine is FAT claiming an exFAT volume.
+#  2. registration still demands a probe, as it did while FAT was the only
+#     registered driver. Expect the storage scans: the four in kernel/fs/ have
+#     none - their mount refuses what it does not recognise - so none is
+#     registered and nothing mounts. On a boot that is a panic, "filesystem
+#     driver refused".
+#
+# Not a case: zeroing the volume's state before each mount attempt. The four
+# drivers share that storage now and a refused mount leaves its fields behind.
+# Removing the zeroing was tried (2026-09-27) and went NOT RED: the four drivers
+# initialise their state before reading it, so nothing here can tell. It is kept
+# because the next driver may not, and recorded as untested rather than as
+# covered.
+
+### registration ignores the order
+--- old
+        while (at > 0u && g_registered[at - 1u]->order > drv->order) {
++++ new
+        while (0) {
+
+### registration demands a probe
+--- old
+    if (drv == 0 || drv->name == 0 || drv->mount == 0) {
++++ new
+    if (drv == 0 || drv->name == 0 || drv->probe == 0 || drv->mount == 0) {
