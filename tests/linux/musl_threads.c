@@ -45,6 +45,7 @@
  * here would read as every command after it having failed.
  */
 #include <pthread.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
@@ -99,6 +100,33 @@ static void *mmap_worker(void *arg)
     }
     memset(p, 0xA5, C5_LEN);
     return p;
+}
+
+/* C5_FILES: one descriptor table per process. The pipe is made by a thread
+ * and read by main, and then main closes an end while another thread is
+ * waiting to write through it. With a table copied per thread the first read
+ * gets EBADF and the late write succeeds - each thread keeps its own. */
+static int files_pipe[2];
+static volatile int files_go;
+
+static void *files_opener(void *arg)
+{
+    (void)arg;
+    if (pipe(files_pipe) != 0) {
+        return (void *)1L;
+    }
+    if (write(files_pipe[1], "F", 1) != 1) {
+        return (void *)2L;
+    }
+    return 0;
+}
+
+static void *files_waiter(void *arg)
+{
+    while (!files_go) {
+        sched_yield();
+    }
+    return (void *)(long)write((int)(long)arg, "x", 1);
 }
 
 static volatile sig_atomic_t usr1_seen;
@@ -379,6 +407,37 @@ int main(int argc, char **argv)
                     printf("THREADS_C5_MMAP_OK\n");
                 }
             }
+        }
+        fflush(stdout);
+    }
+
+    /* C5_FILES */
+    {
+        pthread_t ft, wt;
+        void *r = (void *)1L, *w = 0;
+        char c = 0;
+
+        if (pthread_create(&ft, 0, files_opener, 0) != 0 ||
+            pthread_join(ft, &r) != 0 || r != 0) {
+            printf("THREADS_C5_FILES_FAIL: the thread could not make a pipe (%ld)\n",
+                   (long)r);
+        } else if (read(files_pipe[0], &c, 1) != 1 || c != 'F') {
+            printf("THREADS_C5_FILES_FAIL: a pipe a thread opened is not open in main\n");
+        } else if (pthread_create(&wt, 0, files_waiter,
+                                  (void *)(long)files_pipe[1]) != 0) {
+            printf("THREADS_C5_FILES_FAIL: create\n");
+            close(files_pipe[0]);
+            close(files_pipe[1]);
+        } else {
+            close(files_pipe[1]);
+            files_go = 1;
+            pthread_join(wt, &w);
+            if ((long)w != -1) {
+                printf("THREADS_C5_FILES_FAIL: a descriptor main closed was still open in a thread\n");
+            } else {
+                printf("THREADS_C5_FILES_OK\n");
+            }
+            close(files_pipe[0]);
         }
         fflush(stdout);
     }

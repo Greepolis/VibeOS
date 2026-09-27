@@ -103,11 +103,11 @@ static long hw_sys_socket(uint64_t domain, uint64_t type) {
     }
     hw_spin_unlock(&g_net_lock);
     if (s < 0) {
-        t->files.fds[fd].used = 0;
+        t->ps->files.fds[fd].used = 0;
         return -VIBEOS_ENOMEM;
     }
-    t->files.fds[fd].net_sock = s;
-    t->files.fds[fd].pipe = -1;
+    t->ps->files.fds[fd].net_sock = s;
+    t->ps->files.fds[fd].pipe = -1;
     return 3 + fd;
 }
 
@@ -250,8 +250,8 @@ static long hw_sys_accept(uint64_t fd, uint64_t addr_uptr) {
         hw_spin_unlock(&g_net_lock);
         return -VIBEOS_EMFILE;
     }
-    t->files.fds[nfd].net_sock = child;
-    t->files.fds[nfd].pipe = -1;
+    t->ps->files.fds[nfd].net_sock = child;
+    t->ps->files.fds[nfd].pipe = -1;
     {
         uint32_t ip;
         uint16_t port;
@@ -265,8 +265,8 @@ static long hw_sys_accept(uint64_t fd, uint64_t addr_uptr) {
         if (hw_write_sockaddr(addr_uptr, ip, port) != 0) {
             /* The pointer went bad after the pre-check: undo the accept
              * rather than hand back a connection with no way to learn of it. */
-            t->files.fds[nfd].used = 0;
-            t->files.fds[nfd].net_sock = -1;
+            t->ps->files.fds[nfd].used = 0;
+            t->ps->files.fds[nfd].net_sock = -1;
             hw_spin_lock(&g_net_lock);
             (void)vibeos_inet_close(&g_net, child);
             hw_spin_unlock(&g_net_lock);

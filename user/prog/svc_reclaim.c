@@ -28,6 +28,7 @@
 #define SYS_write   1
 #define SYS_mmap    9
 #define SYS_munmap  11
+#define SYS_mprotect 10
 #define SYS_exit    60
 #define SYS_sysinfo 99
 
@@ -208,6 +209,18 @@ int vibeos_main(void) {
     say4("RECLAIM_FILLED blocks=", got, " past_low=", past,
          " free=", free_pages, " refused=", refused);
     say4("RECLAIM_SWAP total=", swap_pages, " free=", swap_free, 0, 0, 0, 0);
+
+    /* Read-only first, every block. Many are in swap by now, and mprotect on a
+     * page in swap is a permission change like any other: it used to be refused
+     * with EFAULT because the syscall asked whether the entry was present. The
+     * read-back below then also proves the saved permission came back. */
+    for (i = 0; i < got; i++) {
+        if (sys3(SYS_mprotect, (uint64_t)(uintptr_t)g_block[i], BLOCK_BYTES,
+                 PROT_READ) != 0) {
+            say4("RECLAIM_FAIL: mprotect refused block ", i, 0, 0, 0, 0, 0, 0);
+            (void)sys3(SYS_exit, 1, 0, 0);
+        }
+    }
 
     /* Every page back, in the order it was written: the oldest are the ones
      * the clock most likely took, so this is where swap-in happens.

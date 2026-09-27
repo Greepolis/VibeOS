@@ -26,7 +26,7 @@ still holds them. Nothing else did:
 | signal dispositions | M-003 | `sigaction` in one thread was never seen by its siblings |
 | exit_group | H-005 | shared a `case` with `exit` and ended only the calling thread |
 | region list | H-004 | two list heads into one pool; a node one thread freed was still reachable from another's head, with its `next` overwritten by the free list |
-| descriptors | already admitted in a comment | copied, not shared - not changed in this step |
+| descriptors | already admitted in a comment | copied, not shared - fixed later, M-072 ([core_c5_residue.md](core_c5_residue.md)) |
 
 The `sigaction` row is the one worth remembering. The copying loop in
 `clone_thread` sat directly under the comment *"Signal dispositions are the
@@ -125,7 +125,7 @@ core, and reading it afterwards could copy a stranger's dispositions.
 - **A leader that exits while its threads run** becomes a zombie the parent can
   reap early. Linux waits for the whole group. Not changed, not tested.
 - **Descriptors stay per thread.** The source already said so, and it is the next
-  row of the same table.
+  row of the same table. *Closed 2026-09-27 (M-072).*
 - **fork is not atomic against its own process's other threads.** This was first
   written down as "fork reads the break without holding it - three lines", and
   the estimate was wrong in scope, found while writing those three lines. `fork`

@@ -35,7 +35,7 @@ SWITCH_FUNCTIONS = {"vibeos_x86_64_isr_handler", "hw_task_runnable", "hw_task_lo
 ARCH_IDENTITY_LINES = 12
 # Lines anywhere in the arch layer or the Linux ABI that index the descriptor table
 # themselves (`files.fds` / `files.std`) instead of asking vibeos_fdtable_*.
-FILES_INDEX_LINES = 17
+FILES_INDEX_LINES = 12
 
 
 def read(p):
@@ -118,8 +118,14 @@ def main():
     for f in ("fds", "std_redirect"):
         if re.search(r"\b%s\b\s*(\[[^\]]*\])?\s*;" % f, body):
             bad.append("hw_task_t declares `%s` again - descriptors are vibeos_fdtable_t's (fdtable.h)" % f)
-    if not re.search(r"\bvibeos_fdtable_t\s+files\s*;", body):
-        bad.append("hw_task_t does not embed vibeos_fdtable_t as `files`")
+    # The table is the process's since 2026-09-27: every thread of it sees one.
+    # A table back in hw_task_t is a copy per thread again - THREADS_C5_FILES.
+    if re.search(r"\bvibeos_fdtable_t\s+files\s*;", body):
+        bad.append("hw_task_t embeds a descriptor table - it is the process's "
+                   "(hw_procstate_t), shared by its threads")
+    ps = re.search(r"typedef struct hw_procstate \{(.*?)\} hw_procstate_t;", read(HEADER), re.S)
+    if not ps or not re.search(r"\bvibeos_fdtable_t\s+files\s*;", ps.group(1)):
+        bad.append("hw_procstate_t does not embed vibeos_fdtable_t as `files`")
     idx = 0
     for d in (os.path.join(ROOT, "kernel", "arch", "x86_64"), os.path.join(ROOT, "kernel", "abi", "linux")):
         for name in sorted(os.listdir(d)):

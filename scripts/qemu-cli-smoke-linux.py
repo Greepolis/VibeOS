@@ -2345,7 +2345,8 @@ def main():
                            r"tenancy_mismatch=0x([0-9a-f]{16}) "
                            r"cr3_without_owner=0x([0-9a-f]{16}) "
                            r"exit_switch_irq_on=0x([0-9a-f]{16}) "
-                           r"procstate_double_put=0x([0-9a-f]{16})", text)
+                           r"procstate_double_put=0x([0-9a-f]{16}) "
+                           r"files_double_leave=0x([0-9a-f]{16})", text)
             if mt is None:
                 problems.append("tasks_counters_missing")
 
@@ -2364,7 +2365,12 @@ def main():
                                     # nobody held: a double free of the shared
                                     # per-process block, which threads share and
                                     # exit/exec give back exactly once.
-                                    ("procstate_double_put", 6)):
+                                    ("procstate_double_put", 6),
+                                    # a thread leaving the process's descriptor
+                                    # table without having been counted in it:
+                                    # the table closes under its other threads
+                                    # and then is never closed at all (M-072).
+                                    ("files_double_leave", 7)):
                     value = int(mt.group(group), 16)
                     if value != 0:
                         problems.append(f"task_{name}={value}")
@@ -2855,7 +2861,9 @@ def main():
                          "futex_wake_crossed_processes",
                          "threads_c5_futex_xproc_did_not_report"),
                         ("C5_EXEC", "thread_exec_left_siblings_or_identity",
-                         "threads_c5_exec_did_not_report")):
+                         "threads_c5_exec_did_not_report"),
+                        ("C5_FILES", "thread_descriptors_not_shared",
+                         "threads_c5_files_did_not_report")):
                     if f"THREADS_{stage}_OK" in text:
                         continue
                     if f"THREADS_{stage}_FAIL" in text:

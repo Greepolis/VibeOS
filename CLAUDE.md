@@ -61,6 +61,19 @@ the binary it is testing, so a rebuild half-way through means the run measured
 two different kernels and its number means nothing. This has invalidated three
 separate runs, each about half an hour.
 
+The gate is part of what is being run. Adding an assertion to
+`qemu-cli-smoke-linux.py` mid-run failed the last two boots of an eight-boot run
+with `threads_c5_files_did_not_report` - the new check, against a binary built
+before the program that prints it. Edit the gate between runs, not during one.
+
+**A counter that a sabotage corrupts can absorb its own symptom.** Removing the
+increment that counts a thread into its process's descriptor table was expected
+to close the table under a later test. It went NOT RED: the very first thread
+exit took the count to zero, every exit after it wrapped it, and from then on
+nothing closed anything. When a count can be driven past zero, refuse and count
+the attempt - a must-be-zero on the mechanism fires every time; the symptom
+fires once, wherever it happens to land.
+
 **Check a criterion against the baseline before using it to judge a change.**
 The memory manager's P2 was declared unfinished for a day and a half against
 "48 boots with no failure", a number no revision of this project has ever met -

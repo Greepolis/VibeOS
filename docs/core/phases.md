@@ -490,11 +490,11 @@ way. `arch_hw.c` is 6,220 lines, down from 12,174 before C4.
 
 Still open, and out of C5's scope as stated (recorded, not forgotten):
 
-- **mprotect's page-table race with fork.** mprotect still releases the lock
-  before narrowing, so fork's `copy_user` can read a PTE mprotect is narrowing -
-  no worse than before, but not closed. Now that the spin services the IPI,
-  mprotect *could* hold the lock across the narrowing too; a small follow-up.
-- descriptors are still per thread (the table is now one portable type, `vibeos_fdtable_t`, but a thread still copies it rather than sharing it).
+- ~~**mprotect's page-table race with fork.**~~ Closed 2026-09-27 (M-071):
+  mprotect holds the lock across the narrowing, and accepts a page in swap.
+- ~~descriptors are still per thread.~~ Closed 2026-09-27 (M-072): the table is
+  the process's, in `hw_procstate_t`, and gated by `THREADS_C5_FILES`.
+  See [core_c5_residue.md](../implementation_progress/core_c5_residue.md).
 
 **Steps.** `vibeos_task_t` holds identity, state, parent, exit status,
 credentials and descriptors. `hw_task_t` keeps `ctx`, `kstack_*`, `cr3` and a

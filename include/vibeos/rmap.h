@@ -153,6 +153,10 @@ typedef struct vibeos_rmap_stats {
                                * waited for it - the race M-056 described,
                                * happening and being handled                  */
     uint64_t claim_full;      /* a claim refused for want of a table entry     */
+    uint64_t removed_after_forget; /* an eviction that committed after the
+                               * teardown of its root had forgotten the holder -
+                               * the remove finds nothing, and correctly. Not a
+                               * MUST BE ZERO: it is the race above, handled.  */
     uint64_t unclaim_missing; /* an unclaim of a root with no claim. MUST BE
                                * ZERO: a claim released twice would let a
                                * teardown through while a reclaimer is still

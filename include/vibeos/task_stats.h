@@ -50,6 +50,8 @@ typedef struct vibeos_task_stats {
   /* a task about to run on unowned tables     */
     uint64_t exit_switch_irq_on; /* exit chose the next task, interrupts on   */
     uint64_t procstate_double_put; /* a process reference given back unheld  */
+    uint64_t files_double_leave; /* a thread leaving a descriptor table it was
+                                  * never counted in                         */
 } vibeos_task_stats_t;
 
 vibeos_task_stats_t *vibeos_task_stats(void);

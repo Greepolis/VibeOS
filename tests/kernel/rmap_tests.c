@@ -221,6 +221,39 @@ static void relax_releases_on_third(uint64_t spins) {
     }
 }
 
+/* The eviction that commits during a teardown: forget_root has removed the
+ * holder and is waiting for the claim, and the reclaimer - played here by the
+ * relax hook - finishes its swap-out, removes the holder it claimed, and lets
+ * go. The remove finds nothing and that is not a defect. */
+static void relax_commits_then_releases(uint64_t spins) {
+    (void)spins;
+    (void)vibeos_rmap_remove(FRAME(4), 0x4000ull, 0xB000ull);
+    vibeos_rmap_unclaim(0x4000ull);
+}
+
+static void test_eviction_during_teardown(void) {
+    vibeos_rmap_holder_t h;
+    uint64_t missing;
+
+    rm_reset();
+    CHECK(vibeos_rmap_add(FRAME(4), 0x4000ull, 0xB000ull) == 0, "add");
+    CHECK(vibeos_rmap_claim_sole(FRAME(4), &h) == 0, "claimed by a reclaimer");
+    missing = vibeos_rmap_stats()->missing_remove;
+    vibeos_rmap_set_relax(relax_commits_then_releases);
+    vibeos_rmap_forget_root(0x4000ull);
+    vibeos_rmap_set_relax(0);
+    CHECK(vibeos_rmap_stats()->missing_remove == missing,
+          "an eviction committing inside a teardown is not a missing remove");
+    CHECK(vibeos_rmap_stats()->removed_after_forget == 1u,
+          "it is counted as what it is");
+
+    /* And the mark does not outlive the claim: a remove that finds nothing on
+     * the same root afterwards is a real disagreement again. */
+    (void)vibeos_rmap_remove(FRAME(4), 0x4000ull, 0xB000ull);
+    CHECK(vibeos_rmap_stats()->missing_remove == missing + 1u,
+          "with no claim outstanding, a missing remove is counted");
+}
+
 static void test_claims(void) {
     vibeos_rmap_holder_t h;
     uint32_t i;
@@ -292,9 +325,10 @@ int test_rmap(void) {
     test_exhaustion_is_reported();
     test_out_of_range();
     test_claims();
+    test_eviction_during_teardown();
 
     if (g_fail == 0) {
-        printf("  rmap: 10 groups ok\n");
+        printf("  rmap: 11 groups ok\n");
     }
     return g_fail == 0 ? 0 : 1;
 }

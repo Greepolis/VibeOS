@@ -320,80 +320,60 @@ static long hw_sys_mprotect(uint64_t addr, uint64_t len, uint64_t prot) {
     proc = &g_tasks[g_current_task].proc;
     end = (addr + len + 0xFFFull) & ~0xFFFull;
 
-    /* Check the whole range first: a partial application would leave the
-     * address space in a state the caller never asked for.
-     *
-     * "Mapped" is the question, not "mapped and reachable from ring 3": a
-     * PROT_NONE region is mapped with no user access, and mprotect turning
-     * that into a usable stack is the entire point of the pattern. A page
-     * munmap has freed is not mapped at all, and stays a fault - which is what
-     * the ABI self-test checks, and what the first version of this broke. */
-    for (va = addr; va < end; va += 4096ull) {
-        uint64_t *pte = hw_pte_lookup(&proc->as, va);
-        if (!pte || (*pte & PTE_PRESENT) == 0) {
-            hw_log(VIBEOS_LOG_WARN, 13u, va, len,
-                   "mprotect refused: page not mapped");
-            return -VIBEOS_EFAULT;
-        }
-    }
-
-    /* The list is the authority on whether the range is mapped, and it refuses
-     * the whole request rather than applying part of it. The page-table pass
-     * below then carries the decision out.
-     *
-     * A PROT_NONE region is a region like any other here - that is the point of
-     * describing what was asked for. It used to be a mapping trick that only
-     * the page tables knew about, which is why "is this address reserved?" and
-     * "is this address mapped?" were the same question and the ABI self-test
-     * caught mprotect accepting an address it had to refuse. */
-    /* The region-list update is what a fork's vibeos_vma_clone races; take the
-     * lock across it, and only across it. The page-table pass below does a TLB
-     * shootdown, and holding the lock across that shootdown would deadlock a
-     * sibling spinning in hw_mm_lock - it cannot ack the IPI until it leaves the
-     * spin, and it will not until this releases - into the shootdown's timeout
-     * panic. So the list race with fork is closed here; the page-table race is
-     * not, and stays until the spin can service the IPI (phases.md). */
+    /* The whole call runs under the address-space lock: the region list and
+     * the page tables, which is what a fork's clone_cow reads. It used to take
+     * the lock for the list only and narrow the page tables after releasing
+     * it, because the narrowing does a TLB shootdown and a sibling spinning in
+     * hw_mm_lock could not acknowledge the IPI - the shootdown's timeout panic.
+     * That is no longer true: the spin opens an interrupt window every turn,
+     * and a waiting core answers flush requests itself (M-065). So a fork can
+     * no longer read a page-table entry this call is halfway through
+     * narrowing. Single exit below, so one release. */
     hw_mm_lock(g_tasks[g_current_task].ps);
-    if (vibeos_vma_protect(&g_tasks[g_current_task].ps->vmas, addr, end - addr,
-                           hw_prot_of(prot)) != 0) {
-        hw_mm_unlock(g_tasks[g_current_task].ps);
-        hw_log(VIBEOS_LOG_WARN, 15u, addr, len,
-               "mprotect refused: the range is not one this process asked for");
-        return -VIBEOS_EFAULT;
-    }
-    hw_mm_unlock(g_tasks[g_current_task].ps);
+    {
+        vibeos_vmspace_t v = hw_vm(&proc->as);
+        long rc = 0;
 
-    for (va = addr; va < end; va += 4096ull) {
-        uint64_t *pte = hw_pte_lookup(&proc->as, va);
-        /* The pass above established that every page in the range is mapped,
-         * so this cannot be NULL - but checking there and not here is the kind
-         * of asymmetry that survives a later edit to one loop and not the
-         * other, and the cost of being consistent is one branch. */
-        if (!pte) {
-            continue;
+        /* Check the whole range first: a partial application would leave the
+         * address space in a state the caller never asked for.
+         *
+         * "Mapped" is the question, not "mapped and reachable from ring 3": a
+         * PROT_NONE region is mapped with no user access, and mprotect turning
+         * that into a usable stack is the entire point of the pattern. A page
+         * in swap is mapped too - its permissions travel with it (M-063) - and
+         * this refused it with EFAULT for as long as the check asked whether
+         * the entry was present. A page munmap has freed is not mapped at all,
+         * and stays a fault - which is what the ABI self-test checks. */
+        for (va = addr; va < end; va += 4096ull) {
+            uint64_t *e = vibeos_vmspace_entry(&v, va);
+
+            if (!e || (*e & (PTE_PRESENT | VIBEOS_PTE_SWAPPED)) == 0) {
+                hw_log(VIBEOS_LOG_WARN, 13u, va, len,
+                       "mprotect refused: page not mapped");
+                rc = -VIBEOS_EFAULT;
+                break;
+            }
         }
-        /* Reachability and writability are two bits, and mprotect decides
-         * both. Only the write bit used to be touched, on the assumption that
-         * anything mapped was already reachable from ring 3 - which stopped
-         * being true when a PROT_NONE region became a real mapping with
-         * PTE_USER deliberately clear. The page then stayed present and
-         * unreachable, and the thread that had just been given a stack faulted
-         * on its first write to it: present, user, write - error code 7. */
-        {
-            /* Through L1, which does the read-modify-write and preserves
-             * everything the entry records that a permission change does not
-             * alter: the frame, the ownership mark, the copy-on-write mark.
-             *
-             * One behaviour changes, and it is a fix rather than a
-             * consequence. This used to grant PTE_WRITE on request even to a
-             * page marked copy-on-write, which let a forked process write
-             * straight into a page its parent was still reading - the exact
-             * corruption fork's sharing exists to prevent, reachable from a
-             * program simply calling mprotect on its own memory. The layer
-             * leaves such a page read-only; the write then faults, the fault
-             * makes the copy, and the program gets what it asked for one fault
-             * later without anybody else's memory changing. */
-            vibeos_vmspace_t v = hw_vm(&proc->as);
+
+        /* The list is the authority on whether the range is mapped, and it
+         * refuses the whole request rather than applying part of it. The
+         * page-table pass below then carries the decision out. A PROT_NONE
+         * region is a region like any other here - that is the point of
+         * describing what was asked for. */
+        if (rc == 0 &&
+            vibeos_vma_protect(&g_tasks[g_current_task].ps->vmas, addr, end - addr,
+                               hw_prot_of(prot)) != 0) {
+            hw_log(VIBEOS_LOG_WARN, 15u, addr, len,
+                   "mprotect refused: the range is not one this process asked for");
+            rc = -VIBEOS_EFAULT;
+        }
+
+        /* Through L1, which does the compare-exchange, preserves everything a
+         * permission change does not alter (the frame, the ownership mark, the
+         * copy-on-write mark), keeps a copy-on-write page read-only until its
+         * fault makes the copy, updates a swapped entry's saved permissions,
+         * and shoots down the other cores when it narrows. */
+        if (rc == 0) {
             vibeos_prot_t p = VIBEOS_PROT_NONE;
 
             if (prot != PROT_NONE) {
@@ -405,11 +385,14 @@ static long hw_sys_mprotect(uint64_t addr, uint64_t len, uint64_t prot) {
                     p = (vibeos_prot_t)(p | VIBEOS_PROT_EXEC);
                 }
             }
-            (void)vibeos_vmspace_protect(&v, va, p);
+            for (va = addr; va < end; va += 4096ull) {
+                (void)vibeos_vmspace_protect(&v, va, p);
+                hw_invlpg(va);
+            }
         }
-        hw_invlpg(va);
+        hw_mm_unlock(g_tasks[g_current_task].ps);
+        return rc;
     }
-    return 0;
 }
 
 /* munmap(): remove mappings and give the frames back.

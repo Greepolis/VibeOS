@@ -145,6 +145,23 @@ typedef struct {
     char exe_path[64];
 } hw_proc_t;
 
+typedef struct {
+    volatile int locked;
+    uint64_t flags;   /* caller's RFLAGS, restored on release */
+    /* Who holds it, for when nobody lets go.
+     *
+     * A spin loop that never gives up turns a deadlock into silence, and
+     * silence is the most expensive failure this project has: the machine
+     * stops, the log stops, and the evidence is a wedge report naming whatever
+     * static function happened to precede the address. Two of those cost days.
+     *
+     * These are written after the lock is taken and cleared before it is
+     * released, so the bound below can say which lock, whose it is, and what
+     * they were doing - which turns a wedge into a panic with a name. */
+    volatile int owner_cpu;
+    const char *volatile owner_fn;
+} hw_lock_t;
+
 /* What belongs to a process rather than to one of its threads.
  *
  * Referenced, never copied: fork and exec create one, a thread takes a
@@ -168,24 +185,28 @@ typedef struct hw_procstate {
     volatile uint32_t exit_group_claimed;
     volatile uint32_t exit_group;
     uint64_t exit_group_code;
+    /* Open files: the table (fd 3 up) and what 0, 1 and 2 are redirected to.
+     * The process's, like everything above: every thread of it sees one table,
+     * which is what CLONE_FILES means and what a C library asks for. Each
+     * thread used to get a copy at clone, so a descriptor one thread opened did
+     * not exist in the others, and a close in one left the rest holding it.
+     *
+     * files_lock serialises the changes to *which* descriptors exist - claim,
+     * close, dup2, and the copies fork and exec take - so two threads opening
+     * at once cannot be handed one slot. It is not held across I/O: two threads
+     * reading one descriptor at the same moment share its position without
+     * ordering, which is a difference from Linux recorded here rather than
+     * hidden.
+     *
+     * files_users counts the threads still using the table, apart from refs:
+     * the table is closed by the thread that brings it to zero, before that
+     * thread switches away, while refs outlives it (exit gives the process
+     * reference back only after the switch). */
+    vibeos_fdtable_t files;
+    hw_lock_t files_lock;
+    volatile uint32_t files_users;
 } hw_procstate_t;
 
-typedef struct {
-    volatile int locked;
-    uint64_t flags;   /* caller's RFLAGS, restored on release */
-    /* Who holds it, for when nobody lets go.
-     *
-     * A spin loop that never gives up turns a deadlock into silence, and
-     * silence is the most expensive failure this project has: the machine
-     * stops, the log stops, and the evidence is a wedge report naming whatever
-     * static function happened to precede the address. Two of those cost days.
-     *
-     * These are written after the lock is taken and cleared before it is
-     * released, so the bound below can say which lock, whose it is, and what
-     * they were doing - which turns a wedge into a panic with a name. */
-    volatile int owner_cpu;
-    const char *volatile owner_fn;
-} hw_lock_t;
 
 /* A descriptor is `vibeos_fd_t` (include/vibeos/fdtable.h); the old name stays so
  * the ~60 places that say hw_fd_t are not rewritten for a rename. */
@@ -227,10 +248,7 @@ typedef struct {
     uint64_t fs_base;
     uint64_t kstack_base;  /* for reclamation on exit */
     uint32_t kstack_pages;
-    /* Open files: the table (fd 3 up) and what 0, 1 and 2 are redirected to.
-     * vibeos_fdtable_t (include/vibeos/fdtable.h) owns the layout and the rules;
-     * the entries are plain data, so fork copies the table by value. */
-    vibeos_fdtable_t files;
+    /* Open files are the process's: ps->files (hw_procstate_t). */
     /* The x87/SSE register file, saved and restored across a context switch.
      *
      * Until this existed the kernel set CR4.OSFXSR, compiled thousands of XMM
@@ -283,8 +301,12 @@ int hw_user_range_ok(uint64_t base, uint64_t len, int write);
  * and check-chokepoints.py can count it. */
 int linux_user_ok(uint64_t base, uint64_t len, int write);
 
-/* Give a child its parent's open files (fork and clone); defined in kernel/abi/linux/fs.c. */
-void hw_fds_inherit(hw_task_t *child, const hw_task_t *parent);
+/* Descriptors, defined in kernel/abi/linux/fs.c. A fork's child and an exec's
+ * new image get a copy of a table (every pipe end in it gains an owner); a
+ * thread shares its creator's and takes nothing. hw_files_leave is the other
+ * half: a thread done with a table, which it closes if it was the last. */
+void hw_fds_copy(hw_procstate_t *dst, hw_procstate_t *src);
+int hw_files_leave(hw_procstate_t *ps);
 int hw_copy_user_string(uint64_t uptr, char *dst, int max);
 int hw_fd_alloc(hw_task_t *t);
 hw_fd_t *hw_fd_get(uint64_t fd);

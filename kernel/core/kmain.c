@@ -359,6 +359,8 @@ static void kernel_cli_print_meminfo(void) {
     kernel_log_u64_hex(vibeos_rmap_stats()->claim_waits);
     vibeos_x86_64_serial_puts(" rmap_claim_full=0x");
     kernel_log_u64_hex(vibeos_rmap_stats()->claim_full);
+    vibeos_x86_64_serial_puts(" rmap_removed_after_forget=0x");
+    kernel_log_u64_hex(vibeos_rmap_stats()->removed_after_forget);
     vibeos_x86_64_serial_puts(" rmap_unclaim_missing=0x");
     kernel_log_u64_hex(vibeos_rmap_stats()->unclaim_missing);
     vibeos_x86_64_serial_puts("\n");

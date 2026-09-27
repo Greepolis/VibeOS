@@ -1,0 +1,31 @@
+# Target source: kernel/abi/linux/proc.c
+#
+# One descriptor table per process, shared by its threads (2026-09-27). The
+# table lives in hw_procstate_t; a thread is one more user of it, fork and exec
+# take a copy. Run with SABOTAGE_VERIFY=scripts/dev/verify-boot.sh.
+#
+#  1. clone does not count the thread as a user of the table. Expect
+#     task_files_double_leave. It was first written expecting
+#     thread_descriptors_not_shared and went NOT RED: the first thread the
+#     threads test ever creates takes the count to zero - closing a table that
+#     held nothing yet - and every later exit wraps it, so by THREADS_C5_FILES
+#     nothing closes anything. The symptom shows once, somewhere arbitrary; the
+#     underflow shows every time, so that is what is gated.
+#  2. exec does not copy the table into the new process. Every redirection a
+#     shell set up before exec is gone. Observed: the boot wedges at
+#     phase=selftest_done (missing:CLI_READY) - the programs the self-test
+#     script starts have no descriptors at all.
+#
+# Not a case: the table's lock. Two threads claiming the same slot at once needs
+# them to meet inside a few instructions, which one boot does not arrange; a
+# case that went NOT RED would say nothing about the lock. Recorded as untested.
+
+### clone does not count the thread as a user of the table
+--- old
+    (void)__atomic_add_fetch(&child->ps->files_users, 1u, __ATOMIC_ACQ_REL);
++++ new
+
+### exec does not copy the table
+--- old
+        hw_fds_copy(nps, ops);
++++ new

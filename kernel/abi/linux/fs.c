@@ -74,12 +74,53 @@
 
 #define S_IFCHR 0020000u
 
-/* Per-process open-file table helpers. fds 0-2 are the console; 3+ are files. */
-hw_fd_t *hw_fd_get(uint64_t fd) {
-    if (g_current_task < 0 || fd < 3u || fd >= 3u + VIBEOS_HW_MAX_FDS) {
+/* Per-process open-file table helpers. fds 0-2 are the console; 3+ are files.
+ * The table is the process's (ps->files), shared by all of its threads. */
+static vibeos_fdtable_t *hw_cur_files(void) {
+    if (g_current_task < 0 || g_tasks[g_current_task].ps == 0) {
         return 0;
     }
-    return vibeos_fdtable_get(&g_tasks[g_current_task].files, fd);
+    return &g_tasks[g_current_task].ps->files;
+}
+
+hw_fd_t *hw_fd_get(uint64_t fd) {
+    if (fd < 3u || fd >= 3u + VIBEOS_HW_MAX_FDS) {
+        return 0;
+    }
+    return vibeos_fdtable_get(hw_cur_files(), fd);
+}
+
+/* Take descriptor `fd` out of the calling process's table: its entry copied to
+ * `out` and the slot freed, in one step under the table's lock. What close does
+ * with it afterwards - release a pipe end, write a file back - happens on the
+ * copy, outside the lock, so a sibling can neither close the same descriptor a
+ * second time nor be handed the slot while it is still being finished with. */
+static int hw_fd_take(uint64_t fd, hw_fd_t *out) {
+    hw_procstate_t *ps;
+    hw_fd_t *f;
+
+    if (g_current_task < 0 || (ps = g_tasks[g_current_task].ps) == 0) {
+        return -1;
+    }
+    hw_spin_lock_named(&ps->files_lock, __func__);
+    f = (fd < 3u) ? vibeos_fdtable_redirect(&ps->files, fd)
+                  : (fd < 3u + VIBEOS_HW_MAX_FDS ? vibeos_fdtable_get(&ps->files, fd) : 0);
+    if (f) {
+        *out = *f;
+        f->used = 0;
+        f->pipe = -1;
+        f->net_sock = -1;
+    }
+    hw_spin_unlock(&ps->files_lock);
+    return f ? 0 : -1;
+}
+
+/* A descriptor claimed and then not wanted - the open found nothing, the
+ * copy-out faulted. Freed under the lock like any other change to the table. */
+static void hw_fd_unclaim(hw_task_t *t, int index) {
+    hw_spin_lock_named(&t->ps->files_lock, __func__);
+    vibeos_fd_clear(&t->ps->files.fds[index]);
+    hw_spin_unlock(&t->ps->files_lock);
 }
 
 /* Socket-backed descriptors are served by these (defined with the socket
@@ -169,33 +210,30 @@ static long hw_sys_pipe2(uint64_t fds_uptr, uint64_t flags) {
         return -VIBEOS_EMFILE;
     }
 
-    for (i = 0; i < VIBEOS_HW_MAX_FDS && (rfd < 0 || wfd < 0); i++) {
-        if (t->files.fds[i].used) {
-            continue;
-        }
-        {
-            hw_fd_t *f = &t->files.fds[i];
-            uint32_t z;
-            for (z = 0; z < (uint32_t)sizeof(*f); z++) {
-                ((uint8_t *)(void *)f)[z] = 0;
-            }
-            f->net_sock = -1;
-            f->pipe = slot;
-            f->writable = (rfd < 0) ? 0 : 1;
-            f->used = 1;
-        }
-        if (rfd < 0) {
-            rfd = 3 + i;
-        } else {
+    /* Claimed through the table's lock: a sibling thread opening at the same
+     * moment must not be handed the same slot. */
+    i = hw_fd_alloc(t);
+    if (i >= 0) {
+        rfd = 3 + i;
+        i = hw_fd_alloc(t);
+        if (i >= 0) {
             wfd = 3 + i;
         }
     }
     if (rfd < 0 || wfd < 0) {
         vibeos_pipe_abandon(slot);
         if (rfd >= 0) {
-            t->files.fds[rfd - 3].used = 0;
+            hw_fd_unclaim(t, rfd - 3);
         }
         return -VIBEOS_EMFILE;
+    }
+    {
+        hw_fd_t *f = &t->ps->files.fds[rfd - 3];
+        f->pipe = slot;
+        f->writable = 0;
+        f = &t->ps->files.fds[wfd - 3];
+        f->pipe = slot;
+        f->writable = 1;
     }
     {
         int kfds[2];
@@ -206,8 +244,8 @@ static long hw_sys_pipe2(uint64_t fds_uptr, uint64_t flags) {
          * already allocated, so roll them back rather than leak them (uaccess
          * follow-up to 6a94a32). */
         if (vibeos_uaccess_copy((void *)(uintptr_t)fds_uptr, kfds, sizeof(kfds)) != 0) {
-            t->files.fds[rfd - 3].used = 0;
-            t->files.fds[wfd - 3].used = 0;
+            hw_fd_unclaim(t, rfd - 3);
+            hw_fd_unclaim(t, wfd - 3);
             vibeos_pipe_abandon(slot);
             return -VIBEOS_EFAULT;
         }
@@ -223,47 +261,52 @@ static long hw_sys_pipe2(uint64_t fds_uptr, uint64_t flags) {
  * remembering that the entry now stands in for it. */
 static long hw_sys_dup2(uint64_t oldfd, uint64_t newfd) {
     hw_task_t *t;
-    hw_fd_t *src;
+    hw_fd_t *src, *dst;
+    hw_fd_t old;
 
-    if (g_current_task < 0 || !g_tasks[g_current_task].id.is_user) {
+    if (g_current_task < 0 || !g_tasks[g_current_task].id.is_user ||
+        g_tasks[g_current_task].ps == 0) {
         return -VIBEOS_EINVAL;
     }
     t = &g_tasks[g_current_task];
     if (oldfd == newfd) {
         return (long)newfd;
     }
-    src = hw_fd_get(oldfd);
-    if (!src) {
+    if (newfd >= 3u + VIBEOS_HW_MAX_FDS) {
         return -VIBEOS_EBADF;
     }
-    if (newfd >= 3u) {
-        hw_fd_t *dst = (newfd < 3u + VIBEOS_HW_MAX_FDS)
-                       ? &t->files.fds[newfd - 3u] : 0;
-        if (!dst) {
-            return -VIBEOS_EBADF;
-        }
-        if (dst->used) {
-            hw_pipe_release(dst);
-            dst->used = 0;
-        }
-        *dst = *src;
-        vibeos_pipe_end_acquire(dst);
-        return (long)newfd;
+    /* One critical section: the source read, the target replaced and the new
+     * reference taken, so a sibling's close of either descriptor lands wholly
+     * before or wholly after. Descriptors 0, 1 and 2 are not entries in the
+     * table - the console is - so redirecting one means remembering that the
+     * entry now stands in for it; that is the std[] half. */
+    old.used = 0;
+    hw_spin_lock_named(&t->ps->files_lock, __func__);
+    src = vibeos_fdtable_get(&t->ps->files, oldfd);
+    if (!src) {
+        hw_spin_unlock(&t->ps->files_lock);
+        return -VIBEOS_EBADF;
     }
-    /* Redirecting a standard descriptor: the branch above returned for every
-     * other value, so newfd is 0, 1 or 2 here and re-checking that only looks
-     * like a bound. */
-    hw_pipe_release(&t->files.std[newfd]);
-    t->files.std[newfd] = *src;
-    vibeos_pipe_end_acquire(&t->files.std[newfd]);
+    dst = (newfd >= 3u) ? &t->ps->files.fds[newfd - 3u] : &t->ps->files.std[newfd];
+    if (dst->used) {
+        old = *dst;
+    }
+    *dst = *src;
+    vibeos_pipe_end_acquire(dst);
+    hw_spin_unlock(&t->ps->files_lock);
+    /* Whatever the target was, it is closed now - outside the lock, because
+     * releasing a pipe end wakes whoever was waiting on it. */
+    if (old.used) {
+        hw_pipe_release(&old);
+    }
     return (long)newfd;
 }
 
 static long hw_sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
     uint64_t i;
 
-    if (g_current_task >= 0 && vibeos_fdtable_redirect(&g_tasks[g_current_task].files, fd)) {
-        hw_fd_t *r = vibeos_fdtable_redirect(&g_tasks[g_current_task].files, fd);
+    if (vibeos_fdtable_redirect(hw_cur_files(), fd)) {
+        hw_fd_t *r = vibeos_fdtable_redirect(hw_cur_files(), fd);
         if (r->pipe >= 0) {
             return hw_pipe_write(r, buf, len);
         }
@@ -438,8 +481,8 @@ static long hw_sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
     if (len == 0u) {
         return 0;
     }
-    if (g_current_task >= 0 && vibeos_fdtable_redirect(&g_tasks[g_current_task].files, fd)) {
-        hw_fd_t *r = vibeos_fdtable_redirect(&g_tasks[g_current_task].files, fd);
+    if (vibeos_fdtable_redirect(hw_cur_files(), fd)) {
+        hw_fd_t *r = vibeos_fdtable_redirect(hw_cur_files(), fd);
         if (r->pipe >= 0) {
             return hw_pipe_read(r, buf, len);
         }
@@ -597,12 +640,15 @@ static long hw_sys_open(uint64_t path_uptr, uint64_t flags) {
         return -VIBEOS_EFAULT;
     }
     t = &g_tasks[g_current_task];
-    i = vibeos_fdtable_free_index(&t->files);
+    /* Claimed before the lookup, not after: the lookup reads the disk, and a
+     * sibling thread opening meanwhile would otherwise find the same slot
+     * free. A lookup that fails gives it back. */
+    i = hw_fd_alloc(t);
     if (i < 0) {
         return -VIBEOS_EMFILE;
     }
     {
-        hw_fd_t *f = &t->files.fds[i];
+        hw_fd_t *f = &t->ps->files.fds[i];
         int writable = ((flags & 1u) != 0u) || ((flags & 0100u) != 0u); /* O_WRONLY|O_CREAT */
         uint32_t cluster = 0;
         uint64_t size = 0;
@@ -611,6 +657,7 @@ static long hw_sys_open(uint64_t path_uptr, uint64_t flags) {
 
         if (!writable) {
             if (vibeos_fs_lookup(&g_rootfs, path, &node) != 0) {
+                hw_fd_unclaim(t, i);
                 return -VIBEOS_ENOENT;
             }
             cluster = (uint32_t)node.id;
@@ -651,20 +698,22 @@ static long hw_sys_open(uint64_t path_uptr, uint64_t flags) {
 
 /* close(fd): commit buffered writes to the filesystem and release the slot. */
 static long hw_sys_close(uint64_t fd) {
-    hw_fd_t *f = hw_fd_get(fd);
+    hw_fd_t mine;
+    hw_fd_t *f = &mine;
     long rc = 0;
 
-    if (fd < 3u && g_current_task >= 0) {
-        /* Closing a redirected standard descriptor drops the redirection. */
-        hw_fd_t *r = vibeos_fdtable_redirect(&g_tasks[g_current_task].files, fd);
-        if (r) {
-            hw_pipe_release(r);
-            r->used = 0;
-            return 0;
-        }
-    }
-    if (!f) {
+    /* Out of the table first, then finished with. The table is shared by the
+     * process's threads, so the entry is taken in one step - a sibling closing
+     * the same descriptor gets EBADF rather than a second release. */
+    if (hw_fd_take(fd, &mine) != 0) {
+        /* Not open - or 0, 1 or 2 not redirected, which is the console and
+         * not an entry in this table. */
         return -VIBEOS_EBADF;
+    }
+    if (fd < 3u) {
+        /* Closing a redirected standard descriptor drops the redirection. */
+        hw_pipe_release(f);
+        return 0;
     }
     if (f->pipe >= 0) {
         hw_pipe_release(f);
@@ -1086,19 +1135,77 @@ static long hw_sys_readv(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt) {
     return total;
 }
 
-/* A child inherits its parent's descriptors: the table is copied, and every pipe end
- * in it gains an owner. Missing that is the other way a pipeline hangs - the reader
- * waits for an end of file that never arrives because a count went wrong. fork and
- * clone both did this by hand, two copies of the same twenty lines. */
-void hw_fds_inherit(hw_task_t *child, const hw_task_t *parent) {
+/* A new process inherits another's descriptors: the table is copied, and every
+ * pipe end in it gains an owner. Missing that is the other way a pipeline hangs -
+ * the reader waits for an end of file that never arrives because a count went
+ * wrong. fork and exec copy; a thread shares, so clone does neither.
+ *
+ * Under the source's lock, because a sibling of the forking thread may be
+ * opening or closing in the same table. The destination is new and nobody
+ * else can see it yet. */
+void hw_fds_copy(hw_procstate_t *dst, hw_procstate_t *src) {
     uint32_t i;
 
-    /* Task slots are recycled, so the child's table is whatever the previous
-     * occupant left; it is overwritten, not added to. */
-    vibeos_fdtable_copy(&child->files, &parent->files);
-    for (i = 0; i < vibeos_fdtable_count(); i++) {
-        vibeos_pipe_end_acquire(vibeos_fdtable_entry(&child->files, i));
+    if (!dst || !src) {
+        return;
     }
+    hw_spin_lock_named(&src->files_lock, __func__);
+    vibeos_fdtable_copy(&dst->files, &src->files);
+    for (i = 0; i < vibeos_fdtable_count(); i++) {
+        vibeos_pipe_end_acquire(vibeos_fdtable_entry(&dst->files, i));
+    }
+    hw_spin_unlock(&src->files_lock);
+}
+
+/* A thread has finished with its process's table: exit, or exec moving to a
+ * copy. The last one to leave closes everything, and returns 1 so exit knows
+ * the process's sockets go too.
+ *
+ * Exiting closes everything, and for a pipe that is not tidiness: the reader at
+ * the other end is waiting for its writers to reach zero, and a program that
+ * produced its output and exited without closing is the normal case. Leaving
+ * the count high is how ls | wc -l prints nothing and hangs. The redirections of
+ * 0-2 are released the same way. Sockets are not closed here - they belong to
+ * the process id, which an exec keeps - only forgotten by the table. */
+int hw_files_leave(hw_procstate_t *ps) {
+    uint32_t i, n;
+
+    if (!ps) {
+        return 0;
+    }
+    /* Never below zero. A thread that leaves without having been counted -
+     * a clone that forgot the increment - would otherwise take the count to
+     * zero early, close the table under the threads still using it, and then
+     * wrap it so that nobody ever closes it again. The early close is visible
+     * once, in whichever thread happens to be first; the wrap is not visible
+     * at all. So the underflow is counted and gated instead: the mechanism
+     * rather than one lucky symptom. */
+    for (;;) {
+        n = __atomic_load_n(&ps->files_users, __ATOMIC_ACQUIRE);
+        if (n == 0u) {
+            vibeos_task_stats()->files_double_leave++;
+            return 0;
+        }
+        if (__atomic_compare_exchange_n(&ps->files_users, &n, n - 1u, 0,
+                                        __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+            break;
+        }
+    }
+    if (n != 1u) {
+        return 0;
+    }
+    /* Nobody else uses this table now - the count was the last thing that
+     * said somebody might - so no lock. */
+    for (i = 0; i < vibeos_fdtable_count(); i++) {
+        hw_fd_t *f = vibeos_fdtable_entry(&ps->files, i);
+        if (!f->used) {
+            continue;
+        }
+        f->net_sock = -1;
+        hw_pipe_release(f);
+        f->used = 0;
+    }
+    return 1;
 }
 
 /* dup() is dup2() onto the lowest free descriptor. */
@@ -1110,7 +1217,10 @@ static long linux_sys_dup(uint64_t oldfd) {
         return -VIBEOS_EINVAL;
     }
     dt = &g_tasks[g_current_task];
-    i = vibeos_fdtable_free_index(&dt->files);
+    if (dt->ps == 0) {
+        return -VIBEOS_EBADF;
+    }
+    i = vibeos_fdtable_free_index(&dt->ps->files);
     if (i < 0) {
         return -VIBEOS_EMFILE;
     }

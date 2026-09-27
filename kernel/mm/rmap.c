@@ -54,6 +54,10 @@ static void (*g_relax)(uint64_t spins);
 static struct {
     uint64_t root;
     uint32_t n;
+    /* Set by forget_root when it removed this root's holders while a claim
+     * was outstanding: the claimant's eviction may still commit, and its
+     * remove will find nothing - correctly. See vibeos_rmap_remove. */
+    uint32_t forgotten;
 } g_claims[VIBEOS_RMAP_CLAIMS];
 
 void vibeos_rmap_set_relax(void (*relax)(uint64_t spins)) {
@@ -135,6 +139,7 @@ int vibeos_rmap_init(void *pool, uint64_t bytes, uint32_t frames) {
     for (i = 0; i < VIBEOS_RMAP_CLAIMS; i++) {
         g_claims[i].root = 0;
         g_claims[i].n = 0;
+        g_claims[i].forgotten = 0;
     }
     g_ready = 1;
     return 0;
@@ -262,6 +267,28 @@ int vibeos_rmap_remove(uint64_t frame_phys, uint64_t root_phys, uint64_t va) {
             cur = g_nodes[cur].next;
         }
     }
+    /* A teardown got here first. vibeos_vmspace_destroy forgets every holder
+     * of its root and only then waits for the claims on it, so a reclaimer
+     * that claimed before the teardown finishes its eviction afterwards and
+     * removes a holder that is already gone. Nothing disagrees: the frame is
+     * released once, by the eviction, and the teardown frees the slot the
+     * entry now names. It fired once in about fifty boots as missing_remove -
+     * the last time from a reclaim load that exited with its blocks still
+     * mapped, which is exactly a teardown of thousands of evictable pages
+     * while the clock is running. Counted apart, so the must-be-zero counter
+     * means what it says. */
+    {
+        uint32_t c;
+
+        for (c = 0; c < VIBEOS_RMAP_CLAIMS; c++) {
+            if (g_claims[c].n != 0u && g_claims[c].root == root_phys &&
+                g_claims[c].forgotten) {
+                g_stats.removed_after_forget++;
+                rmap_unlock();
+                return -1;
+            }
+        }
+    }
     /* Counted, because it means the two sides disagree about what was mapped -
      * which is the same shape as the defect this subsystem keeps producing,
      * seen from the other end. */
@@ -349,6 +376,7 @@ int vibeos_rmap_claim_sole(uint64_t frame_phys, vibeos_rmap_holder_t *out) {
         }
         i = free_slot;
         g_claims[i].root = out->root_phys;
+        g_claims[i].forgotten = 0;
     }
     g_claims[i].n++;
     g_stats.claims++;
@@ -398,6 +426,11 @@ void vibeos_rmap_forget_root(uint64_t root_phys) {
                 prev = cur;
             }
             cur = next;
+        }
+    }
+    for (i = 0; i < VIBEOS_RMAP_CLAIMS; i++) {
+        if (g_claims[i].n != 0u && g_claims[i].root == root_phys) {
+            g_claims[i].forgotten = 1;
         }
     }
     /* The holders are gone, so no new claim on this root can succeed; wait for

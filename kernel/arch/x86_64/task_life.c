@@ -612,6 +612,13 @@ hw_procstate_t *hw_procstate_new(void) {
         __atomic_store_n(&ps->exit_group_claimed, 0u, __ATOMIC_RELEASE);
         __atomic_store_n(&ps->exit_group, 0u, __ATOMIC_RELEASE);
         ps->exit_group_code = 0;
+        /* The slot is recycled: a process starts with no files, not with the
+         * previous tenant's. */
+        vibeos_fdtable_reset(&ps->files);
+        ps->files_lock.locked = 0;
+        ps->files_lock.owner_cpu = -1;
+        ps->files_lock.owner_fn = 0;
+        __atomic_store_n(&ps->files_users, 1u, __ATOMIC_RELEASE);
         return ps;
     }
     return 0;
@@ -989,33 +996,16 @@ void hw_task_exit(uint64_t code) {
         g_tasks[dying].id.service_id = 0;
     }
 
-    /* A process owns its sockets: releasing them here is what stops a task that
-     * exits with connections open from leaking them for the life of the system.
-     * Done before the task is retired, while its descriptor table is still
-     * ours to walk. */
-    if (dying >= 0) {
-        int fd;
+    /* A process owns its sockets and its descriptors, and they go with the
+     * last thread to leave the table - not with every thread, which is what
+     * each exit did while every thread had a copy: a worker that finished
+     * released the sockets its whole process was still using. Done before the
+     * task is retired, while the table is still reachable through it. */
+    if (dying >= 0 && g_tasks[dying].ps != 0 && hw_files_leave(g_tasks[dying].ps)) {
         if (g_net_up) {
             hw_spin_lock_named(&g_net_lock, __func__);
             (void)vibeos_inet_release_owner_sockets(&g_net, g_tasks[dying].id.tgid);
             hw_spin_unlock(&g_net_lock);
-        }
-        for (fd = 0; fd < (int)vibeos_fdtable_count(); fd++) {
-            hw_fd_t *f = vibeos_fdtable_entry(&g_tasks[dying].files, (uint32_t)fd);
-            if (!f->used) {
-                continue;
-            }
-            if (f->net_sock >= 0) {
-                f->net_sock = -1;
-            }
-            /* Exiting closes everything, and for a pipe that is not tidiness:
-             * the reader at the other end is waiting for its writers to reach
-             * zero, and a program that produced its output and exited without
-             * closing is the normal case. Leaving the count high is how
-             * ls | wc -l prints nothing and hangs. The redirections of 0-2 are
-             * released the same way. */
-            hw_pipe_release(f);
-            f->used = 0;
         }
     }
 
@@ -1675,7 +1665,16 @@ void hw_task_set_service(int slot, uint32_t service_id) {
     g_tasks[slot].id.service_id = service_id;
 }
 
-/* Claim a free descriptor slot in the calling process. */
+/* Claim a free descriptor slot in the calling process: under the table's lock,
+ * because every thread of the process claims from the same table. */
 int hw_fd_alloc(hw_task_t *t) {
-    return vibeos_fdtable_claim(&t->files);
+    int i;
+
+    if (!t->ps) {
+        return -1;
+    }
+    hw_spin_lock_named(&t->ps->files_lock, __func__);
+    i = vibeos_fdtable_claim(&t->ps->files);
+    hw_spin_unlock(&t->ps->files_lock);
+    return i;
 }

@@ -3827,13 +3827,6 @@ int hw_task_alloc_guarded(int guarded, int privileged, uint32_t parent_pid,
     }
     for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
         if (hw_slot_state(i) == HW_TASK_FREE) {
-            /* Slots are recycled, so the descriptor tables hold whatever the
-             * previous occupant left. Clearing them here covers every way a
-             * task comes into existence - spawn, fork, the idle tasks - which
-             * is the only way to be sure none of them starts out believing a
-             * stale entry. An uninitialised redirection sends a write into a
-             * pipe that does not exist, and the task waits there forever. */
-            vibeos_fdtable_reset(&g_tasks[i].files);
             /* A recycled slot must not keep the previous tenant's address
              * space. Leaving cr3 behind is not a tidiness problem: the page it
              * names has been freed and handed back to the allocator, so a slot

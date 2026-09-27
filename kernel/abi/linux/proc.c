@@ -183,10 +183,8 @@ static long hw_sys_fork(const vibeos_x86_64_isr_frame_t *frame) {
          * child move an inherited end onto its standard output. Without
          * inheritance the child has no such descriptor, the redirection fails,
          * and its output goes to the console while the reader waits forever.
-         *
-         * Task slots are recycled, so the child's table is whatever the
-         * previous occupant left; it must be overwritten, not added to. */
-        hw_fds_inherit(child, parent);
+         * A copy, into the child's new process state. */
+        hw_fds_copy(child->ps, parent->ps);
 
         child->id.exit_signal = 0;
         child->id.sig_pending = 0;   /* pending signals are not inherited */
@@ -290,9 +288,11 @@ static long hw_sys_clone_thread(const vibeos_x86_64_isr_frame_t *frame,
      * page tables would be two processes wearing one name. */
     vibeos_task_stats()->threads++;
     child->proc = parent->proc;
-    /* And the same process: a reference, not a copy. See g_procstate. */
+    /* And the same process: a reference, not a copy. See g_procstate. The
+     * descriptor table comes with it, so the thread is one more user of it. */
     child->ps = parent->ps;
     (void)__atomic_add_fetch(&child->ps->refs, 1u, __ATOMIC_ACQ_REL);
+    (void)__atomic_add_fetch(&child->ps->files_users, 1u, __ATOMIC_ACQ_REL);
     child->cr3 = parent->cr3;
     child->cr3_set_by = "clone_thread";
 
@@ -324,16 +324,11 @@ static long hw_sys_clone_thread(const vibeos_x86_64_isr_frame_t *frame,
 
     child->id.clear_child_tid = (flags & CLONE_CHILD_CLEARTID) ? ctid : 0;
 
-    /* Descriptors are copied, not shared. Linux shares them under CLONE_FILES
-     * and a C library asks for that; here each thread gets its own table with
-     * the same entries, so opening a file in one thread is invisible to the
-     * others. Pipe ownership stays balanced because the copy takes a
-     * reference and exit releases it. Recorded as a difference rather than
-     * hidden: it is wrong for a program that passes descriptors between its
-     * own threads. */
-    {
-        hw_fds_inherit(child, parent);
-    }
+    /* Descriptors are shared, not copied: the table is in the process state
+     * the thread has just taken a reference to. It used to be copied here, so
+     * opening a file in one thread was invisible to the others and a close
+     * left the siblings holding the descriptor - THREADS_C5_FILES checks both
+     * directions. */
 
     /* Signal dispositions are the process's. That sentence used to sit above
      * a loop that copied them, so a handler installed in one thread was never
@@ -1027,6 +1022,15 @@ static long hw_sys_execve(vibeos_x86_64_isr_frame_t *frame, uint64_t path_uptr,
                 nps->sig_mask[sg] = ops->sig_mask[sg];
             }
         }
+
+        /* The descriptors survive the exec - that is how a shell hands a
+         * program its redirected output - so the new process gets a copy of
+         * the table and this thread stops using the old one. A threaded exec
+         * leaves the siblings the old table, still open; a single-threaded one
+         * was its last user and closes it, which the copy's own references
+         * balance. */
+        hw_fds_copy(nps, ops);
+        (void)hw_files_leave(ops);
 
         vibeos_task_stats()->execs++;
         int shared;

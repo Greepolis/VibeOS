@@ -35,3 +35,16 @@
     rmap_unlock();
 +++ new
     rmap_unlock();
+
+### teardown does not mark the claims it waits for
+# rmap_missing_remove, once in about fifty boots: an eviction that committed
+# after the teardown of its root had already forgotten the holder. Expect
+# test_eviction_during_teardown - the remove is counted as a missing one.
+--- old
+            g_claims[i].forgotten = 1;
++++ new
+            g_claims[i].forgotten = 0;
+
+# Not a case: clearing the mark when the last claim goes. The mark is read only
+# while a claim on the root is outstanding, and a new claim clears it, so a
+# stale one is never consulted; tried 2026-09-27, NOT RED, and removed.

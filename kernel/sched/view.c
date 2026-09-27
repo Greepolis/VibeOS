@@ -188,6 +188,8 @@ void vibeos_task_print_stats(void) {
     view_hex(s->exit_switch_irq_on);
     vibeos_x86_64_serial_puts(" procstate_double_put=0x");
     view_hex(s->procstate_double_put);
+    vibeos_x86_64_serial_puts(" files_double_leave=0x");
+    view_hex(s->files_double_leave);
     vibeos_x86_64_serial_puts("\n");
     vibeos_x86_64_serial_unlock();
 }
