@@ -25,7 +25,12 @@
 
 #include <stdint.h>
 
+#define SYS_read    0
 #define SYS_write   1
+#define SYS_close   3
+#define SYS_pipe    22
+#define SYS_fork    57
+#define SYS_wait4   61
 #define SYS_mmap    9
 #define SYS_munmap  11
 #define SYS_mprotect 10
@@ -156,6 +161,148 @@ static uint64_t stamp(uint32_t block, uint32_t page) {
     return 0x5EC1A1A000000000ull | ((uint64_t)block << 8) | (uint64_t)page;
 }
 
+/* A teardown while the clock is running.
+ *
+ * Every rare memory defect of the last stretch appeared in a boot where some
+ * process exited with a great deal mapped while reclaim was evicting: svc-press
+ * finishing beside the load (M-070), and this load itself exiting early with its
+ * blocks still mapped when mprotect refused it (M-073). Neither was arranged -
+ * both were accidents - and the counter that says the arrangement happened,
+ * rmap_claim_waits, was zero on every ordinary boot. So it is arranged here.
+ *
+ * A child fills memory past the low mark as the main load did, tells the parent,
+ * and exits without unmapping anything: its teardown has tens of thousands of
+ * pages to release. The parent, woken by the pipe, allocates at once - below the
+ * low mark, so every page it takes goes through reclaim, and reclaim's clock
+ * lands mostly on the child's frames, which are most of the machine. That is an
+ * eviction claiming pages of an address space that is being torn down, on
+ * purpose. What it must not produce is caught by counters the gate already
+ * asserts: a slot freed twice, a slot left allocated, a frame lost. */
+#define ABANDON_PUSH_BLOCKS 16u
+
+static void abandon_phase(void) {
+    uint64_t free_pages = 0, total_pages = 0, swap_pages = 0, swap_free = 0, low;
+    int fds[2];
+    int64_t pid;
+    char c = 0;
+    int status = 0;
+    uint32_t i, p, past = 0;
+
+    if (sys3(SYS_pipe, (uint64_t)(uintptr_t)fds, 0, 0) != 0) {
+        say("RECLAIM_FAIL: abandon pipe");
+        (void)sys3(SYS_exit, 1, 0, 0);
+    }
+    pid = sys3(SYS_fork, 0, 0, 0);
+    if (pid < 0) {
+        say("RECLAIM_FAIL: abandon fork");
+        (void)sys3(SYS_exit, 1, 0, 0);
+    }
+    if (pid == 0) {
+        uint32_t got = 0;
+
+        (void)sys3(SYS_close, (uint64_t)fds[0], 0, 0);
+        if (free_and_total(&free_pages, &total_pages, &swap_pages, &swap_free) != 0) {
+            (void)sys3(SYS_exit, 2, 0, 0);
+        }
+        low = total_pages / 64u;
+        while (got < MAX_BLOCKS && past < PAST_LOW_BLOCKS) {
+            int64_t a = sys6(SYS_mmap, 0, BLOCK_BYTES, PROT_READ | PROT_WRITE,
+                             MAP_PRIVATE | MAP_ANONYMOUS, (uint64_t)-1, 0);
+            uint8_t *b;
+
+            if (a <= 0) {
+                break;
+            }
+            b = (uint8_t *)(uintptr_t)a;
+            for (p = 0; p < BLOCK_PAGES; p++) {
+                ((uint64_t *)(b + p * 4096u))[0] = stamp(got, p);
+            }
+            got++;
+            if ((got % 256u) == 0u) {
+                say4("RECLAIM_ABANDON_AT ", got, 0, 0, 0, 0, 0, 0);
+            }
+            if (free_and_total(&free_pages, &total_pages, &swap_pages, &swap_free) != 0) {
+                break;
+            }
+            if (past > 0u || free_pages <= low) {
+                past++;
+                if (swap_free < swap_pages / 4u) {
+                    break;
+                }
+            }
+        }
+        say4("RECLAIM_ABANDON_FILLED blocks=", got, " past_low=", past, 0, 0, 0, 0);
+        /* The parent starts allocating the moment this arrives. The exit waits
+         * until swap has taken a few more pages - until reclaim is evicting,
+         * not merely about to. The first version exited at once and the
+         * teardown was over before the clock came back round: every page here
+         * was just written, so its first pass only clears the accessed bits,
+         * and rmap_claim_waits stayed at zero. Bounded, so a machine where
+         * nothing is evicted still finishes. */
+        {
+            uint64_t before = swap_free;
+            uint32_t spins;
+
+            (void)sys3(SYS_write, (uint64_t)fds[1], (uint64_t)(uintptr_t)"x", 1);
+            for (spins = 0; spins < 200000u; spins++) {
+                if (free_and_total(&free_pages, &total_pages, &swap_pages,
+                                   &swap_free) != 0 ||
+                    swap_free + 64u <= before) {
+                    break;
+                }
+            }
+            say4("RECLAIM_ABANDON_EXIT spins=", spins, " swapped_meanwhile=",
+                 before > swap_free ? before - swap_free : 0, 0, 0, 0, 0);
+        }
+        (void)sys3(SYS_exit, 0, 0, 0);
+    }
+
+    (void)sys3(SYS_close, (uint64_t)fds[1], 0, 0);
+    if (sys3(SYS_read, (uint64_t)fds[0], (uint64_t)(uintptr_t)&c, 1) != 1 || c != 'x') {
+        say("RECLAIM_FAIL: the abandoning child never filled");
+        (void)sys3(SYS_exit, 1, 0, 0);
+    }
+    for (i = 0; i < ABANDON_PUSH_BLOCKS; i++) {
+        int64_t a = sys6(SYS_mmap, 0, BLOCK_BYTES, PROT_READ | PROT_WRITE,
+                         MAP_PRIVATE | MAP_ANONYMOUS, (uint64_t)-1, 0);
+
+        if (a <= 0) {
+            break;
+        }
+        g_block[i] = (uint8_t *)(uintptr_t)a;
+        for (p = 0; p < BLOCK_PAGES; p++) {
+            uint64_t *w = (uint64_t *)(g_block[i] + p * 4096u);
+            w[0] = stamp(i, p);
+            w[256] = ~stamp(i, p);
+        }
+    }
+    {
+        uint32_t pushed = i, bad = 0;
+
+        for (i = 0; i < pushed; i++) {
+            for (p = 0; p < BLOCK_PAGES; p++) {
+                const uint64_t *w = (const uint64_t *)(g_block[i] + p * 4096u);
+                if (w[0] != stamp(i, p) || w[256] != ~stamp(i, p)) {
+                    bad++;
+                }
+            }
+            (void)sys3(SYS_munmap, (uint64_t)(uintptr_t)g_block[i], BLOCK_BYTES, 0);
+        }
+        if (sys3(SYS_wait4, (uint64_t)pid, (uint64_t)(uintptr_t)&status, 0) != pid ||
+            status != 0) {
+            say4("RECLAIM_FAIL: the abandoning child ended with status ",
+                 (uint64_t)(uint32_t)status, 0, 0, 0, 0, 0, 0);
+            (void)sys3(SYS_exit, 1, 0, 0);
+        }
+        if (bad != 0u) {
+            say4("RECLAIM_FAIL: pages written during the teardown changed = ", bad,
+                 0, 0, 0, 0, 0, 0);
+            (void)sys3(SYS_exit, 1, 0, 0);
+        }
+        say4("RECLAIM_ABANDON_OK pushed=", pushed, 0, 0, 0, 0, 0, 0);
+    }
+}
+
 int vibeos_main(void) {
     uint64_t free_pages = 0, total_pages = 0, swap_pages = 0, swap_free = 0, low;
     uint32_t got = 0, past = 0, refused = 0, bad = 0, i, p;
@@ -250,6 +397,7 @@ int vibeos_main(void) {
         (void)sys3(SYS_exit, 1, 0, 0);
     }
     say4("RECLAIM_OK blocks=", got, " past_low=", past, 0, 0, 0, 0);
+    abandon_phase();
     (void)sys3(SYS_exit, 0, 0, 0);
     return 0;
 }

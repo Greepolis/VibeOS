@@ -6,6 +6,10 @@
 #  1. the read-back expects a word nobody wrote: every page "changed".
 #     Expect reclaim_load_failed.
 #  2. it never says it finished. Expect reclaim_load_did_not_finish.
+#  3. the abandon phase - a child exiting with most of the machine mapped
+#     while the parent drives reclaim into its pages (2026-09-27) - never says
+#     it finished. Expect reclaim_abandon_did_not_finish: that half is asserted
+#     on its own line, not inferred from RECLAIM_OK.
 #
 # reclaim_load_never_ran is in services-press.txt: it needs init.c.
 
@@ -19,3 +23,9 @@
 --- old
     say4("RECLAIM_OK blocks=", got, " past_low=", past, 0, 0, 0, 0);
 +++ new
+
+### the abandon phase never says it finished
+--- old
+        say4("RECLAIM_ABANDON_OK pushed=", pushed, 0, 0, 0, 0, 0, 0);
++++ new
+        say4("RECLAIM_ABANDON_DONE pushed=", pushed, 0, 0, 0, 0, 0, 0);

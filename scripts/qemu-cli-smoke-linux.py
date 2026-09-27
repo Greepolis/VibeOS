@@ -2496,6 +2496,12 @@ def main():
                 problems.append("reclaim_load_failed")
             elif not re.search(r"RECLAIM_OK blocks=\d+ past_low=\d+", text):
                 problems.append("reclaim_load_did_not_finish")
+            elif not re.search(r"RECLAIM_ABANDON_OK pushed=\d+", text):
+                # The second half: a child exits with most of the machine
+                # mapped while the parent's allocations drive reclaim into its
+                # pages - a teardown racing the clock, arranged rather than
+                # left to accident (M-070, M-073).
+                problems.append("reclaim_abandon_did_not_finish")
             rcl = re.search(r"anon_evicted=0x([0-9a-f]{16})", text)
             if rcl is None or int(rcl.group(1), 16) == 0:
                 problems.append("reclaim_never_evicted_an_anonymous_page")

@@ -126,3 +126,28 @@ Lesson worth keeping from the order of events: the rare defect was not found by
 hunting for it. It appeared when a load that normally runs to completion
 stopped early and left a large teardown to race the clock - an arrangement no
 test had set up on purpose.
+
+## The arrangement, made on purpose
+
+That arrangement is also where the two defects still open were seen: M-070
+(a page lost and a slot freed twice) in a boot where svc-press exited beside
+the load, and M-068 in the boot where the load's first version outlived init.
+Twenty-four boots with the clock's second chance disabled - the thrash in which
+M-070 first appeared, rebuilt in a separate worktree - were all clean, and all
+had `rmap_claim_waits=0`: not one teardown ever met an eviction in progress.
+Thrash alone does not produce it.
+
+So `svc-reclaim` has a second half. After `RECLAIM_OK`, a child fills memory
+past the low mark as the main load did, tells the parent through a pipe, and
+exits with everything still mapped; the parent allocates at once, below the low
+mark, so every page it takes goes through reclaim, and the clock lands mostly
+on the child's frames. The first version had the child exit immediately and the
+race still did not happen: every page it owned had just been written, so the
+clock's first pass only cleared accessed bits, and the teardown was over before
+it came round again. The child now waits until swap has taken 64 more pages -
+until reclaim is *evicting* - before it exits. The first boot of that version
+reported `rmap_claim_waits=1 rmap_removed_after_forget=1`: exactly the event that
+had been `rmap_missing_remove=1`, now arranged and classified. The gate asserts
+`RECLAIM_ABANDON_OK` (`reclaim_abandon_did_not_finish`); what the race must not
+produce - a slot freed twice or left allocated, a frame lost - is caught by
+counters it already asserts.
