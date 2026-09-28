@@ -627,6 +627,16 @@ slot allocator (now in `task_switch.c`) and into a console helper (still in
 `arch_hw.c`) each turn it red, naming the function. `arch_hw.c` is 3,119
 lines.
 
+**The banner "APIC + SMP bring-up" covered 640 lines, of which 145 were that.**
+The application-processor bring-up - the bootstrap core's local APIC, the ISA
+lines routed on the IO-APIC, every other core woken and given an idle task -
+moved to `kernel/arch/x86_64/smp.c` (2026-09-28). It did not go into `apic.c`:
+that is the hardware driver and knows nothing of tasks, and this code needs the
+per-CPU table and the idle tasks. The APIC driver's declarations, which were
+written inline in `arch_hw.c`, went with it; only the end-of-interrupt stayed.
+One sabotage case (`io-device-boot-smp.txt`, split from `io-device-boot.txt`)
+was re-run on the new file. `arch_hw.c` is 2,961 lines.
+
 ---
 
 ## What this plan still does not do

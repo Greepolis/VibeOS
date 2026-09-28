@@ -29,6 +29,9 @@
 # asserts that it arrived and woke a reader. device_counters_missing is the
 # [DEV] line disappearing.
 #
+# "The legacy lines are not routed" moved to io-device-boot-smp.txt with the
+# IO-APIC routing it breaks, which left arch_hw.c for smp.c (2026-09-28).
+#
 # Target source: kernel/arch/x86_64/arch_hw.c
 # Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/arch/x86_64/arch_hw.c scripts/dev/cases/io-device-boot.txt
 
@@ -43,13 +46,6 @@
             (vibeos_device_irq((int)frame->vector - 32) & VIBEOS_DEV_IRQ_INPUT)) {
 +++ new
             (vibeos_device_irq((int)frame->vector - 32) & 0)) {
-
-### the legacy lines are not routed
---- old
-        uint32_t i, n = vibeos_device_isa_lines(lines, 16u);
-+++ new
-        uint32_t i, n = 0u;
-        (void)vibeos_device_isa_lines;
 
 ### only the first disk is bound
 --- old

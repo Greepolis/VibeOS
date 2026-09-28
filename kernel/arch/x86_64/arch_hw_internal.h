@@ -892,4 +892,14 @@ extern volatile int g_relrace_slot;
 extern hw_perf_t g_perf_switch;
 extern volatile int g_sched_running;
 
+/* ---- application processors (smp.c) ------------------------------------------
+ * What crosses between it and arch_hw.c. */
+#define VIBEOS_HW_IRQ_TIMER 32u
+void hw_apic_bringup(const vibeos_boot_info_t *boot_info);
+void hw_smp_bringup(void);
+extern uint8_t g_ap_boot_stack[VIBEOS_HW_MAX_CPUS][16384] __attribute__((aligned(16)));
+void hw_enable_syscall(void);
+void hw_load_gdt(uint32_t cpu_index);
+void hw_load_idt_only(void);
+
 #endif
