@@ -663,6 +663,7 @@ int hw_proc_create(hw_proc_t *p, hw_procstate_t *ps,
 int hw_map_user_pages(vibeos_hw_aspace_t *as, uint64_t va, uint64_t pages);
 uint64_t hw_proc_cr3(const hw_proc_t *p);
 void hw_pipe_init(void);
+void hw_mount_table_init(void);
 uint64_t hw_alloc_kstack(uint64_t *out_base, uint32_t *out_pages);
 hw_procstate_t *hw_procstate_new(void);
 void hw_procstate_put(hw_procstate_t *ps);

@@ -25,6 +25,7 @@ static const char *const g_name[VIBEOS_MBZ_COUNT] = {
     "pipe_bad_slot",
     "klog_line_lost",
     "device_after_seal",
+    "mount_unlocked",
 };
 
 void vibeos_mbz_hit(vibeos_mbz_id_t id, uint64_t witness) {

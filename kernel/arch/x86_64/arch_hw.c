@@ -1569,6 +1569,24 @@ void hw_pipe_init(void) {
     vibeos_pipe_reset();
 }
 
+/* The mount table's own lock (vibeos_fs_set_lock). Its own, not the pipes' or the
+ * scheduler's: resolving a path must not wait on either, and nothing is called
+ * while it is held. Registered before the first attach, which is the storage
+ * bring-up; a call before this counts as mount_unlocked. */
+static hw_lock_t g_mount_lock;
+
+static void hw_mount_lock(void) {
+    hw_spin_lock_named(&g_mount_lock, "vibeos_mounts");
+}
+
+static void hw_mount_unlock(void) {
+    hw_spin_unlock(&g_mount_lock);
+}
+
+void hw_mount_table_init(void) {
+    vibeos_fs_set_lock(hw_mount_lock, hw_mount_unlock);
+}
+
 /* hw_task_t now lives in arch_hw_internal.h, so the files lifted out
  * of here can see it. */
 
@@ -2094,6 +2112,7 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
      * malformed table stops the boot with the reason instead of answering some
      * call wrongly for the life of the machine. */
     hw_pipe_init();
+    hw_mount_table_init();
     vibeos_linux_abi_init();
 
     /* SSE on, explicitly, on this core too.

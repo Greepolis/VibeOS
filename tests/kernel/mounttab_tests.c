@@ -10,12 +10,81 @@
 #include <string.h>
 
 #include "vibeos/vfs.h"
+#include "vibeos/mbz.h"
 
 static vibeos_fsmount_t g_root, g_usr, g_lib;
 
 static int fail(const char *what) {
     printf("FAIL:mounttab %s\n", what);
     return -1;
+}
+
+/* A lock that counts. Taken and released once per call, never held across a
+ * return: `depth` must be back at zero after every operation, and `taken` says
+ * the operation asked at all. */
+static int g_depth, g_taken, g_nested;
+
+static void count_lock(void) {
+    if (g_depth != 0) {
+        g_nested++;
+    }
+    g_depth++;
+    g_taken++;
+}
+
+static void count_unlock(void) {
+    g_depth--;
+}
+
+/* Every operation, with the lock registered: each must take it exactly once and
+ * give it back, and none may count as unlocked. The operations are the ones a
+ * resolve can race - attach appends, detach moves the last entry into a hole. */
+static int test_mounttab_locked(void) {
+    vibeos_fsmount_t *m;
+    const char *tail;
+    uint64_t unlocked = vibeos_mbz_count(VIBEOS_MBZ_MOUNT_UNLOCKED);
+    int before;
+
+    vibeos_fs_set_lock(count_lock, count_unlock);
+    g_depth = g_taken = g_nested = 0;
+    vibeos_fs_detach_all();
+
+#define ONCE(what, call)                                                  \
+    before = g_taken;                                                     \
+    (void)(call);                                                         \
+    if (g_taken != before + 1 || g_depth != 0) {                          \
+        vibeos_fs_set_lock(0, 0);                                         \
+        return fail(what " did not take and release the lock once");      \
+    }
+    ONCE("attach", vibeos_fs_attach("/", &g_root));
+    ONCE("an attach that is refused", vibeos_fs_attach("/", &g_usr));
+    ONCE("attach of a second mount", vibeos_fs_attach("/usr", &g_usr));
+    ONCE("resolve", vibeos_fs_resolve("/usr/x", &m, &tail));
+    ONCE("detach_all", vibeos_fs_detach_all());
+    ONCE("resolve on an empty table", vibeos_fs_resolve("/x", &m, &tail));
+    ONCE("attach again", vibeos_fs_attach("/usr", &g_usr));
+    ONCE("detach", vibeos_fs_detach("/usr"));
+    ONCE("a detach that finds nothing", vibeos_fs_detach("/usr"));
+    ONCE("mount_count", vibeos_fs_mount_count());
+    ONCE("mount_path", vibeos_fs_mount_path(0));
+    ONCE("mount_at", vibeos_fs_mount_at(0));
+#undef ONCE
+    if (g_nested != 0) {
+        vibeos_fs_set_lock(0, 0);
+        return fail("an operation took the lock while already holding it");
+    }
+    if (vibeos_mbz_count(VIBEOS_MBZ_MOUNT_UNLOCKED) != unlocked) {
+        vibeos_fs_set_lock(0, 0);
+        return fail("a call with the lock registered was counted as unlocked");
+    }
+    vibeos_fs_set_lock(0, 0);
+    vibeos_fs_detach_all();
+    /* And without one, the call still works and is counted - which is what
+     * the boot gate reads to know the architecture registered it. */
+    if (vibeos_mbz_count(VIBEOS_MBZ_MOUNT_UNLOCKED) == unlocked) {
+        return fail("a call with no lock registered was not counted");
+    }
+    return 0;
 }
 
 int test_mounttab(void) {
@@ -125,5 +194,5 @@ int test_mounttab(void) {
     if (vibeos_fs_mount_count() != 0u) {
         return fail("detach_all left something behind");
     }
-    return 0;
+    return test_mounttab_locked();
 }

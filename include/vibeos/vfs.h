@@ -121,6 +121,21 @@ int vibeos_fs_mkdir(vibeos_fsmount_t *mnt, const char *path);
 #define VIBEOS_FS_MOUNTS_MAX 8u
 #define VIBEOS_FS_MOUNT_PATH_MAX 32u
 
+/* The table's lock, supplied by the architecture, as the pipe and frame layers'
+ * are. Every function below takes it for exactly as long as it touches the
+ * table.
+ *
+ * Until 2026-09-28 the table had no lock and did not need one by accident: every
+ * caller ran during single-core bring-up. Attach appends, detach moves the last
+ * entry into the hole it leaves, and resolve walks the entries - so a resolve
+ * beside a detach can read an entry half copied and hand back the wrong
+ * mount for a path, which is the shape of the page cache's defect in CLAUDE.md
+ * ("a layer that is serialised by accident is not serialised"). A call made with
+ * no lock registered is counted as VIBEOS_MBZ_MOUNT_UNLOCKED, which the boot
+ * gate asserts is zero: a lock that is configured by nobody is caught rather
+ * than trusted. */
+void vibeos_fs_set_lock(void (*lock)(void), void (*unlock)(void));
+
 /* Attach a mounted volume at `path`. `path` must start with '/'.
  *
  * Returns 0, or negative when the path is taken, malformed, or the table is

@@ -77,7 +77,7 @@ AREAS = ("abi", "core", "diag", "exec", "fs", "io", "ipc", "mm", "net", "object"
 BASELINE = {
     "no_header": 15,
     "exported_state": 0,
-    "state_without_lock": 2,   # was 3: mm/anon. Its hand and counters are atomic now (M-056); what this textual check saw is the comment saying why it takes no lock
+    "state_without_lock": 1,   # was 2: fs/vfs has its own lock (2026-09-28). Was 3 before: mm/anon. Its hand and counters are atomic now (M-056); what this textual check saw is the comment saying why it takes no lock
     "no_case": 32,   # was 33; mm/anon gained mm-anon-claims.txt (M-056). Before: 35, then ext2 with M-049
     # C2 step 3. Modules with no must-be-zero, no counter asserted elsewhere and
     # no written exemption. Was 36 of 50 when the property was added.
@@ -85,7 +85,7 @@ BASELINE = {
     # Modules exempted by reason (EXEMPT below). It may only go down: an
     # exemption is a claim that the module has no failure mode a counter could
     # see, and every one is a place a defect could hide without a detector.
-    "mustbezero_exempt": 24,   # was 21; +1 sched/task_ident, +1 fs/fdtable (C5): pure functions over a caller-owned struct, decided not reflexed; +1 diag/crash (C6), see its entry
+    "mustbezero_exempt": 23,   # was 24: fs/vfs counts mount_unlocked (2026-09-28). Was 21; +1 sched/task_ident, +1 fs/fdtable (C5): pure functions over a caller-owned struct, decided not reflexed; +1 diag/crash (C6), see its entry
 }
 
 # A module counts as having a must-be-zero when one of these holds. Three routes,
@@ -126,7 +126,6 @@ EXEMPT = {
     "sched/sched_policy": "a pure decision over its arguments; no state",
     "exec/stats": "the counters themselves; what exec refuses is reported by exec, and a missing file is a normal outcome",
     "fs/storage": "a table of volumes; unmounted and not-found are results the caller handles",
-    "fs/vfs": "a dispatch table; a refusal is the underlying filesystem's, counted there",
     "mm/pmm": "boot-time region arithmetic, saturating; a wrong region shows as frames_leaked or poison_hits, both gated",
     "mm/reclaim": "pressure events are load, not defect; freeing a live frame shows as poison_hits and frames_double_put, gated",
     "mm/usage": "read-only reporting with no state",

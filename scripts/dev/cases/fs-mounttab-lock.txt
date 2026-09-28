@@ -1,0 +1,34 @@
+# The mount table locks itself (2026-09-28). It had no lock and did not need one
+# by accident - every caller ran during single-core bring-up - while attach
+# appends and detach moves the last entry into the hole, so a resolve beside
+# either reads a half-moved entry. Proved by test_mounttab's locked half.
+#
+#  1. resolve reads the table without the lock. Expect "resolve did not take and
+#     release the lock once".
+#  2. detach releases the lock twice on its way out. Expect "detach did not take
+#     and release the lock once" - the depth goes negative.
+#
+# Target source: kernel/fs/vfs.c
+# Run: python3 scripts/dev/sabotage.py kernel/fs/vfs.c scripts/dev/cases/fs-mounttab-lock.txt
+
+### resolve reads the table without the lock
+--- old
+    if (!path || !out_mnt || !out_tail || path[0] != '/') {
+        return -1;
+    }
+    mt_lock();
++++ new
+    if (!path || !out_mnt || !out_tail || path[0] != '/') {
+        return -1;
+    }
+
+### detach releases the lock twice
+--- old
+            g_mount_count--;
+            mt_unlock();
+            return 0;
++++ new
+            g_mount_count--;
+            mt_unlock();
+            mt_unlock();
+            return 0;

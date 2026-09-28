@@ -8,6 +8,7 @@
  */
 
 #include "vibeos/vfs.h"
+#include "vibeos/mbz.h"
 
 int vibeos_fs_mount(vibeos_fsmount_t *mnt, const vibeos_fs_ops_t *ops,
                      void *fs, const char *type) {
@@ -141,6 +142,29 @@ typedef struct {
 
 static fs_attach_t g_mounts[VIBEOS_FS_MOUNTS_MAX];
 static uint32_t g_mount_count;
+static void (*g_lock)(void);
+static void (*g_unlock)(void);
+
+void vibeos_fs_set_lock(void (*lock)(void), void (*unlock)(void)) {
+    g_lock = lock;
+    g_unlock = unlock;
+}
+
+/* See vibeos_fs_set_lock in vfs.h. With none registered - the host tests, or an
+ * architecture that forgot - the call still runs, and says so. */
+static void mt_lock(void) {
+    if (g_lock) {
+        g_lock();
+    } else {
+        vibeos_mbz_hit(VIBEOS_MBZ_MOUNT_UNLOCKED, 0u);
+    }
+}
+
+static void mt_unlock(void) {
+    if (g_unlock) {
+        g_unlock();
+    }
+}
 
 static uint32_t fs_strlen(const char *s) {
     uint32_t n = 0;
@@ -177,12 +201,15 @@ int vibeos_fs_attach(const char *path, vibeos_fsmount_t *mnt) {
     if (len > 1u && path[len - 1u] == '/') {
         return -1;
     }
+    mt_lock();
     for (i = 0; i < g_mount_count; i++) {
         if (g_mounts[i].path_len == len && fs_same(g_mounts[i].path, path, len)) {
+            mt_unlock();
             return -1;   /* taken; see the header on why not overwritten */
         }
     }
     if (g_mount_count >= VIBEOS_FS_MOUNTS_MAX) {
+        mt_unlock();
         return -1;
     }
     for (i = 0; i < len; i++) {
@@ -192,6 +219,7 @@ int vibeos_fs_attach(const char *path, vibeos_fsmount_t *mnt) {
     g_mounts[g_mount_count].path_len = len;
     g_mounts[g_mount_count].mnt = mnt;
     g_mount_count++;
+    mt_unlock();
     return 0;
 }
 
@@ -202,16 +230,20 @@ int vibeos_fs_detach(const char *path) {
         return -1;
     }
     len = fs_strlen(path);
+    mt_lock();
     for (i = 0; i < g_mount_count; i++) {
         if (g_mounts[i].path_len == len && fs_same(g_mounts[i].path, path, len)) {
             /* The last entry moves into the hole. Order carries no meaning
              * here precisely because resolution is longest-prefix rather than
-             * first-match, which is what makes that safe. */
+             * first-match, which is what makes that safe - for a reader that
+             * cannot see the move half done, which is what the lock is for. */
             g_mounts[i] = g_mounts[g_mount_count - 1u];
             g_mount_count--;
+            mt_unlock();
             return 0;
         }
     }
+    mt_unlock();
     return -1;
 }
 
@@ -224,6 +256,7 @@ int vibeos_fs_resolve(const char *path, vibeos_fsmount_t **out_mnt,
     if (!path || !out_mnt || !out_tail || path[0] != '/') {
         return -1;
     }
+    mt_lock();
     for (i = 0; i < g_mount_count; i++) {
         uint32_t n = g_mounts[i].path_len;
         if (!fs_same(g_mounts[i].path, path, n)) {
@@ -242,9 +275,11 @@ int vibeos_fs_resolve(const char *path, vibeos_fsmount_t **out_mnt,
         }
     }
     if (best < 0) {
+        mt_unlock();
         return -1;
     }
     *out_mnt = g_mounts[best].mnt;
+    mt_unlock();
     /* What is left, without the mount's own prefix and without a leading
      * slash: a driver is handed a path relative to its own root, which is what
      * lets one driver be mounted in two places. */
@@ -259,17 +294,36 @@ int vibeos_fs_resolve(const char *path, vibeos_fsmount_t **out_mnt,
 }
 
 uint32_t vibeos_fs_mount_count(void) {
-    return g_mount_count;
+    uint32_t n;
+
+    mt_lock();
+    n = g_mount_count;
+    mt_unlock();
+    return n;
 }
 
+/* For reporting. The pointer names the entry's own storage, which a later
+ * detach may reuse - read it before anything else changes the table. */
 const char *vibeos_fs_mount_path(uint32_t index) {
-    return (index < g_mount_count) ? g_mounts[index].path : 0;
+    const char *p;
+
+    mt_lock();
+    p = (index < g_mount_count) ? g_mounts[index].path : 0;
+    mt_unlock();
+    return p;
 }
 
 vibeos_fsmount_t *vibeos_fs_mount_at(uint32_t index) {
-    return (index < g_mount_count) ? g_mounts[index].mnt : 0;
+    vibeos_fsmount_t *m;
+
+    mt_lock();
+    m = (index < g_mount_count) ? g_mounts[index].mnt : 0;
+    mt_unlock();
+    return m;
 }
 
 void vibeos_fs_detach_all(void) {
+    mt_lock();
     g_mount_count = 0;
+    mt_unlock();
 }
