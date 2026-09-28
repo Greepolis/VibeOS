@@ -830,19 +830,29 @@ void hw_task_set_service(int slot, uint32_t service_id);
 
 /* ---- the memory bridge (mm_bridge.c) ----------------------------------------
  * What crosses between it and arch_hw.c. Everything else in it is its own. */
+/* The counters live in one structure now (plan phase P0), so the console, the
+ * boot gate and a panic all read the same numbers. The names below keep the
+ * call sites unchanged - there are about forty - while there is exactly one
+ * place holding the values. */
+#define g_cow_shared      (vibeos_mm_stats()->cow_shared)
+#define g_cow_copied      (vibeos_mm_stats()->cow_copied)
+#define g_tlb_shootdowns  (vibeos_mm_stats()->tlb_shootdowns)
+#define g_tlb_acks        (vibeos_mm_stats()->tlb_acks)
+#define g_untracked_frees (vibeos_mm_stats()->frames_leaked)
+extern int g_apic_mode;
+extern uint32_t g_cpu_online_count;
+extern volatile uint32_t g_tlb_flush_live;
+extern uint64_t g_cow_copy_changed;
+extern uint64_t g_cow_resolved;
+int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code, uint64_t rip);
 #define PTE_PS      0x080ull            /* 2 MiB page at PD level */
 #define hw_free_page(p) hw_free_page_why((p), __func__)
 #define VIBEOS_HW_LOCK_SPIN_LIMIT 400000000ull
 void *hw_alloc_pages_contig(uint32_t count);
 void hw_enable_paging(void);
 void hw_pmm_bringup(const vibeos_boot_info_t *boot_info);
-int hw_swap_bring_in(vibeos_vmspace_t *sv, uint64_t va);
 void hw_tlbq_help_quiesce(void);
-void hw_tlbq_put(uint64_t root, uint64_t phys);
 void hw_tlbq_selftest(void);
-int hw_frame_still_mapped(uint64_t phys, uint32_t *out_pid, uint32_t *out_mappers, uint64_t *out_va);
-void hw_tlb_shootdown(uint64_t cr3);
-extern const uint64_t *g_aspace_being_destroyed;
 extern int g_frame_layer_ready;
 extern vibeos_pmm_t g_hw_pmm;
 extern uint32_t g_last_destroy_cpu;

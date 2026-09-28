@@ -599,7 +599,19 @@ two files - nine functions and eight variables - is declared in
 `arch_hw_internal.h` under "the memory bridge", so the coupling is a list that
 can be read and shrunk. The two case files whose code moved
 (`mm-tlbq-holders.txt`, `mm-swap-check.txt`) were re-pointed and re-run against
-the new file. `arch_hw.c` is 4,637 lines.
+the new file.
+
+The second half followed the same day: user-memory validation
+(`hw_user_range_ok` and its reasons, `hw_user_addr_ok`), the page-table
+primitives, the TLB shootdown and its wait, the copy-on-write fault and fork's
+copy, and the walk that asks whether a frame is still mapped - about 680 lines
+that sat under arch_hw.c's "shared with the Linux ABI layer" banner, which is
+the rule about banners again. The copy-on-write record and its counters moved
+with the fault that writes them. Five of the first half's crossings stopped
+crossing and are private again (`hw_tlb_shootdown`, `hw_frame_still_mapped`,
+`hw_tlbq_put`, `hw_swap_bring_in`, `g_aspace_being_destroyed`); the list gained
+the fault itself, for the trap handler, the two copy-on-write counters the
+report prints, and three flags of the SMP code the shootdown reads. `arch_hw.c` is 3,940 lines, `mm_bridge.c` 2,736.
 
 ---
 

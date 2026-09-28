@@ -34,7 +34,7 @@ looked; the file is what they are supposed to be.
 ---
 
 case 1: a cached page no longer matches its file
-  break:   in kernel/arch/x86_64/arch_hw.c, after the cache page is filled,
+  break:   in kernel/arch/x86_64/mm_bridge.c, after the cache page is filled,
            flip one byte of a resident cache frame - e.g. in hw_cache_audit
            itself, force `differs = 1` for the first entry examined.
   expect:  [EXEC] CACHE_PAGE_CHANGED file=0x... offset=0x... byte=0x...

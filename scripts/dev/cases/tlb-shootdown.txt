@@ -1,4 +1,4 @@
-# Target source: kernel/mm/vmspace.c (fork), kernel/arch/x86_64/arch_hw.c (the shootdown itself)
+# Target source: kernel/mm/vmspace.c (fork), kernel/arch/x86_64/mm_bridge.c (the shootdown itself)
 
 ### fork never tells the other cores their TLBs are stale
 --- old
@@ -56,5 +56,5 @@
 # and not wrong, which is what this case always claimed.
 #
 # "Fork never tells the other cores" anchors in kernel/mm/vmspace.c and reads
-# "anchor not found" when this file is run against arch_hw.c; run it against
+# "anchor not found" when this file is run against mm_bridge.c; run it against
 # vmspace.c for that case.
