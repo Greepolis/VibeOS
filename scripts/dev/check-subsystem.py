@@ -77,7 +77,7 @@ AREAS = ("abi", "core", "diag", "exec", "fs", "io", "ipc", "mm", "net", "object"
 BASELINE = {
     "no_header": 15,
     "exported_state": 0,
-    "state_without_lock": 1,   # was 2: fs/vfs has its own lock (2026-09-28). Was 3 before: mm/anon. Its hand and counters are atomic now (M-056); what this textual check saw is the comment saying why it takes no lock
+    "state_without_lock": 0,   # was 2: fs/vfs has its own lock and sched/forkguard atomic counters (2026-09-28). Was 3 before: mm/anon. Its hand and counters are atomic now (M-056); what this textual check saw is the comment saying why it takes no lock
     "no_case": 32,   # was 33; mm/anon gained mm-anon-claims.txt (M-056). Before: 35, then ext2 with M-049
     # C2 step 3. Modules with no must-be-zero, no counter asserted elsewhere and
     # no written exemption. Was 36 of 50 when the property was added.

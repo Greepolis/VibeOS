@@ -7,10 +7,23 @@
 
 #include "vibeos/forkguard.h"
 
+/* No lock, and that is a decision rather than an omission (2026-09-28).
+ *
+ * The verdict has no state of its own: the three limits are written once, by
+ * init, before any task exists, and the counts it judges arrive as arguments -
+ * computed by the caller under the scheduler's lock, which is what makes them
+ * mean anything. What is left to protect is the statistics, and those are
+ * atomic adds. Until then they were plain `++`, correct only because the one
+ * caller happens to hold g_sched_lock - a layer serialised by accident, which
+ * a second caller outside that lock would have turned into lost counts. */
 static vibeos_forkguard_stats_t g_stats;
 static uint32_t g_total;
 static uint32_t g_reserved;
 static uint32_t g_max_children;
+
+static void count(uint64_t *field) {
+    __atomic_fetch_add(field, 1u, __ATOMIC_RELAXED);
+}
 
 int vibeos_forkguard_init(uint32_t slots_total, uint32_t reserved,
                           uint32_t max_children) {
@@ -43,7 +56,7 @@ vibeos_fork_verdict_t vibeos_forkguard_check(uint32_t slots_in_use,
     }
 
     if (slots_in_use >= g_total) {
-        g_stats.refused_no_slots++;
+        count(&g_stats.refused_no_slots);
         return VIBEOS_FORK_NO_SLOTS;
     }
 
@@ -52,16 +65,16 @@ vibeos_fork_verdict_t vibeos_forkguard_check(uint32_t slots_in_use,
      * machine is full. The two produce the same errno and completely different
      * investigations. */
     if (!privileged && requester_children >= g_max_children) {
-        g_stats.refused_children++;
+        count(&g_stats.refused_children);
         return VIBEOS_FORK_TOO_MANY_KIDS;
     }
 
     if (!privileged && slots_in_use + g_reserved >= g_total) {
-        g_stats.refused_reserved++;
+        count(&g_stats.refused_reserved);
         return VIBEOS_FORK_RESERVED;
     }
 
-    g_stats.allowed++;
+    count(&g_stats.allowed);
     return VIBEOS_FORK_OK;
 }
 
