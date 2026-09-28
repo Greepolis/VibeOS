@@ -31,12 +31,18 @@ echo "[VM-IMG] building ESP image..."
 # NTFS and exFAT are 16 MiB each - so the tree outgrew it and this step failed
 # with nothing in the log that named the size. A constant that has to track the
 # contents of a directory will stop tracking it; measuring costs one du.
-ESP_MB=$(du -sm "$EFI_ROOT" | cut -f1)
+#
+# --apparent-size, because the filesystem images are made with truncate and are
+# sparse: plain du counts the blocks they occupy, not the bytes the ESP writer
+# copies. It measured 26 MiB for a tree that needed about 58 as soon as CI built
+# the NTFS and exFAT images (2026-09-28), and the step failed with "content does
+# not fit in image".
+ESP_MB=$(du -sm --apparent-size "$EFI_ROOT" | cut -f1)
 # Half again, and never below the old 24: FAT needs room for its own tables and
 # for the boot to write into, and the write-proof test does exactly that.
 ESP_MB=$(( ESP_MB + ESP_MB / 2 + 8 ))
 if [[ "$ESP_MB" -lt 24 ]]; then ESP_MB=24; fi
-echo "[VM-IMG] EFI root is $(du -sm "$EFI_ROOT" | cut -f1) MiB; ESP sized at ${ESP_MB} MiB"
+echo "[VM-IMG] EFI root is $(du -sm --apparent-size "$EFI_ROOT" | cut -f1) MiB; ESP sized at ${ESP_MB} MiB"
 python3 "$SCRIPT_DIR/make_esp_image.py" "$EFI_ROOT" "$ESP" "$ESP_MB" || exit 1
 
 if command -v qemu-img >/dev/null 2>&1; then
