@@ -1,4 +1,4 @@
-# Target source: kernel/arch/x86_64/arch_hw.c
+# Target source: kernel/arch/x86_64/mm_bridge.c
 #
 # The per-slot check on every page-in: a hash of what was written, compared with
 # what comes back. It exists because QEMU's vvfat - the gate's boot disk until

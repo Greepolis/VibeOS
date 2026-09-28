@@ -1,4 +1,4 @@
-# Target source: kernel/arch/x86_64/arch_hw.c
+# Target source: kernel/arch/x86_64/mm_bridge.c
 #
 # M-061: the TLB quarantine parks a frame only when another core has the
 # address space loaded. Run with SABOTAGE_VERIFY=scripts/dev/verify-boot.sh.

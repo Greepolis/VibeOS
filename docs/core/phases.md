@@ -587,6 +587,20 @@ fallback rather than an idle, deliberately, because a task the policy was never
 told about is an admission bug and refusing to run it turns that bug into a hang
 instead of a slower machine. `charged + idle == seen` watches it.
 
+**The memory bridge left `arch_hw.c` (2026-09-28).** Paging and the identity
+map, the frame pool and its bring-up, the TLB quarantine, allocation with
+admission, the lock adapters each portable layer is given, the vmspace backend,
+the swap bridges and the page cache's wiring - about 2,000 lines, moved whole to
+`kernel/arch/x86_64/mm_bridge.c` with nothing changed in the move. Nearly every
+memory defect of the reclaim work (M-056..M-073) was fixed in those lines while
+they sat in a file whose functions are almost all static, which is what makes a
+hung core's nearest-preceding-symbol name unreliable. What crosses between the
+two files - nine functions and eight variables - is declared in
+`arch_hw_internal.h` under "the memory bridge", so the coupling is a list that
+can be read and shrunk. The two case files whose code moved
+(`mm-tlbq-holders.txt`, `mm-swap-check.txt`) were re-pointed and re-run against
+the new file. `arch_hw.c` is 4,637 lines.
+
 ---
 
 ## What this plan still does not do

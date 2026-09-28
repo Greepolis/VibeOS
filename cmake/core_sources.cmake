@@ -128,6 +128,7 @@ set(VIBEOS_KERNEL_DRIVER_SOURCES
 set(VIBEOS_ARCH_X86_64_SOURCES
     kernel/arch/x86_64/arch_hw.c
     kernel/arch/x86_64/task_life.c
+    kernel/arch/x86_64/mm_bridge.c
     kernel/arch/x86_64/io_bringup.c
     kernel/abi/linux/net.c
     kernel/abi/linux/common.c

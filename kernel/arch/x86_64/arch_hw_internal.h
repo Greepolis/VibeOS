@@ -828,4 +828,27 @@ uint32_t hw_task_pgid_of(const hw_task_t *t);
 int hw_task_is_user_of(const hw_task_t *t);
 void hw_task_set_service(int slot, uint32_t service_id);
 
+/* ---- the memory bridge (mm_bridge.c) ----------------------------------------
+ * What crosses between it and arch_hw.c. Everything else in it is its own. */
+#define PTE_PS      0x080ull            /* 2 MiB page at PD level */
+#define hw_free_page(p) hw_free_page_why((p), __func__)
+#define VIBEOS_HW_LOCK_SPIN_LIMIT 400000000ull
+void *hw_alloc_pages_contig(uint32_t count);
+void hw_enable_paging(void);
+void hw_pmm_bringup(const vibeos_boot_info_t *boot_info);
+int hw_swap_bring_in(vibeos_vmspace_t *sv, uint64_t va);
+void hw_tlbq_help_quiesce(void);
+void hw_tlbq_put(uint64_t root, uint64_t phys);
+void hw_tlbq_selftest(void);
+int hw_frame_still_mapped(uint64_t phys, uint32_t *out_pid, uint32_t *out_mappers, uint64_t *out_va);
+void hw_tlb_shootdown(uint64_t cr3);
+extern const uint64_t *g_aspace_being_destroyed;
+extern int g_frame_layer_ready;
+extern vibeos_pmm_t g_hw_pmm;
+extern uint32_t g_last_destroy_cpu;
+extern uint64_t g_last_destroy_pml4;
+extern const char *g_last_destroy_why;
+extern hw_cpu_t g_cpus[VIBEOS_HW_MAX_CPUS];
+extern hw_lock_t g_mm_lock;
+
 #endif
