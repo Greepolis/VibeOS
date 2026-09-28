@@ -19,6 +19,34 @@ Builds live in `build-<compiler>-<config>`. On Windows, run them through WSL:
 `wsl -d Ubuntu -e /bin/bash -c "cd /mnt/c/.../VibeOS; ..."`. The default WSL
 distro here is docker-desktop, so `-d Ubuntu` is not optional.
 
+## Commit messages
+
+Every commit uses the Angular convention:
+
+```
+<type>(<scope>): <subject>
+
+<body>
+
+<footer>
+```
+
+- **type** is one of `feat`, `fix`, `docs`, `style`, `refactor`, `perf`,
+  `test`, `build`, `ci`, `chore`, `revert`.
+- **scope** names the area touched, in the project's own vocabulary: `mm`,
+  `sched`, `fs`, `net`, `abi`, `arch`, `boot`, `gate`, `dev`, `docs`, ... A
+  change across several may leave it out.
+- **subject** is imperative, lower case, no final period, at most 72
+  characters with the prefix: `fix(mm): hold the address-space lock across
+  mprotect`, not `mm: mprotect held the lock for half the call`.
+- **body** says why, the way the code's comments do; finding ids (`M-071`) go
+  here or in the subject.
+- **footer** carries `BREAKING CHANGE: ...`, references, and the co-author
+  line.
+
+A commit that does two things is two commits; if it cannot be split, pick the
+type of the part a reviewer most needs to know about.
+
 ## Rules that were learned the hard way
 
 **Verify under the same configuration CI uses.** Roughly twenty clean local
