@@ -613,6 +613,20 @@ crossing and are private again (`hw_tlb_shootdown`, `hw_frame_still_mapped`,
 the fault itself, for the trap handler, the two copy-on-write counters the
 report prints, and three flags of the SMP code the shootdown reads. `arch_hw.c` is 3,940 lines, `mm_bridge.c` 2,736.
 
+**The context switch left too (2026-09-28).** Kernel stacks and their parking,
+slot allocation and release, the pick, the x87/SSE register file,
+`hw_task_load_cpu_state` with its CR3 guard, the context check and
+`hw_schedule` - about 800 lines, moved whole to
+`kernel/arch/x86_64/task_switch.c`, beside `task_life.c`. The pipe lock and the
+two console helpers that sat inside the same banner stayed. Four of the five
+functions `check-task-identity.py` allows to name a task's identity moved with
+it, so the check now reads both files against the same ratchet of 12 lines;
+a check whose subject leaves the file it reads keeps passing having stopped
+looking. Two sabotage cases prove it reads both: identity put back into the
+slot allocator (now in `task_switch.c`) and into a console helper (still in
+`arch_hw.c`) each turn it red, naming the function. `arch_hw.c` is 3,119
+lines.
+
 ---
 
 ## What this plan still does not do

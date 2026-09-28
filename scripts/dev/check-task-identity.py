@@ -22,6 +22,10 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 HEADER = os.path.join(ROOT, "kernel", "arch", "x86_64", "arch_hw_internal.h")
 ARCH = os.path.join(ROOT, "kernel", "arch", "x86_64", "arch_hw.c")
+# The context switch left arch_hw.c for task_switch.c (2026-09-28), taking four of the
+# five functions below with it. Both files are read: a check whose subject moved out of
+# the file it reads would pass forever, having stopped looking.
+SWITCH_FILES = (ARCH, os.path.join(ROOT, "kernel", "arch", "x86_64", "task_switch.c"))
 IDENT = os.path.join(ROOT, "include", "vibeos", "task_ident.h")
 
 # The functions of arch_hw.c that may name a task's identity: they *are* the context
@@ -78,7 +82,7 @@ def main():
     outside = {}
     cur = None
     head = None   # the name of a function whose signature is still being read over several lines
-    for l in read(ARCH).splitlines():
+    for l in "\n".join(read(f) for f in SWITCH_FILES).splitlines():
         m = re.match(r"^[A-Za-z_][^;=]*?\b(\w+)\s*\([^;]*\)\s*\{\s*$", l)
         h = re.match(r"^[A-Za-z_][^;=(]*?\b(\w+)\s*\([^)]*$", l)
         if h:
@@ -100,15 +104,15 @@ def main():
         print("  arch_hw.c lines naming identity: %d in the context switch (ratchet %d), %d elsewhere"
               % (lines - sum(outside.values()), ARCH_IDENTITY_LINES, sum(outside.values())))
     for fn, n in sorted(outside.items(), key=lambda kv: str(kv[0])):
-        bad.append("arch_hw.c names a task's identity in %s (%d lines), which is not part of the "
+        bad.append("arch_hw.c or task_switch.c names a task's identity in %s (%d lines), which is not part of the "
                    "context switch - ask hw_task_*_of / a vibeos_task_* function, or move it to task_life.c"
                    % (fn, n))
     if lines > ARCH_IDENTITY_LINES:
-        bad.append("arch_hw.c names task identity on %d lines, ratchet is %d - "
+        bad.append("arch_hw.c and task_switch.c name task identity on %d lines, ratchet is %d - "
                    "go through a vibeos_task_* function, or record why it grew"
                    % (lines, ARCH_IDENTITY_LINES))
     elif lines < ARCH_IDENTITY_LINES:
-        bad.append("arch_hw.c names task identity on %d lines, DOWN from the ratchet %d - "
+        bad.append("arch_hw.c and task_switch.c name task identity on %d lines, DOWN from the ratchet %d - "
                    "lower ARCH_IDENTITY_LINES in the same commit" % (lines, ARCH_IDENTITY_LINES))
 
     for f in ("state", "ready_at", "ran_once"):

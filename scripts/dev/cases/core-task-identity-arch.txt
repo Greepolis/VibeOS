@@ -2,10 +2,12 @@
 #
 # The lifecycle left arch_hw.c for task_life.c and the diagnostics ask hw_task_pid_of; the
 # check reads the file function by function. Putting identity back into a function that
-# is not part of the switch - here the slot allocator - must turn it red, naming it.
+# is not part of the switch - here the slot allocator - must turn it red, naming it. The
+# allocator moved to task_switch.c with the switch (2026-09-28), and the check reads both
+# files; core-task-identity-arch-rest.txt proves the other half.
 #
-# Target source: kernel/arch/x86_64/arch_hw.c
-# Run: SABOTAGE_VERIFY="python3 scripts/dev/check-task-identity.py" python3 scripts/dev/sabotage.py kernel/arch/x86_64/arch_hw.c scripts/dev/cases/core-task-identity-arch.txt
+# Target source: kernel/arch/x86_64/task_switch.c
+# Run: SABOTAGE_VERIFY="python3 scripts/dev/check-task-identity.py" python3 scripts/dev/sabotage.py kernel/arch/x86_64/task_switch.c scripts/dev/cases/core-task-identity-arch.txt
 
 ### the slot allocator names a task's pid
 --- old

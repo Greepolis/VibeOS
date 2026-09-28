@@ -861,4 +861,35 @@ extern const char *g_last_destroy_why;
 extern hw_cpu_t g_cpus[VIBEOS_HW_MAX_CPUS];
 extern hw_lock_t g_mm_lock;
 
+/* ---- the context switch (task_switch.c) -----------------------------------
+ * What crosses between it and arch_hw.c. */
+/* One hot path's count, cycles and fastest traversal (core plan C0). */
+typedef struct {
+    uint64_t count;
+    uint64_t cycles;
+    /* The fastest traversal seen, and the only one of these three that is a
+     * baseline.
+     *
+     * The mean is not: a syscall that blocks is timed across the block, so on
+     * the first measured boot it read 46 million cycles per syscall and was
+     * reporting how long waitpid waited rather than what dispatch costs. That
+     * number would have moved with anything that changed scheduling, which is
+     * the opposite of what a performance ratchet is for.
+     *
+     * The minimum cannot be inflated by a blocked task, and an added lookup or
+     * lock on the path moves it. Both are kept: the mean is still worth reading
+     * next to the minimum, because the two diverging is itself information. */
+    uint64_t min;
+} hw_perf_t;
+void hw_schedule(vibeos_x86_64_isr_frame_t *frame);
+void hw_set_kernel_stack(uint64_t top);
+int hw_task_runnable(void *ctx, uint32_t slot, uint32_t cpu);
+uint32_t hw_task_slots(void);
+extern volatile uint64_t g_relrace_rip;
+extern volatile int g_relrace_curcpu;
+extern volatile int g_relrace_relcpu;
+extern volatile int g_relrace_slot;
+extern hw_perf_t g_perf_switch;
+extern volatile int g_sched_running;
+
 #endif

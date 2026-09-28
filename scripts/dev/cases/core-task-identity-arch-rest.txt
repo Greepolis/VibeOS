@@ -1,0 +1,17 @@
+# C5: the identity check still reads arch_hw.c after the context switch left it.
+#
+# check-task-identity.py reads arch_hw.c and task_switch.c together (2026-09-28). The
+# other case file proves it sees task_switch.c; this one proves it did not stop reading
+# the file that stayed. Identity named in a console helper must turn it red.
+#
+# Target source: kernel/arch/x86_64/arch_hw.c
+# Run: SABOTAGE_VERIFY="python3 scripts/dev/check-task-identity.py" python3 scripts/dev/sabotage.py kernel/arch/x86_64/arch_hw.c scripts/dev/cases/core-task-identity-arch-rest.txt
+
+### a console helper names a task's pid
+--- old
+int hw_console_getc(void) {
+    return vibeos_input_getc();
++++ new
+int hw_console_getc(void) {
+    (void)g_tasks[0].id.pid;
+    return vibeos_input_getc();
