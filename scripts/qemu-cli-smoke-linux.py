@@ -1613,13 +1613,22 @@ def main():
             # The absence of an image is reported, not asserted: a machine
             # without e2fsprogs or xorriso still boots and the build says so
             # rather than failing somewhere a developer has to guess about.
+            #
+            # NTFS and exFAT were mounted on every boot and asserted by nobody
+            # until 2026-09-28: the list below named two of the four, while
+            # io-filesystems.txt recorded red results for the other two that
+            # this gate could not produce. exFAT passes on "OK (no marker)" -
+            # its image cannot be given a file without mounting it, so a mount
+            # is all it can prove, and the verdict says that rather than "OK".
+            # CI installs ntfs-3g and exfatprogs so the images exist there; a
+            # machine without them reports "no image" as for the others.
             seen_fs = {}
             for m in re.finditer(
                     r"\[IO\] FSIMAGE name=(\S+) sectors=0x[0-9a-f]{16} "
                     r"got=0x[0-9a-f]{16} "
                     r"result=([^\n]*)", text):
                 seen_fs[m.group(1)] = m.group(2).strip()
-            for want in ("ext2", "iso9660"):
+            for want in ("ext2", "iso9660", "ntfs", "exfat"):
                 res = seen_fs.get(want)
                 if res is None:
                     problems.append("fsimage_missing:" + want)

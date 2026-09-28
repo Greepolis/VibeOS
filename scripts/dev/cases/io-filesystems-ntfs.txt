@@ -1,0 +1,27 @@
+# The NTFS driver walks $INDEX_ALLOCATION, and the gate can now see it does.
+#
+# io-filesystems.txt records this as the case that justifies the whole phase:
+# mkntfs gives the *root* directory an index allocation, so a driver that reads
+# only $INDEX_ROOT cannot find a single file on a real volume - and the host
+# test cannot tell, because its synthetic image is the one shape that works.
+# That case said "expect ntfs:FAILED:_read on the gate" while the gate did not
+# assert NTFS at all (fixed 2026-09-28); this is it as a machine case.
+#
+#  1. the scan stops after the root. Expect ntfs:FAILED:_read, host tests green.
+#
+# Target source: kernel/fs/ntfs.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/fs/ntfs.c scripts/dev/cases/io-filesystems-ntfs.txt
+
+### the index allocation is never walked
+--- old
+    if (r != 0) {
+        return r;
+    }
+
+    alloc = ntfs_find_attr(rec, fs->mft_record_bytes,
++++ new
+    if (r != 0 || 1) {
+        return r;
+    }
+
+    alloc = ntfs_find_attr(rec, fs->mft_record_bytes,
