@@ -2734,3 +2734,44 @@ static int hw_frame_still_mapped(uint64_t phys, uint32_t *out_pid,
     }
     return mappers != 0u;
 }
+
+/* ---- the totals kernel/mm/usage.c asks for ---------------------------------
+ * Moved from the end of arch_hw.c (2026-09-28), where they sat under a banner
+ * about APIC and SMP. */
+
+/* What the portable inspection layer (kernel/mm/usage.c) asks the architecture
+ * for. Weak stubs there return zero; these are the real answers, and they are
+ * everything today's allocator can honestly report. The rest of the picture -
+ * the state histogram, the per-process split - needs the frame table and the
+ * address-space layer, and reports zero until those exist rather than being
+ * guessed at. */
+uint64_t vibeos_mm_bytes_total(void) {
+    return vibeos_frame_total() * 4096ull;
+}
+
+uint64_t vibeos_mm_bytes_free(void) {
+    /* One number, kept by the layer that hands frames out, instead of a bump
+     * remainder plus a walk of a free list. The walk was honest and it was also
+     * the reason "how much memory is free" could disagree with "how many frames
+     * are free" - two answers to one question, which is how this subsystem got
+     * its reputation. */
+    return vibeos_frame_free_count() * 4096ull;
+}
+
+uint64_t vibeos_mm_bytes_reserved(void) {
+    /* Two different reservations, and both are real memory a person cannot use.
+     *
+     * The low user window is taken out before the allocator starts, so nothing
+     * of the kernel's lives where a Linux process shadows it. The rest is what
+     * the bootstrap bump allocator had already handed out when the frame layer
+     * took over - early page tables, the staging buffers, the descriptor table
+     * itself. That second part used to be invisible: it was simply missing from
+     * every total, which is exactly the kind of gap this command exists to
+     * close. */
+    uint64_t prefix = 0;
+
+    if (g_frame_layer_ready) {
+        prefix = (uint64_t)g_hw_pmm.offset_bytes;
+    }
+    return (VIBEOS_HW_LOW_USER_LIMIT - VIBEOS_HW_LOW_USER_BASE) + prefix;
+}

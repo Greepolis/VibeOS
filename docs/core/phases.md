@@ -645,7 +645,7 @@ from. It moved to `kernel/arch/x86_64/userland.c` with its entry point,
 only the saved boot information crosses back. Seven sabotage cases anchored in
 the report moved with it - three files re-pointed, `diag-sink.txt` split into
 `diag-sink-klog.txt` - and all seven were re-run red on the new file.
-`arch_hw.c` is 2,515 lines.
+`arch_hw.c` is 2,515 lines. The memory totals `kernel/mm/usage.c` asks for (`vibeos_mm_bytes_*`), the last thing under that banner, went to `mm_bridge.c`: 2,478 lines.
 
 ---
 
