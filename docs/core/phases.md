@@ -637,6 +637,16 @@ written inline in `arch_hw.c`, went with it; only the end-of-interrupt stayed.
 One sabotage case (`io-device-boot-smp.txt`, split from `io-device-boot.txt`)
 was re-run on the new file. `arch_hw.c` is 2,961 lines.
 
+The rest of that banner was starting userland: the supervisor's manifest, init
+and the first tasks, the scheduler armed, the wait for every user task to
+retire, and the end-of-userland report the gate reads most of its counters
+from. It moved to `kernel/arch/x86_64/userland.c` with its entry point,
+`vibeos_x86_64_hw_start_userland`, so `hw_sched_bringup` is private again and
+only the saved boot information crosses back. Seven sabotage cases anchored in
+the report moved with it - three files re-pointed, `diag-sink.txt` split into
+`diag-sink-klog.txt` - and all seven were re-run red on the new file.
+`arch_hw.c` is 2,515 lines.
+
 ---
 
 ## What this plan still does not do

@@ -31,7 +31,7 @@
 #
 # Target source: scripts/qemu-cli-smoke-linux.py is NOT touched here; every case
 # breaks the kernel or the guest program and the boot must go red.
-# Target source: kernel/arch/x86_64/arch_hw.c (the printed lines; the mouse's moved into its driver in C7), kernel/abi/linux/net.c (fd_aba), kernel/arch/x86_64/mouse.c, user/prog/hello.c, kernel/abi/linux/mm.c
+# Target source: kernel/arch/x86_64/userland.c (the printed lines, since 2026-09-28; the mouse's moved into its driver in C7), kernel/abi/linux/net.c (fd_aba), kernel/arch/x86_64/mouse.c, user/prog/hello.c, kernel/abi/linux/mm.c
 # Run one: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh build-clang-Release" python3 scripts/dev/sabotage.py <its target> <one-case file> build-clang-Release
 
 ### the network line loses its MUSTBEZERO tag and the gate no longer finds it

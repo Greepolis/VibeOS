@@ -902,4 +902,18 @@ void hw_enable_syscall(void);
 void hw_load_gdt(uint32_t cpu_index);
 void hw_load_idt_only(void);
 
+/* ---- starting userland (userland.c) ------------------------------------------
+ * What crosses between it and arch_hw.c. */
+extern const vibeos_boot_info_t *g_saved_boot_info;
+extern volatile uint64_t g_device_stray_irqs;
+extern uint8_t g_disk_init_elf[65536] __attribute__((aligned(16)));
+extern long g_disk_init_len;
+extern uint64_t g_gui_back_base;
+extern uint64_t g_gui_back_end;
+extern uint64_t g_gui_back_lost;
+extern uint64_t g_gui_back_shared;
+extern volatile uint64_t g_input_irq_wakes;
+extern hw_perf_t g_perf_fault;
+extern hw_perf_t g_perf_syscall;
+
 #endif

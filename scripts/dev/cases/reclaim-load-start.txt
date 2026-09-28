@@ -1,4 +1,4 @@
-# Target source: kernel/arch/x86_64/arch_hw.c
+# Target source: kernel/arch/x86_64/userland.c
 #
 # The reclaim load is the last command of the boot's self-test, typed at
 # BusyBox's shell, so nothing runs beside it (it holds the machine at its low
