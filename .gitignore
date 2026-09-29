@@ -74,3 +74,6 @@ soak-high.log
 qemu-cli-logdisk.img
 argv-hunt/
 .boot-evidence/
+
+# Rebuilt by the boot gate on every run (make_esp_image.py).
+qemu-cli-esp.img

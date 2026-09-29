@@ -19,7 +19,7 @@ are for:
 
 | Script | Use |
 | --- | --- |
-| `hunt-boot.sh <dir> <n> <regex> [--stop]` | Boot until a signature appears; keep every log that matches *and* every boot that failed, under `.boot-evidence/hunt/`. The general form of the one-off hunts (`hunt-argv.sh` is one). |
+| `hunt-boot.sh <dir> <n> <regex> [--stop]` | Boot until a signature appears; keep every log that matches *and* every boot that failed, under `.boot-evidence/hunt/`. The general form of the one-off hunts, which were deleted once it existed. |
 | `boots.sh [dir] [n] [parallel]` | Several boots at once. |
 | `until-wedge.sh [dir] [n]` | Boot until one wedges and print what it said last. |
 | `bisect-boot.sh <rev> [n] [dir]` | Build another revision, boot it n times, come back. The baseline a criterion has to be checked against. |
@@ -41,6 +41,7 @@ are for:
 | Script | Scores a case by |
 | --- | --- |
 | `verify-boot.sh [dir]` | Building and booting; prints the gate's own reason. |
+| `verify-boot-keep.sh [dir]` | The same, keeping each case's serial log as `.boot-evidence/sab-<n>.log` - the log of a case that went red for the wrong reason is the one to read. |
 | `verify-host.sh [dir]` | The host suite and short runs of the memory-manager and GUI tortures. |
 | `verify-gui-torture.sh [dir]` | The GUI torture on three seeds, threads included. |
 | `verify-host-sanitized.sh` | The CI "clang Debug" job as CI runs it - ASan and UBSan, its own build directory. For what only a sanitizer sees. |

@@ -112,9 +112,10 @@ machine whose console lock is held by a dead core cannot print):
   interrupted stack before faulting. Another core resumed a context whose rip
   was a user *stack* address with a kernel code selector.
 
-Ruled out by guards that were added and did not fire (the probes are kept as
-`scripts/dev/patches/press-hunt-instrumentation.patch`, applied on top of
-arch_hw.c and kernel.ld):
+Ruled out by guards that were added and did not fire (the probes were kept as
+`scripts/dev/patches/press-hunt-instrumentation.patch` until 2026-09-29, when it
+was deleted: it applied to an arch_hw.c that no longer exists, and git history
+keeps it):
 
 1. the timer re-entered on the same core (a per-core depth counter);
 2. the timer path running off the bottom of its 16 KiB IST slice (a guard band

@@ -110,7 +110,7 @@ mangled rather than absent.
 
 ## Also fixed: a script that broke the rule it was written to serve
 
-`hunt-argv.sh` kept a serial log only when it found an argv refusal, so a sweep
+`hunt-argv.sh` (since replaced by the general `hunt-boot.sh`, and deleted) kept a serial log only when it found an argv refusal, so a sweep
 that produced two failures of another kind overwrote both before anybody read
 them. That is this project's rule about not destroying evidence, broken by the
 script written to gather it. It keeps every failing boot now.
