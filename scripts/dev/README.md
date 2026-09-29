@@ -8,7 +8,7 @@ live in `scripts/` and in `.github/workflows/`; these are for the loop between
 | --- | --- |
 | `check.sh [build\|tests\|smoke\|all] [dir]` | Build, run the host suites, boot. Prints the return code, the count of real warnings, the test verdict, and every ring-3 self-check line the guest produced. |
 | `repeat-boot.sh [dir] [n]` | Boot `n` times and report each verdict. |
-| `trace-linux-binary.sh <binary> [args]` | Trace a real Linux program with `strace` and list which of its syscalls VibeOS does not serve yet. |
+| `trace-linux-binary.sh <binary> [args]` | Trace a real Linux program with `strace` and list which of its syscalls VibeOS serves, serves in part, or lacks - with the phase that owns each. |
 | `catch-hang.py [dir] [attempts]` | Boot until it hangs, then ask the QEMU monitor where every core is, with symbols. |
 
 The table above was the whole list for a long time while the directory grew to
