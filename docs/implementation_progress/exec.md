@@ -405,3 +405,13 @@ than left to be rediscovered:
   its own rounds and the gate asserts on it whenever it is started, but running
   it in the boot script wedges a later phase. See
   [sched_quantum_threads.md](sched_quantum_threads.md).
+
+## Status history
+
+Moved verbatim from the status cell of `docs/implementation_progress.md` on
+2026-09-29, when that table was compacted to one or two sentences per area.
+The table says where things stand; this is how they got there.
+
+### Program Loading (as of 2026-09-29)
+
+**Rewrite underway** ([docs/exec/](exec/README.md)). **X-P0, X-P1, X-P3 and X-P4 done**: every exec refusal names itself and is counted, the segment layout and startup block are host-tested (twelve cases), a failed exec no longer leaks the address space it had already built - eleven refusal points route through one unwinding path - and the interpreter substitution is one function the build checks for. **X-P2 mapping on**: image pages come from the page cache, 4242 mapped against 237 copied. It took four attempts; the cause was that `kernel/mm/backing.c` had **no lock** - invisible while the cache had one caller under the exec lock, and a corruption the moment the loader became a second one. Fourth layer in this project to need a `set_lock`. The staging buffers and demand paging are still open

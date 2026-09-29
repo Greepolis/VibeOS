@@ -79,3 +79,13 @@ and the deliberate ring-3 fault killing its task while the machine keeps going.
 
 ## Next checkpoint
 - Define a common runtime driver contract and isolate the existing hardware drivers behind it before adding hotplug or additional buses.
+
+## Status history
+
+Moved verbatim from the status cell of `docs/implementation_progress.md` on
+2026-09-29, when that table was compacted to one or two sentences per area.
+The table says where things stand; this is how they got there.
+
+### Driver Framework (as of 2026-09-29)
+
+In Progress (virtio-blk **and AHCI/SATA**, virtio-net, PS/2 keyboard and mouse, framebuffer desktop verified; both disk controllers gated in CI). **virtio-net transmit is serialised now**: it had one staging buffer, one descriptor and a plain 16-bit `avail->idx++` shared by every core - the same defect virtio-blk had, never applied here. It presented as a boot wedge with a core spinning on a completion another core had already taken, and QEMU named it on its own stderr: index 65535 available

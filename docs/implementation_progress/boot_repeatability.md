@@ -787,3 +787,13 @@ and its slot reused could have a wake land on the new tenant. Waiters now record
 `alloc_seq` and a wake requires it to still match. Not the four-worker cause -
 that was the READY-while-running invariant above - but a real defect the hunt
 surfaced.
+
+## Status history
+
+Moved verbatim from the status cell of `docs/implementation_progress.md` on
+2026-09-29, when that table was compacted to one or two sentences per area.
+The table says where things stand; this is how they got there.
+
+### Boot Repeatability (as of 2026-09-29)
+
+**24 boots clean out of 24**, from a long-standing 1 in 8. Six defects fixed: three were in the diagnostics rather than the kernel they watched, and three came from CI and nightly logs - a copy-on-write fast path deciding on a fact its compare-exchange could not guard, a kernel address handed to ring 3 as AT_BASE, and a panic that stopped one core instead of the machine, which is what separated every silent wedge from its cause. 24/24 is a good number and not a proof; what is stronger is that two of the three are asserted deterministically and the third turns a silence into a named panic

@@ -7,10 +7,9 @@
 - measure compatibility progress with repeatable suites
 - keep bring-up fast enough for daily development
 
-See also:
-
-- `docs/test_automation_spec.md`
-- `docs/test_feedback_profiles.md`
+See also `scripts/dev/README.md`, which lists what each development script does
+and why it exists. (The April test-automation specification and its feedback
+profiles were never built; they are in [archive/](archive/README.md).)
 
 ## What runs on every push
 

@@ -21,7 +21,7 @@
  * files have no clusters at all, which a reader expecting a cluster chain
  * cannot represent.
  *
- * Read-only, deliberately and permanently for now: see docs/storage_plan.md
+ * Read-only, deliberately and permanently for now: see docs/archive/storage_plan.md
  * for why writing is a different size of problem.
  */
 

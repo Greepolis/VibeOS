@@ -1,5 +1,8 @@
 # Scheduler
 
+> Design intent, written before the code. What is actually built, and how,
+> is in [sched/](sched/README.md) and [implementation_progress/sched.md](implementation_progress/sched.md).
+
 ## Goals
 
 - low wake-up latency

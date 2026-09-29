@@ -1,5 +1,8 @@
 # System Call Interface
 
+> Design intent, written before the code. What is actually built, and how,
+> is in [abi/](abi/README.md) and [implementation_progress/system_call_interface.md](implementation_progress/system_call_interface.md).
+
 ## Design goals
 
 - compact, stable, orthogonal kernel API

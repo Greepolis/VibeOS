@@ -1,5 +1,8 @@
 # Memory Management
 
+> Design intent, written before the code. What is actually built, and how,
+> is in [mm/](mm/README.md) and [implementation_progress/memory_manager.md](implementation_progress/memory_manager.md).
+
 ## Goals
 
 - strong isolation between protection domains

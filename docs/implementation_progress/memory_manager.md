@@ -216,3 +216,13 @@ accurate description of what is running.
 
 ## Next checkpoint
 - Add refcount diagnostics and memory-pressure stress coverage before replacing the current allocator backend.
+
+## Status history
+
+Moved verbatim from the status cell of `docs/implementation_progress.md` on
+2026-09-29, when that table was compacted to one or two sentences per area.
+The table says where things stand; this is how they got there.
+
+### Memory Manager (as of 2026-09-29)
+
+**Rewrite underway** (ADR-0007). **P0-P3 done; P4 done: the staging buffer is no longer a requirement and has shrunk from 6 MiB to 128 KiB - what held that up turned out to be `vibeos_frame_init` leaving the descriptor flags uninitialised, so the poison detector reported 3019 use-after-frees in a boot with none ([mm_frame_init_flags.md](implementation_progress/mm_frame_init_flags.md)); P6 done (reverse map audited every fork, watermarks and pinning wired, compaction with a fragmentation test); P5 now runs on the machine: an 8 MiB contiguous file on the boot volume gives swap 2048 slots, the boot writes a page through the area and finds it again by reading SWAPFILE.BIN through the filesystem, and the fault handler brings a swapped page back - what is still unproved is the eviction path itself, since `freed_anon` stays zero on a machine nothing runs short of memory ([mm_swap_file.md](implementation_progress/mm_swap_file.md)); P7 done: **the soak is proved** - 26 frames lost at 120 stress rounds and 28 at 12000, so the loss is a fixed cost rather than a per-fork leak. Getting that number honestly meant fixing the machine: the wait for userland to finish treated a blocked task as retired, so the accounting was being sampled mid-fork ([mm_soak.md](implementation_progress/mm_soak.md)). **latency is proved too**: every wait a syscall can reach is bounded, each bound now increments a counter, and the gate asserts them - `VIBEOS_BLK_TIMEOUT` was asserted by the gate and produced by no driver, so that assertion was green and could not go red ([mm_latency.md](implementation_progress/mm_latency.md)). **P7 is done**; what remains for the plan as a whole is exercising the eviction path under real memory pressure**. Physical frames have one owner in `kernel/mm/frame.c`; address spaces record what they own in the page-table entry (`kernel/mm/vmspace.c`), so nothing infers ownership from permission bits any more. No page-table write outside `kernel/mm/`, checked on every build. Host tests, 150 torture seeds and single boots are green; the repeat-boot criterion is not, and closing that comes before P3. Plan in [docs/mm/](mm/README.md); current state in [memory_manager.md](implementation_progress/memory_manager.md)

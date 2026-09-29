@@ -221,3 +221,13 @@ stays `In Progress` until the Wave 5 gates pass, per the plan's own rule.
 
 ## Next checkpoint
 - Wire the policy into the x86_64 virtio/socket control path, add rule audit events, then add repeatable QEMU network integration tests, malformed-packet coverage and TCP lifecycle regression tests.
+
+## Status history
+
+Moved verbatim from the status cell of `docs/implementation_progress.md` on
+2026-09-29, when that table was compacted to one or two sentences per area.
+The table says where things stand; this is how they got there.
+
+### Networking Stack (as of 2026-09-29)
+
+In Progress (IPv4 runtime plus portable route/firewall data-path enforcement verified). **M-005: a TCP RST is believed only when it could have come from the peer** - it closed any connection matching address and ports, and a listening socket too; now RFC 5961 3.2 (exact rcv_nxt resets, in-window gets a challenge ACK, outside is dropped; SYN_SENT needs the RST to acknowledge our SYN; LISTEN ignores it). Red host test first, twelve boots: 11 pass, 1 fail - task_illegal_transition (running->running by hw_task_exit) in THREADS' exit_group stage, a scheduler-exit signature this change does not touch and seen for the first time today; recorded with the exit-window evidence as its likeliest cause, H-007's locked exit_group loop not yet ruled out

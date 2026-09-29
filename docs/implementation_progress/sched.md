@@ -368,3 +368,13 @@ the attempt inserted a field into `hw_cpu_t` that shifted the offsets `isr.S`
 reads at `%gs:8` and `%gs:16` - a #GP at rip=0x39 on the next boot. It was
 reverted whole, and `hw_sched_point()` carries a comment saying why it is not
 implemented rather than a stub that looks like it is.
+
+## Status history
+
+Moved verbatim from the status cell of `docs/implementation_progress.md` on
+2026-09-29, when that table was compacted to one or two sentences per area.
+The table says where things stand; this is how they got there.
+
+### Tasks and Scheduling (as of 2026-09-29)
+
+**S-P0 to S-P6 done**, with two gaps named rather than papered over ([docs/sched/](sched/README.md)). A transition table that refuses illegal state changes, tenancy on every task reference, a tested run queue, lifetime, accounting charged to exactly one place per tick, a policy of classes and nice-weighted fairness and affinity driving the picker - measured over tens of thousands of ticks, every rule confirmed by breaking it - a fork-bomb guard on both fork and clone, and a fork-storm service the gate asserts is stopped and cleaned up after. **Still open**: the quantum is defined and not enforced, so preemption is still whatever the timer does; and thread churn during exec is not exercised

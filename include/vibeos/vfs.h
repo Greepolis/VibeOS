@@ -17,7 +17,7 @@
  * own: ext2 has inodes, block groups and indirect blocks, and fitting it in
  * here is what will tell us whether this interface was designed or merely
  * extracted from FAT. Expect it to change then. That is the plan, not a
- * failure of it - see docs/storage_plan.md.
+ * failure of it - see docs/archive/storage_plan.md.
  *
  * One thing is already known to be missing: writing a whole file at a time is
  * FAT's shape, not a filesystem's. A real write path takes an offset. It is

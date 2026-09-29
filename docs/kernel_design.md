@@ -1,5 +1,8 @@
 # Kernel Design
 
+> Design intent, written before the code. What is actually built, and how,
+> is in [core/](core/README.md) and [implementation_progress/kernel_core.md](implementation_progress/kernel_core.md).
+
 ## Kernel scope
 
 The kernel core is intentionally small and responsible only for primitives that are unsafe or inefficient to place in user space.

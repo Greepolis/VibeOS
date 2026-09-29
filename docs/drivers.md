@@ -1,5 +1,8 @@
 # Device Drivers
 
+> Design intent, written before the code. What is actually built, and how,
+> is in [devices/](devices/README.md) and [implementation_progress/driver_framework.md](implementation_progress/driver_framework.md).
+
 ## Driver model goals
 
 - isolate faults from the kernel whenever practical

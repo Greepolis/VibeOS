@@ -28,7 +28,6 @@ PREFERRED = [
     "syscalls.md",
     "ipc.md",
     "filesystem.md",
-    "storage_plan.md",
     "networking.md",
     "drivers.md",
     "graphics.md",
@@ -39,8 +38,6 @@ PREFERRED = [
     "toolchain.md",
     "development_tools.md",
     "testing_strategy.md",
-    "test_automation_spec.md",
-    "test_feedback_profiles.md",
 ]
 
 
@@ -88,7 +85,14 @@ def main():
     # what it was: docs/io/ existed for an hour before anybody noticed it was
     # not in the book, and a detail file that is not in SUMMARY.md exists only
     # for whoever finds it by accident. Adding a plan is now one row.
+    #
+    # sched/ and exec/ were missing from this table for a month (found
+    # 2026-09-29): both plans existed, were linked from the progress table,
+    # and were not in the book.
     for plan_dir, plan_title in (("mm", "Memory management plan"),
+                                 ("sched", "Tasks and scheduling plan"),
+                                 ("exec", "Program loading plan"),
+                                 ("abi", "Syscalls and Linux ABI plan"),
                                  ("io", "Storage and I/O plan"),
                                  ("core", "Kernel core plan"),
                                  ("devices", "Devices and peripherals")):
@@ -118,6 +122,20 @@ def main():
             lines.append("")
             for f in entries:
                 rel = f"adrs/{f}"
+                lines.append(f"- [{title_of(os.path.join(docs, rel))}]({rel})")
+
+    # Superseded documents, last: a record of what was believed, not a
+    # description of the kernel. The README says which is which.
+    archive = os.path.join(docs, "archive")
+    if os.path.isdir(archive):
+        entries = ["README.md"] + sorted(f for f in os.listdir(archive)
+                                         if f.endswith(".md") and f != "README.md")
+        lines.append("")
+        lines.append("# Archive")
+        lines.append("")
+        for f in entries:
+            if os.path.exists(os.path.join(archive, f)):
+                rel = f"archive/{f}"
                 lines.append(f"- [{title_of(os.path.join(docs, rel))}]({rel})")
 
     out = os.path.join(docs, "SUMMARY.md")

@@ -1,5 +1,8 @@
 # Filesystem
 
+> Design intent, written before the code. What is actually built, and how,
+> is in [io/](io/README.md) and [implementation_progress/filesystem_layer.md](implementation_progress/filesystem_layer.md).
+
 ## Goals
 
 - modern reliability and integrity model
