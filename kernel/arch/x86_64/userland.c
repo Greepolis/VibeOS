@@ -434,6 +434,14 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
         vibeos_x86_64_serial_print_hex(g_abi_probes);
         vibeos_x86_64_serial_puts(" last_nr=0x");
         vibeos_x86_64_serial_print_hex(g_abi_last_nr);
+        /* Refused is expected and proved non-zero by hello's iopl; deferred is
+         * asserted zero with its number, like the unimplemented count. */
+        vibeos_x86_64_serial_puts(" refused=0x");
+        vibeos_x86_64_serial_print_hex(g_abi_refused);
+        vibeos_x86_64_serial_puts(" deferred=0x");
+        vibeos_x86_64_serial_print_hex(g_abi_deferred);
+        vibeos_x86_64_serial_puts(" deferred_nr=0x");
+        vibeos_x86_64_serial_print_hex(g_abi_deferred_nr);
         /* The device registry (C7): how many drivers the linker collected, and
          * whether an input interrupt ever woke a reader. Both asserted: an empty
          * table used to show up only as a wedge, and the wake as nothing. */

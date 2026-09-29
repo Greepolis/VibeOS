@@ -101,7 +101,10 @@ def whole_tree():
         for cur, dirs, names in os.walk(base):
             dirs[:] = [d for d in dirs if d not in (".git", "cases") and not d.startswith("build")]
             for n in names:
-                if n.endswith((".c", ".h", ".S", ".s", ".py", ".sh", ".cmake", ".txt", ".ld")):
+                # .def: the syscall registry (kernel/abi/linux_syscalls.def) is
+                # a sabotage target; without it here its cases read as anchored
+                # nowhere while sabotage.py applied them fine.
+                if n.endswith((".c", ".h", ".S", ".s", ".py", ".sh", ".cmake", ".txt", ".ld", ".def")):
                     try:
                         parts.append(read(os.path.join(cur, n)))
                     except OSError:
@@ -112,7 +115,7 @@ def whole_tree():
 def targets_of(text):
     out = []
     for m in re.finditer(r"^#\s*Target source:\s*(.+)$", text, re.M):
-        for p in re.findall(r"[\w./-]+\.(?:c|h|S|s|py|sh|txt|cmake)\b", m.group(1)):
+        for p in re.findall(r"[\w./-]+\.(?:c|h|S|s|py|sh|txt|cmake|def)\b", m.group(1)):
             if p not in out:
                 out.append(p)
     return out

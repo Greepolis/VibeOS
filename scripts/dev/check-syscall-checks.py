@@ -15,13 +15,16 @@ cannot register them; this is the test that can.
 
   1. **A number claimed twice.** Two rows with one number would make the ABI
      ambiguous; the registry refuses it at boot too, and this says so before a boot.
-  2. **A row's number is its name's number.** scripts/dev/linux-syscall-numbers.txt
-     (from syscall_64.tbl) is the authority. A typo in a row is a *different
-     syscall*: the handler compiles, the table registers, and a program calling the
-     right number gets ENOSYS with nothing to say why.
-  3. **An implemented syscall with no row, and a row nobody listed.** Both directions
-     against that file, so adding a syscall means stating its number twice,
-     independently.
+  2. **A row's number is its name's number.** The registry,
+     kernel/abi/linux_syscalls.def (every Linux number, seeded from Linux's own
+     headers; docs/abi/ phase A1), is the authority. It replaced
+     scripts/dev/linux-syscall-numbers.txt, which listed only the implemented ones.
+     A typo in a row is a *different syscall*: the handler compiles, the table
+     registers, and a program calling the right number gets ENOSYS with nothing to
+     say why.
+  3. **A DONE or PARTIAL line with no row, and a row whose line says otherwise.**
+     Both directions against the registry, so adding a syscall means stating it in
+     its row and in its line, independently - and the boot holds the same rule.
   4. **An operation declared and never implemented.** An op in abi.h that no row
      names is a promise the kernel does not keep (and the boot stops on it too).
   5. **The declared checks equal the checks run**, in both directions: a check
@@ -59,7 +62,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 HEADER = os.path.join(ROOT, "include", "vibeos", "abi.h")
-NUMBERS = os.path.join(ROOT, "scripts", "dev", "linux-syscall-numbers.txt")
+REGISTRY = os.path.join(ROOT, "kernel", "abi", "linux_syscalls.def")
 ABI_DIR = os.path.join(ROOT, "kernel", "abi", "linux")
 HANDLER_DIRS = (os.path.join(ROOT, "kernel", "arch", "x86_64"), ABI_DIR)
 
@@ -96,16 +99,29 @@ def declared():
     return out
 
 
-def authority():
-    """nr -> name, from the numbers file."""
-    out = {}
-    for line in read(NUMBERS).splitlines():
-        line = line.split("#", 1)[0].strip()
-        if not line:
-            continue
-        nr, name = line.split()
-        out[int(nr)] = name
+REG_LINE = re.compile(r"^SYSCALL\(\s*(\d+)\s*,\s*(\w+)\s*,\s*(\w+)\s*,", re.M)
+
+
+def registry():
+    """nr -> (name, state), from kernel/abi/linux_syscalls.def.
+
+    A line the pattern cannot read is a failure, not a line to skip: the C
+    compiler reads the file with its own rules, and the first version of this
+    silently dropped a line with a space before a comma - so a DONE with no row
+    passed here while the kernel built it."""
+    text = read(REGISTRY)
+    out = {int(m.group(1)): (m.group(2), m.group(3)) for m in REG_LINE.finditer(text)}
+    lines = len(re.findall(r"^SYSCALL\(", text, re.M))
+    if lines != len(out):
+        print("syscall-checks: %d SYSCALL lines in the registry, %d readable" % (lines, len(out)))
+        sys.exit(1)
     return out
+
+
+def authority():
+    """nr -> name for every number the registry says a row serves."""
+    return {nr: name for nr, (name, state) in registry().items()
+            if state in ("DONE", "PARTIAL")}
 
 
 def rows():
@@ -174,14 +190,18 @@ def main():
         by_nr.setdefault(nr, (name, f))
         if op not in decl:
             bad.append("%s (%s): the operation %s is not declared in abi.h" % (name, f, op))
-        if nr not in auth:
-            bad.append("%s (%s): number %d is not in linux-syscall-numbers.txt" % (name, f, nr))
-        elif auth[nr] != name:
-            bad.append("number %d is %s in linux-syscall-numbers.txt but the row in %s calls it %s"
-                       % (nr, auth[nr], f, name))
+        reg = registry()
+        if nr not in reg:
+            bad.append("%s (%s): number %d is not in the registry" % (name, f, nr))
+        elif reg[nr][0] != name:
+            bad.append("number %d is %s in the registry but the row in %s calls it %s"
+                       % (nr, reg[nr][0], f, name))
+        elif nr not in auth:
+            bad.append("%s (%d) has a row in %s but its registry line says %s"
+                       % (name, nr, f, reg[nr][1]))
     for nr, name in sorted(auth.items()):
         if nr not in by_nr:
-            bad.append("%s (%d) is listed as implemented and has no row" % (name, nr))
+            bad.append("%s (%d) is DONE or PARTIAL in the registry and has no row" % (name, nr))
 
     per_op = {}
     for nr, name, op, expr, f in rs:

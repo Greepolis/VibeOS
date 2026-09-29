@@ -61,7 +61,7 @@ matched strace, so both lists were empty. It reads the table now (M-077).
 counters where there is one (invariant 7).
 
 - A registry file (number, name, state, phase, reason) replaces
-  `scripts/dev/linux-syscall-numbers.txt`, which today lists only the
+  `scripts/dev/linux-syscall-numbers.txt`, which listed only the
   implemented ones. It is generated once from the kernel's
   `arch/x86/entry/syscalls/syscall_64.tbl` and edited by hand after that.
 - The dispatcher answers a refused number with its registry errno and counts
@@ -75,6 +75,34 @@ counters where there is one (invariant 7).
 **Done when** the three statements of a number (row, registry, table) cannot
 disagree without `check.sh` failing, and a sabotage that marks a refused number
 missing turns the gate red.
+
+**Status (2026-09-29): done.** The registry is `kernel/abi/linux_syscalls.def`,
+an X-macro list - `SYSCALL(number, name, state, phase, errno, "why")` - that the
+C code and the scripts both read: 373 Linux numbers seeded from Linux's
+`asm/unistd_64.h` and the plan's table, plus VibeOS's two own. States are DONE,
+PARTIAL, MISSING, DEFERRED and REFUSED; each of the 33 refusals carries its own
+reason, seven of them answer EPERM rather than ENOSYS.
+
+- The dispatcher answers a number with no row from its line: a refusal with its
+  errno, counted as `refused`; a deferred call with ENOSYS, counted and reported
+  by the gate by number (`abi_deferred_syscall_nr`); a missing one as before
+  (`abi_unimplemented_syscall_nr`). `hello` asks for `iopl` on purpose and
+  expects EPERM, so the refusal count is seen moving on every boot
+  (`abi_refused_unproven` otherwise).
+- The boot refuses to start when a row and its line disagree in either
+  direction, and `check-syscall-checks.py` holds the same rule against the
+  sources - reading the registry instead of `linux-syscall-numbers.txt`, which is
+  gone. A registry line it cannot parse is a failure: the first version skipped
+  one with a space before a comma, which the compiler accepted.
+- [syscalls.md](syscalls.md) is written by `make-syscall-table.py` from the
+  registry, and `check.sh` runs it with `--check`, so the published table fails
+  the build when it drifts. Not generated in the book build, as planned: a stale
+  page is caught before the push, which is earlier.
+- Host test `test_linux_registry`; sabotage `abi-registry.txt` (iopl missing,
+  iopl deferred, read without a row - each red for its own reason) and
+  `abi-registry-dispatch.txt` (the refusal path removed, the count removed).
+  `check-sabotage-anchors.py` did not know `.def` files and reported the first
+  as anchored nowhere; it does now.
 
 ### A2. Handlers leave the architecture
 

@@ -1,0 +1,21 @@
+# The dispatcher's use of the registry (docs/abi/ phase A1).
+#
+#  1. a refused number is not looked up and falls through to the missing path.
+#     Expect abi_unimplemented_syscall_nr=172 - hello's iopl - and hello's own
+#     refusal check failing.
+#  2. a refusal is answered but not counted. Expect abi_refused_unproven: the
+#     counter hello exists to move stays at zero.
+#
+# Target source: kernel/abi/linux/dispatch.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot-keep.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/dispatch.c scripts/dev/cases/abi-registry-dispatch.txt
+
+### a refused number falls through to missing
+--- old
+        if (e && e->state == VIBEOS_SYS_REFUSED) {
++++ new
+        if (e && e->state == VIBEOS_SYS_REFUSED && 0) {
+
+### a refusal is not counted
+--- old
+            __sync_fetch_and_add(&g_abi_refused, 1u);
++++ new

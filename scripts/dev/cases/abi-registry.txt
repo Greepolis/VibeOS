@@ -1,0 +1,31 @@
+# The registry of every Linux syscall (docs/abi/ phase A1): the kernel answers a
+# number with no row from its line in kernel/abi/linux_syscalls.def, and the
+# boot holds the rows and the registry to each other.
+#
+#  1. iopl, which hello asks for on purpose, is marked MISSING instead of
+#     REFUSED. Expect abi_unimplemented_syscall_nr=172: a refusal the plan
+#     decided on, turned into a gap, is reported by number.
+#  2. iopl is marked DEFERRED. Expect abi_deferred_syscall_nr=172.
+#  3. read, which has a row, is marked MISSING. Expect the boot to stop: "linux
+#     abi: registry and rows disagree".
+#
+# Target source: kernel/abi/linux_syscalls.def
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot-keep.sh" python3 scripts/dev/sabotage.py kernel/abi/linux_syscalls.def scripts/dev/cases/abi-registry.txt
+
+### iopl is a gap instead of a refusal
+--- old
+SYSCALL(172, iopl,                    REFUSED,  R,     EPERM,
++++ new
+SYSCALL(172, iopl,                    MISSING,  R,     EPERM,
+
+### iopl is deferred instead of refused
+--- old
+SYSCALL(172, iopl,                    REFUSED,  R,     EPERM,
++++ new
+SYSCALL(172, iopl,                    DEFERRED, R,     EPERM,
+
+### read, which has a row, says it has none
+--- old
+SYSCALL(  0, read,                    DONE,     NONE,  NONE,
++++ new
+SYSCALL(  0, read,                    MISSING,  NONE,  NONE,

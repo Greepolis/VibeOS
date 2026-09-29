@@ -12,6 +12,49 @@
  */
 
 #include "vibeos/abi.h"
+#include "vibeos/abi_linux.h"
+
+/* Linux's errno numbers, which are part of the ABI and never change. Spelled
+ * here rather than taken from the architecture's header: this file is portable
+ * and host-tested, and the registry answers in Linux's numbers by definition. */
+#define LINUX_NONE   0
+#define LINUX_EPERM  1
+#define LINUX_ENOSYS 38
+
+/* The registry (kernel/abi/linux_syscalls.def), in number order. Read-only;
+ * consulted only on the path of a number that has no row, so a search is fine. */
+static const vibeos_sys_entry_t g_registry[] = {
+#define SYSCALL(nr, name, state, phase, err, why) \
+    { (nr), #name, VIBEOS_SYS_##state, #phase, LINUX_##err, (why) },
+#include "linux_syscalls.def"
+#undef SYSCALL
+};
+#define REGISTRY_COUNT ((uint32_t)(sizeof(g_registry) / sizeof(g_registry[0])))
+
+const vibeos_sys_entry_t *vibeos_linux_syscall(uint64_t nr) {
+    uint32_t lo = 0, hi = REGISTRY_COUNT;
+
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2u;
+        if ((uint64_t)g_registry[mid].nr == nr) {
+            return &g_registry[mid];
+        }
+        if ((uint64_t)g_registry[mid].nr < nr) {
+            lo = mid + 1u;
+        } else {
+            hi = mid;
+        }
+    }
+    return 0;
+}
+
+uint32_t vibeos_linux_syscall_count(void) {
+    return REGISTRY_COUNT;
+}
+
+const vibeos_sys_entry_t *vibeos_linux_syscall_at(uint32_t index) {
+    return index < REGISTRY_COUNT ? &g_registry[index] : 0;
+}
 
 #define LINUX_LOW_NUMBERS 512u    /* every Linux number implemented is below this */
 #define LINUX_HIGH_MAX 8u         /* VibeOS's own calls, outside the Linux number space */

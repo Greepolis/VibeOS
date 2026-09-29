@@ -143,6 +143,7 @@ static const char abi_iov[] = "abi: writev wrong\n";
 static const char abi_mm[] = "abi: mmap/mprotect/munmap wrong\n";
 static const char abi_futex[] = "abi: futex did not check the value\n";
 static const char abi_nosys[] = "abi: an unimplemented syscall did not return ENOSYS\n";
+static const char abi_refused[] = "abi: a refused syscall did not return its registry errno\n";
 static const char abi_nx[] = "abi: PROT_EXEC is not enforced (page executable without it)\n";
 static const char tls_kept[] = "tls survived context switches\n";
 static const char tls_lost[] = "abi: %fs lost across a context switch\n";
@@ -196,6 +197,12 @@ static const char *check_linux_abi(void) {
      * so the count is seen moving on every boot. */
     if (user_syscall3(1999, 0, 0, 0) != -38) {
         return abi_nosys;
+    }
+    /* A refused number must come back with its registry errno - iopl is EPERM
+     * (1), not ENOSYS - and be counted as refused, which the gate requires to
+     * be non-zero so the counter is seen moving (docs/abi/, phase A1). */
+    if (user_syscall3(172 /* iopl */, 3, 0, 0) != -1) {
+        return abi_refused;
     }
     if (user_syscall3(SYS_uname, (long)(unsigned long)un, 0, 0) != 0) {
         return abi_uname;

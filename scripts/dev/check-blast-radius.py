@@ -142,11 +142,11 @@ POINTS = {
         "from 6 to 2 by making a syscall a *row in the file that implements it* "
         "instead of a case in a central dispatcher plus a declaration between "
         "the two: nothing else names it. A third edit exists that this count "
-        "cannot see because it is not kernel code - its line in "
-        "scripts/dev/linux-syscall-numbers.txt, the independent statement of the "
-        "number that check-syscall-checks.py holds every row against. That is "
-        "deliberate: the number is stated twice so that a typo cannot pass "
-        "unnoticed."),
+        "cannot see because it is not a row - its line in "
+        "kernel/abi/linux_syscalls.def, the registry of every Linux number (A1), "
+        "which check-syscall-checks.py and the boot hold every row against. That "
+        "is deliberate: the number is stated twice so that a typo cannot pass "
+        "unnoticed, and the line changes from MISSING to DONE in the same edit."),
     "input device": (
         "kernel/arch/x86_64/keyboard.c",
         r"vibeos_x86_64_keyboard_[A-Za-z0-9_]+", 1,

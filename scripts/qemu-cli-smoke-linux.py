@@ -1937,7 +1937,9 @@ def main():
                 if int(mz.group(2), 16) != 1:
                     problems.append("mouse_desync_unproven")
             az = re.search(r"\[ABI\] MUSTBEZERO unexpected_unimplemented=0x([0-9a-f]{16}) "
-                           r"probes=0x([0-9a-f]{16}) last_nr=0x([0-9a-f]{16})", text)
+                           r"probes=0x([0-9a-f]{16}) last_nr=0x([0-9a-f]{16}) "
+                           r"refused=0x([0-9a-f]{16}) deferred=0x([0-9a-f]{16}) "
+                           r"deferred_nr=0x([0-9a-f]{16})", text)
             if az is None:
                 problems.append("abi_counters_missing")
             else:
@@ -1945,6 +1947,13 @@ def main():
                     problems.append(f"abi_unimplemented_syscall_nr={int(az.group(3), 16)}")
                 if int(az.group(2), 16) < 1:
                     problems.append("abi_counter_unproven")
+                # The registry (docs/abi/ A1): a refusal is expected, and hello
+                # makes one on purpose so the count is seen moving; a deferred
+                # call is a program asking for something nothing planned for.
+                if int(az.group(4), 16) < 1:
+                    problems.append("abi_refused_unproven")
+                if int(az.group(5), 16) != 0:
+                    problems.append(f"abi_deferred_syscall_nr={int(az.group(6), 16)}")
 
             # The must-be-zero registry (kernel/core/mbz.c): the parsers, the
             # journal, the log sink and the scheduler's requeue. `first` and

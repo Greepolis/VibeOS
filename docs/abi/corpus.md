@@ -6,7 +6,8 @@ workload made on Linux (`tests/corpus/needs/`, measured by
 [syscalls.md](syscalls.md). Phase A0 of [phases.md](phases.md). The workloads are
 listed in `tests/corpus/workloads.txt`.
 
-A workload is *ready* when nothing it asks for is missing here. A *partial*
+A workload is *ready* when nothing it asks for is missing or deferred here - the
+two answers the boot gate fails on. A *refused* call is an answer by decision. A *partial*
 syscall does not count against it - it is served, with a named gap that may or
 may not be the case this workload reaches. Ready is necessary, not sufficient:
 running the workload on VibeOS, and LTP, are what say it works. The musl test
@@ -19,9 +20,10 @@ come out ready.
 | Distinct syscalls asked for | 80 |
 | ... done | 41 |
 | ... partial | 16: `clone`, `futex`, `getcwd`, `getdents64`, `ioctl`, `mmap`, `open`, `openat`, `prlimit64`, `readv`, `rseq`, `sendfile`, `setgid`, `setuid`, `uname`, `writev` |
-| ... missing | 23 |
+| ... missing or deferred | 23 |
+| ... refused (answered by decision) | 0 |
 
-## Missing and partial, by phase - the order to write them in
+## Without a full answer, by phase - the order to write them in
 
 | Phase | Syscall | State | Asked for by |
 | --- | --- | --- | --- |

@@ -116,28 +116,32 @@ def main():
         print("corpus-report: not in docs/abi/syscalls.md: " + " ".join(unknown))
         return 1
 
+    # Since A1 the table's states are the registry's: done, partial, missing,
+    # deferred and refused. Missing and deferred both fail the boot gate when a
+    # program reaches them, so both block a workload; a refused call is an
+    # answer the program is expected to cope with, so it does not.
+    BLOCKING = ("missing", "deferred")
+
     def phase_of(name):
         state, ph = table[name]
-        if state == "missing":
-            return ph
-        if state == "partial":
-            return ph.split()[-1]
-        return None
+        return None if state == "done" else ph.split()[-1]
 
     rows = []
     wanted = {}   # missing or partial syscall -> workloads asking
     for w, calls in needs.items():
         done = [c for c in calls if table[c][0] == "done"]
         partial = [c for c in calls if table[c][0] == "partial"]
-        missing = [c for c in calls if table[c][0] == "missing"]
-        for c in partial + missing:
+        missing = [c for c in calls if table[c][0] in BLOCKING]
+        refused = [c for c in calls if table[c][0] == "refused"]
+        for c in partial + missing + refused:
             wanted.setdefault(c, []).append(w)
         rows.append((w, len(calls), len(done), partial, missing))
 
     union = sorted({c for v in needs.values() for c in v})
     u_done = sum(1 for c in union if table[c][0] == "done")
     u_partial = [c for c in union if table[c][0] == "partial"]
-    u_missing = [c for c in union if table[c][0] == "missing"]
+    u_missing = [c for c in union if table[c][0] in BLOCKING]
+    u_refused = [c for c in union if table[c][0] == "refused"]
     # Ready means nothing it asks for is missing. A partial row is not a blocker
     # by itself - ioctl's ENOTTY is the right answer when output is not a
     # terminal - so it is listed, not counted against. The musl programs the
@@ -154,7 +158,8 @@ def main():
     L.append("[syscalls.md](syscalls.md). Phase A0 of [phases.md](phases.md). The workloads are")
     L.append("listed in `tests/corpus/workloads.txt`.")
     L.append("")
-    L.append("A workload is *ready* when nothing it asks for is missing here. A *partial*")
+    L.append("A workload is *ready* when nothing it asks for is missing or deferred here - the")
+    L.append("two answers the boot gate fails on. A *refused* call is an answer by decision. A *partial*")
     L.append("syscall does not count against it - it is served, with a named gap that may or")
     L.append("may not be the case this workload reaches. Ready is necessary, not sufficient:")
     L.append("running the workload on VibeOS, and LTP, are what say it works. The musl test")
@@ -167,9 +172,11 @@ def main():
     L.append("| Distinct syscalls asked for | %d |" % len(union))
     L.append("| ... done | %d |" % u_done)
     L.append("| ... partial | %d: %s |" % (len(u_partial), ", ".join("`%s`" % c for c in u_partial)))
-    L.append("| ... missing | %d |" % len(u_missing))
+    L.append("| ... missing or deferred | %d |" % len(u_missing))
+    L.append("| ... refused (answered by decision) | %d%s |" % (
+        len(u_refused), (": " + ", ".join("`%s`" % c for c in u_refused)) if u_refused else ""))
     L.append("")
-    L.append("## Missing and partial, by phase - the order to write them in")
+    L.append("## Without a full answer, by phase - the order to write them in")
     L.append("")
     L.append("| Phase | Syscall | State | Asked for by |")
     L.append("| --- | --- | --- | --- |")
@@ -208,7 +215,7 @@ def main():
         for name, (state, ph) in table.items():
             if name in NATIVE:
                 continue
-            key = "done" if state == "done" else (ph.split()[-1] if state == "partial" else ph)
+            key = "done" if state == "done" else ph.split()[-1]
             phases.setdefault(key, []).append(name)
         for key in ["done", "L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "L9", "D", "R"]:
             names = phases.get(key, [])
@@ -234,8 +241,8 @@ def main():
             L.append("| `%s` | %s |" % (f, ", ".join(by)))
     with open(OUT, "w", encoding="utf-8", newline="\n") as fh:
         fh.write("\n".join(L) + "\n")
-    print("corpus-report: workloads=%d ready=%d asked=%d done=%d partial=%d missing=%d"
-          % (len(rows), ready, len(union), u_done, len(u_partial), len(u_missing)))
+    print("corpus-report: workloads=%d ready=%d asked=%d done=%d partial=%d missing=%d refused=%d"
+          % (len(rows), ready, len(union), u_done, len(u_partial), len(u_missing), len(u_refused)))
     return 0
 
 

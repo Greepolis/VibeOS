@@ -528,6 +528,12 @@ uint64_t g_ring3_write_nul;
  * (user/prog/hello.c) so the count is seen moving; the gate asserts
  * unimplemented == probes, and last_nr names the number when it is not. */
 volatile uint64_t g_abi_unimplemented;
+/* The two other ways a number has no row (kernel/abi/linux_syscalls.def): a
+ * refusal by decision, expected and counted, and a deferred call, which the
+ * gate reports by number because nothing planned for a program to ask. */
+volatile uint64_t g_abi_refused;
+volatile uint64_t g_abi_deferred;
+volatile uint64_t g_abi_deferred_nr;
 volatile uint64_t g_abi_probes;
 volatile uint64_t g_abi_last_nr;
 extern int vibeos_x86_64_fb_init(uint64_t base, uint32_t width, uint32_t height);

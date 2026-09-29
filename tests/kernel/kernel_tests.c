@@ -9404,11 +9404,77 @@ static int test_mbz_sched_requeue_failed(void) {
  * are architecture code and are built only into the kernel image. That half -
  * every declared operation has a row, no number is claimed twice, and every row
  * carries the number its name has in syscall_64.tbl - is check-syscall-checks.py
- * (scripts/dev/linux-syscall-numbers.txt is the authority), and the boot itself,
+ * (the registry, kernel/abi/linux_syscalls.def, is the authority), and the boot itself,
  * which stops with the reason if the same registry refuses the same tables. */
 static long abi_test_handler(const vibeos_call_t *call) {
     (void)call;
     return 42;
+}
+
+/* The registry (kernel/abi/linux_syscalls.def, docs/abi/ phase A1): every Linux
+ * x86-64 number exactly once, in order, with an answer that fits its state. The
+ * rows are image-only and are held to the registry by the boot and by
+ * check-syscall-checks.py; what the host can check is the registry itself. */
+static int test_linux_registry(void) {
+    uint32_t i, n = vibeos_linux_syscall_count();
+    uint32_t linux_numbers = 0;
+
+    if (n < 373u) {
+        printf("registry: %u lines, fewer than Linux's 373 numbers\n", n);
+        return -1;
+    }
+    for (i = 0; i < n; i++) {
+        const vibeos_sys_entry_t *e = vibeos_linux_syscall_at(i);
+        int has_row = e->state == VIBEOS_SYS_DONE || e->state == VIBEOS_SYS_PARTIAL;
+
+        if (i > 0 && e->nr <= vibeos_linux_syscall_at(i - 1u)->nr) {
+            printf("registry: %s (%u) is out of order or repeated\n", e->name, e->nr);
+            return -1;   /* the lookup is a binary search: order is a correctness property */
+        }
+        if (!e->name || !e->name[0] || !e->phase || !e->why) {
+            return -1;
+        }
+        if (vibeos_linux_syscall(e->nr) != e) {
+            printf("registry: %s (%u) is not found by its number\n", e->name, e->nr);
+            return -1;
+        }
+        /* A number with a row answers through the row; one without answers with
+         * ENOSYS, or with EPERM when refusing is the point. */
+        if (has_row ? e->err != 0 : (e->err != 38 && !(e->state == VIBEOS_SYS_REFUSED && e->err == 1))) {
+            printf("registry: %s has errno %d for its state\n", e->name, e->err);
+            return -1;
+        }
+        /* A gap and a refusal are claims, so they carry their sentence. */
+        if ((e->state == VIBEOS_SYS_PARTIAL || e->state == VIBEOS_SYS_REFUSED ||
+             e->state == VIBEOS_SYS_DEFERRED) && e->why[0] == '\0') {
+            printf("registry: %s is %d with no reason\n", e->name, (int)e->state);
+            return -1;
+        }
+        if (e->nr < 1000u) {
+            linux_numbers++;
+        }
+    }
+    if (linux_numbers != 373u) {
+        printf("registry: %u Linux numbers, expected 373\n", linux_numbers);
+        return -1;
+    }
+    /* Numbers Linux does not have are not in it: the gap between 334 and 424,
+     * and the probe the boot uses on purpose. */
+    if (vibeos_linux_syscall(335) || vibeos_linux_syscall(423) ||
+        vibeos_linux_syscall(VIBEOS_ABI_PROBE_NR)) {
+        return -1;
+    }
+    /* The boot's own refusal probe depends on these two lines. */
+    if (!vibeos_linux_syscall(172) || strcmp(vibeos_linux_syscall(172)->name, "iopl") != 0 ||
+        vibeos_linux_syscall(172)->state != VIBEOS_SYS_REFUSED ||
+        vibeos_linux_syscall(172)->err != 1) {
+        return -1;
+    }
+    if (!vibeos_linux_syscall(0) || strcmp(vibeos_linux_syscall(0)->name, "read") != 0 ||
+        vibeos_linux_syscall(0)->state != VIBEOS_SYS_DONE) {
+        return -1;
+    }
+    return 0;
 }
 
 static int test_abi_vocabulary_and_linux(void) {
@@ -9741,6 +9807,7 @@ int main(void) {
     RUN_TEST(test_handle_revocation_audit);
     RUN_TEST(test_proc_audit_retention_policy);
     RUN_TEST(test_abi_vocabulary_and_linux);
+    RUN_TEST(test_linux_registry);
     RUN_TEST(test_ceil_div_no_wrap);
     RUN_TEST(test_mbz_fat_chain_refused_cluster);
     RUN_TEST(test_mbz_iso_corrupt_record);

@@ -91,12 +91,28 @@ static long check_pointers(const vibeos_row_t *row, const vibeos_call_t *call) {
 void vibeos_linux_abi_init(void) {
     uint32_t i;
 
+
     vibeos_abi_linux_reset();
     for (i = 0; i < (uint32_t)(sizeof(g_tables) / sizeof(g_tables[0])); i++) {
         if (vibeos_abi_linux_register(g_tables[i].rows, *g_tables[i].count) != 0) {
             hw_log(VIBEOS_LOG_ERROR, 60u, i, 0,
                    "linux abi: a syscall number is claimed twice, or a row is malformed");
             hw_panic("linux abi: syscall table refused");
+        }
+    }
+    /* The registry and the rows are two statements of what is implemented, and
+     * they must agree in both directions: a row whose line says MISSING is a
+     * table nobody updated, and a DONE line with no row answers ENOSYS while
+     * every document says the call works. check-syscall-checks.py holds the
+     * same rule against the sources; this holds it against what was built. */
+    for (i = 0; i < vibeos_linux_syscall_count(); i++) {
+        const vibeos_sys_entry_t *e = vibeos_linux_syscall_at(i);
+        int has_row = vibeos_abi_linux()->lookup(e->nr) != 0;
+        int says_row = e->state == VIBEOS_SYS_DONE || e->state == VIBEOS_SYS_PARTIAL;
+        if (has_row != says_row) {
+            hw_log(VIBEOS_LOG_ERROR, 62u, e->nr, (uint64_t)has_row,
+                   "linux abi: a row and the registry disagree about this number");
+            hw_panic("linux abi: registry and rows disagree");
         }
     }
     if (vibeos_abi_linux_missing() != VIBEOS_OP_NONE) {
@@ -138,6 +154,32 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
         return row->handler(&call);
     }
 
+    /* No row. The registry says which of the three kinds of no this is. */
+    {
+        const vibeos_sys_entry_t *e = vibeos_linux_syscall(nr);
+
+        if (e && e->state == VIBEOS_SYS_REFUSED) {
+            /* A decision, answered with its errno and counted. Not a failure
+             * and not a log line: a C library probing for a facility this
+             * kernel refused is behaving correctly. */
+            __sync_fetch_and_add(&g_abi_refused, 1u);
+            return -(long)e->err;
+        }
+        if (e && e->state == VIBEOS_SYS_DEFERRED) {
+            /* Planned for nobody yet - so a program asking is news: the gate
+             * reports the number, and the plan moves it into a phase. */
+            __sync_fetch_and_add(&g_abi_deferred, 1u);
+            g_abi_deferred_nr = nr;
+            vibeos_x86_64_serial_lock();
+            vibeos_x86_64_serial_puts("[HW][SYS] deferred Linux syscall nr=0x");
+            vibeos_x86_64_serial_print_hex(nr);
+            vibeos_x86_64_serial_puts(" ");
+            vibeos_x86_64_serial_puts(e->name);
+            vibeos_x86_64_serial_puts("\n");
+            vibeos_x86_64_serial_unlock();
+            return -(long)e->err;
+        }
+    }
     __sync_fetch_and_add(&g_abi_unimplemented, 1u);
     if (nr == VIBEOS_ABI_PROBE_NR) {
         __sync_fetch_and_add(&g_abi_probes, 1u);

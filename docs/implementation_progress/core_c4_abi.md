@@ -143,7 +143,9 @@ against names renamed in the same change and never run - now run and red).
   duplicate number, a NULL handler and an operation NONE or out of range.
 - **"Add a syscall" is 2 files** (abi.h and the file that holds the handler), from 6.
   The number is stated a second time in `scripts/dev/linux-syscall-numbers.txt` on
-  purpose, and `check-syscall-checks.py` holds every row against it.
+  purpose, and `check-syscall-checks.py` holds every row against it. (Since
+  2026-09-29 that second statement is the registry of every Linux number,
+  `kernel/abi/linux_syscalls.def` - docs/abi/ phase A1 - and the file is gone.)
 - Sabotage: `cases/core-syscall-rows.txt` (wrong number, duplicate number, deleted row,
   row that no longer validates memory) and four registry cases in `abi-abi_linux.txt`;
   all red. Full check green, 3/3 boots, clang and gcc warnings 0.

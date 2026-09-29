@@ -56,7 +56,7 @@ echo
 sed -nE 's/^\| [0-9]+ \| `([a-z_0-9]+)` \| ([a-z]+) \| ([^|]+) \|.*/\1 \2 \3/p' \
     "$ROOT/docs/abi/syscalls.md" | sed 's/ *$//' > table.txt
 
-for state in done partial missing; do
+for state in done partial missing deferred refused; do
     echo "=== $state"
     awk -v st="$state" 'NR==FNR { s[$1]=$2; p[$1]=$3; for (i = 4; i <= NF; i++) p[$1]=p[$1]" "$i; next }
          ($1 in s) && s[$1]==st { printf "%s%s ", $1, (st=="done" ? "" : "(" p[$1] ")") }' \
@@ -65,5 +65,5 @@ for state in done partial missing; do
 done
 unknown=$(awk 'NR==FNR { s[$1]=1; next } !($1 in s) { printf "%s ", $1 }' table.txt used.txt)
 [ -n "$unknown" ] && echo "=== not in docs/abi/syscalls.md: $unknown"
-missing=$(awk 'NR==FNR { s[$1]=$2; next } s[$1]=="missing"' table.txt used.txt | wc -l)
+missing=$(awk 'NR==FNR { s[$1]=$2; next } s[$1]=="missing" || s[$1]=="deferred"' table.txt used.txt | wc -l)
 echo "=== missing=$missing"

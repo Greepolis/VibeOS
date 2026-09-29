@@ -86,6 +86,9 @@ do_build() {
     # Every operation runs exactly the checks it declares (C4): a check declared
     # and not run, run and not declared, or an operation no case dispatches.
     python3 scripts/dev/check-syscall-checks.py | tail -1
+    # The published table of every Linux syscall is the registry's, not a copy
+    # that drifted from what the kernel answers (docs/abi/, phase A1).
+    python3 scripts/dev/make-syscall-table.py --check | tail -1
     # Every sabotage case still has an anchor to break. Moving code breaks them
     # silently; this finds it the same day.
     python3 scripts/dev/check-sabotage-anchors.py | tail -1
