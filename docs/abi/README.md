@@ -42,7 +42,8 @@ underneath it:
 1. **The handlers are not portable.** `kernel/abi/linux/` includes
    `arch_hw_internal.h` and reaches `g_tasks`, `hw_*` and the page tables directly
    - about 700 references across 4,866 lines. A handler cannot be host-tested,
-   so every syscall so far was proved by booting.
+   so every syscall so far was proved by booting. *(Closed by A2: the handlers
+   reach the kernel through `include/vibeos/ksvc.h` and run in the host tests.)*
 2. **Four descriptors.** The table holds descriptors 3 to 6, and an entry is a
    value copied on `dup` and `fork` - so two descriptors that Linux says share an
    offset do not. Most real programs open more than four files; all of them
@@ -86,6 +87,8 @@ plan; they stand.
 9. **A handler is portable and host-testable.** It reaches a task, its
    descriptors, its address space and the filesystem through a declared
    interface the architecture implements - not through `arch_hw_internal.h`.
+   Since A2 that interface is `include/vibeos/ksvc.h`, and
+   `check-abi-layering.py` holds every personality to it.
 10. **A partial row names its gap in the registry**, and the gap is the same
     sentence the refusal logs, so "partial" cannot quietly become "done".
 

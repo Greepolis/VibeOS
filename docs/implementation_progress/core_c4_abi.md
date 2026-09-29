@@ -80,7 +80,9 @@ against names renamed in the same change and never run - now run and red).
 - The linkage from `linux_internal.h` to `arch_hw_internal.h` is a relative
   include. The Linux layer still reaches x86-64 objects (a task, its address
   space, its descriptor table) directly; abstracting that is the day a second
-  architecture exists, not before.
+  architecture exists, not before. (Done earlier than that, on 2026-09-29, for
+  a different reason: host tests and a second *personality*. The include is
+  gone; see docs/abi/ phase A2 and `include/vibeos/ksvc.h`.)
 
 ## Stage 2b: the pointer arguments are declared in the row (2026-09-21)
 

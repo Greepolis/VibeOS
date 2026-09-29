@@ -124,6 +124,67 @@ go to zero; blast radius for "add a syscall" goes to one file plus its row.
 **Done when** the Linux ABI builds into the host test binary and the existing
 boot gate is unchanged.
 
+**Status (2026-09-29): done.** Nothing under `kernel/abi/` names the architecture
+any more: no `hw_*`, no `g_tasks`, no architecture global, no inline assembly,
+no `arch_hw_internal.h`. Every `hw_sys_*` is `linux_sys_*`.
+
+- **The interface is not Linux's.** It is `include/vibeos/ksvc.h`, *kernel
+  services*, with a `ks_` prefix: 92 functions over tasks, locks and waiting,
+  user memory, the address space, processes, registers and devices. A second
+  personality - Windows is planned - is another directory beside
+  `kernel/abi/linux` that includes the same header. The architecture implements
+  it in `kernel/arch/x86_64/ksvc.c`, mostly one line over a function that
+  already existed. What is more than a line is what used to sit in the handlers
+  and is really about the machine: the mm lock's interrupt window, a fresh
+  page's leaf bits, reading an entry for `pageinfo`, a fork's or a thread's
+  registers, an exec's entry, the signal frame, the TLS MSR.
+- **Portable structures.** The process state, the image and the lock layout
+  moved to `include/vibeos/procstate.h`, and the architecture keeps its names
+  for them as typedefs. Linux errno and signal numbers moved to `abi_linux.h`.
+  The layer's exports to the kernel - the syscall entry, signal delivery,
+  descriptor copies, futex wake - are `include/vibeos/linux_exports.h`.
+- **Reusable across personalities.** The pointer checks a row declares run in
+  `kernel/abi/abi.c` (`vibeos_abi_check_pointers`, handed the personality's own
+  range check and bad-address error), and the row macros are
+  `include/vibeos/abi_rows.h`. The architecture's entry only reads registers;
+  the dispatcher is `linux_syscall(frame, nr, a[6])`.
+- **Moved, not rewritten.** The futex table and its wake left the
+  architecture's task code for `kernel/abi/linux/futex.c`, with the wait. The
+  descriptor claim and a pipe end's release left it for `fs.c`. mmap's two
+  mapping loops, which differed only in the leaf, became one.
+- **Host tests.** `tests/kernel/ksvc_fake.c` is the other implementation: a task
+  table, user memory with a window that can be made to fault (a sibling's
+  munmap between the check and the copy), a filesystem and a network stack in
+  memory, and waits, exits and panics that return to the test instead of
+  hanging it. `linux_abi_tests.c` runs the handlers through `linux_syscall`:
+  pipes, dup2, the console, the pointer engine, sigset numbering, sigaction,
+  kill across sessions, a forged signal frame, the registry's three answers,
+  fork. **Every PARTIAL row has a gap expectation** written as what Linux does;
+  it fails today for the reason the registry names, a gap that starts passing
+  fails the test until the line says DONE, and a gap for a line that is not
+  PARTIAL fails too. `rseq`, partial by decision (phase R), asserts the
+  decision instead.
+- **Checks.** `check-abi-layering.py` (in `check.sh`): no personality file names
+  the architecture - the forbidden globals are read from `arch_hw_internal.h`,
+  after the first version knew only `g_tasks` and let a sabotage reading
+  `g_timer_ticks` through - and both implementations define every service.
+  `check-syscall-checks.py` followed one-line definitions into the next
+  function (its body ended at the next `\n}\n`), which made `close` "reach" the
+  user-range check through `ks_lock`; it matches braces now, and its listing is
+  identical to the one before the refactor for all 68 operations.
+  `check-chokepoints.py` counts `include/` too and the `ks_` doors beside the
+  `hw_` ones. 26 sabotage anchors were re-pointed, 12 by applying the code's own
+  renames and 14 by hand.
+- **Sabotage.** `abi-host-handlers.txt` (sigset numbering, a gap closed without
+  the registry, a forged frame resumed) and `abi-layering.txt` - all red for
+  their stated reason.
+
+**Measure.** References to `hw_*`/`g_tasks` in `kernel/abi/linux/`: ~700 to 0.
+Blast radius for "add a syscall" stays 2 (abi.h and the file with the handler),
+plus its registry line - not the one the plan hoped for: the second is the
+operation's declaration in abi.h, which every personality shares and which is
+kept on purpose.
+
 ### A3. Descriptors as Linux has them
 
 **Objective.** Fix the two descriptor defects under every I/O syscall.

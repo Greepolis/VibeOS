@@ -4,6 +4,7 @@ Status: In Progress (Linux process semantics verified from ring 3)
 Last review: 2026-08-25
 
 ## Implemented
+- **Portable, host-tested handlers (docs/abi/ A2, 2026-09-29).** `kernel/abi/linux/` reaches the kernel only through `include/vibeos/ksvc.h`, a services interface written for every personality rather than for Linux; the architecture implements it in `kernel/arch/x86_64/ksvc.c` and the host tests in `tests/kernel/ksvc_fake.c`. `tests/kernel/linux_abi_tests.c` runs the handlers through `linux_syscall`, and every PARTIAL row of the registry carries a gap expectation that fails until its phase closes it. `check-abi-layering.py` keeps it so. The details are in [docs/abi/phases.md](../abi/phases.md), A2.
 - **Real on-metal ring-3 -> ring-0 syscall entry** (`kernel/arch/x86_64/arch_hw.c` + `isr.S`), two paths into one Linux-ABI dispatcher (`vibeos_x86_64_linux_syscall`):
   - **Native `syscall`/`sysret`** (the real Linux x86-64 fast path): EFER.SCE enabled, STAR/LSTAR/SFMASK programmed, and an LSTAR trampoline that switches to a kernel stack, marshals the Linux ABI (nr in rax; args in rdi/rsi/rdx) into the C ABI, dispatches, and `sysretq`s back to ring 3.
   - **`int 0x80` gate** (DPL 3) as a legacy/bring-up path into the same dispatcher.

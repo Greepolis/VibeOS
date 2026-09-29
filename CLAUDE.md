@@ -206,13 +206,24 @@ section by its functions before planning around its size.
 
 ## Sharp edges in the code
 
+**A syscall handler reaches the kernel through `vibeos/ksvc.h` and nothing
+else.** Since docs/abi/ A2 no file under `kernel/abi/` includes the
+architecture or names its globals, which is what lets `linux_abi_tests.c` run
+the handlers on `tests/kernel/ksvc_fake.c`. A handler that needs something new
+gets a `ks_` function, defined in *both* `kernel/arch/x86_64/ksvc.c` and the
+fake; `check-abi-layering.py` fails otherwise. The interface is deliberately not
+Linux's - a Windows personality is meant to include the same header. The first
+version of that check listed `g_tasks` by hand and a handler reading
+`g_timer_ticks` walked through it: a check that names forbidden things one by
+one forbids only those, so it reads them from `arch_hw_internal.h` now.
+
 **Syscall arguments typed `int` arrive zero-extended.** `mov $-100, %edi`
 delivers `0x00000000ffffff9c`. Read them through `VIBEOS_ARG_INT()`; comparing
 all 64 bits against `AT_FDCWD` or `-1` never matches.
 
 **Linux `sigset_t` bits are numbered from zero**: bit 0 is signal 1. This
 kernel numbers them by signal. Convert only at the boundary
-(`hw_sigset_from_user` / `hw_sigset_to_user`).
+(`linux_sigset_from_user` / `linux_sigset_to_user`).
 
 **A wait status is not an exit code.** Exit code in the high byte, signal
 number in the low seven bits. `128 + sig` is what a shell prints, not what the
