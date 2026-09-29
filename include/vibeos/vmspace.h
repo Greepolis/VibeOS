@@ -380,6 +380,9 @@ int vibeos_vmspace_fault(vibeos_vmspace_t *as, uint64_t va, int write);
  * it - that is the point of this layer. */
 uint64_t *vibeos_vmspace_entry(vibeos_vmspace_t *as, uint64_t va);
 
+/* Whether `va` is mapped: present, or in swap with its permissions kept. */
+int vibeos_vmspace_mapped(vibeos_vmspace_t *as, uint64_t va);
+
 /* How many entries in this address space carry the ownership bit. Walks. Used
  * by the tests and by the inspection layer, never on a hot path. */
 uint64_t vibeos_vmspace_owned_count(vibeos_vmspace_t *as);

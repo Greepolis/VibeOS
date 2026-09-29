@@ -131,7 +131,7 @@ POINTS = {
         "counts, `ready`) were declared and called by nobody."),
     "syscall": (
         "kernel/abi/pageinfo.c",
-        r"VIBEOS_OP_PAGEINFO|X\(PAGEINFO|hw_sys_pageinfo", 2,
+        r"VIBEOS_OP_PAGEINFO|X\(PAGEINFO|linux_sys_pageinfo", 2,   # hw_sys_ until A2
         "the last operation added, as the witness (a stand-in path; only its "
         "basename and include/vibeos/pageinfo.h are excluded). abi.h declares "
         "the operation and its checks; the file that holds the handler carries "

@@ -1,4 +1,4 @@
-# Target source: kernel/abi/linux/proc.c (futex), kernel/abi/linux/mm.c (mprotect), kernel/arch/x86_64/arch_hw.c (the rest); kernel/arch/x86_64/task_life.c (the join word, which moved with exit)
+# Target source: kernel/abi/linux/futex.c (futex), kernel/abi/linux/proc.c (TLS), kernel/abi/linux/mm.c (mprotect), kernel/arch/x86_64/arch_hw.c (the rest); kernel/arch/x86_64/task_life.c (the join word, which moved with exit)
 
 ### the join word is cleared after the context switch, so nobody is woken
 --- old
@@ -12,22 +12,22 @@
 
 ### a thread gets its creator's TLS instead of its own
 --- old
-    child->fs_base = (flags & CLONE_SETTLS) ? tls : parent->fs_base;
+                   (flags & CLONE_SETTLS) ? tls : ks_tls_get(me));
 +++ new
-    child->fs_base = parent->fs_base;
+                   ks_tls_get(me));
 
 ### futex wait sleeps without checking the value first
 --- old
     if (cur != expected) {
-        hw_spin_unlock(&g_futex_lock);
+        ks_unlock(&g_futex_lock);
 +++ new
     if (0) {
-        hw_spin_unlock(&g_futex_lock);
+        ks_unlock(&g_futex_lock);
 
 ### mprotect leaves a reserved page unreachable from ring 3
 --- old
-                p = (vibeos_prot_t)(VIBEOS_PROT_READ | VIBEOS_PROT_USER);
-                if (prot & PROT_WRITE) {
+    p = (vibeos_prot_t)(VIBEOS_PROT_READ | VIBEOS_PROT_USER);
+    if (prot & PROT_WRITE) {
 +++ new
-                p = (vibeos_prot_t)(VIBEOS_PROT_READ);
-                if (prot & PROT_WRITE) {
+    p = (vibeos_prot_t)(VIBEOS_PROT_READ);
+    if (prot & PROT_WRITE) {

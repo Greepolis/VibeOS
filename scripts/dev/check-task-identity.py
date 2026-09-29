@@ -21,6 +21,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 HEADER = os.path.join(ROOT, "kernel", "arch", "x86_64", "arch_hw_internal.h")
+PROCSTATE = os.path.join(ROOT, "include", "vibeos", "procstate.h")
 ARCH = os.path.join(ROOT, "kernel", "arch", "x86_64", "arch_hw.c")
 # The context switch left arch_hw.c for task_switch.c (2026-09-28), taking four of the
 # five functions below with it. Both files are read: a check whose subject moved out of
@@ -127,9 +128,12 @@ def main():
     if re.search(r"\bvibeos_fdtable_t\s+files\s*;", body):
         bad.append("hw_task_t embeds a descriptor table - it is the process's "
                    "(hw_procstate_t), shared by its threads")
-    ps = re.search(r"typedef struct hw_procstate \{(.*?)\} hw_procstate_t;", read(HEADER), re.S)
+    # The process state is include/vibeos/procstate.h since A2 (the architecture
+    # keeps hw_procstate_t as a typedef of it).
+    ps = re.search(r"typedef struct vibeos_procstate \{(.*?)\} vibeos_procstate_t;",
+                   read(PROCSTATE), re.S)
     if not ps or not re.search(r"\bvibeos_fdtable_t\s+files\s*;", ps.group(1)):
-        bad.append("hw_procstate_t does not embed vibeos_fdtable_t as `files`")
+        bad.append("vibeos_procstate_t does not embed vibeos_fdtable_t as `files`")
     idx = 0
     for d in (os.path.join(ROOT, "kernel", "arch", "x86_64"), os.path.join(ROOT, "kernel", "abi", "linux")):
         for name in sorted(os.listdir(d)):

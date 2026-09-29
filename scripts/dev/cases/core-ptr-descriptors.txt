@@ -12,24 +12,24 @@
 
 ### getcwd stops declaring its buffer
 --- old
-PTRS(OUT(0, 2)), hw_sys_getcwd
+PTRS(OUT(0, 2)), linux_sys_getcwd
 +++ new
-NOPTR, hw_sys_getcwd
+NOPTR, linux_sys_getcwd
 
 ### pipe stops declaring its result array
 --- old
-PTRS(OUT(0, 8)), hw_sys_pipe2(ARG(0), 0)
+PTRS(OUT(0, 8)), linux_sys_pipe2(ARG(0), 0)
 +++ new
-NOPTR, hw_sys_pipe2(ARG(0), 0)
+NOPTR, linux_sys_pipe2(ARG(0), 0)
 
 ### getdents64 stops declaring its buffer
 --- old
-PTRS(OUT_BUF(1, 2)), hw_sys_getdents64
+PTRS(OUT_BUF(1, 2)), linux_sys_getdents64
 +++ new
-NOPTR, hw_sys_getdents64
+NOPTR, linux_sys_getdents64
 
 ### fstat stops declaring its stat buffer
 --- old
-PTRS(OUT(1, STAT_SIZE)), hw_sys_fstat
+PTRS(OUT(1, STAT_SIZE)), linux_sys_fstat
 +++ new
-NOPTR, hw_sys_fstat
+NOPTR, linux_sys_fstat

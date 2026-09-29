@@ -22,10 +22,10 @@
 
 ### clone does not count the thread as a user of the table
 --- old
-    (void)__atomic_add_fetch(&child->ps->files_users, 1u, __ATOMIC_ACQ_REL);
+    (void)__atomic_add_fetch(&ps->files_users, 1u, __ATOMIC_ACQ_REL);
 +++ new
 
 ### exec does not copy the table
 --- old
-        hw_fds_copy(nps, ops);
+        linux_fds_copy(nps, ops);
 +++ new

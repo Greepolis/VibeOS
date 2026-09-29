@@ -160,6 +160,14 @@ uint64_t *vibeos_vmspace_entry(vibeos_vmspace_t *as, uint64_t va) {
     return walk(as, va, 0);
 }
 
+/* Mapped means present or in swap: a swapped page keeps its permissions and
+ * comes back on the next touch, so to mprotect it is as mapped as a resident
+ * one (M-063). A page munmap has freed is neither. */
+int vibeos_vmspace_mapped(vibeos_vmspace_t *as, uint64_t va) {
+    uint64_t *e = vibeos_vmspace_entry(as, va);
+    return e && (*e & (PTE_PRESENT | VIBEOS_PTE_SWAPPED)) != 0u;
+}
+
 /* ---- the low window ------------------------------------------------------
  *
  * Below the identity limit the kernel reaches memory by its physical address,

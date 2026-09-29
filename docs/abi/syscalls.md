@@ -238,7 +238,7 @@ calls, outside the Linux number space, are listed last.
 | 199 | `fremovexattr` | missing | L1 | ENOSYS |  | ENOTSUP from the filesystem until one stores attributes |
 | 200 | `tkill` | done | - | - | `sig.c` |  |
 | 201 | `time` | done | - | - | `misc.c` |  |
-| 202 | `futex` | partial | L6 | - | `proc.c` | WAIT and WAKE; no requeue, wake_op or PI |
+| 202 | `futex` | partial | L6 | - | `futex.c` | WAIT and WAKE; no requeue, wake_op or PI |
 | 203 | `sched_setaffinity` | missing | L6 | ENOSYS |  |  |
 | 204 | `sched_getaffinity` | missing | L6 | ENOSYS |  |  |
 | 205 | `set_thread_area` | refused | R | ENOSYS |  | i386 thread storage; x86-64 programs use arch_prctl |

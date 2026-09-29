@@ -26,9 +26,9 @@
 
 ### vfork claims fork's number
 --- old
-    X(58,  vfork,            FORK,            NOPTR, hw_sys_fork(FRAME)) \
+    X(58,  vfork,            FORK,            NOPTR, linux_sys_fork(FRAME)) \
 +++ new
-    X(57,  vfork,            FORK,            NOPTR, hw_sys_fork(FRAME)) \
+    X(57,  vfork,            FORK,            NOPTR, linux_sys_fork(FRAME)) \
 
 ### the last row is deleted although the syscall is listed as implemented
 --- old
@@ -39,6 +39,6 @@
 
 ### execve's row no longer calls anything that validates user memory
 --- old
-    X(59,  execve,           EXEC,            NOPTR, hw_sys_execve(FRAME, ARG(0), ARG(1), ARG(2))) \
+    X(59,  execve,           EXEC,            NOPTR, linux_sys_execve(FRAME, ARG(0), ARG(1), ARG(2))) \
 +++ new
     X(59,  execve,           EXEC,            NOPTR, -VIBEOS_ENOSYS) \

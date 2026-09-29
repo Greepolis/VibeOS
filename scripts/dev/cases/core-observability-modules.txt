@@ -31,7 +31,7 @@
 #
 # Target source: scripts/qemu-cli-smoke-linux.py is NOT touched here; every case
 # breaks the kernel or the guest program and the boot must go red.
-# Target source: kernel/arch/x86_64/userland.c (the printed lines, since 2026-09-28; the mouse's moved into its driver in C7), kernel/abi/linux/net.c (fd_aba), kernel/arch/x86_64/mouse.c, user/prog/hello.c, kernel/abi/linux/mm.c
+# Target source: kernel/arch/x86_64/userland.c (the printed lines, since 2026-09-28; the mouse's moved into its driver in C7), kernel/abi/linux/net.c (fd_aba), kernel/arch/x86_64/mouse.c, user/prog/hello.c, kernel/abi/linux/mm.c, kernel/arch/x86_64/ksvc.c (the leaf of a fresh page, since A2)
 # Run one: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh build-clang-Release" python3 scripts/dev/sabotage.py <its target> <one-case file> build-clang-Release
 
 ### the network line loses its MUSTBEZERO tag and the gate no longer finds it
@@ -42,10 +42,10 @@
 
 ### every blocking socket call is counted as an ABA
 --- old
-static int hw_sock_stable(const hw_fd_t *f, int sock, uint32_t gen) {
+static int linux_sock_stable(const vibeos_fd_t *f, int sock, uint32_t gen) {
     uint32_t cur;
 +++ new
-static int hw_sock_stable(const hw_fd_t *f, int sock, uint32_t gen) {
+static int linux_sock_stable(const vibeos_fd_t *f, int sock, uint32_t gen) {
     uint32_t cur;
     g_net.sock_fd_aba++;
 
@@ -95,6 +95,6 @@ static int hw_sock_stable(const hw_fd_t *f, int sock, uint32_t gen) {
 
 ### an anonymous mapping is executable without asking for PROT_EXEC
 --- old
-        leaf |= PTE_NX;   /* executable only when asked for (M-036) */
+            leaf |= PTE_NX;
 +++ new
-        /* NX omitted */
+            /* NX omitted */

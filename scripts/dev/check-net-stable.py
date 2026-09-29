@@ -4,7 +4,7 @@
 A blocking socket call holds a descriptor across a wait. A sibling thread can
 close that descriptor and open another socket into the same slot, and a loop
 that re-reads `f->net_sock` on each pass then carries on against somebody else's
-socket. `hw_sock_stable(f, sock, gen)` is the re-check: descriptor still open,
+socket. `linux_sock_stable(f, sock, gen)` is the re-check: descriptor still open,
 still the same socket index, socket slot not reused.
 
 M-020's fix put it into connect, accept and the stream read, and missed
@@ -15,7 +15,8 @@ to whoever remembered. This checks it.
 ## The rule
 
 In kernel/abi/linux/net.c, every function that both holds a descriptor (names
-`hw_fd_t`) and waits (calls `hw_net_wait_tick()`) must call `hw_sock_stable(`.
+`vibeos_fd_t`) and waits (calls `linux_net_wait_tick()`) must call
+`linux_sock_stable(`. (hw_fd_t, hw_net_wait_tick and hw_sock_stable until A2.)
 A function that waits without a descriptor - netctl's ping and DNS - has nothing
 a sibling can close, and is not held to it.
 
@@ -64,8 +65,8 @@ def main():
         print("net-stable=FAIL no functions found in net.c; the parser no longer matches the file")
         return 1
 
-    waiting = [(n, b) for n, b in funcs if "hw_net_wait_tick()" in b and "hw_fd_t" in b]
-    bad = [n for n, b in waiting if "hw_sock_stable(" not in b]
+    waiting = [(n, b) for n, b in funcs if "linux_net_wait_tick()" in b and "vibeos_fd_t" in b]
+    bad = [n for n, b in waiting if "linux_sock_stable(" not in b]
     # The check has to have something to look at: the three waits M-020 fixed
     # first are known to exist. Fewer means the parser lost them, not that they
     # were all removed.
@@ -75,7 +76,7 @@ def main():
         return 1
     if bad:
         for n in bad:
-            print("  %s waits holding a descriptor and never calls hw_sock_stable" % n)
+            print("  %s waits holding a descriptor and never calls linux_sock_stable" % n)
         print("net-stable=FAIL unchecked=%d" % len(bad))
         return 1
     print("net-stable=ok waiting=%d" % len(waiting))

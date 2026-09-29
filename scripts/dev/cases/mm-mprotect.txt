@@ -1,4 +1,4 @@
-# Target source: kernel/abi/linux/mm.c
+# Target source: kernel/mm/vmspace.c (vibeos_vmspace_mapped, which mprotect asks since A2)
 #
 # mprotect on an address space some of whose pages are in swap. svc-reclaim
 # makes every block read-only before reading it back, and by then most of the
@@ -15,6 +15,6 @@
 
 ### mprotect refuses a page in swap
 --- old
-            if (!e || (*e & (PTE_PRESENT | VIBEOS_PTE_SWAPPED)) == 0) {
+    return e && (*e & (PTE_PRESENT | VIBEOS_PTE_SWAPPED)) != 0u;
 +++ new
-            if (!e || (*e & PTE_PRESENT) == 0) {
+    return e && (*e & PTE_PRESENT) != 0u;

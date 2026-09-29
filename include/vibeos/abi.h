@@ -191,6 +191,13 @@ typedef struct vibeos_row {
     vibeos_ptr_t ptr[VIBEOS_PTR_MAX];
 } vibeos_row_t;
 
+/* The pointer checks a row declares, run before its handler; any personality's
+ * dispatcher calls this with its own range check and its own bad-address error.
+ * 0, or the negated error of the first range refused. */
+long vibeos_abi_check_pointers(const vibeos_row_t *row, const vibeos_call_t *call,
+                               int (*user_ok)(uint64_t base, uint64_t len, int write),
+                               long efault);
+
 /* An ABI: how a foreign syscall number becomes a kernel operation and a handler.
  * Bound to a task when it is created (never looked up per call), and read-only
  * after boot. */

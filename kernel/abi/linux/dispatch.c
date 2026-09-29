@@ -8,6 +8,25 @@
 
 #include "linux_internal.h"
 
+/* The counters the boot's [ABI] MUSTBEZERO line reports. Defined by the layer
+ * that counts them; the architecture only prints them.
+ *
+ * The ABI surface's must-be-zero: a syscall number the kernel does not
+ * implement. musl probes some and tolerates ENOSYS, but nothing the boot runs
+ * should reach one, and a program that does gets -ENOSYS and carries on
+ * believing something worked. The boot asks for VIBEOS_ABI_PROBE_NR on purpose
+ * (user/prog/hello.c) so the count is seen moving; the gate asserts
+ * unimplemented == probes, and last_nr names the number when it is not. */
+volatile uint64_t g_abi_unimplemented;
+/* The two other ways a number has no row (kernel/abi/linux_syscalls.def): a
+ * refusal by decision, expected and counted, and a deferred call, which the
+ * gate reports by number because nothing planned for a program to ask. */
+volatile uint64_t g_abi_refused;
+volatile uint64_t g_abi_deferred;
+volatile uint64_t g_abi_deferred_nr;
+volatile uint64_t g_abi_probes;
+volatile uint64_t g_abi_last_nr;
+
 extern const vibeos_row_t linux_fs_rows[];
 extern const uint32_t linux_fs_row_count;
 extern const vibeos_row_t linux_mm_rows[];
@@ -20,6 +39,8 @@ extern const vibeos_row_t linux_misc_rows[];
 extern const uint32_t linux_misc_row_count;
 extern const vibeos_row_t linux_net_rows[];
 extern const uint32_t linux_net_row_count;
+extern const vibeos_row_t linux_futex_rows[];
+extern const uint32_t linux_futex_row_count;
 
 static const struct {
     const char *name;
@@ -32,56 +53,15 @@ static const struct {
     { "sig",  linux_sig_rows,  &linux_sig_row_count },
     { "misc", linux_misc_rows, &linux_misc_row_count },
     { "net",  linux_net_rows,  &linux_net_row_count },
+    { "futex", linux_futex_rows, &linux_futex_row_count },
 };
 
-/* The single call site of hw_user_range_ok. Rows declare their pointer arguments
- * with USER_OUT / USER_IN / USER_OUT_OPT (linux_internal.h) and handlers whose
+/* The single call site of ks_user_ok. Rows declare their pointer arguments
+ * with OUT / IN / OUT_OPT (vibeos/abi_rows.h) and handlers whose
  * range depends on data they have only just read (an iovec base, a string, a
  * sockaddr) ask here; nothing else in the kernel calls the check itself. */
 int linux_user_ok(uint64_t base, uint64_t len, int write) {
-    return hw_user_range_ok(base, len, write);
-}
-
-/* Validate the pointer arguments a row declares, before its handler is entered.
- * Returns 0, or -EFAULT for the first range that is not valid; the handler then
- * never runs, so nothing it does first (a lookup, a lock, a dequeue) has happened
- * to a call that was going to fail anyway. */
-static long check_pointers(const vibeos_row_t *row, const vibeos_call_t *call) {
-    uint32_t i;
-
-    for (i = 0; i < VIBEOS_PTR_MAX; i++) {
-        const vibeos_ptr_t *d = &row->ptr[i];
-        uint64_t len;
-
-        if (!(d->flags & VIBEOS_PTR_LIVE)) {
-            continue;
-        }
-        if (d->when_arg) {
-            uint64_t v = call->a[d->when_arg - 1u];
-            if (d->when_mask) {
-                v &= d->when_mask;
-            }
-            if (v != d->when_val) {
-                continue;
-            }
-        }
-        if ((d->flags & VIBEOS_PTR_OPT) && call->a[d->arg] == 0u) {
-            continue;
-        }
-        if (d->len_arg) {
-            uint64_t n = call->a[d->len_arg - 1u];
-            if (n == 0u || (d->cap && n > d->cap)) {
-                continue;
-            }
-            len = n * (uint64_t)d->len;
-        } else {
-            len = d->len;
-        }
-        if (!linux_user_ok(call->a[d->arg], len, (d->flags & VIBEOS_PTR_WRITE) ? 1 : 0)) {
-            return d->err ? -(long)d->err : -VIBEOS_EFAULT;
-        }
-    }
-    return 0;
+    return ks_user_ok(base, len, write);
 }
 
 /* Register every table, once, before the first user task exists. A number claimed
@@ -95,9 +75,9 @@ void vibeos_linux_abi_init(void) {
     vibeos_abi_linux_reset();
     for (i = 0; i < (uint32_t)(sizeof(g_tables) / sizeof(g_tables[0])); i++) {
         if (vibeos_abi_linux_register(g_tables[i].rows, *g_tables[i].count) != 0) {
-            hw_log(VIBEOS_LOG_ERROR, 60u, i, 0,
+            ks_log(VIBEOS_LOG_ERROR, 60u, i, 0,
                    "linux abi: a syscall number is claimed twice, or a row is malformed");
-            hw_panic("linux abi: syscall table refused");
+            ks_panic("linux abi: syscall table refused");
         }
     }
     /* The registry and the rows are two statements of what is implemented, and
@@ -110,43 +90,44 @@ void vibeos_linux_abi_init(void) {
         int has_row = vibeos_abi_linux()->lookup(e->nr) != 0;
         int says_row = e->state == VIBEOS_SYS_DONE || e->state == VIBEOS_SYS_PARTIAL;
         if (has_row != says_row) {
-            hw_log(VIBEOS_LOG_ERROR, 62u, e->nr, (uint64_t)has_row,
+            ks_log(VIBEOS_LOG_ERROR, 62u, e->nr, (uint64_t)has_row,
                    "linux abi: a row and the registry disagree about this number");
-            hw_panic("linux abi: registry and rows disagree");
+            ks_panic("linux abi: registry and rows disagree");
         }
     }
     if (vibeos_abi_linux_missing() != VIBEOS_OP_NONE) {
-        hw_log(VIBEOS_LOG_ERROR, 61u, (uint64_t)vibeos_abi_linux_missing(), 0,
+        ks_log(VIBEOS_LOG_ERROR, 61u, (uint64_t)vibeos_abi_linux_missing(), 0,
                "linux abi: an operation declared in abi.h has no syscall");
-        hw_panic("linux abi: a declared operation has no handler");
+        ks_panic("linux abi: a declared operation has no handler");
     }
 }
 
-/* Linux ABI entry: nr in rax, args in rdi/rsi/rdx/r10/r8/r9, with the full
- * trapframe available (fork needs it). Reached from both the native `syscall`
- * trampoline and the int 0x80 gate. */
-long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
-                                 uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3) {
+/* One syscall. The architecture's entry reads the number and the six
+ * arguments out of its registers - nr in rax, the rest in rdi, rsi, rdx, r10,
+ * r8 and r9 on x86-64 - and hands them here with the trap frame, which fork,
+ * execve and rt_sigreturn need and nothing else reads. Reached from both the
+ * native `syscall` trampoline and the int 0x80 gate, and from the host tests. */
+long linux_syscall(struct ks_regs *frame, uint64_t nr, const uint64_t a[6]) {
     /* The ABI was bound to this task when it was created; it is not looked up
      * per call. A task with no ABI recorded (there is none on the live path) is
      * treated as Linux, the only one there is. */
-    const vibeos_abi_t *abi = (g_current_task >= 0 && g_tasks[g_current_task].abi)
-                                  ? g_tasks[g_current_task].abi
-                                  : vibeos_abi_linux();
+    int cur = ks_current();
+    const vibeos_abi_t *abi = (cur >= 0 && ks_abi(cur)) ? ks_abi(cur)
+                                                        : vibeos_abi_linux();
     const vibeos_row_t *row = abi->lookup(nr);
 
     if (row) {
         vibeos_call_t call;
 
-        call.a[0] = a1;
-        call.a[1] = a2;
-        call.a[2] = a3;
-        call.a[3] = frame->r10;
-        call.a[4] = frame->r8;
-        call.a[5] = frame->r9;
+        uint32_t i;
+
+        for (i = 0; i < 6u; i++) {
+            call.a[i] = a[i];
+        }
         call.frame = frame;
         {
-            long refused = check_pointers(row, &call);
+            long refused = vibeos_abi_check_pointers(row, &call, linux_user_ok,
+                                                     VIBEOS_EFAULT);
             if (refused) {
                 return refused;
             }
@@ -170,13 +151,13 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
              * reports the number, and the plan moves it into a phase. */
             __sync_fetch_and_add(&g_abi_deferred, 1u);
             g_abi_deferred_nr = nr;
-            vibeos_x86_64_serial_lock();
-            vibeos_x86_64_serial_puts("[HW][SYS] deferred Linux syscall nr=0x");
-            vibeos_x86_64_serial_print_hex(nr);
-            vibeos_x86_64_serial_puts(" ");
-            vibeos_x86_64_serial_puts(e->name);
-            vibeos_x86_64_serial_puts("\n");
-            vibeos_x86_64_serial_unlock();
+            ks_con_lock();
+            ks_con_puts("[HW][SYS] deferred Linux syscall nr=0x");
+            ks_con_hex(nr);
+            ks_con_puts(" ");
+            ks_con_puts(e->name);
+            ks_con_puts("\n");
+            ks_con_unlock();
             return -(long)e->err;
         }
     }
@@ -192,10 +173,10 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
     g_abi_last_nr = nr;
     /* One line, one critical section: puts and print_hex each take the console
      * lock on their own. */
-    vibeos_x86_64_serial_lock();
-    vibeos_x86_64_serial_puts("[HW][SYS] unimplemented Linux syscall nr=0x");
-    vibeos_x86_64_serial_print_hex(nr);
-    vibeos_x86_64_serial_puts("\n");
-    vibeos_x86_64_serial_unlock();
+    ks_con_lock();
+    ks_con_puts("[HW][SYS] unimplemented Linux syscall nr=0x");
+    ks_con_hex(nr);
+    ks_con_puts("\n");
+    ks_con_unlock();
     return -VIBEOS_ENOSYS;
 }

@@ -121,6 +121,23 @@ set(VIBEOS_KERNEL_DRIVER_SOURCES
     kernel/fs/ntfs.c
 )
 
+# The Linux syscall personality. Portable since docs/abi/ A2: it reaches the
+# kernel only through include/vibeos/ksvc.h, so the image links it against the
+# architecture's services (kernel/arch/x86_64/ksvc.c) and the host tests against
+# tests/kernel/ksvc_fake.c. A second personality is a second list like this one.
+set(VIBEOS_LINUX_ABI_SOURCES
+    kernel/abi/linux/net.c
+    kernel/abi/linux/common.c
+    kernel/abi/linux/dispatch.c
+    kernel/abi/linux/fs.c
+    kernel/abi/linux/futex.c
+    kernel/abi/linux/misc.c
+    kernel/abi/linux/mm.c
+    kernel/abi/linux/proc.c
+    kernel/abi/linux/sig.c
+    kernel/abi/linux/signal.c
+)
+
 # The freestanding half of the kernel image: hardware bring-up that host tests
 # never link. Kept here for the same reason as the lists above - it was written
 # out by hand in CMakeLists.txt, which made it a second place to remember, and
@@ -135,15 +152,8 @@ set(VIBEOS_ARCH_X86_64_SOURCES
     kernel/arch/x86_64/userland.c
     kernel/arch/x86_64/smp.c
     kernel/arch/x86_64/io_bringup.c
-    kernel/abi/linux/net.c
-    kernel/abi/linux/common.c
-    kernel/abi/linux/dispatch.c
-    kernel/abi/linux/fs.c
-    kernel/abi/linux/misc.c
-    kernel/abi/linux/mm.c
-    kernel/abi/linux/proc.c
-    kernel/abi/linux/sig.c
-    kernel/abi/linux/signal.c
+    kernel/arch/x86_64/ksvc.c
+    ${VIBEOS_LINUX_ABI_SOURCES}
     kernel/arch/x86_64/apic.c
     kernel/arch/x86_64/blk.c
     kernel/arch/x86_64/ahci.c

@@ -7,7 +7,7 @@
 
 /* uname(): six fixed 65-byte fields, in order. Programs branch on the release
  * string, so it carries a real version number rather than a placeholder. */
-static long hw_sys_uname(uint64_t buf) {
+static long linux_sys_uname(uint64_t buf) {
     static const char *const fields[6] = {
         "Linux",            /* sysname: the ABI implemented here, which is    */
                             /* what the question is actually about            */
@@ -43,13 +43,13 @@ static long hw_sys_uname(uint64_t buf) {
 /* clock_gettime(): derived from the timer tick, so it advances at the
  * resolution the timer really has rather than pretending to a nanosecond
  * accuracy it does not possess. */
-static long hw_sys_clock_gettime(uint64_t clk, uint64_t ts_uptr) {
-    uint64_t ticks = g_timer_ticks;
+static long linux_sys_clock_gettime(uint64_t clk, uint64_t ts_uptr) {
+    uint64_t ticks = ks_ticks();
     uint64_t kts[2];
 
     (void)clk;   /* monotonic and realtime are one clock here: uptime */
-    kts[0] = ticks / VIBEOS_HW_TIMER_HZ;
-    kts[1] = (ticks % VIBEOS_HW_TIMER_HZ) * (1000000000ull / VIBEOS_HW_TIMER_HZ);
+    kts[0] = ticks / ks_hz();
+    kts[1] = (ticks % ks_hz()) * (1000000000ull / ks_hz());
     /* Built in the kernel and copied out: a sibling munmap between the check
      * and the write would fault in ring 0 (H-026). */
     if (vibeos_uaccess_copy((void *)(uintptr_t)ts_uptr, kts, sizeof(kts)) != 0) {
@@ -58,8 +58,8 @@ static long hw_sys_clock_gettime(uint64_t clk, uint64_t ts_uptr) {
     return 0;
 }
 
-static long hw_sys_time(uint64_t tptr) {
-    uint64_t secs = g_timer_ticks / VIBEOS_HW_TIMER_HZ;
+static long linux_sys_time(uint64_t tptr) {
+    uint64_t secs = ks_ticks() / ks_hz();
 
     if (tptr != 0u) {
         if (vibeos_uaccess_copy((void *)(uintptr_t)tptr, &secs, sizeof(secs)) != 0) {
@@ -76,7 +76,7 @@ static long hw_sys_time(uint64_t tptr) {
  * it without running the machine into its minimum; BusyBox's `free` asks the
  * same question the same way. Free is the frame layer's free count: the page
  * cache is not counted as free, as Linux counts it in bufferram instead. */
-static long hw_sys_sysinfo(uint64_t buf) {
+static long linux_sys_sysinfo(uint64_t buf) {
     uint64_t w[14];
     const vibeos_mm_stats_t *st = vibeos_mm_stats();
     uint64_t slots = (uint64_t)vibeos_swap_slots();
@@ -86,7 +86,7 @@ static long hw_sys_sysinfo(uint64_t buf) {
     for (i = 0; i < 14u; i++) {
         w[i] = 0;
     }
-    w[0] = g_timer_ticks / VIBEOS_HW_TIMER_HZ;          /* uptime, seconds   */
+    w[0] = ks_ticks() / ks_hz();         /* uptime, seconds   */
     w[4] = st->frames_total * 4096ull;                  /* totalram          */
     w[5] = st->frames_free * 4096ull;                   /* freeram           */
     w[8] = slots * 4096ull;                             /* totalswap         */
@@ -98,9 +98,9 @@ static long hw_sys_sysinfo(uint64_t buf) {
 
 /* ---- the syscalls this file implements --------------------------------------- */
 #define LINUX_MISC_SYSCALLS(X) \
-    X(63,  uname,         UNAME,         PTRS(OUT(0, 6u * 65u)), hw_sys_uname(ARG(0))) \
-    X(99,  sysinfo,       SYSINFO,       PTRS(OUT(0, 112)), hw_sys_sysinfo(ARG(0))) \
-    X(201, time,          TIME,          PTRS(OUT_OPT(0, 8)), hw_sys_time(ARG(0))) \
-    X(228, clock_gettime, CLOCK_GETTIME, PTRS(OUT(1, 16)), hw_sys_clock_gettime(ARG(0), ARG(1)))
+    X(63,  uname,         UNAME,         PTRS(OUT(0, 6u * 65u)), linux_sys_uname(ARG(0))) \
+    X(99,  sysinfo,       SYSINFO,       PTRS(OUT(0, 112)), linux_sys_sysinfo(ARG(0))) \
+    X(201, time,          TIME,          PTRS(OUT_OPT(0, 8)), linux_sys_time(ARG(0))) \
+    X(228, clock_gettime, CLOCK_GETTIME, PTRS(OUT(1, 16)), linux_sys_clock_gettime(ARG(0), ARG(1)))
 
 LINUX_DEFINE_SYSCALLS(misc, LINUX_MISC_SYSCALLS)

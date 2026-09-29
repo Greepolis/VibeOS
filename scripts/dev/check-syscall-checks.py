@@ -38,8 +38,9 @@ For each row it takes the call expression, then follows every function it names
 through the arch and Linux-ABI layers' own definitions - handlers call helpers that
 call the choke points - and asks which are reachable:
 
-  USER_MEMORY   hw_user_range_ok, hw_user_range_why, hw_user_addr_ok
-  SIGNAL_PERMIT hw_signal_permitted
+  USER_MEMORY   hw_user_range_ok, hw_user_range_why, hw_user_addr_ok, and the
+                services handlers reach them through (ks_user_ok, ...)
+  SIGNAL_PERMIT linux_signal_permitted
   TASK_GUARD    hw_task_alloc_guarded
 
 An operation's checks are the union over its rows (fork and vfork are both FORK).
@@ -68,8 +69,9 @@ HANDLER_DIRS = (os.path.join(ROOT, "kernel", "arch", "x86_64"), ABI_DIR)
 
 CHOKEPOINTS = {
     "USER_MEMORY": ("hw_user_range_ok", "hw_user_range_why", "hw_user_addr_ok",
+                    "ks_user_ok", "ks_user_range_why", "ks_user_addr_ok",
                     "linux_user_ok", "PTRS"),
-    "SIGNAL_PERMIT": ("hw_signal_permitted",),
+    "SIGNAL_PERMIT": ("linux_signal_permitted",),
     "TASK_GUARD": ("hw_task_alloc_guarded",),
 }
 
@@ -151,10 +153,21 @@ def function_bodies():
                 fn = m.group(1)
                 if fn in ("if", "for", "while", "switch", "return", "sizeof"):
                     continue
-                close = text.find("\n}\n", m.end())
-                if close < 0:
+                # Matched braces, not the next "\n}\n": a one-line definition
+                # - vibeos/ksvc.h's services are mostly one line each - would
+                # otherwise swallow every function after it, and a close() that
+                # "reached" the user-range check through ks_lock's body was what
+                # that looked like (A2).
+                depth, i = 1, m.end()
+                while i < len(text) and depth:
+                    if text[i] == "{":
+                        depth += 1
+                    elif text[i] == "}":
+                        depth -= 1
+                    i += 1
+                if depth:
                     continue
-                bodies.setdefault(fn, text[m.end():close])
+                bodies.setdefault(fn, text[m.end():i - 1])
     return bodies
 
 

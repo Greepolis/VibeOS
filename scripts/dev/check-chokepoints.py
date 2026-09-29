@@ -45,7 +45,9 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-SCOPE = ("kernel",)
+# include/ since A2: the Linux handlers reach these through vibeos/ksvc.h, and a
+# declaration there is as much a site as one in arch_hw_internal.h was.
+SCOPE = ("kernel", "include")
 
 # name -> (occurrences, why this one is a choke point)
 #
@@ -53,18 +55,29 @@ SCOPE = ("kernel",)
 # separating those from calls needs a parser and the number's job is to move
 # when something changes, not to be a call count.
 CHOKEPOINTS = {
-    "hw_signal_permitted": (
-        5,
+    "linux_signal_permitted": (
+        5,   # renamed from hw_signal_permitted with the handlers (A2)
         "who may signal whom. Four callers and a definition; a fifth caller "
         "that forgot the check is a process signalling one it does not own."),
     "hw_user_range_ok": (
-        4,   # definition + two declarations + the one call, in linux_user_ok (C4 stage 2b)
-        "the low-level range check has ONE call site, linux_user_ok in "
-        "kernel/abi/linux/dispatch.c. It was 46, spread over every handler; "
-        "that is the criterion C4 was written to reach. A second call is a "
-        "handler that decided for itself what a valid pointer is."),
+        5,   # definition + two declarations + the one call, in ks_user_ok (A2; was linux_user_ok,
+             # C4 stage 2b) + a comment in include/vibeos/vmspace.h, in scope since A2
+        "the low-level range check has ONE call site, ks_user_ok in "
+        "kernel/arch/x86_64/ksvc.c, which only linux_user_ok calls. It was 46, "
+        "spread over every handler; that is the criterion C4 was written to "
+        "reach. A second call is a handler that decided for itself what a valid "
+        "pointer is."),
+    "ks_user_ok": (
+        3,   # definition, its declaration in vibeos/ksvc.h, and linux_user_ok's call
+        "the same door, one level up: the kernel service a personality judges a "
+        "user range with. One caller per personality - Linux's is linux_user_ok. "
+        "A handler calling it directly is a handler that skipped the dispatcher's "
+        "chokepoint."),
     "linux_user_ok": (
-        15,   # definition, the engine's call, one declaration, and 12 that cannot be descriptors
+        14,   # definition, a declaration (vibeos/linux_exports.h), and 12 that cannot be
+              # descriptors. 15 -> 14 in A2: the pointer engine moved to kernel/abi/abi.c
+              # to serve every personality, and is handed linux_user_ok as a function
+              # pointer - a site this count cannot see, stated here instead.
         "who asks the dispatcher to judge a user pointer. **This is where the old "
         "'a syscall that stopped checking' alarm lives now.** The pointer arguments of "
         "every syscall are declared in its row (PTRS) and checked by the engine in "
@@ -76,11 +89,20 @@ CHOKEPOINTS = {
         "user string, the crash dump). A number going down is a check that vanished; "
         "going up is a handler deciding for itself again."),
     "hw_user_range_why": (
-        6,
+        5,   # 6 -> 5 in A2: execve's two argv refusals ask ks_user_range_why now
         "the same check with a reason attached. A refusal that names a "
         "mechanism instead of a situation cost a session once."),
+    "ks_user_range_why": (
+        4,   # definition, declaration, execve's two argv refusals
+        "the reason-carrying check as handlers reach it (A2)."),
+    "ks_user_addr_ok": (
+        4,   # definition, declaration, a signal handler's address (H-017), TLS base
+        "the address policy as handlers reach it (A2). The sigreturn rip check "
+        "(H-018) moved with the frame into ks_sigframe_pop, where it calls "
+        "hw_user_addr_ok itself."),
     "hw_user_addr_ok": (
-        6,
+        5,   # 6 -> 5 in A2: two handler calls became ks_user_addr_ok, and ksvc.c adds
+             # the wrapper's and the sigreturn frame's
         "address policy for the two user windows. VibeOS programs link at "
         "0x8000000000 and Linux ones at 0x400000, inside the kernel's identity "
         "map, so 'is this a user address' is not a range test anybody should "

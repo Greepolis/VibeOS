@@ -517,25 +517,8 @@ uint64_t g_gui_back_base;
 uint64_t g_gui_back_end;
 uint64_t g_gui_back_shared;
 uint64_t g_gui_back_lost;
-/* Ring-3 text writes whose leading bytes read as NUL. See hw_sys_write. */
-uint64_t g_ring3_write_nul;
-
-
-/* The ABI surface's must-be-zero: a syscall number the kernel does not
- * implement. musl probes some and tolerates ENOSYS, but nothing the boot runs
- * should reach one, and a program that does gets -ENOSYS and carries on
- * believing something worked. The boot asks for VIBEOS_ABI_PROBE_NR on purpose
- * (user/prog/hello.c) so the count is seen moving; the gate asserts
- * unimplemented == probes, and last_nr names the number when it is not. */
-volatile uint64_t g_abi_unimplemented;
-/* The two other ways a number has no row (kernel/abi/linux_syscalls.def): a
- * refusal by decision, expected and counted, and a deferred call, which the
- * gate reports by number because nothing planned for a program to ask. */
-volatile uint64_t g_abi_refused;
-volatile uint64_t g_abi_deferred;
-volatile uint64_t g_abi_deferred_nr;
-volatile uint64_t g_abi_probes;
-volatile uint64_t g_abi_last_nr;
+/* g_ring3_write_nul and the g_abi_* counters are the Linux layer's now
+ * (vibeos/linux_exports.h); this file prints them. */
 extern int vibeos_x86_64_fb_init(uint64_t base, uint32_t width, uint32_t height);
 extern int vibeos_x86_64_fb_ready(void);
 extern void vibeos_x86_64_fb_puts(const char *s);
@@ -637,10 +620,6 @@ static void hw_pic_send_eoi(uint32_t vector) {
     }
     hw_outb(PIC1_CMD, PIC_EOI);
 }
-/* Defined with the rest of the signal code, far below; the timer path needs it
- * here so a signal raised while a task was running is delivered on the way
- * back to ring 3 rather than at the next syscall. */
-int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame);
 /* Defined with the task code, because it needs the signal numbers that are
  * #defined a thousand lines below here and C only reads the file once. */
 /* Defined with the task table: answers whether a frame about to be freed
@@ -860,7 +839,7 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
              * stack, and there is not one to build on if the interrupt hit
              * kernel code. */
             if ((frame->cs & 3u) == 3u) {
-                (void)hw_signal_deliver(frame);
+                (void)linux_signal_deliver((struct ks_regs *)frame);
             }
             return;
         }
@@ -1289,7 +1268,7 @@ void vibeos_x86_64_syscall_dispatch(vibeos_x86_64_isr_frame_t *frame) {
     /* A signal raised while this process was in the kernel is delivered here,
      * on the way out, where its own stack is available and the register state
      * to save is the one sitting in the trapframe. */
-    (void)hw_signal_deliver(frame);
+    (void)linux_signal_deliver((struct ks_regs *)frame);
 }
 
 /* Bring the scheduler up: spawn the initial user tasks, adopt the kernel as a

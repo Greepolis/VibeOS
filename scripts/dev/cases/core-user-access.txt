@@ -29,9 +29,9 @@
 
 ### read() hands the user's buffer to the filesystem
 --- old
-                got = vibeos_fs_read_at(&g_rootfs, &node, f->pos, bounce, (uint32_t)want);
+                got = vibeos_fs_read_at(ks_rootfs(), &node, f->pos, bounce, (uint32_t)want);
 +++ new
-                got = vibeos_fs_read_at(&g_rootfs, &node, f->pos,
+                got = vibeos_fs_read_at(ks_rootfs(), &node, f->pos,
                                         (uint8_t *)(uintptr_t)(buf + done), (uint32_t)want);
 
 ### uname writes the user's buffer directly

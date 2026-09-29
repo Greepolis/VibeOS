@@ -1,4 +1,4 @@
-# Target source: kernel/abi/linux/proc.c
+# Target source: kernel/abi/linux/futex.c
 #
 # core-process.txt case 7, as a sabotage that runs: a futex wait that does not
 # notice a pending SIGKILL, so exit_group cannot end the blocked leader. Run
@@ -18,9 +18,9 @@
 
 ### a futex wait sleeps through SIGKILL
 --- old
-        if (hw_signal_interrupts(me)) {
+        if (ks_signal_interrupts(me)) {
             break;
         }
-        hw_sched_point("block");
+        ks_block_point();
 +++ new
-        hw_sched_point("block");
+        ks_block_point();

@@ -19,9 +19,9 @@
 ### exec does nothing about the other threads
 --- old
     {
-        int me = (int)(t - g_tasks);
-        uint32_t tgid = t->id.tgid;
+        int me = ks_current();
+        uint32_t tgid = t->tgid;
 +++ new
     if (0) {
-        int me = (int)(t - g_tasks);
-        uint32_t tgid = t->id.tgid;
+        int me = ks_current();
+        uint32_t tgid = t->tgid;

@@ -5,11 +5,11 @@
 # error (a bad address answers EINVAL here, not EFAULT). Dropping it leaves a wait on
 # an address nobody validated, and check-syscall-checks.py must name FUTEX.
 #
-# Target source: kernel/abi/linux/proc.c
-# Run: SABOTAGE_VERIFY="python3 scripts/dev/check-syscall-checks.py" python3 scripts/dev/sabotage.py kernel/abi/linux/proc.c scripts/dev/cases/core-ptr-futex.txt
+# Target source: kernel/abi/linux/futex.c
+# Run: SABOTAGE_VERIFY="python3 scripts/dev/check-syscall-checks.py" python3 scripts/dev/sabotage.py kernel/abi/linux/futex.c scripts/dev/cases/core-ptr-futex.txt
 
 ### futex stops declaring its wait address
 --- old
-PTRS(IN_IFM_ERR(1, FUTEX_CMD_MASK, FUTEX_WAIT, 0, 4, VIBEOS_EINVAL)), hw_sys_futex
+PTRS(IN_IFM_ERR(1, FUTEX_CMD_MASK, FUTEX_WAIT, 0, 4, VIBEOS_EINVAL)), linux_sys_futex
 +++ new
-NOPTR, hw_sys_futex
+NOPTR, linux_sys_futex

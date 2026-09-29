@@ -1001,7 +1001,7 @@ void hw_task_exit(uint64_t code) {
      * each exit did while every thread had a copy: a worker that finished
      * released the sockets its whole process was still using. Done before the
      * task is retired, while the table is still reachable through it. */
-    if (dying >= 0 && g_tasks[dying].ps != 0 && hw_files_leave(g_tasks[dying].ps)) {
+    if (dying >= 0 && g_tasks[dying].ps != 0 && linux_files_leave(g_tasks[dying].ps)) {
         if (g_net_up) {
             hw_spin_lock_named(&g_net_lock, __func__);
             (void)vibeos_inet_release_owner_sockets(&g_net, g_tasks[dying].id.tgid);
@@ -1059,7 +1059,7 @@ void hw_task_exit(uint64_t code) {
              * way. With the reference already given back, ps would be 0, no
              * waiter would match, and every pthread_join on this thread would
              * sleep forever - with nothing failing to compile. */
-            hw_futex_wake(g_tasks[dying].ps, addr, 0x7FFFFFFF);
+            linux_futex_wake(g_tasks[dying].ps, addr, 0x7FFFFFFF);
         } else {
             hw_log(VIBEOS_LOG_WARN, 28u, addr,
                    (uint64_t)why | ((uint64_t)g_tasks[dying].id.pid << 8),
@@ -1223,19 +1223,6 @@ void hw_task_exit(uint64_t code) {
     }
     hw_ctx_check(next, "schedule");
     vibeos_x86_64_task_enter(&g_tasks[next].ctx); /* does not return */
-}
-
-/* Let go of one end of a pipe. The pipe itself lives until both ends are
- * gone, because a reader may still have data to drain after every writer has
- * closed. */
-void hw_pipe_release(hw_fd_t *f) {
-    if (!f || f->pipe < 0) {
-        return;
-    }
-    vibeos_pipe_end_release(f);
-    /* Somebody may be waiting for the data or the space that just became
-     * possible - or for the end of file that just became true. */
-    hw_keyboard_wake();
 }
 
 /* What happens to a signal nobody handles.
@@ -1445,51 +1432,6 @@ int hw_task_by_tid(uint32_t tid) {
     return -1;
 }
 
-hw_futex_waiter_t g_futex_waiters[VIBEOS_HW_MAX_FUTEX_WAITERS];
-
-hw_lock_t g_futex_lock;
-
-/* Wake up to `count` waiters on `addr`. Returns how many were woken, which is
- * what the caller is told: a library uses it to decide whether it needs to
- * wake anybody else. */
-long hw_futex_wake(const hw_procstate_t *ps, uint64_t addr,
-                          uint32_t count) {
-    long woke = 0;
-    uint32_t i;
-
-    if (addr == 0u) {
-        return 0;
-    }
-    hw_spin_lock_named(&g_futex_lock, __func__);
-    for (i = 0; i < VIBEOS_HW_MAX_FUTEX_WAITERS && (uint32_t)woke < count; i++) {
-        if (!g_futex_waiters[i].used || g_futex_waiters[i].addr != addr ||
-            g_futex_waiters[i].ps != ps) {
-            continue;
-        }
-        /* The slot must still hold the very task that enqueued: a reaped-and-
-         * reused slot is a different tenant, and waking it by a stale entry is
-         * the ABA that scheduled an exited thread onto a stack being freed
-         * (H-007, here in the futex table). alloc_seq is stable for the life of
-         * a tenancy and changes on every reuse. */
-        if (g_tasks[g_futex_waiters[i].task].alloc_seq != g_futex_waiters[i].seq) {
-            continue;   /* stale entry; the enqueuer is long gone */
-        }
-        g_futex_waiters[i].addr = 0;   /* no second wake for this waiter */
-        g_futex_waiters[i].woken = 1;
-        hw_spin_lock_named(&g_sched_lock, __func__);
-        if (hw_slot_state(g_futex_waiters[i].task) == HW_TASK_BLOCKED &&
-            g_tasks[g_futex_waiters[i].task].alloc_seq == g_futex_waiters[i].seq) {
-            (void)hw_task_set_state(g_futex_waiters[i].task, HW_TASK_READY, __func__);
-            HW_TASK_MARK(g_futex_waiters[i].task, ready_by, "futex_wake");
-        }
-        hw_spin_unlock(&g_sched_lock);
-        woke++;
-    }
-    hw_spin_unlock(&g_futex_lock);
-    hw_log(VIBEOS_LOG_DEBUG, 20u, addr, (uint64_t)woke, "futex wake");
-    return woke;
-}
-
 void hw_fault_kill_current_user(const vibeos_x86_64_isr_frame_t *frame,
                                        uint64_t fault_address) {
     uint64_t vector = frame->vector;
@@ -1665,16 +1607,3 @@ void hw_task_set_service(int slot, uint32_t service_id) {
     g_tasks[slot].id.service_id = service_id;
 }
 
-/* Claim a free descriptor slot in the calling process: under the table's lock,
- * because every thread of the process claims from the same table. */
-int hw_fd_alloc(hw_task_t *t) {
-    int i;
-
-    if (!t->ps) {
-        return -1;
-    }
-    hw_spin_lock_named(&t->ps->files_lock, __func__);
-    i = vibeos_fdtable_claim(&t->ps->files);
-    hw_spin_unlock(&t->ps->files_lock);
-    return i;
-}

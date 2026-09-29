@@ -3,7 +3,7 @@
 #
 #  1. recvfrom stops re-verifying - the state an external review found it in on
 #     2026-09-24, a phase after the tracker called M-020 fixed: expect
-#     "hw_sys_recvfrom waits holding a descriptor and never calls hw_sock_stable";
+#     "linux_sys_recvfrom waits holding a descriptor and never calls linux_sock_stable";
 #  2. the same for accept, one of the three the original fix did reach.
 #
 # The race itself is not reproduced - it needs a sibling thread closing and
@@ -17,25 +17,25 @@
 ### recvfrom stops re-verifying its socket
 --- old
         int faulted = 0;
-        if (hw_sock_stable(f, sock, gen) < 0) {
+        if (linux_sock_stable(f, sock, gen) < 0) {
             return -VIBEOS_EBADF;
         }
-        hw_spin_lock(&g_net_lock);
-        n = vibeos_inet_recvfrom(&g_net, sock, g_net_bounce,
+        ks_lock(ks_net_lock(), __func__);
+        n = vibeos_inet_recvfrom(ks_net(), sock, g_net_bounce,
 +++ new
         int faulted = 0;
-        hw_spin_lock(&g_net_lock);
-        n = vibeos_inet_recvfrom(&g_net, sock, g_net_bounce,
+        ks_lock(ks_net_lock(), __func__);
+        n = vibeos_inet_recvfrom(ks_net(), sock, g_net_bounce,
 
 ### accept stops re-verifying its socket
 --- old
     for (;;) {
-        if (hw_sock_stable(f, sock, gen) < 0) {
+        if (linux_sock_stable(f, sock, gen) < 0) {
             return -VIBEOS_EBADF;
         }
-        hw_spin_lock(&g_net_lock);
-        child = vibeos_inet_accept(&g_net, sock);
+        ks_lock(ks_net_lock(), __func__);
+        child = vibeos_inet_accept(ks_net(), sock);
 +++ new
     for (;;) {
-        hw_spin_lock(&g_net_lock);
-        child = vibeos_inet_accept(&g_net, sock);
+        ks_lock(ks_net_lock(), __func__);
+        child = vibeos_inet_accept(ks_net(), sock);

@@ -11,18 +11,18 @@
 
 ### uname's row stops declaring its buffer
 --- old
-PTRS(OUT(0, 6u * 65u)), hw_sys_uname(ARG(0))
+PTRS(OUT(0, 6u * 65u)), linux_sys_uname(ARG(0))
 +++ new
-NOPTR, hw_sys_uname(ARG(0))
+NOPTR, linux_sys_uname(ARG(0))
 
 ### clock_gettime's row stops declaring its timespec
 --- old
-PTRS(OUT(1, 16)), hw_sys_clock_gettime(ARG(0), ARG(1))
+PTRS(OUT(1, 16)), linux_sys_clock_gettime(ARG(0), ARG(1))
 +++ new
-NOPTR, hw_sys_clock_gettime(ARG(0), ARG(1))
+NOPTR, linux_sys_clock_gettime(ARG(0), ARG(1))
 
 ### time's row stops declaring its optional pointer
 --- old
-PTRS(OUT_OPT(0, 8)), hw_sys_time(ARG(0))
+PTRS(OUT_OPT(0, 8)), linux_sys_time(ARG(0))
 +++ new
-NOPTR, hw_sys_time(ARG(0))
+NOPTR, linux_sys_time(ARG(0))

@@ -2,8 +2,9 @@
  *
  * Building a frame on a user stack, calling a handler on it, and taking the
  * frame back when the handler returns is Linux ABI, not x86 architecture. What
- * is architectural about it - the selectors, the trap frame layout - is named in
- * arch_hw_internal.h and nothing else here needs to know.
+ * is architectural about it - the selectors, the trap frame layout - is behind
+ * ks_sigframe_push, ks_sigframe_pop and ks_regs_enter_handler (vibeos/ksvc.h),
+ * and nothing else here needs to know.
  *
  * The two halves belong together and were four hundred lines apart in the old
  * file, with the crash dumper and half the syscall table between them.
@@ -11,10 +12,6 @@
 
 #include "linux_internal.h"
 
-/* The console. gcc let this file call it on an implicit declaration and only
- * warned; clang treats that as the error it is. A lifted file has to say what
- * it uses - the whole point of a seam is that nothing arrives by accident. */
-#include "vibeos/arch_x86_64.h"
 
 /* ---- delivering a signal ---------------------------------------------------
  *
@@ -31,22 +28,22 @@
  * wrong.
  */
 
-/* hw_sigframe_t and its magic are in arch_hw_internal.h. */
+/* The frame's layout is the architecture's: ks_sigframe_push, ks_sigframe_size. */
 
 
 /* Which signal to deliver next: the lowest-numbered pending one that is not
  * blocked. Lowest first is what Linux does, and it puts the fatal ones - which
  * are the low numbers - ahead of the informational ones. */
-static uint32_t hw_signal_next(hw_task_t *t) {
-    uint64_t ready = t->id.sig_pending & ~t->id.sig_blocked;
+static uint32_t linux_signal_next(const vibeos_task_t *t) {
+    uint64_t ready = t->sig_pending & ~t->sig_blocked;
     uint32_t sig;
 
     /* SIGKILL and SIGSTOP ignore the mask entirely. */
-    ready |= t->id.sig_pending & ((1ull << VIBEOS_SIGKILL) | (1ull << VIBEOS_SIGSTOP));
+    ready |= t->sig_pending & ((1ull << VIBEOS_SIGKILL) | (1ull << VIBEOS_SIGSTOP));
     if (ready == 0u) {
         return 0;
     }
-    for (sig = 1; sig < VIBEOS_HW_NSIG; sig++) {
+    for (sig = 1; sig < VIBEOS_NSIG; sig++) {
         if (ready & (1ull << sig)) {
             return sig;
         }
@@ -56,25 +53,29 @@ static uint32_t hw_signal_next(hw_task_t *t) {
 
 /* Called on the way back to user space. Returns non-zero if the frame was
  * rewritten to enter a handler. May not return at all, if the signal kills. */
-int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame) {
-    hw_task_t *t;
+int linux_signal_deliver(ks_regs_t *frame) {
+    vibeos_task_t *t;
+    vibeos_procstate_t *ps;
+    int me;
     uint32_t sig;
     uint64_t handler, sp;
 
-    if (hw_current_task() < 0 || !g_tasks[hw_current_task()].id.is_user) {
+    if (ks_current() < 0 || !ks_id(ks_current())->is_user) {
         return 0;
     }
-    t = &g_tasks[hw_current_task()];
+    me = ks_current();
+    t = ks_id(me);
+    ps = ks_ps(me);
     for (;;) {
-        sig = hw_signal_next(t);
+        sig = linux_signal_next(t);
         if (sig == 0u) {
             return 0;
         }
-        t->id.sig_pending &= ~(1ull << sig);
+        t->sig_pending &= ~(1ull << sig);
 
         /* A user task whose process reference is already gone is exiting;
          * the default is the only disposition it has left. */
-        handler = t->ps ? t->ps->sig_handler[sig] : SIG_DFL_ADDR;
+        handler = ps ? ps->sig_handler[sig] : SIG_DFL_ADDR;
         if (sig == VIBEOS_SIGKILL || sig == VIBEOS_SIGSTOP) {
             handler = SIG_DFL_ADDR;   /* uncatchable */
         }
@@ -83,25 +84,25 @@ int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame) {
         }
         if (handler == SIG_DFL_ADDR) {
             if (sig == VIBEOS_SIGSTOP) {
-                t->id.signal_stopped = 1;
-                (void)hw_task_set_state((int)(t - g_tasks), HW_TASK_BLOCKED, __func__);
-                HW_TASK_MARK(hw_current_task(), ready_by, "sigstop");
-                vibeos_x86_64_serial_puts("[SIG] task stopped by SIGSTOP\n");
+                t->signal_stopped = 1;
+                (void)ks_set_state(me, VIBEOS_TASK_BLOCKED, __func__);
+                ks_mark_ready(me, "sigstop");
+                ks_con_puts("[SIG] task stopped by SIGSTOP\n");
                 return 0;
             }
-            if (sig == VIBEOS_SIGKILL && t->ps != 0 &&
-                __atomic_load_n(&t->ps->exit_group, __ATOMIC_ACQUIRE) != 0u) {
+            if (sig == VIBEOS_SIGKILL && ps != 0 &&
+                __atomic_load_n(&ps->exit_group, __ATOMIC_ACQUIRE) != 0u) {
                 /* Ended by exit_group, not by a signal from outside. The
                  * parent builds the wait status from the leader, so a leader
                  * that died here as "killed by 9" would report exactly what an
                  * exit_group built from SIGKILL alone reports - and Linux
                  * reports the group's code. */
-                t->id.exit_signal = 0;
-                hw_task_exit(t->ps->exit_group_code);   /* does not return */
+                t->exit_signal = 0;
+                ks_task_exit(ps->exit_group_code);   /* does not return */
             }
-            if (hw_signal_default_kills(sig)) {
-                t->id.exit_signal = sig;
-                hw_task_exit(128ull + sig);   /* does not return */
+            if (ks_signal_default_kills(sig)) {
+                t->exit_signal = sig;
+                ks_task_exit(128ull + sig);   /* does not return */
             }
             continue;   /* default is to ignore it */
         }
@@ -113,29 +114,29 @@ int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame) {
      * sections and another core writes into the middle of it. Found by the
      * gate's log-integrity check, which saw the handler address cut off after
      * its "0x". */
-    hw_log(VIBEOS_LOG_DEBUG, 42u, (uint64_t)sig, handler,
+    ks_log(VIBEOS_LOG_DEBUG, 42u, (uint64_t)sig, handler,
            "signal delivered to a handler (a0 = signal, a1 = handler)");
-    vibeos_x86_64_serial_lock();
-    vibeos_x86_64_serial_puts("[SIG] deliver sig=0x");
-    vibeos_x86_64_serial_print_hex(sig);
-    vibeos_x86_64_serial_puts(" handler=0x");
-    vibeos_x86_64_serial_print_hex(handler);
-    vibeos_x86_64_serial_puts("\n");
-    vibeos_x86_64_serial_unlock();
+    ks_con_lock();
+    ks_con_puts("[SIG] deliver sig=0x");
+    ks_con_hex(sig);
+    ks_con_puts(" handler=0x");
+    ks_con_hex(handler);
+    ks_con_puts("\n");
+    ks_con_unlock();
 
 
     /* Below the red zone, then aligned. The handler is entered as if by a
      * call, so it wants rsp % 16 == 8 once the return address is pushed. */
-    sp = frame->rsp - 128ull;
-    sp -= sizeof(hw_sigframe_t);
+    sp = ks_regs_sp(frame) - 128ull;
+    sp -= ks_sigframe_size();
     sp &= ~15ull;
     sp -= 8ull;   /* room for the return address */
 
-    if (!linux_user_ok(sp, sizeof(hw_sigframe_t) + 8ull, 1)) {
+    if (!linux_user_ok(sp, ks_sigframe_size() + 8ull, 1)) {
         /* No usable stack to deliver on. A program cannot be asked to handle
          * that, so the signal takes its default action instead of being
          * silently dropped. */
-        hw_task_exit(128ull + sig);
+        ks_task_exit(128ull + sig);
         return 0;
     }
 
@@ -143,9 +144,9 @@ int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame) {
      * rt_sigreturn. Without SA_RESTORER there is nothing to return to, and a
      * handler that returns would jump to whatever was on the stack. Checked
      * first, before the stack is touched. */
-    if ((t->ps->sig_flags[sig] & VIBEOS_SA_RESTORER) == 0u ||
-        t->ps->sig_restorer[sig] == 0u) {
-        hw_task_exit(128ull + sig);
+    if ((ps->sig_flags[sig] & VIBEOS_SA_RESTORER) == 0u ||
+        ps->sig_restorer[sig] == 0u) {
+        ks_task_exit(128ull + sig);
         return 0;
     }
 
@@ -154,32 +155,17 @@ int hw_signal_deliver(vibeos_x86_64_isr_frame_t *frame) {
      * building the frame in place would fault in ring 0 (H-023). On a fault the
      * frame is not left half-written - the task takes SIGSEGV, its default
      * action, rather than the kernel taking the fault. */
-    {
-        hw_sigframe_t kf;
-        uint64_t ret = t->ps->sig_restorer[sig];
-
-        kf.magic = HW_SIGFRAME_MAGIC;
-        kf.blocked = t->id.sig_blocked;
-        kf.frame = *frame;
-        if (vibeos_uaccess_copy((void *)(uintptr_t)(sp + 8ull), &kf,
-                                sizeof(kf)) != 0 ||
-            vibeos_uaccess_copy((void *)(uintptr_t)sp, &ret, sizeof(ret)) != 0) {
-            hw_task_exit(128ull + VIBEOS_SIGSEGV);
-            return 0;
-        }
+    if (ks_sigframe_push(frame, sp, t->sig_blocked, ps->sig_restorer[sig]) != 0) {
+        ks_task_exit(128ull + VIBEOS_SIGSEGV);
+        return 0;
     }
 
     /* While the handler runs, this signal is blocked, plus whatever the
      * program asked to block along with it - otherwise a repeating signal
      * re-enters the handler until the stack is gone. */
-    t->id.sig_blocked |= (1ull << sig) | t->ps->sig_mask[sig];
+    t->sig_blocked |= (1ull << sig) | ps->sig_mask[sig];
 
-    frame->rip = handler;
-    frame->rsp = sp;
-    frame->rdi = sig;    /* the handler's first argument */
-    frame->rsi = 0;
-    frame->rdx = 0;
-    frame->rax = 0;
+    ks_regs_enter_handler(frame, handler, sp, sig);
     return 1;
 }
 

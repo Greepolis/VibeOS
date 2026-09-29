@@ -21,6 +21,52 @@
 #define CLONE_CHILD_CLEARTID 0x00200000u
 #define CLONE_CHILD_SETTID   0x01000000u
 
+/* Linux errno values, returned to user space negated. */
+#define VIBEOS_EPERM   1
+#define VIBEOS_ENOENT  2
+#define VIBEOS_ESRCH   3
+#define VIBEOS_EINTR   4
+#define VIBEOS_EIO     5
+#define VIBEOS_E2BIG   7
+#define VIBEOS_EBADF   9
+#define VIBEOS_ECHILD 10
+#define VIBEOS_EAGAIN 11
+#define VIBEOS_ENOMEM 12
+#define VIBEOS_EFAULT 14
+#define VIBEOS_ENOTDIR 20
+#define VIBEOS_EINVAL 22
+#define VIBEOS_EMFILE 24
+#define VIBEOS_ENOTTY 25
+#define VIBEOS_EPIPE  32
+#define VIBEOS_ERANGE 34
+#define VIBEOS_ENOSYS 38
+
+/* Linux signal numbers. The pending and blocked masks are uint64_t keyed by
+ * signal number, so bit 63 is the highest that exists and 64 is refused rather
+ * than shifted into a bit that cannot hold it (M-017). */
+#define VIBEOS_SIG_MAX 63u
+#define VIBEOS_SIGHUP   1u
+#define VIBEOS_SIGINT   2u
+#define VIBEOS_SIGQUIT  3u
+#define VIBEOS_SIGILL   4u
+#define VIBEOS_SIGABRT  6u
+#define VIBEOS_SIGFPE   8u
+#define VIBEOS_SIGKILL  9u
+#define VIBEOS_SIGSEGV 11u
+#define VIBEOS_SIGPIPE 13u
+#define VIBEOS_SIGALRM 14u
+#define VIBEOS_SIGTERM 15u
+#define VIBEOS_SIGCHLD 17u
+#define VIBEOS_SIGCONT 18u
+#define VIBEOS_SIGSTOP 19u
+#define VIBEOS_SIGWINCH 28u
+
+/* Dispositions that are not addresses, and SA_RESTORER: the handler entry
+ * carries the address the handler returns to. */
+#define SIG_DFL_ADDR 0ull
+#define SIG_IGN_ADDR 1ull
+#define VIBEOS_SA_RESTORER 0x04000000u
+
 /* A number no Linux kernel has: the boot asks for it on purpose, so the count of
  * unimplemented calls is seen moving (see [ABI] MUSTBEZERO). */
 #define VIBEOS_ABI_PROBE_NR 1999u
