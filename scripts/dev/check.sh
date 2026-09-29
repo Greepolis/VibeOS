@@ -117,6 +117,9 @@ do_build() {
     # Every socket call that waits re-verifies its socket (M-020): the fix
     # reached three of four sites and the fourth was found by a reviewer.
     python3 scripts/dev/check-net-stable.py | tail -1
+    # docs/abi/ A2: a syscall personality reaches the kernel only through
+    # vibeos/ksvc.h, and both implementations of it define every service.
+    python3 scripts/dev/check-abi-layering.py | tail -1
     if grep -rn 'TEMPORARY' kernel/ --include=*.c > /dev/null 2>&1; then
         echo "LEFTOVER-DEBUG-CODE:"
         grep -rn 'TEMPORARY' kernel/ --include=*.c | head -3

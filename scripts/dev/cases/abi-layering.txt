@@ -1,0 +1,21 @@
+# check-abi-layering.py (docs/abi/ phase A2): the Linux handlers reach the kernel
+# only through include/vibeos/ksvc.h.
+#
+#  1. a handler reads an architecture global directly. The first version of the
+#     check knew only g_tasks and let this through; it reads every extern and
+#     g_ macro in arch_hw_internal.h now. Expect "names the architecture:
+#     g_timer_ticks". (The build would also fail - misc.c cannot see the
+#     declaration - which is the first line of defence and not the one tested.)
+#
+# Not a case here: a service the fake forgets. Its target is the test tree, and it
+# was run by hand on 2026-09-29 (ks_con_cow_faults removed from ksvc_fake.c):
+# "declares ks_con_cow_faults and tests/kernel/ksvc_fake.c does not define it".
+#
+# Target source: kernel/abi/linux/misc.c
+# Run: SABOTAGE_VERIFY="python3 scripts/dev/check-abi-layering.py" python3 scripts/dev/sabotage.py kernel/abi/linux/misc.c scripts/dev/cases/abi-layering.txt
+
+### a handler reads an architecture global directly
+--- old
+    uint64_t ticks = ks_ticks();
++++ new
+    uint64_t ticks = g_timer_ticks;
