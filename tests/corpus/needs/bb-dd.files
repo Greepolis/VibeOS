@@ -1,0 +1,3 @@
+/dev/zero
+/etc/busybox.conf
+/proc/self/exe

@@ -1,0 +1,43 @@
+# The corpus: real programs, and what they are made to do.
+#
+# One workload per line:  <name> | <command>
+#
+# Each command is run by scripts/dev/corpus-measure.sh on the host, under strace,
+# in a scratch directory holding the fixture it creates (note.txt, dir/ with files,
+# a symlink). It is split on spaces and run directly - never through the host's
+# shell, whose own syscalls would be measured instead. A pipeline goes through the
+# program's own shell (`$BUSYBOX sh -c '...'`), so everything traced is the program
+# under test.
+#
+# $BUSYBOX is the busybox that the boot image stages (cmake/create_boot_image.cmake
+# takes it from /usr/bin: Ubuntu's busybox-static, statically linked against glibc).
+# $BUILD is the build directory, where the musl test programs are.
+#
+# The needs of each workload are written to tests/corpus/needs/<name>.txt and
+# checked in; docs/abi/corpus.md is the report. See tests/corpus/README.md.
+
+# ---- BusyBox: the shell and the file applets (phase L1 and L2's targets) ----
+bb-sh-script | $BUSYBOX sh -c 'for i in 1 2 3; do echo $i > f$i; done; cat f1 f2 f3 | wc -l; test -f f1 && echo ok; x=$(echo sub); trap "echo bye" EXIT'
+bb-ls | $BUSYBOX ls -la dir
+bb-cp-mv-rm | $BUSYBOX sh -c 'cp -a dir dir2 && mv dir2 dir3 && rm -rf dir3'
+bb-find-grep | $BUSYBOX sh -c 'find . -name "*.txt" | xargs grep -l hello'
+bb-grep-r | $BUSYBOX grep -rn hello dir
+bb-tar | $BUSYBOX sh -c 'tar cf a.tar dir && mkdir x && tar xf a.tar -C x && ls x/dir'
+bb-text | $BUSYBOX sh -c 'sort note.txt | sed s/hello/hi/ | awk "{print NF}" | head -n 1 | tail -n 1'
+bb-sed-inplace | $BUSYBOX sed -i s/hello/bye/ note.txt
+bb-metadata | $BUSYBOX sh -c 'touch t; chmod 600 t; ln -s t l; readlink l; stat t; ls -l l'
+bb-disk | $BUSYBOX sh -c 'du -s .; df .'
+bb-dd | $BUSYBOX dd if=/dev/zero of=z bs=4096 count=4
+bb-time | $BUSYBOX sh -c 'date; sleep 0.1; uptime'
+bb-ps | $BUSYBOX ps
+bb-identity | $BUSYBOX sh -c 'id; env; uname -a; hostname'
+bb-mkdir-rm | $BUSYBOX sh -c 'mkdir -p a/b/c && rmdir a/b/c && rm -r a'
+bb-pipeline | $BUSYBOX sh -c 'yes | head -n 1000 | wc -l'
+
+# ---- The musl test programs the boot gate already runs ----
+musl-hello | $BUILD/musl_hello
+musl-pie | $BUILD/musl_pie
+musl-dynamic | $BUILD/musl_dynamic
+musl-signal | $BUILD/musl_signal
+musl-threads | $BUILD/musl_threads
+musl-tfork | $BUILD/musl_tfork

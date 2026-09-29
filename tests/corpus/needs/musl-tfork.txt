@@ -1,0 +1,16 @@
+arch_prctl
+clone
+execve
+exit
+exit_group
+fork
+futex
+gettid
+ioctl
+mmap
+mprotect
+munmap
+rt_sigprocmask
+set_tid_address
+wait4
+writev

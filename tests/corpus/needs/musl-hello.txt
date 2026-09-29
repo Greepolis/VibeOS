@@ -1,0 +1,9 @@
+arch_prctl
+brk
+execve
+exit_group
+ioctl
+mmap
+munmap
+set_tid_address
+writev

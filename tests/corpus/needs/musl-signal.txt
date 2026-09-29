@@ -1,0 +1,7 @@
+arch_prctl
+execve
+exit_group
+ioctl
+rt_sigaction
+set_tid_address
+writev

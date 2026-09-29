@@ -19,13 +19,29 @@ same change.
 **Objective.** Know, per program, which syscalls it needs and which of them are
 missing - before writing any.
 
-- Build the corpus as static musl binaries on the host: BusyBox (with its test
-  suite), `sqlite3`, `lua`, and LTP's `testcases/kernel/syscalls`. Staged on the
-  boot image like the existing test programs.
-- `trace-linux-binary.sh` over each, into a checked-in needs list per program.
-- A report: for each program, needed / done / partial / missing.
+- The corpus: BusyBox as the boot image stages it (Ubuntu's `busybox-static`,
+  which is linked against glibc), the musl test programs, and - from their
+  released sources, built against musl - `sqlite3`, `lua`, and LTP's
+  `testcases/kernel/syscalls`.
+- A checked-in needs list per workload, measured under strace on Linux, with the
+  system files each opens.
+- A report: for each workload, needed / done / partial / missing; across the
+  corpus, the missing ones by phase and by who asks.
 
 **Done when** the report exists for every corpus program and runs in the nightly.
+
+**Status (2026-09-29): in progress.** `tests/corpus/` holds 22 workloads -
+sixteen of BusyBox and the six musl test programs - measured by
+`scripts/dev/corpus-measure.sh` and reported by `scripts/dev/corpus-report.py`
+in [corpus.md](corpus.md): 72 distinct syscalls asked for, 40 done, 13 partial,
+19 missing, 12 workloads ready. The nightly job `corpus-needs` measures again
+and fails on drift. The musl programs come out ready, which is the report's own
+check. Not yet: `sqlite3`, `lua` and LTP, whose sources have to be downloaded.
+
+On the way, `trace-linux-binary.sh` - the tool this whole method rests on -
+turned out to report full coverage for every binary: it looked for handlers as
+`case LSYS_` in `arch_hw.c`, gone since C4, and its name extraction no longer
+matched strace, so both lists were empty. It reads the table now (M-077).
 
 ### A1. The registry
 

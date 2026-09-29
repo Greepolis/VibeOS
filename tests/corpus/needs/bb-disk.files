@@ -1,0 +1,4 @@
+/dev/sdc
+/etc/busybox.conf
+/proc/mounts
+/proc/self/exe

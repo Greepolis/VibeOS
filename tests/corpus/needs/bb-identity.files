@@ -1,0 +1,4 @@
+/etc/busybox.conf
+/etc/group
+/etc/passwd
+/proc/self/exe

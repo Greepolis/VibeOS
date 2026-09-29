@@ -1,0 +1,6 @@
+/etc/busybox.conf
+/etc/passwd
+/proc/<pid>/
+/proc/<pid>/cmdline
+/proc/<pid>/stat
+/proc/self/exe

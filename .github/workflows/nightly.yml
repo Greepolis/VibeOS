@@ -466,3 +466,49 @@ jobs:
             leak-*
             timeout-*
           if-no-files-found: ignore
+
+  corpus-needs:
+    name: Corpus syscall needs (drift against docs/abi/corpus.md)
+    # Measures the corpus programs on Linux, not the kernel, so it declares no
+    # kernel module: it covers the plan in docs/abi/, not a subsystem.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build build-essential musl-tools strace busybox-static
+
+      # The musl test programs are part of the corpus; the full build is what
+      # produces them, as it does for the boot image.
+      - name: Build
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DVIBEOS_BUILD_TESTS=ON -DVIBEOS_BUILD_KERNEL_IMAGE=ON
+          cmake --build build --parallel
+
+      # A program's needs are a property of the program and its C library. If
+      # they moved - a new busybox-static, a new musl - the checked-in lists and
+      # docs/abi/corpus.md no longer describe the corpus, and this says which
+      # workload changed and how. The fresh lists are uploaded either way: if the
+      # difference is this runner's kernel rather than the programs, they are
+      # the ones to check in (tests/corpus/README.md).
+      - name: Measure the corpus
+        run: |
+          set -euo pipefail
+          bash scripts/dev/corpus-measure.sh build /tmp/corpus-needs
+
+      - name: Compare with the checked-in needs
+        run: python3 scripts/dev/corpus-report.py --check /tmp/corpus-needs
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: corpus-needs
+          path: /tmp/corpus-needs
+          if-no-files-found: warn

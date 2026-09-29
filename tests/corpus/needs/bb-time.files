@@ -1,0 +1,3 @@
+/etc/busybox.conf
+/etc/localtime
+/proc/self/exe

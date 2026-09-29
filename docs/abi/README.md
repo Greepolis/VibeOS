@@ -97,9 +97,10 @@ does, not of the kernel, so they are measured rather than reasoned about:
 lists what VibeOS does not serve. Every phase starts from that list for its
 target programs, and ends when those programs run under the gate.
 
-The corpus grows by phase (see [phases.md](phases.md)): BusyBox's own test
-suite, `sqlite3`, `lua`, a static glibc build of the same programs, a small HTTP
-server, and the Linux Test Project's syscall tests built against musl. LTP is
+The corpus grows by phase (see [phases.md](phases.md) and
+[corpus.md](corpus.md)): BusyBox as the boot image stages it (a static glibc
+build), the musl test programs, `sqlite3`, `lua`, a small HTTP server, and the
+Linux Test Project's syscall tests built against musl. LTP is
 the conformance oracle - thousands of cases written by the people who define the
 behaviour, and exactly the kind of artefact neither side of this project
 controls.
