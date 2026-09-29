@@ -1,0 +1,4 @@
+# LTP syscall-test directories that do not build against musl (corpus-build.sh).
+fmtmsg
+timer_create
+utils

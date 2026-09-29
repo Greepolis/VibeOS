@@ -27,6 +27,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 NEEDS = os.path.join(ROOT, "tests", "corpus", "needs")
 TABLE = os.path.join(ROOT, "docs", "abi", "syscalls.md")
 OUT = os.path.join(ROOT, "docs", "abi", "corpus.md")
+LTP = os.path.join(ROOT, "tests", "corpus", "ltp-built.txt")
 
 PHASE_TITLES = {
     "L1": "files and paths", "L2": "processes, credentials, time", "L3": "memory",
@@ -36,12 +37,17 @@ PHASE_TITLES = {
 }
 
 
+NATIVE = set()   # VibeOS's own numbers (1000 and up): not Linux, not in the oracle
+
+
 def load_table():
     table = {}
     for line in open(TABLE, encoding="utf-8"):
         m = re.match(r"\| (\d+) \| `(\w+)` \| (\w+) \| ([^|]+?) \|", line)
         if m:
             table[m.group(2)] = (m.group(3), m.group(4).strip())
+            if int(m.group(1)) >= 1000:
+                NATIVE.add(m.group(2))
     return table
 
 
@@ -61,6 +67,27 @@ def load_files(d):
             with open(os.path.join(d, f), encoding="utf-8") as fh:
                 files[f[:-6]] = sorted(set(l.strip() for l in fh if l.strip()))
     return files
+
+
+def load_ltp(table):
+    """LTP test -> the syscall it tests, by the longest syscall name its binary
+    name starts with: clone301 is clone3's, not clone's; fcntl34_64 is fcntl's."""
+    tests = {}
+    if not os.path.isfile(LTP):
+        return tests
+    names = sorted(table, key=len, reverse=True)
+    for line in open(LTP, encoding="utf-8"):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        binary = line.split("/")[-1]
+        for n in names:
+            if binary.startswith(n):
+                tests.setdefault(n, []).append(binary)
+                break
+        else:
+            tests.setdefault(None, []).append(binary)
+    return tests
 
 
 def check(fresh_dir):
@@ -160,6 +187,36 @@ def main():
         L.append("| `%s` | %d | %d | %s | %s |" % (
             w, n, d, " ".join("`%s`" % c for c in p) or "-",
             " ".join("`%s`" % c for c in m) or "-"))
+    ltp = load_ltp(table)
+    unmatched = sorted(ltp.pop(None, []))
+    if ltp:
+        total = sum(len(v) for v in ltp.values())
+        L.append("")
+        L.append("## The LTP oracle")
+        L.append("")
+        L.append("The Linux Test Project's syscall tests that build against musl")
+        L.append("(`scripts/dev/corpus-build.sh`; the list is `tests/corpus/ltp-built.txt`): %d" % total)
+        L.append("tests covering %d syscalls. Each is matched to the syscall its name starts" % len(ltp))
+        L.append("with, longest name first. What they are for is the phase column: a syscall")
+        L.append("with tests here has a conformance oracle waiting for it; one without has to")
+        L.append("be proved by the corpus programs alone. Another %d built tests have a name" % len(unmatched))
+        L.append("that starts with no syscall's (for example %s) and are not counted." % ", ".join("`%s`" % t for t in unmatched[:5]))
+        L.append("")
+        L.append("| Phase | Syscalls in the phase | with LTP tests | tests |")
+        L.append("| --- | --- | --- | --- |")
+        phases = {}
+        for name, (state, ph) in table.items():
+            if name in NATIVE:
+                continue
+            key = "done" if state == "done" else (ph.split()[-1] if state == "partial" else ph)
+            phases.setdefault(key, []).append(name)
+        for key in ["done", "L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "L9", "D", "R"]:
+            names = phases.get(key, [])
+            covered = [n for n in names if n in ltp]
+            L.append("| %s | %d | %d | %d |" % (
+                key if key == "done" else "%s - %s" % (key, PHASE_TITLES[key]),
+                len(names), len(covered), sum(len(ltp[n]) for n in covered)))
+
     all_files = sorted({f for v in files.values() for f in v})
     if all_files:
         L.append("")

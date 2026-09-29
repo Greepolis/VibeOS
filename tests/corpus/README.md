@@ -9,12 +9,15 @@ A syscall is worth writing when a program in here asks for it.
 | `workloads.txt` | One workload per line: a name and the command that runs it |
 | `needs/<name>.txt` | The syscalls that workload made on Linux, sorted (generated) |
 | `needs/<name>.files` | The system files it opened under `/proc`, `/sys`, `/dev`, `/etc` (generated) |
+| `sources.txt` | SQLite, Lua and LTP: pinned URL and SHA-256 |
+| `ltp-built.txt`, `ltp-failed.txt` | LTP's syscall tests that build against musl, and the directories that do not (generated) |
 
 The report is [docs/abi/corpus.md](../../docs/abi/corpus.md).
 
 ## Refreshing
 
 ```bash
+bash scripts/dev/corpus-build.sh build-gcc-Release      # SQLite, Lua, LTP (about 6 minutes)
 bash scripts/dev/corpus-measure.sh build-gcc-Release    # tests/corpus/needs/
 python3 scripts/dev/corpus-report.py                     # docs/abi/corpus.md
 ```
@@ -38,9 +41,16 @@ workloads over the shell and the file, text, process and identity applets.
 the check on the report itself: they run on VibeOS today, so they must come out
 *ready*. If one does not, the report is wrong, not the kernel.
 
-**Still to come**, and why each is in the plan: `sqlite3` and `lua` built against
-musl from their released sources, and the Linux Test Project's syscall tests. All
-three need their sources downloaded, which has not been done yet.
+**SQLite and Lua**, built static against musl by `scripts/dev/corpus-build.sh`
+from the pinned sources in `sources.txt` (`$CORPUS` in `workloads.txt`): a
+database on a file and in memory, and a script that allocates, writes a file and
+reads the clock.
+
+**The Linux Test Project's syscall tests**, built the same way - not traced but
+recorded: `ltp-built.txt` lists the 1,530 that build against musl and
+`ltp-failed.txt` the directories that do not. The report matches each to the
+syscall it tests, so every phase knows which of its syscalls already has a
+conformance oracle.
 
 ## Method
 

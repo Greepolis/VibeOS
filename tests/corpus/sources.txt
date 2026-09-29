@@ -1,0 +1,9 @@
+# Third-party sources of the corpus, pinned: <name> | <url> | <sha256>
+#
+# Downloaded and verified by scripts/dev/corpus-build.sh, never committed. The
+# hash is what makes two machines build the same program: the LTP one is the
+# project's own published checksum; the SQLite and Lua ones were recorded from
+# the files as downloaded on 2026-09-29.
+sqlite | https://www.sqlite.org/2026/sqlite-amalgamation-3530400.zip | 1e71ddf93849c6a6ecf58b827c0692073d2dd7ee40196158068f7b29f422e87d
+lua | https://www.lua.org/ftp/lua-5.4.9.tar.gz | 2335b6c582a52654f94612bf10d2f4672805d05329aa6568b1d8cd9e5c6fb8e6
+ltp | https://github.com/linux-test-project/ltp/releases/download/20260529/ltp-full-20260529.tar.xz | 685d83c6e370ac09201fb79593412f868fe031ee2890e204b5727fedcf51fb47

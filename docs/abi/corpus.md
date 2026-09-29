@@ -15,35 +15,41 @@ come out ready.
 
 | | |
 | --- | --- |
-| Workloads | 22, of which ready: 12 |
-| Distinct syscalls asked for | 72 |
-| ... done | 40 |
-| ... partial | 13: `clone`, `futex`, `getdents64`, `ioctl`, `mmap`, `openat`, `prlimit64`, `rseq`, `sendfile`, `setgid`, `setuid`, `uname`, `writev` |
-| ... missing | 19 |
+| Workloads | 25, of which ready: 13 |
+| Distinct syscalls asked for | 80 |
+| ... done | 41 |
+| ... partial | 16: `clone`, `futex`, `getcwd`, `getdents64`, `ioctl`, `mmap`, `open`, `openat`, `prlimit64`, `readv`, `rseq`, `sendfile`, `setgid`, `setuid`, `uname`, `writev` |
+| ... missing | 23 |
 
 ## Missing and partial, by phase - the order to write them in
 
 | Phase | Syscall | State | Asked for by |
 | --- | --- | --- | --- |
-| L1 - files and paths | `ioctl` | partial | 17: bb-disk, bb-find-grep, bb-grep-r, bb-identity, bb-ls, bb-metadata, bb-pipeline, bb-ps, bb-sh-script, bb-tar, bb-time, musl-dynamic, musl-hello, musl-pie, musl-signal, musl-tfork, musl-threads |
+| L1 - files and paths | `ioctl` | partial | 20: bb-disk, bb-find-grep, bb-grep-r, bb-identity, bb-ls, bb-metadata, bb-pipeline, bb-ps, bb-sh-script, bb-tar, bb-time, lua-script, musl-dynamic, musl-hello, musl-pie, musl-signal, musl-tfork, musl-threads, sqlite-file, sqlite-memory |
 | L1 - files and paths | `openat` | partial | 15: bb-cp-mv-rm, bb-dd, bb-disk, bb-find-grep, bb-grep-r, bb-identity, bb-ls, bb-metadata, bb-mkdir-rm, bb-ps, bb-sed-inplace, bb-sh-script, bb-tar, bb-text, bb-time |
 | L1 - files and paths | `getdents64` | partial | 8: bb-cp-mv-rm, bb-disk, bb-find-grep, bb-grep-r, bb-ls, bb-mkdir-rm, bb-ps, bb-tar |
+| L1 - files and paths | `fcntl` | missing | 5: bb-sed-inplace, bb-sh-script, bb-time, sqlite-file, sqlite-memory |
+| L1 - files and paths | `access` | missing | 4: bb-mkdir-rm, bb-time, sqlite-file, sqlite-memory |
 | L1 - files and paths | `readlink` | missing | 4: bb-cp-mv-rm, bb-ls, bb-metadata, bb-tar |
-| L1 - files and paths | `fcntl` | missing | 3: bb-sed-inplace, bb-sh-script, bb-time |
+| L1 - files and paths | `open` | partial | 3: lua-script, sqlite-file, sqlite-memory |
 | L1 - files and paths | `sendfile` | partial | 3: bb-cp-mv-rm, bb-sh-script, bb-tar |
 | L1 - files and paths | `symlink` | missing | 3: bb-cp-mv-rm, bb-metadata, bb-tar |
 | L1 - files and paths | `umask` | missing | 3: bb-cp-mv-rm, bb-mkdir-rm, bb-tar |
 | L1 - files and paths | `utimensat` | missing | 3: bb-cp-mv-rm, bb-metadata, bb-tar |
-| L1 - files and paths | `access` | missing | 2: bb-mkdir-rm, bb-time |
 | L1 - files and paths | `chmod` | missing | 2: bb-cp-mv-rm, bb-metadata |
 | L1 - files and paths | `chown` | missing | 2: bb-cp-mv-rm, bb-tar |
+| L1 - files and paths | `pread64` | missing | 2: bb-time, sqlite-file |
 | L1 - files and paths | `rename` | missing | 2: bb-cp-mv-rm, bb-sed-inplace |
 | L1 - files and paths | `rmdir` | missing | 2: bb-cp-mv-rm, bb-mkdir-rm |
+| L1 - files and paths | `stat` | missing | 2: sqlite-file, sqlite-memory |
 | L1 - files and paths | `chdir` | missing | 1: bb-tar |
 | L1 - files and paths | `fchmod` | missing | 1: bb-sed-inplace |
 | L1 - files and paths | `fchown` | missing | 1: bb-sed-inplace |
+| L1 - files and paths | `fsync` | missing | 1: sqlite-file |
+| L1 - files and paths | `getcwd` | partial | 1: sqlite-file |
 | L1 - files and paths | `lchown` | missing | 1: bb-cp-mv-rm |
-| L1 - files and paths | `pread64` | missing | 1: bb-time |
+| L1 - files and paths | `lstat` | missing | 1: sqlite-file |
+| L1 - files and paths | `pwrite64` | missing | 1: sqlite-file |
 | L1 - files and paths | `statfs` | missing | 1: bb-disk |
 | L2 - processes, credentials, time | `prlimit64` | partial | 16: bb-cp-mv-rm, bb-dd, bb-disk, bb-find-grep, bb-grep-r, bb-identity, bb-ls, bb-metadata, bb-mkdir-rm, bb-pipeline, bb-ps, bb-sed-inplace, bb-sh-script, bb-tar, bb-text, bb-time |
 | L2 - processes, credentials, time | `setgid` | partial | 16: bb-cp-mv-rm, bb-dd, bb-disk, bb-find-grep, bb-grep-r, bb-identity, bb-ls, bb-metadata, bb-mkdir-rm, bb-pipeline, bb-ps, bb-sed-inplace, bb-sh-script, bb-tar, bb-text, bb-time |
@@ -51,8 +57,9 @@ come out ready.
 | L2 - processes, credentials, time | `alarm` | missing | 1: bb-time |
 | L2 - processes, credentials, time | `clock_nanosleep` | missing | 1: bb-time |
 | L2 - processes, credentials, time | `getgroups` | missing | 1: bb-identity |
-| L3 - memory | `mmap` | partial | 5: bb-dd, musl-dynamic, musl-hello, musl-tfork, musl-threads |
-| L5 - sockets | `writev` | partial | 6: musl-dynamic, musl-hello, musl-pie, musl-signal, musl-tfork, musl-threads |
+| L3 - memory | `mmap` | partial | 8: bb-dd, lua-script, musl-dynamic, musl-hello, musl-tfork, musl-threads, sqlite-file, sqlite-memory |
+| L5 - sockets | `writev` | partial | 9: lua-script, musl-dynamic, musl-hello, musl-pie, musl-signal, musl-tfork, musl-threads, sqlite-file, sqlite-memory |
+| L5 - sockets | `readv` | partial | 1: lua-script |
 | L6 - threads and scheduling | `clone` | partial | 13: bb-cp-mv-rm, bb-disk, bb-find-grep, bb-identity, bb-metadata, bb-mkdir-rm, bb-pipeline, bb-sh-script, bb-tar, bb-text, bb-time, musl-tfork, musl-threads |
 | L6 - threads and scheduling | `futex` | partial | 2: musl-tfork, musl-threads |
 | L8 - system administration | `uname` | partial | 11: bb-cp-mv-rm, bb-disk, bb-find-grep, bb-identity, bb-metadata, bb-mkdir-rm, bb-pipeline, bb-sh-script, bb-tar, bb-text, bb-time |
@@ -78,12 +85,40 @@ come out ready.
 | `bb-tar` | 41 | 25 | `clone` `getdents64` `ioctl` `openat` `prlimit64` `rseq` `sendfile` `setgid` `setuid` `uname` | `chdir` `chown` `readlink` `symlink` `umask` `utimensat` |
 | `bb-text` | 32 | 25 | `clone` `openat` `prlimit64` `rseq` `setgid` `setuid` `uname` | - |
 | `bb-time` | 37 | 24 | `clone` `ioctl` `openat` `prlimit64` `rseq` `setgid` `setuid` `uname` | `access` `alarm` `clock_nanosleep` `fcntl` `pread64` |
+| `lua-script` | 16 | 11 | `ioctl` `mmap` `open` `readv` `writev` | - |
 | `musl-dynamic` | 9 | 6 | `ioctl` `mmap` `writev` | - |
 | `musl-hello` | 9 | 6 | `ioctl` `mmap` `writev` | - |
 | `musl-pie` | 6 | 4 | `ioctl` `writev` | - |
 | `musl-signal` | 7 | 5 | `ioctl` `writev` | - |
 | `musl-tfork` | 16 | 11 | `clone` `futex` `ioctl` `mmap` `writev` | - |
 | `musl-threads` | 25 | 20 | `clone` `futex` `ioctl` `mmap` `writev` | - |
+| `sqlite-file` | 27 | 15 | `getcwd` `ioctl` `mmap` `open` `writev` | `access` `fcntl` `fsync` `lstat` `pread64` `pwrite64` `stat` |
+| `sqlite-memory` | 18 | 11 | `ioctl` `mmap` `open` `writev` | `access` `fcntl` `stat` |
+
+## The LTP oracle
+
+The Linux Test Project's syscall tests that build against musl
+(`scripts/dev/corpus-build.sh`; the list is `tests/corpus/ltp-built.txt`): 1331
+tests covering 320 syscalls. Each is matched to the syscall its name starts
+with, longest name first. What they are for is the phase column: a syscall
+with tests here has a conformance oracle waiting for it; one without has to
+be proved by the corpus programs alone. Another 199 built tests have a name
+that starts with no syscall's (for example `abort01`, `cacheflush01`, `confstr01`, `endian_switch01`, `epoll-ltp`) and are not counted.
+
+| Phase | Syscalls in the phase | with LTP tests | tests |
+| --- | --- | --- | --- |
+| done | 55 | 53 | 206 |
+| L1 - files and paths | 78 | 73 | 416 |
+| L2 - processes, credentials, time | 50 | 47 | 188 |
+| L3 - memory | 11 | 11 | 66 |
+| L4 - event loops | 21 | 16 | 50 |
+| L5 - sockets | 13 | 13 | 36 |
+| L6 - threads and scheduling | 22 | 21 | 59 |
+| L7 - IPC | 21 | 19 | 81 |
+| L8 - system administration | 12 | 12 | 36 |
+| L9 - security | 6 | 3 | 7 |
+| D - deferred | 50 | 39 | 144 |
+| R - refused by decision | 34 | 13 | 42 |
 
 ## System files the corpus opens
 
@@ -95,11 +130,12 @@ files the credential model will need.
 | Path | Opened by |
 | --- | --- |
 | `/dev/sdc` | bb-disk |
+| `/dev/urandom` | sqlite-file |
 | `/dev/zero` | bb-dd |
 | `/etc/busybox.conf` | bb-cp-mv-rm, bb-dd, bb-disk, bb-find-grep, bb-grep-r, bb-identity, bb-ls, bb-metadata, bb-mkdir-rm, bb-pipeline, bb-ps, bb-sed-inplace, bb-sh-script, bb-tar, bb-text, bb-time |
 | `/etc/group` | bb-identity, bb-ls, bb-metadata, bb-tar |
 | `/etc/localtime` | bb-ls, bb-metadata, bb-time |
-| `/etc/passwd` | bb-identity, bb-ls, bb-metadata, bb-ps, bb-tar |
+| `/etc/passwd` | bb-identity, bb-ls, bb-metadata, bb-ps, bb-tar, sqlite-file, sqlite-memory |
 | `/proc/<pid>/` | bb-ps |
 | `/proc/<pid>/cmdline` | bb-ps |
 | `/proc/<pid>/stat` | bb-ps |

@@ -498,6 +498,12 @@ jobs:
       # workload changed and how. The fresh lists are uploaded either way: if the
       # difference is this runner's kernel rather than the programs, they are
       # the ones to check in (tests/corpus/README.md).
+      # SQLite and Lua from their pinned, hash-checked sources. LTP is left out
+      # here: its list of built tests is recorded separately and takes a few
+      # minutes more to build than everything else in this job.
+      - name: Build the third-party corpus
+        run: bash scripts/dev/corpus-build.sh build --no-ltp
+
       - name: Measure the corpus
         run: |
           set -euo pipefail

@@ -40,6 +40,7 @@ while IFS= read -r line; do
     cmd=${cmd# }
     cmd=${cmd//\$BUSYBOX/$BUSYBOX}
     cmd=${cmd//\$BUILD/$BUILD}
+    cmd=${cmd//\$CORPUS/$BUILD/corpus}
 
     work=$(mktemp -d)
     (

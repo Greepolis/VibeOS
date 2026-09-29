@@ -41,3 +41,8 @@ musl-dynamic | $BUILD/musl_dynamic
 musl-signal | $BUILD/musl_signal
 musl-threads | $BUILD/musl_threads
 musl-tfork | $BUILD/musl_tfork
+
+# ---- Third-party programs built by scripts/dev/corpus-build.sh ($CORPUS) ----
+sqlite-memory | $CORPUS/sqlite3 :memory: 'create table t(a, b); insert into t values (1, "x"), (2, "y"); select sum(a), group_concat(b) from t;'
+sqlite-file | $CORPUS/sqlite3 db.sqlite 'create table t(a integer primary key, b text); insert into t(b) values ("one"), ("two"), ("three"); create index tb on t(b); select count(*) from t; vacuum; pragma integrity_check;'
+lua-script | $CORPUS/lua -e 'local t = {} for i = 1, 1000 do t[i] = i * i end print(#t) local f = io.open("x.txt", "w") f:write("hi") f:close() print(io.open("x.txt"):read("a")) print(os.time() > 0, os.clock() >= 0) os.remove("x.txt") print(os.getenv("HOME") ~= nil)'

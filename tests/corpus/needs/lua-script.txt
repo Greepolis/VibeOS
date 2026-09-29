@@ -1,0 +1,16 @@
+arch_prctl
+brk
+clock_gettime
+close
+execve
+exit_group
+ioctl
+mmap
+munmap
+open
+readv
+rt_sigaction
+rt_sigprocmask
+set_tid_address
+unlink
+writev

@@ -30,13 +30,25 @@ missing - before writing any.
 
 **Done when** the report exists for every corpus program and runs in the nightly.
 
-**Status (2026-09-29): in progress.** `tests/corpus/` holds 22 workloads -
-sixteen of BusyBox and the six musl test programs - measured by
-`scripts/dev/corpus-measure.sh` and reported by `scripts/dev/corpus-report.py`
-in [corpus.md](corpus.md): 72 distinct syscalls asked for, 40 done, 13 partial,
-19 missing, 12 workloads ready. The nightly job `corpus-needs` measures again
-and fails on drift. The musl programs come out ready, which is the report's own
-check. Not yet: `sqlite3`, `lua` and LTP, whose sources have to be downloaded.
+**Status (2026-09-29): done.** `tests/corpus/` holds 25 workloads - sixteen of
+BusyBox, the six musl test programs, two of `sqlite3` and one of `lua` - measured
+by `scripts/dev/corpus-measure.sh` and reported by `scripts/dev/corpus-report.py`
+in [corpus.md](corpus.md): 80 distinct syscalls asked for, 41 done, 16 partial,
+23 missing, 13 workloads ready (Lua among them; `sqlite3` waits on `fcntl`
+locks, `pread64`/`pwrite64` and `fsync`). The musl programs come out ready,
+which is the report's own check. `scripts/dev/corpus-build.sh` downloads SQLite,
+Lua and LTP from pins with their SHA-256 (`tests/corpus/sources.txt`) and builds
+them static against musl. 1,530 of LTP's syscall tests build: 1,331 matched to
+320 syscalls - an oracle for 73 of L1's 78 - and three directories do not build
+(`fmtmsg`, `timer_create`, `utils`). The nightly job `corpus-needs` builds SQLite
+and Lua, measures again and fails on drift.
+
+The first LTP build produced 378 tests, not 1,530: its top-level make stops at
+the first directory that fails, `-k` or not, and `fmtmsg` fails early in the
+alphabet. The script builds each directory on its own now. LTP's tests are
+measured as an oracle - which exist and build - not traced one by one: most
+need root on the host, and what they exercise is by construction the syscall
+they are named after.
 
 On the way, `trace-linux-binary.sh` - the tool this whole method rests on -
 turned out to report full coverage for every binary: it looked for handlers as
