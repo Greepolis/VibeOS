@@ -54,7 +54,9 @@ sabotage, and carrying on would overwrite the only good copy with it.
 
 `vbox-run.py` and `check-vm-images.py` (the shipped appliance, on VirtualBox and
 as an importable file), `mm-torture.sh` (many seeds), `post-finding.sh` and
-`make-book-summary.py` (the docs), and the `check-*.py`/`check-*.sh` family,
+`make-book-summary.py` (the docs), `make-syscall-table.py` (`docs/abi/syscalls.md`,
+every Linux syscall with its state read from the kernel's rows), and the
+`check-*.py`/`check-*.sh` family,
 which `check.sh` runs and each of which says in its own header what it guards.
 
 ## Why each exists

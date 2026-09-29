@@ -17,7 +17,7 @@ boundary between any of them.
 | 1 | Memory manager | [docs/mm/](mm/README.md) | In progress: P0-P3 done, P4 at steps 1-2 |
 | 2 | Tasks and scheduling | [docs/sched/](sched/README.md) | Full plan. Where the most expensive defects have been, and P4 step 3 needs its ownership layer |
 | 3 | Program loading | [docs/exec/](exec/README.md) | Full plan. **Blocks memory P4 step 3**: execve cannot fault pages in while it copies through a staging buffer |
-| 4 | Syscalls and the Linux ABI | sketched below | After the three above, because it sits on top of all of them |
+| 4 | Syscalls and the Linux ABI | [docs/abi/](abi/README.md) | Planned 2026-09-29: every one of the 373 numbers assigned, and the refactor underneath first |
 | 5 | Network and pipes | sketched below | Least entangled with memory and lifetime; least urgent |
 
 ## Why 4 and 5 are sketched and not planned
@@ -33,6 +33,10 @@ boundaries recorded now, while the knowledge is fresh, and the phase-level
 detail when they are next.
 
 ### 4. Syscalls and the Linux ABI
+
+Planned in full on 2026-09-29 - [docs/abi/](abi/README.md). The objective and
+invariants below are carried into it unchanged; they are kept here as the
+sketch it started from.
 
 **Objective.** One dispatch table, one place that validates arguments, and a
 translation layer that says what it does not implement.
@@ -72,7 +76,12 @@ Written here because it cost two days on the memory manager: a phase was
 declared unfinished for a day and a half against a boot count that no revision
 of this project has ever met.
 
-## Open decision: the second syscall layer (deferred 2026-09-02)
+## Closed: the second syscall layer (deferred 2026-09-02, deleted in C3)
+
+Settled by the core plan's C3: `kernel/core/syscall.c` was deleted and its
+vocabulary with it (2026-09-20); what remains of the question -
+`kernel/proc/process.c` - is recorded in `scripts/dev/cases/core-dispatcher.txt`.
+The text below is the deferral as it was written.
 
 `kernel/core/syscall.c` and `kernel/proc/process.c` are a
 complete syscall dispatcher and process table that **nothing in ring 3 reaches**.

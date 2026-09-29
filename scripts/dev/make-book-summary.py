@@ -101,7 +101,7 @@ def main():
             continue
         order = ["README.md", "architecture.md", "observability.md",
                  "maintainability.md", "invariants.md", "phases.md",
-                 "decisions.md"]
+                 "decisions.md", "syscalls.md"]
         present = [f for f in order if os.path.exists(os.path.join(plan, f))]
         present += sorted(f for f in os.listdir(plan)
                           if f.endswith(".md") and f not in order)
