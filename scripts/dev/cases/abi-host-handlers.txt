@@ -1,0 +1,46 @@
+# The Linux handlers on the host (docs/abi/ phase A2): the tests in
+# tests/kernel/linux_abi_tests.c run the handlers of kernel/abi/linux through
+# linux_syscall, on tests/kernel/ksvc_fake.c. Each case breaks a handler and one
+# of those tests must go red - for the reason written here, not merely red.
+#
+#  1. sigset numbering is not converted at the boundary: bit 0 would be signal
+#     0 in the kernel. Expect "the kernel holds it by signal number".
+#  2. ioctl answers TCGETS as though the console were a terminal - a gap
+#     closed without the registry being told. Expect "linux_gap 16 closed".
+#  3. rt_sigreturn resumes from a frame it could not read back: the policy half
+#     of H-018 that stayed in the handler when the frame itself moved to
+#     ks_sigframe_pop. Expect "a forged signal frame ends the task with
+#     SIGSEGV".
+#
+# The registry half (a PARTIAL line marked DONE with its gap still here) is not a
+# case in this file because its target is kernel/abi/linux_syscalls.def, whose
+# boot-side cases live in abi-registry.txt; it was run by hand on 2026-09-29 and
+# went red with "linux_gap 105 has an expectation and is not PARTIAL".
+#
+# Target source: kernel/abi/linux/sig.c (cases 1 and 3); kernel/abi/linux/fs.c for case 2
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/linux/sig.c scripts/dev/cases/abi-host-handlers.txt
+
+### sigset numbering is not converted at the boundary
+--- old
+    return user_set << 1;
++++ new
+    return user_set;
+
+### ioctl answers TCGETS as though the console were a terminal
+--- old
+    return -VIBEOS_ENOTTY;
+}
++++ new
+    if (req == 0x5401u) {
+        return 0;
+    }
+    return -VIBEOS_ENOTTY;
+}
+
+### rt_sigreturn resumes from a frame it could not read back
+--- old
+    if (!linux_user_ok(base, ks_sigframe_size(), 0) ||
+        ks_sigframe_pop(frame, base, &blocked) != 0) {
++++ new
+    if (!linux_user_ok(base, ks_sigframe_size(), 0) ||
+        (ks_sigframe_pop(frame, base, &blocked) != 0 && 0)) {

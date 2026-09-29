@@ -9299,6 +9299,8 @@ int test_task(void);
 int test_task_ident(void);
 int test_fdtable(void);
 int test_pipe(void);
+int test_linux_handlers(void);   /* linux_abi_tests.c: the handlers on ksvc_fake.c (A2) */
+int test_linux_gaps(void);
 int test_klog(void);
 int test_crash(void);
 int test_device(void);
@@ -9808,6 +9810,8 @@ int main(void) {
     RUN_TEST(test_proc_audit_retention_policy);
     RUN_TEST(test_abi_vocabulary_and_linux);
     RUN_TEST(test_linux_registry);
+    RUN_TEST(test_linux_handlers);
+    RUN_TEST(test_linux_gaps);
     RUN_TEST(test_ceil_div_no_wrap);
     RUN_TEST(test_mbz_fat_chain_refused_cluster);
     RUN_TEST(test_mbz_iso_corrupt_record);
