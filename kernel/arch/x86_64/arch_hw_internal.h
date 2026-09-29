@@ -917,4 +917,12 @@ extern volatile uint64_t g_input_irq_wakes;
 extern hw_perf_t g_perf_fault;
 extern hw_perf_t g_perf_syscall;
 
+/* ---- the machine's diagnostics (diagnostics.c) -------------------------------
+ * What crosses between it and arch_hw.c. */
+extern volatile int g_panicked;
+void hw_backtrace(uint64_t rbp, uint64_t rip);
+void hw_klog_init(void);
+void hw_lock_deadlock(hw_lock_t *lock, const char *waiter, const char *holder, int holder_cpu);
+void hw_panic_cpu_summary(void);
+
 #endif

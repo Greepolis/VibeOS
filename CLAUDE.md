@@ -341,7 +341,7 @@ registration function instead, as `vibeos_frame_set_lock` and
 `vibeos_task_view_set_source` do: it is portable, and it says who supplies
 what rather than leaving it to link order.
 
-**Definition order bites repeatedly.** `arch_hw.c` is still one 2,478-line C
+**Definition order bites repeatedly.** `arch_hw.c` is still one 1,993-line C
 file (12,174 before C4; on 2026-09-28 the memory bridge, the context switch,
 AP bring-up and the userland start left for their own files); a helper used above its definition compiles
 as an implicit declaration and then fails with a confusing "static declaration

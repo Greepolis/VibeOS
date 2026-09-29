@@ -647,6 +647,15 @@ the report moved with it - three files re-pointed, `diag-sink.txt` split into
 `diag-sink-klog.txt` - and all seven were re-run red on the new file.
 `arch_hw.c` is 2,515 lines. The memory totals `kernel/mm/usage.c` asks for (`vibeos_mm_bytes_*`), the last thing under that banner, went to `mm_bridge.c`: 2,478 lines.
 
+**The machine's diagnostics left too (2026-09-29).** The kernel log's serial
+device, the backtrace, `hw_panic` and the park of every core, the lock-deadlock
+report, the per-CPU panic summary, the vanished-mapping walk and the crash dump
+- about 500 lines from two places in `arch_hw.c` - moved whole to
+`kernel/arch/x86_64/diagnostics.c`, the machine half of `kernel/diag`. Five
+names cross back, all used by what stays: the trap handler, the spin lock and
+early init. `diag-sink.txt`'s four remaining cases followed the serial sink and
+were re-run red on the new file. `arch_hw.c` is 1,993 lines.
+
 ---
 
 ## What this plan still does not do

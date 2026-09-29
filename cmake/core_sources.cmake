@@ -130,6 +130,7 @@ set(VIBEOS_ARCH_X86_64_SOURCES
     kernel/arch/x86_64/task_life.c
     kernel/arch/x86_64/mm_bridge.c
     kernel/arch/x86_64/task_switch.c
+    kernel/arch/x86_64/diagnostics.c
     kernel/arch/x86_64/userland.c
     kernel/arch/x86_64/smp.c
     kernel/arch/x86_64/io_bringup.c
