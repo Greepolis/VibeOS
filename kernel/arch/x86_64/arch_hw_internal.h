@@ -925,4 +925,9 @@ void hw_klog_init(void);
 void hw_lock_deadlock(hw_lock_t *lock, const char *waiter, const char *holder, int holder_cpu);
 void hw_panic_cpu_summary(void);
 
+/* ---- the network bring-up (net_bringup.c) ------------------------------------
+ * What crosses between it and arch_hw.c. */
+void hw_net_bringup(void);
+void hw_net_pump(void);
+
 #endif

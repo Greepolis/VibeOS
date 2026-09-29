@@ -656,6 +656,15 @@ names cross back, all used by what stays: the trap handler, the spin lock and
 early init. `diag-sink.txt`'s four remaining cases followed the serial sink and
 were re-run red on the new file. `arch_hw.c` is 1,993 lines.
 
+**And the network bring-up (2026-09-29).** The interface the portable stack
+drives, the pump the timer calls, and DHCP with its stated fallback - 200 lines
+- moved to `kernel/arch/x86_64/net_bringup.c`, the twin of `io_bringup.c`. Two
+names cross back: the pump, for the timer interrupt, and the bring-up, for early
+init. No case was anchored in it; the gate's DHCP lease and TCP round trip
+cover it. What is left in `arch_hw.c` - 1,792 lines - is what the name
+promises: the CPU (GDT, TSS, per-CPU state), the spin locks, the IDT with the
+PIC and the PIT, the trap handler, the syscall MSRs and early init.
+
 ---
 
 ## What this plan still does not do

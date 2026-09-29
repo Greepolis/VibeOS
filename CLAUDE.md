@@ -341,9 +341,10 @@ registration function instead, as `vibeos_frame_set_lock` and
 `vibeos_task_view_set_source` do: it is portable, and it says who supplies
 what rather than leaving it to link order.
 
-**Definition order bites repeatedly.** `arch_hw.c` is still one 1,993-line C
-file (12,174 before C4; on 2026-09-28 the memory bridge, the context switch,
-AP bring-up and the userland start left for their own files); a helper used above its definition compiles
+**Definition order bites repeatedly.** `arch_hw.c` is still one 1,792-line C
+file (12,174 before C4; on 2026-09-28/29 the memory bridge, the context switch,
+AP bring-up, the userland start, the diagnostics and the network bring-up left
+for their own files); a helper used above its definition compiles
 as an implicit declaration and then fails with a confusing "static declaration
 follows non-static declaration". The same goes for a variable: a torture used a
 global forty lines above its declaration, the build failed, and the stale binary
