@@ -117,6 +117,16 @@ static long linux_sys_fork(const ks_regs_t *frame) {
     ks_mm_unlock(pps);
     vibeos_task_stats()->forks++;
     cps->brk_cur = pps->brk_cur;
+    /* Where the parent was, and above what it could not climb (A4). */
+    {
+        uint32_t i;
+        ks_lock(&pps->files_lock, __func__);
+        for (i = 0; i < VIBEOS_PATH_MAX; i++) {
+            cps->cwd[i] = pps->cwd[i];
+            cps->root[i] = pps->root[i];
+        }
+        ks_unlock(&pps->files_lock);
+    }
     __atomic_store_n(&cps->mmap_cur,
                      __atomic_load_n(&pps->mmap_cur, __ATOMIC_ACQUIRE),
                      __ATOMIC_RELEASE);
@@ -611,7 +621,8 @@ static long linux_copy_user_argv(uint64_t uvec, linux_argv_t *out) {
 
 static long linux_sys_execve(ks_regs_t *frame, uint64_t path_uptr,
                           uint64_t argv_uptr, uint64_t envp_uptr) {
-    char path[128];
+    char name[128];                 /* as the caller wrote it: argv[0] if none   */
+    char path[VIBEOS_PATH_MAX];     /* absolute, from the working directory (A4) */
     vibeos_image_t np;
     vibeos_procstate_t *nps, *ops;
     vibeos_task_t *t;
@@ -639,10 +650,22 @@ static long linux_sys_execve(ks_regs_t *frame, uint64_t path_uptr,
      * The reason lands in the same tally as every other refusal, and the boot
      * gate asserts the *set* of refusals seen is only "not-found" - so one of
      * these turns a boot red instead of leaving a service quietly missing. */
-    if (ks_copy_user_string(path_uptr, path, sizeof(path)) != 0) {
+    if (ks_copy_user_string(path_uptr, name, sizeof(name)) != 0) {
         return ks_exec_refuse(VIBEOS_EXEC_BAD_ARGS, "-", "path");
     }
-    fallback_argv[0] = path;
+    /* The program is found where the path says from the working directory - a
+     * shell that runs ./configure after cd'ing into a directory depends on it.
+     * argv[0] stays what the caller wrote: BusyBox decides which applet it is
+     * from that name, not from where the file was. */
+    {
+        long pr = linux_path_at((uint64_t)(uint32_t)LINUX_AT_FDCWD, path_uptr, path);
+        if (pr != 0) {
+            (void)ks_exec_refuse(pr == -VIBEOS_ENOENT ? VIBEOS_EXEC_NOT_FOUND
+                                                      : VIBEOS_EXEC_BAD_ARGS, name, "path");
+            return pr;
+        }
+    }
+    fallback_argv[0] = name;
     fallback_argv[1] = 0;
     /* The exec staging buffer is a single shared one, so the read and the load out
      * of it have to be one critical section: two cores exec'ing at once would
@@ -948,20 +971,14 @@ static long linux_sys_execve(ks_regs_t *frame, uint64_t path_uptr,
         }
         t->is_thread = 0;
     }
-    /* Stored with a leading slash even when the caller used a relative path.
-     * /proc/self/exe is defined to be absolute, and a C runtime does not merely
-     * prefer that: glibc asserts on it during startup and aborts the process,
-     * which is how the relative form was found. */
-    {
-        uint32_t w = 0;
-        if (path[0] != '/') {
-            np.exe_path[w++] = '/';
-        }
-        for (k = 0; w < (uint32_t)sizeof(np.exe_path) - 1u && path[k]; k++) {
-            np.exe_path[w++] = path[k];
-        }
-        np.exe_path[w] = 0;
+    /* Absolute, as the path has been since A4 resolved it from the working
+     * directory. /proc/self/exe is defined to be absolute, and a C runtime does
+     * not merely prefer that: glibc asserts on it during startup and aborts the
+     * process, which is how the relative form was found. */
+    for (k = 0; k + 1u < (uint32_t)sizeof(np.exe_path) && path[k]; k++) {
+        np.exe_path[k] = path[k];
     }
+    np.exe_path[k] = 0;
     {
         int me = ks_current();
 
@@ -984,6 +1001,16 @@ static long linux_sys_execve(ks_regs_t *frame, uint64_t path_uptr,
                 nps->sig_flags[sg] = 0;
                 nps->sig_mask[sg] = ops->sig_mask[sg];
             }
+        }
+        /* An exec changes the program, not where it is (A4). */
+        {
+            uint32_t i;
+            ks_lock(&ops->files_lock, __func__);
+            for (i = 0; i < VIBEOS_PATH_MAX; i++) {
+                nps->cwd[i] = ops->cwd[i];
+                nps->root[i] = ops->root[i];
+            }
+            ks_unlock(&ops->files_lock);
         }
 
         /* The descriptors survive the exec - that is how a shell hands a

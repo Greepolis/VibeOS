@@ -24,9 +24,12 @@
 
 #include <stdint.h>
 
+#include "vibeos/path.h"
+#include "vibeos/vfs.h"
+
 #define VIBEOS_FILE_MAX 256u
 #define VIBEOS_FILE_WBUF 512u
-#define VIBEOS_FILE_PATH 64u
+#define VIBEOS_FILE_PATH VIBEOS_PATH_MAX
 
 /* Open flags a description keeps, in Linux's numbering - the numbers a Linux
  * program passes. Another personality translates its own into these. */
@@ -83,7 +86,10 @@ struct vibeos_file {
     /* socket: its index and the tenancy it was opened on (M-020) */
     int sock;
     uint32_t sock_gen;
-    /* regular file or directory */
+    /* regular file or directory: which mount, and the absolute path - the
+     * part inside the mount starts at path + tail (docs/abi/ A4) */
+    vibeos_fsmount_t *mnt;
+    uint32_t tail;
     uint64_t node;                /* the filesystem's identity, opaque        */
     uint64_t size;
     int isdir;

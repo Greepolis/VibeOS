@@ -21,7 +21,8 @@
  *   - user memory: the range checks, strings, the fault-safe copy;
  *   - the address space: the per-process mutation lock, mapping a page, the
  *     unmap quarantine, describing a page;
- *   - the filesystem, the network stack, the console, the log;
+ *   - the network stack, the console, the log (the filesystems are reached
+ *     through the mount table, vibeos/path.h, which is portable);
  *   - and the few operations whose substance is the machine's registers - a
  *     new task's saved state, a program's entry, a handler frame, the thread
  *     pointer. Linux keeps the same things in arch/: copy_thread,
@@ -180,7 +181,6 @@ void ks_tls_set(int slot, uint64_t base);
 
 /* ---- devices ----------------------------------------------------------------------- */
 
-vibeos_fsmount_t *ks_rootfs(void);
 vibeos_inet_t *ks_net(void);          /* 0 while the network is down              */
 vibeos_lock_t *ks_net_lock(void);
 int ks_console_getc(void);            /* next console byte, or -1                 */

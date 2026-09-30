@@ -51,4 +51,10 @@ vibeos_file_t *linux_file_get(uint64_t fd);
 long linux_fd_install(vibeos_file_t *f, uint32_t fdflags, uint32_t min);
 long linux_fd_close(uint64_t fd);
 
+/* A path argument made absolute (fs.c, docs/abi/ A4): against the directory `dirfd`
+ * names, or the working directory for LINUX_AT_FDCWD, never above the root. 0, or
+ * a negated errno. `abs` holds VIBEOS_PATH_MAX. */
+#define LINUX_AT_FDCWD (-100)
+long linux_path_at(uint64_t dirfd, uint64_t upath, char *abs);
+
 #endif

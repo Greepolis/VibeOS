@@ -218,8 +218,8 @@ static void t_registry_answers(void) {
     expect(SYS0(101) == -VIBEOS_ENOSYS && g_abi_deferred == before + 1u &&
            g_abi_deferred_nr == 101u, "ptrace is deferred, counted and named");
     before = g_abi_unimplemented;
-    expect(SYS0(80) == -VIBEOS_ENOSYS && g_abi_unimplemented == before + 1u &&
-           g_abi_last_nr == 80u, "chdir is missing, counted and named");
+    expect(SYS0(84) == -VIBEOS_ENOSYS && g_abi_unimplemented == before + 1u &&
+           g_abi_last_nr == 84u, "rmdir is missing, counted and named");
 }
 
 static void t_uname_and_clock(void) {
@@ -387,6 +387,107 @@ static void t_fork_shares_offsets(void) {
     kf_set_current(parent);
 }
 
+/* ---- paths (A4) --------------------------------------------------------------------- */
+
+/* The working directory is where relative paths start, and getcwd says where it
+ * is. Until A4 there was none: getcwd answered "/" and chdir was ENOSYS. */
+static void t_working_directory(void) {
+    uint64_t buf;
+
+    fresh(90);
+    kf_fs_add("/usr", 0, 0, 1);
+    kf_fs_add("/usr/share", 0, 0, 1);
+    kf_fs_add("/usr/share/note", "hi", 2, 0);
+    buf = kf_ualloc(64);
+    expect(SYS1(80, ustr("/usr/share")) == 0, "chdir into a directory");
+    expect(SYS2(79, buf, 64) == 11 && strcmp((const char *)kf_uptr(buf), "/usr/share") == 0,
+           "getcwd answers it, with the terminator counted");
+    expect(SYS2(79, buf, 5) == -VIBEOS_ERANGE, "a buffer too small is ERANGE");
+    expect(SYS2(2, ustr("note"), 0) >= 3, "a relative open starts there");
+    expect(SYS2(2, ustr("../share/./note"), 0) >= 3, "'..' and '.' are walked");
+    expect(SYS1(80, ustr("..")) == 0 && SYS2(79, buf, 64) == 5 &&
+           strcmp((const char *)kf_uptr(buf), "/usr") == 0, "chdir .. goes up one");
+    expect(SYS1(80, ustr("../../../..")) == 0 && SYS2(79, buf, 64) == 2,
+           "and never above the root");
+    expect(SYS1(80, ustr("/usr/share/note")) == -VIBEOS_ENOTDIR, "chdir onto a file is ENOTDIR");
+    expect(SYS1(80, ustr("/nowhere")) == -VIBEOS_ENOENT, "chdir onto nothing is ENOENT");
+}
+
+/* The errors a walk reports, as Linux reports them. */
+static void t_path_errors(void) {
+    char longname[300];
+    uint32_t i;
+
+    fresh(91);
+    kf_fs_add("/f", "x", 1, 0);
+    expect(SYS2(2, ustr("/f/x"), 0) == -VIBEOS_ENOTDIR, "a file used as a directory is ENOTDIR");
+    expect(SYS2(2, ustr("/no/x"), 0) == -VIBEOS_ENOENT, "a missing directory is ENOENT");
+    expect(SYS2(2, ustr(""), 0) == -VIBEOS_ENOENT, "an empty path is ENOENT");
+    for (i = 0; i < sizeof(longname) - 1u; i++) {
+        longname[i] = 'a';
+    }
+    longname[sizeof(longname) - 1u] = 0;
+    expect(SYS2(2, ustr(longname), 0) == -VIBEOS_ENAMETOOLONG, "a path over PATH_MAX is ENAMETOOLONG");
+}
+
+/* The *at calls resolve against a directory descriptor, and fchdir moves there. */
+static void t_at_calls(void) {
+    uint64_t buf, st;
+    long dfd, ffd;
+
+    fresh(92);
+    kf_fs_add("/etc", 0, 0, 1);
+    kf_fs_add("/etc/motd", "hello", 5, 0);
+    buf = kf_ualloc(64);
+    st = kf_ualloc(144);
+    dfd = SYS2(2, ustr("/etc"), 0);
+    ffd = SYS2(2, ustr("/etc/motd"), 0);
+    expect(SYS3(257, (uint64_t)dfd, ustr("motd"), 0) >= 3, "openat relative to a directory descriptor");
+    expect(sys(262, (uint64_t)dfd, ustr("motd"), st, 0, 0, 0, 0) == 0 &&
+           *(uint64_t *)((uint8_t *)kf_uptr(st) + 48) == 5u, "newfstatat relative to it");
+    expect(SYS3(257, (uint64_t)ffd, ustr("motd"), 0) == -VIBEOS_ENOTDIR,
+           "a file descriptor as dirfd is ENOTDIR");
+    expect(SYS3(257, 77, ustr("motd"), 0) == -VIBEOS_EBADF, "a closed one is EBADF");
+    expect(SYS3(257, 77, ustr("/etc/motd"), 0) >= 3, "an absolute path ignores dirfd");
+    expect(SYS2(258, (uint64_t)dfd, ustr("new.d")) == 0, "mkdirat relative to a directory");
+    expect(SYS2(258, (uint64_t)dfd, ustr("new.d")) == -VIBEOS_EEXIST, "twice is EEXIST");
+    expect(SYS3(263, (uint64_t)dfd, ustr("new.d"), 0) == -VIBEOS_EISDIR, "unlink of a directory is EISDIR");
+    expect(SYS1(81, (uint64_t)dfd) == 0 && SYS2(79, buf, 64) == 5 &&
+           strcmp((const char *)kf_uptr(buf), "/etc") == 0, "fchdir moves to the descriptor's directory");
+    expect(SYS1(81, (uint64_t)ffd) == -VIBEOS_ENOTDIR, "fchdir on a file is ENOTDIR");
+    expect(SYS3(263, (uint64_t)(uint32_t)-100, ustr("motd"), 0) == 0 &&
+           SYS2(2, ustr("motd"), 0) == -VIBEOS_ENOENT, "unlinkat from the working directory");
+}
+
+/* A forked child starts where its parent is. */
+static void t_fork_inherits_cwd(void) {
+    uint64_t buf;
+    long pid;
+    int parent, child = -1;
+    uint32_t i;
+
+    parent = fresh(93);
+    kf_fs_add("/w", 0, 0, 1);
+    buf = kf_ualloc(16);
+    (void)SYS1(80, ustr("/w"));
+    pid = SYS0(57);
+    for (i = 0; i < KF_SLOTS; i++) {
+        if ((int)i != parent && ks_id((int)i)->pid == (uint32_t)pid) {
+            child = (int)i;
+        }
+    }
+    if (child < 0) {
+        expect(0, "fork made a child");
+        return;
+    }
+    kf_set_current(child);
+    expect(SYS2(79, buf, 16) == 3 && strcmp((const char *)kf_uptr(buf), "/w") == 0,
+           "the child's working directory is the parent's");
+    (void)SYS1(80, ustr("/"));
+    kf_set_current(parent);
+    expect(SYS2(79, buf, 16) == 3, "and a chdir in the child does not move the parent");
+}
+
 int test_linux_handlers(void) {
     g_fail = 0;
     t_identity();
@@ -407,6 +508,10 @@ int test_linux_handlers(void) {
     t_pipe_is_a_fifo();
     t_cloexec();
     t_fork_shares_offsets();
+    t_working_directory();
+    t_path_errors();
+    t_at_calls();
+    t_fork_inherits_cwd();
     return g_fail ? -1 : 0;
 }
 
@@ -455,15 +560,6 @@ int test_linux_gaps(void) {
     g_fail = 0;
     g_gaps = 0;
 
-    /* open (2), L1: a relative path resolves against the working directory.
-     * (Its other gap - four descriptors - was closed by A3 and is a handler
-     * test now: t_many_descriptors.) */
-    fresh(60);
-    kf_fs_add("/d", 0, 0, 1);
-    kf_fs_add("/d/x", "hi", 2, 0);
-    (void)SYS1(80, ustr("/d"));
-    gap(2, SYS2(2, ustr("x"), 0) >= 3, "open resolves a relative path in the working directory");
-
     /* fcntl (72), L1: a record lock is taken. */
     {
         uint64_t fl = 0;
@@ -474,6 +570,12 @@ int test_linux_gaps(void) {
         fl = kf_ualloc(32);   /* struct flock: F_RDLCK over the whole file */
         gap(72, fd >= 0 && SYS3(72, (uint64_t)fd, 6 /* F_SETLK */, fl) == 0, "F_SETLK takes a lock");
     }
+
+    /* unlinkat (263), L1: AT_REMOVEDIR removes an empty directory. */
+    fresh(77);
+    kf_fs_add("/empty", 0, 0, 1);
+    gap(263, SYS3(263, (uint64_t)(uint32_t)-100, ustr("empty"), 0x200) == 0,
+        "unlinkat(AT_REMOVEDIR) removes an empty directory");
 
     /* close_range (436), L1: CLOSE_RANGE_UNSHARE gives the caller its own table. */
     fresh(76);
@@ -551,17 +653,6 @@ int test_linux_gaps(void) {
         gap(63, strcmp((const char *)kf_uptr(u) + 65, "box") == 0, "uname reports the hostname set");
     }
 
-    /* getcwd (79), L1: after chdir, getcwd says where. */
-    {
-        uint64_t buf = 0;
-        fresh(67);
-        kf_fs_add("/bin", 0, 0, 1);
-        buf = kf_ualloc(32);
-        r = SYS1(80, ustr("/bin"));
-        (void)SYS2(79, buf, 32);
-        gap(79, r == 0 && strcmp((const char *)kf_uptr(buf), "/bin") == 0, "getcwd after chdir");
-    }
-
     /* setuid (105) and setgid (106), L2: root may become another user. */
     fresh(68);
     gap(105, SYS1(105, 1000) == 0 && SYS0(102) == 1000, "setuid(1000) from root");
@@ -589,16 +680,6 @@ int test_linux_gaps(void) {
         r = SYS3(217, (uint64_t)fd, buf, 256);
         gap(217, r > 19 && strcmp((const char *)kf_uptr(buf) + 19, "a_name_longer_than_fat.txt") == 0,
             "getdents64 lists a long name whole");
-    }
-
-    /* openat (257), L1: a path relative to a directory descriptor. */
-    {
-        long dfd;
-        fresh(72);
-        kf_fs_add("/etc", 0, 0, 1);
-        kf_fs_add("/etc/motd", "hi", 2, 0);
-        dfd = SYS2(2, ustr("etc"), 0);
-        gap(257, SYS3(257, (uint64_t)dfd, ustr("motd"), 0) >= 3, "openat relative to a directory");
     }
 
     /* prlimit64 (302), L2: a limit that is set is the limit reported. */

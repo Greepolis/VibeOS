@@ -199,6 +199,17 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                   "echo ASH_INTERACTIVE_OK\n"
                                   "cat DOCS/NOTES.TXT\n"
                                   "ls /EFI/BOOT\n"
+                                  /* A working directory (docs/abi/ A4): cd,
+                                   * the kernel's answer to getcwd - pwd -P,
+                                   * because plain pwd answers from $PWD
+                                   * without asking, and an external pwd cannot
+                                   * be named: BusyBox dispatches on argv[0],
+                                   * which would be BUSYBOX.ELF - and a relative
+                                   * cat, which only finds the file if the
+                                   * kernel resolved it from where cd went.
+                                   * CD_OK is printed only if all three worked. */
+                                  "cd -P /DOCS && pwd -P && cat NOTES.TXT && echo CD_OK\n"
+                                  "cd /\n"
                                   /* The last thing the self-test says. The boot
                                    * harness waits for this before driving the
                                    * kernel CLI, so a slower build cannot have

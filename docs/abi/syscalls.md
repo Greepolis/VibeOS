@@ -9,9 +9,9 @@ the registry, not this page; `check.sh` fails while the two differ.
 
 | State | Count | What the kernel answers |
 | --- | --- | --- |
-| done | 56 | through its row |
-| partial | 18 | through its row, with the gap named |
-| missing | 216 | ENOSYS, and the boot gate fails naming the number |
+| done | 62 | through its row |
+| partial | 16 | through its row, with the gap named |
+| missing | 212 | ENOSYS, and the boot gate fails naming the number |
 | deferred | 50 | ENOSYS, and the boot gate fails naming the number |
 | refused | 33 | its errno, counted as refused - expected, never a failure |
 
@@ -19,7 +19,7 @@ Without a row, by phase:
 
 | Phase | Syscalls |
 | --- | --- |
-| L1 - files and paths | 69 |
+| L1 - files and paths | 65 |
 | L2 - processes, credentials, time | 47 |
 | L3 - memory | 10 |
 | L4 - event loops | 21 |
@@ -38,7 +38,7 @@ calls, outside the Linux number space, are listed last.
 | --- | --- | --- | --- | --- | --- | --- |
 | 0 | `read` | done | - | - | `fs.c` |  |
 | 1 | `write` | done | - | - | `fs.c` |  |
-| 2 | `open` | partial | L1 | - | `fs.c` | no working directory: paths resolve from the root |
+| 2 | `open` | done | - | - | `fs.c` |  |
 | 3 | `close` | done | - | - | `fs.c` |  |
 | 4 | `stat` | missing | L1 | ENOSYS |  |  |
 | 5 | `fstat` | done | - | - | `fs.c` |  |
@@ -115,9 +115,9 @@ calls, outside the Linux number space, are listed last.
 | 76 | `truncate` | missing | L1 | ENOSYS |  |  |
 | 77 | `ftruncate` | missing | L1 | ENOSYS |  |  |
 | 78 | `getdents` | missing | L1 | ENOSYS |  |  |
-| 79 | `getcwd` | partial | L1 | - | `fs.c` | answers "/": there is one directory |
-| 80 | `chdir` | missing | L1 | ENOSYS |  |  |
-| 81 | `fchdir` | missing | L1 | ENOSYS |  |  |
+| 79 | `getcwd` | done | - | - | `fs.c` |  |
+| 80 | `chdir` | done | - | - | `fs.c` |  |
+| 81 | `fchdir` | done | - | - | `fs.c` |  |
 | 82 | `rename` | missing | L1 | ENOSYS |  |  |
 | 83 | `mkdir` | done | - | - | `fs.c` |  |
 | 84 | `rmdir` | missing | L1 | ENOSYS |  |  |
@@ -293,13 +293,13 @@ calls, outside the Linux number space, are listed last.
 | 254 | `inotify_add_watch` | missing | L4 | ENOSYS |  |  |
 | 255 | `inotify_rm_watch` | missing | L4 | ENOSYS |  |  |
 | 256 | `migrate_pages` | deferred | D | ENOSYS |  | NUMA: one node here |
-| 257 | `openat` | partial | L1 | - | `fs.c` | dirfd must be AT_FDCWD; no working directory |
-| 258 | `mkdirat` | missing | L1 | ENOSYS |  |  |
+| 257 | `openat` | done | - | - | `fs.c` |  |
+| 258 | `mkdirat` | done | - | - | `fs.c` |  |
 | 259 | `mknodat` | missing | L1 | ENOSYS |  |  |
 | 260 | `fchownat` | missing | L1 | ENOSYS |  |  |
 | 261 | `futimesat` | missing | L1 | ENOSYS |  |  |
 | 262 | `newfstatat` | done | - | - | `fs.c` |  |
-| 263 | `unlinkat` | missing | L1 | ENOSYS |  |  |
+| 263 | `unlinkat` | partial | L1 | - | `fs.c` | AT_REMOVEDIR refused: no filesystem here implements rmdir |
 | 264 | `renameat` | missing | L1 | ENOSYS |  |  |
 | 265 | `linkat` | missing | L1 | ENOSYS |  |  |
 | 266 | `symlinkat` | missing | L1 | ENOSYS |  |  |

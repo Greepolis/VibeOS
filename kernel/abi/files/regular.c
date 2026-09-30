@@ -1,9 +1,14 @@
-/* Regular files and directories on the root filesystem, as files (docs/abi/ A3).
+/* Regular files and directories, as files (docs/abi/ A3).
  *
  * Moved from the Linux handlers' `fd >= 3` branches. What changed in moving is
  * where the state lives: the offset, the directory cursor and the unwritten bytes
  * belong to the description, so two descriptors a dup made share them, as every
- * program expects. */
+ * program expects.
+ *
+ * Since A4 a description knows which mount it is on and its absolute path, and
+ * is opened through vibeos/path.h's walk: before, every one of them was on the
+ * boot volume, whatever the path said, because nothing consulted the mount
+ * table. */
 
 #include "files_internal.h"
 
@@ -11,6 +16,13 @@ static void (*g_on_write_back)(void);
 
 void vibeos_files_on_write_back(void (*fn)(void)) {
     g_on_write_back = fn;
+}
+
+/* The path inside the file's mount. A mount point itself leaves nothing, and
+ * drivers spell their own root "/". */
+static const char *tail_of(const vibeos_file_t *f) {
+    const char *t = f->path + f->tail;
+    return *t ? t : "/";
 }
 
 static vibeos_fs_node_t node_of(const vibeos_file_t *f) {
@@ -57,7 +69,7 @@ static long regular_read(vibeos_file_t *f, uint64_t buf, uint64_t len) {
         if (want > chunk) {
             want = chunk;
         }
-        got = vibeos_fs_read_at(ks_rootfs(), &node, f->pos, bounce, (uint32_t)want);
+        got = vibeos_fs_read_at(f->mnt, &node, f->pos, bounce, (uint32_t)want);
         if (got <= 0) {
             n = (done > 0u) ? 0 : got;   /* an error only if nothing was read */
             break;
@@ -142,7 +154,7 @@ static long dir_getdents(vibeos_file_t *f, uint64_t buf, uint64_t len) {
         uint16_t reclen;
         uint64_t entry_size = 0;
 
-        if (vibeos_fs_list(ks_rootfs(), f->path, f->dir_index, name,
+        if (vibeos_fs_list(f->mnt, tail_of(f), f->dir_index, name,
                            sizeof(name), &entry_size, &is_dir) != 0) {
             break; /* end of directory */
         }
@@ -190,7 +202,7 @@ static void regular_release(vibeos_file_t *f) {
         if (g_on_write_back) {
             g_on_write_back();
         }
-        if (vibeos_fs_write_file(ks_rootfs(), f->path, f->wbuf, f->wlen) < 0) {
+        if (vibeos_fs_write_file(f->mnt, tail_of(f), f->wbuf, f->wlen) < 0) {
             ks_log(VIBEOS_LOG_WARN, 70u, f->wlen, 0, "a file's write-back failed at its last close");
         }
     }
@@ -204,41 +216,54 @@ const vibeos_file_ops_t vibeos_fops_dir = {
     "dir", 0, 0, regular_seek, regular_stat, 0, dir_getdents, 0
 };
 
-vibeos_file_t *vibeos_open_path(const char *path, uint32_t flags, long *err) {
+vibeos_file_t *vibeos_open_path(const char *abs, uint32_t flags, long *err) {
     vibeos_fs_node_t node;
+    vibeos_fsmount_t *mnt = 0;
+    const char *tail = 0;
     /* O_WRONLY or O_CREAT, as it always was. O_RDWR on its own opens for reading:
      * a write-back replaces the whole file with the bytes written, so writing
      * into the middle of an existing file would truncate it to what was written.
-     * That is a gap of the filesystem layer (A4/L1), kept visible as EBADF. */
+     * That is a gap of the filesystem layer (L1), kept visible as EBADF. */
     int writing = (flags & VIBEOS_O_ACCMODE) == VIBEOS_O_WRONLY || (flags & VIBEOS_O_CREAT);
     vibeos_file_t *f;
     uint32_t k;
+    int r;
 
     node.id = 0;
     node.size = 0;
     node.is_dir = 0;
     /* A file opened to be written is created or replaced when it is released,
-     * from the bytes written - the FAT writer stores whole files - so it is not
-     * looked up first. That is the behaviour this kernel had; truncation without
-     * O_TRUNC is a gap of the filesystem layer, not of this one. */
-    if (!writing && vibeos_fs_lookup(ks_rootfs(), path, &node) != 0) {
-        *err = -VIBEOS_ENOENT;
+     * from the bytes written - the FAT writer stores whole files - so only its
+     * directory has to exist now. Anything else must exist, and every directory
+     * on the way to it must be one (ENOTDIR otherwise, as Linux says). */
+    if (writing) {
+        r = vibeos_path_parent(abs, &mnt, &tail);
+        if (r == 0 && vibeos_fs_lookup(mnt, tail, &node) == 0 && node.is_dir) {
+            r = -VIBEOS_EISDIR;
+        }
+    } else {
+        r = vibeos_path_lookup(abs, &mnt, &tail, &node);
+    }
+    if (r != 0) {
+        *err = r;
         return 0;
     }
     flags &= ~VIBEOS_O_ACCMODE;
     flags |= writing ? VIBEOS_O_WRONLY : VIBEOS_O_RDONLY;
-    f = vibeos_file_alloc(node.is_dir ? &vibeos_fops_dir : &vibeos_fops_regular, flags);
+    f = vibeos_file_alloc(node.is_dir && !writing ? &vibeos_fops_dir : &vibeos_fops_regular, flags);
     if (!f) {
         *err = -VIBEOS_ENFILE;
         return 0;
     }
-    for (k = 0; k + 1u < VIBEOS_FILE_PATH && path[k]; k++) {
-        f->path[k] = path[k];
+    for (k = 0; k + 1u < VIBEOS_FILE_PATH && abs[k]; k++) {
+        f->path[k] = abs[k];
     }
     f->path[k] = 0;
+    f->mnt = mnt;
+    f->tail = (uint32_t)(tail - abs);
     f->node = node.id;
-    f->size = node.size;
-    f->isdir = node.is_dir;
+    f->size = writing ? 0u : node.size;
+    f->isdir = node.is_dir && !writing;
     *err = 0;
     return f;
 }

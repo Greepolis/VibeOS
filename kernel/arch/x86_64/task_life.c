@@ -106,13 +106,32 @@ static uint32_t hw_file_id(const char *path) {
  * page at a time. */
 long hw_read_file_cached(const char *path, void *buf, uint32_t cap,
                                 uint32_t *out_id) {
-    uint32_t id = hw_file_id(path);
+    uint32_t id;
     uint64_t size, off;
     uint8_t *out = (uint8_t *)buf;
 
     if (out_id) {
         *out_id = 0u;   /* nothing is cache-backed until this function says so */
     }
+    /* An absolute path goes through the mount table (docs/abi/ A4): a program
+     * on /ext2 is read from ext2, where every path used to be handed to the
+     * boot volume whatever it said. The page cache keys files on the boot
+     * volume only, so anything else is read whole and uncached - correct, and
+     * slower, which is the right way round. */
+    if (path && path[0] == '/') {
+        vibeos_fsmount_t *m = 0;
+        const char *tail = 0;
+        if (vibeos_fs_resolve(path, &m, &tail) != 0 || !m) {
+            return -1;
+        }
+        if (m->ops != g_rootfs.ops || m->fs != g_rootfs.fs) {
+            while (*tail == '/') {
+                tail++;
+            }
+            return vibeos_fs_read_file(m, tail, buf, cap);
+        }
+    }
+    id = hw_file_id(path);
     if (id == 0u) {
         return vibeos_fs_read_file(&g_rootfs, path, buf, cap);
     }
@@ -615,6 +634,8 @@ hw_procstate_t *hw_procstate_new(void) {
         /* The slot is recycled: a process starts with no files, not with the
          * previous tenant's. */
         vibeos_fdtable_init(&ps->files);
+        ps->cwd[0] = '/'; ps->cwd[1] = 0;     /* a new process starts at the root */
+        ps->root[0] = '/'; ps->root[1] = 0;
         ps->files_lock.locked = 0;
         ps->files_lock.owner_cpu = -1;
         ps->files_lock.owner_fn = 0;

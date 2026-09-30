@@ -74,6 +74,10 @@
     X(STAT_AT,         "stat_at",         VIBEOS_CHECK_USER_MEMORY) \
     X(READLINK_AT,     "readlink_at",     VIBEOS_CHECK_USER_MEMORY) \
     X(GETCWD,          "getcwd",          VIBEOS_CHECK_USER_MEMORY) \
+    X(CHDIR,           "chdir",           VIBEOS_CHECK_USER_MEMORY) \
+    X(FCHDIR,          "fchdir",          VIBEOS_CHECK_NONE) \
+    X(MKDIR_AT,        "mkdir_at",        VIBEOS_CHECK_USER_MEMORY) \
+    X(UNLINK_AT,       "unlink_at",       VIBEOS_CHECK_USER_MEMORY) \
     X(IOCTL,           "ioctl",           VIBEOS_CHECK_USER_MEMORY) \
     X(DUP,             "dup",             VIBEOS_CHECK_NONE) \
     X(DUP2,            "dup2",            VIBEOS_CHECK_NONE) \

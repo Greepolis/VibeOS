@@ -480,7 +480,6 @@ void ks_tls_set(int slot, uint64_t base) {
 
 /* ---- devices ------------------------------------------------------------------------- */
 
-vibeos_fsmount_t *ks_rootfs(void) { return &g_rootfs; }
 vibeos_inet_t *ks_net(void) { return g_net_up ? &g_net : 0; }
 vibeos_lock_t *ks_net_lock(void) { return &g_net_lock; }
 int ks_console_getc(void) { return hw_console_getc(); }

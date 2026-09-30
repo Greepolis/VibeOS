@@ -26,10 +26,11 @@ extern const vibeos_file_ops_t vibeos_fops_pipe;
 extern const vibeos_file_ops_t vibeos_fops_socket;
 extern const vibeos_file_ops_t vibeos_fops_console;
 
-/* A path on the root filesystem: a directory or a regular file, one reference.
+/* An absolute, normal path (vibeos/path.h), through the mount table: a directory
+ * or a regular file, one reference.
  * Opening for writing creates or truncates on release, from the bytes written
  * (the FAT writer stores whole files). 0 and a negated errno in *err otherwise. */
-vibeos_file_t *vibeos_open_path(const char *path, uint32_t flags, long *err);
+vibeos_file_t *vibeos_open_path(const char *abs, uint32_t flags, long *err);
 
 /* A new pipe: its read end and its write end, one reference each. 0 or -EMFILE. */
 int vibeos_open_pipe(uint32_t flags, vibeos_file_t **rd, vibeos_file_t **wr);

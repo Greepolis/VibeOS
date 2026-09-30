@@ -2747,6 +2747,15 @@ def main():
                     problems.append("pipeline_did_not_complete")
                 if "BUSYBOX_SH_OK" not in text:
                     problems.append("shell_script_did_not_run")
+                # cd in a shell (docs/abi/ A4): the chain prints CD_OK only if
+                # chdir, getcwd and a relative open all worked, and getcwd's
+                # own answer - pwd -P, which asks getcwd, not ash's $PWD - is
+                # checked on its line. Both are read off the program's output
+                # lines: the command itself is echoed into the log as it is
+                # typed, so the bare token would be found whether or not it ran.
+                if (not re.search(r"write\(ring3\): CD_OK\r?\n", text) or
+                        not re.search(r"write\(ring3\): /DOCS\r?\n", text)):
+                    problems.append("shell_cd_did_not_work")
 
             signal_elf = os.path.join(efi_root, "EFI", "BOOT", "SIGNAL.ELF")
             if os.path.exists(signal_elf):

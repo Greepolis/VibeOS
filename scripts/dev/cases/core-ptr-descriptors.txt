@@ -10,11 +10,15 @@
 # Target source: kernel/abi/linux/fs.c
 # Run: SABOTAGE_VERIFY="python3 scripts/dev/check-syscall-checks.py" python3 scripts/dev/sabotage.py kernel/abi/linux/fs.c scripts/dev/cases/core-ptr-descriptors.txt
 
-### getcwd stops declaring its buffer
+### getcwd stops checking its buffer
+# Not a descriptor since docs/abi/ A4: how many bytes getcwd writes is the
+# working directory's length, which only the kernel knows, so the handler asks
+# linux_user_ok itself - and removing that is what must go red now.
 --- old
-PTRS(OUT(0, 2)), linux_sys_getcwd
+    if (!linux_user_ok(ubuf, n + 1u, 1)) {
+        return -VIBEOS_EFAULT;
+    }
 +++ new
-NOPTR, linux_sys_getcwd
 
 ### pipe stops declaring its result array
 --- old

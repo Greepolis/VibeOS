@@ -1,0 +1,52 @@
+# Paths (kernel/fs/path.c, docs/abi/ A4), proved by the host tests in
+# tests/kernel/path_tests.c and the Linux handlers' in linux_abi_tests.c.
+#
+#  1. ".." climbs above the root. Expect "normalize(root=/jail, ...)" - a process
+#     given a root must not walk out of it.
+#  2. a component longer than NAME_MAX is accepted. Expect "a component over
+#     NAME_MAX is ENAMETOOLONG".
+#  3. a file used as a directory is looked up anyway, so /file/x reports ENOENT
+#     rather than ENOTDIR. Expect "a file used as a directory is ENOTDIR".
+#  4. a relative path ignores the working directory - what every path was until
+#     A4. Expect "normalize(root=/, cwd=/usr, bin)" and the handlers' "a relative
+#     open starts there".
+#
+# Target source: kernel/fs/path.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/fs/path.c scripts/dev/cases/fs-path.txt
+
+### ".." climbs above the root
+--- old
+        while (*n > floor && out[*n - 1u] != '/') {
+            (*n)--;
+        }
+        if (*n > floor) {
+            (*n)--;             /* the slash in front of the removed component */
+        }
++++ new
+        while (*n > 1u && out[*n - 1u] != '/') {
+            (*n)--;
+        }
+        if (*n > 1u) {
+            (*n)--;             /* the slash in front of the removed component */
+        }
+
+### a component longer than NAME_MAX is accepted
+--- old
+    if (len > VIBEOS_NAME_MAX) {
+        return -VIBEOS_ENAMETOOLONG;
+    }
++++ new
+
+### a file used as a directory is looked up anyway
+--- old
+    return node.is_dir ? 0 : -VIBEOS_ENOTDIR;
++++ new
+    return 0;
+
+### a relative path ignores the working directory
+--- old
+    if (path[0] != '/') {
+        /* The working directory is already under the root, so it is taken
++++ new
+    if (0) {
+        /* The working directory is already under the root, so it is taken

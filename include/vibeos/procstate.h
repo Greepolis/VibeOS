@@ -19,6 +19,7 @@
 #include <stdint.h>
 #include "vibeos/fdtable.h"
 #include "vibeos/vma.h"
+#include "vibeos/path.h"
 
 /* Signals 1..64; index 0 is unused so the numbering matches Linux. */
 #define VIBEOS_NSIG 65
@@ -62,7 +63,7 @@ typedef struct vibeos_image {
     /* What execve was given. A program that wants to find itself reads
      * /proc/self/exe, and answering from the real path is the difference
      * between a correct answer and a plausible one. */
-    char exe_path[64];
+    char exe_path[VIBEOS_PATH_MAX];
 } vibeos_image_t;
 
 /* What belongs to a process rather than to one of its threads.
@@ -108,6 +109,14 @@ typedef struct vibeos_procstate {
     vibeos_fdtable_t files;
     vibeos_lock_t files_lock;
     volatile uint32_t files_users;
+    /* Where relative paths start, and above what ".." cannot climb (docs/abi/
+     * A4). Absolute and normal, both "/" for a process nobody changed. The
+     * process's, like the descriptors: every thread sees one working directory,
+     * which is what CLONE_FS means - and fork and exec carry them over. Read
+     * and written under files_lock, so a chdir in one thread cannot hand
+     * another half a path. */
+    char cwd[VIBEOS_PATH_MAX];
+    char root[VIBEOS_PATH_MAX];
 } vibeos_procstate_t;
 
 #endif

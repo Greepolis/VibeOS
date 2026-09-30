@@ -80,8 +80,15 @@ static int kf_find(const char *path) {
 }
 
 static int kf_fs_lookup(void *fs, const char *path, vibeos_fs_node_t *out) {
-    int i = kf_find(path);
+    int i;
     (void)fs;
+    if (path[0] == 0 || (path[0] == '/' && path[1] == 0)) {
+        out->id = 0;          /* the volume's root, however it is spelled */
+        out->size = 0;
+        out->is_dir = 1;
+        return 0;
+    }
+    i = kf_find(path);
     if (i < 0) {
         return -1;
     }
@@ -281,6 +288,8 @@ uint32_t kf_net_udp_sent(uint32_t *last_payload_len) {
 static void kf_procstate_init(vibeos_procstate_t *ps) {
     memset(ps, 0, sizeof(*ps));
     vibeos_fdtable_init(&ps->files);
+    ps->cwd[0] = '/';
+    ps->root[0] = '/';
     ps->refs = 1u;
     ps->files_users = 1u;
     ps->brk_cur = 0x10000000ull;
@@ -327,6 +336,10 @@ void kf_reset(void) {
     vibeos_pipe_set_lock(kf_pipe_lock, kf_pipe_unlock);
     vibeos_fs_unmount(&g_root);
     (void)vibeos_fs_mount(&g_root, &g_kf_fs_ops, 0, "kf");
+    /* Paths go through the mount table since docs/abi/ A4, as in the kernel. */
+    vibeos_fs_set_lock(kf_pipe_lock, kf_pipe_unlock);
+    vibeos_fs_detach_all();
+    (void)vibeos_fs_attach("/", &g_root);
     /* The personality registers its own tables: see the tests' fresh(). */
 }
 
@@ -724,7 +737,6 @@ void ks_regs_enter_handler(ks_regs_t *frame, uint64_t handler, uint64_t sp, uint
 uint64_t ks_tls_get(int slot) { return g_t[slot].tls; }
 void ks_tls_set(int slot, uint64_t base) { g_t[slot].tls = base; }
 
-vibeos_fsmount_t *ks_rootfs(void) { return &g_root; }
 vibeos_inet_t *ks_net(void) { return g_net_is_up ? &g_net_v : 0; }
 vibeos_lock_t *ks_net_lock(void) { return &g_net_lock_v; }
 int ks_console_getc(void) { return -1; }

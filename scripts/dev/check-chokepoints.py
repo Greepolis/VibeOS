@@ -74,8 +74,10 @@ CHOKEPOINTS = {
         "A handler calling it directly is a handler that skipped the dispatcher's "
         "chokepoint."),
     "linux_user_ok": (
-        14,   # definition, a declaration (vibeos/linux_exports.h), and 12 that cannot be
-              # descriptors. 15 -> 14 in A2: the pointer engine moved to kernel/abi/abi.c
+        15,   # 14 -> 15 in A4: getcwd writes as many bytes as the working directory
+              # is long, which only the kernel knows, so its row cannot declare the
+              # range and the handler asks. Before that: definition, a declaration
+              # (vibeos/linux_exports.h), and 12 that cannot be descriptors. 15 -> 14 in A2: the pointer engine moved to kernel/abi/abi.c
               # to serve every personality, and is handed linux_user_ok as a function
               # pointer - a site this count cannot see, stated here instead.
         "who asks the dispatcher to judge a user pointer. **This is where the old "
