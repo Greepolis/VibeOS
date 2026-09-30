@@ -203,6 +203,62 @@ kept on purpose.
 program opens 200 files, and descriptor sharing between threads (M-072) still
 passes.
 
+**Status (2026-09-30): done.**
+
+- **Open file descriptions** (`include/vibeos/file.h`, `kernel/fs/file.c`): a
+  counted object holding the offset, the status flags and each type's state,
+  in a pool of 256 with its own lock. The last reference runs the type's
+  release - a pipe end given back, a socket closed, a written file committed -
+  and a slot is not handed out again until that release has finished. A put
+  with nothing to put is `file_put_underflow` in the must-be-zero registry.
+- **The table** (`fdtable.h`) holds references and one flag per number,
+  close-on-exec, and grows a page of 256 at a time up to 1024 (RLIMIT_NOFILE,
+  which prlimit now reports). Descriptors 0-2 are ordinary entries: a spawned
+  program gets one console description on all three, so closing 1 and opening
+  a file gives the file 1, as every shell's redirection expects. fork copies
+  references, exec copies and then drops the close-on-exec numbers, and the
+  last thread to leave destroys the table.
+- **One operations table per type**, in `kernel/abi/files/` beside the
+  personalities - regular file, directory, pipe end, socket, console - written
+  against `vibeos/ksvc.h`, so a Windows personality uses the same ones. `read`,
+  `write`, `lseek`, `fstat`, `ioctl` and `getdents64` dispatch by type: a pipe
+  is a FIFO and a socket a socket to fstat, both ESPIPE to lseek. The socket
+  waits (connect, accept, recvfrom) moved with the type, leaving the Linux
+  handlers the sockaddr translation only. Pipe ends are counted per
+  description, so dup and fork no longer touch a pipe's counts; the five sites
+  that had to remember an acquire became none.
+- **Every call holds a reference** to the description it works on for its
+  whole length (Linux's fdget/fdput), so a sibling thread's close takes the
+  number away and not the file. A socket call still re-checks the socket's own
+  tenancy (M-020), because a process's exit releases the sockets it owns.
+- **New and finished syscalls**: `dup3` (DONE), `fcntl` (PARTIAL: descriptor
+  and status flags, F_DUPFD and F_DUPFD_CLOEXEC; record locks answer ENOLCK
+  rather than pretend), `close_range` (PARTIAL: CLOSE_RANGE_UNSHARE refused),
+  `pipe2` honours O_NONBLOCK and O_CLOEXEC, `open` honours O_CLOEXEC, `socket`
+  honours SOCK_CLOEXEC. `open` stays PARTIAL for the working directory only.
+- **Host tests**: dup shares an offset, 200 files at consecutive numbers, a
+  closed stdout reused, a pipe is a FIFO with ESPIPE and non-blocking EAGAIN,
+  close-on-exec through open, dup3, F_DUPFD_CLOEXEC and close_range, and a
+  forked child reading on from its parent's offset; the table and description
+  layers have their own. The `open` gap for four descriptors closed on its own
+  when the table grew and failed the test until the registry said so, which is
+  the gap mechanism doing its job; its expectation is the working directory now,
+  and fcntl and close_range carry theirs.
+- **Checks**: `check-net-stable.py` follows the waits into `socket.c` and
+  matches braces - its one-line signature parser saw two of four waits and said
+  so instead of passing. `check-task-identity.py`'s count of lines indexing the
+  table's arrays went to zero. The host test runner is unbuffered: a sabotage
+  of the table's page clearing was named by its test and the line was lost when
+  a later group crashed on the same garbage.
+- **Sabotage**: `fs-file.txt` (3), `fs-fdtable.txt` rewritten (4 - the C5 cases
+  named code that no longer exists), `abi-files.txt` (3), ten anchors
+  re-pointed; all red for their reason, the page-clearing case by its test
+  and then a crash.
+- **Not done**: the write-back still replaces a whole file with at most 512
+  buffered bytes, so O_RDWR on an existing file opens for reading only - a gap
+  of the filesystem layer, recorded in `regular.c`. And eventfd, timerfd,
+  signalfd and epoll are future types (L4).
+
 ### A4. Paths
 
 **Objective.** Relative paths, a working directory, and the `*at` family.

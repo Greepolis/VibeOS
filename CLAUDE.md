@@ -217,6 +217,20 @@ version of that check listed `g_tasks` by hand and a handler reading
 `g_timer_ticks` walked through it: a check that names forbidden things one by
 one forbids only those, so it reads them from `arch_hw_internal.h` now.
 
+**A descriptor names a description, and releasing one does I/O.** Since
+docs/abi/ A3 a table entry is a reference to a counted open file description,
+and the last reference runs its type's release: a written file is committed to
+the FAT volume, a pipe's reader is woken, a socket is closed. So never drop a
+reference under a process's `files_lock` - take the description out of the
+table under the lock and `vibeos_file_put` it after. And a call holds its own
+reference for as long as it runs (`linux_file_get`), so a sibling's close takes
+the number away and not the file under it.
+
+**The host test runner's stdout is unbuffered for a reason.** A sabotage was
+named by its test and then a later group crashed on the same garbage; the
+FAIL line was still in the buffer and the run printed nothing at all. A crash
+is the moment a message most needs to have already left.
+
 **Syscall arguments typed `int` arrive zero-extended.** `mov $-100, %edi`
 delivers `0x00000000ffffff9c`. Read them through `VIBEOS_ARG_INT()`; comparing
 all 64 bits against `AT_FDCWD` or `-1` never matches.

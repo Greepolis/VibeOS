@@ -47,7 +47,8 @@ underneath it:
 2. **Four descriptors.** The table holds descriptors 3 to 6, and an entry is a
    value copied on `dup` and `fork` - so two descriptors that Linux says share an
    offset do not. Most real programs open more than four files; all of them
-   expect `dup` to share.
+   expect `dup` to share. *(Closed by A3: descriptors name counted open file
+   descriptions, 1024 of them, and each file type has its own operations.)*
 3. **One directory.** There is no working directory: `getcwd` answers `/`, and
    `openat` accepts only `AT_FDCWD`.
 4. **Anonymous memory only.** `mmap` refuses file-backed mappings and
