@@ -23,11 +23,32 @@
  * FAT's shape, not a filesystem's. A real write path takes an offset. It is
  * left alone here because changing it in the same step as the abstraction
  * would mean neither is verified.
+ *
+ * docs/abi/ L1 is where it grew: a node carries what stat reports, and the
+ * operations a POSIX file system needs - write and truncate at an offset,
+ * create, rmdir, rename, links, attributes, statfs, sync - were added beside the
+ * original six. Every one of them is optional. A driver fills in what its
+ * on-disk format can do, and the wrappers answer for the rest as Linux does:
+ * EROFS from a filesystem that writes nothing, EPERM from one that writes but
+ * cannot represent the thing asked for (a symbolic link on FAT). The new
+ * operations return 0 or a negated errno (vibeos/abi_linux.h); the original
+ * six keep their -1.
  */
 
 #include <stdint.h>
 
 #define VIBEOS_FS_NAME_MAX 64u
+
+/* File types and permission bits: st_mode as POSIX numbers it, which is what
+ * Linux reports and what every filesystem here is translated into. */
+#define VIBEOS_S_IFMT   0170000u
+#define VIBEOS_S_IFIFO  0010000u
+#define VIBEOS_S_IFCHR  0020000u
+#define VIBEOS_S_IFDIR  0040000u
+#define VIBEOS_S_IFBLK  0060000u
+#define VIBEOS_S_IFREG  0100000u
+#define VIBEOS_S_IFLNK  0120000u
+#define VIBEOS_S_IFSOCK 0140000u
 
 typedef struct {
     /* Driver-private identity for the file. FAT puts the first cluster here.
@@ -35,7 +56,51 @@ typedef struct {
     uint64_t id;
     uint64_t size;
     int is_dir;
+    /* What stat reports (L1). vibeos_fs_lookup zeroes the node before asking
+     * the driver - a field a driver never heard of must not arrive holding
+     * whatever was on the stack - and supplies what it left out: a type from
+     * is_dir, permissions 0755 or 0644, one link. is_dir and the type always
+     * agree afterwards. */
+    uint32_t mode;                /* VIBEOS_S_IF* | permission bits */
+    uint32_t nlink;
+    uint32_t uid;
+    uint32_t gid;
+    uint64_t atime_ns;            /* nanoseconds on vibeos_fs_now_ns's clock */
+    uint64_t mtime_ns;
+    uint64_t ctime_ns;
 } vibeos_fs_node_t;
+
+/* What setattr may change: the fields named in `valid`. */
+#define VIBEOS_ATTR_MODE  0x01u   /* permission bits only; the type is fixed */
+#define VIBEOS_ATTR_UID   0x02u
+#define VIBEOS_ATTR_GID   0x04u
+#define VIBEOS_ATTR_ATIME 0x08u
+#define VIBEOS_ATTR_MTIME 0x10u
+
+typedef struct {
+    uint32_t valid;
+    uint32_t mode;
+    uint32_t uid;
+    uint32_t gid;
+    uint64_t atime_ns;
+    uint64_t mtime_ns;
+} vibeos_fs_attr_t;
+
+/* What statfs reports. `magic` is the filesystem's own number where Linux has
+ * one (TMPFS_MAGIC, MSDOS_SUPER_MAGIC, ...), which some programs branch on. */
+typedef struct {
+    uint64_t magic;
+    uint32_t block_size;
+    uint64_t blocks;
+    uint64_t blocks_free;
+    uint64_t files;
+    uint64_t files_free;
+    uint32_t name_max;
+    int read_only;
+} vibeos_fs_statfs_t;
+
+/* rename: fail with EEXIST rather than replace an existing name. */
+#define VIBEOS_RENAME_NOREPLACE 0x1u
 
 typedef struct {
     /* Resolve a path. Returns 0 and fills `out` on success. */
@@ -57,6 +122,33 @@ typedef struct {
 
     int (*unlink)(void *fs, const char *path);
     int (*mkdir)(void *fs, const char *path);
+
+    /* ---- L1: every one optional, 0 or a negated errno ---- */
+
+    /* Write at an offset into a node, growing it as needed (a gap reads as
+     * zeros). Bytes written, or a negated errno. */
+    long (*write_at)(void *fs, const vibeos_fs_node_t *node, uint64_t offset,
+                     const void *buf, uint32_t len);
+    /* Set a node's size, dropping or zero-filling. */
+    int (*truncate)(void *fs, const vibeos_fs_node_t *node, uint64_t size);
+    /* A new regular file with `mode`'s permission bits; -EEXIST if the name is
+     * taken. `out` describes it. */
+    int (*create)(void *fs, const char *path, uint32_t mode, vibeos_fs_node_t *out);
+    /* Remove an empty directory: -ENOTEMPTY otherwise. */
+    int (*rmdir)(void *fs, const char *path);
+    /* Move a name, replacing what `to` names unless NOREPLACE: a file over a
+     * file, an empty directory over a directory. Both inside this filesystem. */
+    int (*rename)(void *fs, const char *from, const char *to, uint32_t flags);
+    /* A second name for an existing file. */
+    int (*link)(void *fs, const char *existing, const char *path);
+    /* A symbolic link at `path` whose contents are `target`, unresolved. */
+    int (*symlink)(void *fs, const char *target, const char *path);
+    /* A symbolic link's contents, not terminated; bytes copied. */
+    long (*readlink)(void *fs, const char *path, char *buf, uint32_t cap);
+    int (*setattr)(void *fs, const char *path, const vibeos_fs_attr_t *attr);
+    int (*statfs)(void *fs, vibeos_fs_statfs_t *out);
+    /* Everything written is on the medium when this returns. */
+    int (*sync)(void *fs);
 } vibeos_fs_ops_t;
 
 typedef struct {
@@ -89,6 +181,41 @@ int vibeos_fs_list(vibeos_fsmount_t *mnt, const char *path, uint32_t index,
                     int *out_is_dir);
 int vibeos_fs_unlink(vibeos_fsmount_t *mnt, const char *path);
 int vibeos_fs_mkdir(vibeos_fsmount_t *mnt, const char *path);
+
+/* ---- L1's operations, through wrappers that answer for a missing one ----
+ *
+ * 0 or a negated errno. A driver without the operation gets EROFS if it
+ * writes nothing at all, EPERM if it writes but cannot do this; the exceptions
+ * are named at each. */
+
+/* 1 if the filesystem can change anything at all. */
+int vibeos_fs_writable(const vibeos_fsmount_t *mnt);
+/* -EOPNOTSUPP from a writable filesystem without in-place writes: the caller
+ * falls back to write_file, which is the difference between FAT today and a
+ * refusal. */
+long vibeos_fs_write_at(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node,
+                         uint64_t offset, const void *buf, uint32_t len);
+int vibeos_fs_truncate(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, uint64_t size);
+int vibeos_fs_create(vibeos_fsmount_t *mnt, const char *path, uint32_t mode,
+                     vibeos_fs_node_t *out);
+int vibeos_fs_rmdir(vibeos_fsmount_t *mnt, const char *path);
+int vibeos_fs_rename(vibeos_fsmount_t *mnt, const char *from, const char *to, uint32_t flags);
+int vibeos_fs_link(vibeos_fsmount_t *mnt, const char *existing, const char *path);
+int vibeos_fs_symlink(vibeos_fsmount_t *mnt, const char *target, const char *path);
+/* -EINVAL when the filesystem has no symbolic links: nothing on it is one. */
+long vibeos_fs_readlink(vibeos_fsmount_t *mnt, const char *path, char *buf, uint32_t cap);
+int vibeos_fs_setattr(vibeos_fsmount_t *mnt, const char *path, const vibeos_fs_attr_t *attr);
+/* A driver without statfs is described from what the wrapper knows: its
+ * writability and nothing else. */
+int vibeos_fs_statfs(vibeos_fsmount_t *mnt, vibeos_fs_statfs_t *out);
+/* 0 from a driver without sync: it has nothing held back. */
+int vibeos_fs_sync(vibeos_fsmount_t *mnt);
+
+/* The clock timestamps are read from, supplied by the architecture - a
+ * registration, not a weak symbol (CLAUDE.md). Uptime until the kernel has a
+ * wall clock (L2); 0 before one is registered. */
+void vibeos_fs_set_clock(uint64_t (*now_ns)(void));
+uint64_t vibeos_fs_now_ns(void);
 
 /* ---- the mount table (I4b step 4) -----------------------------------------
  *

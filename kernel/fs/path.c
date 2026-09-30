@@ -120,77 +120,209 @@ int vibeos_path_normalize(const char *root, const char *cwd, const char *path,
     return path_push_all(out, &n, cap, floor, path);
 }
 
-/* Look up the part of `tail` (inside `mnt`) that ends at `end`, as a directory. */
-static int path_dir_prefix(vibeos_fsmount_t *mnt, const char *tail, uint32_t end) {
-    char part[VIBEOS_PATH_MAX];
-    vibeos_fs_node_t node;
-    uint32_t i;
+/* ---- the walk (L1) -------------------------------------------------------------- */
 
-    if (end >= sizeof(part)) {
-        return -VIBEOS_ENAMETOOLONG;
-    }
-    for (i = 0; i < end; i++) {
-        part[i] = tail[i];
-    }
-    part[end] = 0;
-    if (vibeos_fs_lookup(mnt, part, &node) != 0) {
-        return -VIBEOS_ENOENT;
-    }
-    return node.is_dir ? 0 : -VIBEOS_ENOTDIR;
-}
-
-/* Every component of `tail` before the last must be a directory. */
-static int path_check_parents(vibeos_fsmount_t *mnt, const char *tail) {
-    uint32_t i;
-
-    for (i = 0; tail[i]; i++) {
-        if (tail[i] == '/' && i > 0u) {
-            int r = path_dir_prefix(mnt, tail, i);
-            if (r != 0) {
-                return r;
-            }
-        }
-    }
-    return 0;
-}
-
-static int path_split(const char *abs, vibeos_fsmount_t **mnt, const char **tail) {
-    if (!abs || abs[0] != '/') {
-        return -VIBEOS_ENOENT;
-    }
+/* Which mount an absolute path is on, what is left of it inside, and the node.
+ * A path that is the mount point itself leaves nothing inside the mount:
+ * drivers spell their root "/", not every one takes the empty string. */
+static int walk_lookup(const char *abs, vibeos_fsmount_t **mnt, const char **tail,
+                       vibeos_fs_node_t *node) {
     if (vibeos_fs_resolve(abs, mnt, tail) != 0 || !*mnt) {
         return -VIBEOS_ENOENT;
     }
     while (**tail == '/') {
         (*tail)++;
     }
-    return 0;
-}
-
-int vibeos_path_lookup(const char *abs, vibeos_fsmount_t **mnt, const char **tail,
-                       vibeos_fs_node_t *node) {
-    int r = path_split(abs, mnt, tail);
-
-    if (r != 0) {
-        return r;
-    }
-    r = path_check_parents(*mnt, *tail);
-    if (r != 0) {
-        return r;
-    }
-    /* A path that is the mount point itself leaves nothing inside the mount.
-     * Drivers spell their root "/"; not every one takes the empty string. */
     return vibeos_fs_lookup(*mnt, **tail ? *tail : "/", node) == 0 ? 0 : -VIBEOS_ENOENT;
 }
 
-int vibeos_path_parent(const char *abs, vibeos_fsmount_t **mnt, const char **tail) {
-    int r = path_split(abs, mnt, tail);
+/* What is left to walk is kept as a string; a link's target goes in front of
+ * it. Twice a path, because a link can be a path long and name more path. */
+#define WALK_PENDING (2u * VIBEOS_PATH_MAX)
 
+int vibeos_path_walk(const char *root, const char *base, const char *path,
+                     uint32_t flags, vibeos_path_t *out) {
+    char pending[WALK_PENDING];
+    char target[VIBEOS_PATH_MAX];
+    uint32_t n, floor, links = 0, i, plen;
+    const char *p;
+    int looked = 0, r;
+
+    if (!path || !out) {
+        return -VIBEOS_EINVAL;
+    }
+    if (path[0] == 0) {
+        return -VIBEOS_ENOENT;   /* Linux: an empty path names nothing */
+    }
+    out->exists = 0;
+    out->mnt = 0;
+    out->tail = out->path;
+    out->trailing_slash = 0;
+    for (plen = 0; path[plen]; plen++) {
+    }
+    if (plen >= VIBEOS_PATH_MAX) {
+        return -VIBEOS_ENAMETOOLONG;
+    }
+    for (i = plen; i > 0u && path[i - 1u] == '/'; i--) {
+    }
+    out->trailing_slash = (i > 0u && i < plen);
+
+    /* Where the walk starts: the root for an absolute path, the base directory
+     * (already resolved - a working directory or a directory descriptor's path)
+     * for a relative one. Both lexical, and both already real. */
+    /* The root's own length first - the floor ".." stops at - measured in the
+     * output buffer rather than a second one: kernel stacks are small, and the
+     * walk already holds two path-sized buffers. */
+    r = vibeos_path_normalize(root, root, "/", out->path, VIBEOS_PATH_MAX);
     if (r != 0) {
         return r;
     }
-    if (**tail == 0) {
-        return -VIBEOS_EEXIST;   /* the mount's own root: it is there already */
+    for (floor = 0; out->path[floor]; floor++) {
     }
-    return path_check_parents(*mnt, *tail);
+    r = vibeos_path_normalize(root, base, path[0] == '/' ? "/" : ".", out->path,
+                              VIBEOS_PATH_MAX);
+    if (r != 0) {
+        return r;
+    }
+    for (n = 0; out->path[n]; n++) {
+    }
+    for (i = 0; i <= plen; i++) {
+        pending[i] = path[i];
+    }
+
+    p = pending;
+    for (;;) {
+        const char *start;
+        uint32_t len, saved;
+        int last;
+        vibeos_fs_node_t node;
+        vibeos_fsmount_t *mnt;
+        const char *tail;
+
+        while (*p == '/') {
+            p++;
+        }
+        if (*p == 0) {
+            break;
+        }
+        start = p;
+        while (*p && *p != '/') {
+            p++;
+        }
+        len = (uint32_t)(p - start);
+        {
+            const char *q = p;
+            while (*q == '/') {
+                q++;
+            }
+            last = (*q == 0);
+        }
+        if (len == 1u && start[0] == '.') {
+            continue;
+        }
+        if (len == 2u && start[0] == '.' && start[1] == '.') {
+            /* The path so far is real - every component in it was looked up,
+             * and links in it were replaced by what they point at - so removing
+             * one is going to the parent of what it names. */
+            r = path_push(out->path, &n, VIBEOS_PATH_MAX, floor, start, len);
+            if (r != 0) {
+                return r;
+            }
+            looked = 0;
+            continue;
+        }
+        saved = n;
+        r = path_push(out->path, &n, VIBEOS_PATH_MAX, floor, start, len);
+        if (r != 0) {
+            return r;
+        }
+        mnt = 0;
+        tail = out->path;
+        r = walk_lookup(out->path, &mnt, &tail, &node);
+        if (r != 0) {
+            if (last && (flags & VIBEOS_PATH_CREATE) && mnt) {
+                out->mnt = mnt;
+                out->tail = tail;
+                return 0;   /* exists = 0: where it would be */
+            }
+            return r;
+        }
+        looked = 1;
+        if ((node.mode & VIBEOS_S_IFMT) == VIBEOS_S_IFLNK &&
+            (!last || !(flags & VIBEOS_PATH_NOFOLLOW) || out->trailing_slash)) {
+            long t;
+            uint32_t rest, k;
+
+            if (++links > VIBEOS_PATH_SYMLINK_MAX) {
+                return -VIBEOS_ELOOP;
+            }
+            t = vibeos_fs_readlink(mnt, *tail ? tail : "/", target, sizeof(target));
+            if (t < 0) {
+                return (int)t;
+            }
+            if ((uint32_t)t >= sizeof(target)) {
+                return -VIBEOS_ENAMETOOLONG;   /* not cut short and followed */
+            }
+            if (t == 0) {
+                return -VIBEOS_ENOENT;   /* an empty link names nothing */
+            }
+            /* The link is replaced by its target: an absolute one starts again
+             * from the root, a relative one from the directory holding it. */
+            n = (target[0] == '/') ? floor : saved;
+            out->path[n] = 0;
+            if (n == 0u) {
+                out->path[n++] = '/';
+                out->path[n] = 0;
+            }
+            for (rest = 0; p[rest]; rest++) {
+            }
+            if ((uint32_t)t + 1u + rest + 1u > WALK_PENDING) {
+                return -VIBEOS_ENAMETOOLONG;
+            }
+            /* In place: what is left moves to make room, then the target goes
+             * in front of it. Up or down depending on whether the target is
+             * longer than what the walk has consumed, and in the direction that
+             * reads each byte before it is overwritten. */
+            {
+                uint32_t from = (uint32_t)(p - pending);
+                uint32_t to = (uint32_t)t + 1u;
+                if (to > from) {
+                    for (k = rest + 1u; k > 0u; k--) {
+                        pending[to + k - 1u] = pending[from + k - 1u];
+                    }
+                } else {
+                    for (k = 0; k <= rest; k++) {
+                        pending[to + k] = pending[from + k];
+                    }
+                }
+                for (k = 0; k < (uint32_t)t; k++) {
+                    pending[k] = target[k];
+                }
+                pending[t] = '/';
+            }
+            p = pending;
+            looked = 0;
+            continue;
+        }
+        if (!last && !node.is_dir) {
+            return -VIBEOS_ENOTDIR;
+        }
+        out->node = node;
+        out->mnt = mnt;
+        out->tail = tail;
+    }
+
+    /* Nothing was looked up since the last change - a path of "/", ".", or
+     * one that ended in "..": ask about where the walk stands. */
+    if (!looked) {
+        r = walk_lookup(out->path, &out->mnt, &out->tail, &out->node);
+        if (r != 0) {
+            return r;
+        }
+    }
+    out->exists = 1;
+    if (out->trailing_slash && !out->node.is_dir) {
+        return -VIBEOS_ENOTDIR;
+    }
+    return 0;
 }

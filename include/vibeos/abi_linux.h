@@ -20,21 +20,31 @@
 #define VIBEOS_ECHILD 10
 #define VIBEOS_EAGAIN 11
 #define VIBEOS_ENOMEM 12
+#define VIBEOS_EACCES 13
 #define VIBEOS_EFAULT 14
+#define VIBEOS_EBUSY  16
 #define VIBEOS_EEXIST 17
+#define VIBEOS_EXDEV  18
 #define VIBEOS_ENOTDIR 20
 #define VIBEOS_EISDIR 21
 #define VIBEOS_EINVAL 22
 #define VIBEOS_ENFILE 23
 #define VIBEOS_EMFILE 24
 #define VIBEOS_ENOTTY 25
+#define VIBEOS_EFBIG  27
+#define VIBEOS_ENOSPC 28
 #define VIBEOS_ESPIPE 29
+#define VIBEOS_EROFS  30
+#define VIBEOS_EMLINK 31
 #define VIBEOS_EPIPE  32
 #define VIBEOS_ERANGE 34
 #define VIBEOS_ENAMETOOLONG 36
 #define VIBEOS_ENOLCK 37
 #define VIBEOS_ENOSYS 38
+#define VIBEOS_ENOTEMPTY 39
+#define VIBEOS_ELOOP  40
 #define VIBEOS_ENOTSOCK 88
+#define VIBEOS_EOPNOTSUPP 95
 
 /* Linux signal numbers. The pending and blocked masks are uint64_t keyed by
  * signal number, so bit 63 is the highest that exists and 64 is refused rather

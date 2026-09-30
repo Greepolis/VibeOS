@@ -11,6 +11,22 @@
 #     A4. Expect "normalize(root=/, cwd=/usr, bin)" and the handlers' "a relative
 #     open starts there".
 #
+# The walk's symbolic links (L1):
+#
+#  5. no bound on links followed. Expect "a cycle is ELOOP, not a hang" - red
+#     with ENAMETOOLONG, not HUNG: every splice leaves a '/' behind, so a cycle
+#     grows the rest of the path until the pending buffer refuses it. The
+#     buffer is a second line of defence; the bound is what makes the answer
+#     the right errno.
+#  6. an absolute target continues from the link's directory instead of the
+#     root. Expect "an absolute link starts again from the root".
+#  7. the rest of the path always moved up, never down. Expect "a target
+#     shorter than the link keeps the rest of the path intact" - the move
+#     overlaps itself and copies bytes it has already overwritten.
+#  8. NOFOLLOW ignored. Expect "NOFOLLOW answers with the link itself".
+#  9. a trailing slash on a file accepted. Expect "a trailing slash asks for a
+#     directory".
+#
 # Target source: kernel/fs/path.c
 # Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/fs/path.c scripts/dev/cases/fs-path.txt
 
@@ -39,9 +55,10 @@
 
 ### a file used as a directory is looked up anyway
 --- old
-    return node.is_dir ? 0 : -VIBEOS_ENOTDIR;
+        if (!last && !node.is_dir) {
+            return -VIBEOS_ENOTDIR;
+        }
 +++ new
-    return 0;
 
 ### a relative path ignores the working directory
 --- old
@@ -50,3 +67,33 @@
 +++ new
     if (0) {
         /* The working directory is already under the root, so it is taken
+
+### no bound on links followed
+--- old
+            if (++links > VIBEOS_PATH_SYMLINK_MAX) {
++++ new
+            if (++links == 0u) {
+
+### an absolute target continues from the link's directory
+--- old
+            n = (target[0] == '/') ? floor : saved;
++++ new
+            n = saved;
+
+### the rest of the path always moved up
+--- old
+                if (to > from) {
++++ new
+                if (1) {
+
+### NOFOLLOW ignored
+--- old
+            (!last || !(flags & VIBEOS_PATH_NOFOLLOW) || out->trailing_slash)) {
++++ new
+            (1)) {
+
+### a trailing slash on a file accepted
+--- old
+    if (out->trailing_slash && !out->node.is_dir) {
++++ new
+    if (0) {

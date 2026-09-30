@@ -74,7 +74,9 @@ CHOKEPOINTS = {
         "A handler calling it directly is a handler that skipped the dispatcher's "
         "chokepoint."),
     "linux_user_ok": (
-        15,   # 14 -> 15 in A4: getcwd writes as many bytes as the working directory
+        16,   # 15 -> 16 in L1: readlinkat copies a link's contents, whose length
+              # only the filesystem knows - the same reason as getcwd's.
+              # 14 -> 15 in A4: getcwd writes as many bytes as the working directory
               # is long, which only the kernel knows, so its row cannot declare the
               # range and the handler asks. Before that: definition, a declaration
               # (vibeos/linux_exports.h), and 12 that cannot be descriptors. 15 -> 14 in A2: the pointer engine moved to kernel/abi/abi.c

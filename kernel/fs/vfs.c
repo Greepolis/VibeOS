@@ -9,6 +9,7 @@
 
 #include "vibeos/vfs.h"
 #include "vibeos/mbz.h"
+#include "vibeos/abi_linux.h"
 
 int vibeos_fs_mount(vibeos_fsmount_t *mnt, const vibeos_fs_ops_t *ops,
                      void *fs, const char *type) {
@@ -41,12 +42,44 @@ const char *vibeos_fs_type(const vibeos_fsmount_t *mnt) {
     return (mnt && mnt->mounted && mnt->type) ? mnt->type : "none";
 }
 
+/* A node as every caller may read it (L1): zeroed before the driver is asked,
+ * because five drivers were written before most of these fields existed and a
+ * field a driver never heard of must not carry stack garbage into stat; then
+ * completed from what the driver did say. */
+static void fs_node_clear(vibeos_fs_node_t *n) {
+    uint8_t *p = (uint8_t *)n;
+    uint32_t i;
+    for (i = 0; i < sizeof(*n); i++) {
+        p[i] = 0;
+    }
+}
+
+static void fs_node_complete(vibeos_fs_node_t *n) {
+    if ((n->mode & VIBEOS_S_IFMT) == 0u) {
+        n->mode |= n->is_dir ? VIBEOS_S_IFDIR : VIBEOS_S_IFREG;
+        if ((n->mode & 07777u) == 0u) {
+            n->mode |= n->is_dir ? 0755u : 0644u;
+        }
+    }
+    n->is_dir = (n->mode & VIBEOS_S_IFMT) == VIBEOS_S_IFDIR;
+    if (n->nlink == 0u) {
+        n->nlink = 1u;
+    }
+}
+
 int vibeos_fs_lookup(vibeos_fsmount_t *mnt, const char *path,
                       vibeos_fs_node_t *out) {
+    int r;
+
     if (!vibeos_fs_is_mounted(mnt) || !path || !out) {
         return -1;
     }
-    return mnt->ops->lookup(mnt->fs, path, out);
+    fs_node_clear(out);
+    r = mnt->ops->lookup(mnt->fs, path, out);
+    if (r == 0) {
+        fs_node_complete(out);
+    }
+    return r;
 }
 
 long vibeos_fs_read_at(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node,
@@ -92,6 +125,133 @@ int vibeos_fs_mkdir(vibeos_fsmount_t *mnt, const char *path) {
         return -1;
     }
     return mnt->ops->mkdir(mnt->fs, path);
+}
+
+/* ---- L1's operations ----------------------------------------------------------- */
+
+int vibeos_fs_writable(const vibeos_fsmount_t *mnt) {
+    return vibeos_fs_is_mounted(mnt) &&
+           (mnt->ops->write_file || mnt->ops->write_at || mnt->ops->create);
+}
+
+/* What a missing operation means: a filesystem that writes nothing is
+ * read-only, one that writes but lacks this cannot represent it. */
+static int fs_missing(const vibeos_fsmount_t *mnt) {
+    return vibeos_fs_writable(mnt) ? -VIBEOS_EPERM : -VIBEOS_EROFS;
+}
+
+long vibeos_fs_write_at(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node,
+                         uint64_t offset, const void *buf, uint32_t len) {
+    if (!vibeos_fs_is_mounted(mnt) || !node || (!buf && len)) {
+        return -VIBEOS_EINVAL;
+    }
+    if (!mnt->ops->write_at) {
+        return vibeos_fs_writable(mnt) ? -VIBEOS_EOPNOTSUPP : -VIBEOS_EROFS;
+    }
+    return mnt->ops->write_at(mnt->fs, node, offset, buf, len);
+}
+
+int vibeos_fs_truncate(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, uint64_t size) {
+    if (!vibeos_fs_is_mounted(mnt) || !node) {
+        return -VIBEOS_EINVAL;
+    }
+    if (!mnt->ops->truncate) {
+        return vibeos_fs_writable(mnt) ? -VIBEOS_EOPNOTSUPP : -VIBEOS_EROFS;
+    }
+    return mnt->ops->truncate(mnt->fs, node, size);
+}
+
+int vibeos_fs_create(vibeos_fsmount_t *mnt, const char *path, uint32_t mode,
+                     vibeos_fs_node_t *out) {
+    int r;
+
+    if (!vibeos_fs_is_mounted(mnt) || !path || !out) {
+        return -VIBEOS_EINVAL;
+    }
+    if (!mnt->ops->create) {
+        return vibeos_fs_writable(mnt) ? -VIBEOS_EOPNOTSUPP : -VIBEOS_EROFS;
+    }
+    fs_node_clear(out);
+    r = mnt->ops->create(mnt->fs, path, mode, out);
+    if (r == 0) {
+        fs_node_complete(out);
+    }
+    return r;
+}
+
+int vibeos_fs_rmdir(vibeos_fsmount_t *mnt, const char *path) {
+    if (!vibeos_fs_is_mounted(mnt) || !path) {
+        return -VIBEOS_EINVAL;
+    }
+    return mnt->ops->rmdir ? mnt->ops->rmdir(mnt->fs, path) : fs_missing(mnt);
+}
+
+int vibeos_fs_rename(vibeos_fsmount_t *mnt, const char *from, const char *to, uint32_t flags) {
+    if (!vibeos_fs_is_mounted(mnt) || !from || !to || (flags & ~VIBEOS_RENAME_NOREPLACE)) {
+        return -VIBEOS_EINVAL;
+    }
+    return mnt->ops->rename ? mnt->ops->rename(mnt->fs, from, to, flags) : fs_missing(mnt);
+}
+
+int vibeos_fs_link(vibeos_fsmount_t *mnt, const char *existing, const char *path) {
+    if (!vibeos_fs_is_mounted(mnt) || !existing || !path) {
+        return -VIBEOS_EINVAL;
+    }
+    return mnt->ops->link ? mnt->ops->link(mnt->fs, existing, path) : fs_missing(mnt);
+}
+
+int vibeos_fs_symlink(vibeos_fsmount_t *mnt, const char *target, const char *path) {
+    if (!vibeos_fs_is_mounted(mnt) || !target || !path) {
+        return -VIBEOS_EINVAL;
+    }
+    return mnt->ops->symlink ? mnt->ops->symlink(mnt->fs, target, path) : fs_missing(mnt);
+}
+
+long vibeos_fs_readlink(vibeos_fsmount_t *mnt, const char *path, char *buf, uint32_t cap) {
+    if (!vibeos_fs_is_mounted(mnt) || !path || !buf) {
+        return -VIBEOS_EINVAL;
+    }
+    return mnt->ops->readlink ? mnt->ops->readlink(mnt->fs, path, buf, cap) : -VIBEOS_EINVAL;
+}
+
+int vibeos_fs_setattr(vibeos_fsmount_t *mnt, const char *path, const vibeos_fs_attr_t *attr) {
+    if (!vibeos_fs_is_mounted(mnt) || !path || !attr) {
+        return -VIBEOS_EINVAL;
+    }
+    return mnt->ops->setattr ? mnt->ops->setattr(mnt->fs, path, attr) : fs_missing(mnt);
+}
+
+int vibeos_fs_statfs(vibeos_fsmount_t *mnt, vibeos_fs_statfs_t *out) {
+    uint8_t *p = (uint8_t *)out;
+    uint32_t i;
+
+    if (!vibeos_fs_is_mounted(mnt) || !out) {
+        return -VIBEOS_EINVAL;
+    }
+    for (i = 0; i < sizeof(*out); i++) {
+        p[i] = 0;
+    }
+    out->block_size = 512u;
+    out->name_max = 255u;
+    out->read_only = !vibeos_fs_writable(mnt);
+    return mnt->ops->statfs ? mnt->ops->statfs(mnt->fs, out) : 0;
+}
+
+int vibeos_fs_sync(vibeos_fsmount_t *mnt) {
+    if (!vibeos_fs_is_mounted(mnt)) {
+        return -VIBEOS_EINVAL;
+    }
+    return mnt->ops->sync ? mnt->ops->sync(mnt->fs) : 0;
+}
+
+static uint64_t (*g_now_ns)(void);
+
+void vibeos_fs_set_clock(uint64_t (*now_ns)(void)) {
+    g_now_ns = now_ns;
+}
+
+uint64_t vibeos_fs_now_ns(void) {
+    return g_now_ns ? g_now_ns() : 0u;
 }
 
 long vibeos_fs_read_file(vibeos_fsmount_t *mnt, const char *path,

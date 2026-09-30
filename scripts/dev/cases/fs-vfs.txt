@@ -1,0 +1,49 @@
+# The filesystem interface's wrappers (kernel/fs/vfs.c, docs/abi/ L1), proved by
+# the host tests in tests/kernel/path_tests.c.
+#
+#  1. the node is not cleared before the driver is asked. Expect "a driver that
+#     fills three fields leaves no stack garbage in the rest" - the test fills
+#     the node with 0xAA first, so this does not depend on what the stack held.
+#     The walk's tests fail first: their nodes are uninitialised stack, which is
+#     the situation the clearing exists for.
+#  2. a read-only filesystem answers EPERM like a writable one. Expect "rmdir on
+#     a read-only filesystem is EROFS".
+#  3. a writable filesystem without in-place writes answers EROFS, and the
+#     whole-file fallback is never taken. Expect "a writable filesystem without
+#     in-place writes says so".
+#  4. a type the driver gave is overwritten by is_dir's. Expect "a type the
+#     driver gave is kept" - a symbolic link would be reported as a file.
+#
+# Target source: kernel/fs/vfs.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/fs/vfs.c scripts/dev/cases/fs-vfs.txt
+
+### the node is not cleared before the driver is asked
+--- old
+    fs_node_clear(out);
+    r = mnt->ops->lookup(mnt->fs, path, out);
++++ new
+    r = mnt->ops->lookup(mnt->fs, path, out);
+
+### a read-only filesystem answers EPERM
+--- old
+    return vibeos_fs_writable(mnt) ? -VIBEOS_EPERM : -VIBEOS_EROFS;
++++ new
+    return -VIBEOS_EPERM;
+
+### a writable filesystem without in-place writes answers EROFS
+--- old
+    if (!mnt->ops->write_at) {
+        return vibeos_fs_writable(mnt) ? -VIBEOS_EOPNOTSUPP : -VIBEOS_EROFS;
+    }
++++ new
+    if (!mnt->ops->write_at) {
+        return -VIBEOS_EROFS;
+    }
+
+### a type the driver gave is overwritten by is_dir's
+--- old
+    if ((n->mode & VIBEOS_S_IFMT) == 0u) {
+        n->mode |= n->is_dir ? VIBEOS_S_IFDIR : VIBEOS_S_IFREG;
++++ new
+    if (1) {
+        n->mode = n->is_dir ? VIBEOS_S_IFDIR : VIBEOS_S_IFREG;

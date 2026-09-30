@@ -142,6 +142,7 @@ typedef struct {
 
 /* *at calls (linux/fcntl.h). AT_FDCWD arrives zero-extended: VIBEOS_ARG_INT. */
 #define LINUX_AT_FDCWD       (-100)
+#define LINUX_AT_SYMLINK_NOFOLLOW 0x100
 #define LINUX_AT_REMOVEDIR   0x200
 #define LINUX_AT_EMPTY_PATH  0x1000
 

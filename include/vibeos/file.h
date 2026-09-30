@@ -43,12 +43,7 @@
 #define VIBEOS_O_NONBLOCK 0x800u
 #define VIBEOS_O_CLOEXEC  0x80000u   /* a descriptor's, never kept here */
 
-/* What kind of file fstat says it is (st_mode's type bits, POSIX's numbers). */
-#define VIBEOS_S_IFIFO  0010000u
-#define VIBEOS_S_IFCHR  0020000u
-#define VIBEOS_S_IFDIR  0040000u
-#define VIBEOS_S_IFREG  0100000u
-#define VIBEOS_S_IFSOCK 0140000u
+/* What kind of file fstat says it is: VIBEOS_S_IF* in vibeos/vfs.h. */
 
 /* Where a seek is measured from: Linux's SEEK_SET, SEEK_CUR and SEEK_END, which
  * are POSIX's and C's too. */
@@ -58,12 +53,24 @@
 
 typedef struct vibeos_file vibeos_file_t;
 
-/* What fstat reports, filled by the type. */
+/* What fstat reports, filled by the type. A type that has no owner or times
+ * leaves them zero; vibeos_file_stat_clear is what makes that true. */
 typedef struct vibeos_file_stat {
     uint32_t mode;       /* S_IF* | permissions */
     uint64_t size;
     uint64_t ino;
+    uint32_t nlink;      /* 0 is reported as 1 */
+    uint32_t uid;
+    uint32_t gid;
+    uint64_t atime_ns;
+    uint64_t mtime_ns;
+    uint64_t ctime_ns;
 } vibeos_file_stat_t;
+
+void vibeos_file_stat_clear(vibeos_file_stat_t *st);
+/* What a filesystem node says, as stat reports it: a directory's size is 0,
+ * and a node without an identity is inode 2, the root's. */
+void vibeos_file_stat_from_node(vibeos_file_stat_t *st, const vibeos_fs_node_t *node);
 
 /* One file type. Every entry may be NULL, and the caller answers for a missing
  * one with what Linux answers: EINVAL for read/write, ESPIPE for seek, ENOTTY for

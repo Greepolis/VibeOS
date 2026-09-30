@@ -116,10 +116,11 @@ static void linux_ps_path(vibeos_procstate_t *ps, int which_root, char *out) {
     ks_unlock(&ps->files_lock);
 }
 
-long linux_path_at(uint64_t dirfd, uint64_t upath, char *abs) {
+/* What a walk starts from: the path as the program wrote it, the process's root,
+ * and the directory a relative path is relative to. */
+static long linux_walk_inputs(uint64_t dirfd, uint64_t upath, char *raw, char *root,
+                              char *base) {
     vibeos_procstate_t *ps = linux_cur_ps();
-    char raw[VIBEOS_PATH_MAX + 1u];
-    char base[VIBEOS_PATH_MAX], root[VIBEOS_PATH_MAX];
     uint32_t n = 0;
 
     if (!ps) {
@@ -127,7 +128,7 @@ long linux_path_at(uint64_t dirfd, uint64_t upath, char *abs) {
     }
     /* One byte more than a path may have, so a string that fills it is known to
      * be too long rather than silently cut to fit - the copy truncates. */
-    if (ks_copy_user_string(upath, raw, (int)sizeof(raw)) != 0) {
+    if (ks_copy_user_string(upath, raw, (int)VIBEOS_PATH_MAX + 1) != 0) {
         return -VIBEOS_EFAULT;
     }
     while (raw[n]) {
@@ -157,7 +158,33 @@ long linux_path_at(uint64_t dirfd, uint64_t upath, char *abs) {
         base[i] = 0;
         vibeos_file_put(f);
     }
-    return vibeos_path_normalize(root, base, raw, abs, VIBEOS_PATH_MAX);
+    return 0;
+}
+
+long linux_walk_at(uint64_t dirfd, uint64_t upath, uint32_t flags, vibeos_path_t *w) {
+    char raw[VIBEOS_PATH_MAX + 1u];
+    char base[VIBEOS_PATH_MAX], root[VIBEOS_PATH_MAX];
+    long r = linux_walk_inputs(dirfd, upath, raw, root, base);
+
+    return r != 0 ? r : vibeos_path_walk(root, base, raw, flags, w);
+}
+
+/* Is this path /proc/self/exe? /proc does not exist, so the question is asked
+ * of the path as written, made absolute - "self/exe" from /proc and
+ * "/proc/./self/exe" are the one programs usually ask. */
+static int linux_is_proc_self_exe(uint64_t dirfd, uint64_t upath) {
+    char raw[VIBEOS_PATH_MAX + 1u];
+    char base[VIBEOS_PATH_MAX], root[VIBEOS_PATH_MAX], abs[VIBEOS_PATH_MAX];
+    const char *want = "/proc/self/exe";
+    uint32_t i;
+
+    if (linux_walk_inputs(dirfd, upath, raw, root, base) != 0 ||
+        vibeos_path_normalize(root, base, raw, abs, VIBEOS_PATH_MAX) != 0) {
+        return 0;
+    }
+    for (i = 0; want[i] && abs[i] == want[i]; i++) {
+    }
+    return want[i] == 0 && abs[i] == 0;
 }
 
 /* ---- read and write -------------------------------------------------------------- */
@@ -280,18 +307,18 @@ static long linux_sys_lseek(uint64_t fd, uint64_t off, uint64_t whence) {
  * descriptor. With a write flag the file is created or replaced when its last
  * descriptor goes. open() is openat(AT_FDCWD). */
 static long linux_sys_openat(uint64_t dirfd, uint64_t path_uptr, uint64_t flags) {
-    char abs[VIBEOS_PATH_MAX];
+    vibeos_path_t w;
     vibeos_file_t *f;
     long err;
 
     if (ks_current() < 0 || !ks_id(ks_current())->is_user) {
         return -VIBEOS_EINVAL;
     }
-    err = linux_path_at(dirfd, path_uptr, abs);
+    err = linux_walk_at(dirfd, path_uptr, vibeos_open_walk_flags((uint32_t)flags), &w);
     if (err != 0) {
         return err;
     }
-    f = vibeos_open_path(abs, (uint32_t)flags, &err);
+    f = vibeos_open_path(&w, (uint32_t)flags, &err);
     if (!f) {
         return err;
     }
@@ -535,11 +562,19 @@ static long linux_write_stat(uint64_t ubuf, const vibeos_file_stat_t *st) {
         raw[i] = 0;   /* padding included: it is copied out */
     }
     k.st_ino = st->ino;
-    k.st_nlink = 1;
+    k.st_nlink = st->nlink ? st->nlink : 1u;
     k.st_mode = st->mode;
+    k.st_uid = st->uid;
+    k.st_gid = st->gid;
     k.st_size = (int64_t)st->size;
     k.st_blksize = 512;
     k.st_blocks = (int64_t)vibeos_ceil_div_u64(st->size, 512ull);
+    k.st_atime = st->atime_ns / 1000000000ull;
+    k.st_atime_nsec = st->atime_ns % 1000000000ull;
+    k.st_mtime = st->mtime_ns / 1000000000ull;
+    k.st_mtime_nsec = st->mtime_ns % 1000000000ull;
+    k.st_ctime = st->ctime_ns / 1000000000ull;
+    k.st_ctime_nsec = st->ctime_ns % 1000000000ull;
     if (vibeos_uaccess_copy((void *)(uintptr_t)ubuf, &k, sizeof(k)) != 0) {
         return -VIBEOS_EFAULT;
     }
@@ -556,9 +591,7 @@ static long linux_sys_fstat(uint64_t fd, uint64_t ubuf) {
     if (!f) {
         return -VIBEOS_EBADF;
     }
-    st.mode = 0;
-    st.size = 0;
-    st.ino = 0;
+    vibeos_file_stat_clear(&st);
     r = f->ops->stat ? (long)f->ops->stat(f, &st) : 0;
     vibeos_file_put(f);
     return r < 0 ? r : linux_write_stat(ubuf, &st);
@@ -568,14 +601,14 @@ static long linux_sys_fstat(uint64_t fd, uint64_t ubuf) {
  * empty and AT_EMPTY_PATH is set. */
 static long linux_sys_newfstatat(uint64_t dirfd, uint64_t path_uptr, uint64_t ubuf,
                                  uint64_t flags) {
-    char abs[VIBEOS_PATH_MAX];
+    vibeos_path_t w;
     vibeos_file_stat_t st;
-    vibeos_fs_node_t node;
-    vibeos_fsmount_t *mnt;
-    const char *tail;
     char first = 0;
     long r;
 
+    if (flags & ~(uint64_t)(LINUX_AT_EMPTY_PATH | LINUX_AT_SYMLINK_NOFOLLOW)) {
+        return -VIBEOS_EINVAL;
+    }
     if (vibeos_uaccess_copy(&first, (const void *)(uintptr_t)path_uptr, 1u) != 0) {
         return -VIBEOS_EFAULT;
     }
@@ -585,21 +618,16 @@ static long linux_sys_newfstatat(uint64_t dirfd, uint64_t path_uptr, uint64_t ub
         }
         return linux_sys_fstat(dirfd, ubuf);
     }
-    r = linux_path_at(dirfd, path_uptr, abs);
-    if (r != 0) {
-        return r;
-    }
     /* Directory or file? The answer changes what a program does, not just what
      * it prints: ls given a directory lists it and given a file names it, so
      * reporting the wrong one produces a plausible wrong result rather than an
      * error. The filesystem decides; how it decides is its business. */
-    r = vibeos_path_lookup(abs, &mnt, &tail, &node);
+    r = linux_walk_at(dirfd, path_uptr,
+                      (flags & LINUX_AT_SYMLINK_NOFOLLOW) ? VIBEOS_PATH_NOFOLLOW : 0u, &w);
     if (r != 0) {
         return r;
     }
-    st.mode = node.is_dir ? (VIBEOS_S_IFDIR | 0755u) : (VIBEOS_S_IFREG | 0644u);
-    st.size = node.is_dir ? 0u : node.size;   /* 64-bit: do not narrow (M-018) */
-    st.ino = node.id ? node.id : 2u;
+    vibeos_file_stat_from_node(&st, &w.node);
     return linux_write_stat(ubuf, &st);
 }
 
@@ -639,10 +667,7 @@ static long linux_sys_ioctl(uint64_t fd, uint64_t req, uint64_t arg) {
  * Linux answers unlink on one; AT_REMOVEDIR asks for rmdir, which no filesystem
  * here implements yet, and is refused rather than approximated. */
 static long linux_sys_unlinkat(uint64_t dirfd, uint64_t path_uptr, uint64_t flags) {
-    char abs[VIBEOS_PATH_MAX];
-    vibeos_fs_node_t node;
-    vibeos_fsmount_t *mnt;
-    const char *tail;
+    vibeos_path_t w;
     long r;
 
     if (flags & ~(uint64_t)LINUX_AT_REMOVEDIR) {
@@ -651,18 +676,15 @@ static long linux_sys_unlinkat(uint64_t dirfd, uint64_t path_uptr, uint64_t flag
     if (flags & LINUX_AT_REMOVEDIR) {
         return -VIBEOS_EINVAL;
     }
-    r = linux_path_at(dirfd, path_uptr, abs);
+    /* The name itself goes, so a symbolic link is removed and not followed. */
+    r = linux_walk_at(dirfd, path_uptr, VIBEOS_PATH_NOFOLLOW, &w);
     if (r != 0) {
         return r;
     }
-    r = vibeos_path_lookup(abs, &mnt, &tail, &node);
-    if (r != 0) {
-        return r;
-    }
-    if (node.is_dir) {
+    if (w.node.is_dir) {
         return -VIBEOS_EISDIR;
     }
-    return (vibeos_fs_unlink(mnt, tail) == 0) ? 0 : -VIBEOS_EIO;
+    return (vibeos_fs_unlink(w.mnt, w.tail) == 0) ? 0 : -VIBEOS_EIO;
 }
 
 static long linux_sys_unlink(uint64_t path_uptr) {
@@ -672,24 +694,19 @@ static long linux_sys_unlink(uint64_t path_uptr) {
 /* mkdirat(dirfd, path, mode) and mkdir(path, mode). The mode is not kept: there
  * is one user and no permission bits on these filesystems. */
 static long linux_sys_mkdirat(uint64_t dirfd, uint64_t path_uptr) {
-    char abs[VIBEOS_PATH_MAX];
-    vibeos_fs_node_t node;
-    vibeos_fsmount_t *mnt;
-    const char *tail;
+    vibeos_path_t w;
     long r;
 
-    r = linux_path_at(dirfd, path_uptr, abs);
+    /* Not followed: a dangling symbolic link at the name is EEXIST, as on
+     * Linux, rather than a directory made where it points. */
+    r = linux_walk_at(dirfd, path_uptr, VIBEOS_PATH_CREATE | VIBEOS_PATH_NOFOLLOW, &w);
     if (r != 0) {
         return r;
     }
-    r = vibeos_path_parent(abs, &mnt, &tail);
-    if (r != 0) {
-        return r;
-    }
-    if (vibeos_fs_lookup(mnt, tail, &node) == 0) {
+    if (w.exists) {
         return -VIBEOS_EEXIST;
     }
-    return (vibeos_fs_mkdir(mnt, tail) == 0) ? 0 : -VIBEOS_EIO;
+    return (vibeos_fs_mkdir(w.mnt, w.tail) == 0) ? 0 : -VIBEOS_EIO;
 }
 
 static long linux_sys_mkdir(uint64_t path_uptr) {
@@ -700,22 +717,15 @@ static long linux_sys_mkdir(uint64_t path_uptr) {
  * from. It must be a directory that exists now; it is kept as a path, so a
  * directory removed later leaves a working directory that names nothing, and the
  * next relative lookup says ENOENT - as on Linux. */
-static long linux_set_cwd(const char *abs) {
+static long linux_set_cwd(const vibeos_path_t *w) {
     vibeos_procstate_t *ps = linux_cur_ps();
-    vibeos_fs_node_t node;
-    vibeos_fsmount_t *mnt;
-    const char *tail;
+    const char *abs = w->path;
     uint32_t i;
-    long r;
 
     if (!ps) {
         return -VIBEOS_EINVAL;
     }
-    r = vibeos_path_lookup(abs, &mnt, &tail, &node);
-    if (r != 0) {
-        return r;
-    }
-    if (!node.is_dir) {
+    if (!w->node.is_dir) {
         return -VIBEOS_ENOTDIR;
     }
     ks_lock(&ps->files_lock, __func__);
@@ -728,16 +738,16 @@ static long linux_set_cwd(const char *abs) {
 }
 
 static long linux_sys_chdir(uint64_t path_uptr) {
-    char abs[VIBEOS_PATH_MAX];
-    long r = linux_path_at((uint64_t)(uint32_t)LINUX_AT_FDCWD, path_uptr, abs);
+    vibeos_path_t w;
+    long r = linux_walk_at((uint64_t)(uint32_t)LINUX_AT_FDCWD, path_uptr, 0u, &w);
 
-    return r != 0 ? r : linux_set_cwd(abs);
+    return r != 0 ? r : linux_set_cwd(&w);
 }
 
 static long linux_sys_fchdir(uint64_t fd) {
     vibeos_file_t *f = linux_file_get(fd);
-    char abs[VIBEOS_PATH_MAX];
-    uint32_t i;
+    vibeos_path_t w;
+    long r;
 
     if (!f) {
         return -VIBEOS_EBADF;
@@ -746,12 +756,11 @@ static long linux_sys_fchdir(uint64_t fd) {
         vibeos_file_put(f);
         return -VIBEOS_ENOTDIR;
     }
-    for (i = 0; i + 1u < VIBEOS_PATH_MAX && f->path[i]; i++) {
-        abs[i] = f->path[i];
-    }
-    abs[i] = 0;
+    /* Walked again from its path: the directory may have gone since it was
+     * opened, and a working directory is only set to one that exists. */
+    r = vibeos_path_walk("/", "/", f->path, 0u, &w);
     vibeos_file_put(f);
-    return linux_set_cwd(abs);
+    return r != 0 ? r : linux_set_cwd(&w);
 }
 
 /* getcwd(): the working directory, and ERANGE when it does not fit - which is
@@ -783,28 +792,43 @@ static long linux_sys_getcwd(uint64_t ubuf, uint64_t size) {
     return (long)(n + 1u);
 }
 
-/* readlinkat(): the only symlink that exists here is the one a program uses to
- * find itself, and it is answered from what execve was actually given rather
- * than from a made-up path. Everything else is not a link, which is what
- * EINVAL means. */
+/* readlinkat(): a symbolic link's contents, from a filesystem that has them
+ * (L1), and the one link a program uses to find itself, answered from what
+ * execve was actually given rather than from a made-up path - there is no /proc
+ * to hold it. Anything else is not a link, which is what EINVAL means. */
 static long linux_sys_readlinkat(uint64_t dirfd, uint64_t path_uptr, uint64_t ubuf,
                                  uint64_t bufsz) {
-    char path[VIBEOS_PATH_MAX];
+    char raw[VIBEOS_PATH_MAX];
+    vibeos_path_t w;
     const char *self;
     uint64_t n = 0;
     long r;
 
-    /* Made absolute first, so "self/exe" from /proc and "/proc/./self/exe" are
-     * the same question as the one programs usually ask. */
-    r = linux_path_at(dirfd, path_uptr, path);
-    if (r != 0) {
-        return r;
-    }
-    if (!(path[0] == '/' && path[1] == 'p' && path[2] == 'r' && path[3] == 'o' &&
-          path[4] == 'c' && path[5] == '/' && path[6] == 's' && path[7] == 'e' &&
-          path[8] == 'l' && path[9] == 'f' && path[10] == '/' && path[11] == 'e' &&
-          path[12] == 'x' && path[13] == 'e' && path[14] == 0)) {
-        return -VIBEOS_EINVAL;
+    /* /proc does not exist, so its one link is recognised from the path as
+     * written, before any walk would say ENOENT for it. */
+    if (!linux_is_proc_self_exe(dirfd, path_uptr)) {
+        long t;
+        /* Walked without following the last component: the link is the
+         * question. */
+        r = linux_walk_at(dirfd, path_uptr, VIBEOS_PATH_NOFOLLOW, &w);
+        if (r != 0) {
+            return r;
+        }
+        if ((w.node.mode & VIBEOS_S_IFMT) != VIBEOS_S_IFLNK) {
+            return -VIBEOS_EINVAL;
+        }
+        t = vibeos_fs_readlink(w.mnt, *w.tail ? w.tail : "/", raw, sizeof(raw));
+        if (t < 0) {
+            return t;
+        }
+        n = (uint64_t)t < bufsz ? (uint64_t)t : bufsz;
+        if (!linux_user_ok(ubuf, n, 1)) {
+            return -VIBEOS_EFAULT;
+        }
+        if (vibeos_uaccess_copy((void *)(uintptr_t)ubuf, raw, n) != 0) {
+            return -VIBEOS_EFAULT;
+        }
+        return (long)n;   /* not terminated, as Linux does not terminate it */
     }
     if (ks_current() < 0) {
         return -VIBEOS_EINVAL;

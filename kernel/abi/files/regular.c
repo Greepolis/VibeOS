@@ -138,11 +138,23 @@ static long regular_seek(vibeos_file_t *f, int64_t off, int whence) {
 /* The mode matters more than it looks: a libc decides how to buffer a stream from
  * it, and a program decides whether to recurse from it. Reporting a regular file
  * for a directory does not fail here - it fails later, inside the program, doing
- * something that made sense given what it was told. */
+ * something that made sense given what it was told.
+ *
+ * Asked of the filesystem again (L1): owner, mode and times change under an
+ * open file - chmod, a write through another description - and the node the
+ * description was opened on is a snapshot. The description's own size wins,
+ * because its unwritten bytes are part of the file this descriptor sees. */
 static int regular_stat(vibeos_file_t *f, vibeos_file_stat_t *out) {
-    out->mode = f->isdir ? (VIBEOS_S_IFDIR | 0755u) : (VIBEOS_S_IFREG | 0644u);
+    vibeos_fs_node_t node;
+
+    if (vibeos_fs_lookup(f->mnt, tail_of(f), &node) == 0) {
+        vibeos_file_stat_from_node(out, &node);
+    } else {
+        vibeos_file_stat_clear(out);
+        out->mode = f->isdir ? (VIBEOS_S_IFDIR | 0755u) : (VIBEOS_S_IFREG | 0644u);
+        out->ino = f->node ? f->node : 2u;
+    }
     out->size = f->isdir ? 0u : f->size;
-    out->ino = f->node ? f->node : 2u;
     return 0;
 }
 
@@ -222,36 +234,48 @@ const vibeos_file_ops_t vibeos_fops_dir = {
     "dir", 0, 0, regular_seek, regular_stat, 0, dir_getdents, 0
 };
 
-vibeos_file_t *vibeos_open_path(const char *abs, uint32_t flags, long *err) {
+/* O_WRONLY or O_CREAT, as it always was. O_RDWR on its own opens for reading:
+ * a write-back replaces the whole file with the bytes written, so writing into
+ * the middle of an existing file would truncate it to what was written. That is
+ * a gap of the filesystem layer (L1), kept visible as EBADF. */
+static int open_writing(uint32_t flags) {
+    return (flags & VIBEOS_O_ACCMODE) == VIBEOS_O_WRONLY || (flags & VIBEOS_O_CREAT);
+}
+
+/* A file opened to be written is created or replaced when it is released, from
+ * the bytes written - the FAT writer stores whole files - so only its directory
+ * has to exist now. Anything else must exist, and every directory on the way to
+ * it must be one (ENOTDIR otherwise, as Linux says). */
+uint32_t vibeos_open_walk_flags(uint32_t flags) {
+    return open_writing(flags) ? VIBEOS_PATH_CREATE : 0u;
+}
+
+vibeos_file_t *vibeos_open_path(const vibeos_path_t *w, uint32_t flags, long *err) {
+    const char *abs = w->path;
+    const char *tail = w->tail;
+    vibeos_fsmount_t *mnt = w->mnt;
     vibeos_fs_node_t node;
-    vibeos_fsmount_t *mnt = 0;
-    const char *tail = 0;
-    /* O_WRONLY or O_CREAT, as it always was. O_RDWR on its own opens for reading:
-     * a write-back replaces the whole file with the bytes written, so writing
-     * into the middle of an existing file would truncate it to what was written.
-     * That is a gap of the filesystem layer (L1), kept visible as EBADF. */
-    int writing = (flags & VIBEOS_O_ACCMODE) == VIBEOS_O_WRONLY || (flags & VIBEOS_O_CREAT);
+    int writing = open_writing(flags);
     vibeos_file_t *f;
     uint32_t k;
-    int r;
 
-    node.id = 0;
-    node.size = 0;
-    node.is_dir = 0;
-    /* A file opened to be written is created or replaced when it is released,
-     * from the bytes written - the FAT writer stores whole files - so only its
-     * directory has to exist now. Anything else must exist, and every directory
-     * on the way to it must be one (ENOTDIR otherwise, as Linux says). */
-    if (writing) {
-        r = vibeos_path_parent(abs, &mnt, &tail);
-        if (r == 0 && vibeos_fs_lookup(mnt, tail, &node) == 0 && node.is_dir) {
-            r = -VIBEOS_EISDIR;
-        }
+    if (w->exists) {
+        node = w->node;
     } else {
-        r = vibeos_path_lookup(abs, &mnt, &tail, &node);
+        node.id = 0;
+        node.size = 0;
+        node.is_dir = 0;
     }
-    if (r != 0) {
-        *err = r;
+    if (writing && w->exists && node.is_dir) {
+        *err = -VIBEOS_EISDIR;
+        return 0;
+    }
+    if (writing && !w->exists && w->trailing_slash) {
+        *err = -VIBEOS_EISDIR;   /* "name/" cannot become a file */
+        return 0;
+    }
+    if (!writing && !w->exists) {
+        *err = -VIBEOS_ENOENT;
         return 0;
     }
     flags &= ~VIBEOS_O_ACCMODE;

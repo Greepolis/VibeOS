@@ -644,12 +644,19 @@ static long linux_sys_execve(ks_regs_t *frame, uint64_t path_uptr,
      * argv[0] stays what the caller wrote: BusyBox decides which applet it is
      * from that name, not from where the file was. */
     {
-        long pr = linux_path_at((uint64_t)(uint32_t)LINUX_AT_FDCWD, path_uptr, path);
+        vibeos_path_t w;
+        long pr = linux_walk_at((uint64_t)(uint32_t)LINUX_AT_FDCWD, path_uptr, 0u, &w);
         if (pr != 0) {
             (void)ks_exec_refuse(pr == -VIBEOS_ENOENT ? VIBEOS_EXEC_NOT_FOUND
                                                       : VIBEOS_EXEC_BAD_ARGS, name, "path");
             return pr;
         }
+        /* The resolved path: a program reached through a symbolic link is read
+         * from where the link points. */
+        for (k = 0; k + 1u < VIBEOS_PATH_MAX && w.path[k]; k++) {
+            path[k] = w.path[k];
+        }
+        path[k] = 0;
     }
     fallback_argv[0] = name;
     fallback_argv[1] = 0;

@@ -36,7 +36,8 @@ ABI = os.path.join(ROOT, "kernel", "abi")
 CONSTANT_HEADERS = {
     "include/vibeos/linux_layout.h": r"LINUX_\w+",
     "include/vibeos/abi_linux.h": r"VIBEOS_E[A-Z0-9]+|VIBEOS_SIG[A-Z]+|VIBEOS_SA_\w+|SIG_DFL_ADDR|SIG_IGN_ADDR",
-    "include/vibeos/file.h": r"VIBEOS_O_\w+|VIBEOS_S_IF\w+|VIBEOS_SEEK_\w+",
+    "include/vibeos/file.h": r"VIBEOS_O_\w+|VIBEOS_SEEK_\w+",
+    "include/vibeos/vfs.h": r"VIBEOS_S_IF\w+",
     "include/vibeos/fdtable.h": r"VIBEOS_FD_CLOEXEC",
     "include/vibeos/fileops.h": r"VIBEOS_IOCTL_\w+",
 }

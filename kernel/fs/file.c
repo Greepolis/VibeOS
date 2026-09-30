@@ -116,6 +116,27 @@ void vibeos_file_put(vibeos_file_t *f) {
     unlock();
 }
 
+void vibeos_file_stat_clear(vibeos_file_stat_t *st) {
+    uint8_t *p = (uint8_t *)st;
+    uint32_t i;
+    for (i = 0; i < sizeof(*st); i++) {
+        p[i] = 0;
+    }
+}
+
+void vibeos_file_stat_from_node(vibeos_file_stat_t *st, const vibeos_fs_node_t *node) {
+    vibeos_file_stat_clear(st);
+    st->mode = node->mode;
+    st->size = node->is_dir ? 0u : node->size;   /* 64-bit: do not narrow (M-018) */
+    st->ino = node->id ? node->id : 2u;
+    st->nlink = node->nlink;
+    st->uid = node->uid;
+    st->gid = node->gid;
+    st->atime_ns = node->atime_ns;
+    st->mtime_ns = node->mtime_ns;
+    st->ctime_ns = node->ctime_ns;
+}
+
 uint32_t vibeos_file_in_use(void) {
     uint32_t i, n = 0;
 
