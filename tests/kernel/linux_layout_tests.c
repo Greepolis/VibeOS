@@ -1,0 +1,321 @@
+/* Linux's structures and numbers against Linux's own headers (docs/abi/ A5,
+ * invariant 8).
+ *
+ * The kernel is freestanding and declares Linux's layouts itself
+ * (vibeos/linux_layout.h); the errno values, signal numbers and open flags are
+ * the kernel's own, numbered as Linux's (abi_linux.h, file.h). A copy of an ABI
+ * is exactly as right as whoever typed it, and a host test written by the same
+ * hand can only agree with it - CLAUDE.md's rule about fixtures this project
+ * writes. So this file compiles against the host's uapi headers, the one
+ * artefact neither side controls, and compares: every field's offset and size,
+ * every structure's size, every constant's value.
+ *
+ * check-linux-layout.py fails the build when the header declares a field or a
+ * constant that is not named here, so the comparison cannot fall behind the
+ * declarations.
+ *
+ * Only on a Linux host: elsewhere (the Windows job) there are no uapi headers,
+ * and the test says it was skipped. On Linux the includes are unconditional, so
+ * a runner without them fails to build rather than passing having compared
+ * nothing. */
+
+#include <stdio.h>
+#include <stddef.h>
+
+int test_linux_layout(void);
+
+#if !defined(__linux__)
+
+int test_linux_layout(void) {
+    printf("linux_layout: skipped - no Linux uapi headers on this host\n");
+    return 0;
+}
+
+#else
+
+#include <asm/stat.h>
+#include <asm/signal.h>
+#include <asm/ioctls.h>
+#include <asm/mman.h>
+#include <asm/prctl.h>
+#include <linux/time_types.h>
+#include <linux/utsname.h>
+#include <linux/sysinfo.h>
+#include <linux/in.h>
+#include <linux/uio.h>
+#include <linux/resource.h>
+#include <linux/errno.h>
+#include <linux/fcntl.h>
+#include <linux/fs.h>
+#include <linux/futex.h>
+#include <linux/prctl.h>
+#include <linux/sched.h>
+#include <linux/wait.h>
+#include <linux/close_range.h>
+
+#include "vibeos/linux_layout.h"
+#include "vibeos/abi_linux.h"
+#include "vibeos/file.h"
+#include "vibeos/fdtable.h"
+#include "vibeos/fileops.h"
+#include "linux_layout_libc.h"
+
+static int g_fail;
+static int g_checked;
+
+static void expect(int ok, const char *what) {
+    g_checked++;
+    if (!ok) {
+        printf("FAIL:linux_layout %s\n", what);
+        g_fail = 1;
+    }
+}
+
+#define SIZE(ours, theirs) \
+    expect(sizeof(ours) == sizeof(theirs), "sizeof " #ours " is sizeof " #theirs)
+
+/* A field of ours against Linux's, under Linux's name - or, for padding whose
+ * Linux name is reserved to the implementation, under that name. */
+#define FIELD2(ours, theirs, f, tf) do { \
+        expect(offsetof(ours, f) == offsetof(theirs, tf), \
+               #ours "." #f " is at " #theirs "." #tf "'s offset"); \
+        expect(sizeof(((ours *)0)->f) == sizeof(((theirs *)0)->tf), \
+               #ours "." #f " is " #theirs "." #tf "'s size"); \
+    } while (0)
+#define FIELD(ours, theirs, f) FIELD2(ours, theirs, f, f)
+
+#define CONST(ours, theirs) \
+    expect((long long)(ours) == (long long)(theirs), #ours " is " #theirs)
+
+/* The C library's answer, for what uapi does not export. */
+static void libc_field(size_t off, size_t size, int has_size, const char *field,
+                       const char *what) {
+    size_t loff = 0, lsize = 0;
+    int ok = linux_libc_dirent64(field, &loff, &lsize) == 0 && off == loff &&
+             (!has_size || size == lsize);
+    expect(ok, what);
+}
+#define LIBC_FIELD(ours, f) \
+    libc_field(offsetof(ours, f), sizeof(((ours *)0)->f), 1, #f, #ours "." #f " is struct dirent64's")
+#define LIBC_OFFSET(ours, f) \
+    libc_field(offsetof(ours, f), 0, 0, #f, #ours "." #f " starts where struct dirent64's does")
+
+static void libc_const(long long ours, const char *theirs, const char *what) {
+    long long v = 0;
+    expect(linux_libc_const(theirs, &v) == 0 && v == ours, what);
+}
+#define LIBC_CONST(ours, theirs) libc_const((long long)(ours), theirs, #ours " is the C library's " theirs)
+
+int test_linux_layout(void) {
+    g_fail = 0;
+    g_checked = 0;
+
+    /* ---- structures ---- */
+    SIZE(linux_stat_t, struct stat);
+    FIELD(linux_stat_t, struct stat, st_dev);
+    FIELD(linux_stat_t, struct stat, st_ino);
+    FIELD(linux_stat_t, struct stat, st_nlink);
+    FIELD(linux_stat_t, struct stat, st_mode);
+    FIELD(linux_stat_t, struct stat, st_uid);
+    FIELD(linux_stat_t, struct stat, st_gid);
+    FIELD2(linux_stat_t, struct stat, pad0, __pad0);
+    FIELD(linux_stat_t, struct stat, st_rdev);
+    FIELD(linux_stat_t, struct stat, st_size);
+    FIELD(linux_stat_t, struct stat, st_blksize);
+    FIELD(linux_stat_t, struct stat, st_blocks);
+    FIELD(linux_stat_t, struct stat, st_atime);
+    FIELD(linux_stat_t, struct stat, st_atime_nsec);
+    FIELD(linux_stat_t, struct stat, st_mtime);
+    FIELD(linux_stat_t, struct stat, st_mtime_nsec);
+    FIELD(linux_stat_t, struct stat, st_ctime);
+    FIELD(linux_stat_t, struct stat, st_ctime_nsec);
+    FIELD2(linux_stat_t, struct stat, unused, __unused);
+
+    SIZE(linux_timespec_t, struct __kernel_timespec);
+    FIELD(linux_timespec_t, struct __kernel_timespec, tv_sec);
+    FIELD(linux_timespec_t, struct __kernel_timespec, tv_nsec);
+
+    SIZE(linux_utsname_t, struct new_utsname);
+    FIELD(linux_utsname_t, struct new_utsname, sysname);
+    FIELD(linux_utsname_t, struct new_utsname, nodename);
+    FIELD(linux_utsname_t, struct new_utsname, release);
+    FIELD(linux_utsname_t, struct new_utsname, version);
+    FIELD(linux_utsname_t, struct new_utsname, machine);
+    FIELD(linux_utsname_t, struct new_utsname, domainname);
+
+    SIZE(linux_sysinfo_t, struct sysinfo);
+    FIELD(linux_sysinfo_t, struct sysinfo, uptime);
+    FIELD(linux_sysinfo_t, struct sysinfo, loads);
+    FIELD(linux_sysinfo_t, struct sysinfo, totalram);
+    FIELD(linux_sysinfo_t, struct sysinfo, freeram);
+    FIELD(linux_sysinfo_t, struct sysinfo, sharedram);
+    FIELD(linux_sysinfo_t, struct sysinfo, bufferram);
+    FIELD(linux_sysinfo_t, struct sysinfo, totalswap);
+    FIELD(linux_sysinfo_t, struct sysinfo, freeswap);
+    FIELD(linux_sysinfo_t, struct sysinfo, procs);
+    FIELD(linux_sysinfo_t, struct sysinfo, pad);
+    FIELD(linux_sysinfo_t, struct sysinfo, totalhigh);
+    FIELD(linux_sysinfo_t, struct sysinfo, freehigh);
+    FIELD(linux_sysinfo_t, struct sysinfo, mem_unit);
+
+    SIZE(linux_sockaddr_in_t, struct sockaddr_in);
+    FIELD(linux_sockaddr_in_t, struct sockaddr_in, sin_family);
+    FIELD(linux_sockaddr_in_t, struct sockaddr_in, sin_port);
+    FIELD(linux_sockaddr_in_t, struct sockaddr_in, sin_addr);
+    FIELD(linux_sockaddr_in_t, struct sockaddr_in, sin_zero);
+
+    SIZE(linux_iovec_t, struct iovec);
+    FIELD(linux_iovec_t, struct iovec, iov_base);
+    FIELD(linux_iovec_t, struct iovec, iov_len);
+
+    SIZE(linux_rlimit64_t, struct rlimit64);
+    FIELD(linux_rlimit64_t, struct rlimit64, rlim_cur);
+    FIELD(linux_rlimit64_t, struct rlimit64, rlim_max);
+
+    SIZE(linux_sigaction_t, struct sigaction);
+    FIELD(linux_sigaction_t, struct sigaction, sa_handler);
+    FIELD(linux_sigaction_t, struct sigaction, sa_flags);
+    FIELD(linux_sigaction_t, struct sigaction, sa_restorer);
+    FIELD(linux_sigaction_t, struct sigaction, sa_mask);
+
+    LIBC_FIELD(linux_dirent64_t, d_ino);
+    LIBC_FIELD(linux_dirent64_t, d_off);
+    LIBC_FIELD(linux_dirent64_t, d_reclen);
+    LIBC_FIELD(linux_dirent64_t, d_type);
+    LIBC_OFFSET(linux_dirent64_t, d_name);
+
+    /* ---- errno: every value the kernel returns ---- */
+    CONST(VIBEOS_EPERM, EPERM);
+    CONST(VIBEOS_ENOENT, ENOENT);
+    CONST(VIBEOS_ESRCH, ESRCH);
+    CONST(VIBEOS_EINTR, EINTR);
+    CONST(VIBEOS_EIO, EIO);
+    CONST(VIBEOS_E2BIG, E2BIG);
+    CONST(VIBEOS_EBADF, EBADF);
+    CONST(VIBEOS_ECHILD, ECHILD);
+    CONST(VIBEOS_EAGAIN, EAGAIN);
+    CONST(VIBEOS_ENOMEM, ENOMEM);
+    CONST(VIBEOS_EFAULT, EFAULT);
+    CONST(VIBEOS_EEXIST, EEXIST);
+    CONST(VIBEOS_ENOTDIR, ENOTDIR);
+    CONST(VIBEOS_EISDIR, EISDIR);
+    CONST(VIBEOS_EINVAL, EINVAL);
+    CONST(VIBEOS_ENFILE, ENFILE);
+    CONST(VIBEOS_EMFILE, EMFILE);
+    CONST(VIBEOS_ENOTTY, ENOTTY);
+    CONST(VIBEOS_ESPIPE, ESPIPE);
+    CONST(VIBEOS_EPIPE, EPIPE);
+    CONST(VIBEOS_ERANGE, ERANGE);
+    CONST(VIBEOS_ENAMETOOLONG, ENAMETOOLONG);
+    CONST(VIBEOS_ENOLCK, ENOLCK);
+    CONST(VIBEOS_ENOSYS, ENOSYS);
+    CONST(VIBEOS_ENOTSOCK, ENOTSOCK);
+
+    /* ---- signals and their dispositions ---- */
+    CONST(VIBEOS_SIGHUP, SIGHUP);
+    CONST(VIBEOS_SIGINT, SIGINT);
+    CONST(VIBEOS_SIGQUIT, SIGQUIT);
+    CONST(VIBEOS_SIGILL, SIGILL);
+    CONST(VIBEOS_SIGABRT, SIGABRT);
+    CONST(VIBEOS_SIGFPE, SIGFPE);
+    CONST(VIBEOS_SIGKILL, SIGKILL);
+    CONST(VIBEOS_SIGSEGV, SIGSEGV);
+    CONST(VIBEOS_SIGPIPE, SIGPIPE);
+    CONST(VIBEOS_SIGALRM, SIGALRM);
+    CONST(VIBEOS_SIGTERM, SIGTERM);
+    CONST(VIBEOS_SIGCHLD, SIGCHLD);
+    CONST(VIBEOS_SIGCONT, SIGCONT);
+    CONST(VIBEOS_SIGSTOP, SIGSTOP);
+    CONST(VIBEOS_SIGWINCH, SIGWINCH);
+    CONST(SIG_DFL_ADDR, (unsigned long)SIG_DFL);
+    CONST(SIG_IGN_ADDR, (unsigned long)SIG_IGN);
+    CONST(VIBEOS_SA_RESTORER, SA_RESTORER);
+    CONST(LINUX_SIG_BLOCK, SIG_BLOCK);
+    CONST(LINUX_SIG_UNBLOCK, SIG_UNBLOCK);
+    CONST(LINUX_SIG_SETMASK, SIG_SETMASK);
+
+    /* ---- files: the file layer's flags are Linux's by decision ---- */
+    CONST(VIBEOS_O_ACCMODE, O_ACCMODE);
+    CONST(VIBEOS_O_RDONLY, O_RDONLY);
+    CONST(VIBEOS_O_WRONLY, O_WRONLY);
+    CONST(VIBEOS_O_RDWR, O_RDWR);
+    CONST(VIBEOS_O_CREAT, O_CREAT);
+    CONST(VIBEOS_O_TRUNC, O_TRUNC);
+    CONST(VIBEOS_O_APPEND, O_APPEND);
+    CONST(VIBEOS_O_NONBLOCK, O_NONBLOCK);
+    CONST(VIBEOS_O_CLOEXEC, O_CLOEXEC);
+    /* linux/stat.h withholds these when the C library is glibc. */
+    LIBC_CONST(VIBEOS_S_IFIFO, "S_IFIFO");
+    LIBC_CONST(VIBEOS_S_IFCHR, "S_IFCHR");
+    LIBC_CONST(VIBEOS_S_IFDIR, "S_IFDIR");
+    LIBC_CONST(VIBEOS_S_IFREG, "S_IFREG");
+    LIBC_CONST(VIBEOS_S_IFSOCK, "S_IFSOCK");
+    CONST(VIBEOS_SEEK_SET, SEEK_SET);
+    CONST(VIBEOS_SEEK_CUR, SEEK_CUR);
+    CONST(VIBEOS_SEEK_END, SEEK_END);
+    CONST(VIBEOS_FD_CLOEXEC, FD_CLOEXEC);
+    CONST(VIBEOS_IOCTL_GET_PGRP, TIOCGPGRP);
+    CONST(VIBEOS_IOCTL_SET_PGRP, TIOCSPGRP);
+    CONST(LINUX_AT_FDCWD, AT_FDCWD);
+    CONST(LINUX_AT_REMOVEDIR, AT_REMOVEDIR);
+    CONST(LINUX_AT_EMPTY_PATH, AT_EMPTY_PATH);
+    CONST(LINUX_F_DUPFD, F_DUPFD);
+    CONST(LINUX_F_GETFD, F_GETFD);
+    CONST(LINUX_F_SETFD, F_SETFD);
+    CONST(LINUX_F_GETFL, F_GETFL);
+    CONST(LINUX_F_SETFL, F_SETFL);
+    CONST(LINUX_F_GETLK, F_GETLK);
+    CONST(LINUX_F_SETLK, F_SETLK);
+    CONST(LINUX_F_SETLKW, F_SETLKW);
+    CONST(LINUX_F_DUPFD_CLOEXEC, F_DUPFD_CLOEXEC);
+    CONST(LINUX_CLOSE_RANGE_UNSHARE, CLOSE_RANGE_UNSHARE);
+    CONST(LINUX_CLOSE_RANGE_CLOEXEC, CLOSE_RANGE_CLOEXEC);
+    LIBC_CONST(LINUX_DT_DIR, "DT_DIR");
+    LIBC_CONST(LINUX_DT_REG, "DT_REG");
+
+    /* ---- processes, memory, threads ---- */
+    CONST(LINUX_CLONE_VM, CLONE_VM);
+    CONST(LINUX_CLONE_FS, CLONE_FS);
+    CONST(LINUX_CLONE_FILES, CLONE_FILES);
+    CONST(LINUX_CLONE_SIGHAND, CLONE_SIGHAND);
+    CONST(LINUX_CLONE_THREAD, CLONE_THREAD);
+    CONST(LINUX_CLONE_SYSVSEM, CLONE_SYSVSEM);
+    CONST(LINUX_CLONE_SETTLS, CLONE_SETTLS);
+    CONST(LINUX_CLONE_PARENT_SETTID, CLONE_PARENT_SETTID);
+    CONST(LINUX_CLONE_CHILD_CLEARTID, CLONE_CHILD_CLEARTID);
+    CONST(LINUX_CLONE_CHILD_SETTID, CLONE_CHILD_SETTID);
+    CONST(LINUX_WNOHANG, WNOHANG);
+    CONST(LINUX_WUNTRACED, WUNTRACED);
+    CONST(LINUX_WCONTINUED, WCONTINUED);
+    CONST(LINUX_WNOTHREAD, __WNOTHREAD);
+    CONST(LINUX_WALL, __WALL);
+    CONST(LINUX_WCLONE, __WCLONE);
+    CONST(LINUX_RLIMIT_STACK, RLIMIT_STACK);
+    CONST(LINUX_RLIMIT_NOFILE, RLIMIT_NOFILE);
+    CONST(LINUX_RLIM64_INFINITY, RLIM64_INFINITY);
+    CONST(LINUX_PR_SET_NAME, PR_SET_NAME);
+    CONST(LINUX_PR_GET_NAME, PR_GET_NAME);
+    CONST(LINUX_ARCH_SET_GS, ARCH_SET_GS);
+    CONST(LINUX_ARCH_SET_FS, ARCH_SET_FS);
+    CONST(LINUX_ARCH_GET_FS, ARCH_GET_FS);
+    CONST(LINUX_ARCH_GET_GS, ARCH_GET_GS);
+    CONST(LINUX_PROT_NONE, PROT_NONE);
+    CONST(LINUX_PROT_WRITE, PROT_WRITE);
+    CONST(LINUX_PROT_EXEC, PROT_EXEC);
+    CONST(LINUX_MAP_FIXED, MAP_FIXED);
+    CONST(LINUX_MAP_ANONYMOUS, MAP_ANONYMOUS);
+    CONST(LINUX_FUTEX_WAIT, FUTEX_WAIT);
+    CONST(LINUX_FUTEX_WAKE, FUTEX_WAKE);
+
+    /* ---- sockets ---- */
+    LIBC_CONST(LINUX_AF_INET, "AF_INET");
+    LIBC_CONST(LINUX_SOCK_STREAM, "SOCK_STREAM");
+    LIBC_CONST(LINUX_SOCK_DGRAM, "SOCK_DGRAM");
+
+    if (!g_fail) {
+        printf("  linux_layout: %d comparisons against the host's Linux headers\n", g_checked);
+    }
+    return g_fail ? -1 : 0;
+}
+
+#endif

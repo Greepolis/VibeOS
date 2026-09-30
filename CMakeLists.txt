@@ -199,6 +199,9 @@ if(VIBEOS_BUILD_TESTS)
         # The Linux personality, on the services' host implementation (A2).
         tests/kernel/linux_abi_tests.c
         tests/kernel/ksvc_fake.c
+        # Its layouts and numbers against the host's Linux headers (A5).
+        tests/kernel/linux_layout_tests.c
+        tests/kernel/linux_layout_libc.c
         ${VIBEOS_LINUX_ABI_SOURCES}
     )
     target_link_libraries(vibeos_kernel_tests PRIVATE vibeos_kernel_core vibeos_user_core vibeos_tls)

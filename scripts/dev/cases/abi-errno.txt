@@ -1,0 +1,23 @@
+# The kernel's errno values are Linux's (vibeos/abi_linux.h), compared with
+# linux/errno.h by tests/kernel/linux_layout_tests.c (docs/abi/ A5).
+#
+#  1. ENOTSOCK given EOPNOTSUPP's number, 95 - the neighbouring socket error, and
+#     a plausible slip. Expect "VIBEOS_ENOTSOCK is ENOTSOCK".
+#  2. EAGAIN given 35, which is what it is on the BSDs and macOS - the slip a
+#     number copied from the wrong manual page makes. On Linux 35 is EDEADLK.
+#     Expect "VIBEOS_EAGAIN is EAGAIN".
+#
+# Target source: include/vibeos/abi_linux.h
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py include/vibeos/abi_linux.h scripts/dev/cases/abi-errno.txt
+
+### ENOTSOCK given EOPNOTSUPP's number
+--- old
+\#define VIBEOS_ENOTSOCK 88
++++ new
+\#define VIBEOS_ENOTSOCK 95
+
+### EAGAIN given another number
+--- old
+\#define VIBEOS_EAGAIN 11
++++ new
+\#define VIBEOS_EAGAIN 35

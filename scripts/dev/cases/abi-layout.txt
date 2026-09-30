@@ -1,0 +1,56 @@
+# Linux's layouts as the kernel declares them (vibeos/linux_layout.h, docs/abi/
+# A5), against the host's uapi headers in tests/kernel/linux_layout_tests.c.
+#
+# Each case moves or resizes one field, or changes one number, and must be named
+# by the comparison that covers it - not by a crash somewhere later, and not by a
+# build failure, which would prove only that something referenced the field.
+#
+#  1. st_uid and st_gid swapped. Both are 32 bits, so every size stays right and
+#     only an offset can tell. Expect "linux_stat_t.st_uid is at struct
+#     stat.st_uid's offset".
+#  2. sin_port widened to 32 bits: the address moves with it. Expect
+#     "linux_sockaddr_in_t.sin_port is struct sockaddr_in.sin_port's size".
+#  3. d_type written before d_reclen. uapi has no dirent64, so this is the case
+#     for the C library half. Expect "linux_dirent64_t.d_reclen is struct
+#     dirent64's".
+#  4. mem_unit widened to 64 bits. The structure stays 112 bytes - alignment
+#     pads it there either way - so a test that compared sizes only would pass.
+#     Expect "linux_sysinfo_t.mem_unit is struct sysinfo.mem_unit's size".
+#  5. AT_FDCWD off by one. Expect "LINUX_AT_FDCWD is AT_FDCWD".
+#
+# Target source: include/vibeos/linux_layout.h
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py include/vibeos/linux_layout.h scripts/dev/cases/abi-layout.txt
+
+### st_uid and st_gid swapped
+--- old
+    uint32_t st_uid;
+    uint32_t st_gid;
++++ new
+    uint32_t st_gid;
+    uint32_t st_uid;
+
+### sin_port widened to 32 bits
+--- old
+    uint16_t sin_port;
++++ new
+    uint32_t sin_port;
+
+### d_type written before d_reclen
+--- old
+    uint16_t d_reclen;
+    uint8_t d_type;
++++ new
+    uint8_t d_type;
+    uint16_t d_reclen;
+
+### mem_unit widened to 64 bits
+--- old
+    uint32_t mem_unit;
++++ new
+    uint64_t mem_unit;
+
+### AT_FDCWD off by one
+--- old
+\#define LINUX_AT_FDCWD       (-100)
++++ new
+\#define LINUX_AT_FDCWD       (-101)

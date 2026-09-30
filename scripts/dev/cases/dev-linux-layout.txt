@@ -1,0 +1,28 @@
+# check-linux-layout.py: the layout test cannot fall behind the declarations
+# (docs/abi/ A5). Each case removes one comparison from the test, which leaves
+# the test green - it compares everything it names - and must turn the check red.
+#
+#  1. st_blocks never compared. Expect "linux_stat_t.st_blocks is declared and
+#     never compared with Linux's".
+#  2. sizeof(linux_iovec_t) never compared. Expect "sizeof(linux_iovec_t) is
+#     never compared with Linux's".
+#  3. ENOLCK never compared. Expect "include/vibeos/abi_linux.h defines
+#     VIBEOS_ENOLCK and the layout test never compares it".
+#
+# Target source: tests/kernel/linux_layout_tests.c
+# Run: SABOTAGE_VERIFY="python3 scripts/dev/check-linux-layout.py" python3 scripts/dev/sabotage.py tests/kernel/linux_layout_tests.c scripts/dev/cases/dev-linux-layout.txt
+
+### st_blocks never compared
+--- old
+    FIELD(linux_stat_t, struct stat, st_blocks);
++++ new
+
+### sizeof(linux_iovec_t) never compared
+--- old
+    SIZE(linux_iovec_t, struct iovec);
++++ new
+
+### ENOLCK never compared
+--- old
+    CONST(VIBEOS_ENOLCK, ENOLCK);
++++ new

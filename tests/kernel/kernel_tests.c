@@ -9301,6 +9301,7 @@ int test_fdtable(void);
 int test_path(void);        /* path_tests.c: paths and the mount-table walk (A4) */
 int test_pipe(void);
 int test_linux_handlers(void);   /* linux_abi_tests.c: the handlers on ksvc_fake.c (A2) */
+int test_linux_layout(void);     /* linux_layout_tests.c: layouts and numbers vs Linux's headers (A5) */
 int test_linux_gaps(void);
 int test_klog(void);
 int test_crash(void);
@@ -9819,6 +9820,7 @@ int main(void) {
     RUN_TEST(test_abi_vocabulary_and_linux);
     RUN_TEST(test_linux_registry);
     RUN_TEST(test_linux_handlers);
+    RUN_TEST(test_linux_layout);
     RUN_TEST(test_linux_gaps);
     RUN_TEST(test_ceil_div_no_wrap);
     RUN_TEST(test_mbz_fat_chain_refused_cluster);
