@@ -9638,6 +9638,12 @@ static int test_mbz_all_demonstrated(void) {
 
 int main(void) {
     int failures = 0;
+    /* Unbuffered, so a crash in a later test cannot swallow the FAIL lines an
+     * earlier one already printed. A sabotage of the descriptor table's page
+     * clearing was caught by its own test and then lost, because the next
+     * group segfaulted on the same garbage with the line still in the buffer -
+     * the run said nothing at all about why (docs/abi/ A3). */
+    setvbuf(stdout, NULL, _IONBF, 0);
     /* Run each test and accumulate failures while preserving full execution. */
 #define RUN_TEST(fn) do { if ((fn)() != 0) { failures++; printf("FAIL:%s\n", #fn); } } while (0)
     /* Memory-management counters: defined in mm_stats_tests.c, kept out of
