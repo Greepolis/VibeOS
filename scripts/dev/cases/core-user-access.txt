@@ -17,12 +17,13 @@
 
 ### a socket address is written through a raw pointer
 --- old
-    return vibeos_uaccess_copy((void *)(uintptr_t)uptr, p, sizeof(p)) == 0 ? 0 : -1;
+    return vibeos_uaccess_copy((void *)(uintptr_t)uptr, &a, sizeof(a)) == 0 ? 0 : -1;
 +++ new
     {
         uint8_t *u = (uint8_t *)(uintptr_t)uptr;
-        for (k = 0; k < 16; k++) {
-            u[k] = p[k];
+        const uint8_t *from = (const uint8_t *)&a;
+        for (k = 0; k < sizeof(a); k++) {
+            u[k] = from[k];
         }
     }
     return 0;
@@ -36,6 +37,6 @@
 
 ### uname writes the user's buffer directly
 --- old
-        char *dst = out + f * 65u;
+        char *dst = dsts[f];
 +++ new
         char *dst = (char *)(uintptr_t)(buf + (uint64_t)f * 65u);

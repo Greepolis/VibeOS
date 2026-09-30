@@ -50,6 +50,12 @@
 #define VIBEOS_S_IFREG  0100000u
 #define VIBEOS_S_IFSOCK 0140000u
 
+/* Where a seek is measured from: Linux's SEEK_SET, SEEK_CUR and SEEK_END, which
+ * are POSIX's and C's too. */
+#define VIBEOS_SEEK_SET 0
+#define VIBEOS_SEEK_CUR 1
+#define VIBEOS_SEEK_END 2
+
 typedef struct vibeos_file vibeos_file_t;
 
 /* What fstat reports, filled by the type. */

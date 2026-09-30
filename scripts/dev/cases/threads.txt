@@ -12,7 +12,7 @@
 
 ### a thread gets its creator's TLS instead of its own
 --- old
-                   (flags & CLONE_SETTLS) ? tls : ks_tls_get(me));
+                   (flags & LINUX_CLONE_SETTLS) ? tls : ks_tls_get(me));
 +++ new
                    ks_tls_get(me));
 
@@ -27,7 +27,7 @@
 ### mprotect leaves a reserved page unreachable from ring 3
 --- old
     p = (vibeos_prot_t)(VIBEOS_PROT_READ | VIBEOS_PROT_USER);
-    if (prot & PROT_WRITE) {
+    if (prot & LINUX_PROT_WRITE) {
 +++ new
     p = (vibeos_prot_t)(VIBEOS_PROT_READ);
-    if (prot & PROT_WRITE) {
+    if (prot & LINUX_PROT_WRITE) {

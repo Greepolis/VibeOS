@@ -24,6 +24,8 @@
  * descriptors.
  */
 
+#include <stddef.h>
+
 #include "linux_internal.h"
 
 /* Read a struct sockaddr_in out of user memory: family (host order), port and
@@ -36,41 +38,53 @@
  * length - so a sibling thread's munmap in between made the kernel take the
  * fault in ring 0, outside the one instruction that can recover, and panic.
  * H-010's family again; M-040 closed the same shape in write(). */
-static int linux_read_sockaddr(uint64_t uptr, uint32_t *out_ip, uint16_t *out_port) {
-    uint8_t p[8];
+/* Network order is big-endian and this machine is not; bytes, so it does not
+ * matter which the host is. */
+static uint16_t linux_be16(uint16_t wire) {
+    const uint8_t *b = (const uint8_t *)&wire;
+    return (uint16_t)(((uint16_t)b[0] << 8) | b[1]);
+}
 
-    if (vibeos_uaccess_copy(p, (const void *)(uintptr_t)uptr, sizeof(p)) != 0) {
+static uint32_t linux_be32(uint32_t wire) {
+    const uint8_t *b = (const uint8_t *)&wire;
+    return ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) |
+           ((uint32_t)b[2] << 8) | (uint32_t)b[3];
+}
+
+/* Only the family, port and address are read: 8 bytes, which is what the rows
+ * declare, and what a program passing a bare sockaddr_in prefix gets away with
+ * on Linux too. */
+static int linux_read_sockaddr(uint64_t uptr, uint32_t *out_ip, uint16_t *out_port) {
+    linux_sockaddr_in_t a;
+
+    if (vibeos_uaccess_copy(&a, (const void *)(uintptr_t)uptr,
+                            offsetof(linux_sockaddr_in_t, sin_zero)) != 0) {
         return -1;
     }
-    if (((uint16_t)p[0] | ((uint16_t)p[1] << 8)) != 2u) {   /* AF_INET */
+    if (a.sin_family != LINUX_AF_INET) {
         return -1;
     }
-    *out_port = (uint16_t)(((uint16_t)p[2] << 8) | p[3]);
-    *out_ip = ((uint32_t)p[4] << 24) | ((uint32_t)p[5] << 16) |
-              ((uint32_t)p[6] << 8) | (uint32_t)p[7];
+    *out_port = linux_be16(a.sin_port);
+    *out_ip = linux_be32(a.sin_addr);
     return 0;
 }
 
 static int linux_write_sockaddr(uint64_t uptr, uint32_t ip, uint16_t port) {
-    uint8_t p[16];
-    int k;
+    linux_sockaddr_in_t a;
+    uint32_t k;
 
     if (uptr == 0u) {
         return 0;
     }
-    p[0] = 2; p[1] = 0;
-    p[2] = (uint8_t)(port >> 8);
-    p[3] = (uint8_t)(port & 0xFFu);
-    p[4] = (uint8_t)(ip >> 24);
-    p[5] = (uint8_t)((ip >> 16) & 0xFFu);
-    p[6] = (uint8_t)((ip >> 8) & 0xFFu);
-    p[7] = (uint8_t)(ip & 0xFFu);
-    for (k = 8; k < 16; k++) {
-        p[k] = 0;
+    a.sin_family = LINUX_AF_INET;
+    a.sin_port = linux_be16(port);     /* the swap is its own inverse */
+    a.sin_addr = linux_be32(ip);
+    for (k = 0; k < sizeof(a.sin_zero); k++) {
+        a.sin_zero[k] = 0;
     }
     /* The one fallible step, and the callers' undo paths were written for it:
      * until now it could not fail, so they had never run. */
-    return vibeos_uaccess_copy((void *)(uintptr_t)uptr, p, sizeof(p)) == 0 ? 0 : -1;
+    return vibeos_uaccess_copy((void *)(uintptr_t)uptr, &a, sizeof(a)) == 0 ? 0 : -1;
 }
 
 
@@ -99,13 +113,13 @@ static long linux_sys_socket(uint64_t domain, uint64_t type) {
     if (!ks_net() || (me = ks_current()) < 0 || !ks_id(me)->is_user) {
         return -VIBEOS_EINVAL;
     }
-    if (domain != 2u) {                       /* AF_INET only */
+    if (domain != LINUX_AF_INET) {
         return -VIBEOS_EINVAL;
     }
-    if ((type & 0xFFu) == 1u) {
-        kind = VIBEOS_INET_SOCK_TCP;          /* SOCK_STREAM */
-    } else if ((type & 0xFFu) == 2u) {
-        kind = VIBEOS_INET_SOCK_UDP;          /* SOCK_DGRAM  */
+    if ((type & 0xFFu) == LINUX_SOCK_STREAM) {
+        kind = VIBEOS_INET_SOCK_TCP;
+    } else if ((type & 0xFFu) == LINUX_SOCK_DGRAM) {
+        kind = VIBEOS_INET_SOCK_UDP;
     } else {
         return -VIBEOS_EINVAL;
     }

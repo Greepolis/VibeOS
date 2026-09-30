@@ -10,7 +10,13 @@
  * boot volume, whatever the path said, because nothing consulted the mount
  * table. */
 
+#include <stddef.h>
+
 #include "files_internal.h"
+/* getdents64 writes Linux's records: the one operation of this type whose
+ * output format is a personality's. Another personality lists a directory
+ * through vibeos_fs_list and formats its own. */
+#include "vibeos/linux_layout.h"
 
 static void (*g_on_write_back)(void);
 
@@ -117,9 +123,9 @@ static long regular_seek(vibeos_file_t *f, int64_t off, int whence) {
     int64_t base;
 
     switch (whence) {
-        case 0: base = 0; break;                    /* SEEK_SET */
-        case 1: base = (int64_t)f->pos; break;      /* SEEK_CUR */
-        case 2: base = (int64_t)f->size; break;     /* SEEK_END */
+        case VIBEOS_SEEK_SET: base = 0; break;
+        case VIBEOS_SEEK_CUR: base = (int64_t)f->pos; break;
+        case VIBEOS_SEEK_END: base = (int64_t)f->size; break;
         default: return -VIBEOS_EINVAL;
     }
     if ((off > 0 && base > INT64_MAX - off) || base + off < 0) {
@@ -161,25 +167,25 @@ static long dir_getdents(vibeos_file_t *f, uint64_t buf, uint64_t len) {
         while (name[n]) {
             n++;
         }
-        reclen = (uint16_t)((19 + n + 1 + 7) & ~7); /* 8+8+2+1 header, 8-aligned */
+        /* The header, the name and its NUL, rounded up to 8 as Linux does. */
+        reclen = (uint16_t)((offsetof(linux_dirent64_t, d_name) + (uint32_t)n + 1u + 7u) & ~7u);
         if (used + reclen > len) {
             break;
         }
         {
             /* Built here and copied out whole (M-052): filling the user's
              * buffer byte by byte faulted in ring 0 if a sibling unmapped it
-             * after the range check. A record is at most 19 + 15 + 1 bytes
-             * rounded to 8. */
-            uint8_t rec[48];
+             * after the range check. Room for the longest name `name` holds. */
+            uint64_t rec[(sizeof(linux_dirent64_t) + sizeof(name) + 1u + 7u) / 8u];
+            linux_dirent64_t *d = (linux_dirent64_t *)(void *)rec;
             int k;
-            for (k = 0; k < reclen; k++) {
+            for (k = 0; k < (int)(sizeof(rec) / sizeof(rec[0])); k++) {
                 rec[k] = 0;
             }
-            rec[16] = (uint8_t)(reclen & 0xFFu);
-            rec[17] = (uint8_t)(reclen >> 8);
-            rec[18] = is_dir ? 4u : 8u; /* DT_DIR / DT_REG */
+            d->d_reclen = reclen;
+            d->d_type = is_dir ? LINUX_DT_DIR : LINUX_DT_REG;
             for (k = 0; k < n; k++) {
-                rec[19 + k] = (uint8_t)name[k];
+                d->d_name[k] = name[k];
             }
             if (vibeos_uaccess_copy((void *)(uintptr_t)(buf + used), rec, reclen) != 0) {
                 return (used > 0u) ? (long)used : -VIBEOS_EFAULT;

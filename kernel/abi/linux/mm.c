@@ -5,17 +5,6 @@
 
 #include "linux_internal.h"
 
-/* mmap flags and protection bits (asm-generic/mman-common.h). */
-#define PROT_NONE  0x0
-
-#define PROT_WRITE 0x2
-
-#define PROT_EXEC  0x4
-
-#define MAP_FIXED     0x10
-
-#define MAP_ANONYMOUS 0x20
-
 /* Claim `pages` of anonymous address space for the calling process, or 0.
  *
  * The cursor is the process's, so two threads can reach it at once. What this
@@ -125,14 +114,14 @@ static long linux_sys_brk(uint64_t addr) {
 static vibeos_prot_t linux_prot_of(uint64_t prot) {
     vibeos_prot_t p = VIBEOS_PROT_NONE;
 
-    if (prot == PROT_NONE) {
+    if (prot == LINUX_PROT_NONE) {
         return p;   /* a guard: mapped, owned, and reachable by nobody */
     }
     p = (vibeos_prot_t)(VIBEOS_PROT_READ | VIBEOS_PROT_USER);
-    if (prot & PROT_WRITE) {
+    if (prot & LINUX_PROT_WRITE) {
         p = (vibeos_prot_t)(p | VIBEOS_PROT_WRITE);
     }
-    if (prot & PROT_EXEC) {
+    if (prot & LINUX_PROT_EXEC) {
         p = (vibeos_prot_t)(p | VIBEOS_PROT_EXEC);
     }
     return p;
@@ -213,14 +202,14 @@ static long linux_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot,
     if (!ps) {
         return -VIBEOS_EINVAL;
     }
-    if (flags & MAP_FIXED) {
+    if (flags & LINUX_MAP_FIXED) {
         ks_log(VIBEOS_LOG_WARN, 10u, addr, flags, "mmap refused: MAP_FIXED");
         return -VIBEOS_EINVAL;
     }
     /* File-backed mappings need a page cache this kernel does not have. Say so
      * instead of returning anonymous zeroes, which would look like a file full
      * of NULs. */
-    if ((flags & MAP_ANONYMOUS) == 0 || VIBEOS_ARG_INT(fd) >= 0) {
+    if ((flags & LINUX_MAP_ANONYMOUS) == 0 || VIBEOS_ARG_INT(fd) >= 0) {
         ks_log(VIBEOS_LOG_WARN, 11u, flags, fd,
                "mmap refused: file-backed mapping");
         return -VIBEOS_ENOSYS;

@@ -14,18 +14,17 @@
 #include "vibeos/abi.h"
 #include "vibeos/abi_linux.h"
 
-/* Linux's errno numbers, which are part of the ABI and never change. Spelled
- * here rather than taken from the architecture's header: this file is portable
- * and host-tested, and the registry answers in Linux's numbers by definition. */
-#define LINUX_NONE   0
-#define LINUX_EPERM  1
-#define LINUX_ENOSYS 38
+/* A registry line's errno column names one of the kernel's errno values, which
+ * are Linux's (vibeos/abi_linux.h, compared with Linux's own headers by
+ * linux_layout_tests.c since docs/abi/ A5); NONE is a line with a row. They
+ * were spelled a second time here, which is one more copy to be wrong. */
+#define VIBEOS_NONE 0
 
 /* The registry (kernel/abi/linux_syscalls.def), in number order. Read-only;
  * consulted only on the path of a number that has no row, so a search is fine. */
 static const vibeos_sys_entry_t g_registry[] = {
 #define SYSCALL(nr, name, state, phase, err, why) \
-    { (nr), #name, VIBEOS_SYS_##state, #phase, LINUX_##err, (why) },
+    { (nr), #name, VIBEOS_SYS_##state, #phase, VIBEOS_##err, (why) },
 #include "linux_syscalls.def"
 #undef SYSCALL
 };

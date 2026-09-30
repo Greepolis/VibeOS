@@ -11,13 +11,13 @@
 
 ### readv stops validating each element's own buffer
 --- old
-        if (!linux_user_ok(v.base, v.len, 1)) {
+        if (!linux_user_ok(v.iov_base, v.iov_len, 1)) {
             return total > 0 ? total : -VIBEOS_EFAULT;
         }
 +++ new
 
 ### a handler calls the low-level check itself
 --- old
-        if (!linux_user_ok(v.base, v.len, 0)) {
+        if (!linux_user_ok(v.iov_base, v.iov_len, 0)) {
 +++ new
-        if (!hw_user_range_ok(v.base, v.len, 0)) {
+        if (!hw_user_range_ok(v.iov_base, v.iov_len, 0)) {

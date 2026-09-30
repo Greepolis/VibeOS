@@ -198,22 +198,21 @@ static long linux_sys_rt_sigaction(uint64_t sig, uint64_t act_uptr, uint64_t old
         return -VIBEOS_EINVAL;
     }
 
-    /* struct sigaction: handler at 0, flags at 8, restorer at 16, mask at 24. */
     if (old_uptr != 0u) {
-        uint64_t old[4];
-        old[0] = ps->sig_handler[sig];
-        old[1] = ps->sig_flags[sig];
-        old[2] = ps->sig_restorer[sig];
-        old[3] = ps->sig_mask[sig] >> 1;
+        linux_sigaction_t old;
+        old.sa_handler = ps->sig_handler[sig];
+        old.sa_flags = ps->sig_flags[sig];
+        old.sa_restorer = ps->sig_restorer[sig];
+        old.sa_mask = ps->sig_mask[sig] >> 1;
         /* Written through the fault-safe copy: a sibling munmap between the
          * range check and here would fault in ring 0 otherwise (H-016). */
-        if (vibeos_uaccess_copy((void *)(uintptr_t)old_uptr, old, sizeof(old)) != 0) {
+        if (vibeos_uaccess_copy((void *)(uintptr_t)old_uptr, &old, sizeof(old)) != 0) {
             return -VIBEOS_EFAULT;
         }
     }
     if (act_uptr != 0u) {
-        uint64_t act[4];
-        if (vibeos_uaccess_copy(act, (const void *)(uintptr_t)act_uptr,
+        linux_sigaction_t act;
+        if (vibeos_uaccess_copy(&act, (const void *)(uintptr_t)act_uptr,
                                 sizeof(act)) != 0) {
             return -VIBEOS_EFAULT;   /* H-016 */
         }
@@ -223,14 +222,14 @@ static long linux_sys_rt_sigaction(uint64_t sig, uint64_t act_uptr, uint64_t old
          * is unmapped only faults in ring 3 and kills the task, so canonicality
          * and the user window are what must be checked. The two sentinels are
          * dispositions (default, ignore), not addresses. */
-        if (act[0] != SIG_DFL_ADDR && act[0] != SIG_IGN_ADDR &&
-            !ks_user_addr_ok(act[0])) {
+        if (act.sa_handler != SIG_DFL_ADDR && act.sa_handler != SIG_IGN_ADDR &&
+            !ks_user_addr_ok(act.sa_handler)) {
             return -VIBEOS_EINVAL;
         }
-        ps->sig_handler[sig] = act[0];
-        ps->sig_flags[sig] = act[1];
-        ps->sig_restorer[sig] = act[2];
-        ps->sig_mask[sig] = act[3] << 1;
+        ps->sig_handler[sig] = act.sa_handler;
+        ps->sig_flags[sig] = act.sa_flags;
+        ps->sig_restorer[sig] = act.sa_restorer;
+        ps->sig_mask[sig] = act.sa_mask << 1;
     }
     return 0;
 }
@@ -277,9 +276,9 @@ static long linux_sys_rt_sigprocmask(uint64_t how, uint64_t set_uptr, uint64_t o
         set = linux_sigset_from_user(raw);
     }
     switch (how) {
-        case 0: t->sig_blocked |= set; break;
-        case 1: t->sig_blocked &= ~set; break;
-        case 2: t->sig_blocked = set; break;
+        case LINUX_SIG_BLOCK: t->sig_blocked |= set; break;
+        case LINUX_SIG_UNBLOCK: t->sig_blocked &= ~set; break;
+        case LINUX_SIG_SETMASK: t->sig_blocked = set; break;
         default: return -VIBEOS_EINVAL;
     }
     /* Blocking these would make a process unkillable, so the request is
@@ -321,7 +320,7 @@ static long linux_sys_rt_sigreturn(ks_regs_t *frame) {
  *   tgkill  the thread named by tid, provided it still belongs to tgid - the check
  *           that stops a recycled thread id from reaching a different process. */
 #define LINUX_SIG_SYSCALLS(X) \
-    X(13,  rt_sigaction,   SIG_ACTION,   PTRS(OUT_OPT(2, 32), IN_OPT(1, 32)), linux_sys_rt_sigaction(ARG(0), ARG(1), ARG(2))) \
+    X(13,  rt_sigaction,   SIG_ACTION,   PTRS(OUT_OPT(2, sizeof(linux_sigaction_t)), IN_OPT(1, sizeof(linux_sigaction_t))), linux_sys_rt_sigaction(ARG(0), ARG(1), ARG(2))) \
     X(14,  rt_sigprocmask, SIG_PROCMASK, PTRS(OUT_OPT(2, 8), IN_OPT(1, 8)), linux_sys_rt_sigprocmask(ARG(0), ARG(1), ARG(2))) \
     X(15,  rt_sigreturn,   SIG_RETURN,   NOPTR, linux_sys_rt_sigreturn(FRAME)) \
     X(62,  kill,           KILL,         NOPTR, linux_sys_kill(ARG(0), ARG(1))) \

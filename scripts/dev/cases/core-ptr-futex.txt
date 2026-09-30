@@ -10,6 +10,6 @@
 
 ### futex stops declaring its wait address
 --- old
-PTRS(IN_IFM_ERR(1, FUTEX_CMD_MASK, FUTEX_WAIT, 0, 4, VIBEOS_EINVAL)), linux_sys_futex
+PTRS(IN_IFM_ERR(1, VIBEOS_FUTEX_OP_BITS, LINUX_FUTEX_WAIT, 0, 4, VIBEOS_EINVAL)), linux_sys_futex
 +++ new
 NOPTR, linux_sys_futex

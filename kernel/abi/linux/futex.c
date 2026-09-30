@@ -7,12 +7,10 @@
 
 #include "linux_internal.h"
 
-/* futex operations we can answer honestly. */
-#define FUTEX_WAIT 0
-
-#define FUTEX_WAKE 1
-
-#define FUTEX_CMD_MASK 0x7F
+/* The operation in the op word's low bits, below FUTEX_PRIVATE_FLAG (128).
+ * Not Linux's FUTEX_CMD_MASK, which is ~(PRIVATE | CLOCK_REALTIME): the two
+ * agree on every operation this file answers. */
+#define VIBEOS_FUTEX_OP_BITS 0x7F
 
 /* futex: the primitive every thread library builds its waiting on.
  *
@@ -214,11 +212,11 @@ static long linux_futex_wait(uint64_t addr, uint32_t expected) {
 }
 
 static long linux_sys_futex(uint64_t addr, uint64_t op, uint64_t val) {
-    switch (op & FUTEX_CMD_MASK) {
-        case FUTEX_WAKE:
+    switch (op & VIBEOS_FUTEX_OP_BITS) {
+        case LINUX_FUTEX_WAKE:
             return linux_futex_wake(ks_current() >= 0 ? ks_ps(ks_current()) : 0,
                                  addr, (uint32_t)val);
-        case FUTEX_WAIT:
+        case LINUX_FUTEX_WAIT:
             return linux_futex_wait(addr, (uint32_t)val);
         default:
             /* Loudly, because this is how a thread library silently stops
@@ -232,6 +230,6 @@ static long linux_sys_futex(uint64_t addr, uint64_t op, uint64_t val) {
 
 /* ---- the syscalls this file implements --------------------------------------- */
 #define LINUX_FUTEX_SYSCALLS(X) \
-    X(202, futex,            FUTEX,           PTRS(IN_IFM_ERR(1, FUTEX_CMD_MASK, FUTEX_WAIT, 0, 4, VIBEOS_EINVAL)), linux_sys_futex(ARG(0), ARG(1), ARG(2)))
+    X(202, futex,            FUTEX,           PTRS(IN_IFM_ERR(1, VIBEOS_FUTEX_OP_BITS, LINUX_FUTEX_WAIT, 0, 4, VIBEOS_EINVAL)), linux_sys_futex(ARG(0), ARG(1), ARG(2)))
 
 LINUX_DEFINE_SYSCALLS(futex, LINUX_FUTEX_SYSCALLS)

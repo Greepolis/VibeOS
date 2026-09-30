@@ -34,6 +34,6 @@ NOPTR, linux_sys_getdents64
 
 ### fstat stops declaring its stat buffer
 --- old
-PTRS(OUT(1, STAT_SIZE)), linux_sys_fstat
+PTRS(OUT(1, sizeof(linux_stat_t))), linux_sys_fstat
 +++ new
 NOPTR, linux_sys_fstat

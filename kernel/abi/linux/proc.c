@@ -30,20 +30,6 @@ static int linux_exec_cache_hit(const char *path) {
     return 0;
 }
 
-/* prctl operations. PR_SET_NAME is the one a real program actually uses. */
-#define PR_SET_NAME 15
-
-#define PR_GET_NAME 16
-
-/* arch_prctl subfunctions. */
-#define ARCH_SET_GS 0x1001
-
-#define ARCH_SET_FS 0x1002
-
-#define ARCH_GET_FS 0x1003
-
-#define ARCH_GET_GS 0x1004
-
 /* fork(): duplicate the calling task, address space and all. The child resumes
  * at the same instruction with a 0 return value. */
 static long linux_sys_fork(const ks_regs_t *frame) {
@@ -281,7 +267,7 @@ static long linux_sys_clone_thread(const ks_regs_t *frame,
      * stack guard, which is the kind of sharing that looks like memory
      * corruption from user space. */
     ks_thread_regs(idx, me, frame, child_stack,
-                   (flags & CLONE_SETTLS) ? tls : ks_tls_get(me));
+                   (flags & LINUX_CLONE_SETTLS) ? tls : ks_tls_get(me));
 
     child->pid = ks_next_pid();
     child->tgid = parent->tgid;    /* same process */
@@ -294,7 +280,7 @@ static long linux_sys_clone_thread(const ks_regs_t *frame,
     child->exit_code = 0;
     child->exit_signal = 0;
 
-    child->clear_child_tid = (flags & CLONE_CHILD_CLEARTID) ? ctid : 0;
+    child->clear_child_tid = (flags & LINUX_CLONE_CHILD_CLEARTID) ? ctid : 0;
 
     /* Descriptors are shared, not copied: the table is in the process state
      * the thread has just taken a reference to. It used to be copied here, so
@@ -314,12 +300,12 @@ static long linux_sys_clone_thread(const ks_regs_t *frame,
      * between the range check and the store, faulting in ring 0 (H-021). A
      * failed write is dropped - the thread is created either way, as it is on
      * Linux when these optional stores fault. */
-    if ((flags & CLONE_PARENT_SETTID) && ptid != 0u &&
+    if ((flags & LINUX_CLONE_PARENT_SETTID) && ptid != 0u &&
         linux_user_ok(ptid, 4u, 1)) {
         uint32_t v = child->pid;
         (void)vibeos_uaccess_copy((void *)(uintptr_t)ptid, &v, sizeof(v));
     }
-    if ((flags & CLONE_CHILD_SETTID) && ctid != 0u &&
+    if ((flags & LINUX_CLONE_CHILD_SETTID) && ctid != 0u &&
         linux_user_ok(ctid, 4u, 1)) {
         uint32_t v = child->pid;
         (void)vibeos_uaccess_copy((void *)(uintptr_t)ctid, &v, sizeof(v));
@@ -359,8 +345,8 @@ static long linux_sys_waitpid(uint64_t want_pid, uint64_t status_ptr,
      * distinctions to make. Refusing them would be more precise and would
      * break BusyBox's shell, which passes WUNTRACED for job control. Any other
      * bit is refused, as Linux refuses it. */
-    if (options & ~(uint64_t)(0x00000001u | 0x00000002u | 0x00000008u |
-                              0x20000000u | 0x40000000u | 0x80000000u)) {
+    if (options & ~(uint64_t)(LINUX_WNOHANG | LINUX_WUNTRACED | LINUX_WCONTINUED |
+                              LINUX_WNOTHREAD | LINUX_WALL | LINUX_WCLONE)) {
         return -VIBEOS_EINVAL;
     }
 
@@ -450,7 +436,7 @@ static long linux_sys_waitpid(uint64_t want_pid, uint64_t status_ptr,
             ks_irq_on();
             return -VIBEOS_ECHILD;
         }
-        if (options & 0x00000001u) {   /* WNOHANG: children, none changed */
+        if (options & LINUX_WNOHANG) {   /* children, none changed */
             ks_unlock(ks_sched_lock());
             ks_irq_on();
             return 0;
@@ -1112,7 +1098,7 @@ static long linux_sys_prctl(uint64_t op, uint64_t arg) {
         return -VIBEOS_EINVAL;
     }
     t = ks_id(ks_current());
-    if (op == PR_SET_NAME) {
+    if (op == LINUX_PR_SET_NAME) {
         char kname[16];
         /* Copy in fault-safe, then terminate: a sibling munmap between the
          * check and the read would fault in ring 0 (uaccess follow-up). */
@@ -1122,7 +1108,7 @@ static long linux_sys_prctl(uint64_t op, uint64_t arg) {
         vibeos_task_set_comm(t, kname, sizeof(kname));
         return 0;
     }
-    if (op == PR_GET_NAME) {
+    if (op == LINUX_PR_GET_NAME) {
         if (vibeos_uaccess_copy((void *)(uintptr_t)arg, t->comm, 16) != 0) {
             return -VIBEOS_EFAULT;
         }
@@ -1235,7 +1221,7 @@ static long linux_sys_arch_prctl(uint64_t code, uint64_t addr) {
     }
 
     switch (code) {
-        case ARCH_SET_FS:
+        case LINUX_ARCH_SET_FS:
             /* A non-canonical address in this MSR faults on the wrmsr itself,
              * in ring 0 - user space must not be able to reach that. So the
              * base is checked before the write.
@@ -1251,7 +1237,7 @@ static long linux_sys_arch_prctl(uint64_t code, uint64_t addr) {
             }
             ks_tls_set(me, addr);
             return 0;
-        case ARCH_GET_FS:
+        case LINUX_ARCH_GET_FS:
             /* Fault-safe: a sibling thread can munmap the page between the
              * range check and here (H-024). */
             {
@@ -1262,8 +1248,8 @@ static long linux_sys_arch_prctl(uint64_t code, uint64_t addr) {
                 }
             }
             return 0;
-        case ARCH_SET_GS:
-        case ARCH_GET_GS:
+        case LINUX_ARCH_SET_GS:
+        case LINUX_ARCH_GET_GS:
             /* %gs holds this CPU's per-CPU block. Handing it to a program
              * would let ring 3 relocate the kernel's own state. */
             return -VIBEOS_EPERM;
@@ -1285,22 +1271,20 @@ static long linux_sys_prlimit64(uint64_t resource, uint64_t new_uptr, uint64_t o
         /* Filled here and copied out (M-052), not written into the user's
          * struct directly: a sibling's munmap after the range check made that
          * store fault in ring 0. */
-        uint64_t rl[2];
+        linux_rlimit64_t rl;
         switch (resource) {
-            case 3: /* RLIMIT_STACK */
-                rl[0] = ks_stack_bytes();
-                rl[1] = rl[0];
+            case LINUX_RLIMIT_STACK:
+                rl.rlim_cur = ks_stack_bytes();
                 break;
-            case 7: /* RLIMIT_NOFILE */
-                rl[0] = (uint64_t)LINUX_MAX_FDS;
-                rl[1] = rl[0];
+            case LINUX_RLIMIT_NOFILE:
+                rl.rlim_cur = (uint64_t)LINUX_MAX_FDS;
                 break;
             default:
-                rl[0] = 0xFFFFFFFFFFFFFFFFull;   /* RLIM64_INFINITY */
-                rl[1] = rl[0];
+                rl.rlim_cur = LINUX_RLIM64_INFINITY;
                 break;
         }
-        if (vibeos_uaccess_copy((void *)(uintptr_t)old_uptr, rl, sizeof(rl)) != 0) {
+        rl.rlim_max = rl.rlim_cur;
+        if (vibeos_uaccess_copy((void *)(uintptr_t)old_uptr, &rl, sizeof(rl)) != 0) {
             return -VIBEOS_EFAULT;
         }
     }
@@ -1371,13 +1355,13 @@ static long linux_sys_exit_group(uint64_t code) {
 static long linux_sys_clone(const vibeos_call_t *c) {
     uint64_t flags = ARG(0);
 
-    if ((flags & CLONE_THREAD) != 0u) {
-        if ((flags & CLONE_VM) == 0u) {
+    if ((flags & LINUX_CLONE_THREAD) != 0u) {
+        if ((flags & LINUX_CLONE_VM) == 0u) {
             return -VIBEOS_ENOSYS;
         }
         return linux_sys_clone_thread(FRAME, ARG(0), ARG(1), ARG(2), ARG(3), ARG(4));
     }
-    if ((flags & CLONE_VM) != 0u) {
+    if ((flags & LINUX_CLONE_VM) != 0u) {
         return -VIBEOS_ENOSYS;   /* vfork-like sharing: not supported */
     }
     return linux_sys_fork(FRAME);
@@ -1422,8 +1406,8 @@ static long linux_sys_clone(const vibeos_call_t *c) {
     X(111, getpgrp,          GETPGRP,         NOPTR, linux_sys_getpgrp()) \
     X(112, setsid,           SETSID,          NOPTR, linux_sys_setsid()) \
     X(124, getsid,           GETSID,          NOPTR, linux_sys_getsid(ARG(0))) \
-    X(157, prctl,            PRCTL,           PTRS(IN_IF(0, PR_SET_NAME, 1, 16), OUT_IF(0, PR_GET_NAME, 1, 16)), linux_sys_prctl(ARG(0), ARG(1))) \
-    X(158, arch_prctl,       ARCH_PRCTL,      PTRS(OUT_IF(0, ARCH_GET_FS, 1, 8)), linux_sys_arch_prctl(ARG(0), ARG(1))) \
+    X(157, prctl,            PRCTL,           PTRS(IN_IF(0, LINUX_PR_SET_NAME, 1, 16), OUT_IF(0, LINUX_PR_GET_NAME, 1, 16)), linux_sys_prctl(ARG(0), ARG(1))) \
+    X(158, arch_prctl,       ARCH_PRCTL,      PTRS(OUT_IF(0, LINUX_ARCH_GET_FS, 1, 8)), linux_sys_arch_prctl(ARG(0), ARG(1))) \
     X(186, gettid,           GETTID,          NOPTR, linux_sys_gettid()) \
     X(218, set_tid_address,  SET_TID_ADDRESS, NOPTR, linux_sys_set_tid_address(ARG(0))) \
     X(231, exit_group,       EXIT_GROUP,      NOPTR, linux_sys_exit_group(ARG(0))) \

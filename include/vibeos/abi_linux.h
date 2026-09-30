@@ -9,18 +9,6 @@
  * and deliberately outside the Linux number space, so they can never collide
  * with a real syscall implemented later. */
 
-/* clone() flags that decide whether it is a fork or a thread. */
-#define CLONE_VM     0x00000100u
-#define CLONE_FS     0x00000200u
-#define CLONE_FILES  0x00000400u
-#define CLONE_SIGHAND 0x00000800u
-#define CLONE_THREAD 0x00010000u
-#define CLONE_SYSVSEM 0x00040000u
-#define CLONE_SETTLS 0x00080000u
-#define CLONE_PARENT_SETTID  0x00100000u
-#define CLONE_CHILD_CLEARTID 0x00200000u
-#define CLONE_CHILD_SETTID   0x01000000u
-
 /* Linux errno values, returned to user space negated. */
 #define VIBEOS_EPERM   1
 #define VIBEOS_ENOENT  2

@@ -20,11 +20,13 @@ static long linux_sys_uname(uint64_t buf) {
     /* Built in the kernel and copied out once (M-052): the fields were written
      * into the user's buffer directly, which faults in ring 0 if a sibling
      * unmaps it after the dispatcher's range check. */
-    char out[6u * 65u];
+    linux_utsname_t out;
+    char *const dsts[6] = { out.sysname, out.nodename, out.release,
+                            out.version, out.machine, out.domainname };
     uint32_t f, i;
 
     for (f = 0; f < 6u; f++) {
-        char *dst = out + f * 65u;
+        char *dst = dsts[f];
         const char *src = fields[f];
         for (i = 0; i < 65u; i++) {
             dst[i] = (i < 64u) ? src[i] : 0;
@@ -36,7 +38,7 @@ static long linux_sys_uname(uint64_t buf) {
             dst[i] = 0;
         }
     }
-    return vibeos_uaccess_copy((void *)(uintptr_t)buf, out, sizeof(out)) == 0
+    return vibeos_uaccess_copy((void *)(uintptr_t)buf, &out, sizeof(out)) == 0
                ? 0 : -VIBEOS_EFAULT;
 }
 
@@ -45,14 +47,14 @@ static long linux_sys_uname(uint64_t buf) {
  * accuracy it does not possess. */
 static long linux_sys_clock_gettime(uint64_t clk, uint64_t ts_uptr) {
     uint64_t ticks = ks_ticks();
-    uint64_t kts[2];
+    linux_timespec_t kts;
 
     (void)clk;   /* monotonic and realtime are one clock here: uptime */
-    kts[0] = ticks / ks_hz();
-    kts[1] = (ticks % ks_hz()) * (1000000000ull / ks_hz());
+    kts.tv_sec = (int64_t)(ticks / ks_hz());
+    kts.tv_nsec = (int64_t)((ticks % ks_hz()) * (1000000000ull / ks_hz()));
     /* Built in the kernel and copied out: a sibling munmap between the check
      * and the write would fault in ring 0 (H-026). */
-    if (vibeos_uaccess_copy((void *)(uintptr_t)ts_uptr, kts, sizeof(kts)) != 0) {
+    if (vibeos_uaccess_copy((void *)(uintptr_t)ts_uptr, &kts, sizeof(kts)) != 0) {
         return -VIBEOS_EFAULT;
     }
     return 0;
@@ -69,30 +71,30 @@ static long linux_sys_time(uint64_t tptr) {
     return (long)secs;
 }
 
-/* sysinfo(): how much memory there is and how much is free, in Linux's layout -
- * 112 bytes on x86_64, written here as fourteen words.
+/* sysinfo(): how much memory there is and how much is free, in Linux's layout.
  *
  * Added for svc-reclaim, which has to know where the low watermark is to reach
  * it without running the machine into its minimum; BusyBox's `free` asks the
  * same question the same way. Free is the frame layer's free count: the page
  * cache is not counted as free, as Linux counts it in bufferram instead. */
 static long linux_sys_sysinfo(uint64_t buf) {
-    uint64_t w[14];
+    linux_sysinfo_t si;
+    uint8_t *raw = (uint8_t *)&si;
     const vibeos_mm_stats_t *st = vibeos_mm_stats();
     uint64_t slots = (uint64_t)vibeos_swap_slots();
     uint64_t used = vibeos_swap_stats()->allocated;
     uint32_t i;
 
-    for (i = 0; i < 14u; i++) {
-        w[i] = 0;
+    for (i = 0; i < sizeof(si); i++) {
+        raw[i] = 0;   /* padding included: it is copied out */
     }
-    w[0] = ks_ticks() / ks_hz();         /* uptime, seconds   */
-    w[4] = st->frames_total * 4096ull;                  /* totalram          */
-    w[5] = st->frames_free * 4096ull;                   /* freeram           */
-    w[8] = slots * 4096ull;                             /* totalswap         */
-    w[9] = (used < slots ? slots - used : 0ull) * 4096ull; /* freeswap       */
-    w[13] = 1u;                                         /* mem_unit: bytes   */
-    return vibeos_uaccess_copy((void *)(uintptr_t)buf, w, sizeof(w)) == 0
+    si.uptime = (int64_t)(ks_ticks() / ks_hz());
+    si.totalram = st->frames_total * 4096ull;
+    si.freeram = st->frames_free * 4096ull;
+    si.totalswap = slots * 4096ull;
+    si.freeswap = (used < slots ? slots - used : 0ull) * 4096ull;
+    si.mem_unit = 1u;                                   /* bytes */
+    return vibeos_uaccess_copy((void *)(uintptr_t)buf, &si, sizeof(si)) == 0
                ? 0 : -VIBEOS_EFAULT;
 }
 

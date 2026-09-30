@@ -24,6 +24,6 @@
 
 ### a directory descriptor is ignored
 --- old
-    if (raw[0] == '/' || VIBEOS_ARG_INT(dirfd) == AT_FDCWD) {
+    if (raw[0] == '/' || VIBEOS_ARG_INT(dirfd) == LINUX_AT_FDCWD) {
 +++ new
     if (1) {

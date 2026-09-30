@@ -11,9 +11,6 @@
 /* Console writes whose leading bytes read as NUL. */
 uint64_t g_ring3_write_nul;
 
-#define TIOCGPGRP 0x540Fu
-#define TIOCSPGRP 0x5410u
-
 static long console_write(vibeos_file_t *f, uint64_t buf, uint64_t len) {
     uint64_t i;
     (void)f;
@@ -213,14 +210,14 @@ static int console_stat(vibeos_file_t *f, vibeos_file_stat_t *out) {
  * libc uses to decide stdout is not a terminal and should be block buffered. */
 static long console_ioctl(vibeos_file_t *f, uint64_t req, uint64_t arg) {
     (void)f;
-    if (req == TIOCGPGRP) {
+    if (req == VIBEOS_IOCTL_GET_PGRP) {
         uint32_t v = ks_foreground_pgid();
         if (vibeos_uaccess_copy((void *)(uintptr_t)arg, &v, sizeof(v)) != 0) {
             return -VIBEOS_EFAULT;   /* H-025 */
         }
         return 0;
     }
-    if (req == TIOCSPGRP) {
+    if (req == VIBEOS_IOCTL_SET_PGRP) {
         uint32_t pgid;
         int me = ks_current(), group;
         if (me < 0) {

@@ -20,6 +20,12 @@
 #include "vibeos/file.h"
 #include "vibeos/fdtable.h"
 
+/* The requests the console's ioctl answers, numbered as Linux's TIOCGPGRP and
+ * TIOCSPGRP: the ioctl operation takes the request a Linux program passes, and
+ * another personality translates its own into these, as it does open flags. */
+#define VIBEOS_IOCTL_GET_PGRP 0x540Fu
+#define VIBEOS_IOCTL_SET_PGRP 0x5410u
+
 extern const vibeos_file_ops_t vibeos_fops_regular;
 extern const vibeos_file_ops_t vibeos_fops_dir;
 extern const vibeos_file_ops_t vibeos_fops_pipe;
