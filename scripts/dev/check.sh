@@ -106,10 +106,6 @@ do_build() {
     # C5: one definition of what a task is, and a ratchet on how far the arch layer
     # still reaches into it.
     python3 scripts/dev/check-task-identity.py | tail -1
-    # The interpreter substitution, checked the same way and for the same
-    # reason: a rule that lives only in a comment erodes one reasonable
-    # looking line at a time.
-    bash scripts/dev/check-exec-layering.sh | tail -1
     # User memory only through the fault-safe copy (M-050..M-052): the same
     # race-to-panic had been fixed one site at a time, and one review found
     # eight more. A rule nothing enforces is found again by the next reviewer.

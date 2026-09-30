@@ -194,18 +194,6 @@ long hw_read_file_cached(const char *path, void *buf, uint32_t cap,
 /* A fresh address space: a private PML4 that shares the supervisor-only kernel
  * identity mapping, so ring 0 (syscalls, interrupts) keeps working while running
  * on a process's CR3, but ring 3 cannot touch kernel memory. */
-/* Exact string equality. Only used to recognise the one interpreter path this
- * kernel knows how to substitute, so it is a comparison and not a library. */
-static int hw_streq(const char *a, const char *b) {
-    uint32_t i;
-    for (i = 0; a[i] != 0 && b[i] != 0; i++) {
-        if (a[i] != b[i]) {
-            return 0;
-        }
-    }
-    return a[i] == b[i];
-}
-
 /* Say no, out loud, once. Phase X-P0 of docs/exec/.
  *
  * The loader had fourteen `return -1` sites and one message between them, so
@@ -238,27 +226,6 @@ int hw_exec_refuse(vibeos_exec_fail_t why, const char *path,
     return -1;
 }
 
-/* Translate the interpreter path a file asks for into one this boot volume can
- * open. **This is a stand-in for a filesystem layout, not a feature.**
- *
- * A dynamic program asks for /lib/ld-musl-x86_64.so.1; the boot volume is FAT,
- * which has neither that directory nor a name that long, so the loader lives
- * beside the other programs under a name FAT can hold.
- *
- * It is one function on purpose, and `scripts/dev/check-exec-layering.sh` fails
- * the build if any interpreter path is named anywhere else. The risk with a
- * stand-in is not that it exists - it is that it breeds. A second hard-coded
- * path somewhere else, the two disagree, and the substitution stops being
- * something anyone can find, reason about, or delete.
- *
- * If the layout ever becomes real, delete this function rather than
- * generalising it, and delete the check with it. */
-static const char *hw_interp_path_substitute(const char *path) {
-    if (hw_streq(path, "/lib/ld-musl-x86_64.so.1")) {
-        return "EFI/BOOT/LDMUSL.SO";
-    }
-    return path;
-}
 
 /* `len` is how long the file is. `staged` is how many of its bytes are behind
  * `elf`. They were the same number until I3 of docs/io/, and the signature says
@@ -443,8 +410,10 @@ int hw_proc_create(hw_proc_t *p, hw_procstate_t *ps,
             { rc = hw_exec_refuse(VIBEOS_EXEC_NO_STAGING, interp_path, "interp_staging"); goto fail; }
         }
 
-        interp_path = hw_interp_path_substitute(interp_path);
-
+        /* By its path, as the program named it. Until docs/abi/ A4 the kernel
+         * translated /lib/ld-musl-x86_64.so.1 into an 8.3 name on the boot
+         * volume, because FAT reads here had no long names and no /lib; the
+         * loader is at that path now and FAT reads its long name. */
         uint32_t interp_id = 0;
 
         n = hw_read_file_cached(interp_path, g_interp_elf, g_interp_elf_cap,

@@ -180,16 +180,17 @@ endif()
 # a dynamic executable without its loader is a file the kernel can parse and
 # refuse, which tests nothing about loading.
 #
-# The loader is copied under a name FAT can hold. The binary asks for
-# /lib/ld-musl-x86_64.so.1, and the kernel translates that one path - the
-# substitution is written in the kernel too, so it is visible from both ends
-# rather than being a property of how the media happened to be built.
+# The loader goes where the binary says it is: /lib/ld-musl-x86_64.so.1. Until
+# docs/abi/ A4 it was copied to EFI/BOOT/LDMUSL.SO and the kernel translated the
+# path, because its FAT driver read no long names; it reads them now, and the
+# ESP builder writes them (make_esp_image.py).
 set(DYN_ELF "${CMAKE_BINARY_DIR}/musl_dynamic")
 if(EXISTS "${DYN_ELF}")
     set(MUSL_LOADER "/usr/lib/x86_64-linux-musl/libc.so")
     if(EXISTS "${MUSL_LOADER}")
         file(COPY_FILE "${DYN_ELF}" "${EFI_BOOT_DIR}/DYN.ELF" ONLY_IF_DIFFERENT)
-        file(COPY_FILE "${MUSL_LOADER}" "${EFI_BOOT_DIR}/LDMUSL.SO" ONLY_IF_DIFFERENT)
+        file(MAKE_DIRECTORY "${EFI_ROOT_DIR}/lib")
+        file(COPY_FILE "${MUSL_LOADER}" "${EFI_ROOT_DIR}/lib/ld-musl-x86_64.so.1" ONLY_IF_DIFFERENT)
         message(STATUS "EFI media includes a dynamic Linux binary and its loader: EFI/BOOT/DYN.ELF")
     else()
         message(STATUS "musl loader not found; skipping the dynamic Linux binary")
