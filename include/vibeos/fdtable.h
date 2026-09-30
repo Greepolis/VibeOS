@@ -3,78 +3,95 @@
 
 #include <stdint.h>
 
-/* C5: a task's open files, apart from the machine that runs it.
- *
- * Descriptors 0-2 are the console unless a shell has redirected them; 3 and up are
- * table entries. That split is the ABI's, and this type is where it is stated once:
- * `fds[]` holds descriptor 3 onwards (index = fd - 3) and `std[]` holds what 0, 1 and
- * 2 currently mean (`used` clear means the console). Every caller used to know it
- * and index the arrays itself, in nine places, and fork copied them by hand twice.
- *
- * Entries are plain data - a pipe or socket is an index into a table the kernel
- * owns, not a pointer - so the table copies by value, which is what fork does. */
+#include "vibeos/file.h"
 
-#define VIBEOS_FD_WBUF 512u
-#define VIBEOS_FD_SLOTS 4u      /* descriptors 3 .. 3 + SLOTS - 1 */
-#define VIBEOS_FD_STD 3u        /* descriptors 0, 1, 2 */
-#define VIBEOS_FD_FIRST 3u      /* the number of the first table entry */
+/* A process's descriptors (C5; rebuilt in docs/abi/ phase A3).
+ *
+ * A descriptor is a number and a reference to an open file description
+ * (vibeos/file.h), plus the one flag that belongs to the number rather than the
+ * file: close-on-exec. Two descriptors naming one description share its offset -
+ * which is what `dup`, `dup2` and `fork` promise and what this table could not do
+ * while an entry held the file by value.
+ *
+ * Descriptors 0, 1 and 2 are ordinary entries. They used to be a separate array
+ * meaning "the console unless redirected", so closing 1 and opening a file gave
+ * the file descriptor 3 instead of the 1 every shell's redirection relies on.
+ *
+ * The table holds up to VIBEOS_FD_MAX descriptors (Linux's default RLIMIT_NOFILE)
+ * and grows a page of VIBEOS_FD_PER_PAGE at a time, from pages the kernel supplies
+ * (vibeos_fdtable_set_pages): a process that opens three files costs nothing for
+ * the other thousand. It was four entries, so any program opening a fifth file
+ * failed.
+ *
+ * Not locked here: the table is the process's and the caller holds the process's
+ * files_lock around every change. Nothing in this file releases a description
+ * except vibeos_fdtable_destroy and vibeos_fdtable_drop_cloexec, which run on a
+ * table nobody else can reach; everything else hands the description back so the
+ * caller releases it after unlocking - a release writes files back and wakes
+ * pipe readers, and neither belongs under a spinlock. */
 
-typedef struct vibeos_fd {
-    int used;
-    int writable;
-    int dirty;
-    /* Index into the pipe table, or -1. A descriptor is a pipe end when this is set;
-     * `writable` then says which end. */
-    int pipe;
-    uint32_t cluster;
-    uint64_t size;        /* 64-bit: a >4 GiB file must not wrap in fstat/lseek (M-033) */
-    uint64_t pos;
-    int net_sock;         /* index into the TCP/IP stack, or -1 for a file */
-    uint32_t dir_index;   /* for getdents64 on a directory fd */
-    /* Whether this descriptor names a directory. Determined when it is opened
-     * rather than guessed later: opendir() opens the path and then fstats the
-     * descriptor, and a descriptor that claims to be a regular file is refused
-     * with ENOTDIR no matter what stat said about the path a moment earlier. */
-    int isdir;
-    char name[24];
-    uint8_t wbuf[VIBEOS_FD_WBUF];
-    uint32_t wlen;
-} vibeos_fd_t;
+#define VIBEOS_FD_MAX 1024u
+#define VIBEOS_FD_PER_PAGE 256u
+#define VIBEOS_FD_PAGES (VIBEOS_FD_MAX / VIBEOS_FD_PER_PAGE)
+#define VIBEOS_FD_CLOEXEC 1u    /* Linux's FD_CLOEXEC */
+
+/* Why an install failed. */
+#define VIBEOS_FDT_FULL  (-1)   /* no free descriptor below the limit: EMFILE */
+#define VIBEOS_FDT_NOMEM (-2)   /* a page for the table could not be had      */
+#define VIBEOS_FDT_BADFD (-3)   /* the number is outside the table: EBADF     */
+
+typedef struct vibeos_fdent {
+    vibeos_file_t *file;
+    uint32_t flags;
+    uint32_t reserved;
+} vibeos_fdent_t;
 
 typedef struct vibeos_fdtable {
-    vibeos_fd_t fds[VIBEOS_FD_SLOTS];
-    vibeos_fd_t std[VIBEOS_FD_STD];
+    vibeos_fdent_t *page[VIBEOS_FD_PAGES];
+    uint32_t limit;   /* RLIMIT_NOFILE: descriptors below this may be installed */
+    uint32_t open;    /* how many are installed                                 */
 } vibeos_fdtable_t;
 
-/* One entry in the state a fresh descriptor starts in: not used, no pipe, no socket,
- * every other field zero. */
-void vibeos_fd_clear(vibeos_fd_t *f);
+/* Where the table's pages come from: at least 4096 bytes each. Registered once
+ * (a registration function, not a weak symbol - see CLAUDE.md on mingw). */
+void vibeos_fdtable_set_pages(void *(*alloc)(void), void (*release)(void *));
 
-/* Every entry cleared. The one place a task's table is initialised, so a recycled
- * slot cannot start believing the previous tenant's redirection - which sends a
- * write into a pipe that does not exist and leaves the task waiting there. */
-void vibeos_fdtable_reset(vibeos_fdtable_t *t);
+/* Empty, with the default limit and no pages. For a table that has never held
+ * anything or has been destroyed - it forgets, it does not release. */
+void vibeos_fdtable_init(vibeos_fdtable_t *t);
 
-/* The entry for descriptor `fd` (3 or more) if it is in use, else NULL. */
-vibeos_fd_t *vibeos_fdtable_get(vibeos_fdtable_t *t, uint64_t fd);
+/* The description `fd` names, or 0. No reference is taken: the caller either holds
+ * the table's lock for as long as it uses the result or takes one itself. */
+vibeos_file_t *vibeos_fdtable_get(const vibeos_fdtable_t *t, uint64_t fd);
+uint32_t vibeos_fdtable_flags(const vibeos_fdtable_t *t, uint64_t fd);
+int vibeos_fdtable_set_flags(vibeos_fdtable_t *t, uint64_t fd, uint32_t flags);
 
-/* What descriptor 0, 1 or 2 has been redirected to, or NULL for the console. */
-vibeos_fd_t *vibeos_fdtable_redirect(vibeos_fdtable_t *t, uint64_t fd);
+/* Install `f` at the lowest free descriptor at or above `min`, taking over the
+ * caller's reference. The descriptor, or VIBEOS_FDT_FULL / VIBEOS_FDT_NOMEM (the
+ * reference is then still the caller's). */
+int vibeos_fdtable_install(vibeos_fdtable_t *t, vibeos_file_t *f, uint32_t flags,
+                           uint32_t min);
 
-/* The lowest free table index, or -1 when full. The descriptor number is
- * VIBEOS_FD_FIRST + the index. */
-int vibeos_fdtable_free_index(const vibeos_fdtable_t *t);
+/* Install `f` at exactly `fd`, replacing what was there - dup2. `*old` receives the
+ * replaced description, whose reference the caller now owns and releases. 0, or
+ * VIBEOS_FDT_BADFD / VIBEOS_FDT_NOMEM. */
+int vibeos_fdtable_install_at(vibeos_fdtable_t *t, uint64_t fd, vibeos_file_t *f,
+                              uint32_t flags, vibeos_file_t **old);
 
-/* Claim the lowest free table entry: cleared, marked used, its index returned (or -1
- * when full). The descriptor number is VIBEOS_FD_FIRST + the index. */
-int vibeos_fdtable_claim(vibeos_fdtable_t *t);
+/* Take `fd` out of the table; its description (the caller's reference now), or 0. */
+vibeos_file_t *vibeos_fdtable_remove(vibeos_fdtable_t *t, uint64_t fd);
 
-/* Inherit `src` into `dst`, replacing whatever `dst` held. */
-void vibeos_fdtable_copy(vibeos_fdtable_t *dst, const vibeos_fdtable_t *src);
+/* Make `dst` (empty) name every description `src` names, one more reference each -
+ * fork and exec. 0, or VIBEOS_FDT_NOMEM with `dst` left empty. */
+int vibeos_fdtable_copy(vibeos_fdtable_t *dst, const vibeos_fdtable_t *src);
 
-/* Every entry, table and redirections alike: index 0 .. count-1. For the walks that
- * treat them the same (give each inherited pipe end an owner; release them at exit). */
-uint32_t vibeos_fdtable_count(void);
-vibeos_fd_t *vibeos_fdtable_entry(vibeos_fdtable_t *t, uint32_t index);
+/* Release every close-on-exec descriptor; how many. For a table nobody else uses. */
+uint32_t vibeos_fdtable_drop_cloexec(vibeos_fdtable_t *t);
+
+/* Release every descriptor and give the pages back; the table is empty after. */
+void vibeos_fdtable_destroy(vibeos_fdtable_t *t);
+
+/* The highest descriptor number in use, or -1. For close_range and walks. */
+int vibeos_fdtable_highest(const vibeos_fdtable_t *t);
 
 #endif

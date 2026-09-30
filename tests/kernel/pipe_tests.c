@@ -50,7 +50,6 @@ int test_pipe(void) {
     static uint8_t out[VIBEOS_PIPE_BYTES + 64];
     static uint8_t in[VIBEOS_PIPE_BYTES + 64];
     uint8_t small[16];
-    vibeos_fd_t rd, wr;
     uint64_t base_under, base_bad;
     int a, b, i, slots[VIBEOS_PIPE_MAX];
     long n;
@@ -148,23 +147,9 @@ int test_pipe(void) {
     if (!expect(vibeos_mbz_count(VIBEOS_MBZ_PIPE_END_UNDERFLOW) == base_under,
                 "balanced acquires and releases record no underflow")) { return -1; }
 
-    /* ---- the descriptor helpers ---------------------------------------------------- */
-    a = vibeos_pipe_create();
-    memset(&rd, 0, sizeof(rd));
-    memset(&wr, 0, sizeof(wr));
-    rd.used = 1; rd.pipe = a; rd.writable = 0;
-    wr.used = 1; wr.pipe = a; wr.writable = 1;
-    vibeos_pipe_end_acquire(&wr);
-    if (!expect(vibeos_pipe_writers(a) == 2u, "acquire on a used pipe descriptor adds its end")) { return -1; }
-    wr.used = 0;
-    vibeos_pipe_end_acquire(&wr);
-    if (!expect(vibeos_pipe_writers(a) == 2u, "acquire on an unused descriptor adds nothing")) { return -1; }
-    wr.used = 1;
-    vibeos_pipe_end_release(&wr);
-    if (!expect(wr.pipe == -1 && vibeos_pipe_writers(a) == 1u, "release detaches the descriptor so it cannot release twice")) { return -1; }
-    vibeos_pipe_end_release(&wr);
-    if (!expect(vibeos_pipe_writers(a) == 1u, "a second release of a detached descriptor changes nothing")) { return -1; }
-    vibeos_pipe_end_release(&rd);
+    /* The descriptor helpers (end_acquire / end_release) are gone since A3: an
+     * end is held by a file description, and file_tests.c checks that dup and
+     * fork leave these counts alone while the last release gives the end back. */
 
     /* ---- a count that goes wrong is counted, not clamped ---------------------------- */
     b = vibeos_pipe_create();

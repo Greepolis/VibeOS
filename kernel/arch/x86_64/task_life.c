@@ -614,7 +614,7 @@ hw_procstate_t *hw_procstate_new(void) {
         ps->exit_group_code = 0;
         /* The slot is recycled: a process starts with no files, not with the
          * previous tenant's. */
-        vibeos_fdtable_reset(&ps->files);
+        vibeos_fdtable_init(&ps->files);
         ps->files_lock.locked = 0;
         ps->files_lock.owner_cpu = -1;
         ps->files_lock.owner_fn = 0;
@@ -650,6 +650,13 @@ void hw_procstate_put(hw_procstate_t *ps) {
         }
         if (r == 1u) {
             vibeos_vma_clear(&ps->vmas);
+            /* Normally empty already: the last thread to leave the table
+             * closed it (linux_files_leave) before switching away. What is
+             * left is a process that never ran - a spawn that failed after
+             * its console was installed - and its descriptions would
+             * otherwise be held for the rest of the boot. On an empty table
+             * this does nothing. */
+            vibeos_fdtable_destroy(&ps->files);
         }
         if (__atomic_compare_exchange_n(&ps->refs, &r, r - 1u, 0,
                                         __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
@@ -908,6 +915,15 @@ int hw_task_spawn_user(const unsigned char *elf, uint64_t len,
      * not one read through the cache - so staged and len are the same. */
     g_tasks[i].ps = hw_procstate_new();
     if (!g_tasks[i].ps) {
+        hw_task_release(i);
+        return -1;
+    }
+    /* A program the kernel starts has the console on 0, 1 and 2, as a program a
+     * shell starts has whatever the shell left there. They are ordinary
+     * descriptors since A3: one console description, three references. */
+    if (vibeos_files_std_console(&g_tasks[i].ps->files) != 0) {
+        hw_procstate_put(g_tasks[i].ps);
+        g_tasks[i].ps = 0;
         hw_task_release(i);
         return -1;
     }

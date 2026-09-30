@@ -77,6 +77,9 @@
     X(IOCTL,           "ioctl",           VIBEOS_CHECK_USER_MEMORY) \
     X(DUP,             "dup",             VIBEOS_CHECK_NONE) \
     X(DUP2,            "dup2",            VIBEOS_CHECK_NONE) \
+    X(DUP3,            "dup3",            VIBEOS_CHECK_NONE) \
+    X(FCNTL,           "fcntl",           VIBEOS_CHECK_NONE) \
+    X(CLOSE_RANGE,     "close_range",     VIBEOS_CHECK_NONE) \
     X(PIPE,            "pipe",            VIBEOS_CHECK_USER_MEMORY) \
     X(PIPE2,           "pipe2",           VIBEOS_CHECK_USER_MEMORY) \
     X(SENDFILE,        "sendfile",        VIBEOS_CHECK_NONE) \

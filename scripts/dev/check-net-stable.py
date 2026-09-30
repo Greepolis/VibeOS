@@ -4,8 +4,12 @@
 A blocking socket call holds a descriptor across a wait. A sibling thread can
 close that descriptor and open another socket into the same slot, and a loop
 that re-reads `f->net_sock` on each pass then carries on against somebody else's
-socket. `linux_sock_stable(f, sock, gen)` is the re-check: descriptor still open,
-still the same socket index, socket slot not reused.
+socket. The re-check is `vibeos_sockfile_stable(f)` since docs/abi/ A3: the call
+holds a reference to the socket's open file description, so the description
+cannot be closed and reused under it any more, but the socket itself can still
+go - a process's exit releases the sockets it owns - and its slot in the stack
+be given to another; the check compares the socket's tenancy with the one the
+description was opened on.
 
 M-020's fix put it into connect, accept and the stream read, and missed
 `recvfrom` - found by an external review a phase later, still open while the
@@ -14,15 +18,16 @@ to whoever remembered. This checks it.
 
 ## The rule
 
-In kernel/abi/linux/net.c, every function that both holds a descriptor (names
-`vibeos_fd_t`) and waits (calls `linux_net_wait_tick()`) must call
-`linux_sock_stable(`. (hw_fd_t, hw_net_wait_tick and hw_sock_stable until A2.)
-A function that waits without a descriptor - netctl's ping and DNS - has nothing
-a sibling can close, and is not held to it.
+In kernel/abi/files/socket.c - where the socket waits moved in A3, out of the
+Linux handlers - every function that both holds a description (names
+`vibeos_file_t`) and waits (calls `socket_wait_tick()`) must call
+`vibeos_sockfile_stable(`. (vibeos_fd_t, linux_net_wait_tick and linux_sock_stable
+in kernel/abi/linux/net.c until A3; hw_ names before A2.) A wait with no socket -
+netctl's ping and DNS, in net.c - has nothing a sibling can close, and is not
+held to it.
 
-Crude by design: functions are found by their opening line at column zero and
-their closing brace at column zero, which is how every function in the file is
-written. A function it cannot find is a failure, not a pass.
+Functions are found by their definition and their matching brace. A function
+it cannot find is a failure, not a pass.
 
 Usage: check-net-stable.py
 """
@@ -32,25 +37,30 @@ import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-SRC = os.path.join(ROOT, "kernel", "abi", "linux", "net.c")
+SRC = os.path.join(ROOT, "kernel", "abi", "files", "socket.c")
 
-OPEN = re.compile(r"^(?:static\s+)?[A-Za-z_][\w\s\*]*?\b(\w+)\s*\([^;]*\)\s*\{\s*$")
+# A definition: a name, a parameter list that may span lines, and its brace.
+OPEN = re.compile(r"^(?:static\s+)?[A-Za-z_][\w\s\*]*?\b(\w+)\s*\(([^;{}]*)\)\s*\{", re.M)
 
 
 def functions(text):
-    """(name, body) for every top-level function definition."""
+    """(name, body) for every top-level function definition, its body found by
+    matching braces. The first version read a signature off one line, and the
+    waits that moved into socket.c in A3 have two-line signatures: it saw two of
+    four and said so rather than passing, which is why that guard is there."""
     out = []
-    name, body = None, []
-    for line in text.splitlines():
-        if name is None:
-            m = OPEN.match(line)
-            if m:
-                name, body = m.group(1), [line]
+    for m in OPEN.finditer(text):
+        if m.group(1) in ("if", "for", "while", "switch", "return", "sizeof"):
             continue
-        body.append(line)
-        if line.startswith("}"):
-            out.append((name, "\n".join(body)))
-            name, body = None, []
+        depth, i = 1, m.end()
+        while i < len(text) and depth:
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+            i += 1
+        if depth == 0:
+            out.append((m.group(1), text[m.start():i]))
     return out
 
 
@@ -62,11 +72,11 @@ def main():
         return 1
     funcs = functions(text)
     if not funcs:
-        print("net-stable=FAIL no functions found in net.c; the parser no longer matches the file")
+        print("net-stable=FAIL no functions found in socket.c; the parser no longer matches the file")
         return 1
 
-    waiting = [(n, b) for n, b in funcs if "linux_net_wait_tick()" in b and "vibeos_fd_t" in b]
-    bad = [n for n, b in waiting if "linux_sock_stable(" not in b]
+    waiting = [(n, b) for n, b in funcs if "socket_wait_tick()" in b and "vibeos_file_t" in b]
+    bad = [n for n, b in waiting if "vibeos_sockfile_stable(" not in b]
     # The check has to have something to look at: the three waits M-020 fixed
     # first are known to exist. Fewer means the parser lost them, not that they
     # were all removed.
@@ -76,7 +86,7 @@ def main():
         return 1
     if bad:
         for n in bad:
-            print("  %s waits holding a descriptor and never calls linux_sock_stable" % n)
+            print("  %s waits holding a description and never calls vibeos_sockfile_stable" % n)
         print("net-stable=FAIL unchecked=%d" % len(bad))
         return 1
     print("net-stable=ok waiting=%d" % len(waiting))

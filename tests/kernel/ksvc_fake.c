@@ -2,10 +2,13 @@
 
 #include <setjmp.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "ksvc_fake.h"
 #include "vibeos/fdtable.h"
+#include "vibeos/file.h"
+#include "vibeos/fileops.h"
 #include "vibeos/pipe.h"
 /* Signal numbers and errno values: the kernel numbers signals as Linux does. */
 #include "vibeos/abi_linux.h"
@@ -277,7 +280,7 @@ uint32_t kf_net_udp_sent(uint32_t *last_payload_len) {
 
 static void kf_procstate_init(vibeos_procstate_t *ps) {
     memset(ps, 0, sizeof(*ps));
-    vibeos_fdtable_reset(&ps->files);
+    vibeos_fdtable_init(&ps->files);
     ps->refs = 1u;
     ps->files_users = 1u;
     ps->brk_cur = 0x10000000ull;
@@ -286,10 +289,21 @@ static void kf_procstate_init(vibeos_procstate_t *ps) {
 static void kf_pipe_lock(void) {}
 static void kf_pipe_unlock(void) {}
 
+static void *kf_fd_page(void) { return malloc(4096); }
+static void kf_fd_page_free(void *p) { free(p); }
+
 void kf_reset(void) {
     uint32_t i;
 
     memset(g_t, 0, sizeof(g_t));
+    /* The previous test's tables hold pages and descriptions: release them before
+     * forgetting the process states, or every reset leaks what they held. */
+    vibeos_fdtable_set_pages(kf_fd_page, kf_fd_page_free);
+    for (i = 0; i < KF_PROCS; i++) {
+        vibeos_fdtable_destroy(&g_ps[i].files);
+    }
+    vibeos_file_reset();
+    vibeos_pipe_reset();
     memset(g_ps, 0, sizeof(g_ps));
     memset(g_user, 0, sizeof(g_user));
     memset(g_files, 0, sizeof(g_files));
@@ -342,6 +356,7 @@ int kf_spawn(uint32_t pid, uint32_t sid) {
     g_t[i].id.sid = sid;
     g_t[i].id.is_user = 1;
     kf_procstate_init(&g_ps[p]);
+    (void)vibeos_files_std_console(&g_ps[p].files);
     g_t[i].ps = &g_ps[p];
     g_t[i].seq++;
     return (int)i;
@@ -618,6 +633,10 @@ vibeos_procstate_t *ks_procstate_new(void) {
 }
 void ks_procstate_put(vibeos_procstate_t *ps) {
     if (ps && ps->refs) {
+        /* As the architecture's: the last reference closes a table nobody left. */
+        if (ps->refs == 1u) {
+            vibeos_fdtable_destroy(&ps->files);
+        }
         ps->refs--;
     }
 }

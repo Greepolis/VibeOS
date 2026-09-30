@@ -3,8 +3,6 @@
 
 #include <stdint.h>
 
-#include "vibeos/fdtable.h"
-
 /* C5: pipes, as a module.
  *
  * A pipe is a ring of bytes and two counts - how many descriptors hold its read end,
@@ -12,10 +10,14 @@
  * be duplicated and inherited: `ls | wc` gives the write end to a child, and the
  * parent must close its own copy or the reader never sees end of file. That is the
  * classic way a shell pipeline hangs, and it is a refcount bug, not a pipe bug - which
- * is why the counts live here, behind one interface, and are checked: every place that
- * used to adjust `writers` and `readers` by hand (dup2, fork, clone, close, exit) now
- * goes through acquire and release, and a release with nothing to release is counted
- * (VIBEOS_MBZ_PIPE_END_UNDERFLOW) instead of being clamped away in silence.
+ * is why the counts live here, behind one interface, and are checked: a release with
+ * nothing to release is counted (VIBEOS_MBZ_PIPE_END_UNDERFLOW) instead of being
+ * clamped away in silence.
+ *
+ * Since docs/abi/ A3 an end is held by an open file description, not a descriptor:
+ * dup, dup2 and fork share the description and leave these counts alone, and the
+ * description's release gives its end back. Five call sites that each had to
+ * remember an acquire became none.
  *
  * This layer is portable. It does not sleep, raise signals or touch user memory: it
  * makes one attempt and says what happened, and the caller - which knows about the
@@ -56,11 +58,6 @@ void vibeos_pipe_abandon(int slot);
  * may still drain after every writer has closed, so it lives until both are gone. */
 void vibeos_pipe_add_end(int slot, int writable);
 void vibeos_pipe_release_end(int slot, int writable);
-
-/* The same, for a descriptor: acquire when it is a pipe end in use; release also
- * detaches it (pipe = -1) so it cannot release twice. */
-void vibeos_pipe_end_acquire(const vibeos_fd_t *f);
-void vibeos_pipe_end_release(vibeos_fd_t *f);
 
 /* One attempt. Returns the bytes moved (0 with a status that says why), and never
  * blocks. A fault after some bytes moved returns those bytes with VIBEOS_PIPE_OK. */

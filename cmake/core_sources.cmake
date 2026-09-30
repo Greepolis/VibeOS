@@ -44,6 +44,7 @@ set(VIBEOS_KERNEL_CORE_SOURCES
     kernel/fs/blockcache.c
     kernel/fs/vfs.c
     kernel/fs/fdtable.c
+    kernel/fs/file.c
     kernel/ipc/pipe.c
     kernel/fs/partition.c
     kernel/fs/storage.c
@@ -121,6 +122,16 @@ set(VIBEOS_KERNEL_DRIVER_SOURCES
     kernel/fs/ntfs.c
 )
 
+# The file types every personality shares (docs/abi/ A3): regular files and
+# directories, pipe ends, sockets and the console, written against vibeos/ksvc.h
+# like a handler is. Built wherever a personality is.
+set(VIBEOS_ABI_FILES_SOURCES
+    kernel/abi/files/console.c
+    kernel/abi/files/pipefile.c
+    kernel/abi/files/regular.c
+    kernel/abi/files/socket.c
+)
+
 # The Linux syscall personality. Portable since docs/abi/ A2: it reaches the
 # kernel only through include/vibeos/ksvc.h, so the image links it against the
 # architecture's services (kernel/arch/x86_64/ksvc.c) and the host tests against
@@ -136,6 +147,7 @@ set(VIBEOS_LINUX_ABI_SOURCES
     kernel/abi/linux/proc.c
     kernel/abi/linux/sig.c
     kernel/abi/linux/signal.c
+    ${VIBEOS_ABI_FILES_SOURCES}
 )
 
 # The freestanding half of the kernel image: hardware bring-up that host tests

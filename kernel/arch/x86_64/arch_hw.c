@@ -1199,9 +1199,34 @@ static void hw_pipe_unlock(void) {
     hw_spin_unlock(&g_pipe_lock);
 }
 
+/* Open file descriptions (docs/abi/ A3) lock themselves with their own lock:
+ * a release that runs a pipe end's give-back takes the pipes' lock, so sharing
+ * one would deadlock on the first close of a pipe. */
+static hw_lock_t g_file_lock;
+
+static void hw_file_lock(void) {
+    hw_spin_lock_named(&g_file_lock, "vibeos_file");
+}
+
+static void hw_file_unlock(void) {
+    hw_spin_unlock(&g_file_lock);
+}
+
+/* A descriptor table grows a page at a time. */
+static void *hw_fdtable_page(void) {
+    return hw_alloc_page();
+}
+
+static void hw_fdtable_page_free(void *p) {
+    hw_free_page_why(p, "fdtable page");
+}
+
 void hw_pipe_init(void) {
     vibeos_pipe_set_lock(hw_pipe_lock, hw_pipe_unlock);
     vibeos_pipe_reset();
+    vibeos_file_set_lock(hw_file_lock, hw_file_unlock);
+    vibeos_file_reset();
+    vibeos_fdtable_set_pages(hw_fdtable_page, hw_fdtable_page_free);
 }
 
 /* The mount table's own lock (vibeos_fs_set_lock). Its own, not the pipes' or the

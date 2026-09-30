@@ -1,0 +1,244 @@
+/* Regular files and directories on the root filesystem, as files (docs/abi/ A3).
+ *
+ * Moved from the Linux handlers' `fd >= 3` branches. What changed in moving is
+ * where the state lives: the offset, the directory cursor and the unwritten bytes
+ * belong to the description, so two descriptors a dup made share them, as every
+ * program expects. */
+
+#include "files_internal.h"
+
+static void (*g_on_write_back)(void);
+
+void vibeos_files_on_write_back(void (*fn)(void)) {
+    g_on_write_back = fn;
+}
+
+static vibeos_fs_node_t node_of(const vibeos_file_t *f) {
+    vibeos_fs_node_t n;
+    n.id = f->node;
+    n.size = f->size;
+    n.is_dir = f->isdir;
+    return n;
+}
+
+/* Through a kernel buffer, then vibeos_uaccess_copy (M-051). The filesystem used
+ * to copy straight into the user's buffer: the dispatcher checks the range before
+ * the handler runs, and a sibling thread's munmap between that check and the
+ * driver's memcpy faulted in ring 0, outside the one instruction that can recover
+ * - a panic any threaded program could cause. The same shape M-040 closed in write().
+ *
+ * A page, not a small stack buffer: the FAT reader walks the cluster chain from
+ * the start on every call, so small chunks make a large read quadratic, and a
+ * kernel stack here is 8 KiB or less. If no page is free the read still works,
+ * 512 bytes at a time. */
+static long regular_read(vibeos_file_t *f, uint64_t buf, uint64_t len) {
+    vibeos_fs_node_t node = node_of(f);
+    uint8_t small[512];
+    uint8_t *bounce;
+    uint32_t chunk;
+    uint64_t done = 0;
+    long n = 0;
+
+    if ((f->flags & VIBEOS_O_ACCMODE) == VIBEOS_O_WRONLY) {
+        return -VIBEOS_EBADF;
+    }
+    if (len == 0u) {
+        return 0;
+    }
+    bounce = (uint8_t *)ks_page_alloc();
+    chunk = bounce ? 4096u : (uint32_t)sizeof(small);
+    if (!bounce) {
+        bounce = small;
+    }
+    while (done < len) {
+        uint64_t want = len - done;
+        long got;
+
+        if (want > chunk) {
+            want = chunk;
+        }
+        got = vibeos_fs_read_at(ks_rootfs(), &node, f->pos, bounce, (uint32_t)want);
+        if (got <= 0) {
+            n = (done > 0u) ? 0 : got;   /* an error only if nothing was read */
+            break;
+        }
+        if (vibeos_uaccess_copy((void *)(uintptr_t)(buf + done), bounce, (uint64_t)got) != 0) {
+            n = (done > 0u) ? 0 : -VIBEOS_EFAULT;
+            break;
+        }
+        done += (uint64_t)got;
+        f->pos += (uint64_t)got;
+        if ((uint64_t)got < want) {
+            break;   /* end of file */
+        }
+    }
+    if (bounce != small) {
+        ks_page_free(bounce, "read() bounce buffer");
+    }
+    return done > 0u ? (long)done : n;
+}
+
+/* Buffered, committed on release (the FAT writer stores whole files). Fault-safe:
+ * the dispatcher's row validates the buffer before this runs, and that check and
+ * this copy are two instants - a sibling thread can munmap the buffer in between
+ * (H-010's family). */
+static long regular_write(vibeos_file_t *f, uint64_t buf, uint64_t len) {
+    uint64_t n = 0;
+
+    if ((f->flags & VIBEOS_O_ACCMODE) == VIBEOS_O_RDONLY) {
+        return -VIBEOS_EBADF;
+    }
+    if (f->wlen < VIBEOS_FILE_WBUF) {
+        uint64_t room = (uint64_t)(VIBEOS_FILE_WBUF - f->wlen);
+        n = (len < room) ? len : room;
+        if (n > 0u &&
+            vibeos_uaccess_copy(&f->wbuf[f->wlen], (const void *)(uintptr_t)buf, n) != 0) {
+            return -VIBEOS_EFAULT;
+        }
+        f->wlen += (uint32_t)n;
+    }
+    f->dirty = 1;
+    return (long)n;
+}
+
+static long regular_seek(vibeos_file_t *f, int64_t off, int whence) {
+    int64_t base;
+
+    switch (whence) {
+        case 0: base = 0; break;                    /* SEEK_SET */
+        case 1: base = (int64_t)f->pos; break;      /* SEEK_CUR */
+        case 2: base = (int64_t)f->size; break;     /* SEEK_END */
+        default: return -VIBEOS_EINVAL;
+    }
+    if ((off > 0 && base > INT64_MAX - off) || base + off < 0) {
+        return -VIBEOS_EINVAL;   /* Linux refuses a negative result */
+    }
+    f->pos = (uint64_t)(base + off);
+    return (long)f->pos;
+}
+
+/* The mode matters more than it looks: a libc decides how to buffer a stream from
+ * it, and a program decides whether to recurse from it. Reporting a regular file
+ * for a directory does not fail here - it fails later, inside the program, doing
+ * something that made sense given what it was told. */
+static int regular_stat(vibeos_file_t *f, vibeos_file_stat_t *out) {
+    out->mode = f->isdir ? (VIBEOS_S_IFDIR | 0755u) : (VIBEOS_S_IFREG | 0644u);
+    out->size = f->isdir ? 0u : f->size;
+    out->ino = f->node ? f->node : 2u;
+    return 0;
+}
+
+/* dirent64 records from the directory the description was opened on. The cursor
+ * is the description's, like the offset of a file. */
+static long dir_getdents(vibeos_file_t *f, uint64_t buf, uint64_t len) {
+    uint64_t used = 0;
+    uint32_t records = 0;
+
+    /* A bounded syscall must not spin forever if a filesystem backend returns
+     * a cyclic directory stream or fails to advance its cursor. */
+    while (records < 256u && f->dir_index < 4096u) {
+        char name[16];
+        int is_dir = 0, n = 0;
+        uint16_t reclen;
+        uint64_t entry_size = 0;
+
+        if (vibeos_fs_list(ks_rootfs(), f->path, f->dir_index, name,
+                           sizeof(name), &entry_size, &is_dir) != 0) {
+            break; /* end of directory */
+        }
+        while (name[n]) {
+            n++;
+        }
+        reclen = (uint16_t)((19 + n + 1 + 7) & ~7); /* 8+8+2+1 header, 8-aligned */
+        if (used + reclen > len) {
+            break;
+        }
+        {
+            /* Built here and copied out whole (M-052): filling the user's
+             * buffer byte by byte faulted in ring 0 if a sibling unmapped it
+             * after the range check. A record is at most 19 + 15 + 1 bytes
+             * rounded to 8. */
+            uint8_t rec[48];
+            int k;
+            for (k = 0; k < reclen; k++) {
+                rec[k] = 0;
+            }
+            rec[16] = (uint8_t)(reclen & 0xFFu);
+            rec[17] = (uint8_t)(reclen >> 8);
+            rec[18] = is_dir ? 4u : 8u; /* DT_DIR / DT_REG */
+            for (k = 0; k < n; k++) {
+                rec[19 + k] = (uint8_t)name[k];
+            }
+            if (vibeos_uaccess_copy((void *)(uintptr_t)(buf + used), rec, reclen) != 0) {
+                return (used > 0u) ? (long)used : -VIBEOS_EFAULT;
+            }
+        }
+        used += reclen;
+        f->dir_index++;
+        records++;
+    }
+    return (long)used;
+}
+
+/* The last descriptor has gone: commit what was written. The volume changed, so
+ * a staged image may no longer match the file it came from - dropping it is the
+ * whole basis for trusting that cache. A failed write-back has nobody left to be
+ * told; close reports it only when it was the last reference, as Linux's close
+ * reports what the release said. */
+static void regular_release(vibeos_file_t *f) {
+    if ((f->flags & VIBEOS_O_ACCMODE) != VIBEOS_O_RDONLY && f->dirty) {
+        if (g_on_write_back) {
+            g_on_write_back();
+        }
+        if (vibeos_fs_write_file(ks_rootfs(), f->path, f->wbuf, f->wlen) < 0) {
+            ks_log(VIBEOS_LOG_WARN, 70u, f->wlen, 0, "a file's write-back failed at its last close");
+        }
+    }
+}
+
+const vibeos_file_ops_t vibeos_fops_regular = {
+    "file", regular_read, regular_write, regular_seek, regular_stat, 0, 0, regular_release
+};
+
+const vibeos_file_ops_t vibeos_fops_dir = {
+    "dir", 0, 0, regular_seek, regular_stat, 0, dir_getdents, 0
+};
+
+vibeos_file_t *vibeos_open_path(const char *path, uint32_t flags, long *err) {
+    vibeos_fs_node_t node;
+    /* O_WRONLY or O_CREAT, as it always was. O_RDWR on its own opens for reading:
+     * a write-back replaces the whole file with the bytes written, so writing
+     * into the middle of an existing file would truncate it to what was written.
+     * That is a gap of the filesystem layer (A4/L1), kept visible as EBADF. */
+    int writing = (flags & VIBEOS_O_ACCMODE) == VIBEOS_O_WRONLY || (flags & VIBEOS_O_CREAT);
+    vibeos_file_t *f;
+    uint32_t k;
+
+    node.id = 0;
+    node.size = 0;
+    node.is_dir = 0;
+    /* A file opened to be written is created or replaced when it is released,
+     * from the bytes written - the FAT writer stores whole files - so it is not
+     * looked up first. That is the behaviour this kernel had; truncation without
+     * O_TRUNC is a gap of the filesystem layer, not of this one. */
+    if (!writing && vibeos_fs_lookup(ks_rootfs(), path, &node) != 0) {
+        *err = -VIBEOS_ENOENT;
+        return 0;
+    }
+    flags &= ~VIBEOS_O_ACCMODE;
+    flags |= writing ? VIBEOS_O_WRONLY : VIBEOS_O_RDONLY;
+    f = vibeos_file_alloc(node.is_dir ? &vibeos_fops_dir : &vibeos_fops_regular, flags);
+    if (!f) {
+        *err = -VIBEOS_ENFILE;
+        return 0;
+    }
+    for (k = 0; k + 1u < VIBEOS_FILE_PATH && path[k]; k++) {
+        f->path[k] = path[k];
+    }
+    f->path[k] = 0;
+    f->node = node.id;
+    f->size = node.size;
+    f->isdir = node.is_dir;
+    *err = 0;
+    return f;
+}

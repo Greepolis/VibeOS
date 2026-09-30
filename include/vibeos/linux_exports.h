@@ -28,9 +28,10 @@ int linux_signal_deliver(struct ks_regs *frame);
 /* The one place a user pointer is judged (dispatch.c). */
 int linux_user_ok(uint64_t base, uint64_t len, int write);
 
-/* Descriptors (fs.c): a fork's or exec's copy of a table, and a thread done with
- * one - which closes it if that thread was the last, and returns 1 if so. */
-void linux_fds_copy(vibeos_procstate_t *dst, vibeos_procstate_t *src);
+/* Descriptors (fs.c): a fork's or exec's copy of a table (0 or -ENOMEM), and a
+ * thread done with one - which closes it if that thread was the last, and returns
+ * 1 if so. */
+int linux_fds_copy(vibeos_procstate_t *dst, vibeos_procstate_t *src);
 int linux_files_leave(vibeos_procstate_t *ps);
 
 /* Futexes (futex.c): exit wakes whoever joins the thread. One waiter per task at
@@ -45,6 +46,5 @@ extern volatile uint64_t g_abi_deferred;
 extern volatile uint64_t g_abi_deferred_nr;
 extern volatile uint64_t g_abi_probes;
 extern volatile uint64_t g_abi_last_nr;
-extern uint64_t g_ring3_write_nul;
 
 #endif

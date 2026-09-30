@@ -123,9 +123,9 @@ typedef vibeos_lock_t hw_lock_t;
 typedef vibeos_procstate_t hw_procstate_t;
 
 
-/* A descriptor is `vibeos_fd_t` (include/vibeos/fdtable.h); the old name stays so
- * the ~60 places that say hw_fd_t are not rewritten for a rename. */
-typedef vibeos_fd_t hw_fd_t;
+/* A descriptor names an open file description (include/vibeos/fdtable.h, file.h);
+ * hw_fd_t, the entry-as-the-file it replaced, went with docs/abi/ A3. */
+#include "vibeos/fileops.h"
 
 typedef struct {
     vibeos_x86_64_isr_frame_t ctx;

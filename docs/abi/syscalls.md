@@ -9,9 +9,9 @@ the registry, not this page; `check.sh` fails while the two differ.
 
 | State | Count | What the kernel answers |
 | --- | --- | --- |
-| done | 55 | through its row |
-| partial | 16 | through its row, with the gap named |
-| missing | 219 | ENOSYS, and the boot gate fails naming the number |
+| done | 56 | through its row |
+| partial | 18 | through its row, with the gap named |
+| missing | 216 | ENOSYS, and the boot gate fails naming the number |
 | deferred | 50 | ENOSYS, and the boot gate fails naming the number |
 | refused | 33 | its errno, counted as refused - expected, never a failure |
 
@@ -19,7 +19,7 @@ Without a row, by phase:
 
 | Phase | Syscalls |
 | --- | --- |
-| L1 - files and paths | 72 |
+| L1 - files and paths | 69 |
 | L2 - processes, credentials, time | 47 |
 | L3 - memory | 10 |
 | L4 - event loops | 21 |
@@ -38,7 +38,7 @@ calls, outside the Linux number space, are listed last.
 | --- | --- | --- | --- | --- | --- | --- |
 | 0 | `read` | done | - | - | `fs.c` |  |
 | 1 | `write` | done | - | - | `fs.c` |  |
-| 2 | `open` | partial | L1 | - | `fs.c` | no working directory: paths resolve from the root; 4 descriptor slots |
+| 2 | `open` | partial | L1 | - | `fs.c` | no working directory: paths resolve from the root |
 | 3 | `close` | done | - | - | `fs.c` |  |
 | 4 | `stat` | missing | L1 | ENOSYS |  |  |
 | 5 | `fstat` | done | - | - | `fs.c` |  |
@@ -108,7 +108,7 @@ calls, outside the Linux number space, are listed last.
 | 69 | `msgsnd` | missing | L7 | ENOSYS |  |  |
 | 70 | `msgrcv` | missing | L7 | ENOSYS |  |  |
 | 71 | `msgctl` | missing | L7 | ENOSYS |  |  |
-| 72 | `fcntl` | missing | L1 | ENOSYS |  |  |
+| 72 | `fcntl` | partial | L1 | - | `fs.c` | no record locks: F_GETLK/F_SETLK answer ENOLCK |
 | 73 | `flock` | missing | L1 | ENOSYS |  |  |
 | 74 | `fsync` | missing | L1 | ENOSYS |  |  |
 | 75 | `fdatasync` | missing | L1 | ENOSYS |  |  |
@@ -328,7 +328,7 @@ calls, outside the Linux number space, are listed last.
 | 289 | `signalfd4` | missing | L4 | ENOSYS |  |  |
 | 290 | `eventfd2` | missing | L4 | ENOSYS |  |  |
 | 291 | `epoll_create1` | missing | L4 | ENOSYS |  |  |
-| 292 | `dup3` | missing | L1 | ENOSYS |  |  |
+| 292 | `dup3` | done | - | - | `fs.c` |  |
 | 293 | `pipe2` | done | - | - | `fs.c` |  |
 | 294 | `inotify_init1` | missing | L4 | ENOSYS |  |  |
 | 295 | `preadv` | missing | L1 | ENOSYS |  |  |
@@ -383,7 +383,7 @@ calls, outside the Linux number space, are listed last.
 | 433 | `fspick` | deferred | D | ENOSYS |  | the new mount API: after L8 |
 | 434 | `pidfd_open` | missing | L2 | ENOSYS |  |  |
 | 435 | `clone3` | missing | L2 | ENOSYS |  |  |
-| 436 | `close_range` | missing | L1 | ENOSYS |  |  |
+| 436 | `close_range` | partial | L1 | - | `fs.c` | CLOSE_RANGE_UNSHARE refused: no unshare(CLONE_FILES) |
 | 437 | `openat2` | missing | L1 | ENOSYS |  |  |
 | 438 | `pidfd_getfd` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
 | 439 | `faccessat2` | missing | L1 | ENOSYS |  |  |

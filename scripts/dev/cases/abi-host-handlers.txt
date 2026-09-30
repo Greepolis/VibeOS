@@ -17,7 +17,7 @@
 # boot-side cases live in abi-registry.txt; it was run by hand on 2026-09-29 and
 # went red with "linux_gap 105 has an expectation and is not PARTIAL".
 #
-# Target source: kernel/abi/linux/sig.c (cases 1 and 3); kernel/abi/linux/fs.c for case 2
+# Target source: kernel/abi/linux/sig.c (cases 1 and 3); kernel/abi/files/console.c for case 2 (the console's ioctl since A3)
 # Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/linux/sig.c scripts/dev/cases/abi-host-handlers.txt
 
 ### sigset numbering is not converted at the boundary

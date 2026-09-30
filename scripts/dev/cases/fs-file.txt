@@ -1,0 +1,31 @@
+# Open file descriptions (kernel/fs/file.c, docs/abi/ A3), proved by the host test
+# in tests/kernel/fdtable_tests.c.
+#
+#  1. the last put does not run the type's release: a pipe end is never given
+#     back, a written file never committed. Expect "the last put releases it".
+#  2. a put with nothing to put is clamped instead of counted. Expect "a put with
+#     nothing left is counted".
+#  3. a slot is handed out while its release is still running - the refcount
+#     alone decides it is free. Expect "a slot being released is not handed out".
+#
+# Target source: kernel/fs/file.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/fs/file.c scripts/dev/cases/fs-file.txt
+
+### the last put does not run the type's release
+--- old
+    if (f->ops && f->ops->release) {
+        f->ops->release(f);
+    }
++++ new
+
+### a put with nothing to put is clamped instead of counted
+--- old
+            vibeos_mbz_hit(VIBEOS_MBZ_FILE_PUT_UNDERFLOW, (uint64_t)(uintptr_t)f);
++++ new
+            (void)f;
+
+### a slot is handed out while its release is still running
+--- old
+        if (g_files[i].refs == 0u && g_files[i].ops == 0) {
++++ new
+        if (g_files[i].refs == 0u) {

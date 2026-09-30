@@ -71,7 +71,10 @@ int linux_user_ok(uint64_t base, uint64_t len, int write) {
 void vibeos_linux_abi_init(void) {
     uint32_t i;
 
-
+    /* A file written back at its last close may be a program: the exec staging
+     * cache must not keep serving the old bytes (A3 moved the write-back into
+     * the regular-file type, which does not know about the cache). */
+    vibeos_files_on_write_back(linux_exec_cache_drop);
     vibeos_abi_linux_reset();
     for (i = 0; i < (uint32_t)(sizeof(g_tables) / sizeof(g_tables[0])); i++) {
         if (vibeos_abi_linux_register(g_tables[i].rows, *g_tables[i].count) != 0) {

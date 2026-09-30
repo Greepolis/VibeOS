@@ -16,6 +16,12 @@
  * header - the honest cost of the cut. Since A2 (docs/abi/) that is the stack,
  * its lock, the clock and a wait, all through vibeos/ksvc.h, and this file runs
  * in the host tests like the rest of the personality.
+ *
+ * Since A3 a socket is an open file description, and the waits a socket call
+ * makes - connect, accept, recvfrom - are the socket type's
+ * (kernel/abi/files/socket.c), where another personality can make them too.
+ * What is left here is Linux's half: struct sockaddr_in in and out, and
+ * descriptors.
  */
 
 #include "linux_internal.h"
@@ -67,15 +73,28 @@ static int linux_write_sockaddr(uint64_t uptr, uint32_t ip, uint16_t port) {
     return vibeos_uaccess_copy((void *)(uintptr_t)uptr, p, sizeof(p)) == 0 ? 0 : -1;
 }
 
-/* Give up the CPU until the next tick; the network is pumped from there. */
-static void linux_net_wait_tick(void) {
-    ks_idle();
+
+/* The socket description a descriptor names, with a reference the caller puts;
+ * 0 and *err set when the descriptor is not open or not a socket. */
+static vibeos_file_t *linux_socket_get(uint64_t fd, long *err) {
+    vibeos_file_t *f = linux_file_get(fd);
+
+    if (!f) {
+        *err = -VIBEOS_EBADF;
+        return 0;
+    }
+    if (f->ops != &vibeos_fops_socket) {
+        vibeos_file_put(f);
+        *err = -VIBEOS_ENOTSOCK;
+        return 0;
+    }
+    return f;
 }
 
 static long linux_sys_socket(uint64_t domain, uint64_t type) {
-    vibeos_procstate_t *ps;
-    int me, fd, s;
-    int kind;
+    vibeos_file_t *f;
+    long err;
+    int me, kind;
 
     if (!ks_net() || (me = ks_current()) < 0 || !ks_id(me)->is_user) {
         return -VIBEOS_EINVAL;
@@ -90,293 +109,126 @@ static long linux_sys_socket(uint64_t domain, uint64_t type) {
     } else {
         return -VIBEOS_EINVAL;
     }
-
-    fd = linux_fd_alloc(me);
-    ps = ks_ps(me);
-    if (fd < 0) {
-        return -VIBEOS_EMFILE;
+    f = vibeos_sockfile_create(kind, ks_id(me)->tgid, &err);
+    if (!f) {
+        return err;
     }
-    ks_lock(ks_net_lock(), __func__);
-    s = vibeos_inet_socket(ks_net(), kind);
-    if (s >= 0 && vibeos_inet_socket_set_owner(ks_net(), s, ks_id(me)->tgid) != 0) {
-        (void)vibeos_inet_close(ks_net(), s);
-        s = -1;
-    }
-    ks_unlock(ks_net_lock());
-    if (s < 0) {
-        ps->files.fds[fd].used = 0;
-        return -VIBEOS_ENOMEM;
-    }
-    ps->files.fds[fd].net_sock = s;
-    ps->files.fds[fd].pipe = -1;
-    return 3 + fd;
+    /* SOCK_CLOEXEC is O_CLOEXEC's bit, carried in the type. */
+    return linux_fd_install(f, (type & VIBEOS_O_CLOEXEC) ? VIBEOS_FD_CLOEXEC : 0u, 0);
 }
 
 static long linux_sys_bind(uint64_t fd, uint64_t addr_uptr) {
-    vibeos_fd_t *f = linux_fd_get(fd);
     uint32_t ip;
     uint16_t port;
-    int r;
+    long r;
+    vibeos_file_t *f = linux_socket_get(fd, &r);
 
-    if (!f || f->net_sock < 0) {
-        return -VIBEOS_EBADF;
+    if (!f) {
+        return r;
     }
-    if (linux_read_sockaddr(addr_uptr, &ip, &port) != 0) {
-        return -VIBEOS_EFAULT;
-    }
-    ks_lock(ks_net_lock(), __func__);
-    r = vibeos_inet_bind(ks_net(), f->net_sock, port);
-    ks_unlock(ks_net_lock());
-    return (r == 0) ? 0 : -VIBEOS_EINVAL;
+    r = (linux_read_sockaddr(addr_uptr, &ip, &port) != 0) ? -VIBEOS_EFAULT
+                                                           : vibeos_sockfile_bind(f, port);
+    vibeos_file_put(f);
+    return r;
 }
 
 static long linux_sys_listen(uint64_t fd) {
-    vibeos_fd_t *f = linux_fd_get(fd);
-    int r;
+    long r;
+    vibeos_file_t *f = linux_socket_get(fd, &r);
 
-    if (!f || f->net_sock < 0) {
-        return -VIBEOS_EBADF;
+    if (!f) {
+        return r;
     }
-    ks_lock(ks_net_lock(), __func__);
-    r = vibeos_inet_listen(ks_net(), f->net_sock);
-    ks_unlock(ks_net_lock());
-    return (r == 0) ? 0 : -VIBEOS_EINVAL;
-}
-
-/* A blocking socket call re-reads its descriptor on every wake, and a sibling
- * thread can close it and reuse the slot for a new socket while it sleeps -
- * M-020's slot-index ABA in the FD table, the same shape as H-007 and H-028.
- * Capture the socket index and the socket's generation before blocking, and on
- * every wake confirm the descriptor still names that socket and it is still the
- * same tenant. Returns the stable socket index, or -1 (and counts the ABA) when
- * the descriptor was closed (f->used clear), pointed at a different socket
- * (net_sock changed), or that socket slot was reused (generation changed). */
-static int linux_sock_stable(const vibeos_fd_t *f, int sock, uint32_t gen) {
-    uint32_t cur;
-    if (!f->used || f->net_sock != sock) {
-        ks_net()->sock_fd_aba++;
-        return -1;
-    }
-    ks_lock(ks_net_lock(), __func__);
-    cur = ks_net()->sockets[sock].gen;
-    ks_unlock(ks_net_lock());
-    if (cur != gen) {
-        ks_net()->sock_fd_aba++;
-        return -1;
-    }
-    return sock;
+    r = vibeos_sockfile_listen(f);
+    vibeos_file_put(f);
+    return r;
 }
 
 static long linux_sys_connect(uint64_t fd, uint64_t addr_uptr) {
-    vibeos_fd_t *f = linux_fd_get(fd);
-    uint32_t ip, gen;
+    uint32_t ip;
     uint16_t port;
-    uint64_t deadline;
-    int r, sock;
+    long r;
+    vibeos_file_t *f = linux_socket_get(fd, &r);
 
-    if (!f || f->net_sock < 0) {
-        return -VIBEOS_EBADF;
+    if (!f) {
+        return r;
     }
-    if (linux_read_sockaddr(addr_uptr, &ip, &port) != 0) {
-        return -VIBEOS_EFAULT;
-    }
-    sock = f->net_sock;
-    ks_lock(ks_net_lock(), __func__);
-    gen = ks_net()->sockets[sock].gen;
-    r = vibeos_inet_connect(ks_net(), sock, ip, port);
-    ks_unlock(ks_net_lock());
-    if (r != 0) {
-        return -VIBEOS_EINVAL;
-    }
-
-    deadline = ks_ticks() + LINUX_NET_TIMEOUT_SECONDS * ks_hz();
-    for (;;) {
-        int st;
-        if (linux_sock_stable(f, sock, gen) < 0) {
-            return -VIBEOS_EBADF;
-        }
-        ks_lock(ks_net_lock(), __func__);
-        st = vibeos_inet_socket_state(ks_net(), sock);
-        ks_unlock(ks_net_lock());
-        if (st == VIBEOS_TCP_ESTABLISHED) {
-            return 0;
-        }
-        if (st == VIBEOS_TCP_CLOSED || st < 0) {
-            return -VIBEOS_EIO;   /* refused, reset, or gave up retransmitting */
-        }
-        if (ks_ticks() > deadline) {
-            return -VIBEOS_EIO;
-        }
-        linux_net_wait_tick();
-    }
+    r = (linux_read_sockaddr(addr_uptr, &ip, &port) != 0) ? -VIBEOS_EFAULT
+                                                           : vibeos_sockfile_connect(f, ip, port);
+    vibeos_file_put(f);
+    return r;
 }
 
 static long linux_sys_accept(uint64_t fd, uint64_t addr_uptr) {
-    vibeos_fd_t *f = linux_fd_get(fd);
-    vibeos_procstate_t *ps;
-    int me;
-    int child = -1;
-    int nfd, sock;
-    uint32_t gen;
+    vibeos_file_t *child = 0;
+    uint32_t ip = 0;
+    uint16_t port = 0;
+    long r, nfd;
+    vibeos_file_t *f = linux_socket_get(fd, &r);
 
-    if (!f || f->net_sock < 0 || ks_current() < 0) {
-        return -VIBEOS_EBADF;
+    if (!f || ks_current() < 0) {
+        if (f) {
+            vibeos_file_put(f);
+        }
+        return f ? -VIBEOS_EBADF : r;
     }
-    me = ks_current();
     /* A bad peer-address pointer is refused by the row, before a connection is
      * consumed (M-032). */
-    sock = f->net_sock;
-    ks_lock(ks_net_lock(), __func__);
-    gen = ks_net()->sockets[sock].gen;
-    ks_unlock(ks_net_lock());
-    for (;;) {
-        if (linux_sock_stable(f, sock, gen) < 0) {
-            return -VIBEOS_EBADF;
-        }
-        ks_lock(ks_net_lock(), __func__);
-        child = vibeos_inet_accept(ks_net(), sock);
-        ks_unlock(ks_net_lock());
-        if (child >= 0) {
-            break;
-        }
-        if (child != -VIBEOS_INET_EAGAIN) {
-            return -VIBEOS_EINVAL;
-        }
-        linux_net_wait_tick();
+    r = vibeos_sockfile_accept(f, ks_id(ks_current())->tgid, &child, &ip, &port);
+    vibeos_file_put(f);
+    if (r != 0) {
+        return r;
     }
-
-    nfd = linux_fd_alloc(me);
-    ps = ks_ps(me);
+    nfd = linux_fd_install(child, 0, 0);
     if (nfd < 0) {
-        ks_lock(ks_net_lock(), __func__);
-        (void)vibeos_inet_close(ks_net(), child);
-        ks_unlock(ks_net_lock());
-        return -VIBEOS_EMFILE;
+        return nfd;   /* the install released the child, which closed it */
     }
-    ps->files.fds[nfd].net_sock = child;
-    ps->files.fds[nfd].pipe = -1;
-    {
-        uint32_t ip;
-        uint16_t port;
-        ks_lock(ks_net_lock(), __func__);
-        ip = ks_net()->sockets[child].remote_ip;
-        port = ks_net()->sockets[child].remote_port;
-        /* The child was made by the stack and is owned by nobody; without an
-         * owner, process exit never releases it (M-031). */
-        (void)vibeos_inet_socket_set_owner(ks_net(), child, ks_id(me)->tgid);
-        ks_unlock(ks_net_lock());
-        if (linux_write_sockaddr(addr_uptr, ip, port) != 0) {
-            /* The pointer went bad after the pre-check: undo the accept
-             * rather than hand back a connection with no way to learn of it. */
-            ps->files.fds[nfd].used = 0;
-            ps->files.fds[nfd].net_sock = -1;
-            ks_lock(ks_net_lock(), __func__);
-            (void)vibeos_inet_close(ks_net(), child);
-            ks_unlock(ks_net_lock());
-            return -VIBEOS_EFAULT;
-        }
-    }
-    return 3 + nfd;
-}
-
-/* Where socket data waits between the stack and user memory (H-010).
- *
- * The portable stack copies straight into whatever pointer it is given, and it
- * cannot use the fault-tolerant copy - that is assembly in the arch layer. So
- * receives go into this buffer and are then copied out, and sends are copied in
- * first. Both halves happen under the network lock, which serialises every user of it.
- * One receive buffer's worth: a socket never holds more than that. */
-static uint8_t g_net_bounce[VIBEOS_INET_RXBUF];
-
-/* Blocking stream receive: returns 0 at end of stream, like Linux. */
-long linux_net_recv(vibeos_fd_t *f, uint64_t buf, uint64_t len) {
-    uint64_t deadline = ks_ticks() + LINUX_NET_TIMEOUT_SECONDS * ks_hz();
-    int sock;
-    uint32_t gen;
-
-    if (!f || f->net_sock < 0) {
-        return -VIBEOS_EBADF;
-    }
-    sock = f->net_sock;
-    ks_lock(ks_net_lock(), __func__);
-    gen = ks_net()->sockets[sock].gen;
-    ks_unlock(ks_net_lock());
-    for (;;) {
-        long n;
-        int faulted = 0;
-        if (linux_sock_stable(f, sock, gen) < 0) {
-            return -VIBEOS_EBADF;
-        }
-        ks_lock(ks_net_lock(), __func__);
-        n = vibeos_inet_recv(ks_net(), sock, g_net_bounce,
-                             (uint32_t)(len < sizeof(g_net_bounce) ? len : sizeof(g_net_bounce)));
-        if (n > 0 && vibeos_uaccess_copy((void *)(uintptr_t)buf, g_net_bounce, (uint64_t)n) != 0) {
-            faulted = 1;
-        }
-        ks_unlock(ks_net_lock());
-        if (faulted) {
-            return -VIBEOS_EFAULT;
-        }
-        if (n >= 0) {
-            return n;
-        }
-        if (n == -VIBEOS_INET_ECONNRESET) {
-            return -VIBEOS_EIO;
-        }
-        if (n != -VIBEOS_INET_EAGAIN) {
-            return -VIBEOS_EINVAL;
-        }
-        if (ks_ticks() > deadline) {
-            return -VIBEOS_EIO;
-        }
-        linux_net_wait_tick();
-    }
-}
-
-long linux_net_send(vibeos_fd_t *f, uint64_t buf, uint64_t len) {
-    long n;
-    if (len > sizeof(g_net_bounce)) {
-        len = sizeof(g_net_bounce);   /* a short send, which a stream allows */
-    }
-    ks_lock(ks_net_lock(), __func__);
-    if (vibeos_uaccess_copy(g_net_bounce, (const void *)(uintptr_t)buf, len) != 0) {
-        ks_unlock(ks_net_lock());
+    if (linux_write_sockaddr(addr_uptr, ip, port) != 0) {
+        /* The pointer went bad after the pre-check: undo the accept rather than
+         * hand back a connection with no way to learn of it. */
+        (void)linux_fd_close((uint64_t)nfd);
         return -VIBEOS_EFAULT;
     }
-    n = vibeos_inet_send(ks_net(), f->net_sock, g_net_bounce, (uint32_t)len);
-    ks_unlock(ks_net_lock());
-    if (n < 0) {
-        return (n == -VIBEOS_INET_EAGAIN) ? 0 : -VIBEOS_EIO;
-    }
-    return n;
+    return nfd;
 }
 
 static long linux_sys_sendto(uint64_t fd, uint64_t buf, uint64_t len, uint64_t addr_uptr) {
-    vibeos_fd_t *f = linux_fd_get(fd);
     uint32_t ip;
     uint16_t port;
-    long n;
+    long r;
+    vibeos_file_t *f = linux_socket_get(fd, &r);
 
-    if (!f || f->net_sock < 0) {
-        return -VIBEOS_EBADF;
+    if (!f) {
+        return r;
     }
     if (addr_uptr == 0u) {
-        return linux_net_send(f, buf, len);
+        r = f->ops->write(f, buf, len);
+    } else if (linux_read_sockaddr(addr_uptr, &ip, &port) != 0) {
+        r = -VIBEOS_EFAULT;
+    } else {
+        r = vibeos_sockfile_sendto(f, buf, len, ip, port);
     }
-    if (linux_read_sockaddr(addr_uptr, &ip, &port) != 0) {
+    vibeos_file_put(f);
+    return r;
+}
+
+static long linux_sys_recvfrom(uint64_t fd, uint64_t buf, uint64_t len, uint64_t addr_uptr) {
+    uint32_t ip = 0;
+    uint16_t port = 0;
+    long r;
+    vibeos_file_t *f = linux_socket_get(fd, &r);
+
+    if (!f) {
+        return r;
+    }
+    /* The buffer and the source-address pointer are refused by the row, before
+     * the datagram is dequeued - or a bad pointer loses it with no error (M-032). */
+    r = vibeos_sockfile_recvfrom(f, buf, len, &ip, &port);
+    vibeos_file_put(f);
+    if (r >= 0 && linux_write_sockaddr(addr_uptr, ip, port) != 0) {
         return -VIBEOS_EFAULT;
     }
-    if (len > sizeof(g_net_bounce)) {
-        return -VIBEOS_EINVAL;   /* a datagram is not split */
-    }
-    ks_lock(ks_net_lock(), __func__);
-    if (vibeos_uaccess_copy(g_net_bounce, (const void *)(uintptr_t)buf, len) != 0) {
-        ks_unlock(ks_net_lock());
-        return -VIBEOS_EFAULT;
-    }
-    n = vibeos_inet_sendto(ks_net(), f->net_sock, g_net_bounce, (uint32_t)len, ip, port);
-    ks_unlock(ks_net_lock());
-    return (n < 0) ? -VIBEOS_EIO : n;
+    return r;
 }
 
 /* netctl: the small control surface a shell needs to inspect and exercise the
@@ -428,7 +280,7 @@ static long linux_sys_netctl(uint64_t op, uint64_t arg) {
                 if (ks_ticks() > deadline) {
                     return -VIBEOS_EIO;
                 }
-                linux_net_wait_tick();
+                ks_idle();
             }
         }
         case 2: {
@@ -452,7 +304,7 @@ static long linux_sys_netctl(uint64_t op, uint64_t arg) {
                 if (r != -VIBEOS_INET_EAGAIN || ks_ticks() > deadline) {
                     return -VIBEOS_ENOENT;
                 }
-                linux_net_wait_tick();
+                ks_idle();
             }
         }
         case 3: {
@@ -468,63 +320,6 @@ static long linux_sys_netctl(uint64_t op, uint64_t arg) {
         }
         default:
             return -VIBEOS_EINVAL;
-    }
-}
-
-static long linux_sys_recvfrom(uint64_t fd, uint64_t buf, uint64_t len, uint64_t addr_uptr) {
-    vibeos_fd_t *f = linux_fd_get(fd);
-    uint64_t deadline;
-    uint32_t gen;
-    int sock;
-
-    if (!f || f->net_sock < 0) {
-        return -VIBEOS_EBADF;
-    }
-    /* The socket and its generation, taken once and re-verified on every pass
-     * (M-020). This loop waits, and it used to re-read f->net_sock each time
-     * round: a sibling thread that closed the descriptor and opened another
-     * socket into the same slot had this call receive on the new one. M-020's
-     * fix reached connect, accept and the stream read and missed this one,
-     * which check-net-stable.py now makes impossible to miss again. */
-    sock = f->net_sock;
-    ks_lock(ks_net_lock(), __func__);
-    gen = ks_net()->sockets[sock].gen;
-    ks_unlock(ks_net_lock());
-    /* The buffer and the source-address pointer are refused by the row, before the
-     * datagram is dequeued - or a bad pointer loses it with no error (M-032). */
-    deadline = ks_ticks() + LINUX_NET_TIMEOUT_SECONDS * ks_hz();
-    for (;;) {
-        long n;
-        uint32_t ip = 0;
-        uint16_t port = 0;
-        int faulted = 0;
-        if (linux_sock_stable(f, sock, gen) < 0) {
-            return -VIBEOS_EBADF;
-        }
-        ks_lock(ks_net_lock(), __func__);
-        n = vibeos_inet_recvfrom(ks_net(), sock, g_net_bounce,
-                                 (uint32_t)(len < sizeof(g_net_bounce) ? len : sizeof(g_net_bounce)),
-                                 &ip, &port);
-        if (n > 0 && vibeos_uaccess_copy((void *)(uintptr_t)buf, g_net_bounce, (uint64_t)n) != 0) {
-            faulted = 1;
-        }
-        ks_unlock(ks_net_lock());
-        if (faulted) {
-            return -VIBEOS_EFAULT;
-        }
-        if (n >= 0) {
-            if (linux_write_sockaddr(addr_uptr, ip, port) != 0) {
-                return -VIBEOS_EFAULT;
-            }
-            return n;
-        }
-        if (n != -VIBEOS_INET_EAGAIN) {
-            return -VIBEOS_EINVAL;
-        }
-        if (ks_ticks() > deadline) {
-            return -VIBEOS_EIO;
-        }
-        linux_net_wait_tick();
     }
 }
 

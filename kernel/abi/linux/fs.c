@@ -1,38 +1,16 @@
 /* Linux ABI: files, descriptors and pipes.
  *
- * What a program does once it is running: look at files, read directories, ask
- * who it is, talk through pipes and the console. The list came from tracing
- * BusyBox rather than from reasoning about it.
+ * What a program does once it is running: look at files, read directories, talk
+ * through pipes and the console. The list came from tracing BusyBox rather than
+ * from reasoning about it.
  *
- * Lifted out of arch_hw.c (C4 stage 3), moved as it was. */
+ * Lifted out of arch_hw.c (C4 stage 3). Since docs/abi/ A3 a descriptor names an
+ * open file description (vibeos/file.h) and what each kind of file does is its
+ * type's (kernel/abi/files/), so these handlers are the ABI's half only: find the
+ * description, call its type, translate the answer. The `if` chains that decided
+ * by hand whether a descriptor was a pipe, a socket or the console are gone. */
 
 #include "linux_internal.h"
-
-/* Writes to the console whose leading bytes read as NUL: see linux_sys_write.
- * The boot's MUSTBEZERO line reports it. */
-uint64_t g_ring3_write_nul;
-
-/* Open-file table entry. Reads stream straight off the filesystem; writes are
- * buffered and committed to disk on close (the FAT writer stores whole files). */
-#define LINUX_MAX_DIR_ENTRIES 4096u
-
-/* The Linux errno values are in vibeos/abi_linux.h. */
-#define VIBEOS_TIOCGPGRP 0x540Fu
-
-#define VIBEOS_TIOCSPGRP 0x5410u
-
-/* Linux x86-64 syscall numbers we implement. */
-/* VibeOS-specific: network control. Deliberately outside the Linux number
- * space, so it can never collide with a real syscall we implement later. */
-
-/* Numbers a real C runtime reaches for before it runs any of the program.
- * Taken from arch/x86/entry/syscalls/syscall_64.tbl, not from memory. */
-
-/* What a real program needs once it is past startup and doing work. Taken from
- * a strace of BusyBox running echo, cat, ls, pwd and wc - see
- * scripts/dev/trace-linux-binary.sh. */
-
-/* clone() flags that decide whether this is a fork or a thread. */
 
 /* openat/newfstatat interpret a relative path against this directory fd. There
  * is no per-process working directory here, so it is the only value accepted.
@@ -68,1005 +46,122 @@ uint64_t g_ring3_write_nul;
 
 #define STAT_OFF_INO         8u
 
-#define S_IFREG 0100000u
+/* fcntl commands (asm-generic/fcntl.h). */
+#define F_DUPFD          0
+#define F_GETFD          1
+#define F_SETFD          2
+#define F_GETFL          3
+#define F_SETFL          4
+#define F_GETLK          5
+#define F_SETLK          6
+#define F_SETLKW         7
+#define F_DUPFD_CLOEXEC  1030
 
-#define S_IFDIR 0040000u
+/* The flags F_SETFL may change; the access mode and creation flags stay what
+ * open made them, as on Linux. */
+#define LINUX_SETFL_MASK (VIBEOS_O_APPEND | VIBEOS_O_NONBLOCK)
 
-#define S_IFCHR 0020000u
+#define CLOSE_RANGE_UNSHARE (1u << 1)
+#define CLOSE_RANGE_CLOEXEC (1u << 2)
 
-/* Per-process open-file table helpers. fds 0-2 are the console; 3+ are files.
- * The table is the process's (ps->files), shared by all of its threads. */
-static vibeos_fdtable_t *linux_cur_files(void) {
-    if (ks_current() < 0 || ks_ps(ks_current()) == 0) {
-        return 0;
-    }
-    return &ks_ps(ks_current())->files;
+/* ---- descriptors ----------------------------------------------------------------
+ *
+ * A call holds a reference to the description it works on for as long as it runs
+ * - Linux's fdget/fdput - so a sibling thread closing the descriptor meanwhile
+ * takes the number away and not the file: a read blocked on a pipe is not left
+ * reading a slot somebody else has been handed. */
+
+static vibeos_procstate_t *linux_cur_ps(void) {
+    int me = ks_current();
+    return me < 0 ? 0 : ks_ps(me);
 }
 
-vibeos_fd_t *linux_fd_get(uint64_t fd) {
-    if (fd < 3u || fd >= 3u + LINUX_MAX_FDS) {
-        return 0;
-    }
-    return vibeos_fdtable_get(linux_cur_files(), fd);
-}
-
-/* Take descriptor `fd` out of the calling process's table: its entry copied to
- * `out` and the slot freed, in one step under the table's lock. What close does
- * with it afterwards - release a pipe end, write a file back - happens on the
- * copy, outside the lock, so a sibling can neither close the same descriptor a
- * second time nor be handed the slot while it is still being finished with. */
-static int linux_fd_take(uint64_t fd, vibeos_fd_t *out) {
-    vibeos_procstate_t *ps;
-    vibeos_fd_t *f;
-
-    if (ks_current() < 0 || (ps = ks_ps(ks_current())) == 0) {
-        return -1;
-    }
-    ks_lock(&ps->files_lock, __func__);
-    f = (fd < 3u) ? vibeos_fdtable_redirect(&ps->files, fd)
-                  : (fd < 3u + LINUX_MAX_FDS ? vibeos_fdtable_get(&ps->files, fd) : 0);
-    if (f) {
-        *out = *f;
-        f->used = 0;
-        f->pipe = -1;
-        f->net_sock = -1;
-    }
-    ks_unlock(&ps->files_lock);
-    return f ? 0 : -1;
-}
-
-/* A descriptor claimed and then not wanted - the open found nothing, the
- * copy-out faulted. Freed under the lock like any other change to the table. */
-static void linux_fd_unclaim(int slot, int index) {
-    vibeos_procstate_t *ps = ks_ps(slot);
-
-    ks_lock(&ps->files_lock, __func__);
-    vibeos_fd_clear(&ps->files.fds[index]);
-    ks_unlock(&ps->files_lock);
-}
-
-/* Claim a free descriptor slot in a task's process: under the table's lock,
- * because every thread of the process claims from the same table. */
-int linux_fd_alloc(int slot) {
-    vibeos_procstate_t *ps = ks_ps(slot);
-    int i;
+vibeos_file_t *linux_file_get(uint64_t fd) {
+    vibeos_procstate_t *ps = linux_cur_ps();
+    vibeos_file_t *f;
 
     if (!ps) {
-        return -1;
+        return 0;
     }
     ks_lock(&ps->files_lock, __func__);
-    i = vibeos_fdtable_claim(&ps->files);
+    f = vibeos_fdtable_get(&ps->files, fd);
+    vibeos_file_get(f);
     ks_unlock(&ps->files_lock);
-    return i;
+    return f;
 }
 
-/* Let go of one end of a pipe. The pipe itself lives until both ends are
- * gone, because a reader may still have data to drain after every writer has
- * closed. */
-void linux_pipe_release(vibeos_fd_t *f) {
-    if (!f || f->pipe < 0) {
-        return;
-    }
-    vibeos_pipe_end_release(f);
-    /* Somebody may be waiting for the data or the space that just became
-     * possible - or for the end of file that just became true. */
-    ks_wake_waiters();
-}
+/* Install a description at the lowest free number at or above `min`, taking over
+ * the caller's reference; on failure the reference is released here. */
+long linux_fd_install(vibeos_file_t *f, uint32_t fdflags, uint32_t min) {
+    vibeos_procstate_t *ps = linux_cur_ps();
+    int fd;
 
-/* Socket-backed descriptors are served by linux_net_recv and linux_net_send
- * (net.c), so read/write work on a connection like any other stream. */
-
-static long linux_pipe_read(vibeos_fd_t *f, uint64_t buf, uint64_t len) {
-    for (;;) {
-        vibeos_pipe_status_t st;
-        long n = vibeos_pipe_read(f->pipe, (void *)(uintptr_t)buf, len, vibeos_uaccess_copy, &st);
-
-        if (n > 0) {
-            ks_wake_waiters();   /* a blocked writer may now have room */
-            return n;
-        }
-        if (st == VIBEOS_PIPE_FAULT) {
-            return -VIBEOS_EFAULT;
-        }
-        if (st == VIBEOS_PIPE_EOF) {
-            return 0;   /* end of file: empty, and nobody can ever write again */
-        }
-        /* Nothing yet, and somebody could still write. Park instead of
-         * spinning, so the writer actually gets a chance to run - unless a
-         * signal needs acting on. This wait never marks the task BLOCKED, so
-         * the timer returns it here each tick and the check cannot be missed. */
-        if (ks_current() >= 0 && ks_signal_interrupts(ks_current())) {
-            return -VIBEOS_EINTR;
-        }
-        ks_block_point();
-    }
-}
-
-static long linux_pipe_write(vibeos_fd_t *f, uint64_t buf, uint64_t len) {
-    uint64_t written = 0;
-
-    while (written < len) {
-        vibeos_pipe_status_t st;
-        long n = vibeos_pipe_write(f->pipe, (const void *)(uintptr_t)(buf + written), len - written,
-                                   vibeos_uaccess_copy, &st);
-
-        if (n > 0) {
-            written += (uint64_t)n;
-            ks_wake_waiters();   /* a blocked reader now has data */
-            continue;
-        }
-        /* Writing into a pipe nobody will read. Linux raises SIGPIPE and returns
-         * EPIPE; with no handler the default action ends the process, which is what
-         * stops a pipeline from filling memory after its reader has gone. */
-        if (st == VIBEOS_PIPE_NO_READER) {
-            if (ks_current() >= 0) {
-                (void)ks_signal_raise(ks_current(), VIBEOS_SIGPIPE);
-            }
-            return written > 0u ? (long)written : -VIBEOS_EPIPE;
-        }
-        if (st == VIBEOS_PIPE_FAULT) {
-            return written > 0u ? (long)written : -VIBEOS_EFAULT;
-        }
-        /* Full, and a signal needs acting on: report what was written, or EINTR if
-         * nothing was. Same shape as the read side, and the same reason the check
-         * cannot be missed. */
-        if (ks_current() >= 0 && ks_signal_interrupts(ks_current())) {
-            return written > 0u ? (long)written : -VIBEOS_EINTR;
-        }
-        ks_block_point();
-    }
-    return (long)written;
-}
-
-/* pipe2(): two descriptors onto one buffer, read end first. */
-static long linux_sys_pipe2(uint64_t fds_uptr, uint64_t flags) {
-    int me;
-    int slot = -1, rfd = -1, wfd = -1;
-    int i;
-
-    (void)flags;   /* O_CLOEXEC has no meaning without an exec-close list */
-    if (ks_current() < 0 || !ks_id(ks_current())->is_user) {
+    if (!ps) {
+        vibeos_file_put(f);
         return -VIBEOS_EINVAL;
     }
-    me = ks_current();
+    ks_lock(&ps->files_lock, __func__);
+    fd = vibeos_fdtable_install(&ps->files, f, fdflags, min);
+    ks_unlock(&ps->files_lock);
+    if (fd < 0) {
+        vibeos_file_put(f);
+        return fd == VIBEOS_FDT_NOMEM ? -VIBEOS_ENOMEM : -VIBEOS_EMFILE;
+    }
+    return fd;
+}
 
-    slot = vibeos_pipe_create();
-    if (slot < 0) {
-        return -VIBEOS_EMFILE;
-    }
+/* Take a number out of the table and release its description - outside the
+ * table's lock, because a release writes a file back or wakes a pipe's reader. */
+long linux_fd_close(uint64_t fd) {
+    vibeos_procstate_t *ps = linux_cur_ps();
+    vibeos_file_t *f;
 
-    /* Claimed through the table's lock: a sibling thread opening at the same
-     * moment must not be handed the same slot. */
-    i = linux_fd_alloc(me);
-    if (i >= 0) {
-        rfd = 3 + i;
-        i = linux_fd_alloc(me);
-        if (i >= 0) {
-            wfd = 3 + i;
-        }
+    if (!ps) {
+        return -VIBEOS_EBADF;
     }
-    if (rfd < 0 || wfd < 0) {
-        vibeos_pipe_abandon(slot);
-        if (rfd >= 0) {
-            linux_fd_unclaim(me, rfd - 3);
-        }
-        return -VIBEOS_EMFILE;
+    ks_lock(&ps->files_lock, __func__);
+    f = vibeos_fdtable_remove(&ps->files, fd);
+    ks_unlock(&ps->files_lock);
+    if (!f) {
+        return -VIBEOS_EBADF;
     }
-    {
-        vibeos_fd_t *f = &ks_ps(me)->files.fds[rfd - 3];
-        f->pipe = slot;
-        f->writable = 0;
-        f = &ks_ps(me)->files.fds[wfd - 3];
-        f->pipe = slot;
-        f->writable = 1;
-    }
-    {
-        int kfds[2];
-        kfds[0] = rfd;
-        kfds[1] = wfd;
-        /* Copied out fault-safe: a sibling munmap between the range check and
-         * this write would fault in ring 0. On fault the pipe and both fds are
-         * already allocated, so roll them back rather than leak them (uaccess
-         * follow-up to 6a94a32). */
-        if (vibeos_uaccess_copy((void *)(uintptr_t)fds_uptr, kfds, sizeof(kfds)) != 0) {
-            linux_fd_unclaim(me, rfd - 3);
-            linux_fd_unclaim(me, wfd - 3);
-            vibeos_pipe_abandon(slot);
-            return -VIBEOS_EFAULT;
-        }
-    }
+    vibeos_file_put(f);
     return 0;
 }
 
-/* dup2(): make newfd refer to whatever oldfd refers to.
- *
- * This is how a shell attaches a pipe to a program's standard input or output
- * without the program knowing. Only descriptors 0, 1 and 2 can be targets
- * here: the console is not an entry in the table, so redirecting one means
- * remembering that the entry now stands in for it. */
-static long linux_sys_dup2(uint64_t oldfd, uint64_t newfd) {
-    int me;
-    vibeos_fd_t *src, *dst;
-    vibeos_fd_t old;
+/* ---- read and write -------------------------------------------------------------- */
 
-    if (ks_current() < 0 || !ks_id(ks_current())->is_user ||
-        ks_ps(ks_current()) == 0) {
-        return -VIBEOS_EINVAL;
-    }
-    me = ks_current();
-    if (oldfd == newfd) {
-        return (long)newfd;
-    }
-    if (newfd >= 3u + LINUX_MAX_FDS) {
+static long linux_sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
+    vibeos_file_t *f = linux_file_get(fd);
+    long r;
+
+    if (!f) {
         return -VIBEOS_EBADF;
     }
-    /* One critical section: the source read, the target replaced and the new
-     * reference taken, so a sibling's close of either descriptor lands wholly
-     * before or wholly after. Descriptors 0, 1 and 2 are not entries in the
-     * table - the console is - so redirecting one means remembering that the
-     * entry now stands in for it; that is the std[] half. */
-    old.used = 0;
-    ks_lock(&ks_ps(me)->files_lock, __func__);
-    src = vibeos_fdtable_get(&ks_ps(me)->files, oldfd);
-    if (!src) {
-        ks_unlock(&ks_ps(me)->files_lock);
-        return -VIBEOS_EBADF;
+    if (f->ops->read) {
+        r = f->ops->read(f, buf, len);
+    } else {
+        r = (f->ops == &vibeos_fops_dir) ? -VIBEOS_EISDIR : -VIBEOS_EINVAL;
     }
-    dst = (newfd >= 3u) ? &ks_ps(me)->files.fds[newfd - 3u] : &ks_ps(me)->files.std[newfd];
-    if (dst->used) {
-        old = *dst;
-    }
-    *dst = *src;
-    vibeos_pipe_end_acquire(dst);
-    ks_unlock(&ks_ps(me)->files_lock);
-    /* Whatever the target was, it is closed now - outside the lock, because
-     * releasing a pipe end wakes whoever was waiting on it. */
-    if (old.used) {
-        linux_pipe_release(&old);
-    }
-    return (long)newfd;
+    vibeos_file_put(f);
+    return r;
 }
 
 static long linux_sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
-    uint64_t i;
-
-    if (vibeos_fdtable_redirect(linux_cur_files(), fd)) {
-        vibeos_fd_t *r = vibeos_fdtable_redirect(linux_cur_files(), fd);
-        if (r->pipe >= 0) {
-            return linux_pipe_write(r, buf, len);
-        }
-    }
-    if (fd >= 3u) { /* a file: buffer the bytes, committed on close */
-        vibeos_fd_t *f = linux_fd_get(fd);
-        uint64_t i2;
-        if (!f) {
-            return -VIBEOS_EBADF;
-        }
-        if (f->pipe >= 0) {
-            return linux_pipe_write(f, buf, len);
-        }
-        if (f->net_sock >= 0) {
-            return linux_net_send(f, buf, len);
-        }
-        if (!f->writable) {
-            return -VIBEOS_EBADF;
-        }
-        /* Fault-safe: the dispatcher's row validates [buf, buf+len) is mapped
-         * before this handler runs, and that check and this copy are two
-         * instants. A sibling thread of the same process can munmap the
-         * buffer in between (H-010's family), and a raw p[i2] read then
-         * faults with no user task privileged to take it - a kernel panic a
-         * program could trigger against itself with a second thread and a
-         * race, where every other buffered path in this file already uses
-         * vibeos_uaccess_copy. */
-        i2 = 0u;
-        if (f->wlen < VIBEOS_FD_WBUF) {
-            uint64_t room = (uint64_t)(VIBEOS_FD_WBUF - f->wlen);
-            i2 = (len < room) ? len : room;
-            if (i2 > 0u &&
-                vibeos_uaccess_copy(&f->wbuf[f->wlen], (const void *)(uintptr_t)buf, i2) != 0) {
-                return -VIBEOS_EFAULT;
-            }
-            f->wlen += (uint32_t)i2;
-        }
-        f->dirty = 1;
-        return (long)i2;
-    }
-    if (fd != 1u && fd != 2u) {
-        return -VIBEOS_EBADF;
-    }
-    /* A text write whose leading bytes read as NUL, reported at the moment it
-     * happens rather than reconstructed afterwards.
-     *
-     * Three boots in ten produced `write(ring3): <16 NULs>=120` where the
-     * program had written "STRESS_OK rounds=120" from a buffer on its own
-     * stack. The kernel reads that buffer directly - there is no copy to blame
-     * - so the page it can see holds zeros where the process wrote.
-     *
-     * Two very different defects produce that, and nothing recorded so far
-     * separates them: either the process's store went to a frame this mapping
-     * no longer points at, or the store never landed. So the bytes are read a
-     * second time. A difference means the page is moving under the kernel; the
-     * same zeros twice means they were already zero when the syscall began.
-     *
-     * Deliberately not a range check on the whole buffer: the signature is
-     * leading NULs followed by real text, and a detector that fires on any NUL
-     * anywhere would catch every program that writes a binary byte. This
-     * project has a rule about detectors that report healthy behaviour. */
-    /* Every read of the user's buffer below goes through vibeos_uaccess_copy
-     * (M-052): M-040 made the file branch above fault-safe and left this one,
-     * stdout and stderr, reading the buffer directly - the path every program uses. The
-     * range was checked before the handler ran; a sibling's munmap since then
-     * made the read fault in ring 0, under the console lock, and panic. */
-    uint8_t head[8], tail = 0;
-    if (len >= 8u &&
-        (vibeos_uaccess_copy(head, (const void *)(uintptr_t)buf, 8u) != 0 ||
-         vibeos_uaccess_copy(&tail, (const void *)(uintptr_t)(buf + len - 1u), 1u) != 0)) {
-        return -VIBEOS_EFAULT;
-    }
-    if (len >= 8u && head[0] == 0 && tail != 0) {
-        uint64_t a = 0ull, b = 0ull;
-        uint8_t again[8];
-        uint32_t k;
-        for (k = 0; k < 8u; k++) {
-            a |= (uint64_t)head[k] << (k * 8u);
-        }
-        /* Read a second time, from the user's page: a difference is the page
-         * moving under the kernel, which is the question this asks. */
-        if (vibeos_uaccess_copy(again, (const void *)(uintptr_t)buf, 8u) != 0) {
-            return -VIBEOS_EFAULT;
-        }
-        for (k = 0; k < 8u; k++) {
-            b |= (uint64_t)again[k] << (k * 8u);
-        }
-        g_ring3_write_nul++;
-        ks_con_lock();
-        ks_con_puts("[MM] RING3_WRITE_NUL task=0x");
-        ks_con_hex((uint64_t)(int64_t)ks_current());
-        ks_con_puts(" va=0x");
-        ks_con_hex(buf);
-        ks_con_puts(" len=0x");
-        ks_con_hex(len);
-        ks_con_puts(" first8=0x");
-        ks_con_hex(a);
-        ks_con_puts(" again=0x");
-        ks_con_hex(b);
-        ks_con_puts(" cpu=0x");
-        ks_con_hex((uint64_t)ks_cpu_id());
-        ks_con_puts(" cr3=0x");
-        ks_con_hex(ks_cr3_now());
-        ks_con_puts(" tail=0x");
-        ks_con_hex((uint64_t)tail);
-        /* Every copy-on-write fault this boot took on the corrupted page, in
-         * the same critical section as the line above: the two are one fact,
-         * and a diagnostic split across calls comes back interleaved from
-         * different cores and reads as a contradiction. */
-        ks_con_cow_faults(buf & ~0xFFFull);
-        ks_con_puts("\n");
-        ks_con_unlock();
-    }
-
-    /* User output goes to both consoles: the serial line (logs, CI) and the
-     * display framebuffer (what a user in front of the machine sees). */
-    /* One critical section for the whole line, as before, with the bytes copied
-     * in chunks inside it. That is safe under the console lock: a copy that
-     * faults resumes at its recovery point before the trap handler prints
-     * anything, so the fault path never asks for the lock this core holds. */
-    ks_con_lock();
-    ks_con_puts("[HW][SYS] write(ring3): ");
-    for (i = 0; i < len; ) {
-        char chunk[128];
-        uint64_t n = len - i, k;
-        if (n > sizeof(chunk)) {
-            n = sizeof(chunk);
-        }
-        if (vibeos_uaccess_copy(chunk, (const void *)(uintptr_t)(buf + i), n) != 0) {
-            ks_con_puts("\n");
-            ks_con_unlock();
-            return (i > 0u) ? (long)i : -VIBEOS_EFAULT;
-        }
-        for (k = 0; k < n; k++) {
-            char c = chunk[k];
-            if (c == '\n') {
-                ks_con_putc('\r');
-            }
-            ks_con_putc(c);
-            ks_console_echo(c);
-        }
-        i += n;
-    }
-    ks_con_unlock();
-    return (long)len;
-}
-
-/* read(0, ...): blocking keyboard read. Returns after at least one character;
- * blocks (BLOCKED + wait_input) until the keyboard IRQ enqueues input and wakes
- * us. The cli window makes the check-and-block race-free against the IRQ. */
-static long linux_sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
-
-    if (len == 0u) {
-        return 0;
-    }
-    if (vibeos_fdtable_redirect(linux_cur_files(), fd)) {
-        vibeos_fd_t *r = vibeos_fdtable_redirect(linux_cur_files(), fd);
-        if (r->pipe >= 0) {
-            return linux_pipe_read(r, buf, len);
-        }
-    }
-    if (fd >= 3u) { /* a file: stream from the filesystem */
-        vibeos_fd_t *f = linux_fd_get(fd);
-        long n;
-        if (!f) {
-            return -VIBEOS_EBADF;
-        }
-        if (f->pipe >= 0) {
-            return linux_pipe_read(f, buf, len);
-        }
-        if (f->net_sock >= 0) {
-            return linux_net_recv(f, buf, len);
-        }
-        /* Through a kernel buffer, then vibeos_uaccess_copy (M-051). The
-         * filesystem used to copy straight into the user's buffer: the dispatcher checks the
-         * range before the handler runs, and a sibling thread's munmap between
-         * that check and the driver's memcpy faulted in ring 0, outside the one
-         * instruction that can recover - a panic any threaded program could
-         * cause. The same shape M-040 closed in write().
-         *
-         * A page, not a small stack buffer: the FAT reader walks the cluster
-         * chain from the start on every call, so small chunks make a large read
-         * quadratic, and a kernel stack here is 8 KiB or less. If no page is
-         * free the read still works, 512 bytes at a time. */
-        {
-            vibeos_fs_node_t node;
-            uint8_t small[512];
-            uint8_t *bounce = (uint8_t *)ks_page_alloc();
-            uint32_t chunk = bounce ? 4096u : (uint32_t)sizeof(small);
-            uint64_t done = 0;
-
-            if (!bounce) {
-                bounce = small;
-            }
-            node.id = f->cluster;
-            node.size = f->size;
-            node.is_dir = f->isdir;
-            n = 0;
-            while (done < len) {
-                uint64_t want = len - done;
-                long got;
-
-                if (want > chunk) {
-                    want = chunk;
-                }
-                got = vibeos_fs_read_at(ks_rootfs(), &node, f->pos, bounce, (uint32_t)want);
-                if (got <= 0) {
-                    n = (done > 0u) ? 0 : got;   /* an error only if nothing was read */
-                    break;
-                }
-                if (vibeos_uaccess_copy((void *)(uintptr_t)(buf + done), bounce, (uint64_t)got) != 0) {
-                    n = (done > 0u) ? 0 : -VIBEOS_EFAULT;
-                    break;
-                }
-                done += (uint64_t)got;
-                f->pos += (uint64_t)got;
-                if ((uint64_t)got < want) {
-                    break;   /* end of file */
-                }
-            }
-            if (bounce != small) {
-                ks_page_free(bounce, "read() bounce buffer");
-            }
-            if (done > 0u) {
-                return (long)done;
-            }
-        }
-        return n;
-    }
-    if (fd != 0u) {
-        return -VIBEOS_EBADF;
-    }
-    for (;;) {
-        uint64_t copied = 0;
-        int c;
-
-        ks_irq_off();
-        c = ks_console_getc();
-        if (c >= 0) {
-            /* Line discipline: echo what was typed and let backspace erase the
-             * previous character before the line is handed to the program. */
-            while (copied < len && c >= 0) {
-                if (c == '\b' || c == 127) {
-                    if (copied > 0) {
-                        copied--;
-                        ks_con_puts("\b \b");
-                        ks_console_echo('\b');
-                    }
-                    c = ks_console_getc();
-                    continue;
-                }
-                {
-                    /* The line waits in this loop for keystrokes; the buffer
-                     * can be unmapped under it (H-010). */
-                    uint8_t ch = (uint8_t)c;
-                    if (vibeos_uaccess_copy((void *)(uintptr_t)(buf + copied), &ch, 1u) != 0) {
-                        ks_irq_on();
-                        return copied > 0u ? (long)copied : -VIBEOS_EFAULT;
-                    }
-                    copied++;
-                }
-                /* Under the console lock, like every other writer. Echoing
-                 * without it lets a character land in the middle of another
-                 * core's write() - which does not merely look untidy: it
-                 * splits the markers the boot gate matches on, so a passing
-                 * run reports a failure that never happened. */
-                ks_con_lock();
-                if (c == '\n') {
-                    ks_con_putc('\r');
-                }
-                ks_con_putc((char)c);
-                ks_con_unlock();
-                ks_console_echo((char)c);
-                if ((uint8_t)c == '\n') {
-                    break; /* line-oriented: stop at newline */
-                }
-                c = ks_console_getc();
-            }
-            ks_irq_on();
-            return (long)copied;
-        }
-        if (ks_current() >= 0) {
-            ks_id(ks_current())->wait_input = 1;
-            (void)ks_set_state(ks_current(), VIBEOS_TASK_BLOCKED, __func__);
-            /* Blocked first and asked second, so a signal raised in between
-             * finds the task BLOCKED and wakes it. ks_signal_raise already
-             * cleared wait_input for this, and nothing ever read it here. */
-            if (ks_signal_interrupts(ks_current())) {
-                ks_id(ks_current())->wait_input = 0;
-                (void)ks_set_state(ks_current(), VIBEOS_TASK_READY, __func__);
-                ks_mark_ready(ks_current(), "read_interrupted");
-                ks_irq_on();
-                return -VIBEOS_EINTR;
-            }
-        }
-        ks_block_point();
-    }
-}
-
-/* open(path, flags): resolve a file (or directory) and take an fd. With a write
- * flag the file is created/truncated on close from the buffered bytes. */
-static long linux_sys_open(uint64_t path_uptr, uint64_t flags) {
-    char path[64];
-    int me;
-    int i, k;
-
-    if (ks_current() < 0 || !ks_id(ks_current())->is_user) {
-        return -VIBEOS_EINVAL;
-    }
-    if (ks_copy_user_string(path_uptr, path, sizeof(path)) != 0) {
-        return -VIBEOS_EFAULT;
-    }
-    me = ks_current();
-    /* Claimed before the lookup, not after: the lookup reads the disk, and a
-     * sibling thread opening meanwhile would otherwise find the same slot
-     * free. A lookup that fails gives it back. */
-    i = linux_fd_alloc(me);
-    if (i < 0) {
-        return -VIBEOS_EMFILE;
-    }
-    {
-        vibeos_fd_t *f = &ks_ps(me)->files.fds[i];
-        int writable = ((flags & 1u) != 0u) || ((flags & 0100u) != 0u); /* O_WRONLY|O_CREAT */
-        uint32_t cluster = 0;
-        uint64_t size = 0;
-        vibeos_fs_node_t node;
-        int node_is_dir = 0;
-
-        if (!writable) {
-            if (vibeos_fs_lookup(ks_rootfs(), path, &node) != 0) {
-                linux_fd_unclaim(me, i);
-                return -VIBEOS_ENOENT;
-            }
-            cluster = (uint32_t)node.id;
-            size = node.size;
-            node_is_dir = node.is_dir;
-        }
-        for (k = 0; k < (int)sizeof(f->name) - 1 && path[k]; k++) {
-            f->name[k] = path[k];
-        }
-        f->name[k] = 0;
-        f->cluster = cluster;
-        f->size = size;
-        f->pos = 0;
-        f->dir_index = 0;
-        /* Not a pipe. The field has to be set explicitly: descriptor slots are
-         * recycled, so an uninitialised value here is whatever the previous
-         * occupant left, and a stale pipe index sends every read and write on
-         * this file into the pipe path - where it waits for a writer that does
-         * not exist. */
-        f->pipe = -1;
-        /* The filesystem already answered this during lookup; asking twice
-         * would put a FAT-specific question back in the syscall layer. */
-        f->isdir = node_is_dir;
-        f->wlen = 0;
-        f->dirty = 0;
-        f->writable = writable;
-        f->net_sock = -1;
-        f->used = 1;
-    }
-    return 3 + i;
-}
-
-/* The socket syscalls moved to linux_socket.c. None of what they do is
- * architecture: reading a sockaddr out of user memory and blocking until a
- * connection arrives is Linux ABI translation over kernel/net/inet.c, and it
- * sat beside the GDT only because that is where this file started. */
-
-
-/* close(fd): commit buffered writes to the filesystem and release the slot. */
-static long linux_sys_close(uint64_t fd) {
-    vibeos_fd_t mine;
-    vibeos_fd_t *f = &mine;
-    long rc = 0;
-
-    /* Out of the table first, then finished with. The table is shared by the
-     * process's threads, so the entry is taken in one step - a sibling closing
-     * the same descriptor gets EBADF rather than a second release. */
-    if (linux_fd_take(fd, &mine) != 0) {
-        /* Not open - or 0, 1 or 2 not redirected, which is the console and
-         * not an entry in this table. */
-        return -VIBEOS_EBADF;
-    }
-    if (fd < 3u) {
-        /* Closing a redirected standard descriptor drops the redirection. */
-        linux_pipe_release(f);
-        return 0;
-    }
-    if (f->pipe >= 0) {
-        linux_pipe_release(f);
-        f->used = 0;
-        return 0;
-    }
-    if (f->net_sock >= 0) {
-        ks_lock(ks_net_lock(), __func__);
-        (void)vibeos_inet_close(ks_net(), f->net_sock);
-        ks_unlock(ks_net_lock());
-        f->net_sock = -1;
-        f->used = 0;
-        return 0;
-    }
-    if (f->writable && f->dirty) {
-        /* The volume changed, so a staged image may no longer match the file
-         * it came from. Dropping it here is the whole basis for trusting the
-         * cache: a rewritten program must not keep running as its old self. */
-        linux_exec_cache_drop();
-        if (vibeos_fs_write_file(ks_rootfs(), f->name, f->wbuf, f->wlen) < 0) {
-            rc = -VIBEOS_EIO;
-        }
-    }
-    f->used = 0;
-    return rc;
-}
-
-static long linux_sys_lseek(uint64_t fd, uint64_t off, uint64_t whence) {
-    vibeos_fd_t *f = linux_fd_get(fd);
-    uint64_t base;
+    vibeos_file_t *f = linux_file_get(fd);
+    long r;
 
     if (!f) {
         return -VIBEOS_EBADF;
     }
-    base = (whence == 1u) ? f->pos : ((whence == 2u) ? f->size : 0u);
-    f->pos = base + off;
-    return (long)f->pos;
+    r = f->ops->write ? f->ops->write(f, buf, len) : -VIBEOS_EBADF;
+    vibeos_file_put(f);
+    return r;
 }
 
-/* getdents64(fd, buf, len): fill Linux dirent64 records from the directory the
- * fd was opened on, so user space can list a directory. */
-static long linux_sys_getdents64(uint64_t fd, uint64_t buf, uint64_t len) {
-    vibeos_fd_t *f = linux_fd_get(fd);
-    uint64_t used = 0;
-    uint32_t records = 0;
-
-    if (!f) {
-        return -VIBEOS_EBADF;
-    }
-    if (!f->isdir) {
-        return -VIBEOS_ENOTDIR;
-    }
-    /* A bounded syscall must not spin forever if a filesystem backend returns
-     * a cyclic directory stream or fails to advance its cursor. */
-    while (records < 256u && f->dir_index < LINUX_MAX_DIR_ENTRIES) {
-        char name[16];
-        uint32_t fsize = 0;
-        int is_dir = 0, n = 0;
-        uint16_t reclen;
-
-        {
-            uint64_t entry_size = 0;
-            if (vibeos_fs_list(ks_rootfs(), f->name, f->dir_index, name,
-                                sizeof(name), &entry_size, &is_dir) != 0) {
-                break; /* end of directory */
-            }
-            fsize = (uint32_t)entry_size;
-            (void)fsize;   /* getdents64 reports names and kinds, not sizes */
-        }
-        while (name[n]) {
-            n++;
-        }
-        reclen = (uint16_t)((19 + n + 1 + 7) & ~7); /* 8+8+2+1 header, 8-aligned */
-        if (used + reclen > len) {
-            break;
-        }
-        {
-            /* Built here and copied out whole (M-052): filling the user's
-             * buffer byte by byte faulted in ring 0 if a sibling unmapped it
-             * after the range check. A record is at most 19 + 15 + 1 bytes
-             * rounded to 8. */
-            uint8_t rec[48];
-            int k;
-            for (k = 0; k < reclen; k++) {
-                rec[k] = 0;
-            }
-            rec[16] = (uint8_t)(reclen & 0xFFu);
-            rec[17] = (uint8_t)(reclen >> 8);
-            rec[18] = is_dir ? 4u : 8u; /* DT_DIR / DT_REG */
-            for (k = 0; k < n; k++) {
-                rec[19 + k] = (uint8_t)name[k];
-            }
-            if (vibeos_uaccess_copy((void *)(uintptr_t)(buf + used), rec, reclen) != 0) {
-                return (used > 0u) ? (long)used : -VIBEOS_EFAULT;
-            }
-        }
-        used += reclen;
-        f->dir_index++;
-        records++;
-    }
-    return (long)used;
-}
-
-/* unlink(path) / mkdir(path): filesystem mutations from user space. */
-static long linux_sys_unlink(uint64_t path_uptr) {
-    char path[64];
-    if (ks_copy_user_string(path_uptr, path, sizeof(path)) != 0) {
-        return -VIBEOS_EFAULT;
-    }
-    return (vibeos_fs_unlink(ks_rootfs(), path) == 0) ? 0 : -VIBEOS_ENOENT;
-}
-
-static long linux_sys_mkdir(uint64_t path_uptr) {
-    char path[64];
-    if (ks_copy_user_string(path_uptr, path, sizeof(path)) != 0) {
-        return -VIBEOS_EFAULT;
-    }
-    return (vibeos_fs_mkdir(ks_rootfs(), path) == 0) ? 0 : -VIBEOS_EIO;
-}
-
-static void linux_stat_wr64(uint8_t *base, uint32_t off, uint64_t v) {
-    uint8_t *p = base + off;
-    uint32_t i;
-    for (i = 0; i < 8u; i++) {
-        p[i] = (uint8_t)(v >> (8u * i));
-    }
-}
-
-static void linux_stat_wr32(uint8_t *base, uint32_t off, uint32_t v) {
-    uint8_t *p = base + off;
-    uint32_t i;
-    for (i = 0; i < 4u; i++) {
-        p[i] = (uint8_t)(v >> (8u * i));
-    }
-}
-
-/* Fill a struct stat the caller can believe.
- *
- * The mode matters more than it looks: a libc decides how to buffer a stream
- * from it, and a program decides whether to recurse from it. Reporting a
- * regular file for a directory does not fail here - it fails later, inside the
- * program, doing something that made sense given what it was told. */
-static long linux_write_stat(uint64_t ubuf, uint32_t mode, uint64_t size, uint64_t ino) {
-    uint8_t kbuf[STAT_SIZE];
-    uint8_t *kbase = kbuf;
-    uint32_t i;
-
-    /* Assemble the whole struct in the kernel and copy it out once. Filling the
-     * user buffer field by field would fault in ring 0 if a sibling munmaps it
-     * between the range check and any of these writes (uaccess follow-up to
-     * 6a94a32, same class as H-026). */
-    for (i = 0; i < STAT_SIZE; i++) {
-        kbuf[i] = 0;
-    }
-    linux_stat_wr64(kbase, STAT_OFF_INO, ino);
-    linux_stat_wr64(kbase, STAT_OFF_NLINK, 1);
-    linux_stat_wr32(kbase, STAT_OFF_MODE, mode);
-    linux_stat_wr32(kbase, STAT_OFF_UID, 0);
-    linux_stat_wr32(kbase, STAT_OFF_GID, 0);
-    linux_stat_wr64(kbase, STAT_OFF_SIZE, size);
-    linux_stat_wr64(kbase, STAT_OFF_BLKSIZE, 512);
-    linux_stat_wr64(kbase, STAT_OFF_BLOCKS, vibeos_ceil_div_u64(size, 512ull));
-    if (vibeos_uaccess_copy((void *)(uintptr_t)ubuf, kbuf, STAT_SIZE) != 0) {
-        return -VIBEOS_EFAULT;
-    }
-    return 0;
-}
-
-static long linux_sys_fstat(uint64_t fd, uint64_t ubuf) {
-    vibeos_fd_t *f;
-
-    if (fd < 3u) {
-        /* The console. Character device, and deliberately not a terminal -
-         * the same answer ioctl gives. */
-        return linux_write_stat(ubuf, S_IFCHR | 0620u, 0, fd + 1u);
-    }
-    f = linux_fd_get(fd);
-    if (!f) {
-        return -VIBEOS_EBADF;
-    }
-    if (f->net_sock >= 0) {
-        return linux_write_stat(ubuf, S_IFCHR | 0600u, 0, fd + 1u);
-    }
-    if (f->isdir) {
-        return linux_write_stat(ubuf, S_IFDIR | 0755u, 0,
-                             f->cluster ? f->cluster : fd + 1u);
-    }
-    return linux_write_stat(ubuf, S_IFREG | 0644u, f->size, f->cluster ? f->cluster : fd + 1u);
-}
-
-/* newfstatat(dirfd, path, buf, flags): stat by name, or by fd when the path is
- * empty and AT_EMPTY_PATH is set. Relative paths resolve against the volume
- * root, which is the only directory there is. */
-static long linux_sys_newfstatat(uint64_t dirfd, uint64_t path_uptr, uint64_t ubuf,
-                              uint64_t flags) {
-    char path[64];
-    uint32_t cluster = 0;
-    uint64_t size = 0;   /* st_size is 64-bit; do not narrow node.size (M-018) */
-
-    if (ks_copy_user_string(path_uptr, path, sizeof(path)) != 0) {
-        return -VIBEOS_EFAULT;
-    }
-    if (path[0] == 0) {
-        if ((flags & AT_EMPTY_PATH) == 0) {
-            return -VIBEOS_ENOENT;
-        }
-        return linux_sys_fstat(dirfd, ubuf);
-    }
-    if (VIBEOS_ARG_INT(dirfd) != AT_FDCWD && dirfd < 3u) {
-        return -VIBEOS_EBADF;
-    }
-    /* The root of the volume, however it is spelled. */
-    if ((path[0] == '/' && path[1] == 0) || (path[0] == '.' && path[1] == 0)) {
-        return linux_write_stat(ubuf, S_IFDIR | 0755u, 0, 1);
-    }
-    {
-        /* Directory or file? The answer changes what a program does, not just
-         * what it prints: ls given a directory lists it and given a file names
-         * it, so reporting the wrong one produces a plausible wrong result
-         * rather than an error. The filesystem decides; how it decides is its
-         * business. */
-        vibeos_fs_node_t node;
-        if (vibeos_fs_lookup(ks_rootfs(), path, &node) != 0) {
-            return -VIBEOS_ENOENT;
-        }
-        cluster = (uint32_t)node.id;
-        size = node.size;
-        if (node.is_dir) {
-            return linux_write_stat(ubuf, S_IFDIR | 0755u, 0, cluster ? cluster : 2u);
-        }
-    }
-    return linux_write_stat(ubuf, S_IFREG | 0644u, size, cluster ? cluster : 2u);
-}
-
-/* openat(): the modern spelling of open. Only AT_FDCWD is accepted, because a
- * directory fd would have to mean something and here it cannot. */
-static long linux_sys_openat(uint64_t dirfd, uint64_t path_uptr, uint64_t flags) {
-    if (VIBEOS_ARG_INT(dirfd) != AT_FDCWD) {
-        return -VIBEOS_ENOSYS;
-    }
-    return linux_sys_open(path_uptr, flags);
-}
-
-/* getcwd(): there is one directory. Saying so is accurate; inventing a path
- * would make a program build filenames that do not resolve. */
-static long linux_sys_getcwd(uint64_t ubuf, uint64_t size) {
-    if (size < 2u) {
-        return -VIBEOS_ERANGE;
-    }
-    {
-        /* Fault-safe copy out: a sibling munmap between the check and the write
-         * would fault in ring 0 (uaccess follow-up to 6a94a32). */
-        char kcwd[2];
-        kcwd[0] = '/';
-        kcwd[1] = 0;
-        if (vibeos_uaccess_copy((void *)(uintptr_t)ubuf, kcwd, 2) != 0) {
-            return -VIBEOS_EFAULT;
-        }
-    }
-    return 2;   /* Linux returns the length including the terminator */
-}
-
-/* readlinkat(): the only symlink that exists here is the one a program uses to
- * find itself, and it is answered from what execve was actually given rather
- * than from a made-up path. Everything else is not a link, which is what
- * EINVAL means. */
-static long linux_sys_readlinkat(uint64_t dirfd, uint64_t path_uptr, uint64_t ubuf,
-                              uint64_t bufsz) {
-    char path[64];
-    const char *self;
-    uint64_t n = 0;
-
-    (void)dirfd;
-    if (ks_copy_user_string(path_uptr, path, sizeof(path)) != 0) {
-        return -VIBEOS_EFAULT;
-    }
-    if (!(path[0] == '/' && path[1] == 'p' && path[2] == 'r' && path[3] == 'o' &&
-          path[4] == 'c' && path[5] == '/' && path[6] == 's' && path[7] == 'e' &&
-          path[8] == 'l' && path[9] == 'f' && path[10] == '/' && path[11] == 'e' &&
-          path[12] == 'x' && path[13] == 'e' && path[14] == 0)) {
-        return -VIBEOS_EINVAL;
-    }
-    if (ks_current() < 0) {
-        return -VIBEOS_EINVAL;
-    }
-    self = ks_image(ks_current())->exe_path;
-    while (self[n]) {
-        n++;
-    }
-    if (n == 0) {
-        return -VIBEOS_ENOENT;
-    }
-    if (n > bufsz) {
-        n = bufsz;
-    }
-    if (!linux_user_ok(ubuf, n, 1)) {
-        return -VIBEOS_EFAULT;
-    }
-    /* self is a kernel string; copy out fault-safe so a sibling munmap between
-     * the check and the write cannot fault in ring 0 (uaccess follow-up). */
-    if (vibeos_uaccess_copy((void *)(uintptr_t)ubuf, self, n) != 0) {
-        return -VIBEOS_EFAULT;
-    }
-    return (long)n;   /* not terminated, as Linux does not terminate it */
-}
-
-/* ioctl(): there is no terminal device here. ENOTTY is not a shortcut, it is
- * the truthful answer - and it is the answer a libc uses to decide that
- * stdout is a file or a pipe and should be block buffered. */
-static long linux_sys_ioctl(uint64_t fd, uint64_t req, uint64_t arg) {
-    if (fd >= 3u && !linux_fd_get(fd)) {
-        return -VIBEOS_EBADF;
-    }
-    if (fd < 3u && req == VIBEOS_TIOCGPGRP) {
-        if (ks_current() < 0) {
-            return -VIBEOS_EFAULT;
-        }
-        {
-            uint32_t v = ks_foreground_pgid();
-            if (vibeos_uaccess_copy((void *)(uintptr_t)arg, &v, sizeof(v)) != 0) {
-                return -VIBEOS_EFAULT;   /* H-025 */
-            }
-        }
-        return 0;
-    }
-    if (fd < 3u && req == VIBEOS_TIOCSPGRP) {
-        uint32_t pgid;
-        int group;
-        if (ks_current() < 0) {
-            return -VIBEOS_EFAULT;
-        }
-        if (vibeos_uaccess_copy(&pgid, (const void *)(uintptr_t)arg,
-                                sizeof(pgid)) != 0) {
-            return -VIBEOS_EFAULT;   /* H-025 */
-        }
-        group = ks_task_by_pid(pgid);
-        if (group < 0 || ks_id(group)->sid != ks_id(ks_current())->sid) {
-            return -VIBEOS_EPERM;
-        }
-        ks_set_foreground_pgid(ks_id(group)->pgid);
-        return 0;
-    }
-    return -VIBEOS_ENOTTY;
-}
-
-/* writev()/readv(): scatter-gather over the existing single-buffer paths. The
- * iovec array is itself user memory, so it is validated like any other user
- * pointer before being walked. */
+/* writev()/readv(): scatter-gather over the single-buffer paths. The iovec array
+ * is itself user memory, so it is validated like any other user pointer before
+ * being walked. */
 typedef struct {
     uint64_t base;
     uint64_t len;
@@ -1140,40 +235,511 @@ static long linux_sys_readv(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt) {
     return total;
 }
 
-/* A new process inherits another's descriptors: the table is copied, and every
- * pipe end in it gains an owner. Missing that is the other way a pipeline hangs -
- * the reader waits for an end of file that never arrives because a count went
- * wrong. fork and exec copy; a thread shares, so clone does neither.
- *
- * Under the source's lock, because a sibling of the forking thread may be
- * opening or closing in the same table. The destination is new and nobody
- * else can see it yet. */
-void linux_fds_copy(vibeos_procstate_t *dst, vibeos_procstate_t *src) {
+static long linux_sys_lseek(uint64_t fd, uint64_t off, uint64_t whence) {
+    vibeos_file_t *f = linux_file_get(fd);
+    long r;
+
+    if (!f) {
+        return -VIBEOS_EBADF;
+    }
+    /* A pipe, a socket or the console has no position: ESPIPE, as Linux says. */
+    r = f->ops->seek ? f->ops->seek(f, (int64_t)off, (int)whence) : -VIBEOS_ESPIPE;
+    vibeos_file_put(f);
+    return r;
+}
+
+/* ---- opening and closing ------------------------------------------------------------ */
+
+/* open(path, flags): resolve a file (or directory) and take a descriptor. With a
+ * write flag the file is created or replaced when its last descriptor goes. */
+static long linux_sys_open(uint64_t path_uptr, uint64_t flags) {
+    char path[64];
+    vibeos_file_t *f;
+    long err;
+
+    if (ks_current() < 0 || !ks_id(ks_current())->is_user) {
+        return -VIBEOS_EINVAL;
+    }
+    if (ks_copy_user_string(path_uptr, path, sizeof(path)) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    f = vibeos_open_path(path, (uint32_t)flags, &err);
+    if (!f) {
+        return err;
+    }
+    return linux_fd_install(f, (flags & VIBEOS_O_CLOEXEC) ? VIBEOS_FD_CLOEXEC : 0u, 0);
+}
+
+/* openat(): the modern spelling of open. Only AT_FDCWD is accepted, because a
+ * directory fd would have to mean something and here it cannot. */
+static long linux_sys_openat(uint64_t dirfd, uint64_t path_uptr, uint64_t flags) {
+    if (VIBEOS_ARG_INT(dirfd) != AT_FDCWD) {
+        return -VIBEOS_ENOSYS;
+    }
+    return linux_sys_open(path_uptr, flags);
+}
+
+static long linux_sys_close(uint64_t fd) {
+    return linux_fd_close(fd);
+}
+
+/* close_range(first, last, flags): close - or with CLOSE_RANGE_CLOEXEC, mark
+ * close-on-exec - every descriptor in the range. What a program runs before it
+ * execs something it does not trust with its descriptors. */
+static long linux_sys_close_range(uint64_t first, uint64_t last, uint64_t flags) {
+    vibeos_procstate_t *ps = linux_cur_ps();
+    int hi;
+    uint64_t fd;
+
+    if (!ps || first > last || (flags & ~(uint64_t)(CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC))) {
+        return -VIBEOS_EINVAL;
+    }
+    if (flags & CLOSE_RANGE_UNSHARE) {
+        /* Giving this thread a table of its own is unshare(CLONE_FILES), which
+         * is not implemented; refusing is better than closing descriptors in a
+         * table the other threads are still using. */
+        return -VIBEOS_EINVAL;
+    }
+    ks_lock(&ps->files_lock, __func__);
+    hi = vibeos_fdtable_highest(&ps->files);
+    ks_unlock(&ps->files_lock);
+    if (hi < 0 || first > (uint64_t)hi) {
+        return 0;
+    }
+    if (last > (uint64_t)hi) {
+        last = (uint64_t)hi;
+    }
+    for (fd = first; fd <= last; fd++) {
+        if (flags & CLOSE_RANGE_CLOEXEC) {
+            ks_lock(&ps->files_lock, __func__);
+            if (vibeos_fdtable_get(&ps->files, fd)) {
+                (void)vibeos_fdtable_set_flags(&ps->files, fd,
+                    vibeos_fdtable_flags(&ps->files, fd) | VIBEOS_FD_CLOEXEC);
+            }
+            ks_unlock(&ps->files_lock);
+        } else {
+            (void)linux_fd_close(fd);
+        }
+    }
+    return 0;
+}
+
+/* ---- pipes and duplicates -------------------------------------------------------------- */
+
+/* pipe2(): two descriptors onto one buffer, read end first. */
+static long linux_sys_pipe2(uint64_t fds_uptr, uint64_t flags) {
+    vibeos_file_t *rd, *wr;
+    uint32_t fdflags = (flags & VIBEOS_O_CLOEXEC) ? VIBEOS_FD_CLOEXEC : 0u;
+    long r, rfd, wfd;
+    int kfds[2];
+
+    if (ks_current() < 0 || !ks_id(ks_current())->is_user) {
+        return -VIBEOS_EINVAL;
+    }
+    if (flags & ~(uint64_t)(VIBEOS_O_CLOEXEC | VIBEOS_O_NONBLOCK)) {
+        return -VIBEOS_EINVAL;
+    }
+    r = vibeos_open_pipe((uint32_t)flags, &rd, &wr);
+    if (r != 0) {
+        return r;
+    }
+    rfd = linux_fd_install(rd, fdflags, 0);
+    if (rfd < 0) {
+        vibeos_file_put(wr);
+        return rfd;
+    }
+    wfd = linux_fd_install(wr, fdflags, 0);
+    if (wfd < 0) {
+        (void)linux_fd_close((uint64_t)rfd);
+        return wfd;
+    }
+    kfds[0] = (int)rfd;
+    kfds[1] = (int)wfd;
+    /* Copied out fault-safe: a sibling munmap between the range check and this
+     * write would fault in ring 0. On fault both descriptors are already
+     * installed, so they are closed rather than leaked (uaccess follow-up to
+     * 6a94a32). */
+    if (vibeos_uaccess_copy((void *)(uintptr_t)fds_uptr, kfds, sizeof(kfds)) != 0) {
+        (void)linux_fd_close((uint64_t)rfd);
+        (void)linux_fd_close((uint64_t)wfd);
+        return -VIBEOS_EFAULT;
+    }
+    return 0;
+}
+
+/* dup2 and dup3: make newfd name what oldfd names - the same description, so the
+ * two share an offset. This is how a shell attaches a pipe to a program's
+ * standard input or output without the program knowing. */
+static long linux_dup_to(uint64_t oldfd, uint64_t newfd, uint32_t fdflags) {
+    vibeos_procstate_t *ps = linux_cur_ps();
+    vibeos_file_t *f, *old = 0;
+    int r;
+
+    if (!ps) {
+        return -VIBEOS_EINVAL;
+    }
+    /* One critical section: the source read, the target replaced and the new
+     * reference taken, so a sibling's close of either descriptor lands wholly
+     * before or wholly after. Whatever the target named is released outside
+     * the lock, because releasing a pipe end wakes whoever was waiting on it. */
+    ks_lock(&ps->files_lock, __func__);
+    f = vibeos_fdtable_get(&ps->files, oldfd);
+    if (!f) {
+        ks_unlock(&ps->files_lock);
+        return -VIBEOS_EBADF;
+    }
+    vibeos_file_get(f);
+    r = vibeos_fdtable_install_at(&ps->files, newfd, f, fdflags, &old);
+    ks_unlock(&ps->files_lock);
+    if (r != 0) {
+        vibeos_file_put(f);
+        return r == VIBEOS_FDT_NOMEM ? -VIBEOS_ENOMEM : -VIBEOS_EBADF;
+    }
+    if (old) {
+        vibeos_file_put(old);
+    }
+    return (long)newfd;
+}
+
+static long linux_sys_dup2(uint64_t oldfd, uint64_t newfd) {
+    if (oldfd == newfd) {
+        /* Linux answers newfd if oldfd is open, EBADF if not, and changes
+         * nothing - not even the close-on-exec flag. */
+        vibeos_file_t *f = linux_file_get(oldfd);
+        if (!f) {
+            return -VIBEOS_EBADF;
+        }
+        vibeos_file_put(f);
+        return (long)newfd;
+    }
+    return linux_dup_to(oldfd, newfd, 0);
+}
+
+static long linux_sys_dup3(uint64_t oldfd, uint64_t newfd, uint64_t flags) {
+    if (oldfd == newfd || (flags & ~(uint64_t)VIBEOS_O_CLOEXEC)) {
+        return -VIBEOS_EINVAL;
+    }
+    return linux_dup_to(oldfd, newfd, (flags & VIBEOS_O_CLOEXEC) ? VIBEOS_FD_CLOEXEC : 0u);
+}
+
+/* dup() and F_DUPFD: the lowest free number at or above `min`. */
+static long linux_dup_from(uint64_t oldfd, uint32_t min, uint32_t fdflags) {
+    vibeos_file_t *f = linux_file_get(oldfd);
+
+    if (!f) {
+        return -VIBEOS_EBADF;
+    }
+    return linux_fd_install(f, fdflags, min);   /* takes the reference get gave */
+}
+
+static long linux_sys_dup(uint64_t oldfd) {
+    return linux_dup_from(oldfd, 0, 0);
+}
+
+/* fcntl(): descriptor flags, status flags and duplicates. Record locks are not
+ * implemented and say so with ENOLCK - "no locks available" - rather than
+ * pretend a lock was taken: SQLite relies on them for correctness. */
+static long linux_sys_fcntl(uint64_t fd, uint64_t cmd, uint64_t arg) {
+    vibeos_procstate_t *ps = linux_cur_ps();
+    vibeos_file_t *f;
+    long r;
+
+    switch (VIBEOS_ARG_INT(cmd)) {
+        case F_DUPFD:
+        case F_DUPFD_CLOEXEC:
+            if (arg >= VIBEOS_FD_MAX) {
+                return -VIBEOS_EINVAL;
+            }
+            return linux_dup_from(fd, (uint32_t)arg,
+                                  VIBEOS_ARG_INT(cmd) == F_DUPFD_CLOEXEC ? VIBEOS_FD_CLOEXEC : 0u);
+        case F_GETFD:
+        case F_SETFD:
+            if (!ps) {
+                return -VIBEOS_EBADF;
+            }
+            ks_lock(&ps->files_lock, __func__);
+            if (!vibeos_fdtable_get(&ps->files, fd)) {
+                r = -VIBEOS_EBADF;
+            } else if (VIBEOS_ARG_INT(cmd) == F_GETFD) {
+                r = (long)vibeos_fdtable_flags(&ps->files, fd);
+            } else {
+                r = vibeos_fdtable_set_flags(&ps->files, fd,
+                                             (uint32_t)arg & VIBEOS_FD_CLOEXEC) == 0 ? 0 : -VIBEOS_EBADF;
+            }
+            ks_unlock(&ps->files_lock);
+            return r;
+        case F_GETFL:
+            if (!(f = linux_file_get(fd))) {
+                return -VIBEOS_EBADF;
+            }
+            r = (long)f->flags;
+            vibeos_file_put(f);
+            return r;
+        case F_SETFL:
+            if (!(f = linux_file_get(fd))) {
+                return -VIBEOS_EBADF;
+            }
+            /* The description's, so every descriptor naming it sees the change:
+             * that is what makes O_NONBLOCK on a dup'd pipe end mean anything. */
+            f->flags = (f->flags & ~LINUX_SETFL_MASK) | ((uint32_t)arg & LINUX_SETFL_MASK);
+            vibeos_file_put(f);
+            return 0;
+        case F_GETLK:
+        case F_SETLK:
+        case F_SETLKW:
+            if (!(f = linux_file_get(fd))) {
+                return -VIBEOS_EBADF;
+            }
+            vibeos_file_put(f);
+            return -VIBEOS_ENOLCK;
+        default:
+            return -VIBEOS_EINVAL;
+    }
+}
+
+/* ---- metadata ---------------------------------------------------------------------- */
+
+static void linux_stat_wr64(uint8_t *base, uint32_t off, uint64_t v) {
+    uint8_t *p = base + off;
+    uint32_t i;
+    for (i = 0; i < 8u; i++) {
+        p[i] = (uint8_t)(v >> (8u * i));
+    }
+}
+
+static void linux_stat_wr32(uint8_t *base, uint32_t off, uint32_t v) {
+    uint8_t *p = base + off;
+    uint32_t i;
+    for (i = 0; i < 4u; i++) {
+        p[i] = (uint8_t)(v >> (8u * i));
+    }
+}
+
+/* Fill a struct stat the caller can believe. Assembled in the kernel and copied
+ * out once: filling the user buffer field by field would fault in ring 0 if a
+ * sibling munmaps it between the range check and any of these writes (uaccess
+ * follow-up to 6a94a32, same class as H-026). */
+static long linux_write_stat(uint64_t ubuf, const vibeos_file_stat_t *st) {
+    uint8_t kbuf[STAT_SIZE];
     uint32_t i;
 
+    for (i = 0; i < STAT_SIZE; i++) {
+        kbuf[i] = 0;
+    }
+    linux_stat_wr64(kbuf, STAT_OFF_INO, st->ino);
+    linux_stat_wr64(kbuf, STAT_OFF_NLINK, 1);
+    linux_stat_wr32(kbuf, STAT_OFF_MODE, st->mode);
+    linux_stat_wr32(kbuf, STAT_OFF_UID, 0);
+    linux_stat_wr32(kbuf, STAT_OFF_GID, 0);
+    linux_stat_wr64(kbuf, STAT_OFF_SIZE, st->size);
+    linux_stat_wr64(kbuf, STAT_OFF_BLKSIZE, 512);
+    linux_stat_wr64(kbuf, STAT_OFF_BLOCKS, vibeos_ceil_div_u64(st->size, 512ull));
+    if (vibeos_uaccess_copy((void *)(uintptr_t)ubuf, kbuf, STAT_SIZE) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    return 0;
+}
+
+/* fstat(): the type decides - a pipe is a FIFO and a socket a socket, where both
+ * used to come out as whatever the table entry happened to resemble. */
+static long linux_sys_fstat(uint64_t fd, uint64_t ubuf) {
+    vibeos_file_t *f = linux_file_get(fd);
+    vibeos_file_stat_t st;
+    long r;
+
+    if (!f) {
+        return -VIBEOS_EBADF;
+    }
+    st.mode = 0;
+    st.size = 0;
+    st.ino = 0;
+    r = f->ops->stat ? (long)f->ops->stat(f, &st) : 0;
+    vibeos_file_put(f);
+    return r < 0 ? r : linux_write_stat(ubuf, &st);
+}
+
+/* newfstatat(dirfd, path, buf, flags): stat by name, or by fd when the path is
+ * empty and AT_EMPTY_PATH is set. Relative paths resolve against the volume
+ * root, which is the only directory there is. */
+static long linux_sys_newfstatat(uint64_t dirfd, uint64_t path_uptr, uint64_t ubuf,
+                                 uint64_t flags) {
+    char path[64];
+    vibeos_file_stat_t st;
+    vibeos_fs_node_t node;
+
+    if (ks_copy_user_string(path_uptr, path, sizeof(path)) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    if (path[0] == 0) {
+        if ((flags & AT_EMPTY_PATH) == 0) {
+            return -VIBEOS_ENOENT;
+        }
+        return linux_sys_fstat(dirfd, ubuf);
+    }
+    if (VIBEOS_ARG_INT(dirfd) != AT_FDCWD && dirfd < 3u) {
+        return -VIBEOS_EBADF;
+    }
+    /* The root of the volume, however it is spelled. */
+    if ((path[0] == '/' && path[1] == 0) || (path[0] == '.' && path[1] == 0)) {
+        st.mode = VIBEOS_S_IFDIR | 0755u;
+        st.size = 0;
+        st.ino = 1;
+        return linux_write_stat(ubuf, &st);
+    }
+    /* Directory or file? The answer changes what a program does, not just what
+     * it prints: ls given a directory lists it and given a file names it, so
+     * reporting the wrong one produces a plausible wrong result rather than an
+     * error. The filesystem decides; how it decides is its business. */
+    if (vibeos_fs_lookup(ks_rootfs(), path, &node) != 0) {
+        return -VIBEOS_ENOENT;
+    }
+    st.mode = node.is_dir ? (VIBEOS_S_IFDIR | 0755u) : (VIBEOS_S_IFREG | 0644u);
+    st.size = node.is_dir ? 0u : node.size;   /* 64-bit: do not narrow (M-018) */
+    st.ino = node.id ? node.id : 2u;
+    return linux_write_stat(ubuf, &st);
+}
+
+/* getdents64(fd, buf, len): dirent64 records from the directory the descriptor
+ * names, so user space can list a directory. */
+static long linux_sys_getdents64(uint64_t fd, uint64_t buf, uint64_t len) {
+    vibeos_file_t *f = linux_file_get(fd);
+    long r;
+
+    if (!f) {
+        return -VIBEOS_EBADF;
+    }
+    r = f->ops->getdents ? f->ops->getdents(f, buf, len) : -VIBEOS_ENOTDIR;
+    vibeos_file_put(f);
+    return r;
+}
+
+/* ioctl(): the type answers. Only the console answers anything, and only the
+ * process-group questions; ENOTTY is the truthful answer everywhere else, and it
+ * is the answer a libc uses to decide stdout is a file or a pipe and should be
+ * block buffered. */
+static long linux_sys_ioctl(uint64_t fd, uint64_t req, uint64_t arg) {
+    vibeos_file_t *f = linux_file_get(fd);
+    long r;
+
+    if (!f) {
+        return -VIBEOS_EBADF;
+    }
+    r = f->ops->ioctl ? f->ops->ioctl(f, req, arg) : -VIBEOS_ENOTTY;
+    vibeos_file_put(f);
+    return r;
+}
+
+/* ---- paths ----------------------------------------------------------------------------- */
+
+/* unlink(path) / mkdir(path): filesystem mutations from user space. */
+static long linux_sys_unlink(uint64_t path_uptr) {
+    char path[64];
+    if (ks_copy_user_string(path_uptr, path, sizeof(path)) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    return (vibeos_fs_unlink(ks_rootfs(), path) == 0) ? 0 : -VIBEOS_ENOENT;
+}
+
+static long linux_sys_mkdir(uint64_t path_uptr) {
+    char path[64];
+    if (ks_copy_user_string(path_uptr, path, sizeof(path)) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    return (vibeos_fs_mkdir(ks_rootfs(), path) == 0) ? 0 : -VIBEOS_EIO;
+}
+
+/* getcwd(): there is one directory. Saying so is accurate; inventing a path
+ * would make a program build filenames that do not resolve. */
+static long linux_sys_getcwd(uint64_t ubuf, uint64_t size) {
+    if (size < 2u) {
+        return -VIBEOS_ERANGE;
+    }
+    {
+        /* Fault-safe copy out: a sibling munmap between the check and the write
+         * would fault in ring 0 (uaccess follow-up to 6a94a32). */
+        char kcwd[2];
+        kcwd[0] = '/';
+        kcwd[1] = 0;
+        if (vibeos_uaccess_copy((void *)(uintptr_t)ubuf, kcwd, 2) != 0) {
+            return -VIBEOS_EFAULT;
+        }
+    }
+    return 2;   /* Linux returns the length including the terminator */
+}
+
+/* readlinkat(): the only symlink that exists here is the one a program uses to
+ * find itself, and it is answered from what execve was actually given rather
+ * than from a made-up path. Everything else is not a link, which is what
+ * EINVAL means. */
+static long linux_sys_readlinkat(uint64_t dirfd, uint64_t path_uptr, uint64_t ubuf,
+                                 uint64_t bufsz) {
+    char path[64];
+    const char *self;
+    uint64_t n = 0;
+
+    (void)dirfd;
+    if (ks_copy_user_string(path_uptr, path, sizeof(path)) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    if (!(path[0] == '/' && path[1] == 'p' && path[2] == 'r' && path[3] == 'o' &&
+          path[4] == 'c' && path[5] == '/' && path[6] == 's' && path[7] == 'e' &&
+          path[8] == 'l' && path[9] == 'f' && path[10] == '/' && path[11] == 'e' &&
+          path[12] == 'x' && path[13] == 'e' && path[14] == 0)) {
+        return -VIBEOS_EINVAL;
+    }
+    if (ks_current() < 0) {
+        return -VIBEOS_EINVAL;
+    }
+    self = ks_image(ks_current())->exe_path;
+    while (self[n]) {
+        n++;
+    }
+    if (n == 0) {
+        return -VIBEOS_ENOENT;
+    }
+    if (n > bufsz) {
+        n = bufsz;
+    }
+    if (!linux_user_ok(ubuf, n, 1)) {
+        return -VIBEOS_EFAULT;
+    }
+    /* self is a kernel string; copy out fault-safe so a sibling munmap between
+     * the check and the write cannot fault in ring 0 (uaccess follow-up). */
+    if (vibeos_uaccess_copy((void *)(uintptr_t)ubuf, self, n) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    return (long)n;   /* not terminated, as Linux does not terminate it */
+}
+
+/* ---- what fork, exec and exit do to a table ------------------------------------------------ */
+
+/* A new process inherits another's descriptors: a copy of the table, every
+ * description in it one reference fuller. fork and exec copy; a thread shares, so
+ * clone does neither. Under the source's lock, because a sibling of the forking
+ * thread may be opening or closing in the same table. The destination is new and
+ * nobody else can see it yet. 0, or -ENOMEM with the destination empty. */
+int linux_fds_copy(vibeos_procstate_t *dst, vibeos_procstate_t *src) {
+    int r;
+
     if (!dst || !src) {
-        return;
+        return -VIBEOS_EINVAL;
     }
     ks_lock(&src->files_lock, __func__);
-    vibeos_fdtable_copy(&dst->files, &src->files);
-    for (i = 0; i < vibeos_fdtable_count(); i++) {
-        vibeos_pipe_end_acquire(vibeos_fdtable_entry(&dst->files, i));
-    }
+    r = vibeos_fdtable_copy(&dst->files, &src->files);
     ks_unlock(&src->files_lock);
+    return r == 0 ? 0 : -VIBEOS_ENOMEM;
 }
 
 /* A thread has finished with its process's table: exit, or exec moving to a
- * copy. The last one to leave closes everything, and returns 1 so exit knows
- * the process's sockets go too.
+ * copy. The last one to leave closes everything, and returns 1 so exit knows the
+ * process's sockets go too.
  *
  * Exiting closes everything, and for a pipe that is not tidiness: the reader at
  * the other end is waiting for its writers to reach zero, and a program that
  * produced its output and exited without closing is the normal case. Leaving
- * the count high is how ls | wc -l prints nothing and hangs. The redirections of
- * 0-2 are released the same way. Sockets are not closed here - they belong to
- * the process id, which an exec keeps - only forgotten by the table. */
+ * the count high is how ls | wc -l prints nothing and hangs. */
 int linux_files_leave(vibeos_procstate_t *ps) {
-    uint32_t i, n;
+    uint32_t n;
 
     if (!ps) {
         return 0;
@@ -1199,37 +765,10 @@ int linux_files_leave(vibeos_procstate_t *ps) {
     if (n != 1u) {
         return 0;
     }
-    /* Nobody else uses this table now - the count was the last thing that
-     * said somebody might - so no lock. */
-    for (i = 0; i < vibeos_fdtable_count(); i++) {
-        vibeos_fd_t *f = vibeos_fdtable_entry(&ps->files, i);
-        if (!f->used) {
-            continue;
-        }
-        f->net_sock = -1;
-        linux_pipe_release(f);
-        f->used = 0;
-    }
+    /* Nobody else uses this table now - the count was the last thing that said
+     * somebody might - so no lock. */
+    vibeos_fdtable_destroy(&ps->files);
     return 1;
-}
-
-/* dup() is dup2() onto the lowest free descriptor. */
-static long linux_sys_dup(uint64_t oldfd) {
-    vibeos_procstate_t *ps;
-    int i;
-
-    if (ks_current() < 0) {
-        return -VIBEOS_EINVAL;
-    }
-    ps = ks_ps(ks_current());
-    if (ps == 0) {
-        return -VIBEOS_EBADF;
-    }
-    i = vibeos_fdtable_free_index(&ps->files);
-    if (i < 0) {
-        return -VIBEOS_EMFILE;
-    }
-    return linux_sys_dup2(oldfd, (uint64_t)(VIBEOS_FD_FIRST + (uint32_t)i));
 }
 
 /* ---- the syscalls this file implements ---------------------------------------
@@ -1238,28 +777,36 @@ static long linux_sys_dup(uint64_t oldfd) {
  *             loop is the documented fallback. Refusing is therefore free, while
  *             serving it would mean a second copy of the file and console paths
  *             purely to move bytes between kernel buffers.
- *   pipe      is pipe2 with no flags. */
+ *   pipe      is pipe2 with no flags.
+ *   ioctl     the row keeps the console's two pointer descriptors, so a bad
+ *             pointer is refused before the type is asked. */
+#define TIOCGPGRP 0x540Fu
+#define TIOCSPGRP 0x5410u
+
 #define LINUX_FS_SYSCALLS(X) \
-    X(0,   read,       READ,        PTRS(OUT_BUF(1, 2)), linux_sys_read(ARG(0), ARG(1), ARG(2))) \
-    X(1,   write,      WRITE,       PTRS(IN_BUF(1, 2)), linux_sys_write(ARG(0), ARG(1), ARG(2))) \
-    X(2,   open,       OPEN,        NOPTR, linux_sys_open(ARG(0), ARG(1))) \
-    X(3,   close,      CLOSE,       NOPTR, linux_sys_close(ARG(0))) \
-    X(5,   fstat,      FSTAT,       PTRS(OUT(1, STAT_SIZE)), linux_sys_fstat(ARG(0), ARG(1))) \
-    X(8,   lseek,      LSEEK,       NOPTR, linux_sys_lseek(ARG(0), ARG(1), ARG(2))) \
-    X(16,  ioctl,      IOCTL,       PTRS(OUT_IF(1, VIBEOS_TIOCGPGRP, 2, sizeof(uint32_t)), IN_IF(1, VIBEOS_TIOCSPGRP, 2, sizeof(uint32_t))), linux_sys_ioctl(ARG(0), ARG(1), ARG(2))) \
-    X(19,  readv,      READV,       PTRS(IN_VEC(1, 2, sizeof(linux_iovec_t), 1024)), linux_sys_readv(ARG(0), ARG(1), ARG(2))) \
-    X(20,  writev,     WRITEV,      PTRS(IN_VEC(1, 2, sizeof(linux_iovec_t), 1024)), linux_sys_writev(ARG(0), ARG(1), ARG(2))) \
-    X(22,  pipe,       PIPE,        PTRS(OUT(0, 8)), linux_sys_pipe2(ARG(0), 0)) \
-    X(32,  dup,        DUP,         NOPTR, linux_sys_dup(ARG(0))) \
-    X(33,  dup2,       DUP2,        NOPTR, linux_sys_dup2(ARG(0), ARG(1))) \
-    X(40,  sendfile,   SENDFILE,    NOPTR, -VIBEOS_ENOSYS) \
-    X(79,  getcwd,     GETCWD,      PTRS(OUT(0, 2)), linux_sys_getcwd(ARG(0), ARG(1))) \
-    X(83,  mkdir,      MKDIR,       NOPTR, linux_sys_mkdir(ARG(0))) \
-    X(87,  unlink,     UNLINK,      NOPTR, linux_sys_unlink(ARG(0))) \
-    X(217, getdents64, GETDENTS,    PTRS(OUT_BUF(1, 2)), linux_sys_getdents64(ARG(0), ARG(1), ARG(2))) \
-    X(257, openat,     OPEN_AT,     NOPTR, linux_sys_openat(ARG(0), ARG(1), ARG(2))) \
-    X(262, newfstatat, STAT_AT,     PTRS(OUT(2, STAT_SIZE)), linux_sys_newfstatat(ARG(0), ARG(1), ARG(2), ARG(3))) \
-    X(267, readlinkat, READLINK_AT, NOPTR, linux_sys_readlinkat(ARG(0), ARG(1), ARG(2), ARG(3))) \
-    X(293, pipe2,      PIPE2,       PTRS(OUT(0, 8)), linux_sys_pipe2(ARG(0), ARG(1)))
+    X(0,   read,        READ,        PTRS(OUT_BUF(1, 2)), linux_sys_read(ARG(0), ARG(1), ARG(2))) \
+    X(1,   write,       WRITE,       PTRS(IN_BUF(1, 2)), linux_sys_write(ARG(0), ARG(1), ARG(2))) \
+    X(2,   open,        OPEN,        NOPTR, linux_sys_open(ARG(0), ARG(1))) \
+    X(3,   close,       CLOSE,       NOPTR, linux_sys_close(ARG(0))) \
+    X(5,   fstat,       FSTAT,       PTRS(OUT(1, STAT_SIZE)), linux_sys_fstat(ARG(0), ARG(1))) \
+    X(8,   lseek,       LSEEK,       NOPTR, linux_sys_lseek(ARG(0), ARG(1), ARG(2))) \
+    X(16,  ioctl,       IOCTL,       PTRS(OUT_IF(1, TIOCGPGRP, 2, sizeof(uint32_t)), IN_IF(1, TIOCSPGRP, 2, sizeof(uint32_t))), linux_sys_ioctl(ARG(0), ARG(1), ARG(2))) \
+    X(19,  readv,       READV,       PTRS(IN_VEC(1, 2, sizeof(linux_iovec_t), 1024)), linux_sys_readv(ARG(0), ARG(1), ARG(2))) \
+    X(20,  writev,      WRITEV,      PTRS(IN_VEC(1, 2, sizeof(linux_iovec_t), 1024)), linux_sys_writev(ARG(0), ARG(1), ARG(2))) \
+    X(22,  pipe,        PIPE,        PTRS(OUT(0, 8)), linux_sys_pipe2(ARG(0), 0)) \
+    X(32,  dup,         DUP,         NOPTR, linux_sys_dup(ARG(0))) \
+    X(33,  dup2,        DUP2,        NOPTR, linux_sys_dup2(ARG(0), ARG(1))) \
+    X(40,  sendfile,    SENDFILE,    NOPTR, -VIBEOS_ENOSYS) \
+    X(72,  fcntl,       FCNTL,       NOPTR, linux_sys_fcntl(ARG(0), ARG(1), ARG(2))) \
+    X(79,  getcwd,      GETCWD,      PTRS(OUT(0, 2)), linux_sys_getcwd(ARG(0), ARG(1))) \
+    X(83,  mkdir,       MKDIR,       NOPTR, linux_sys_mkdir(ARG(0))) \
+    X(87,  unlink,      UNLINK,      NOPTR, linux_sys_unlink(ARG(0))) \
+    X(217, getdents64,  GETDENTS,    PTRS(OUT_BUF(1, 2)), linux_sys_getdents64(ARG(0), ARG(1), ARG(2))) \
+    X(257, openat,      OPEN_AT,     NOPTR, linux_sys_openat(ARG(0), ARG(1), ARG(2))) \
+    X(262, newfstatat,  STAT_AT,     PTRS(OUT(2, STAT_SIZE)), linux_sys_newfstatat(ARG(0), ARG(1), ARG(2), ARG(3))) \
+    X(267, readlinkat,  READLINK_AT, NOPTR, linux_sys_readlinkat(ARG(0), ARG(1), ARG(2), ARG(3))) \
+    X(292, dup3,        DUP3,        NOPTR, linux_sys_dup3(ARG(0), ARG(1), ARG(2))) \
+    X(293, pipe2,       PIPE2,       PTRS(OUT(0, 8)), linux_sys_pipe2(ARG(0), ARG(1))) \
+    X(436, close_range, CLOSE_RANGE, NOPTR, linux_sys_close_range(ARG(0), ARG(1), ARG(2)))
 
 LINUX_DEFINE_SYSCALLS(fs, LINUX_FS_SYSCALLS)

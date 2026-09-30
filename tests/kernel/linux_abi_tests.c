@@ -268,6 +268,125 @@ static void t_fork_publishes_a_child(void) {
     expect(kf_illegal_transitions() == 0, "through legal transitions only");
 }
 
+
+/* ---- descriptors as Linux has them (A3) -------------------------------------------- */
+
+/* Two descriptors dup made share one offset - which is what a shell's `2>&1`
+ * and every `exec 3<file` rely on. The table held entries by value until A3, so
+ * the second read started from the beginning again. */
+static void t_dup_shares_offset(void) {
+    uint64_t buf;
+    long a, b;
+
+    fresh(80);
+    kf_fs_add("/f", "abcdef", 6, 0);
+    buf = kf_ualloc(8);
+    a = SYS2(2, ustr("f"), 0);
+    b = SYS1(32, (uint64_t)a);
+    expect(a >= 3 && b > a, "dup gives a second descriptor");
+    expect(SYS3(0, (uint64_t)a, buf, 2) == 2 && memcmp(kf_uptr(buf), "ab", 2) == 0, "read two bytes");
+    expect(SYS3(0, (uint64_t)b, buf, 2) == 2 && memcmp(kf_uptr(buf), "cd", 2) == 0,
+           "the duplicate continues where the original stopped");
+    expect(SYS3(8, (uint64_t)b, 0, 1) == 4, "and reports the shared position");
+    expect(SYS1(3, (uint64_t)a) == 0 && SYS3(0, (uint64_t)b, buf, 8) == 2,
+           "closing one leaves the other open, with the offset");
+}
+
+/* A program opens two hundred files. The table held four. */
+static void t_many_descriptors(void) {
+    uint32_t i;
+    int ok = 1;
+    uint64_t path;
+
+    fresh(81);
+    kf_fs_add("/f", "x", 1, 0);
+    path = ustr("f");
+    for (i = 0; i < 200u; i++) {
+        if (SYS2(2, path, 0) != (long)(3u + i)) {
+            ok = 0;
+        }
+    }
+    expect(ok, "two hundred files open at once, each at the next number");
+    expect(SYS1(3, 50) == 0 && SYS2(2, path, 0) == 50, "a closed number is the next one handed out");
+    expect(SYS1(3, 1) == 0 && SYS2(2, path, 0) == 1,
+           "closing stdout and opening a file gives the file 1 - a shell's redirection");
+}
+
+/* A pipe is a FIFO, has no position, and O_NONBLOCK makes an empty read say so
+ * instead of waiting. */
+static void t_pipe_is_a_fifo(void) {
+    uint64_t fds, st, buf;
+    int32_t *f;
+    kf_outcome_t how;
+
+    fresh(82);
+    fds = kf_ualloc(8);
+    st = kf_ualloc(144);
+    buf = kf_ualloc(8);
+    f = (int32_t *)kf_uptr(fds);
+    expect(SYS2(293, fds, 0x800 /* O_NONBLOCK */) == 0, "a non-blocking pipe");
+    expect(SYS2(5, (uint64_t)f[0], st) == 0 &&
+           (*(uint32_t *)((uint8_t *)kf_uptr(st) + 24) & 0170000u) == 0010000u,
+           "fstat says FIFO, not a regular file");
+    expect(SYS3(8, (uint64_t)f[0], 0, 1) == -VIBEOS_ESPIPE, "lseek on a pipe is ESPIPE");
+    (void)sys(0, (uint64_t)f[0], buf, 8, 0, 0, 0, &how);
+    expect(how == KF_RETURNED && sys(0, (uint64_t)f[0], buf, 8, 0, 0, 0, 0) == -VIBEOS_EAGAIN,
+           "an empty non-blocking pipe answers EAGAIN instead of waiting");
+    expect(SYS3(72, (uint64_t)f[0], 3 /* F_GETFL */, 0) & 0x800, "F_GETFL reports O_NONBLOCK");
+    expect(SYS3(72, (uint64_t)f[0], 4 /* F_SETFL */, 0) == 0 &&
+           !(SYS3(72, (uint64_t)f[0], 3, 0) & 0x800), "and F_SETFL clears it");
+}
+
+/* Close-on-exec belongs to the number, not the file. */
+static void t_cloexec(void) {
+    uint64_t path;
+    long a, b;
+
+    fresh(83);
+    kf_fs_add("/f", "x", 1, 0);
+    path = ustr("f");
+    a = SYS2(2, path, 0x80000 /* O_CLOEXEC */);
+    expect(SYS3(72, (uint64_t)a, 1 /* F_GETFD */, 0) == 1, "O_CLOEXEC sets FD_CLOEXEC");
+    b = SYS3(292, (uint64_t)a, 40, 0);
+    expect(b == 40 && SYS3(72, 40, 1, 0) == 0, "dup3 without O_CLOEXEC gives a number without it");
+    expect(SYS3(292, (uint64_t)a, (uint64_t)a, 0) == -VIBEOS_EINVAL, "dup3 onto itself is EINVAL");
+    expect(SYS3(72, (uint64_t)a, 1030 /* F_DUPFD_CLOEXEC */, 100) == 100 && SYS3(72, 100, 1, 0) == 1,
+           "F_DUPFD_CLOEXEC honours its minimum and the flag");
+    expect(SYS3(436, 40, 100, 4 /* CLOSE_RANGE_CLOEXEC */) == 0 && SYS3(72, 40, 1, 0) == 1,
+           "close_range can mark a range close-on-exec");
+    expect(SYS3(436, 40, ~0ull, 0) == 0 && SYS1(3, 40) == -VIBEOS_EBADF && SYS1(3, 100) == -VIBEOS_EBADF,
+           "and close it");
+    expect(SYS2(33, (uint64_t)a, (uint64_t)a) == a, "dup2 onto itself answers the number");
+}
+
+/* A forked child shares its parent's descriptions: one offset between them. */
+static void t_fork_shares_offsets(void) {
+    uint64_t buf;
+    long fd, pid;
+    int parent, child = -1;
+    uint32_t i;
+
+    parent = fresh(84);
+    kf_fs_add("/f", "0123456789", 10, 0);
+    buf = kf_ualloc(8);
+    fd = SYS2(2, ustr("f"), 0);
+    pid = SYS0(57);
+    for (i = 0; i < KF_SLOTS; i++) {
+        if ((int)i != parent && ks_id((int)i)->pid == (uint32_t)pid) {
+            child = (int)i;
+        }
+    }
+    expect(child >= 0, "a child");
+    if (child < 0) {
+        return;
+    }
+    (void)SYS3(0, (uint64_t)fd, buf, 3);
+    kf_set_current(child);
+    expect(SYS3(0, (uint64_t)fd, buf, 3) == 3 && memcmp(kf_uptr(buf), "345", 3) == 0,
+           "the child reads on from where the parent stopped");
+    kf_set_current(parent);
+}
+
 int test_linux_handlers(void) {
     g_fail = 0;
     t_identity();
@@ -283,6 +402,11 @@ int test_linux_handlers(void) {
     t_uname_and_clock();
     t_exit_and_wait();
     t_fork_publishes_a_child();
+    t_dup_shares_offset();
+    t_many_descriptors();
+    t_pipe_is_a_fifo();
+    t_cloexec();
+    t_fork_shares_offsets();
     return g_fail ? -1 : 0;
 }
 
@@ -331,19 +455,29 @@ int test_linux_gaps(void) {
     g_fail = 0;
     g_gaps = 0;
 
-    /* open (2), L1: a process has at least 64 descriptors on Linux. */
+    /* open (2), L1: a relative path resolves against the working directory.
+     * (Its other gap - four descriptors - was closed by A3 and is a handler
+     * test now: t_many_descriptors.) */
+    fresh(60);
+    kf_fs_add("/d", 0, 0, 1);
+    kf_fs_add("/d/x", "hi", 2, 0);
+    (void)SYS1(80, ustr("/d"));
+    gap(2, SYS2(2, ustr("x"), 0) >= 3, "open resolves a relative path in the working directory");
+
+    /* fcntl (72), L1: a record lock is taken. */
     {
-        uint64_t path = 0;
-        int opened = 0;
-        fresh(60);
-        path = ustr("f.txt");
-        for (i = 0; i < 16u; i++) {
-            if (SYS3(2, path, 0101u /* O_WRONLY|O_CREAT */, 0644u) >= 3) {
-                opened++;
-            }
-        }
-        gap(2, opened == 16, "sixteen files open at once");
+        uint64_t fl = 0;
+        long fd;
+        fresh(75);
+        kf_fs_add("/db", "x", 1, 0);
+        fd = SYS2(2, ustr("db"), 0);
+        fl = kf_ualloc(32);   /* struct flock: F_RDLCK over the whole file */
+        gap(72, fd >= 0 && SYS3(72, (uint64_t)fd, 6 /* F_SETLK */, fl) == 0, "F_SETLK takes a lock");
     }
+
+    /* close_range (436), L1: CLOSE_RANGE_UNSHARE gives the caller its own table. */
+    fresh(76);
+    gap(436, SYS3(436, 3, ~0ull, 2 /* CLOSE_RANGE_UNSHARE */) == 0, "close_range with CLOSE_RANGE_UNSHARE");
 
     /* mmap (9), L3: MAP_FIXED|MAP_ANONYMOUS maps at the address given. */
     fresh(61);

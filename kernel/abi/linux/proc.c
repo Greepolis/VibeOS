@@ -137,15 +137,23 @@ static long linux_sys_fork(const ks_regs_t *frame) {
     child->signal_stopped = 0;
     child->is_thread = 0;
     child->clear_child_tid = 0;
+    /* Open descriptors are inherited. This is not a refinement: a shell builds
+     * a pipeline by creating the pipe, forking, and having the child move an
+     * inherited end onto its standard output. Without inheritance the child has
+     * no such descriptor, the redirection fails, and its output goes to the
+     * console while the reader waits forever. A copy of the table, naming the
+     * same descriptions - the child and the parent share each file's offset,
+     * which is what fork promises (A3). The copy can need a page, so it can
+     * fail, and the child is unwound as the other failures above unwind it. */
+    if (linux_fds_copy(cps, pps) != 0) {
+        ks_procstate_put(cps);
+        ks_set_ps(idx, 0);
+        ks_drop_aspace(idx);
+        (void)ks_set_state(idx, VIBEOS_TASK_FREE, __func__);
+        return -VIBEOS_ENOMEM;
+    }
     {
         uint32_t sg;
-        /* Open descriptors are inherited. This is not a refinement: a shell
-         * builds a pipeline by creating the pipe, forking, and having the
-         * child move an inherited end onto its standard output. Without
-         * inheritance the child has no such descriptor, the redirection fails,
-         * and its output goes to the console while the reader waits forever.
-         * A copy, into the child's new process state. */
-        linux_fds_copy(cps, pps);
 
         child->exit_signal = 0;
         child->sig_pending = 0;   /* pending signals are not inherited */
@@ -984,7 +992,18 @@ static long linux_sys_execve(ks_regs_t *frame, uint64_t path_uptr,
          * leaves the siblings the old table, still open; a single-threaded one
          * was its last user and closes it, which the copy's own references
          * balance. */
-        linux_fds_copy(nps, ops);
+        if (linux_fds_copy(nps, ops) != 0) {
+            /* Nothing is committed yet - the old image and process are still
+             * this task's - so the exec fails and the program carries on,
+             * without the siblings it has already been made to lose. */
+            ks_image_drop(&np, "exec_no_fd_page");
+            ks_procstate_put(nps);
+            return -VIBEOS_ENOMEM;
+        }
+        /* Close-on-exec is the point of the flag: a descriptor the program
+         * marked is not the new image's to inherit. On the copy, which nobody
+         * else can reach yet. */
+        (void)vibeos_fdtable_drop_cloexec(&nps->files);
         (void)linux_files_leave(ops);
 
         vibeos_task_stats()->execs++;
@@ -1246,7 +1265,7 @@ static long linux_sys_prlimit64(uint64_t resource, uint64_t new_uptr, uint64_t o
                 rl[1] = rl[0];
                 break;
             case 7: /* RLIMIT_NOFILE */
-                rl[0] = 3u + LINUX_MAX_FDS;
+                rl[0] = (uint64_t)LINUX_MAX_FDS;
                 rl[1] = rl[0];
                 break;
             default:

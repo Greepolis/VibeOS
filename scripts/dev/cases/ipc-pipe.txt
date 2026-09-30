@@ -34,7 +34,7 @@
     unlock();
 }
 
-void vibeos_pipe_end_acquire
+long vibeos_pipe_read(
 +++ new
         if (p->readers == 0u || p->writers == 0u) {
             p->used = 0;
@@ -46,7 +46,7 @@ void vibeos_pipe_end_acquire
     unlock();
 }
 
-void vibeos_pipe_end_acquire
+long vibeos_pipe_read(
 
 ### releasing an end that is not held is clamped instead of counted
 --- old

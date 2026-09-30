@@ -1,33 +1,59 @@
-# C5: the descriptor table (kernel/fs/fdtable.c), proved by the host test.
+# The descriptor table (kernel/fs/fdtable.c), rebuilt around open file
+# descriptions in docs/abi/ A3, proved by the host test (tests/kernel/fdtable_tests.c).
 #
 # Each case breaks one rule the table states once, and the run must go red on the
 # host test that names it:
-#  1. the bound is off by one: the entry after the last is reachable, and in the real
-#     task structure that is the first redirection of fd 0;
-#  2. claim does not clear: a new descriptor inherits the previous holder's position,
-#     pipe and socket;
-#  3. copy skips the redirections: a forked child loses `cmd > file` and writes to the
-#     console.
+#  1. install does not take the lowest free number: closing stdout and opening a
+#     file no longer gives the file 1. Expect "a closed number is the next one
+#     handed out".
+#  2. a fresh page is not cleared: the kernel's free pages carry a poison
+#     pattern, read as descriptors. Expect "descriptor 1 was not the next free
+#     one" - and then a crash in a later group, on the same garbage. The first
+#     run of this case showed only the crash, because the test runner's stdout
+#     was buffered and the line naming the defect died in the buffer; the
+#     runner is unbuffered now.
+#  3. a copy takes no reference: fork's child and its parent then release one
+#     description twice. Expect "a copied table holds a reference".
+#  4. exec closes every descriptor, not only the close-on-exec ones. Expect "exec
+#     closes only its own close-on-exec numbers".
+#
+# The three cases C5 had - an off-by-one bound, a claim that did not clear, a copy
+# that left the redirections behind - named code A3 removed: there is no bound
+# but the table's own size, no entry holding a file to clear, and no redirections.
 #
 # Target source: kernel/fs/fdtable.c
-# Run: python3 scripts/dev/sabotage.py kernel/fs/fdtable.c scripts/dev/cases/fs-fdtable.txt build-clang-Release
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/fs/fdtable.c scripts/dev/cases/fs-fdtable.txt
 
-### the table's bound is off by one
+### install does not take the lowest free number
 --- old
-    if (!t || fd < VIBEOS_FD_FIRST || fd >= VIBEOS_FD_FIRST + VIBEOS_FD_SLOTS) {
+        vibeos_fdent_t *e = slot(t, fd);
+        if (e && e->file) {
+            continue;
+        }
 +++ new
-    if (!t || fd < VIBEOS_FD_FIRST || fd > VIBEOS_FD_FIRST + VIBEOS_FD_SLOTS) {
+        vibeos_fdent_t *e = slot(t, fd);
+        if ((e && e->file) || (fd < t->open && fd != 0)) {
+            continue;
+        }
 
-### claiming an entry does not clear it
+### a fresh page is not cleared
 --- old
-    vibeos_fd_clear(&t->fds[i]);
-    t->fds[i].used = 1;
+        for (i = 0; i < VIBEOS_FD_PER_PAGE; i++) {
+            p[i].file = 0;
+            p[i].flags = 0;
+            p[i].reserved = 0;
+        }
 +++ new
-    t->fds[i].used = 1;
 
-### copying a table leaves the redirections behind
+### a copy takes no reference
 --- old
-    for (i = 0; i < VIBEOS_FD_STD; i++) {
-        dst->std[i] = src->std[i];
-    }
+            vibeos_file_get(s->file);
+            d->file = s->file;
 +++ new
+            d->file = s->file;
+
+### exec closes every descriptor
+--- old
+            if (e->file && (e->flags & VIBEOS_FD_CLOEXEC)) {
++++ new
+            if (e->file) {

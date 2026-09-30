@@ -40,7 +40,8 @@ SWITCH_FUNCTIONS = {"vibeos_x86_64_isr_handler", "hw_task_runnable", "hw_task_lo
 ARCH_IDENTITY_LINES = 12
 # Lines anywhere in the arch layer or the Linux ABI that index the descriptor table
 # themselves (`files.fds` / `files.std`) instead of asking vibeos_fdtable_*.
-FILES_INDEX_LINES = 12
+FILES_INDEX_LINES = 0   # 12 until A3: a descriptor names a description now, and no arch or
+                        # handler line indexes the table's arrays - it has none
 
 
 def read(p):

@@ -14,7 +14,10 @@
 #  2. exec does not copy the table into the new process. Every redirection a
 #     shell set up before exec is gone. Observed: the boot wedges at
 #     phase=selftest_done (missing:CLI_READY) - the programs the self-test
-#     script starts have no descriptors at all.
+#     script starts have no descriptors at all. Since A3, 0-2 are table
+#     entries too, so an exec'd program has not even the console: re-run on
+#     2026-09-30 the boot wedges earlier (missing:VIBEOS_SELFTEST_DONE), with
+#     only init - which the kernel starts, console installed - writing at all.
 #
 # Not a case: the table's lock. Two threads claiming the same slot at once needs
 # them to meet inside a few instructions, which one boot does not arrange; a
@@ -27,5 +30,6 @@
 
 ### exec does not copy the table
 --- old
-        linux_fds_copy(nps, ops);
+        if (linux_fds_copy(nps, ops) != 0) {
 +++ new
+        if (0) {

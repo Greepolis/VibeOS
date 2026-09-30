@@ -1,0 +1,130 @@
+/* Open file descriptions. See include/vibeos/file.h. */
+
+#include "vibeos/file.h"
+#include "vibeos/mbz.h"
+
+static vibeos_file_t g_files[VIBEOS_FILE_MAX];
+static void (*g_lock)(void);
+static void (*g_unlock)(void);
+
+static void lock(void) {
+    if (g_lock) {
+        g_lock();
+    }
+}
+
+static void unlock(void) {
+    if (g_unlock) {
+        g_unlock();
+    }
+}
+
+void vibeos_file_set_lock(void (*l)(void), void (*u)(void)) {
+    g_lock = l;
+    g_unlock = u;
+}
+
+static void file_clear(vibeos_file_t *f) {
+    unsigned char *raw = (unsigned char *)f;
+    uint32_t gen = f->gen, i;
+
+    for (i = 0; i < (uint32_t)sizeof(*f); i++) {
+        raw[i] = 0;
+    }
+    f->gen = gen;
+    f->pipe = -1;
+    f->sock = -1;
+}
+
+void vibeos_file_reset(void) {
+    uint32_t i;
+
+    lock();
+    for (i = 0; i < VIBEOS_FILE_MAX; i++) {
+        file_clear(&g_files[i]);
+        g_files[i].gen = 0;
+    }
+    unlock();
+}
+
+vibeos_file_t *vibeos_file_alloc(const vibeos_file_ops_t *ops, uint32_t flags) {
+    uint32_t i;
+    vibeos_file_t *f = 0;
+
+    if (!ops) {
+        return 0;
+    }
+    lock();
+    for (i = 0; i < VIBEOS_FILE_MAX; i++) {
+        /* Free is both: no reference, and no release still running. The last
+         * put takes refs to zero before it runs the type's release, so refs
+         * alone would hand out a slot whose pipe end is still being given back. */
+        if (g_files[i].refs == 0u && g_files[i].ops == 0) {
+            f = &g_files[i];
+            file_clear(f);
+            f->gen++;
+            f->ops = ops;
+            f->flags = flags & ~VIBEOS_O_CLOEXEC;
+            __atomic_store_n(&f->refs, 1u, __ATOMIC_RELEASE);
+            break;
+        }
+    }
+    unlock();
+    return f;
+}
+
+void vibeos_file_get(vibeos_file_t *f) {
+    if (f) {
+        (void)__atomic_add_fetch(&f->refs, 1u, __ATOMIC_ACQ_REL);
+    }
+}
+
+void vibeos_file_put(vibeos_file_t *f) {
+    uint32_t n;
+
+    if (!f) {
+        return;
+    }
+    /* Never below zero: a second release of the same reference would otherwise
+     * run the type's release twice - a pipe end given back twice, a socket closed
+     * under whoever was handed its slot - and then wrap, so nothing released
+     * the description again. The same rule as a thread leaving a table. */
+    for (;;) {
+        n = __atomic_load_n(&f->refs, __ATOMIC_ACQUIRE);
+        if (n == 0u) {
+            vibeos_mbz_hit(VIBEOS_MBZ_FILE_PUT_UNDERFLOW, (uint64_t)(uintptr_t)f);
+            return;
+        }
+        if (__atomic_compare_exchange_n(&f->refs, &n, n - 1u, 0,
+                                        __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+            break;
+        }
+    }
+    if (n != 1u) {
+        return;
+    }
+    /* Nobody else can reach it now: the count was the last thing that said
+     * somebody might. The release runs without this layer's lock, because it
+     * wakes pipe readers and writes files back. The slot stays taken while it
+     * runs - alloc wants no references *and* no ops - and is handed back here,
+     * under the lock alloc takes. */
+    if (f->ops && f->ops->release) {
+        f->ops->release(f);
+    }
+    lock();
+    f->ops = 0;
+    unlock();
+}
+
+uint32_t vibeos_file_in_use(void) {
+    uint32_t i, n = 0;
+
+    lock();
+    for (i = 0; i < VIBEOS_FILE_MAX; i++) {
+        if (g_files[i].refs != 0u) {
+            n++;
+        }
+    }
+    unlock();
+    return n;
+}

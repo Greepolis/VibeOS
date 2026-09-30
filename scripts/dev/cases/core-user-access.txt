@@ -12,7 +12,7 @@
 #
 # Case 1 is in net.c, case 2 in fs.c, case 3 in misc.c; run the file once against
 # each - the cases whose anchor is elsewhere are skipped.
-# Target source: kernel/abi/linux/net.c, kernel/abi/linux/fs.c, kernel/abi/linux/misc.c
+# Target source: kernel/abi/linux/net.c, kernel/abi/linux/fs.c, kernel/abi/linux/misc.c, kernel/abi/files/regular.c (read, since A3)
 # Run: SABOTAGE_VERIFY="python3 scripts/dev/check-user-access.py" python3 scripts/dev/sabotage.py <one of them> scripts/dev/cases/core-user-access.txt
 
 ### a socket address is written through a raw pointer
@@ -29,10 +29,10 @@
 
 ### read() hands the user's buffer to the filesystem
 --- old
-                got = vibeos_fs_read_at(ks_rootfs(), &node, f->pos, bounce, (uint32_t)want);
+        got = vibeos_fs_read_at(ks_rootfs(), &node, f->pos, bounce, (uint32_t)want);
 +++ new
-                got = vibeos_fs_read_at(ks_rootfs(), &node, f->pos,
-                                        (uint8_t *)(uintptr_t)(buf + done), (uint32_t)want);
+        got = vibeos_fs_read_at(ks_rootfs(), &node, f->pos,
+                                (uint8_t *)(uintptr_t)(buf + done), (uint32_t)want);
 
 ### uname writes the user's buffer directly
 --- old

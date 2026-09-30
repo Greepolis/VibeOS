@@ -17,6 +17,7 @@
 #include "vibeos/abi_rows.h"
 #include "vibeos/procstate.h"
 #include "vibeos/fdtable.h"
+#include "vibeos/fileops.h"
 #include "vibeos/pipe.h"
 #include "vibeos/vma.h"
 #include "vibeos/mm_stats.h"
@@ -33,12 +34,9 @@
 
 #define VIBEOS_ARG_INT(v)  ((int)(uint32_t)(v))
 
-/* The descriptor numbers the table covers: 0-2 are the console (or what they
- * were redirected to), 3 up are entries. */
-#define LINUX_MAX_FDS ((int)VIBEOS_FD_SLOTS)
+/* How many descriptors a process may have: RLIMIT_NOFILE, as prlimit reports it. */
+#define LINUX_MAX_FDS ((int)VIBEOS_FD_MAX)
 
-/* A network wait gives up after ten seconds of ticks. */
-#define LINUX_NET_TIMEOUT_SECONDS 10u
 
 /* The exec staging cache (common.c): which image the staging buffer holds. */
 extern char g_exec_cached[128];
@@ -46,11 +44,11 @@ extern long g_exec_cached_len;
 extern uint32_t g_exec_cached_id;
 void linux_exec_cache_drop(void);
 
-/* Shared between fs.c and net.c: a stream on a socket, and claiming a descriptor. */
-long linux_net_recv(vibeos_fd_t *f, uint64_t buf, uint64_t len);
-long linux_net_send(vibeos_fd_t *f, uint64_t buf, uint64_t len);
-int linux_fd_alloc(int slot);
-vibeos_fd_t *linux_fd_get(uint64_t fd);
-void linux_pipe_release(vibeos_fd_t *f);
+/* Descriptors (fs.c), shared with the socket calls: a reference to what fd names
+ * (the caller puts it), a description installed at the lowest free number at or
+ * above min (the reference is taken over, or released on failure), and a close. */
+vibeos_file_t *linux_file_get(uint64_t fd);
+long linux_fd_install(vibeos_file_t *f, uint32_t fdflags, uint32_t min);
+long linux_fd_close(uint64_t fd);
 
 #endif

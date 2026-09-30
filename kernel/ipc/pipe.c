@@ -134,20 +134,6 @@ void vibeos_pipe_release_end(int slot, int writable) {
     unlock();
 }
 
-void vibeos_pipe_end_acquire(const vibeos_fd_t *f) {
-    if (f && f->used && f->pipe >= 0) {
-        vibeos_pipe_add_end(f->pipe, f->writable);
-    }
-}
-
-void vibeos_pipe_end_release(vibeos_fd_t *f) {
-    if (!f || f->pipe < 0) {
-        return;
-    }
-    vibeos_pipe_release_end(f->pipe, f->writable);
-    f->pipe = -1;
-}
-
 long vibeos_pipe_read(int slot, void *dst, uint64_t len, vibeos_pipe_copy_fn copy,
                       vibeos_pipe_status_t *status) {
     pipe_t *p;

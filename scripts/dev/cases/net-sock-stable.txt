@@ -3,7 +3,8 @@
 #
 #  1. recvfrom stops re-verifying - the state an external review found it in on
 #     2026-09-24, a phase after the tracker called M-020 fixed: expect
-#     "linux_sys_recvfrom waits holding a descriptor and never calls linux_sock_stable";
+#     "vibeos_sockfile_recvfrom waits holding a description and never calls
+#     vibeos_sockfile_stable" (the waits moved to kernel/abi/files/socket.c in A3);
 #  2. the same for accept, one of the three the original fix did reach.
 #
 # The race itself is not reproduced - it needs a sibling thread closing and
@@ -11,31 +12,31 @@
 # makes it impossible, at every site, which is what was missing: three sites had
 # it and the fourth was left to memory.
 #
-# Target source: kernel/abi/linux/net.c
-# Run: SABOTAGE_VERIFY="python3 scripts/dev/check-net-stable.py" python3 scripts/dev/sabotage.py kernel/abi/linux/net.c scripts/dev/cases/net-sock-stable.txt
+# Target source: kernel/abi/files/socket.c
+# Run: SABOTAGE_VERIFY="python3 scripts/dev/check-net-stable.py" python3 scripts/dev/sabotage.py kernel/abi/files/socket.c scripts/dev/cases/net-sock-stable.txt
 
 ### recvfrom stops re-verifying its socket
 --- old
-        int faulted = 0;
-        if (linux_sock_stable(f, sock, gen) < 0) {
+        if ((sock = vibeos_sockfile_stable(f)) < 0) {
             return -VIBEOS_EBADF;
         }
         ks_lock(ks_net_lock(), __func__);
-        n = vibeos_inet_recvfrom(ks_net(), sock, g_net_bounce,
+        n = vibeos_inet_recvfrom(ks_net(), sock, g_bounce,
 +++ new
-        int faulted = 0;
+        sock = f->sock;
         ks_lock(ks_net_lock(), __func__);
-        n = vibeos_inet_recvfrom(ks_net(), sock, g_net_bounce,
+        n = vibeos_inet_recvfrom(ks_net(), sock, g_bounce,
 
 ### accept stops re-verifying its socket
 --- old
     for (;;) {
-        if (linux_sock_stable(f, sock, gen) < 0) {
+        if ((sock = vibeos_sockfile_stable(f)) < 0) {
             return -VIBEOS_EBADF;
         }
         ks_lock(ks_net_lock(), __func__);
         child = vibeos_inet_accept(ks_net(), sock);
 +++ new
     for (;;) {
+        sock = f->sock;
         ks_lock(ks_net_lock(), __func__);
         child = vibeos_inet_accept(ks_net(), sock);
