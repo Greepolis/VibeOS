@@ -51,6 +51,12 @@ are for:
 file means an earlier run stopped with a case applied, the source holds the
 sabotage, and carrying on would overwrite the only good copy with it.
 
+In a case file a line starting with `#` is a comment, even inside a case. An
+anchor or replacement that is a preprocessor line is written `\#define ...`;
+the backslash is removed. A case whose anchor comes out empty is refused, by
+`sabotage.py` and by `check-sabotage-anchors.py` - it used to run, change
+nothing and score NOT RED.
+
 **Other**
 
 `vbox-run.py` and `check-vm-images.py` (the shipped appliance, on VirtualBox and

@@ -19,7 +19,7 @@
 
 ### the arch layer names a symbol from the fenced process model
 --- old
-#include "vibeos/ceildiv.h"
+\#include "vibeos/ceildiv.h"
 +++ new
-#include "vibeos/ceildiv.h"
+\#include "vibeos/ceildiv.h"
 static void *g_fence_probe_never_used = (void *)0 + (unsigned long)&vibeos_proc_init;

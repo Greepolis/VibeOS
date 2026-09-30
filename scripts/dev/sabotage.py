@@ -45,9 +45,15 @@ def parse_cases(text):
             # like it was working, and was testing nothing at all. That is the
             # exact failure this whole tool exists to catch, in the tool.
             #
-            # A replacement that genuinely needs a preprocessor directive can
-            # indent it; nothing here does.
+            # An anchor that is a preprocessor directive cannot be indented -
+            # it has to match the source - so a line written `\#define ...` is
+            # content, with the backslash removed. Without that escape a
+            # `#define` anchor was dropped as a comment, the case ran with an
+            # empty anchor, and it scored NOT RED having changed nothing
+            # (docs/abi/ A5's errno cases, which were right all along).
             continue
+        if line.startswith('\\#'):
+            line = line[1:]
         if line.startswith('### '):
             if label is not None:
                 cases.append((label, '\n'.join(old), '\n'.join(new)))
@@ -140,6 +146,12 @@ def main():
     try:
         for label, old, new in cases:
             print("--- %s" % label)
+            if not old.strip():
+                # "" is in every file, so it used to pass the anchor check and
+                # run a case that changed nothing.
+                print("    empty anchor; this case tests nothing")
+                weak.append(label)
+                continue
             if old not in original:
                 print("    anchor not found; this case tests nothing")
                 weak.append(label)

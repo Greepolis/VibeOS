@@ -2,9 +2,9 @@
 
 ### only one service is started, so init knows a program rather than a manifest
 --- old
-#define SERVICE_COUNT (int)(sizeof(services) / sizeof(services[0]))
+\#define SERVICE_COUNT (int)(sizeof(services) / sizeof(services[0]))
 +++ new
-#define SERVICE_COUNT 1
+\#define SERVICE_COUNT 1
 
 ### a clean exit is treated as a failure and restarted
 --- old

@@ -78,6 +78,8 @@ def parse_cases(text):
     for line in text.splitlines():
         if line.startswith("#") and not line.startswith("### "):
             continue
+        if line.startswith("\\#"):
+            line = line[1:]   # a directive as content: sabotage.py's escape
         if line.startswith("### "):
             if label is not None:
                 cases.append((label, "\n".join(old)))
@@ -143,7 +145,7 @@ def main():
                 tree[0] = whole_tree()
             for label, old in cases:
                 checked += 1
-                if old and old not in tree[0]:
+                if not old.strip() or old not in tree[0]:
                     unresolved.append((name, label))
             continue
         sources = []
@@ -156,7 +158,7 @@ def main():
         blob = "\n".join(sources)
         for label, old in cases:
             checked += 1
-            if old and old not in blob:
+            if not old.strip() or old not in blob:
                 unresolved.append((name, label))
 
     if listing:

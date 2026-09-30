@@ -418,6 +418,15 @@ in the low seven bits of the wait status and leaves the exit-code byte zero, so
 an init that reads only the code byte reports a segfault as a clean stop. The
 crashing service came back STOPPED. The wait-status rule above is not trivia.
 
+**A `#define` anchor in a sabotage case was a comment.** `sabotage.py` drops
+lines starting with `#`, so an anchor that was a preprocessor line vanished,
+the case ran with an empty anchor, changed nothing, and - because "" is in
+every file - the anchor check passed it too. Two cases had never tested
+anything since they were written (`core-dispatcher.txt`'s fence,
+`services.txt`'s single-service manifest); A5's errno cases came back NOT RED
+for the same reason while the test they aimed at was right. Write such a line
+`\#define`; an empty anchor is refused now by both tools.
+
 **A sabotage run whose verify script is missing scores every case red**, which
 is indistinguishable from every case working. The verify script lived in /tmp,
 WSL cleaned it, and eight cases "passed" having proved nothing - the tell was
