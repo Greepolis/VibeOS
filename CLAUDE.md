@@ -226,6 +226,14 @@ table under the lock and `vibeos_file_put` it after. And a call holds its own
 reference for as long as it runs (`linux_file_get`), so a sibling's close takes
 the number away and not the file under it.
 
+**A Linux structure or constant is declared in `vibeos/linux_layout.h`, not
+in the handler.** Since docs/abi/ A5 every layout a handler copies to or from
+user memory and every number it compares an argument against lives there, and
+`linux_layout_tests.c` compares each with the host's uapi headers.
+`check-linux-layout.py` fails if one is declared and not compared, or if a
+file under `kernel/abi/` defines a constant under Linux's own spelling. That
+check's first run found `FUTEX_CMD_MASK` - Linux's name for a different value.
+
 **The host test runner's stdout is unbuffered for a reason.** A sabotage was
 named by its test and then a later group crashed on the same garbage; the
 FAIL line was still in the buffer and the run printed nothing at all. A crash

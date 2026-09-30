@@ -338,6 +338,64 @@ its interpreter by path.
 
 **Done when** the test exists and a sabotage that moves one field turns it red.
 
+**Status (2026-09-30): done.**
+
+- **One declaration of Linux's layouts** (`include/vibeos/linux_layout.h`):
+  `stat`, `__kernel_timespec`, `new_utsname`, `sysinfo`, `sockaddr_in`, `iovec`,
+  `rlimit64`, the kernel's `sigaction`, and the getdents64 record, with Linux's
+  field names and padding named too - plus every constant a handler compares a
+  user's argument against: the *at flags, fcntl commands, close_range, clone,
+  wait4, mmap, prctl, arch_prctl, futex, rlimit, sigprocmask, socket and
+  dirent-type numbers. The handlers used to write byte offsets and bare numbers
+  (`rec[18] = 4`, `STAT_OFF_UID 28u`, `domain != 2u`); TIOCGPGRP and AT_FDCWD
+  were spelled twice in two files, and the registry spelled EPERM and ENOSYS a
+  second time. Each handler now fills a structure and copies it out once.
+- **The file layer's numbers are Linux's by decision**, and named so: the open
+  flags and mode bits were already `VIBEOS_O_*` and `VIBEOS_S_IF*`; seek origins
+  (`VIBEOS_SEEK_*`) and the console's ioctl requests (`VIBEOS_IOCTL_*`) joined
+  them. getdents64 is the one file operation whose output is a personality's,
+  and says so.
+- **The test** (`tests/kernel/linux_layout_tests.c`) compiles against the host's
+  uapi headers and makes 232 comparisons: every field's offset and size, every
+  structure's size, every errno value the kernel returns, every signal number,
+  flag and constant. What uapi does not carry - `struct dirent64`, `AF_INET`,
+  `SOCK_*`, `DT_*`, and the `S_IF*` types that `linux/stat.h` withholds from a
+  glibc build - comes from the C library's headers, in a second file
+  (`linux_layout_libc.c`), because the two sets of headers cannot share one.
+  On a non-Linux host it says it was skipped; on Linux the includes are
+  unconditional, so a runner without the headers fails to build rather than
+  passing having compared nothing.
+- **The test cannot fall behind the header**: `check-linux-layout.py` (in
+  `check.sh`) fails when a field, a structure's size or a Linux-valued constant
+  is declared and not compared, and when a file under `kernel/abi/` defines a
+  constant under Linux's own spelling. Its first run found `FUTEX_CMD_MASK`,
+  which is Linux's name for a different value (`~(PRIVATE | CLOCK_REALTIME)`,
+  not `0x7F`); it is `VIBEOS_FUTEX_OP_BITS` now.
+- **Sabotage**: `abi-layout.txt` (5: two fields swapped at equal size, a field
+  widened, the dirent64 order, `mem_unit` widened where the structure's size
+  cannot tell, AT_FDCWD off by one), `abi-errno.txt` (2), `dev-linux-layout.txt`
+  (3, against the check); all red for their reason. AT_FDCWD is named by the
+  layout test and by the handler tests, which run first.
+- **The sabotage tool had a hole, and two cases had never run.** `sabotage.py`
+  drops lines starting with `#` as comments, so an anchor that is a `#define`
+  vanished, the case ran with an empty anchor, changed nothing and scored NOT
+  RED - which is how the errno cases first came back. `check-sabotage-anchors.py`
+  skipped an empty anchor too. Both refuse one now, and `\#` at the start of a
+  line is a literal `#`. That found `core-dispatcher.txt`'s fence case and
+  `services.txt`'s "only one service is started", which had never tested
+  anything; both are escaped and red now - the fence case by
+  `check-reachable.py`, the manifest case at boot as `missing:[CRASH] end`: with
+  one service started, svc-crash never runs and the crash record the gate waits
+  for never comes.
+- **Not declared, because nothing writes them yet**: `statx` (L1), `siginfo_t`
+  and a Linux `ucontext` (the signal frame is this kernel's own layout, and
+  SA_SIGINFO handlers get no siginfo - L2), `termios` (the console answers
+  ENOTTY). Each arrives with the phase that writes it, and the check makes it
+  arrive with its comparison.
+- **Found on the way**: getdents64's gap reason said "FAT names", which has been
+  wrong since A4 gave FAT long names; names are cut at 15 bytes by the listing
+  buffer, which is what the registry says now. Still L1's.
+
 ---
 
 ## Part L - the syscalls, by capability

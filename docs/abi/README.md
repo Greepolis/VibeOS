@@ -86,7 +86,10 @@ plan; they stand.
 8. **Conformance is measured against somebody else's artefact.** Errno values and
    structure layouts are checked against Linux's uapi headers; behaviour against
    the Linux Test Project and real programs. CLAUDE.md records why: a fixture
-   this project writes can only prove the handler matches the fixture.
+   this project writes can only prove the handler matches the fixture. Since A5
+   the layouts live in `include/vibeos/linux_layout.h`,
+   `tests/kernel/linux_layout_tests.c` compares them, and
+   `check-linux-layout.py` holds the comparison to the declarations.
 9. **A handler is portable and host-testable.** It reaches a task, its
    descriptors, its address space and the filesystem through a declared
    interface the architecture implements - not through `arch_hw_internal.h`.
