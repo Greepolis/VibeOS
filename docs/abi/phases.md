@@ -418,6 +418,85 @@ asks for first.
 **Programs:** BusyBox's file applets and its test suite (`ls -l`, `cp -a`, `mv`,
 `find`, `tar`, `sort`, `grep -r`, `sed -i`), `sqlite3` on a file.
 
+**Where it starts from (2026-09-30).** The syscalls are the small part. Only FAT
+is writable, and only a whole file at a time: a descriptor buffers 512 bytes and
+the file is rewritten from them when the last reference goes, so a program that
+writes more gets short writes. The filesystem interface (`vibeos/vfs.h`) has
+lookup, read, whole-file write, list, unlink and mkdir - no write at an offset,
+truncate, rename, rmdir, links, attributes, statfs or sync. ext2, exFAT, NTFS
+and ISO9660 are read-only. There is no wall clock (time is uptime) and no
+credential model (L2). `stat`, `rename`, `chmod` and `symlink` need something
+true to report before they are worth a row, so L1 builds that first:
+
+1. **The filesystem interface grows the operations** - write and truncate on a
+   node, create, rmdir, rename, link, symlink and readlink, attributes (mode,
+   owner, times, link count), statfs and sync - optional per driver, with the
+   wrapper answering as Linux does when one is missing: EROFS from a read-only
+   filesystem, EPERM from one that cannot represent the thing. The path walk
+   follows symbolic links (ELOOP after 40) and answers lstat's question too.
+2. **tmpfs** (`kernel/fs/tmpfs.c`): the filesystem with all of it - modes,
+   owners, hard and symbolic links, timestamps, rename over an existing name,
+   sparse files - mounted at `/tmp`. Portable, host-tested, and a nightly
+   torture against a model, per the rule that every module gets one.
+3. **Writing through a descriptor**: regular files write at their offset through
+   the node, with O_CREAT/O_EXCL/O_TRUNC/O_APPEND as Linux means them, and
+   `pread64`, `pwrite64`, `preadv(2)`, `pwritev(2)`, `truncate`, `ftruncate`,
+   `fsync`, `fdatasync`, `sync`, `syncfs`, `fallocate`, `fadvise64`,
+   `readahead`, `copy_file_range`, and `sendfile` served rather than refused.
+   A filesystem without in-place writes keeps the whole-file path, without the
+   512-byte ceiling.
+4. **FAT writes in place**: write at an offset, truncate, rename and rmdir in
+   the FAT driver, so the boot volume is a real filesystem too.
+5. **Names and metadata**: `stat`, `lstat`, `statx`, `access` and the
+   `faccessat`s, `rename` and `renameat(2)`, `rmdir` and AT_REMOVEDIR, `link`,
+   `symlink`, `readlink` against real links, `creat`, `mknod`, `openat2`, the
+   `chmod`, `chown` and `utime` families, `umask`, `statfs`/`fstatfs`.
+6. **The rest of the file calls**: `flock` and fcntl record locks, `getdents`,
+   getdents64 without its 15-byte names, the xattr calls (EOPNOTSUPP from every
+   filesystem here), `sync_file_range`, close_range's UNSHARE.
+7. **A minimal terminal**: the console answers TCGETS, TCSETS, TIOCGWINSZ and
+   the process-group requests, with ECHO and ICANON honoured.
+8. **The programs**: the BusyBox file workloads of the corpus run in `/tmp`
+   under the gate, `sqlite3` on a file, and the LTP cases for these syscalls
+   staged and run.
+
+**Step 1 (2026-09-30): done.**
+
+- `vibeos_fs_node_t` carries mode, link count, owner and three times. The
+  lookup wrapper zeroes the node before asking the driver and completes what
+  the driver left out (a type from `is_dir`, 0755 or 0644, one link), so five
+  drivers written before the fields existed hand no stack garbage to stat.
+- Eleven operations beside the original six - `write_at`, `truncate`,
+  `create`, `rmdir`, `rename` (with NOREPLACE), `link`, `symlink`, `readlink`,
+  `setattr`, `statfs`, `sync` - each optional, returning 0 or a negated errno.
+  A missing one is EROFS from a filesystem that writes nothing, EPERM from one
+  that writes but cannot do this, EOPNOTSUPP for `write_at`/`truncate`/`create`
+  where the caller keeps a whole-file fallback. `vibeos_fs_set_clock` is the
+  registration timestamps read from. The five drivers' tables are designated
+  initialisers now; positional ones were one field away from a hole.
+- `vibeos_path_walk` replaces `vibeos_path_lookup` and `vibeos_path_parent`: it
+  takes a root, a base directory and the path as written, follows links one
+  component at a time (a relative target from the link's directory, an
+  absolute one from the root, ELOOP after 40), applies ".." to the path
+  resolved so far - so `link/..` is the parent of where the link points - and
+  with CREATE answers for a missing last component where it would be made.
+  NOFOLLOW and a trailing slash behave as Linux's do.
+- The Linux handlers walk through `linux_walk_at`; `newfstatat` honours
+  AT_SYMLINK_NOFOLLOW and reports owner, link count and times, `unlinkat` and
+  `mkdirat` do not follow the last component, exec runs the program a link
+  points at, and `readlinkat` reads real links (the `/proc/self/exe` answer is
+  kept, recognised before a walk would call `/proc` missing).
+- Errno values for what comes next (EACCES, EBUSY, EXDEV, EFBIG, ENOSPC, EROFS,
+  EMLINK, ENOTEMPTY, ELOOP, EOPNOTSUPP), and S_IFMT, S_IFBLK, S_IFLNK - all
+  compared with Linux's headers, which the layout check made non-optional.
+- Host tests: 16 walk cases (links relative, absolute, chained, across a
+  mount, in the middle of a path, cyclic, dangling, a target shorter than the
+  link with path after it) and 12 for the wrappers. Sabotage: `fs-path.txt`
+  gained 5 cases and `fs-vfs.txt` has 4; all red. Removing the link bound is
+  red with ENAMETOOLONG rather than a hang: every splice leaves a separator
+  behind, so the pending buffer refuses a cycle too - a second defence, and
+  not the right errno.
+
 ### L2. Processes, credentials and time (47)
 
 Sleeping and timers (`nanosleep`, `clock_nanosleep`, `alarm`, `setitimer`,
