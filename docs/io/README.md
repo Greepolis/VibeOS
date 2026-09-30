@@ -110,7 +110,7 @@ three separate subsystems have shipped one.
 
 **Maintainable.** One cache, not three. One request type, not a different
 signature per driver. A boundary that a check can enforce, as
-`check-exec-layering.sh` does for the interpreter path.
+`check-exec-layering.sh` did for the interpreter path.
 
 **Extensible.** Adding a driver should be filling in a table. Adding a
 filesystem should be filling in `vibeos_fs_ops_t` and nothing else. Neither is

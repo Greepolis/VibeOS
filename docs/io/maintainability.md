@@ -1,9 +1,10 @@
 # Maintainability — the rules, and what enforces them
 
-A rule nothing checks is a preference. This project already has the counterpart
-in `scripts/dev/check-exec-layering.sh`, which enforces that exactly one
-function may name an interpreter path — and it exists because that rule was
-broken twice by people who agreed with it.
+A rule nothing checks is a preference. This project had the counterpart in
+`scripts/dev/check-exec-layering.sh`, which enforced that exactly one function
+may name an interpreter path — it existed because that rule was broken twice by
+people who agreed with it, and was deleted with the substitution in docs/abi/
+A4.
 
 ## The structural rules
 

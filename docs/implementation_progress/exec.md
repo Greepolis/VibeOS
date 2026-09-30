@@ -342,6 +342,9 @@ forget to**.
 ## X-P4 — Acceptance (done, 2026-09-01)
 
 **The interpreter substitution is one function, and the build enforces it.**
+*(Superseded 2026-09-30 by docs/abi/ A4: the substitution and
+`check-exec-layering.sh` are deleted, and the loader is opened at the path
+PT_INTERP names. Kept as the record of why the stand-in stayed findable.)*
 `hw_interp_path_substitute` is the only place that may name an
 interpreter path; `scripts/dev/check-exec-layering.sh` fails if a second
 one appears anywhere in the kernel, or if the function stops saying in its own

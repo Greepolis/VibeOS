@@ -77,12 +77,13 @@ load leaves dirty for the next caller.
    plan is to keep it structurally rather than by care.
 5. **The interpreter substitution is named as a stand-in.** It exists because
    FAT cannot hold `/lib/ld-musl-x86_64.so.1`; the plan does not generalise it,
-   it isolates it so that a real filesystem layout can delete it.
+   it isolates it so that a real filesystem layout can delete it. *(Deleted by
+   docs/abi/ A4: FAT reads long names and the loader lives at that path.)*
 
 ## 4. Non-goals
 
 - A real filesystem layout. The interpreter path substitution stays until there
-  is one.
+  is one. *(There is one since docs/abi/ A4, and the substitution is gone.)*
 - Shared libraries beyond the single interpreter this kernel already loads.
 - `MAP_SHARED` file mappings, which belong to the memory plan.
 - Changing the two user windows, or where Linux binaries link.

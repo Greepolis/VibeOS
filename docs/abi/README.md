@@ -50,7 +50,9 @@ underneath it:
    expect `dup` to share. *(Closed by A3: descriptors name counted open file
    descriptions, 1024 of them, and each file type has its own operations.)*
 3. **One directory.** There is no working directory: `getcwd` answers `/`, and
-   `openat` accepts only `AT_FDCWD`.
+   `openat` accepts only `AT_FDCWD`. *(Closed by A4: a working directory and
+   root per process, one path walk through the mount table, `dirfd` honoured,
+   and the loader's interpreter found by path.)*
 4. **Anonymous memory only.** `mmap` refuses file-backed mappings and
    `MAP_FIXED`, which glibc's dynamic loader needs.
 5. **No terminal.** `ioctl` answers ENOTTY to everything, so a shell cannot ask

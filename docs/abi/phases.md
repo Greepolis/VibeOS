@@ -274,6 +274,59 @@ passes.
 **Done when** `cd` in a shell works, relative `open` works, and the loader finds
 its interpreter by path.
 
+**Status (2026-09-30): done.**
+
+- **One path walk** (`include/vibeos/path.h`, `kernel/fs/path.c`), shared by
+  every personality. A path is made absolute and normalised lexically against a
+  root and a working directory - `.`, `..` and repeated slashes, with `..`
+  stopping at the root - and then looked up through the mount table, so a path
+  under a mount point reaches that filesystem rather than the boot volume. Every
+  component before the last must be a directory (ENOTDIR otherwise), a component
+  over 255 bytes or a result over 256 is ENAMETOOLONG rather than cut short.
+  `vibeos_path_parent` answers for a name about to be created: its parent must
+  exist, the name need not.
+- **A working directory and a root per process**, in the process state beside
+  the descriptor table and under its lock, inherited by fork, threads and exec.
+  An open file description remembers the mount it was opened on, so a read, a
+  directory listing and a write-back reach the right filesystem.
+- **`dirfd` is honoured** by every *at call (`linux_path_at`): AT_FDCWD is the
+  working directory, a directory descriptor its own path, anything else EBADF
+  or ENOTDIR. New and finished rows: `chdir`, `fchdir`, `getcwd` (ERANGE for a
+  short buffer), `mkdirat`, `openat`, `open` all DONE; `unlinkat` PARTIAL, since
+  AT_REMOVEDIR has no filesystem here that removes a directory. `readlinkat` and
+  `newfstatat` resolve relative paths too.
+- **exec resolves its path** against the working directory, and `argv[0]` stays
+  the name the caller gave - BusyBox still dispatches on it.
+- **The interpreter substitution is deleted.** The loader is staged at
+  `/lib/ld-musl-x86_64.so.1` on the boot volume and the kernel opens whatever
+  path the program's PT_INTERP names. `check-exec-layering.sh`, which existed
+  to keep the substitution to one function, went with it.
+- **FAT reads long names.** It had to: the loader's name is not 8.3. VFAT
+  entries are collected in front of their short entry and used only when their
+  checksum matches it, so an orphaned long name left by a tool that did not know
+  VFAT is ignored rather than misattributed. The ESP writer emits them, and the
+  gate mounts a second image written by mtools (`FATLONG.IMG`, at `/fatlong`)
+  and reads a file through a long directory name - an artefact neither side of
+  the test produced, after the ISO9660 lesson.
+- **Gated**: the boot self-test runs `cd -P /DOCS && pwd -P && cat NOTES.TXT`
+  in the shell; `shell_cd_did_not_work` fails the boot unless the program
+  printed `/DOCS` and the relative `cat` succeeded. The musl interpreter is
+  loaded by path on every boot that runs a dynamic binary.
+- **Host tests**: `path_tests.c` (normalisation, the root floor, NAME_MAX, the
+  walk across two mounts, ENOTDIR and ENOENT, the parent rule) and, in
+  `linux_abi_tests.c`, the working directory, relative open, the at calls with
+  a directory descriptor, the errors, and fork inheriting the directory.
+- **Sabotage**: `fs-path.txt` (4, host), `abi-paths.txt` (2),
+  `io-fat-longnames.txt` (2), and a case for the new image row in
+  `io-filesystems-gate.txt`; every one red for its reason. One of them only on
+  the host: a directory descriptor ignored in favour of the working directory
+  boots green, run to confirm it, because nothing the self-test runs opens
+  relative to one. Breaking the long-name reader fails the image row *and* the
+  dynamic binary - the loader's name is a long one.
+- **Not done**: symbolic links and ELOOP - no filesystem here has them, so
+  there is nothing to follow; `chroot` stays refused, although the root is now
+  a real field. Both belong to L1.
+
 ### A5. Layouts and errno from Linux's headers
 
 **Objective.** Invariant 8 for structures: `stat`, `statx`, `dirent64`,

@@ -256,7 +256,22 @@ live where a process shadows it. Address policy lives in `hw_user_addr_ok`.
 
 **`argv[0]` is not the path.** BusyBox becomes twenty commands by looking up
 the name it was invoked under, and FAT stores names upper case with an
-extension. The shell supplies the name; the path only opens the file.
+extension. The shell supplies the name; the path only opens the file. exec
+resolves a relative path against the working directory and leaves `argv[0]`
+exactly as given - resolving the name too would turn every applet into
+`/EFI/BOOT/BUSYBOX.ELF`.
+
+**A long name belongs to the short entry after it only if the checksum says
+so.** VFAT stores a long name as entries in front of an 8.3 one, and a tool
+that does not know VFAT can delete or rename the short entry and leave them
+orphaned. `fat.c` checks each run against the short name's checksum and falls
+back to the 8.3 name otherwise. The test image is written by mtools, not by
+this project's writer, for the ISO9660 reason below.
+
+**Typed input is in the serial log too.** The shell echoes what the self-test
+types, so a marker the command itself contains is present whether or not the
+command worked. `shell_cd_did_not_work` reads `CD_OK` off the program's
+`write(ring3)` line for that reason.
 
 **Spinlocks mask interrupts.** Anything slow under one is slow with the timer
 off. The 2 MB FAT read under `g_exec_lock` was indistinguishable from a hang
@@ -1005,11 +1020,11 @@ The GUI is **not** gated - `screenshot.py` is run by hand.
 Static, position-independent and dynamically linked Linux binaries all run and
 are all gated. A dynamic one has its interpreter mapped into the same address
 space and entered first; `AT_ENTRY` stays the program's own entry, which is how
-the interpreter knows where to jump when it is done. The interpreter path is
-translated in the kernel - a musl binary asks for /lib/ld-musl-x86_64.so.1 and
-FAT has neither that directory nor a name that long - so the loader lives at
-EFI/BOOT/LDMUSL.SO. That substitution is a stand-in for a filesystem layout,
-and if the layout ever becomes real it should be deleted, not generalised.
+the interpreter knows where to jump when it is done. The loader lives at
+/lib/ld-musl-x86_64.so.1 on the boot volume and is opened at the path PT_INTERP
+names. It used to be translated to EFI/BOOT/LDMUSL.SO because FAT could not
+hold that name; FAT reads long names since docs/abi/ A4, and the substitution
+was deleted rather than generalised, as this paragraph said it should be.
 
 ## Tone of the code
 

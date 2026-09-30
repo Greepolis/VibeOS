@@ -108,4 +108,5 @@ running its original program; counters return to their starting values.
   short file look complete.
 - **Re-exec is cheap**: the second exec of a program reads nothing from disk.
 - **The interpreter substitution is one function**, marked as a stand-in, with a
-  test that fails if a second hard-coded path appears.
+  test that fails if a second hard-coded path appears. *(Deleted with its check
+  by docs/abi/ A4, once the loader could be found by path.)*
