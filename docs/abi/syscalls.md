@@ -253,7 +253,7 @@ calls, outside the Linux number space, are listed last.
 | 214 | `epoll_ctl_old` | refused | R | ENOSYS |  | removed or never implemented by Linux itself |
 | 215 | `epoll_wait_old` | refused | R | ENOSYS |  | removed or never implemented by Linux itself |
 | 216 | `remap_file_pages` | refused | R | ENOSYS |  | removed or never implemented by Linux itself |
-| 217 | `getdents64` | partial | L1 | - | `fs.c` | one directory stream per descriptor, FAT names |
+| 217 | `getdents64` | partial | L1 | - | `fs.c` | one directory stream per descriptor; names cut at 15 bytes |
 | 218 | `set_tid_address` | done | - | - | `proc.c` |  |
 | 219 | `restart_syscall` | missing | L2 | ENOSYS |  |  |
 | 220 | `semtimedop` | missing | L7 | ENOSYS |  |  |
