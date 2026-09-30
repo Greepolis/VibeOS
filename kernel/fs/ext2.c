@@ -479,13 +479,11 @@ static int ext2_op_list(void *fsv, const char *path, uint32_t index, char *name,
     return -1;   /* past the last entry */
 }
 
+/* Read-only: every writing operation is absent, and the wrappers say EROFS. */
 static const vibeos_fs_ops_t g_ext2_ops = {
-    ext2_op_lookup,
-    ext2_op_read_at,
-    0,              /* write_file: read-only, and the wrapper reports that */
-    ext2_op_list,
-    0,              /* unlink  */
-    0               /* mkdir   */
+    .lookup = ext2_op_lookup,
+    .read_at = ext2_op_read_at,
+    .list = ext2_op_list,
 };
 
 const vibeos_fs_ops_t *vibeos_ext2_ops(void) {

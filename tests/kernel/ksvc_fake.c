@@ -172,7 +172,12 @@ static int kf_fs_mkdir(void *fs, const char *path) {
 }
 
 static const vibeos_fs_ops_t g_kf_fs_ops = {
-    kf_fs_lookup, kf_fs_read_at, kf_fs_write_file, kf_fs_list, kf_fs_unlink, kf_fs_mkdir
+    .lookup = kf_fs_lookup,
+    .read_at = kf_fs_read_at,
+    .write_file = kf_fs_write_file,
+    .list = kf_fs_list,
+    .unlink = kf_fs_unlink,
+    .mkdir = kf_fs_mkdir,
 };
 
 void kf_fs_add(const char *path, const void *data, uint32_t len, int is_dir) {

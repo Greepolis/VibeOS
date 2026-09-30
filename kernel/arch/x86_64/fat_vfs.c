@@ -108,13 +108,15 @@ static int fat_vfs_mkdir(void *fs, const char *path) {
         return vibeos_x86_64_fat_mkdir_on(fs, path);
 }
 
+/* Designated, not positional: the table grew eleven operations in L1, and a
+ * positional initialiser is how a struct silently gains a hole (CLAUDE.md). */
 static const vibeos_fs_ops_t g_fat_ops = {
-    fat_vfs_lookup,
-    fat_vfs_read_at,
-    fat_vfs_write_file,
-    fat_vfs_list,
-    fat_vfs_unlink,
-    fat_vfs_mkdir
+    .lookup = fat_vfs_lookup,
+    .read_at = fat_vfs_read_at,
+    .write_file = fat_vfs_write_file,
+    .list = fat_vfs_list,
+    .unlink = fat_vfs_unlink,
+    .mkdir = fat_vfs_mkdir,
 };
 
 /* Mount the boot volume. Returns 0 on success. Reached as the driver's mount

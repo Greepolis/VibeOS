@@ -409,13 +409,11 @@ static int exfat_op_list(void *fsv, const char *path, uint32_t index, char *name
     return 0;
 }
 
+/* Read-only: every writing operation is absent, and the wrappers say EROFS. */
 static const vibeos_fs_ops_t g_exfat_ops = {
-    exfat_op_lookup,
-    exfat_op_read_at,
-    0,
-    exfat_op_list,
-    0,
-    0
+    .lookup = exfat_op_lookup,
+    .read_at = exfat_op_read_at,
+    .list = exfat_op_list,
 };
 
 const vibeos_fs_ops_t *vibeos_exfat_ops(void) {

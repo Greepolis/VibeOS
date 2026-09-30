@@ -327,13 +327,12 @@ static int iso_op_list(void *fsv, const char *path, uint32_t index, char *name,
     return -1;
 }
 
+/* A disc is read-only: every writing operation is absent, and the wrappers
+ * say EROFS. */
 static const vibeos_fs_ops_t g_iso_ops = {
-    iso_op_lookup,
-    iso_op_read_at,
-    0,   /* write_file: a disc is read-only, and the wrapper says so */
-    iso_op_list,
-    0,
-    0
+    .lookup = iso_op_lookup,
+    .read_at = iso_op_read_at,
+    .list = iso_op_list,
 };
 
 const vibeos_fs_ops_t *vibeos_iso9660_ops(void) {
