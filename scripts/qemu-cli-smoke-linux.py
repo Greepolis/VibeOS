@@ -1628,7 +1628,8 @@ def main():
                     r"got=0x[0-9a-f]{16} "
                     r"result=([^\n]*)", text):
                 seen_fs[m.group(1)] = m.group(2).strip()
-            for want in ("ext2", "iso9660", "ntfs", "exfat"):
+            # fat since docs/abi/ A4: VFAT long names written by mtools.
+            for want in ("ext2", "iso9660", "ntfs", "exfat", "fat"):
                 res = seen_fs.get(want)
                 if res is None:
                     problems.append("fsimage_missing:" + want)

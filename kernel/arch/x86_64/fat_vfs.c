@@ -25,7 +25,7 @@ static int fat_is_directory(void *fs, const char *path) {
     char probe[16];
     uint32_t probe_size = 0;
     int probe_dir = 0;
-    return vibeos_x86_64_fat_list_on(fs, path, 0, probe, &probe_size,
+    return vibeos_x86_64_fat_list_on(fs, path, 0, probe, sizeof(probe), &probe_size,
                                      &probe_dir) == 0;
 }
 
@@ -84,7 +84,7 @@ static int fat_vfs_list(void *fs, const char *path, uint32_t index, char *name,
     if (name_cap == 0u) {
         return -1;
     }
-    if (vibeos_x86_64_fat_list_on(fs, path, index, local, &size, &is_dir) != 0) {
+    if (vibeos_x86_64_fat_list_on(fs, path, index, local, sizeof(local), &size, &is_dir) != 0) {
         return -1;
     }
     for (i = 0; i + 1u < name_cap && local[i]; i++) {

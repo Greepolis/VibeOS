@@ -50,9 +50,9 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          # ntfs-3g and exfatprogs build the NTFS and exFAT images the boot
+          # ntfs-3g, exfatprogs and mtools build the NTFS, exFAT and long-name FAT images the boot
           # mounts and the gate asserts; without them both report "no image".
-          sudo apt-get install -y qemu-system-x86 qemu-utils ninja-build build-essential clang ovmf xorriso musl-tools busybox-static ntfs-3g exfatprogs
+          sudo apt-get install -y qemu-system-x86 qemu-utils ninja-build build-essential clang ovmf xorriso musl-tools busybox-static ntfs-3g exfatprogs mtools
 
       - name: Configure
         run: |

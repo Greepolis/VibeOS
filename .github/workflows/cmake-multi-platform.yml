@@ -59,9 +59,9 @@ jobs:
           # musl-tools builds the unmodified static Linux binary the boot gate
           # runs. Without it that check silently does not happen, which is the
           # kind of gap that turns a gate into decoration.
-          # ntfs-3g and exfatprogs build the NTFS and exFAT images the boot
+          # ntfs-3g, exfatprogs and mtools build the NTFS, exFAT and long-name FAT images the boot
           # mounts and the gate asserts; without them both report "no image".
-          sudo apt-get install -y qemu-system-x86 qemu-utils ninja-build build-essential clang ovmf xorriso musl-tools ntfs-3g exfatprogs
+          sudo apt-get install -y qemu-system-x86 qemu-utils ninja-build build-essential clang ovmf xorriso musl-tools ntfs-3g exfatprogs mtools
 
       - name: Configure
         run: >

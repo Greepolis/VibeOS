@@ -84,6 +84,17 @@ if(Python3_Interpreter_FOUND)
     if(NOT _exfat_rc EQUAL 0)
         message(WARNING "exfat image not staged (rc=${_exfat_rc})")
     endif()
+    # FAT with VFAT long names, written by mtools (docs/abi/ A4): the boot volume's
+    # long names come from this project's own writer, so this is the image that
+    # can say the kernel's reader is wrong.
+    execute_process(
+        COMMAND ${Python3_EXECUTABLE}
+                "${CMAKE_CURRENT_LIST_DIR}/../scripts/make-fs-image.py"
+                fat "${EFI_BOOT_DIR}/FATLONG.IMG" 16777216
+        RESULT_VARIABLE _fat_rc)
+    if(NOT _fat_rc EQUAL 0)
+        message(WARNING "fat image not staged (rc=${_fat_rc})")
+    endif()
 endif()
 file(COPY_FILE "${KERNEL_ELF}" "${EFI_KERNEL}" ONLY_IF_DIFFERENT)
 file(WRITE "${EFI_STARTUP_NSH}"

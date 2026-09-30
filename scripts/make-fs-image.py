@@ -177,7 +177,59 @@ def build_exfat(path, size_bytes):
         path, size_bytes, "exfat")
 
 
+FAT_LONG_DIR = "long directory name"
+FAT_LONG_FILE = "a_long_marker_name.txt"
+FAT_OFFSET = 1024 * 1024   # the kernel mounts it at LBA 2048 (see below)
+
+
+def build_fat(path, size_bytes):
+    """FAT with long names, written by mtools (docs/abi/ A4).
+
+    The kernel reads VFAT long names since A4, and the boot volume's long names
+    are written by this project's own make_esp_image.py - so the boot proves the
+    reader agrees with that writer and nothing more. This image is the one
+    neither side controls: mformat formats it and mcopy names the file, the way
+    every other system that writes FAT does.
+
+    The filesystem starts 1 MiB into the image. This kernel's FAT driver reads a
+    first sector of zero as "the boot volume", so a filesystem at sector 0 of a
+    loop device would mount the wrong volume; at an offset it is mounted as a
+    second one, which is also how a partitioned disk looks to it."""
+    mformat, mcopy, mmd = shutil.which("mformat"), shutil.which("mcopy"), shutil.which("mmd")
+    if not (mformat and mcopy and mmd):
+        return "mtools not found"
+    fs = path + ".fs"
+    marker = path + ".marker"
+    with open(fs, "wb") as f:
+        f.truncate(size_bytes - FAT_OFFSET)
+    with open(marker, "wb") as f:
+        f.write(content())
+    try:
+        # FAT16, which this driver reads (it has no FAT12): four-sector clusters
+        # put a 15 MiB volume at 7,680 clusters, well inside FAT16's range and
+        # past FAT12's, so mformat picks FAT16 by itself.
+        steps = [[mformat, "-i", fs, "-c", "4", "::"],
+                 [mmd, "-i", fs, "::/" + FAT_LONG_DIR],
+                 [mcopy, "-i", fs, marker, "::/" + FAT_LONG_DIR + "/" + FAT_LONG_FILE]]
+        for cmd in steps:
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            if r.returncode != 0:
+                return "%s failed: %s" % (os.path.basename(cmd[0]),
+                                          (r.stderr or r.stdout).strip()[:200])
+        with open(path, "wb") as out, open(fs, "rb") as inp:
+            out.write(b"\0" * FAT_OFFSET)
+            out.write(inp.read())
+    finally:
+        for p in (fs, marker):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+    return None
+
+
 BUILDERS = {
+    "fat": build_fat,
     "ext2": build_ext2,
     "iso9660": build_iso9660,
     "ntfs": build_ntfs,
@@ -197,7 +249,7 @@ def main():
     # contents are a constant of this script.
     try:
         n = os.path.getsize(path)
-        if (n == size) if kind in ("ext2", "ntfs", "exfat") else (n > 0):
+        if (n == size) if kind in ("ext2", "ntfs", "exfat", "fat") else (n > 0):
             return 0
     except OSError:
         pass

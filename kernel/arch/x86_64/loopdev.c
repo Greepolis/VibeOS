@@ -39,8 +39,9 @@
 /* Raised from 2 in the change that earned it. I5 attaches four filesystem
  * images, and at 2 the third and fourth were refused - silently, and a silent
  * refusal here is indistinguishable from the image not being on the medium,
- * which is exactly how the two were confused for a boot. */
-#define LOOP_MAX 4u
+ * which is exactly how the two were confused for a boot. 4 -> 8 when docs/abi/
+ * A4 added a fifth, the long-name FAT image mtools writes. */
+#define LOOP_MAX 8u
 
 typedef struct {
     uint64_t first_lba;      /* on the backing device */

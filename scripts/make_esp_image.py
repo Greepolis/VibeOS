@@ -8,8 +8,12 @@ FAT16 image (no partition table) whose contents mirror the given source tree
 QEMU+OVMF and can be converted to .vdi/.vmdk with qemu-img for VirtualBox /
 VMware, or wrapped into an El Torito UEFI .iso with xorriso.
 
-All input file names are 8.3-compatible (BOOTX64.EFI, VIBEOSKR.ELF,
-STARTUP.NSH, EFI, BOOT), so no long-file-name directory entries are needed.
+A name that is not 8.3 - /lib/ld-musl-x86_64.so.1, which a dynamic program
+names as its interpreter - is written as VFAT long-name entries in front of a
+generated short alias (NAME~1.EXT), as Windows and mtools write them. The
+kernel reads them since docs/abi/ A4, and `mdir` from mtools - a reader this
+project did not write - is what check-esp-longnames.sh uses to confirm this
+writer is right.
 
 Usage: make_esp_image.py <source_dir> <output_img> [size_mb]
 """
@@ -38,13 +42,79 @@ def encode_83(name, is_dir):
     """Return the 11-byte 8.3 directory name field for an 8.3-safe name."""
     if name in (".", ".."):
         return name.encode("ascii").ljust(11, b" ")
-    if is_dir:
+    if is_dir and "." not in name:
         base, ext = name, ""
     else:
         base, _, ext = name.partition(".")
     base = base.upper()[:8].ljust(8, " ")
     ext = ext.upper()[:3].ljust(3, " ")
     return (base + ext).encode("ascii")
+
+
+def fits_83(name):
+    """Whether `name` has an exact 8.3 form (case aside)."""
+    if name in (".", ".."):
+        return True
+    base, dot, ext = name.partition(".")
+    if "." in ext or not base:
+        return False
+    ok = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789$%'-_@~`!(){}^#&")
+    return (len(base) <= 8 and len(ext) <= 3 and
+            all(c.upper() in ok for c in base + ext))
+
+
+def short_alias(name, taken):
+    """A unique NAME~N.EXT alias for a long name, the way VFAT makes one."""
+    base, _, ext = name.rpartition(".") if "." in name[1:] else (name, "", "")
+    keep = lambda t: "".join(c for c in t.upper() if c.isalnum())
+    base, ext = keep(base) or "FILE", keep(ext)[:3]
+    for n in range(1, 1000):
+        tail = "~%d" % n
+        cand = base[:8 - len(tail)] + tail
+        full = cand + ("." + ext if ext else "")
+        if full not in taken:
+            taken.add(full)
+            return full
+    raise SystemExit("no short alias left for " + name)
+
+
+def short_sum(short11):
+    s = 0
+    for b in short11:
+        s = (((s & 1) << 7) + (s >> 1) + b) & 0xFF
+    return s
+
+
+def lfn_entries(name, short11):
+    """The long-name entries for `name`, in on-disk order (last piece first)."""
+    units = [ord(c) for c in name]
+    if any(u > 0xFFFF for u in units):
+        raise SystemExit("name outside UCS-2: " + name)
+    pieces = [units[i:i + 13] for i in range(0, len(units), 13)]
+    csum = short_sum(short11)
+    out = []
+    for i, piece in enumerate(pieces):
+        seq = i + 1
+        chars = piece + ([0x0000] if len(piece) < 13 else [])
+        chars += [0xFFFF] * (13 - len(chars))
+        raw = bytearray(32)
+        raw[0] = seq | (0x40 if seq == len(pieces) else 0)
+        raw[11] = 0x0F
+        raw[13] = csum
+        for k, off in enumerate((1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30)):
+            struct.pack_into("<H", raw, off, chars[k])
+        out.append(bytes(raw))
+    return b"".join(reversed(out))
+
+
+def dir_entries(name, is_dir, first_cluster, size, taken):
+    """The short entry for `name`, preceded by long-name entries if it needs them.
+    `taken` is the set of short names already used in this directory."""
+    if fits_83(name):
+        return dir_entry(name, is_dir, first_cluster, size)
+    alias = short_alias(name, taken)
+    short = dir_entry(alias, is_dir, first_cluster, size)
+    return lfn_entries(name, short[:11]) + short
 
 
 def dir_entry(name, is_dir, first_cluster, size):
@@ -91,8 +161,9 @@ class FatBuilder:
         blob = bytearray()
         blob += dir_entry(".", True, self_cluster, 0)
         blob += dir_entry("..", True, parent_cluster, 0)
+        taken = set(n.upper() for n, _, _, _ in entries if fits_83(n))
         for name, is_dir, fc, size in entries:
-            blob += dir_entry(name, is_dir, fc, size)
+            blob += dir_entries(name, is_dir, fc, size, taken)
         return bytes(blob)
 
 
@@ -226,8 +297,12 @@ def main():
     # root directory region (fixed)
     root_blob = bytearray()
     root_blob += dir_entry("VIBEOS", False, 0, 0)[:11] + bytes([ATTR_VOLUME]) + bytes(20)
+    taken = set(n.upper() for n, _, _, _ in root_entries if fits_83(n))
     for name, is_dir, fc, size in root_entries:
-        root_blob += dir_entry(name, is_dir, fc, size)
+        root_blob += dir_entries(name, is_dir, fc, size, taken)
+    if len(root_blob) > ROOT_ENTRIES * 32:
+        print("root directory overflows its fixed region", file=sys.stderr)
+        return 1
     root_off = (RESERVED_SECTORS + NUM_FATS * sectors_per_fat) * SECTOR
     image[root_off:root_off + len(root_blob)] = root_blob
 

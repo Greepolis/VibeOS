@@ -456,8 +456,129 @@ static void fat_make_83(const char *name, uint8_t out[11]) {
     return;
 }
 
-/* Scan a run of directory sectors for an 8.3 name; report cluster/size/attr. */
-static int fat_scan_sectors(uint32_t lba, uint32_t sectors, const uint8_t want[11],
+/* Whether a name has an exact 8.3 form: at most eight characters, at most one
+ * dot, at most three after it. "." and ".." are directory entries of their own. */
+static int fat_fits_83(const char *name) {
+    int base = 0, ext = 0, dots = 0;
+    const char *p;
+
+    if (name[0] == '.' && (name[1] == 0 || (name[1] == '.' && name[2] == 0))) {
+        return 1;
+    }
+    for (p = name; *p; p++) {
+        if (*p == '.') {
+            if (++dots > 1 || base == 0) {
+                return 0;
+            }
+        } else if (dots) {
+            ext++;
+        } else {
+            base++;
+        }
+    }
+    return base >= 1 && base <= 8 && ext <= 3;
+}
+
+/* ---- long names (VFAT) ------------------------------------------------------
+ *
+ * A name that is not 8.3 - ld-musl-x86_64.so.1, the name a dynamic program asks
+ * for its interpreter by - is stored as a run of long-name entries in front of
+ * the short entry it belongs to: attribute 0x0F, 13 UCS-2 characters each,
+ * last piece first, every piece carrying a checksum of the short name. This
+ * driver used to skip them, so a volume could hold such a file and no path
+ * could reach it; the kernel substituted an 8.3 name for the interpreter
+ * instead (docs/abi/ A4 deletes that).
+ *
+ * Read only. A file this driver creates still gets an 8.3 name, which is what
+ * the writer has always done.
+ *
+ * The run is accumulated across sectors and clusters, because a directory scan
+ * reads them one at a time and nothing stops a run from straddling the edge. It
+ * is believed only if every piece arrived in order with the same checksum and
+ * that checksum matches the short entry that follows: a run left behind by a
+ * tool that renamed the short name without it - an older DOS, a careless
+ * formatter - is not this file's name, and matching it would open the wrong
+ * file under the right name. Characters outside ASCII cannot be spelled by a
+ * path this kernel accepts, so they make the name unmatchable, not mismatched. */
+#define FAT_LFN_MAX 255u
+
+typedef struct {
+    char name[FAT_LFN_MAX + 1u];
+    uint8_t sum;
+    uint8_t expect;   /* the sequence number the next piece must carry */
+    uint8_t valid;
+} fat_lfn_t;
+
+static uint8_t fat_short_sum(const uint8_t *d) {
+    uint8_t sum = 0;
+    int i;
+    for (i = 0; i < 11; i++) {
+        sum = (uint8_t)(((sum & 1u) ? 0x80u : 0u) + (sum >> 1) + d[i]);
+    }
+    return sum;
+}
+
+static void fat_lfn_piece(fat_lfn_t *l, const uint8_t *d) {
+    static const uint8_t at[13] = {1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30};
+    uint32_t seq = d[0] & 0x1Fu, base, k;
+
+    if (d[0] & 0x40u) {                 /* the last piece, which comes first */
+        uint32_t i;
+        for (i = 0; i <= FAT_LFN_MAX; i++) {
+            l->name[i] = 0;
+        }
+        l->valid = (seq >= 1u && seq <= 20u);
+        l->sum = d[13];
+        l->expect = (uint8_t)seq;
+    } else if (!l->valid || seq != (uint32_t)l->expect - 1u || d[13] != l->sum) {
+        l->valid = 0;
+        return;
+    } else {
+        l->expect = (uint8_t)seq;
+    }
+    if (!l->valid) {
+        return;
+    }
+    base = (seq - 1u) * 13u;
+    for (k = 0; k < 13u; k++) {
+        uint16_t c = rd16(&d[at[k]]);
+        if (c == 0x0000u || c == 0xFFFFu) {
+            break;
+        }
+        if (base + k >= FAT_LFN_MAX) {
+            l->valid = 0;
+            return;
+        }
+        /* Not ASCII: no path here can spell it. 0x01 is a byte no path holds. */
+        l->name[base + k] = (c < 0x80u) ? (char)c : (char)0x01;
+    }
+}
+
+/* The long name for the short entry `d`, or 0 when it has none (or the run did
+ * not belong to it). Consumes the run either way. */
+static const char *fat_lfn_take(fat_lfn_t *l, const uint8_t *d) {
+    int ok = l->valid && l->expect == 1u && l->sum == fat_short_sum(d) && l->name[0];
+    l->valid = 0;
+    return ok ? l->name : 0;
+}
+
+/* Long names compare as FAT does: case-insensitively, preserving the case they
+ * were written in. */
+static int fat_lfn_equal(const char *a, const char *b) {
+    while (*a && *b) {
+        if (fat_upper((uint8_t)*a) != fat_upper((uint8_t)*b)) {
+            return 0;
+        }
+        a++;
+        b++;
+    }
+    return *a == 0 && *b == 0;
+}
+
+/* Scan a run of directory sectors for a name - its long name if it has one, its
+ * 8.3 name either way; report cluster/size/attr. */
+static int fat_scan_sectors(uint32_t lba, uint32_t sectors, const char *comp,
+                            const uint8_t want[11], fat_lfn_t *lfn,
                             uint32_t *out_cluster, uint32_t *out_size, uint8_t *out_attr) {
     uint32_t s, e;
     for (s = 0; s < sectors; s++) {
@@ -466,20 +587,31 @@ static int fat_scan_sectors(uint32_t lba, uint32_t sectors, const uint8_t want[1
         }
         for (e = 0; e < SECTOR_SIZE; e += 32u) {
             const uint8_t *d = &g_secbuf[e];
+            const char *longname;
             int k, match = 1;
             if (d[0] == 0x00) {
                 return -1; /* end of directory */
             }
-            if (d[0] == 0xE5 || (d[11] & 0x0Fu) == 0x0Fu || (d[11] & 0x08u)) {
-                continue;  /* deleted, long-name, or volume label */
+            if (d[0] == 0xE5) {
+                lfn->valid = 0;
+                continue;  /* deleted */
             }
+            if ((d[11] & 0x3Fu) == 0x0Fu) {
+                fat_lfn_piece(lfn, d);
+                continue;
+            }
+            if (d[11] & 0x08u) {
+                lfn->valid = 0;
+                continue;  /* volume label */
+            }
+            longname = fat_lfn_take(lfn, d);
             for (k = 0; k < 11; k++) {
                 if (d[k] != want[k]) {
                     match = 0;
                     break;
                 }
             }
-            if (match) {
+            if (match || (longname && fat_lfn_equal(longname, comp))) {
                 *out_cluster = ((uint32_t)rd16(&d[20]) << 16) | rd16(&d[26]);
                 *out_size = rd32(&d[28]);
                 *out_attr = d[11];
@@ -492,20 +624,32 @@ static int fat_scan_sectors(uint32_t lba, uint32_t sectors, const uint8_t want[1
 
 /* Find an 8.3 name inside a directory. dir_cluster==0 means the root (a fixed
  * region on FAT16, the root cluster chain on FAT32); otherwise a cluster chain. */
-static int fat_dir_find(uint32_t dir_cluster, const uint8_t want[11],
+static int fat_dir_find(uint32_t dir_cluster, const char *comp,
                         uint32_t *out_cluster, uint32_t *out_size, uint8_t *out_attr) {
+    static fat_lfn_t lfn;   /* under the driver's lock, like g_secbuf */
+    uint8_t want[11];
     uint32_t cl;
     uint32_t steps = 0;
 
+    /* An 8.3 conversion of a long component is not that component's short name
+     * - it would match whatever file happens to own the truncation - so a name
+     * that does not fit 8.3 is looked up by its long name only. */
+    fat_make_83(comp, want);
+    if (!fat_fits_83(comp)) {
+        want[0] = 0xE5;   /* no live entry starts with it */
+    }
+    lfn.valid = 0;
+
     if (dir_cluster == 0 && !g_fat_cur->is_fat32) {
         uint32_t root_sectors = ((uint32_t)g_fat_cur->root_entries * 32u + (SECTOR_SIZE - 1u)) / SECTOR_SIZE;
-        return fat_scan_sectors(g_fat_cur->root_lba, root_sectors, want, out_cluster, out_size, out_attr);
+        return fat_scan_sectors(g_fat_cur->root_lba, root_sectors, comp, want, &lfn,
+                                out_cluster, out_size, out_attr);
     }
     cl = (dir_cluster == 0) ? g_fat_cur->root_cluster : dir_cluster;
     while (!fat_chain_end(cl) && cl >= 2u && cl - 2u < g_fat_cur->max_clusters &&
            steps++ < g_fat_cur->max_clusters) {
         if (fat_scan_sectors(fat_cluster_lba(cl), g_fat_cur->sectors_per_cluster,
-                             want, out_cluster, out_size, out_attr) == 0) {
+                             comp, want, &lfn, out_cluster, out_size, out_attr) == 0) {
             return 0;
         }
         cl = fat_next_cluster(cl);
@@ -526,13 +670,16 @@ static int fat_resolve(const char *path, uint32_t *out_cluster, uint32_t *out_si
         p++;
     }
     while (*p) {
-        char comp[13];
-        uint8_t want[11], attr = 0;
+        static char comp[FAT_LFN_MAX + 1u];   /* under the driver's lock */
+        uint8_t attr = 0;
         uint32_t cl = 0, size = 0;
-        int n = 0;
+        uint32_t n = 0;
         int last;
 
-        while (*p && *p != '/' && *p != '\\' && n < 12) {
+        while (*p && *p != '/' && *p != '\\') {
+            if (n >= FAT_LFN_MAX) {
+                return -1;   /* longer than any FAT name */
+            }
             comp[n++] = *p++;
         }
         comp[n] = 0;
@@ -541,8 +688,7 @@ static int fat_resolve(const char *path, uint32_t *out_cluster, uint32_t *out_si
         }
         last = (*p == 0);
 
-        fat_make_83(comp, want);
-        if (fat_dir_find(dir, want, &cl, &size, &attr) != 0) {
+        if (fat_dir_find(dir, comp, &cl, &size, &attr) != 0) {
             return -1;
         }
         if (last) {
@@ -627,13 +773,15 @@ static long fat_read_at_locked(uint32_t first_cluster, uint32_t size, uint32_t o
 /* Enumerate directory entries: fill name (8.3, NUL-terminated) for entry index
  * `idx` of the directory at `path` (empty/"/" = root). Returns 0 on success,
  * -1 when the index is past the end. */
-static int fat_list_locked(const char *path, uint32_t idx, char *name, uint32_t *out_size,
-                           int *out_is_dir) {
+static int fat_list_locked(const char *path, uint32_t idx, char *name, uint32_t name_cap,
+                           uint32_t *out_size, int *out_is_dir) {
+    static fat_lfn_t lfn;   /* under the driver's lock */
     uint32_t dir_cluster = 0, sectors, lba, s, e, seen = 0;
 
-    if (!g_fat_cur->mounted || !name) {
+    if (!g_fat_cur->mounted || !name || name_cap == 0u) {
         return -1;
     }
+    lfn.valid = 0;
     if (path && path[0] && !(path[0] == '/' && path[1] == 0)) {
         uint32_t sz = 0;
         if (fat_resolve(path, &dir_cluster, &sz) != 0) {
@@ -657,23 +805,43 @@ static int fat_list_locked(const char *path, uint32_t idx, char *name, uint32_t 
         }
         for (e = 0; e < SECTOR_SIZE; e += 32u) {
             const uint8_t *d = &g_secbuf[e];
-            int k, n = 0;
+            const char *longname;
+            uint32_t k, n = 0;
             if (d[0] == 0x00) {
                 return -1; /* end of directory */
             }
-            if (d[0] == 0xE5 || (d[11] & 0x0Fu) == 0x0Fu || (d[11] & 0x08u)) {
+            if (d[0] == 0xE5) {
+                lfn.valid = 0;
                 continue;
             }
+            if ((d[11] & 0x3Fu) == 0x0Fu) {
+                fat_lfn_piece(&lfn, d);
+                continue;
+            }
+            if (d[11] & 0x08u) {
+                lfn.valid = 0;
+                continue;
+            }
+            longname = fat_lfn_take(&lfn, d);
             if (seen++ != idx) {
                 continue;
             }
-            for (k = 0; k < 8 && d[k] != ' '; k++) {
-                name[n++] = (char)d[k];
-            }
-            if (d[8] != ' ') {
-                name[n++] = '.';
-                for (k = 8; k < 11 && d[k] != ' '; k++) {
+            if (longname) {
+                /* The name it was written with. Truncated to the caller's
+                 * buffer rather than overflowing it: a lister that asked for
+                 * sixteen bytes has said how much it can hold. */
+                for (k = 0; longname[k] && n + 1u < name_cap; k++) {
+                    name[n++] = longname[k];
+                }
+            } else {
+                for (k = 0; k < 8u && d[k] != ' ' && n + 1u < name_cap; k++) {
                     name[n++] = (char)d[k];
+                }
+                if (d[8] != ' ' && n + 1u < name_cap) {
+                    name[n++] = '.';
+                    for (k = 8; k < 11u && d[k] != ' ' && n + 1u < name_cap; k++) {
+                        name[n++] = (char)d[k];
+                    }
                 }
             }
             name[n] = 0;
@@ -1361,18 +1529,18 @@ long vibeos_x86_64_fat_read_at(uint32_t first_cluster, uint32_t size, uint32_t o
 }
 
 int vibeos_x86_64_fat_list_on(void *vol, const char *path, uint32_t idx, char *name,
-                              uint32_t *out_size, int *out_is_dir) {
+                              uint32_t name_cap, uint32_t *out_size, int *out_is_dir) {
     int r;
     fs_lock();
     fat_select(vol);
-    r = fat_list_locked(path, idx, name, out_size, out_is_dir);
+    r = fat_list_locked(path, idx, name, name_cap, out_size, out_is_dir);
     fs_unlock();
     return r;
 }
 
 int vibeos_x86_64_fat_list(const char *path, uint32_t idx, char *name, uint32_t *out_size,
                            int *out_is_dir) {
-    return vibeos_x86_64_fat_list_on(0, path, idx, name, out_size, out_is_dir);
+    return vibeos_x86_64_fat_list_on(0, path, idx, name, 13u, out_size, out_is_dir);
 }
 
 long vibeos_x86_64_fat_write_file_on(void *vol, const char *path, const void *buf, uint32_t len) {

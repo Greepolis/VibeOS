@@ -165,7 +165,8 @@ long vibeos_x86_64_fat_read_at_on(void *vol, uint32_t first_cluster,
                                   uint32_t size, uint32_t off,
                                   void *buf, uint32_t len);
 int vibeos_x86_64_fat_list_on(void *vol, const char *path, uint32_t idx,
-                              char *name, uint32_t *out_size, int *out_is_dir);
+                              char *name, uint32_t name_cap, uint32_t *out_size,
+                              int *out_is_dir);
 long vibeos_x86_64_fat_write_file_on(void *vol, const char *path,
                                      const void *buf, uint32_t len);
 int vibeos_x86_64_fat_unlink_on(void *vol, const char *path);

@@ -437,6 +437,10 @@ typedef struct hw_fsimage {
      * would be worse than the gap, so the row says so and the boot reports
      * "OK (no marker)" rather than "OK". */
     const char *marker;
+    /* Where the filesystem starts on the image. Zero for all but FAT, whose
+     * driver reads a first sector of zero as "the boot volume"; the mtools
+     * image carries its filesystem 1 MiB in, as a partition would. */
+    uint64_t first_lba;
     /* The mounted driver's state, which a mount by name needs the caller to
      * keep - the same storage a volume gives it. */
     uint64_t state[VIBEOS_FS_STATE_BYTES / 8u];
@@ -467,13 +471,18 @@ static int hw_fsimage_write(void *ctx, uint64_t lba, const void *buf) {
  * (C7). This used to name each driver - its state, a mount wrapper and its ops
  * - which made this file one of the four a new filesystem had to edit. */
 static hw_fsimage_t g_fsimages[] = {
-    { "ext2",    "EFI/BOOT/EXT2.IMG",  "/ext2",  "HELLO.TXT", {0},
+    { "ext2",    "EFI/BOOT/EXT2.IMG",  "/ext2",  "HELLO.TXT", 0ull, {0},
       {{0}}, {{0}}, {0}, {0}, {0}, -1 },
-    { "iso9660", "EFI/BOOT/ISO.IMG",   "/iso",   "HELLO.TXT", {0},
+    { "iso9660", "EFI/BOOT/ISO.IMG",   "/iso",   "HELLO.TXT", 0ull, {0},
       {{0}}, {{0}}, {0}, {0}, {0}, -1 },
-    { "ntfs",    "EFI/BOOT/NTFS.IMG",  "/ntfs",  "HELLO.TXT", {0},
+    { "ntfs",    "EFI/BOOT/NTFS.IMG",  "/ntfs",  "HELLO.TXT", 0ull, {0},
       {{0}}, {{0}}, {0}, {0}, {0}, -1 },
-    { "exfat",   "EFI/BOOT/EXFAT.IMG", "/exfat", 0,           {0},
+    { "exfat",   "EFI/BOOT/EXFAT.IMG", "/exfat", 0,           0ull, {0},
+      {{0}}, {{0}}, {0}, {0}, {0}, -1 },
+    /* VFAT long names as mtools writes them (docs/abi/ A4): the marker is reached
+     * through a long-named directory, so the lookup walks two long names. */
+    { "fat",     "EFI/BOOT/FATLONG.IMG", "/fatlong",
+      "long directory name/a_long_marker_name.txt", 2048ull, {0},
       {{0}}, {{0}}, {0}, {0}, {0}, -1 },
 };
 
@@ -517,7 +526,7 @@ static void hw_fsimage_bringup(hw_fsimage_t *e) {
             verdict = "FAILED: mount";
             const vibeos_fs_driver_t *drv = vibeos_storage_driver(e->name);
 
-            if (drv && drv->mount(&e->mnt, &e->bc, 0ull, sectors, e->state) == 0) {
+            if (drv && drv->mount(&e->mnt, &e->bc, e->first_lba, sectors, e->state) == 0) {
                 long got;
 
                 if (e->marker == 0) {

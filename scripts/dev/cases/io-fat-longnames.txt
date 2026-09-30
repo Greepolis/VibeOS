@@ -1,0 +1,34 @@
+# VFAT long names in the FAT driver (docs/abi/ A4), proved at boot by the image
+# mtools writes (EFI/BOOT/FATLONG.IMG, "[IO] FSIMAGE name=fat") and, once the
+# interpreter is found by its path, by every dynamic program the boot runs.
+#
+#  1. long-name pieces are skipped, as they were before A4. Expect
+#     fat:FAILED:_read - the marker is reachable only through two long names.
+#  2. every piece is written at the start of the name, so a name longer than
+#     13 characters comes out as its first piece overwritten by the others.
+#     Expect fat:FAILED:_read.
+#
+# Not a case: the checksum that ties a run to its short entry. It exists for a
+# run left behind by a tool that renamed the short name without it, and no image
+# here has one - removing the check leaves every boot green, which is "this
+# environment cannot tell", not "the check works". Recorded so the gap is visible.
+#
+# Target source: kernel/arch/x86_64/fat.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/arch/x86_64/fat.c scripts/dev/cases/io-fat-longnames.txt
+
+### long-name pieces are skipped
+--- old
+            if ((d[11] & 0x3Fu) == 0x0Fu) {
+                fat_lfn_piece(lfn, d);
+                continue;
+            }
++++ new
+            if ((d[11] & 0x3Fu) == 0x0Fu) {
+                continue;
+            }
+
+### every piece is written at the start of the name
+--- old
+    base = (seq - 1u) * 13u;
++++ new
+    base = 0u;
