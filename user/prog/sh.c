@@ -329,8 +329,13 @@ int vibeos_main(int argc, char **argv, char **envp) {
                     if (reclen == 0) {
                         break;
                     }
-                    put(&dbuf[o + 19]);
-                    put(dbuf[o + 18] == 4 ? "/\n" : "\n");
+                    /* Not the two dots, which every directory lists since
+                     * docs/abi/ L1 step 6: this is ls, not ls -a. */
+                    if (!(dbuf[o + 19] == '.' && (dbuf[o + 20] == 0 ||
+                          (dbuf[o + 20] == '.' && dbuf[o + 21] == 0)))) {
+                        put(&dbuf[o + 19]);
+                        put(dbuf[o + 18] == 4 ? "/\n" : "\n");
+                    }
                     o += reclen;
                 }
                 sys3(SYS_close, fd, 0, 0);
@@ -349,23 +354,32 @@ int vibeos_main(int argc, char **argv, char **envp) {
             }
         } else if (seq(line, "write")) {
             char *text = split_word(args);
-            long fd = sys3(SYS_open, (long)(unsigned long)args, 0100 /*O_CREAT*/, 0);
+            /* Open to write, and say so. This used to pass O_CREAT alone,
+             * which is O_RDONLY: it worked while a file was replaced on
+             * release from whatever had been written, and from docs/abi/ L1
+             * step 4 - when a write went into the file at once and a
+             * read-only descriptor refused it - it made an empty file and
+             * printed "written", because the writes' results were not looked
+             * at. Every cat of that file printed nothing for three steps. */
+            long fd = sys3(SYS_open, (long)(unsigned long)args,
+                           01101 /* O_WRONLY|O_CREAT|O_TRUNC */, 0644);
             if (fd < 0) {
                 put("write: cannot create\n");
             } else {
-                sys3(SYS_write, fd, (long)(unsigned long)text, (long)slen(text));
-                sys3(SYS_write, fd, (long)(unsigned long)"\n", 1);
-                if (sys3(SYS_close, fd, 0, 0) == 0) {
+                long want = (long)slen(text);
+                long a = sys3(SYS_write, fd, (long)(unsigned long)text, want);
+                long b = sys3(SYS_write, fd, (long)(unsigned long)"\n", 1);
+                if (sys3(SYS_close, fd, 0, 0) == 0 && a == want && b == 1) {
                     put("written\n");
                 } else {
-                    put("write: commit failed\n");
+                    put("write: failed\n");
                 }
             }
         } else if (seq(line, "rm")) {
             put(sys3(SYS_unlink, (long)(unsigned long)args, 0, 0) == 0 ? "removed\n"
                                                                       : "rm: failed\n");
         } else if (seq(line, "mkdir")) {
-            put(sys3(SYS_mkdir, (long)(unsigned long)args, 0, 0) == 0 ? "created\n"
+            put(sys3(SYS_mkdir, (long)(unsigned long)args, 0755, 0) == 0 ? "created\n"
                                                                      : "mkdir: failed\n");
         } else if (seq(line, "net")) {
             unsigned int cfg[5];
@@ -409,7 +423,12 @@ int vibeos_main(int argc, char **argv, char **envp) {
              * inherits this session rather than running underneath it. argv[0]
              * is "sh" because that is the name the program looks itself up by;
              * the path is where the file happens to live. Nothing after this
-             * line runs if it succeeds. */
+             * line runs if it succeeds.
+             *
+             * Since docs/abi/ L1 step 7 the console is a terminal, so the shell
+             * that starts here is interactive: it prints a prompt, puts the
+             * terminal in raw mode and edits its own command line, asking
+             * poll() before every key. */
             static char *ash_argv[] = {(char *)"sh", 0};
             put("handing the console to BusyBox sh\n");
             sys3(SYS_execve, (long)(unsigned long)"EFI/BOOT/BUSYBOX.ELF",

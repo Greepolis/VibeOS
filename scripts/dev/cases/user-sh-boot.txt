@@ -1,0 +1,16 @@
+# The native shell's `write` (user/prog/sh.c), as the boot gate sees it: the
+# file it writes is read back five times by four different programs.
+#
+#  1. the file is opened read-only, as it was from docs/abi/ L1 step 4 to step
+#     7: every write is refused, nothing checks, and the file is empty. Expect
+#     notes_file_not_read_back. This is the defect as it shipped - the gate had
+#     the line in its log for months and asserted nothing on it.
+#
+# Target source: user/prog/sh.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py user/prog/sh.c scripts/dev/cases/user-sh-boot.txt
+
+### the file is opened read-only
+--- old
+                           01101 /* O_WRONLY|O_CREAT|O_TRUNC */, 0644);
++++ new
+                           0100 /* O_CREAT */, 0644);
