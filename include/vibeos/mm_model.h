@@ -87,7 +87,13 @@ typedef enum vibeos_prot {
     VIBEOS_PROT_READ  = 1u << 0,
     VIBEOS_PROT_WRITE = 1u << 1,
     VIBEOS_PROT_EXEC  = 1u << 2,
-    VIBEOS_PROT_USER  = 1u << 3   /* reachable from ring 3                    */
+    VIBEOS_PROT_USER  = 1u << 3,  /* reachable from ring 3                    */
+    /* Not an access right: what a fork does with the page. Without it a
+     * writable page becomes copy-on-write and each side's stores are its own;
+     * with it the child maps the same frame as the parent does, writable if the
+     * parent's is, and a store by either is seen by both (docs/abi/ L3). Asked
+     * for when the page is mapped; a later change of protection leaves it. */
+    VIBEOS_PROT_SHARED = 1u << 4
 } vibeos_prot_t;
 
 /* ---- L2: regions (P3) ---------------------------------------------------- */

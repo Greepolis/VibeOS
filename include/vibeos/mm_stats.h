@@ -112,6 +112,8 @@ typedef struct vibeos_mm_stats {
     uint64_t fork_swapped_in;     /* pages fork brought back to share them    */
     uint64_t fork_swapped_failed; /* ...and could not: the fork failed        */
     uint64_t stack_grown;         /* pages given to a stack that reached them  */
+    uint64_t fork_kept_shared;    /* shared pages a fork mapped into the child
+                                   * as they were, not copy-on-write (L3)     */
     uint64_t fork_frame_gone;     /* the frame fork read was already free (M-070) */
     uint64_t fork_entry_moved;    /* an entry changed under fork's pin (M-070)*/
     uint64_t swap_read_checked;   /* page-ins compared with what was written   */

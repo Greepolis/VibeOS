@@ -75,6 +75,27 @@
  * treats it as writable and shares copy-on-write). */
 #define VIBEOS_PTE_SWAPOUT (1ull << 52)
 
+/* This page is shared, not private: fork maps the same frame into the child
+ * with the same access instead of making both sides copy-on-write.
+ *
+ * Bit 53, ignored by the hardware in a leaf and outside PTE_ADDR_MASK like the
+ * swap-out marker beside it. Everything that rebuilds an entry has to decide
+ * what a shared page means to it, and the list is short because most of them
+ * already leave alone what they do not own:
+ *
+ *   fork        shares it as it stands, write bit included
+ *   the fault   never sees a copy-on-write mark on one, so a store to a
+ *               read-only shared page is the violation it looks like
+ *   mprotect    changes the access bits and nothing else
+ *   page-out    refuses it: an entry in swap names a slot, and two address
+ *               spaces bringing one page back would each get a frame of their
+ *               own - the sharing would end silently, at the next reclaim
+ *
+ * A shared page of a file is the file's own page: the filesystem holds a
+ * reference to the frame and so does every mapping, and whoever lets go last
+ * frees it. */
+#define VIBEOS_PTE_SHARED (1ull << 53)
+
 typedef struct vibeos_vmspace {
     uint64_t root_phys;     /* what goes in CR3 */
     uint64_t *root;         /* the same table, through the backend's mapping */

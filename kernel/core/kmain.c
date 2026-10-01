@@ -347,6 +347,10 @@ static void kernel_cli_print_meminfo(void) {
      * was never asked to. */
     vibeos_x86_64_serial_puts(" stack_grown=0x");
     kernel_log_u64_hex(st->stack_grown);
+    /* Shared pages a fork handed on as they were. The boot's self-test maps
+     * one and forks, so zero means a fork made a shared mapping private. */
+    vibeos_x86_64_serial_puts(" fork_kept_shared=0x");
+    kernel_log_u64_hex(st->fork_kept_shared);
     vibeos_x86_64_serial_puts(" fork_frame_gone=0x");
     kernel_log_u64_hex(st->fork_frame_gone);
     vibeos_x86_64_serial_puts(" fork_entry_moved=0x");

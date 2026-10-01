@@ -22,8 +22,8 @@
 ### fork's shared mapping gives its reference back
 --- old
     (void)vibeos_frame_put(phys);
-    vibeos_mm_stats()->cow_shared++;
+    if (entry & VIBEOS_PTE_SHARED) {
 +++ new
     (void)vibeos_frame_put(phys);
     (void)vibeos_frame_put(phys);
-    vibeos_mm_stats()->cow_shared++;
+    if (entry & VIBEOS_PTE_SHARED) {

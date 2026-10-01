@@ -103,6 +103,9 @@ uint64_t vibeos_vmspace_leaf_flags(vibeos_prot_t prot) {
     if (!(prot & VIBEOS_PROT_EXEC)) {
         f |= PTE_NX;
     }
+    if (prot & VIBEOS_PROT_SHARED) {
+        f |= VIBEOS_PTE_SHARED;
+    }
     return f;
 }
 
@@ -874,6 +877,14 @@ again:
             ((entry & PTE_WRITE) == 0u && (entry & VIBEOS_PTE_SWAPOUT) == 0u)) {
             break;   /* nothing to convert: shared as it stands */
         }
+        /* A shared mapping stays what it is on both sides (L3): the parent
+         * keeps its write bit and the child is given one below. Converting it
+         * would be a private mapping that says it is shared - each side's
+         * first store would take a copy, and neither would see the other's
+         * again. */
+        if (entry & VIBEOS_PTE_SHARED) {
+            break;
+        }
         desired = (entry & ~(PTE_WRITE | VIBEOS_PTE_SWAPOUT)) | PTE_COW_BIT;
         if (__atomic_compare_exchange_n(pte, &entry, desired, 0,
                                         __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
@@ -895,6 +906,9 @@ again:
         if (g_be.invlpg) {
             g_be.invlpg(va);
         }
+    }
+    if (entry & VIBEOS_PTE_SHARED) {
+        flags |= VIBEOS_PTE_SHARED | (entry & PTE_WRITE);
     }
 
     /* Pin the frame, then confirm the entry still names it (M-070).
@@ -944,7 +958,11 @@ again:
         return -1;
     }
     (void)vibeos_frame_put(phys);
-    vibeos_mm_stats()->cow_shared++;
+    if (entry & VIBEOS_PTE_SHARED) {
+        vibeos_mm_stats()->fork_kept_shared++;
+    } else {
+        vibeos_mm_stats()->cow_shared++;
+    }
     (void)src;
     return 0;
 }
@@ -1359,6 +1377,16 @@ int vibeos_vmspace_swap_out(vibeos_vmspace_t *as, uint64_t va, uint32_t slot) {
 
     if (vibeos_frame_test_flag(phys, VIBEOS_FRAME_PINNED)) {
         vibeos_mm_stats()->swap_refused_pinned++;
+        return -1;
+    }
+    /* A shared mapping stays resident, even while this is its only holder (L3).
+     * The entry in swap would name a slot; a fork would bring the page back
+     * and share the frame, which works - but the mark that says "shared" has
+     * no place in a swapped entry, and a page that came back without it would
+     * be private from then on. Refused rather than taught to carry it: what
+     * shares memory here is small. */
+    if (entry & VIBEOS_PTE_SHARED) {
+        vibeos_mm_stats()->swap_refused_shared++;
         return -1;
     }
     /* One holder only. After a fork a frame belongs to several address spaces
