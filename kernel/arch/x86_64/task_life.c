@@ -10,7 +10,6 @@
 
 #define VIBEOS_HW_KERNEL_DS 0x10u
 
-#define VIBEOS_HW_USER_STACK_TOP (VIBEOS_HW_USER_BASE + 0x00400000ull) /* +4 MiB */
 
 /* The free list used to live here, threaded through the first word of every
  * reclaimed page. It is in kernel/mm/frame.c now, threaded through the frame
@@ -476,17 +475,23 @@ int hw_proc_create(hw_proc_t *p, hw_procstate_t *ps,
             { rc = hw_exec_refuse(VIBEOS_EXEC_NO_MEMORY, path, "user_stack"); goto fail; }
         }
         hw_page_put((uint64_t)(uintptr_t)page);   /* D9: the mapping owns it now */
-        (void)vibeos_vma_insert(&ps->vmas, stack_va, 4096ull,
-                                (vibeos_prot_t)(VIBEOS_PROT_READ |
-                                                VIBEOS_PROT_WRITE |
-                                                VIBEOS_PROT_USER),
-                                VIBEOS_BACKING_ANON, 0, 0);
         if (i == 0u) {
             /* Still safe to write through: the address space holds the frame,
              * and the kernel reaches it by its physical address either way. */
             top_page = (uint8_t *)page;
         }
     }
+
+    /* One region for the whole of what the stack may grow into, not one per
+     * page mapped: a region says what the process has, and it has a stack of
+     * two megabytes of which four pages exist yet. The page fault asks this
+     * region whether an untouched address below is the stack's to take
+     * (hw_stack_grow). */
+    (void)vibeos_vma_insert(&ps->vmas, VIBEOS_HW_USER_STACK_FLOOR,
+                            VIBEOS_HW_USER_STACK_TOP - VIBEOS_HW_USER_STACK_FLOOR,
+                            (vibeos_prot_t)(VIBEOS_PROT_READ | VIBEOS_PROT_WRITE |
+                                            VIBEOS_PROT_USER),
+                            VIBEOS_BACKING_ANON, 0, 0);
 
     /* Fill the topmost stack page with the startup block. The page is still
      * identity-mapped for the kernel, so it is written here through its

@@ -2137,6 +2137,8 @@ int hw_user_range_ok(uint64_t va, uint64_t len, int need_write) {
     return hw_user_range_why(va, len, need_write, &why);
 }
 
+static int hw_stack_may_reach(uint64_t va);
+
 int hw_user_range_why(uint64_t va, uint64_t len, int need_write,
                              uint32_t *why) {
     static const uint32_t shifts[3] = {39u, 30u, 21u};
@@ -2161,9 +2163,14 @@ int hw_user_range_why(uint64_t va, uint64_t len, int need_write,
         const uint64_t *tbl = t->proc.as.pml4;
         uint64_t e = 0;
         uint32_t level;
+        int grows = 0;
 
         for (level = 0; level < 3u; level++) {
             e = tbl[(page >> shifts[level]) & 0x1FFu];
+            if ((e & PTE_PRESENT) == 0 && hw_stack_may_reach(page)) {
+                grows = 1;   /* no table yet: an untouched part of the stack */
+                break;
+            }
             if ((e & PTE_PRESENT) == 0 || (e & PTE_USER) == 0) {
                 *why = HW_RANGE_LEVEL0 + level;
                 return 0;
@@ -2172,6 +2179,18 @@ int hw_user_range_why(uint64_t va, uint64_t len, int need_write,
                 break; /* 2 MiB leaf */
             }
             tbl = (const uint64_t *)(uintptr_t)(e & 0x000FFFFFFFFFF000ull);
+        }
+        /* A page of the stack nobody has touched yet is the process's to read
+         * and write: the copy that follows faults, and the fault maps it
+         * (hw_stack_grow). Refused here, a read() into a large buffer on the
+         * stack - which is where programs keep them - would be EFAULT for
+         * every page the program had not happened to touch first. */
+        if (!grows && (e & PTE_PS) == 0 && hw_stack_may_reach(page) &&
+            tbl[(page >> 12) & 0x1FFu] == 0ull) {
+            grows = 1;
+        }
+        if (grows) {
+            continue;
         }
         if ((e & PTE_PS) == 0) {
             e = tbl[(page >> 12) & 0x1FFu];
@@ -2414,6 +2433,66 @@ static void hw_tlb_shootdown(uint64_t cr3) {
 #define VIBEOS_COW_FAULT_TRACE 0
 #endif
 
+/* Is this an address the stack may grow to? The region below the stack's top,
+ * less its lowest page - the guard, which is never mapped. */
+static int hw_stack_may_reach(uint64_t va) {
+    return va >= VIBEOS_HW_USER_STACK_FLOOR && va < VIBEOS_HW_USER_STACK_TOP;
+}
+
+/* The stack grows: a touch of a page in its region that nothing maps is given
+ * a zeroed page (docs/abi/ L3).
+ *
+ * 1 when the fault is dealt with and the access should be tried again, 0 when
+ * it is not this function's.
+ *
+ * The region list is asked, not only the address: the region was put there at
+ * exec, and a program that unmapped part of it, or took its write permission
+ * away, has said what it wants. The mapping is made under the process's mm
+ * lock - a thread of the same process may be forking, or faulting on this very
+ * page, on another core - and the lock is *tried*, not waited for: this is a
+ * fault handler, and returning to fault again is how it waits. If the entry is
+ * no longer empty once the lock is held, somebody else mapped the page; the
+ * retry finds it there.
+ *
+ * The frame comes from the privileged door, as a page coming back from swap
+ * does: the stack is memory the process was promised at exec, and refusing it
+ * at the low watermark kills the process for using what it has. It is bounded
+ * - two megabytes a process - which is what makes that affordable. */
+static int hw_stack_grow(hw_task_t *t, uint64_t fault_va) {
+    const uint64_t page_va = fault_va & ~0xFFFull;
+    vibeos_procstate_t *ps = t->ps;
+    vibeos_vmspace_t sv = hw_vm(&t->proc.as);
+    const vibeos_vma_t *region;
+    uint64_t *entry;
+    uint32_t zero = 0;
+    void *page;
+    int done = 0;
+
+    if (!ps || !hw_stack_may_reach(page_va)) {
+        return 0;
+    }
+    if (!__atomic_compare_exchange_n(&ps->mm_busy, &zero, 1u, 0,
+                                     __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+        return 1;   /* somebody is changing this address space: fault again */
+    }
+    region = vibeos_vma_find(&ps->vmas, page_va);
+    entry = vibeos_vmspace_entry(&sv, page_va);
+    if (entry && *entry != 0ull) {
+        done = 1;   /* mapped while this waited for the lock */
+    } else if (region && (region->prot & VIBEOS_PROT_WRITE) && (region->prot & VIBEOS_PROT_USER) &&
+               (page = hw_alloc_page()) != 0) {
+        /* Zeroed already: the allocator hands out nothing else. */
+        if (hw_map_page(&t->proc.as, page_va, (uint64_t)(uintptr_t)page,
+                        PTE_PRESENT | PTE_WRITE | PTE_USER | PTE_NX) == 0) {
+            vibeos_mm_stats()->stack_grown++;
+            done = 1;
+        }
+        hw_page_put((uint64_t)(uintptr_t)page);   /* the mapping owns it, or nobody does */
+    }
+    __atomic_store_n(&ps->mm_busy, 0u, __ATOMIC_RELEASE);
+    return done;
+}
+
 int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code,
                                uint64_t rip) {
     hw_task_t *t;
@@ -2441,6 +2520,9 @@ int hw_handle_cow_fault(uint64_t fault_va, uint64_t error_code,
         }
         /* Falls through on failure rather than retrying: a retry on the same
          * entry faults again forever, and the path below reports it. */
+        if (hw_stack_grow(t, fault_va)) {
+            return 1;
+        }
     }
 
     /* Present and write. The originating privilege level is deliberately not

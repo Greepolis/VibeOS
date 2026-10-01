@@ -221,7 +221,8 @@ void *ks_page_alloc(void) { return hw_alloc_page(); }
 void ks_page_free(void *page, const char *why) { hw_free_page_why(page, why); }
 uint64_t ks_heap_base(void) { return VIBEOS_HW_USER_HEAP_BASE; }
 uint64_t ks_mmap_base(void) { return VIBEOS_HW_USER_MMAP_BASE; }
-uint64_t ks_stack_bytes(void) { return (uint64_t)VIBEOS_HW_USER_STACK_PAGES * 4096ull; }
+/* How large the stack may become, which is what RLIMIT_STACK reports. */
+uint64_t ks_stack_bytes(void) { return (uint64_t)(VIBEOS_HW_USER_STACK_MAX_PAGES - 1u) * 4096ull; }
 
 /* Describe the page behind one address of a task's own address space: the bits
  * of its entry, and - read from one pinned instant - the frame's identity, its

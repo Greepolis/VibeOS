@@ -420,15 +420,27 @@ typedef struct {
  * `_start` is written in assembly (user/prog/crt0.S) precisely so that state is
  * consumed correctly instead of being reinterpreted as a function frame.
  *
- * 64 pages, 256 KiB, all of them mapped at exec: the stack does not grow. It
- * was 4 pages until docs/abi/ L1 step 8 ran the corpus, where every workload
- * ended in a segmentation fault - in sed, which each of them prints through.
- * BusyBox's sed has a function with an 18 KiB frame, and the compiler's stack
- * probe touched the first page below the sixteen kilobytes there were. A Linux
- * program is written for a stack of megabytes that grows on demand; that is
- * L3's to give (a fault below the stack maps a page). Until then this is what
- * the programs of the corpus need, with room. */
-#define VIBEOS_HW_USER_STACK_PAGES 64u
+ * The stack grows (docs/abi/ L3). Four pages are mapped at exec - the startup
+ * block lives in the top one - and the rest of a two-megabyte region below
+ * VIBEOS_HW_USER_STACK_TOP is the stack's to grow into: a touch of a page in
+ * it that nothing maps is given a zeroed page (hw_stack_grow, in the page
+ * fault), and the region's lowest page is never mapped, so running off the
+ * end is a fault and not a walk into whatever lies below.
+ *
+ * It was four pages and no growth until L1 step 8 ran the corpus: BusyBox's
+ * sed has a function with an 18 KiB frame and every workload printed through
+ * it. That step mapped sixty-four pages at exec instead, which worked and had
+ * a cost nobody had measured: sixty pages per process that nothing ever
+ * touched, read-only and copy-on-write after any fork - exactly what reclaim
+ * takes first - and the swap map's open defect (M-070) went from unseen in
+ * ninety boots to one boot in twenty. A page nobody touched is not mapped
+ * now. */
+#define VIBEOS_HW_USER_STACK_TOP (VIBEOS_HW_USER_BASE + 0x00400000ull) /* +4 MiB */
+#define VIBEOS_HW_USER_STACK_PAGES 4u         /* mapped at exec              */
+#define VIBEOS_HW_USER_STACK_MAX_PAGES 512u   /* how far it may grow: 2 MiB  */
+/* The lowest address the stack may grow down to; the page below is the guard. */
+#define VIBEOS_HW_USER_STACK_FLOOR \
+    (VIBEOS_HW_USER_STACK_TOP - (uint64_t)(VIBEOS_HW_USER_STACK_MAX_PAGES - 1u) * 4096ull)
 #define hw_aspace_destroy(as) hw_aspace_destroy_why((as), __func__)
 /* Thread-local storage base. A C runtime reaches its own thread state through
  * %fs on x86-64 - errno, the stack guard, locale - so this MSR is per task,

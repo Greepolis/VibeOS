@@ -341,6 +341,12 @@ static void kernel_cli_print_meminfo(void) {
      * already been released by a page-out, and how often the entry changed
      * between fork's reading it and pinning the frame. Each one of the first
      * is a child that used to be mapped onto a free frame. */
+    /* Pages a stack was given when it reached them (docs/abi/ L3): the gate
+     * wants this non-zero, because a program in the boot needs more stack
+     * than is mapped at exec and a stack that never grew is a stack that
+     * was never asked to. */
+    vibeos_x86_64_serial_puts(" stack_grown=0x");
+    kernel_log_u64_hex(st->stack_grown);
     vibeos_x86_64_serial_puts(" fork_frame_gone=0x");
     kernel_log_u64_hex(st->fork_frame_gone);
     vibeos_x86_64_serial_puts(" fork_entry_moved=0x");
