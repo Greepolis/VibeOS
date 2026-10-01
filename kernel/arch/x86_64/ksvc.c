@@ -304,7 +304,20 @@ void ks_fork_regs(int child, int parent, const ks_regs_t *frame) {
     const hw_task_t *p = &g_tasks[parent];
     uint32_t fi;
 
-    c->proc.entry = p->proc.entry;
+    /* The parent's image, whole, on the child's own address space. Only the
+     * entry point was copied here, so every other field of the child's image -
+     * the path it was started from above all - was whatever the slot's last
+     * tenant had left: a forked child that asked who it was (readlink of
+     * /proc/self/exe) was told the name of a program that had exited. Nothing
+     * showed it until docs/abi/ L1 step 8 made execve answer for the same name,
+     * and BusyBox's shell - which runs each applet by executing "the program I
+     * am" from a forked child - started the thread tests instead of sort.
+     * CLAUDE.md, "a field written on one path and read on all of them". */
+    {
+        vibeos_hw_aspace_t own = c->proc.as;
+        c->proc = p->proc;
+        c->proc.as = own;
+    }
     c->cr3 = hw_proc_cr3(&c->proc);
     c->cr3_set_by = "fork";
     c->ctx = *hw_regs_c(frame);   /* resume exactly where the parent is */
