@@ -1,7 +1,7 @@
 /* The FAT writer, on a volume somebody else made, for somebody else to read
  * (docs/abi/ L1 step 4).
  *
- *     vibeos_fat_exercise <filesystem image> <output directory>
+ *     vibeos_fat_exercise        (in the directory that holds fs.img)
  *
  * fat_tests.c formats its own volume and reads back what it wrote, which proves
  * the writer and the reader agree - and ISO9660 is the record of how little that
@@ -16,9 +16,16 @@
  * the free bytes the driver's statfs reports. Anything else on the volume, or
  * anything missing, is the script's failure to report. */
 
+/* open and fdopen are POSIX's, and the build asks for strict C. Without this
+ * gcc declared fdopen implicitly, truncated the pointer it returned and the
+ * program segfaulted; clang refused to compile it. */
+#define _POSIX_C_SOURCE 200809L
+
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "vibeos/fat.h"
 #include "vibeos/vfs.h"
@@ -222,7 +229,32 @@ static void x_adopt(const char *path) {
     }
 }
 
-int main(int argc, char **argv) {
+/* The image and everything written beside it have fixed names in the working
+ * directory, and what is created is the owner's alone.
+ *
+ * This took the image and an output directory as arguments and made its files
+ * with fopen, and code scanning said two true things about that: a path built
+ * from an argument can name anything the caller can reach, and fopen creates a
+ * file every user may write wherever the umask allows it. Neither is worth
+ * having in a tool whose only caller is one script that can change directory
+ * first. */
+#define IMAGE_NAME "fs.img"
+
+static FILE *out_file(const char *name, const char *mode) {
+    int fd = open(name, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    FILE *f = fd >= 0 ? fdopen(fd, mode) : 0;
+
+    if (!f) {
+        if (fd >= 0) {
+            close(fd);
+        }
+        fprintf(stderr, "FAIL:fat_exercise cannot write %s\n", name);
+        exit(2);
+    }
+    return f;
+}
+
+int main(void) {
     const vibeos_fs_driver_t *drv = vibeos_fat_fs_driver();
     vibeos_fs_statfs_t sf;
     char name[300];
@@ -231,13 +263,9 @@ int main(int argc, char **argv) {
     uint32_t i;
     int k;
 
-    if (argc < 3) {
-        fprintf(stderr, "usage: %s <image> <outdir>\n", argv[0]);
-        return 2;
-    }
-    f = fopen(argv[1], "rb");
+    f = fopen(IMAGE_NAME, "rb");
     if (!f) {
-        fprintf(stderr, "cannot open %s\n", argv[1]);
+        fprintf(stderr, "cannot open " IMAGE_NAME " in the working directory\n");
         return 2;
     }
     fseek(f, 0, SEEK_END);
@@ -368,36 +396,33 @@ int main(int argc, char **argv) {
     }
 
     /* The image back where mtools will read it, and what it should find. */
-    f = fopen(argv[1], "wb");
-    if (!f || fwrite(g_img + FIRST * 512u, 1, (size_t)size, f) != (size_t)size) {
+    f = out_file(IMAGE_NAME, "wb");
+    if (fwrite(g_img + FIRST * 512u, 1, (size_t)size, f) != (size_t)size) {
         return 2;
     }
     fclose(f);
-    snprintf(name, sizeof(name), "%s/manifest", argv[2]);
-    f = fopen(name, "w");
+    f = out_file("manifest", "w");
     for (k = 0; k < g_nwant; k++) {
-        char bin[300];
+        char bin[32];
         FILE *b;
         if (!g_want[k].live) {
             continue;
         }
         fprintf(f, "%d %s\n", k, g_want[k].path);
-        snprintf(bin, sizeof(bin), "%s/%d.bin", argv[2], k);
-        b = fopen(bin, "wb");
+        snprintf(bin, sizeof(bin), "%d.bin", k);
+        b = out_file(bin, "wb");
         fwrite(g_want[k].data, 1, g_want[k].size, b);
         fclose(b);
     }
     fclose(f);
-    snprintf(name, sizeof(name), "%s/dirs", argv[2]);
-    f = fopen(name, "w");
+    f = out_file("dirs", "w");
     for (k = 0; k < g_ndirs; k++) {
         if (g_dirs[k][0]) {
             fprintf(f, "%s\n", g_dirs[k]);
         }
     }
     fclose(f);
-    snprintf(name, sizeof(name), "%s/free", argv[2]);
-    f = fopen(name, "w");
+    f = out_file("free", "w");
     fprintf(f, "%llu\n", (unsigned long long)(sf.blocks_free * sf.block_size));
     fclose(f);
     printf("fat_exercise ok files=%d\n", g_nwant);

@@ -86,7 +86,10 @@ if [ "$(grep -c . "$T/mdir0.txt")" != "2" ]; then
     fail "$(head -3 "$T/mdir0.txt" | tr '\n' ' ')" dirtying_changed_what_mtools_reads
 fi
 
-if ! "$B/vibeos_fat_exercise" "$T/fs.img" "$T" > "$T/exercise.log" 2>&1; then
+# The program works on fs.img in its working directory and writes beside it;
+# it takes no paths.
+EXERCISE="$(cd "$B" && pwd)/vibeos_fat_exercise"
+if ! (cd "$T" && "$EXERCISE") > "$T/exercise.log" 2>&1; then
     fail "$(grep -m1 FAIL "$T/exercise.log" || tail -1 "$T/exercise.log")" driver_refused
 fi
 
