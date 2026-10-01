@@ -554,7 +554,7 @@ true to report before they are worth a row, so L1 builds that first:
 - **Twenty rows**: `pread64`, `preadv`, `sendfile`, `fsync`, `fdatasync`,
   `creat`, `umask`, `sync`, `syncfs`, `sync_file_range`, `readahead`,
   `fadvise64` and `copy_file_range` DONE; `pwrite64`, `pwritev`, `truncate` and
-  `ftruncate` PARTIAL until FAT writes in place; `preadv2`/`pwritev2` PARTIAL
+  `ftruncate` PARTIAL until FAT writes in place (step 4); `preadv2`/`pwritev2` PARTIAL
   (RWF_ flags are refused, not ignored); `fallocate` PARTIAL (it guarantees
   the size, not the space, and only mode 0 and KEEP_SIZE). The registry stands
   at 75 done, 22 partial, 193 missing.
@@ -588,6 +588,81 @@ true to report before they are worth a row, so L1 builds that first:
   M-052) had been unwatched since. The case that hands read()'s user buffer to
   the filesystem went NOT RED, which is how it was found. It scans all of
   `kernel/abi/` now: 53 casts, none raw.
+
+**Step 4 (2026-10-01): done.**
+
+- **The driver left the architecture first** (`kernel/fs/fat.c`,
+  `include/vibeos/fat.h`): it reaches the disk, its lock and the mount hook
+  through registrations, so the host tests link the same file the kernel runs.
+- **A file is its directory entry.** The node id is where the 32-byte entry
+  sits (sector and slot), which is the one thing FAT has that names a file
+  without naming its path; every operation on a node reloads the entry from
+  there and refuses a slot that no longer holds a file (ENOENT). The known gap
+  is the one that follows from it: a description held across an unlink or a
+  rename loses its file, and after the slot is reused it names another. FAT has
+  no inode to keep; an in-memory one is a later step's work if a program needs
+  it.
+- **Writes in place**: `write_at` grows the chain as needed and zeroes the gap
+  when the offset is past the end - FAT has no holes and a cluster comes back
+  from the allocator with whatever its last file left; `truncate` cuts the
+  chain or grows it with zeros; a write that runs out of space keeps what
+  fitted (the clusters that were left) and reports the short count.
+- **Names**: an entry is created with its long name whenever the name is not
+  8.3 upper case - the pieces, the checksum, a `~n` alias that no other entry
+  in the directory has - and an 8.3 name in lower case is stored with the two
+  NT flags rather than a long name, as Windows does. A directory grows a
+  cluster when it fills (the fixed FAT16 root cannot, and says ENOSPC), and a
+  name that used up the end-of-directory marker writes a new one.
+- **rename, rmdir, setattr, statfs, sync**: rename writes the new name before
+  removing the old, replaces an existing file (NOREPLACE honoured), refuses a
+  directory moved into itself, and updates a moved directory's ".."; rmdir
+  wants it empty; setattr keeps the read-only bit and the modification time,
+  and refuses an owner other than root (EPERM) - FAT has nowhere to put one.
+- **The whole-file path is gone.** With no filesystem left that stores whole
+  files, `kernel/abi/files/regular.c` lost the 512-byte buffer, the write-back
+  on release and the "direct" flag; `pwrite64`, `pwritev`, `truncate` and
+  `ftruncate` are DONE. The registry stands at 79 done, 18 partial, 193
+  missing.
+- **Host tests** (`tests/kernel/fat_tests.c`): a volume the driver formats in
+  memory, filled with 0xE7 first so nothing is zero by luck - names of every
+  kind, in-place writes, gaps, truncation, a directory grown to forty long
+  names, rename in each of its cases, times, statfs, a volume filled to its
+  last cluster, three hundred create/unlink cycles in the root.
+- **Somebody else's reader.** Those tests can only say the writer and the
+  reader agree. `scripts/dev/verify-fat-mtools.sh` (in `check.sh`) has mformat
+  make the volume and mcopy put a file on it, runs the driver over it
+  (`tests/kernel/fat_exercise.c`), and compares what mdir and mcopy find with
+  what the driver believes: names, contents, free space. mtools follows
+  whatever the table says, so `scripts/dev/fat-fsck.py` checks what it cannot -
+  lost and cross-linked clusters, chains against sizes, "..", orphaned long
+  names - and is run on mformat's own volume first.
+- **At boot** the shell writes 866 bytes on the boot volume in twenty-two
+  writes and counts them, writes and reads back a file under a long name
+  (`fat_write_path_failed`), and cuts a two-cluster file with O_TRUNC. When the
+  machine has stopped the gate runs fat-fsck on the image it left
+  (`boot_volume_inconsistent:<what>`) and has mtools read the long-named file
+  (`mtools_cannot_read_what_the_guest_wrote`).
+- **Sabotage**: `fs-fat.txt` (15, all red under the host tests or mtools, each
+  case says which), `fs-fat-boot.txt` (2, red), `abi-write-path.txt` re-pointed
+  (6, red). What went NOT RED, and why:
+  - *Under mtools, three cases at once*, because mformat's volume was zeros: an
+    unzeroed gap, an unzeroed directory cluster and a missing end marker all
+    read as correct on a disk that is zero wherever nobody wrote. The image is
+    filled with 'A' before mformat now, and fat-fsck has a `--dirty` mode that
+    overwrites everything past each directory's marker.
+  - *An unzeroed directory cluster*, still: with room left in the old cluster
+    the marker stays there and the new cluster is never read. The exercise
+    fills a directory exactly to the end of its cluster. And then the missing
+    marker - written down at first as unverifiable here - turned out to be
+    what had been hiding it.
+  - *The short write*: the test's volume happened to have exactly the clusters
+    the write needed. It checks its own arrangement now (`0 < free < 4`).
+  - *A sector that reaches the cache and not the disk*, at boot: green, the
+    volume consistent and the file readable. Recorded in `fs-fat-boot.txt` as
+    something this environment cannot tell, with the likely reason.
+- **Still open**: timestamps are uptime, so every file is dated 1980-01-01
+  until there is a wall clock (L2); the exec page cache is not told about a
+  write to a file it holds.
 
 ### L2. Processes, credentials and time (47)
 

@@ -30,7 +30,8 @@ Partition tables (MBR and GPT) sit between the device and the drivers in
 
 | Filesystem | Access | Notes |
 | --- | --- | --- |
-| FAT16/FAT32 | read/write | the boot volume; also reachable through the VFS adapter |
+| FAT16/FAT32 | read/write | the boot volume (`kernel/fs/fat.c`). Since docs/abi/ L1 step 4 it writes in place: offsets, truncate, long names created, rename, rmdir, growing directories, statfs. Checked against mtools and `scripts/dev/fat-fsck.py`, on the host and on the image each boot leaves |
+| tmpfs | read/write | `/tmp`, in memory (docs/abi/ L1 step 2): modes, owners, links, sparse files |
 | ext2 | read | direct, indirect, double and triple indirect blocks; holes |
 | ISO9660 | read | including Joliet names |
 | exFAT | read | |
@@ -68,7 +69,7 @@ region is reused by transactions of different lengths.
 ## Pending
 - The kernel mounts FAT as its root; the other four drivers are reachable
   through the VFS but nothing boots from them yet.
-- Writing is FAT-only. The journal exists and is tested, but no filesystem
+- Writing on a disk is FAT-only. The journal exists and is tested, but no filesystem
   driver routes its metadata updates through it yet - that connection is the
   next piece of work, and until it is made "crash-safe" describes the journal
   and not the volume.

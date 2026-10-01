@@ -292,6 +292,33 @@ orphaned. `fat.c` checks each run against the short name's checksum and falls
 back to the 8.3 name otherwise. The test image is written by mtools, not by
 this project's writer, for the ISO9660 reason below.
 
+**A FAT file is its directory entry, and nothing else names it.** Since
+docs/abi/ L1 step 4 the driver (`kernel/fs/fat.c`, portable, host-tested)
+writes in place, and a node's id is where its 32-byte entry sits. Every
+operation reloads the entry from there. So a description held across an unlink
+or a rename loses its file, and once the slot is reused it names another: FAT
+has no inode, and that gap is written down rather than papered over.
+
+**A volume that is zero wherever nobody wrote forgives every missing memset.**
+Three FAT sabotage cases went NOT RED under mtools at once - an unzeroed gap
+before a write past the end, an unzeroed directory cluster, a missing
+end-of-directory marker - because mformat's image was zeros and each defect
+left exactly the bytes a correct driver would have written. The test volume is
+filled with a letter before it is formatted now (0xE7 in the host tests; not
+0xE5 or anything with the volume-label bit, which a directory reader skips).
+Two of those defects were also hiding each other: the marker made the unzeroed
+cluster unreachable, so the marker's own case had been written down as
+unverifiable until the other one refused to go red. Same family as vvfat:
+when storage is involved, make the background hostile.
+
+**mtools reads a volume; it does not check one.** It follows whatever the
+entries and the table say, so lost clusters, a chain longer than its size and
+orphaned long names all read back perfectly. `scripts/dev/fat-fsck.py` checks
+consistency, is run on mformat's own output first so that it is not believed
+before it has been wrong about nothing, and the boot gate runs it on the image
+the guest leaves behind - a truncate that kept its chain went red there and
+nowhere inside the guest.
+
 **Typed input is in the serial log too.** The shell echoes what the self-test
 types, so a marker the command itself contains is present whether or not the
 command worked. `shell_cd_did_not_work` reads `CD_OK` off the program's
