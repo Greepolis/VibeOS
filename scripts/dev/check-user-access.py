@@ -16,7 +16,8 @@ is the argument for a check rather than a ninth fix.
 
 ## The rule
 
-In kernel/abi/linux/*.c, every conversion of an integer to a pointer - a cast to
+In every .c file under kernel/abi/ - the personalities and the file types they
+share - every conversion of an integer to a pointer - a cast to
 a pointer type applied to `(uintptr_t)...` - is on a line that hands it straight
 to one of the calls that copy fault-safely:
 
@@ -35,6 +36,15 @@ A cast split across lines from its call, or an access through a pointer that
 arrived already typed. Neither exists today; the first would fail this check
 (the cast line lacks the call), which is the safe direction.
 
+## Where it looks
+
+Until docs/abi/ L1 it looked in kernel/abi/linux/ only. A3 had moved read, write,
+getdents64, the console and the sockets - most of the sites listed above - into
+kernel/abi/files/, and from that day nothing watched them: the case that hands
+read()'s user buffer to the filesystem went NOT RED when it was next run, which
+is how this was found. A check scoped by directory follows the code only if
+somebody moves the scope with it.
+
 Usage: check-user-access.py [--list]
 """
 
@@ -43,7 +53,7 @@ import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-AREA = os.path.join(ROOT, "kernel", "abi", "linux")
+AREA = os.path.join(ROOT, "kernel", "abi")
 
 CAST = re.compile(r"\(\s*(?:const\s+)?(?:volatile\s+)?[A-Za-z_][A-Za-z0-9_ ]*\*+\s*\)\s*\(uintptr_t\)")
 SAFE = ("vibeos_uaccess_copy(", "hw_copy_user_string(", "vibeos_pipe_read(",
@@ -61,10 +71,12 @@ def main():
     listing = "--list" in sys.argv
     bad = []
     seen = 0
-    for name in sorted(os.listdir(AREA)):
-        if not name.endswith(".c"):
-            continue
-        with open(os.path.join(AREA, name), encoding="utf-8", errors="replace") as fh:
+    sources = []
+    for base, _, names in os.walk(AREA):
+        sources += [os.path.join(base, n) for n in names if n.endswith(".c")]
+    for path in sorted(sources):
+        name = os.path.basename(path)
+        with open(path, encoding="utf-8", errors="replace") as fh:
             lines = fh.read().splitlines()
         for no, line in enumerate(lines, 1):
             code = line.split("//")[0]
