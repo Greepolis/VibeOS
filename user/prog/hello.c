@@ -462,6 +462,59 @@ static int check_file_locks(void) {
     return status == 0;
 }
 
+/* The stack grows (docs/abi/ L3). Four pages are mapped when a program starts;
+ * this function's frame is a hundred kilobytes, so it only works if a page
+ * the stack reaches is given to it.
+ *
+ * Three ways of reaching one. A store from ring 3 into the far end of the
+ * frame. A read() into a page well below the frame, which is the kernel
+ * storing into a page nobody has touched - refused as EFAULT if the range
+ * check does not know the stack may grow, and a fault in ring 0 if it does.
+ * Below the frame and not inside it, because the compiler probes every page of
+ * a large frame on entry: the first version read into the middle of `big`, a
+ * page ring 3 had already touched, and removing the range check's knowledge of
+ * the stack went NOT RED. And, in a child, a
+ * store into the page below the region, which must stay unmapped: the child is
+ * killed by SIGSEGV, and that is the answer wanted. */
+static const char stack_ok[] = "STACK_OK: the stack grew when it was reached, and its guard held\n";
+static const char stack_bad[] = "abi: the stack did not grow as it should\n";
+
+static int check_stack_grows(void) {
+    volatile unsigned char big[100 * 1024];
+    volatile int status = 0;
+    long fd, child;
+
+    big[0] = 'a';                       /* the lowest address: furthest from the top */
+    big[sizeof(big) - 1] = 'z';
+    fd = user_syscall3(2 /* open */, (long)(unsigned long)self_path, 0, 0);
+    {
+        /* 256 KiB under this frame's lowest byte, page aligned: stack nobody
+         * has reached. */
+        volatile unsigned char *deep =
+            (volatile unsigned char *)(((unsigned long)&big[0] - 256ul * 1024ul) & ~0xFFFul);
+
+        if (fd < 0 ||
+            user_syscall3(0 /* read */, fd, (long)(unsigned long)deep, 4096) != 4096 ||
+            deep[0] != 0x7f || deep[1] != 'E') {
+            return 0;
+        }
+    }
+    user_syscall3(3 /* close */, fd, 0, 0);
+    if (big[0] != 'a' || big[sizeof(big) - 1] != 'z' || big[30000] != 0) {
+        return 0;   /* a page given to the stack is zeroed, and keeps what is stored */
+    }
+    child = user_syscall3(SYS_fork, 0, 0, 0);
+    if (child == 0) {
+        /* 0x8000200800: inside the one page below the stack's region. */
+        *(volatile char *)0x8000200800ul = 1;
+        user_syscall3(SYS_exit, 0, 0, 0);   /* only if the guard was not there */
+    }
+    if (child < 0 || user_syscall3(SYS_wait4, child, (long)(unsigned long)&status, 0) != child) {
+        return 0;
+    }
+    return (status & 0x7f) == 11;       /* killed by SIGSEGV */
+}
+
 int vibeos_main(int argc, char **argv, char **envp) {
     long pid, brk0, brk1, map, rejected;
 
@@ -493,6 +546,11 @@ int vibeos_main(int argc, char **argv, char **envp) {
             n++;
         }
         user_syscall3(SYS_write, 1, (long)(unsigned long)verdict, n);
+    }
+    if (check_stack_grows()) {
+        user_syscall3(SYS_write, 1, (long)(unsigned long)stack_ok, sizeof(stack_ok) - 1);
+    } else {
+        user_syscall3(SYS_write, 1, (long)(unsigned long)stack_bad, sizeof(stack_bad) - 1);
     }
     if (check_file_locks()) {
         user_syscall3(SYS_write, 1, (long)(unsigned long)locks_ok, sizeof(locks_ok) - 1);

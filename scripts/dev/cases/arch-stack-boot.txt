@@ -1,14 +1,35 @@
-# The user stack (docs/abi/ L1 step 8).
+# The user stack (docs/abi/ L3): four pages at exec, and a page for every
+# address below them that the stack reaches, down to a guard.
 #
-#  1. four pages, as it was. BusyBox's sed has an 18 KiB frame and every corpus
-#     workload prints through sed. Expect deliberate_ring3_faults and
-#     corpus_answers_differ.
+#  1. the stack does not grow: a touch below what exec mapped is a fault, as it
+#     was before. Expect a boot that goes quiet before VIBEOS_SELFTEST_DONE:
+#     the self-test program, whose frame is a hundred kilobytes, is killed, and
+#     it is the program that starts the shell.
+#  2. the range check does not know the stack may grow: a read() into a part
+#     of the stack nobody has touched is EFAULT. Expect stack_selftest_failed.
 #
-# Target source: kernel/arch/x86_64/arch_hw_internal.h
-# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/arch/x86_64/arch_hw_internal.h scripts/dev/cases/arch-stack-boot.txt
+# Not cases, both tried and NOT RED for a reason worth keeping:
+#
+#  - "the guard page is the stack's to take": widening hw_stack_may_reach by a
+#    page changes nothing, because the region list refuses the address too -
+#    exec describes the stack from its floor up, and hw_stack_grow asks the
+#    list. Two things hold the guard; breaking one is not breaking it.
+#  - "a page given to the stack is not zeroed": the allocator zeroes every page
+#    it hands out, so the loop that did it again here was dead code. Removed.
+#
+# Target source: kernel/arch/x86_64/mm_bridge.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/arch/x86_64/mm_bridge.c scripts/dev/cases/arch-stack-boot.txt
 
-### the user stack is four pages
+### the stack does not grow
 --- old
-\#define VIBEOS_HW_USER_STACK_PAGES 64u
+        if (hw_stack_grow(t, fault_va)) {
+            return 1;
+        }
 +++ new
-\#define VIBEOS_HW_USER_STACK_PAGES 4u
+
+### the range check does not know the stack may grow
+--- old
+        if (grows) {
+            continue;
+        }
++++ new

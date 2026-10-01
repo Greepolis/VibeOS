@@ -1321,32 +1321,39 @@ def main():
                 problems.append(f"cpus_online={int(cpus.group(1), 16)}_expected={EXPECTED_CPUS}")
 
             # A recovered fault still means something went wrong that the boot
-            # was not supposed to hit. There are exactly two exceptions, and
-            # both are deliberate: the int3 self-test, and svc-crash, which
+            # was not supposed to hit. There are exactly three exceptions, and
+            # all are deliberate: the int3 self-test; svc-crash, which
             # dereferences null so that the boot proves a ring-3 fault kills
-            # one task rather than the machine. That claim used to be gated and
+            # one task rather than the machine; and, since docs/abi/ L3, the
+            # self-test's child that stores into the guard page below its
+            # stack, which has to be killed for the guard to be one. That claim used to be gated and
             # green while being false, because every service in the manifest
             # died by exiting - a cooperative death that never reaches the trap
             # handler at all.
             lines = text.splitlines()
             killed = [ln for ln in lines if "ring3 fault: killing task" in ln]
-            if len(killed) != 1:
-                # Not "at least one": a second ring-3 fault is a real one, and
+            if len(killed) != 2:
+                # Not "at least two": another ring-3 fault is a real one, and
                 # allowing any number would re-open exactly the hole this
                 # assertion exists to close.
-                problems.append("deliberate_ring3_faults=%d_expected=1" % len(killed))
+                problems.append("deliberate_ring3_faults=%d_expected=2" % len(killed))
 
             faults = [ln for ln in lines
                       if "[HW][TRAP]" in ln
                       and "vector=0x0000000000000003" not in ln       # int3 self-test
                       and "ring3 fault: killing task" not in ln]      # the kill notice
-            # ...and the one trap dump that belongs to the deliberate crash: a
-            # page fault raised from ring 3 (cs=0x23). Removed once, by value,
-            # so a second identical fault still counts.
-            for ln in faults:
-                if "vector=0x000000000000000e" in ln and "cs=0x0000000000000023" in ln:
-                    faults.remove(ln)
-                    break
+            # ...and the two trap dumps that belong to the deliberate crashes:
+            # page faults raised from ring 3 (cs=0x23), told apart by the
+            # address each one touched - null for svc-crash, the stack's guard
+            # page for the self-test. Each removed once, by that address, so a
+            # second fault at either, or one anywhere else, still counts. It
+            # used to remove whichever ring-3 page fault came first.
+            for addr in ("cr2=0x0000000000000000", "cr2=0x0000008000200800"):
+                for ln in faults:
+                    if ("vector=0x000000000000000e" in ln and "cs=0x0000000000000023" in ln
+                            and addr in ln):
+                        faults.remove(ln)
+                        break
             if faults:
                 problems.append("unexpected_cpu_fault")
 
@@ -1460,8 +1467,17 @@ def main():
             # this project three wrong diagnoses of one address.
             if "[CRASH] recorded" not in text:
                 problems.append("fault_was_not_recorded")
-            elif "SVC_CRSH.ELF" not in text.split("[CRASH] recorded")[1][:200]:
-                problems.append("crash_record_does_not_name_the_program")
+            else:
+                # Every record, and svc-crash's among them. This read the
+                # first record only while there was one; since the stack
+                # self-test's child also dies on purpose (L3) there are two,
+                # in whichever order the cores get there, and four boots in
+                # twenty-four failed here on a record that named its program
+                # correctly - SELFTEST.ELF, first.
+                recorded = [ln for ln in text.splitlines() if "[CRASH] recorded" in ln]
+                named = [re.search(r"exe=(\S+\.ELF)\b", ln) for ln in recorded]
+                if not all(named) or not any(m.group(1).endswith("SVC_CRSH.ELF") for m in named if m):
+                    problems.append("crash_record_does_not_name_the_program")
             if "[CRASH] no process has faulted" in text:
                 problems.append("crash_dump_found_no_record")
 
@@ -2670,6 +2686,13 @@ def main():
                     problems.append("nothing_ever_came_back_from_swap")
                 if int(sw.group(4), 16) != 0:
                     problems.append(f"fork_of_swapped_page_failed={int(sw.group(4), 16)}")
+            # The stack grows on demand (docs/abi/ L3): BusyBox's sed, which the
+            # corpus prints through, needs more than the four pages mapped at
+            # exec - so a boot in which no stack grew is one in which the
+            # mechanism was not there to be used.
+            sg = re.search(r" stack_grown=0x([0-9a-f]{16})", text)
+            if sg is None or int(sg.group(1), 16) == 0:
+                problems.append("stack_never_grew")
             sl = re.search(r"\[MM\] SWAP slots=0x[0-9a-f]{16} allocated=0x([0-9a-f]{16})",
                            text)
             if sl is not None and int(sl.group(1), 16) != 0:
@@ -3160,6 +3183,11 @@ def main():
             # else the boot runs takes a lock.
             if not re.search(r"write\(ring3\): LOCKS_OK", text):
                 problems.append("file_locks_selftest_failed")
+            # The stack, from ring 3 (L3): a frame of a hundred kilobytes, the
+            # kernel storing into a page of it nobody had touched, and a child
+            # killed on the guard page below.
+            if not re.search(r"write\(ring3\): STACK_OK", text):
+                problems.append("stack_selftest_failed")
 
             # A write from a kernel address must be refused. The row declares the
             # buffer and the dispatcher's descriptor engine refuses it before the
