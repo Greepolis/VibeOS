@@ -122,6 +122,10 @@ typedef struct vibeos_file_ops {
     uint32_t (*ready)(vibeos_file_t *f);
     /* What this description wrote is on the medium. */
     int (*sync)(vibeos_file_t *f);
+    /* The file's own page at `off`, held, for a shared mapping; see
+     * vibeos_fs_ops_t.share_page, whose answers these are. A type without the
+     * entry has no pages to share. */
+    int (*share_page)(vibeos_file_t *f, uint64_t off, void **page);
 } vibeos_file_ops_t;
 
 struct vibeos_file {

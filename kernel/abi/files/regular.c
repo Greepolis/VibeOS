@@ -255,6 +255,12 @@ static int regular_sync(vibeos_file_t *f) {
     return vibeos_fs_sync(f->mnt);
 }
 
+static int regular_share_page(vibeos_file_t *f, uint64_t off, void **page) {
+    vibeos_fs_node_t node = node_of(f);
+
+    return vibeos_fs_share_page(f->mnt, &node, off, page);
+}
+
 /* A directory's entries by position. The first two are "." and "..", which a
  * program expects of every directory and only some filesystems list - FAT has
  * them in every directory but its root - so they are made here and whatever the
@@ -357,6 +363,7 @@ const vibeos_file_ops_t vibeos_fops_regular = {
     .pwrite = regular_pwrite,
     .truncate = regular_truncate,
     .sync = regular_sync,
+    .share_page = regular_share_page,
 };
 
 static int dir_sync(vibeos_file_t *f) {

@@ -161,6 +161,17 @@ int vibeos_fs_truncate(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, uint
     return mnt->ops->truncate(mnt->fs, node, size);
 }
 
+int vibeos_fs_share_page(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, uint64_t offset,
+                         void **page) {
+    if (!vibeos_fs_is_mounted(mnt) || !node || !page || (offset & 0xFFFull) != 0u) {
+        return -VIBEOS_EINVAL;
+    }
+    if (!mnt->ops->share_page) {
+        return -VIBEOS_ENODEV;
+    }
+    return mnt->ops->share_page(mnt->fs, node, offset, page);
+}
+
 int vibeos_fs_create(vibeos_fsmount_t *mnt, const char *path, uint32_t mode,
                      vibeos_fs_node_t *out) {
     int r;

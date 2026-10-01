@@ -152,6 +152,19 @@ typedef struct {
     int (*statfs)(void *fs, vibeos_fs_statfs_t *out);
     /* Everything written is on the medium when this returns. */
     int (*sync)(void *fs);
+    /* The page that holds byte `offset` of a file - a page multiple - for a
+     * mapping to share (docs/abi/ L3): the filesystem's own page, made if the
+     * file has a hole there, so a store through the mapping is a store into
+     * the file and a write to the file is seen through the mapping. It comes
+     * with a reference, taken while the filesystem could still vouch for the
+     * page; the caller gives it back when its own are in place.
+     *
+     * 0 and the page; 1 when `offset` is at or past the end of the last page
+     * that holds any of the file - there is nothing there to share; a negated
+     * errno otherwise. Only a filesystem that keeps a file in pages has this:
+     * one that keeps it in clusters on a disk has no page to give, and a
+     * mapping of its files is private or refused. */
+    int (*share_page)(void *fs, const vibeos_fs_node_t *node, uint64_t offset, void **page);
 } vibeos_fs_ops_t;
 
 typedef struct {
@@ -199,6 +212,9 @@ int vibeos_fs_writable(const vibeos_fsmount_t *mnt);
 long vibeos_fs_write_at(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node,
                          uint64_t offset, const void *buf, uint32_t len);
 int vibeos_fs_truncate(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, uint64_t size);
+/* -ENODEV from a filesystem that has no pages to share. */
+int vibeos_fs_share_page(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, uint64_t offset,
+                         void **page);
 int vibeos_fs_create(vibeos_fsmount_t *mnt, const char *path, uint32_t mode,
                      vibeos_fs_node_t *out);
 int vibeos_fs_rmdir(vibeos_fsmount_t *mnt, const char *path);

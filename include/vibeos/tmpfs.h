@@ -56,6 +56,7 @@ typedef struct {
     vibeos_tmpfs_inode_t inode[VIBEOS_TMPFS_INODES];
     void *(*page_alloc)(void);    /* a page, or 0; contents unspecified         */
     void (*page_free)(void *page);
+    void (*page_hold)(void *page);  /* one more reference; 0: pages are not shared */
     void (*lock)(void);
     void (*unlock)(void);
     uint64_t pages_max;           /* data and pointer pages together            */
@@ -68,6 +69,16 @@ typedef struct {
 int vibeos_tmpfs_init(vibeos_tmpfs_t *t, uint64_t pages_max,
                       void *(*page_alloc)(void), void (*page_free)(void *page),
                       void (*lock)(void), void (*unlock)(void));
+
+/* Let a file's pages be mapped (docs/abi/ L3).
+ *
+ * `hold` takes one more reference on a page this filesystem allocated, and from
+ * then on `page_free` is "this filesystem's reference is given back", not "the
+ * page is free": a mapping can outlive the file's own use of the page - a
+ * truncate, an unlink - and the page goes when the last holder does. So the two
+ * functions have to be a counted pair; with a plain allocator, leave this
+ * unset, and a shared mapping of a file here is refused (ENODEV). */
+void vibeos_tmpfs_set_page_hold(vibeos_tmpfs_t *t, void (*hold)(void *page));
 
 /* Everything freed; the filesystem is empty again. For tests. */
 void vibeos_tmpfs_destroy(vibeos_tmpfs_t *t);

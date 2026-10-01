@@ -661,6 +661,46 @@ static int tf_op_truncate(void *fs, const vibeos_fs_node_t *node, uint64_t size)
     return r;
 }
 
+/* A file's page, for a mapping to share. Made if the file has a hole there: a
+ * mapping has to be able to store into it, and a hole has nowhere to store.
+ *
+ * Held under the lock. The page is this file's for exactly as long as the lock
+ * is - a truncate on another core gives it back the moment it is released -
+ * and a reference taken after that would be a reference to whatever the frame
+ * had become. */
+static int tf_op_share_page(void *fs, const vibeos_fs_node_t *node, uint64_t off, void **page) {
+    tf_ctx_t cx;
+    uint32_t i;
+    int r;
+
+    if (!T->page_hold) {
+        return -VIBEOS_ENODEV;
+    }
+    tf_ctx_fill(T, &cx, TF_SPARES);
+    T->lock();
+    r = tf_from_id(T, node->id, &i);
+    if (r == 0) {
+        vibeos_tmpfs_inode_t *in = &T->inode[i];
+        uint8_t *pg;
+
+        if (!tf_is(in, VIBEOS_S_IFREG)) {
+            r = -VIBEOS_ENODEV;
+        } else if (off >= in->size) {
+            /* `off` is a page's first byte, so this is "past the last page
+             * that holds any of the file". */
+            r = 1;
+        } else if (!(pg = tf_block(T, in, off, &cx))) {
+            r = -VIBEOS_ENOSPC;
+        } else {
+            T->page_hold(pg);
+            *page = pg;
+        }
+    }
+    T->unlock();
+    tf_ctx_drain(T, &cx);
+    return r;
+}
+
 /* The whole-file path the VFS started with: replace a file's contents, making
  * it if it is not there. */
 static long tf_op_write_file(void *fs, const char *path, const void *buf, uint32_t len) {
@@ -1060,6 +1100,7 @@ static const vibeos_fs_ops_t g_tmpfs_ops = {
     .readlink = tf_op_readlink,
     .setattr = tf_op_setattr,
     .statfs = tf_op_statfs,
+    .share_page = tf_op_share_page,
 };
 
 const vibeos_fs_ops_t *vibeos_tmpfs_ops(void) {
@@ -1087,6 +1128,12 @@ int vibeos_tmpfs_init(vibeos_tmpfs_t *t, uint64_t pages_max,
     t->inode[0].atime_ns = t->inode[0].mtime_ns = t->inode[0].ctime_ns = now;
     t->inodes_used = 1u;
     return 0;
+}
+
+void vibeos_tmpfs_set_page_hold(vibeos_tmpfs_t *t, void (*hold)(void *page)) {
+    if (t) {
+        t->page_hold = hold;
+    }
 }
 
 void vibeos_tmpfs_destroy(vibeos_tmpfs_t *t) {

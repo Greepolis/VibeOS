@@ -1,0 +1,26 @@
+# tmpfs handing out a file's page for a shared mapping (docs/abi/ L3 step 2).
+# Host tests: t_mmap_shared in tests/kernel/linux_abi_tests.c.
+#
+#  1. the page is handed out without a reference
+#  2. a page past the end of the file is made and handed out
+#  3. a hole is not given a page
+#
+# Target source: kernel/fs/tmpfs.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/fs/tmpfs.c scripts/dev/cases/fs-tmpfs-share.txt
+
+### the page is handed out without a reference
+--- old
+            T->page_hold(pg);
++++ new
+
+### a page past the end of the file is made and handed out
+--- old
+        } else if (off >= in->size) {
++++ new
+        } else if (0) {
+
+### a hole is not given a page
+--- old
+        } else if (!(pg = tf_block(T, in, off, &cx))) {
++++ new
+        } else if (!(pg = tf_block(T, in, off, 0))) {
