@@ -261,6 +261,33 @@ with its own refusal (EPERM from one that cannot rename at all) instead of
 Linux's. Test such a check against the least capable filesystem available -
 the fake kernel's root - not the most complete one.
 
+**A directory entry's type is trusted, so it has to be true.** getdents64
+reported every entry as a file or a directory with inode 0, names cut at
+fifteen bytes, and no "." or "..". Nothing failed for months because `ls`
+stats everything it prints. A program that walks a tree does not: it reads the
+type out of the entry, and a symbolic link listed as a regular file is followed
+where it should have been left. Each entry is looked up now for what stat would
+say of it, and the file layer hands entries out by position
+(`vibeos_dirent_t`) for the personality to format - `getdents`, `getdents64`
+and whatever Windows will want are formats, not readers.
+
+**When nobody declares a layout, ask the host's kernel.** `struct
+linux_dirent` - the record of the getdents call before getdents64 - is in no
+uapi header and no C library. Declaring it here and testing it against a
+record built here would have been the ISO9660 fixture again. The layout test
+makes the host's own kernel answer that syscall for "/" and reads the bytes
+through our structure: the one artefact neither side of the test controls,
+when there is no header to be that artefact.
+
+**POSIX's locks belong to the process and die with any close.** Closing *any*
+descriptor a process has for a file drops every record lock the process holds
+on that file, whichever descriptor took them; flock and OFD locks belong to the
+open file description instead and go when it does. Both rules are in
+`kernel/abi/linux/fs.c` (`linux_locks_on_close`) and `kernel/fs/file.c`, and the
+table under them (`kernel/fs/filelock.c`) knows neither - an owner is a number.
+The table never waits: a handler that waits asks it first whether the wait
+could end (`vibeos_flk_wait`).
+
 **`st_dev` was 0 for every filesystem.** `cp` and `mv` compare st_dev and
 st_ino to refuse copying a file onto itself, so a file in /tmp and one on the
 boot volume with equal inode numbers were the same file. Nothing failed,

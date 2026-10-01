@@ -732,6 +732,85 @@ true to report before they are worth a row, so L1 builds that first:
   repeats (a file over a directory, a directory into itself) have no case of
   their own for the reason above.
 
+**Step 6 (2026-10-01): done.**
+
+- **Locks** (`kernel/fs/filelock.c`, `include/vibeos/filelock.h`): one table,
+  personality-neutral, of two kinds kept apart as Linux keeps them. *Record
+  locks* are byte ranges held by an owner - a process for `fcntl`'s F_SETLK,
+  F_SETLKW and F_GETLK, an open file description for the F_OFD_ forms, both in
+  one space so each sees the other's. An owner asking again replaces what it
+  held: the table splits a lock whose middle is unlocked and joins two when
+  the gap between them is filled, so an owner's locks are always disjoint and
+  never two where one would do. *Whole-file locks* are `flock`'s, held by the
+  description. The table never waits and never allocates; it refuses with the
+  owner in the way, and checks it has room for the worst case before it
+  changes anything.
+- **The handlers do the waiting**, the way a pipe's reader waits, and stop for
+  a signal. Before a process waits for a record lock the table is asked
+  whether the holder is, through however many others, waiting for it: EDEADLK
+  instead of two waits for ever. Linux looks for no deadlock among
+  description-owned locks, and neither does this.
+- **Lifetimes, which are the hard part of POSIX's locks**: closing *any*
+  descriptor a process has for a file gives back every record lock the process
+  holds on it; a process's locks end at its exit and are not inherited by
+  fork; a description's locks - flock, OFD - go when the description does, so
+  a dup and a fork share them. A lock at SEEK_END is where the file ends when
+  it is taken; a length of 0 runs to the end wherever that goes; a negative
+  one is the bytes before the start.
+- **Directories**: the file layer hands out entries by position
+  (`vibeos_dirent_t`, the `readdir` operation that replaced `getdents`), and
+  the record is the personality's - so `getdents64` and the older `getdents`
+  are two formats over one reader, and a Windows directory query will be a
+  third. Names are whole (they were cut at fifteen bytes), "." and ".." are in
+  every directory once, each entry carries the inode number stat reports and
+  its real type (a symbolic link was listed as a file, and a program that walks
+  a tree trusts that), and the position is the description's own, so
+  `lseek(fd, 0)` rewinds and a `d_off` can be returned to.
+- **Extended attributes**: the twelve calls say what Linux says of a
+  filesystem that stores none - EOPNOTSUPP to setting, getting and removing,
+  an empty list - after refusing what Linux refuses first, in its order: a
+  flag, a name (ERANGE), a size (E2BIG), and the file itself, so a mistyped
+  path is ENOENT and not "not supported".
+- **close_range's UNSHARE** asks for nothing in a process of one thread and is
+  honoured there. With threads it is still refused: a thread cannot hold a
+  table apart from its process until L6, which owns that row now.
+- **Sixteen rows closed**: `flock`, `getdents`, the twelve xattr calls, and
+  `fcntl` and `getdents64` from partial to done. The registry stands at 124
+  done, 19 partial, 147 missing.
+- **`struct linux_dirent`**, the old call's record, is declared by nobody -
+  Linux keeps it to itself and no C library has used the call in years. A
+  fixture this project wrote would only agree with the declaration this
+  project wrote, so the layout test asks the *host's kernel* to list "/" with
+  that call and reads the answer through our structure: the records have to
+  chain, and "." and ".." have to be there with an inode and a directory's
+  type in the last byte.
+- **Host tests**: the table on its own (`filelock_tests.c`), four groups of
+  handlers in `linux_abi_tests.c`, and a torture in the nightly
+  (`filelock_torture.c`, 300 seeds sanitized, three seeds in `check.sh` and in
+  every host sabotage run). Its model has no ranges: a file is seventeen
+  cells, an owner paints them, and every round compares the answer, a probe of
+  every cell for every owner, and the number of locks held against the number
+  of runs of equal cells - one more is a join that was missed.
+- **At boot** the ring-3 self-test takes a record lock and a flock, forks, and
+  the child finds both in its way (`file_locks_selftest_failed`) - nothing else
+  the boot runs takes a lock, and the BusyBox on the image has no flock applet;
+  the shell lists a directory holding a long name and a dangling link, and the
+  gate reads ls's own line and `DIRS_4_1` (`directory_listing_failed`).
+- **Sabotage**: `fs-filelock.txt` (15), `abi-locks.txt` (20),
+  `abi-readdir.txt` (5), `abi-xattr.txt` (6) and one more in `fs-file.txt` on
+  the host; `abi-locks-boot.txt` (2) and `abi-readdir-boot.txt` (2) at boot. All
+  red, each for the expectation it names. One went NOT RED first: a pipe that
+  cannot be told from another pipe. The test locked one pipe, and one of
+  anything has an identity whatever it is computed from; it locks two now, and
+  the other end of the first.
+- **A new must-be-zero**, `filelock_unlocked`: the table used with no lock
+  registered, as the mount table counts it.
+- **Still open**: an exec keeps every record lock the process holds, those on
+  its close-on-exec descriptors included, where POSIX gives those back as the
+  descriptors close; a lock is found by the filesystem's identity for the
+  file, so on FAT it follows the directory entry (step 4's gap); mandatory
+  locking does not exist, as on current Linux.
+
 ### L2. Processes, credentials and time (47)
 
 Sleeping and timers (`nanosleep`, `clock_nanosleep`, `alarm`, `setitimer`,
