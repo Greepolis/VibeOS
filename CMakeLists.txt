@@ -186,6 +186,7 @@ if(VIBEOS_BUILD_TESTS)
         tests/kernel/fdtable_tests.c
         tests/kernel/path_tests.c
         tests/kernel/tmpfs_tests.c
+        tests/kernel/fat_tests.c
         tests/kernel/pipe_tests.c
         tests/kernel/klog_tests.c
         tests/kernel/crash_tests.c
@@ -260,6 +261,13 @@ if(VIBEOS_BUILD_TESTS)
     target_link_libraries(vibeos_tmpfs_torture PRIVATE vibeos_kernel_core)
     target_include_directories(vibeos_tmpfs_torture PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     add_test(NAME vibeos-tmpfs-torture COMMAND vibeos_tmpfs_torture 1 3000)
+
+    # The FAT writer on a volume mformat made, for mdir and mcopy to read back
+    # (scripts/dev/verify-fat-mtools.sh): the artefact neither side of the host
+    # tests controls.
+    add_executable(vibeos_fat_exercise tests/kernel/fat_exercise.c)
+    target_link_libraries(vibeos_fat_exercise PRIVATE vibeos_kernel_core)
+    target_include_directories(vibeos_fat_exercise PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
     add_executable(vibeos_mm_torture tests/kernel/mm_torture.c)
     target_link_libraries(vibeos_mm_torture PRIVATE vibeos_kernel_core)

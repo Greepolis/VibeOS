@@ -1,0 +1,169 @@
+# The FAT driver's write path (kernel/fs/fat.c, docs/abi/ L1 step 4), proved by
+# the host tests in tests/kernel/fat_tests.c and by mtools reading what the
+# driver wrote (scripts/dev/verify-fat-mtools.sh).
+#
+#  1. the gap before a write past the end is not zeroed. Expect "a write past
+#     the end zeroes the gap".
+#  2. truncate growing a file does not zero what it exposes. Expect "truncate
+#     growing a file exposes zeros".
+#  3. truncate does not give clusters back. Expect "truncate gives back the
+#     clusters past the new end".
+#  4. unlink leaves the long-name entries behind. Expect "unlink returns the
+#     long-name slots too". Invisible to a reader - the orphaned entries fail
+#     their checksum and are ignored - until a directory that cannot grow fills
+#     with them.
+#  5. every long name gets the alias ~1. Expect "have two short aliases".
+#  6. the lower-case flags are not recorded. Expect "listed in the case it was
+#     written"; mtools: files_differ.
+#  7. the long-name checksum is wrong. Expect "a nine-character name is kept
+#     whole" - a reader ignores a long name that does not belong to its entry.
+#  8. a moved directory keeps its old "..". Expect "and its '..' is its new
+#     parent".
+#  9. rename over a file does not free the replaced file's clusters. Expect
+#     "the replaced file's clusters come back"; mtools: free_space_differs.
+# 10. a directory's new cluster is not zeroed. Expect "every one of them is
+#     found and listed once" - the image is filled with 0xE7, so an unzeroed
+#     cluster is sixteen entries of garbage.
+# 11. the allocator hands out a cluster that is in use. Expect the contents
+#     tests; mtools: contents_differ.
+# 12. a write does not store the new size. Expect "the size is where the write
+#     ended".
+# 13. "." and ".." are looked up as 8.3 names. Expect "and its '..' is its new
+#     parent".
+# 14. a short write does not take the clusters that are left. Expect "the write
+#     that runs out keeps what fitted and leaves nothing free".
+#
+# 15. no end-of-directory marker is written after a name that used up the old
+#     one. Expect, under mtools, files_differ: what follows a marker is not
+#     promised to be zero, and on a volume that starts full of 'A's it is
+#     sixty-four files called AAAAAAAA.AAA. This was written down as
+#     unverifiable here - every directory this project can make is zero after
+#     its marker - until case 10 went NOT RED under mtools for exactly the
+#     reason that the marker was hiding an unzeroed cluster.
+#
+# Case 10 needs a directory filled exactly to the end of its cluster: with
+# room left, the marker is still in the old cluster, everything after it is
+# free, and the new cluster's contents never show. The host tests' sixteen-
+# entry clusters hit that by chance; the mtools exercise fills one on purpose.
+#
+# Target source: kernel/fs/fat.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/fs/fat.c scripts/dev/cases/fs-fat.txt
+# and: SABOTAGE_VERIFY="cmake --build build-gcc-Release > /dev/null 2>&1 || echo BUILD_FAILED; bash scripts/dev/verify-fat-mtools.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/fs/fat.c scripts/dev/cases/fs-fat.txt
+
+### the gap before a write past the end is not zeroed
+--- old
+    if (off > e->size) {
+        r = fat_chain_put(e->cluster, e->size, 0, (uint32_t)(off - e->size));
+        if (r != 0) {
+            return r;
+        }
+    }
++++ new
+
+### truncate growing a file does not zero what it exposes
+--- old
+        r = fat_chain_put(e->cluster, e->size, 0, size - e->size);
+        if (r != 0) {
+            return r;
+        }
++++ new
+
+### truncate does not give clusters back
+--- old
+    } else if (need < have) {
++++ new
+    } else if (0) {
+
+### unlink leaves the long-name entries behind
+--- old
+    for (i = 0; i < e->run_len; i++) {
+        if (fat_sector_read(e->run[i].lba, g_secbuf) != 0) {
++++ new
+    for (i = e->run_len - 1u; i < e->run_len; i++) {
+        if (fat_sector_read(e->run[i].lba, g_secbuf) != 0) {
+
+### every long name gets the alias ~1
+--- old
+        if (!fat_short_taken(dir, out)) {
+            return 0;
+        }
++++ new
+        return 0;
+
+### the lower-case flags are not recorded
+--- old
+    ent[12] = ntres;
++++ new
+    ent[12] = 0;
+
+### the long-name checksum is wrong
+--- old
+    sum = fat_short_sum(short_name);
++++ new
+    sum = (uint8_t)(fat_short_sum(short_name) + 1u);
+
+### a moved directory keeps its old ".."
+--- old
+    if (r == 0 && (src.attr & 0x10u) && fdir != tdir) {
++++ new
+    if (0) {
+
+### rename over a file does not free the replaced file's clusters
+--- old
+        r = fat_dir_remove(&dst);
+        if (r == 0 && dst.cluster >= 2u) {
+            fat_free_chain(dst.cluster);
+        }
++++ new
+        r = fat_dir_remove(&dst);
+
+### a directory's new cluster is not zeroed
+--- old
+            if (fat_zero_cluster(fresh) != 0 || fat_set_entry(last_cl, fresh) != 0) {
++++ new
+            if (fat_set_entry(last_cl, fresh) != 0) {
+
+### the allocator hands out a cluster that is in use
+--- old
+        looked++;
+        if (fat_get_entry(cl) != 0u) {
+            cl++;
+            continue;
+        }
++++ new
+        looked++;
+
+### a write does not store the new size
+--- old
+    if (end > e->size) {
+        e->size = (uint32_t)end;
+    }
+    fat_touch(e);
++++ new
+    fat_touch(e);
+
+### "." and ".." are looked up as 8.3 names
+--- old
+    if (name[0] == '.' && (name[1] == 0 || (name[1] == '.' && name[2] == 0))) {
+        /* "." and "..": dots that are the name, not the separator before an
++++ new
+    if (0) {
+        /* "." and "..": dots that are the name, not the separator before an
+
+### a short write does not take the clusters that are left
+--- old
+            if (left > 0u && left < need - have && fat_chain_grow(e, have, have + left) == 0) {
++++ new
+            if (0 && fat_chain_grow(e, have, have + left) == 0) {
+
+### no end-of-directory marker after a name that used up the old one
+--- old
+    if (need_end) {
+        for (k = 0; k < 32u; k++) {
+            ent[k] = 0;
+        }
++++ new
+    if (0) {
+        for (k = 0; k < 32u; k++) {
+            ent[k] = 0;
+        }

@@ -50,6 +50,9 @@ void vibeos_fat_cache_stats(uint64_t *hits, uint64_t *misses,
  * or null. */
 void *vibeos_fat_mount_volume(vibeos_blockcache_t *bc, uint32_t first_lba);
 
+/* Forget every volume but the boot one. For tests. */
+void vibeos_fat_forget_volumes(void);
+
 /* ---- the boot volume's spellings ------------------------------------------------- *
  *
  * Every one of these is the matching _on with a null handle. */

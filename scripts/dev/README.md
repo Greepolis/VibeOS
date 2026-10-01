@@ -44,6 +44,8 @@ are for:
 | `verify-boot.sh [dir]` | Building and booting; prints the gate's own reason. |
 | `verify-boot-keep.sh [dir]` | The same, keeping each case's serial log as `.boot-evidence/sab-<n>.log` - the log of a case that went red for the wrong reason is the one to read. |
 | `verify-host.sh [dir]` | The host suite and short runs of the memory-manager and GUI tortures. |
+| `verify-fat-mtools.sh [dir]` | mformat makes a FAT volume, the driver works on it, mdir and mcopy say what is there, `fat-fsck.py` says whether it is consistent. Run by `check.sh`; skips without mtools. |
+| `fat-fsck.py <image>` | An independent consistency check of a FAT volume - lost and cross-linked clusters, chains against sizes, "..", orphaned long names. The boot gate runs it on the volume the guest left behind. `--dirty` overwrites what follows each directory's end marker. |
 | `verify-gui-torture.sh [dir]` | The GUI torture on three seeds, threads included. |
 | `verify-host-sanitized.sh` | The CI "clang Debug" job as CI runs it - ASan and UBSan, its own build directory. For what only a sanitizer sees. |
 

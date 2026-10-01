@@ -143,6 +143,13 @@ do_tests() {
     # The GUI's too (C7): the thread phase is the only thing that can see its
     # lock go missing, short of the nightly's ThreadSanitizer.
     "./$d/vibeos_gui_torture" 1 300 4 >/dev/null 2>&1 || t=1
+    # The FAT writer against somebody else's reader (docs/abi/ L1 step 4): the
+    # host tests format their own volume, so they can only say the writer and
+    # the reader agree with each other. Skips, and says so, without mtools.
+    local fm
+    fm="$(bash scripts/dev/verify-fat-mtools.sh "$d" | tail -1)"
+    echo "$fm"
+    case "$fm" in fat-mtools=ok*|fat-mtools=skip*) ;; *) t=1 ;; esac
     if [ "$k" -eq 0 ] && [ "$b" -eq 0 ] && [ "$t" -eq 0 ]; then
         echo "host-tests=pass"
     else
