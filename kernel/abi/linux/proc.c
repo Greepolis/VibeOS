@@ -644,7 +644,22 @@ static long linux_sys_execve(ks_regs_t *frame, uint64_t path_uptr,
      * shell that runs ./configure after cd'ing into a directory depends on it.
      * argv[0] stays what the caller wrote: BusyBox decides which applet it is
      * from that name, not from where the file was. */
-    {
+    if (linux_is_proc_self_exe((uint64_t)(uint32_t)LINUX_AT_FDCWD, path_uptr) &&
+        ks_current() >= 0 && ks_image(ks_current())->exe_path[0] != 0) {
+        /* "Run the program I am." There is no /proc, and this is the one name
+         * in it a program cannot do without: BusyBox's shell runs every applet
+         * that is not built into it - sort, sed, tar, awk - by executing
+         * /proc/self/exe under the applet's name. Until docs/abi/ L1 step 8
+         * that was refused as not found, and the shell fell back to a file
+         * called after the applet on its PATH - which exists for four of them.
+         * readlink has answered for this name since A4; execve is the other
+         * half. */
+        const char *self = ks_image(ks_current())->exe_path;
+        for (k = 0; k + 1u < VIBEOS_PATH_MAX && self[k]; k++) {
+            path[k] = self[k];
+        }
+        path[k] = 0;
+    } else {
         vibeos_path_t w;
         long pr = linux_walk_at((uint64_t)(uint32_t)LINUX_AT_FDCWD, path_uptr, 0u, &w);
         if (pr != 0) {

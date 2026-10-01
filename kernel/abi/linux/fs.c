@@ -267,7 +267,7 @@ long linux_walk_at_empty(uint64_t dirfd, uint64_t upath, uint64_t atflags, uint3
 /* Is this path /proc/self/exe? /proc does not exist, so the question is asked
  * of the path as written, made absolute - "self/exe" from /proc and
  * "/proc/./self/exe" are the one programs usually ask. */
-static int linux_is_proc_self_exe(uint64_t dirfd, uint64_t upath) {
+int linux_is_proc_self_exe(uint64_t dirfd, uint64_t upath) {
     char raw[VIBEOS_PATH_MAX + 1u];
     char base[VIBEOS_PATH_MAX], root[VIBEOS_PATH_MAX], abs[VIBEOS_PATH_MAX];
     const char *want = "/proc/self/exe";

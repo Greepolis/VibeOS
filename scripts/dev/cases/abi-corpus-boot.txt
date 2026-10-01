@@ -1,0 +1,17 @@
+# The corpus at boot (docs/abi/ L1 step 8): tests/corpus/run-l1.sh runs fifteen
+# workloads in the guest and the gate compares every line with what the same
+# script printed on Linux (tests/corpus/l1-expected.txt).
+#
+#  1. execve refuses /proc/self/exe, as it did before the step. BusyBox's shell
+#     runs every applet that is not built into it by that name - `sh` itself
+#     among them, so `sh /corpus/run.sh` is "not found" and the script never
+#     starts. Expect corpus_did_not_finish.
+#
+# Target source: kernel/abi/linux/proc.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/proc.c scripts/dev/cases/abi-corpus-boot.txt
+
+### execve refuses /proc/self/exe
+--- old
+    if (linux_is_proc_self_exe((uint64_t)(uint32_t)LINUX_AT_FDCWD, path_uptr) &&
++++ new
+    if (0 && linux_is_proc_self_exe((uint64_t)(uint32_t)LINUX_AT_FDCWD, path_uptr) &&

@@ -75,5 +75,8 @@ uint64_t linux_dev_of(const vibeos_fsmount_t *mnt);
 long linux_sys_openat(uint64_t dirfd, uint64_t path_uptr, uint64_t flags, uint64_t mode);
 uint32_t linux_umask(void);
 long linux_rmdir_at(uint64_t dirfd, uint64_t path_uptr);
+/* Is this path /proc/self/exe, as written or made absolute? There is no /proc;
+ * the one name in it programs depend on is answered by readlink and by execve. */
+int linux_is_proc_self_exe(uint64_t dirfd, uint64_t upath);
 
 #endif
