@@ -308,6 +308,31 @@ see: the string *is* in the gate's source, so a grep for it says it is covered.
 And the program that wrote the file said "written" without looking at what
 write returned.
 
+**Compare with what Linux printed, not with what you expect.** The corpus
+script (`tests/corpus/run-l1.sh`) runs under the same BusyBox on Linux and in
+the guest, and the gate compares the two outputs line for line. Nobody chose a
+marker. On its first run that found four defects none of which was in a
+syscall the phase had written: execve refusing `/proc/self/exe`, fork leaving
+the child with another program's path, a 16 KiB stack, FAT files that were not
+executable. A sabotaged `rename` comes back as exactly the three workloads that
+move files. To refresh the expectation, run `scripts/dev/corpus-expect.sh`; do
+not edit the file.
+
+**Fork copied one field of the image.** `ks_fork_regs` set the child's entry
+point and left the rest of `vibeos_image_t` - the path the program was started
+from above all - as the slot's last tenant had it. readlink of
+`/proc/self/exe` in a forked child had been answering with the name of a
+program that had exited, for as long as it existed, and nothing asked. This is
+`interp_base` again, to the letter; the fix is to copy the structure and keep
+the one field that must differ, not to add the next field to the list.
+
+**"Absent" has to be in the verdict, or it is a pass.** The gate accepts a
+corpus program that is not staged, because a plain build does not build SQLite.
+The first green boot after that had all three third-party workloads absent -
+they were on the volume, and `[ -x ]` said no - and it was seen only because
+the verdict line says `corpus_absent=`. A skip that is allowed must be printed
+where the result is read.
+
 **`st_dev` was 0 for every filesystem.** `cp` and `mv` compare st_dev and
 st_ino to refuse copying a file onto itself, so a file in /tmp and one on the
 boot volume with equal inode numbers were the same file. Nothing failed,
@@ -1143,6 +1168,13 @@ step 7: the console is a terminal, so ash prints its prompt, switches to raw
 mode and reads the injected script a key at a time, echoing each itself. In the
 serial log a typed command is therefore a run of one-character writes on one
 physical line, and a command's output starts on the next.
+
+The corpus (docs/abi/ L1 step 8): fifteen workloads run by
+`/corpus/run.sh` in the guest, compared with `tests/corpus/l1-expected.txt`.
+SQLite and Lua are staged only if `scripts/dev/corpus-build.sh` has been run
+for the build directory; otherwise the verdict carries `corpus_absent=...`.
+LTP tests are run by hand with `scripts/dev/ltp-run.sh` and all break in their
+harness until L3.
 
 The GUI is **not** gated - `screenshot.py` is run by hand.
 

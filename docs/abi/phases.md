@@ -888,6 +888,92 @@ true to report before they are worth a row, so L1 builds that first:
   terminal and no /dev/tty to name it; a program that dies in raw mode leaves
   the next one in it, as on a real terminal, and nothing here resets it.
 
+**Step 8 (2026-10-01): done, except LTP, which waits for L3.**
+
+- **The corpus runs on VibeOS and is compared with Linux.**
+  `tests/corpus/run-l1.sh` runs fifteen workloads - twelve of BusyBox's (the
+  shell, ls, cp/mv/rm, find and grep, grep -r, tar, sort/sed/awk, sed -i,
+  touch/chmod/ln/stat, mkdir/rmdir, a pipeline, mv), SQLite on a file and in
+  memory, and a Lua script - and prints every line of every answer tagged with
+  the workload's name. `scripts/dev/corpus-expect.sh` runs the same script
+  under the same BusyBox on Linux and keeps what it printed
+  (`tests/corpus/l1-expected.txt`, 100 lines). The boot gate stages the script
+  on the boot volume, the self-test's shell runs it in `/tmp`, and the gate
+  compares the two line for line: `corpus_answers_differ:<workloads>`,
+  `corpus_did_not_finish`. All fifteen match.
+- **The oracle is Linux.** Nobody wrote down what `ls -la` or `tar tf` should
+  print; the commands are shaped so that what two machines may differ in - the
+  date, the owner's name, a directory's size, the order it lists in - is not in
+  the answer, and everything left has to be identical. The nightly re-runs the
+  script on its own Linux first (`corpus-expect.sh --check`), so a BusyBox that
+  starts answering differently is named before the boot is compared with a
+  stale file.
+- **SQLite and Lua** are staged when `corpus-build.sh` has built them, which a
+  plain build does not do. Without them their workloads answer "absent", which
+  the gate accepts and *says* (`corpus_absent=` on the verdict line); with
+  `VIBEOS_SMOKE_CORPUS=require`, which the nightly's corpus job sets, absent is
+  a failure. `sqlite3` makes a database, indexes it, vacuums it, and a second
+  process reopens it and finds the first one's rows - record locks, pread and
+  pwrite, fsync, truncate - with no syscall missing.
+- **What running real programs found**, none of it in the syscalls this step
+  set out to prove:
+  - *`execve` of `/proc/self/exe`.* BusyBox's shell runs every applet not built
+    into it by executing "the program I am" under the applet's name. That was
+    refused as not found, the shell fell back to a file called after the applet
+    on its PATH, and four such files had been staged - which is why `cat` and
+    `ls` worked and `sort`, `sed`, `tar` and `awk` never could have. `readlink`
+    has answered for that name since A4; `execve` does now.
+  - *A forked child did not know what program it was.* Fork copied the image's
+    entry point and nothing else of it, so the path it was started from - what
+    `/proc/self/exe` answers - was the slot's last tenant's. With the fix above
+    the shell's child executed "itself" and started the thread tests, which
+    forked children that did the same: the boot did not end. The whole image
+    is copied now.
+  - *The user stack was sixteen kilobytes and did not grow.* BusyBox's `sed`
+    has a function with an 18 KiB frame; every workload prints through `sed`,
+    so every workload ended in a segmentation fault. 256 KiB, mapped at exec.
+    Growth on demand is L3's.
+  - *Files on FAT were not executable.* Reported 0644 where Linux reports a FAT
+    volume's files 0755; `exec` never asked, and the script's `[ -x ]` did - so
+    SQLite and Lua were on the volume, judged not runnable, and reported
+    absent. This one was only visible because "absent" is printed in the
+    verdict: the boot was green.
+  - `/dev/null` does not exist (L2, with `/proc` and `/etc`); the script does
+    not use it.
+- **LTP is staged and run, and does not run yet.** `scripts/dev/ltp-run.sh`
+  stages any of the 1,530 built tests on the boot volume, runs them after the
+  workloads and reads each one's verdict out of the log. Every one is
+  "broken" before its first check: LTP's harness keeps its results in a page
+  shared between the test and the child that runs it, mapped from a file -
+  `mmap(MAP_SHARED)` of a descriptor - and file-backed mappings are L3's (as
+  is keeping a shared page shared across fork). None of the built tests uses
+  LTP's older harness, which did not need it. So L1's 416 tests are an oracle
+  that exists and cannot be consulted until L3; what proves L1 until then is
+  the corpus above and the handlers' host tests. Recorded under L3, which now
+  owes L1 that run.
+- **Sabotage**: five cases at boot, all red. execve refusing
+  `/proc/self/exe` is `corpus_did_not_finish` - the shell cannot start `sh`
+  itself; a `rename` that reports success and does nothing is
+  `corpus_answers_differ:bb-cp-mv-rm+bb-sed-inplace+bb-mv`, exactly the three
+  workloads that move files; fork copying only the entry point is a boot that
+  never ends; a four-page stack is 23 ring-3 faults; a self-test that does not
+  run the script is `corpus_did_not_finish`.
+- **One boot in eighteen failed, with M-070's signature** - the open
+  swap-slot double release under the reclaim load - and for the first time
+  with that finding's instrumentation in the log: init killed on a swapped-out
+  entry whose slot a swap-in in another process had already given back. Not
+  this step's defect and not chased here; the evidence and what it narrows are
+  in the tracker under M-070. What this step may have changed is how often:
+  sixty more anonymous pages per process is sixty more for reclaim to take.
+  Twelve boots of twelve were clean afterwards.
+
+**L1 is closed** as far as it can be without L3: the registry stands at 124
+done, 20 partial, 146 missing; 23 of the corpus's 25 workloads have nothing
+missing, and fifteen of them are run and compared on every boot. Open, and
+written where they belong: LTP (L3); `mknod` of a FIFO, `renameat2`'s EXCHANGE,
+`openat2`'s RESOLVE flags, `ioctl`'s ISIG and TIME (L1 partials nothing has
+asked for yet); a description that does not follow its file across a rename.
+
 ### L2. Processes, credentials and time (47)
 
 Sleeping and timers (`nanosleep`, `clock_nanosleep`, `alarm`, `setitimer`,
@@ -914,8 +1000,15 @@ File-backed mappings - private and shared - through the page cache, `MAP_FIXED`,
 This is the phase that makes **glibc** possible: its dynamic loader maps
 libraries with `MAP_FIXED`.
 
+A user stack that grows: a fault just below it maps a page, where today 256 KiB
+are mapped at exec because BusyBox's `sed` needed more than the sixteen there
+were (L1 step 8).
+
 **Programs:** the corpus rebuilt against glibc, dynamically linked; `sqlite3`
-with memory-mapped I/O; `lua`.
+with memory-mapped I/O; `lua`. **And LTP, for every phase before this one**:
+its harness maps a file `MAP_SHARED` for its results and needs that page to
+stay shared across fork, so not one of its tests can start until this phase.
+L1's 416 are the first owed (`scripts/dev/ltp-run.sh`).
 
 ### L4. Event loops (21)
 

@@ -16,11 +16,11 @@ come out ready.
 
 | | |
 | --- | --- |
-| Workloads | 25, of which ready: 13 |
+| Workloads | 25, of which ready: 23 |
 | Distinct syscalls asked for | 80 |
-| ... done | 41 |
-| ... partial | 16: `clone`, `futex`, `getcwd`, `getdents64`, `ioctl`, `mmap`, `open`, `openat`, `prlimit64`, `readv`, `rseq`, `sendfile`, `setgid`, `setuid`, `uname`, `writev` |
-| ... missing or deferred | 23 |
+| ... done | 66 |
+| ... partial | 11: `clone`, `futex`, `ioctl`, `mmap`, `prlimit64`, `readv`, `rseq`, `setgid`, `setuid`, `uname`, `writev` |
+| ... missing or deferred | 3 |
 | ... refused (answered by decision) | 0 |
 
 ## Without a full answer, by phase - the order to write them in
@@ -28,31 +28,6 @@ come out ready.
 | Phase | Syscall | State | Asked for by |
 | --- | --- | --- | --- |
 | L1 - files and paths | `ioctl` | partial | 20: bb-disk, bb-find-grep, bb-grep-r, bb-identity, bb-ls, bb-metadata, bb-pipeline, bb-ps, bb-sh-script, bb-tar, bb-time, lua-script, musl-dynamic, musl-hello, musl-pie, musl-signal, musl-tfork, musl-threads, sqlite-file, sqlite-memory |
-| L1 - files and paths | `openat` | partial | 15: bb-cp-mv-rm, bb-dd, bb-disk, bb-find-grep, bb-grep-r, bb-identity, bb-ls, bb-metadata, bb-mkdir-rm, bb-ps, bb-sed-inplace, bb-sh-script, bb-tar, bb-text, bb-time |
-| L1 - files and paths | `getdents64` | partial | 8: bb-cp-mv-rm, bb-disk, bb-find-grep, bb-grep-r, bb-ls, bb-mkdir-rm, bb-ps, bb-tar |
-| L1 - files and paths | `fcntl` | missing | 5: bb-sed-inplace, bb-sh-script, bb-time, sqlite-file, sqlite-memory |
-| L1 - files and paths | `access` | missing | 4: bb-mkdir-rm, bb-time, sqlite-file, sqlite-memory |
-| L1 - files and paths | `readlink` | missing | 4: bb-cp-mv-rm, bb-ls, bb-metadata, bb-tar |
-| L1 - files and paths | `open` | partial | 3: lua-script, sqlite-file, sqlite-memory |
-| L1 - files and paths | `sendfile` | partial | 3: bb-cp-mv-rm, bb-sh-script, bb-tar |
-| L1 - files and paths | `symlink` | missing | 3: bb-cp-mv-rm, bb-metadata, bb-tar |
-| L1 - files and paths | `umask` | missing | 3: bb-cp-mv-rm, bb-mkdir-rm, bb-tar |
-| L1 - files and paths | `utimensat` | missing | 3: bb-cp-mv-rm, bb-metadata, bb-tar |
-| L1 - files and paths | `chmod` | missing | 2: bb-cp-mv-rm, bb-metadata |
-| L1 - files and paths | `chown` | missing | 2: bb-cp-mv-rm, bb-tar |
-| L1 - files and paths | `pread64` | missing | 2: bb-time, sqlite-file |
-| L1 - files and paths | `rename` | missing | 2: bb-cp-mv-rm, bb-sed-inplace |
-| L1 - files and paths | `rmdir` | missing | 2: bb-cp-mv-rm, bb-mkdir-rm |
-| L1 - files and paths | `stat` | missing | 2: sqlite-file, sqlite-memory |
-| L1 - files and paths | `chdir` | missing | 1: bb-tar |
-| L1 - files and paths | `fchmod` | missing | 1: bb-sed-inplace |
-| L1 - files and paths | `fchown` | missing | 1: bb-sed-inplace |
-| L1 - files and paths | `fsync` | missing | 1: sqlite-file |
-| L1 - files and paths | `getcwd` | partial | 1: sqlite-file |
-| L1 - files and paths | `lchown` | missing | 1: bb-cp-mv-rm |
-| L1 - files and paths | `lstat` | missing | 1: sqlite-file |
-| L1 - files and paths | `pwrite64` | missing | 1: sqlite-file |
-| L1 - files and paths | `statfs` | missing | 1: bb-disk |
 | L2 - processes, credentials, time | `prlimit64` | partial | 16: bb-cp-mv-rm, bb-dd, bb-disk, bb-find-grep, bb-grep-r, bb-identity, bb-ls, bb-metadata, bb-mkdir-rm, bb-pipeline, bb-ps, bb-sed-inplace, bb-sh-script, bb-tar, bb-text, bb-time |
 | L2 - processes, credentials, time | `setgid` | partial | 16: bb-cp-mv-rm, bb-dd, bb-disk, bb-find-grep, bb-grep-r, bb-identity, bb-ls, bb-metadata, bb-mkdir-rm, bb-pipeline, bb-ps, bb-sed-inplace, bb-sh-script, bb-tar, bb-text, bb-time |
 | L2 - processes, credentials, time | `setuid` | partial | 16: bb-cp-mv-rm, bb-dd, bb-disk, bb-find-grep, bb-grep-r, bb-identity, bb-ls, bb-metadata, bb-mkdir-rm, bb-pipeline, bb-ps, bb-sed-inplace, bb-sh-script, bb-tar, bb-text, bb-time |
@@ -71,31 +46,31 @@ come out ready.
 
 | Workload | Asks for | Done | Partial | Missing |
 | --- | --- | --- | --- | --- |
-| `bb-cp-mv-rm` | 40 | 22 | `clone` `getdents64` `openat` `prlimit64` `rseq` `sendfile` `setgid` `setuid` `uname` | `chmod` `chown` `lchown` `readlink` `rename` `rmdir` `symlink` `umask` `utimensat` |
-| `bb-dd` | 24 | 18 | `mmap` `openat` `prlimit64` `rseq` `setgid` `setuid` | - |
-| `bb-disk` | 32 | 22 | `clone` `getdents64` `ioctl` `openat` `prlimit64` `rseq` `setgid` `setuid` `uname` | `statfs` |
-| `bb-find-grep` | 34 | 25 | `clone` `getdents64` `ioctl` `openat` `prlimit64` `rseq` `setgid` `setuid` `uname` | - |
-| `bb-grep-r` | 24 | 17 | `getdents64` `ioctl` `openat` `prlimit64` `rseq` `setgid` `setuid` | - |
-| `bb-identity` | 33 | 24 | `clone` `ioctl` `openat` `prlimit64` `rseq` `setgid` `setuid` `uname` | `getgroups` |
-| `bb-ls` | 26 | 18 | `getdents64` `ioctl` `openat` `prlimit64` `rseq` `setgid` `setuid` | `readlink` |
-| `bb-metadata` | 35 | 23 | `clone` `ioctl` `openat` `prlimit64` `rseq` `setgid` `setuid` `uname` | `chmod` `readlink` `symlink` `utimensat` |
-| `bb-mkdir-rm` | 32 | 21 | `clone` `getdents64` `openat` `prlimit64` `rseq` `setgid` `setuid` `uname` | `access` `rmdir` `umask` |
+| `bb-cp-mv-rm` | 40 | 34 | `clone` `prlimit64` `rseq` `setgid` `setuid` `uname` | - |
+| `bb-dd` | 24 | 19 | `mmap` `prlimit64` `rseq` `setgid` `setuid` | - |
+| `bb-disk` | 32 | 25 | `clone` `ioctl` `prlimit64` `rseq` `setgid` `setuid` `uname` | - |
+| `bb-find-grep` | 34 | 27 | `clone` `ioctl` `prlimit64` `rseq` `setgid` `setuid` `uname` | - |
+| `bb-grep-r` | 24 | 19 | `ioctl` `prlimit64` `rseq` `setgid` `setuid` | - |
+| `bb-identity` | 33 | 25 | `clone` `ioctl` `prlimit64` `rseq` `setgid` `setuid` `uname` | `getgroups` |
+| `bb-ls` | 26 | 21 | `ioctl` `prlimit64` `rseq` `setgid` `setuid` | - |
+| `bb-metadata` | 35 | 28 | `clone` `ioctl` `prlimit64` `rseq` `setgid` `setuid` `uname` | - |
+| `bb-mkdir-rm` | 32 | 26 | `clone` `prlimit64` `rseq` `setgid` `setuid` `uname` | - |
 | `bb-pipeline` | 32 | 25 | `clone` `ioctl` `prlimit64` `rseq` `setgid` `setuid` `uname` | - |
-| `bb-ps` | 24 | 17 | `getdents64` `ioctl` `openat` `prlimit64` `rseq` `setgid` `setuid` | - |
-| `bb-sed-inplace` | 26 | 17 | `openat` `prlimit64` `rseq` `setgid` `setuid` | `fchmod` `fchown` `fcntl` `rename` |
-| `bb-sh-script` | 34 | 24 | `clone` `ioctl` `openat` `prlimit64` `rseq` `sendfile` `setgid` `setuid` `uname` | `fcntl` |
-| `bb-tar` | 41 | 25 | `clone` `getdents64` `ioctl` `openat` `prlimit64` `rseq` `sendfile` `setgid` `setuid` `uname` | `chdir` `chown` `readlink` `symlink` `umask` `utimensat` |
-| `bb-text` | 32 | 25 | `clone` `openat` `prlimit64` `rseq` `setgid` `setuid` `uname` | - |
-| `bb-time` | 37 | 24 | `clone` `ioctl` `openat` `prlimit64` `rseq` `setgid` `setuid` `uname` | `access` `alarm` `clock_nanosleep` `fcntl` `pread64` |
-| `lua-script` | 16 | 11 | `ioctl` `mmap` `open` `readv` `writev` | - |
+| `bb-ps` | 24 | 19 | `ioctl` `prlimit64` `rseq` `setgid` `setuid` | - |
+| `bb-sed-inplace` | 26 | 22 | `prlimit64` `rseq` `setgid` `setuid` | - |
+| `bb-sh-script` | 34 | 27 | `clone` `ioctl` `prlimit64` `rseq` `setgid` `setuid` `uname` | - |
+| `bb-tar` | 41 | 34 | `clone` `ioctl` `prlimit64` `rseq` `setgid` `setuid` `uname` | - |
+| `bb-text` | 32 | 26 | `clone` `prlimit64` `rseq` `setgid` `setuid` `uname` | - |
+| `bb-time` | 37 | 28 | `clone` `ioctl` `prlimit64` `rseq` `setgid` `setuid` `uname` | `alarm` `clock_nanosleep` |
+| `lua-script` | 16 | 12 | `ioctl` `mmap` `readv` `writev` | - |
 | `musl-dynamic` | 9 | 6 | `ioctl` `mmap` `writev` | - |
 | `musl-hello` | 9 | 6 | `ioctl` `mmap` `writev` | - |
 | `musl-pie` | 6 | 4 | `ioctl` `writev` | - |
 | `musl-signal` | 7 | 5 | `ioctl` `writev` | - |
 | `musl-tfork` | 16 | 11 | `clone` `futex` `ioctl` `mmap` `writev` | - |
 | `musl-threads` | 25 | 20 | `clone` `futex` `ioctl` `mmap` `writev` | - |
-| `sqlite-file` | 27 | 15 | `getcwd` `ioctl` `mmap` `open` `writev` | `access` `fcntl` `fsync` `lstat` `pread64` `pwrite64` `stat` |
-| `sqlite-memory` | 18 | 11 | `ioctl` `mmap` `open` `writev` | `access` `fcntl` `stat` |
+| `sqlite-file` | 27 | 24 | `ioctl` `mmap` `writev` | - |
+| `sqlite-memory` | 18 | 15 | `ioctl` `mmap` `writev` | - |
 
 ## The LTP oracle
 
@@ -109,13 +84,13 @@ that starts with no syscall's (for example `abort01`, `cacheflush01`, `confstr01
 
 | Phase | Syscalls in the phase | with LTP tests | tests |
 | --- | --- | --- | --- |
-| done | 55 | 53 | 206 |
-| L1 - files and paths | 78 | 73 | 416 |
+| done | 124 | 117 | 549 |
+| L1 - files and paths | 8 | 8 | 71 |
 | L2 - processes, credentials, time | 50 | 47 | 188 |
 | L3 - memory | 11 | 11 | 66 |
 | L4 - event loops | 21 | 16 | 50 |
 | L5 - sockets | 13 | 13 | 36 |
-| L6 - threads and scheduling | 22 | 21 | 59 |
+| L6 - threads and scheduling | 23 | 22 | 61 |
 | L7 - IPC | 21 | 19 | 81 |
 | L8 - system administration | 12 | 12 | 36 |
 | L9 - security | 6 | 3 | 7 |
