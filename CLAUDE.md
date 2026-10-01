@@ -373,6 +373,14 @@ into the middle of that array to prove the kernel can store into an untouched
 stack page was storing into a page ring 3 had touched a microsecond earlier,
 and the sabotage that should have broken it went NOT RED.
 
+**A build that has already compiled a file does not warn about it again.**
+`check.sh` printed `warnings=1` and, run again a minute later, `warnings=0` with
+nothing changed: the object was up to date, so the compiler never ran and the
+warning never repeated. It was an implicit declaration in a test - the kind
+clang rejects and the kind that returned a truncated pointer from `fdopen` the
+same day. The count that matters is the first one after the edit; a later zero
+is silence, not a pass. Touch the file, or read the first run.
+
 **`st_dev` was 0 for every filesystem.** `cp` and `mv` compare st_dev and
 st_ino to refuse copying a file onto itself, so a file in /tmp and one on the
 boot volume with equal inode numbers were the same file. Nothing failed,
@@ -408,6 +416,16 @@ region nothing maps, from ring 3 or from a kernel store, and
 `hw_user_range_why` accepts such an address for the same reason. A new path
 that walks page tables to decide whether user memory is "there" has to know
 this, as it had to learn copy-on-write and swap.
+
+**A shared page of a file has three kinds of holder, and only two are
+mappings.** Since docs/abi/ L3 a `MAP_SHARED` mapping of a tmpfs file maps the
+filesystem's own page: the filesystem holds one reference to the frame, each
+mapping one, and `share_page` hands the page out with one more that the mapper
+gives back. So such a frame has more owners than reverse-map holders, on
+purpose - which is why page-out and compaction refuse it without being told
+(`owners != holders`) - and tmpfs's `page_free` is a put, not a free. The mark
+in the entry (`VIBEOS_PTE_SHARED`, bit 53) is what fork reads; anything new
+that rebuilds an entry has to carry it or say why not, as page-out does.
 
 **Two user windows exist.** VibeOS programs link at `0x8000000000`; Linux
 programs link at `0x400000`, inside the kernel's identity map. The low window's

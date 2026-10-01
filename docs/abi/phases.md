@@ -1096,6 +1096,49 @@ Six steps, in the order that pays L1's debt first:
   mapped that nobody touched) removes what raised the rate; it does not
   explain the defect.
 
+**Step 2 (2026-10-01): done.**
+
+- **A shared mapping stays shared.** `MAP_SHARED` marks the page
+  (`VIBEOS_PROT_SHARED`, bit 53 of the entry), and a fork maps the same frame
+  into the child with the access the parent has, instead of making both sides
+  copy-on-write. A store by either is seen by both, before the fork or after.
+  mprotect changes the access and leaves the kind; a read-only shared page
+  refuses a store rather than copying.
+- **A shared mapping of a file is the file.** The filesystem hands out its own
+  page (`share_page`, a new optional operation; tmpfs has it) and that page is
+  what is mapped: a store through the mapping is read back by `read`, a `write`
+  is seen through the mapping, two mappings of one file are one page. A hole is
+  given a page. The page comes held - the reference is taken inside the
+  filesystem's lock, where it can still vouch for it - and each mapping holds
+  it too, so a file truncated or unlinked under a mapping leaves the mapping
+  its page, and the page is freed when the last holder lets go.
+- **Shared and writable needs a descriptor that can write** (EACCES); shared
+  and read-only does not, and neither does private and writable.
+- **`msync`** validates and returns: there is no second copy to write back.
+  EINVAL for an address that is not a page's or flags that make no sense,
+  ENOMEM for a range with a hole in it.
+- **A shared page is not paged out.** An entry in swap has nowhere to say
+  "shared", and a page that came back without the mark would be private from
+  then on (`swap_refused_shared`).
+- **What is not done, and said**: a shared mapping of a file on a filesystem
+  that keeps no pages - FAT - is ENODEV, and is the registry's `mmap` gap. Only
+  the pages holding some of the file are mapped; one past the end is absent,
+  and touching it is SIGSEGV where Linux says SIGBUS. A mapping does not follow
+  its file: grown after it was mapped, the new pages are not in the mapping;
+  cut and grown again, the mapping still has the old page. mprotect will make
+  writable a shared mapping made from a read-only descriptor.
+- **The layering check gained one exception, written into it**: the hold on a
+  file's page is a frame reference taken outside `kernel/mm`, by
+  `hw_tmpfs_page_hold` and nothing else.
+- **At boot** the self-test maps two anonymous pages and a page of a file on
+  /tmp shared, forks, and the child stores into each: the parent has to see the
+  stores and `pread` has to return the file's (`shared_mapping_selftest_failed`);
+  and the fork has to have handed shared pages on (`fork_never_kept_a_shared_page`).
+- **Sabotage**: `abi-mmap-shared.txt` (5), `mm-shared.txt` (4),
+  `fs-tmpfs-share.txt` (3) against the host tests, `arch-shared-boot.txt` and
+  `arch-shared-leaf-boot.txt` against the boot; all red. 24 boots of 24 clean.
+- **LTP**: its harness maps its results page and gets further - every test now stops one step later, at `tst_memutils.c:94: Failed to open FILE '/proc/meminfo'` (eight tests tried). That is step 3's first item, not a mapping's.
+
 **Step 5 (2026-10-01), done ahead of its turn.** Taken before step 2 because of
 what step 1 found: the boot gate had become flaky, and the pages mapped at exec
 that nobody touched were what had made it so.
