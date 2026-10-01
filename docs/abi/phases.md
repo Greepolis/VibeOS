@@ -1000,9 +1000,7 @@ File-backed mappings - private and shared - through the page cache, `MAP_FIXED`,
 This is the phase that makes **glibc** possible: its dynamic loader maps
 libraries with `MAP_FIXED`.
 
-A user stack that grows: a fault just below it maps a page, where today 256 KiB
-are mapped at exec because BusyBox's `sed` needed more than the sixteen there
-were (L1 step 8).
+A user stack that grows: a fault below it maps a page (step 5, done second).
 
 **Programs:** the corpus rebuilt against glibc, dynamically linked; `sqlite3`
 with memory-mapped I/O; `lua`. **And LTP, for every phase before this one**:
@@ -1097,6 +1095,56 @@ Six steps, in the order that pays L1's debt first:
   phase's predecessor that made it so. Step 5 (a stack that grows, no pages
   mapped that nobody touched) removes what raised the rate; it does not
   explain the defect.
+
+**Step 5 (2026-10-01), done ahead of its turn.** Taken before step 2 because of
+what step 1 found: the boot gate had become flaky, and the pages mapped at exec
+that nobody touched were what had made it so.
+
+- **The stack grows.** Four pages are mapped at exec, as before L1 step 8, and
+  the two megabytes below the stack's top are one region the process has from
+  the start. A touch of a page in it that nothing maps is given a zeroed page
+  by the page fault (`hw_stack_grow`), whichever side the touch comes from -
+  ring 3, or the kernel storing a syscall's result into a buffer on the stack.
+  Any address in the region grows it, not only one near the stack pointer:
+  that is what Linux has done since it dropped the stack-pointer test.
+- **The region list is asked**, not only the address. A program that unmapped
+  part of its stack, or took its write permission away, is not given a page
+  there. The region's lowest page is never mapped and below it is nothing of
+  the stack's, so running off the end is a fault.
+- **The range check knows.** A syscall's buffer is judged before the handler
+  runs, and a page of the stack nobody has touched is the process's to use:
+  refused, a `read()` into a large buffer on the stack - where programs keep
+  them - would be EFAULT for every page not happened upon first.
+- **Under the process's mm lock, which is tried and not waited for**: this is
+  a fault handler, a thread of the same process may be forking on another
+  core, and returning to fault again is how it waits. The frame comes from the
+  privileged door, as a page coming back from swap does: the stack was
+  promised at exec, and it is bounded.
+- **`RLIMIT_STACK`** reports the two megabytes; it reported the four pages,
+  then the sixty-four.
+- **At boot** the ring-3 self-test runs a function with a hundred-kilobyte
+  frame, has the kernel `read()` into a page a quarter of a megabyte below it,
+  and forks a child that stores into the guard page and must die of SIGSEGV
+  (`stack_selftest_failed`). The kernel counts the pages it gave
+  (`stack_grown`), and a boot in which it gave none fails (`stack_never_grew`):
+  the corpus prints through a `sed` that needs them.
+- **The gate's count of deliberate faults is two now**, and each is matched by
+  the address it touched - null for svc-crash, the guard page for this - where
+  it used to excuse whichever ring-3 page fault came first. The crash-record
+  check reads every record now and wants svc-crash's among them: it read the
+  first one only, and the first 24-boot run failed four times on a record that
+  correctly named `SELFTEST.ELF`, whenever that child died before svc-crash.
+- **Sabotage**: `arch-stack-boot.txt`, two cases, red. Three went NOT RED
+  first. The compiler probes every page of a large frame on entry, so the
+  `read()` into the middle of the big array wrote into a page ring 3 had
+  already touched - the test reads below the frame now. Widening the address
+  test to include the guard page changed nothing, because the region list
+  refuses it too. And a loop that zeroed the new page was dead code: the
+  allocator hands out nothing but zeroed pages.
+- **What it did to M-070**: 48 boots in two runs, none with its signature (the four that failed were the gate's own crash-record check, above), against three in about sixty before with the stack growing. A boot gives
+  out about sixty stack pages in all, where it mapped sixty per process. The
+  defect is not explained and its instrumentation stays; what changed is how
+  much reclaim has to take that nobody is using.
 
 ### L4. Event loops (21)
 

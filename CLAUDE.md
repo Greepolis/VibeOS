@@ -356,6 +356,23 @@ real. The diagnosis was a field misread. When a line is the evidence, read the
 code that prints it, and when a fix is claimed for an intermittent failure,
 give it a counter that says whether it was ever hit.
 
+**Memory nobody touches is not free, it is what reclaim takes first.** L1 step
+8 fixed a stack overflow by mapping sixty-four pages of stack at exec instead
+of four. Every process then had sixty pages it never used - read-only and
+copy-on-write after any fork, cold, single-owner - and reclaim swapped them out
+by the hundred. An open defect in the swap path (M-070) that had not shown in
+ninety boots showed in one of twenty. The fix for "the program needs more
+stack" was a stack that grows when reached (L3 step 5), not a bigger one mapped
+in advance; when a number is raised to make a failure go away, ask what the
+machine now does with the difference.
+
+**The compiler touches a large frame before your test does.** Ubuntu's gcc
+builds with stack-clash protection, so a function with a hundred-kilobyte
+array probes every page of it on entry. A test that had the kernel `read()`
+into the middle of that array to prove the kernel can store into an untouched
+stack page was storing into a page ring 3 had touched a microsecond earlier,
+and the sabotage that should have broken it went NOT RED.
+
 **`st_dev` was 0 for every filesystem.** `cp` and `mv` compare st_dev and
 st_ino to refuse copying a file onto itself, so a file in /tmp and one on the
 boot volume with equal inode numbers were the same file. Nothing failed,
@@ -383,6 +400,14 @@ handler must accept kernel-mode writes (the kernel writes user buffers with
 CR0.WP set), `hw_user_range_ok` must treat a COW page as writable, and a second
 fork must preserve the COW bit rather than treating the page as plain
 read-only.
+
+**The user stack is two megabytes of which four pages exist.** Exec maps four
+pages below `VIBEOS_HW_USER_STACK_TOP` and one region for the whole growth area;
+`hw_stack_grow` in the page fault gives a zeroed page to any address in that
+region nothing maps, from ring 3 or from a kernel store, and
+`hw_user_range_why` accepts such an address for the same reason. A new path
+that walks page tables to decide whether user memory is "there" has to know
+this, as it had to learn copy-on-write and swap.
 
 **Two user windows exist.** VibeOS programs link at `0x8000000000`; Linux
 programs link at `0x400000`, inside the kernel's identity map. The low window's
