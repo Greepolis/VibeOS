@@ -74,6 +74,19 @@ void vibeos_file_stat_clear(vibeos_file_stat_t *st);
  * and a node without an identity is inode 2, the root's. */
 void vibeos_file_stat_from_node(vibeos_file_stat_t *st, const vibeos_fs_node_t *node);
 
+/* One directory entry, as a directory description hands it out: the name, and
+ * what stat would say of it - the same inode number, and the type in the mode.
+ * What a personality makes of it (Linux's dirent64, a Windows directory
+ * information record) is the personality's. */
+typedef struct {
+    char name[VIBEOS_NAME_MAX + 1u];
+    uint64_t ino;
+    uint32_t mode;       /* VIBEOS_S_IF*, and the permission bits when known */
+} vibeos_dirent_t;
+
+#define VIBEOS_READDIR_END  1   /* no entry at this position or after it       */
+#define VIBEOS_READDIR_SKIP 2   /* none at this position; the next may have one */
+
 /* One file type. Every entry may be NULL, and the caller answers for a missing
  * one with what Linux answers: EINVAL for read/write, ESPIPE for seek and the
  * positional calls, ENOTTY for ioctl, ENOTDIR for getdents, EINVAL for truncate
@@ -86,7 +99,12 @@ typedef struct vibeos_file_ops {
     long (*seek)(vibeos_file_t *f, int64_t off, int whence);
     int (*stat)(vibeos_file_t *f, vibeos_file_stat_t *out);
     long (*ioctl)(vibeos_file_t *f, uint64_t req, uint64_t arg);
-    long (*getdents)(vibeos_file_t *f, uint64_t ubuf, uint64_t len);
+    /* The entry at `index`, positions counted from 0: "." and ".." first,
+     * whatever the filesystem itself lists. 0 and the entry, VIBEOS_READDIR_END,
+     * VIBEOS_READDIR_SKIP, or a negated errno. The position is the caller's:
+     * the description's `pos`, which lseek moves, so rewinding a directory is
+     * seeking it to 0. */
+    int (*readdir)(vibeos_file_t *f, uint64_t index, vibeos_dirent_t *out);
     /* The last reference went: give back what this description holds. */
     void (*release)(vibeos_file_t *f);
     /* At an offset, leaving the description's own position alone (L1). */
@@ -116,7 +134,6 @@ struct vibeos_file {
     uint64_t node;                /* the filesystem's identity, opaque        */
     uint64_t size;
     int isdir;
-    uint32_t dir_index;
     char path[VIBEOS_FILE_PATH];
     /* Set at the first write through this description, which is when anything
      * cached from the file stops being true (vibeos_files_on_write_back). */

@@ -13,11 +13,6 @@
 #include <stddef.h>
 
 #include "files_internal.h"
-/* getdents64 writes Linux's records: the one operation of this type whose
- * output format is a personality's. Another personality lists a directory
- * through vibeos_fs_list and formats its own. */
-#include "vibeos/linux_layout.h"
-
 static void (*g_on_write_back)(void);
 
 void vibeos_files_on_write_back(void (*fn)(void)) {
@@ -260,56 +255,96 @@ static int regular_sync(vibeos_file_t *f) {
     return vibeos_fs_sync(f->mnt);
 }
 
-/* dirent64 records from the directory the description was opened on. The cursor
- * is the description's, like the offset of a file. */
-static long dir_getdents(vibeos_file_t *f, uint64_t buf, uint64_t len) {
-    uint64_t used = 0;
-    uint32_t records = 0;
+/* A directory's entries by position. The first two are "." and "..", which a
+ * program expects of every directory and only some filesystems list - FAT has
+ * them in every directory but its root - so they are made here and whatever the
+ * filesystem lists under those names is passed over: a position with no entry,
+ * which the caller steps past. After them, position n is the filesystem's
+ * entry n - 2.
+ *
+ * Each entry is looked up for what stat would say of it. The type is why: a
+ * program that walks a tree trusts the type in the entry and does not stat, so
+ * a symbolic link listed as a regular file is followed where it should not be.
+ * Until docs/abi/ L1 step 6 names were cut at 15 bytes and every entry was a
+ * file or a directory with inode 0. */
+static int dir_readdir(vibeos_file_t *f, uint64_t index, vibeos_dirent_t *out) {
+    char path[VIBEOS_PATH_MAX];
+    vibeos_fs_node_t node;
+    vibeos_file_stat_t st;
+    const char *tail = tail_of(f);
+    uint64_t size = 0;
+    uint32_t n = 0, k;
+    int is_dir = 0;
 
-    /* A bounded syscall must not spin forever if a filesystem backend returns
-     * a cyclic directory stream or fails to advance its cursor. */
-    while (records < 256u && f->dir_index < 4096u) {
-        char name[16];
-        int is_dir = 0, n = 0;
-        uint16_t reclen;
-        uint64_t entry_size = 0;
-
-        if (vibeos_fs_list(f->mnt, tail_of(f), f->dir_index, name,
-                           sizeof(name), &entry_size, &is_dir) != 0) {
-            break; /* end of directory */
-        }
-        while (name[n]) {
-            n++;
-        }
-        /* The header, the name and its NUL, rounded up to 8 as Linux does. */
-        reclen = (uint16_t)((offsetof(linux_dirent64_t, d_name) + (uint32_t)n + 1u + 7u) & ~7u);
-        if (used + reclen > len) {
-            break;
-        }
-        {
-            /* Built here and copied out whole (M-052): filling the user's
-             * buffer byte by byte faulted in ring 0 if a sibling unmapped it
-             * after the range check. Room for the longest name `name` holds. */
-            uint64_t rec[(sizeof(linux_dirent64_t) + sizeof(name) + 1u + 7u) / 8u];
-            linux_dirent64_t *d = (linux_dirent64_t *)(void *)rec;
-            int k;
-            for (k = 0; k < (int)(sizeof(rec) / sizeof(rec[0])); k++) {
-                rec[k] = 0;
-            }
-            d->d_reclen = reclen;
-            d->d_type = is_dir ? LINUX_DT_DIR : LINUX_DT_REG;
-            for (k = 0; k < n; k++) {
-                d->d_name[k] = name[k];
-            }
-            if (vibeos_uaccess_copy((void *)(uintptr_t)(buf + used), rec, reclen) != 0) {
-                return (used > 0u) ? (long)used : -VIBEOS_EFAULT;
-            }
-        }
-        used += reclen;
-        f->dir_index++;
-        records++;
+    if (index >= (1u << 20)) {
+        return VIBEOS_READDIR_END;   /* no directory here is this long: a cursor gone wrong */
     }
-    return (long)used;
+    vibeos_file_stat_clear(&st);
+    if (index < 2u) {
+        vibeos_path_t w;
+        out->name[0] = '.';
+        out->name[1] = index ? '.' : 0;
+        out->name[2] = 0;
+        (void)regular_stat(f, &st);
+        if (index == 1u) {
+            /* The parent, which may be on another mount: walked, as a program
+             * naming "dir/.." would have it walked. */
+            while (f->path[n]) {
+                n++;
+            }
+            if (n + 4u <= sizeof(path)) {
+                for (k = 0; k < n; k++) {
+                    path[k] = f->path[k];
+                }
+                path[n] = '/';
+                path[n + 1u] = '.';
+                path[n + 2u] = '.';
+                path[n + 3u] = 0;
+                if (vibeos_path_walk("/", "/", path, 0u, &w) == 0) {
+                    vibeos_file_stat_from_node(&st, &w.node);
+                }
+            }
+        }
+        out->ino = st.ino;
+        out->mode = st.mode;
+        return 0;
+    }
+    if (vibeos_fs_list(f->mnt, tail, (uint32_t)(index - 2u), out->name, sizeof(out->name),
+                       &size, &is_dir) != 0) {
+        return VIBEOS_READDIR_END;
+    }
+    if (out->name[0] == '.' && (out->name[1] == 0 || (out->name[1] == '.' && out->name[2] == 0))) {
+        return VIBEOS_READDIR_SKIP;
+    }
+    out->mode = is_dir ? VIBEOS_S_IFDIR : VIBEOS_S_IFREG;
+    out->ino = 0;
+    while (tail[n]) {
+        n++;
+    }
+    for (k = 0; out->name[k]; k++) {
+    }
+    if (n + 1u + k + 1u <= sizeof(path)) {
+        uint32_t at = 0, i;
+        for (i = 0; i < n; i++) {
+            path[at++] = tail[i];
+        }
+        if (at == 0u || path[at - 1u] != '/') {
+            path[at++] = '/';
+        }
+        for (i = 0; i < k; i++) {
+            path[at++] = out->name[i];
+        }
+        path[at] = 0;
+        if (vibeos_fs_lookup(f->mnt, path, &node) == 0) {
+            vibeos_file_stat_from_node(&st, &node);
+            out->mode = st.mode;
+            out->ino = st.ino;
+        }
+    }
+    if (out->ino == 0u) {
+        out->ino = 2u;   /* an entry that could not be looked up still has to have one */
+    }
+    return 0;
 }
 
 const vibeos_file_ops_t vibeos_fops_regular = {
@@ -332,7 +367,7 @@ const vibeos_file_ops_t vibeos_fops_dir = {
     .name = "dir",
     .seek = regular_seek,
     .stat = regular_stat,
-    .getdents = dir_getdents,
+    .readdir = dir_readdir,
     .sync = dir_sync,
 };
 

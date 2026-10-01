@@ -68,6 +68,12 @@
     X(WRITEV,          "writev",          VIBEOS_CHECK_USER_MEMORY) \
     X(LSEEK,           "lseek",           VIBEOS_CHECK_NONE) \
     X(GETDENTS,        "getdents",        VIBEOS_CHECK_USER_MEMORY) \
+    X(GETDENTS_OLD,    "getdents_old",    VIBEOS_CHECK_USER_MEMORY) \
+    X(FLOCK,           "flock",           VIBEOS_CHECK_NONE) \
+    X(XATTR_SET,       "xattr_set",       VIBEOS_CHECK_USER_MEMORY) \
+    X(XATTR_GET,       "xattr_get",       VIBEOS_CHECK_USER_MEMORY) \
+    X(XATTR_LIST,      "xattr_list",      VIBEOS_CHECK_USER_MEMORY) \
+    X(XATTR_REMOVE,    "xattr_remove",    VIBEOS_CHECK_USER_MEMORY) \
     X(UNLINK,          "unlink",          VIBEOS_CHECK_USER_MEMORY) \
     X(MKDIR,           "mkdir",           VIBEOS_CHECK_USER_MEMORY) \
     X(FSTAT,           "fstat",           VIBEOS_CHECK_USER_MEMORY) \
@@ -100,7 +106,7 @@
     X(DUP,             "dup",             VIBEOS_CHECK_NONE) \
     X(DUP2,            "dup2",            VIBEOS_CHECK_NONE) \
     X(DUP3,            "dup3",            VIBEOS_CHECK_NONE) \
-    X(FCNTL,           "fcntl",           VIBEOS_CHECK_NONE) \
+    X(FCNTL,           "fcntl",           VIBEOS_CHECK_USER_MEMORY) \
     X(CLOSE_RANGE,     "close_range",     VIBEOS_CHECK_NONE) \
     X(PIPE,            "pipe",            VIBEOS_CHECK_USER_MEMORY) \
     X(PIPE2,           "pipe2",           VIBEOS_CHECK_USER_MEMORY) \

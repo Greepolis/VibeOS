@@ -18,6 +18,7 @@
 #include "vibeos/procstate.h"
 #include "vibeos/fdtable.h"
 #include "vibeos/fileops.h"
+#include "vibeos/filelock.h"
 #include "vibeos/linux_layout.h"
 #include "vibeos/pipe.h"
 #include "vibeos/vma.h"

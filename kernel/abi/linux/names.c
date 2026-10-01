@@ -649,6 +649,76 @@ static long linux_sys_fstatfs(uint64_t fd, uint64_t ubuf) {
     return r != 0 ? r : linux_statfs_walked(&w, ubuf);
 }
 
+/* ---- extended attributes --------------------------------------------------------------
+ *
+ * No filesystem here stores them, and the twelve calls say what Linux says of
+ * a filesystem that does not: EOPNOTSUPP to setting, getting and removing one,
+ * and an empty list - which is how `ls -l`, `cp -a` and `tar` find out and
+ * carry on. What Linux refuses before it asks the filesystem is refused first,
+ * in its order: a flag setxattr does not have, a name that is empty or too
+ * long (ERANGE), a value too large (E2BIG), and then the file itself - ENOENT
+ * or EBADF beats "not supported", so a program that mistyped a path is told
+ * that. `how` is the walk's flags for a path, or -1 when `where` is a
+ * descriptor. */
+static long linux_xattr_file(uint64_t where, int how) {
+    vibeos_path_t w;
+    vibeos_file_t *f;
+
+    if (how >= 0) {
+        return linux_walk_at(LINUX_CWD, where, (uint32_t)how, &w);
+    }
+    if (!(f = linux_file_get(where))) {
+        return -VIBEOS_EBADF;
+    }
+    vibeos_file_put(f);
+    return 0;
+}
+
+static long linux_xattr_name(uint64_t name_uptr) {
+    char name[LINUX_XATTR_NAME_MAX + 2];
+    uint32_t n = 0;
+
+    if (ks_copy_user_string(name_uptr, name, (int)sizeof(name)) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    while (name[n]) {
+        n++;
+    }
+    return (n == 0u || n > LINUX_XATTR_NAME_MAX) ? -VIBEOS_ERANGE : 0;
+}
+
+static long linux_xattr_set(uint64_t where, int how, uint64_t name_uptr, uint64_t size,
+                            uint64_t flags) {
+    long r;
+
+    if (flags & ~(uint64_t)(LINUX_XATTR_CREATE | LINUX_XATTR_REPLACE)) {
+        return -VIBEOS_EINVAL;
+    }
+    if ((r = linux_xattr_name(name_uptr)) != 0) {
+        return r;
+    }
+    if (size > LINUX_XATTR_SIZE_MAX) {
+        return -VIBEOS_E2BIG;
+    }
+    r = linux_xattr_file(where, how);
+    return r != 0 ? r : -VIBEOS_EOPNOTSUPP;
+}
+
+/* getxattr and removexattr: a name, then the file, then the refusal. */
+static long linux_xattr_named(uint64_t where, int how, uint64_t name_uptr) {
+    long r = linux_xattr_name(name_uptr);
+
+    if (r == 0) {
+        r = linux_xattr_file(where, how);
+    }
+    return r != 0 ? r : -VIBEOS_EOPNOTSUPP;
+}
+
+/* listxattr: no names, in no bytes. */
+static long linux_xattr_list(uint64_t where, int how) {
+    return linux_xattr_file(where, how);
+}
+
 /* ---- the syscalls this file implements ---------------------------------------
  *
  *   A path argument is not a declared pointer: it is copied in by
@@ -672,6 +742,18 @@ static long linux_sys_fstatfs(uint64_t fd, uint64_t ubuf) {
     X(133, mknod,       MKNOD,       NOPTR, linux_mknod_at(LINUX_CWD, ARG(0), ARG(1))) \
     X(137, statfs,      STATFS,      PTRS(OUT(1, sizeof(linux_statfs_t))), linux_sys_statfs(ARG(0), ARG(1))) \
     X(138, fstatfs,     FSTATFS,     PTRS(OUT(1, sizeof(linux_statfs_t))), linux_sys_fstatfs(ARG(0), ARG(1))) \
+    X(188, setxattr,    XATTR_SET,   NOPTR, linux_xattr_set(ARG(0), 0, ARG(1), ARG(3), ARG(4))) \
+    X(189, lsetxattr,   XATTR_SET,   NOPTR, linux_xattr_set(ARG(0), VIBEOS_PATH_NOFOLLOW, ARG(1), ARG(3), ARG(4))) \
+    X(190, fsetxattr,   XATTR_SET,   NOPTR, linux_xattr_set(ARG(0), -1, ARG(1), ARG(3), ARG(4))) \
+    X(191, getxattr,    XATTR_GET,   NOPTR, linux_xattr_named(ARG(0), 0, ARG(1))) \
+    X(192, lgetxattr,   XATTR_GET,   NOPTR, linux_xattr_named(ARG(0), VIBEOS_PATH_NOFOLLOW, ARG(1))) \
+    X(193, fgetxattr,   XATTR_GET,   NOPTR, linux_xattr_named(ARG(0), -1, ARG(1))) \
+    X(194, listxattr,   XATTR_LIST,  NOPTR, linux_xattr_list(ARG(0), 0)) \
+    X(195, llistxattr,  XATTR_LIST,  NOPTR, linux_xattr_list(ARG(0), VIBEOS_PATH_NOFOLLOW)) \
+    X(196, flistxattr,  XATTR_LIST,  NOPTR, linux_xattr_list(ARG(0), -1)) \
+    X(197, removexattr, XATTR_REMOVE, NOPTR, linux_xattr_named(ARG(0), 0, ARG(1))) \
+    X(198, lremovexattr, XATTR_REMOVE, NOPTR, linux_xattr_named(ARG(0), VIBEOS_PATH_NOFOLLOW, ARG(1))) \
+    X(199, fremovexattr, XATTR_REMOVE, NOPTR, linux_xattr_named(ARG(0), -1, ARG(1))) \
     X(235, utimes,      UTIME,       PTRS(IN_OPT(1, 2 * sizeof(linux_timeval_t))), linux_utimes_at(LINUX_CWD, ARG(0), ARG(1))) \
     X(259, mknodat,     MKNOD,       NOPTR, linux_mknod_at(ARG(0), ARG(1), ARG(2))) \
     X(260, fchownat,    CHOWN,       NOPTR, linux_chown_at(ARG(0), ARG(1), ARG(2), ARG(3), ARG(4))) \

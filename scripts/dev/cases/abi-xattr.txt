@@ -1,0 +1,58 @@
+# Extended attributes (kernel/abi/linux/names.c, docs/abi/ L1 step 6), proved by
+# the handlers' host tests in tests/kernel/linux_abi_tests.c. No filesystem
+# stores them; what is tested is that the refusal is Linux's, in Linux's order.
+#
+# Target source: kernel/abi/linux/names.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/linux/names.c scripts/dev/cases/abi-xattr.txt
+
+### the list of attributes is refused instead of empty
+--- old
+    return linux_xattr_file(where, how);
+}
+
+/* ---- the syscalls this file implements
++++ new
+    long r = linux_xattr_file(where, how);
+    return r != 0 ? r : -VIBEOS_EOPNOTSUPP;
+}
+
+/* ---- the syscalls this file implements
+
+### a file that is not there is "not supported"
+--- old
+    r = linux_xattr_file(where, how);
+    return r != 0 ? r : -VIBEOS_EOPNOTSUPP;
+}
+
+/* getxattr and removexattr
++++ new
+    return -VIBEOS_EOPNOTSUPP;
+}
+
+/* getxattr and removexattr
+
+### an attribute name of any length is accepted
+--- old
+    return (n == 0u || n > LINUX_XATTR_NAME_MAX) ? -VIBEOS_ERANGE : 0;
++++ new
+    return 0;
+
+### a setxattr flag Linux lacks is accepted
+--- old
+    if (flags & ~(uint64_t)(LINUX_XATTR_CREATE | LINUX_XATTR_REPLACE)) {
+        return -VIBEOS_EINVAL;
+    }
++++ new
+
+### a value of any size is accepted
+--- old
+    if (size > LINUX_XATTR_SIZE_MAX) {
+        return -VIBEOS_E2BIG;
+    }
++++ new
+
+### the l forms follow the link
+--- old
+        return linux_walk_at(LINUX_CWD, where, (uint32_t)how, &w);
++++ new
+        return linux_walk_at(LINUX_CWD, where, 0u, &w);

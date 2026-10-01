@@ -1,0 +1,49 @@
+# A directory's entries by position (kernel/abi/files/regular.c, docs/abi/ L1
+# step 6), proved through getdents64 by the handlers' host tests in
+# tests/kernel/linux_abi_tests.c.
+#
+#  1. what the filesystem lists as "." and ".." is listed again. Expect "does
+#     not get them listed twice".
+#  2. an entry's type is not looked up. Expect "a symbolic link is listed as
+#     one, not as a file".
+#  3. an entry's inode number is not looked up. Expect "with the inode number
+#     stat reports".
+#  4. ".." is the directory itself. Expect "'..' is there, and is its parent".
+#  5. names are cut at fifteen bytes, as before the step. Expect "a long name
+#     is listed whole".
+#
+# Target source: kernel/abi/files/regular.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/files/regular.c scripts/dev/cases/abi-readdir.txt
+
+### what the filesystem lists as dots is listed again
+--- old
+    if (out->name[0] == '.' && (out->name[1] == 0 || (out->name[1] == '.' && out->name[2] == 0))) {
+        return VIBEOS_READDIR_SKIP;
+    }
++++ new
+
+### an entry's type is not looked up
+--- old
+            out->mode = st.mode;
+            out->ino = st.ino;
++++ new
+            out->ino = st.ino;
+
+### an entry's inode number is not looked up
+--- old
+            out->mode = st.mode;
+            out->ino = st.ino;
++++ new
+            out->mode = st.mode;
+
+### '..' is the directory itself
+--- old
+        if (index == 1u) {
++++ new
+        if (0) {
+
+### names are cut at fifteen bytes
+--- old
+    if (vibeos_fs_list(f->mnt, tail, (uint32_t)(index - 2u), out->name, sizeof(out->name),
++++ new
+    if (vibeos_fs_list(f->mnt, tail, (uint32_t)(index - 2u), out->name, 16u,

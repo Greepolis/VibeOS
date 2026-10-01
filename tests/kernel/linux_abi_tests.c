@@ -26,6 +26,7 @@
 #include "vibeos/linux_exports.h"
 #include "vibeos/linux_layout.h"
 #include "vibeos/vfs.h"
+#include "vibeos/ksvc.h"
 
 int test_linux_handlers(void);
 int test_linux_gaps(void);
@@ -220,8 +221,8 @@ static void t_registry_answers(void) {
     expect(SYS0(101) == -VIBEOS_ENOSYS && g_abi_deferred == before + 1u &&
            g_abi_deferred_nr == 101u, "ptrace is deferred, counted and named");
     before = g_abi_unimplemented;
-    expect(SYS0(78) == -VIBEOS_ENOSYS && g_abi_unimplemented == before + 1u &&
-           g_abi_last_nr == 78u, "getdents is missing, counted and named");
+    expect(SYS0(161) == -VIBEOS_ENOSYS && g_abi_unimplemented == before + 1u &&
+           g_abi_last_nr == 161u, "chroot is missing, counted and named");
 }
 
 static void t_uname_and_clock(void) {
@@ -1158,6 +1159,357 @@ static void t_mknod_and_openat2(void) {
     expect(kf_lock_imbalance() == 0, "mknod and openat2 released every lock they took");
 }
 
+/* ---- L1 step 6: locks, directories, extended attributes ----------------------------- */
+
+static long lock_op(long fd, int cmd, int type, int64_t start, int64_t len, linux_flock_t *out) {
+    uint64_t u = kf_ualloc(sizeof(linux_flock_t));
+    linux_flock_t *fl = (linux_flock_t *)kf_uptr(u);
+    long r;
+
+    memset(fl, 0, sizeof(*fl));
+    fl->l_type = (int16_t)type;
+    fl->l_start = start;
+    fl->l_len = len;
+    r = SYS3(72, (uint64_t)fd, (uint64_t)cmd, u);
+    if (out) {
+        *out = *fl;
+    }
+    return r;
+}
+
+static int slot_of_pid(long pid) {
+    uint32_t i;
+    for (i = 0; i < KF_SLOTS; i++) {
+        if (ks_id((int)i)->pid == (uint32_t)pid) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+static void t_record_locks(void) {
+    linux_flock_t fl;
+    kf_outcome_t how;
+    int parent, child;
+    long fd, fd2, cfd, pid;
+    uint64_t u;
+
+    parent = fresh(110);
+    tmp_put("/tmp/db", "0123456789");
+    fd = tmp_open("/tmp/db", 2, 0);
+    expect(lock_op(fd, 6 /* F_SETLK */, 1 /* F_WRLCK */, 0, 4, 0) == 0, "F_SETLK takes a write lock");
+    expect(lock_op(fd, 5 /* F_GETLK */, 1, 0, 10, &fl) == 0 && fl.l_type == 2 /* F_UNLCK */,
+           "the holder's own lock is not in its way");
+    pid = SYS0(57);
+    expect(pid > 0, "fork");
+    child = slot_of_pid(pid);
+    kf_set_current(child);
+    cfd = tmp_open("/tmp/db", 2, 0);
+    expect(lock_op(cfd, 6, 0 /* F_RDLCK */, 2, 2, 0) == -VIBEOS_EAGAIN, "another process is refused the range");
+    expect(lock_op(fd, 6, 0, 2, 2, 0) == -VIBEOS_EAGAIN,
+           "through the inherited descriptor too: the lock is the process's, not the descriptor's");
+    expect(lock_op(cfd, 5, 0, 0, 0, &fl) == 0 && fl.l_type == 1 && fl.l_whence == 0 && fl.l_start == 0 &&
+           fl.l_len == 4 && fl.l_pid == 110, "F_GETLK names the lock in the way and who holds it");
+    expect(lock_op(cfd, 6, 1, 4, 0, 0) == 0, "the rest of the file, to its end, is free");
+    kf_set_current(parent);
+    expect(lock_op(fd, 5, 0, 100, 1, &fl) == 0 && fl.l_type == 1 && fl.l_start == 4 && fl.l_len == 0 &&
+           fl.l_pid == (int32_t)pid, "a lock to the end of the file is reported with length 0");
+    /* Waiting: the child holds [4, end); the parent asks and waits. */
+    u = kf_ualloc(sizeof(fl));
+    memset(kf_uptr(u), 0, sizeof(fl));
+    ((linux_flock_t *)kf_uptr(u))->l_type = 1;
+    ((linux_flock_t *)kf_uptr(u))->l_start = 6;
+    ((linux_flock_t *)kf_uptr(u))->l_len = 1;
+    (void)sys(72, (uint64_t)fd, 7 /* F_SETLKW */, u, 0, 0, 0, &how);
+    expect(how == KF_BLOCKED, "F_SETLKW waits for a lock it cannot have");
+    kf_set_current(child);
+    ((linux_flock_t *)kf_uptr(u))->l_start = 1;
+    expect(SYS3(72, (uint64_t)cfd, 7, u) == -VIBEOS_EDEADLK,
+           "and the holder waiting for the waiter is EDEADLK, not two waits for ever");
+    /* Unlocking the middle of a range. */
+    expect(lock_op(cfd, 6, 2 /* F_UNLCK */, 6, 2, 0) == 0, "the child gives back two bytes of its range");
+    kf_set_current(parent);
+    expect(lock_op(fd, 6, 1, 6, 2, 0) == 0 && lock_op(fd, 6, 1, 8, 1, 0) == -VIBEOS_EAGAIN &&
+           lock_op(fd, 6, 1, 5, 1, 0) == -VIBEOS_EAGAIN, "exactly those two are free");
+    /* POSIX's rule: closing any descriptor for the file drops the process's locks on it. */
+    fd2 = tmp_open("/tmp/db", 0, 0);
+    expect(SYS1(3, (uint64_t)fd2) == 0, "the parent closes another descriptor for the file");
+    kf_set_current(child);
+    expect(lock_op(cfd, 6, 1, 0, 4, 0) == 0, "and its locks on the file are gone, whichever descriptor took them");
+    /* Access modes, ranges and bad requests - on a second file, where nobody
+     * holds anything yet. */
+    {
+        long p2, r2, c2;
+        uint64_t w = kf_ualloc(sizeof(fl));
+        linux_flock_t *p = (linux_flock_t *)kf_uptr(w);
+
+        kf_set_current(parent);
+        tmp_put("/tmp/db2", "0123456789");
+        p2 = tmp_open("/tmp/db2", 2, 0);
+        r2 = tmp_open("/tmp/db2", 0, 0);
+        expect(lock_op(r2, 6, 1, 20, 1, 0) == -VIBEOS_EBADF, "a write lock needs a descriptor open for writing");
+        expect(lock_op(r2, 6, 0, 20, 1, 0) == 0, "a read lock does not");
+        expect(lock_op(p2, 6, 1, -1, 1, 0) == -VIBEOS_EINVAL, "a range that starts before the file is EINVAL");
+        expect(lock_op(p2, 6, 1, 30, -5, 0) == 0, "a negative length is the bytes before the start");
+        kf_set_current(child);
+        c2 = tmp_open("/tmp/db2", 2, 0);
+        expect(lock_op(c2, 5, 1, 22, 20, &fl) == 0 && fl.l_type == 1 && fl.l_start == 25 && fl.l_len == 5,
+               "exactly those");
+        expect(lock_op(c2, 6, 3, 0, 1, 0) == -VIBEOS_EINVAL && lock_op(c2, 5, 2, 0, 1, 0) == -VIBEOS_EINVAL,
+               "a lock type that is none, and F_GETLK asked about an unlock, are EINVAL");
+        expect(SYS3(72, 99, 6, kf_ualloc(32)) == -VIBEOS_EBADF && SYS3(72, (uint64_t)c2, 6, 0x1000) == -VIBEOS_EFAULT,
+               "no descriptor is EBADF, no structure EFAULT");
+        /* A lock at SEEK_END is where the file ends now. */
+        memset(p, 0, sizeof(*p));
+        p->l_type = 1; p->l_whence = 2 /* SEEK_END */; p->l_start = 0; p->l_len = 5;
+        expect(SYS3(72, (uint64_t)c2, 6, w) == 0, "a lock from the end of the file");
+        kf_set_current(parent);
+        expect(lock_op(p2, 5, 1, 0, 20, &fl) == 0 && fl.l_type == 1 && fl.l_start == 10 && fl.l_len == 5 &&
+               fl.l_pid == (int32_t)pid, "is at the file's size");
+    }
+    /* Exit gives everything back: what the architecture's exit path calls
+     * when the last thread of a process has left. */
+    linux_locks_exit((uint32_t)pid);
+    expect(lock_op(fd, 6, 1, 0, 0, 0) == 0, "a process that exits leaves no locks behind");
+    expect(kf_lock_imbalance() == 0, "the lock calls released every kernel lock they took");
+}
+
+static void t_description_locks(void) {
+    linux_flock_t fl;
+    kf_outcome_t how;
+    long a, b, c;
+
+    fresh(111);
+    tmp_put("/tmp/f", "x");
+    a = tmp_open("/tmp/f", 2, 0);
+    b = tmp_open("/tmp/f", 2, 0);
+    /* flock: the description's, whole-file. */
+    expect(SYS2(73, (uint64_t)a, 2 /* LOCK_EX */) == 0, "flock takes the file");
+    expect(SYS2(73, (uint64_t)b, 2 | 4 /* LOCK_NB */) == -VIBEOS_EAGAIN &&
+           SYS2(73, (uint64_t)b, 1 | 4) == -VIBEOS_EAGAIN,
+           "another description of the same process is refused: the lock is the description's");
+    (void)sys(73, (uint64_t)b, 1, 0, 0, 0, 0, &how);
+    expect(how == KF_BLOCKED, "and waits without LOCK_NB");
+    c = SYS1(32, (uint64_t)a);
+    expect(SYS2(73, (uint64_t)c, 2 | 4) == 0, "a dup is the same description and already holds it");
+    expect(SYS2(73, (uint64_t)a, 1) == 0 && SYS2(73, (uint64_t)b, 1 | 4) == 0,
+           "converted to shared, another description shares it");
+    expect(SYS2(73, (uint64_t)a, 2 | 4) == -VIBEOS_EAGAIN, "and it cannot go back to exclusive while shared");
+    expect(SYS2(73, (uint64_t)b, 8 /* LOCK_UN */) == 0 && SYS2(73, (uint64_t)a, 2 | 4) == 0,
+           "until the other lets go");
+    expect(SYS1(3, (uint64_t)a) == 0 && SYS2(73, (uint64_t)b, 2 | 4) == -VIBEOS_EAGAIN,
+           "closing one of two descriptors for a description keeps its lock");
+    expect(SYS1(3, (uint64_t)c) == 0 && SYS2(73, (uint64_t)b, 2 | 4) == 0,
+           "closing the last gives it back");
+    expect(SYS2(73, (uint64_t)b, 3) == -VIBEOS_EINVAL && SYS2(73, (uint64_t)b, 0) == -VIBEOS_EINVAL &&
+           SYS2(73, 99, 1) == -VIBEOS_EBADF, "two operations at once or none are EINVAL, no descriptor EBADF");
+    /* flock and fcntl do not see each other. */
+    expect(lock_op(a = tmp_open("/tmp/f", 2, 0), 6, 1, 0, 0, 0) == 0,
+           "a record lock on a file somebody has flocked is granted");
+    /* OFD locks: record locks a description owns. */
+    c = tmp_open("/tmp/f", 2, 0);
+    expect(lock_op(c, 37 /* F_OFD_SETLK */, 1, 0, 1, 0) == -VIBEOS_EAGAIN,
+           "an OFD lock conflicts with the process's own record lock: one space, two owners");
+    expect(lock_op(a, 6, 2, 0, 0, 0) == 0 && lock_op(c, 37, 1, 0, 1, 0) == 0, "and is granted once that is gone");
+    expect(lock_op(a, 6, 1, 0, 1, 0) == -VIBEOS_EAGAIN && lock_op(a, 5, 1, 0, 1, &fl) == 0 && fl.l_pid == -1,
+           "the process is refused in turn, by a lock with no process: pid -1");
+    {
+        uint64_t u = kf_ualloc(sizeof(fl));
+        linux_flock_t *p = (linux_flock_t *)kf_uptr(u);
+        memset(p, 0, sizeof(*p));
+        p->l_type = 1; p->l_pid = 5;
+        expect(SYS3(72, (uint64_t)c, 37, u) == -VIBEOS_EINVAL, "an OFD lock with l_pid set is EINVAL");
+    }
+    b = tmp_open("/tmp/f", 0, 0);
+    expect(SYS1(3, (uint64_t)b) == 0 && lock_op(a, 6, 1, 0, 1, 0) == -VIBEOS_EAGAIN,
+           "closing another descriptor for the file does not drop an OFD lock");
+    expect(SYS1(3, (uint64_t)c) == 0 && lock_op(a, 6, 1, 0, 1, 0) == 0, "closing its description does");
+    /* A pipe can be locked too. */
+    {
+        uint64_t fds = kf_ualloc(8), fds2 = kf_ualloc(8);
+        (void)SYS2(293, fds, 0);
+        (void)SYS2(293, fds2, 0);
+        expect(SYS2(73, (uint64_t)((int32_t *)kf_uptr(fds))[0], 2 | 4) == 0, "flock on a pipe");
+        expect(SYS2(73, (uint64_t)((int32_t *)kf_uptr(fds))[1], 2 | 4) == -VIBEOS_EAGAIN,
+               "its other end is the same pipe, another description: refused");
+        expect(SYS2(73, (uint64_t)((int32_t *)kf_uptr(fds2))[0], 2 | 4) == 0,
+               "and another pipe is another file");
+    }
+    expect(kf_lock_imbalance() == 0, "the description locks released every kernel lock they took");
+}
+
+/* One getdents64 record at `off` in a buffer. */
+static const linux_dirent64_t *dent(uint64_t buf, long off) {
+    return (const linux_dirent64_t *)(const void *)((const uint8_t *)kf_uptr(buf) + off);
+}
+
+/* The entry called `name` among `n` bytes of records, or null. */
+static const linux_dirent64_t *dent_named(uint64_t buf, long n, const char *name) {
+    long off = 0;
+    while (off < n) {
+        const linux_dirent64_t *d = dent(buf, off);
+        if (strcmp(d->d_name, name) == 0) {
+            return d;
+        }
+        off += d->d_reclen;
+    }
+    return 0;
+}
+
+static void t_directories(void) {
+    static const char longname[] = "a name far longer than fifteen bytes, with spaces.txt";
+    char path[96];
+    linux_stat_t st;
+    const linux_dirent64_t *d;
+    uint64_t buf;
+    long fd, n, n2, off, count;
+
+    fresh(112);
+    buf = kf_ualloc(4096);
+    (void)SYS2(83, ustr("/tmp/d"), 0755);
+    (void)SYS2(83, ustr("/tmp/d/sub"), 0755);
+    snprintf(path, sizeof(path), "/tmp/d/%s", longname);
+    tmp_put(path, "x");
+    tmp_put("/tmp/d/f", "y");
+    (void)SYS2(88, ustr("f"), ustr("/tmp/d/link"));
+    fd = tmp_open("/tmp/d", 0x10000, 0);
+    n = SYS3(217, (uint64_t)fd, buf, 4096);
+    expect(n > 0, "getdents64 lists a directory");
+    d = dent_named(buf, n, longname);
+    expect(d != 0 && d->d_type == 8, "a long name is listed whole - it was cut at fifteen bytes");
+    expect(d != 0 && tmp_stat(path, 0, &st) == 0 && d->d_ino == st.st_ino && d->d_ino != 0u,
+           "with the inode number stat reports");
+    d = dent_named(buf, n, "link");
+    expect(d != 0 && d->d_type == 10, "a symbolic link is listed as one, not as a file");
+    d = dent_named(buf, n, "sub");
+    expect(d != 0 && d->d_type == 4, "a directory as a directory");
+    d = dent_named(buf, n, ".");
+    expect(d != 0 && d->d_type == 4 && tmp_stat("/tmp/d", 1, &st) == 0 && d->d_ino == st.st_ino,
+           "'.' is there, and is the directory");
+    d = dent_named(buf, n, "..");
+    expect(d != 0 && d->d_type == 4 && tmp_stat("/tmp", 1, &st) == 0 && d->d_ino == st.st_ino,
+           "'..' is there, and is its parent");
+    for (off = 0, count = 0, n2 = 0; off < n; off += dent(buf, off)->d_reclen) {
+        count++;
+        /* Not consecutive: a position where the filesystem stores its own "."
+         * has no record. Increasing is what a program may rely on. */
+        expect((dent(buf, off)->d_reclen & 7u) == 0u && dent(buf, off)->d_off > n2,
+               "every record is a multiple of 8 long and carries a later position than the one before");
+        n2 = (long)dent(buf, off)->d_off;
+    }
+    expect(count == 6, "six entries: the two dots and the four made");
+    expect(SYS3(217, (uint64_t)fd, buf, 4096) == 0, "and then the end, which is 0");
+    /* The position is the description's, and lseek moves it. */
+    expect(SYS3(8, (uint64_t)fd, 0, 0) == 0 && SYS3(217, (uint64_t)fd, buf, 4096) == n,
+           "lseek to 0 starts the directory again");
+    d = dent_named(buf, n, "..");
+    off = d ? (long)d->d_off : 0;
+    expect(SYS3(8, (uint64_t)fd, (uint64_t)off, 0) == off && (n2 = SYS3(217, (uint64_t)fd, buf, 4096)) > 0 &&
+           dent_named(buf, n2, ".") == 0 && dent_named(buf, n2, "..") == 0 && dent_named(buf, n2, "sub") != 0 &&
+           dent_named(buf, n2, "link") != 0,
+           "and to the position a record named resumes after that record");
+    /* A buffer that holds one record at a time lists the same entries. */
+    (void)SYS3(8, (uint64_t)fd, 0, 0);
+    for (count = 0; (n2 = SYS3(217, (uint64_t)fd, buf, 80)) > 0; ) {
+        for (off = 0; off < n2; off += dent(buf, off)->d_reclen) {
+            count++;
+        }
+    }
+    expect(count == 6 && n2 == 0, "a small buffer gets the same six, a few at a time");
+    (void)SYS3(8, (uint64_t)fd, 0, 0);
+    expect(SYS3(217, (uint64_t)fd, buf, 16) == -VIBEOS_EINVAL, "a buffer too small for one record is EINVAL");
+    /* The call before getdents64: the type is the record's last byte. */
+    (void)SYS3(8, (uint64_t)fd, 0, 0);
+    n = SYS3(78, (uint64_t)fd, buf, 4096);
+    for (off = 0, count = 0; off < n; ) {
+        const linux_dirent_t *o = (const linux_dirent_t *)(const void *)((const uint8_t *)kf_uptr(buf) + off);
+        uint8_t type = ((const uint8_t *)kf_uptr(buf))[off + o->d_reclen - 1];
+        count++;
+        if (strcmp(o->d_name, longname) == 0) {
+            expect(type == 8 && o->d_ino != 0u && o->d_off > 2u, "getdents: the long name, a file");
+            count += 100;
+        }
+        if (strcmp(o->d_name, "link") == 0) {
+            expect(type == 10, "getdents: the link's type is in the record's last byte");
+            count += 100;
+        }
+        off += o->d_reclen;
+    }
+    expect(n > 0 && count == 206, "getdents lists the same six entries in its own record");
+    expect(SYS3(78, (uint64_t)fd, buf, 4096) == 0, "and then the end");
+    /* Not a directory. */
+    fd = tmp_open("/tmp/d/f", 0, 0);
+    expect(SYS3(217, (uint64_t)fd, buf, 4096) == -VIBEOS_ENOTDIR && SYS3(78, (uint64_t)fd, buf, 4096) == -VIBEOS_ENOTDIR &&
+           SYS3(217, 99, buf, 4096) == -VIBEOS_EBADF, "a file is ENOTDIR, no descriptor EBADF");
+    /* The fake's root lists '.' itself, as FAT does in every directory but its
+     * root: it must come out once. */
+    kf_fs_add("/r", 0, 0, 1);
+    kf_fs_add("/r/.", 0, 0, 1);
+    kf_fs_add("/r/..", 0, 0, 1);
+    kf_fs_add("/r/x", "1", 1, 0);
+    fd = SYS2(2, ustr("/r"), 0x10000);
+    n = SYS3(217, (uint64_t)fd, buf, 4096);
+    for (off = 0, count = 0; off < n; off += dent(buf, off)->d_reclen) {
+        count++;
+    }
+    expect(count == 3 && dent_named(buf, n, "x") != 0,
+           "a filesystem that stores '.' and '..' does not get them listed twice");
+    expect(kf_lock_imbalance() == 0, "getdents released every lock it took");
+}
+
+static void t_xattr_and_unshare(void) {
+    uint64_t buf, big;
+    long fd;
+    int me;
+
+    me = fresh(113);
+    buf = kf_ualloc(64);
+    big = kf_ualloc(300);
+    memset(kf_uptr(big), 'n', 299);
+    ((char *)kf_uptr(big))[299] = 0;
+    tmp_put("/tmp/x", "x");
+    fd = tmp_open("/tmp/x", 2, 0);
+    expect(sys(188, ustr("/tmp/x"), ustr("user.k"), buf, 4, 0, 0, 0) == -VIBEOS_EOPNOTSUPP &&
+           sys(189, ustr("/tmp/x"), ustr("user.k"), buf, 4, 0, 0, 0) == -VIBEOS_EOPNOTSUPP &&
+           sys(190, (uint64_t)fd, ustr("user.k"), buf, 4, 0, 0, 0) == -VIBEOS_EOPNOTSUPP,
+           "setting an attribute is EOPNOTSUPP: no filesystem here stores them");
+    expect(SYS4(191, ustr("/tmp/x"), ustr("user.k"), buf, 64) == -VIBEOS_EOPNOTSUPP &&
+           SYS4(192, ustr("/tmp/x"), ustr("user.k"), buf, 64) == -VIBEOS_EOPNOTSUPP &&
+           SYS4(193, (uint64_t)fd, ustr("user.k"), buf, 64) == -VIBEOS_EOPNOTSUPP, "so is getting one");
+    expect(SYS3(194, ustr("/tmp/x"), buf, 64) == 0 && SYS3(195, ustr("/tmp/x"), buf, 64) == 0 &&
+           SYS3(196, (uint64_t)fd, buf, 64) == 0, "the list is empty, which is how ls and cp find out");
+    expect(SYS2(197, ustr("/tmp/x"), ustr("user.k")) == -VIBEOS_EOPNOTSUPP &&
+           SYS2(198, ustr("/tmp/x"), ustr("user.k")) == -VIBEOS_EOPNOTSUPP &&
+           SYS2(199, (uint64_t)fd, ustr("user.k")) == -VIBEOS_EOPNOTSUPP, "removing one is EOPNOTSUPP");
+    expect(sys(188, ustr("/tmp/nope"), ustr("user.k"), buf, 4, 0, 0, 0) == -VIBEOS_ENOENT &&
+           SYS4(191, ustr("/tmp/nope"), ustr("user.k"), buf, 64) == -VIBEOS_ENOENT &&
+           SYS3(194, ustr("/tmp/nope"), buf, 64) == -VIBEOS_ENOENT &&
+           SYS2(199, 99, ustr("user.k")) == -VIBEOS_EBADF && SYS3(196, 99, buf, 64) == -VIBEOS_EBADF,
+           "a file that is not there is said first: ENOENT, EBADF");
+    expect(sys(188, ustr("/tmp/x"), ustr("user.k"), buf, 4, 4, 0, 0) == -VIBEOS_EINVAL,
+           "a setxattr flag Linux lacks is EINVAL");
+    expect(sys(188, ustr("/tmp/x"), ustr(""), buf, 4, 0, 0, 0) == -VIBEOS_ERANGE &&
+           SYS4(191, ustr("/tmp/x"), big, buf, 64) == -VIBEOS_ERANGE, "an empty or over-long name is ERANGE");
+    expect(sys(188, ustr("/tmp/x"), ustr("user.k"), buf, 65537, 0, 0, 0) == -VIBEOS_E2BIG,
+           "a value over 64 KiB is E2BIG");
+    expect(SYS4(191, ustr("/tmp/x"), 0x1000, buf, 64) == -VIBEOS_EFAULT, "a name outside user memory is EFAULT");
+    (void)SYS2(88, ustr("nowhere"), ustr("/tmp/dangling"));
+    expect(SYS4(192, ustr("/tmp/dangling"), ustr("user.k"), buf, 64) == -VIBEOS_EOPNOTSUPP &&
+           SYS4(191, ustr("/tmp/dangling"), ustr("user.k"), buf, 64) == -VIBEOS_ENOENT,
+           "the l forms ask about the link, the others about what it points at");
+
+    /* close_range's UNSHARE: nothing to do for a process of one thread. */
+    expect(SYS1(32, (uint64_t)fd) > fd &&
+           SYS3(436, (uint64_t)fd, ~0ull, 2 /* CLOSE_RANGE_UNSHARE */) == 0 &&
+           SYS1(3, (uint64_t)fd) == -VIBEOS_EBADF,
+           "CLOSE_RANGE_UNSHARE in a single-threaded process closes the range");
+    ks_ps(me)->files_users = 2u;
+    fd = tmp_open("/tmp/x", 0, 0);
+    expect(SYS3(436, (uint64_t)fd, ~0ull, 2) == -VIBEOS_EINVAL && SYS1(3, (uint64_t)fd) == 0,
+           "and is refused, closing nothing, when other threads share the table");
+    ks_ps(me)->files_users = 1u;
+}
+
 int test_linux_handlers(void) {
     g_fail = 0;
     t_identity();
@@ -1191,6 +1543,10 @@ int test_linux_handlers(void) {
     t_rmdir_and_links();
     t_metadata();
     t_mknod_and_openat2();
+    t_record_locks();
+    t_description_locks();
+    t_directories();
+    t_xattr_and_unshare();
     return g_fail ? -1 : 0;
 }
 
@@ -1239,17 +1595,6 @@ int test_linux_gaps(void) {
     g_fail = 0;
     g_gaps = 0;
 
-    /* fcntl (72), L1: a record lock is taken. */
-    {
-        uint64_t fl = 0;
-        long fd;
-        fresh(75);
-        kf_fs_add("/db", "x", 1, 0);
-        fd = SYS2(2, ustr("db"), 0);
-        fl = kf_ualloc(32);   /* struct flock: F_RDLCK over the whole file */
-        gap(72, fd >= 0 && SYS3(72, (uint64_t)fd, 6 /* F_SETLK */, fl) == 0, "F_SETLK takes a lock");
-    }
-
     /* mknod (133) and mknodat (259), L1: a FIFO has a name. */
     fresh(77);
     gap(133, SYS3(133, ustr("/tmp/fifo"), 0010644, 0) == 0, "mknod makes a FIFO");
@@ -1276,9 +1621,13 @@ int test_linux_gaps(void) {
             "openat2 with RESOLVE_BENEATH");
     }
 
-    /* close_range (436), L1: CLOSE_RANGE_UNSHARE gives the caller its own table. */
-    fresh(76);
-    gap(436, SYS3(436, 3, ~0ull, 2 /* CLOSE_RANGE_UNSHARE */) == 0, "close_range with CLOSE_RANGE_UNSHARE");
+    /* close_range (436), L6: CLOSE_RANGE_UNSHARE gives a thread its own table. */
+    {
+        int me = fresh(76);
+        ks_ps(me)->files_users = 2u;   /* another thread shares the table */
+        gap(436, SYS3(436, 3, ~0ull, 2 /* CLOSE_RANGE_UNSHARE */) == 0,
+            "close_range with CLOSE_RANGE_UNSHARE in a process with threads");
+    }
 
     /* mmap (9), L3: MAP_FIXED|MAP_ANONYMOUS maps at the address given. */
     fresh(61);
@@ -1383,20 +1732,6 @@ int test_linux_gaps(void) {
         w = kf_ualloc(8);
         r = sys(202, w, 4 /* FUTEX_CMP_REQUEUE */, 1, 1, w + 4u, 0, 0);
         gap(202, r == 0, "FUTEX_CMP_REQUEUE");
-    }
-
-    /* getdents64 (217), L1: names longer than FAT's are listed whole. */
-    {
-        uint64_t buf = 0;
-        long fd;
-        fresh(71);
-        kf_fs_add("/d", 0, 0, 1);
-        kf_fs_add("/d/a_name_longer_than_fat.txt", "x", 1, 0);
-        buf = kf_ualloc(256);
-        fd = SYS2(2, ustr("d"), 0);
-        r = SYS3(217, (uint64_t)fd, buf, 256);
-        gap(217, r > 19 && strcmp((const char *)kf_uptr(buf) + 19, "a_name_longer_than_fat.txt") == 0,
-            "getdents64 lists a long name whole");
     }
 
     /* prlimit64 (302), L2: a limit that is set is the limit reported. */

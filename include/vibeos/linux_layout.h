@@ -195,6 +195,26 @@ typedef struct {
     int64_t tv_usec;
 } linux_timeval_t;
 
+/* struct flock (asm-generic/fcntl.h): fcntl's record locks. */
+typedef struct {
+    int16_t l_type;
+    int16_t l_whence;
+    int64_t l_start;
+    int64_t l_len;
+    int32_t l_pid;
+} linux_flock_t;
+
+/* One getdents record, the call before getdents64: this header, the name and
+ * its NUL, padding, and the type in the record's last byte. Linux exports no
+ * declaration of it and no C library uses it, so the test asks the host's
+ * kernel for a directory and reads the answer through this structure. */
+typedef struct {
+    uint64_t d_ino;
+    uint64_t d_off;
+    uint16_t d_reclen;
+    char d_name[];
+} linux_dirent_t;
+
 /* ---- constants ---------------------------------------------------------------------- */
 
 /* clone() flags that decide whether it is a fork or a thread (linux/sched.h). */
@@ -264,6 +284,24 @@ typedef struct {
 #define LINUX_F_SETLK          6
 #define LINUX_F_SETLKW         7
 #define LINUX_F_DUPFD_CLOEXEC  1030
+#define LINUX_F_OFD_GETLK      36
+#define LINUX_F_OFD_SETLK      37
+#define LINUX_F_OFD_SETLKW     38
+
+/* struct flock's l_type, and flock's operations (asm-generic/fcntl.h). */
+#define LINUX_F_RDLCK 0
+#define LINUX_F_WRLCK 1
+#define LINUX_F_UNLCK 2
+#define LINUX_LOCK_SH 1
+#define LINUX_LOCK_EX 2
+#define LINUX_LOCK_NB 4
+#define LINUX_LOCK_UN 8
+
+/* setxattr's flags and limits (linux/xattr.h, linux/limits.h). */
+#define LINUX_XATTR_CREATE   1
+#define LINUX_XATTR_REPLACE  2
+#define LINUX_XATTR_NAME_MAX 255
+#define LINUX_XATTR_SIZE_MAX 65536
 
 /* fallocate modes (linux/falloc.h) and posix_fadvise advice (linux/fadvise.h):
  * the one mode honoured, and the largest advice there is. */
@@ -274,9 +312,12 @@ typedef struct {
 #define LINUX_CLOSE_RANGE_UNSHARE (1u << 1)
 #define LINUX_CLOSE_RANGE_CLOEXEC (1u << 2)
 
-/* getdents64 record types (the C library's dirent.h). */
+/* getdents64 record types (the C library's dirent.h): the file type in the
+ * mode, moved down - what the C library calls IFTODT. */
 #define LINUX_DT_DIR 4u
 #define LINUX_DT_REG 8u
+#define LINUX_DT_LNK 10u
+#define LINUX_DT_OF(mode) (((mode) & 0170000u) >> 12)
 
 /* futex operations (linux/futex.h). */
 #define LINUX_FUTEX_WAIT 0

@@ -9,9 +9,9 @@ the registry, not this page; `check.sh` fails while the two differ.
 
 | State | Count | What the kernel answers |
 | --- | --- | --- |
-| done | 108 | through its row |
-| partial | 21 | through its row, with the gap named |
-| missing | 161 | ENOSYS, and the boot gate fails naming the number |
+| done | 124 | through its row |
+| partial | 19 | through its row, with the gap named |
+| missing | 147 | ENOSYS, and the boot gate fails naming the number |
 | deferred | 50 | ENOSYS, and the boot gate fails naming the number |
 | refused | 33 | its errno, counted as refused - expected, never a failure |
 
@@ -19,7 +19,7 @@ Without a row, by phase:
 
 | Phase | Syscalls |
 | --- | --- |
-| L1 - files and paths | 14 |
+| L1 - files and paths | 0 |
 | L2 - processes, credentials, time | 47 |
 | L3 - memory | 10 |
 | L4 - event loops | 21 |
@@ -108,13 +108,13 @@ calls, outside the Linux number space, are listed last.
 | 69 | `msgsnd` | missing | L7 | ENOSYS |  |  |
 | 70 | `msgrcv` | missing | L7 | ENOSYS |  |  |
 | 71 | `msgctl` | missing | L7 | ENOSYS |  |  |
-| 72 | `fcntl` | partial | L1 | - | `fs.c` | no record locks: F_GETLK/F_SETLK answer ENOLCK |
-| 73 | `flock` | missing | L1 | ENOSYS |  |  |
+| 72 | `fcntl` | done | - | - | `fs.c` |  |
+| 73 | `flock` | done | - | - | `fs.c` |  |
 | 74 | `fsync` | done | - | - | `fs.c` |  |
 | 75 | `fdatasync` | done | - | - | `fs.c` |  |
 | 76 | `truncate` | done | - | - | `fs.c` |  |
 | 77 | `ftruncate` | done | - | - | `fs.c` |  |
-| 78 | `getdents` | missing | L1 | ENOSYS |  |  |
+| 78 | `getdents` | done | - | - | `fs.c` |  |
 | 79 | `getcwd` | done | - | - | `fs.c` |  |
 | 80 | `chdir` | done | - | - | `fs.c` |  |
 | 81 | `fchdir` | done | - | - | `fs.c` |  |
@@ -224,18 +224,18 @@ calls, outside the Linux number space, are listed last.
 | 185 | `security` | refused | R | ENOSYS |  | removed or never implemented by Linux itself |
 | 186 | `gettid` | done | - | - | `proc.c` |  |
 | 187 | `readahead` | done | - | - | `fs.c` |  |
-| 188 | `setxattr` | missing | L1 | ENOSYS |  | ENOTSUP from the filesystem until one stores attributes |
-| 189 | `lsetxattr` | missing | L1 | ENOSYS |  | ENOTSUP from the filesystem until one stores attributes |
-| 190 | `fsetxattr` | missing | L1 | ENOSYS |  | ENOTSUP from the filesystem until one stores attributes |
-| 191 | `getxattr` | missing | L1 | ENOSYS |  | ENOTSUP from the filesystem until one stores attributes |
-| 192 | `lgetxattr` | missing | L1 | ENOSYS |  | ENOTSUP from the filesystem until one stores attributes |
-| 193 | `fgetxattr` | missing | L1 | ENOSYS |  | ENOTSUP from the filesystem until one stores attributes |
-| 194 | `listxattr` | missing | L1 | ENOSYS |  | ENOTSUP from the filesystem until one stores attributes |
-| 195 | `llistxattr` | missing | L1 | ENOSYS |  | ENOTSUP from the filesystem until one stores attributes |
-| 196 | `flistxattr` | missing | L1 | ENOSYS |  | ENOTSUP from the filesystem until one stores attributes |
-| 197 | `removexattr` | missing | L1 | ENOSYS |  | ENOTSUP from the filesystem until one stores attributes |
-| 198 | `lremovexattr` | missing | L1 | ENOSYS |  | ENOTSUP from the filesystem until one stores attributes |
-| 199 | `fremovexattr` | missing | L1 | ENOSYS |  | ENOTSUP from the filesystem until one stores attributes |
+| 188 | `setxattr` | done | - | - | `names.c` |  |
+| 189 | `lsetxattr` | done | - | - | `names.c` |  |
+| 190 | `fsetxattr` | done | - | - | `names.c` |  |
+| 191 | `getxattr` | done | - | - | `names.c` |  |
+| 192 | `lgetxattr` | done | - | - | `names.c` |  |
+| 193 | `fgetxattr` | done | - | - | `names.c` |  |
+| 194 | `listxattr` | done | - | - | `names.c` |  |
+| 195 | `llistxattr` | done | - | - | `names.c` |  |
+| 196 | `flistxattr` | done | - | - | `names.c` |  |
+| 197 | `removexattr` | done | - | - | `names.c` |  |
+| 198 | `lremovexattr` | done | - | - | `names.c` |  |
+| 199 | `fremovexattr` | done | - | - | `names.c` |  |
 | 200 | `tkill` | done | - | - | `sig.c` |  |
 | 201 | `time` | done | - | - | `misc.c` |  |
 | 202 | `futex` | partial | L6 | - | `futex.c` | WAIT and WAKE; no requeue, wake_op or PI |
@@ -253,7 +253,7 @@ calls, outside the Linux number space, are listed last.
 | 214 | `epoll_ctl_old` | refused | R | ENOSYS |  | removed or never implemented by Linux itself |
 | 215 | `epoll_wait_old` | refused | R | ENOSYS |  | removed or never implemented by Linux itself |
 | 216 | `remap_file_pages` | refused | R | ENOSYS |  | removed or never implemented by Linux itself |
-| 217 | `getdents64` | partial | L1 | - | `fs.c` | one directory stream per descriptor; names cut at 15 bytes |
+| 217 | `getdents64` | done | - | - | `fs.c` |  |
 | 218 | `set_tid_address` | done | - | - | `proc.c` |  |
 | 219 | `restart_syscall` | missing | L2 | ENOSYS |  |  |
 | 220 | `semtimedop` | missing | L7 | ENOSYS |  |  |
@@ -383,7 +383,7 @@ calls, outside the Linux number space, are listed last.
 | 433 | `fspick` | deferred | D | ENOSYS |  | the new mount API: after L8 |
 | 434 | `pidfd_open` | missing | L2 | ENOSYS |  |  |
 | 435 | `clone3` | missing | L2 | ENOSYS |  |  |
-| 436 | `close_range` | partial | L1 | - | `fs.c` | CLOSE_RANGE_UNSHARE refused: no unshare(CLONE_FILES) |
+| 436 | `close_range` | partial | L6 | - | `fs.c` | CLOSE_RANGE_UNSHARE in a process with threads refused: a thread cannot hold a table of its own |
 | 437 | `openat2` | partial | L1 | - | `names.c` | resolve: only NO_MAGICLINKS; BENEATH, IN_ROOT, NO_XDEV and NO_SYMLINKS answer ENOSYS |
 | 438 | `pidfd_getfd` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
 | 439 | `faccessat2` | done | - | - | `names.c` |  |

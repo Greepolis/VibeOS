@@ -28,9 +28,9 @@ NOPTR, linux_sys_pipe2(ARG(0), 0)
 
 ### getdents64 stops declaring its buffer
 --- old
-PTRS(OUT_BUF(1, 2)), linux_sys_getdents64
+PTRS(OUT_BUF(1, 2)), linux_getdents(ARG(0), ARG(1), ARG(2), 0)
 +++ new
-NOPTR, linux_sys_getdents64
+NOPTR, linux_getdents(ARG(0), ARG(1), ARG(2), 0)
 
 ### fstat stops declaring its stat buffer
 --- old

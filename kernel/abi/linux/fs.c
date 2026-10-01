@@ -10,6 +10,8 @@
  * description, call its type, translate the answer. The `if` chains that decided
  * by hand whether a descriptor was a pipe, a socket or the console are gone. */
 
+#include <stddef.h>
+
 #include "linux_internal.h"
 
 /* The *at calls interpret a relative path against a directory descriptor, or
@@ -74,8 +76,50 @@ long linux_fd_install(vibeos_file_t *f, uint32_t fdflags, uint32_t min) {
     return fd;
 }
 
+/* ---- locks (L1 step 6) ---------------------------------------------------------------
+ *
+ * What a lock is on: the filesystem's identity for a file, or - for a pipe, a
+ * socket or the console, which Linux locks too - the description's own. */
+static void linux_lock_key(const vibeos_file_t *f, const void **fs, uint64_t *node) {
+    if (f->mnt) {
+        *fs = f->mnt;
+        *node = f->node;
+    } else {
+        *fs = f->ops;
+        *node = f->pipe >= 0 ? (uint64_t)f->pipe + 1u : (uint64_t)(uint32_t)f->sock + 0x100000u;
+    }
+}
+
+static uint64_t linux_lock_owner_proc(void) {
+    int me = ks_current();
+    return me < 0 ? 0u : VIBEOS_FLK_OWNER_PROC(ks_id(me)->tgid);
+}
+
+/* POSIX's rule, which nobody would have chosen and every program has to live
+ * with: closing *any* descriptor a process has for a file gives back every
+ * record lock the process holds on that file - whichever descriptor took them.
+ * Called for a description that is leaving the caller's table. */
+static void linux_locks_on_close(const vibeos_file_t *f) {
+    const void *fs;
+    uint64_t node, owner = linux_lock_owner_proc();
+
+    if (owner == 0u || vibeos_flk_count() == 0u) {
+        return;
+    }
+    linux_lock_key(f, &fs, &node);
+    vibeos_flk_drop_file(owner, fs, node);
+}
+
+/* A process has ended: its record locks end with it. Not called for an exec,
+ * which keeps them. */
+void linux_locks_exit(uint32_t tgid) {
+    if (vibeos_flk_count() != 0u) {
+        vibeos_flk_drop_owner(VIBEOS_FLK_OWNER_PROC(tgid));
+    }
+}
+
 /* Take a number out of the table and release its description - outside the
- * table's lock, because a release writes a file back or wakes a pipe's reader. */
+ * table's lock, because a release wakes a pipe's reader. */
 long linux_fd_close(uint64_t fd) {
     vibeos_procstate_t *ps = linux_cur_ps();
     vibeos_file_t *f;
@@ -89,6 +133,7 @@ long linux_fd_close(uint64_t fd) {
     if (!f) {
         return -VIBEOS_EBADF;
     }
+    linux_locks_on_close(f);
     vibeos_file_put(f);
     return 0;
 }
@@ -627,7 +672,7 @@ static long linux_sys_fadvise64(uint64_t fd, uint64_t off, uint64_t len, uint64_
     if (!f) {
         return -VIBEOS_EBADF;
     }
-    if (!f->ops->pread && !f->ops->getdents) {
+    if (!f->ops->pread && !f->ops->readdir) {
         r = -VIBEOS_ESPIPE;
     } else if (VIBEOS_ARG_INT(advice) < 0 || VIBEOS_ARG_INT(advice) > LINUX_POSIX_FADV_NOREUSE) {
         r = -VIBEOS_EINVAL;
@@ -824,10 +869,13 @@ static long linux_sys_close_range(uint64_t first, uint64_t last, uint64_t flags)
     if (!ps || first > last || (flags & ~(uint64_t)(LINUX_CLOSE_RANGE_UNSHARE | LINUX_CLOSE_RANGE_CLOEXEC))) {
         return -VIBEOS_EINVAL;
     }
-    if (flags & LINUX_CLOSE_RANGE_UNSHARE) {
-        /* Giving this thread a table of its own is unshare(CLONE_FILES), which
-         * is not implemented; refusing is better than closing descriptors in a
-         * table the other threads are still using. */
+    if ((flags & LINUX_CLOSE_RANGE_UNSHARE) &&
+        __atomic_load_n(&ps->files_users, __ATOMIC_ACQUIRE) > 1u) {
+        /* "Give this thread a table of its own first." A process with one
+         * thread already has one, and the flag asks for nothing. With more,
+         * it is unshare(CLONE_FILES), which needs a thread to be able to hold
+         * a table apart from its process (L6); refusing is better than closing
+         * descriptors in a table the other threads are still using. */
         return -VIBEOS_EINVAL;
     }
     ks_lock(&ps->files_lock, __func__);
@@ -926,6 +974,7 @@ static long linux_dup_to(uint64_t oldfd, uint64_t newfd, uint32_t fdflags) {
         return r == VIBEOS_FDT_NOMEM ? -VIBEOS_ENOMEM : -VIBEOS_EBADF;
     }
     if (old) {
+        linux_locks_on_close(old);
         vibeos_file_put(old);
     }
     return (long)newfd;
@@ -966,9 +1015,185 @@ static long linux_sys_dup(uint64_t oldfd) {
     return linux_dup_from(oldfd, 0, 0);
 }
 
-/* fcntl(): descriptor flags, status flags and duplicates. Record locks are not
- * implemented and say so with ENOLCK - "no locks available" - rather than
- * pretend a lock was taken: SQLite relies on them for correctness. */
+/* The range a struct flock names: from l_start, counted from the start of the
+ * file, the description's position or the end, for l_len bytes - to the end of
+ * the file wherever that goes when l_len is 0, and backwards from the start
+ * when it is negative. */
+static long linux_flock_range(vibeos_file_t *f, const linux_flock_t *fl, uint64_t *start,
+                              uint64_t *end) {
+    int64_t base = 0, s, e;
+
+    switch (fl->l_whence) {
+        case VIBEOS_SEEK_SET:
+            break;
+        case VIBEOS_SEEK_CUR:
+            base = (int64_t)f->pos;
+            break;
+        case VIBEOS_SEEK_END: {
+            vibeos_file_stat_t st;
+            vibeos_file_stat_clear(&st);
+            if (f->ops->stat) {
+                (void)f->ops->stat(f, &st);
+            }
+            base = (int64_t)st.size;
+            break;
+        }
+        default:
+            return -VIBEOS_EINVAL;
+    }
+    if (fl->l_start > 0 && base > INT64_MAX - fl->l_start) {
+        return -VIBEOS_EOVERFLOW;
+    }
+    s = base + fl->l_start;
+    if (fl->l_len == 0) {
+        if (s < 0) {
+            return -VIBEOS_EINVAL;
+        }
+        *start = (uint64_t)s;
+        *end = VIBEOS_FLK_END;
+        return 0;
+    }
+    if (fl->l_len > 0) {
+        if (s > INT64_MAX - (fl->l_len - 1)) {
+            return -VIBEOS_EOVERFLOW;
+        }
+        e = s + fl->l_len - 1;
+    } else {
+        e = s - 1;
+        s = s + fl->l_len;
+    }
+    if (s < 0) {
+        return -VIBEOS_EINVAL;
+    }
+    *start = (uint64_t)s;
+    *end = (uint64_t)e;
+    return 0;
+}
+
+/* Take a lock, waiting for it if `wait`. This layer does the waiting - the
+ * lock table only ever answers - the way a pipe's reader waits: give up the
+ * core, try again, and stop for a signal. A wait that could never end is
+ * refused first, for record locks a process holds (EDEADLK); Linux looks for
+ * no deadlock among description-owned locks, and neither does this. */
+static long linux_lock_take(uint32_t space, vibeos_file_t *f, uint64_t owner, uint32_t pid,
+                            uint32_t type, uint64_t start, uint64_t end, int wait, int detect) {
+    const void *fs;
+    uint64_t node, blocker = 0;
+    long r;
+
+    linux_lock_key(f, &fs, &node);
+    for (;;) {
+        r = vibeos_flk_set(space, fs, node, owner, pid, type, start, end, &blocker);
+        if (r != -VIBEOS_EAGAIN || !wait) {
+            break;
+        }
+        if (detect && vibeos_flk_wait(owner, blocker) != 0) {
+            r = -VIBEOS_EDEADLK;
+            break;
+        }
+        if (ks_current() >= 0 && ks_signal_interrupts(ks_current())) {
+            r = -VIBEOS_EINTR;
+            break;
+        }
+        ks_block_point();
+    }
+    if (wait && detect) {
+        vibeos_flk_wait_done(owner);
+    }
+    return r;
+}
+
+/* F_GETLK, F_SETLK, F_SETLKW and their open-file-description forms. A process
+ * owns the first three's locks, the description the others'; both are in one
+ * space, so each sees the other's. SQLite's correctness rests on these, which
+ * is why they used to answer ENOLCK rather than pretend. */
+static long linux_fcntl_lock(vibeos_file_t *f, int cmd, uint64_t uptr) {
+    linux_flock_t fl;
+    uint64_t start = 0, end = 0, owner;
+    uint32_t type, pid = 0, acc = f->flags & VIBEOS_O_ACCMODE;
+    int ofd = cmd == LINUX_F_OFD_GETLK || cmd == LINUX_F_OFD_SETLK || cmd == LINUX_F_OFD_SETLKW;
+    int get = cmd == LINUX_F_GETLK || cmd == LINUX_F_OFD_GETLK;
+    const void *fs;
+    uint64_t node;
+    long r;
+
+    /* Judged here and not by the row: whether fcntl's third argument is a
+     * pointer at all depends on the command, and six commands say it is - more
+     * than a row has descriptors for. */
+    if (!linux_user_ok(uptr, sizeof(fl), get) ||
+        vibeos_uaccess_copy(&fl, (const void *)(uintptr_t)uptr, sizeof(fl)) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    if (ofd && fl.l_pid != 0) {
+        return -VIBEOS_EINVAL;   /* Linux reserves the field for these */
+    }
+    if (fl.l_type == LINUX_F_RDLCK) {
+        type = VIBEOS_FLK_SHARED;
+    } else if (fl.l_type == LINUX_F_WRLCK) {
+        type = VIBEOS_FLK_EXCL;
+    } else if (fl.l_type == LINUX_F_UNLCK && !get) {
+        type = VIBEOS_FLK_UNLOCK;
+    } else {
+        return -VIBEOS_EINVAL;
+    }
+    r = linux_flock_range(f, &fl, &start, &end);
+    if (r != 0) {
+        return r;
+    }
+    if (ofd) {
+        owner = VIBEOS_FLK_OWNER_FILE(f);
+    } else {
+        owner = linux_lock_owner_proc();
+        pid = ks_current() >= 0 ? ks_id(ks_current())->tgid : 0u;
+    }
+    if (get) {
+        vibeos_flk_info_t info;
+        linux_lock_key(f, &fs, &node);
+        if (vibeos_flk_test(VIBEOS_FLK_RECORD, fs, node, owner, type, start, end, &info)) {
+            fl.l_type = info.type == VIBEOS_FLK_EXCL ? LINUX_F_WRLCK : LINUX_F_RDLCK;
+            fl.l_whence = VIBEOS_SEEK_SET;
+            fl.l_start = (int64_t)info.start;
+            fl.l_len = info.end == VIBEOS_FLK_END ? 0 : (int64_t)(info.end - info.start + 1u);
+            fl.l_pid = info.pid ? (int32_t)info.pid : -1;   /* -1: a description's, no process */
+        } else {
+            fl.l_type = LINUX_F_UNLCK;   /* and nothing else is touched */
+        }
+        return vibeos_uaccess_copy((void *)(uintptr_t)uptr, &fl, sizeof(fl)) != 0 ? -VIBEOS_EFAULT : 0;
+    }
+    /* A read lock needs a descriptor that can read, a write lock one that can
+     * write: EBADF, as Linux says. */
+    if ((type == VIBEOS_FLK_SHARED && acc == VIBEOS_O_WRONLY) ||
+        (type == VIBEOS_FLK_EXCL && acc == VIBEOS_O_RDONLY)) {
+        return -VIBEOS_EBADF;
+    }
+    return linux_lock_take(VIBEOS_FLK_RECORD, f, owner, pid, type, start, end,
+                           cmd == LINUX_F_SETLKW || cmd == LINUX_F_OFD_SETLKW, !ofd);
+}
+
+/* flock(fd, op): one lock on the whole file, held by the open file description
+ * - so a dup and a fork share it, and it goes when the last descriptor naming
+ * the description does. It does not see fcntl's locks, nor they it. */
+static long linux_sys_flock(uint64_t fd, uint64_t op) {
+    vibeos_file_t *f;
+    uint32_t type;
+    long r;
+
+    switch (VIBEOS_ARG_INT(op) & ~LINUX_LOCK_NB) {
+        case LINUX_LOCK_SH: type = VIBEOS_FLK_SHARED; break;
+        case LINUX_LOCK_EX: type = VIBEOS_FLK_EXCL; break;
+        case LINUX_LOCK_UN: type = VIBEOS_FLK_UNLOCK; break;
+        default: return -VIBEOS_EINVAL;
+    }
+    if (!(f = linux_file_get(fd))) {
+        return -VIBEOS_EBADF;
+    }
+    r = linux_lock_take(VIBEOS_FLK_WHOLE, f, VIBEOS_FLK_OWNER_FILE(f), 0, type, 0, VIBEOS_FLK_END,
+                        !(VIBEOS_ARG_INT(op) & LINUX_LOCK_NB), 0);
+    vibeos_file_put(f);
+    return r;   /* -EAGAIN is EWOULDBLOCK: one number on Linux */
+}
+
+/* fcntl(): descriptor flags, status flags, duplicates and record locks. */
 static long linux_sys_fcntl(uint64_t fd, uint64_t cmd, uint64_t arg) {
     vibeos_procstate_t *ps = linux_cur_ps();
     vibeos_file_t *f;
@@ -1017,11 +1242,15 @@ static long linux_sys_fcntl(uint64_t fd, uint64_t cmd, uint64_t arg) {
         case LINUX_F_GETLK:
         case LINUX_F_SETLK:
         case LINUX_F_SETLKW:
+        case LINUX_F_OFD_GETLK:
+        case LINUX_F_OFD_SETLK:
+        case LINUX_F_OFD_SETLKW:
             if (!(f = linux_file_get(fd))) {
                 return -VIBEOS_EBADF;
             }
+            r = linux_fcntl_lock(f, VIBEOS_ARG_INT(cmd), arg);
             vibeos_file_put(f);
-            return -VIBEOS_ENOLCK;
+            return r;
         default:
             return -VIBEOS_EINVAL;
     }
@@ -1168,18 +1397,94 @@ static long linux_sys_lstat(uint64_t path_uptr, uint64_t ubuf) {
                                 LINUX_AT_SYMLINK_NOFOLLOW);
 }
 
-/* getdents64(fd, buf, len): dirent64 records from the directory the descriptor
- * names, so user space can list a directory. */
-static long linux_sys_getdents64(uint64_t fd, uint64_t buf, uint64_t len) {
+/* getdents64(fd, buf, len) and getdents, the call before it: records from the
+ * directory the descriptor names, as many as fit. The file layer hands out
+ * entries by position (vibeos_dirent_t); the record is Linux's and is made
+ * here, in one of two shapes - getdents64 has the type after the header,
+ * getdents in the record's last byte.
+ *
+ * Each record carries the position after it in d_off, and the description's
+ * position is that - so lseek(fd, 0) starts the directory again and seekdir
+ * returns to an entry telldir named. A buffer too small for even one record is
+ * EINVAL, where an empty directory is 0. */
+static long linux_getdents(uint64_t fd, uint64_t buf, uint64_t len, int old) {
     vibeos_file_t *f = linux_file_get(fd);
-    long r;
+    uint64_t used = 0;
+    uint32_t steps;
+    long r = 0;
 
     if (!f) {
         return -VIBEOS_EBADF;
     }
-    r = f->ops->getdents ? f->ops->getdents(f, buf, len) : -VIBEOS_ENOTDIR;
+    if (!f->ops->readdir) {
+        vibeos_file_put(f);
+        return -VIBEOS_ENOTDIR;
+    }
+    /* Bounded: a filesystem whose listing never ends must not hold a core. */
+    for (steps = 0; steps < 4096u; steps++) {
+        /* The record, built here and copied out whole (M-052): filling the
+         * user's buffer field by field faulted in ring 0 if a sibling unmapped
+         * it after the range check. Room for the longest name there is. */
+        uint64_t rec[(sizeof(linux_dirent64_t) + VIBEOS_NAME_MAX + 2u + 7u) / 8u + 1u];
+        vibeos_dirent_t de;
+        uint32_t n = 0, k, reclen;
+        int got = f->ops->readdir(f, f->pos, &de);
+
+        if (got == VIBEOS_READDIR_END) {
+            break;
+        }
+        if (got == VIBEOS_READDIR_SKIP) {
+            f->pos++;
+            continue;
+        }
+        if (got < 0) {
+            r = got;
+            break;
+        }
+        while (de.name[n]) {
+            n++;
+        }
+        /* The header, the name and its NUL - and, the old way, the type's own
+         * byte - rounded up to 8 as Linux does. */
+        reclen = old ? (uint32_t)((offsetof(linux_dirent_t, d_name) + n + 2u + 7u) & ~7u)
+                     : (uint32_t)((offsetof(linux_dirent64_t, d_name) + n + 1u + 7u) & ~7u);
+        if (used + reclen > len) {
+            if (used == 0u) {
+                r = -VIBEOS_EINVAL;
+            }
+            break;
+        }
+        for (k = 0; k < (uint32_t)(sizeof(rec) / sizeof(rec[0])); k++) {
+            rec[k] = 0;
+        }
+        if (old) {
+            linux_dirent_t *d = (linux_dirent_t *)(void *)rec;
+            d->d_ino = de.ino;
+            d->d_off = f->pos + 1u;
+            d->d_reclen = (uint16_t)reclen;
+            for (k = 0; k < n; k++) {
+                d->d_name[k] = de.name[k];
+            }
+            ((uint8_t *)rec)[reclen - 1u] = (uint8_t)LINUX_DT_OF(de.mode);
+        } else {
+            linux_dirent64_t *d = (linux_dirent64_t *)(void *)rec;
+            d->d_ino = de.ino;
+            d->d_off = (int64_t)(f->pos + 1u);
+            d->d_reclen = (uint16_t)reclen;
+            d->d_type = (uint8_t)LINUX_DT_OF(de.mode);
+            for (k = 0; k < n; k++) {
+                d->d_name[k] = de.name[k];
+            }
+        }
+        if (vibeos_uaccess_copy((void *)(uintptr_t)(buf + used), rec, reclen) != 0) {
+            r = -VIBEOS_EFAULT;
+            break;
+        }
+        used += reclen;
+        f->pos++;
+    }
     vibeos_file_put(f);
-    return r;
+    return used > 0u ? (long)used : r;
 }
 
 /* ioctl(): the type answers. Only the console answers anything, and only the
@@ -1494,6 +1799,8 @@ int linux_files_leave(vibeos_procstate_t *ps) {
     X(17,  pread64,     PREAD,       PTRS(OUT_BUF(1, 2)), linux_sys_pread64(ARG(0), ARG(1), ARG(2), ARG(3))) \
     X(18,  pwrite64,    PWRITE,      PTRS(IN_BUF(1, 2)), linux_sys_pwrite64(ARG(0), ARG(1), ARG(2), ARG(3))) \
     X(40,  sendfile,    SENDFILE,    PTRS(OUT_OPT(2, 8)), linux_sys_sendfile(ARG(0), ARG(1), ARG(2), ARG(3))) \
+    X(73,  flock,       FLOCK,       NOPTR, linux_sys_flock(ARG(0), ARG(1))) \
+    X(78,  getdents,    GETDENTS_OLD, PTRS(OUT_BUF(1, 2)), linux_getdents(ARG(0), ARG(1), ARG(2), 1)) \
     X(74,  fsync,       FSYNC,       NOPTR, linux_sys_fsync(ARG(0))) \
     X(75,  fdatasync,   FDATASYNC,   NOPTR, linux_sys_fsync(ARG(0))) \
     X(76,  truncate,    TRUNCATE,    NOPTR, linux_sys_truncate(ARG(0), ARG(1))) \
@@ -1510,7 +1817,7 @@ int linux_files_leave(vibeos_procstate_t *ps) {
     X(83,  mkdir,       MKDIR,       NOPTR, linux_sys_mkdir(ARG(0), ARG(1))) \
     X(89,  readlink,    READLINK,    NOPTR, linux_sys_readlink(ARG(0), ARG(1), ARG(2))) \
     X(87,  unlink,      UNLINK,      NOPTR, linux_sys_unlink(ARG(0))) \
-    X(217, getdents64,  GETDENTS,    PTRS(OUT_BUF(1, 2)), linux_sys_getdents64(ARG(0), ARG(1), ARG(2))) \
+    X(217, getdents64,  GETDENTS,    PTRS(OUT_BUF(1, 2)), linux_getdents(ARG(0), ARG(1), ARG(2), 0)) \
     X(257, openat,      OPEN_AT,     NOPTR, linux_sys_openat(ARG(0), ARG(1), ARG(2), ARG(3))) \
     X(258, mkdirat,     MKDIR_AT,    NOPTR, linux_sys_mkdirat(ARG(0), ARG(1), ARG(2))) \
     X(262, newfstatat,  STAT_AT,     PTRS(OUT(2, sizeof(linux_stat_t))), linux_sys_newfstatat(ARG(0), ARG(1), ARG(2), ARG(3))) \

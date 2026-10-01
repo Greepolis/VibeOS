@@ -74,7 +74,10 @@ CHOKEPOINTS = {
         "A handler calling it directly is a handler that skipped the dispatcher's "
         "chokepoint."),
     "linux_user_ok": (
-        17,   # 16 -> 17 in L1 step 3: preadv and pwritev check each iovec
+        18,   # 17 -> 18 in L1 step 6: fcntl's record locks. Whether its third
+              # argument is a pointer depends on the command, and six commands
+              # say so - more than a row has descriptors for.
+              # 16 -> 17 in L1 step 3: preadv and pwritev check each iovec
               # element's own buffer, as readv and writev do - an address read
               # out of user memory a moment ago, which no row can declare.
               # 15 -> 16 in L1: readlinkat copies a link's contents, whose length

@@ -1009,6 +1009,7 @@ void hw_task_exit(uint64_t code) {
      * released the sockets its whole process was still using. Done before the
      * task is retired, while the table is still reachable through it. */
     if (dying >= 0 && g_tasks[dying].ps != 0 && linux_files_leave(g_tasks[dying].ps)) {
+        linux_locks_exit(g_tasks[dying].id.tgid);
         if (g_net_up) {
             hw_spin_lock_named(&g_net_lock, __func__);
             (void)vibeos_inet_release_owner_sockets(&g_net, g_tasks[dying].id.tgid);

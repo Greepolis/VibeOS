@@ -7,6 +7,10 @@
 #include <stddef.h>
 
 int linux_libc_dirent64(const char *field, size_t *off, size_t *size);
+/* What the host's own kernel answers the old getdents call with, for "/": the
+ * bytes, or negative. No header declares that record, so the kernel is asked. */
+long linux_host_getdents(unsigned char *buf, unsigned long cap);
+
 int linux_libc_const(const char *name, long long *value);
 
 #endif

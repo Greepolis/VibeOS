@@ -33,6 +33,8 @@ int linux_user_ok(uint64_t base, uint64_t len, int write);
  * 1 if so. */
 int linux_fds_copy(vibeos_procstate_t *dst, vibeos_procstate_t *src);
 int linux_files_leave(vibeos_procstate_t *ps);
+/* A process has ended: the record locks it held end with it (L1 step 6). */
+void linux_locks_exit(uint32_t tgid);
 
 /* Futexes (futex.c): exit wakes whoever joins the thread. One waiter per task at
  * most, so the table is sized by the task table, which the architecture asserts. */

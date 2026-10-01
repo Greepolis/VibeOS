@@ -58,6 +58,9 @@ int test_linux_layout(void) {
 #include <linux/openat2.h>
 #include <linux/utime.h>
 #include <asm/statfs.h>
+#include <linux/xattr.h>
+#include <linux/limits.h>
+#include <string.h>
 
 #include "vibeos/linux_layout.h"
 #include "vibeos/abi_linux.h"
@@ -118,7 +121,52 @@ static void libc_const(long long ours, const char *theirs, const char *what) {
 }
 #define LIBC_CONST(ours, theirs) libc_const((long long)(ours), theirs, #ours " is the C library's " theirs)
 
+/* struct linux_dirent, the record of the getdents call before getdents64, is
+ * declared by nobody: Linux keeps it to itself and no C library has used the
+ * call in years. So the host's kernel is asked to list "/" with it and the
+ * answer is read through our structure. If a field of ours were misplaced the
+ * records would not chain - each one's length is where the next begins - and
+ * "." and ".." would not be found with an inode and a directory's type in the
+ * record's last byte. */
+static int host_dirent_agrees(void) {
+    static unsigned char buf[8192];
+    long n = linux_host_getdents(buf, sizeof(buf)), off = 0;
+    int dot = 0, dotdot = 0;
+
+    if (n <= 0) {
+        return 0;
+    }
+    while (off < n) {
+        const linux_dirent_t *d = (const linux_dirent_t *)(const void *)(buf + off);
+        size_t max, len;
+        unsigned char type;
+
+        if (d->d_reclen < offsetof(linux_dirent_t, d_name) + 2u || (d->d_reclen & 7u) != 0u ||
+            off + (long)d->d_reclen > n) {
+            return 0;
+        }
+        max = d->d_reclen - offsetof(linux_dirent_t, d_name) - 1u;
+        for (len = 0; len < max && d->d_name[len]; len++) {
+        }
+        type = buf[off + d->d_reclen - 1];
+        if (len == max || d->d_ino == 0u || d->d_off == 0u) {
+            return 0;
+        }
+        if (strcmp(d->d_name, ".") == 0 && (type == 4u || type == 0u)) {
+            dot = 1;
+        }
+        if (strcmp(d->d_name, "..") == 0 && (type == 4u || type == 0u)) {
+            dotdot = 1;
+        }
+        off += d->d_reclen;
+    }
+    return dot && dotdot;
+}
+#define HOST_FIELD(ours, f) \
+    expect(host_agrees, #ours "." #f " is where the host's kernel puts it")
+
 int test_linux_layout(void) {
+    int host_agrees = host_dirent_agrees();
     g_fail = 0;
     g_checked = 0;
 
@@ -261,6 +309,36 @@ int test_linux_layout(void) {
     LIBC_CONST(LINUX_ST_RDONLY, "ST_RDONLY");
     LIBC_CONST(VIBEOS_S_ISUID, "S_ISUID");
     LIBC_CONST(VIBEOS_S_ISGID, "S_ISGID");
+
+    SIZE(linux_flock_t, struct flock);
+    FIELD(linux_flock_t, struct flock, l_type);
+    FIELD(linux_flock_t, struct flock, l_whence);
+    FIELD(linux_flock_t, struct flock, l_start);
+    FIELD(linux_flock_t, struct flock, l_len);
+    FIELD(linux_flock_t, struct flock, l_pid);
+
+    HOST_FIELD(linux_dirent_t, d_ino);
+    HOST_FIELD(linux_dirent_t, d_off);
+    HOST_FIELD(linux_dirent_t, d_reclen);
+    HOST_FIELD(linux_dirent_t, d_name);
+
+    CONST(LINUX_F_OFD_GETLK, F_OFD_GETLK);
+    CONST(LINUX_F_OFD_SETLK, F_OFD_SETLK);
+    CONST(LINUX_F_OFD_SETLKW, F_OFD_SETLKW);
+    CONST(LINUX_F_RDLCK, F_RDLCK);
+    CONST(LINUX_F_WRLCK, F_WRLCK);
+    CONST(LINUX_F_UNLCK, F_UNLCK);
+    CONST(LINUX_LOCK_SH, LOCK_SH);
+    CONST(LINUX_LOCK_EX, LOCK_EX);
+    CONST(LINUX_LOCK_NB, LOCK_NB);
+    CONST(LINUX_LOCK_UN, LOCK_UN);
+    CONST(LINUX_XATTR_CREATE, XATTR_CREATE);
+    CONST(LINUX_XATTR_REPLACE, XATTR_REPLACE);
+    CONST(LINUX_XATTR_NAME_MAX, XATTR_NAME_MAX);
+    CONST(LINUX_XATTR_SIZE_MAX, XATTR_SIZE_MAX);
+    LIBC_CONST(LINUX_DT_LNK, "DT_LNK");
+    CONST(VIBEOS_EDEADLK, EDEADLK);
+    CONST(VIBEOS_EOVERFLOW, EOVERFLOW);
 
     SIZE(linux_rlimit64_t, struct rlimit64);
     FIELD(linux_rlimit64_t, struct rlimit64, rlim_cur);

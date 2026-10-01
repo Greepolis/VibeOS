@@ -21,6 +21,8 @@
 #if defined(__linux__)
 
 #include <dirent.h>
+#include <fcntl.h>
+#include <sys/syscall.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
@@ -38,6 +40,7 @@ static const struct { const char *name; long long value; } g_consts[] = {
     { "SOCK_DGRAM", SOCK_DGRAM },
     { "DT_DIR", DT_DIR },
     { "DT_REG", DT_REG },
+    { "DT_LNK", DT_LNK },
     { "S_IFMT", S_IFMT },
     { "S_IFBLK", S_IFBLK },
     { "S_IFLNK", S_IFLNK },
@@ -55,6 +58,18 @@ static const struct { const char *name; long long value; } g_consts[] = {
     { "UTIME_OMIT", UTIME_OMIT },
     { "ST_RDONLY", ST_RDONLY },
 };
+
+long linux_host_getdents(unsigned char *buf, unsigned long cap) {
+    int fd = open("/", O_RDONLY | O_DIRECTORY);
+    long n;
+
+    if (fd < 0) {
+        return -1;
+    }
+    n = syscall(SYS_getdents, fd, buf, cap);
+    close(fd);
+    return n;
+}
 
 int linux_libc_dirent64(const char *field, size_t *off, size_t *size) {
     size_t i;
@@ -80,6 +95,11 @@ int linux_libc_const(const char *name, long long *value) {
 }
 
 #else
+
+long linux_host_getdents(unsigned char *buf, unsigned long cap) {
+    (void)buf; (void)cap;
+    return -1;
+}
 
 int linux_libc_dirent64(const char *field, size_t *off, size_t *size) {
     (void)field; (void)off; (void)size;
