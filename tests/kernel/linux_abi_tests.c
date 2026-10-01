@@ -1961,6 +1961,24 @@ static void t_fork_snapshot_and_groups(void) {
     ks_ps(parent)->brk_cur = brk0;
     ks_ps(parent)->mmap_cur = cur0;
 
+    /* M-080: a descriptor whose path now names another file does not act on
+     * that file. */
+    {
+        linux_stat_t st;
+        long fd = tmp_open("/tmp/id-a", 0x42, 0644);
+
+        expect(fd >= 0 && SYS2(82, ustr("/tmp/id-a"), ustr("/tmp/id-b")) == 0 &&
+               SYS2(91, (uint64_t)fd, 0600) == -VIBEOS_ENOENT,
+               "fchmod after the file was renamed away finds nothing at its path");
+        expect(SYS1(3, (uint64_t)tmp_open("/tmp/id-a", 0x42, 0644)) == 0 &&
+               SYS2(91, (uint64_t)fd, 0600) == -VIBEOS_ESTALE &&
+               tmp_stat("/tmp/id-a", 1, &st) == 0 && (st.st_mode & 0777u) == 0644u,
+               "and a new file at that path is not the descriptor's: ESTALE, and it is left alone");
+        expect(SYS2(82, ustr("/tmp/id-b"), ustr("/tmp/id-a")) == 0 && SYS2(91, (uint64_t)fd, 0600) == 0 &&
+               tmp_stat("/tmp/id-a", 1, &st) == 0 && (st.st_mode & 0777u) == 0600u,
+               "back at its path, the descriptor's file is the one changed");
+    }
+
     /* M-079: a group is joined only if somebody leads it. */
     kf_set_current(child);
     gpid = SYS0(57);

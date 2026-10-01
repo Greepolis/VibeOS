@@ -48,6 +48,7 @@
 #define VIBEOS_EOVERFLOW 75
 #define VIBEOS_ENOTSOCK 88
 #define VIBEOS_EOPNOTSUPP 95
+#define VIBEOS_ESTALE 116
 
 /* Linux signal numbers. The pending and blocked masks are uint64_t keyed by
  * signal number, so bit 63 is the highest that exists and 64 is refused rather

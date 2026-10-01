@@ -1,3 +1,6 @@
+# M-078, M-079 and M-080 (the last in kernel/abi/linux/fs.c: its case is in
+# abi-fd-identity.txt). Host tests: t_fork_snapshot_and_groups in
+# tests/kernel/linux_abi_tests.c.
 #
 #  1. fork copies the break after releasing the address-space lock
 #  2. fork copies the mapping cursor after releasing it
