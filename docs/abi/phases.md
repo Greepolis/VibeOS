@@ -811,6 +811,83 @@ true to report before they are worth a row, so L1 builds that first:
   file, so on FAT it follows the directory entry (step 4's gap); mandatory
   locking does not exist, as on current Linux.
 
+**Step 7 (2026-10-01): done.**
+
+- **The console is a terminal** (`include/vibeos/tty.h`,
+  `kernel/abi/files/console.c`). It was a character device that answered ENOTTY
+  to every terminal question but the foreground process group - by design, and
+  truthfully - read a line at a time, echoed always, and handed back whatever
+  had been typed when the keyboard went quiet, half a line included. It has
+  modes now, one set for the one terminal, in Linux's numbering as the open
+  flags are; another personality translates its console modes into them.
+- **What is honoured**: ICANON - a read returns one finished line, erasable
+  until Enter, and waits for it; without it a read returns as soon as MIN bytes
+  are typed, with MIN 0 at once. ECHO, ECHOE, ECHONL. The erase, kill and
+  end-of-file characters. ICRNL on input; OPOST with ONLCR on output. Typed-
+  ahead input is taken from the keyboard only as far as a read needs it, so
+  what comes next is read in whatever mode the terminal is in by then.
+  Everything else is stored and given back as set - which is what lets a
+  program save the modes and restore them - and no more: the interrupt
+  character interrupts with ISIG clear, and TIME is not a timer.
+- **The requests** are the personality's, as their structures are: TCGETS,
+  TCSETS, TCSETSW, TCSETSF, TIOCGWINSZ and TIOCSWINSZ on the console, ENOTTY
+  on anything else; and four any descriptor answers - FIOCLEX, FIONCLEX,
+  FIONBIO, FIONREAD (a file, a pipe, the terminal). `ioctl` stays PARTIAL for
+  what is left: ISIG, TIME, TCFLSH, TIOCSCTTY and the rest.
+- **A terminal changes what every program does**, and the boot found out at
+  once. A C library buffers a terminal by lines and writes a line as two pieces
+  of one `writev`, which this kernel wrote as two writes: `THREADS_C5_EXEC_OK`
+  arrived as `THREADS_C5_EXEC` and `_OK` with a log prefix each, and five gate
+  assertions failed on output that was correct. A `writev` that fits a page is
+  gathered and written once, as Linux writes it. `ls` lays its names out in
+  columns for the width TIOCGWINSZ reports.
+- **And a shell on a terminal is interactive.** BusyBox's ash prints a prompt,
+  puts the terminal in raw mode and edits its own command line, asking
+  `poll()` before every key - a syscall this kernel did not have, so the first
+  boot printed "poll: Function not implemented" once per character of the
+  self-test. `+i` does not turn that off in BusyBox. So **`poll` is here ahead
+  of L4**, as much of it as the terminal needs: each file type says what it
+  can do without waiting (`ready`: the console, a pipe; a file is always
+  ready), and the wait is the pipes' wait. PARTIAL, owned by L4: a socket
+  always reports ready. The self-test's shell session is a real interactive
+  one now, every command typed a key at a time through raw mode.
+- **A defect three steps old, found by reading the log this step changed.**
+  The native shell's `write` opened its file with `O_CREAT` alone, which is
+  read-only. That worked while a file was replaced on release from whatever
+  had been written; from step 4, when a write went into the file at once, the
+  write was refused, nothing looked at its result, the shell printed
+  "written", and the file was empty. Every `cat DOCS/NOTES.TXT` in the boot -
+  five of them, four programs - printed nothing for three steps, and the gate
+  stayed green: the line "persistent hello" moved the gate's reported *phase*
+  and was asserted by nothing. It is asserted now (`notes_file_not_read_back`,
+  five times), the shell opens to write and checks what write returns, and the
+  sabotage case is the defect as it shipped.
+- **Host tests**: the fake kernel has a keyboard that can be typed at
+  (`kf_type`); two groups cover the modes and the requests, poll and the
+  gathered writev. **At boot**: the ring-3 self-test asks TCGETS and expects a
+  canonical, echoing terminal (it used to expect ENOTTY); the shell's prompt
+  (`shell_not_interactive`); and the word "echo" arriving as four writes of
+  one character - the shell showing each key itself, the kernel's echo off
+  (`terminal_raw_mode_failed`).
+- **Sabotage**: `abi-tty.txt` (15), `abi-tty-fs.txt` (13), `abi-tty-pipe.txt`
+  (2) on the host; `abi-tty-boot.txt` (2), `abi-tty-console-boot.txt` (1) and
+  `user-sh-boot.txt` (1) at boot. Three host cases went NOT RED first, and
+  each was the test's:
+  - *poll waits with a timeout of 0.* The fake kernel abandons a call that
+    waits, and an abandoned call leaves 0 behind - which is what poll returns
+    when nothing is ready. The test compared the number. It asks now whether
+    the call returned at all.
+  - *poll reports reading to whoever asked about writing.* Nothing asked about
+    writing on a descriptor that could be read.
+  - *a read returns every finished line at once.* The terminal takes input
+    only until one line is finished, so two never waited together - except
+    after raw mode, where FIONREAD takes everything typed. That is the
+    arrangement the test makes now.
+- **Still open**: ISIG and TIME; TCSETSF throws away the terminal's own line
+  and not what is still in the keyboard's queue behind it; there is one
+  terminal and no /dev/tty to name it; a program that dies in raw mode leaves
+  the next one in it, as on a real terminal, and nothing here resets it.
+
 ### L2. Processes, credentials and time (47)
 
 Sleeping and timers (`nanosleep`, `clock_nanosleep`, `alarm`, `setitimer`,

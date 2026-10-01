@@ -288,6 +288,26 @@ table under them (`kernel/fs/filelock.c`) knows neither - an owner is a number.
 The table never waits: a handler that waits asks it first whether the wait
 could end (`vibeos_flk_wait`).
 
+**Making something true changes every program that asks.** The console
+answered ENOTTY for months, and every program buffered and behaved
+accordingly. The day it answered TCGETS (L1 step 7), five gate assertions
+failed on correct output - a C library buffers a terminal by lines and writes
+each as a two-piece `writev`, which arrived as two log lines - `ls` printed
+columns, and BusyBox's shell went interactive and called `poll()`, which did
+not exist, once per keystroke of the self-test. None of that is a bug in the
+terminal. When a capability is added that programs *probe for*, expect the
+programs to change, and read the first boot's log before touching anything.
+
+**A line that only moves the reported phase is not asserted.** The gate looked
+for "persistent hello" to decide which phase a failure report should name, and
+that was its only use. When the file behind it went empty - the native shell's
+`write` opened with O_CREAT alone, read-only, from L1 step 4 - every `cat`
+printed nothing for three steps and every boot was green. This is "a line in
+the serial log is not a check" a second time, in the shape that is hardest to
+see: the string *is* in the gate's source, so a grep for it says it is covered.
+And the program that wrote the file said "written" without looking at what
+write returned.
+
 **`st_dev` was 0 for every filesystem.** `cp` and `mv` compare st_dev and
 st_ino to refuse copying a file onto itself, so a file in /tmp and one on the
 boot volume with equal inode numbers were the same file. Nothing failed,
@@ -1117,6 +1137,12 @@ evidence can silently lose lines is asserting on a sample.
 
 It waits for `VIBEOS_SELFTEST_DONE` before driving the kernel CLI, because the
 two run concurrently and a slower build used to get its script cut short.
+
+The shell part of the self-test is an interactive BusyBox session since L1
+step 7: the console is a terminal, so ash prints its prompt, switches to raw
+mode and reads the injected script a key at a time, echoing each itself. In the
+serial log a typed command is therefore a run of one-character writes on one
+physical line, and a command's output starts on the next.
 
 The GUI is **not** gated - `screenshot.py` is run by hand.
 
