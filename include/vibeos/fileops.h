@@ -40,12 +40,10 @@ uint32_t vibeos_open_walk_flags(uint32_t flags);
  * or a regular file, one reference. `mode` is the permission bits a created
  * file gets, the caller's umask already applied.
  *
- * On a filesystem that writes at an offset the flags mean what Linux means by
- * them: O_CREAT makes the file now, O_EXCL refuses an existing one, O_TRUNC
- * empties it, O_APPEND writes at its end, O_RDWR reads and writes. On one that
- * only stores whole files (FAT, for now) a file opened O_WRONLY or O_CREAT is
- * created or replaced on release from the bytes written, as it was before L1.
- * 0 and a negated errno in *err otherwise. */
+ * The flags mean what Linux means by them: O_CREAT makes the file now, O_EXCL
+ * refuses an existing one, O_TRUNC empties it, O_APPEND writes at its end,
+ * O_RDWR reads and writes. Opening to write on a filesystem that writes
+ * nothing is EROFS. 0 and a negated errno in *err otherwise. */
 vibeos_file_t *vibeos_open_path(const vibeos_path_t *w, uint32_t flags, uint32_t mode,
                                 long *err);
 

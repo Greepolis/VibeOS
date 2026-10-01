@@ -28,7 +28,6 @@
 #include "vibeos/vfs.h"
 
 #define VIBEOS_FILE_MAX 256u
-#define VIBEOS_FILE_WBUF 512u
 #define VIBEOS_FILE_PATH VIBEOS_PATH_MAX
 
 /* Open flags a description keeps, in Linux's numbering - the numbers a Linux
@@ -119,12 +118,8 @@ struct vibeos_file {
     int isdir;
     uint32_t dir_index;
     char path[VIBEOS_FILE_PATH];
-    /* A file on a filesystem that writes at an offset (L1): reads and writes
-     * go straight to the node. Otherwise writes are buffered and committed on
-     * release - the FAT writer stores whole files, until it learns better. */
-    int direct;
-    uint8_t wbuf[VIBEOS_FILE_WBUF];
-    uint32_t wlen;
+    /* Set at the first write through this description, which is when anything
+     * cached from the file stops being true (vibeos_files_on_write_back). */
     int dirty;
 };
 

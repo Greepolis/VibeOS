@@ -107,7 +107,7 @@ static long regular_read(vibeos_file_t *f, uint64_t buf, uint64_t len) {
  * another process, may have written since this one was opened. */
 static uint64_t regular_size(vibeos_file_t *f) {
     vibeos_fs_node_t node;
-    if (f->direct && vibeos_fs_lookup(f->mnt, tail_of(f), &node) == 0) {
+    if (vibeos_fs_lookup(f->mnt, tail_of(f), &node) == 0) {
         f->size = node.size;
     }
     return f->size;
@@ -174,44 +174,34 @@ static long regular_pwrite(vibeos_file_t *f, uint64_t buf, uint64_t len, uint64_
     if ((f->flags & VIBEOS_O_ACCMODE) == VIBEOS_O_RDONLY) {
         return -VIBEOS_EBADF;
     }
-    if (!f->direct) {
-        return -VIBEOS_ESPIPE;   /* a whole-file writer has no offsets to write at */
-    }
     return regular_pwrite_direct(f, buf, len, off);
 }
 
-/* Buffered, committed on release (the FAT writer stores whole files). Fault-safe:
- * the dispatcher's row validates the buffer before this runs, and that check and
- * this copy are two instants - a sibling thread can munmap the buffer in between
- * (H-010's family). */
+/* Fault-safe: the dispatcher's row validates the buffer before this runs, and
+ * that check and the copy are two instants - a sibling thread can munmap the
+ * buffer in between (H-010's family) - so the bytes go through a kernel page.
+ *
+ * Until docs/abi/ L1 a write went into a 512-byte buffer and the file was
+ * replaced from it when the last descriptor closed, because FAT, the one
+ * filesystem that wrote, stored whole files. tmpfs wrote at an offset from
+ * step 3 and FAT from step 4; with no whole-file filesystem left, the buffer
+ * and the write-back on release went with it. */
 static long regular_write(vibeos_file_t *f, uint64_t buf, uint64_t len) {
-    uint64_t n = 0;
+    uint64_t at;
+    long w;
 
     if ((f->flags & VIBEOS_O_ACCMODE) == VIBEOS_O_RDONLY) {
         return -VIBEOS_EBADF;
     }
-    if (f->direct) {
-        /* O_APPEND: every write goes to the end as it is now, whoever else has
-         * written since - which is what makes two processes appending to one
-         * log interleave lines rather than overwrite each other. */
-        uint64_t at = (f->flags & VIBEOS_O_APPEND) ? regular_size(f) : f->pos;
-        long w = regular_pwrite_direct(f, buf, len, at);
-        if (w > 0) {
-            f->pos = at + (uint64_t)w;
-        }
-        return w;
+    /* O_APPEND: every write goes to the end as it is now, whoever else has
+     * written since - which is what makes two processes appending to one log
+     * interleave lines rather than overwrite each other. */
+    at = (f->flags & VIBEOS_O_APPEND) ? regular_size(f) : f->pos;
+    w = regular_pwrite_direct(f, buf, len, at);
+    if (w > 0) {
+        f->pos = at + (uint64_t)w;
     }
-    if (f->wlen < VIBEOS_FILE_WBUF) {
-        uint64_t room = (uint64_t)(VIBEOS_FILE_WBUF - f->wlen);
-        n = (len < room) ? len : room;
-        if (n > 0u &&
-            vibeos_uaccess_copy(&f->wbuf[f->wlen], (const void *)(uintptr_t)buf, n) != 0) {
-            return -VIBEOS_EFAULT;
-        }
-        f->wlen += (uint32_t)n;
-    }
-    f->dirty = 1;
-    return (long)n;
+    return w;
 }
 
 static long regular_seek(vibeos_file_t *f, int64_t off, int whence) {
@@ -237,8 +227,7 @@ static long regular_seek(vibeos_file_t *f, int64_t off, int whence) {
  *
  * Asked of the filesystem again (L1): owner, mode and times change under an
  * open file - chmod, a write through another description - and the node the
- * description was opened on is a snapshot. The description's own size wins,
- * because its unwritten bytes are part of the file this descriptor sees. */
+ * description was opened on is a snapshot. */
 static int regular_stat(vibeos_file_t *f, vibeos_file_stat_t *out) {
     vibeos_fs_node_t node;
 
@@ -248,8 +237,6 @@ static int regular_stat(vibeos_file_t *f, vibeos_file_stat_t *out) {
         vibeos_file_stat_clear(out);
         out->mode = f->isdir ? (VIBEOS_S_IFDIR | 0755u) : (VIBEOS_S_IFREG | 0644u);
         out->ino = f->node ? f->node : 2u;
-    }
-    if (!f->direct) {
         out->size = f->isdir ? 0u : f->size;
     }
     return 0;
@@ -262,16 +249,6 @@ static int regular_truncate(vibeos_file_t *f, uint64_t size) {
     if ((f->flags & VIBEOS_O_ACCMODE) == VIBEOS_O_RDONLY) {
         return -VIBEOS_EINVAL;   /* Linux: not open for writing */
     }
-    if (!f->direct) {
-        /* The buffer is the file: cutting it is all a whole-file writer can
-         * do, and it cannot grow one. */
-        if (size > f->wlen) {
-            return -VIBEOS_EINVAL;
-        }
-        f->wlen = (uint32_t)size;
-        f->dirty = 1;
-        return 0;
-    }
     r = vibeos_fs_truncate(f->mnt, &node, size);
     if (r == 0) {
         f->size = size;
@@ -279,19 +256,7 @@ static int regular_truncate(vibeos_file_t *f, uint64_t size) {
     return r;
 }
 
-static void regular_write_back(vibeos_file_t *f) {
-    if (g_on_write_back) {
-        g_on_write_back();
-    }
-    if (vibeos_fs_write_file(f->mnt, tail_of(f), f->wbuf, f->wlen) < 0) {
-        ks_log(VIBEOS_LOG_WARN, 70u, f->wlen, 0, "a file's write-back failed at its last close");
-    }
-}
-
 static int regular_sync(vibeos_file_t *f) {
-    if (!f->direct && f->dirty && (f->flags & VIBEOS_O_ACCMODE) != VIBEOS_O_RDONLY) {
-        regular_write_back(f);   /* what was written so far, now */
-    }
     return vibeos_fs_sync(f->mnt);
 }
 
@@ -347,24 +312,12 @@ static long dir_getdents(vibeos_file_t *f, uint64_t buf, uint64_t len) {
     return (long)used;
 }
 
-/* The last descriptor has gone: commit what was written. The volume changed, so
- * a staged image may no longer match the file it came from - dropping it is the
- * whole basis for trusting that cache. A failed write-back has nobody left to be
- * told; close reports it only when it was the last reference, as Linux's close
- * reports what the release said. */
-static void regular_release(vibeos_file_t *f) {
-    if (!f->direct && (f->flags & VIBEOS_O_ACCMODE) != VIBEOS_O_RDONLY && f->dirty) {
-        regular_write_back(f);
-    }
-}
-
 const vibeos_file_ops_t vibeos_fops_regular = {
     .name = "file",
     .read = regular_read,
     .write = regular_write,
     .seek = regular_seek,
     .stat = regular_stat,
-    .release = regular_release,
     .pread = regular_pread,
     .pwrite = regular_pwrite,
     .truncate = regular_truncate,
@@ -407,7 +360,6 @@ vibeos_file_t *vibeos_open_path(const vibeos_path_t *w, uint32_t flags, uint32_t
     vibeos_fs_node_t node;
     uint32_t acc = flags & VIBEOS_O_ACCMODE;
     int wants_write = acc != VIBEOS_O_RDONLY;
-    int direct = 0, legacy_write = 0;
     vibeos_file_t *f;
     uint32_t k;
     long r;
@@ -438,31 +390,15 @@ vibeos_file_t *vibeos_open_path(const vibeos_path_t *w, uint32_t flags, uint32_t
             *err = -VIBEOS_ENOTDIR;
             return 0;
         }
-        if (!node.is_dir) {
+        if (!node.is_dir && wants_write) {
             /* Can this filesystem write into the file where it stands? A
-             * zero-length write asks without changing anything. The answer is
-             * the filesystem's, not this descriptor's: a read-only descriptor
-             * on such a file is "direct" too, so its fstat and SEEK_END see the
-             * file as it is now. The first version asked only when opening to
-             * write, and a reader's size stayed what it was at open while
-             * another descriptor grew the file. */
+             * zero-length write asks without changing anything: EROFS from a
+             * filesystem that writes nothing, and the open fails here rather
+             * than at the first write. */
             r = vibeos_fs_write_at(mnt, &node, 0, 0, 0);
-            if (r == 0) {
-                direct = 1;
-                if (wants_write && (flags & VIBEOS_O_TRUNC)) {
-                    r = vibeos_fs_truncate(mnt, &node, 0);
-                    node.size = 0;
-                }
-            } else if (r == -VIBEOS_EROFS && !wants_write) {
-                r = 0;   /* reading from a read-only filesystem is what it is for */
-            } else if (r == -VIBEOS_EOPNOTSUPP) {
-                /* A whole-file writer (FAT, for now). O_WRONLY or O_CREAT opens
-                 * to replace the file on release; O_RDWR on its own opens for
-                 * reading, because writing into the middle would truncate the
-                 * file to what was written. The gap stays visible as EBADF. */
-                legacy_write = (acc == VIBEOS_O_WRONLY || (flags & VIBEOS_O_CREAT)) &&
-                               vibeos_fs_writable(mnt);
-                r = 0;
+            if (r == 0 && (flags & VIBEOS_O_TRUNC)) {
+                r = vibeos_fs_truncate(mnt, &node, 0);
+                node.size = 0;
             }
             if (r != 0) {
                 *err = r;
@@ -476,19 +412,10 @@ vibeos_file_t *vibeos_open_path(const vibeos_path_t *w, uint32_t flags, uint32_t
             return 0;
         }
         r = vibeos_fs_create(mnt, tail, mode & 07777u, &node);
-        if (r == 0) {
-            direct = 1;
-        } else if (r == -VIBEOS_EOPNOTSUPP) {
-            legacy_write = 1;   /* made on release, from the bytes written */
-        } else {
+        if (r != 0) {
             *err = r;
             return 0;
         }
-    }
-    if (legacy_write) {
-        flags = (flags & ~VIBEOS_O_ACCMODE) | VIBEOS_O_WRONLY;
-    } else if (!direct) {
-        flags = (flags & ~VIBEOS_O_ACCMODE) | VIBEOS_O_RDONLY;
     }
     f = vibeos_file_alloc(node.is_dir ? &vibeos_fops_dir : &vibeos_fops_regular,
                           flags & ~(VIBEOS_O_CREAT | VIBEOS_O_EXCL | VIBEOS_O_TRUNC |
@@ -504,9 +431,8 @@ vibeos_file_t *vibeos_open_path(const vibeos_path_t *w, uint32_t flags, uint32_t
     f->mnt = mnt;
     f->tail = (uint32_t)(w->tail - abs);
     f->node = node.id;
-    f->size = legacy_write ? 0u : node.size;
+    f->size = node.size;
     f->isdir = node.is_dir;
-    f->direct = direct;
     *err = 0;
     return f;
 }

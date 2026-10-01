@@ -700,9 +700,9 @@ static void t_kernel_copies(void) {
            "copy_file_range is between regular files");
 }
 
-/* The whole-file filesystem keeps working as it did: the fake's root stores
- * files the way FAT does. */
-static void t_whole_file_writer(void) {
+/* The root filesystem, beside /tmp: the fake's own, a second implementation of
+ * the same operations, as FAT is beside tmpfs. */
+static void t_root_filesystem_writes(void) {
     uint64_t buf = 0;
     long fd;
 
@@ -711,21 +711,36 @@ static void t_whole_file_writer(void) {
     fd = SYS3(2, ustr("/w"), 0x41, 0644);
     memcpy(kf_uptr(buf), "whole", 5);
     expect(fd >= 3 && SYS3(1, (uint64_t)fd, buf, 5) == 5 && SYS1(3, (uint64_t)fd) == 0,
-           "a file written on a whole-file filesystem");
+           "a file written on the root filesystem");
     fd = SYS2(2, ustr("/w"), 0);
     expect(fd >= 3 && SYS3(0, (uint64_t)fd, buf + 16, 16) == 5 &&
-           memcmp((char *)kf_uptr(buf) + 16, "whole", 5) == 0, "is there after its last close");
+           memcmp((char *)kf_uptr(buf) + 16, "whole", 5) == 0, "is there");
     expect(SYS4(17, (uint64_t)fd, buf, 3, 1) == 3 && memcmp(kf_uptr(buf), "hol", 3) == 0,
            "and pread64 works on it too");
-    /* An existing one, replaced: the open that finds the file, where a new
-     * file takes the create path. */
+    /* An existing one, written into: the open that finds the file, where a
+     * new file takes the create path. O_WRONLY without O_TRUNC keeps what the
+     * write does not cover - it used to replace the whole file. */
     fd = SYS2(2, ustr("/w"), 1);
-    memcpy(kf_uptr(buf), "again!", 6);
-    expect(fd >= 3 && SYS3(1, (uint64_t)fd, buf, 6) == 6 && SYS1(3, (uint64_t)fd) == 0,
-           "an existing file on a whole-file filesystem is opened to be replaced");
+    memcpy(kf_uptr(buf), "WH", 2);
+    expect(fd >= 3 && SYS3(1, (uint64_t)fd, buf, 2) == 2 && SYS1(3, (uint64_t)fd) == 0,
+           "an existing file on the root filesystem opens to be written");
     fd = SYS2(2, ustr("/w"), 0);
-    expect(fd >= 3 && SYS3(0, (uint64_t)fd, buf + 32, 16) == 6 &&
-           memcmp((char *)kf_uptr(buf) + 32, "again!", 6) == 0, "and is, at its last close");
+    expect(fd >= 3 && SYS3(0, (uint64_t)fd, buf + 32, 16) == 5 &&
+           memcmp((char *)kf_uptr(buf) + 32, "WHole", 5) == 0,
+           "and a write without O_TRUNC changes the bytes it covers and keeps the rest");
+    {
+        uint64_t iov = kf_ualloc(16);
+        uint64_t *v = (uint64_t *)kf_uptr(iov);
+        fd = SYS2(2, ustr("/w"), 2);
+        memcpy(kf_uptr(buf), "XY", 2);
+        v[0] = buf; v[1] = 2;
+        expect(SYS4(18, (uint64_t)fd, buf, 2, 3) == 2 && sys(296, (uint64_t)fd, iov, 1, 0, 0, 0, 0) == 2 &&
+               SYS4(17, (uint64_t)fd, buf + 48, 5, 0) == 5 &&
+               memcmp((char *)kf_uptr(buf) + 48, "XYoXY", 5) == 0,
+               "pwrite64 and pwritev write at their offsets there too");
+        expect(SYS2(77, (uint64_t)fd, 100) == 0 && SYS2(76, ustr("/w"), 3) == 0 &&
+               SYS3(8, (uint64_t)fd, 0, 2) == 3, "ftruncate grows it and truncate cuts it");
+    }
 }
 
 /* A forked child starts where its parent is. */
@@ -785,7 +800,7 @@ int test_linux_handlers(void) {
     t_positional();
     t_truncate_and_sync();
     t_kernel_copies();
-    t_whole_file_writer();
+    t_root_filesystem_writes();
     return g_fail ? -1 : 0;
 }
 
@@ -904,10 +919,7 @@ int test_linux_gaps(void) {
         }
     }
 
-    /* L1's writes on a filesystem that stores whole files - the fake's root, as
-     * FAT on the boot volume: pwrite64 (18), pwritev (296) and pwritev2 (328)
-     * have no offset to write at, truncate (76) can only empty and ftruncate
-     * (77) only cut. Step 4 teaches FAT. */
+    /* pwritev2 (328): RWF_HIPRI is advice Linux accepts. */
     fresh(64);
     kf_fs_add("/f", "abcdef", 6, 0);
     {
@@ -916,12 +928,8 @@ int test_linux_gaps(void) {
         uint64_t *v = (uint64_t *)kf_uptr(iov);
         memcpy(kf_uptr(b), "XY", 2);
         v[0] = b; v[1] = 2;
-        gap(18, sys(18, (uint64_t)fd, b, 2, 1, 0, 0, 0) == 2, "pwrite64 into a file on the root filesystem");
-        gap(296, sys(296, (uint64_t)fd, iov, 1, 1, 0, 0, 0) == 2, "pwritev into one");
         gap(328, sys(328, (uint64_t)fd, iov, 1, 1, 0, 1 /* RWF_HIPRI */, 0) == 2,
-            "pwritev2 into one, with a flag Linux accepts");
-        gap(77, SYS2(77, (uint64_t)fd, 100) == 0, "ftruncate growing a file on the root filesystem");
-        gap(76, SYS2(76, ustr("/f"), 3) == 0, "truncate cutting one by path");
+            "pwritev2 with a flag Linux accepts");
     }
     /* preadv2 (327): RWF_HIPRI is advice Linux accepts. */
     fresh(65);

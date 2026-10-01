@@ -172,6 +172,11 @@ static int kf_fs_mkdir(void *fs, const char *path) {
     return 0;
 }
 
+static int kf_fs_create(void *fs, const char *path, uint32_t mode, vibeos_fs_node_t *out);
+static long kf_fs_write_at(void *fs, const vibeos_fs_node_t *node, uint64_t offset,
+                           const void *buf, uint32_t len);
+static int kf_fs_truncate(void *fs, const vibeos_fs_node_t *node, uint64_t size);
+
 static const vibeos_fs_ops_t g_kf_fs_ops = {
     .lookup = kf_fs_lookup,
     .read_at = kf_fs_read_at,
@@ -179,6 +184,9 @@ static const vibeos_fs_ops_t g_kf_fs_ops = {
     .list = kf_fs_list,
     .unlink = kf_fs_unlink,
     .mkdir = kf_fs_mkdir,
+    .write_at = kf_fs_write_at,
+    .truncate = kf_fs_truncate,
+    .create = kf_fs_create,
 };
 
 void kf_fs_add(const char *path, const void *data, uint32_t len, int is_dir) {
@@ -207,6 +215,76 @@ void kf_fs_add(const char *path, const void *data, uint32_t len, int is_dir) {
     g_files[i].len = len;
     g_files[i].is_dir = is_dir;
     g_files[i].used = 1;
+}
+
+/* The root writes in place, as every filesystem the kernel mounts to write
+ * does since docs/abi/ L1 step 4. A file here is 512 bytes at most; past that
+ * is the volume being full. */
+static kf_file_t *kf_node_file(const vibeos_fs_node_t *node) {
+    if (node->id == 0u || node->id > KF_FILES || !g_files[node->id - 1u].used) {
+        return 0;
+    }
+    return &g_files[node->id - 1u];
+}
+
+static int kf_fs_create(void *fs, const char *path, uint32_t mode, vibeos_fs_node_t *out) {
+    int i;
+    (void)fs;
+    (void)mode;
+    if (kf_find(path) >= 0) {
+        return -VIBEOS_EEXIST;
+    }
+    kf_fs_add(path, 0, 0, 0);
+    i = kf_find(path);
+    if (i < 0) {
+        return -VIBEOS_ENOSPC;
+    }
+    out->id = (uint64_t)i + 1u;
+    out->size = 0;
+    out->is_dir = 0;
+    return 0;
+}
+
+static long kf_fs_write_at(void *fs, const vibeos_fs_node_t *node, uint64_t offset,
+                           const void *buf, uint32_t len) {
+    kf_file_t *f = kf_node_file(node);
+    (void)fs;
+    if (!f) {
+        return -VIBEOS_ENOENT;
+    }
+    if (len == 0u) {
+        return 0;
+    }
+    if (offset >= sizeof(f->data)) {
+        return -VIBEOS_ENOSPC;
+    }
+    if (len > sizeof(f->data) - offset) {
+        len = (uint32_t)(sizeof(f->data) - offset);
+    }
+    if (offset > f->len) {
+        memset(f->data + f->len, 0, (size_t)(offset - f->len));
+    }
+    memcpy(f->data + offset, buf, len);
+    if (offset + len > f->len) {
+        f->len = (uint32_t)(offset + len);
+    }
+    return (long)len;
+}
+
+static int kf_fs_truncate(void *fs, const vibeos_fs_node_t *node, uint64_t size) {
+    kf_file_t *f = kf_node_file(node);
+    (void)fs;
+    if (!f) {
+        return -VIBEOS_ENOENT;
+    }
+    if (size > sizeof(f->data)) {
+        return -VIBEOS_EFBIG;
+    }
+    if (size > f->len) {
+        memset(f->data + f->len, 0, (size_t)(size - f->len));
+    }
+    f->len = (uint32_t)size;
+    return 0;
 }
 
 /* ---- the network ------------------------------------------------------------------- */
