@@ -1,0 +1,14 @@
+# The terminal's modes at boot (docs/abi/ L1 step 7): BusyBox's shell turns
+# echo off and shows each key itself.
+#
+#  1. ECHO off still echoes. Expect terminal_raw_mode_failed: every typed
+#     letter is in the log twice, once bare.
+#
+# Target source: kernel/abi/files/console.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/abi/files/console.c scripts/dev/cases/abi-tty-console-boot.txt
+
+### ECHO off still echoes
+--- old
+    const int echo = (lf & VIBEOS_TTY_ECHO) != 0u;
++++ new
+    const int echo = 1;

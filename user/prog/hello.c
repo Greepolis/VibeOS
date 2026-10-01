@@ -140,6 +140,7 @@ static const char abi_fs[] = "abi: arch_prctl or %fs broken\n";
 static const char abi_uname[] = "abi: uname wrong\n";
 static const char abi_clock[] = "abi: clock_gettime wrong\n";
 static const char abi_iov[] = "abi: writev wrong\n";
+static const char abi_tty[] = "abi: the console is not a terminal\n";
 static const char abi_mm[] = "abi: mmap/mprotect/munmap wrong\n";
 static const char abi_futex[] = "abi: futex did not check the value\n";
 static const char abi_nosys[] = "abi: an unimplemented syscall did not return ENOSYS\n";
@@ -223,9 +224,19 @@ static const char *check_linux_abi(void) {
         return abi_clock;   /* nanoseconds must be a fraction of a second */
     }
 
-    /* stdout is not a terminal here, and a libc needs to be told so. */
-    if (user_syscall3(SYS_ioctl, 1, 0x5401 /*TCGETS*/, 0) != -25 /*ENOTTY*/) {
-        return abi_iov;
+    /* stdout is a terminal (docs/abi/ L1 step 7), and a libc asks exactly this
+     * to decide how to buffer it: TCGETS answers, with the modes a terminal
+     * starts in - canonical, echoing. Until step 7 the answer was ENOTTY, and
+     * this line checked for that. */
+    {
+        unsigned int tio[9];
+        if (user_syscall3(SYS_ioctl, 1, 0x5401 /*TCGETS*/, (long)(unsigned long)tio) != 0 ||
+            (tio[3] & 0xAu) != 0xAu /* ICANON|ECHO */) {
+            return abi_tty;
+        }
+        if (user_syscall3(SYS_ioctl, 1, 0x5401, 0x1000) != -14 /*EFAULT*/) {
+            return abi_tty;
+        }
     }
     iov[0].base = iov_a;
     iov[0].len = sizeof(iov_a) - 1;

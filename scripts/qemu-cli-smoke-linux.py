@@ -2767,6 +2767,29 @@ def main():
                 # typed lines itself. This checks the whole chain: an
                 # interactive shell running a builtin, then finding an external
                 # command through PATH and exec'ing it.
+                # The file the native shell wrote is read back with its
+                # contents, by every program that cats it - five times: the
+                # native shell, BusyBox as a program, and BusyBox's shell with
+                # -c, at its prompt and after cd. The line had been
+                # in the log for months and was never asserted - it only moved
+                # the reported phase - so when the write stopped writing
+                # (L1 step 4: the native `write` opened read-only) every cat
+                # printed nothing and the boot stayed green for three steps.
+                if len(re.findall(r"write\(ring3\): persistent hello\r?\n", text)) < 5:
+                    problems.append("notes_file_not_read_back")
+                # The console is a terminal (L1 step 7), so BusyBox's shell is
+                # interactive on it: it prints its prompt, which it does for
+                # nothing but a terminal...
+                if not re.search(r"write\(ring3\): ~ # ", text):
+                    problems.append("shell_not_interactive")
+                # ...and reads its command line a key at a time with the
+                # terminal's echo off, showing each key itself: the word "echo"
+                # as four writes of one character. With the kernel still
+                # echoing, the typed letters would be in the log bare, between
+                # the shell's.
+                if not re.search(r"write\(ring3\): e\[HW\]\[SYS\] write\(ring3\): c\[HW\]\[SYS\] "
+                                 r"write\(ring3\): h\[HW\]\[SYS\] write\(ring3\): o\[HW\]", text):
+                    problems.append("terminal_raw_mode_failed")
                 if "ASH_INTERACTIVE_OK" not in text:
                     problems.append("interactive_shell_did_not_run")
                 # A pipeline is the first thing anyone tries on a shell, and
@@ -2815,7 +2838,9 @@ def main():
                 # A directory listed (step 6): ls prints the long name whole,
                 # ls -a counts four entries - the two dots, the file, the link -
                 # and find, which trusts the type in the entry, counts one link.
-                if (not re.search(r"write\(ring3\): a file name longer than fifteen bytes\r?\n", text) or
+                # Since step 7 the two names are on one line: ls found a
+                # terminal, asked how wide it is, and laid them out in columns.
+                if (not re.search(r"write\(ring3\): a file name longer than fifteen bytes +dangling\r?\n", text) or
                         not re.search(r"write\(ring3\): DIRS_4_1\r?\n", text)):
                     problems.append("directory_listing_failed")
 
