@@ -36,6 +36,7 @@ typedef enum {
     VIBEOS_MBZ_MOUNT_UNLOCKED,      /* the mount table was used with no lock registered            */
     VIBEOS_MBZ_FILE_PUT_UNDERFLOW,  /* a file description released with no reference left (A3)     */
     VIBEOS_MBZ_TMPFS_BAD_RECORD,    /* a tmpfs directory record naming a free inode, or unbacked (L1) */
+    VIBEOS_MBZ_FILELOCK_UNLOCKED,   /* the file-lock table was used with no lock registered (L1)  */
     VIBEOS_MBZ_COUNT
 } vibeos_mbz_id_t;
 

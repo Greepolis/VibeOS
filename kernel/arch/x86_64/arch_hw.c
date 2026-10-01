@@ -1213,6 +1213,20 @@ static void hw_file_unlock(void) {
     hw_spin_unlock(&g_file_lock);
 }
 
+/* The file-lock table (docs/abi/ L1 step 6), with a lock of its own: it is
+ * reached from a description's release, which runs outside the lock above. */
+static hw_lock_t g_flk_lock;
+#include "vibeos/filelock.h"
+
+
+static void hw_flk_lock(void) {
+    hw_spin_lock_named(&g_flk_lock, "vibeos_flk");
+}
+
+static void hw_flk_unlock(void) {
+    hw_spin_unlock(&g_flk_lock);
+}
+
 /* A descriptor table grows a page at a time. */
 static void *hw_fdtable_page(void) {
     return hw_alloc_page();
@@ -1227,6 +1241,8 @@ void hw_pipe_init(void) {
     vibeos_pipe_reset();
     vibeos_file_set_lock(hw_file_lock, hw_file_unlock);
     vibeos_file_reset();
+    vibeos_flk_set_lock(hw_flk_lock, hw_flk_unlock);
+    vibeos_flk_reset();
     vibeos_fdtable_set_pages(hw_fdtable_page, hw_fdtable_page_free);
 }
 

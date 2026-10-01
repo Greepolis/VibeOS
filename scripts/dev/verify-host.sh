@@ -26,6 +26,14 @@ if ! out="$("./$BUILD/vibeos_kernel_tests" 2>&1)"; then
     echo "$out" | grep -E '^FAIL' | head -2
     rc=1
 fi
+# The file-lock table against its model (docs/abi/ L1 step 6): three seeds.
+for seed in 1 2 3; do
+    if ! out="$("./$BUILD/vibeos_filelock_torture" "$seed" 3000 2>&1)"; then
+        echo "$out" | grep -E '^FAIL' | head -1
+        rc=1
+        break
+    fi
+done
 if ! out="$("./$BUILD/vibeos_mm_torture" 3 4000 2>&1)"; then
     echo "$out" | grep -E '^FAIL' | head -1
     rc=1

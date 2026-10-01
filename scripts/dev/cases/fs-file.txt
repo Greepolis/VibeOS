@@ -7,6 +7,8 @@
 #     nothing left is counted".
 #  3. a slot is handed out while its release is still running - the refcount
 #     alone decides it is free. Expect "a slot being released is not handed out".
+#  4. a description's locks outlive it (docs/abi/ L1 step 6). Expect, from
+#     linux_abi_tests.c, "closing the last gives it back".
 #
 # Target source: kernel/fs/file.c
 # Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/fs/file.c scripts/dev/cases/fs-file.txt
@@ -29,3 +31,9 @@
         if (g_files[i].refs == 0u && g_files[i].ops == 0) {
 +++ new
         if (g_files[i].refs == 0u) {
+
+### a description's locks outlive it
+--- old
+        vibeos_flk_drop_owner(VIBEOS_FLK_OWNER_FILE(f));
++++ new
+        (void)f;

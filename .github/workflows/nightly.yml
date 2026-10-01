@@ -226,7 +226,7 @@ jobs:
         run: |
           set -euo pipefail
           cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug             -DVIBEOS_BUILD_TESTS=ON             -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g"
-          cmake --build build-asan --parallel --target vibeos_tmpfs_torture
+          cmake --build build-asan --parallel --target vibeos_tmpfs_torture vibeos_filelock_torture
 
       # Many seeds against the model (docs/abi/ L1 step 2). Each prints its seed
       # first, so a failure replays by passing it back.
@@ -239,6 +239,24 @@ jobs:
               fails=$((fails + 1))
               echo "::group::seed $s"
               cat /tmp/tt.log
+              echo "::endgroup::"
+            fi
+          done
+          echo "failing seeds: $fails of 300"
+          test "$fails" -eq 0
+
+      # The file-lock table against a model that has no ranges in it (docs/abi/
+      # L1 step 6): splitting and joining are arithmetic on boundaries, and the
+      # model paints cells.
+      - name: Torture the file locks (300 seeds, sanitized)
+        run: |
+          set -uo pipefail
+          fails=0
+          for s in $(seq 1 300); do
+            if ! ./build-asan/vibeos_filelock_torture "$s" 5000 > /tmp/fl.log 2>&1; then
+              fails=$((fails + 1))
+              echo "::group::seed $s"
+              cat /tmp/fl.log
               echo "::endgroup::"
             fi
           done

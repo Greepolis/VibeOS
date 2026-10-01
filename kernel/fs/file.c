@@ -2,6 +2,7 @@
 
 #include "vibeos/file.h"
 #include "vibeos/mbz.h"
+#include "vibeos/filelock.h"
 
 static vibeos_file_t g_files[VIBEOS_FILE_MAX];
 static void (*g_lock)(void);
@@ -108,6 +109,11 @@ void vibeos_file_put(vibeos_file_t *f) {
      * wakes pipe readers and writes files back. The slot stays taken while it
      * runs - alloc wants no references *and* no ops - and is handed back here,
      * under the lock alloc takes. */
+    /* What the description itself held of locks - a flock, an OFD lock - goes
+     * with it: that is the whole of their lifetime rule. */
+    if (vibeos_flk_count() != 0u) {
+        vibeos_flk_drop_owner(VIBEOS_FLK_OWNER_FILE(f));
+    }
     if (f->ops && f->ops->release) {
         f->ops->release(f);
     }

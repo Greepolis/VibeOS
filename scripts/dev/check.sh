@@ -143,6 +143,9 @@ do_tests() {
     # The GUI's too (C7): the thread phase is the only thing that can see its
     # lock go missing, short of the nightly's ThreadSanitizer.
     "./$d/vibeos_gui_torture" 1 300 4 >/dev/null 2>&1 || t=1
+    # And the file locks' (docs/abi/ L1 step 6): ranges split and joined,
+    # against a model that has no ranges.
+    "./$d/vibeos_filelock_torture" 1 3000 >/dev/null 2>&1 || t=1
     # The FAT writer against somebody else's reader (docs/abi/ L1 step 4): the
     # host tests format their own volume, so they can only say the writer and
     # the reader agree with each other. Skips, and says so, without mtools.

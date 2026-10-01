@@ -9300,6 +9300,7 @@ int test_task_ident(void);
 int test_fdtable(void);
 int test_path(void);        /* path_tests.c: paths and the mount-table walk (A4) */
 int test_tmpfs(void);       /* tmpfs_tests.c: the in-memory filesystem (L1) */
+int test_filelock(void);    /* filelock_tests.c: advisory locks, by range and whole-file (L1) */
 int test_fat(void);         /* fat_tests.c: FAT's write path on an image in memory (L1) */
 int test_pipe(void);
 int test_linux_handlers(void);   /* linux_abi_tests.c: the handlers on ksvc_fake.c (A2) */
@@ -9676,6 +9677,7 @@ int main(void) {
     RUN_TEST(test_path);
     RUN_TEST(test_tmpfs);
     RUN_TEST(test_fat);
+    RUN_TEST(test_filelock);
     RUN_TEST(test_pipe);
     RUN_TEST(test_klog);
     RUN_TEST(test_crash);

@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "ksvc_fake.h"
+#include "vibeos/filelock.h"
 #include "vibeos/tmpfs.h"
 #include "vibeos/fdtable.h"
 #include "vibeos/file.h"
@@ -404,6 +405,8 @@ void kf_reset(void) {
         vibeos_fdtable_destroy(&g_ps[i].files);
     }
     vibeos_file_reset();
+    vibeos_flk_set_lock(kf_pipe_lock, kf_pipe_unlock);
+    vibeos_flk_reset();
     vibeos_pipe_reset();
     memset(g_ps, 0, sizeof(g_ps));
     memset(g_user, 0, sizeof(g_user));

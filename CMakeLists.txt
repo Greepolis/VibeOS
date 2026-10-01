@@ -186,6 +186,7 @@ if(VIBEOS_BUILD_TESTS)
         tests/kernel/fdtable_tests.c
         tests/kernel/path_tests.c
         tests/kernel/tmpfs_tests.c
+        tests/kernel/filelock_tests.c
         tests/kernel/fat_tests.c
         tests/kernel/pipe_tests.c
         tests/kernel/klog_tests.c
@@ -261,6 +262,13 @@ if(VIBEOS_BUILD_TESTS)
     target_link_libraries(vibeos_tmpfs_torture PRIVATE vibeos_kernel_core)
     target_include_directories(vibeos_tmpfs_torture PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     add_test(NAME vibeos-tmpfs-torture COMMAND vibeos_tmpfs_torture 1 3000)
+
+    # The file-lock table against a model with no ranges in it (docs/abi/ L1
+    # step 6): every request, every byte probed, and the number of locks held.
+    add_executable(vibeos_filelock_torture tests/kernel/filelock_torture.c)
+    target_link_libraries(vibeos_filelock_torture PRIVATE vibeos_kernel_core)
+    target_include_directories(vibeos_filelock_torture PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    add_test(NAME vibeos-filelock-torture COMMAND vibeos_filelock_torture 1 3000)
 
     # The FAT writer on a volume mformat made, for mdir and mcopy to read back
     # (scripts/dev/verify-fat-mtools.sh): the artefact neither side of the host

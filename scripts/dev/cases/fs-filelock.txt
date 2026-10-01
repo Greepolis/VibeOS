@@ -1,0 +1,126 @@
+# The file-lock table (kernel/fs/filelock.c, docs/abi/ L1 step 6), proved by its
+# host tests (tests/kernel/filelock_tests.c) and by the torture against a model
+# with no ranges in it (tests/kernel/filelock_torture.c), which verify-host.sh
+# runs for a few seeds.
+#
+# Each case names the expectation of the host test it should fail; the torture
+# catches most of them too, as "a request was answered differently" or "the
+# number of locks is not the number of runs".
+#
+# Target source: kernel/fs/filelock.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/fs/filelock.c scripts/dev/cases/fs-filelock.txt
+
+### shared locks do not coexist
+--- old
+        if (type == VIBEOS_FLK_EXCL || e->type == VIBEOS_FLK_EXCL) {
+            return e;
+        }
++++ new
+        return e;
+
+### an owner's own lock is in its way
+--- old
+        if (!on_file(e, space, fs, node) || e->owner == owner) {
+            continue;
+        }
+        if (e->end < start || e->start > end) {
++++ new
+        if (!on_file(e, space, fs, node)) {
+            continue;
+        }
+        if (e->end < start || e->start > end) {
+
+### a lock ending where a request starts is not in the way
+--- old
+        if (e->end < start || e->start > end) {
+            continue;
+        }
+        if (type == VIBEOS_FLK_EXCL || e->type == VIBEOS_FLK_EXCL) {
++++ new
+        if (e->end <= start || e->start > end) {
+            continue;
+        }
+        if (type == VIBEOS_FLK_EXCL || e->type == VIBEOS_FLK_EXCL) {
+
+### unlocking the middle of a lock drops its tail
+--- old
+            n = take_free();
+            *n = *e;
+            n->start = end + 1u;
+            e->end = start - 1u;
++++ new
+            e->end = start - 1u;
+
+### a lock is not joined to the one before it
+--- old
+                if (e->end != VIBEOS_FLK_END && e->end + 1u == n->start) {
++++ new
+                if (0) {
+
+### a lock is not joined to the one after it
+--- old
+                } else if (n->end != VIBEOS_FLK_END && n->end + 1u == e->start) {
++++ new
+                } else if (0) {
+
+### locks of different types are joined
+--- old
+                if (e == n || !on_file(e, space, fs, node) || e->owner != owner ||
+                    e->type != n->type) {
++++ new
+                if (e == n || !on_file(e, space, fs, node) || e->owner != owner) {
+
+### the table is not checked for room before it is changed
+--- old
+    if (VIBEOS_FLK_MAX - g_flk_used < 2u) {
++++ new
+    if (VIBEOS_FLK_MAX - g_flk_used < 1u) {
+
+### the two kinds of lock see each other
+--- old
+    return e->used && e->space == space && e->fs == fs && e->node == node;
++++ new
+    return e->used && e->fs == fs && e->node == node;
+
+### a file is named by its node alone
+--- old
+    return e->used && e->space == space && e->fs == fs && e->node == node;
++++ new
+    return e->used && e->space == space && e->node == node;
+
+### dropping an owner's locks on one file drops them on every file
+--- old
+        if (e->used && e->owner == owner && e->fs == fs && e->node == node) {
++++ new
+        if (e->used && e->owner == owner) {
+
+### dropping an owner drops everybody
+--- old
+        if (g_flk[i].used && g_flk[i].owner == owner) {
++++ new
+        if (g_flk[i].used) {
+
+### an owner that is gone is still waiting
+--- old
+            give_back(&g_flk[i]);
+        }
+    }
+    wait_done_locked(owner);
++++ new
+            give_back(&g_flk[i]);
+        }
+    }
+
+### a circle of waits is not looked for
+--- old
+        if (cur == waiter) {
+            unlock();
+            return -VIBEOS_EDEADLK;
+        }
++++ new
+
+### a call with no lock registered is not counted
+--- old
+        vibeos_mbz_hit(VIBEOS_MBZ_FILELOCK_UNLOCKED, 0);
++++ new
+        (void)g_lock;

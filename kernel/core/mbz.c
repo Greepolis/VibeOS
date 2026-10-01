@@ -28,6 +28,7 @@ static const char *const g_name[VIBEOS_MBZ_COUNT] = {
     "mount_unlocked",
     "file_put_underflow",
     "tmpfs_bad_record",
+    "filelock_unlocked",
 };
 
 void vibeos_mbz_hit(vibeos_mbz_id_t id, uint64_t witness) {
