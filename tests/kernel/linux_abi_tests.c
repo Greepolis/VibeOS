@@ -1510,6 +1510,244 @@ static void t_xattr_and_unshare(void) {
     ks_ps(me)->files_users = 1u;
 }
 
+/* ---- L1 step 7: the console as a terminal ---------------------------------------------- */
+
+static long tty_get(linux_termios_t *out) {
+    uint64_t u = kf_ualloc(sizeof(*out));
+    long r = SYS3(16, 0, 0x5401 /* TCGETS */, u);
+    memcpy(out, kf_uptr(u), sizeof(*out));
+    return r;
+}
+
+static long tty_set(const linux_termios_t *in, uint64_t req) {
+    uint64_t u = kf_ualloc(sizeof(*in));
+    memcpy(kf_uptr(u), in, sizeof(*in));
+    return SYS3(16, 0, req, u);
+}
+
+/* Read from the console: the bytes, or the outcome of a call that did not return. */
+static long tty_read(char *out, uint64_t cap, kf_outcome_t *how) {
+    uint64_t u = kf_ualloc(cap);
+    long r = sys(0, 0, u, cap, 0, 0, 0, how);
+    if (r > 0) {
+        memcpy(out, kf_uptr(u), (size_t)r);
+        out[r] = 0;
+    }
+    return r;
+}
+
+static void t_terminal_modes(void) {
+    linux_termios_t t, raw;
+    linux_winsize_t *ws;
+    kf_outcome_t how;
+    char got[80];
+    uint64_t u, fds;
+    size_t mark;
+    long fd;
+
+    fresh(120);
+    u = kf_ualloc(64);
+    fds = kf_ualloc(8);
+    ws = (linux_winsize_t *)kf_uptr(u);
+    expect(tty_get(&t) == 0 && (t.c_lflag & 0xBu) == 0xBu && (t.c_iflag & 0x100u) && (t.c_oflag & 5u) == 5u &&
+           t.c_cc[6] == 1 && t.c_cc[2] == 127 && t.c_cc[4] == 4,
+           "TCGETS: a terminal, canonical and echoing, as one starts");
+    expect(SYS3(16, 0, 0x5413 /* TIOCGWINSZ */, u) == 0 && ws->ws_row == 25 && ws->ws_col == 80,
+           "TIOCGWINSZ: 25 by 80");
+    ws->ws_row = 50; ws->ws_col = 132;
+    expect(SYS3(16, 0, 0x5414 /* TIOCSWINSZ */, u) == 0 && (ws->ws_row = 0, SYS3(16, 0, 0x5413, u) == 0) &&
+           ws->ws_row == 50 && ws->ws_col == 132, "and TIOCSWINSZ changes it");
+    expect(SYS3(16, 0, 0x5401, 0x1000) == -VIBEOS_EFAULT && SYS3(16, 0, 0x5402, 0x1000) == -VIBEOS_EFAULT &&
+           SYS3(16, 0, 0x5413, 0x1000) == -VIBEOS_EFAULT, "a structure outside user memory is EFAULT");
+    tmp_put("/tmp/f", "abcdef");
+    fd = tmp_open("/tmp/f", 0, 0);
+    (void)SYS2(293, fds, 0);
+    expect(SYS3(16, (uint64_t)fd, 0x5401, u) == -VIBEOS_ENOTTY &&
+           SYS3(16, (uint64_t)((int32_t *)kf_uptr(fds))[0], 0x5413, u) == -VIBEOS_ENOTTY &&
+           SYS3(16, 99, 0x5401, u) == -VIBEOS_EBADF,
+           "a file and a pipe are not terminals: ENOTTY, which is how a C library finds out");
+
+    /* Canonical: a line at a time, erasable until Enter. */
+    kf_type("ab\bc\nrest");
+    expect(tty_read(got, 64, 0) == 3 && strcmp(got, "ac\n") == 0, "a read returns the line, the erased character gone");
+    expect(strstr(kf_console(), "ab\b \bc") != 0, "what was typed was echoed, and the erase rubbed it out");
+    (void)tty_read(got, 64, &how);
+    expect(how == KF_BLOCKED, "half a line is not something to read: the read waits - it used to return it");
+    kf_type("\n");
+    expect(tty_read(got, 64, 0) == 5 && strcmp(got, "rest\n") == 0, "and returns the whole line once it is finished");
+    kf_type("abcdef\n");
+    expect(tty_read(got, 4, 0) == 4 && strcmp(got, "abcd") == 0 && tty_read(got, 64, 0) == 3 &&
+           strcmp(got, "ef\n") == 0, "a line longer than the buffer is read in pieces");
+    kf_type("one\ntwo\n");
+    expect(tty_read(got, 64, 0) == 4 && strcmp(got, "one\n") == 0 && tty_read(got, 64, 0) == 4 &&
+           strcmp(got, "two\n") == 0, "two lines typed ahead are two reads");
+    kf_type("abc\025xy\n");
+    expect(tty_read(got, 64, 0) == 3 && strcmp(got, "xy\n") == 0, "the kill character erases the line so far");
+    kf_type("ok\r");
+    expect(tty_read(got, 64, 0) == 3 && strcmp(got, "ok\n") == 0, "a carriage return typed is a newline read");
+    kf_type("\004");
+    expect(tty_read(got, 64, &how) == 0 && how == KF_RETURNED, "end-of-file on an empty line is a read of nothing");
+    kf_type("ab\004");
+    expect(tty_read(got, 64, 0) == 2 && strcmp(got, "ab") == 0, "and after some bytes it hands those over as they are");
+
+    /* ECHO off. */
+    t.c_lflag &= ~0x8u;
+    expect(tty_set(&t, 0x5402 /* TCSETS */) == 0, "TCSETS");
+    mark = strlen(kf_console());
+    kf_type("secret\n");
+    expect(tty_read(got, 64, 0) == 7 && strcmp(got, "secret\n") == 0 && strstr(kf_console() + mark, "secret") == 0,
+           "with ECHO off what is typed is read and not shown");
+    t.c_lflag |= 0x8u;
+
+    /* Raw: a byte at a time, as typed. */
+    raw = t;
+    raw.c_lflag &= ~0xAu;   /* ICANON and ECHO off */
+    raw.c_cc[6] = 1;        /* VMIN */
+    expect(tty_set(&raw, 0x5402) == 0 && tty_get(&t) == 0 && (t.c_lflag & 0xAu) == 0u && (t.c_lflag & 1u),
+           "the modes set are the modes got back, the ones not honoured too");
+    mark = strlen(kf_console());
+    kf_type("x");
+    expect(tty_read(got, 64, 0) == 1 && got[0] == 'x', "raw: one key is one read, with no Enter");
+    kf_type("\b\n");
+    expect(tty_read(got, 64, 0) == 2 && got[0] == '\b' && got[1] == '\n', "an erase is a byte like any other");
+    kf_type("pq");
+    expect(tty_read(got, 1, 0) == 1 && got[0] == 'p' && tty_read(got, 1, 0) == 1 && got[0] == 'q',
+           "a read for one byte takes one and leaves the next");
+    expect(kf_console()[mark] == 0, "and nothing was echoed");
+    (void)tty_read(got, 64, &how);
+    expect(how == KF_BLOCKED, "with MIN 1 and nothing typed, the read waits");
+    raw.c_cc[6] = 0;
+    expect(tty_set(&raw, 0x5403 /* TCSETSW */) == 0 && tty_read(got, 64, &how) == 0 && how == KF_RETURNED,
+           "with MIN 0 it returns at once, with nothing");
+
+    /* Changing modes with a line half typed, and flushing. */
+    raw.c_cc[6] = 1;
+    t.c_lflag |= 0xAu;
+    (void)tty_set(&t, 0x5402);
+    kf_type("par");
+    (void)tty_read(got, 64, &how);
+    expect(how == KF_BLOCKED, "canonical again: half a line waits");
+    expect(tty_set(&raw, 0x5402) == 0 && tty_read(got, 64, 0) == 3 && strncmp(got, "par", 3) == 0,
+           "leaving canonical mode hands over what was typed so far");
+    (void)tty_set(&t, 0x5402);
+    kf_type("junk");
+    (void)tty_read(got, 64, &how);
+    expect(tty_set(&t, 0x5404 /* TCSETSF */) == 0, "TCSETSF");
+    kf_type("\n");
+    expect(tty_read(got, 64, 0) == 1 && got[0] == '\n', "TCSETSF throws away what was typed and not read");
+
+    /* Two lines that reached the terminal while it was raw - counted by
+     * FIONREAD, which takes what was typed - are still two reads once it is
+     * canonical again. */
+    {
+        uint64_t n = kf_ualloc(4);
+        (void)tty_set(&raw, 0x5402);
+        kf_type("a\nb\n");
+        expect(SYS3(16, 0, 0x541B, n) == 0 && *(int32_t *)kf_uptr(n) == 4, "four bytes typed ahead in raw mode");
+        (void)tty_set(&t, 0x5402);
+        expect(tty_read(got, 64, 0) == 2 && strcmp(got, "a\n") == 0 && tty_read(got, 64, 0) == 2 &&
+               strcmp(got, "b\n") == 0, "canonical again, they are read a line at a time");
+    }
+
+    /* Output: a newline goes out as CR LF until the program says otherwise. */
+    mark = strlen(kf_console());
+    (void)SYS3(1, 1, ustr("a\n"), 2);
+    expect(strstr(kf_console() + mark, "a\r\n") != 0, "a newline written goes out as CR LF");
+    t.c_oflag &= ~1u;   /* OPOST off */
+    (void)tty_set(&t, 0x5402);
+    mark = strlen(kf_console());
+    (void)SYS3(1, 1, ustr("b\n"), 2);
+    expect(strstr(kf_console() + mark, "b\n") != 0 && strstr(kf_console() + mark, "b\r\n") == 0,
+           "and as it is with output processing off");
+    expect(kf_lock_imbalance() == 0, "the terminal released every lock it took");
+}
+
+static void t_descriptor_requests_and_poll(void) {
+    linux_pollfd_t *p;
+    kf_outcome_t how;
+    char got[16];
+    uint64_t u, up, fds, iov;
+    int32_t *v, *f;
+    long fd;
+
+    fresh(121);
+    u = kf_ualloc(16);
+    up = kf_ualloc(4 * sizeof(linux_pollfd_t));
+    fds = kf_ualloc(8);
+    iov = kf_ualloc(32);
+    v = (int32_t *)kf_uptr(u);
+    p = (linux_pollfd_t *)kf_uptr(up);
+    f = (int32_t *)kf_uptr(fds);
+    tmp_put("/tmp/f", "abcdef");
+    fd = tmp_open("/tmp/f", 0, 0);
+    (void)SYS2(293, fds, 0);
+
+    /* The four requests any descriptor answers. */
+    expect(SYS3(16, (uint64_t)fd, 0x5451 /* FIOCLEX */, 0) == 0 && SYS3(72, (uint64_t)fd, 1, 0) == 1 &&
+           SYS3(16, (uint64_t)fd, 0x5450 /* FIONCLEX */, 0) == 0 && SYS3(72, (uint64_t)fd, 1, 0) == 0,
+           "FIOCLEX and FIONCLEX set and clear close-on-exec");
+    (void)SYS3(0, (uint64_t)fd, kf_ualloc(2), 2);
+    expect(SYS3(16, (uint64_t)fd, 0x541B /* FIONREAD */, u) == 0 && *v == 4, "FIONREAD on a file: what is left to read");
+    (void)SYS3(1, (uint64_t)f[1], ustr("xyz"), 3);
+    expect(SYS3(16, (uint64_t)f[0], 0x541B, u) == 0 && *v == 3, "on a pipe: what is in it");
+    kf_type("abc\n");
+    expect(SYS3(16, 0, 0x541B, u) == 0 && *v == 4, "on the terminal: the finished line, read or not yet looked at");
+    expect(tty_read(got, 16, 0) == 4, "which a read then gets");
+    *v = 1;
+    expect(SYS3(16, 0, 0x5421 /* FIONBIO */, u) == 0 && tty_read(got, 16, &how) == -VIBEOS_EAGAIN && how == KF_RETURNED,
+           "FIONBIO makes a read with nothing typed EAGAIN where it waited");
+    *v = 0;
+    (void)SYS3(16, 0, 0x5421, u);
+    (void)tty_read(got, 16, &how);
+    expect(how == KF_BLOCKED, "and back");
+    expect(SYS3(16, (uint64_t)fd, 0x541B, 0x1000) == -VIBEOS_EFAULT && SYS3(16, 0, 0x5421, 0x1000) == -VIBEOS_EFAULT,
+           "their pointers are judged too");
+
+    /* poll. */
+    p[0].fd = 0; p[0].events = 1 /* POLLIN */; p[0].revents = 0x7fff;
+    /* "Returned 0" and "did not return" are told apart on purpose: a call that
+     * waits leaves 0 behind too, and a timeout of 0 that waited was NOT RED. */
+    expect(sys(7, up, 1, 0, 0, 0, 0, &how) == 0 && how == KF_RETURNED && p[0].revents == 0,
+           "poll: nothing typed, nothing to read, and revents says so - at once, with a timeout of 0");
+    kf_type("li");
+    expect(sys(7, up, 1, 0, 0, 0, 0, &how) == 0 && how == KF_RETURNED,
+           "half a line is not readable in canonical mode");
+    kf_type("ne\n");
+    expect(SYS3(7, up, 1, 0) == 1 && p[0].revents == 1, "a finished line is");
+    p[0].events = 4 /* POLLOUT */;
+    expect(SYS3(7, up, 1, 0) == 1 && p[0].revents == 4,
+           "asked only whether it can be written, it is not told that it can be read");
+    expect(tty_read(got, 16, 0) == 5 && strncmp(got, "line\n", 5) == 0, "and poll took none of it");
+    p[0].fd = 1; p[0].events = 4 /* POLLOUT */;
+    p[1].fd = f[0]; p[1].events = 1;
+    p[2].fd = -1; p[2].events = 1; p[2].revents = 0x7fff;
+    p[3].fd = 99; p[3].events = 1;
+    expect(SYS3(7, up, 4, 0) == 3 && p[0].revents == 4 && p[1].revents == 1 && p[2].revents == 0 &&
+           p[3].revents == 0x20, "the console can be written, the pipe read; a negative fd is skipped, a closed one is POLLNVAL");
+    (void)SYS3(0, (uint64_t)f[0], kf_ualloc(8), 8);
+    p[0].fd = f[0]; p[0].events = 1;
+    p[1].fd = f[1]; p[1].events = 4;
+    expect(SYS3(7, up, 2, 0) == 1 && p[0].revents == 0 && p[1].revents == 4,
+           "an empty pipe: nothing to read, room to write");
+    (void)sys(7, up, 1, (uint64_t)-1, 0, 0, 0, &how);
+    expect(how == KF_BLOCKED, "with no timeout poll waits for one of them");
+    (void)SYS1(3, (uint64_t)f[1]);
+    expect(SYS3(7, up, 1, 0) == 1 && p[0].revents == (1 | 0x10),
+           "a pipe nobody can write any more is readable - end of file - and hung up");
+    expect(SYS3(7, up, 2000, 0) == -VIBEOS_EINVAL && SYS3(7, 0x1000, 1, 0) == -VIBEOS_EFAULT,
+           "more descriptors than a process may have is EINVAL, an array outside user memory EFAULT");
+
+    /* A writev of two pieces is one write: one line on the console. */
+    {
+        uint64_t *q = (uint64_t *)kf_uptr(iov);
+        q[0] = ustr("TOGE"); q[1] = 4;
+        q[2] = ustr("THER\n"); q[3] = 5;
+        expect(SYS3(20, 1, iov, 2) == 9 && strstr(kf_console(), "write(ring3): TOGETHER") != 0,
+               "a writev of two pieces reaches the console as one write");
+    }
+    expect(kf_lock_imbalance() == 0, "poll and the descriptor requests released every lock they took");
+}
+
 int test_linux_handlers(void) {
     g_fail = 0;
     t_identity();
@@ -1547,6 +1785,8 @@ int test_linux_handlers(void) {
     t_description_locks();
     t_directories();
     t_xattr_and_unshare();
+    t_terminal_modes();
+    t_descriptor_requests_and_poll();
     return g_fail ? -1 : 0;
 }
 
@@ -1595,6 +1835,24 @@ int test_linux_gaps(void) {
     g_fail = 0;
     g_gaps = 0;
 
+    /* poll (7), L4: a socket with nothing to read is not readable. */
+    {
+        uint64_t pf, sa;
+        long fd;
+        fresh(80);
+        kf_net_up(0x0A00020Fu, 0x0A000202u);
+        pf = kf_ualloc(8);
+        sa = kf_ualloc(16);
+        fd = SYS2(41, 2, 2);
+        ((uint8_t *)kf_uptr(sa))[0] = 2;
+        ((uint8_t *)kf_uptr(sa))[2] = 0x10; ((uint8_t *)kf_uptr(sa))[3] = 0x93;
+        (void)SYS2(49, (uint64_t)fd, sa);
+        ((int32_t *)kf_uptr(pf))[0] = (int32_t)fd;
+        ((int16_t *)kf_uptr(pf))[2] = 1;   /* POLLIN */
+        ((int16_t *)kf_uptr(pf))[3] = 0;
+        gap(7, fd >= 0 && SYS3(7, pf, 1, 0) == 0, "poll on a socket with nothing to read");
+    }
+
     /* mknod (133) and mknodat (259), L1: a FIFO has a name. */
     fresh(77);
     gap(133, SYS3(133, ustr("/tmp/fifo"), 0010644, 0) == 0, "mknod makes a FIFO");
@@ -1635,9 +1893,10 @@ int test_linux_gaps(void) {
             (uint64_t)-1, 0, 0);
     gap(9, r == 0x30000000l, "MAP_FIXED maps at the address asked for");
 
-    /* ioctl (16), L1: TCGETS on a terminal succeeds. */
-    fresh(62);
-    gap(16, SYS3(16, 0, 0x5401u, kf_ualloc(60)) == 0, "TCGETS on the console");
+    /* ioctl (16), L1: TCFLSH - throw away what was typed and not read - is
+     * one of the terminal requests still unanswered. */
+    fresh(72);
+    gap(16, SYS3(16, 0, 0x540Bu /* TCFLSH */, 0) == 0, "TCFLSH on the console");
 
     /* readv (19) and writev (20), L5: a datagram is one read, scattered; a
      * gathered write is one datagram. */

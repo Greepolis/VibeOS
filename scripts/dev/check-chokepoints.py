@@ -74,7 +74,12 @@ CHOKEPOINTS = {
         "A handler calling it directly is a handler that skipped the dispatcher's "
         "chokepoint."),
     "linux_user_ok": (
-        18,   # 17 -> 18 in L1 step 6: fcntl's record locks. Whether its third
+        20,   # 18 -> 20 in L1 step 7. ioctl: whether its argument is a pointer,
+              # and how long, depends on the request (one helper, linux_ioctl_arg,
+              # which every request goes through). And the gathered writev,
+              # which checks each element's buffer as the element-by-element
+              # path does - an address read out of user memory a moment ago.
+              # 17 -> 18 in L1 step 6: fcntl's record locks. Whether its third
               # argument is a pointer depends on the command, and six commands
               # say so - more than a row has descriptors for.
               # 16 -> 17 in L1 step 3: preadv and pwritev check each iovec

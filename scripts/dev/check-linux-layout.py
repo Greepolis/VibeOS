@@ -40,6 +40,7 @@ CONSTANT_HEADERS = {
     "include/vibeos/vfs.h": r"VIBEOS_S_I[FS]\w+",
     "include/vibeos/fdtable.h": r"VIBEOS_FD_CLOEXEC",
     "include/vibeos/fileops.h": r"VIBEOS_IOCTL_\w+",
+    "include/vibeos/tty.h": r"VIBEOS_TTY_\w+",
 }
 
 # Linux's own spellings, which a file under kernel/abi/ must not define itself.

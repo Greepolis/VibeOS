@@ -75,6 +75,8 @@ uint32_t kf_net_udp_sent(uint32_t *last_payload_len);
 
 /* What was written to the console, and how many lock/unlock calls did not pair. */
 const char *kf_console(void);
+/* Type at the console: the bytes wait in the keyboard's queue until read. */
+void kf_type(const char *s);
 int kf_lock_imbalance(void);
 uint64_t kf_exit_code(void);
 const char *kf_panic_reason(void);

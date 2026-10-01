@@ -1217,6 +1217,7 @@ static void hw_file_unlock(void) {
  * reached from a description's release, which runs outside the lock above. */
 static hw_lock_t g_flk_lock;
 #include "vibeos/filelock.h"
+#include "vibeos/tty.h"
 
 
 static void hw_flk_lock(void) {
@@ -1243,6 +1244,7 @@ void hw_pipe_init(void) {
     vibeos_file_reset();
     vibeos_flk_set_lock(hw_flk_lock, hw_flk_unlock);
     vibeos_flk_reset();
+    vibeos_tty_reset();
     vibeos_fdtable_set_pages(hw_fdtable_page, hw_fdtable_page_free);
 }
 

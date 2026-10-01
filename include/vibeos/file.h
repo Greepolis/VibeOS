@@ -87,6 +87,11 @@ typedef struct {
 #define VIBEOS_READDIR_END  1   /* no entry at this position or after it       */
 #define VIBEOS_READDIR_SKIP 2   /* none at this position; the next may have one */
 
+/* What a description can do now without waiting (ready, below). */
+#define VIBEOS_READY_IN  0x1u    /* a read returns at once: data, or end of file  */
+#define VIBEOS_READY_OUT 0x2u    /* a write would be taken                         */
+#define VIBEOS_READY_HUP 0x4u    /* the other side has gone                        */
+
 /* One file type. Every entry may be NULL, and the caller answers for a missing
  * one with what Linux answers: EINVAL for read/write, ESPIPE for seek and the
  * positional calls, ENOTTY for ioctl, ENOTDIR for getdents, EINVAL for truncate
@@ -111,6 +116,10 @@ typedef struct vibeos_file_ops {
     long (*pread)(vibeos_file_t *f, uint64_t ubuf, uint64_t len, uint64_t off);
     long (*pwrite)(vibeos_file_t *f, uint64_t ubuf, uint64_t len, uint64_t off);
     int (*truncate)(vibeos_file_t *f, uint64_t size);
+    /* What it can do now without waiting: VIBEOS_READY_*. A type without the
+     * entry is always ready for both, which is true of a file on a
+     * filesystem and is what Linux assumes of a file that cannot say. */
+    uint32_t (*ready)(vibeos_file_t *f);
     /* What this description wrote is on the medium. */
     int (*sync)(vibeos_file_t *f);
 } vibeos_file_ops_t;

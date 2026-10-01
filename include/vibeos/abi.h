@@ -69,6 +69,7 @@
     X(LSEEK,           "lseek",           VIBEOS_CHECK_NONE) \
     X(GETDENTS,        "getdents",        VIBEOS_CHECK_USER_MEMORY) \
     X(GETDENTS_OLD,    "getdents_old",    VIBEOS_CHECK_USER_MEMORY) \
+    X(POLL,            "poll",            VIBEOS_CHECK_USER_MEMORY) \
     X(FLOCK,           "flock",           VIBEOS_CHECK_NONE) \
     X(XATTR_SET,       "xattr_set",       VIBEOS_CHECK_USER_MEMORY) \
     X(XATTR_GET,       "xattr_get",       VIBEOS_CHECK_USER_MEMORY) \

@@ -7,13 +7,223 @@
  * the old "0-2 unless redirected" rule could not express. */
 
 #include "files_internal.h"
+#include "vibeos/tty.h"
+
+/* ---- the terminal (docs/abi/ L1 step 7; see vibeos/tty.h) -----------------------------
+ *
+ * One terminal: its modes, its size, and the line being typed. `len` bytes have
+ * been taken from the keyboard; the first `ready` of them may be read - in
+ * canonical mode that is whole lines, the rest being a line still open to
+ * erasing. The lock is the terminal's own: the modes are set by one program
+ * while another reads. */
+#define TTY_LINE 256u
+
+static struct {
+    vibeos_tty_modes_t m;
+    vibeos_tty_size_t size;
+    uint8_t line[TTY_LINE];
+    uint32_t len;
+    uint32_t ready;
+    int eof;                      /* end-of-file typed on an empty line */
+} g_tty;
+static vibeos_lock_t g_tty_lock;
+static int g_tty_set_up;
+
+static void tty_pump(uint64_t want);
+
+static void tty_defaults(void) {
+    static const uint8_t cc[VIBEOS_TTY_NCC] = {
+        3, 28, 127, 21, 4, 0, 1, 0, 17, 19, 26, 0, 18, 15, 23, 22, 0, 0, 0,
+    };
+    uint32_t i;
+
+    g_tty.m.iflag = VIBEOS_TTY_ICRNL | VIBEOS_TTY_IXON;
+    g_tty.m.oflag = VIBEOS_TTY_OPOST | VIBEOS_TTY_ONLCR;
+    g_tty.m.cflag = VIBEOS_TTY_CFLAG_DEFAULT;
+    g_tty.m.lflag = VIBEOS_TTY_ISIG | VIBEOS_TTY_ICANON | VIBEOS_TTY_ECHO | VIBEOS_TTY_ECHOE |
+                    VIBEOS_TTY_ECHOK | VIBEOS_TTY_ECHOCTL | VIBEOS_TTY_ECHOKE | VIBEOS_TTY_IEXTEN;
+    g_tty.m.line = 0;
+    for (i = 0; i < VIBEOS_TTY_NCC; i++) {
+        g_tty.m.cc[i] = cc[i];
+    }
+    g_tty.size.rows = 25;
+    g_tty.size.cols = 80;
+    g_tty.size.xpixel = g_tty.size.ypixel = 0;
+    g_tty.len = g_tty.ready = 0;
+    g_tty.eof = 0;
+    g_tty_set_up = 1;
+}
+
+/* A terminal nobody reset still has modes: the first use gives it the ones it
+ * starts with, so no caller has to be the one that remembered. */
+static void tty_lock(void) {
+    ks_lock(&g_tty_lock, "vibeos_tty");
+    if (!g_tty_set_up) {
+        tty_defaults();
+    }
+}
+
+static void tty_unlock(void) {
+    ks_unlock(&g_tty_lock);
+}
+
+void vibeos_tty_reset(void) {
+    ks_lock(&g_tty_lock, "vibeos_tty");
+    tty_defaults();
+    ks_unlock(&g_tty_lock);
+}
+
+void vibeos_tty_get(vibeos_tty_modes_t *out) {
+    tty_lock();
+    *out = g_tty.m;
+    tty_unlock();
+}
+
+void vibeos_tty_set(const vibeos_tty_modes_t *in, int flush) {
+    tty_lock();
+    g_tty.m = *in;
+    if (flush) {
+        g_tty.len = g_tty.ready = 0;
+        g_tty.eof = 0;
+    }
+    /* Leaving canonical mode with a line half typed: those bytes were typed,
+     * and a program reading a byte at a time is owed them. */
+    if (!(g_tty.m.lflag & VIBEOS_TTY_ICANON)) {
+        g_tty.ready = g_tty.len;
+    }
+    tty_unlock();
+}
+
+void vibeos_tty_get_size(vibeos_tty_size_t *out) {
+    tty_lock();
+    *out = g_tty.size;
+    tty_unlock();
+}
+
+void vibeos_tty_set_size(const vibeos_tty_size_t *in) {
+    tty_lock();
+    g_tty.size = *in;
+    tty_unlock();
+}
+
+uint32_t vibeos_tty_pending(void) {
+    uint32_t n;
+    tty_lock();
+    tty_pump(TTY_LINE);   /* what was typed counts whether or not a read has looked yet */
+    n = g_tty.ready;
+    tty_unlock();
+    return n;
+}
+
+/* What typing shows. Under the console lock, like every other writer: echoing
+ * without it lets a character land in the middle of another core's write() -
+ * which does not merely look untidy, it splits the markers the boot gate
+ * matches on, so a passing run reports a failure that never happened. */
+static void tty_echo(char c) {
+    ks_con_lock();
+    if (c == '\n') {
+        ks_con_putc('\r');
+    }
+    ks_con_putc(c);
+    ks_con_unlock();
+    ks_console_echo(c);
+}
+
+static void tty_rub_out(void) {
+    ks_con_lock();
+    ks_con_puts("\b \b");
+    ks_con_unlock();
+    ks_console_echo('\b');
+}
+
+/* Take what the keyboard has, as far as this read needs it: in canonical mode
+ * until a line is finished, otherwise until `want` bytes are there. No further
+ * - what is typed ahead stays in the keyboard's queue for whoever reads next,
+ * in whatever mode the terminal is in by then. Called under the terminal's
+ * lock. */
+static void tty_pump(uint64_t want) {
+    const uint32_t lf = g_tty.m.lflag;
+    const int canon = (lf & VIBEOS_TTY_ICANON) != 0u;
+    const int echo = (lf & VIBEOS_TTY_ECHO) != 0u;
+
+    for (;;) {
+        int c;
+
+        if (g_tty.eof || g_tty.len >= TTY_LINE) {
+            break;
+        }
+        if (canon ? g_tty.ready > 0u : (uint64_t)g_tty.ready >= want) {
+            break;
+        }
+        c = ks_console_getc();
+        if (c < 0) {
+            break;
+        }
+        if (c == '\r' && (g_tty.m.iflag & VIBEOS_TTY_ICRNL)) {
+            c = '\n';
+        }
+        if (!canon) {
+            g_tty.line[g_tty.len++] = (uint8_t)c;
+            g_tty.ready = g_tty.len;
+            if (echo) {
+                tty_echo((char)c);
+            }
+            continue;
+        }
+        /* Erase: the character before, if the open line has one. Backspace is
+         * taken as well as the erase character - a PC keyboard sends the one,
+         * a serial console the other. */
+        if (c == (int)g_tty.m.cc[VIBEOS_TTY_VERASE] || c == '\b') {
+            if (g_tty.len > g_tty.ready) {
+                g_tty.len--;
+                if (echo && (lf & VIBEOS_TTY_ECHOE)) {
+                    tty_rub_out();
+                }
+            }
+            continue;
+        }
+        if (c == (int)g_tty.m.cc[VIBEOS_TTY_VKILL]) {
+            while (g_tty.len > g_tty.ready) {
+                g_tty.len--;
+                if (echo && (lf & VIBEOS_TTY_ECHOE)) {
+                    tty_rub_out();
+                }
+            }
+            continue;
+        }
+        /* End of file: what is typed so far is given to the reader as it is,
+         * and on an empty line that is nothing - a read of 0, which is how a
+         * program is told there is no more. */
+        if (c == (int)g_tty.m.cc[VIBEOS_TTY_VEOF]) {
+            if (g_tty.len == g_tty.ready) {
+                g_tty.eof = 1;
+            }
+            g_tty.ready = g_tty.len;
+            continue;
+        }
+        g_tty.line[g_tty.len++] = (uint8_t)c;
+        if (echo || (c == '\n' && (lf & VIBEOS_TTY_ECHONL))) {
+            tty_echo((char)c);
+        }
+        if (c == '\n' || g_tty.len == TTY_LINE) {
+            g_tty.ready = g_tty.len;   /* a line; or one too long to wait for its end */
+        }
+    }
+}
 
 /* Console writes whose leading bytes read as NUL. */
 uint64_t g_ring3_write_nul;
 
 static long console_write(vibeos_file_t *f, uint64_t buf, uint64_t len) {
     uint64_t i;
+    vibeos_tty_modes_t modes;
+    int onlcr;
     (void)f;
+
+    /* A newline goes out as CR LF unless the program turned that off - which
+     * one drawing the screen itself does, and then sends its own. */
+    vibeos_tty_get(&modes);
+    onlcr = (modes.oflag & VIBEOS_TTY_OPOST) && (modes.oflag & VIBEOS_TTY_ONLCR);
 
     /* A text write whose leading bytes read as NUL, reported at the moment it
      * happens rather than reconstructed afterwards.
@@ -107,7 +317,7 @@ static long console_write(vibeos_file_t *f, uint64_t buf, uint64_t len) {
         }
         for (k = 0; k < n; k++) {
             char c = chunk[k];
-            if (c == '\n') {
+            if (c == '\n' && onlcr) {
                 ks_con_putc('\r');
             }
             ks_con_putc(c);
@@ -119,63 +329,72 @@ static long console_write(vibeos_file_t *f, uint64_t buf, uint64_t len) {
     return (long)len;
 }
 
-/* A blocking keyboard read. Returns after at least one character; blocks
- * (BLOCKED + wait_input) until the keyboard IRQ enqueues input and wakes the
- * task. The interrupts-off window makes the check-and-block race-free against
- * the IRQ. */
+/* A read from the terminal. In canonical mode it returns one finished line -
+ * or the part of it that fits, the rest waiting for the next read - and waits
+ * until there is one: it used to hand back whatever had been typed when the
+ * keyboard went quiet, half a line included. Otherwise it returns as soon as
+ * MIN bytes are there, which with MIN 0 is at once and possibly with nothing.
+ *
+ * Blocks (BLOCKED + wait_input) until the keyboard IRQ enqueues input and
+ * wakes the task. The interrupts-off window makes the check-and-block
+ * race-free against the IRQ; the terminal's lock is inside it and gives the
+ * interrupt state back as it found it. */
 static long console_read(vibeos_file_t *f, uint64_t buf, uint64_t len) {
-    (void)f;
     if (len == 0u) {
         return 0;
     }
     for (;;) {
-        uint64_t copied = 0;
-        int c;
+        uint32_t n = 0, min, i;
+        int canon, done = 0;
 
         ks_irq_off();
-        c = ks_console_getc();
-        if (c >= 0) {
-            /* Line discipline: echo what was typed and let backspace erase the
-             * previous character before the line is handed to the program. */
-            while (copied < len && c >= 0) {
-                if (c == '\b' || c == 127) {
-                    if (copied > 0) {
-                        copied--;
-                        ks_con_puts("\b \b");
-                        ks_console_echo('\b');
+        tty_lock();
+        tty_pump(len);
+        canon = (g_tty.m.lflag & VIBEOS_TTY_ICANON) != 0u;
+        min = g_tty.m.cc[VIBEOS_TTY_VMIN];
+        if (g_tty.ready > 0u) {
+            n = g_tty.ready;
+            if (canon) {
+                /* One line a read: up to and including its newline. */
+                for (i = 0; i < g_tty.ready; i++) {
+                    if (g_tty.line[i] == '\n') {
+                        n = i + 1u;
+                        break;
                     }
-                    c = ks_console_getc();
-                    continue;
                 }
-                {
-                    /* The line waits in this loop for keystrokes; the buffer
-                     * can be unmapped under it (H-010). */
-                    uint8_t ch = (uint8_t)c;
-                    if (vibeos_uaccess_copy((void *)(uintptr_t)(buf + copied), &ch, 1u) != 0) {
-                        ks_irq_on();
-                        return copied > 0u ? (long)copied : -VIBEOS_EFAULT;
-                    }
-                    copied++;
-                }
-                /* Under the console lock, like every other writer. Echoing
-                 * without it lets a character land in the middle of another
-                 * core's write() - which does not merely look untidy: it
-                 * splits the markers the boot gate matches on, so a passing
-                 * run reports a failure that never happened. */
-                ks_con_lock();
-                if (c == '\n') {
-                    ks_con_putc('\r');
-                }
-                ks_con_putc((char)c);
-                ks_con_unlock();
-                ks_console_echo((char)c);
-                if ((uint8_t)c == '\n') {
-                    break; /* line-oriented: stop at newline */
-                }
-                c = ks_console_getc();
             }
+            if ((uint64_t)n > len) {
+                n = (uint32_t)len;
+            }
+            if (canon || n >= min || (uint64_t)n == len) {
+                /* The buffer can be unmapped while the line was being waited
+                 * for (H-010); the copy is fault-safe and the bytes stay. */
+                if (vibeos_uaccess_copy((void *)(uintptr_t)buf, g_tty.line, n) != 0) {
+                    tty_unlock();
+                    ks_irq_on();
+                    return -VIBEOS_EFAULT;
+                }
+                for (i = n; i < g_tty.len; i++) {
+                    g_tty.line[i - n] = g_tty.line[i];
+                }
+                g_tty.len -= n;
+                g_tty.ready -= n;
+                done = 1;
+            }
+        } else if (g_tty.eof) {
+            g_tty.eof = 0;
+            done = 1;                     /* end of file: a read of nothing */
+        } else if (!canon && min == 0u) {
+            done = 1;                     /* MIN 0: whatever there is, now */
+        }
+        tty_unlock();
+        if (done) {
             ks_irq_on();
-            return (long)copied;
+            return (long)n;
+        }
+        if (f->flags & VIBEOS_O_NONBLOCK) {
+            ks_irq_on();
+            return -VIBEOS_EAGAIN;
         }
         if (ks_current() >= 0) {
             ks_id(ks_current())->wait_input = 1;
@@ -195,8 +414,26 @@ static long console_read(vibeos_file_t *f, uint64_t buf, uint64_t len) {
     }
 }
 
-/* A character device, and deliberately not a terminal - the same answer ioctl
- * gives for everything but the process group. */
+/* Would a read return now? In canonical mode only once a line is finished -
+ * a key typed is not yet something to read - and otherwise as soon as MIN bytes
+ * are there. Asking takes what the keyboard has into the terminal's line, the
+ * same as a read would have. Output never waits. */
+static uint32_t console_ready(vibeos_file_t *f) {
+    uint32_t r = VIBEOS_READY_OUT, min;
+    (void)f;
+
+    tty_lock();
+    min = g_tty.m.cc[VIBEOS_TTY_VMIN];
+    tty_pump(min ? min : 1u);
+    if (g_tty.eof || ((g_tty.m.lflag & VIBEOS_TTY_ICANON) ? g_tty.ready > 0u
+                                                          : g_tty.ready >= (min ? min : 1u))) {
+        r |= VIBEOS_READY_IN;
+    }
+    tty_unlock();
+    return r;
+}
+
+/* A character device, as a terminal is. */
 static int console_stat(vibeos_file_t *f, vibeos_file_stat_t *out) {
     (void)f;
     out->mode = VIBEOS_S_IFCHR | 0620u;
@@ -205,9 +442,10 @@ static int console_stat(vibeos_file_t *f, vibeos_file_stat_t *out) {
     return 0;
 }
 
-/* The foreground process group is the one terminal question a shell asks and
- * this console answers; ENOTTY for the rest is the truthful answer, and what a
- * libc uses to decide stdout is not a terminal and should be block buffered. */
+/* The foreground process group, which is the console's to answer because the
+ * kernel services hold it. The terminal's modes and size are asked through
+ * vibeos/tty.h by the personality, which owns the request numbers and the
+ * structures they carry. */
 static long console_ioctl(vibeos_file_t *f, uint64_t req, uint64_t arg) {
     (void)f;
     if (req == VIBEOS_IOCTL_GET_PGRP) {
@@ -242,6 +480,7 @@ const vibeos_file_ops_t vibeos_fops_console = {
     .write = console_write,
     .stat = console_stat,
     .ioctl = console_ioctl,
+    .ready = console_ready,
 };
 
 int vibeos_files_std_console(vibeos_fdtable_t *t) {

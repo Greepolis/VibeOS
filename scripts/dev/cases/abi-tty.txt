@@ -1,0 +1,108 @@
+# The console as a terminal (kernel/abi/files/console.c, docs/abi/ L1 step 7),
+# proved by the handlers' host tests in tests/kernel/linux_abi_tests.c, which
+# type at the fake kernel's keyboard.
+#
+# Each case names the expectation it should fail.
+#
+# Target source: kernel/abi/files/console.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/files/console.c scripts/dev/cases/abi-tty.txt
+
+### an erase erases nothing
+--- old
+            if (g_tty.len > g_tty.ready) {
+                g_tty.len--;
+                if (echo && (lf & VIBEOS_TTY_ECHOE)) {
+                    tty_rub_out();
+                }
+            }
+            continue;
++++ new
+            continue;
+
+### half a line can be read
+--- old
+        if (c == '\n' || g_tty.len == TTY_LINE) {
++++ new
+        if (1) {
+
+### a read returns every finished line at once
+--- old
+                    if (g_tty.line[i] == '\n') {
++++ new
+                    if (0) {
+
+### ECHO off still echoes
+--- old
+        if (echo || (c == '\n' && (lf & VIBEOS_TTY_ECHONL))) {
++++ new
+        if (1) {
+
+### the terminal is always canonical
+--- old
+    const int canon = (lf & VIBEOS_TTY_ICANON) != 0u;
+    const int echo = (lf & VIBEOS_TTY_ECHO) != 0u;
++++ new
+    const int canon = 1;
+    const int echo = (lf & VIBEOS_TTY_ECHO) != 0u;
+
+### a carriage return stays one
+--- old
+        if (c == '\r' && (g_tty.m.iflag & VIBEOS_TTY_ICRNL)) {
++++ new
+        if (0) {
+
+### the end-of-file character is a byte
+--- old
+        if (c == (int)g_tty.m.cc[VIBEOS_TTY_VEOF]) {
++++ new
+        if (0) {
+
+### the kill character is a byte
+--- old
+        if (c == (int)g_tty.m.cc[VIBEOS_TTY_VKILL]) {
++++ new
+        if (0) {
+
+### MIN 0 waits
+--- old
+        } else if (!canon && min == 0u) {
++++ new
+        } else if (0) {
+
+### leaving canonical mode keeps the half line back
+--- old
+    if (!(g_tty.m.lflag & VIBEOS_TTY_ICANON)) {
+        g_tty.ready = g_tty.len;
+    }
+    tty_unlock();
++++ new
+    tty_unlock();
+
+### a flush throws nothing away
+--- old
+    if (flush) {
++++ new
+    if (0) {
+
+### a newline goes out as CR LF whatever the modes say
+--- old
+            if (c == '\n' && onlcr) {
++++ new
+            if (c == '\n') {
+
+### a non-blocking read waits
+--- old
+        if (f->flags & VIBEOS_O_NONBLOCK) {
++++ new
+        if (0) {
+
+### half a line counts as readable
+--- old
+    if (g_tty.eof || ((g_tty.m.lflag & VIBEOS_TTY_ICANON) ? g_tty.ready > 0u
++++ new
+    if (g_tty.eof || ((g_tty.m.lflag & VIBEOS_TTY_ICANON) ? g_tty.len > 0u
+
+### what was typed and not yet read is not counted
+--- old
+    tty_pump(TTY_LINE);   /* what was typed counts whether or not a read has looked yet */
++++ new

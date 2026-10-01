@@ -96,6 +96,23 @@ static int pipe_stat(vibeos_file_t *f, vibeos_file_stat_t *out) {
  * ends are gone, because a reader may still have data to drain after every
  * writer has closed - and somebody may be waiting for the data, the room or the
  * end of file that just became true. */
+/* A read end is ready when there is something to read or nobody left to write
+ * it - end of file is an answer, and a reader waiting for one must be told. A
+ * write end is ready while there is room, and "ready" with nobody left to read:
+ * the write will not wait, it will fail, which the caller has to find out. */
+static uint32_t pipe_ready(vibeos_file_t *f) {
+    uint32_t pending = vibeos_pipe_pending(f->pipe);
+
+    if (f->pipe_write) {
+        uint32_t r = pending < VIBEOS_PIPE_BYTES ? VIBEOS_READY_OUT : 0u;
+        return vibeos_pipe_readers(f->pipe) == 0u ? (r | VIBEOS_READY_OUT | VIBEOS_READY_HUP) : r;
+    }
+    if (pending > 0u) {
+        return VIBEOS_READY_IN;
+    }
+    return vibeos_pipe_writers(f->pipe) == 0u ? (VIBEOS_READY_IN | VIBEOS_READY_HUP) : 0u;
+}
+
 static void pipe_release(vibeos_file_t *f) {
     if (f->pipe < 0) {
         return;
@@ -111,6 +128,7 @@ const vibeos_file_ops_t vibeos_fops_pipe = {
     .write = pipe_write,
     .stat = pipe_stat,
     .release = pipe_release,
+    .ready = pipe_ready,
 };
 
 int vibeos_open_pipe(uint32_t flags, vibeos_file_t **rd, vibeos_file_t **wr) {

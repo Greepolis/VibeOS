@@ -7,6 +7,7 @@
 
 #include "ksvc_fake.h"
 #include "vibeos/filelock.h"
+#include "vibeos/tty.h"
 #include "vibeos/tmpfs.h"
 #include "vibeos/fdtable.h"
 #include "vibeos/file.h"
@@ -47,6 +48,9 @@ static uint32_t g_idles;
 static uint64_t g_next_sp_v;
 
 static char g_con[16384];
+/* The keyboard: what a test typed and nobody has read yet. */
+static char g_kbd[1024];
+static uint32_t g_kbd_len, g_kbd_at;
 static uint32_t g_con_len;
 static int g_lock_depth, g_lock_bad;
 
@@ -407,6 +411,8 @@ void kf_reset(void) {
     vibeos_file_reset();
     vibeos_flk_set_lock(kf_pipe_lock, kf_pipe_unlock);
     vibeos_flk_reset();
+    vibeos_tty_reset();
+    g_kbd_len = g_kbd_at = 0;
     vibeos_pipe_reset();
     memset(g_ps, 0, sizeof(g_ps));
     memset(g_user, 0, sizeof(g_user));
@@ -842,7 +848,15 @@ void ks_tls_set(int slot, uint64_t base) { g_t[slot].tls = base; }
 
 vibeos_inet_t *ks_net(void) { return g_net_is_up ? &g_net_v : 0; }
 vibeos_lock_t *ks_net_lock(void) { return &g_net_lock_v; }
-int ks_console_getc(void) { return -1; }
+void kf_type(const char *s) {
+    while (*s && g_kbd_len < sizeof(g_kbd)) {
+        g_kbd[g_kbd_len++] = *s++;
+    }
+}
+
+int ks_console_getc(void) {
+    return g_kbd_at < g_kbd_len ? (int)(unsigned char)g_kbd[g_kbd_at++] : -1;
+}
 void ks_console_echo(char c) { (void)c; }
 uint32_t ks_foreground_pgid(void) { return g_fg_pgid; }
 void ks_set_foreground_pgid(uint32_t pgid) { g_fg_pgid = pgid; }

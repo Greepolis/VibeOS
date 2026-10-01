@@ -10,8 +10,8 @@ the registry, not this page; `check.sh` fails while the two differ.
 | State | Count | What the kernel answers |
 | --- | --- | --- |
 | done | 124 | through its row |
-| partial | 19 | through its row, with the gap named |
-| missing | 147 | ENOSYS, and the boot gate fails naming the number |
+| partial | 20 | through its row, with the gap named |
+| missing | 146 | ENOSYS, and the boot gate fails naming the number |
 | deferred | 50 | ENOSYS, and the boot gate fails naming the number |
 | refused | 33 | its errno, counted as refused - expected, never a failure |
 
@@ -22,7 +22,7 @@ Without a row, by phase:
 | L1 - files and paths | 0 |
 | L2 - processes, credentials, time | 47 |
 | L3 - memory | 10 |
-| L4 - event loops | 21 |
+| L4 - event loops | 20 |
 | L5 - sockets | 11 |
 | L6 - threads and scheduling | 20 |
 | L7 - IPC | 21 |
@@ -43,7 +43,7 @@ calls, outside the Linux number space, are listed last.
 | 4 | `stat` | done | - | - | `fs.c` |  |
 | 5 | `fstat` | done | - | - | `fs.c` |  |
 | 6 | `lstat` | done | - | - | `fs.c` |  |
-| 7 | `poll` | missing | L4 | ENOSYS |  |  |
+| 7 | `poll` | partial | L4 | - | `fs.c` | the console, pipes and files; a socket always reports ready |
 | 8 | `lseek` | done | - | - | `fs.c` |  |
 | 9 | `mmap` | partial | L3 | - | `mm.c` | anonymous only; MAP_FIXED and file-backed mappings refused |
 | 10 | `mprotect` | done | - | - | `mm.c` |  |
@@ -52,7 +52,7 @@ calls, outside the Linux number space, are listed last.
 | 13 | `rt_sigaction` | done | - | - | `sig.c` |  |
 | 14 | `rt_sigprocmask` | done | - | - | `sig.c` |  |
 | 15 | `rt_sigreturn` | done | - | - | `sig.c` |  |
-| 16 | `ioctl` | partial | L1 | - | `fs.c` | ENOTTY for everything: no terminal device |
+| 16 | `ioctl` | partial | L1 | - | `fs.c` | the console's modes, size and process group, and the descriptor requests; ISIG, VTIME and the other terminal requests (TCFLSH, TIOCSCTTY, ...) are not honoured |
 | 17 | `pread64` | done | - | - | `fs.c` |  |
 | 18 | `pwrite64` | done | - | - | `fs.c` |  |
 | 19 | `readv` | partial | L5 | - | `fs.c` | files and the console; no socket scatter |

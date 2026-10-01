@@ -315,12 +315,81 @@ static long linux_sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
 /* writev()/readv(): scatter-gather over the single-buffer paths. The iovec array
  * is itself user memory, so it is validated like any other user pointer before
  * being walked. */
+/* A writev of several pieces that fit in a page, as one write.
+ *
+ * A C library that buffers a stream by lines - which it does the moment the
+ * stream is a terminal (L1 step 7) - writes what was in its buffer and the
+ * piece that completed the line as two elements of one writev. Written one
+ * element at a time those are two writes: on the console two lines of log with
+ * a prefix each, and on a pipe two chances for another writer's bytes to land
+ * in between. Linux writes a small writev whole; so the pieces are gathered
+ * into a kernel page and written once. The page's address goes where a user
+ * address usually goes, as in sendfile.
+ *
+ * 0 when this did not apply and the caller should write element by element;
+ * otherwise the call's result. */
+static long linux_writev_gathered(vibeos_file_t *f, uint64_t iov_uptr, uint64_t iovcnt, int *did) {
+    linux_iovec_t v;
+    uint8_t *page;
+    uint64_t i, total = 0;
+    long r;
+
+    *did = 0;
+    if (iovcnt < 2u || !f->ops->write) {
+        return 0;
+    }
+    for (i = 0; i < iovcnt; i++) {
+        if (vibeos_uaccess_copy(&v, (const void *)(uintptr_t)
+                (iov_uptr + i * sizeof(linux_iovec_t)), sizeof(v)) != 0) {
+            return 0;   /* the element-by-element path says EFAULT where it should */
+        }
+        if (v.iov_len > 4096u || total + v.iov_len > 4096u) {
+            return 0;
+        }
+        total += v.iov_len;
+    }
+    if (total == 0u || !(page = (uint8_t *)ks_page_alloc())) {
+        return 0;
+    }
+    total = 0;
+    for (i = 0; i < iovcnt; i++) {
+        /* Read again: the lengths may have changed under a sibling thread, so
+         * the bound is checked against the page once more. */
+        if (vibeos_uaccess_copy(&v, (const void *)(uintptr_t)
+                (iov_uptr + i * sizeof(linux_iovec_t)), sizeof(v)) != 0 ||
+            total + v.iov_len > 4096u || v.iov_len > 4096u ||
+            (v.iov_len != 0u && (!linux_user_ok(v.iov_base, v.iov_len, 0) ||
+             vibeos_uaccess_copy(page + total, (const void *)(uintptr_t)v.iov_base, v.iov_len) != 0))) {
+            ks_page_free(page, "writev gather buffer");
+            return 0;
+        }
+        total += v.iov_len;
+    }
+    r = f->ops->write(f, (uint64_t)(uintptr_t)page, total);
+    ks_page_free(page, "writev gather buffer");
+    *did = 1;
+    return r;
+}
+
 static long linux_sys_writev(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt) {
     long total = 0;
     uint64_t i;
 
     if (iovcnt > 1024u) {
         return -VIBEOS_EINVAL;   /* Linux caps this at UIO_MAXIOV */
+    }
+    {
+        vibeos_file_t *f = linux_file_get(fd);
+        int did = 0;
+        long r;
+        if (!f) {
+            return -VIBEOS_EBADF;
+        }
+        r = linux_writev_gathered(f, iov_uptr, iovcnt, &did);
+        vibeos_file_put(f);
+        if (did) {
+            return r;
+        }
     }
     for (i = 0; i < iovcnt; i++) {
         linux_iovec_t v;
@@ -1487,20 +1556,233 @@ static long linux_getdents(uint64_t fd, uint64_t buf, uint64_t len, int old) {
     return used > 0u ? (long)used : r;
 }
 
-/* ioctl(): the type answers. Only the console answers anything, and only the
- * process-group questions; ENOTTY is the truthful answer everywhere else, and it
- * is the answer a libc uses to decide stdout is a file or a pipe and should be
+/* An ioctl's argument, when the request says it is a pointer. Judged here and
+ * not by the row: which requests carry one, and how long, is a table of its
+ * own - more than a row has descriptors for. */
+static int linux_ioctl_arg(uint64_t arg, uint64_t n, int write) {
+    return linux_user_ok(arg, n, write);
+}
+
+/* The terminal's requests, on a description that is the console. The modes
+ * are kept in Linux's numbering (vibeos/tty.h), so this is a copy field by
+ * field between two structures that agree, not a translation. */
+static long linux_tty_ioctl(uint32_t req, uint64_t arg) {
+    vibeos_tty_modes_t m;
+    vibeos_tty_size_t sz;
+    linux_termios_t t;
+    linux_winsize_t w;
+    uint8_t *raw;
+    uint32_t i;
+
+    switch (req) {
+        case LINUX_TCGETS:
+            if (!linux_ioctl_arg(arg, sizeof(t), 1)) {
+                return -VIBEOS_EFAULT;
+            }
+            vibeos_tty_get(&m);
+            raw = (uint8_t *)&t;
+            for (i = 0; i < sizeof(t); i++) {
+                raw[i] = 0;
+            }
+            t.c_iflag = m.iflag;
+            t.c_oflag = m.oflag;
+            t.c_cflag = m.cflag;
+            t.c_lflag = m.lflag;
+            t.c_line = m.line;
+            for (i = 0; i < VIBEOS_TTY_NCC; i++) {
+                t.c_cc[i] = m.cc[i];
+            }
+            return vibeos_uaccess_copy((void *)(uintptr_t)arg, &t, sizeof(t)) != 0 ? -VIBEOS_EFAULT : 0;
+        case LINUX_TCSETS:
+        case LINUX_TCSETSW:
+        case LINUX_TCSETSF:
+            /* "Now", "once output has drained" - which it always has: nothing
+             * is queued for the console - and "drained, with unread input
+             * thrown away". */
+            if (!linux_ioctl_arg(arg, sizeof(t), 0) ||
+                vibeos_uaccess_copy(&t, (const void *)(uintptr_t)arg, sizeof(t)) != 0) {
+                return -VIBEOS_EFAULT;
+            }
+            m.iflag = t.c_iflag;
+            m.oflag = t.c_oflag;
+            m.cflag = t.c_cflag;
+            m.lflag = t.c_lflag;
+            m.line = t.c_line;
+            for (i = 0; i < VIBEOS_TTY_NCC; i++) {
+                m.cc[i] = t.c_cc[i];
+            }
+            vibeos_tty_set(&m, req == LINUX_TCSETSF);
+            return 0;
+        case LINUX_TIOCGWINSZ:
+            if (!linux_ioctl_arg(arg, sizeof(w), 1)) {
+                return -VIBEOS_EFAULT;
+            }
+            vibeos_tty_get_size(&sz);
+            w.ws_row = sz.rows;
+            w.ws_col = sz.cols;
+            w.ws_xpixel = sz.xpixel;
+            w.ws_ypixel = sz.ypixel;
+            return vibeos_uaccess_copy((void *)(uintptr_t)arg, &w, sizeof(w)) != 0 ? -VIBEOS_EFAULT : 0;
+        case LINUX_TIOCSWINSZ:
+            if (!linux_ioctl_arg(arg, sizeof(w), 0) ||
+                vibeos_uaccess_copy(&w, (const void *)(uintptr_t)arg, sizeof(w)) != 0) {
+                return -VIBEOS_EFAULT;
+            }
+            sz.rows = w.ws_row;
+            sz.cols = w.ws_col;
+            sz.xpixel = w.ws_xpixel;
+            sz.ypixel = w.ws_ypixel;
+            vibeos_tty_set_size(&sz);
+            return 0;
+        default:
+            return 1;   /* not one of these */
+    }
+}
+
+/* ioctl(). Four requests any descriptor answers - close-on-exec on and off,
+ * non-blocking on and off, how much can be read now - then the terminal's on
+ * the console, then whatever the file's type answers itself (the console's
+ * process group). Everything else is ENOTTY, which is the truthful answer and
+ * the one a C library uses to decide a stream is not a terminal and should be
  * block buffered. */
 static long linux_sys_ioctl(uint64_t fd, uint64_t req, uint64_t arg) {
+    vibeos_procstate_t *ps = linux_cur_ps();
     vibeos_file_t *f = linux_file_get(fd);
+    uint32_t r32 = (uint32_t)req;
+    int32_t v = 0;
     long r;
 
     if (!f) {
         return -VIBEOS_EBADF;
     }
-    r = f->ops->ioctl ? f->ops->ioctl(f, req, arg) : -VIBEOS_ENOTTY;
+    switch (r32) {
+        case LINUX_FIOCLEX:
+        case LINUX_FIONCLEX:
+            r = -VIBEOS_EBADF;
+            if (ps) {
+                ks_lock(&ps->files_lock, __func__);
+                if (vibeos_fdtable_get(&ps->files, fd)) {
+                    uint32_t fl = vibeos_fdtable_flags(&ps->files, fd) & ~VIBEOS_FD_CLOEXEC;
+                    r = vibeos_fdtable_set_flags(&ps->files, fd,
+                            fl | (r32 == LINUX_FIOCLEX ? VIBEOS_FD_CLOEXEC : 0u)) == 0 ? 0 : -VIBEOS_EBADF;
+                }
+                ks_unlock(&ps->files_lock);
+            }
+            break;
+        case LINUX_FIONBIO:
+            if (!linux_ioctl_arg(arg, sizeof(v), 0) ||
+                vibeos_uaccess_copy(&v, (const void *)(uintptr_t)arg, sizeof(v)) != 0) {
+                r = -VIBEOS_EFAULT;
+            } else {
+                /* The description's flag, as F_SETFL sets it. */
+                f->flags = v ? (f->flags | VIBEOS_O_NONBLOCK) : (f->flags & ~VIBEOS_O_NONBLOCK);
+                r = 0;
+            }
+            break;
+        case LINUX_FIONREAD:
+            if (f->ops == &vibeos_fops_console) {
+                v = (int32_t)vibeos_tty_pending();
+            } else if (f->ops == &vibeos_fops_regular) {
+                vibeos_file_stat_t st;
+                vibeos_file_stat_clear(&st);
+                (void)f->ops->stat(f, &st);
+                v = st.size > f->pos ? (int32_t)(st.size - f->pos > 0x7fffffffull ? 0x7fffffffull
+                                                                                 : st.size - f->pos) : 0;
+            } else if (f->ops == &vibeos_fops_pipe && !f->pipe_write) {
+                v = (int32_t)vibeos_pipe_pending(f->pipe);
+            } else {
+                r = -VIBEOS_ENOTTY;   /* a socket's count is the network's to give (L5) */
+                break;
+            }
+            r = !linux_ioctl_arg(arg, sizeof(v), 1) ||
+                vibeos_uaccess_copy((void *)(uintptr_t)arg, &v, sizeof(v)) != 0 ? -VIBEOS_EFAULT : 0;
+            break;
+        default:
+            r = f->ops == &vibeos_fops_console ? linux_tty_ioctl(r32, arg) : 1;
+            if (r == 1) {
+                r = f->ops->ioctl ? f->ops->ioctl(f, req, arg) : -VIBEOS_ENOTTY;
+            }
+            break;
+    }
     vibeos_file_put(f);
     return r;
+}
+
+/* poll(fds, nfds, timeout): which of these descriptors can be read or written
+ * now, waiting up to `timeout` milliseconds for one that can - for ever when it
+ * is negative, not at all when it is 0.
+ *
+ * Here ahead of the event loops it belongs with (L4), and no more of it than
+ * the terminal needs: a shell on a terminal asks poll before every key. Each
+ * file type says what it can do now (vibeos_file_ops_t.ready); one that cannot
+ * say is always ready, which is right for a file and wrong for a socket - the
+ * gap the registry names. The wait is the pipes' wait: give up the core, look
+ * again, stop for a signal. */
+static long linux_sys_poll(uint64_t fds_uptr, uint64_t nfds, uint64_t timeout) {
+    int ms = VIBEOS_ARG_INT(timeout);
+    uint64_t deadline = 0, i;
+    long count;
+
+    if (nfds > (uint64_t)LINUX_MAX_FDS) {
+        return -VIBEOS_EINVAL;
+    }
+    if (ms > 0) {
+        deadline = ks_ticks() + vibeos_ceil_div_u64((uint64_t)ms * ks_hz(), 1000ull);
+    }
+    for (;;) {
+        count = 0;
+        for (i = 0; i < nfds; i++) {
+            linux_pollfd_t p;
+            uint64_t at = fds_uptr + i * sizeof(p);
+            int16_t got = 0;
+
+            /* Each element copied in, judged and copied out on its own: the
+             * array was checked as a whole before this ran, and that check and
+             * these copies are two instants (H-020). */
+            if (vibeos_uaccess_copy(&p, (const void *)(uintptr_t)at, sizeof(p)) != 0) {
+                return -VIBEOS_EFAULT;
+            }
+            if (p.fd >= 0) {
+                vibeos_file_t *f = linux_file_get((uint64_t)(uint32_t)p.fd);
+                if (!f) {
+                    got = LINUX_POLLNVAL;
+                } else {
+                    uint32_t r = f->ops->ready ? f->ops->ready(f) : (VIBEOS_READY_IN | VIBEOS_READY_OUT);
+                    if (r & VIBEOS_READY_IN) {
+                        got |= (int16_t)(p.events & (LINUX_POLLIN | LINUX_POLLRDNORM));
+                    }
+                    if (r & VIBEOS_READY_OUT) {
+                        got |= (int16_t)(p.events & (LINUX_POLLOUT | LINUX_POLLWRNORM));
+                    }
+                    if (r & VIBEOS_READY_HUP) {
+                        /* Reported whether asked for or not, as an error is. A
+                         * write end whose reader has gone is an error. */
+                        got |= f->pipe_write ? LINUX_POLLERR : LINUX_POLLHUP;
+                    }
+                    vibeos_file_put(f);
+                }
+            }
+            if (got != p.revents) {
+                p.revents = got;
+                if (vibeos_uaccess_copy((void *)(uintptr_t)at, &p, sizeof(p)) != 0) {
+                    return -VIBEOS_EFAULT;
+                }
+            }
+            if (got != 0) {
+                count++;
+            }
+        }
+        if (count > 0 || ms == 0) {
+            return count;
+        }
+        if (ms > 0 && ks_ticks() >= deadline) {
+            return 0;
+        }
+        if (ks_current() >= 0 && ks_signal_interrupts(ks_current())) {
+            return -VIBEOS_EINTR;
+        }
+        ks_block_point();
+    }
 }
 
 /* ---- paths ----------------------------------------------------------------------------- */
@@ -1789,6 +2071,7 @@ int linux_files_leave(vibeos_procstate_t *ps) {
     X(4,   stat,        STAT,        PTRS(OUT(1, sizeof(linux_stat_t))), linux_sys_stat(ARG(0), ARG(1))) \
     X(5,   fstat,       FSTAT,       PTRS(OUT(1, sizeof(linux_stat_t))), linux_sys_fstat(ARG(0), ARG(1))) \
     X(6,   lstat,       LSTAT,       PTRS(OUT(1, sizeof(linux_stat_t))), linux_sys_lstat(ARG(0), ARG(1))) \
+    X(7,   poll,        POLL,        PTRS(OUT_VEC(0, 1, sizeof(linux_pollfd_t), 1024)), linux_sys_poll(ARG(0), ARG(1), ARG(2))) \
     X(8,   lseek,       LSEEK,       NOPTR, linux_sys_lseek(ARG(0), ARG(1), ARG(2))) \
     X(16,  ioctl,       IOCTL,       PTRS(OUT_IF(1, VIBEOS_IOCTL_GET_PGRP, 2, sizeof(uint32_t)), IN_IF(1, VIBEOS_IOCTL_SET_PGRP, 2, sizeof(uint32_t))), linux_sys_ioctl(ARG(0), ARG(1), ARG(2))) \
     X(19,  readv,       READV,       PTRS(IN_VEC(1, 2, sizeof(linux_iovec_t), 1024)), linux_sys_readv(ARG(0), ARG(1), ARG(2))) \

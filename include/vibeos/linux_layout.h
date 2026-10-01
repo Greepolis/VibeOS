@@ -215,6 +215,32 @@ typedef struct {
     char d_name[];
 } linux_dirent_t;
 
+/* struct termios (asm-generic/termbits.h) - the kernel's, which is shorter
+ * than the C library's - and struct winsize (asm-generic/termios.h): the
+ * terminal's modes and size, by ioctl. */
+typedef struct {
+    uint32_t c_iflag;
+    uint32_t c_oflag;
+    uint32_t c_cflag;
+    uint32_t c_lflag;
+    uint8_t c_line;
+    uint8_t c_cc[19];
+} linux_termios_t;
+
+typedef struct {
+    uint16_t ws_row;
+    uint16_t ws_col;
+    uint16_t ws_xpixel;
+    uint16_t ws_ypixel;
+} linux_winsize_t;
+
+/* struct pollfd (asm-generic/poll.h): poll. */
+typedef struct {
+    int32_t fd;
+    int16_t events;
+    int16_t revents;
+} linux_pollfd_t;
+
 /* ---- constants ---------------------------------------------------------------------- */
 
 /* clone() flags that decide whether it is a fork or a thread (linux/sched.h). */
@@ -307,6 +333,29 @@ typedef struct {
  * the one mode honoured, and the largest advice there is. */
 #define LINUX_FALLOC_FL_KEEP_SIZE 0x01
 #define LINUX_POSIX_FADV_NOREUSE  5
+
+/* ioctl requests (asm-generic/ioctls.h): the terminal's, and the four any
+ * descriptor answers. The process-group pair is the file layer's
+ * (VIBEOS_IOCTL_*). */
+#define LINUX_TCGETS     0x5401u
+#define LINUX_TCSETS     0x5402u
+#define LINUX_TCSETSW    0x5403u
+#define LINUX_TCSETSF    0x5404u
+#define LINUX_TIOCGWINSZ 0x5413u
+#define LINUX_TIOCSWINSZ 0x5414u
+#define LINUX_FIONREAD   0x541Bu
+#define LINUX_FIONBIO    0x5421u
+#define LINUX_FIONCLEX   0x5450u
+#define LINUX_FIOCLEX    0x5451u
+
+/* poll's events (asm-generic/poll.h). */
+#define LINUX_POLLIN   0x0001
+#define LINUX_POLLOUT  0x0004
+#define LINUX_POLLERR  0x0008
+#define LINUX_POLLHUP  0x0010
+#define LINUX_POLLNVAL 0x0020
+#define LINUX_POLLRDNORM 0x0040
+#define LINUX_POLLWRNORM 0x0100
 
 /* close_range flags (linux/close_range.h). */
 #define LINUX_CLOSE_RANGE_UNSHARE (1u << 1)

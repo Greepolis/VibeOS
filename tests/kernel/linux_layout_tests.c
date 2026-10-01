@@ -36,6 +36,8 @@ int test_linux_layout(void) {
 #include <asm/stat.h>
 #include <asm/signal.h>
 #include <asm/ioctls.h>
+#include <asm/termbits.h>
+#include <asm/termios.h>
 #include <asm/mman.h>
 #include <asm/prctl.h>
 #include <linux/time_types.h>
@@ -58,6 +60,7 @@ int test_linux_layout(void) {
 #include <linux/openat2.h>
 #include <linux/utime.h>
 #include <asm/statfs.h>
+#include <asm/poll.h>
 #include <linux/xattr.h>
 #include <linux/limits.h>
 #include <string.h>
@@ -67,6 +70,7 @@ int test_linux_layout(void) {
 #include "vibeos/file.h"
 #include "vibeos/fdtable.h"
 #include "vibeos/fileops.h"
+#include "vibeos/tty.h"
 #include "linux_layout_libc.h"
 
 static int g_fail;
@@ -339,6 +343,66 @@ int test_linux_layout(void) {
     LIBC_CONST(LINUX_DT_LNK, "DT_LNK");
     CONST(VIBEOS_EDEADLK, EDEADLK);
     CONST(VIBEOS_EOVERFLOW, EOVERFLOW);
+
+    SIZE(linux_pollfd_t, struct pollfd);
+    FIELD(linux_pollfd_t, struct pollfd, fd);
+    FIELD(linux_pollfd_t, struct pollfd, events);
+    FIELD(linux_pollfd_t, struct pollfd, revents);
+    CONST(LINUX_POLLIN, POLLIN);
+    CONST(LINUX_POLLOUT, POLLOUT);
+    CONST(LINUX_POLLERR, POLLERR);
+    CONST(LINUX_POLLHUP, POLLHUP);
+    CONST(LINUX_POLLNVAL, POLLNVAL);
+    CONST(LINUX_POLLRDNORM, POLLRDNORM);
+    CONST(LINUX_POLLWRNORM, POLLWRNORM);
+
+    SIZE(linux_termios_t, struct termios);
+    FIELD(linux_termios_t, struct termios, c_iflag);
+    FIELD(linux_termios_t, struct termios, c_oflag);
+    FIELD(linux_termios_t, struct termios, c_cflag);
+    FIELD(linux_termios_t, struct termios, c_lflag);
+    FIELD(linux_termios_t, struct termios, c_line);
+    FIELD(linux_termios_t, struct termios, c_cc);
+    SIZE(linux_winsize_t, struct winsize);
+    FIELD(linux_winsize_t, struct winsize, ws_row);
+    FIELD(linux_winsize_t, struct winsize, ws_col);
+    FIELD(linux_winsize_t, struct winsize, ws_xpixel);
+    FIELD(linux_winsize_t, struct winsize, ws_ypixel);
+
+    CONST(LINUX_TCGETS, TCGETS);
+    CONST(LINUX_TCSETS, TCSETS);
+    CONST(LINUX_TCSETSW, TCSETSW);
+    CONST(LINUX_TCSETSF, TCSETSF);
+    CONST(LINUX_TIOCGWINSZ, TIOCGWINSZ);
+    CONST(LINUX_TIOCSWINSZ, TIOCSWINSZ);
+    CONST(LINUX_FIONREAD, FIONREAD);
+    CONST(LINUX_FIONBIO, FIONBIO);
+    CONST(LINUX_FIONCLEX, FIONCLEX);
+    CONST(LINUX_FIOCLEX, FIOCLEX);
+    /* The terminal's modes are kept in Linux's numbering (vibeos/tty.h). */
+    CONST(VIBEOS_TTY_NCC, NCCS);
+    CONST(VIBEOS_TTY_ICRNL, ICRNL);
+    CONST(VIBEOS_TTY_IXON, IXON);
+    CONST(VIBEOS_TTY_OPOST, OPOST);
+    CONST(VIBEOS_TTY_ONLCR, ONLCR);
+    CONST(VIBEOS_TTY_CFLAG_DEFAULT, B38400 | CS8 | CREAD);
+    CONST(VIBEOS_TTY_ISIG, ISIG);
+    CONST(VIBEOS_TTY_ICANON, ICANON);
+    CONST(VIBEOS_TTY_ECHO, ECHO);
+    CONST(VIBEOS_TTY_ECHOE, ECHOE);
+    CONST(VIBEOS_TTY_ECHOK, ECHOK);
+    CONST(VIBEOS_TTY_ECHONL, ECHONL);
+    CONST(VIBEOS_TTY_ECHOCTL, ECHOCTL);
+    CONST(VIBEOS_TTY_ECHOKE, ECHOKE);
+    CONST(VIBEOS_TTY_IEXTEN, IEXTEN);
+    CONST(VIBEOS_TTY_VINTR, VINTR);
+    CONST(VIBEOS_TTY_VQUIT, VQUIT);
+    CONST(VIBEOS_TTY_VERASE, VERASE);
+    CONST(VIBEOS_TTY_VKILL, VKILL);
+    CONST(VIBEOS_TTY_VEOF, VEOF);
+    CONST(VIBEOS_TTY_VTIME, VTIME);
+    CONST(VIBEOS_TTY_VMIN, VMIN);
+    SIZE(vibeos_tty_modes_t, struct termios);
 
     SIZE(linux_rlimit64_t, struct rlimit64);
     FIELD(linux_rlimit64_t, struct rlimit64, rlim_cur);
