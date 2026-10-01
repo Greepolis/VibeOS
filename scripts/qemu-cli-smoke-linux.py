@@ -2804,6 +2804,14 @@ def main():
                 if (not re.search(r"write\(ring3\): 866\r?\n", text) or
                         not re.search(r"write\(ring3\): LFN_5\r?\n", text)):
                     problems.append("fat_write_path_failed")
+                # Names and metadata (step 5): stat's own line, printed only
+                # if mv, ln, ln -s, chmod, mkdir and rmdir before it worked, and
+                # carrying the mode, link count and size they should have left;
+                # then a rename on the FAT volume, read back by its new name.
+                if not re.search(r"write\(ring3\): META_600_2_2\r?\n", text):
+                    problems.append("names_and_metadata_failed")
+                if not re.search(r"write\(ring3\): FATMV_4\r?\n", text):
+                    problems.append("fat_rename_failed")
 
             signal_elf = os.path.join(efi_root, "EFI", "BOOT", "SIGNAL.ELF")
             if os.path.exists(signal_elf):

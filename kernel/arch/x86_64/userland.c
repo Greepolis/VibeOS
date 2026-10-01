@@ -244,6 +244,20 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                    * volume can see the clusters it kept. */
                                   "cat /fatbig.txt /fatbig.txt /fatbig.txt > /fatcut.txt; "
                                   "echo cut > /fatcut.txt\n"
+                                  /* Names and metadata (L1 step 5), as the
+                                   * programs that use them call them: mv is
+                                   * rename, ln is link and symlink, chmod is
+                                   * fchmodat, and stat prints what the kernel
+                                   * told it - mode 600, two links, two bytes -
+                                   * only if every step before it worked. */
+                                  "cd /tmp && echo x > mv1 && mv mv1 mv2 && ln -s mv2 lnk && "
+                                  "ln mv2 hard && chmod 600 mv2 && mkdir dd && rmdir dd && "
+                                  "cat lnk > mv3 && stat -c META_%a_%h_%s hard; cd /\n"
+                                  /* And on FAT, where the gate's check of
+                                   * the volume afterwards is what says a
+                                   * rename and an rmdir left it whole. */
+                                  "mv /fatcut.txt '/moved by rename.txt' && mkdir /fatdir && "
+                                  "rmdir /fatdir && echo FATMV_$(wc -c < '/moved by rename.txt')\n"
                                   /* The last thing the self-test says. The boot
                                    * harness waits for this before driving the
                                    * kernel CLI, so a slower build cannot have

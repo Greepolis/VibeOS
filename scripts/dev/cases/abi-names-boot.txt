@@ -1,0 +1,25 @@
+# Names and metadata at boot (docs/abi/ L1 step 5): the shell self-test runs mv,
+# ln, ln -s, chmod, mkdir, rmdir and stat in /tmp, and the gate reads stat's own
+# line - META_600_2_2: mode 600, two links, two bytes.
+#
+#  1. chmod reports success and changes nothing. Expect
+#     names_and_metadata_failed: stat prints 644.
+#  2. link reports success and makes no name. Expect names_and_metadata_failed:
+#     stat has nothing called "hard" to print.
+#
+# Target source: kernel/abi/linux/names.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/names.c scripts/dev/cases/abi-names-boot.txt
+
+### chmod reports success and changes nothing
+--- old
+    attr.mode = (uint32_t)mode & 07777u;
+    return vibeos_fs_setattr(w->mnt, linux_tail(w), &attr);
++++ new
+    attr.mode = (uint32_t)mode & 07777u;
+    return 0;
+
+### link reports success and makes no name
+--- old
+    return vibeos_fs_link(a.mnt, a.tail, b.tail);
++++ new
+    return 0;

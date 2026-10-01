@@ -9,6 +9,11 @@
 #     boot_volume_inconsistent:chain_too_long and nothing from the guest - a
 #     file cut by O_TRUNC that keeps its chain reads perfectly, and the kernel
 #     that left it that way is the last thing able to notice.
+#  3. rename reports success and does nothing (L1 step 5). Expect
+#     fat_rename_failed: mv is content and the new name is not there.
+#  4. rename does not remove the old name. Expect
+#     boot_volume_inconsistent:cross_linked - two entries, one chain, and both
+#     names read perfectly from inside.
 #
 # Not a case: mtools_cannot_read_what_the_guest_wrote. The defect it is there
 # for is a sector that reaches the cache and not the disk - the guest reads its
@@ -39,3 +44,16 @@
     } else if (need < have) {
 +++ new
     } else if (0) {
+
+### rename reports success and does nothing
+--- old
+    r = fat_rename(from, to, flags);
++++ new
+    r = 0;
+
+### rename does not remove the old name
+--- old
+    if (r == 0) {
+        r = fat_dir_remove(&src);
+    }
++++ new
