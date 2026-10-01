@@ -277,6 +277,8 @@ int test_fat(void) {
            node("e/sub/moved", &n) != 0, "rmdir of an empty directory");
 
     /* ---- attributes, times, statfs ---- */
+    expect(node("f", &n) == 0 && (n.mode & 0777u) == 0755u && node("e", &n) == 0 && (n.mode & 0777u) == 0755u,
+           "a file is executable, like a directory: FAT has no bit to say otherwise, and Linux says 0755");
     memset(&a, 0, sizeof(a));
     a.valid = VIBEOS_ATTR_MODE | VIBEOS_ATTR_MTIME;
     a.mode = 0444u;

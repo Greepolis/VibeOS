@@ -2604,9 +2604,16 @@ long vibeos_fat_read_file(const char *path, void *buf, uint32_t bufcap) {
  * docs/abi/ L1 step 4. */
 
 /* What stat reports for an entry. FAT keeps no owner and one permission, read-
- * only; a node's identity is where its entry is. */
+ * only; a node's identity is where its entry is.
+ *
+ * Every file is executable, as Linux reports a FAT volume mounted with its
+ * defaults: the format has no bit to say otherwise, and the programs on the
+ * boot volume are run from it. They were 0644 until docs/abi/ L1 step 8, which
+ * exec never noticed - it does not ask - and a shell's `[ -x file ]` did: the
+ * corpus script found SQLite and Lua on the volume, judged them not runnable,
+ * and reported them absent. */
 static void fat_node_fill(const fat_ent_t *e, vibeos_fs_node_t *out) {
-    uint32_t perm = (e->attr & 0x10u) ? 0755u : 0644u;
+    uint32_t perm = 0755u;
 
     if (e->attr & 0x01u) {
         perm &= ~0222u;
