@@ -418,8 +418,17 @@ typedef struct {
  * startup block (argc, argv, envp, auxv) in the topmost stack page and reports
  * the stack pointer to enter on, which is 16-byte aligned as the ABI requires.
  * `_start` is written in assembly (user/prog/crt0.S) precisely so that state is
- * consumed correctly instead of being reinterpreted as a function frame. */
-#define VIBEOS_HW_USER_STACK_PAGES 4u
+ * consumed correctly instead of being reinterpreted as a function frame.
+ *
+ * 64 pages, 256 KiB, all of them mapped at exec: the stack does not grow. It
+ * was 4 pages until docs/abi/ L1 step 8 ran the corpus, where every workload
+ * ended in a segmentation fault - in sed, which each of them prints through.
+ * BusyBox's sed has a function with an 18 KiB frame, and the compiler's stack
+ * probe touched the first page below the sixteen kilobytes there were. A Linux
+ * program is written for a stack of megabytes that grows on demand; that is
+ * L3's to give (a fault below the stack maps a page). Until then this is what
+ * the programs of the corpus need, with room. */
+#define VIBEOS_HW_USER_STACK_PAGES 64u
 #define hw_aspace_destroy(as) hw_aspace_destroy_why((as), __func__)
 /* Thread-local storage base. A C runtime reaches its own thread state through
  * %fs on x86-64 - errno, the stack guard, locale - so this MSR is per task,
