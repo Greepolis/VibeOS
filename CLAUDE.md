@@ -234,6 +234,22 @@ user memory and every number it compares an argument against lives there, and
 file under `kernel/abi/` defines a constant under Linux's own spelling. That
 check's first run found `FUTEX_CMD_MASK` - Linux's name for a different value.
 
+**A check scoped by directory stops watching when the code moves.**
+`check-user-access.py` looked for raw user pointers in `kernel/abi/linux/`. A3
+moved read, write, getdents64, the console and the sockets into
+`kernel/abi/files/` - most of the sites the check was written after - and for
+two phases nothing watched them, while the sabotage case for one of them still
+named the file. It was found when that case was next run and went NOT RED. When
+moving code, move the scope of whatever checks it, and run the cases that name
+it.
+
+**"Direct" is the filesystem's property, not the descriptor's.** A regular file
+on a filesystem that writes at an offset reads its size from the filesystem
+every time; one on a whole-file filesystem keeps the size it was opened with.
+The first version decided that from the access mode, so a read-only descriptor
+on tmpfs reported a stale size from fstat and SEEK_END while a writer grew the
+file - found because a sabotage of ftruncate was refused by the wrong branch.
+
 **The host test runner's stdout is unbuffered for a reason.** A sabotage was
 named by its test and then a later group crashed on the same garbage; the
 FAIL line was still in the buffer and the run printed nothing at all. A crash

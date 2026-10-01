@@ -534,6 +534,61 @@ true to report before they are worth a row, so L1 builds that first:
   them exposes it. And the torture could not see a stale generation until it
   learned to keep a node across rounds, as an open description does.
 
+**Step 3 (2026-10-01): done.**
+
+- **A regular file writes at its offset.** On a filesystem with `write_at` a
+  description is "direct": `write` goes to the node through a kernel page,
+  `read` comes from it, and the 512-byte buffer that used to be the whole file
+  is not involved. A filesystem that only stores whole files - FAT, until step
+  4 - keeps the old path: a file opened O_WRONLY or O_CREAT is replaced on
+  release from what was written.
+- **open's flags mean what Linux means.** O_CREAT makes the file at open, with
+  the mode given less the process's umask; O_EXCL refuses an existing name and
+  does not follow a link there; O_TRUNC empties at open; O_APPEND finds the
+  end at every write, so two appenders interleave; O_RDWR reads and writes;
+  O_DIRECTORY and O_NOFOLLOW are honoured; an access mode of 3 is EINVAL.
+  O_WRONLY without O_CREAT on a missing file is ENOENT - it used to make one.
+- **File types gained four operations** - `pread`, `pwrite`, `truncate`, `sync`
+  - and their tables became designated initialisers. A type without positions
+  is ESPIPE to the positional calls, as on Linux.
+- **Twenty rows**: `pread64`, `preadv`, `sendfile`, `fsync`, `fdatasync`,
+  `creat`, `umask`, `sync`, `syncfs`, `sync_file_range`, `readahead`,
+  `fadvise64` and `copy_file_range` DONE; `pwrite64`, `pwritev`, `truncate` and
+  `ftruncate` PARTIAL until FAT writes in place; `preadv2`/`pwritev2` PARTIAL
+  (RWF_ flags are refused, not ignored); `fallocate` PARTIAL (it guarantees
+  the size, not the space, and only mode 0 and KEEP_SIZE). The registry stands
+  at 75 done, 22 partial, 193 missing.
+- **sendfile and copy_file_range copy in the kernel**, through one page whose
+  address goes where a user address usually goes: every file type copies
+  through `vibeos_uaccess_copy`, which does not care whose memory it is. At
+  most a megabyte a call, because a syscall runs with interrupts masked.
+- **The umask** is per process, beside the working directory, inherited by
+  fork and exec.
+- **Host tests** run on a tmpfs the fake kernel mounts at `/tmp`, as the real
+  one does: five groups, 70 checks - the flags, a 5000-byte write, the
+  positional calls and their vector forms, truncation, durability, the advice
+  calls, both kernel copies, and the whole-file filesystem still working.
+  **At boot** the shell writes 820 bytes in twenty writes, appends five with
+  `>>` and counts them with `wc -c`; the gate wants 825
+  (`tmp_write_path_failed`).
+- **Sabotage**: `abi-write-path.txt` (7) and `abi-file-calls.txt` (6), all red.
+  Three went NOT RED first, and each was read before anything was changed:
+  - *ftruncate on a read-only descriptor* was refused for the wrong reason. A
+    read-only description was not "direct", so it fell into the whole-file
+    branch - and its `fstat` and SEEK_END reported the size from when it was
+    opened while another descriptor grew the file. A defect, fixed: "direct" is
+    the filesystem's property, not the access mode's.
+  - *the whole-file writer taken for one that writes in place*: the test only
+    created new files, which take the create path; replacing an existing one
+    is tested now.
+  - *umask keeping bits above 0777*: the test never set one.
+- **A check had stopped watching.** `check-user-access.py` looked in
+  `kernel/abi/linux/` only; A3 moved read, write, getdents64, the console and
+  the sockets to `kernel/abi/files/`, so the sites it was written for (M-050 to
+  M-052) had been unwatched since. The case that hands read()'s user buffer to
+  the filesystem went NOT RED, which is how it was found. It scans all of
+  `kernel/abi/` now: 53 casts, none raw.
+
 ### L2. Processes, credentials and time (47)
 
 Sleeping and timers (`nanosleep`, `clock_nanosleep`, `alarm`, `setitimer`,
