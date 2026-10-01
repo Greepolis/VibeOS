@@ -210,6 +210,12 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                    * CD_OK is printed only if all three worked. */
                                   "cd -P /DOCS && pwd -P && cat NOTES.TXT && echo CD_OK\n"
                                   "cd /\n"
+                                  /* /tmp is tmpfs (docs/abi/ L1): a file
+                                   * written there and read back. The contents
+                                   * are the shell's arithmetic, so the gate
+                                   * cannot mistake the echoed command for
+                                   * the file. */
+                                  "echo TMPFS_RT_$((1+1)) > /tmp/rt.txt && cat /tmp/rt.txt\n"
                                   /* The last thing the self-test says. The boot
                                    * harness waits for this before driving the
                                    * kernel CLI, so a slower build cannot have

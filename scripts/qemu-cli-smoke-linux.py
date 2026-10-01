@@ -1628,6 +1628,11 @@ def main():
                     r"got=0x[0-9a-f]{16} "
                     r"result=([^\n]*)", text):
                 seen_fs[m.group(1)] = m.group(2).strip()
+            # /tmp (docs/abi/ L1): tmpfs mounted, read off its own line.
+            m = re.search(r"\[IO\] TMPFS at=/tmp pages=0x[0-9a-f]+ result=([^\n]*)", text)
+            if not m or m.group(1).strip() != "OK":
+                problems.append("tmpfs_not_mounted")
+
             # fat since docs/abi/ A4: VFAT long names written by mtools.
             for want in ("ext2", "iso9660", "ntfs", "exfat", "fat"):
                 res = seen_fs.get(want)
@@ -2756,6 +2761,12 @@ def main():
                 if (not re.search(r"write\(ring3\): CD_OK\r?\n", text) or
                         not re.search(r"write\(ring3\): /DOCS\r?\n", text)):
                     problems.append("shell_cd_did_not_work")
+                # A file written in /tmp and read back (docs/abi/ L1). The
+                # contents are computed by the shell - TMPFS_RT_$((1+1)) - so
+                # the typed command, which is echoed into the log too, cannot
+                # stand in for the file's contents.
+                if not re.search(r"write\(ring3\): TMPFS_RT_2\r?\n", text):
+                    problems.append("tmpfs_round_trip_failed")
 
             signal_elf = os.path.join(efi_root, "EFI", "BOOT", "SIGNAL.ELF")
             if os.path.exists(signal_elf):

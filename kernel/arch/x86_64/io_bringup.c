@@ -36,6 +36,7 @@
 #include "vibeos/storage.h"
 #include "vibeos/swaparea.h"
 #include "vibeos/swapmap.h"
+#include "vibeos/tmpfs.h"
 #include "vibeos/vfs.h"
 
 #include "arch_hw_internal.h"
@@ -940,6 +941,61 @@ void hw_scratch_bringup(void) {
  */
 static vibeos_storage_t g_storage;
 
+/* ---- /tmp (docs/abi/ L1 step 2) ----------------------------------------------------
+ *
+ * tmpfs, the one filesystem here with owners, modes, links and writes at an
+ * offset. Its own lock: it has callers on every core, and it allocates, so no
+ * other layer's lock will do (CLAUDE.md). Its pages come through the admitted
+ * door for user memory - they are a program's data, and the reserve the
+ * kernel keeps for itself must not be spent on a file somebody wrote - and
+ * tmpfs takes them before its lock, because that door may reclaim. */
+#define HW_TMPFS_PAGES 8192u   /* 32 MiB: a ceiling, not a reservation */
+
+static vibeos_tmpfs_t g_tmpfs;
+static vibeos_fsmount_t g_tmpfs_mnt;
+static hw_lock_t g_tmpfs_lock;
+
+static void hw_tmpfs_lock(void) {
+    hw_spin_lock_named(&g_tmpfs_lock, "tmpfs");
+}
+
+static void hw_tmpfs_unlock(void) {
+    hw_spin_unlock(&g_tmpfs_lock);
+}
+
+static void *hw_tmpfs_page(void) {
+    return hw_alloc_user_page();
+}
+
+static void hw_tmpfs_page_free(void *p) {
+    hw_free_page_why(p, "tmpfs page");
+}
+
+/* Uptime until there is a wall clock (L2). */
+static uint64_t hw_fs_clock_ns(void) {
+    return g_timer_ticks * (1000000000ull / VIBEOS_HW_TIMER_HZ);
+}
+
+static void hw_tmpfs_bringup(void) {
+    const char *verdict = "OK";
+
+    vibeos_fs_set_clock(hw_fs_clock_ns);
+    if (vibeos_tmpfs_init(&g_tmpfs, HW_TMPFS_PAGES, hw_tmpfs_page, hw_tmpfs_page_free,
+                          hw_tmpfs_lock, hw_tmpfs_unlock) != 0 ||
+        vibeos_fs_mount(&g_tmpfs_mnt, vibeos_tmpfs_ops(), &g_tmpfs, "tmpfs") != 0) {
+        verdict = "FAILED: mount";
+    } else if (vibeos_fs_attach("/tmp", &g_tmpfs_mnt) != 0) {
+        verdict = "FAILED: attach";
+    }
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts("[IO] TMPFS at=/tmp pages=0x");
+    vibeos_x86_64_serial_print_hex(HW_TMPFS_PAGES);
+    vibeos_x86_64_serial_puts(" result=");
+    vibeos_x86_64_serial_puts(verdict);
+    vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
+}
+
 void hw_volumes_bringup(void) {
     vibeos_blockcache_t *bc = vibeos_x86_64_fat_cache();
     uint64_t sectors = 0;
@@ -1018,6 +1074,9 @@ void hw_volumes_bringup(void) {
             vibeos_x86_64_serial_unlock();
         }
     }
+
+    /* After the volumes, so the first of them is still the root. */
+    hw_tmpfs_bringup();
 
     {
         uint32_t k;
