@@ -664,6 +664,74 @@ true to report before they are worth a row, so L1 builds that first:
   until there is a wall clock (L2); the exec page cache is not told about a
   write to a file it holds.
 
+**Step 5 (2026-10-01): done.**
+
+- **Thirty-two rows**, twenty-nine in a new file, `kernel/abi/linux/names.c`,
+  and three in `fs.c`: `stat`, `lstat`, `statx`; `access`, `faccessat`, `faccessat2`;
+  `rename`, `renameat`, `renameat2`; `rmdir` and unlinkat's AT_REMOVEDIR;
+  `link`, `linkat`, `symlink`, `symlinkat`, `readlink`; `chmod`, `fchmod`,
+  `fchmodat`, `fchmodat2`; `chown`, `fchown`, `lchown`, `fchownat`; `utime`,
+  `utimes`, `futimesat`, `utimensat`; `statfs`, `fstatfs`; `mknod`, `mknodat`;
+  `openat2`. The registry stands at 108 done, 21 partial, 161 missing.
+- **What Linux decides before a filesystem is asked is decided in the
+  handler**, so every filesystem answers alike: a rename or a link across two
+  mounts is EXDEV, a mount's root is EBUSY to rename and rmdir, a directory
+  goes only over a directory and never into itself, `rmdir` of "." is EINVAL
+  and of ".." ENOTEMPTY (read off the string the program wrote - the walk has
+  already resolved both), a hard link to a directory is EPERM, an empty
+  symlink target ENOENT. What a filesystem cannot do it says itself through
+  the wrappers - EROFS, or EPERM for a symbolic link or an owner on FAT - and
+  nothing in the handlers asks which filesystem it is.
+- **One user, root, until L2.** No call refuses for want of permission, and
+  `access` answers as it does for root on Linux: W_OK is EROFS on a filesystem
+  that writes nothing, X_OK is EACCES on a regular file nobody may run.
+- **`st_dev` is the mount.** Every filesystem reported device 0, so a file in
+  `/tmp` and one on the boot volume with the same inode number were one file
+  to `cp` and `mv`, which compare the pair to refuse copying a file onto
+  itself. A mount's place in the table, from 1; 0 is a pipe or a socket.
+- **A descriptor's file is walked again from its path** (`linux_walk_fd`):
+  fchmod, fchown, futimens, fstatfs and every AT_EMPTY_PATH. The gap is the one
+  a path for an identity always has - after a rename the description's path
+  names nothing, or something else - and it is the same one step 4 recorded
+  for FAT's nodes.
+- **chown clears set-user-id** on a regular file, and set-group-id when the
+  file is group-executable, as Linux does even for root. `mkdir` passes its
+  mode, less the umask, where it used to drop it. `utimensat` takes UTIME_NOW
+  and UTIME_OMIT and, with no path, is futimens.
+- **statx** fills the basic set whatever was asked and says so in `stx_mask`;
+  Linux has kept adding fields to the end of the structure, so only the part
+  filled is declared field by field and the rest is "up to the size", compared
+  as that (`TAIL` in the layout test). Six structures and twenty-four constants
+  joined `linux_layout.h`; the layout test makes 366 comparisons.
+- **Partial, and why**: `mknod`/`mknodat` make regular files only - a FIFO or a
+  device node is EPERM, because no filesystem here has anywhere to keep one and
+  a name that looked like a FIFO and opened as an empty file would be worse;
+  `renameat2` refuses EXCHANGE and WHITEOUT (EINVAL, Linux's answer from a
+  filesystem with neither); `openat2` honours RESOLVE_NO_MAGICLINKS only - the
+  others are ENOSYS, which a caller already handles by falling back to openat,
+  where EINVAL would say its arguments were wrong.
+- **Host tests**: four groups in `linux_abi_tests.c` on tmpfs, on the fake
+  kernel's root (which can neither rename nor link) and on a filesystem mounted
+  for the purpose that writes nothing. **At boot** the shell runs mv, ln,
+  ln -s, chmod, mkdir, rmdir and stat in `/tmp` and the gate reads stat's own
+  line, `META_600_2_2` (`names_and_metadata_failed`); then mv, mkdir and rmdir
+  on the FAT volume (`fat_rename_failed`), which the gate's consistency check
+  judges after the machine stops.
+- **Sabotage**: `abi-names.txt` (31), `abi-names-fs.txt` (6),
+  `abi-names-boot.txt` (2) and two more in `fs-fat-boot.txt`, all red. Two went
+  NOT RED first: RENAME_NOREPLACE left to the filesystem, and an empty symlink
+  target accepted. tmpfs refuses both itself, so on tmpfs the handler's check
+  could not be seen. What the check is for is a filesystem that cannot rename
+  or link at all giving Linux's answer (EEXIST, ENOENT) and not its own
+  (EPERM) - so both are asked of the fake's root now. A FAT rename that leaves
+  the old name behind is invisible from inside the guest and red as
+  `boot_volume_inconsistent:cross_linked`.
+- **Still open**: an open description does not follow its file across a
+  rename; `fchmod` and `fchown` on a pipe or a socket are EINVAL where Linux
+  changes an inode nobody can see; the remaining handler checks that tmpfs
+  repeats (a file over a directory, a directory into itself) have no case of
+  their own for the reason above.
+
 ### L2. Processes, credentials and time (47)
 
 Sleeping and timers (`nanosleep`, `clock_nanosleep`, `alarm`, `setitimer`,

@@ -219,8 +219,9 @@ one forbids only those, so it reads them from `arch_hw_internal.h` now.
 
 **A descriptor names a description, and releasing one does I/O.** Since
 docs/abi/ A3 a table entry is a reference to a counted open file description,
-and the last reference runs its type's release: a written file is committed to
-the FAT volume, a pipe's reader is woken, a socket is closed. So never drop a
+and the last reference runs its type's release: a pipe's reader is woken, a
+socket is closed. (A regular file used to be written back to the volume there
+too; since L1 step 4 a write is in the file when write returns.) So never drop a
 reference under a process's `files_lock` - take the description out of the
 table under the lock and `vibeos_file_put` it after. And a call holds its own
 reference for as long as it runs (`linux_file_get`), so a sibling's close takes
@@ -243,12 +244,27 @@ named the file. It was found when that case was next run and went NOT RED. When
 moving code, move the scope of whatever checks it, and run the cases that name
 it.
 
-**"Direct" is the filesystem's property, not the descriptor's.** A regular file
-on a filesystem that writes at an offset reads its size from the filesystem
-every time; one on a whole-file filesystem keeps the size it was opened with.
-The first version decided that from the access mode, so a read-only descriptor
-on tmpfs reported a stale size from fstat and SEEK_END while a writer grew the
-file - found because a sabotage of ftruncate was refused by the wrong branch.
+**A description asks the filesystem for its size, every time.** The first
+version of L1's write path decided from the access mode whether a description
+was "direct", so a read-only descriptor on tmpfs reported a stale size from
+fstat and SEEK_END while a writer grew the file - found because a sabotage of
+ftruncate was refused by the wrong branch. The flag went with the whole-file
+write path in step 4; the rule it stood for did not.
+
+**A check the filesystem repeats cannot be seen through that filesystem.** The
+Linux handlers decide what Linux's VFS decides before a filesystem is asked -
+EEXIST under RENAME_NOREPLACE, ENOENT for an empty symlink target - and tmpfs
+decides both again for itself. Removing the handler's check went NOT RED twice,
+correctly: nothing a program could observe had changed. What the handler's
+check is for is the filesystem that does *not* repeat it, which then answers
+with its own refusal (EPERM from one that cannot rename at all) instead of
+Linux's. Test such a check against the least capable filesystem available -
+the fake kernel's root - not the most complete one.
+
+**`st_dev` was 0 for every filesystem.** `cp` and `mv` compare st_dev and
+st_ino to refuse copying a file onto itself, so a file in /tmp and one on the
+boot volume with equal inode numbers were the same file. Nothing failed,
+because nothing had yet tried; it is the mount's place in the table now.
 
 **The host test runner's stdout is unbuffered for a reason.** A sabotage was
 named by its test and then a later group crashed on the same garbage; the
