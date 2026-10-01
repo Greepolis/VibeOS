@@ -1,0 +1,45 @@
+#
+#  1. fork copies the break after releasing the address-space lock
+#  2. fork copies the mapping cursor after releasing it
+#  3. setpgid joins a group nobody leads
+#
+# Target source: kernel/abi/linux/proc.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/linux/proc.c scripts/dev/cases/abi-fork-snapshot.txt
+
+### fork copies the break after releasing the address-space lock
+--- old
+    cps->brk_cur = pps->brk_cur;
+    __atomic_store_n(&cps->mmap_cur,
+                     __atomic_load_n(&pps->mmap_cur, __ATOMIC_ACQUIRE),
+                     __ATOMIC_RELEASE);
+    /* The parent's tables and list have both been read; release before the
+     * child-only setup below. */
+    ks_mm_unlock(pps);
++++ new
+    __atomic_store_n(&cps->mmap_cur,
+                     __atomic_load_n(&pps->mmap_cur, __ATOMIC_ACQUIRE),
+                     __ATOMIC_RELEASE);
+    ks_mm_unlock(pps);
+    cps->brk_cur = pps->brk_cur;
+
+### fork copies the mapping cursor after releasing it
+--- old
+    cps->brk_cur = pps->brk_cur;
+    __atomic_store_n(&cps->mmap_cur,
+                     __atomic_load_n(&pps->mmap_cur, __ATOMIC_ACQUIRE),
+                     __ATOMIC_RELEASE);
+    /* The parent's tables and list have both been read; release before the
+     * child-only setup below. */
+    ks_mm_unlock(pps);
++++ new
+    cps->brk_cur = pps->brk_cur;
+    ks_mm_unlock(pps);
+    __atomic_store_n(&cps->mmap_cur,
+                     __atomic_load_n(&pps->mmap_cur, __ATOMIC_ACQUIRE),
+                     __ATOMIC_RELEASE);
+
+### setpgid joins a group nobody leads
+--- old
+    } else if ((uint32_t)leader != pid && ks_id(leader_slot)->pgid != (uint32_t)leader) {
++++ new
+    } else if (0) {

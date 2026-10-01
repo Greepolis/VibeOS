@@ -875,7 +875,20 @@ int ks_copy_user_string(uint64_t uptr, char *dst, int max) {
 }
 
 void ks_mm_lock(vibeos_procstate_t *ps) { ps->mm_busy = 1u; }
-void ks_mm_unlock(vibeos_procstate_t *ps) { ps->mm_busy = 0u; }
+/* What a sibling thread does the instant the address-space lock is released:
+ * the test's to supply, fired once. A fork that reads the parent's state after
+ * letting go of the lock reads what this left (M-078). */
+static void (*g_mm_unlock_hook)(vibeos_procstate_t *ps);
+void kf_on_mm_unlock(void (*fn)(vibeos_procstate_t *ps)) { g_mm_unlock_hook = fn; }
+void ks_mm_unlock(vibeos_procstate_t *ps) {
+    void (*fn)(vibeos_procstate_t *) = g_mm_unlock_hook;
+
+    ps->mm_busy = 0u;
+    if (fn) {
+        g_mm_unlock_hook = 0;
+        fn(ps);
+    }
+}
 vibeos_vmspace_t ks_vm(int slot) {
     vibeos_vmspace_t v;
     memset(&v, 0, sizeof(v));

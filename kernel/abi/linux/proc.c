@@ -98,11 +98,21 @@ static long linux_sys_fork(const ks_regs_t *frame) {
         (void)ks_set_state(idx, VIBEOS_TASK_FREE, __func__);
         return -VIBEOS_ENOMEM;
     }
+    /* The break and the mapping cursor, under the same lock as the tables and
+     * the list they describe (M-078). They were copied after the release, and
+     * a sibling thread's brk or mmap fits in that gap: the child then had the
+     * regions and pages of one moment and the break of the next, and its own
+     * next brk mapped over pages it already had, or gave back ones it never
+     * got. The cursor's load was atomic, which made each read safe and the
+     * two of them together no more one snapshot than before. */
+    cps->brk_cur = pps->brk_cur;
+    __atomic_store_n(&cps->mmap_cur,
+                     __atomic_load_n(&pps->mmap_cur, __ATOMIC_ACQUIRE),
+                     __ATOMIC_RELEASE);
     /* The parent's tables and list have both been read; release before the
      * child-only setup below. */
     ks_mm_unlock(pps);
     vibeos_task_stats()->forks++;
-    cps->brk_cur = pps->brk_cur;
     /* Where the parent was, and above what it could not climb (A4). */
     {
         uint32_t i;
@@ -114,9 +124,6 @@ static long linux_sys_fork(const ks_regs_t *frame) {
         cps->umask = pps->umask;
         ks_unlock(&pps->files_lock);
     }
-    __atomic_store_n(&cps->mmap_cur,
-                     __atomic_load_n(&pps->mmap_cur, __ATOMIC_ACQUIRE),
-                     __ATOMIC_RELEASE);
     /* Resume exactly where the parent is - including the vector registers and
      * the TLS base the copied image expects - except that fork() returns 0 in
      * the child. */
@@ -1167,6 +1174,14 @@ static long linux_sys_setpgid(uint64_t requested_pid, uint64_t requested_pgid) {
     } else if (leader <= 0 || (leader_slot = ks_task_by_pid((uint32_t)leader)) < 0) {
         r = -VIBEOS_ESRCH;
     } else if (ks_id(leader_slot)->sid != ks_id(target)->sid) {
+        r = -VIBEOS_EPERM;
+    } else if ((uint32_t)leader != pid && ks_id(leader_slot)->pgid != (uint32_t)leader) {
+        /* A group is joined, or made with the target as its leader - and a
+         * group to join is one somebody leads (M-079). This took any pid of
+         * the session, so a process could be put in "group 7" where 7 was a
+         * thread, or a process in somebody else's group: a group whose number
+         * names nobody in it, for getpgrp to report and kill(-7) to aim at.
+         * EPERM, as Linux says when no such group is in the session. */
         r = -VIBEOS_EPERM;
     } else {
         ks_id(target)->pgid = (uint32_t)leader;

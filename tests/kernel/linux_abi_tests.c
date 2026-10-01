@@ -1932,6 +1932,52 @@ static void t_mmap_files(void) {
     expect(kf_lock_imbalance() == 0, "file mappings released every lock they took");
 }
 
+/* ---- M-078, M-079 ------------------------------------------------------------------- */
+
+static void sibling_moves_the_break(vibeos_procstate_t *ps) {
+    ps->brk_cur += 0x5000u;
+    ps->mmap_cur += 0x9000u;
+}
+
+static void t_fork_snapshot_and_groups(void) {
+    int parent, child, grand;
+    uint64_t brk0, cur0;
+    long pid, gpid;
+
+    /* M-078: the child's break and cursor are the ones its regions were cloned
+     * beside, whatever a sibling does the moment the lock is released. */
+    parent = fresh(151);
+    (void)SYS1(12, 0x10000000ull + 8192u);
+    (void)MMAP(0, 4096, 3, MAP_PRIV_ANON, -1, 0);
+    brk0 = ks_ps(parent)->brk_cur;
+    cur0 = ks_ps(parent)->mmap_cur;
+    kf_on_mm_unlock(sibling_moves_the_break);
+    pid = SYS0(57);
+    child = slot_of_pid(pid);
+    expect(pid > 0 && child >= 0 && ks_ps(parent)->brk_cur == brk0 + 0x5000u,
+           "a sibling moved the break as fork let go of the lock");
+    expect(ks_ps(child)->brk_cur == brk0 && ks_ps(child)->mmap_cur == cur0,
+           "the child's break and cursor belong to the address space it was given");
+    ks_ps(parent)->brk_cur = brk0;
+    ks_ps(parent)->mmap_cur = cur0;
+
+    /* M-079: a group is joined only if somebody leads it. */
+    kf_set_current(child);
+    gpid = SYS0(57);
+    grand = slot_of_pid(gpid);
+    kf_set_current(parent);
+    expect(gpid > 0 && grand >= 0 && ks_id(child)->pgid == 151u && ks_id(grand)->pgid == 151u,
+           "children start in their parent's group");
+    expect(SYS2(109, (uint64_t)gpid, (uint64_t)pid) == -VIBEOS_EPERM && ks_id(grand)->pgid == 151u,
+           "setpgid into a group nobody leads is EPERM");
+    expect(SYS2(109, (uint64_t)pid, (uint64_t)pid) == 0 && ks_id(child)->pgid == (uint32_t)pid,
+           "a process may lead a group of its own");
+    expect(SYS2(109, (uint64_t)gpid, (uint64_t)pid) == 0 && ks_id(grand)->pgid == (uint32_t)pid,
+           "and then it can be joined");
+    expect(SYS2(109, (uint64_t)gpid, 0) == 0 && ks_id(grand)->pgid == (uint32_t)gpid,
+           "setpgid(pid, 0) makes the target its own leader");
+}
+
 /* ---- L3 step 2: shared mappings ------------------------------------------------------- */
 
 #define MAP_SH 0x01u
@@ -2111,6 +2157,7 @@ int test_linux_handlers(void) {
     t_mmap_placement();
     t_mmap_files();
     t_mmap_shared();
+    t_fork_snapshot_and_groups();
     return g_fail ? -1 : 0;
 }
 

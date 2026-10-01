@@ -84,6 +84,8 @@ int kf_poke(uint64_t va, const void *in, uint64_t n);
 /* Type at the console: the bytes wait in the keyboard's queue until read. */
 void kf_type(const char *s);
 int kf_lock_imbalance(void);
+/* Run `fn` once, right after the next release of an address-space lock. */
+void kf_on_mm_unlock(void (*fn)(vibeos_procstate_t *ps));
 uint64_t kf_exit_code(void);
 const char *kf_panic_reason(void);
 uint32_t kf_illegal_transitions(void);
