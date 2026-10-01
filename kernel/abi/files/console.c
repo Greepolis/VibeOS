@@ -237,7 +237,11 @@ static long console_ioctl(vibeos_file_t *f, uint64_t req, uint64_t arg) {
 }
 
 const vibeos_file_ops_t vibeos_fops_console = {
-    "console", console_read, console_write, 0, console_stat, console_ioctl, 0, 0
+    .name = "console",
+    .read = console_read,
+    .write = console_write,
+    .stat = console_stat,
+    .ioctl = console_ioctl,
 };
 
 int vibeos_files_std_console(vibeos_fdtable_t *t) {

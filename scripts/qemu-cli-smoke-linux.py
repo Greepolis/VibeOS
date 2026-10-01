@@ -2767,6 +2767,12 @@ def main():
                 # stand in for the file's contents.
                 if not re.search(r"write\(ring3\): TMPFS_RT_2\r?\n", text):
                     problems.append("tmpfs_round_trip_failed")
+                # Writing through a descriptor (docs/abi/ L1 step 3): 820
+                # bytes written in twenty writes, five appended, and wc's
+                # count of the file. Any other number is on the line instead:
+                # 512 was the old ceiling, 820 is >> that did not append.
+                if not re.search(r"write\(ring3\): 825\r?\n", text):
+                    problems.append("tmp_write_path_failed")
 
             signal_elf = os.path.join(efi_root, "EFI", "BOOT", "SIGNAL.ELF")
             if os.path.exists(signal_elf):

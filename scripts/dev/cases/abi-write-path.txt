@@ -1,0 +1,74 @@
+# Writing through a descriptor (kernel/abi/files/regular.c, docs/abi/ L1 step 3),
+# proved by the handlers' host tests in tests/kernel/linux_abi_tests.c on the
+# fake's tmpfs at /tmp.
+#
+#  1. O_EXCL ignored. Expect "O_EXCL refuses an existing file".
+#  2. O_TRUNC ignored. Expect "O_TRUNC empties the file at open".
+#  3. O_APPEND writes at the description's position. Expect "O_APPEND writes at
+#     the end" or "two appenders interleave"; at boot, tmp_write_path_failed -
+#     the shell's >> overwrites the start of the file and wc counts 820.
+#  4. pread reads at the position, not the offset. Expect "pread64 reads
+#     there".
+#  5. a write is not counted as progress past a short one - the loop goes on
+#     after the filesystem took less than it was given. Left out: nothing here
+#     makes tmpfs take less without failing, so no test could tell.
+#  6. ftruncate allowed on a read-only descriptor. Expect "ftruncate on a
+#     read-only descriptor is EINVAL". NOT RED at first, and for a reason that
+#     was a defect: a read-only descriptor was not "direct", so it fell into
+#     the whole-file branch and was refused there instead - and its fstat and
+#     SEEK_END reported the size from when it was opened.
+#  7. a new file ignores the mode it was given. Expect "less the umask".
+#  8. the whole-file writer is taken for a filesystem that writes in place -
+#     every file is "direct". Expect the whole-file tests, and before them the
+#     earliest test that reads a file on the fake's root: the fake's root has
+#     no write_at, and a description marked direct neither writes back nor
+#     keeps its own size.
+#
+# Target source: kernel/abi/files/regular.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/files/regular.c scripts/dev/cases/abi-write-path.txt
+
+### O_EXCL ignored
+--- old
+        if ((flags & VIBEOS_O_CREAT) && (flags & VIBEOS_O_EXCL)) {
+            *err = -VIBEOS_EEXIST;
+            return 0;
+        }
++++ new
+
+### O_TRUNC ignored
+--- old
+                if (wants_write && (flags & VIBEOS_O_TRUNC)) {
++++ new
+                if (0) {
+
+### O_APPEND writes at the description's position
+--- old
+        uint64_t at = (f->flags & VIBEOS_O_APPEND) ? regular_size(f) : f->pos;
++++ new
+        uint64_t at = f->pos;
+
+### pread reads at the position, not the offset
+--- old
+        got = vibeos_fs_read_at(f->mnt, &node, off + done, bounce, (uint32_t)want);
++++ new
+        got = vibeos_fs_read_at(f->mnt, &node, f->pos + done, bounce, (uint32_t)want);
+
+### ftruncate allowed on a read-only descriptor
+--- old
+        return -VIBEOS_EINVAL;   /* Linux: not open for writing */
++++ new
+        (void)0;
+
+### a new file ignores the mode it was given
+--- old
+        r = vibeos_fs_create(mnt, tail, mode & 07777u, &node);
++++ new
+        r = vibeos_fs_create(mnt, tail, 0644u, &node);
+
+### the whole-file writer is taken for one that writes in place
+--- old
+            } else if (r == -VIBEOS_EOPNOTSUPP) {
+                /* A whole-file writer (FAT, for now). O_WRONLY or O_CREAT opens
++++ new
+            } else if (r == -VIBEOS_EOPNOTSUPP && (direct = 1) == 0) {
+                /* A whole-file writer (FAT, for now). O_WRONLY or O_CREAT opens

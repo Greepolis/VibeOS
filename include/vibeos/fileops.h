@@ -37,10 +37,17 @@ extern const vibeos_file_ops_t vibeos_fops_console;
 uint32_t vibeos_open_walk_flags(uint32_t flags);
 
 /* A walked path (vibeos/path.h, walked with vibeos_open_walk_flags): a directory
- * or a regular file, one reference.
- * Opening for writing creates or truncates on release, from the bytes written
- * (the FAT writer stores whole files). 0 and a negated errno in *err otherwise. */
-vibeos_file_t *vibeos_open_path(const vibeos_path_t *w, uint32_t flags, long *err);
+ * or a regular file, one reference. `mode` is the permission bits a created
+ * file gets, the caller's umask already applied.
+ *
+ * On a filesystem that writes at an offset the flags mean what Linux means by
+ * them: O_CREAT makes the file now, O_EXCL refuses an existing one, O_TRUNC
+ * empties it, O_APPEND writes at its end, O_RDWR reads and writes. On one that
+ * only stores whole files (FAT, for now) a file opened O_WRONLY or O_CREAT is
+ * created or replaced on release from the bytes written, as it was before L1.
+ * 0 and a negated errno in *err otherwise. */
+vibeos_file_t *vibeos_open_path(const vibeos_path_t *w, uint32_t flags, uint32_t mode,
+                                long *err);
 
 /* A new pipe: its read end and its write end, one reference each. 0 or -EMFILE. */
 int vibeos_open_pipe(uint32_t flags, vibeos_file_t **rd, vibeos_file_t **wr);

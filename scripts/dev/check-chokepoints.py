@@ -74,7 +74,10 @@ CHOKEPOINTS = {
         "A handler calling it directly is a handler that skipped the dispatcher's "
         "chokepoint."),
     "linux_user_ok": (
-        16,   # 15 -> 16 in L1: readlinkat copies a link's contents, whose length
+        17,   # 16 -> 17 in L1 step 3: preadv and pwritev check each iovec
+              # element's own buffer, as readv and writev do - an address read
+              # out of user memory a moment ago, which no row can declare.
+              # 15 -> 16 in L1: readlinkat copies a link's contents, whose length
               # only the filesystem knows - the same reason as getcwd's.
               # 14 -> 15 in A4: getcwd writes as many bytes as the working directory
               # is long, which only the kernel knows, so its row cannot declare the

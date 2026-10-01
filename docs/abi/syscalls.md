@@ -9,9 +9,9 @@ the registry, not this page; `check.sh` fails while the two differ.
 
 | State | Count | What the kernel answers |
 | --- | --- | --- |
-| done | 62 | through its row |
-| partial | 16 | through its row, with the gap named |
-| missing | 212 | ENOSYS, and the boot gate fails naming the number |
+| done | 75 | through its row |
+| partial | 22 | through its row, with the gap named |
+| missing | 193 | ENOSYS, and the boot gate fails naming the number |
 | deferred | 50 | ENOSYS, and the boot gate fails naming the number |
 | refused | 33 | its errno, counted as refused - expected, never a failure |
 
@@ -19,7 +19,7 @@ Without a row, by phase:
 
 | Phase | Syscalls |
 | --- | --- |
-| L1 - files and paths | 65 |
+| L1 - files and paths | 46 |
 | L2 - processes, credentials, time | 47 |
 | L3 - memory | 10 |
 | L4 - event loops | 21 |
@@ -53,8 +53,8 @@ calls, outside the Linux number space, are listed last.
 | 14 | `rt_sigprocmask` | done | - | - | `sig.c` |  |
 | 15 | `rt_sigreturn` | done | - | - | `sig.c` |  |
 | 16 | `ioctl` | partial | L1 | - | `fs.c` | ENOTTY for everything: no terminal device |
-| 17 | `pread64` | missing | L1 | ENOSYS |  |  |
-| 18 | `pwrite64` | missing | L1 | ENOSYS |  |  |
+| 17 | `pread64` | done | - | - | `fs.c` |  |
+| 18 | `pwrite64` | partial | L1 | - | `fs.c` | on a filesystem that stores whole files (FAT) there is no offset to write at |
 | 19 | `readv` | partial | L5 | - | `fs.c` | files and the console; no socket scatter |
 | 20 | `writev` | partial | L5 | - | `fs.c` | files and the console; no socket gather |
 | 21 | `access` | missing | L1 | ENOSYS |  |  |
@@ -76,7 +76,7 @@ calls, outside the Linux number space, are listed last.
 | 37 | `alarm` | missing | L2 | ENOSYS |  |  |
 | 38 | `setitimer` | missing | L2 | ENOSYS |  |  |
 | 39 | `getpid` | done | - | - | `proc.c` |  |
-| 40 | `sendfile` | partial | L1 | - | `fs.c` | row answers ENOSYS on purpose; callers fall back to read/write |
+| 40 | `sendfile` | done | - | - | `fs.c` |  |
 | 41 | `socket` | done | - | - | `net.c` |  |
 | 42 | `connect` | done | - | - | `net.c` |  |
 | 43 | `accept` | done | - | - | `net.c` |  |
@@ -110,10 +110,10 @@ calls, outside the Linux number space, are listed last.
 | 71 | `msgctl` | missing | L7 | ENOSYS |  |  |
 | 72 | `fcntl` | partial | L1 | - | `fs.c` | no record locks: F_GETLK/F_SETLK answer ENOLCK |
 | 73 | `flock` | missing | L1 | ENOSYS |  |  |
-| 74 | `fsync` | missing | L1 | ENOSYS |  |  |
-| 75 | `fdatasync` | missing | L1 | ENOSYS |  |  |
-| 76 | `truncate` | missing | L1 | ENOSYS |  |  |
-| 77 | `ftruncate` | missing | L1 | ENOSYS |  |  |
+| 74 | `fsync` | done | - | - | `fs.c` |  |
+| 75 | `fdatasync` | done | - | - | `fs.c` |  |
+| 76 | `truncate` | partial | L1 | - | `fs.c` | FAT can only be emptied, not cut or grown |
+| 77 | `ftruncate` | partial | L1 | - | `fs.c` | FAT can only be cut within what the descriptor wrote |
 | 78 | `getdents` | missing | L1 | ENOSYS |  |  |
 | 79 | `getcwd` | done | - | - | `fs.c` |  |
 | 80 | `chdir` | done | - | - | `fs.c` |  |
@@ -121,7 +121,7 @@ calls, outside the Linux number space, are listed last.
 | 82 | `rename` | missing | L1 | ENOSYS |  |  |
 | 83 | `mkdir` | done | - | - | `fs.c` |  |
 | 84 | `rmdir` | missing | L1 | ENOSYS |  |  |
-| 85 | `creat` | missing | L1 | ENOSYS |  |  |
+| 85 | `creat` | done | - | - | `fs.c` |  |
 | 86 | `link` | missing | L1 | ENOSYS |  |  |
 | 87 | `unlink` | done | - | - | `fs.c` |  |
 | 88 | `symlink` | missing | L1 | ENOSYS |  |  |
@@ -131,7 +131,7 @@ calls, outside the Linux number space, are listed last.
 | 92 | `chown` | missing | L1 | ENOSYS |  |  |
 | 93 | `fchown` | missing | L1 | ENOSYS |  |  |
 | 94 | `lchown` | missing | L1 | ENOSYS |  |  |
-| 95 | `umask` | missing | L1 | ENOSYS |  |  |
+| 95 | `umask` | done | - | - | `fs.c` |  |
 | 96 | `gettimeofday` | missing | L2 | ENOSYS |  |  |
 | 97 | `getrlimit` | missing | L2 | ENOSYS |  |  |
 | 98 | `getrusage` | missing | L2 | ENOSYS |  |  |
@@ -198,7 +198,7 @@ calls, outside the Linux number space, are listed last.
 | 159 | `adjtimex` | missing | L2 | ENOSYS |  | EPERM without privilege; real only once there is one |
 | 160 | `setrlimit` | missing | L2 | ENOSYS |  |  |
 | 161 | `chroot` | missing | L8 | ENOSYS |  |  |
-| 162 | `sync` | missing | L1 | ENOSYS |  |  |
+| 162 | `sync` | done | - | - | `fs.c` |  |
 | 163 | `acct` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
 | 164 | `settimeofday` | missing | L2 | ENOSYS |  | EPERM without privilege; real only once there is one |
 | 165 | `mount` | missing | L8 | ENOSYS |  |  |
@@ -223,7 +223,7 @@ calls, outside the Linux number space, are listed last.
 | 184 | `tuxcall` | refused | R | ENOSYS |  | removed or never implemented by Linux itself |
 | 185 | `security` | refused | R | ENOSYS |  | removed or never implemented by Linux itself |
 | 186 | `gettid` | done | - | - | `proc.c` |  |
-| 187 | `readahead` | missing | L1 | ENOSYS |  |  |
+| 187 | `readahead` | done | - | - | `fs.c` |  |
 | 188 | `setxattr` | missing | L1 | ENOSYS |  | ENOTSUP from the filesystem until one stores attributes |
 | 189 | `lsetxattr` | missing | L1 | ENOSYS |  | ENOTSUP from the filesystem until one stores attributes |
 | 190 | `fsetxattr` | missing | L1 | ENOSYS |  | ENOTSUP from the filesystem until one stores attributes |
@@ -257,7 +257,7 @@ calls, outside the Linux number space, are listed last.
 | 218 | `set_tid_address` | done | - | - | `proc.c` |  |
 | 219 | `restart_syscall` | missing | L2 | ENOSYS |  |  |
 | 220 | `semtimedop` | missing | L7 | ENOSYS |  |  |
-| 221 | `fadvise64` | missing | L1 | ENOSYS |  |  |
+| 221 | `fadvise64` | done | - | - | `fs.c` |  |
 | 222 | `timer_create` | missing | L2 | ENOSYS |  |  |
 | 223 | `timer_settime` | missing | L2 | ENOSYS |  |  |
 | 224 | `timer_gettime` | missing | L2 | ENOSYS |  |  |
@@ -313,7 +313,7 @@ calls, outside the Linux number space, are listed last.
 | 274 | `get_robust_list` | missing | L6 | ENOSYS |  |  |
 | 275 | `splice` | missing | L7 | ENOSYS |  |  |
 | 276 | `tee` | missing | L7 | ENOSYS |  |  |
-| 277 | `sync_file_range` | missing | L1 | ENOSYS |  |  |
+| 277 | `sync_file_range` | done | - | - | `fs.c` |  |
 | 278 | `vmsplice` | missing | L7 | ENOSYS |  |  |
 | 279 | `move_pages` | deferred | D | ENOSYS |  | NUMA: one node here |
 | 280 | `utimensat` | missing | L1 | ENOSYS |  |  |
@@ -321,7 +321,7 @@ calls, outside the Linux number space, are listed last.
 | 282 | `signalfd` | missing | L4 | ENOSYS |  |  |
 | 283 | `timerfd_create` | missing | L4 | ENOSYS |  |  |
 | 284 | `eventfd` | missing | L4 | ENOSYS |  |  |
-| 285 | `fallocate` | missing | L1 | ENOSYS |  |  |
+| 285 | `fallocate` | partial | L1 | - | `fs.c` | the size is guaranteed, not the space; only mode 0 and KEEP_SIZE |
 | 286 | `timerfd_settime` | missing | L4 | ENOSYS |  |  |
 | 287 | `timerfd_gettime` | missing | L4 | ENOSYS |  |  |
 | 288 | `accept4` | missing | L5 | ENOSYS |  | and AF_UNIX sockets |
@@ -331,8 +331,8 @@ calls, outside the Linux number space, are listed last.
 | 292 | `dup3` | done | - | - | `fs.c` |  |
 | 293 | `pipe2` | done | - | - | `fs.c` |  |
 | 294 | `inotify_init1` | missing | L4 | ENOSYS |  |  |
-| 295 | `preadv` | missing | L1 | ENOSYS |  |  |
-| 296 | `pwritev` | missing | L1 | ENOSYS |  |  |
+| 295 | `preadv` | done | - | - | `fs.c` |  |
+| 296 | `pwritev` | partial | L1 | - | `fs.c` | on a filesystem that stores whole files (FAT) there is no offset to write at |
 | 297 | `rt_tgsigqueueinfo` | missing | L2 | ENOSYS |  |  |
 | 298 | `perf_event_open` | refused | R | ENOSYS |  | no performance-counter interface: a facility this kernel does not have |
 | 299 | `recvmmsg` | missing | L5 | ENOSYS |  | and AF_UNIX sockets |
@@ -342,7 +342,7 @@ calls, outside the Linux number space, are listed last.
 | 303 | `name_to_handle_at` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
 | 304 | `open_by_handle_at` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
 | 305 | `clock_adjtime` | missing | L2 | ENOSYS |  | EPERM without privilege; real only once there is one |
-| 306 | `syncfs` | missing | L1 | ENOSYS |  |  |
+| 306 | `syncfs` | done | - | - | `fs.c` |  |
 | 307 | `sendmmsg` | missing | L5 | ENOSYS |  | and AF_UNIX sockets |
 | 308 | `setns` | deferred | D | ENOSYS |  | namespaces: after the credential model |
 | 309 | `getcpu` | missing | L6 | ENOSYS |  |  |
@@ -362,9 +362,9 @@ calls, outside the Linux number space, are listed last.
 | 323 | `userfaultfd` | refused | R | ENOSYS |  | no user-space fault handling: a facility this kernel does not have |
 | 324 | `membarrier` | missing | L6 | ENOSYS |  |  |
 | 325 | `mlock2` | missing | L3 | ENOSYS |  | with file-backed and shared mappings (the other half of mmap) |
-| 326 | `copy_file_range` | missing | L1 | ENOSYS |  |  |
-| 327 | `preadv2` | missing | L1 | ENOSYS |  |  |
-| 328 | `pwritev2` | missing | L1 | ENOSYS |  |  |
+| 326 | `copy_file_range` | done | - | - | `fs.c` |  |
+| 327 | `preadv2` | partial | L1 | - | `fs.c` | RWF_ flags refused |
+| 328 | `pwritev2` | partial | L1 | - | `fs.c` | RWF_ flags refused; on a filesystem that stores whole files (FAT) there is no offset to write at |
 | 329 | `pkey_mprotect` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
 | 330 | `pkey_alloc` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
 | 331 | `pkey_free` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |

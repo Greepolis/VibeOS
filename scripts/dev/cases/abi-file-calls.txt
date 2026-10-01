@@ -1,0 +1,59 @@
+# The file calls of docs/abi/ L1 step 3 (kernel/abi/linux/fs.c), proved by the
+# handlers' host tests in tests/kernel/linux_abi_tests.c.
+#
+#  1. the umask is not applied. Expect "less the umask".
+#  2. sendfile does not write the offset back. Expect "sendfile copies from the
+#     offset given and moves it".
+#  3. copy_file_range copies a range onto itself. Expect "a range copied onto
+#     itself is EINVAL".
+#  4. fallocate sets the size it was given, shrinking a longer file. Expect
+#     "and never shorter".
+#  5. preadv2 ignores its flags. Expect "preadv2 refuses a flag".
+#  6. a kernel copy does not stop at a megabyte. Left out: no test copies that
+#     much, and the bound is about interrupt latency, which a host test cannot
+#     see - recorded as unverifiable here, like AHCI's hardware-only cases.
+#  7. umask keeps bits above 0777. Expect "umask returns the one before, and
+#     keeps permission bits only". NOT RED until the test set a bit above them.
+#
+# Target source: kernel/abi/linux/fs.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/linux/fs.c scripts/dev/cases/abi-file-calls.txt
+
+### the umask is not applied
+--- old
+    f = vibeos_open_path(&w, (uint32_t)flags, (uint32_t)mode & ~linux_umask(), &err);
++++ new
+    f = vibeos_open_path(&w, (uint32_t)flags, (uint32_t)mode, &err);
+
+### sendfile does not write the offset back
+--- old
+        if (r >= 0 && off_uptr != 0u &&
+            vibeos_uaccess_copy((void *)(uintptr_t)off_uptr, &off, sizeof(off)) != 0) {
++++ new
+        if (0 && off_uptr != 0u &&
+            vibeos_uaccess_copy((void *)(uintptr_t)off_uptr, &off, sizeof(off)) != 0) {
+
+### copy_file_range copies a range onto itself
+--- old
+        if (in->mnt == out->mnt && in->node == out->node && a < b + len && b < a + len) {
++++ new
+        if (0 && a < b) {
+
+### fallocate sets the size it was given
+--- old
+        if (st.size < off + len) {
++++ new
+        if (1) {
+
+### preadv2 ignores its flags
+--- old
+static long linux_sys_preadv2(uint64_t fd, uint64_t iov, uint64_t cnt, uint64_t off, uint64_t flags) {
+    if (flags != 0u) {
++++ new
+static long linux_sys_preadv2(uint64_t fd, uint64_t iov, uint64_t cnt, uint64_t off, uint64_t flags) {
+    if (flags == 99u) {
+
+### umask keeps bits above 0777
+--- old
+    ps->umask = (uint32_t)mask & 0777u;
++++ new
+    ps->umask = (uint32_t)mask;

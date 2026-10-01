@@ -117,6 +117,9 @@ typedef struct vibeos_procstate {
      * another half a path. */
     char cwd[VIBEOS_PATH_MAX];
     char root[VIBEOS_PATH_MAX];
+    /* The permission bits a created file does not get (L1). Under files_lock,
+     * inherited by fork and exec like the two paths above. */
+    uint32_t umask;
 } vibeos_procstate_t;
 
 #endif

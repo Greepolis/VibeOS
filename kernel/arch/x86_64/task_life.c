@@ -605,6 +605,7 @@ hw_procstate_t *hw_procstate_new(void) {
         vibeos_fdtable_init(&ps->files);
         ps->cwd[0] = '/'; ps->cwd[1] = 0;     /* a new process starts at the root */
         ps->root[0] = '/'; ps->root[1] = 0;
+        ps->umask = 022u;                     /* what init starts with on Linux */
         ps->files_lock.locked = 0;
         ps->files_lock.owner_cpu = -1;
         ps->files_lock.owner_fn = 0;

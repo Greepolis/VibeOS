@@ -216,6 +216,14 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                    * cannot mistake the echoed command for
                                    * the file. */
                                   "echo TMPFS_RT_$((1+1)) > /tmp/rt.txt && cat /tmp/rt.txt\n"
+                                  /* The write path (L1 step 3): twenty lines of
+                                   * forty-one bytes - past the 512 a descriptor
+                                   * used to hold - then five more appended with
+                                   * >>, and the count of what the file holds.
+                                   * 825, which the command does not contain. */
+                                  "for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do "
+                                  "echo 0123456789012345678901234567890123456789; done > /tmp/big.txt; "
+                                  "echo tail >> /tmp/big.txt; wc -c < /tmp/big.txt\n"
                                   /* The last thing the self-test says. The boot
                                    * harness waits for this before driving the
                                    * kernel CLI, so a slower build cannot have

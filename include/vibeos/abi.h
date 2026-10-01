@@ -86,7 +86,26 @@
     X(CLOSE_RANGE,     "close_range",     VIBEOS_CHECK_NONE) \
     X(PIPE,            "pipe",            VIBEOS_CHECK_USER_MEMORY) \
     X(PIPE2,           "pipe2",           VIBEOS_CHECK_USER_MEMORY) \
-    X(SENDFILE,        "sendfile",        VIBEOS_CHECK_NONE) \
+    X(SENDFILE,        "sendfile",        VIBEOS_CHECK_USER_MEMORY) \
+    X(PREAD,           "pread",           VIBEOS_CHECK_USER_MEMORY) \
+    X(PWRITE,          "pwrite",          VIBEOS_CHECK_USER_MEMORY) \
+    X(PREADV,          "preadv",          VIBEOS_CHECK_USER_MEMORY) \
+    X(PWRITEV,         "pwritev",         VIBEOS_CHECK_USER_MEMORY) \
+    X(PREADV2,         "preadv2",         VIBEOS_CHECK_USER_MEMORY) \
+    X(PWRITEV2,        "pwritev2",        VIBEOS_CHECK_USER_MEMORY) \
+    X(COPY_RANGE,      "copy_range",      VIBEOS_CHECK_USER_MEMORY) \
+    X(TRUNCATE,        "truncate",        VIBEOS_CHECK_USER_MEMORY) \
+    X(FTRUNCATE,       "ftruncate",       VIBEOS_CHECK_NONE) \
+    X(FSYNC,           "fsync",           VIBEOS_CHECK_NONE) \
+    X(FDATASYNC,       "fdatasync",       VIBEOS_CHECK_NONE) \
+    X(SYNC,            "sync",            VIBEOS_CHECK_NONE) \
+    X(SYNCFS,          "syncfs",          VIBEOS_CHECK_NONE) \
+    X(SYNC_RANGE,      "sync_range",      VIBEOS_CHECK_NONE) \
+    X(FALLOCATE,       "fallocate",       VIBEOS_CHECK_NONE) \
+    X(FADVISE,         "fadvise",         VIBEOS_CHECK_NONE) \
+    X(READAHEAD,       "readahead",       VIBEOS_CHECK_NONE) \
+    X(CREAT,           "creat",           VIBEOS_CHECK_USER_MEMORY) \
+    X(UMASK,           "umask",           VIBEOS_CHECK_NONE) \
     /* memory */ \
     X(BRK,             "brk",             VIBEOS_CHECK_NONE) \
     X(MAP,             "map",             VIBEOS_CHECK_NONE) \

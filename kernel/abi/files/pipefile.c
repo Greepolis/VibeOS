@@ -106,7 +106,11 @@ static void pipe_release(vibeos_file_t *f) {
 }
 
 const vibeos_file_ops_t vibeos_fops_pipe = {
-    "pipe", pipe_read, pipe_write, 0, pipe_stat, 0, 0, pipe_release
+    .name = "pipe",
+    .read = pipe_read,
+    .write = pipe_write,
+    .stat = pipe_stat,
+    .release = pipe_release,
 };
 
 int vibeos_open_pipe(uint32_t flags, vibeos_file_t **rd, vibeos_file_t **wr) {

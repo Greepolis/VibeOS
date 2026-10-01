@@ -111,6 +111,7 @@ static long linux_sys_fork(const ks_regs_t *frame) {
             cps->cwd[i] = pps->cwd[i];
             cps->root[i] = pps->root[i];
         }
+        cps->umask = pps->umask;
         ks_unlock(&pps->files_lock);
     }
     __atomic_store_n(&cps->mmap_cur,
@@ -1003,6 +1004,7 @@ static long linux_sys_execve(ks_regs_t *frame, uint64_t path_uptr,
                 nps->cwd[i] = ops->cwd[i];
                 nps->root[i] = ops->root[i];
             }
+            nps->umask = ops->umask;
             ks_unlock(&ops->files_lock);
         }
 

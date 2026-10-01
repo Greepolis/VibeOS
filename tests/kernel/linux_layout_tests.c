@@ -52,6 +52,8 @@ int test_linux_layout(void) {
 #include <linux/sched.h>
 #include <linux/wait.h>
 #include <linux/close_range.h>
+#include <linux/falloc.h>
+#include <linux/fadvise.h>
 
 #include "vibeos/linux_layout.h"
 #include "vibeos/abi_linux.h"
@@ -250,6 +252,9 @@ int test_linux_layout(void) {
     CONST(VIBEOS_O_WRONLY, O_WRONLY);
     CONST(VIBEOS_O_RDWR, O_RDWR);
     CONST(VIBEOS_O_CREAT, O_CREAT);
+    CONST(VIBEOS_O_EXCL, O_EXCL);
+    CONST(VIBEOS_O_DIRECTORY, O_DIRECTORY);
+    CONST(VIBEOS_O_NOFOLLOW, O_NOFOLLOW);
     CONST(VIBEOS_O_TRUNC, O_TRUNC);
     CONST(VIBEOS_O_APPEND, O_APPEND);
     CONST(VIBEOS_O_NONBLOCK, O_NONBLOCK);
@@ -282,6 +287,8 @@ int test_linux_layout(void) {
     CONST(LINUX_F_SETLK, F_SETLK);
     CONST(LINUX_F_SETLKW, F_SETLKW);
     CONST(LINUX_F_DUPFD_CLOEXEC, F_DUPFD_CLOEXEC);
+    CONST(LINUX_FALLOC_FL_KEEP_SIZE, FALLOC_FL_KEEP_SIZE);
+    CONST(LINUX_POSIX_FADV_NOREUSE, POSIX_FADV_NOREUSE);
     CONST(LINUX_CLOSE_RANGE_UNSHARE, CLOSE_RANGE_UNSHARE);
     CONST(LINUX_CLOSE_RANGE_CLOEXEC, CLOSE_RANGE_CLOEXEC);
     LIBC_CONST(LINUX_DT_DIR, "DT_DIR");

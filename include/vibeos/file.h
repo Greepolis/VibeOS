@@ -38,9 +38,12 @@
 #define VIBEOS_O_WRONLY   0x1u
 #define VIBEOS_O_RDWR     0x2u
 #define VIBEOS_O_CREAT    0x40u
+#define VIBEOS_O_EXCL     0x80u
 #define VIBEOS_O_TRUNC    0x200u
 #define VIBEOS_O_APPEND   0x400u
 #define VIBEOS_O_NONBLOCK 0x800u
+#define VIBEOS_O_DIRECTORY 0x10000u
+#define VIBEOS_O_NOFOLLOW 0x20000u
 #define VIBEOS_O_CLOEXEC  0x80000u   /* a descriptor's, never kept here */
 
 /* What kind of file fstat says it is: VIBEOS_S_IF* in vibeos/vfs.h. */
@@ -73,8 +76,10 @@ void vibeos_file_stat_clear(vibeos_file_stat_t *st);
 void vibeos_file_stat_from_node(vibeos_file_stat_t *st, const vibeos_fs_node_t *node);
 
 /* One file type. Every entry may be NULL, and the caller answers for a missing
- * one with what Linux answers: EINVAL for read/write, ESPIPE for seek, ENOTTY for
- * ioctl, ENOTDIR for getdents. Return values are byte counts or negated errno. */
+ * one with what Linux answers: EINVAL for read/write, ESPIPE for seek and the
+ * positional calls, ENOTTY for ioctl, ENOTDIR for getdents, EINVAL for truncate
+ * and sync. Return values are byte counts or negated errno. Tables are written
+ * with designated initialisers: the type grew four entries in L1. */
 typedef struct vibeos_file_ops {
     const char *name;
     long (*read)(vibeos_file_t *f, uint64_t ubuf, uint64_t len);
@@ -85,6 +90,12 @@ typedef struct vibeos_file_ops {
     long (*getdents)(vibeos_file_t *f, uint64_t ubuf, uint64_t len);
     /* The last reference went: give back what this description holds. */
     void (*release)(vibeos_file_t *f);
+    /* At an offset, leaving the description's own position alone (L1). */
+    long (*pread)(vibeos_file_t *f, uint64_t ubuf, uint64_t len, uint64_t off);
+    long (*pwrite)(vibeos_file_t *f, uint64_t ubuf, uint64_t len, uint64_t off);
+    int (*truncate)(vibeos_file_t *f, uint64_t size);
+    /* What this description wrote is on the medium. */
+    int (*sync)(vibeos_file_t *f);
 } vibeos_file_ops_t;
 
 struct vibeos_file {
@@ -108,8 +119,10 @@ struct vibeos_file {
     int isdir;
     uint32_t dir_index;
     char path[VIBEOS_FILE_PATH];
-    /* writes to a regular file are buffered and committed on release (the FAT
-     * writer stores whole files) */
+    /* A file on a filesystem that writes at an offset (L1): reads and writes
+     * go straight to the node. Otherwise writes are buffered and committed on
+     * release - the FAT writer stores whole files, until it learns better. */
+    int direct;
     uint8_t wbuf[VIBEOS_FILE_WBUF];
     uint32_t wlen;
     int dirty;

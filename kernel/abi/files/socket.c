@@ -126,7 +126,11 @@ static void socket_release(vibeos_file_t *f) {
 }
 
 const vibeos_file_ops_t vibeos_fops_socket = {
-    "socket", socket_recv, socket_send, 0, socket_stat, 0, 0, socket_release
+    .name = "socket",
+    .read = socket_recv,
+    .write = socket_send,
+    .stat = socket_stat,
+    .release = socket_release,
 };
 
 vibeos_file_t *vibeos_open_socket(int sock) {

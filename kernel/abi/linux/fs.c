@@ -306,7 +306,13 @@ static long linux_sys_lseek(uint64_t fd, uint64_t off, uint64_t whence) {
 /* openat(dirfd, path, flags): resolve a file or directory and take a
  * descriptor. With a write flag the file is created or replaced when its last
  * descriptor goes. open() is openat(AT_FDCWD). */
-static long linux_sys_openat(uint64_t dirfd, uint64_t path_uptr, uint64_t flags) {
+/* The permission bits a new file may not have. */
+static uint32_t linux_umask(void) {
+    vibeos_procstate_t *ps = linux_cur_ps();
+    return ps ? ps->umask : 022u;
+}
+
+static long linux_sys_openat(uint64_t dirfd, uint64_t path_uptr, uint64_t flags, uint64_t mode) {
     vibeos_path_t w;
     vibeos_file_t *f;
     long err;
@@ -318,15 +324,439 @@ static long linux_sys_openat(uint64_t dirfd, uint64_t path_uptr, uint64_t flags)
     if (err != 0) {
         return err;
     }
-    f = vibeos_open_path(&w, (uint32_t)flags, &err);
+    f = vibeos_open_path(&w, (uint32_t)flags, (uint32_t)mode & ~linux_umask(), &err);
     if (!f) {
         return err;
     }
     return linux_fd_install(f, (flags & VIBEOS_O_CLOEXEC) ? VIBEOS_FD_CLOEXEC : 0u, 0);
 }
 
-static long linux_sys_open(uint64_t path_uptr, uint64_t flags) {
-    return linux_sys_openat((uint64_t)(uint32_t)LINUX_AT_FDCWD, path_uptr, flags);
+static long linux_sys_open(uint64_t path_uptr, uint64_t flags, uint64_t mode) {
+    return linux_sys_openat((uint64_t)(uint32_t)LINUX_AT_FDCWD, path_uptr, flags, mode);
+}
+
+/* creat(path, mode): open to write a new or emptied file. */
+static long linux_sys_creat(uint64_t path_uptr, uint64_t mode) {
+    return linux_sys_openat((uint64_t)(uint32_t)LINUX_AT_FDCWD, path_uptr,
+                            VIBEOS_O_CREAT | VIBEOS_O_WRONLY | VIBEOS_O_TRUNC, mode);
+}
+
+/* umask(mask): the new one in, the old one out. It cannot fail. */
+static long linux_sys_umask(uint64_t mask) {
+    vibeos_procstate_t *ps = linux_cur_ps();
+    uint32_t old;
+
+    if (!ps) {
+        return 022;
+    }
+    ks_lock(&ps->files_lock, __func__);
+    old = ps->umask;
+    ps->umask = (uint32_t)mask & 0777u;
+    ks_unlock(&ps->files_lock);
+    return (long)old;
+}
+
+/* ---- at an offset (L1) ---------------------------------------------------------------
+ *
+ * pread64 and pwrite64 leave the description's position alone; a file type
+ * without positions - a pipe, a socket, the console - is ESPIPE, as on Linux. */
+
+static long linux_sys_pread64(uint64_t fd, uint64_t buf, uint64_t len, uint64_t off) {
+    vibeos_file_t *f;
+    long r;
+
+    if ((int64_t)off < 0) {
+        return -VIBEOS_EINVAL;
+    }
+    if (!(f = linux_file_get(fd))) {
+        return -VIBEOS_EBADF;
+    }
+    r = f->ops->pread ? f->ops->pread(f, buf, len, off) : -VIBEOS_ESPIPE;
+    vibeos_file_put(f);
+    return r;
+}
+
+static long linux_sys_pwrite64(uint64_t fd, uint64_t buf, uint64_t len, uint64_t off) {
+    vibeos_file_t *f;
+    long r;
+
+    if ((int64_t)off < 0) {
+        return -VIBEOS_EINVAL;
+    }
+    if (!(f = linux_file_get(fd))) {
+        return -VIBEOS_EBADF;
+    }
+    r = f->ops->pwrite ? f->ops->pwrite(f, buf, len, off) : -VIBEOS_ESPIPE;
+    vibeos_file_put(f);
+    return r;
+}
+
+/* preadv and pwritev, and their "2" forms: the vector calls at an offset. An
+ * offset of -1 in the "2" forms means the description's own position, which is
+ * readv and writev; any RWF_ flag is refused rather than ignored - each one
+ * promises something (no blocking, durability) this kernel would not keep. */
+static long linux_rw_vec_at(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt, uint64_t off,
+                            int write) {
+    long total = 0;
+    uint64_t i;
+
+    if (iovcnt > 1024u) {
+        return -VIBEOS_EINVAL;
+    }
+    if ((int64_t)off < 0) {
+        return -VIBEOS_EINVAL;
+    }
+    for (i = 0; i < iovcnt; i++) {
+        linux_iovec_t v;
+        long n;
+        /* Copied in before base and len are read (H-020), as readv does. */
+        if (vibeos_uaccess_copy(&v, (const void *)(uintptr_t)
+                (iov_uptr + i * sizeof(linux_iovec_t)), sizeof(v)) != 0) {
+            return total > 0 ? total : -VIBEOS_EFAULT;
+        }
+        if (v.iov_len == 0u) {
+            continue;
+        }
+        if (!linux_user_ok(v.iov_base, v.iov_len, write ? 0 : 1)) {
+            return total > 0 ? total : -VIBEOS_EFAULT;
+        }
+        n = write ? linux_sys_pwrite64(fd, v.iov_base, v.iov_len, off + (uint64_t)total)
+                  : linux_sys_pread64(fd, v.iov_base, v.iov_len, off + (uint64_t)total);
+        if (n < 0) {
+            return total > 0 ? total : n;
+        }
+        total += n;
+        if ((uint64_t)n < v.iov_len) {
+            break;
+        }
+    }
+    return total;
+}
+
+static long linux_sys_readv(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt);
+static long linux_sys_writev(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt);
+
+static long linux_sys_preadv2(uint64_t fd, uint64_t iov, uint64_t cnt, uint64_t off, uint64_t flags) {
+    if (flags != 0u) {
+        return -VIBEOS_EOPNOTSUPP;
+    }
+    return (int64_t)off == -1 ? linux_sys_readv(fd, iov, cnt) : linux_rw_vec_at(fd, iov, cnt, off, 0);
+}
+
+static long linux_sys_pwritev2(uint64_t fd, uint64_t iov, uint64_t cnt, uint64_t off, uint64_t flags) {
+    if (flags != 0u) {
+        return -VIBEOS_EOPNOTSUPP;
+    }
+    return (int64_t)off == -1 ? linux_sys_writev(fd, iov, cnt) : linux_rw_vec_at(fd, iov, cnt, off, 1);
+}
+
+/* ---- sizes and durability (L1) ------------------------------------------------------ */
+
+static long linux_sys_ftruncate(uint64_t fd, uint64_t len) {
+    vibeos_file_t *f;
+    long r;
+
+    if ((int64_t)len < 0) {
+        return -VIBEOS_EINVAL;
+    }
+    if (!(f = linux_file_get(fd))) {
+        return -VIBEOS_EBADF;
+    }
+    r = f->ops->truncate ? f->ops->truncate(f, len) : -VIBEOS_EINVAL;
+    vibeos_file_put(f);
+    return r;
+}
+
+static long linux_sys_truncate(uint64_t path_uptr, uint64_t len) {
+    vibeos_path_t w;
+    long r;
+
+    if ((int64_t)len < 0) {
+        return -VIBEOS_EINVAL;
+    }
+    r = linux_walk_at((uint64_t)(uint32_t)LINUX_AT_FDCWD, path_uptr, 0u, &w);
+    if (r != 0) {
+        return r;
+    }
+    if (w.node.is_dir) {
+        return -VIBEOS_EISDIR;
+    }
+    if ((w.node.mode & VIBEOS_S_IFMT) != VIBEOS_S_IFREG) {
+        return -VIBEOS_EINVAL;
+    }
+    r = vibeos_fs_truncate(w.mnt, &w.node, len);
+    if (r == -VIBEOS_EOPNOTSUPP && len == 0u) {
+        /* A whole-file writer can still empty a file: write it with nothing. */
+        r = vibeos_fs_write_file(w.mnt, w.tail, "", 0) >= 0 ? 0 : -VIBEOS_EIO;
+    }
+    return r;
+}
+
+/* fsync and fdatasync: the file's data is on the medium. One answer for both -
+ * no filesystem here separates metadata from data. */
+static long linux_sys_fsync(uint64_t fd) {
+    vibeos_file_t *f = linux_file_get(fd);
+    long r;
+
+    if (!f) {
+        return -VIBEOS_EBADF;
+    }
+    r = f->ops->sync ? f->ops->sync(f) : -VIBEOS_EINVAL;   /* a pipe, a socket: EINVAL */
+    vibeos_file_put(f);
+    return r;
+}
+
+/* sync(): every mounted filesystem. It reports nothing, as on Linux. */
+static long linux_sys_sync(void) {
+    uint32_t i;
+    for (i = 0; i < vibeos_fs_mount_count(); i++) {
+        vibeos_fsmount_t *m = vibeos_fs_mount_at(i);
+        if (m) {
+            (void)vibeos_fs_sync(m);
+        }
+    }
+    return 0;
+}
+
+/* syncfs(fd): the filesystem the descriptor is on. */
+static long linux_sys_syncfs(uint64_t fd) {
+    vibeos_file_t *f = linux_file_get(fd);
+    long r;
+
+    if (!f) {
+        return -VIBEOS_EBADF;
+    }
+    r = f->mnt ? vibeos_fs_sync(f->mnt) : 0;
+    vibeos_file_put(f);
+    return r;
+}
+
+/* fallocate(fd, mode, off, len). Mode 0 makes the file at least off + len long;
+ * the space itself is not reserved - tmpfs has holes and FAT has no way to
+ * promise - so what this guarantees is the size, which is what programs that
+ * call it to extend a file use it for. KEEP_SIZE then has nothing to do. Hole
+ * punching and the rest are refused. */
+static long linux_sys_fallocate(uint64_t fd, uint64_t mode, uint64_t off, uint64_t len) {
+    vibeos_file_t *f;
+    vibeos_file_stat_t st;
+    long r = 0;
+
+    if ((int64_t)off < 0 || (int64_t)len <= 0) {
+        return -VIBEOS_EINVAL;
+    }
+    if (mode & ~(uint64_t)LINUX_FALLOC_FL_KEEP_SIZE) {
+        return -VIBEOS_EOPNOTSUPP;
+    }
+    if (!(f = linux_file_get(fd))) {
+        return -VIBEOS_EBADF;
+    }
+    if (!f->ops->truncate || !f->ops->stat) {
+        r = f->ops->pread ? -VIBEOS_EINVAL : -VIBEOS_ESPIPE;
+    } else if ((f->flags & VIBEOS_O_ACCMODE) == VIBEOS_O_RDONLY) {
+        r = -VIBEOS_EBADF;
+    } else if (!(mode & LINUX_FALLOC_FL_KEEP_SIZE)) {
+        vibeos_file_stat_clear(&st);
+        (void)f->ops->stat(f, &st);
+        if (st.size < off + len) {
+            r = f->ops->truncate(f, off + len);
+        }
+    }
+    vibeos_file_put(f);
+    return r;
+}
+
+/* fadvise64(fd, off, len, advice): advice about a cache this kernel does not
+ * tune. Accepted, because it is advice; a pipe is ESPIPE and an advice Linux
+ * does not have is EINVAL, as there. */
+static long linux_sys_fadvise64(uint64_t fd, uint64_t off, uint64_t len, uint64_t advice) {
+    vibeos_file_t *f = linux_file_get(fd);
+    long r = 0;
+
+    (void)off;
+    (void)len;
+    if (!f) {
+        return -VIBEOS_EBADF;
+    }
+    if (!f->ops->pread && !f->ops->getdents) {
+        r = -VIBEOS_ESPIPE;
+    } else if (VIBEOS_ARG_INT(advice) < 0 || VIBEOS_ARG_INT(advice) > LINUX_POSIX_FADV_NOREUSE) {
+        r = -VIBEOS_EINVAL;
+    }
+    vibeos_file_put(f);
+    return r;
+}
+
+/* readahead(fd, off, count): the same, for a file open for reading. */
+static long linux_sys_readahead(uint64_t fd) {
+    vibeos_file_t *f = linux_file_get(fd);
+    long r = 0;
+
+    if (!f) {
+        return -VIBEOS_EBADF;
+    }
+    if ((f->flags & VIBEOS_O_ACCMODE) == VIBEOS_O_WRONLY) {
+        r = -VIBEOS_EBADF;
+    } else if (!f->ops->pread) {
+        r = -VIBEOS_EINVAL;
+    }
+    vibeos_file_put(f);
+    return r;
+}
+
+/* ---- kernel-side copies: sendfile and copy_file_range (L1) ----------------------------
+ *
+ * One loop through a kernel page. The page's address goes where a user address
+ * usually goes: every file type copies through vibeos_uaccess_copy, which does
+ * not care whose memory it is, so the types need no second set of operations.
+ * At most a megabyte a call - a syscall runs with interrupts masked, and a
+ * short count is an answer every caller of these already handles. */
+#define LINUX_COPY_MAX (1024u * 1024u)
+
+static long linux_copy_between(vibeos_file_t *in, uint64_t *in_off, vibeos_file_t *out,
+                               uint64_t *out_off, uint64_t len) {
+    uint8_t *page = (uint8_t *)ks_page_alloc();
+    uint64_t ioff = in_off ? *in_off : in->pos;
+    uint64_t done = 0;
+    long r = 0;
+
+    if (!page) {
+        return -VIBEOS_ENOMEM;
+    }
+    if (len > LINUX_COPY_MAX) {
+        len = LINUX_COPY_MAX;
+    }
+    while (done < len) {
+        uint64_t want = len - done > 4096u ? 4096u : len - done;
+        long got = in->ops->pread(in, (uint64_t)(uintptr_t)page, want, ioff);
+        long put;
+
+        if (got <= 0) {
+            r = got;
+            break;
+        }
+        put = out_off ? out->ops->pwrite(out, (uint64_t)(uintptr_t)page, (uint64_t)got,
+                                         *out_off + done)
+                      : out->ops->write(out, (uint64_t)(uintptr_t)page, (uint64_t)got);
+        if (put <= 0) {
+            r = put;
+            break;
+        }
+        done += (uint64_t)put;
+        ioff += (uint64_t)put;
+        if (put < got) {
+            break;
+        }
+    }
+    ks_page_free(page, "sendfile bounce buffer");
+    if (in_off) {
+        *in_off = ioff;
+    } else {
+        in->pos = ioff;
+    }
+    if (out_off) {
+        *out_off += done;
+    }
+    return done > 0u ? (long)done : r;
+}
+
+/* An optional offset argument: read in, and written back when the call ends. */
+static long linux_off_in(uint64_t uptr, uint64_t *off) {
+    if (vibeos_uaccess_copy(off, (const void *)(uintptr_t)uptr, sizeof(*off)) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    return (int64_t)*off < 0 ? -VIBEOS_EINVAL : 0;
+}
+
+/* sendfile(out, in, offset, count): from a file that has positions to anything
+ * that can be written. */
+static long linux_sys_sendfile(uint64_t out_fd, uint64_t in_fd, uint64_t off_uptr, uint64_t count) {
+    vibeos_file_t *in = linux_file_get(in_fd), *out = linux_file_get(out_fd);
+    uint64_t off = 0;
+    long r = 0;
+
+    if (!in || !out) {
+        r = -VIBEOS_EBADF;
+    } else if ((in->flags & VIBEOS_O_ACCMODE) == VIBEOS_O_WRONLY ||
+               (out->flags & VIBEOS_O_ACCMODE) == VIBEOS_O_RDONLY) {
+        r = -VIBEOS_EBADF;
+    } else if (!in->ops->pread || !out->ops->write) {
+        r = -VIBEOS_EINVAL;
+    } else if (off_uptr != 0u) {
+        r = linux_off_in(off_uptr, &off);
+    }
+    if (r == 0) {
+        r = linux_copy_between(in, off_uptr ? &off : 0, out, 0, count);
+        if (r >= 0 && off_uptr != 0u &&
+            vibeos_uaccess_copy((void *)(uintptr_t)off_uptr, &off, sizeof(off)) != 0) {
+            r = -VIBEOS_EFAULT;
+        }
+    }
+    if (in) {
+        vibeos_file_put(in);
+    }
+    if (out) {
+        vibeos_file_put(out);
+    }
+    return r;
+}
+
+/* copy_file_range(in, off_in, out, off_out, len, flags): between two regular
+ * files. A range copied onto itself is EINVAL, as Linux refuses it. */
+static long linux_sys_copy_file_range(uint64_t in_fd, uint64_t in_uptr, uint64_t out_fd,
+                                      uint64_t out_uptr, uint64_t len, uint64_t flags) {
+    vibeos_file_t *in, *out;
+    uint64_t ioff = 0, ooff = 0;
+    long r = 0;
+
+    if (flags != 0u) {
+        return -VIBEOS_EINVAL;
+    }
+    in = linux_file_get(in_fd);
+    out = linux_file_get(out_fd);
+    if (!in || !out) {
+        r = -VIBEOS_EBADF;
+    } else if (in->ops != &vibeos_fops_regular || out->ops != &vibeos_fops_regular) {
+        r = (in->ops == &vibeos_fops_dir || out->ops == &vibeos_fops_dir) ? -VIBEOS_EISDIR
+                                                                          : -VIBEOS_EINVAL;
+    } else if ((in->flags & VIBEOS_O_ACCMODE) == VIBEOS_O_WRONLY ||
+               (out->flags & VIBEOS_O_ACCMODE) == VIBEOS_O_RDONLY ||
+               (out->flags & VIBEOS_O_APPEND)) {
+        r = -VIBEOS_EBADF;
+    }
+    if (r == 0 && in_uptr != 0u) {
+        r = linux_off_in(in_uptr, &ioff);
+    }
+    if (r == 0 && out_uptr != 0u) {
+        r = linux_off_in(out_uptr, &ooff);
+    }
+    if (r == 0) {
+        uint64_t a = in_uptr ? ioff : in->pos, b = out_uptr ? ooff : out->pos;
+        if (in->mnt == out->mnt && in->node == out->node && a < b + len && b < a + len) {
+            r = -VIBEOS_EINVAL;
+        }
+    }
+    if (r == 0) {
+        uint64_t opos = out->pos;
+        r = linux_copy_between(in, in_uptr ? &ioff : 0, out, out_uptr ? &ooff : &opos, len);
+        if (r >= 0 && !out_uptr) {
+            out->pos = opos;
+        }
+        if (r >= 0 && in_uptr &&
+            vibeos_uaccess_copy((void *)(uintptr_t)in_uptr, &ioff, sizeof(ioff)) != 0) {
+            r = -VIBEOS_EFAULT;
+        }
+        if (r >= 0 && out_uptr &&
+            vibeos_uaccess_copy((void *)(uintptr_t)out_uptr, &ooff, sizeof(ooff)) != 0) {
+            r = -VIBEOS_EFAULT;
+        }
+    }
+    if (in) {
+        vibeos_file_put(in);
+    }
+    if (out) {
+        vibeos_file_put(out);
+    }
+    return r;
 }
 
 static long linux_sys_close(uint64_t fd) {
@@ -927,7 +1357,7 @@ int linux_files_leave(vibeos_procstate_t *ps) {
 #define LINUX_FS_SYSCALLS(X) \
     X(0,   read,        READ,        PTRS(OUT_BUF(1, 2)), linux_sys_read(ARG(0), ARG(1), ARG(2))) \
     X(1,   write,       WRITE,       PTRS(IN_BUF(1, 2)), linux_sys_write(ARG(0), ARG(1), ARG(2))) \
-    X(2,   open,        OPEN,        NOPTR, linux_sys_open(ARG(0), ARG(1))) \
+    X(2,   open,        OPEN,        NOPTR, linux_sys_open(ARG(0), ARG(1), ARG(2))) \
     X(3,   close,       CLOSE,       NOPTR, linux_sys_close(ARG(0))) \
     X(5,   fstat,       FSTAT,       PTRS(OUT(1, sizeof(linux_stat_t))), linux_sys_fstat(ARG(0), ARG(1))) \
     X(8,   lseek,       LSEEK,       NOPTR, linux_sys_lseek(ARG(0), ARG(1), ARG(2))) \
@@ -937,7 +1367,18 @@ int linux_files_leave(vibeos_procstate_t *ps) {
     X(22,  pipe,        PIPE,        PTRS(OUT(0, 8)), linux_sys_pipe2(ARG(0), 0)) \
     X(32,  dup,         DUP,         NOPTR, linux_sys_dup(ARG(0))) \
     X(33,  dup2,        DUP2,        NOPTR, linux_sys_dup2(ARG(0), ARG(1))) \
-    X(40,  sendfile,    SENDFILE,    NOPTR, -VIBEOS_ENOSYS) \
+    X(17,  pread64,     PREAD,       PTRS(OUT_BUF(1, 2)), linux_sys_pread64(ARG(0), ARG(1), ARG(2), ARG(3))) \
+    X(18,  pwrite64,    PWRITE,      PTRS(IN_BUF(1, 2)), linux_sys_pwrite64(ARG(0), ARG(1), ARG(2), ARG(3))) \
+    X(40,  sendfile,    SENDFILE,    PTRS(OUT_OPT(2, 8)), linux_sys_sendfile(ARG(0), ARG(1), ARG(2), ARG(3))) \
+    X(74,  fsync,       FSYNC,       NOPTR, linux_sys_fsync(ARG(0))) \
+    X(75,  fdatasync,   FDATASYNC,   NOPTR, linux_sys_fsync(ARG(0))) \
+    X(76,  truncate,    TRUNCATE,    NOPTR, linux_sys_truncate(ARG(0), ARG(1))) \
+    X(77,  ftruncate,   FTRUNCATE,   NOPTR, linux_sys_ftruncate(ARG(0), ARG(1))) \
+    X(85,  creat,       CREAT,       NOPTR, linux_sys_creat(ARG(0), ARG(1))) \
+    X(95,  umask,       UMASK,       NOPTR, linux_sys_umask(ARG(0))) \
+    X(162, sync,        SYNC,        NOPTR, linux_sys_sync()) \
+    X(187, readahead,   READAHEAD,   NOPTR, linux_sys_readahead(ARG(0))) \
+    X(221, fadvise64,   FADVISE,     NOPTR, linux_sys_fadvise64(ARG(0), ARG(1), ARG(2), ARG(3))) \
     X(72,  fcntl,       FCNTL,       NOPTR, linux_sys_fcntl(ARG(0), ARG(1), ARG(2))) \
     X(79,  getcwd,      GETCWD,      NOPTR, linux_sys_getcwd(ARG(0), ARG(1))) \
     X(80,  chdir,       CHDIR,       NOPTR, linux_sys_chdir(ARG(0))) \
@@ -945,13 +1386,21 @@ int linux_files_leave(vibeos_procstate_t *ps) {
     X(83,  mkdir,       MKDIR,       NOPTR, linux_sys_mkdir(ARG(0))) \
     X(87,  unlink,      UNLINK,      NOPTR, linux_sys_unlink(ARG(0))) \
     X(217, getdents64,  GETDENTS,    PTRS(OUT_BUF(1, 2)), linux_sys_getdents64(ARG(0), ARG(1), ARG(2))) \
-    X(257, openat,      OPEN_AT,     NOPTR, linux_sys_openat(ARG(0), ARG(1), ARG(2))) \
+    X(257, openat,      OPEN_AT,     NOPTR, linux_sys_openat(ARG(0), ARG(1), ARG(2), ARG(3))) \
     X(258, mkdirat,     MKDIR_AT,    NOPTR, linux_sys_mkdirat(ARG(0), ARG(1))) \
     X(262, newfstatat,  STAT_AT,     PTRS(OUT(2, sizeof(linux_stat_t))), linux_sys_newfstatat(ARG(0), ARG(1), ARG(2), ARG(3))) \
     X(263, unlinkat,    UNLINK_AT,   NOPTR, linux_sys_unlinkat(ARG(0), ARG(1), ARG(2))) \
     X(267, readlinkat,  READLINK_AT, NOPTR, linux_sys_readlinkat(ARG(0), ARG(1), ARG(2), ARG(3))) \
+    X(277, sync_file_range, SYNC_RANGE, NOPTR, linux_sys_fsync(ARG(0))) \
+    X(285, fallocate,   FALLOCATE,   NOPTR, linux_sys_fallocate(ARG(0), ARG(1), ARG(2), ARG(3))) \
     X(292, dup3,        DUP3,        NOPTR, linux_sys_dup3(ARG(0), ARG(1), ARG(2))) \
     X(293, pipe2,       PIPE2,       PTRS(OUT(0, 8)), linux_sys_pipe2(ARG(0), ARG(1))) \
+    X(295, preadv,      PREADV,      PTRS(IN_VEC(1, 2, sizeof(linux_iovec_t), 1024)), linux_rw_vec_at(ARG(0), ARG(1), ARG(2), ARG(3), 0)) \
+    X(296, pwritev,     PWRITEV,     PTRS(IN_VEC(1, 2, sizeof(linux_iovec_t), 1024)), linux_rw_vec_at(ARG(0), ARG(1), ARG(2), ARG(3), 1)) \
+    X(306, syncfs,      SYNCFS,      NOPTR, linux_sys_syncfs(ARG(0))) \
+    X(326, copy_file_range, COPY_RANGE, PTRS(OUT_OPT(1, 8), OUT_OPT(3, 8)), linux_sys_copy_file_range(ARG(0), ARG(1), ARG(2), ARG(3), ARG(4), ARG(5))) \
+    X(327, preadv2,     PREADV2,     PTRS(IN_VEC(1, 2, sizeof(linux_iovec_t), 1024)), linux_sys_preadv2(ARG(0), ARG(1), ARG(2), ARG(3), ARG(5))) \
+    X(328, pwritev2,    PWRITEV2,    PTRS(IN_VEC(1, 2, sizeof(linux_iovec_t), 1024)), linux_sys_pwritev2(ARG(0), ARG(1), ARG(2), ARG(3), ARG(5))) \
     X(436, close_range, CLOSE_RANGE, NOPTR, linux_sys_close_range(ARG(0), ARG(1), ARG(2)))
 
 LINUX_DEFINE_SYSCALLS(fs, LINUX_FS_SYSCALLS)

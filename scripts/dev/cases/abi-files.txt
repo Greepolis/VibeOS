@@ -27,7 +27,9 @@
 
 ### a regular file's read does not advance the shared position
 --- old
-        done += (uint64_t)got;
-        f->pos += (uint64_t)got;
+    long n = regular_pread(f, buf, len, f->pos);
+    if (n > 0) {
+        f->pos += (uint64_t)n;
+    }
 +++ new
-        done += (uint64_t)got;
+    long n = regular_pread(f, buf, len, f->pos);

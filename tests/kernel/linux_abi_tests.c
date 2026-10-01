@@ -459,6 +459,275 @@ static void t_at_calls(void) {
            SYS2(2, ustr("motd"), 0) == -VIBEOS_ENOENT, "unlinkat from the working directory");
 }
 
+/* ---- L1 step 3: writing through a descriptor, on /tmp ------------------------------ */
+
+#define SYS4(nr, a, b, c, d) sys((nr), (a), (b), (c), (d), 0, 0, 0)
+
+static long tmp_open(const char *path, uint64_t flags, uint64_t mode) {
+    return SYS3(2, ustr(path), flags, mode);
+}
+
+/* The size and mode a path's stat reports. */
+static uint64_t tmp_size(const char *path) {
+    uint64_t st = kf_ualloc(144);
+    if (sys(262, (uint64_t)(uint32_t)-100, ustr(path), st, 0, 0, 0, 0) != 0) {
+        return ~0ull;
+    }
+    return *(uint64_t *)((uint8_t *)kf_uptr(st) + 48);
+}
+
+static uint32_t tmp_mode(const char *path) {
+    uint64_t st = kf_ualloc(144);
+    if (sys(262, (uint64_t)(uint32_t)-100, ustr(path), st, 0, 0, 0, 0) != 0) {
+        return ~0u;
+    }
+    return *(uint32_t *)((uint8_t *)kf_uptr(st) + 24);
+}
+
+/* open's flags mean what Linux means by them. */
+static void t_open_flags(void) {
+    uint64_t buf = 0, big = 0;
+    long fd, fd2;
+    uint32_t i;
+
+    fresh(93);
+    buf = kf_ualloc(64);
+    big = kf_ualloc(5000);
+    expect(tmp_open("/tmp/a", 0, 0) == -VIBEOS_ENOENT, "opening a missing file is ENOENT");
+    expect(tmp_open("/tmp/a", 1, 0) == -VIBEOS_ENOENT,
+           "O_WRONLY without O_CREAT does not make one - it used to, on release");
+    fd = tmp_open("/tmp/a", 0x41 /* O_CREAT|O_WRONLY */, 0644);
+    expect(fd >= 3 && tmp_size("/tmp/a") == 0u, "O_CREAT makes the file now, not when it is closed");
+    expect(tmp_open("/tmp/a", 0xC1 /* O_CREAT|O_EXCL|O_WRONLY */, 0644) == -VIBEOS_EEXIST,
+           "O_EXCL refuses an existing file");
+    memcpy(kf_uptr(buf), "hello", 5);
+    expect(SYS3(1, (uint64_t)fd, buf, 5) == 5 && tmp_size("/tmp/a") == 5u,
+           "a write is in the file when write returns");
+    for (i = 0; i < 5000u; i++) {
+        ((uint8_t *)kf_uptr(big))[i] = (uint8_t)(i * 13u + 1u);
+    }
+    expect(SYS3(1, (uint64_t)fd, big, 5000) == 5000 && tmp_size("/tmp/a") == 5005u,
+           "a write longer than 512 bytes is whole - the old buffer's ceiling is gone");
+    fd2 = tmp_open("/tmp/a", 0, 0);
+    expect(SYS3(8, (uint64_t)fd2, 5, 0) == 5 && SYS3(0, (uint64_t)fd2, big, 5000) == 5000 &&
+           ((uint8_t *)kf_uptr(big))[4999] == (uint8_t)(4999u * 13u + 1u),
+           "and reads back through another descriptor");
+    /* O_RDWR reads what it wrote. */
+    fd = tmp_open("/tmp/a", 2 /* O_RDWR */, 0);
+    memcpy(kf_uptr(buf), "HE", 2);
+    expect(fd >= 3 && SYS3(1, (uint64_t)fd, buf, 2) == 2 && SYS3(8, (uint64_t)fd, 0, 0) == 0 &&
+           SYS3(0, (uint64_t)fd, buf, 5) == 5 && memcmp(kf_uptr(buf), "HEllo", 5) == 0 &&
+           tmp_size("/tmp/a") == 5005u,
+           "O_RDWR writes into the middle of a file and leaves the rest");
+    /* O_APPEND goes to the end as it is now. */
+    fd = tmp_open("/tmp/a", 0x401 /* O_APPEND|O_WRONLY */, 0);
+    memcpy(kf_uptr(buf), "!", 1);
+    expect(SYS3(1, (uint64_t)fd, buf, 1) == 1 && tmp_size("/tmp/a") == 5006u, "O_APPEND writes at the end");
+    expect(SYS3(1, (uint64_t)fd2, buf, 1) == -VIBEOS_EBADF, "a read-only descriptor cannot write");
+    fd2 = tmp_open("/tmp/a", 0x401, 0);
+    expect(SYS3(1, (uint64_t)fd2, buf, 1) == 1 && SYS3(1, (uint64_t)fd, buf, 1) == 1 &&
+           tmp_size("/tmp/a") == 5008u,
+           "two appenders interleave: each write finds the end where the other left it");
+    expect(tmp_open("/tmp/a", 0x201 /* O_TRUNC|O_WRONLY */, 0) >= 3 && tmp_size("/tmp/a") == 0u,
+           "O_TRUNC empties the file at open");
+    expect(tmp_open("/tmp/a", 0x10000 /* O_DIRECTORY */, 0) == -VIBEOS_ENOTDIR,
+           "O_DIRECTORY on a file is ENOTDIR");
+    expect(tmp_open("/tmp", 1, 0) == -VIBEOS_EISDIR, "a directory opened to write is EISDIR");
+    expect(tmp_open("/tmp/a", 3, 0) == -VIBEOS_EINVAL, "access mode 3 is EINVAL");
+    /* umask and creat. */
+    expect(SYS1(95, 077) == 022 && SYS1(95, 07777) == 077 && SYS1(95, 077) == 0777,
+           "umask returns the one before, and keeps permission bits only");
+    expect(SYS2(85, ustr("/tmp/m"), 0666) >= 3 && tmp_mode("/tmp/m") == 0100600u,
+           "a created file has the mode asked for, less the umask");
+    expect(tmp_mode("/tmp/a") == 0100644u, "and the earlier one kept its own");
+}
+
+/* pread, pwrite and the vector forms: at an offset, the position untouched. */
+static void t_positional(void) {
+    uint64_t buf = 0, iov = 0, fds = 0;
+    uint64_t *v;
+    long fd;
+
+    fresh(94);
+    buf = kf_ualloc(64);
+    iov = kf_ualloc(32);
+    fds = kf_ualloc(8);
+    fd = tmp_open("/tmp/p", 0x42 /* O_CREAT|O_RDWR */, 0644);
+    memcpy(kf_uptr(buf), "0123456789", 10);
+    expect(SYS3(1, (uint64_t)fd, buf, 10) == 10, "ten bytes");
+    memcpy(kf_uptr(buf), "XY", 2);
+    expect(SYS4(18, (uint64_t)fd, buf, 2, 3) == 2 && SYS3(8, (uint64_t)fd, 0, 1) == 10,
+           "pwrite64 writes at its offset and leaves the position alone");
+    expect(SYS4(17, (uint64_t)fd, buf, 5, 2) == 5 && memcmp(kf_uptr(buf), "2XY56", 5) == 0 &&
+           SYS3(8, (uint64_t)fd, 0, 1) == 10, "pread64 reads there, and does the same");
+    expect(SYS4(18, (uint64_t)fd, buf, 1, 5000) == 1 && tmp_size("/tmp/p") == 5001u &&
+           SYS4(17, (uint64_t)fd, buf, 4, 4000) == 4 && ((char *)kf_uptr(buf))[0] == 0,
+           "a write past the end leaves a hole that reads as zeros");
+    expect(SYS4(17, (uint64_t)fd, buf, 4, (uint64_t)-5) == -VIBEOS_EINVAL, "a negative offset is EINVAL");
+    expect(SYS1(22, fds) == 0 &&
+           SYS4(17, (uint64_t)((int *)kf_uptr(fds))[0], buf, 4, 0) == -VIBEOS_ESPIPE,
+           "pread64 on a pipe is ESPIPE");
+    /* The vector forms. */
+    v = (uint64_t *)kf_uptr(iov);
+    v[0] = buf; v[1] = 3; v[2] = buf + 8; v[3] = 2;
+    expect(sys(295, (uint64_t)fd, iov, 2, 0, 0, 0, 0) == 5 &&
+           memcmp(kf_uptr(buf), "012", 3) == 0 && memcmp((char *)kf_uptr(buf) + 8, "XY", 2) == 0,
+           "preadv fills each buffer in turn from the offset");
+    memcpy(kf_uptr(buf), "abc", 3);
+    memcpy((char *)kf_uptr(buf) + 8, "de", 2);
+    expect(sys(296, (uint64_t)fd, iov, 2, 20, 0, 0, 0) == 5 &&
+           SYS4(17, (uint64_t)fd, buf + 16, 5, 20) == 5 &&
+           memcmp((char *)kf_uptr(buf) + 16, "abcde", 5) == 0, "pwritev gathers them at the offset");
+    expect(sys(327, (uint64_t)fd, iov, 2, 0, 0, 2 /* RWF_DSYNC */, 0) == -VIBEOS_EOPNOTSUPP,
+           "preadv2 refuses a flag rather than ignoring what it promises");
+    expect(SYS3(8, (uint64_t)fd, 0, 0) == 0 && sys(327, (uint64_t)fd, iov, 2, (uint64_t)-1, 0, 0, 0) == 5 &&
+           SYS3(8, (uint64_t)fd, 0, 1) == 5, "preadv2 at -1 uses and moves the position");
+}
+
+/* Sizes, durability, and the advice calls. */
+static void t_truncate_and_sync(void) {
+    uint64_t buf = 0, fds = 0;
+    long fd, ro, dfd;
+    int pr;
+
+    fresh(95);
+    buf = kf_ualloc(64);
+    fds = kf_ualloc(8);
+    fd = tmp_open("/tmp/t", 0x42, 0644);
+    memcpy(kf_uptr(buf), "0123456789", 10);
+    expect(SYS3(1, (uint64_t)fd, buf, 10) == 10, "ten bytes");
+    expect(SYS2(77, (uint64_t)fd, 4) == 0 && tmp_size("/tmp/t") == 4u, "ftruncate shrinks");
+    expect(SYS2(77, (uint64_t)fd, 8) == 0 && tmp_size("/tmp/t") == 8u &&
+           SYS4(17, (uint64_t)fd, buf, 8, 0) == 8 && memcmp(kf_uptr(buf), "0123\0\0\0\0", 8) == 0,
+           "and grows with zeros, not with what was cut off");
+    expect(SYS2(77, (uint64_t)fd, (uint64_t)-1) == -VIBEOS_EINVAL, "a negative length is EINVAL");
+    ro = tmp_open("/tmp/t", 0, 0);
+    expect(SYS2(77, (uint64_t)ro, 1) == -VIBEOS_EINVAL && tmp_size("/tmp/t") == 8u,
+           "ftruncate on a read-only descriptor is EINVAL");
+    {
+        /* A reader sees the file as it is now, not as it was when it opened. */
+        uint64_t st = kf_ualloc(144);
+        expect(SYS2(77, (uint64_t)fd, 300) == 0 && SYS2(5, (uint64_t)ro, st) == 0 &&
+               *(uint64_t *)((uint8_t *)kf_uptr(st) + 48) == 300u &&
+               SYS3(8, (uint64_t)ro, 0, 2) == 300,
+               "fstat and SEEK_END through a read-only descriptor follow the file as it grows");
+        expect(SYS2(77, (uint64_t)fd, 8) == 0, "back to eight");
+    }
+    expect(SYS2(76, ustr("/tmp/t"), 2) == 0 && tmp_size("/tmp/t") == 2u, "truncate by path");
+    expect(SYS2(76, ustr("/tmp"), 0) == -VIBEOS_EISDIR, "truncate of a directory is EISDIR");
+    expect(SYS2(76, ustr("/tmp/none"), 0) == -VIBEOS_ENOENT, "truncate of nothing is ENOENT");
+    /* durability */
+    dfd = tmp_open("/tmp", 0, 0);
+    expect(SYS1(74, (uint64_t)fd) == 0 && SYS1(75, (uint64_t)fd) == 0 && SYS1(74, (uint64_t)dfd) == 0,
+           "fsync and fdatasync succeed on a file and on a directory");
+    expect(SYS1(22, fds) == 0, "a pipe");
+    pr = ((int *)kf_uptr(fds))[0];
+    expect(SYS1(74, (uint64_t)pr) == -VIBEOS_EINVAL, "fsync on a pipe is EINVAL");
+    expect(SYS1(74, 99) == -VIBEOS_EBADF, "on nothing, EBADF");
+    expect(SYS0(162) == 0 && SYS1(306, (uint64_t)fd) == 0, "sync and syncfs");
+    /* fallocate and the advice calls */
+    expect(SYS4(285, (uint64_t)fd, 0, 0, 100) == 0 && tmp_size("/tmp/t") == 100u,
+           "fallocate makes the file at least that long");
+    expect(SYS4(285, (uint64_t)fd, 0, 0, 10) == 0 && tmp_size("/tmp/t") == 100u, "and never shorter");
+    expect(SYS4(285, (uint64_t)fd, 1 /* KEEP_SIZE */, 0, 500) == 0 && tmp_size("/tmp/t") == 100u,
+           "KEEP_SIZE leaves the size");
+    expect(SYS4(285, (uint64_t)fd, 0, 0, 0) == -VIBEOS_EINVAL, "a zero length is EINVAL");
+    expect(SYS4(285, (uint64_t)pr, 0, 0, 10) == -VIBEOS_ESPIPE, "fallocate on a pipe is ESPIPE");
+    expect(SYS4(221, (uint64_t)fd, 0, 0, 2) == 0 && SYS4(221, (uint64_t)fd, 0, 0, 9) == -VIBEOS_EINVAL &&
+           SYS4(221, (uint64_t)pr, 0, 0, 0) == -VIBEOS_ESPIPE,
+           "fadvise accepts Linux's advice, refuses a number it does not have, and a pipe");
+    expect(SYS3(187, (uint64_t)fd, 0, 10) == 0 && SYS3(187, (uint64_t)pr, 0, 10) == -VIBEOS_EINVAL,
+           "readahead on a file, and not on a pipe");
+}
+
+/* sendfile and copy_file_range: the kernel does the copying. */
+static void t_kernel_copies(void) {
+    uint64_t buf = 0, off = 0, off2 = 0, fds = 0;
+    long in, out;
+    int pr, pw;
+    uint32_t i;
+
+    fresh(96);
+    buf = kf_ualloc(6000);
+    off = kf_ualloc(8);
+    off2 = kf_ualloc(8);
+    fds = kf_ualloc(8);
+    in = tmp_open("/tmp/src", 0x42, 0644);
+    for (i = 0; i < 6000u; i++) {
+        ((uint8_t *)kf_uptr(buf))[i] = (uint8_t)(i * 7u + 5u);
+    }
+    expect(SYS3(1, (uint64_t)in, buf, 6000) == 6000, "a source of 6000 bytes");
+    out = tmp_open("/tmp/dst", 0x42, 0644);
+    *(uint64_t *)kf_uptr(off) = 100;
+    expect(SYS4(40, (uint64_t)out, (uint64_t)in, off, 5000) == 5000 &&
+           *(uint64_t *)kf_uptr(off) == 5100u && tmp_size("/tmp/dst") == 5000u,
+           "sendfile copies from the offset given and moves it, across a page boundary");
+    memset(kf_uptr(buf), 0, 6000);
+    expect(SYS4(17, (uint64_t)out, buf, 5000, 0) == 5000 &&
+           ((uint8_t *)kf_uptr(buf))[0] == (uint8_t)(100u * 7u + 5u) &&
+           ((uint8_t *)kf_uptr(buf))[4999] == (uint8_t)(5099u * 7u + 5u),
+           "and the bytes are the source's");
+    expect(SYS3(8, (uint64_t)in, 0, 1) == 6000, "the source's position did not move: an offset was given");
+    expect(SYS3(8, (uint64_t)in, 5990, 0) == 5990 && SYS4(40, (uint64_t)out, (uint64_t)in, 0, 100) == 10 &&
+           SYS3(8, (uint64_t)in, 0, 1) == 6000,
+           "without one it reads from the position, moves it, and stops at the end");
+    expect(SYS4(40, (uint64_t)out, (uint64_t)in, 0, 0) == 0, "a count of zero copies nothing");
+    expect(SYS1(22, fds) == 0, "a pipe");
+    pr = ((int *)kf_uptr(fds))[0];
+    pw = ((int *)kf_uptr(fds))[1];
+    *(uint64_t *)kf_uptr(off) = 0;
+    expect(SYS4(40, (uint64_t)pw, (uint64_t)in, off, 64) == 64 &&
+           SYS3(0, (uint64_t)pr, buf, 64) == 64 && ((uint8_t *)kf_uptr(buf))[63] == (uint8_t)(63u * 7u + 5u),
+           "sendfile into a pipe: any file that can be written");
+    expect(SYS4(40, (uint64_t)out, (uint64_t)pr, 0, 10) == -VIBEOS_EINVAL,
+           "but not out of one: the source needs positions");
+    expect(SYS4(40, 99, (uint64_t)in, 0, 10) == -VIBEOS_EBADF, "a closed descriptor is EBADF");
+    /* copy_file_range */
+    *(uint64_t *)kf_uptr(off) = 10;
+    *(uint64_t *)kf_uptr(off2) = 7000;
+    expect(sys(326, (uint64_t)in, off, (uint64_t)out, off2, 20, 0, 0) == 20 &&
+           *(uint64_t *)kf_uptr(off) == 30u && *(uint64_t *)kf_uptr(off2) == 7020u &&
+           tmp_size("/tmp/dst") == 7020u, "copy_file_range between two offsets, both moved");
+    expect(SYS4(17, (uint64_t)out, buf, 20, 7000) == 20 &&
+           ((uint8_t *)kf_uptr(buf))[0] == (uint8_t)(10u * 7u + 5u), "the bytes arrived");
+    *(uint64_t *)kf_uptr(off) = 0;
+    *(uint64_t *)kf_uptr(off2) = 10;
+    expect(sys(326, (uint64_t)in, off, (uint64_t)in, off2, 20, 0, 0) == -VIBEOS_EINVAL,
+           "a range copied onto itself is EINVAL");
+    expect(sys(326, (uint64_t)in, off, (uint64_t)out, off2, 20, 1, 0) == -VIBEOS_EINVAL,
+           "a flag is EINVAL");
+    expect(sys(326, (uint64_t)in, off, (uint64_t)pw, 0, 20, 0, 0) == -VIBEOS_EINVAL,
+           "copy_file_range is between regular files");
+}
+
+/* The whole-file filesystem keeps working as it did: the fake's root stores
+ * files the way FAT does. */
+static void t_whole_file_writer(void) {
+    uint64_t buf = 0;
+    long fd;
+
+    fresh(97);
+    buf = kf_ualloc(64);
+    fd = SYS3(2, ustr("/w"), 0x41, 0644);
+    memcpy(kf_uptr(buf), "whole", 5);
+    expect(fd >= 3 && SYS3(1, (uint64_t)fd, buf, 5) == 5 && SYS1(3, (uint64_t)fd) == 0,
+           "a file written on a whole-file filesystem");
+    fd = SYS2(2, ustr("/w"), 0);
+    expect(fd >= 3 && SYS3(0, (uint64_t)fd, buf + 16, 16) == 5 &&
+           memcmp((char *)kf_uptr(buf) + 16, "whole", 5) == 0, "is there after its last close");
+    expect(SYS4(17, (uint64_t)fd, buf, 3, 1) == 3 && memcmp(kf_uptr(buf), "hol", 3) == 0,
+           "and pread64 works on it too");
+    /* An existing one, replaced: the open that finds the file, where a new
+     * file takes the create path. */
+    fd = SYS2(2, ustr("/w"), 1);
+    memcpy(kf_uptr(buf), "again!", 6);
+    expect(fd >= 3 && SYS3(1, (uint64_t)fd, buf, 6) == 6 && SYS1(3, (uint64_t)fd) == 0,
+           "an existing file on a whole-file filesystem is opened to be replaced");
+    fd = SYS2(2, ustr("/w"), 0);
+    expect(fd >= 3 && SYS3(0, (uint64_t)fd, buf + 32, 16) == 6 &&
+           memcmp((char *)kf_uptr(buf) + 32, "again!", 6) == 0, "and is, at its last close");
+}
+
 /* A forked child starts where its parent is. */
 static void t_fork_inherits_cwd(void) {
     uint64_t buf;
@@ -512,6 +781,11 @@ int test_linux_handlers(void) {
     t_path_errors();
     t_at_calls();
     t_fork_inherits_cwd();
+    t_open_flags();
+    t_positional();
+    t_truncate_and_sync();
+    t_kernel_copies();
+    t_whole_file_writer();
     return g_fail ? -1 : 0;
 }
 
@@ -630,12 +904,37 @@ int test_linux_gaps(void) {
         }
     }
 
-    /* sendfile (40), L1: a count of zero copies nothing and succeeds. */
+    /* L1's writes on a filesystem that stores whole files - the fake's root, as
+     * FAT on the boot volume: pwrite64 (18), pwritev (296) and pwritev2 (328)
+     * have no offset to write at, truncate (76) can only empty and ftruncate
+     * (77) only cut. Step 4 teaches FAT. */
     fresh(64);
-    kf_fs_add("/src", "abc", 3, 0);
+    kf_fs_add("/f", "abcdef", 6, 0);
     {
-        long in = SYS2(2, ustr("src"), 0);
-        gap(40, sys(40, 1, (uint64_t)in, 0, 0, 0, 0, 0) == 0, "sendfile of zero bytes");
+        uint64_t b = kf_ualloc(16), iov = kf_ualloc(16);
+        long fd = SYS2(2, ustr("/f"), 1);
+        uint64_t *v = (uint64_t *)kf_uptr(iov);
+        memcpy(kf_uptr(b), "XY", 2);
+        v[0] = b; v[1] = 2;
+        gap(18, sys(18, (uint64_t)fd, b, 2, 1, 0, 0, 0) == 2, "pwrite64 into a file on the root filesystem");
+        gap(296, sys(296, (uint64_t)fd, iov, 1, 1, 0, 0, 0) == 2, "pwritev into one");
+        gap(328, sys(328, (uint64_t)fd, iov, 1, 1, 0, 1 /* RWF_HIPRI */, 0) == 2,
+            "pwritev2 into one, with a flag Linux accepts");
+        gap(77, SYS2(77, (uint64_t)fd, 100) == 0, "ftruncate growing a file on the root filesystem");
+        gap(76, SYS2(76, ustr("/f"), 3) == 0, "truncate cutting one by path");
+    }
+    /* preadv2 (327): RWF_HIPRI is advice Linux accepts. */
+    fresh(65);
+    {
+        uint64_t b = kf_ualloc(16), iov = kf_ualloc(16);
+        long fd = SYS3(2, ustr("/tmp/g"), 0x42, 0644);
+        uint64_t *v = (uint64_t *)kf_uptr(iov);
+        v[0] = b; v[1] = 2;
+        (void)SYS3(1, (uint64_t)fd, b, 2);
+        gap(327, sys(327, (uint64_t)fd, iov, 1, 0, 0, 1 /* RWF_HIPRI */, 0) == 2, "preadv2 with RWF_HIPRI");
+        /* fallocate (285): punching a hole. */
+        gap(285, sys(285, (uint64_t)fd, 3 /* PUNCH_HOLE|KEEP_SIZE */, 0, 1, 0, 0, 0) == 0,
+            "fallocate punching a hole");
     }
 
     /* clone (56), L6: vfork-like sharing - CLONE_VM|CLONE_VFORK|SIGCHLD - makes a child. */

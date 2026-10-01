@@ -157,6 +157,11 @@ typedef struct {
 #define LINUX_F_SETLKW         7
 #define LINUX_F_DUPFD_CLOEXEC  1030
 
+/* fallocate modes (linux/falloc.h) and posix_fadvise advice (linux/fadvise.h):
+ * the one mode honoured, and the largest advice there is. */
+#define LINUX_FALLOC_FL_KEEP_SIZE 0x01
+#define LINUX_POSIX_FADV_NOREUSE  5
+
 /* close_range flags (linux/close_range.h). */
 #define LINUX_CLOSE_RANGE_UNSHARE (1u << 1)
 #define LINUX_CLOSE_RANGE_CLOEXEC (1u << 2)

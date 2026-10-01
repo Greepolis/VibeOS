@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "ksvc_fake.h"
+#include "vibeos/tmpfs.h"
 #include "vibeos/fdtable.h"
 #include "vibeos/file.h"
 #include "vibeos/fileops.h"
@@ -295,6 +296,7 @@ static void kf_procstate_init(vibeos_procstate_t *ps) {
     vibeos_fdtable_init(&ps->files);
     ps->cwd[0] = '/';
     ps->root[0] = '/';
+    ps->umask = 022u;
     ps->refs = 1u;
     ps->files_users = 1u;
     ps->brk_cur = 0x10000000ull;
@@ -305,6 +307,13 @@ static void kf_pipe_unlock(void) {}
 
 static void *kf_fd_page(void) { return malloc(4096); }
 static void kf_fd_page_free(void *p) { free(p); }
+
+/* /tmp is tmpfs here as in the kernel (docs/abi/ L1): the root above stores
+ * whole files, as FAT does, so the handlers' real write path - at an offset,
+ * with modes and links - needs the filesystem that has one. */
+static vibeos_tmpfs_t g_tmpfs;
+static vibeos_fsmount_t g_tmpfs_mnt;
+static int g_tmpfs_live;
 
 void kf_reset(void) {
     uint32_t i;
@@ -345,6 +354,14 @@ void kf_reset(void) {
     vibeos_fs_set_lock(kf_pipe_lock, kf_pipe_unlock);
     vibeos_fs_detach_all();
     (void)vibeos_fs_attach("/", &g_root);
+    if (g_tmpfs_live) {
+        vibeos_tmpfs_destroy(&g_tmpfs);
+    }
+    (void)vibeos_tmpfs_init(&g_tmpfs, 4096, kf_fd_page, kf_fd_page_free, kf_pipe_lock,
+                            kf_pipe_unlock);
+    g_tmpfs_live = 1;
+    (void)vibeos_fs_mount(&g_tmpfs_mnt, vibeos_tmpfs_ops(), &g_tmpfs, "tmpfs");
+    (void)vibeos_fs_attach("/tmp", &g_tmpfs_mnt);
     /* The personality registers its own tables: see the tests' fresh(). */
 }
 
@@ -632,8 +649,8 @@ void ks_pageinfo(int slot, uint64_t va, vibeos_pageinfo_t *out) {
     (void)slot; (void)va;
     memset(out, 0, sizeof(*out));
 }
-void *ks_page_alloc(void) { return 0; }   /* read() then uses its small buffer */
-void ks_page_free(void *page, const char *why) { (void)page; (void)why; }
+void *ks_page_alloc(void) { return malloc(4096); }
+void ks_page_free(void *page, const char *why) { (void)why; free(page); }
 uint64_t ks_heap_base(void) { return 0x10000000ull; }
 uint64_t ks_mmap_base(void) { return 0x20000000ull; }
 uint64_t ks_stack_bytes(void) { return 16384ull; }
