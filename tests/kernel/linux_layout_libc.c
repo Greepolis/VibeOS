@@ -23,6 +23,8 @@
 #include <dirent.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
+#include <unistd.h>
 
 #define F(name) { #name, offsetof(struct dirent64, name), sizeof(((struct dirent64 *)0)->name) }
 
@@ -44,6 +46,14 @@ static const struct { const char *name; long long value; } g_consts[] = {
     { "S_IFDIR", S_IFDIR },
     { "S_IFREG", S_IFREG },
     { "S_IFSOCK", S_IFSOCK },
+    { "S_ISUID", S_ISUID },
+    { "S_ISGID", S_ISGID },
+    { "R_OK", R_OK },
+    { "W_OK", W_OK },
+    { "X_OK", X_OK },
+    { "UTIME_NOW", UTIME_NOW },
+    { "UTIME_OMIT", UTIME_OMIT },
+    { "ST_RDONLY", ST_RDONLY },
 };
 
 int linux_libc_dirent64(const char *field, size_t *off, size_t *size) {

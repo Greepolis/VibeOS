@@ -169,6 +169,56 @@ long linux_walk_at(uint64_t dirfd, uint64_t upath, uint32_t flags, vibeos_path_t
     return r != 0 ? r : vibeos_path_walk(root, base, raw, flags, w);
 }
 
+/* The file a descriptor names, walked again from the path its description
+ * remembers - what fchmod, fchown, futimens, fstatfs and every AT_EMPTY_PATH
+ * work on. The last component is not followed: the description was opened on
+ * what the link pointed at, and its path is that. AT_FDCWD is the working
+ * directory. A pipe, a socket or the console is on no filesystem: EINVAL.
+ *
+ * The gap is the one a path for an identity always has: after a rename the
+ * description's path names nothing, or something else. */
+long linux_walk_fd(uint64_t fd, vibeos_path_t *w) {
+    vibeos_file_t *f;
+    long r;
+
+    if (VIBEOS_ARG_INT(fd) == LINUX_AT_FDCWD) {
+        vibeos_procstate_t *ps = linux_cur_ps();
+        char cwd[VIBEOS_PATH_MAX];
+        if (!ps) {
+            return -VIBEOS_EINVAL;
+        }
+        linux_ps_path(ps, 0, cwd);
+        return vibeos_path_walk("/", "/", cwd, 0u, w);
+    }
+    if (!(f = linux_file_get(fd))) {
+        return -VIBEOS_EBADF;
+    }
+    if (!f->mnt) {
+        vibeos_file_put(f);
+        return -VIBEOS_EINVAL;
+    }
+    r = vibeos_path_walk("/", "/", f->path, VIBEOS_PATH_NOFOLLOW, w);
+    vibeos_file_put(f);
+    return r;
+}
+
+/* A path argument that may be empty with AT_EMPTY_PATH, which makes `dirfd`
+ * itself the file. Without the flag an empty path is ENOENT, as the walk says. */
+long linux_walk_at_empty(uint64_t dirfd, uint64_t upath, uint64_t atflags, uint32_t flags,
+                         vibeos_path_t *w) {
+    char first = 1;
+
+    if (atflags & LINUX_AT_EMPTY_PATH) {
+        if (vibeos_uaccess_copy(&first, (const void *)(uintptr_t)upath, 1u) != 0) {
+            return -VIBEOS_EFAULT;
+        }
+        if (first == 0) {
+            return linux_walk_fd(dirfd, w);
+        }
+    }
+    return linux_walk_at(dirfd, upath, flags, w);
+}
+
 /* Is this path /proc/self/exe? /proc does not exist, so the question is asked
  * of the path as written, made absolute - "self/exe" from /proc and
  * "/proc/./self/exe" are the one programs usually ask. */
@@ -307,12 +357,12 @@ static long linux_sys_lseek(uint64_t fd, uint64_t off, uint64_t whence) {
  * descriptor. With a write flag the file is created or replaced when its last
  * descriptor goes. open() is openat(AT_FDCWD). */
 /* The permission bits a new file may not have. */
-static uint32_t linux_umask(void) {
+uint32_t linux_umask(void) {
     vibeos_procstate_t *ps = linux_cur_ps();
     return ps ? ps->umask : 022u;
 }
 
-static long linux_sys_openat(uint64_t dirfd, uint64_t path_uptr, uint64_t flags, uint64_t mode) {
+long linux_sys_openat(uint64_t dirfd, uint64_t path_uptr, uint64_t flags, uint64_t mode) {
     vibeos_path_t w;
     vibeos_file_t *f;
     long err;
@@ -983,7 +1033,7 @@ static long linux_sys_fcntl(uint64_t fd, uint64_t cmd, uint64_t arg) {
  * out once: filling the user buffer field by field would fault in ring 0 if a
  * sibling munmaps it between the range check and any of these writes (uaccess
  * follow-up to 6a94a32, same class as H-026). */
-static long linux_write_stat(uint64_t ubuf, const vibeos_file_stat_t *st) {
+static long linux_write_stat(uint64_t ubuf, const vibeos_file_stat_t *st, uint64_t dev) {
     linux_stat_t k;
     uint8_t *raw = (uint8_t *)&k;
     uint32_t i;
@@ -991,6 +1041,7 @@ static long linux_write_stat(uint64_t ubuf, const vibeos_file_stat_t *st) {
     for (i = 0; i < sizeof(k); i++) {
         raw[i] = 0;   /* padding included: it is copied out */
     }
+    k.st_dev = dev;
     k.st_ino = st->ino;
     k.st_nlink = st->nlink ? st->nlink : 1u;
     k.st_mode = st->mode;
@@ -1011,54 +1062,110 @@ static long linux_write_stat(uint64_t ubuf, const vibeos_file_stat_t *st) {
     return 0;
 }
 
-/* fstat(): the type decides - a pipe is a FIFO and a socket a socket, where both
- * used to come out as whatever the table entry happened to resemble. */
-static long linux_sys_fstat(uint64_t fd, uint64_t ubuf) {
+/* Which device a file is on, as st_dev reports it: the mount's place in the
+ * table, from 1. A program that asks whether two names are one file compares
+ * st_dev and st_ino - cp and mv do, to refuse copying a file onto itself - and
+ * with every filesystem answering 0 a file in /tmp and one on the boot volume
+ * with the same inode number were the same file. 0 is what is on no mount: a
+ * pipe, a socket, the console. */
+uint64_t linux_dev_of(const vibeos_fsmount_t *mnt) {
+    uint32_t i;
+
+    for (i = 0; mnt && i < vibeos_fs_mount_count(); i++) {
+        if (vibeos_fs_mount_at(i) == mnt) {
+            return (uint64_t)i + 1u;
+        }
+    }
+    return 0;
+}
+
+/* What a descriptor says about itself: the type decides - a pipe is a FIFO and
+ * a socket a socket, where both used to come out as whatever the table entry
+ * happened to resemble. */
+static long linux_stat_fd(uint64_t fd, vibeos_file_stat_t *st, uint64_t *dev) {
     vibeos_file_t *f = linux_file_get(fd);
-    vibeos_file_stat_t st;
     long r;
 
     if (!f) {
         return -VIBEOS_EBADF;
     }
-    vibeos_file_stat_clear(&st);
-    r = f->ops->stat ? (long)f->ops->stat(f, &st) : 0;
+    vibeos_file_stat_clear(st);
+    r = f->ops->stat ? (long)f->ops->stat(f, st) : 0;
+    *dev = linux_dev_of(f->mnt);
     vibeos_file_put(f);
-    return r < 0 ? r : linux_write_stat(ubuf, &st);
+    return r < 0 ? r : 0;
+}
+
+/* What stat reports for a name, or for `dirfd` itself when the path is empty
+ * and AT_EMPTY_PATH is set: newfstatat's and statx's question, asked once.
+ * `atflags` has been checked by the caller. */
+long linux_stat_get(uint64_t dirfd, uint64_t path_uptr, uint64_t atflags,
+                    vibeos_file_stat_t *st, uint64_t *dev) {
+    vibeos_path_t w;
+    char first = 0;
+    long r;
+
+    if (vibeos_uaccess_copy(&first, (const void *)(uintptr_t)path_uptr, 1u) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    if (first == 0) {
+        if ((atflags & LINUX_AT_EMPTY_PATH) == 0) {
+            return -VIBEOS_ENOENT;
+        }
+        if (VIBEOS_ARG_INT(dirfd) != LINUX_AT_FDCWD) {
+            return linux_stat_fd(dirfd, st, dev);
+        }
+        r = linux_walk_fd(dirfd, &w);
+    } else {
+        /* Directory or file? The answer changes what a program does, not just
+         * what it prints: ls given a directory lists it and given a file names
+         * it, so reporting the wrong one produces a plausible wrong result
+         * rather than an error. The filesystem decides; how it decides is its
+         * business. */
+        r = linux_walk_at(dirfd, path_uptr,
+                          (atflags & LINUX_AT_SYMLINK_NOFOLLOW) ? VIBEOS_PATH_NOFOLLOW : 0u, &w);
+    }
+    if (r != 0) {
+        return r;
+    }
+    vibeos_file_stat_from_node(st, &w.node);
+    *dev = linux_dev_of(w.mnt);
+    return 0;
+}
+
+static long linux_sys_fstat(uint64_t fd, uint64_t ubuf) {
+    vibeos_file_stat_t st;
+    uint64_t dev = 0;
+    long r = linux_stat_fd(fd, &st, &dev);
+
+    return r < 0 ? r : linux_write_stat(ubuf, &st, dev);
 }
 
 /* newfstatat(dirfd, path, buf, flags): stat by name, or by fd when the path is
  * empty and AT_EMPTY_PATH is set. */
 static long linux_sys_newfstatat(uint64_t dirfd, uint64_t path_uptr, uint64_t ubuf,
                                  uint64_t flags) {
-    vibeos_path_t w;
     vibeos_file_stat_t st;
-    char first = 0;
+    uint64_t dev = 0;
     long r;
 
-    if (flags & ~(uint64_t)(LINUX_AT_EMPTY_PATH | LINUX_AT_SYMLINK_NOFOLLOW)) {
+    if (flags & ~(uint64_t)(LINUX_AT_EMPTY_PATH | LINUX_AT_SYMLINK_NOFOLLOW |
+                            LINUX_AT_NO_AUTOMOUNT)) {
         return -VIBEOS_EINVAL;
     }
-    if (vibeos_uaccess_copy(&first, (const void *)(uintptr_t)path_uptr, 1u) != 0) {
-        return -VIBEOS_EFAULT;
-    }
-    if (first == 0) {
-        if ((flags & LINUX_AT_EMPTY_PATH) == 0) {
-            return -VIBEOS_ENOENT;
-        }
-        return linux_sys_fstat(dirfd, ubuf);
-    }
-    /* Directory or file? The answer changes what a program does, not just what
-     * it prints: ls given a directory lists it and given a file names it, so
-     * reporting the wrong one produces a plausible wrong result rather than an
-     * error. The filesystem decides; how it decides is its business. */
-    r = linux_walk_at(dirfd, path_uptr,
-                      (flags & LINUX_AT_SYMLINK_NOFOLLOW) ? VIBEOS_PATH_NOFOLLOW : 0u, &w);
-    if (r != 0) {
-        return r;
-    }
-    vibeos_file_stat_from_node(&st, &w.node);
-    return linux_write_stat(ubuf, &st);
+    r = linux_stat_get(dirfd, path_uptr, flags, &st, &dev);
+    return r < 0 ? r : linux_write_stat(ubuf, &st, dev);
+}
+
+/* stat(path, buf) and lstat(path, buf): the two newfstatat spellings a program
+ * built before the *at calls uses. */
+static long linux_sys_stat(uint64_t path_uptr, uint64_t ubuf) {
+    return linux_sys_newfstatat((uint64_t)(uint32_t)LINUX_AT_FDCWD, path_uptr, ubuf, 0);
+}
+
+static long linux_sys_lstat(uint64_t path_uptr, uint64_t ubuf) {
+    return linux_sys_newfstatat((uint64_t)(uint32_t)LINUX_AT_FDCWD, path_uptr, ubuf,
+                                LINUX_AT_SYMLINK_NOFOLLOW);
 }
 
 /* getdents64(fd, buf, len): dirent64 records from the directory the descriptor
@@ -1094,8 +1201,7 @@ static long linux_sys_ioctl(uint64_t fd, uint64_t req, uint64_t arg) {
 /* ---- paths ----------------------------------------------------------------------------- */
 
 /* unlinkat(dirfd, path, flags) and unlink(path). A directory is EISDIR, as
- * Linux answers unlink on one; AT_REMOVEDIR asks for rmdir, which no filesystem
- * here implements yet, and is refused rather than approximated. */
+ * Linux answers unlink on one; AT_REMOVEDIR asks for rmdir (names.c). */
 static long linux_sys_unlinkat(uint64_t dirfd, uint64_t path_uptr, uint64_t flags) {
     vibeos_path_t w;
     long r;
@@ -1104,7 +1210,7 @@ static long linux_sys_unlinkat(uint64_t dirfd, uint64_t path_uptr, uint64_t flag
         return -VIBEOS_EINVAL;
     }
     if (flags & LINUX_AT_REMOVEDIR) {
-        return -VIBEOS_EINVAL;
+        return linux_rmdir_at(dirfd, path_uptr);
     }
     /* The name itself goes, so a symbolic link is removed and not followed. */
     r = linux_walk_at(dirfd, path_uptr, VIBEOS_PATH_NOFOLLOW, &w);
@@ -1121,10 +1227,13 @@ static long linux_sys_unlink(uint64_t path_uptr) {
     return linux_sys_unlinkat((uint64_t)(uint32_t)LINUX_AT_FDCWD, path_uptr, 0);
 }
 
-/* mkdirat(dirfd, path, mode) and mkdir(path, mode). The mode is not kept: there
- * is one user and no permission bits on these filesystems. */
-static long linux_sys_mkdirat(uint64_t dirfd, uint64_t path_uptr) {
+/* mkdirat(dirfd, path, mode) and mkdir(path, mode). The filesystem makes the
+ * directory and is then told the mode, less the umask: a filesystem with
+ * nowhere to keep one (FAT, beyond its read-only bit) says so and the directory
+ * stands as it made it, which is what mounting such a volume on Linux gives. */
+static long linux_sys_mkdirat(uint64_t dirfd, uint64_t path_uptr, uint64_t mode) {
     vibeos_path_t w;
+    vibeos_fs_attr_t attr;
     long r;
 
     /* Not followed: a dangling symbolic link at the name is EEXIST, as on
@@ -1136,11 +1245,17 @@ static long linux_sys_mkdirat(uint64_t dirfd, uint64_t path_uptr) {
     if (w.exists) {
         return -VIBEOS_EEXIST;
     }
-    return (vibeos_fs_mkdir(w.mnt, w.tail) == 0) ? 0 : -VIBEOS_EIO;
+    if (vibeos_fs_mkdir(w.mnt, w.tail) != 0) {
+        return vibeos_fs_writable(w.mnt) ? -VIBEOS_EIO : -VIBEOS_EROFS;
+    }
+    attr.valid = VIBEOS_ATTR_MODE;
+    attr.mode = (uint32_t)mode & 01777u & ~linux_umask();
+    (void)vibeos_fs_setattr(w.mnt, w.tail, &attr);
+    return 0;
 }
 
-static long linux_sys_mkdir(uint64_t path_uptr) {
-    return linux_sys_mkdirat((uint64_t)(uint32_t)LINUX_AT_FDCWD, path_uptr);
+static long linux_sys_mkdir(uint64_t path_uptr, uint64_t mode) {
+    return linux_sys_mkdirat((uint64_t)(uint32_t)LINUX_AT_FDCWD, path_uptr, mode);
 }
 
 /* chdir(path) and fchdir(fd): the working directory, which relative paths start
@@ -1247,6 +1362,9 @@ static long linux_sys_readlinkat(uint64_t dirfd, uint64_t path_uptr, uint64_t ub
         if ((w.node.mode & VIBEOS_S_IFMT) != VIBEOS_S_IFLNK) {
             return -VIBEOS_EINVAL;
         }
+        if ((int64_t)bufsz <= 0) {
+            return -VIBEOS_EINVAL;   /* as Linux answers a buffer of no size */
+        }
         t = vibeos_fs_readlink(w.mnt, *w.tail ? w.tail : "/", raw, sizeof(raw));
         if (t < 0) {
             return t;
@@ -1282,6 +1400,10 @@ static long linux_sys_readlinkat(uint64_t dirfd, uint64_t path_uptr, uint64_t ub
         return -VIBEOS_EFAULT;
     }
     return (long)n;   /* not terminated, as Linux does not terminate it */
+}
+
+static long linux_sys_readlink(uint64_t path_uptr, uint64_t ubuf, uint64_t bufsz) {
+    return linux_sys_readlinkat((uint64_t)(uint32_t)LINUX_AT_FDCWD, path_uptr, ubuf, bufsz);
 }
 
 /* ---- what fork, exec and exit do to a table ------------------------------------------------ */
@@ -1359,7 +1481,9 @@ int linux_files_leave(vibeos_procstate_t *ps) {
     X(1,   write,       WRITE,       PTRS(IN_BUF(1, 2)), linux_sys_write(ARG(0), ARG(1), ARG(2))) \
     X(2,   open,        OPEN,        NOPTR, linux_sys_open(ARG(0), ARG(1), ARG(2))) \
     X(3,   close,       CLOSE,       NOPTR, linux_sys_close(ARG(0))) \
+    X(4,   stat,        STAT,        PTRS(OUT(1, sizeof(linux_stat_t))), linux_sys_stat(ARG(0), ARG(1))) \
     X(5,   fstat,       FSTAT,       PTRS(OUT(1, sizeof(linux_stat_t))), linux_sys_fstat(ARG(0), ARG(1))) \
+    X(6,   lstat,       LSTAT,       PTRS(OUT(1, sizeof(linux_stat_t))), linux_sys_lstat(ARG(0), ARG(1))) \
     X(8,   lseek,       LSEEK,       NOPTR, linux_sys_lseek(ARG(0), ARG(1), ARG(2))) \
     X(16,  ioctl,       IOCTL,       PTRS(OUT_IF(1, VIBEOS_IOCTL_GET_PGRP, 2, sizeof(uint32_t)), IN_IF(1, VIBEOS_IOCTL_SET_PGRP, 2, sizeof(uint32_t))), linux_sys_ioctl(ARG(0), ARG(1), ARG(2))) \
     X(19,  readv,       READV,       PTRS(IN_VEC(1, 2, sizeof(linux_iovec_t), 1024)), linux_sys_readv(ARG(0), ARG(1), ARG(2))) \
@@ -1383,11 +1507,12 @@ int linux_files_leave(vibeos_procstate_t *ps) {
     X(79,  getcwd,      GETCWD,      NOPTR, linux_sys_getcwd(ARG(0), ARG(1))) \
     X(80,  chdir,       CHDIR,       NOPTR, linux_sys_chdir(ARG(0))) \
     X(81,  fchdir,      FCHDIR,      NOPTR, linux_sys_fchdir(ARG(0))) \
-    X(83,  mkdir,       MKDIR,       NOPTR, linux_sys_mkdir(ARG(0))) \
+    X(83,  mkdir,       MKDIR,       NOPTR, linux_sys_mkdir(ARG(0), ARG(1))) \
+    X(89,  readlink,    READLINK,    NOPTR, linux_sys_readlink(ARG(0), ARG(1), ARG(2))) \
     X(87,  unlink,      UNLINK,      NOPTR, linux_sys_unlink(ARG(0))) \
     X(217, getdents64,  GETDENTS,    PTRS(OUT_BUF(1, 2)), linux_sys_getdents64(ARG(0), ARG(1), ARG(2))) \
     X(257, openat,      OPEN_AT,     NOPTR, linux_sys_openat(ARG(0), ARG(1), ARG(2), ARG(3))) \
-    X(258, mkdirat,     MKDIR_AT,    NOPTR, linux_sys_mkdirat(ARG(0), ARG(1))) \
+    X(258, mkdirat,     MKDIR_AT,    NOPTR, linux_sys_mkdirat(ARG(0), ARG(1), ARG(2))) \
     X(262, newfstatat,  STAT_AT,     PTRS(OUT(2, sizeof(linux_stat_t))), linux_sys_newfstatat(ARG(0), ARG(1), ARG(2), ARG(3))) \
     X(263, unlinkat,    UNLINK_AT,   NOPTR, linux_sys_unlinkat(ARG(0), ARG(1), ARG(2))) \
     X(267, readlinkat,  READLINK_AT, NOPTR, linux_sys_readlinkat(ARG(0), ARG(1), ARG(2), ARG(3))) \

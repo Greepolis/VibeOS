@@ -57,4 +57,21 @@ long linux_fd_close(uint64_t fd);
  * symbolic links followed as `flags` (VIBEOS_PATH_*) says. 0, or a negated errno. */
 long linux_walk_at(uint64_t dirfd, uint64_t upath, uint32_t flags, vibeos_path_t *w);
 
+/* The file a descriptor names, walked from the path its description remembers
+ * (AT_FDCWD: the working directory), and a path that may be empty under
+ * AT_EMPTY_PATH - then `dirfd` is the file. */
+long linux_walk_fd(uint64_t fd, vibeos_path_t *w);
+long linux_walk_at_empty(uint64_t dirfd, uint64_t upath, uint64_t atflags, uint32_t flags,
+                         vibeos_path_t *w);
+
+/* What fs.c and names.c share (docs/abi/ L1 step 5): what stat reports for a
+ * name or a descriptor and the device it is on, open by another name, the
+ * umask, and rmdir for unlinkat's AT_REMOVEDIR. */
+long linux_stat_get(uint64_t dirfd, uint64_t path_uptr, uint64_t atflags,
+                    vibeos_file_stat_t *st, uint64_t *dev);
+uint64_t linux_dev_of(const vibeos_fsmount_t *mnt);
+long linux_sys_openat(uint64_t dirfd, uint64_t path_uptr, uint64_t flags, uint64_t mode);
+uint32_t linux_umask(void);
+long linux_rmdir_at(uint64_t dirfd, uint64_t path_uptr);
+
 #endif

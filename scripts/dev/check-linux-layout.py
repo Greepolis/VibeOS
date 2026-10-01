@@ -37,7 +37,7 @@ CONSTANT_HEADERS = {
     "include/vibeos/linux_layout.h": r"LINUX_\w+",
     "include/vibeos/abi_linux.h": r"VIBEOS_E[A-Z0-9]+|VIBEOS_SIG[A-Z]+|VIBEOS_SA_\w+|SIG_DFL_ADDR|SIG_IGN_ADDR",
     "include/vibeos/file.h": r"VIBEOS_O_\w+|VIBEOS_SEEK_\w+",
-    "include/vibeos/vfs.h": r"VIBEOS_S_IF\w+",
+    "include/vibeos/vfs.h": r"VIBEOS_S_I[FS]\w+",
     "include/vibeos/fdtable.h": r"VIBEOS_FD_CLOEXEC",
     "include/vibeos/fileops.h": r"VIBEOS_IOCTL_\w+",
 }
@@ -85,7 +85,7 @@ def main():
     layout = strip_comments(read(LAYOUT))
 
     compared_fields = set()
-    for m in re.finditer(r"\b(?:FIELD2?|LIBC_FIELD|LIBC_OFFSET)\(\s*(\w+)\s*,\s*(?:[^,()]+,\s*)?(\w+)", test):
+    for m in re.finditer(r"\b(?:FIELD2?|TAIL|LIBC_FIELD|LIBC_OFFSET)\(\s*(\w+)\s*,\s*(?:[^,()]+,\s*)?(\w+)", test):
         compared_fields.add((m.group(1), m.group(2)))
     sized = set(re.findall(r"\bSIZE\(\s*(\w+)\s*,", test))
     compared_consts = set(re.findall(r"\b(?:CONST|LIBC_CONST)\(\s*(\w+)\s*,", test))

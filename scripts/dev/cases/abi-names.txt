@@ -1,0 +1,228 @@
+# Names and metadata, docs/abi/ L1 step 5 (kernel/abi/linux/names.c), proved by
+# the handlers' host tests in tests/kernel/linux_abi_tests.c.
+#
+# Each case names the expectation it should fail. The handlers decide what
+# Linux decides before a filesystem is asked, and tmpfs decides some of the
+# same things again for itself - so a case that removes only the handler's
+# check can be caught by the filesystem under it. Where that happened it is
+# said at the case.
+#
+# Two went NOT RED on their first run for exactly that reason - NOREPLACE left
+# to the filesystem, and an empty symlink target - because tmpfs refuses both
+# itself. The handler's check is what makes a filesystem that cannot rename or
+# link at all give Linux's answer (EEXIST, ENOENT) rather than its own (EPERM),
+# so both are asked of the fake kernel's root now, which can do neither.
+#
+# Target source: kernel/abi/linux/names.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/linux/names.c scripts/dev/cases/abi-names.txt
+
+### a rename across two mounts is handed to one of them
+--- old
+    if (a.mnt != b.mnt) {
+        return -VIBEOS_EXDEV;
+    }
+    if (*a.tail == 0 || *b.tail == 0) {
++++ new
+    if (*a.tail == 0 || *b.tail == 0) {
+
+### a mount's root may be renamed
+--- old
+    if (*a.tail == 0 || *b.tail == 0) {
+        return -VIBEOS_EBUSY;
+    }
++++ new
+
+### RENAME_NOREPLACE is left to the filesystem
+--- old
+        if (flags & LINUX_RENAME_NOREPLACE) {
+            return -VIBEOS_EEXIST;
+        }
++++ new
+
+### an unknown rename flag is accepted
+--- old
+    if (flags & ~(uint64_t)(LINUX_RENAME_NOREPLACE | LINUX_RENAME_EXCHANGE | LINUX_RENAME_WHITEOUT)) {
+        return -VIBEOS_EINVAL;
+    }
++++ new
+
+### rmdir removes '.'
+--- old
+    if (n - s == 1u && raw[s] == '.') {
+        return -VIBEOS_EINVAL;
+    }
++++ new
+
+### rmdir of '..' is not refused by name
+--- old
+    if (n - s == 2u && raw[s] == '.' && raw[s + 1u] == '.') {
+        return -VIBEOS_ENOTEMPTY;
+    }
++++ new
+
+### rmdir of a mount's root is handed to the filesystem
+--- old
+    if (*w.tail == 0) {
+        return -VIBEOS_EBUSY;   /* a mount's root, the process's root among them */
+    }
++++ new
+
+### a link across two mounts is handed to one of them
+--- old
+    if (a.mnt != b.mnt) {
+        return -VIBEOS_EXDEV;
+    }
+    return vibeos_fs_link(a.mnt, a.tail, b.tail);
++++ new
+    return vibeos_fs_link(a.mnt, a.tail, b.tail);
+
+### linkat follows a symbolic link unless told not to
+--- old
+                            (flags & LINUX_AT_SYMLINK_FOLLOW) ? 0u : VIBEOS_PATH_NOFOLLOW, &a);
++++ new
+                            (flags & LINUX_AT_SYMLINK_FOLLOW) ? VIBEOS_PATH_NOFOLLOW : 0u, &a);
+
+### an empty symlink target is accepted
+--- old
+    if (n == 0u) {
+        return -VIBEOS_ENOENT;
+    }
+    if (n >= VIBEOS_PATH_MAX) {
++++ new
+    if (n >= VIBEOS_PATH_MAX) {
+
+### statx does not say which device
+--- old
+    k.stx_dev_minor = (uint32_t)dev;
++++ new
+
+### statx accepts the reserved mask bit
+--- old
+    if (mask & LINUX_STATX_RESERVED) {
+        return -VIBEOS_EINVAL;
+    }
++++ new
+
+### statx accepts both sync types at once
+--- old
+    if ((flags & LINUX_AT_STATX_SYNC_TYPE) == LINUX_AT_STATX_SYNC_TYPE) {
+        return -VIBEOS_EINVAL;   /* force-sync and don't-sync at once */
+    }
++++ new
+
+### access lets root run a file nobody may run
+--- old
+    if ((mode & LINUX_X_OK) && (w.node.mode & VIBEOS_S_IFMT) == VIBEOS_S_IFREG &&
+        (w.node.mode & 0111u) == 0u) {
+        return -VIBEOS_EACCES;
+    }
++++ new
+
+### access says a read-only filesystem can be written
+--- old
+    if ((mode & LINUX_W_OK) && !vibeos_fs_writable(w.mnt)) {
+        return -VIBEOS_EROFS;
+    }
++++ new
+
+### chmod changes a symbolic link
+--- old
+    if ((w->node.mode & VIBEOS_S_IFMT) == VIBEOS_S_IFLNK) {
+        return -VIBEOS_EOPNOTSUPP;
+    }
++++ new
+
+### chown leaves set-user-id on
+--- old
+        if (mode & drop) {
++++ new
+        if (0) {
+
+### chown takes -1 for an id
+--- old
+    if (VIBEOS_ARG_INT(uid) != -1) {
++++ new
+    if (1) {
+
+### UTIME_OMIT is taken for a time
+--- old
+            if (ts[i].tv_nsec == LINUX_UTIME_OMIT) {
+                when[i].set = 0;
+                continue;
+            }
++++ new
+            if (ts[i].tv_nsec == LINUX_UTIME_OMIT) {
+                continue;
+            }
+
+### a nanosecond field out of range is accepted
+--- old
+            if (ts[i].tv_nsec < 0 || ts[i].tv_nsec >= 1000000000ll || ts[i].tv_sec < 0) {
++++ new
+            if (ts[i].tv_sec < 0) {
+
+### utimes takes microseconds for nanoseconds
+--- old
+            when[i].ns = (uint64_t)tv[i].tv_sec * 1000000000ull + (uint64_t)tv[i].tv_usec * 1000ull;
++++ new
+            when[i].ns = (uint64_t)tv[i].tv_sec * 1000000000ull + (uint64_t)tv[i].tv_usec;
+
+### utime sets the access time from the modification time
+--- old
+        when[0].ns = (uint64_t)ut.actime * 1000000000ull;
++++ new
+        when[0].ns = (uint64_t)ut.modtime * 1000000000ull;
+
+### statfs never says read-only
+--- old
+    k.f_flags = s.read_only ? LINUX_ST_RDONLY : 0;
++++ new
+    k.f_flags = 0;
+
+### fstatfs of a pipe is EINVAL
+--- old
+    if (r == -VIBEOS_EINVAL) {
+        return -VIBEOS_ENOSYS;
+    }
++++ new
+
+### mknod does not apply the umask
+--- old
+    return vibeos_fs_create(w.mnt, w.tail, (uint32_t)mode & 07777u & ~linux_umask(), &node);
++++ new
+    return vibeos_fs_create(w.mnt, w.tail, (uint32_t)mode & 07777u, &node);
+
+### mknod makes an empty file for a FIFO
+--- old
+    if (type != 0u && type != VIBEOS_S_IFREG) {
+        return -VIBEOS_EPERM;
+    }
++++ new
+
+### openat2 does not read past the structure it knows
+--- old
+        if (b != 0u) {
+            return -VIBEOS_E2BIG;
+        }
++++ new
+
+### openat2 takes a mode without O_CREAT
+--- old
+    if (how.mode != 0u && !(how.flags & VIBEOS_O_CREAT)) {
+        return -VIBEOS_EINVAL;
+    }
++++ new
+
+### openat2 ignores a bit that is no open flag
+--- old
+    if (how.flags & ~(uint64_t)LINUX_OPEN_VALID) {
+        return -VIBEOS_EINVAL;
+    }
++++ new
+
+### openat2 opens under a resolve flag it does not honour
+--- old
+    if (how.resolve & ~(uint64_t)LINUX_RESOLVE_NO_MAGICLINKS) {
+        return -VIBEOS_ENOSYS;
+    }
++++ new

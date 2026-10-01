@@ -126,6 +126,75 @@ typedef struct {
     char d_name[];
 } linux_dirent64_t;
 
+/* struct statx_timestamp and struct statx (linux/stat.h). Linux keeps adding
+ * fields at the end, into what used to be spare, so only the part this kernel
+ * fills is declared field by field; `rest` is whatever follows, up to the size
+ * - which is 256 bytes and has not changed. */
+typedef struct {
+    int64_t tv_sec;
+    uint32_t tv_nsec;
+    int32_t pad;
+} linux_statx_timestamp_t;
+
+typedef struct {
+    uint32_t stx_mask;
+    uint32_t stx_blksize;
+    uint64_t stx_attributes;
+    uint32_t stx_nlink;
+    uint32_t stx_uid;
+    uint32_t stx_gid;
+    uint16_t stx_mode;
+    uint16_t spare0;
+    uint64_t stx_ino;
+    uint64_t stx_size;
+    uint64_t stx_blocks;
+    uint64_t stx_attributes_mask;
+    linux_statx_timestamp_t stx_atime;
+    linux_statx_timestamp_t stx_btime;
+    linux_statx_timestamp_t stx_ctime;
+    linux_statx_timestamp_t stx_mtime;
+    uint32_t stx_rdev_major;
+    uint32_t stx_rdev_minor;
+    uint32_t stx_dev_major;
+    uint32_t stx_dev_minor;
+    uint64_t rest[14];
+} linux_statx_t;
+
+/* struct statfs (asm-generic/statfs.h): statfs and fstatfs. */
+typedef struct {
+    int64_t f_type;
+    int64_t f_bsize;
+    int64_t f_blocks;
+    int64_t f_bfree;
+    int64_t f_bavail;
+    int64_t f_files;
+    int64_t f_ffree;
+    int32_t f_fsid[2];
+    int64_t f_namelen;
+    int64_t f_frsize;
+    int64_t f_flags;
+    int64_t f_spare[4];
+} linux_statfs_t;
+
+/* struct open_how (linux/openat2.h): openat2. */
+typedef struct {
+    uint64_t flags;
+    uint64_t mode;
+    uint64_t resolve;
+} linux_open_how_t;
+
+/* struct utimbuf (linux/utime.h) and struct __kernel_old_timeval
+ * (linux/time_types.h): utime, and utimes and futimesat. */
+typedef struct {
+    int64_t actime;
+    int64_t modtime;
+} linux_utimbuf_t;
+
+typedef struct {
+    int64_t tv_sec;
+    int64_t tv_usec;
+} linux_timeval_t;
+
 /* ---- constants ---------------------------------------------------------------------- */
 
 /* clone() flags that decide whether it is a fork or a thread (linux/sched.h). */
@@ -145,6 +214,45 @@ typedef struct {
 #define LINUX_AT_SYMLINK_NOFOLLOW 0x100
 #define LINUX_AT_REMOVEDIR   0x200
 #define LINUX_AT_EMPTY_PATH  0x1000
+#define LINUX_AT_EACCESS     0x200   /* faccessat2; the same bit as AT_REMOVEDIR */
+#define LINUX_AT_SYMLINK_FOLLOW 0x400
+#define LINUX_AT_NO_AUTOMOUNT 0x800
+#define LINUX_AT_STATX_SYNC_TYPE 0x6000
+
+/* access (the C library's unistd.h). */
+#define LINUX_R_OK 4
+#define LINUX_W_OK 2
+#define LINUX_X_OK 1
+
+/* renameat2 (linux/fs.h). */
+#define LINUX_RENAME_NOREPLACE (1u << 0)
+#define LINUX_RENAME_EXCHANGE  (1u << 1)
+#define LINUX_RENAME_WHITEOUT  (1u << 2)
+
+/* statx (linux/stat.h): what stat has always reported, and the bit that must
+ * be clear in a mask. */
+#define LINUX_STATX_BASIC_STATS 0x000007ffu
+#define LINUX_STATX_RESERVED    0x80000000u
+
+/* utimensat (the C library's sys/stat.h): "now" and "leave it", in tv_nsec. */
+#define LINUX_UTIME_NOW  ((1l << 30) - 1l)
+#define LINUX_UTIME_OMIT ((1l << 30) - 2l)
+
+/* Every open flag Linux has (asm-generic/fcntl.h): openat2 refuses a bit outside
+ * these, where open ignores it. Linux keeps this as VALID_OPEN_FLAGS, inside
+ * the kernel; the test compares it with the flags themselves, or-ed. */
+#define LINUX_OPEN_VALID 0x7fffc3u
+
+/* openat2's resolve flags (linux/openat2.h). */
+#define LINUX_RESOLVE_NO_XDEV       0x01
+#define LINUX_RESOLVE_NO_MAGICLINKS 0x02
+#define LINUX_RESOLVE_NO_SYMLINKS   0x04
+#define LINUX_RESOLVE_BENEATH       0x08
+#define LINUX_RESOLVE_IN_ROOT       0x10
+#define LINUX_RESOLVE_CACHED        0x20
+
+/* statfs's f_flags (the C library's sys/statvfs.h). */
+#define LINUX_ST_RDONLY 1
 
 /* fcntl commands (asm-generic/fcntl.h, linux/fcntl.h). */
 #define LINUX_F_DUPFD          0

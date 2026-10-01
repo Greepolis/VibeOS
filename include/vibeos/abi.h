@@ -72,6 +72,24 @@
     X(MKDIR,           "mkdir",           VIBEOS_CHECK_USER_MEMORY) \
     X(FSTAT,           "fstat",           VIBEOS_CHECK_USER_MEMORY) \
     X(STAT_AT,         "stat_at",         VIBEOS_CHECK_USER_MEMORY) \
+    X(STAT,            "stat",            VIBEOS_CHECK_USER_MEMORY) \
+    X(LSTAT,           "lstat",           VIBEOS_CHECK_USER_MEMORY) \
+    X(STATX,           "statx",           VIBEOS_CHECK_USER_MEMORY) \
+    X(READLINK,        "readlink",        VIBEOS_CHECK_USER_MEMORY) \
+    X(ACCESS,          "access",          VIBEOS_CHECK_USER_MEMORY) \
+    X(RENAME,          "rename",          VIBEOS_CHECK_USER_MEMORY) \
+    X(RMDIR,           "rmdir",           VIBEOS_CHECK_USER_MEMORY) \
+    X(LINK,            "link",            VIBEOS_CHECK_USER_MEMORY) \
+    X(SYMLINK,         "symlink",         VIBEOS_CHECK_USER_MEMORY) \
+    X(MKNOD,           "mknod",           VIBEOS_CHECK_USER_MEMORY) \
+    X(OPEN_AT2,        "open_at2",        VIBEOS_CHECK_USER_MEMORY) \
+    X(CHMOD,           "chmod",           VIBEOS_CHECK_USER_MEMORY) \
+    X(FCHMOD,          "fchmod",          VIBEOS_CHECK_NONE) \
+    X(CHOWN,           "chown",           VIBEOS_CHECK_USER_MEMORY) \
+    X(FCHOWN,          "fchown",          VIBEOS_CHECK_NONE) \
+    X(UTIME,           "utime",           VIBEOS_CHECK_USER_MEMORY) \
+    X(STATFS,          "statfs",          VIBEOS_CHECK_USER_MEMORY) \
+    X(FSTATFS,         "fstatfs",         VIBEOS_CHECK_USER_MEMORY) \
     X(READLINK_AT,     "readlink_at",     VIBEOS_CHECK_USER_MEMORY) \
     X(GETCWD,          "getcwd",          VIBEOS_CHECK_USER_MEMORY) \
     X(CHDIR,           "chdir",           VIBEOS_CHECK_USER_MEMORY) \

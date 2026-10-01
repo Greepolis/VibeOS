@@ -29,6 +29,8 @@ volatile uint64_t g_abi_last_nr;
 
 extern const vibeos_row_t linux_fs_rows[];
 extern const uint32_t linux_fs_row_count;
+extern const vibeos_row_t linux_names_rows[];
+extern const uint32_t linux_names_row_count;
 extern const vibeos_row_t linux_mm_rows[];
 extern const uint32_t linux_mm_row_count;
 extern const vibeos_row_t linux_proc_rows[];
@@ -48,6 +50,7 @@ static const struct {
     const uint32_t *count;
 } g_tables[] = {
     { "fs",   linux_fs_rows,   &linux_fs_row_count },
+    { "names", linux_names_rows, &linux_names_row_count },
     { "mm",   linux_mm_rows,   &linux_mm_row_count },
     { "proc", linux_proc_rows, &linux_proc_row_count },
     { "sig",  linux_sig_rows,  &linux_sig_row_count },

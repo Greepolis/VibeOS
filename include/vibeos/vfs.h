@@ -49,6 +49,9 @@
 #define VIBEOS_S_IFREG  0100000u
 #define VIBEOS_S_IFLNK  0120000u
 #define VIBEOS_S_IFSOCK 0140000u
+/* Set-user-id and set-group-id: chown clears them on a regular file. */
+#define VIBEOS_S_ISUID  0004000u
+#define VIBEOS_S_ISGID  0002000u
 
 typedef struct {
     /* Driver-private identity for the file. FAT puts the first cluster here.

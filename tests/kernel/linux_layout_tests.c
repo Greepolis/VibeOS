@@ -54,6 +54,10 @@ int test_linux_layout(void) {
 #include <linux/close_range.h>
 #include <linux/falloc.h>
 #include <linux/fadvise.h>
+#include <linux/stat.h>
+#include <linux/openat2.h>
+#include <linux/utime.h>
+#include <asm/statfs.h>
 
 #include "vibeos/linux_layout.h"
 #include "vibeos/abi_linux.h"
@@ -85,6 +89,12 @@ static void expect(int ok, const char *what) {
                #ours "." #f " is " #theirs "." #tf "'s size"); \
     } while (0)
 #define FIELD(ours, theirs, f) FIELD2(ours, theirs, f, f)
+
+/* Our last field is everything after the fields we name: it ends where Linux's
+ * structure ends, whatever Linux has since put inside it. */
+#define TAIL(ours, theirs, f) \
+    expect(offsetof(ours, f) + sizeof(((ours *)0)->f) == sizeof(theirs), \
+           #ours "." #f " runs to the end of " #theirs)
 
 #define CONST(ours, theirs) \
     expect((long long)(ours) == (long long)(theirs), #ours " is " #theirs)
@@ -169,6 +179,88 @@ int test_linux_layout(void) {
     SIZE(linux_iovec_t, struct iovec);
     FIELD(linux_iovec_t, struct iovec, iov_base);
     FIELD(linux_iovec_t, struct iovec, iov_len);
+
+    SIZE(linux_statx_timestamp_t, struct statx_timestamp);
+    FIELD(linux_statx_timestamp_t, struct statx_timestamp, tv_sec);
+    FIELD(linux_statx_timestamp_t, struct statx_timestamp, tv_nsec);
+    FIELD2(linux_statx_timestamp_t, struct statx_timestamp, pad, __reserved);
+
+    SIZE(linux_statx_t, struct statx);
+    FIELD(linux_statx_t, struct statx, stx_mask);
+    FIELD(linux_statx_t, struct statx, stx_blksize);
+    FIELD(linux_statx_t, struct statx, stx_attributes);
+    FIELD(linux_statx_t, struct statx, stx_nlink);
+    FIELD(linux_statx_t, struct statx, stx_uid);
+    FIELD(linux_statx_t, struct statx, stx_gid);
+    FIELD(linux_statx_t, struct statx, stx_mode);
+    FIELD2(linux_statx_t, struct statx, spare0, __spare0);
+    FIELD(linux_statx_t, struct statx, stx_ino);
+    FIELD(linux_statx_t, struct statx, stx_size);
+    FIELD(linux_statx_t, struct statx, stx_blocks);
+    FIELD(linux_statx_t, struct statx, stx_attributes_mask);
+    FIELD(linux_statx_t, struct statx, stx_atime);
+    FIELD(linux_statx_t, struct statx, stx_btime);
+    FIELD(linux_statx_t, struct statx, stx_ctime);
+    FIELD(linux_statx_t, struct statx, stx_mtime);
+    FIELD(linux_statx_t, struct statx, stx_rdev_major);
+    FIELD(linux_statx_t, struct statx, stx_rdev_minor);
+    FIELD(linux_statx_t, struct statx, stx_dev_major);
+    FIELD(linux_statx_t, struct statx, stx_dev_minor);
+    TAIL(linux_statx_t, struct statx, rest);
+
+    SIZE(linux_statfs_t, struct statfs);
+    FIELD(linux_statfs_t, struct statfs, f_type);
+    FIELD(linux_statfs_t, struct statfs, f_bsize);
+    FIELD(linux_statfs_t, struct statfs, f_blocks);
+    FIELD(linux_statfs_t, struct statfs, f_bfree);
+    FIELD(linux_statfs_t, struct statfs, f_bavail);
+    FIELD(linux_statfs_t, struct statfs, f_files);
+    FIELD(linux_statfs_t, struct statfs, f_ffree);
+    FIELD(linux_statfs_t, struct statfs, f_fsid);
+    FIELD(linux_statfs_t, struct statfs, f_namelen);
+    FIELD(linux_statfs_t, struct statfs, f_frsize);
+    FIELD(linux_statfs_t, struct statfs, f_flags);
+    FIELD(linux_statfs_t, struct statfs, f_spare);
+
+    SIZE(linux_open_how_t, struct open_how);
+    FIELD(linux_open_how_t, struct open_how, flags);
+    FIELD(linux_open_how_t, struct open_how, mode);
+    FIELD(linux_open_how_t, struct open_how, resolve);
+
+    SIZE(linux_utimbuf_t, struct utimbuf);
+    FIELD(linux_utimbuf_t, struct utimbuf, actime);
+    FIELD(linux_utimbuf_t, struct utimbuf, modtime);
+
+    SIZE(linux_timeval_t, struct __kernel_old_timeval);
+    FIELD(linux_timeval_t, struct __kernel_old_timeval, tv_sec);
+    FIELD(linux_timeval_t, struct __kernel_old_timeval, tv_usec);
+
+    CONST(LINUX_AT_EACCESS, AT_EACCESS);
+    CONST(LINUX_AT_SYMLINK_FOLLOW, AT_SYMLINK_FOLLOW);
+    CONST(LINUX_AT_NO_AUTOMOUNT, AT_NO_AUTOMOUNT);
+    CONST(LINUX_AT_STATX_SYNC_TYPE, AT_STATX_SYNC_TYPE);
+    LIBC_CONST(LINUX_R_OK, "R_OK");
+    LIBC_CONST(LINUX_W_OK, "W_OK");
+    LIBC_CONST(LINUX_X_OK, "X_OK");
+    CONST(LINUX_RENAME_NOREPLACE, RENAME_NOREPLACE);
+    CONST(LINUX_RENAME_EXCHANGE, RENAME_EXCHANGE);
+    CONST(LINUX_RENAME_WHITEOUT, RENAME_WHITEOUT);
+    CONST(LINUX_STATX_BASIC_STATS, STATX_BASIC_STATS);
+    CONST(LINUX_STATX_RESERVED, STATX__RESERVED);
+    LIBC_CONST(LINUX_UTIME_NOW, "UTIME_NOW");
+    LIBC_CONST(LINUX_UTIME_OMIT, "UTIME_OMIT");
+    CONST(LINUX_OPEN_VALID, O_ACCMODE | O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC | O_APPEND | O_NONBLOCK |
+                            O_DSYNC | FASYNC | O_DIRECT | O_LARGEFILE | O_DIRECTORY | O_NOFOLLOW |
+                            O_NOATIME | O_CLOEXEC | O_SYNC | O_PATH | O_TMPFILE);
+    CONST(LINUX_RESOLVE_NO_XDEV, RESOLVE_NO_XDEV);
+    CONST(LINUX_RESOLVE_NO_MAGICLINKS, RESOLVE_NO_MAGICLINKS);
+    CONST(LINUX_RESOLVE_NO_SYMLINKS, RESOLVE_NO_SYMLINKS);
+    CONST(LINUX_RESOLVE_BENEATH, RESOLVE_BENEATH);
+    CONST(LINUX_RESOLVE_IN_ROOT, RESOLVE_IN_ROOT);
+    CONST(LINUX_RESOLVE_CACHED, RESOLVE_CACHED);
+    LIBC_CONST(LINUX_ST_RDONLY, "ST_RDONLY");
+    LIBC_CONST(VIBEOS_S_ISUID, "S_ISUID");
+    LIBC_CONST(VIBEOS_S_ISGID, "S_ISGID");
 
     SIZE(linux_rlimit64_t, struct rlimit64);
     FIELD(linux_rlimit64_t, struct rlimit64, rlim_cur);

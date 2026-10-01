@@ -24,6 +24,8 @@
 #include "ksvc_fake.h"
 #include "vibeos/abi_linux.h"
 #include "vibeos/linux_exports.h"
+#include "vibeos/linux_layout.h"
+#include "vibeos/vfs.h"
 
 int test_linux_handlers(void);
 int test_linux_gaps(void);
@@ -218,8 +220,8 @@ static void t_registry_answers(void) {
     expect(SYS0(101) == -VIBEOS_ENOSYS && g_abi_deferred == before + 1u &&
            g_abi_deferred_nr == 101u, "ptrace is deferred, counted and named");
     before = g_abi_unimplemented;
-    expect(SYS0(84) == -VIBEOS_ENOSYS && g_abi_unimplemented == before + 1u &&
-           g_abi_last_nr == 84u, "rmdir is missing, counted and named");
+    expect(SYS0(78) == -VIBEOS_ENOSYS && g_abi_unimplemented == before + 1u &&
+           g_abi_last_nr == 78u, "getdents is missing, counted and named");
 }
 
 static void t_uname_and_clock(void) {
@@ -772,6 +774,390 @@ static void t_fork_inherits_cwd(void) {
     expect(SYS2(79, buf, 16) == 3, "and a chdir in the child does not move the parent");
 }
 
+/* ---- L1 step 5: names and metadata -------------------------------------------------- */
+
+#define SYS5(nr, a, b, c, d, e) sys((nr), (a), (b), (c), (d), (e), 0, 0)
+#define CWD ((uint64_t)(uint32_t)-100)
+#define NOID ((uint64_t)(uint32_t)-1)
+
+static long tmp_stat(const char *path, int follow, linux_stat_t *out) {
+    uint64_t st = kf_ualloc(sizeof(*out));
+    long r = SYS2(follow ? 4 : 6, ustr(path), st);
+    memcpy(out, kf_uptr(st), sizeof(*out));
+    return r;
+}
+
+static void tmp_put(const char *path, const char *text) {
+    long fd = tmp_open(path, 0x241 /* O_CREAT|O_WRONLY|O_TRUNC */, 0644);
+    (void)SYS3(1, (uint64_t)fd, ustr(text), strlen(text));
+    (void)SYS1(3, (uint64_t)fd);
+}
+
+static int tmp_is(const char *path, const char *text) {
+    uint64_t buf = kf_ualloc(64);
+    long fd = tmp_open(path, 0, 0);
+    long n = fd < 0 ? -1 : SYS3(0, (uint64_t)fd, buf, 64);
+    if (fd >= 0) {
+        (void)SYS1(3, (uint64_t)fd);
+    }
+    return n == (long)strlen(text) && memcmp(kf_uptr(buf), text, strlen(text)) == 0;
+}
+
+static int tmp_gone(const char *path) {
+    linux_stat_t st;
+    return tmp_stat(path, 0, &st) == -VIBEOS_ENOENT;
+}
+
+/* A filesystem that writes nothing, mounted at /ro: one empty directory. What
+ * every call here answers from it is EROFS, and none of them was asked which
+ * filesystem it was talking to. */
+static int ro_lookup(void *fs, const char *path, vibeos_fs_node_t *out) {
+    (void)fs;
+    if (path[0] != 0 && !(path[0] == '/' && path[1] == 0)) {
+        return -1;
+    }
+    out->id = 1;
+    out->is_dir = 1;
+    return 0;
+}
+
+static long ro_read_at(void *fs, const vibeos_fs_node_t *node, uint64_t offset, void *buf,
+                       uint32_t len) {
+    (void)fs; (void)node; (void)offset; (void)buf; (void)len;
+    return 0;
+}
+
+static const vibeos_fs_ops_t g_ro_ops = { .lookup = ro_lookup, .read_at = ro_read_at };
+static vibeos_fsmount_t g_ro;
+
+static void mount_ro(void) {
+    (void)vibeos_fs_mount(&g_ro, &g_ro_ops, 0, "ro");
+    (void)vibeos_fs_attach("/ro", &g_ro);
+}
+
+static void t_rename(void) {
+    long dfd;
+
+    fresh(100);
+    tmp_put("/tmp/a", "one");
+    expect(SYS2(82, ustr("/tmp/a"), ustr("/tmp/b")) == 0 && tmp_gone("/tmp/a") && tmp_is("/tmp/b", "one"),
+           "rename moves a name");
+    tmp_put("/tmp/c", "two");
+    expect(SYS2(82, ustr("/tmp/b"), ustr("/tmp/c")) == 0 && tmp_gone("/tmp/b") && tmp_is("/tmp/c", "one"),
+           "rename over a file replaces it");
+    tmp_put("/tmp/b", "x");
+    expect(SYS5(316, CWD, ustr("/tmp/b"), CWD, ustr("/tmp/c"), 1) == -VIBEOS_EEXIST &&
+           tmp_is("/tmp/b", "x") && tmp_is("/tmp/c", "one"),
+           "RENAME_NOREPLACE refuses an existing name and changes nothing");
+    expect(SYS5(316, CWD, ustr("/tmp/b"), CWD, ustr("/tmp/z"), 1) == 0 && tmp_is("/tmp/z", "x"),
+           "and moves onto a free one");
+    expect(SYS5(316, CWD, ustr("/tmp/z"), CWD, ustr("/tmp/y"), 8) == -VIBEOS_EINVAL,
+           "a rename flag Linux does not have is EINVAL");
+    expect(SYS2(82, ustr("/tmp/c"), ustr("/tmp/c")) == 0 && tmp_is("/tmp/c", "one"),
+           "a name renamed onto itself is left alone");
+    expect(SYS2(82, ustr("/tmp/nope"), ustr("/tmp/y")) == -VIBEOS_ENOENT, "renaming nothing is ENOENT");
+    expect(SYS2(83, ustr("/tmp/d"), 0755) == 0, "a directory to rename against");
+    expect(SYS2(82, ustr("/tmp/c"), ustr("/tmp/d")) == -VIBEOS_EISDIR, "a file over a directory is EISDIR");
+    expect(SYS2(82, ustr("/tmp/d"), ustr("/tmp/c")) == -VIBEOS_ENOTDIR, "a directory over a file is ENOTDIR");
+    expect(SYS2(82, ustr("/tmp/d"), ustr("/tmp/d/sub")) == -VIBEOS_EINVAL,
+           "a directory into itself is EINVAL");
+    expect(SYS2(82, ustr("/tmp/c"), ustr("/moved")) == -VIBEOS_EXDEV && tmp_is("/tmp/c", "one"),
+           "a rename across two mounts is EXDEV");
+    expect(SYS2(82, ustr("/tmp"), ustr("/tmp/x")) == -VIBEOS_EBUSY, "a mount's root is EBUSY");
+    tmp_put("/tmp/d/in", "in");
+    dfd = tmp_open("/tmp/d", 0x10000 /* O_DIRECTORY */, 0);
+    expect(dfd >= 3 && SYS4(264, (uint64_t)dfd, ustr("in"), CWD, ustr("/tmp/out")) == 0 &&
+           tmp_is("/tmp/out", "in") && tmp_gone("/tmp/d/in"), "renameat resolves against its directory");
+    tmp_put("/tmp/d/kept", "kept");
+    expect(SYS2(82, ustr("/tmp/d"), ustr("/tmp/e")) == 0 && tmp_is("/tmp/e/kept", "kept") &&
+           tmp_gone("/tmp/d"), "a directory moves with what is in it");
+    /* A filesystem that writes and cannot rename: the fake's root. */
+    kf_fs_add("/f", "x", 1, 0);
+    expect(SYS2(82, ustr("/f"), ustr("/g")) == -VIBEOS_EPERM,
+           "a filesystem that cannot rename says EPERM, not ENOSYS");
+    /* And there too an existing name is what NOREPLACE finds first: tmpfs
+     * honours the flag itself, so it could not say whether the handler does. */
+    kf_fs_add("/g2", "y", 1, 0);
+    expect(SYS5(316, CWD, ustr("/f"), CWD, ustr("/g2"), 1) == -VIBEOS_EEXIST,
+           "RENAME_NOREPLACE finds the existing name before the filesystem is asked");
+    mount_ro();
+    expect(SYS2(82, ustr("/ro"), ustr("/ro/x")) == -VIBEOS_EBUSY, "and a read-only mount's root is EBUSY too");
+    expect(kf_lock_imbalance() == 0, "rename released every lock it took");
+}
+
+static void t_rmdir_and_links(void) {
+    linux_stat_t a, b;
+    uint64_t buf;
+    long dfd;
+
+    fresh(101);
+    buf = kf_ualloc(64);
+    expect(SYS2(83, ustr("/tmp/d"), 0700) == 0 && tmp_stat("/tmp/d", 1, &a) == 0 &&
+           a.st_mode == (VIBEOS_S_IFDIR | 0700u), "mkdir keeps the mode it was given");
+    expect(SYS2(83, ustr("/tmp/open"), 0777) == 0 && tmp_stat("/tmp/open", 1, &a) == 0 &&
+           a.st_mode == (VIBEOS_S_IFDIR | 0755u), "less the umask");
+    tmp_put("/tmp/d/f", "f");
+    expect(SYS1(84, ustr("/tmp/d")) == -VIBEOS_ENOTEMPTY, "rmdir of a directory with something in it is ENOTEMPTY");
+    expect(SYS1(84, ustr("/tmp/d/f")) == -VIBEOS_ENOTDIR, "rmdir of a file is ENOTDIR");
+    expect(SYS1(87, ustr("/tmp/d/f")) == 0, "empty it");
+    expect(SYS1(84, ustr("/tmp/d/.")) == -VIBEOS_EINVAL, "rmdir of '.' is EINVAL");
+    expect(SYS1(84, ustr("/tmp/d/..")) == -VIBEOS_ENOTEMPTY, "rmdir of '..' is ENOTEMPTY");
+    expect(SYS1(84, ustr("/tmp")) == -VIBEOS_EBUSY && SYS1(84, ustr("/")) == -VIBEOS_EBUSY,
+           "rmdir of a mount's root is EBUSY");
+    expect(SYS1(84, ustr("/tmp/nope")) == -VIBEOS_ENOENT, "rmdir of nothing is ENOENT");
+    expect(SYS1(84, ustr("/tmp/d/")) == 0 && tmp_gone("/tmp/d"), "rmdir removes an empty directory");
+    expect(SYS3(263, CWD, ustr("/tmp/open"), 0x200) == 0 && tmp_gone("/tmp/open"),
+           "and unlinkat(AT_REMOVEDIR) is rmdir");
+    expect(SYS3(263, CWD, ustr("/tmp/open"), 0x400) == -VIBEOS_EINVAL, "an unlinkat flag Linux lacks is EINVAL");
+
+    /* A second name for one file. */
+    tmp_put("/tmp/a", "shared");
+    expect(SYS2(86, ustr("/tmp/a"), ustr("/tmp/l")) == 0 && tmp_stat("/tmp/a", 1, &a) == 0 &&
+           tmp_stat("/tmp/l", 1, &b) == 0 && a.st_nlink == 2u && b.st_nlink == 2u &&
+           a.st_ino == b.st_ino && a.st_dev == b.st_dev, "link makes a second name: one inode, two links");
+    expect(SYS2(86, ustr("/tmp/a"), ustr("/tmp/l")) == -VIBEOS_EEXIST, "link onto an existing name is EEXIST");
+    expect(SYS1(87, ustr("/tmp/a")) == 0 && tmp_is("/tmp/l", "shared") &&
+           tmp_stat("/tmp/l", 1, &b) == 0 && b.st_nlink == 1u, "the file outlives its first name");
+    expect(SYS2(83, ustr("/tmp/dir"), 0755) == 0 &&
+           SYS2(86, ustr("/tmp/dir"), ustr("/tmp/dir2")) == -VIBEOS_EPERM, "a hard link to a directory is EPERM");
+    expect(SYS2(86, ustr("/tmp/l"), ustr("/elsewhere")) == -VIBEOS_EXDEV, "a link across two mounts is EXDEV");
+    kf_fs_add("/f", "x", 1, 0);
+    expect(SYS2(86, ustr("/f"), ustr("/g")) == -VIBEOS_EPERM, "a filesystem without links says EPERM");
+
+    /* A name whose contents are a path. */
+    expect(SYS2(88, ustr("a-target"), ustr("/tmp/s")) == 0 && tmp_stat("/tmp/s", 0, &a) == 0 &&
+           (a.st_mode & VIBEOS_S_IFMT) == VIBEOS_S_IFLNK && a.st_size == 8,
+           "symlink makes a link, as long as its target's name");
+    expect(tmp_stat("/tmp/s", 1, &a) == -VIBEOS_ENOENT, "whose target need not exist");
+    memset(kf_uptr(buf), '#', 64);
+    expect(SYS3(89, ustr("/tmp/s"), buf, 64) == 8 && memcmp(kf_uptr(buf), "a-target#", 9) == 0,
+           "readlink gives its contents, not terminated");
+    expect(SYS3(89, ustr("/tmp/s"), buf, 3) == 3 && memcmp(kf_uptr(buf), "a-ta", 4) == 0,
+           "and cuts them to the buffer without complaint");
+    expect(SYS3(89, ustr("/tmp/l"), buf, 64) == -VIBEOS_EINVAL, "readlink of what is not a link is EINVAL");
+    expect(SYS2(88, ustr("l"), ustr("/tmp/s2")) == 0 && tmp_is("/tmp/s2", "shared"),
+           "a relative target is resolved from the link's directory");
+    expect(SYS2(88, ustr("x"), ustr("/tmp/s2")) == -VIBEOS_EEXIST, "symlink onto an existing name is EEXIST");
+    /* Asked of the fake's root, which has no symbolic links: tmpfs refuses an
+     * empty target itself, and so could not tell whether the handler does. */
+    expect(SYS2(88, ustr(""), ustr("/s3")) == -VIBEOS_ENOENT,
+           "an empty target is ENOENT, whatever the filesystem would have said");
+    dfd = tmp_open("/tmp/dir", 0x10000, 0);
+    expect(SYS3(266, ustr("../l"), (uint64_t)dfd, ustr("up")) == 0 && tmp_is("/tmp/dir/up", "shared"),
+           "symlinkat resolves the new name against its directory");
+    kf_fs_add("/h", "x", 1, 0);
+    expect(SYS2(88, ustr("h"), ustr("/hs")) == -VIBEOS_EPERM, "a filesystem without symbolic links says EPERM");
+    /* linkat links the link itself unless told to follow it. */
+    expect(SYS5(265, CWD, ustr("/tmp/s2"), CWD, ustr("/tmp/h1"), 0) == 0 && tmp_stat("/tmp/h1", 0, &a) == 0 &&
+           (a.st_mode & VIBEOS_S_IFMT) == VIBEOS_S_IFLNK, "linkat links a symbolic link itself");
+    expect(SYS5(265, CWD, ustr("/tmp/s2"), CWD, ustr("/tmp/h2"), 0x400) == 0 &&
+           tmp_stat("/tmp/h2", 0, &a) == 0 && (a.st_mode & VIBEOS_S_IFMT) == VIBEOS_S_IFREG,
+           "and what it points at with AT_SYMLINK_FOLLOW");
+    expect(SYS5(265, CWD, ustr("/tmp/l"), CWD, ustr("/tmp/h3"), 0x100) == -VIBEOS_EINVAL,
+           "a linkat flag that is not linkat's is EINVAL");
+    mount_ro();
+    expect(SYS2(83, ustr("/ro/d"), 0755) == -VIBEOS_EROFS && SYS2(88, ustr("t"), ustr("/ro/s")) == -VIBEOS_EROFS &&
+           SYS3(133, ustr("/ro/n"), 0100644, 0) == -VIBEOS_EROFS,
+           "making anything on a filesystem that writes nothing is EROFS");
+    expect(kf_lock_imbalance() == 0, "the name calls released every lock they took");
+}
+
+static void t_metadata(void) {
+    linux_stat_t st, st2;
+    linux_statx_t *sx;
+    linux_statfs_t *sf;
+    linux_timespec_t *ts;
+    linux_timeval_t *tv;
+    linux_utimbuf_t *ut;
+    uint64_t ubuf, ufs, uts, fds;
+    long fd, dfd;
+
+    fresh(102);
+    ubuf = kf_ualloc(sizeof(linux_statx_t));
+    ufs = kf_ualloc(sizeof(linux_statfs_t));
+    uts = kf_ualloc(32);
+    fds = kf_ualloc(8);
+    sx = (linux_statx_t *)kf_uptr(ubuf);
+    sf = (linux_statfs_t *)kf_uptr(ufs);
+    ts = (linux_timespec_t *)kf_uptr(uts);
+    tv = (linux_timeval_t *)kf_uptr(uts);
+    ut = (linux_utimbuf_t *)kf_uptr(uts);
+    tmp_put("/tmp/m", "12345");
+    kf_fs_add("/f", "x", 1, 0);
+    (void)SYS2(88, ustr("m"), ustr("/tmp/s"));
+    (void)SYS2(83, ustr("/tmp/d"), 0755);
+
+    /* stat, lstat, statx. */
+    expect(tmp_stat("/tmp/m", 1, &st) == 0 && st.st_mode == (VIBEOS_S_IFREG | 0644u) && st.st_size == 5,
+           "stat reports a file");
+    expect(tmp_stat("/tmp/s", 1, &st2) == 0 && st2.st_ino == st.st_ino &&
+           tmp_stat("/tmp/s", 0, &st2) == 0 && (st2.st_mode & VIBEOS_S_IFMT) == VIBEOS_S_IFLNK,
+           "stat follows a link and lstat does not");
+    expect(tmp_stat("/f", 1, &st2) == 0 && st.st_dev != 0u && st2.st_dev != 0u && st.st_dev != st2.st_dev,
+           "two filesystems are two devices");
+    expect(SYS5(332, CWD, ustr("/tmp/m"), 0, 0x7ff, ubuf) == 0 && sx->stx_mask == 0x7ffu &&
+           sx->stx_mode == (VIBEOS_S_IFREG | 0644u) && sx->stx_size == 5u && sx->stx_ino == st.st_ino &&
+           sx->stx_dev_minor == st.st_dev && sx->stx_nlink == 1u, "statx reports what stat does");
+    expect(SYS5(332, CWD, ustr("/tmp/s"), 0x100, 0x7ff, ubuf) == 0 &&
+           (sx->stx_mode & VIBEOS_S_IFMT) == VIBEOS_S_IFLNK, "and the link itself with AT_SYMLINK_NOFOLLOW");
+    expect(SYS5(332, CWD, ustr("/tmp/m"), 0x6000, 0x7ff, ubuf) == -VIBEOS_EINVAL &&
+           SYS5(332, CWD, ustr("/tmp/m"), 0, 0x80000000u, ubuf) == -VIBEOS_EINVAL &&
+           SYS5(332, CWD, ustr("/tmp/m"), 0x10, 0x7ff, ubuf) == -VIBEOS_EINVAL,
+           "both sync types at once, the reserved mask bit and an unknown flag are EINVAL");
+    fd = tmp_open("/tmp/m", 2, 0);
+    expect(SYS5(332, (uint64_t)fd, ustr(""), 0x1000, 0x7ff, ubuf) == 0 && sx->stx_size == 5u,
+           "statx of a descriptor with AT_EMPTY_PATH");
+    expect(SYS5(332, (uint64_t)fd, ustr(""), 0, 0x7ff, ubuf) == -VIBEOS_ENOENT,
+           "and ENOENT for an empty path without it");
+    (void)SYS2(293, fds, 0);
+    expect(SYS5(332, (uint64_t)((int32_t *)kf_uptr(fds))[0], ustr(""), 0x1000, 0x7ff, ubuf) == 0 &&
+           (sx->stx_mode & VIBEOS_S_IFMT) == VIBEOS_S_IFIFO && sx->stx_dev_minor == 0u,
+           "a pipe is a FIFO to statx too, on no device");
+
+    /* access. */
+    expect(SYS2(21, ustr("/tmp/m"), 0) == 0 && SYS2(21, ustr("/tmp/m"), 6) == 0, "access: it exists, root reads and writes");
+    expect(SYS2(21, ustr("/tmp/nope"), 0) == -VIBEOS_ENOENT, "access of nothing is ENOENT");
+    expect(SYS2(21, ustr("/tmp/m"), 8) == -VIBEOS_EINVAL, "a mode bit access does not have is EINVAL");
+    expect(SYS2(21, ustr("/tmp/m"), 1) == -VIBEOS_EACCES, "a file nobody may run is EACCES even for root");
+    expect(SYS2(21, ustr("/tmp/d"), 1) == 0, "a directory may be searched");
+    expect(SYS4(439, CWD, ustr("/tmp/m"), 4, 0x200) == 0 && SYS4(439, CWD, ustr("/tmp/m"), 4, 0x8000) == -VIBEOS_EINVAL &&
+           SYS3(269, CWD, ustr("/tmp/m"), 4) == 0, "faccessat2 takes AT_EACCESS and refuses a flag it lacks");
+
+    /* chmod. */
+    expect(SYS2(90, ustr("/tmp/m"), 0755) == 0 && tmp_stat("/tmp/m", 1, &st) == 0 &&
+           st.st_mode == (VIBEOS_S_IFREG | 0755u) && SYS2(21, ustr("/tmp/m"), 1) == 0,
+           "chmod changes the permission bits, and the file may now be run");
+    expect(SYS2(90, ustr("/tmp/s"), 0700) == 0 && tmp_stat("/tmp/m", 1, &st) == 0 &&
+           (st.st_mode & 0777u) == 0700u, "chmod through a link changes what it points at");
+    expect(SYS2(91, (uint64_t)fd, 0600) == 0 && tmp_stat("/tmp/m", 1, &st) == 0 && (st.st_mode & 0777u) == 0600u,
+           "fchmod changes the file a descriptor names");
+    expect(SYS2(91, (uint64_t)((int32_t *)kf_uptr(fds))[0], 0600) == -VIBEOS_EINVAL && SYS2(91, 99, 0600) == -VIBEOS_EBADF,
+           "fchmod of a pipe is EINVAL and of nothing EBADF");
+    expect(SYS4(452, CWD, ustr("/tmp/s"), 0777, 0x100) == -VIBEOS_EOPNOTSUPP,
+           "a symbolic link has no mode of its own to change");
+    expect(SYS4(452, CWD, ustr("/tmp/m"), 0640, 0x100) == 0 && SYS3(268, CWD, ustr("/tmp/m"), 0644) == 0 &&
+           tmp_stat("/tmp/m", 1, &st) == 0 && (st.st_mode & 0777u) == 0644u, "fchmodat and fchmodat2 on a file");
+    expect(SYS2(90, ustr("/tmp/nope"), 0644) == -VIBEOS_ENOENT, "chmod of nothing is ENOENT");
+
+    /* chown. */
+    expect(SYS2(90, ustr("/tmp/m"), 06755) == 0 && SYS3(92, ustr("/tmp/m"), 1000, 1001) == 0 &&
+           tmp_stat("/tmp/m", 1, &st) == 0 && st.st_uid == 1000u && st.st_gid == 1001u,
+           "chown changes owner and group");
+    expect((st.st_mode & 07777u) == 0755u, "and takes set-user-id and set-group-id off the file");
+    expect(SYS3(92, ustr("/tmp/m"), NOID, 5) == 0 && tmp_stat("/tmp/m", 1, &st) == 0 &&
+           st.st_uid == 1000u && st.st_gid == 5u, "an id of -1 is left alone");
+    expect(SYS3(94, ustr("/tmp/s"), 7, 7) == 0 && tmp_stat("/tmp/s", 0, &st2) == 0 && st2.st_uid == 7u &&
+           tmp_stat("/tmp/m", 1, &st) == 0 && st.st_uid == 1000u, "lchown changes the link and not its target");
+    expect(SYS3(93, (uint64_t)fd, 8, 9) == 0 && tmp_stat("/tmp/m", 1, &st) == 0 && st.st_uid == 8u && st.st_gid == 9u,
+           "fchown changes the file a descriptor names");
+    expect(SYS5(260, (uint64_t)fd, ustr(""), 10, 11, 0x1000) == 0 && tmp_stat("/tmp/m", 1, &st) == 0 &&
+           st.st_uid == 10u, "fchownat with AT_EMPTY_PATH is fchown");
+    expect(SYS5(260, CWD, ustr("/tmp/m"), 1, 1, 0x200) == -VIBEOS_EINVAL, "a fchownat flag it lacks is EINVAL");
+    expect(SYS3(92, ustr("/f"), 1, 1) == -VIBEOS_EPERM, "a filesystem with no owners says EPERM");
+
+    /* Times. */
+    ts[0].tv_sec = 100; ts[0].tv_nsec = 5;
+    ts[1].tv_sec = 200; ts[1].tv_nsec = 7;
+    expect(SYS4(280, CWD, ustr("/tmp/m"), uts, 0) == 0 && tmp_stat("/tmp/m", 1, &st) == 0 &&
+           st.st_atime == 100u && st.st_atime_nsec == 5u && st.st_mtime == 200u && st.st_mtime_nsec == 7u,
+           "utimensat sets both times to the nanosecond");
+    ts[0].tv_nsec = LINUX_UTIME_OMIT;
+    ts[1].tv_sec = 300; ts[1].tv_nsec = 0;
+    expect(SYS4(280, CWD, ustr("/tmp/m"), uts, 0) == 0 && tmp_stat("/tmp/m", 1, &st) == 0 &&
+           st.st_atime == 100u && st.st_atime_nsec == 5u && st.st_mtime == 300u, "UTIME_OMIT leaves a time alone");
+    ts[0].tv_nsec = LINUX_UTIME_OMIT; ts[1].tv_nsec = LINUX_UTIME_OMIT;
+    expect(SYS4(280, CWD, ustr("/tmp/m"), uts, 0) == 0 && tmp_stat("/tmp/m", 1, &st) == 0 && st.st_mtime == 300u,
+           "both omitted changes nothing");
+    ts[0].tv_sec = 1; ts[0].tv_nsec = 1000000000;
+    expect(SYS4(280, CWD, ustr("/tmp/m"), uts, 0) == -VIBEOS_EINVAL, "a nanosecond field out of range is EINVAL");
+    ts[0].tv_sec = 11; ts[0].tv_nsec = 0; ts[1].tv_sec = 12; ts[1].tv_nsec = 0;
+    expect(SYS4(280, (uint64_t)fd, 0, uts, 0) == 0 && tmp_stat("/tmp/m", 1, &st) == 0 &&
+           st.st_atime == 11u && st.st_mtime == 12u, "no path at all is the descriptor: futimens");
+    expect(SYS4(280, CWD, ustr("/tmp/m"), 0, 0) == 0 && SYS4(280, CWD, ustr("/tmp/m"), uts, 0x200) == -VIBEOS_EINVAL,
+           "no times at all is now, and a flag it lacks is EINVAL");
+    ut->actime = 400; ut->modtime = 500;
+    expect(SYS2(132, ustr("/tmp/m"), uts) == 0 && tmp_stat("/tmp/m", 1, &st) == 0 &&
+           st.st_atime == 400u && st.st_mtime == 500u && st.st_mtime_nsec == 0u, "utime sets them to the second");
+    tv[0].tv_sec = 1; tv[0].tv_usec = 999999; tv[1].tv_sec = 2; tv[1].tv_usec = 0;
+    expect(SYS2(235, ustr("/tmp/m"), uts) == 0 && tmp_stat("/tmp/m", 1, &st) == 0 &&
+           st.st_atime == 1u && st.st_atime_nsec == 999999000u && st.st_mtime == 2u,
+           "utimes sets them to the microsecond");
+    tv[0].tv_usec = 1000000;
+    expect(SYS2(235, ustr("/tmp/m"), uts) == -VIBEOS_EINVAL, "a microsecond field out of range is EINVAL");
+    tv[0].tv_sec = 21; tv[0].tv_usec = 0; tv[1].tv_sec = 22;
+    dfd = tmp_open("/tmp", 0x10000, 0);
+    expect(SYS3(261, (uint64_t)dfd, ustr("m"), uts) == 0 && tmp_stat("/tmp/m", 1, &st) == 0 &&
+           st.st_atime == 21u && st.st_mtime == 22u, "futimesat resolves against its directory");
+
+    /* statfs. */
+    expect(SYS2(137, ustr("/tmp/m"), ufs) == 0 && sf->f_type == 0x01021994 && sf->f_bsize == 4096 &&
+           sf->f_blocks > 0 && sf->f_bfree > 0 && sf->f_bfree <= sf->f_blocks && sf->f_namelen == 255 &&
+           sf->f_flags == 0 && sf->f_fsid[0] == (int32_t)st.st_dev, "statfs describes the filesystem a file is on");
+    memset(sf, 0xFF, sizeof(*sf));
+    expect(SYS2(138, (uint64_t)fd, ufs) == 0 && sf->f_type == 0x01021994, "fstatfs the one a descriptor is on");
+    expect(SYS2(138, (uint64_t)((int32_t *)kf_uptr(fds))[0], ufs) == -VIBEOS_ENOSYS && SYS2(138, 99, ufs) == -VIBEOS_EBADF,
+           "a pipe is on none");
+    expect(SYS2(137, ustr("/tmp/nope"), ufs) == -VIBEOS_ENOENT, "statfs of nothing is ENOENT");
+    mount_ro();
+    expect(SYS2(137, ustr("/ro"), ufs) == 0 && (sf->f_flags & 1) != 0, "a filesystem that writes nothing is ST_RDONLY");
+    expect(SYS2(21, ustr("/ro"), 2) == -VIBEOS_EROFS && SYS2(21, ustr("/ro"), 4) == 0,
+           "and writing there is EROFS to access, reading is not");
+    expect(SYS2(90, ustr("/ro"), 0700) == -VIBEOS_EROFS && SYS3(92, ustr("/ro"), 1, 1) == -VIBEOS_EROFS &&
+           SYS4(280, CWD, ustr("/ro"), 0, 0) == -VIBEOS_EROFS, "chmod, chown and utimensat there are EROFS");
+    expect(kf_lock_imbalance() == 0, "the metadata calls released every lock they took");
+}
+
+static void t_mknod_and_openat2(void) {
+    linux_stat_t st;
+    linux_open_how_t *how;
+    uint64_t uhow;
+    long fd, dfd;
+
+    fresh(103);
+    uhow = kf_ualloc(64);
+    how = (linux_open_how_t *)kf_uptr(uhow);
+    expect(SYS3(133, ustr("/tmp/n"), 0100640, 0) == 0 && tmp_stat("/tmp/n", 1, &st) == 0 &&
+           st.st_mode == (VIBEOS_S_IFREG | 0640u) && st.st_size == 0, "mknod makes a regular file");
+    expect(SYS3(133, ustr("/tmp/n"), 0100640, 0) == -VIBEOS_EEXIST, "and refuses an existing name");
+    expect(SYS3(133, ustr("/tmp/n0"), 0666, 0) == 0 && tmp_stat("/tmp/n0", 1, &st) == 0 &&
+           st.st_mode == (VIBEOS_S_IFREG | 0644u), "no type at all is a regular file, less the umask");
+    expect(SYS3(133, ustr("/tmp/nd"), 0040755, 0) == -VIBEOS_EPERM, "mknod does not make directories");
+    expect(SYS3(133, ustr("/tmp/nx"), 0150644, 0) == -VIBEOS_EINVAL, "a type that is not one is EINVAL");
+    (void)SYS2(83, ustr("/tmp/d"), 0755);
+    dfd = tmp_open("/tmp/d", 0x10000, 0);
+    expect(SYS4(259, (uint64_t)dfd, ustr("x"), 0100600, 0) == 0 && tmp_stat("/tmp/d/x", 1, &st) == 0,
+           "mknodat resolves against its directory");
+
+    memset(how, 0, 64);
+    how->flags = 2;   /* O_RDWR */
+    fd = SYS4(437, CWD, ustr("/tmp/n"), uhow, 24);
+    expect(fd >= 3 && SYS3(1, (uint64_t)fd, ustr("ok"), 2) == 2 && tmp_is("/tmp/n", "ok"), "openat2 opens");
+    expect(SYS4(437, CWD, ustr("/tmp/n"), uhow, 16) == -VIBEOS_EINVAL, "a structure shorter than the first is EINVAL");
+    expect(SYS4(437, CWD, ustr("/tmp/n"), uhow, 40) >= 3, "a longer one whose extra is zero is accepted");
+    ((uint8_t *)how)[33] = 1;
+    expect(SYS4(437, CWD, ustr("/tmp/n"), uhow, 40) == -VIBEOS_E2BIG, "and E2BIG when the extra says something");
+    ((uint8_t *)how)[33] = 0;
+    how->flags = 2 | 0x8000;   /* O_LARGEFILE, which every 64-bit open carries */
+    expect(SYS4(437, CWD, ustr("/tmp/n"), uhow, 24) >= 3, "a flag Linux has is accepted");
+    how->flags = 2 | 0x4;
+    expect(SYS4(437, CWD, ustr("/tmp/n"), uhow, 24) == -VIBEOS_EINVAL, "a flag Linux lacks is EINVAL - open would ignore it");
+    how->flags = 2; how->mode = 0644;
+    expect(SYS4(437, CWD, ustr("/tmp/n"), uhow, 24) == -VIBEOS_EINVAL, "a mode without O_CREAT is EINVAL");
+    how->flags = 0x42; how->mode = 0600;
+    expect(SYS4(437, CWD, ustr("/tmp/made"), uhow, 24) >= 3 && tmp_stat("/tmp/made", 1, &st) == 0 &&
+           (st.st_mode & 0777u) == 0600u, "with O_CREAT the mode is the file's");
+    how->flags = 0; how->mode = 0; how->resolve = 2;   /* RESOLVE_NO_MAGICLINKS */
+    expect(SYS4(437, CWD, ustr("/tmp/n"), uhow, 24) >= 3, "RESOLVE_NO_MAGICLINKS is honoured: there are none");
+    how->resolve = 0x40;
+    expect(SYS4(437, CWD, ustr("/tmp/n"), uhow, 24) == -VIBEOS_EINVAL, "a resolve flag Linux lacks is EINVAL");
+    how->resolve = 0x18;
+    expect(SYS4(437, CWD, ustr("/tmp/n"), uhow, 24) == -VIBEOS_EINVAL, "BENEATH with IN_ROOT is EINVAL");
+    how->resolve = 0x20;
+    expect(SYS4(437, CWD, ustr("/tmp/n"), uhow, 24) == -VIBEOS_EAGAIN, "RESOLVE_CACHED is EAGAIN: ask again without it");
+    expect(SYS4(437, CWD, ustr("/tmp/n"), 0x1000, 24) == -VIBEOS_EFAULT, "a structure outside user memory is EFAULT");
+    expect(kf_lock_imbalance() == 0, "mknod and openat2 released every lock they took");
+}
+
 int test_linux_handlers(void) {
     g_fail = 0;
     t_identity();
@@ -801,6 +1187,10 @@ int test_linux_handlers(void) {
     t_truncate_and_sync();
     t_kernel_copies();
     t_root_filesystem_writes();
+    t_rename();
+    t_rmdir_and_links();
+    t_metadata();
+    t_mknod_and_openat2();
     return g_fail ? -1 : 0;
 }
 
@@ -860,11 +1250,31 @@ int test_linux_gaps(void) {
         gap(72, fd >= 0 && SYS3(72, (uint64_t)fd, 6 /* F_SETLK */, fl) == 0, "F_SETLK takes a lock");
     }
 
-    /* unlinkat (263), L1: AT_REMOVEDIR removes an empty directory. */
+    /* mknod (133) and mknodat (259), L1: a FIFO has a name. */
     fresh(77);
-    kf_fs_add("/empty", 0, 0, 1);
-    gap(263, SYS3(263, (uint64_t)(uint32_t)-100, ustr("empty"), 0x200) == 0,
-        "unlinkat(AT_REMOVEDIR) removes an empty directory");
+    gap(133, SYS3(133, ustr("/tmp/fifo"), 0010644, 0) == 0, "mknod makes a FIFO");
+    gap(259, SYS4(259, (uint64_t)(uint32_t)-100, ustr("/tmp/fifo2"), 0010644, 0) == 0, "mknodat makes a FIFO");
+
+    /* renameat2 (316), L1: RENAME_EXCHANGE swaps two names. */
+    fresh(78);
+    {
+        long a = SYS3(2, ustr("/tmp/x1"), 0x41, 0644), b = SYS3(2, ustr("/tmp/x2"), 0x41, 0644);
+        gap(316, a >= 0 && b >= 0 &&
+                 sys(316, (uint64_t)(uint32_t)-100, ustr("/tmp/x1"), (uint64_t)(uint32_t)-100,
+                     ustr("/tmp/x2"), 2 /* RENAME_EXCHANGE */, 0, 0) == 0,
+            "renameat2(RENAME_EXCHANGE) swaps two names");
+    }
+
+    /* openat2 (437), L1: RESOLVE_BENEATH opens a path that stays beneath. */
+    fresh(79);
+    {
+        uint64_t how = kf_ualloc(24);
+        long fd = SYS3(2, ustr("/tmp/b"), 0x41, 0644);
+        memset(kf_uptr(how), 0, 24);
+        ((uint64_t *)kf_uptr(how))[2] = 8;   /* RESOLVE_BENEATH */
+        gap(437, fd >= 0 && SYS4(437, (uint64_t)(uint32_t)-100, ustr("tmp/b"), how, 24) >= 0,
+            "openat2 with RESOLVE_BENEATH");
+    }
 
     /* close_range (436), L1: CLOSE_RANGE_UNSHARE gives the caller its own table. */
     fresh(76);

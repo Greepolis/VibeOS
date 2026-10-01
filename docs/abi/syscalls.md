@@ -9,9 +9,9 @@ the registry, not this page; `check.sh` fails while the two differ.
 
 | State | Count | What the kernel answers |
 | --- | --- | --- |
-| done | 79 | through its row |
-| partial | 18 | through its row, with the gap named |
-| missing | 193 | ENOSYS, and the boot gate fails naming the number |
+| done | 108 | through its row |
+| partial | 21 | through its row, with the gap named |
+| missing | 161 | ENOSYS, and the boot gate fails naming the number |
 | deferred | 50 | ENOSYS, and the boot gate fails naming the number |
 | refused | 33 | its errno, counted as refused - expected, never a failure |
 
@@ -19,7 +19,7 @@ Without a row, by phase:
 
 | Phase | Syscalls |
 | --- | --- |
-| L1 - files and paths | 46 |
+| L1 - files and paths | 14 |
 | L2 - processes, credentials, time | 47 |
 | L3 - memory | 10 |
 | L4 - event loops | 21 |
@@ -40,9 +40,9 @@ calls, outside the Linux number space, are listed last.
 | 1 | `write` | done | - | - | `fs.c` |  |
 | 2 | `open` | done | - | - | `fs.c` |  |
 | 3 | `close` | done | - | - | `fs.c` |  |
-| 4 | `stat` | missing | L1 | ENOSYS |  |  |
+| 4 | `stat` | done | - | - | `fs.c` |  |
 | 5 | `fstat` | done | - | - | `fs.c` |  |
-| 6 | `lstat` | missing | L1 | ENOSYS |  |  |
+| 6 | `lstat` | done | - | - | `fs.c` |  |
 | 7 | `poll` | missing | L4 | ENOSYS |  |  |
 | 8 | `lseek` | done | - | - | `fs.c` |  |
 | 9 | `mmap` | partial | L3 | - | `mm.c` | anonymous only; MAP_FIXED and file-backed mappings refused |
@@ -57,7 +57,7 @@ calls, outside the Linux number space, are listed last.
 | 18 | `pwrite64` | done | - | - | `fs.c` |  |
 | 19 | `readv` | partial | L5 | - | `fs.c` | files and the console; no socket scatter |
 | 20 | `writev` | partial | L5 | - | `fs.c` | files and the console; no socket gather |
-| 21 | `access` | missing | L1 | ENOSYS |  |  |
+| 21 | `access` | done | - | - | `names.c` |  |
 | 22 | `pipe` | done | - | - | `fs.c` |  |
 | 23 | `select` | missing | L4 | ENOSYS |  |  |
 | 24 | `sched_yield` | done | - | - | `proc.c` |  |
@@ -118,19 +118,19 @@ calls, outside the Linux number space, are listed last.
 | 79 | `getcwd` | done | - | - | `fs.c` |  |
 | 80 | `chdir` | done | - | - | `fs.c` |  |
 | 81 | `fchdir` | done | - | - | `fs.c` |  |
-| 82 | `rename` | missing | L1 | ENOSYS |  |  |
+| 82 | `rename` | done | - | - | `names.c` |  |
 | 83 | `mkdir` | done | - | - | `fs.c` |  |
-| 84 | `rmdir` | missing | L1 | ENOSYS |  |  |
+| 84 | `rmdir` | done | - | - | `names.c` |  |
 | 85 | `creat` | done | - | - | `fs.c` |  |
-| 86 | `link` | missing | L1 | ENOSYS |  |  |
+| 86 | `link` | done | - | - | `names.c` |  |
 | 87 | `unlink` | done | - | - | `fs.c` |  |
-| 88 | `symlink` | missing | L1 | ENOSYS |  |  |
-| 89 | `readlink` | missing | L1 | ENOSYS |  |  |
-| 90 | `chmod` | missing | L1 | ENOSYS |  |  |
-| 91 | `fchmod` | missing | L1 | ENOSYS |  |  |
-| 92 | `chown` | missing | L1 | ENOSYS |  |  |
-| 93 | `fchown` | missing | L1 | ENOSYS |  |  |
-| 94 | `lchown` | missing | L1 | ENOSYS |  |  |
+| 88 | `symlink` | done | - | - | `names.c` |  |
+| 89 | `readlink` | done | - | - | `fs.c` |  |
+| 90 | `chmod` | done | - | - | `names.c` |  |
+| 91 | `fchmod` | done | - | - | `names.c` |  |
+| 92 | `chown` | done | - | - | `names.c` |  |
+| 93 | `fchown` | done | - | - | `names.c` |  |
+| 94 | `lchown` | done | - | - | `names.c` |  |
 | 95 | `umask` | done | - | - | `fs.c` |  |
 | 96 | `gettimeofday` | missing | L2 | ENOSYS |  |  |
 | 97 | `getrlimit` | missing | L2 | ENOSYS |  |  |
@@ -168,13 +168,13 @@ calls, outside the Linux number space, are listed last.
 | 129 | `rt_sigqueueinfo` | missing | L2 | ENOSYS |  |  |
 | 130 | `rt_sigsuspend` | missing | L2 | ENOSYS |  |  |
 | 131 | `sigaltstack` | missing | L2 | ENOSYS |  |  |
-| 132 | `utime` | missing | L1 | ENOSYS |  |  |
-| 133 | `mknod` | missing | L1 | ENOSYS |  |  |
+| 132 | `utime` | done | - | - | `names.c` |  |
+| 133 | `mknod` | partial | L1 | - | `names.c` | regular files only: a FIFO, a socket or a device node is EPERM - no filesystem here holds one |
 | 134 | `uselib` | refused | R | ENOSYS |  | removed or never implemented by Linux itself |
 | 135 | `personality` | missing | L2 | ENOSYS |  |  |
 | 136 | `ustat` | refused | R | ENOSYS |  | removed or never implemented by Linux itself |
-| 137 | `statfs` | missing | L1 | ENOSYS |  |  |
-| 138 | `fstatfs` | missing | L1 | ENOSYS |  |  |
+| 137 | `statfs` | done | - | - | `names.c` |  |
+| 138 | `fstatfs` | done | - | - | `names.c` |  |
 | 139 | `sysfs` | refused | R | ENOSYS |  | removed or never implemented by Linux itself |
 | 140 | `getpriority` | missing | L2 | ENOSYS |  |  |
 | 141 | `setpriority` | missing | L2 | ENOSYS |  |  |
@@ -271,7 +271,7 @@ calls, outside the Linux number space, are listed last.
 | 232 | `epoll_wait` | missing | L4 | ENOSYS |  |  |
 | 233 | `epoll_ctl` | missing | L4 | ENOSYS |  |  |
 | 234 | `tgkill` | done | - | - | `sig.c` |  |
-| 235 | `utimes` | missing | L1 | ENOSYS |  |  |
+| 235 | `utimes` | done | - | - | `names.c` |  |
 | 236 | `vserver` | refused | R | ENOSYS |  | removed or never implemented by Linux itself |
 | 237 | `mbind` | deferred | D | ENOSYS |  | NUMA: one node here |
 | 238 | `set_mempolicy` | deferred | D | ENOSYS |  | NUMA: one node here |
@@ -295,17 +295,17 @@ calls, outside the Linux number space, are listed last.
 | 256 | `migrate_pages` | deferred | D | ENOSYS |  | NUMA: one node here |
 | 257 | `openat` | done | - | - | `fs.c` |  |
 | 258 | `mkdirat` | done | - | - | `fs.c` |  |
-| 259 | `mknodat` | missing | L1 | ENOSYS |  |  |
-| 260 | `fchownat` | missing | L1 | ENOSYS |  |  |
-| 261 | `futimesat` | missing | L1 | ENOSYS |  |  |
+| 259 | `mknodat` | partial | L1 | - | `names.c` | regular files only: a FIFO, a socket or a device node is EPERM - no filesystem here holds one |
+| 260 | `fchownat` | done | - | - | `names.c` |  |
+| 261 | `futimesat` | done | - | - | `names.c` |  |
 | 262 | `newfstatat` | done | - | - | `fs.c` |  |
-| 263 | `unlinkat` | partial | L1 | - | `fs.c` | AT_REMOVEDIR refused: no filesystem here implements rmdir |
-| 264 | `renameat` | missing | L1 | ENOSYS |  |  |
-| 265 | `linkat` | missing | L1 | ENOSYS |  |  |
-| 266 | `symlinkat` | missing | L1 | ENOSYS |  |  |
+| 263 | `unlinkat` | done | - | - | `fs.c` |  |
+| 264 | `renameat` | done | - | - | `names.c` |  |
+| 265 | `linkat` | done | - | - | `names.c` |  |
+| 266 | `symlinkat` | done | - | - | `names.c` |  |
 | 267 | `readlinkat` | done | - | - | `fs.c` |  |
-| 268 | `fchmodat` | missing | L1 | ENOSYS |  |  |
-| 269 | `faccessat` | missing | L1 | ENOSYS |  |  |
+| 268 | `fchmodat` | done | - | - | `names.c` |  |
+| 269 | `faccessat` | done | - | - | `names.c` |  |
 | 270 | `pselect6` | missing | L4 | ENOSYS |  |  |
 | 271 | `ppoll` | missing | L4 | ENOSYS |  |  |
 | 272 | `unshare` | deferred | D | ENOSYS |  | namespaces: after the credential model |
@@ -316,7 +316,7 @@ calls, outside the Linux number space, are listed last.
 | 277 | `sync_file_range` | done | - | - | `fs.c` |  |
 | 278 | `vmsplice` | missing | L7 | ENOSYS |  |  |
 | 279 | `move_pages` | deferred | D | ENOSYS |  | NUMA: one node here |
-| 280 | `utimensat` | missing | L1 | ENOSYS |  |  |
+| 280 | `utimensat` | done | - | - | `names.c` |  |
 | 281 | `epoll_pwait` | missing | L4 | ENOSYS |  |  |
 | 282 | `signalfd` | missing | L4 | ENOSYS |  |  |
 | 283 | `timerfd_create` | missing | L4 | ENOSYS |  |  |
@@ -352,7 +352,7 @@ calls, outside the Linux number space, are listed last.
 | 313 | `finit_module` | refused | R | EPERM |  | no loadable modules: code enters this kernel only by being built into it |
 | 314 | `sched_setattr` | missing | L6 | ENOSYS |  |  |
 | 315 | `sched_getattr` | missing | L6 | ENOSYS |  |  |
-| 316 | `renameat2` | missing | L1 | ENOSYS |  |  |
+| 316 | `renameat2` | partial | L1 | - | `names.c` | RENAME_EXCHANGE and RENAME_WHITEOUT refused |
 | 317 | `seccomp` | missing | L9 | ENOSYS |  | the security goals of docs/vision.md |
 | 318 | `getrandom` | done | - | - | `proc.c` |  |
 | 319 | `memfd_create` | missing | L3 | ENOSYS |  | with file-backed and shared mappings (the other half of mmap) |
@@ -368,7 +368,7 @@ calls, outside the Linux number space, are listed last.
 | 329 | `pkey_mprotect` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
 | 330 | `pkey_alloc` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
 | 331 | `pkey_free` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
-| 332 | `statx` | missing | L1 | ENOSYS |  |  |
+| 332 | `statx` | done | - | - | `names.c` |  |
 | 333 | `io_pgetevents` | deferred | D | ENOSYS |  | legacy AIO: ENOSYS, and libcs fall back to threads |
 | 334 | `rseq` | partial | R | - | `proc.c` | ENOSYS on purpose: the libc takes its fallback |
 | 424 | `pidfd_send_signal` | missing | L2 | ENOSYS |  |  |
@@ -384,9 +384,9 @@ calls, outside the Linux number space, are listed last.
 | 434 | `pidfd_open` | missing | L2 | ENOSYS |  |  |
 | 435 | `clone3` | missing | L2 | ENOSYS |  |  |
 | 436 | `close_range` | partial | L1 | - | `fs.c` | CLOSE_RANGE_UNSHARE refused: no unshare(CLONE_FILES) |
-| 437 | `openat2` | missing | L1 | ENOSYS |  |  |
+| 437 | `openat2` | partial | L1 | - | `names.c` | resolve: only NO_MAGICLINKS; BENEATH, IN_ROOT, NO_XDEV and NO_SYMLINKS answer ENOSYS |
 | 438 | `pidfd_getfd` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
-| 439 | `faccessat2` | missing | L1 | ENOSYS |  |  |
+| 439 | `faccessat2` | done | - | - | `names.c` |  |
 | 440 | `process_madvise` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
 | 441 | `epoll_pwait2` | missing | L4 | ENOSYS |  |  |
 | 442 | `mount_setattr` | deferred | D | ENOSYS |  | the new mount API: after L8 |
@@ -399,7 +399,7 @@ calls, outside the Linux number space, are listed last.
 | 449 | `futex_waitv` | missing | L6 | ENOSYS |  |  |
 | 450 | `set_mempolicy_home_node` | deferred | D | ENOSYS |  | NUMA: one node here |
 | 451 | `cachestat` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
-| 452 | `fchmodat2` | missing | L1 | ENOSYS |  |  |
+| 452 | `fchmodat2` | done | - | - | `names.c` |  |
 | 453 | `map_shadow_stack` | refused | R | ENOSYS |  | no shadow stacks |
 | 454 | `futex_wake` | missing | L6 | ENOSYS |  |  |
 | 455 | `futex_wait` | missing | L6 | ENOSYS |  |  |
