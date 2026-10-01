@@ -22,6 +22,7 @@
 #include "vibeos/arch_x86_64.h"
 #include "vibeos/blkdev.h"
 #include "vibeos/exfat.h"
+#include "vibeos/fat.h"
 #include "vibeos/ext2.h"
 #include "vibeos/anon.h"
 #include "vibeos/frame.h"
@@ -133,7 +134,7 @@ void hw_write_proof(void) {
                              HW_WRITE_PROOF_BYTES) < 0) {
         vibeos_x86_64_serial_lock();
         vibeos_x86_64_serial_puts("[IO] WRITE_PROOF write refused: ");
-        vibeos_x86_64_serial_puts(vibeos_x86_64_fat_write_why());
+        vibeos_x86_64_serial_puts(vibeos_fat_write_why());
         vibeos_x86_64_serial_puts("\n");
         vibeos_x86_64_serial_unlock();
         verdict = "FAILED: write refused";
@@ -997,7 +998,7 @@ static void hw_tmpfs_bringup(void) {
 }
 
 void hw_volumes_bringup(void) {
-    vibeos_blockcache_t *bc = vibeos_x86_64_fat_cache();
+    vibeos_blockcache_t *bc = vibeos_fat_cache();
     uint64_t sectors = 0;
     uint32_t i;
 
@@ -1133,7 +1134,7 @@ void hw_volumes_bringup(void) {
  * volume as everything else, so an area that spanned a gap in the chain would
  * not fail - it would write a page of some process's memory over another
  * file's data, and the damage would surface at the next boot as a program that
- * is quietly wrong. vibeos_x86_64_fat_file_extent reports whether the chain is
+ * is quietly wrong. vibeos_fat_file_extent reports whether the chain is
  * one run and this refuses it if it is not, rather than hoping. */
 void hw_swap_bringup(void) {
     vibeos_swap_area_t area;
@@ -1154,7 +1155,7 @@ void hw_swap_bringup(void) {
     area.origin = "EFI/BOOT/SWAPFILE.BIN";
 
     if (dev >= 0 &&
-        vibeos_x86_64_fat_file_extent("EFI/BOOT/SWAPFILE.BIN",
+        vibeos_fat_file_extent("EFI/BOOT/SWAPFILE.BIN",
                                       &first, &sectors, &contiguous) == 0) {
         if (!contiguous) {
             /* Declined, not worked around. Following an extent list belongs in
@@ -1260,8 +1261,8 @@ void hw_swap_bringup(void) {
                 uint32_t fc = 0, fsz = 0;
                 long n = -1;
 
-                if (vibeos_x86_64_fat_open("EFI/BOOT/SWAPFILE.BIN", &fc, &fsz) == 0) {
-                    n = vibeos_x86_64_fat_read_at(fc, fsz, 0u, back, 4096u);
+                if (vibeos_fat_open("EFI/BOOT/SWAPFILE.BIN", &fc, &fsz) == 0) {
+                    n = vibeos_fat_read_at(fc, fsz, 0u, back, 4096u);
                 }
                 if (n < 4096) {
                     verdict = "swap round trip FAILED: file unreadable";

@@ -317,7 +317,7 @@ its interpreter by path.
   `linux_abi_tests.c`, the working directory, relative open, the at calls with
   a directory descriptor, the errors, and fork inheriting the directory.
 - **Sabotage**: `fs-path.txt` (4, host), `abi-paths.txt` (2),
-  `io-fat-longnames.txt` (2), and a case for the new image row in
+  `fs-fat-longnames.txt` (2), and a case for the new image row in
   `io-filesystems-gate.txt`; every one red for its reason. One of them only on
   the host: a directory descriptor ignored in favour of the working directory
   boots green, run to confirm it, because nothing the self-test runs opens

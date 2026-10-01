@@ -4,8 +4,7 @@ on:
   pull_request:
     paths:
       - "kernel/arch/x86_64/arch_hw.c"
-      - "kernel/arch/x86_64/fat.c"
-      - "kernel/arch/x86_64/fat_vfs.c"
+      - "kernel/fs/fat.c"
       - "kernel/fs/**"
       - "include/vibeos/**"
       - "user/prog/**"
@@ -17,8 +16,7 @@ on:
     branches: ["main"]
     paths:
       - "kernel/arch/x86_64/arch_hw.c"
-      - "kernel/arch/x86_64/fat.c"
-      - "kernel/arch/x86_64/fat_vfs.c"
+      - "kernel/fs/fat.c"
       - "kernel/fs/**"
       - "include/vibeos/**"
       - "user/prog/**"

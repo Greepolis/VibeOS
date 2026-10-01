@@ -1,5 +1,6 @@
 #include "vibeos/kernel.h"
 #include "vibeos/arch_x86_64.h"
+#include "vibeos/fat.h"
 #include "vibeos/klog.h"
 #include "vibeos/device.h"
 #include "vibeos/mm_model.h"
@@ -141,18 +142,6 @@ static void kernel_cli_print_status(const vibeos_kernel_t *kernel) {
  * Zero is the honest answer here: a build with no disk had no wait to time out.
  * (The network card's timeouts are its driver's own report line since C7.) */
 __attribute__((weak)) uint64_t vibeos_x86_64_blk_timeouts(void) { return 0ull; }
-/* Zero is the honest answer for a link with no filesystem: nothing was cached
- * because nothing was mounted. Weak and in the same translation unit as its
- * caller, which is the one arrangement that works under PE/COFF. */
-__attribute__((weak)) void vibeos_x86_64_fat_cache_stats(uint64_t *hits,
-                                                         uint64_t *misses,
-                                                         uint64_t *evictions,
-                                                         uint64_t *evict_failed) {
-    if (hits) { *hits = 0ull; }
-    if (misses) { *misses = 0ull; }
-    if (evictions) { *evictions = 0ull; }
-    if (evict_failed) { *evict_failed = 0ull; }
-}
 /* Beside their caller, like every other stub here. */
 __attribute__((weak)) uint64_t vibeos_x86_64_ioapic_irq_count(uint32_t v) { (void)v; return 0ull; }
 __attribute__((weak)) uint64_t vibeos_x86_64_tlbq_deferred(void) { return 0ull; }
@@ -863,7 +852,7 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
          * cache. */
         {
             uint64_t h = 0, m = 0, ev = 0, ef = 0;
-            vibeos_x86_64_fat_cache_stats(&h, &m, &ev, &ef);
+            vibeos_fat_cache_stats(&h, &m, &ev, &ef);
             vibeos_x86_64_serial_puts("[IO] BLKCACHE hits=0x");
             kernel_log_u64_hex(h);
             vibeos_x86_64_serial_puts(" misses=0x");

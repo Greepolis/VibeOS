@@ -115,23 +115,6 @@ uint64_t vibeos_x86_64_tlbq_live_peak(void);
  *
  * Exposed at all because a cache that never hits and a cache that is not wired
  * in look identical from outside, which is the whole reason phase I2 exists. */
-/* The one block cache, so a second reader of this disk uses it rather than
- * standing up its own. Null before the volume is mounted.
- *
- * Declared with a struct pointer the caller must have the definition for; the
- * header for it is vibeos/blockdev.h. */
-vibeos_blockcache_t *vibeos_x86_64_fat_cache(void);
-
-/* Mount a second FAT volume, from a device the caller names.
- *
- * Returns an opaque handle, or null. Everything below takes that handle and
- * acts on the volume it names; passing null means the boot volume, which is
- * what the no-argument spellings above do.
- *
- * One operation at a time across all volumes: this driver serialises through a
- * single lock and always has, so a handle selects a volume rather than making
- * two of them concurrent. That is a limit worth knowing and not a correctness
- * problem - see fat.c for what lifting it would take. */
 /* Attach a file on the boot volume as a read-only block device.
  *
  * The same extent resolution the swap area uses, for reading somebody else's
@@ -143,58 +126,14 @@ int vibeos_x86_64_loop_attach(const char *path, uint64_t *out_sectors);
  * different facts, and reporting the first for the second cost a boot. */
 const char *vibeos_x86_64_loop_why(void);
 
-void *vibeos_x86_64_fat_mount_volume(vibeos_blockcache_t *bc,
-                                     uint32_t first_lba);
-
-/* The boot volume's spellings. Every one of these is the matching _on with a
- * null handle, and they exist because everything above this driver still names
- * the boot volume implicitly - the mount table knows about more than one, the
- * syscalls do not yet. */
-int vibeos_x86_64_fat_mount(void);
-int vibeos_x86_64_fat_list(const char *path, uint32_t idx, char *name,
-                           uint32_t *out_size, int *out_is_dir);
-long vibeos_x86_64_fat_write_file(const char *path, const void *buf,
-                                  uint32_t len);
-int vibeos_x86_64_fat_unlink(const char *path);
-int vibeos_x86_64_fat_mkdir(const char *path);
-long vibeos_x86_64_fat_read_file(const char *path, void *buf, uint32_t bufcap);
-
-int vibeos_x86_64_fat_open_on(void *vol, const char *path,
-                              uint32_t *out_cluster, uint32_t *out_size);
-long vibeos_x86_64_fat_read_at_on(void *vol, uint32_t first_cluster,
-                                  uint32_t size, uint32_t off,
-                                  void *buf, uint32_t len);
-int vibeos_x86_64_fat_list_on(void *vol, const char *path, uint32_t idx,
-                              char *name, uint32_t name_cap, uint32_t *out_size,
-                              int *out_is_dir);
-long vibeos_x86_64_fat_write_file_on(void *vol, const char *path,
-                                     const void *buf, uint32_t len);
-int vibeos_x86_64_fat_unlink_on(void *vol, const char *path);
-int vibeos_x86_64_fat_mkdir_on(void *vol, const char *path);
-
-void vibeos_x86_64_fat_cache_stats(uint64_t *hits, uint64_t *misses,
-                                   uint64_t *evictions, uint64_t *evict_failed);
-
-/* Why the last write to this filesystem refused. Every failure in that path
- * used to be a bare -1, so a full disk, a name that is not 8.3, a directory
- * with no free slot and a medium that would not take the sector arrived at the
- * caller as one thing. */
-const char *vibeos_x86_64_fat_write_why(void);
+/* The FAT driver's own declarations are in vibeos/fat.h since it left this
+ * directory (docs/abi/ L1 step 4). */
 
 /* The disk drivers' own functions - read, write, the multi-sector pair, the
  * barrier, their size - used to be declared here, one set per driver. Since C7
  * a disk driver is a registered device (include/vibeos/device.h) and hands them
  * over in a vibeos_block_ops_t; nothing outside its file names them. */
 
-/* Where a file's bytes physically are, for swap and for nothing else. See the
- * comment on the definition: `contiguous` is reported rather than assumed,
- * because a swap area that wrote through a gap would write into other files. */
-int vibeos_x86_64_fat_file_extent(const char *path, uint64_t *out_first_lba,
-                                  uint64_t *out_sectors, int *out_contiguous);
-int vibeos_x86_64_fat_open(const char *path, uint32_t *out_cluster,
-                           uint32_t *out_size);
-long vibeos_x86_64_fat_read_at(uint32_t first_cluster, uint32_t size,
-                               uint32_t off, void *buf, uint32_t len);
 const char *vibeos_x86_64_blk_name(void);
 int vibeos_x86_64_blk_present(void);
 int vibeos_x86_64_blk_read(uint64_t lba, void *buf);

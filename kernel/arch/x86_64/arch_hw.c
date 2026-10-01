@@ -40,6 +40,7 @@
 #include "vibeos/ext2.h"
 #include "vibeos/iso9660.h"
 #include "vibeos/exfat.h"
+#include "vibeos/fat.h"
 #include "vibeos/ntfs.h"
 #include "vibeos/logsink.h"
 #include "vibeos/storage.h"
@@ -1411,6 +1412,41 @@ static void hw_device_table(void) {
     vibeos_x86_64_serial_unlock();
 }
 
+/* ---- what the FAT driver takes from this machine (vibeos/fat.h) ------------------
+ *
+ * The driver is portable since docs/abi/ L1 step 4; these three were written
+ * inside it while it lived here. The lock is the one it always had: a spin
+ * that does not mask interrupts, because a two-megabyte read under a lock
+ * that did was indistinguishable from a hang (CLAUDE.md), and its callers are
+ * syscalls, which run with them masked already. */
+static volatile int g_fat_lock;
+
+static void hw_fat_lock(void) {
+    while (__sync_lock_test_and_set(&g_fat_lock, 1)) {
+        while (g_fat_lock) {
+            __asm__ __volatile__("pause" ::: "memory");
+        }
+    }
+}
+
+static void hw_fat_unlock(void) {
+    __sync_lock_release(&g_fat_lock);
+}
+
+/* One line per mounted volume, bracketed: six console calls are six critical
+ * sections otherwise. */
+static void hw_fat_mounted(int is_fat32, uint32_t part_lba, uint32_t data_lba) {
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts("[FAT] mounted ");
+    vibeos_x86_64_serial_puts(is_fat32 ? "FAT32" : "FAT16");
+    vibeos_x86_64_serial_puts(" part_lba=0x");
+    vibeos_x86_64_serial_print_hex(part_lba);
+    vibeos_x86_64_serial_puts(" data_lba=0x");
+    vibeos_x86_64_serial_print_hex(data_lba);
+    vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
+}
+
 void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
     /* The Linux syscall registry, before anything that could make a syscall. It
      * refuses a number claimed twice and an operation with no handler, so a
@@ -1698,6 +1734,10 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
      *
      * So each adapter is tried until one carries a mountable volume. The cost
      * is one sector read per rejected disk, once. */
+    vibeos_fat_set_lock(hw_fat_lock, hw_fat_unlock);
+    vibeos_fat_set_mount_hook(hw_fat_mounted);
+    vibeos_fat_set_boot_device(vibeos_x86_64_blk_read, vibeos_x86_64_blk_write,
+                               vibeos_x86_64_blk_read_many);
     {
         uint32_t d, n = vibeos_x86_64_blk_adapter_count();
         for (d = 0; d < n; d++) {

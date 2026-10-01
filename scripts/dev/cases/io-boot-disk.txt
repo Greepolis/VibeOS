@@ -66,7 +66,7 @@ case: the boot disk is adapter 0 again
     between that and noticing.
 
 case: the selection loop stops at the first adapter
-  in the bring-up loop, break after the first vibeos_x86_64_fat_vfs_mount call
+  in the bring-up loop, break after the first vibeos_fat_vfs_mount call
     whatever it returned
   expect: identical to the case above
   why it matters: separates "the loop exists" from "the loop is load-bearing".

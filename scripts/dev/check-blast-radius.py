@@ -60,7 +60,7 @@ statement of what C6 has to achieve: a seam a driver joins **without anybody
 editing a bring-up path**.
 
 That also corrects a hand measurement made while writing this file. FAT was
-counted as 2 by grepping `vibeos_x86_64_fat_vfs`, which misses `_ops` and
+counted as 2 by grepping `vibeos_fat_vfs`, which misses `_ops` and
 `_register_driver` - the two symbols that *are* the seam. The check contradicted
 its author on the first run, which is the only reason the number is 4 here.
 
@@ -78,7 +78,7 @@ SCOPE = (("kernel",), ("include",), ("cmake",))
 # extension point -> (witness .c, symbol regex, declared radius, why)
 #
 # The matcher is a regex per point rather than a shared prefix, because a prefix
-# is not always a module. `vibeos_x86_64_fat_` matches both the VFS driver in
+# is not always a module. `vibeos_fat_` matches both the VFS driver in
 # fat_vfs.c and the raw FAT reader in fat.c, which are two different things; the
 # first version of this file used the prefix and reported a radius of 7 for a
 # module whose real answer is 2. Name what the witness exports.
@@ -98,8 +98,8 @@ POINTS = {
         "keeps its name so the history reads; there is no longer a direct "
         "path."),
     "filesystem (registered)": (
-        "kernel/arch/x86_64/fat_vfs.c",
-        r"vibeos_x86_64_fat_(?:vfs_[A-Za-z0-9_]+|ops|register_driver)"
+        "kernel/fs/fat.c",
+        r"vibeos_fat_(?:vfs_[A-Za-z0-9_]+|ops|register_driver)"
         r"|g_fat_driver_[A-Za-z0-9_]+|fat_vfs_mount_boot", 1,
         "**1 since C7 step 3b**: the driver declares itself with "
         "VIBEOS_FS_DRIVER and arch_hw.c registers whatever the linker "

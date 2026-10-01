@@ -122,6 +122,7 @@ set(VIBEOS_KERNEL_DRIVER_SOURCES
     kernel/fs/iso9660.c
     kernel/fs/exfat.c
     kernel/fs/ntfs.c
+    kernel/fs/fat.c
 )
 
 # The file types every personality shares (docs/abi/ A3): regular files and
@@ -173,9 +174,7 @@ set(VIBEOS_ARCH_X86_64_SOURCES
     kernel/arch/x86_64/ahci.c
     kernel/arch/x86_64/virtio_blk.c
     kernel/arch/x86_64/virtio_net.c
-    kernel/arch/x86_64/fat.c
     kernel/arch/x86_64/loopdev.c
-    kernel/arch/x86_64/fat_vfs.c
     kernel/arch/x86_64/keyboard.c
     kernel/arch/x86_64/fb.c
     kernel/arch/x86_64/mouse.c

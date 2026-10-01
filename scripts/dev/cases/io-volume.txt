@@ -53,7 +53,7 @@ case: the scan runs and reports no volumes at all
 # ---- I4b steps 3 and 4: the probe, and the mount table --------------------
 
 case: the FAT probe says yes to an exFAT volume
-  in fat_probe (fat_vfs.c), delete the sec[13] and sec[16] checks, keeping only
+  in fat_probe (fat.c), delete the sec[13] and sec[16] checks, keeping only
   the 0xAA55 signature
   expect: NOT OBSERVABLE ON THIS MEDIUM, which holds no exFAT volume.
     It is the reason the probe exists. exFAT's boot sector *is* a FAT boot
@@ -102,7 +102,7 @@ case: the first mount is not the root
 # ---- the FAT driver stops being a singleton -------------------------------
 
 case: an entry point forgets to select its volume
-  in vibeos_x86_64_fat_file_extent, delete the fat_select(0) call
+  in vibeos_fat_file_extent, delete the fat_select(0) call
   expect: invariant_failed:swap_area_not_configured
   why it matters: THIS HAPPENED. With a current-volume pointer, an entry point
     that does not select operates on whatever the previous caller left - and

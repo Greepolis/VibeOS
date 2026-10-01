@@ -9,7 +9,7 @@
  * is not a thing to do in passing.
  *
  * A file is a device this machine can already describe. The swap area does
- * exactly this: `vibeos_x86_64_fat_file_extent` resolves a path to its sectors
+ * exactly this: `vibeos_fat_file_extent` resolves a path to its sectors
  * and refuses a file that is not one unbroken run, and swap has been writing
  * through it since it was given somewhere to write. The same resolution, used
  * for reading somebody else's filesystem instead.
@@ -33,6 +33,7 @@
 #include <stdint.h>
 
 #include "vibeos/arch_x86_64.h"
+#include "vibeos/fat.h"
 #include "vibeos/blkdev.h"
 #include "vibeos/blockdev.h"
 
@@ -123,7 +124,7 @@ int vibeos_x86_64_loop_attach(const char *path, uint64_t *out_sectors) {
         g_loop_why = "no loop device left";
         return -1;
     }
-    if (vibeos_x86_64_fat_file_extent(path, &first, &sectors,
+    if (vibeos_fat_file_extent(path, &first, &sectors,
                                       &contiguous) != 0) {
         g_loop_why = "no such file on this medium";
         return -1;
