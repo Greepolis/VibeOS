@@ -485,7 +485,7 @@ const vibeos_file_ops_t vibeos_fops_console = {
 
 int vibeos_files_std_console(vibeos_fdtable_t *t) {
     vibeos_file_t *c = vibeos_file_alloc(&vibeos_fops_console, VIBEOS_O_RDWR);
-    uint32_t fd;
+    uint32_t fd, left;
 
     if (!c) {
         return -1;
@@ -497,7 +497,7 @@ int vibeos_files_std_console(vibeos_fdtable_t *t) {
         if (vibeos_fdtable_install_at(t, fd, c, 0, &old) != 0) {
             /* The references not installed are this function's to give back;
              * the installed ones go with the table. */
-            for (; fd < 3u; fd++) {
+            for (left = fd; left < 3u; left++) {
                 vibeos_file_put(c);
             }
             return -1;

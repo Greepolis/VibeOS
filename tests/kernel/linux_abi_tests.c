@@ -2055,11 +2055,11 @@ int test_linux_gaps(void) {
     /* openat2 (437), L1: RESOLVE_BENEATH opens a path that stays beneath. */
     fresh(79);
     {
-        uint64_t how = kf_ualloc(24);
-        long fd = SYS3(2, ustr("/tmp/b"), 0x41, 0644);
-        memset(kf_uptr(how), 0, 24);
-        ((uint64_t *)kf_uptr(how))[2] = 8;   /* RESOLVE_BENEATH */
-        gap(437, fd >= 0 && SYS4(437, (uint64_t)(uint32_t)-100, ustr("tmp/b"), how, 24) >= 0,
+        uint64_t open_how = kf_ualloc(24);
+        long made = SYS3(2, ustr("/tmp/b"), 0x41, 0644);
+        memset(kf_uptr(open_how), 0, 24);
+        ((uint64_t *)kf_uptr(open_how))[2] = 8;   /* RESOLVE_BENEATH */
+        gap(437, made >= 0 && SYS4(437, (uint64_t)(uint32_t)-100, ustr("tmp/b"), open_how, 24) >= 0,
             "openat2 with RESOLVE_BENEATH");
     }
 

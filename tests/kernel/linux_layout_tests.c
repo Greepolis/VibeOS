@@ -176,6 +176,7 @@ int test_linux_layout(void) {
     g_checked = 0;
 
     /* ---- structures ---- */
+    /* what stat, fstat and newfstatat fill */
     SIZE(linux_stat_t, struct stat);
     FIELD(linux_stat_t, struct stat, st_dev);
     FIELD(linux_stat_t, struct stat, st_ino);
@@ -196,10 +197,12 @@ int test_linux_layout(void) {
     FIELD(linux_stat_t, struct stat, st_ctime_nsec);
     FIELD2(linux_stat_t, struct stat, unused, __unused);
 
+    /* clock_gettime, nanosleep, utimensat */
     SIZE(linux_timespec_t, struct __kernel_timespec);
     FIELD(linux_timespec_t, struct __kernel_timespec, tv_sec);
     FIELD(linux_timespec_t, struct __kernel_timespec, tv_nsec);
 
+    /* uname */
     SIZE(linux_utsname_t, struct new_utsname);
     FIELD(linux_utsname_t, struct new_utsname, sysname);
     FIELD(linux_utsname_t, struct new_utsname, nodename);
@@ -208,6 +211,7 @@ int test_linux_layout(void) {
     FIELD(linux_utsname_t, struct new_utsname, machine);
     FIELD(linux_utsname_t, struct new_utsname, domainname);
 
+    /* sysinfo */
     SIZE(linux_sysinfo_t, struct sysinfo);
     FIELD(linux_sysinfo_t, struct sysinfo, uptime);
     FIELD(linux_sysinfo_t, struct sysinfo, loads);
@@ -223,21 +227,25 @@ int test_linux_layout(void) {
     FIELD(linux_sysinfo_t, struct sysinfo, freehigh);
     FIELD(linux_sysinfo_t, struct sysinfo, mem_unit);
 
+    /* bind, connect, accept and the rest of the socket calls */
     SIZE(linux_sockaddr_in_t, struct sockaddr_in);
     FIELD(linux_sockaddr_in_t, struct sockaddr_in, sin_family);
     FIELD(linux_sockaddr_in_t, struct sockaddr_in, sin_port);
     FIELD(linux_sockaddr_in_t, struct sockaddr_in, sin_addr);
     FIELD(linux_sockaddr_in_t, struct sockaddr_in, sin_zero);
 
+    /* readv and writev */
     SIZE(linux_iovec_t, struct iovec);
     FIELD(linux_iovec_t, struct iovec, iov_base);
     FIELD(linux_iovec_t, struct iovec, iov_len);
 
+    /* a time inside statx's answer */
     SIZE(linux_statx_timestamp_t, struct statx_timestamp);
     FIELD(linux_statx_timestamp_t, struct statx_timestamp, tv_sec);
     FIELD(linux_statx_timestamp_t, struct statx_timestamp, tv_nsec);
     FIELD2(linux_statx_timestamp_t, struct statx_timestamp, pad, __reserved);
 
+    /* statx */
     SIZE(linux_statx_t, struct statx);
     FIELD(linux_statx_t, struct statx, stx_mask);
     FIELD(linux_statx_t, struct statx, stx_blksize);
@@ -261,6 +269,7 @@ int test_linux_layout(void) {
     FIELD(linux_statx_t, struct statx, stx_dev_minor);
     TAIL(linux_statx_t, struct statx, rest);
 
+    /* statfs and fstatfs */
     SIZE(linux_statfs_t, struct statfs);
     FIELD(linux_statfs_t, struct statfs, f_type);
     FIELD(linux_statfs_t, struct statfs, f_bsize);
@@ -275,15 +284,18 @@ int test_linux_layout(void) {
     FIELD(linux_statfs_t, struct statfs, f_flags);
     FIELD(linux_statfs_t, struct statfs, f_spare);
 
+    /* openat2's argument */
     SIZE(linux_open_how_t, struct open_how);
     FIELD(linux_open_how_t, struct open_how, flags);
     FIELD(linux_open_how_t, struct open_how, mode);
     FIELD(linux_open_how_t, struct open_how, resolve);
 
+    /* utime */
     SIZE(linux_utimbuf_t, struct utimbuf);
     FIELD(linux_utimbuf_t, struct utimbuf, actime);
     FIELD(linux_utimbuf_t, struct utimbuf, modtime);
 
+    /* utimes, futimesat, gettimeofday */
     SIZE(linux_timeval_t, struct __kernel_old_timeval);
     FIELD(linux_timeval_t, struct __kernel_old_timeval, tv_sec);
     FIELD(linux_timeval_t, struct __kernel_old_timeval, tv_usec);
@@ -315,6 +327,7 @@ int test_linux_layout(void) {
     LIBC_CONST(VIBEOS_S_ISUID, "S_ISUID");
     LIBC_CONST(VIBEOS_S_ISGID, "S_ISGID");
 
+    /* fcntl's record locks */
     SIZE(linux_flock_t, struct flock);
     FIELD(linux_flock_t, struct flock, l_type);
     FIELD(linux_flock_t, struct flock, l_whence);
