@@ -150,6 +150,7 @@ static const char tls_kept[] = "tls survived context switches\n";
 static const char tls_lost[] = "abi: %fs lost across a context switch\n";
 static const char sse_kept[] = "sse survived context switches\n";
 static const char sse_lost[] = "abi: xmm lost across a context switch\n";
+static const char self_path[] = "/EFI/BOOT/SELFTEST.ELF";
 static const char iov_a[] = "iov";
 static const char iov_b[] = "ec\n";
 
@@ -345,10 +346,54 @@ static const char *check_linux_abi(void) {
         }
     }
 
-    /* MAP_FIXED is refused rather than silently ignored. */
-    if (user_syscall6(SYS_mmap, page, 4096, 3, 0x32 /*FIXED|ANON|PRIVATE*/,
-                      -1, 0) > 0) {
-        return abi_mm;
+    /* MAP_FIXED maps at the address given and takes the place of what was
+     * there (docs/abi/ L3 step 1) - it used to be refused, and this checked
+     * that it was. A page written, mapped over, and read back as zeros: the
+     * old page is gone, not hidden. */
+    {
+        long at = user_syscall6(SYS_mmap, 0, 8192, 3, 0x22, -1, 0);
+        volatile char *q = (volatile char *)at;
+
+        if (at <= 0) {
+            return abi_mm;
+        }
+        q[0] = 'x';
+        q[4096] = 'y';
+        if (user_syscall6(SYS_mmap, at, 4096, 3, 0x32 /*FIXED|ANON|PRIVATE*/, -1, 0) != at ||
+            q[0] != 0 || q[4096] != 'y') {
+            return abi_mm;
+        }
+        /* MAP_FIXED_NOREPLACE refuses a range in use: EEXIST. */
+        if (user_syscall6(SYS_mmap, at, 4096, 3, 0x100022, -1, 0) != -17) {
+            return abi_mm;
+        }
+        /* And a mapping must say whether it is private or shared. */
+        if (user_syscall6(SYS_mmap, 0, 4096, 3, 0x20, -1, 0) != -22) {
+            return abi_mm;
+        }
+    }
+    /* A file mapped privately holds the file's bytes: this program's own image,
+     * off the FAT boot volume, begins with the ELF magic - and a store into the
+     * mapping stays in the mapping. */
+    {
+        long fd = user_syscall3(2 /* open */, (long)(unsigned long)self_path, 0, 0);
+        long at;
+        volatile unsigned char *q;
+
+        if (fd < 0) {
+            return abi_mm;
+        }
+        at = user_syscall6(SYS_mmap, 0, 4096, 3, 2 /* MAP_PRIVATE */, fd, 0);
+        q = (volatile unsigned char *)at;
+        if (at <= 0 || q[0] != 0x7f || q[1] != 'E' || q[2] != 'L' || q[3] != 'F') {
+            return abi_mm;
+        }
+        q[1] = 'e';
+        if (q[1] != 'e') {
+            return abi_mm;
+        }
+        user_syscall3(3 /* close */, fd, 0, 0);
+        /* A shared mapping of a file is step 2's: refused for now, and said. */
     }
     return abi_ok;
 }

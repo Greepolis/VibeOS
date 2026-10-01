@@ -376,8 +376,13 @@ typedef struct {
 #define LINUX_PROT_NONE     0x0
 #define LINUX_PROT_WRITE    0x2
 #define LINUX_PROT_EXEC     0x4
+#define LINUX_MAP_SHARED    0x01
+#define LINUX_MAP_PRIVATE   0x02
+#define LINUX_MAP_SHARED_VALIDATE 0x03
+#define LINUX_MAP_TYPE      0x0f
 #define LINUX_MAP_FIXED     0x10
 #define LINUX_MAP_ANONYMOUS 0x20
+#define LINUX_MAP_FIXED_NOREPLACE 0x100000
 
 /* prctl and arch_prctl (linux/prctl.h, asm/prctl.h). */
 #define LINUX_PR_SET_NAME 15

@@ -201,6 +201,17 @@ int ks_map_anon(int slot, uint64_t va, vibeos_prot_t prot) {
     return r != 0 ? -1 : 0;
 }
 
+/* A mapping at an address the program chose goes in the high user window -
+ * the 512 GiB of PML4 slot 1 - and nowhere else. The low window, where Linux
+ * programs are linked, is carved out of the kernel's identity map a page at a
+ * time, over physical memory reserved for exactly the image that lives there;
+ * it is not somewhere to put an arbitrary mapping. */
+int ks_user_fixed_ok(uint64_t base, uint64_t len) {
+    const uint64_t lo = VIBEOS_HW_USER_BASE, hi = VIBEOS_HW_USER_BASE + (512ull << 30);
+
+    return base >= lo && len <= hi - lo && base <= hi - len;
+}
+
 int ks_map_user_pages(int slot, uint64_t va, uint64_t pages) {
     return hw_map_user_pages(&g_tasks[slot].proc.as, va, pages);
 }

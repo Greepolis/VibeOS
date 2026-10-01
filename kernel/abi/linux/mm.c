@@ -1,33 +1,47 @@
 /* Linux ABI: brk, mmap, mprotect, munmap and pageinfo.
  *
- * Lifted out of arch_hw.c (C4 stage 3). Nothing here is new: the handlers and the
- * helpers only they use, moved as they were. */
+ * Lifted out of arch_hw.c (C4 stage 3) as they were. Since docs/abi/ L3 mmap
+ * places a mapping where the program says and maps a file's contents. */
 
 #include "linux_internal.h"
 
-/* Claim `pages` of anonymous address space for the calling process, or 0.
- *
- * The cursor is the process's, so two threads can reach it at once. What this
- * replaced was worse than a race: each thread held a private copy, so a
- * thread's mmap never moved main's cursor and main was handed the same base
- * every time. A compare-exchange claims the range before anything is mapped,
- * so no two callers are given the same pages and nobody holds a lock across the
- * mapping. A range whose mapping later fails stays a hole - address space, not
- * memory. */
-static uint64_t linux_mmap_claim(vibeos_procstate_t *ps, uint64_t pages) {
-    uint64_t base;
+/* Does any region of the process overlap [base, base + len)? The first one
+ * that does, or null. Under the process's mm lock. */
+static vibeos_vma_t *linux_region_in(vibeos_procstate_t *ps, uint64_t base, uint64_t len) {
+    vibeos_vma_t *v;
 
-    for (;;) {
-        base = __atomic_load_n(&ps->mmap_cur, __ATOMIC_ACQUIRE);
-        if (base + pages * 4096ull < base) {
-            return 0u;
-        }
-        if (__atomic_compare_exchange_n(&ps->mmap_cur, &base,
-                                        base + pages * 4096ull, 0,
-                                        __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
-            return base;
+    for (v = ps->vmas.head; v; v = v->next) {
+        if (v->base < base + len && base < v->base + v->len) {
+            return v;
         }
     }
+    return 0;
+}
+
+/* Address space for `pages` that nothing occupies, or 0. Under the mm lock.
+ *
+ * The arena is a cursor that only moves up, which was the whole of it while
+ * every mapping came from here. Since docs/abi/ L3 a program can put a mapping
+ * at an address it names, and that address can be ahead of the cursor - so the
+ * cursor steps over whatever is already there rather than assuming nothing is.
+ * A range whose mapping later fails stays a hole: address space, not memory. */
+static uint64_t linux_mmap_place(vibeos_procstate_t *ps, uint64_t pages) {
+    uint64_t base = __atomic_load_n(&ps->mmap_cur, __ATOMIC_ACQUIRE);
+    const uint64_t bytes = pages * 4096ull;
+    vibeos_vma_t *v;
+
+    for (;;) {
+        if (base + bytes < base || !ks_user_fixed_ok(base, bytes)) {
+            return 0u;
+        }
+        v = linux_region_in(ps, base, bytes);
+        if (!v) {
+            break;
+        }
+        base = v->base + v->len;
+    }
+    __atomic_store_n(&ps->mmap_cur, base + bytes, __ATOMIC_RELEASE);
+    return base;
 }
 
 /* brk(0) reports the break; brk(addr) moves it, mapping fresh pages or giving
@@ -101,12 +115,6 @@ static long linux_sys_brk(uint64_t addr) {
     return r;
 }
 
-/* Anonymous mmap: bump the per-process arena and map zeroed pages.
- *
- * The address hint is ignored - the arena is bump-allocated, so honouring a
- * fixed address would require a real VMA tree. MAP_FIXED is therefore refused
- * rather than quietly ignored: a program that asks for a specific address and
- * silently gets another one corrupts itself later, far from here. */
 /* The syscall's protection bits as this kernel's own type. One place, because
  * mmap and mprotect must agree about what a region's protection means or the
  * list and the tables drift apart - which is the drift this layer exists to
@@ -127,7 +135,84 @@ static vibeos_prot_t linux_prot_of(uint64_t prot) {
     return p;
 }
 
-/* Runs under the process's mm lock; see linux_sys_mmap.
+/* Take [addr, end) out of the caller's address space: the regions first, so
+ * nothing is described after it has stopped existing, then the pages. munmap's
+ * body, and what a mapping at a fixed address does to whatever was there. Under
+ * the mm lock. */
+static void linux_unmap_range(int me, vibeos_procstate_t *ps, uint64_t addr, uint64_t end) {
+    vibeos_vmspace_t v = ks_vm(me);
+    uint64_t va;
+
+    (void)vibeos_vma_remove(&ps->vmas, addr, end - addr);
+    for (va = addr; va < end; va += 4096ull) {
+        /* One call, and it is the last page-table write that lived outside
+         * kernel/mm/vmspace.c.
+         *
+         * The two rules this used to get wrong are now properties of the
+         * layer rather than of this loop. It freed the frame outright, which
+         * is correct only for a page nobody else has - and after a fork that
+         * is the rare case, so unmapping a copy-on-write page put it back on
+         * the free list while another process was still running from it. And
+         * it decided ownership by asking whether the page was present and
+         * user-reachable, the same inference that freed the kernel's identity
+         * map from teardown; munmap had simply never been pointed at a
+         * low-window address by anything that mattered.
+         *
+         * That premature free was chased three times from the far end and
+         * presented as something different each time: a musl program tripping
+         * over its own malloc bins, init printing a pointer where a pid
+         * belonged, a forked child reading back something it had not
+         * written. */
+        if (vibeos_vmspace_unmap(&v, va) == 1) {
+            ks_log(VIBEOS_LOG_DEBUG, 45u, va, 0, "munmap released a page (a0 = address)");
+        }
+    }
+    /* A shootdown still does not belong here, and the gap it left is closed a
+     * different way.
+     *
+     * The need was real and this comment used to end by admitting it was
+     * unmet: a thread of this process on another core still holds the old
+     * translation for an address whose frame has just been handed back, so it
+     * can write into memory that now belongs to somebody else. An external
+     * review found the admission and was right to call it a defect rather than
+     * a note.
+     *
+     * A synchronous barrier is still the wrong answer, for the measured reason:
+     * it was tried, and two runs in twenty-four failed with `tlb_acks below
+     * shootdowns`. `syscall` clears IF, so a target cannot take the IPI until
+     * it returns to ring 3, and munmap runs far more often than fork.
+     *
+     * What changed is that asking is not the only option. The frame is parked
+     * instead - vb.release_deferred - and released once every other core has
+     * loaded CR3, which flushes its whole TLB. Nobody waits for anybody; the
+     * timer makes every core quiescent on its own. The same shape as the dead
+     * kernel stack a core parks until it is provably running on another.
+     *
+     * Drained here as well as on the timer so a machine doing nothing but
+     * unmapping still gives frames back. */
+    ks_tlb_drain();
+}
+
+/* mmap(addr, len, prot, flags, fd, offset).
+ *
+ * **Where.** At the address given when the program insists (MAP_FIXED), taking
+ * the place of whatever was mapped there - which is how a dynamic loader lays a
+ * library's segments over the range it reserved for it - or refusing if anything
+ * was (MAP_FIXED_NOREPLACE, EEXIST). Otherwise at the address hinted when that
+ * range is free, and failing that wherever the arena has room. A fixed address
+ * the architecture does not allow a mapping at is ENOMEM, as an address past
+ * the end of user memory is on Linux.
+ *
+ * **What.** Zeroed pages, or the bytes of a file from `offset`: a private
+ * mapping of a file is the file's contents in pages of the process's own, read
+ * when the mapping is made. That is what MAP_PRIVATE promises - writes stay in
+ * the process and never reach the file - and what it leaves open (whether a
+ * later change to the file shows through) is answered "no". The pages past the
+ * end of the file read as zeros, where Linux raises SIGBUS beyond the last
+ * page that holds any of it.
+ *
+ * A shared mapping of a file is still refused (step 2), and a shared anonymous
+ * one is made but is private after a fork - the gap the registry names.
  *
  * PROT_NONE is a mapping with no access, which is how a thread stack is made: a
  * C library asks for stack plus guard as one PROT_NONE region and then
@@ -144,86 +229,149 @@ static vibeos_prot_t linux_prot_of(uint64_t prot) {
  * question that two ranges could not, at the cost of a frame per guard page -
  * ks_map_anon maps VIBEOS_PROT_NONE with no user access, so ring 3 faults on it
  * exactly as a guard should. Any other protection is executable only when asked
- * for (M-036). */
-static long linux_mmap_locked(int me, vibeos_procstate_t *ps, uint64_t len,
-                              uint64_t prot) {
-    uint64_t pages, base, i;
+ * for (M-036).
+ *
+ * Runs under the process's mm lock, so a fork cloning the tables and the region
+ * list, or a sibling's brk or munmap, cannot see it half-built. */
+static long linux_mmap_locked(int me, vibeos_procstate_t *ps, uint64_t addr, uint64_t len,
+                              uint64_t prot, uint64_t flags, vibeos_file_t *f, uint64_t off) {
+    const vibeos_prot_t want = linux_prot_of(prot);
+    const vibeos_prot_t fill = (vibeos_prot_t)(VIBEOS_PROT_READ | VIBEOS_PROT_WRITE | VIBEOS_PROT_USER);
+    const uint64_t pages = (len + 0xFFFull) / 4096ull, bytes = pages * 4096ull;
+    vibeos_vmspace_t v = ks_vm(me);
+    uint64_t base, i;
+    long r = 0;
 
-    pages = (len + 0xFFFull) / 4096ull;
-    base = linux_mmap_claim(ps, pages);
-    if (base == 0u) {
-        return -VIBEOS_ENOMEM;
-    }
-    for (i = 0; i < pages; i++) {
-        if (ks_map_anon(me, base + i * 4096ull, linux_prot_of(prot)) != 0) {
-            /* Roll back what was mapped. Two leaks lived here, and in the
-             * ordinary-malloc path there was no rollback at all (M-002's fix
-             * went into the reservation loop and missed the other one): the
-             * pages already mapped stayed mapped with no region describing
-             * them, and the cursor is claimed before anything is mapped, so
-             * nothing would ever map over them again. ks_map_anon gives back
-             * the page it could not map itself. */
-            uint64_t j;
-            vibeos_vmspace_t v = ks_vm(me);
-
-            for (j = 0; j < i; j++) {
-                (void)vibeos_vmspace_unmap(&v, base + j * 4096ull);
+    if (flags & (LINUX_MAP_FIXED | LINUX_MAP_FIXED_NOREPLACE)) {
+        if ((addr & 0xFFFull) != 0u) {
+            return -VIBEOS_EINVAL;
+        }
+        if (!ks_user_fixed_ok(addr, bytes)) {
+            return -VIBEOS_ENOMEM;
+        }
+        if (flags & LINUX_MAP_FIXED_NOREPLACE) {
+            if (linux_region_in(ps, addr, bytes)) {
+                return -VIBEOS_EEXIST;
             }
-            ks_tlb_drain();
+        } else {
+            linux_unmap_range(me, ps, addr, addr + bytes);
+        }
+        base = addr;
+    } else {
+        base = addr & ~0xFFFull;
+        if (base == 0u || !ks_user_fixed_ok(base, bytes) || linux_region_in(ps, base, bytes)) {
+            base = linux_mmap_place(ps, pages);   /* a hint is a hint */
+        }
+        if (base == 0u) {
             return -VIBEOS_ENOMEM;
         }
     }
-    (void)vibeos_vma_insert(&ps->vmas, base, pages * 4096ull,
-                            linux_prot_of(prot), VIBEOS_BACKING_ANON, 0, 0);
+    for (i = 0; i < pages && r == 0; i++) {
+        /* A file's page is mapped writable to be filled, whatever was asked
+         * for, and given its real protection after. */
+        if (ks_map_anon(me, base + i * 4096ull, f ? fill : want) != 0) {
+            r = -VIBEOS_ENOMEM;
+            break;
+        }
+    }
+    for (i = 0; f && i < pages && r == 0; i++) {
+        /* Into the mapping itself: the file's read copies to a user address,
+         * and this is one now. A short read is the end of the file, and the
+         * rest stays zeros. */
+        long n = f->ops->pread(f, base + i * 4096ull, 4096u, off + i * 4096ull);
+        if (n < 0) {
+            r = n;
+        } else if (n < 4096) {
+            break;
+        }
+    }
+    if (r != 0) {
+        /* Roll back what was mapped. Two leaks lived here, and in the
+         * ordinary-malloc path there was no rollback at all (M-002's fix went
+         * into the reservation loop and missed the other one): the pages
+         * already mapped stayed mapped with no region describing them, and the
+         * address space is claimed before anything is mapped, so nothing would
+         * ever map over them again. ks_map_anon gives back the page it could
+         * not map itself. */
+        for (i = 0; i < pages; i++) {
+            (void)vibeos_vmspace_unmap(&v, base + i * 4096ull);
+        }
+        ks_tlb_drain();
+        return r;
+    }
+    (void)vibeos_vma_insert(&ps->vmas, base, bytes, want, VIBEOS_BACKING_ANON, 0, 0);
+    if (f && want != fill) {
+        for (i = 0; i < pages; i++) {
+            (void)vibeos_vmspace_protect(&v, base + i * 4096ull, want);
+            ks_tlb_flush_page(base + i * 4096ull);
+        }
+    }
     return (long)base;
 }
 
-static long linux_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot,
-                        uint64_t flags, uint64_t fd) {
+static long linux_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot, uint64_t flags, uint64_t fd,
+                           uint64_t off) {
     vibeos_procstate_t *ps;
+    vibeos_file_t *f = 0;
+    long r;
 
     ks_log(VIBEOS_LOG_DEBUG, 12u, len, prot | (flags << 32), "mmap");
     if (ks_current() < 0 || !ks_id(ks_current())->is_user || len == 0u) {
         return -VIBEOS_EINVAL;
     }
-    /* Both branches below round with (len + 0xFFF) / 4096, and for a length
-     * within a page of 2^64 that sum wraps to a page count of zero: nothing was
-     * claimed, nothing mapped, and the call returned success with the base the
-     * next caller would also get (M-006, verified). Refused before the sum, with
+    /* The page count is (len + 0xFFF) / 4096, and for a length within a page
+     * of 2^64 that sum wraps to a page count of zero: nothing was claimed,
+     * nothing mapped, and the call returned success with the base the next
+     * caller would also get (M-006, verified). Refused before the sum, with
      * the answer Linux gives when the aligned length is zero. */
     if (len > ~0ull - 0xFFFull) {
         return -VIBEOS_ENOMEM;
     }
-    /* Established here, before anything reads it. The reservation branch below
-     * used it one statement too early and handed back a base of zero, which a
-     * C library then mprotected at address 0x2000 - a thread stack placed on
-     * top of nothing. */
+    /* Private or shared, and one of them: Linux refuses a mapping that says
+     * neither, because the two mean different things for every later write. */
+    if ((flags & LINUX_MAP_TYPE) != LINUX_MAP_PRIVATE && (flags & LINUX_MAP_TYPE) != LINUX_MAP_SHARED &&
+        (flags & LINUX_MAP_TYPE) != LINUX_MAP_SHARED_VALIDATE) {
+        return -VIBEOS_EINVAL;
+    }
     ps = ks_ps(ks_current());
     if (!ps) {
         return -VIBEOS_EINVAL;
     }
-    if (flags & LINUX_MAP_FIXED) {
-        ks_log(VIBEOS_LOG_WARN, 10u, addr, flags, "mmap refused: MAP_FIXED");
-        return -VIBEOS_EINVAL;
+    if (!(flags & LINUX_MAP_ANONYMOUS)) {
+        /* The file, held for as long as it is being read from. The mapping
+         * does not keep it: the bytes are the process's own once copied, which
+         * is why closing the descriptor afterwards changes nothing. */
+        if ((off & 0xFFFull) != 0u || (int64_t)off < 0) {
+            return -VIBEOS_EINVAL;
+        }
+        if (!(f = linux_file_get(fd))) {
+            return -VIBEOS_EBADF;
+        }
+        if (f->ops != &vibeos_fops_regular) {
+            /* A directory, a pipe, a socket, the console: nothing to map. */
+            vibeos_file_put(f);
+            return -VIBEOS_ENODEV;
+        }
+        if ((f->flags & VIBEOS_O_ACCMODE) == VIBEOS_O_WRONLY) {
+            vibeos_file_put(f);
+            return -VIBEOS_EACCES;
+        }
+        if ((flags & LINUX_MAP_TYPE) != LINUX_MAP_PRIVATE) {
+            /* Shared with the file: a store has to reach it, and every other
+             * mapping of it. Step 2. Said rather than answered with a private
+             * copy, which would look like a file nobody else's writes reach. */
+            vibeos_file_put(f);
+            ks_log(VIBEOS_LOG_WARN, 11u, flags, fd, "mmap refused: shared file mapping");
+            return -VIBEOS_ENOSYS;
+        }
     }
-    /* File-backed mappings need a page cache this kernel does not have. Say so
-     * instead of returning anonymous zeroes, which would look like a file full
-     * of NULs. */
-    if ((flags & LINUX_MAP_ANONYMOUS) == 0 || VIBEOS_ARG_INT(fd) >= 0) {
-        ks_log(VIBEOS_LOG_WARN, 11u, flags, fd,
-               "mmap refused: file-backed mapping");
-        return -VIBEOS_ENOSYS;
-    }
-    /* The mapping runs under the process address-space lock, so a fork
-     * cloning the tables and region list, or a sibling brk/munmap, cannot
-     * see it half-built. mmap does no shootdown, so holding the lock is
-     * safe here (mprotect, which does, is the exception). */
     ks_mm_lock(ps);
-    {
-        long r = linux_mmap_locked(ks_current(), ps, len, prot);
-        ks_mm_unlock(ps);
-        return r;
+    r = linux_mmap_locked(ks_current(), ps, addr, len, prot, flags, f, off);
+    ks_mm_unlock(ps);
+    if (f) {
+        vibeos_file_put(f);
     }
+    return r;
 }
 
 /* mprotect(): change permissions on pages that are already mapped.
@@ -320,7 +468,7 @@ static long linux_sys_mprotect(uint64_t addr, uint64_t len, uint64_t prot) {
  * reuse - but the pages are unmapped for real, so a use-after-unmap faults
  * here exactly as it would on Linux instead of quietly still working. */
 static long linux_sys_munmap(uint64_t addr, uint64_t len) {
-    uint64_t va, end;
+    uint64_t end;
     int me = ks_current();
 
     if (me < 0 || !ks_id(me)->is_user) {
@@ -338,68 +486,14 @@ static long linux_sys_munmap(uint64_t addr, uint64_t len) {
     end = (addr + len + 0xFFFull) & ~0xFFFull;
     /* One mutation of this process's address space at a time: a fork cloning
      * the tables and the region list, or a sibling's brk, must not see this
-     * range half-removed. Single exit below, so one release. See ks_mm_lock. */
-    ks_mm_lock(ks_ps(me));
-    /* The list decides what this range contains; the page tables are then made
+     * range half-removed. See ks_mm_lock.
+     *
+     * The list decides what this range contains; the page tables are then made
      * to agree. That order is the phase: the tables record what the hardware
      * currently does, and asking *them* what to release is what let munmap free
-     * frames that belonged to somebody else.
-     *
-     * Removed first, so a region is never described after it has stopped
-     * existing - the same publish-last rule as everywhere else in here. */
-    (void)vibeos_vma_remove(&ks_ps(me)->vmas, addr, end - addr);
-    {
-        vibeos_vmspace_t v = ks_vm(me);
-
-        for (va = addr; va < end; va += 4096ull) {
-            /* One call, and it is the last page-table write that lived outside
-             * kernel/mm/vmspace.c.
-             *
-             * The two rules this used to get wrong are now properties of the
-             * layer rather than of this loop. It freed the frame outright,
-             * which is correct only for a page nobody else has - and after a
-             * fork that is the rare case, so unmapping a copy-on-write page put
-             * it back on the free list while another process was still running
-             * from it. And it decided ownership by asking whether the page was
-             * present and user-reachable, the same inference that freed the
-             * kernel's identity map from teardown; munmap had simply never been
-             * pointed at a low-window address by anything that mattered.
-             *
-             * That premature free was chased three times from the far end and
-             * presented as something different each time: a musl program
-             * tripping over its own malloc bins, init printing a pointer where
-             * a pid belonged, a forked child reading back something it had not
-             * written. */
-            if (vibeos_vmspace_unmap(&v, va) == 1) {
-                ks_log(VIBEOS_LOG_DEBUG, 45u, va, 0,
-                       "munmap released a page (a0 = address)");
-            }
-        }
-    }
-    /* A shootdown still does not belong here, and the gap it left is closed a
-     * different way.
-     *
-     * The need was real and this comment used to end by admitting it was
-     * unmet: a thread of this process on another core still holds the old
-     * translation for an address whose frame has just been handed back, so it
-     * can write into memory that now belongs to somebody else. An external
-     * review found the admission and was right to call it a defect rather than
-     * a note.
-     *
-     * A synchronous barrier is still the wrong answer, for the measured reason:
-     * it was tried, and two runs in twenty-four failed with `tlb_acks below
-     * shootdowns`. `syscall` clears IF, so a target cannot take the IPI until
-     * it returns to ring 3, and munmap runs far more often than fork.
-     *
-     * What changed is that asking is not the only option. The frame is parked
-     * instead - vb.release_deferred - and released once every other core has
-     * loaded CR3, which flushes its whole TLB. Nobody waits for anybody; the
-     * timer makes every core quiescent on its own. The same shape as the dead
-     * kernel stack a core parks until it is provably running on another.
-     *
-     * Drained here as well as on the timer so a machine doing nothing but
-     * unmapping still gives frames back. */
-    ks_tlb_drain();
+     * frames that belonged to somebody else. */
+    ks_mm_lock(ks_ps(me));
+    linux_unmap_range(me, ks_ps(me), addr, end);
     ks_mm_unlock(ks_ps(me));
     return 0;
 }
@@ -441,7 +535,7 @@ static long linux_sys_pageinfo(uint64_t va, uint64_t out_uptr) {
 
 /* ---- the syscalls this file implements --------------------------------------- */
 #define LINUX_MM_SYSCALLS(X) \
-    X(9,    mmap,     MAP,      NOPTR, linux_sys_mmap(ARG(0), ARG(1), ARG(2), ARG(3), ARG(4))) \
+    X(9,    mmap,     MAP,      NOPTR, linux_sys_mmap(ARG(0), ARG(1), ARG(2), ARG(3), ARG(4), ARG(5))) \
     X(10,   mprotect, PROTECT,  NOPTR, linux_sys_mprotect(ARG(0), ARG(1), ARG(2))) \
     X(11,   munmap,   UNMAP,    NOPTR, linux_sys_munmap(ARG(0), ARG(1))) \
     X(12,   brk,      BRK,      NOPTR, linux_sys_brk(ARG(0))) \

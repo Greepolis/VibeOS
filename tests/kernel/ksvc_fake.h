@@ -75,6 +75,12 @@ uint32_t kf_net_udp_sent(uint32_t *last_payload_len);
 
 /* What was written to the console, and how many lock/unlock calls did not pair. */
 const char *kf_console(void);
+/* Read and write memory a handler mapped (mmap, brk) - through the current
+ * task's page tables, as a program would reach it. 0, or -1 if the address is
+ * not mapped, or not writable for a poke. */
+int kf_peek(uint64_t va, void *out, uint64_t n);
+int kf_poke(uint64_t va, const void *in, uint64_t n);
+
 /* Type at the console: the bytes wait in the keyboard's queue until read. */
 void kf_type(const char *s);
 int kf_lock_imbalance(void);

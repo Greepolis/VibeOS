@@ -124,6 +124,10 @@ void ks_mm_unlock(vibeos_procstate_t *ps);
 vibeos_vmspace_t ks_vm(int slot);
 int ks_map_anon(int slot, uint64_t va, vibeos_prot_t prot);
 int ks_map_user_pages(int slot, uint64_t va, uint64_t pages);
+/* May a program place a mapping of `len` bytes at `base`, an address it chose?
+ * The architecture's policy on where user memory may be: a personality asks,
+ * for a mapping at a fixed address, and never decides. */
+int ks_user_fixed_ok(uint64_t base, uint64_t len);
 void ks_tlb_drain(void);
 void ks_tlb_flush_page(uint64_t va);
 void ks_pageinfo(int slot, uint64_t va, vibeos_pageinfo_t *out);

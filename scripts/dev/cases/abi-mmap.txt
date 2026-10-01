@@ -1,0 +1,155 @@
+# mmap by the rules, docs/abi/ L3 step 1 (kernel/abi/linux/mm.c), proved by the
+# handlers' host tests in tests/kernel/linux_abi_tests.c on the fake kernel's
+# real page tables.
+#
+# Each case names the expectation it should fail. Three went NOT RED first:
+#
+#  - "MAP_FIXED leaves what was there". The address-space layer releases the
+#    page a mapping replaces, so the pages were right without the handler's
+#    unmap. What the unmap is for is the region list, which refuses the new
+#    region as an overlap; the test maps over a mapped page and a free one now
+#    and asks mprotect about the second.
+#  - "a file mapping ignores its offset". The test file's pattern repeated
+#    every 256 bytes, so the byte at offset 4096 was the byte at 0.
+#  - "anything with a descriptor can be mapped" goes red by crashing - the
+#    handler calls a read operation a pipe does not have - and not by the
+#    expectation that names it. Kept, and counted as that kind of red.
+#
+# Target source: kernel/abi/linux/mm.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/linux/mm.c scripts/dev/cases/abi-mmap.txt
+
+### a mapping need not say whether it is private or shared
+--- old
+    if ((flags & LINUX_MAP_TYPE) != LINUX_MAP_PRIVATE && (flags & LINUX_MAP_TYPE) != LINUX_MAP_SHARED &&
+        (flags & LINUX_MAP_TYPE) != LINUX_MAP_SHARED_VALIDATE) {
+        return -VIBEOS_EINVAL;
+    }
++++ new
+
+### MAP_FIXED is placed by the arena
+--- old
+        base = addr;
+    } else {
++++ new
+        base = linux_mmap_place(ps, pages);
+    } else {
+
+### MAP_FIXED leaves what was there
+--- old
+        } else {
+            linux_unmap_range(me, ps, addr, addr + bytes);
+        }
++++ new
+        }
+
+### MAP_FIXED_NOREPLACE replaces
+--- old
+            if (linux_region_in(ps, addr, bytes)) {
+                return -VIBEOS_EEXIST;
+            }
++++ new
+
+### a fixed address need not be page aligned
+--- old
+        if ((addr & 0xFFFull) != 0u) {
+            return -VIBEOS_EINVAL;
+        }
+        if (!ks_user_fixed_ok(addr, bytes)) {
++++ new
+        if (!ks_user_fixed_ok(addr, bytes)) {
+
+### a fixed address may be anywhere
+--- old
+        if (!ks_user_fixed_ok(addr, bytes)) {
+            return -VIBEOS_ENOMEM;
+        }
++++ new
+
+### a hint is ignored
+--- old
+        if (base == 0u || !ks_user_fixed_ok(base, bytes) || linux_region_in(ps, base, bytes)) {
++++ new
+        if (1) {
+
+### a hint is taken even when the range is in use
+--- old
+        if (base == 0u || !ks_user_fixed_ok(base, bytes) || linux_region_in(ps, base, bytes)) {
++++ new
+        if (base == 0u || !ks_user_fixed_ok(base, bytes)) {
+
+### the arena does not step over what is already mapped
+--- old
+        v = linux_region_in(ps, base, bytes);
+        if (!v) {
+            break;
+        }
+        base = v->base + v->len;
++++ new
+        (void)v;
+        break;
+
+### a file's bytes are not read into its mapping
+--- old
+        long n = f->ops->pread(f, base + i * 4096ull, 4096u, off + i * 4096ull);
++++ new
+        long n = 0;
+
+### a file mapping ignores its offset
+--- old
+        long n = f->ops->pread(f, base + i * 4096ull, 4096u, off + i * 4096ull);
++++ new
+        long n = f->ops->pread(f, base + i * 4096ull, 4096u, i * 4096ull);
+
+### only the first page of a file is read
+--- old
+        } else if (n < 4096) {
+            break;
+        }
++++ new
+        } else {
+            break;
+        }
+
+### a file mapping stays writable whatever was asked
+--- old
+    if (f && want != fill) {
++++ new
+    if (0) {
+
+### an offset need not be a page multiple
+--- old
+        if ((off & 0xFFFull) != 0u || (int64_t)off < 0) {
+            return -VIBEOS_EINVAL;
+        }
++++ new
+
+### anything with a descriptor can be mapped
+--- old
+        if (f->ops != &vibeos_fops_regular) {
+            /* A directory, a pipe, a socket, the console: nothing to map. */
+            vibeos_file_put(f);
+            return -VIBEOS_ENODEV;
+        }
++++ new
+
+### a write-only descriptor can be mapped
+--- old
+        if ((f->flags & VIBEOS_O_ACCMODE) == VIBEOS_O_WRONLY) {
+            vibeos_file_put(f);
+            return -VIBEOS_EACCES;
+        }
++++ new
+
+### a shared file mapping is made as a private one
+--- old
+            vibeos_file_put(f);
+            ks_log(VIBEOS_LOG_WARN, 11u, flags, fd, "mmap refused: shared file mapping");
+            return -VIBEOS_ENOSYS;
++++ new
+            (void)fd;
+
+### MAP_ANONYMOUS looks at the descriptor
+--- old
+    if (!(flags & LINUX_MAP_ANONYMOUS)) {
++++ new
+    if (!(flags & LINUX_MAP_ANONYMOUS) || VIBEOS_ARG_INT(fd) >= 0) {

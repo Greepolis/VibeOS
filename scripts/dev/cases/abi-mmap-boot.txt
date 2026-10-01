@@ -1,0 +1,15 @@
+# mmap at boot (docs/abi/ L3 step 1): the ring-3 self-test maps over a page at
+# a fixed address and maps its own image off the FAT boot volume.
+#
+#  1. a file's bytes are not read into its mapping. Expect
+#     linux_abi_selftest_failed: the mapping of the program's image does not
+#     begin with the ELF magic.
+#
+# Target source: kernel/abi/linux/mm.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/mm.c scripts/dev/cases/abi-mmap-boot.txt
+
+### a file's bytes are not read into its mapping
+--- old
+        long n = f->ops->pread(f, base + i * 4096ull, 4096u, off + i * 4096ull);
++++ new
+        long n = 0;

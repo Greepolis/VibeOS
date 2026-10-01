@@ -8,6 +8,11 @@
 #include "ksvc_fake.h"
 #include "vibeos/filelock.h"
 #include "vibeos/tty.h"
+#include "vibeos/frame.h"
+#include "vibeos/rmap.h"
+#include "vibeos/vmspace.h"
+#include "vibeos/vma.h"
+#include "vibeos/mm_stats.h"
 #include "vibeos/tmpfs.h"
 #include "vibeos/fdtable.h"
 #include "vibeos/file.h"
@@ -25,6 +30,8 @@ typedef struct {
     uint32_t seq;
     uint64_t tls;
     const char *ready_by;
+    vibeos_vmspace_t as;          /* its address space (docs/abi/ L3) */
+    int has_as;
 } kf_task_t;
 
 #define KF_PROCS 16u
@@ -39,6 +46,90 @@ static uint32_t g_illegal;
 static uint8_t g_user[KF_USER_BYTES] __attribute__((aligned(4096)));
 static uint64_t g_user_used;
 static uint64_t g_fault_base, g_fault_len;
+
+/* ---- an address space (docs/abi/ L3) ------------------------------------------------
+ *
+ * The memory handlers - mmap, munmap, mprotect, brk - could not run here: this
+ * file had no page tables, and said so by failing every mapping. It has them
+ * now, the real ones: kernel/mm's frame layer and address-space layer over a
+ * few megabytes of static memory, exactly as their own host tests set them up.
+ *
+ * A mapped address is not a host pointer. Everything a handler copies to or from
+ * user memory goes through vibeos_uaccess_copy, which finds the page through the
+ * current task's tables as the hardware would - and takes the copy-on-write
+ * fault a kernel-mode store takes. Addresses in the window below are looked up
+ * that way; anything else is the flat arena kf_ualloc hands out, as before. */
+#define KF_MM_LO 0x10000000ull            /* ks_heap_base                     */
+#define KF_MM_HI 0x100000000ull           /* four gigabytes: no host pointer  */
+#define KF_PHYS_BASE 0x40000000ull
+#define KF_FRAMES 1024u
+#define KF_PTE_PRESENT 1ull
+#define KF_PTE_WRITE 2ull
+#define KF_PTE_USER 4ull
+#define KF_PTE_COW (1ull << 9)
+#define KF_PTE_ADDR 0x000FFFFFFFFFF000ull
+
+static uint8_t g_kf_ram[KF_FRAMES * 4096u] __attribute__((aligned(4096)));
+static vibeos_frame_t g_kf_ftable[KF_FRAMES];
+static unsigned char g_kf_rpool[KF_FRAMES * sizeof(uint32_t) + 4096u];
+static vibeos_vma_t g_kf_vmas[512];
+
+static void *kf_phys(uint64_t phys) {
+    if (phys < KF_PHYS_BASE || phys >= KF_PHYS_BASE + (uint64_t)KF_FRAMES * 4096ull) {
+        return 0;
+    }
+    return g_kf_ram + (phys - KF_PHYS_BASE);
+}
+
+static uint64_t kf_alloc_table(void) { return vibeos_frame_alloc(VIBEOS_FRAME_PAGE_TABLE); }
+static void kf_free_table(uint64_t phys) { (void)vibeos_frame_put(phys); }
+
+static void kf_mm_reset(void) {
+    vibeos_vmspace_backend_t be;
+
+    memset(g_kf_ftable, 0, sizeof(g_kf_ftable));
+    memset(g_kf_rpool, 0, sizeof(g_kf_rpool));
+    vibeos_mm_stats_reset();
+    (void)vibeos_frame_init(KF_PHYS_BASE, (uint64_t)KF_FRAMES * 4096ull, g_kf_ftable, KF_FRAMES,
+                            kf_phys);
+    vibeos_rmap_set_base(KF_PHYS_BASE);
+    (void)vibeos_rmap_init(g_kf_rpool, (uint64_t)sizeof(g_kf_rpool), KF_FRAMES);
+    memset(&be, 0, sizeof(be));
+    be.map_phys = kf_phys;
+    be.alloc_table = kf_alloc_table;
+    be.free_table = kf_free_table;
+    (void)vibeos_vmspace_init(&be);
+    vibeos_vma_pool_init(g_kf_vmas, (uint32_t)(sizeof(g_kf_vmas) / sizeof(g_kf_vmas[0])));
+}
+
+static int kf_mm_va(uint64_t va) { return va >= KF_MM_LO && va < KF_MM_HI; }
+
+/* The host memory behind one mapped address of the current task, or null. A
+ * store to a page that is read-only because it is shared takes the fault the
+ * kernel's own store would take. */
+static uint8_t *kf_mm_ptr(uint64_t va, int write) {
+    uint64_t *e;
+    uint8_t *page;
+
+    if (g_cur < 0 || !g_t[g_cur].has_as) {
+        return 0;
+    }
+    e = vibeos_vmspace_entry(&g_t[g_cur].as, va);
+    if (!e || !(*e & KF_PTE_PRESENT) || !(*e & KF_PTE_USER)) {
+        return 0;
+    }
+    if (write && !(*e & KF_PTE_WRITE)) {
+        if (vibeos_vmspace_fault(&g_t[g_cur].as, va, 1) != 1) {
+            return 0;
+        }
+        e = vibeos_vmspace_entry(&g_t[g_cur].as, va);
+        if (!e || !(*e & KF_PTE_WRITE)) {
+            return 0;
+        }
+    }
+    page = (uint8_t *)kf_phys(*e & KF_PTE_ADDR);
+    return page ? page + (va & 0xFFFull) : 0;
+}
 
 static jmp_buf g_escape;
 static int g_in_call;
@@ -383,6 +474,7 @@ static void kf_procstate_init(vibeos_procstate_t *ps) {
     ps->refs = 1u;
     ps->files_users = 1u;
     ps->brk_cur = 0x10000000ull;
+    ps->mmap_cur = 0x20000000ull;
 }
 
 static void kf_pipe_lock(void) {}
@@ -408,6 +500,7 @@ void kf_reset(void) {
     for (i = 0; i < KF_PROCS; i++) {
         vibeos_fdtable_destroy(&g_ps[i].files);
     }
+    kf_mm_reset();
     vibeos_file_reset();
     vibeos_flk_set_lock(kf_pipe_lock, kf_pipe_unlock);
     vibeos_flk_reset();
@@ -481,6 +574,7 @@ int kf_spawn(uint32_t pid, uint32_t sid) {
     (void)vibeos_files_std_console(&g_ps[p].files);
     g_t[i].ps = &g_ps[p];
     g_t[i].seq++;
+    g_t[i].has_as = vibeos_vmspace_create(&g_t[i].as) == 0;
     return (int)i;
 }
 
@@ -679,7 +773,22 @@ static int kf_in_user(uint64_t base, uint64_t len) {
 }
 
 int ks_user_ok(uint64_t base, uint64_t len, int write) {
-    (void)write;
+    if (kf_mm_va(base)) {
+        /* A mapped range: every page present and reachable from ring 3, and
+         * for a store writable or copy-on-write - which a store resolves. */
+        uint64_t va, end = base + (len == 0u ? 1u : len);
+        if (g_cur < 0 || !g_t[g_cur].has_as || end < base || end > KF_MM_HI) {
+            return 0;
+        }
+        for (va = base & ~0xFFFull; va < end; va += 4096ull) {
+            uint64_t *e = vibeos_vmspace_entry(&g_t[g_cur].as, va);
+            if (!e || !(*e & KF_PTE_PRESENT) || !(*e & KF_PTE_USER) ||
+                (write && !(*e & (KF_PTE_WRITE | KF_PTE_COW)))) {
+                return 0;
+            }
+        }
+        return 1;
+    }
     return kf_in_user(base, len == 0u ? 1u : len);
 }
 int ks_user_addr_ok(uint64_t va) { return va == 0u ? 0 : kf_in_user(va, 1u); }
@@ -696,11 +805,42 @@ static int kf_faults(const void *p, uint64_t n) {
 }
 
 int vibeos_uaccess_copy(void *dst, const void *src, uint64_t len) {
+    uint64_t d = (uint64_t)(uintptr_t)dst, s = (uint64_t)(uintptr_t)src, done = 0;
+
     if (kf_faults(dst, len) || kf_faults(src, len)) {
         return -1;
     }
-    memmove(dst, src, (size_t)len);
+    if (!kf_mm_va(d) && !kf_mm_va(s)) {
+        memmove(dst, src, (size_t)len);
+        return 0;
+    }
+    /* One side is a mapped address: a page at a time, through the tables. */
+    while (done < len) {
+        uint64_t n = len - done, room;
+        uint8_t *dp = kf_mm_va(d + done) ? kf_mm_ptr(d + done, 1) : (uint8_t *)(uintptr_t)(d + done);
+        const uint8_t *sp = kf_mm_va(s + done) ? kf_mm_ptr(s + done, 0)
+                                               : (const uint8_t *)(uintptr_t)(s + done);
+        if (!dp || !sp) {
+            return -1;
+        }
+        if (kf_mm_va(d + done) && (room = 4096ull - ((d + done) & 0xFFFull)) < n) {
+            n = room;
+        }
+        if (kf_mm_va(s + done) && (room = 4096ull - ((s + done) & 0xFFFull)) < n) {
+            n = room;
+        }
+        memmove(dp, sp, (size_t)n);
+        done += n;
+    }
     return 0;
+}
+
+int kf_peek(uint64_t va, void *out, uint64_t n) {
+    return vibeos_uaccess_copy(out, (const void *)(uintptr_t)va, n);
+}
+
+int kf_poke(uint64_t va, const void *in, uint64_t n) {
+    return vibeos_uaccess_copy((void *)(uintptr_t)va, in, n);
 }
 
 int ks_copy_user_string(uint64_t uptr, char *dst, int max) {
@@ -722,14 +862,40 @@ void ks_mm_lock(vibeos_procstate_t *ps) { ps->mm_busy = 1u; }
 void ks_mm_unlock(vibeos_procstate_t *ps) { ps->mm_busy = 0u; }
 vibeos_vmspace_t ks_vm(int slot) {
     vibeos_vmspace_t v;
-    (void)slot;
     memset(&v, 0, sizeof(v));
-    return v;
+    return g_t[slot].has_as ? g_t[slot].as : v;
 }
-/* No page tables here: a handler that reaches these is a test that needs the
- * memory manager's own harness (vmspace_tests.c), and says so by failing. */
-int ks_map_anon(int slot, uint64_t va, vibeos_prot_t prot) { (void)slot; (void)va; (void)prot; return -1; }
-int ks_map_user_pages(int slot, uint64_t va, uint64_t pages) { (void)slot; (void)va; (void)pages; return -1; }
+/* One fresh zeroed page at `va`, as the architecture maps one: the frame is
+ * allocated, mapped - the mapping takes its own reference - and the
+ * allocation's reference given back. */
+int ks_map_anon(int slot, uint64_t va, vibeos_prot_t prot) {
+    uint64_t phys;
+
+    if (!g_t[slot].has_as || (phys = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED)) == 0u) {
+        return -1;
+    }
+    memset(kf_phys(phys), 0, 4096u);
+    if (vibeos_vmspace_map(&g_t[slot].as, va, phys, prot) != 0) {
+        (void)vibeos_frame_put(phys);
+        return -1;
+    }
+    (void)vibeos_frame_put(phys);
+    return 0;
+}
+int ks_map_user_pages(int slot, uint64_t va, uint64_t pages) {
+    uint64_t i;
+    for (i = 0; i < pages; i++) {
+        if (ks_map_anon(slot, va + i * 4096ull,
+                        (vibeos_prot_t)(VIBEOS_PROT_READ | VIBEOS_PROT_WRITE | VIBEOS_PROT_USER)) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+/* Where a program may put a mapping it names the address of. */
+int ks_user_fixed_ok(uint64_t base, uint64_t len) {
+    return base >= KF_MM_LO && len <= KF_MM_HI - KF_MM_LO && base <= KF_MM_HI - len;
+}
 void ks_tlb_drain(void) {}
 void ks_tlb_flush_page(uint64_t va) { (void)va; }
 void ks_pageinfo(int slot, uint64_t va, vibeos_pageinfo_t *out) {
@@ -762,8 +928,24 @@ void ks_procstate_put(vibeos_procstate_t *ps) {
         ps->refs--;
     }
 }
-int ks_fork_aspace(int child, int parent) { (void)child; (void)parent; return 0; }
-void ks_drop_aspace(int slot) { (void)slot; }
+int ks_fork_aspace(int child, int parent) {
+    if (!g_t[parent].has_as || vibeos_vmspace_create(&g_t[child].as) != 0) {
+        return -1;
+    }
+    g_t[child].has_as = 1;
+    if (vibeos_vmspace_clone_cow(&g_t[child].as, &g_t[parent].as) != 0) {
+        (void)vibeos_vmspace_destroy(&g_t[child].as);
+        g_t[child].has_as = 0;
+        return -1;
+    }
+    return 0;
+}
+void ks_drop_aspace(int slot) {
+    if (g_t[slot].has_as) {
+        (void)vibeos_vmspace_destroy(&g_t[slot].as);
+        g_t[slot].has_as = 0;
+    }
+}
 int ks_alloc_kstack(int slot) { (void)slot; return 0; }
 void ks_fork_regs(int child, int parent, const ks_regs_t *frame) {
     (void)frame;

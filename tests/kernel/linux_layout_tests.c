@@ -39,6 +39,7 @@ int test_linux_layout(void) {
 #include <asm/termbits.h>
 #include <asm/termios.h>
 #include <asm/mman.h>
+#include <linux/mman.h>
 #include <asm/prctl.h>
 #include <linux/time_types.h>
 #include <linux/utsname.h>
@@ -343,6 +344,13 @@ int test_linux_layout(void) {
     LIBC_CONST(LINUX_DT_LNK, "DT_LNK");
     CONST(VIBEOS_EDEADLK, EDEADLK);
     CONST(VIBEOS_EOVERFLOW, EOVERFLOW);
+
+    CONST(LINUX_MAP_SHARED, MAP_SHARED);
+    CONST(LINUX_MAP_PRIVATE, MAP_PRIVATE);
+    CONST(LINUX_MAP_SHARED_VALIDATE, MAP_SHARED_VALIDATE);
+    CONST(LINUX_MAP_TYPE, MAP_TYPE);
+    CONST(LINUX_MAP_FIXED_NOREPLACE, MAP_FIXED_NOREPLACE);
+    CONST(VIBEOS_ENODEV, ENODEV);
 
     SIZE(linux_pollfd_t, struct pollfd);
     FIELD(linux_pollfd_t, struct pollfd, fd);

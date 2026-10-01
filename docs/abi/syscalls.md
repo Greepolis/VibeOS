@@ -45,7 +45,7 @@ calls, outside the Linux number space, are listed last.
 | 6 | `lstat` | done | - | - | `fs.c` |  |
 | 7 | `poll` | partial | L4 | - | `fs.c` | the console, pipes and files; a socket always reports ready |
 | 8 | `lseek` | done | - | - | `fs.c` |  |
-| 9 | `mmap` | partial | L3 | - | `mm.c` | anonymous only; MAP_FIXED and file-backed mappings refused |
+| 9 | `mmap` | partial | L3 | - | `mm.c` | a shared mapping of a file is refused, and a shared anonymous one is private after fork (L3 step 2) |
 | 10 | `mprotect` | done | - | - | `mm.c` |  |
 | 11 | `munmap` | done | - | - | `mm.c` |  |
 | 12 | `brk` | done | - | - | `mm.c` |  |

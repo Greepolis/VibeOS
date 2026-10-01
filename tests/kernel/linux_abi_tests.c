@@ -27,6 +27,7 @@
 #include "vibeos/linux_layout.h"
 #include "vibeos/vfs.h"
 #include "vibeos/ksvc.h"
+#include "vibeos/mm_stats.h"
 
 int test_linux_handlers(void);
 int test_linux_gaps(void);
@@ -1748,6 +1749,187 @@ static void t_descriptor_requests_and_poll(void) {
     expect(kf_lock_imbalance() == 0, "poll and the descriptor requests released every lock they took");
 }
 
+/* ---- L3 step 1: mmap by the rules -------------------------------------------------------
+ *
+ * The fake kernel has real page tables since this step (ksvc_fake.c): a mapped
+ * address is read and written through them with kf_peek and kf_poke. */
+
+#define MAP_PRIV_ANON 0x22u
+#define MMAP(addr, len, prot, flags, fd, off) \
+    sys(9, (uint64_t)(addr), (uint64_t)(len), (uint64_t)(prot), (uint64_t)(flags), (uint64_t)(fd), (uint64_t)(off), 0)
+
+static int mem_is(uint64_t va, uint8_t byte, uint64_t n) {
+    uint8_t b = 0;
+    uint64_t i;
+    for (i = 0; i < n; i++) {
+        if (kf_peek(va + i, &b, 1) != 0 || b != byte) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void t_mmap_placement(void) {
+    long a, b, c, h;
+    uint8_t x = 'A', y = 0;
+
+    fresh(130);
+    a = MMAP(0, 8192, 3, MAP_PRIV_ANON, -1, 0);
+    expect(a >= 0x20000000l && (a & 0xFFF) == 0 && mem_is((uint64_t)a, 0, 8192),
+           "an anonymous mapping: page aligned, in the arena, zeroed");
+    expect(kf_poke((uint64_t)a + 8191u, &x, 1) == 0 && kf_peek((uint64_t)a + 8191u, &y, 1) == 0 && y == 'A',
+           "and writable to its last byte");
+    expect(kf_poke((uint64_t)a + 8192u, &x, 1) != 0, "and not one byte past it");
+    b = MMAP(0, 4096, 3, MAP_PRIV_ANON, -1, 0);
+    expect(b >= a + 8192 || b + 4096 <= a, "a second mapping does not overlap the first");
+    expect(MMAP(0, 4096, 3, 0x20u, -1, 0) == -VIBEOS_EINVAL, "neither private nor shared is EINVAL");
+    expect(MMAP(0, 0, 3, MAP_PRIV_ANON, -1, 0) == -VIBEOS_EINVAL, "no length is EINVAL");
+    expect(MMAP(0, ~0ull, 3, MAP_PRIV_ANON, -1, 0) == -VIBEOS_ENOMEM, "a length that wraps is ENOMEM");
+    expect(MMAP(0, 4096, 3, MAP_PRIV_ANON, 0, 0) > 0, "MAP_ANONYMOUS ignores the descriptor, whatever it is");
+
+    /* At an address the program names. */
+    c = MMAP(0x30000000ull, 3 * 4096, 3, MAP_PRIV_ANON | 0x10u, -1, 0);
+    expect(c == 0x30000000l, "MAP_FIXED maps at the address asked for");
+    (void)kf_poke(0x30000000ull, &x, 1);
+    (void)kf_poke(0x30001000ull, &x, 1);
+    (void)kf_poke(0x30002000ull, &x, 1);
+    {
+        /* What was there is given back, not buried: replacing a page with a
+         * page leaves the machine with as many free frames as before. Reading
+         * zeros is not enough to know - mapping over the old page without
+         * releasing it reads zeros too, and went NOT RED. */
+        uint64_t free_before = vibeos_mm_stats()->frames_free;
+        expect(MMAP(0x30001000ull, 4096, 3, MAP_PRIV_ANON | 0x10u, -1, 0) == 0x30001000l &&
+               mem_is(0x30001000ull, 0, 4096) && mem_is(0x30000000ull, 'A', 1) && mem_is(0x30002000ull, 'A', 1),
+               "MAP_FIXED over the middle of a mapping replaces that page and leaves its neighbours");
+        expect(vibeos_mm_stats()->frames_free == free_before,
+               "and the page that was there went back to the allocator");
+    }
+    expect(MMAP(0x30000800ull, 4096, 3, MAP_PRIV_ANON | 0x10u, -1, 0) == -VIBEOS_EINVAL,
+           "a fixed address that is not page aligned is EINVAL");
+    expect(MMAP(0x1000ull, 4096, 3, MAP_PRIV_ANON | 0x10u, -1, 0) == -VIBEOS_ENOMEM,
+           "a fixed address where no mapping may go is ENOMEM");
+    expect(MMAP(0x30002000ull, 4096, 3, MAP_PRIV_ANON | 0x100000u, -1, 0) == -VIBEOS_EEXIST &&
+           mem_is(0x30002000ull, 'A', 1), "MAP_FIXED_NOREPLACE refuses a range in use and touches nothing");
+    expect(MMAP(0x30003000ull, 4096, 3, MAP_PRIV_ANON | 0x100000u, -1, 0) == 0x30003000l,
+           "and maps a free one where it was asked");
+    /* A fixed mapping that covers a mapped page and a free one is one region
+     * afterwards, described as it was asked for. The pages take care of
+     * themselves - mapping over a page releases it - so what removing the old
+     * region first is for is the *list*: left alone, it refuses the new region
+     * as an overlap, and the page past the old one is mapped and described by
+     * nothing, which mprotect then refuses. */
+    expect(MMAP(0x30003000ull, 8192, 3, MAP_PRIV_ANON | 0x10u, -1, 0) == 0x30003000l &&
+           SYS3(10, 0x30004000ull, 4096, 1) == 0 && kf_poke(0x30004000ull, &x, 1) != 0,
+           "MAP_FIXED over a mapped page and a free one: both described, and mprotect knows the second");
+
+    /* A hint is honoured when it is free, and is only a hint when it is not. */
+    h = MMAP(0x50000000ull, 4096, 3, MAP_PRIV_ANON, -1, 0);
+    expect(h == 0x50000000l, "a free address hinted is the address given");
+    h = MMAP(0x50000000ull, 8192, 3, MAP_PRIV_ANON, -1, 0);
+    expect(h > 0 && h != 0x50000000l && (h + 8192 <= 0x50000000l || h >= 0x50001000l) &&
+           mem_is(0x50000000ull, 0, 1), "one in use is placed elsewhere, and what was there is untouched");
+
+    /* The arena steps over what a fixed mapping took. */
+    a = MMAP(0, 4096, 3, MAP_PRIV_ANON, -1, 0);
+    expect(MMAP((uint64_t)a + 4096u, 4096, 3, MAP_PRIV_ANON | 0x10u, -1, 0) == a + 4096 &&
+           kf_poke((uint64_t)a + 4096u, &x, 1) == 0, "a fixed mapping exactly where the arena would go next");
+    b = MMAP(0, 8192, 3, MAP_PRIV_ANON, -1, 0);
+    expect(b > 0 && (b >= a + 8192 || b + 8192 <= a + 4096) && mem_is((uint64_t)a + 4096u, 'A', 1),
+           "the next mapping goes around it - it used to be handed the same pages");
+
+    /* munmap and mprotect on what mmap made. */
+    expect(SYS2(11, 0x30000000ull, 4096) == 0 && kf_peek(0x30000000ull, &y, 1) != 0 &&
+           mem_is(0x30002000ull, 'A', 1), "munmap takes a page out and leaves the rest");
+    expect(SYS3(10, 0x30002000ull, 4096, 1) == 0 && kf_poke(0x30002000ull, &x, 1) != 0 &&
+           mem_is(0x30002000ull, 'A', 1), "mprotect to read-only: readable, not writable");
+    expect(kf_lock_imbalance() == 0, "mmap released every lock it took");
+}
+
+/* What byte i of the test file holds. Not i * 7 + 3 alone: that repeats every
+ * 256 bytes, so byte 4096 was byte 0 and a mapping that ignored its offset read
+ * the right value - which is how that sabotage went NOT RED. */
+#define PAT(i) ((uint8_t)((i) * 7u + ((i) >> 8) * 13u + 3u))
+
+static void t_mmap_files(void) {
+    uint64_t buf, fds;
+    uint8_t x = 'Z', y = 0;
+    long fd, wfd, m, m2, pid;
+    int parent, child;
+    uint32_t i;
+
+    parent = fresh(131);
+    buf = kf_ualloc(5000);
+    fds = kf_ualloc(8);
+    for (i = 0; i < 5000u; i++) {
+        ((uint8_t *)kf_uptr(buf))[i] = PAT(i);
+    }
+    fd = tmp_open("/tmp/m", 0x42 /* O_CREAT|O_RDWR */, 0644);
+    expect(SYS3(1, (uint64_t)fd, buf, 5000) == 5000, "a file of 5000 bytes");
+
+    m = MMAP(0, 8192, 1 /* PROT_READ */, 2 /* MAP_PRIVATE */, fd, 0);
+    expect(m > 0, "a private mapping of a file");
+    for (i = 0; i < 5000u && m > 0; i += 613u) {
+        (void)kf_peek((uint64_t)m + i, &y, 1);
+        if (y != PAT(i)) {
+            break;
+        }
+    }
+    expect(i >= 5000u && kf_peek((uint64_t)m + 4999u, &y, 1) == 0 && y == PAT(4999u),
+           "holds the file's bytes, across a page boundary");
+    expect(mem_is((uint64_t)m + 5000u, 0, 8192 - 5000), "and zeros after the file's end");
+    expect(kf_poke((uint64_t)m, &x, 1) != 0, "mapped read-only, it cannot be written");
+    m2 = MMAP(0, 4096, 1, 2, fd, 4096);
+    expect(m2 > 0 && kf_peek((uint64_t)m2, &y, 1) == 0 && y == PAT(4096u),
+           "an offset starts the mapping that far into the file");
+
+    /* Private means private: a store stays in the process. */
+    m2 = MMAP(0, 4096, 3, 2, fd, 0);
+    expect(m2 > 0 && kf_poke((uint64_t)m2, &x, 1) == 0 && mem_is((uint64_t)m2, 'Z', 1) &&
+           SYS4(17, (uint64_t)fd, buf, 1, 0) == 1 && ((uint8_t *)kf_uptr(buf))[0] == PAT(0u),
+           "a store into a private mapping does not reach the file");
+    expect(SYS1(3, (uint64_t)fd) == 0 && kf_peek((uint64_t)m + 100u, &y, 1) == 0 &&
+           y == PAT(100u), "the mapping outlives the descriptor it was made from");
+
+    /* What cannot be mapped, and how it is said. */
+    fd = tmp_open("/tmp/m", 0, 0);
+    wfd = tmp_open("/tmp/m", 1, 0);
+    (void)SYS2(293, fds, 0);
+    expect(MMAP(0, 4096, 1, 2, fd, 100) == -VIBEOS_EINVAL, "an offset that is not a page multiple is EINVAL");
+    expect(MMAP(0, 4096, 1, 2, 99, 0) == -VIBEOS_EBADF, "no descriptor is EBADF");
+    expect(MMAP(0, 4096, 1, 2, wfd, 0) == -VIBEOS_EACCES, "a descriptor that cannot be read is EACCES");
+    expect(MMAP(0, 4096, 1, 2, ((int32_t *)kf_uptr(fds))[0], 0) == -VIBEOS_ENODEV &&
+           MMAP(0, 4096, 1, 2, tmp_open("/tmp", 0x10000, 0), 0) == -VIBEOS_ENODEV &&
+           MMAP(0, 4096, 1, 2, 0, 0) == -VIBEOS_ENODEV, "a pipe, a directory and the console are ENODEV");
+    /* The fake's own root filesystem: another implementation under the same call. */
+    kf_fs_add("/f", "root file", 9, 0);
+    m2 = MMAP(0, 4096, 1, 2, SYS2(2, ustr("/f"), 0), 0);
+    expect(m2 > 0 && kf_peek((uint64_t)m2 + 5u, &y, 1) == 0 && y == 'f' && mem_is((uint64_t)m2 + 9u, 0, 16),
+           "a file on another filesystem maps the same way");
+
+    /* Fork: the child has the mapping, and each side's writes are its own. */
+    m2 = MMAP(0, 4096, 3, MAP_PRIV_ANON, -1, 0);
+    (void)kf_poke((uint64_t)m2, &x, 1);
+    pid = SYS0(57);
+    child = slot_of_pid(pid);
+    expect(pid > 0 && child >= 0, "fork");
+    kf_set_current(child);
+    expect(mem_is((uint64_t)m2, 'Z', 1) && kf_peek((uint64_t)m + 100u, &y, 1) == 0 &&
+           y == PAT(100u), "the child sees what the parent mapped");
+    y = 'c';
+    expect(kf_poke((uint64_t)m2, &y, 1) == 0 && mem_is((uint64_t)m2, 'c', 1), "the child writes its copy");
+    kf_set_current(parent);
+    expect(mem_is((uint64_t)m2, 'Z', 1), "and the parent's is as it was");
+
+    /* brk, which could not run here before either. */
+    expect(SYS1(12, 0) == 0x10000000l && SYS1(12, 0x10000000ull + 5000u) == 0x10002000l &&
+           kf_poke(0x10001fffull, &x, 1) == 0 && mem_is(0x10000000ull, 0, 16),
+           "brk grows the heap by whole zeroed pages");
+    expect(SYS1(12, 0x10001000ull) == 0x10001000l && kf_peek(0x10001000ull, &y, 1) != 0,
+           "and gives them back");
+    expect(kf_lock_imbalance() == 0, "file mappings released every lock they took");
+}
+
 int test_linux_handlers(void) {
     g_fail = 0;
     t_identity();
@@ -1787,6 +1969,8 @@ int test_linux_handlers(void) {
     t_xattr_and_unshare();
     t_terminal_modes();
     t_descriptor_requests_and_poll();
+    t_mmap_placement();
+    t_mmap_files();
     return g_fail ? -1 : 0;
 }
 
@@ -1887,11 +2071,14 @@ int test_linux_gaps(void) {
             "close_range with CLOSE_RANGE_UNSHARE in a process with threads");
     }
 
-    /* mmap (9), L3: MAP_FIXED|MAP_ANONYMOUS maps at the address given. */
+    /* mmap (9), L3: a shared mapping of a file. */
     fresh(61);
-    r = sys(9, 0x30000000ull, 4096, 3, 0x32 /* MAP_PRIVATE|MAP_FIXED|MAP_ANONYMOUS */,
-            (uint64_t)-1, 0, 0);
-    gap(9, r == 0x30000000l, "MAP_FIXED maps at the address asked for");
+    {
+        long fd = SYS3(2, ustr("/tmp/shared"), 0x42, 0644);
+        (void)SYS2(77, (uint64_t)fd, 4096);
+        r = sys(9, 0, 4096, 3, 1 /* MAP_SHARED */, (uint64_t)fd, 0, 0);
+        gap(9, fd >= 0 && r > 0, "a shared mapping of a file");
+    }
 
     /* ioctl (16), L1: TCFLSH - throw away what was typed and not read - is
      * one of the terminal requests still unanswered. */
