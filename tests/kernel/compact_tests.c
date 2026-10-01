@@ -1066,6 +1066,108 @@ static void test_swapout_readonly_page(void) {
           "bit it never had");
 }
 
+/* M-070: a read-only page goes out to swap between fork's reading of its entry
+ * and fork's taking of the frame.
+ *
+ * A read-only page - and a copy-on-write one whose other holder has gone is
+ * exactly that - is paged out with no marker: nobody can store to it, so there
+ * is nothing to stop. Fork does not change such an entry either; it shares the
+ * page as it stands. So neither operation writes anything the other would
+ * notice, and the page-out can commit and give the frame back in the few
+ * instructions between fork reading "present, frame F" and fork mapping F into
+ * the child. The child is then mapped onto a free frame, which the allocator
+ * hands to somebody else while the child still holds it.
+ *
+ * The hook is that page-out, at exactly that point. */
+static uint32_t g_fr_slot;
+static int g_fr_fired;
+static int g_fr_rc;
+
+static int g_fr_reuse;          /* and the frame is handed to somebody else at once */
+static uint64_t g_fr_other;
+
+static void fork_race_page_goes_out(uint64_t *pte) {
+    (void)pte;
+    if (!g_fr_fired) {
+        g_fr_fired = 1;
+        g_fr_rc = vibeos_vmspace_swap_out(&g_sw_as, VA_A, g_fr_slot);
+        if (g_fr_reuse) {
+            g_fr_other = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+            if (g_fr_other) {
+                memset(cp_map(g_fr_other), 0x99, 4096);
+            }
+        }
+    }
+}
+
+static void test_fork_while_readonly_page_goes_out(void) {
+    uint64_t f = sw_setup(RO_USER, 0x37);
+    uint64_t *pp, *cp;
+    const unsigned char *seen;
+    int rc;
+
+    CHECK(f != 0 && vibeos_swap_alloc(&g_fr_slot) == 0 &&
+          vibeos_vmspace_create(&g_sw_child) == 0, "setup");
+    g_fr_fired = 0;
+    g_fr_rc = -1;
+    vibeos_vmspace_set_fork_race_hook(fork_race_page_goes_out);
+    rc = vibeos_vmspace_clone_cow(&g_sw_child, &g_sw_as);
+    vibeos_vmspace_set_fork_race_hook(0);
+    CHECK(g_fr_fired && g_fr_rc == 0,
+          "the arrangement: the page really went out while fork was looking at it");
+    CHECK(rc == 0, "fork succeeds");
+    pp = vibeos_vmspace_entry(&g_sw_as, VA_A);
+    cp = vibeos_vmspace_entry(&g_sw_child, VA_A);
+    CHECK(pp && cp && (*cp & PTE_P), "the child has the page");
+    CHECK(pp && cp && (*pp & PTE_P) &&
+          (*pp & 0x000FFFFFFFFFF000ull) == (*cp & 0x000FFFFFFFFFF000ull),
+          "and the parent has it back, in the same frame - not the child on a "
+          "frame the page-out had already given away");
+    CHECK(cp && vibeos_frame_owners(*cp & 0x000FFFFFFFFFF000ull) == 2u,
+          "which both of them own");
+    seen = cp ? (const unsigned char *)cp_map(*cp & 0x000FFFFFFFFFF000ull) : 0;
+    CHECK(seen && seen[0] == 0x37 && seen[4095] == 0x37, "holding what the page held");
+    CHECK(vibeos_mm_stats()->frames_double_put == 0u, "and no frame released twice");
+    CHECK(vibeos_mm_stats()->fork_frame_gone == 1u && vibeos_mm_stats()->fork_swapped_in == 1u,
+          "counted: the frame was gone once, and the page was brought back once");
+    CHECK(!vibeos_swap_is_allocated(g_fr_slot), "the slot it went out to was given back once");
+}
+
+/* The same, with the released frame taken by somebody else before fork gets to
+ * it - which is what the allocator does with a frame just freed. Now the frame
+ * has an owner again, so a pin succeeds; what says it is no longer the page is
+ * the entry, which names a swap slot where it named this frame. */
+static void test_fork_while_readonly_page_goes_out_and_is_reused(void) {
+    uint64_t f = sw_setup(RO_USER, 0x38);
+    uint64_t *pp, *cp;
+    const unsigned char *seen;
+    int rc;
+
+    CHECK(f != 0 && vibeos_swap_alloc(&g_fr_slot) == 0 &&
+          vibeos_vmspace_create(&g_sw_child) == 0, "setup");
+    g_fr_fired = 0;
+    g_fr_reuse = 1;
+    g_fr_other = 0;
+    vibeos_vmspace_set_fork_race_hook(fork_race_page_goes_out);
+    rc = vibeos_vmspace_clone_cow(&g_sw_child, &g_sw_as);
+    vibeos_vmspace_set_fork_race_hook(0);
+    g_fr_reuse = 0;
+    CHECK(g_fr_fired && g_fr_rc == 0 && g_fr_other == f,
+          "the arrangement: the page went out and its frame was handed to somebody else");
+    CHECK(rc == 0, "fork succeeds");
+    pp = vibeos_vmspace_entry(&g_sw_as, VA_A);
+    cp = vibeos_vmspace_entry(&g_sw_child, VA_A);
+    CHECK(pp && cp && (*pp & PTE_P) && (*cp & PTE_P) &&
+          (*cp & 0x000FFFFFFFFFF000ull) != g_fr_other &&
+          (*pp & 0x000FFFFFFFFFF000ull) == (*cp & 0x000FFFFFFFFFF000ull),
+          "the child shares the parent's page, not the frame somebody else now has");
+    seen = cp ? (const unsigned char *)cp_map(*cp & 0x000FFFFFFFFFF000ull) : 0;
+    CHECK(seen && seen[0] == 0x38 && seen[4095] == 0x38, "holding what the page held");
+    CHECK(vibeos_frame_owners(g_fr_other) == 1u && ((const unsigned char *)cp_map(g_fr_other))[0] == 0x99,
+          "and the other owner's frame is its own, untouched");
+    CHECK(vibeos_mm_stats()->fork_entry_moved == 1u, "counted: the entry had moved under the pin");
+}
+
 /* Anonymous reclaim end to end, and its claims (M-056): every claim it takes is
  * given back, so a teardown afterwards does not wait. */
 static uint64_t g_anon_relax_calls;
@@ -1268,6 +1370,8 @@ int test_compact(void) {
     test_swapout_munmap_mid_write();
     test_swapout_fork_mid_write();
     test_swapout_readonly_page();
+    test_fork_while_readonly_page_goes_out();
+    test_fork_while_readonly_page_goes_out_and_is_reused();
     test_anon_reclaim_claims();
     test_anon_reclaim_spares_the_young();
     test_swapped_entries_are_mappings();

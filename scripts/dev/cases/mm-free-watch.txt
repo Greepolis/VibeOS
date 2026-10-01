@@ -21,13 +21,9 @@
 
 ### fork's shared mapping gives its reference back
 --- old
-    if (vibeos_vmspace_map_raw(dst, va, phys, flags) != 0) {
-        return -1;
-    }
+    (void)vibeos_frame_put(phys);
     vibeos_mm_stats()->cow_shared++;
 +++ new
-    if (vibeos_vmspace_map_raw(dst, va, phys, flags) != 0) {
-        return -1;
-    }
+    (void)vibeos_frame_put(phys);
     (void)vibeos_frame_put(phys);
     vibeos_mm_stats()->cow_shared++;

@@ -897,12 +897,53 @@ again:
         }
     }
 
+    /* Pin the frame, then confirm the entry still names it (M-070).
+     *
+     * `entry` was read some instructions ago, and for a page that needed no
+     * conversion - read-only, or copy-on-write already - nothing this function
+     * did since would make anybody else's exchange fail. A page-out is exactly
+     * such an "anybody": it marks only writable pages, so a read-only one with
+     * a single owner goes to swap with no trace in the entry until its final
+     * exchange, and that exchange succeeds against the value read here. Then
+     * the frame is released, and this function mapped it into the child anyway
+     * - a free frame, which the allocator hands to somebody else while the
+     * child still holds it. From there it is whatever the frame becomes: when
+     * it became a page table, two address spaces named one swap slot, which is
+     * the double release the swap map counted about one boot in ten once every
+     * process had sixty cold stack pages its last fork had left
+     * copy-on-write.
+     *
+     * So: a reference only if the frame still has an owner - a free frame is
+     * not resurrected - and then the entry again. If it still holds the value
+     * this was built from, the parent's own reference kept the frame alive
+     * from that read to this pin, and the pin keeps it alive across the
+     * mapping. If it changed, the page went somewhere; start over, which
+     * brings it back. A page-out that commits after the pin is harmless: it
+     * gives back the parent's reference and the child keeps the frame. */
+    if (!vibeos_frame_try_get(phys)) {
+        vibeos_mm_stats()->fork_frame_gone++;
+        if (tries++ >= 64u) {
+            return -1;
+        }
+        goto again;
+    }
+    if (__atomic_load_n(pte, __ATOMIC_ACQUIRE) != entry) {
+        (void)vibeos_frame_put(phys);
+        vibeos_mm_stats()->fork_entry_moved++;
+        if (tries++ >= 64u) {
+            return -1;
+        }
+        goto again;
+    }
     /* The reference is taken by the mapping, as it is everywhere else. There is
      * deliberately no explicit count here: a future path that shares a frame
-     * cannot forget to do something it never had to remember. */
+     * cannot forget to do something it never had to remember. The pin above is
+     * given back either way. */
     if (vibeos_vmspace_map_raw(dst, va, phys, flags) != 0) {
+        (void)vibeos_frame_put(phys);
         return -1;
     }
+    (void)vibeos_frame_put(phys);
     vibeos_mm_stats()->cow_shared++;
     (void)src;
     return 0;

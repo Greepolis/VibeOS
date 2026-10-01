@@ -1,0 +1,44 @@
+# Fork's pin on the frame it is about to share (kernel/mm/vmspace.c, M-070),
+# proved by tests/kernel/compact_tests.c, whose fork hook pages the parent's
+# read-only page out at exactly the point another core would.
+#
+#  1. fork takes its reference whether or not the frame still has an owner, as
+#     it did. A frame the page-out released is resurrected and mapped into the
+#     child. Expect "and the parent has it back, in the same frame".
+#  2. fork does not look at the entry again after pinning. A frame released and
+#     handed to somebody else has an owner, so the pin succeeds, and the child
+#     is mapped onto the stranger's frame. Expect "the child shares the parent's
+#     page, not the frame somebody else now has".
+#
+# Target source: kernel/mm/vmspace.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/mm/vmspace.c scripts/dev/cases/mm-fork-pin.txt
+
+### fork maps the frame it read without asking whether it is still owned
+--- old
+    if (!vibeos_frame_try_get(phys)) {
+        vibeos_mm_stats()->fork_frame_gone++;
+        if (tries++ >= 64u) {
+            return -1;
+        }
+        goto again;
+    }
+    if (__atomic_load_n(pte, __ATOMIC_ACQUIRE) != entry) {
+        (void)vibeos_frame_put(phys);
+        vibeos_mm_stats()->fork_entry_moved++;
+        if (tries++ >= 64u) {
+            return -1;
+        }
+        goto again;
+    }
++++ new
+    vibeos_frame_get(phys);
+
+### fork does not look at the entry again after pinning
+--- old
+    if (__atomic_load_n(pte, __ATOMIC_ACQUIRE) != entry) {
+        (void)vibeos_frame_put(phys);
+        vibeos_mm_stats()->fork_entry_moved++;
++++ new
+    if (0) {
+        (void)vibeos_frame_put(phys);
+        vibeos_mm_stats()->fork_entry_moved++;

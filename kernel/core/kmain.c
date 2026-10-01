@@ -337,6 +337,14 @@ static void kernel_cli_print_meminfo(void) {
     kernel_log_u64_hex(st->swap_out_raced);
     vibeos_x86_64_serial_puts(" swap_out_cancelled=0x");
     kernel_log_u64_hex(st->swap_out_cancelled);
+    /* Fork's pin (M-070): how often the frame fork was about to share had
+     * already been released by a page-out, and how often the entry changed
+     * between fork's reading it and pinning the frame. Each one of the first
+     * is a child that used to be mapped onto a free frame. */
+    vibeos_x86_64_serial_puts(" fork_frame_gone=0x");
+    kernel_log_u64_hex(st->fork_frame_gone);
+    vibeos_x86_64_serial_puts(" fork_entry_moved=0x");
+    kernel_log_u64_hex(st->fork_entry_moved);
     /* Reclaim's claims on the address spaces it evicts from, and the teardowns
      * that had to wait for one. unclaim_missing is a claim released twice,
      * which would let a teardown through while a reclaimer is still inside;
