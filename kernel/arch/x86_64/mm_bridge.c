@@ -1148,7 +1148,17 @@ static uint64_t hw_swap_page_hash(const void *page) {
     return h | 1ull;   /* never 0, so an unwritten slot never matches */
 }
 
+/* Who wrote each slot last and how many times it has been written (M-070): see
+ * hw_swap_release, which says so when a slot is given back twice. */
+static uint32_t g_swap_written_pid[VIBEOS_HW_SWAP_SLOTS];
+static uint32_t g_swap_writes[VIBEOS_HW_SWAP_SLOTS];
+static uint32_t hw_swap_pid_now(void);
+
 static int hw_swap_write_page(uint32_t slot, void *page) {
+    if (slot < VIBEOS_HW_SWAP_SLOTS) {
+        g_swap_written_pid[slot] = hw_swap_pid_now();
+        g_swap_writes[slot]++;
+    }
     /* Hashed before the write: the page is read-only to its owner by now (the
      * swap-out marker), so this is what the device is given. */
     uint64_t h = hw_swap_page_hash(page);
@@ -1165,6 +1175,17 @@ static int hw_swap_write_page(uint32_t slot, void *page) {
  * slot can say who did the first. M-070 was one boot in 24 with only a count
  * - swap_double_free=1 - and a count says nothing about who. */
 static const char *g_swap_freed_by[VIBEOS_HW_SWAP_SLOTS];
+/* And which process was running when it did, and how many times the slot has
+ * been written and given back: a release names an operation, and three
+ * captures of M-070 have shown that an operation is not enough - the question
+ * each of them left was *whose* page-in gave back a slot another address space
+ * still named. */
+static uint32_t g_swap_freed_pid[VIBEOS_HW_SWAP_SLOTS];
+static uint32_t g_swap_frees[VIBEOS_HW_SWAP_SLOTS];
+
+static uint32_t hw_swap_pid_now(void) {
+    return g_current_task >= 0 ? (uint32_t)hw_task_pid_of(&g_tasks[g_current_task]) : 0u;
+}
 
 static void hw_swap_release(uint32_t slot) {
     const char *op = vibeos_vmspace_current_op();
@@ -1179,13 +1200,22 @@ static void hw_swap_release(uint32_t slot) {
         vibeos_x86_64_serial_puts(g_swap_freed_by[slot] ? g_swap_freed_by[slot]
                                                         : "not-a-release");
         vibeos_x86_64_serial_puts(" pid=0x");
-        vibeos_x86_64_serial_print_hex(g_current_task >= 0
-            ? (uint64_t)hw_task_pid_of(&g_tasks[g_current_task]) : 0ull);
+        vibeos_x86_64_serial_print_hex(hw_swap_pid_now());
+        vibeos_x86_64_serial_puts(" before_pid=0x");
+        vibeos_x86_64_serial_print_hex(g_swap_freed_pid[slot]);
+        vibeos_x86_64_serial_puts(" written_by_pid=0x");
+        vibeos_x86_64_serial_print_hex(g_swap_written_pid[slot]);
+        vibeos_x86_64_serial_puts(" writes=0x");
+        vibeos_x86_64_serial_print_hex(g_swap_writes[slot]);
+        vibeos_x86_64_serial_puts(" frees=0x");
+        vibeos_x86_64_serial_print_hex(g_swap_frees[slot]);
         vibeos_x86_64_serial_puts("\n");
         vibeos_x86_64_serial_unlock();
     }
     if (slot < VIBEOS_HW_SWAP_SLOTS) {
         g_swap_freed_by[slot] = op;
+        g_swap_freed_pid[slot] = hw_swap_pid_now();
+        g_swap_frees[slot]++;
     }
     (void)vibeos_swap_free(slot);
 }
@@ -1199,6 +1229,40 @@ static void hw_swap_release(uint32_t slot) {
  * refusing it at the low watermark would leave a process unable to touch
  * memory it already owns, and reclaim would be preventing the very thing it
  * reclaimed for. */
+/* Why a page-in did not happen, in one line with everything that decides it: a
+ * process killed on a swapped entry (M-070) has so far left only the entry
+ * behind, and the entry does not say whether there was no frame to be had,
+ * the slot could not be read, or the slot was no longer this entry's. */
+static void hw_swap_in_failed(uint64_t va, int64_t slot, const char *why) {
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts("[MM] SWAP_IN_FAILED why=");
+    vibeos_x86_64_serial_puts(why);
+    vibeos_x86_64_serial_puts(" va=0x");
+    vibeos_x86_64_serial_print_hex(va);
+    vibeos_x86_64_serial_puts(" slot=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)slot);
+    vibeos_x86_64_serial_puts(" allocated=0x");
+    vibeos_x86_64_serial_print_hex(slot >= 0 ? (uint64_t)vibeos_swap_is_allocated((uint32_t)slot) : 0ull);
+    vibeos_x86_64_serial_puts(" pid=0x");
+    vibeos_x86_64_serial_print_hex(hw_swap_pid_now());
+    if (slot >= 0 && slot < (int64_t)VIBEOS_HW_SWAP_SLOTS) {
+        vibeos_x86_64_serial_puts(" freed_by=");
+        vibeos_x86_64_serial_puts(g_swap_freed_by[slot] ? g_swap_freed_by[slot] : "nobody");
+        vibeos_x86_64_serial_puts(" freed_pid=0x");
+        vibeos_x86_64_serial_print_hex(g_swap_freed_pid[slot]);
+        vibeos_x86_64_serial_puts(" written_by_pid=0x");
+        vibeos_x86_64_serial_print_hex(g_swap_written_pid[slot]);
+        vibeos_x86_64_serial_puts(" writes=0x");
+        vibeos_x86_64_serial_print_hex(g_swap_writes[slot]);
+        vibeos_x86_64_serial_puts(" frees=0x");
+        vibeos_x86_64_serial_print_hex(g_swap_frees[slot]);
+    }
+    vibeos_x86_64_serial_puts(" free_frames=0x");
+    vibeos_x86_64_serial_print_hex(vibeos_mm_stats()->frames_free);
+    vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
+}
+
 static int hw_swap_bring_in(vibeos_vmspace_t *sv, uint64_t va) {
     int64_t slot = vibeos_vmspace_swap_slot(sv, va);
     void *page;
@@ -1208,11 +1272,17 @@ static int hw_swap_bring_in(vibeos_vmspace_t *sv, uint64_t va) {
     }
     page = hw_alloc_page();
     if (!page) {
+        hw_swap_in_failed(va, slot, "no_frame");
         return -1;
     }
     if (vibeos_vmspace_swap_in(sv, va, (uint64_t)(uintptr_t)page) != 0) {
-        /* Nothing was taken: the frame is still this function's. */
+        /* Nothing was taken: the frame is still this function's. Said only
+         * when the entry still names a slot afterwards: an entry another core
+         * brought in first is not a failure, it is somebody else's success. */
         hw_free_page_why(page, "swap_in_failed");
+        if (vibeos_vmspace_swap_slot(sv, va) >= 0) {
+            hw_swap_in_failed(va, slot, "page_in_refused");
+        }
         return -1;
     }
     /* The slot went back inside the page-in, through hw_swap_release: only it
