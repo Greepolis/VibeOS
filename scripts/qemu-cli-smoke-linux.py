@@ -774,6 +774,110 @@ def wait_for(buffer_getter, needle, deadline, last_rx_getter=None):
 EXEC_EXPECTED_REFUSALS = {"not-found"}
 
 
+# ---- the corpus (docs/abi/ L1 step 8) ---------------------------------------
+#
+# tests/corpus/run-l1.sh runs the corpus's file workloads - BusyBox's applets
+# over a small tree, SQLite on a file, a Lua script - and prints every line of
+# every answer tagged "C:<workload>: ". The same script, under the same BusyBox,
+# was run on Linux by scripts/dev/corpus-expect.sh, and what Linux printed is
+# tests/corpus/l1-expected.txt. The guest's answers are compared with it line
+# for line: the oracle is Linux, not a list of markers somebody chose.
+#
+# SQLite and Lua are staged when scripts/dev/corpus-build.sh has built them,
+# which a plain build does not do. A workload whose program is not there
+# answers "absent", and that is accepted - reported in the summary, and
+# refused with VIBEOS_SMOKE_CORPUS=require, which is what a job that built
+# them sets. A workload that *ran* is always compared.
+CORPUS_MODE = os.environ.get("VIBEOS_SMOKE_CORPUS", "")
+CORPUS_PROGRAMS = ("sqlite3", "lua")
+# LTP's tests, by name, to stage and run after the workloads (scripts/dev/
+# ltp-run.sh sets this). Each is run with its output kept and its exit code
+# printed as "C:ltp: <test> rc=<n>"; nothing here asserts on them - the boot's
+# verdict is the workloads' - and ltp-run.sh reads the codes out of the log.
+LTP_TESTS = os.environ.get("VIBEOS_SMOKE_LTP", "").split()
+
+
+def stage_corpus(efi_root, build_dir):
+    """Put the workload script, and the third-party programs if built, on the
+    boot volume as /corpus. Returns the names of the programs staged."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    dst = os.path.join(efi_root, "corpus")
+    os.makedirs(dst, exist_ok=True)
+    with open(os.path.join(root, "tests", "corpus", "run-l1.sh"), "rb") as f:
+        script = f.read().replace(b"\r\n", b"\n")   # a Windows checkout may have converted it
+    ltp_dst = os.path.join(dst, "ltp")
+    shutil.rmtree(ltp_dst, ignore_errors=True)
+    if LTP_TESTS:
+        os.makedirs(ltp_dst)
+        for t in LTP_TESTS:
+            src = os.path.join(build_dir, "corpus", "ltp", t)
+            if shutil.which("strip") is None or subprocess.run(
+                    ["strip", "-o", os.path.join(ltp_dst, t), src], capture_output=True).returncode != 0:
+                shutil.copyfile(src, os.path.join(ltp_dst, t))
+        # Each in /tmp, where LTP makes its own scratch directory; the last
+        # thirty lines of what it said, tagged, and its exit code - LTP's own
+        # verdict: 0 passed, 1 failed, 2 broken, 4 warned, 32 not applicable.
+        script = script.replace(b'echo "C:done: ', (
+            b'mkdir -p /tmp/ltp && cd /tmp/ltp\n'
+            b'for t in ' + " ".join(LTP_TESTS).encode() + b'; do\n'
+            b'    "$C/ltp/$t" > /tmp/ltp/out 2>&1\n'
+            b'    rc=$?\n'
+            b'    tail -n 30 /tmp/ltp/out | sed "s/^/C:ltp-$t: /"\n'
+            b'    echo "C:ltp: $t rc=$rc"\n'
+            b'    rm -rf /tmp/ltp/* /tmp/ltp/.[!.]*\n'
+            b'done\n'
+            b'cd /\n'
+            b'echo "C:done: '))
+    with open(os.path.join(dst, "run.sh"), "wb") as f:
+        f.write(script)
+    staged = []
+    for name in CORPUS_PROGRAMS:
+        src = os.path.join(build_dir, "corpus", name)
+        out = os.path.join(dst, name)
+        if not os.path.isfile(src):
+            if os.path.exists(out):
+                os.unlink(out)
+            continue
+        # Stripped: the symbols are a megabyte of a file the guest reads whole.
+        if shutil.which("strip") is None or subprocess.run(
+                ["strip", "-o", out, src], capture_output=True).returncode != 0:
+            shutil.copyfile(src, out)
+        staged.append(name)
+    return staged
+
+
+def corpus_answers(text):
+    """{workload: [lines]} from "C:<workload>: <line>" lines, in order."""
+    out = {}
+    for name, line in re.findall(r"^(?:\[HW\]\[SYS\] write\(ring3\): )?C:([a-z0-9-]+): ?([^\r\n]*)\r?$",
+                                 text, re.M):
+        out.setdefault(name, []).append(line.rstrip())
+    return out
+
+
+def corpus_problems(serial_text):
+    """What the guest answered the corpus with, against what Linux answered."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, "tests", "corpus", "l1-expected.txt"), encoding="utf-8") as f:
+        want = corpus_answers(f.read())
+    got = corpus_answers(serial_text)
+    if "done" not in got:
+        return ["corpus_did_not_finish"], []
+    differ, absent = [], []
+    for name, lines in want.items():
+        mine = got.get(name)
+        if mine == ["absent", "rc=0"]:
+            absent.append(name)
+        elif mine != lines:
+            differ.append(name)
+    problems = []
+    if differ:
+        problems.append("corpus_answers_differ:" + "+".join(differ))
+    if absent and CORPUS_MODE == "require":
+        problems.append("corpus_program_absent:" + "+".join(absent))
+    return problems, absent
+
+
 def boot_volume_problems(esp_img):
     """What is wrong with the FAT volume the guest left behind, as reasons.
 
@@ -823,6 +927,7 @@ def main():
         # Rebuilt every run: a real medium keeps what the guest wrote, and the
         # previous run's writes are not this run's starting point.
         esp_img = os.path.abspath("qemu-cli-esp.img")
+        stage_corpus(efi_root, build_dir)
         subprocess.run([sys.executable,
                         os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                      "make_esp_image.py"),
@@ -851,6 +956,7 @@ def main():
     echo_state = {"connections": 0, "received": 0}
     echo_thread = None
     infra = False
+    corpus_absent = []
     last_guest_phase = "boot"
     last_serial_timestamp = 0.0
     phase_history = []
@@ -2835,6 +2941,10 @@ def main():
                     problems.append("names_and_metadata_failed")
                 if not re.search(r"write\(ring3\): FATMV_4\r?\n", text):
                     problems.append("fat_rename_failed")
+                # The corpus's file workloads, against Linux's answers (step 8).
+                if ESP == "image":
+                    cp, corpus_absent = corpus_problems(text)
+                    problems.extend(cp)
                 # A directory listed (step 6): ls prints the long name whole,
                 # ls -a counts four entries - the two dots, the file, the link -
                 # and find, which trusts the type in the entry, counts one link.
@@ -3107,6 +3217,10 @@ def main():
             reason = (f"cli_and_network_verified"
                       f" tcp_connections={echo_state['connections']}"
                       f" bytes={echo_state['received']}")
+            if ESP == "image" and corpus_absent:
+                # Said in the verdict, not left to be noticed: these workloads
+                # were skipped because their programs were not built.
+                reason += " corpus_absent=" + "+".join(corpus_absent)
 
     except Exception as exc:
         reason = str(exc)

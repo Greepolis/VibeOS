@@ -1,0 +1,17 @@
+# The corpus against a kernel that lies about one call (docs/abi/ L1 step 8).
+#
+#  1. rename reports success and leaves the name where it was. Expect
+#     corpus_answers_differ naming the workloads that move files - bb-cp-mv-rm,
+#     bb-sed-inplace, bb-mv - and not the others: the comparison with Linux
+#     says which programs were lied to, which a marker chosen in advance could
+#     not.
+#
+# Target source: kernel/abi/linux/names.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/names.c scripts/dev/cases/abi-corpus-names-boot.txt
+
+### rename reports success and does nothing
+--- old
+    return vibeos_fs_rename(a.mnt, a.tail, b.tail,
+                            (flags & LINUX_RENAME_NOREPLACE) ? VIBEOS_RENAME_NOREPLACE : 0u);
++++ new
+    return 0;

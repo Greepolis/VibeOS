@@ -265,6 +265,15 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                    * takes for one from the entry's type. */
                                   "mkdir /tmp/ls && cd /tmp/ls && echo > 'a file name longer than fifteen bytes' && "
                                   "ln -s nowhere dangling && ls && echo DIRS_$(ls -a | wc -l)_$(find . -type l | wc -l); cd /\n"
+                                  /* The corpus's file workloads (L1 step
+                                   * 8): BusyBox's applets over a small tree,
+                                   * SQLite on a file, a Lua script. The
+                                   * script is staged by the boot gate, which
+                                   * compares what it prints here with what
+                                   * the same script printed on Linux. On a
+                                   * volume without it the shell says so and
+                                   * carries on. */
+                                  "sh /corpus/run.sh\n"
                                   /* The last thing the self-test says. The boot
                                    * harness waits for this before driving the
                                    * kernel CLI, so a slower build cannot have

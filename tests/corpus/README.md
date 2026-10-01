@@ -12,7 +12,26 @@ A syscall is worth writing when a program in here asks for it.
 | `sources.txt` | SQLite, Lua and LTP: pinned URL and SHA-256 |
 | `ltp-built.txt`, `ltp-failed.txt` | LTP's syscall tests that build against musl, and the directories that do not (generated) |
 
+| `run-l1.sh` | The file workloads, run for their answers: on VibeOS at boot, and on Linux by `scripts/dev/corpus-expect.sh` |
+| `l1-expected.txt` | What Linux answered `run-l1.sh` with (generated; the boot gate's oracle) |
+
 The report is [docs/abi/corpus.md](../../docs/abi/corpus.md).
+
+## Running it, not only measuring it
+
+`workloads.txt` says what the programs ask for. `run-l1.sh` is what they are
+expected to answer (docs/abi/ L1 step 8): the same commands, shaped so that the
+answer leaves out what two machines may differ in - dates, owner names, the
+size of a directory, the order it lists in. It runs under the same BusyBox in
+the guest and on Linux, and the boot gate compares the two outputs line for
+line. After changing it:
+
+```bash
+bash scripts/dev/corpus-expect.sh build-gcc-Release      # rewrite l1-expected.txt from Linux
+```
+
+Never edit `l1-expected.txt` by hand: it is Linux's answer, and an edited one
+is somebody's opinion.
 
 ## Refreshing
 

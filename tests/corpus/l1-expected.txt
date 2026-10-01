@@ -1,0 +1,100 @@
+C:bb-sh-script: 3
+C:bb-sh-script: ok
+C:bb-sh-script: sub
+C:bb-sh-script: bye
+C:bb-sh-script: rc=0
+C:bb-ls: a.txt
+C:bb-ls: link
+C:bb-ls: sub
+C:bb-ls: drwxr-xr-x .  
+C:bb-ls: drwxr-xr-x ..  
+C:bb-ls: -rw-r--r-- a.txt  
+C:bb-ls: lrwxrwxrwx link -> a.txt
+C:bb-ls: drwxr-xr-x sub  
+C:bb-ls: -rw-r--r-- 1 6
+C:bb-ls: rc=0
+C:bb-cp-mv-rm: dir3:
+C:bb-cp-mv-rm: a.txt
+C:bb-cp-mv-rm: link
+C:bb-cp-mv-rm: sub
+C:bb-cp-mv-rm: 
+C:bb-cp-mv-rm: dir3/sub:
+C:bb-cp-mv-rm: b.txt
+C:bb-cp-mv-rm: hello
+C:bb-cp-mv-rm: world
+C:bb-cp-mv-rm: a.txt
+C:bb-cp-mv-rm: dir
+C:bb-cp-mv-rm: note.txt
+C:bb-cp-mv-rm: rc=0
+C:bb-find-grep: ./dir/a.txt
+C:bb-find-grep: ./note.txt
+C:bb-find-grep: ./dir/link
+C:bb-find-grep: .
+C:bb-find-grep: ./dir
+C:bb-find-grep: ./dir/sub
+C:bb-find-grep: rc=0
+C:bb-grep-r: dir/a.txt:1:hello
+C:bb-grep-r: dir/link:1:hello
+C:bb-grep-r: rc=0
+C:bb-tar: a.txt
+C:bb-tar: link
+C:bb-tar: sub
+C:bb-tar: world
+C:bb-tar: a.txt
+C:bb-tar: dir/
+C:bb-tar: dir/a.txt
+C:bb-tar: dir/link
+C:bb-tar: dir/sub/
+C:bb-tar: dir/sub/b.txt
+C:bb-tar: rc=0
+C:bb-text: 4
+C:bb-text: second line with hi
+C:bb-text: hi from a file
+C:bb-text: 2 note.txt
+C:bb-text: rc=0
+C:bb-sed-inplace: bye from a file
+C:bb-sed-inplace: second line with bye
+C:bb-sed-inplace: dir
+C:bb-sed-inplace: note.txt
+C:bb-sed-inplace: rc=0
+C:bb-metadata: t
+C:bb-metadata: 600 1 0 regular empty file
+C:bb-metadata: symbolic link
+C:bb-metadata: lrwxrwxrwx l -> t
+C:bb-metadata: 946684800
+C:bb-metadata: 2
+C:bb-metadata: more
+C:bb-metadata: 444
+C:bb-metadata: rc=0
+C:bb-mkdir-rm: dir
+C:bb-mkdir-rm: note.txt
+C:bb-mkdir-rm: rmdir: 'a/missing': No such file or directory
+C:bb-mkdir-rm: rmdir of nothing: 1
+C:bb-mkdir-rm: rmdir: 'a/full': Directory not empty
+C:bb-mkdir-rm: rmdir of a full directory: 1
+C:bb-mkdir-rm: rc=0
+C:bb-pipeline: 1000
+C:bb-pipeline: 100
+C:bb-pipeline: 99
+C:bb-pipeline: 98
+C:bb-pipeline: rc=0
+C:bb-mv: data
+C:bb-mv: three
+C:bb-mv: data
+C:bb-mv: rc=0
+C:sqlite-memory: 3|x,y
+C:sqlite-memory: rc=0
+C:sqlite-file: 3
+C:sqlite-file: ok
+C:sqlite-file: one,two,three,four
+C:sqlite-file: ok
+C:sqlite-file: db.sqlite
+C:sqlite-file: dir
+C:sqlite-file: note.txt
+C:sqlite-file: rc=0
+C:lua-script: 1000
+C:lua-script: hi
+C:lua-script: true	true
+C:lua-script: true
+C:lua-script: rc=0
+C:done: 15

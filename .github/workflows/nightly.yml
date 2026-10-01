@@ -526,7 +526,7 @@ jobs:
           if-no-files-found: ignore
 
   corpus-needs:
-    name: Corpus syscall needs (drift against docs/abi/corpus.md)
+    name: Corpus (needs against docs/abi/corpus.md, answers against Linux)
     # Measures the corpus programs on Linux, not the kernel, so it declares no
     # kernel module: it covers the plan in docs/abi/, not a subsystem.
     runs-on: ubuntu-latest
@@ -539,7 +539,7 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build build-essential musl-tools strace busybox-static
+          sudo apt-get install -y ninja-build build-essential musl-tools strace busybox-static qemu-system-x86 qemu-utils ovmf mtools
 
       # The musl test programs are part of the corpus; the full build is what
       # produces them, as it does for the boot image.
@@ -569,6 +569,31 @@ jobs:
 
       - name: Compare with the checked-in needs
         run: python3 scripts/dev/corpus-report.py --check /tmp/corpus-needs
+
+      # docs/abi/ L1 step 8. tests/corpus/l1-expected.txt is what Linux
+      # answered the workloads with when it was checked in; if this runner's
+      # BusyBox answers differently now, the boot below would be compared with
+      # a stale oracle, so that is found out first and by name.
+      - name: Linux still answers the workloads the same way
+        run: bash scripts/dev/corpus-expect.sh build --check
+
+      # And the boot, with SQLite and Lua staged - which no other job builds -
+      # and required: here "absent" is a failure.
+      - name: Boot and run the corpus (SQLite and Lua required)
+        run: |
+          set -uo pipefail
+          VIBEOS_SMOKE_CORPUS=require python3 scripts/qemu-cli-smoke-linux.py build 400
+          grep -o '^reason=.*' qemu-cli-summary.txt
+          grep -q cli_and_network_verified qemu-cli-summary.txt
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: corpus-boot-log
+          path: |
+            qemu-cli-serial.log
+            qemu-cli-summary.txt
+          if-no-files-found: warn
 
       - uses: actions/upload-artifact@v7
         if: always()
