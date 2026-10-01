@@ -9299,6 +9299,7 @@ int test_task(void);
 int test_task_ident(void);
 int test_fdtable(void);
 int test_path(void);        /* path_tests.c: paths and the mount-table walk (A4) */
+int test_tmpfs(void);       /* tmpfs_tests.c: the in-memory filesystem (L1) */
 int test_pipe(void);
 int test_linux_handlers(void);   /* linux_abi_tests.c: the handlers on ksvc_fake.c (A2) */
 int test_linux_layout(void);     /* linux_layout_tests.c: layouts and numbers vs Linux's headers (A5) */
@@ -9672,6 +9673,7 @@ int main(void) {
     RUN_TEST(test_task_ident);
     RUN_TEST(test_fdtable);
     RUN_TEST(test_path);
+    RUN_TEST(test_tmpfs);
     RUN_TEST(test_pipe);
     RUN_TEST(test_klog);
     RUN_TEST(test_crash);

@@ -1,0 +1,113 @@
+# tmpfs (kernel/fs/tmpfs.c, docs/abi/ L1 step 2), proved by the host tests in
+# tests/kernel/tmpfs_tests.c.
+#
+#  1. a new page is not zeroed. Expect "the bytes before the first write read
+#     as zero" - the test's allocator hands out pages full of 0x5A, as a freed
+#     page is full of the kernel's poison.
+#  2. truncate leaves the cut tail. Expect "bytes past the old cut read zero".
+#  3. the last name's unlink is every unlink. Expect "unlinking one name keeps
+#     the data for the other".
+#  4. a freed inode keeps its generation. Expect "even after its inode is
+#     reused" - a stale description reads the new file's bytes.
+#  5. a directory may move inside itself. Expect "a directory cannot move
+#     inside itself".
+#  6. pages allocated under the lock. Expect "allocated a page while holding
+#     its own lock".
+#  7. the single-indirect page is not given back. Expect "every page taken is
+#     given back".
+#  8. a moved directory's new parent does not gain its link. Expect "the link
+#     counts moved with it".
+#  9. NOREPLACE ignored. Expect "NOREPLACE refuses a taken name".
+# 10. the source's record is not found again after the target's is removed.
+#     Removing a record moves the directory's last one into its place, so the
+#     remembered slot can name a different file. Expect "rename over a name
+#     when the source is the directory's last record". This case went NOT RED
+#     twice before it was red: the first test had the target last (nothing
+#     moves), the second had it just before the source (the stale slot is
+#     exactly the new end, and the wrong removal removes the right record).
+#     Only a record between the two exposes it.
+# 11. a record naming a free inode is followed. Expect "a record naming a free
+#     inode is refused, not followed" - tmpfs_bad_record, its must-be-zero.
+#
+# Every case is also red under the torture (vibeos_tmpfs_torture, 20 seeds),
+# 1-10 at least; the generation case only after the torture learned to keep a
+# node across rounds, as an open description does.
+#
+# Target source: kernel/fs/tmpfs.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/fs/tmpfs.c scripts/dev/cases/fs-tmpfs.txt
+
+### a new page is not zeroed
+--- old
+    pg = (uint8_t *)cx->page[--cx->n];
+    tf_zero(pg, VIBEOS_TMPFS_PAGE);
++++ new
+    pg = (uint8_t *)cx->page[--cx->n];
+
+### truncate leaves the cut tail
+--- old
+            tf_zero(last + size % VIBEOS_TMPFS_PAGE, VIBEOS_TMPFS_PAGE - size % VIBEOS_TMPFS_PAGE);
++++ new
+            (void)last;
+
+### the last name's unlink is every unlink
+--- old
+    if (tf_is(in, VIBEOS_S_IFDIR) || in->nlink <= 1u) {
++++ new
+    if (1) {
+
+### a freed inode keeps its generation
+--- old
+    in->gen++;          /* a description still holding the old id is refused */
++++ new
+
+### a directory may move inside itself
+--- old
+            if (x == src) {
+                r = -VIBEOS_EINVAL;
+                goto out;
+            }
++++ new
+
+### pages allocated under the lock
+--- old
+        tf_ctx_fill(t, &cx, TF_SPARES);
+        t->lock();
+        w = tf_from_id(t, id, &i);
++++ new
+        t->lock();
+        tf_ctx_fill(t, &cx, TF_SPARES);
+        w = tf_from_id(t, id, &i);
+
+### the single-indirect page is not given back
+--- old
+        if (keep <= VIBEOS_TMPFS_DIRECT) {
+            tf_unpage(t, in->ind);
+            in->ind = 0;
+        }
++++ new
+
+### a moved directory's new parent does not gain its link
+--- old
+        T->inode[tdir].nlink++;
+        T->inode[src].parent = tdir;
++++ new
+        T->inode[src].parent = tdir;
+
+### NOREPLACE ignored
+--- old
+    if (tslot >= 0 && (flags & VIBEOS_RENAME_NOREPLACE)) {
++++ new
+    if (0 && flags) {
+
+### the source's record is not found again
+--- old
+    fslot = tf_find(T, fdir, fname, flen, 0);
+    tf_remove(T, fdir, (uint64_t)fslot);
++++ new
+    tf_remove(T, fdir, (uint64_t)fslot);
+
+### a record naming a free inode is followed
+--- old
+    if (next >= VIBEOS_TMPFS_INODES || t->inode[next].mode == 0u) {
++++ new
+    if (next >= VIBEOS_TMPFS_INODES) {

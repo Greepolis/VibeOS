@@ -61,7 +61,9 @@ import sys
 # cache reorders. That is a real check and it is not nothing; it is just not
 # what this rule asks for. Lowering this number again means writing a torture
 # that discriminates.
-BASELINE = 8
+# Lowered from 8 to 7 in docs/abi/ L1: kernel/fs has tmpfs's torture against a
+# model (tmpfs-torture in nightly.yml).
+BASELINE = 7
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 NIGHTLY = os.path.join(ROOT, ".github", "workflows", "nightly.yml")

@@ -205,6 +205,46 @@ jobs:
             ./build-asan/vibeos_sched_torture "$s" 400000
           done
 
+  tmpfs-torture:
+    name: tmpfs Torture (model + sanitizers)
+    # module: fs
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build build-essential
+
+      # Sanitized: the model catches a wrong answer, the sanitizer a page used
+      # after tmpfs gave it back or a record written past its page.
+      - name: Build (sanitized)
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug             -DVIBEOS_BUILD_TESTS=ON             -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g"
+          cmake --build build-asan --parallel --target vibeos_tmpfs_torture
+
+      # Many seeds against the model (docs/abi/ L1 step 2). Each prints its seed
+      # first, so a failure replays by passing it back.
+      - name: Torture tmpfs (300 seeds, sanitized)
+        run: |
+          set -uo pipefail
+          fails=0
+          for s in $(seq 1 300); do
+            if ! ./build-asan/vibeos_tmpfs_torture "$s" 4000 > /tmp/tt.log 2>&1; then
+              fails=$((fails + 1))
+              echo "::group::seed $s"
+              cat /tmp/tt.log
+              echo "::endgroup::"
+            fi
+          done
+          echo "failing seeds: $fails of 300"
+          test "$fails" -eq 0
+
   storage-durability:
     name: On-disk Log Torture (model + sanitizers)
     # module: io

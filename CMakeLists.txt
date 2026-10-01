@@ -185,6 +185,7 @@ if(VIBEOS_BUILD_TESTS)
         tests/kernel/task_ident_tests.c
         tests/kernel/fdtable_tests.c
         tests/kernel/path_tests.c
+        tests/kernel/tmpfs_tests.c
         tests/kernel/pipe_tests.c
         tests/kernel/klog_tests.c
         tests/kernel/crash_tests.c
@@ -252,6 +253,13 @@ if(VIBEOS_BUILD_TESTS)
         target_link_libraries(vibeos_gui_torture PRIVATE Threads::Threads)
     endif()
     add_test(NAME vibeos-gui-torture COMMAND vibeos_gui_torture 1 400 4)
+
+    # tmpfs against a model of its own (docs/abi/ L1): names, links, renames,
+    # sparse pages and the count of pages it holds, round by round.
+    add_executable(vibeos_tmpfs_torture tests/kernel/tmpfs_torture.c)
+    target_link_libraries(vibeos_tmpfs_torture PRIVATE vibeos_kernel_core)
+    target_include_directories(vibeos_tmpfs_torture PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    add_test(NAME vibeos-tmpfs-torture COMMAND vibeos_tmpfs_torture 1 3000)
 
     add_executable(vibeos_mm_torture tests/kernel/mm_torture.c)
     target_link_libraries(vibeos_mm_torture PRIVATE vibeos_kernel_core)
