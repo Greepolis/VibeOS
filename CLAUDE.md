@@ -333,6 +333,29 @@ they were on the volume, and `[ -x ]` said no - and it was seen only because
 the verdict line says `corpus_absent=`. A skip that is allowed must be printed
 where the result is read.
 
+**An exchange only protects against the changes somebody writes.** The
+address-space layer does everything by compare-exchange on the entry, and the
+rule that follows - "anything that touched the entry meanwhile makes the
+exchange fail" - is true only of operations that *write* the entry. Fork does
+not write a read-only entry; it shares the page as it stands. A page-out does
+not mark a read-only page; nobody can store to it. So the two ran through each
+other untouched: fork read "frame F", the page-out evicted the page and
+released F, and fork mapped F into the child. When two operations each
+decide from an entry and neither changes it, the entry is not what serialises
+them - take a reference that can fail (`vibeos_frame_try_get`) and read the
+entry again.
+
+**Know what every field of a diagnostic line is before building on it.**
+`SWAP_DOUBLE_RELEASE ... before_by=swap-in pid=5` was read as "a page-in in
+process 5 gave the slot back first". The pid is printed by the *second*
+release - it is whoever is running now - and says nothing about the first. A
+theory was built on that reading (two address spaces naming one slot), a real
+race was found by looking where it pointed, fixed, and written up as the cause;
+the next failed boot had the fix in and its counters at zero. The race was
+real. The diagnosis was a field misread. When a line is the evidence, read the
+code that prints it, and when a fix is claimed for an intermittent failure,
+give it a counter that says whether it was ever hit.
+
 **`st_dev` was 0 for every filesystem.** `cp` and `mv` compare st_dev and
 st_ino to refuse copying a file onto itself, so a file in /tmp and one on the
 boot volume with equal inode numbers were the same file. Nothing failed,

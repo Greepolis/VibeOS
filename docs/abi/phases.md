@@ -961,7 +961,7 @@ true to report before they are worth a row, so L1 builds that first:
 - **One boot in eighteen failed, with M-070's signature** - the open
   swap-slot double release under the reclaim load - and for the first time
   with that finding's instrumentation in the log: init killed on a swapped-out
-  entry whose slot a swap-in in another process had already given back. Not
+  entry whose slot was already free when its address space was torn down. Not
   this step's defect and not chased here; the evidence and what it narrows are
   in the tracker under M-070. What this step may have changed is how often:
   sixty more anonymous pages per process is sixty more for reclaim to take.
@@ -1009,6 +1009,94 @@ with memory-mapped I/O; `lua`. **And LTP, for every phase before this one**:
 its harness maps a file `MAP_SHARED` for its results and needs that page to
 stay shared across fork, so not one of its tests can start until this phase.
 L1's 416 are the first owed (`scripts/dev/ltp-run.sh`).
+
+Six steps, in the order that pays L1's debt first:
+
+1. **mmap by the rules**: the flags read as Linux reads them (one of private
+   and shared, required), `MAP_FIXED` and `MAP_FIXED_NOREPLACE`, an address
+   hint honoured when it is free, the arena stepping over what a fixed mapping
+   took, and **private file mappings** - the file's bytes in the process's own
+   pages.
+2. **Shared mappings**: `MAP_SHARED`, anonymous and of a file whose filesystem
+   can hand out its pages (tmpfs), staying shared across fork; `msync`. This is
+   what LTP's harness needs.
+3. **LTP, for L1**: its 416 tests run through `scripts/dev/ltp-run.sh`, and what
+   they find fixed or written down.
+4. **The rest of the calls**: `madvise`, `mincore`, the `mlock` family,
+   `memfd_create`, `mremap`.
+5. **A stack that grows**, and the 256 KiB mapped at exec given back.
+6. **The programs**: the corpus against glibc, dynamically linked; `sqlite3`
+   with memory-mapped I/O; LTP's own tests for these calls.
+
+**Step 1 (2026-10-01): done.**
+
+- **mmap places a mapping where the program says.** `MAP_FIXED` maps at the
+  address given and takes the place of whatever was there - how a dynamic
+  loader lays a library's segments over the range it reserved - and
+  `MAP_FIXED_NOREPLACE` refuses if anything was (EEXIST). An address hint is
+  honoured when the range is free. The arena is still a cursor that moves up,
+  but it steps over what is already mapped: a fixed mapping can be ahead of it
+  now, and it used to hand out the same pages. Where a program may put a
+  mapping is the architecture's to say (`ks_user_fixed_ok`: the high user
+  window); an address outside it is ENOMEM.
+- **The flags are read as Linux reads them**: exactly one of private and
+  shared, or EINVAL; `MAP_ANONYMOUS` ignores the descriptor (it used to refuse
+  one that was not -1).
+- **A private mapping of a file** is the file's bytes in pages of the
+  process's own, read when the mapping is made, from any filesystem - the page
+  is mapped writable, filled through the file's own read, and given the
+  protection asked for. A store stays in the process; the mapping outlives the
+  descriptor. Past the end of the file it reads zeros, where Linux raises
+  SIGBUS beyond the file's last page. EACCES for a descriptor that cannot be
+  read, ENODEV for what is not a file.
+- **Still refused, and said**: a shared mapping of a file (ENOSYS); a shared
+  anonymous one is made and is private after a fork. Both are step 2, and the
+  registry's `mmap` line names them.
+- **The fake kernel has page tables.** The memory handlers could not run in
+  the host tests - the fake failed every mapping and said why. It now runs
+  `kernel/mm`'s frame layer and address-space layer over a few megabytes, as
+  their own tests set them up; a mapped address is read and written through
+  the tables (`kf_peek`, `kf_poke`), a kernel-mode store takes the
+  copy-on-write fault, and fork clones the space. So mmap, munmap, mprotect and
+  brk are host-tested as handlers for the first time, fork's copy-on-write
+  included.
+- **At boot** the ring-3 self-test maps over a page at a fixed address and
+  reads zeros where it had written, is refused by NOREPLACE, and maps its own
+  image off the FAT volume privately: the ELF magic, and a store that sticks.
+- **Sabotage**: `abi-mmap.txt` (18) on the host, `abi-mmap-boot.txt` (1). Three
+  went NOT RED first; two were the test's - a pattern that repeated every 256
+  bytes, so the byte at offset 4096 was the byte at 0 - and one was the code's:
+  the handler's unmap before a fixed mapping is not what releases the old
+  pages (the address-space layer does that), it is what lets the region list
+  describe the new mapping.
+- **A race in fork, found while reading for M-070, and fixed.** For a page
+  that needs no conversion - read-only, or copy-on-write already - fork reads
+  the entry and, some instructions later, maps the frame into the child. A
+  page-out marks only writable pages, so it can evict that page and release
+  the frame in between, with nothing in the entry either side would notice:
+  the child is mapped onto a free frame, which the allocator hands to somebody
+  else. `clone_one` now pins the frame only if it still has an owner and reads
+  the entry again before mapping. A host test puts the page-out exactly there
+  through the fork hook, with the frame left free and with it reused; before
+  the fix it found the child on a frame the page-out had given away.
+  `fork_frame_gone` and `fork_entry_moved` count the two cases on every boot.
+- **M-070 itself is not fixed, and is more frequent than it was.** The swap
+  map's double release - not seen in ninety boots before L1 step 8 - has been
+  seen three times in about sixty since that step gave every process sixty
+  cold stack pages, the third time *with* the fix above in place and its
+  counters at zero: so that race, real as it is, is not what these boots hit.
+  What the three captures agree on: the reclaim load is running; a process is
+  killed reading a page whose entry is a valid swapped one (read-only, user);
+  its slot is found already free when the address space is torn down, last
+  given back by a page-in. What they do not say is whose page-in, or why the
+  one that killed the process failed. The kernel says both now -
+  `SWAP_IN_FAILED` with the reason and the slot's history, and each slot's
+  last writer and last releaser by process - and sixteen boots after adding
+  that were clean, so the next capture is still owed. **The boot gate is
+  therefore flaky, at something like one boot in twenty**, and it was this
+  phase's predecessor that made it so. Step 5 (a stack that grows, no pages
+  mapped that nobody touched) removes what raised the rate; it does not
+  explain the defect.
 
 ### L4. Event loops (21)
 
