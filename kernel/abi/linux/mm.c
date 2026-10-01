@@ -211,8 +211,16 @@ static void linux_unmap_range(int me, vibeos_procstate_t *ps, uint64_t addr, uin
  * end of the file read as zeros, where Linux raises SIGBUS beyond the last
  * page that holds any of it.
  *
- * A shared mapping of a file is still refused (step 2), and a shared anonymous
- * one is made but is private after a fork - the gap the registry names.
+ * **Whose.** A private mapping's pages are the process's own: a fork makes them
+ * copy-on-write and each side's stores stay with it. A shared mapping's are
+ * not (step 2): a fork hands the child the same frames, writable if the
+ * parent's are, and a shared mapping of a file maps the file's own pages - the
+ * ones read() and write() use - so a store is in the file as it is made, with
+ * nothing to write back. That needs a filesystem that keeps its files in pages;
+ * tmpfs does, and one that keeps them on a disk answers ENODEV, the gap the
+ * registry names. Only the pages that hold some of the file are mapped: the
+ * ones past its end are left out, and touching one kills the program with
+ * SIGSEGV where Linux says SIGBUS.
  *
  * PROT_NONE is a mapping with no access, which is how a thread stack is made: a
  * C library asks for stack plus guard as one PROT_NONE region and then
@@ -235,7 +243,9 @@ static void linux_unmap_range(int me, vibeos_procstate_t *ps, uint64_t addr, uin
  * list, or a sibling's brk or munmap, cannot see it half-built. */
 static long linux_mmap_locked(int me, vibeos_procstate_t *ps, uint64_t addr, uint64_t len,
                               uint64_t prot, uint64_t flags, vibeos_file_t *f, uint64_t off) {
-    const vibeos_prot_t want = linux_prot_of(prot);
+    const int shared = (flags & LINUX_MAP_TYPE) != LINUX_MAP_PRIVATE;
+    const vibeos_prot_t access = linux_prot_of(prot);
+    const vibeos_prot_t want = shared ? (vibeos_prot_t)(access | VIBEOS_PROT_SHARED) : access;
     const vibeos_prot_t fill = (vibeos_prot_t)(VIBEOS_PROT_READ | VIBEOS_PROT_WRITE | VIBEOS_PROT_USER);
     const uint64_t pages = (len + 0xFFFull) / 4096ull, bytes = pages * 4096ull;
     vibeos_vmspace_t v = ks_vm(me);
@@ -266,7 +276,25 @@ static long linux_mmap_locked(int me, vibeos_procstate_t *ps, uint64_t addr, uin
             return -VIBEOS_ENOMEM;
         }
     }
-    for (i = 0; i < pages && r == 0; i++) {
+    for (i = 0; f && shared && i < pages && r == 0; i++) {
+        /* The file's own page, which comes held: the mapping takes a reference
+         * of its own and the one it came with is given back. */
+        void *page = 0;
+        int s = f->ops->share_page ? f->ops->share_page(f, off + i * 4096ull, &page) : -VIBEOS_ENODEV;
+
+        if (s == 1) {
+            break;   /* past the file's last page: nothing there to share */
+        }
+        if (s < 0) {
+            r = s;
+            break;
+        }
+        if (ks_map_page(me, base + i * 4096ull, page, want) != 0) {
+            r = -VIBEOS_ENOMEM;
+        }
+        ks_page_unhold(page);
+    }
+    for (i = 0; !(f && shared) && i < pages && r == 0; i++) {
         /* A file's page is mapped writable to be filled, whatever was asked
          * for, and given its real protection after. */
         if (ks_map_anon(me, base + i * 4096ull, f ? fill : want) != 0) {
@@ -274,7 +302,7 @@ static long linux_mmap_locked(int me, vibeos_procstate_t *ps, uint64_t addr, uin
             break;
         }
     }
-    for (i = 0; f && i < pages && r == 0; i++) {
+    for (i = 0; f && !shared && i < pages && r == 0; i++) {
         /* Into the mapping itself: the file's read copies to a user address,
          * and this is one now. A short read is the end of the file, and the
          * rest stays zeros. */
@@ -299,8 +327,15 @@ static long linux_mmap_locked(int me, vibeos_procstate_t *ps, uint64_t addr, uin
         ks_tlb_drain();
         return r;
     }
-    (void)vibeos_vma_insert(&ps->vmas, base, bytes, want, VIBEOS_BACKING_ANON, 0, 0);
-    if (f && want != fill) {
+    /* The region says what the mapping is, so that what comes after can ask:
+     * the stack does not grow into a shared region, and the calls of step 4
+     * will want to know. Its protection is the access alone - "shared" is not
+     * something mprotect changes. */
+    (void)vibeos_vma_insert(&ps->vmas, base, bytes, access,
+                            !shared ? VIBEOS_BACKING_ANON
+                                    : f ? VIBEOS_BACKING_FILE : VIBEOS_BACKING_SHARED,
+                            0, 0);
+    if (f && !shared && want != fill) {
         for (i = 0; i < pages; i++) {
             (void)vibeos_vmspace_protect(&v, base + i * 4096ull, want);
             ks_tlb_flush_page(base + i * 4096ull);
@@ -356,13 +391,13 @@ static long linux_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot, uint64_t 
             vibeos_file_put(f);
             return -VIBEOS_EACCES;
         }
-        if ((flags & LINUX_MAP_TYPE) != LINUX_MAP_PRIVATE) {
-            /* Shared with the file: a store has to reach it, and every other
-             * mapping of it. Step 2. Said rather than answered with a private
-             * copy, which would look like a file nobody else's writes reach. */
+        if ((flags & LINUX_MAP_TYPE) != LINUX_MAP_PRIVATE && (prot & LINUX_PROT_WRITE) &&
+            (f->flags & VIBEOS_O_ACCMODE) != VIBEOS_O_RDWR) {
+            /* Shared and writable is writing the file, and that takes a
+             * descriptor that may. A private mapping never needed one: its
+             * stores stay in the process. */
             vibeos_file_put(f);
-            ks_log(VIBEOS_LOG_WARN, 11u, flags, fd, "mmap refused: shared file mapping");
-            return -VIBEOS_ENOSYS;
+            return -VIBEOS_EACCES;
         }
     }
     ks_mm_lock(ps);
@@ -371,6 +406,47 @@ static long linux_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot, uint64_t 
     if (f) {
         vibeos_file_put(f);
     }
+    return r;
+}
+
+/* msync(addr, len, flags): what was stored through a shared mapping is in the
+ * file.
+ *
+ * It already is. A shared mapping here maps the file's own pages, so there is
+ * no second copy to write back and nothing for MS_INVALIDATE to throw away;
+ * what is left of the call is what it refuses - an address that is not a page's
+ * (EINVAL), flags it does not know or both of "wait" and "do not wait"
+ * (EINVAL), and a range with a hole in it (ENOMEM), which is the answer a
+ * program checks to learn whether it still has the mapping. A filesystem that
+ * kept a mapped file on a disk would do its writing here; none does yet. */
+static long linux_sys_msync(uint64_t addr, uint64_t len, uint64_t flags) {
+    vibeos_procstate_t *ps;
+    uint64_t va, end;
+    long r = 0;
+
+    if (ks_current() < 0 || !ks_id(ks_current())->is_user || (ps = ks_ps(ks_current())) == 0) {
+        return -VIBEOS_EINVAL;
+    }
+    if ((addr & 0xFFFull) != 0u ||
+        (flags & ~(uint64_t)(LINUX_MS_ASYNC | LINUX_MS_INVALIDATE | LINUX_MS_SYNC)) != 0u ||
+        ((flags & LINUX_MS_ASYNC) && (flags & LINUX_MS_SYNC))) {
+        return -VIBEOS_EINVAL;
+    }
+    if (len > ~0ull - 0xFFFull - addr) {
+        return -VIBEOS_ENOMEM;
+    }
+    end = (addr + len + 0xFFFull) & ~0xFFFull;
+    ks_mm_lock(ps);
+    for (va = addr; va < end;) {
+        vibeos_vma_t *v = vibeos_vma_find(&ps->vmas, va);
+
+        if (!v) {
+            r = -VIBEOS_ENOMEM;
+            break;
+        }
+        va = v->base + v->len;
+    }
+    ks_mm_unlock(ps);
     return r;
 }
 
@@ -539,6 +615,7 @@ static long linux_sys_pageinfo(uint64_t va, uint64_t out_uptr) {
     X(10,   mprotect, PROTECT,  NOPTR, linux_sys_mprotect(ARG(0), ARG(1), ARG(2))) \
     X(11,   munmap,   UNMAP,    NOPTR, linux_sys_munmap(ARG(0), ARG(1))) \
     X(12,   brk,      BRK,      NOPTR, linux_sys_brk(ARG(0))) \
+    X(26,   msync,    MSYNC,    NOPTR, linux_sys_msync(ARG(0), ARG(1), ARG(2))) \
     X(1001, pageinfo, PAGEINFO, PTRS(OUT(1, sizeof(vibeos_pageinfo_t))), linux_sys_pageinfo(ARG(0), ARG(1)))
 
 LINUX_DEFINE_SYSCALLS(mm, LINUX_MM_SYSCALLS)

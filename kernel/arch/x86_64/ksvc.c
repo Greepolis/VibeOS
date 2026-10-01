@@ -177,18 +177,11 @@ vibeos_vmspace_t ks_vm(int slot) { return hw_vm(&g_tasks[slot].proc.as); }
  * faults on it; anything else is user-reachable, writable when asked, and
  * no-execute unless asked (M-036). The map takes its own reference on the
  * frame, so the allocation's is given back either way (D9). */
-int ks_map_anon(int slot, uint64_t va, vibeos_prot_t prot) {
-    void *page = hw_alloc_user_page();
-    uint64_t leaf;
-    int r;
+static uint64_t ks_leaf_of(vibeos_prot_t prot) {
+    uint64_t leaf = PTE_PRESENT;
 
-    if (!page) {
-        return -1;
-    }
-    if (prot == VIBEOS_PROT_NONE) {
-        leaf = PTE_PRESENT;
-    } else {
-        leaf = PTE_PRESENT | PTE_USER;
+    if ((prot & ~VIBEOS_PROT_SHARED) != VIBEOS_PROT_NONE) {
+        leaf |= PTE_USER;
         if (prot & VIBEOS_PROT_WRITE) {
             leaf |= PTE_WRITE;
         }
@@ -196,9 +189,33 @@ int ks_map_anon(int slot, uint64_t va, vibeos_prot_t prot) {
             leaf |= PTE_NX;
         }
     }
-    r = hw_map_page(&g_tasks[slot].proc.as, va, (uint64_t)(uintptr_t)page, leaf);
+    if (prot & VIBEOS_PROT_SHARED) {
+        leaf |= VIBEOS_PTE_SHARED;   /* a fork hands it on as it is (L3) */
+    }
+    return leaf;
+}
+
+int ks_map_anon(int slot, uint64_t va, vibeos_prot_t prot) {
+    void *page = hw_alloc_user_page();
+    int r;
+
+    if (!page) {
+        return -1;
+    }
+    r = hw_map_page(&g_tasks[slot].proc.as, va, (uint64_t)(uintptr_t)page, ks_leaf_of(prot));
     hw_page_put((uint64_t)(uintptr_t)page);
     return r != 0 ? -1 : 0;
+}
+
+/* A page somebody else owns too. The kernel reaches memory by identity, so the
+ * pointer a filesystem holds its page by is the frame's address. */
+int ks_map_page(int slot, uint64_t va, void *page, vibeos_prot_t prot) {
+    return hw_map_page(&g_tasks[slot].proc.as, va, (uint64_t)(uintptr_t)page, ks_leaf_of(prot)) != 0
+               ? -1 : 0;
+}
+
+void ks_page_unhold(void *page) {
+    hw_page_put((uint64_t)(uintptr_t)page);
 }
 
 /* A mapping at an address the program chose goes in the high user window -

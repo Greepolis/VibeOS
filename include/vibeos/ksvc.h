@@ -123,6 +123,11 @@ void ks_mm_lock(vibeos_procstate_t *ps);
 void ks_mm_unlock(vibeos_procstate_t *ps);
 vibeos_vmspace_t ks_vm(int slot);
 int ks_map_anon(int slot, uint64_t va, vibeos_prot_t prot);
+/* Map a page that already exists - one a filesystem handed out with
+ * share_page - at `va`. The mapping takes its own reference; the caller still
+ * has the one the page came with, and gives it back with ks_page_unhold. */
+int ks_map_page(int slot, uint64_t va, void *page, vibeos_prot_t prot);
+void ks_page_unhold(void *page);
 int ks_map_user_pages(int slot, uint64_t va, uint64_t pages);
 /* May a program place a mapping of `len` bytes at `base`, an address it chose?
  * The architecture's policy on where user memory may be: a personality asks,

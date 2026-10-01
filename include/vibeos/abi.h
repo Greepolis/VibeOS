@@ -136,6 +136,7 @@
     X(MAP,             "map",             VIBEOS_CHECK_NONE) \
     X(PROTECT,         "protect",         VIBEOS_CHECK_NONE) \
     X(UNMAP,           "unmap",           VIBEOS_CHECK_NONE) \
+    X(MSYNC,           "msync",           VIBEOS_CHECK_NONE) \
     X(PAGEINFO,        "pageinfo",        VIBEOS_CHECK_USER_MEMORY) \
     /* signals */ \
     X(SIG_ACTION,      "sig_action",      VIBEOS_CHECK_USER_MEMORY) \

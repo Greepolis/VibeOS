@@ -112,7 +112,7 @@
 
 ### a file mapping stays writable whatever was asked
 --- old
-    if (f && want != fill) {
+    if (f && !shared && want != fill) {
 +++ new
     if (0) {
 
@@ -139,14 +139,6 @@
             return -VIBEOS_EACCES;
         }
 +++ new
-
-### a shared file mapping is made as a private one
---- old
-            vibeos_file_put(f);
-            ks_log(VIBEOS_LOG_WARN, 11u, flags, fd, "mmap refused: shared file mapping");
-            return -VIBEOS_ENOSYS;
-+++ new
-            (void)fd;
 
 ### MAP_ANONYMOUS looks at the descriptor
 --- old

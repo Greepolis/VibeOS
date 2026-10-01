@@ -28,6 +28,8 @@
 #include "vibeos/vfs.h"
 #include "vibeos/ksvc.h"
 #include "vibeos/mm_stats.h"
+#include "vibeos/frame.h"
+#include "vibeos/vmspace.h"
 
 int test_linux_handlers(void);
 int test_linux_gaps(void);
@@ -1930,6 +1932,143 @@ static void t_mmap_files(void) {
     expect(kf_lock_imbalance() == 0, "file mappings released every lock they took");
 }
 
+/* ---- L3 step 2: shared mappings ------------------------------------------------------- */
+
+#define MAP_SH 0x01u
+#define MAP_SH_ANON 0x21u
+
+static void t_mmap_shared(void) {
+    uint64_t buf;
+    uint8_t x = 'Z', y = 0;
+    long fd, rfd, m, m2, pid;
+    int parent, child;
+    uint32_t i;
+    uint64_t free1, free2;
+
+    parent = fresh(141);
+    buf = kf_ualloc(8192);
+
+    /* Anonymous: one page of memory in two processes. */
+    m = MMAP(0, 8192, 3, MAP_SH_ANON, -1, 0);
+    expect(m > 0 && mem_is((uint64_t)m, 0, 8192) && kf_poke((uint64_t)m, &x, 1) == 0,
+           "a shared anonymous mapping is zeroed memory");
+    {
+        /* It stays resident: an entry in swap has no way to say "shared".
+         * Asked before the fork, while this is the page's only holder - after
+         * it the page has two, and a page with two is refused whatever it is. */
+        vibeos_vmspace_t v = ks_vm(parent);
+        uint64_t refused = vibeos_mm_stats()->swap_refused_shared;
+        expect(vibeos_vmspace_swap_out(&v, (uint64_t)m, 3u) != 0 &&
+               vibeos_mm_stats()->swap_refused_shared == refused + 1u && mem_is((uint64_t)m, 'Z', 1),
+               "a shared page is not paged out");
+    }
+    pid = SYS0(57);
+    child = slot_of_pid(pid);
+    expect(pid > 0 && child >= 0, "fork");
+    kf_set_current(child);
+    y = 'c';
+    expect(mem_is((uint64_t)m, 'Z', 1) && kf_poke((uint64_t)m + 1u, &y, 1) == 0,
+           "the child sees it and stores into it");
+    kf_set_current(parent);
+    y = 'p';
+    expect(mem_is((uint64_t)m + 1u, 'c', 1) && kf_poke((uint64_t)m + 4096u, &y, 1) == 0,
+           "the parent sees the child's store");
+    kf_set_current(child);
+    expect(mem_is((uint64_t)m + 4096u, 'p', 1), "and the child the parent's, made after the fork");
+    kf_set_current(parent);
+    expect(vibeos_mm_stats()->fork_kept_shared == 2u, "the fork handed on two pages as they were");
+    /* A change of protection is not a change of kind. */
+    expect(SYS3(10, (uint64_t)m, 4096, 1) == 0 && kf_poke((uint64_t)m, &x, 1) != 0 &&
+           SYS3(10, (uint64_t)m, 4096, 3) == 0,
+           "read-only, a shared page refuses a store instead of copying");
+    pid = SYS0(57);
+    child = slot_of_pid(pid);
+    kf_set_current(child);
+    y = 'd';
+    (void)kf_poke((uint64_t)m, &y, 1);
+    kf_set_current(parent);
+    expect(mem_is((uint64_t)m, 'd', 1), "and after mprotect it is still shared across a fork");
+
+    /* A file: the mapping is the file. */
+    for (i = 0; i < 5000u; i++) {
+        ((uint8_t *)kf_uptr(buf))[i] = PAT(i);
+    }
+    fd = tmp_open("/tmp/s", 0x42 /* O_CREAT|O_RDWR */, 0644);
+    expect(SYS3(1, (uint64_t)fd, buf, 5000) == 5000, "a file of 5000 bytes");
+    m = MMAP(0, 12288, 3, MAP_SH, fd, 0);
+    expect(m > 0 && kf_peek((uint64_t)m + 4999u, &y, 1) == 0 && y == PAT(4999u) &&
+           kf_peek((uint64_t)m + 613u, &y, 1) == 0 && y == PAT(613u),
+           "a shared mapping of a file holds the file's bytes");
+    expect(mem_is((uint64_t)m + 5000u, 0, 8192 - 5000), "and zeros to the end of its last page");
+    expect(kf_peek((uint64_t)m + 8192u, &y, 1) != 0, "a page past the file's last is not there");
+    x = 'S';
+    expect(kf_poke((uint64_t)m + 10u, &x, 1) == 0 && SYS4(17, (uint64_t)fd, buf, 1, 10) == 1 &&
+           ((uint8_t *)kf_uptr(buf))[0] == 'S', "a store through the mapping is read from the file");
+    ((uint8_t *)kf_uptr(buf))[0] = 'W';
+    expect(SYS4(18, (uint64_t)fd, buf, 1, 4100) == 1 && mem_is((uint64_t)m + 4100u, 'W', 1),
+           "a write to the file is seen through the mapping");
+    m2 = MMAP(0, 4096, 1, MAP_SH, fd, 4096);
+    expect(m2 > 0 && mem_is((uint64_t)m2 + 4u, 'W', 1) && kf_poke((uint64_t)m2, &x, 1) != 0,
+           "a second mapping, at an offset and read-only, is the same page");
+    pid = SYS0(57);
+    child = slot_of_pid(pid);
+    kf_set_current(child);
+    y = 'k';
+    expect(kf_poke((uint64_t)m + 20u, &y, 1) == 0, "a forked child stores through it");
+    kf_set_current(parent);
+    expect(mem_is((uint64_t)m + 20u, 'k', 1) && SYS4(17, (uint64_t)fd, buf, 1, 20) == 1 &&
+           ((uint8_t *)kf_uptr(buf))[0] == 'k', "and the parent and the file both have it");
+    expect(SYS3(26, (uint64_t)m, 8192, 4 /* MS_SYNC */) == 0 && SYS3(26, (uint64_t)m, 100, 1) == 0,
+           "msync has nothing left to write");
+    expect(SYS3(26, (uint64_t)m + 1u, 4096, 4) == -VIBEOS_EINVAL &&
+           SYS3(26, (uint64_t)m, 4096, 5 /* ASYNC|SYNC */) == -VIBEOS_EINVAL &&
+           SYS3(26, (uint64_t)m, 4096, 8) == -VIBEOS_EINVAL,
+           "msync refuses an unaligned address and flags that make no sense");
+    expect(SYS2(11, (uint64_t)m + 4096u, 4096) == 0 &&
+           SYS3(26, (uint64_t)m, 8192, 4) == -VIBEOS_ENOMEM,
+           "and a range with a hole in it is ENOMEM");
+    expect(SYS1(3, (uint64_t)fd) == 0 && mem_is((uint64_t)m + 20u, 'k', 1),
+           "the mapping outlives the descriptor");
+
+    /* A hole is given a page; a truncate under a mapping does not fault it. */
+    fd = tmp_open("/tmp/h", 0x42, 0644);
+    expect(SYS2(77, (uint64_t)fd, 8192) == 0 && (m = MMAP(0, 8192, 3, MAP_SH, fd, 0)) > 0 &&
+           kf_poke((uint64_t)m + 4096u, &x, 1) == 0 && SYS4(17, (uint64_t)fd, buf, 1, 4096) == 1 &&
+           ((uint8_t *)kf_uptr(buf))[0] == 'S', "a hole in the file is given a page to share");
+    expect(SYS2(77, (uint64_t)fd, 0) == 0 && mem_is((uint64_t)m + 4096u, 'S', 1),
+           "a file cut short under a mapping leaves the mapping its page");
+    expect(SYS2(11, (uint64_t)m, 8192) == 0, "unmapped");
+    /* The same again, twice, and nothing is left behind the second time: the
+     * page tables are in place after the first. */
+    (void)SYS2(77, (uint64_t)fd, 8192);
+    m = MMAP(0, 8192, 3, MAP_SH, fd, 0);
+    (void)kf_poke((uint64_t)m, &x, 1);
+    (void)SYS2(11, (uint64_t)m, 8192);
+    (void)SYS2(77, (uint64_t)fd, 0);
+    free1 = vibeos_frame_free_count();
+    (void)SYS2(77, (uint64_t)fd, 8192);
+    m2 = MMAP((uint64_t)m, 8192, 3, MAP_SH | 0x10 /* MAP_FIXED */, fd, 0);
+    (void)kf_poke((uint64_t)m2, &x, 1);
+    (void)SYS2(77, (uint64_t)fd, 0);         /* the file lets go first */
+    (void)SYS2(11, (uint64_t)m2, 8192);      /* then the mapping */
+    free2 = vibeos_frame_free_count();
+    expect(m2 == m && free2 == free1, "a shared page is freed when its last holder lets go, once");
+
+    /* What is refused. */
+    rfd = tmp_open("/tmp/s", 0, 0);
+    expect(MMAP(0, 4096, 3, MAP_SH, rfd, 0) == -VIBEOS_EACCES,
+           "shared and writable needs a descriptor that can write");
+    m = MMAP(0, 4096, 1, MAP_SH, rfd, 0);
+    expect(m > 0 && mem_is((uint64_t)m + 10u, 'S', 1) && kf_poke((uint64_t)m, &x, 1) != 0,
+           "shared and read-only does not");
+    expect(MMAP(0, 4096, 3, 2 /* MAP_PRIVATE */, rfd, 0) > 0,
+           "nor does private and writable: its stores stay in the process");
+    kf_fs_add("/g", "root file", 9, 0);
+    expect(MMAP(0, 4096, 1, MAP_SH, SYS2(2, ustr("/g"), 0), 0) == -VIBEOS_ENODEV,
+           "a filesystem with no pages to share says ENODEV");
+    expect(kf_lock_imbalance() == 0, "shared mappings released every lock they took");
+}
+
 int test_linux_handlers(void) {
     g_fail = 0;
     t_identity();
@@ -1971,6 +2110,7 @@ int test_linux_handlers(void) {
     t_descriptor_requests_and_poll();
     t_mmap_placement();
     t_mmap_files();
+    t_mmap_shared();
     return g_fail ? -1 : 0;
 }
 
@@ -2071,13 +2211,16 @@ int test_linux_gaps(void) {
             "close_range with CLOSE_RANGE_UNSHARE in a process with threads");
     }
 
-    /* mmap (9), L3: a shared mapping of a file. */
+    /* mmap (9), L3: a shared mapping of a file on a filesystem that keeps its
+     * files somewhere other than in pages - here the fake's root, in the kernel
+     * FAT. */
     fresh(61);
     {
-        long fd = SYS3(2, ustr("/tmp/shared"), 0x42, 0644);
-        (void)SYS2(77, (uint64_t)fd, 4096);
-        r = sys(9, 0, 4096, 3, 1 /* MAP_SHARED */, (uint64_t)fd, 0, 0);
-        gap(9, fd >= 0 && r > 0, "a shared mapping of a file");
+        long fd;
+        kf_fs_add("/shared", "on the root", 11, 0);
+        fd = SYS2(2, ustr("/shared"), 0);
+        r = sys(9, 0, 4096, 1, 1 /* MAP_SHARED */, (uint64_t)fd, 0, 0);
+        gap(9, fd >= 0 && r > 0, "a shared mapping of a file that is not kept in pages");
     }
 
     /* ioctl (16), L1: TCFLSH - throw away what was typed and not read - is

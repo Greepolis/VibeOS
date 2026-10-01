@@ -9,9 +9,9 @@ the registry, not this page; `check.sh` fails while the two differ.
 
 | State | Count | What the kernel answers |
 | --- | --- | --- |
-| done | 124 | through its row |
+| done | 125 | through its row |
 | partial | 20 | through its row, with the gap named |
-| missing | 146 | ENOSYS, and the boot gate fails naming the number |
+| missing | 145 | ENOSYS, and the boot gate fails naming the number |
 | deferred | 50 | ENOSYS, and the boot gate fails naming the number |
 | refused | 33 | its errno, counted as refused - expected, never a failure |
 
@@ -21,7 +21,7 @@ Without a row, by phase:
 | --- | --- |
 | L1 - files and paths | 0 |
 | L2 - processes, credentials, time | 47 |
-| L3 - memory | 10 |
+| L3 - memory | 9 |
 | L4 - event loops | 20 |
 | L5 - sockets | 11 |
 | L6 - threads and scheduling | 20 |
@@ -45,7 +45,7 @@ calls, outside the Linux number space, are listed last.
 | 6 | `lstat` | done | - | - | `fs.c` |  |
 | 7 | `poll` | partial | L4 | - | `fs.c` | the console, pipes and files; a socket always reports ready |
 | 8 | `lseek` | done | - | - | `fs.c` |  |
-| 9 | `mmap` | partial | L3 | - | `mm.c` | a shared mapping of a file is refused, and a shared anonymous one is private after fork (L3 step 2) |
+| 9 | `mmap` | partial | L3 | - | `mm.c` | a shared mapping of a file on a filesystem that keeps no pages (FAT) is refused: ENODEV |
 | 10 | `mprotect` | done | - | - | `mm.c` |  |
 | 11 | `munmap` | done | - | - | `mm.c` |  |
 | 12 | `brk` | done | - | - | `mm.c` |  |
@@ -62,7 +62,7 @@ calls, outside the Linux number space, are listed last.
 | 23 | `select` | missing | L4 | ENOSYS |  |  |
 | 24 | `sched_yield` | done | - | - | `proc.c` |  |
 | 25 | `mremap` | missing | L3 | ENOSYS |  | with file-backed and shared mappings (the other half of mmap) |
-| 26 | `msync` | missing | L3 | ENOSYS |  | with file-backed and shared mappings (the other half of mmap) |
+| 26 | `msync` | done | - | - | `mm.c` |  |
 | 27 | `mincore` | missing | L3 | ENOSYS |  | with file-backed and shared mappings (the other half of mmap) |
 | 28 | `madvise` | missing | L3 | ENOSYS |  | with file-backed and shared mappings (the other half of mmap) |
 | 29 | `shmget` | missing | L7 | ENOSYS |  |  |

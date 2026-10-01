@@ -2693,6 +2693,12 @@ def main():
             sg = re.search(r" stack_grown=0x([0-9a-f]{16})", text)
             if sg is None or int(sg.group(1), 16) == 0:
                 problems.append("stack_never_grew")
+            # And the mechanism under the self-test above: the fork in it has to
+            # have handed shared pages on as they were. Zero with the self-test
+            # passing would be a test that passes for another reason.
+            fk = re.search(r" fork_kept_shared=0x([0-9a-f]{16})", text)
+            if fk is None or int(fk.group(1), 16) == 0:
+                problems.append("fork_never_kept_a_shared_page")
             sl = re.search(r"\[MM\] SWAP slots=0x[0-9a-f]{16} allocated=0x([0-9a-f]{16})",
                            text)
             if sl is not None and int(sl.group(1), 16) != 0:
@@ -3188,6 +3194,11 @@ def main():
             # killed on the guard page below.
             if not re.search(r"write\(ring3\): STACK_OK", text):
                 problems.append("stack_selftest_failed")
+            # Shared mappings, from ring 3 (L3 step 2): anonymous memory and a
+            # page of a file on /tmp, stored into by a forked child and read by
+            # the parent - and, for the file, read back through the descriptor.
+            if not re.search(r"write\(ring3\): SHARED_OK", text):
+                problems.append("shared_mapping_selftest_failed")
 
             # A write from a kernel address must be refused. The row declares the
             # buffer and the dispatcher's descriptor engine refuses it before the

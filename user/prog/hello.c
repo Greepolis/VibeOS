@@ -393,7 +393,6 @@ static const char *check_linux_abi(void) {
             return abi_mm;
         }
         user_syscall3(3 /* close */, fd, 0, 0);
-        /* A shared mapping of a file is step 2's: refused for now, and said. */
     }
     return abi_ok;
 }
@@ -515,6 +514,61 @@ static int check_stack_grows(void) {
     return (status & 0x7f) == 11;       /* killed by SIGSEGV */
 }
 
+/* Shared mappings (docs/abi/ L3 step 2). Two pages of anonymous memory and one
+ * page of a file on /tmp, mapped shared, and a fork: the child stores into
+ * each, and the parent has to see the stores - and the file has to have its
+ * own, read back through the descriptor, because a shared mapping of a file is
+ * the file. The child's store into the anonymous memory goes to a page the
+ * parent never touched, so a fork that copied instead of sharing cannot pass by
+ * both sides happening to hold the same bytes. */
+static const char shared_ok[] = "SHARED_OK: a shared mapping stayed shared across a fork, and a file's was the file\n";
+static const char shared_bad[] = "abi: shared mappings wrong\n";
+static const char shm_path[] = "/tmp/selftest.shm";
+
+static int check_shared_mappings(void) {
+    volatile unsigned char *a, *m;
+    volatile int status = -1;
+    unsigned char back = 0;
+    long fd, child;
+
+    a = (volatile unsigned char *)user_syscall6(SYS_mmap, 0, 8192, 3, 0x21 /* SHARED|ANONYMOUS */, -1, 0);
+    if ((long)a <= 0) {
+        return 0;
+    }
+    a[0] = 'p';
+    fd = user_syscall3(2 /* open */, (long)(unsigned long)shm_path, 0x242 /* CREAT|TRUNC|RDWR */, 0600);
+    if (fd < 0 || user_syscall3(77 /* ftruncate */, fd, 4096, 0) != 0) {
+        return 0;
+    }
+    m = (volatile unsigned char *)user_syscall6(SYS_mmap, 0, 4096, 3, 0x01 /* SHARED */, fd, 0);
+    if ((long)m <= 0) {
+        return 0;
+    }
+    child = user_syscall3(SYS_fork, 0, 0, 0);
+    if (child == 0) {
+        a[4096] = 'c';
+        m[7] = 'f';
+        user_syscall3(SYS_exit, a[0] == 'p' ? 0 : 1, 0, 0);
+    }
+    if (child < 0 || user_syscall3(SYS_wait4, child, (long)(unsigned long)&status, 0) != child ||
+        status != 0) {
+        return 0;
+    }
+    if (a[4096] != 'c' || m[7] != 'f') {
+        return 0;
+    }
+    if (user_syscall6(17 /* pread64 */, fd, (long)(unsigned long)&back, 1, 7, 0, 0) != 1 || back != 'f') {
+        return 0;
+    }
+    if (user_syscall3(26 /* msync */, (long)(unsigned long)m, 4096, 4 /* MS_SYNC */) != 0) {
+        return 0;
+    }
+    /* The name and the descriptor go; the mapping still has the page. */
+    user_syscall3(3 /* close */, fd, 0, 0);
+    user_syscall3(87 /* unlink */, (long)(unsigned long)shm_path, 0, 0);
+    return m[7] == 'f';
+}
+
 int vibeos_main(int argc, char **argv, char **envp) {
     long pid, brk0, brk1, map, rejected;
 
@@ -551,6 +605,11 @@ int vibeos_main(int argc, char **argv, char **envp) {
         user_syscall3(SYS_write, 1, (long)(unsigned long)stack_ok, sizeof(stack_ok) - 1);
     } else {
         user_syscall3(SYS_write, 1, (long)(unsigned long)stack_bad, sizeof(stack_bad) - 1);
+    }
+    if (check_shared_mappings()) {
+        user_syscall3(SYS_write, 1, (long)(unsigned long)shared_ok, sizeof(shared_ok) - 1);
+    } else {
+        user_syscall3(SYS_write, 1, (long)(unsigned long)shared_bad, sizeof(shared_bad) - 1);
     }
     if (check_file_locks()) {
         user_syscall3(SYS_write, 1, (long)(unsigned long)locks_ok, sizeof(locks_ok) - 1);

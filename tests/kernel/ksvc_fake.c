@@ -62,7 +62,7 @@ static uint64_t g_fault_base, g_fault_len;
 #define KF_MM_LO 0x10000000ull            /* ks_heap_base                     */
 #define KF_MM_HI 0x100000000ull           /* four gigabytes: no host pointer  */
 #define KF_PHYS_BASE 0x40000000ull
-#define KF_FRAMES 1024u
+#define KF_FRAMES 4096u
 #define KF_PTE_PRESENT 1ull
 #define KF_PTE_WRITE 2ull
 #define KF_PTE_USER 4ull
@@ -483,6 +483,19 @@ static void kf_pipe_unlock(void) {}
 static void *kf_fd_page(void) { return malloc(4096); }
 static void kf_fd_page_free(void *p) { free(p); }
 
+/* /tmp's pages are frames, as the kernel's are: a shared mapping of a file maps
+ * the file's own page (docs/abi/ L3), so the page has to be something the
+ * address-space layer can map and the frame layer can count. */
+static uint64_t kf_phys_of(void *page) {
+    return KF_PHYS_BASE + (uint64_t)((uint8_t *)page - g_kf_ram);
+}
+static void *kf_tmpfs_page(void) {
+    uint64_t phys = vibeos_frame_alloc(VIBEOS_FRAME_ALLOCATED);
+    return phys ? kf_phys(phys) : 0;
+}
+static void kf_tmpfs_page_free(void *p) { (void)vibeos_frame_put(kf_phys_of(p)); }
+static void kf_tmpfs_page_hold(void *p) { vibeos_frame_get(kf_phys_of(p)); }
+
 /* /tmp is tmpfs here as in the kernel (docs/abi/ L1): the root above stores
  * whole files, as FAT does, so the handlers' real write path - at an offset,
  * with modes and links - needs the filesystem that has one. */
@@ -499,6 +512,11 @@ void kf_reset(void) {
     vibeos_fdtable_set_pages(kf_fd_page, kf_fd_page_free);
     for (i = 0; i < KF_PROCS; i++) {
         vibeos_fdtable_destroy(&g_ps[i].files);
+    }
+    /* Before the frames are forgotten: its pages are frames, and giving them
+     * back to a table that has been wiped would be giving them to nobody. */
+    if (g_tmpfs_live) {
+        vibeos_tmpfs_destroy(&g_tmpfs);
     }
     kf_mm_reset();
     vibeos_file_reset();
@@ -534,11 +552,9 @@ void kf_reset(void) {
     vibeos_fs_set_lock(kf_pipe_lock, kf_pipe_unlock);
     vibeos_fs_detach_all();
     (void)vibeos_fs_attach("/", &g_root);
-    if (g_tmpfs_live) {
-        vibeos_tmpfs_destroy(&g_tmpfs);
-    }
-    (void)vibeos_tmpfs_init(&g_tmpfs, 4096, kf_fd_page, kf_fd_page_free, kf_pipe_lock,
+    (void)vibeos_tmpfs_init(&g_tmpfs, 2048, kf_tmpfs_page, kf_tmpfs_page_free, kf_pipe_lock,
                             kf_pipe_unlock);
+    vibeos_tmpfs_set_page_hold(&g_tmpfs, kf_tmpfs_page_hold);
     g_tmpfs_live = 1;
     (void)vibeos_fs_mount(&g_tmpfs_mnt, vibeos_tmpfs_ops(), &g_tmpfs, "tmpfs");
     (void)vibeos_fs_attach("/tmp", &g_tmpfs_mnt);
@@ -882,6 +898,11 @@ int ks_map_anon(int slot, uint64_t va, vibeos_prot_t prot) {
     (void)vibeos_frame_put(phys);
     return 0;
 }
+int ks_map_page(int slot, uint64_t va, void *page, vibeos_prot_t prot) {
+    return g_t[slot].has_as && vibeos_vmspace_map(&g_t[slot].as, va, kf_phys_of(page), prot) == 0
+               ? 0 : -1;
+}
+void ks_page_unhold(void *page) { (void)vibeos_frame_put(kf_phys_of(page)); }
 int ks_map_user_pages(int slot, uint64_t va, uint64_t pages) {
     uint64_t i;
     for (i = 0; i < pages; i++) {

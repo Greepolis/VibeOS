@@ -1,0 +1,53 @@
+# Shared mappings, in the handler (docs/abi/ L3 step 2). Host tests:
+# t_mmap_shared in tests/kernel/linux_abi_tests.c.
+#
+#  1. a shared mapping is made as a private one
+#  2. shared and writable does not ask whether the descriptor can write
+#  3. the reference a file's page came with is never given back (a leak: the
+#     page outlives the file and every mapping)
+#  4. msync takes any flags
+#  5. msync does not look for a hole in the range
+#
+# Not a case: the region's kind (anonymous, shared, file). Nothing a host test
+# can see reads it - the page fault's stack growth does, in the kernel - so
+# recording every region as anonymous changes no answer here.
+#
+# Target source: kernel/abi/linux/mm.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/linux/mm.c scripts/dev/cases/abi-mmap-shared.txt
+
+### a shared mapping is made as a private one
+--- old
+    const int shared = (flags & LINUX_MAP_TYPE) != LINUX_MAP_PRIVATE;
++++ new
+    const int shared = 0;
+
+### shared and writable does not ask whether the descriptor can write
+--- old
+            (f->flags & VIBEOS_O_ACCMODE) != VIBEOS_O_RDWR) {
++++ new
+            0) {
+
+### the reference a file's page came with is never given back
+--- old
+        ks_page_unhold(page);
++++ new
+
+### msync takes any flags
+--- old
+        (flags & ~(uint64_t)(LINUX_MS_ASYNC | LINUX_MS_INVALIDATE | LINUX_MS_SYNC)) != 0u ||
+        ((flags & LINUX_MS_ASYNC) && (flags & LINUX_MS_SYNC))) {
++++ new
+        0) {
+
+### msync does not look for a hole in the range
+--- old
+        if (!v) {
+            r = -VIBEOS_ENOMEM;
+            break;
+        }
+        va = v->base + v->len;
++++ new
+        if (!v) {
+            break;
+        }
+        va = v->base + v->len;

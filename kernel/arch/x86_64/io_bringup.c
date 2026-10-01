@@ -968,8 +968,16 @@ static void *hw_tmpfs_page(void) {
     return hw_alloc_user_page();
 }
 
+/* The filesystem's reference given back, which frees the page unless a mapping
+ * still has it (docs/abi/ L3). Not hw_free_page_why: that one reports a frame
+ * released while a process maps it, and here that is a file truncated under a
+ * mapping - allowed, and the mapping keeps the page. */
 static void hw_tmpfs_page_free(void *p) {
-    hw_free_page_why(p, "tmpfs page");
+    (void)hw_page_put((uint64_t)(uintptr_t)p);
+}
+
+static void hw_tmpfs_page_hold(void *p) {
+    vibeos_frame_get((uint64_t)(uintptr_t)p);
 }
 
 /* Uptime until there is a wall clock (L2). */
@@ -988,6 +996,7 @@ static void hw_tmpfs_bringup(void) {
     } else if (vibeos_fs_attach("/tmp", &g_tmpfs_mnt) != 0) {
         verdict = "FAILED: attach";
     }
+    vibeos_tmpfs_set_page_hold(&g_tmpfs, hw_tmpfs_page_hold);
     vibeos_x86_64_serial_lock();
     vibeos_x86_64_serial_puts("[IO] TMPFS at=/tmp pages=0x");
     vibeos_x86_64_serial_print_hex(HW_TMPFS_PAGES);

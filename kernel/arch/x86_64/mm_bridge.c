@@ -2479,7 +2479,8 @@ static int hw_stack_grow(hw_task_t *t, uint64_t fault_va) {
     entry = vibeos_vmspace_entry(&sv, page_va);
     if (entry && *entry != 0ull) {
         done = 1;   /* mapped while this waited for the lock */
-    } else if (region && (region->prot & VIBEOS_PROT_WRITE) && (region->prot & VIBEOS_PROT_USER) &&
+    } else if (region && region->backing == VIBEOS_BACKING_ANON &&
+               (region->prot & VIBEOS_PROT_WRITE) && (region->prot & VIBEOS_PROT_USER) &&
                (page = hw_alloc_page()) != 0) {
         /* Zeroed already: the allocator hands out nothing else. */
         if (hw_map_page(&t->proc.as, page_va, (uint64_t)(uintptr_t)page,

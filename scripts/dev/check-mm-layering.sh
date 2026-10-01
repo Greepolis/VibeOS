@@ -38,8 +38,22 @@ fi
 # reference and the record of it are written together, which is the whole
 # repair. Releasing one is still wrapped in the arch layer until the call sites
 # are renamed, so only `get` is checked here.
+#
+# One call outside is legitimate (docs/abi/ L3): hw_tmpfs_page_hold. A shared
+# mapping of a file maps the filesystem's own page, and the filesystem has to
+# hold it for the mapper from inside its own lock - a truncate on another core
+# frees the page the moment that lock is released, and mapping it there would
+# mean allocating page tables with interrupts masked. It is a pin, given back as
+# soon as the mapping has its own reference, the same shape as the one fork
+# takes inside the layer. If a second is ever right, add it here deliberately.
 bad="$(grep -rn 'vibeos_frame_get(' --include=*.c kernel/ user/ 2>/dev/null \
-      | grep -v '^kernel/mm/' || true)"
+      | grep -v '^kernel/mm/' \
+      | grep -v '^kernel/arch/x86_64/io_bringup.c:[0-9]*:    vibeos_frame_get((uint64_t)(uintptr_t)p);$' \
+      || true)"
+if [ "$(grep -c 'vibeos_frame_get(' kernel/arch/x86_64/io_bringup.c)" -gt 1 ]; then
+    bad="$bad
+kernel/arch/x86_64/io_bringup.c: more than the one hold this check allows"
+fi
 if [ -n "$bad" ]; then
     echo "mm-layering: a frame reference is taken outside kernel/mm/:"
     echo "$bad" | head -10
