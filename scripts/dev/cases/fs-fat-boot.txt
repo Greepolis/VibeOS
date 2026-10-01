@@ -1,0 +1,41 @@
+# The FAT write path on the boot volume (docs/abi/ L1 step 4), as the boot gate
+# sees it: the shell self-test writes on the volume, and once the machine has
+# stopped the gate checks the image it left behind with scripts/dev/fat-fsck.py
+# and reads one file back with mtools.
+#
+#  1. a write does not store the new size. Expect fat_write_path_failed: the
+#     file the shell wrote counts as empty.
+#  2. truncate does not give clusters back. Expect
+#     boot_volume_inconsistent:chain_too_long and nothing from the guest - a
+#     file cut by O_TRUNC that keeps its chain reads perfectly, and the kernel
+#     that left it that way is the last thing able to notice.
+#
+# Not a case: mtools_cannot_read_what_the_guest_wrote. The defect it is there
+# for is a sector that reaches the cache and not the disk - the guest reads its
+# own cache and finds everything it wrote. Dropping the flush from
+# fat_sector_write was tried and the boot stayed green: the volume was
+# consistent and mtools read the file. The cache writes a dirty block out when
+# it evicts it, and the boot runs a great many programs after the shell has
+# written its files - which is the likely reason and has not been measured.
+# If it is the reason, only the last writes before a power cut are lost, and
+# nothing here writes last. Recorded as "this
+# environment cannot tell"; scripts/dev/verify-fat-mtools.sh is where mtools is
+# put to the proof, and its cases are in fs-fat.txt.
+#
+# Target source: kernel/fs/fat.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/fs/fat.c scripts/dev/cases/fs-fat-boot.txt
+
+### a write does not store the new size
+--- old
+    if (end > e->size) {
+        e->size = (uint32_t)end;
+    }
+    fat_touch(e);
++++ new
+    fat_touch(e);
+
+### truncate does not give clusters back
+--- old
+    } else if (need < have) {
++++ new
+    } else if (0) {

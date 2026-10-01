@@ -224,6 +224,26 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                   "for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do "
                                   "echo 0123456789012345678901234567890123456789; done > /tmp/big.txt; "
                                   "echo tail >> /tmp/big.txt; wc -c < /tmp/big.txt\n"
+                                  /* And on the boot volume, which is FAT
+                                   * (step 4): twenty-one lines this time, so
+                                   * the count - 866 - is not /tmp's; then a
+                                   * file whose name is not 8.3, written and
+                                   * read back by that name. The gate also
+                                   * reads it off the disk image with mtools
+                                   * once the machine has stopped. */
+                                  "for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21; do "
+                                  "echo 0123456789012345678901234567890123456789; done > /fatbig.txt; "
+                                  "echo tail >> /fatbig.txt; wc -c < /fatbig.txt\n"
+                                  "echo LFN_$((2+3)) > '/written with a long name.txt' && "
+                                  "cat '/written with a long name.txt'\n"
+                                  /* A file of two clusters, opened again
+                                   * with O_TRUNC. Nothing here reads the
+                                   * result: a truncate that keeps the chain
+                                   * leaves a file that reads perfectly, and
+                                   * only the gate's consistency check of the
+                                   * volume can see the clusters it kept. */
+                                  "cat /fatbig.txt /fatbig.txt /fatbig.txt > /fatcut.txt; "
+                                  "echo cut > /fatcut.txt\n"
                                   /* The last thing the self-test says. The boot
                                    * harness waits for this before driving the
                                    * kernel CLI, so a slower build cannot have

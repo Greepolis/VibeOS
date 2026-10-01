@@ -774,6 +774,31 @@ def wait_for(buffer_getter, needle, deadline, last_rx_getter=None):
 EXEC_EXPECTED_REFUSALS = {"not-found"}
 
 
+def boot_volume_problems(esp_img):
+    """What is wrong with the FAT volume the guest left behind, as reasons.
+
+    Two questions the serial log cannot answer. Is the volume consistent with
+    itself - no cluster lost or claimed twice, every chain as long as its size
+    says, every long name belonging to an entry (scripts/dev/fat-fsck.py)? And
+    does somebody else's FAT implementation read the file the shell wrote under
+    a long name? mtools is asked when it is installed, as it is in CI; without
+    it only the first question is asked."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    out = []
+    r = subprocess.run([sys.executable, os.path.join(here, "dev", "fat-fsck.py"), esp_img],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        m = re.search(r"first=(\S+)", r.stdout)
+        out.append("boot_volume_inconsistent:" + (m.group(1) if m else "unreadable"))
+    mtype = shutil.which("mtype")
+    if mtype:
+        r = subprocess.run([mtype, "-i", esp_img, "::/written with a long name.txt"],
+                           capture_output=True, text=True)
+        if r.returncode != 0 or r.stdout.strip() != "LFN_5":
+            out.append("mtools_cannot_read_what_the_guest_wrote")
+    return out
+
+
 def main():
     build_dir = sys.argv[1] if len(sys.argv) > 1 else "build"
     timeout_sec = int(sys.argv[2]) if len(sys.argv) > 2 else 90
@@ -2773,6 +2798,12 @@ def main():
                 # 512 was the old ceiling, 820 is >> that did not append.
                 if not re.search(r"write\(ring3\): 825\r?\n", text):
                     problems.append("tmp_write_path_failed")
+                # The same on the boot volume, FAT, in place (step 4): 866
+                # bytes counted, and a file under a name that is not 8.3 read
+                # back by it.
+                if (not re.search(r"write\(ring3\): 866\r?\n", text) or
+                        not re.search(r"write\(ring3\): LFN_5\r?\n", text)):
+                    problems.append("fat_write_path_failed")
 
             signal_elf = os.path.join(efi_root, "EFI", "BOOT", "SIGNAL.ELF")
             if os.path.exists(signal_elf):
@@ -3009,10 +3040,6 @@ def main():
                 reason = "invariant_failed:" + ",".join(problems)
                 raise RuntimeError(reason)
 
-            status = "pass"
-            reason = (f"cli_and_network_verified"
-                      f" tcp_connections={echo_state['connections']}"
-                      f" bytes={echo_state['received']}")
             serial.close()
             qemu.terminate()
             try:
@@ -3021,6 +3048,21 @@ def main():
                 qemu.kill()
                 qemu.wait(timeout=5)
             err_fp.close()
+
+            # The boot volume, now that nothing is writing it (docs/abi/ L1
+            # step 4). The guest wrote files on it in place; whether the volume
+            # it left behind is one another system would accept is not something
+            # the guest can say about itself.
+            if ESP == "image":
+                problems = boot_volume_problems(esp_img)
+                if problems:
+                    reason = "invariant_failed:" + ",".join(problems)
+                    raise RuntimeError(reason)
+
+            status = "pass"
+            reason = (f"cli_and_network_verified"
+                      f" tcp_connections={echo_state['connections']}"
+                      f" bytes={echo_state['received']}")
 
     except Exception as exc:
         reason = str(exc)
