@@ -497,6 +497,43 @@ true to report before they are worth a row, so L1 builds that first:
   behind, so the pending buffer refuses a cycle too - a second defence, and
   not the right errno.
 
+**Step 2 (2026-09-30): done.**
+
+- `kernel/fs/tmpfs.c`: 1024 inodes; a file's data in pages through sixteen
+  direct pointers, one indirect and one double-indirect page (up to about a
+  gigabyte), a page never written is a hole; a directory is a file of
+  fixed-size records holding whole names. Modes, owners, three times, hard and
+  symbolic links, rename over an existing name (NOREPLACE checked first, as
+  Linux does; a directory cannot move inside itself), rmdir of empty
+  directories, statfs with TMPFS_MAGIC. A freed inode's generation moves on, so
+  a description left holding it gets ENOENT rather than the next file's bytes -
+  the known gap is that the last unlink frees at once, before the last close.
+- **It never allocates under its own lock.** The allocator can reclaim, and the
+  lock masks interrupts; so an operation takes up to three spare pages first,
+  the locked code takes from them, and the rest go back after. Writes go a
+  page at a time for the same reason. The host test's allocator fails the test
+  if it is called with the lock held.
+- Mounted at `/tmp` at boot, 32 MiB at most, its pages through the admitted
+  door for user memory; timestamps read uptime until L2 has a wall clock. The
+  gate asserts `tmpfs_not_mounted` from its own line, and the shell writes a
+  file there and reads it back (`tmpfs_round_trip_failed` - the contents are
+  the shell's arithmetic, so the echoed command cannot stand in for them).
+- A must-be-zero, `tmpfs_bad_record`: a directory record naming a free inode,
+  or one without its page, is refused as EIO and counted.
+- Host tests (`tmpfs_tests.c`, 70 checks besides the helper) and a torture against a model that
+  shares no code with it (`tmpfs_torture.c`: eleven paths, twelve operations,
+  every return value, every byte read, every path's type, size and link
+  count, and the pages and inodes held, after every round). It is the nightly
+  `tmpfs-torture` job, 300 seeds sanitized, which covers `kernel/fs` - the
+  nightly-coverage baseline goes from 8 to 7.
+- Sabotage: `fs-tmpfs.txt`, 11 cases, all red under the host tests and 10 of
+  them under the torture as well. Two lessons on the way. "The source's record
+  is not found again" went NOT RED twice: with the target last nothing moves,
+  and with the target just before the source the stale slot is exactly the new
+  end, so the wrong removal removes the right record - only a record between
+  them exposes it. And the torture could not see a stale generation until it
+  learned to keep a node across rounds, as an open description does.
+
 ### L2. Processes, credentials and time (47)
 
 Sleeping and timers (`nanosleep`, `clock_nanosleep`, `alarm`, `setitimer`,
