@@ -2812,6 +2812,12 @@ def main():
                     problems.append("names_and_metadata_failed")
                 if not re.search(r"write\(ring3\): FATMV_4\r?\n", text):
                     problems.append("fat_rename_failed")
+                # A directory listed (step 6): ls prints the long name whole,
+                # ls -a counts four entries - the two dots, the file, the link -
+                # and find, which trusts the type in the entry, counts one link.
+                if (not re.search(r"write\(ring3\): a file name longer than fifteen bytes\r?\n", text) or
+                        not re.search(r"write\(ring3\): DIRS_4_1\r?\n", text)):
+                    problems.append("directory_listing_failed")
 
             signal_elf = os.path.join(efi_root, "EFI", "BOOT", "SIGNAL.ELF")
             if os.path.exists(signal_elf):
@@ -3014,6 +3020,11 @@ def main():
             # not a check.
             if "linux abi ok" not in text:
                 problems.append("linux_abi_selftest_failed")
+            # File locks between two processes (L1 step 6), which the same
+            # program checks from ring 3 and says in a line of its own: nothing
+            # else the boot runs takes a lock.
+            if not re.search(r"write\(ring3\): LOCKS_OK", text):
+                problems.append("file_locks_selftest_failed")
 
             # A write from a kernel address must be refused. The row declares the
             # buffer and the dispatcher's descriptor engine refuses it before the

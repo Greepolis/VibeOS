@@ -342,6 +342,70 @@ static const char *check_linux_abi(void) {
     return abi_ok;
 }
 
+/* File locks, across two processes (docs/abi/ L1 step 6) - which is the only
+ * way a lock means anything, and nothing else the boot runs takes one.
+ *
+ * The parent holds a record lock on ten bytes and a flock on the whole file.
+ * The child is another process, so the record lock is in its way, and F_GETLK
+ * tells it which bytes; a description of its own is refused the flock; and the
+ * descriptor it inherited names the parent's description, which already holds
+ * it. The child's exit status says whether all of that was so. */
+struct abi_flock {
+    short l_type;
+    short l_whence;
+    long l_start;
+    long l_len;
+    int l_pid;
+};
+
+static const char lock_path[] = "/tmp/lockself";
+static const char locks_ok[] = "LOCKS_OK: record and whole-file locks hold between processes\n";
+static const char locks_bad[] = "abi: file locks wrong\n";
+
+static int check_file_locks(void) {
+    struct abi_flock fl;
+    volatile int status = 0;
+    long fd, child;
+
+    fd = user_syscall3(2 /* open */, (long)(unsigned long)lock_path, 0x42 /* O_CREAT|O_RDWR */, 0600);
+    if (fd < 0) {
+        return 0;
+    }
+    fl.l_type = 1;   /* F_WRLCK */
+    fl.l_whence = 0;
+    fl.l_start = 0;
+    fl.l_len = 10;
+    fl.l_pid = 0;
+    if (user_syscall3(72 /* fcntl */, fd, 6 /* F_SETLK */, (long)(unsigned long)&fl) != 0 ||
+        user_syscall3(73 /* flock */, fd, 2 /* LOCK_EX */, 0) != 0) {
+        return 0;
+    }
+    child = user_syscall3(SYS_fork, 0, 0, 0);
+    if (child == 0) {
+        struct abi_flock ask;
+        long own = user_syscall3(2, (long)(unsigned long)lock_path, 2 /* O_RDWR */, 0);
+        int ok = own >= 0;
+
+        ask.l_type = 0;   /* F_RDLCK */
+        ask.l_whence = 0;
+        ask.l_start = 5;
+        ask.l_len = 1;
+        ask.l_pid = 0;
+        ok = ok && user_syscall3(72, own, 6, (long)(unsigned long)&ask) == -11 /* EAGAIN */;
+        ok = ok && user_syscall3(72, own, 5 /* F_GETLK */, (long)(unsigned long)&ask) == 0 &&
+             ask.l_type == 1 && ask.l_start == 0 && ask.l_len == 10;
+        ok = ok && user_syscall3(73, own, 2 | 4 /* LOCK_EX|LOCK_NB */, 0) == -11;
+        ok = ok && user_syscall3(73, fd, 2 | 4, 0) == 0;
+        user_syscall3(SYS_exit, ok ? 0 : 1, 0, 0);
+    }
+    if (child < 0 || user_syscall3(SYS_wait4, child, (long)(unsigned long)&status, 0) != child) {
+        return 0;
+    }
+    user_syscall3(3 /* close */, fd, 0, 0);
+    user_syscall3(87 /* unlink */, (long)(unsigned long)lock_path, 0, 0);
+    return status == 0;
+}
+
 int vibeos_main(int argc, char **argv, char **envp) {
     long pid, brk0, brk1, map, rejected;
 
@@ -373,6 +437,11 @@ int vibeos_main(int argc, char **argv, char **envp) {
             n++;
         }
         user_syscall3(SYS_write, 1, (long)(unsigned long)verdict, n);
+    }
+    if (check_file_locks()) {
+        user_syscall3(SYS_write, 1, (long)(unsigned long)locks_ok, sizeof(locks_ok) - 1);
+    } else {
+        user_syscall3(SYS_write, 1, (long)(unsigned long)locks_bad, sizeof(locks_bad) - 1);
     }
 
     pid = user_syscall3(SYS_getpid, 0, 0, 0);

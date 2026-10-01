@@ -258,6 +258,13 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                    * rename and an rmdir left it whole. */
                                   "mv /fatcut.txt '/moved by rename.txt' && mkdir /fatdir && "
                                   "rmdir /fatdir && echo FATMV_$(wc -c < '/moved by rename.txt')\n"
+                                  /* A directory listed (L1 step 6): a name
+                                   * longer than the fifteen bytes getdents64
+                                   * used to cut it at, the two dots every
+                                   * directory has, and a link that find
+                                   * takes for one from the entry's type. */
+                                  "mkdir /tmp/ls && cd /tmp/ls && echo > 'a file name longer than fifteen bytes' && "
+                                  "ln -s nowhere dangling && ls && echo DIRS_$(ls -a | wc -l)_$(find . -type l | wc -l); cd /\n"
                                   /* The last thing the self-test says. The boot
                                    * harness waits for this before driving the
                                    * kernel CLI, so a slower build cannot have

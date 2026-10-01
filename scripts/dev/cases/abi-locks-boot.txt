@@ -1,0 +1,23 @@
+# File locks at boot (docs/abi/ L1 step 6): the ring-3 self-test (user/prog/
+# hello.c) takes a record lock and a flock, forks, and the child finds both in
+# its way; the program prints LOCKS_OK only if it did.
+#
+#  1. every process is one lock owner, so the child's request is the parent's
+#     own. Expect file_locks_selftest_failed.
+#  2. flock is owned by the process, so the description the child opened for
+#     itself already holds it. Expect file_locks_selftest_failed.
+#
+# Target source: kernel/abi/linux/fs.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/fs.c scripts/dev/cases/abi-locks-boot.txt
+
+### every process is one lock owner
+--- old
+    return me < 0 ? 0u : VIBEOS_FLK_OWNER_PROC(ks_id(me)->tgid);
++++ new
+    return me < 0 ? 0u : VIBEOS_FLK_OWNER_PROC(1);
+
+### flock is owned by a constant
+--- old
+    r = linux_lock_take(VIBEOS_FLK_WHOLE, f, VIBEOS_FLK_OWNER_FILE(f), 0, type, 0, VIBEOS_FLK_END,
++++ new
+    r = linux_lock_take(VIBEOS_FLK_WHOLE, f, VIBEOS_FLK_OWNER_PROC(1), 0, type, 0, VIBEOS_FLK_END,

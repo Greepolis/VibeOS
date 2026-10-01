@@ -1,0 +1,25 @@
+# A directory listed at boot (docs/abi/ L1 step 6): the shell self-test makes a
+# file with a long name and a dangling link in /tmp/ls, and the gate reads ls's
+# own line and DIRS_4_1 - four entries with the two dots, one link by find.
+#
+#  1. "." and ".." are not made. Expect directory_listing_failed: ls -a counts
+#     two.
+#  2. names are cut at fifteen bytes. Expect directory_listing_failed: ls
+#     prints a name that is not the file's.
+#
+# Target source: kernel/abi/files/regular.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/abi/files/regular.c scripts/dev/cases/abi-readdir-boot.txt
+
+### the two dots are not made
+--- old
+        out->ino = st.ino;
+        out->mode = st.mode;
+        return 0;
++++ new
+        return VIBEOS_READDIR_SKIP;
+
+### names are cut at fifteen bytes
+--- old
+    if (vibeos_fs_list(f->mnt, tail, (uint32_t)(index - 2u), out->name, sizeof(out->name),
++++ new
+    if (vibeos_fs_list(f->mnt, tail, (uint32_t)(index - 2u), out->name, 16u,
