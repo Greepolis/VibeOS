@@ -61,7 +61,13 @@ static uint32_t hw_file_id(const char *path) {
         }
     }
     if (g_cached_file_count >= VIBEOS_HW_CACHE_FILES) {
-        return 0;   /* out of identities: read uncached rather than guess */
+        /* Out of identities: read uncached rather than guess - which works
+         * only for a file that fits the staging buffer. Said, because what the
+         * caller reports for the others is "not found" (M-081). */
+        hw_log(VIBEOS_LOG_WARN, 47u, (uint64_t)VIBEOS_HW_CACHE_FILES, 0,
+               "no file identity left for the page cache: this file is read uncached "
+               "(a0 = identities)");
+        return 0;
     }
     if (vibeos_fs_lookup(&g_rootfs, path, &node) != 0) {
         return 0;

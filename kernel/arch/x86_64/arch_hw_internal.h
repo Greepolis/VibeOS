@@ -549,8 +549,18 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
  * Small and fixed: the alternative is hashing the path, and two paths that
  * collide would serve each other's contents with nothing reporting an error -
  * the one failure in a cache that is completely silent. A table compares the
- * whole path and simply runs out instead. */
-#define VIBEOS_HW_CACHE_FILES 32u
+ * whole path and simply runs out instead.
+ *
+ * And running out is not harmless any more (M-081). A file with no identity is
+ * read whole into the exec staging buffer, which was four megabytes when this
+ * was written and is 64 KiB now - so with thirty-two identities, the
+ * thirty-third program a boot ran did not start if it was larger than that,
+ * and execve said "not found" about a file that was on the disk. A boot runs
+ * about twenty programs; a run of LTP tests is a different program every few
+ * seconds. Five hundred and twelve is room, not a fix: the table still never
+ * gives an identity back, because a live process's regions name theirs and
+ * nothing counts who does. Running out is at least said now. */
+#define VIBEOS_HW_CACHE_FILES 512u
 typedef struct {
     char path[64];
     vibeos_fs_node_t node;
