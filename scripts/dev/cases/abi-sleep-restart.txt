@@ -1,0 +1,36 @@
+# Sleeping, and a call run again after a signal (docs/abi/ L3 step 3). Host
+# tests: t_sleep and t_sa_restart in tests/kernel/linux_abi_tests.c.
+#
+#  1. a sleep does not count the tick it began in (it can end early)
+#  2. a time shorter than a tick is no wait at all
+#  3. a signal does not end a sleep
+#  4. what was left of an interrupted sleep is not reported
+#
+# Target source: kernel/abi/linux/misc.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/linux/misc.c scripts/dev/cases/abi-sleep-restart.txt
+
+### a sleep does not count the tick it began in
+--- old
+        deadline = ks_ticks() + (uint64_t)ticks + 1u;
++++ new
+        deadline = ks_ticks() + (uint64_t)ticks;
+
+### a time shorter than a tick is no wait at all
+--- old
+    return (int64_t)((uint64_t)ts->tv_sec * ks_hz() + ((uint64_t)ts->tv_nsec + per - 1u) / per);
++++ new
+    return (int64_t)((uint64_t)ts->tv_sec * ks_hz() + (uint64_t)ts->tv_nsec / per);
+
+### a signal does not end a sleep
+--- old
+        if (ks_current() >= 0 && ks_signal_interrupts(ks_current())) {
+            *left = deadline - now;
+            return -VIBEOS_EINTR;
+        }
++++ new
+
+### what was left of an interrupted sleep is not reported
+--- old
+    if (r == -VIBEOS_EINTR && rem_uptr != 0u && !(flags & LINUX_TIMER_ABSTIME)) {
++++ new
+    if (0) {

@@ -91,7 +91,10 @@ void ks_unlock_preemptible(vibeos_lock_t *l);
 void ks_irq_off(void);
 void ks_irq_on(void);
 void ks_idle(void);                    /* interrupts on, sleep until the next one  */
-void ks_block_point(void);             /* a task giving up the core to wait: idle  */
+void ks_block_point(void);
+/* Give the core away until the clock has moved: what a wait with a deadline
+ * does between looks at the time. Always returns, a tick later at most. */
+void ks_wait_tick(void);             /* a task giving up the core to wait: idle  */
 void ks_wake_waiters(void);            /* data, room or an end of file appeared    */
 int ks_signal_interrupts(int slot);    /* must a wait end, for a signal?           */
 int ks_signal_raise(int slot, uint32_t sig);
@@ -176,6 +179,11 @@ void ks_exec_regs(int slot, ks_regs_t *frame, uint64_t entry, uint64_t sp);
 
 uint64_t ks_regs_sp(const ks_regs_t *frame);
 uint64_t ks_regs_ret(const ks_regs_t *frame);
+/* Make the frame one that issues syscall `nr` again when it is resumed: the
+ * number back where the instruction reads it, and the instruction pointer back
+ * on the instruction. The arguments are still in their registers - a handler
+ * does not write them. */
+void ks_regs_restart(ks_regs_t *frame, uint64_t nr);
 /* Signal frames: pushed at `sp` holding the whole register state and the mask
  * to restore, and read back by rt_sigreturn. Both 0, or -1 (and nothing
  * changed) if the user side is unusable. */

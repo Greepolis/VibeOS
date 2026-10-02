@@ -820,7 +820,9 @@ def stage_corpus(efi_root, build_dir):
         script = script.replace(b'echo "C:done: ', (
             b'mkdir -p /tmp/ltp && cd /tmp/ltp\n'
             b'for t in ' + " ".join(LTP_TESTS).encode() + b'; do\n'
-            b'    "$C/ltp/$t" > /tmp/ltp/out 2>&1\n'
+            # KCONFIG_SKIP_CHECK: a test that names kernel options it needs
+            # looks for the kernel's .config, and there is none to find.
+            b'    KCONFIG_SKIP_CHECK=1 "$C/ltp/$t" > /tmp/ltp/out 2>&1\n'
             b'    rc=$?\n'
             b'    tail -n 30 /tmp/ltp/out | sed "s/^/C:ltp-$t: /"\n'
             b'    echo "C:ltp: $t rc=$rc"\n'

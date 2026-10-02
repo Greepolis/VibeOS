@@ -52,13 +52,22 @@ static uint32_t linux_signal_next(const vibeos_task_t *t) {
 }
 
 /* Called on the way back to user space. Returns non-zero if the frame was
- * rewritten to enter a handler. May not return at all, if the signal kills. */
+ * rewritten to enter a handler. May not return at all, if the signal kills.
+ *
+ * It also decides what becomes of a call a signal cut short (the dispatcher
+ * left its number in sys_restart). If a handler runs and was installed with
+ * SA_RESTART, the frame the handler will return to is made to issue the call
+ * again; without the flag it keeps the EINTR. If no handler runs - the signal
+ * was discarded, or stopped the task - there is nobody to have asked for
+ * EINTR, and the call is issued again. This did not exist: every interrupted
+ * wait was EINTR, and a parent whose child reports through a signal - LTP's
+ * harness, every shell with a SIGCHLD handler - saw waitpid fail. */
 int linux_signal_deliver(ks_regs_t *frame) {
     vibeos_task_t *t;
     vibeos_procstate_t *ps;
     int me;
     uint32_t sig;
-    uint64_t handler, sp;
+    uint64_t handler, sp, restart;
 
     if (ks_current() < 0 || !ks_id(ks_current())->is_user) {
         return 0;
@@ -66,9 +75,14 @@ int linux_signal_deliver(ks_regs_t *frame) {
     me = ks_current();
     t = ks_id(me);
     ps = ks_ps(me);
+    restart = t->sys_restart;
+    t->sys_restart = 0;
     for (;;) {
         sig = linux_signal_next(t);
         if (sig == 0u) {
+            if (restart) {
+                ks_regs_restart(frame, restart - 1u);
+            }
             return 0;
         }
         t->sig_pending &= ~(1ull << sig);
@@ -88,6 +102,9 @@ int linux_signal_deliver(ks_regs_t *frame) {
                 (void)ks_set_state(me, VIBEOS_TASK_BLOCKED, __func__);
                 ks_mark_ready(me, "sigstop");
                 ks_con_puts("[SIG] task stopped by SIGSTOP\n");
+                if (restart) {
+                    ks_regs_restart(frame, restart - 1u);   /* waits again once continued */
+                }
                 return 0;
             }
             if (sig == VIBEOS_SIGKILL && ps != 0 &&
@@ -155,6 +172,9 @@ int linux_signal_deliver(ks_regs_t *frame) {
      * building the frame in place would fault in ring 0 (H-023). On a fault the
      * frame is not left half-written - the task takes SIGSEGV, its default
      * action, rather than the kernel taking the fault. */
+    if (restart && (ps->sig_flags[sig] & VIBEOS_SA_RESTART)) {
+        ks_regs_restart(frame, restart - 1u);   /* saved below: what sigreturn resumes */
+    }
     if (ks_sigframe_push(frame, sp, t->sig_blocked, ps->sig_restorer[sig]) != 0) {
         ks_task_exit(128ull + VIBEOS_SIGSEGV);
         return 0;

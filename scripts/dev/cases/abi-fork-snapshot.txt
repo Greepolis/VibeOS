@@ -4,7 +4,9 @@
 #
 #  1. fork copies the break after releasing the address-space lock
 #  2. fork copies the mapping cursor after releasing it
-#  3. setpgid joins a group nobody leads
+#  3. setpgid joins a group nobody is in
+#  4. setpgid moves one thread of the process (M-083)
+#  5. a group is asked for by its leader's pid, not by who is in it (M-083)
 #
 # Target source: kernel/abi/linux/proc.c
 # Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/linux/proc.c scripts/dev/cases/abi-fork-snapshot.txt
@@ -41,8 +43,25 @@
                      __atomic_load_n(&pps->mmap_cur, __ATOMIC_ACQUIRE),
                      __ATOMIC_RELEASE);
 
-### setpgid joins a group nobody leads
+### setpgid joins a group nobody is in
 --- old
-    } else if ((uint32_t)leader != pid && ks_id(leader_slot)->pgid != (uint32_t)leader) {
+            if (!found) {
+                r = -VIBEOS_EPERM;
+            }
 +++ new
-    } else if (0) {
+
+### setpgid moves one thread of the process (M-083)
+--- old
+            if (linux_task_live(i) && ks_id(i)->tgid == tgid) {
+                ks_id(i)->pgid = group;
+            }
++++ new
+            if (i == target) {
+                ks_id(i)->pgid = group;
+            }
+
+### a group is asked for by its leader's pid, not by who is in it (M-083)
+--- old
+                found = linux_task_live(i) && ks_id(i)->pgid == group && ks_id(i)->sid == sid;
++++ new
+                found = linux_task_live(i) && ks_id(i)->pid == group && ks_id(i)->sid == sid;

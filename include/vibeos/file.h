@@ -27,7 +27,11 @@
 #include "vibeos/path.h"
 #include "vibeos/vfs.h"
 
-#define VIBEOS_FILE_MAX 256u
+/* Open file descriptions, the whole machine's. More than one process's table
+ * holds (1024), or a program that opens files until it is refused is refused
+ * by the machine (ENFILE) and not by its own limit (EMFILE), which is what it
+ * was counting to - 256 was fewer, and LTP's creat05 and fcntl12 both said so. */
+#define VIBEOS_FILE_MAX 2048u
 #define VIBEOS_FILE_PATH VIBEOS_PATH_MAX
 
 /* Open flags a description keeps, in Linux's numbering - the numbers a Linux

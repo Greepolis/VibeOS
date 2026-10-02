@@ -35,7 +35,7 @@ static long pipe_read(vibeos_file_t *f, uint64_t buf, uint64_t len) {
          * signal needs acting on. This wait never marks the task BLOCKED, so
          * the timer returns it here each tick and the check cannot be missed. */
         if (ks_current() >= 0 && ks_signal_interrupts(ks_current())) {
-            return -VIBEOS_EINTR;
+            return -VIBEOS_RESTART_CALL;
         }
         ks_block_point();
     }
@@ -76,7 +76,7 @@ static long pipe_write(vibeos_file_t *f, uint64_t buf, uint64_t len) {
          * nothing was. Same shape as the read side, and the same reason the check
          * cannot be missed. */
         if (ks_current() >= 0 && ks_signal_interrupts(ks_current())) {
-            return written > 0u ? (long)written : -VIBEOS_EINTR;
+            return written > 0u ? (long)written : -VIBEOS_RESTART_CALL;
         }
         ks_block_point();
     }

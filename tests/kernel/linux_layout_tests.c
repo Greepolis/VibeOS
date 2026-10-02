@@ -42,6 +42,7 @@ int test_linux_layout(void) {
 #include <linux/mman.h>
 #include <asm/prctl.h>
 #include <linux/time_types.h>
+#include <linux/time.h>
 #include <linux/utsname.h>
 #include <linux/sysinfo.h>
 #include <linux/in.h>
@@ -358,12 +359,17 @@ int test_linux_layout(void) {
     CONST(VIBEOS_EDEADLK, EDEADLK);
     CONST(VIBEOS_EOVERFLOW, EOVERFLOW);
     CONST(VIBEOS_ESTALE, ESTALE);
+    CONST(VIBEOS_EAFNOSUPPORT, EAFNOSUPPORT);
 
     CONST(LINUX_MAP_SHARED, MAP_SHARED);
     CONST(LINUX_MAP_PRIVATE, MAP_PRIVATE);
     CONST(LINUX_MAP_SHARED_VALIDATE, MAP_SHARED_VALIDATE);
     CONST(LINUX_MAP_TYPE, MAP_TYPE);
     CONST(LINUX_MAP_FIXED_NOREPLACE, MAP_FIXED_NOREPLACE);
+    CONST(LINUX_CLOCK_REALTIME, CLOCK_REALTIME);
+    CONST(LINUX_CLOCK_MONOTONIC, CLOCK_MONOTONIC);
+    CONST(LINUX_CLOCK_BOOTTIME, CLOCK_BOOTTIME);
+    CONST(LINUX_TIMER_ABSTIME, TIMER_ABSTIME);
     CONST(LINUX_MS_ASYNC, MS_ASYNC);
     CONST(LINUX_MS_INVALIDATE, MS_INVALIDATE);
     CONST(LINUX_MS_SYNC, MS_SYNC);
@@ -501,6 +507,12 @@ int test_linux_layout(void) {
     CONST(SIG_DFL_ADDR, (unsigned long)SIG_DFL);
     CONST(SIG_IGN_ADDR, (unsigned long)SIG_IGN);
     CONST(VIBEOS_SA_RESTORER, SA_RESTORER);
+    CONST(VIBEOS_SA_RESTART, SA_RESTART);
+    /* In no header a program can include - it is Linux's own internal number,
+     * and ours never leaves the kernel either. What can be held to the host is
+     * the property it is chosen for: no errno a program may see is that large,
+     * so a result carrying it cannot be mistaken for one. */
+    expect(VIBEOS_RESTART_CALL > EHWPOISON, "VIBEOS_RESTART_CALL is above every errno the host defines");
     CONST(LINUX_SIG_BLOCK, SIG_BLOCK);
     CONST(LINUX_SIG_UNBLOCK, SIG_UNBLOCK);
     CONST(LINUX_SIG_SETMASK, SIG_SETMASK);

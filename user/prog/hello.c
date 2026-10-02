@@ -367,6 +367,20 @@ static const char *check_linux_abi(void) {
         if (user_syscall6(SYS_mmap, at, 4096, 3, 0x100022, -1, 0) != -17) {
             return abi_mm;
         }
+        /* A path in memory the program may not read is EFAULT (M-082). A
+         * PROT_NONE page holds zeros: a kernel that read it without asking
+         * whose it was saw an empty path and said ENOENT, which is one bit of
+         * memory the program had been refused. */
+        {
+            long none = user_syscall6(SYS_mmap, 0, 4096, 0 /* PROT_NONE */, 0x22, -1, 0);
+            unsigned char stx[256];
+
+            if (none <= 0 ||
+                user_syscall6(332 /* statx */, -100, none, 0, 0, (long)(unsigned long)stx, 0) != -14 ||
+                user_syscall6(262 /* newfstatat */, -100, none, (long)(unsigned long)stx, 0, 0, 0) != -14) {
+                return abi_mm;
+            }
+        }
         /* And a mapping must say whether it is private or shared. */
         if (user_syscall6(SYS_mmap, 0, 4096, 3, 0x20, -1, 0) != -22) {
             return abi_mm;

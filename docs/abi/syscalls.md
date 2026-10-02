@@ -9,9 +9,9 @@ the registry, not this page; `check.sh` fails while the two differ.
 
 | State | Count | What the kernel answers |
 | --- | --- | --- |
-| done | 125 | through its row |
+| done | 127 | through its row |
 | partial | 20 | through its row, with the gap named |
-| missing | 145 | ENOSYS, and the boot gate fails naming the number |
+| missing | 143 | ENOSYS, and the boot gate fails naming the number |
 | deferred | 50 | ENOSYS, and the boot gate fails naming the number |
 | refused | 33 | its errno, counted as refused - expected, never a failure |
 
@@ -20,7 +20,7 @@ Without a row, by phase:
 | Phase | Syscalls |
 | --- | --- |
 | L1 - files and paths | 0 |
-| L2 - processes, credentials, time | 47 |
+| L2 - processes, credentials, time | 45 |
 | L3 - memory | 9 |
 | L4 - event loops | 20 |
 | L5 - sockets | 11 |
@@ -71,7 +71,7 @@ calls, outside the Linux number space, are listed last.
 | 32 | `dup` | done | - | - | `fs.c` |  |
 | 33 | `dup2` | done | - | - | `fs.c` |  |
 | 34 | `pause` | missing | L2 | ENOSYS |  |  |
-| 35 | `nanosleep` | missing | L2 | ENOSYS |  |  |
+| 35 | `nanosleep` | done | - | - | `misc.c` |  |
 | 36 | `getitimer` | missing | L2 | ENOSYS |  |  |
 | 37 | `alarm` | missing | L2 | ENOSYS |  |  |
 | 38 | `setitimer` | missing | L2 | ENOSYS |  |  |
@@ -266,7 +266,7 @@ calls, outside the Linux number space, are listed last.
 | 227 | `clock_settime` | missing | L2 | ENOSYS |  | EPERM without privilege; real only once there is one |
 | 228 | `clock_gettime` | done | - | - | `misc.c` |  |
 | 229 | `clock_getres` | missing | L2 | ENOSYS |  |  |
-| 230 | `clock_nanosleep` | missing | L2 | ENOSYS |  |  |
+| 230 | `clock_nanosleep` | done | - | - | `misc.c` |  |
 | 231 | `exit_group` | done | - | - | `proc.c` |  |
 | 232 | `epoll_wait` | missing | L4 | ENOSYS |  |  |
 | 233 | `epoll_ctl` | missing | L4 | ENOSYS |  |  |

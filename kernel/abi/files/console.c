@@ -407,7 +407,7 @@ static long console_read(vibeos_file_t *f, uint64_t buf, uint64_t len) {
                 (void)ks_set_state(ks_current(), VIBEOS_TASK_READY, __func__);
                 ks_mark_ready(ks_current(), "read_interrupted");
                 ks_irq_on();
-                return -VIBEOS_EINTR;
+                return -VIBEOS_RESTART_CALL;
             }
         }
         ks_block_point();

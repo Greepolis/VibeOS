@@ -1,0 +1,43 @@
+# A call a signal cut short is run again when the handler asked for that, or
+# when no handler ran (docs/abi/ L3 step 3). Host test: t_sa_restart in
+# tests/kernel/linux_abi_tests.c; at boot, SIGNAL.ELF's restart phases.
+#
+#  1. a handler without SA_RESTART gets the call run again too
+#  2. a handler with SA_RESTART gets EINTR
+#  3. with no handler to run, the program is left with EINTR
+#  4. the call to run again is left for the next delivery to find
+#
+# Target source: kernel/abi/linux/signal.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/linux/signal.c scripts/dev/cases/abi-restart.txt
+
+### a handler without SA_RESTART gets the call run again too
+--- old
+    if (restart && (ps->sig_flags[sig] & VIBEOS_SA_RESTART)) {
++++ new
+    if (restart) {
+
+### a handler with SA_RESTART gets EINTR
+--- old
+    if (restart && (ps->sig_flags[sig] & VIBEOS_SA_RESTART)) {
++++ new
+    if (0) {
+
+### with no handler to run, the program is left with EINTR
+--- old
+        if (sig == 0u) {
+            if (restart) {
+                ks_regs_restart(frame, restart - 1u);
+            }
+            return 0;
+        }
++++ new
+        if (sig == 0u) {
+            return 0;
+        }
+
+### the call to run again is left for the next delivery to find
+--- old
+    restart = t->sys_restart;
+    t->sys_restart = 0;
++++ new
+    restart = t->sys_restart;

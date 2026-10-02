@@ -110,10 +110,16 @@ static long linux_sys_socket(uint64_t domain, uint64_t type) {
     long err;
     int me, kind;
 
-    if (!ks_net() || (me = ks_current()) < 0 || !ks_id(me)->is_user) {
-        return -VIBEOS_EINVAL;
-    }
     if (domain != LINUX_AF_INET) {
+        /* A family this kernel has no sockets of. Not EINVAL: a C library
+         * asks for a local socket to reach a name-service daemon before it
+         * gives up on a user or group name, and takes "no such family" as "no
+         * daemon" and anything else as a failure - so getgrgid for a group
+         * that is not in /etc/group failed with EINVAL, where it should have
+         * found nothing (seven LTP tests stopped there). */
+        return -VIBEOS_EAFNOSUPPORT;
+    }
+    if (!ks_net() || (me = ks_current()) < 0 || !ks_id(me)->is_user) {
         return -VIBEOS_EINVAL;
     }
     if ((type & 0xFFu) == LINUX_SOCK_STREAM) {

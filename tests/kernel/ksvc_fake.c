@@ -14,6 +14,7 @@
 #include "vibeos/vma.h"
 #include "vibeos/mm_stats.h"
 #include "vibeos/tmpfs.h"
+#include "vibeos/procfs.h"
 #include "vibeos/fdtable.h"
 #include "vibeos/file.h"
 #include "vibeos/fileops.h"
@@ -106,8 +107,16 @@ static int kf_mm_va(uint64_t va) { return va >= KF_MM_LO && va < KF_MM_HI; }
 
 /* The host memory behind one mapped address of the current task, or null. A
  * store to a page that is read-only because it is shared takes the fault the
- * kernel's own store would take. */
-static uint8_t *kf_mm_ptr(uint64_t va, int write) {
+ * kernel's own store would take.
+ *
+ * `ring3` says who is touching it. The program reaches only a page mapped for
+ * it; the kernel reaches any page that is mapped - the user bit is a limit on
+ * ring 3, and ring 0 reads a PROT_NONE page without a fault. This used to
+ * refuse the kernel too, which made vibeos_uaccess_copy a permission check it
+ * is not: a handler that copied from a pointer nobody had judged passed here
+ * and leaked on the machine (M-082). What ring 0 does not get is a store to a
+ * read-only page, with CR0.WP set, as here. */
+static uint8_t *kf_mm_ptr_as(uint64_t va, int write, int ring3) {
     uint64_t *e;
     uint8_t *page;
 
@@ -115,7 +124,7 @@ static uint8_t *kf_mm_ptr(uint64_t va, int write) {
         return 0;
     }
     e = vibeos_vmspace_entry(&g_t[g_cur].as, va);
-    if (!e || !(*e & KF_PTE_PRESENT) || !(*e & KF_PTE_USER)) {
+    if (!e || !(*e & KF_PTE_PRESENT) || (ring3 && !(*e & KF_PTE_USER))) {
         return 0;
     }
     if (write && !(*e & KF_PTE_WRITE)) {
@@ -129,6 +138,11 @@ static uint8_t *kf_mm_ptr(uint64_t va, int write) {
     }
     page = (uint8_t *)kf_phys(*e & KF_PTE_ADDR);
     return page ? page + (va & 0xFFFull) : 0;
+}
+
+static int g_copy_ring3;   /* set while kf_peek and kf_poke copy: the program's access */
+static uint8_t *kf_mm_ptr(uint64_t va, int write) {
+    return kf_mm_ptr_as(va, write, g_copy_ring3);
 }
 
 static jmp_buf g_escape;
@@ -501,6 +515,17 @@ static void kf_tmpfs_page_hold(void *p) { vibeos_frame_get(kf_phys_of(p)); }
  * with modes and links - needs the filesystem that has one. */
 static vibeos_tmpfs_t g_tmpfs;
 static vibeos_fsmount_t g_tmpfs_mnt;
+static vibeos_fsmount_t g_procfs_mnt;
+static vibeos_procfs_t g_procfs;
+
+static void kf_procfs_mem(vibeos_procfs_mem_t *out) {
+    out->total_kb = vibeos_frame_total() * 4ull;
+    out->free_kb = vibeos_frame_free_count() * 4ull;
+    out->available_kb = out->free_kb;
+    out->cached_kb = 0;
+    out->swap_total_kb = 0;
+    out->swap_free_kb = 0;
+}
 static int g_tmpfs_live;
 
 void kf_reset(void) {
@@ -558,6 +583,12 @@ void kf_reset(void) {
     g_tmpfs_live = 1;
     (void)vibeos_fs_mount(&g_tmpfs_mnt, vibeos_tmpfs_ops(), &g_tmpfs, "tmpfs");
     (void)vibeos_fs_attach("/tmp", &g_tmpfs_mnt);
+    /* /proc, as in the kernel (docs/abi/ L3 step 3). */
+    g_procfs.mem = kf_procfs_mem;
+    g_procfs.pid_max = 4194304u;
+    vibeos_fs_unmount(&g_procfs_mnt);
+    (void)vibeos_fs_mount(&g_procfs_mnt, vibeos_procfs_ops(), &g_procfs, "proc");
+    (void)vibeos_fs_attach("/proc", &g_procfs_mnt);
     /* The personality registers its own tables: see the tests' fresh(). */
 }
 
@@ -765,6 +796,7 @@ void ks_idle(void) {
     }
 }
 void ks_block_point(void) { kf_escape(KF_BLOCKED); }
+void ks_wait_tick(void) { ks_idle(); }
 void ks_wake_waiters(void) {}
 int ks_signal_interrupts(int slot) {
     return (g_t[slot].id.sig_pending & ~g_t[slot].id.sig_blocked) != 0u;
@@ -851,12 +883,21 @@ int vibeos_uaccess_copy(void *dst, const void *src, uint64_t len) {
     return 0;
 }
 
+/* What the program itself can read and write: ring 3's view. */
 int kf_peek(uint64_t va, void *out, uint64_t n) {
-    return vibeos_uaccess_copy(out, (const void *)(uintptr_t)va, n);
+    int r;
+    g_copy_ring3 = 1;
+    r = vibeos_uaccess_copy(out, (const void *)(uintptr_t)va, n);
+    g_copy_ring3 = 0;
+    return r;
 }
 
 int kf_poke(uint64_t va, const void *in, uint64_t n) {
-    return vibeos_uaccess_copy((void *)(uintptr_t)va, in, n);
+    int r;
+    g_copy_ring3 = 1;
+    r = vibeos_uaccess_copy((void *)(uintptr_t)va, in, n);
+    g_copy_ring3 = 0;
+    return r;
 }
 
 int ks_copy_user_string(uint64_t uptr, char *dst, int max) {
@@ -1025,6 +1066,10 @@ void ks_exec_regs(int slot, ks_regs_t *frame, uint64_t entry, uint64_t sp) {
 
 uint64_t ks_regs_sp(const ks_regs_t *frame) { return frame->sp; }
 uint64_t ks_regs_ret(const ks_regs_t *frame) { return frame->ret; }
+void ks_regs_restart(ks_regs_t *frame, uint64_t nr) {
+    frame->ret = nr;
+    frame->ip -= 2u;
+}
 
 typedef struct {
     uint64_t magic, blocked;

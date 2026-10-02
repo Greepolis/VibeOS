@@ -48,6 +48,7 @@
 #define VIBEOS_EOVERFLOW 75
 #define VIBEOS_ENOTSOCK 88
 #define VIBEOS_EOPNOTSUPP 95
+#define VIBEOS_EAFNOSUPPORT 97
 #define VIBEOS_ESTALE 116
 
 /* Linux signal numbers. The pending and blocked masks are uint64_t keyed by
@@ -75,6 +76,21 @@
 #define SIG_DFL_ADDR 0ull
 #define SIG_IGN_ADDR 1ull
 #define VIBEOS_SA_RESTORER 0x04000000u
+/* The handler asks that a call it interrupted be run again when it returns. */
+#define VIBEOS_SA_RESTART 0x10000000u
+
+/* Not an errno, and not Linux's to define: no program ever sees it. (Linux has
+ * the same thing inside its kernel, as ERESTARTSYS, 512; the number is borrowed
+ * and nothing depends on it being that one - only on it being no errno.)
+ *
+ * A handler returns it instead of EINTR when the wait a signal cut short is
+ * one that may simply be started again: waiting for a child, reading a
+ * terminal or a pipe, waiting for a lock. The dispatcher turns it into EINTR
+ * and remembers the call; whoever delivers the signal decides whether the
+ * program sees that EINTR or the call again (linux_signal_deliver). A wait
+ * with a time limit returns plain EINTR: started again it would wait the whole
+ * time over. */
+#define VIBEOS_RESTART_CALL 512
 
 /* A number no Linux kernel has: the boot asks for it on purpose, so the count of
  * unimplemented calls is seen moving (see [ABI] MUSTBEZERO). */

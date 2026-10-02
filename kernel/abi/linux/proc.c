@@ -62,6 +62,15 @@ static long linux_sys_fork(const ks_regs_t *frame) {
     child = ks_id(idx);
     pps = ks_ps(me);
     my_tenancy = ks_seq(idx);
+    if (!pps) {
+        /* A task that has let go of its process state is on its way out and
+         * has nothing to fork from. It cannot be here today - only exit lets
+         * go, and exit does not return - but everything below dereferences the
+         * pointer, and three callers in four of ks_ps check it (code scanning,
+         * alert 147). The slot is all that was taken. */
+        (void)ks_set_state(idx, VIBEOS_TASK_FREE, __func__);
+        return -VIBEOS_EINVAL;
+    }
 
     /* From here to the vma clone below reads the parent's address space - the
      * page tables and the region list - which a sibling thread's brk (and,
@@ -458,7 +467,7 @@ static long linux_sys_waitpid(uint64_t want_pid, uint64_t status_ptr,
             ks_mark_ready(ks_current(), "waitpid_interrupted");
             ks_unlock(ks_sched_lock());
             ks_irq_on();
-            return -VIBEOS_EINTR;
+            return -VIBEOS_RESTART_CALL;   /* waits again under SA_RESTART */
         }
         ks_unlock(ks_sched_lock());
         ks_block_point();
@@ -1148,44 +1157,63 @@ static long linux_sys_prctl(uint64_t op, uint64_t arg) {
     return -VIBEOS_EINVAL;
 }
 
+/* Is this slot a user task that exists? */
+static int linux_task_live(int i) {
+    return ks_id(i)->is_user && vibeos_task_state((uint32_t)i) != VIBEOS_TASK_FREE &&
+           vibeos_task_state((uint32_t)i) != VIBEOS_TASK_SETUP;
+}
+
+/* setpgid(pid, pgid): put a process in a group - its own, or one that exists.
+ *
+ * The group is the process's, and the process is every thread of it (M-083).
+ * The number lives in each task, so it is written to every task of the thread
+ * group, as setsid below does; it was written to the one task the pid named,
+ * and the threads of a process could then be found in different groups - by
+ * getpgid, and by a signal sent to one of the groups.
+ *
+ * A group exists while something is in it (M-079, M-083). Joining used to ask
+ * whether a *task* had the group's number as its pid, which accepted a thread's
+ * id, refused a group whose leader had exited, and - once M-079 required that
+ * task to lead - still asked a task about a group. What is asked now is whether
+ * any process of the session is in that group. EPERM if none is, as Linux says.
+ *
+ * Every lookup and the writes are under g_sched_lock: a slot found and a slot
+ * written must be the same tenant (H-007). */
 static long linux_sys_setpgid(uint64_t requested_pid, uint64_t requested_pgid) {
-    uint32_t pid;
-    int target;
-    int leader_slot;
-    int leader;
-    long r;
+    uint32_t pid, tgid, sid, group;
+    int target, i, found = 0;
+    long r = 0;
+
     if (ks_current() < 0 || !ks_id(ks_current())->is_user) {
         return -VIBEOS_EINVAL;
     }
+    if (VIBEOS_ARG_INT(requested_pgid) < 0) {
+        return -VIBEOS_EINVAL;
+    }
     pid = requested_pid == 0 ? ks_id(ks_current())->tgid : (uint32_t)requested_pid;
-    /* Both arms cast to int explicitly. `pid` is uint32_t, so the conditional
-     * otherwise takes the unsigned type and converts back on assignment - the
-     * guard below still works, but the reader has to prove that, and the
-     * compiler warns rather than take it on faith. */
-    leader = requested_pgid == 0 ? (int)pid : (int)requested_pgid;
-    /* Two lookups and a write to one of the slots found: under g_sched_lock,
-     * or the write can land on a task that took the slot in between (H-007). */
     ks_lock(ks_sched_lock(), __func__);
     target = ks_task_by_pid(pid);
     if (target < 0) {
         r = -VIBEOS_ESRCH;
     } else if (ks_id(target)->sid != ks_id(ks_current())->sid) {
         r = -VIBEOS_EPERM;
-    } else if (leader <= 0 || (leader_slot = ks_task_by_pid((uint32_t)leader)) < 0) {
-        r = -VIBEOS_ESRCH;
-    } else if (ks_id(leader_slot)->sid != ks_id(target)->sid) {
-        r = -VIBEOS_EPERM;
-    } else if ((uint32_t)leader != pid && ks_id(leader_slot)->pgid != (uint32_t)leader) {
-        /* A group is joined, or made with the target as its leader - and a
-         * group to join is one somebody leads (M-079). This took any pid of
-         * the session, so a process could be put in "group 7" where 7 was a
-         * thread, or a process in somebody else's group: a group whose number
-         * names nobody in it, for getpgrp to report and kill(-7) to aim at.
-         * EPERM, as Linux says when no such group is in the session. */
-        r = -VIBEOS_EPERM;
     } else {
-        ks_id(target)->pgid = (uint32_t)leader;
-        r = 0;
+        tgid = ks_id(target)->tgid;
+        sid = ks_id(target)->sid;
+        group = requested_pgid == 0 ? tgid : (uint32_t)requested_pgid;
+        if (group != tgid) {
+            for (i = 0; i < (int)ks_slots() && !found; i++) {
+                found = linux_task_live(i) && ks_id(i)->pgid == group && ks_id(i)->sid == sid;
+            }
+            if (!found) {
+                r = -VIBEOS_EPERM;
+            }
+        }
+        for (i = 0; r == 0 && i < (int)ks_slots(); i++) {
+            if (linux_task_live(i) && ks_id(i)->tgid == tgid) {
+                ks_id(i)->pgid = group;
+            }
+        }
     }
     ks_unlock(ks_sched_lock());
     return r;

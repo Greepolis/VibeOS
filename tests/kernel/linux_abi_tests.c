@@ -1932,6 +1932,310 @@ static void t_mmap_files(void) {
     expect(kf_lock_imbalance() == 0, "file mappings released every lock they took");
 }
 
+/* ---- /proc (L3 step 3) --------------------------------------------------------------- */
+
+/* The kibibytes on the line of /proc/meminfo that starts with `name`, or -1. */
+static long meminfo_kb(const char *text, const char *name) {
+    const char *p = strstr(text, name);
+    long v = 0;
+
+    if (!p || (p != text && p[-1] != '\n')) {
+        return -1;
+    }
+    p += strlen(name);
+    if (*p++ != ':') {
+        return -1;
+    }
+    while (*p == ' ') {
+        p++;
+    }
+    if (*p < '0' || *p > '9') {
+        return -1;
+    }
+    while (*p >= '0' && *p <= '9') {
+        v = v * 10 + (*p++ - '0');
+    }
+    return strncmp(p, " kB\n", 4) == 0 ? v : -1;
+}
+
+static void t_procfs(void) {
+    uint64_t buf, st = 0;
+    char text[600];
+    linux_stat_t sb;
+    long fd, n, total, avail;
+
+    fresh(161);
+    buf = kf_ualloc(600);
+    fd = SYS2(2, ustr("/proc/meminfo"), 0);
+    n = fd >= 0 ? SYS3(0, (uint64_t)fd, buf, 599) : -1;
+    expect(fd >= 0 && n > 0 && n < 599, "/proc/meminfo opens and reads");
+    memset(text, 0, sizeof(text));
+    if (n > 0) {
+        memcpy(text, kf_uptr(buf), (size_t)n);
+    }
+    total = meminfo_kb(text, "MemTotal");
+    avail = meminfo_kb(text, "MemAvailable");
+    expect(total == (long)(vibeos_frame_total() * 4ull) && total > 0,
+           "MemTotal is the memory there is, in kB, on a line laid out as Linux lays it");
+    expect(avail > 0 && avail <= total && meminfo_kb(text, "MemFree") == avail &&
+           meminfo_kb(text, "Cached") == 0 && meminfo_kb(text, "SwapTotal") == 0 &&
+           meminfo_kb(text, "SwapFree") == 0, "and the other lines a harness reads are there");
+    expect(SYS3(0, (uint64_t)fd, buf, 599) == 0, "the file ends");
+    expect(sys(262, (uint64_t)(uint32_t)-100, ustr("/proc/meminfo"), (st = kf_ualloc(144)), 0, 0, 0, 0) == 0 &&
+           (memcpy(&sb, kf_uptr(st), sizeof(sb)), sb.st_size == n) &&
+           sb.st_mode == (VIBEOS_S_IFREG | 0444u), "its size is what a read returns, and it is read-only");
+    expect(SYS3(2, ustr("/proc/meminfo"), 1, 0) == -VIBEOS_EROFS &&
+           SYS3(2, ustr("/proc/new"), 0x41, 0644) == -VIBEOS_EROFS,
+           "nothing under /proc is written or made");
+    expect(SYS2(2, ustr("/proc/nothing"), 0) == -VIBEOS_ENOENT, "a name it does not have is ENOENT");
+    fd = SYS2(2, ustr("/proc/sys/kernel/pid_max"), 0);
+    n = fd >= 0 ? SYS3(0, (uint64_t)fd, buf, 599) : -1;
+    expect(n == 8 && memcmp(kf_uptr(buf), "4194304\n", 8) == 0, "/proc/sys/kernel/pid_max is a number and a newline");
+    expect(sys(262, (uint64_t)(uint32_t)-100, ustr("/proc/sys/kernel"), st, 0, 0, 0, 0) == 0 &&
+           (memcpy(&sb, kf_uptr(st), sizeof(sb)), (sb.st_mode & VIBEOS_S_IFMT) == VIBEOS_S_IFDIR) &&
+           sys(262, (uint64_t)(uint32_t)-100, ustr("/proc/sys/ker"), st, 0, 0, 0, 0) == -VIBEOS_ENOENT,
+           "the directories on the way to a file exist, and half a name does not");
+    {
+        /* /proc lists meminfo and sys, once each; /proc/sys lists kernel. */
+        long d = SYS2(2, ustr("/proc"), 0x10000 /* O_DIRECTORY */);
+        long got = d >= 0 ? SYS3(217, (uint64_t)d, buf, 599) : -1;
+        const uint8_t *b = (const uint8_t *)kf_uptr(buf);
+        int meminfo = 0, sysdir = 0, others = 0;
+        long at = 0;
+
+        while (got > 0 && at < got) {
+            const char *nm = (const char *)b + at + 19;
+            uint16_t rl = 0;
+            memcpy(&rl, b + at + 16, 2);
+            if (strcmp(nm, "meminfo") == 0) {
+                meminfo += b[at + 18] == 8 /* DT_REG */;
+            } else if (strcmp(nm, "sys") == 0) {
+                sysdir += b[at + 18] == 4 /* DT_DIR */;
+            } else if (strcmp(nm, ".") != 0 && strcmp(nm, "..") != 0) {
+                others++;
+            }
+            at += rl;
+        }
+        expect(meminfo == 1 && sysdir == 1 && others == 0, "/proc lists a file and a directory, each once");
+    }
+}
+
+/* ---- what LTP's L1 tests found (L3 step 3) --------------------------------------------- */
+
+static void t_ltp_l1(void) {
+    uint64_t buf, iov, stx, fds;
+    uint64_t *v;
+    linux_flock_t fl;
+    long fd, dfd, none, i, last = 0;
+    int parent, child;
+    long pid;
+
+    /* After fresh(): it gives the user arena back, and an address taken before
+     * it is the next allocation's. */
+    parent = fresh(191);
+    buf = kf_ualloc(64);
+    iov = kf_ualloc(32);
+    stx = kf_ualloc(256);
+    fds = kf_ualloc(8);
+    v = (uint64_t *)kf_uptr(iov);
+
+    /* M-082 (statx03): a path that is not the program's to read is EFAULT,
+     * whatever its first byte is. A PROT_NONE page holds zeros. */
+    none = MMAP(0, 4096, 0 /* PROT_NONE */, MAP_PRIV_ANON, -1, 0);
+    expect(none > 0 && sys(332, (uint64_t)(uint32_t)-100, (uint64_t)none, 0, 0, stx, 0, 0) == -VIBEOS_EFAULT,
+           "statx of a path in memory the program may not read is EFAULT, not ENOENT");
+    expect(sys(262, (uint64_t)(uint32_t)-100, (uint64_t)none, stx, 0, 0, 0, 0) == -VIBEOS_EFAULT &&
+           sys(262, (uint64_t)(uint32_t)-100, (uint64_t)none, stx, 0x1000 /* AT_EMPTY_PATH */, 0, 0, 0) == -VIBEOS_EFAULT,
+           "nor is newfstatat's, with AT_EMPTY_PATH or without");
+    expect(sys(268, (uint64_t)(uint32_t)-100, (uint64_t)none, 0600, 0, 0, 0, 0) == -VIBEOS_EFAULT,
+           "nor fchmodat's");
+    expect(sys(260, (uint64_t)(uint32_t)-100, (uint64_t)none, (uint64_t)(uint32_t)-1, (uint64_t)(uint32_t)-1,
+               0x1000 /* AT_EMPTY_PATH */, 0, 0) == -VIBEOS_EFAULT,
+           "nor fchownat's under AT_EMPTY_PATH, where an unreadable zero would have named the directory itself");
+
+    /* fchmodat02: an empty path is ENOENT before the directory is looked at. */
+    fd = tmp_open("/tmp/l1", 0x42, 0644);
+    expect(sys(268, (uint64_t)fd, ustr(""), 0600, 0, 0, 0, 0) == -VIBEOS_ENOENT &&
+           sys(268, 99, ustr(""), 0600, 0, 0, 0, 0) == -VIBEOS_ENOENT &&
+           sys(268, (uint64_t)fd, ustr("x"), 0600, 0, 0, 0, 0) == -VIBEOS_ENOTDIR,
+           "an empty path is ENOENT whatever the directory descriptor is");
+
+    /* preadv02: a length that is not one, and a directory. */
+    v[0] = buf;
+    v[1] = (uint64_t)-1;
+    expect(SYS4(295, (uint64_t)fd, iov, 1, 0) == -VIBEOS_EINVAL && SYS4(296, (uint64_t)fd, iov, 1, 0) == -VIBEOS_EINVAL,
+           "preadv and pwritev with a negative length are EINVAL, not EFAULT");
+    v[1] = 8;
+    dfd = SYS2(2, ustr("/tmp"), 0x10000);
+    expect(SYS4(295, (uint64_t)dfd, iov, 1, 0) == -VIBEOS_EISDIR && SYS4(17, (uint64_t)dfd, buf, 8, 0) == -VIBEOS_EISDIR,
+           "reading a directory at an offset is EISDIR");
+    (void)SYS2(293, fds, 0);
+    expect(SYS4(17, (uint64_t)((int32_t *)kf_uptr(fds))[0], buf, 8, 0) == -VIBEOS_ESPIPE, "and a pipe is still ESPIPE");
+
+    /* fallocate02: past the largest offset. */
+    expect(SYS4(285, (uint64_t)fd, 1 /* KEEP_SIZE */, 0x7ffffffffffffc00ull, 1024) == -VIBEOS_EFBIG &&
+           SYS4(285, (uint64_t)fd, 1, 1024, 0x7ffffffffffffc00ull) == -VIBEOS_EFBIG &&
+           SYS4(285, (uint64_t)fd, 1, 0, 4096) == 0,
+           "fallocate past the largest offset is EFBIG even when it keeps the size");
+
+    /* A socket of a family there is none of. */
+    expect(SYS3(41, 1 /* AF_UNIX */, 1, 0) == -VIBEOS_EAFNOSUPPORT, "a local socket is EAFNOSUPPORT");
+
+    /* fcntl11: F_GETLK names the first lock in the way, by position. */
+    expect(lock_op(fd, 6 /* F_SETLK */, 1 /* F_WRLCK */, 10, 5, 0) == 0 &&
+           lock_op(fd, 6, 0 /* F_RDLCK */, 1, 5, 0) == 0, "a write lock at 10, then a read lock at 1");
+    pid = SYS0(57);
+    child = slot_of_pid(pid);
+    kf_set_current(child);
+    expect(lock_op(fd, 5 /* F_GETLK */, 1, 0, 0, &fl) == 0 && fl.l_type == 0 /* F_RDLCK */ &&
+           fl.l_start == 1 && fl.l_len == 5 && fl.l_pid == 191,
+           "another process asking about the whole file is told of the one that starts first");
+    kf_set_current(parent);
+
+    /* creat05, fcntl12: a process runs into its own limit, not the machine's. */
+    for (i = 0; i < 1100; i++) {
+        last = SYS2(2, ustr("/tmp/l1"), 0);
+        if (last < 0) {
+            break;
+        }
+    }
+    expect(last == -VIBEOS_EMFILE && i > 1000, "opening until refused ends at EMFILE, a thousand files on");
+    expect(SYS3(72, 1, 0 /* F_DUPFD */, 1) == -VIBEOS_EMFILE, "and a duplicate is refused the same way");
+}
+
+/* ---- sleeping (L3 step 3) ------------------------------------------------------------ */
+
+static void t_sleep(void) {
+    uint64_t req = kf_ualloc(16), rem = kf_ualloc(16);
+    int64_t *q = (int64_t *)kf_uptr(req), *m = (int64_t *)kf_uptr(rem);
+    uint64_t t0;
+    int me = fresh(181);
+    kf_outcome_t how;
+
+    /* The fake's clock is 100 ticks a second and moves one tick a wait. */
+    q[0] = 0;
+    q[1] = 250000000;                 /* a quarter of a second: 25 ticks */
+    t0 = ks_ticks();
+    expect(SYS2(35, req, 0) == 0 && ks_ticks() - t0 >= 26u && ks_ticks() - t0 <= 27u,
+           "nanosleep waits the time asked for, and the rest of the tick it began in");
+    q[1] = 1;                         /* a nanosecond is still a wait */
+    t0 = ks_ticks();
+    expect(SYS2(35, req, 0) == 0 && ks_ticks() - t0 >= 2u, "a time shorter than a tick is rounded up, not away");
+    q[1] = 0;
+    t0 = ks_ticks();
+    expect(SYS2(35, req, 0) == 0 && ks_ticks() == t0, "a sleep of nothing returns at once");
+    q[1] = 1000000000;
+    expect(SYS2(35, req, 0) == -VIBEOS_EINVAL, "a billion nanoseconds is not a timespec");
+    q[0] = -1;
+    q[1] = 0;
+    expect(SYS2(35, req, 0) == -VIBEOS_EINVAL && SYS2(35, 0, 0) == -VIBEOS_EFAULT,
+           "nor is a negative second; no request at all is EFAULT");
+
+    /* A signal ends it, and says how much was left. */
+    q[0] = 5;
+    q[1] = 0;
+    m[0] = m[1] = -1;
+    (void)ks_signal_raise(me, 10);
+    expect(SYS2(35, req, rem) == -VIBEOS_EINTR && ks_id(me)->sys_restart == 0u,
+           "a signal ends a sleep with EINTR, and a sleep is not run again");
+    expect(m[0] == 5 && m[1] >= 0 && m[1] < 1000000000ll, "and what was left of it is reported");
+    ks_id(me)->sig_pending = 0;
+
+    /* clock_nanosleep: until a time, not for one. */
+    q[0] = (int64_t)(ks_ticks() / 100u) + 1;
+    q[1] = 0;
+    expect(sys(230, 1 /* MONOTONIC */, 1 /* TIMER_ABSTIME */, req, 0, 0, 0, 0) == 0 &&
+           ks_ticks() >= (uint64_t)q[0] * 100u && ks_ticks() < (uint64_t)q[0] * 100u + 2u,
+           "clock_nanosleep with TIMER_ABSTIME sleeps until the clock reads the time");
+    t0 = ks_ticks();
+    expect(sys(230, 1, 1, req, 0, 0, 0, 0) == 0 && ks_ticks() == t0, "a time already past is no wait");
+    q[0] = 0;
+    q[1] = 20000000;
+    t0 = ks_ticks();
+    expect(sys(230, 0 /* REALTIME */, 0, req, 0, 0, 0, 0) == 0 && ks_ticks() - t0 >= 3u,
+           "without the flag it is nanosleep on the clock named");
+    expect(sys(230, 2 /* PROCESS_CPUTIME_ID */, 0, req, 0, 0, 0, 0) == -VIBEOS_EINVAL &&
+           sys(230, 1, 2, req, 0, 0, 0, 0) == -VIBEOS_EINVAL,
+           "a CPU-time clock and an unknown flag are EINVAL");
+
+    /* A sleep longer than anything will wait is a wait, not a wrap to zero. */
+    q[0] = 0x7fffffffffffffffll;
+    (void)sys(35, req, 0, 0, 0, 0, 0, &how);
+    expect(how == KF_BLOCKED, "the longest sleep there is does not return");
+}
+
+/* ---- SA_RESTART (L3 step 3) ----------------------------------------------------------- */
+
+/* The fake's signal frame: a magic, the mask, then the registers it saved -
+ * ip, sp, ret, arg0 - eight bytes above where the handler's stack starts. */
+static uint64_t saved_reg(const struct ks_regs *fr, uint32_t which) {
+    uint64_t v = 0;
+    memcpy(&v, (const uint8_t *)kf_uptr(fr->sp + 8u + 16u) + 8u * which, 8);
+    return v;
+}
+
+static void t_sa_restart(void) {
+    uint64_t act = kf_ualloc(32), stack = kf_ualloc(8192), handler = kf_ualloc(16), restorer = kf_ualloc(16);
+    uint64_t *a = (uint64_t *)kf_uptr(act);
+    struct ks_regs fr;
+    int me = fresh(171);
+    long pid;
+
+    pid = SYS0(57);
+    kf_set_current(me);
+    a[0] = handler;
+    a[1] = 0x04000000u | 0x10000000u;    /* SA_RESTORER | SA_RESTART */
+    a[2] = restorer;
+    a[3] = 0;
+    expect(pid > 0 && SYS4(13, 10 /* SIGUSR1 */, act, 0, 8) == 0, "a handler installed with SA_RESTART");
+
+    /* The wait is cut short: the program's answer is EINTR until delivery says
+     * otherwise, and the call is remembered. */
+    (void)ks_signal_raise(me, 10);
+    expect(SYS3(61, (uint64_t)-1, 0, 0) == -VIBEOS_EINTR && ks_id(me)->sys_restart == 62u,
+           "waitpid cut short by a signal is EINTR, and remembered as restartable");
+    memset(&fr, 0, sizeof(fr));
+    fr.ip = 0x1002;
+    fr.sp = stack + 8000u;
+    fr.ret = (uint64_t)-VIBEOS_EINTR;
+    expect(linux_signal_deliver(&fr) == 1 && fr.ip == handler && ks_id(me)->sys_restart == 0u,
+           "the handler is entered");
+    expect(saved_reg(&fr, 0) == 0x1000 && saved_reg(&fr, 2) == 61u,
+           "and returns to the call itself: SA_RESTART runs waitpid again");
+
+    /* Without the flag the program gets its EINTR. */
+    ks_id(me)->sig_blocked = 0;
+    a[1] = 0x04000000u;
+    (void)SYS4(13, 10, act, 0, 8);
+    (void)ks_signal_raise(me, 10);
+    expect(SYS3(61, (uint64_t)-1, 0, 0) == -VIBEOS_EINTR, "interrupted again");
+    memset(&fr, 0, sizeof(fr));
+    fr.ip = 0x1002;
+    fr.sp = stack + 8000u;
+    fr.ret = (uint64_t)-VIBEOS_EINTR;
+    expect(linux_signal_deliver(&fr) == 1 && saved_reg(&fr, 0) == 0x1002 &&
+           saved_reg(&fr, 2) == (uint64_t)-VIBEOS_EINTR,
+           "without SA_RESTART the handler returns after the call, to EINTR");
+
+    /* A signal nobody handles interrupts nothing the program can see. */
+    ks_id(me)->sig_blocked = 0;
+    (void)ks_signal_raise(me, 17 /* SIGCHLD, default: discarded */);
+    expect(SYS3(61, (uint64_t)-1, 0, 0) == -VIBEOS_EINTR, "interrupted by a signal that will be discarded");
+    memset(&fr, 0, sizeof(fr));
+    fr.ip = 0x1002;
+    fr.sp = stack + 8000u;
+    fr.ret = (uint64_t)-VIBEOS_EINTR;
+    expect(linux_signal_deliver(&fr) == 0 && fr.ip == 0x1000 && fr.ret == 61u,
+           "with no handler to run, the call is simply issued again");
+
+    /* And a call nothing interrupted is left alone. */
+    memset(&fr, 0, sizeof(fr));
+    fr.ip = 0x1002;
+    fr.ret = 7;
+    expect(SYS0(39) > 0 && ks_id(me)->sys_restart == 0u && linux_signal_deliver(&fr) == 0 &&
+           fr.ip == 0x1002 && fr.ret == 7u, "a call that was not interrupted is not restarted");
+}
+
 /* ---- M-078, M-079 ------------------------------------------------------------------- */
 
 static void sibling_moves_the_break(vibeos_procstate_t *ps) {
@@ -1994,6 +2298,29 @@ static void t_fork_snapshot_and_groups(void) {
            "and then it can be joined");
     expect(SYS2(109, (uint64_t)gpid, 0) == 0 && ks_id(grand)->pgid == (uint32_t)gpid,
            "setpgid(pid, 0) makes the target its own leader");
+
+    /* M-083: the group is the process's - every thread of it moves - and it
+     * exists while something is in it, whether or not its leader still does. */
+    {
+        int th = kf_spawn(990, ks_id(child)->sid);
+
+        ks_id(th)->tgid = (uint32_t)pid;
+        ks_id(th)->is_thread = 1;
+        ks_id(th)->pgid = ks_id(child)->pgid;
+        kf_set_current(parent);
+        expect(SYS2(109, (uint64_t)pid, (uint64_t)gpid) == 0 && ks_id(child)->pgid == (uint32_t)gpid &&
+               ks_id(th)->pgid == (uint32_t)gpid, "setpgid moves every thread of the process");
+        expect(SYS2(109, (uint64_t)gpid, 990) == -VIBEOS_EPERM && ks_id(grand)->pgid == (uint32_t)gpid,
+               "a thread's id is not a group");
+        /* The group's leader leaves it; the group is still there, and joined. */
+        expect(SYS2(109, (uint64_t)gpid, 151) == 0 && ks_id(grand)->pgid == 151u &&
+               SYS2(109, (uint64_t)gpid, (uint64_t)gpid) == 0 &&
+               SYS2(109, (uint64_t)gpid, (uint64_t)gpid) == 0, "a process moves between groups that exist");
+        expect(SYS2(109, (uint64_t)pid, 151) == 0 && SYS2(109, (uint64_t)gpid, 151) == 0 &&
+               SYS2(109, (uint64_t)pid, (uint64_t)gpid) == -VIBEOS_EPERM,
+               "a group everybody has left is gone, though the process it was named after lives");
+        expect(SYS2(109, (uint64_t)pid, (uint64_t)-1) == -VIBEOS_EINVAL, "a negative group is EINVAL");
+    }
 }
 
 /* ---- L3 step 2: shared mappings ------------------------------------------------------- */
@@ -2176,6 +2503,10 @@ int test_linux_handlers(void) {
     t_mmap_files();
     t_mmap_shared();
     t_fork_snapshot_and_groups();
+    t_procfs();
+    t_sa_restart();
+    t_sleep();
+    t_ltp_l1();
     return g_fail ? -1 : 0;
 }
 

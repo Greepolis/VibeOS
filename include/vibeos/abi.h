@@ -151,6 +151,8 @@
     X(RSEQ,            "rseq",            VIBEOS_CHECK_NONE) \
     X(CLOCK_GETTIME,   "clock_gettime",   VIBEOS_CHECK_USER_MEMORY) \
     X(TIME,            "time",            VIBEOS_CHECK_USER_MEMORY) \
+    X(NANOSLEEP,       "nanosleep",       VIBEOS_CHECK_USER_MEMORY) \
+    X(CLOCK_NANOSLEEP, "clock_nanosleep", VIBEOS_CHECK_USER_MEMORY) \
     X(UNAME,           "uname",           VIBEOS_CHECK_USER_MEMORY) \
     X(SYSINFO,         "sysinfo",         VIBEOS_CHECK_USER_MEMORY) \
     X(GETRANDOM,       "getrandom",       VIBEOS_CHECK_NONE) \

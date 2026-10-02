@@ -18,9 +18,9 @@ come out ready.
 | --- | --- |
 | Workloads | 25, of which ready: 23 |
 | Distinct syscalls asked for | 80 |
-| ... done | 66 |
+| ... done | 67 |
 | ... partial | 11: `clone`, `futex`, `ioctl`, `mmap`, `prlimit64`, `readv`, `rseq`, `setgid`, `setuid`, `uname`, `writev` |
-| ... missing or deferred | 3 |
+| ... missing or deferred | 2 |
 | ... refused (answered by decision) | 0 |
 
 ## Without a full answer, by phase - the order to write them in
@@ -32,7 +32,6 @@ come out ready.
 | L2 - processes, credentials, time | `setgid` | partial | 16: bb-cp-mv-rm, bb-dd, bb-disk, bb-find-grep, bb-grep-r, bb-identity, bb-ls, bb-metadata, bb-mkdir-rm, bb-pipeline, bb-ps, bb-sed-inplace, bb-sh-script, bb-tar, bb-text, bb-time |
 | L2 - processes, credentials, time | `setuid` | partial | 16: bb-cp-mv-rm, bb-dd, bb-disk, bb-find-grep, bb-grep-r, bb-identity, bb-ls, bb-metadata, bb-mkdir-rm, bb-pipeline, bb-ps, bb-sed-inplace, bb-sh-script, bb-tar, bb-text, bb-time |
 | L2 - processes, credentials, time | `alarm` | missing | 1: bb-time |
-| L2 - processes, credentials, time | `clock_nanosleep` | missing | 1: bb-time |
 | L2 - processes, credentials, time | `getgroups` | missing | 1: bb-identity |
 | L3 - memory | `mmap` | partial | 8: bb-dd, lua-script, musl-dynamic, musl-hello, musl-tfork, musl-threads, sqlite-file, sqlite-memory |
 | L5 - sockets | `writev` | partial | 9: lua-script, musl-dynamic, musl-hello, musl-pie, musl-signal, musl-tfork, musl-threads, sqlite-file, sqlite-memory |
@@ -61,7 +60,7 @@ come out ready.
 | `bb-sh-script` | 34 | 27 | `clone` `ioctl` `prlimit64` `rseq` `setgid` `setuid` `uname` | - |
 | `bb-tar` | 41 | 34 | `clone` `ioctl` `prlimit64` `rseq` `setgid` `setuid` `uname` | - |
 | `bb-text` | 32 | 26 | `clone` `prlimit64` `rseq` `setgid` `setuid` `uname` | - |
-| `bb-time` | 37 | 28 | `clone` `ioctl` `prlimit64` `rseq` `setgid` `setuid` `uname` | `alarm` `clock_nanosleep` |
+| `bb-time` | 37 | 29 | `clone` `ioctl` `prlimit64` `rseq` `setgid` `setuid` `uname` | `alarm` |
 | `lua-script` | 16 | 12 | `ioctl` `mmap` `readv` `writev` | - |
 | `musl-dynamic` | 9 | 6 | `ioctl` `mmap` `writev` | - |
 | `musl-hello` | 9 | 6 | `ioctl` `mmap` `writev` | - |
@@ -84,10 +83,10 @@ that starts with no syscall's (for example `abort01`, `cacheflush01`, `confstr01
 
 | Phase | Syscalls in the phase | with LTP tests | tests |
 | --- | --- | --- | --- |
-| done | 124 | 117 | 549 |
+| done | 127 | 120 | 560 |
 | L1 - files and paths | 8 | 8 | 71 |
-| L2 - processes, credentials, time | 50 | 47 | 188 |
-| L3 - memory | 11 | 11 | 66 |
+| L2 - processes, credentials, time | 48 | 45 | 181 |
+| L3 - memory | 10 | 10 | 62 |
 | L4 - event loops | 21 | 16 | 50 |
 | L5 - sockets | 13 | 13 | 36 |
 | L6 - threads and scheduling | 23 | 22 | 61 |

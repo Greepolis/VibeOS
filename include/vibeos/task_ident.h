@@ -45,6 +45,12 @@ typedef struct vibeos_task {
      * process's: the dispositions live with the process. */
     uint64_t sig_pending;
     uint64_t sig_blocked;
+
+    /* The syscall this thread just had cut short by a signal and could run
+     * again, as its number plus one; 0 for none. Written by the dispatcher on
+     * the way out of the call and taken - cleared - by the signal delivery
+     * that follows it on the same way out. */
+    uint64_t sys_restart;
 } vibeos_task_t;
 
 /* Put every identity field into a defined state. The one place that does it, so no

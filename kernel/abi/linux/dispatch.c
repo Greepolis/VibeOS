@@ -138,7 +138,21 @@ long linux_syscall(struct ks_regs *frame, uint64_t nr, const uint64_t a[6]) {
                 return refused;
             }
         }
-        return row->handler(&call);
+        {
+            long r = row->handler(&call);
+
+            /* A wait a signal cut short, of the kind that can be started
+             * again. The program is told EINTR unless the delivery that
+             * follows decides otherwise; the number is left where that
+             * delivery finds it. 512 never leaves the kernel. */
+            if (r == -VIBEOS_RESTART_CALL) {
+                if (cur >= 0) {
+                    ks_id(cur)->sys_restart = nr + 1u;
+                }
+                r = -VIBEOS_EINTR;
+            }
+            return r;
+        }
     }
 
     /* No row. The registry says which of the three kinds of no this is. */

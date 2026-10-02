@@ -182,6 +182,14 @@ static long linux_walk_inputs(uint64_t dirfd, uint64_t upath, char *raw, char *r
     if (n >= VIBEOS_PATH_MAX) {
         return -VIBEOS_ENAMETOOLONG;
     }
+    if (n == 0u) {
+        /* Nothing to look up, whatever it would have been looked up from:
+         * Linux says ENOENT before it examines the directory descriptor, and
+         * this said ENOTDIR or EBADF when that was a file or nothing (LTP's
+         * fchmodat02). The calls that take an empty path on purpose ask for
+         * it with AT_EMPTY_PATH and do not come this way. */
+        return -VIBEOS_ENOENT;
+    }
     linux_ps_path(ps, 1, root);
     if (raw[0] == '/' || VIBEOS_ARG_INT(dirfd) == LINUX_AT_FDCWD) {
         linux_ps_path(ps, 0, base);
@@ -266,7 +274,9 @@ long linux_walk_at_empty(uint64_t dirfd, uint64_t upath, uint64_t atflags, uint3
     char first = 1;
 
     if (atflags & LINUX_AT_EMPTY_PATH) {
-        if (vibeos_uaccess_copy(&first, (const void *)(uintptr_t)upath, 1u) != 0) {
+        /* Asked first whose memory it is; see linux_stat_get (M-082). */
+        if (!linux_user_ok(upath, 1u, 0) ||
+            vibeos_uaccess_copy(&first, (const void *)(uintptr_t)upath, 1u) != 0) {
             return -VIBEOS_EFAULT;
         }
         if (first == 0) {
@@ -547,7 +557,10 @@ static long linux_sys_pread64(uint64_t fd, uint64_t buf, uint64_t len, uint64_t 
     if (!(f = linux_file_get(fd))) {
         return -VIBEOS_EBADF;
     }
-    r = f->ops->pread ? f->ops->pread(f, buf, len, off) : -VIBEOS_ESPIPE;
+    /* No position to read at: a pipe or a terminal is ESPIPE, a directory
+     * EISDIR - it has an offset, and is not read this way (LTP's preadv02). */
+    r = f->ops->pread ? f->ops->pread(f, buf, len, off)
+                      : f->ops == &vibeos_fops_dir ? -VIBEOS_EISDIR : -VIBEOS_ESPIPE;
     vibeos_file_put(f);
     return r;
 }
@@ -562,7 +575,8 @@ static long linux_sys_pwrite64(uint64_t fd, uint64_t buf, uint64_t len, uint64_t
     if (!(f = linux_file_get(fd))) {
         return -VIBEOS_EBADF;
     }
-    r = f->ops->pwrite ? f->ops->pwrite(f, buf, len, off) : -VIBEOS_ESPIPE;
+    r = f->ops->pwrite ? f->ops->pwrite(f, buf, len, off)
+                       : f->ops == &vibeos_fops_dir ? -VIBEOS_EISDIR : -VIBEOS_ESPIPE;
     vibeos_file_put(f);
     return r;
 }
@@ -589,6 +603,12 @@ static long linux_rw_vec_at(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt, uin
         if (vibeos_uaccess_copy(&v, (const void *)(uintptr_t)
                 (iov_uptr + i * sizeof(linux_iovec_t)), sizeof(v)) != 0) {
             return total > 0 ? total : -VIBEOS_EFAULT;
+        }
+        if ((int64_t)v.iov_len < 0) {
+            /* Not a length. EINVAL, and before the range is judged: a range
+             * of that size is nobody's, and EFAULT would be the answer to a
+             * different question (LTP's preadv02 and pwritev02). */
+            return total > 0 ? total : -VIBEOS_EINVAL;
         }
         if (v.iov_len == 0u) {
             continue;
@@ -722,6 +742,12 @@ static long linux_sys_fallocate(uint64_t fd, uint64_t mode, uint64_t off, uint64
     }
     if (mode & ~(uint64_t)LINUX_FALLOC_FL_KEEP_SIZE) {
         return -VIBEOS_EOPNOTSUPP;
+    }
+    if ((int64_t)(off + len) < 0) {
+        /* Past the largest offset a file can have. With FALLOC_FL_KEEP_SIZE
+         * nothing below would have looked, and the call succeeded (LTP's
+         * fallocate02). */
+        return -VIBEOS_EFBIG;
     }
     if (!(f = linux_file_get(fd))) {
         return -VIBEOS_EBADF;
@@ -1173,7 +1199,7 @@ static long linux_lock_take(uint32_t space, vibeos_file_t *f, uint64_t owner, ui
             break;
         }
         if (ks_current() >= 0 && ks_signal_interrupts(ks_current())) {
-            r = -VIBEOS_EINTR;
+            r = -VIBEOS_RESTART_CALL;
             break;
         }
         ks_block_point();
@@ -1415,7 +1441,17 @@ long linux_stat_get(uint64_t dirfd, uint64_t path_uptr, uint64_t atflags,
     char first = 0;
     long r;
 
-    if (vibeos_uaccess_copy(&first, (const void *)(uintptr_t)path_uptr, 1u) != 0) {
+    /* The first byte, to learn whether the path is empty - and the range is
+     * judged before it is read (M-082). A path is not one of the pointers a
+     * row declares, so nothing had asked whose memory this was, and the copy
+     * that follows is fault-tolerant, not permission-checked: ring 0 reads a
+     * page that is mapped whoever it is mapped for. So a path pointing at a
+     * PROT_NONE page of the program's own, or at the kernel, was read; the
+     * call then answered ENOENT if the byte was zero and EFAULT if it was not,
+     * which is one bit of memory the program may not read, a call at a time.
+     * Found by LTP's statx03, which expects EFAULT and got ENOENT. */
+    if (!linux_user_ok(path_uptr, 1u, 0) ||
+        vibeos_uaccess_copy(&first, (const void *)(uintptr_t)path_uptr, 1u) != 0) {
         return -VIBEOS_EFAULT;
     }
     if (first == 0) {

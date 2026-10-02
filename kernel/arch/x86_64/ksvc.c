@@ -79,6 +79,7 @@ void ks_block_point(void) {
     hw_sched_point("block");
     __asm__ __volatile__("sti; hlt" ::: "memory");
 }
+void ks_wait_tick(void) { ks_block_point(); }
 void ks_wake_waiters(void) { hw_keyboard_wake(); }
 int ks_signal_interrupts(int slot) { return hw_signal_interrupts(slot); }
 int ks_signal_raise(int slot, uint32_t sig) { return hw_signal_raise(slot, sig); }
@@ -444,6 +445,15 @@ void ks_exec_regs(int slot, ks_regs_t *regs, uint64_t entry, uint64_t sp) {
 
 uint64_t ks_regs_sp(const ks_regs_t *frame) { return hw_regs_c(frame)->rsp; }
 uint64_t ks_regs_ret(const ks_regs_t *frame) { return hw_regs_c(frame)->rax; }
+
+/* `syscall` and `int $0x80` are both two bytes, so stepping back two lands on
+ * whichever the program used. */
+void ks_regs_restart(ks_regs_t *regs, uint64_t nr) {
+    vibeos_x86_64_isr_frame_t *frame = hw_regs(regs);
+
+    frame->rax = nr;
+    frame->rip -= 2u;
+}
 uint64_t ks_sigframe_size(void) { return sizeof(hw_sigframe_t); }
 
 /* Built in the kernel and copied out fault-safely: a sibling thread can munmap

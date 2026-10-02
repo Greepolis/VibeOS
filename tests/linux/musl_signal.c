@@ -18,6 +18,7 @@
  *   the default action still kills, and the parent sees 128 + the signal
  */
 
+#include <errno.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -152,6 +153,53 @@ int main(void) {
             if (!WIFSIGNALED(status) || WTERMSIG(status) != SIGTERM) {
                 printf("SIG_FAIL: default action, status=%d\n", status);
                 ok = 0;
+            }
+        }
+    }
+
+    /* SA_RESTART: a wait cut short by a handled signal goes on waiting, and
+     * without the flag it fails with EINTR. The child gives the parent a third
+     * of a second to be inside waitpid before it signals - if the signal came
+     * first, the wait would not be interrupted at all and the second half
+     * would have nothing to observe. */
+    {
+        int with;
+
+        for (with = 1; with >= 0; with--) {
+            pid_t child;
+            int status = 0;
+            pid_t r;
+
+            memset(&sa, 0, sizeof(sa));
+            sa.sa_handler = on_signal;
+            sa.sa_flags = with ? SA_RESTART : 0;
+            sigaction(SIGUSR1, &sa, NULL);
+            g_got = 0;
+            printf("SIG_PHASE: restart=%d\n", with);
+            fflush(stdout);
+            child = fork();
+            if (child == 0) {
+                usleep(300000);
+                kill(getppid(), SIGUSR1);
+                usleep(300000);
+                _exit(7);
+            }
+            errno = 0;
+            r = waitpid(child, &status, 0);
+            if (g_got != SIGUSR1) {
+                printf("SIG_FAIL: restart=%d: the handler did not run\n", with);
+                ok = 0;
+            }
+            if (with && (r != child || !WIFEXITED(status) || WEXITSTATUS(status) != 7)) {
+                printf("SIG_FAIL: SA_RESTART: waitpid returned %d errno=%d\n", (int)r, errno);
+                ok = 0;
+            }
+            if (!with && (r != -1 || errno != EINTR)) {
+                printf("SIG_FAIL: no SA_RESTART: waitpid returned %d errno=%d, not EINTR\n", (int)r, errno);
+                ok = 0;
+            }
+            if (r != child) {
+                waitpid(child, &status, 0);
             }
         }
     }
