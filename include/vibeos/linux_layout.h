@@ -388,6 +388,28 @@ typedef struct {
 #define LINUX_CLOCK_MONOTONIC 1
 #define LINUX_CLOCK_BOOTTIME  7
 #define LINUX_TIMER_ABSTIME   1
+/* madvise, mlock, mremap, memfd_create (L3 step 4). */
+#define LINUX_MADV_NORMAL      0
+#define LINUX_MADV_RANDOM      1
+#define LINUX_MADV_SEQUENTIAL  2
+#define LINUX_MADV_WILLNEED    3
+#define LINUX_MADV_DONTNEED    4
+#define LINUX_MADV_FREE        8
+#define LINUX_MADV_DONTDUMP    16
+#define LINUX_MADV_DODUMP      17
+#define LINUX_MADV_COLD        20
+#define LINUX_MADV_PAGEOUT     21
+#define LINUX_MADV_POPULATE_READ  22
+#define LINUX_MADV_POPULATE_WRITE 23
+#define LINUX_MLOCK_ONFAULT    0x01
+#define LINUX_MCL_CURRENT      1
+#define LINUX_MCL_FUTURE       2
+#define LINUX_MCL_ONFAULT      4
+#define LINUX_MREMAP_MAYMOVE   1
+#define LINUX_MREMAP_FIXED     2
+#define LINUX_MFD_CLOEXEC       0x0001u
+#define LINUX_MFD_ALLOW_SEALING 0x0002u
+#define LINUX_MFD_NAME_MAX      249u    /* NAME_MAX less "memfd:" */
 #define LINUX_MS_ASYNC      1
 #define LINUX_MS_INVALIDATE 2
 #define LINUX_MS_SYNC       4

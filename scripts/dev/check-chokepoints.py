@@ -74,7 +74,7 @@ CHOKEPOINTS = {
         "A handler calling it directly is a handler that skipped the dispatcher's "
         "chokepoint."),
     "linux_user_ok": (
-        22,   # 20 -> 22 with M-082: the first byte of a path is judged before it is read, in the two places that read it. Before: 18 -> 20 in L1 step 7. ioctl: whether its argument is a pointer,
+        23,   # 22 -> 23 in L3 step 4: mincore's vector, whose length follows from the range's. Before: 20 -> 22 with M-082: the first byte of a path is judged before it is read, in the two places that read it. Before: 18 -> 20 in L1 step 7. ioctl: whether its argument is a pointer,
               # and how long, depends on the request (one helper, linux_ioctl_arg,
               # which every request goes through). And the gathered writev,
               # which checks each element's buffer as the element-by-element

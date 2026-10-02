@@ -137,6 +137,15 @@
     X(PROTECT,         "protect",         VIBEOS_CHECK_NONE) \
     X(UNMAP,           "unmap",           VIBEOS_CHECK_NONE) \
     X(MSYNC,           "msync",           VIBEOS_CHECK_NONE) \
+    X(MREMAP,          "mremap",          VIBEOS_CHECK_NONE) \
+    X(MINCORE,         "mincore",         VIBEOS_CHECK_USER_MEMORY) \
+    X(MADVISE,         "madvise",         VIBEOS_CHECK_NONE) \
+    X(MLOCK,           "mlock",           VIBEOS_CHECK_NONE) \
+    X(MUNLOCK,         "munlock",         VIBEOS_CHECK_NONE) \
+    X(MLOCKALL,        "mlockall",        VIBEOS_CHECK_NONE) \
+    X(MUNLOCKALL,      "munlockall",      VIBEOS_CHECK_NONE) \
+    X(MLOCK2,          "mlock2",          VIBEOS_CHECK_NONE) \
+    X(MEMFD_CREATE,    "memfd_create",    VIBEOS_CHECK_USER_MEMORY) \
     X(PAGEINFO,        "pageinfo",        VIBEOS_CHECK_USER_MEMORY) \
     /* signals */ \
     X(SIG_ACTION,      "sig_action",      VIBEOS_CHECK_USER_MEMORY) \

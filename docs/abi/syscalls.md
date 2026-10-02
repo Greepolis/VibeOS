@@ -9,9 +9,9 @@ the registry, not this page; `check.sh` fails while the two differ.
 
 | State | Count | What the kernel answers |
 | --- | --- | --- |
-| done | 127 | through its row |
-| partial | 20 | through its row, with the gap named |
-| missing | 143 | ENOSYS, and the boot gate fails naming the number |
+| done | 132 | through its row |
+| partial | 24 | through its row, with the gap named |
+| missing | 134 | ENOSYS, and the boot gate fails naming the number |
 | deferred | 50 | ENOSYS, and the boot gate fails naming the number |
 | refused | 33 | its errno, counted as refused - expected, never a failure |
 
@@ -21,7 +21,7 @@ Without a row, by phase:
 | --- | --- |
 | L1 - files and paths | 0 |
 | L2 - processes, credentials, time | 45 |
-| L3 - memory | 9 |
+| L3 - memory | 0 |
 | L4 - event loops | 20 |
 | L5 - sockets | 11 |
 | L6 - threads and scheduling | 20 |
@@ -61,10 +61,10 @@ calls, outside the Linux number space, are listed last.
 | 22 | `pipe` | done | - | - | `fs.c` |  |
 | 23 | `select` | missing | L4 | ENOSYS |  |  |
 | 24 | `sched_yield` | done | - | - | `proc.c` |  |
-| 25 | `mremap` | missing | L3 | ENOSYS |  | with file-backed and shared mappings (the other half of mmap) |
+| 25 | `mremap` | partial | L3 | - | `mm.c` | only a private anonymous mapping grows; a zero old length and MREMAP_DONTUNMAP are refused |
 | 26 | `msync` | done | - | - | `mm.c` |  |
-| 27 | `mincore` | missing | L3 | ENOSYS |  | with file-backed and shared mappings (the other half of mmap) |
-| 28 | `madvise` | missing | L3 | ENOSYS |  | with file-backed and shared mappings (the other half of mmap) |
+| 27 | `mincore` | done | - | - | `mm.c` |  |
+| 28 | `madvise` | partial | L3 | - | `mm.c` | MADV_DONTNEED leaves a private page of a file as the program left it, where Linux shows the file again |
 | 29 | `shmget` | missing | L7 | ENOSYS |  |  |
 | 30 | `shmat` | missing | L7 | ENOSYS |  |  |
 | 31 | `shmctl` | missing | L7 | ENOSYS |  |  |
@@ -185,10 +185,10 @@ calls, outside the Linux number space, are listed last.
 | 146 | `sched_get_priority_max` | missing | L6 | ENOSYS |  |  |
 | 147 | `sched_get_priority_min` | missing | L6 | ENOSYS |  |  |
 | 148 | `sched_rr_get_interval` | missing | L6 | ENOSYS |  |  |
-| 149 | `mlock` | missing | L3 | ENOSYS |  | with file-backed and shared mappings (the other half of mmap) |
-| 150 | `munlock` | missing | L3 | ENOSYS |  | with file-backed and shared mappings (the other half of mmap) |
-| 151 | `mlockall` | missing | L3 | ENOSYS |  | with file-backed and shared mappings (the other half of mmap) |
-| 152 | `munlockall` | missing | L3 | ENOSYS |  | with file-backed and shared mappings (the other half of mmap) |
+| 149 | `mlock` | done | - | - | `mm.c` |  |
+| 150 | `munlock` | done | - | - | `mm.c` |  |
+| 151 | `mlockall` | partial | L3 | - | `mm.c` | MCL_FUTURE is accepted and a mapping made afterwards is not locked |
+| 152 | `munlockall` | done | - | - | `mm.c` |  |
 | 153 | `vhangup` | missing | L8 | ENOSYS |  |  |
 | 154 | `modify_ldt` | refused | R | ENOSYS |  | no LDT: 64-bit programs do not use one |
 | 155 | `pivot_root` | missing | L8 | ENOSYS |  |  |
@@ -355,13 +355,13 @@ calls, outside the Linux number space, are listed last.
 | 316 | `renameat2` | partial | L1 | - | `names.c` | RENAME_EXCHANGE and RENAME_WHITEOUT refused |
 | 317 | `seccomp` | missing | L9 | ENOSYS |  | the security goals of docs/vision.md |
 | 318 | `getrandom` | done | - | - | `proc.c` |  |
-| 319 | `memfd_create` | missing | L3 | ENOSYS |  | with file-backed and shared mappings (the other half of mmap) |
+| 319 | `memfd_create` | partial | L3 | - | `fs.c` | no seals: MFD_ALLOW_SEALING is accepted and F_ADD_SEALS refused; the file has a name under /tmp while open |
 | 320 | `kexec_file_load` | refused | R | EPERM |  | no kexec: the machine is booted by the bootloader, not by itself |
 | 321 | `bpf` | refused | R | ENOSYS |  | no in-kernel bytecode: a facility this kernel does not have |
 | 322 | `execveat` | missing | L2 | ENOSYS |  |  |
 | 323 | `userfaultfd` | refused | R | ENOSYS |  | no user-space fault handling: a facility this kernel does not have |
 | 324 | `membarrier` | missing | L6 | ENOSYS |  |  |
-| 325 | `mlock2` | missing | L3 | ENOSYS |  | with file-backed and shared mappings (the other half of mmap) |
+| 325 | `mlock2` | done | - | - | `mm.c` |  |
 | 326 | `copy_file_range` | done | - | - | `fs.c` |  |
 | 327 | `preadv2` | partial | L1 | - | `fs.c` | RWF_ flags refused |
 | 328 | `pwritev2` | partial | L1 | - | `fs.c` | RWF_ flags refused |

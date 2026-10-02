@@ -145,3 +145,15 @@
     if (!(flags & LINUX_MAP_ANONYMOUS)) {
 +++ new
     if (!(flags & LINUX_MAP_ANONYMOUS) || VIBEOS_ARG_INT(fd) >= 0) {
+
+### a zero length is judged before the descriptor
+--- old
+            if (!(f = linux_file_get(fd))) {
+                return -VIBEOS_EBADF;
+            }
+            vibeos_file_put(f);
+        }
+        return -VIBEOS_EINVAL;
++++ new
+        }
+        return -VIBEOS_EINVAL;

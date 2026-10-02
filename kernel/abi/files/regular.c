@@ -255,6 +255,15 @@ static int regular_sync(vibeos_file_t *f) {
     return vibeos_fs_sync(f->mnt);
 }
 
+/* The last reference to a description went. Nothing to do for a file with a
+ * name of its own; one made by memfd_create takes its name with it, and its
+ * pages go back unless a mapping still holds them. */
+static void regular_release(vibeos_file_t *f) {
+    if (f->unlink_on_release && f->mnt) {
+        (void)vibeos_fs_unlink(f->mnt, tail_of(f));
+    }
+}
+
 static int regular_share_page(vibeos_file_t *f, uint64_t off, void **page) {
     vibeos_fs_node_t node = node_of(f);
 
@@ -364,6 +373,7 @@ const vibeos_file_ops_t vibeos_fops_regular = {
     .truncate = regular_truncate,
     .sync = regular_sync,
     .share_page = regular_share_page,
+    .release = regular_release,
 };
 
 static int dir_sync(vibeos_file_t *f) {

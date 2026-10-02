@@ -583,6 +583,71 @@ static int check_shared_mappings(void) {
     return m[7] == 'f';
 }
 
+/* The rest of the memory calls (docs/abi/ L3 step 4), on the machine: a page
+ * given back reads zeros; a mapping that has to move to grow arrives with its
+ * contents; a locked page is reported in memory; and a memfd, mapped shared,
+ * is one memory in two processes that a read() of the descriptor also sees. */
+static const char mem4_ok[] = "MEM4_OK: madvise, mincore, mlock, mremap and memfd_create\n";
+static const char mem4_bad[] = "abi: the memory calls of L3 step 4 are wrong\n";
+static const char memfd_name[] = "selftest";
+
+static int check_memory_calls(void) {
+    volatile unsigned char *p, *q, *m;
+    volatile int status = -1;
+    unsigned char vec[2] = {9, 9}, back = 0;
+    long fd, child;
+
+    p = (volatile unsigned char *)user_syscall6(SYS_mmap, 0, 8192, 3, 0x22, -1, 0);
+    if ((long)p <= 0) {
+        return 0;
+    }
+    p[0] = 'a';
+    p[4096] = 'b';
+    if (user_syscall3(28 /* madvise */, (long)(unsigned long)p, 4096, 4 /* DONTNEED */) != 0 ||
+        p[0] != 0 || p[4096] != 'b') {
+        return 0;
+    }
+    p[0] = 'a';
+    if (user_syscall3(149 /* mlock */, (long)(unsigned long)p, 8192, 0) != 0 ||
+        user_syscall3(27 /* mincore */, (long)(unsigned long)p, 8192, (long)(unsigned long)vec) != 0 ||
+        vec[0] != 1 || vec[1] != 1 ||
+        user_syscall3(150 /* munlock */, (long)(unsigned long)p, 8192, 0) != 0) {
+        return 0;
+    }
+    /* Something right after it, so that growing means moving. */
+    if (user_syscall6(SYS_mmap, (long)(unsigned long)p + 8192, 4096, 3, 0x32 /* FIXED */, -1, 0) !=
+        (long)(unsigned long)p + 8192) {
+        return 0;
+    }
+    q = (volatile unsigned char *)user_syscall6(25 /* mremap */, (long)(unsigned long)p, 8192, 16384,
+                                                1 /* MAYMOVE */, 0, 0);
+    if ((long)q <= 0 || q == p || q[0] != 'a' || q[4096] != 'b' || q[8192] != 0 || q[16383] != 0) {
+        return 0;
+    }
+    q[16383] = 'z';
+
+    fd = user_syscall3(319 /* memfd_create */, (long)(unsigned long)memfd_name, 0, 0);
+    if (fd < 0 || user_syscall3(77 /* ftruncate */, fd, 4096, 0) != 0) {
+        return 0;
+    }
+    m = (volatile unsigned char *)user_syscall6(SYS_mmap, 0, 4096, 3, 0x01 /* SHARED */, fd, 0);
+    if ((long)m <= 0) {
+        return 0;
+    }
+    child = user_syscall3(SYS_fork, 0, 0, 0);
+    if (child == 0) {
+        m[9] = 'm';
+        user_syscall3(SYS_exit, q[16383] == 'z' ? 0 : 1, 0, 0);
+    }
+    if (child < 0 || user_syscall3(SYS_wait4, child, (long)(unsigned long)&status, 0) != child ||
+        status != 0 || m[9] != 'm' ||
+        user_syscall6(17 /* pread64 */, fd, (long)(unsigned long)&back, 1, 9, 0, 0) != 1 || back != 'm') {
+        return 0;
+    }
+    user_syscall3(3 /* close */, fd, 0, 0);
+    return m[9] == 'm';
+}
+
 int vibeos_main(int argc, char **argv, char **envp) {
     long pid, brk0, brk1, map, rejected;
 
@@ -619,6 +684,11 @@ int vibeos_main(int argc, char **argv, char **envp) {
         user_syscall3(SYS_write, 1, (long)(unsigned long)stack_ok, sizeof(stack_ok) - 1);
     } else {
         user_syscall3(SYS_write, 1, (long)(unsigned long)stack_bad, sizeof(stack_bad) - 1);
+    }
+    if (check_memory_calls()) {
+        user_syscall3(SYS_write, 1, (long)(unsigned long)mem4_ok, sizeof(mem4_ok) - 1);
+    } else {
+        user_syscall3(SYS_write, 1, (long)(unsigned long)mem4_bad, sizeof(mem4_bad) - 1);
     }
     if (check_shared_mappings()) {
         user_syscall3(SYS_write, 1, (long)(unsigned long)shared_ok, sizeof(shared_ok) - 1);

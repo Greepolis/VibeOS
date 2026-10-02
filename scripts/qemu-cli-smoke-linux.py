@@ -3211,6 +3211,12 @@ def main():
             # the parent - and, for the file, read back through the descriptor.
             if not re.search(r"write\(ring3\): SHARED_OK", text):
                 problems.append("shared_mapping_selftest_failed")
+            # madvise, mincore, mlock, mremap and memfd_create, from ring 3
+            # (L3 step 4): a page given back reads zeros, a mapping that moves
+            # to grow keeps its contents, a memfd is shared across a fork.
+            if not re.search(r"write\(ring3\): MEM4_OK", text):
+                problems.append("memory_calls_selftest_failed")
+
             # A write from a kernel address must be refused. The row declares the
             # buffer and the dispatcher's descriptor engine refuses it before the
             # handler runs; the program prints this line only if it was refused.

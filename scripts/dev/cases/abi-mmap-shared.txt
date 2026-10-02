@@ -41,13 +41,11 @@
 
 ### msync does not look for a hole in the range
 --- old
-        if (!v) {
-            r = -VIBEOS_ENOMEM;
-            break;
-        }
-        va = v->base + v->len;
+    if (!linux_regions_cover(ps, addr, end)) {
+        r = -VIBEOS_ENOMEM;
+    }
+    ks_mm_unlock(ps);
+    return r;
 +++ new
-        if (!v) {
-            break;
-        }
-        va = v->base + v->len;
+    ks_mm_unlock(ps);
+    return r;

@@ -517,6 +517,68 @@ long linux_sys_openat(uint64_t dirfd, uint64_t path_uptr, uint64_t flags, uint64
     return linux_fd_install(f, (flags & VIBEOS_O_CLOEXEC) ? VIBEOS_FD_CLOEXEC : 0u, 0);
 }
 
+/* memfd_create(name, flags): a file that is nobody's but the descriptor's
+ * (docs/abi/ L3 step 4) - memory with a file's interface, to size with
+ * ftruncate, map shared and hand to another process.
+ *
+ * It is a file on /tmp, which is the filesystem here that keeps its files in
+ * memory and can share their pages. Linux's has no name anywhere; this one has
+ * a name under /tmp for as long as it is open, because a file here is found by
+ * its path, and the name goes when the last descriptor does. That it can be
+ * seen there meanwhile is the difference, and it is written down.
+ *
+ * The name a program gives is a label for a debugger and is only checked for
+ * length. MFD_ALLOW_SEALING is accepted and means nothing yet: there are no
+ * seals to add (fcntl refuses F_ADD_SEALS), which the registry names. */
+static uint32_t g_memfd_seq;
+
+static long linux_sys_memfd_create(uint64_t name_uptr, uint64_t flags) {
+    char label[LINUX_MFD_NAME_MAX + 2u];
+    char path[40] = "/tmp/.memfd-";
+    vibeos_path_t w;
+    vibeos_file_t *f;
+    uint32_t seq, n, k, tries;
+    long err = -VIBEOS_EEXIST;
+
+    if (ks_current() < 0 || !ks_id(ks_current())->is_user) {
+        return -VIBEOS_EINVAL;
+    }
+    if (flags & ~(uint64_t)(LINUX_MFD_CLOEXEC | LINUX_MFD_ALLOW_SEALING)) {
+        return -VIBEOS_EINVAL;
+    }
+    if (ks_copy_user_string(name_uptr, label, (int)sizeof(label)) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    for (n = 0; label[n]; n++) {
+    }
+    if (n > LINUX_MFD_NAME_MAX) {
+        return -VIBEOS_EINVAL;
+    }
+    for (tries = 0; tries < 8u && err == -VIBEOS_EEXIST; tries++) {
+        char digits[10];
+
+        seq = __sync_add_and_fetch(&g_memfd_seq, 1u);
+        for (n = 12, k = 0; k == 0u || seq != 0u; seq /= 10u) {
+            digits[k++] = (char)('0' + seq % 10u);
+        }
+        while (k > 0u) {
+            path[n++] = digits[--k];
+        }
+        path[n] = 0;
+        err = vibeos_path_walk("/", "/", path,
+                               vibeos_open_walk_flags(VIBEOS_O_CREAT | VIBEOS_O_EXCL | VIBEOS_O_RDWR), &w);
+        if (err != 0) {
+            return err;
+        }
+        f = vibeos_open_path(&w, VIBEOS_O_CREAT | VIBEOS_O_EXCL | VIBEOS_O_RDWR, 0600u, &err);
+        if (f) {
+            f->unlink_on_release = 1;
+            return linux_fd_install(f, (flags & LINUX_MFD_CLOEXEC) ? VIBEOS_FD_CLOEXEC : 0u, 0);
+        }
+    }
+    return err;
+}
+
 static long linux_sys_open(uint64_t path_uptr, uint64_t flags, uint64_t mode) {
     return linux_sys_openat((uint64_t)(uint32_t)LINUX_AT_FDCWD, path_uptr, flags, mode);
 }
@@ -2161,6 +2223,7 @@ int linux_files_leave(vibeos_procstate_t *ps) {
     X(295, preadv,      PREADV,      PTRS(IN_VEC(1, 2, sizeof(linux_iovec_t), 1024)), linux_rw_vec_at(ARG(0), ARG(1), ARG(2), ARG(3), 0)) \
     X(296, pwritev,     PWRITEV,     PTRS(IN_VEC(1, 2, sizeof(linux_iovec_t), 1024)), linux_rw_vec_at(ARG(0), ARG(1), ARG(2), ARG(3), 1)) \
     X(306, syncfs,      SYNCFS,      NOPTR, linux_sys_syncfs(ARG(0))) \
+    X(319, memfd_create, MEMFD_CREATE, NOPTR, linux_sys_memfd_create(ARG(0), ARG(1))) \
     X(326, copy_file_range, COPY_RANGE, PTRS(OUT_OPT(1, 8), OUT_OPT(3, 8)), linux_sys_copy_file_range(ARG(0), ARG(1), ARG(2), ARG(3), ARG(4), ARG(5))) \
     X(327, preadv2,     PREADV2,     PTRS(IN_VEC(1, 2, sizeof(linux_iovec_t), 1024)), linux_sys_preadv2(ARG(0), ARG(1), ARG(2), ARG(3), ARG(5))) \
     X(328, pwritev2,    PWRITEV2,    PTRS(IN_VEC(1, 2, sizeof(linux_iovec_t), 1024)), linux_sys_pwritev2(ARG(0), ARG(1), ARG(2), ARG(3), ARG(5))) \

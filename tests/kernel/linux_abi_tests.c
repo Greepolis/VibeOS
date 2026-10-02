@@ -1899,6 +1899,9 @@ static void t_mmap_files(void) {
     (void)SYS2(293, fds, 0);
     expect(MMAP(0, 4096, 1, 2, fd, 100) == -VIBEOS_EINVAL, "an offset that is not a page multiple is EINVAL");
     expect(MMAP(0, 4096, 1, 2, 99, 0) == -VIBEOS_EBADF, "no descriptor is EBADF");
+    expect(MMAP(0, 0, 2, 1, -1, 0) == -VIBEOS_EBADF && MMAP(0, 0, 1, 2, fd, 0) == -VIBEOS_EINVAL &&
+           MMAP(0, 0, 3, MAP_PRIV_ANON, -1, 0) == -VIBEOS_EINVAL,
+           "a length of zero is EINVAL, but a descriptor that is not open is EBADF first");
     expect(MMAP(0, 4096, 1, 2, wfd, 0) == -VIBEOS_EACCES, "a descriptor that cannot be read is EACCES");
     expect(MMAP(0, 4096, 1, 2, ((int32_t *)kf_uptr(fds))[0], 0) == -VIBEOS_ENODEV &&
            MMAP(0, 4096, 1, 2, tmp_open("/tmp", 0x10000, 0), 0) == -VIBEOS_ENODEV &&
@@ -2460,6 +2463,176 @@ static void t_mmap_shared(void) {
     expect(kf_lock_imbalance() == 0, "shared mappings released every lock they took");
 }
 
+/* ---- L3 step 4: madvise, mincore, mlock, mremap, memfd_create ------------------------ */
+
+#define PTE_FRAME 0x000FFFFFFFFFF000ull
+
+static uint64_t entry_of(int slot, uint64_t va) {
+    vibeos_vmspace_t v = ks_vm(slot);
+    uint64_t *e = vibeos_vmspace_entry(&v, va);
+    return e ? *e : 0u;
+}
+
+static void t_memory_calls(void) {
+    uint64_t vec, name, buf;
+    uint8_t x = 'A', y = 0, *vp;
+    long m, m2, s, blk, fd, pid, r;
+    int parent, child;
+    uint64_t frame, free1, refused;
+    vibeos_vmspace_t v;
+    linux_stat_t st;
+    char path[40];
+
+    parent = fresh(201);
+    vec = kf_ualloc(16);
+    buf = kf_ualloc(64);
+    vp = (uint8_t *)kf_uptr(vec);
+
+    /* madvise */
+    m = MMAP(0, 8192, 3, MAP_PRIV_ANON, -1, 0);
+    (void)kf_poke((uint64_t)m, &x, 1);
+    (void)kf_poke((uint64_t)m + 4096u, &x, 1);
+    pid = SYS0(57);
+    child = slot_of_pid(pid);
+    kf_set_current(parent);
+    expect(SYS3(28, (uint64_t)m, 4096, 4 /* MADV_DONTNEED */) == 0 && mem_is((uint64_t)m, 0, 4096) &&
+           mem_is((uint64_t)m + 4096u, 'A', 1), "MADV_DONTNEED gives the page back: it reads zeros, its neighbour does not");
+    expect(kf_poke((uint64_t)m, &x, 1) == 0 && mem_is((uint64_t)m, 'A', 1), "and it is still the program's to write");
+    kf_set_current(child);
+    expect(mem_is((uint64_t)m, 'A', 1), "a child that shared the page keeps what was in it");
+    kf_set_current(parent);
+    (void)SYS3(28, (uint64_t)m, 8192, 4);
+    free1 = vibeos_frame_free_count();
+    (void)kf_poke((uint64_t)m, &x, 1);
+    expect(SYS3(28, (uint64_t)m, 8192, 8 /* MADV_FREE */) == 0 && mem_is((uint64_t)m, 0, 1) &&
+           vibeos_frame_free_count() == free1, "MADV_FREE does the same, and a page is given back for each one taken");
+    expect(SYS3(28, (uint64_t)m, 8192, 0) == 0 && SYS3(28, (uint64_t)m, 8192, 3) == 0 &&
+           SYS3(28, (uint64_t)m, 8192, 21) == 0 && SYS3(28, (uint64_t)m, 0, 4) == 0,
+           "advice about speed is taken by doing nothing");
+    expect(SYS3(28, (uint64_t)m, 8192, 10 /* MADV_DONTFORK */) == -VIBEOS_EINVAL &&
+           SYS3(28, (uint64_t)m, 8192, 99) == -VIBEOS_EINVAL && SYS3(28, (uint64_t)m + 1u, 4096, 4) == -VIBEOS_EINVAL,
+           "advice this kernel cannot keep, advice nobody has, and an unaligned address are EINVAL");
+    expect(SYS3(28, (uint64_t)m, 3 * 4096, 0) == -VIBEOS_ENOMEM, "a range with a hole in it is ENOMEM");
+    s = MMAP(0, 4096, 3, MAP_SH_ANON, -1, 0);
+    (void)kf_poke((uint64_t)s, &x, 1);
+    expect(SYS3(28, (uint64_t)s, 4096, 4) == 0 && mem_is((uint64_t)s, 'A', 1) &&
+           SYS3(28, (uint64_t)s, 4096, 8) == -VIBEOS_EINVAL,
+           "a shared page is not this process's to discard, and MADV_FREE of one is EINVAL");
+
+    /* mincore */
+    vp[0] = vp[1] = vp[2] = 9;
+    expect(SYS3(27, (uint64_t)m, 8192, vec) == 0 && vp[0] == 1 && vp[1] == 1 && vp[2] == 9,
+           "mincore writes a byte a page, and no more");
+    v = ks_vm(parent);
+    expect(vibeos_vmspace_swap_out(&v, (uint64_t)m + 4096u, 7u) == 0 && SYS3(27, (uint64_t)m, 8192, vec) == 0 &&
+           vp[0] == 1 && vp[1] == 0, "a page in swap is mapped and not in memory");
+    expect(SYS3(27, (uint64_t)m + 1u, 4096, vec) == -VIBEOS_EINVAL &&
+           SYS3(27, 0x30000000ull, 4096, vec) == -VIBEOS_ENOMEM &&
+           SYS3(27, (uint64_t)m, 4096, 0x7000000000ull) == -VIBEOS_EFAULT,
+           "mincore: an unaligned address, a hole, a vector that is nobody's");
+    /* The fake has no swap to read back from: a locked page must be here, and
+     * this one cannot be brought. */
+    expect(SYS2(149, (uint64_t)m + 4096u, 1) == -VIBEOS_EAGAIN, "mlock of a page that cannot be brought back is EAGAIN");
+    (void)SYS2(11, (uint64_t)m + 4096u, 4096);
+
+    /* mlock */
+    refused = vibeos_mm_stats()->swap_refused_locked;
+    expect(SYS2(149, (uint64_t)m + 100u, 10) == 0 && (entry_of(parent, (uint64_t)m) & VIBEOS_PTE_LOCKED) &&
+           vibeos_vmspace_swap_out(&v, (uint64_t)m, 8u) != 0 &&
+           vibeos_mm_stats()->swap_refused_locked == refused + 1u,
+           "mlock locks the pages its bytes fall in, and reclaim leaves them");
+    expect(SYS3(28, (uint64_t)m, 4096, 4) == -VIBEOS_EINVAL, "a locked page is not discarded");
+    pid = SYS0(57);
+    child = slot_of_pid(pid);
+    kf_set_current(parent);
+    expect(!(entry_of(child, (uint64_t)m) & VIBEOS_PTE_LOCKED), "a lock is not inherited across fork");
+    expect(kf_poke((uint64_t)m, &x, 1) == 0 && (entry_of(parent, (uint64_t)m) & VIBEOS_PTE_LOCKED),
+           "the copy a write makes after the fork is still locked");
+    expect(SYS3(10, (uint64_t)m, 4096, 1) == 0 && (entry_of(parent, (uint64_t)m) & VIBEOS_PTE_LOCKED),
+           "and so is the page after mprotect");
+    expect(SYS2(150, (uint64_t)m, 4096) == 0 && !(entry_of(parent, (uint64_t)m) & VIBEOS_PTE_LOCKED),
+           "munlock lets it go");
+    expect(SYS2(149, (uint64_t)m, 2 * 4096) == -VIBEOS_ENOMEM && SYS2(149, (uint64_t)m, 0) == 0 &&
+           SYS3(325, (uint64_t)m, 4096, 2) == -VIBEOS_EINVAL && SYS3(325, (uint64_t)m, 4096, 1) == 0,
+           "mlock: a hole is ENOMEM, nothing is nothing, mlock2 takes MLOCK_ONFAULT and no other flag");
+    expect(SYS1(151, 1 /* MCL_CURRENT */) == 0 && (entry_of(parent, (uint64_t)s) & VIBEOS_PTE_LOCKED) &&
+           SYS0(152) == 0 && !(entry_of(parent, (uint64_t)s) & VIBEOS_PTE_LOCKED) &&
+           !(entry_of(parent, (uint64_t)m) & VIBEOS_PTE_LOCKED),
+           "mlockall locks every mapping and munlockall lets them all go");
+    expect(SYS1(151, 0) == -VIBEOS_EINVAL && SYS1(151, 8) == -VIBEOS_EINVAL && SYS1(151, 4) == -VIBEOS_EINVAL,
+           "mlockall: no flags, an unknown one, and MCL_ONFAULT by itself are EINVAL");
+
+    /* mremap */
+    parent = fresh(202);
+    m = MMAP(0, 8192, 3, MAP_PRIV_ANON, -1, 0);
+    (void)kf_poke((uint64_t)m, &x, 1);
+    y = 'B';
+    (void)kf_poke((uint64_t)m + 4096u, &y, 1);
+    expect(sys(25, (uint64_t)m, 8192, 4096, 0, 0, 0, 0) == m && mem_is((uint64_t)m, 'A', 1) &&
+           kf_peek((uint64_t)m + 4096u, &y, 1) != 0, "mremap to a smaller size gives the tail back");
+    expect(sys(25, (uint64_t)m, 4096, 8192, 0, 0, 0, 0) == m && mem_is((uint64_t)m, 'A', 1) &&
+           mem_is((uint64_t)m + 4096u, 0, 4096), "to a larger one, with room after it, it grows where it stands");
+    blk = MMAP((uint64_t)m + 8192u, 4096, 3, MAP_PRIV_ANON | 0x10 /* MAP_FIXED */, -1, 0);
+    expect(blk == m + 8192 && sys(25, (uint64_t)m, 8192, 16384, 0, 0, 0, 0) == -VIBEOS_ENOMEM,
+           "with something in the way and no leave to move, ENOMEM");
+    (void)SYS2(149, (uint64_t)m, 4096);
+    frame = entry_of(parent, (uint64_t)m) & PTE_FRAME;
+    m2 = sys(25, (uint64_t)m, 8192, 16384, 1 /* MREMAP_MAYMOVE */, 0, 0, 0);
+    expect(m2 > 0 && m2 != m && mem_is((uint64_t)m2, 'A', 1) && mem_is((uint64_t)m2 + 8192u, 0, 8192),
+           "with leave to move, the mapping goes where there is room, contents first, zeros after");
+    expect((entry_of(parent, (uint64_t)m2) & PTE_FRAME) == frame && (entry_of(parent, (uint64_t)m2) & VIBEOS_PTE_LOCKED),
+           "the same frame at the new address, still locked: moved, not copied");
+    expect(kf_peek((uint64_t)m, &y, 1) != 0 && SYS3(26, (uint64_t)m, 4096, 4) == -VIBEOS_ENOMEM &&
+           SYS3(26, (uint64_t)m2, 16384, 4) == 0 && mem_is((uint64_t)blk, 0, 1),
+           "the old range is unmapped and undescribed, the new one described, the neighbour untouched");
+    expect(sys(25, (uint64_t)m2, 4096, 4096, 3 /* MAYMOVE|FIXED */, (uint64_t)blk, 0, 0) == blk &&
+           mem_is((uint64_t)blk, 'A', 1) && kf_peek((uint64_t)m2, &y, 1) != 0,
+           "MREMAP_FIXED moves it to the address named, over what was there");
+    expect(sys(25, (uint64_t)blk, 4096, 8192, 3, (uint64_t)blk, 0, 0) == -VIBEOS_EINVAL &&
+           sys(25, (uint64_t)blk, 4096, 4096, 2, (uint64_t)m, 0, 0) == -VIBEOS_EINVAL &&
+           sys(25, (uint64_t)blk, 0, 4096, 1, 0, 0, 0) == -VIBEOS_EINVAL &&
+           sys(25, (uint64_t)blk, 4096, 0, 1, 0, 0, 0) == -VIBEOS_EINVAL &&
+           sys(25, (uint64_t)blk, 4096, 4096, 4, 0, 0, 0) == -VIBEOS_EINVAL &&
+           sys(25, (uint64_t)blk + 1u, 4096, 4096, 1, 0, 0, 0) == -VIBEOS_EINVAL,
+           "mremap refuses a target over its source, FIXED alone, a zero length, an unknown flag, an unaligned address");
+    (void)SYS3(10, (uint64_t)m2 + 8192u, 4096, 1);
+    expect(sys(25, (uint64_t)m2 + 4096u, 8192, 4096, 0, 0, 0, 0) == -VIBEOS_EFAULT &&
+           sys(25, 0x30000000ull, 4096, 8192, 1, 0, 0, 0) == -VIBEOS_EFAULT,
+           "a range across two mappings, or in none, is EFAULT");
+    s = MMAP(0, 4096, 3, MAP_SH_ANON, -1, 0);
+    (void)kf_poke((uint64_t)s, &x, 1);
+    pid = SYS0(57);
+    child = slot_of_pid(pid);
+    kf_set_current(parent);
+    expect(sys(25, (uint64_t)s, 4096, 8192, 1, 0, 0, 0) == -VIBEOS_ENOMEM, "a shared mapping does not grow");
+    m = sys(25, (uint64_t)s, 4096, 4096, 3, (uint64_t)m2, 0, 0);
+    kf_set_current(child);
+    y = 'c';
+    (void)kf_poke((uint64_t)s, &y, 1);
+    kf_set_current(parent);
+    expect(m == m2 && mem_is((uint64_t)m, 'c', 1), "moved, a shared page is still the one the child has");
+
+    /* memfd_create */
+    parent = fresh(203);
+    buf = kf_ualloc(64);
+    name = kf_ualloc(300);
+    memset(kf_uptr(name), 'n', 250);
+    fd = SYS2(319, ustr("results"), 1 /* MFD_CLOEXEC */);
+    expect(fd >= 0 && SYS3(72, (uint64_t)fd, 1 /* F_GETFD */, 0) == 1 && SYS2(77, (uint64_t)fd, 4096) == 0,
+           "memfd_create gives a descriptor, close-on-exec when asked, to a file that can be sized");
+    snprintf(path, sizeof(path), "/tmp/.memfd-%u", 1u);
+    m = MMAP(0, 4096, 3, MAP_SH, fd, 0);
+    expect(m > 0 && kf_poke((uint64_t)m + 5u, &x, 1) == 0 && SYS4(17, (uint64_t)fd, buf, 1, 5) == 1 &&
+           ((uint8_t *)kf_uptr(buf))[0] == 'A', "mapped shared, it is memory with a file's interface");
+    r = tmp_stat(path, 1, &st);
+    expect(r == 0 && SYS1(3, (uint64_t)fd) == 0 && tmp_stat(path, 1, &st) == -VIBEOS_ENOENT &&
+           mem_is((uint64_t)m + 5u, 'A', 1), "its name goes with the last descriptor, and the mapping keeps the page");
+    expect(SYS2(319, ustr("x"), 4) == -VIBEOS_EINVAL && SYS2(319, name, 0) == -VIBEOS_EINVAL &&
+           SYS2(319, 0x7000000000ull, 0) == -VIBEOS_EFAULT && SYS2(319, ustr(""), 2 /* ALLOW_SEALING */) >= 0,
+           "memfd_create refuses an unknown flag, a name too long and a name that is nobody's");
+    expect(kf_lock_imbalance() == 0, "the memory calls released every lock they took");
+}
+
 int test_linux_handlers(void) {
     g_fail = 0;
     t_identity();
@@ -2502,6 +2675,7 @@ int test_linux_handlers(void) {
     t_mmap_placement();
     t_mmap_files();
     t_mmap_shared();
+    t_memory_calls();
     t_fork_snapshot_and_groups();
     t_procfs();
     t_sa_restart();
@@ -2605,6 +2779,52 @@ int test_linux_gaps(void) {
         ks_ps(me)->files_users = 2u;   /* another thread shares the table */
         gap(436, SYS3(436, 3, ~0ull, 2 /* CLOSE_RANGE_UNSHARE */) == 0,
             "close_range with CLOSE_RANGE_UNSHARE in a process with threads");
+    }
+
+    /* mremap (25), L3: a shared mapping grows. */
+    fresh(62);
+    {
+        long at = sys(9, 0, 4096, 3, 0x21 /* SHARED|ANONYMOUS */, (uint64_t)-1, 0, 0);
+        r = sys(25, (uint64_t)at, 4096, 8192, 1 /* MAYMOVE */, 0, 0, 0);
+        gap(25, at > 0 && r > 0, "mremap growing a shared mapping");
+    }
+
+    /* madvise (28), L3: MADV_DONTNEED on a private page of a file shows the
+     * file's bytes again. */
+    fresh(63);
+    {
+        long fd = SYS3(2, ustr("/tmp/dn"), 0x42, 0644);
+        uint64_t b = kf_ualloc(8);
+        uint8_t c = 0;
+        long at;
+        memcpy(kf_uptr(b), "file", 4);
+        (void)SYS3(1, (uint64_t)fd, b, 4);
+        at = sys(9, 0, 4096, 3, 2 /* PRIVATE */, (uint64_t)fd, 0, 0);
+        c = 'X';
+        (void)kf_poke((uint64_t)at, &c, 1);
+        (void)SYS3(28, (uint64_t)at, 4096, 4);
+        (void)kf_peek((uint64_t)at, &c, 1);
+        gap(28, at > 0 && c == 'f', "MADV_DONTNEED on a private page of a file brings the file back");
+    }
+
+    /* mlockall (151), L3: MCL_FUTURE locks what is mapped afterwards. */
+    {
+        int me = fresh(64);
+        vibeos_vmspace_t as;
+        uint64_t *e;
+        long at;
+        r = SYS1(151, 3 /* CURRENT|FUTURE */);
+        at = sys(9, 0, 4096, 3, 0x22, (uint64_t)-1, 0, 0);
+        as = ks_vm(me);
+        e = vibeos_vmspace_entry(&as, (uint64_t)at);
+        gap(151, r == 0 && e && (*e & VIBEOS_PTE_LOCKED), "mlockall(MCL_FUTURE) locking a later mapping");
+    }
+
+    /* memfd_create (319), L3: seals. */
+    fresh(65);
+    {
+        long fd = SYS2(319, ustr("s"), 2 /* MFD_ALLOW_SEALING */);
+        gap(319, fd >= 0 && SYS3(72, (uint64_t)fd, 1033 /* F_ADD_SEALS */, 8) == 0, "sealing a memfd");
     }
 
     /* mmap (9), L3: a shared mapping of a file on a filesystem that keeps its

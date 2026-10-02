@@ -1,0 +1,148 @@
+# madvise, mincore, mlock and mremap (docs/abi/ L3 step 4). Host test:
+# t_memory_calls in tests/kernel/linux_abi_tests.c.
+#
+#  1. MADV_DONTNEED leaves the page as it was
+#  2. a shared page is discarded like a private one
+#  3. a locked page is discarded
+#  4. advice that changes what fork does is taken
+#  5. madvise does not look for a hole
+#  6. mincore calls a page in swap resident
+#  7. mincore does not judge its vector (red because the host test then stores
+#     through a pointer that is nobody's and dies there - which is what the
+#     check is for, and is not the same as an expectation failing)
+#  8. mlock locks nothing
+#  9. mlock2 takes any flag
+# 10. mremap grows over what is after the mapping
+# 11. mremap moves without being allowed to
+# 12. mremap leaves the old range described
+# 13. mremap takes a range across two mappings
+# 14. a shared mapping grows with private pages
+#
+# Target source: kernel/abi/linux/mm.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/linux/mm.c scripts/dev/cases/abi-mem4.txt
+
+### MADV_DONTNEED leaves the page as it was
+--- old
+        case LINUX_MADV_DONTNEED: case LINUX_MADV_FREE:
+            discard = 1;
+            break;
++++ new
+        case LINUX_MADV_DONTNEED: case LINUX_MADV_FREE:
+            break;
+
+### a shared page is discarded like a private one
+--- old
+        if (reg->backing != VIBEOS_BACKING_ANON || !vibeos_vmspace_mapped(&v, va)) {
+            continue;
+        }
++++ new
+        if (!vibeos_vmspace_mapped(&v, va)) {
+            continue;
+        }
+
+### a locked page is discarded
+--- old
+        } else if (e && (*e & VIBEOS_PTE_LOCKED)) {
+            r = -VIBEOS_EINVAL;   /* locked in memory: not to be thrown away */
+        }
++++ new
+        }
+
+### advice that changes what fork does is taken
+--- old
+        default:
+            return -VIBEOS_EINVAL;
+    }
+    end = (addr + len + 0xFFFull) & ~0xFFFull;
+    if (end == addr) {
+        return 0;
+    }
++++ new
+        default:
+            break;
+    }
+    end = (addr + len + 0xFFFull) & ~0xFFFull;
+    if (end == addr) {
+        return 0;
+    }
+
+### madvise does not look for a hole
+--- old
+    if (!linux_regions_cover(ps, addr, end)) {
+        r = -VIBEOS_ENOMEM;
+    }
+    for (va = addr; discard && r == 0 && va < end; va += 4096ull) {
+        const vibeos_vma_t *reg = vibeos_vma_find(&ps->vmas, va);
+        const uint64_t *e = vibeos_vmspace_entry(&v, va);
++++ new
+    for (va = addr; discard && r == 0 && va < end; va += 4096ull) {
+        const vibeos_vma_t *reg = vibeos_vma_find(&ps->vmas, va);
+        const uint64_t *e = vibeos_vmspace_entry(&v, va);
+
+### mincore calls a page in swap resident
+--- old
+            out[n] = vibeos_vmspace_resident(&v, va) == 1 ? 1u : 0u;
++++ new
+            out[n] = vibeos_vmspace_resident(&v, va) >= 0 ? 1u : 0u;
+
+### mincore does not judge its vector
+--- old
+    if (pages != 0u && !linux_user_ok(vec_uptr, pages, 1)) {
+        return -VIBEOS_EFAULT;
+    }
++++ new
+
+### mlock locks nothing
+--- old
+        if (vibeos_vmspace_set_locked(&v, va, on) < 0) {
+            return -VIBEOS_EAGAIN;   /* a page in swap that could not be brought back */
+        }
++++ new
+        (void)v;
+
+### mlock2 takes any flag
+--- old
+    if (flags & ~(uint64_t)LINUX_MLOCK_ONFAULT) {
+        return -VIBEOS_EINVAL;
+    }
++++ new
+
+### mremap grows over what is after the mapping
+--- old
+        if (ks_user_fixed_ok(old + old_len, new_len - old_len) &&
+            !linux_region_in(ps, old + old_len, new_len - old_len)) {
++++ new
+        if (ks_user_fixed_ok(old + old_len, new_len - old_len)) {
+
+### mremap moves without being allowed to
+--- old
+        if (!(flags & LINUX_MREMAP_MAYMOVE)) {
+            return -VIBEOS_ENOMEM;
+        }
++++ new
+
+### mremap leaves the old range described
+--- old
+        linux_unmap_range(me, ps, old, old + old_len);
+        (void)vibeos_vma_insert(&ps->vmas, base, new_len, region_prot, kind, 0, 0);
++++ new
+        (void)vibeos_vma_insert(&ps->vmas, base, new_len, region_prot, kind, 0, 0);
+
+### mremap takes a range across two mappings
+--- old
+    if (!reg || old + old_len > reg->base + reg->len) {
+        return -VIBEOS_EFAULT;
+    }
++++ new
+    if (!reg) {
+        return -VIBEOS_EFAULT;
+    }
+
+### a shared mapping grows with private pages
+--- old
+        if (kind != VIBEOS_BACKING_ANON) {
+            return -VIBEOS_ENOMEM;
+        }
+        /* Room after it: grow where it stands. */
++++ new
+        /* Room after it: grow where it stands. */

@@ -83,10 +83,10 @@ that starts with no syscall's (for example `abort01`, `cacheflush01`, `confstr01
 
 | Phase | Syscalls in the phase | with LTP tests | tests |
 | --- | --- | --- | --- |
-| done | 127 | 120 | 560 |
+| done | 132 | 125 | 575 |
 | L1 - files and paths | 8 | 8 | 71 |
 | L2 - processes, credentials, time | 48 | 45 | 181 |
-| L3 - memory | 10 | 10 | 62 |
+| L3 - memory | 5 | 5 | 47 |
 | L4 - event loops | 21 | 16 | 50 |
 | L5 - sockets | 13 | 13 | 36 |
 | L6 - threads and scheduling | 23 | 22 | 61 |
