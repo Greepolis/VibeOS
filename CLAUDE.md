@@ -1064,6 +1064,17 @@ itself finds those. A separate model does.
 `# module: <names>` comment, and the count of uncovered modules may only go
 down. Seven of thirteen had nothing when the rule was written.
 
+**Three analysers read the tree in CI, and each was let in on evidence.**
+CodeQL (patterns across files), clang's static analyzer (paths through one
+function; `scripts/dev/clang-analyze.sh`) and Semgrep (C, the Python, the
+workflows), with OpenSSF Scorecard for the repository itself. clang's found, on
+its first run, a function's failure thrown away and its outputs then used; a
+planted null dereference is reported. GCC's `-fanalyzer` was tried before any
+of them and missed a planted fault, which is why it is not there. What an
+analyser reports and is not a defect is written down with its reason
+(`clang-analyze-known.txt`, `.github/codeql/codeql-config.yml`), never just
+filtered.
+
 **Two more checks watch the checks**, for the two failure shapes that are
 mechanical rather than a matter of judgement. `check-assertions-covered.py`
 matches every name the boot gate can put in `reason=` against the sabotage

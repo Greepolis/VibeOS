@@ -1,0 +1,98 @@
+name: Static Analysis
+
+# Two analysers beside CodeQL, each for what the others do not see.
+#
+# clang's static analyzer is path-sensitive: it follows a value down a branch,
+# so it finds a pointer checked in one arm and used in the other, or a variable
+# one path never set. On its first run over this tree it reported six things;
+# one was a function's failure ignored and its outputs then used (tmpfs's
+# symlink rollback), three were dead stores, two were buffers filled through a
+# function pointer it does not follow - which are written down, with the
+# reason, in scripts/dev/clang-analyze-known.txt. A planted null dereference is
+# reported. It was admitted on that evidence, as CodeQL was and as GCC's
+# -fanalyzer was not (see codeql.yml).
+#
+# Semgrep matches patterns, in C and also in what CodeQL is not pointed at
+# here: the Python the build and the gates are written in, and these workflow
+# files themselves.
+#
+# Neither blocks a merge. They run beside the required matrix, and what they
+# find arrives in code scanning.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  clang-analyze:
+    name: clang static analyzer
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      security-events: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install clang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang
+
+      - name: Analyze
+        id: analyze
+        # The script's exit code is the verdict; the upload below runs either
+        # way, so a finding is in code scanning and not only in this log.
+        run: bash scripts/dev/clang-analyze.sh --sarif clang-sarif
+
+      - name: Merge The Reports
+        # One run for code scanning: clang writes a file per source.
+        if: always()
+        run: python3 scripts/dev/sarif-merge.py clang-sarif clang-analyzer.sarif
+
+      - name: Upload To Code Scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: clang-analyzer.sarif
+          category: clang-analyzer
+
+  semgrep:
+    name: Semgrep
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      security-events: write
+      contents: read
+    container:
+      image: semgrep/semgrep
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Scan
+        # Rule packs named, not "auto": auto chooses by what it finds in the
+        # tree and reports the run to Semgrep; these are the three languages
+        # here, and --metrics=off sends nothing. third_party is the audited TLS
+        # library, which is not this project's to lint.
+        run: |
+          semgrep scan \
+            --config p/c --config p/python --config p/github-actions \
+            --exclude third_party --exclude 'build*' \
+            --metrics=off --sarif --output semgrep.sarif
+
+      - name: Upload To Code Scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep

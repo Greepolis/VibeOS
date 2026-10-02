@@ -1,0 +1,52 @@
+name: Scorecard
+
+# OpenSSF Scorecard: the repository and its workflows, not the code. Whether
+# actions are pinned, what the default token may do, whether a workflow can be
+# made to run somebody else's code - the things CodeQL does not read and that
+# decide what a compromised dependency could reach.
+#
+# The results go to this repository's code scanning and nowhere else:
+# publish_results is off, so nothing is sent to the OpenSSF API and no badge is
+# claimed. Turn it on deliberately if the project wants the public score.
+#
+# It will say the actions here are pinned by tag and not by commit. That is
+# true, and it is this repository's convention everywhere; whether to change
+# it is a decision to take once, for every workflow, not a finding to silence.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "30 4 * * 1"
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Scorecard
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Run Scorecard
+        uses: ossf/scorecard-action@v2.4.4
+        with:
+          results_file: scorecard.sarif
+          results_format: sarif
+          publish_results: false
+
+      - name: Upload To Code Scanning
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: scorecard.sarif
+          category: scorecard

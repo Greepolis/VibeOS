@@ -1,0 +1,5 @@
+# Findings of scripts/dev/clang-analyze.sh that were read and are not defects.
+# <file>: <checker>: <why>. One line a finding: two of the same checker in a
+# file need two lines, so a new one is not hidden behind an old one.
+kernel/fs/exfat.c: core.uninitialized.Assign: the cluster buffer is filled by exfat_read_cluster through the block cache's function pointers, which the analyzer does not follow; a failed read returns before the buffer is looked at
+kernel/fs/ntfs.c: core.UndefinedBinaryOperatorResult: the record is filled by ntfs_read_sectors through the block cache, as above; a failed read returns first

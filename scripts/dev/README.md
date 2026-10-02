@@ -50,6 +50,7 @@ are for:
 | `verify-fat-mtools.sh [dir]` | mformat makes a FAT volume, the driver works on it, mdir and mcopy say what is there, `fat-fsck.py` says whether it is consistent. Run by `check.sh`; skips without mtools. |
 | `fat-fsck.py <image>` | An independent consistency check of a FAT volume - lost and cross-linked clusters, chains against sizes, "..", orphaned long names. The boot gate runs it on the volume the guest left behind. `--dirty` overwrites what follows each directory's end marker. |
 | `verify-gui-torture.sh [dir]` | The GUI torture on three seeds, threads included. |
+| `clang-analyze.sh [--sarif dir] [file...]` | clang's static analyzer over the portable kernel (two and a half minutes for all of it): paths through a function, where CodeQL reports patterns. Findings read and judged not defects are in `clang-analyze-known.txt`, by file and checker. `sarif-merge.py` makes its per-file reports one for code scanning. |
 | `verify-host-sanitized.sh` | The CI "clang Debug" job as CI runs it - ASan and UBSan, its own build directory. For what only a sanitizer sees. |
 
 `sabotage.py` refuses to start while a `<source>.sabotage-backup` exists: that
