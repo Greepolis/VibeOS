@@ -1,0 +1,81 @@
+# The credential rules (docs/abi/ L2 step 1): kernel/sched/cred.c. Host test:
+# t_credentials in tests/kernel/linux_abi_tests.c, through the Linux handlers.
+#
+#  1. the owner's bits do not decide for the owner (other's are used)
+#  2. a supplementary group does not count
+#  3. root's setuid leaves the saved id (a way back)
+#  4. an unprivileged setuid takes any id
+#  5. setreuid always leaves the saved id alone
+#  6. setresuid lets an unprivileged process take an id it does not hold
+#  7. setfsuid takes any id
+#  8. setgroups is anybody's
+#
+# Target source: kernel/sched/cred.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/sched/cred.c scripts/dev/cases/sched-cred.txt
+
+### the owner's bits do not decide for the owner
+--- old
+    if (who == uid) {
+        bits = (mode >> 6) & 7u;
+    } else if (vibeos_cred_in_group(c, gid, real)) {
++++ new
+    if (vibeos_cred_in_group(c, gid, real)) {
+
+### a supplementary group does not count
+--- old
+    for (i = 0; i < c->ngroups && i < VIBEOS_NGROUPS; i++) {
+        if (c->groups[i] == gid) {
+            return 1;
+        }
+    }
+    return 0;
++++ new
+    (void)i;
+    return 0;
+
+### root's setuid leaves the saved id
+--- old
+        c->uid = c->euid = c->suid = c->fsuid = uid;   /* for good: no way back */
++++ new
+        c->uid = c->euid = c->fsuid = uid;
+
+### an unprivileged setuid takes any id
+--- old
+    if (uid != c->uid && uid != c->suid) {
+        return -VIBEOS_EPERM;
+    }
+    c->euid = c->fsuid = uid;
++++ new
+    c->euid = c->fsuid = uid;
+
+### setreuid always leaves the saved id alone
+--- old
+    if (ruid != VIBEOS_ID_KEEP || (euid != VIBEOS_ID_KEEP && euid != old_r)) {
+        c->suid = c->euid;
+    }
+    c->fsuid = c->euid;
++++ new
+    c->fsuid = c->euid;
+
+### setresuid lets an unprivileged process take an id it does not hold
+--- old
+    if (!privileged(c) && (!held(ruid, c->uid, c->euid, c->suid) ||
++++ new
+    if (0 && (!held(ruid, c->uid, c->euid, c->suid) ||
+
+### setfsuid takes any id
+--- old
+    if (privileged(c) || uid == c->uid || uid == c->euid || uid == c->suid || uid == c->fsuid) {
+        c->fsuid = uid;
+    }
++++ new
+    c->fsuid = uid;
+
+### setgroups is anybody's
+--- old
+    if (!privileged(c)) {
+        return -VIBEOS_EPERM;
+    }
+    if (n > VIBEOS_NGROUPS) {
++++ new
+    if (n > VIBEOS_NGROUPS) {

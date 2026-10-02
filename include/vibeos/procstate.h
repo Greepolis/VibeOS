@@ -20,6 +20,7 @@
 #include "vibeos/fdtable.h"
 #include "vibeos/vma.h"
 #include "vibeos/path.h"
+#include "vibeos/cred.h"
 
 /* Signals 1..64; index 0 is unused so the numbering matches Linux. */
 #define VIBEOS_NSIG 65
@@ -120,6 +121,13 @@ typedef struct vibeos_procstate {
     /* The permission bits a created file does not get (L1). Under files_lock,
      * inherited by fork and exec like the two paths above. */
     uint32_t umask;
+    /* Who the process is (docs/abi/ L2). All zero - root - for a process nobody
+     * changed, which is what a state cleared before use starts as. The
+     * process's, under files_lock like the paths above; fork copies it and exec
+     * keeps it. Linux keeps credentials per thread and its C libraries change
+     * every thread's together; here there is one copy, which is what that
+     * amounts to. */
+    vibeos_cred_t cred;
 } vibeos_procstate_t;
 
 #endif

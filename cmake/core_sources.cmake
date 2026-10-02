@@ -29,6 +29,7 @@ set(VIBEOS_KERNEL_CORE_SOURCES
     kernel/sched/stats.c
     kernel/sched/task.c
     kernel/sched/task_ident.c
+    kernel/sched/cred.c
     kernel/sched/runq.c
     kernel/sched/lifetime.c
     kernel/sched/view.c
