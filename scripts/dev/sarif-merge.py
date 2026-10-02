@@ -41,8 +41,21 @@ def clean(node):
             clean(v)
 
 
+def known_findings():
+    """(file, checker) pairs clang-analyze-known.txt lists, with how many of each."""
+    known = {}
+    path = os.path.join(ROOT, "scripts", "dev", "clang-analyze-known.txt")
+    if os.path.isfile(path):
+        for line in open(path, encoding="utf-8"):
+            parts = line.strip().split(": ", 2)
+            if len(parts) == 3 and not line.startswith("#"):
+                known[(parts[0], parts[1])] = known.get((parts[0], parts[1]), 0) + 1
+    return known
+
+
 def main():
     src, out = sys.argv[1], sys.argv[2]
+    known = known_findings()
     merged = None
     rules = {}
     results = []
@@ -59,6 +72,16 @@ def main():
                 rules.setdefault(r.get("id"), r)
             for r in run.get("results", []):
                 clean(r)
+                # A finding read and judged not a defect is left out here as it
+                # is left out of the script's verdict: one that is written down
+                # with its reason should not also sit in code scanning as open.
+                try:
+                    key = (r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"], r.get("ruleId"))
+                except (KeyError, IndexError):
+                    key = None
+                if key in known and known[key] > 0:
+                    known[key] -= 1
+                    continue
                 results.append(r)
     if merged is None:
         merged = {"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "clang"}}, "results": []}]}

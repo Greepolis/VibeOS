@@ -27,6 +27,7 @@ so being killed by a timeout is not a hypothetical.
 """
 
 import os
+import shlex
 import subprocess
 import sys
 
@@ -84,7 +85,10 @@ def build_and_test(build_dir, verify=None):
         return 'nobuild', ''
     try:
         if verify is not None:
-            r = subprocess.run(verify, shell=True, capture_output=True,
+            # Split as a shell would split it, and run without one: the
+            # command is "bash scripts/dev/verify-host.sh <dir>" or the like,
+            # and nothing in it needs a shell to interpret.
+            r = subprocess.run(shlex.split(verify), capture_output=True,
                                text=True, timeout=300)
             if r.returncode == 0:
                 return 'pass', r.stdout

@@ -955,7 +955,9 @@ def main():
         # previous run's writes are not this run's starting point.
         esp_img = os.path.abspath(f"qemu-cli-esp{suffix}.img")
         stage_corpus(efi_root, build_dir)
-        subprocess.run([sys.executable,
+        # As for QEMU below: the paths are the build directory this script was
+        # told to boot, and the call is a list, with no shell.
+        subprocess.run([sys.executable,  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
                         os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                      "make_esp_image.py"),
                         efi_root, esp_img, "96"],
@@ -1060,7 +1062,11 @@ def main():
             trace = os.environ.get("VIBEOS_QEMU_TRACE", "")
             if trace:
                 cmd += ["-d", "int,guest_errors", "-D", os.path.abspath(trace)]
-            qemu = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=err_fp)
+            # The command is built from this script's own arguments and
+            # environment - which build to boot, which disk controller. Whoever
+            # runs the gate chooses those; there is no other party whose input
+            # reaches it, and it is passed as a list, with no shell.
+            qemu = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=err_fp)  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
 
             serial = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             connect_deadline = time.monotonic() + 10

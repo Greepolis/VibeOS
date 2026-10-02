@@ -82,7 +82,9 @@ def main():
             "-net", "none", "-no-reboot",
         ]
         err_fp = open(os.path.join(tmp, "qemu-err.log"), "wb")
-        qemu = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=err_fp)
+        # Built from this script's own arguments (which image to boot), passed
+        # as a list with no shell: the caller is the only source of its input.
+        qemu = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=err_fp)  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
         try:
             serial = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             deadline = time.monotonic() + 10
