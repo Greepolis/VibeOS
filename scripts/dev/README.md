@@ -10,7 +10,7 @@ live in `scripts/` and in `.github/workflows/`; these are for the loop between
 | `repeat-boot.sh [dir] [n]` | Boot `n` times and report each verdict. |
 | `trace-linux-binary.sh <binary> [args]` | Trace a real Linux program with `strace` and list which of its syscalls VibeOS serves, serves in part, or lacks - with the phase that owns each. |
 | `corpus-expect.sh [dir] [--check]` | Run `tests/corpus/run-l1.sh` under the host's BusyBox and write what Linux answered to `tests/corpus/l1-expected.txt` - the file the boot gate compares the guest's answers with. `--check` compares instead. Needs SQLite and Lua built (`corpus-build.sh`). |
-| `ltp-run.sh <dir> <test>...` | Stage LTP tests on the boot volume, boot, and report each one's verdict. Every test breaks in LTP's harness until L3 (file-backed `mmap`). |
+| `ltp-run.sh <dir> <test>... \| --list <file>` | Stage LTP tests on the boot volume, thirty-two to a boot, and report each one's verdict; all of them go to `<dir>/ltp-results.txt`. Tests in `tests/corpus/ltp-hangs.txt` are left out and said (`VIBEOS_LTP_HANGS=none` runs them). `ltp-list.py <phase>` writes a phase's list. |
 | `corpus-build.sh [dir] [--no-ltp]`, `corpus-measure.sh [dir] [out]`, `corpus-report.py [--check dir]` | Build the third-party corpus (SQLite, Lua, LTP) from pinned sources, measure every workload in `tests/corpus/`, and write `docs/abi/corpus.md`. |
 | `catch-hang.py [dir] [attempts]` | Boot until it hangs, then ask the QEMU monitor where every core is, with symbols. |
 
@@ -23,7 +23,7 @@ are for:
 | Script | Use |
 | --- | --- |
 | `hunt-boot.sh <dir> <n> <regex> [--stop]` | Boot until a signature appears; keep every log that matches *and* every boot that failed, under `.boot-evidence/hunt/`. The general form of the one-off hunts, which were deleted once it existed. |
-| `boots.sh [dir] [n] [parallel]` | Several boots at once. |
+| `boots.sh [dir] [n] [parallel]` | Several boots at once, each with its own image and logs - about two and a half times as many boots a minute. Everything the gate checks except the TCP echo. |
 | `until-wedge.sh [dir] [n]` | Boot until one wedges and print what it said last. |
 | `bisect-boot.sh <rev> [n] [dir]` | Build another revision, boot it n times, come back. The baseline a criterion has to be checked against. |
 | `soak.sh`, `soak-report.py` | The memory soak, and the one definition of whether it passed. |
@@ -46,6 +46,7 @@ are for:
 | `verify-boot.sh [dir]` | Building and booting; prints the gate's own reason. |
 | `verify-boot-keep.sh [dir]` | The same, keeping each case's serial log as `.boot-evidence/sab-<n>.log` - the log of a case that went red for the wrong reason is the one to read. |
 | `verify-host.sh [dir]` | The host suite and short runs of the memory-manager, GUI and file-lock tortures. |
+| `verify-host-quick.sh [dir]` | The host suite alone, in a third of the time: the verifier for a sabotage case aimed at a test in it. |
 | `verify-fat-mtools.sh [dir]` | mformat makes a FAT volume, the driver works on it, mdir and mcopy say what is there, `fat-fsck.py` says whether it is consistent. Run by `check.sh`; skips without mtools. |
 | `fat-fsck.py <image>` | An independent consistency check of a FAT volume - lost and cross-linked clusters, chains against sizes, "..", orphaned long names. The boot gate runs it on the volume the guest left behind. `--dirty` overwrites what follows each directory's end marker. |
 | `verify-gui-torture.sh [dir]` | The GUI torture on three seeds, threads included. |

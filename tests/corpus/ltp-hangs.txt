@@ -1,0 +1,7 @@
+# LTP tests that hang on VibeOS and are not stopped (no alarm() yet, L2).
+# scripts/dev/ltp-run.sh leaves these out and says so; VIBEOS_LTP_HANGS=none
+# runs them. One name a line. Take a name out when its test stops hanging.
+#
+# flock03: its child waits at an LTP checkpoint that is never signalled; the
+# first boot it ran in gave no verdict for it or the six tests after it.
+flock03

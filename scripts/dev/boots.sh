@@ -17,7 +17,9 @@ cd "$(dirname "$0")/../.."
 
 d="${1:-build-gcc-Release}"
 n="${2:-4}"
-par="${3:-$(( $(nproc) / 2 ))}"
+# Measured on eight host threads (2026-10-02): six boots, three at a time, in
+# four minutes - forty seconds a boot against about a hundred one after another.
+par="${3:-$(( ($(nproc) + 2) / 3 ))}"
 # A healthy boot reaches the shell in about ninety seconds, so this is a little
 # over the worst honest case and not the five minutes the gate allows. It bounds
 # the one failure the per-phase quiet budget cannot catch: a guest that keeps
@@ -26,7 +28,9 @@ par="${3:-$(( $(nproc) / 2 ))}"
 # host cache and is markedly slower than the rest. At 90 it failed reliably in
 # the bootloader phase, and that looked like a bootloader defect for a while.
 # It was this number.
-budget="${4:-180}"
+# 300 since docs/abi/ L3: the boot runs the corpus and five ring-3 self-tests
+# now, and three at once on eight host threads take about two minutes each.
+budget="${4:-300}"
 [ "$par" -lt 1 ] && par=1
 [ "$par" -gt "$n" ] && par="$n"
 
@@ -46,13 +50,15 @@ run_one() {
            # Keep the log of the boot that failed. The next run with this id
            # overwrites it, and the failing one is the only one worth reading.
            cp "qemu-cli-serial${sfx}.log" "wedge-serial-${id}.log" 2>/dev/null
+           cp "qemu-cli-summary${sfx}.txt" "wedge-summary-${id}.txt" 2>/dev/null
            ;;
     esac
 }
 
+results=$(mktemp)
 running=0
 for i in $(seq 1 "$n"); do
-    run_one "$i" &
+    run_one "$i" | tee -a "$results" &
     running=$((running + 1))
     if [ "$running" -ge "$par" ]; then
         wait -n 2>/dev/null || wait
@@ -61,4 +67,6 @@ for i in $(seq 1 "$n"); do
 done
 wait
 
+echo "clean=$(grep -c ': pass$' "$results" 2>/dev/null || echo 0)/$n"
+rm -f "$results"
 echo "--- logs of any failures are in wedge-serial-<id>.log ---"

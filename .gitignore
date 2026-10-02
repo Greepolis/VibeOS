@@ -72,8 +72,11 @@ repeat-fail-*
 soak-low.log
 soak-high.log
 qemu-cli-logdisk.img
+qemu-cli-logdisk-*.img
+wedge-summary-*.txt
 argv-hunt/
 .boot-evidence/
 
 # Rebuilt by the boot gate on every run (make_esp_image.py).
 qemu-cli-esp.img
+qemu-cli-esp-*.img

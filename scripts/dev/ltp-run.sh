@@ -30,6 +30,26 @@ else
     tests="$*"
 fi
 [ -n "$tests" ] || { echo "ltp=FAIL reason=no_tests_named"; exit 2; }
+
+# Tests known to hang here are left out and said: LTP stops a hung test with
+# alarm(), which this kernel does not have yet (L2), so one of them costs the
+# rest of its boot - nine minutes, and every test after it in that boot.
+# VIBEOS_LTP_HANGS=none runs them anyway, which is how to find out whether one
+# still does.
+hangs_file=tests/corpus/ltp-hangs.txt
+hangs=""
+if [ "${VIBEOS_LTP_HANGS:-skip}" != "none" ] && [ -f "$hangs_file" ]; then
+    hangs=$(grep -v '^#' "$hangs_file" | tr -d '\r' | tr '\n' ' ')
+fi
+kept=""
+skipped=0
+for t in $tests; do
+    case " $hangs " in
+        *" $t "*) echo "  $t: left out (tests/corpus/ltp-hangs.txt)"; skipped=$((skipped + 1)) ;;
+        *) kept="$kept $t" ;;
+    esac
+done
+tests="$kept"
 for t in $tests; do
     [ -f "$B/corpus/ltp/$t" ] || { echo "ltp=FAIL reason=not_built:$t (scripts/dev/corpus-build.sh $B)"; exit 2; }
 done
@@ -79,5 +99,5 @@ while [ $# -gt 0 ]; do
         esac
     done
 done
-echo "ltp=ran tests=$n boots=$boot passed=$passed failed=$failed broken=$broken other=$other did_not_run=$missing"
+echo "ltp=ran tests=$n boots=$boot passed=$passed failed=$failed broken=$broken other=$other did_not_run=$missing left_out=$skipped"
 [ "$failed" -eq 0 ] && [ "$broken" -eq 0 ] && [ "$missing" -eq 0 ]

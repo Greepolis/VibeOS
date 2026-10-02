@@ -830,8 +830,13 @@ def stage_corpus(efi_root, build_dir):
             b'done\n'
             b'cd /\n'
             b'echo "C:done: '))
-    with open(os.path.join(dst, "run.sh"), "wb") as f:
+    # Written beside and renamed over: several boots stage the same directory
+    # at once (scripts/dev/boots.sh), and another run building its image must
+    # read the whole file or the previous whole file, never one being written.
+    tmp = os.path.join(dst, "run.sh.%d.tmp" % os.getpid())
+    with open(tmp, "wb") as f:
         f.write(script)
+    os.replace(tmp, os.path.join(dst, "run.sh"))
     staged = []
     for name in CORPUS_PROGRAMS:
         src = os.path.join(build_dir, "corpus", name)
@@ -841,9 +846,11 @@ def stage_corpus(efi_root, build_dir):
                 os.unlink(out)
             continue
         # Stripped: the symbols are a megabyte of a file the guest reads whole.
+        tmp = out + ".%d.tmp" % os.getpid()
         if shutil.which("strip") is None or subprocess.run(
-                ["strip", "-o", out, src], capture_output=True).returncode != 0:
-            shutil.copyfile(src, out)
+                ["strip", "-o", tmp, src], capture_output=True).returncode != 0:
+            shutil.copyfile(src, tmp)
+        os.replace(tmp, out)
         staged.append(name)
     return staged
 
@@ -924,11 +931,14 @@ def main():
     # thing here that has to outlive a run, because "the machine was reset and
     # the log survived" cannot be demonstrated by a medium that is recreated
     # with the machine.
-    log_disk = os.path.abspath("qemu-cli-logdisk.img")
+    # Both media carry the run's id. They did not when parallel runs were
+    # added, because the boot disk was a host directory then; once it became an
+    # image, two boots at once were two machines writing one disk.
+    log_disk = os.path.abspath(f"qemu-cli-logdisk{suffix}.img")
     if ESP == "image":
         # Rebuilt every run: a real medium keeps what the guest wrote, and the
         # previous run's writes are not this run's starting point.
-        esp_img = os.path.abspath("qemu-cli-esp.img")
+        esp_img = os.path.abspath(f"qemu-cli-esp{suffix}.img")
         stage_corpus(efi_root, build_dir)
         subprocess.run([sys.executable,
                         os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -3201,7 +3211,6 @@ def main():
             # the parent - and, for the file, read back through the descriptor.
             if not re.search(r"write\(ring3\): SHARED_OK", text):
                 problems.append("shared_mapping_selftest_failed")
-
             # A write from a kernel address must be refused. The row declares the
             # buffer and the dispatcher's descriptor engine refuses it before the
             # handler runs; the program prints this line only if it was refused.
