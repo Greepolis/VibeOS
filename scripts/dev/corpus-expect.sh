@@ -21,7 +21,7 @@ cd "$(dirname "$0")/../.." || exit 1
 
 B="${1:-build-gcc-Release}"
 BB=$(command -v busybox) || { echo "corpus-expect=FAIL reason=no_busybox"; exit 2; }
-for p in sqlite3 lua; do
+for p in sqlite3 lua sqlite3-glibc lua-glibc; do
     [ -x "$B/corpus/$p" ] || { echo "corpus-expect=FAIL reason=no_$p (run scripts/dev/corpus-build.sh $B --no-ltp)"; exit 2; }
 done
 

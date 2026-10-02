@@ -16,6 +16,13 @@ if ! cmake --build "$BUILD" -j8 > /tmp/verify-boot-build.log 2>&1; then
     exit 1
 fi
 
-python3 scripts/qemu-cli-smoke-linux.py "$BUILD" 150 > /dev/null 2>&1
+# 300, the gate's own budget. A boot alone on the machine takes about ninety
+# seconds (five to the kernel, fifty in the services and self-tests, twenty in
+# the corpus), and at 150 that left no room for a busy host: with a recursive
+# grep running over the build tree a boot took over three minutes and read as
+# `missing:CLI_READY verdict=guest_still_talking` - a failure that was only
+# this number. A boot that passes stops when it has, so the larger budget
+# costs a failing case only.
+python3 scripts/qemu-cli-smoke-linux.py "$BUILD" 300 > /dev/null 2>&1
 grep -o '^reason=.*' qemu-cli-summary.txt | cut -c1-110
 grep -q cli_and_network_verified qemu-cli-summary.txt

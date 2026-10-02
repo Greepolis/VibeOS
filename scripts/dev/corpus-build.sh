@@ -62,6 +62,15 @@ if f=$(fetch sqlite); then
     else
         echo "corpus-build: sqlite3 FAILED (see $OUT/sqlite.log)"; rc=1
     fi
+    # And against glibc, dynamically linked (docs/abi/ L3 step 6): the host's
+    # compiler and the host's C library, whose loader maps libc.so.6 with
+    # MAP_FIXED over a range it reserved - the program L3 was for.
+    if gcc -O2 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_THREADSAFE=0 \
+            "$d/shell.c" "$d/sqlite3.c" -o "$OUT/sqlite3-glibc" -lm >> "$OUT/sqlite.log" 2>&1; then
+        echo "corpus-build: sqlite3-glibc ok"
+    else
+        echo "corpus-build: sqlite3-glibc FAILED (see $OUT/sqlite.log)"; rc=1
+    fi
 else
     rc=1
 fi
@@ -77,9 +86,31 @@ if f=$(fetch lua); then
     else
         echo "corpus-build: lua FAILED (see $OUT/lua.log)"; rc=1
     fi
+    if make -s -C "$d" clean >> "$OUT/lua.log" 2>&1 &&
+            make -s -C "$d" posix CC=gcc >> "$OUT/lua.log" 2>&1; then
+        cp "$d/src/lua" "$OUT/lua-glibc"
+        echo "corpus-build: lua-glibc ok"
+    else
+        echo "corpus-build: lua-glibc FAILED (see $OUT/lua.log)"; rc=1
+    fi
 else
     rc=1
 fi
+
+# ---- glibc itself: the loader and the libraries the two programs name ----
+# Copied from this host, at the paths the programs ask for them by, into a tree
+# the boot gate lays over the boot volume: <build>/corpus/glibc/lib64/... and
+# .../lib/x86_64-linux-gnu/.... Whatever `ldd` lists, so a host whose glibc
+# splits its libraries differently still stages what its binaries need.
+rm -rf "$OUT/glibc"
+for p in sqlite3-glibc lua-glibc; do
+    [ -x "$OUT/$p" ] || continue
+    for lib in $(ldd "$OUT/$p" | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^\//) print $i }'); do
+        mkdir -p "$OUT/glibc$(dirname "$lib")"
+        cp -L "$lib" "$OUT/glibc$lib"
+    done
+done
+[ -d "$OUT/glibc" ] && echo "corpus-build: glibc $(find "$OUT/glibc" -type f | wc -l) files: $(cd "$OUT/glibc" && find . -type f | sort | tr '\n' ' ')"
 
 # ---- LTP: the syscall tests that build against musl ----
 if [ $NO_LTP -eq 0 ]; then

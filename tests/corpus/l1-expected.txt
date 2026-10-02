@@ -97,4 +97,28 @@ C:lua-script: hi
 C:lua-script: true	true
 C:lua-script: true
 C:lua-script: rc=0
-C:done: 15
+C:glibc-sqlite: 3|one,two,three
+C:glibc-sqlite: ok
+C:glibc-sqlite: 6|two|2.0|ONE
+C:glibc-sqlite: rc=0
+C:glibc-lua: 1000	1000000
+C:glibc-lua: hi
+C:glibc-lua: 3.142    42 x
+C:glibc-lua: true
+C:glibc-lua: rc=0
+C:sqlite-wal-mmap: wal
+C:sqlite-wal-mmap: 1048576
+C:sqlite-wal-mmap: 400|80200|row 99
+C:sqlite-wal-mmap: 1048576
+C:sqlite-wal-mmap: 111
+C:sqlite-wal-mmap: row 199
+C:sqlite-wal-mmap: changed
+C:sqlite-wal-mmap: row 201
+C:sqlite-wal-mmap: 0|0|0
+C:sqlite-wal-mmap: ok
+C:sqlite-wal-mmap: wal
+C:sqlite-wal-mmap: dir
+C:sqlite-wal-mmap: note.txt
+C:sqlite-wal-mmap: w.sqlite
+C:sqlite-wal-mmap: rc=0
+C:done: 18

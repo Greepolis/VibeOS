@@ -789,7 +789,7 @@ EXEC_EXPECTED_REFUSALS = {"not-found"}
 # refused with VIBEOS_SMOKE_CORPUS=require, which is what a job that built
 # them sets. A workload that *ran* is always compared.
 CORPUS_MODE = os.environ.get("VIBEOS_SMOKE_CORPUS", "")
-CORPUS_PROGRAMS = ("sqlite3", "lua")
+CORPUS_PROGRAMS = ("sqlite3", "lua", "sqlite3-glibc", "lua-glibc")
 # LTP's tests, by name, to stage and run after the workloads (scripts/dev/
 # ltp-run.sh sets this). Each is run with its output kept and its exit code
 # printed as "C:ltp: <test> rc=<n>"; nothing here asserts on them - the boot's
@@ -852,6 +852,21 @@ def stage_corpus(efi_root, build_dir):
             shutil.copyfile(src, tmp)
         os.replace(tmp, out)
         staged.append(name)
+    # glibc's loader and libraries, where the dynamically linked programs ask
+    # for them (docs/abi/ L3 step 6): <build>/corpus/glibc is laid over the
+    # volume's root. Copied only when it differs - two megabytes a boot adds up.
+    glibc = os.path.join(build_dir, "corpus", "glibc")
+    for base, _dirs, files in os.walk(glibc):
+        for name in files:
+            src = os.path.join(base, name)
+            out = os.path.join(efi_root, os.path.relpath(src, glibc))
+            if os.path.isfile(out) and os.path.getsize(out) == os.path.getsize(src) \
+                    and os.path.getmtime(out) >= os.path.getmtime(src):
+                continue
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+            tmp = out + ".%d.tmp" % os.getpid()
+            shutil.copyfile(src, tmp)
+            os.replace(tmp, out)
     return staged
 
 

@@ -1,0 +1,33 @@
+# The programs of docs/abi/ L3 step 6, at boot: SQLite and Lua against glibc,
+# dynamically linked, and SQLite in write-ahead-log mode with memory-mapped I/O.
+# The gate compares what they print with what Linux printed
+# (tests/corpus/l1-expected.txt).
+#
+#  1. mmap ignores MAP_FIXED: glibc's loader lays a library's segments over the
+#     range it reserved, and with them anywhere else nothing it loads runs.
+#     Expect corpus_answers_differ naming glibc-sqlite and glibc-lua (and the
+#     boot's own dynamic musl test).
+#  2. a shared mapping of a file is made private: the WAL's index is a file
+#     every connection maps shared. Expect corpus_answers_differ naming
+#     sqlite-wal-mmap, and shared_mapping_selftest_failed.
+#
+# Target source: kernel/abi/linux/mm.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/mm.c scripts/dev/cases/abi-corpus-l3-boot.txt
+
+### mmap ignores MAP_FIXED
+--- old
+        } else {
+            linux_unmap_range(me, ps, addr, addr + bytes);
+        }
+        base = addr;
++++ new
+        } else {
+            linux_unmap_range(me, ps, addr, addr + bytes);
+        }
+        base = linux_mmap_place(ps, pages);
+
+### a shared mapping of a file is made private
+--- old
+    const int shared = (flags & LINUX_MAP_TYPE) != LINUX_MAP_PRIVATE;
++++ new
+    const int shared = (flags & LINUX_MAP_TYPE) != LINUX_MAP_PRIVATE && !f;

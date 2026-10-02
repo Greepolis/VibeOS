@@ -170,6 +170,35 @@ w_lua_script() {
     "$C/lua" -e 'local t = {} for i = 1, 1000 do t[i] = i * i end print(#t) local f = io.open("x.txt", "w") f:write("hi") f:close() print(io.open("x.txt"):read("a")) print(os.time() > 0, os.clock() >= 0) os.remove("x.txt") print(os.getenv("HOME") ~= nil)'
 }
 
+# ---- docs/abi/ L3 step 6: the programs memory was for --------------------------------
+#
+# The same two programs built against glibc and linked dynamically: the loader
+# is glibc's own, which reserves a range and lays the library's segments over
+# it with MAP_FIXED. And SQLite in write-ahead-log mode with memory-mapped I/O:
+# the WAL's index is a file every connection maps shared - without a shared
+# mapping of a file the journal mode cannot be entered at all - and the
+# database itself is read through a mapping when mmap_size says so.
+
+w_glibc_sqlite() {
+    [ -x "$C/sqlite3-glibc" ] || { echo absent; return 0; }
+    "$C/sqlite3-glibc" g.sqlite 'create table t(a integer primary key, b text); insert into t(b) values ("one"), ("two"), ("three"); create index tb on t(b); select count(*), group_concat(b) from t; vacuum; pragma integrity_check;'
+    "$C/sqlite3-glibc" g.sqlite 'select sum(a), max(b), round(avg(a), 2), upper(min(b)) from t;'
+}
+
+w_glibc_lua() {
+    [ -x "$C/lua-glibc" ] || { echo absent; return 0; }
+    "$C/lua-glibc" -e 'local t = {} for i = 1, 1000 do t[i] = i * i end print(#t, t[1000]) local f = io.open("y.txt", "w") f:write("hi") f:close() print(io.open("y.txt"):read("a")) print(string.format("%.3f %5d %s", math.pi, 42, "x")) print(os.time() > 0) os.remove("y.txt")'
+}
+
+w_sqlite_wal_mmap() {
+    [ -x "$C/sqlite3" ] || { echo absent; return 0; }
+    "$C/sqlite3" w.sqlite 'pragma journal_mode=wal; pragma mmap_size=1048576; create table t(a integer primary key, b text); with recursive n(i) as (select 1 union all select i + 1 from n where i < 400) insert into t(b) select "row " || i from n; select count(*), sum(a), max(b) from t;'
+    # A second connection reads through the log and the mapping, and puts the
+    # log back into the database.
+    "$C/sqlite3" w.sqlite 'pragma mmap_size=1048576; select count(*) from t where b like "row 3%"; update t set b = "changed" where a = 200; select b from t where a between 199 and 201; pragma wal_checkpoint(truncate); pragma integrity_check; pragma journal_mode;'
+    ls
+}
+
 run bb-sh-script w_sh_script
 run bb-ls w_ls
 run bb-cp-mv-rm w_cp_mv_rm
@@ -185,8 +214,11 @@ run bb-mv w_mv_across
 run sqlite-memory w_sqlite_memory
 run sqlite-file w_sqlite_file
 run lua-script w_lua_script
+run glibc-sqlite w_glibc_sqlite
+run glibc-lua w_glibc_lua
+run sqlite-wal-mmap w_sqlite_wal_mmap
 # Leave nothing behind: what stays in /tmp is memory the machine does not get
 # back, and the boot gate counts it.
 cd /
 rm -rf "$W"
-echo "C:done: 15"
+echo "C:done: 18"
