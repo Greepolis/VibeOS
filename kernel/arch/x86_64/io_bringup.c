@@ -38,6 +38,8 @@
 #include "vibeos/swaparea.h"
 #include "vibeos/swapmap.h"
 #include "vibeos/tmpfs.h"
+#include "vibeos/procfs.h"
+#include "vibeos/swapmap.h"
 #include "vibeos/vfs.h"
 
 #include "arch_hw_internal.h"
@@ -1006,6 +1008,47 @@ static void hw_tmpfs_bringup(void) {
     vibeos_x86_64_serial_unlock();
 }
 
+/* /proc (docs/abi/ L3 step 3): what a program reads before it does anything
+ * else. The numbers are the frame layer's and the swap map's, in kibibytes;
+ * "available" is what is free, because what reclaim could add to it is not
+ * something this kernel can count without doing it. */
+static vibeos_fsmount_t g_procfs_mnt;
+static vibeos_procfs_t g_procfs;
+
+static void hw_procfs_mem(vibeos_procfs_mem_t *out) {
+    uint32_t slots = vibeos_swap_slots(), s, used = 0;
+
+    out->total_kb = vibeos_frame_total() * 4ull;
+    out->free_kb = vibeos_frame_free_count() * 4ull;
+    out->available_kb = out->free_kb;
+    out->cached_kb = 0;
+    for (s = 0; s < slots; s++) {
+        used += vibeos_swap_is_allocated(s) ? 1u : 0u;
+    }
+    out->swap_total_kb = (uint64_t)slots * 4ull;
+    out->swap_free_kb = (uint64_t)(slots - used) * 4ull;
+}
+
+static void hw_procfs_bringup(void) {
+    const char *verdict = "OK";
+
+    g_procfs.mem = hw_procfs_mem;
+    /* Linux's own limit on a 64-bit machine. Pids here come off a counter that
+     * does not wrap, so this is a number no boot has come near rather than one
+     * the allocator enforces. */
+    g_procfs.pid_max = 4194304u;
+    if (vibeos_fs_mount(&g_procfs_mnt, vibeos_procfs_ops(), &g_procfs, "proc") != 0) {
+        verdict = "FAILED: mount";
+    } else if (vibeos_fs_attach("/proc", &g_procfs_mnt) != 0) {
+        verdict = "FAILED: attach";
+    }
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts("[IO] PROCFS at=/proc result=");
+    vibeos_x86_64_serial_puts(verdict);
+    vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
+}
+
 void hw_volumes_bringup(void) {
     vibeos_blockcache_t *bc = vibeos_fat_cache();
     uint64_t sectors = 0;
@@ -1087,6 +1130,7 @@ void hw_volumes_bringup(void) {
 
     /* After the volumes, so the first of them is still the root. */
     hw_tmpfs_bringup();
+    hw_procfs_bringup();
 
     {
         uint32_t k;

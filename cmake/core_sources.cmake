@@ -47,6 +47,7 @@ set(VIBEOS_KERNEL_CORE_SOURCES
     kernel/fs/file.c
     kernel/fs/path.c
     kernel/fs/tmpfs.c
+    kernel/fs/procfs.c
     kernel/fs/filelock.c
     kernel/ipc/pipe.c
     kernel/fs/partition.c

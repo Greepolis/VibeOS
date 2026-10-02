@@ -197,6 +197,30 @@ if(EXISTS "${DYN_ELF}")
     endif()
 endif()
 
+# /etc/passwd and /etc/group (docs/abi/ L3 step 3). A C library answers
+# getpwnam and getgrnam out of these two files and nothing else; without them
+# every program that asks who "nobody" is - which is every LTP test that drops
+# privileges - stops before it starts. Real files on the boot volume: there is
+# no account database behind them, and the kernel does not read them. The
+# names are the ones a small Linux system has, with Linux's customary numbers.
+file(MAKE_DIRECTORY "${EFI_ROOT_DIR}/etc")
+file(WRITE "${EFI_ROOT_DIR}/etc/passwd"
+"root:x:0:0:root:/:/bin/sh
+daemon:x:1:1:daemon:/:/bin/false
+bin:x:2:2:bin:/:/bin/false
+sys:x:3:3:sys:/:/bin/false
+nobody:x:65534:65534:nobody:/:/bin/false
+")
+file(WRITE "${EFI_ROOT_DIR}/etc/group"
+"root:x:0:
+daemon:x:1:
+bin:x:2:
+sys:x:3:
+users:x:100:
+nogroup:x:65533:
+nobody:x:65534:
+")
+
 # Threads, through the library's own pthread implementation: one created and
 # joined, then four at once contending for a mutex.
 set(THR_ELF "${CMAKE_BINARY_DIR}/musl_threads")

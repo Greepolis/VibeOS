@@ -85,7 +85,7 @@ BASELINE = {
     # Modules exempted by reason (EXEMPT below). It may only go down: an
     # exemption is a claim that the module has no failure mode a counter could
     # see, and every one is a place a defect could hide without a detector.
-    "mustbezero_exempt": 24,   # 23 -> 24: fs/path (docs/abi/ A4), pure functions whose every refusal is an errno to the caller. Was 24 before that: fs/vfs counts mount_unlocked (2026-09-28). Was 21; +1 sched/task_ident, +1 fs/fdtable (C5): pure functions over a caller-owned struct, decided not reflexed; +1 diag/crash (C6), see its entry
+    "mustbezero_exempt": 25,   # 24 -> 25: fs/procfs (docs/abi/ L3 step 3), generated read-only text and no state. Before:   # 23 -> 24: fs/path (docs/abi/ A4), pure functions whose every refusal is an errno to the caller. Was 24 before that: fs/vfs counts mount_unlocked (2026-09-28). Was 21; +1 sched/task_ident, +1 fs/fdtable (C5): pure functions over a caller-owned struct, decided not reflexed; +1 diag/crash (C6), see its entry
 }
 
 # A module counts as having a must-be-zero when one of these holds. Three routes,
@@ -134,6 +134,7 @@ EXEMPT = {
     "proc/process": "state transitions are validated by the task-state table, whose illegal_transition is gated",
     "sched/forkguard": "refusing a fork is the guard's purpose",
     "fs/path": "pure functions over strings and the mount table; every refusal is ENOENT, ENOTDIR or ENAMETOOLONG returned to the caller, and the rules are proved by path_tests.c and fs-path.txt",
+    "fs/procfs": "no state: every figure is asked of the mount's owner when the file is read, and every refusal is ENOENT, ENOTDIR or EISDIR returned to the caller; the text it prints is checked by the handlers' host test",
     "fs/fdtable": "pure functions over a table the caller owns; an exhausted table is -1 and a limit, not a defect - the layout rules are proved by the host test and fs-fdtable.txt",
     "sched/task_ident": "pure functions over a struct the caller owns; no state and no refusal - the reset is proved byte-for-byte by the host test",
     "sched/runq": "a round-robin pick proven against a model by the scheduler torture harness; no state to be wrong",
