@@ -46,6 +46,7 @@ build-*/
 artifacts/*.log
 artifacts/*.json
 artifacts/*.txt
+artifacts/*.efi
 qemu-*.log
 qemu-*-summary.txt
 qemu-ovmf-vars*.fd
