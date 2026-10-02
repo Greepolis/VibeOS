@@ -1,0 +1,15 @@
+# The memory calls of docs/abi/ L3 step 4, at boot: the ring-3 self-test
+# (check_memory_calls in user/prog/hello.c) on the machine's own page tables.
+#
+#  1. a page moved by mremap is not taken out of where it was: the old address
+#     still reaches it and the move reports a failure it did not have. Expect
+#     memory_calls_selftest_failed.
+#
+# Target source: kernel/mm/vmspace.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/mm/vmspace.c scripts/dev/cases/abi-mem4-boot.txt
+
+### a moved page is put nowhere
+--- old
+    if (!__atomic_compare_exchange_n(dst, &zero, e, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
++++ new
+    if (1) {

@@ -171,6 +171,16 @@ int vibeos_vmspace_mapped(vibeos_vmspace_t *as, uint64_t va) {
     return e && (*e & (PTE_PRESENT | VIBEOS_PTE_SWAPPED)) != 0u;
 }
 
+int vibeos_vmspace_resident(vibeos_vmspace_t *as, uint64_t va) {
+    uint64_t *e = vibeos_vmspace_entry(as, va);
+    uint64_t v = e ? __atomic_load_n(e, __ATOMIC_ACQUIRE) : 0u;
+
+    if (v & PTE_PRESENT) {
+        return 1;
+    }
+    return (v & VIBEOS_PTE_SWAPPED) ? 0 : -1;
+}
+
 /* ---- the low window ------------------------------------------------------
  *
  * Below the identity limit the kernel reaches memory by its physical address,
@@ -1218,7 +1228,7 @@ int vibeos_vmspace_fault(vibeos_vmspace_t *as, uint64_t va, int write) {
     if (vibeos_frame_owners(phys) <= 1u) {
         expected = entry;
         desired = phys | PTE_PRESENT | PTE_WRITE | PTE_USER | VIBEOS_PTE_OWNED |
-                  (entry & PTE_NX);   /* the copy keeps the original's execute permission */
+                  (entry & (PTE_NX | VIBEOS_PTE_LOCKED));   /* execute permission and mlock stay */
         if (g_race_hook) {
             g_race_hook(phys);
         }
@@ -1296,7 +1306,7 @@ copy:
      * was never ours to release. */
     expected = entry;
     desired = (fresh & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITE | PTE_USER |
-              VIBEOS_PTE_OWNED | (entry & PTE_NX);
+              VIBEOS_PTE_OWNED | (entry & (PTE_NX | VIBEOS_PTE_LOCKED));
     if (!__atomic_compare_exchange_n(pte, &expected, desired, 0,
                                      __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
         (void)vibeos_frame_put(fresh);
@@ -1340,6 +1350,109 @@ copy:
 
 #define PTE_SWAPPED VIBEOS_PTE_SWAPPED
 
+/* The entry for `va` once it is in memory: brought back from swap if it was
+ * there. 0 if nothing is mapped, or it could not be brought back (*failed). */
+static uint64_t *resident_entry(vibeos_vmspace_t *as, uint64_t va, int *failed) {
+    uint32_t tries = 0;
+
+    *failed = 0;
+    for (;;) {
+        uint64_t *pte = walk(as, va, 0);
+        uint64_t e = pte ? __atomic_load_n(pte, __ATOMIC_ACQUIRE) : 0u;
+
+        if (e & PTE_PRESENT) {
+            return (e & VIBEOS_PTE_OWNED) ? pte : 0;
+        }
+        if ((e & VIBEOS_PTE_SWAPPED) == 0u) {
+            return 0;
+        }
+        if (!g_be.swap_bring_in || tries++ >= 8u || g_be.swap_bring_in(as, va) != 0) {
+            *failed = 1;
+            return 0;
+        }
+    }
+}
+
+int vibeos_vmspace_set_locked(vibeos_vmspace_t *as, uint64_t va, int locked) {
+    vm_op("mlock");
+    if (!g_ready || !as || !as->root) {
+        return -1;
+    }
+    for (;;) {
+        int failed;
+        uint64_t *pte = locked ? resident_entry(as, va, &failed) : walk(as, va, 0);
+        uint64_t e, want;
+
+        if (!pte) {
+            return (locked && failed) ? -1 : 1;
+        }
+        e = __atomic_load_n(pte, __ATOMIC_ACQUIRE);
+        if ((e & PTE_PRESENT) == 0u) {
+            if (!locked) {
+                return 1;   /* in swap: it carries no lock there to take off */
+            }
+            continue;       /* taken between the look and the mark: bring it back */
+        }
+        want = locked ? (e | VIBEOS_PTE_LOCKED) : (e & ~VIBEOS_PTE_LOCKED);
+        if (want == e ||
+            __atomic_compare_exchange_n(pte, &e, want, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+            return 0;
+        }
+    }
+}
+
+int vibeos_vmspace_move(vibeos_vmspace_t *as, uint64_t from, uint64_t to) {
+    uint64_t *src, *dst, e, zero = 0;
+    int failed;
+
+    vm_op("mremap");
+    if (!g_ready || !as || !as->root || (from & 0xFFFull) || (to & 0xFFFull) || from == to) {
+        return -1;
+    }
+    /* The destination's tables first: if they cannot be had, nothing has been
+     * touched. Above the identity window only - a mapping is not moved into
+     * the tables every address space shares. */
+    if (g_be.identity_limit != 0ull && to < g_be.identity_limit) {
+        return -1;
+    }
+    dst = walk(as, to, 1);
+    if (!dst) {
+        return -1;
+    }
+    for (;;) {
+        src = resident_entry(as, from, &failed);
+        if (!src) {
+            return failed ? -1 : 1;
+        }
+        e = __atomic_load_n(src, __ATOMIC_ACQUIRE);
+        if ((e & PTE_PRESENT) == 0u) {
+            continue;
+        }
+        if (__atomic_compare_exchange_n(src, &e, 0ull, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+            break;
+        }
+    }
+    /* A swap-out that had marked it is abandoned by the exchange above; the
+     * write permission its mark stood for goes back in. */
+    if (e & VIBEOS_PTE_SWAPOUT) {
+        e = (e | PTE_WRITE) & ~VIBEOS_PTE_SWAPOUT;
+    }
+    if (!__atomic_compare_exchange_n(dst, &zero, e, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+        /* Something is mapped at the destination: the caller's mistake. Put
+         * the page back where it was. */
+        uint64_t none = 0;
+        (void)__atomic_compare_exchange_n(src, &none, e, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
+        return -1;
+    }
+    (void)vibeos_rmap_add(e & PTE_ADDR_MASK, as->root_phys, to);
+    (void)vibeos_rmap_remove(e & PTE_ADDR_MASK, as->root_phys, from);
+    if (g_be.invlpg) {
+        g_be.invlpg(from);
+        g_be.invlpg(to);
+    }
+    return 0;
+}
+
 int64_t vibeos_vmspace_swap_slot(vibeos_vmspace_t *as, uint64_t va) {
     uint64_t *pte;
     uint64_t e;
@@ -1377,6 +1490,11 @@ int vibeos_vmspace_swap_out(vibeos_vmspace_t *as, uint64_t va, uint32_t slot) {
 
     if (vibeos_frame_test_flag(phys, VIBEOS_FRAME_PINNED)) {
         vibeos_mm_stats()->swap_refused_pinned++;
+        return -1;
+    }
+    /* mlock: the program asked for this page to be here. */
+    if (entry & VIBEOS_PTE_LOCKED) {
+        vibeos_mm_stats()->swap_refused_locked++;
         return -1;
     }
     /* A shared mapping stays resident, even while this is its only holder (L3).

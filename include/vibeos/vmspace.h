@@ -96,6 +96,15 @@
  * frees it. */
 #define VIBEOS_PTE_SHARED (1ull << 53)
 
+/* This page stays in memory: mlock (docs/abi/ L3 step 4).
+ *
+ * Bit 54, beside the shared mark and ignored by the hardware like it. Page-out
+ * refuses an entry that carries it. It is the mapping's, not the frame's: a
+ * fork does not hand it to the child (Linux does not inherit locks either),
+ * while everything that rebuilds the entry in place - the copy a write fault
+ * makes, a change of protection, a move to another address - keeps it. */
+#define VIBEOS_PTE_LOCKED (1ull << 54)
+
 typedef struct vibeos_vmspace {
     uint64_t root_phys;     /* what goes in CR3 */
     uint64_t *root;         /* the same table, through the backend's mapping */
@@ -403,6 +412,29 @@ uint64_t *vibeos_vmspace_entry(vibeos_vmspace_t *as, uint64_t va);
 
 /* Whether `va` is mapped: present, or in swap with its permissions kept. */
 int vibeos_vmspace_mapped(vibeos_vmspace_t *as, uint64_t va);
+
+/* 1 if the page at `va` is in memory, 0 if it is mapped and in swap, -1 if
+ * nothing is mapped there. What mincore reports. */
+int vibeos_vmspace_resident(vibeos_vmspace_t *as, uint64_t va);
+
+/* Lock the page at `va` in memory, or let it go. A page in swap is brought
+ * back first - a locked page is one that is here. 0, 1 when nothing is mapped
+ * there (not an error: a region can have holes), -1 when a page could not be
+ * brought back. */
+int vibeos_vmspace_set_locked(vibeos_vmspace_t *as, uint64_t va, int locked);
+
+/* Move the mapping at `from` to `to`, whole: the same frame, the same access
+ * and marks, the same reference - nothing is copied and no count changes.
+ * `to` must be unmapped. This is mremap.
+ *
+ * The entry is taken out of `from` by compare-exchange before it is put
+ * anywhere, so a fault resolving on another core either lands before the move
+ * and is moved, or finds nothing at `from`. No other core is told: a stale
+ * translation for `from` reaches the frame that `to` now maps, which is the
+ * right frame, and nothing was released for anybody to reuse.
+ *
+ * 0, 1 when nothing was mapped at `from`, -1 on failure with `from` as it was. */
+int vibeos_vmspace_move(vibeos_vmspace_t *as, uint64_t from, uint64_t to);
 
 /* How many entries in this address space carry the ownership bit. Walks. Used
  * by the tests and by the inspection layer, never on a hot path. */

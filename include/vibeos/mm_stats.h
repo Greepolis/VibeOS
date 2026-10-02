@@ -65,6 +65,7 @@ typedef struct vibeos_mm_stats {
      * touch shared pages will never reclaim what a forking workload
      * accumulates, and that should be a number rather than a silence. */
     uint64_t swap_refused_pinned;
+    uint64_t swap_refused_locked;   /* mlock'd pages reclaim asked for and left */
     uint64_t swap_refused_shared;
     uint64_t swap_write_failed;
     uint64_t swap_read_failed;

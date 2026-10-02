@@ -1,0 +1,39 @@
+# A locked page, and a page moved (docs/abi/ L3 step 4). Host test:
+# t_memory_calls in tests/kernel/linux_abi_tests.c, over this layer.
+#
+#  1. a locked page is paged out like any other
+#  2. the copy a write fault makes loses the lock
+#  3. a moved page takes a new reference and leaves the old mapping
+#  4. a moved page is not removed from where it was
+#
+# Target source: kernel/mm/vmspace.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/mm/vmspace.c scripts/dev/cases/mm-lock-move.txt
+
+### a locked page is paged out like any other
+--- old
+    if (entry & VIBEOS_PTE_LOCKED) {
+        vibeos_mm_stats()->swap_refused_locked++;
+        return -1;
+    }
++++ new
+
+### the copy a write fault makes loses the lock
+--- old
+              VIBEOS_PTE_OWNED | (entry & (PTE_NX | VIBEOS_PTE_LOCKED));
++++ new
+              VIBEOS_PTE_OWNED | (entry & PTE_NX);
+
+### a moved page is not removed from where it was
+--- old
+        if (__atomic_compare_exchange_n(src, &e, 0ull, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+            break;
+        }
++++ new
+        break;
+
+### a moved page loses its marks
+--- old
+    if (!__atomic_compare_exchange_n(dst, &zero, e, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
++++ new
+    e &= ~VIBEOS_PTE_LOCKED;
+    if (!__atomic_compare_exchange_n(dst, &zero, e, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
