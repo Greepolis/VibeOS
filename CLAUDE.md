@@ -381,6 +381,32 @@ clang rejects and the kind that returned a truncated pointer from `fdopen` the
 same day. The count that matters is the first one after the edit; a later zero
 is silence, not a pass. Touch the file, or read the first run.
 
+**A call that returns nothing a caller checks can be missing for years.**
+`nanosleep` did not exist. Every `sleep` and `usleep` in every program returned
+at once with ENOSYS, the C library's wrappers hide what they return, and the
+boot was green - until a test put a `usleep` between a fork and a signal and
+needed the time to pass. The gate's "unimplemented syscall" check named it on
+the first boot that called it; it had simply never been called by anything that
+cared. An absent call is found by the first program whose *behaviour* depends
+on it, not by the first that calls it.
+
+**The fake kernel's copy was stricter than the machine's, and hid a hole.**
+`vibeos_uaccess_copy` on the machine is fault-tolerant, not permission-checked:
+ring 0 reads any mapped page, user bit or not. The fake's refused a page not
+mapped for the user, so a handler that copied from a pointer nobody had judged
+(M-082) passed every host test and leaked on the machine. A stand-in that is
+more careful than the thing it stands in for makes the tests above it unable
+to fail. When a sabotage goes NOT RED on the fake, ask whether the fake would
+let the defect happen at all.
+
+**LTP is the oracle now.** `scripts/dev/ltp-run.sh <build> --list
+tests/corpus/ltp-l1.txt` runs a phase's tests thirty-two to a boot and leaves
+`<build>/ltp-results.txt`. A test that hangs is not stopped - LTP's timeout is
+`alarm()`, which is L2's - so read "did not run" as "the test before the first
+of these hung". Most of what does not pass is one of three things, none a
+defect in the call under test: credentials (L2), a loop device, a missing file
+under /proc or /dev.
+
 **`st_dev` was 0 for every filesystem.** `cp` and `mv` compare st_dev and
 st_ino to refuse copying a file onto itself, so a file in /tmp and one on the
 boot volume with equal inode numbers were the same file. Nothing failed,
@@ -1239,8 +1265,8 @@ The corpus (docs/abi/ L1 step 8): fifteen workloads run by
 `/corpus/run.sh` in the guest, compared with `tests/corpus/l1-expected.txt`.
 SQLite and Lua are staged only if `scripts/dev/corpus-build.sh` has been run
 for the build directory; otherwise the verdict carries `corpus_absent=...`.
-LTP tests are run by hand with `scripts/dev/ltp-run.sh` and all break in their
-harness until L3.
+LTP tests are run by hand with `scripts/dev/ltp-run.sh`; since L3 step 3 they
+run, and L1's 382 are listed in `tests/corpus/ltp-l1.txt`.
 
 The GUI is **not** gated - `screenshot.py` is run by hand.
 

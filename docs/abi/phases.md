@@ -1139,6 +1139,79 @@ Six steps, in the order that pays L1's debt first:
   `arch-shared-leaf-boot.txt` against the boot; all red. 24 boots of 24 clean.
 - **LTP**: its harness maps its results page and gets further - every test now stops one step later, at `tst_memutils.c:94: Failed to open FILE '/proc/meminfo'` (eight tests tried). That is step 3's first item, not a mapping's.
 
+**Step 3 (2026-10-02): done - the oracle runs, and what it said.**
+
+`scripts/dev/ltp-run.sh build-gcc-Release --list tests/corpus/ltp-l1.txt` runs
+the 382 LTP tests for the syscalls L1 owned (`scripts/dev/ltp-list.py`; the
+"416" above was counted against an earlier registry), thirty-two to a boot,
+and leaves each verdict in `<build>/ltp-results.txt`. The first run, before
+anything below was fixed: 113 passed. The last: 131 passed, 10 failed, 177 broken, 57 not applicable, 7 did not run.
+
+**What had to exist before a test could start.** None of it is a mapping's:
+
+- **`/proc`**, a filesystem (`kernel/fs/procfs.c`) with what the harness reads:
+  `/proc/meminfo` and `/proc/sys/kernel/pid_max`. Generated on read, no state.
+- **`/etc/passwd` and `/etc/group`** on the boot volume: a C library answers
+  `getpwnam("nobody")` out of them.
+- **`nanosleep` and `clock_nanosleep`** (L2's, taken early). They did not
+  exist: every `sleep` and `usleep` in every program had been returning at
+  once, and nothing checks what they return.
+- **A call a signal cut short is run again** when the handler was installed
+  with `SA_RESTART`, or when no handler ran. Every interrupted wait had been
+  EINTR, so a parent whose child signals it - LTP's harness - saw `waitpid`
+  fail. A handler returns `VIBEOS_RESTART_CALL` where a wait can simply be
+  started again (waiting for a child, a terminal, a pipe, a lock); the
+  dispatcher turns it into EINTR and remembers the call; the delivery decides.
+- **More than thirty-two programs in a boot** (M-081, below).
+
+**What the tests found in L1's own calls, fixed:**
+
+- `F_GETLK` named whichever conflicting lock the table held first; it names
+  the one that starts first (fcntl11, fcntl21).
+- A path's first byte was read without asking whose memory it was (**M-082**,
+  statx03): ring 0 reads a page that is mapped for nobody, so `statx` of a
+  path in a `PROT_NONE` page, or in the kernel, answered ENOENT or EFAULT by
+  the byte it found there.
+- An empty path was looked up from the directory descriptor: ENOTDIR or EBADF
+  where Linux says ENOENT (fchmodat02).
+- `preadv`/`pwritev` with a negative length were EFAULT, not EINVAL; reading a
+  directory at an offset was ESPIPE, not EISDIR (preadv02, pwritev02).
+- `fallocate` with `FALLOC_FL_KEEP_SIZE` did not look at how far it reached:
+  past the largest offset is EFBIG (fallocate02).
+- A process that opened files until refused was refused by the machine (ENFILE
+  at 256) and not by its own limit (EMFILE at 1024): the description pool is
+  2048 (creat05, fcntl12).
+- `socket()` of a family there is none of was EINVAL, which a C library takes
+  for a failure where EAFNOSUPPORT means "no name-service daemon" - so
+  `getgrgid` of an unknown group failed (seven tests).
+
+**What they found that is written down and not fixed:**
+
+- **Credentials are L2's**: `setuid`, `seteuid`, `setgid`, `setegid`,
+  `setreuid` and `getpgid` are missing or refuse, so every test that becomes
+  "nobody" stops in its setup, and the ones that check a permission is
+  *refused* cannot (symlink03). The largest group after the next.
+- **No block device to borrow**: about ninety tests ask LTP for a loop device
+  (`Failed to acquire device`) to make a filesystem on. Not a syscall's fault.
+- **`alarm` and `setitimer` are L2's**, and LTP's own timeout is `alarm()`: a
+  test that hangs is not stopped, and takes the rest of its boot (flock03 and
+  the tests after it in that boot `did not run`).
+- `/dev/null`, `/dev/urandom`, a pty, `/proc/mounts`, `/proc/self/maps`,
+  `/proc/cpuinfo`, `/proc/version` (L2); `socketpair` (L5); `pthread_create`
+  refused under OFD-lock tests (L6).
+- Leases (`F_SETLEASE`), `O_PATH` descriptors answering EBADF to I/O, FIFOs
+  from `mknod`/`mkfifo`, `RENAME_EXCHANGE`: gaps in L1's own rows, the last two
+  already in the registry.
+- xattr tests report TCONF, correctly: no filesystem here keeps them.
+
+- **Sabotage**: `abi-ltp-l1.txt` (6), `abi-restart.txt` (4),
+  `abi-sleep-restart.txt` (4), `fs-procfs.txt` (3), one more in
+  `fs-filelock.txt`; all red. Two went NOT RED first, and the reason was the
+  fake kernel: its `vibeos_uaccess_copy` refused a page not mapped for the
+  user, which the machine's does not - so the test for M-082 could not fail
+  there. The fake's kernel copy now reaches what ring 0 reaches, and the
+  self-test checks the same thing on the machine. `check.sh all` green, the sanitized host tests clean, 20 boots of 20 over two runs.
+
 **Step 5 (2026-10-01), done ahead of its turn.** Taken before step 2 because of
 what step 1 found: the boot gate had become flaky, and the pages mapped at exec
 that nobody touched were what had made it so.
