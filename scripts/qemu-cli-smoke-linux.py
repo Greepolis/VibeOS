@@ -3237,6 +3237,11 @@ def main():
             # to grow keeps its contents, a memfd is shared across a fork.
             if not re.search(r"write\(ring3\): MEM4_OK", text):
                 problems.append("memory_calls_selftest_failed")
+            # Credentials, from ring 3 (L2 step 1): a child that gave up root
+            # is refused root's file and root's directory, owns what it makes,
+            # and cannot take root back.
+            if not re.search(r"write\(ring3\): CRED_OK", text):
+                problems.append("credentials_selftest_failed")
 
             # A write from a kernel address must be refused. The row declares the
             # buffer and the dispatcher's descriptor engine refuses it before the

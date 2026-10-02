@@ -583,6 +583,85 @@ static int check_shared_mappings(void) {
     return m[7] == 'f';
 }
 
+/* Credentials (docs/abi/ L2 step 1), on the machine. Root makes a file only
+ * it may read and a directory only it may search; a child gives its privileges
+ * up for good and has to be refused both, has to be able to make a file of its
+ * own in /tmp and find itself its owner, and must not be able to remove root's
+ * file from /tmp, which is sticky - nor to become root again. */
+static const char cred_ok[] = "CRED_OK: a process that gave up root was refused what root owns\n";
+static const char cred_bad[] = "abi: credentials wrong\n";
+static const char cred_file[] = "/tmp/cred.root";
+static const char cred_dir[] = "/tmp/cred.dir";
+static const char cred_in[] = "/tmp/cred.dir/x";
+static const char cred_mine[] = "/tmp/cred.mine";
+static const char cred_bb[] = "/EFI/BOOT/BUSYBOX.ELF";
+static const char *const cred_argv[] = { "test", "-r", cred_file, 0 };
+
+static int check_credentials(void) {
+    volatile int status = -1;
+    unsigned char st[144];
+    long fd, child;
+
+    fd = user_syscall3(2 /* open */, (long)(unsigned long)cred_file, 0x241 /* CREAT|TRUNC|WRONLY */, 0600);
+    if (fd < 0 || user_syscall3(90 /* chmod */, (long)(unsigned long)cred_file, 0600, 0) != 0) {
+        return 0;
+    }
+    user_syscall3(3 /* close */, fd, 0, 0);
+    if (user_syscall3(83 /* mkdir */, (long)(unsigned long)cred_dir, 0700, 0) != 0 ||
+        user_syscall3(90, (long)(unsigned long)cred_dir, 0700, 0) != 0) {
+        return 0;
+    }
+    /* A file in it that anybody may read: what refuses the child is then the
+     * directory's search bit and nothing else. The first version had the child
+     * create a file there, which the directory's write bit refuses as well, and
+     * a walk that asked nobody for search permission passed the boot. */
+    fd = user_syscall3(2, (long)(unsigned long)cred_in, 0x241, 0644);
+    if (fd < 0 || user_syscall3(90, (long)(unsigned long)cred_in, 0644, 0) != 0) {
+        return 0;
+    }
+    user_syscall3(3, fd, 0, 0);
+    child = user_syscall3(SYS_fork, 0, 0, 0);
+    if (child == 0) {
+        int bad = 0;
+        long mine;
+
+        bad |= user_syscall3(106 /* setgid */, 100, 0, 0) != 0;
+        bad |= user_syscall3(105 /* setuid */, 1000, 0, 0) != 0;
+        bad |= user_syscall3(102 /* getuid */, 0, 0, 0) != 1000 || user_syscall3(107 /* geteuid */, 0, 0, 0) != 1000;
+        bad |= user_syscall3(105, 0, 0, 0) != -1 /* EPERM */;
+        bad |= user_syscall3(2, (long)(unsigned long)cred_file, 0, 0) != -13 /* EACCES */;
+        bad |= user_syscall3(2, (long)(unsigned long)cred_in, 0 /* O_RDONLY */, 0) != -13;
+        bad |= user_syscall3(87 /* unlink */, (long)(unsigned long)cred_file, 0, 0) != -1;
+        mine = user_syscall3(2, (long)(unsigned long)cred_mine, 0x241, 0644);
+        bad |= mine < 0 || user_syscall3(5 /* fstat */, mine, (long)(unsigned long)st, 0) != 0 ||
+               *(unsigned int *)(void *)(st + 28) != 1000u /* st_uid */ ||
+               *(unsigned int *)(void *)(st + 32) != 100u /* st_gid */;
+        bad |= user_syscall3(87, (long)(unsigned long)cred_mine, 0, 0) != 0;
+        /* And it stays who it is across an exec: another program, run by this
+         * one, is refused root's file as this one was. exec built the new
+         * process state without the credentials at first, and the program was
+         * whoever the slot had last belonged to. */
+        {
+            volatile int st2 = -1;
+            long gc = user_syscall3(SYS_fork, 0, 0, 0);
+            if (gc == 0) {
+                user_syscall3(SYS_execve, (long)(unsigned long)cred_bb, (long)(unsigned long)cred_argv, 0);
+                user_syscall3(SYS_exit, 0, 0, 0);   /* no exec: reads as "was let in" */
+            }
+            bad |= gc < 0 || user_syscall3(SYS_wait4, gc, (long)(unsigned long)&st2, 0) != gc ||
+                   ((st2 >> 8) & 0xff) != 1 || (st2 & 0x7f) != 0;
+        }
+        user_syscall3(SYS_exit, bad ? 1 : 0, 0, 0);
+    }
+    if (child < 0 || user_syscall3(SYS_wait4, child, (long)(unsigned long)&status, 0) != child) {
+        return 0;
+    }
+    user_syscall3(87, (long)(unsigned long)cred_file, 0, 0);
+    user_syscall3(87, (long)(unsigned long)cred_in, 0, 0);
+    user_syscall3(84 /* rmdir */, (long)(unsigned long)cred_dir, 0, 0);
+    return status == 0 && user_syscall3(102, 0, 0, 0) == 0;
+}
+
 /* The rest of the memory calls (docs/abi/ L3 step 4), on the machine: a page
  * given back reads zeros; a mapping that has to move to grow arrives with its
  * contents; a locked page is reported in memory; and a memfd, mapped shared,
@@ -684,6 +763,11 @@ int vibeos_main(int argc, char **argv, char **envp) {
         user_syscall3(SYS_write, 1, (long)(unsigned long)stack_ok, sizeof(stack_ok) - 1);
     } else {
         user_syscall3(SYS_write, 1, (long)(unsigned long)stack_bad, sizeof(stack_bad) - 1);
+    }
+    if (check_credentials()) {
+        user_syscall3(SYS_write, 1, (long)(unsigned long)cred_ok, sizeof(cred_ok) - 1);
+    } else {
+        user_syscall3(SYS_write, 1, (long)(unsigned long)cred_bad, sizeof(cred_bad) - 1);
     }
     if (check_memory_calls()) {
         user_syscall3(SYS_write, 1, (long)(unsigned long)mem4_ok, sizeof(mem4_ok) - 1);

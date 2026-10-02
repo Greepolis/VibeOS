@@ -72,9 +72,9 @@
     if (a.mnt != b.mnt) {
         return -VIBEOS_EXDEV;
     }
-    return vibeos_fs_link(a.mnt, a.tail, b.tail);
+    if ((r = linux_may_add(&b)) != 0) {
 +++ new
-    return vibeos_fs_link(a.mnt, a.tail, b.tail);
+    if ((r = linux_may_add(&b)) != 0) {
 
 ### linkat follows a symbolic link unless told not to
 --- old
@@ -112,11 +112,10 @@
 
 ### access lets root run a file nobody may run
 --- old
-    if ((mode & LINUX_X_OK) && (w.node.mode & VIBEOS_S_IFMT) == VIBEOS_S_IFREG &&
-        (w.node.mode & 0111u) == 0u) {
-        return -VIBEOS_EACCES;
-    }
+        return vibeos_cred_may(&c, 1, w.node.mode, w.node.uid, w.node.gid, want);
 +++ new
+        (void)want;
+        return 0;
 
 ### access says a read-only filesystem can be written
 --- old
@@ -188,9 +187,9 @@
 
 ### mknod does not apply the umask
 --- old
-    return vibeos_fs_create(w.mnt, w.tail, (uint32_t)mode & 07777u & ~linux_umask(), &node);
+    r = vibeos_fs_create(w.mnt, w.tail, (uint32_t)mode & 07777u & ~linux_umask(), &node);
 +++ new
-    return vibeos_fs_create(w.mnt, w.tail, (uint32_t)mode & 07777u, &node);
+    r = vibeos_fs_create(w.mnt, w.tail, (uint32_t)mode & 07777u, &node);
 
 ### mknod makes an empty file for a FIFO
 --- old

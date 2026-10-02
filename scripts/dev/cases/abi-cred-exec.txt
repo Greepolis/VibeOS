@@ -1,0 +1,12 @@
+# Credentials across exec (docs/abi/ L2 step 1), at boot: the self-test's
+# child, having given up root, runs BusyBox test -r on root s file and it has to
+# be refused. The host tests cannot exec, so this is the boot's to see.
+#
+# Target source: kernel/abi/linux/proc.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/proc.c scripts/dev/cases/abi-cred-exec.txt
+
+### exec does not carry the credentials over
+--- old
+            nps->cred = ops->cred;
++++ new
+            (void)0;

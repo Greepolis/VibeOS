@@ -9,9 +9,9 @@ the registry, not this page; `check.sh` fails while the two differ.
 
 | State | Count | What the kernel answers |
 | --- | --- | --- |
-| done | 132 | through its row |
-| partial | 24 | through its row, with the gap named |
-| missing | 134 | ENOSYS, and the boot gate fails naming the number |
+| done | 143 | through its row |
+| partial | 23 | through its row, with the gap named |
+| missing | 124 | ENOSYS, and the boot gate fails naming the number |
 | deferred | 50 | ENOSYS, and the boot gate fails naming the number |
 | refused | 33 | its errno, counted as refused - expected, never a failure |
 
@@ -20,7 +20,7 @@ Without a row, by phase:
 | Phase | Syscalls |
 | --- | --- |
 | L1 - files and paths | 0 |
-| L2 - processes, credentials, time | 45 |
+| L2 - processes, credentials, time | 35 |
 | L3 - memory | 0 |
 | L4 - event loops | 20 |
 | L5 - sockets | 11 |
@@ -141,25 +141,25 @@ calls, outside the Linux number space, are listed last.
 | 102 | `getuid` | done | - | - | `proc.c` |  |
 | 103 | `syslog` | missing | L8 | ENOSYS |  |  |
 | 104 | `getgid` | done | - | - | `proc.c` |  |
-| 105 | `setuid` | partial | L2 | - | `proc.c` | one user; accepted without a credential model |
-| 106 | `setgid` | partial | L2 | - | `proc.c` | one user; accepted without a credential model |
+| 105 | `setuid` | done | - | - | `proc.c` |  |
+| 106 | `setgid` | done | - | - | `proc.c` |  |
 | 107 | `geteuid` | done | - | - | `proc.c` |  |
 | 108 | `getegid` | done | - | - | `proc.c` |  |
 | 109 | `setpgid` | done | - | - | `proc.c` |  |
 | 110 | `getppid` | done | - | - | `proc.c` |  |
 | 111 | `getpgrp` | done | - | - | `proc.c` |  |
 | 112 | `setsid` | done | - | - | `proc.c` |  |
-| 113 | `setreuid` | missing | L2 | ENOSYS |  | the credential model arrives here |
-| 114 | `setregid` | missing | L2 | ENOSYS |  | the credential model arrives here |
-| 115 | `getgroups` | missing | L2 | ENOSYS |  | the credential model arrives here |
-| 116 | `setgroups` | missing | L2 | ENOSYS |  | the credential model arrives here |
-| 117 | `setresuid` | missing | L2 | ENOSYS |  | the credential model arrives here |
-| 118 | `getresuid` | missing | L2 | ENOSYS |  | the credential model arrives here |
-| 119 | `setresgid` | missing | L2 | ENOSYS |  | the credential model arrives here |
-| 120 | `getresgid` | missing | L2 | ENOSYS |  | the credential model arrives here |
+| 113 | `setreuid` | done | - | - | `proc.c` |  |
+| 114 | `setregid` | done | - | - | `proc.c` |  |
+| 115 | `getgroups` | done | - | - | `proc.c` |  |
+| 116 | `setgroups` | partial | L2 | - | `proc.c` | thirty-two supplementary groups, where Linux keeps 65536: more is EINVAL |
+| 117 | `setresuid` | done | - | - | `proc.c` |  |
+| 118 | `getresuid` | done | - | - | `proc.c` |  |
+| 119 | `setresgid` | done | - | - | `proc.c` |  |
+| 120 | `getresgid` | done | - | - | `proc.c` |  |
 | 121 | `getpgid` | missing | L2 | ENOSYS |  |  |
-| 122 | `setfsuid` | missing | L2 | ENOSYS |  | the credential model arrives here |
-| 123 | `setfsgid` | missing | L2 | ENOSYS |  | the credential model arrives here |
+| 122 | `setfsuid` | done | - | - | `proc.c` |  |
+| 123 | `setfsgid` | done | - | - | `proc.c` |  |
 | 124 | `getsid` | done | - | - | `proc.c` |  |
 | 125 | `capget` | missing | L9 | ENOSYS |  | the security goals of docs/vision.md |
 | 126 | `capset` | missing | L9 | ENOSYS |  | the security goals of docs/vision.md |

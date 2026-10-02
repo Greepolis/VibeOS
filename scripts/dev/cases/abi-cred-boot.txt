@@ -1,0 +1,19 @@
+# Credentials at boot (docs/abi/ L2 step 1): the ring-3 self-test
+# (check_credentials in user/prog/hello.c), on the machine's own filesystems.
+#
+#  1. fork does not hand the child its parent's credentials... which would
+#     change nothing here, both being root: not a case.
+#  2. the walk does not ask for search permission. Expect
+#     credentials_selftest_failed: the child reads a file anybody may read,
+#     in a directory only root may search. (The first version had the child
+#     create one there and went NOT RED: the directory's write bit refuses
+#     that too.)
+#
+# Target source: kernel/fs/path.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/fs/path.c scripts/dev/cases/abi-cred-boot.txt
+
+### the walk does not ask for search permission
+--- old
+        if (who && who->fsuid != 0u) {
++++ new
+        if (0) {

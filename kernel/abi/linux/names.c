@@ -93,10 +93,11 @@ static long linux_sys_statx(uint64_t dirfd, uint64_t path_uptr, uint64_t flags, 
 /* ---- access -------------------------------------------------------------------------- */
 
 /* access, faccessat and faccessat2: may the caller read, write or run it? The
- * caller is root, so the answers are root's: writing is refused on a filesystem
- * that writes nothing (EROFS), and running a regular file with no execute bit
- * at all (EACCES). AT_EACCESS asks about the effective identity where the real
- * one is the default; there is one identity, so it changes nothing. */
+ * answer is for the *real* identity - "could the user who ran this program do
+ * it?", which is what a program running with borrowed privileges needs to
+ * know before it uses them - unless AT_EACCESS asks about the one the call
+ * would actually be judged by. Writing is also refused on a filesystem that
+ * writes nothing (EROFS). */
 static long linux_access_at(uint64_t dirfd, uint64_t path_uptr, uint64_t mode, uint64_t flags) {
     vibeos_path_t w;
     long r;
@@ -115,11 +116,18 @@ static long linux_access_at(uint64_t dirfd, uint64_t path_uptr, uint64_t mode, u
     if ((mode & LINUX_W_OK) && !vibeos_fs_writable(w.mnt)) {
         return -VIBEOS_EROFS;
     }
-    if ((mode & LINUX_X_OK) && (w.node.mode & VIBEOS_S_IFMT) == VIBEOS_S_IFREG &&
-        (w.node.mode & 0111u) == 0u) {
-        return -VIBEOS_EACCES;
+    {
+        vibeos_cred_t c;
+        uint32_t want = ((mode & LINUX_R_OK) ? VIBEOS_MAY_READ : 0u) |
+                        ((mode & LINUX_W_OK) ? VIBEOS_MAY_WRITE : 0u) |
+                        ((mode & LINUX_X_OK) ? VIBEOS_MAY_EXEC : 0u);
+        linux_cred(&c);
+        if (flags & LINUX_AT_EACCESS) {
+            c.uid = c.fsuid;   /* judged as an open would be */
+            c.gid = c.fsgid;
+        }
+        return vibeos_cred_may(&c, 1, w.node.mode, w.node.uid, w.node.gid, want);
     }
-    return 0;
 }
 
 /* ---- rename -------------------------------------------------------------------------- */
@@ -184,6 +192,9 @@ static long linux_rename_at(uint64_t olddir, uint64_t old_uptr, uint64_t newdir,
     } else if (b.trailing_slash && !a.node.is_dir) {
         return -VIBEOS_ENOTDIR;   /* "new/" promises a directory */
     }
+    if ((r = linux_may_remove(&a)) != 0 || (r = b.exists ? linux_may_remove(&b) : linux_may_add(&b)) != 0) {
+        return r;
+    }
     return vibeos_fs_rename(a.mnt, a.tail, b.tail,
                             (flags & LINUX_RENAME_NOREPLACE) ? VIBEOS_RENAME_NOREPLACE : 0u);
 }
@@ -227,6 +238,12 @@ long linux_rmdir_at(uint64_t dirfd, uint64_t path_uptr) {
     if (*w.tail == 0) {
         return -VIBEOS_EBUSY;   /* a mount's root, the process's root among them */
     }
+    {
+        long may = linux_may_remove(&w);
+        if (may != 0) {
+            return may;
+        }
+    }
     return vibeos_fs_rmdir(w.mnt, w.tail);
 }
 
@@ -261,6 +278,9 @@ static long linux_link_at(uint64_t olddir, uint64_t old_uptr, uint64_t newdir, u
     if (a.mnt != b.mnt) {
         return -VIBEOS_EXDEV;
     }
+    if ((r = linux_may_add(&b)) != 0) {
+        return r;
+    }
     return vibeos_fs_link(a.mnt, a.tail, b.tail);
 }
 
@@ -292,7 +312,14 @@ static long linux_symlink_at(uint64_t target_uptr, uint64_t newdir, uint64_t new
     if (w.exists) {
         return -VIBEOS_EEXIST;
     }
-    return vibeos_fs_symlink(w.mnt, target, w.tail);
+    if ((r = linux_may_add(&w)) != 0) {
+        return r;
+    }
+    r = vibeos_fs_symlink(w.mnt, target, w.tail);
+    if (r == 0) {
+        linux_own_new(&w);
+    }
+    return r;
 }
 
 /* ---- mknod and openat2 --------------------------------------------------------------- */
@@ -324,7 +351,14 @@ static long linux_mknod_at(uint64_t dirfd, uint64_t path_uptr, uint64_t mode) {
     if (type != 0u && type != VIBEOS_S_IFREG) {
         return -VIBEOS_EPERM;
     }
-    return vibeos_fs_create(w.mnt, w.tail, (uint32_t)mode & 07777u & ~linux_umask(), &node);
+    if ((r = linux_may_add(&w)) != 0) {
+        return r;
+    }
+    r = vibeos_fs_create(w.mnt, w.tail, (uint32_t)mode & 07777u & ~linux_umask(), &node);
+    if (r == 0) {
+        linux_own_new(&w);
+    }
+    return r;
 }
 
 /* openat2(dirfd, path, how, size): openat with its arguments in a structure
@@ -406,6 +440,11 @@ static long linux_chmod_walked(const vibeos_path_t *w, uint64_t mode) {
     if ((w->node.mode & VIBEOS_S_IFMT) == VIBEOS_S_IFLNK) {
         return -VIBEOS_EOPNOTSUPP;
     }
+    /* The owner's to change, or the superuser's: EPERM for anybody else,
+     * whatever the file's own bits would let them do to its contents. */
+    if (linux_may_own(&w->node) != 0) {
+        return -VIBEOS_EPERM;
+    }
     attr.valid = VIBEOS_ATTR_MODE;
     attr.mode = (uint32_t)mode & 07777u;
     return vibeos_fs_setattr(w->mnt, linux_tail(w), &attr);
@@ -451,6 +490,18 @@ static long linux_chown_walked(const vibeos_path_t *w, uint64_t uid, uint64_t gi
     if (attr.valid == 0u) {
         return 0;
     }
+    {
+        /* Giving a file away is the superuser's. Its owner may hand it to
+         * another of the owner's own groups, and that is all. */
+        vibeos_cred_t c;
+        linux_cred(&c);
+        if (c.fsuid != 0u &&
+            (c.fsuid != w->node.uid ||
+             ((attr.valid & VIBEOS_ATTR_UID) && attr.uid != w->node.uid) ||
+             ((attr.valid & VIBEOS_ATTR_GID) && !vibeos_cred_in_group(&c, attr.gid, 0)))) {
+            return -VIBEOS_EPERM;
+        }
+    }
     if ((mode & VIBEOS_S_IFMT) == VIBEOS_S_IFREG) {
         uint32_t drop = VIBEOS_S_ISUID | ((mode & 0010u) ? VIBEOS_S_ISGID : 0u);
         if (mode & drop) {
@@ -487,6 +538,7 @@ static long linux_sys_fchown(uint64_t fd, uint64_t uid, uint64_t gid) {
  * the clock the filesystems stamp with (vibeos_fs_now_ns). */
 typedef struct {
     int set;
+    int now;        /* the caller asked for the present moment, not a time of its choosing */
     uint64_t ns;
 } linux_when_t;
 
@@ -502,7 +554,16 @@ static long linux_times_walked(const vibeos_path_t *w, const linux_when_t *a, co
         attr.valid |= VIBEOS_ATTR_MTIME;
         attr.mtime_ns = m->ns;
     }
-    return attr.valid == 0u ? 0 : vibeos_fs_setattr(w->mnt, linux_tail(w), &attr);
+    if (attr.valid == 0u) {
+        return 0;
+    }
+    /* A file's times are its owner's to set. Anybody who may write it may
+     * stamp it "now", which is what touch does - `now` says both times are. */
+    if (linux_may_own(&w->node) != 0 &&
+        !(a->now && m->now && linux_may(&w->node, VIBEOS_MAY_WRITE) == 0)) {
+        return a->now && m->now ? -VIBEOS_EACCES : -VIBEOS_EPERM;
+    }
+    return vibeos_fs_setattr(w->mnt, linux_tail(w), &attr);
 }
 
 /* utimensat(dirfd, path, times, flags): both times to the nanosecond, each of
@@ -520,6 +581,7 @@ static long linux_sys_utimensat(uint64_t dirfd, uint64_t path_uptr, uint64_t tim
         return -VIBEOS_EINVAL;
     }
     when[0].set = when[1].set = 1;
+    when[0].now = when[1].now = 1;
     when[0].ns = when[1].ns = now;
     if (times_uptr != 0u) {
         linux_timespec_t ts[2];
@@ -537,6 +599,7 @@ static long linux_sys_utimensat(uint64_t dirfd, uint64_t path_uptr, uint64_t tim
             if (ts[i].tv_nsec < 0 || ts[i].tv_nsec >= 1000000000ll || ts[i].tv_sec < 0) {
                 return -VIBEOS_EINVAL;
             }
+            when[i].now = 0;
             when[i].ns = (uint64_t)ts[i].tv_sec * 1000000000ull + (uint64_t)ts[i].tv_nsec;
         }
     }
@@ -557,6 +620,7 @@ static long linux_utimes_at(uint64_t dirfd, uint64_t path_uptr, uint64_t times_u
     long r;
 
     when[0].set = when[1].set = 1;
+    when[0].now = when[1].now = 1;
     when[0].ns = when[1].ns = vibeos_fs_now_ns();
     if (times_uptr != 0u) {
         linux_timeval_t tv[2];
@@ -567,6 +631,7 @@ static long linux_utimes_at(uint64_t dirfd, uint64_t path_uptr, uint64_t times_u
             if (tv[i].tv_usec < 0 || tv[i].tv_usec >= 1000000ll || tv[i].tv_sec < 0) {
                 return -VIBEOS_EINVAL;
             }
+            when[i].now = 0;
             when[i].ns = (uint64_t)tv[i].tv_sec * 1000000000ull + (uint64_t)tv[i].tv_usec * 1000ull;
         }
     }
@@ -581,6 +646,7 @@ static long linux_sys_utime(uint64_t path_uptr, uint64_t times_uptr) {
     long r;
 
     when[0].set = when[1].set = 1;
+    when[0].now = when[1].now = 1;
     when[0].ns = when[1].ns = vibeos_fs_now_ns();
     if (times_uptr != 0u) {
         linux_utimbuf_t ut;
@@ -590,6 +656,7 @@ static long linux_sys_utime(uint64_t path_uptr, uint64_t times_uptr) {
         if (ut.actime < 0 || ut.modtime < 0) {
             return -VIBEOS_EINVAL;
         }
+        when[0].now = when[1].now = 0;
         when[0].ns = (uint64_t)ut.actime * 1000000000ull;
         when[1].ns = (uint64_t)ut.modtime * 1000000000ull;
     }

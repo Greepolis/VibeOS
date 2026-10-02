@@ -219,7 +219,13 @@ long linux_walk_at(uint64_t dirfd, uint64_t upath, uint32_t flags, vibeos_path_t
     char base[VIBEOS_PATH_MAX], root[VIBEOS_PATH_MAX];
     long r = linux_walk_inputs(dirfd, upath, raw, root, base);
 
-    return r != 0 ? r : vibeos_path_walk(root, base, raw, flags, w);
+    if (r == 0) {
+        /* As the caller: a directory it may not search stops the walk. */
+        vibeos_cred_t c;
+        linux_cred(&c);
+        r = vibeos_path_walk_as(root, base, raw, flags, &c, w);
+    }
+    return r;
 }
 
 /* The file a descriptor names, walked again from the path its description
@@ -498,6 +504,109 @@ uint32_t linux_umask(void) {
     return ps ? ps->umask : 022u;
 }
 
+/* ---- who is asking (docs/abi/ L2 step 1) ------------------------------------------- */
+
+void linux_cred(vibeos_cred_t *out) {
+    vibeos_procstate_t *ps = linux_cur_ps();
+
+    if (!ps) {
+        vibeos_cred_root(out);
+        return;
+    }
+    ks_lock(&ps->files_lock, __func__);
+    *out = ps->cred;
+    ks_unlock(&ps->files_lock);
+}
+
+long linux_may(const vibeos_fs_node_t *node, uint32_t want) {
+    vibeos_cred_t c;
+
+    linux_cred(&c);
+    return vibeos_cred_may(&c, 0, node->mode, node->uid, node->gid, want);
+}
+
+long linux_may_own(const vibeos_fs_node_t *node) {
+    vibeos_cred_t c;
+
+    linux_cred(&c);
+    return (c.fsuid == 0u || c.fsuid == node->uid) ? 0 : -VIBEOS_EPERM;
+}
+
+/* The directory `w`'s last component is, or would be, an entry of. 0 and the
+ * node; a walk's own error otherwise. Walked by the kernel for itself: the
+ * caller already got this far. */
+static long linux_parent_of(const vibeos_path_t *w, vibeos_fs_node_t *dir) {
+    char parent[VIBEOS_PATH_MAX];
+    vibeos_path_t pw;
+    uint32_t n = 0, cut = 0, i;
+    long r;
+
+    for (i = 0; w->path[i]; i++) {
+        if (w->path[i] == '/') {
+            cut = i;
+        }
+        n++;
+    }
+    for (i = 0; i < cut; i++) {
+        parent[i] = w->path[i];
+    }
+    if (cut == 0u) {
+        parent[cut++] = '/';
+    }
+    parent[cut] = 0;
+    (void)n;
+    r = vibeos_path_walk("/", "/", parent, 0u, &pw);
+    if (r == 0) {
+        *dir = pw.node;
+    }
+    return r;
+}
+
+long linux_may_add(const vibeos_path_t *w) {
+    vibeos_fs_node_t dir;
+    vibeos_cred_t c;
+
+    linux_cred(&c);
+    if (c.fsuid == 0u || linux_parent_of(w, &dir) != 0) {
+        return 0;
+    }
+    return vibeos_cred_may(&c, 0, dir.mode, dir.uid, dir.gid, VIBEOS_MAY_WRITE | VIBEOS_MAY_EXEC);
+}
+
+long linux_may_remove(const vibeos_path_t *w) {
+    vibeos_fs_node_t dir;
+    vibeos_cred_t c;
+
+    linux_cred(&c);
+    if (c.fsuid == 0u || linux_parent_of(w, &dir) != 0) {
+        return 0;
+    }
+    if (vibeos_cred_may(&c, 0, dir.mode, dir.uid, dir.gid, VIBEOS_MAY_WRITE | VIBEOS_MAY_EXEC) != 0) {
+        return -VIBEOS_EACCES;
+    }
+    /* A sticky directory - /tmp - is one everybody may write and nobody may
+     * clear of other people's files: a name there goes only for the file's
+     * owner or the directory's. */
+    if ((dir.mode & VIBEOS_S_ISVTX) && c.fsuid != dir.uid && c.fsuid != w->node.uid) {
+        return -VIBEOS_EPERM;
+    }
+    return 0;
+}
+
+void linux_own_new(const vibeos_path_t *w) {
+    vibeos_fs_attr_t attr;
+    vibeos_cred_t c;
+
+    linux_cred(&c);
+    if (c.fsuid == 0u && c.fsgid == 0u) {
+        return;   /* a filesystem makes its files root's */
+    }
+    attr.valid = VIBEOS_ATTR_UID | VIBEOS_ATTR_GID;
+    attr.uid = c.fsuid;
+    attr.gid = c.fsgid;
+    (void)vibeos_fs_setattr(w->mnt, *w->tail ? w->tail : "/", &attr);
+}
+
 long linux_sys_openat(uint64_t dirfd, uint64_t path_uptr, uint64_t flags, uint64_t mode) {
     vibeos_path_t w;
     vibeos_file_t *f;
@@ -510,9 +619,29 @@ long linux_sys_openat(uint64_t dirfd, uint64_t path_uptr, uint64_t flags, uint64
     if (err != 0) {
         return err;
     }
+    /* Permission, by what the open would do: read, write (truncating is
+     * writing), or make a name in the directory. Asked before the file is
+     * touched - an open that is refused must not have truncated anything. */
+    if (w.exists) {
+        const uint32_t acc = (uint32_t)flags & VIBEOS_O_ACCMODE;
+        uint32_t want = acc == VIBEOS_O_WRONLY ? VIBEOS_MAY_WRITE
+                      : acc == VIBEOS_O_RDWR ? (VIBEOS_MAY_READ | VIBEOS_MAY_WRITE) : VIBEOS_MAY_READ;
+        if (flags & VIBEOS_O_TRUNC) {
+            want |= VIBEOS_MAY_WRITE;
+        }
+        err = linux_may(&w.node, want);
+    } else {
+        err = linux_may_add(&w);
+    }
+    if (err != 0) {
+        return err;
+    }
     f = vibeos_open_path(&w, (uint32_t)flags, (uint32_t)mode & ~linux_umask(), &err);
     if (!f) {
         return err;
+    }
+    if (!w.exists) {
+        linux_own_new(&w);
     }
     return linux_fd_install(f, (flags & VIBEOS_O_CLOEXEC) ? VIBEOS_FD_CLOEXEC : 0u, 0);
 }
@@ -741,6 +870,9 @@ static long linux_sys_truncate(uint64_t path_uptr, uint64_t len) {
     }
     if ((w.node.mode & VIBEOS_S_IFMT) != VIBEOS_S_IFREG) {
         return -VIBEOS_EINVAL;
+    }
+    if ((r = linux_may(&w.node, VIBEOS_MAY_WRITE)) != 0) {
+        return r;
     }
     r = vibeos_fs_truncate(w.mnt, &w.node, len);
     if (r == -VIBEOS_EOPNOTSUPP && len == 0u) {
@@ -1917,6 +2049,9 @@ static long linux_sys_unlinkat(uint64_t dirfd, uint64_t path_uptr, uint64_t flag
     if (w.node.is_dir) {
         return -VIBEOS_EISDIR;
     }
+    if ((r = linux_may_remove(&w)) != 0) {
+        return r;
+    }
     return (vibeos_fs_unlink(w.mnt, w.tail) == 0) ? 0 : -VIBEOS_EIO;
 }
 
@@ -1942,12 +2077,16 @@ static long linux_sys_mkdirat(uint64_t dirfd, uint64_t path_uptr, uint64_t mode)
     if (w.exists) {
         return -VIBEOS_EEXIST;
     }
+    if ((r = linux_may_add(&w)) != 0) {
+        return r;
+    }
     if (vibeos_fs_mkdir(w.mnt, w.tail) != 0) {
         return vibeos_fs_writable(w.mnt) ? -VIBEOS_EIO : -VIBEOS_EROFS;
     }
     attr.valid = VIBEOS_ATTR_MODE;
     attr.mode = (uint32_t)mode & 01777u & ~linux_umask();
     (void)vibeos_fs_setattr(w.mnt, w.tail, &attr);
+    linux_own_new(&w);
     return 0;
 }
 
@@ -1969,6 +2108,9 @@ static long linux_set_cwd(const vibeos_path_t *w) {
     }
     if (!w->node.is_dir) {
         return -VIBEOS_ENOTDIR;
+    }
+    if (linux_may(&w->node, VIBEOS_MAY_EXEC) != 0) {
+        return -VIBEOS_EACCES;   /* a directory one may not search is not one to work in */
     }
     ks_lock(&ps->files_lock, __func__);
     for (i = 0; i + 1u < VIBEOS_PATH_MAX && abs[i]; i++) {

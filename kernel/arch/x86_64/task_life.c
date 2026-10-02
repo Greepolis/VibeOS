@@ -617,6 +617,9 @@ hw_procstate_t *hw_procstate_new(void) {
         ps->cwd[0] = '/'; ps->cwd[1] = 0;     /* a new process starts at the root */
         ps->root[0] = '/'; ps->root[1] = 0;
         ps->umask = 022u;                     /* what init starts with on Linux */
+        /* Root, until fork or exec says otherwise - not whoever the slot's
+         * last tenant had become. */
+        vibeos_cred_root(&ps->cred);
         ps->files_lock.locked = 0;
         ps->files_lock.owner_cpu = -1;
         ps->files_lock.owner_fn = 0;

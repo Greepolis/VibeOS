@@ -69,4 +69,12 @@ typedef struct {
 int vibeos_path_walk(const char *root, const char *base, const char *path,
                      uint32_t flags, vibeos_path_t *out);
 
+/* The same walk, made by somebody (docs/abi/ L2): every directory a component
+ * is looked up in has to grant `who` search permission, or the walk is
+ * -EACCES. Null - the kernel walking for itself - and the superuser are never
+ * refused, and for them nothing more is looked up than before. */
+struct vibeos_cred;
+int vibeos_path_walk_as(const char *root, const char *base, const char *path, uint32_t flags,
+                        const void *who, vibeos_path_t *out);
+
 #endif

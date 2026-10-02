@@ -51,6 +51,7 @@ static const struct { const char *name; long long value; } g_consts[] = {
     { "S_IFSOCK", S_IFSOCK },
     { "S_ISUID", S_ISUID },
     { "S_ISGID", S_ISGID },
+    { "S_ISVTX", S_ISVTX },
     { "R_OK", R_OK },
     { "W_OK", W_OK },
     { "X_OK", X_OK },

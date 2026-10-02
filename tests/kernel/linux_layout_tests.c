@@ -329,6 +329,7 @@ int test_linux_layout(void) {
     LIBC_CONST(LINUX_ST_RDONLY, "ST_RDONLY");
     LIBC_CONST(VIBEOS_S_ISUID, "S_ISUID");
     LIBC_CONST(VIBEOS_S_ISGID, "S_ISGID");
+    LIBC_CONST(VIBEOS_S_ISVTX, "S_ISVTX");
 
     /* fcntl's record locks */
     SIZE(linux_flock_t, struct flock);

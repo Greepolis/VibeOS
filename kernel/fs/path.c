@@ -1,6 +1,7 @@
 /* Paths. See include/vibeos/path.h. */
 
 #include "vibeos/path.h"
+#include "vibeos/cred.h"
 #include "vibeos/abi_linux.h"
 
 static uint32_t path_len(const char *s) {
@@ -142,6 +143,12 @@ static int walk_lookup(const char *abs, vibeos_fsmount_t **mnt, const char **tai
 
 int vibeos_path_walk(const char *root, const char *base, const char *path,
                      uint32_t flags, vibeos_path_t *out) {
+    return vibeos_path_walk_as(root, base, path, flags, 0, out);
+}
+
+int vibeos_path_walk_as(const char *root, const char *base, const char *path, uint32_t flags,
+                        const void *who_v, vibeos_path_t *out) {
+    const vibeos_cred_t *who = (const vibeos_cred_t *)who_v;
     char pending[WALK_PENDING];
     char target[VIBEOS_PATH_MAX];
     uint32_t n, floor, links = 0, i, plen;
@@ -230,6 +237,19 @@ int vibeos_path_walk(const char *root, const char *base, const char *path,
             }
             looked = 0;
             continue;
+        }
+        if (who && who->fsuid != 0u) {
+            /* Search permission on the directory this component is looked up
+             * in: what out->path names right now. Looked up again for the
+             * purpose, and only for somebody who can be refused. */
+            vibeos_fs_node_t dir;
+            vibeos_fsmount_t *dm = 0;
+            const char *dt = out->path;
+
+            if (walk_lookup(out->path, &dm, &dt, &dir) == 0 &&
+                vibeos_cred_may(who, 0, dir.mode, dir.uid, dir.gid, VIBEOS_MAY_EXEC) != 0) {
+                return -VIBEOS_EACCES;
+            }
         }
         saved = n;
         r = path_push(out->path, &n, VIBEOS_PATH_MAX, floor, start, len);

@@ -131,6 +131,7 @@ static long linux_sys_fork(const ks_regs_t *frame) {
             cps->root[i] = pps->root[i];
         }
         cps->umask = pps->umask;
+        cps->cred = pps->cred;   /* a child is who its parent was (L2) */
         ks_unlock(&pps->files_lock);
     }
     /* Resume exactly where the parent is - including the vector registers and
@@ -260,6 +261,15 @@ static long linux_sys_clone_thread(const ks_regs_t *frame,
     parent = ks_id(me);
     child = ks_id(idx);
     my_tenancy = ks_seq(idx);
+    ps = ks_ps(me);
+    if (!ps) {
+        /* The creator has let go of its process state: it is exiting, and
+         * there is no process for a thread to join. As in fork (code scanning
+         * 237): it cannot be here today, and everything below uses the
+         * pointer. Asked before anything but the slot is taken. */
+        (void)ks_set_state(idx, VIBEOS_TASK_FREE, __func__);
+        return -VIBEOS_EINVAL;
+    }
 
     if (ks_alloc_kstack(idx) != 0) {
         (void)ks_set_state(idx, VIBEOS_TASK_FREE, __func__);
@@ -272,7 +282,6 @@ static long linux_sys_clone_thread(const ks_regs_t *frame,
      * reference, not a copy. The descriptor table comes with it, so the thread
      * is one more user of it. */
     vibeos_task_stats()->threads++;
-    ps = ks_ps(me);
     ks_set_ps(idx, ps);
     (void)__atomic_add_fetch(&ps->refs, 1u, __ATOMIC_ACQ_REL);
     (void)__atomic_add_fetch(&ps->files_users, 1u, __ATOMIC_ACQ_REL);
@@ -685,6 +694,12 @@ static long linux_sys_execve(ks_regs_t *frame, uint64_t path_uptr,
         }
         /* The resolved path: a program reached through a symbolic link is read
          * from where the link points. */
+        /* Permission to run it (L2): the execute bit for whoever is asking -
+         * and for the superuser too, some execute bit, because a file nobody
+         * may run is not a program. */
+        if (!w.node.is_dir && linux_may(&w.node, VIBEOS_MAY_EXEC) != 0) {
+            return -VIBEOS_EACCES;
+        }
         for (k = 0; k + 1u < VIBEOS_PATH_MAX && w.path[k]; k++) {
             path[k] = w.path[k];
         }
@@ -866,7 +881,8 @@ static long linux_sys_execve(ks_regs_t *frame, uint64_t path_uptr,
      * sibling thread still running that image keeps the old process. Built
      * before the old one is let go, which is why the pool has room for an exec
      * per core. */
-    if (ks_ps(ks_current()) == 0) {
+    ops = ks_ps(ks_current());
+    if (!ops) {
         ks_unlock_preemptible(&g_exec_lock);
         return -VIBEOS_EINVAL;
     }
@@ -1015,8 +1031,11 @@ static long linux_sys_execve(ks_regs_t *frame, uint64_t path_uptr,
          * Derived here, from the outgoing process, and not after the commit:
          * the reference to it is given back below, and once the last one is
          * gone its slot can be handed to an exec or a fork on another core -
-         * so reading it afterwards could copy a stranger's dispositions. */
-        ops = ks_ps(me);
+         * so reading it afterwards could copy a stranger's dispositions.
+         *
+         * ops is the pointer the check above looked at, not a second read:
+         * asked twice, the answer checked was not the answer used (code
+         * scanning 243). */
         {
             uint32_t sg;
             for (sg = 0; sg < VIBEOS_NSIG; sg++) {
@@ -1036,6 +1055,11 @@ static long linux_sys_execve(ks_regs_t *frame, uint64_t path_uptr,
                 nps->root[i] = ops->root[i];
             }
             nps->umask = ops->umask;
+            /* Nor who is running it (L2). The first version copied this in
+             * fork and not here, so a program was whoever had the slot before
+             * it: one boot in six, root's shell was the self-test's user 1000
+             * and could not create a file. */
+            nps->cred = ops->cred;
             ks_unlock(&ops->files_lock);
         }
 
@@ -1268,10 +1292,135 @@ static long linux_sys_getsid(uint64_t requested_pid) {
     return r;
 }
 
-/* setuid()/setgid(): there is one identity and it is root. Becoming it again
- * succeeds; becoming anyone else is refused rather than pretended. */
-static long linux_sys_setresid(uint64_t id) {
-    return (id == 0u) ? 0 : -VIBEOS_EPERM;
+/* ---- who the process is (docs/abi/ L2 step 1) --------------------------------------
+ *
+ * The get and set calls over vibeos/cred.h, which holds the rules. Every one
+ * works on the process's one copy under files_lock: read, changed and written
+ * back in one critical section, so two threads changing ids cannot leave a
+ * mixture neither asked for. An id of -1 means "leave it" where a call has
+ * that meaning; the 32-bit argument is read as one (VIBEOS_ARG_INT is how an
+ * `int` arrives). */
+
+enum { ID_RUID, ID_EUID, ID_RGID, ID_EGID };
+
+static long linux_sys_getid(int which) {
+    vibeos_cred_t c;
+
+    linux_cred(&c);
+    switch (which) {
+        case ID_RUID: return (long)c.uid;
+        case ID_EUID: return (long)c.euid;
+        case ID_RGID: return (long)c.gid;
+        default:      return (long)c.egid;
+    }
+}
+
+/* Run one of the set functions on the process's credentials. */
+typedef struct {
+    int op;
+    uint32_t a, b, c;
+    const uint32_t *list;
+} linux_setid_t;
+
+enum { SET_UID, SET_GID, SET_REUID, SET_REGID, SET_RESUID, SET_RESGID, SET_FSUID, SET_FSGID, SET_GROUPS };
+
+static long linux_setid(const linux_setid_t *s) {
+    vibeos_procstate_t *ps;
+    vibeos_cred_t *c;
+    long r;
+
+    if (ks_current() < 0 || !ks_id(ks_current())->is_user || !(ps = ks_ps(ks_current()))) {
+        return -VIBEOS_EINVAL;
+    }
+    ks_lock(&ps->files_lock, __func__);
+    c = &ps->cred;
+    switch (s->op) {
+        case SET_UID:    r = vibeos_cred_setuid(c, s->a); break;
+        case SET_GID:    r = vibeos_cred_setgid(c, s->a); break;
+        case SET_REUID:  r = vibeos_cred_setreuid(c, s->a, s->b); break;
+        case SET_REGID:  r = vibeos_cred_setregid(c, s->a, s->b); break;
+        case SET_RESUID: r = vibeos_cred_setresuid(c, s->a, s->b, s->c); break;
+        case SET_RESGID: r = vibeos_cred_setresgid(c, s->a, s->b, s->c); break;
+        case SET_FSUID:  r = (long)vibeos_cred_setfsuid(c, s->a); break;
+        case SET_FSGID:  r = (long)vibeos_cred_setfsgid(c, s->a); break;
+        default:         r = vibeos_cred_setgroups(c, s->a, s->list); break;
+    }
+    ks_unlock(&ps->files_lock);
+    return r;
+}
+
+static long linux_set1(int op, uint64_t a) {
+    linux_setid_t s = {op, (uint32_t)a, 0, 0, 0};
+    return linux_setid(&s);
+}
+
+static long linux_set2(int op, uint64_t a, uint64_t b) {
+    linux_setid_t s = {op, (uint32_t)a, (uint32_t)b, 0, 0};
+    return linux_setid(&s);
+}
+
+static long linux_set3(int op, uint64_t a, uint64_t b, uint64_t c) {
+    linux_setid_t s = {op, (uint32_t)a, (uint32_t)b, (uint32_t)c, 0};
+    return linux_setid(&s);
+}
+
+/* getresuid and getresgid: three ids, each to its own pointer. */
+static long linux_sys_getres(int gids, uint64_t r_uptr, uint64_t e_uptr, uint64_t s_uptr) {
+    vibeos_cred_t c;
+    uint32_t v[3];
+
+    linux_cred(&c);
+    v[0] = gids ? c.gid : c.uid;
+    v[1] = gids ? c.egid : c.euid;
+    v[2] = gids ? c.sgid : c.suid;
+    if (vibeos_uaccess_copy((void *)(uintptr_t)r_uptr, &v[0], 4u) != 0 ||
+        vibeos_uaccess_copy((void *)(uintptr_t)e_uptr, &v[1], 4u) != 0 ||
+        vibeos_uaccess_copy((void *)(uintptr_t)s_uptr, &v[2], 4u) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    return 0;
+}
+
+/* getgroups(size, list): how many supplementary groups, and which. A size of
+ * zero asks only how many; a size too small for them is EINVAL. */
+static long linux_sys_getgroups(uint64_t size, uint64_t list_uptr) {
+    vibeos_cred_t c;
+
+    linux_cred(&c);
+    if (VIBEOS_ARG_INT(size) < 0) {
+        return -VIBEOS_EINVAL;
+    }
+    if ((uint32_t)size == 0u) {
+        return (long)c.ngroups;
+    }
+    if ((uint32_t)size < c.ngroups) {
+        return -VIBEOS_EINVAL;
+    }
+    if (c.ngroups != 0u &&
+        (!linux_user_ok(list_uptr, (uint64_t)c.ngroups * 4u, 1) ||
+         vibeos_uaccess_copy((void *)(uintptr_t)list_uptr, c.groups, (uint64_t)c.ngroups * 4u) != 0)) {
+        return -VIBEOS_EFAULT;
+    }
+    return (long)c.ngroups;
+}
+
+/* setgroups(size, list): the superuser's alone. Thirty-two groups are kept,
+ * where Linux keeps sixty-five thousand: more than that is EINVAL here. */
+static long linux_sys_setgroups(uint64_t size, uint64_t list_uptr) {
+    uint32_t list[VIBEOS_NGROUPS];
+    linux_setid_t s = {SET_GROUPS, (uint32_t)size, 0, 0, list};
+
+    if (size > VIBEOS_NGROUPS) {
+        vibeos_cred_t c;
+        linux_cred(&c);
+        return c.euid == 0u ? -VIBEOS_EINVAL : -VIBEOS_EPERM;
+    }
+    if (size != 0u &&
+        (!linux_user_ok(list_uptr, size * 4u, 0) ||
+         vibeos_uaccess_copy(list, (const void *)(uintptr_t)list_uptr, size * 4u) != 0)) {
+        return -VIBEOS_EFAULT;
+    }
+    return linux_setid(&s);
 }
 
 /* arch_prctl(): the one everything else depends on.
@@ -1462,12 +1611,22 @@ static long linux_sys_clone(const vibeos_call_t *c) {
     X(59,  execve,           EXEC,            NOPTR, linux_sys_execve(FRAME, ARG(0), ARG(1), ARG(2))) \
     X(60,  exit,             EXIT,            NOPTR, linux_sys_exit(ARG(0))) \
     X(61,  wait4,            WAIT,            NOPTR, linux_sys_waitpid(ARG(0), ARG(1), ARG(2))) \
-    X(102, getuid,           IDENTITY_GET,    NOPTR, 0) \
-    X(104, getgid,           IDENTITY_GET,    NOPTR, 0) \
-    X(105, setuid,           IDENTITY_SET,    NOPTR, linux_sys_setresid(ARG(0))) \
-    X(106, setgid,           IDENTITY_SET,    NOPTR, linux_sys_setresid(ARG(0))) \
-    X(107, geteuid,          IDENTITY_GET,    NOPTR, 0) \
-    X(108, getegid,          IDENTITY_GET,    NOPTR, 0) \
+    X(102, getuid,           IDENTITY_GET,    NOPTR, linux_sys_getid(ID_RUID)) \
+    X(104, getgid,           IDENTITY_GET,    NOPTR, linux_sys_getid(ID_RGID)) \
+    X(105, setuid,           IDENTITY_SET,    NOPTR, linux_set1(SET_UID, ARG(0))) \
+    X(106, setgid,           IDENTITY_SET,    NOPTR, linux_set1(SET_GID, ARG(0))) \
+    X(107, geteuid,          IDENTITY_GET,    NOPTR, linux_sys_getid(ID_EUID)) \
+    X(108, getegid,          IDENTITY_GET,    NOPTR, linux_sys_getid(ID_EGID)) \
+    X(113, setreuid,         IDENTITY_SET,    NOPTR, linux_set2(SET_REUID, ARG(0), ARG(1))) \
+    X(114, setregid,         IDENTITY_SET,    NOPTR, linux_set2(SET_REGID, ARG(0), ARG(1))) \
+    X(115, getgroups,        IDENTITY_GET,    NOPTR, linux_sys_getgroups(ARG(0), ARG(1))) \
+    X(116, setgroups,        IDENTITY_SET,    NOPTR, linux_sys_setgroups(ARG(0), ARG(1))) \
+    X(117, setresuid,        IDENTITY_SET,    NOPTR, linux_set3(SET_RESUID, ARG(0), ARG(1), ARG(2))) \
+    X(118, getresuid,        IDENTITY_GET,    PTRS(OUT(0, 4), OUT(1, 4), OUT(2, 4)), linux_sys_getres(0, ARG(0), ARG(1), ARG(2))) \
+    X(119, setresgid,        IDENTITY_SET,    NOPTR, linux_set3(SET_RESGID, ARG(0), ARG(1), ARG(2))) \
+    X(120, getresgid,        IDENTITY_GET,    PTRS(OUT(0, 4), OUT(1, 4), OUT(2, 4)), linux_sys_getres(1, ARG(0), ARG(1), ARG(2))) \
+    X(122, setfsuid,         IDENTITY_SET,    NOPTR, linux_set1(SET_FSUID, ARG(0))) \
+    X(123, setfsgid,         IDENTITY_SET,    NOPTR, linux_set1(SET_FSGID, ARG(0))) \
     X(109, setpgid,          SETPGID,         NOPTR, linux_sys_setpgid(ARG(0), ARG(1))) \
     X(110, getppid,          GETPPID,         NOPTR, linux_sys_getppid()) \
     X(111, getpgrp,          GETPGRP,         NOPTR, linux_sys_getpgrp()) \

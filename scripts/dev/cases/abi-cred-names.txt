@@ -1,0 +1,57 @@
+# Permission checks in the name and attribute handlers (docs/abi/ L2 step 1).
+# Host test: t_credentials in tests/kernel/linux_abi_tests.c.
+#
+#  1. chmod is anybody's
+#  2. chown gives a file away
+#  3. a file's times are set by anybody
+#  4. access answers for the effective user
+#  5. rename does not ask about either directory
+#  6. a hard link is made anywhere
+#
+# Target source: kernel/abi/linux/names.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/names.c scripts/dev/cases/abi-cred-names.txt
+
+### chmod is anybody's
+--- old
+    if (linux_may_own(&w->node) != 0) {
+        return -VIBEOS_EPERM;
+    }
+    attr.valid = VIBEOS_ATTR_MODE;
++++ new
+    attr.valid = VIBEOS_ATTR_MODE;
+
+### chown gives a file away
+--- old
+        if (c.fsuid != 0u &&
++++ new
+        if (0 && c.fsuid != 0u &&
+
+### a file's times are set by anybody
+--- old
+    if (linux_may_own(&w->node) != 0 &&
+        !(a->now && m->now && linux_may(&w->node, VIBEOS_MAY_WRITE) == 0)) {
++++ new
+    if (0 && linux_may_own(&w->node) != 0 &&
+        !(a->now && m->now && linux_may(&w->node, VIBEOS_MAY_WRITE) == 0)) {
+
+### access answers for the effective user
+--- old
+        if (flags & LINUX_AT_EACCESS) {
++++ new
+        if (1) {
+
+### rename does not ask about either directory
+--- old
+    if ((r = linux_may_remove(&a)) != 0 || (r = b.exists ? linux_may_remove(&b) : linux_may_add(&b)) != 0) {
+        return r;
+    }
++++ new
+
+### a hard link is made anywhere
+--- old
+    if ((r = linux_may_add(&b)) != 0) {
+        return r;
+    }
+    return vibeos_fs_link(a.mnt, a.tail, b.tail);
++++ new
+    return vibeos_fs_link(a.mnt, a.tail, b.tail);

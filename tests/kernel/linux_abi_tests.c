@@ -2643,6 +2643,156 @@ static void t_memory_calls(void) {
     expect(kf_lock_imbalance() == 0, "the memory calls released every lock they took");
 }
 
+/* ---- L2 step 1: credentials ------------------------------------------------------------ */
+
+#define KEEP ((uint64_t)(uint32_t)-1)
+
+/* Fork, and make the child the caller. */
+static int become_child(void) {
+    long pid = SYS0(57);
+    int child = slot_of_pid(pid);
+    kf_set_current(child);
+    return child;
+}
+
+static uint32_t mode_of(const char *path) {
+    linux_stat_t st;
+    return tmp_stat(path, 1, &st) == 0 ? (st.st_mode & 07777u) : ~0u;
+}
+
+static void t_credentials(void) {
+    uint64_t ids = kf_ualloc(16), list = kf_ualloc(16), buf = kf_ualloc(8);
+    uint32_t *idp, *lp;
+    linux_stat_t st;
+    int root, user;
+    long fd;
+
+    root = fresh(211);
+    ids = kf_ualloc(16);
+    list = kf_ualloc(16);
+    buf = kf_ualloc(8);
+    idp = (uint32_t *)kf_uptr(ids);
+    lp = (uint32_t *)kf_uptr(list);
+
+    /* What root leaves for somebody else to meet. */
+    (void)SYS2(83, ustr("/tmp/c"), 0755);
+    (void)SYS2(83, ustr("/tmp/c/priv"), 0700);
+    (void)SYS2(83, ustr("/tmp/c/open"), 0777);
+    (void)SYS2(90, ustr("/tmp/c/open"), 0777);
+    (void)SYS1(3, (uint64_t)tmp_open("/tmp/c/rootfile", 0x41, 0600));
+    (void)SYS2(90, ustr("/tmp/c/rootfile"), 0600);
+    fd = tmp_open("/tmp/c/pub", 0x41, 0644);
+    memcpy(kf_uptr(buf), "data", 4);
+    (void)SYS3(1, (uint64_t)fd, buf, 4);
+    (void)SYS1(3, (uint64_t)fd);
+    (void)SYS2(90, ustr("/tmp/c/pub"), 0644);
+    (void)SYS1(3, (uint64_t)tmp_open("/tmp/c/priv/x", 0x41, 0644));
+    (void)SYS1(3, (uint64_t)tmp_open("/tmp/rootsticky", 0x41, 0644));
+    (void)SYS2(90, ustr("/tmp/rootsticky"), 0666);
+
+    expect(SYS0(102) == 0 && SYS0(107) == 0 && SYS0(104) == 0 && SYS0(108) == 0, "a process starts as root");
+    lp[0] = 100;
+    lp[1] = 200;
+    expect(SYS2(116, 2, list) == 0 && SYS2(115, 0, 0) == 2 && SYS2(115, 1, list) == -VIBEOS_EINVAL,
+           "setgroups by root; getgroups(0) counts them, and a list too short is EINVAL");
+    lp[0] = lp[1] = 0;
+    expect(SYS2(115, 2, list) == 2 && lp[0] == 100 && lp[1] == 200, "getgroups reads them back");
+
+    /* For good: root's setgid and setuid set every id, and there is no way back. */
+    user = become_child();
+    expect(SYS1(106, 100) == 0 && SYS1(105, 1000) == 0 && SYS0(102) == 1000 && SYS0(107) == 1000 &&
+           SYS0(104) == 100 && SYS0(108) == 100, "root becomes user 1000, group 100");
+    expect(SYS3(118, ids, ids + 4u, ids + 8u) == 0 && idp[0] == 1000 && idp[1] == 1000 && idp[2] == 1000 &&
+           SYS3(120, ids, ids + 4u, ids + 8u) == 0 && idp[0] == 100 && idp[2] == 100,
+           "getresuid and getresgid: real, effective and saved all changed");
+    expect(SYS1(105, 0) == -VIBEOS_EPERM && SYS2(113, KEEP, 0) == -VIBEOS_EPERM &&
+           SYS3(117, 0, KEEP, KEEP) == -VIBEOS_EPERM && SYS1(106, 0) == -VIBEOS_EPERM &&
+           SYS2(116, 0, 0) == -VIBEOS_EPERM && SYS0(107) == 1000,
+           "and cannot become root again by any of the calls");
+    expect(SYS1(122, 0) == 1000 && SYS1(122, KEEP) == 1000 && SYS1(123, 200) == 100 && SYS1(123, KEEP) == 100,
+           "setfsuid and setfsgid answer the old id and refuse one the process does not hold");
+
+    /* Reading and writing, by the file's bits. */
+    expect(tmp_open("/tmp/c/rootfile", 0, 0) == -VIBEOS_EACCES && (fd = tmp_open("/tmp/c/pub", 0, 0)) >= 0 &&
+           tmp_open("/tmp/c/pub", 1, 0) == -VIBEOS_EACCES, "a file is opened as its bits allow this user");
+    expect(tmp_open("/tmp/c/pub", 0x200 /* O_TRUNC, read-only */, 0) == -VIBEOS_EACCES && tmp_size("/tmp/c/pub") == 4,
+           "an open that is refused has not truncated the file");
+    expect(SYS2(76, ustr("/tmp/c/pub"), 0) == -VIBEOS_EACCES && tmp_size("/tmp/c/pub") == 4,
+           "nor does truncate cut a file the user may not write");
+    expect(tmp_open("/tmp/c/priv/x", 0, 0) == -VIBEOS_EACCES && tmp_stat("/tmp/c/priv/x", 1, &st) == -VIBEOS_EACCES &&
+           SYS1(80, ustr("/tmp/c/priv")) == -VIBEOS_EACCES,
+           "a directory the user may not search hides what is in it, and is not one to work in");
+
+    /* Names: the directory's permission. */
+    expect(tmp_open("/tmp/c/new", 0x41, 0644) == -VIBEOS_EACCES && SYS2(83, ustr("/tmp/c/d"), 0755) == -VIBEOS_EACCES &&
+           SYS1(87, ustr("/tmp/c/pub")) == -VIBEOS_EACCES &&
+           SYS2(82, ustr("/tmp/c/pub"), ustr("/tmp/c/open/pub")) == -VIBEOS_EACCES &&
+           SYS2(88, ustr("x"), ustr("/tmp/c/l")) == -VIBEOS_EACCES &&
+           SYS2(86, ustr("/tmp/c/pub"), ustr("/tmp/c/hard")) == -VIBEOS_EACCES,
+           "a name is not made, taken away or moved in a directory the user may not write");
+    fd = tmp_open("/tmp/c/open/mine", 0x42, 0640);
+    expect(fd >= 0 && tmp_stat("/tmp/c/open/mine", 1, &st) == 0 && st.st_uid == 1000 && st.st_gid == 100 &&
+           SYS2(83, ustr("/tmp/c/open/d"), 0755) == 0 && tmp_stat("/tmp/c/open/d", 1, &st) == 0 && st.st_uid == 1000,
+           "what the user makes where it may is the user's");
+    expect(SYS1(87, ustr("/tmp/rootsticky")) == -VIBEOS_EPERM &&
+           SYS2(82, ustr("/tmp/rootsticky"), ustr("/tmp/stolen")) == -VIBEOS_EPERM &&
+           SYS1(3, (uint64_t)tmp_open("/tmp/mine", 0x41, 0644)) == 0 && SYS1(87, ustr("/tmp/mine")) == 0,
+           "in a sticky directory a name goes only for the file's owner");
+
+    /* Attributes: the owner's. */
+    expect(SYS2(90, ustr("/tmp/c/pub"), 0666) == -VIBEOS_EPERM && mode_of("/tmp/c/pub") == 0644u &&
+           SYS2(90, ustr("/tmp/c/open/mine"), 0600) == 0 && mode_of("/tmp/c/open/mine") == 0600u,
+           "chmod is the owner's");
+    expect(SYS3(92, ustr("/tmp/c/open/mine"), 0, KEEP) == -VIBEOS_EPERM &&
+           SYS3(92, ustr("/tmp/c/open/mine"), KEEP, 300) == -VIBEOS_EPERM &&
+           SYS3(92, ustr("/tmp/c/open/mine"), KEEP, 200) == 0 &&
+           tmp_stat("/tmp/c/open/mine", 1, &st) == 0 && st.st_gid == 200 && st.st_uid == 1000,
+           "chown: a file is not given away, and its group only to one of the owner's own");
+    ((int64_t *)kf_uptr(ids))[0] = 5;
+    ((int64_t *)kf_uptr(ids))[1] = 0;
+    expect(sys(280, (uint64_t)(uint32_t)-100, ustr("/tmp/c/pub"), 0, 0, 0, 0, 0) == -VIBEOS_EACCES &&
+           sys(280, (uint64_t)(uint32_t)-100, ustr("/tmp/rootsticky"), 0, 0, 0, 0, 0) == 0 &&
+           SYS2(132 /* utime */, ustr("/tmp/rootsticky"), ids) == -VIBEOS_EPERM,
+           "a file's times: 'now' for whoever may write it, a chosen time for its owner alone");
+
+    /* One class decides: the owner's bits for the owner, even where everybody
+     * else would be let in. */
+    expect(SYS2(90, ustr("/tmp/c/open/mine"), 0066) == 0 && tmp_open("/tmp/c/open/mine", 0, 0) == -VIBEOS_EACCES &&
+           SYS2(90, ustr("/tmp/c/open/mine"), 0600) == 0 && SYS1(3, (uint64_t)tmp_open("/tmp/c/open/mine", 2, 0)) == 0,
+           "an owner denied by the owner's bits is denied, whatever the others' say");
+
+    /* access() answers for the real user. */
+    expect(SYS2(21, ustr("/tmp/c/rootfile"), 4) == -VIBEOS_EACCES && SYS2(21, ustr("/tmp/c/pub"), 4) == 0 &&
+           SYS2(21, ustr("/tmp/c/pub"), 2) == -VIBEOS_EACCES && SYS2(21, ustr("/tmp/c/pub"), 0) == 0,
+           "access reports what this user may do");
+
+    /* Signals: the superuser's process is not this user's to signal. */
+    expect(SYS2(62, 211, 15) == -VIBEOS_EPERM, "a user may not signal root's process");
+    kf_set_current(root);
+    expect(SYS2(62, (uint64_t)ks_id(user)->pid, 0) == 0, "root may signal anybody");
+
+    /* Borrowed privileges: real 1000, effective root, and the way back kept. */
+    user = become_child();
+    expect(SYS3(117, 1000, 1000, 0) == 0 && SYS0(102) == 1000 && SYS0(107) == 1000 &&
+           tmp_open("/tmp/c/rootfile", 0, 0) == -VIBEOS_EACCES, "setresuid(1000, 1000, 0): a user, with root saved");
+    expect(SYS3(117, KEEP, 0, KEEP) == 0 && SYS0(107) == 0 && tmp_open("/tmp/c/rootfile", 0, 0) >= 0,
+           "the saved id is the way back: effective root opens the file");
+    expect(SYS2(21, ustr("/tmp/c/rootfile"), 4) == -VIBEOS_EACCES &&
+           sys(439, (uint64_t)(uint32_t)-100, ustr("/tmp/c/rootfile"), 4, 0x200 /* AT_EACCESS */, 0, 0, 0) == 0,
+           "access still answers for the real user, and AT_EACCESS for the effective one");
+
+    /* setreuid's rule for the saved id. */
+    kf_set_current(root);
+    user = become_child();
+    expect(SYS2(113, 1000, 2000) == 0 && SYS3(118, ids, ids + 4u, ids + 8u) == 0 && idp[0] == 1000 &&
+           idp[1] == 2000 && idp[2] == 2000, "setreuid(1000, 2000) by root: the saved id follows the effective one");
+    expect(SYS2(113, KEEP, 1000) == 0 && SYS3(118, ids, ids + 4u, ids + 8u) == 0 && idp[1] == 1000 && idp[2] == 2000 &&
+           SYS2(113, KEEP, 2000) == 0 && SYS0(107) == 2000 && SYS2(113, KEEP, 3000) == -VIBEOS_EPERM,
+           "an effective id set to the real one keeps the saved one, which is the way back");
+    kf_set_current(root);
+    expect(kf_lock_imbalance() == 0, "the credential calls released every lock they took");
+}
+
 int test_linux_handlers(void) {
     g_fail = 0;
     t_identity();
@@ -2686,6 +2836,7 @@ int test_linux_handlers(void) {
     t_mmap_files();
     t_mmap_shared();
     t_memory_calls();
+    t_credentials();
     t_fork_snapshot_and_groups();
     t_procfs();
     t_sa_restart();
@@ -2934,11 +3085,12 @@ int test_linux_gaps(void) {
         gap(63, strcmp((const char *)kf_uptr(u) + 65, "box") == 0, "uname reports the hostname set");
     }
 
-    /* setuid (105) and setgid (106), L2: root may become another user. */
+    /* setgroups (116), L2: as many groups as Linux keeps. */
     fresh(68);
-    gap(105, SYS1(105, 1000) == 0 && SYS0(102) == 1000, "setuid(1000) from root");
-    fresh(69);
-    gap(106, SYS1(106, 1000) == 0 && SYS0(104) == 1000, "setgid(1000) from root");
+    {
+        uint64_t many = kf_ualloc(40u * 4u);
+        gap(116, SYS2(116, 40, many) == 0, "setgroups with forty groups");
+    }
 
     /* futex (202), L6: FUTEX_CMP_REQUEUE with nobody waiting requeues nobody. */
     {

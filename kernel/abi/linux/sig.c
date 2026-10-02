@@ -39,7 +39,23 @@ static int linux_signal_permitted(int target) {
     if (ks_id(target)->tgid == me->tgid) {
         return 1;
     }
-    return ks_id(target)->sid == me->sid;
+    if (ks_id(target)->sid != me->sid) {
+        return 0;
+    }
+    /* And whose process it is (docs/abi/ L2): the superuser signals anybody;
+     * anybody else, a process whose real or saved user id is the sender's real
+     * or effective one - Linux's rule, on top of the session one above. */
+    {
+        vibeos_cred_t mine;
+        const vibeos_procstate_t *tp = ks_ps(target);
+
+        linux_cred(&mine);
+        if (mine.euid == 0u || !tp) {
+            return 1;
+        }
+        return mine.uid == tp->cred.uid || mine.uid == tp->cred.suid ||
+               mine.euid == tp->cred.uid || mine.euid == tp->cred.suid;
+    }
 }
 
 static long linux_sys_kill(uint64_t target_pid, uint64_t sig) {

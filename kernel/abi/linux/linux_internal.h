@@ -74,6 +74,24 @@ long linux_stat_get(uint64_t dirfd, uint64_t path_uptr, uint64_t atflags,
 uint64_t linux_dev_of(const vibeos_fsmount_t *mnt);
 long linux_sys_openat(uint64_t dirfd, uint64_t path_uptr, uint64_t flags, uint64_t mode);
 uint32_t linux_umask(void);
+
+/* Who is asking (docs/abi/ L2 step 1): a copy of the caller's credentials, and
+ * the questions the file handlers put to them. All answer 0 for the superuser
+ * without looking anything up.
+ *
+ *   linux_may          may the caller do `want` (VIBEOS_MAY_*) to this file?
+ *   linux_may_add      may it make a new name where `w` says one would go?
+ *   linux_may_remove   may it take away the name `w` found?  (the directory's
+ *                      permission, and the sticky bit's rule in a shared one)
+ *   linux_may_own      is it the file's owner, or the superuser?  (-EPERM)
+ *   linux_own_new      give a file the caller just made its owner and group
+ */
+void linux_cred(vibeos_cred_t *out);
+long linux_may(const vibeos_fs_node_t *node, uint32_t want);
+long linux_may_add(const vibeos_path_t *w);
+long linux_may_remove(const vibeos_path_t *w);
+long linux_may_own(const vibeos_fs_node_t *node);
+void linux_own_new(const vibeos_path_t *w);
 long linux_rmdir_at(uint64_t dirfd, uint64_t path_uptr);
 /* Is this path /proc/self/exe, as written or made absolute? There is no /proc;
  * the one name in it programs depend on is answered by readlink and by execve. */
