@@ -33,6 +33,8 @@ def main():
         if not line or line.startswith("#"):
             continue
         binary = line.split("/")[-1]
+        if "." in binary:
+            continue    # an object file the build left executable, not a test
         for n in names:
             if binary.startswith(n):
                 if n in wanted:
