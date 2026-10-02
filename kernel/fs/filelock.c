@@ -65,8 +65,16 @@ static int on_file(const flk_t *e, uint32_t space, const void *fs, uint64_t node
  * with, or null. */
 static const flk_t *conflict(uint32_t space, const void *fs, uint64_t node, uint64_t owner,
                              uint32_t type, uint64_t start, uint64_t end) {
+    const flk_t *first = 0;
     uint32_t i;
 
+    /* The one that starts lowest, not the one the table happens to hold first.
+     * Which lock is "in the way" is something a program reads: F_GETLK reports
+     * it, and Linux keeps a file's locks in order of where they start, so the
+     * answer there is the first by position. Returning the table's first made
+     * the answer depend on the order the locks had been taken in - LTP's
+     * fcntl11 takes a write lock at byte 10 and then a read lock at byte 1,
+     * asks, and was told about byte 10. */
     for (i = 0; i < VIBEOS_FLK_MAX; i++) {
         const flk_t *e = &g_flk[i];
         if (!on_file(e, space, fs, node) || e->owner == owner) {
@@ -75,11 +83,12 @@ static const flk_t *conflict(uint32_t space, const void *fs, uint64_t node, uint
         if (e->end < start || e->start > end) {
             continue;
         }
-        if (type == VIBEOS_FLK_EXCL || e->type == VIBEOS_FLK_EXCL) {
-            return e;
+        if ((type == VIBEOS_FLK_EXCL || e->type == VIBEOS_FLK_EXCL) &&
+            (!first || e->start < first->start)) {
+            first = e;
         }
     }
-    return 0;
+    return first;
 }
 
 static flk_t *take_free(void) {

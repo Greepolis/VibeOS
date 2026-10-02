@@ -12,11 +12,10 @@
 
 ### shared locks do not coexist
 --- old
-        if (type == VIBEOS_FLK_EXCL || e->type == VIBEOS_FLK_EXCL) {
-            return e;
-        }
+        if ((type == VIBEOS_FLK_EXCL || e->type == VIBEOS_FLK_EXCL) &&
+            (!first || e->start < first->start)) {
 +++ new
-        return e;
+        if (!first || e->start < first->start) {
 
 ### an owner's own lock is in its way
 --- old
@@ -35,12 +34,12 @@
         if (e->end < start || e->start > end) {
             continue;
         }
-        if (type == VIBEOS_FLK_EXCL || e->type == VIBEOS_FLK_EXCL) {
+        if ((type == VIBEOS_FLK_EXCL || e->type == VIBEOS_FLK_EXCL) &&
 +++ new
         if (e->end <= start || e->start > end) {
             continue;
         }
-        if (type == VIBEOS_FLK_EXCL || e->type == VIBEOS_FLK_EXCL) {
+        if ((type == VIBEOS_FLK_EXCL || e->type == VIBEOS_FLK_EXCL) &&
 
 ### unlocking the middle of a lock drops its tail
 --- old
@@ -124,3 +123,10 @@
         vibeos_mbz_hit(VIBEOS_MBZ_FILELOCK_UNLOCKED, 0);
 +++ new
         (void)g_lock;
+
+### the lock reported in the way is whichever the table holds first
+--- old
+        if ((type == VIBEOS_FLK_EXCL || e->type == VIBEOS_FLK_EXCL) &&
+            (!first || e->start < first->start)) {
++++ new
+        if ((type == VIBEOS_FLK_EXCL || e->type == VIBEOS_FLK_EXCL) && !first) {

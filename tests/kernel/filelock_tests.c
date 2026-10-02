@@ -70,6 +70,11 @@ int test_filelock(void) {
            info.start == 150u && info.end == 199u && info.owner == C && info.pid == (uint32_t)C,
            "the lock in the way is reported whole");
     expect(held(C, EX, 150, 199) == 0, "an owner's own lock is never in its way");
+    /* Taken at 150 first and at 0 after: the one in the way of "everything"
+     * is still the one that starts first. */
+    expect(vibeos_flk_test(REC, &fsa, 7, C, EX, 0, VIBEOS_FLK_END, &info) == 1 && info.start == 0u &&
+           info.type == SH && info.owner == A,
+           "of several locks in the way, the one reported is the first by position");
     expect(set(B, SH, 10, 5) == -VIBEOS_EINVAL, "a range that ends before it starts is EINVAL");
     vibeos_flk_reset();
 
