@@ -824,8 +824,6 @@ again:
         vibeos_mm_stats()->fork_swapped_in++;
         goto again;
     }
-    phys = entry & PTE_ADDR_MASK;
-    flags = entry & (PTE_PRESENT | PTE_USER | PTE_NX);
 
     /* Three cases, and conflating the last two is a silent disaster.
      *

@@ -1010,8 +1010,12 @@ static int tf_op_symlink(void *fs, const char *target, const char *path) {
             uint32_t dir, nl;
             const char *name;
             int64_t slot;
-            (void)tf_split(T, path, &dir, &name, &nl);
-            slot = tf_find(T, dir, name, nl, 0);
+            /* The split's answer is looked at. It was thrown away, and on the
+             * path where it fails `dir`, `name` and `nl` are whatever the stack
+             * held - handed to tf_find. tf_make has just split the same path,
+             * so it does not fail today; clang's analyzer found the path on
+             * which it would. */
+            slot = tf_split(T, path, &dir, &name, &nl) == 0 ? tf_find(T, dir, name, nl, 0) : -1;
             if (slot >= 0) {
                 tf_remove(T, dir, (uint64_t)slot);
             }

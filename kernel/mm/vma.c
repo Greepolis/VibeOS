@@ -364,7 +364,6 @@ int vibeos_vma_protect_locked(vibeos_vma_list_t *list, uint64_t base, uint64_t l
             if (!vma_split(list, cur, end)) {
                 return -1;
             }
-            cur_end = end;
         }
         cur->prot = prot;
         {
