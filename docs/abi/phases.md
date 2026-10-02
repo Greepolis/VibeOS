@@ -993,6 +993,80 @@ syscall, but `ps`, `top` and most C libraries read it.
 **Programs:** BusyBox `sh` scripts with `trap`, `timeout`, `sleep`, `ps`, `time`;
 LTP's signal and process cases.
 
+L2 was taken after L3, because L3's oracle said what it wanted most: of the
+LTP tests for L1 that did not pass, most stopped at something of L2's - a
+credential call, `alarm`, a file under /proc or /dev. Seven steps, in the order
+that pays that debt first:
+
+1. **Credentials**: who a process is, the calls that change it, and permission
+   checks in L1's file operations.
+2. **Signals completed**: a fault delivered to a handler that asked for it
+   (SIGSEGV, SIGBUS, SIGFPE, SIGILL) with a real `siginfo_t`, `sigaltstack`,
+   `rt_sigsuspend`, `rt_sigpending`, `rt_sigtimedwait`, the queueing calls,
+   `pause`, and SIGCHLD raised when a child ends.
+3. **Timers**: `alarm`, `setitimer`, POSIX timers, `clock_getres`,
+   `gettimeofday`, `times` - which is also LTP's own timeout. Setting the clock
+   stays EPERM.
+4. **Limits and usage**: `getrlimit`/`setrlimit`/`prlimit64` enforced,
+   `getrusage`, priorities, `personality`.
+5. **Processes**: `waitid`, `getpgid`, `execveat`, `clone3`, pidfds.
+6. **/proc and /dev**: `/proc/self/*`, `/proc/<pid>`, `/proc/cpuinfo`,
+   `/proc/mounts`; `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/tty`.
+7. **The programs**: the corpus's shell workloads with `trap`, `timeout`,
+   `ps`, `time`; LTP for L2's own calls.
+
+(`nanosleep` and `clock_nanosleep` were done in L3 step 3, which could not run
+its oracle without them.)
+
+**Step 1 (2026-10-02): done.**
+
+- **A process is somebody.** Real, effective, saved and filesystem ids for
+  user and group, and thirty-two supplementary groups, in the process's state
+  (`include/vibeos/cred.h`); all zero - root - for a process nobody changed, a
+  copy for a forked child, kept across exec. The rules for changing them are
+  Linux's without capabilities ("privileged" is effective user 0) and live in
+  one portable file of pure functions, `kernel/sched/cred.c`.
+- **Sixteen calls**: `getuid`, `geteuid`, `getgid`, `getegid` report them (they
+  answered 0); `setuid`, `setgid`, `setreuid`, `setregid`, `setresuid`,
+  `setresgid`, `getresuid`, `getresgid`, `setfsuid`, `setfsgid`, `getgroups`,
+  `setgroups`. `setuid(1000)` used to be EPERM: there was one identity.
+- **The file operations ask who is asking.** The walk needs search permission
+  on every directory it looks a name up in; `open` needs read or write by its
+  flags (and write to truncate - asked before anything is cut); a name is made
+  or removed only in a directory the caller may write, and in a sticky one
+  (`/tmp`) only by the file's owner or the directory's; `chmod` and a chosen
+  time are the owner's, `chown` the superuser's except for the owner's own
+  groups; `truncate`, `chdir` and `execve` ask for write, search and execute.
+  What a process makes is its own. `access` answers for the *real* user and
+  `AT_EACCESS` for the effective one. The superuser is refused nothing but
+  running a file with no execute bit at all - and for it nothing more is
+  looked up than before.
+- **Signals**: a process may signal another only if it is the superuser's or
+  the target's real or saved user is its real or effective one - on top of the
+  session rule already there.
+- **Not done, and said**: capabilities; the set-user-id bit on exec; a new
+  file taking its directory's group under a set-group-id directory; `setgroups`
+  with more than thirty-two groups (the registry's gap); FAT has no owners, so
+  everything on the boot volume is root's and nobody else may write there.
+- **At boot** the self-test's child gives up root for good and is refused
+  root's file, root's directory and root's name in /tmp, owns what it makes,
+  and cannot take root back (`credentials_selftest_failed`).
+- **Sabotage**: `sched-cred.txt` (8), `abi-cred.txt` (8),
+  `abi-cred-names.txt` (6) against the host tests, `abi-cred-boot.txt` and
+  `abi-cred-exec.txt` against the boot; all red. One went NOT RED first - "the owner's bits do not decide
+  for the owner" - because no test had an owner whose own bits were the
+  stricter ones; there is one now. And the boot's own case went NOT RED:
+  the child was refused *creating* a file in root's directory, which the
+  directory's write bit refuses with or without the walk's search check; it
+  reads a file anybody may read there now.
+- **Found by a failed boot, not by a test**: exec built the new process state
+  without the credentials, so a program was whoever had held the slot before -
+  one boot in six, root's shell was the self-test's user 1000 and every create
+  on the boot volume was "Permission denied". exec copies them, a new slot
+  starts as root, and the self-test's child now runs BusyBox `test -r` on root's
+  file and must see it refused (`abi-cred-exec.txt`, red). Nine boots of nine after the fix.
+- **LTP, L1's 382 again**: 154 passed (131 before it), 16 failed, 144 broken, 65 not applicable, 2 did not run. What is left is mostly a loop device, `alarm`, and files under /proc and /dev.
+
 ### L3. Memory (10, plus `mmap` finished)
 
 File-backed mappings - private and shared - through the page cache, `MAP_FIXED`,

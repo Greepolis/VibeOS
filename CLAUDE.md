@@ -477,6 +477,25 @@ to say what it does with each: the fault keeps the lock and never sees the
 shared mark, fork keeps the shared mark and drops the lock, a move keeps all of
 them. A new mark means reading every one of those five again.
 
+**A file handler asks who is asking, and root is not looked up.** Since
+docs/abi/ L2 a process has credentials (`ps->cred`, under `files_lock`) and the
+Linux handlers put four questions to them (`linux_may`, `linux_may_add`,
+`linux_may_remove`, `linux_may_own` in `fs.c`), with search permission asked
+inside the walk (`vibeos_path_walk_as`). Each returns at once for the
+superuser, so a boot - all of which is root - does no more lookups than before.
+A new handler that makes, removes or changes a file needs the matching
+question before it touches the filesystem; `abi-cred*.txt` is where a missing
+one shows. The kernel walking a path for itself passes no credentials and is
+never refused.
+
+**The third field that exec, fork or a recycled slot forgot.** `interp_base`,
+the image's path, and now the credentials: fork copied them, exec did not, and
+`hw_procstate_new` left whatever the slot's last tenant had. The fake kernel
+memsets a new process state, so every host test was green; five boots of six
+were too, because the slot a shell landed in was usually one root had held. A
+field added to the process state has three writers to visit - new, fork, exec -
+and the fake's memset is why no host test will say which was missed.
+
 **Two user windows exist.** VibeOS programs link at `0x8000000000`; Linux
 programs link at `0x400000`, inside the kernel's identity map. The low window's
 physical range is reserved out of the allocator so nothing of the kernel's can
