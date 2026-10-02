@@ -381,6 +381,15 @@ clang rejects and the kind that returned a truncated pointer from `fdopen` the
 same day. The count that matters is the first one after the edit; a later zero
 is silence, not a pass. Touch the file, or read the first run.
 
+**Boots run three at a time.** `scripts/dev/boots.sh <build> <n>` runs them in
+parallel - about forty seconds a boot on eight host threads against a hundred
+one after another - and it works again since each run has its own boot image
+(the image was shared, from the day the boot disk stopped being a host
+directory, and two boots at once were two machines writing one disk). A run
+with an id skips the TCP echo and nothing else; `repeat-boot.sh` is still the
+full gate. For sabotage cases aimed at the host tests,
+`verify-host-quick.sh` is three seconds where `verify-host.sh` is nine.
+
 **A call that returns nothing a caller checks can be missing for years.**
 `nanosleep` did not exist. Every `sleep` and `usleep` in every program returned
 at once with ENOSYS, the C library's wrappers hide what they return, and the
@@ -452,6 +461,14 @@ purpose - which is why page-out and compaction refuse it without being told
 (`owners != holders`) - and tmpfs's `page_free` is a put, not a free. The mark
 in the entry (`VIBEOS_PTE_SHARED`, bit 53) is what fork reads; anything new
 that rebuilds an entry has to carry it or say why not, as page-out does.
+
+**Three marks in a page's entry are the kernel's own, and each has a list.**
+Bits 52, 53 and 54: a swap-out in progress, a shared page, a locked one
+(`VIBEOS_PTE_SWAPOUT`, `_SHARED`, `_LOCKED`). Whatever rebuilds an entry -
+fork, the copy-on-write fault, mprotect, page-out, `vibeos_vmspace_move` - has
+to say what it does with each: the fault keeps the lock and never sees the
+shared mark, fork keeps the shared mark and drops the lock, a move keeps all of
+them. A new mark means reading every one of those five again.
 
 **Two user windows exist.** VibeOS programs link at `0x8000000000`; Linux
 programs link at `0x400000`, inside the kernel's identity map. The low window's

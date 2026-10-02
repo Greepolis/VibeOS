@@ -1212,6 +1212,47 @@ anything below was fixed: 113 passed. The last: 131 passed, 10 failed, 177 broke
   there. The fake's kernel copy now reaches what ring 0 reaches, and the
   self-test checks the same thing on the machine. `check.sh all` green, the sanitized host tests clean, 20 boots of 20 over two runs.
 
+**Step 4 (2026-10-02): done.**
+
+- **`madvise`.** Advice about speed is taken by doing nothing: every page is
+  already there. `MADV_DONTNEED` and `MADV_FREE` are not advice - a program
+  reads zeros afterwards and an allocator relies on it - so a private anonymous
+  page is given back and a zeroed one put in its place. A shared page is left
+  as it is; a locked one refuses. Advice that would change what a later call
+  does (`MADV_DONTFORK`, the huge-page pair, `MADV_REMOVE`) is EINVAL rather
+  than a promise not kept. **Gap, in the registry**: `MADV_DONTNEED` on a
+  private page of a file keeps what the program stored, where Linux shows the
+  file again.
+- **`mincore`**: a byte a page - in memory, or not (in swap, or a part of a
+  mapping nothing backs).
+- **`mlock`, `mlock2`, `munlock`, `mlockall`, `munlockall`.** A locked page
+  carries a mark in its entry (`VIBEOS_PTE_LOCKED`, bit 54) and page-out
+  refuses it; a page in swap is brought back when it is locked. The copy a
+  write fault makes, a change of protection and a move keep the mark; a fork
+  does not hand it to the child. **Gap**: `MCL_FUTURE` is accepted and a
+  mapping made afterwards is not locked.
+- **`mremap`.** Shrinks; grows where it stands when the address space after it
+  is free; moves when it is not and `MREMAP_MAYMOVE` allows, or to the address
+  `MREMAP_FIXED` names. A move takes each entry out of the old address and puts
+  it at the new one - the same frame, the same marks, the same reference;
+  nothing is copied (`vibeos_vmspace_move`). A failure half-way puts back what
+  was moved. **Gap**: only a private anonymous mapping grows - a shared one or
+  a file's would need more of what it shares, and the region does not remember
+  where that came from; a zero old length and `MREMAP_DONTUNMAP` are refused.
+- **`memfd_create`.** A file on /tmp that goes when its last descriptor does:
+  memory with a file's interface, to size, map shared and pass on. **Gap**: it
+  has a name under /tmp while it is open, where Linux's has none anywhere; and
+  there are no seals.
+- **A region says what it is** - anonymous, a file's bytes in private pages,
+  or shared - because three of these calls have to ask.
+- **At boot** the self-test discards a page and reads zeros, locks two pages
+  and asks mincore, grows a mapping that has to move and finds its contents,
+  and shares a memfd across a fork (`memory_calls_selftest_failed`).
+- **Sabotage**: `abi-mem4.txt` (14), `mm-lock-move.txt` (4), `abi-memfd.txt`
+  (3) against the host tests, `abi-mem4-boot.txt` against the boot; all red.
+  `check.sh all` green, the sanitized host tests clean, 21 boots of 21 (run three at a time).
+- **LTP**, the tests for these calls and for mmap and msync: 32 tried, 20 pass. `mmap08` found one more wrong answer, fixed (a mapping of a descriptor that is not open is EBADF before a zero length is EINVAL). Of the rest: `mincore03` expects an untouched anonymous page not to be in memory, and here a mapping is populated when it is made; `mremap01` grows a shared mapping of a file (the gap above); the others want `setrlimit`, `/proc/self/maps`, `shmget`, seals or `mount`.
+
 **Step 5 (2026-10-01), done ahead of its turn.** Taken before step 2 because of
 what step 1 found: the boot gate had become flaky, and the pages mapped at exec
 that nobody touched were what had made it so.
