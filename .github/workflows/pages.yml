@@ -33,7 +33,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install mdBook
         run: |
@@ -62,14 +62,14 @@ jobs:
           done < <(grep -oP '\]\(\K[^)]+' docs/SUMMARY.md)
           [ "$missing" -eq 0 ]
 
-      - uses: actions/configure-pages@v6
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
         with:
           # Turn Pages on rather than requiring somebody to find the setting.
           # Without this the first run fails with "Get Pages site failed... Not
           # Found", which reads like a broken workflow and is in fact a
           # repository that has never had Pages enabled.
           enablement: true
-      - uses: actions/upload-pages-artifact@v5
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
         with:
           path: docs/book
 
@@ -81,4 +81,4 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5
