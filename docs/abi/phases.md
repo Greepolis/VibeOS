@@ -1253,6 +1253,40 @@ anything below was fixed: 113 passed. The last: 131 passed, 10 failed, 177 broke
   `check.sh all` green, the sanitized host tests clean, 21 boots of 21 (run three at a time).
 - **LTP**, the tests for these calls and for mmap and msync: 32 tried, 20 pass. `mmap08` found one more wrong answer, fixed (a mapping of a descriptor that is not open is EBADF before a zero length is EINVAL). Of the rest: `mincore03` expects an untouched anonymous page not to be in memory, and here a mapping is populated when it is made; `mremap01` grows a shared mapping of a file (the gap above); the others want `setrlimit`, `/proc/self/maps`, `shmget`, seals or `mount`.
 
+**Step 6 (2026-10-02): done. L3 is closed, with its gaps named.**
+
+- **glibc, dynamically linked, runs.** SQLite's shell and Lua are built a
+  second time with the host's compiler against the host's glibc
+  (`scripts/dev/corpus-build.sh`: `sqlite3-glibc`, `lua-glibc`), and the
+  loader and the libraries they name - `ld-linux-x86-64.so.2`, `libc.so.6`,
+  `libm.so.6` - are copied to the boot volume at the paths the programs ask for
+  them by. glibc's loader reserves a range and lays each library's segments
+  over it with `MAP_FIXED`, private mappings of the file: step 1. Nothing had
+  to be added for it; the first program ran on the first try.
+- **SQLite with memory-mapped I/O, in write-ahead-log mode.** The WAL's index
+  is a file every connection maps shared - the journal mode cannot be entered
+  without step 2 - and with `mmap_size` set the database is read through a
+  mapping. Two connections, four hundred rows, an update, a checkpoint and an
+  integrity check; the `-wal` and `-shm` files are gone afterwards, as on
+  Linux.
+- **Three workloads more in the corpus** (`glibc-sqlite`, `glibc-lua`,
+  `sqlite-wal-mmap`), eighteen in all, compared line for line with what Linux
+  printed. They matched on the first boot.
+- **Sabotage**: `abi-corpus-l3-boot.txt`, two cases, red - a `MAP_FIXED` that
+  is not honoured takes the glibc workloads down, a shared file mapping made
+  private takes the WAL one.
+- **LTP for L3's own syscalls** (`tests/corpus/ltp-l3.txt`, 66 tests):
+  31 of 63 pass, with two left out because they hang (`mincore04`, `mmap18`). It found three more wrong answers, fixed: `MAP_SHARED_VALIDATE` did not refuse an unknown flag, `MAP_LOCKED` was ignored, and `msync(MS_INVALIDATE)` of a locked page was not EBUSY. Not fixed and said: a fault in ring 3 kills the task instead of delivering SIGSEGV or SIGBUS to a handler that asked for it (`mmap05`, `mmap13`, and why `mmap18` hangs); `mincore03` expects an untouched page not to be resident; `mremap01` aborts after `mremap` refuses to grow a shared mapping of a file - most likely in its own cleanup, which was not confirmed. The rest want `setrlimit`, `/proc/self/maps` and `status`, `shmget`, seals, `mount` or a loop device.
+- `check.sh all` green, the sanitized host tests clean, 12 boots of 12 three at a time and 5 of 5 through the full gate. A later run of six in parallel ran out of its 300 seconds with every boot still working through the corpus: the host was at 70% load from something else and everything on it ran at half speed.
+
+**What L3 leaves open**, all in the registry or above: a region does not
+remember its file, which is one cause with three faces (a shared or file
+mapping does not grow under `mremap`, `MADV_DONTNEED` keeps a private page of
+a file, a page past the end of a mapped file is absent rather than SIGBUS); a
+shared mapping of a file needs a filesystem that keeps pages, so not FAT; a
+mapping is populated when it is made, so `mincore` never says "not yet";
+`MCL_FUTURE`; seals on a memfd.
+
 **Step 5 (2026-10-01), done ahead of its turn.** Taken before step 2 because of
 what step 1 found: the boot gate had become flaky, and the pages mapped at exec
 that nobody touched were what had made it so.

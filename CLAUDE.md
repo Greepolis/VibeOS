@@ -390,6 +390,13 @@ with an id skips the TCP echo and nothing else; `repeat-boot.sh` is still the
 full gate. For sabotage cases aimed at the host tests,
 `verify-host-quick.sh` is three seconds where `verify-host.sh` is nine.
 
+**A slow boot is the host's until shown otherwise.** A boot alone takes about
+ninety seconds. One took nearly four minutes and was written down as "the boot
+has become slower", with a limit raised to match - while a recursive grep over
+the build tree, started a minute earlier and forgotten, was reading the same
+disk. Run the gate with its output showing (`phase=... elapsed=...`) and look
+at what else the machine is doing before explaining a number.
+
 **A call that returns nothing a caller checks can be missing for years.**
 `nanosleep` did not exist. Every `sleep` and `usleep` in every program returned
 at once with ENOSYS, the C library's wrappers hide what they return, and the
@@ -1278,10 +1285,12 @@ mode and reads the injected script a key at a time, echoing each itself. In the
 serial log a typed command is therefore a run of one-character writes on one
 physical line, and a command's output starts on the next.
 
-The corpus (docs/abi/ L1 step 8): fifteen workloads run by
+The corpus (docs/abi/ L1 step 8, L3 step 6): eighteen workloads run by
 `/corpus/run.sh` in the guest, compared with `tests/corpus/l1-expected.txt`.
-SQLite and Lua are staged only if `scripts/dev/corpus-build.sh` has been run
-for the build directory; otherwise the verdict carries `corpus_absent=...`.
+SQLite and Lua - built against musl statically and against glibc dynamically,
+with glibc's loader and libraries copied from the host - are staged only if
+`scripts/dev/corpus-build.sh` has been run for the build directory; otherwise
+the verdict carries `corpus_absent=...`.
 LTP tests are run by hand with `scripts/dev/ltp-run.sh`; since L3 step 3 they
 run, and L1's 382 are listed in `tests/corpus/ltp-l1.txt`.
 

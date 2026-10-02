@@ -10,6 +10,7 @@ A syscall is worth writing when a program in here asks for it.
 | `needs/<name>.txt` | The syscalls that workload made on Linux, sorted (generated) |
 | `needs/<name>.files` | The system files it opened under `/proc`, `/sys`, `/dev`, `/etc` (generated) |
 | `sources.txt` | SQLite, Lua and LTP: pinned URL and SHA-256 |
+| `ltp-l1.txt`, `ltp-l3.txt`, `ltp-hangs.txt` | The LTP tests that belong to a phase's syscalls (`scripts/dev/ltp-list.py`), and the ones `ltp-run.sh` leaves out because they hang |
 | `ltp-built.txt`, `ltp-failed.txt` | LTP's syscall tests that build against musl, and the directories that do not (generated) |
 
 | `run-l1.sh` | The file workloads, run for their answers: on VibeOS at boot, and on Linux by `scripts/dev/corpus-expect.sh` |
