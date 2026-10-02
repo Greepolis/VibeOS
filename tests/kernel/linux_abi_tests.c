@@ -2559,6 +2559,16 @@ static void t_memory_calls(void) {
            SYS0(152) == 0 && !(entry_of(parent, (uint64_t)s) & VIBEOS_PTE_LOCKED) &&
            !(entry_of(parent, (uint64_t)m) & VIBEOS_PTE_LOCKED),
            "mlockall locks every mapping and munlockall lets them all go");
+    expect(SYS2(149, (uint64_t)s, 4096) == 0 && SYS3(26, (uint64_t)s, 4096, 2 /* MS_INVALIDATE */) == -VIBEOS_EBUSY &&
+           SYS2(150, (uint64_t)s, 4096) == 0 && SYS3(26, (uint64_t)s, 4096, 2) == 0,
+           "msync(MS_INVALIDATE) of a locked page is EBUSY");
+    expect(MMAP(0, 4096, 3, 0x23 /* SHARED_VALIDATE|ANONYMOUS */, -1, 0) > 0 &&
+           MMAP(0, 4096, 3, 0x23 | 0x400, -1, 0) == -VIBEOS_EOPNOTSUPP &&
+           MMAP(0, 4096, 3, 0x22 | 0x400, -1, 0) > 0,
+           "MAP_SHARED_VALIDATE refuses a flag nobody knows, and the other kinds ignore it");
+    m2 = MMAP(0, 4096, 3, MAP_PRIV_ANON | 0x2000 /* MAP_LOCKED */, -1, 0);
+    expect(m2 > 0 && (entry_of(parent, (uint64_t)m2) & VIBEOS_PTE_LOCKED) &&
+           !(entry_of(parent, (uint64_t)m) & VIBEOS_PTE_LOCKED), "MAP_LOCKED is mlock at the time of the mapping");
     expect(SYS1(151, 0) == -VIBEOS_EINVAL && SYS1(151, 8) == -VIBEOS_EINVAL && SYS1(151, 4) == -VIBEOS_EINVAL,
            "mlockall: no flags, an unknown one, and MCL_ONFAULT by itself are EINVAL");
 

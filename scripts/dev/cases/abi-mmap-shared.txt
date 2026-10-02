@@ -43,9 +43,29 @@
 --- old
     if (!linux_regions_cover(ps, addr, end)) {
         r = -VIBEOS_ENOMEM;
-    }
-    ks_mm_unlock(ps);
-    return r;
+    } else if (flags & LINUX_MS_INVALIDATE) {
 +++ new
-    ks_mm_unlock(ps);
-    return r;
+    if (0) {
+    } else if (flags & LINUX_MS_INVALIDATE) {
+
+### MAP_SHARED_VALIDATE takes any flag
+--- old
+    if ((flags & LINUX_MAP_TYPE) == LINUX_MAP_SHARED_VALIDATE && (flags & ~(uint64_t)LINUX_MAP_KNOWN)) {
++++ new
+    if (0) {
+
+### msync throws away a locked page's copies
+--- old
+            if (e && (*e & VIBEOS_PTE_LOCKED)) {
+                r = -VIBEOS_EBUSY;
+                break;
+            }
++++ new
+            (void)e;
+
+### MAP_LOCKED is ignored
+--- old
+    if (r > 0 && (flags & LINUX_MAP_LOCKED)) {
++++ new
+    if (0) {
+

@@ -383,6 +383,11 @@ typedef struct {
 #define LINUX_MAP_FIXED     0x10
 #define LINUX_MAP_ANONYMOUS 0x20
 #define LINUX_MAP_FIXED_NOREPLACE 0x100000
+#define LINUX_MAP_LOCKED    0x2000
+/* The flags Linux's mmap has always accepted (its LEGACY_MAP_MASK, the huge
+ * page sizes included) and MAP_FIXED_NOREPLACE. MAP_SHARED_VALIDATE exists to
+ * refuse everything else; 0x200 and 0x400 are in nobody's list. */
+#define LINUX_MAP_KNOWN     0xfc17f97fu
 /* clock_nanosleep: the clocks one can sleep on, and "until", not "for". */
 #define LINUX_CLOCK_REALTIME  0
 #define LINUX_CLOCK_MONOTONIC 1

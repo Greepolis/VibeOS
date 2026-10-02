@@ -32,11 +32,11 @@
 
 ### a shared page is discarded like a private one
 --- old
-        if (reg->backing != VIBEOS_BACKING_ANON || !vibeos_vmspace_mapped(&v, va)) {
+        if (!reg || reg->backing != VIBEOS_BACKING_ANON || !vibeos_vmspace_mapped(&v, va)) {
             continue;
         }
 +++ new
-        if (!vibeos_vmspace_mapped(&v, va)) {
+        if (!reg || !vibeos_vmspace_mapped(&v, va)) {
             continue;
         }
 

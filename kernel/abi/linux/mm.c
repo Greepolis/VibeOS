@@ -18,6 +18,12 @@ static vibeos_vma_t *linux_region_in(vibeos_procstate_t *ps, uint64_t base, uint
     return 0;
 }
 
+/* Defined with the calls of L3 step 4, further down; mmap and msync, above
+ * them, ask the same questions. Declared here because a use above a definition
+ * compiles as an implicit declaration and fails three hundred lines later. */
+static int linux_regions_cover(vibeos_procstate_t *ps, uint64_t addr, uint64_t end);
+static long linux_lock_range(int me, vibeos_procstate_t *ps, uint64_t addr, uint64_t end, int on);
+
 /* Address space for `pages` that nothing occupies, or 0. Under the mm lock.
  *
  * The arena is a cursor that only moves up, which was the whole of it while
@@ -383,6 +389,13 @@ static long linux_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot, uint64_t 
         (flags & LINUX_MAP_TYPE) != LINUX_MAP_SHARED_VALIDATE) {
         return -VIBEOS_EINVAL;
     }
+    /* MAP_SHARED_VALIDATE is MAP_SHARED that refuses a flag it does not know,
+     * where the other two ignore one: it exists so a program can ask for
+     * something new and be told when the kernel is too old to do it (LTP's
+     * mmap20). */
+    if ((flags & LINUX_MAP_TYPE) == LINUX_MAP_SHARED_VALIDATE && (flags & ~(uint64_t)LINUX_MAP_KNOWN)) {
+        return -VIBEOS_EOPNOTSUPP;
+    }
     ps = ks_ps(ks_current());
     if (!ps) {
         return -VIBEOS_EINVAL;
@@ -417,6 +430,12 @@ static long linux_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot, uint64_t 
     }
     ks_mm_lock(ps);
     r = linux_mmap_locked(ks_current(), ps, addr, len, prot, flags, f, off);
+    if (r > 0 && (flags & LINUX_MAP_LOCKED)) {
+        /* MAP_LOCKED: mlock, said at the time of the mapping. Linux does not
+         * fail the mmap when the lock cannot be had, and neither does this. */
+        (void)linux_lock_range(ks_current(), ps, (uint64_t)r,
+                               (uint64_t)r + ((len + 0xFFFull) & ~0xFFFull), 1);
+    }
     ks_mm_unlock(ps);
     if (f) {
         vibeos_file_put(f);
@@ -434,8 +453,6 @@ static long linux_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot, uint64_t 
  * (EINVAL), and a range with a hole in it (ENOMEM), which is the answer a
  * program checks to learn whether it still has the mapping. A filesystem that
  * kept a mapped file on a disk would do its writing here; none does yet. */
-static int linux_regions_cover(vibeos_procstate_t *ps, uint64_t addr, uint64_t end);
-
 static long linux_sys_msync(uint64_t addr, uint64_t len, uint64_t flags) {
     vibeos_procstate_t *ps;
     uint64_t end;
@@ -456,6 +473,19 @@ static long linux_sys_msync(uint64_t addr, uint64_t len, uint64_t flags) {
     ks_mm_lock(ps);
     if (!linux_regions_cover(ps, addr, end)) {
         r = -VIBEOS_ENOMEM;
+    } else if (flags & LINUX_MS_INVALIDATE) {
+        /* "Throw the other mappings' copies away" cannot be done to a page
+         * somebody locked in memory: EBUSY, as Linux says (LTP's msync03). */
+        vibeos_vmspace_t v = ks_vm(ks_current());
+        uint64_t va;
+
+        for (va = addr; va < end; va += 4096ull) {
+            const uint64_t *e = vibeos_vmspace_entry(&v, va);
+            if (e && (*e & VIBEOS_PTE_LOCKED)) {
+                r = -VIBEOS_EBUSY;
+                break;
+            }
+        }
     }
     ks_mm_unlock(ps);
     return r;
@@ -543,6 +573,13 @@ static long linux_sys_madvise(uint64_t addr, uint64_t len, uint64_t advice) {
         const vibeos_vma_t *reg = vibeos_vma_find(&ps->vmas, va);
         const uint64_t *e = vibeos_vmspace_entry(&v, va);
 
+        /* Every page of the range is in a region - that was asked a few
+         * lines up, under the lock still held - so `reg` is not null here.
+         * Said to the compiler's reader as well as to this one (code scanning
+         * 149, 150): a page with no region is simply passed over. */
+        if (!reg) {
+            continue;
+        }
         if (advice == LINUX_MADV_FREE && reg->backing != VIBEOS_BACKING_ANON) {
             r = -VIBEOS_EINVAL;   /* only memory that is nobody else's and no file's */
         } else if (e && (*e & VIBEOS_PTE_LOCKED)) {
@@ -552,7 +589,7 @@ static long linux_sys_madvise(uint64_t addr, uint64_t len, uint64_t advice) {
     for (va = addr; discard && r == 0 && va < end; va += 4096ull) {
         const vibeos_vma_t *reg = vibeos_vma_find(&ps->vmas, va);
 
-        if (reg->backing != VIBEOS_BACKING_ANON || !vibeos_vmspace_mapped(&v, va)) {
+        if (!reg || reg->backing != VIBEOS_BACKING_ANON || !vibeos_vmspace_mapped(&v, va)) {
             continue;
         }
         (void)vibeos_vmspace_unmap(&v, va);
