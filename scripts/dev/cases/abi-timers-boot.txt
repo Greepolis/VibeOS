@@ -1,0 +1,29 @@
+# Timers on the machine (docs/abi/ L2 step 3): what the architecture does with
+# the table - fires it on the clock owner's tick, charges it on every core's,
+# and takes a process's timers away when it ends. Gate: SIGNAL.ELF prints
+# TIMER_OK only if every kind fired (timers_did_not_fire), and a timer that
+# outlives its process is ptimer_orphan in the must-be-zero registry.
+#
+#  1. nothing charges CPU time to the timers. Expect timers_did_not_fire:
+#     ITIMER_VIRTUAL and ITIMER_PROF never fire.
+#  2. an exiting process keeps its timers. Expect mbz ptimer_orphan: the child
+#     SIGNAL.ELF forks arms alarm(1) and exits before it goes off.
+#
+# Not a case: SIGEV_THREAD_ID delivered to the process instead of the thread.
+# SIGNAL.ELF names its own main thread, which is also the process's leader, so
+# both deliveries look the same; the host test (t_timers) checks the record.
+#
+# Target source: kernel/arch/x86_64/task_life.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/arch/x86_64/task_life.c scripts/dev/cases/abi-timers-boot.txt
+
+### nothing charges CPU time to the timers
+--- old
+    vibeos_ptimer_charge(g_tasks[slot].id.tgid, g_tasks[slot].id.pid, user, hw_ptimer_fire);
++++ new
+    (void)user;
+
+### an exiting process keeps its timers
+--- old
+        vibeos_ptimer_exit(g_tasks[dying].id.tgid);
++++ new
+        (void)0;

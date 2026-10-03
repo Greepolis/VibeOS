@@ -21,6 +21,9 @@
  *     the alternate stack, the vector registers, sigqueue's value; and the
  *     calls that wait for a signal - sigtimedwait, sigsuspend, pause - and
  *     SIGCHLD, which a child's end now raises
+ *   (L2 step 3) timers fire, at about the time asked: alarm, setitimer's
+ *     three, POSIX timers on the machine's clock and the CPU's; and the
+ *     clocks a program reads its own CPU time from
  */
 
 /* REG_RIP and the rest of ucontext_t's register names. */
@@ -30,6 +33,8 @@
 #include <stdint.h>
 #include <time.h>
 #include <ucontext.h>
+#include <sys/time.h>
+#include <sys/times.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -286,6 +291,227 @@ static int l2_checks(void) {
     return ok;
 }
 
+/* ---- docs/abi/ L2 step 3: timers --------------------------------------------
+ *
+ * Each timer has to *fire*, at about the time asked, and say what Linux says.
+ * Bounded by the wall clock everywhere, so a timer that never fires fails the
+ * check instead of hanging the boot. */
+
+static volatile sig_atomic_t g_alrm, g_vt, g_prof;
+
+static void on_alrm(int sig) { (void)sig; g_alrm++; }
+static void on_vt(int sig) { (void)sig; g_vt++; }
+static void on_prof(int sig) { (void)sig; g_prof++; }
+
+static double now_mono(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (double)t.tv_sec + (double)t.tv_nsec / 1e9;
+}
+
+/* Run on the CPU until `flag` moves or `limit` seconds of wall time pass. */
+static void spin_until(volatile sig_atomic_t *flag, double limit) {
+    double end = now_mono() + limit;
+    volatile unsigned long x = 0;
+    sig_atomic_t start = *flag;
+
+    while (*flag == start && now_mono() < end) {
+        x++;
+    }
+}
+
+/* The kernel's sigevent, for SIGEV_THREAD_ID through the raw call: the C
+ * library's timer_create does not take that one. */
+struct k_sigevent {
+    unsigned long value;
+    int signo;
+    int notify;
+    int tid;
+    char pad[44];
+};
+
+static int timer_checks(void) {
+    struct sigaction sa;
+    struct itimerval itv;
+    struct sigevent sev;
+    struct itimerspec its;
+    struct timespec res, cpu;
+    struct tms tm;
+    sigset_t set, old;
+    siginfo_t si;
+    timer_t t;
+    double t0, el;
+    int ok = 1;
+
+    printf("SIG_PHASE: timers\n");
+    fflush(stdout);
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = on_alrm;
+    sigaction(SIGALRM, &sa, NULL);
+    sa.sa_handler = on_vt;
+    sigaction(SIGVTALRM, &sa, NULL);
+    sa.sa_handler = on_prof;
+    sigaction(SIGPROF, &sa, NULL);
+
+    /* A child that arms an alarm and exits before it goes off: its timer has to
+     * go with it. If it did not, it would fire into a process that no longer
+     * exists - ptimer_orphan, which the gate requires to be zero - about the
+     * time the alarm below is pausing. */
+    {
+        pid_t child = fork();
+        if (child == 0) {
+            alarm(1);
+            _exit(0);
+        }
+        waitpid(child, NULL, 0);
+    }
+
+    /* alarm and pause: a second, give or take a tick. */
+    t0 = now_mono();
+    g_alrm = 0;
+    alarm(1);
+    pause();
+    el = now_mono() - t0;
+    if (g_alrm != 1 || el < 0.98 || el > 1.5) {
+        printf("SIG_FAIL: alarm(1): fired=%d after %.3fs\n", (int)g_alrm, el);
+        ok = 0;
+    }
+
+    /* setitimer, periodic: four expiries of 50ms, then disarmed. */
+    memset(&itv, 0, sizeof(itv));
+    itv.it_value.tv_usec = 50000;
+    itv.it_interval.tv_usec = 50000;
+    g_alrm = 0;
+    t0 = now_mono();
+    setitimer(ITIMER_REAL, &itv, NULL);
+    while (g_alrm < 4 && now_mono() - t0 < 2.0) {
+        pause();
+    }
+    el = now_mono() - t0;
+    memset(&itv, 0, sizeof(itv));
+    setitimer(ITIMER_REAL, &itv, NULL);
+    getitimer(ITIMER_REAL, &itv);
+    if (g_alrm < 4 || el < 0.19 || itv.it_value.tv_sec != 0 || itv.it_value.tv_usec != 0) {
+        printf("SIG_FAIL: setitimer periodic: %d expiries in %.3fs\n", (int)g_alrm, el);
+        ok = 0;
+    }
+
+    /* The CPU-time interval timers fire on time the process spends running. */
+    memset(&itv, 0, sizeof(itv));
+    itv.it_value.tv_usec = 30000;
+    g_vt = 0;
+    setitimer(ITIMER_VIRTUAL, &itv, NULL);
+    spin_until(&g_vt, 5.0);
+    g_prof = 0;
+    setitimer(ITIMER_PROF, &itv, NULL);
+    spin_until(&g_prof, 5.0);
+    if (g_vt != 1 || g_prof != 1) {
+        printf("SIG_FAIL: ITIMER_VIRTUAL fired %d, ITIMER_PROF %d\n", (int)g_vt, (int)g_prof);
+        ok = 0;
+    }
+
+    /* A POSIX timer: SI_TIMER, the value given, no overrun. */
+    sigemptyset(&set);
+    sigaddset(&set, SIGUSR2);
+    sigprocmask(SIG_BLOCK, &set, &old);
+    memset(&sev, 0, sizeof(sev));
+    sev.sigev_notify = SIGEV_SIGNAL;
+    sev.sigev_signo = SIGUSR2;
+    sev.sigev_value.sival_int = 9;
+    memset(&its, 0, sizeof(its));
+    its.it_value.tv_nsec = 20000000;
+    if (timer_create(CLOCK_MONOTONIC, &sev, &t) != 0 || timer_settime(t, 0, &its, NULL) != 0) {
+        printf("SIG_FAIL: timer_create or timer_settime: errno=%d\n", errno);
+        ok = 0;
+    } else {
+        struct timespec wait = { 2, 0 };
+        if (sigtimedwait(&set, &si, &wait) != SIGUSR2 || si.si_code != SI_TIMER ||
+            si.si_value.sival_int != 9 || timer_getoverrun(t) != 0) {
+            printf("SIG_FAIL: POSIX timer: code=%d value=%d overrun=%d\n",
+                   si.si_code, si.si_value.sival_int, timer_getoverrun(t));
+            ok = 0;
+        }
+        timer_delete(t);
+    }
+
+    /* On the process's CPU clock: fires on CPU time spent. */
+    memset(&sev, 0, sizeof(sev));
+    sev.sigev_notify = SIGEV_SIGNAL;
+    sev.sigev_signo = SIGUSR2;
+    its.it_value.tv_nsec = 30000000;
+    if (timer_create(CLOCK_PROCESS_CPUTIME_ID, &sev, &t) != 0 || timer_settime(t, 0, &its, NULL) != 0) {
+        printf("SIG_FAIL: a timer on CLOCK_PROCESS_CPUTIME_ID: errno=%d\n", errno);
+        ok = 0;
+    } else {
+        sigset_t pend;
+        double end = now_mono() + 5.0;
+        volatile unsigned long x = 0;
+
+        do {
+            x++;
+            sigpending(&pend);
+        } while (!sigismember(&pend, SIGUSR2) && now_mono() < end);
+        if (!sigismember(&pend, SIGUSR2)) {
+            printf("SIG_FAIL: the CPU-time timer never fired\n");
+            ok = 0;
+        } else {
+            struct timespec zero = { 0, 0 };
+            sigtimedwait(&set, &si, &zero);
+        }
+        timer_delete(t);
+    }
+
+    /* SIGEV_THREAD_ID, through the raw call: to this thread. */
+    {
+        struct k_sigevent ks;
+        int id = -1;
+        struct timespec wait = { 2, 0 };
+
+        memset(&ks, 0, sizeof(ks));
+        ks.signo = SIGUSR2;
+        ks.notify = 4;   /* SIGEV_THREAD_ID */
+        ks.tid = (int)syscall(SYS_gettid);
+        its.it_value.tv_nsec = 10000000;
+        if (syscall(SYS_timer_create, CLOCK_MONOTONIC, &ks, &id) != 0 ||
+            syscall(SYS_timer_settime, id, 0, &its, NULL) != 0 ||
+            sigtimedwait(&set, &si, &wait) != SIGUSR2 || si.si_code != SI_TIMER) {
+            printf("SIG_FAIL: SIGEV_THREAD_ID: errno=%d\n", errno);
+            ok = 0;
+        }
+        syscall(SYS_timer_delete, id);
+    }
+    sigprocmask(SIG_SETMASK, &old, NULL);
+
+    /* The clocks. */
+    if (clock_getres(CLOCK_MONOTONIC, &res) != 0 || res.tv_sec != 0 || res.tv_nsec != 10000000) {
+        printf("SIG_FAIL: clock_getres: %ld.%09ld\n", (long)res.tv_sec, (long)res.tv_nsec);
+        ok = 0;
+    }
+    if (clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &cpu) != 0 || (cpu.tv_sec == 0 && cpu.tv_nsec == 0) ||
+        times(&tm) == (clock_t)-1 || tm.tms_utime == 0) {
+        printf("SIG_FAIL: CPU time: %ld.%09ld utime=%ld\n", (long)cpu.tv_sec, (long)cpu.tv_nsec, (long)tm.tms_utime);
+        ok = 0;
+    }
+    {
+        struct timeval tv;
+        struct timespec rt;
+        gettimeofday(&tv, NULL);
+        clock_gettime(CLOCK_REALTIME, &rt);
+        if (rt.tv_sec - tv.tv_sec > 1 || tv.tv_sec > rt.tv_sec) {
+            printf("SIG_FAIL: gettimeofday %ld and CLOCK_REALTIME %ld disagree\n", (long)tv.tv_sec, (long)rt.tv_sec);
+            ok = 0;
+        }
+    }
+    signal(SIGALRM, SIG_DFL);
+    signal(SIGVTALRM, SIG_DFL);
+    signal(SIGPROF, SIG_DFL);
+    if (ok) {
+        printf("TIMER_OK: alarm, setitimer real virtual prof, POSIX timers, CPU clocks\n");
+        fflush(stdout);
+    }
+    return ok;
+}
+
 int main(void) {
     struct sigaction sa;
     sigset_t block, old;
@@ -458,6 +684,8 @@ int main(void) {
 
     /* ---- L2 step 2: what a handler is told, and the calls that wait ---------- */
     ok &= l2_checks();
+    /* ---- L2 step 3: timers ---------------------------------------------------- */
+    ok &= timer_checks();
 
     printf(ok ? "SIG_OK: handlers, masking, ignoring and default actions\n"
               : "SIG_FAIL: see above\n");

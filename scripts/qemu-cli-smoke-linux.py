@@ -3026,6 +3026,10 @@ def main():
                 # only if every one of those checks held.
                 if not re.search(r"write\(ring3\): SIG_L2_OK: ", text):
                     problems.append("signal_l2_checks_failed")
+                # L2 step 3: every timer kind fires, read off the program's own
+                # line, which it prints only if each one did.
+                if not re.search(r"write\(ring3\): TIMER_OK: ", text):
+                    problems.append("timers_did_not_fire")
 
             # The graphical shell, to the extent a serial log can speak for
             # it: the console has to have reached the on-screen terminal. Only
