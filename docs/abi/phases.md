@@ -1187,6 +1187,53 @@ its oracle without them.)
   was tried together with a time that was not one. Nine boots of nine after it.
 - **LTP**: the timer tests and step 2's signal tests together (tests/corpus/ltp-l2.txt's subset, 70 tests): 37 passed, 1 failed (times03: no system time), 24 broken, 7 did not run (kill10 takes the rest of its boot: step 5). Before this step the same list ran 3 of 48. Of the broken: /proc/<pid>/stat and /proc/cpuinfo (step 6), setrlimit (step 4), clock_settime refused, System V shared memory, signal 64, and LTP's musl restorer.
 
+**Step 4 (2026-10-03): done.**
+
+- **Limits** (`kernel/abi/linux/limits.c`): Linux's sixteen, soft and hard,
+  in the process state - a child has its parent's, exec keeps them, and the
+  first process starts with Linux's defaults where this machine can honour
+  them (`linux_procstate_defaults`, called by the architecture's
+  `hw_procstate_new`: the third writer every field of the process state has).
+  `getrlimit`, `setrlimit` and `prlimit64` (on another process too, for the
+  superuser or a caller whose ids match) with Linux's rules: soft above hard is
+  EINVAL, raising a hard limit is the superuser's, NOFILE stops at what the
+  descriptor table holds.
+- **Enforced** where the mechanism already was: NOFILE is the descriptor
+  table's own limit; FSIZE cuts a write at the limit in the one place every
+  regular-file write passes, and past it is SIGXFSZ and EFBIG; DATA stops `brk`;
+  NPROC refuses fork and clone for a user who is not root; CPU is two timers in
+  the process-timer table (step 3) on the process's CPU time - SIGXCPU at the
+  soft limit and every second after, SIGKILL at the hard one. The rest are kept
+  and reported, and the registry says so.
+- **`getrusage`** reports CPU time (all of it user time); **`getpriority` and
+  `setpriority`** are the scheduler's nice, answering 20 - nice raw as Linux
+  does, with Linux's rules for who may renice whom and RLIMIT_NICE's allowance;
+  **`personality`** is kept and reported, and changes nothing.
+- **Found on the way, and not in this step's code: the scheduler's policy had
+  never run on the machine (M-084).** `kernel/sched/sched_policy.c` - classes,
+  nice-weighted fairness, affinity - was written on 2026-09-02, host-tested and
+  tortured, and the architecture admitted every task into it and asked it to
+  pick on every tick. It never initialised it. Every admission into a table of
+  no slots was refused, every refusal was ignored, the picker returned nothing
+  and the machine fell back to round robin; nor was the policy ever charged the
+  virtual time it picks by, so initialising it alone would have picked the
+  lowest slot for ever. setpriority returned 0 and changed nothing, which is
+  how it was found. The architecture initialises it and charges it on every
+  tick now; a refused admission is `sched_admit_refused`, must be zero, and the
+  gate asserts the policy was charged (`sched_policy_never_charged`).
+- **Not done, and said**: RSS, AS, MEMLOCK, STACK and the rest are kept, not
+  enforced (RLIMIT_AS is the registry's gap on 160 and 302); `getrusage` has no
+  resident-set high-water mark (98); no personality flag changes behaviour
+  (135).
+- **At boot** SIGNAL.ELF runs into NOFILE, FSIZE (dies of SIGXFSZ, and with it
+  ignored gets EFBIG) and CPU (SIGXCPU after a second of running), and checks
+  priorities, `getrusage` and `personality` (`limits_not_enforced`).
+- **Sabotage**: `abi-limits.txt` (12), `abi-limits-paths.txt` (2),
+  `abi-limits-mm.txt` and `abi-limits-fork.txt` (3) against the host tests,
+  `abi-limits-boot.txt` and `sched-policy-live.txt` (2) against the boot; all
+  red. Eighteen boots of eighteen after it - double the usual, because the scheduler's policy going live changes every program's scheduling.
+- **LTP**: the limit tests (22): 17 passed; the rest need 512 MB free (getrusage03), /proc/cpuinfo (getrusage04, step 6), sched_getaffinity (nice05, L6), select (personality02), /bin/true on the volume (setrlimit04), and useradd (setpriority01, which then waits out its timeout - not looked into). With step 3's 70 alongside: 54 of 94 passed.
+
 ### L3. Memory (10, plus `mmap` finished)
 
 File-backed mappings - private and shared - through the page cache, `MAP_FIXED`,

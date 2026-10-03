@@ -521,6 +521,17 @@ and the first version of the timer code charged a tick there, which would have
 made a sleeping process's CPU timers fire. CPU time in the host tests is
 `kf_cpu(ticks, user)` now, said explicitly; a wait moves only the clock.
 
+**A layer the host tortures can be one the machine never started.** The
+scheduler's policy - classes, nice weights, affinity - had host tests, a
+randomised torture against a model and a nightly job, and on the machine it
+had zero slots: `vibeos_sched_policy_init` was never called, every admission
+was refused with a return value nobody read, and the picker fell back to round
+robin on every tick for a month. Nor was it charged. Every check that existed
+asked whether the policy was *right*; none asked whether it was *running*.
+Found because `setpriority` returned 0 and changed nothing (M-084). When a
+layer is wired into the machine, gate that it ran - a counter that must move,
+a refusal that must be zero - not only that it is correct when it does.
+
 **"Present" in a page-fault error code means present for anybody.** A Linux
 program's low window lies over the kernel's identity map, so its null page is
 present, for ring 0, and a null dereference is a protection fault to the CPU.
