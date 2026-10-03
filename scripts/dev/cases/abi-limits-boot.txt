@@ -1,0 +1,17 @@
+# Limits on the machine (docs/abi/ L2 step 4). Gate: SIGNAL.ELF runs into each
+# limit the kernel enforces and prints LIMITS_OK only if every one held
+# (limits_not_enforced).
+#
+#  1. RLIMIT_FSIZE is not cut at on the machine's write path. Expect
+#     limits_not_enforced: the child that should die of SIGXFSZ writes on.
+#
+# Target source: kernel/abi/files/regular.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/abi/files/regular.c scripts/dev/cases/abi-limits-boot.txt
+
+### RLIMIT_FSIZE is not cut at on the machine's write path
+--- old
+        if (lim != VIBEOS_RLIM_INFINITY) {
+            if (off >= lim) {
++++ new
+        if (0) {
+            if (off >= lim) {

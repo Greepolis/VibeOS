@@ -1887,6 +1887,12 @@ def main():
                 problems.append("dead_kstack_counter_missing")
             elif int(mks.group(1), 16) == 0:
                 problems.append("dead_kstacks_never_freed")
+            # The scheduling policy is charged, which is what it picks by. It
+            # was neither initialised nor charged for a month and nothing said
+            # so: the picker fell back to round robin on every tick (L2 step 4).
+            mpc = re.search(r"policy_charged=0x([0-9a-f]{16})", text)
+            if mpc is None or int(mpc.group(1), 16) == 0:
+                problems.append("sched_policy_never_charged")
 
             # The kernel own log lines, on the medium (I5b, second half).
             #
@@ -3030,6 +3036,10 @@ def main():
                 # line, which it prints only if each one did.
                 if not re.search(r"write\(ring3\): TIMER_OK: ", text):
                     problems.append("timers_did_not_fire")
+                # L2 step 4: the enforced limits are run into, read off the
+                # program's own line.
+                if not re.search(r"write\(ring3\): LIMITS_OK: ", text):
+                    problems.append("limits_not_enforced")
 
             # The graphical shell, to the extent a serial log can speak for
             # it: the console has to have reached the on-screen terminal. Only

@@ -24,6 +24,9 @@
  *   (L2 step 3) timers fire, at about the time asked: alarm, setitimer's
  *     three, POSIX timers on the machine's clock and the CPU's; and the
  *     clocks a program reads its own CPU time from
+ *   (L2 step 4) the limits the kernel enforces are run into: NOFILE,
+ *     FSIZE (SIGXFSZ, then EFBIG), CPU (SIGXCPU); priorities, getrusage
+ *     and personality
  */
 
 /* REG_RIP and the rest of ucontext_t's register names. */
@@ -35,6 +38,9 @@
 #include <ucontext.h>
 #include <sys/time.h>
 #include <sys/times.h>
+#include <fcntl.h>
+#include <sys/personality.h>
+#include <sys/resource.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -512,6 +518,138 @@ static int timer_checks(void) {
     return ok;
 }
 
+/* ---- docs/abi/ L2 step 4: limits ---------------------------------------------
+ *
+ * Each limit the kernel claims to enforce is run into, in a child where running
+ * into it ends the process. Bounded by the wall clock, as the timers are. */
+
+static volatile sig_atomic_t g_xcpu;
+
+static void on_xcpu(int sig) { (void)sig; g_xcpu++; }
+
+static int limit_checks(void) {
+    struct rlimit rl;
+    struct rusage ru;
+    int ok = 1;
+
+    printf("SIG_PHASE: limits\n");
+    fflush(stdout);
+
+    /* NOFILE: the table's limit. */
+    {
+        struct rlimit old;
+        int fds[8], n = 0, fd = 0;
+
+        getrlimit(RLIMIT_NOFILE, &old);
+        rl.rlim_cur = 6;
+        rl.rlim_max = old.rlim_max;
+        if (setrlimit(RLIMIT_NOFILE, &rl) != 0) {
+            printf("SIG_FAIL: setrlimit(RLIMIT_NOFILE): errno=%d\n", errno);
+            ok = 0;
+        }
+        while (n < 8 && (fd = open("/tmp", O_RDONLY)) >= 0) {
+            fds[n++] = fd;
+        }
+        if (fd >= 0 || errno != EMFILE || n > 3) {
+            printf("SIG_FAIL: RLIMIT_NOFILE of 6: %d opened, then errno=%d\n", n, errno);
+            ok = 0;
+        }
+        while (n > 0) {
+            close(fds[--n]);
+        }
+        setrlimit(RLIMIT_NOFILE, &old);
+    }
+
+    /* FSIZE: SIGXFSZ kills a writer that passes it; ignored, the write is EFBIG. */
+    {
+        int round;
+
+        for (round = 0; round < 2; round++) {
+            pid_t child = fork();
+            int status = 0;
+
+            if (child == 0) {
+                int fd = open("/tmp/limit.f", O_CREAT | O_TRUNC | O_WRONLY, 0644);
+                char b[64];
+                memset(b, 'x', sizeof(b));
+                rl.rlim_cur = rl.rlim_max = 100;
+                setrlimit(RLIMIT_FSIZE, &rl);
+                if (round == 1) {
+                    signal(SIGXFSZ, SIG_IGN);
+                }
+                if (write(fd, b, 64) != 64 || write(fd, b, 64) != 36) {
+                    _exit(2);
+                }
+                _exit(write(fd, b, 1) == -1 && errno == EFBIG ? 0 : 3);
+            }
+            waitpid(child, &status, 0);
+            if (round == 0 && !(WIFSIGNALED(status) && WTERMSIG(status) == SIGXFSZ)) {
+                printf("SIG_FAIL: RLIMIT_FSIZE did not end the writer with SIGXFSZ: status=%x\n", status);
+                ok = 0;
+            }
+            if (round == 1 && !(WIFEXITED(status) && WEXITSTATUS(status) == 0)) {
+                printf("SIG_FAIL: RLIMIT_FSIZE with SIGXFSZ ignored: status=%x\n", status);
+                ok = 0;
+            }
+        }
+        unlink("/tmp/limit.f");
+    }
+
+    /* CPU: a second of running and SIGXCPU arrives. */
+    {
+        pid_t child = fork();
+        int status = 0;
+
+        if (child == 0) {
+            double end;
+            volatile unsigned long x = 0;
+
+            signal(SIGXCPU, on_xcpu);
+            rl.rlim_cur = 1;
+            rl.rlim_max = 3;
+            setrlimit(RLIMIT_CPU, &rl);
+            end = now_mono() + 10.0;
+            while (!g_xcpu && now_mono() < end) {
+                x++;
+            }
+            _exit(g_xcpu ? 0 : 4);
+        }
+        waitpid(child, &status, 0);
+        if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+            printf("SIG_FAIL: RLIMIT_CPU sent no SIGXCPU: status=%x\n", status);
+            ok = 0;
+        }
+    }
+
+    /* Priorities, usage, personality. */
+    errno = 0;
+    {
+        int set = setpriority(PRIO_PROCESS, 0, 5);
+        int got = getpriority(PRIO_PROCESS, 0);
+        long raw = syscall(SYS_getpriority, PRIO_PROCESS, 0);
+
+        if (set != 0 || got != 5) {
+            printf("SIG_FAIL: setpriority/getpriority: set=%d got=%d raw=%ld errno=%d\n", set, got, raw, errno);
+            ok = 0;
+        }
+    }
+    setpriority(PRIO_PROCESS, 0, 0);
+    if (getrusage(RUSAGE_SELF, &ru) != 0 || (ru.ru_utime.tv_sec == 0 && ru.ru_utime.tv_usec == 0)) {
+        printf("SIG_FAIL: getrusage reports no CPU time\n");
+        ok = 0;
+    }
+    if (personality(0xffffffff) != 0 || personality(0x0008) != 0 || personality(0xffffffff) != 0x0008) {
+        printf("SIG_FAIL: personality is not kept\n");
+        ok = 0;
+    }
+    personality(0);
+    if (ok) {
+        printf("LIMITS_OK: NOFILE, FSIZE, CPU, priorities, getrusage, personality\n");
+        fflush(stdout);
+    }
+    return ok;
+}
+
 int main(void) {
     struct sigaction sa;
     sigset_t block, old;
@@ -686,6 +824,8 @@ int main(void) {
     ok &= l2_checks();
     /* ---- L2 step 3: timers ---------------------------------------------------- */
     ok &= timer_checks();
+    /* ---- L2 step 4: limits ---------------------------------------------------- */
+    ok &= limit_checks();
 
     printf(ok ? "SIG_OK: handlers, masking, ignoring and default actions\n"
               : "SIG_FAIL: see above\n");
