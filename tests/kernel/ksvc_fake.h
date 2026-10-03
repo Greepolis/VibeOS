@@ -41,8 +41,15 @@ typedef enum {
 /* What a handler saw of its registers: enough for the calls that read or write
  * them (fork, execve, the signal frame). */
 struct ks_regs {
-    uint64_t ip, sp, ret, arg0;
+    uint64_t ip, sp, ret, arg0, arg1, arg2, flags;
+    uint64_t other[10];   /* r8-r15, rbp, rbx, rcx: carried, never looked at */
 };
+
+/* The fake's vector registers: what ks_fpu_save writes out and ks_fpu_restore
+ * reads back. */
+extern unsigned char g_kf_fpu[512];
+/* Why a pending signal was raised, as the fake keeps it. */
+const vibeos_siginfo_t *kf_siginfo(int slot, uint32_t sig);
 
 typedef long (*kf_entry_t)(struct ks_regs *frame, uint64_t nr, const uint64_t a[6]);
 
@@ -87,6 +94,8 @@ int kf_lock_imbalance(void);
 /* Run `fn` once, right after the next release of an address-space lock. */
 void kf_on_mm_unlock(void (*fn)(vibeos_procstate_t *ps));
 uint64_t kf_exit_code(void);
+/* The frame the last call returned with: where it resumes (rt_sigreturn). */
+const struct ks_regs *kf_last_frame(void);
 const char *kf_panic_reason(void);
 uint32_t kf_illegal_transitions(void);
 

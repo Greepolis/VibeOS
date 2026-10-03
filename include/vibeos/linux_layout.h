@@ -441,6 +441,99 @@ typedef struct {
 #define LINUX_WALL       0x40000000u
 #define LINUX_WCLONE     0x80000000u
 
+/* What a handler is handed (docs/abi/ L2): the frame Linux builds on the
+ * stack - a return address, a ucontext and a siginfo - is read by C libraries
+ * and by programs. musl's thread cancellation rewrites the saved rip in it, and
+ * a SIGSEGV handler that recovers does the same; rt_sigreturn reads it back.
+ * Until L2 the frame here was private to this kernel and nothing could. */
+
+/* stack_t (asm/signal.h): sigaltstack, and uc_stack. */
+typedef struct {
+    uint64_t ss_sp;
+    int32_t ss_flags;
+    uint64_t ss_size;
+} linux_stack_t;
+
+/* struct sigcontext (asm/sigcontext.h), x86-64. */
+typedef struct {
+    uint64_t r8, r9, r10, r11, r12, r13, r14, r15;
+    uint64_t rdi, rsi, rbp, rbx, rdx, rax, rcx, rsp, rip, eflags;
+    uint16_t cs, gs, fs, ss;
+    uint64_t err, trapno, oldmask, cr2;
+    uint64_t fpstate;       /* the FXSAVE area, or 0 for none */
+    uint64_t reserved1[8];
+} linux_sigcontext_t;
+
+/* struct ucontext (asm/ucontext.h): the kernel's, which ends at uc_sigmask -
+ * the C library's ucontext_t goes on, and nothing past here is the kernel's. */
+typedef struct {
+    uint64_t uc_flags;
+    uint64_t uc_link;
+    linux_stack_t uc_stack;
+    linux_sigcontext_t uc_mcontext;
+    uint64_t uc_sigmask;
+} linux_ucontext_t;
+
+/* siginfo_t (asm-generic/siginfo.h): 128 bytes, of which what a field means
+ * depends on the signal and si_code. Linux's is a union; this is the one
+ * arrangement of it that every field used here fits, and the two that overlay
+ * others - a fault's si_addr, SIGCHLD's si_status - are written through the
+ * helpers below. The fields are not called si_pid and so on because those
+ * are macros in every C library's header, naming the union's members. */
+typedef struct {
+    int32_t si_signo;
+    int32_t si_errno;
+    int32_t si_code;
+    int32_t pad0;        /* unnamed in Linux: the union is 8-aligned       */
+    int32_t pid;         /* kill, sigqueue, SIGCHLD; si_addr's low half    */
+    uint32_t uid;        /* the sender's real user; si_addr's high half    */
+    uint64_t value;      /* sigqueue's value; si_status is its low half    */
+    int64_t utime;       /* SIGCHLD                                        */
+    int64_t stime;
+    uint8_t rest[80];
+} linux_siginfo_t;
+
+static inline void linux_si_set_addr(linux_siginfo_t *o, uint64_t addr) {
+    o->pid = (int32_t)(uint32_t)addr;
+    o->uid = (uint32_t)(addr >> 32);
+}
+static inline uint64_t linux_si_addr(const linux_siginfo_t *o) {
+    return (uint64_t)(uint32_t)o->pid | ((uint64_t)o->uid << 32);
+}
+static inline void linux_si_set_status(linux_siginfo_t *o, int32_t status) {
+    o->value = (uint64_t)(uint32_t)status;
+}
+
+/* The handler's flags and the alternate stack's (asm-generic/signal-defs.h,
+ * asm/signal.h, linux/signal.h). */
+#define LINUX_SA_SIGINFO     0x00000004u
+#define LINUX_SA_ONSTACK     0x08000000u
+#define LINUX_SA_NODEFER     0x40000000u
+#define LINUX_SA_RESETHAND   0x80000000u
+#define LINUX_SS_ONSTACK     1
+#define LINUX_SS_DISABLE     2
+#define LINUX_SS_AUTODISARM  (1u << 31)
+#define LINUX_MINSIGSTKSZ    2048u
+
+/* si_code (asm-generic/siginfo.h). */
+#define LINUX_SI_USER        0
+#define LINUX_SI_KERNEL      0x80
+#define LINUX_SI_QUEUE       (-1)
+#define LINUX_SI_TKILL       (-6)
+#define LINUX_SEGV_MAPERR    1
+#define LINUX_SEGV_ACCERR    2
+#define LINUX_BUS_ADRALN     1
+#define LINUX_FPE_INTDIV     1
+#define LINUX_FPE_FLTINV     7
+#define LINUX_ILL_ILLOPN     2
+#define LINUX_CLD_EXITED     1
+#define LINUX_CLD_KILLED     2
+
+/* uc_flags (asm/ucontext.h): the frame carries ss, and sigreturn is to put it
+ * back exactly. */
+#define LINUX_UC_SIGCONTEXT_SS    0x2u
+#define LINUX_UC_STRICT_RESTORE_SS 0x4u
+
 /* rt_sigprocmask (asm-generic/signal-defs.h). */
 #define LINUX_SIG_BLOCK   0
 #define LINUX_SIG_UNBLOCK 1

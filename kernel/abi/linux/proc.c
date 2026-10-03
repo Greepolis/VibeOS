@@ -172,6 +172,11 @@ static long linux_sys_fork(const ks_regs_t *frame) {
         child->exit_signal = 0;
         child->sig_pending = 0;   /* pending signals are not inherited */
         child->sig_blocked = parent->sig_blocked;
+        child->sig_saved_valid = 0;
+        /* The alternate stack is at the same address in the copy (L2). */
+        child->sas_sp = parent->sas_sp;
+        child->sas_size = parent->sas_size;
+        child->sas_flags = parent->sas_flags;
         for (sg = 0; sg < VIBEOS_NSIG; sg++) {
             cps->sig_handler[sg] = pps->sig_handler[sg];
             cps->sig_restorer[sg] = pps->sig_restorer[sg];
@@ -321,6 +326,12 @@ static long linux_sys_clone_thread(const ks_regs_t *frame,
      * pending set stay per thread, which is the Linux model. */
     child->sig_pending = 0;
     child->sig_blocked = parent->sig_blocked;
+    /* A new thread has no alternate stack: two threads on one would run their
+     * handlers over each other (Linux clears it for CLONE_VM). */
+    child->sig_saved_valid = 0;
+    child->sas_sp = 0;
+    child->sas_size = 0;
+    child->sas_flags = 0;
 
     /* Written through the fault-safe copy: a sibling thread can munmap the page
      * between the range check and the store, faulting in ring 0 (H-021). A
@@ -1129,6 +1140,11 @@ static long linux_sys_execve(ks_regs_t *frame, uint64_t path_uptr,
      * signals do not survive an exec: they were raised against the old image. */
     ks_exec_regs(ks_current(), frame, np.entry, np.user_sp);
     t->sig_pending = 0;
+    /* The alternate stack was memory of the old image. */
+    t->sas_sp = 0;
+    t->sas_size = 0;
+    t->sas_flags = 0;
+    t->sig_saved_valid = 0;
 
     /* One line per exec: what was loaded, how big it was, and where it
       * starts. Enough to tell a failed load from a failed program without

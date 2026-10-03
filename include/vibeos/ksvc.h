@@ -48,6 +48,7 @@
 #include "vibeos/vmspace.h"
 #include "vibeos/pageinfo.h"
 #include "vibeos/exec_stats.h"
+#include "vibeos/siginfo.h"
 
 /* A saved user register state: the trap frame a syscall arrived with. Opaque
  * here; only the functions below that name it read or write it. */
@@ -97,7 +98,14 @@ void ks_block_point(void);
 void ks_wait_tick(void);             /* a task giving up the core to wait: idle  */
 void ks_wake_waiters(void);            /* data, room or an end of file appeared    */
 int ks_signal_interrupts(int slot);    /* must a wait end, for a signal?           */
-int ks_signal_raise(int slot, uint32_t sig);
+int ks_signal_raise(int slot, uint32_t sig);   /* from the kernel           */
+/* Raise with a reason. A signal already pending keeps the reason it came with
+ * (Linux's rule for the standard signals; queued real-time ones are not kept
+ * apart yet). 0, or -1 if the task cannot take one. */
+int ks_signal_send(int slot, uint32_t sig, const vibeos_siginfo_t *info);
+/* Take `sig` off the pending set with its reason: 1 if it was pending. Raise and
+ * take are one critical section each, so a reason is never read half-written. */
+int ks_signal_take(int slot, uint32_t sig, vibeos_siginfo_t *out);
 int ks_signal_default_kills(uint32_t sig);
 
 /* ---- time ------------------------------------------------------------------- */
@@ -184,15 +192,35 @@ uint64_t ks_regs_ret(const ks_regs_t *frame);
  * on the instruction. The arguments are still in their registers - a handler
  * does not write them. */
 void ks_regs_restart(ks_regs_t *frame, uint64_t nr);
-/* Signal frames: pushed at `sp` holding the whole register state and the mask
- * to restore, and read back by rt_sigreturn. Both 0, or -1 (and nothing
- * changed) if the user side is unusable. */
-uint64_t ks_sigframe_size(void);
-int ks_sigframe_push(const ks_regs_t *frame, uint64_t sp, uint64_t blocked,
-                     uint64_t restorer);
-int ks_sigframe_pop(ks_regs_t *frame, uint64_t base, uint64_t *blocked);
+/* The registers a program can see, for a personality that saves them where
+ * the program can read and change them - Linux's signal frame (docs/abi/ L2).
+ * The frame's layout is the personality's; what the registers are is the
+ * machine's, so they cross here by name.
+ *
+ * ks_regs_set puts back what a program may have changed and decides what of it
+ * may be trusted: the selectors and the privileged flags are forced, and a
+ * resume address that is not a user address is refused (-1, nothing changed) -
+ * iretq to a non-canonical rip faults in ring 0 (H-018). */
+typedef struct {
+    uint64_t r8, r9, r10, r11, r12, r13, r14, r15;
+    uint64_t rdi, rsi, rbp, rbx, rdx, rax, rcx, rsp, rip, rflags;
+    uint16_t cs, ss;
+} vibeos_uregs_t;
+
+void ks_regs_get(const ks_regs_t *frame, vibeos_uregs_t *out);
+int ks_regs_set(ks_regs_t *frame, const vibeos_uregs_t *in);
+/* The calling task's vector and floating-point state, 512 bytes in the FXSAVE
+ * format, to and from user memory at `uaddr` (16-byte aligned). Both 0, or -1:
+ * the memory was not there, or the state read back would fault the CPU. A
+ * handler that uses SSE - memcpy does - would otherwise hand the interrupted
+ * code back registers it never wrote. */
+uint64_t ks_fpu_size(void);
+int ks_fpu_save(uint64_t uaddr);
+int ks_fpu_restore(uint64_t uaddr);
+/* Resume in a handler: at `handler`, on `sp`, with its three arguments - the
+ * signal, and two pointers the personality chose. */
 void ks_regs_enter_handler(ks_regs_t *frame, uint64_t handler, uint64_t sp,
-                           uint32_t sig);
+                           uint64_t a0, uint64_t a1, uint64_t a2);
 uint64_t ks_tls_get(int slot);
 void ks_tls_set(int slot, uint64_t base);
 

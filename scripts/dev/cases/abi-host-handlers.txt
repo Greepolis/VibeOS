@@ -7,24 +7,27 @@
 #     0 in the kernel. Expect "the kernel holds it by signal number".
 #  2. ioctl answers TCGETS as though the console were a terminal - a gap
 #     closed without the registry being told. Expect "linux_gap 16 closed".
-#  3. rt_sigreturn resumes from a frame it could not read back: the policy half
-#     of H-018 that stayed in the handler when the frame itself moved to
-#     ks_sigframe_pop. Expect "a forged signal frame ends the task with
-#     SIGSEGV".
+#  3. rt_sigreturn resumes at an address the architecture refused: the policy
+#     half of H-018, which is the handler's - ks_regs_set refuses, and the
+#     handler has to act on it. Expect "a resume address outside user memory
+#     ends the task with SIGSEGV". (Until L2 step 2 this case removed the check
+#     on a frame that could not be read back; that frame is Linux's ucontext
+#     now, read with one fault-safe copy, and the refusal that matters is the
+#     resume address's.)
 #
 # The registry half (a PARTIAL line marked DONE with its gap still here) is not a
 # case in this file because its target is kernel/abi/linux_syscalls.def, whose
 # boot-side cases live in abi-registry.txt; it was run by hand on 2026-09-29 and
 # went red with "linux_gap 105 has an expectation and is not PARTIAL".
 #
-# Target source: kernel/abi/linux/sig.c (cases 1 and 3); kernel/abi/files/console.c for case 2 (the console's ioctl since A3)
+# Target source: kernel/abi/linux/sig.c (case 3); kernel/abi/linux/linux_internal.h (case 1: the conversion is shared with the signal frame since L2 step 2); kernel/abi/files/console.c for case 2 (the console's ioctl since A3)
 # Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/linux/sig.c scripts/dev/cases/abi-host-handlers.txt
 
 ### sigset numbering is not converted at the boundary
 --- old
-    return user_set << 1;
+static inline uint64_t linux_sigset_from_user(uint64_t user_set) { return user_set << 1; }
 +++ new
-    return user_set;
+static inline uint64_t linux_sigset_from_user(uint64_t user_set) { return user_set; }
 
 ### ioctl answers TCGETS as though the console were a terminal
 --- old
@@ -37,10 +40,10 @@
     return -VIBEOS_ENOTTY;
 }
 
-### rt_sigreturn resumes from a frame it could not read back
+### rt_sigreturn resumes at an address the architecture refused
 --- old
-    if (!linux_user_ok(base, ks_sigframe_size(), 0) ||
-        ks_sigframe_pop(frame, base, &blocked) != 0) {
+    if (ks_regs_set(frame, &r) != 0) {
+        goto bad;
+    }
 +++ new
-    if (!linux_user_ok(base, ks_sigframe_size(), 0) ||
-        (ks_sigframe_pop(frame, base, &blocked) != 0 && 0)) {
+    (void)ks_regs_set(frame, &r);

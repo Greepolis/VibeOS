@@ -12,13 +12,13 @@
 
 ### a handler without SA_RESTART gets the call run again too
 --- old
-    if (restart && (ps->sig_flags[sig] & VIBEOS_SA_RESTART)) {
+    if (restart && (flags & VIBEOS_SA_RESTART)) {
 +++ new
     if (restart) {
 
 ### a handler with SA_RESTART gets EINTR
 --- old
-    if (restart && (ps->sig_flags[sig] & VIBEOS_SA_RESTART)) {
+    if (restart && (flags & VIBEOS_SA_RESTART)) {
 +++ new
     if (0) {
 
@@ -28,10 +28,12 @@
             if (restart) {
                 ks_regs_restart(frame, restart - 1u);
             }
+            linux_signal_unsave(t);
             return 0;
         }
 +++ new
         if (sig == 0u) {
+            linux_signal_unsave(t);
             return 0;
         }
 

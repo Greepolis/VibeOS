@@ -910,6 +910,12 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
         }
     }
 
+    /* A program that handles its own faults (docs/abi/ L2) is asked first:
+     * for such a program this is not a crash. See hw_fault_to_handler. */
+    if ((frame->cs & 3u) == 3u && hw_fault_to_handler(frame, fault_address)) {
+        return;
+    }
+
     /* A fault report is many small writes; keep another core from splitting it. */
     vibeos_x86_64_serial_lock();
     vibeos_x86_64_serial_puts("[HW][TRAP] ");

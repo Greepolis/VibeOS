@@ -76,7 +76,7 @@ static long linux_sys_clock_gettime(uint64_t clk, uint64_t ts_uptr) {
  * Linux: run again from the start it would sleep the whole time over. */
 
 /* A timespec as ticks, rounded up. -1 if it is not a time. */
-static int64_t linux_ticks_of(const linux_timespec_t *ts) {
+int64_t linux_ticks_of(const linux_timespec_t *ts) {
     const uint64_t per = 1000000000ull / ks_hz();
 
     if (ts->tv_sec < 0 || ts->tv_nsec < 0 || ts->tv_nsec >= 1000000000ll) {

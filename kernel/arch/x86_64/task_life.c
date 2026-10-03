@@ -989,6 +989,7 @@ void hw_task_exit(uint64_t code) {
     hw_cpu_t *cpu = hw_this_cpu();
     int dying = cpu->current_task;
     int next, i;
+    uint32_t child_uid = 0;
 
     /* A task running on this core must be RUNNING, never READY - otherwise it is
      * a scheduling candidate while it is already executing. A futex_wait that was
@@ -1173,6 +1174,9 @@ void hw_task_exit(uint64_t code) {
          * this task. That used to be written as "a sibling thread that keeps
          * the tables keeps the list too", which was true only because every
          * sibling held its own private copy of the list head. */
+        /* Who the child was, for the SIGCHLD below: the credentials go with
+         * the process state, and that is let go of here. */
+        child_uid = g_tasks[dying].ps ? g_tasks[dying].ps->cred.uid : 0u;
         hw_procstate_put(g_tasks[dying].ps);
         g_tasks[dying].ps = 0;
         /* The kernel stack is parked on this core, not left for the parent.
@@ -1238,6 +1242,43 @@ void hw_task_exit(uint64_t code) {
                 g_tasks[i].id.pid == g_tasks[dying].id.ppid) {
                 (void)hw_task_set_state(i, HW_TASK_READY, __func__);
                 HW_TASK_MARK(i, ready_by, "parent_woken_by_child_exit");
+            }
+        }
+        /* SIGCHLD (docs/abi/ L2). It was never raised: a shell that runs jobs
+         * in the background learns of their end from it, and so does any
+         * program that waits for children with a handler rather than in
+         * waitpid. To the parent's thread-group leader, with how the child
+         * ended; under the scheduler's lock, as kill raises. A parent that
+         * ignores SIGCHLD, or never set a handler, has it discarded - children
+         * of a parent that ignores it are still left for wait() to reap
+         * (SA_NOCLDWAIT is not implemented). */
+        for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+            vibeos_task_state_t st = hw_slot_state(i);
+
+            if (i != dying && g_tasks[i].id.is_user && st != HW_TASK_FREE &&
+                st != HW_TASK_RESERVED && st != HW_TASK_ZOMBIE &&
+                g_tasks[i].id.pid == g_tasks[dying].id.ppid &&
+                g_tasks[i].id.pid == g_tasks[i].id.tgid) {
+                vibeos_siginfo_t why;
+                uint32_t k;
+                const vibeos_task_account_t *acct = vibeos_account_task((uint32_t)dying);
+
+                for (k = 0; k < sizeof(why); k++) {
+                    ((unsigned char *)&why)[k] = 0;
+                }
+                why.from = VIBEOS_SIG_FROM_CHILD;
+                why.pid = g_tasks[dying].id.tgid;
+                why.uid = child_uid;
+                if (g_tasks[dying].id.exit_signal != 0u) {
+                    why.code = (int32_t)VIBEOS_CHILD_KILLED;
+                    why.status = (int32_t)g_tasks[dying].id.exit_signal;
+                } else {
+                    why.code = (int32_t)VIBEOS_CHILD_EXITED;
+                    why.status = (int32_t)(code & 0xFFu);
+                }
+                why.utime = acct ? acct->ticks : 0u;
+                (void)hw_signal_send(i, VIBEOS_SIGCHLD, &why);
+                break;
             }
         }
         }
@@ -1322,6 +1363,12 @@ int hw_signal_interrupts(int task) {
  * signal frame can safely be built. Raising can happen from an interrupt, from
  * another CPU, or from the task itself, and none of those own that stack. */
 int hw_signal_raise(int task_index, uint32_t sig) {
+    return hw_signal_send(task_index, sig, 0);
+}
+
+int hw_signal_send(int task_index, uint32_t sig, const vibeos_siginfo_t *info) {
+    hw_task_t *t;
+
     if (task_index < 0 || task_index >= VIBEOS_HW_MAX_TASKS || sig == 0u || sig > VIBEOS_HW_SIG_MAX) {
         return -1;
     }
@@ -1336,11 +1383,32 @@ int hw_signal_raise(int task_index, uint32_t sig) {
     }
     /* SIGKILL and SIGSTOP cannot be caught or blocked. Honouring a handler for
      * them would make a process unkillable. */
+    /* Unless blocked: a blocked signal is kept whatever its disposition, since
+     * the disposition may change before it is unblocked - and sigtimedwait
+     * takes exactly such signals, ignored or not (Linux's sig_ignored). */
     if (sig != VIBEOS_SIGKILL && sig != VIBEOS_SIGSTOP &&
-        g_tasks[task_index].ps->sig_handler[sig] == SIG_IGN_ADDR) {
+        g_tasks[task_index].ps->sig_handler[sig] == SIG_IGN_ADDR &&
+        (g_tasks[task_index].id.sig_blocked & (1ull << sig)) == 0u) {
         return 0;   /* explicitly ignored: raised and discarded, as Linux does */
     }
-    __sync_fetch_and_or(&g_tasks[task_index].id.sig_pending, 1ull << sig);
+    /* The reason goes in with the bit, under the task's signal lock, so that
+     * delivery never reads one half-written. A signal already pending keeps
+     * the reason it was first raised with: one bit, one record. */
+    t = &g_tasks[task_index];
+    hw_spin_lock_named(&t->sig_lock, __func__);
+    if ((t->id.sig_pending & (1ull << sig)) == 0u) {
+        if (info) {
+            t->sig_info[sig] = *info;
+        } else {
+            uint32_t i;
+            for (i = 0; i < sizeof(t->sig_info[sig]); i++) {
+                ((unsigned char *)&t->sig_info[sig])[i] = 0;
+            }
+            t->sig_info[sig].from = VIBEOS_SIG_FROM_KERNEL;
+        }
+        __sync_fetch_and_or(&t->id.sig_pending, 1ull << sig);
+    }
+    hw_spin_unlock(&t->sig_lock);
     /* A task asleep in read() has to wake up to notice. */
     if (hw_slot_state(task_index) == HW_TASK_BLOCKED) {
         g_tasks[task_index].id.wait_input = 0;
@@ -1348,6 +1416,29 @@ int hw_signal_raise(int task_index, uint32_t sig) {
         HW_TASK_MARK(task_index, ready_by, "signal_wake");
     }
     return 0;
+}
+
+/* Take one pending signal with its reason; 1 if it was pending. The owner
+ * calls this on its way back to user space, while senders on other cores may
+ * be in hw_signal_send for the same task. */
+int hw_signal_take(int task_index, uint32_t sig, vibeos_siginfo_t *out) {
+    hw_task_t *t;
+    int had = 0;
+
+    if (task_index < 0 || task_index >= VIBEOS_HW_MAX_TASKS || sig == 0u || sig > VIBEOS_HW_SIG_MAX) {
+        return 0;
+    }
+    t = &g_tasks[task_index];
+    hw_spin_lock_named(&t->sig_lock, __func__);
+    if (t->id.sig_pending & (1ull << sig)) {
+        had = 1;
+        if (out) {
+            *out = t->sig_info[sig];
+        }
+        __sync_fetch_and_and(&t->id.sig_pending, ~(1ull << sig));
+    }
+    hw_spin_unlock(&t->sig_lock);
+    return had;
 }
 
 /* exit_group: the whole process ends, and the parent sees `code`.
@@ -1454,6 +1545,75 @@ int hw_task_by_tid(uint32_t tid) {
     return -1;
 }
 
+/* The signal Linux reports for a CPU exception in a program. */
+uint32_t hw_fault_signal(uint64_t vector) {
+    switch (vector) {
+        case 0u:  return VIBEOS_SIGFPE;    /* #DE divide error        */
+        case 6u:  return VIBEOS_SIGILL;    /* #UD invalid opcode      */
+        case 13u: return VIBEOS_SIGSEGV;   /* #GP general protection  */
+        case 14u: return VIBEOS_SIGSEGV;   /* #PF page fault          */
+        case 16u:                          /* #MF x87 floating point  */
+        case 19u: return VIBEOS_SIGFPE;    /* #XM SIMD floating point */
+        case 17u: return VIBEOS_SIGBUS;    /* #AC alignment check     */
+        default:  return VIBEOS_SIGSEGV;
+    }
+}
+
+/* A CPU exception in ring 3, offered to the program before anything is
+ * reported (docs/abi/ L2): a SIGSEGV handler that recovers, a garbage
+ * collector's write barrier, a JIT's guard page. Until L2 every one of these
+ * killed the task - so a runtime that installs a handler on purpose could not
+ * run at all. 1 if the frame now enters the program's handler; 0 if the program
+ * has none, or blocks or ignores the signal, and the fault goes on to be
+ * reported and kill, as before. #BP is the trap model's to continue. */
+int hw_fault_to_handler(vibeos_x86_64_isr_frame_t *frame, uint64_t fault_address) {
+    vibeos_siginfo_t why;
+    uint32_t fsig, i;
+
+    if (frame->vector >= 32u || frame->vector == 3u ||
+        g_current_task < 0 || !g_tasks[g_current_task].id.is_user) {
+        return 0;
+    }
+    fsig = hw_fault_signal(frame->vector);
+    for (i = 0; i < sizeof(why); i++) {
+        ((unsigned char *)&why)[i] = 0;
+    }
+    why.from = VIBEOS_SIG_FROM_FAULT;
+    why.pid = g_tasks[g_current_task].id.tgid;
+    why.trapno = (uint32_t)frame->vector;
+    why.fault_err = frame->error_code;
+    why.addr = frame->vector == 14u ? fault_address : frame->rip;
+    /* "Present" in the error code means present for anybody. A Linux program's
+     * low window lies over the kernel's identity map, so its null page is
+     * present - for the kernel - and the CPU reports a protection fault where
+     * Linux, which maps nothing there, reports a missing page. What the program
+     * is told is whether *it* had a mapping: present and user-reachable. */
+    if (frame->vector == 14u && (why.fault_err & 1u)) {
+        vibeos_vmspace_t sv = hw_vm(&g_tasks[g_current_task].proc.as);
+        uint64_t *e = vibeos_vmspace_entry(&sv, fault_address);
+
+        if (!e || (*e & PTE_USER) == 0u) {
+            why.fault_err &= ~1ull;
+        }
+    }
+    if (!linux_signal_fault((struct ks_regs *)frame, fsig, &why)) {
+        return 0;
+    }
+    /* One line, so that a log reader can tell a fault the program took from
+     * one that killed it; not [HW][TRAP], which the gate counts as a fault
+     * nobody expected. */
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts("[SIG] fault taken by the program's handler vector=0x");
+    vibeos_x86_64_serial_print_hex(why.trapno);
+    vibeos_x86_64_serial_puts(" sig=0x");
+    vibeos_x86_64_serial_print_hex(fsig);
+    vibeos_x86_64_serial_puts(" addr=0x");
+    vibeos_x86_64_serial_print_hex(why.addr);
+    vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
+    return 1;
+}
+
 void hw_fault_kill_current_user(const vibeos_x86_64_isr_frame_t *frame,
                                        uint64_t fault_address) {
     uint64_t vector = frame->vector;
@@ -1462,13 +1622,7 @@ void hw_fault_kill_current_user(const vibeos_x86_64_isr_frame_t *frame,
     if (g_current_task < 0 || !g_tasks[g_current_task].id.is_user) {
         return;   /* nothing to kill: the caller panics instead */
     }
-    switch (vector) {
-        case 0u:  sig = VIBEOS_SIGFPE;  break;   /* #DE divide error      */
-        case 6u:  sig = VIBEOS_SIGILL;  break;   /* #UD invalid opcode    */
-        case 13u: sig = VIBEOS_SIGSEGV; break;   /* #GP general protection*/
-        case 14u: sig = VIBEOS_SIGSEGV; break;   /* #PF page fault        */
-        default:  sig = VIBEOS_SIGSEGV; break;
-    }
+    sig = hw_fault_signal(vector);
     /* One call, one line: this is read next to the trap dump above it, and a
      * diagnostic split across two writes came back interleaved from two cores
      * once already and read as a contradiction. */

@@ -83,6 +83,8 @@ void ks_wait_tick(void) { ks_block_point(); }
 void ks_wake_waiters(void) { hw_keyboard_wake(); }
 int ks_signal_interrupts(int slot) { return hw_signal_interrupts(slot); }
 int ks_signal_raise(int slot, uint32_t sig) { return hw_signal_raise(slot, sig); }
+int ks_signal_send(int slot, uint32_t sig, const vibeos_siginfo_t *info) { return hw_signal_send(slot, sig, info); }
+int ks_signal_take(int slot, uint32_t sig, vibeos_siginfo_t *out) { return hw_signal_take(slot, sig, out); }
 int ks_signal_default_kills(uint32_t sig) { return hw_signal_default_kills(sig); }
 
 /* ---- time ------------------------------------------------------------------------- */
@@ -454,71 +456,90 @@ void ks_regs_restart(ks_regs_t *regs, uint64_t nr) {
     frame->rax = nr;
     frame->rip -= 2u;
 }
-uint64_t ks_sigframe_size(void) { return sizeof(hw_sigframe_t); }
+/* The registers by name, for a personality's signal frame (docs/abi/ L2). */
+void ks_regs_get(const ks_regs_t *regs, vibeos_uregs_t *out) {
+    const vibeos_x86_64_isr_frame_t *f = hw_regs_c(regs);
 
-/* Built in the kernel and copied out fault-safely: a sibling thread can munmap
- * the stack page between the range check and these writes, and building the
- * frame in place would fault in ring 0 (H-023). The return address - the C
- * library's trampoline - goes at sp, the frame just above it. */
-int ks_sigframe_push(const ks_regs_t *frame, uint64_t sp, uint64_t blocked,
-                     uint64_t restorer) {
-    hw_sigframe_t kf;
-    uint64_t ret = restorer;
+    out->r8 = f->r8;   out->r9 = f->r9;   out->r10 = f->r10; out->r11 = f->r11;
+    out->r12 = f->r12; out->r13 = f->r13; out->r14 = f->r14; out->r15 = f->r15;
+    out->rdi = f->rdi; out->rsi = f->rsi; out->rbp = f->rbp; out->rbx = f->rbx;
+    out->rdx = f->rdx; out->rax = f->rax; out->rcx = f->rcx; out->rsp = f->rsp;
+    out->rip = f->rip; out->rflags = f->rflags;
+    out->cs = (uint16_t)f->cs;
+    out->ss = (uint16_t)f->ss;
+}
 
-    kf.magic = HW_SIGFRAME_MAGIC;
-    kf.blocked = blocked;
-    kf.frame = *hw_regs_c(frame);
-    if (vibeos_uaccess_copy((void *)(uintptr_t)(sp + 8ull), &kf, sizeof(kf)) != 0 ||
-        vibeos_uaccess_copy((void *)(uintptr_t)sp, &ret, sizeof(ret)) != 0) {
+int ks_regs_set(ks_regs_t *regs, const vibeos_uregs_t *in) {
+    vibeos_x86_64_isr_frame_t *f = hw_regs(regs);
+
+    /* rip comes from memory the program can write; a non-canonical rip reaches
+     * iretq and #GPs in ring 0 (H-018). The selectors and flags are forced
+     * below, so this is the remaining ring-0 fault vector. rsp is left
+     * unchecked - a bad rsp faults in ring 3 on the next push, killing the
+     * task safely. Refused before anything is written. */
+    if (!hw_user_addr_ok(in->rip)) {
         return -1;
     }
+    f->r8 = in->r8;   f->r9 = in->r9;   f->r10 = in->r10; f->r11 = in->r11;
+    f->r12 = in->r12; f->r13 = in->r13; f->r14 = in->r14; f->r15 = in->r15;
+    f->rdi = in->rdi; f->rsi = in->rsi; f->rbp = in->rbp; f->rbx = in->rbx;
+    f->rdx = in->rdx; f->rax = in->rax; f->rcx = in->rcx; f->rsp = in->rsp;
+    f->rip = in->rip;
+    /* Only user state, and the selectors are the user ones whatever the frame
+     * said: nothing read out of user memory may decide privilege. The flags
+     * keep the arithmetic ones, DF and OF; IF is always on, IOPL zero, no trap. */
+    f->cs = VIBEOS_HW_USER_CODE_SEL;
+    f->ss = VIBEOS_HW_USER_DATA_SEL;
+    f->rflags = (in->rflags & 0x0000000000000CD5ull) | 0x202ull;
     return 0;
 }
 
-int ks_sigframe_pop(ks_regs_t *regs, uint64_t base, uint64_t *blocked) {
-    hw_sigframe_t kf;
-    vibeos_x86_64_isr_frame_t restored;
+/* The kernel is built without SSE (CMakeLists.txt), so while it runs on a
+ * task's behalf the vector registers are still the task's: the context switch
+ * restores them on the way in. What is live is what the program had. */
+uint64_t ks_fpu_size(void) { return 512u; }
 
-    /* Copied into the kernel before anything is read: the range check and the
-     * reads below are two instants, and a sibling munmap of the frame page in
-     * between would fault in ring 0 (H-018). */
-    if (vibeos_uaccess_copy(&kf, (const void *)(uintptr_t)base, sizeof(kf)) != 0) {
+int ks_fpu_save(uint64_t uaddr) {
+    unsigned char area[512] __attribute__((aligned(16)));
+
+    __asm__ __volatile__("fxsave (%0)" :: "r"(area) : "memory");
+    return vibeos_uaccess_copy((void *)(uintptr_t)uaddr, area, sizeof(area)) == 0 ? 0 : -1;
+}
+
+int ks_fpu_restore(uint64_t uaddr) {
+    unsigned char area[512] __attribute__((aligned(16)));
+    uint32_t mxcsr;
+
+    if (vibeos_uaccess_copy(area, (const void *)(uintptr_t)uaddr, sizeof(area)) != 0) {
         return -1;
     }
-    if (kf.magic != HW_SIGFRAME_MAGIC) {
-        /* Somebody called rt_sigreturn without a frame, or overwrote it.
-         * Resuming from whatever is on the stack would hand ring 3 a chance to
-         * pick its own cs and rflags. */
-        return -1;
-    }
-    restored = kf.frame;
-    /* Only user state is restored, and the segment selectors are forced
-     * back to the user ones: the frame is in memory the program can write,
-     * so nothing read out of it may decide privilege. */
-    restored.cs = VIBEOS_HW_USER_CODE_SEL;
-    restored.ss = VIBEOS_HW_USER_DATA_SEL;
-    restored.rflags = (restored.rflags & 0x0000000000000CD5ull) | 0x202ull;
-    /* rip comes from a user-writable frame; a non-canonical rip reaches
-     * iretq and #GPs in ring 0 (H-018). cs/ss/rflags are forced above, so
-     * this is the remaining ring-0 fault vector. rsp is left unchecked - a
-     * bad rsp faults in ring 3 on the next push, killing the task safely. */
-    if (!hw_user_addr_ok(restored.rip)) {
-        return -1;
-    }
-    *blocked = kf.blocked;
-    *hw_regs(regs) = restored;
+    /* MXCSR's upper half is reserved and fxrstor raises #GP - in ring 0 - on a
+     * set bit there. The program wrote this; it is cleared, as Linux does. */
+    mxcsr = (uint32_t)area[24] | ((uint32_t)area[25] << 8) |
+            ((uint32_t)area[26] << 16) | ((uint32_t)area[27] << 24);
+    mxcsr &= 0x0000FFFFu;
+    area[24] = (unsigned char)mxcsr;
+    area[25] = (unsigned char)(mxcsr >> 8);
+    area[26] = 0;
+    area[27] = 0;
+    __asm__ __volatile__("fxrstor (%0)" :: "r"(area) : "memory");
     return 0;
 }
 
-void ks_regs_enter_handler(ks_regs_t *regs, uint64_t handler, uint64_t sp, uint32_t sig) {
+void ks_regs_enter_handler(ks_regs_t *regs, uint64_t handler, uint64_t sp,
+                           uint64_t a0, uint64_t a1, uint64_t a2) {
     vibeos_x86_64_isr_frame_t *frame = hw_regs(regs);
 
     frame->rip = handler;
     frame->rsp = sp;
-    frame->rdi = sig;    /* the handler's first argument */
-    frame->rsi = 0;
-    frame->rdx = 0;
+    frame->rdi = a0;
+    frame->rsi = a1;
+    frame->rdx = a2;
     frame->rax = 0;
+    /* The System V ABI enters a function with the direction flag clear, and a
+     * handler that inherited a set one would copy backwards. Trap off too:
+     * single-stepping is not the handler's. */
+    frame->rflags &= ~((1ull << 10) | (1ull << 8));
 }
 
 uint64_t ks_tls_get(int slot) { return g_tasks[slot].fs_base; }

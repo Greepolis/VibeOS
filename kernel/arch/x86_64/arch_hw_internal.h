@@ -27,6 +27,7 @@
 #include "vibeos/elf.h"
 #include "vibeos/services.h"
 #include "vibeos/exec_stats.h"
+#include "vibeos/siginfo.h"
 #include "vibeos/account.h"
 #include "vibeos/forkguard.h"
 #include "vibeos/sched_policy.h"
@@ -177,6 +178,12 @@ typedef struct {
      * shared: a single global area would restore the previous task's registers
      * into this one, which is worse than not saving at all and quieter. */
     unsigned char fpu[512] __attribute__((aligned(16)));
+    /* Why each pending signal was raised (docs/abi/ L2), and the lock that
+     * makes raising and taking one each a single step: a sender on another core
+     * and the delivery on this one would otherwise meet in the middle of a
+     * record. Interrupts are off under it, because ^C raises from one. */
+    vibeos_siginfo_t sig_info[VIBEOS_HW_NSIG];
+    hw_lock_t sig_lock;
 } hw_task_t;
 
 /* ---- what the lifted files may reach back for ---------------------------- */
@@ -213,18 +220,6 @@ int hw_user_range_ok(uint64_t base, uint64_t len, int write);
 /* linux_user_ok, linux_fds_copy and linux_files_leave: vibeos/linux_exports.h. */
 int hw_copy_user_string(uint64_t uptr, char *dst, int max);
 
-
-/* Saved on the user stack across a handler. The layout is private to this
- * kernel - only the code that writes it and rt_sigreturn read it - so it holds
- * the whole trapframe rather than a Linux-compatible ucontext, which would
- * matter only to a program that inspects it. */
-typedef struct {
-    uint64_t magic;
-    uint64_t blocked;
-    vibeos_x86_64_isr_frame_t frame;
-} hw_sigframe_t;
-
-#define HW_SIGFRAME_MAGIC 0x5649424553494721ull   /* "VIBESIG!" */
 
 
 /* The signal numbers are in arch_hw_internal.h: two files name them now. */
@@ -528,6 +523,8 @@ void hw_invlpg(uint64_t va);
 int hw_aspace_copy_user(vibeos_hw_aspace_t *dst, vibeos_hw_aspace_t *src);
 int hw_signal_interrupts(int task);
 int hw_signal_raise(int task_index, uint32_t sig);
+int hw_signal_send(int task_index, uint32_t sig, const vibeos_siginfo_t *info);
+int hw_signal_take(int task_index, uint32_t sig, vibeos_siginfo_t *out);
 void hw_task_exit_group(uint64_t code);
 int hw_task_by_pid(uint32_t pid);
 int hw_task_by_tid(uint32_t tid);
@@ -669,6 +666,8 @@ int hw_task_create_idle(hw_cpu_t *cpu);
 int hw_task_spawn_user(const unsigned char *elf, uint64_t len,
                               const char *const *argv);
 int hw_task_describe(uint32_t slot, vibeos_task_desc_t *out);
+uint32_t hw_fault_signal(uint64_t vector);
+int hw_fault_to_handler(vibeos_x86_64_isr_frame_t *frame, uint64_t fault_address);
 void hw_fault_kill_current_user(const vibeos_x86_64_isr_frame_t *frame,
                                        uint64_t fault_address);
 

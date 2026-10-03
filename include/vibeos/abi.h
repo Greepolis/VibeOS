@@ -154,6 +154,13 @@
     X(KILL,            "kill",            VIBEOS_CHECK_SIGNAL_PERMIT) \
     X(TKILL,           "tkill",           VIBEOS_CHECK_SIGNAL_PERMIT) \
     X(TGKILL,          "tgkill",          VIBEOS_CHECK_SIGNAL_PERMIT) \
+    X(SIG_ALTSTACK,    "sig_altstack",    VIBEOS_CHECK_USER_MEMORY) \
+    X(SIG_PENDING,     "sig_pending",     VIBEOS_CHECK_USER_MEMORY) \
+    X(SIG_SUSPEND,     "sig_suspend",     VIBEOS_CHECK_USER_MEMORY) \
+    X(SIG_PAUSE,       "sig_pause",       VIBEOS_CHECK_NONE) \
+    X(SIG_TIMEDWAIT,   "sig_timedwait",   VIBEOS_CHECK_USER_MEMORY) \
+    X(SIG_QUEUE,       "sig_queue",       VIBEOS_CHECK_SIGNAL_PERMIT | VIBEOS_CHECK_USER_MEMORY) \
+    X(SIG_TGQUEUE,     "sig_tgqueue",     VIBEOS_CHECK_SIGNAL_PERMIT | VIBEOS_CHECK_USER_MEMORY) \
     /* synchronisation and time */ \
     X(FUTEX,           "futex",           VIBEOS_CHECK_USER_MEMORY) \
     X(SET_ROBUST_LIST, "set_robust_list", VIBEOS_CHECK_NONE) \

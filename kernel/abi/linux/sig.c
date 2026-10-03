@@ -58,11 +58,27 @@ static int linux_signal_permitted(int target) {
     }
 }
 
+/* Who is sending: what a siginfo_t says of the sender (L2). Read before the
+ * scheduler's lock is taken - the credentials have a lock of their own. */
+static void linux_sender(vibeos_siginfo_t *why, uint32_t from) {
+    vibeos_cred_t c;
+    uint32_t i;
+
+    for (i = 0; i < sizeof(*why); i++) {
+        ((unsigned char *)why)[i] = 0;
+    }
+    linux_cred(&c);
+    why->from = from;
+    why->pid = ks_id(ks_current())->tgid;
+    why->uid = c.uid;
+}
+
 static long linux_sys_kill(uint64_t target_pid, uint64_t sig) {
     int target;
     int delivered = 0;
     int64_t signed_pid = (int64_t)target_pid;
     long r;
+    vibeos_siginfo_t why;
 
     if (ks_current() < 0 || !ks_id(ks_current())->is_user) {
         return -VIBEOS_EINVAL;
@@ -70,6 +86,7 @@ static long linux_sys_kill(uint64_t target_pid, uint64_t sig) {
     if (sig > VIBEOS_SIG_MAX) {
         return -VIBEOS_EINVAL;
     }
+    linux_sender(&why, VIBEOS_SIG_FROM_PROCESS);
     /* Every branch below resolves ids to slots and acts on them, so every one
      * holds g_sched_lock from the lookup to the act. See ks_task_by_pid. */
     if (sig == 0u) {
@@ -98,7 +115,7 @@ static long linux_sys_kill(uint64_t target_pid, uint64_t sig) {
             if (ks_id(i)->is_user && vibeos_task_state((uint32_t)(i)) != VIBEOS_TASK_FREE &&
                 vibeos_task_state((uint32_t)(i)) != VIBEOS_TASK_SETUP &&
                 ks_id(i)->pgid == group && ks_id(i)->sid == ks_id(ks_current())->sid) {
-                if (ks_signal_raise(i, (uint32_t)sig) == 0) {
+                if (ks_signal_send(i, (uint32_t)sig, &why) == 0) {
                     delivered++;
                 }
             }
@@ -116,7 +133,7 @@ static long linux_sys_kill(uint64_t target_pid, uint64_t sig) {
          * decision, and this kernel's group branch does not make it either. */
         r = -VIBEOS_EPERM;
     } else {
-        r = (ks_signal_raise(target, (uint32_t)sig) == 0) ? 0 : -VIBEOS_EINVAL;
+        r = (ks_signal_send(target, (uint32_t)sig, &why) == 0) ? 0 : -VIBEOS_EINVAL;
     }
     ks_unlock(ks_sched_lock());
     return r;
@@ -125,11 +142,13 @@ static long linux_sys_kill(uint64_t target_pid, uint64_t sig) {
 static long linux_sys_tkill(uint64_t target_tid, uint64_t sig) {
     int target;
     long r;
+    vibeos_siginfo_t why;
 
     if (ks_current() < 0 || !ks_id(ks_current())->is_user ||
         sig > VIBEOS_SIG_MAX) {
         return -VIBEOS_EINVAL;
     }
+    linux_sender(&why, VIBEOS_SIG_FROM_THREAD);
     /* Lookup, check and raise as one critical section (H-007). */
     ks_lock(ks_sched_lock(), __func__);
     target = ks_task_by_tid((uint32_t)target_tid);
@@ -140,7 +159,7 @@ static long linux_sys_tkill(uint64_t target_tid, uint64_t sig) {
     } else if (sig == 0u) {
         r = 0;
     } else {
-        r = (ks_signal_raise(target, (uint32_t)sig) == 0) ? 0 : -VIBEOS_EINVAL;
+        r = (ks_signal_send(target, (uint32_t)sig, &why) == 0) ? 0 : -VIBEOS_EINVAL;
     }
     ks_unlock(ks_sched_lock());
     if (sig == 0u || r != 0) {
@@ -163,11 +182,13 @@ static long linux_sys_tgkill(uint64_t target_tgid, uint64_t target_tid,
                           uint64_t sig) {
     int target;
     long r;
+    vibeos_siginfo_t why;
 
     if (ks_current() < 0 || !ks_id(ks_current())->is_user ||
         sig > VIBEOS_SIG_MAX) {
         return -VIBEOS_EINVAL;
     }
+    linux_sender(&why, VIBEOS_SIG_FROM_THREAD);
     /* Lookup, identity check and raise as one critical section (H-007): the
      * tgid comparison protects nothing if the slot can change after it. */
     ks_lock(ks_sched_lock(), __func__);
@@ -179,7 +200,7 @@ static long linux_sys_tgkill(uint64_t target_tgid, uint64_t target_tid,
     } else if (sig == 0u) {
         r = 0;
     } else {
-        r = (ks_signal_raise(target, (uint32_t)sig) == 0) ? 0 : -VIBEOS_EINVAL;
+        r = (ks_signal_send(target, (uint32_t)sig, &why) == 0) ? 0 : -VIBEOS_EINVAL;
     }
     ks_unlock(ks_sched_lock());
     if (sig == 0u || r != 0) {
@@ -257,13 +278,8 @@ static long linux_sys_rt_sigaction(uint64_t sig, uint64_t act_uptr, uint64_t old
  * the boundary, and only here - getting it wrong shifts every mask by one, so
  * a program blocking SIGUSR2 actually blocks SIGSEGV and its own blocked
  * signal is delivered anyway. */
-static uint64_t linux_sigset_from_user(uint64_t user_set) {
-    return user_set << 1;
-}
-
-static uint64_t linux_sigset_to_user(uint64_t kernel_set) {
-    return kernel_set >> 1;
-}
+/* linux_sigset_from_user and linux_sigset_to_user are in linux_internal.h:
+ * the signal frame converts the mask it saves too. */
 
 static long linux_sys_rt_sigprocmask(uint64_t how, uint64_t set_uptr, uint64_t old_uptr) {
     vibeos_task_t *t;
@@ -303,29 +319,300 @@ static long linux_sys_rt_sigprocmask(uint64_t how, uint64_t set_uptr, uint64_t o
     return 0;
 }
 
+/* The alternate stack, set from a stack_t: sigaltstack, and rt_sigreturn putting
+ * back what the frame recorded. Refused while the thread is running on it -
+ * moving a stack out from under its own handler is how a program corrupts it. */
+static long linux_altstack_set(vibeos_task_t *t, const linux_stack_t *ss, uint64_t sp) {
+    int32_t mode = ss->ss_flags & ~(int32_t)LINUX_SS_AUTODISARM;
+
+    if (linux_on_altstack(t, sp)) {
+        return -VIBEOS_EPERM;
+    }
+    if (mode != 0 && mode != LINUX_SS_ONSTACK && mode != LINUX_SS_DISABLE) {
+        return -VIBEOS_EINVAL;
+    }
+    if (mode == LINUX_SS_DISABLE) {
+        t->sas_sp = 0;
+        t->sas_size = 0;
+        t->sas_flags = 0;
+        return 0;
+    }
+    if (ss->ss_size < LINUX_MINSIGSTKSZ) {
+        return -VIBEOS_ENOMEM;
+    }
+    t->sas_sp = ss->ss_sp;
+    t->sas_size = ss->ss_size;
+    t->sas_flags = (uint32_t)ss->ss_flags & LINUX_SS_AUTODISARM;
+    return 0;
+}
+
 /* rt_sigreturn(): put back everything the handler interrupted.
  *
- * The frame is in memory the program can write, so the architecture reads it
- * back and decides what of it may be trusted - the privilege-bearing registers
- * are forced, the resume address is checked (H-018). What is left here is the
- * policy: a frame that is missing, unreadable or forged ends the task with
- * SIGSEGV rather than resuming from whatever is on the stack. */
+ * The frame is Linux's (signal.c), in memory the program can write - and may
+ * have, on purpose: a handler that recovers from a fault moves the saved rip.
+ * So it is read as the program left it, and what of it may be trusted is the
+ * architecture's to decide (ks_regs_set: the selectors and privileged flags
+ * forced, the resume address checked, H-018). A frame that is missing,
+ * unreadable or refused ends the task with SIGSEGV rather than resuming from
+ * whatever is on the stack. */
 static long linux_sys_rt_sigreturn(ks_regs_t *frame) {
-    uint64_t base, blocked = 0;
+    vibeos_task_t *t;
+    linux_ucontext_t uc;
+    vibeos_uregs_t r;
+    uint64_t base;
 
     if (ks_current() < 0) {
         return -VIBEOS_EINVAL;
     }
+    t = ks_id(ks_current());
     /* The handler has returned, so rsp points just past the return address
-     * that the trampoline popped. */
+     * that the trampoline popped: at the ucontext. */
     base = ks_regs_sp(frame);
-    if (!linux_user_ok(base, ks_sigframe_size(), 0) ||
-        ks_sigframe_pop(frame, base, &blocked) != 0) {
-        ks_task_exit(128ull + VIBEOS_SIGSEGV);
-        return 0;
+    if (!linux_user_ok(base, sizeof(uc), 0) ||
+        vibeos_uaccess_copy(&uc, (const void *)(uintptr_t)base, sizeof(uc)) != 0) {
+        goto bad;
     }
-    ks_id(ks_current())->sig_blocked = blocked;
+    r.r8 = uc.uc_mcontext.r8;    r.r9 = uc.uc_mcontext.r9;
+    r.r10 = uc.uc_mcontext.r10;  r.r11 = uc.uc_mcontext.r11;
+    r.r12 = uc.uc_mcontext.r12;  r.r13 = uc.uc_mcontext.r13;
+    r.r14 = uc.uc_mcontext.r14;  r.r15 = uc.uc_mcontext.r15;
+    r.rdi = uc.uc_mcontext.rdi;  r.rsi = uc.uc_mcontext.rsi;
+    r.rbp = uc.uc_mcontext.rbp;  r.rbx = uc.uc_mcontext.rbx;
+    r.rdx = uc.uc_mcontext.rdx;  r.rax = uc.uc_mcontext.rax;
+    r.rcx = uc.uc_mcontext.rcx;  r.rsp = uc.uc_mcontext.rsp;
+    r.rip = uc.uc_mcontext.rip;  r.rflags = uc.uc_mcontext.eflags;
+    r.cs = uc.uc_mcontext.cs;
+    r.ss = uc.uc_mcontext.ss;
+    /* The vector registers, if the frame names them. 0 is "none", as on Linux;
+     * anything else has to be an aligned area the program can read. */
+    if (uc.uc_mcontext.fpstate != 0u &&
+        ((uc.uc_mcontext.fpstate & 15u) != 0u ||
+         !linux_user_ok(uc.uc_mcontext.fpstate, ks_fpu_size(), 0) ||
+         ks_fpu_restore(uc.uc_mcontext.fpstate) != 0)) {
+        goto bad;
+    }
+    if (ks_regs_set(frame, &r) != 0) {
+        goto bad;
+    }
+    t->sig_blocked = linux_sigset_from_user(uc.uc_sigmask) &
+                     ~((1ull << VIBEOS_SIGKILL) | (1ull << VIBEOS_SIGSTOP));
+    /* The alternate stack as it was when the handler was entered - which is
+     * how SS_AUTODISARM arms it again. A refusal is not the program's error
+     * here; Linux ignores it too. */
+    (void)linux_altstack_set(t, &uc.uc_stack, r.rsp);
     return (long)ks_regs_ret(frame);
+
+bad:
+    t->exit_signal = VIBEOS_SIGSEGV;
+    ks_task_exit(128ull + VIBEOS_SIGSEGV);
+    return 0;
+}
+
+/* sigaltstack(): set, report, or both. The old one is read before the new one
+ * is set and written only if setting it worked. */
+static long linux_sys_sigaltstack(ks_regs_t *frame, uint64_t ss_uptr, uint64_t old_uptr) {
+    vibeos_task_t *t;
+    linux_stack_t ss, old;
+    uint64_t sp;
+    long r;
+
+    if (ks_current() < 0) {
+        return -VIBEOS_EINVAL;
+    }
+    t = ks_id(ks_current());
+    sp = ks_regs_sp(frame);
+    {
+        uint32_t i;
+        for (i = 0; i < sizeof(old); i++) {
+            ((unsigned char *)&old)[i] = 0;   /* the padding goes out too */
+        }
+    }
+    old.ss_sp = t->sas_sp;
+    old.ss_size = t->sas_size;
+    old.ss_flags = (int32_t)(t->sas_size == 0u ? LINUX_SS_DISABLE
+                   : (linux_on_altstack(t, sp) ? LINUX_SS_ONSTACK : 0)) | (int32_t)t->sas_flags;
+    if (ss_uptr != 0u) {
+        if (vibeos_uaccess_copy(&ss, (const void *)(uintptr_t)ss_uptr, sizeof(ss)) != 0) {
+            return -VIBEOS_EFAULT;
+        }
+        if ((r = linux_altstack_set(t, &ss, sp)) != 0) {
+            return r;
+        }
+    }
+    if (old_uptr != 0u &&
+        vibeos_uaccess_copy((void *)(uintptr_t)old_uptr, &old, sizeof(old)) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    return 0;
+}
+
+/* rt_sigpending(): what has been raised and is waiting behind the mask. */
+static long linux_sys_rt_sigpending(uint64_t set_uptr, uint64_t size) {
+    const vibeos_task_t *t;
+    uint64_t out;
+
+    if (ks_current() < 0 || size != 8u) {
+        return -VIBEOS_EINVAL;
+    }
+    t = ks_id(ks_current());
+    out = linux_sigset_to_user(t->sig_pending & t->sig_blocked);
+    if (vibeos_uaccess_copy((void *)(uintptr_t)set_uptr, &out, sizeof(out)) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    return 0;
+}
+
+/* Wait until a signal arrives that the program has to see: one with a handler,
+ * or one that ends it. Always EINTR, never run again - sigsuspend and pause are
+ * defined as returning when a handler has run. */
+static long linux_wait_for_signal(void) {
+    int me = ks_current();
+
+    while (!ks_signal_interrupts(me)) {
+        ks_wait_tick();
+    }
+    return -VIBEOS_EINTR;
+}
+
+static long linux_sys_pause(void) {
+    if (ks_current() < 0) {
+        return -VIBEOS_EINVAL;
+    }
+    return linux_wait_for_signal();
+}
+
+/* rt_sigsuspend(): wait under a temporary mask. The program's own mask is kept
+ * aside for the handler's frame (sig_saved), so the handler runs under the
+ * temporary one and the program resumes under its own - the one atomic step
+ * sigprocmask followed by pause cannot be. */
+static long linux_sys_rt_sigsuspend(uint64_t set_uptr, uint64_t size) {
+    vibeos_task_t *t;
+    uint64_t raw;
+
+    if (ks_current() < 0 || size != 8u) {
+        return -VIBEOS_EINVAL;
+    }
+    if (vibeos_uaccess_copy(&raw, (const void *)(uintptr_t)set_uptr, sizeof(raw)) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    t = ks_id(ks_current());
+    t->sig_saved = t->sig_blocked;
+    t->sig_saved_valid = 1;
+    t->sig_blocked = linux_sigset_from_user(raw) &
+                     ~((1ull << VIBEOS_SIGKILL) | (1ull << VIBEOS_SIGSTOP));
+    return linux_wait_for_signal();
+}
+
+/* rt_sigtimedwait(): take one of `set` off the pending set without running its
+ * handler - which is why programs block the set first - and say why it came.
+ * EAGAIN when the time runs out, EINTR when some other signal needs acting on. */
+static long linux_sys_rt_sigtimedwait(uint64_t set_uptr, uint64_t info_uptr,
+                                      uint64_t ts_uptr, uint64_t size) {
+    int me = ks_current();
+    vibeos_task_t *t;
+    uint64_t raw, want, deadline = 0;
+
+    if (me < 0 || size != 8u) {
+        return -VIBEOS_EINVAL;
+    }
+    if (vibeos_uaccess_copy(&raw, (const void *)(uintptr_t)set_uptr, sizeof(raw)) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    want = linux_sigset_from_user(raw) & ~((1ull << VIBEOS_SIGKILL) | (1ull << VIBEOS_SIGSTOP));
+    if (ts_uptr != 0u) {
+        linux_timespec_t ts;
+        int64_t ticks;
+
+        if (vibeos_uaccess_copy(&ts, (const void *)(uintptr_t)ts_uptr, sizeof(ts)) != 0) {
+            return -VIBEOS_EFAULT;
+        }
+        if ((ticks = linux_ticks_of(&ts)) < 0) {
+            return -VIBEOS_EINVAL;
+        }
+        deadline = ks_ticks() + (uint64_t)ticks;
+    }
+    t = ks_id(me);
+    for (;;) {
+        uint64_t ready = t->sig_pending & want;
+
+        if (ready) {
+            uint32_t sig = 1;
+            vibeos_siginfo_t why;
+
+            while ((ready & (1ull << sig)) == 0u) {
+                sig++;
+            }
+            if (ks_signal_take(me, sig, &why)) {
+                if (info_uptr != 0u) {
+                    linux_siginfo_t info;
+
+                    linux_siginfo_from(&info, sig, &why);
+                    if (vibeos_uaccess_copy((void *)(uintptr_t)info_uptr, &info, sizeof(info)) != 0) {
+                        return -VIBEOS_EFAULT;
+                    }
+                }
+                return (long)sig;
+            }
+            continue;
+        }
+        if (ks_signal_interrupts(me)) {
+            return -VIBEOS_EINTR;
+        }
+        if (ts_uptr != 0u && ks_ticks() >= deadline) {
+            return -VIBEOS_EAGAIN;
+        }
+        ks_wait_tick();
+    }
+}
+
+/* rt_sigqueueinfo() and rt_tgsigqueueinfo(): a signal with a reason the sender
+ * wrote. Only to itself may a program claim a code that says the kernel or kill
+ * sent it (si_code >= 0, or SI_TKILL); anything else could forge a sender. */
+static long linux_sys_rt_sigqueueinfo(uint64_t tgid, uint64_t tid, uint64_t sig,
+                                      uint64_t info_uptr, int to_thread) {
+    linux_siginfo_t in;
+    vibeos_siginfo_t why;
+    const vibeos_task_t *me;
+    int target;
+    long r;
+
+    if (ks_current() < 0 || !ks_id(ks_current())->is_user || sig > VIBEOS_SIG_MAX) {
+        return -VIBEOS_EINVAL;
+    }
+    me = ks_id(ks_current());
+    if (vibeos_uaccess_copy(&in, (const void *)(uintptr_t)info_uptr, sizeof(in)) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    if ((in.si_code >= 0 || in.si_code == LINUX_SI_TKILL) &&
+        (uint32_t)(to_thread ? tid : tgid) != me->pid) {
+        return -VIBEOS_EPERM;
+    }
+    {
+        uint32_t i;
+        for (i = 0; i < sizeof(why); i++) {
+            ((unsigned char *)&why)[i] = 0;
+        }
+    }
+    why.from = VIBEOS_SIG_FROM_QUEUE;
+    why.code = in.si_code;
+    why.pid = (uint32_t)in.pid;
+    why.uid = in.uid;
+    why.addr = in.value;
+
+    /* Lookup, check and raise as one critical section (H-007), as kill. */
+    ks_lock(ks_sched_lock(), __func__);
+    target = to_thread ? ks_task_by_tid((uint32_t)tid) : ks_task_by_pid((uint32_t)tgid);
+    if (target < 0 || (to_thread && ks_id(target)->tgid != (uint32_t)tgid)) {
+        r = -VIBEOS_ESRCH;
+    } else if (!linux_signal_permitted(target)) {
+        r = -VIBEOS_EPERM;
+    } else if (sig == 0u) {
+        r = 0;
+    } else {
+        r = (ks_signal_send(target, (uint32_t)sig, &why) == 0) ? 0 : -VIBEOS_EINVAL;
+    }
+    ks_unlock(ks_sched_lock());
+    return r;
 }
 
 /* ---- the syscalls this file implements ---------------------------------------
@@ -341,6 +628,13 @@ static long linux_sys_rt_sigreturn(ks_regs_t *frame) {
     X(15,  rt_sigreturn,   SIG_RETURN,   NOPTR, linux_sys_rt_sigreturn(FRAME)) \
     X(62,  kill,           KILL,         NOPTR, linux_sys_kill(ARG(0), ARG(1))) \
     X(200, tkill,          TKILL,        NOPTR, linux_sys_tkill(ARG(0), ARG(1))) \
-    X(234, tgkill,         TGKILL,       NOPTR, linux_sys_tgkill(ARG(0), ARG(1), ARG(2)))
+    X(234, tgkill,         TGKILL,       NOPTR, linux_sys_tgkill(ARG(0), ARG(1), ARG(2))) \
+    X(34,  pause,          SIG_PAUSE,    NOPTR, linux_sys_pause()) \
+    X(127, rt_sigpending,  SIG_PENDING,  PTRS(OUT(0, 8)), linux_sys_rt_sigpending(ARG(0), ARG(1))) \
+    X(128, rt_sigtimedwait, SIG_TIMEDWAIT, PTRS(IN(0, 8), OUT_OPT(1, sizeof(linux_siginfo_t)), IN_OPT(2, sizeof(linux_timespec_t))), linux_sys_rt_sigtimedwait(ARG(0), ARG(1), ARG(2), ARG(3))) \
+    X(129, rt_sigqueueinfo, SIG_QUEUE,   PTRS(IN(2, sizeof(linux_siginfo_t))), linux_sys_rt_sigqueueinfo(ARG(0), 0, ARG(1), ARG(2), 0)) \
+    X(130, rt_sigsuspend,  SIG_SUSPEND,  PTRS(IN(0, 8)), linux_sys_rt_sigsuspend(ARG(0), ARG(1))) \
+    X(131, sigaltstack,    SIG_ALTSTACK, PTRS(IN_OPT(0, sizeof(linux_stack_t)), OUT_OPT(1, sizeof(linux_stack_t))), linux_sys_sigaltstack(FRAME, ARG(0), ARG(1))) \
+    X(297, rt_tgsigqueueinfo, SIG_TGQUEUE, PTRS(IN(3, sizeof(linux_siginfo_t))), linux_sys_rt_sigqueueinfo(ARG(0), ARG(1), ARG(2), ARG(3), 1))
 
 LINUX_DEFINE_SYSCALLS(sig, LINUX_SIG_SYSCALLS)

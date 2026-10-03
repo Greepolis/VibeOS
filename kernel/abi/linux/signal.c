@@ -28,7 +28,11 @@
  * wrong.
  */
 
-/* The frame's layout is the architecture's: ks_sigframe_push, ks_sigframe_size. */
+/* The frame is Linux's since docs/abi/ L2: a return address, a ucontext and a
+ * siginfo, with the vector registers in an FXSAVE area above them. It used to be
+ * private to this kernel - a magic, the mask and the raw trap frame - which was
+ * enough for a handler that only returns, and nothing for one that asks why it
+ * was called or where: si_addr, the saved rip, what was blocked. */
 
 
 /* Which signal to deliver next: the lowest-numbered pending one that is not
@@ -51,6 +55,81 @@ static uint32_t linux_signal_next(const vibeos_task_t *t) {
     return 0;
 }
 
+/* Is `sp` on the thread's alternate stack? Linux's test, end inclusive: a stack
+ * pointer at the very top has pushed nothing yet and is on it. */
+int linux_on_altstack(const vibeos_task_t *t, uint64_t sp) {
+    return t->sas_size != 0u && sp > t->sas_sp && sp - t->sas_sp <= t->sas_size;
+}
+
+/* The reason a signal came, in Linux's words. Every field the signal's kind does
+ * not use is zero: a handler that reads si_pid of a fault gets 0, not the last
+ * tenant's stack. */
+void linux_siginfo_from(linux_siginfo_t *o, uint32_t sig, const vibeos_siginfo_t *in) {
+    uint32_t i;
+
+    for (i = 0; i < sizeof(*o); i++) {
+        ((unsigned char *)o)[i] = 0;
+    }
+    o->si_signo = (int32_t)sig;
+    switch (in->from) {
+        case VIBEOS_SIG_FROM_PROCESS:
+            o->si_code = LINUX_SI_USER;
+            o->pid = (int32_t)in->pid;
+            o->uid = in->uid;
+            break;
+        case VIBEOS_SIG_FROM_THREAD:
+            o->si_code = LINUX_SI_TKILL;
+            o->pid = (int32_t)in->pid;
+            o->uid = in->uid;
+            break;
+        case VIBEOS_SIG_FROM_QUEUE:
+            /* As the sender wrote it: sigqueueinfo hands the whole record over,
+             * and only the codes that would claim to be the kernel were refused
+             * when it was sent. */
+            o->si_code = in->code;
+            o->pid = (int32_t)in->pid;
+            o->uid = in->uid;
+            o->value = in->addr;
+            break;
+        case VIBEOS_SIG_FROM_CHILD:
+            o->si_code = in->code == (int32_t)VIBEOS_CHILD_KILLED ? LINUX_CLD_KILLED : LINUX_CLD_EXITED;
+            o->pid = (int32_t)in->pid;
+            o->uid = in->uid;
+            linux_si_set_status(o, in->status);
+            o->utime = (int64_t)in->utime;
+            break;
+        case VIBEOS_SIG_FROM_FAULT:
+            linux_si_set_addr(o, in->addr);
+            switch (in->trapno) {
+                case 14u: o->si_code = (in->fault_err & 1u) ? LINUX_SEGV_ACCERR : LINUX_SEGV_MAPERR; break;
+                case 0u:  o->si_code = LINUX_FPE_INTDIV; break;
+                case 6u:  o->si_code = LINUX_ILL_ILLOPN; break;
+                case 17u: o->si_code = LINUX_BUS_ADRALN; break;
+                case 16u:
+                case 19u: o->si_code = LINUX_FPE_FLTINV; break;
+                default:
+                    /* #GP names no address: what the program touched is not
+                     * something the CPU reports. */
+                    o->si_code = LINUX_SI_KERNEL;
+                    linux_si_set_addr(o, 0);
+                    break;
+            }
+            break;
+        default:
+            o->si_code = LINUX_SI_KERNEL;
+            break;
+    }
+}
+
+/* A wait under a temporary mask (sigsuspend) that ended without a handler to
+ * carry the program's own mask back: it goes back here. */
+static void linux_signal_unsave(vibeos_task_t *t) {
+    if (t->sig_saved_valid) {
+        t->sig_blocked = t->sig_saved;
+        t->sig_saved_valid = 0;
+    }
+}
+
 /* Called on the way back to user space. Returns non-zero if the frame was
  * rewritten to enter a handler. May not return at all, if the signal kills.
  *
@@ -67,7 +146,11 @@ int linux_signal_deliver(ks_regs_t *frame) {
     vibeos_procstate_t *ps;
     int me;
     uint32_t sig;
-    uint64_t handler, sp, restart;
+    uint64_t handler, flags, restart, saved, sp, fp, base;
+    vibeos_siginfo_t why;
+    vibeos_uregs_t regs;
+    linux_ucontext_t uc;
+    linux_siginfo_t info;
 
     if (ks_current() < 0 || !ks_id(ks_current())->is_user) {
         return 0;
@@ -83,9 +166,12 @@ int linux_signal_deliver(ks_regs_t *frame) {
             if (restart) {
                 ks_regs_restart(frame, restart - 1u);
             }
+            linux_signal_unsave(t);
             return 0;
         }
-        t->sig_pending &= ~(1ull << sig);
+        if (!ks_signal_take(me, sig, &why)) {
+            continue;   /* nobody else takes this thread's signals; cannot happen */
+        }
 
         /* A user task whose process reference is already gone is exiting;
          * the default is the only disposition it has left. */
@@ -125,6 +211,7 @@ int linux_signal_deliver(ks_regs_t *frame) {
         }
         break;
     }
+    flags = ps->sig_flags[sig];
 
     /* Bracketed, like every other multi-part message: puts and print_hex take
      * the lock individually, so without this the line is four critical
@@ -141,52 +228,143 @@ int linux_signal_deliver(ks_regs_t *frame) {
     ks_con_puts("\n");
     ks_con_unlock();
 
-
-    /* Below the red zone, then aligned. The handler is entered as if by a
-     * call, so it wants rsp % 16 == 8 once the return address is pushed. */
-    sp = ks_regs_sp(frame) - 128ull;
-    sp -= ks_sigframe_size();
-    sp &= ~15ull;
-    sp -= 8ull;   /* room for the return address */
-
-    if (!linux_user_ok(sp, ks_sigframe_size() + 8ull, 1)) {
-        /* No usable stack to deliver on. A program cannot be asked to handle
-         * that, so the signal takes its default action instead of being
-         * silently dropped. */
-        ks_task_exit(128ull + sig);
-        return 0;
-    }
-
     /* The return address is the C library's trampoline, which issues
      * rt_sigreturn. Without SA_RESTORER there is nothing to return to, and a
      * handler that returns would jump to whatever was on the stack. Checked
      * first, before the stack is touched. */
-    if ((ps->sig_flags[sig] & VIBEOS_SA_RESTORER) == 0u ||
-        ps->sig_restorer[sig] == 0u) {
+    if ((flags & VIBEOS_SA_RESTORER) == 0u || ps->sig_restorer[sig] == 0u) {
         ks_task_exit(128ull + sig);
         return 0;
     }
-
-    /* Built in the kernel and copied out fault-safely: a sibling thread can
-     * munmap the stack page between the range check and these writes, and
-     * building the frame in place would fault in ring 0 (H-023). On a fault the
-     * frame is not left half-written - the task takes SIGSEGV, its default
-     * action, rather than the kernel taking the fault. */
-    if (restart && (ps->sig_flags[sig] & VIBEOS_SA_RESTART)) {
+    if (restart && (flags & VIBEOS_SA_RESTART)) {
         ks_regs_restart(frame, restart - 1u);   /* saved below: what sigreturn resumes */
     }
-    if (ks_sigframe_push(frame, sp, t->sig_blocked, ps->sig_restorer[sig]) != 0) {
+    ks_regs_get(frame, &regs);
+    /* What the handler returns to: the program's own mask, also when it was
+     * waiting under a temporary one. */
+    saved = t->sig_saved_valid ? t->sig_saved : t->sig_blocked;
+
+    /* Where: on the alternate stack if the handler asked for it and the thread
+     * is not already on it, else below the red zone - the System V ABI lets a
+     * leaf function use the 128 bytes below rsp without reserving them, so a
+     * frame written at rsp would corrupt live data in a program that was doing
+     * nothing wrong. Then the vector registers, 64-aligned as Linux places
+     * them; then the frame, so that the handler is entered as if by a call:
+     * rsp % 16 == 8, with the return address at rsp. */
+    sp = regs.rsp;
+    if ((flags & LINUX_SA_ONSTACK) && t->sas_size != 0u && !linux_on_altstack(t, sp)) {
+        sp = t->sas_sp + t->sas_size;
+    } else {
+        sp -= 128ull;
+    }
+    fp = (sp - ks_fpu_size()) & ~63ull;
+    base = ((fp - (8ull + sizeof(uc) + sizeof(info))) & ~15ull) - 8ull;
+
+    /* No usable stack to deliver on: a program cannot be asked to handle that,
+     * so it takes SIGSEGV, as Linux does. */
+    if (!linux_user_ok(base, (fp + ks_fpu_size()) - base, 1)) {
+        t->exit_signal = VIBEOS_SIGSEGV;
         ks_task_exit(128ull + VIBEOS_SIGSEGV);
         return 0;
     }
 
+    {
+        uint32_t i;
+        for (i = 0; i < sizeof(uc); i++) {
+            ((unsigned char *)&uc)[i] = 0;
+        }
+    }
+    uc.uc_flags = LINUX_UC_SIGCONTEXT_SS | LINUX_UC_STRICT_RESTORE_SS;
+    uc.uc_stack.ss_sp = t->sas_sp;
+    uc.uc_stack.ss_size = t->sas_size;
+    uc.uc_stack.ss_flags = (int32_t)(t->sas_size == 0u ? LINUX_SS_DISABLE
+                           : (linux_on_altstack(t, regs.rsp) ? LINUX_SS_ONSTACK : 0)) |
+                           (int32_t)t->sas_flags;
+    uc.uc_mcontext.r8 = regs.r8;    uc.uc_mcontext.r9 = regs.r9;
+    uc.uc_mcontext.r10 = regs.r10;  uc.uc_mcontext.r11 = regs.r11;
+    uc.uc_mcontext.r12 = regs.r12;  uc.uc_mcontext.r13 = regs.r13;
+    uc.uc_mcontext.r14 = regs.r14;  uc.uc_mcontext.r15 = regs.r15;
+    uc.uc_mcontext.rdi = regs.rdi;  uc.uc_mcontext.rsi = regs.rsi;
+    uc.uc_mcontext.rbp = regs.rbp;  uc.uc_mcontext.rbx = regs.rbx;
+    uc.uc_mcontext.rdx = regs.rdx;  uc.uc_mcontext.rax = regs.rax;
+    uc.uc_mcontext.rcx = regs.rcx;  uc.uc_mcontext.rsp = regs.rsp;
+    uc.uc_mcontext.rip = regs.rip;  uc.uc_mcontext.eflags = regs.rflags;
+    uc.uc_mcontext.cs = regs.cs;
+    uc.uc_mcontext.ss = regs.ss;
+    if (why.from == VIBEOS_SIG_FROM_FAULT) {
+        uc.uc_mcontext.err = why.fault_err;
+        uc.uc_mcontext.trapno = why.trapno;
+        uc.uc_mcontext.cr2 = why.trapno == 14u ? why.addr : 0u;
+    }
+    uc.uc_mcontext.oldmask = linux_sigset_to_user(saved);
+    uc.uc_mcontext.fpstate = fp;
+    uc.uc_sigmask = linux_sigset_to_user(saved);
+    linux_siginfo_from(&info, sig, &why);
+
+    /* Built in the kernel and copied out fault-safely: a sibling thread can
+     * munmap the stack page between the range check and these writes, and
+     * building the frame in place would fault in ring 0 (H-023). On a fault the
+     * task takes SIGSEGV rather than the kernel taking the fault. */
+    {
+        uint64_t ret = ps->sig_restorer[sig];
+
+        if (ks_fpu_save(fp) != 0 ||
+            vibeos_uaccess_copy((void *)(uintptr_t)base, &ret, sizeof(ret)) != 0 ||
+            vibeos_uaccess_copy((void *)(uintptr_t)(base + 8ull), &uc, sizeof(uc)) != 0 ||
+            vibeos_uaccess_copy((void *)(uintptr_t)(base + 8ull + sizeof(uc)), &info, sizeof(info)) != 0) {
+            t->exit_signal = VIBEOS_SIGSEGV;
+            ks_task_exit(128ull + VIBEOS_SIGSEGV);
+            return 0;
+        }
+    }
+
+    /* SS_AUTODISARM: the stack is the handler's now, and a signal inside it
+     * must not start again at its top; sigreturn arms it again from uc_stack. */
+    if (t->sas_flags & LINUX_SS_AUTODISARM) {
+        t->sas_sp = 0;
+        t->sas_size = 0;
+        t->sas_flags = 0;
+    }
     /* While the handler runs, this signal is blocked, plus whatever the
      * program asked to block along with it - otherwise a repeating signal
-     * re-enters the handler until the stack is gone. */
-    t->sig_blocked |= (1ull << sig) | ps->sig_mask[sig];
+     * re-enters the handler until the stack is gone. SA_NODEFER asks for the
+     * re-entry; SA_RESETHAND for one delivery only. */
+    t->sig_saved_valid = 0;
+    t->sig_blocked = saved | ps->sig_mask[sig] |
+                     ((flags & LINUX_SA_NODEFER) ? 0u : (1ull << sig));
+    t->sig_blocked &= ~((1ull << VIBEOS_SIGKILL) | (1ull << VIBEOS_SIGSTOP));
+    if (flags & LINUX_SA_RESETHAND) {
+        ps->sig_handler[sig] = SIG_DFL_ADDR;
+        ps->sig_flags[sig] &= ~LINUX_SA_SIGINFO;
+    }
 
-    ks_regs_enter_handler(frame, handler, sp, sig);
+    ks_regs_enter_handler(frame, handler, base, sig,
+                          base + 8ull + sizeof(uc), base + 8ull);
     return 1;
 }
 
+/* A CPU exception in a program (docs/abi/ L2): the architecture asks whether
+ * the program takes it. Yes only if a handler is installed and the signal is
+ * not blocked - Linux forces the default for a synchronous fault that is
+ * blocked or ignored, since returning to the instruction would fault again
+ * forever. 1 if the frame now enters the handler; 0 and the architecture kills
+ * the task, as it did for every fault before L2. */
+int linux_signal_fault(ks_regs_t *frame, uint32_t sig, const vibeos_siginfo_t *why) {
+    int me = ks_current();
+    const vibeos_procstate_t *ps;
+    uint64_t handler;
 
+    if (me < 0 || !ks_id(me)->is_user || sig == 0u || sig > VIBEOS_SIG_MAX) {
+        return 0;
+    }
+    ps = ks_ps(me);
+    handler = ps ? ps->sig_handler[sig] : SIG_DFL_ADDR;
+    if (handler == SIG_DFL_ADDR || handler == SIG_IGN_ADDR ||
+        (ks_id(me)->sig_blocked & (1ull << sig))) {
+        return 0;
+    }
+    if (ks_signal_send(me, sig, why) != 0) {
+        return 0;
+    }
+    return linux_signal_deliver(frame);
+}

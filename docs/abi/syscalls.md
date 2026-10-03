@@ -9,9 +9,9 @@ the registry, not this page; `check.sh` fails while the two differ.
 
 | State | Count | What the kernel answers |
 | --- | --- | --- |
-| done | 143 | through its row |
-| partial | 23 | through its row, with the gap named |
-| missing | 124 | ENOSYS, and the boot gate fails naming the number |
+| done | 148 | through its row |
+| partial | 25 | through its row, with the gap named |
+| missing | 117 | ENOSYS, and the boot gate fails naming the number |
 | deferred | 50 | ENOSYS, and the boot gate fails naming the number |
 | refused | 33 | its errno, counted as refused - expected, never a failure |
 
@@ -20,7 +20,7 @@ Without a row, by phase:
 | Phase | Syscalls |
 | --- | --- |
 | L1 - files and paths | 0 |
-| L2 - processes, credentials, time | 35 |
+| L2 - processes, credentials, time | 28 |
 | L3 - memory | 0 |
 | L4 - event loops | 20 |
 | L5 - sockets | 11 |
@@ -70,7 +70,7 @@ calls, outside the Linux number space, are listed last.
 | 31 | `shmctl` | missing | L7 | ENOSYS |  |  |
 | 32 | `dup` | done | - | - | `fs.c` |  |
 | 33 | `dup2` | done | - | - | `fs.c` |  |
-| 34 | `pause` | missing | L2 | ENOSYS |  |  |
+| 34 | `pause` | done | - | - | `sig.c` |  |
 | 35 | `nanosleep` | done | - | - | `misc.c` |  |
 | 36 | `getitimer` | missing | L2 | ENOSYS |  |  |
 | 37 | `alarm` | missing | L2 | ENOSYS |  |  |
@@ -163,11 +163,11 @@ calls, outside the Linux number space, are listed last.
 | 124 | `getsid` | done | - | - | `proc.c` |  |
 | 125 | `capget` | missing | L9 | ENOSYS |  | the security goals of docs/vision.md |
 | 126 | `capset` | missing | L9 | ENOSYS |  | the security goals of docs/vision.md |
-| 127 | `rt_sigpending` | missing | L2 | ENOSYS |  |  |
-| 128 | `rt_sigtimedwait` | missing | L2 | ENOSYS |  |  |
-| 129 | `rt_sigqueueinfo` | missing | L2 | ENOSYS |  |  |
-| 130 | `rt_sigsuspend` | missing | L2 | ENOSYS |  |  |
-| 131 | `sigaltstack` | missing | L2 | ENOSYS |  |  |
+| 127 | `rt_sigpending` | done | - | - | `sig.c` |  |
+| 128 | `rt_sigtimedwait` | done | - | - | `sig.c` |  |
+| 129 | `rt_sigqueueinfo` | partial | L2 | - | `sig.c` | a real-time signal sent twice before it is taken is delivered once: Linux queues each, this kernel keeps one per signal |
+| 130 | `rt_sigsuspend` | done | - | - | `sig.c` |  |
+| 131 | `sigaltstack` | done | - | - | `sig.c` |  |
 | 132 | `utime` | done | - | - | `names.c` |  |
 | 133 | `mknod` | partial | L1 | - | `names.c` | regular files only: a FIFO, a socket or a device node is EPERM - no filesystem here holds one |
 | 134 | `uselib` | refused | R | ENOSYS |  | removed or never implemented by Linux itself |
@@ -333,7 +333,7 @@ calls, outside the Linux number space, are listed last.
 | 294 | `inotify_init1` | missing | L4 | ENOSYS |  |  |
 | 295 | `preadv` | done | - | - | `fs.c` |  |
 | 296 | `pwritev` | done | - | - | `fs.c` |  |
-| 297 | `rt_tgsigqueueinfo` | missing | L2 | ENOSYS |  |  |
+| 297 | `rt_tgsigqueueinfo` | partial | L2 | - | `sig.c` | as rt_sigqueueinfo: one pending instance per signal |
 | 298 | `perf_event_open` | refused | R | ENOSYS |  | no performance-counter interface: a facility this kernel does not have |
 | 299 | `recvmmsg` | missing | L5 | ENOSYS |  | and AF_UNIX sockets |
 | 300 | `fanotify_init` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |

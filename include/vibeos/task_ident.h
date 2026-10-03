@@ -51,6 +51,19 @@ typedef struct vibeos_task {
      * the way out of the call and taken - cleared - by the signal delivery
      * that follows it on the same way out. */
     uint64_t sys_restart;
+
+    /* The mask a handler is to return to instead of the current one: set by a
+     * call that waits under a temporary mask (sigsuspend) and taken by the
+     * delivery that ends the wait, so the handler runs under the temporary mask
+     * and the program resumes under its own. */
+    uint64_t sig_saved;
+    uint8_t sig_saved_valid;
+
+    /* The alternate signal stack (sigaltstack): a thread's, kept across fork,
+     * gone with exec and with a new thread. Size zero is "none". */
+    uint64_t sas_sp;
+    uint64_t sas_size;
+    uint32_t sas_flags;     /* only SS_AUTODISARM is remembered */
 } vibeos_task_t;
 
 /* Put every identity field into a defined state. The one place that does it, so no

@@ -2169,12 +2169,12 @@ static void t_sleep(void) {
 
 /* ---- SA_RESTART (L3 step 3) ----------------------------------------------------------- */
 
-/* The fake's signal frame: a magic, the mask, then the registers it saved -
- * ip, sp, ret, arg0 - eight bytes above where the handler's stack starts. */
+/* The register a handler will return to, read out of Linux's frame as a
+ * program would: the ucontext is eight bytes above where the handler's stack
+ * starts (L2). 0 is the saved rip, 2 the saved rax. */
 static uint64_t saved_reg(const struct ks_regs *fr, uint32_t which) {
-    uint64_t v = 0;
-    memcpy(&v, (const uint8_t *)kf_uptr(fr->sp + 8u + 16u) + 8u * which, 8);
-    return v;
+    const linux_ucontext_t *uc = (const linux_ucontext_t *)kf_uptr(fr->sp + 8u);
+    return which == 0u ? uc->uc_mcontext.rip : uc->uc_mcontext.rax;
 }
 
 static void t_sa_restart(void) {
@@ -2237,6 +2237,319 @@ static void t_sa_restart(void) {
     fr.ret = 7;
     expect(SYS0(39) > 0 && ks_id(me)->sys_restart == 0u && linux_signal_deliver(&fr) == 0 &&
            fr.ip == 0x1002 && fr.ret == 7u, "a call that was not interrupted is not restarted");
+}
+
+/* ---- signals completed (docs/abi/ L2 step 2) ------------------------------------------ */
+
+#define T_SA_RESTORER 0x04000000u
+#define T_SA_SIGINFO  0x00000004u
+#define T_SA_ONSTACK  0x08000000u
+#define T_SA_NODEFER  0x40000000u
+#define T_SA_RESETHAND 0x80000000u
+
+/* Install a handler for `sig` with `flags` (plus SA_RESTORER) through
+ * rt_sigaction, as a C library does. */
+static void t_handler(uint32_t sig, uint64_t handler, uint64_t flags, uint64_t mask) {
+    uint64_t act = kf_ualloc(32);
+    uint64_t *a = (uint64_t *)kf_uptr(act);
+
+    a[0] = handler;
+    a[1] = flags | T_SA_RESTORER;
+    a[2] = 0x3000;          /* the trampoline; never run here */
+    a[3] = mask;
+    expect(SYS4(13, sig, act, 0, 8) == 0, "a handler is installed");
+}
+
+/* Deliver on a frame that was at `ip` with stack `sp`; the handler's frame. */
+static int t_deliver(struct ks_regs *fr, uint64_t ip, uint64_t sp) {
+    memset(fr, 0, sizeof(*fr));
+    fr->ip = ip;
+    fr->sp = sp;
+    fr->ret = 0x77;
+    fr->other[9] = 0xB0B0;   /* rbx: a register nobody but the frame keeps */
+    return linux_signal_deliver(fr);
+}
+
+static void t_signals_l2(void) {
+    uint64_t stack, handler, alt, ss, old, set, info, ts, qi;
+    linux_stack_t *ssp, *oldp;
+    uint64_t *setp;
+    linux_siginfo_t *ip, *qp;
+    int64_t *tsp;
+    struct ks_regs fr;
+    const linux_ucontext_t *uc;
+    const linux_siginfo_t *si;
+    kf_outcome_t how;
+    int me, other;
+    uint32_t i;
+
+    /* ---- the frame: what a handler with SA_SIGINFO is handed -------------- */
+    me = fresh(301);
+    handler = kf_ualloc(16);
+    stack = kf_ualloc(16384);
+    other = kf_spawn(302, 301);
+    t_handler(10, handler, T_SA_SIGINFO, 0);
+    ks_id(me)->sig_blocked = 1ull << 12;            /* the program's own mask */
+    for (i = 0; i < 512u; i++) {
+        g_kf_fpu[i] = (unsigned char)(i * 7u);
+    }
+    g_kf_fpu[26] = g_kf_fpu[27] = 0;
+    kf_set_current(other);
+    expect(SYS2(62, 301, 10) == 0, "another process of the session sends SIGUSR1");
+    kf_set_current(me);
+    expect(t_deliver(&fr, 0x1234, stack + 12000u) == 1 && fr.ip == handler,
+           "the handler is entered");
+    uc = (const linux_ucontext_t *)kf_uptr(fr.sp + 8u);
+    si = (const linux_siginfo_t *)kf_uptr(fr.sp + 8u + sizeof(linux_ucontext_t));
+    expect(fr.arg0 == 10u && fr.arg1 == fr.sp + 8u + sizeof(linux_ucontext_t) && fr.arg2 == fr.sp + 8u,
+           "its arguments are the signal, the siginfo and the ucontext");
+    expect((fr.sp & 15u) == 8u && fr.sp + 512u < stack + 12000u - 128u,
+           "entered as if called, below the red zone");
+    expect(*(const uint64_t *)kf_uptr(fr.sp) == 0x3000, "returning to the C library's trampoline");
+    expect(si->si_signo == 10 && si->si_code == LINUX_SI_USER && si->pid == 302,
+           "the siginfo says kill sent it, and who");
+    expect(uc->uc_mcontext.rip == 0x1234 && uc->uc_mcontext.rax == 0x77 &&
+           uc->uc_mcontext.rbx == 0xB0B0 && uc->uc_mcontext.rsp == stack + 12000u,
+           "the ucontext holds the interrupted registers by Linux's names");
+    expect(uc->uc_sigmask == (1ull << 11) && uc->uc_stack.ss_flags == LINUX_SS_DISABLE,
+           "and the mask to return to - Linux's numbering - and no alternate stack");
+    expect(uc->uc_mcontext.fpstate != 0u && (uc->uc_mcontext.fpstate & 63u) == 0u &&
+           memcmp(kf_uptr(uc->uc_mcontext.fpstate), g_kf_fpu, 512) == 0,
+           "and the vector registers, 64-aligned, where fpstate says");
+    expect(ks_id(me)->sig_blocked == ((1ull << 12) | (1ull << 10)),
+           "the signal itself is blocked while its handler runs");
+
+    /* ---- rt_sigreturn reads the frame as the program left it -------------- */
+    {
+        linux_ucontext_t *w = (linux_ucontext_t *)kf_uptr(fr.sp + 8u);
+        uint64_t base = fr.sp + 8u;
+
+        w->uc_mcontext.rip = 0x1300;       /* what a recovering handler does */
+        w->uc_mcontext.rax = 0x55;
+        w->uc_sigmask = 1ull << 1;         /* SIGINT, in Linux's numbering */
+        ((unsigned char *)kf_uptr(w->uc_mcontext.fpstate))[100] = 0xEE;
+        kf_next_sp(base);
+        expect(sys(15, 0, 0, 0, 0, 0, 0, &how) == 0x55 && how == 0 &&
+               kf_last_frame()->ip == 0x1300 && kf_last_frame()->other[9] == 0xB0B0,
+               "rt_sigreturn resumes where the ucontext now says, with its registers");
+        expect(ks_id(me)->sig_blocked == (1ull << 2) && g_kf_fpu[100] == 0xEE,
+               "and puts back its mask and its vector registers");
+        w->uc_mcontext.rip = 0xdead000000000000ull;
+        kf_next_sp(base);
+        (void)sys(15, 0, 0, 0, 0, 0, 0, &how);
+        expect(how == KF_EXITED && kf_exit_code() == 128u + 11u,
+               "a resume address outside user memory ends the task with SIGSEGV (H-018)");
+    }
+    {
+        uint64_t u;
+        linux_ucontext_t *w;
+
+        me = fresh(303);
+        u = kf_ualloc(sizeof(linux_ucontext_t) + 64u);
+        w = (linux_ucontext_t *)kf_uptr(u);
+        w->uc_mcontext.rip = 0x1300;
+        w->uc_mcontext.fpstate = u + 4u;
+        kf_next_sp(u);
+        (void)sys(15, 0, 0, 0, 0, 0, 0, &how);
+        expect(how == KF_EXITED && kf_exit_code() == 128u + 11u, "so does a misaligned vector area");
+        w->uc_mcontext.fpstate = 0;
+        kf_next_sp(u);
+        (void)sys(15, 0, 0, 0, 0, 0, 0, &how);
+        expect(how == 0 && kf_last_frame()->ip == 0x1300, "and none at all is allowed, as on Linux");
+    }
+
+    /* ---- sigaltstack ------------------------------------------------------ */
+    me = fresh(311);
+    handler = kf_ualloc(16);
+    stack = kf_ualloc(16384);
+    alt = kf_ualloc(8192);
+    ss = kf_ualloc(24); old = kf_ualloc(24);
+    ssp = (linux_stack_t *)kf_uptr(ss);
+    oldp = (linux_stack_t *)kf_uptr(old);
+    expect(SYS2(131, 0, old) == 0 && oldp->ss_flags == LINUX_SS_DISABLE && oldp->ss_size == 0u,
+           "a thread starts with no alternate stack");
+    ssp->ss_sp = alt;
+    ssp->ss_size = 1024;
+    ssp->ss_flags = 0;
+    expect(SYS2(131, ss, 0) == -VIBEOS_ENOMEM, "one smaller than MINSIGSTKSZ is refused");
+    ssp->ss_size = 8192;
+    ssp->ss_flags = 5;
+    expect(SYS2(131, ss, 0) == -VIBEOS_EINVAL, "and flags that are not a mode");
+    ssp->ss_flags = 0;
+    expect(SYS2(131, ss, old) == 0 && SYS2(131, 0, old) == 0 &&
+           oldp->ss_sp == alt && oldp->ss_size == 8192u && oldp->ss_flags == 0,
+           "one set is reported back");
+    t_handler(12, handler, T_SA_SIGINFO | T_SA_ONSTACK, 0);
+    t_handler(10, handler, T_SA_SIGINFO, 0);
+    (void)ks_signal_raise(me, 12);
+    expect(t_deliver(&fr, 0x1234, stack + 12000u) == 1 && fr.sp > alt && fr.sp < alt + 8192u,
+           "SA_ONSTACK delivers on it");
+    uc = (const linux_ucontext_t *)kf_uptr(fr.sp + 8u);
+    expect(uc->uc_stack.ss_sp == alt && uc->uc_stack.ss_flags == 0 && uc->uc_mcontext.rsp == stack + 12000u,
+           "and the frame records the stack the program was on");
+    kf_next_sp(fr.sp + 256u);
+    expect(SYS2(131, ss, 0) == -VIBEOS_EPERM, "it cannot be changed from on it");
+    ks_id(me)->sig_blocked = 0;
+    (void)ks_signal_raise(me, 10);
+    expect(t_deliver(&fr, 0x1234, stack + 12000u) == 1 && fr.sp < stack + 12000u && fr.sp > stack,
+           "a handler without SA_ONSTACK runs on the program's own stack");
+    ks_id(me)->sig_blocked = 0;
+    {
+        uint64_t inside = fr.sp;
+        (void)ks_signal_raise(me, 12);
+        expect(t_deliver(&fr, 0x1234, alt + 4000u) == 1 && fr.sp < alt + 4000u - 128u && fr.sp > alt,
+               "already on it, the next frame goes below the one in use, not at its top");
+        (void)inside;
+    }
+    ssp->ss_flags = (int32_t)LINUX_SS_AUTODISARM;
+    ks_id(me)->sig_blocked = 0;
+    expect(SYS2(131, ss, 0) == 0, "SS_AUTODISARM is accepted");
+    (void)ks_signal_raise(me, 12);
+    expect(t_deliver(&fr, 0x1234, stack + 12000u) == 1 && ks_id(me)->sas_size == 0u,
+           "and disarms the stack while a handler is on it");
+    kf_next_sp(fr.sp + 8u);
+    (void)sys(15, 0, 0, 0, 0, 0, 0, &how);
+    expect(how == 0 && ks_id(me)->sas_size == 8192u && ks_id(me)->sas_sp == alt,
+           "rt_sigreturn arms it again from the frame");
+
+    /* ---- SA_NODEFER, SA_RESETHAND ----------------------------------------- */
+    me = fresh(321);
+    handler = kf_ualloc(16);
+    stack = kf_ualloc(16384);
+    t_handler(10, handler, T_SA_NODEFER | T_SA_RESETHAND, 0);
+    (void)ks_signal_raise(me, 10);
+    expect(t_deliver(&fr, 0x1234, stack + 12000u) == 1 &&
+           (ks_id(me)->sig_blocked & (1ull << 10)) == 0u && ks_ps(me)->sig_handler[10] == SIG_DFL_ADDR,
+           "SA_NODEFER leaves the signal unblocked, SA_RESETHAND delivers once");
+
+    /* ---- rt_sigpending, rt_sigsuspend, pause ------------------------------ */
+    me = fresh(331);
+    handler = kf_ualloc(16);
+    stack = kf_ualloc(16384);
+    set = kf_ualloc(8);
+    setp = (uint64_t *)kf_uptr(set);
+    t_handler(10, handler, 0, 0);
+    ks_id(me)->sig_blocked = 1ull << 10;
+    (void)ks_signal_raise(me, 10);
+    (void)ks_signal_raise(me, 12);   /* pending and not blocked: not reported */
+    expect(SYS2(127, set, 8) == 0 && *setp == (1ull << 9),
+           "rt_sigpending reports a blocked one, Linux-numbered, and only the blocked ones");
+    expect(SYS2(127, set, 4) == -VIBEOS_EINVAL, "for a sigset of eight bytes only");
+    ks_id(me)->sig_pending &= ~(1ull << 12);
+    *setp = 0;
+    expect(SYS2(130, set, 8) == -VIBEOS_EINTR && ks_id(me)->sig_saved_valid &&
+           ks_id(me)->sig_saved == (1ull << 10) && ks_id(me)->sig_blocked == 0u,
+           "rt_sigsuspend waits under its mask, which lets the pending one in");
+    expect(t_deliver(&fr, 0x1234, stack + 12000u) == 1 &&
+           ((const linux_ucontext_t *)kf_uptr(fr.sp + 8u))->uc_sigmask == (1ull << 9) &&
+           !ks_id(me)->sig_saved_valid,
+           "and the handler returns to the program's own mask, not the temporary one");
+    ks_id(me)->sig_blocked = 0;
+    (void)sys(34, 0, 0, 0, 0, 0, 0, &how);
+    expect(how == KF_BLOCKED, "pause waits while nothing is pending");
+    (void)ks_signal_raise(me, 10);
+    expect(SYS0(34) == -VIBEOS_EINTR, "and ends with EINTR when a signal needs handling");
+    ks_id(me)->sig_pending = 0;
+
+    /* ---- rt_sigtimedwait --------------------------------------------------- */
+    me = fresh(341);
+    handler = kf_ualloc(16);
+    stack = kf_ualloc(16384);
+    other = kf_spawn(342, 341);
+    set = kf_ualloc(8); info = kf_ualloc(128); ts = kf_ualloc(16);
+    setp = (uint64_t *)kf_uptr(set);
+    ip = (linux_siginfo_t *)kf_uptr(info);
+    tsp = (int64_t *)kf_uptr(ts);
+    ks_id(me)->sig_blocked = (1ull << 10) | (1ull << 12);
+    t_handler(12, SIG_IGN_ADDR, 0, 0);
+    kf_set_current(other);
+    expect(SYS2(62, 341, 12) == 0 && SYS2(62, 341, 10) == 0, "two blocked signals are sent");
+    kf_set_current(me);
+    *setp = (1ull << 9) | (1ull << 11);
+    expect(sys(128, set, info, 0, 8, 0, 0, 0) == 10 && ip->si_signo == 10 && ip->pid == 342 &&
+           (ks_id(me)->sig_pending & (1ull << 10)) == 0u,
+           "rt_sigtimedwait takes the lowest of the set, with why it came");
+    expect(sys(128, set, info, 0, 8, 0, 0, 0) == 12,
+           "an ignored signal that is blocked was kept, and is taken");
+    tsp[0] = 0;
+    tsp[1] = 0;
+    expect(sys(128, set, info, ts, 8, 0, 0, 0) == -VIBEOS_EAGAIN, "with nothing pending, a zero wait is EAGAIN");
+    tsp[1] = 1000000000;
+    expect(sys(128, set, info, ts, 8, 0, 0, 0) == -VIBEOS_EINVAL, "a timespec that is not one is EINVAL");
+    (void)sys(128, set, info, 0, 8, 0, 0, &how);
+    expect(how == KF_BLOCKED, "without a time it waits");
+
+    /* ---- rt_sigqueueinfo, rt_tgsigqueueinfo -------------------------------- */
+    me = fresh(351);
+    handler = kf_ualloc(16);
+    stack = kf_ualloc(16384);
+    other = kf_spawn(352, 351);
+    qi = kf_ualloc(128);
+    qp = (linux_siginfo_t *)kf_uptr(qi);
+    qp->si_code = LINUX_SI_QUEUE;
+    qp->pid = 352;
+    qp->value = 42;
+    kf_set_current(other);
+    expect(SYS3(129, 351, 10, qi) == 0 && kf_siginfo(me, 10)->from == VIBEOS_SIG_FROM_QUEUE &&
+           kf_siginfo(me, 10)->addr == 42u,
+           "rt_sigqueueinfo queues a signal with the sender's value");
+    qp->si_code = LINUX_SI_USER;
+    expect(SYS3(129, 351, 12, qi) == -VIBEOS_EPERM, "but may not claim kill sent it, to another process");
+    expect(SYS3(129, 352, 12, qi) == 0, "to itself it may");
+    qp->si_code = LINUX_SI_QUEUE;
+    expect(SYS4(297, 999, 351, 12, qi) == -VIBEOS_ESRCH, "rt_tgsigqueueinfo checks the thread is in the group");
+    expect(SYS4(297, 351, 351, 12, qi) == 0, "and queues to the thread named");
+    kf_set_current(me);
+    ks_id(me)->sig_pending = 0;
+
+    /* ---- a fault, given to the program ------------------------------------- */
+    me = fresh(361);
+    handler = kf_ualloc(16);
+    stack = kf_ualloc(16384);
+    {
+        vibeos_siginfo_t why;
+
+        memset(&why, 0, sizeof(why));
+        why.from = VIBEOS_SIG_FROM_FAULT;
+        why.trapno = 14;
+        why.fault_err = 0x6;          /* a write, from user, to a page not present */
+        why.addr = 0x40;
+        memset(&fr, 0, sizeof(fr));
+        fr.ip = 0x1234;
+        fr.sp = stack + 12000u;
+        expect(linux_signal_fault(&fr, 11, &why) == 0, "a fault with no handler is the architecture's to kill");
+        t_handler(11, handler, T_SA_SIGINFO, 0);
+        ks_id(me)->sig_blocked = 1ull << 11;
+        expect(linux_signal_fault(&fr, 11, &why) == 0 && (ks_id(me)->sig_pending & (1ull << 11)) == 0u,
+               "and one the program blocks, as Linux forces it - nothing left pending behind it");
+        ks_id(me)->sig_blocked = 0;
+        expect(linux_signal_fault(&fr, 11, &why) == 1 && fr.ip == handler, "with a handler, the program takes it");
+        si = (const linux_siginfo_t *)kf_uptr(fr.arg1);
+        uc = (const linux_ucontext_t *)kf_uptr(fr.arg2);
+        expect(si->si_signo == 11 && si->si_code == LINUX_SEGV_MAPERR && linux_si_addr(si) == 0x40,
+               "told the address, and that nothing was mapped there");
+        expect(uc->uc_mcontext.rip == 0x1234 && uc->uc_mcontext.trapno == 14u &&
+               uc->uc_mcontext.err == 0x6u && uc->uc_mcontext.cr2 == 0x40u,
+               "with the faulting rip, trap number, error code and cr2 in the ucontext");
+        ks_id(me)->sig_blocked = 0;
+        why.fault_err = 0x7;
+        memset(&fr, 0, sizeof(fr));
+        fr.ip = 0x1234;
+        fr.sp = stack + 12000u;
+        expect(linux_signal_fault(&fr, 11, &why) == 1 &&
+               ((const linux_siginfo_t *)kf_uptr(fr.arg1))->si_code == LINUX_SEGV_ACCERR,
+               "a present page refused is SEGV_ACCERR");
+        ks_id(me)->sig_blocked = 0;
+        why.trapno = 13;
+        why.addr = 0x1234;
+        memset(&fr, 0, sizeof(fr));
+        fr.ip = 0x1234;
+        fr.sp = stack + 12000u;
+        expect(linux_signal_fault(&fr, 11, &why) == 1 &&
+               ((const linux_siginfo_t *)kf_uptr(fr.arg1))->si_code == LINUX_SI_KERNEL &&
+               linux_si_addr((const linux_siginfo_t *)kf_uptr(fr.arg1)) == 0u,
+               "a general protection fault names no address");
+    }
 }
 
 /* ---- M-078, M-079 ------------------------------------------------------------------- */
@@ -2840,6 +3153,7 @@ int test_linux_handlers(void) {
     t_fork_snapshot_and_groups();
     t_procfs();
     t_sa_restart();
+    t_signals_l2();
     t_sleep();
     t_ltp_l1();
     return g_fail ? -1 : 0;
@@ -3090,6 +3404,32 @@ int test_linux_gaps(void) {
     {
         uint64_t many = kf_ualloc(40u * 4u);
         gap(116, SYS2(116, 40, many) == 0, "setgroups with forty groups");
+    }
+
+    /* rt_sigqueueinfo (129) and rt_tgsigqueueinfo (297), L2: a real-time
+     * signal queued twice is there twice for sigtimedwait to take. */
+    {
+        uint32_t n;
+        for (n = 129; n <= 297; n += 168) {
+            int me = fresh(69);
+            uint64_t qi = kf_ualloc(128), set = kf_ualloc(8), ts = kf_ualloc(16);
+            linux_siginfo_t *q = (linux_siginfo_t *)kf_uptr(qi);
+            long first, second;
+
+            q->si_code = LINUX_SI_QUEUE;
+            ks_id(me)->sig_blocked = 1ull << 34;
+            *(uint64_t *)kf_uptr(set) = 1ull << 33;   /* SIGRTMIN, Linux-numbered */
+            if (n == 129) {
+                (void)SYS3(129, 69, 34, qi);
+                (void)SYS3(129, 69, 34, qi);
+            } else {
+                (void)SYS4(297, 69, 69, 34, qi);
+                (void)SYS4(297, 69, 69, 34, qi);
+            }
+            first = sys(128, set, 0, ts, 8, 0, 0, 0);
+            second = sys(128, set, 0, ts, 8, 0, 0, 0);
+            gap(n, first == 34 && second == 34, "a real-time signal queued twice is taken twice");
+        }
     }
 
     /* futex (202), L6: FUTEX_CMP_REQUEUE with nobody waiting requeues nobody. */

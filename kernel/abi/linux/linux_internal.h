@@ -31,6 +31,20 @@
 #include "vibeos/ceildiv.h"
 #include "vibeos/frame.h"
 
+/* A Linux sigset_t numbers its bits from zero, this kernel by signal; the two
+ * meet only through these (see sig.c). */
+static inline uint64_t linux_sigset_from_user(uint64_t user_set) { return user_set << 1; }
+static inline uint64_t linux_sigset_to_user(uint64_t kernel_set) { return kernel_set >> 1; }
+
+/* Is this stack pointer on the thread's alternate signal stack (signal.c)? */
+int linux_on_altstack(const vibeos_task_t *t, uint64_t sp);
+
+/* A timespec as ticks, rounded up; -1 if it is not a time (misc.c). */
+int64_t linux_ticks_of(const linux_timespec_t *ts);
+
+/* A reason in Linux's words: the siginfo_t a handler or sigtimedwait sees. */
+void linux_siginfo_from(linux_siginfo_t *o, uint32_t sig, const vibeos_siginfo_t *in);
+
 /* Rows are declared with the macros in vibeos/abi_rows.h, which every
  * personality shares; LINUX_DEFINE_SYSCALLS is the Linux spelling. */
 #define LINUX_DEFINE_SYSCALLS(topic, LIST) VIBEOS_DEFINE_SYSCALLS(linux, topic, LIST)

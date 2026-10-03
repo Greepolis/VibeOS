@@ -35,6 +35,10 @@ int test_linux_layout(void) {
 
 #include <asm/stat.h>
 #include <asm/signal.h>
+#include <asm/sigcontext.h>
+#include <asm/ucontext.h>
+#include <asm/siginfo.h>
+#include <linux/signal.h>
 #include <asm/ioctls.h>
 #include <asm/termbits.h>
 #include <asm/termios.h>
@@ -100,6 +104,12 @@ static void expect(int ok, const char *what) {
                #ours "." #f " is " #theirs "." #tf "'s size"); \
     } while (0)
 #define FIELD(ours, theirs, f) FIELD2(ours, theirs, f, f)
+
+/* Padding Linux leaves without a name: ours ends exactly where Linux's next
+ * field starts. */
+#define PAD(ours, f, theirs, next) \
+    expect(offsetof(ours, f) + sizeof(((ours *)0)->f) == offsetof(theirs, next), \
+           #ours "." #f " ends where " #theirs "." #next " starts")
 
 /* Our last field is everything after the fields we name: it ends where Linux's
  * structure ends, whatever Linux has since put inside it. */
@@ -474,6 +484,81 @@ int test_linux_layout(void) {
     FIELD(linux_sigaction_t, struct sigaction, sa_restorer);
     FIELD(linux_sigaction_t, struct sigaction, sa_mask);
 
+    /* The signal frame (L2). */
+    SIZE(linux_stack_t, stack_t);
+    FIELD(linux_stack_t, stack_t, ss_sp);
+    FIELD(linux_stack_t, stack_t, ss_flags);
+    FIELD(linux_stack_t, stack_t, ss_size);
+    SIZE(linux_sigcontext_t, struct sigcontext);
+    FIELD(linux_sigcontext_t, struct sigcontext, r8);
+    FIELD(linux_sigcontext_t, struct sigcontext, r15);
+    FIELD(linux_sigcontext_t, struct sigcontext, rdi);
+    FIELD(linux_sigcontext_t, struct sigcontext, rsi);
+    FIELD(linux_sigcontext_t, struct sigcontext, rbp);
+    FIELD(linux_sigcontext_t, struct sigcontext, rbx);
+    FIELD(linux_sigcontext_t, struct sigcontext, rdx);
+    FIELD(linux_sigcontext_t, struct sigcontext, rax);
+    FIELD(linux_sigcontext_t, struct sigcontext, rcx);
+    FIELD(linux_sigcontext_t, struct sigcontext, rsp);
+    FIELD(linux_sigcontext_t, struct sigcontext, rip);
+    FIELD(linux_sigcontext_t, struct sigcontext, eflags);
+    FIELD(linux_sigcontext_t, struct sigcontext, cs);
+    FIELD(linux_sigcontext_t, struct sigcontext, gs);
+    FIELD(linux_sigcontext_t, struct sigcontext, fs);
+    FIELD(linux_sigcontext_t, struct sigcontext, ss);
+    FIELD(linux_sigcontext_t, struct sigcontext, err);
+    FIELD(linux_sigcontext_t, struct sigcontext, trapno);
+    FIELD(linux_sigcontext_t, struct sigcontext, oldmask);
+    FIELD(linux_sigcontext_t, struct sigcontext, cr2);
+    FIELD(linux_sigcontext_t, struct sigcontext, fpstate);
+    FIELD(linux_sigcontext_t, struct sigcontext, reserved1);
+    SIZE(linux_ucontext_t, struct ucontext);
+    FIELD(linux_ucontext_t, struct ucontext, uc_flags);
+    FIELD(linux_ucontext_t, struct ucontext, uc_link);
+    FIELD(linux_ucontext_t, struct ucontext, uc_stack);
+    FIELD(linux_ucontext_t, struct ucontext, uc_mcontext);
+    FIELD(linux_ucontext_t, struct ucontext, uc_sigmask);
+    SIZE(linux_siginfo_t, siginfo_t);
+    FIELD(linux_siginfo_t, siginfo_t, si_signo);
+    FIELD(linux_siginfo_t, siginfo_t, si_errno);
+    FIELD(linux_siginfo_t, siginfo_t, si_code);
+    PAD(linux_siginfo_t, pad0, siginfo_t, si_pid);
+    FIELD2(linux_siginfo_t, siginfo_t, pid, si_pid);
+    FIELD2(linux_siginfo_t, siginfo_t, uid, si_uid);
+    FIELD2(linux_siginfo_t, siginfo_t, value, si_value);
+    FIELD2(linux_siginfo_t, siginfo_t, utime, si_utime);
+    FIELD2(linux_siginfo_t, siginfo_t, stime, si_stime);
+    TAIL(linux_siginfo_t, siginfo_t, rest);
+    /* The two that overlay others, where the helpers put them. */
+    expect(offsetof(linux_siginfo_t, pid) == offsetof(siginfo_t, si_addr) &&
+           sizeof(((siginfo_t *)0)->si_addr) == 8u,
+           "si_addr is the eight bytes from si_pid, as linux_si_set_addr writes it");
+    expect(offsetof(linux_siginfo_t, value) == offsetof(siginfo_t, si_status) &&
+           sizeof(((siginfo_t *)0)->si_status) == 4u,
+           "si_status is si_value's low half, as linux_si_set_status writes it");
+    CONST(LINUX_SA_SIGINFO, SA_SIGINFO);
+    CONST(LINUX_SA_ONSTACK, SA_ONSTACK);
+    CONST(LINUX_SA_NODEFER, SA_NODEFER);
+    CONST(LINUX_SA_RESETHAND, SA_RESETHAND);
+    CONST(LINUX_SS_ONSTACK, SS_ONSTACK);
+    CONST(LINUX_SS_DISABLE, SS_DISABLE);
+    CONST(LINUX_SS_AUTODISARM, SS_AUTODISARM);
+    CONST(LINUX_MINSIGSTKSZ, MINSIGSTKSZ);
+    CONST(LINUX_SI_USER, SI_USER);
+    CONST(LINUX_SI_KERNEL, SI_KERNEL);
+    CONST(LINUX_SI_QUEUE, SI_QUEUE);
+    CONST(LINUX_SI_TKILL, SI_TKILL);
+    CONST(LINUX_SEGV_MAPERR, SEGV_MAPERR);
+    CONST(LINUX_SEGV_ACCERR, SEGV_ACCERR);
+    CONST(LINUX_BUS_ADRALN, BUS_ADRALN);
+    CONST(LINUX_FPE_INTDIV, FPE_INTDIV);
+    CONST(LINUX_FPE_FLTINV, FPE_FLTINV);
+    CONST(LINUX_ILL_ILLOPN, ILL_ILLOPN);
+    CONST(LINUX_CLD_EXITED, CLD_EXITED);
+    CONST(LINUX_CLD_KILLED, CLD_KILLED);
+    CONST(LINUX_UC_SIGCONTEXT_SS, UC_SIGCONTEXT_SS);
+    CONST(LINUX_UC_STRICT_RESTORE_SS, UC_STRICT_RESTORE_SS);
+
     LIBC_FIELD(linux_dirent64_t, d_ino);
     LIBC_FIELD(linux_dirent64_t, d_off);
     LIBC_FIELD(linux_dirent64_t, d_reclen);
@@ -526,6 +611,9 @@ int test_linux_layout(void) {
     CONST(VIBEOS_SIGFPE, SIGFPE);
     CONST(VIBEOS_SIGKILL, SIGKILL);
     CONST(VIBEOS_SIGSEGV, SIGSEGV);
+    CONST(VIBEOS_SIGBUS, SIGBUS);
+    CONST(VIBEOS_SIGUSR1, SIGUSR1);
+    CONST(VIBEOS_SIGUSR2, SIGUSR2);
     CONST(VIBEOS_SIGPIPE, SIGPIPE);
     CONST(VIBEOS_SIGALRM, SIGALRM);
     CONST(VIBEOS_SIGTERM, SIGTERM);

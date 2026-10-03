@@ -56,8 +56,9 @@ SCOPE = ("kernel", "include")
 # when something changes, not to be a call count.
 CHOKEPOINTS = {
     "linux_signal_permitted": (
-        5,   # renamed from hw_signal_permitted with the handlers (A2)
-        "who may signal whom. Four callers and a definition; a fifth caller "
+        6,   # renamed from hw_signal_permitted with the handlers (A2); 5 -> 6 in L2 step 2:
+             # rt_sigqueueinfo and rt_tgsigqueueinfo, one handler for both
+        "who may signal whom. Five callers and a definition; a sixth caller "
         "that forgot the check is a process signalling one it does not own."),
     "hw_user_range_ok": (
         5,   # definition + two declarations + the one call, in ks_user_ok (A2; was linux_user_ok,
@@ -74,7 +75,7 @@ CHOKEPOINTS = {
         "A handler calling it directly is a handler that skipped the dispatcher's "
         "chokepoint."),
     "linux_user_ok": (
-        25,   # 23 -> 25 in L2 step 1: the lists of getgroups and setgroups, whose length is an argument's value times four. Before: 22 -> 23 in L3 step 4: mincore's vector, whose length follows from the range's. Before: 20 -> 22 with M-082: the first byte of a path is judged before it is read, in the two places that read it. Before: 18 -> 20 in L1 step 7. ioctl: whether its argument is a pointer,
+        26,   # 25 -> 26 in L2 step 2: rt_sigreturn reads the vector-register area at the address the frame names - an address read out of user memory a moment ago, as writev's elements are. Before: 23 -> 25 in L2 step 1: the lists of getgroups and setgroups, whose length is an argument's value times four. Before: 22 -> 23 in L3 step 4: mincore's vector, whose length follows from the range's. Before: 20 -> 22 with M-082: the first byte of a path is judged before it is read, in the two places that read it. Before: 18 -> 20 in L1 step 7. ioctl: whether its argument is a pointer,
               # and how long, depends on the request (one helper, linux_ioctl_arg,
               # which every request goes through). And the gathered writev,
               # which checks each element's buffer as the element-by-element

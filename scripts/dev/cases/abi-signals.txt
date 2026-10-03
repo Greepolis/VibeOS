@@ -1,0 +1,92 @@
+# Signal delivery as Linux does it (docs/abi/ L2 step 2): the frame is a
+# return address, a ucontext and a siginfo, with the vector registers above
+# them; the alternate stack; the flags a handler is installed with; and a fault
+# offered to the program. Host test: t_signals_l2 in tests/kernel/linux_abi_tests.c.
+#
+#  1. the saved rip is not the interrupted one. Expect "the ucontext holds the
+#     interrupted registers by Linux's names".
+#  2. the handler is not handed the siginfo. Expect "its arguments are the
+#     signal, the siginfo and the ucontext".
+#  3. the vector registers are not saved. Expect "and the vector registers,
+#     64-aligned, where fpstate says".
+#  4. SA_ONSTACK is ignored. Expect "SA_ONSTACK delivers on it".
+#  5. a frame on the alternate stack starts at its top again. Expect "already on
+#     it, the next frame goes below the one in use".
+#  6. the handler returns to sigsuspend's temporary mask. Expect "and the
+#     handler returns to the program's own mask".
+#  7. a fault the program blocks is raised against it. Expect "and one the
+#     program blocks, as Linux forces it - nothing left pending behind it". The
+#     task is killed either way - delivery skips a blocked signal - so the
+#     first run of this case went NOT RED; what the check keeps from happening
+#     is the signal left pending in a task that is about to die.
+#  8. SA_NODEFER is ignored. Expect "SA_NODEFER leaves the signal unblocked".
+#  9. a fault on a page that is there is reported as one that is not. Expect
+#     "a present page refused is SEGV_ACCERR".
+# 10. SS_AUTODISARM is ignored. Expect "and disarms the stack while a handler
+#     is on it".
+#
+# Target source: kernel/abi/linux/signal.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/signal.c scripts/dev/cases/abi-signals.txt
+
+### the saved rip is not the interrupted one
+--- old
+    uc.uc_mcontext.rip = regs.rip;  uc.uc_mcontext.eflags = regs.rflags;
++++ new
+    uc.uc_mcontext.rip = 0;  uc.uc_mcontext.eflags = regs.rflags;
+
+### the handler is not handed the siginfo
+--- old
+    ks_regs_enter_handler(frame, handler, base, sig,
+                          base + 8ull + sizeof(uc), base + 8ull);
++++ new
+    ks_regs_enter_handler(frame, handler, base, sig,
+                          0, base + 8ull);
+
+### the vector registers are not saved
+--- old
+        if (ks_fpu_save(fp) != 0 ||
++++ new
+        if ((0 && ks_fpu_save(fp) != 0) ||
+
+### SA_ONSTACK is ignored
+--- old
+    if ((flags & LINUX_SA_ONSTACK) && t->sas_size != 0u && !linux_on_altstack(t, sp)) {
++++ new
+    if (0) {
+
+### a frame on the alternate stack starts at its top again
+--- old
+    if ((flags & LINUX_SA_ONSTACK) && t->sas_size != 0u && !linux_on_altstack(t, sp)) {
++++ new
+    if ((flags & LINUX_SA_ONSTACK) && t->sas_size != 0u) {
+
+### the handler returns to sigsuspend's temporary mask
+--- old
+    saved = t->sig_saved_valid ? t->sig_saved : t->sig_blocked;
++++ new
+    saved = t->sig_blocked;
+
+### a fault the program blocks goes to its handler
+--- old
+    if (handler == SIG_DFL_ADDR || handler == SIG_IGN_ADDR ||
+        (ks_id(me)->sig_blocked & (1ull << sig))) {
++++ new
+    if (handler == SIG_DFL_ADDR || handler == SIG_IGN_ADDR) {
+
+### SA_NODEFER is ignored
+--- old
+                     ((flags & LINUX_SA_NODEFER) ? 0u : (1ull << sig));
++++ new
+                     (1ull << sig);
+
+### a fault on a page that is there is reported as one that is not
+--- old
+                case 14u: o->si_code = (in->fault_err & 1u) ? LINUX_SEGV_ACCERR : LINUX_SEGV_MAPERR; break;
++++ new
+                case 14u: o->si_code = LINUX_SEGV_MAPERR; break;
+
+### SS_AUTODISARM is ignored
+--- old
+    if (t->sas_flags & LINUX_SS_AUTODISARM) {
++++ new
+    if (0) {

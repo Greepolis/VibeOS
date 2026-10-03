@@ -26,6 +26,7 @@
 
 typedef struct {
     vibeos_task_t id;
+    vibeos_siginfo_t info[VIBEOS_NSIG];
     vibeos_procstate_t *ps;
     vibeos_image_t img;
     uint32_t seq;
@@ -653,24 +654,26 @@ void kf_fault(uint64_t uaddr, uint64_t len) {
     g_fault_len = len;
 }
 
+static struct ks_regs g_last_frame;
+const struct ks_regs *kf_last_frame(void) { return &g_last_frame; }
+
 long kf_call(kf_entry_t entry, uint64_t nr, uint64_t a0, uint64_t a1, uint64_t a2,
              uint64_t a3, uint64_t a4, uint64_t a5, kf_outcome_t *out) {
-    static struct ks_regs frame;
     uint64_t a[6];
     volatile long r = 0;
     int how;
 
     a[0] = a0; a[1] = a1; a[2] = a2; a[3] = a3; a[4] = a4; a[5] = a5;
-    memset(&frame, 0, sizeof(frame));
-    frame.ret = nr;
-    frame.sp = g_next_sp_v;
+    memset(&g_last_frame, 0, sizeof(g_last_frame));
+    g_last_frame.ret = nr;
+    g_last_frame.sp = g_next_sp_v;
     g_next_sp_v = 0;
     g_lock_depth = 0;
     g_idles = 0;
     g_in_call = 1;
     how = setjmp(g_escape);
     if (how == 0) {
-        r = entry(&frame, nr, a);
+        r = entry(&g_last_frame, nr, a);
     }
     g_in_call = 0;
     if (out) {
@@ -802,12 +805,39 @@ int ks_signal_interrupts(int slot) {
     return (g_t[slot].id.sig_pending & ~g_t[slot].id.sig_blocked) != 0u;
 }
 int ks_signal_raise(int slot, uint32_t sig) {
+    return ks_signal_send(slot, sig, 0);
+}
+/* As the machine: a pending signal keeps its first reason, and one that is
+ * ignored and not blocked is dropped. */
+int ks_signal_send(int slot, uint32_t sig, const vibeos_siginfo_t *info) {
     if (sig == 0u || sig > VIBEOS_SIG_MAX) {
         return -1;
     }
-    g_t[slot].id.sig_pending |= 1ull << sig;
+    if (sig != VIBEOS_SIGKILL && sig != VIBEOS_SIGSTOP && g_t[slot].ps &&
+        g_t[slot].ps->sig_handler[sig] == SIG_IGN_ADDR &&
+        (g_t[slot].id.sig_blocked & (1ull << sig)) == 0u) {
+        return 0;
+    }
+    if ((g_t[slot].id.sig_pending & (1ull << sig)) == 0u) {
+        memset(&g_t[slot].info[sig], 0, sizeof(g_t[slot].info[sig]));
+        if (info) {
+            g_t[slot].info[sig] = *info;
+        }
+        g_t[slot].id.sig_pending |= 1ull << sig;
+    }
     return 0;
 }
+int ks_signal_take(int slot, uint32_t sig, vibeos_siginfo_t *out) {
+    if (sig == 0u || sig > VIBEOS_SIG_MAX || (g_t[slot].id.sig_pending & (1ull << sig)) == 0u) {
+        return 0;
+    }
+    if (out) {
+        *out = g_t[slot].info[sig];
+    }
+    g_t[slot].id.sig_pending &= ~(1ull << sig);
+    return 1;
+}
+const vibeos_siginfo_t *kf_siginfo(int slot, uint32_t sig) { return &g_t[slot].info[sig]; }
 int ks_signal_default_kills(uint32_t sig) {
     return !(sig == VIBEOS_SIGCHLD || sig == VIBEOS_SIGCONT || sig == VIBEOS_SIGWINCH);
 }
@@ -1071,38 +1101,71 @@ void ks_regs_restart(ks_regs_t *frame, uint64_t nr) {
     frame->ip -= 2u;
 }
 
-typedef struct {
-    uint64_t magic, blocked;
-    struct ks_regs regs;
-} kf_sigframe_t;
-
-uint64_t ks_sigframe_size(void) { return sizeof(kf_sigframe_t); }
-int ks_sigframe_push(const ks_regs_t *frame, uint64_t sp, uint64_t blocked, uint64_t restorer) {
-    kf_sigframe_t kf;
-    kf.magic = 0x4B46534947ull;
-    kf.blocked = blocked;
-    kf.regs = *frame;
-    if (vibeos_uaccess_copy((void *)(uintptr_t)(sp + 8u), &kf, sizeof(kf)) != 0 ||
-        vibeos_uaccess_copy((void *)(uintptr_t)sp, &restorer, 8u) != 0) {
+/* The fake's registers by the machine's names: ip, sp, ret and the first three
+ * arguments are the ones the handlers and the tests look at; the rest is
+ * carried so that a frame round trip can be checked whole. */
+void ks_regs_get(const ks_regs_t *frame, vibeos_uregs_t *out) {
+    memset(out, 0, sizeof(*out));
+    out->rip = frame->ip;
+    out->rsp = frame->sp;
+    out->rax = frame->ret;
+    out->rdi = frame->arg0;
+    out->rsi = frame->arg1;
+    out->rdx = frame->arg2;
+    out->rflags = frame->flags;
+    out->r8 = frame->other[0];  out->r9 = frame->other[1];
+    out->r10 = frame->other[2]; out->r11 = frame->other[3];
+    out->r12 = frame->other[4]; out->r13 = frame->other[5];
+    out->r14 = frame->other[6]; out->r15 = frame->other[7];
+    out->rbp = frame->other[8]; out->rbx = frame->other[9];
+    out->cs = 0x33;
+    out->ss = 0x2b;
+}
+/* Refuses what the machine refuses: a resume address outside user memory. The
+ * fake's user memory is its arena and the pages it maps; anything below 0x10000
+ * is code the tests pretend to run, and is accepted. */
+int ks_regs_set(ks_regs_t *frame, const vibeos_uregs_t *in) {
+    if (in->rip >> 47) {
         return -1;
     }
+    frame->ip = in->rip;
+    frame->sp = in->rsp;
+    frame->ret = in->rax;
+    frame->arg0 = in->rdi;
+    frame->arg1 = in->rsi;
+    frame->arg2 = in->rdx;
+    frame->flags = (in->rflags & 0xCD5u) | 0x202u;
+    frame->other[0] = in->r8;  frame->other[1] = in->r9;
+    frame->other[2] = in->r10; frame->other[3] = in->r11;
+    frame->other[4] = in->r12; frame->other[5] = in->r13;
+    frame->other[6] = in->r14; frame->other[7] = in->r15;
+    frame->other[8] = in->rbp; frame->other[9] = in->rbx;
     return 0;
 }
-int ks_sigframe_pop(ks_regs_t *frame, uint64_t base, uint64_t *blocked) {
-    kf_sigframe_t kf;
-    if (vibeos_uaccess_copy(&kf, (const void *)(uintptr_t)base, sizeof(kf)) != 0 ||
-        kf.magic != 0x4B46534947ull) {
+unsigned char g_kf_fpu[512];
+uint64_t ks_fpu_size(void) { return 512u; }
+int ks_fpu_save(uint64_t uaddr) {
+    return vibeos_uaccess_copy((void *)(uintptr_t)uaddr, g_kf_fpu, sizeof(g_kf_fpu)) == 0 ? 0 : -1;
+}
+int ks_fpu_restore(uint64_t uaddr) {
+    unsigned char area[512];
+    if (vibeos_uaccess_copy(area, (const void *)(uintptr_t)uaddr, sizeof(area)) != 0) {
         return -1;
     }
-    *blocked = kf.blocked;
-    *frame = kf.regs;
+    area[26] = 0;   /* MXCSR's reserved half, as the machine clears it */
+    area[27] = 0;
+    memcpy(g_kf_fpu, area, sizeof(area));
     return 0;
 }
-void ks_regs_enter_handler(ks_regs_t *frame, uint64_t handler, uint64_t sp, uint32_t sig) {
+void ks_regs_enter_handler(ks_regs_t *frame, uint64_t handler, uint64_t sp,
+                           uint64_t a0, uint64_t a1, uint64_t a2) {
     frame->ip = handler;
     frame->sp = sp;
-    frame->arg0 = sig;
+    frame->arg0 = a0;
+    frame->arg1 = a1;
+    frame->arg2 = a2;
     frame->ret = 0;
+    frame->flags &= ~((1ull << 10) | (1ull << 8));
 }
 uint64_t ks_tls_get(int slot) { return g_t[slot].tls; }
 void ks_tls_set(int slot, uint64_t base) { g_t[slot].tls = base; }

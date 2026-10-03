@@ -9,6 +9,7 @@
  * by the architecture (arch_hw_internal.h) and by the layer itself, so the two
  * cannot disagree about a signature. */
 
+#include "vibeos/siginfo.h"
 #include <stdint.h>
 #include "vibeos/procstate.h"
 
@@ -24,6 +25,10 @@ long linux_syscall(struct ks_regs *frame, uint64_t nr, const uint64_t a[6]);
 /* Called on the way back to user space. Non-zero if the frame was rewritten to
  * enter a handler; does not return if the signal kills. */
 int linux_signal_deliver(struct ks_regs *frame);
+
+/* A CPU exception in ring 3 (docs/abi/ L2): 1 if the program has a handler for
+ * `sig` and the frame now enters it; 0 and the caller kills the task. */
+int linux_signal_fault(struct ks_regs *frame, uint32_t sig, const vibeos_siginfo_t *why);
 
 /* The one place a user pointer is judged (dispatch.c). */
 int linux_user_ok(uint64_t base, uint64_t len, int write);
