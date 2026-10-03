@@ -496,6 +496,23 @@ were too, because the slot a shell landed in was usually one root had held. A
 field added to the process state has three writers to visit - new, fork, exec -
 and the fake's memset is why no host test will say which was missed.
 
+**A signal frame is a program's to change.** Since docs/abi/ L2 the frame on
+the user stack is Linux's (`siginfo_t`, `ucontext`, an FXSAVE area), and
+`rt_sigreturn` resumes from whatever the handler left in it - which is the
+point: a handler that recovers from a fault moves the saved rip, musl's thread
+cancellation does too. So everything read back is untrusted, and what decides
+privilege is forced by `ks_regs_set`, not checked by the Linux layer. The
+vector registers are saved with `fxsave` straight from the CPU because the
+kernel is built without SSE: while it runs on a task's behalf the registers
+are still the task's. A kernel built with SSE would make that a lie.
+
+**"Present" in a page-fault error code means present for anybody.** A Linux
+program's low window lies over the kernel's identity map, so its null page is
+present, for ring 0, and a null dereference is a protection fault to the CPU.
+Linux maps nothing there and says `SEGV_MAPERR`; the fault path asks whether
+the *program* had a mapping before it says which. Anything new that reads the
+error code on behalf of a program has the same question to ask.
+
 **Two user windows exist.** VibeOS programs link at `0x8000000000`; Linux
 programs link at `0x400000`, inside the kernel's identity map. The low window's
 physical range is reserved out of the allocator so nothing of the kernel's can

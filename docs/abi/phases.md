@@ -1067,6 +1067,59 @@ its oracle without them.)
   file and must see it refused (`abi-cred-exec.txt`, red). Nine boots of nine after the fix.
 - **LTP, L1's 382 again**: 154 passed (131 before it), 16 failed, 144 broken, 65 not applicable, 2 did not run. What is left is mostly a loop device, `alarm`, and files under /proc and /dev.
 
+**Step 2 (2026-10-03): done.**
+
+- **The frame is Linux's.** A handler is entered with the signal, a
+  `siginfo_t` and a `ucontext` - the interrupted registers by Linux's names,
+  the mask to return to, the alternate stack - and the vector registers in an
+  FXSAVE area that `fpstate` points at. `rt_sigreturn` reads the frame back as
+  the program left it, so a handler that moves the saved rip moves where the
+  program resumes; the architecture still decides what of it may be trusted
+  (`ks_regs_set`: selectors and privileged flags forced, a resume address
+  outside user memory refused, H-018). Until this step the frame was private
+  to the kernel - a magic, the mask, the raw trap frame - which served a
+  handler that only returns, and nothing that asks why or where. The
+  registers cross the boundary by name (`vibeos_uregs_t`), the frame's layout
+  is the Linux layer's, and the layouts are compared with the host's headers.
+- **Why a signal came** travels with it (`include/vibeos/siginfo.h`): who sent
+  it, which fault, how a child ended - facts, which the Linux layer puts into
+  `si_code` and the rest. Raising and taking are one critical section each
+  (`ks_signal_send`, `ks_signal_take`), under a lock per task with interrupts
+  off. A blocked signal is kept even when ignored, as Linux keeps it, so
+  `sigtimedwait` can take it.
+- **A fault goes to a handler that asked for it.** SIGSEGV, SIGBUS, SIGFPE and
+  SIGILL with `si_addr` and the right `si_code`, the trap number, error code and
+  cr2 in the frame; blocked or ignored, it kills as before. Nothing about a
+  fault the program takes is printed as a trap: `[SIG] fault taken by the
+  program's handler`. The null page of a Linux program is present - the
+  kernel's identity map lies under the low window - so the CPU says
+  "protection" where Linux says "nothing mapped"; the program is told whether
+  *it* had a mapping.
+- **Calls**: `sigaltstack` (with `SS_AUTODISARM`), `rt_sigpending`,
+  `rt_sigsuspend` (the handler returns to the program's own mask, not the
+  temporary one), `pause`, `rt_sigtimedwait`, `rt_sigqueueinfo`,
+  `rt_tgsigqueueinfo`; `SA_ONSTACK`, `SA_NODEFER`, `SA_RESETHAND` honoured.
+- **SIGCHLD** is raised when a child ends, with its pid, uid, status and how it
+  ended. It never was.
+- **Not done, and said**: a real-time signal queued twice is delivered once
+  (the registry's gap on 129 and 297); signals sent to a process go to its
+  leader rather than to any thread that does not block them; SIGCHLD on stop
+  and continue, `SA_NOCLDWAIT`, and a parent that ignores SIGCHLD reaping its
+  children automatically.
+- **At boot** the musl program that already checked handlers now also recovers
+  from a fault on its alternate stack by moving the saved rip, keeps a vector
+  register across a handler that overwrites it, reads `sigqueue`'s value, takes
+  signals with `sigtimedwait`, waits in `sigsuspend` and `pause`, and is told of
+  its child's end by SIGCHLD (`signal_l2_checks_failed`).
+- **Sabotage**: `abi-signals.txt` (10) and `abi-signal-calls.txt` (8) against
+  the host tests; `abi-signals-boot.txt` (3), `abi-signals-fpu.txt` and
+  `abi-signals-value.txt` against the boot; all red. One went NOT RED first -
+  a fault the program blocks offered to it anyway - and correctly: delivery
+  skips a blocked signal and the task is killed either way; what the check
+  keeps from happening is a signal left pending in a task about to die, which
+  the test now asks about. Nine boots of nine after it.
+- **LTP**: not measured in this step. The first test of the signal list, pause01, waits for its child to show as sleeping in /proc/<pid>/stat (step 6), and LTP's own timeout is setitimer (step 3), so the first test that waits forever takes the rest of its boot: 3 of 48 reported (kill08 passed; kill05 needs System V shared memory; kill06 failed with ESRCH killing a process group, not yet looked into). Measured again with step 3, when the timeout works.
+
 ### L3. Memory (10, plus `mmap` finished)
 
 File-backed mappings - private and shared - through the page cache, `MAP_FIXED`,
