@@ -31,6 +31,7 @@ static const char *const g_name[VIBEOS_MBZ_COUNT] = {
     "filelock_unlocked",
     "ptimer_unlocked",
     "ptimer_orphan",
+    "sched_admit_refused",
 };
 
 void vibeos_mbz_hit(vibeos_mbz_id_t id, uint64_t witness) {

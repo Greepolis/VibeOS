@@ -6,6 +6,7 @@
  * a policy nobody can change safely.
  */
 
+#include "vibeos/mbz.h"
 #include <stdio.h>
 
 #include "vibeos/sched_policy.h"
@@ -50,6 +51,13 @@ int test_sched_policy(void) {
     g_fail = 0;
 
     expect(vibeos_sched_policy_init(0) != 0, "zero slots accepted");
+    {
+        uint64_t before = vibeos_mbz_count(VIBEOS_MBZ_SCHED_ADMIT_REFUSED);
+        (void)vibeos_sched_policy_init(4);
+        expect(vibeos_sched_policy_admit(9, VIBEOS_SCHED_NORMAL, 0, 0u) != 0 &&
+               vibeos_mbz_count(VIBEOS_MBZ_SCHED_ADMIT_REFUSED) == before + 1u,
+               "a slot past the table is refused, and counted as sched_admit_refused");
+    }
     expect(vibeos_sched_policy_init(VIBEOS_SCHED_MAX_SLOTS + 1u) != 0, "too many slots accepted");
     if (!expect(vibeos_sched_policy_init(SLOTS) == 0, "init refused a sane size")) {
         return -1;

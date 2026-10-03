@@ -6,6 +6,7 @@
  * argued about at all.
  */
 
+#include "vibeos/mbz.h"
 #include "vibeos/sched_policy.h"
 
 typedef struct {
@@ -18,6 +19,7 @@ typedef struct {
 } policy_task_t;
 
 static policy_task_t g_task[VIBEOS_SCHED_MAX_SLOTS];
+static uint64_t g_charged;
 static uint32_t g_slots;
 
 /* nice -> weight, as a table rather than a formula.
@@ -124,7 +126,17 @@ int vibeos_sched_policy_admit(uint32_t slot, vibeos_sched_class_t cls, int nice,
                         uint32_t cpu_mask) {
     uint64_t floor;
 
-    if (slot >= g_slots || (uint32_t)cls >= (uint32_t)VIBEOS_SCHED_CLASS_COUNT) {
+    /* A slot past the table is a policy nobody sized - or never initialised,
+     * which is what the machine ran with from the day this layer was written
+     * until docs/abi/ L2 step 4: every admission refused, every refusal
+     * ignored, and the picker falling back to round robin on every tick. A
+     * refusal of this kind is counted, must be zero, so it cannot be quiet
+     * again. */
+    if (slot >= g_slots) {
+        vibeos_mbz_hit(VIBEOS_MBZ_SCHED_ADMIT_REFUSED, slot);
+        return -1;
+    }
+    if ((uint32_t)cls >= (uint32_t)VIBEOS_SCHED_CLASS_COUNT) {
         return -1;
     }
     if (nice < VIBEOS_NICE_MIN || nice > VIBEOS_NICE_MAX) {
@@ -188,9 +200,22 @@ void vibeos_sched_policy_charge(uint32_t slot, uint64_t ticks) {
     /* Weighted: a favourable nice makes a tick count for less, so a favoured
      * task's virtual time advances more slowly and the picker returns to it
      * sooner. That is the whole of the fairness rule; everything else is
-     * bookkeeping around it. */
-    g_task[slot].vruntime += (ticks * (uint64_t)WEIGHT_BASE * VRUNTIME_SCALE) /
-                             (uint64_t)g_task[slot].weight;
+     * bookkeeping around it.
+     *
+     * Atomic, because the machine charges from every core's tick without the
+     * scheduler's lock - the tick's fast path takes no lock - while the picker
+     * reads under it. A reader sees the virtual time before or after a tick,
+     * never a torn one. */
+    __atomic_add_fetch(&g_task[slot].vruntime,
+                       (ticks * (uint64_t)WEIGHT_BASE * VRUNTIME_SCALE) / (uint64_t)g_task[slot].weight,
+                       __ATOMIC_RELAXED);
+    __atomic_add_fetch(&g_charged, ticks, __ATOMIC_RELAXED);
+}
+
+/* Ticks charged, ever: the boot gate asserts it moved, because a policy that
+ * is never charged picks by slot number (L2 step 4). */
+uint64_t vibeos_sched_policy_charged(void) {
+    return __atomic_load_n(&g_charged, __ATOMIC_RELAXED);
 }
 
 static int may_run_here(uint32_t slot, uint32_t cpu) {

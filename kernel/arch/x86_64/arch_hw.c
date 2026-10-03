@@ -827,6 +827,13 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
                     idle = g_tasks[cur].id.is_idle;
                 }
                 vibeos_account_tick(acpu->index, cur, idle);
+                /* And the policy's virtual time, which is what it picks by.
+                 * Never charged before L2 step 4 either: with every task at
+                 * the same virtual time, the policy would pick the lowest slot
+                 * number for ever. */
+                if (cur >= 0 && !idle) {
+                    vibeos_sched_policy_charge((uint32_t)cur, 1u);
+                }
                 /* And to the CPU-time timers of whatever it was running. */
                 if (cur >= 0 && !idle) {
                     hw_ptimer_charge_current(cur, (frame->cs & 3u) == 3u);
@@ -1558,6 +1565,14 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
     vibeos_task_view_set_source(hw_task_slots, hw_task_describe);
     (void)vibeos_runq_init(&g_runq, (uint32_t)VIBEOS_HW_MAX_TASKS,
                            (uint32_t)VIBEOS_HW_MAX_CPUS, hw_task_runnable, 0);
+    /* The policy that chooses among the runnable - classes, nice-weighted
+     * fairness, affinity. It was never initialised, from the day it was
+     * written (2026-09-02) to L2 step 4: every admission into a table of zero
+     * slots was refused and ignored, and the picker fell back to round robin
+     * on every tick. Found because setpriority changed nothing. */
+    if (vibeos_sched_policy_init((uint32_t)VIBEOS_HW_MAX_TASKS) != 0) {
+        hw_panic("scheduler policy refused the task table's size");
+    }
     hw_pmm_bringup(boot_info);
     hw_boot_stage("physical_memory");
 

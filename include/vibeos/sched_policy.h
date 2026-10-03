@@ -80,6 +80,8 @@ int vibeos_sched_policy_set_affinity(uint32_t slot, uint32_t cpu_mask);
  * worth, and confusing the two is how a scheduler comes to believe its own
  * weighting is the truth about the machine. */
 void vibeos_sched_policy_charge(uint32_t slot, uint64_t ticks);
+/* Ticks charged since boot, for the gate (L2 step 4). */
+uint64_t vibeos_sched_policy_charged(void);
 
 /* Who should run on `cpu`, given the set of slots that are runnable right now.
  *

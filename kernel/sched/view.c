@@ -12,6 +12,7 @@
  * because somebody had to do exactly that.
  */
 
+#include "vibeos/sched_policy.h"
 #include "vibeos/task_stats.h"
 #include "vibeos/task.h"
 #include "vibeos/account.h"
@@ -122,6 +123,10 @@ void vibeos_task_print_stats(void) {
      * asserts it is not zero on a boot that exited anything. */
     vibeos_x86_64_serial_puts(" dead_kstacks_freed=0x");
     view_hex(s->dead_kstacks_freed);
+    /* What the scheduling policy has been charged: the gate asserts it moved,
+     * since a policy never charged picks by slot number (L2 step 4). */
+    vibeos_x86_64_serial_puts(" policy_charged=0x");
+    view_hex(vibeos_sched_policy_charged());
     vibeos_x86_64_serial_puts("\n");
     vibeos_x86_64_serial_unlock();
 
