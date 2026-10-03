@@ -3020,6 +3020,12 @@ def main():
             if os.path.exists(signal_elf):
                 if "SIG_OK" not in text:
                     problems.append("signal_delivery_broken")
+                # docs/abi/ L2 step 2: the frame is Linux's, a fault goes to a
+                # handler that asked for it, and the calls that wait for a
+                # signal work. Read off the program's own line, which it prints
+                # only if every one of those checks held.
+                if not re.search(r"write\(ring3\): SIG_L2_OK: ", text):
+                    problems.append("signal_l2_checks_failed")
 
             # The graphical shell, to the extent a serial log can speak for
             # it: the console has to have reached the on-screen terminal. Only

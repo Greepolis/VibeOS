@@ -1,0 +1,17 @@
+# The vector registers across a signal handler (docs/abi/ L2 step 2), on the
+# machine: the host's fake keeps a byte array where the CPU keeps registers, so
+# only a boot can show that fxrstor ran. Gate: SIGNAL.ELF loads xmm8, takes a
+# handler that overwrites it, and checks it came back (signal_l2_checks_failed).
+#
+#  1. rt_sigreturn leaves the handler's vector registers in place. Expect
+#     signal_l2_checks_failed: "xmm8 after a handler".
+#
+# Target source: kernel/arch/x86_64/ksvc.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/arch/x86_64/ksvc.c scripts/dev/cases/abi-signals-fpu.txt
+
+### rt_sigreturn leaves the handler's vector registers in place
+--- old
+    __asm__ __volatile__("fxrstor (%0)" :: "r"(area) : "memory");
+    return 0;
++++ new
+    return 0;

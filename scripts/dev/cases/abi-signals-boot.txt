@@ -1,0 +1,35 @@
+# Signals on the machine (docs/abi/ L2 step 2): what the architecture does for
+# a fault a program handles and for a child that ends. Gate: SIGNAL.ELF
+# (tests/linux/musl_signal.c) prints SIG_L2_OK only if every check held, and
+# the gate asserts it (signal_l2_checks_failed).
+#
+#  1. a fault never reaches the program's handler. Expect the musl program to
+#     die of its SIGSEGV: signal_l2_checks_failed, with an unexpected fault.
+#  2. SIGCHLD is never raised. Expect signal_l2_checks_failed: sigtimedwait for
+#     SIGCHLD times out.
+#  3. the null page reads as present to the program, because the kernel's
+#     identity map is there. Expect signal_l2_checks_failed: SEGV_ACCERR where
+#     Linux says SEGV_MAPERR.
+#
+# Target source: kernel/arch/x86_64/task_life.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/arch/x86_64/task_life.c scripts/dev/cases/abi-signals-boot.txt
+
+### a fault never reaches the program's handler
+--- old
+    if (!linux_signal_fault((struct ks_regs *)frame, fsig, &why)) {
++++ new
+    if (1 || !linux_signal_fault((struct ks_regs *)frame, fsig, &why)) {
+
+### SIGCHLD is never raised
+--- old
+                (void)hw_signal_send(i, VIBEOS_SIGCHLD, &why);
++++ new
+                (void)why;
+
+### the null page reads as present to the program
+--- old
+        if (!e || (*e & PTE_USER) == 0u) {
+            why.fault_err &= ~1ull;
+        }
++++ new
+        (void)e;

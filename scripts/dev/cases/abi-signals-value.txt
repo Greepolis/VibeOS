@@ -1,0 +1,16 @@
+# sigqueue's value, as a handler reads it (docs/abi/ L2 step 2). The host test
+# looks at the reason the fake kept, before it is put into Linux's words, so the
+# conversion is the boot's to check: SIGNAL.ELF queues SIGUSR1 with the value 7
+# and its SA_SIGINFO handler reads si_value (signal_l2_checks_failed).
+#
+#  1. the value is not copied into the siginfo. Expect signal_l2_checks_failed:
+#     "sigqueue: ... value=0".
+#
+# Target source: kernel/abi/linux/signal.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/signal.c scripts/dev/cases/abi-signals-value.txt
+
+### the value is not copied into the siginfo
+--- old
+            o->value = in->addr;
++++ new
+            (void)in->addr;
