@@ -55,6 +55,32 @@ static uint32_t linux_signal_next(const vibeos_task_t *t) {
     return 0;
 }
 
+/* Whether one more per-signal line goes to the console. The first few of a
+ * boot say that delivery works; after that a program that signals itself in a
+ * loop - LTP's signal06 does it thirty thousand times to test the FPU state -
+ * spends its run writing to a serial port slower than it can signal, and its
+ * boot ran out of time inside it. The kernel log still records every one. */
+int linux_sig_chatty(void) {
+    static uint32_t printed;
+    uint32_t n = __atomic_add_fetch(&printed, 1u, __ATOMIC_RELAXED);
+
+    if (n == 65u) {
+        ks_con_puts("[SIG] further deliveries and tkills are in the kernel log, not printed\n");
+    }
+    /* But not silence: a program that only signals itself prints nothing of
+     * its own until it ends, and the gate stops a guest that has been quiet for
+     * 45 seconds as wedged - signal06's boot ended that way, mid-run, with
+     * nothing wrong. A count every 4096 keeps the pulse. */
+    if (n > 64u && (n & 4095u) == 0u) {
+        ks_con_lock();
+        ks_con_puts("[SIG] deliveries and tkills so far: 0x");
+        ks_con_hex(n);
+        ks_con_puts("\n");
+        ks_con_unlock();
+    }
+    return n <= 64u;
+}
+
 /* Is `sp` on the thread's alternate stack? Linux's test, end inclusive: a stack
  * pointer at the very top has pushed nothing yet and is on it. */
 int linux_on_altstack(const vibeos_task_t *t, uint64_t sp) {
@@ -97,6 +123,13 @@ void linux_siginfo_from(linux_siginfo_t *o, uint32_t sig, const vibeos_siginfo_t
             o->uid = in->uid;
             linux_si_set_status(o, in->status);
             o->utime = (int64_t)in->utime;
+            break;
+        case VIBEOS_SIG_FROM_TIMER:
+            /* si_timerid and si_overrun lie where si_pid and si_uid do. */
+            o->si_code = LINUX_SI_TIMER;
+            o->pid = in->code;
+            o->uid = (uint32_t)in->status;
+            o->value = in->addr;
             break;
         case VIBEOS_SIG_FROM_FAULT:
             linux_si_set_addr(o, in->addr);
@@ -220,13 +253,15 @@ int linux_signal_deliver(ks_regs_t *frame) {
      * its "0x". */
     ks_log(VIBEOS_LOG_DEBUG, 42u, (uint64_t)sig, handler,
            "signal delivered to a handler (a0 = signal, a1 = handler)");
-    ks_con_lock();
-    ks_con_puts("[SIG] deliver sig=0x");
-    ks_con_hex(sig);
-    ks_con_puts(" handler=0x");
-    ks_con_hex(handler);
-    ks_con_puts("\n");
-    ks_con_unlock();
+    if (linux_sig_chatty()) {
+        ks_con_lock();
+        ks_con_puts("[SIG] deliver sig=0x");
+        ks_con_hex(sig);
+        ks_con_puts(" handler=0x");
+        ks_con_hex(handler);
+        ks_con_puts("\n");
+        ks_con_unlock();
+    }
 
     /* The return address is the C library's trampoline, which issues
      * rt_sigreturn. Without SA_RESTORER there is nothing to return to, and a
@@ -333,9 +368,10 @@ int linux_signal_deliver(ks_regs_t *frame) {
     t->sig_blocked = saved | ps->sig_mask[sig] |
                      ((flags & LINUX_SA_NODEFER) ? 0u : (1ull << sig));
     t->sig_blocked &= ~((1ull << VIBEOS_SIGKILL) | (1ull << VIBEOS_SIGSTOP));
+    /* The handler, and nothing else: an earlier Linux cleared SA_SIGINFO too,
+     * and LTP's sigaction01 checks that this one does not. */
     if (flags & LINUX_SA_RESETHAND) {
         ps->sig_handler[sig] = SIG_DFL_ADDR;
-        ps->sig_flags[sig] &= ~LINUX_SA_SIGINFO;
     }
 
     ks_regs_enter_handler(frame, handler, base, sig,

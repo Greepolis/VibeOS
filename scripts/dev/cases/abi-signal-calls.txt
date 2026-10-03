@@ -15,6 +15,14 @@
 #  7. a program queues a signal claiming kill sent it, to another process.
 #     Expect "but may not claim kill sent it".
 #  8. kill's signal says tkill sent it. Expect "the siginfo says kill sent it".
+#  9. a thread's id finds no process. Expect "rt_sigqueueinfo and kill find a
+#     process by one of its threads' ids".
+# 10. a signal to a process on its way out is the sender's error. Expect "a
+#     signal to a process that is exiting is not the sender's error".
+# 11. tgkill looks up an id that is not positive. Expect "tgkill refuses an id
+#     that is not positive".
+# 12. rt_sigaction takes a sigset of any size. Expect "rt_sigaction and
+#     rt_sigprocmask refuse a sigset that is not eight bytes".
 #
 # Target source: kernel/abi/linux/sig.c
 # Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/sig.c scripts/dev/cases/abi-signal-calls.txt
@@ -69,3 +77,41 @@
     linux_sender(&why, VIBEOS_SIG_FROM_PROCESS);
 +++ new
     linux_sender(&why, VIBEOS_SIG_FROM_THREAD);
+
+### a thread's id finds no process
+--- old
+    return t >= 0 ? t : ks_task_by_tid(id);
++++ new
+    return t;
+
+### a signal to a process on its way out is the sender's error
+--- old
+        (void)ks_signal_send(target, (uint32_t)sig, &why);
+        r = 0;
+    }
+    ks_unlock(ks_sched_lock());
+    return r;
+}
+
+static long linux_sys_tkill(
++++ new
+        r = ks_signal_send(target, (uint32_t)sig, &why) == 0 ? 0 : -VIBEOS_EINVAL;
+    }
+    ks_unlock(ks_sched_lock());
+    return r;
+}
+
+static long linux_sys_tkill(
+
+### tgkill looks up an id that is not positive
+--- old
+        sig > VIBEOS_SIG_MAX || (int32_t)(uint32_t)target_tgid <= 0 ||
+        (int32_t)(uint32_t)target_tid <= 0) {
++++ new
+        sig > VIBEOS_SIG_MAX) {
+
+### rt_sigaction takes a sigset of any size
+--- old
+    if (ks_current() < 0 || sig == 0u || sig > VIBEOS_SIG_MAX || setsize != 8u) {
++++ new
+    if (ks_current() < 0 || sig == 0u || sig > VIBEOS_SIG_MAX) {

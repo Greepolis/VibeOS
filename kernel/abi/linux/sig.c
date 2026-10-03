@@ -73,6 +73,14 @@ static void linux_sender(vibeos_siginfo_t *why, uint32_t from) {
     why->uid = c.uid;
 }
 
+/* A pid, or failing that a thread id: Linux's kill, rt_sigqueueinfo and the
+ * rest find a process by the id of any of its threads (LTP's rt_sigqueueinfo01
+ * sends to a thread's tid and got ESRCH here). Under the scheduler's lock. */
+static int linux_task_by_any_id(uint32_t id) {
+    int t = ks_task_by_pid(id);
+    return t >= 0 ? t : ks_task_by_tid(id);
+}
+
 static long linux_sys_kill(uint64_t target_pid, uint64_t sig) {
     int target;
     int delivered = 0;
@@ -124,7 +132,7 @@ static long linux_sys_kill(uint64_t target_pid, uint64_t sig) {
         return delivered == 0 ? -VIBEOS_ESRCH : 0;
     }
     ks_lock(ks_sched_lock(), __func__);
-    target = ks_task_by_pid((uint32_t)signed_pid);
+    target = linux_task_by_any_id((uint32_t)signed_pid);
     if (target < 0) {
         r = -VIBEOS_ESRCH;
     } else if (!linux_signal_permitted(target)) {
@@ -133,7 +141,12 @@ static long linux_sys_kill(uint64_t target_pid, uint64_t sig) {
          * decision, and this kernel's group branch does not make it either. */
         r = -VIBEOS_EPERM;
     } else {
-        r = (ks_signal_send(target, (uint32_t)sig, &why) == 0) ? 0 : -VIBEOS_EINVAL;
+        /* A process that is already on its way out takes no signal, and that
+         * is not the sender's error: Linux answers 0 for a signal to a process
+         * that has exited and not been reaped (LTP's sigwait helpers kill
+         * their child after it ended, and got EINVAL here). */
+        (void)ks_signal_send(target, (uint32_t)sig, &why);
+        r = 0;
     }
     ks_unlock(ks_sched_lock());
     return r;
@@ -159,10 +172,11 @@ static long linux_sys_tkill(uint64_t target_tid, uint64_t sig) {
     } else if (sig == 0u) {
         r = 0;
     } else {
-        r = (ks_signal_send(target, (uint32_t)sig, &why) == 0) ? 0 : -VIBEOS_EINVAL;
+        (void)ks_signal_send(target, (uint32_t)sig, &why);   /* exiting: see kill */
+        r = 0;
     }
     ks_unlock(ks_sched_lock());
-    if (sig == 0u || r != 0) {
+    if (sig == 0u || r != 0 || !linux_sig_chatty()) {
         return r;
     }
     /* After the lock, not inside it: the console lock is never taken under
@@ -184,8 +198,11 @@ static long linux_sys_tgkill(uint64_t target_tgid, uint64_t target_tid,
     long r;
     vibeos_siginfo_t why;
 
+    /* Ids are positive: Linux refuses a zero or negative one before looking
+     * (LTP's tgkill03). */
     if (ks_current() < 0 || !ks_id(ks_current())->is_user ||
-        sig > VIBEOS_SIG_MAX) {
+        sig > VIBEOS_SIG_MAX || (int32_t)(uint32_t)target_tgid <= 0 ||
+        (int32_t)(uint32_t)target_tid <= 0) {
         return -VIBEOS_EINVAL;
     }
     linux_sender(&why, VIBEOS_SIG_FROM_THREAD);
@@ -200,10 +217,11 @@ static long linux_sys_tgkill(uint64_t target_tgid, uint64_t target_tid,
     } else if (sig == 0u) {
         r = 0;
     } else {
-        r = (ks_signal_send(target, (uint32_t)sig, &why) == 0) ? 0 : -VIBEOS_EINVAL;
+        (void)ks_signal_send(target, (uint32_t)sig, &why);   /* exiting: see kill */
+        r = 0;
     }
     ks_unlock(ks_sched_lock());
-    if (sig == 0u || r != 0) {
+    if (sig == 0u || r != 0 || !linux_sig_chatty()) {
         return r;
     }
     /* After the lock; see tkill. One line, one critical section: puts and
@@ -221,10 +239,13 @@ static long linux_sys_tgkill(uint64_t target_tgid, uint64_t target_tid,
 }
 
 /* rt_sigaction(): install, or report, the disposition of one signal. */
-static long linux_sys_rt_sigaction(uint64_t sig, uint64_t act_uptr, uint64_t old_uptr) {
+static long linux_sys_rt_sigaction(uint64_t sig, uint64_t act_uptr, uint64_t old_uptr,
+                                   uint64_t setsize) {
     vibeos_procstate_t *ps;
 
-    if (ks_current() < 0 || sig == 0u || sig > VIBEOS_SIG_MAX) {
+    /* A mask is eight bytes; any other size is a program built for another
+     * kernel's sigset_t, refused before anything is read (LTP's rt_sigaction03). */
+    if (ks_current() < 0 || sig == 0u || sig > VIBEOS_SIG_MAX || setsize != 8u) {
         return -VIBEOS_EINVAL;
     }
     if (sig == VIBEOS_SIGKILL || sig == VIBEOS_SIGSTOP) {
@@ -281,11 +302,12 @@ static long linux_sys_rt_sigaction(uint64_t sig, uint64_t act_uptr, uint64_t old
 /* linux_sigset_from_user and linux_sigset_to_user are in linux_internal.h:
  * the signal frame converts the mask it saves too. */
 
-static long linux_sys_rt_sigprocmask(uint64_t how, uint64_t set_uptr, uint64_t old_uptr) {
+static long linux_sys_rt_sigprocmask(uint64_t how, uint64_t set_uptr, uint64_t old_uptr,
+                                     uint64_t setsize) {
     vibeos_task_t *t;
     uint64_t set = 0;
 
-    if (ks_current() < 0) {
+    if (ks_current() < 0 || setsize != 8u) {   /* as rt_sigaction (rt_sigprocmask02) */
         return -VIBEOS_EINVAL;
     }
     t = ks_id(ks_current());
@@ -601,7 +623,7 @@ static long linux_sys_rt_sigqueueinfo(uint64_t tgid, uint64_t tid, uint64_t sig,
 
     /* Lookup, check and raise as one critical section (H-007), as kill. */
     ks_lock(ks_sched_lock(), __func__);
-    target = to_thread ? ks_task_by_tid((uint32_t)tid) : ks_task_by_pid((uint32_t)tgid);
+    target = to_thread ? ks_task_by_tid((uint32_t)tid) : linux_task_by_any_id((uint32_t)tgid);
     if (target < 0 || (to_thread && ks_id(target)->tgid != (uint32_t)tgid)) {
         r = -VIBEOS_ESRCH;
     } else if (!linux_signal_permitted(target)) {
@@ -609,7 +631,8 @@ static long linux_sys_rt_sigqueueinfo(uint64_t tgid, uint64_t tid, uint64_t sig,
     } else if (sig == 0u) {
         r = 0;
     } else {
-        r = (ks_signal_send(target, (uint32_t)sig, &why) == 0) ? 0 : -VIBEOS_EINVAL;
+        (void)ks_signal_send(target, (uint32_t)sig, &why);   /* exiting: see kill */
+        r = 0;
     }
     ks_unlock(ks_sched_lock());
     return r;
@@ -623,8 +646,8 @@ static long linux_sys_rt_sigqueueinfo(uint64_t tgid, uint64_t tid, uint64_t sig,
  *   tgkill  the thread named by tid, provided it still belongs to tgid - the check
  *           that stops a recycled thread id from reaching a different process. */
 #define LINUX_SIG_SYSCALLS(X) \
-    X(13,  rt_sigaction,   SIG_ACTION,   PTRS(OUT_OPT(2, sizeof(linux_sigaction_t)), IN_OPT(1, sizeof(linux_sigaction_t))), linux_sys_rt_sigaction(ARG(0), ARG(1), ARG(2))) \
-    X(14,  rt_sigprocmask, SIG_PROCMASK, PTRS(OUT_OPT(2, 8), IN_OPT(1, 8)), linux_sys_rt_sigprocmask(ARG(0), ARG(1), ARG(2))) \
+    X(13,  rt_sigaction,   SIG_ACTION,   PTRS(OUT_OPT(2, sizeof(linux_sigaction_t)), IN_OPT(1, sizeof(linux_sigaction_t))), linux_sys_rt_sigaction(ARG(0), ARG(1), ARG(2), ARG(3))) \
+    X(14,  rt_sigprocmask, SIG_PROCMASK, PTRS(OUT_OPT(2, 8), IN_OPT(1, 8)), linux_sys_rt_sigprocmask(ARG(0), ARG(1), ARG(2), ARG(3))) \
     X(15,  rt_sigreturn,   SIG_RETURN,   NOPTR, linux_sys_rt_sigreturn(FRAME)) \
     X(62,  kill,           KILL,         NOPTR, linux_sys_kill(ARG(0), ARG(1))) \
     X(200, tkill,          TKILL,        NOPTR, linux_sys_tkill(ARG(0), ARG(1))) \
