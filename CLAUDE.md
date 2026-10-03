@@ -506,6 +506,21 @@ vector registers are saved with `fxsave` straight from the CPU because the
 kernel is built without SSE: while it runs on a task's behalf the registers
 are still the task's. A kernel built with SSE would make that a lie.
 
+**A timer fires from an interrupt, and raising its signal takes the
+scheduler's lock.** So the process-timer table (`kernel/sched/ptimer.c`)
+collects what is due under its own lock and calls back after releasing it -
+the table is reached from code holding the scheduler's lock, and the other
+order deadlocks. A timer that outlives its process is counted
+(`ptimer_orphan`), not fired at the next owner of the pid; the exit path is
+what takes it, and SIGNAL.ELF has a child that arms an alarm and exits to keep
+that true.
+
+**The fake kernel charged CPU time to a task that was waiting.** Its `ks_idle`
+is a wait - the machine's core has given the task away and charges it nothing -
+and the first version of the timer code charged a tick there, which would have
+made a sleeping process's CPU timers fire. CPU time in the host tests is
+`kf_cpu(ticks, user)` now, said explicitly; a wait moves only the clock.
+
 **"Present" in a page-fault error code means present for anybody.** A Linux
 program's low window lies over the kernel's identity map, so its null page is
 present, for ring 0, and a null dereference is a protection fault to the CPU.

@@ -1120,6 +1120,73 @@ its oracle without them.)
   the test now asks about. Nine boots of nine after it.
 - **LTP**: not measured in this step. The first test of the signal list, pause01, waits for its child to show as sleeping in /proc/<pid>/stat (step 6), and LTP's own timeout is setitimer (step 3), so the first test that waits forever takes the rest of its boot: 3 of 48 reported (kill08 passed; kill05 needs System V shared memory; kill06 failed with ESRCH killing a process group, not yet looked into). Measured again with step 3, when the timeout works.
 
+**Step 3 (2026-10-03): done.**
+
+- **Timers that belong to a process** (`kernel/sched/ptimer.c`, portable,
+  host-tested): one table for the machine with a lock of its own, armed by the
+  process's calls on any core, counted down by every core's tick and fired by
+  the clock owner's. The callback that raises the signal runs outside the
+  table's lock, because it takes the scheduler's; and a timer whose process is
+  gone is counted (`ptimer_orphan`, must be zero) rather than fired at whoever
+  has the pid next. The exit path takes a process's timers with it; exec takes
+  its POSIX timers and leaves `alarm`, as Linux does.
+- **Calls**: `alarm`, `setitimer`, `getitimer` (real, virtual and profiling);
+  `timer_create`, `timer_settime`, `timer_gettime`, `timer_getoverrun`,
+  `timer_delete` on the machine's clocks and on the process's and a thread's
+  CPU time, with `SIGEV_SIGNAL`, `SIGEV_NONE` and `SIGEV_THREAD_ID`;
+  `clock_getres`, `gettimeofday`, `times`; `clock_gettime` on the CPU-time
+  clocks. `clock_gettime` used to answer every clock number with uptime, so a
+  program asking for its CPU time got the wall clock; an unknown clock is
+  EINVAL now. Setting the clock is REFUSED (EPERM).
+- **What the tick can tell**: a tick is the resolution, and `clock_getres`
+  says so. CPU time is charged by the tick to whatever each core was running,
+  as user time when it interrupted ring 3 - which is what `ITIMER_VIRTUAL`
+  needs. A timer never fires early: it is armed a tick late, and that tick is
+  not reported back.
+- **Overruns** are Linux's: an expiry that finds its timer's signal still
+  pending adds to that signal's count, which `si_overrun` and
+  `timer_getoverrun` report; periods that went by with no tick to fire them
+  count too.
+- **What LTP found once its timeout worked**, none of it in the timer code:
+  a thread's id did not name its process for `kill` and `rt_sigqueueinfo`; a
+  signal to a process already exiting was EINVAL instead of 0; `tgkill` looked
+  up ids that are not positive; `waitpid(INT_MIN)` was ECHILD, not ESRCH;
+  SA_RESETHAND cleared SA_SIGINFO; `rt_sigaction` and `rt_sigprocmask`
+  accepted a sigset of any size; and `getpgid` did not exist - musl's
+  `getpgrp()` is `getpgid(0)`, so every musl program's process group was
+  -ENOSYS (taken early from step 5). And the CPU time of a process in a
+  recycled slot included everybody who had held the slot: the scheduler's
+  accounting is per slot, so each task now records where it started
+  (`cpu_base`). `signal06` signals itself thirty thousand times and the
+  console line per signal ran its boot out of time; only the first 64 are
+  printed now.
+- **Not a kernel defect**: LTP's x86-64 `rt_sigaction` wrapper fetches its
+  restorer from the C library's `sigaction` old action, and musl does not fill
+  that field, so `rt_sigsuspend01` and `rt_sigaction01` return through an
+  uninitialised pointer. Built against glibc they would not.
+- **Not done, and said**: `times()` reports no system time, and a thread that
+  has exited takes its CPU time with it (the registry's gap on 100); the CPU
+  clocks of another process (negative clock ids); `SIGEV_THREAD` is the C
+  library's and reaches the kernel as a signal to the process. Signal 64 has
+  no bit in a 64-bit mask numbered by signal (`sighold02`, `sigrelse01`).
+  `clock_settime` stays refused, and four LTP tests say root should be able
+  to set the clock: an offset to the timer's uptime would do it, the day a
+  program needs it.
+- **At boot** the musl signal program waits in `pause` for `alarm(1)`, counts
+  four expiries of a periodic `setitimer`, spins until `ITIMER_VIRTUAL` and
+  `ITIMER_PROF` fire, takes a POSIX timer's signal with `sigtimedwait` and
+  checks `SI_TIMER` and its value, waits for a timer on its own CPU time, uses
+  `SIGEV_THREAD_ID`, and reads the clocks (`timers_did_not_fire`); a child that
+  arms an alarm and exits leaves nothing behind (`ptimer_orphan`).
+- **Sabotage**: `sched-ptimer.txt` (10), `abi-timers.txt` (9) and
+  `abi-cpu-base.txt` against the host tests, with four more in
+  `abi-signal-calls.txt` and one in `abi-signals.txt` for what LTP found; `abi-timers-boot.txt` (2) and `abi-timers-tick.txt` against the
+  boot; all red. Two went NOT RED first, both tests right about the outcome and
+  wrong about the arrangement: the wall clock and the process's CPU clock both
+  read seven ticks, since the process had done nothing but run; and a bad flag
+  was tried together with a time that was not one. Nine boots of nine after it.
+- **LTP**: the timer tests and step 2's signal tests together (tests/corpus/ltp-l2.txt's subset, 70 tests): 37 passed, 1 failed (times03: no system time), 24 broken, 7 did not run (kill10 takes the rest of its boot: step 5). Before this step the same list ran 3 of 48. Of the broken: /proc/<pid>/stat and /proc/cpuinfo (step 6), setrlimit (step 4), clock_settime refused, System V shared memory, signal 64, and LTP's musl restorer.
+
 ### L3. Memory (10, plus `mmap` finished)
 
 File-backed mappings - private and shared - through the page cache, `MAP_FIXED`,
