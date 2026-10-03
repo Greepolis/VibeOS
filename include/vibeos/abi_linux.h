@@ -72,6 +72,8 @@
 #define VIBEOS_SIGCHLD 17u
 #define VIBEOS_SIGCONT 18u
 #define VIBEOS_SIGSTOP 19u
+#define VIBEOS_SIGVTALRM 26u
+#define VIBEOS_SIGPROF 27u
 #define VIBEOS_SIGWINCH 28u
 
 /* Dispositions that are not addresses, and SA_RESTORER: the handler entry

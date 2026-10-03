@@ -30,6 +30,7 @@ set(VIBEOS_KERNEL_CORE_SOURCES
     kernel/sched/task.c
     kernel/sched/task_ident.c
     kernel/sched/cred.c
+    kernel/sched/ptimer.c
     kernel/sched/runq.c
     kernel/sched/lifetime.c
     kernel/sched/view.c
@@ -154,6 +155,7 @@ set(VIBEOS_LINUX_ABI_SOURCES
     kernel/abi/linux/proc.c
     kernel/abi/linux/sig.c
     kernel/abi/linux/signal.c
+    kernel/abi/linux/timer.c
     ${VIBEOS_ABI_FILES_SOURCES}
 )
 

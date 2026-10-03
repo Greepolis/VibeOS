@@ -28,6 +28,7 @@
 #include "vibeos/services.h"
 #include "vibeos/exec_stats.h"
 #include "vibeos/siginfo.h"
+#include "vibeos/ptimer.h"
 #include "vibeos/account.h"
 #include "vibeos/forkguard.h"
 #include "vibeos/sched_policy.h"
@@ -667,6 +668,8 @@ int hw_task_spawn_user(const unsigned char *elf, uint64_t len,
                               const char *const *argv);
 int hw_task_describe(uint32_t slot, vibeos_task_desc_t *out);
 uint32_t hw_fault_signal(uint64_t vector);
+int hw_ptimer_fire(const vibeos_ptimer_fire_t *f);
+void hw_ptimer_charge_current(int slot, int user);
 int hw_fault_to_handler(vibeos_x86_64_isr_frame_t *frame, uint64_t fault_address);
 void hw_fault_kill_current_user(const vibeos_x86_64_isr_frame_t *frame,
                                        uint64_t fault_address);

@@ -39,6 +39,7 @@ int test_linux_layout(void) {
 #include <asm/ucontext.h>
 #include <asm/siginfo.h>
 #include <linux/signal.h>
+#include <linux/times.h>
 #include <asm/ioctls.h>
 #include <asm/termbits.h>
 #include <asm/termios.h>
@@ -388,6 +389,46 @@ int test_linux_layout(void) {
     CONST(LINUX_CLOCK_MONOTONIC, CLOCK_MONOTONIC);
     CONST(LINUX_CLOCK_BOOTTIME, CLOCK_BOOTTIME);
     CONST(LINUX_TIMER_ABSTIME, TIMER_ABSTIME);
+    CONST(LINUX_CLOCK_PROCESS_CPUTIME_ID, CLOCK_PROCESS_CPUTIME_ID);
+    CONST(LINUX_CLOCK_THREAD_CPUTIME_ID, CLOCK_THREAD_CPUTIME_ID);
+    CONST(LINUX_CLOCK_MONOTONIC_RAW, CLOCK_MONOTONIC_RAW);
+    CONST(LINUX_CLOCK_REALTIME_COARSE, CLOCK_REALTIME_COARSE);
+    CONST(LINUX_CLOCK_MONOTONIC_COARSE, CLOCK_MONOTONIC_COARSE);
+    CONST(LINUX_CLOCK_REALTIME_ALARM, CLOCK_REALTIME_ALARM);
+    CONST(LINUX_CLOCK_BOOTTIME_ALARM, CLOCK_BOOTTIME_ALARM);
+    CONST(LINUX_CLOCK_TAI, CLOCK_TAI);
+
+    /* Timers (L2 step 3). */
+    SIZE(linux_itimerval_t, struct itimerval);
+    FIELD(linux_itimerval_t, struct itimerval, it_interval);
+    FIELD(linux_itimerval_t, struct itimerval, it_value);
+    SIZE(linux_itimerspec_t, struct __kernel_itimerspec);
+    FIELD(linux_itimerspec_t, struct __kernel_itimerspec, it_interval);
+    FIELD(linux_itimerspec_t, struct __kernel_itimerspec, it_value);
+    SIZE(linux_sigevent_t, struct sigevent);
+    FIELD(linux_sigevent_t, struct sigevent, sigev_value);
+    FIELD(linux_sigevent_t, struct sigevent, sigev_signo);
+    FIELD(linux_sigevent_t, struct sigevent, sigev_notify);
+    FIELD2(linux_sigevent_t, struct sigevent, notify_tid, sigev_notify_thread_id);
+    TAIL(linux_sigevent_t, struct sigevent, rest);
+    SIZE(linux_tms_t, struct tms);
+    FIELD(linux_tms_t, struct tms, tms_utime);
+    FIELD(linux_tms_t, struct tms, tms_stime);
+    FIELD(linux_tms_t, struct tms, tms_cutime);
+    FIELD(linux_tms_t, struct tms, tms_cstime);
+    SIZE(linux_timezone_t, struct timezone);
+    FIELD(linux_timezone_t, struct timezone, tz_minuteswest);
+    FIELD(linux_timezone_t, struct timezone, tz_dsttime);
+    CONST(LINUX_ITIMER_REAL, ITIMER_REAL);
+    CONST(LINUX_ITIMER_VIRTUAL, ITIMER_VIRTUAL);
+    CONST(LINUX_ITIMER_PROF, ITIMER_PROF);
+    CONST(LINUX_SIGEV_SIGNAL, SIGEV_SIGNAL);
+    CONST(LINUX_SIGEV_NONE, SIGEV_NONE);
+    CONST(LINUX_SIGEV_THREAD, SIGEV_THREAD);
+    CONST(LINUX_SIGEV_THREAD_ID, SIGEV_THREAD_ID);
+    CONST(LINUX_SI_TIMER, SI_TIMER);
+    CONST(VIBEOS_SIGVTALRM, SIGVTALRM);
+    CONST(VIBEOS_SIGPROF, SIGPROF);
     CONST(LINUX_MADV_NORMAL, MADV_NORMAL);
     CONST(LINUX_MADV_RANDOM, MADV_RANDOM);
     CONST(LINUX_MADV_SEQUENTIAL, MADV_SEQUENTIAL);
@@ -536,6 +577,9 @@ int test_linux_layout(void) {
     expect(offsetof(linux_siginfo_t, value) == offsetof(siginfo_t, si_status) &&
            sizeof(((siginfo_t *)0)->si_status) == 4u,
            "si_status is si_value's low half, as linux_si_set_status writes it");
+    expect(offsetof(linux_siginfo_t, pid) == offsetof(siginfo_t, si_tid) &&
+           offsetof(linux_siginfo_t, uid) == offsetof(siginfo_t, si_overrun),
+           "a timer's si_timerid and si_overrun are where si_pid and si_uid are");
     CONST(LINUX_SA_SIGINFO, SA_SIGINFO);
     CONST(LINUX_SA_ONSTACK, SA_ONSTACK);
     CONST(LINUX_SA_NODEFER, SA_NODEFER);

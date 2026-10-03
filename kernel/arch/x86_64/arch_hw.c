@@ -792,6 +792,9 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
             /* Every core's LAPIC timer lands here; only one may own the clock. */
             if (!g_apic_mode || hw_this_cpu()->index == 0u) {
                 g_timer_ticks++;
+                /* The process timers that are due (L2 step 3): on the clock
+                 * owner, against the clock it has just advanced. */
+                vibeos_ptimer_tick(g_timer_ticks, hw_ptimer_fire);
                 /* Give back the frames whose stale translations have expired.
                  *
                  * On the clock owner only, and deliberately: this walks 512
@@ -824,6 +827,10 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
                     idle = g_tasks[cur].id.is_idle;
                 }
                 vibeos_account_tick(acpu->index, cur, idle);
+                /* And to the CPU-time timers of whatever it was running. */
+                if (cur >= 0 && !idle) {
+                    hw_ptimer_charge_current(cur, (frame->cs & 3u) == 3u);
+                }
             }
             hw_pic_send_eoi((uint32_t)frame->vector);
             /* One core owns the network clock: draining the device from every
@@ -1239,6 +1246,20 @@ static void *hw_fdtable_page(void) {
     return hw_alloc_page();
 }
 
+/* The process timers' own lock (docs/abi/ L2 step 3): they are armed from every
+ * core's syscalls and counted down by every core's tick, so the table locks
+ * itself - with interrupts off, since the tick is an interrupt. Its own lock,
+ * not the scheduler's: firing a timer takes that one. */
+static hw_lock_t g_ptimer_lock;
+
+static void hw_ptimer_lock(void) {
+    hw_spin_lock_named(&g_ptimer_lock, "vibeos_ptimer");
+}
+
+static void hw_ptimer_unlock(void) {
+    hw_spin_unlock(&g_ptimer_lock);
+}
+
 static void hw_fdtable_page_free(void *p) {
     hw_free_page_why(p, "fdtable page");
 }
@@ -1250,6 +1271,8 @@ void hw_pipe_init(void) {
     vibeos_file_reset();
     vibeos_flk_set_lock(hw_flk_lock, hw_flk_unlock);
     vibeos_flk_reset();
+    vibeos_ptimer_set_lock(hw_ptimer_lock, hw_ptimer_unlock);
+    vibeos_ptimer_reset();
     vibeos_tty_reset();
     vibeos_fdtable_set_pages(hw_fdtable_page, hw_fdtable_page_free);
 }

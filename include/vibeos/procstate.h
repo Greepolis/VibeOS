@@ -128,6 +128,9 @@ typedef struct vibeos_procstate {
      * every thread's together; here there is one copy, which is what that
      * amounts to. */
     vibeos_cred_t cred;
+    /* CPU ticks of the children this process has reaped: times()'s cutime
+     * (docs/abi/ L2 step 3). Kept across exec, as Linux keeps it. */
+    uint64_t cpu_children;
 } vibeos_procstate_t;
 
 #endif

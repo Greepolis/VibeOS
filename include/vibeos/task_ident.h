@@ -64,6 +64,13 @@ typedef struct vibeos_task {
     uint64_t sas_sp;
     uint64_t sas_size;
     uint32_t sas_flags;     /* only SS_AUTODISARM is remembered */
+
+    /* The slot's CPU ticks when this task began (docs/abi/ L2 step 3). The
+     * scheduler's accounting counts by slot across tenants - its balance
+     * against the clock needs that - so a task's own CPU time is the count
+     * now minus this. Without it every process in a recycled slot was born
+     * with the time of everybody who had held the slot before. */
+    uint64_t cpu_base;
 } vibeos_task_t;
 
 /* Put every identity field into a defined state. The one place that does it, so no

@@ -6,6 +6,8 @@
 #     g_ macro in arch_hw_internal.h now. Expect "names the architecture:
 #     g_timer_ticks". (The build would also fail - misc.c cannot see the
 #     declaration - which is the first line of defence and not the one tested.)
+#     Aimed at time() since L2 step 3, when clock_gettime stopped reading the
+#     tick itself and began asking timer.c which clock it was asked for.
 #
 # Not a case here: a service the fake forgets. Its target is the test tree, and it
 # was run by hand on 2026-09-29 (ks_con_cow_faults removed from ksvc_fake.c):
@@ -16,6 +18,6 @@
 
 ### a handler reads an architecture global directly
 --- old
-    uint64_t ticks = ks_ticks();
+    uint64_t secs = ks_ticks() / ks_hz();
 +++ new
-    uint64_t ticks = g_timer_ticks;
+    uint64_t secs = g_timer_ticks / ks_hz();

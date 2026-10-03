@@ -30,6 +30,8 @@
 #include "vibeos/lifetime.h"
 #include "vibeos/ceildiv.h"
 #include "vibeos/frame.h"
+#include "vibeos/ptimer.h"
+#include "vibeos/account.h"
 
 /* A Linux sigset_t numbers its bits from zero, this kernel by signal; the two
  * meet only through these (see sig.c). */
@@ -38,9 +40,18 @@ static inline uint64_t linux_sigset_to_user(uint64_t kernel_set) { return kernel
 
 /* Is this stack pointer on the thread's alternate signal stack (signal.c)? */
 int linux_on_altstack(const vibeos_task_t *t, uint64_t sp);
+/* Whether one more per-signal line goes to the console (signal.c). */
+int linux_sig_chatty(void);
 
 /* A timespec as ticks, rounded up; -1 if it is not a time (misc.c). */
 int64_t linux_ticks_of(const linux_timespec_t *ts);
+
+/* The clocks (timer.c): what one reads now in ticks, -1 for a clock this
+ * kernel does not know; and the CPU time a process or a thread has run. */
+int64_t linux_clock_read(uint64_t clk);
+uint64_t linux_cpu_of_process(uint32_t tgid);
+uint64_t linux_cpu_of_thread(int slot);
+uint64_t linux_cpu_slot(int slot);
 
 /* A reason in Linux's words: the siginfo_t a handler or sigtimedwait sees. */
 void linux_siginfo_from(linux_siginfo_t *o, uint32_t sig, const vibeos_siginfo_t *in);

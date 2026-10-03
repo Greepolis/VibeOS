@@ -9,18 +9,18 @@ the registry, not this page; `check.sh` fails while the two differ.
 
 | State | Count | What the kernel answers |
 | --- | --- | --- |
-| done | 148 | through its row |
-| partial | 25 | through its row, with the gap named |
-| missing | 117 | ENOSYS, and the boot gate fails naming the number |
+| done | 159 | through its row |
+| partial | 26 | through its row, with the gap named |
+| missing | 104 | ENOSYS, and the boot gate fails naming the number |
 | deferred | 50 | ENOSYS, and the boot gate fails naming the number |
-| refused | 33 | its errno, counted as refused - expected, never a failure |
+| refused | 34 | its errno, counted as refused - expected, never a failure |
 
 Without a row, by phase:
 
 | Phase | Syscalls |
 | --- | --- |
 | L1 - files and paths | 0 |
-| L2 - processes, credentials, time | 28 |
+| L2 - processes, credentials, time | 15 |
 | L3 - memory | 0 |
 | L4 - event loops | 20 |
 | L5 - sockets | 11 |
@@ -29,7 +29,7 @@ Without a row, by phase:
 | L8 - system administration | 11 |
 | L9 - security | 6 |
 | D - deferred | 50 |
-| R - refused | 33 |
+| R - refused | 34 |
 
 A `partial` row names its gap and the phase that closes it. VibeOS's own two
 calls, outside the Linux number space, are listed last.
@@ -72,9 +72,9 @@ calls, outside the Linux number space, are listed last.
 | 33 | `dup2` | done | - | - | `fs.c` |  |
 | 34 | `pause` | done | - | - | `sig.c` |  |
 | 35 | `nanosleep` | done | - | - | `misc.c` |  |
-| 36 | `getitimer` | missing | L2 | ENOSYS |  |  |
-| 37 | `alarm` | missing | L2 | ENOSYS |  |  |
-| 38 | `setitimer` | missing | L2 | ENOSYS |  |  |
+| 36 | `getitimer` | done | - | - | `timer.c` |  |
+| 37 | `alarm` | done | - | - | `timer.c` |  |
+| 38 | `setitimer` | done | - | - | `timer.c` |  |
 | 39 | `getpid` | done | - | - | `proc.c` |  |
 | 40 | `sendfile` | done | - | - | `fs.c` |  |
 | 41 | `socket` | done | - | - | `net.c` |  |
@@ -132,11 +132,11 @@ calls, outside the Linux number space, are listed last.
 | 93 | `fchown` | done | - | - | `names.c` |  |
 | 94 | `lchown` | done | - | - | `names.c` |  |
 | 95 | `umask` | done | - | - | `fs.c` |  |
-| 96 | `gettimeofday` | missing | L2 | ENOSYS |  |  |
+| 96 | `gettimeofday` | done | - | - | `timer.c` |  |
 | 97 | `getrlimit` | missing | L2 | ENOSYS |  |  |
 | 98 | `getrusage` | missing | L2 | ENOSYS |  |  |
 | 99 | `sysinfo` | done | - | - | `misc.c` |  |
-| 100 | `times` | missing | L2 | ENOSYS |  |  |
+| 100 | `times` | partial | L2 | - | `timer.c` | all CPU time is user time, and a thread that has exited takes its time with it |
 | 101 | `ptrace` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
 | 102 | `getuid` | done | - | - | `proc.c` |  |
 | 103 | `syslog` | missing | L8 | ENOSYS |  |  |
@@ -157,7 +157,7 @@ calls, outside the Linux number space, are listed last.
 | 118 | `getresuid` | done | - | - | `proc.c` |  |
 | 119 | `setresgid` | done | - | - | `proc.c` |  |
 | 120 | `getresgid` | done | - | - | `proc.c` |  |
-| 121 | `getpgid` | missing | L2 | ENOSYS |  |  |
+| 121 | `getpgid` | done | - | - | `proc.c` |  |
 | 122 | `setfsuid` | done | - | - | `proc.c` |  |
 | 123 | `setfsgid` | done | - | - | `proc.c` |  |
 | 124 | `getsid` | done | - | - | `proc.c` |  |
@@ -258,14 +258,14 @@ calls, outside the Linux number space, are listed last.
 | 219 | `restart_syscall` | missing | L2 | ENOSYS |  |  |
 | 220 | `semtimedop` | missing | L7 | ENOSYS |  |  |
 | 221 | `fadvise64` | done | - | - | `fs.c` |  |
-| 222 | `timer_create` | missing | L2 | ENOSYS |  |  |
-| 223 | `timer_settime` | missing | L2 | ENOSYS |  |  |
-| 224 | `timer_gettime` | missing | L2 | ENOSYS |  |  |
-| 225 | `timer_getoverrun` | missing | L2 | ENOSYS |  |  |
-| 226 | `timer_delete` | missing | L2 | ENOSYS |  |  |
-| 227 | `clock_settime` | missing | L2 | ENOSYS |  | EPERM without privilege; real only once there is one |
+| 222 | `timer_create` | done | - | - | `timer.c` |  |
+| 223 | `timer_settime` | done | - | - | `timer.c` |  |
+| 224 | `timer_gettime` | done | - | - | `timer.c` |  |
+| 225 | `timer_getoverrun` | done | - | - | `timer.c` |  |
+| 226 | `timer_delete` | done | - | - | `timer.c` |  |
+| 227 | `clock_settime` | refused | R | EPERM |  | the clock is the timer's uptime; there is nothing to set it from |
 | 228 | `clock_gettime` | done | - | - | `misc.c` |  |
-| 229 | `clock_getres` | missing | L2 | ENOSYS |  |  |
+| 229 | `clock_getres` | done | - | - | `timer.c` |  |
 | 230 | `clock_nanosleep` | done | - | - | `misc.c` |  |
 | 231 | `exit_group` | done | - | - | `proc.c` |  |
 | 232 | `epoll_wait` | missing | L4 | ENOSYS |  |  |

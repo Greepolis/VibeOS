@@ -94,6 +94,8 @@ int kf_lock_imbalance(void);
 /* Run `fn` once, right after the next release of an address-space lock. */
 void kf_on_mm_unlock(void (*fn)(vibeos_procstate_t *ps));
 uint64_t kf_exit_code(void);
+/* The current task runs for `ticks`, in user mode (user != 0) or in the kernel. */
+void kf_cpu(uint32_t ticks, int user);
 /* The frame the last call returned with: where it resumes (rt_sigreturn). */
 const struct ks_regs *kf_last_frame(void);
 const char *kf_panic_reason(void);

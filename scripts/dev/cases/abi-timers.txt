@@ -1,0 +1,97 @@
+# The timer calls (kernel/abi/linux/timer.c, docs/abi/ L2 step 3). Host test:
+# t_timers in tests/kernel/linux_abi_tests.c.
+#
+#  1. alarm reports 0 for a timer still armed with less than half a second
+#     left. Expect "a hundredth of a second left is still 1".
+#  2. setitimer drops the period. Expect "and again after its period".
+#  3. timer_create without a sigevent leaves its value at zero instead of its
+#     id. Expect "the timer's id as its value".
+#  4. SIGEV_THREAD_ID may name another process's thread. Expect "nor to a
+#     thread of another process".
+#  5. TIMER_ABSTIME is read as a length. Expect "and when it does".
+#  6. the process's CPU clock reads the wall clock. Expect "clock_gettime on the
+#     process's CPU clock: what it ran".
+#  7. a clock nobody knows reads as the machine's. Expect "an unknown clock is
+#     EINVAL, not the wall clock".
+#  8. times reports no CPU time. Expect "times: the clock in USER_HZ, and the
+#     CPU time the process ran".
+#  9. timer_settime accepts a flag it does not know. Expect "and a bad flag".
+#
+# Cases 6 and 9 went NOT RED first, and the tests were right about the outcome
+# and wrong about the arrangement: the wall clock and the CPU clock both read 7
+# ticks, since the process had done nothing but run; and the bad flag was tried
+# with a time that was not one, which is EINVAL for its own reason. The test
+# waits before it runs now, and tries the flag with a good time.
+#
+# Not a case: exec keeping POSIX timers (vibeos_ptimer_exec in proc.c). The host
+# tests cannot exec, the boot has no program that execs with a timer armed, and
+# the table's own half of the rule is sched-ptimer.txt's case 7.
+#
+# Target source: kernel/abi/linux/timer.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/timer.c scripts/dev/cases/abi-timers.txt
+
+### alarm reports 0 for a timer still armed
+--- old
+    return (long)(r == 0u && left != 0u ? 1u : r);
++++ new
+    return (long)r;
+
+### setitimer drops the period
+--- old
+                          (uint64_t)value, (uint64_t)every, 0, ks_ticks(), &left, &interval) != 0) {
+        return -VIBEOS_EAGAIN;
++++ new
+                          (uint64_t)value, 0, 0, ks_ticks(), &left, &interval) != 0) {
+        return -VIBEOS_EAGAIN;
+
+### timer_create without a sigevent leaves its value at zero
+--- old
+    uint64_t value = VIBEOS_PTIMER_VALUE_IS_ID;
++++ new
+    uint64_t value = 0;
+
+### SIGEV_THREAD_ID may name another process's thread
+--- old
+                if (t >= 0 && ks_id(t)->tgid != linux_my_tgid()) {
++++ new
+                if (0) {
+
+### TIMER_ABSTIME is read as a length
+--- old
+                          (flags & LINUX_TIMER_ABSTIME) != 0u, ks_ticks(), &left, &interval) != 0) {
++++ new
+                          0, ks_ticks(), &left, &interval) != 0) {
+
+### the process's CPU clock reads the wall clock
+--- old
+        case VIBEOS_PCLOCK_PROCESS_CPU: return (int64_t)linux_cpu_of_process(linux_my_tgid());
++++ new
+        case VIBEOS_PCLOCK_PROCESS_CPU: return (int64_t)ks_ticks();
+
+### a clock nobody knows reads as the machine's
+--- old
+        default:
+            return -1;
+    }
+}
+
+/* What a clock reads now
++++ new
+        default:
+            return VIBEOS_PCLOCK_REAL;
+    }
+}
+
+/* What a clock reads now
+
+### times reports no CPU time
+--- old
+        t.tms_utime = (int64_t)linux_user_hz(linux_cpu_of_process(linux_my_tgid()));
++++ new
+        t.tms_utime = 0;
+
+### timer_settime accepts a flag it does not know
+--- old
+    if (ks_current() < 0 || id < 0 || (flags & ~(uint64_t)LINUX_TIMER_ABSTIME)) {
++++ new
+    if (ks_current() < 0 || id < 0) {

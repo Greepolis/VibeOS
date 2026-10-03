@@ -5,6 +5,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "vibeos/ptimer.h"
+#include "vibeos/account.h"
+#include "vibeos/mbz.h"
 #include "ksvc_fake.h"
 #include "vibeos/filelock.h"
 #include "vibeos/tty.h"
@@ -43,6 +46,7 @@ static vibeos_procstate_t g_ps[KF_PROCS];
 static int g_cur = -1;
 static uint32_t g_next_pid_v = 100;
 static uint64_t g_ticks_v;
+static int g_account_ready;   /* the accounting table, set up by the first kf_cpu */
 static uint32_t g_illegal;
 
 static uint8_t g_user[KF_USER_BYTES] __attribute__((aligned(4096)));
@@ -548,6 +552,9 @@ void kf_reset(void) {
     vibeos_file_reset();
     vibeos_flk_set_lock(kf_pipe_lock, kf_pipe_unlock);
     vibeos_flk_reset();
+    vibeos_ptimer_set_lock(kf_pipe_lock, kf_pipe_unlock);
+    vibeos_ptimer_reset();
+    g_account_ready = 0;
     vibeos_tty_reset();
     g_kbd_len = g_kbd_at = 0;
     vibeos_pipe_reset();
@@ -790,10 +797,68 @@ void ks_unlock_preemptible(vibeos_lock_t *l) { ks_unlock(l); }
 void ks_irq_off(void) {}
 void ks_irq_on(void) {}
 
+/* A timer's expiry, as the machine's hw_ptimer_fire delivers it: to the
+ * process's leader, or to the thread named, and not again while the last one
+ * is pending. */
+
+static int kf_ptimer_fire(const vibeos_ptimer_fire_t *f) {
+    int i, slot = -1;
+    vibeos_siginfo_t why;
+
+    for (i = 0; i < KF_SLOTS; i++) {
+        if (!g_t[i].id.is_user || g_t[i].id.tgid != f->tgid ||
+            vibeos_task_state((uint32_t)i) == VIBEOS_TASK_FREE) {
+            continue;
+        }
+        if (f->to_thread ? g_t[i].id.pid == f->tid : (slot < 0 || g_t[i].id.pid == f->tgid)) {
+            slot = i;
+        }
+    }
+    if (slot < 0) {
+        vibeos_mbz_hit(VIBEOS_MBZ_PTIMER_ORPHAN, f->tgid);
+        return 0;
+    }
+    if (f->id >= 0 && (g_t[slot].id.sig_pending & (1ull << f->signo)) &&
+        g_t[slot].info[f->signo].from == VIBEOS_SIG_FROM_TIMER && g_t[slot].info[f->signo].code == f->id) {
+        g_t[slot].info[f->signo].status += 1 + (int32_t)f->overrun;
+        return 1 + g_t[slot].info[f->signo].status;
+    }
+    memset(&why, 0, sizeof(why));
+    why.from = f->id < 0 ? VIBEOS_SIG_FROM_KERNEL : VIBEOS_SIG_FROM_TIMER;
+    why.code = f->id;
+    why.status = (int32_t)f->overrun;
+    why.addr = f->value;
+    (void)ks_signal_send(slot, f->signo, &why);
+    return 0;
+}
+
+/* The current task runs for `ticks`, in user mode or in the kernel: the clock
+ * moves, the due timers fire, and the task is charged the CPU time - what the
+ * machine's tick does on a core that is running it. A wait (ks_idle) charges
+ * nothing, as a core that has given its task away charges it nothing. */
+void kf_cpu(uint32_t ticks, int user) {
+    uint32_t i;
+
+    if (!g_account_ready) {
+        (void)vibeos_account_init(KF_SLOTS, 1u);
+        g_account_ready = 1;
+    }
+    for (i = 0; i < ticks; i++) {
+        g_ticks_v++;
+        vibeos_ptimer_tick(g_ticks_v, kf_ptimer_fire);
+        if (g_cur >= 0 && g_t[g_cur].id.is_user) {
+            vibeos_account_tick(0u, g_cur, 0);
+            vibeos_ptimer_charge(g_t[g_cur].id.tgid, g_t[g_cur].id.pid, user, kf_ptimer_fire);
+        }
+    }
+}
+
 /* A wait. The clock moves one tick, so a wait with a deadline reaches it; one
- * with no deadline and nobody to wake it is reported rather than spun forever. */
+ * with no deadline and nobody to wake it is reported rather than spun forever.
+ * The due timers fire, as the machine's clock owner fires them. */
 void ks_idle(void) {
     g_ticks_v++;
+    vibeos_ptimer_tick(g_ticks_v, kf_ptimer_fire);
     if (++g_idles > 5000u) {
         kf_escape(KF_BLOCKED);
     }
@@ -810,7 +875,9 @@ int ks_signal_raise(int slot, uint32_t sig) {
 /* As the machine: a pending signal keeps its first reason, and one that is
  * ignored and not blocked is dropped. */
 int ks_signal_send(int slot, uint32_t sig, const vibeos_siginfo_t *info) {
-    if (sig == 0u || sig > VIBEOS_SIG_MAX) {
+    /* As the machine: a task with no process state left is exiting, and
+     * takes no signal. */
+    if (sig == 0u || sig > VIBEOS_SIG_MAX || !g_t[slot].ps) {
         return -1;
     }
     if (sig != VIBEOS_SIGKILL && sig != VIBEOS_SIGSTOP && g_t[slot].ps &&

@@ -30,6 +30,7 @@
 #include "vibeos/mm_stats.h"
 #include "vibeos/frame.h"
 #include "vibeos/vmspace.h"
+#include "vibeos/mbz.h"
 
 int test_linux_handlers(void);
 int test_linux_gaps(void);
@@ -52,6 +53,7 @@ static long sys(uint64_t nr, uint64_t a0, uint64_t a1, uint64_t a2,
 #define SYS1(nr, a)          sys((nr), (a), 0, 0, 0, 0, 0, 0)
 #define SYS2(nr, a, b)       sys((nr), (a), (b), 0, 0, 0, 0, 0)
 #define SYS3(nr, a, b, c)    sys((nr), (a), (b), (c), 0, 0, 0, 0)
+#define SYS4(nr, a, b, c, d) sys((nr), (a), (b), (c), (d), 0, 0, 0)
 
 static uint64_t ustr(const char *s) {
     uint64_t u = kf_ualloc(strlen(s) + 1u);
@@ -147,12 +149,12 @@ static void t_sigprocmask_numbering(void) {
 
     /* Linux numbers a sigset from bit 0 for signal 1; SIGUSR2 is 12, bit 11. */
     *(uint64_t *)kf_uptr(set) = 1ull << 11;
-    expect(SYS3(14, 0, set, 0) == 0, "block SIGUSR2");
+    expect(SYS4(14, 0, set, 0, 8) == 0, "block SIGUSR2");
     expect(ks_id(me)->sig_blocked == (1ull << 12), "the kernel holds it by signal number");
-    expect(SYS3(14, 0, 0, old) == 0 && *(uint64_t *)kf_uptr(old) == (1ull << 11),
+    expect(SYS4(14, 0, 0, old, 8) == 0 && *(uint64_t *)kf_uptr(old) == (1ull << 11),
            "and reports it back in Linux numbering");
     *(uint64_t *)kf_uptr(set) = (1ull << 8) | (1ull << 18);   /* SIGKILL, SIGSTOP */
-    (void)SYS3(14, 2, set, 0);
+    (void)SYS4(14, 2, set, 0, 8);
     expect(ks_id(me)->sig_blocked == 0, "SIGKILL and SIGSTOP cannot be blocked");
 }
 
@@ -170,12 +172,12 @@ static void t_sigaction_round_trip(void) {
     a[1] = VIBEOS_SA_RESTORER;
     a[2] = handler + 8u;
     a[3] = 1ull << 1;   /* SIGINT blocked while it runs */
-    expect(SYS3(13, 10, act, 0) == 0, "install a SIGUSR1 handler");
-    expect(SYS3(13, 10, 0, old) == 0 && o[0] == handler && o[3] == (1ull << 1),
+    expect(SYS4(13, 10, act, 0, 8) == 0, "install a SIGUSR1 handler");
+    expect(SYS4(13, 10, 0, old, 8) == 0 && o[0] == handler && o[3] == (1ull << 1),
            "and read it back as installed");
-    expect(SYS3(13, 9, act, 0) == -VIBEOS_EINVAL, "SIGKILL cannot be caught");
+    expect(SYS4(13, 9, act, 0, 8) == -VIBEOS_EINVAL, "SIGKILL cannot be caught");
     a[0] = 0x1000;
-    expect(SYS3(13, 10, act, 0) == -VIBEOS_EINVAL, "a handler outside user memory is refused (H-017)");
+    expect(SYS4(13, 10, act, 0, 8) == -VIBEOS_EINVAL, "a handler outside user memory is refused (H-017)");
 }
 
 /* A frame rt_sigreturn cannot trust ends the task with SIGSEGV rather than
@@ -467,7 +469,6 @@ static void t_at_calls(void) {
 
 /* ---- L1 step 3: writing through a descriptor, on /tmp ------------------------------ */
 
-#define SYS4(nr, a, b, c, d) sys((nr), (a), (b), (c), (d), 0, 0, 0)
 
 static long tmp_open(const char *path, uint64_t flags, uint64_t mode) {
     return SYS3(2, ustr(path), flags, mode);
@@ -2416,11 +2417,13 @@ static void t_signals_l2(void) {
     me = fresh(321);
     handler = kf_ualloc(16);
     stack = kf_ualloc(16384);
-    t_handler(10, handler, T_SA_NODEFER | T_SA_RESETHAND, 0);
+    t_handler(10, handler, T_SA_NODEFER | T_SA_RESETHAND | T_SA_SIGINFO, 0);
     (void)ks_signal_raise(me, 10);
     expect(t_deliver(&fr, 0x1234, stack + 12000u) == 1 &&
            (ks_id(me)->sig_blocked & (1ull << 10)) == 0u && ks_ps(me)->sig_handler[10] == SIG_DFL_ADDR,
            "SA_NODEFER leaves the signal unblocked, SA_RESETHAND delivers once");
+    expect((ks_ps(me)->sig_flags[10] & T_SA_SIGINFO) != 0u,
+           "and SA_RESETHAND leaves SA_SIGINFO as it was (LTP's sigaction01)");
 
     /* ---- rt_sigpending, rt_sigsuspend, pause ------------------------------ */
     me = fresh(331);
@@ -2549,6 +2552,281 @@ static void t_signals_l2(void) {
                ((const linux_siginfo_t *)kf_uptr(fr.arg1))->si_code == LINUX_SI_KERNEL &&
                linux_si_addr((const linux_siginfo_t *)kf_uptr(fr.arg1)) == 0u,
                "a general protection fault names no address");
+    }
+
+    /* Found by LTP once its timeout worked (L2 step 3). */
+    me = fresh(371);
+    other = kf_spawn(372, 371);
+    ks_id(other)->tgid = 371;            /* a second thread of 371 */
+    kf_set_current(me);
+    {
+        uint64_t q = kf_ualloc(128);
+        linux_siginfo_t *qq = (linux_siginfo_t *)kf_uptr(q);
+
+        qq->si_code = LINUX_SI_QUEUE;
+        expect(SYS3(129, 372, 10, q) == 0 && SYS2(62, 372, 12) == 0,
+               "rt_sigqueueinfo and kill find a process by one of its threads' ids");
+    }
+    ks_set_ps(other, 0);                 /* on its way out */
+    expect(SYS2(62, 372, 15) == 0 && SYS2(200, 372, 15) == 0,
+           "a signal to a process that is exiting is not the sender's error");
+    expect(SYS3(234, (uint64_t)-1, 371, 10) == -VIBEOS_EINVAL && SYS3(234, 371, 0, 10) == -VIBEOS_EINVAL,
+           "tgkill refuses an id that is not positive before looking it up");
+    expect(SYS1(121, 0) == (long)ks_id(me)->pgid && SYS1(121, 372) == (long)ks_id(other)->pgid &&
+           SYS1(121, 999) == -VIBEOS_ESRCH,
+           "getpgid: the caller's group for 0, another's by pid, ESRCH for nobody");
+    {
+        uint64_t act = kf_ualloc(32);
+        uint64_t *aa = (uint64_t *)kf_uptr(act);
+        aa[0] = kf_ualloc(16);
+        aa[1] = T_SA_RESTORER | T_SA_SIGINFO;
+        aa[2] = 0x3000;
+        expect(SYS4(13, 10, act, 0, 4) == -VIBEOS_EINVAL && SYS4(14, 0, 0, act, 16) == -VIBEOS_EINVAL,
+               "rt_sigaction and rt_sigprocmask refuse a sigset that is not eight bytes");
+    }
+    expect(SYS3(61, 0x80000000u, 0, 0) == -VIBEOS_ESRCH, "waitpid(INT_MIN) is ESRCH, as Linux says");
+}
+
+/* ---- timers (docs/abi/ L2 step 3) --------------------------------------------------- */
+
+static void t_timers(void) {
+    uint64_t itv, old, ts, its, sev, idp, set, info, tv, tz, tms;
+    linux_itimerval_t *ip, *op;
+    linux_itimerspec_t *sp;
+    linux_sigevent_t *ev;
+    linux_timespec_t *tsp;
+    linux_siginfo_t *si;
+    int32_t *id;
+    kf_outcome_t how;
+    int me, other;
+    long r;
+
+    /* alarm: seconds, and what was left of the last one. */
+    me = fresh(401);
+    expect(SYS1(37, 2) == 0, "alarm with none before returns 0");
+    expect(SYS1(37, 5) == 2, "a second alarm returns what was left of the first");
+    kf_cpu(260, 1);
+    expect(SYS1(37, 0) == 2 && (ks_id(me)->sig_pending & (1ull << 14)) == 0u,
+           "2.4 seconds left reads as 2, and alarm(0) cancels it");
+    expect(SYS1(37, 1) == 0, "nothing was left after a cancel");
+    kf_cpu(99, 1);
+    expect(SYS1(37, 1) == 1 && (ks_id(me)->sig_pending & (1ull << 14)) == 0u,
+           "a hundredth of a second left is still 1, not 0 - 0 would mean none");
+    r = sys(34, 0, 0, 0, 0, 0, 0, &how);
+    expect(r == -VIBEOS_EINTR && how == 0, "pause is ended by the alarm");
+    expect((ks_id(me)->sig_pending & (1ull << 14)) != 0u && kf_siginfo(me, 14)->from == VIBEOS_SIG_FROM_KERNEL,
+           "SIGALRM is raised, from the kernel as Linux's alarm is");
+
+    /* setitimer and getitimer. */
+    me = fresh(402);
+    itv = kf_ualloc(32);
+    old = kf_ualloc(32);
+    ip = (linux_itimerval_t *)kf_uptr(itv);
+    op = (linux_itimerval_t *)kf_uptr(old);
+    ip->it_value.tv_sec = 0;
+    ip->it_value.tv_usec = 300000;
+    ip->it_interval.tv_sec = 0;
+    ip->it_interval.tv_usec = 100000;
+    expect(SYS3(38, 0, itv, old) == 0 && op->it_value.tv_sec == 0 && op->it_value.tv_usec == 0,
+           "setitimer arms ITIMER_REAL, and there was none");
+    expect(SYS2(36, 0, old) == 0 && op->it_value.tv_usec == 300000 && op->it_interval.tv_usec == 100000,
+           "getitimer reads it back");
+    kf_cpu(31, 1);
+    expect((ks_id(me)->sig_pending & (1ull << 14)) != 0u, "it fires after its 0.3 seconds");
+    ks_id(me)->sig_pending = 0;
+    kf_cpu(10, 1);
+    expect((ks_id(me)->sig_pending & (1ull << 14)) != 0u, "and again after its period");
+    ip->it_value.tv_usec = 1000000;
+    expect(SYS3(38, 0, itv, 0) == -VIBEOS_EINVAL && SYS3(38, 3, itv, 0) == -VIBEOS_EINVAL,
+           "a timeval that is not one, and a fourth timer, are EINVAL");
+    expect(SYS3(38, 0, 0, old) == 0 && op->it_interval.tv_usec == 100000 && SYS2(36, 0, old) == 0 &&
+           op->it_value.tv_usec == 0 && op->it_value.tv_sec == 0,
+           "no new value disarms it, and says what it was");
+    ip->it_value.tv_usec = 50000;
+    ip->it_interval.tv_usec = 0;
+    ks_id(me)->sig_pending = 0;
+    expect(SYS3(38, 1, itv, 0) == 0, "ITIMER_VIRTUAL armed for 5 ticks of user time");
+    kf_cpu(10, 0);
+    expect((ks_id(me)->sig_pending & (1ull << 26)) == 0u, "time in the kernel does not count for it");
+    kf_cpu(5, 1);
+    expect((ks_id(me)->sig_pending & (1ull << 26)) != 0u, "user time does: SIGVTALRM");
+    expect(SYS3(38, 2, itv, 0) == 0, "ITIMER_PROF armed for 5 ticks");
+    kf_cpu(5, 0);
+    expect((ks_id(me)->sig_pending & (1ull << 27)) != 0u, "kernel time counts for it: SIGPROF");
+
+    /* POSIX timers. */
+    me = fresh(403);
+    other = kf_spawn(404, 403);
+    its = kf_ualloc(32);
+    sev = kf_ualloc(64);
+    idp = kf_ualloc(4);
+    set = kf_ualloc(8);
+    info = kf_ualloc(128);
+    sp = (linux_itimerspec_t *)kf_uptr(its);
+    ev = (linux_sigevent_t *)kf_uptr(sev);
+    id = (int32_t *)kf_uptr(idp);
+    si = (linux_siginfo_t *)kf_uptr(info);
+    expect(SYS3(222, LINUX_CLOCK_MONOTONIC, 0, idp) == 0 && *id == 0 &&
+           SYS3(222, LINUX_CLOCK_MONOTONIC, 0, idp) == 0 && *id == 1,
+           "timer_create numbers timers from zero");
+    sp->it_value.tv_sec = 0;
+    sp->it_value.tv_nsec = 20000000;
+    expect(sys(223, 1, 0, its, 0, 0, 0, 0) == 0, "timer_settime arms the second one for 20ms");
+    ks_id(me)->sig_blocked = 1ull << 14;
+    kf_cpu(3, 1);
+    *(uint64_t *)kf_uptr(set) = 1ull << 13;
+    expect(sys(128, set, info, 0, 8, 0, 0, 0) == 14 && si->si_code == LINUX_SI_TIMER && si->pid == 1 &&
+           si->value == 1u,
+           "without a sigevent: SIGALRM, SI_TIMER, the timer's id as its value");
+    ev->sigev_signo = 10;
+    ev->sigev_notify = LINUX_SIGEV_SIGNAL;
+    ev->sigev_value = 0x55;
+    expect(SYS3(222, LINUX_CLOCK_REALTIME, sev, idp) == 0 && *id == 2, "one with a sigevent");
+    sp->it_value.tv_nsec = 10000000;
+    sp->it_interval.tv_nsec = 10000000;
+    ks_id(me)->sig_blocked = 1ull << 10;
+    expect(sys(223, 2, 0, its, 0, 0, 0, 0) == 0, "periodic, every tick, with its signal blocked");
+    kf_cpu(12, 1);
+    *(uint64_t *)kf_uptr(set) = 1ull << 9;
+    r = sys(128, set, info, 0, 8, 0, 0, 0);
+    expect(r == 10 && si->value == 0x55u && si->uid >= 8u && SYS1(225, 2) == (long)si->uid,
+           "one signal for many expiries: the rest are its overrun, as timer_getoverrun says");
+    expect(sys(224, 2, its, 0, 0, 0, 0, 0) == 0 && sp->it_interval.tv_nsec == 10000000 &&
+           sp->it_value.tv_nsec > 0, "timer_gettime reads it");
+    expect(SYS1(226, 2) == 0 && sys(224, 2, its, 0, 0, 0, 0, 0) == -VIBEOS_EINVAL &&
+           SYS1(226, 2) == -VIBEOS_EINVAL && SYS1(225, 2) == -VIBEOS_EINVAL,
+           "timer_delete, and a deleted timer is no timer");
+    ev->sigev_notify = LINUX_SIGEV_NONE;
+    expect(SYS3(222, LINUX_CLOCK_MONOTONIC, sev, idp) == 0, "SIGEV_NONE");
+    sp->it_value.tv_nsec = 50000000;
+    sp->it_interval.tv_nsec = 0;
+    (void)sys(223, (uint64_t)*id, 0, its, 0, 0, 0, 0);
+    kf_cpu(2, 1);
+    expect(sys(224, (uint64_t)*id, its, 0, 0, 0, 0, 0) == 0 && sp->it_value.tv_nsec == 30000000,
+           "a silent timer still counts down");
+    ev->sigev_notify = LINUX_SIGEV_THREAD_ID;
+    ev->notify_tid = 999;
+    expect(SYS3(222, LINUX_CLOCK_MONOTONIC, sev, idp) == -VIBEOS_EINVAL, "SIGEV_THREAD_ID to no thread");
+    ev->notify_tid = 404;
+    expect(SYS3(222, LINUX_CLOCK_MONOTONIC, sev, idp) == -VIBEOS_EINVAL,
+           "nor to a thread of another process");
+    ev->notify_tid = 403;
+    ev->sigev_signo = 12;
+    expect(SYS3(222, LINUX_CLOCK_MONOTONIC, sev, idp) == 0, "to one of its own");
+    ev->sigev_notify = 7;
+    expect(SYS3(222, LINUX_CLOCK_MONOTONIC, sev, idp) == -VIBEOS_EINVAL, "an unknown notify is EINVAL");
+    ev->sigev_notify = LINUX_SIGEV_SIGNAL;
+    ev->sigev_signo = 65;
+    expect(SYS3(222, LINUX_CLOCK_MONOTONIC, sev, idp) == -VIBEOS_EINVAL, "so is a signal that does not exist");
+    expect(SYS3(222, 99, 0, idp) == -VIBEOS_EINVAL && SYS3(222, LINUX_CLOCK_MONOTONIC_RAW, 0, idp) == -VIBEOS_EINVAL,
+           "a clock it does not know, and one Linux keeps no timers on, are EINVAL");
+    sp->it_value.tv_nsec = 1000000000;
+    expect(sys(223, 0, 0, its, 0, 0, 0, 0) == -VIBEOS_EINVAL, "timer_settime refuses a time that is not one");
+    sp->it_value.tv_nsec = 0;   /* a valid time, so that only the flag or the id is wrong */
+    expect(sys(223, 0, 2, its, 0, 0, 0, 0) == -VIBEOS_EINVAL && sys(223, 77, 0, its, 0, 0, 0, 0) == -VIBEOS_EINVAL,
+           "and a bad flag, and a timer that is not there");
+    /* Absolute, on the machine's clock. */
+    ks_id(me)->sig_pending = 0;
+    ks_id(me)->sig_blocked = 0;
+    sp->it_value.tv_sec = (int64_t)(ks_ticks() / 100u);
+    sp->it_value.tv_nsec = (int64_t)((ks_ticks() % 100u) + 5u) * 10000000;
+    if (sp->it_value.tv_nsec >= 1000000000) {
+        sp->it_value.tv_sec++;
+        sp->it_value.tv_nsec -= 1000000000;
+    }
+    expect(sys(223, 0, 1, its, 0, 0, 0, 0) == 0, "TIMER_ABSTIME: five ticks from now, as a clock reading");
+    kf_cpu(4, 1);
+    expect((ks_id(me)->sig_pending & (1ull << 14)) == 0u, "not before the clock reads it");
+    kf_cpu(1, 1);
+    expect((ks_id(me)->sig_pending & (1ull << 14)) != 0u, "and when it does");
+    /* On the process's CPU clock. */
+    ks_id(me)->sig_pending = 0;
+    expect(SYS3(222, LINUX_CLOCK_PROCESS_CPUTIME_ID, 0, idp) == 0, "a timer on the process's CPU clock");
+    sp->it_value.tv_sec = 0;
+    sp->it_value.tv_nsec = 30000000;
+    (void)sys(223, (uint64_t)*id, 0, its, 0, 0, 0, 0);
+    kf_set_current(other);
+    kf_cpu(5, 1);
+    kf_set_current(me);
+    expect((ks_id(me)->sig_pending & (1ull << 14)) == 0u, "another process's time does not count for it");
+    kf_cpu(3, 0);
+    expect((ks_id(me)->sig_pending & (1ull << 14)) != 0u, "its own does");
+
+    /* The clocks. */
+    me = fresh(405);
+    ts = kf_ualloc(16);
+    tsp = (linux_timespec_t *)kf_uptr(ts);
+    expect(SYS2(229, LINUX_CLOCK_REALTIME, ts) == 0 && tsp->tv_sec == 0 && tsp->tv_nsec == 10000000,
+           "clock_getres says a tick");
+    expect(SYS2(229, LINUX_CLOCK_THREAD_CPUTIME_ID, 0) == 0 && SYS2(229, 99, ts) == -VIBEOS_EINVAL,
+           "with nowhere to put it too, and EINVAL for a clock it does not know");
+    /* The wall clock moves while the process waits: the two clocks must
+     * differ, or a CPU clock that read the wall clock would pass. */
+    tsp->tv_sec = 0;
+    tsp->tv_nsec = 300000000;
+    (void)SYS2(35, ts, 0);
+    kf_cpu(7, 1);
+    expect(ks_ticks() > 30u && SYS2(228, LINUX_CLOCK_PROCESS_CPUTIME_ID, ts) == 0 && tsp->tv_sec == 0 && tsp->tv_nsec == 70000000,
+           "clock_gettime on the process's CPU clock: what it ran");
+    expect(SYS2(228, LINUX_CLOCK_THREAD_CPUTIME_ID, ts) == 0 && tsp->tv_nsec == 70000000 &&
+           SYS2(228, 99, ts) == -VIBEOS_EINVAL,
+           "and on the thread's; an unknown clock is EINVAL, not the wall clock");
+    /* A child forked into a slot that has run before starts from nothing:
+     * the accounting is the slot's, every tenant's. */
+    {
+        long cpid = SYS0(57);
+        int cslot = -1;
+        uint32_t k;
+
+        for (k = 0; k < ks_slots(); k++) {
+            if (ks_id((int)k)->pid == (uint32_t)cpid) {
+                cslot = (int)k;
+            }
+        }
+        if (cslot >= 0) {
+            kf_set_current(cslot);
+            kf_cpu(4, 1);
+            expect(SYS2(228, LINUX_CLOCK_THREAD_CPUTIME_ID, ts) == 0 && tsp->tv_nsec == 40000000,
+                   "a forked child's CPU clock counts its own time only");
+            (void)vibeos_task_transition((uint32_t)cslot, VIBEOS_TASK_ZOMBIE, "test");
+            (void)vibeos_task_transition((uint32_t)cslot, VIBEOS_TASK_FREE, "test");
+            kf_set_current(me);
+            cpid = SYS0(57);
+            kf_set_current(cslot);
+            expect(ks_id(cslot)->pid == (uint32_t)cpid && SYS2(228, LINUX_CLOCK_THREAD_CPUTIME_ID, ts) == 0 &&
+                   tsp->tv_nsec == 0 && tsp->tv_sec == 0,
+                   "and one forked into the same slot afterwards starts from zero, not from its predecessor's");
+            kf_set_current(me);
+        } else {
+            expect(0, "fork made a child");
+        }
+    }
+    tv = kf_ualloc(16);
+    tz = kf_ualloc(8);
+    memset(kf_uptr(tz), 0xFF, 8);
+    expect(SYS2(96, tv, tz) == 0 && ((linux_timeval_t *)kf_uptr(tv))->tv_sec == (int64_t)(ks_ticks() / 100u) &&
+           ((linux_timezone_t *)kf_uptr(tz))->tz_minuteswest == 0, "gettimeofday, and a zone of nothing");
+    tms = kf_ualloc(32);
+    r = SYS1(100, tms);
+    expect(r == (long)ks_ticks() && ((linux_tms_t *)kf_uptr(tms))->tms_utime == 7,
+           "times: the clock in USER_HZ, and the CPU time the process ran");
+    expect(SYS2(227, LINUX_CLOCK_REALTIME, ts) == -VIBEOS_EPERM, "setting the clock is refused");
+
+    /* A timer that outlives its process is counted, and goes to nobody else:
+     * the exit path is supposed to have taken it. */
+    {
+        uint64_t before = vibeos_mbz_count(VIBEOS_MBZ_PTIMER_ORPHAN);
+
+        me = fresh(406);
+        other = kf_spawn(407, 406);
+        (void)SYS1(37, 1);
+        (void)vibeos_task_transition((uint32_t)me, VIBEOS_TASK_ZOMBIE, "test");
+        (void)vibeos_task_transition((uint32_t)me, VIBEOS_TASK_FREE, "test");
+        kf_set_current(other);
+        kf_cpu(102, 1);
+        expect(vibeos_mbz_count(VIBEOS_MBZ_PTIMER_ORPHAN) == before + 1u &&
+               (ks_id(other)->sig_pending & (1ull << 14)) == 0u,
+               "a timer whose process is gone is ptimer_orphan, and nobody else's alarm");
     }
 }
 
@@ -3154,6 +3432,7 @@ int test_linux_handlers(void) {
     t_procfs();
     t_sa_restart();
     t_signals_l2();
+    t_timers();
     t_sleep();
     t_ltp_l1();
     return g_fail ? -1 : 0;
@@ -3404,6 +3683,16 @@ int test_linux_gaps(void) {
     {
         uint64_t many = kf_ualloc(40u * 4u);
         gap(116, SYS2(116, 40, many) == 0, "setgroups with forty groups");
+    }
+
+    /* times (100), L2: time spent in the kernel is system time. */
+    {
+        uint64_t tms;
+        fresh(71);
+        tms = kf_ualloc(32);
+        kf_cpu(10, 0);
+        (void)SYS1(100, tms);
+        gap(100, ((linux_tms_t *)kf_uptr(tms))->tms_stime > 0, "times reports time spent in the kernel");
     }
 
     /* rt_sigqueueinfo (129) and rt_tgsigqueueinfo (297), L2: a real-time

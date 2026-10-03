@@ -29,6 +29,8 @@ static const char *const g_name[VIBEOS_MBZ_COUNT] = {
     "file_put_underflow",
     "tmpfs_bad_record",
     "filelock_unlocked",
+    "ptimer_unlocked",
+    "ptimer_orphan",
 };
 
 void vibeos_mbz_hit(vibeos_mbz_id_t id, uint64_t witness) {

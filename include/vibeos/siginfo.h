@@ -16,7 +16,8 @@ typedef enum {
     VIBEOS_SIG_FROM_THREAD,       /* tkill(), tgkill()                             */
     VIBEOS_SIG_FROM_QUEUE,        /* sigqueueinfo: code, pid, uid, value as given  */
     VIBEOS_SIG_FROM_FAULT,        /* a CPU exception in the program                */
-    VIBEOS_SIG_FROM_CHILD         /* a child ended                                 */
+    VIBEOS_SIG_FROM_CHILD,        /* a child ended                                 */
+    VIBEOS_SIG_FROM_TIMER         /* a POSIX timer: code = its id, status = overrun, addr = value */
 } vibeos_sig_from_t;
 
 /* How a child ended, for VIBEOS_SIG_FROM_CHILD. */

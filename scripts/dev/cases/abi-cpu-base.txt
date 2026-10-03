@@ -1,0 +1,17 @@
+# A task's own CPU time (docs/abi/ L2 step 3). The scheduler counts CPU ticks
+# by slot, across every task that has held it, so each task records where the
+# count stood when it began. Without that a process in a recycled slot was born
+# with its predecessors' time - found by LTP's times03, which saw thirteen ticks
+# in a process that had done nothing. Host test: t_timers.
+#
+#  1. fork does not record where the child's time starts. Expect "and one
+#     forked into the same slot afterwards starts from zero".
+#
+# Target source: kernel/abi/linux/proc.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/proc.c scripts/dev/cases/abi-cpu-base.txt
+
+### fork does not record where the child's time starts
+--- old
+        child->cpu_base = linux_cpu_slot(idx);   /* its own CPU time starts now */
++++ new
+        (void)0;

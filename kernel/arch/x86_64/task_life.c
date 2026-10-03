@@ -620,6 +620,7 @@ hw_procstate_t *hw_procstate_new(void) {
         /* Root, until fork or exec says otherwise - not whoever the slot's
          * last tenant had become. */
         vibeos_cred_root(&ps->cred);
+        ps->cpu_children = 0;
         ps->files_lock.locked = 0;
         ps->files_lock.owner_cpu = -1;
         ps->files_lock.owner_fn = 0;
@@ -1025,6 +1026,9 @@ void hw_task_exit(uint64_t code) {
      * task is retired, while the table is still reachable through it. */
     if (dying >= 0 && g_tasks[dying].ps != 0 && linux_files_leave(g_tasks[dying].ps)) {
         linux_locks_exit(g_tasks[dying].id.tgid);
+        /* And its timers (L2 step 3): a timer that outlived its process would
+         * fire into whoever has its pid next. */
+        vibeos_ptimer_exit(g_tasks[dying].id.tgid);
         if (g_net_up) {
             hw_spin_lock_named(&g_net_lock, __func__);
             (void)vibeos_inet_release_owner_sockets(&g_net, g_tasks[dying].id.tgid);
@@ -1276,7 +1280,8 @@ void hw_task_exit(uint64_t code) {
                     why.code = (int32_t)VIBEOS_CHILD_EXITED;
                     why.status = (int32_t)(code & 0xFFu);
                 }
-                why.utime = acct ? acct->ticks : 0u;
+                why.utime = acct && acct->ticks > g_tasks[dying].id.cpu_base
+                            ? acct->ticks - g_tasks[dying].id.cpu_base : 0u;
                 (void)hw_signal_send(i, VIBEOS_SIGCHLD, &why);
                 break;
             }
@@ -1543,6 +1548,83 @@ int hw_task_by_tid(uint32_t tid) {
         }
     }
     return -1;
+}
+
+/* One expiry of a process timer (docs/abi/ L2 step 3), from the tick.
+ *
+ * To the process - its leader if it has one still running, else any thread of
+ * it - or to the one thread SIGEV_THREAD_ID named. Under the scheduler's lock,
+ * as kill raises: the slot found is the slot signalled. A POSIX timer whose
+ * signal is still pending from its last expiry is not raised again; that is an
+ * overrun, which the table counts and the next siginfo reports.
+ *
+ * A timer whose process is gone entirely is a timer exit should have taken
+ * with it, and is counted must-be-zero rather than dropped quietly: the next
+ * process with that pid would otherwise get its alarms. */
+int hw_ptimer_fire(const vibeos_ptimer_fire_t *f) {
+    int i, slot = -1, any = 0, pending = 0;
+
+    if (f->signo == 0u || f->signo > VIBEOS_HW_SIG_MAX) {
+        return 0;
+    }
+    hw_spin_lock_named(&g_sched_lock, __func__);
+    for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+        vibeos_task_state_t st = hw_slot_state(i);
+
+        if (!g_tasks[i].id.is_user || st == HW_TASK_FREE || st == HW_TASK_RESERVED ||
+            st == HW_TASK_ZOMBIE || g_tasks[i].id.tgid != f->tgid) {
+            continue;
+        }
+        any = 1;
+        if (f->to_thread) {
+            if (g_tasks[i].id.pid == f->tid) {
+                slot = i;
+            }
+        } else if (slot < 0 || g_tasks[i].id.pid == f->tgid) {
+            slot = i;
+        }
+    }
+    if (slot >= 0) {
+        hw_task_t *t = &g_tasks[slot];
+        vibeos_siginfo_t why;
+        uint32_t k;
+
+        hw_spin_lock_named(&t->sig_lock, __func__);
+        if (f->id >= 0 && (t->id.sig_pending & (1ull << f->signo)) &&
+            t->sig_info[f->signo].from == VIBEOS_SIG_FROM_TIMER &&
+            t->sig_info[f->signo].code == f->id) {
+            /* Still pending: this expiry is an overrun of that signal, and the
+             * signal says how many it has when it is taken. */
+            t->sig_info[f->signo].status += 1 + (int32_t)f->overrun;
+            pending = 1 + t->sig_info[f->signo].status;
+        }
+        hw_spin_unlock(&t->sig_lock);
+        if (!pending) {
+            for (k = 0; k < sizeof(why); k++) {
+                ((unsigned char *)&why)[k] = 0;
+            }
+            /* An interval timer's signal is the kernel's (SI_KERNEL, as
+             * Linux's alarm), a POSIX timer's says which timer it was. */
+            why.from = f->id < 0 ? VIBEOS_SIG_FROM_KERNEL : VIBEOS_SIG_FROM_TIMER;
+            why.code = f->id;
+            why.status = (int32_t)f->overrun;
+            why.addr = f->value;
+            (void)hw_signal_send(slot, f->signo, &why);
+        }
+    }
+    hw_spin_unlock(&g_sched_lock);
+    if (!any) {
+        vibeos_mbz_hit(VIBEOS_MBZ_PTIMER_ORPHAN, f->tgid);
+    }
+    return pending;
+}
+
+/* A tick of CPU time, charged to the timers of the thread it went to. */
+void hw_ptimer_charge_current(int slot, int user) {
+    if (slot < 0 || slot >= VIBEOS_HW_MAX_TASKS || !g_tasks[slot].id.is_user) {
+        return;
+    }
+    vibeos_ptimer_charge(g_tasks[slot].id.tgid, g_tasks[slot].id.pid, user, hw_ptimer_fire);
 }
 
 /* The signal Linux reports for a CPU exception in a program. */

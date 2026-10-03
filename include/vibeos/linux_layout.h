@@ -393,6 +393,65 @@ typedef struct {
 #define LINUX_CLOCK_MONOTONIC 1
 #define LINUX_CLOCK_BOOTTIME  7
 #define LINUX_TIMER_ABSTIME   1
+
+/* The rest of Linux's clocks (linux/time.h): the two CPU-time clocks, and the
+ * variants of the machine's clock that differ on Linux by what they promise -
+ * here they are all the one clock the timer keeps. */
+#define LINUX_CLOCK_PROCESS_CPUTIME_ID 2
+#define LINUX_CLOCK_THREAD_CPUTIME_ID  3
+#define LINUX_CLOCK_MONOTONIC_RAW      4
+#define LINUX_CLOCK_REALTIME_COARSE    5
+#define LINUX_CLOCK_MONOTONIC_COARSE   6
+#define LINUX_CLOCK_REALTIME_ALARM     8
+#define LINUX_CLOCK_BOOTTIME_ALARM     9
+#define LINUX_CLOCK_TAI                11
+
+/* Timers (docs/abi/ L2 step 3). */
+/* struct itimerval (linux/time.h): setitimer, getitimer. */
+typedef struct {
+    linux_timeval_t it_interval;
+    linux_timeval_t it_value;
+} linux_itimerval_t;
+
+/* struct __kernel_itimerspec (linux/time_types.h): timer_settime. */
+typedef struct {
+    linux_timespec_t it_interval;
+    linux_timespec_t it_value;
+} linux_itimerspec_t;
+
+/* struct sigevent (asm-generic/siginfo.h): how timer_create is to say so. The
+ * thread id is a member of a union Linux names through a macro, so ours has
+ * its own name; the rest is padding to 64 bytes. */
+typedef struct {
+    uint64_t sigev_value;
+    int32_t sigev_signo;
+    int32_t sigev_notify;
+    int32_t notify_tid;
+    uint8_t rest[44];
+} linux_sigevent_t;
+
+/* struct tms (linux/times.h): times(). Clock ticks, in USER_HZ. */
+typedef struct {
+    int64_t tms_utime;
+    int64_t tms_stime;
+    int64_t tms_cutime;
+    int64_t tms_cstime;
+} linux_tms_t;
+
+/* struct timezone (linux/time.h): gettimeofday's second argument, always zero. */
+typedef struct {
+    int32_t tz_minuteswest;
+    int32_t tz_dsttime;
+} linux_timezone_t;
+
+#define LINUX_ITIMER_REAL    0
+#define LINUX_ITIMER_VIRTUAL 1
+#define LINUX_ITIMER_PROF    2
+#define LINUX_SIGEV_SIGNAL    0
+#define LINUX_SIGEV_NONE      1
+#define LINUX_SIGEV_THREAD    2
+#define LINUX_SIGEV_THREAD_ID 4
+#define LINUX_SI_TIMER        (-2)
 /* madvise, mlock, mremap, memfd_create (L3 step 4). */
 #define LINUX_MADV_NORMAL      0
 #define LINUX_MADV_RANDOM      1

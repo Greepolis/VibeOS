@@ -1,0 +1,110 @@
+# The process-timer table (kernel/sched/ptimer.c, docs/abi/ L2 step 3). Host
+# test: test_ptimer in tests/kernel/ptimer_tests.c.
+#
+#  1. a real timer fires a tick early. Expect "it does not fire with its time
+#     not wholly gone".
+#  2. a one-shot timer stays armed after it fires. Expect "and is disarmed
+#     afterwards".
+#  3. periods that went by between ticks are not counted. Expect "periods with
+#     no tick to fire them are overruns".
+#  4. a pending signal's overrun count is not kept. Expect "expiries that found
+#     the signal pending are its overrun count".
+#  5. kernel time counts for ITIMER_VIRTUAL. Expect "time in the kernel is not
+#     ITIMER_VIRTUAL's".
+#  6. a thread's CPU clock counts every thread of the process. Expect "another
+#     thread's time is not its".
+#  7. exec drops the interval timers too. Expect "exec drops POSIX timers and
+#     keeps alarm".
+#  8. the count of armed CPU-time timers is not kept, so the tick skips them.
+#     Expect "and ITIMER_PROF counts it".
+#  9. a full table takes a timer over. Expect "a full table refuses".
+# 10. a timer due when the batch is full is lost. Expect "every timer fires, in
+#     batches, none lost".
+#
+# Target source: kernel/sched/ptimer.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/sched/ptimer.c scripts/dev/cases/sched-ptimer.txt
+
+### a real timer fires a tick early
+--- old
+        e->expires = now + ticks + 1u;
++++ new
+        e->expires = now + ticks;
+
+### a one-shot timer stays armed after it fires
+--- old
+        if (e->interval == 0u) {
+            e->expires = 0;
+        } else {
++++ new
+        if (e->interval == 0u) {
+        } else {
+
+### periods that went by between ticks are not counted
+--- old
+            while (e->expires <= now) {
+                e->expires += e->interval;
+                e->missed++;
+            }
++++ new
+            while (e->expires <= now) {
+                e->expires += e->interval;
+            }
+
+### a pending signal's overrun count is not kept
+--- old
+            e->overrun = r > 0 ? (uint32_t)(r - 1) : f[i].overrun;
++++ new
+            e->overrun = f[i].overrun;
+
+### kernel time counts for ITIMER_VIRTUAL
+--- old
+            case VIBEOS_PCLOCK_VIRT:        counts = e->tgid == tgid && user; break;
++++ new
+            case VIBEOS_PCLOCK_VIRT:        counts = e->tgid == tgid; break;
+
+### a thread's CPU clock counts every thread of the process
+--- old
+            case VIBEOS_PCLOCK_THREAD_CPU:  counts = e->tgid == tgid && e->charged == tid; break;
++++ new
+            case VIBEOS_PCLOCK_THREAD_CPU:  counts = e->tgid == tgid; break;
+
+### exec drops the interval timers too
+--- old
+void vibeos_ptimer_exec(uint32_t tgid) { drop(tgid, 1); }
++++ new
+void vibeos_ptimer_exec(uint32_t tgid) { drop(tgid, 0); }
+
+### the count of armed CPU-time timers is not kept
+--- old
+    recount();
+    unlock();
+    return 0;
+}
+
+int vibeos_ptimer_get(
++++ new
+    unlock();
+    return 0;
+}
+
+int vibeos_ptimer_get(
+
+### a full table takes a timer over
+--- old
+        if (!g_pt[i].used) {
+            pt_t *e = &g_pt[i];
++++ new
+        if (!g_pt[i].used || i == VIBEOS_PTIMER_MAX - 1u) {
+            pt_t *e = &g_pt[i];
+
+### a timer due when the batch is full is lost
+--- old
+    for (i = 0; i < VIBEOS_PTIMER_MAX && n < PT_BATCH; i++) {
++++ new
+    for (i = 0; i < VIBEOS_PTIMER_MAX; i++) {
+        if (n >= PT_BATCH) {
+            if (g_pt[i].used && g_pt[i].expires != 0u && g_pt[i].expires <= now) {
+                g_pt[i].expires = 0;
+            }
+            continue;
+        }

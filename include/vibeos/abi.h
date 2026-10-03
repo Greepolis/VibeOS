@@ -51,6 +51,7 @@
     X(GETPGRP,         "getpgrp",         VIBEOS_CHECK_NONE) \
     X(SETSID,          "setsid",          VIBEOS_CHECK_NONE) \
     X(GETSID,          "getsid",          VIBEOS_CHECK_NONE) \
+    X(GETPGID,         "getpgid",         VIBEOS_CHECK_NONE) \
     X(YIELD,           "yield",           VIBEOS_CHECK_NONE) \
     X(SET_TID_ADDRESS, "set_tid_address", VIBEOS_CHECK_NONE) \
     X(ARCH_PRCTL,      "arch_prctl",      VIBEOS_CHECK_USER_MEMORY) \
@@ -169,6 +170,17 @@
     X(TIME,            "time",            VIBEOS_CHECK_USER_MEMORY) \
     X(NANOSLEEP,       "nanosleep",       VIBEOS_CHECK_USER_MEMORY) \
     X(CLOCK_NANOSLEEP, "clock_nanosleep", VIBEOS_CHECK_USER_MEMORY) \
+    X(ALARM,           "alarm",           VIBEOS_CHECK_NONE) \
+    X(ITIMER_SET,      "itimer_set",      VIBEOS_CHECK_USER_MEMORY) \
+    X(ITIMER_GET,      "itimer_get",      VIBEOS_CHECK_USER_MEMORY) \
+    X(TIMER_CREATE,    "timer_create",    VIBEOS_CHECK_USER_MEMORY) \
+    X(TIMER_SET,       "timer_set",       VIBEOS_CHECK_USER_MEMORY) \
+    X(TIMER_GET,       "timer_get",       VIBEOS_CHECK_USER_MEMORY) \
+    X(TIMER_OVERRUN,   "timer_overrun",   VIBEOS_CHECK_NONE) \
+    X(TIMER_DELETE,    "timer_delete",    VIBEOS_CHECK_NONE) \
+    X(CLOCK_GETRES,    "clock_getres",    VIBEOS_CHECK_USER_MEMORY) \
+    X(GETTIMEOFDAY,    "gettimeofday",    VIBEOS_CHECK_USER_MEMORY) \
+    X(TIMES,           "times",           VIBEOS_CHECK_USER_MEMORY) \
     X(UNAME,           "uname",           VIBEOS_CHECK_USER_MEMORY) \
     X(SYSINFO,         "sysinfo",         VIBEOS_CHECK_USER_MEMORY) \
     X(GETRANDOM,       "getrandom",       VIBEOS_CHECK_NONE) \

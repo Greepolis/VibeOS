@@ -44,12 +44,18 @@ static long linux_sys_uname(uint64_t buf) {
 
 /* clock_gettime(): derived from the timer tick, so it advances at the
  * resolution the timer really has rather than pretending to a nanosecond
- * accuracy it does not possess. */
+ * accuracy it does not possess. The machine's clocks are one clock here,
+ * uptime; the CPU-time clocks are what the scheduler charged (timer.c). A
+ * clock it does not know is EINVAL - it used to answer every number with
+ * uptime, so a program asking for a process's CPU time got the wall clock. */
 static long linux_sys_clock_gettime(uint64_t clk, uint64_t ts_uptr) {
-    uint64_t ticks = ks_ticks();
+    int64_t read = linux_clock_read(clk);
+    uint64_t ticks = (uint64_t)read;
     linux_timespec_t kts;
 
-    (void)clk;   /* monotonic and realtime are one clock here: uptime */
+    if (read < 0) {
+        return -VIBEOS_EINVAL;
+    }
     kts.tv_sec = (int64_t)(ticks / ks_hz());
     kts.tv_nsec = (int64_t)((ticks % ks_hz()) * (1000000000ull / ks_hz()));
     /* Built in the kernel and copied out: a sibling munmap between the check

@@ -170,6 +170,7 @@ static long linux_sys_fork(const ks_regs_t *frame) {
         uint32_t sg;
 
         child->exit_signal = 0;
+        child->cpu_base = linux_cpu_slot(idx);   /* its own CPU time starts now */
         child->sig_pending = 0;   /* pending signals are not inherited */
         child->sig_blocked = parent->sig_blocked;
         child->sig_saved_valid = 0;
@@ -307,6 +308,7 @@ static long linux_sys_clone_thread(const ks_regs_t *frame,
     child->sid = parent->sid;
     child->signal_stopped = 0;
     child->is_thread = 1;
+    child->cpu_base = linux_cpu_slot(idx);
     child->is_user = 1;
     child->exit_code = 0;
     child->exit_signal = 0;
@@ -371,6 +373,11 @@ static long linux_sys_waitpid(uint64_t want_pid, uint64_t status_ptr,
         return -VIBEOS_EINVAL;
     }
     mypid = ks_id(ks_current())->tgid;
+    /* The one pid whose group cannot be negated: Linux says no such process
+     * rather than no such child (LTP's waitpid04). */
+    if ((int32_t)(uint32_t)want_pid == (int32_t)0x80000000) {
+        return -VIBEOS_ESRCH;
+    }
 
     /* The options used to be dropped by the dispatcher before they got here,
      * so WNOHANG blocked. A shell reaping background jobs stalls on the first
@@ -440,6 +447,11 @@ static long linux_sys_waitpid(uint64_t want_pid, uint64_t status_ptr,
                  * about one boot in six. */
                 uint64_t kbase = 0;
                 uint32_t kpages = 0;
+                /* What it ran, for the parent's times() (L2 step 3): taken
+                 * before the slot is published, after which the account is the
+                 * next tenant's. */
+                const vibeos_task_account_t *acct = vibeos_account_task((uint32_t)i);
+                uint64_t child_cpu = acct && acct->ticks > t->cpu_base ? acct->ticks - t->cpu_base : 0u;
                 (void)vibeos_teardown_step((uint32_t)i,
                                            VIBEOS_TEARDOWN_HARVESTED);
                 vibeos_task_stats()->reaped++;
@@ -449,6 +461,12 @@ static long linux_sys_waitpid(uint64_t want_pid, uint64_t status_ptr,
                 ks_unlock(ks_sched_lock());
                 (void)kbase; (void)kpages;
                 ks_irq_on();
+                {
+                    vibeos_procstate_t *mps = ks_ps(ks_current());
+                    if (mps) {
+                        __atomic_add_fetch(&mps->cpu_children, child_cpu, __ATOMIC_RELAXED);
+                    }
+                }
                 if (status_ptr != 0 && linux_user_ok(status_ptr, 4, 1)) {
                     /* The wait status word: a normal exit puts the code in the
                      * high byte and leaves the low seven bits clear; a signal
@@ -1071,6 +1089,7 @@ static long linux_sys_execve(ks_regs_t *frame, uint64_t path_uptr,
              * it: one boot in six, root's shell was the self-test's user 1000
              * and could not create a file. */
             nps->cred = ops->cred;
+            nps->cpu_children = ops->cpu_children;   /* times() survives exec too */
             ks_unlock(&ops->files_lock);
         }
 
@@ -1140,6 +1159,9 @@ static long linux_sys_execve(ks_regs_t *frame, uint64_t path_uptr,
      * signals do not survive an exec: they were raised against the old image. */
     ks_exec_regs(ks_current(), frame, np.entry, np.user_sp);
     t->sig_pending = 0;
+    /* The new program does not inherit the old one's POSIX timers; its
+     * interval timers it does, alarm() included (L2 step 3). */
+    vibeos_ptimer_exec(t->tgid);
     /* The alternate stack was memory of the old image. */
     t->sas_sp = 0;
     t->sas_size = 0;
@@ -1304,6 +1326,30 @@ static long linux_sys_getsid(uint64_t requested_pid) {
     ks_lock(ks_sched_lock(), __func__);
     target = ks_task_by_pid(pid);
     r = target < 0 ? -VIBEOS_ESRCH : (long)ks_id(target)->sid;
+    ks_unlock(ks_sched_lock());
+    return r;
+}
+
+/* getpgid(): the group a process is in, 0 meaning the caller. Taken from L2
+ * step 5 early: musl's getpgrp() is getpgid(0), so without it every musl
+ * program's getpgrp() was -ENOSYS - and LTP's kill06 killed `-getpgrp()`, which
+ * is process 38, and got ESRCH. */
+static long linux_sys_getpgid(uint64_t requested_pid) {
+    int target;
+    uint32_t pid;
+    long r;
+
+    if (ks_current() < 0 || !ks_id(ks_current())->is_user) {
+        return -VIBEOS_EINVAL;
+    }
+    pid = (uint32_t)requested_pid == 0u ? ks_id(ks_current())->tgid : (uint32_t)requested_pid;
+    /* Lookup and read as one critical section, as getsid (H-007). */
+    ks_lock(ks_sched_lock(), __func__);
+    target = ks_task_by_pid(pid);
+    if (target < 0) {
+        target = ks_task_by_tid(pid);   /* any thread's id names its process */
+    }
+    r = target < 0 ? -VIBEOS_ESRCH : (long)ks_id(target)->pgid;
     ks_unlock(ks_sched_lock());
     return r;
 }
@@ -1648,6 +1694,7 @@ static long linux_sys_clone(const vibeos_call_t *c) {
     X(111, getpgrp,          GETPGRP,         NOPTR, linux_sys_getpgrp()) \
     X(112, setsid,           SETSID,          NOPTR, linux_sys_setsid()) \
     X(124, getsid,           GETSID,          NOPTR, linux_sys_getsid(ARG(0))) \
+    X(121, getpgid,          GETPGID,         NOPTR, linux_sys_getpgid(ARG(0))) \
     X(157, prctl,            PRCTL,           PTRS(IN_IF(0, LINUX_PR_SET_NAME, 1, 16), OUT_IF(0, LINUX_PR_GET_NAME, 1, 16)), linux_sys_prctl(ARG(0), ARG(1))) \
     X(158, arch_prctl,       ARCH_PRCTL,      PTRS(OUT_IF(0, LINUX_ARCH_GET_FS, 1, 8)), linux_sys_arch_prctl(ARG(0), ARG(1))) \
     X(186, gettid,           GETTID,          NOPTR, linux_sys_gettid()) \

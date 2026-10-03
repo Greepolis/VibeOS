@@ -43,6 +43,8 @@ extern const vibeos_row_t linux_net_rows[];
 extern const uint32_t linux_net_row_count;
 extern const vibeos_row_t linux_futex_rows[];
 extern const uint32_t linux_futex_row_count;
+extern const vibeos_row_t linux_timer_rows[];
+extern const uint32_t linux_timer_row_count;
 
 static const struct {
     const char *name;
@@ -57,6 +59,7 @@ static const struct {
     { "misc", linux_misc_rows, &linux_misc_row_count },
     { "net",  linux_net_rows,  &linux_net_row_count },
     { "futex", linux_futex_rows, &linux_futex_row_count },
+    { "timer", linux_timer_rows, &linux_timer_row_count },
 };
 
 /* The single call site of ks_user_ok. Rows declare their pointer arguments
