@@ -57,6 +57,12 @@
     X(ARCH_PRCTL,      "arch_prctl",      VIBEOS_CHECK_USER_MEMORY) \
     X(PRCTL,           "prctl",           VIBEOS_CHECK_USER_MEMORY) \
     X(PRLIMIT,         "prlimit",         VIBEOS_CHECK_USER_MEMORY) \
+    X(GETRLIMIT,       "getrlimit",       VIBEOS_CHECK_USER_MEMORY) \
+    X(SETRLIMIT,       "setrlimit",       VIBEOS_CHECK_USER_MEMORY) \
+    X(GETRUSAGE,       "getrusage",       VIBEOS_CHECK_USER_MEMORY) \
+    X(GETPRIORITY,     "getpriority",     VIBEOS_CHECK_NONE) \
+    X(SETPRIORITY,     "setpriority",     VIBEOS_CHECK_NONE) \
+    X(PERSONALITY,     "personality",     VIBEOS_CHECK_NONE) \
     X(IDENTITY_GET,    "identity_get",    VIBEOS_CHECK_USER_MEMORY) \
     X(IDENTITY_SET,    "identity_set",    VIBEOS_CHECK_USER_MEMORY) \
     /* files and descriptors */ \

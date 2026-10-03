@@ -2830,6 +2830,180 @@ static void t_timers(void) {
     }
 }
 
+/* ---- limits, usage, priorities (docs/abi/ L2 step 4) ---------------------------------- */
+
+static void t_limits(void) {
+    uint64_t rl, rl2, buf, path, ru;
+    uint64_t *rp, *rp2;
+    int me, other;
+    long r, fd, child;
+    uint32_t i;
+
+    me = fresh(501);
+    rl = kf_ualloc(16);
+    rl2 = kf_ualloc(16);
+    rp = (uint64_t *)kf_uptr(rl);
+    rp2 = (uint64_t *)kf_uptr(rl2);
+
+    /* What a process starts with. */
+    expect(SYS2(97, LINUX_RLIMIT_NOFILE, rl) == 0 && rp[0] == 1024u && rp[1] == 1024u,
+           "RLIMIT_NOFILE starts at what the descriptor table holds");
+    expect(SYS2(97, LINUX_RLIMIT_CORE, rl) == 0 && rp[0] == 0u && rp[1] == LINUX_RLIM64_INFINITY,
+           "RLIMIT_CORE starts at 0, as Linux starts it");
+    expect(SYS2(97, LINUX_RLIMIT_STACK, rl) == 0 && rp[0] == ks_stack_bytes(),
+           "RLIMIT_STACK is the stack this machine gives");
+    expect(SYS2(97, 16, rl) == -VIBEOS_EINVAL && SYS2(97, (uint64_t)-1, rl) == -VIBEOS_EINVAL,
+           "a resource that does not exist is EINVAL");
+    expect(SYS4(302, 0, LINUX_RLIMIT_NOFILE, 0, rl2) == 0 && rp2[0] == 1024u,
+           "prlimit64 reads what getrlimit reads");
+
+    /* The rules for changing one. */
+    rp[0] = 20;
+    rp[1] = 10;
+    expect(SYS2(160, LINUX_RLIMIT_NOFILE, rl) == -VIBEOS_EINVAL, "a soft limit above the hard one is EINVAL");
+    rp[0] = 2048;
+    rp[1] = 2048;
+    expect(SYS2(160, LINUX_RLIMIT_NOFILE, rl) == -VIBEOS_EPERM,
+           "nobody raises NOFILE past what the table can hold");
+
+    /* NOFILE is the descriptor table's limit. */
+    rp[0] = 5;
+    rp[1] = 1024;
+    expect(SYS2(160, LINUX_RLIMIT_NOFILE, rl) == 0 && ks_ps(me)->files.limit == 5u,
+           "setrlimit(RLIMIT_NOFILE) is the table's limit");
+    for (i = 0, fd = 0; i < 10u && fd >= 0; i++) {
+        fd = SYS1(32, 0);   /* dup */
+    }
+    expect(fd == -VIBEOS_EMFILE, "and a descriptor past it is EMFILE");
+
+    /* Children inherit limits, nice and personality. */
+    me = fresh(502);
+    rl = kf_ualloc(16);
+    rp = (uint64_t *)kf_uptr(rl);
+    rp[0] = 50;
+    rp[1] = 60;
+    (void)SYS2(160, LINUX_RLIMIT_NOFILE, rl);
+    (void)ks_task_set_nice(me, 7);
+    expect(SYS1(135, 0x0008) == 0 && SYS1(135, 0xFFFFFFFFu) == 0x0008, "personality is kept and read back");
+    child = SYS0(57);
+    {
+        int cs = -1;
+        uint32_t k;
+        for (k = 0; k < ks_slots(); k++) {
+            if (ks_id((int)k)->pid == (uint32_t)child) {
+                cs = (int)k;
+            }
+        }
+        expect(cs >= 0 && ks_ps(cs)->rlim_cur[LINUX_RLIMIT_NOFILE] == 50u &&
+               ks_ps(cs)->rlim_max[LINUX_RLIMIT_NOFILE] == 60u && ks_ps(cs)->files.limit == 50u &&
+               ks_task_nice(cs) == 7 && ks_ps(cs)->personality == 0x0008u,
+               "a forked child has its parent's limits, nice and personality");
+    }
+
+    /* FSIZE: a write is cut at the limit, and past it is SIGXFSZ and EFBIG. */
+    me = fresh(503);
+    rl = kf_ualloc(16);
+    rp = (uint64_t *)kf_uptr(rl);
+    buf = kf_ualloc(300);
+    path = ustr("/tmp/big");
+    fd = SYS3(2, path, 0x42, 0644);   /* O_CREAT | O_RDWR */
+    rp[0] = 100;
+    rp[1] = LINUX_RLIM64_INFINITY;
+    expect(fd >= 0 && SYS2(160, LINUX_RLIMIT_FSIZE, rl) == 0, "RLIMIT_FSIZE set to 100 bytes");
+    expect(SYS3(1, (uint64_t)fd, buf, 200) == 100, "a write that would pass it is cut at it");
+    expect(SYS3(1, (uint64_t)fd, buf, 10) == -VIBEOS_EFBIG && (ks_id(me)->sig_pending & (1ull << VIBEOS_SIGXFSZ)),
+           "one at it is EFBIG, with SIGXFSZ");
+    ks_id(me)->sig_pending = 0;
+
+    /* DATA: brk may not take the heap past it. */
+    {
+        uint64_t base = (uint64_t)SYS1(12, 0);
+        rp[0] = (base - ks_heap_base()) + 8192u;
+        rp[1] = LINUX_RLIM64_INFINITY;
+        expect(SYS2(160, LINUX_RLIMIT_DATA, rl) == 0 && (uint64_t)SYS1(12, base + 4096u) == base + 4096u,
+               "brk within RLIMIT_DATA moves");
+        expect((uint64_t)SYS1(12, base + 65536u) == base + 4096u,
+               "and past it stays where it was, as Linux refuses");
+    }
+
+    /* CPU: SIGXCPU at the soft limit, SIGKILL at the hard one. */
+    me = fresh(504);
+    rl = kf_ualloc(16);
+    rp = (uint64_t *)kf_uptr(rl);
+    rp[0] = 1;
+    rp[1] = 2;
+    expect(SYS2(160, LINUX_RLIMIT_CPU, rl) == 0, "RLIMIT_CPU of one second, two hard");
+    kf_cpu(99, 1);
+    expect((ks_id(me)->sig_pending & (1ull << VIBEOS_SIGXCPU)) == 0u, "not before a second has run");
+    kf_cpu(1, 1);
+    expect((ks_id(me)->sig_pending & (1ull << VIBEOS_SIGXCPU)) != 0u, "SIGXCPU when it has");
+    kf_cpu(100, 1);
+    expect((ks_id(me)->sig_pending & (1ull << VIBEOS_SIGKILL)) != 0u, "SIGKILL at the hard limit");
+    ks_id(me)->sig_pending = 0;
+
+    /* NPROC: counted for a user who is not root. */
+    me = fresh(505);
+    rl = kf_ualloc(16);
+    rp = (uint64_t *)kf_uptr(rl);
+    rp[0] = 1;
+    rp[1] = 1;
+    expect(SYS2(160, LINUX_RLIMIT_NPROC, rl) == 0 && SYS0(57) > 0, "the superuser is not held to RLIMIT_NPROC");
+    kf_set_current(me);
+    expect(SYS1(105, 1000) == 0 && SYS0(57) == -VIBEOS_EAGAIN,
+           "a user at RLIMIT_NPROC cannot fork");
+    rp[0] = 1;
+    rp[1] = 2;
+    expect(SYS2(160, LINUX_RLIMIT_NPROC, rl) == -VIBEOS_EPERM, "nor raise a hard limit");
+
+    /* prlimit64 on another process. */
+    me = fresh(506);
+    other = kf_spawn(507, 506);
+    rl = kf_ualloc(16);
+    rp = (uint64_t *)kf_uptr(rl);
+    rp[0] = 33;
+    rp[1] = 1024;
+    expect(SYS4(302, 507, LINUX_RLIMIT_NOFILE, rl, 0) == 0 && ks_ps(other)->rlim_cur[LINUX_RLIMIT_NOFILE] == 33u &&
+           ks_ps(other)->files.limit == 33u,
+           "prlimit64 changes another process's limit");
+    expect(SYS4(302, 999, LINUX_RLIMIT_NOFILE, 0, rl) == -VIBEOS_ESRCH, "and refuses one that does not exist");
+    kf_set_current(other);
+    (void)SYS1(105, 1000);
+    expect(SYS4(302, 506, LINUX_RLIMIT_NOFILE, 0, rl) == -VIBEOS_EPERM,
+           "and a user may not reach the superuser's");
+    kf_set_current(me);
+
+    /* getrusage. */
+    me = fresh(508);
+    ru = kf_ualloc(sizeof(linux_rusage_t));
+    kf_cpu(5, 1);
+    expect(SYS2(98, LINUX_RUSAGE_SELF, ru) == 0 && ((linux_rusage_t *)kf_uptr(ru))->ru_utime.tv_usec == 50000,
+           "getrusage(SELF): the CPU time run");
+    expect(SYS2(98, LINUX_RUSAGE_THREAD, ru) == 0 && ((linux_rusage_t *)kf_uptr(ru))->ru_utime.tv_usec == 50000 &&
+           SYS2(98, 5, ru) == -VIBEOS_EINVAL,
+           "RUSAGE_THREAD too; an unknown who is EINVAL");
+
+    /* Priorities: 20 - nice, raw, as Linux answers. */
+    me = fresh(509);
+    other = kf_spawn(510, 509);
+    expect(SYS2(140, LINUX_PRIO_PROCESS, 0) == 20, "getpriority answers 20 - nice");
+    expect(SYS3(141, LINUX_PRIO_PROCESS, 0, 5) == 0 && ks_task_nice(me) == 5 && SYS2(140, LINUX_PRIO_PROCESS, 0) == 15,
+           "setpriority sets the caller's nice");
+    expect(SYS3(141, LINUX_PRIO_PROCESS, 510, 3) == 0 && ks_task_nice(other) == 3,
+           "and another's, by pid");
+    expect(SYS2(140, LINUX_PRIO_PGRP, 0) == 15 && SYS2(140, LINUX_PRIO_USER, 0) == 17,
+           "a group answers for its members only, a user for all its processes: the highest priority");
+    expect(SYS3(141, 3, 0, 0) == -VIBEOS_EINVAL && SYS2(140, LINUX_PRIO_PROCESS, 999) == -VIBEOS_ESRCH,
+           "an unknown which is EINVAL, nobody is ESRCH");
+    expect(SYS3(141, LINUX_PRIO_PROCESS, 0, 40) == 0 && ks_task_nice(me) == 19, "a nice past 19 is 19");
+    (void)SYS1(105, 1000);
+    expect(SYS3(141, LINUX_PRIO_PROCESS, 0, 10) == -VIBEOS_EACCES,
+           "a user may not lower its own nice without RLIMIT_NICE");
+    expect(SYS3(141, LINUX_PRIO_PROCESS, 510, 15) == -VIBEOS_EPERM,
+           "nor touch the superuser's");
+    r = SYS3(141, LINUX_PRIO_PROCESS, 0, 19);
+    expect(r == 0, "raising it is anybody's");
+}
+
 /* ---- M-078, M-079 ------------------------------------------------------------------- */
 
 static void sibling_moves_the_break(vibeos_procstate_t *ps) {
@@ -3433,6 +3607,7 @@ int test_linux_handlers(void) {
     t_sa_restart();
     t_signals_l2();
     t_timers();
+    t_limits();
     t_sleep();
     t_ltp_l1();
     return g_fail ? -1 : 0;
@@ -3730,17 +3905,45 @@ int test_linux_gaps(void) {
         gap(202, r == 0, "FUTEX_CMP_REQUEUE");
     }
 
-    /* prlimit64 (302), L2: a limit that is set is the limit reported. */
+    /* setrlimit (160) and prlimit64 (302), L2: RLIMIT_AS is kept, not
+     * enforced - a mapping larger than it still succeeds. */
     {
-        uint64_t nl = 0, ol = 0;
-        fresh(73);
-        nl = kf_ualloc(16);
-        ol = kf_ualloc(16);
-        ((uint64_t *)kf_uptr(nl))[0] = 10;
-        ((uint64_t *)kf_uptr(nl))[1] = 10;
-        r = sys(302, 0, 7 /* RLIMIT_NOFILE */, nl, 0, 0, 0, 0);
-        (void)sys(302, 0, 7, 0, ol, 0, 0, 0);
-        gap(302, r == 0 && ((uint64_t *)kf_uptr(ol))[0] == 10u, "prlimit64 sets RLIMIT_NOFILE");
+        uint64_t nl;
+        uint32_t n;
+        for (n = 160; n <= 302; n += 142) {
+            fresh(73);
+            nl = kf_ualloc(16);
+            ((uint64_t *)kf_uptr(nl))[0] = 1ull << 20;
+            ((uint64_t *)kf_uptr(nl))[1] = 1ull << 20;
+            if (n == 160) {
+                (void)SYS2(160, LINUX_RLIMIT_AS, nl);
+            } else {
+                (void)SYS4(302, 0, LINUX_RLIMIT_AS, nl, 0);
+            }
+            r = sys(9, 0, 4ull << 20, 3, 0x22, (uint64_t)-1, 0, 0);
+            gap(n, r < 0, "a mapping larger than RLIMIT_AS is refused");
+        }
+    }
+
+    /* getrusage (98), L2: no resident-set high-water mark. */
+    {
+        uint64_t ru;
+        fresh(75);
+        ru = kf_ualloc(sizeof(linux_rusage_t));
+        (void)SYS2(98, LINUX_RUSAGE_SELF, ru);
+        gap(98, ((linux_rusage_t *)kf_uptr(ru))->ru_maxrss > 0, "getrusage reports ru_maxrss");
+    }
+
+    /* personality (135), L2: kept, and changes nothing - PER_LINUX32 makes
+     * Linux's uname say i686. */
+    {
+        uint64_t u;
+        fresh(76);
+        u = kf_ualloc(6u * 65u);
+        (void)SYS1(135, 0x0008 /* PER_LINUX32 */);
+        (void)SYS1(63, u);
+        gap(135, strcmp((const char *)kf_uptr(u) + 4u * 65u, "i686") == 0,
+            "PER_LINUX32 changes the machine uname reports");
     }
 
     /* rseq (334), R: ENOSYS by decision - the library takes its fallback. */

@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "vibeos/ptimer.h"
+#include "vibeos/linux_exports.h"
 #include "vibeos/account.h"
 #include "vibeos/mbz.h"
 #include "ksvc_fake.h"
@@ -47,6 +48,7 @@ static int g_cur = -1;
 static uint32_t g_next_pid_v = 100;
 static uint64_t g_ticks_v;
 static int g_account_ready;   /* the accounting table, set up by the first kf_cpu */
+static int g_nice[KF_SLOTS];  /* the scheduler's nice per slot, as the machine's policy keeps it */
 static uint32_t g_illegal;
 
 static uint8_t g_user[KF_USER_BYTES] __attribute__((aligned(4096)));
@@ -490,6 +492,7 @@ static void kf_procstate_init(vibeos_procstate_t *ps) {
     ps->cwd[0] = '/';
     ps->root[0] = '/';
     ps->umask = 022u;
+    linux_procstate_defaults(ps);
     ps->refs = 1u;
     ps->files_users = 1u;
     ps->brk_cur = 0x10000000ull;
@@ -554,6 +557,7 @@ void kf_reset(void) {
     vibeos_flk_reset();
     vibeos_ptimer_set_lock(kf_pipe_lock, kf_pipe_unlock);
     vibeos_ptimer_reset();
+    memset(g_nice, 0, sizeof(g_nice));
     g_account_ready = 0;
     vibeos_tty_reset();
     g_kbd_len = g_kbd_at = 0;
@@ -871,6 +875,15 @@ int ks_signal_interrupts(int slot) {
 }
 int ks_signal_raise(int slot, uint32_t sig) {
     return ks_signal_send(slot, sig, 0);
+}
+/* The scheduler's nice, per slot, as the machine's policy keeps it. */
+int ks_task_nice(int slot) { return g_nice[slot]; }
+int ks_task_set_nice(int slot, int nice) {
+    if (nice < -20 || nice > 19) {
+        return -1;
+    }
+    g_nice[slot] = nice;
+    return 0;
 }
 /* As the machine: a pending signal keeps its first reason, and one that is
  * ignored and not blocked is dropped. */

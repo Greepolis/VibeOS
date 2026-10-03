@@ -1,0 +1,14 @@
+# RLIMIT_DATA on brk (kernel/abi/linux/mm.c, docs/abi/ L2 step 4). Host test:
+# t_limits.
+#
+#  1. brk grows the heap past RLIMIT_DATA. Expect "and past it stays where it
+#     was".
+#
+# Target source: kernel/abi/linux/mm.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/mm.c scripts/dev/cases/abi-limits-mm.txt
+
+### brk grows the heap past RLIMIT_DATA
+--- old
+    if (new_brk > ps->brk_cur && new_brk - ks_heap_base() > ps->rlim_cur[LINUX_RLIMIT_DATA]) {
++++ new
+    if (0) {

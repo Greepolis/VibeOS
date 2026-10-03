@@ -599,8 +599,51 @@ static inline void linux_si_set_status(linux_siginfo_t *o, int32_t status) {
 #define LINUX_SIG_SETMASK 2
 
 /* prlimit64 resources (asm-generic/resource.h). */
-#define LINUX_RLIMIT_STACK  3
-#define LINUX_RLIMIT_NOFILE 7
+#define LINUX_RLIMIT_CPU        0
+#define LINUX_RLIMIT_FSIZE      1
+#define LINUX_RLIMIT_DATA       2
+#define LINUX_RLIMIT_STACK      3
+#define LINUX_RLIMIT_CORE       4
+#define LINUX_RLIMIT_RSS        5
+#define LINUX_RLIMIT_NPROC      6
+#define LINUX_RLIMIT_NOFILE     7
+#define LINUX_RLIMIT_MEMLOCK    8
+#define LINUX_RLIMIT_AS         9
+#define LINUX_RLIMIT_LOCKS      10
+#define LINUX_RLIMIT_SIGPENDING 11
+#define LINUX_RLIMIT_MSGQUEUE   12
+#define LINUX_RLIMIT_NICE       13
+#define LINUX_RLIMIT_RTPRIO     14
+#define LINUX_RLIMIT_RTTIME     15
+#define LINUX_RLIM_NLIMITS      16
 #define LINUX_RLIM64_INFINITY 0xFFFFFFFFFFFFFFFFull
+
+/* getpriority, setpriority (linux/resource.h) and getrusage's who. */
+#define LINUX_PRIO_PROCESS    0
+#define LINUX_PRIO_PGRP       1
+#define LINUX_PRIO_USER       2
+#define LINUX_RUSAGE_SELF     0
+#define LINUX_RUSAGE_CHILDREN (-1)
+#define LINUX_RUSAGE_THREAD   1
+
+/* struct rusage (linux/resource.h): two timevals and fourteen counters. */
+typedef struct {
+    linux_timeval_t ru_utime;
+    linux_timeval_t ru_stime;
+    int64_t ru_maxrss;
+    int64_t ru_ixrss;
+    int64_t ru_idrss;
+    int64_t ru_isrss;
+    int64_t ru_minflt;
+    int64_t ru_majflt;
+    int64_t ru_nswap;
+    int64_t ru_inblock;
+    int64_t ru_oublock;
+    int64_t ru_msgsnd;
+    int64_t ru_msgrcv;
+    int64_t ru_nsignals;
+    int64_t ru_nvcsw;
+    int64_t ru_nivcsw;
+} linux_rusage_t;
 
 #endif

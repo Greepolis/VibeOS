@@ -1,0 +1,23 @@
+# RLIMIT_FSIZE where every regular-file write goes (kernel/abi/files/regular.c,
+# docs/abi/ L2 step 4). Host test: t_limits.
+#
+#  1. a write past the limit is not cut. Expect "a write that would pass it is
+#     cut at it".
+#  2. a write at the limit raises no SIGXFSZ. Expect "one at it is EFBIG, with
+#     SIGXFSZ".
+#
+# Target source: kernel/abi/files/regular.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/files/regular.c scripts/dev/cases/abi-limits-paths.txt
+
+### a write past the limit is not cut
+--- old
+            if (len > lim - off) {
+                len = lim - off;
+            }
++++ new
+
+### a write at the limit raises no SIGXFSZ
+--- old
+                (void)ks_signal_raise(ks_current(), VIBEOS_SIGXFSZ);
++++ new
+                (void)0;

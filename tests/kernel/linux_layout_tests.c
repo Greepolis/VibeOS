@@ -80,6 +80,7 @@ int test_linux_layout(void) {
 #include "vibeos/fdtable.h"
 #include "vibeos/fileops.h"
 #include "vibeos/tty.h"
+#include "vibeos/procstate.h"
 #include "linux_layout_libc.h"
 
 static int g_fail;
@@ -743,9 +744,57 @@ int test_linux_layout(void) {
     CONST(LINUX_WNOTHREAD, __WNOTHREAD);
     CONST(LINUX_WALL, __WALL);
     CONST(LINUX_WCLONE, __WCLONE);
+    CONST(LINUX_RLIMIT_CPU, RLIMIT_CPU);
+    CONST(LINUX_RLIMIT_FSIZE, RLIMIT_FSIZE);
+    CONST(LINUX_RLIMIT_DATA, RLIMIT_DATA);
     CONST(LINUX_RLIMIT_STACK, RLIMIT_STACK);
+    CONST(LINUX_RLIMIT_CORE, RLIMIT_CORE);
+    CONST(LINUX_RLIMIT_RSS, RLIMIT_RSS);
+    CONST(LINUX_RLIMIT_NPROC, RLIMIT_NPROC);
     CONST(LINUX_RLIMIT_NOFILE, RLIMIT_NOFILE);
+    CONST(LINUX_RLIMIT_MEMLOCK, RLIMIT_MEMLOCK);
+    CONST(LINUX_RLIMIT_AS, RLIMIT_AS);
+    CONST(LINUX_RLIMIT_LOCKS, RLIMIT_LOCKS);
+    CONST(LINUX_RLIMIT_SIGPENDING, RLIMIT_SIGPENDING);
+    CONST(LINUX_RLIMIT_MSGQUEUE, RLIMIT_MSGQUEUE);
+    CONST(LINUX_RLIMIT_NICE, RLIMIT_NICE);
+    CONST(LINUX_RLIMIT_RTPRIO, RLIMIT_RTPRIO);
+    CONST(LINUX_RLIMIT_RTTIME, RLIMIT_RTTIME);
+    CONST(LINUX_RLIM_NLIMITS, RLIM_NLIMITS);
     CONST(LINUX_RLIM64_INFINITY, RLIM64_INFINITY);
+    /* The kernel's own numbering of the ones it enforces is Linux's. */
+    CONST(VIBEOS_RLIM_CPU, RLIMIT_CPU);
+    CONST(VIBEOS_RLIM_FSIZE, RLIMIT_FSIZE);
+    CONST(VIBEOS_RLIM_DATA, RLIMIT_DATA);
+    CONST(VIBEOS_RLIM_NPROC, RLIMIT_NPROC);
+    CONST(VIBEOS_RLIM_NOFILE, RLIMIT_NOFILE);
+    CONST(VIBEOS_RLIM_NICE, RLIMIT_NICE);
+    CONST(VIBEOS_RLIM_COUNT, RLIM_NLIMITS);
+    CONST(LINUX_PRIO_PROCESS, PRIO_PROCESS);
+    CONST(LINUX_PRIO_PGRP, PRIO_PGRP);
+    CONST(LINUX_PRIO_USER, PRIO_USER);
+    CONST(LINUX_RUSAGE_SELF, RUSAGE_SELF);
+    CONST(LINUX_RUSAGE_CHILDREN, RUSAGE_CHILDREN);
+    CONST(LINUX_RUSAGE_THREAD, RUSAGE_THREAD);
+    CONST(VIBEOS_SIGXCPU, SIGXCPU);
+    CONST(VIBEOS_SIGXFSZ, SIGXFSZ);
+    SIZE(linux_rusage_t, struct rusage);
+    FIELD(linux_rusage_t, struct rusage, ru_utime);
+    FIELD(linux_rusage_t, struct rusage, ru_stime);
+    FIELD(linux_rusage_t, struct rusage, ru_maxrss);
+    FIELD(linux_rusage_t, struct rusage, ru_ixrss);
+    FIELD(linux_rusage_t, struct rusage, ru_idrss);
+    FIELD(linux_rusage_t, struct rusage, ru_isrss);
+    FIELD(linux_rusage_t, struct rusage, ru_minflt);
+    FIELD(linux_rusage_t, struct rusage, ru_majflt);
+    FIELD(linux_rusage_t, struct rusage, ru_nswap);
+    FIELD(linux_rusage_t, struct rusage, ru_inblock);
+    FIELD(linux_rusage_t, struct rusage, ru_oublock);
+    FIELD(linux_rusage_t, struct rusage, ru_msgsnd);
+    FIELD(linux_rusage_t, struct rusage, ru_msgrcv);
+    FIELD(linux_rusage_t, struct rusage, ru_nsignals);
+    FIELD(linux_rusage_t, struct rusage, ru_nvcsw);
+    FIELD(linux_rusage_t, struct rusage, ru_nivcsw);
     CONST(LINUX_PR_SET_NAME, PR_SET_NAME);
     CONST(LINUX_PR_GET_NAME, PR_GET_NAME);
     CONST(LINUX_ARCH_SET_GS, ARCH_SET_GS);

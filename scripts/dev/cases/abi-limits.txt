@@ -1,0 +1,109 @@
+# Limits, priorities and personality (kernel/abi/linux/limits.c, docs/abi/ L2
+# step 4). Host test: t_limits in tests/kernel/linux_abi_tests.c.
+#
+#  1. a soft limit above the hard one is accepted. Expect "a soft limit above
+#     the hard one is EINVAL".
+#  2. NOFILE may be raised past the descriptor table. Expect "nobody raises
+#     NOFILE past what the table can hold".
+#  3. RLIMIT_NOFILE is stored and the table not told. Expect "setrlimit(
+#     RLIMIT_NOFILE) is the table's limit".
+#  4. RLIMIT_CPU is stored and nothing armed. Expect "SIGXCPU when it has".
+#  5. the superuser is held to RLIMIT_NPROC. Expect "the superuser is not held
+#     to RLIMIT_NPROC".
+#  6. RLIMIT_NPROC counts nothing. Expect "a user at RLIMIT_NPROC cannot fork".
+#  7. a user may raise a hard limit. Expect "nor raise a hard limit".
+#  8. prlimit64 lets a user reach another user's process. Expect "a user may
+#     not reach the superuser's".
+#  9. getpriority answers nice itself. Expect "getpriority answers 20 - nice".
+# 10. a user may lower its nice with no allowance. Expect "may not lower its
+#     own nice without RLIMIT_NICE".
+# 11. a user may renice another user's task. Expect "nor touch the
+#     superuser's".
+# 12. personality's query changes the personality. Expect "personality is kept
+#     and read back".
+#
+# Target source: kernel/abi/linux/limits.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/limits.c scripts/dev/cases/abi-limits.txt
+
+### a soft limit above the hard one is accepted
+--- old
+    if (nl->rlim_cur > nl->rlim_max) {
+        return -VIBEOS_EINVAL;
+    }
++++ new
+
+### NOFILE may be raised past the descriptor table
+--- old
+    if (res == LINUX_RLIMIT_NOFILE && nl->rlim_max > (uint64_t)LINUX_MAX_FDS) {
++++ new
+    if (0) {
+
+### RLIMIT_NOFILE is stored and the table not told
+--- old
+        ps->files.limit = (uint32_t)nl->rlim_cur;
++++ new
+        (void)0;
+
+### RLIMIT_CPU is stored and nothing armed
+--- old
+        linux_rlimit_cpu_arm(tgid, ps, linux_cpu_of_process(tgid));
++++ new
+        (void)tgid;
+
+### the superuser is held to RLIMIT_NPROC
+--- old
+    if (me.euid == 0u || !ps) {
+        return 0;
+    }
+    lim = ps->rlim_cur[LINUX_RLIMIT_NPROC];
++++ new
+    if (!ps) {
+        return 0;
+    }
+    lim = ps->rlim_cur[LINUX_RLIMIT_NPROC];
+
+### RLIMIT_NPROC counts nothing
+--- old
+        if (tp && tp->cred.uid == me.uid) {
+            n++;
+        }
++++ new
+        (void)tp;
+
+### a user may raise a hard limit
+--- old
+    if (nl->rlim_max > ps->rlim_max[res] && c->euid != 0u) {
++++ new
+    if (0) {
+
+### prlimit64 lets a user reach another user's process
+--- old
+        } else if (c.euid != 0u &&
+                   (ps->cred.uid != c.uid || ps->cred.euid != c.uid || ps->cred.suid != c.uid ||
+                    ps->cred.gid != c.gid || ps->cred.egid != c.gid || ps->cred.sgid != c.gid)) {
++++ new
+        } else if (0) {
+
+### getpriority answers nice itself
+--- old
+    return best == 100 ? -VIBEOS_ESRCH : (long)(20 - best);
++++ new
+    return best == 100 ? -VIBEOS_ESRCH : (long)best;
+
+### a user may lower its nice with no allowance
+--- old
+        if (me.euid != 0u && nice < ks_task_nice((int)i) &&
++++ new
+        if (0 && nice < ks_task_nice((int)i) &&
+
+### a user may renice another user's task
+--- old
+        if (me.euid != 0u && (!tp || (tp->cred.uid != me.euid && tp->cred.euid != me.euid))) {
++++ new
+        if (0) {
+
+### personality's query changes the personality
+--- old
+    if ((uint32_t)persona != 0xFFFFFFFFu) {
++++ new
+    if (1) {

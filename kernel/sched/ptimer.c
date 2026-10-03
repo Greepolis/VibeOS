@@ -160,7 +160,7 @@ int vibeos_ptimer_set(uint32_t tgid, int32_t id, uint64_t ticks, uint64_t interv
 
     lock();
     e = find(tgid, id);
-    if (!e && id < 0 && id >= VIBEOS_PTIMER_ITIMER(2)) {
+    if (!e && id < 0 && id >= VIBEOS_PTIMER_FIXED_LAST) {
         if (ticks == 0u) {
             /* Disarming an interval timer that was never armed. */
             unlock();
@@ -174,11 +174,14 @@ int vibeos_ptimer_set(uint32_t tgid, int32_t id, uint64_t ticks, uint64_t interv
             e->id = id;
             e->clock = (uint8_t)(id == VIBEOS_PTIMER_ITIMER(0) ? VIBEOS_PCLOCK_REAL
                                : id == VIBEOS_PTIMER_ITIMER(1) ? VIBEOS_PCLOCK_VIRT
-                               : VIBEOS_PCLOCK_PROF);
+                               : id == VIBEOS_PTIMER_ITIMER(2) ? VIBEOS_PCLOCK_PROF
+                               : VIBEOS_PCLOCK_PROCESS_CPU);
             e->notify = VIBEOS_PTIMER_SIGNAL;
             e->signo = id == VIBEOS_PTIMER_ITIMER(0) ? 14u      /* SIGALRM   */
                      : id == VIBEOS_PTIMER_ITIMER(1) ? 26u      /* SIGVTALRM */
-                     : 27u;                                     /* SIGPROF   */
+                     : id == VIBEOS_PTIMER_ITIMER(2) ? 27u      /* SIGPROF   */
+                     : id == VIBEOS_PTIMER_RLIMIT_SOFT ? 24u    /* SIGXCPU   */
+                     : 9u;                                      /* SIGKILL   */
         }
     }
     if (!e) {
@@ -214,7 +217,7 @@ int vibeos_ptimer_get(uint32_t tgid, int32_t id, uint64_t now, uint64_t *left, u
     e = find(tgid, id);
     if (!e) {
         unlock();
-        if (id < 0 && id >= VIBEOS_PTIMER_ITIMER(2)) {
+        if (id < 0 && id >= VIBEOS_PTIMER_FIXED_LAST) {
             *left = 0;   /* an interval timer never armed reads as disarmed */
             *interval = 0;
             return 0;

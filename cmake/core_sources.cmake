@@ -156,6 +156,7 @@ set(VIBEOS_LINUX_ABI_SOURCES
     kernel/abi/linux/sig.c
     kernel/abi/linux/signal.c
     kernel/abi/linux/timer.c
+    kernel/abi/linux/limits.c
     ${VIBEOS_ABI_FILES_SOURCES}
 )
 

@@ -10,6 +10,7 @@
  *
  * docs/abi/phases.md, A2. */
 
+#include "vibeos/sched_policy.h"
 #include "arch_hw_internal.h"
 
 _Static_assert(VIBEOS_HW_MAX_TASKS <= LINUX_FUTEX_WAITERS,
@@ -83,6 +84,8 @@ void ks_wait_tick(void) { ks_block_point(); }
 void ks_wake_waiters(void) { hw_keyboard_wake(); }
 int ks_signal_interrupts(int slot) { return hw_signal_interrupts(slot); }
 int ks_signal_raise(int slot, uint32_t sig) { return hw_signal_raise(slot, sig); }
+int ks_task_nice(int slot) { return vibeos_sched_policy_nice((uint32_t)slot); }
+int ks_task_set_nice(int slot, int nice) { return vibeos_sched_policy_set_nice((uint32_t)slot, nice); }
 int ks_signal_send(int slot, uint32_t sig, const vibeos_siginfo_t *info) { return hw_signal_send(slot, sig, info); }
 int ks_signal_take(int slot, uint32_t sig, vibeos_siginfo_t *out) { return hw_signal_take(slot, sig, out); }
 int ks_signal_default_kills(uint32_t sig) { return hw_signal_default_kills(sig); }

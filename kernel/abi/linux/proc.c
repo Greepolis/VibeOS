@@ -47,6 +47,13 @@ static long linux_sys_fork(const ks_regs_t *frame) {
      * ENOMEM: the refusal is temporary by nature, since a child exiting undoes
      * it, and that is what a C library turns into "resource temporarily
      * unavailable" and what a shell retries on. */
+    /* RLIMIT_NPROC (L2 step 4), before a slot is taken. */
+    {
+        long lim = linux_nproc_check();
+        if (lim != 0) {
+            return lim;
+        }
+    }
     idx = ks_task_alloc_for_user("fork");
     if (idx < 0) {
         /* DEBUG, not WARN. ks_task_alloc_for_user already prints a line
@@ -132,7 +139,19 @@ static long linux_sys_fork(const ks_regs_t *frame) {
         }
         cps->umask = pps->umask;
         cps->cred = pps->cred;   /* a child is who its parent was (L2) */
+        /* And has its limits and personality (L2 step 4). */
+        for (i = 0; i < VIBEOS_RLIM_COUNT; i++) {
+            cps->rlim_cur[i] = pps->rlim_cur[i];
+            cps->rlim_max[i] = pps->rlim_max[i];
+        }
+        cps->personality = pps->personality;
         ks_unlock(&pps->files_lock);
+        /* Its own CPU time counts from zero against an inherited RLIMIT_CPU. */
+        if (cps->rlim_cur[LINUX_RLIMIT_CPU] != VIBEOS_RLIM_INFINITY ||
+            cps->rlim_max[LINUX_RLIMIT_CPU] != VIBEOS_RLIM_INFINITY) {
+            linux_rlimit_cpu_arm(child->tgid, cps, 0);
+        }
+        (void)ks_task_set_nice(idx, ks_task_nice(me));   /* and its parent's nice */
     }
     /* Resume exactly where the parent is - including the vector registers and
      * the TLS base the copied image expects - except that fork() returns 0 in
@@ -258,6 +277,13 @@ static long linux_sys_clone_thread(const ks_regs_t *frame,
      * reserve that was supposed to keep the machine administrable. The guard
      * was written for fork and clone was left open beside it, which is why
      * there is now one entry point rather than a rule to remember. */
+    /* Threads count against RLIMIT_NPROC too, as Linux counts them. */
+    {
+        long lim = linux_nproc_check();
+        if (lim != 0) {
+            return lim;
+        }
+    }
     idx = ks_task_alloc_for_user("clone");
     if (idx < 0) {
         ks_log(VIBEOS_LOG_WARN, 7u, flags, 0,
@@ -309,6 +335,7 @@ static long linux_sys_clone_thread(const ks_regs_t *frame,
     child->signal_stopped = 0;
     child->is_thread = 1;
     child->cpu_base = linux_cpu_slot(idx);
+    (void)ks_task_set_nice(idx, ks_task_nice(me));   /* a thread starts at its creator's nice */
     child->is_user = 1;
     child->exit_code = 0;
     child->exit_signal = 0;
@@ -1090,6 +1117,14 @@ static long linux_sys_execve(ks_regs_t *frame, uint64_t path_uptr,
              * and could not create a file. */
             nps->cred = ops->cred;
             nps->cpu_children = ops->cpu_children;   /* times() survives exec too */
+            {
+                uint32_t k;   /* limits and personality too (L2 step 4) */
+                for (k = 0; k < VIBEOS_RLIM_COUNT; k++) {
+                    nps->rlim_cur[k] = ops->rlim_cur[k];
+                    nps->rlim_max[k] = ops->rlim_max[k];
+                }
+                nps->personality = ops->personality;
+            }
             ks_unlock(&ops->files_lock);
         }
 
@@ -1536,39 +1571,6 @@ static long linux_sys_arch_prctl(uint64_t code, uint64_t addr) {
     }
 }
 
-/* prlimit64(): report the limits that are real here. The stack is the one a
- * runtime acts on - some size a guard region from it. */
-static long linux_sys_prlimit64(uint64_t resource, uint64_t new_uptr, uint64_t old_uptr) {
-    if (new_uptr != 0u) {
-        return -VIBEOS_EPERM;   /* the limits here are fixed by the layout */
-    }
-    if (old_uptr == 0u) {
-        return 0;
-    }
-    {
-        /* Filled here and copied out (M-052), not written into the user's
-         * struct directly: a sibling's munmap after the range check made that
-         * store fault in ring 0. */
-        linux_rlimit64_t rl;
-        switch (resource) {
-            case LINUX_RLIMIT_STACK:
-                rl.rlim_cur = ks_stack_bytes();
-                break;
-            case LINUX_RLIMIT_NOFILE:
-                rl.rlim_cur = (uint64_t)LINUX_MAX_FDS;
-                break;
-            default:
-                rl.rlim_cur = LINUX_RLIM64_INFINITY;
-                break;
-        }
-        rl.rlim_max = rl.rlim_cur;
-        if (vibeos_uaccess_copy((void *)(uintptr_t)old_uptr, &rl, sizeof(rl)) != 0) {
-            return -VIBEOS_EFAULT;
-        }
-    }
-    return 0;
-}
-
 /* ---- the calls that were a few lines inside the dispatcher --------------------
  *
  * They are functions now so that a row can name them like any other handler. */
@@ -1701,7 +1703,6 @@ static long linux_sys_clone(const vibeos_call_t *c) {
     X(218, set_tid_address,  SET_TID_ADDRESS, NOPTR, linux_sys_set_tid_address(ARG(0))) \
     X(231, exit_group,       EXIT_GROUP,      NOPTR, linux_sys_exit_group(ARG(0))) \
     X(273, set_robust_list,  SET_ROBUST_LIST, NOPTR, 0) \
-    X(302, prlimit64,        PRLIMIT,         PTRS(OUT_OPT(3, 16)), linux_sys_prlimit64(ARG(1), ARG(2), ARG(3))) \
     X(318, getrandom,        GETRANDOM,       NOPTR, -VIBEOS_ENOSYS) \
     X(334, rseq,             RSEQ,            NOPTR, -VIBEOS_ENOSYS)
 

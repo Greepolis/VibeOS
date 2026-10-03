@@ -1,0 +1,28 @@
+# What fork hands a child of the process state (kernel/abi/linux/proc.c, docs/abi/
+# L2 step 4). Host test: t_limits.
+#
+#  1. the child does not get its parent's limits. Expect "a forked child has
+#     its parent's limits, nice and personality".
+#  2. nor its personality. Same expectation.
+#  3. nor its nice. Same expectation.
+#
+# Target source: kernel/abi/linux/proc.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/proc.c scripts/dev/cases/abi-limits-fork.txt
+
+### the child does not get its parent's limits
+--- old
+            cps->rlim_cur[i] = pps->rlim_cur[i];
++++ new
+            (void)0;
+
+### nor its personality
+--- old
+        cps->personality = pps->personality;
++++ new
+        (void)0;
+
+### nor its nice
+--- old
+        (void)ks_task_set_nice(idx, ks_task_nice(me));   /* and its parent's nice */
++++ new
+        (void)0;

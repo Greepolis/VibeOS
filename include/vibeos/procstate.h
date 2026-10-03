@@ -25,6 +25,19 @@
 /* Signals 1..64; index 0 is unused so the numbering matches Linux. */
 #define VIBEOS_NSIG 65
 
+/* Resource limits (docs/abi/ L2 step 4): what a process may use, soft and
+ * hard. Numbered as Linux numbers them, which is the first personality's and
+ * is compared with its headers (linux_layout_tests.c); the ones the kernel
+ * enforces are named, the rest are kept and reported. */
+#define VIBEOS_RLIM_CPU     0u    /* CPU seconds: SIGXCPU at soft, SIGKILL at hard */
+#define VIBEOS_RLIM_FSIZE   1u    /* largest file a write may make: SIGXFSZ, EFBIG */
+#define VIBEOS_RLIM_DATA    2u    /* the heap brk may grow                          */
+#define VIBEOS_RLIM_NPROC   6u    /* tasks one user may have                         */
+#define VIBEOS_RLIM_NOFILE  7u    /* descriptors: the table's own limit             */
+#define VIBEOS_RLIM_NICE    13u   /* how far an unprivileged process may lower nice */
+#define VIBEOS_RLIM_COUNT   16u
+#define VIBEOS_RLIM_INFINITY 0xFFFFFFFFFFFFFFFFull
+
 typedef struct vibeos_lock {
     volatile int locked;
     uint64_t flags;   /* caller's RFLAGS, restored on release */
@@ -131,6 +144,12 @@ typedef struct vibeos_procstate {
     /* CPU ticks of the children this process has reaped: times()'s cutime
      * (docs/abi/ L2 step 3). Kept across exec, as Linux keeps it. */
     uint64_t cpu_children;
+    /* Limits, soft and hard (VIBEOS_RLIM_*), and the execution domain a
+     * program asked for with personality(). A child has its parent's; exec
+     * keeps them. Under files_lock. */
+    uint64_t rlim_cur[VIBEOS_RLIM_COUNT];
+    uint64_t rlim_max[VIBEOS_RLIM_COUNT];
+    uint32_t personality;
 } vibeos_procstate_t;
 
 #endif

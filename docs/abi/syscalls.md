@@ -9,9 +9,9 @@ the registry, not this page; `check.sh` fails while the two differ.
 
 | State | Count | What the kernel answers |
 | --- | --- | --- |
-| done | 159 | through its row |
-| partial | 26 | through its row, with the gap named |
-| missing | 104 | ENOSYS, and the boot gate fails naming the number |
+| done | 162 | through its row |
+| partial | 29 | through its row, with the gap named |
+| missing | 98 | ENOSYS, and the boot gate fails naming the number |
 | deferred | 50 | ENOSYS, and the boot gate fails naming the number |
 | refused | 34 | its errno, counted as refused - expected, never a failure |
 
@@ -20,7 +20,7 @@ Without a row, by phase:
 | Phase | Syscalls |
 | --- | --- |
 | L1 - files and paths | 0 |
-| L2 - processes, credentials, time | 15 |
+| L2 - processes, credentials, time | 9 |
 | L3 - memory | 0 |
 | L4 - event loops | 20 |
 | L5 - sockets | 11 |
@@ -133,8 +133,8 @@ calls, outside the Linux number space, are listed last.
 | 94 | `lchown` | done | - | - | `names.c` |  |
 | 95 | `umask` | done | - | - | `fs.c` |  |
 | 96 | `gettimeofday` | done | - | - | `timer.c` |  |
-| 97 | `getrlimit` | missing | L2 | ENOSYS |  |  |
-| 98 | `getrusage` | missing | L2 | ENOSYS |  |  |
+| 97 | `getrlimit` | done | - | - | `limits.c` |  |
+| 98 | `getrusage` | partial | L2 | - | `limits.c` | CPU time only, all of it user time; no RSS, faults or switches |
 | 99 | `sysinfo` | done | - | - | `misc.c` |  |
 | 100 | `times` | partial | L2 | - | `timer.c` | all CPU time is user time, and a thread that has exited takes its time with it |
 | 101 | `ptrace` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
@@ -171,13 +171,13 @@ calls, outside the Linux number space, are listed last.
 | 132 | `utime` | done | - | - | `names.c` |  |
 | 133 | `mknod` | partial | L1 | - | `names.c` | regular files only: a FIFO, a socket or a device node is EPERM - no filesystem here holds one |
 | 134 | `uselib` | refused | R | ENOSYS |  | removed or never implemented by Linux itself |
-| 135 | `personality` | missing | L2 | ENOSYS |  |  |
+| 135 | `personality` | partial | L2 | - | `limits.c` | kept and reported; no flag changes what the kernel does |
 | 136 | `ustat` | refused | R | ENOSYS |  | removed or never implemented by Linux itself |
 | 137 | `statfs` | done | - | - | `names.c` |  |
 | 138 | `fstatfs` | done | - | - | `names.c` |  |
 | 139 | `sysfs` | refused | R | ENOSYS |  | removed or never implemented by Linux itself |
-| 140 | `getpriority` | missing | L2 | ENOSYS |  |  |
-| 141 | `setpriority` | missing | L2 | ENOSYS |  |  |
+| 140 | `getpriority` | done | - | - | `limits.c` |  |
+| 141 | `setpriority` | done | - | - | `limits.c` |  |
 | 142 | `sched_setparam` | missing | L6 | ENOSYS |  |  |
 | 143 | `sched_getparam` | missing | L6 | ENOSYS |  |  |
 | 144 | `sched_setscheduler` | missing | L6 | ENOSYS |  |  |
@@ -196,7 +196,7 @@ calls, outside the Linux number space, are listed last.
 | 157 | `prctl` | done | - | - | `proc.c` |  |
 | 158 | `arch_prctl` | done | - | - | `proc.c` |  |
 | 159 | `adjtimex` | missing | L2 | ENOSYS |  | EPERM without privilege; real only once there is one |
-| 160 | `setrlimit` | missing | L2 | ENOSYS |  |  |
+| 160 | `setrlimit` | partial | L2 | - | `limits.c` | NOFILE, FSIZE, DATA, NPROC and CPU are enforced; the rest are kept and reported |
 | 161 | `chroot` | missing | L8 | ENOSYS |  |  |
 | 162 | `sync` | done | - | - | `fs.c` |  |
 | 163 | `acct` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
@@ -338,7 +338,7 @@ calls, outside the Linux number space, are listed last.
 | 299 | `recvmmsg` | missing | L5 | ENOSYS |  | and AF_UNIX sockets |
 | 300 | `fanotify_init` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
 | 301 | `fanotify_mark` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
-| 302 | `prlimit64` | partial | L2 | - | `proc.c` | reports limits; setting them is not enforced |
+| 302 | `prlimit64` | partial | L2 | - | `limits.c` | as setrlimit |
 | 303 | `name_to_handle_at` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
 | 304 | `open_by_handle_at` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
 | 305 | `clock_adjtime` | missing | L2 | ENOSYS |  | EPERM without privilege; real only once there is one |

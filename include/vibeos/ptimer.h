@@ -44,6 +44,12 @@ typedef enum {
 /* The three interval timers have fixed ids below zero; POSIX timers are
  * numbered from zero per process, smallest free first, as Linux numbers them. */
 #define VIBEOS_PTIMER_ITIMER(which) (-1 - (int32_t)(which))
+/* And two more the kernel arms for itself (L2 step 4): RLIMIT_CPU's soft
+ * limit, which raises SIGXCPU every second once reached, and its hard limit,
+ * which raises SIGKILL. Both count the process's CPU time. */
+#define VIBEOS_PTIMER_RLIMIT_SOFT (-4)
+#define VIBEOS_PTIMER_RLIMIT_HARD (-5)
+#define VIBEOS_PTIMER_FIXED_LAST  VIBEOS_PTIMER_RLIMIT_HARD
 
 /* One expiry, for the callback. */
 typedef struct {

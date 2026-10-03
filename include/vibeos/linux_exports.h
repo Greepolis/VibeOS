@@ -37,6 +37,10 @@ int linux_user_ok(uint64_t base, uint64_t len, int write);
  * thread done with one - which closes it if that thread was the last, and returns
  * 1 if so. */
 int linux_fds_copy(vibeos_procstate_t *dst, vibeos_procstate_t *src);
+/* A new process state's limits and personality, as Linux starts a process
+ * nothing else set them for (limits.c, L2 step 4): the architecture's
+ * hw_procstate_new calls it, fork and exec copy instead. */
+void linux_procstate_defaults(vibeos_procstate_t *ps);
 int linux_files_leave(vibeos_procstate_t *ps);
 /* A process has ended: the record locks it held end with it (L1 step 6). */
 void linux_locks_exit(uint32_t tgid);

@@ -122,6 +122,25 @@ static long regular_pwrite_direct(vibeos_file_t *f, uint64_t buf, uint64_t len, 
     if (len == 0u) {
         return 0;
     }
+    /* RLIMIT_FSIZE (L2 step 4): a write that would make the file larger than
+     * the writer's limit is cut at it; one that starts at or past it writes
+     * nothing, and the writer gets SIGXFSZ - which kills by default - and
+     * EFBIG if it survives. One place, because every write to a regular file
+     * comes through here. */
+    {
+        const vibeos_procstate_t *ps = ks_current() >= 0 ? ks_ps(ks_current()) : 0;
+        uint64_t lim = ps ? ps->rlim_cur[VIBEOS_RLIM_FSIZE] : VIBEOS_RLIM_INFINITY;
+
+        if (lim != VIBEOS_RLIM_INFINITY) {
+            if (off >= lim) {
+                (void)ks_signal_raise(ks_current(), VIBEOS_SIGXFSZ);
+                return -VIBEOS_EFBIG;
+            }
+            if (len > lim - off) {
+                len = lim - off;
+            }
+        }
+    }
     if (!f->dirty) {
         /* The volume is about to change, so a staged image may no longer match
          * the file it came from. */

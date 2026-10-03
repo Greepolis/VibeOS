@@ -62,6 +62,11 @@ static long linux_sys_brk_locked(int me, vibeos_procstate_t *ps, uint64_t addr) 
         return (long)ps->brk_cur; /* out of the heap arena: unchanged */
     }
     new_brk = (addr + 0xFFFull) & ~0xFFFull;
+    /* RLIMIT_DATA (L2 step 4): the heap may not grow past it. A refused brk
+     * answers with the break as it was, which is how Linux says no. */
+    if (new_brk > ps->brk_cur && new_brk - ks_heap_base() > ps->rlim_cur[LINUX_RLIMIT_DATA]) {
+        return (long)ps->brk_cur;
+    }
     if (new_brk > ps->brk_cur) {
         pages = (new_brk - ps->brk_cur) / 4096ull;
         if (ks_map_user_pages(me, ps->brk_cur, pages) != 0) {

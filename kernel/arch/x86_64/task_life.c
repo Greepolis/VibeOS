@@ -617,6 +617,10 @@ hw_procstate_t *hw_procstate_new(void) {
         ps->cwd[0] = '/'; ps->cwd[1] = 0;     /* a new process starts at the root */
         ps->root[0] = '/'; ps->root[1] = 0;
         ps->umask = 022u;                     /* what init starts with on Linux */
+        /* Linux's starting limits and personality (L2 step 4) - one of the
+         * three writers every field of the process state has: new, fork and
+         * exec. */
+        linux_procstate_defaults(ps);
         /* Root, until fork or exec says otherwise - not whoever the slot's
          * last tenant had become. */
         vibeos_cred_root(&ps->cred);

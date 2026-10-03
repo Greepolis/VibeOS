@@ -74,6 +74,9 @@ vibeos_lock_t *ks_sched_lock(void);
 int ks_set_state(int slot, vibeos_task_state_t to, const char *why);
 int ks_task_by_pid(uint32_t pid);              /* under ks_sched_lock          */
 int ks_task_by_tid(uint32_t tid);
+/* A task's nice, -20..19: the scheduler's weight (L2 step 4). */
+int ks_task_nice(int slot);
+int ks_task_set_nice(int slot, int nice);
 int ks_task_alloc_for_user(const char *what);  /* a RESERVED slot, or negative */
 void ks_task_release(int slot);
 uint32_t ks_next_pid(void);
