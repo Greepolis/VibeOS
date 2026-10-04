@@ -689,6 +689,49 @@ int hw_task_describe(uint32_t slot, vibeos_task_desc_t *out) {
     out->slot = slot;
     out->generation = t->alloc_seq;
     out->state = (uint32_t)hw_task_state(t);
+uint32_t g_init_pid;   /* the first program the kernel starts: who adopts orphans */
+
+/* A process's children go to init when the last of its tasks ends, as on Linux.
+ * init waits for whatever it is given (user/prog/init.c: "an orphan we
+ * adopted"), and the kernel never gave it anything: a child whose parent had
+ * gone stayed a zombie with nobody to reap it, holding its task slot for the
+ * rest of the boot. Every LTP test killed for its time left its children like
+ * that, until fork was EAGAIN for every test after (L2 step 5's run). Under the
+ * scheduler's lock; `dying` is already ZOMBIE or on its way out. */
+static void hw_orphans_to_init(int dying) {
+    uint32_t tgid = g_tasks[dying].id.tgid;
+    int i, init = -1, zombies = 0;
+
+    if (g_init_pid == 0u || tgid == g_init_pid) {
+        return;
+    }
+    for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+        vibeos_task_state_t st = hw_slot_state(i);
+
+        if (i == dying || st == HW_TASK_FREE || st == HW_TASK_RESERVED) {
+            continue;
+        }
+        if (g_tasks[i].id.tgid == tgid && g_tasks[i].id.is_user && st != HW_TASK_ZOMBIE) {
+            return;   /* the process lives on in another of its threads */
+        }
+        if (g_tasks[i].id.is_user && g_tasks[i].id.pid == g_init_pid && st != HW_TASK_ZOMBIE) {
+            init = i;
+        }
+    }
+    for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+        vibeos_task_state_t st = hw_slot_state(i);
+
+        if (i != dying && st != HW_TASK_FREE && st != HW_TASK_RESERVED && g_tasks[i].id.is_user &&
+            g_tasks[i].id.ppid == tgid && g_tasks[i].id.tgid != tgid) {
+            g_tasks[i].id.ppid = g_init_pid;
+            zombies += st == HW_TASK_ZOMBIE ? 1 : 0;
+        }
+    }
+    if (zombies > 0 && init >= 0 && hw_slot_state(init) == HW_TASK_BLOCKED) {
+        (void)hw_task_set_state(init, HW_TASK_READY, __func__);
+        HW_TASK_MARK(init, ready_by, "init_given_orphans");
+    }
+}
     out->state_name = hw_task_state_name(hw_task_state(t));
     out->pid = t->id.pid;
     out->tgid = t->id.tgid;
@@ -1186,8 +1229,19 @@ void hw_task_exit(uint64_t code) {
          * the process state, and that is let go of here. */
         child_uid = g_tasks[dying].ps ? g_tasks[dying].ps->cred.uid : 0u;
         g_tasks[dying].id.exit_uid = child_uid;
-        hw_procstate_put(g_tasks[dying].ps);
-        g_tasks[dying].ps = 0;
+        /* The pointer goes before the reference, and under the scheduler's
+         * lock: whoever finds another process's state under that lock - /proc
+         * since L2 step 6, prlimit before it - takes a reference there, and
+         * with the put first it could be given a state already let go. */
+        {
+            hw_procstate_t *gone;
+
+            hw_spin_lock_named(&g_sched_lock, __func__);
+            gone = g_tasks[dying].ps;
+            g_tasks[dying].ps = 0;
+            hw_spin_unlock(&g_sched_lock);
+            hw_procstate_put(gone);
+        }
         /* The kernel stack is parked on this core, not left for the parent.
          *
          * We are still executing on it right now, and the parent may reap this
@@ -1255,9 +1309,11 @@ void hw_task_exit(uint64_t code) {
         }
         /* SIGCHLD (docs/abi/ L2). It was never raised: a shell that runs jobs
          * in the background learns of their end from it, and so does any
+            hw_orphans_to_init(dying);   /* if it was the last of its process */
          * program that waits for children with a handler rather than in
          * waitpid. To the parent's thread-group leader, with how the child
          * ended; under the scheduler's lock, as kill raises. A parent that
+        hw_orphans_to_init(dying);
          * ignores SIGCHLD, or never set a handler, has it discarded - children
          * of a parent that ignores it are still left for wait() to reap
          * (SA_NOCLDWAIT is not implemented). */

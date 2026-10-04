@@ -509,6 +509,7 @@ uint64_t hw_alloc_kstack(uint64_t *out_base, uint32_t *out_pages);
 hw_procstate_t *hw_procstate_new(void);
 void hw_procstate_put(hw_procstate_t *ps);
 extern uint32_t g_next_pid;
+extern uint32_t g_init_pid;
 extern uint32_t g_console_foreground_pgid;
 int hw_task_alloc_for_user(const char *what);
 void hw_task_release(int i);

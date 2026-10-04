@@ -293,6 +293,9 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
         vibeos_x86_64_serial_puts("[SCHED] failed to spawn initial tasks\n");
         return;
     }
+    /* The program started first adopts every process whose parent ends
+     * (hw_orphans_to_init), as Linux's init does. */
+    g_init_pid = hw_task_pid_of(&g_tasks[hello_id]);
     hw_runtime_supervisor_init();
     if (g_runtime_supervisor_ready) {
         hw_task_set_service(hello_id, 1u);
