@@ -121,4 +121,90 @@ C:sqlite-wal-mmap: dir
 C:sqlite-wal-mmap: note.txt
 C:sqlite-wal-mmap: w.sqlite
 C:sqlite-wal-mmap: rc=0
-C:done: 18
+C:bb-trap: caught USR1
+C:bb-trap: after it
+C:bb-trap: trap -- 'echo caught USR1' USR1
+C:bb-trap: caught TERM
+C:bb-trap: a trap that exits: 3
+C:bb-trap: INT ignored
+C:bb-trap: on exit
+C:bb-trap: the exit trap keeps the code: 4
+C:bb-trap: Terminated
+C:bb-trap: no trap: 143
+C:bb-trap: hup
+C:bb-trap: HUP ignored now
+C:bb-trap: TERM
+C:bb-trap: 15
+C:bb-trap: rc=0
+C:bb-kill-wait: the child is there
+C:bb-kill-wait: Terminated
+C:bb-kill-wait: ended by TERM: 143
+C:bb-kill-wait: and gone: 1
+C:bb-kill-wait: Killed
+C:bb-kill-wait: ended by KILL: 137
+C:bb-kill-wait: its own code: 9
+C:bb-kill-wait: Terminated
+C:bb-kill-wait: woken by the kill: 143
+C:bb-kill-wait: 2
+C:bb-kill-wait: waited for all: 0
+C:bb-kill-wait: rc=0
+C:bb-timeout: Terminated
+C:bb-timeout: timed out: 143
+C:bb-timeout: Killed
+C:bb-timeout: killed: 137
+C:bb-timeout: in time: 0
+C:bb-timeout: the program's code: 7
+C:bb-timeout: rc=0
+C:bb-time: slept for long enough
+C:bb-time: real a number
+C:bb-time: user a number
+C:bb-time: sys a number
+C:bb-time: time passes the code on: 5
+C:bb-time: it ran for a while
+C:bb-time: rc=0
+C:bb-ps: the child: S
+C:bb-ps: its parent: S
+C:bb-ps: one group
+C:bb-ps: PID   PPID  PGID  STAT
+C:bb-ps: Terminated
+C:bb-ps: 0
+C:bb-ps: rc=0
+C:bb-proc: 52 R
+C:bb-proc: 7
+C:bb-proc: State: R
+C:bb-proc: a stack
+C:bb-proc: bb-proc
+C:bb-proc: the script has a directory
+C:bb-proc: self is a link
+C:bb-proc: up 2
+C:bb-proc: 5
+C:bb-proc: bb-proc.out
+C:bb-proc: rc=0
+C:bb-dev: crw-rw-rw- 1, 7 /dev/full
+C:bb-dev: crw-rw-rw- 1, 3 /dev/null
+C:bb-dev: crw-rw-rw- 1, 8 /dev/random
+C:bb-dev: crw-rw-rw- 5, 0 /dev/tty
+C:bb-dev: crw-rw-rw- 1, 9 /dev/urandom
+C:bb-dev: crw-rw-rw- 1, 5 /dev/zero
+C:bb-dev: lrwxrwxrwx /dev/fd -> /proc/self/fd
+C:bb-dev: lrwxrwxrwx /dev/stderr -> /proc/self/fd/2
+C:bb-dev: lrwxrwxrwx /dev/stdin -> /proc/self/fd/0
+C:bb-dev: lrwxrwxrwx /dev/stdout -> /proc/self/fd/1
+C:bb-dev: to null: 0
+C:bb-dev: 0
+C:bb-dev:  00 00 00
+C:bb-dev: 4096
+C:bb-dev: 32
+C:bb-dev: two reads differ
+C:bb-dev: sh: write error: No space left on device
+C:bb-dev: to full: 1
+C:bb-dev: rc=0
+C:bb-limits: 64
+C:bb-limits: 32
+C:bb-limits: 64
+C:bb-limits: past the file size: 153
+C:bb-limits: 512
+C:bb-limits: 0
+C:bb-limits: 5
+C:bb-limits: rc=0
+C:done: 26

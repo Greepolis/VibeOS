@@ -131,8 +131,7 @@ w_mkdir_rm() {
     mkdir a && rmdir a/missing
     echo "rmdir of nothing: $?"
     mkdir -p a/full/x
-    # Not "2> /dev/null": there is no /dev until L2, and the message is part of
-    # the answer anyway.
+    # Not "2> /dev/null": the message is part of the answer.
     rmdir a/full
     echo "rmdir of a full directory: $?"
 }
@@ -199,6 +198,153 @@ w_sqlite_wal_mmap() {
     ls
 }
 
+# ---- docs/abi/ L2 step 7: the programs processes and signals were for ------------
+#
+# A shell's own process work: traps, signals to itself and to its children,
+# timeout, time, ps, job control's wait, limits and nice, and what /proc and
+# /dev say. What two machines may differ in is left out as it is above - pids,
+# times, owners, the name a NOEXEC applet runs under (BusyBox runs some applets
+# in a forked shell without an exec, so their comm and cmdline are the shell's).
+# What is left is states, relationships, codes and the messages a shell prints
+# for a child a signal ended: "Terminated" is the wait status read correctly.
+#
+# A trap that the shell must take from a signal it sends itself runs in a shell
+# of its own: in run()'s subshell $$ is still the script's pid, and the signal
+# would go to the script.
+
+w_trap() {
+    sh -c 'trap "echo caught USR1" USR1; kill -USR1 $$; echo after it; trap'
+    sh -c 'trap "echo caught TERM; exit 3" TERM; kill -TERM $$; echo not reached'
+    echo "a trap that exits: $?"
+    sh -c 'trap "" INT; kill -INT $$; echo INT ignored'
+    sh -c 'trap "echo on exit" EXIT; exit 4'
+    echo "the exit trap keeps the code: $?"
+    sh -c 'kill -TERM $$; echo not reached'
+    echo "no trap: $?"
+    sh -c 'trap "echo hup" HUP; kill -HUP $$; trap - HUP; trap "" HUP; kill -HUP $$; echo HUP ignored now'
+    kill -l 15
+    kill -l TERM
+}
+
+w_children() {
+    sleep 5 &
+    p=$!
+    kill -0 $p && echo "the child is there"
+    kill -TERM $p
+    wait $p
+    echo "ended by TERM: $?"
+    kill -0 $p 2> /dev/null
+    echo "and gone: $?"
+    sleep 5 &
+    p=$!
+    kill -KILL $p
+    wait $p
+    echo "ended by KILL: $?"
+    (exit 9) &
+    wait $!
+    echo "its own code: $?"
+    sleep 5 &
+    p=$!
+    (sleep 0.2; kill $p) &
+    wait $p
+    echo "woken by the kill: $?"
+    wait
+    sleep 1 &
+    sleep 1 &
+    jobs | wc -l
+    wait
+    echo "waited for all: $?"
+}
+
+w_timeout() {
+    timeout 1 sleep 5
+    echo "timed out: $?"
+    timeout -s KILL 1 sleep 5
+    echo "killed: $?"
+    timeout 5 true
+    echo "in time: $?"
+    timeout 5 sh -c 'exit 7'
+    echo "the program's code: $?"
+}
+
+w_time() {
+    time -p sleep 0.3 2> t.txt
+    awk '$1 == "real" { print ($2 >= 0.3 ? "slept for long enough" : "returned early: " $2) }' t.txt
+    awk '{ print $1, ($2 ~ /^[0-9]+\.[0-9][0-9]$/ ? "a number" : $2) }' t.txt
+    time -p sh -c 'exit 5' 2> t.txt
+    echo "time passes the code on: $?"
+    # CPU time, which time reads from the rusage wait4 hands back.
+    time -p sh -c 'i=0; while [ $i -lt 10000 ]; do i=$((i + 1)); done' 2> t.txt
+    awk '$1 == "user" { u = $2 } $1 == "sys" { s = $2 } END { print (u + s > 0 ? "it ran for a while" : "no CPU time: " u " " s) }' t.txt
+}
+
+w_ps() {
+    sleep 3 &
+    p=$!
+    # Until it is in its sleep: a child just forked is running, not waiting.
+    n=0
+    while [ "$(ps -o pid,stat | awk -v p=$p '$1 == p { print $2 }')" != S ] && [ $n -lt 50 ]; do
+        sleep 0.1
+        n=$((n + 1))
+    done
+    ps -o pid,ppid,pgid,stat > ps.txt
+    pp=$(awk -v p=$p '$1 == p { print $2 }' ps.txt)
+    awk -v p=$p '$1 == p { print "the child:", $4 }' ps.txt
+    awk -v p=$p -v pp=$pp '$1 == p { g = $3 } $1 == pp { pg = $3; print "its parent:", $4 } END { print (g == pg ? "one group" : "two groups") }' ps.txt
+    head -n 1 ps.txt
+    kill $p
+    wait $p
+    ps -o pid | awk -v p=$p '$1 == p' | wc -l
+}
+
+w_proc() {
+    awk '{ print NF, $3 }' /proc/self/stat
+    awk '{ print NF }' /proc/self/statm
+    awk '$1 == "State:" { print $1, $2 }' /proc/self/status
+    awk '$6 == "[stack]" { print "a stack" }' /proc/self/maps
+    readlink /proc/self/cwd | sed "s|^$W/||"
+    test -d /proc/$$ && echo "the script has a directory"
+    test -L /proc/self && echo "self is a link"
+    awk '{ print ($1 > 0 ? "up" : "not up"), NF }' /proc/uptime
+    awk '{ print NF }' /proc/loadavg
+    # Not how many descriptors there are: that is whatever the caller of the
+    # script left open. Standard error is run()'s output file.
+    readlink /proc/self/fd/2 | sed "s|^$W/||"
+}
+
+w_dev() {
+    ls -l /dev/null /dev/zero /dev/full /dev/random /dev/urandom /dev/tty | awk '{ print $1, $5, $6, $NF }'
+    ls -l /dev/stdin /dev/stdout /dev/stderr /dev/fd | awk '{ print $1, $(NF - 2), $(NF - 1), $NF }'
+    echo gone > /dev/null
+    echo "to null: $?"
+    wc -c < /dev/null
+    head -c 3 /dev/zero | od -An -tx1
+    head -c 4096 /dev/urandom | wc -c
+    dd if=/dev/random bs=16 count=2 2> /dev/null | wc -c
+    a=$(head -c 16 /dev/urandom | od -An -tx1)
+    b=$(head -c 16 /dev/urandom | od -An -tx1)
+    [ "$a" != "$b" ] && echo "two reads differ"
+    echo x > /dev/full
+    echo "to full: $?"
+}
+
+w_limits() {
+    ulimit -n 64
+    ulimit -n
+    ulimit -S -n 32
+    ulimit -n
+    ulimit -H -n
+    # The shell that waits says "File size limit exceeded", and Linux adds
+    # "(core dumped)" when its core_pattern is a pipe - a host's setting, which
+    # ignores RLIMIT_CORE - so that shell's stderr is not part of the answer.
+    sh -c 'ulimit -f 1; head -c 4096 /dev/zero > big; echo "past the file size: $?"' 2> /dev/null
+    wc -c < big
+    # Not nice: this BusyBox has no such applet, and Linux answered from
+    # coreutils' - renice is BusyBox's, and a child keeps what its parent set.
+    awk '{ print $19 }' /proc/self/stat
+    sh -c 'renice -n 5 -p $$ > /dev/null; awk "{ print \$19 }" /proc/self/stat'
+}
+
 run bb-sh-script w_sh_script
 run bb-ls w_ls
 run bb-cp-mv-rm w_cp_mv_rm
@@ -217,8 +363,16 @@ run lua-script w_lua_script
 run glibc-sqlite w_glibc_sqlite
 run glibc-lua w_glibc_lua
 run sqlite-wal-mmap w_sqlite_wal_mmap
+run bb-trap w_trap
+run bb-kill-wait w_children
+run bb-timeout w_timeout
+run bb-time w_time
+run bb-ps w_ps
+run bb-proc w_proc
+run bb-dev w_dev
+run bb-limits w_limits
 # Leave nothing behind: what stays in /tmp is memory the machine does not get
 # back, and the boot gate counts it.
 cd /
 rm -rf "$W"
-echo "C:done: 18"
+echo "C:done: 26"

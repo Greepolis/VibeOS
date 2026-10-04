@@ -13,7 +13,7 @@ A syscall is worth writing when a program in here asks for it.
 | `ltp-l1.txt`, `ltp-l3.txt`, `ltp-hangs.txt` | The LTP tests that belong to a phase's syscalls (`scripts/dev/ltp-list.py`), and the ones `ltp-run.sh` leaves out because they hang |
 | `ltp-built.txt`, `ltp-failed.txt` | LTP's syscall tests that build against musl, and the directories that do not (generated) |
 
-| `run-l1.sh` | The file workloads, run for their answers: on VibeOS at boot, and on Linux by `scripts/dev/corpus-expect.sh` |
+| `run-l1.sh` | The file, memory and process workloads, run for their answers: on VibeOS at boot, and on Linux by `scripts/dev/corpus-expect.sh` |
 | `l1-expected.txt` | What Linux answered `run-l1.sh` with (generated; the boot gate's oracle) |
 
 The report is [docs/abi/corpus.md](../../docs/abi/corpus.md).

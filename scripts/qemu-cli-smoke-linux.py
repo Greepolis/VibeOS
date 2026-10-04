@@ -3048,6 +3048,10 @@ def main():
                 # orphans given to init).
                 if not re.search(r"write\(ring3\): PROCDEV_OK: ", text):
                     problems.append("proc_dev_checks_failed")
+                # L2 step 7: a stop holds until SIGCONT, and a group orphaned
+                # with a stopped member is hung up (step 6's LTP run).
+                if not re.search(r"write\(ring3\): JOBS_OK: ", text):
+                    problems.append("job_control_broken")
 
             # The graphical shell, to the extent a serial log can speak for
             # it: the console has to have reached the on-screen terminal. Only

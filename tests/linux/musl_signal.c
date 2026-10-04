@@ -990,6 +990,161 @@ static int procdev_checks(void) {
     return ok;
 }
 
+/* ---- docs/abi/ L2 step 7: what a stop means, and the orphaned process group
+ * step 6's LTP run found ----------------------------------------------------- */
+
+/* The state letter /proc/<pid>/stat gives, or 0. */
+static int proc_state(pid_t pid) {
+    char path[64], buf[512], *p;
+
+    snprintf(path, sizeof(path), "/proc/%d/stat", (int)pid);
+    if (read_file(path, buf, sizeof(buf)) <= 0 || !(p = strrchr(buf, ')')) || p[1] != ' ') {
+        return 0;
+    }
+    return p[2];
+}
+
+static int wait_state(pid_t pid, int want) {
+    int i;
+
+    for (i = 0; i < 300; i++) {
+        if (proc_state(pid) == want) {
+            return 1;
+        }
+        usleep(10000);
+    }
+    return 0;
+}
+
+static int g_job_fd = -1;
+
+static void on_usr1_note(int s) {
+    (void)s;
+    (void)write(g_job_fd, "U", 1);
+}
+
+/* A stopped process stays stopped when another signal comes, and takes it when
+ * it is continued. Any signal used to wake it, and it ran its handler - and the
+ * rest of its program - with nobody having sent SIGCONT.
+ *
+ * Twice: a child waiting in pause() takes its stop on a system call's way out,
+ * and one running its program takes it on the timer's. Different code holds
+ * each (the system call's exit waits; the timer's path relies on nothing waking
+ * a stopped task), and a sabotage of the second went red only through the
+ * first's transition table until the running child was asked about too. */
+static int stop_holds(int running) {
+    const char *how = running ? "running" : "waiting";
+    int ok = 1, status = 0, p[2], i;
+    pid_t c;
+    char r = 0;
+
+    if (pipe(p) != 0) {
+        printf("SIG_FAIL: jobs: pipe errno=%d\n", errno);
+        return 0;
+    }
+    c = fork();
+    if (c == 0) {
+        close(p[0]);
+        g_job_fd = p[1];
+        signal(SIGUSR1, on_usr1_note);
+        (void)write(p[1], "R", 1);   /* the handler is in place */
+        for (;;) {
+            if (!running) {
+                pause();
+            }
+        }
+    }
+    close(p[1]);
+    if (read(p[0], &r, 1) != 1 || r != 'R' || (!running && !wait_state(c, 'S')) ||
+        kill(c, SIGSTOP) != 0 || !wait_state(c, 'T')) {
+        printf("SIG_FAIL: a stopped child (%s) never showed T: %c\n", how, proc_state(c) ? proc_state(c) : '-');
+        ok = 0;
+    }
+    fcntl(p[0], F_SETFL, O_NONBLOCK);
+    kill(c, SIGUSR1);
+    usleep(200000);
+    if (read(p[0], &r, 1) == 1 || proc_state(c) != 'T') {
+        printf("SIG_FAIL: a stopped child (%s) ran on a SIGUSR1: state %c\n", how,
+               proc_state(c) ? proc_state(c) : '-');
+        ok = 0;
+    }
+    kill(c, SIGCONT);
+    for (i = 0; i < 300 && read(p[0], &r, 1) != 1; i++) {
+        usleep(10000);
+    }
+    if (i == 300) {
+        printf("SIG_FAIL: the SIGUSR1 was not taken after SIGCONT (%s)\n", how);
+        ok = 0;
+    }
+    kill(c, SIGSTOP);
+    (void)wait_state(c, 'T');
+    kill(c, SIGKILL);
+    if (waitpid(c, &status, 0) != c || !WIFSIGNALED(status) || WTERMSIG(status) != SIGKILL) {
+        printf("SIG_FAIL: SIGKILL did not end a stopped child (%s): status=%x\n", how, status);
+        ok = 0;
+    }
+    close(p[0]);
+    return ok;
+}
+
+static int job_checks(void) {
+    int ok = 1, status = 0, p[2];
+    pid_t c, k = 0;
+    char r = 0;
+
+    printf("SIG_PHASE: jobs\n");
+    fflush(stdout);
+
+    ok &= stop_holds(0);
+    ok &= stop_holds(1);
+
+    /* A group left orphaned with a stopped member is sent SIGHUP and then
+     * SIGCONT, as POSIX requires: the middle process puts itself in a group
+     * of its own, stops a child there and ends - and with it the group's last
+     * parent outside the group. The child holds the pipe's write end, so its
+     * death is the end of the pipe; continued without the hangup, it writes. */
+    if (pipe(p) != 0) {
+        printf("SIG_FAIL: jobs: pipe errno=%d\n", errno);
+        return 0;
+    }
+    c = fork();
+    if (c == 0) {
+        close(p[0]);
+        setpgid(0, 0);
+        k = fork();
+        if (k == 0) {
+            kill(getpid(), SIGSTOP);
+            (void)write(p[1], "C", 1);
+            _exit(0);
+        }
+        (void)write(p[1], &k, sizeof(k));
+        _exit(wait_state(k, 'T') ? 0 : 2);
+    }
+    close(p[1]);
+    waitpid(c, &status, 0);
+    if (read(p[0], &k, sizeof(k)) != (ssize_t)sizeof(k) || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        printf("SIG_FAIL: orphaned group: the child did not stop: status=%x\n", status);
+        ok = 0;
+    } else {
+        struct pollfd pf = {p[0], POLLIN, 0};
+        int n = poll(&pf, 1, 3000);
+
+        r = 0;
+        if (n != 1 || read(p[0], &r, 1) != 0) {
+            printf("SIG_FAIL: a stopped child in an orphaned group was not hung up: poll=%d r=%c state=%c\n",
+                   n, r ? r : '-', proc_state(k) ? proc_state(k) : '-');
+            kill(k, SIGKILL);
+            ok = 0;
+        }
+    }
+    close(p[0]);
+    if (ok) {
+        printf("JOBS_OK: a stop holds until SIGCONT, orphaned groups are hung up\n");
+        fflush(stdout);
+    }
+    return ok;
+}
+
 int main(void) {
     struct sigaction sa;
     sigset_t block, old;
@@ -1169,6 +1324,8 @@ int main(void) {
     /* ---- L2 step 5: processes ------------------------------------------------- */
     ok &= process_checks();
     ok &= procdev_checks();
+    /* ---- L2 step 7: stops, and orphaned process groups --------------------- */
+    ok &= job_checks();
 
     printf(ok ? "SIG_OK: handlers, masking, ignoring and default actions\n"
               : "SIG_FAIL: see above\n");

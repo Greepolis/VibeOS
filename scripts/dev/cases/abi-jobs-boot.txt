@@ -1,0 +1,29 @@
+# A stop, and orphaned process groups, on the machine (docs/abi/ L2 step 7).
+# Gate: SIGNAL.ELF (tests/linux/musl_signal.c) prints JOBS_OK only if every
+# check held, and the gate asserts it (job_control_broken).
+#
+#  1. any signal wakes a stopped task: it runs its handler, and its program,
+#     with nobody having sent SIGCONT. Expect job_control_broken: "a stopped
+#     child (running) ran on a SIGUSR1". Its first run went red as
+#     task_illegal_transition instead: the child stopped in pause(), and the
+#     system call's exit - which holds a stop itself - blocked it again from
+#     READY. The running child is the one only this guard protects.
+#  2. an orphaned group with a stopped member is never hung up: the child
+#     stays stopped with nobody left to continue it, holding its slot - LTP's
+#     waitpid13 and every fork after it. Expect job_control_broken: "a stopped
+#     child in an orphaned group was not hung up".
+#
+# Target source: kernel/arch/x86_64/task_life.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/arch/x86_64/task_life.c scripts/dev/cases/abi-jobs-boot.txt
+
+### any signal wakes a stopped task
+--- old
+    if (hw_slot_state(task_index) == HW_TASK_BLOCKED && !g_tasks[task_index].id.signal_stopped) {
++++ new
+    if (hw_slot_state(task_index) == HW_TASK_BLOCKED) {
+
+### an orphaned group with a stopped member is never hung up
+--- old
+    if (!stopped || !hw_pgrp_orphaned(pgid, gone)) {
++++ new
+    if (1 || !stopped || !hw_pgrp_orphaned(pgid, gone)) {
