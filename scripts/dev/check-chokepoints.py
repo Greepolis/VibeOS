@@ -56,9 +56,9 @@ SCOPE = ("kernel", "include")
 # when something changes, not to be a call count.
 CHOKEPOINTS = {
     "linux_signal_permitted": (
-        7,   # 6 -> 7 in L2 step 5: pidfd_send_signal. Renamed from hw_signal_permitted with the handlers (A2); 5 -> 6 in L2 step 2:
+        8,   # 7 -> 8 in L2 step 7: kill of a group judges each member as a single kill would (it was "everyone in the sender's session"). 6 -> 7 in L2 step 5: pidfd_send_signal. Renamed from hw_signal_permitted with the handlers (A2); 5 -> 6 in L2 step 2:
              # rt_sigqueueinfo and rt_tgsigqueueinfo, one handler for both
-        "who may signal whom. Six callers and a definition; a seventh caller "
+        "who may signal whom. Seven callers and a definition; an eighth caller "
         "that forgot the check is a process signalling one it does not own."),
     "hw_user_range_ok": (
         5,   # definition + two declarations + the one call, in ks_user_ok (A2; was linux_user_ok,

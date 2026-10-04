@@ -18,13 +18,18 @@
  * reason the fork guard ended up with one entry point: the version with the
  * check in some places and not others is exactly what shipped.
  *
- * Session, not parent, because that is the relationship this kernel already
- * uses to decide the same question for a group, and inventing a second rule
- * would mean two answers to "may I signal this".
+ * The answer was "the same session" until processes had owners, and that rule
+ * is not Linux's: BusyBox's timeout leaves a watcher in a session of its own
+ * (bb_daemonize calls setsid) that asks kill(parent, 0) each second whether
+ * the program is still there - refused here, it concluded the program had
+ * ended and never stopped it (L2 step 7's corpus). What keeps an unprivileged
+ * program from killing what is not its own is the credentials (L2 step 1),
+ * which is Linux's rule; SIGCONT within a session is allowed whoever owns the
+ * target, so a shell can continue a job that changed its user.
  *
  * init and the kernel are exempt: init supervises services and stopping them is
  * its job. */
-static int linux_signal_permitted(int target) {
+static int linux_signal_permitted(int target, uint32_t sig) {
     const vibeos_task_t *me;
 
     if (ks_current() < 0 || target < 0 || target >= (int)ks_slots()) {
@@ -39,8 +44,8 @@ static int linux_signal_permitted(int target) {
     if (ks_id(target)->tgid == me->tgid) {
         return 1;
     }
-    if (ks_id(target)->sid != me->sid) {
-        return 0;
+    if (sig == VIBEOS_SIGCONT && ks_id(target)->sid == me->sid) {
+        return 1;
     }
     /* And whose process it is (docs/abi/ L2): the superuser signals anybody;
      * anybody else, a process whose real or saved user id is the sender's real
@@ -110,32 +115,40 @@ static long linux_sys_kill(uint64_t target_pid, uint64_t sig) {
         if (target < 0) {
             r = -VIBEOS_ESRCH;
         } else {
-            r = linux_signal_permitted(target) ? 0 : -VIBEOS_EPERM;
+            r = linux_signal_permitted(target, (uint32_t)sig) ? 0 : -VIBEOS_EPERM;
         }
         ks_unlock(ks_sched_lock());
         return r;
     }
     if (signed_pid < 0 || signed_pid == 0) {
         uint32_t group = signed_pid < 0 ? (uint32_t)(-signed_pid) : ks_id(ks_current())->pgid;
-        int i;
+        int i, members = 0;
         ks_lock(ks_sched_lock(), __func__);
         for (i = 0; i < (int)ks_slots(); i++) {
+        /* Every member the sender may signal, each judged as a single kill
+         * would judge it - not "every member of the sender's session", which
+         * was this kernel's rule and not Linux's. A group with members none of
+         * whom may be signalled is EPERM, as Linux answers; none at all ESRCH. */
             if (ks_id(i)->is_user && vibeos_task_state((uint32_t)(i)) != VIBEOS_TASK_FREE &&
                 vibeos_task_state((uint32_t)(i)) != VIBEOS_TASK_SETUP &&
-                ks_id(i)->pgid == group && ks_id(i)->sid == ks_id(ks_current())->sid) {
-                if (ks_signal_send(i, (uint32_t)sig, &why) == 0) {
+                ks_id(i)->pgid == group) {
+                members++;
+                if (linux_signal_permitted(i, (uint32_t)sig)) {
+                    /* One already on its way out takes nothing, and that is
+                     * not the sender's error - as for a single pid below. */
+                    (void)ks_signal_send(i, (uint32_t)sig, &why);
                     delivered++;
                 }
             }
         }
         ks_unlock(ks_sched_lock());
-        return delivered == 0 ? -VIBEOS_ESRCH : 0;
+        return delivered != 0 ? 0 : members != 0 ? -VIBEOS_EPERM : -VIBEOS_ESRCH;
     }
     ks_lock(ks_sched_lock(), __func__);
     target = linux_task_by_any_id((uint32_t)signed_pid);
     if (target < 0) {
         r = -VIBEOS_ESRCH;
-    } else if (!linux_signal_permitted(target)) {
+    } else if (!linux_signal_permitted(target, (uint32_t)sig)) {
         /* EPERM and not ESRCH: the caller is being refused, not lied to about
          * whether the process exists. Hiding existence would be a different
          * decision, and this kernel's group branch does not make it either. */
@@ -165,7 +178,7 @@ static long linux_sys_tkill(uint64_t target_tid, uint64_t sig) {
     /* Lookup, check and raise as one critical section (H-007). */
     ks_lock(ks_sched_lock(), __func__);
     target = ks_task_by_tid((uint32_t)target_tid);
-    if (target >= 0 && !linux_signal_permitted(target)) {
+    if (target >= 0 && !linux_signal_permitted(target, (uint32_t)sig)) {
         r = -VIBEOS_EPERM;   /* same rule as kill; see linux_signal_permitted */
     } else if (target < 0) {
         r = -VIBEOS_ESRCH;
@@ -210,7 +223,7 @@ static long linux_sys_tgkill(uint64_t target_tgid, uint64_t target_tid,
      * tgid comparison protects nothing if the slot can change after it. */
     ks_lock(ks_sched_lock(), __func__);
     target = ks_task_by_tid((uint32_t)target_tid);
-    if (target >= 0 && !linux_signal_permitted(target)) {
+    if (target >= 0 && !linux_signal_permitted(target, (uint32_t)sig)) {
         r = -VIBEOS_EPERM;   /* same rule as kill; see linux_signal_permitted */
     } else if (target < 0 || ks_id(target)->tgid != (uint32_t)target_tgid) {
         r = -VIBEOS_ESRCH;
@@ -626,7 +639,7 @@ static long linux_sys_rt_sigqueueinfo(uint64_t tgid, uint64_t tid, uint64_t sig,
     target = to_thread ? ks_task_by_tid((uint32_t)tid) : linux_task_by_any_id((uint32_t)tgid);
     if (target < 0 || (to_thread && ks_id(target)->tgid != (uint32_t)tgid)) {
         r = -VIBEOS_ESRCH;
-    } else if (!linux_signal_permitted(target)) {
+    } else if (!linux_signal_permitted(target, (uint32_t)sig)) {
         r = -VIBEOS_EPERM;
     } else if (sig == 0u) {
         r = 0;
@@ -740,7 +753,7 @@ static long linux_sys_pidfd_send_signal(uint64_t fd, uint64_t sig, uint64_t info
     slot = vibeos_pidfd_slot(f);
     if (slot < 0) {
         r = -VIBEOS_ESRCH;
-    } else if (!linux_signal_permitted(slot)) {
+    } else if (!linux_signal_permitted(slot, (uint32_t)sig)) {
         r = -VIBEOS_EPERM;
     } else {
         if (sig != 0u) {

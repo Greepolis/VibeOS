@@ -208,12 +208,22 @@ static void t_kill_permission(void) {
     a = kf_spawn(20, 20);
     b = kf_spawn(30, 30);   /* another session */
     kf_set_current(a);
-    expect(SYS2(62, 30, 15) == -VIBEOS_EPERM, "no signal across sessions");
+    /* A session is not a wall (L2 step 7): BusyBox's timeout probes its program
+     * with kill(pid, 0) from a session of its own, and was refused. */
+    expect(SYS2(62, 30, 0) == 0 && SYS2(62, 30, 15) == 0 && (ks_id(b)->sig_pending & (1ull << 15)) != 0,
+           "the superuser signals a process of another session");
     expect(SYS2(62, 20, 0) == 0, "a process may probe itself");
     expect(SYS2(62, 999, 0) == -VIBEOS_ESRCH, "no such process");
     ks_id(b)->sid = 20;
-    expect(SYS2(62, 30, 15) == 0 && (ks_id(b)->sig_pending & (1ull << 15)) != 0,
-           "within a session it is delivered");
+    ks_id(b)->sig_pending = 0;
+    expect(SYS1(105, 1000) == 0, "the sender gives up root");
+    expect(SYS2(62, 30, 15) == -VIBEOS_EPERM && SYS2(62, 30, 18) == -VIBEOS_EPERM &&
+           ks_id(b)->sig_pending == 0, "a user's signal to root's process in another session is refused, SIGCONT too");
+    expect(SYS2(62, -30, 15) == -VIBEOS_EPERM && SYS2(62, -999, 15) == -VIBEOS_ESRCH,
+           "so is one to its group: EPERM for a group nobody may be sent to, ESRCH for none");
+    expect(SYS2(62, 30, 15) == -VIBEOS_EPERM, "within a session, owners still decide");
+    expect(SYS2(62, 30, 18) == 0 && (ks_id(b)->sig_pending & (1ull << 18)) != 0,
+           "except for SIGCONT, which a session allows");
 }
 
 static void t_registry_answers(void) {
