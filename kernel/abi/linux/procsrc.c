@@ -20,6 +20,12 @@
 
 #define SRC_USER_HZ 100u
 
+/* The name is copied bounded by the snapshot's array alone, which is safe while
+ * the task's is no shorter. Said here rather than tested at every byte: with
+ * both sixteen, the second bound could never fail, and code scanning said so. */
+_Static_assert(sizeof(((vibeos_procfs_proc_t *)0)->comm) <= sizeof(((vibeos_task_t *)0)->comm),
+               "a task's name is shorter than /proc's copy of it");
+
 static uint64_t src_user_hz(uint64_t ticks) {
     return ticks * SRC_USER_HZ / ks_hz();
 }
@@ -92,7 +98,7 @@ static int src_proc(uint32_t pid, vibeos_procfs_proc_t *out) {
     out->ppid = t->ppid;
     out->pgid = t->pgid;
     out->sid = t->sid;
-    for (i = 0; i + 1u < sizeof(out->comm) && i < sizeof(t->comm) && t->comm[i]; i++) {
+    for (i = 0; i + 1u < sizeof(out->comm) && t->comm[i]; i++) {
         out->comm[i] = t->comm[i];
     }
     out->start = src_user_hz(t->start_tick);
@@ -219,7 +225,7 @@ static long src_cmdline(uint32_t pid, char *buf, uint32_t cap) {
 static long src_copy(char *buf, uint32_t cap, const char *s) {
     uint32_t n = 0;
 
-    while (s[n] && n < cap) {
+    while (n < cap && s[n]) {   /* the bound before the byte it guards */
         buf[n] = s[n];
         n++;
     }

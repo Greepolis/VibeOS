@@ -1249,10 +1249,10 @@ static long linux_sys_execve(ks_regs_t *frame, uint64_t dirfd, uint64_t path_upt
             nps->cred = ops->cred;
             nps->cpu_children = ops->cpu_children;   /* times() survives exec too */
             {
-                uint32_t k;   /* limits and personality too (L2 step 4) */
-                for (k = 0; k < VIBEOS_RLIM_COUNT; k++) {
-                    nps->rlim_cur[k] = ops->rlim_cur[k];
-                    nps->rlim_max[k] = ops->rlim_max[k];
+                uint32_t lim;   /* limits and personality too (L2 step 4) */
+                for (lim = 0; lim < VIBEOS_RLIM_COUNT; lim++) {
+                    nps->rlim_cur[lim] = ops->rlim_cur[lim];
+                    nps->rlim_max[lim] = ops->rlim_max[lim];
                 }
                 nps->personality = ops->personality;
             }

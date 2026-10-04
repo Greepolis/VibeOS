@@ -349,10 +349,10 @@ static const char *check_linux_abi(void) {
          * last call left there, and once FUTEX_WAIT read its timeout (L2 step
          * 6) that was a pointer to nowhere - EFAULT before the compare, as
          * Linux answers too. */
-        long r = user_syscall6(SYS_futex, (unsigned long)&futex_word,
-                               0 /*WAIT*/, 2, 0, 0, 0);
+        long waited = user_syscall6(SYS_futex, (unsigned long)&futex_word,
+                                    0 /*WAIT*/, 2, 0, 0, 0);
 
-        if (r != -11 /*EAGAIN*/) {
+        if (waited != -11 /*EAGAIN*/) {
             return abi_futex;
         }
     }
