@@ -4,6 +4,7 @@
  * helpers only they use, moved as they were. */
 
 #include "linux_internal.h"
+#include "vibeos/procfs.h"
 
 /* May the calling task send a signal to `target`?
  *
@@ -47,9 +48,9 @@ static int linux_signal_permitted(int target, uint32_t sig) {
     if (sig == VIBEOS_SIGCONT && ks_id(target)->sid == me->sid) {
         return 1;
     }
-    /* And whose process it is (docs/abi/ L2): the superuser signals anybody;
+    /* Whose process it is (docs/abi/ L2): the superuser signals anybody;
      * anybody else, a process whose real or saved user id is the sender's real
-     * or effective one - Linux's rule, on top of the session one above. */
+     * or effective one. */
     {
         vibeos_cred_t mine;
         const vibeos_procstate_t *tp = ks_ps(target);
@@ -124,11 +125,11 @@ static long linux_sys_kill(uint64_t target_pid, uint64_t sig) {
         uint32_t group = signed_pid < 0 ? (uint32_t)(-signed_pid) : ks_id(ks_current())->pgid;
         int i, members = 0;
         ks_lock(ks_sched_lock(), __func__);
-        for (i = 0; i < (int)ks_slots(); i++) {
         /* Every member the sender may signal, each judged as a single kill
          * would judge it - not "every member of the sender's session", which
          * was this kernel's rule and not Linux's. A group with members none of
          * whom may be signalled is EPERM, as Linux answers; none at all ESRCH. */
+        for (i = 0; i < (int)ks_slots(); i++) {
             if (ks_id(i)->is_user && vibeos_task_state((uint32_t)(i)) != VIBEOS_TASK_FREE &&
                 vibeos_task_state((uint32_t)(i)) != VIBEOS_TASK_SETUP &&
                 ks_id(i)->pgid == group) {
@@ -710,6 +711,7 @@ long linux_pidfd_pid(uint64_t fd) {
 static long linux_sys_pidfd_send_signal(uint64_t fd, uint64_t sig, uint64_t info_uptr, uint64_t flags) {
     vibeos_file_t *f;
     vibeos_siginfo_t why;
+    uint32_t pid;
     int slot;
     long r;
 
@@ -719,7 +721,11 @@ static long linux_sys_pidfd_send_signal(uint64_t fd, uint64_t sig, uint64_t info
     if (!(f = linux_file_get(fd))) {
         return -VIBEOS_EBADF;
     }
-    if (f->ops != &vibeos_fops_pidfd) {
+    /* A pidfd, or a process's directory under /proc, which Linux takes for
+     * one: LTP's pidfd_send_signal01 and 02 open /proc/self and send through
+     * it (L2 step 6's run, once there was a /proc to open). */
+    pid = f->ops == &vibeos_fops_pidfd ? f->proc_pid : vibeos_procfs_node_pid(f->mnt, f->node);
+    if (pid == 0u) {
         vibeos_file_put(f);
         return -VIBEOS_EBADF;
     }
@@ -734,7 +740,7 @@ static long linux_sys_pidfd_send_signal(uint64_t fd, uint64_t sig, uint64_t info
         /* As rt_sigqueueinfo: the record must be for this signal, and only to
          * itself may a process claim kill or the kernel sent it. */
         if ((uint32_t)in.si_signo != (uint32_t)sig ||
-            ((in.si_code >= 0 || in.si_code == LINUX_SI_TKILL) && f->proc_pid != ks_id(ks_current())->tgid)) {
+            ((in.si_code >= 0 || in.si_code == LINUX_SI_TKILL) && pid != ks_id(ks_current())->tgid)) {
             vibeos_file_put(f);
             return (uint32_t)in.si_signo != (uint32_t)sig ? -VIBEOS_EINVAL : -VIBEOS_EPERM;
         }
@@ -750,7 +756,18 @@ static long linux_sys_pidfd_send_signal(uint64_t fd, uint64_t sig, uint64_t info
         linux_sender(&why, VIBEOS_SIG_FROM_PROCESS);
     }
     ks_lock(ks_sched_lock(), __func__);
-    slot = vibeos_pidfd_slot(f);
+    if (f->ops == &vibeos_fops_pidfd) {
+        slot = vibeos_pidfd_slot(f);
+    } else {
+        /* By its pid: a directory does not remember the tenancy of the slot
+         * as a pidfd does, so a pid reused after the reap is not told apart. */
+        slot = ks_task_by_tid(pid);
+        if (slot >= 0 && (ks_id(slot)->tgid != pid || !ks_id(slot)->is_user ||
+                          vibeos_task_state((uint32_t)slot) == VIBEOS_TASK_FREE ||
+                          vibeos_task_state((uint32_t)slot) == VIBEOS_TASK_SETUP)) {
+            slot = -1;
+        }
+    }
     if (slot < 0) {
         r = -VIBEOS_ESRCH;
     } else if (!linux_signal_permitted(slot, (uint32_t)sig)) {

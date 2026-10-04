@@ -16,11 +16,14 @@
  * What is here:
  *
  *   meminfo, cpuinfo, version, uptime, loadavg, mounts (a link to
- *   self/mounts, as in Linux), sys/kernel/pid_max
+ *   self/mounts, as in Linux), sys/kernel/pid_max,
+ *   sys/kernel/random/entropy_avail
  *   self            a link to the asking process's directory
  *   <pid>/          one per process: stat, statm, status, cmdline, comm,
  *                   maps, mounts, the links exe, cwd and root, and fd/ - a
  *                   link per open descriptor, to what it was opened as
+ *   <pid>/task/     a directory per thread, each the same as <tid>/ - which
+ *                   exists for every thread, as on Linux, and is not listed
  *
  * Who asks is the source's to say (`self`), because the filesystem is portable
  * and the task table is not; the same goes for every fact about a process.
@@ -37,11 +40,14 @@ typedef struct {
     uint64_t swap_free_kb;
 } vibeos_procfs_mem_t;
 
-/* One process, as /proc/<pid> shows it. Times are in clock ticks of 100 a
- * second - Linux's USER_HZ, which is what a program divides by - and signal
- * sets in Linux's numbering, bit 0 for signal 1: the source converts. */
+/* One process, as /proc/<pid> shows it - or one thread of it, as <tid>/ and
+ * task/<tid>/ do: then `pid` is the thread's id, `tgid` its process's, and the
+ * state, name and signals are the thread's own. Times are in clock ticks of
+ * 100 a second - Linux's USER_HZ, which is what a program divides by - and
+ * signal sets in Linux's numbering, bit 0 for signal 1: the source converts. */
 typedef struct {
     uint32_t pid, ppid, pgid, sid;
+    uint32_t tgid;                /* the process; 0 is read as `pid` */
     uint32_t threads;
     uint32_t uid[4], gid[4];      /* real, effective, saved, filesystem */
     char state;                   /* R running, S waiting, T stopped, Z ended */
@@ -96,14 +102,18 @@ typedef struct {
     uint32_t (*cpu_khz)(void);         /* 0 when not yet measured */
     uint32_t (*cpus)(void);            /* online now: the others start after /proc */
     uint64_t (*uptime_ms)(void);
+    uint32_t (*entropy_avail)(void);   /* bits, as sys/kernel/random/entropy_avail */
     const char *version;               /* /proc/version's line, without the newline */
 
     /* The process asking, by pid; 0 for none (the kernel, for itself). */
     uint32_t (*self)(void);
-    /* A process by pid: 0 and the snapshot, or negative for none. */
+    /* A process by pid, or a thread by its id: 0 and the snapshot, or
+     * negative for none. */
     int (*proc)(uint32_t pid, vibeos_procfs_proc_t *out);
     /* The smallest pid above `after` that is a process, or 0. */
     uint32_t (*next_pid)(uint32_t after);
+    /* The smallest id above `after` of a thread of process `pid`, or 0. */
+    uint32_t (*next_tid)(uint32_t pid, uint32_t after);
     /* Its arguments, each ended by a NUL; bytes. */
     long (*cmdline)(uint32_t pid, char *buf, uint32_t cap);
     /* Where one of its links points (VIBEOS_PROCFS_LINK_*, `fd` for the
@@ -117,5 +127,9 @@ typedef struct {
 
 /* The operations, for vibeos_fs_mount. */
 const vibeos_fs_ops_t *vibeos_procfs_ops(void);
+
+/* The process whose directory `node` is on the /proc mount `mnt` - Linux takes
+ * an open /proc/<pid> as a pidfd - or 0 for any other node or mount. */
+uint32_t vibeos_procfs_node_pid(const vibeos_fsmount_t *mnt, uint64_t node);
 
 #endif

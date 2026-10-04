@@ -13,6 +13,7 @@
 #include <stddef.h>
 
 #include "linux_internal.h"
+#include "vibeos/devfs.h"
 
 /* The *at calls interpret a relative path against a directory descriptor, or
  * against the working directory when that descriptor is AT_FDCWD.
@@ -1919,6 +1920,17 @@ static long linux_sys_ioctl(uint64_t fd, uint64_t req, uint64_t arg) {
                 r = -VIBEOS_ENOTTY;   /* a socket's count is the network's to give (L5) */
                 break;
             }
+            r = !linux_ioctl_arg(arg, sizeof(v), 1) ||
+                vibeos_uaccess_copy((void *)(uintptr_t)arg, &v, sizeof(v)) != 0 ? -VIBEOS_EFAULT : 0;
+            break;
+        case LINUX_RNDGETENTCNT:
+            /* The random devices' (L2 step 7, LTP's ioctl07): the same number
+             * /proc/sys/kernel/random/entropy_avail prints. */
+            if (f->ops != &vibeos_fops_chrdev || (f->rdev != VIBEOS_DEV_RANDOM && f->rdev != VIBEOS_DEV_URANDOM)) {
+                r = -VIBEOS_ENOTTY;
+                break;
+            }
+            v = (int32_t)linux_entropy_avail();
             r = !linux_ioctl_arg(arg, sizeof(v), 1) ||
                 vibeos_uaccess_copy((void *)(uintptr_t)arg, &v, sizeof(v)) != 0 ? -VIBEOS_EFAULT : 0;
             break;

@@ -3,7 +3,8 @@
 #
 #  1. pidfd_send_signal takes a flag. Expect "a flag, or a descriptor that is
 #     not a pidfd, is refused".
-#  2. pidfd_send_signal takes any descriptor. Same expectation.
+#  2. pidfd_send_signal takes any descriptor - not a pidfd, not an open
+#     /proc/<pid> either (L2 step 7). Same expectation.
 #  3. pidfd_open takes a flag it does not know. Expect "pid 0, nobody and an
 #     unknown flag are refused".
 #
@@ -18,7 +19,7 @@
 
 ### pidfd_send_signal takes any descriptor
 --- old
-    if (f->ops != &vibeos_fops_pidfd) {
+    if (pid == 0u) {
         vibeos_file_put(f);
         return -VIBEOS_EBADF;
     }

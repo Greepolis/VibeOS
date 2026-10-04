@@ -1,0 +1,28 @@
+# What /proc says of a thread (docs/abi/ L2 step 7). Host test: t_procdev in
+# tests/kernel/linux_abi_tests.c.
+#
+#  1. a thread's directory describes its process's leader: task/<tid>/stat
+#     names the leader's id and state, and LTP's futex tests watch the wrong
+#     thread
+#  2. a process's state is any thread's that runs, as it was: a process whose
+#     main thread waits shows R while another thread reads - futex_wait03
+#
+# Target source: kernel/abi/linux/procsrc.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/procsrc.c scripts/dev/cases/abi-procsrc-threads.txt
+
+### a thread's directory describes its process's leader
+--- old
+    t = ks_id(s);
+    th = ks_id(ts);
++++ new
+    t = ks_id(s);
+    th = ks_id(s);
+    out->pid = t->tgid;
+    pid = t->tgid;
+
+### a process's state is any running thread's
+--- old
+    running = vibeos_task_state((uint32_t)ts) != VIBEOS_TASK_ZOMBIE && !th->sleeping;
++++ new
+    running = vibeos_task_state((uint32_t)ts) != VIBEOS_TASK_ZOMBIE && !th->sleeping;
+    running |= me >= 0 && ks_id(me)->tgid == t->tgid && !ks_id(me)->sleeping;

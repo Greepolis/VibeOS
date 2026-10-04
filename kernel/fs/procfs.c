@@ -121,6 +121,11 @@ static void pf_meminfo(const vibeos_procfs_t *pf, pf_out_t *o) {
     pf_kb(o, "SwapFree", m.swap_free_kb);
 }
 
+static void pf_entropy_avail(const vibeos_procfs_t *pf, pf_out_t *o) {
+    pf_u(o, pf->entropy_avail ? pf->entropy_avail() : 0u);
+    pf_char(o, '\n');
+}
+
 static void pf_pid_max(const vibeos_procfs_t *pf, pf_out_t *o) {
     pf_u(o, pf->pid_max);
     pf_char(o, '\n');
@@ -253,6 +258,7 @@ static const pf_file_t g_files[] = {
     {"uptime", pf_uptime},
     {"version", pf_version},
     {"sys/kernel/pid_max", pf_pid_max},
+    {"sys/kernel/random/entropy_avail", pf_entropy_avail},
 };
 #define PF_FILES ((uint32_t)(sizeof(g_files) / sizeof(g_files[0])))
 
@@ -348,7 +354,7 @@ static void pf_p_status(const vibeos_procfs_t *pf, const vibeos_procfs_proc_t *p
     pf_tag(o, "State");
     pf_str(o, pf_state_name(p->state));
     pf_char(o, '\n');
-    pf_tag_u(o, "Tgid", p->pid);
+    pf_tag_u(o, "Tgid", p->tgid ? p->tgid : p->pid);
     pf_tag_u(o, "Ngid", 0);
     pf_tag_u(o, "Pid", p->pid);
     pf_tag_u(o, "PPid", p->ppid);
@@ -444,9 +450,10 @@ static void pf_p_mounts(const vibeos_procfs_t *pf, const vibeos_procfs_proc_t *p
     pf_mounts(o);
 }
 
-#define PF_E_FILE 0u
-#define PF_E_LINK 1u
-#define PF_E_DIR  2u
+#define PF_E_FILE  0u
+#define PF_E_LINK  1u
+#define PF_E_DIR   2u   /* fd/: a link per descriptor */
+#define PF_E_TASKS 3u   /* task/: a directory per thread */
 
 typedef struct {
     const char *name;
@@ -468,6 +475,7 @@ static const pf_pid_entry_t g_pid_files[] = {
     {"stat", PF_E_FILE, 0444u, 0, pf_p_stat},
     {"statm", PF_E_FILE, 0444u, 0, pf_p_statm},
     {"status", PF_E_FILE, 0444u, 0, pf_p_status},
+    {"task", PF_E_TASKS, 0555u, 0, 0},
 };
 #define PF_PID_FILES ((uint32_t)(sizeof(g_pid_files) / sizeof(g_pid_files[0])))
 
@@ -594,41 +602,56 @@ static int pf_parse(const vibeos_procfs_t *pf, const char *path, pf_where_t *w) 
         if (!pf->proc || pf->proc(pid, &w->p) != 0) {
             return -VIBEOS_ENOENT;
         }
-        w->pid = pid;
-        if (*rest == 0) {
-            w->kind = PF_K_PID;
-            return 0;
-        }
-        c = pf_component(&rest, &n);
-        for (i = 0; i < PF_PID_FILES; i++) {
-            if (pf_is(c, n, g_pid_files[i].name)) {
-                break;
-            }
-        }
-        if (i == PF_PID_FILES) {
-            return -VIBEOS_ENOENT;
-        }
-        w->kind = PF_K_ENTRY;
-        w->arg = i;
-        if (g_pid_files[i].type == PF_E_DIR && *rest != 0) {
-            uint32_t fd, got;
+        /* Once round for <pid>/, and once more for each task/<tid>/ - which is
+         * <tid>/ under another name, so a node in it is named by the tid. */
+        for (;;) {
+            uint32_t tgid;
 
+            w->pid = pid;
+            if (*rest == 0) {
+                w->kind = PF_K_PID;
+                return 0;
+            }
             c = pf_component(&rest, &n);
-            fd = pf_number(c, n);
-            if (fd == 0u && !pf_is(c, n, "0")) {
+            for (i = 0; i < PF_PID_FILES; i++) {
+                if (pf_is(c, n, g_pid_files[i].name)) {
+                    break;
+                }
+            }
+            if (i == PF_PID_FILES) {
                 return -VIBEOS_ENOENT;
             }
-            if (*rest != 0) {
-                return -VIBEOS_ENOTDIR;
+            w->kind = PF_K_ENTRY;
+            w->arg = i;
+            if (g_pid_files[i].type == PF_E_DIR && *rest != 0) {
+                uint32_t fd, got;
+
+                c = pf_component(&rest, &n);
+                fd = pf_number(c, n);
+                if (fd == 0u && !pf_is(c, n, "0")) {
+                    return -VIBEOS_ENOENT;
+                }
+                if (*rest != 0) {
+                    return -VIBEOS_ENOTDIR;
+                }
+                if (!pf->next_fd || pf->next_fd(pid, fd, &got) != 0 || got != fd) {
+                    return -VIBEOS_ENOENT;
+                }
+                w->kind = PF_K_FD;
+                w->arg = fd;
+                return 0;
             }
-            if (!pf->next_fd || pf->next_fd(pid, fd, &got) != 0 || got != fd) {
+            if (g_pid_files[i].type != PF_E_TASKS || *rest == 0) {
+                return *rest == 0 ? 0 : -VIBEOS_ENOTDIR;
+            }
+            /* A thread of this process, and nobody else's. */
+            tgid = w->p.tgid ? w->p.tgid : w->p.pid;
+            c = pf_component(&rest, &n);
+            pid = pf_number(c, n);
+            if (pid == 0u || pf->proc(pid, &w->p) != 0 || (w->p.tgid ? w->p.tgid : w->p.pid) != tgid) {
                 return -VIBEOS_ENOENT;
             }
-            w->kind = PF_K_FD;
-            w->arg = fd;
-            return 0;
         }
-        return *rest == 0 ? 0 : -VIBEOS_ENOTDIR;
     }
     if (pf_is(c, n, "mounts") && *rest == 0) {
         w->kind = PF_K_MOUNTS;
@@ -709,10 +732,10 @@ static int pf_lookup(void *fs, const char *path, vibeos_fs_node_t *out) {
             break;
         case PF_K_ENTRY: {
             const pf_pid_entry_t *e = &g_pid_files[w.arg];
-            out->is_dir = e->type == PF_E_DIR;
-            out->mode = e->mode | (e->type == PF_E_DIR ? VIBEOS_S_IFDIR
+            out->is_dir = e->type == PF_E_DIR || e->type == PF_E_TASKS;
+            out->mode = e->mode | (out->is_dir ? VIBEOS_S_IFDIR
                                    : e->type == PF_E_LINK ? VIBEOS_S_IFLNK : VIBEOS_S_IFREG);
-            out->nlink = e->type == PF_E_DIR ? 2u : 1u;
+            out->nlink = out->is_dir ? 2u : 1u;
             break;
         }
         default:   /* PF_K_FD */
@@ -731,7 +754,8 @@ static long pf_read_at(void *fs, const vibeos_fs_node_t *node, uint64_t off, voi
     w.arg = (uint32_t)((node->id >> 8) & 0xffffffu);
     w.pid = (uint32_t)(node->id >> 32);
     if (w.kind == PF_K_DIR || w.kind == PF_K_PID ||
-        (w.kind == PF_K_ENTRY && w.arg < PF_PID_FILES && g_pid_files[w.arg].type == PF_E_DIR)) {
+        (w.kind == PF_K_ENTRY && w.arg < PF_PID_FILES &&
+         (g_pid_files[w.arg].type == PF_E_DIR || g_pid_files[w.arg].type == PF_E_TASKS))) {
         return -VIBEOS_EISDIR;
     }
     if (w.kind == PF_K_ENTRY) {
@@ -909,7 +933,24 @@ static int pf_list(void *fs, const char *path, uint32_t index, char *name, uint3
         }
         pf_name(name, cap, g_pid_files[index].name, k);
         if (out_is_dir) {
-            *out_is_dir = g_pid_files[index].type == PF_E_DIR;
+            *out_is_dir = g_pid_files[index].type == PF_E_DIR || g_pid_files[index].type == PF_E_TASKS;
+        }
+        return 0;
+    }
+    if (w.kind == PF_K_ENTRY && g_pid_files[w.arg].type == PF_E_TASKS) {
+        uint32_t tid = 0, tgid = w.p.tgid ? w.p.tgid : w.p.pid;
+        pf_out_t o = {name, cap - 1u, 0, 0};
+
+        for (k = 0; k <= index; k++) {
+            tid = pf->next_tid ? pf->next_tid(tgid, tid) : 0u;
+            if (tid == 0u) {
+                return -1;
+            }
+        }
+        pf_u(&o, tid);
+        name[o.len < cap - 1u ? o.len : cap - 1u] = 0;
+        if (out_is_dir) {
+            *out_is_dir = 1;
         }
         return 0;
     }
@@ -950,6 +991,13 @@ static const vibeos_fs_ops_t g_procfs_ops = {
     .readlink = pf_readlink,
     .statfs = pf_statfs,
 };
+
+uint32_t vibeos_procfs_node_pid(const vibeos_fsmount_t *mnt, uint64_t node) {
+    if (!mnt || mnt->ops != &g_procfs_ops || (node & 0xffu) != PF_K_PID) {
+        return 0;
+    }
+    return (uint32_t)(node >> 32);
+}
 
 const vibeos_fs_ops_t *vibeos_procfs_ops(void) {
     return &g_procfs_ops;

@@ -52,7 +52,7 @@ calls, outside the Linux number space, are listed last.
 | 13 | `rt_sigaction` | done | - | - | `sig.c` |  |
 | 14 | `rt_sigprocmask` | done | - | - | `sig.c` |  |
 | 15 | `rt_sigreturn` | done | - | - | `sig.c` |  |
-| 16 | `ioctl` | partial | L1 | - | `fs.c` | the console's modes, size and process group, and the descriptor requests; ISIG, VTIME and the other terminal requests (TCFLSH, TIOCSCTTY, ...) are not honoured |
+| 16 | `ioctl` | partial | L1 | - | `fs.c` | the console's modes, size and process group, the random devices' entropy count, and the descriptor requests; ISIG, VTIME and the other terminal requests (TCFLSH, TIOCSCTTY, ...) are not honoured |
 | 17 | `pread64` | done | - | - | `fs.c` |  |
 | 18 | `pwrite64` | done | - | - | `fs.c` |  |
 | 19 | `readv` | partial | L5 | - | `fs.c` | files and the console; no socket scatter |

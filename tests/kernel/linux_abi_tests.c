@@ -19,6 +19,7 @@
  * checked against the registry itself at the end. */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "ksvc_fake.h"
@@ -214,13 +215,13 @@ static void t_kill_permission(void) {
            "the superuser signals a process of another session");
     expect(SYS2(62, 20, 0) == 0, "a process may probe itself");
     expect(SYS2(62, 999, 0) == -VIBEOS_ESRCH, "no such process");
-    ks_id(b)->sid = 20;
     ks_id(b)->sig_pending = 0;
     expect(SYS1(105, 1000) == 0, "the sender gives up root");
     expect(SYS2(62, 30, 15) == -VIBEOS_EPERM && SYS2(62, 30, 18) == -VIBEOS_EPERM &&
            ks_id(b)->sig_pending == 0, "a user's signal to root's process in another session is refused, SIGCONT too");
     expect(SYS2(62, -30, 15) == -VIBEOS_EPERM && SYS2(62, -999, 15) == -VIBEOS_ESRCH,
            "so is one to its group: EPERM for a group nobody may be sent to, ESRCH for none");
+    ks_id(b)->sid = 20;
     expect(SYS2(62, 30, 15) == -VIBEOS_EPERM, "within a session, owners still decide");
     expect(SYS2(62, 30, 18) == 0 && (ks_id(b)->sig_pending & (1ull << 18)) != 0,
            "except for SIGCONT, which a session allows");
@@ -2099,10 +2100,10 @@ static void t_procdev(void) {
     linux_stat_t sb, sb2;
     vibeos_image_t *img;
     long fd, n, fields = 0;
-    int slot;
+    int slot, other;
 
     slot = fresh(170);
-    (void)kf_spawn(171, 171);
+    other = kf_spawn(171, 171);
     kf_set_current(slot);
     img = ks_image(slot);
     memcpy(img->exe_path, "/bin/prog", 10);
@@ -2148,6 +2149,50 @@ static void t_procdev(void) {
            (memcpy(&sb, kf_uptr(st), sizeof(sb)), (sb.st_mode & VIBEOS_S_IFMT) == VIBEOS_S_IFDIR),
            "a process's directory is a directory");
 
+    /* Threads (L2 step 7). The main thread waits; another reads, as LTP's
+     * futex_wait03 does to see its main thread asleep - and the process is
+     * the leader's state, not "running because somebody is". */
+    {
+        int th = kf_spawn(175, 170);
+
+        ks_id(th)->tgid = 170;
+        ks_id(th)->is_thread = 1;
+        ks_id(th)->ppid = ks_id(slot)->ppid;
+        ks_id(slot)->sleeping = 1;
+        kf_set_current(th);
+        expect(read_whole("/proc/170/stat", text, sizeof(text)) > 0 && strncmp(text, "170 (prog) S ", 13) == 0,
+               "a process whose leader waits is S, while another of its threads runs");
+        expect(read_whole("/proc/170/task/175/stat", text, sizeof(text)) > 0 && strncmp(text, "175 (", 5) == 0 &&
+               strstr(text, ") R ") && read_whole("/proc/170/task/170/stat", text, sizeof(text)) > 0 &&
+               strncmp(text, "170 (prog) S ", 13) == 0,
+               "task/<tid>/stat is each thread's own: its id and its state");
+        expect(read_whole("/proc/self/task/175/status", text, sizeof(text)) > 0 && strstr(text, "Pid:\t175\n") &&
+               strstr(text, "Tgid:\t170\n"), "a thread's status names it and its process");
+        expect(dir_type("/proc/170/task", "170") == 4 && dir_type("/proc/170/task", "175") == 4 &&
+               dir_type("/proc/170", "task") == 4,
+               "task lists the process's threads, each a directory");
+        expect(read_whole("/proc/175/stat", text, sizeof(text)) > 0 && strncmp(text, "175 (", 5) == 0 &&
+               dir_type("/proc", "175") == -1,
+               "/proc/<tid> exists for a thread, and is not listed");
+        expect(read_whole("/proc/171/task/175/stat", text, sizeof(text)) == -VIBEOS_ENOENT &&
+               read_whole("/proc/170/task/171/stat", text, sizeof(text)) == -VIBEOS_ENOENT,
+               "a thread is under its own process's task/ and nobody else's");
+        expect(link_of("/proc/170/task/175/exe", text) == 9 && strcmp(text, "/bin/prog") == 0,
+               "and its program is its process's");
+        ks_id(slot)->sleeping = 0;
+        kf_set_current(slot);
+    }
+
+    /* A process's directory is a pidfd to pidfd_send_signal, as on Linux. */
+    fd = SYS2(2, ustr("/proc/171"), 0x10000 /* O_DIRECTORY */);
+    expect(fd >= 0 && SYS4(424, (uint64_t)fd, 10, 0, 0) == 0 &&
+           (ks_id(other)->sig_pending & (1ull << 10)) != 0,
+           "pidfd_send_signal takes an open /proc/<pid> for the process");
+    (void)SYS1(3, (uint64_t)fd);
+    fd = SYS2(2, ustr("/proc/171/stat"), 0);
+    expect(fd >= 0 && SYS4(424, (uint64_t)fd, 10, 0, 0) == -VIBEOS_EBADF, "and a file under it for nothing");
+    (void)SYS1(3, (uint64_t)fd);
+
     /* Its descriptors, as links to what each was opened as. */
     fd = SYS3(2, ustr("/tmp/pf"), 0x42 /* O_CREAT|O_RDWR */, 0644);
     snprintf(want, sizeof(want), "/proc/self/fd/%ld", fd);
@@ -2180,6 +2225,21 @@ static void t_procdev(void) {
            sys(262, (uint64_t)(uint32_t)-100, ustr("/dev/null"), st, 0, 0, 0, 0) == 0 &&
            (memcpy(&sb2, kf_uptr(st), sizeof(sb2)), sb2.st_ino == sb.st_ino && sb2.st_dev == sb.st_dev),
            "it is character device 1:3, and fstat of it is stat of its name");
+    expect(SYS3(16, (uint64_t)fd, 0x80045200u /* RNDGETENTCNT */, b) == -VIBEOS_ENOTTY,
+           "it has no entropy to report");
+    (void)SYS1(3, (uint64_t)fd);
+    /* The pool's entropy, by the random devices' ioctl and by /proc, the same
+     * number - LTP's ioctl07 compares the two (L2 step 7). */
+    fd = SYS2(2, ustr("/dev/urandom"), 0);
+    {
+        int32_t cnt = -1;
+
+        expect(fd >= 0 && SYS3(16, (uint64_t)fd, 0x80045200u, b) == 0 &&
+               (memcpy(&cnt, kf_uptr(b), sizeof(cnt)), cnt >= 0 && cnt <= 256) &&
+               read_whole("/proc/sys/kernel/random/entropy_avail", text, sizeof(text)) > 0 &&
+               strtol(text, 0, 10) == cnt,
+               "RNDGETENTCNT on /dev/urandom is what /proc/sys/kernel/random/entropy_avail says");
+    }
     (void)SYS1(3, (uint64_t)fd);
     fd = SYS2(2, ustr("/dev/zero"), 0);
     memset(kf_uptr(b), 0xAA, 16);

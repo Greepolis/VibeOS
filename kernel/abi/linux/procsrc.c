@@ -17,6 +17,7 @@
 #include "vibeos/procfs.h"
 #include "vibeos/devfs.h"
 #include "vibeos/vma.h"
+#include "vibeos/random.h"
 
 #define SRC_USER_HZ 100u
 
@@ -52,6 +53,31 @@ static int src_leader(uint32_t pid) {
     return s;
 }
 
+/* The slot of the thread `tid` - any task of a user process, its leader
+ * included - or -1. Under the scheduler's lock. */
+static int src_thread(uint32_t tid) {
+    int s = ks_task_by_tid(tid);
+    vibeos_task_state_t st;
+
+    if (s < 0) {
+        return -1;
+    }
+    st = vibeos_task_state((uint32_t)s);
+    if (st == VIBEOS_TASK_FREE || st == VIBEOS_TASK_SETUP || !ks_id(s)->is_user) {
+        return -1;
+    }
+    return s;
+}
+
+/* The leader of the process `id` names, by its pid or by the id of any of its
+ * threads - /proc/<tid> is the thread's process for everything a process
+ * owns: its descriptors, its regions, its program. Under the scheduler's lock. */
+static int src_owner(uint32_t id) {
+    int s = src_thread(id);
+
+    return s < 0 ? -1 : src_leader(ks_id(s)->tgid);
+}
+
 /* A reference to a slot's process state, if it still has one with a reference
  * left to share; under the scheduler's lock. Given back with
  * ks_procstate_put. */
@@ -77,10 +103,13 @@ static uint64_t src_sigset(uint64_t kernel_set) {
     return kernel_set >> 1;
 }
 
+/* /proc/<pid>, or /proc/<tid> and task/<tid>: what a process owns from its
+ * leader, and what a thread has of its own - state, name, signals - from the
+ * thread asked about, which for /proc/<pid> is the leader itself. */
 static int src_proc(uint32_t pid, vibeos_procfs_proc_t *out) {
     vibeos_procstate_t *ps;
-    const vibeos_task_t *t;
-    int s, me = ks_current();
+    const vibeos_task_t *t, *th;
+    int s, ts, me = ks_current();
     uint32_t i, threads = 0;
     int running = 0, stopped = 0, nice;
 
@@ -88,33 +117,41 @@ static int src_proc(uint32_t pid, vibeos_procfs_proc_t *out) {
         ((unsigned char *)out)[i] = 0;
     }
     ks_lock(ks_sched_lock(), __func__);
-    s = src_leader(pid);
+    ts = src_thread(pid);
+    s = ts >= 0 ? src_leader(ks_id(ts)->tgid) : -1;
     if (s < 0) {
         ks_unlock(ks_sched_lock());
         return -VIBEOS_ENOENT;
     }
     t = ks_id(s);
+    th = ks_id(ts);
     out->pid = pid;
+    out->tgid = t->tgid;
     out->ppid = t->ppid;
     out->pgid = t->pgid;
     out->sid = t->sid;
-    for (i = 0; i + 1u < sizeof(out->comm) && t->comm[i]; i++) {
-        out->comm[i] = t->comm[i];
+    for (i = 0; i + 1u < sizeof(out->comm) && th->comm[i]; i++) {
+        out->comm[i] = th->comm[i];
     }
-    out->start = src_user_hz(t->start_tick);
-    out->sig_pending = src_sigset(t->sig_pending);
-    out->sig_blocked = src_sigset(t->sig_blocked);
+    out->start = src_user_hz(th->start_tick);
+    out->sig_pending = src_sigset(th->sig_pending);
+    out->sig_blocked = src_sigset(th->sig_blocked);
     for (i = 0; i < ks_slots(); i++) {
         vibeos_task_state_t st = vibeos_task_state(i);
 
         if (st == VIBEOS_TASK_FREE || st == VIBEOS_TASK_SETUP || st == VIBEOS_TASK_ZOMBIE ||
-            !ks_id((int)i)->is_user || ks_id((int)i)->tgid != pid) {
+            !ks_id((int)i)->is_user || ks_id((int)i)->tgid != t->tgid) {
             continue;
         }
         threads++;
-        stopped |= ks_id((int)i)->signal_stopped != 0u;
-        running |= !ks_id((int)i)->sleeping;
     }
+    /* The state is the thread's asked about - the leader's, for /proc/<pid>,
+     * as Linux gives it. It used to be "running if any thread is", so a
+     * process whose main thread waited in a futex while another thread
+     * watched for that, by reading this file, was running for as long as it
+     * looked - LTP's futex_wait03 waited out its timeout (L2 step 6's run). */
+    stopped = th->signal_stopped != 0u;
+    running = vibeos_task_state((uint32_t)ts) != VIBEOS_TASK_ZOMBIE && !th->sleeping;
     out->threads = threads;
     if (threads == 0u) {
         out->state = 'Z';
@@ -123,12 +160,15 @@ static int src_proc(uint32_t pid, vibeos_procfs_proc_t *out) {
     } else {
         out->state = running ? 'R' : 'S';
     }
-    ps = src_ps_get(s);
+    /* The thread's own reference: they share one state, and a leader that has
+     * ended has let go of its pointer to it while its threads have not. */
+    ps = src_ps_get(ts);
     ks_unlock(ks_sched_lock());
 
-    nice = ks_task_nice(s);
+    nice = ks_task_nice(ts);
     out->nice = nice;
-    out->utime = src_user_hz(linux_cpu_of_process(pid));
+    /* A thread's own time for <tid>/, the process's for <pid>/, as Linux. */
+    out->utime = src_user_hz(pid != t->tgid ? linux_cpu_of_thread(ts) : linux_cpu_of_process(t->tgid));
     out->tty = VIBEOS_DEV_CONSOLE;   /* the one terminal, every process's */
     out->tty_pgid = ks_foreground_pgid();
     out->rss_limit = ~0ull;
@@ -166,7 +206,7 @@ static int src_proc(uint32_t pid, vibeos_procfs_proc_t *out) {
     }
     /* Resident pages, for the asking process only: its own page tables are
      * the ones nothing can take away while it asks. */
-    if (me >= 0 && ks_id(me)->tgid == pid) {
+    if (me >= 0 && ks_id(me)->tgid == out->tgid) {
         vibeos_vmspace_t vm = ks_vm(me);
         const vibeos_vma_t *v;
         uint32_t n = 0;
@@ -202,13 +242,34 @@ static uint32_t src_next_pid(uint32_t after) {
     return best;
 }
 
+/* task/: the threads of process `pid`, by id. */
+static uint32_t src_next_tid(uint32_t pid, uint32_t after) {
+    uint32_t i, best = 0;
+
+    ks_lock(ks_sched_lock(), __func__);
+    for (i = 0; i < ks_slots(); i++) {
+        vibeos_task_state_t st = vibeos_task_state(i);
+        const vibeos_task_t *t = ks_id((int)i);
+
+        if (st == VIBEOS_TASK_FREE || st == VIBEOS_TASK_SETUP || st == VIBEOS_TASK_ZOMBIE ||
+            !t->is_user || t->tgid != pid) {
+            continue;
+        }
+        if (t->pid > after && (best == 0u || t->pid < best)) {
+            best = t->pid;
+        }
+    }
+    ks_unlock(ks_sched_lock());
+    return best;
+}
+
 static long src_cmdline(uint32_t pid, char *buf, uint32_t cap) {
     const vibeos_image_t *img;
     uint32_t n = 0, i;
     int s;
 
     ks_lock(ks_sched_lock(), __func__);
-    s = src_leader(pid);
+    s = src_owner(pid);
     if (s >= 0 && vibeos_task_state((uint32_t)s) != VIBEOS_TASK_ZOMBIE) {
         img = ks_image(s);
         n = img->cmdline_len < (uint32_t)sizeof(img->cmdline) ? img->cmdline_len
@@ -279,7 +340,7 @@ static long src_link(uint32_t pid, uint32_t which, uint32_t fd, char *buf, uint3
     int s;
 
     ks_lock(ks_sched_lock(), __func__);
-    s = src_leader(pid);
+    s = src_owner(pid);
     if (s >= 0 && which == VIBEOS_PROCFS_LINK_EXE) {
         const char *exe = ks_image(s)->exe_path;
         char path[VIBEOS_PATH_MAX];
@@ -317,7 +378,7 @@ static int src_next_fd(uint32_t pid, uint32_t from, uint32_t *fd) {
     uint32_t i;
 
     ks_lock(ks_sched_lock(), __func__);
-    s = src_leader(pid);
+    s = src_owner(pid);
     ps = s >= 0 ? src_ps_get(s) : 0;
     ks_unlock(ks_sched_lock());
     if (!ps) {
@@ -345,7 +406,7 @@ static int src_map(uint32_t pid, uint32_t index, vibeos_procfs_map_t *out) {
     int s, r = -1;
 
     ks_lock(ks_sched_lock(), __func__);
-    s = src_leader(pid);
+    s = src_owner(pid);
     if (s >= 0) {
         sp = ks_image(s)->user_sp;
     }
@@ -387,6 +448,19 @@ static int src_map(uint32_t pid, uint32_t index, vibeos_procfs_map_t *out) {
     return r;
 }
 
+/* Linux since 5.18 says 256 - a full pool - once the generator is seeded, and
+ * what has been credited before then. One function for the ioctl and the file,
+ * which LTP's ioctl07 compares. */
+uint32_t linux_entropy_avail(void) {
+    uint64_t c;
+
+    if (vibeos_random_ready()) {
+        return 256u;
+    }
+    c = vibeos_random_credited();
+    return c > 255u ? 255u : (uint32_t)c;
+}
+
 static uint64_t src_uptime_ms(void) {
     return ks_ticks() * 1000u / ks_hz();
 }
@@ -395,10 +469,12 @@ void linux_procfs_bind(vibeos_procfs_t *pf) {
     pf->self = src_self;
     pf->proc = src_proc;
     pf->next_pid = src_next_pid;
+    pf->next_tid = src_next_tid;
     pf->cmdline = src_cmdline;
     pf->link = src_link;
     pf->next_fd = src_next_fd;
     pf->map = src_map;
     pf->uptime_ms = src_uptime_ms;
+    pf->entropy_avail = linux_entropy_avail;
     pf->version = "Linux version " VIBEOS_LINUX_RELEASE " (vibeos@vibeos) (gcc) #1 SMP PREEMPT";
 }

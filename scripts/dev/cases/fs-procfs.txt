@@ -8,10 +8,11 @@
 #  4. /proc/self names nobody: the asking process is not asked
 #  5. stat loses its last field, so a reader counting fields reads the wrong one
 #  6. a read at an offset starts from the beginning of the text again
-#
-# Not a case today: "a directory lists a name once for every file under it".
-# No directory here holds two files yet, so listing without the check prints
-# the same entries; the first second file under /proc/sys/kernel makes it one.
+#  7. a directory lists a name once for every file under it: /proc shows
+#     "sys" twice. Not a case until L2 step 7 put a second file under
+#     /proc/sys/kernel (random/entropy_avail beside pid_max), as this file
+#     said it would be.
+#  8. task/<tid> takes any thread, another process's too
 #
 # Target source: kernel/fs/procfs.c
 # Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/fs/procfs.c scripts/dev/cases/fs-procfs.txt
@@ -54,3 +55,15 @@
     o.skip = off;
 +++ new
     o.skip = 0;
+
+### a directory lists a name once for every file under it
+--- old
+        if (dup || seen++ != index) {
++++ new
+        if (seen++ != index) {
+
+### task/<tid> takes any thread
+--- old
+            if (pid == 0u || pf->proc(pid, &w->p) != 0 || (w->p.tgid ? w->p.tgid : w->p.pid) != tgid) {
++++ new
+            if (pid == 0u || pf->proc(pid, &w->p) != 0) {

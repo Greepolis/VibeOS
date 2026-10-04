@@ -290,6 +290,9 @@ typedef struct {
 #define LINUX_GRND_NONBLOCK 0x0001u
 #define LINUX_GRND_RANDOM   0x0002u
 #define LINUX_GRND_INSECURE 0x0004u
+/* The random devices' ioctl that says how much entropy the pool holds
+ * (linux/random.h): _IOR('R', 0x00, int). */
+#define LINUX_RNDGETENTCNT  0x80045200u
 
 /* *at calls (linux/fcntl.h). AT_FDCWD arrives zero-extended: VIBEOS_ARG_INT. */
 #define LINUX_AT_FDCWD       (-100)

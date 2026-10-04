@@ -53,6 +53,10 @@ uint64_t linux_cpu_of_process(uint32_t tgid);
 uint64_t linux_cpu_of_thread(int slot);
 uint64_t linux_cpu_slot(int slot);
 
+/* The pool's entropy as Linux reports it, in bits, for RNDGETENTCNT and
+ * /proc/sys/kernel/random/entropy_avail alike (procsrc.c). */
+uint32_t linux_entropy_avail(void);
+
 /* Limits (limits.c, L2 step 4): RLIMIT_CPU's two timers for a process that has
  * run `ran` ticks, and whether the caller may have one more task. */
 void linux_rlimit_cpu_arm(uint32_t tgid, const vibeos_procstate_t *ps, uint64_t ran);
