@@ -68,6 +68,7 @@ typedef struct vibeos_file_stat {
     uint32_t nlink;      /* 0 is reported as 1 */
     uint32_t uid;
     uint32_t gid;
+    uint32_t rdev;       /* a device's number, vibeos/devfs.h's encoding */
     uint64_t atime_ns;
     uint64_t mtime_ns;
     uint64_t ctime_ns;
@@ -143,6 +144,7 @@ struct vibeos_file {
     int pipe_write;
     uint32_t proc_pid;            /* a pidfd: the process, and its slot's     */
     uint32_t proc_seq;            /* tenancy when the description was made    */
+    uint32_t rdev;                /* a character device: which (devfs.h)      */
     /* socket: its index and the tenancy it was opened on (M-020) */
     int sock;
     uint32_t sock_gen;

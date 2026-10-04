@@ -31,6 +31,7 @@
 #include "vibeos/frame.h"
 #include "vibeos/vmspace.h"
 #include "vibeos/mbz.h"
+#include "vibeos/random.h"
 
 int test_linux_handlers(void);
 int test_linux_gaps(void);
@@ -2020,8 +2021,278 @@ static void t_procfs(void) {
             }
             at += rl;
         }
-        expect(meminfo == 1 && sysdir == 1 && others == 0, "/proc lists a file and a directory, each once");
+        expect(meminfo == 1 && sysdir == 1 && others > 0, "/proc lists a file and a directory, each once");
     }
+}
+
+/* ---- /proc and /dev (L2 step 6) ---------------------------------------------------------- */
+
+/* A whole file, through open and read; the bytes read, or the open's error. */
+static long read_whole(const char *path, char *out, long cap) {
+    uint64_t b = kf_ualloc(4096);
+    long fd = SYS2(2, ustr(path), 0), n, total = 0;
+
+    if (fd < 0) {
+        return fd;
+    }
+    while (total < cap - 1 &&
+           (n = SYS3(0, (uint64_t)fd, b, (uint64_t)(cap - 1 - total > 4096 ? 4096 : cap - 1 - total))) > 0) {
+        memcpy(out + total, kf_uptr(b), (size_t)n);
+        total += n;
+    }
+    out[total] = 0;
+    (void)SYS1(3, (uint64_t)fd);
+    return total;
+}
+
+static long link_of(const char *path, char *out) {
+    uint64_t b = kf_ualloc(256);
+    long n = SYS3(89, ustr(path), b, 255);
+
+    out[0] = 0;
+    if (n >= 0) {
+        memcpy(out, kf_uptr(b), (size_t)n);
+        out[n] = 0;
+    }
+    return n;
+}
+
+/* Does the directory list `name`, and with which getdents64 type; -1 if not. */
+static int dir_type(const char *path, const char *name) {
+    uint64_t b = kf_ualloc(4096);
+    long d = SYS2(2, ustr(path), 0x10000 /* O_DIRECTORY */), got;
+    int type = -1;
+
+    while (d >= 0 && (got = SYS3(217, (uint64_t)d, b, 4096)) > 0) {
+        const uint8_t *p = (const uint8_t *)kf_uptr(b);
+        long at = 0;
+
+        while (at < got) {
+            uint16_t rl = 0;
+            memcpy(&rl, p + at + 16, 2);
+            if (strcmp((const char *)p + at + 19, name) == 0) {
+                type = p[at + 18];
+            }
+            at += rl;
+        }
+    }
+    if (d >= 0) {
+        (void)SYS1(3, (uint64_t)d);
+    }
+    return type;
+}
+
+static void t_procdev(void) {
+    static const uint8_t seed[32] = {9, 8, 7};
+    char text[4096], want[64];
+    uint64_t b, b2, st;
+    linux_stat_t sb, sb2;
+    vibeos_image_t *img;
+    long fd, n, fields = 0;
+    int slot;
+
+    slot = fresh(170);
+    (void)kf_spawn(171, 171);
+    kf_set_current(slot);
+    img = ks_image(slot);
+    memcpy(img->exe_path, "/bin/prog", 10);
+    memcpy(img->cmdline, "prog\0-x\0", 8);
+    img->cmdline_len = 8;
+    (void)SYS2(157, 15 /* PR_SET_NAME */, ustr("prog"));
+    b = kf_ualloc(64);
+    b2 = kf_ualloc(64);
+    st = kf_ualloc(144);
+
+    /* The asking process, by the link that names it. */
+    expect(link_of("/proc/self", text) == 3 && strcmp(text, "170") == 0,
+           "/proc/self is a link to the asking process's directory");
+    expect(link_of("/proc/self/exe", text) == 9 && strcmp(text, "/bin/prog") == 0,
+           "/proc/self/exe is the program, read through the links like any other path");
+    n = read_whole("/proc/self/cmdline", text, sizeof(text));
+    expect(n == 8 && memcmp(text, "prog\0-x\0", 8) == 0, "cmdline is the arguments, each ended by a NUL");
+    n = read_whole("/proc/170/stat", text, sizeof(text));
+    for (fields = 0; n > 0 && text[0]; ) {
+        const char *s;
+        fields = 1;
+        for (s = strchr(text, ')'); s && *s; s++) {
+            fields += *s == ' ';
+        }
+        break;
+    }
+    expect(n > 0 && strncmp(text, "170 (prog) R ", 13) == 0 && fields == 51 && text[n - 1] == '\n',
+           "stat is Linux's line: pid, (comm), state, and fifty more fields");
+    n = read_whole("/proc/self/status", text, sizeof(text));
+    expect(n > 0 && strstr(text, "Name:\tprog\n") && strstr(text, "Pid:\t170\n") &&
+           strstr(text, "Uid:\t0\t0\t0\t0\n") && strstr(text, "State:\tR (running)\n") &&
+           strstr(text, "SigBlk:\t0000000000000000\n"),
+           "status names the process, its ids and its state as Linux lays them out");
+    expect(read_whole("/proc/171/stat", text, sizeof(text)) > 0 && strncmp(text, "171 (", 5) == 0,
+           "another process has a directory of its own");
+    expect(read_whole("/proc/172/stat", text, sizeof(text)) == -VIBEOS_ENOENT &&
+           read_whole("/proc/170/nothing", text, sizeof(text)) == -VIBEOS_ENOENT,
+           "a pid that is nobody, and a name a process does not have, are ENOENT");
+    expect(dir_type("/proc", "170") == 4 && dir_type("/proc", "171") == 4 && dir_type("/proc", "self") == 10 &&
+           dir_type("/proc", "cpuinfo") == 8,
+           "/proc lists every process as a directory, self as a link, and its files");
+    expect(sys(262, (uint64_t)(uint32_t)-100, ustr("/proc/170"), st, 0, 0, 0, 0) == 0 &&
+           (memcpy(&sb, kf_uptr(st), sizeof(sb)), (sb.st_mode & VIBEOS_S_IFMT) == VIBEOS_S_IFDIR),
+           "a process's directory is a directory");
+
+    /* Its descriptors, as links to what each was opened as. */
+    fd = SYS3(2, ustr("/tmp/pf"), 0x42 /* O_CREAT|O_RDWR */, 0644);
+    snprintf(want, sizeof(want), "/proc/self/fd/%ld", fd);
+    expect(fd >= 0 && link_of(want, text) == 7 && strcmp(text, "/tmp/pf") == 0,
+           "/proc/self/fd/N is a link to the file descriptor N was opened on");
+    snprintf(want, sizeof(want), "%ld", fd);
+    expect(dir_type("/proc/self/fd", want) == 10, "and fd lists it");
+    (void)SYS1(3, (uint64_t)fd);
+    snprintf(want, sizeof(want), "/proc/self/fd/%ld", fd);
+    expect(link_of(want, text) == -VIBEOS_ENOENT, "a descriptor closed is gone from fd");
+
+    /* The machine's files. */
+    n = read_whole("/proc/mounts", text, sizeof(text));
+    expect(n > 0 && strstr(text, "tmpfs /tmp tmpfs rw 0 0\n") && strstr(text, "proc /proc proc ro 0 0\n") &&
+           strstr(text, "devtmpfs /dev devtmpfs ro 0 0\n"),
+           "/proc/mounts (a link to self/mounts) lists every mount as Linux does");
+    n = read_whole("/proc/cpuinfo", text, sizeof(text));
+    expect(n > 0 && strstr(text, "processor\t: 0\n") && strstr(text, "vendor_id\t: FakeIntel\n") &&
+           strstr(text, "flags\t\t: fpu tsc lm\n") && strstr(text, "model name\t: Fake CPU\n"),
+           "/proc/cpuinfo describes the processor in Linux's layout");
+    n = read_whole("/proc/version", text, sizeof(text));
+    expect(n > 0 && strncmp(text, "Linux version 6.1.0-vibeos ", 27) == 0, "/proc/version agrees with uname");
+
+    /* /dev. */
+    fd = SYS2(2, ustr("/dev/null"), 2 /* O_RDWR */);
+    expect(fd >= 0 && SYS3(0, (uint64_t)fd, b, 64) == 0 && SYS3(1, (uint64_t)fd, b, 10) == 10,
+           "/dev/null reads nothing and takes everything");
+    expect(SYS2(5, (uint64_t)fd, st) == 0 && (memcpy(&sb, kf_uptr(st), sizeof(sb)), 1) &&
+           sb.st_mode == (VIBEOS_S_IFCHR | 0666u) && sb.st_rdev == 0x103u &&
+           sys(262, (uint64_t)(uint32_t)-100, ustr("/dev/null"), st, 0, 0, 0, 0) == 0 &&
+           (memcpy(&sb2, kf_uptr(st), sizeof(sb2)), sb2.st_ino == sb.st_ino && sb2.st_dev == sb.st_dev),
+           "it is character device 1:3, and fstat of it is stat of its name");
+    (void)SYS1(3, (uint64_t)fd);
+    fd = SYS2(2, ustr("/dev/zero"), 0);
+    memset(kf_uptr(b), 0xAA, 16);
+    expect(fd >= 0 && SYS3(0, (uint64_t)fd, b, 16) == 16 && memcmp(kf_uptr(b), "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", 16) == 0,
+           "/dev/zero reads zeros");
+    (void)SYS1(3, (uint64_t)fd);
+    fd = SYS2(2, ustr("/dev/full"), 1 /* O_WRONLY */);
+    expect(fd >= 0 && SYS3(1, (uint64_t)fd, b, 4) == -VIBEOS_ENOSPC, "/dev/full is always full");
+    (void)SYS1(3, (uint64_t)fd);
+    fd = SYS2(2, ustr("/dev/urandom"), 0);
+    expect(fd >= 0 && SYS3(0, (uint64_t)fd, b, 32) == 32 && SYS3(0, (uint64_t)fd, b2, 32) == 32 &&
+           memcmp(kf_uptr(b), kf_uptr(b2), 32) != 0, "/dev/urandom gives different bytes each read");
+    (void)SYS1(3, (uint64_t)fd);
+    expect(SYS2(2, ustr("/dev/nothing"), 0) == -VIBEOS_ENOENT, "a device /dev does not have is ENOENT");
+    expect(dir_type("/dev", "null") == 2 && dir_type("/dev", "fd") == 10, "/dev lists its devices and links");
+    expect(link_of("/dev/fd", text) == 13 && strcmp(text, "/proc/self/fd") == 0, "/dev/fd is /proc/self/fd");
+    fd = SYS2(2, ustr("/dev/tty"), 2);
+    expect(fd >= 0 && SYS2(5, (uint64_t)fd, st) == 0 && (memcpy(&sb, kf_uptr(st), sizeof(sb)), 1) &&
+           sb.st_rdev == 0x500u && SYS3(16, (uint64_t)fd, 0x5401 /* TCGETS */, kf_ualloc(64)) == 0,
+           "/dev/tty is the terminal: the console, which answers as one");
+    (void)SYS1(3, (uint64_t)fd);
+
+    /* getrandom and the pool behind it. */
+    expect(SYS3(318, b, 32, 0) == 32 && SYS3(318, b2, 32, 0) == 32 && memcmp(kf_uptr(b), kf_uptr(b2), 32) != 0,
+           "getrandom fills the buffer, differently each time");
+    expect(SYS3(318, b, 32, 8) == -VIBEOS_EINVAL && SYS3(318, b, 32, 6) == -VIBEOS_EINVAL,
+           "an unknown flag, and GRND_INSECURE with GRND_RANDOM, are EINVAL");
+    vibeos_random_reset();
+    expect(SYS3(318, b, 16, 1 /* GRND_NONBLOCK */) == -VIBEOS_EAGAIN && SYS3(318, b, 16, 4 /* GRND_INSECURE */) == 16,
+           "before the pool is ready a caller is told EAGAIN, or given what there is if it asked for that");
+    fd = SYS2(2, ustr("/dev/random"), 04000 /* O_NONBLOCK */);
+    expect(fd >= 0 && SYS3(0, (uint64_t)fd, b, 8) == -VIBEOS_EAGAIN, "and /dev/random waits for it, /dev/urandom does not");
+    (void)SYS1(3, (uint64_t)fd);
+    {
+        kf_outcome_t out = KF_RETURNED;
+        (void)sys(318, b, 16, 0, 0, 0, 0, &out);
+        expect(out == KF_BLOCKED, "a getrandom that may wait, waits");
+    }
+    vibeos_random_add(seed, (uint32_t)sizeof(seed), 256u);
+    expect(SYS3(318, b, 16, 1) == 16, "and is answered once the pool is ready");
+
+    /* Read seven bytes at a time, a file is the same file. */
+    {
+        char whole[2048], pieces[2048];
+        long total = 0, got;
+
+        n = read_whole("/proc/self/status", whole, sizeof(whole));
+        fd = SYS2(2, ustr("/proc/self/status"), 0);
+        while (fd >= 0 && total < (long)sizeof(pieces) - 8 && (got = SYS3(0, (uint64_t)fd, b, 7)) > 0) {
+            memcpy(pieces + total, kf_uptr(b), (size_t)got);
+            total += got;
+        }
+        (void)SYS1(3, (uint64_t)fd);
+        expect(n > 7 && total == n && memcmp(whole, pieces, (size_t)n) == 0,
+               "a /proc file read a few bytes at a time is the file read whole");
+    }
+}
+
+/* clone3's argument rules (L2 step 6, from step 5's LTP run: clone302). */
+static void t_clone3_checks(void) {
+    uint64_t a, big;
+    linux_clone_args_t *ca;
+
+    (void)fresh(190);
+    a = kf_ualloc(sizeof(linux_clone_args_t));
+    ca = (linux_clone_args_t *)kf_uptr(a);
+    memset(ca, 0, sizeof(*ca));
+    ca->exit_signal = 17;
+    ca->flags = LINUX_CLONE_SIGHAND;
+    expect(SYS2(435, a, sizeof(*ca)) == -VIBEOS_EINVAL, "handlers shared without the memory they point into are EINVAL");
+    ca->flags = LINUX_CLONE_FS | LINUX_CLONE_NEWNS;
+    expect(SYS2(435, a, sizeof(*ca)) == -VIBEOS_EINVAL, "a filesystem view both shared and new is EINVAL");
+    ca->flags = LINUX_CLONE_PIDFD | LINUX_CLONE_PARENT_SETTID;
+    ca->pidfd = ca->parent_tid = kf_ualloc(8);
+    expect(SYS2(435, a, sizeof(*ca)) == -VIBEOS_EINVAL, "a pidfd and a tid written to one place are EINVAL");
+    ca->flags = 0;
+    ca->pidfd = ca->parent_tid = 0;
+    expect(SYS2(435, a, 4097) == -VIBEOS_E2BIG, "a structure larger than a page is E2BIG");
+    big = kf_ualloc(sizeof(*ca) + 8u);
+    memset(kf_uptr(big), 0, sizeof(*ca) + 8u);
+    memcpy(kf_uptr(big), ca, sizeof(*ca));
+    ((uint8_t *)kf_uptr(big))[sizeof(*ca) + 3u] = 1;
+    expect(SYS2(435, big, sizeof(*ca) + 8u) == -VIBEOS_E2BIG,
+           "a newer structure is E2BIG if what this kernel does not know is not zero");
+    expect(SYS1(56, 65 /* CSIGNAL past the last signal */) == -VIBEOS_EINVAL,
+           "clone's exit signal must be a signal");
+}
+
+/* A futex on a page mapped MAP_SHARED is the same word in every process that
+ * maps it, wherever each maps it (L2 step 6): LTP's checkpoints. */
+static void t_futex_shared(void) {
+    uint64_t wa, wb, ts;
+    kf_outcome_t out = KF_RETURNED;
+    int a, b;
+
+    a = fresh(180);
+    b = kf_spawn(181, 181);
+    wa = (kf_ualloc(8192) + 4095u) & ~4095ull;
+    wb = (kf_ualloc(8192) + 4095u) & ~4095ull;
+    kf_share_page(a, wa, 77u);
+    kf_share_page(b, wb, 77u);
+    *(uint32_t *)kf_uptr(wa + 8u) = 5u;
+    *(uint32_t *)kf_uptr(wb + 8u) = 5u;
+    kf_set_current(a);
+    (void)sys(202, wa + 8u, 0 /* FUTEX_WAIT */, 5, 0, 0, 0, &out);
+    expect(out == KF_BLOCKED, "a waits on the shared word");
+    kf_set_current(b);
+    expect(SYS3(202, wb + 8u, 1 /* FUTEX_WAKE */, 1) == 1,
+           "and b, waking the same word at its own address, wakes it");
+    kf_set_current(a);
+    out = KF_RETURNED;
+    (void)sys(202, wa + 8u, 128 /* FUTEX_WAIT|PRIVATE */, 5, 0, 0, 0, &out);
+    kf_set_current(b);
+    expect(SYS3(202, wb + 8u, 1 | 128, 1) == 0, "a private wait is its own process's, whatever the page");
+    /* A timed wait ends. */
+    kf_set_current(a);
+    ts = kf_ualloc(16);
+    ((int64_t *)kf_uptr(ts))[0] = 0;
+    ((int64_t *)kf_uptr(ts))[1] = 50000000;   /* 50 ms */
+    expect(sys(202, wa + 8u, 128, 5, ts, 0, 0, 0) == -VIBEOS_ETIMEDOUT, "a wait with a timeout nobody ends is ETIMEDOUT");
+    ((int64_t *)kf_uptr(ts))[1] = 1000000000;
+    expect(sys(202, wa + 8u, 128, 5, ts, 0, 0, 0) == -VIBEOS_EINVAL, "and a timeout that is not one is EINVAL");
+    kf_share_page(-1, 0, 0);
 }
 
 /* ---- what LTP's L1 tests found (L3 step 3) --------------------------------------------- */
@@ -3739,6 +4010,9 @@ int test_linux_handlers(void) {
     t_timers();
     t_limits();
     t_processes();
+    t_procdev();
+    t_futex_shared();
+    t_clone3_checks();
     t_sleep();
     t_ltp_l1();
     return g_fail ? -1 : 0;

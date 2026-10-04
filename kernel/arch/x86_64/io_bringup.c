@@ -39,6 +39,7 @@
 #include "vibeos/swapmap.h"
 #include "vibeos/tmpfs.h"
 #include "vibeos/procfs.h"
+#include "vibeos/devfs.h"
 #include "vibeos/swapmap.h"
 #include "vibeos/vfs.h"
 
@@ -1029,10 +1030,162 @@ static void hw_procfs_mem(vibeos_procfs_mem_t *out) {
     out->swap_free_kb = (uint64_t)(slots - used) * 4ull;
 }
 
+/* cpuinfo (L2 step 6): what CPUID says, under Linux's names for the bits, and a
+ * clock measured from the TSC against the timer rather than claimed. LTP
+ * decides it runs virtualised from the model name ("QEMU Virtual CPU") and
+ * the hypervisor bit, and loosens its timing checks for it. */
+static char g_cpu_flags[640];
+static uint64_t g_cpu_tsc0, g_cpu_tick0;
+
+static void hw_cpuid(uint32_t leaf, uint32_t sub, uint32_t r[4]) {
+    __asm__ __volatile__("cpuid" : "=a"(r[0]), "=b"(r[1]), "=c"(r[2]), "=d"(r[3]) : "a"(leaf), "c"(sub));
+}
+
+static uint64_t hw_rdtsc(void) {
+    uint32_t lo, hi;
+    __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+typedef struct {
+    uint8_t reg;     /* 0 leaf 1 edx, 1 leaf 1 ecx, 2 ext edx, 3 ext ecx, 4 leaf 7 ebx */
+    uint8_t bit;
+    const char *name;
+} hw_cpu_flag_t;
+
+static const hw_cpu_flag_t g_cpu_flag_names[] = {
+    {0, 0, "fpu"}, {0, 1, "vme"}, {0, 2, "de"}, {0, 3, "pse"}, {0, 4, "tsc"}, {0, 5, "msr"},
+    {0, 6, "pae"}, {0, 7, "mce"}, {0, 8, "cx8"}, {0, 9, "apic"}, {0, 11, "sep"}, {0, 12, "mtrr"},
+    {0, 13, "pge"}, {0, 14, "mca"}, {0, 15, "cmov"}, {0, 16, "pat"}, {0, 17, "pse36"},
+    {0, 19, "clflush"}, {0, 23, "mmx"}, {0, 24, "fxsr"}, {0, 25, "sse"}, {0, 26, "sse2"},
+    {0, 28, "ht"}, {2, 11, "syscall"}, {2, 20, "nx"}, {2, 26, "pdpe1gb"}, {2, 27, "rdtscp"},
+    {2, 29, "lm"}, {1, 0, "pni"}, {1, 1, "pclmulqdq"}, {1, 9, "ssse3"}, {1, 12, "fma"},
+    {1, 13, "cx16"}, {1, 19, "sse4_1"}, {1, 20, "sse4_2"}, {1, 21, "x2apic"}, {1, 22, "movbe"},
+    {1, 23, "popcnt"}, {1, 25, "aes"}, {1, 26, "xsave"}, {1, 28, "avx"}, {1, 29, "f16c"},
+    {1, 30, "rdrand"}, {1, 31, "hypervisor"}, {3, 0, "lahf_lm"}, {3, 5, "abm"},
+    {4, 0, "fsgsbase"}, {4, 3, "bmi1"}, {4, 5, "avx2"}, {4, 8, "bmi2"}, {4, 9, "erms"},
+    {4, 18, "rdseed"}, {4, 19, "adx"}, {4, 29, "sha_ni"},
+};
+
+static uint32_t hw_procfs_cpus(void) {
+    return g_cpu_online_count ? g_cpu_online_count : 1u;
+}
+
+static uint32_t hw_procfs_cpu_khz(void) {
+    uint64_t ticks = g_timer_ticks - g_cpu_tick0;
+
+    if (ticks < 10u) {
+        return 0;   /* not long enough yet to say */
+    }
+    return (uint32_t)((hw_rdtsc() - g_cpu_tsc0) * VIBEOS_HW_TIMER_HZ / ticks / 1000u);
+}
+
+static void hw_procfs_cpu(vibeos_procfs_cpu_t *c) {
+    uint32_t r[4], regs[5] = {0, 0, 0, 0, 0}, max, ext, i, n = 0, k;
+
+    hw_cpuid(0, 0, r);
+    max = r[0];
+    c->cpuid_level = max;
+    ((uint32_t *)c->vendor)[0] = r[1];
+    ((uint32_t *)c->vendor)[1] = r[3];
+    ((uint32_t *)c->vendor)[2] = r[2];
+    c->vendor[12] = 0;
+    hw_cpuid(1, 0, r);
+    c->stepping = r[0] & 0xfu;
+    c->model = (r[0] >> 4) & 0xfu;
+    c->family = (r[0] >> 8) & 0xfu;
+    if (c->family == 6u || c->family == 15u) {
+        c->model += ((r[0] >> 16) & 0xfu) << 4;
+    }
+    if (c->family == 15u) {
+        c->family += (r[0] >> 20) & 0xffu;
+    }
+    regs[0] = r[3];
+    regs[1] = r[2];
+    if (max >= 7u) {
+        hw_cpuid(7, 0, r);
+        regs[4] = r[1];
+    }
+    hw_cpuid(0x80000000u, 0, r);
+    ext = r[0];
+    if (ext >= 0x80000001u) {
+        hw_cpuid(0x80000001u, 0, r);
+        regs[2] = r[3];
+        regs[3] = r[2];
+    }
+    c->model_name[0] = 0;
+    if (ext >= 0x80000004u) {
+        char brand[49];
+        uint32_t j, at = 0;
+
+        for (i = 0; i < 3u; i++) {
+            hw_cpuid(0x80000002u + i, 0, r);
+            for (j = 0; j < 4u; j++) {
+                ((uint32_t *)brand)[i * 4u + j] = r[j];
+            }
+        }
+        brand[48] = 0;
+        while (brand[at] == ' ') {
+            at++;   /* Intel pads the brand on the left */
+        }
+        for (i = 0; brand[at + i] && i + 1u < sizeof(c->model_name); i++) {
+            c->model_name[i] = brand[at + i];
+        }
+        c->model_name[i] = 0;
+    }
+    c->phys_bits = 36u;
+    c->virt_bits = 48u;
+    if (ext >= 0x80000008u) {
+        hw_cpuid(0x80000008u, 0, r);
+        c->phys_bits = r[0] & 0xffu;
+        c->virt_bits = (r[0] >> 8) & 0xffu;
+    }
+    for (i = 0; i < sizeof(g_cpu_flag_names) / sizeof(g_cpu_flag_names[0]); i++) {
+        const hw_cpu_flag_t *f = &g_cpu_flag_names[i];
+
+        if (!(regs[f->reg] & (1u << f->bit))) {
+            continue;
+        }
+        if (n > 0u && n + 1u < sizeof(g_cpu_flags)) {
+            g_cpu_flags[n++] = ' ';
+        }
+        for (k = 0; f->name[k] && n + 1u < sizeof(g_cpu_flags); k++) {
+            g_cpu_flags[n++] = f->name[k];
+        }
+    }
+    g_cpu_flags[n] = 0;
+    c->flags = g_cpu_flags;
+}
+
+/* /dev (L2 step 6): the names programs open without asking. Its own mount,
+ * with no state - the devices behind its names are the file types'. */
+static vibeos_fsmount_t g_devfs_mnt;
+
+static void hw_devfs_bringup(void) {
+    const char *verdict = "OK";
+
+    if (vibeos_fs_mount(&g_devfs_mnt, vibeos_devfs_ops(), 0, "devtmpfs") != 0) {
+        verdict = "FAILED: mount";
+    } else if (vibeos_fs_attach("/dev", &g_devfs_mnt) != 0) {
+        verdict = "FAILED: attach";
+    }
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts("[IO] DEVFS at=/dev result=");
+    vibeos_x86_64_serial_puts(verdict);
+    vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
+}
+
 static void hw_procfs_bringup(void) {
     const char *verdict = "OK";
 
     g_procfs.mem = hw_procfs_mem;
+    hw_procfs_cpu(&g_procfs.cpu);
+    g_cpu_tsc0 = hw_rdtsc();
+    g_cpu_tick0 = g_timer_ticks;
+    g_procfs.cpu_khz = hw_procfs_cpu_khz;
+    g_procfs.cpus = hw_procfs_cpus;
+    linux_procfs_bind(&g_procfs);
     /* Linux's own limit on a 64-bit machine. Pids here come off a counter that
      * does not wrap, so this is a number no boot has come near rather than one
      * the allocator enforces. */
@@ -1131,6 +1284,7 @@ void hw_volumes_bringup(void) {
     /* After the volumes, so the first of them is still the root. */
     hw_tmpfs_bringup();
     hw_procfs_bringup();
+    hw_devfs_bringup();
 
     {
         uint32_t k;

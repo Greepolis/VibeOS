@@ -137,6 +137,7 @@ EXEMPT = {
     "fs/procfs": "no state: every figure is asked of the mount's owner when the file is read, and every refusal is ENOENT, ENOTDIR or EISDIR returned to the caller; the text it prints is checked by the handlers' host test",
     "fs/fdtable": "pure functions over a table the caller owns; an exhausted table is -1 and a limit, not a defect - the layout rules are proved by the host test and fs-fdtable.txt",
     "sched/cred": "pure functions over a struct the caller owns; every refusal is EPERM or EACCES returned to the caller, and the rules are proved by the host tests and sched-cred.txt",
+    "fs/devfs": "no state: a constant table of names, numbers and links, every refusal ENOENT or EINVAL to the caller; what a device does is the file types' (abi-chrdev.txt), what the table says is proved by fs-devfs.txt",
     "sched/task_ident": "pure functions over a struct the caller owns; no state and no refusal - the reset is proved byte-for-byte by the host test",
     "sched/runq": "a round-robin pick proven against a model by the scheduler torture harness; no state to be wrong",
     "diag/crash": "a ring of four under its own lock, copied whole in and out; overwriting the oldest is the design, and the capture itself is the arch's, proved on every boot by svc-crash and crash-recorder.txt",

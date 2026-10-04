@@ -32,6 +32,13 @@ extern const vibeos_file_ops_t vibeos_fops_pipe;
 extern const vibeos_file_ops_t vibeos_fops_socket;
 extern const vibeos_file_ops_t vibeos_fops_console;
 extern const vibeos_file_ops_t vibeos_fops_pidfd;
+extern const vibeos_file_ops_t vibeos_fops_chrdev;
+
+/* What a character device node opens as, by its number (vibeos/devfs.h): the
+ * console for a terminal, a description of its own for null, zero, full and
+ * the random devices. -ENXIO for a number with no driver, -ENFILE when the
+ * table is full; *err is 0 otherwise. */
+vibeos_file_t *vibeos_open_chrdev(uint32_t rdev, uint32_t flags, long *err);
 
 /* A description naming a process (L2 step 5): its pid and the tenancy of its
  * slot, so that a reused pid is not it. NULL if the table is full. */

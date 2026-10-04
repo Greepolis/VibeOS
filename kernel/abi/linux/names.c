@@ -84,6 +84,8 @@ static long linux_sys_statx(uint64_t dirfd, uint64_t path_uptr, uint64_t flags, 
     linux_statx_time(&k.stx_ctime, st.ctime_ns);
     linux_statx_time(&k.stx_mtime, st.mtime_ns);
     k.stx_dev_minor = (uint32_t)dev;
+    k.stx_rdev_major = st.rdev >> 8;
+    k.stx_rdev_minor = st.rdev & 0xffu;
     if (vibeos_uaccess_copy((void *)(uintptr_t)ubuf, &k, sizeof(k)) != 0) {
         return -VIBEOS_EFAULT;
     }

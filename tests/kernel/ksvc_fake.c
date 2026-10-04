@@ -19,6 +19,8 @@
 #include "vibeos/mm_stats.h"
 #include "vibeos/tmpfs.h"
 #include "vibeos/procfs.h"
+#include "vibeos/random.h"
+#include "vibeos/devfs.h"
 #include "vibeos/fdtable.h"
 #include "vibeos/file.h"
 #include "vibeos/fileops.h"
@@ -525,6 +527,7 @@ static vibeos_tmpfs_t g_tmpfs;
 static vibeos_fsmount_t g_tmpfs_mnt;
 static vibeos_fsmount_t g_procfs_mnt;
 static vibeos_procfs_t g_procfs;
+static vibeos_fsmount_t g_devfs_mnt;
 
 static void kf_procfs_mem(vibeos_procfs_mem_t *out) {
     out->total_kb = vibeos_frame_total() * 4ull;
@@ -557,6 +560,14 @@ void kf_reset(void) {
     vibeos_flk_reset();
     vibeos_ptimer_set_lock(kf_pipe_lock, kf_pipe_unlock);
     vibeos_ptimer_reset();
+    /* A pool that is ready, as the machine's is a second after boot; a test
+     * that wants the wait empties it with vibeos_random_reset. */
+    vibeos_random_set_lock(kf_pipe_lock, kf_pipe_unlock);
+    vibeos_random_reset();
+    {
+        static const uint8_t seed[32] = {0x56, 0x69, 0x62, 0x65};
+        vibeos_random_add(seed, (uint32_t)sizeof(seed), 256u);
+    }
     memset(g_nice, 0, sizeof(g_nice));
     g_account_ready = 0;
     vibeos_tty_reset();
@@ -582,6 +593,7 @@ void kf_reset(void) {
     g_exit_code_v = 0;
     g_net_is_up = 0;
     g_fg_pgid = 0;
+    kf_share_page(-1, 0, 0);
     vibeos_pipe_set_lock(kf_pipe_lock, kf_pipe_unlock);
     vibeos_fs_unmount(&g_root);
     (void)vibeos_fs_mount(&g_root, &g_kf_fs_ops, 0, "kf");
@@ -593,15 +605,25 @@ void kf_reset(void) {
                             kf_pipe_unlock);
     vibeos_tmpfs_set_page_hold(&g_tmpfs, kf_tmpfs_page_hold);
     g_tmpfs_live = 1;
-    kf_share_page(-1, 0, 0);
     (void)vibeos_fs_mount(&g_tmpfs_mnt, vibeos_tmpfs_ops(), &g_tmpfs, "tmpfs");
     (void)vibeos_fs_attach("/tmp", &g_tmpfs_mnt);
     /* /proc, as in the kernel (docs/abi/ L3 step 3). */
     g_procfs.mem = kf_procfs_mem;
     g_procfs.pid_max = 4194304u;
+    /* What processes there are is the personality's to say, here as there
+     * (L2 step 6); the processor is a fixed one. */
+    linux_procfs_bind(&g_procfs);
+    memcpy(g_procfs.cpu.vendor, "FakeIntel", 10);
+    memcpy(g_procfs.cpu.model_name, "Fake CPU", 9);
+    g_procfs.cpu.family = 6;
+    g_procfs.cpu.flags = "fpu tsc lm";
     vibeos_fs_unmount(&g_procfs_mnt);
     (void)vibeos_fs_mount(&g_procfs_mnt, vibeos_procfs_ops(), &g_procfs, "proc");
     (void)vibeos_fs_attach("/proc", &g_procfs_mnt);
+    /* /dev, as in the kernel (L2 step 6). */
+    vibeos_fs_unmount(&g_devfs_mnt);
+    (void)vibeos_fs_mount(&g_devfs_mnt, vibeos_devfs_ops(), 0, "devtmpfs");
+    (void)vibeos_fs_attach("/dev", &g_devfs_mnt);
     /* The personality registers its own tables: see the tests' fresh(). */
 }
 
@@ -1084,28 +1106,6 @@ int ks_user_fixed_ok(uint64_t base, uint64_t len) {
 }
 void ks_tlb_drain(void) {}
 void ks_tlb_flush_page(uint64_t va) { (void)va; }
-void ks_pageinfo(int slot, uint64_t va, vibeos_pageinfo_t *out) {
-    (void)slot; (void)va;
-    memset(out, 0, sizeof(*out));
-}
-void *ks_page_alloc(void) { return malloc(4096); }
-void ks_page_free(void *page, const char *why) { (void)why; free(page); }
-uint64_t ks_heap_base(void) { return 0x10000000ull; }
-uint64_t ks_mmap_base(void) { return 0x20000000ull; }
-uint64_t ks_stack_bytes(void) { return 16384ull; }
-
-vibeos_procstate_t *ks_procstate_new(void) {
-    uint32_t p;
-    for (p = 0; p < KF_PROCS; p++) {
-        if (g_ps[p].refs == 0u) {
-            kf_procstate_init(&g_ps[p]);
-            g_ps[p].files_users = 1u;
-            return &g_ps[p];
-        }
-    }
-    return 0;
-}
-void ks_procstate_put(vibeos_procstate_t *ps) {
 /* Pages a test says are shared (kf_share_page): the fake has no page tables,
  * so this is the whole of what ks_pageinfo knows - enough for a shared futex,
  * which asks which frame a word is on and nothing else. */
@@ -1129,10 +1129,10 @@ void kf_share_page(int slot, uint64_t va, uint64_t frame) {
     }
 }
 
-    if (ps && ps->refs) {
-        /* As the architecture's: the last reference closes a table nobody left. */
-        if (ps->refs == 1u) {
-            vibeos_fdtable_destroy(&ps->files);
+void ks_pageinfo(int slot, uint64_t va, vibeos_pageinfo_t *out) {
+    uint32_t i;
+
+    memset(out, 0, sizeof(*out));
     for (i = 0; i < g_shared_count; i++) {
         if (g_shared_pages[i].slot == slot && g_shared_pages[i].page == (va & ~0xfffull)) {
             out->frame = g_shared_pages[i].frame;
@@ -1140,6 +1140,29 @@ void kf_share_page(int slot, uint64_t va, uint64_t frame) {
             out->owners = 2u;
         }
     }
+}
+void *ks_page_alloc(void) { return malloc(4096); }
+void ks_page_free(void *page, const char *why) { (void)why; free(page); }
+uint64_t ks_heap_base(void) { return 0x10000000ull; }
+uint64_t ks_mmap_base(void) { return 0x20000000ull; }
+uint64_t ks_stack_bytes(void) { return 16384ull; }
+
+vibeos_procstate_t *ks_procstate_new(void) {
+    uint32_t p;
+    for (p = 0; p < KF_PROCS; p++) {
+        if (g_ps[p].refs == 0u) {
+            kf_procstate_init(&g_ps[p]);
+            g_ps[p].files_users = 1u;
+            return &g_ps[p];
+        }
+    }
+    return 0;
+}
+void ks_procstate_put(vibeos_procstate_t *ps) {
+    if (ps && ps->refs) {
+        /* As the architecture's: the last reference closes a table nobody left. */
+        if (ps->refs == 1u) {
+            vibeos_fdtable_destroy(&ps->files);
         }
         ps->refs--;
     }

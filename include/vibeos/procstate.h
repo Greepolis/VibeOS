@@ -32,6 +32,7 @@
 #define VIBEOS_RLIM_CPU     0u    /* CPU seconds: SIGXCPU at soft, SIGKILL at hard */
 #define VIBEOS_RLIM_FSIZE   1u    /* largest file a write may make: SIGXFSZ, EFBIG */
 #define VIBEOS_RLIM_DATA    2u    /* the heap brk may grow                          */
+#define VIBEOS_RLIM_RSS     5u    /* kept and reported: /proc's rsslim              */
 #define VIBEOS_RLIM_NPROC   6u    /* tasks one user may have                         */
 #define VIBEOS_RLIM_NOFILE  7u    /* descriptors: the table's own limit             */
 #define VIBEOS_RLIM_NICE    13u   /* how far an unprivileged process may lower nice */
@@ -78,6 +79,12 @@ typedef struct vibeos_image {
      * /proc/self/exe, and answering from the real path is the difference
      * between a correct answer and a plausible one. */
     char exe_path[VIBEOS_PATH_MAX];
+    /* What execve was given as arguments, each ended by a NUL, cut at the
+     * size of this field: /proc/<pid>/cmdline (L2 step 6). Linux reads it out
+     * of the process's own memory; a copy is enough for ps, and a program
+     * cannot reach into it to change what it says. */
+    char cmdline[256];
+    uint32_t cmdline_len;
 } vibeos_image_t;
 
 /* What belongs to a process rather than to one of its threads.

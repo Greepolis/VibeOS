@@ -188,6 +188,7 @@ if(VIBEOS_BUILD_TESTS)
         tests/kernel/tmpfs_tests.c
         tests/kernel/filelock_tests.c
         tests/kernel/ptimer_tests.c
+        tests/kernel/random_tests.c
         tests/kernel/fat_tests.c
         tests/kernel/pipe_tests.c
         tests/kernel/klog_tests.c

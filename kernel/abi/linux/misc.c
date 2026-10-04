@@ -1,9 +1,10 @@
-/* Linux ABI: uname, clock_gettime, time, sysinfo.
+/* Linux ABI: uname, clock_gettime, time, sysinfo, getrandom.
  *
- * Lifted out of arch_hw.c (C4 stage 3). Nothing here is new: the handlers and the
- * helpers only they use, moved as they were. */
+ * Lifted out of arch_hw.c (C4 stage 3), the handlers and the helpers only they
+ * use moved as they were; getrandom arrived with the random pool (L2 step 6). */
 
 #include "linux_internal.h"
+#include "vibeos/random.h"
 
 /* uname(): six fixed 65-byte fields, in order. Programs branch on the release
  * string, so it carries a real version number rather than a placeholder. */
@@ -12,7 +13,7 @@ static long linux_sys_uname(uint64_t buf) {
         "Linux",            /* sysname: the ABI implemented here, which is    */
                             /* what the question is actually about            */
         "vibeos",           /* nodename   */
-        "6.1.0-vibeos",     /* release    */
+        VIBEOS_LINUX_RELEASE, /* release  */
         "VibeOS",           /* version    */
         "x86_64",           /* machine    */
         "(none)"            /* domainname */
@@ -195,11 +196,63 @@ static long linux_sys_sysinfo(uint64_t buf) {
                ? 0 : -VIBEOS_EFAULT;
 }
 
+/* getrandom(): bytes from the kernel's pool (kernel/core/random.c). Until the
+ * pool has been credited with enough to be unpredictable a caller waits, or is
+ * told EAGAIN with GRND_NONBLOCK; GRND_INSECURE takes what there is, which is
+ * what it asks for. GRND_RANDOM changes nothing, as it changes nothing in Linux
+ * since 5.6. A long request is handed out a chunk at a time and a signal can
+ * end it early, with the count so far - Linux's answer for a request past 256
+ * bytes. */
+#define LINUX_RANDOM_CHUNK 256u
+
+static long linux_sys_getrandom(uint64_t ubuf, uint64_t len, uint64_t flags) {
+    uint8_t chunk[LINUX_RANDOM_CHUNK];
+    uint64_t done = 0;
+    uint32_t i;
+    long r = 0;
+
+    if (flags & ~(uint64_t)(LINUX_GRND_NONBLOCK | LINUX_GRND_RANDOM | LINUX_GRND_INSECURE)) {
+        return -VIBEOS_EINVAL;
+    }
+    if ((flags & LINUX_GRND_INSECURE) && (flags & LINUX_GRND_RANDOM)) {
+        return -VIBEOS_EINVAL;
+    }
+    if (!(flags & LINUX_GRND_INSECURE)) {
+        while (!vibeos_random_ready()) {
+            if (flags & LINUX_GRND_NONBLOCK) {
+                return -VIBEOS_EAGAIN;
+            }
+            if (ks_current() >= 0 && ks_signal_interrupts(ks_current())) {
+                return -VIBEOS_EINTR;
+            }
+            ks_wait_tick();
+        }
+    }
+    while (done < len) {
+        uint32_t n = len - done > LINUX_RANDOM_CHUNK ? LINUX_RANDOM_CHUNK : (uint32_t)(len - done);
+
+        if (done > 0u && ks_current() >= 0 && ks_signal_interrupts(ks_current())) {
+            break;
+        }
+        vibeos_random_read(chunk, n);
+        if (vibeos_uaccess_copy((void *)(uintptr_t)(ubuf + done), chunk, n) != 0) {
+            r = -VIBEOS_EFAULT;
+            break;
+        }
+        done += n;
+    }
+    for (i = 0; i < LINUX_RANDOM_CHUNK; i++) {
+        ((volatile uint8_t *)chunk)[i] = 0;   /* what a caller asked for is theirs alone */
+    }
+    return done > 0u ? (long)done : r;
+}
+
 /* ---- the syscalls this file implements --------------------------------------- */
 #define LINUX_MISC_SYSCALLS(X) \
     X(63,  uname,         UNAME,         PTRS(OUT(0, 6u * 65u)), linux_sys_uname(ARG(0))) \
     X(99,  sysinfo,       SYSINFO,       PTRS(OUT(0, 112)), linux_sys_sysinfo(ARG(0))) \
     X(201, time,          TIME,          PTRS(OUT_OPT(0, 8)), linux_sys_time(ARG(0))) \
+    X(318, getrandom,     GETRANDOM,     PTRS(OUT_BUF(0, 1)), linux_sys_getrandom(ARG(0), ARG(1), ARG(2))) \
     X(35,  nanosleep,     NANOSLEEP,     PTRS(IN(0, 16), OUT_OPT(1, 16)), linux_sys_nanosleep(ARG(0), ARG(1))) \
     X(228, clock_gettime, CLOCK_GETTIME, PTRS(OUT(1, 16)), linux_sys_clock_gettime(ARG(0), ARG(1))) \
     X(230, clock_nanosleep, CLOCK_NANOSLEEP, PTRS(IN(2, 16), OUT_OPT(3, 16)), linux_sys_clock_nanosleep(ARG(0), ARG(1), ARG(2), ARG(3)))

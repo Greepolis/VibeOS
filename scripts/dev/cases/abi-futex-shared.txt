@@ -1,0 +1,30 @@
+# Shared futexes and timed waits (kernel/abi/linux/futex.c, L2 step 6, found
+# by step 5's LTP run). Host test: t_futex_shared in
+# tests/kernel/linux_abi_tests.c.
+#
+#  1. a word on a MAP_SHARED page is keyed by the caller's address, as every
+#     word was: a wake from another process finds nobody
+#  2. the private flag is ignored, so a private word on a shared page is
+#     shared too
+#  3. the timeout is never reached: a timed wait nobody ends waits for ever
+#
+# Target source: kernel/abi/linux/futex.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/futex.c scripts/dev/cases/abi-futex-shared.txt
+
+### a word on a MAP_SHARED page is keyed by the caller's address
+--- old
+        if ((pi.flags & VIBEOS_PAGE_PRESENT) && (pi.flags & VIBEOS_PAGE_SHARED)) {
++++ new
+        if (0) {
+
+### the private flag is ignored
+--- old
+    if (me < 0 || (op & LINUX_FUTEX_PRIVATE_FLAG)) {
++++ new
+    if (me < 0) {
+
+### the timeout is never reached
+--- old
+            if (ks_ticks() >= deadline) {
++++ new
+            if (0) {

@@ -194,7 +194,7 @@
     X(TIMES,           "times",           VIBEOS_CHECK_USER_MEMORY) \
     X(UNAME,           "uname",           VIBEOS_CHECK_USER_MEMORY) \
     X(SYSINFO,         "sysinfo",         VIBEOS_CHECK_USER_MEMORY) \
-    X(GETRANDOM,       "getrandom",       VIBEOS_CHECK_NONE) \
+    X(GETRANDOM,       "getrandom",       VIBEOS_CHECK_USER_MEMORY) \
     /* network */ \
     X(SOCKET,          "socket",          VIBEOS_CHECK_NONE) \
     X(CONNECT,         "connect",         VIBEOS_CHECK_USER_MEMORY) \

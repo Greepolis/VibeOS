@@ -1,17 +1,19 @@
-# The corpus at boot (docs/abi/ L1 step 8): tests/corpus/run-l1.sh runs fifteen
+# The corpus (docs/abi/ L1 step 8): /corpus/run.sh runs the eighteen
 # workloads in the guest and the gate compares every line with what the same
 # script printed on Linux (tests/corpus/l1-expected.txt).
 #
-#  1. execve refuses /proc/self/exe, as it did before the step. BusyBox's shell
-#     runs every applet that is not built into it by that name - `sh` itself
-#     among them, so `sh /corpus/run.sh` is "not found" and the script never
-#     starts. Expect corpus_did_not_finish.
+#  1. /proc/self/exe names nothing, as it did before L1 step 8 (when execve
+#     recognised the name by its spelling) and before L2 step 6 (when /proc
+#     became a filesystem and the name an ordinary walk through two links).
+#     BusyBox's shell runs every applet that is not built into it by that
+#     name - `sh` itself among them, so `sh /corpus/run.sh` is "not found" and
+#     the script never starts. Expect corpus_did_not_finish.
 #
-# Target source: kernel/abi/linux/proc.c
-# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/proc.c scripts/dev/cases/abi-corpus-boot.txt
+# Target source: kernel/abi/linux/procsrc.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/procsrc.c scripts/dev/cases/abi-corpus-boot.txt
 
-### execve refuses /proc/self/exe
+### /proc/self/exe names nothing
 --- old
-    if (linux_is_proc_self_exe(dirfd, path_uptr) &&
+        return i ? src_copy(buf, cap, path) : -VIBEOS_ENOENT;
 +++ new
-    if (0 && linux_is_proc_self_exe(dirfd, path_uptr) &&
+        return -VIBEOS_ENOENT;

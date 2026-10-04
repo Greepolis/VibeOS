@@ -69,6 +69,7 @@ typedef struct {
     uint32_t nlink;
     uint32_t uid;
     uint32_t gid;
+    uint32_t rdev;                /* a device node's number (vibeos/devfs.h)  */
     uint64_t atime_ns;            /* nanoseconds on vibeos_fs_now_ns's clock */
     uint64_t mtime_ns;
     uint64_t ctime_ns;

@@ -12,6 +12,7 @@
 #include "vibeos/siginfo.h"
 #include <stdint.h>
 #include "vibeos/procstate.h"
+#include "vibeos/procfs.h"
 
 struct ks_regs;
 
@@ -44,6 +45,10 @@ void linux_procstate_defaults(vibeos_procstate_t *ps);
 int linux_files_leave(vibeos_procstate_t *ps);
 /* A process has ended: the record locks it held end with it (L1 step 6). */
 void linux_locks_exit(uint32_t tgid);
+
+/* What /proc says about processes (procsrc.c, L2 step 6): the mount's owner
+ * fills the machine's facts and asks this for the rest. */
+void linux_procfs_bind(vibeos_procfs_t *pf);
 
 /* Futexes (futex.c): exit wakes whoever joins the thread. One waiter per task at
  * most, so the table is sized by the task table, which the architecture asserts. */

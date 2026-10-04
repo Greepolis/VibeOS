@@ -138,6 +138,7 @@ void vibeos_file_stat_from_node(vibeos_file_stat_t *st, const vibeos_fs_node_t *
     st->nlink = node->nlink;
     st->uid = node->uid;
     st->gid = node->gid;
+    st->rdev = node->rdev;
     st->atime_ns = node->atime_ns;
     st->mtime_ns = node->mtime_ns;
     st->ctime_ns = node->ctime_ns;

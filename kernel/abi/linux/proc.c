@@ -344,6 +344,7 @@ static long linux_sys_clone_thread(const ks_regs_t *frame,
     child->signal_stopped = 0;
     child->is_thread = 1;
     child->cpu_base = linux_cpu_slot(idx);
+    child->start_tick = ks_ticks();
     (void)ks_task_set_nice(idx, ks_task_nice(me));   /* a thread starts at its creator's nice */
     child->is_user = 1;
     child->exit_code = 0;
@@ -861,22 +862,12 @@ static long linux_sys_execve(ks_regs_t *frame, uint64_t dirfd, uint64_t path_upt
     if (atflags & ~(uint64_t)(LINUX_AT_EMPTY_PATH | LINUX_AT_SYMLINK_NOFOLLOW)) {
         return -VIBEOS_EINVAL;
     }
-    if (linux_is_proc_self_exe(dirfd, path_uptr) &&
-        ks_current() >= 0 && ks_image(ks_current())->exe_path[0] != 0) {
-        /* "Run the program I am." There is no /proc, and this is the one name
-         * in it a program cannot do without: BusyBox's shell runs every applet
-         * that is not built into it - sort, sed, tar, awk - by executing
-         * /proc/self/exe under the applet's name. Until docs/abi/ L1 step 8
-         * that was refused as not found, and the shell fell back to a file
-         * called after the applet on its PATH - which exists for four of them.
-         * readlink has answered for this name since A4; execve is the other
-         * half. */
-        const char *self = ks_image(ks_current())->exe_path;
-        for (k = 0; k + 1u < VIBEOS_PATH_MAX && self[k]; k++) {
-            path[k] = self[k];
-        }
-        path[k] = 0;
-    } else {
+    /* "Run the program I am" - /proc/self/exe, which BusyBox's shell runs
+     * every applet not built into it by - is an ordinary walk since L2 step
+     * 6: /proc/self is a link to the process's directory and exe a link to
+     * the program. Until then it was recognised here by its spelling, because
+     * there was no /proc to hold it. */
+    {
         vibeos_path_t w;
         long pr = linux_walk_at_empty(dirfd, path_uptr, atflags,
                                       (atflags & LINUX_AT_SYMLINK_NOFOLLOW) ? VIBEOS_PATH_NOFOLLOW : 0u, &w);
@@ -1796,6 +1787,15 @@ static long linux_sys_clone3(const vibeos_call_t *c) {
     }
     /* Judged before it is read (M-082): ring 0 reads a page the program may
      * not, and a structure on one (LTP's clone302) was taken as arguments. */
+    if (!linux_user_ok(ARG(0), size, 0)) {
+        return -VIBEOS_EFAULT;
+    }
+    for (i = 0; i < sizeof(a); i++) {
+        ((unsigned char *)&a)[i] = 0;
+    }
+    if (vibeos_uaccess_copy(&a, (const void *)(uintptr_t)ARG(0), size < sizeof(a) ? size : sizeof(a)) != 0) {
+        return -VIBEOS_EFAULT;
+    }
     /* A newer structure than this kernel knows is accepted if what it does not
      * know is zero, as Linux's copy_struct_from_user accepts it. */
     for (i = (uint32_t)sizeof(a); i < size; i++) {
@@ -1807,10 +1807,10 @@ static long linux_sys_clone3(const vibeos_call_t *c) {
             return -VIBEOS_E2BIG;
         }
     }
-    if (!linux_user_ok(ARG(0), size, 0)) {
-        return -VIBEOS_EFAULT;
+    if ((a.flags >> 32) != 0u || a.exit_signal > VIBEOS_SIG_MAX ||
+        a.set_tid != 0u || a.set_tid_size != 0u || (a.flags & LINUX_CLONE_INTO_CGROUP)) {
+        return -VIBEOS_EINVAL;
     }
-    for (i = 0; i < sizeof(a); i++) {
     /* Linux's rules between the flags: handlers are shared only with the
      * memory they point into, a filesystem view is not both shared and new,
      * and the pidfd and the parent's tid are not written to one place. */
@@ -1818,15 +1818,6 @@ static long linux_sys_clone3(const vibeos_call_t *c) {
         ((a.flags & LINUX_CLONE_FS) && (a.flags & LINUX_CLONE_NEWNS)) ||
         ((a.flags & LINUX_CLONE_PIDFD) && (a.flags & LINUX_CLONE_PARENT_SETTID) &&
          a.pidfd == a.parent_tid)) {
-        return -VIBEOS_EINVAL;
-    }
-        ((unsigned char *)&a)[i] = 0;
-    }
-    if (vibeos_uaccess_copy(&a, (const void *)(uintptr_t)ARG(0), size) != 0) {
-        return -VIBEOS_EFAULT;
-    }
-    if ((a.flags >> 32) != 0u || a.exit_signal > VIBEOS_SIG_MAX ||
-        a.set_tid != 0u || a.set_tid_size != 0u || (a.flags & LINUX_CLONE_INTO_CGROUP)) {
         return -VIBEOS_EINVAL;
     }
     if (a.stack != 0u) {
@@ -1903,9 +1894,6 @@ static long linux_sys_clone(const vibeos_call_t *c) {
  *   rseq     an optimisation with a mandatory fallback: ENOSYS makes the libc take
  *            the fallback, where claiming success would make it run a fast path
  *            this kernel does not implement.
- *   getrandom  there is no entropy source yet, and predictable bytes from the
- *            syscall a program uses for keys are worse than refusing: ENOSYS is
- *            visible, weak randomness is not.
  *   set_robust_list  walked only when a thread dies holding a robust mutex; no
  *            such thing exists here, so there is nothing to walk. */
 #define LINUX_PROC_SYSCALLS(X) \
@@ -1948,7 +1936,6 @@ static long linux_sys_clone(const vibeos_call_t *c) {
     X(218, set_tid_address,  SET_TID_ADDRESS, NOPTR, linux_sys_set_tid_address(ARG(0))) \
     X(231, exit_group,       EXIT_GROUP,      NOPTR, linux_sys_exit_group(ARG(0))) \
     X(273, set_robust_list,  SET_ROBUST_LIST, NOPTR, 0) \
-    X(318, getrandom,        GETRANDOM,       NOPTR, -VIBEOS_ENOSYS) \
     X(334, rseq,             RSEQ,            NOPTR, -VIBEOS_ENOSYS)
 
 LINUX_DEFINE_SYSCALLS(proc, LINUX_PROC_SYSCALLS)

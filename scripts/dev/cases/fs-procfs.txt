@@ -1,10 +1,13 @@
-# /proc (docs/abi/ L3 step 3). Host tests: t_procfs in
-# tests/kernel/linux_abi_tests.c.
+# /proc (docs/abi/ L3 step 3, L2 step 6). Host tests: t_procfs and t_procdev
+# in tests/kernel/linux_abi_tests.c.
 #
 #  1. a number is printed without its unit and newline, so a reader's scanf
 #     matches the next line's name as part of this one's value
 #  2. a file's size is not what a read of it returns
 #  3. half a directory's name is taken for the directory
+#  4. /proc/self names nobody: the asking process is not asked
+#  5. stat loses its last field, so a reader counting fields reads the wrong one
+#  6. a read at an offset starts from the beginning of the text again
 #
 # Not a case today: "a directory lists a name once for every file under it".
 # No directory here holds two files yet, so listing without the check prints
@@ -15,24 +18,39 @@
 
 ### a number is printed without its unit and newline
 --- old
-    pf_char(o, ' ');
-    pf_char(o, 'k');
-    pf_char(o, 'B');
-    pf_char(o, '\n');
+    pf_num(o, kb, 8, ' ');
+    pf_str(o, " kB\n");
 +++ new
-    pf_char(o, ' ');
+    pf_num(o, kb, 8, ' ');
 
 ### a file's size is not what a read of it returns
 --- old
-            out->size = g_files[i].text((const vibeos_procfs_t *)fs, text, PF_TEXT_MAX);
-            out->is_dir = 0;
+            out->size = o.len;
 +++ new
             out->size = 4096u;
-            (void)text;
-            out->is_dir = 0;
 
 ### half a directory's name is taken for the directory
 --- old
     return (path[i] == 0 && f[i] == '/') ? (int)(i + 1u) : -1;
 +++ new
     return (path[i] == 0) ? (int)(i + 1u) : -1;
+
+### /proc/self names nobody
+--- old
+        pid = pf->self ? pf->self() : 0u;
+        if (*rest == 0) {
++++ new
+        pid = 0u;
+        if (*rest == 0) {
+
+### stat loses its last field
+--- old
+    for (i = 39; i <= 52u; i++) {
++++ new
+    for (i = 40; i <= 52u; i++) {
+
+### a read at an offset starts from the beginning of the text again
+--- old
+    o.skip = off;
++++ new
+    o.skip = 0;

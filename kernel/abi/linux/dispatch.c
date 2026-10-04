@@ -147,6 +147,10 @@ long linux_syscall(struct ks_regs *frame, uint64_t nr, const uint64_t a[6]) {
         {
             long r = row->handler(&call);
 
+            /* Whatever it waited for is over (/proc's S, L2 step 6). */
+            if (cur >= 0 && cur == ks_current()) {
+                ks_id(cur)->sleeping = 0;
+            }
             /* A wait a signal cut short, of the kind that can be started
              * again. The program is told EINTR unless the delivery that
              * follows decides otherwise; the number is left where that

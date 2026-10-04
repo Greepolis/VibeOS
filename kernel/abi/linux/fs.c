@@ -292,24 +292,6 @@ long linux_walk_at_empty(uint64_t dirfd, uint64_t upath, uint64_t atflags, uint3
     return linux_walk_at(dirfd, upath, flags, w);
 }
 
-/* Is this path /proc/self/exe? /proc does not exist, so the question is asked
- * of the path as written, made absolute - "self/exe" from /proc and
- * "/proc/./self/exe" are the one programs usually ask. */
-int linux_is_proc_self_exe(uint64_t dirfd, uint64_t upath) {
-    char raw[VIBEOS_PATH_MAX + 1u];
-    char base[VIBEOS_PATH_MAX], root[VIBEOS_PATH_MAX], abs[VIBEOS_PATH_MAX];
-    const char *want = "/proc/self/exe";
-    uint32_t i;
-
-    if (linux_walk_inputs(dirfd, upath, raw, root, base) != 0 ||
-        vibeos_path_normalize(root, base, raw, abs, VIBEOS_PATH_MAX) != 0) {
-        return 0;
-    }
-    for (i = 0; want[i] && abs[i] == want[i]; i++) {
-    }
-    return want[i] == 0 && abs[i] == 0;
-}
-
 /* ---- read and write -------------------------------------------------------------- */
 
 static long linux_sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
@@ -1577,6 +1559,7 @@ static long linux_write_stat(uint64_t ubuf, const vibeos_file_stat_t *st, uint64
     k.st_mode = st->mode;
     k.st_uid = st->uid;
     k.st_gid = st->gid;
+    k.st_rdev = st->rdev;   /* Linux's encoding of a small number is the kernel's */
     k.st_size = (int64_t)st->size;
     k.st_blksize = 512;
     k.st_blocks = (int64_t)vibeos_ceil_div_u64(st->size, 512ull);
@@ -2177,65 +2160,38 @@ static long linux_sys_getcwd(uint64_t ubuf, uint64_t size) {
 }
 
 /* readlinkat(): a symbolic link's contents, from a filesystem that has them
- * (L1), and the one link a program uses to find itself, answered from what
- * execve was actually given rather than from a made-up path - there is no /proc
- * to hold it. Anything else is not a link, which is what EINVAL means. */
+ * (L1). The one a program uses to find itself, /proc/self/exe, is /proc's
+ * since L2 step 6; until then it was answered here from its spelling, there
+ * being no /proc to hold it. Anything else is not a link, which is what EINVAL
+ * means. */
 static long linux_sys_readlinkat(uint64_t dirfd, uint64_t path_uptr, uint64_t ubuf,
                                  uint64_t bufsz) {
     char raw[VIBEOS_PATH_MAX];
     vibeos_path_t w;
-    const char *self;
-    uint64_t n = 0;
-    long r;
+    uint64_t n;
+    long r, t;
 
-    /* /proc does not exist, so its one link is recognised from the path as
-     * written, before any walk would say ENOENT for it. */
-    if (!linux_is_proc_self_exe(dirfd, path_uptr)) {
-        long t;
-        /* Walked without following the last component: the link is the
-         * question. */
-        r = linux_walk_at(dirfd, path_uptr, VIBEOS_PATH_NOFOLLOW, &w);
-        if (r != 0) {
-            return r;
-        }
-        if ((w.node.mode & VIBEOS_S_IFMT) != VIBEOS_S_IFLNK) {
-            return -VIBEOS_EINVAL;
-        }
-        if ((int64_t)bufsz <= 0) {
-            return -VIBEOS_EINVAL;   /* as Linux answers a buffer of no size */
-        }
-        t = vibeos_fs_readlink(w.mnt, *w.tail ? w.tail : "/", raw, sizeof(raw));
-        if (t < 0) {
-            return t;
-        }
-        n = (uint64_t)t < bufsz ? (uint64_t)t : bufsz;
-        if (!linux_user_ok(ubuf, n, 1)) {
-            return -VIBEOS_EFAULT;
-        }
-        if (vibeos_uaccess_copy((void *)(uintptr_t)ubuf, raw, n) != 0) {
-            return -VIBEOS_EFAULT;
-        }
-        return (long)n;   /* not terminated, as Linux does not terminate it */
+    /* Walked without following the last component: the link is the
+     * question. */
+    r = linux_walk_at(dirfd, path_uptr, VIBEOS_PATH_NOFOLLOW, &w);
+    if (r != 0) {
+        return r;
     }
-    if (ks_current() < 0) {
+    if ((w.node.mode & VIBEOS_S_IFMT) != VIBEOS_S_IFLNK) {
         return -VIBEOS_EINVAL;
     }
-    self = ks_image(ks_current())->exe_path;
-    while (self[n]) {
-        n++;
+    if ((int64_t)bufsz <= 0) {
+        return -VIBEOS_EINVAL;   /* as Linux answers a buffer of no size */
     }
-    if (n == 0) {
-        return -VIBEOS_ENOENT;
+    t = vibeos_fs_readlink(w.mnt, *w.tail ? w.tail : "/", raw, sizeof(raw));
+    if (t < 0) {
+        return t;
     }
-    if (n > bufsz) {
-        n = bufsz;
-    }
+    n = (uint64_t)t < bufsz ? (uint64_t)t : bufsz;
     if (!linux_user_ok(ubuf, n, 1)) {
         return -VIBEOS_EFAULT;
     }
-    /* self is a kernel string; copy out fault-safe so a sibling munmap between
-     * the check and the write cannot fault in ring 0 (uaccess follow-up). */
-    if (vibeos_uaccess_copy((void *)(uintptr_t)ubuf, self, n) != 0) {
+    if (vibeos_uaccess_copy((void *)(uintptr_t)ubuf, raw, n) != 0) {
         return -VIBEOS_EFAULT;
     }
     return (long)n;   /* not terminated, as Linux does not terminate it */

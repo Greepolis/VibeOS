@@ -272,6 +272,18 @@ int hw_proc_create(hw_proc_t *p, hw_procstate_t *ps,
      * and "every caller must remember to clear a field" is the kind of rule
      * that holds until somebody adds a caller. */
     p->interp_base = 0;
+    /* The arguments, for /proc/<pid>/cmdline (L2 step 6), here for the same
+     * reason: as many whole ones as fit, the one that does not cut, each
+     * ended by a NUL - which is what a program reading cmdline looks for. */
+    p->cmdline_len = 0;
+    for (i = 0; argv && argv[i] && p->cmdline_len < (uint32_t)sizeof(p->cmdline); i++) {
+        uint32_t k;
+
+        for (k = 0; argv[i][k] && p->cmdline_len + 1u < (uint32_t)sizeof(p->cmdline); k++) {
+            p->cmdline[p->cmdline_len++] = argv[i][k];
+        }
+        p->cmdline[p->cmdline_len++] = 0;
+    }
 
     if (hw_aspace_create(&p->as) != 0) {
         return hw_exec_refuse(VIBEOS_EXEC_NO_ASPACE, path, "aspace_create");
@@ -677,18 +689,6 @@ void hw_procstate_put(hw_procstate_t *ps) {
 
 /* Defined near the spinlocks, which read it. */
 uint32_t g_next_pid = 1;
-
-int hw_task_describe(uint32_t slot, vibeos_task_desc_t *out) {
-    const hw_task_t *t;
-    uint32_t i;
-
-    if (!out || slot >= (uint32_t)VIBEOS_HW_MAX_TASKS) {
-        return -1;
-    }
-    t = &g_tasks[slot];
-    out->slot = slot;
-    out->generation = t->alloc_seq;
-    out->state = (uint32_t)hw_task_state(t);
 uint32_t g_init_pid;   /* the first program the kernel starts: who adopts orphans */
 
 /* A process's children go to init when the last of its tasks ends, as on Linux.
@@ -732,6 +732,18 @@ static void hw_orphans_to_init(int dying) {
         HW_TASK_MARK(init, ready_by, "init_given_orphans");
     }
 }
+
+int hw_task_describe(uint32_t slot, vibeos_task_desc_t *out) {
+    const hw_task_t *t;
+    uint32_t i;
+
+    if (!out || slot >= (uint32_t)VIBEOS_HW_MAX_TASKS) {
+        return -1;
+    }
+    t = &g_tasks[slot];
+    out->slot = slot;
+    out->generation = t->alloc_seq;
+    out->state = (uint32_t)hw_task_state(t);
     out->state_name = hw_task_state_name(hw_task_state(t));
     out->pid = t->id.pid;
     out->tgid = t->id.tgid;
@@ -1297,9 +1309,11 @@ void hw_task_exit(uint64_t code) {
              * that one line. Reap it immediately afterwards, since this is the
              * reaper nothing else will be. */
             (void)hw_task_set_state(dying, HW_TASK_ZOMBIE, __func__);
+            hw_orphans_to_init(dying);   /* if it was the last of its process */
             hw_task_release(dying);
         } else {
         (void)hw_task_set_state(dying, HW_TASK_ZOMBIE, __func__);
+        hw_orphans_to_init(dying);
         for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
             if (hw_slot_state(i) == HW_TASK_BLOCKED &&
                 g_tasks[i].id.pid == g_tasks[dying].id.ppid) {
@@ -1309,11 +1323,9 @@ void hw_task_exit(uint64_t code) {
         }
         /* SIGCHLD (docs/abi/ L2). It was never raised: a shell that runs jobs
          * in the background learns of their end from it, and so does any
-            hw_orphans_to_init(dying);   /* if it was the last of its process */
          * program that waits for children with a handler rather than in
          * waitpid. To the parent's thread-group leader, with how the child
          * ended; under the scheduler's lock, as kill raises. A parent that
-        hw_orphans_to_init(dying);
          * ignores SIGCHLD, or never set a handler, has it discarded - children
          * of a parent that ignores it are still left for wait() to reap
          * (SA_NOCLDWAIT is not implemented). */

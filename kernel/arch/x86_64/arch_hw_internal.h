@@ -705,6 +705,7 @@ void *hw_alloc_pages_contig(uint32_t count);
 void hw_enable_paging(void);
 void hw_pmm_bringup(const vibeos_boot_info_t *boot_info);
 void hw_tlbq_help_quiesce(void);
+void hw_random_tick(void);   /* every core's timer interrupt: jitter into the random pool */
 void hw_tlbq_selftest(void);
 extern int g_frame_layer_ready;
 extern vibeos_pmm_t g_hw_pmm;

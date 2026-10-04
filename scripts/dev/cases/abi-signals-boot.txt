@@ -22,9 +22,9 @@
 
 ### SIGCHLD is never raised
 --- old
-                (void)hw_signal_send(i, VIBEOS_SIGCHLD, &why);
+                if (g_tasks[dying].id.exit_sig_other != VIBEOS_EXIT_SIG_NONE) {
 +++ new
-                (void)why;
+                if (0) {
 
 ### the null page reads as present to the program
 --- old

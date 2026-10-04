@@ -50,6 +50,7 @@ set(VIBEOS_KERNEL_CORE_SOURCES
     kernel/fs/path.c
     kernel/fs/tmpfs.c
     kernel/fs/procfs.c
+    kernel/fs/devfs.c
     kernel/fs/filelock.c
     kernel/ipc/pipe.c
     kernel/fs/partition.c
@@ -68,6 +69,7 @@ set(VIBEOS_KERNEL_CORE_SOURCES
     kernel/diag/klog.c
     kernel/diag/crash.c
     kernel/core/mbz.c
+    kernel/core/random.c
     kernel/abi/abi.c
     kernel/abi/abi_linux.c
     kernel/core/policy.c
@@ -133,6 +135,7 @@ set(VIBEOS_KERNEL_DRIVER_SOURCES
 # directories, pipe ends, sockets and the console, written against vibeos/ksvc.h
 # like a handler is. Built wherever a personality is.
 set(VIBEOS_ABI_FILES_SOURCES
+    kernel/abi/files/chrdev.c
     kernel/abi/files/console.c
     kernel/abi/files/pipefile.c
     kernel/abi/files/pidfd.c
@@ -158,6 +161,7 @@ set(VIBEOS_LINUX_ABI_SOURCES
     kernel/abi/linux/signal.c
     kernel/abi/linux/timer.c
     kernel/abi/linux/limits.c
+    kernel/abi/linux/procsrc.c
     ${VIBEOS_ABI_FILES_SOURCES}
 )
 

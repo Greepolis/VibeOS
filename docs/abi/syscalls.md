@@ -354,7 +354,7 @@ calls, outside the Linux number space, are listed last.
 | 315 | `sched_getattr` | missing | L6 | ENOSYS |  |  |
 | 316 | `renameat2` | partial | L1 | - | `names.c` | RENAME_EXCHANGE and RENAME_WHITEOUT refused |
 | 317 | `seccomp` | missing | L9 | ENOSYS |  | the security goals of docs/vision.md |
-| 318 | `getrandom` | done | - | - | `proc.c` |  |
+| 318 | `getrandom` | done | - | - | `misc.c` |  |
 | 319 | `memfd_create` | partial | L3 | - | `fs.c` | no seals: MFD_ALLOW_SEALING is accepted and F_ADD_SEALS refused; the file has a name under /tmp while open |
 | 320 | `kexec_file_load` | refused | R | EPERM |  | no kexec: the machine is booted by the bootloader, not by itself |
 | 321 | `bpf` | refused | R | ENOSYS |  | no in-kernel bytecode: a facility this kernel does not have |

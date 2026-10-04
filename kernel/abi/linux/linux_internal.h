@@ -126,8 +126,9 @@ long linux_may_remove(const vibeos_path_t *w);
 long linux_may_own(const vibeos_fs_node_t *node);
 void linux_own_new(const vibeos_path_t *w);
 long linux_rmdir_at(uint64_t dirfd, uint64_t path_uptr);
-/* Is this path /proc/self/exe, as written or made absolute? There is no /proc;
- * the one name in it programs depend on is answered by readlink and by execve. */
-int linux_is_proc_self_exe(uint64_t dirfd, uint64_t upath);
+
+/* The release uname reports and /proc/version repeats: one string, so the two
+ * cannot disagree. */
+#define VIBEOS_LINUX_RELEASE "6.1.0-vibeos"
 
 #endif

@@ -1,0 +1,38 @@
+# clone3's and clone's argument rules (kernel/abi/linux/proc.c, L2 step 6,
+# from what LTP's clone302 found in step 5). Host test: t_clone3_checks in
+# tests/kernel/linux_abi_tests.c.
+#
+#  1. the rules between the flags are not asked. Expect "handlers shared
+#     without the memory they point into are EINVAL".
+#  2. the bytes past what this kernel knows are not looked at. Expect "a newer
+#     structure is E2BIG if what this kernel does not know is not zero".
+#  3. clone takes any exit signal. Expect "clone's exit signal must be a
+#     signal".
+#
+# Not a case on the host: "the structure's pointer is not judged before it is
+# read". The fake kernel's copy refuses a page not mapped for the user by
+# itself, so removing the judgement changes nothing there; on the machine a
+# PROT_NONE page reads, and clone302 is what says so.
+#
+# Target source: kernel/abi/linux/proc.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/proc.c scripts/dev/cases/abi-clone3-checks.txt
+
+### the rules between the flags are not asked
+--- old
+    if (((a.flags & LINUX_CLONE_SIGHAND) && !(a.flags & LINUX_CLONE_VM)) ||
++++ new
+    if (0 && ((a.flags & LINUX_CLONE_SIGHAND) && !(a.flags & LINUX_CLONE_VM)) ||
+
+### the bytes past what this kernel knows are not looked at
+--- old
+        if (b != 0u) {
+            return -VIBEOS_E2BIG;
+        }
++++ new
+        (void)b;
+
+### clone takes any exit signal
+--- old
+    if ((flags & LINUX_CSIGNAL) > VIBEOS_SIG_MAX) {
++++ new
+    if (0) {

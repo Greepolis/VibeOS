@@ -7,6 +7,7 @@
  * the old "0-2 unless redirected" rule could not express. */
 
 #include "files_internal.h"
+#include "vibeos/devfs.h"
 #include "vibeos/tty.h"
 
 /* ---- the terminal (docs/abi/ L1 step 7; see vibeos/tty.h) -----------------------------
@@ -435,10 +436,13 @@ static uint32_t console_ready(vibeos_file_t *f) {
 
 /* A character device, as a terminal is. */
 static int console_stat(vibeos_file_t *f, vibeos_file_stat_t *out) {
-    (void)f;
     out->mode = VIBEOS_S_IFCHR | 0620u;
     out->size = 0;
-    out->ino = 1;
+    /* Opened by name (/dev/tty, /dev/console, L2 step 6), the node it was
+     * opened through, so fstat of the descriptor and stat of the name agree -
+     * which is how ttyname() decides a name is the terminal's. */
+    out->ino = f->node ? f->node : 1u;
+    out->rdev = f->rdev ? f->rdev : VIBEOS_DEV_CONSOLE;
     return 0;
 }
 

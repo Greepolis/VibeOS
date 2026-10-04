@@ -461,6 +461,23 @@ vibeos_file_t *vibeos_open_path(const vibeos_path_t *w, uint32_t flags, uint32_t
             *err = -VIBEOS_ENOTDIR;
             return 0;
         }
+        if ((node.mode & VIBEOS_S_IFMT) == VIBEOS_S_IFCHR) {
+            /* A device (L2 step 6): what it opens as is the number's, not the
+             * filesystem's, and O_TRUNC means nothing to it. The mount and the
+             * node stay with the description so that fstat says what stat of
+             * the name says. */
+            f = vibeos_open_chrdev(node.rdev, flags, err);
+            if (f) {
+                for (k = 0; k + 1u < VIBEOS_FILE_PATH && abs[k]; k++) {
+                    f->path[k] = abs[k];
+                }
+                f->path[k] = 0;
+                f->mnt = mnt;
+                f->tail = (uint32_t)(w->tail - abs);
+                f->node = node.id;
+            }
+            return f;
+        }
         if (!node.is_dir && wants_write) {
             /* Can this filesystem write into the file where it stands? A
              * zero-length write asks without changing anything: EROFS from a

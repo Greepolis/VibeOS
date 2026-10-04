@@ -29,6 +29,7 @@
 #include "vibeos/rmap.h"
 #include "vibeos/reclaim.h"
 #include "vibeos/mbz.h"
+#include "vibeos/random.h"
 #include "vibeos/abi.h"
 #include "vibeos/abi_linux.h"
 #include "vibeos/ceildiv.h"
@@ -789,6 +790,7 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
              * running the same task never reloads CR3 on its own, and that is
              * the core most likely to be holding the stale translation. */
             hw_tlbq_help_quiesce();
+            hw_random_tick();
             /* Every core's LAPIC timer lands here; only one may own the clock. */
             if (!g_apic_mode || hw_this_cpu()->index == 0u) {
                 g_timer_ticks++;
@@ -1271,6 +1273,79 @@ static void hw_fdtable_page_free(void *p) {
     hw_free_page_why(p, "fdtable page");
 }
 
+/* The random pool's own lock (docs/abi/ L2 step 6): read from every core's
+ * syscalls and mixed into from every core's tick, so with interrupts off. A
+ * leaf: nothing is called while it is held but ChaCha20. */
+static hw_lock_t g_random_lock;
+static volatile int g_random_live;
+static uint64_t g_random_acc[VIBEOS_HW_MAX_CPUS];
+static uint32_t g_random_ticks[VIBEOS_HW_MAX_CPUS];
+
+static void hw_random_lock(void) {
+    hw_spin_lock_named(&g_random_lock, "vibeos_random");
+}
+
+static void hw_random_unlock(void) {
+    hw_spin_unlock(&g_random_lock);
+}
+
+/* Every core's timer interrupt: the timestamp it arrived at, folded into this
+ * core's own word, and every sixteenth tick the word into the pool. One bit
+ * believed per tick - the low bits of when a timer interrupt is taken, which
+ * is Linux's own credit for the same jitter when it has nothing better - so
+ * four cores make the pool ready in well under a second. Only this core
+ * touches its word, from its own interrupt, so the word needs no lock. */
+void hw_random_tick(void) {
+    uint32_t c = hw_this_cpu()->index, lo, hi;
+
+    if (!g_random_live || c >= VIBEOS_HW_MAX_CPUS) {
+        return;
+    }
+    __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
+    g_random_acc[c] = ((g_random_acc[c] << 7) | (g_random_acc[c] >> 57)) ^ (((uint64_t)hi << 32) | lo);
+    if (++g_random_ticks[c] % 16u == 0u) {
+        uint64_t v = g_random_acc[c];
+        vibeos_random_add(&v, (uint32_t)sizeof(v), 16u);
+    }
+}
+
+/* RDRAND, when the processor has it, is believed in full: 256 bits at once.
+ * QEMU's default TCG processor does not, so under the gate the pool is made
+ * ready by the ticks alone - and the line says which, because a source whose
+ * quality is not stated is one somebody will later assume is good. */
+static void hw_random_init(void) {
+    uint32_t eax, ebx, ecx, edx, i;
+    uint64_t seed[4] = {0, 0, 0, 0};
+    uint8_t mix[16];
+    int from_rdrand = 0;
+
+    vibeos_random_set_lock(hw_random_lock, hw_random_unlock);
+    vibeos_random_reset();
+    __asm__ __volatile__("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(1u), "c"(0u));
+    if (ecx & (1u << 30)) {
+        from_rdrand = 1;
+        for (i = 0; i < 4u && from_rdrand; i++) {
+            uint64_t v = 0, ok = 0;
+            int tries;
+            for (tries = 0; tries < 10 && !ok; tries++) {
+                __asm__ __volatile__("xorl %%edx, %%edx; rdrand %%rax; setc %%dl" : "=a"(v), "=d"(ok));
+            }
+            from_rdrand = ok != 0u;   /* a failing RDRAND is not a source */
+            seed[i] = v;
+        }
+    }
+    hw_seed_at_random(mix);
+    vibeos_random_add(mix, (uint32_t)sizeof(mix), 0);
+    if (from_rdrand) {
+        vibeos_random_add(seed, (uint32_t)sizeof(seed), 256u);
+    }
+    g_random_live = 1;
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts(from_rdrand ? "[RNG] seeded from rdrand\n"
+                                          : "[RNG] no rdrand: ready once the timer ticks have been mixed in\n");
+    vibeos_x86_64_serial_unlock();
+}
+
 void hw_pipe_init(void) {
     vibeos_pipe_set_lock(hw_pipe_lock, hw_pipe_unlock);
     vibeos_pipe_reset();
@@ -1280,6 +1355,7 @@ void hw_pipe_init(void) {
     vibeos_flk_reset();
     vibeos_ptimer_set_lock(hw_ptimer_lock, hw_ptimer_unlock);
     vibeos_ptimer_reset();
+    hw_random_init();
     vibeos_tty_reset();
     vibeos_fdtable_set_pages(hw_fdtable_page, hw_fdtable_page_free);
 }

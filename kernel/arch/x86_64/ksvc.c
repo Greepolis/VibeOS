@@ -77,6 +77,12 @@ void ks_irq_off(void) { __asm__ __volatile__("cli"); }
 void ks_irq_on(void) { __asm__ __volatile__("sti"); }
 void ks_idle(void) { __asm__ __volatile__("sti; hlt" ::: "memory"); }
 void ks_block_point(void) {
+    int cur = hw_this_cpu()->current_task;
+
+    /* Waiting, for /proc's S; the dispatcher clears it when the call returns. */
+    if (cur >= 0 && cur < VIBEOS_HW_MAX_TASKS) {
+        g_tasks[cur].id.sleeping = 1;
+    }
     hw_sched_point("block");
     __asm__ __volatile__("sti; hlt" ::: "memory");
 }
@@ -274,13 +280,13 @@ void ks_pageinfo(int slot, uint64_t va, vibeos_pageinfo_t *out) {
         if (entry & PTE_COW)           { out->flags |= VIBEOS_PAGE_COW; }
         if (entry & VIBEOS_PTE_OWNED)  { out->flags |= VIBEOS_PAGE_OWNED; }
         if (entry & PTE_NX)            { out->flags |= VIBEOS_PAGE_NX; }
+        if (entry & VIBEOS_PTE_SHARED) { out->flags |= VIBEOS_PAGE_SHARED; }
         /* Everything below describes one frame, so it is all read from the
          * same pinned instant (M-038). A sibling thread can munmap the page,
          * the frame can be released and handed to another process, and a
          * bare read through the address taken from an entry this function
          * does not own returns that process's first eight bytes - and an
          * identity and an owner count taken at different moments describe
-        if (entry & VIBEOS_PTE_SHARED) { out->flags |= VIBEOS_PAGE_SHARED; }
          * different frames.
          *
          * Pin the frame first - try_get refuses one nobody owns - and then

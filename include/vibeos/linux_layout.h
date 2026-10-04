@@ -286,6 +286,10 @@ typedef struct {
 #define LINUX_WNOWAIT     0x01000000u
 /* pidfd_open's one flag (linux/pidfd.h): O_NONBLOCK. */
 #define LINUX_PIDFD_NONBLOCK 0x00000800u
+/* getrandom's flags (linux/random.h). */
+#define LINUX_GRND_NONBLOCK 0x0001u
+#define LINUX_GRND_RANDOM   0x0002u
+#define LINUX_GRND_INSECURE 0x0004u
 
 /* *at calls (linux/fcntl.h). AT_FDCWD arrives zero-extended: VIBEOS_ARG_INT. */
 #define LINUX_AT_FDCWD       (-100)
@@ -403,6 +407,9 @@ typedef struct {
 /* futex operations (linux/futex.h). */
 #define LINUX_FUTEX_WAIT 0
 #define LINUX_FUTEX_WAKE 1
+/* Not set: the word may be shared between processes, and is named by what it
+ * is rather than where the caller maps it. */
+#define LINUX_FUTEX_PRIVATE_FLAG 128
 
 /* mmap protection and flags (asm-generic/mman-common.h). */
 #define LINUX_PROT_NONE     0x0
@@ -410,9 +417,6 @@ typedef struct {
 #define LINUX_PROT_EXEC     0x4
 #define LINUX_MAP_SHARED    0x01
 #define LINUX_MAP_PRIVATE   0x02
-/* Not set: the word may be shared between processes, and is named by what it
- * is rather than where the caller maps it. */
-#define LINUX_FUTEX_PRIVATE_FLAG 128
 #define LINUX_MAP_SHARED_VALIDATE 0x03
 #define LINUX_MAP_TYPE      0x0f
 #define LINUX_MAP_FIXED     0x10

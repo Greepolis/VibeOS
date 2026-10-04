@@ -1,0 +1,43 @@
+# The random pool (kernel/core/random.c, docs/abi/ L2 step 6). Host test:
+# test_random in tests/kernel/random_tests.c.
+#
+#  1. the pool says it is ready one bit early
+#  2. what is mixed in is ignored: every boot's pool is the same pool
+#  3. a quarter round mixes the wrong word: not ChaCha20 any more, and
+#     nothing but the RFC's vector would say so
+#  4. a read longer than one chunk writes every chunk over the first
+#
+# Not a case: "the key is not replaced after a read". Removing the replacement
+# leaves every output different from the last, because the nonce moves, so
+# nothing a caller can see changes - what it protects is the bytes already
+# handed out, from somebody who reads the key out of memory later. That is a
+# property of the construction, argued in the header, and no test here can see
+# it.
+#
+# Target source: kernel/core/random.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/core/random.c scripts/dev/cases/core-random.txt
+
+### the pool says it is ready one bit early
+--- old
+    r = g_credited >= RANDOM_READY_BITS;
++++ new
+    r = g_credited >= RANDOM_READY_BITS - 1u;
+
+### what is mixed in is ignored
+--- old
+        g_key[i % 32u] ^= in[i];
++++ new
+        (void)in;
+
+### a quarter round mixes the wrong word
+--- old
+        QR(x[0], x[4], x[8], x[12]);
++++ new
+        QR(x[0], x[4], x[8], x[13]);
+
+### a read longer than one chunk writes every chunk over the first
+--- old
+        out += n;
+        len -= n;
++++ new
+        len -= n;
