@@ -141,6 +141,8 @@ struct vibeos_file {
     /* pipe end */
     int pipe;
     int pipe_write;
+    uint32_t proc_pid;            /* a pidfd: the process, and its slot's     */
+    uint32_t proc_seq;            /* tenancy when the description was made    */
     /* socket: its index and the tenancy it was opened on (M-020) */
     int sock;
     uint32_t sock_gen;

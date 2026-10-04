@@ -1,0 +1,53 @@
+# Waiting for children, clone3 and execveat (kernel/abi/linux/proc.c, docs/abi/
+# L2 step 5). Host test: t_processes in tests/kernel/linux_abi_tests.c.
+#
+#  1. a process group selects nothing. Expect "waitpid(-pgid) reaps a child of
+#     that group".
+#  2. WNOWAIT reaps. Expect "WNOWAIT leaves it to be reaped".
+#  3. waitid does not say whose the child was. Expect "waitid says who ended
+#     and how".
+#  4. CLONE_PIDFD hands back nothing. Expect "CLONE_PIDFD hands back a pidfd".
+#  5. clone3 takes a structure smaller than its first version. Expect "a
+#     structure too small is EINVAL".
+#  6. execveat takes any flag. Expect "execveat refuses a flag it does not know".
+#
+# Target source: kernel/abi/linux/proc.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/proc.c scripts/dev/cases/abi-processes.txt
+
+### a process group selects nothing
+--- old
+                (kind == LINUX_WAIT_PGID && t->pgid != id)) {
++++ new
+                0) {
+
+### WNOWAIT reaps
+--- old
+        r = linux_wait_child(kind, sel, options, (options & LINUX_WNOWAIT) == 0u, &w);
++++ new
+        r = linux_wait_child(kind, sel, options, 1, &w);
+
+### waitid does not say whose the child was
+--- old
+        si.uid = w.uid;
++++ new
+        (void)w.uid;
+
+### CLONE_PIDFD hands back nothing
+--- old
+        (void)vibeos_uaccess_copy((void *)(uintptr_t)a.pidfd, &fd, sizeof(fd));
++++ new
+        (void)fd;
+
+### clone3 takes a structure smaller than its first version
+--- old
+    if (size < LINUX_CLONE_ARGS_SIZE_VER0) {
+        return -VIBEOS_EINVAL;
+    }
++++ new
+
+### execveat takes any flag
+--- old
+    if (atflags & ~(uint64_t)(LINUX_AT_EMPTY_PATH | LINUX_AT_SYMLINK_NOFOLLOW)) {
+        return -VIBEOS_EINVAL;
+    }
++++ new

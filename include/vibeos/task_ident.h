@@ -71,6 +71,10 @@ typedef struct vibeos_task {
      * now minus this. Without it every process in a recycled slot was born
      * with the time of everybody who had held the slot before. */
     uint64_t cpu_base;
+
+    /* Its real user when it ended, for waitid's si_uid: the process state
+     * that holds the credentials is let go of before the parent reaps. */
+    uint32_t exit_uid;
 } vibeos_task_t;
 
 /* Put every identity field into a defined state. The one place that does it, so no

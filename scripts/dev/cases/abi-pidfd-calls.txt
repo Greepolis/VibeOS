@@ -1,0 +1,33 @@
+# The pidfd calls (kernel/abi/linux/sig.c, docs/abi/ L2 step 5). Host test:
+# t_processes.
+#
+#  1. pidfd_send_signal takes a flag. Expect "a flag, or a descriptor that is
+#     not a pidfd, is refused".
+#  2. pidfd_send_signal takes any descriptor. Same expectation.
+#  3. pidfd_open takes a flag it does not know. Expect "pid 0, nobody and an
+#     unknown flag are refused".
+#
+# Target source: kernel/abi/linux/sig.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/sig.c scripts/dev/cases/abi-pidfd-calls.txt
+
+### pidfd_send_signal takes a flag
+--- old
+    if (ks_current() < 0 || !ks_id(ks_current())->is_user || flags != 0u || sig > VIBEOS_SIG_MAX) {
++++ new
+    if (ks_current() < 0 || !ks_id(ks_current())->is_user || sig > VIBEOS_SIG_MAX) {
+
+### pidfd_send_signal takes any descriptor
+--- old
+    if (f->ops != &vibeos_fops_pidfd) {
+        vibeos_file_put(f);
+        return -VIBEOS_EBADF;
+    }
+    if (info_uptr != 0u) {
++++ new
+    if (info_uptr != 0u) {
+
+### pidfd_open takes a flag it does not know
+--- old
+    if ((int32_t)(uint32_t)pid <= 0 || (flags & ~(uint64_t)LINUX_PIDFD_NONBLOCK)) {
++++ new
+    if ((int32_t)(uint32_t)pid <= 0) {

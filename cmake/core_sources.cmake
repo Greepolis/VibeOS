@@ -135,6 +135,7 @@ set(VIBEOS_KERNEL_DRIVER_SOURCES
 set(VIBEOS_ABI_FILES_SOURCES
     kernel/abi/files/console.c
     kernel/abi/files/pipefile.c
+    kernel/abi/files/pidfd.c
     kernel/abi/files/regular.c
     kernel/abi/files/socket.c
 )

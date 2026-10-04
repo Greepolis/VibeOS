@@ -254,6 +254,35 @@ typedef struct {
 #define LINUX_CLONE_PARENT_SETTID  0x00100000u
 #define LINUX_CLONE_CHILD_CLEARTID 0x00200000u
 #define LINUX_CLONE_CHILD_SETTID   0x01000000u
+#define LINUX_CLONE_PIDFD          0x00001000u
+#define LINUX_CLONE_INTO_CGROUP    0x200000000ull
+#define LINUX_CLONE_ARGS_SIZE_VER0 64u
+
+/* struct clone_args (linux/sched.h): clone3's arguments, version 2. */
+typedef struct {
+    uint64_t flags;
+    uint64_t pidfd;
+    uint64_t child_tid;
+    uint64_t parent_tid;
+    uint64_t exit_signal;
+    uint64_t stack;
+    uint64_t stack_size;
+    uint64_t tls;
+    uint64_t set_tid;
+    uint64_t set_tid_size;
+    uint64_t cgroup;
+} linux_clone_args_t;
+
+/* waitid (linux/wait.h): which children, and what to report. */
+#define LINUX_P_ALL       0
+#define LINUX_P_PID       1
+#define LINUX_P_PGID      2
+#define LINUX_P_PIDFD     3
+#define LINUX_WSTOPPED    0x00000002u
+#define LINUX_WEXITED     0x00000004u
+#define LINUX_WNOWAIT     0x01000000u
+/* pidfd_open's one flag (linux/pidfd.h): O_NONBLOCK. */
+#define LINUX_PIDFD_NONBLOCK 0x00000800u
 
 /* *at calls (linux/fcntl.h). AT_FDCWD arrives zero-extended: VIBEOS_ARG_INT. */
 #define LINUX_AT_FDCWD       (-100)

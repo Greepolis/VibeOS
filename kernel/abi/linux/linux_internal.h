@@ -58,6 +58,9 @@ uint64_t linux_cpu_slot(int slot);
 void linux_rlimit_cpu_arm(uint32_t tgid, const vibeos_procstate_t *ps, uint64_t ran);
 long linux_nproc_check(void);
 
+/* The process a pidfd names, by pid (sig.c, L2 step 5); EBADF if not one. */
+long linux_pidfd_pid(uint64_t fd);
+
 /* A reason in Linux's words: the siginfo_t a handler or sigtimedwait sees. */
 void linux_siginfo_from(linux_siginfo_t *o, uint32_t sig, const vibeos_siginfo_t *in);
 

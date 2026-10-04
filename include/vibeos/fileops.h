@@ -31,6 +31,14 @@ extern const vibeos_file_ops_t vibeos_fops_dir;
 extern const vibeos_file_ops_t vibeos_fops_pipe;
 extern const vibeos_file_ops_t vibeos_fops_socket;
 extern const vibeos_file_ops_t vibeos_fops_console;
+extern const vibeos_file_ops_t vibeos_fops_pidfd;
+
+/* A description naming a process (L2 step 5): its pid and the tenancy of its
+ * slot, so that a reused pid is not it. NULL if the table is full. */
+vibeos_file_t *vibeos_open_pidfd(uint32_t pid, uint32_t seq, uint32_t flags);
+/* The slot of the process a pidfd names, under the scheduler's lock, or -1
+ * once it has been reaped. */
+int vibeos_pidfd_slot(const vibeos_file_t *f);
 
 /* What vibeos_open_path needs the walk to have done for `flags` (VIBEOS_O_*):
  * VIBEOS_PATH_* flags for vibeos_path_walk. */

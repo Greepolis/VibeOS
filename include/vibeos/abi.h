@@ -44,6 +44,11 @@
     X(EXIT,            "exit",            VIBEOS_CHECK_USER_MEMORY) \
     X(EXIT_GROUP,      "exit_group",      VIBEOS_CHECK_USER_MEMORY) \
     X(WAIT,            "wait",            VIBEOS_CHECK_USER_MEMORY) \
+    X(WAITID,          "waitid",          VIBEOS_CHECK_USER_MEMORY) \
+    X(EXECVEAT,        "execveat",        VIBEOS_CHECK_USER_MEMORY) \
+    X(CLONE3,          "clone3",          VIBEOS_CHECK_TASK_GUARD | VIBEOS_CHECK_USER_MEMORY) \
+    X(PIDFD_OPEN,      "pidfd_open",      VIBEOS_CHECK_NONE) \
+    X(PIDFD_SEND_SIGNAL,"pidfd_send_signal",VIBEOS_CHECK_SIGNAL_PERMIT | VIBEOS_CHECK_USER_MEMORY) \
     X(GETPID,          "getpid",          VIBEOS_CHECK_NONE) \
     X(GETTID,          "gettid",          VIBEOS_CHECK_NONE) \
     X(GETPPID,         "getppid",         VIBEOS_CHECK_NONE) \

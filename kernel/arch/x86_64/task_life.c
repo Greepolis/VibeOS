@@ -1185,6 +1185,7 @@ void hw_task_exit(uint64_t code) {
         /* Who the child was, for the SIGCHLD below: the credentials go with
          * the process state, and that is let go of here. */
         child_uid = g_tasks[dying].ps ? g_tasks[dying].ps->cred.uid : 0u;
+        g_tasks[dying].id.exit_uid = child_uid;
         hw_procstate_put(g_tasks[dying].ps);
         g_tasks[dying].ps = 0;
         /* The kernel stack is parked on this core, not left for the parent.

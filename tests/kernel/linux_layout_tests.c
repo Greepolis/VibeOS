@@ -40,6 +40,7 @@ int test_linux_layout(void) {
 #include <asm/siginfo.h>
 #include <linux/signal.h>
 #include <linux/times.h>
+#include <linux/pidfd.h>
 #include <asm/ioctls.h>
 #include <asm/termbits.h>
 #include <asm/termios.h>
@@ -738,6 +739,29 @@ int test_linux_layout(void) {
     CONST(LINUX_CLONE_PARENT_SETTID, CLONE_PARENT_SETTID);
     CONST(LINUX_CLONE_CHILD_CLEARTID, CLONE_CHILD_CLEARTID);
     CONST(LINUX_CLONE_CHILD_SETTID, CLONE_CHILD_SETTID);
+    CONST(LINUX_CLONE_PIDFD, CLONE_PIDFD);
+    CONST(LINUX_CLONE_INTO_CGROUP, CLONE_INTO_CGROUP);
+    CONST(LINUX_CLONE_ARGS_SIZE_VER0, CLONE_ARGS_SIZE_VER0);
+    SIZE(linux_clone_args_t, struct clone_args);
+    FIELD(linux_clone_args_t, struct clone_args, flags);
+    FIELD(linux_clone_args_t, struct clone_args, pidfd);
+    FIELD(linux_clone_args_t, struct clone_args, child_tid);
+    FIELD(linux_clone_args_t, struct clone_args, parent_tid);
+    FIELD(linux_clone_args_t, struct clone_args, exit_signal);
+    FIELD(linux_clone_args_t, struct clone_args, stack);
+    FIELD(linux_clone_args_t, struct clone_args, stack_size);
+    FIELD(linux_clone_args_t, struct clone_args, tls);
+    FIELD(linux_clone_args_t, struct clone_args, set_tid);
+    FIELD(linux_clone_args_t, struct clone_args, set_tid_size);
+    FIELD(linux_clone_args_t, struct clone_args, cgroup);
+    CONST(LINUX_P_ALL, P_ALL);
+    CONST(LINUX_P_PID, P_PID);
+    CONST(LINUX_P_PGID, P_PGID);
+    CONST(LINUX_P_PIDFD, P_PIDFD);
+    CONST(LINUX_WSTOPPED, WSTOPPED);
+    CONST(LINUX_WEXITED, WEXITED);
+    CONST(LINUX_WNOWAIT, WNOWAIT);
+    CONST(LINUX_PIDFD_NONBLOCK, PIDFD_NONBLOCK);
     CONST(LINUX_WNOHANG, WNOHANG);
     CONST(LINUX_WUNTRACED, WUNTRACED);
     CONST(LINUX_WCONTINUED, WCONTINUED);

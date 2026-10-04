@@ -12,6 +12,6 @@
 
 ### execve refuses /proc/self/exe
 --- old
-    if (linux_is_proc_self_exe((uint64_t)(uint32_t)LINUX_AT_FDCWD, path_uptr) &&
+    if (linux_is_proc_self_exe(dirfd, path_uptr) &&
 +++ new
-    if (0 && linux_is_proc_self_exe((uint64_t)(uint32_t)LINUX_AT_FDCWD, path_uptr) &&
+    if (0 && linux_is_proc_self_exe(dirfd, path_uptr) &&

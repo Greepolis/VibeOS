@@ -3004,6 +3004,136 @@ static void t_limits(void) {
     expect(r == 0, "raising it is anybody's");
 }
 
+/* ---- processes (docs/abi/ L2 step 5) ------------------------------------------------- */
+
+/* Fork a child of the current task and return its slot, or -1. */
+static int t_fork_child(long *pid_out) {
+    long pid = SYS0(57);
+    uint32_t k;
+
+    *pid_out = pid;
+    for (k = 0; k < ks_slots(); k++) {
+        if (pid > 0 && ks_id((int)k)->pid == (uint32_t)pid) {
+            return (int)k;
+        }
+    }
+    return -1;
+}
+
+/* The child in `slot` ends with `code`, or killed by `sig`. */
+static void t_child_ends(int slot, uint32_t code, uint32_t sig) {
+    ks_id(slot)->exit_code = code;
+    ks_id(slot)->exit_signal = sig;
+    ks_id(slot)->exit_uid = 77;
+    (void)vibeos_task_transition((uint32_t)slot, VIBEOS_TASK_ZOMBIE, "test");
+}
+
+static void t_processes(void) {
+    uint64_t st, ru, info, idp, args, set;
+    linux_siginfo_t *si;
+    long pid, pid2, r;
+    int me, c1, c2, fd;
+
+    /* wait4 by group: 0 is the caller's, -pgid another's. */
+    me = fresh(601);
+    st = kf_ualloc(4);
+    ru = kf_ualloc(sizeof(linux_rusage_t));
+    c1 = t_fork_child(&pid);
+    kf_set_current(me);
+    c2 = t_fork_child(&pid2);
+    kf_set_current(me);
+    ks_id(c2)->pgid = 999;            /* the second child in a group of its own */
+    t_child_ends(c1, 3, 0);
+    t_child_ends(c2, 4, 0);
+    expect(SYS3(61, (uint64_t)-999, st, 0) == pid2 && *(int *)kf_uptr(st) == (4 << 8),
+           "waitpid(-pgid) reaps a child of that group");
+    expect(sys(61, 0, st, 0, ru, 0, 0, 0) == pid && *(int *)kf_uptr(st) == (3 << 8),
+           "waitpid(0) a child of the caller's group, with its rusage");
+    expect(SYS3(61, 0, st, 0) == -VIBEOS_ECHILD, "and then there are none");
+
+    /* waitid. */
+    me = fresh(602);
+    info = kf_ualloc(128);
+    si = (linux_siginfo_t *)kf_uptr(info);
+    c1 = t_fork_child(&pid);
+    kf_set_current(me);
+    expect(sys(247, LINUX_P_PID, (uint64_t)pid, info, LINUX_WEXITED | 1u /* WNOHANG */, 0, 0, 0) == 0 &&
+           si->pid == 0 && si->si_signo == 0,
+           "waitid with WNOHANG and nothing ended: 0, and a record of zeroes");
+    t_child_ends(c1, 0, 9);
+    expect(sys(247, LINUX_P_PID, (uint64_t)pid, info, LINUX_WEXITED | LINUX_WNOWAIT, 0, 0, 0) == 0 &&
+           si->si_signo == 17 && si->si_code == LINUX_CLD_KILLED && si->pid == (int32_t)pid &&
+           si->uid == 77u && (int32_t)si->value == 9 &&
+           vibeos_task_state((uint32_t)c1) == VIBEOS_TASK_ZOMBIE,
+           "waitid says who ended and how, and WNOWAIT leaves it to be reaped");
+    expect(sys(247, LINUX_P_ALL, 0, info, LINUX_WEXITED, 0, 0, 0) == 0 && si->pid == (int32_t)pid &&
+           vibeos_task_state((uint32_t)c1) == VIBEOS_TASK_FREE,
+           "and without it, reaps");
+    expect(sys(247, LINUX_P_ALL, 0, info, 0, 0, 0, 0) == -VIBEOS_EINVAL &&
+           sys(247, 9, 0, info, LINUX_WEXITED, 0, 0, 0) == -VIBEOS_EINVAL &&
+           sys(247, LINUX_P_PID, 0, info, LINUX_WEXITED, 0, 0, 0) == -VIBEOS_EINVAL,
+           "no event asked for, an unknown idtype, a pid of 0: EINVAL");
+    expect(sys(247, LINUX_P_ALL, 0, info, LINUX_WEXITED, 0, 0, 0) == -VIBEOS_ECHILD, "no children: ECHILD");
+
+    /* pidfds. */
+    me = fresh(603);
+    info = kf_ualloc(128);
+    si = (linux_siginfo_t *)kf_uptr(info);
+    c1 = t_fork_child(&pid);
+    kf_set_current(me);
+    fd = (int)SYS2(434, (uint64_t)pid, 0);
+    expect(fd >= 0, "pidfd_open names a child");
+    expect(SYS2(434, 0, 0) == -VIBEOS_EINVAL && SYS2(434, 9999, 0) == -VIBEOS_ESRCH &&
+           SYS2(434, (uint64_t)pid, 1) == -VIBEOS_EINVAL,
+           "pid 0, nobody and an unknown flag are refused");
+    expect(SYS4(424, (uint64_t)fd, 15, 0, 0) == 0 && (ks_id(c1)->sig_pending & (1ull << 15)) != 0u,
+           "pidfd_send_signal reaches the process it names");
+    expect(SYS4(424, (uint64_t)fd, 15, 0, 1) == -VIBEOS_EINVAL && SYS4(424, 0, 15, 0, 0) == -VIBEOS_EBADF,
+           "a flag, or a descriptor that is not a pidfd, is refused");
+    t_child_ends(c1, 5, 0);
+    expect(sys(247, LINUX_P_PIDFD, (uint64_t)fd, info, LINUX_WEXITED, 0, 0, 0) == 0 && si->pid == (int32_t)pid,
+           "waitid(P_PIDFD) waits for it");
+    /* The slot is free now; a new child may take it and even its number. */
+    c2 = t_fork_child(&pid2);
+    kf_set_current(me);
+    if (c2 == c1) {
+        ks_id(c2)->pid = ks_id(c2)->tgid = (uint32_t)pid;   /* the number reused too */
+    }
+    expect(SYS4(424, (uint64_t)fd, 15, 0, 0) == -VIBEOS_ESRCH,
+           "once reaped, a pidfd names nobody - not whoever has the slot or the number now");
+
+    /* clone3. */
+    me = fresh(604);
+    args = kf_ualloc(sizeof(linux_clone_args_t));
+    idp = kf_ualloc(4);
+    {
+        linux_clone_args_t *a = (linux_clone_args_t *)kf_uptr(args);
+        a->flags = LINUX_CLONE_PIDFD;
+        a->exit_signal = 17;
+        a->pidfd = idp;
+        *(int *)kf_uptr(idp) = -7;
+        r = SYS2(435, args, sizeof(*a));
+        expect(r > 0 && *(int *)kf_uptr(idp) >= 0, "clone3 forks, and CLONE_PIDFD hands back a pidfd");
+        kf_set_current(me);
+        expect(SYS2(435, args, 32) == -VIBEOS_EINVAL && SYS2(435, args, 200) == -VIBEOS_E2BIG,
+               "a structure too small is EINVAL, a larger one than known E2BIG");
+        a->flags = 0;
+        a->set_tid = kf_ualloc(8);
+        a->set_tid_size = 1;
+        expect(SYS2(435, args, sizeof(*a)) == -VIBEOS_EINVAL, "a chosen pid is refused");
+        a->set_tid = 0;
+        a->set_tid_size = 0;
+        a->stack_size = 4096;
+        expect(SYS2(435, args, sizeof(*a)) == -VIBEOS_EINVAL, "a stack size with no stack is refused");
+    }
+
+    /* execveat's flags. */
+    me = fresh(605);
+    expect(sys(322, (uint64_t)(uint32_t)-100, ustr("/x"), 0, 0, 0x4, 0, 0) == -VIBEOS_EINVAL,
+           "execveat refuses a flag it does not know");
+    (void)set;
+}
+
 /* ---- M-078, M-079 ------------------------------------------------------------------- */
 
 static void sibling_moves_the_break(vibeos_procstate_t *ps) {
@@ -3608,6 +3738,7 @@ int test_linux_handlers(void) {
     t_signals_l2();
     t_timers();
     t_limits();
+    t_processes();
     t_sleep();
     t_ltp_l1();
     return g_fail ? -1 : 0;
@@ -3923,6 +4054,32 @@ int test_linux_gaps(void) {
             r = sys(9, 0, 4ull << 20, 3, 0x22, (uint64_t)-1, 0, 0);
             gap(n, r < 0, "a mapping larger than RLIMIT_AS is refused");
         }
+    }
+
+    /* waitid (247), L2: a stopped child is never reported. */
+    {
+        long pid;
+        int me = fresh(77), c;
+        uint64_t info = kf_ualloc(128);
+
+        c = t_fork_child(&pid);
+        kf_set_current(me);
+        if (c >= 0) {
+            ks_id(c)->signal_stopped = 1;
+        }
+        (void)sys(247, LINUX_P_PID, (uint64_t)pid, info, LINUX_WSTOPPED | 1u, 0, 0, 0);
+        gap(247, ((linux_siginfo_t *)kf_uptr(info))->pid == (int32_t)pid, "waitid(WSTOPPED) reports a stopped child");
+    }
+
+    /* clone3 (435), L2: no process that shares its parent's memory. */
+    {
+        uint64_t args;
+        fresh(78);
+        args = kf_ualloc(sizeof(linux_clone_args_t));
+        ((linux_clone_args_t *)kf_uptr(args))->flags = LINUX_CLONE_VM;
+        ((linux_clone_args_t *)kf_uptr(args))->exit_signal = 17;
+        gap(435, SYS2(435, args, sizeof(linux_clone_args_t)) != -VIBEOS_ENOSYS,
+            "clone3 with CLONE_VM and no CLONE_THREAD makes a process");
     }
 
     /* getrusage (98), L2: no resident-set high-water mark. */

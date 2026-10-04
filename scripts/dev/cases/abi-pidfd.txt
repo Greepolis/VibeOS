@@ -1,0 +1,14 @@
+# Pidfds (kernel/abi/files/pidfd.c and kernel/abi/linux/sig.c, docs/abi/ L2
+# step 5). Host test: t_processes.
+#
+#  1. a pidfd names whatever has its slot now. Expect "once reaped, a pidfd
+#     names nobody".
+#
+# Target source: kernel/abi/files/pidfd.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/files/pidfd.c scripts/dev/cases/abi-pidfd.txt
+
+### a pidfd names whatever has its slot now
+--- old
+    if (slot < 0 || ks_seq(slot) != f->proc_seq || ks_id(slot)->tgid != f->proc_pid) {
++++ new
+    if (slot < 0) {

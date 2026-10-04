@@ -39,6 +39,6 @@
 
 ### execve's row no longer calls anything that validates user memory
 --- old
-    X(59,  execve,           EXEC,            NOPTR, linux_sys_execve(FRAME, ARG(0), ARG(1), ARG(2))) \
+    X(59,  execve,           EXEC,            NOPTR, linux_sys_execve(FRAME, (uint64_t)(uint32_t)LINUX_AT_FDCWD, ARG(0), ARG(1), ARG(2), 0)) \
 +++ new
     X(59,  execve,           EXEC,            NOPTR, -VIBEOS_ENOSYS) \

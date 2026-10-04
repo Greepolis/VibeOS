@@ -9,9 +9,9 @@ the registry, not this page; `check.sh` fails while the two differ.
 
 | State | Count | What the kernel answers |
 | --- | --- | --- |
-| done | 162 | through its row |
-| partial | 29 | through its row, with the gap named |
-| missing | 98 | ENOSYS, and the boot gate fails naming the number |
+| done | 165 | through its row |
+| partial | 31 | through its row, with the gap named |
+| missing | 93 | ENOSYS, and the boot gate fails naming the number |
 | deferred | 50 | ENOSYS, and the boot gate fails naming the number |
 | refused | 34 | its errno, counted as refused - expected, never a failure |
 
@@ -20,7 +20,7 @@ Without a row, by phase:
 | Phase | Syscalls |
 | --- | --- |
 | L1 - files and paths | 0 |
-| L2 - processes, credentials, time | 9 |
+| L2 - processes, credentials, time | 4 |
 | L3 - memory | 0 |
 | L4 - event loops | 20 |
 | L5 - sockets | 11 |
@@ -283,7 +283,7 @@ calls, outside the Linux number space, are listed last.
 | 244 | `mq_notify` | missing | L7 | ENOSYS |  |  |
 | 245 | `mq_getsetattr` | missing | L7 | ENOSYS |  |  |
 | 246 | `kexec_load` | refused | R | EPERM |  | no kexec: the machine is booted by the bootloader, not by itself |
-| 247 | `waitid` | missing | L2 | ENOSYS |  |  |
+| 247 | `waitid` | partial | L2 | - | `proc.c` | stopped and continued children are never reported |
 | 248 | `add_key` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
 | 249 | `request_key` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
 | 250 | `keyctl` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
@@ -358,7 +358,7 @@ calls, outside the Linux number space, are listed last.
 | 319 | `memfd_create` | partial | L3 | - | `fs.c` | no seals: MFD_ALLOW_SEALING is accepted and F_ADD_SEALS refused; the file has a name under /tmp while open |
 | 320 | `kexec_file_load` | refused | R | EPERM |  | no kexec: the machine is booted by the bootloader, not by itself |
 | 321 | `bpf` | refused | R | ENOSYS |  | no in-kernel bytecode: a facility this kernel does not have |
-| 322 | `execveat` | missing | L2 | ENOSYS |  |  |
+| 322 | `execveat` | done | - | - | `proc.c` |  |
 | 323 | `userfaultfd` | refused | R | ENOSYS |  | no user-space fault handling: a facility this kernel does not have |
 | 324 | `membarrier` | missing | L6 | ENOSYS |  |  |
 | 325 | `mlock2` | done | - | - | `mm.c` |  |
@@ -371,7 +371,7 @@ calls, outside the Linux number space, are listed last.
 | 332 | `statx` | done | - | - | `names.c` |  |
 | 333 | `io_pgetevents` | deferred | D | ENOSYS |  | legacy AIO: ENOSYS, and libcs fall back to threads |
 | 334 | `rseq` | partial | R | - | `proc.c` | ENOSYS on purpose: the libc takes its fallback |
-| 424 | `pidfd_send_signal` | missing | L2 | ENOSYS |  |  |
+| 424 | `pidfd_send_signal` | done | - | - | `sig.c` |  |
 | 425 | `io_uring_setup` | deferred | D | ENOSYS |  | a second I/O model; after L4 |
 | 426 | `io_uring_enter` | deferred | D | ENOSYS |  | a second I/O model; after L4 |
 | 427 | `io_uring_register` | deferred | D | ENOSYS |  | a second I/O model; after L4 |
@@ -381,8 +381,8 @@ calls, outside the Linux number space, are listed last.
 | 431 | `fsconfig` | deferred | D | ENOSYS |  | the new mount API: after L8 |
 | 432 | `fsmount` | deferred | D | ENOSYS |  | the new mount API: after L8 |
 | 433 | `fspick` | deferred | D | ENOSYS |  | the new mount API: after L8 |
-| 434 | `pidfd_open` | missing | L2 | ENOSYS |  |  |
-| 435 | `clone3` | missing | L2 | ENOSYS |  |  |
+| 434 | `pidfd_open` | done | - | - | `sig.c` |  |
+| 435 | `clone3` | partial | L2 | - | `proc.c` | as clone: no CLONE_VM process, no set_tid, no cgroup |
 | 436 | `close_range` | partial | L6 | - | `fs.c` | CLOSE_RANGE_UNSHARE in a process with threads refused: a thread cannot hold a table of its own |
 | 437 | `openat2` | partial | L1 | - | `names.c` | resolve: only NO_MAGICLINKS; BENEATH, IN_ROOT, NO_XDEV and NO_SYMLINKS answer ENOSYS |
 | 438 | `pidfd_getfd` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |

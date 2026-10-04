@@ -638,6 +638,121 @@ static long linux_sys_rt_sigqueueinfo(uint64_t tgid, uint64_t tid, uint64_t sig,
     return r;
 }
 
+/* ---- pidfds (docs/abi/ L2 step 5) ---------------------------------------------------
+ *
+ * A descriptor that names a process, so that a signal reaches the process it
+ * was meant for even if the number is reused (kernel/abi/files/pidfd.c). */
+
+/* pidfd_open(): for a process - a thread group's leader - not for a thread.
+ * Close-on-exec always, as Linux makes them. */
+static long linux_sys_pidfd_open(uint64_t pid, uint64_t flags) {
+    vibeos_file_t *f;
+    uint32_t seq = 0;
+    int slot;
+    long r = 0;
+
+    if (ks_current() < 0) {
+        return -VIBEOS_EINVAL;
+    }
+    if ((int32_t)(uint32_t)pid <= 0 || (flags & ~(uint64_t)LINUX_PIDFD_NONBLOCK)) {
+        return -VIBEOS_EINVAL;
+    }
+    ks_lock(ks_sched_lock(), __func__);
+    slot = ks_task_by_tid((uint32_t)pid);
+    if (slot < 0) {
+        r = -VIBEOS_ESRCH;
+    } else if (ks_id(slot)->tgid != (uint32_t)pid) {
+        r = -VIBEOS_EINVAL;   /* a thread, not a process */
+    } else {
+        seq = ks_seq(slot);
+    }
+    ks_unlock(ks_sched_lock());
+    if (r != 0) {
+        return r;
+    }
+    f = vibeos_open_pidfd((uint32_t)pid, seq, (uint32_t)flags);
+    if (!f) {
+        return -VIBEOS_ENFILE;
+    }
+    return linux_fd_install(f, VIBEOS_FD_CLOEXEC, 0);
+}
+
+/* The process a pidfd names, by pid - for waitid's P_PIDFD. EBADF for a
+ * descriptor that is not a pidfd. */
+long linux_pidfd_pid(uint64_t fd) {
+    vibeos_file_t *f = linux_file_get(fd);
+    long pid;
+
+    if (!f) {
+        return -VIBEOS_EBADF;
+    }
+    pid = f->ops == &vibeos_fops_pidfd ? (long)f->proc_pid : -VIBEOS_EBADF;
+    vibeos_file_put(f);
+    return pid;
+}
+
+/* pidfd_send_signal(): kill, or rt_sigqueueinfo when a siginfo is given, to the
+ * process the descriptor names - ESRCH once it has been reaped, whoever has its
+ * number now. */
+static long linux_sys_pidfd_send_signal(uint64_t fd, uint64_t sig, uint64_t info_uptr, uint64_t flags) {
+    vibeos_file_t *f;
+    vibeos_siginfo_t why;
+    int slot;
+    long r;
+
+    if (ks_current() < 0 || !ks_id(ks_current())->is_user || flags != 0u || sig > VIBEOS_SIG_MAX) {
+        return -VIBEOS_EINVAL;
+    }
+    if (!(f = linux_file_get(fd))) {
+        return -VIBEOS_EBADF;
+    }
+    if (f->ops != &vibeos_fops_pidfd) {
+        vibeos_file_put(f);
+        return -VIBEOS_EBADF;
+    }
+    if (info_uptr != 0u) {
+        linux_siginfo_t in;
+        uint32_t i;
+
+        if (vibeos_uaccess_copy(&in, (const void *)(uintptr_t)info_uptr, sizeof(in)) != 0) {
+            vibeos_file_put(f);
+            return -VIBEOS_EFAULT;
+        }
+        /* As rt_sigqueueinfo: the record must be for this signal, and only to
+         * itself may a process claim kill or the kernel sent it. */
+        if ((uint32_t)in.si_signo != (uint32_t)sig ||
+            ((in.si_code >= 0 || in.si_code == LINUX_SI_TKILL) && f->proc_pid != ks_id(ks_current())->tgid)) {
+            vibeos_file_put(f);
+            return (uint32_t)in.si_signo != (uint32_t)sig ? -VIBEOS_EINVAL : -VIBEOS_EPERM;
+        }
+        for (i = 0; i < sizeof(why); i++) {
+            ((unsigned char *)&why)[i] = 0;
+        }
+        why.from = VIBEOS_SIG_FROM_QUEUE;
+        why.code = in.si_code;
+        why.pid = (uint32_t)in.pid;
+        why.uid = in.uid;
+        why.addr = in.value;
+    } else {
+        linux_sender(&why, VIBEOS_SIG_FROM_PROCESS);
+    }
+    ks_lock(ks_sched_lock(), __func__);
+    slot = vibeos_pidfd_slot(f);
+    if (slot < 0) {
+        r = -VIBEOS_ESRCH;
+    } else if (!linux_signal_permitted(slot)) {
+        r = -VIBEOS_EPERM;
+    } else {
+        if (sig != 0u) {
+            (void)ks_signal_send(slot, (uint32_t)sig, &why);   /* exiting: see kill */
+        }
+        r = 0;
+    }
+    ks_unlock(ks_sched_lock());
+    vibeos_file_put(f);
+    return r;
+}
+
 /* ---- the syscalls this file implements ---------------------------------------
  *
  *   tkill   raise() goes through tkill, not kill: a library raising a signal in
@@ -658,6 +773,8 @@ static long linux_sys_rt_sigqueueinfo(uint64_t tgid, uint64_t tid, uint64_t sig,
     X(129, rt_sigqueueinfo, SIG_QUEUE,   PTRS(IN(2, sizeof(linux_siginfo_t))), linux_sys_rt_sigqueueinfo(ARG(0), 0, ARG(1), ARG(2), 0)) \
     X(130, rt_sigsuspend,  SIG_SUSPEND,  PTRS(IN(0, 8)), linux_sys_rt_sigsuspend(ARG(0), ARG(1))) \
     X(131, sigaltstack,    SIG_ALTSTACK, PTRS(IN_OPT(0, sizeof(linux_stack_t)), OUT_OPT(1, sizeof(linux_stack_t))), linux_sys_sigaltstack(FRAME, ARG(0), ARG(1))) \
-    X(297, rt_tgsigqueueinfo, SIG_TGQUEUE, PTRS(IN(3, sizeof(linux_siginfo_t))), linux_sys_rt_sigqueueinfo(ARG(0), ARG(1), ARG(2), ARG(3), 1))
+    X(297, rt_tgsigqueueinfo, SIG_TGQUEUE, PTRS(IN(3, sizeof(linux_siginfo_t))), linux_sys_rt_sigqueueinfo(ARG(0), ARG(1), ARG(2), ARG(3), 1)) \
+    X(434, pidfd_open,     PIDFD_OPEN,   NOPTR, linux_sys_pidfd_open(ARG(0), ARG(1))) \
+    X(424, pidfd_send_signal, PIDFD_SEND_SIGNAL, PTRS(IN_OPT(2, sizeof(linux_siginfo_t))), linux_sys_pidfd_send_signal(ARG(0), ARG(1), ARG(2), ARG(3)))
 
 LINUX_DEFINE_SYSCALLS(sig, LINUX_SIG_SYSCALLS)

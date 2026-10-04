@@ -388,38 +388,37 @@ static long linux_sys_clone_thread(const ks_regs_t *frame,
     return (long)child->pid;
 }
 
-/* waitpid(): reap a finished child. Blocks the caller (state BLOCKED, so the
- * scheduler stops running it) until a child exit wakes it, instead of spinning.
- * The check-and-block is done under cli so a child exit cannot slip in between
- * (lost wakeup); `sti; hlt` then parks the task with interrupts enabled. */
-static long linux_sys_waitpid(uint64_t want_pid, uint64_t status_ptr,
-                           uint64_t options) {
-    uint32_t mypid;
+/* ---- waiting for a child (docs/abi/ L2 step 5) -------------------------------------
+ *
+ * One engine under wait4 and waitid. It used to be wait4 alone, and it heard
+ * only "any child" and "this pid": waitpid(0) and waitpid(-pgid) - a shell's
+ * job control - were matched as a pid of 0 or of 4294967xxx and answered
+ * ECHILD.
+ *
+ * What is selected: every child, one by pid, or a process group's. A child
+ * that has ended is reported and, unless the caller asked only to look
+ * (WNOWAIT), reaped. Stopped and continued children are not reported: this
+ * kernel does not keep that state for a parent (the registry's gap). */
 
-    if (ks_current() < 0 || !ks_id(ks_current())->is_user) {
-        return -VIBEOS_EINVAL;
-    }
-    mypid = ks_id(ks_current())->tgid;
-    /* The one pid whose group cannot be negated: Linux says no such process
-     * rather than no such child (LTP's waitpid04). */
-    if ((int32_t)(uint32_t)want_pid == (int32_t)0x80000000) {
-        return -VIBEOS_ESRCH;
-    }
+#define LINUX_WAIT_ANY  0u
+#define LINUX_WAIT_PID  1u
+#define LINUX_WAIT_PGID 2u
 
-    /* The options used to be dropped by the dispatcher before they got here,
-     * so WNOHANG blocked. A shell reaping background jobs stalls on the first
-     * one still running, and every bounded poll in a test is not bounded at all.
-     *
-     * WNOHANG is honoured. WUNTRACED, WCONTINUED and Linux's __WALL, __WCLONE
-     * and __WNOTHREAD are accepted and have no effect: this kernel reports
-     * neither stopped nor continued children, and it has no thread-group wait
-     * distinctions to make. Refusing them would be more precise and would
-     * break BusyBox's shell, which passes WUNTRACED for job control. Any other
-     * bit is refused, as Linux refuses it. */
-    if (options & ~(uint64_t)(LINUX_WNOHANG | LINUX_WUNTRACED | LINUX_WCONTINUED |
-                              LINUX_WNOTHREAD | LINUX_WALL | LINUX_WCLONE)) {
-        return -VIBEOS_EINVAL;
-    }
+typedef struct {
+    uint32_t pid;
+    uint32_t uid;
+    int status;           /* the wait status word: what wait4 hands back       */
+    uint32_t signal;      /* the signal that ended it, or 0                     */
+    uint32_t code;        /* the exit code, when it exited                      */
+    uint64_t cpu;         /* the ticks it ran, for rusage and times()           */
+} linux_waited_t;
+
+/* 1 if a child was found and *out filled, 0 if there were children and none
+ * had ended (only with WNOHANG), or a negated errno: ECHILD, or EINTR made a
+ * restart by the dispatcher. */
+static long linux_wait_child(uint32_t kind, uint32_t id, uint64_t options, int reap,
+                             linux_waited_t *out) {
+    uint32_t mypid = ks_id(ks_current())->tgid;
 
     for (;;) {
         int i;
@@ -429,89 +428,53 @@ static long linux_sys_waitpid(uint64_t want_pid, uint64_t status_ptr,
         ks_lock(ks_sched_lock(), __func__);
         for (i = 0; i < (int)ks_slots(); i++) {
             vibeos_task_t *t = ks_id(i);
-            if (t->ppid != mypid || vibeos_task_state((uint32_t)i) == VIBEOS_TASK_FREE) {
+
+            if (t->ppid != mypid || vibeos_task_state((uint32_t)i) == VIBEOS_TASK_FREE ||
+                vibeos_task_state((uint32_t)i) == VIBEOS_TASK_SETUP || t->is_thread) {
                 continue;
             }
-            if (want_pid != (uint64_t)-1 && t->tgid != (uint32_t)want_pid) {
+            if ((kind == LINUX_WAIT_PID && t->tgid != id) ||
+                (kind == LINUX_WAIT_PGID && t->pgid != id)) {
                 continue;
-            }
-            if (vibeos_task_state((uint32_t)i) == VIBEOS_TASK_ZOMBIE) {
-                uint32_t child_pid = t->tgid;
-                uint64_t code = t->exit_code;
-                uint32_t exit_signal = t->exit_signal;
-                /* One encoding, defined once. A wait status is not an exit
-                 * code, and an init that read only the code byte reported a
-                 * segfault as a clean stop - the crashing service came back
-                 * STOPPED. Producer and consumer now share the function. */
-                int status = vibeos_wait_status_make((uint32_t)code, exit_signal);
-                /* Publishing the slot as FREE is the last thing done to it,
-                 * and everything still needed from it is taken first.
-                 *
-                 * It used to set FREE, drop the lock, and only then call
-                 * the kernel-stack free - which both frees pages and writes to the
-                 * task. In between, another core allocating a task slot sees
-                 * this one free and starts a fork into it, and the two owners
-                 * interleave: the reaper then frees the kernel stack the fork
-                 * has just allocated, those pages go back on the freelist, and
-                 * the allocator hands them out again as page tables. That is
-                 * how a live process ends up with a PML4 whose entry zero is a
-                 * freelist pointer instead of the kernel - and a core loading
-                 * that CR3 stops mid-instruction with no way to report why.
-                 *
-                 * The freeing happens outside the lock, from locals, because
-                 * freeing a page takes the memory lock and nesting the two would
-                 * be a new ordering rule to get wrong. */
-                /* Nothing to take: the stack was parked on the core the
-                 * task exited on, and that core frees it once it is running on
-                 * a different one.
-                 *
-                 * This used to read kstack_base and kstack_pages here and free
-                 * them below, and it was wrong in a way three careful readings
-                 * of the exit path missed. Publishing the slot last was not
-                 * enough, because the danger is not the slot - it is that the
-                 * dying core is still standing on that stack when the reaper
-                 * runs. The window is a handful of instructions and it was hit
-                 * about one boot in six. */
-                uint64_t kbase = 0;
-                uint32_t kpages = 0;
-                /* What it ran, for the parent's times() (L2 step 3): taken
-                 * before the slot is published, after which the account is the
-                 * next tenant's. */
-                const vibeos_task_account_t *acct = vibeos_account_task((uint32_t)i);
-                uint64_t child_cpu = acct && acct->ticks > t->cpu_base ? acct->ticks - t->cpu_base : 0u;
-                (void)vibeos_teardown_step((uint32_t)i,
-                                           VIBEOS_TEARDOWN_HARVESTED);
-                vibeos_task_stats()->reaped++;
-                (void)vibeos_teardown_step((uint32_t)i,
-                                           VIBEOS_TEARDOWN_PUBLISHED);
-                (void)ks_set_state(i, VIBEOS_TASK_FREE, __func__); /* reaped; nothing may touch t now */
-                ks_unlock(ks_sched_lock());
-                (void)kbase; (void)kpages;
-                ks_irq_on();
-                {
-                    vibeos_procstate_t *mps = ks_ps(ks_current());
-                    if (mps) {
-                        __atomic_add_fetch(&mps->cpu_children, child_cpu, __ATOMIC_RELAXED);
-                    }
-                }
-                if (status_ptr != 0 && linux_user_ok(status_ptr, 4, 1)) {
-                    /* The wait status word: a normal exit puts the code in the
-                     * high byte and leaves the low seven bits clear; a signal
-                     * death puts the signal number in those low bits. That is
-                     * what WIFEXITED and WIFSIGNALED read.
-                     *
-                     * Written through the fault-safe copy: the reap has already
-                     * published the slot FREE and released the lock, so a
-                     * sibling can munmap this page before the store (H-022). The
-                     * child stays consumed if it faults - the pid is returned
-                     * regardless, as Linux does after EFAULT here. */
-                    int st = status;
-                    (void)vibeos_uaccess_copy((void *)(uintptr_t)status_ptr,
-                                              &st, sizeof(st));
-                }
-                return (long)child_pid;
             }
             have_children = 1;
+            if (vibeos_task_state((uint32_t)i) != VIBEOS_TASK_ZOMBIE) {
+                continue;
+            }
+            {
+                const vibeos_task_account_t *acct = vibeos_account_task((uint32_t)i);
+
+                out->pid = t->tgid;
+                out->uid = t->exit_uid;
+                out->signal = t->exit_signal;
+                out->code = (uint32_t)t->exit_code;
+                /* One encoding, defined once. A wait status is not an exit
+                 * code, and an init that read only the code byte reported a
+                 * segfault as a clean stop. */
+                out->status = vibeos_wait_status_make((uint32_t)t->exit_code, t->exit_signal);
+                out->cpu = acct && acct->ticks > t->cpu_base ? acct->ticks - t->cpu_base : 0u;
+            }
+            if (reap) {
+                /* Publishing the slot as FREE is the last thing done to it, and
+                 * everything still needed from it was taken above. The kernel
+                 * stack is not the reaper's: it was parked on the core the task
+                 * exited on, which frees it once it is running on another (a
+                 * reaper that freed it was freeing the stack under the dying
+                 * core's feet, about one boot in six). */
+                (void)vibeos_teardown_step((uint32_t)i, VIBEOS_TEARDOWN_HARVESTED);
+                vibeos_task_stats()->reaped++;
+                (void)vibeos_teardown_step((uint32_t)i, VIBEOS_TEARDOWN_PUBLISHED);
+                (void)ks_set_state(i, VIBEOS_TASK_FREE, __func__); /* reaped; nothing may touch t now */
+            }
+            ks_unlock(ks_sched_lock());
+            ks_irq_on();
+            if (reap) {
+                vibeos_procstate_t *mps = ks_ps(ks_current());
+                if (mps) {
+                    __atomic_add_fetch(&mps->cpu_children, out->cpu, __ATOMIC_RELAXED);
+                }
+            }
+            return 1;
         }
         if (!have_children) {
             ks_unlock(ks_sched_lock());
@@ -523,9 +486,9 @@ static long linux_sys_waitpid(uint64_t want_pid, uint64_t status_ptr,
             ks_irq_on();
             return 0;
         }
-        /* Block until a child exit sets us READY again (see ks_task_exit) -
-         * or until a signal needs acting on. Blocked first, then asked, still
-         * under the lock, for the same reason as the futex and console waits. */
+        /* Block until a child exit sets us READY again - or until a signal
+         * needs acting on. Blocked first, then asked, still under the lock, for
+         * the same reason as the futex and console waits. */
         (void)ks_set_state(ks_current(), VIBEOS_TASK_BLOCKED, __func__);
         if (ks_signal_interrupts(ks_current())) {
             (void)ks_set_state(ks_current(), VIBEOS_TASK_READY, __func__);
@@ -537,6 +500,165 @@ static long linux_sys_waitpid(uint64_t want_pid, uint64_t status_ptr,
         ks_unlock(ks_sched_lock());
         ks_block_point();
     }
+}
+
+static void linux_rusage_of(uint64_t ticks, uint64_t uptr) {
+    linux_rusage_t ru;
+    uint32_t i;
+
+    for (i = 0; i < sizeof(ru); i++) {
+        ((unsigned char *)&ru)[i] = 0;
+    }
+    ru.ru_utime.tv_sec = (int64_t)(ticks / ks_hz());
+    ru.ru_utime.tv_usec = (int64_t)((ticks % ks_hz()) * (1000000ull / ks_hz()));
+    (void)vibeos_uaccess_copy((void *)(uintptr_t)uptr, &ru, sizeof(ru));
+}
+
+/* wait4(): pid > 0 that child, -1 any, 0 the caller's group, < -1 group -pid. */
+static long linux_sys_waitpid(uint64_t want_pid, uint64_t status_ptr, uint64_t options,
+                              uint64_t rusage_ptr) {
+    int32_t p = (int32_t)(uint32_t)want_pid;
+    uint32_t kind, id;
+    linux_waited_t w;
+    long r;
+
+    if (ks_current() < 0 || !ks_id(ks_current())->is_user) {
+        return -VIBEOS_EINVAL;
+    }
+    /* The one pid whose group cannot be negated: Linux says no such process
+     * rather than no such child (LTP's waitpid04). */
+    if (p == (int32_t)0x80000000) {
+        return -VIBEOS_ESRCH;
+    }
+    /* WNOHANG is honoured. WUNTRACED, WCONTINUED and Linux's __WALL, __WCLONE
+     * and __WNOTHREAD are accepted and have no effect: this kernel reports
+     * neither stopped nor continued children. Refusing them would break
+     * BusyBox's shell, which passes WUNTRACED for job control. Any other bit is
+     * refused, as Linux refuses it. */
+    if (options & ~(uint64_t)(LINUX_WNOHANG | LINUX_WUNTRACED | LINUX_WCONTINUED |
+                              LINUX_WNOTHREAD | LINUX_WALL | LINUX_WCLONE)) {
+        return -VIBEOS_EINVAL;
+    }
+    if (p == -1) {
+        kind = LINUX_WAIT_ANY;
+        id = 0;
+    } else if (p == 0) {
+        kind = LINUX_WAIT_PGID;
+        id = ks_id(ks_current())->pgid;
+    } else if (p < 0) {
+        kind = LINUX_WAIT_PGID;
+        id = (uint32_t)-p;
+    } else {
+        kind = LINUX_WAIT_PID;
+        id = (uint32_t)p;
+    }
+    r = linux_wait_child(kind, id, options, 1, &w);
+    if (r <= 0) {
+        return r;
+    }
+    if (status_ptr != 0 && linux_user_ok(status_ptr, 4, 1)) {
+        /* Written through the fault-safe copy: the reap has already published
+         * the slot FREE, so a sibling can munmap this page before the store
+         * (H-022). The child stays consumed if it faults - the pid is returned
+         * regardless, as Linux does. */
+        int st = w.status;
+        (void)vibeos_uaccess_copy((void *)(uintptr_t)status_ptr, &st, sizeof(st));
+    }
+    if (rusage_ptr != 0 && linux_user_ok(rusage_ptr, sizeof(linux_rusage_t), 1)) {
+        linux_rusage_of(w.cpu, rusage_ptr);
+    }
+    return (long)w.pid;
+}
+
+/* waitid(): the same, with what happened told as a siginfo_t, a choice of
+ * events (WEXITED is the only one this kernel reports), and WNOWAIT to look
+ * without reaping. A pidfd names its process as P_PIDFD. */
+static long linux_sys_waitid(uint64_t idtype, uint64_t id, uint64_t info_ptr, uint64_t options,
+                             uint64_t rusage_ptr) {
+    uint32_t kind, sel = (uint32_t)id;
+    linux_waited_t w;
+    linux_siginfo_t si;
+    uint32_t i;
+    long r;
+
+    if (ks_current() < 0 || !ks_id(ks_current())->is_user) {
+        return -VIBEOS_EINVAL;
+    }
+    if (options & ~(uint64_t)(LINUX_WNOHANG | LINUX_WSTOPPED | LINUX_WEXITED | LINUX_WCONTINUED |
+                              LINUX_WNOWAIT | LINUX_WNOTHREAD | LINUX_WALL | LINUX_WCLONE)) {
+        return -VIBEOS_EINVAL;
+    }
+    if (!(options & (LINUX_WEXITED | LINUX_WSTOPPED | LINUX_WCONTINUED))) {
+        return -VIBEOS_EINVAL;   /* nothing asked for */
+    }
+    switch ((uint32_t)idtype) {
+        case LINUX_P_ALL:
+            kind = LINUX_WAIT_ANY;
+            break;
+        case LINUX_P_PID:
+            if ((int32_t)sel <= 0) {
+                return -VIBEOS_EINVAL;
+            }
+            kind = LINUX_WAIT_PID;
+            break;
+        case LINUX_P_PGID:
+            if ((int32_t)sel < 0) {
+                return -VIBEOS_EINVAL;
+            }
+            kind = LINUX_WAIT_PGID;
+            if (sel == 0u) {
+                sel = ks_id(ks_current())->pgid;
+            }
+            break;
+        case LINUX_P_PIDFD: {
+            long pid = linux_pidfd_pid(id);
+            if (pid < 0) {
+                return pid;
+            }
+            kind = LINUX_WAIT_PID;
+            sel = (uint32_t)pid;
+            break;
+        }
+        default:
+            return -VIBEOS_EINVAL;
+    }
+    if (!(options & LINUX_WEXITED)) {
+        /* Only stopped or continued children asked for, and those are never
+         * reported here: nothing to find, as if no child ever changed. */
+        if (options & LINUX_WNOHANG) {
+            r = 0;
+        } else {
+            while (!ks_signal_interrupts(ks_current())) {
+                ks_wait_tick();
+            }
+            return -VIBEOS_EINTR;
+        }
+    } else {
+        r = linux_wait_child(kind, sel, options, (options & LINUX_WNOWAIT) == 0u, &w);
+        if (r < 0) {
+            return r;
+        }
+    }
+    for (i = 0; i < sizeof(si); i++) {
+        ((unsigned char *)&si)[i] = 0;
+    }
+    if (r > 0) {
+        si.si_signo = (int32_t)VIBEOS_SIGCHLD;
+        si.si_code = w.signal ? LINUX_CLD_KILLED : LINUX_CLD_EXITED;
+        si.pid = (int32_t)w.pid;
+        si.uid = w.uid;
+        linux_si_set_status(&si, w.signal ? (int32_t)w.signal : (int32_t)(w.code & 0xFFu));
+    }
+    /* With WNOHANG and nothing to report the record is zeroes, which is how a
+     * program tells "nothing yet" from a child: si_pid 0. */
+    if (info_ptr != 0u &&
+        vibeos_uaccess_copy((void *)(uintptr_t)info_ptr, &si, sizeof(si)) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    if (r > 0 && rusage_ptr != 0u) {
+        linux_rusage_of(w.cpu, rusage_ptr);
+    }
+    return 0;
 }
 
 /* execve(): replace the current process image with an ELF read from the
@@ -687,8 +809,8 @@ static long linux_copy_user_argv(uint64_t uvec, linux_argv_t *out) {
     return (long)count;
 }
 
-static long linux_sys_execve(ks_regs_t *frame, uint64_t path_uptr,
-                          uint64_t argv_uptr, uint64_t envp_uptr) {
+static long linux_sys_execve(ks_regs_t *frame, uint64_t dirfd, uint64_t path_uptr,
+                          uint64_t argv_uptr, uint64_t envp_uptr, uint64_t atflags) {
     char name[128];                 /* as the caller wrote it: argv[0] if none   */
     char path[VIBEOS_PATH_MAX];     /* absolute, from the working directory (A4) */
     vibeos_image_t np;
@@ -725,7 +847,12 @@ static long linux_sys_execve(ks_regs_t *frame, uint64_t path_uptr,
      * shell that runs ./configure after cd'ing into a directory depends on it.
      * argv[0] stays what the caller wrote: BusyBox decides which applet it is
      * from that name, not from where the file was. */
-    if (linux_is_proc_self_exe((uint64_t)(uint32_t)LINUX_AT_FDCWD, path_uptr) &&
+    /* execveat (L2 step 5): a directory to start from, AT_EMPTY_PATH to run
+     * the file a descriptor names, AT_SYMLINK_NOFOLLOW to refuse a link. */
+    if (atflags & ~(uint64_t)(LINUX_AT_EMPTY_PATH | LINUX_AT_SYMLINK_NOFOLLOW)) {
+        return -VIBEOS_EINVAL;
+    }
+    if (linux_is_proc_self_exe(dirfd, path_uptr) &&
         ks_current() >= 0 && ks_image(ks_current())->exe_path[0] != 0) {
         /* "Run the program I am." There is no /proc, and this is the one name
          * in it a program cannot do without: BusyBox's shell runs every applet
@@ -742,7 +869,11 @@ static long linux_sys_execve(ks_regs_t *frame, uint64_t path_uptr,
         path[k] = 0;
     } else {
         vibeos_path_t w;
-        long pr = linux_walk_at((uint64_t)(uint32_t)LINUX_AT_FDCWD, path_uptr, 0u, &w);
+        long pr = linux_walk_at_empty(dirfd, path_uptr, atflags,
+                                      (atflags & LINUX_AT_SYMLINK_NOFOLLOW) ? VIBEOS_PATH_NOFOLLOW : 0u, &w);
+        if (pr == 0 && (w.node.mode & VIBEOS_S_IFMT) == VIBEOS_S_IFLNK) {
+            pr = -VIBEOS_ELOOP;   /* AT_SYMLINK_NOFOLLOW, and the name is a link */
+        }
         if (pr != 0) {
             (void)ks_exec_refuse(pr == -VIBEOS_ENOENT ? VIBEOS_EXEC_NOT_FOUND
                                                       : VIBEOS_EXEC_BAD_ARGS, name, "path");
@@ -1632,6 +1763,80 @@ static long linux_sys_exit_group(uint64_t code) {
  * process. The other two combinations are refused rather than approximated: a
  * thread with a private address space, or a vfork-like sharing without being a
  * thread, would be something that only looks like what it claims to be. */
+/* clone3(): clone with its arguments in a structure (docs/abi/ L2 step 5). The
+ * C library tries it first for threads and falls back to clone on ENOSYS, so
+ * it is clone's two paths again - a thread, or a fork - with the stack given
+ * as its lowest address and size rather than its top, and CLONE_PIDFD, which
+ * hands the parent a pidfd for the child. What clone does not do it does not
+ * do either: a CLONE_VM process (vfork's sharing), a chosen pid (set_tid), a
+ * cgroup. */
+static long linux_sys_clone3(const vibeos_call_t *c) {
+    linux_clone_args_t a;
+    uint64_t size = ARG(1), top = 0;
+    uint32_t i;
+    long r;
+
+    if (ks_current() < 0 || !ks_id(ks_current())->is_user) {
+        return -VIBEOS_EINVAL;
+    }
+    if (size < LINUX_CLONE_ARGS_SIZE_VER0) {
+        return -VIBEOS_EINVAL;
+    }
+    if (size > sizeof(a)) {
+        return -VIBEOS_E2BIG;   /* a newer structure than this kernel knows */
+    }
+    for (i = 0; i < sizeof(a); i++) {
+        ((unsigned char *)&a)[i] = 0;
+    }
+    if (vibeos_uaccess_copy(&a, (const void *)(uintptr_t)ARG(0), size) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    if ((a.flags >> 32) != 0u || a.exit_signal > VIBEOS_SIG_MAX ||
+        a.set_tid != 0u || a.set_tid_size != 0u || (a.flags & LINUX_CLONE_INTO_CGROUP)) {
+        return -VIBEOS_EINVAL;
+    }
+    if (a.stack != 0u) {
+        if (a.stack_size == 0u) {
+            return -VIBEOS_EINVAL;
+        }
+        top = a.stack + a.stack_size;
+    } else if (a.stack_size != 0u) {
+        return -VIBEOS_EINVAL;
+    }
+    if (a.flags & LINUX_CLONE_THREAD) {
+        if (!(a.flags & LINUX_CLONE_VM) || a.exit_signal != 0u || (a.flags & LINUX_CLONE_PIDFD)) {
+            return -VIBEOS_EINVAL;
+        }
+        return linux_sys_clone_thread(FRAME, a.flags, top, a.parent_tid, a.child_tid, a.tls);
+    }
+    if (a.flags & LINUX_CLONE_VM) {
+        return -VIBEOS_ENOSYS;   /* vfork-like sharing: not supported, as clone */
+    }
+    r = linux_sys_fork(FRAME);
+    if (r > 0 && (a.flags & LINUX_CLONE_PIDFD)) {
+        /* The child exists and nobody can have reaped it: its parent is here. */
+        vibeos_file_t *f;
+        int slot, fd = -1;
+        uint32_t seq = 0;
+
+        ks_lock(ks_sched_lock(), __func__);
+        slot = ks_task_by_tid((uint32_t)r);
+        if (slot >= 0) {
+            seq = ks_seq(slot);
+        }
+        ks_unlock(ks_sched_lock());
+        f = slot >= 0 ? vibeos_open_pidfd((uint32_t)r, seq, 0) : 0;
+        if (f) {
+            long installed = linux_fd_install(f, VIBEOS_FD_CLOEXEC, 0);
+            fd = installed >= 0 ? (int)installed : -1;
+        }
+        /* The child runs either way, as on Linux; a pidfd that could not be
+         * made or written leaves the parent with -1 where it looks. */
+        (void)vibeos_uaccess_copy((void *)(uintptr_t)a.pidfd, &fd, sizeof(fd));
+    }
+    return r;
+}
+
 static long linux_sys_clone(const vibeos_call_t *c) {
     uint64_t flags = ARG(0);
 
@@ -1672,9 +1877,12 @@ static long linux_sys_clone(const vibeos_call_t *c) {
     X(56,  clone,            THREAD_CREATE,   NOPTR, linux_sys_clone(c)) \
     X(57,  fork,             FORK,            NOPTR, linux_sys_fork(FRAME)) \
     X(58,  vfork,            FORK,            NOPTR, linux_sys_fork(FRAME)) \
-    X(59,  execve,           EXEC,            NOPTR, linux_sys_execve(FRAME, ARG(0), ARG(1), ARG(2))) \
+    X(59,  execve,           EXEC,            NOPTR, linux_sys_execve(FRAME, (uint64_t)(uint32_t)LINUX_AT_FDCWD, ARG(0), ARG(1), ARG(2), 0)) \
+    X(322, execveat,         EXECVEAT,        NOPTR, linux_sys_execve(FRAME, ARG(0), ARG(1), ARG(2), ARG(3), ARG(4))) \
+    X(435, clone3,           CLONE3,          NOPTR, linux_sys_clone3(c)) \
+    X(247, waitid,           WAITID,          PTRS(OUT_OPT(2, sizeof(linux_siginfo_t)), OUT_OPT(4, sizeof(linux_rusage_t))), linux_sys_waitid(ARG(0), ARG(1), ARG(2), ARG(3), ARG(4))) \
     X(60,  exit,             EXIT,            NOPTR, linux_sys_exit(ARG(0))) \
-    X(61,  wait4,            WAIT,            NOPTR, linux_sys_waitpid(ARG(0), ARG(1), ARG(2))) \
+    X(61,  wait4,            WAIT,            NOPTR, linux_sys_waitpid(ARG(0), ARG(1), ARG(2), ARG(3))) \
     X(102, getuid,           IDENTITY_GET,    NOPTR, linux_sys_getid(ID_RUID)) \
     X(104, getgid,           IDENTITY_GET,    NOPTR, linux_sys_getid(ID_RGID)) \
     X(105, setuid,           IDENTITY_SET,    NOPTR, linux_set1(SET_UID, ARG(0))) \
