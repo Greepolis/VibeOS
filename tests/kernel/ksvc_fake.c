@@ -916,6 +916,10 @@ int ks_signal_send(int slot, uint32_t sig, const vibeos_siginfo_t *info) {
     if (sig == 0u || sig > VIBEOS_SIG_MAX || !g_t[slot].ps) {
         return -1;
     }
+    /* As the machine: only SIGCONT and SIGKILL end a stop. */
+    if (sig == VIBEOS_SIGCONT || sig == VIBEOS_SIGKILL) {
+        g_t[slot].id.signal_stopped = 0;
+    }
     if (sig != VIBEOS_SIGKILL && sig != VIBEOS_SIGSTOP && g_t[slot].ps &&
         g_t[slot].ps->sig_handler[sig] == SIG_IGN_ADDR &&
         (g_t[slot].id.sig_blocked & (1ull << sig)) == 0u) {

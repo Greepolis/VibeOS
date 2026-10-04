@@ -526,6 +526,9 @@ int hw_aspace_copy_user(vibeos_hw_aspace_t *dst, vibeos_hw_aspace_t *src);
 int hw_signal_interrupts(int task);
 int hw_signal_raise(int task_index, uint32_t sig);
 int hw_signal_send(int task_index, uint32_t sig, const vibeos_siginfo_t *info);
+/* A stop taken on a system call's way out holds the task there (task_life.c);
+ * 1 if it waited, and the caller delivers what came meanwhile. */
+int hw_task_hold_while_stopped(void);
 int hw_signal_take(int task_index, uint32_t sig, vibeos_siginfo_t *out);
 void hw_task_exit_group(uint64_t code);
 int hw_task_by_pid(uint32_t pid);

@@ -691,6 +691,81 @@ void hw_procstate_put(hw_procstate_t *ps) {
 uint32_t g_next_pid = 1;
 uint32_t g_init_pid;   /* the first program the kernel starts: who adopts orphans */
 
+/* A live user task's slot state, for the walks below: neither free, nor being
+ * built, nor ended. */
+static int hw_task_live(int i) {
+    vibeos_task_state_t st = hw_slot_state(i);
+
+    return g_tasks[i].id.is_user && st != HW_TASK_FREE && st != HW_TASK_RESERVED &&
+           st != HW_TASK_ZOMBIE;
+}
+
+/* The live leader of process `tgid`, or -1. */
+static int hw_leader_of(uint32_t tgid) {
+    int i;
+
+    for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+        if (hw_task_live(i) && g_tasks[i].id.pid == tgid && g_tasks[i].id.tgid == tgid) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* POSIX's orphaned process group: no member has a parent in another group of
+ * the same session - nobody left who could continue its stopped jobs. `gone`
+ * is a process about to stop counting (its tgid), 0 for none; a member whose
+ * parent is init has no such connection either. */
+static int hw_pgrp_orphaned(uint32_t pgid, uint32_t gone) {
+    int i, p;
+
+    for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+        if (!hw_task_live(i) || g_tasks[i].id.pgid != pgid || g_tasks[i].id.tgid == gone ||
+            g_tasks[i].id.ppid == g_init_pid) {
+            continue;
+        }
+        p = hw_leader_of(g_tasks[i].id.ppid);
+        if (p >= 0 && g_tasks[p].id.pgid != pgid && g_tasks[p].id.sid == g_tasks[i].id.sid) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* An orphaned group with a stopped member is sent SIGHUP and then SIGCONT,
+ * as POSIX requires and Linux does (kill_orphaned_pgrp): otherwise what was
+ * stopped stays stopped for ever, since whoever could have continued it is
+ * gone. LTP's waitpid13 moves half its children into a group of their own and
+ * stops them; when the test was killed for its time, its group's SIGKILL did
+ * not reach them, and they held their slots until fork was EAGAIN for the tests
+ * after (L2 step 6's LTP run). The hangup is delivered on the continue. */
+static void hw_pgrp_hangup_if_stopped(uint32_t pgid, uint32_t gone) {
+    int i, stopped = 0;
+
+    if (pgid == 0u) {
+        return;
+    }
+    for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+        stopped |= hw_task_live(i) && g_tasks[i].id.pgid == pgid && g_tasks[i].id.signal_stopped;
+    }
+    if (!stopped || !hw_pgrp_orphaned(pgid, gone)) {
+        return;
+    }
+    /* The hangup to each process first, then the continue - to each process
+     * and to every task that is stopped, since a stop here is a task's. */
+    for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+        if (hw_task_live(i) && g_tasks[i].id.pgid == pgid && g_tasks[i].id.pid == g_tasks[i].id.tgid) {
+            (void)hw_signal_send(i, VIBEOS_SIGHUP, 0);
+        }
+    }
+    for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
+        if (hw_task_live(i) && g_tasks[i].id.pgid == pgid &&
+            (g_tasks[i].id.pid == g_tasks[i].id.tgid || g_tasks[i].id.signal_stopped)) {
+            (void)hw_signal_send(i, VIBEOS_SIGCONT, 0);
+        }
+    }
+}
+
 /* A process's children go to init when the last of its tasks ends, as on Linux.
  * init waits for whatever it is given (user/prog/init.c: "an orphan we
  * adopted"), and the kernel never gave it anything: a child whose parent had
@@ -700,7 +775,8 @@ uint32_t g_init_pid;   /* the first program the kernel starts: who adopts orphan
  * scheduler's lock; `dying` is already ZOMBIE or on its way out. */
 static void hw_orphans_to_init(int dying) {
     uint32_t tgid = g_tasks[dying].id.tgid;
-    int i, init = -1, zombies = 0;
+    uint32_t groups[VIBEOS_HW_MAX_TASKS];
+    int i, j, init = -1, zombies = 0, ngroups = 0, parent;
 
     if (g_init_pid == 0u || tgid == g_init_pid) {
         return;
@@ -725,11 +801,32 @@ static void hw_orphans_to_init(int dying) {
             g_tasks[i].id.ppid == tgid && g_tasks[i].id.tgid != tgid) {
             g_tasks[i].id.ppid = g_init_pid;
             zombies += st == HW_TASK_ZOMBIE ? 1 : 0;
+            /* A child in a group of its own, in this session: this process may
+             * have been that group's last connection outside it. */
+            if (st != HW_TASK_ZOMBIE && g_tasks[i].id.pgid != g_tasks[dying].id.pgid &&
+                g_tasks[i].id.sid == g_tasks[dying].id.sid) {
+                for (j = 0; j < ngroups && groups[j] != g_tasks[i].id.pgid; j++) {
+                }
+                if (j == ngroups) {
+                    groups[ngroups++] = g_tasks[i].id.pgid;
+                }
+            }
         }
     }
     if (zombies > 0 && init >= 0 && hw_slot_state(init) == HW_TASK_BLOCKED) {
         (void)hw_task_set_state(init, HW_TASK_READY, __func__);
         HW_TASK_MARK(init, ready_by, "init_given_orphans");
+    }
+    /* The groups this end leaves orphaned: its own, when its parent is outside
+     * it in the same session - the connection that just went - and each of its
+     * children's, checked now that they are init's. */
+    parent = hw_leader_of(g_tasks[dying].id.ppid);
+    if (parent >= 0 && g_tasks[parent].id.pgid != g_tasks[dying].id.pgid &&
+        g_tasks[parent].id.sid == g_tasks[dying].id.sid) {
+        hw_pgrp_hangup_if_stopped(g_tasks[dying].id.pgid, tgid);
+    }
+    for (j = 0; j < ngroups; j++) {
+        hw_pgrp_hangup_if_stopped(groups[j], tgid);
     }
 }
 
@@ -1315,7 +1412,8 @@ void hw_task_exit(uint64_t code) {
         (void)hw_task_set_state(dying, HW_TASK_ZOMBIE, __func__);
         hw_orphans_to_init(dying);
         for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
-            if (hw_slot_state(i) == HW_TASK_BLOCKED &&
+            /* Not a stopped parent: a child's end is no SIGCONT. */
+            if (hw_slot_state(i) == HW_TASK_BLOCKED && !g_tasks[i].id.signal_stopped &&
                 g_tasks[i].id.pid == g_tasks[dying].id.ppid) {
                 (void)hw_task_set_state(i, HW_TASK_READY, __func__);
                 HW_TASK_MARK(i, ready_by, "parent_woken_by_child_exit");
@@ -1460,10 +1558,12 @@ int hw_signal_send(int task_index, uint32_t sig, const vibeos_siginfo_t *info) {
         g_tasks[task_index].ps == 0) {
         return -1;   /* no process left to hold a disposition: it is exiting */
     }
-    if (sig == VIBEOS_SIGCONT && g_tasks[task_index].id.signal_stopped) {
+    /* SIGKILL ends a stop as SIGCONT does: a stopped process can always be
+     * killed, and it is not stopped while it dies. */
+    if ((sig == VIBEOS_SIGCONT || sig == VIBEOS_SIGKILL) && g_tasks[task_index].id.signal_stopped) {
         g_tasks[task_index].id.signal_stopped = 0;
         (void)hw_task_set_state(task_index, HW_TASK_READY, __func__);
-        HW_TASK_MARK(task_index, ready_by, "sigcont");
+        HW_TASK_MARK(task_index, ready_by, sig == VIBEOS_SIGKILL ? "sigkill_stopped" : "sigcont");
     }
     /* SIGKILL and SIGSTOP cannot be caught or blocked. Honouring a handler for
      * them would make a process unkillable. */
@@ -1493,13 +1593,55 @@ int hw_signal_send(int task_index, uint32_t sig, const vibeos_siginfo_t *info) {
         __sync_fetch_and_or(&t->id.sig_pending, 1ull << sig);
     }
     hw_spin_unlock(&t->sig_lock);
-    /* A task asleep in read() has to wake up to notice. */
-    if (hw_slot_state(task_index) == HW_TASK_BLOCKED) {
+    /* A task asleep in read() has to wake up to notice. A stopped one does not:
+     * it is BLOCKED too, and woken by any signal it went back to running its
+     * program without a SIGCONT - the signal stays pending until one comes.
+     * (Orphaned process groups are sent SIGHUP before SIGCONT for exactly
+     * this: the hangup is taken when the group is continued.) */
+    if (hw_slot_state(task_index) == HW_TASK_BLOCKED && !g_tasks[task_index].id.signal_stopped) {
         g_tasks[task_index].id.wait_input = 0;
         (void)hw_task_set_state(task_index, HW_TASK_READY, __func__);
         HW_TASK_MARK(task_index, ready_by, "signal_wake");
     }
     return 0;
+}
+
+/* A stop taken on the way out of a system call is a stop there, not at the next
+ * tick: the task used to return to its program BLOCKED and run it until the
+ * timer switched it away - long enough to enter a futex wait that a wake then
+ * ended, with nobody having sent SIGCONT (L2 step 7). It waits until SIGCONT
+ * or SIGKILL ends the stop, looking and blocking under the scheduler's lock so
+ * that neither can come between the two; 1 if it waited, and the caller then
+ * delivers what came meanwhile - the hangup an orphaned group is sent first,
+ * above all. Only the system call's exit asks: the timer's runs on an
+ * interrupt stack (IST 1) that a second tick inside the first would overwrite,
+ * so a stop taken there still runs to the end of its tick. */
+int hw_task_hold_while_stopped(void) {
+    int cur = hw_this_cpu()->current_task;
+    int stopped, waited = 0;
+
+    if (cur < 0 || cur >= VIBEOS_HW_MAX_TASKS || !g_tasks[cur].id.is_user) {
+        return 0;
+    }
+    for (;;) {
+        hw_spin_lock_named(&g_sched_lock, __func__);
+        stopped = g_tasks[cur].id.signal_stopped != 0u;
+        /* Not from READY: a wake that came before this core reached its hlt is
+         * the scheduler's to act on - the table refuses ready -> blocked, and
+         * a sabotage that woke stopped tasks found that out. It is picked
+         * again, and blocks then. */
+        if (stopped && hw_slot_state(cur) != HW_TASK_READY) {
+            (void)hw_task_set_state(cur, HW_TASK_BLOCKED, __func__);
+        }
+        hw_spin_unlock(&g_sched_lock);
+        if (!stopped) {
+            return waited;
+        }
+        /* Not ks_block_point: that marks the task waiting for /proc, and only
+         * the Linux dispatcher, already returned, clears the mark. */
+        __asm__ __volatile__("sti; hlt" ::: "memory");
+        waited = 1;
+    }
 }
 
 /* Take one pending signal with its reason; 1 if it was pending. The owner

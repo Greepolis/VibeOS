@@ -1425,6 +1425,11 @@ void vibeos_x86_64_syscall_dispatch(vibeos_x86_64_isr_frame_t *frame) {
      * on the way out, where its own stack is available and the register state
      * to save is the one sitting in the trapframe. */
     (void)linux_signal_deliver((struct ks_regs *)frame);
+    /* A stop taken on the way out is held here (hw_task_hold_while_stopped),
+     * and what came while it was stopped is taken after it. */
+    if (hw_task_hold_while_stopped()) {
+        (void)linux_signal_deliver((struct ks_regs *)frame);
+    }
 }
 
 /* Bring the scheduler up: spawn the initial user tasks, adopt the kernel as a
