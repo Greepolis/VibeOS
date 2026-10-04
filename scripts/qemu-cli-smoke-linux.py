@@ -3043,6 +3043,11 @@ def main():
                 # L2 step 5: waiting, pidfds, execveat, clone3.
                 if not re.search(r"write\(ring3\): PROC_OK: ", text):
                     problems.append("process_calls_failed")
+                # L2 step 6: /proc, /dev, getrandom, and the three defects
+                # step 5's LTP run found (shared futex, clone's exit signal,
+                # orphans given to init).
+                if not re.search(r"write\(ring3\): PROCDEV_OK: ", text):
+                    problems.append("proc_dev_checks_failed")
 
             # The graphical shell, to the extent a serial log can speak for
             # it: the console has to have reached the on-screen terminal. Only

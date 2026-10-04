@@ -43,6 +43,7 @@
 #include <fcntl.h>
 #include <sys/personality.h>
 #include <sys/resource.h>
+#include <sys/mman.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdio.h>
@@ -769,6 +770,226 @@ static int process_checks(void) {
     return ok;
 }
 
+/* ---- docs/abi/ L2 step 6: /proc, /dev, random numbers - and the three defects
+ * step 5's LTP run found: a futex shared through a MAP_SHARED page, clone's
+ * exit signal, and orphans that nobody adopted ---------------------------- */
+
+static int read_file(const char *path, char *buf, int cap) {
+    int fd = open(path, O_RDONLY), n, total = 0;
+
+    if (fd < 0) {
+        return -errno;
+    }
+    while (total < cap - 1 && (n = (int)read(fd, buf + total, (size_t)(cap - 1 - total))) > 0) {
+        total += n;
+    }
+    buf[total] = 0;
+    close(fd);
+    return total;
+}
+
+static volatile sig_atomic_t g_usr2;
+
+static void on_usr2(int s) {
+    (void)s;
+    g_usr2 = 1;
+}
+
+static int procdev_checks(void) {
+    static char buf[8192];
+    char path[64], want[32], link[256];
+    unsigned char r1[16], r2[16], z[16];
+    int ok = 1, n, status, fd, i, seen = 0;
+    pid_t c;
+
+    printf("SIG_PHASE: proc and dev\n");
+    fflush(stdout);
+
+    /* The asking process, by the link that names it, and its files. */
+    n = (int)readlink("/proc/self", link, sizeof(link) - 1);
+    snprintf(want, sizeof(want), "%d", (int)getpid());
+    if (n <= 0 || (link[n] = 0, strcmp(link, want) != 0)) {
+        printf("SIG_FAIL: /proc/self: n=%d '%s'\n", n, n > 0 ? link : "");
+        ok = 0;
+    }
+    n = read_file("/proc/self/stat", buf, sizeof(buf));
+    if (n <= 0 || atoi(buf) != (int)getpid() || !strstr(buf, ") R ")) {
+        printf("SIG_FAIL: /proc/self/stat: n=%d '%.60s'\n", n, n > 0 ? buf : "");
+        ok = 0;
+    }
+    n = (int)readlink("/proc/self/exe", link, sizeof(link) - 1);
+    if (n <= 0 || link[0] != '/') {
+        printf("SIG_FAIL: /proc/self/exe: n=%d\n", n);
+        ok = 0;
+    }
+    n = (int)readlink("/proc/self/fd/1", link, sizeof(link) - 1);
+    if (n <= 0) {
+        printf("SIG_FAIL: /proc/self/fd/1: n=%d errno=%d\n", n, errno);
+        ok = 0;
+    }
+    snprintf(want, sizeof(want), "Pid:\t%d\n", (int)getpid());
+    if (read_file("/proc/self/status", buf, sizeof(buf)) <= 0 || !strstr(buf, want) ||
+        read_file("/proc/self/cmdline", buf, sizeof(buf)) <= 0 ||
+        read_file("/proc/self/maps", buf, sizeof(buf)) <= 0 || !strstr(buf, "[stack]") ||
+        read_file("/proc/cpuinfo", buf, sizeof(buf)) <= 0 || !strstr(buf, "processor\t: 0\n") ||
+        !strstr(buf, "flags\t\t: ") ||
+        read_file("/proc/mounts", buf, sizeof(buf)) <= 0 || !strstr(buf, " /proc proc ") ||
+        !strstr(buf, " /dev devtmpfs ")) {
+        printf("SIG_FAIL: a /proc file: '%.80s'\n", buf);
+        ok = 0;
+    }
+
+    /* A child that waits shows S - what LTP's harness waits to see before it
+     * signals a child that pauses. */
+    c = fork();
+    if (c == 0) {
+        for (;;) {
+            pause();
+        }
+    }
+    snprintf(path, sizeof(path), "/proc/%d/stat", (int)c);
+    for (i = 0; i < 300 && !seen; i++) {
+        if (read_file(path, buf, sizeof(buf)) > 0) {
+            char *p = strrchr(buf, ')');
+            seen = p && p[1] == ' ' && p[2] == 'S';
+        }
+        if (!seen) {
+            usleep(10000);
+        }
+    }
+    kill(c, SIGKILL);
+    waitpid(c, &status, 0);
+    if (!seen) {
+        printf("SIG_FAIL: a paused child never showed S: '%.60s'\n", buf);
+        ok = 0;
+    }
+
+    /* /dev and getrandom. */
+    fd = open("/dev/null", O_RDWR);
+    if (fd < 0 || write(fd, "abcde", 5) != 5 || read(fd, buf, 16) != 0) {
+        printf("SIG_FAIL: /dev/null: fd=%d errno=%d\n", fd, errno);
+        ok = 0;
+    }
+    close(fd);
+    memset(z, 0xAA, sizeof(z));
+    fd = open("/dev/zero", O_RDONLY);
+    if (fd < 0 || read(fd, z, sizeof(z)) != (ssize_t)sizeof(z) || z[0] != 0 || z[15] != 0) {
+        printf("SIG_FAIL: /dev/zero\n");
+        ok = 0;
+    }
+    close(fd);
+    fd = open("/dev/urandom", O_RDONLY);
+    if (fd < 0 || read(fd, r1, sizeof(r1)) != (ssize_t)sizeof(r1) ||
+        syscall(318 /* getrandom */, r2, sizeof(r2), 0) != (long)sizeof(r2) ||
+        memcmp(r1, r2, sizeof(r1)) == 0) {
+        printf("SIG_FAIL: /dev/urandom or getrandom: errno=%d\n", errno);
+        ok = 0;
+    }
+    close(fd);
+    fd = open("/dev/full", O_WRONLY);
+    if (fd < 0 || write(fd, "x", 1) != -1 || errno != ENOSPC) {
+        printf("SIG_FAIL: /dev/full\n");
+        ok = 0;
+    }
+    close(fd);
+
+    /* A futex shared between two processes through a MAP_SHARED page of a
+     * file, as LTP's checkpoint is; woken by the one, waited on by the other. */
+    fd = open("/tmp/sig-futex", O_RDWR | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0 || ftruncate(fd, 4096) != 0) {
+        printf("SIG_FAIL: futex file: errno=%d\n", errno);
+        ok = 0;
+    } else {
+        volatile uint32_t *w = mmap(0, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+
+        if (w == MAP_FAILED) {
+            printf("SIG_FAIL: futex mmap: errno=%d\n", errno);
+            ok = 0;
+        } else {
+            *w = 0;
+            c = fork();
+            if (c == 0) {
+                struct timespec t = {5, 0};
+                long r = syscall(SYS_futex, w, 0 /* FUTEX_WAIT */, 0, &t, 0, 0);
+                _exit(r == 0 ? 0 : (errno == ETIMEDOUT ? 3 : 4));
+            }
+            for (i = 0; i < 500; i++) {
+                if (syscall(SYS_futex, w, 1 /* FUTEX_WAKE */, 1, 0, 0, 0) == 1) {
+                    break;
+                }
+                usleep(10000);
+            }
+            waitpid(c, &status, 0);
+            if (i == 500 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+                printf("SIG_FAIL: shared futex: tries=%d status=%x\n", i, status);
+                ok = 0;
+            }
+            {
+                struct timespec t = {0, 50000000};
+                long r = syscall(SYS_futex, w, 128 /* FUTEX_WAIT_PRIVATE */, 0, &t, 0, 0);
+                if (r != -1 || errno != ETIMEDOUT) {
+                    printf("SIG_FAIL: a timed futex wait did not time out: r=%ld errno=%d\n", r, errno);
+                    ok = 0;
+                }
+            }
+            munmap((void *)w, 4096);
+        }
+        close(fd);
+        unlink("/tmp/sig-futex");
+    }
+
+    /* clone with another exit signal: the parent is sent that, not SIGCHLD. */
+    signal(SIGUSR2, on_usr2);
+    g_usr2 = 0;
+    c = (pid_t)syscall(SYS_clone, SIGUSR2, 0, 0, 0, 0);
+    if (c == 0) {
+        _exit(0);
+    }
+    waitpid(c, &status, __WALL);
+    for (i = 0; i < 100 && !g_usr2; i++) {
+        usleep(10000);
+    }
+    signal(SIGUSR2, SIG_DFL);
+    if (c < 0 || !g_usr2) {
+        printf("SIG_FAIL: clone's exit signal: c=%d usr2=%d\n", (int)c, (int)g_usr2);
+        ok = 0;
+    }
+
+    /* An orphan is given to init: its parent changes when its own ends. */
+    {
+        int p[2];
+        char r = 0;
+
+        if (pipe(p) == 0) {
+            c = fork();
+            if (c == 0) {
+                pid_t me = getpid();
+                if (fork() == 0) {
+                    for (i = 0; i < 300 && getppid() == me; i++) {
+                        usleep(10000);
+                    }
+                    r = (getppid() != me && getppid() != 0) ? 'Y' : 'N';
+                    write(p[1], &r, 1);
+                    _exit(0);
+                }
+                _exit(0);
+            }
+            close(p[1]);
+            waitpid(c, &status, 0);
+            if (read(p[0], &r, 1) != 1 || r != 'Y') {
+                printf("SIG_FAIL: an orphan was not adopted: r=%c\n", r ? r : '-');
+                ok = 0;
+            }
+            close(p[0]);
+        }
+    }
+    if (ok) {
+        printf("PROCDEV_OK: /proc, /dev, getrandom, a shared futex, clone's exit signal, orphans\n");
+        fflush(stdout);
+    }
+    return ok;
+}
+
 int main(void) {
     struct sigaction sa;
     sigset_t block, old;
@@ -947,6 +1168,7 @@ int main(void) {
     ok &= limit_checks();
     /* ---- L2 step 5: processes ------------------------------------------------- */
     ok &= process_checks();
+    ok &= procdev_checks();
 
     printf(ok ? "SIG_OK: handlers, masking, ignoring and default actions\n"
               : "SIG_FAIL: see above\n");

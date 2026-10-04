@@ -1,0 +1,16 @@
+# /proc, /dev and what step 5's LTP run found, on the machine (docs/abi/ L2
+# step 6). Gate: SIGNAL.ELF (tests/linux/musl_signal.c) prints PROCDEV_OK only
+# if every check held, and the gate asserts it (proc_dev_checks_failed).
+#
+#  1. an orphan is not given to init: a child whose parent has ended keeps the
+#     dead parent's pid, and its end is a zombie nobody reaps. Expect
+#     proc_dev_checks_failed: "an orphan was not adopted".
+#
+# Target source: kernel/arch/x86_64/task_life.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/arch/x86_64/task_life.c scripts/dev/cases/abi-procdev-boot.txt
+
+### an orphan is not given to init
+--- old
+            g_tasks[i].id.ppid = g_init_pid;
++++ new
+            (void)g_init_pid;
