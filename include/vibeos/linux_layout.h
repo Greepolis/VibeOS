@@ -256,6 +256,9 @@ typedef struct {
 #define LINUX_CLONE_CHILD_SETTID   0x01000000u
 #define LINUX_CLONE_PIDFD          0x00001000u
 #define LINUX_CLONE_INTO_CGROUP    0x200000000ull
+#define LINUX_CLONE_NEWNS          0x00020000u
+/* clone()'s low byte: the signal the parent is sent when the child ends. */
+#define LINUX_CSIGNAL              0x000000ffu
 #define LINUX_CLONE_ARGS_SIZE_VER0 64u
 
 /* struct clone_args (linux/sched.h): clone3's arguments, version 2. */

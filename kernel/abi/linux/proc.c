@@ -31,8 +31,10 @@ static int linux_exec_cache_hit(const char *path) {
 }
 
 /* fork(): duplicate the calling task, address space and all. The child resumes
- * at the same instruction with a 0 return value. */
-static long linux_sys_fork(const ks_regs_t *frame) {
+ * at the same instruction with a 0 return value. `exit_sig` is what its parent
+ * is sent when it ends - SIGCHLD from fork, whatever clone and clone3 were
+ * told, 0 for nothing. */
+static long linux_fork(const ks_regs_t *frame, uint32_t exit_sig) {
     vibeos_task_t *parent, *child;
     vibeos_procstate_t *pps, *cps;
     int me, idx;
@@ -189,6 +191,9 @@ static long linux_sys_fork(const ks_regs_t *frame) {
         uint32_t sg;
 
         child->exit_signal = 0;
+        child->exit_sig_other = exit_sig == VIBEOS_SIGCHLD ? 0u
+                                : exit_sig == 0u ? (uint8_t)VIBEOS_EXIT_SIG_NONE : (uint8_t)exit_sig;
+        child->start_tick = ks_ticks();
         child->cpu_base = linux_cpu_slot(idx);   /* its own CPU time starts now */
         child->sig_pending = 0;   /* pending signals are not inherited */
         child->sig_blocked = parent->sig_blocked;
@@ -232,6 +237,10 @@ static long linux_sys_fork(const ks_regs_t *frame) {
     (void)ks_set_state(idx, VIBEOS_TASK_READY, __func__);
     ks_mark_ready(idx, "fork");
     return (long)child->pid;
+}
+
+static long linux_sys_fork(const ks_regs_t *frame) {
+    return linux_fork(frame, VIBEOS_SIGCHLD);
 }
 
 /* clone() with CLONE_VM|CLONE_THREAD: another thread in this process.
@@ -1782,10 +1791,35 @@ static long linux_sys_clone3(const vibeos_call_t *c) {
     if (size < LINUX_CLONE_ARGS_SIZE_VER0) {
         return -VIBEOS_EINVAL;
     }
-    if (size > sizeof(a)) {
-        return -VIBEOS_E2BIG;   /* a newer structure than this kernel knows */
+    if (size > 4096u) {
+        return -VIBEOS_E2BIG;
+    }
+    /* Judged before it is read (M-082): ring 0 reads a page the program may
+     * not, and a structure on one (LTP's clone302) was taken as arguments. */
+    /* A newer structure than this kernel knows is accepted if what it does not
+     * know is zero, as Linux's copy_struct_from_user accepts it. */
+    for (i = (uint32_t)sizeof(a); i < size; i++) {
+        uint8_t b = 0;
+        if (vibeos_uaccess_copy(&b, (const void *)(uintptr_t)(ARG(0) + i), 1u) != 0) {
+            return -VIBEOS_EFAULT;
+        }
+        if (b != 0u) {
+            return -VIBEOS_E2BIG;
+        }
+    }
+    if (!linux_user_ok(ARG(0), size, 0)) {
+        return -VIBEOS_EFAULT;
     }
     for (i = 0; i < sizeof(a); i++) {
+    /* Linux's rules between the flags: handlers are shared only with the
+     * memory they point into, a filesystem view is not both shared and new,
+     * and the pidfd and the parent's tid are not written to one place. */
+    if (((a.flags & LINUX_CLONE_SIGHAND) && !(a.flags & LINUX_CLONE_VM)) ||
+        ((a.flags & LINUX_CLONE_FS) && (a.flags & LINUX_CLONE_NEWNS)) ||
+        ((a.flags & LINUX_CLONE_PIDFD) && (a.flags & LINUX_CLONE_PARENT_SETTID) &&
+         a.pidfd == a.parent_tid)) {
+        return -VIBEOS_EINVAL;
+    }
         ((unsigned char *)&a)[i] = 0;
     }
     if (vibeos_uaccess_copy(&a, (const void *)(uintptr_t)ARG(0), size) != 0) {
@@ -1812,7 +1846,7 @@ static long linux_sys_clone3(const vibeos_call_t *c) {
     if (a.flags & LINUX_CLONE_VM) {
         return -VIBEOS_ENOSYS;   /* vfork-like sharing: not supported, as clone */
     }
-    r = linux_sys_fork(FRAME);
+    r = linux_fork(FRAME, (uint32_t)a.exit_signal);
     if (r > 0 && (a.flags & LINUX_CLONE_PIDFD)) {
         /* The child exists and nobody can have reaped it: its parent is here. */
         vibeos_file_t *f;
@@ -1849,7 +1883,10 @@ static long linux_sys_clone(const vibeos_call_t *c) {
     if ((flags & LINUX_CLONE_VM) != 0u) {
         return -VIBEOS_ENOSYS;   /* vfork-like sharing: not supported */
     }
-    return linux_sys_fork(FRAME);
+    if ((flags & LINUX_CSIGNAL) > VIBEOS_SIG_MAX) {
+        return -VIBEOS_EINVAL;
+    }
+    return linux_fork(FRAME, (uint32_t)(flags & LINUX_CSIGNAL));
 }
 
 /* ---- the syscalls this file implements ---------------------------------------

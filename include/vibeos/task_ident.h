@@ -75,7 +75,23 @@ typedef struct vibeos_task {
     /* Its real user when it ended, for waitid's si_uid: the process state
      * that holds the credentials is let go of before the parent reaps. */
     uint32_t exit_uid;
+
+    /* The signal its parent is sent when it ends, when that is not SIGCHLD:
+     * clone's and clone3's exit signal. Kept the other way round so that an
+     * identity cleared to zero - every new tenancy - means SIGCHLD;
+     * VIBEOS_EXIT_SIG_NONE is no signal at all. */
+    uint8_t exit_sig_other;
+
+    /* Waiting in the kernel: set at every wait's block point and cleared when
+     * the call returns. What /proc reports as S rather than R (L2 step 6) - a
+     * wait here keeps the task runnable, so its state cannot say. */
+    volatile uint8_t sleeping;
+
+    /* The tick it was created on, for /proc's start time. */
+    uint64_t start_tick;
 } vibeos_task_t;
+
+#define VIBEOS_EXIT_SIG_NONE 0xFFu
 
 /* Put every identity field into a defined state. The one place that does it, so no
  * way of making a task can forget a field - the shape of every recycled-slot bug

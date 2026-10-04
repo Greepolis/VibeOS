@@ -1343,7 +1343,13 @@ void hw_task_exit(uint64_t code) {
                 }
                 why.utime = acct && acct->ticks > g_tasks[dying].id.cpu_base
                             ? acct->ticks - g_tasks[dying].id.cpu_base : 0u;
-                (void)hw_signal_send(i, VIBEOS_SIGCHLD, &why);
+                /* SIGCHLD unless clone or clone3 named another, or none
+                 * (exit_sig_other; LTP's clone301 found it ignored). */
+                if (g_tasks[dying].id.exit_sig_other != VIBEOS_EXIT_SIG_NONE) {
+                    (void)hw_signal_send(i, g_tasks[dying].id.exit_sig_other != 0u
+                                             ? (uint32_t)g_tasks[dying].id.exit_sig_other
+                                             : VIBEOS_SIGCHLD, &why);
+                }
                 break;
             }
         }
