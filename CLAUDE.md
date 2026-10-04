@@ -1329,6 +1329,19 @@ was going down one layer at a time with the same question - does it give back
 what it was given? - until a raw write and read at one LBA, below everything the
 kernel does, still said no. The gate boots a real FAT image now.
 
+**A comment that says something does not exist is a claim about the future.**
+futex.c keyed every waiter by process and said why: "there are no shared
+mappings in this kernel". True when written; false from L3, and nobody
+re-read it when shared mappings arrived. LTP synchronises a parent and child
+through a futex on a MAP_SHARED page (its checkpoint), so every test that did
+waited out its timeout - and init said, in a comment, that it reaped "an
+orphan we adopted" while the kernel had never given it one, so each killed
+test's children stayed zombies until fork was EAGAIN for everything after.
+Both were found by one LTP run in L2 step 5, neither by reading. When a
+capability arrives, grep for the sentences that say it is missing; and a
+receiver written for something nobody sends is "configured and consulted by
+nobody" from the other side.
+
 **A mechanism proved alone has not met the others.** Page-out and page-in were
 host-tested for weeks. Nobody asked what fork, munmap, teardown or mprotect did
 to a page that was on disk, and the answer to all four was "nothing" - found in

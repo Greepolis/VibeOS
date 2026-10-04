@@ -1269,6 +1269,55 @@ its oracle without them.)
   against the boot; all red. Six boots after it: 6 of 6 clean.
 - **LTP**: the step's own 41 (`build-gcc-Release/ltp-l2s5.txt`): 12 passed, 2 failed, 26 broken, 1 not applicable. It found two defects in this step's clone3 - the exit signal a caller names is ignored and SIGCHLD sent instead (clone301), and five of the argument checks Linux makes are missing (clone302) - and two in older layers that decide most of the rest. Eight tests waited out their timeout; waitid04, the one read, passed its checks and then hung in LTP's checkpoint, a futex shared between processes through a MAP_SHARED page, which the futex table keys per process. And an orphan is never given to init here, so the children of a test killed by its timeout stay zombies nobody reaps: the task table filled, and every fork after that was EAGAIN (seven tests). All three are fixed in the next commits. The rest want /proc (step 6), unshare, cgroups, a loop device, core dumps, ns_last_pid, or LTP resources that are not staged (execveat01, execveat02).
 
+**Step 6 (2026-10-04): done.**
+
+- **/proc is about processes** (`kernel/fs/procfs.c`, rewritten). `self` is a
+  link to the asking process's directory, and each process has one: `stat`
+  (Linux's 52 fields), `statm`, `status`, `cmdline`, `comm`, `maps`, `mounts`,
+  the links `exe`, `cwd` and `root`, and `fd/`, a link per descriptor to what
+  it was opened as. The machine has `cpuinfo` (CPUID under Linux's names, a
+  clock measured from the TSC, the brand that tells LTP it is virtualised),
+  `mounts`, `version`, `uptime` and `loadavg`. The filesystem formats and keeps
+  nothing; what it says about processes it asks of a source in the Linux layer
+  (`kernel/abi/linux/procsrc.c`), which copies it out under the locks that hold
+  it. A file is generated straight into the reader's buffer at any offset, never
+  whole on a kernel stack.
+- **/proc/self/exe is a walk.** execve and readlink recognised the name by its
+  spelling, because there was no /proc to hold it; both special cases are gone,
+  deleted rather than generalised.
+- **A process that waits shows S.** Every wait here keeps its task runnable, so
+  the task's state could not say; a wait's block point marks it and the
+  dispatcher clears the mark when the call returns. LTP's harness waits to see
+  exactly that before it signals a child that pauses.
+- **/dev** (`kernel/fs/devfs.c`): `null`, `zero`, `full`, `random`, `urandom`,
+  `tty`, `console`, and the links `fd`, `stdin`, `stdout`, `stderr`. A node is a
+  type and a number; what it opens as is decided by the number in the file
+  types (`kernel/abi/files/chrdev.c`), and `/dev/tty` is the console's own
+  description, which answers as a terminal. stat reports the device number.
+- **Random numbers** (`kernel/core/random.c`): a ChaCha20 key everything is
+  mixed into and every read replaces, tested against RFC 8439's vector. Fed by
+  RDRAND when the processor has it and by every core's timer interrupt -
+  ready, under QEMU's TCG processor which has no RDRAND, within a second of the
+  timer starting. `getrandom` waits until then (EAGAIN with GRND_NONBLOCK,
+  what there is with GRND_INSECURE); it answered ENOSYS before, under a
+  registry row that said done. `/dev/random` waits, `/dev/urandom` does not.
+- **What step 5's LTP run found, fixed.** A futex word on a MAP_SHARED page is
+  the page's, the same word in every process that maps it - LTP's checkpoints -
+  and FUTEX_WAIT's timeout is honoured; both had been missing since L3 made
+  shared mappings, under a comment that said there were none. A process's
+  children go to init when the last of its tasks ends: none ever did, so every
+  child of a killed test stayed a zombie holding its slot. clone and clone3 send
+  the exit signal they were given, and clone3 checks what Linux checks. And exit
+  clears a task's pointer to its process state under the scheduler's lock before
+  giving its reference back, so whoever finds the state under that lock - /proc
+  now, prlimit before it - can hold it.
+- **At boot** SIGNAL.ELF reads its own /proc files, sees a paused child as S,
+  uses /dev/null, zero, full and urandom and getrandom, waits on a futex in a
+  shared file page from another process, is sent SIGUSR2 by a child cloned with
+  it, and sees an orphan adopted (`proc_dev_checks_failed`).
+- **Sabotage**: `core-random.txt` (4), `fs-procfs.txt` (6), `fs-devfs.txt`, `abi-chrdev.txt`, `abi-futex-shared.txt` and `abi-clone3-checks.txt` (3 each) against the host tests, `abi-procdev-boot.txt` against the boot; all red. The pool's key not being replaced after a read is not a case, and the case file says why: nothing a caller can see changes. Six boots after it: 6 of 6 clean.
+- **LTP**: the step's own tests with step 5's again (`build-gcc-Release/ltp-l2s6.txt`, 79): 41 passed, 9 failed, 21 broken, 4 not applicable, 4 did not run (kill10 still takes the rest of its boot). Step 5's 41 among them: 23 passed, 12 before. What it found, for step 7: a process group left orphaned with stopped members is never sent SIGHUP and SIGCONT, as POSIX says it must be - waitpid13's child moves half its children into a group of its own, they stop themselves, LTP's kill of the test's group does not reach them, and they hold their slots until a fork is EAGAIN (pause01); `/proc/<pid>/task`, which futex_wait03 reads to see its thread asleep and waits out its timeout without; a `/proc/<pid>` directory used as a pidfd (pidfd_send_signal01, 02); /dev/random's ioctls (ioctl07); and one clone3 check more (clone302's invalid pidfd). Capacity, not defects: waitpid03 forks 25 children and futex_wake02 clones more threads than a process may have, on a table of 32 slots. The rest want stopped and continued children reported (waitid07, waitid08, waitpid08, waitpid13), core dumps, /proc/sys, a loop device, mknod of a device, unshare and cgroups.
+
 ### L3. Memory (10, plus `mmap` finished)
 
 File-backed mappings - private and shared - through the page cache, `MAP_FIXED`,
