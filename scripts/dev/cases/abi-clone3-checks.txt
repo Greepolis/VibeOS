@@ -8,6 +8,9 @@
 #     structure is E2BIG if what this kernel does not know is not zero".
 #  3. clone takes any exit signal. Expect "clone's exit signal must be a
 #     signal".
+#  4. where the pidfd goes is not judged before the child is made (L2 step 7,
+#     clone302's "invalid pidfd"). Expect "a pidfd to be written outside user
+#     memory is EFAULT".
 #
 # Not a case on the host: "the structure's pointer is not judged before it is
 # read". The fake kernel's copy refuses a page not mapped for the user by
@@ -36,3 +39,9 @@
     if ((flags & LINUX_CSIGNAL) > VIBEOS_SIG_MAX) {
 +++ new
     if (0) {
+
+### where the pidfd goes is not judged before the child is made
+--- old
+    if ((a.flags & LINUX_CLONE_PIDFD) && !linux_user_ok(a.pidfd, sizeof(int), 1)) {
++++ new
+    if (0 && (a.flags & LINUX_CLONE_PIDFD) && !linux_user_ok(a.pidfd, sizeof(int), 1)) {

@@ -9,6 +9,8 @@
 #  6. setresuid lets an unprivileged process take an id it does not hold
 #  7. setfsuid takes any id
 #  8. setgroups is anybody's
+#  9. -1 becomes root's filesystem id, so setfsuid(-1) - a question - answers
+#     -1 the next time (L2 step 7, LTP's setfsuid02)
 #
 # Target source: kernel/sched/cred.c
 # Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/sched/cred.c scripts/dev/cases/sched-cred.txt
@@ -65,11 +67,21 @@
 
 ### setfsuid takes any id
 --- old
-    if (privileged(c) || uid == c->uid || uid == c->euid || uid == c->suid || uid == c->fsuid) {
+    if (uid != VIBEOS_ID_KEEP &&
+        (privileged(c) || uid == c->uid || uid == c->euid || uid == c->suid || uid == c->fsuid)) {
         c->fsuid = uid;
     }
 +++ new
-    c->fsuid = uid;
+    if (uid != VIBEOS_ID_KEEP) {
+        c->fsuid = uid;
+    }
+
+### -1 becomes root's filesystem id
+--- old
+    if (uid != VIBEOS_ID_KEEP &&
+        (privileged(c) || uid == c->uid || uid == c->euid || uid == c->suid || uid == c->fsuid)) {
++++ new
+    if ((privileged(c) || uid == c->uid || uid == c->euid || uid == c->suid || uid == c->fsuid)) {
 
 ### setgroups is anybody's
 --- old

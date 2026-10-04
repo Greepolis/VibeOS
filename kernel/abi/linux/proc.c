@@ -1837,6 +1837,11 @@ static long linux_sys_clone3(const vibeos_call_t *c) {
     if (a.flags & LINUX_CLONE_VM) {
         return -VIBEOS_ENOSYS;   /* vfork-like sharing: not supported, as clone */
     }
+    /* Where the pidfd goes is judged before there is a child, as Linux writes
+     * it before its point of no return: EFAULT, and nothing made (clone302). */
+    if ((a.flags & LINUX_CLONE_PIDFD) && !linux_user_ok(a.pidfd, sizeof(int), 1)) {
+        return -VIBEOS_EFAULT;
+    }
     r = linux_fork(FRAME, (uint32_t)a.exit_signal);
     if (r > 0 && (a.flags & LINUX_CLONE_PIDFD)) {
         /* The child exists and nobody can have reaped it: its parent is here. */

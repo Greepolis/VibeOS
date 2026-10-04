@@ -2315,6 +2315,15 @@ static void t_clone3_checks(void) {
     ca->flags = LINUX_CLONE_PIDFD | LINUX_CLONE_PARENT_SETTID;
     ca->pidfd = ca->parent_tid = kf_ualloc(8);
     expect(SYS2(435, a, sizeof(*ca)) == -VIBEOS_EINVAL, "a pidfd and a tid written to one place are EINVAL");
+    ca->flags = LINUX_CLONE_PIDFD;
+    /* Unmapped, inside the fake's address-space window: outside it the fake
+     * takes an address for a host pointer, so without the check the late
+     * write crashed the suite instead of failing this line, where the
+     * machine's copy refuses it. */
+    ca->pidfd = 0x20000000ull;
+    ca->parent_tid = 0;
+    expect(SYS2(435, a, sizeof(*ca)) == -VIBEOS_EFAULT,
+           "a pidfd to be written outside user memory is EFAULT, before there is a child (L2 step 7)");
     ca->flags = 0;
     ca->pidfd = ca->parent_tid = 0;
     expect(SYS2(435, a, 4097) == -VIBEOS_E2BIG, "a structure larger than a page is E2BIG");
@@ -2499,9 +2508,27 @@ static void t_sleep(void) {
     t0 = ks_ticks();
     expect(sys(230, 0 /* REALTIME */, 0, req, 0, 0, 0, 0) == 0 && ks_ticks() - t0 >= 3u,
            "without the flag it is nanosleep on the clock named");
-    expect(sys(230, 2 /* PROCESS_CPUTIME_ID */, 0, req, 0, 0, 0, 0) == -VIBEOS_EINVAL &&
-           sys(230, 1, 2, req, 0, 0, 0, 0) == -VIBEOS_EINVAL,
-           "a CPU-time clock and an unknown flag are EINVAL");
+    t0 = ks_ticks();
+    expect(sys(230, 11 /* TAI */, 0, req, 0, 0, 0, 0) == 0 && ks_ticks() - t0 >= 3u,
+           "and TAI is slept on like the others (L2 step 7)");
+    expect(sys(230, 3 /* THREAD_CPUTIME_ID */, 0, req, 0, 0, 0, 0) == -VIBEOS_EOPNOTSUPP &&
+           sys(230, 6 /* MONOTONIC_COARSE */, 0, req, 0, 0, 0, 0) == -VIBEOS_EOPNOTSUPP &&
+           sys(230, 4 /* MONOTONIC_RAW */, 0, req, 0, 0, 0, 0) == -VIBEOS_EOPNOTSUPP,
+           "a thread's CPU time and the raw and coarse clocks have no sleep: EOPNOTSUPP, as Linux");
+    expect(sys(230, 1, 2, req, 0, 0, 0, 0) == -VIBEOS_EINVAL && sys(230, 99, 0, req, 0, 0, 0, 0) == -VIBEOS_EINVAL,
+           "an unknown flag and an unknown clock are EINVAL");
+    q[0] = 0;
+    q[1] = 0;
+    expect(sys(230, 2 /* PROCESS_CPUTIME_ID */, 1, req, 0, 0, 0, 0) == 0,
+           "a CPU time the process has already had is no wait");
+    q[1] = 20000000;
+    {
+        kf_outcome_t cpu_how = KF_RETURNED;
+
+        (void)sys(230, 2, 0, req, 0, 0, 0, &cpu_how);
+        expect(cpu_how == KF_BLOCKED,
+               "a sleep on the process's own CPU time waits for CPU time, which waiting does not give it");
+    }
 
     /* A sleep longer than anything will wait is a wait, not a wrap to zero. */
     q[0] = 0x7fffffffffffffffll;
@@ -3933,6 +3960,8 @@ static void t_credentials(void) {
            "setgroups by root; getgroups(0) counts them, and a list too short is EINVAL");
     lp[0] = lp[1] = 0;
     expect(SYS2(115, 2, list) == 2 && lp[0] == 100 && lp[1] == 200, "getgroups reads them back");
+    expect(SYS1(122, KEEP) == 0 && SYS1(122, KEEP) == 0 && SYS1(123, KEEP) == 0 && SYS1(123, KEEP) == 0,
+           "setfsuid(-1) and setfsgid(-1) ask, even root's: -1 is never an id (L2 step 7, setfsuid02)");
 
     /* For good: root's setgid and setuid set every id, and there is no way back. */
     user = become_child();

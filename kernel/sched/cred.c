@@ -181,10 +181,15 @@ int vibeos_cred_setresgid(vibeos_cred_t *c, uint32_t rgid, uint32_t egid, uint32
     return 0;
 }
 
+/* -1 is nobody's id, and never becomes one: setfsuid(-1) is how a program asks
+ * for the current id without changing it. The superuser's call used to store
+ * it, and the next question was answered with -1 (LTP's setfsuid02 and
+ * setfsgid01, L2 step 7). */
 uint32_t vibeos_cred_setfsuid(vibeos_cred_t *c, uint32_t uid) {
     const uint32_t old = c->fsuid;
 
-    if (privileged(c) || uid == c->uid || uid == c->euid || uid == c->suid || uid == c->fsuid) {
+    if (uid != VIBEOS_ID_KEEP &&
+        (privileged(c) || uid == c->uid || uid == c->euid || uid == c->suid || uid == c->fsuid)) {
         c->fsuid = uid;
     }
     return old;
@@ -193,7 +198,8 @@ uint32_t vibeos_cred_setfsuid(vibeos_cred_t *c, uint32_t uid) {
 uint32_t vibeos_cred_setfsgid(vibeos_cred_t *c, uint32_t gid) {
     const uint32_t old = c->fsgid;
 
-    if (privileged(c) || gid == c->gid || gid == c->egid || gid == c->sgid || gid == c->fsgid) {
+    if (gid != VIBEOS_ID_KEEP &&
+        (privileged(c) || gid == c->gid || gid == c->egid || gid == c->sgid || gid == c->fsgid)) {
         c->fsgid = gid;
     }
     return old;

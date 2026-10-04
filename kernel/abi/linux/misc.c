@@ -95,10 +95,10 @@ int64_t linux_ticks_of(const linux_timespec_t *ts) {
     return (int64_t)((uint64_t)ts->tv_sec * ks_hz() + ((uint64_t)ts->tv_nsec + per - 1u) / per);
 }
 
-/* Wait until the clock reads `deadline`. 0, or -EINTR with the ticks left. */
-static long linux_sleep_until(uint64_t deadline, uint64_t *left) {
+/* Wait until clock `clk` reads `deadline`. 0, or -EINTR with the ticks left. */
+static long linux_sleep_until(uint64_t clk, uint64_t deadline, uint64_t *left) {
     for (;;) {
-        uint64_t now = ks_ticks();
+        uint64_t now = (uint64_t)linux_clock_read(clk);
 
         if (now >= deadline) {
             return 0;
@@ -117,10 +117,34 @@ static long linux_sleep(uint64_t clk, uint64_t flags, uint64_t req_uptr, uint64_
     int64_t ticks;
     long r;
 
-    /* The clocks that count time passing; they are one clock here. A CPU-time
-     * clock is not something to sleep on. */
-    if (clk != LINUX_CLOCK_REALTIME && clk != LINUX_CLOCK_MONOTONIC && clk != LINUX_CLOCK_BOOTTIME) {
-        return -VIBEOS_EINVAL;
+    /* Linux sleeps on the clocks that have a sleep: the ones that count time
+     * passing - one clock here - TAI and the alarm clocks among them, and the
+     * process's own CPU time, which ends the sleep when its other threads have
+     * run that long. A thread's CPU time and the raw and coarse clocks have no
+     * sleep: EOPNOTSUPP, which a C library turns into EINVAL and LTP's
+     * clock_nanosleep01 asks for raw. This answered EINVAL for everything but
+     * the first three, under a registry row that said done (L2 step 7). */
+    switch ((int32_t)(uint32_t)clk) {
+        case LINUX_CLOCK_THREAD_CPUTIME_ID:
+        case LINUX_CLOCK_MONOTONIC_RAW:
+        case LINUX_CLOCK_REALTIME_COARSE:
+        case LINUX_CLOCK_MONOTONIC_COARSE:
+            return -VIBEOS_EOPNOTSUPP;
+        case LINUX_CLOCK_REALTIME_ALARM:
+        case LINUX_CLOCK_BOOTTIME_ALARM: {
+            vibeos_cred_t me;
+
+            linux_cred(&me);
+            if (me.euid != 0u) {
+                return -VIBEOS_EPERM;   /* CAP_WAKE_ALARM, which only root has here */
+            }
+            break;
+        }
+        default:
+            if (linux_clock_read(clk) < 0) {
+                return -VIBEOS_EINVAL;
+            }
+            break;
     }
     if (flags & ~(uint64_t)LINUX_TIMER_ABSTIME) {
         return -VIBEOS_EINVAL;
@@ -136,9 +160,9 @@ static long linux_sleep(uint64_t clk, uint64_t flags, uint64_t req_uptr, uint64_
     } else if (ticks == 0) {
         return 0;
     } else {
-        deadline = ks_ticks() + (uint64_t)ticks + 1u;
+        deadline = (uint64_t)linux_clock_read(clk) + (uint64_t)ticks + 1u;
     }
-    r = linux_sleep_until(deadline, &left);
+    r = linux_sleep_until(clk, deadline, &left);
     if (r == -VIBEOS_EINTR && rem_uptr != 0u && !(flags & LINUX_TIMER_ABSTIME)) {
         rem.tv_sec = (int64_t)(left / ks_hz());
         rem.tv_nsec = (int64_t)((left % ks_hz()) * (1000000000ull / ks_hz()));

@@ -5,15 +5,18 @@
 #  2. a time shorter than a tick is no wait at all
 #  3. a signal does not end a sleep
 #  4. what was left of an interrupted sleep is not reported
+#  5. every clock is slept on as the wall clock: a sleep on the process's CPU
+#     time ends when the wall clock has moved that far (L2 step 7)
+#  6. the clocks Linux cannot sleep on answer EINVAL, not EOPNOTSUPP
 #
 # Target source: kernel/abi/linux/misc.c
 # Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/linux/misc.c scripts/dev/cases/abi-sleep-restart.txt
 
 ### a sleep does not count the tick it began in
 --- old
-        deadline = ks_ticks() + (uint64_t)ticks + 1u;
+        deadline = (uint64_t)linux_clock_read(clk) + (uint64_t)ticks + 1u;
 +++ new
-        deadline = ks_ticks() + (uint64_t)ticks;
+        deadline = (uint64_t)linux_clock_read(clk) + (uint64_t)ticks;
 
 ### a time shorter than a tick is no wait at all
 --- old
@@ -34,3 +37,17 @@
     if (r == -VIBEOS_EINTR && rem_uptr != 0u && !(flags & LINUX_TIMER_ABSTIME)) {
 +++ new
     if (0) {
+
+### every clock is slept on as the wall clock
+--- old
+        uint64_t now = (uint64_t)linux_clock_read(clk);
++++ new
+        uint64_t now = ks_ticks() + 0u * (uint64_t)clk;
+
+### the clocks Linux cannot sleep on answer EINVAL
+--- old
+            return -VIBEOS_EOPNOTSUPP;
+        case LINUX_CLOCK_REALTIME_ALARM:
++++ new
+            return -VIBEOS_EINVAL;
+        case LINUX_CLOCK_REALTIME_ALARM:
