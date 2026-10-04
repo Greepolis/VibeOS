@@ -1318,6 +1318,109 @@ its oracle without them.)
 - **Sabotage**: `core-random.txt` (4), `fs-procfs.txt` (6), `fs-devfs.txt`, `abi-chrdev.txt`, `abi-futex-shared.txt` and `abi-clone3-checks.txt` (3 each) against the host tests, `abi-procdev-boot.txt` against the boot; all red. The pool's key not being replaced after a read is not a case, and the case file says why: nothing a caller can see changes. Six boots after it: 6 of 6 clean.
 - **LTP**: the step's own tests with step 5's again (`build-gcc-Release/ltp-l2s6.txt`, 79): 41 passed, 9 failed, 21 broken, 4 not applicable, 4 did not run (kill10 still takes the rest of its boot). Step 5's 41 among them: 23 passed, 12 before. What it found, for step 7: a process group left orphaned with stopped members is never sent SIGHUP and SIGCONT, as POSIX says it must be - waitpid13's child moves half its children into a group of its own, they stop themselves, LTP's kill of the test's group does not reach them, and they hold their slots until a fork is EAGAIN (pause01); `/proc/<pid>/task`, which futex_wait03 reads to see its thread asleep and waits out its timeout without; a `/proc/<pid>` directory used as a pidfd (pidfd_send_signal01, 02); /dev/random's ioctls (ioctl07); and one clone3 check more (clone302's invalid pidfd). Capacity, not defects: waitpid03 forks 25 children and futex_wake02 clones more threads than a process may have, on a table of 32 slots. The rest want stopped and continued children reported (waitid07, waitid08, waitpid08, waitpid13), core dumps, /proc/sys, a loop device, mknod of a device, unshare and cgroups.
 
+**Step 7 (2026-10-04): done. L2 is closed, with its gaps named.**
+
+- **Eight workloads more in the corpus**, twenty-six in all, compared line for
+  line with what Linux printed under the same BusyBox: `bb-trap` (traps a shell
+  takes from signals it sends itself, an exit trap's code), `bb-kill-wait`
+  (children ended by TERM and KILL, `wait` woken by a kill, `jobs`),
+  `bb-timeout`, `bb-time` (`time -p`, its CPU time read from wait4's rusage),
+  `bb-ps` (a sleeping child and its parent by state and group), `bb-proc`,
+  `bb-dev` (device numbers and modes, the links into /proc/self/fd, `/dev/full`'s
+  ENOSPC) and `bb-limits` (`ulimit`, a file-size limit run into, `renice`).
+  Six of eight matched on the first boot. Of the other two, one was the
+  workload's: `nice` is not one of this BusyBox's applets, and Linux had
+  answered from coreutils' - it uses `renice` now. The other was the kernel's.
+- **kill had a rule Linux does not have.** A signal to another session was
+  refused, a rule from before processes had owners. BusyBox's `timeout` leaves a
+  watcher in a session of its own (`bb_daemonize` calls `setsid`) that asks
+  `kill(pid, 0)` each second whether the program is still there; refused, it
+  concluded the program had ended and never stopped it. The credentials (step
+  1) are the rule now, as on Linux, with SIGCONT allowed within a session
+  whoever owns the target; a group is signalled member by member under that
+  rule, and is EPERM when it has members none of whom may be signalled.
+- **A stop holds.** Any signal used to wake a stopped task, which then ran its
+  handler and its program with nobody having sent SIGCONT; and a task stopped
+  on a system call's way out returned to its program BLOCKED and ran until the
+  next tick. Only SIGCONT and SIGKILL end a stop now; the system call's exit
+  waits while the task is stopped and delivers what came meanwhile; a child's
+  end no longer wakes a stopped parent. The timer's path cannot wait - it runs
+  on an interrupt stack a second tick would overwrite - so a stop taken there
+  still runs to the end of its tick.
+- **Orphaned process groups are hung up** (step 6's LTP run). A group left with
+  no member whose parent is outside it in the same session, and with a stopped
+  member, is sent SIGHUP and then SIGCONT, as POSIX requires: LTP's waitpid13
+  moves half its children into a group of their own and stops them, LTP's kill
+  of the test's group did not reach them, and they held their slots until fork
+  was EAGAIN for the tests after.
+- **/proc about threads.** `/proc/<pid>/stat` and `status` give the leader's
+  state, as Linux does; they gave "running" if any thread ran, so a process
+  whose main thread waited while another watched for it never looked asleep
+  (futex_wait03). `/proc/<tid>` exists for every thread, unlisted, and
+  `task/<tid>` is the same directory; a thread's files give its own id, state,
+  name, signals and CPU time, and its process's everything else.
+- **What else step 6's LTP run found, fixed**: an open `/proc/<pid>` is a pidfd
+  to `pidfd_send_signal`, as on Linux; the random devices answer
+  `RNDGETENTCNT` with what the new `/proc/sys/kernel/random/entropy_avail`
+  prints - one function for both; clone3 judges where a pidfd is to be written
+  before there is a child (EFAULT, and nothing made).
+- **What this step's own LTP run found, fixed**: `setfsuid(-1)` and
+  `setfsgid(-1)` are how a program asks for the current id, and root's call
+  stored -1 as its id (setfsuid02, setfsgid01); `clock_nanosleep` answered
+  EINVAL for every clock but three, under a registry row that said done - it
+  sleeps on TAI, the alarm clocks and the process's own CPU time now, and a
+  thread's CPU time and the raw and coarse clocks are EOPNOTSUPP, as on Linux
+  (clock_nanosleep01).
+- **Found by CI, not by a test here**: the native programs' three-argument
+  syscall wrappers left r10, r8 and r9 holding whatever the compiler had put
+  there, and wait4 has filled its rusage since step 5. Built with clang, init
+  kept its pointer to the service table in r10, every reap wrote a rusage over
+  the services, and init died reading a service name that was the number 1 -
+  CI's clang Release boots were red while every local (gcc) boot was green.
+  Every wrapper passes zero now. And the nightly's corpus job said Linux
+  answered differently because the CI runner starts its steps with SIGPIPE
+  ignored; the expectation is made with every signal at its default.
+- **At boot** SIGNAL.ELF stops a child waiting in `pause()` and one running its
+  program, sends each a SIGUSR1 that must wait for the SIGCONT, ends a stopped
+  child with SIGKILL, and leaves a stopped child in a group that its parent's
+  end orphans, which must be hung up (`job_control_broken`).
+- **Sabotage**: `abi-signal-reach.txt` (4), `abi-procsrc-threads.txt` (2), two
+  cases more in `fs-procfs.txt` and in `abi-sleep-restart.txt`, one each in
+  `abi-random-ioctl.txt`, `abi-clone3-checks.txt` and `sched-cred.txt`, and
+  `abi-pidfd-calls.txt`'s and `abi-sleep-restart.txt`'s first cases re-pointed
+  at the code that moved, against the host tests; all red. The clone3 case went
+  red first by crashing the suite - outside its address-space window the fake
+  kernel takes an address for a host pointer - and is caught by its test now.
+  One of `fs-procfs.txt`'s, "a directory lists a name once", had been written
+  down as unverifiable until a second file lived under /proc/sys/kernel; this
+  step put one there. `abi-jobs-boot.txt` (2) against the boot: both red - the first on job_control_broken only once a running child was asked about too; its first run went red on the transition table instead, and the case file says why.
+  Fifteen boots across the step's three rounds of validation (six, six and three), all clean, and one of the clang Release build.
+- **LTP for L2's own calls** (`tests/corpus/ltp-l2.txt`, 188 tests): 106
+  passed, 6 failed, 26 broken, 50 not applicable, and none left unrun -
+  kill10 no longer takes the rest of its boot. The three it found in the calls
+  themselves are fixed above, and their calls' ten tests run again after it
+  passed ten of ten. What is left: setting the clock (refused, and five tests
+  set it), `adjtimex`, `unshare`, `select`; stopped and continued children
+  reported by wait (waitid07 and 08 wait out their timeout); `times()` reports
+  no system time; the wall clock reads 1970 at boot, so an absolute time far
+  enough in the past is negative and refused (timer_settime03); a C library's
+  restorer (rt_sigsuspend01, musl's); and resources LTP stages that this run
+  does not (`/bin/true`, the execveat helpers, `/proc/sys/kernel/core_pattern`,
+  a loop device). Not looked into: timer_settime02 fails outside the thirty
+  lines a run keeps, and pidfd_open04 waits out an LTP checkpoint. Capacity,
+  not a defect: pause01 forks a child per iteration and reaps them at the end,
+  and the ninth is past the eight children a process may have unreaped on a
+  table of thirty-two slots.
+
+**What L2 leaves open**, all in the registry or above: stopped and continued
+children are never reported by wait; capabilities, set-user-id on exec and a
+set-group-id directory's group; a real-time signal queued twice is delivered
+once, and a signal to a process goes to its leader rather than to a thread that
+does not block it; `times()` has no system time; setting the clock, and a wall
+clock that starts at 1970 because nothing reads the hardware's; RSS, AS and
+the other limits that are kept but not enforced; no personality flag changes
+anything; and a task table of thirty-two slots.
+
 ### L3. Memory (10, plus `mmap` finished)
 
 File-backed mappings - private and shared - through the page cache, `MAP_FIXED`,

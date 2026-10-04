@@ -1342,6 +1342,25 @@ capability arrives, grep for the sentences that say it is missing; and a
 receiver written for something nobody sends is "configured and consulted by
 nobody" from the other side.
 
+**A wrapper that sets three registers passes six.** The native programs'
+`sys3` put its arguments in rdi, rsi and rdx and left r10, r8 and r9 holding
+whatever the compiler had there - harmless for as long as no call read a
+fourth argument. wait4 started filling its rusage (L2 step 5), FUTEX_WAIT
+started reading its timeout (step 6), and the two programs that called them
+with three arguments broke on the day the kernel became more correct: hello.c
+with EFAULT, init by having its service table overwritten - and only under
+clang, which happened to keep a pointer in r10, so every local boot was green
+and CI's clang Release boots were red. A wrapper passes zero for what it does
+not set; a call that gains an argument changes every caller that left it out.
+
+**A rule that stood in for a missing mechanism outlives it.** kill refused a
+signal across sessions because, when it was written, there was nothing else to
+decide by. Credentials arrived in L2 step 1 and were added "on top of the
+session rule" instead of replacing it, and the stand-in stayed a rule Linux
+does not have until BusyBox's `timeout`, whose watcher lives in a session of
+its own, believed every program it watched had already ended. When the real
+mechanism arrives, delete the stand-in, or write down why it stays.
+
 **A mechanism proved alone has not met the others.** Page-out and page-in were
 host-tested for weeks. Nobody asked what fork, munmap, teardown or mprotect did
 to a page that was on disk, and the answer to all four was "nothing" - found in
