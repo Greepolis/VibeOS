@@ -1234,6 +1234,41 @@ its oracle without them.)
   red. Eighteen boots of eighteen after it - double the usual, because the scheduler's policy going live changes every program's scheduling.
 - **LTP**: the limit tests (22): 17 passed; the rest need 512 MB free (getrusage03), /proc/cpuinfo (getrusage04, step 6), sched_getaffinity (nice05, L6), select (personality02), /bin/true on the volume (setrlimit04), and useradd (setpriority01, which then waits out its timeout - not looked into). With step 3's 70 alongside: 54 of 94 passed.
 
+**Step 5 (2026-10-03): done.**
+
+- **One way to wait.** wait4 and waitid share one engine, which selects every
+  child, one by pid, or a process group's. wait4 used to hear only "any" and
+  "this pid": `waitpid(0)` and `waitpid(-pgid)` - a shell's job control - were
+  matched as pids and answered ECHILD. wait4 fills its rusage now. `waitid`
+  reports what ended as a siginfo (`CLD_EXITED` or `CLD_KILLED`, the pid, the
+  user it was when it ended, the status), honours `WNOWAIT` - look without
+  reaping - and `WNOHANG` with a record of zeroes, and takes a pidfd as
+  `P_PIDFD`.
+- **Pidfds** (`kernel/abi/files/pidfd.c`): a description that names a
+  process by its pid and the tenancy of its slot, so that a pid reused after
+  the reap is not mistaken for it - the reason a program holds one. Readable
+  once the process has ended. `pidfd_open` (a process, not a thread; always
+  close-on-exec) and `pidfd_send_signal` (kill, or sigqueueinfo with a
+  siginfo; ESRCH once the process is reaped, whoever has the number now). It
+  is what a Windows process handle is, which is why it lives with the file
+  types and not in the Linux layer.
+- **`clone3`** is clone's two paths with the arguments in a structure - a
+  thread, or a fork - plus `CLONE_PIDFD`; **`execveat`** runs a program
+  relative to a directory descriptor, or the file a descriptor names with
+  `AT_EMPTY_PATH`, and refuses a link under `AT_SYMLINK_NOFOLLOW`.
+- **Not done, and said**: stopped and continued children are never reported
+  (waitid's gap); `clone3`, like `clone`, makes no process that shares its
+  parent's memory and takes no chosen pid or cgroup (its gap).
+- **At boot** SIGNAL.ELF looks at a child with `WNOWAIT` and then reaps it,
+  waits for a group, signals a child through a pidfd, sees the pidfd become
+  readable and waits for it with `P_PIDFD`, runs BusyBox through `execveat`
+  on a descriptor, and forks with `clone3` and `CLONE_PIDFD`
+  (`process_calls_failed`).
+- **Sabotage**: `abi-processes.txt` (6), `abi-pidfd.txt` and
+  `abi-pidfd-calls.txt` (3) against the host tests, `abi-processes-boot.txt`
+  against the boot; all red. Six boots after it: 6 of 6 clean.
+- **LTP**: the step's own 41 (`build-gcc-Release/ltp-l2s5.txt`): 12 passed, 2 failed, 26 broken, 1 not applicable. It found two defects in this step's clone3 - the exit signal a caller names is ignored and SIGCHLD sent instead (clone301), and five of the argument checks Linux makes are missing (clone302) - and two in older layers that decide most of the rest. Eight tests waited out their timeout; waitid04, the one read, passed its checks and then hung in LTP's checkpoint, a futex shared between processes through a MAP_SHARED page, which the futex table keys per process. And an orphan is never given to init here, so the children of a test killed by its timeout stay zombies nobody reaps: the task table filled, and every fork after that was EAGAIN (seven tests). All three are fixed in the next commits. The rest want /proc (step 6), unshare, cgroups, a loop device, core dumps, ns_last_pid, or LTP resources that are not staged (execveat01, execveat02).
+
 ### L3. Memory (10, plus `mmap` finished)
 
 File-backed mappings - private and shared - through the page cache, `MAP_FIXED`,
