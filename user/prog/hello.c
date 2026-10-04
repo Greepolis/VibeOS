@@ -12,15 +12,22 @@
 
 static long user_syscall3(long nr, long a1, long a2, long a3) {
     long ret;
+    /* r10, r8 and r9 zero, not what the compiler left there: a fourth
+     * argument is read whether or not it was meant (see init.c's sys3). */
+    register long r10 __asm__("r10") = 0;
+    register long r8 __asm__("r8") = 0;
+    register long r9 __asm__("r9") = 0;
 #if defined(VIBEOS_USE_SYSCALL_INSN)
     __asm__ __volatile__("syscall"
                          : "=a"(ret)
-                         : "a"(nr), "D"(a1), "S"(a2), "d"(a3)
+                         : "a"(nr), "D"(a1), "S"(a2), "d"(a3),
+                           "r"(r10), "r"(r8), "r"(r9)
                          : "rcx", "r11", "memory");
 #else
     __asm__ __volatile__("int $0x80"
                          : "=a"(ret)
-                         : "a"(nr), "D"(a1), "S"(a2), "d"(a3)
+                         : "a"(nr), "D"(a1), "S"(a2), "d"(a3),
+                           "r"(r10), "r"(r8), "r"(r9)
                          : "memory");
 #endif
     return ret;

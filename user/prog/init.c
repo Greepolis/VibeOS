@@ -34,9 +34,19 @@
 
 static int64_t sys3(int64_t nr, uint64_t a1, uint64_t a2, uint64_t a3) {
     int64_t ret;
+    /* r10, r8 and r9 are zero, not whatever the compiler left in them: a call
+     * that has a fourth argument reads it whether or not the caller meant one.
+     * wait4 has filled its rusage since docs/abi/ L2 step 5, and clang kept
+     * this file's pointer to the service table in r10 - so every reap wrote
+     * 144 bytes over the services, and init read a name that was the number 1
+     * (L2 step 7; gcc's registers happened to hold nothing that mattered). */
+    register uint64_t r10 __asm__("r10") = 0;
+    register uint64_t r8 __asm__("r8") = 0;
+    register uint64_t r9 __asm__("r9") = 0;
     __asm__ __volatile__("syscall"
                          : "=a"(ret)
-                         : "a"(nr), "D"(a1), "S"(a2), "d"(a3)
+                         : "a"(nr), "D"(a1), "S"(a2), "d"(a3),
+                           "r"(r10), "r"(r8), "r"(r9)
                          : "rcx", "r11", "memory");
     return ret;
 }

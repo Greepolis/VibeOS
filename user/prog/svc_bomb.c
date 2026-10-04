@@ -33,9 +33,15 @@
 
 static int64_t sys3(int64_t nr, uint64_t a1, uint64_t a2, uint64_t a3) {
     int64_t ret;
+    /* r10, r8 and r9 zero, not what the compiler left there: a fourth
+     * argument is read whether or not it was meant (see init.c's sys3). */
+    register uint64_t r10 __asm__("r10") = 0;
+    register uint64_t r8 __asm__("r8") = 0;
+    register uint64_t r9 __asm__("r9") = 0;
     __asm__ __volatile__("syscall"
                          : "=a"(ret)
-                         : "a"(nr), "D"(a1), "S"(a2), "d"(a3)
+                         : "a"(nr), "D"(a1), "S"(a2), "d"(a3),
+                           "r"(r10), "r"(r8), "r"(r9)
                          : "rcx", "r11", "memory");
     return ret;
 }
