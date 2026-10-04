@@ -28,8 +28,13 @@ done
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 out="$work/expected.txt"
+# Every signal at its default, as the guest's shell has them. A CI runner
+# starts its steps with SIGPIPE ignored, so `yes | head` there printed "yes:
+# Broken pipe" instead of dying quietly, and the nightly said Linux answered
+# differently; a shell cannot undo it, since a signal ignored on entry stays
+# ignored. The workloads that send TERM, INT and HUP would differ the same way.
 CORPUS_DIR="$(cd "$B/corpus" && pwd)" CORPUS_WORK="$work/w" \
-    "$BB" sh tests/corpus/run-l1.sh > "$out" 2> "$work/err.txt"
+    env --default-signal "$BB" sh tests/corpus/run-l1.sh > "$out" 2> "$work/err.txt"
 if ! grep -q '^C:done: ' "$out"; then
     echo "corpus-expect=FAIL reason=the_script_did_not_finish"
     head -5 "$work/err.txt"
