@@ -3040,6 +3040,9 @@ def main():
                 # program's own line.
                 if not re.search(r"write\(ring3\): LIMITS_OK: ", text):
                     problems.append("limits_not_enforced")
+                # L2 step 5: waiting, pidfds, execveat, clone3.
+                if not re.search(r"write\(ring3\): PROC_OK: ", text):
+                    problems.append("process_calls_failed")
 
             # The graphical shell, to the extent a serial log can speak for
             # it: the console has to have reached the on-screen terminal. Only

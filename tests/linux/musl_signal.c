@@ -27,6 +27,8 @@
  *   (L2 step 4) the limits the kernel enforces are run into: NOFILE,
  *     FSIZE (SIGXFSZ, then EFBIG), CPU (SIGXCPU); priorities, getrusage
  *     and personality
+ *   (L2 step 5) waitid, waitpid by group, a pidfd signalled, polled and
+ *     waited for, execveat on a descriptor, clone3 with CLONE_PIDFD
  */
 
 /* REG_RIP and the rest of ucontext_t's register names. */
@@ -41,6 +43,7 @@
 #include <fcntl.h>
 #include <sys/personality.h>
 #include <sys/resource.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -650,6 +653,122 @@ static int limit_checks(void) {
     return ok;
 }
 
+/* ---- docs/abi/ L2 step 5: processes -------------------------------------------
+ *
+ * Through the raw calls, by number: they are newer than the C library's
+ * wrappers for some of them, and the numbers are what the kernel sees. */
+
+struct k_clone_args {
+    unsigned long long flags, pidfd, child_tid, parent_tid, exit_signal, stack,
+        stack_size, tls, set_tid, set_tid_size, cgroup;
+};
+
+static int process_checks(void) {
+    siginfo_t si;
+    int ok = 1, status;
+    pid_t c;
+
+    printf("SIG_PHASE: processes\n");
+    fflush(stdout);
+
+    /* waitid: look first (WNOWAIT), then reap. */
+    c = fork();
+    if (c == 0) {
+        _exit(6);
+    }
+    memset(&si, 0, sizeof(si));
+    if (waitid(P_PID, (id_t)c, &si, WEXITED | WNOWAIT) != 0 || si.si_pid != c ||
+        si.si_code != CLD_EXITED || si.si_status != 6 ||
+        waitid(P_PID, (id_t)c, &si, WEXITED) != 0 || si.si_pid != c ||
+        waitpid(c, &status, WNOHANG) != -1 || errno != ECHILD) {
+        printf("SIG_FAIL: waitid: pid=%d code=%d status=%d errno=%d\n",
+               (int)si.si_pid, si.si_code, si.si_status, errno);
+        ok = 0;
+    }
+
+    /* waitpid(-pgid): a child that made its own group. */
+    c = fork();
+    if (c == 0) {
+        setpgid(0, 0);
+        _exit(7);
+    }
+    setpgid(c, c);   /* either order: the group exists before the wait */
+    if (waitpid(-c, &status, 0) != c || !WIFEXITED(status) || WEXITSTATUS(status) != 7) {
+        printf("SIG_FAIL: waitpid(-pgid): errno=%d\n", errno);
+        ok = 0;
+    }
+
+    /* A pidfd: signalled through it, readable once the child is gone, waited
+     * for by it. */
+    c = fork();
+    if (c == 0) {
+        for (;;) {
+            pause();
+        }
+    }
+    {
+        int pfd = (int)syscall(434 /* pidfd_open */, c, 0);
+        struct pollfd p;
+
+        p.fd = pfd;
+        p.events = POLLIN;
+        p.revents = 0;
+        if (pfd < 0 || poll(&p, 1, 0) != 0 ||
+            syscall(424 /* pidfd_send_signal */, pfd, SIGTERM, NULL, 0) != 0 ||
+            poll(&p, 1, 5000) != 1 || !(p.revents & POLLIN) ||
+            waitid((idtype_t)3 /* P_PIDFD */, (id_t)pfd, &si, WEXITED) != 0 ||
+            si.si_pid != c || si.si_code != CLD_KILLED || si.si_status != SIGTERM) {
+            printf("SIG_FAIL: pidfd: fd=%d revents=%x code=%d status=%d errno=%d\n",
+                   pfd, p.revents, si.si_code, si.si_status, errno);
+            ok = 0;
+        }
+        close(pfd);
+    }
+
+    /* execveat with AT_EMPTY_PATH: run the program a descriptor names. */
+    c = fork();
+    if (c == 0) {
+        static char *const argv[] = { "true", 0 };
+        static char *const envp[] = { 0 };
+        int fd = open("/EFI/BOOT/BUSYBOX.ELF", O_RDONLY);
+        syscall(322 /* execveat */, fd, "", argv, envp, 0x1000 /* AT_EMPTY_PATH */);
+        _exit(9);
+    }
+    if (waitpid(c, &status, 0) != c || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        printf("SIG_FAIL: execveat(AT_EMPTY_PATH): status=%x\n", status);
+        ok = 0;
+    }
+
+    /* clone3, as a fork with CLONE_PIDFD. */
+    {
+        struct k_clone_args a;
+        int pfd = -1;
+        long r;
+
+        memset(&a, 0, sizeof(a));
+        a.flags = 0x1000;   /* CLONE_PIDFD */
+        a.pidfd = (unsigned long long)(unsigned long)&pfd;
+        a.exit_signal = SIGCHLD;
+        r = syscall(435 /* clone3 */, &a, sizeof(a));
+        if (r == 0) {
+            _exit(8);
+        }
+        if (r < 0 || pfd < 0 || waitid((idtype_t)3, (id_t)pfd, &si, WEXITED) != 0 ||
+            si.si_pid != r || si.si_status != 8) {
+            printf("SIG_FAIL: clone3: r=%ld pidfd=%d errno=%d\n", r, pfd, errno);
+            ok = 0;
+        }
+        if (pfd >= 0) {
+            close(pfd);
+        }
+    }
+    if (ok) {
+        printf("PROC_OK: waitid, waitpid by group, pidfds, execveat, clone3\n");
+        fflush(stdout);
+    }
+    return ok;
+}
+
 int main(void) {
     struct sigaction sa;
     sigset_t block, old;
@@ -826,6 +945,8 @@ int main(void) {
     ok &= timer_checks();
     /* ---- L2 step 4: limits ---------------------------------------------------- */
     ok &= limit_checks();
+    /* ---- L2 step 5: processes ------------------------------------------------- */
+    ok &= process_checks();
 
     printf(ok ? "SIG_OK: handlers, masking, ignoring and default actions\n"
               : "SIG_FAIL: see above\n");

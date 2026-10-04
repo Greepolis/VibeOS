@@ -1,0 +1,15 @@
+# Processes on the machine (docs/abi/ L2 step 5). Gate: SIGNAL.ELF prints
+# PROC_OK only if waitid, waitpid by group, a pidfd, execveat and clone3 all
+# held (process_calls_failed).
+#
+#  1. a pidfd is never readable. Expect process_calls_failed: poll on the
+#     pidfd of a child that has ended times out.
+#
+# Target source: kernel/abi/files/pidfd.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/abi/files/pidfd.c scripts/dev/cases/abi-processes-boot.txt
+
+### a pidfd is never readable
+--- old
+    r = (slot < 0 || vibeos_task_state((uint32_t)slot) == VIBEOS_TASK_ZOMBIE) ? VIBEOS_READY_IN : 0u;
++++ new
+    r = 0u;
