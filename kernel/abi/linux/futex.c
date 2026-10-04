@@ -24,11 +24,13 @@
  * Uncontended locks never come here at all - a library takes those with an
  * atomic instruction - so this is the path for contention and for joins.
  *
- * Waiters are matched on the address alone. Every thread that can share a
- * futex shares an address space, so the same virtual address is the same word;
- * two processes waiting on the same address in their own spaces would be
- * confused with each other, and that is a real limitation, written down rather
- * than papered over. Shared futexes across processes are not implemented.
+ * Waiters are matched on a key: the process and the address for a private
+ * word, and the frame and the offset for a word on a MAP_SHARED page that the
+ * caller did not mark private (linux_futex_key). This said, until L2 step 6,
+ * that shared futexes were not implemented because there were no shared
+ * mappings - true when written, false since L3, and every LTP test that waits
+ * on its checkpoint (a futex on a MAP_SHARED page, between a parent and its
+ * child) waited out its timeout instead.
  */
 typedef struct {
     /* `used` and `addr` are not the same question, and conflating them was a
@@ -45,8 +47,8 @@ typedef struct {
      * virtual address means nothing without its process: every Linux program
      * here links at 0x400000, and a forked child has its parent's layout
      * exactly. The table was keyed by address alone, so a wake in one process
-     * ended a wait in another - THREADS_C5_FUTEX_XPROC, red first. There are no
-     * shared mappings in this kernel, so the process is the whole key. */
+     * ended a wait in another - THREADS_C5_FUTEX_XPROC, red first. Null for a
+     * shared word, whose `addr` is then the frame's and is nobody's address. */
     const vibeos_procstate_t *ps;
     int task;
     /* Which tenancy of `task` enqueued. The slot index alone is an ABA: a
@@ -103,7 +105,42 @@ long linux_futex_wake(const vibeos_procstate_t *ps, uint64_t addr, uint32_t coun
     return woke;
 }
 
-static long linux_futex_wait(uint64_t addr, uint32_t expected) {
+/* Which word a futex names: its process and its address, or - for a word the
+ * caller did not mark private, on a page mapped MAP_SHARED - the page's frame
+ * and the offset in it, with no process. The same word in every process that
+ * maps it, wherever each maps it: how a parent and a child wait for each other
+ * through shared memory, as LTP's checkpoints do. A word on a private page is
+ * its process's whatever the flag says, as in Linux. The word is read first,
+ * so that its page is in: a frame that is not there has no identity yet. */
+static long linux_futex_key(uint64_t addr, uint64_t op, const vibeos_procstate_t **ps, uint64_t *key) {
+    int me = ks_current();
+    uint32_t word;
+
+    *ps = me >= 0 ? ks_ps(me) : 0;
+    *key = addr;
+    if (me < 0 || (op & LINUX_FUTEX_PRIVATE_FLAG)) {
+        return 0;
+    }
+    if (!linux_user_ok(addr, 4u, 0) ||
+        vibeos_uaccess_copy(&word, (const void *)(uintptr_t)addr, 4u) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    {
+        vibeos_pageinfo_t pi;
+
+        ks_pageinfo(me, addr & ~0xFFFull, &pi);
+        if ((pi.flags & VIBEOS_PAGE_PRESENT) && (pi.flags & VIBEOS_PAGE_SHARED)) {
+            *ps = 0;
+            *key = (pi.frame << 12) | (addr & 0xFFFull);
+        }
+    }
+    return 0;
+}
+
+/* Wait until woken, a signal, or - with a timeout - until `deadline` ticks,
+ * 0 for none. */
+static long linux_futex_wait(const vibeos_procstate_t *kps, uint64_t key, uint64_t addr,
+                             uint32_t expected, uint64_t deadline) {
     uint32_t slot;
     uint32_t cur = 0;
     int me = ks_current();
@@ -146,15 +183,20 @@ static long linux_futex_wait(uint64_t addr, uint32_t expected) {
         return -VIBEOS_ENOMEM;
     }
     g_futex_waiters[slot].used = 1;
-    g_futex_waiters[slot].addr = addr;
-    g_futex_waiters[slot].ps = ks_ps(me);
+    g_futex_waiters[slot].addr = key;
+    g_futex_waiters[slot].ps = kps;
     g_futex_waiters[slot].task = me;
     g_futex_waiters[slot].seq = ks_seq(me);
     g_futex_waiters[slot].woken = 0;
 
-    ks_lock(ks_sched_lock(), __func__);
-    (void)ks_set_state(me, VIBEOS_TASK_BLOCKED, __func__);
-    ks_unlock(ks_sched_lock());
+    /* A wait with a timeout stays runnable and looks at the clock each tick,
+     * as a pipe's wait does: BLOCKED is left only by a wake or a signal, and
+     * nothing would come to say the time was up. */
+    if (deadline == 0u) {
+        ks_lock(ks_sched_lock(), __func__);
+        (void)ks_set_state(me, VIBEOS_TASK_BLOCKED, __func__);
+        ks_unlock(ks_sched_lock());
+    }
     ks_unlock(&g_futex_lock);
     ks_log(VIBEOS_LOG_DEBUG, 22u, addr,
            (uint64_t)cur |
@@ -174,7 +216,14 @@ static long linux_futex_wait(uint64_t addr, uint32_t expected) {
         if (ks_signal_interrupts(me)) {
             break;
         }
-        ks_block_point();
+        if (deadline != 0u) {
+            if (ks_ticks() >= deadline) {
+                break;
+            }
+            ks_wait_tick();   /* a wait with an end: the clock has to move */
+        } else {
+            ks_block_point();
+        }
     }
 
     {
@@ -201,6 +250,9 @@ static long linux_futex_wait(uint64_t addr, uint32_t expected) {
                 ks_mark_ready(me, "futex_wait_interrupted");
             }
             ks_unlock(ks_sched_lock());
+            if (!ks_signal_interrupts(me) && deadline != 0u && ks_ticks() >= deadline) {
+                return -VIBEOS_ETIMEDOUT;
+            }
             ks_log(VIBEOS_LOG_DEBUG, 23u, addr, (uint64_t)ks_id(me)->pid,
                    "futex wait: interrupted by a signal");
             return -VIBEOS_EINTR;
@@ -211,13 +263,40 @@ static long linux_futex_wait(uint64_t addr, uint32_t expected) {
     return 0;
 }
 
-static long linux_sys_futex(uint64_t addr, uint64_t op, uint64_t val) {
+static long linux_sys_futex(uint64_t addr, uint64_t op, uint64_t val, uint64_t utimeout) {
+    const vibeos_procstate_t *kps;
+    uint64_t key, deadline = 0;
+    long r;
+
     switch (op & VIBEOS_FUTEX_OP_BITS) {
         case LINUX_FUTEX_WAKE:
-            return linux_futex_wake(ks_current() >= 0 ? ks_ps(ks_current()) : 0,
-                                 addr, (uint32_t)val);
+            if ((r = linux_futex_key(addr, op, &kps, &key)) != 0) {
+                return r;
+            }
+            return linux_futex_wake(kps, key, (uint32_t)val);
         case LINUX_FUTEX_WAIT:
-            return linux_futex_wait(addr, (uint32_t)val);
+            /* A relative timeout, which every C library's timed wait passes
+             * and which used to be ignored: a timed wait that nobody ended
+             * waited for ever. */
+            if (utimeout != 0u) {
+                linux_timespec_t ts;
+                uint64_t ticks;
+
+                if (!linux_user_ok(utimeout, sizeof(ts), 0) ||
+                    vibeos_uaccess_copy(&ts, (const void *)(uintptr_t)utimeout, sizeof(ts)) != 0) {
+                    return -VIBEOS_EFAULT;
+                }
+                if (ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= 1000000000) {
+                    return -VIBEOS_EINVAL;
+                }
+                ticks = (uint64_t)ts.tv_sec * ks_hz() +
+                        ((uint64_t)ts.tv_nsec * ks_hz() + 999999999u) / 1000000000u;
+                deadline = ks_ticks() + (ticks ? ticks : 1u);
+            }
+            if ((r = linux_futex_key(addr, op, &kps, &key)) != 0) {
+                return r;
+            }
+            return linux_futex_wait(kps, key, addr, (uint32_t)val, deadline);
         default:
             /* Loudly, because this is how a thread library silently stops
              * working: it asks for an operation, is told it does not exist,
@@ -230,6 +309,6 @@ static long linux_sys_futex(uint64_t addr, uint64_t op, uint64_t val) {
 
 /* ---- the syscalls this file implements --------------------------------------- */
 #define LINUX_FUTEX_SYSCALLS(X) \
-    X(202, futex,            FUTEX,           PTRS(IN_IFM_ERR(1, VIBEOS_FUTEX_OP_BITS, LINUX_FUTEX_WAIT, 0, 4, VIBEOS_EINVAL)), linux_sys_futex(ARG(0), ARG(1), ARG(2)))
+    X(202, futex,            FUTEX,           PTRS(IN_IFM_ERR(1, VIBEOS_FUTEX_OP_BITS, LINUX_FUTEX_WAIT, 0, 4, VIBEOS_EINVAL)), linux_sys_futex(ARG(0), ARG(1), ARG(2), ARG(3)))
 
 LINUX_DEFINE_SYSCALLS(futex, LINUX_FUTEX_SYSCALLS)

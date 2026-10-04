@@ -55,6 +55,9 @@ typedef long (*kf_entry_t)(struct ks_regs *frame, uint64_t nr, const uint64_t a[
 
 void kf_reset(void);
 int kf_spawn(uint32_t pid, uint32_t sid);           /* a user task; its slot   */
+/* The page at `va` in `slot`'s space is frame `frame`, mapped MAP_SHARED: what
+ * ks_pageinfo reports for it. A negative slot forgets them all. */
+void kf_share_page(int slot, uint64_t va, uint64_t frame);
 void kf_set_current(int slot);
 
 /* User memory. kf_ualloc hands out user addresses in the arena (zeroed). */

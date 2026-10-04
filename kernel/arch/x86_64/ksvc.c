@@ -280,6 +280,7 @@ void ks_pageinfo(int slot, uint64_t va, vibeos_pageinfo_t *out) {
          * bare read through the address taken from an entry this function
          * does not own returns that process's first eight bytes - and an
          * identity and an owner count taken at different moments describe
+        if (entry & VIBEOS_PTE_SHARED) { out->flags |= VIBEOS_PAGE_SHARED; }
          * different frames.
          *
          * Pin the frame first - try_get refuses one nobody owns - and then

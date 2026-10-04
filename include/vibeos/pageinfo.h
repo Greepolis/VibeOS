@@ -35,6 +35,7 @@
 #define VIBEOS_PAGE_COW     0x08u
 #define VIBEOS_PAGE_OWNED   0x10u   /* this address space holds a reference */
 #define VIBEOS_PAGE_NX      0x20u   /* the entry forbids instruction fetch (M-036) */
+#define VIBEOS_PAGE_SHARED  0x40u   /* MAP_SHARED: every process mapping it sees this frame (L3) */
 
 typedef struct vibeos_pageinfo {
     uint64_t frame;    /* allocator index, 0 when nothing is mapped */

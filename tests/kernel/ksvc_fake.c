@@ -593,6 +593,7 @@ void kf_reset(void) {
                             kf_pipe_unlock);
     vibeos_tmpfs_set_page_hold(&g_tmpfs, kf_tmpfs_page_hold);
     g_tmpfs_live = 1;
+    kf_share_page(-1, 0, 0);
     (void)vibeos_fs_mount(&g_tmpfs_mnt, vibeos_tmpfs_ops(), &g_tmpfs, "tmpfs");
     (void)vibeos_fs_attach("/tmp", &g_tmpfs_mnt);
     /* /proc, as in the kernel (docs/abi/ L3 step 3). */
@@ -1105,10 +1106,40 @@ vibeos_procstate_t *ks_procstate_new(void) {
     return 0;
 }
 void ks_procstate_put(vibeos_procstate_t *ps) {
+/* Pages a test says are shared (kf_share_page): the fake has no page tables,
+ * so this is the whole of what ks_pageinfo knows - enough for a shared futex,
+ * which asks which frame a word is on and nothing else. */
+static struct {
+    int slot;
+    uint64_t page;
+    uint64_t frame;
+} g_shared_pages[8];
+static uint32_t g_shared_count;
+
+void kf_share_page(int slot, uint64_t va, uint64_t frame) {
+    if (slot < 0) {
+        g_shared_count = 0;
+        return;
+    }
+    if (g_shared_count < 8u) {
+        g_shared_pages[g_shared_count].slot = slot;
+        g_shared_pages[g_shared_count].page = va & ~0xfffull;
+        g_shared_pages[g_shared_count].frame = frame;
+        g_shared_count++;
+    }
+}
+
     if (ps && ps->refs) {
         /* As the architecture's: the last reference closes a table nobody left. */
         if (ps->refs == 1u) {
             vibeos_fdtable_destroy(&ps->files);
+    for (i = 0; i < g_shared_count; i++) {
+        if (g_shared_pages[i].slot == slot && g_shared_pages[i].page == (va & ~0xfffull)) {
+            out->frame = g_shared_pages[i].frame;
+            out->flags = VIBEOS_PAGE_PRESENT | VIBEOS_PAGE_WRITE | VIBEOS_PAGE_USER | VIBEOS_PAGE_SHARED;
+            out->owners = 2u;
+        }
+    }
         }
         ps->refs--;
     }

@@ -21,6 +21,6 @@
         if (ks_signal_interrupts(me)) {
             break;
         }
-        ks_block_point();
+        if (deadline != 0u) {
 +++ new
-        ks_block_point();
+        if (deadline != 0u) {

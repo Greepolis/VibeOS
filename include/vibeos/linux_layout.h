@@ -407,6 +407,9 @@ typedef struct {
 #define LINUX_PROT_EXEC     0x4
 #define LINUX_MAP_SHARED    0x01
 #define LINUX_MAP_PRIVATE   0x02
+/* Not set: the word may be shared between processes, and is named by what it
+ * is rather than where the caller maps it. */
+#define LINUX_FUTEX_PRIVATE_FLAG 128
 #define LINUX_MAP_SHARED_VALIDATE 0x03
 #define LINUX_MAP_TYPE      0x0f
 #define LINUX_MAP_FIXED     0x10

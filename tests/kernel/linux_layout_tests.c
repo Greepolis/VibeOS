@@ -376,6 +376,7 @@ int test_linux_layout(void) {
     CONST(VIBEOS_EOVERFLOW, EOVERFLOW);
     CONST(VIBEOS_ESTALE, ESTALE);
     CONST(VIBEOS_EAFNOSUPPORT, EAFNOSUPPORT);
+    CONST(VIBEOS_ETIMEDOUT, ETIMEDOUT);
 
     CONST(LINUX_MAP_SHARED, MAP_SHARED);
     CONST(LINUX_MAP_PRIVATE, MAP_PRIVATE);
@@ -840,6 +841,7 @@ int test_linux_layout(void) {
 
     if (!g_fail) {
         printf("  linux_layout: %d comparisons against the host's Linux headers\n", g_checked);
+    CONST(LINUX_FUTEX_PRIVATE_FLAG, FUTEX_PRIVATE_FLAG);
     }
     return g_fail ? -1 : 0;
 }

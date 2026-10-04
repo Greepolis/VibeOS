@@ -338,8 +338,12 @@ static const char *check_linux_abi(void) {
          * declaration. Harmless as it stood, and exactly the kind of thing
          * that stops being harmless the day somebody edits around it. */
         volatile int futex_word = 1;
-        long r = user_syscall3(SYS_futex, (unsigned long)&futex_word,
-                               0 /*WAIT*/, 2);
+        /* Six arguments, the timeout NULL: with three, r10 held whatever the
+         * last call left there, and once FUTEX_WAIT read its timeout (L2 step
+         * 6) that was a pointer to nowhere - EFAULT before the compare, as
+         * Linux answers too. */
+        long r = user_syscall6(SYS_futex, (unsigned long)&futex_word,
+                               0 /*WAIT*/, 2, 0, 0, 0);
 
         if (r != -11 /*EAGAIN*/) {
             return abi_futex;
