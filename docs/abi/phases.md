@@ -1773,6 +1773,60 @@ case in the scheduler.
 
 **Programs:** BusyBox `httpd` serving from the guest, `nc`, `tail -f`.
 
+**The plan (2026-10-04).** Measured first, as A0 measured the corpus: the
+three programs under strace on Linux, with the BusyBox the image stages.
+`httpd` asks for no event loop at all - it forks a child per connection,
+bounds it with `alarm`, and sends with `sendfile`, `setsockopt` and `shutdown`;
+`nc`, server and client, waits in `poll` on its socket and on standard input;
+`tail -f` sleeps and looks again (`clock_nanosleep`, `fstat`). So what the
+programs exercise is `poll` on a socket - which is what poll cannot answer
+today, a socket always saying it is ready - and two of L5's calls, which are
+taken here as far as `httpd` needs them, as L3 took `nanosleep`. The rest of
+the phase has LTP for its oracle, and its own boot checks:
+`tests/corpus/ltp-l4.txt`, 78 tests. `scripts/dev/ltp-list.py` found only 50
+of them at first - LTP names some directories after a family (`inotify01`,
+`pselect01`, `timerfd01`, `epoll-ltp`) and those matched no syscall, and
+`timerfd01` matched `time`. It matches whole names now, then families; the
+same change found twelve of L1's (`pread01`, `pwrite01` and the rest) that
+L1's list never had, and they run with step 1.
+
+**No wait queue.** Every wait in this kernel is the same: look, give up the
+core, look again - pipes, sockets, futexes, `poll` itself - and what a
+description can do is its type's `ready`. The event loops are built on that,
+not beside it: an interest list asks each description's `ready` at each look.
+A wait queue would be a second model of waiting for one phase. Edge-triggered
+epoll is a rise in what `ready` says between two looks.
+
+Seven steps, in the order that pays what is owed first (`select` is missing,
+and L2's personality02 stopped on it):
+
+1. **One readiness engine, four calls**: `poll` finished - a socket says what
+   it can do, from the stack (data to read, a connection to accept, a peer that
+   closed, room to send) - and `ppoll`, `select`, `pselect6` on the same
+   engine: a set of descriptors and events, looked at until one is ready, the
+   time is up or a signal needs acting on. `ppoll` and `pselect6` swap the
+   signal mask for the wait, atomically, as `rt_sigsuspend` does; `select`
+   writes back what was left of its time, as Linux does.
+2. **`eventfd`, `eventfd2`**: a counter as a file type - `EFD_SEMAPHORE`,
+   `EFD_NONBLOCK`, `EFD_CLOEXEC`; a read waits at zero, a write at overflow.
+3. **`timerfd_create`, `timerfd_settime`, `timerfd_gettime`**: a timer as a
+   file type, read for how many times it expired; relative or absolute, with an
+   interval.
+4. **`signalfd`, `signalfd4`**: a thread's pending signals read as records -
+   the same take `sigtimedwait` uses - and ready while one of its mask is
+   pending.
+5. **`epoll`**: `epoll_create`, `epoll_create1`, `epoll_ctl`, `epoll_wait`,
+   `epoll_pwait`, `epoll_pwait2`. An interest list as a file type, each entry a
+   description and its events; level- and edge-triggered, `EPOLLONESHOT`; an
+   epoll in another epoll's or in `poll`'s set; an entry goes with the
+   description, not the descriptor, as on Linux.
+6. **`inotify`**: `inotify_init`, `inotify_init1`, `inotify_add_watch`,
+   `inotify_rm_watch`. Events from the file layer's operations - made, removed,
+   written, changed, moved, opened, closed - at the one place every
+   filesystem's operation passes, queued per instance, with an overflow.
+7. **The programs**: BusyBox `httpd` serving from the guest to the host, `nc`
+   both ways, `tail -f`; and LTP for L4's own calls.
+
 ### L5. Sockets (11, plus `readv`/`writev` on sockets)
 
 The rest of the BSD API (`sendmsg`/`recvmsg`, `shutdown`, `getsockname`,
