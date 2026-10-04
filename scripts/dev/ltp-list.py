@@ -36,10 +36,34 @@ def main():
         if "." in binary:
             continue    # an object file the build left executable, not a test
         for n in names:
-            if binary.startswith(n):
+            # A whole name, not the start of a longer word: "time" is not
+            # timerfd01's syscall, and took it from L4 until this said so.
+            if binary.startswith(n) and not binary[len(n):len(n) + 1].isalpha():
                 if n in wanted:
                     out.append(binary)
                 break
+        else:
+            # No syscall's name starts it: LTP names some directories after a
+            # family - inotify01, pselect01, timerfd01, epoll-ltp - and these
+            # matched nothing, so L4's list was missing a third of its tests.
+            # The family's syscalls are those whose name starts with the
+            # test's stem; the test is theirs when they are all one phase's.
+            # A refused row ("R": epoll_ctl_old and the like) is nobody's
+            # phase, and does not make a family two phases' either.
+            stem = re.match(r"[a-z]+", binary)
+            phases = {ph for n2, _, ph in rows
+                      if stem and n2.startswith(stem.group(0)) and ph != "R"}
+            if len(phases) == 1:
+                if phase in phases:
+                    out.append(binary)
+                continue
+            # Neither: the longest name it merely starts with, as before -
+            # statvfs01 is statfs's, which only "stat" reaches.
+            for n in names:
+                if binary.startswith(n):
+                    if n in wanted:
+                        out.append(binary)
+                    break
     # LF whatever the host: the list is read by a shell script in the guest's
     # build environment, and a carriage return becomes part of a test's name.
     sys.stdout.reconfigure(newline="\n")

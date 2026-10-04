@@ -264,6 +264,10 @@ mknodat02
 openat201
 openat202
 openat203
+pread01
+pread01_64
+pread02
+pread02_64
 preadv01
 preadv01_64
 preadv02
@@ -276,6 +280,14 @@ preadv202
 preadv202_64
 preadv203
 preadv203_64
+pwrite01
+pwrite01_64
+pwrite02
+pwrite02_64
+pwrite03
+pwrite03_64
+pwrite04
+pwrite04_64
 pwritev01
 pwritev01_64
 pwritev02
