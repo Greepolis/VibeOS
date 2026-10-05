@@ -1880,6 +1880,55 @@ and L2's personality02 stopped on it):
   `mknod`, not the event loop's. select02 to 04 pass their own variant and say
   so of the time64 one, which x86-64 does not have.
 
+**Steps 2 to 4 (2026-10-05): done, together.** Three descriptors that are
+events, each a file type with a `ready` and a pipe's way of waiting, so `poll`,
+`select` and (step 5) `epoll` see them without being told.
+
+- **`eventfd`, `eventfd2`** (`kernel/abi/files/eventfd.c`, personality-neutral):
+  a counter in the description, so `dup` and `fork` share it; every change a
+  compare-exchange, because two processes after a fork can read and write it at
+  the same instant and a description has no lock. A read takes the count, or
+  one under `EFD_SEMAPHORE`, and waits at zero; a write adds and waits for room
+  under the largest count, 2^64 - 2; the value past it is EINVAL. A read whose
+  buffer cannot take the value gives the count back.
+- **`timerfd_create`, `timerfd_settime`, `timerfd_gettime`**
+  (`kernel/abi/files/timerfd.c`): a deadline and a period in ticks, and nothing
+  that fires them - whoever looks, a read or a poll, counts the expiries since
+  the last look. Every clock a timerfd may use counts time passing, which is one
+  clock here, so "how many periods have gone by" is arithmetic, and a timer
+  nobody reads costs nothing and needs no slot in the process-timer table.
+  Relative and absolute, with an interval; a relative time does not count the
+  tick in progress, as a sleep does not; set again, it starts counting again.
+  The alarm clocks are the superuser's, a CPU-time clock EINVAL, as on Linux.
+  `TFD_TIMER_CANCEL_ON_SET` is accepted and never cancels: no clock here can be
+  set.
+- **`signalfd`, `signalfd4`** (`kernel/abi/linux/events.c` - its records are
+  Linux's layout, `linux_signalfd_siginfo_t`): a read takes, of the signals in
+  its mask, those pending for the reading thread, lowest first, as many records
+  as fit - by `ks_signal_take`, the take `sigtimedwait` uses, so a signal read
+  is not delivered too - and waits while none is. Readable while one of its mask
+  is pending for whoever asks. A second call on it changes its mask.
+- **At boot** EVENTS.ELF waits on each in a way only another process or the
+  clock can end: an `eventfd` read woken by a child's write, `poll` on a
+  periodic `timerfd` (not early, and every period counted), a `signalfd` read
+  and a `poll` on one woken by a child's `kill`. It ran on Linux first.
+- **Sabotage**: `abi-eventfd.txt` (5), `abi-timerfd.txt` (4) and
+  `abi-signalfd.txt` (6) against the host tests, and `abi-signalfd-boot.txt`
+  against the boot (`events_l4_failed`, for the reason it names); all red. No
+  case removes a wake: every wait here looks again at the next tick, so a
+  missing `ks_wake_waiters` costs a tick and nothing a test can see.
+- **Sabotage**, one more: `abi-signalfd.txt`'s seventh case checks the pointer
+  before the descriptor, and is red.
+- **LTP**: the steps' twenty tests: 16 passed. timerfd_gettime01 failed: with
+  a closed descriptor and a bad pointer Linux says EBADF, and the row judged the
+  pointer first - a timerfd setting is written out last now, by the handler, as
+  Linux orders it, and the test passes. timerfd_settime02 wanted
+  `/proc/sys/kernel/tainted` (0 now: nothing here taints the kernel) and then
+  races two threads with LTP's fuzzy sync, which asks `sched_getaffinity` -
+  L6's - and outlasts a boot under TCG. timerfd04 needs a time namespace
+  (`unshare(CLONE_NEWTIME)`), eventfd06 libaio: neither is this phase's.
+  Six boots, all clean.
+
 ### L5. Sockets (11, plus `readv`/`writev` on sockets)
 
 The rest of the BSD API (`sendmsg`/`recvmsg`, `shutdown`, `getsockname`,
