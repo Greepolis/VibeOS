@@ -12,7 +12,9 @@
  * Steps 2 to 4: eventfd, timerfd and signalfd, each woken by another process or
  * by the clock.
  *
- * Step 5: epoll, woken by another process, edge- and level-triggered. */
+ * Step 5: epoll, woken by another process, edge- and level-triggered.
+ *
+ * Step 6: inotify, woken by a file another process makes. */
 
 #define _GNU_SOURCE
 #include <errno.h>
@@ -24,6 +26,9 @@
 #include <stdint.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
+#include <sys/inotify.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 #include <sys/select.h>
 #include <sys/signalfd.h>
 #include <sys/socket.h>
@@ -309,19 +314,77 @@ static int epoll_checks(void) {
     return ok;
 }
 
+/* Step 6: inotify - a watched directory, a file made in it by another process,
+ * a blocking read that wakes with the record, and a rename's pair. */
+static int inotify_checks(void) {
+    char buf[1024], *p;
+    struct pollfd pf;
+    int ok = 1, st = 0, wd, in, n;
+    uint32_t cookie = 0, seen = 0;
+    pid_t c;
+
+    mkdir("/tmp/evn", 0755);
+    in = inotify_init1(IN_CLOEXEC);
+    wd = in < 0 ? -1 : inotify_add_watch(in, "/tmp/evn", IN_CREATE | IN_MOVED_FROM | IN_MOVED_TO | IN_DELETE);
+    if (wd < 1) {
+        return fail("inotify_init1 and a watch on /tmp/evn", in, wd);
+    }
+    c = fork();
+    if (c == 0) {
+        int fd;
+
+        usleep(30000);
+        fd = open("/tmp/evn/a", O_CREAT | O_WRONLY, 0644);
+        _exit(fd >= 0 && close(fd) == 0 ? 0 : 1);
+    }
+    /* poll first, with an end: a kernel that never says would otherwise hold
+     * the boot here until the gate gave up. */
+    pf.fd = in; pf.events = POLLIN; pf.revents = 0;
+    n = poll(&pf, 1, 2000) == 1 ? (int)read(in, buf, sizeof(buf)) : -1;
+    p = buf;
+    if (n < (int)sizeof(struct inotify_event) || ((struct inotify_event *)p)->wd != wd ||
+        ((struct inotify_event *)p)->mask != IN_CREATE || strcmp(((struct inotify_event *)p)->name, "a") != 0) {
+        ok = fail("an inotify read wakes for a file another process makes", n, n > 0 ? (long)((struct inotify_event *)p)->mask : 0);
+    }
+    waitpid(c, &st, 0);
+    if (rename("/tmp/evn/a", "/tmp/evn/b") != 0) {
+        return fail("rename in the watched directory", errno, 0);
+    }
+    pf.fd = in; pf.events = POLLIN; pf.revents = 0;
+    n = poll(&pf, 1, 1000) == 1 ? (int)read(in, buf, sizeof(buf)) : -1;
+    for (p = buf; n > 0 && p < buf + n; p += sizeof(struct inotify_event) + ((struct inotify_event *)p)->len) {
+        struct inotify_event *e = (struct inotify_event *)p;
+
+        if (e->mask == IN_MOVED_FROM && strcmp(e->name, "a") == 0) {
+            cookie = e->cookie;
+            seen |= 1;
+        } else if (e->mask == IN_MOVED_TO && strcmp(e->name, "b") == 0 && e->cookie == cookie && cookie != 0) {
+            seen |= 2;
+        }
+    }
+    if (seen != 3) {
+        ok = fail("poll sees inotify readable; a rename is MOVED_FROM and MOVED_TO with one cookie", n, seen);
+    }
+    unlink("/tmp/evn/b");
+    rmdir("/tmp/evn");
+    close(in);
+    return ok;
+}
+
 int main(void) {
     int ok = 1;
 
-    printf("EVENTS_PHASE: steps 1 to 5\n");
+    printf("EVENTS_PHASE: steps 1 to 6\n");
     fflush(stdout);
     ok &= socket_checks();
     ok &= select_checks();
     ok &= mask_checks();
     ok &= event_fd_checks();
     ok &= epoll_checks();
+    ok &= inotify_checks();
     if (ok) {
         printf("EVENTS_OK: poll, ppoll, select and pselect6; sockets say what they can do;"
-               " eventfd, timerfd and signalfd wait and wake; epoll\n");
+               " eventfd, timerfd and signalfd wait and wake; epoll; inotify\n");
     }
     fflush(stdout);
     return ok ? 0 : 1;

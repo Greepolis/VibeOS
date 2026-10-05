@@ -1,0 +1,16 @@
+# inotify at boot (docs/abi/ L4 step 6). Gate: EVENTS.ELF
+# (tests/linux/musl_events.c) prints EVENTS_OK only if every check held, and the
+# gate asserts it (events_l4_failed).
+#
+#  1. nobody listens: the hook is never registered, so the file layer tells no
+#     one and the poll runs out its two seconds. Expect events_l4_failed: "an
+#     inotify read wakes for a file another process makes".
+#
+# Target source: kernel/abi/linux/inotify.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/inotify.c scripts/dev/cases/abi-inotify-boot.txt
+
+### nobody listens
+--- old
+    vibeos_fs_set_notify(in_notify);
++++ new
+    vibeos_fs_set_notify(0);
