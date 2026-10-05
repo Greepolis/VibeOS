@@ -113,18 +113,81 @@ int vibeos_fs_list(vibeos_fsmount_t *mnt, const char *path, uint32_t index,
     return mnt->ops->list(mnt->fs, path, index, name, name_cap, out_size, out_is_dir);
 }
 
+/* ---- what happened, for whoever listens (docs/abi/ L4 step 6) ------------------- */
+
+static vibeos_fs_notify_fn g_notify;
+static uint32_t g_notify_cookie;
+
+void vibeos_fs_set_notify(vibeos_fs_notify_fn fn) {
+    __atomic_store_n(&g_notify, fn, __ATOMIC_RELEASE);
+}
+
+int vibeos_fs_notify_active(void) {
+    return __atomic_load_n(&g_notify, __ATOMIC_ACQUIRE) != 0;
+}
+
+void vibeos_fs_notify(vibeos_fsmount_t *mnt, const char *path, uint64_t id, uint32_t event, uint32_t cookie,
+                      int is_dir) {
+    vibeos_fs_notify_fn fn = __atomic_load_n(&g_notify, __ATOMIC_ACQUIRE);
+
+    if (fn && mnt && path) {
+        fn(mnt, path, id, event, cookie, is_dir);
+    }
+}
+
+/* The node at `path` before an operation changes it, when somebody listens;
+ * found is 0 otherwise, and nothing is looked up. */
+static int fs_peek(vibeos_fsmount_t *mnt, const char *path, vibeos_fs_node_t *out) {
+    return vibeos_fs_notify_active() && vibeos_fs_lookup(mnt, path, out) == 0;
+}
+
+/* A name gone: the node's link count changed, its directory lost an entry, and
+ * if that was its last name the node itself is gone. */
+static void fs_notify_gone(vibeos_fsmount_t *mnt, const char *path, const vibeos_fs_node_t *n) {
+    if (!n->is_dir) {
+        vibeos_fs_notify(mnt, path, n->id, VIBEOS_FSN_NLINK, 0, 0);
+    }
+    vibeos_fs_notify(mnt, path, n->id, VIBEOS_FSN_DELETE, 0, n->is_dir);
+    if (n->is_dir || n->nlink <= 1u) {
+        vibeos_fs_notify(mnt, path, n->id, VIBEOS_FSN_DELETE_SELF, 0, n->is_dir);
+    }
+}
+
+/* A name made: its directory gained an entry. */
+static void fs_notify_made(vibeos_fsmount_t *mnt, const char *path) {
+    vibeos_fs_node_t n;
+
+    if (fs_peek(mnt, path, &n)) {
+        vibeos_fs_notify(mnt, path, n.id, VIBEOS_FSN_CREATE, 0, n.is_dir);
+    }
+}
+
 int vibeos_fs_unlink(vibeos_fsmount_t *mnt, const char *path) {
+    vibeos_fs_node_t n;
+    int had, r;
+
     if (!vibeos_fs_is_mounted(mnt) || !path || !mnt->ops->unlink) {
         return -1;
     }
-    return mnt->ops->unlink(mnt->fs, path);
+    had = fs_peek(mnt, path, &n);
+    r = mnt->ops->unlink(mnt->fs, path);
+    if (r == 0 && had) {
+        fs_notify_gone(mnt, path, &n);
+    }
+    return r;
 }
 
 int vibeos_fs_mkdir(vibeos_fsmount_t *mnt, const char *path) {
+    int r;
+
     if (!vibeos_fs_is_mounted(mnt) || !path || !mnt->ops->mkdir) {
         return -1;
     }
-    return mnt->ops->mkdir(mnt->fs, path);
+    r = mnt->ops->mkdir(mnt->fs, path);
+    if (r == 0) {
+        fs_notify_made(mnt, path);
+    }
+    return r;
 }
 
 /* ---- L1's operations ----------------------------------------------------------- */
@@ -186,36 +249,95 @@ int vibeos_fs_create(vibeos_fsmount_t *mnt, const char *path, uint32_t mode,
     r = mnt->ops->create(mnt->fs, path, mode, out);
     if (r == 0) {
         fs_node_complete(out);
+        vibeos_fs_notify(mnt, path, out->id, VIBEOS_FSN_CREATE, 0, out->is_dir);
     }
     return r;
 }
 
 int vibeos_fs_rmdir(vibeos_fsmount_t *mnt, const char *path) {
+    vibeos_fs_node_t n;
+    int had, r;
+
     if (!vibeos_fs_is_mounted(mnt) || !path) {
         return -VIBEOS_EINVAL;
     }
-    return mnt->ops->rmdir ? mnt->ops->rmdir(mnt->fs, path) : fs_missing(mnt);
+    if (!mnt->ops->rmdir) {
+        return fs_missing(mnt);
+    }
+    had = fs_peek(mnt, path, &n);
+    r = mnt->ops->rmdir(mnt->fs, path);
+    if (r == 0 && had) {
+        fs_notify_gone(mnt, path, &n);
+    }
+    return r;
 }
 
+/* A rename is two records with one cookie, the source's then the target's, and
+ * the node's own MOVE_SELF; a node the target replaced is gone. */
 int vibeos_fs_rename(vibeos_fsmount_t *mnt, const char *from, const char *to, uint32_t flags) {
+    vibeos_fs_node_t n, old;
+    int had, had_old, r;
+
     if (!vibeos_fs_is_mounted(mnt) || !from || !to || (flags & ~VIBEOS_RENAME_NOREPLACE)) {
         return -VIBEOS_EINVAL;
     }
-    return mnt->ops->rename ? mnt->ops->rename(mnt->fs, from, to, flags) : fs_missing(mnt);
+    if (!mnt->ops->rename) {
+        return fs_missing(mnt);
+    }
+    had = fs_peek(mnt, from, &n);
+    had_old = fs_peek(mnt, to, &old);
+    r = mnt->ops->rename(mnt->fs, from, to, flags);
+    if (r == 0 && had) {
+        uint32_t cookie = __atomic_add_fetch(&g_notify_cookie, 1u, __ATOMIC_ACQ_REL);
+
+        if (cookie == 0u) {
+            cookie = __atomic_add_fetch(&g_notify_cookie, 1u, __ATOMIC_ACQ_REL);   /* 0 is "no pair" */
+        }
+        vibeos_fs_notify(mnt, from, n.id, VIBEOS_FSN_MOVED_FROM, cookie, n.is_dir);
+        vibeos_fs_notify(mnt, to, n.id, VIBEOS_FSN_MOVED_TO, cookie, n.is_dir);
+        vibeos_fs_notify(mnt, to, n.id, VIBEOS_FSN_MOVE_SELF, 0, n.is_dir);
+        if (had_old && old.id != n.id && (old.is_dir || old.nlink <= 1u)) {
+            vibeos_fs_notify(mnt, to, old.id, VIBEOS_FSN_DELETE_SELF, 0, old.is_dir);
+        }
+    }
+    return r;
 }
 
 int vibeos_fs_link(vibeos_fsmount_t *mnt, const char *existing, const char *path) {
+    int r;
+
     if (!vibeos_fs_is_mounted(mnt) || !existing || !path) {
         return -VIBEOS_EINVAL;
     }
-    return mnt->ops->link ? mnt->ops->link(mnt->fs, existing, path) : fs_missing(mnt);
+    if (!mnt->ops->link) {
+        return fs_missing(mnt);
+    }
+    r = mnt->ops->link(mnt->fs, existing, path);
+    if (r == 0 && vibeos_fs_notify_active()) {
+        vibeos_fs_node_t n;
+
+        if (vibeos_fs_lookup(mnt, path, &n) == 0) {
+            vibeos_fs_notify(mnt, existing, n.id, VIBEOS_FSN_NLINK, 0, 0);
+            vibeos_fs_notify(mnt, path, n.id, VIBEOS_FSN_CREATE, 0, 0);
+        }
+    }
+    return r;
 }
 
 int vibeos_fs_symlink(vibeos_fsmount_t *mnt, const char *target, const char *path) {
+    int r;
+
     if (!vibeos_fs_is_mounted(mnt) || !target || !path) {
         return -VIBEOS_EINVAL;
     }
-    return mnt->ops->symlink ? mnt->ops->symlink(mnt->fs, target, path) : fs_missing(mnt);
+    if (!mnt->ops->symlink) {
+        return fs_missing(mnt);
+    }
+    r = mnt->ops->symlink(mnt->fs, target, path);
+    if (r == 0) {
+        fs_notify_made(mnt, path);
+    }
+    return r;
 }
 
 long vibeos_fs_readlink(vibeos_fsmount_t *mnt, const char *path, char *buf, uint32_t cap) {
@@ -226,10 +348,20 @@ long vibeos_fs_readlink(vibeos_fsmount_t *mnt, const char *path, char *buf, uint
 }
 
 int vibeos_fs_setattr(vibeos_fsmount_t *mnt, const char *path, const vibeos_fs_attr_t *attr) {
+    vibeos_fs_node_t n;
+    int r;
+
     if (!vibeos_fs_is_mounted(mnt) || !path || !attr) {
         return -VIBEOS_EINVAL;
     }
-    return mnt->ops->setattr ? mnt->ops->setattr(mnt->fs, path, attr) : fs_missing(mnt);
+    if (!mnt->ops->setattr) {
+        return fs_missing(mnt);
+    }
+    r = mnt->ops->setattr(mnt->fs, path, attr);
+    if (r == 0 && fs_peek(mnt, path, &n)) {
+        vibeos_fs_notify(mnt, path, n.id, VIBEOS_FSN_ATTRIB, 0, n.is_dir);
+    }
+    return r;
 }
 
 int vibeos_fs_statfs(vibeos_fsmount_t *mnt, vibeos_fs_statfs_t *out) {

@@ -27,9 +27,11 @@
 
 ### a regular file's read does not advance the shared position
 --- old
-    long n = regular_pread(f, buf, len, f->pos);
     if (n > 0) {
         f->pos += (uint64_t)n;
+        file_notify(f, VIBEOS_FSN_ACCESS);
     }
 +++ new
-    long n = regular_pread(f, buf, len, f->pos);
+    if (n > 0) {
+        file_notify(f, VIBEOS_FSN_ACCESS);
+    }

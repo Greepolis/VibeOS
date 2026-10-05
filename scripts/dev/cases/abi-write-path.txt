@@ -70,6 +70,6 @@
     if (f->flags & VIBEOS_O_APPEND) {
         off = regular_size(f);
     }
-    return regular_pwrite_direct(f, buf, len, off);
+    w = regular_pwrite_direct(f, buf, len, off);
 +++ new
-    return regular_pwrite_direct(f, buf, len, off);
+    w = regular_pwrite_direct(f, buf, len, off);

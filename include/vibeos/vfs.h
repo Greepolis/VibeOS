@@ -236,6 +236,36 @@ int vibeos_fs_sync(vibeos_fsmount_t *mnt);
  * registration, not a weak symbol (CLAUDE.md). Uptime until the kernel has a
  * wall clock (L2); 0 before one is registered. */
 void vibeos_fs_set_clock(uint64_t (*now_ns)(void));
+
+/* What happened to a file, said once where every filesystem's operation passes
+ * (docs/abi/ L4 step 6): here for the operations on names, and in the regular
+ * file type for open, read, write and close. The numbering is the file layer's;
+ * it happens to be Linux's inotify numbering, which a personality maps rather
+ * than assumes. One listener, registered - Linux's inotify - and nothing is
+ * looked up for anybody while there is none. */
+#define VIBEOS_FSN_ACCESS        0x0001u
+#define VIBEOS_FSN_MODIFY        0x0002u
+#define VIBEOS_FSN_ATTRIB        0x0004u
+#define VIBEOS_FSN_CLOSE_WRITE   0x0008u
+#define VIBEOS_FSN_CLOSE_NOWRITE 0x0010u
+#define VIBEOS_FSN_OPEN          0x0020u
+#define VIBEOS_FSN_MOVED_FROM    0x0040u
+#define VIBEOS_FSN_MOVED_TO      0x0080u
+#define VIBEOS_FSN_CREATE        0x0100u
+#define VIBEOS_FSN_DELETE        0x0200u
+#define VIBEOS_FSN_DELETE_SELF   0x0400u
+#define VIBEOS_FSN_MOVE_SELF     0x0800u
+/* The node's link count changed (a link made or removed): the node hears it,
+ * its directory does not - which is how Linux tells it, apart from a chmod. */
+#define VIBEOS_FSN_NLINK         0x1000u
+/* `path` is inside `mnt`; `id` is the node the event is about (gone already for
+ * a delete); `cookie` ties the two halves of a rename, 0 otherwise. */
+typedef void (*vibeos_fs_notify_fn)(vibeos_fsmount_t *mnt, const char *path, uint64_t id, uint32_t event,
+                                    uint32_t cookie, int is_dir);
+void vibeos_fs_set_notify(vibeos_fs_notify_fn fn);
+int vibeos_fs_notify_active(void);
+void vibeos_fs_notify(vibeos_fsmount_t *mnt, const char *path, uint64_t id, uint32_t event, uint32_t cookie,
+                      int is_dir);
 uint64_t vibeos_fs_now_ns(void);
 
 /* ---- the mount table (I4b step 4) -----------------------------------------

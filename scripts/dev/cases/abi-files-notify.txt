@@ -1,0 +1,32 @@
+# What the regular file type says happened (kernel/abi/files/regular.c,
+# docs/abi/ L4 step 6), proved through inotify by t_inotify in
+# tests/kernel/linux_abi_tests.c.
+#
+#  1. a write is not told. Expect "create, open, modify, close-write - in
+#     order, each named".
+#  2. a close is always a close-nowrite. Expect the same.
+#  3. an open is not told. Expect the same.
+#
+# Target source: kernel/abi/files/regular.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/files/regular.c scripts/dev/cases/abi-files-notify.txt
+
+### a write is not told
+--- old
+        f->pos = at + (uint64_t)w;
+        file_notify(f, VIBEOS_FSN_MODIFY);
++++ new
+        f->pos = at + (uint64_t)w;
+
+### a close is always a close-nowrite
+--- old
+    file_notify(f, (f->flags & VIBEOS_O_ACCMODE) != VIBEOS_O_RDONLY ? VIBEOS_FSN_CLOSE_WRITE
+                                                                    : VIBEOS_FSN_CLOSE_NOWRITE);
++++ new
+    file_notify(f, VIBEOS_FSN_CLOSE_NOWRITE);
+
+### an open is not told
+--- old
+    file_notify(f, VIBEOS_FSN_OPEN);
+    return f;
++++ new
+    return f;

@@ -26,6 +26,13 @@ static const char *tail_of(const vibeos_file_t *f) {
     return *t ? t : "/";
 }
 
+/* What happened to this file, for whoever listens (vibeos_fs_notify). */
+static void file_notify(const vibeos_file_t *f, uint32_t event) {
+    if (f->mnt && vibeos_fs_notify_active()) {
+        vibeos_fs_notify(f->mnt, tail_of(f), f->node, event, 0, f->isdir);
+    }
+}
+
 static vibeos_fs_node_t node_of(const vibeos_file_t *f) {
     vibeos_fs_node_t n;
     n.id = f->node;
@@ -94,6 +101,7 @@ static long regular_read(vibeos_file_t *f, uint64_t buf, uint64_t len) {
     long n = regular_pread(f, buf, len, f->pos);
     if (n > 0) {
         f->pos += (uint64_t)n;
+        file_notify(f, VIBEOS_FSN_ACCESS);
     }
     return n;
 }
@@ -191,10 +199,16 @@ static long regular_pwrite(vibeos_file_t *f, uint64_t buf, uint64_t len, uint64_
     /* Under O_APPEND Linux writes at the end and ignores the offset - a
      * documented bug kept for compatibility, which LTP's pwrite04 asks for and
      * L1's list never ran (docs/abi/ L4 step 1 found it). */
+    long w;
+
     if (f->flags & VIBEOS_O_APPEND) {
         off = regular_size(f);
     }
-    return regular_pwrite_direct(f, buf, len, off);
+    w = regular_pwrite_direct(f, buf, len, off);
+    if (w > 0) {
+        file_notify(f, VIBEOS_FSN_MODIFY);
+    }
+    return w;
 }
 
 /* Fault-safe: the dispatcher's row validates the buffer before this runs, and
@@ -220,6 +234,7 @@ static long regular_write(vibeos_file_t *f, uint64_t buf, uint64_t len) {
     w = regular_pwrite_direct(f, buf, len, at);
     if (w > 0) {
         f->pos = at + (uint64_t)w;
+        file_notify(f, VIBEOS_FSN_MODIFY);
     }
     return w;
 }
@@ -272,6 +287,7 @@ static int regular_truncate(vibeos_file_t *f, uint64_t size) {
     r = vibeos_fs_truncate(f->mnt, &node, size);
     if (r == 0) {
         f->size = size;
+        file_notify(f, VIBEOS_FSN_MODIFY);
     }
     return r;
 }
@@ -284,6 +300,8 @@ static int regular_sync(vibeos_file_t *f) {
  * name of its own; one made by memfd_create takes its name with it, and its
  * pages go back unless a mapping still holds them. */
 static void regular_release(vibeos_file_t *f) {
+    file_notify(f, (f->flags & VIBEOS_O_ACCMODE) != VIBEOS_O_RDONLY ? VIBEOS_FSN_CLOSE_WRITE
+                                                                    : VIBEOS_FSN_CLOSE_NOWRITE);
     if (f->unlink_on_release && f->mnt) {
         (void)vibeos_fs_unlink(f->mnt, tail_of(f));
     }
@@ -405,8 +423,13 @@ static int dir_sync(vibeos_file_t *f) {
     return vibeos_fs_sync(f->mnt);   /* fsync on a directory is how a rename is made durable */
 }
 
+static void dir_release(vibeos_file_t *f) {
+    file_notify(f, VIBEOS_FSN_CLOSE_NOWRITE);
+}
+
 const vibeos_file_ops_t vibeos_fops_dir = {
     .name = "dir",
+    .release = dir_release,
     .seek = regular_seek,
     .stat = regular_stat,
     .readdir = dir_readdir,
@@ -528,5 +551,11 @@ vibeos_file_t *vibeos_open_path(const vibeos_path_t *w, uint32_t flags, uint32_t
     f->size = node.size;
     f->isdir = node.is_dir;
     *err = 0;
+    /* Opened, and truncated first if it was asked: Linux tells both, the
+     * truncation as a change to the file. */
+    if (w->exists && !node.is_dir && wants_write && (flags & VIBEOS_O_TRUNC)) {
+        file_notify(f, VIBEOS_FSN_MODIFY);
+    }
+    file_notify(f, VIBEOS_FSN_OPEN);
     return f;
 }
