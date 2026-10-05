@@ -7,7 +7,10 @@
  *
  * Step 1: poll, ppoll, select and pselect6 on one engine, and sockets that say
  * what they can do - a socket used to be "always ready", so nc, which waits in
- * poll on its socket, never waited. */
+ * poll on its socket, never waited.
+ *
+ * Steps 2 to 4: eventfd, timerfd and signalfd, each woken by another process or
+ * by the clock. */
 
 #define _GNU_SOURCE
 #include <errno.h>
@@ -16,8 +19,13 @@
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
+#include <sys/eventfd.h>
 #include <sys/select.h>
+#include <sys/signalfd.h>
 #include <sys/socket.h>
+#include <sys/timerfd.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -159,16 +167,108 @@ static int mask_checks(void) {
     return ok;
 }
 
+/* Steps 2 to 4: eventfd, timerfd and signalfd, each waited for in a way only
+ * another process or the clock can end - the wakes are what the host tests
+ * cannot see. */
+static int event_fd_checks(void) {
+    struct pollfd p;
+    uint64_t v = 0;
+    struct itimerspec its;
+    struct signalfd_siginfo rec[2];
+    sigset_t m;
+    double t0, dt;
+    int ok = 1, st = 0;
+    int efd = eventfd(0, EFD_CLOEXEC);
+    int tfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
+    int sfd, n;
+    pid_t c;
+
+    if (efd < 0 || tfd < 0) {
+        return fail("eventfd and timerfd made", efd, tfd);
+    }
+    /* A child writes the counter after 30 ms; the parent's read waits for it. */
+    c = fork();
+    if (c == 0) {
+        uint64_t seven = 7;
+        usleep(30000);
+        _exit(write(efd, &seven, 8) == 8 ? 0 : 1);
+    }
+    t0 = now_ms();
+    n = (int)read(efd, &v, 8);
+    dt = now_ms() - t0;
+    if (n != 8 || v != 7 || dt < 20) {
+        ok = fail("an eventfd read waits for another process's write", (long)v, (long)dt);
+    }
+    waitpid(c, &st, 0);
+    /* A periodic timer, waited for in poll: the first expiry after 40 ms. */
+    memset(&its, 0, sizeof(its));
+    its.it_value.tv_nsec = 40000000;
+    its.it_interval.tv_nsec = 20000000;
+    p.fd = tfd; p.events = POLLIN; p.revents = 0;
+    t0 = now_ms();
+    n = timerfd_settime(tfd, 0, &its, 0) == 0 ? poll(&p, 1, 1000) : -1;
+    dt = now_ms() - t0;
+    if (n != 1 || dt < 35 || dt > 500) {
+        ok = fail("poll waits for a timerfd's first expiry", n, (long)dt);
+    }
+    usleep(100000);
+    if (read(tfd, &v, 8) != 8 || v < 3 || v > 12) {
+        ok = fail("a periodic timerfd counts every period since", (long)v, 0);
+    }
+    /* A signal from another process, blocked, read off a signalfd that a
+     * blocking read was already waiting on. */
+    sigemptyset(&m);
+    sigaddset(&m, SIGUSR2);
+    sigprocmask(SIG_BLOCK, &m, 0);
+    sfd = signalfd(-1, &m, SFD_CLOEXEC);
+    c = fork();
+    if (c == 0) {
+        usleep(30000);
+        _exit(kill(getppid(), SIGUSR2) == 0 ? 0 : 1);
+    }
+    memset(rec, 0, sizeof(rec));
+    n = sfd < 0 ? -1 : (int)read(sfd, rec, sizeof(rec));
+    if (n != (int)sizeof(rec[0]) || rec[0].ssi_signo != SIGUSR2 || rec[0].ssi_pid != (uint32_t)c ||
+        rec[0].ssi_code != SI_USER) {
+        ok = fail("a signalfd read waits for a signal another process sends", (long)rec[0].ssi_signo,
+                  (long)rec[0].ssi_pid);
+    }
+    waitpid(c, &st, 0);
+    /* And the same through poll: readable once the other process has sent it. */
+    c = fork();
+    if (c == 0) {
+        usleep(30000);
+        _exit(kill(getppid(), SIGUSR2) == 0 ? 0 : 1);
+    }
+    p.fd = sfd; p.events = POLLIN; p.revents = 0;
+    n = poll(&p, 1, 2000);
+    if (n != 1 || p.revents != POLLIN || read(sfd, rec, sizeof(rec)) != (ssize_t)sizeof(rec[0])) {
+        ok = fail("poll on a signalfd wakes for a signal another process sends", n, p.revents);
+    }
+    waitpid(c, &st, 0);
+    /* Taken, not delivered: nothing is pending now. */
+    sigpending(&m);
+    if (sigismember(&m, SIGUSR2)) {
+        ok = fail("a signal read from a signalfd is no longer pending", 1, 0);
+    }
+    close(efd);
+    close(tfd);
+    close(sfd);
+    return ok;
+}
+
 int main(void) {
     int ok = 1;
 
-    printf("EVENTS_PHASE: step 1\n");
+    printf("EVENTS_PHASE: steps 1 to 4\n");
     fflush(stdout);
     ok &= socket_checks();
     ok &= select_checks();
     ok &= mask_checks();
+    ok &= event_fd_checks();
     if (ok) {
-        printf("EVENTS_OK: poll, ppoll, select and pselect6; sockets say what they can do\n");
+        printf("EVENTS_OK: poll, ppoll, select and pselect6; sockets say what they can do;"
+               " eventfd, timerfd and signalfd wait and wake\n");
     }
     fflush(stdout);
     return ok ? 0 : 1;

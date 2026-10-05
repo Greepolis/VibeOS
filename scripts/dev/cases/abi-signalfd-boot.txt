@@ -1,0 +1,16 @@
+# Event descriptors at boot (docs/abi/ L4 steps 2 to 4). Gate: EVENTS.ELF
+# (tests/linux/musl_events.c) prints EVENTS_OK only if every check held, and the
+# gate asserts it (events_l4_failed).
+#
+#  1. a signalfd is never readable: poll on it waits out its timeout although
+#     another process has sent a signal in its mask. Expect events_l4_failed:
+#     "poll on a signalfd wakes for a signal another process sends".
+#
+# Target source: kernel/abi/linux/events.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/events.c scripts/dev/cases/abi-signalfd-boot.txt
+
+### a signalfd is never readable
+--- old
+    return (me >= 0 && (ks_id(me)->sig_pending & f->sig_mask) != 0u) ? VIBEOS_READY_IN : 0u;
++++ new
+    return 0u;
