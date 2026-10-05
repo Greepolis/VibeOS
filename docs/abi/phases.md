@@ -1981,6 +1981,47 @@ events, each a file type with a `ready` and a pipe's way of waiting, so `poll`,
   Unix sockets (L5); epoll_wait05 `listen` on an unbound socket, epoll_wait06
   `F_SETPIPE_SZ`: both open, neither epoll's. Six boots, all clean.
 
+**Step 6 (2026-10-05): done.** `inotify_init`, `inotify_init1`,
+`inotify_add_watch`, `inotify_rm_watch` (`kernel/abi/linux/inotify.c`).
+
+- **The file layer says what happened, once** (`vibeos_fs_notify`,
+  `kernel/fs/vfs.c`): every operation on a name - create, mkdir, symlink,
+  link, unlink, rmdir, rename, setattr - tells one registered listener what it
+  did, to which node, at which path, and a rename's two halves share a cookie;
+  the regular-file type tells open, read, write, truncate and close
+  (`regular.c`). The numbering is the file layer's (`VIBEOS_FSN_*`), equal to
+  Linux's where both have the event, and a personality maps it. Nothing is
+  looked up for anybody while no instance exists.
+- **A watch names a node** - a mount and the filesystem's identity - so on tmpfs
+  it follows a rename, and on FAT, whose identity is where an entry sits, it
+  does not: FAT's gap, not inotify's. The node's own watch hears its events
+  unnamed, its directory's hears them named; a link count is the node's alone,
+  and a directory's DELETE_SELF and MOVE_SELF carry no IN_ISDIR, as Linux
+  reports them. A queue of 31 events and then one IN_Q_OVERFLOW, merged when
+  identical and consecutive; IN_ONESHOT, IN_MASK_ADD, IN_MASK_CREATE,
+  IN_ONLYDIR, IN_DONT_FOLLOW; FIONREAD; and `/proc/sys/fs/inotify/max_*` say
+  the limits, which here are the machine's (8 instances, 128 watches).
+- **At boot** EVENTS.ELF watches a directory in `/tmp`, polls the instance
+  until a child makes a file there, reads the record, and renames it for the
+  MOVED_FROM/MOVED_TO pair with one cookie.
+- **Sabotage**: `abi-inotify.txt` (10), `fs-notify.txt` (4),
+  `abi-files-notify.txt` (3) and `abi-paths-moved.txt` against the host tests,
+  `abi-inotify-boot.txt` against the boot; all red. "The node hears its
+  directory's events" went NOT RED first: the file's watch asked for nothing
+  the directory hears. It asks for the MOVED_* events too now, and is red.
+- **What the step's LTP run found**, of which one defect is not inotify's at
+  all. inotify02 renames its own working directory and goes on with relative
+  names: a process stands in a *path* here, so every name after the rename was
+  ENOENT, and LTP's own cleanup failed the same way. A directory renamed now
+  takes the working directories, roots and open descriptions inside it along
+  (`linux_paths_moved`, `vibeos_file_paths_moved`). inotify04 asked for the
+  link count's IN_ATTRIB without the directory hearing it, and a directory's
+  DELETE_SELF bare; inotify05 and 06 for the `/proc` limits. All four are
+  fixed with host tests and run again in step 7. inotify03, 07 and 08 need a
+  loop device; inotify09 is a fuzzy-sync race (LTP's harness asks
+  `sched_getaffinity`, L6) and outlasts a boot, so it is in
+  `tests/corpus/ltp-hangs.txt` beside timerfd_settime02. Six boots, all clean.
+
 ### L5. Sockets (11, plus `readv`/`writev` on sockets)
 
 The rest of the BSD API (`sendmsg`/`recvmsg`, `shutdown`, `getsockname`,
