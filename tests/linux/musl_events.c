@@ -10,7 +10,9 @@
  * poll on its socket, never waited.
  *
  * Steps 2 to 4: eventfd, timerfd and signalfd, each woken by another process or
- * by the clock. */
+ * by the clock.
+ *
+ * Step 5: epoll, woken by another process, edge- and level-triggered. */
 
 #define _GNU_SOURCE
 #include <errno.h>
@@ -20,6 +22,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/select.h>
 #include <sys/signalfd.h>
@@ -257,18 +260,68 @@ static int event_fd_checks(void) {
     return ok;
 }
 
+/* Step 5: epoll, woken by another process, edge-triggered against level, and
+ * an epoll inside poll. */
+static int epoll_checks(void) {
+    struct epoll_event ev, out[4];
+    struct pollfd p;
+    int pf[2], ok = 1, n, st = 0;
+    int ep = epoll_create1(EPOLL_CLOEXEC);
+    char b[8];
+    double t0, dt;
+    pid_t c;
+
+    if (ep < 0 || pipe(pf) != 0) {
+        return fail("an epoll and a pipe", ep, errno);
+    }
+    ev.events = EPOLLIN | EPOLLET;
+    ev.data.u64 = 0x1234;
+    if (epoll_ctl(ep, EPOLL_CTL_ADD, pf[0], &ev) != 0) {
+        return fail("epoll_ctl ADD", errno, 0);
+    }
+    c = fork();
+    if (c == 0) {
+        usleep(30000);
+        _exit(write(pf[1], "ab", 2) == 2 ? 0 : 1);
+    }
+    t0 = now_ms();
+    n = epoll_wait(ep, out, 4, 2000);
+    dt = now_ms() - t0;
+    if (n != 1 || out[0].data.u64 != 0x1234 || !(out[0].events & EPOLLIN) || dt < 20) {
+        ok = fail("epoll_wait wakes for another process's write", n, (long)dt);
+    }
+    waitpid(c, &st, 0);
+    if (epoll_wait(ep, out, 4, 0) != 0) {
+        ok = fail("edge-triggered: not again while nothing changes", 1, 0);
+    }
+    ev.events = EPOLLIN;
+    epoll_ctl(ep, EPOLL_CTL_MOD, pf[0], &ev);
+    p.fd = ep; p.events = POLLIN; p.revents = 0;
+    if (epoll_wait(ep, out, 4, 0) != 1 || epoll_wait(ep, out, 4, 0) != 1 || poll(&p, 1, 0) != 1) {
+        ok = fail("level-triggered: every look, and poll sees the epoll readable", p.revents, 0);
+    }
+    if (read(pf[0], b, sizeof(b)) != 2 || epoll_wait(ep, out, 4, 0) != 0 || poll(&p, 1, 0) != 0) {
+        ok = fail("emptied: neither says so", 0, 0);
+    }
+    close(pf[0]);
+    close(pf[1]);
+    close(ep);
+    return ok;
+}
+
 int main(void) {
     int ok = 1;
 
-    printf("EVENTS_PHASE: steps 1 to 4\n");
+    printf("EVENTS_PHASE: steps 1 to 5\n");
     fflush(stdout);
     ok &= socket_checks();
     ok &= select_checks();
     ok &= mask_checks();
     ok &= event_fd_checks();
+    ok &= epoll_checks();
     if (ok) {
         printf("EVENTS_OK: poll, ppoll, select and pselect6; sockets say what they can do;"
-               " eventfd, timerfd and signalfd wait and wake\n");
+               " eventfd, timerfd and signalfd wait and wake; epoll\n");
     }
     fflush(stdout);
     return ok ? 0 : 1;
