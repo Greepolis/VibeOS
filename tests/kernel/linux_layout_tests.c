@@ -52,6 +52,7 @@ int test_linux_layout(void) {
 #include <asm/prctl.h>
 #include <linux/time_types.h>
 #include <linux/time.h>
+#include <linux/timex.h>
 #include <linux/utsname.h>
 #include <linux/sysinfo.h>
 #include <linux/in.h>
@@ -800,6 +801,34 @@ int test_linux_layout(void) {
     CONST(LINUX_EPOLLWAKEUP, EPOLLWAKEUP);
     CONST(LINUX_EPOLLONESHOT, EPOLLONESHOT);
     CONST(LINUX_EPOLLET, EPOLLET);
+    SIZE(linux_timex_t, struct timex);
+    FIELD(linux_timex_t, struct timex, modes);
+    FIELD(linux_timex_t, struct timex, offset);
+    FIELD(linux_timex_t, struct timex, freq);
+    FIELD(linux_timex_t, struct timex, maxerror);
+    FIELD(linux_timex_t, struct timex, esterror);
+    FIELD(linux_timex_t, struct timex, status);
+    FIELD(linux_timex_t, struct timex, constant);
+    FIELD(linux_timex_t, struct timex, precision);
+    FIELD(linux_timex_t, struct timex, tolerance);
+    FIELD(linux_timex_t, struct timex, time);
+    FIELD(linux_timex_t, struct timex, tick);
+    FIELD(linux_timex_t, struct timex, ppsfreq);
+    FIELD(linux_timex_t, struct timex, jitter);
+    FIELD(linux_timex_t, struct timex, shift);
+    FIELD(linux_timex_t, struct timex, stabil);
+    FIELD(linux_timex_t, struct timex, jitcnt);
+    FIELD(linux_timex_t, struct timex, calcnt);
+    FIELD(linux_timex_t, struct timex, errcnt);
+    FIELD(linux_timex_t, struct timex, stbcnt);
+    FIELD(linux_timex_t, struct timex, tai);
+    PAD(linux_timex_t, pad0, struct timex, offset);
+    PAD(linux_timex_t, pad1, struct timex, constant);
+    PAD(linux_timex_t, pad2, struct timex, stabil);
+    TAIL(linux_timex_t, struct timex, pad3);
+    CONST(LINUX_ADJ_OFFSET_SS_READ, ADJ_OFFSET_SS_READ);
+    CONST(LINUX_STA_UNSYNC, STA_UNSYNC);
+    CONST(LINUX_TIME_ERROR, TIME_ERROR);
     SIZE(linux_epoll_event_t, struct epoll_event);
     FIELD(linux_epoll_event_t, struct epoll_event, events);
     FIELD(linux_epoll_event_t, struct epoll_event, data);

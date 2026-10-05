@@ -1,0 +1,46 @@
+# The clock is read, never set (kernel/abi/linux/timer.c): adjtimex,
+# clock_adjtime, settimeofday and restart_syscall, closed after L2 where the
+# registry still named them L2's. Proved by the decided() rows of
+# tests/kernel/linux_abi_tests.c.
+#
+#  1. adjtimex accepts a change. Expect "and refuses to set, as clock_settime
+#     does".
+#  2. adjtimex says the clock is synchronised. Expect "adjtimex reads:
+#     unsynchronised, TIME_ERROR, a 100 Hz tick".
+#  3. settimeofday takes any microsecond count. Expect "settimeofday: a
+#     microsecond count of a second is EINVAL".
+#  4. restart_syscall pretends to have restarted. Expect "restart_syscall with
+#     nothing to restart is EINTR, as Linux's".
+#
+# Target source: kernel/abi/linux/timer.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/timer.c scripts/dev/cases/abi-clock-discipline.txt
+
+### adjtimex accepts a change
+--- old
+    if (tx.modes != 0u && tx.modes != LINUX_ADJ_OFFSET_SS_READ) {
++++ new
+    if (0) {
+
+### adjtimex says the clock is synchronised
+--- old
+    tx->status = LINUX_STA_UNSYNC;
++++ new
+    tx->status = 0;
+
+### settimeofday takes any microsecond count
+--- old
+        if (tv.tv_sec < 0 || tv.tv_usec < 0 || tv.tv_usec >= 1000000) {
++++ new
+        if (tv.tv_sec < 0 || tv.tv_usec < 0) {
+
+### restart_syscall pretends to have restarted
+--- old
+    return -VIBEOS_EINTR;
+}
+
+/* ---- the syscalls this file implements
++++ new
+    return 0;
+}
+
+/* ---- the syscalls this file implements

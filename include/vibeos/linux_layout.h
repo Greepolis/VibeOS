@@ -195,6 +195,39 @@ typedef struct {
     int64_t tv_usec;
 } linux_timeval_t;
 
+/* struct timex (linux/timex.h): adjtimex's and clock_adjtime's - the clock's
+ * discipline, as NTP sets it. The padding is Linux's unnamed alignment and its
+ * eleven reserved ints. */
+typedef struct {
+    uint32_t modes;
+    int32_t pad0;
+    int64_t offset;
+    int64_t freq;
+    int64_t maxerror;
+    int64_t esterror;
+    int32_t status;
+    int32_t pad1;
+    int64_t constant;
+    int64_t precision;
+    int64_t tolerance;
+    linux_timeval_t time;
+    int64_t tick;
+    int64_t ppsfreq;
+    int64_t jitter;
+    int32_t shift;
+    int32_t pad2;
+    int64_t stabil;
+    int64_t jitcnt;
+    int64_t calcnt;
+    int64_t errcnt;
+    int64_t stbcnt;
+    int32_t tai;
+    int32_t pad3[11];
+} linux_timex_t;
+#define LINUX_ADJ_OFFSET_SS_READ 0xa001u
+#define LINUX_STA_UNSYNC         0x0040
+#define LINUX_TIME_ERROR         5
+
 /* struct flock (asm-generic/fcntl.h): fcntl's record locks. */
 typedef struct {
     int16_t l_type;

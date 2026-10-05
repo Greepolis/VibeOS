@@ -4835,6 +4835,31 @@ int test_linux_gaps(void) {
             "PER_LINUX32 changes the machine uname reports");
     }
 
+    /* The clock is read, never set (R, as clock_settime): adjtimex and
+     * clock_adjtime hand back its state and refuse a change; settimeofday
+     * judges what it is given and refuses the setting. */
+    {
+        uint64_t tx = kf_ualloc(sizeof(linux_timex_t)), tv = kf_ualloc(16);
+        linux_timex_t *t = (linux_timex_t *)kf_uptr(tx);
+        int64_t *v = (int64_t *)kf_uptr(tv);
+
+        memset(t, 0, sizeof(*t));
+        decided(159, SYS1(159, tx) == LINUX_TIME_ERROR && (t->status & LINUX_STA_UNSYNC) && t->tick == 10000,
+                "adjtimex reads: unsynchronised, TIME_ERROR, a 100 Hz tick");
+        t->modes = 0x0001u;   /* ADJ_OFFSET */
+        decided(159, SYS1(159, tx) == -VIBEOS_EPERM, "and refuses to set, as clock_settime does");
+        t->modes = 0;
+        decided(305, SYS2(305, 0, tx) == LINUX_TIME_ERROR && SYS2(305, 1, tx) == -VIBEOS_EOPNOTSUPP &&
+                         SYS2(305, 99, tx) == -VIBEOS_EINVAL,
+                "clock_adjtime: the realtime clock is adjtimex's, another clock cannot be adjusted, none is EINVAL");
+        v[0] = 0; v[1] = 1000000;
+        decided(164, SYS2(164, tv, 0) == -VIBEOS_EINVAL, "settimeofday: a microsecond count of a second is EINVAL");
+        v[1] = 0;
+        decided(164, SYS2(164, tv, 0) == -VIBEOS_EPERM && SYS2(164, 0, 0) == 0,
+                "a time to set is refused; nothing to set is nothing refused, for root");
+        expect(SYS0(219) == -VIBEOS_EINTR, "restart_syscall with nothing to restart is EINTR, as Linux's");
+    }
+
     /* rseq (334), R: ENOSYS by decision - the library takes its fallback. */
     fresh(74);
     decided(334, sys(334, kf_ualloc(32), 32, 0, 0x53053053u, 0, 0, 0) == -VIBEOS_ENOSYS,

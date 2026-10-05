@@ -1400,7 +1400,15 @@ its oracle without them.)
   kill10 no longer takes the rest of its boot. The three it found in the calls
   themselves are fixed above, and their calls' ten tests run again after it
   passed ten of ten. What is left: setting the clock (refused, and five tests
-  set it), `adjtimex`, `unshare`, `select`; stopped and continued children
+  set it), `adjtimex`, `unshare`, `select`; (2026-10-05, after the close: the
+  registry still named four calls L2's - `adjtimex`, `clock_adjtime`,
+  `settimeofday`, `restart_syscall` - so "closed" was true of the plan's seven
+  steps and not of the registry. They are served now: the first three read the
+  clock's state or judge their arguments and refuse a setting, EPERM, as
+  `clock_settime` is refused - partial by decision, phase R - and
+  `restart_syscall` is Linux's EINTR, since no call here leaves a restart
+  block. `abi-clock-discipline.txt`, four cases, all red. L2 has no row
+  left.) stopped and continued children
   reported by wait (waitid07 and 08 wait out their timeout); `times()` reports
   no system time; the wall clock reads 1970 at boot, so an absolute time far
   enough in the past is negative and refused (timer_settime03); a C library's

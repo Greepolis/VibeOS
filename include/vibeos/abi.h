@@ -194,7 +194,7 @@
     X(TIMER_OVERRUN,   "timer_overrun",   VIBEOS_CHECK_NONE) \
     X(TIMER_DELETE,    "timer_delete",    VIBEOS_CHECK_NONE) \
     X(CLOCK_GETRES,    "clock_getres",    VIBEOS_CHECK_USER_MEMORY) \
-    X(GETTIMEOFDAY,    "gettimeofday",    VIBEOS_CHECK_USER_MEMORY) \
+    X(GETTIMEOFDAY,    "gettimeofday",    VIBEOS_CHECK_USER_MEMORY)     X(SETTIMEOFDAY,    "settimeofday",    VIBEOS_CHECK_USER_MEMORY)     X(ADJTIMEX,        "adjtimex",        VIBEOS_CHECK_USER_MEMORY)     X(RESTART,         "restart_syscall", VIBEOS_CHECK_NONE) \
     X(TIMES,           "times",           VIBEOS_CHECK_USER_MEMORY) \
     X(UNAME,           "uname",           VIBEOS_CHECK_USER_MEMORY) \
     X(SYSINFO,         "sysinfo",         VIBEOS_CHECK_USER_MEMORY) \

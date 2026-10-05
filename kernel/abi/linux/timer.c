@@ -9,7 +9,8 @@
  * so rather than pretending to nanoseconds. CPU time is what the scheduler's
  * accounting charged - by the tick, all of it as user time, and only for the
  * threads a process has now: a thread that has exited takes its time with it.
- * Setting the clock is refused (the registry's REFUSED, EPERM). */
+ * Setting the clock is refused (the registry's REFUSED, EPERM): clock_settime
+ * has no row, and adjtimex, clock_adjtime and settimeofday read and refuse. */
 
 #include "linux_internal.h"
 #include "vibeos/ptimer.h"
@@ -374,8 +375,99 @@ static long linux_sys_times(uint64_t buf_uptr) {
     return (long)linux_user_hz(ks_ticks());
 }
 
+/* ---- the clock's discipline: read, never set ----------------------------------- */
+
+/* adjtimex's answer for a clock nothing disciplines: no offset, no frequency
+ * correction, the largest error Linux reports (NTP_PHASE_LIMIT) and
+ * STA_UNSYNC, which makes the call's return TIME_ERROR - what a Linux machine
+ * with no NTP daemon says too. The time is the realtime clock's. */
+static void linux_timex_now(linux_timex_t *tx) {
+    uint32_t i;
+
+    for (i = 0; i < sizeof(*tx); i++) {
+        ((unsigned char *)tx)[i] = 0;
+    }
+    tx->maxerror = 16000000;
+    tx->esterror = 16000000;
+    tx->status = LINUX_STA_UNSYNC;
+    tx->constant = 2;
+    tx->precision = 1;
+    tx->tolerance = 32768000;   /* 500 ppm, scaled by 2^16: Linux's MAXFREQ_SCALED >> 16 */
+    linux_tv_of(ks_ticks(), &tx->time);
+    tx->tick = 1000000 / 100;   /* microseconds per USER_HZ tick */
+}
+
+/* adjtimex(tx), and clock_adjtime on the realtime clock: modes 0 - or
+ * ADJ_OFFSET_SS_READ, also a read - hand back the state; anything else sets,
+ * and setting the clock is refused here as clock_settime is (the registry's
+ * EPERM: the clock is the timer's uptime and there is nothing to set it
+ * from). */
+static long linux_sys_adjtimex(uint64_t tx_uptr) {
+    linux_timex_t tx;
+
+    if (vibeos_uaccess_copy(&tx, (const void *)(uintptr_t)tx_uptr, sizeof(tx)) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    if (tx.modes != 0u && tx.modes != LINUX_ADJ_OFFSET_SS_READ) {
+        return -VIBEOS_EPERM;
+    }
+    linux_timex_now(&tx);
+    if (vibeos_uaccess_copy((void *)(uintptr_t)tx_uptr, &tx, sizeof(tx)) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    return LINUX_TIME_ERROR;
+}
+
+/* clock_adjtime(clk, tx): the realtime clock is adjtimex's; a clock that
+ * exists and cannot be adjusted is EOPNOTSUPP, one that does not EINVAL. */
+static long linux_sys_clock_adjtime(uint64_t clk, uint64_t tx_uptr) {
+    if (VIBEOS_ARG_INT(clk) == LINUX_CLOCK_REALTIME) {
+        return linux_sys_adjtimex(tx_uptr);
+    }
+    return linux_clock_read(clk) >= 0 ? -VIBEOS_EOPNOTSUPP : -VIBEOS_EINVAL;
+}
+
+/* settimeofday(tv, tz): what it was given is read and judged as Linux judges
+ * it - EFAULT, then EINVAL for a time that is not one - and the setting is
+ * refused, as clock_settime's is. Nothing to set is nothing refused, for the
+ * superuser; anybody else may not ask (CAP_SYS_TIME). */
+static long linux_sys_settimeofday(uint64_t tv_uptr, uint64_t tz_uptr) {
+    linux_timeval_t tv;
+    linux_timezone_t tz;
+    vibeos_cred_t me;
+
+    if (tv_uptr != 0u) {
+        if (vibeos_uaccess_copy(&tv, (const void *)(uintptr_t)tv_uptr, sizeof(tv)) != 0) {
+            return -VIBEOS_EFAULT;
+        }
+        if (tv.tv_sec < 0 || tv.tv_usec < 0 || tv.tv_usec >= 1000000) {
+            return -VIBEOS_EINVAL;
+        }
+    }
+    if (tz_uptr != 0u && vibeos_uaccess_copy(&tz, (const void *)(uintptr_t)tz_uptr, sizeof(tz)) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    linux_cred(&me);
+    if (me.euid != 0u || tv_uptr != 0u || tz_uptr != 0u) {
+        return -VIBEOS_EPERM;
+    }
+    return 0;
+}
+
+/* restart_syscall(): Linux's way back into a call a signal cut short when the
+ * call left a restart block behind (nanosleep, futex, poll). Nothing here leaves
+ * one - a cut-short call is started again from its own arguments, or ends in
+ * EINTR - so this is Linux's answer when there is no block: EINTR. */
+static long linux_sys_restart_syscall(void) {
+    return -VIBEOS_EINTR;
+}
+
 /* ---- the syscalls this file implements ----------------------------------------- */
 #define LINUX_TIMER_SYSCALLS(X) \
+    X(159, adjtimex,         ADJTIMEX,      PTRS(OUT(0, sizeof(linux_timex_t))), linux_sys_adjtimex(ARG(0))) \
+    X(305, clock_adjtime,    ADJTIMEX,      PTRS(OUT(1, sizeof(linux_timex_t))), linux_sys_clock_adjtime(ARG(0), ARG(1))) \
+    X(164, settimeofday,     SETTIMEOFDAY,  PTRS(IN_OPT(0, sizeof(linux_timeval_t)), IN_OPT(1, sizeof(linux_timezone_t))), linux_sys_settimeofday(ARG(0), ARG(1))) \
+    X(219, restart_syscall,  RESTART,       NOPTR, linux_sys_restart_syscall()) \
     X(37,  alarm,            ALARM,         NOPTR, linux_sys_alarm(ARG(0))) \
     X(38,  setitimer,        ITIMER_SET,    PTRS(IN_OPT(1, sizeof(linux_itimerval_t)), OUT_OPT(2, sizeof(linux_itimerval_t))), linux_sys_setitimer(ARG(0), ARG(1), ARG(2))) \
     X(36,  getitimer,        ITIMER_GET,    PTRS(OUT(1, sizeof(linux_itimerval_t))), linux_sys_getitimer(ARG(0), ARG(1))) \
