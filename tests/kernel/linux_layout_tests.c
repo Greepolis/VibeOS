@@ -73,6 +73,9 @@ int test_linux_layout(void) {
 #include <asm/statfs.h>
 #include <asm/poll.h>
 #include <linux/posix_types.h>
+#include <linux/eventfd.h>
+#include <linux/timerfd.h>
+#include <linux/signalfd.h>
 #include <linux/xattr.h>
 #include <linux/limits.h>
 #include <string.h>
@@ -779,6 +782,38 @@ int test_linux_layout(void) {
     CONST(LINUX_GRND_RANDOM, GRND_RANDOM);
     CONST(LINUX_GRND_INSECURE, GRND_INSECURE);
     CONST(LINUX_RNDGETENTCNT, RNDGETENTCNT);
+    CONST(LINUX_EFD_SEMAPHORE, EFD_SEMAPHORE);
+    CONST(LINUX_EFD_NONBLOCK, EFD_NONBLOCK);
+    CONST(LINUX_EFD_CLOEXEC, EFD_CLOEXEC);
+    CONST(LINUX_TFD_TIMER_ABSTIME, TFD_TIMER_ABSTIME);
+    CONST(LINUX_TFD_TIMER_CANCEL_ON_SET, TFD_TIMER_CANCEL_ON_SET);
+    CONST(LINUX_TFD_NONBLOCK, TFD_NONBLOCK);
+    CONST(LINUX_TFD_CLOEXEC, TFD_CLOEXEC);
+    CONST(LINUX_SFD_NONBLOCK, SFD_NONBLOCK);
+    CONST(LINUX_SFD_CLOEXEC, SFD_CLOEXEC);
+    SIZE(linux_signalfd_siginfo_t, struct signalfd_siginfo);
+    FIELD(linux_signalfd_siginfo_t, struct signalfd_siginfo, ssi_signo);
+    FIELD(linux_signalfd_siginfo_t, struct signalfd_siginfo, ssi_errno);
+    FIELD(linux_signalfd_siginfo_t, struct signalfd_siginfo, ssi_code);
+    FIELD(linux_signalfd_siginfo_t, struct signalfd_siginfo, ssi_pid);
+    FIELD(linux_signalfd_siginfo_t, struct signalfd_siginfo, ssi_uid);
+    FIELD(linux_signalfd_siginfo_t, struct signalfd_siginfo, ssi_fd);
+    FIELD(linux_signalfd_siginfo_t, struct signalfd_siginfo, ssi_tid);
+    FIELD(linux_signalfd_siginfo_t, struct signalfd_siginfo, ssi_band);
+    FIELD(linux_signalfd_siginfo_t, struct signalfd_siginfo, ssi_overrun);
+    FIELD(linux_signalfd_siginfo_t, struct signalfd_siginfo, ssi_trapno);
+    FIELD(linux_signalfd_siginfo_t, struct signalfd_siginfo, ssi_status);
+    FIELD(linux_signalfd_siginfo_t, struct signalfd_siginfo, ssi_int);
+    FIELD(linux_signalfd_siginfo_t, struct signalfd_siginfo, ssi_ptr);
+    FIELD(linux_signalfd_siginfo_t, struct signalfd_siginfo, ssi_utime);
+    FIELD(linux_signalfd_siginfo_t, struct signalfd_siginfo, ssi_stime);
+    FIELD(linux_signalfd_siginfo_t, struct signalfd_siginfo, ssi_addr);
+    FIELD(linux_signalfd_siginfo_t, struct signalfd_siginfo, ssi_addr_lsb);
+    FIELD(linux_signalfd_siginfo_t, struct signalfd_siginfo, ssi_syscall);
+    FIELD(linux_signalfd_siginfo_t, struct signalfd_siginfo, ssi_call_addr);
+    FIELD(linux_signalfd_siginfo_t, struct signalfd_siginfo, ssi_arch);
+    FIELD2(linux_signalfd_siginfo_t, struct signalfd_siginfo, pad2, __pad2);
+    FIELD2(linux_signalfd_siginfo_t, struct signalfd_siginfo, pad, __pad);
     CONST(LINUX_WNOHANG, WNOHANG);
     CONST(LINUX_WUNTRACED, WUNTRACED);
     CONST(LINUX_WCONTINUED, WCONTINUED);

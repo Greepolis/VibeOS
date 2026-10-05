@@ -313,7 +313,11 @@ static long src_fd_name(const vibeos_file_t *f, char *buf, uint32_t cap) {
     } else if (f->ops == &vibeos_fops_console) {
         return src_copy(buf, cap, "/dev/console");
     } else {
-        return src_copy(buf, cap, f->ops == &vibeos_fops_pidfd ? "anon_inode:[pidfd]" : "anon_inode:[file]");
+        return src_copy(buf, cap, f->ops == &vibeos_fops_pidfd ? "anon_inode:[pidfd]"
+                                  : f->ops == &vibeos_fops_eventfd ? "anon_inode:[eventfd]"
+                                  : f->ops == &vibeos_fops_timerfd ? "anon_inode:[timerfd]"
+                                  : f->ops == &linux_fops_signalfd ? "anon_inode:[signalfd]"
+                                  : "anon_inode:[file]");
     }
     for (k = 0; kind[k]; k++) {
         tmp[n++] = kind[k];

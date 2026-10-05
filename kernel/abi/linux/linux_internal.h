@@ -57,6 +57,9 @@ uint64_t linux_cpu_slot(int slot);
  * hangup and the error whether asked or not (poll.c, docs/abi/ L4). */
 uint32_t linux_revents(vibeos_file_t *f, uint32_t events);
 
+/* A signalfd's type (events.c): its records are Linux's layout. */
+extern const vibeos_file_ops_t linux_fops_signalfd;
+
 /* The pool's entropy as Linux reports it, in bits, for RNDGETENTCNT and
  * /proc/sys/kernel/random/entropy_avail alike (procsrc.c). */
 uint32_t linux_entropy_avail(void);

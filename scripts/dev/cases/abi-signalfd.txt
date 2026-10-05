@@ -1,0 +1,77 @@
+# Signals read as records, and the calls that make event descriptors
+# (kernel/abi/linux/events.c, docs/abi/ L4 steps 2 to 4), proved by t_event_fds
+# in tests/kernel/linux_abi_tests.c.
+#
+#  1. a signalfd reads one record whatever the buffer holds. Expect "two
+#     pending are two records, lowest first, with who sent them - taken, not
+#     delivered".
+#  2. a record does not say who sent it. Expect the same.
+#  3. a second signalfd call makes a new descriptor instead of changing the
+#     mask. Expect "a second call on it changes its mask".
+#  4. a signalfd is readable whatever is pending. Expect "signalfd: nothing
+#     pending, nothing to read".
+#  5. a relative timer counts the tick in progress, and expires early. Expect
+#     "a blocking read waits for the expiry, and never less than asked".
+#  6. a semaphore flag is dropped on the way in. Expect "a semaphore gives one
+#     at a time".
+#  7. timerfd_gettime judges its pointer before its descriptor. Expect "gettime
+#     looks at the descriptor before the pointer (LTP's timerfd_gettime01)".
+#
+# Target source: kernel/abi/linux/events.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/events.c scripts/dev/cases/abi-signalfd.txt
+
+### a signalfd reads one record whatever the buffer holds
+--- old
+            n++;
+        }
++++ new
+            n++;
+            break;
+        }
+
+### a record does not say who sent it
+--- old
+    o->ssi_pid = (uint32_t)li.pid;
++++ new
+    o->ssi_pid = 0;
+
+### a second call makes a new descriptor
+--- old
+    if (VIBEOS_ARG_INT(fd) == -1) {
+        f = vibeos_file_alloc(&linux_fops_signalfd
++++ new
+    if (VIBEOS_ARG_INT(fd) == -1 || 1) {
+        f = vibeos_file_alloc(&linux_fops_signalfd
+
+### a signalfd is readable whatever is pending
+--- old
+    return (me >= 0 && (ks_id(me)->sig_pending & f->sig_mask) != 0u) ? VIBEOS_READY_IN : 0u;
++++ new
+    return me >= 0 ? VIBEOS_READY_IN : 0u;
+
+### a relative timer counts the tick in progress
+--- old
+        next = (flags & LINUX_TFD_TIMER_ABSTIME) ? (uint64_t)v : ks_ticks() + (uint64_t)v + 1u;
++++ new
+        next = (flags & LINUX_TFD_TIMER_ABSTIME) ? (uint64_t)v : ks_ticks() + (uint64_t)v - 1u;
+
+### a semaphore flag is dropped on the way in
+--- old
+                            (flags & LINUX_EFD_SEMAPHORE) ? VIBEOS_EVENT_SEMAPHORE : 0u,
++++ new
+                            0u,
+
+### gettime judges the pointer before the descriptor
+--- old
+    if ((r = linux_timerfd_get(fd, &f)) != 0) {
+        return r;
+    }
+    vibeos_timerfd_get(f, &left, &interval);
++++ new
+    if (!linux_user_ok(cur_uptr, sizeof(linux_itimerspec_t), 1)) {
+        return -VIBEOS_EFAULT;
+    }
+    if ((r = linux_timerfd_get(fd, &f)) != 0) {
+        return r;
+    }
+    vibeos_timerfd_get(f, &left, &interval);

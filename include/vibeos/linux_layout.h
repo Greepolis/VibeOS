@@ -298,6 +298,45 @@ typedef struct {
 #define LINUX_GRND_NONBLOCK 0x0001u
 #define LINUX_GRND_RANDOM   0x0002u
 #define LINUX_GRND_INSECURE 0x0004u
+/* eventfd2's, timerfd's and signalfd4's flags (linux/eventfd.h, timerfd.h,
+ * signalfd.h): their own and O_NONBLOCK and O_CLOEXEC under other names. */
+#define LINUX_EFD_SEMAPHORE        0x00000001u
+#define LINUX_EFD_NONBLOCK         0x00000800u
+#define LINUX_EFD_CLOEXEC          0x00080000u
+#define LINUX_TFD_TIMER_ABSTIME    0x00000001u
+#define LINUX_TFD_TIMER_CANCEL_ON_SET 0x00000002u
+#define LINUX_TFD_NONBLOCK         0x00000800u
+#define LINUX_TFD_CLOEXEC          0x00080000u
+#define LINUX_SFD_NONBLOCK         0x00000800u
+#define LINUX_SFD_CLOEXEC          0x00080000u
+
+/* struct signalfd_siginfo (linux/signalfd.h): what a read of a signalfd
+ * returns, one 128-byte record per signal taken. */
+typedef struct {
+    uint32_t ssi_signo;
+    int32_t ssi_errno;
+    int32_t ssi_code;
+    uint32_t ssi_pid;
+    uint32_t ssi_uid;
+    int32_t ssi_fd;
+    uint32_t ssi_tid;
+    uint32_t ssi_band;
+    uint32_t ssi_overrun;
+    uint32_t ssi_trapno;
+    int32_t ssi_status;
+    int32_t ssi_int;
+    uint64_t ssi_ptr;
+    uint64_t ssi_utime;
+    uint64_t ssi_stime;
+    uint64_t ssi_addr;
+    uint16_t ssi_addr_lsb;
+    uint16_t pad2;
+    int32_t ssi_syscall;
+    uint64_t ssi_call_addr;
+    uint32_t ssi_arch;
+    uint8_t pad[28];
+} linux_signalfd_siginfo_t;
+
 /* The random devices' ioctl that says how much entropy the pool holds
  * (linux/random.h): _IOR('R', 0x00, int). */
 #define LINUX_RNDGETENTCNT  0x80045200u

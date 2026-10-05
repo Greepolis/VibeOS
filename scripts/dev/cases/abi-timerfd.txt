@@ -1,0 +1,38 @@
+# A timer as a file (kernel/abi/files/timerfd.c, docs/abi/ L4 step 3), proved
+# by t_event_fds in tests/kernel/linux_abi_tests.c.
+#
+#  1. a periodic timer counts one expiry however many periods went by. Expect
+#     "after 100 ms it has expired once and every 10 ms since, and a read takes
+#     the count".
+#  2. a read leaves the count where it was. Expect "which it then has none of".
+#  3. a timer set again keeps the old setting's period. Expect "a zero value
+#     disarms, and the old setting is handed back".
+#  4. a timer is readable before it expires. Expect "armed for 30 ms: not yet".
+#
+# Target source: kernel/abi/files/timerfd.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/files/timerfd.c scripts/dev/cases/abi-timerfd.txt
+
+### a periodic timer counts one expiry however many went by
+--- old
+    n = 1u + (f->tfd_interval != 0u ? (now - f->tfd_next) / f->tfd_interval : 0u);
++++ new
+    n = 1u;
+
+### a read leaves the count where it was
+--- old
+        got = f->tfd_count;
+        f->tfd_count = 0;
++++ new
+        got = f->tfd_count;
+
+### a timer set again keeps its period
+--- old
+    f->tfd_interval = next != 0u ? interval : 0u;
++++ new
+    f->tfd_interval = next != 0u ? interval : f->tfd_interval;
+
+### a timer is readable before it expires
+--- old
+    r = f->tfd_count != 0u ? VIBEOS_READY_IN : 0u;
++++ new
+    r = f->tfd_next != 0u || f->tfd_count != 0u ? VIBEOS_READY_IN : 0u;

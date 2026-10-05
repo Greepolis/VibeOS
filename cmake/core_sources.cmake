@@ -139,6 +139,8 @@ set(VIBEOS_ABI_FILES_SOURCES
     kernel/abi/files/console.c
     kernel/abi/files/pipefile.c
     kernel/abi/files/pidfd.c
+    kernel/abi/files/eventfd.c
+    kernel/abi/files/timerfd.c
     kernel/abi/files/regular.c
     kernel/abi/files/socket.c
 )
@@ -163,6 +165,7 @@ set(VIBEOS_LINUX_ABI_SOURCES
     kernel/abi/linux/limits.c
     kernel/abi/linux/procsrc.c
     kernel/abi/linux/poll.c
+    kernel/abi/linux/events.c
     ${VIBEOS_ABI_FILES_SOURCES}
 )
 

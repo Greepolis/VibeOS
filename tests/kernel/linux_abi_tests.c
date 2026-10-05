@@ -2428,6 +2428,116 @@ static void t_event_loops(void) {
     expect(kf_lock_imbalance() == 0, "the event loops released every lock they took");
 }
 
+/* ---- L4 steps 2 to 4: eventfd, timerfd, signalfd ------------------------------------ */
+static void t_event_fds(void) {
+    uint64_t v8 = kf_ualloc(8), its = kf_ualloc(32), old = kf_ualloc(32), mask = kf_ualloc(8);
+    uint64_t pf = kf_ualloc(sizeof(linux_pollfd_t)), rec = kf_ualloc(256), ts = kf_ualloc(16);
+    uint64_t *v = (uint64_t *)kf_uptr(v8), *m = (uint64_t *)kf_uptr(mask);
+    int64_t *it = (int64_t *)kf_uptr(its), *ot = (int64_t *)kf_uptr(old), *t = (int64_t *)kf_uptr(ts);
+    linux_pollfd_t *p = (linux_pollfd_t *)kf_uptr(pf);
+    linux_signalfd_siginfo_t *r = (linux_signalfd_siginfo_t *)kf_uptr(rec);
+    kf_outcome_t how = KF_RETURNED;
+    long efd, sem, dup, tfd, tb, sfd;
+    uint64_t t0;
+    int me = fresh(83);
+
+    /* eventfd: a counter, read whole or one at a time. */
+    efd = SYS2(290, 3, 0);
+    expect(efd >= 0 && SYS3(0, (uint64_t)efd, v8, 8) == 8 && *v == 3, "eventfd: a read takes the whole count");
+    (void)sys(0, (uint64_t)efd, v8, 8, 0, 0, 0, &how);
+    expect(how == KF_BLOCKED, "and waits at zero");
+    sem = SYS2(290, 0, 0x800 | 1 /* EFD_NONBLOCK|EFD_SEMAPHORE */);
+    *v = 2;
+    expect(sem >= 0 && SYS3(0, (uint64_t)sem, v8, 8) == -VIBEOS_EAGAIN && SYS3(1, (uint64_t)sem, v8, 8) == 8,
+           "non-blocking at zero is EAGAIN; a write adds");
+    expect(SYS3(0, (uint64_t)sem, v8, 8) == 8 && *v == 1 && SYS3(0, (uint64_t)sem, v8, 8) == 8 && *v == 1 &&
+           SYS3(0, (uint64_t)sem, v8, 8) == -VIBEOS_EAGAIN, "a semaphore gives one at a time");
+    *v = ~0ull;
+    expect(SYS3(1, (uint64_t)sem, v8, 8) == -VIBEOS_EINVAL && SYS3(0, (uint64_t)sem, v8, 4) == -VIBEOS_EINVAL &&
+           SYS2(290, 0, 4) == -VIBEOS_EINVAL, "the value past the largest count, a short buffer, an unknown flag: EINVAL");
+    *v = 0xfffffffffffffffeull;
+    expect(SYS3(1, (uint64_t)sem, v8, 8) == 8, "the largest count fits");
+    *v = 1;
+    p->fd = (int32_t)sem; p->events = 1 | 4; p->revents = 0;
+    expect(SYS3(1, (uint64_t)sem, v8, 8) == -VIBEOS_EAGAIN && SYS3(7, pf, 1, 0) == 1 && p->revents == 1,
+           "one more does not: no room, readable and not writable");
+    dup = SYS1(32, (uint64_t)efd);
+    *v = 5;
+    expect(SYS3(1, (uint64_t)efd, v8, 8) == 8 && SYS3(0, (uint64_t)dup, v8, 8) == 8 && *v == 5,
+           "a duplicate shares the count: it is the description's");
+    expect(SYS2(290, 0, 0x80000 /* EFD_CLOEXEC */) >= 0, "EFD_CLOEXEC");
+
+    /* timerfd: expiries counted by whoever looks. */
+    tfd = SYS2(283, 1 /* MONOTONIC */, 0x800 /* TFD_NONBLOCK */);
+    expect(tfd >= 0 && SYS3(0, (uint64_t)tfd, v8, 8) == -VIBEOS_EAGAIN, "timerfd: disarmed, nothing to read");
+    memset(kf_uptr(its), 0, 32);
+    it[2] = 0; it[3] = 30000000;   /* it_value: 30 ms */
+    it[0] = 0; it[1] = 10000000;   /* it_interval: 10 ms */
+    p->fd = (int32_t)tfd; p->events = 1; p->revents = 0;
+    expect(SYS4(286, (uint64_t)tfd, 0, its, 0) == 0 && SYS3(7, pf, 1, 0) == 0,
+           "armed for 30 ms: not yet");
+    expect(SYS2(287, (uint64_t)tfd, old) == 0 && ot[0] == 0 && ot[1] == 10000000 && ot[2] == 0 &&
+           ot[3] > 0 && ot[3] <= 40000000, "gettime: the period, and what is left");
+    t[0] = 0; t[1] = 100000000;
+    (void)SYS2(35, ts, 0);   /* 100 ms go by */
+    expect(SYS3(7, pf, 1, 0) == 1 && SYS3(0, (uint64_t)tfd, v8, 8) == 8 && *v >= 5 && *v <= 9,
+           "after 100 ms it has expired once and every 10 ms since, and a read takes the count");
+    expect(SYS3(0, (uint64_t)tfd, v8, 8) == -VIBEOS_EAGAIN, "which it then has none of");
+    memset(kf_uptr(its), 0, 32);
+    expect(SYS4(286, (uint64_t)tfd, 0, its, old) == 0 && ot[1] == 10000000 &&
+           SYS2(287, (uint64_t)tfd, old) == 0 && ot[0] == 0 && ot[1] == 0 && ot[2] == 0 && ot[3] == 0,
+           "a zero value disarms, and the old setting is handed back");
+    it[2] = 0;
+    it[3] = 1;   /* a nanosecond after the clock started: long past, and not zero, which disarms */
+    expect(SYS4(286, (uint64_t)tfd, 1 /* TFD_TIMER_ABSTIME */, its, 0) == 0 && SYS3(0, (uint64_t)tfd, v8, 8) == 8 && *v == 1,
+           "an absolute time already past has expired once");
+    tb = SYS2(283, 1, 0);
+    memset(kf_uptr(its), 0, 32);
+    it[3] = 20000000;
+    t0 = ks_ticks();
+    expect(tb >= 0 && SYS4(286, (uint64_t)tb, 0, its, 0) == 0 && SYS3(0, (uint64_t)tb, v8, 8) == 8 && *v == 1 &&
+           ks_ticks() - t0 >= 2u * ks_hz() / 100u + 1u,
+           "a blocking read waits for the expiry, and never less than asked");
+    it[3] = 1000000000;
+    expect(SYS2(283, 99, 0) == -VIBEOS_EINVAL && SYS2(283, 2 /* PROCESS_CPUTIME */, 0) == -VIBEOS_EINVAL &&
+           SYS2(283, 1, 4) == -VIBEOS_EINVAL && SYS4(286, (uint64_t)tfd, 0, its, 0) == -VIBEOS_EINVAL &&
+           SYS4(286, (uint64_t)efd, 0, its, 0) == -VIBEOS_EINVAL && SYS2(287, 99, old) == -VIBEOS_EBADF,
+           "an unknown or CPU-time clock, an unknown flag, a bad time, a descriptor that is not a timer, none at all");
+    expect(SYS2(287, 99, 0x10) == -VIBEOS_EBADF && SYS2(287, (uint64_t)tfd, 0x10) == -VIBEOS_EFAULT,
+           "gettime looks at the descriptor before the pointer (LTP's timerfd_gettime01)");
+
+    /* signalfd: pending signals read as records. */
+    ks_id(me)->sig_blocked = (1ull << 10) | (1ull << 12);
+    *m = (1ull << 9) | (1ull << 11);   /* Linux's numbering: SIGUSR1, SIGUSR2 */
+    sfd = sys(289, (uint64_t)-1, mask, 8, 0x800 /* SFD_NONBLOCK */, 0, 0, 0);
+    p->fd = (int32_t)sfd; p->events = 1; p->revents = 0;
+    expect(sfd >= 0 && SYS3(0, (uint64_t)sfd, rec, 128) == -VIBEOS_EAGAIN && SYS3(7, pf, 1, 0) == 0,
+           "signalfd: nothing pending, nothing to read");
+    {
+        vibeos_siginfo_t why;
+
+        memset(&why, 0, sizeof(why));
+        why.from = VIBEOS_SIG_FROM_PROCESS;
+        why.pid = 77;
+        why.uid = 5;
+        (void)ks_signal_send(me, 12, &why);
+        (void)ks_signal_send(me, 10, &why);
+    }
+    expect(SYS3(7, pf, 1, 0) == 1 && SYS3(0, (uint64_t)sfd, rec, 256) == 256 && r[0].ssi_signo == 10 &&
+           r[0].ssi_pid == 77 && r[0].ssi_uid == 5 && r[0].ssi_code == 0 && r[1].ssi_signo == 12 &&
+           (ks_id(me)->sig_pending & ((1ull << 10) | (1ull << 12))) == 0,
+           "two pending are two records, lowest first, with who sent them - taken, not delivered");
+    expect(SYS3(0, (uint64_t)sfd, rec, 64) == -VIBEOS_EINVAL && sys(289, (uint64_t)-1, mask, 4, 0, 0, 0, 0) == -VIBEOS_EINVAL &&
+           sys(289, (uint64_t)efd, mask, 8, 0, 0, 0, 0) == -VIBEOS_EINVAL,
+           "a buffer shorter than a record, a mask of another size, a descriptor that is not a signalfd: EINVAL");
+    *m = 1ull << 9;
+    expect(sys(289, (uint64_t)sfd, mask, 8, 0, 0, 0, 0) == sfd, "a second call on it changes its mask");
+    (void)ks_signal_send(me, 12, 0);
+    expect(SYS3(0, (uint64_t)sfd, rec, 128) == -VIBEOS_EAGAIN, "and SIGUSR2 is not in it any more");
+    ks_id(me)->sig_pending = 0;
+    expect(kf_lock_imbalance() == 0, "the event descriptors released every lock they took");
+}
+
 /* clone3's argument rules (L2 step 6, from step 5's LTP run: clone302). */
 static void t_clone3_checks(void) {
     uint64_t a, big;
@@ -4241,6 +4351,7 @@ int test_linux_handlers(void) {
     t_processes();
     t_procdev();
     t_event_loops();
+    t_event_fds();
     t_futex_shared();
     t_clone3_checks();
     t_sleep();

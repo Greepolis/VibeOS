@@ -9,9 +9,9 @@ the registry, not this page; `check.sh` fails while the two differ.
 
 | State | Count | What the kernel answers |
 | --- | --- | --- |
-| done | 169 | through its row |
+| done | 176 | through its row |
 | partial | 30 | through its row, with the gap named |
-| missing | 90 | ENOSYS, and the boot gate fails naming the number |
+| missing | 83 | ENOSYS, and the boot gate fails naming the number |
 | deferred | 50 | ENOSYS, and the boot gate fails naming the number |
 | refused | 34 | its errno, counted as refused - expected, never a failure |
 
@@ -22,7 +22,7 @@ Without a row, by phase:
 | L1 - files and paths | 0 |
 | L2 - processes, credentials, time | 4 |
 | L3 - memory | 0 |
-| L4 - event loops | 17 |
+| L4 - event loops | 10 |
 | L5 - sockets | 11 |
 | L6 - threads and scheduling | 20 |
 | L7 - IPC | 21 |
@@ -318,15 +318,15 @@ calls, outside the Linux number space, are listed last.
 | 279 | `move_pages` | deferred | D | ENOSYS |  | NUMA: one node here |
 | 280 | `utimensat` | done | - | - | `names.c` |  |
 | 281 | `epoll_pwait` | missing | L4 | ENOSYS |  |  |
-| 282 | `signalfd` | missing | L4 | ENOSYS |  |  |
-| 283 | `timerfd_create` | missing | L4 | ENOSYS |  |  |
-| 284 | `eventfd` | missing | L4 | ENOSYS |  |  |
+| 282 | `signalfd` | done | - | - | `events.c` |  |
+| 283 | `timerfd_create` | done | - | - | `events.c` |  |
+| 284 | `eventfd` | done | - | - | `events.c` |  |
 | 285 | `fallocate` | partial | L1 | - | `fs.c` | the size is guaranteed, not the space; only mode 0 and KEEP_SIZE |
-| 286 | `timerfd_settime` | missing | L4 | ENOSYS |  |  |
-| 287 | `timerfd_gettime` | missing | L4 | ENOSYS |  |  |
+| 286 | `timerfd_settime` | done | - | - | `events.c` |  |
+| 287 | `timerfd_gettime` | done | - | - | `events.c` |  |
 | 288 | `accept4` | missing | L5 | ENOSYS |  | and AF_UNIX sockets |
-| 289 | `signalfd4` | missing | L4 | ENOSYS |  |  |
-| 290 | `eventfd2` | missing | L4 | ENOSYS |  |  |
+| 289 | `signalfd4` | done | - | - | `events.c` |  |
+| 290 | `eventfd2` | done | - | - | `events.c` |  |
 | 291 | `epoll_create1` | missing | L4 | ENOSYS |  |  |
 | 292 | `dup3` | done | - | - | `fs.c` |  |
 | 293 | `pipe2` | done | - | - | `fs.c` |  |

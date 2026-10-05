@@ -166,6 +166,18 @@ struct vibeos_file {
     /* Set at the first write through this description, which is when anything
      * cached from the file stops being true (vibeos_files_on_write_back). */
     int dirty;
+    /* The event types (docs/abi/ L4). An event counter (eventfd.c), changed
+     * only by compare-exchange; a timer (timerfd.c) in clock ticks of its
+     * clock - when it next expires (0 disarmed), its period, and how many
+     * expiries nobody has read; a signal mask (signalfd.c), the kernel's
+     * numbering. */
+    uint64_t event_count;
+    uint32_t event_flags;
+    int32_t tfd_clock;
+    uint64_t tfd_next;
+    uint64_t tfd_interval;
+    uint64_t tfd_count;
+    uint64_t sig_mask;
 };
 
 void vibeos_file_set_lock(void (*lock)(void), void (*unlock)(void));

@@ -33,6 +33,23 @@ extern const vibeos_file_ops_t vibeos_fops_socket;
 extern const vibeos_file_ops_t vibeos_fops_console;
 extern const vibeos_file_ops_t vibeos_fops_pidfd;
 extern const vibeos_file_ops_t vibeos_fops_chrdev;
+extern const vibeos_file_ops_t vibeos_fops_eventfd;
+extern const vibeos_file_ops_t vibeos_fops_timerfd;
+
+/* An event counter (docs/abi/ L4 step 2): `count` to start from, and with
+ * VIBEOS_EVENT_SEMAPHORE a read takes one at a time instead of all of it.
+ * NULL if the table is full. */
+#define VIBEOS_EVENT_SEMAPHORE 0x1u
+vibeos_file_t *vibeos_open_eventfd(uint64_t count, uint32_t event_flags, uint32_t flags);
+
+/* A timer (docs/abi/ L4 step 3), in clock ticks: `clock` is kept only to be
+ * reported. Set arms it to expire at tick `next` (0 disarms) and every
+ * `interval` after, clears the count of unread expiries, and hands back what
+ * was left and the period it had; get reads both. NULL if the table is full. */
+vibeos_file_t *vibeos_open_timerfd(int32_t clock, uint32_t flags);
+void vibeos_timerfd_set(vibeos_file_t *f, uint64_t next, uint64_t interval, uint64_t *old_left,
+                        uint64_t *old_interval);
+void vibeos_timerfd_get(vibeos_file_t *f, uint64_t *left, uint64_t *interval);
 
 /* What a character device node opens as, by its number (vibeos/devfs.h): the
  * console for a terminal, a description of its own for null, zero, full and
