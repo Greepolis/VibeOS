@@ -3053,6 +3053,13 @@ def main():
                 if not re.search(r"write\(ring3\): JOBS_OK: ", text):
                     problems.append("job_control_broken")
 
+            # docs/abi/ L4: the event loops, read off EVENTS.ELF's own line,
+            # which it prints only if every one of its checks held.
+            events_elf = os.path.join(efi_root, "EFI", "BOOT", "EVENTS.ELF")
+            if os.path.exists(events_elf):
+                if not re.search(r"write\(ring3\): EVENTS_OK: ", text):
+                    problems.append("events_l4_failed")
+
             # The graphical shell, to the extent a serial log can speak for
             # it: the console has to have reached the on-screen terminal. Only
             # checked when a desktop came up at all, since a build without a

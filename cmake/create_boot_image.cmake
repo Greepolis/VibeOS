@@ -274,6 +274,12 @@ if(EXISTS "${SIG_ELF}")
     message(STATUS "EFI media includes the signal test: EFI/BOOT/SIGNAL.ELF")
 endif()
 
+set(EVENTS_ELF "${CMAKE_BINARY_DIR}/musl_events")
+if(EXISTS "${EVENTS_ELF}")
+    file(COPY_FILE "${EVENTS_ELF}" "${EFI_BOOT_DIR}/EVENTS.ELF" ONLY_IF_DIFFERENT)
+    message(STATUS "EFI media includes the event-loop test: EFI/BOOT/EVENTS.ELF")
+endif()
+
 # Keep legacy kernel-as-image artifact for direct-loader probes.
 file(COPY_FILE "${KERNEL_ELF}" "${LEGACY_BOOT_IMAGE}" ONLY_IF_DIFFERENT)
 

@@ -174,6 +174,7 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                   "EFI/BOOT/THREADS.ELF\n"
                                   "EFI/BOOT/TFORK.ELF\n"
                                   "EFI/BOOT/SIGNAL.ELF\n"
+                                  "EFI/BOOT/EVENTS.ELF\n"
                                   /* The reclaim load, alone: the commands here
                                    * run one at a time. It holds the machine at
                                    * its low watermark, where every other

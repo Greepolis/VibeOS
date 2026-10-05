@@ -461,6 +461,19 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         )
         add_custom_target(vibeos_musl_signal ALL DEPENDS "${VIBEOS_SIG_BIN}")
 
+        # The event loops (docs/abi/ L4), one program grown a step at a time as
+        # the signal test was for L2.
+        set(VIBEOS_EVENTS_SRC "${CMAKE_CURRENT_SOURCE_DIR}/tests/linux/musl_events.c")
+        set(VIBEOS_EVENTS_BIN "${CMAKE_BINARY_DIR}/musl_events")
+        add_custom_command(
+            OUTPUT "${VIBEOS_EVENTS_BIN}"
+            COMMAND "${VIBEOS_MUSL_GCC}" -static -O2 -o "${VIBEOS_EVENTS_BIN}" "${VIBEOS_EVENTS_SRC}"
+            DEPENDS "${VIBEOS_EVENTS_SRC}"
+            COMMENT "Building the event-loop test as a static Linux binary"
+            VERBATIM
+        )
+        add_custom_target(vibeos_musl_events ALL DEPENDS "${VIBEOS_EVENTS_BIN}")
+
         # A position-independent executable. Same compiler, same library, one
         # linker flag apart - which is the point: the difference under test is
         # the loading, not the program.
