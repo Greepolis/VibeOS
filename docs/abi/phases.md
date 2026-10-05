@@ -1929,6 +1929,50 @@ events, each a file type with a `ready` and a pipe's way of waiting, so `poll`,
   (`unshare(CLONE_NEWTIME)`), eventfd06 libaio: neither is this phase's.
   Six boots, all clean.
 
+**Step 5 (2026-10-05): done.** `epoll_create`, `epoll_create1`, `epoll_ctl`,
+`epoll_wait`, `epoll_pwait`, `epoll_pwait2` (`kernel/abi/linux/epoll.c`).
+
+- **poll with a set that outlives the call.** An entry is a description, the
+  number it was added under, the events asked and the program's word; a look
+  asks each description's `ready`, as poll does, and the wait is poll's engine
+  (`linux_wait_ready`, now shared). Nothing wakes an epoll and no file type
+  calls into it.
+- **An entry is the description's.** It holds no reference: closing one of
+  two descriptors leaves it, and the last reference going takes it away - the
+  file layer calls a hook (`vibeos_file_on_release`) before the slot can be
+  handed out again, so an entry never watches a slot's next tenant. A look
+  takes a reference to each description by `vibeos_file_try_get`, which
+  refuses one whose release has begun.
+- **Edge-triggered is a rise**: what `ready` says now that it did not at the
+  last look. Linux's is "something happened", which also reports a pipe that
+  was readable and got more; with no event to report here, only a state, a rise
+  is the most a state can say. A program that reads until EAGAIN before it
+  waits again - which is what edge-triggered requires of it on Linux too -
+  sees no difference.
+- **Nested**: an epoll is readable while one of its entries would be reported,
+  so it can be in another's set or in poll's; a cycle, or nesting deeper than
+  Linux's five, is ELOOP. A look never asks a `ready` under epoll's lock, so
+  an epoll inside an epoll cannot deadlock on it.
+- `EPOLLONESHOT` disarms an entry once reported, until `EPOLL_CTL_MOD`;
+  `EPOLLEXCLUSIVE` is accepted with Linux's rules for it and means nothing more:
+  nothing is woken, so there is no herd to keep from waking. The entries are one
+  pool of 512 for every instance.
+- **At boot** EVENTS.ELF waits in `epoll_wait` for a child's write to a pipe,
+  edge-triggered, then level-triggered, and polls the epoll.
+- **Sabotage**: `abi-epoll.txt` (10) against the host tests and
+  `abi-epoll-boot.txt` against the boot. "An entry outlives its description"
+  went NOT RED first, and correctly: `try_get` skips a released description,
+  so a left-behind entry is invisible until its slot is handed out again. The
+  test makes a readable description in that slot now, and it is red.
+- **LTP**: the step's 23 and timerfd01 and timerfd_settime01 again: 16 passed.
+  epoll_ctl04 failed: it builds a chain of five epolls and asks for a sixth on
+  top, and the check counted only the chain below the epoll being added. It
+  counts the whole chain once joined now - what is below and what is above -
+  and the five epoll_ctl tests, run again, passed five of five; a sabotage case
+  more (11) keeps it. Five epoll_pwait tests need `socketpair` and epoll_pwait06
+  Unix sockets (L5); epoll_wait05 `listen` on an unbound socket, epoll_wait06
+  `F_SETPIPE_SZ`: both open, neither epoll's. Six boots, all clean.
+
 ### L5. Sockets (11, plus `readv`/`writev` on sockets)
 
 The rest of the BSD API (`sendmsg`/`recvmsg`, `shutdown`, `getsockname`,
