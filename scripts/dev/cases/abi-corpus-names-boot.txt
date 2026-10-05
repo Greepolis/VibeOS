@@ -11,7 +11,7 @@
 
 ### rename reports success and does nothing
 --- old
-    return vibeos_fs_rename(a.mnt, a.tail, b.tail,
-                            (flags & LINUX_RENAME_NOREPLACE) ? VIBEOS_RENAME_NOREPLACE : 0u);
+    r = vibeos_fs_rename(a.mnt, a.tail, b.tail,
+                         (flags & LINUX_RENAME_NOREPLACE) ? VIBEOS_RENAME_NOREPLACE : 0u);
 +++ new
-    return 0;
+    r = 0;

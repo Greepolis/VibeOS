@@ -201,6 +201,12 @@ void vibeos_file_put(vibeos_file_t *f);
 int vibeos_file_try_get(vibeos_file_t *f);
 
 /* Called with every description whose last reference has gone, before its type's
+/* A directory renamed: every open description whose path is `from` or inside it
+ * remembers the same thing under `to` - its path is how a description is walked
+ * again (fchdir, the *at calls, fstat). Both absolute; the mount is the same, so
+ * where the path inside the mount starts does not move. */
+void vibeos_file_paths_moved(const char *from, const char *to);
+
  * release and before the slot can be handed out again: whoever keeps pointers
  * without references forgets them here. One hook. */
 void vibeos_file_on_release(void (*fn)(vibeos_file_t *f));

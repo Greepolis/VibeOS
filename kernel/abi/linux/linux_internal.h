@@ -156,3 +156,6 @@ long linux_rmdir_at(uint64_t dirfd, uint64_t path_uptr);
 #define VIBEOS_LINUX_RELEASE "6.1.0-vibeos"
 
 #endif
+/* A directory renamed from `from` to `to` (absolute): working directories, roots
+ * and open descriptions under it follow (names.c). */
+void linux_paths_moved(const char *from, const char *to);

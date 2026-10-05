@@ -80,6 +80,42 @@ void vibeos_file_get(vibeos_file_t *f) {
     }
 }
 
+void vibeos_file_paths_moved(const char *from, const char *to) {
+    uint32_t i;
+
+    lock();
+    for (i = 0; i < VIBEOS_FILE_MAX; i++) {
+        vibeos_file_t *f = &g_files[i];
+        char out[VIBEOS_FILE_PATH];
+        uint32_t n = 0, k = 0;
+
+        if (f->ops == 0 || f->path[0] == 0) {
+            continue;
+        }
+        while (from[n] && from[n] == f->path[n]) {
+            n++;
+        }
+        if (from[n] != 0 || (f->path[n] != 0 && f->path[n] != '/')) {
+            continue;
+        }
+        while (to[k] && k + 1u < sizeof(out)) {
+            out[k] = to[k];
+            k++;
+        }
+        while (f->path[n] && k + 1u < sizeof(out)) {
+            out[k++] = f->path[n++];
+        }
+        if (f->path[n] != 0) {
+            continue;   /* would not fit: left as it was */
+        }
+        out[k] = 0;
+        for (n = 0; n <= k; n++) {
+            f->path[n] = out[n];
+        }
+    }
+    unlock();
+}
+
 int vibeos_file_try_get(vibeos_file_t *f) {
     uint32_t n;
 

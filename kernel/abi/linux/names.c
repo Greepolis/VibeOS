@@ -197,8 +197,63 @@ static long linux_rename_at(uint64_t olddir, uint64_t old_uptr, uint64_t newdir,
     if ((r = linux_may_remove(&a)) != 0 || (r = b.exists ? linux_may_remove(&b) : linux_may_add(&b)) != 0) {
         return r;
     }
-    return vibeos_fs_rename(a.mnt, a.tail, b.tail,
-                            (flags & LINUX_RENAME_NOREPLACE) ? VIBEOS_RENAME_NOREPLACE : 0u);
+    r = vibeos_fs_rename(a.mnt, a.tail, b.tail,
+                         (flags & LINUX_RENAME_NOREPLACE) ? VIBEOS_RENAME_NOREPLACE : 0u);
+    if (r == 0 && a.node.is_dir) {
+        linux_paths_moved(a.path, b.path);
+    }
+    return r;
+}
+
+/* A path that named something inside `from` names it inside `to` now; 0 if it
+ * did not, or the new one would not fit. */
+static int linux_path_moved(char *p, uint32_t cap, const char *from, const char *to) {
+    char out[VIBEOS_PATH_MAX];
+    uint32_t n = 0, k = 0;
+
+    while (from[n] && from[n] == p[n]) {
+        n++;
+    }
+    if (from[n] != 0 || (p[n] != 0 && p[n] != '/')) {
+        return 0;
+    }
+    while (to[k] && k + 1u < sizeof(out)) {
+        out[k] = to[k];
+        k++;
+    }
+    while (p[n] && k + 1u < sizeof(out)) {
+        out[k++] = p[n++];
+    }
+    if (p[n] != 0 || k + 1u > cap) {
+        return 0;
+    }
+    out[k] = 0;
+    for (n = 0; n <= k; n++) {
+        p[n] = out[n];
+    }
+    return 1;
+}
+
+/* A directory renamed: the working directories and roots inside it, and the
+ * paths of descriptions open under it, follow it. This kernel keeps where a
+ * process stands as a path, and Linux as the directory itself - so until this,
+ * a process that renamed its own working directory had every relative name
+ * fail (LTP's inotify02, whose own cleanup then failed the same way). */
+void linux_paths_moved(const char *from, const char *to) {
+    uint32_t s;
+
+    for (s = 0; s < ks_slots(); s++) {
+        vibeos_procstate_t *ps = ks_ps((int)s);
+
+        if (!ps) {
+            continue;
+        }
+        ks_lock(&ps->files_lock, __func__);
+        (void)linux_path_moved(ps->cwd, sizeof(ps->cwd), from, to);
+        (void)linux_path_moved(ps->root, sizeof(ps->root), from, to);
+        ks_unlock(&ps->files_lock);
+    }
+    vibeos_file_paths_moved(from, to);
 }
 
 /* ---- rmdir --------------------------------------------------------------------------- */
