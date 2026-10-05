@@ -310,6 +310,22 @@ typedef struct {
 #define LINUX_SFD_NONBLOCK         0x00000800u
 #define LINUX_SFD_CLOEXEC          0x00080000u
 
+/* epoll (linux/eventpoll.h): the operations, the flags beside the poll bits, and
+ * the event record - packed on x86-64, twelve bytes, which is the one place the
+ * kernel's own layout of it differs from a natural C struct. */
+#define LINUX_EPOLL_CLOEXEC        0x00080000u
+#define LINUX_EPOLL_CTL_ADD        1u
+#define LINUX_EPOLL_CTL_DEL        2u
+#define LINUX_EPOLL_CTL_MOD        3u
+#define LINUX_EPOLLEXCLUSIVE       0x10000000u
+#define LINUX_EPOLLWAKEUP          0x20000000u
+#define LINUX_EPOLLONESHOT         0x40000000u
+#define LINUX_EPOLLET              0x80000000u
+typedef struct __attribute__((packed)) {
+    uint32_t events;
+    uint64_t data;
+} linux_epoll_event_t;
+
 /* struct signalfd_siginfo (linux/signalfd.h): what a read of a signalfd
  * returns, one 128-byte record per signal taken. */
 typedef struct {

@@ -166,6 +166,7 @@ set(VIBEOS_LINUX_ABI_SOURCES
     kernel/abi/linux/procsrc.c
     kernel/abi/linux/poll.c
     kernel/abi/linux/events.c
+    kernel/abi/linux/epoll.c
     ${VIBEOS_ABI_FILES_SOURCES}
 )
 

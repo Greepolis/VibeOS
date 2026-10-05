@@ -1,0 +1,100 @@
+# epoll (kernel/abi/linux/epoll.c, docs/abi/ L4 step 5), proved by t_epoll in
+# tests/kernel/linux_abi_tests.c.
+#
+#  1. an edge-triggered entry reports every look. Expect "edge-triggered:
+#     reported once, then not while nothing changes".
+#  2. an edge remembers only what it reported. Expect "and a new byte is a new
+#     edge" (a fall that is not seen leaves the old state, and the rise after it
+#     is not a rise).
+#  3. a one-shot entry stays armed. Expect "one-shot: reported once although
+#     still readable".
+#  4. an entry outlives its description. Expect "a readable description made in
+#     the freed slot is not reported" (try_get skips the dead one; the slot
+#     handed out again is what the entry would watch).
+#  5. an entry dies with a descriptor. Expect "closing one of two descriptors
+#     of a description leaves the entry" (Linux keys it by description: a
+#     second descriptor keeps it).
+#  6. an epoll can be put inside one it contains. Expect "and the second in the
+#     first is a loop".
+#  7. a regular file can be added. Expect "a regular file is EPERM, ...".
+#  8. maxevents is ignored. Expect "a byte in the first makes two, and
+#     maxevents bounds the count".
+#  9. an epoll is always readable to poll. Expect "nothing ready: neither says
+#     so".
+# 10. a wait ends early. Expect "a wait of 30 ms with nothing ready returns 0,
+#     and not early".
+# 11. only the chain below counts. Expect "a chain of five epolls is built; a
+#     sixth, above or below, is ELOOP" (LTP's epoll_ctl04 found it: a sixth
+#     on top was let in).
+#
+# Target source: kernel/abi/linux/epoll.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/epoll.c scripts/dev/cases/abi-epoll.txt
+
+### an edge-triggered entry reports every look
+--- old
+    return (s->events & LINUX_EPOLLET) ? (got & ~s->seen) : got;
++++ new
+    return got;
+
+### an edge remembers only what it reported
+--- old
+            if (judged && (rep != 0u || (s[i].events & LINUX_EPOLLET))) {
++++ new
+            if (judged && rep != 0u) {
+
+### a one-shot entry stays armed
+--- old
+                    if (fired && (s[i].events & LINUX_EPOLLONESHOT)) {
++++ new
+                    if (0) {
+
+### an entry outlives its description
+--- old
+        if (g_ep[i].owner != 0 && (g_ep[i].file == f || g_ep[i].owner == f)) {
++++ new
+        if (g_ep[i].owner != 0 && g_ep[i].owner == f) {
+
+### an entry dies with a descriptor
+--- old
+        if (e->owner != ep || !e->armed || !vibeos_file_try_get(e->file)) {
++++ new
+        if (e->owner != ep || !e->armed || linux_file_get((uint64_t)(uint32_t)e->fd) != e->file ||
+            !vibeos_file_try_get(e->file)) {
+
+### an epoll can be put inside one it contains
+--- old
+            if (f->ops == &linux_fops_epoll && ep_loops(ep, f)) {
++++ new
+            if (0) {
+
+### a regular file can be added
+--- old
+    if (f->ops->ready == 0) {
+        r = -VIBEOS_EPERM;          /* a regular file or a directory: always ready */
+    } else if
++++ new
+    if
+
+### maxevents is ignored
+--- old
+            int fired = 0, judged = got < w->max;
++++ new
+            int fired = 0, judged = 1;
+
+### an epoll is always readable to poll
+--- old
+            if (r == 0 && ep_judge(&s[i], &now) != 0) {
++++ new
+            if (r == 0) {
+
+### a wait ends early
+--- old
+    return ms < 0 ? -1 : (int64_t)(((uint64_t)ms * ks_hz() + 999u) / 1000u);
++++ new
+    return ms < 0 ? -1 : (int64_t)(((uint64_t)ms * ks_hz()) / 2000u);
+
+### only the chain below counts
+--- old
+    return ep_down(inner, outer, 0) + ep_up(outer, 0) > EP_DEPTH;
++++ new
+    return ep_down(inner, outer, 0) + 1u > EP_DEPTH;

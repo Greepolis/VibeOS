@@ -76,6 +76,7 @@ int test_linux_layout(void) {
 #include <linux/eventfd.h>
 #include <linux/timerfd.h>
 #include <linux/signalfd.h>
+#include <linux/eventpoll.h>
 #include <linux/xattr.h>
 #include <linux/limits.h>
 #include <string.h>
@@ -791,6 +792,17 @@ int test_linux_layout(void) {
     CONST(LINUX_TFD_CLOEXEC, TFD_CLOEXEC);
     CONST(LINUX_SFD_NONBLOCK, SFD_NONBLOCK);
     CONST(LINUX_SFD_CLOEXEC, SFD_CLOEXEC);
+    CONST(LINUX_EPOLL_CLOEXEC, EPOLL_CLOEXEC);
+    CONST(LINUX_EPOLL_CTL_ADD, EPOLL_CTL_ADD);
+    CONST(LINUX_EPOLL_CTL_DEL, EPOLL_CTL_DEL);
+    CONST(LINUX_EPOLL_CTL_MOD, EPOLL_CTL_MOD);
+    CONST(LINUX_EPOLLEXCLUSIVE, EPOLLEXCLUSIVE);
+    CONST(LINUX_EPOLLWAKEUP, EPOLLWAKEUP);
+    CONST(LINUX_EPOLLONESHOT, EPOLLONESHOT);
+    CONST(LINUX_EPOLLET, EPOLLET);
+    SIZE(linux_epoll_event_t, struct epoll_event);
+    FIELD(linux_epoll_event_t, struct epoll_event, events);
+    FIELD(linux_epoll_event_t, struct epoll_event, data);
     SIZE(linux_signalfd_siginfo_t, struct signalfd_siginfo);
     FIELD(linux_signalfd_siginfo_t, struct signalfd_siginfo, ssi_signo);
     FIELD(linux_signalfd_siginfo_t, struct signalfd_siginfo, ssi_errno);

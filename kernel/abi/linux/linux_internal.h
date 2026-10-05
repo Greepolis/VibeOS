@@ -60,6 +60,19 @@ uint32_t linux_revents(vibeos_file_t *f, uint32_t events);
 /* A signalfd's type (events.c): its records are Linux's layout. */
 extern const vibeos_file_ops_t linux_fops_signalfd;
 
+/* epoll (epoll.c): its type, and its entries forgotten with their description -
+ * the hook is registered here, and the pool emptied, by the ABI's init. */
+extern const vibeos_file_ops_t linux_fops_epoll;
+void linux_epoll_init(void);
+
+/* poll.c's engine, which epoll waits on too: look until something is ready, the
+ * time (ticks; < 0 for ever, 0 once) is up or a signal needs acting on; and the
+ * mask a call waits under, swapped in and given back as rt_sigsuspend does. */
+typedef long (*linux_look_t)(void *ctx);
+long linux_wait_ready(linux_look_t look, void *ctx, int64_t ticks, uint64_t *left);
+void linux_mask_swap(uint64_t raw);
+void linux_mask_back(long r);
+
 /* The pool's entropy as Linux reports it, in bits, for RNDGETENTCNT and
  * /proc/sys/kernel/random/entropy_avail alike (procsrc.c). */
 uint32_t linux_entropy_avail(void);

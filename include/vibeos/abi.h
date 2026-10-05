@@ -85,6 +85,7 @@
     X(EVENTFD,         "eventfd",         VIBEOS_CHECK_NONE) \
     X(TIMERFD,         "timerfd",         VIBEOS_CHECK_USER_MEMORY) \
     X(SIGNALFD,        "signalfd",        VIBEOS_CHECK_USER_MEMORY) \
+    X(EPOLL,           "epoll",           VIBEOS_CHECK_USER_MEMORY) \
     X(FLOCK,           "flock",           VIBEOS_CHECK_NONE) \
     X(XATTR_SET,       "xattr_set",       VIBEOS_CHECK_USER_MEMORY) \
     X(XATTR_GET,       "xattr_get",       VIBEOS_CHECK_USER_MEMORY) \

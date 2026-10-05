@@ -9,9 +9,9 @@ the registry, not this page; `check.sh` fails while the two differ.
 
 | State | Count | What the kernel answers |
 | --- | --- | --- |
-| done | 176 | through its row |
+| done | 182 | through its row |
 | partial | 30 | through its row, with the gap named |
-| missing | 83 | ENOSYS, and the boot gate fails naming the number |
+| missing | 77 | ENOSYS, and the boot gate fails naming the number |
 | deferred | 50 | ENOSYS, and the boot gate fails naming the number |
 | refused | 34 | its errno, counted as refused - expected, never a failure |
 
@@ -22,7 +22,7 @@ Without a row, by phase:
 | L1 - files and paths | 0 |
 | L2 - processes, credentials, time | 4 |
 | L3 - memory | 0 |
-| L4 - event loops | 10 |
+| L4 - event loops | 4 |
 | L5 - sockets | 11 |
 | L6 - threads and scheduling | 20 |
 | L7 - IPC | 21 |
@@ -249,7 +249,7 @@ calls, outside the Linux number space, are listed last.
 | 210 | `io_cancel` | deferred | D | ENOSYS |  | legacy AIO: ENOSYS, and libcs fall back to threads |
 | 211 | `get_thread_area` | refused | R | ENOSYS |  | i386 thread storage; x86-64 programs use arch_prctl |
 | 212 | `lookup_dcookie` | refused | R | ENOSYS |  | removed or never implemented by Linux itself |
-| 213 | `epoll_create` | missing | L4 | ENOSYS |  |  |
+| 213 | `epoll_create` | done | - | - | `epoll.c` |  |
 | 214 | `epoll_ctl_old` | refused | R | ENOSYS |  | removed or never implemented by Linux itself |
 | 215 | `epoll_wait_old` | refused | R | ENOSYS |  | removed or never implemented by Linux itself |
 | 216 | `remap_file_pages` | refused | R | ENOSYS |  | removed or never implemented by Linux itself |
@@ -268,8 +268,8 @@ calls, outside the Linux number space, are listed last.
 | 229 | `clock_getres` | done | - | - | `timer.c` |  |
 | 230 | `clock_nanosleep` | done | - | - | `misc.c` |  |
 | 231 | `exit_group` | done | - | - | `proc.c` |  |
-| 232 | `epoll_wait` | missing | L4 | ENOSYS |  |  |
-| 233 | `epoll_ctl` | missing | L4 | ENOSYS |  |  |
+| 232 | `epoll_wait` | done | - | - | `epoll.c` |  |
+| 233 | `epoll_ctl` | done | - | - | `epoll.c` |  |
 | 234 | `tgkill` | done | - | - | `sig.c` |  |
 | 235 | `utimes` | done | - | - | `names.c` |  |
 | 236 | `vserver` | refused | R | ENOSYS |  | removed or never implemented by Linux itself |
@@ -317,7 +317,7 @@ calls, outside the Linux number space, are listed last.
 | 278 | `vmsplice` | missing | L7 | ENOSYS |  |  |
 | 279 | `move_pages` | deferred | D | ENOSYS |  | NUMA: one node here |
 | 280 | `utimensat` | done | - | - | `names.c` |  |
-| 281 | `epoll_pwait` | missing | L4 | ENOSYS |  |  |
+| 281 | `epoll_pwait` | done | - | - | `epoll.c` |  |
 | 282 | `signalfd` | done | - | - | `events.c` |  |
 | 283 | `timerfd_create` | done | - | - | `events.c` |  |
 | 284 | `eventfd` | done | - | - | `events.c` |  |
@@ -327,7 +327,7 @@ calls, outside the Linux number space, are listed last.
 | 288 | `accept4` | missing | L5 | ENOSYS |  | and AF_UNIX sockets |
 | 289 | `signalfd4` | done | - | - | `events.c` |  |
 | 290 | `eventfd2` | done | - | - | `events.c` |  |
-| 291 | `epoll_create1` | missing | L4 | ENOSYS |  |  |
+| 291 | `epoll_create1` | done | - | - | `epoll.c` |  |
 | 292 | `dup3` | done | - | - | `fs.c` |  |
 | 293 | `pipe2` | done | - | - | `fs.c` |  |
 | 294 | `inotify_init1` | missing | L4 | ENOSYS |  |  |
@@ -388,7 +388,7 @@ calls, outside the Linux number space, are listed last.
 | 438 | `pidfd_getfd` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
 | 439 | `faccessat2` | done | - | - | `names.c` |  |
 | 440 | `process_madvise` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
-| 441 | `epoll_pwait2` | missing | L4 | ENOSYS |  |  |
+| 441 | `epoll_pwait2` | done | - | - | `epoll.c` |  |
 | 442 | `mount_setattr` | deferred | D | ENOSYS |  | the new mount API: after L8 |
 | 443 | `quotactl_fd` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
 | 444 | `landlock_create_ruleset` | missing | L9 | ENOSYS |  | the security goals of docs/vision.md |

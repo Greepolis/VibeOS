@@ -2430,6 +2430,7 @@ static void t_event_loops(void) {
 
 /* ---- L4 steps 2 to 4: eventfd, timerfd, signalfd ------------------------------------ */
 static void t_event_fds(void) {
+    int me = fresh(83);   /* first: it empties the user arena the allocations below come from */
     uint64_t v8 = kf_ualloc(8), its = kf_ualloc(32), old = kf_ualloc(32), mask = kf_ualloc(8);
     uint64_t pf = kf_ualloc(sizeof(linux_pollfd_t)), rec = kf_ualloc(256), ts = kf_ualloc(16);
     uint64_t *v = (uint64_t *)kf_uptr(v8), *m = (uint64_t *)kf_uptr(mask);
@@ -2439,7 +2440,6 @@ static void t_event_fds(void) {
     kf_outcome_t how = KF_RETURNED;
     long efd, sem, dup, tfd, tb, sfd;
     uint64_t t0;
-    int me = fresh(83);
 
     /* eventfd: a counter, read whole or one at a time. */
     efd = SYS2(290, 3, 0);
@@ -2536,6 +2536,140 @@ static void t_event_fds(void) {
     expect(SYS3(0, (uint64_t)sfd, rec, 128) == -VIBEOS_EAGAIN, "and SIGUSR2 is not in it any more");
     ks_id(me)->sig_pending = 0;
     expect(kf_lock_imbalance() == 0, "the event descriptors released every lock they took");
+}
+
+/* ---- L4 step 5: epoll -------------------------------------------------------------- */
+static void t_epoll(void) {
+    int me = fresh(84);   /* first: it empties the user arena the allocations below come from */
+    uint64_t fdsu = kf_ualloc(8), fdsv = kf_ualloc(8), evu = kf_ualloc(8 * 12), ctlu = kf_ualloc(12);
+    uint64_t pf = kf_ualloc(sizeof(linux_pollfd_t)), mask = kf_ualloc(8), ts = kf_ualloc(16);
+    int32_t *f = (int32_t *)kf_uptr(fdsu), *g = (int32_t *)kf_uptr(fdsv);
+    linux_epoll_event_t *ev = (linux_epoll_event_t *)kf_uptr(evu), *ctl = (linux_epoll_event_t *)kf_uptr(ctlu);
+    linux_pollfd_t *p = (linux_pollfd_t *)kf_uptr(pf);
+    int64_t *t = (int64_t *)kf_uptr(ts);
+    kf_outcome_t how = KF_RETURNED;
+    long ep, ep2, efd, dup, reg;
+    uint64_t t0;
+
+    kf_fs_add("/f", "abc", 3, 0);
+    ep = SYS1(291, 0);
+    expect(ep >= 0 && SYS2(293, fdsu, 0) == 0 && SYS2(293, fdsv, 0) == 0, "epoll: an instance and two pipes");
+#define CTL(op, fd, evs, d) (ctl->events = (evs), ctl->data = (d), SYS4(233, (uint64_t)ep, (op), (uint64_t)(fd), ctlu))
+    expect(CTL(1, f[0], 1 /* EPOLLIN */, 0xabc) == 0 && CTL(1, g[1], 4 /* EPOLLOUT */, 0xdef) == 0,
+           "two entries: a pipe's reader for input, another's writer for output");
+    expect(SYS4(232, (uint64_t)ep, evu, 8, 0) == 1 && ev[0].events == 4 && ev[0].data == 0xdef,
+           "a look reports only the writable one, with the program's word");
+    (void)SYS3(1, (uint64_t)f[1], ustr("x"), 1);
+    expect(SYS4(232, (uint64_t)ep, evu, 8, 0) == 2 && SYS4(232, (uint64_t)ep, evu, 1, 0) == 1,
+           "a byte in the first makes two, and maxevents bounds the count");
+    expect(CTL(1, f[0], 1, 0) == -VIBEOS_EEXIST && CTL(3, f[1], 1, 0) == -VIBEOS_ENOENT &&
+           CTL(2, f[1], 0, 0) == -VIBEOS_ENOENT && CTL(9, f[0], 1, 0) == -VIBEOS_EINVAL,
+           "added twice is EEXIST; modified or removed and never added, ENOENT; an unknown op EINVAL");
+    reg = SYS2(2, ustr("f"), 0);
+    expect(CTL(1, reg, 1, 0) == -VIBEOS_EPERM && CTL(1, ep, 1, 0) == -VIBEOS_EINVAL &&
+           CTL(1, 99, 1, 0) == -VIBEOS_EBADF && SYS4(233, (uint64_t)reg, 1, (uint64_t)f[0], ctlu) == -VIBEOS_EINVAL,
+           "a regular file is EPERM, the epoll itself EINVAL, a closed number EBADF, a non-epoll EINVAL");
+    expect(SYS4(232, (uint64_t)ep, evu, 0, 0) == -VIBEOS_EINVAL && SYS4(232, (uint64_t)reg, evu, 1, 0) == -VIBEOS_EINVAL &&
+           SYS1(213, 0) == -VIBEOS_EINVAL && SYS1(291, 1) == -VIBEOS_EINVAL && SYS1(213, 1) >= 0,
+           "maxevents 0, waiting on a non-epoll, a size of 0, an unknown flag: EINVAL");
+
+    /* Level against edge against one-shot, on the pipe with a byte in it. */
+    expect(CTL(2, g[1], 0, 0) == 0 && CTL(3, f[0], 1u | 0x80000000u /* EPOLLET */, 1) == 0,
+           "the writer removed; the reader made edge-triggered");
+    expect(SYS4(232, (uint64_t)ep, evu, 8, 0) == 1 && SYS4(232, (uint64_t)ep, evu, 8, 0) == 0,
+           "edge-triggered: reported once, then not while nothing changes");
+    (void)SYS3(0, (uint64_t)f[0], kf_ualloc(8), 8);
+    expect(SYS4(232, (uint64_t)ep, evu, 8, 0) == 0, "emptied: nothing");
+    (void)SYS3(1, (uint64_t)f[1], ustr("y"), 1);
+    expect(SYS4(232, (uint64_t)ep, evu, 8, 0) == 1, "and a new byte is a new edge");
+    expect(CTL(3, f[0], 1u | 0x40000000u /* EPOLLONESHOT */, 2) == 0 && SYS4(232, (uint64_t)ep, evu, 8, 0) == 1 &&
+           SYS4(232, (uint64_t)ep, evu, 8, 0) == 0,
+           "one-shot: reported once although still readable");
+    expect(CTL(3, f[0], 1, 3) == 0 && SYS4(232, (uint64_t)ep, evu, 8, 0) == 1 && SYS4(232, (uint64_t)ep, evu, 8, 0) == 1 &&
+           ev[0].data == 3, "MOD arms it again, level-triggered: reported every look");
+    expect(CTL(1, g[0], 1u | 0x10000000u | 0x40000000u, 0) == -VIBEOS_EINVAL &&
+           CTL(1, g[0], 1u | 0x10000000u /* EPOLLEXCLUSIVE */, 0) == 0 &&
+           CTL(3, g[0], 1, 0) == -VIBEOS_EINVAL,
+           "EPOLLEXCLUSIVE with ONESHOT is EINVAL; an exclusive entry cannot be modified");
+    (void)CTL(2, g[0], 0, 0);
+
+    /* The entry is the description's. */
+    dup = SYS1(32, (uint64_t)f[0]);
+    expect(SYS1(3, (uint64_t)f[0]) == 0 && SYS4(232, (uint64_t)ep, evu, 8, 0) == 1,
+           "closing one of two descriptors of a description leaves the entry");
+    expect(SYS1(3, (uint64_t)dup) == 0 && SYS4(232, (uint64_t)ep, evu, 8, 0) == 0,
+           "closing the last takes it away");
+    /* What a left-behind entry would do: the slot goes to the next description
+     * made, and the entry watches that instead. */
+    expect(SYS2(290, 1, 0) >= 0 && SYS4(232, (uint64_t)ep, evu, 8, 0) == 0,
+           "a readable description made in the freed slot is not reported");
+
+    /* Waiting. */
+    t0 = ks_ticks();
+    expect(SYS4(232, (uint64_t)ep, evu, 8, 30) == 0 && ks_ticks() - t0 >= 3u * ks_hz() / 100u + 1u,
+           "a wait of 30 ms with nothing ready returns 0, and not early");
+    {
+        /* On an epoll of its own: the fake abandons a call at its block point, so
+         * the reference this one took to its epoll is never put back. */
+        long lone = SYS1(291, 0);
+
+        (void)sys(232, (uint64_t)lone, evu, 8, (uint64_t)-1, 0, 0, &how);
+    }
+    expect(how == KF_BLOCKED, "a wait without a timeout waits");
+    t[0] = 0; t[1] = 20000000;
+    t0 = ks_ticks();
+    expect(sys(441, (uint64_t)ep, evu, 8, ts, 0, 8, 0) == 0 && ks_ticks() - t0 >= 2u * ks_hz() / 100u + 1u,
+           "epoll_pwait2: a timespec");
+    *(uint64_t *)kf_uptr(mask) = 0;
+    expect(sys(281, (uint64_t)ep, evu, 8, 0, mask, 4, 0) == -VIBEOS_EINVAL, "a mask of another size is EINVAL");
+    ks_id(me)->sig_blocked = 1ull << 10;
+    (void)ks_signal_send(me, 10, 0);
+    t[0] = 1; t[1] = 0;
+    expect(sys(441, (uint64_t)ep, evu, 8, ts, mask, 8, 0) == -VIBEOS_EINTR && (ks_id(me)->sig_blocked & (1ull << 10)) == 0,
+           "a mask that lets a pending signal through ends the wait, delivered under it");
+    ks_id(me)->sig_pending = 0;
+    ks_id(me)->sig_blocked = 0;
+    ks_id(me)->sig_saved_valid = 0;
+
+    /* An epoll is a description like another: in poll, in another epoll, not in itself. */
+    efd = SYS2(290, 0, 0);
+    ep2 = SYS1(291, 0x80000 /* EPOLL_CLOEXEC */);
+    expect(CTL(1, efd, 1, 7) == 0 && SYS4(233, (uint64_t)ep2, 1, (uint64_t)ep, ctlu) == 0,
+           "an eventfd in the first, the first in a second");
+    expect(SYS4(233, (uint64_t)ep, 1, (uint64_t)ep2, ctlu) == -VIBEOS_ELOOP, "and the second in the first is a loop");
+    {
+        /* Five epolls in one chain, as LTP's epoll_ctl04 builds them; a sixth
+         * is refused whether it goes on top or underneath. */
+        long chain[5], top, under;
+        uint32_t i;
+        int built = 1;
+
+        chain[0] = SYS1(291, 0);
+        for (i = 1; i < 5u; i++) {
+            chain[i] = SYS1(291, 0);
+            built &= SYS4(233, (uint64_t)chain[i], 1, (uint64_t)chain[i - 1u], ctlu) == 0;
+        }
+        top = SYS1(291, 0);
+        under = SYS1(291, 0);
+        expect(built && SYS4(233, (uint64_t)top, 1, (uint64_t)chain[4], ctlu) == -VIBEOS_ELOOP &&
+               SYS4(233, (uint64_t)chain[0], 1, (uint64_t)under, ctlu) == -VIBEOS_ELOOP,
+               "a chain of five epolls is built; a sixth, above or below, is ELOOP");
+        for (i = 0; i < 5u; i++) {
+            (void)SYS1(3, (uint64_t)chain[i]);
+        }
+        (void)SYS1(3, (uint64_t)top);
+        (void)SYS1(3, (uint64_t)under);
+    }
+    p->fd = (int32_t)ep; p->events = 1; p->revents = 0;
+    expect(SYS3(7, pf, 1, 0) == 0 && SYS4(232, (uint64_t)ep2, evu, 8, 0) == 0, "nothing ready: neither says so");
+    *(uint64_t *)kf_uptr(mask) = 1;
+    (void)SYS3(1, (uint64_t)efd, mask, 8);
+    expect(SYS3(7, pf, 1, 0) == 1 && p->revents == 1 && SYS4(232, (uint64_t)ep2, evu, 8, 0) == 1 && ev[0].events == 1,
+           "the eventfd counted: poll sees the epoll readable, and so does the epoll around it");
+    expect(SYS1(3, (uint64_t)ep) == 0 && SYS4(232, (uint64_t)ep2, evu, 8, 0) == 0,
+           "an epoll closed leaves the one it was in");
+    expect(kf_lock_imbalance() == 0, "epoll released every lock it took");
+#undef CTL
 }
 
 /* clone3's argument rules (L2 step 6, from step 5's LTP run: clone302). */
@@ -4352,6 +4486,7 @@ int test_linux_handlers(void) {
     t_procdev();
     t_event_loops();
     t_event_fds();
+    t_epoll();
     t_futex_shared();
     t_clone3_checks();
     t_sleep();

@@ -44,15 +44,12 @@ uint32_t linux_revents(vibeos_file_t *f, uint32_t events) {
 
 /* ---- the engine ------------------------------------------------------------------- */
 
-/* One look at whatever is waited on: how many are ready, or a negated errno. */
-typedef long (*linux_look_t)(void *ctx);
-
 /* Look until something is ready, the time is up or a signal needs acting on;
  * what was ready wins over a signal that came meanwhile, as on Linux. `ticks` < 0
  * waits for ever and 0 looks once. The tick in progress is not counted, so the
  * wait is never shorter than asked, as a sleep's is not (misc.c); *left is what
  * was left of the time, never more than was asked. */
-static long linux_wait_ready(linux_look_t look, void *ctx, int64_t ticks, uint64_t *left) {
+long linux_wait_ready(linux_look_t look, void *ctx, int64_t ticks, uint64_t *left) {
     uint64_t deadline = ticks > 0 ? ks_ticks() + (uint64_t)ticks + 1u : 0;
     long n;
 
@@ -88,7 +85,7 @@ static long linux_wait_ready(linux_look_t look, void *ctx, int64_t ticks, uint64
  * resumes under its own. When the call does not end in EINTR the program's mask
  * comes back before it returns - otherwise a signal it blocks, let through only
  * for the wait, would be delivered on the way out. */
-static void linux_mask_swap(uint64_t raw) {
+void linux_mask_swap(uint64_t raw) {
     vibeos_task_t *t = ks_id(ks_current());
 
     t->sig_saved = t->sig_blocked;
@@ -96,7 +93,7 @@ static void linux_mask_swap(uint64_t raw) {
     t->sig_blocked = linux_sigset_from_user(raw) & ~((1ull << VIBEOS_SIGKILL) | (1ull << VIBEOS_SIGSTOP));
 }
 
-static void linux_mask_back(long r) {
+void linux_mask_back(long r) {
     vibeos_task_t *t = ks_id(ks_current());
 
     if (r != -VIBEOS_EINTR && t->sig_saved_valid) {

@@ -51,6 +51,8 @@ extern const vibeos_row_t linux_poll_rows[];
 extern const uint32_t linux_poll_row_count;
 extern const vibeos_row_t linux_events_rows[];
 extern const uint32_t linux_events_row_count;
+extern const vibeos_row_t linux_epoll_rows[];
+extern const uint32_t linux_epoll_row_count;
 
 static const struct {
     const char *name;
@@ -69,6 +71,7 @@ static const struct {
     { "limits", linux_limits_rows, &linux_limits_row_count },
     { "poll", linux_poll_rows, &linux_poll_row_count },
     { "events", linux_events_rows, &linux_events_row_count },
+    { "epoll", linux_epoll_rows, &linux_epoll_row_count },
 };
 
 /* The single call site of ks_user_ok. Rows declare their pointer arguments
@@ -90,6 +93,7 @@ void vibeos_linux_abi_init(void) {
      * cache must not keep serving the old bytes (A3 moved the write-back into
      * the regular-file type, which does not know about the cache). */
     vibeos_files_on_write_back(linux_exec_cache_drop);
+    linux_epoll_init();
     vibeos_abi_linux_reset();
     for (i = 0; i < (uint32_t)(sizeof(g_tables) / sizeof(g_tables[0])); i++) {
         if (vibeos_abi_linux_register(g_tables[i].rows, *g_tables[i].count) != 0) {
