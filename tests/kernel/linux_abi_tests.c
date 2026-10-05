@@ -583,6 +583,13 @@ static void t_positional(void) {
            SYS4(17, (uint64_t)fd, buf, 4, 4000) == 4 && ((char *)kf_uptr(buf))[0] == 0,
            "a write past the end leaves a hole that reads as zeros");
     expect(SYS4(17, (uint64_t)fd, buf, 4, (uint64_t)-5) == -VIBEOS_EINVAL, "a negative offset is EINVAL");
+    {
+        long afd = tmp_open("/tmp/p", 0x401 /* O_WRONLY|O_APPEND */, 0);
+
+        expect(afd >= 0 && SYS4(18, (uint64_t)afd, buf, 2, 0) == 2 && tmp_size("/tmp/p") == 5003u,
+               "under O_APPEND pwrite64 writes at the end whatever its offset, as Linux does (pwrite04)");
+        (void)SYS1(3, (uint64_t)afd);
+    }
     expect(SYS1(22, fds) == 0 &&
            SYS4(17, (uint64_t)((int *)kf_uptr(fds))[0], buf, 4, 0) == -VIBEOS_ESPIPE,
            "pread64 on a pipe is ESPIPE");

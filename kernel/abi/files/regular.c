@@ -188,6 +188,12 @@ static long regular_pwrite(vibeos_file_t *f, uint64_t buf, uint64_t len, uint64_
     if ((f->flags & VIBEOS_O_ACCMODE) == VIBEOS_O_RDONLY) {
         return -VIBEOS_EBADF;
     }
+    /* Under O_APPEND Linux writes at the end and ignores the offset - a
+     * documented bug kept for compatibility, which LTP's pwrite04 asks for and
+     * L1's list never ran (docs/abi/ L4 step 1 found it). */
+    if (f->flags & VIBEOS_O_APPEND) {
+        off = regular_size(f);
+    }
     return regular_pwrite_direct(f, buf, len, off);
 }
 

@@ -3,6 +3,9 @@
 # fake's tmpfs at /tmp.
 #
 #  1. O_EXCL ignored. Expect "O_EXCL refuses an existing file".
+#  (7.) pwrite under O_APPEND writes at its offset, as POSIX says and Linux
+#     does not. Expect "under O_APPEND pwrite64 writes at the end" (L4 step 1,
+#     LTP's pwrite04 - one of L1's twelve its list never had).
 #  2. O_TRUNC ignored. Expect "O_TRUNC empties the file at open".
 #  3. O_APPEND writes at the description's position. Expect "O_APPEND writes at
 #     the end" or "two appenders interleave"; at boot, tmp_write_path_failed -
@@ -61,3 +64,12 @@
         r = vibeos_fs_create(mnt, tail, mode & 07777u, &node);
 +++ new
         r = vibeos_fs_create(mnt, tail, 0644u, &node);
+
+### pwrite under O_APPEND writes at its offset
+--- old
+    if (f->flags & VIBEOS_O_APPEND) {
+        off = regular_size(f);
+    }
+    return regular_pwrite_direct(f, buf, len, off);
++++ new
+    return regular_pwrite_direct(f, buf, len, off);
