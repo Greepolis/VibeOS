@@ -9,9 +9,9 @@ the registry, not this page; `check.sh` fails while the two differ.
 
 | State | Count | What the kernel answers |
 | --- | --- | --- |
-| done | 183 | through its row |
+| done | 187 | through its row |
 | partial | 33 | through its row, with the gap named |
-| missing | 73 | ENOSYS, and the boot gate fails naming the number |
+| missing | 69 | ENOSYS, and the boot gate fails naming the number |
 | deferred | 50 | ENOSYS, and the boot gate fails naming the number |
 | refused | 34 | its errno, counted as refused - expected, never a failure |
 
@@ -22,7 +22,7 @@ Without a row, by phase:
 | L1 - files and paths | 0 |
 | L2 - processes, credentials, time | 0 |
 | L3 - memory | 0 |
-| L4 - event loops | 4 |
+| L4 - event loops | 0 |
 | L5 - sockets | 11 |
 | L6 - threads and scheduling | 20 |
 | L7 - IPC | 21 |
@@ -289,9 +289,9 @@ calls, outside the Linux number space, are listed last.
 | 250 | `keyctl` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
 | 251 | `ioprio_set` | missing | L6 | ENOSYS |  |  |
 | 252 | `ioprio_get` | missing | L6 | ENOSYS |  |  |
-| 253 | `inotify_init` | missing | L4 | ENOSYS |  |  |
-| 254 | `inotify_add_watch` | missing | L4 | ENOSYS |  |  |
-| 255 | `inotify_rm_watch` | missing | L4 | ENOSYS |  |  |
+| 253 | `inotify_init` | done | - | - | `inotify.c` |  |
+| 254 | `inotify_add_watch` | done | - | - | `inotify.c` |  |
+| 255 | `inotify_rm_watch` | done | - | - | `inotify.c` |  |
 | 256 | `migrate_pages` | deferred | D | ENOSYS |  | NUMA: one node here |
 | 257 | `openat` | done | - | - | `fs.c` |  |
 | 258 | `mkdirat` | done | - | - | `fs.c` |  |
@@ -330,7 +330,7 @@ calls, outside the Linux number space, are listed last.
 | 291 | `epoll_create1` | done | - | - | `epoll.c` |  |
 | 292 | `dup3` | done | - | - | `fs.c` |  |
 | 293 | `pipe2` | done | - | - | `fs.c` |  |
-| 294 | `inotify_init1` | missing | L4 | ENOSYS |  |  |
+| 294 | `inotify_init1` | done | - | - | `inotify.c` |  |
 | 295 | `preadv` | done | - | - | `fs.c` |  |
 | 296 | `pwritev` | done | - | - | `fs.c` |  |
 | 297 | `rt_tgsigqueueinfo` | partial | L2 | - | `sig.c` | as rt_sigqueueinfo: one pending instance per signal |

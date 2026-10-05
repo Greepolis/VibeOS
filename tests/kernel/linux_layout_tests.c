@@ -78,6 +78,7 @@ int test_linux_layout(void) {
 #include <linux/timerfd.h>
 #include <linux/signalfd.h>
 #include <linux/eventpoll.h>
+#include <linux/inotify.h>
 #include <linux/xattr.h>
 #include <linux/limits.h>
 #include <string.h>
@@ -832,6 +833,35 @@ int test_linux_layout(void) {
     SIZE(linux_epoll_event_t, struct epoll_event);
     FIELD(linux_epoll_event_t, struct epoll_event, events);
     FIELD(linux_epoll_event_t, struct epoll_event, data);
+    CONST(LINUX_IN_ACCESS, IN_ACCESS);
+    CONST(LINUX_IN_MODIFY, IN_MODIFY);
+    CONST(LINUX_IN_ATTRIB, IN_ATTRIB);
+    CONST(LINUX_IN_CLOSE_WRITE, IN_CLOSE_WRITE);
+    CONST(LINUX_IN_CLOSE_NOWRITE, IN_CLOSE_NOWRITE);
+    CONST(LINUX_IN_OPEN, IN_OPEN);
+    CONST(LINUX_IN_MOVED_FROM, IN_MOVED_FROM);
+    CONST(LINUX_IN_MOVED_TO, IN_MOVED_TO);
+    CONST(LINUX_IN_CREATE, IN_CREATE);
+    CONST(LINUX_IN_DELETE, IN_DELETE);
+    CONST(LINUX_IN_DELETE_SELF, IN_DELETE_SELF);
+    CONST(LINUX_IN_MOVE_SELF, IN_MOVE_SELF);
+    CONST(LINUX_IN_UNMOUNT, IN_UNMOUNT);
+    CONST(LINUX_IN_Q_OVERFLOW, IN_Q_OVERFLOW);
+    CONST(LINUX_IN_IGNORED, IN_IGNORED);
+    CONST(LINUX_IN_ONLYDIR, IN_ONLYDIR);
+    CONST(LINUX_IN_DONT_FOLLOW, IN_DONT_FOLLOW);
+    CONST(LINUX_IN_EXCL_UNLINK, IN_EXCL_UNLINK);
+    CONST(LINUX_IN_MASK_CREATE, IN_MASK_CREATE);
+    CONST(LINUX_IN_MASK_ADD, IN_MASK_ADD);
+    CONST(LINUX_IN_ISDIR, IN_ISDIR);
+    CONST(LINUX_IN_ONESHOT, IN_ONESHOT);
+    CONST(LINUX_IN_NONBLOCK, IN_NONBLOCK);
+    CONST(LINUX_IN_CLOEXEC, IN_CLOEXEC);
+    SIZE(linux_inotify_event_t, struct inotify_event);
+    FIELD(linux_inotify_event_t, struct inotify_event, wd);
+    FIELD(linux_inotify_event_t, struct inotify_event, mask);
+    FIELD(linux_inotify_event_t, struct inotify_event, cookie);
+    FIELD(linux_inotify_event_t, struct inotify_event, len);
     SIZE(linux_signalfd_siginfo_t, struct signalfd_siginfo);
     FIELD(linux_signalfd_siginfo_t, struct signalfd_siginfo, ssi_signo);
     FIELD(linux_signalfd_siginfo_t, struct signalfd_siginfo, ssi_errno);

@@ -126,6 +126,21 @@ static void pf_entropy_avail(const vibeos_procfs_t *pf, pf_out_t *o) {
     pf_char(o, '\n');
 }
 
+static void pf_inotify_queued(const vibeos_procfs_t *pf, pf_out_t *o) {
+    pf_u(o, pf->inotify_queued);
+    pf_char(o, '\n');
+}
+
+static void pf_inotify_instances(const vibeos_procfs_t *pf, pf_out_t *o) {
+    pf_u(o, pf->inotify_instances);
+    pf_char(o, '\n');
+}
+
+static void pf_inotify_watches(const vibeos_procfs_t *pf, pf_out_t *o) {
+    pf_u(o, pf->inotify_watches);
+    pf_char(o, '\n');
+}
+
 static void pf_pid_max(const vibeos_procfs_t *pf, pf_out_t *o) {
     pf_u(o, pf->pid_max);
     pf_char(o, '\n');
@@ -269,6 +284,9 @@ static const pf_file_t g_files[] = {
     {"sys/kernel/pid_max", pf_pid_max},
     {"sys/kernel/random/entropy_avail", pf_entropy_avail},
     {"sys/kernel/tainted", pf_tainted},
+    {"sys/fs/inotify/max_queued_events", pf_inotify_queued},
+    {"sys/fs/inotify/max_user_instances", pf_inotify_instances},
+    {"sys/fs/inotify/max_user_watches", pf_inotify_watches},
 };
 #define PF_FILES ((uint32_t)(sizeof(g_files) / sizeof(g_files[0])))
 

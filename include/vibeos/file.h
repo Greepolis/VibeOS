@@ -170,7 +170,7 @@ struct vibeos_file {
      * only by compare-exchange; a timer (timerfd.c) in clock ticks of its
      * clock - when it next expires (0 disarmed), its period, and how many
      * expiries nobody has read; a signal mask (signalfd.c), the kernel's
-     * numbering. */
+     * numbering; and an inotify instance, by its index in inotify.c's table. */
     uint64_t event_count;
     uint32_t event_flags;
     int32_t tfd_clock;
@@ -178,6 +178,7 @@ struct vibeos_file {
     uint64_t tfd_interval;
     uint64_t tfd_count;
     uint64_t sig_mask;
+    int ev_index;
 };
 
 void vibeos_file_set_lock(void (*lock)(void), void (*unlock)(void));
@@ -200,13 +201,13 @@ void vibeos_file_put(vibeos_file_t *f);
  * description whose release has begun. 1 if it took one. */
 int vibeos_file_try_get(vibeos_file_t *f);
 
-/* Called with every description whose last reference has gone, before its type's
 /* A directory renamed: every open description whose path is `from` or inside it
  * remembers the same thing under `to` - its path is how a description is walked
  * again (fchdir, the *at calls, fstat). Both absolute; the mount is the same, so
  * where the path inside the mount starts does not move. */
 void vibeos_file_paths_moved(const char *from, const char *to);
 
+/* Called with every description whose last reference has gone, before its type's
  * release and before the slot can be handed out again: whoever keeps pointers
  * without references forgets them here. One hook. */
 void vibeos_file_on_release(void (*fn)(vibeos_file_t *f));

@@ -13,3 +13,10 @@ flock03
 # than deliver the signal.
 mincore04
 mmap18
+#
+# timerfd_settime02 and inotify09 (L4 steps 2 to 4 and 6): both race two
+# threads with LTP's fuzzy sync, which pins them with sched_getaffinity (L6,
+# ENOSYS here) and then outlasts a TCG boot. Neither call under test is what
+# holds it up; the race harness is.
+timerfd_settime02
+inotify09

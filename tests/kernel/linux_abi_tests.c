@@ -2672,6 +2672,171 @@ static void t_epoll(void) {
 #undef CTL
 }
 
+/* ---- L4 step 6: inotify ------------------------------------------------------------ */
+
+/* The records an inotify read returned, one line each: "wd mask cookie name". */
+static uint32_t in_records(uint64_t buf, long n, char out[][48], uint32_t cap, uint32_t *cookies) {
+    uint32_t at = 0, i = 0;
+
+    while (n > 0 && at + 16u <= (uint64_t)n && i < cap) {
+        linux_inotify_event_t *e = (linux_inotify_event_t *)((uint8_t *)kf_uptr(buf) + at);
+        const char *name = e->len ? (const char *)(e + 1) : "";
+
+        snprintf(out[i], 48, "%d %x %s", e->wd, e->mask, name);
+        cookies[i] = e->cookie;
+        at += 16u + e->len;
+        i++;
+    }
+    return i;
+}
+
+static void t_inotify(void) {
+    int me = fresh(85);   /* first: it empties the user arena the allocations below come from */
+    uint64_t buf = kf_ualloc(4096), nr = kf_ualloc(4);
+    char rec[40][48];
+    uint32_t ck[40], n;
+    long in, wd_dir, wd_file, fd, got;
+
+    (void)me;
+    in = SYS1(294, 0x800 /* IN_NONBLOCK */);
+    expect(in >= 0 && SYS3(0, (uint64_t)in, buf, 4096) == -VIBEOS_EAGAIN, "inotify: nothing yet");
+    expect(SYS2(83, ustr("/tmp/d"), 0755) == 0, "a directory to watch");
+    wd_dir = SYS3(254, (uint64_t)in, ustr("/tmp/d"), 0x100 | 0x200 | 0x40 | 0x80 | 0x2 | 0x20 | 0x8 | 0x10);
+    expect(wd_dir == 1, "watch descriptors start at 1");
+
+    /* Made, written, closed: the directory hears each, named. */
+    fd = tmp_open("/tmp/d/f", 0x41 /* O_CREAT|O_WRONLY */, 0644);
+    (void)SYS3(1, (uint64_t)fd, ustr("hello"), 5);
+    (void)SYS1(3, (uint64_t)fd);
+    got = SYS3(0, (uint64_t)in, buf, 4096);
+    n = in_records(buf, got, rec, 40, ck);
+    expect(n == 4 && strcmp(rec[0], "1 100 f") == 0 && strcmp(rec[1], "1 20 f") == 0 &&
+           strcmp(rec[2], "1 2 f") == 0 && strcmp(rec[3], "1 8 f") == 0,
+           "create, open, modify, close-write - in order, each named");
+    expect(got > 0 && (got % 16) == 0, "a record's name is padded to a multiple of the header");
+
+    /* The file itself, watched too: its own records have no name. */
+    wd_file = SYS3(254, (uint64_t)in, ustr("/tmp/d/f"), 0x4 /* IN_ATTRIB */ | 0x400 /* DELETE_SELF */ | 0x800 /* MOVE_SELF */ | 0x40 | 0x80 /* MOVED_* */);
+    expect(wd_file == 2 && SYS3(254, (uint64_t)in, ustr("/tmp/d/f"), 0x4 | 0x10000000 /* IN_MASK_CREATE */) == -VIBEOS_EEXIST &&
+           SYS3(254, (uint64_t)in, ustr("/tmp/d/f"), 0x4 | 0x400 | 0x800 | 0x40 | 0x80) == 2,
+           "a second watch on the same file is the same wd, or EEXIST under IN_MASK_CREATE");
+    expect(SYS2(90, ustr("/tmp/d/f"), 0600) == 0, "chmod");
+    got = SYS3(0, (uint64_t)in, buf, 4096);
+    n = in_records(buf, got, rec, 40, ck);
+    expect(n == 1 && strcmp(rec[0], "2 4 ") == 0,
+           "the file's own watch hears ATTRIB without a name; the directory did not ask for it");
+
+    /* Renamed within the directory: a pair with one cookie. */
+    expect(SYS2(82, ustr("/tmp/d/f"), ustr("/tmp/d/g")) == 0, "rename");
+    got = SYS3(0, (uint64_t)in, buf, 4096);
+    n = in_records(buf, got, rec, 40, ck);
+    expect(n == 3 && strcmp(rec[0], "1 40 f") == 0 && strcmp(rec[1], "1 80 g") == 0 && ck[0] != 0 && ck[0] == ck[1] &&
+           strcmp(rec[2], "2 800 ") == 0,
+           "MOVED_FROM and MOVED_TO to the directory with one cookie; the file itself hears MOVE_SELF and only that");
+
+    /* Removed: the directory hears DELETE, the file DELETE_SELF and then its
+     * watch is gone - IN_IGNORED. */
+    expect(SYS1(87, ustr("/tmp/d/g")) == 0, "unlink");
+    got = SYS3(0, (uint64_t)in, buf, 4096);
+    n = in_records(buf, got, rec, 40, ck);
+    expect(n == 4 && strcmp(rec[0], "2 4 ") == 0 && strcmp(rec[1], "1 200 g") == 0 &&
+           strcmp(rec[2], "2 400 ") == 0 && strcmp(rec[3], "2 8000 ") == 0,
+           "unlink: ATTRIB to the file, DELETE to the directory, DELETE_SELF and IGNORED");
+    expect(SYS2(255, (uint64_t)in, 2) == -VIBEOS_EINVAL, "and its wd is gone");
+
+    /* A directory made inside: ISDIR. A read too short for a record: EINVAL. */
+    expect(SYS2(83, ustr("/tmp/d/sub"), 0755) == 0, "mkdir inside");
+    expect(SYS3(0, (uint64_t)in, buf, 8) == -VIBEOS_EINVAL, "a buffer shorter than the next record is EINVAL");
+    expect(SYS3(16, (uint64_t)in, 0x541B /* FIONREAD */, nr) == 0 && *(uint32_t *)kf_uptr(nr) == 32u,
+           "FIONREAD says how many bytes are waiting");
+    got = SYS3(0, (uint64_t)in, buf, 4096);
+    n = in_records(buf, got, rec, 40, ck);
+    expect(n == 1 && strcmp(rec[0], "1 40000100 sub") == 0, "CREATE with IN_ISDIR");
+
+    /* rm_watch: IN_IGNORED, then silence. */
+    expect(SYS2(255, (uint64_t)in, (uint64_t)wd_dir) == 0, "rm_watch");
+    (void)SYS2(83, ustr("/tmp/d/sub2"), 0755);
+    got = SYS3(0, (uint64_t)in, buf, 4096);
+    n = in_records(buf, got, rec, 40, ck);
+    expect(n == 1 && strcmp(rec[0], "1 8000 ") == 0, "rm_watch queues IN_IGNORED, and nothing after it");
+
+    /* What the calls refuse. */
+    expect(SYS3(254, (uint64_t)in, ustr("/tmp/none"), 0x100) == -VIBEOS_ENOENT &&
+           SYS3(254, (uint64_t)in, ustr("/tmp/d"), 0) == -VIBEOS_EINVAL &&
+           SYS3(254, 99, ustr("/tmp/d"), 0) == -VIBEOS_EBADF &&
+           SYS3(254, (uint64_t)in, ustr("/tmp/d/sub/../../d"), 0x100 | 0x01000000 /* IN_ONLYDIR */) >= 1 &&
+           SYS1(294, 4) == -VIBEOS_EINVAL,
+           "a missing path ENOENT, no events EINVAL, a closed descriptor EBADF, an unknown flag EINVAL");
+
+    /* An overflow is one record and then nothing until it is read. */
+    {
+        uint32_t i;
+
+        for (i = 0; i < 40u; i++) {
+            char name[32];
+
+            snprintf(name, sizeof(name), "/tmp/d/o%u", i);
+            (void)SYS2(83, ustr(name), 0755);
+        }
+        got = SYS3(0, (uint64_t)in, buf, 4096);
+        n = in_records(buf, got, rec, 40, ck);
+        (void)n;
+        {
+            char last[48];
+            long more;
+
+            /* The queue held 31 and the overflow; read the rest. */
+            more = got;
+            while (more > 0) {
+                n = in_records(buf, more, rec, 40, ck);
+                snprintf(last, sizeof(last), "%s", rec[n - 1u]);
+                more = SYS3(0, (uint64_t)in, buf, 4096);
+            }
+            expect(strcmp(last, "-1 4000 ") == 0, "an overflow ends the queue with IN_Q_OVERFLOW, wd -1");
+        }
+    }
+    expect(SYS1(3, (uint64_t)in) == 0, "closing the instance");
+    expect(kf_lock_imbalance() == 0, "inotify released every lock it took");
+}
+
+/* What L4 step 6's LTP run found. A process whose working directory is renamed
+ * stands in it still (inotify02); a directory's own DELETE_SELF and MOVE_SELF
+ * carry no IN_ISDIR, its other events do (inotify02, 04); /proc says inotify's
+ * limits (inotify05, 06). */
+static void t_inotify_ltp(void) {
+    int me = fresh(87);   /* first: it empties the user arena the allocations below come from */
+    uint64_t buf = kf_ualloc(4096), cwd = kf_ualloc(256);
+    char rec[8][48], text[64];
+    uint32_t ck[8], n;
+    long in, got, fd;
+
+    (void)me;
+    expect(SYS2(83, ustr("/tmp/w"), 0755) == 0 && SYS1(80, ustr("/tmp/w")) == 0 &&
+           SYS2(82, ustr("/tmp/w"), ustr("/tmp/w2")) == 0, "a process renames its own working directory");
+    fd = tmp_open("x", 0x41, 0644);
+    expect(fd >= 0 && tmp_size("/tmp/w2/x") == 0u && SYS2(79, cwd, 256) > 0 &&
+           strcmp((const char *)kf_uptr(cwd), "/tmp/w2") == 0,
+           "and stands in it still: a relative name is made there, and getcwd says the new name");
+    (void)SYS1(3, (uint64_t)fd);
+
+    in = SYS1(294, 0x800);
+    expect(SYS3(254, (uint64_t)in, ustr("/tmp/w2"), 0x4 | 0x400 | 0x800) == 1, "a watch on the directory itself");
+    (void)SYS2(90, ustr("/tmp/w2"), 0700);
+    (void)SYS2(82, ustr("/tmp/w2"), ustr("/tmp/w3"));
+    (void)SYS1(80, ustr("/"));
+    (void)SYS1(87, ustr("/tmp/w3/x"));
+    (void)SYS1(84, ustr("/tmp/w3"));
+    got = SYS3(0, (uint64_t)in, buf, 4096);
+    n = in_records(buf, got, rec, 8, ck);
+    expect(n == 4 && strcmp(rec[0], "1 40000004 ") == 0 && strcmp(rec[1], "1 800 ") == 0 &&
+           strcmp(rec[2], "1 400 ") == 0 && strcmp(rec[3], "1 8000 ") == 0,
+           "ATTRIB with IN_ISDIR; MOVE_SELF and DELETE_SELF bare; then IGNORED");
+    expect(read_whole("/proc/sys/fs/inotify/max_queued_events", text, sizeof(text)) > 0 &&
+           strcmp(text, "31\n") == 0,
+           "/proc/sys/fs/inotify/max_queued_events: what a queue holds before its overflow record");
+    (void)SYS1(3, (uint64_t)in);
+}
+
 /* clone3's argument rules (L2 step 6, from step 5's LTP run: clone302). */
 static void t_clone3_checks(void) {
     uint64_t a, big;
@@ -4487,6 +4652,8 @@ int test_linux_handlers(void) {
     t_event_loops();
     t_event_fds();
     t_epoll();
+    t_inotify();
+    t_inotify_ltp();
     t_futex_shared();
     t_clone3_checks();
     t_sleep();

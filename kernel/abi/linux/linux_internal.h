@@ -65,6 +65,13 @@ extern const vibeos_file_ops_t linux_fops_signalfd;
 extern const vibeos_file_ops_t linux_fops_epoll;
 void linux_epoll_init(void);
 
+/* inotify (inotify.c): its type, the bytes a read would return now (FIONREAD),
+ * and its tables emptied by the ABI's init. */
+extern const vibeos_file_ops_t linux_fops_inotify;
+uint32_t linux_inotify_pending(vibeos_file_t *f);
+void linux_inotify_limits(uint32_t *queued, uint32_t *instances, uint32_t *watches);
+void linux_inotify_init(void);
+
 /* poll.c's engine, which epoll waits on too: look until something is ready, the
  * time (ticks; < 0 for ever, 0 once) is up or a signal needs acting on; and the
  * mask a call waits under, swapped in and given back as rt_sigsuspend does. */
@@ -150,12 +157,12 @@ long linux_may_remove(const vibeos_path_t *w);
 long linux_may_own(const vibeos_fs_node_t *node);
 void linux_own_new(const vibeos_path_t *w);
 long linux_rmdir_at(uint64_t dirfd, uint64_t path_uptr);
+/* A directory renamed from `from` to `to` (absolute): working directories, roots
+ * and open descriptions under it follow (names.c). */
+void linux_paths_moved(const char *from, const char *to);
 
 /* The release uname reports and /proc/version repeats: one string, so the two
  * cannot disagree. */
 #define VIBEOS_LINUX_RELEASE "6.1.0-vibeos"
 
 #endif
-/* A directory renamed from `from` to `to` (absolute): working directories, roots
- * and open descriptions under it follow (names.c). */
-void linux_paths_moved(const char *from, const char *to);

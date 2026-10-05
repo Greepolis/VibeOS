@@ -359,6 +359,40 @@ typedef struct __attribute__((packed)) {
     uint64_t data;
 } linux_epoll_event_t;
 
+/* inotify (linux/inotify.h): the events, the flags of a watch, init1's flags,
+ * and the record's header - a name follows it, padded with zeroes to a multiple
+ * of the header. */
+#define LINUX_IN_ACCESS        0x00000001u
+#define LINUX_IN_MODIFY        0x00000002u
+#define LINUX_IN_ATTRIB        0x00000004u
+#define LINUX_IN_CLOSE_WRITE   0x00000008u
+#define LINUX_IN_CLOSE_NOWRITE 0x00000010u
+#define LINUX_IN_OPEN          0x00000020u
+#define LINUX_IN_MOVED_FROM    0x00000040u
+#define LINUX_IN_MOVED_TO      0x00000080u
+#define LINUX_IN_CREATE        0x00000100u
+#define LINUX_IN_DELETE        0x00000200u
+#define LINUX_IN_DELETE_SELF   0x00000400u
+#define LINUX_IN_MOVE_SELF     0x00000800u
+#define LINUX_IN_UNMOUNT       0x00002000u
+#define LINUX_IN_Q_OVERFLOW    0x00004000u
+#define LINUX_IN_IGNORED       0x00008000u
+#define LINUX_IN_ONLYDIR       0x01000000u
+#define LINUX_IN_DONT_FOLLOW   0x02000000u
+#define LINUX_IN_EXCL_UNLINK   0x04000000u
+#define LINUX_IN_MASK_CREATE   0x10000000u
+#define LINUX_IN_MASK_ADD      0x20000000u
+#define LINUX_IN_ISDIR         0x40000000u
+#define LINUX_IN_ONESHOT       0x80000000u
+#define LINUX_IN_NONBLOCK      0x00000800u
+#define LINUX_IN_CLOEXEC       0x00080000u
+typedef struct {
+    int32_t wd;
+    uint32_t mask;
+    uint32_t cookie;
+    uint32_t len;
+} linux_inotify_event_t;
+
 /* struct signalfd_siginfo (linux/signalfd.h): what a read of a signalfd
  * returns, one 128-byte record per signal taken. */
 typedef struct {

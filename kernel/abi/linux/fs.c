@@ -1916,6 +1916,8 @@ static long linux_sys_ioctl(uint64_t fd, uint64_t req, uint64_t arg) {
                                                                                  : st.size - f->pos) : 0;
             } else if (f->ops == &vibeos_fops_pipe && !f->pipe_write) {
                 v = (int32_t)vibeos_pipe_pending(f->pipe);
+            } else if (f->ops == &linux_fops_inotify) {
+                v = (int32_t)linux_inotify_pending(f);
             } else {
                 r = -VIBEOS_ENOTTY;   /* a socket's count is the network's to give (L5) */
                 break;

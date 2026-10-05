@@ -167,6 +167,7 @@ set(VIBEOS_LINUX_ABI_SOURCES
     kernel/abi/linux/poll.c
     kernel/abi/linux/events.c
     kernel/abi/linux/epoll.c
+    kernel/abi/linux/inotify.c
     ${VIBEOS_ABI_FILES_SOURCES}
 )
 

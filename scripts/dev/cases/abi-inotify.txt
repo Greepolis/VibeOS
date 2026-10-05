@@ -1,0 +1,102 @@
+# inotify (kernel/abi/linux/inotify.c, docs/abi/ L4 step 6), proved by
+# t_inotify in tests/kernel/linux_abi_tests.c.
+#
+#  1. the directory hears nothing. Expect "create, open, modify, close-write -
+#     in order, each named".
+#  2. the node itself hears its directory's events. Expect "MOVED_FROM and
+#     MOVED_TO to the directory with one cookie; the file itself hears
+#     MOVE_SELF and only that" (it asked for MOVED_* too, and is not told).
+#  3. a deleted node keeps its watch. Expect "unlink: ATTRIB to the file,
+#     DELETE to the directory, DELETE_SELF and IGNORED".
+#  4. a full queue drops silently. Expect "an overflow ends the queue with
+#     IN_Q_OVERFLOW, wd -1".
+#  5. a read too short for a record returns nothing. Expect "a buffer shorter
+#     than the next record is EINVAL".
+#  6. a name is not padded. Expect "a record's name is padded to a multiple of
+#     the header".
+#  7. IN_MASK_CREATE replaces. Expect "a second watch on the same file is the
+#     same wd, or EEXIST under IN_MASK_CREATE".
+#  8. rm_watch says nothing. Expect "rm_watch queues IN_IGNORED, and nothing
+#     after it".
+#  9. a directory's DELETE_SELF says it is one. Expect "ATTRIB with IN_ISDIR;
+#     MOVE_SELF and DELETE_SELF bare; then IGNORED" (LTP's inotify04).
+# 10. a link count goes to the directory too. Expect the same: the unlink in
+#     it would add "1 4 x" (inotify04).
+#
+# Target source: kernel/abi/linux/inotify.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/inotify.c scripts/dev/cases/abi-inotify.txt
+
+### the directory hears nothing
+--- old
+    if (have_parent) {
+        in_deliver(mnt, parent.id,
++++ new
+    if (0) {
+        in_deliver(mnt, parent.id,
+
+### the node itself hears its directory's events
+--- old
+    in_deliver(mnt, id, mask & ~(uint32_t)(LINUX_IN_CREATE | LINUX_IN_DELETE | LINUX_IN_MOVED_FROM |
+                                           LINUX_IN_MOVED_TO),
++++ new
+    in_deliver(mnt, id, mask,
+
+### a deleted node keeps its watch
+--- old
+    if (mask & LINUX_IN_DELETE_SELF) {
+        for (i = 0; i < IN_WATCHES; i++) {
++++ new
+    if (0) {
+        for (i = 0; i < IN_WATCHES; i++) {
+
+### a full queue drops silently
+--- old
+    if (in->count == IN_QUEUE - 1u) {
+        wd = -1;
++++ new
+    if (in->count == IN_QUEUE - 1u) {
+        in->overflowed = 1;
+        return;
+        wd = -1;
+
+### a read too short for a record returns nothing
+--- old
+            if (done + sizeof(h) + nl > len) {
+                if (done == 0u) {
+                    r = -VIBEOS_EINVAL;
+                }
++++ new
+            if (done + sizeof(h) + nl > len) {
+
+### a name is not padded
+--- old
+    return n == 0u ? 0u : (n + 1u + (uint32_t)sizeof(linux_inotify_event_t) - 1u) /
+                              (uint32_t)sizeof(linux_inotify_event_t) * (uint32_t)sizeof(linux_inotify_event_t);
++++ new
+    return n == 0u ? 0u : n + 1u;
+
+### IN_MASK_CREATE replaces
+--- old
+                r = -VIBEOS_EEXIST;
++++ new
+                r = x->wd;
+
+### rm_watch says nothing
+--- old
+        if (g_inw[i].inst == f->ev_index && g_inw[i].wd == VIBEOS_ARG_INT(wd)) {
+            in_drop_watch(&g_inw[i]);
++++ new
+        if (g_inw[i].inst == f->ev_index && g_inw[i].wd == VIBEOS_ARG_INT(wd)) {
+            g_inw[i].inst = -1;
+
+### a directory's DELETE_SELF says it is one
+--- old
+               (mask & (LINUX_IN_DELETE_SELF | LINUX_IN_MOVE_SELF)) ? 0u : isdir, 0, "");
++++ new
+               isdir, 0, "");
+
+### a link count goes to the directory too
+--- old
+    have_parent = name[0] != 0 && !(fsn & VIBEOS_FSN_NLINK) && vibeos_fs_lookup(mnt, dir, &parent) == 0;
++++ new
+    have_parent = name[0] != 0 && vibeos_fs_lookup(mnt, dir, &parent) == 0;

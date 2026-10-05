@@ -17,7 +17,8 @@
  *
  *   meminfo, cpuinfo, version, uptime, loadavg, mounts (a link to
  *   self/mounts, as in Linux), sys/kernel/pid_max,
- *   sys/kernel/random/entropy_avail
+ *   sys/kernel/random/entropy_avail, sys/fs/inotify/max_queued_events,
+ *   max_user_instances and max_user_watches
  *   self            a link to the asking process's directory
  *   <pid>/          one per process: stat, statm, status, cmdline, comm,
  *                   maps, mounts, the links exe, cwd and root, and fd/ - a
@@ -103,6 +104,10 @@ typedef struct {
     uint32_t (*cpus)(void);            /* online now: the others start after /proc */
     uint64_t (*uptime_ms)(void);
     uint32_t (*entropy_avail)(void);   /* bits, as sys/kernel/random/entropy_avail */
+    /* inotify's limits, as sys/fs/inotify/max_* say them: the events a queue
+     * holds before its overflow record, the instances and the watches there may
+     * be. All three are the whole machine's here, where Linux's are a user's. */
+    uint32_t inotify_queued, inotify_instances, inotify_watches;
     const char *version;               /* /proc/version's line, without the newline */
 
     /* The process asking, by pid; 0 for none (the kernel, for itself). */

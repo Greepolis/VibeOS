@@ -318,6 +318,7 @@ static long src_fd_name(const vibeos_file_t *f, char *buf, uint32_t cap) {
                                   : f->ops == &vibeos_fops_timerfd ? "anon_inode:[timerfd]"
                                   : f->ops == &linux_fops_signalfd ? "anon_inode:[signalfd]"
                                   : f->ops == &linux_fops_epoll ? "anon_inode:[eventpoll]"
+                                  : f->ops == &linux_fops_inotify ? "anon_inode:inotify"
                                   : "anon_inode:[file]");
     }
     for (k = 0; kind[k]; k++) {
@@ -481,5 +482,6 @@ void linux_procfs_bind(vibeos_procfs_t *pf) {
     pf->map = src_map;
     pf->uptime_ms = src_uptime_ms;
     pf->entropy_avail = linux_entropy_avail;
+    linux_inotify_limits(&pf->inotify_queued, &pf->inotify_instances, &pf->inotify_watches);
     pf->version = "Linux version " VIBEOS_LINUX_RELEASE " (vibeos@vibeos) (gcc) #1 SMP PREEMPT";
 }

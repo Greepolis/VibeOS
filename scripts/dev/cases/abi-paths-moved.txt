@@ -1,0 +1,16 @@
+# A directory renamed takes the working directories and open descriptions
+# inside it along (kernel/abi/linux/names.c, LTP's inotify02 in docs/abi/ L4
+# step 6), proved by t_inotify_ltp in tests/kernel/linux_abi_tests.c.
+#
+#  1. a renamed working directory is left behind. Expect "and stands in it
+#     still: a relative name is made there, and getcwd says the new name".
+#
+# Target source: kernel/abi/linux/names.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/names.c scripts/dev/cases/abi-paths-moved.txt
+
+### a renamed working directory is left behind
+--- old
+    if (r == 0 && a.node.is_dir) {
+        linux_paths_moved(a.path, b.path);
+    }
++++ new

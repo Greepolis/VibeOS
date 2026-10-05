@@ -53,6 +53,8 @@ extern const vibeos_row_t linux_events_rows[];
 extern const uint32_t linux_events_row_count;
 extern const vibeos_row_t linux_epoll_rows[];
 extern const uint32_t linux_epoll_row_count;
+extern const vibeos_row_t linux_inotify_rows[];
+extern const uint32_t linux_inotify_row_count;
 
 static const struct {
     const char *name;
@@ -72,6 +74,7 @@ static const struct {
     { "poll", linux_poll_rows, &linux_poll_row_count },
     { "events", linux_events_rows, &linux_events_row_count },
     { "epoll", linux_epoll_rows, &linux_epoll_row_count },
+    { "inotify", linux_inotify_rows, &linux_inotify_row_count },
 };
 
 /* The single call site of ks_user_ok. Rows declare their pointer arguments
@@ -94,6 +97,7 @@ void vibeos_linux_abi_init(void) {
      * the regular-file type, which does not know about the cache). */
     vibeos_files_on_write_back(linux_exec_cache_drop);
     linux_epoll_init();
+    linux_inotify_init();
     vibeos_abi_linux_reset();
     for (i = 0; i < (uint32_t)(sizeof(g_tables) / sizeof(g_tables[0])); i++) {
         if (vibeos_abi_linux_register(g_tables[i].rows, *g_tables[i].count) != 0) {
