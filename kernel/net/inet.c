@@ -587,6 +587,59 @@ int vibeos_inet_socket_state(const vibeos_inet_t *net, int sock) {
     return (int)net->sockets[sock].state;
 }
 
+/* What poll says of a socket, as Linux's tcp_poll and udp_poll do. The cases
+ * that are not obvious are Linux's, not choices: a TCP socket nobody connected is
+ * writable and hung up (state CLOSE), a reset one is everything - readable for
+ * the error, writable because a send fails at once, errored and hung up - and a
+ * connection whose peer sent its FIN is readable, for the end of the stream. One
+ * still being made says nothing until it is made. */
+uint32_t vibeos_inet_ready(const vibeos_inet_t *net, int sock) {
+    const vibeos_inet_socket_t *s;
+    uint32_t r = 0;
+
+    if (!net || sock < 0 || (uint32_t)sock >= VIBEOS_INET_MAX_SOCKETS || !net->sockets[sock].used) {
+        return 0;
+    }
+    s = &net->sockets[sock];
+    if (s->type == VIBEOS_INET_SOCK_UDP) {
+        return VIBEOS_INET_READY_OUT | (s->rx_len > 0u ? VIBEOS_INET_READY_IN : 0u);
+    }
+    if (s->type != VIBEOS_INET_SOCK_TCP) {
+        return 0;
+    }
+    if (s->reset) {
+        return VIBEOS_INET_READY_IN | VIBEOS_INET_READY_OUT | VIBEOS_INET_READY_ERR |
+               VIBEOS_INET_READY_HUP | VIBEOS_INET_READY_RDHUP;
+    }
+    switch (s->state) {
+        case VIBEOS_TCP_CLOSED:
+            return VIBEOS_INET_READY_OUT | VIBEOS_INET_READY_HUP;
+        case VIBEOS_TCP_LISTEN:
+            return s->backlog_len > 0u ? VIBEOS_INET_READY_IN : 0u;
+        case VIBEOS_TCP_SYN_SENT:
+        case VIBEOS_TCP_SYN_RECEIVED:
+            return 0;
+        default:
+            break;
+    }
+    if (s->rx_len > 0u) {
+        r |= VIBEOS_INET_READY_IN;
+    }
+    if (s->fin_received) {
+        r |= VIBEOS_INET_READY_IN | VIBEOS_INET_READY_RDHUP;
+    }
+    /* Room to send while this side is open; once its FIN is out a send fails at
+     * once, which is writable to poll as well (Linux sets POLLOUT on a socket
+     * shut for writing). */
+    if (s->fin_sent || s->tx_len < VIBEOS_INET_TXBUF) {
+        r |= VIBEOS_INET_READY_OUT;
+    }
+    if (s->fin_sent && s->fin_received) {
+        r |= VIBEOS_INET_READY_HUP;
+    }
+    return r;
+}
+
 /* ---- UDP ----------------------------------------------------------------- */
 
 static int udp_send_from(vibeos_inet_t *net, uint32_t src, uint32_t dst,

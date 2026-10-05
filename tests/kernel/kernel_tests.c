@@ -3875,6 +3875,71 @@ static int test_inet_tcp_listen_accept(void) {
     return 0;
 }
 
+/* What poll may say of a socket at each point of its life (docs/abi/ L4), as
+ * Linux's tcp_poll says it: never connected is writable and hung up; a listener
+ * is readable only with a connection to accept, and a half-made one is not one;
+ * a connection is readable with data or after the peer's FIN, which is also
+ * RDHUP; a reset is everything. A socket used to say "always ready" for all of
+ * it, so nc - which waits in poll on its socket - never waited. */
+static int test_inet_ready(void) {
+    static vibeos_inet_t net;
+    static inet_capture_t cap;
+    const uint32_t IN = VIBEOS_INET_READY_IN, OUT = VIBEOS_INET_READY_OUT, HUP = VIBEOS_INET_READY_HUP;
+    const uint32_t ERR = VIBEOS_INET_READY_ERR, RDHUP = VIBEOS_INET_READY_RDHUP;
+    static const uint8_t data[5] = {'h', 'e', 'l', 'l', 'o'};
+    uint8_t buf[16];
+    int srv, conn, fresh_sock;
+    uint32_t child_isn;
+
+    memset(&cap, 0, sizeof(cap));
+    if (vibeos_inet_init(&net, inet_test_local_mac, inet_capture_tx, &cap) != 0) {
+        return -1;
+    }
+    vibeos_inet_set_addr(&net, 0x0A00020Fu, 0xFFFFFF00u, 0x0A000202u, 0x0A000203u);
+    inet_seed_arp(&net);
+
+    fresh_sock = vibeos_inet_socket(&net, VIBEOS_INET_SOCK_TCP);
+    if (fresh_sock < 0 || vibeos_inet_ready(&net, fresh_sock) != (OUT | HUP)) {
+        return -1;   /* never connected: Linux's TCP_CLOSE */
+    }
+    srv = vibeos_inet_socket(&net, VIBEOS_INET_SOCK_TCP);
+    if (srv < 0 || vibeos_inet_bind(&net, srv, 8080) != 0 || vibeos_inet_listen(&net, srv) != 0 ||
+        vibeos_inet_ready(&net, srv) != 0) {
+        return -1;   /* a listener with nobody waiting says nothing */
+    }
+    cap.count = 0;
+    inet_deliver_tcp(&net, 0x0A000202u, 40000, 8080, 0x900u, 0, 0x02, 0, 0);
+    if (cap.count != 1 || vibeos_inet_ready(&net, srv) != 0) {
+        return -1;   /* a handshake half made is not a connection to accept */
+    }
+    child_isn = inet_rd32(cap.frame[0] + 14 + 20 + 4);
+    inet_deliver_tcp(&net, 0x0A000202u, 40000, 8080, 0x901u, child_isn + 1, 0x10, 0, 0);
+    if (vibeos_inet_ready(&net, srv) != IN) {
+        return -1;
+    }
+    conn = vibeos_inet_accept(&net, srv);
+    if (conn < 0 || vibeos_inet_ready(&net, srv) != 0 || vibeos_inet_ready(&net, conn) != OUT) {
+        return -1;   /* accepted: the listener is empty again; nothing to read yet */
+    }
+    inet_deliver_tcp(&net, 0x0A000202u, 40000, 8080, 0x901u, child_isn + 1, 0x18, data, sizeof(data));
+    if (vibeos_inet_ready(&net, conn) != (IN | OUT)) {
+        return -1;
+    }
+    if (vibeos_inet_recv(&net, conn, buf, sizeof(buf)) != (long)sizeof(data) ||
+        vibeos_inet_ready(&net, conn) != OUT) {
+        return -1;   /* read to empty: writable only */
+    }
+    inet_deliver_tcp(&net, 0x0A000202u, 40000, 8080, 0x901u + sizeof(data), child_isn + 1, 0x11, 0, 0);
+    if (vibeos_inet_ready(&net, conn) != (IN | OUT | RDHUP)) {
+        return -1;   /* the peer's FIN: readable for the end of the stream */
+    }
+    inet_deliver_tcp(&net, 0x0A000202u, 40000, 8080, 0x902u + sizeof(data), child_isn + 1, 0x04, 0, 0);
+    if (vibeos_inet_ready(&net, conn) != (IN | OUT | ERR | HUP | RDHUP)) {
+        return -1;   /* reset: everything */
+    }
+    return vibeos_inet_ready(&net, 999) == 0 ? 0 : -1;
+}
+
 /* H-028: a child in SYN_RECEIVED remembers its listener by slot index only. If
  * the listener is closed and its slot handed to an unrelated socket before the
  * final ACK arrives, the completed connection must NOT be delivered to that
@@ -9779,6 +9844,7 @@ int main(void) {
     RUN_TEST(test_network_policy_data_path);
     RUN_TEST(test_inet_tcp_connection);
     RUN_TEST(test_inet_tcp_listen_accept);
+    RUN_TEST(test_inet_ready);
     RUN_TEST(test_inet_tcp_accept_aba);
     RUN_TEST(test_inet_tcp_orphan_child_freed);
     RUN_TEST(test_inet_tcp_half_open_reclaimed);

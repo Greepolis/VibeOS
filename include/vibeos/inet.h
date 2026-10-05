@@ -277,6 +277,17 @@ int vibeos_inet_close_owned(vibeos_inet_t *net, int sock, uint32_t owner_pid);
 uint32_t vibeos_inet_release_owner_sockets(vibeos_inet_t *net, uint32_t owner_pid);
 int vibeos_inet_socket_state(const vibeos_inet_t *net, int sock);
 
+/* What a socket can do now without waiting (docs/abi/ L4), as Linux's tcp_poll
+ * and udp_poll say it: VIBEOS_INET_READY_*, 0 for a socket that is not there.
+ * Under the caller's network lock, like every call here. */
+#define VIBEOS_INET_READY_IN    0x1u   /* a receive returns now: data, the end, an error;
+                                        * for a listener, a connection to accept      */
+#define VIBEOS_INET_READY_OUT   0x2u   /* a send takes something now                  */
+#define VIBEOS_INET_READY_HUP   0x4u   /* nothing more either way, or never connected */
+#define VIBEOS_INET_READY_ERR   0x8u   /* the connection was reset                    */
+#define VIBEOS_INET_READY_RDHUP 0x10u  /* the peer closed its half                    */
+uint32_t vibeos_inet_ready(const vibeos_inet_t *net, int sock);
+
 /* ---- utilities ---------------------------------------------------------- */
 
 int vibeos_inet_ping(vibeos_inet_t *net, uint32_t ip);
