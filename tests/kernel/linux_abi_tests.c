@@ -2014,6 +2014,9 @@ static void t_procfs(void) {
     fd = SYS2(2, ustr("/proc/sys/kernel/pid_max"), 0);
     n = fd >= 0 ? SYS3(0, (uint64_t)fd, buf, 599) : -1;
     expect(n == 8 && memcmp(kf_uptr(buf), "4194304\n", 8) == 0, "/proc/sys/kernel/pid_max is a number and a newline");
+    fd = SYS2(2, ustr("/proc/sys/kernel/tainted"), 0);
+    n = fd >= 0 ? SYS3(0, (uint64_t)fd, buf, 599) : -1;
+    expect(n == 2 && memcmp(kf_uptr(buf), "0\n", 2) == 0, "/proc/sys/kernel/tainted: nothing taints this kernel");
     expect(sys(262, (uint64_t)(uint32_t)-100, ustr("/proc/sys/kernel"), st, 0, 0, 0, 0) == 0 &&
            (memcpy(&sb, kf_uptr(st), sizeof(sb)), (sb.st_mode & VIBEOS_S_IFMT) == VIBEOS_S_IFDIR) &&
            sys(262, (uint64_t)(uint32_t)-100, ustr("/proc/sys/ker"), st, 0, 0, 0, 0) == -VIBEOS_ENOENT,

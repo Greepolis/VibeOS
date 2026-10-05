@@ -131,6 +131,15 @@ static void pf_pid_max(const vibeos_procfs_t *pf, pf_out_t *o) {
     pf_char(o, '\n');
 }
 
+/* Linux's taint mask: what made the kernel's word less trustworthy - a module
+ * from outside the tree, a warning, a forced unload. None of those exists here,
+ * so it is 0. LTP reads it before and after a test that might provoke a warning
+ * (tst_taint.c), and refuses to run without it (timerfd_settime02, L4). */
+static void pf_tainted(const vibeos_procfs_t *pf, pf_out_t *o) {
+    (void)pf;
+    pf_str(o, "0\n");
+}
+
 /* Linux's layout, one record per processor and a blank line after each. The
  * clock is measured, not configured; bogomips is twice it, as Linux's has been
  * on every x86 since it stopped measuring a delay loop. */
@@ -259,6 +268,7 @@ static const pf_file_t g_files[] = {
     {"version", pf_version},
     {"sys/kernel/pid_max", pf_pid_max},
     {"sys/kernel/random/entropy_avail", pf_entropy_avail},
+    {"sys/kernel/tainted", pf_tainted},
 };
 #define PF_FILES ((uint32_t)(sizeof(g_files) / sizeof(g_files[0])))
 
