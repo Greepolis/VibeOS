@@ -1827,6 +1827,59 @@ and L2's personality02 stopped on it):
 7. **The programs**: BusyBox `httpd` serving from the guest to the host, `nc`
    both ways, `tail -f`; and LTP for L4's own calls.
 
+**Step 1 (2026-10-05): done.**
+
+- **One engine, four calls** (`kernel/abi/linux/poll.c`): a set of
+  descriptors and what is asked of each, looked at until one can, the time is
+  up, or a signal needs acting on - and what was ready wins over a signal that
+  came meanwhile. `poll` moved here from `fs.c`; `ppoll`, `select` and
+  `pselect6` are new. The hangup and the error are reported whether asked for
+  or not; `select` counts them as Linux does (a hangup is readable, an error
+  both). A wait is never shorter than asked - the tick in progress is not
+  counted, as a sleep's is not, which `poll` used to get wrong by up to a tick
+  - and `ppoll`, `select` and `pselect6` write back what was left of their
+  time, going on without it when the memory cannot be written, as Linux does.
+- **A mask for the wait.** `ppoll` and `pselect6` swap the signal mask for the
+  wait as `rt_sigsuspend` does: a signal it lets through is delivered under it
+  and the program resumes under its own; a call that does not end in EINTR has
+  the program's mask back before it returns.
+- **Sockets say what they can do** (`vibeos_inet_ready` in `kernel/net/inet.c`,
+  `socket.c`'s `ready`), as Linux's `tcp_poll` says it: a listener only with a
+  connection to accept, a connection with data or after the peer's FIN (also
+  `POLLRDHUP`), a socket nobody connected writable and hung up, a reset one
+  everything. A socket had no `ready`, which reads as always ready for both, so
+  `nc` - which waits in `poll` on its socket - never waited.
+- **Two new readiness bits** in the file layer, an error and the peer's half
+  closed (`VIBEOS_READY_ERR`, `_RDHUP`). A pipe whose reader has gone is an
+  error to its writer, where `poll` had a special case asking which end of a
+  pipe it was looking at; an empty pipe whose writers have gone is a hangup and
+  only that (LTP's poll03 - it was readable too).
+- **What the step's LTP run found in L1**: twelve of L1's tests its list never
+  had (`ltp-list.py`, above) ran for the first time, and one failed - under
+  `O_APPEND`, Linux's `pwrite` writes at the end and ignores its offset, a
+  documented bug kept for compatibility (pwrite04). It does here now.
+- **At boot** `EVENTS.ELF` (`tests/linux/musl_events.c`), the phase's own
+  program, polls three sockets that nothing has happened to, waits in `select`
+  on an empty pipe and measures that the wait was not short, sees a byte make it
+  readable, and waits in `ppoll` and `pselect` under masks that let a pending
+  signal through and keep it out (`events_l4_failed`). It ran on Linux first:
+  the checks describe Linux.
+- **Sabotage**: `net-inet-ready.txt` (4), `abi-socket-ready.txt`,
+  `abi-event-loops.txt` (11, six of them `poll`'s from `abi-tty-fs.txt`, moved
+  with the code), a case more in `abi-tty-pipe.txt` and in `abi-write-path.txt`,
+  against the host tests; `abi-events-boot.txt` and `abi-poll-boot.txt` (moved
+  from `abi-tty-boot.txt`) against the boot; all red. "select's sets are not
+  judged" went NOT RED, correctly - a set is written back where it was read,
+  and a page the program may not read is one it may not write, so the call is
+  EFAULT either way; what the judgement keeps out is a page ring 0 may read and
+  write and the program may not, which the fake kernel does not have. It is
+  written down in the case file instead of kept. Twelve boots across two rounds (six and six), all clean.
+- **LTP**: the step's own fifteen and L1's twelve: 23 of 27 passed. Of the rest,
+  poll03 and pwrite04 (twice) are fixed above and the six tests of the calls they touch, run again after, passed six of six; select01 makes a
+  FIFO with `mkfifo` in its temporary directory and is refused - L1's gap on
+  `mknod`, not the event loop's. select02 to 04 pass their own variant and say
+  so of the time64 one, which x86-64 does not have.
+
 ### L5. Sockets (11, plus `readv`/`writev` on sockets)
 
 The rest of the BSD API (`sendmsg`/`recvmsg`, `shutdown`, `getsockname`,
