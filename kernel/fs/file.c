@@ -80,6 +80,27 @@ void vibeos_file_get(vibeos_file_t *f) {
     }
 }
 
+int vibeos_file_try_get(vibeos_file_t *f) {
+    uint32_t n;
+
+    if (!f) {
+        return 0;
+    }
+    n = __atomic_load_n(&f->refs, __ATOMIC_ACQUIRE);
+    while (n != 0u) {
+        if (__atomic_compare_exchange_n(&f->refs, &n, n + 1u, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void (*g_on_release)(vibeos_file_t *f);
+
+void vibeos_file_on_release(void (*fn)(vibeos_file_t *f)) {
+    g_on_release = fn;
+}
+
 void vibeos_file_put(vibeos_file_t *f) {
     uint32_t n;
 
@@ -113,6 +134,9 @@ void vibeos_file_put(vibeos_file_t *f) {
      * with it: that is the whole of their lifetime rule. */
     if (vibeos_flk_count() != 0u) {
         vibeos_flk_drop_owner(VIBEOS_FLK_OWNER_FILE(f));
+    }
+    if (g_on_release) {
+        g_on_release(f);
     }
     if (f->ops && f->ops->release) {
         f->ops->release(f);

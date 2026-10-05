@@ -195,6 +195,16 @@ void vibeos_file_get(vibeos_file_t *f);
  * it is a descriptor released twice, and clamping would hide the second owner. */
 void vibeos_file_put(vibeos_file_t *f);
 
+/* One more reference, unless the last one is already gone - for a holder that
+ * keeps a pointer without a reference (epoll's entries) and must not revive a
+ * description whose release has begun. 1 if it took one. */
+int vibeos_file_try_get(vibeos_file_t *f);
+
+/* Called with every description whose last reference has gone, before its type's
+ * release and before the slot can be handed out again: whoever keeps pointers
+ * without references forgets them here. One hook. */
+void vibeos_file_on_release(void (*fn)(vibeos_file_t *f));
+
 uint32_t vibeos_file_in_use(void);
 
 #endif
