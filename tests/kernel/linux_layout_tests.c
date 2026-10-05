@@ -72,6 +72,7 @@ int test_linux_layout(void) {
 #include <linux/utime.h>
 #include <asm/statfs.h>
 #include <asm/poll.h>
+#include <linux/posix_types.h>
 #include <linux/xattr.h>
 #include <linux/limits.h>
 #include <string.h>
@@ -470,6 +471,13 @@ int test_linux_layout(void) {
     CONST(LINUX_POLLNVAL, POLLNVAL);
     CONST(LINUX_POLLRDNORM, POLLRDNORM);
     CONST(LINUX_POLLWRNORM, POLLWRNORM);
+    CONST(LINUX_POLLPRI, POLLPRI);
+    CONST(LINUX_POLLRDBAND, POLLRDBAND);
+    CONST(LINUX_POLLWRBAND, POLLWRBAND);
+    CONST(LINUX_POLLRDHUP, POLLRDHUP);
+    CONST(LINUX_FD_SETSIZE, __FD_SETSIZE);
+    SIZE(linux_fd_set_t, __kernel_fd_set);
+    FIELD(linux_fd_set_t, __kernel_fd_set, fds_bits);
 
     SIZE(linux_termios_t, struct termios);
     FIELD(linux_termios_t, struct termios, c_iflag);

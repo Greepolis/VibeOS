@@ -1,0 +1,15 @@
+# poll at boot (moved from abi-tty-boot.txt with poll, docs/abi/ L4 step 1):
+# BusyBox's shell is interactive on the terminal and asks poll before every key.
+#
+#  1. poll says the keyboard never has anything. Expect a boot that does not
+#     finish: the shell waits for its first key for ever.
+#
+# Target source: kernel/abi/linux/poll.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/poll.c scripts/dev/cases/abi-poll-boot.txt
+
+### poll says nothing can ever be read
+--- old
+    if (r & VIBEOS_READY_IN) {
+        got |= events & (LINUX_POLLIN | LINUX_POLLRDNORM);
+    }
++++ new

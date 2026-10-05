@@ -1945,83 +1945,6 @@ static long linux_sys_ioctl(uint64_t fd, uint64_t req, uint64_t arg) {
     return r;
 }
 
-/* poll(fds, nfds, timeout): which of these descriptors can be read or written
- * now, waiting up to `timeout` milliseconds for one that can - for ever when it
- * is negative, not at all when it is 0.
- *
- * Here ahead of the event loops it belongs with (L4), and no more of it than
- * the terminal needs: a shell on a terminal asks poll before every key. Each
- * file type says what it can do now (vibeos_file_ops_t.ready); one that cannot
- * say is always ready, which is right for a file and wrong for a socket - the
- * gap the registry names. The wait is the pipes' wait: give up the core, look
- * again, stop for a signal. */
-static long linux_sys_poll(uint64_t fds_uptr, uint64_t nfds, uint64_t timeout) {
-    int ms = VIBEOS_ARG_INT(timeout);
-    uint64_t deadline = 0, i;
-    long count;
-
-    if (nfds > (uint64_t)LINUX_MAX_FDS) {
-        return -VIBEOS_EINVAL;
-    }
-    if (ms > 0) {
-        deadline = ks_ticks() + vibeos_ceil_div_u64((uint64_t)ms * ks_hz(), 1000ull);
-    }
-    for (;;) {
-        count = 0;
-        for (i = 0; i < nfds; i++) {
-            linux_pollfd_t p;
-            uint64_t at = fds_uptr + i * sizeof(p);
-            int16_t got = 0;
-
-            /* Each element copied in, judged and copied out on its own: the
-             * array was checked as a whole before this ran, and that check and
-             * these copies are two instants (H-020). */
-            if (vibeos_uaccess_copy(&p, (const void *)(uintptr_t)at, sizeof(p)) != 0) {
-                return -VIBEOS_EFAULT;
-            }
-            if (p.fd >= 0) {
-                vibeos_file_t *f = linux_file_get((uint64_t)(uint32_t)p.fd);
-                if (!f) {
-                    got = LINUX_POLLNVAL;
-                } else {
-                    uint32_t r = f->ops->ready ? f->ops->ready(f) : (VIBEOS_READY_IN | VIBEOS_READY_OUT);
-                    if (r & VIBEOS_READY_IN) {
-                        got |= (int16_t)(p.events & (LINUX_POLLIN | LINUX_POLLRDNORM));
-                    }
-                    if (r & VIBEOS_READY_OUT) {
-                        got |= (int16_t)(p.events & (LINUX_POLLOUT | LINUX_POLLWRNORM));
-                    }
-                    if (r & VIBEOS_READY_HUP) {
-                        /* Reported whether asked for or not, as an error is. A
-                         * write end whose reader has gone is an error. */
-                        got |= f->pipe_write ? LINUX_POLLERR : LINUX_POLLHUP;
-                    }
-                    vibeos_file_put(f);
-                }
-            }
-            if (got != p.revents) {
-                p.revents = got;
-                if (vibeos_uaccess_copy((void *)(uintptr_t)at, &p, sizeof(p)) != 0) {
-                    return -VIBEOS_EFAULT;
-                }
-            }
-            if (got != 0) {
-                count++;
-            }
-        }
-        if (count > 0 || ms == 0) {
-            return count;
-        }
-        if (ms > 0 && ks_ticks() >= deadline) {
-            return 0;
-        }
-        if (ks_current() >= 0 && ks_signal_interrupts(ks_current())) {
-            return -VIBEOS_EINTR;
-        }
-        ks_block_point();
-    }
-}
-
 /* ---- paths ----------------------------------------------------------------------------- */
 
 /* unlinkat(dirfd, path, flags) and unlink(path). A directory is EISDIR, as
@@ -2291,7 +2214,6 @@ int linux_files_leave(vibeos_procstate_t *ps) {
     X(4,   stat,        STAT,        PTRS(OUT(1, sizeof(linux_stat_t))), linux_sys_stat(ARG(0), ARG(1))) \
     X(5,   fstat,       FSTAT,       PTRS(OUT(1, sizeof(linux_stat_t))), linux_sys_fstat(ARG(0), ARG(1))) \
     X(6,   lstat,       LSTAT,       PTRS(OUT(1, sizeof(linux_stat_t))), linux_sys_lstat(ARG(0), ARG(1))) \
-    X(7,   poll,        POLL,        PTRS(OUT_VEC(0, 1, sizeof(linux_pollfd_t), 1024)), linux_sys_poll(ARG(0), ARG(1), ARG(2))) \
     X(8,   lseek,       LSEEK,       NOPTR, linux_sys_lseek(ARG(0), ARG(1), ARG(2))) \
     X(16,  ioctl,       IOCTL,       PTRS(OUT_IF(1, VIBEOS_IOCTL_GET_PGRP, 2, sizeof(uint32_t)), IN_IF(1, VIBEOS_IOCTL_SET_PGRP, 2, sizeof(uint32_t))), linux_sys_ioctl(ARG(0), ARG(1), ARG(2))) \
     X(19,  readv,       READV,       PTRS(IN_VEC(1, 2, sizeof(linux_iovec_t), 1024)), linux_sys_readv(ARG(0), ARG(1), ARG(2))) \

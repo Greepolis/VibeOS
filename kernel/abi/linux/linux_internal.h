@@ -53,6 +53,10 @@ uint64_t linux_cpu_of_process(uint32_t tgid);
 uint64_t linux_cpu_of_thread(int slot);
 uint64_t linux_cpu_slot(int slot);
 
+/* What a description can do now, in Linux's poll bits, for `events` - with the
+ * hangup and the error whether asked or not (poll.c, docs/abi/ L4). */
+uint32_t linux_revents(vibeos_file_t *f, uint32_t events);
+
 /* The pool's entropy as Linux reports it, in bits, for RNDGETENTCNT and
  * /proc/sys/kernel/random/entropy_avail alike (procsrc.c). */
 uint32_t linux_entropy_avail(void);

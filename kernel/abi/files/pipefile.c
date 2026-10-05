@@ -105,12 +105,17 @@ static uint32_t pipe_ready(vibeos_file_t *f) {
 
     if (f->pipe_write) {
         uint32_t r = pending < VIBEOS_PIPE_BYTES ? VIBEOS_READY_OUT : 0u;
-        return vibeos_pipe_readers(f->pipe) == 0u ? (r | VIBEOS_READY_OUT | VIBEOS_READY_HUP) : r;
+        /* No reader: a write fails at once with EPIPE, which is an error to
+         * poll (POLLERR, as Linux's pipe_poll says), not a hangup. */
+        return vibeos_pipe_readers(f->pipe) == 0u ? (r | VIBEOS_READY_OUT | VIBEOS_READY_ERR) : r;
     }
     if (pending > 0u) {
         return VIBEOS_READY_IN;
     }
-    return vibeos_pipe_writers(f->pipe) == 0u ? (VIBEOS_READY_IN | VIBEOS_READY_HUP) : 0u;
+    /* Empty with no writer is a hangup and only that, as Linux's pipe_poll says
+     * (LTP's poll03): a read returns 0 at once, which select counts as readable
+     * because a hangup is in its read set - poll's caller asked and is told. */
+    return vibeos_pipe_writers(f->pipe) == 0u ? VIBEOS_READY_HUP : 0u;
 }
 
 static void pipe_release(vibeos_file_t *f) {

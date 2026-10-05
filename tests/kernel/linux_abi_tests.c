@@ -1755,8 +1755,8 @@ static void t_descriptor_requests_and_poll(void) {
     (void)sys(7, up, 1, (uint64_t)-1, 0, 0, 0, &how);
     expect(how == KF_BLOCKED, "with no timeout poll waits for one of them");
     (void)SYS1(3, (uint64_t)f[1]);
-    expect(SYS3(7, up, 1, 0) == 1 && p[0].revents == (1 | 0x10),
-           "a pipe nobody can write any more is readable - end of file - and hung up");
+    expect(SYS3(7, up, 1, 0) == 1 && p[0].revents == 0x10,
+           "an empty pipe nobody can write any more is hung up, and only that (Linux's pipe_poll, LTP's poll03)");
     expect(SYS3(7, up, 2000, 0) == -VIBEOS_EINVAL && SYS3(7, 0x1000, 1, 0) == -VIBEOS_EFAULT,
            "more descriptors than a process may have is EINVAL, an array outside user memory EFAULT");
 
@@ -2303,6 +2303,126 @@ static void t_procdev(void) {
         expect(n > 7 && total == n && memcmp(whole, pieces, (size_t)n) == 0,
                "a /proc file read a few bytes at a time is the file read whole");
     }
+}
+
+/* ---- L4 step 1: poll, ppoll, select and pselect6 on one engine --------------------------- */
+static void t_event_loops(void) {
+    uint64_t up = kf_ualloc(4 * sizeof(linux_pollfd_t)), fdsu = kf_ualloc(8), sets = kf_ualloc(3 * 128);
+    uint64_t tv = kf_ualloc(16), mask = kf_ualloc(8), pack = kf_ualloc(16), sa = kf_ualloc(16);
+    linux_pollfd_t *p = (linux_pollfd_t *)kf_uptr(up);
+    int32_t *f = (int32_t *)kf_uptr(fdsu);
+    uint64_t *rs = (uint64_t *)kf_uptr(sets), *ws = rs + 16, *es = rs + 32;
+    int64_t *t = (int64_t *)kf_uptr(tv);
+    uint64_t *m = (uint64_t *)kf_uptr(mask), *pk = (uint64_t *)kf_uptr(pack);
+    kf_outcome_t how = KF_RETURNED;
+    long udp, tcp, lis;
+    int me;
+
+    me = fresh(81);
+    kf_net_up(0x0A00020Fu, 0x0A000202u);
+    expect(SYS2(293, fdsu, 0) == 0, "a pipe to wait on");
+
+    /* select: the sets say which, and only of what was asked. */
+    memset(rs, 0, 3 * 128);
+    rs[0] = 1ull << f[0];
+    ws[0] = 1ull << f[1];
+    t[0] = 0; t[1] = 0;
+    expect(SYS5(23, (uint64_t)f[1] + 1u, sets, sets + 128, sets + 256, tv) == 1 && rs[0] == 0 &&
+           ws[0] == (1ull << f[1]) && es[0] == 0,
+           "select: an empty pipe can be written and not read, and the sets say so");
+    (void)SYS3(1, (uint64_t)f[1], ustr("x"), 1);
+    rs[0] = 1ull << f[0];
+    ws[0] = 0;
+    t[0] = 1; t[1] = 0;
+    expect(SYS5(23, (uint64_t)f[1] + 1u, sets, sets + 128, 0, tv) == 1 && rs[0] == (1ull << f[0]) &&
+           t[0] * 1000000 + t[1] == 1000000,
+           "a byte in it is readable at once, and what was left of the time - all of it - is written back");
+    rs[0] = 1ull << 20;
+    expect(SYS5(23, 21, sets, 0, 0, tv) == -VIBEOS_EBADF, "a descriptor that is not open is EBADF");
+    t[0] = 0; t[1] = 1000000;
+    expect(SYS5(23, 1, 0, 0, 0, tv) == -VIBEOS_EINVAL && SYS5(23, (uint64_t)-1, 0, 0, 0, 0) == -VIBEOS_EINVAL,
+           "a microsecond count of a second or more, and a negative nfds, are EINVAL");
+    (void)SYS3(0, (uint64_t)f[0], kf_ualloc(8), 8);
+    rs[0] = 1ull << f[0];
+    t[0] = 0; t[1] = 30000;
+    {
+        uint64_t t0 = ks_ticks();
+
+        expect(sys(23, (uint64_t)f[0] + 1u, sets, 0, 0, tv, 0, &how) == 0 && how == KF_RETURNED && rs[0] == 0 &&
+               t[0] == 0 && t[1] == 0,
+               "a time that runs out returns 0, the set cleared and the time used up");
+        expect(ks_ticks() - t0 >= 3u * ks_hz() / 100u + 1u,
+               "and it is never shorter than asked: the tick it began in is not counted, as a sleep's is not");
+    }
+    {
+        int64_t none = MMAP(0, 4096, 0 /* PROT_NONE */, MAP_PRIV_ANON, -1, 0);
+
+        /* A set's size follows from nfds, so the handler judges it - and the
+         * machine's copy would read this page, as the fake's does (M-082). */
+        t[0] = 0; t[1] = 0;
+        expect(none > 0 && SYS5(23, 1, (uint64_t)none, 0, 0, tv) == -VIBEOS_EFAULT,
+               "a set in memory the program may not read is EFAULT");
+        pk[0] = (uint64_t)none; pk[1] = 8;
+        expect(sys(270, 1, 0, 0, 0, tv, pack, 0) == -VIBEOS_EFAULT, "and so is pselect6's mask there");
+    }
+    rs[0] = 1ull << f[0];
+    (void)sys(23, (uint64_t)f[0] + 1u, sets, 0, 0, 0, 0, &how);
+    expect(how == KF_BLOCKED, "and with no time it waits");
+
+    /* Sockets say what they can do (socket.c, from the stack): a socket used to
+     * be always ready, and nc - which waits in poll on its socket - spun. */
+    udp = SYS3(41, 2, 2, 0);
+    tcp = SYS3(41, 2, 1, 0);
+    lis = SYS3(41, 2, 1, 0);
+    ((uint8_t *)kf_uptr(sa))[0] = 2;
+    ((uint8_t *)kf_uptr(sa))[2] = 0x1F; ((uint8_t *)kf_uptr(sa))[3] = 0x90;   /* 8080 */
+    expect(udp >= 0 && tcp >= 0 && lis >= 0 && SYS3(49, (uint64_t)lis, sa, 16) == 0 && SYS2(50, (uint64_t)lis, 4) == 0,
+           "three sockets, one of them listening");
+    p[0].fd = (int32_t)udp; p[0].events = 1 | 4; p[0].revents = 0;
+    p[1].fd = (int32_t)tcp; p[1].events = 1 | 4; p[1].revents = 0;
+    p[2].fd = (int32_t)lis; p[2].events = 1; p[2].revents = 0;
+    p[3].fd = f[1]; p[3].events = 4; p[3].revents = 0;
+    expect(SYS3(7, up, 3, 0) == 2 && p[0].revents == 4 && p[1].revents == (4 | 0x10) && p[2].revents == 0,
+           "poll: a datagram socket can send, a stream socket nobody connected is writable and hung up, "
+           "and a listener with nobody waiting is nothing");
+    (void)SYS1(3, (uint64_t)f[0]);
+    expect(SYS3(7, up + 3u * sizeof(linux_pollfd_t), 1, 0) == 1 && p[3].revents == (4 | 0x8),
+           "a pipe nobody reads any more is writable - the write fails at once - and an error, not a hangup");
+
+    /* ppoll and pselect6: a mask for the wait, as rt_sigsuspend has. */
+    expect(SYS2(293, fdsu, 0) == 0, "another pipe");
+    p[0].fd = f[0]; p[0].events = 1; p[0].revents = 0;
+    t[0] = 0; t[1] = 0;
+    expect(SYS5(271, up, 1, tv, 0, 8) == 0 && t[0] == 0 && t[1] == 0, "ppoll with a zero timespec looks once");
+    ks_id(me)->sig_blocked = 1ull << 10;
+    (void)ks_signal_send(me, 10, 0);
+    *m = 0;   /* nothing blocked during the wait */
+    expect(SYS5(271, up, 1, 0, mask, 8) == -VIBEOS_EINTR && ks_id(me)->sig_saved_valid &&
+           ks_id(me)->sig_saved == (1ull << 10) && ks_id(me)->sig_blocked == 0,
+           "a signal the program blocks and ppoll's mask lets through ends the wait, the program's mask kept "
+           "aside for the handler's frame");
+    ks_id(me)->sig_blocked = 1ull << 10;
+    ks_id(me)->sig_saved_valid = 0;
+    *m = 1ull << 9;   /* Linux's numbering: SIGUSR1 is bit 9 */
+    t[0] = 0; t[1] = 0;
+    expect(SYS5(271, up, 1, tv, mask, 8) == 0 && ks_id(me)->sig_blocked == (1ull << 10) && !ks_id(me)->sig_saved_valid,
+           "one ppoll's mask keeps out does not, and the program's mask is back before the call returns");
+    expect(SYS5(271, up, 1, tv, mask, 4) == -VIBEOS_EINVAL, "a mask of any size but eight bytes is EINVAL");
+    rs[0] = 1ull << f[0];
+    *m = 0;
+    pk[0] = mask; pk[1] = 8;
+    expect(sys(270, (uint64_t)f[0] + 1u, sets, 0, 0, 0, pack, &how) == -VIBEOS_EINTR && how == KF_RETURNED &&
+           ks_id(me)->sig_saved_valid,
+           "pselect6 takes its mask in a pair, and waits under it");
+    ks_id(me)->sig_saved_valid = 0;
+    ks_id(me)->sig_pending = 0;
+    pk[1] = 4;
+    expect(sys(270, (uint64_t)f[0] + 1u, sets, 0, 0, tv, pack, 0) == -VIBEOS_EINVAL, "and refuses a mask of another size");
+    pk[0] = 0;
+    t[0] = 0; t[1] = 0;
+    rs[0] = 1ull << f[0];
+    expect(sys(270, (uint64_t)f[0] + 1u, sets, 0, 0, tv, pack, 0) == 0 && rs[0] == 0, "with no mask it is select on a timespec");
+    expect(kf_lock_imbalance() == 0, "the event loops released every lock they took");
 }
 
 /* clone3's argument rules (L2 step 6, from step 5's LTP run: clone302). */
@@ -4117,6 +4237,7 @@ int test_linux_handlers(void) {
     t_limits();
     t_processes();
     t_procdev();
+    t_event_loops();
     t_futex_shared();
     t_clone3_checks();
     t_sleep();
@@ -4168,24 +4289,6 @@ int test_linux_gaps(void) {
 
     g_fail = 0;
     g_gaps = 0;
-
-    /* poll (7), L4: a socket with nothing to read is not readable. */
-    {
-        uint64_t pf, sa;
-        long fd;
-        fresh(80);
-        kf_net_up(0x0A00020Fu, 0x0A000202u);
-        pf = kf_ualloc(8);
-        sa = kf_ualloc(16);
-        fd = SYS2(41, 2, 2);
-        ((uint8_t *)kf_uptr(sa))[0] = 2;
-        ((uint8_t *)kf_uptr(sa))[2] = 0x10; ((uint8_t *)kf_uptr(sa))[3] = 0x93;
-        (void)SYS2(49, (uint64_t)fd, sa);
-        ((int32_t *)kf_uptr(pf))[0] = (int32_t)fd;
-        ((int16_t *)kf_uptr(pf))[2] = 1;   /* POLLIN */
-        ((int16_t *)kf_uptr(pf))[3] = 0;
-        gap(7, fd >= 0 && SYS3(7, pf, 1, 0) == 0, "poll on a socket with nothing to read");
-    }
 
     /* mknod (133) and mknodat (259), L1: a FIFO has a name. */
     fresh(77);

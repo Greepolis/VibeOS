@@ -112,6 +112,29 @@ static int socket_stat(vibeos_file_t *f, vibeos_file_stat_t *out) {
     return 0;
 }
 
+/* What poll may say of it (docs/abi/ L4): the stack's answer, by its own rules.
+ * A socket used to have no `ready`, which reads as "always ready for both", so
+ * poll returned at once on a socket with nothing to read and nc - which waits in
+ * poll on its socket - spun. A socket that is no longer this description's
+ * (closed, its slot given away) is hung up. */
+static uint32_t socket_ready(vibeos_file_t *f) {
+    uint32_t in, r = 0;
+    int sock;
+
+    if ((sock = vibeos_sockfile_stable(f)) < 0) {
+        return VIBEOS_READY_HUP;
+    }
+    ks_lock(ks_net_lock(), __func__);
+    in = vibeos_inet_ready(ks_net(), sock);
+    ks_unlock(ks_net_lock());
+    r |= (in & VIBEOS_INET_READY_IN) ? VIBEOS_READY_IN : 0u;
+    r |= (in & VIBEOS_INET_READY_OUT) ? VIBEOS_READY_OUT : 0u;
+    r |= (in & VIBEOS_INET_READY_HUP) ? VIBEOS_READY_HUP : 0u;
+    r |= (in & VIBEOS_INET_READY_ERR) ? VIBEOS_READY_ERR : 0u;
+    r |= (in & VIBEOS_INET_READY_RDHUP) ? VIBEOS_READY_RDHUP : 0u;
+    return r;
+}
+
 /* The last descriptor has gone. Closed only if it is still the socket this
  * description was opened on: a process's exit releases the sockets it owns, and
  * a child that inherited the descriptor can outlive its parent - closing by
@@ -131,6 +154,7 @@ const vibeos_file_ops_t vibeos_fops_socket = {
     .write = socket_send,
     .stat = socket_stat,
     .release = socket_release,
+    .ready = socket_ready,
 };
 
 vibeos_file_t *vibeos_open_socket(int sock) {

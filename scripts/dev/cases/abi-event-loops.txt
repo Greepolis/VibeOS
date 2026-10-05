@@ -1,0 +1,100 @@
+# poll, ppoll, select and pselect6 on one engine (kernel/abi/linux/poll.c,
+# docs/abi/ L4 step 1). Host test: t_event_loops (and poll's older checks) in
+# tests/kernel/linux_abi_tests.c.
+#
+#  1. a hangup is reported only when asked for, where Linux always reports it
+#  2. so is an error
+#  3. the tick in progress counts, so a wait can end before the time asked
+#  4. the program's mask is not back when ppoll ends without EINTR, so a signal
+#     it blocks is delivered on the way out
+#  5. select skips a descriptor that is not open, where Linux says EBADF
+#  6. what was left of the time is not written back
+#
+# Moved here with poll from abi-tty-fs.txt (docs/abi/ L1 step 7), re-pointed:
+#
+#  7. poll looks at a negative descriptor
+#  8. poll passes over a closed descriptor, where it is POLLNVAL
+#  9. poll waits with a timeout of 0
+# 10. poll leaves revents as it found it
+# 11. poll reports reading to whoever asked about writing
+#
+# Not a case: "select's sets are not judged before they are read". It goes NOT
+# RED, correctly: a set is written back to the page it was read from, and a page
+# the program may not read is one it may not write, so the call is EFAULT with
+# or without the judgement. What the judgement keeps out is a page ring 0 may
+# both read and write and the program may not - the kernel's own - and the fake
+# kernel has none. Correct, and unverifiable on the host; check-chokepoints.py
+# counts the call.
+#
+# Target source: kernel/abi/linux/poll.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/poll.c scripts/dev/cases/abi-event-loops.txt
+
+### a hangup is reported only when asked for
+--- old
+        got |= LINUX_POLLHUP;
++++ new
+        got |= events & LINUX_POLLHUP;
+
+### an error is reported only when asked for
+--- old
+        got |= LINUX_POLLERR;
++++ new
+        got |= events & LINUX_POLLERR;
+
+### the tick in progress counts
+--- old
+    uint64_t deadline = ticks > 0 ? ks_ticks() + (uint64_t)ticks + 1u : 0;
++++ new
+    uint64_t deadline = ticks > 0 ? ks_ticks() + (uint64_t)ticks : 0;
+
+### the program's mask is not back after a wait that did not end in EINTR
+--- old
+    if (r != -VIBEOS_EINTR && t->sig_saved_valid) {
++++ new
+    if (0 && r != -VIBEOS_EINTR && t->sig_saved_valid) {
+
+### select skips a descriptor that is not open
+--- old
+        if (!(f = linux_file_get(fd))) {
+            return -VIBEOS_EBADF;
+        }
++++ new
+        if (!(f = linux_file_get(fd))) {
+            continue;
+        }
+
+### what was left of the time is not written back
+--- old
+        *left = (ticks > 0 && deadline > now) ? deadline - now : 0;
++++ new
+        *left = 0;
+
+### poll looks at a negative descriptor
+--- old
+        if (p.fd >= 0) {
++++ new
+        if (1) {
+
+### poll passes over a closed descriptor
+--- old
+                got = LINUX_POLLNVAL;
++++ new
+                got = 0;
+
+### poll waits with a timeout of 0
+--- old
+        if (n != 0 || ticks == 0 || (ticks > 0 && ks_ticks() >= deadline)) {
++++ new
+        if (n != 0 || (ticks > 0 && ks_ticks() >= deadline)) {
+
+### poll leaves revents as it found it
+--- old
+        if (got != p.revents) {
++++ new
+        if (got != 0) {
+
+### poll reports reading to whoever asked about writing
+--- old
+        got |= events & (LINUX_POLLIN | LINUX_POLLRDNORM);
++++ new
+        got |= LINUX_POLLIN;

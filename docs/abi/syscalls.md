@@ -9,9 +9,9 @@ the registry, not this page; `check.sh` fails while the two differ.
 
 | State | Count | What the kernel answers |
 | --- | --- | --- |
-| done | 165 | through its row |
-| partial | 31 | through its row, with the gap named |
-| missing | 93 | ENOSYS, and the boot gate fails naming the number |
+| done | 169 | through its row |
+| partial | 30 | through its row, with the gap named |
+| missing | 90 | ENOSYS, and the boot gate fails naming the number |
 | deferred | 50 | ENOSYS, and the boot gate fails naming the number |
 | refused | 34 | its errno, counted as refused - expected, never a failure |
 
@@ -22,7 +22,7 @@ Without a row, by phase:
 | L1 - files and paths | 0 |
 | L2 - processes, credentials, time | 4 |
 | L3 - memory | 0 |
-| L4 - event loops | 20 |
+| L4 - event loops | 17 |
 | L5 - sockets | 11 |
 | L6 - threads and scheduling | 20 |
 | L7 - IPC | 21 |
@@ -43,7 +43,7 @@ calls, outside the Linux number space, are listed last.
 | 4 | `stat` | done | - | - | `fs.c` |  |
 | 5 | `fstat` | done | - | - | `fs.c` |  |
 | 6 | `lstat` | done | - | - | `fs.c` |  |
-| 7 | `poll` | partial | L4 | - | `fs.c` | the console, pipes and files; a socket always reports ready |
+| 7 | `poll` | done | - | - | `poll.c` |  |
 | 8 | `lseek` | done | - | - | `fs.c` |  |
 | 9 | `mmap` | partial | L3 | - | `mm.c` | a shared mapping of a file on a filesystem that keeps no pages (FAT) is refused: ENODEV |
 | 10 | `mprotect` | done | - | - | `mm.c` |  |
@@ -59,7 +59,7 @@ calls, outside the Linux number space, are listed last.
 | 20 | `writev` | partial | L5 | - | `fs.c` | files and the console; no socket gather |
 | 21 | `access` | done | - | - | `names.c` |  |
 | 22 | `pipe` | done | - | - | `fs.c` |  |
-| 23 | `select` | missing | L4 | ENOSYS |  |  |
+| 23 | `select` | done | - | - | `poll.c` |  |
 | 24 | `sched_yield` | done | - | - | `proc.c` |  |
 | 25 | `mremap` | partial | L3 | - | `mm.c` | only a private anonymous mapping grows; a zero old length and MREMAP_DONTUNMAP are refused |
 | 26 | `msync` | done | - | - | `mm.c` |  |
@@ -306,8 +306,8 @@ calls, outside the Linux number space, are listed last.
 | 267 | `readlinkat` | done | - | - | `fs.c` |  |
 | 268 | `fchmodat` | done | - | - | `names.c` |  |
 | 269 | `faccessat` | done | - | - | `names.c` |  |
-| 270 | `pselect6` | missing | L4 | ENOSYS |  |  |
-| 271 | `ppoll` | missing | L4 | ENOSYS |  |  |
+| 270 | `pselect6` | done | - | - | `poll.c` |  |
+| 271 | `ppoll` | done | - | - | `poll.c` |  |
 | 272 | `unshare` | deferred | D | ENOSYS |  | namespaces: after the credential model |
 | 273 | `set_robust_list` | done | - | - | `proc.c` |  |
 | 274 | `get_robust_list` | missing | L6 | ENOSYS |  |  |

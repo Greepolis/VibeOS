@@ -162,6 +162,7 @@ set(VIBEOS_LINUX_ABI_SOURCES
     kernel/abi/linux/timer.c
     kernel/abi/linux/limits.c
     kernel/abi/linux/procsrc.c
+    kernel/abi/linux/poll.c
     ${VIBEOS_ABI_FILES_SOURCES}
 )
 

@@ -241,6 +241,14 @@ typedef struct {
     int16_t revents;
 } linux_pollfd_t;
 
+/* __kernel_fd_set (linux/posix_types.h): select's three sets, a bit per
+ * descriptor in 64-bit words. A call reads only as many words as its nfds
+ * needs, so a smaller set in user memory is fine. */
+#define LINUX_FD_SETSIZE 1024
+typedef struct {
+    uint64_t fds_bits[LINUX_FD_SETSIZE / 64];
+} linux_fd_set_t;
+
 /* ---- constants ---------------------------------------------------------------------- */
 
 /* clone() flags that decide whether it is a fork or a thread (linux/sched.h). */
@@ -395,6 +403,10 @@ typedef struct {
 #define LINUX_POLLNVAL 0x0020
 #define LINUX_POLLRDNORM 0x0040
 #define LINUX_POLLWRNORM 0x0100
+#define LINUX_POLLPRI    0x0002
+#define LINUX_POLLRDBAND 0x0080
+#define LINUX_POLLWRBAND 0x0200
+#define LINUX_POLLRDHUP  0x2000
 
 /* close_range flags (linux/close_range.h). */
 #define LINUX_CLOSE_RANGE_UNSHARE (1u << 1)

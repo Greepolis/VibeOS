@@ -1,6 +1,7 @@
-# The terminal's requests, the descriptor requests, poll and the gathered writev
-# in the Linux handlers (kernel/abi/linux/fs.c, docs/abi/ L1 step 7), proved by
-# the host tests in tests/kernel/linux_abi_tests.c.
+# The terminal's requests, the descriptor requests and the gathered writev in
+# the Linux handlers (kernel/abi/linux/fs.c, docs/abi/ L1 step 7), proved by
+# the host tests in tests/kernel/linux_abi_tests.c. poll's cases moved with
+# poll to abi-event-loops.txt (docs/abi/ L4 step 1).
 #
 # Not a case: an ioctl pointer that is not judged (linux_ioctl_arg answering
 # yes). The fake kernel's memory really faults on such a pointer, so the suite
@@ -44,41 +45,6 @@
                 v = (int32_t)vibeos_pipe_pending(f->pipe);
 +++ new
                 v = 0;
-
-### poll looks at a negative descriptor
---- old
-            if (p.fd >= 0) {
-+++ new
-            if (1) {
-
-### poll passes over a closed descriptor
---- old
-                    got = LINUX_POLLNVAL;
-+++ new
-                    got = 0;
-
-### poll waits with a timeout of 0
---- old
-        if (count > 0 || ms == 0) {
-+++ new
-        if (count > 0) {
-
-### poll does not say a pipe hung up
---- old
-                        got |= f->pipe_write ? LINUX_POLLERR : LINUX_POLLHUP;
-+++ new
-
-### poll leaves revents as it found it
---- old
-            if (got != p.revents) {
-+++ new
-            if (got != 0) {
-
-### poll reports reading to whoever asked about writing
---- old
-                        got |= (int16_t)(p.events & (LINUX_POLLIN | LINUX_POLLRDNORM));
-+++ new
-                        got |= LINUX_POLLIN;
 
 ### a writev is written a piece at a time
 --- old

@@ -93,9 +93,13 @@ typedef struct {
 #define VIBEOS_READDIR_SKIP 2   /* none at this position; the next may have one */
 
 /* What a description can do now without waiting (ready, below). */
-#define VIBEOS_READY_IN  0x1u    /* a read returns at once: data, or end of file  */
-#define VIBEOS_READY_OUT 0x2u    /* a write would be taken                         */
-#define VIBEOS_READY_HUP 0x4u    /* the other side has gone                        */
+#define VIBEOS_READY_IN    0x1u   /* a read returns at once: data, or end of file  */
+#define VIBEOS_READY_OUT   0x2u   /* a write would be taken                        */
+#define VIBEOS_READY_HUP   0x4u   /* the other side has gone                       */
+#define VIBEOS_READY_ERR   0x8u   /* an error waits: a pipe's reader has gone, a
+                                   * connection was reset (docs/abi/ L4)          */
+#define VIBEOS_READY_RDHUP 0x10u  /* the other side will send nothing more: a
+                                   * connection's peer closed its half            */
 
 /* One file type. Every entry may be NULL, and the caller answers for a missing
  * one with what Linux answers: EINVAL for read/write, ESPIPE for seek and the
