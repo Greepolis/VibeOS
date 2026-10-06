@@ -2116,6 +2116,40 @@ descriptions.
 **Programs:** BusyBox `wget` against the host, a DNS lookup through the C
 library, a client and server over a Unix socket.
 
+**The plan (2026-10-06).** Measured first, with strace on Linux and the
+BusyBox the image stages. `wget` needs little: socket, connect, read and write,
+and `fcntl` turning O_NONBLOCK on and off on the socket. A DNS lookup through
+musl's `getaddrinfo` needs more: `/etc/hosts` and `/etc/resolv.conf`, a UDP
+socket made with SOCK_NONBLOCK|SOCK_CLOEXEC in its type, `bind` to port 0,
+`sendto` with MSG_NOSIGNAL, `poll`, and `recvmsg` for the answer and the
+address it came from. L4 left four things here: `socketpair` and AF_UNIX
+(epoll_pwait01 to 06), `listen` on a socket nobody bound (Linux binds it to a
+port of its own; epoll_wait05), the rest of `setsockopt`, and a `recv` that
+gives up with EIO after ten seconds where Linux waits. LTP is the oracle for
+the calls: `tests/corpus/ltp-l5.txt`, the phase's own 36 tests and the 21 of
+the socket calls that were done before L1 and never had a list (accept, bind,
+connect, listen, recv, recvfrom, send, sendto, socket; not socketcall, which
+x86-64 does not have).
+
+Four steps:
+
+1. **The BSD calls on IP sockets**: `getsockname`, `getpeername`, `accept4`,
+   the type flags of `socket`, `listen` that binds what nobody bound, socket
+   options as Linux reports them (SO_TYPE, SO_ERROR, SO_DOMAIN, SO_PROTOCOL,
+   SO_ACCEPTCONN, the buffer sizes, SO_LINGER, the timeouts, TCP_NODELAY), the
+   flags of a send and a receive (MSG_DONTWAIT, MSG_PEEK, MSG_NOSIGNAL), a
+   receive that waits as long as Linux's, `readv` and `writev` on a socket,
+   and `sendmsg`, `recvmsg`, `sendmmsg`, `recvmmsg`.
+2. **AF_UNIX stream sockets**, a file type of their own beside the pipe: a
+   name in the filesystem or in the abstract namespace, listen, connect,
+   accept, `socketpair`, poll, shutdown, the names and SO_PEERCRED.
+3. **AF_UNIX datagram sockets and SCM_RIGHTS**: messages kept whole, a
+   connected or a named peer, and open file descriptions passed with a
+   message - A3's counted descriptions, installed in the receiver's table.
+4. **The programs**: `wget` fetching from the host, a lookup through musl's
+   resolver at boot, a client and a server over a Unix socket; and LTP for
+   the phase.
+
 ### L6. Threads and scheduling (20, plus `futex` and `clone` finished)
 
 The rest of `futex` (requeue, wake-op, the `futex2` calls; priority inheritance
