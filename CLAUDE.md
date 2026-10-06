@@ -195,7 +195,8 @@ transmit into every core parked in `hw_spin_lock` behind it. The wedge
 report showed exactly that: one core in the driver, three queued.
 
 When adding a lock around something that already waited, look at what the wait
-costs now that others are behind it.
+costs now that others are behind it. The bound is two million now - still orders
+of magnitude of headroom, and a failed frame instead of a failed machine.
 
 **A sequence number is not a byte.** The TCP flush counted what was left to
 send as `snd_una + tx_len - snd_nxt`, unsigned - and a FIN takes a sequence
@@ -212,8 +213,7 @@ looked again every tick and never asked whether a signal needed acting on, so
 an httpd parked in `accept` could not be killed - and the machine leaves
 userland only once every user task has ended, so the boot that started it
 never finished. Every new wait loop asks `ks_signal_interrupts` and honours
-O_NONBLOCK, the way the pipe's and poll's do. The bound is two million now - still orders
-of magnitude of headroom, and a failed frame instead of a failed machine.
+O_NONBLOCK, the way the pipe's and poll's do.
 
 **Section banners in `arch_hw.c` describe where somebody stopped
 writing, not what follows.** The banner "delivering a signal" covers signals,
