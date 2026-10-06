@@ -64,6 +64,8 @@ enum {
 #define VIBEOS_INET_ETIMEDOUT 5
 #define VIBEOS_INET_ENOBUFS 6
 #define VIBEOS_INET_EPIPE 7      /* this side's FIN is out: nothing more to send */
+#define VIBEOS_INET_EADDRINUSE 8 /* another socket holds the port                */
+#define VIBEOS_INET_EISCONN 9    /* connected already                            */
 
 typedef struct vibeos_arp_entry {
     uint32_t ip;
@@ -98,6 +100,10 @@ typedef struct vibeos_inet_socket {
     uint8_t fin_received;
     uint8_t fin_queued;      /* nothing more to send: the FIN follows the data */
     uint8_t shut_rd;         /* shutdown(SHUT_RD): reads end once rx is empty  */
+    uint8_t bound;           /* a port is this socket's: bind, listen, connect, a send */
+    uint8_t reuse;           /* SO_REUSEADDR: another may bind the port unless listening */
+    uint8_t udp_peer;        /* a connected datagram socket: remote_* is its peer */
+    uint32_t local_ip;       /* what bind named; 0 is any                    */
 
     /* Retransmission of the single outstanding send window. */
     uint64_t rto_deadline_ms;
@@ -275,6 +281,24 @@ long vibeos_inet_sendto(vibeos_inet_t *net, int sock, const void *buf, uint32_t 
                         uint32_t ip, uint16_t port);
 long vibeos_inet_recvfrom(vibeos_inet_t *net, int sock, void *buf, uint32_t len,
                           uint32_t *out_ip, uint16_t *out_port);
+
+/* docs/abi/ L5 step 1: the BSD calls as Linux has them.
+ *
+ * bind_addr names an address (0 for any) and a port (0 for one of the stack's
+ * own); a socket bound already is EINVAL, and a port another socket holds is
+ * EADDRINUSE unless both asked for reuse and neither listens. A receive with
+ * VIBEOS_INET_PEEK leaves what it read where it was; a datagram's *full_len is
+ * its whole length, for MSG_TRUNC. names says where the socket is and who its
+ * peer is, 1 if it has one. A datagram socket may connect, which names its
+ * peer for sends without an address. */
+#define VIBEOS_INET_PEEK 0x1u
+int vibeos_inet_bind_addr(vibeos_inet_t *net, int sock, uint32_t ip, uint16_t port);
+int vibeos_inet_set_reuse(vibeos_inet_t *net, int sock, int on);
+long vibeos_inet_recv_ex(vibeos_inet_t *net, int sock, void *buf, uint32_t len, uint32_t flags);
+long vibeos_inet_recvfrom_ex(vibeos_inet_t *net, int sock, void *buf, uint32_t len, uint32_t flags,
+                             uint32_t *out_ip, uint16_t *out_port, uint32_t *full_len);
+int vibeos_inet_names(const vibeos_inet_t *net, int sock, uint32_t *lip, uint16_t *lport,
+                      uint32_t *rip, uint16_t *rport);
 int vibeos_inet_close(vibeos_inet_t *net, int sock);
 /* Half a close (docs/abi/ L4 step 7, for httpd and nc): VIBEOS_INET_SHUT_WR sends
  * the FIN and leaves the socket open for what the peer still sends;

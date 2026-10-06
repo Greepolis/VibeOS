@@ -535,14 +535,6 @@ static int sock_alloc(vibeos_inet_t *net, int type) {
     return -VIBEOS_INET_ENOBUFS;
 }
 
-static uint16_t ephemeral(vibeos_inet_t *net) {
-    uint16_t p = net->next_ephemeral++;
-    if (net->next_ephemeral == 0u || net->next_ephemeral < 49152u) {
-        net->next_ephemeral = 49152u;
-    }
-    return p;
-}
-
 int vibeos_inet_socket(vibeos_inet_t *net, int type) {
     if (!net || (type != VIBEOS_INET_SOCK_UDP && type != VIBEOS_INET_SOCK_TCP)) {
         return -VIBEOS_INET_EINVAL;
@@ -568,13 +560,106 @@ int vibeos_inet_socket_owner(const vibeos_inet_t *net, int sock, uint32_t *out_o
     return 0;
 }
 
+/* Does another socket of this type hold `port` on an address that overlaps
+ * `ip`? Reuse lets two through when both asked for it and neither listens -
+ * Linux's SO_REUSEADDR rule for TCP; for datagrams, both asking is enough. */
+static int port_taken(const vibeos_inet_t *net, const vibeos_inet_socket_t *s, uint32_t ip, uint16_t port) {
+    uint32_t i;
+
+    for (i = 0; i < VIBEOS_INET_MAX_SOCKETS; i++) {
+        const vibeos_inet_socket_t *o = &net->sockets[i];
+
+        if (o == s || !o->used || !o->bound || o->type != s->type || o->local_port != port ||
+            o->parent >= 0) {
+            continue;   /* an accepted connection shares its listener's port */
+        }
+        if (o->local_ip != 0u && ip != 0u && o->local_ip != ip) {
+            continue;
+        }
+        if (s->reuse && o->reuse &&
+            (s->type == VIBEOS_INET_SOCK_UDP || (o->state != VIBEOS_TCP_LISTEN))) {
+            continue;
+        }
+        return 1;
+    }
+    return 0;
+}
+
+/* A port nobody holds, from the ephemeral range. */
+static uint16_t ephemeral_free(vibeos_inet_t *net, const vibeos_inet_socket_t *s) {
+    uint32_t tries;
+
+    for (tries = 0; tries < 16384u; tries++) {
+        uint16_t p = net->next_ephemeral++;
+
+        if (net->next_ephemeral == 0u || net->next_ephemeral < 49152u) {
+            net->next_ephemeral = 49152u;
+        }
+        if (p >= 49152u && !port_taken(net, s, 0, p)) {
+            return p;
+        }
+    }
+    return 0;
+}
+
 int vibeos_inet_bind(vibeos_inet_t *net, int sock, uint16_t port) {
     vibeos_inet_socket_t *s = sock_at(net, sock);
     if (!s) {
         return -VIBEOS_INET_EINVAL;
     }
     s->local_port = port;
+    s->bound = 1;
     return 0;
+}
+
+int vibeos_inet_bind_addr(vibeos_inet_t *net, int sock, uint32_t ip, uint16_t port) {
+    vibeos_inet_socket_t *s = sock_at(net, sock);
+
+    if (!s || s->bound) {
+        return -VIBEOS_INET_EINVAL;
+    }
+    if (port == 0u) {
+        if ((port = ephemeral_free(net, s)) == 0u) {
+            return -VIBEOS_INET_EADDRINUSE;
+        }
+    } else if (port_taken(net, s, ip, port)) {
+        return -VIBEOS_INET_EADDRINUSE;
+    }
+    s->local_port = port;
+    s->local_ip = ip;
+    s->bound = 1;
+    return 0;
+}
+
+int vibeos_inet_set_reuse(vibeos_inet_t *net, int sock, int on) {
+    vibeos_inet_socket_t *s = sock_at(net, sock);
+
+    if (!s) {
+        return -VIBEOS_INET_EINVAL;
+    }
+    s->reuse = on ? 1u : 0u;
+    return 0;
+}
+
+int vibeos_inet_names(const vibeos_inet_t *net, int sock, uint32_t *lip, uint16_t *lport,
+                      uint32_t *rip, uint16_t *rport) {
+    const vibeos_inet_socket_t *s;
+    int peer;
+
+    if (!net || sock < 0 || (uint32_t)sock >= VIBEOS_INET_MAX_SOCKETS || !net->sockets[sock].used) {
+        return -VIBEOS_INET_EINVAL;
+    }
+    s = &net->sockets[sock];
+    peer = s->type == VIBEOS_INET_SOCK_UDP ? s->udp_peer
+                                          : (s->state != VIBEOS_TCP_CLOSED && s->state != VIBEOS_TCP_LISTEN &&
+                                             s->state != VIBEOS_TCP_SYN_SENT);
+    *lport = s->local_port;
+    /* A connected socket is on this machine's address whatever it was bound to. */
+    *lip = (peer || (s->type == VIBEOS_INET_SOCK_TCP && s->state == VIBEOS_TCP_SYN_SENT)) ? net->ip
+                                                                                          : s->local_ip;
+    *rip = peer ? s->remote_ip : 0u;
+    *rport = peer ? s->remote_port : 0u;
+    return peer;
 }
 
 int vibeos_inet_socket_state(const vibeos_inet_t *net, int sock) {
@@ -680,7 +765,17 @@ long vibeos_inet_sendto(vibeos_inet_t *net, int sock, const void *buf, uint32_t 
         return -VIBEOS_INET_EINVAL;
     }
     if (s->local_port == 0u) {
-        s->local_port = ephemeral(net);
+        if ((s->local_port = ephemeral_free(net, s)) == 0u) {
+            return -VIBEOS_INET_EADDRINUSE;
+        }
+        s->bound = 1;
+    }
+    if (ip == 0u && port == 0u) {
+        if (!s->udp_peer) {
+            return -VIBEOS_INET_ENOTCONN;   /* no address, and no peer to send to */
+        }
+        ip = s->remote_ip;
+        port = s->remote_port;
     }
     r = udp_send(net, ip, s->local_port, port, (const uint8_t *)buf, len);
     if (r != 0) {
@@ -691,9 +786,14 @@ long vibeos_inet_sendto(vibeos_inet_t *net, int sock, const void *buf, uint32_t 
 
 long vibeos_inet_recvfrom(vibeos_inet_t *net, int sock, void *buf, uint32_t len,
                           uint32_t *out_ip, uint16_t *out_port) {
+    return vibeos_inet_recvfrom_ex(net, sock, buf, len, 0, out_ip, out_port, 0);
+}
+
+long vibeos_inet_recvfrom_ex(vibeos_inet_t *net, int sock, void *buf, uint32_t len, uint32_t flags,
+                             uint32_t *out_ip, uint16_t *out_port, uint32_t *full_len) {
     vibeos_inet_socket_t *s = sock_at(net, sock);
     uint32_t n, i;
-    if (!s || !buf) {
+    if (!s || (!buf && len != 0u)) {
         return -VIBEOS_INET_EINVAL;
     }
     if (s->rx_len < UDP_FRAME_HDR) {
@@ -717,10 +817,16 @@ long vibeos_inet_recvfrom(vibeos_inet_t *net, int sock, void *buf, uint32_t len,
         for (i = 0; i < copied; i++) {
             ((uint8_t *)buf)[i] = s->rx[UDP_FRAME_HDR + i];
         }
-        for (i = total; i < s->rx_len; i++) {
-            s->rx[i - total] = s->rx[i];
+        if (full_len) {
+            *full_len = dlen;
         }
-        s->rx_len -= total;
+        /* MSG_PEEK: the same datagram is there for the next call. */
+        if (!(flags & VIBEOS_INET_PEEK)) {
+            for (i = total; i < s->rx_len; i++) {
+                s->rx[i - total] = s->rx[i];
+            }
+            s->rx_len -= total;
+        }
         s->last_src_ip = src_ip;
         s->last_src_port = src_port;
         if (out_ip) {
@@ -1393,14 +1499,28 @@ static void tcp_flush(vibeos_inet_t *net, vibeos_inet_socket_t *s) {
 
 int vibeos_inet_connect(vibeos_inet_t *net, int sock, uint32_t ip, uint16_t port) {
     vibeos_inet_socket_t *s = sock_at(net, sock);
-    if (!s || s->type != VIBEOS_INET_SOCK_TCP) {
-        return -VIBEOS_INET_EINVAL;
-    }
-    if (s->state != VIBEOS_TCP_CLOSED) {
+    if (!s) {
         return -VIBEOS_INET_EINVAL;
     }
     if (s->local_port == 0u) {
-        s->local_port = ephemeral(net);
+        if ((s->local_port = ephemeral_free(net, s)) == 0u) {
+            return -VIBEOS_INET_EADDRINUSE;
+        }
+        s->bound = 1;
+    }
+    /* A datagram socket's connect names its peer and sends nothing; a second
+     * one names another (L5 step 1). */
+    if (s->type == VIBEOS_INET_SOCK_UDP) {
+        s->remote_ip = ip;
+        s->remote_port = port;
+        s->udp_peer = 1;
+        return 0;
+    }
+    if (s->type != VIBEOS_INET_SOCK_TCP) {
+        return -VIBEOS_INET_EINVAL;
+    }
+    if (s->state != VIBEOS_TCP_CLOSED) {
+        return s->state == VIBEOS_TCP_LISTEN ? -VIBEOS_INET_EINVAL : -VIBEOS_INET_EISCONN;
     }
     s->remote_ip = ip;
     s->remote_port = port;
@@ -1417,8 +1537,20 @@ int vibeos_inet_connect(vibeos_inet_t *net, int sock, uint32_t ip, uint16_t port
 
 int vibeos_inet_listen(vibeos_inet_t *net, int sock) {
     vibeos_inet_socket_t *s = sock_at(net, sock);
-    if (!s || s->type != VIBEOS_INET_SOCK_TCP || s->local_port == 0u) {
+    if (!s || s->type != VIBEOS_INET_SOCK_TCP ||
+        (s->state != VIBEOS_TCP_CLOSED && s->state != VIBEOS_TCP_LISTEN)) {
         return -VIBEOS_INET_EINVAL;
+    }
+    /* Nobody bound it: Linux binds it to a port of its own and listens there
+     * (LTP's epoll_wait05, found in L4). */
+    if (s->local_port == 0u) {
+        if ((s->local_port = ephemeral_free(net, s)) == 0u) {
+            return -VIBEOS_INET_EADDRINUSE;
+        }
+        s->bound = 1;
+    }
+    if (s->state == VIBEOS_TCP_LISTEN) {
+        return 0;   /* listen again: Linux changes the backlog and nothing else */
     }
     s->state = VIBEOS_TCP_LISTEN;
     s->backlog_len = 0;
@@ -1476,10 +1608,14 @@ long vibeos_inet_send(vibeos_inet_t *net, int sock, const void *buf, uint32_t le
 }
 
 long vibeos_inet_recv(vibeos_inet_t *net, int sock, void *buf, uint32_t len) {
+    return vibeos_inet_recv_ex(net, sock, buf, len, 0);
+}
+
+long vibeos_inet_recv_ex(vibeos_inet_t *net, int sock, void *buf, uint32_t len, uint32_t flags) {
     vibeos_inet_socket_t *s = sock_at(net, sock);
     uint32_t n, i;
 
-    if (!s || !buf) {
+    if (!s || (!buf && len != 0u)) {
         return -VIBEOS_INET_EINVAL;
     }
     if (s->rx_len == 0u) {
@@ -1495,10 +1631,12 @@ long vibeos_inet_recv(vibeos_inet_t *net, int sock, void *buf, uint32_t len) {
     for (i = 0; i < n; i++) {
         ((uint8_t *)buf)[i] = s->rx[i];
     }
-    for (i = n; i < s->rx_len; i++) {
-        s->rx[i - n] = s->rx[i];
+    if (!(flags & VIBEOS_INET_PEEK)) {
+        for (i = n; i < s->rx_len; i++) {
+            s->rx[i - n] = s->rx[i];
+        }
+        s->rx_len -= n;
     }
-    s->rx_len -= n;
     return (long)n;
 }
 
