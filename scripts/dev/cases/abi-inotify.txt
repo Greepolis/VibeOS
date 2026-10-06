@@ -100,3 +100,21 @@
     have_parent = name[0] != 0 && !(fsn & VIBEOS_FSN_NLINK) && vibeos_fs_lookup(mnt, dir, &parent) == 0;
 +++ new
     have_parent = name[0] != 0 && vibeos_fs_lookup(mnt, dir, &parent) == 0;
+
+### the node is told before its directory
+--- old
+    if (have_parent) {
+        in_deliver(mnt, parent.id, mask & ~(uint32_t)(LINUX_IN_DELETE_SELF | LINUX_IN_MOVE_SELF), isdir, cookie,
+                   name);
+    }
+    /* Then the node itself
++++ new
+    in_deliver(mnt, id, mask & ~(uint32_t)(LINUX_IN_CREATE | LINUX_IN_DELETE | LINUX_IN_MOVED_FROM |
+                                           LINUX_IN_MOVED_TO),
+               (mask & (LINUX_IN_DELETE_SELF | LINUX_IN_MOVE_SELF)) ? 0u : isdir, 0, "");
+    mask = 0;
+    if (have_parent) {
+        in_deliver(mnt, parent.id, in_linux_of(fsn) & ~(uint32_t)(LINUX_IN_DELETE_SELF | LINUX_IN_MOVE_SELF), isdir, cookie,
+                   name);
+    }
+    /* Then the node itself

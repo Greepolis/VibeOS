@@ -170,17 +170,19 @@ static void in_notify(vibeos_fsmount_t *mnt, const char *path, uint64_t id, uint
     }
     have_parent = name[0] != 0 && !(fsn & VIBEOS_FSN_NLINK) && vibeos_fs_lookup(mnt, dir, &parent) == 0;
     ks_lock(&g_in_lock, __func__);
-    /* The node itself: everything but the directory's events, unnamed. A
+    /* Its directory first: everything but what only the node hears, named.
+     * Linux tells the parent before the node, and one instance watching both
+     * reads them in that order (LTP's inotify10; it was the other way). */
+    if (have_parent) {
+        in_deliver(mnt, parent.id, mask & ~(uint32_t)(LINUX_IN_DELETE_SELF | LINUX_IN_MOVE_SELF), isdir, cookie,
+                   name);
+    }
+    /* Then the node itself: everything but the directory's events, unnamed. A
      * directory says it is one, except in DELETE_SELF and MOVE_SELF, which
      * Linux reports bare (LTP's inotify02 and 04 ask both ways). */
     in_deliver(mnt, id, mask & ~(uint32_t)(LINUX_IN_CREATE | LINUX_IN_DELETE | LINUX_IN_MOVED_FROM |
                                            LINUX_IN_MOVED_TO),
                (mask & (LINUX_IN_DELETE_SELF | LINUX_IN_MOVE_SELF)) ? 0u : isdir, 0, "");
-    /* Its directory: everything but what only the node hears, named. */
-    if (have_parent) {
-        in_deliver(mnt, parent.id, mask & ~(uint32_t)(LINUX_IN_DELETE_SELF | LINUX_IN_MOVE_SELF), isdir, cookie,
-                   name);
-    }
     /* A node deleted is a watch gone. */
     if (mask & LINUX_IN_DELETE_SELF) {
         for (i = 0; i < IN_WATCHES; i++) {

@@ -2831,6 +2831,15 @@ static void t_inotify_ltp(void) {
     expect(n == 4 && strcmp(rec[0], "1 40000004 ") == 0 && strcmp(rec[1], "1 800 ") == 0 &&
            strcmp(rec[2], "1 400 ") == 0 && strcmp(rec[3], "1 8000 ") == 0,
            "ATTRIB with IN_ISDIR; MOVE_SELF and DELETE_SELF bare; then IGNORED");
+    /* A directory and the directory inside it, watched by one instance: the
+     * parent's record comes first (LTP's inotify10). */
+    expect(SYS2(83, ustr("/tmp/p"), 0755) == 0 && SYS2(83, ustr("/tmp/p/c"), 0755) == 0 &&
+           SYS3(254, (uint64_t)in, ustr("/tmp/p"), 0x4) == 2 && SYS3(254, (uint64_t)in, ustr("/tmp/p/c"), 0x4) == 3 &&
+           SYS2(90, ustr("/tmp/p/c"), 0700) == 0, "a directory and its child, both watched");
+    got = SYS3(0, (uint64_t)in, buf, 4096);
+    n = in_records(buf, got, rec, 8, ck);
+    expect(n == 2 && strcmp(rec[0], "2 40000004 c") == 0 && strcmp(rec[1], "3 40000004 ") == 0,
+           "the parent's record, named, before the child's own");
     expect(read_whole("/proc/sys/fs/inotify/max_queued_events", text, sizeof(text)) > 0 &&
            strcmp(text, "31\n") == 0,
            "/proc/sys/fs/inotify/max_queued_events: what a queue holds before its overflow record");
