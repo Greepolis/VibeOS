@@ -274,6 +274,12 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                    * the same script printed on Linux. On a
                                    * volume without it the shell says so and
                                    * carries on. */
+                                  /* The event loops' programs (docs/abi/
+                                   * L4 step 7): tail -f, BusyBox httpd and nc
+                                   * both ways, the gate on the host's end of
+                                   * the last three. Before the corpus, whose
+                                   * LTP tests can take the rest of a boot. */
+                                  "sh /corpus/progs.sh\n"
                                   "sh /corpus/run.sh\n"
                                   /* The last thing the self-test says. The boot
                                    * harness waits for this before driving the

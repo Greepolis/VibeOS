@@ -2,6 +2,7 @@
 """Interactive OVMF smoke test for the VibeOS serial CLI."""
 
 import os
+import random
 import re
 import shutil
 import socket
@@ -35,6 +36,13 @@ import time
 SMOKE_ID = int(os.environ.get("VIBEOS_SMOKE_ID", "0"))
 ECHO_PORT = 7777
 SKIP_ECHO = SMOKE_ID != 0
+# The other direction (docs/abi/ L4 step 7): the guest serves, the host asks.
+# QEMU forwards these host ports to the guest's 8080 (BusyBox httpd) and 8081
+# (nc listening). hostfwd, unlike guestfwd, takes any host port, so every run
+# has its own pair and parallel boots need not skip this as they skip the echo.
+STAMPS_PATH = os.environ.get("VIBEOS_SMOKE_STAMPS", "")   # a file: every serial line, timed
+PROG_HTTP_PORT = 18080 + 10 * SMOKE_ID
+PROG_NC_PORT = 18081 + 10 * SMOKE_ID
 
 # The guest is booted with this many vCPUs; every one of them must come online.
 # How many cores the guest gets. Four is what CI runs and what every assertion
@@ -323,6 +331,45 @@ def start_echo_server(stop_event, state):
     t = threading.Thread(target=serve, daemon=True)
     t.start()
     return t
+
+
+def drive_guest_programs(text, state):
+    """The host's half of the event loops' programs (docs/abi/ L4 step 7):
+    once the guest says its httpd is up, fetch the page; once its nc listens,
+    send it a line this run made up and read until it closes. Each runs once,
+    in a thread of its own, and leaves what happened in `state` for the
+    verdict - the gate asserts on the bytes, not on the guest's say-so."""
+    def fetch():
+        try:
+            with socket.create_connection(("127.0.0.1", PROG_HTTP_PORT), timeout=20) as c:
+                c.sendall(b"GET /index.html HTTP/1.0\r\nHost: vibeos\r\n\r\n")
+                got = b""
+                while True:
+                    part = c.recv(4096)
+                    if not part:
+                        break
+                    got += part
+            state["http"] = got.decode("utf-8", errors="replace")
+        except OSError as exc:
+            state["http"] = "error: %s" % exc
+
+    def send_line():
+        try:
+            with socket.create_connection(("127.0.0.1", PROG_NC_PORT), timeout=20) as c:
+                c.sendall((state["nc_token"] + "\n").encode())
+                c.shutdown(socket.SHUT_WR)
+                while c.recv(4096):
+                    pass
+            state["nc"] = "sent"
+        except OSError as exc:
+            state["nc"] = "error: %s" % exc
+
+    if not state["http_started"] and "L4P_HTTPD_2_READY" in text:
+        state["http_started"] = True
+        threading.Thread(target=fetch, daemon=True).start()
+    if not state["nc_started"] and "L4P_NCIN_4_READY" in text:
+        state["nc_started"] = True
+        threading.Thread(target=send_line, daemon=True).start()
 
 
 def write(path, text):
@@ -837,6 +884,13 @@ def stage_corpus(efi_root, build_dir):
     with open(tmp, "wb") as f:
         f.write(script)
     os.replace(tmp, os.path.join(dst, "run.sh"))
+    # The event loops' programs (docs/abi/ L4 step 7), beside it.
+    with open(os.path.join(root, "tests", "corpus", "run-l4.sh"), "rb") as f:
+        progs = f.read().replace(b"\r\n", b"\n")
+    tmp = os.path.join(dst, "progs.sh.%d.tmp" % os.getpid())
+    with open(tmp, "wb") as f:
+        f.write(progs)
+    os.replace(tmp, os.path.join(dst, "progs.sh"))
     staged = []
     for name in CORPUS_PROGRAMS:
         src = os.path.join(build_dir, "corpus", name)
@@ -995,6 +1049,27 @@ def main():
     try:
         echo_thread = None if SKIP_ECHO else start_echo_server(echo_stop,
                                                                 echo_state)
+        progs_state = {"http_started": False, "nc_started": False, "http": None, "nc": None,
+                       "nc_token": "L4P_NCIN_%d" % random.randrange(10**8, 10**9)}
+        # QEMU refuses a forward to a port somebody holds and exits with one
+        # line in its error log, which read as "QEMU exited before serial
+        # connection" the first time - a stray httpd from a measurement on the
+        # host. Said here as what it is: the host's problem, not the guest's.
+        for port in (PROG_HTTP_PORT, PROG_NC_PORT):
+            probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            # As QEMU binds a forward: a port the previous boot's connection
+            # left in TIME_WAIT is free to it, and only a listener is not. The
+            # first version bound without this and failed every other boot of
+            # a sabotage run with INFRA: for a port nobody was using.
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                probe.bind(("127.0.0.1", port))
+            except OSError as exc:
+                raise RuntimeError(
+                    f"INFRA: forwarded port {port} unavailable ({exc}); "
+                    "another smoke run, or a server left on the host, holds it") from exc
+            finally:
+                probe.close()
         if not os.path.exists(bootloader) or not os.path.exists(kernel):
             raise RuntimeError("EFI bootloader or kernel payload missing")
         if shutil.which("qemu-system-x86_64") is None:
@@ -1034,7 +1109,8 @@ def main():
                 "-drive", esp_drive,
                 # A real NIC on QEMU's user-mode network: DHCP and DNS come
                 # from the built-in services, and 10.0.2.2 is the host.
-                "-netdev", "user,id=n0",
+                "-netdev", "user,id=n0,hostfwd=tcp:127.0.0.1:%d-:8080,hostfwd=tcp:127.0.0.1:%d-:8081"
+                           % (PROG_HTTP_PORT, PROG_NC_PORT),
                 "-device", "virtio-net-pci,netdev=n0",
                 "-no-reboot",
                 "-no-shutdown",
@@ -1127,6 +1203,14 @@ def main():
                 # serial line still active is a budget problem, one that has
                 # been silent for a long time is a hang.
                 last_rx = time.monotonic()
+                # When each line arrived, for finding where a slow boot spends
+                # its time: the serial log itself has no clock, and the phase
+                # list names only what the gate looks for.
+                if STAMPS_PATH:
+                    with open(STAMPS_PATH, "a", encoding="utf-8", errors="replace") as sp:
+                        for sl in chunk.decode("utf-8", errors="replace").splitlines():
+                            sp.write("%7.1f %s\n" % (last_serial_timestamp, sl))
+                drive_guest_programs(serial_text, progs_state)
                 if not fault_snapshot_taken[0]:
                     marker = thread_fault_signature(serial_text)
                     if marker:
@@ -3059,6 +3143,26 @@ def main():
             if os.path.exists(events_elf):
                 if not re.search(r"write\(ring3\): EVENTS_OK: ", text):
                     problems.append("events_l4_failed")
+
+            # docs/abi/ L4 step 7: the programs the phase was planned from,
+            # run by /corpus/progs.sh under BusyBox. Each verdict is read off
+            # what came back, not off a line the guest chose to print.
+            if os.path.exists(busybox):
+                print("[QEMU-CLI] programs: httpd fetch=%r nc send=%s"
+                      % ((progs_state["http"] or "never asked")[:120], progs_state["nc"]))
+                if "L4P_DONE_42" not in text:
+                    problems.append("l4_programs_did_not_finish")
+                if "L4P_TAILF_SAW L4P_TAILF_42" not in text:
+                    problems.append("tail_f_did_not_follow")
+                body = progs_state["http"] or "never asked"
+                if not body.startswith("HTTP/1.") or not body.rstrip().endswith("L4P_BODY_42"):
+                    print("[QEMU-CLI] httpd answered: %r" % body[:200])
+                    problems.append("httpd_not_served")
+                if "L4P_NCIN_SAW " + progs_state["nc_token"] not in text:
+                    print("[QEMU-CLI] nc listening: host side %s" % progs_state["nc"])
+                    problems.append("nc_in_not_received")
+                if not SKIP_ECHO and "L4P_NCOUT_SAW ECHO:L4P_NCOUT_9" not in text:
+                    problems.append("nc_out_no_answer")
 
             # The graphical shell, to the extent a serial log can speak for
             # it: the console has to have reached the on-screen terminal. Only

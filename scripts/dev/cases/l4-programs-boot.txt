@@ -1,0 +1,50 @@
+# The event loops' programs at boot (docs/abi/ L4 step 7): tests/corpus/run-l4.sh
+# runs tail -f, BusyBox httpd and nc both ways, and the boot gate fetches the
+# page and sends nc its line from the host (drive_guest_programs). Each case
+# breaks one program's half of the exchange and names the reason the gate must
+# give - the gate's assertions are what is tested here, so the cases break the
+# script, which needs no rebuild.
+#
+# A kernel case was tried and is not kept: refusing SO_REUSEADDR went NOT RED,
+# correctly - BusyBox sets it through setsockopt_reuseaddr(), which ignores the
+# answer, so httpd and nc work without it. setsockopt is held by the host tests
+# (t_sock_halfclose); no boot can tell.
+#
+#  1. tail -f has nothing to follow. Expect tail_f_did_not_follow.
+#  2. httpd serves another directory. Expect httpd_not_served.
+#  3. nc dials a port nobody answers. Expect nc_out_no_answer.
+#  4. nc listens where the host does not connect. Expect nc_in_not_received.
+#  5. the script stops before its end. Expect l4_programs_did_not_finish.
+#
+# Target source: tests/corpus/run-l4.sh
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py tests/corpus/run-l4.sh scripts/dev/cases/l4-programs-boot.txt
+
+### tail -f has nothing to follow
+--- old
+echo "L4P_TAILF_$((40+2))" >> /tmp/tf.log
++++ new
+true
+
+### httpd serves another directory
+--- old
+httpd -f -p 8080 -h /tmp/www 2> /tmp/httpd.err &
++++ new
+httpd -f -p 8080 -h /tmp 2> /tmp/httpd.err &
+
+### nc dials a port nobody answers
+--- old
+echo "L4P_NCOUT_$((3*3))" | timeout 10 nc 10.0.2.2 7777 > /tmp/nco.out 2>/dev/null
++++ new
+echo "L4P_NCOUT_$((3*3))" | timeout 10 nc 10.0.2.2 7778 > /tmp/nco.out 2>/dev/null
+
+### nc listens where the host does not connect
+--- old
+timeout 20 nc -l -p 8081 > /tmp/nci.out 2> /tmp/nci.err &
++++ new
+timeout 20 nc -l -p 8082 > /tmp/nci.out 2> /tmp/nci.err &
+
+### the script stops before its end
+--- old
+echo "L4P_DONE_$((7*6))"
++++ new
+true
