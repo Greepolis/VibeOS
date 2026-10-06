@@ -830,6 +830,8 @@ int test_linux_layout(void) {
     CONST(LINUX_ADJ_OFFSET_SS_READ, ADJ_OFFSET_SS_READ);
     CONST(LINUX_STA_UNSYNC, STA_UNSYNC);
     CONST(LINUX_TIME_ERROR, TIME_ERROR);
+    CONST(LINUX_ADJ_OFFSET, ADJ_OFFSET);
+    CONST(LINUX_ADJ_OFFSET_SINGLESHOT, ADJ_OFFSET_SINGLESHOT);
     SIZE(linux_epoll_event_t, struct epoll_event);
     FIELD(linux_epoll_event_t, struct epoll_event, events);
     FIELD(linux_epoll_event_t, struct epoll_event, data);

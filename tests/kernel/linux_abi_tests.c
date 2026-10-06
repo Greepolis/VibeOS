@@ -5060,3 +5060,5 @@ int test_linux_gaps(void) {
     expect(kf_lock_imbalance() == 0, "the gap calls released every lock they took");
     return g_fail ? -1 : 0;
 }
+        t->modes = 0x8000u;   /* ADJ_ADJTIME without ADJ_OFFSET_SINGLESHOT */
+        decided(159, SYS1(159, tx) == -VIBEOS_EINVAL, "adjtime's form without its other half is EINVAL first");

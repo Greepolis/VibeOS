@@ -225,6 +225,11 @@ typedef struct {
     int32_t pad3[11];
 } linux_timex_t;
 #define LINUX_ADJ_OFFSET_SS_READ 0xa001u
+/* uapi's names, which are not the kernel's own: ADJ_OFFSET_SINGLESHOT here is
+ * the old adjtime() form, ADJ_OFFSET (0x0001) with the kernel-internal
+ * ADJ_ADJTIME bit (0x8000) that no header exports. */
+#define LINUX_ADJ_OFFSET            0x0001u
+#define LINUX_ADJ_OFFSET_SINGLESHOT 0x8001u
 #define LINUX_STA_UNSYNC         0x0040
 #define LINUX_TIME_ERROR         5
 

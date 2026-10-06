@@ -44,3 +44,10 @@
 }
 
 /* ---- the syscalls this file implements
+
+### adjtime's half form is refused for privilege
+--- old
+        if ((tx.modes & adjtime_bit) && !(tx.modes & LINUX_ADJ_OFFSET)) {
+            return -VIBEOS_EINVAL;
+        }
++++ new

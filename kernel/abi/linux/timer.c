@@ -408,6 +408,17 @@ static long linux_sys_adjtimex(uint64_t tx_uptr) {
     if (vibeos_uaccess_copy(&tx, (const void *)(uintptr_t)tx_uptr, sizeof(tx)) != 0) {
         return -VIBEOS_EFAULT;
     }
+    /* adjtime()'s form is the adjtime bit with ADJ_OFFSET (uapi's
+     * ADJ_OFFSET_SINGLESHOT is the two together), and Linux refuses the bit
+     * without ADJ_OFFSET as EINVAL before it asks who is asking (LTP's
+     * adjtimex03 sends 0x8000 alone). */
+    {
+        const uint32_t adjtime_bit = LINUX_ADJ_OFFSET_SINGLESHOT & ~LINUX_ADJ_OFFSET;
+
+        if ((tx.modes & adjtime_bit) && !(tx.modes & LINUX_ADJ_OFFSET)) {
+            return -VIBEOS_EINVAL;
+        }
+    }
     if (tx.modes != 0u && tx.modes != LINUX_ADJ_OFFSET_SS_READ) {
         return -VIBEOS_EPERM;
     }
