@@ -31,6 +31,23 @@ static void socket_wait_tick(void) {
     ks_idle();
 }
 
+/* One more look later, or a reason not to wait: a socket that may not block
+ * says EAGAIN, and a signal that needs acting on ends the wait with `cut` - the
+ * call restarted under SA_RESTART for accept and the reads, EINTR for connect,
+ * as Linux has them. Until docs/abi/ L4 step 7 a wait here heard no signal: an
+ * httpd parked in accept could not be killed, and the boot that started it
+ * never left userland. 0 when it has waited. */
+static long socket_wait(const vibeos_file_t *f, long cut) {
+    if (f->flags & VIBEOS_O_NONBLOCK) {
+        return -VIBEOS_EAGAIN;
+    }
+    if (ks_current() >= 0 && ks_signal_interrupts(ks_current())) {
+        return cut;
+    }
+    socket_wait_tick();
+    return 0;
+}
+
 int vibeos_sockfile_stable(const vibeos_file_t *f) {
     vibeos_inet_t *net = ks_net();
     int ok;
@@ -78,7 +95,9 @@ static long socket_recv(vibeos_file_t *f, uint64_t buf, uint64_t len) {
         if (ks_ticks() > deadline) {
             return -VIBEOS_EIO;
         }
-        socket_wait_tick();
+        if ((n = socket_wait(f, -VIBEOS_RESTART_CALL)) != 0) {
+            return n;
+        }
     }
 }
 
@@ -283,7 +302,16 @@ long vibeos_sockfile_accept(vibeos_file_t *f, uint32_t owner, vibeos_file_t **ch
         if (child != -VIBEOS_INET_EAGAIN) {
             return -VIBEOS_EINVAL;
         }
-        socket_wait_tick();
+        {
+            long w = socket_wait(f, -VIBEOS_RESTART_CALL);
+
+            if (w != 0) {
+                return w;
+            }
+        }
+        if (ks_current() >= 0 && ks_signal_interrupts(ks_current())) {
+            return -VIBEOS_EINTR;
+        }
     }
     ks_lock(ks_net_lock(), __func__);
     *ip = ks_net()->sockets[child].remote_ip;
@@ -354,6 +382,8 @@ long vibeos_sockfile_recvfrom(vibeos_file_t *f, uint64_t buf, uint64_t len,
         if (ks_ticks() > deadline) {
             return -VIBEOS_EIO;
         }
-        socket_wait_tick();
+        if ((n = socket_wait(f, -VIBEOS_RESTART_CALL)) != 0) {
+            return n;
+        }
     }
 }

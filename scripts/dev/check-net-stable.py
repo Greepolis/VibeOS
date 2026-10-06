@@ -20,7 +20,7 @@ to whoever remembered. This checks it.
 
 In kernel/abi/files/socket.c - where the socket waits moved in A3, out of the
 Linux handlers - every function that both holds a description (names
-`vibeos_file_t`) and waits (calls `socket_wait_tick()`) must call
+`vibeos_file_t`) and waits (calls `socket_wait_tick()`, or `socket_wait()`) must call
 `vibeos_sockfile_stable(`. (vibeos_fd_t, linux_net_wait_tick and linux_sock_stable
 in kernel/abi/linux/net.c until A3; hw_ names before A2.) A wait with no socket -
 netctl's ping and DNS, in net.c - has nothing a sibling can close, and is not
@@ -75,7 +75,12 @@ def main():
         print("net-stable=FAIL no functions found in socket.c; the parser no longer matches the file")
         return 1
 
-    waiting = [(n, b) for n, b in funcs if "socket_wait_tick()" in b and "vibeos_file_t" in b]
+    # A wait is a call to socket_wait_tick() or, since L4 step 7, to
+    # socket_wait(), which adds the signal and O_NONBLOCK and knows no socket -
+    # so the helper itself is not one of the functions held to the rule.
+    waiting = [(n, b) for n, b in funcs
+               if n != "socket_wait" and "vibeos_file_t" in b
+               and ("socket_wait_tick()" in b or "socket_wait(f" in b)]
     bad = [n for n, b in waiting if "vibeos_sockfile_stable(" not in b]
     # The check has to have something to look at: the three waits M-020 fixed
     # first are known to exist. Fewer means the parser lost them, not that they
