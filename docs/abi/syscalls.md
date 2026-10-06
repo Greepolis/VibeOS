@@ -9,9 +9,9 @@ the registry, not this page; `check.sh` fails while the two differ.
 
 | State | Count | What the kernel answers |
 | --- | --- | --- |
-| done | 187 | through its row |
-| partial | 33 | through its row, with the gap named |
-| missing | 69 | ENOSYS, and the boot gate fails naming the number |
+| done | 188 | through its row |
+| partial | 34 | through its row, with the gap named |
+| missing | 67 | ENOSYS, and the boot gate fails naming the number |
 | deferred | 50 | ENOSYS, and the boot gate fails naming the number |
 | refused | 34 | its errno, counted as refused - expected, never a failure |
 
@@ -23,7 +23,7 @@ Without a row, by phase:
 | L2 - processes, credentials, time | 0 |
 | L3 - memory | 0 |
 | L4 - event loops | 0 |
-| L5 - sockets | 11 |
+| L5 - sockets | 9 |
 | L6 - threads and scheduling | 20 |
 | L7 - IPC | 21 |
 | L8 - system administration | 11 |
@@ -84,13 +84,13 @@ calls, outside the Linux number space, are listed last.
 | 45 | `recvfrom` | done | - | - | `net.c` |  |
 | 46 | `sendmsg` | missing | L5 | ENOSYS |  | and AF_UNIX sockets |
 | 47 | `recvmsg` | missing | L5 | ENOSYS |  | and AF_UNIX sockets |
-| 48 | `shutdown` | missing | L5 | ENOSYS |  | and AF_UNIX sockets |
+| 48 | `shutdown` | done | - | - | `net.c` |  |
 | 49 | `bind` | done | - | - | `net.c` |  |
 | 50 | `listen` | done | - | - | `net.c` |  |
 | 51 | `getsockname` | missing | L5 | ENOSYS |  | and AF_UNIX sockets |
 | 52 | `getpeername` | missing | L5 | ENOSYS |  | and AF_UNIX sockets |
 | 53 | `socketpair` | missing | L5 | ENOSYS |  | and AF_UNIX sockets |
-| 54 | `setsockopt` | missing | L5 | ENOSYS |  | and AF_UNIX sockets |
+| 54 | `setsockopt` | partial | L5 | - | `net.c` | SO_REUSEADDR and SO_KEEPALIVE only, as httpd and nc set them; anything else ENOPROTOOPT |
 | 55 | `getsockopt` | missing | L5 | ENOSYS |  | and AF_UNIX sockets |
 | 56 | `clone` | partial | L6 | - | `proc.c` | thread and fork shapes; vfork-like sharing refused |
 | 57 | `fork` | done | - | - | `proc.c` |  |

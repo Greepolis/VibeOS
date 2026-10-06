@@ -152,6 +152,55 @@ static long linux_sys_bind(uint64_t fd, uint64_t addr_uptr) {
     return r;
 }
 
+/* shutdown(fd, how): half a close, or all of one, on the stack's socket. */
+static long linux_sys_shutdown(uint64_t fd, uint64_t how) {
+    long r;
+    vibeos_file_t *f = linux_socket_get(fd, &r);
+    int bits;
+
+    if (!f) {
+        return r;
+    }
+    switch (VIBEOS_ARG_INT(how)) {
+        case LINUX_SHUT_RD:   bits = VIBEOS_INET_SHUT_RD; break;
+        case LINUX_SHUT_WR:   bits = VIBEOS_INET_SHUT_WR; break;
+        case LINUX_SHUT_RDWR: bits = VIBEOS_INET_SHUT_RD | VIBEOS_INET_SHUT_WR; break;
+        default:              bits = 0; break;
+    }
+    r = bits ? vibeos_sockfile_shutdown(f, bits) : -VIBEOS_EINVAL;
+    vibeos_file_put(f);
+    return r;
+}
+
+/* setsockopt(fd, level, name, value, len): as far as httpd and nc go (docs/abi/
+ * L4 step 7). SO_REUSEADDR is what binding here does anyway - a port is taken
+ * only while a socket is bound to it - and SO_KEEPALIVE is accepted with no probe
+ * ever sent: a connection here lives as long as both ends say. Anything else is
+ * ENOPROTOOPT, which a program may take as "not here", until L5. */
+static long linux_sys_setsockopt(uint64_t fd, uint64_t level, uint64_t name, uint64_t val_uptr,
+                                 uint64_t len) {
+    long r;
+    vibeos_file_t *f = linux_socket_get(fd, &r);
+    int32_t v;
+
+    if (!f) {
+        return r;
+    }
+    vibeos_file_put(f);
+    if (VIBEOS_ARG_INT(len) < (int)sizeof(v)) {
+        return -VIBEOS_EINVAL;
+    }
+    if (!linux_user_ok(val_uptr, sizeof(v), 0) ||
+        vibeos_uaccess_copy(&v, (const void *)(uintptr_t)val_uptr, sizeof(v)) != 0) {
+        return -VIBEOS_EFAULT;
+    }
+    if (VIBEOS_ARG_INT(level) == (int)LINUX_SOL_SOCKET &&
+        (VIBEOS_ARG_INT(name) == (int)LINUX_SO_REUSEADDR || VIBEOS_ARG_INT(name) == (int)LINUX_SO_KEEPALIVE)) {
+        return 0;
+    }
+    return -VIBEOS_ENOPROTOOPT;
+}
+
 static long linux_sys_listen(uint64_t fd) {
     long r;
     vibeos_file_t *f = linux_socket_get(fd, &r);
@@ -355,6 +404,8 @@ static long linux_sys_netctl(uint64_t op, uint64_t arg) {
     X(45,   recvfrom, RECVFROM, PTRS(OUT_BUF(1, 2), OUT_OPT(4, 16)), linux_sys_recvfrom(ARG(0), ARG(1), ARG(2), ARG(4))) \
     X(49,   bind,     BIND,     PTRS(IN(1, 8)), linux_sys_bind(ARG(0), ARG(1))) \
     X(50,   listen,   LISTEN,   NOPTR, linux_sys_listen(ARG(0))) \
+    X(48,   shutdown, SHUTDOWN, NOPTR, linux_sys_shutdown(ARG(0), ARG(1))) \
+    X(54,   setsockopt, SETSOCKOPT, NOPTR, linux_sys_setsockopt(ARG(0), ARG(1), ARG(2), ARG(3), ARG(4))) \
     X(1000, netctl,   NETCTL,   PTRS(OUT_IF(0, 0, 1, 20), OUT_IF(0, 3, 1, 32)), linux_sys_netctl(ARG(0), ARG(1)))
 
 LINUX_DEFINE_SYSCALLS(net, LINUX_NET_SYSCALLS)

@@ -101,6 +101,7 @@ int vibeos_sockfile_stable(const vibeos_file_t *f);
 vibeos_file_t *vibeos_sockfile_create(int kind, uint32_t owner, long *err);
 long vibeos_sockfile_bind(vibeos_file_t *f, uint16_t port);
 long vibeos_sockfile_listen(vibeos_file_t *f);
+long vibeos_sockfile_shutdown(vibeos_file_t *f, int how);
 long vibeos_sockfile_connect(vibeos_file_t *f, uint32_t ip, uint16_t port);
 long vibeos_sockfile_accept(vibeos_file_t *f, uint32_t owner, vibeos_file_t **child,
                             uint32_t *ip, uint16_t *port);

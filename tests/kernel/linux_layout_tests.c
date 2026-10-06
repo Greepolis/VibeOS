@@ -664,6 +664,8 @@ int test_linux_layout(void) {
     CONST(VIBEOS_ENOLCK, ENOLCK);
     CONST(VIBEOS_ENOSYS, ENOSYS);
     CONST(VIBEOS_ENOTSOCK, ENOTSOCK);
+    CONST(VIBEOS_ENOPROTOOPT, ENOPROTOOPT);
+    CONST(VIBEOS_ENOTCONN, ENOTCONN);
 
     /* ---- signals and their dispositions ---- */
     CONST(VIBEOS_SIGHUP, SIGHUP);
@@ -828,10 +830,10 @@ int test_linux_layout(void) {
     PAD(linux_timex_t, pad2, struct timex, stabil);
     TAIL(linux_timex_t, struct timex, pad3);
     CONST(LINUX_ADJ_OFFSET_SS_READ, ADJ_OFFSET_SS_READ);
-    CONST(LINUX_STA_UNSYNC, STA_UNSYNC);
-    CONST(LINUX_TIME_ERROR, TIME_ERROR);
     CONST(LINUX_ADJ_OFFSET, ADJ_OFFSET);
     CONST(LINUX_ADJ_OFFSET_SINGLESHOT, ADJ_OFFSET_SINGLESHOT);
+    CONST(LINUX_STA_UNSYNC, STA_UNSYNC);
+    CONST(LINUX_TIME_ERROR, TIME_ERROR);
     SIZE(linux_epoll_event_t, struct epoll_event);
     FIELD(linux_epoll_event_t, struct epoll_event, events);
     FIELD(linux_epoll_event_t, struct epoll_event, data);
@@ -964,6 +966,12 @@ int test_linux_layout(void) {
     LIBC_CONST(LINUX_AF_INET, "AF_INET");
     LIBC_CONST(LINUX_SOCK_STREAM, "SOCK_STREAM");
     LIBC_CONST(LINUX_SOCK_DGRAM, "SOCK_DGRAM");
+    LIBC_CONST(LINUX_SHUT_RD, "SHUT_RD");
+    LIBC_CONST(LINUX_SHUT_WR, "SHUT_WR");
+    LIBC_CONST(LINUX_SHUT_RDWR, "SHUT_RDWR");
+    LIBC_CONST(LINUX_SOL_SOCKET, "SOL_SOCKET");
+    LIBC_CONST(LINUX_SO_REUSEADDR, "SO_REUSEADDR");
+    LIBC_CONST(LINUX_SO_KEEPALIVE, "SO_KEEPALIVE");
 
     if (!g_fail) {
         printf("  linux_layout: %d comparisons against the host's Linux headers\n", g_checked);

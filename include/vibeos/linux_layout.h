@@ -670,6 +670,14 @@ typedef struct {
 /* Sockets (the C library's sys/socket.h: uapi does not carry these). */
 #define LINUX_AF_INET     2u
 #define LINUX_SOCK_STREAM 1u
+/* shutdown's `how`, and the socket options setsockopt accepts (docs/abi/ L4
+ * step 7: what httpd and nc set). */
+#define LINUX_SHUT_RD      0u
+#define LINUX_SHUT_WR      1u
+#define LINUX_SHUT_RDWR    2u
+#define LINUX_SOL_SOCKET   1u
+#define LINUX_SO_REUSEADDR 2u
+#define LINUX_SO_KEEPALIVE 9u
 #define LINUX_SOCK_DGRAM  2u
 
 /* wait4 options (linux/wait.h). The last three are Linux's __WNOTHREAD,

@@ -207,7 +207,7 @@
     X(SENDTO,          "sendto",          VIBEOS_CHECK_USER_MEMORY) \
     X(RECVFROM,        "recvfrom",        VIBEOS_CHECK_USER_MEMORY) \
     X(BIND,            "bind",            VIBEOS_CHECK_USER_MEMORY) \
-    X(LISTEN,          "listen",          VIBEOS_CHECK_NONE) \
+    X(LISTEN,          "listen",          VIBEOS_CHECK_NONE)     X(SHUTDOWN,        "shutdown",        VIBEOS_CHECK_NONE)     X(SETSOCKOPT,      "setsockopt",      VIBEOS_CHECK_USER_MEMORY) \
     X(NETCTL,          "netctl",          VIBEOS_CHECK_USER_MEMORY)
 
 typedef enum vibeos_op_id {

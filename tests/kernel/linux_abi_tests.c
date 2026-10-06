@@ -2846,6 +2846,50 @@ static void t_inotify_ltp(void) {
     (void)SYS1(3, (uint64_t)in);
 }
 
+/* ---- L4 step 7: setsockopt and shutdown, as far as httpd and nc go -------------- */
+static void t_sock_halfclose(void) {
+    int me = fresh(86);   /* first: it empties the user arena the allocations below come from */
+    uint64_t one = kf_ualloc(4);
+    long s;
+
+    (void)me;
+    kf_net_up(0x0A00020Fu, 0x0A000202u);
+    *(int32_t *)kf_uptr(one) = 1;
+    s = SYS2(41, 2 /* AF_INET */, 1 /* SOCK_STREAM */);
+    expect(s >= 0 && sys(54, (uint64_t)s, 1, 2 /* SO_REUSEADDR */, one, 4, 0, 0) == 0 &&
+           sys(54, (uint64_t)s, 1, 9 /* SO_KEEPALIVE */, one, 4, 0, 0) == 0,
+           "setsockopt: SO_REUSEADDR and SO_KEEPALIVE, as httpd and nc set them");
+    expect(sys(54, (uint64_t)s, 1, 2, one, 2, 0, 0) == -VIBEOS_EINVAL &&
+           sys(54, (uint64_t)s, 1, 2, 0x10, 4, 0, 0) == -VIBEOS_EFAULT &&
+           sys(54, 99, 1, 2, one, 4, 0, 0) == -VIBEOS_EBADF &&
+           sys(54, (uint64_t)SYS2(290, 0, 0), 1, 2, one, 4, 0, 0) == -VIBEOS_ENOTSOCK &&
+           sys(54, (uint64_t)s, 1, 7 /* SO_SNDBUF */, one, 4, 0, 0) == -VIBEOS_ENOPROTOOPT,
+           "a short value EINVAL, a bad one EFAULT, no descriptor EBADF, not a socket ENOTSOCK, another option ENOPROTOOPT");
+    expect(SYS2(48, (uint64_t)s, 1 /* SHUT_WR */) == -VIBEOS_ENOTCONN && SYS2(48, (uint64_t)s, 3) == -VIBEOS_EINVAL &&
+           SYS2(48, 99, 1) == -VIBEOS_EBADF,
+           "shutdown: an unconnected socket ENOTCONN, a direction that is none EINVAL, no descriptor EBADF");
+    /* A wait on a socket hears a signal, and a socket that may not block does
+     * not wait: an httpd parked in accept could not be killed until this. */
+    {
+        uint64_t sa = kf_ualloc(16);
+        uint8_t *a = (uint8_t *)kf_uptr(sa);
+        long l = SYS2(41, 2, 1);
+
+        memset(a, 0, 16);
+        a[0] = 2;            /* AF_INET */
+        a[2] = 0x1f; a[3] = 0x91;   /* port 8081 */
+        expect(l >= 0 && SYS3(49, (uint64_t)l, sa, 16) == 0 && SYS2(50, (uint64_t)l, 1) == 0,
+               "a listener with nobody waiting");
+        (void)ks_signal_send(me, 15, 0);   /* SIGTERM, not blocked */
+        expect(SYS3(43, (uint64_t)l, 0, 0) == -VIBEOS_EINTR, "accept ends for a signal");
+        ks_id(me)->sig_pending = 0;
+        expect(SYS3(72, (uint64_t)l, 4 /* F_SETFL */, 0x800 /* O_NONBLOCK */) == 0 &&
+               SYS3(43, (uint64_t)l, 0, 0) == -VIBEOS_EAGAIN,
+               "and a non-blocking one does not wait at all");
+    }
+    expect(kf_lock_imbalance() == 0, "the socket options released every lock they took");
+}
+
 /* clone3's argument rules (L2 step 6, from step 5's LTP run: clone302). */
 static void t_clone3_checks(void) {
     uint64_t a, big;
@@ -4662,6 +4706,7 @@ int test_linux_handlers(void) {
     t_event_fds();
     t_epoll();
     t_inotify();
+    t_sock_halfclose();
     t_inotify_ltp();
     t_futex_shared();
     t_clone3_checks();
@@ -5024,6 +5069,8 @@ int test_linux_gaps(void) {
                 "adjtimex reads: unsynchronised, TIME_ERROR, a 100 Hz tick");
         t->modes = 0x0001u;   /* ADJ_OFFSET */
         decided(159, SYS1(159, tx) == -VIBEOS_EPERM, "and refuses to set, as clock_settime does");
+        t->modes = 0x8000u;   /* ADJ_ADJTIME without ADJ_OFFSET_SINGLESHOT */
+        decided(159, SYS1(159, tx) == -VIBEOS_EINVAL, "adjtime's form without its other half is EINVAL first");
         t->modes = 0;
         decided(305, SYS2(305, 0, tx) == LINUX_TIME_ERROR && SYS2(305, 1, tx) == -VIBEOS_EOPNOTSUPP &&
                          SYS2(305, 99, tx) == -VIBEOS_EINVAL,
@@ -5034,6 +5081,18 @@ int test_linux_gaps(void) {
         decided(164, SYS2(164, tv, 0) == -VIBEOS_EPERM && SYS2(164, 0, 0) == 0,
                 "a time to set is refused; nothing to set is nothing refused, for root");
         expect(SYS0(219) == -VIBEOS_EINTR, "restart_syscall with nothing to restart is EINTR, as Linux's");
+    }
+
+    /* setsockopt (54), L5: two options, as httpd and nc set them. */
+    {
+        uint64_t one = kf_ualloc(4);
+        long s;
+
+        *(int32_t *)kf_uptr(one) = 1;
+        kf_net_up(0x0A00020Fu, 0x0A000202u);
+        s = SYS2(41, 2, 1);
+        gap(54, s >= 0 && sys(54, (uint64_t)s, 6 /* IPPROTO_TCP */, 1 /* TCP_NODELAY */, one, 4, 0, 0) == 0,
+            "setsockopt sets TCP_NODELAY");
     }
 
     /* rseq (334), R: ENOSYS by decision - the library takes its fallback. */
@@ -5060,5 +5119,3 @@ int test_linux_gaps(void) {
     expect(kf_lock_imbalance() == 0, "the gap calls released every lock they took");
     return g_fail ? -1 : 0;
 }
-        t->modes = 0x8000u;   /* ADJ_ADJTIME without ADJ_OFFSET_SINGLESHOT */
-        decided(159, SYS1(159, tx) == -VIBEOS_EINVAL, "adjtime's form without its other half is EINVAL first");

@@ -118,6 +118,14 @@ static long socket_send(vibeos_file_t *f, uint64_t buf, uint64_t len) {
     }
     n = vibeos_inet_send(ks_net(), sock, g_bounce, (uint32_t)len);
     ks_unlock(ks_net_lock());
+    if (n == -VIBEOS_INET_EPIPE) {
+        /* Shut for writing: Linux's EPIPE, and SIGPIPE as a pipe with no
+         * reader raises it (pipefile.c). */
+        if (ks_current() >= 0) {
+            (void)ks_signal_raise(ks_current(), VIBEOS_SIGPIPE);
+        }
+        return -VIBEOS_EPIPE;
+    }
     if (n < 0) {
         return (n == -VIBEOS_INET_EAGAIN) ? 0 : -VIBEOS_EIO;
     }
@@ -236,6 +244,22 @@ long vibeos_sockfile_bind(vibeos_file_t *f, uint16_t port) {
     return (r == 0) ? 0 : -VIBEOS_EINVAL;
 }
 
+/* shutdown(): `how` in the stack's bits (VIBEOS_INET_SHUT_*). */
+long vibeos_sockfile_shutdown(vibeos_file_t *f, int how) {
+    int r, sock;
+
+    if ((sock = vibeos_sockfile_stable(f)) < 0) {
+        return -VIBEOS_EBADF;
+    }
+    ks_lock(ks_net_lock(), __func__);
+    r = vibeos_inet_shutdown(ks_net(), sock, how);
+    ks_unlock(ks_net_lock());
+    if (r == -VIBEOS_INET_ENOTCONN) {
+        return -VIBEOS_ENOTCONN;
+    }
+    return r == 0 ? 0 : -VIBEOS_EINVAL;
+}
+
 long vibeos_sockfile_listen(vibeos_file_t *f) {
     int r, sock;
 
@@ -279,6 +303,9 @@ long vibeos_sockfile_connect(vibeos_file_t *f, uint32_t ip, uint16_t port) {
         if (ks_ticks() > deadline) {
             return -VIBEOS_EIO;
         }
+        if (ks_current() >= 0 && ks_signal_interrupts(ks_current())) {
+            return -VIBEOS_EINTR;
+        }
         socket_wait_tick();
     }
 }
@@ -308,9 +335,6 @@ long vibeos_sockfile_accept(vibeos_file_t *f, uint32_t owner, vibeos_file_t **ch
             if (w != 0) {
                 return w;
             }
-        }
-        if (ks_current() >= 0 && ks_signal_interrupts(ks_current())) {
-            return -VIBEOS_EINTR;
         }
     }
     ks_lock(ks_net_lock(), __func__);
