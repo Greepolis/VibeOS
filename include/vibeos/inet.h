@@ -63,6 +63,7 @@ enum {
 #define VIBEOS_INET_ENOTCONN 4
 #define VIBEOS_INET_ETIMEDOUT 5
 #define VIBEOS_INET_ENOBUFS 6
+#define VIBEOS_INET_EPIPE 7      /* this side's FIN is out: nothing more to send */
 
 typedef struct vibeos_arp_entry {
     uint32_t ip;
@@ -95,6 +96,8 @@ typedef struct vibeos_inet_socket {
     uint16_t snd_wnd;        /* peer's advertised window                    */
     uint8_t fin_sent;
     uint8_t fin_received;
+    uint8_t fin_queued;      /* nothing more to send: the FIN follows the data */
+    uint8_t shut_rd;         /* shutdown(SHUT_RD): reads end once rx is empty  */
 
     /* Retransmission of the single outstanding send window. */
     uint64_t rto_deadline_ms;
@@ -273,6 +276,13 @@ long vibeos_inet_sendto(vibeos_inet_t *net, int sock, const void *buf, uint32_t 
 long vibeos_inet_recvfrom(vibeos_inet_t *net, int sock, void *buf, uint32_t len,
                           uint32_t *out_ip, uint16_t *out_port);
 int vibeos_inet_close(vibeos_inet_t *net, int sock);
+/* Half a close (docs/abi/ L4 step 7, for httpd and nc): VIBEOS_INET_SHUT_WR sends
+ * the FIN and leaves the socket open for what the peer still sends;
+ * VIBEOS_INET_SHUT_RD ends reads once what has arrived is read. -ENOTCONN for a
+ * socket that is not connected. */
+#define VIBEOS_INET_SHUT_RD 1
+#define VIBEOS_INET_SHUT_WR 2
+int vibeos_inet_shutdown(vibeos_inet_t *net, int sock, int how);
 int vibeos_inet_close_owned(vibeos_inet_t *net, int sock, uint32_t owner_pid);
 uint32_t vibeos_inet_release_owner_sockets(vibeos_inet_t *net, uint32_t owner_pid);
 int vibeos_inet_socket_state(const vibeos_inet_t *net, int sock);

@@ -1,0 +1,44 @@
+# Half a close in the stack (kernel/net/inet.c, docs/abi/ L4 step 7), proved
+# by test_inet_shutdown in tests/kernel/kernel_tests.c.
+#
+#  1. a flush counts the FIN as data. The old arithmetic: with the data
+#     acknowledged and the FIN not, it finds four billion bytes to send and
+#     never returns - so the verify is run under `timeout`, and a hang is red.
+#  (2.) the FIN goes ahead of unsent data. Went NOT RED, correctly: this stack
+#     sends every byte it is given at once, and leaves data unsent only while
+#     ARP is pending - which an established connection never is. The queued FIN
+#     is kept for that case, and it cannot be told apart here. Not kept.
+#  3. a send after SHUT_WR is accepted. Expect "-1" from the EPIPE check.
+#  4. a close after SHUT_WR frees the slot. Expect the FIN_WAIT_2 check after
+#     close to fail.
+#  5. SHUT_RD reads on into EAGAIN. Expect the end-of-stream check to fail.
+#
+# Target source: kernel/net/inet.c
+# Run: SABOTAGE_VERIFY="timeout 60 bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/net/inet.c scripts/dev/cases/net-inet-shutdown.txt
+
+### a flush counts the FIN as data
+--- old
+    uint32_t unsent = flight < s->tx_len ? s->tx_len - flight : 0u;
++++ new
+    uint32_t unsent = s->tx_len - flight;
+
+### a send after SHUT_WR is accepted
+--- old
+    if (s->fin_queued) {
+        return -VIBEOS_INET_EPIPE;   /* shut for writing: Linux's EPIPE */
+    }
++++ new
+
+### a close after SHUT_WR frees the slot
+--- old
+    if (s->type == VIBEOS_INET_SOCK_TCP && s->fin_queued && s->state != VIBEOS_TCP_CLOSED) {
++++ new
+    if (0) {
+
+### SHUT_RD reads on into EAGAIN
+--- old
+        if (s->fin_received || s->shut_rd) {
+            return 0;   /* orderly shutdown, or this side's SHUT_RD: end of stream */
++++ new
+        if (s->fin_received) {
+            return 0;   /* orderly shutdown, or this side's SHUT_RD: end of stream */

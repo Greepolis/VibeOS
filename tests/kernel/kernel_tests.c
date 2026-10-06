@@ -3940,6 +3940,117 @@ static int test_inet_ready(void) {
     return vibeos_inet_ready(&net, 999) == 0 ? 0 : -1;
 }
 
+/* Half a close (docs/abi/ L4 step 7), as httpd and nc use it: shutdown(SHUT_WR)
+ * sends the FIN and the socket still reads what the peer sends; a send after it
+ * is EPIPE; close after it leaves the exchange to finish instead of freeing the
+ * slot under the peer's last FIN; SHUT_RD ends reads once the queue is empty. */
+static int test_inet_shutdown(void) {
+    static vibeos_inet_t net;
+    static inet_capture_t cap;
+    static const uint8_t data[3] = {'a', 'b', 'c'};
+    uint8_t buf[16];
+    int srv, conn, fresh_sock;
+    uint32_t child_isn, i;
+    int fin = 0;
+
+    memset(&cap, 0, sizeof(cap));
+    if (vibeos_inet_init(&net, inet_test_local_mac, inet_capture_tx, &cap) != 0) {
+        return -1;
+    }
+    vibeos_inet_set_addr(&net, 0x0A00020Fu, 0xFFFFFF00u, 0x0A000202u, 0x0A000203u);
+    inet_seed_arp(&net);
+
+    fresh_sock = vibeos_inet_socket(&net, VIBEOS_INET_SOCK_TCP);
+    if (vibeos_inet_shutdown(&net, fresh_sock, VIBEOS_INET_SHUT_WR) != -VIBEOS_INET_ENOTCONN ||
+        vibeos_inet_shutdown(&net, fresh_sock, 0) != -VIBEOS_INET_EINVAL) {
+        return -1;   /* never connected: ENOTCONN; no direction: EINVAL */
+    }
+    srv = vibeos_inet_socket(&net, VIBEOS_INET_SOCK_TCP);
+    if (srv < 0 || vibeos_inet_bind(&net, srv, 8080) != 0 || vibeos_inet_listen(&net, srv) != 0) {
+        return -1;
+    }
+    cap.count = 0;
+    inet_deliver_tcp(&net, 0x0A000202u, 40000, 8080, 0x900u, 0, 0x02, 0, 0);
+    child_isn = inet_rd32(cap.frame[0] + 14 + 20 + 4);
+    inet_deliver_tcp(&net, 0x0A000202u, 40000, 8080, 0x901u, child_isn + 1, 0x10, 0, 0);
+    conn = vibeos_inet_accept(&net, srv);
+    if (conn < 0) {
+        return -1;
+    }
+
+    /* SHUT_WR: a FIN goes out, and the socket is still open for reading. */
+    cap.count = 0;
+    if (vibeos_inet_shutdown(&net, conn, VIBEOS_INET_SHUT_WR) != 0) {
+        return -1;
+    }
+    for (i = 0; i < cap.count; i++) {
+        fin |= (cap.frame[i][14 + 20 + 13] & 0x01) != 0;
+    }
+    if (!fin || vibeos_inet_socket_state(&net, conn) != VIBEOS_TCP_FIN_WAIT_1) {
+        return -1;
+    }
+    if (vibeos_inet_send(&net, conn, data, sizeof(data)) != -VIBEOS_INET_EPIPE) {
+        return -1;   /* nothing more to send once the FIN is out */
+    }
+    if (vibeos_inet_shutdown(&net, conn, VIBEOS_INET_SHUT_WR) != 0 || cap.count != i) {
+        return -1;   /* a second SHUT_WR sends nothing more */
+    }
+    /* The peer ACKs the FIN and goes on sending: it arrives. */
+    inet_deliver_tcp(&net, 0x0A000202u, 40000, 8080, 0x901u, child_isn + 2, 0x10, 0, 0);
+    inet_deliver_tcp(&net, 0x0A000202u, 40000, 8080, 0x901u, child_isn + 2, 0x18, data, sizeof(data));
+    if (vibeos_inet_recv(&net, conn, buf, sizeof(buf)) != (long)sizeof(data) || buf[0] != 'a') {
+        return -1;
+    }
+    /* Closed before the peer's FIN: the slot stays for the exchange to end. */
+    if (vibeos_inet_close(&net, conn) != 0 || vibeos_inet_socket_state(&net, conn) != VIBEOS_TCP_FIN_WAIT_2) {
+        return -1;
+    }
+
+    /* What nc does: write, and shut down at once, before the data is
+     * acknowledged. The peer then acknowledges the data and not yet the FIN -
+     * one sequence number more in flight than there are bytes - and the next
+     * flush has to find nothing to send. It used to find four billion bytes and
+     * never return, with the network lock held. */
+    cap.count = 0;
+    inet_deliver_tcp(&net, 0x0A000202u, 40002, 8080, 0x500u, 0, 0x02, 0, 0);
+    child_isn = inet_rd32(cap.frame[0] + 14 + 20 + 4);
+    inet_deliver_tcp(&net, 0x0A000202u, 40002, 8080, 0x501u, child_isn + 1, 0x10, 0, 0);
+    conn = vibeos_inet_accept(&net, srv);
+    cap.count = 0;
+    if (conn < 0 || vibeos_inet_send(&net, conn, data, sizeof(data)) != (long)sizeof(data) ||
+        vibeos_inet_shutdown(&net, conn, VIBEOS_INET_SHUT_WR) != 0 || cap.count != 2u ||
+        (cap.frame[1][14 + 20 + 13] & 0x01) == 0 ||
+        inet_rd32(cap.frame[1] + 14 + 20 + 4) != child_isn + 1u + sizeof(data)) {
+        return -1;   /* the data, then the FIN right after its last byte */
+    }
+    inet_deliver_tcp(&net, 0x0A000202u, 40002, 8080, 0x501u, child_isn + 1u + sizeof(data), 0x10, 0, 0);
+    inet_deliver_tcp(&net, 0x0A000202u, 40002, 8080, 0x501u, child_isn + 1u + sizeof(data), 0x18, data, 1);
+    if (cap.count > 4u || vibeos_inet_socket_state(&net, conn) != VIBEOS_TCP_FIN_WAIT_1) {
+        return -1;   /* an ACK for the byte that came, and nothing resent */
+    }
+    inet_deliver_tcp(&net, 0x0A000202u, 40002, 8080, 0x502u, child_isn + 2u + sizeof(data), 0x10, 0, 0);
+    if (vibeos_inet_socket_state(&net, conn) != VIBEOS_TCP_FIN_WAIT_2) {
+        return -1;   /* the FIN acknowledged too */
+    }
+
+    /* SHUT_RD on a second connection: what arrived is still read, then the end. */
+    cap.count = 0;
+    inet_deliver_tcp(&net, 0x0A000202u, 40001, 8080, 0x700u, 0, 0x02, 0, 0);
+    child_isn = inet_rd32(cap.frame[0] + 14 + 20 + 4);
+    inet_deliver_tcp(&net, 0x0A000202u, 40001, 8080, 0x701u, child_isn + 1, 0x10, 0, 0);
+    conn = vibeos_inet_accept(&net, srv);
+    inet_deliver_tcp(&net, 0x0A000202u, 40001, 8080, 0x701u, child_isn + 1, 0x18, data, sizeof(data));
+    if (conn < 0 || vibeos_inet_shutdown(&net, conn, VIBEOS_INET_SHUT_RD) != 0 ||
+        (vibeos_inet_ready(&net, conn) & VIBEOS_INET_READY_RDHUP) == 0) {
+        return -1;
+    }
+    if (vibeos_inet_recv(&net, conn, buf, sizeof(buf)) != (long)sizeof(data) ||
+        vibeos_inet_recv(&net, conn, buf, sizeof(buf)) != 0) {
+        return -1;   /* the queue, then the end - not EAGAIN */
+    }
+    return 0;
+}
+
 /* H-028: a child in SYN_RECEIVED remembers its listener by slot index only. If
  * the listener is closed and its slot handed to an unrelated socket before the
  * final ACK arrives, the completed connection must NOT be delivered to that
@@ -9845,6 +9956,7 @@ int main(void) {
     RUN_TEST(test_inet_tcp_connection);
     RUN_TEST(test_inet_tcp_listen_accept);
     RUN_TEST(test_inet_ready);
+    RUN_TEST(test_inet_shutdown);
     RUN_TEST(test_inet_tcp_accept_aba);
     RUN_TEST(test_inet_tcp_orphan_child_freed);
     RUN_TEST(test_inet_tcp_half_open_reclaimed);

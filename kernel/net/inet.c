@@ -625,13 +625,13 @@ uint32_t vibeos_inet_ready(const vibeos_inet_t *net, int sock) {
     if (s->rx_len > 0u) {
         r |= VIBEOS_INET_READY_IN;
     }
-    if (s->fin_received) {
+    if (s->fin_received || s->shut_rd) {
         r |= VIBEOS_INET_READY_IN | VIBEOS_INET_READY_RDHUP;
     }
     /* Room to send while this side is open; once its FIN is out a send fails at
      * once, which is writable to poll as well (Linux sets POLLOUT on a socket
      * shut for writing). */
-    if (s->fin_sent || s->tx_len < VIBEOS_INET_TXBUF) {
+    if (s->fin_queued || s->tx_len < VIBEOS_INET_TXBUF) {
         r |= VIBEOS_INET_READY_OUT;
     }
     if (s->fin_sent && s->fin_received) {
@@ -1343,9 +1343,32 @@ static int tcp_send_seg(vibeos_inet_t *net, vibeos_inet_socket_t *s, uint8_t fla
                         s->local_port, s->remote_port, 20u + dlen);
 }
 
-/* Send whatever is queued and unsent, and arm the retransmission timer. */
+/* The FIN on the wire: it takes the sequence number after the last byte of
+ * data, so it goes only once every byte has. ESTABLISHED goes to FIN_WAIT_1,
+ * CLOSE_WAIT to LAST_ACK. */
+static void tcp_fin_now(vibeos_inet_t *net, vibeos_inet_socket_t *s) {
+    uint8_t was_close_wait = (s->state == VIBEOS_TCP_CLOSE_WAIT);
+
+    (void)tcp_send_seg(net, s, TCP_ACK | TCP_FIN, s->snd_nxt, 0, 0);
+    s->snd_nxt++;
+    s->fin_sent = 1;
+    s->state = was_close_wait ? VIBEOS_TCP_LAST_ACK : VIBEOS_TCP_FIN_WAIT_1;
+}
+
+/* Send whatever is queued and unsent, then a FIN that is waiting for it, and
+ * arm the retransmission timer.
+ *
+ * What is in flight can be one more than the data: a FIN takes a sequence
+ * number and no byte of tx. This used to be `snd_una + tx_len - snd_nxt`
+ * unsigned, so once the peer had acknowledged the data and not yet the FIN the
+ * count was minus one - four billion - and the loop sent the buffer's
+ * neighbours for ever, holding the network lock: the machine stopped with one
+ * core here and the others queued behind it. A close with data in flight could
+ * always do it; nc, which writes and shuts down at once, did it every time
+ * (docs/abi/ L4 step 7). */
 static void tcp_flush(vibeos_inet_t *net, vibeos_inet_socket_t *s) {
-    uint32_t unsent = s->snd_una + s->tx_len - s->snd_nxt;
+    uint32_t flight = s->snd_nxt - s->snd_una;
+    uint32_t unsent = flight < s->tx_len ? s->tx_len - flight : 0u;
     uint32_t off, n;
 
     while (unsent > 0u) {
@@ -1359,6 +1382,9 @@ static void tcp_flush(vibeos_inet_t *net, vibeos_inet_socket_t *s) {
         }
         s->snd_nxt += n;
         unsent -= n;
+    }
+    if (s->fin_queued && !s->fin_sent && s->snd_nxt == s->snd_una + s->tx_len) {
+        tcp_fin_now(net, s);
     }
     if (s->tx_len > 0u && s->rto_deadline_ms == 0u) {
         s->rto_deadline_ms = net->now_ms + s->rto_ms;
@@ -1430,6 +1456,9 @@ long vibeos_inet_send(vibeos_inet_t *net, int sock, const void *buf, uint32_t le
     if (s->reset) {
         return -VIBEOS_INET_ECONNRESET;
     }
+    if (s->fin_queued) {
+        return -VIBEOS_INET_EPIPE;   /* shut for writing: Linux's EPIPE */
+    }
     if (s->state != VIBEOS_TCP_ESTABLISHED && s->state != VIBEOS_TCP_CLOSE_WAIT) {
         return -VIBEOS_INET_ENOTCONN;
     }
@@ -1457,8 +1486,8 @@ long vibeos_inet_recv(vibeos_inet_t *net, int sock, void *buf, uint32_t len) {
         if (s->reset) {
             return -VIBEOS_INET_ECONNRESET;
         }
-        if (s->fin_received) {
-            return 0;   /* orderly shutdown: end of stream */
+        if (s->fin_received || s->shut_rd) {
+            return 0;   /* orderly shutdown, or this side's SHUT_RD: end of stream */
         }
         return -VIBEOS_INET_EAGAIN;
     }
@@ -1473,18 +1502,58 @@ long vibeos_inet_recv(vibeos_inet_t *net, int sock, void *buf, uint32_t len) {
     return (long)n;
 }
 
+/* This side has nothing more to send: the FIN is queued behind the data and
+ * goes when tcp_flush has sent the last byte - at once, unless a segment is
+ * still waiting for ARP. A FIN sent ahead of unsent data would take the
+ * sequence number the data needed. */
+static void tcp_send_fin(vibeos_inet_t *net, vibeos_inet_socket_t *s) {
+    s->fin_queued = 1;
+    tcp_flush(net, s);
+}
+
+int vibeos_inet_shutdown(vibeos_inet_t *net, int sock, int how) {
+    vibeos_inet_socket_t *s = sock_at(net, sock);
+
+    if (!s || (how & ~(VIBEOS_INET_SHUT_RD | VIBEOS_INET_SHUT_WR)) || how == 0) {
+        return -VIBEOS_INET_EINVAL;
+    }
+    if (s->type != VIBEOS_INET_SOCK_TCP) {
+        return -VIBEOS_INET_ENOTCONN;   /* a datagram socket here is never connected */
+    }
+    if (s->state == VIBEOS_TCP_LISTEN) {
+        return 0;
+    }
+    if (s->state == VIBEOS_TCP_CLOSED || s->state == VIBEOS_TCP_SYN_SENT ||
+        s->state == VIBEOS_TCP_SYN_RECEIVED) {
+        return -VIBEOS_INET_ENOTCONN;
+    }
+    if (how & VIBEOS_INET_SHUT_RD) {
+        s->shut_rd = 1;
+    }
+    if ((how & VIBEOS_INET_SHUT_WR) && !s->fin_queued &&
+        (s->state == VIBEOS_TCP_ESTABLISHED || s->state == VIBEOS_TCP_CLOSE_WAIT)) {
+        tcp_send_fin(net, s);
+    }
+    return 0;
+}
+
 int vibeos_inet_close(vibeos_inet_t *net, int sock) {
     vibeos_inet_socket_t *s = sock_at(net, sock);
     if (!s) {
         return -VIBEOS_INET_EINVAL;
     }
+    /* Shut for writing already: its FIN is queued or out and the exchange
+     * finishes on its own. Freed here, the slot would answer the peer's last
+     * FIN with a reset. Reclaimed by the deadline instead, as a close's is. */
+    if (s->type == VIBEOS_INET_SOCK_TCP && s->fin_queued && s->state != VIBEOS_TCP_CLOSED) {
+        if (s->close_deadline_ms == 0u) {
+            s->close_deadline_ms = net->now_ms + VIBEOS_INET_TIME_WAIT_MS;
+        }
+        return 0;
+    }
     if (s->type == VIBEOS_INET_SOCK_TCP &&
         (s->state == VIBEOS_TCP_ESTABLISHED || s->state == VIBEOS_TCP_CLOSE_WAIT)) {
-        uint8_t was_close_wait = (s->state == VIBEOS_TCP_CLOSE_WAIT);
-        (void)tcp_send_seg(net, s, TCP_ACK | TCP_FIN, s->snd_nxt, 0, 0);
-        s->snd_nxt++;
-        s->fin_sent = 1;
-        s->state = was_close_wait ? VIBEOS_TCP_LAST_ACK : VIBEOS_TCP_FIN_WAIT_1;
+        tcp_send_fin(net, s);
         /* If the peer never finishes the exchange, the slot is still reclaimed
          * instead of being held for the life of the system. */
         s->close_deadline_ms = net->now_ms + VIBEOS_INET_TIME_WAIT_MS;
