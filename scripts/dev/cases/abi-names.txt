@@ -187,13 +187,13 @@
 
 ### mknod does not apply the umask
 --- old
-    r = vibeos_fs_create(w.mnt, w.tail, (uint32_t)mode & 07777u & ~linux_umask(), &node);
+            : vibeos_fs_create(w.mnt, w.tail, (uint32_t)mode & 07777u & ~linux_umask(), &node);
 +++ new
-    r = vibeos_fs_create(w.mnt, w.tail, (uint32_t)mode & 07777u, &node);
+            : vibeos_fs_create(w.mnt, w.tail, (uint32_t)mode & 07777u, &node);
 
 ### mknod makes an empty file for a FIFO
 --- old
-    if (type != 0u && type != VIBEOS_S_IFREG) {
+    if (type != 0u && type != VIBEOS_S_IFREG && type != VIBEOS_S_IFSOCK) {
         return -VIBEOS_EPERM;
     }
 +++ new

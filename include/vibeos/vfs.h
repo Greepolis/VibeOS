@@ -139,6 +139,10 @@ typedef struct {
     /* A new regular file with `mode`'s permission bits; -EEXIST if the name is
      * taken. `out` describes it. */
     int (*create)(void *fs, const char *path, uint32_t mode, vibeos_fs_node_t *out);
+    /* A node that is not a regular file - `mode` carries its type - for a
+     * filesystem that can keep one; -EPERM for a type it cannot (docs/abi/ L5:
+     * a local socket's name is a socket node). Optional. */
+    int (*mknod)(void *fs, const char *path, uint32_t mode, vibeos_fs_node_t *out);
     /* Remove an empty directory: -ENOTEMPTY otherwise. */
     int (*rmdir)(void *fs, const char *path);
     /* Move a name, replacing what `to` names unless NOREPLACE: a file over a
@@ -219,6 +223,8 @@ int vibeos_fs_share_page(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, ui
                          void **page);
 int vibeos_fs_create(vibeos_fsmount_t *mnt, const char *path, uint32_t mode,
                      vibeos_fs_node_t *out);
+/* A node of `mode`'s type; -EPERM from a filesystem that cannot keep it. */
+int vibeos_fs_mknod(vibeos_fsmount_t *mnt, const char *path, uint32_t mode, vibeos_fs_node_t *out);
 int vibeos_fs_rmdir(vibeos_fsmount_t *mnt, const char *path);
 int vibeos_fs_rename(vibeos_fsmount_t *mnt, const char *from, const char *to, uint32_t flags);
 int vibeos_fs_link(vibeos_fsmount_t *mnt, const char *existing, const char *path);

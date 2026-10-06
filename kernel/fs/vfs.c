@@ -254,6 +254,24 @@ int vibeos_fs_create(vibeos_fsmount_t *mnt, const char *path, uint32_t mode,
     return r;
 }
 
+int vibeos_fs_mknod(vibeos_fsmount_t *mnt, const char *path, uint32_t mode, vibeos_fs_node_t *out) {
+    int r;
+
+    if (!vibeos_fs_is_mounted(mnt) || !path || !out) {
+        return -VIBEOS_EINVAL;
+    }
+    if (!mnt->ops->mknod) {
+        return vibeos_fs_writable(mnt) ? -VIBEOS_EPERM : -VIBEOS_EROFS;
+    }
+    fs_node_clear(out);
+    r = mnt->ops->mknod(mnt->fs, path, mode, out);
+    if (r == 0) {
+        fs_node_complete(out);
+        vibeos_fs_notify(mnt, path, out->id, VIBEOS_FSN_CREATE, 0, 0);
+    }
+    return r;
+}
+
 int vibeos_fs_rmdir(vibeos_fsmount_t *mnt, const char *path) {
     vibeos_fs_node_t n;
     int had, r;

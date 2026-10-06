@@ -830,6 +830,29 @@ static int tf_op_create(void *fs, const char *path, uint32_t mode, vibeos_fs_nod
     return r;
 }
 
+/* A socket node (docs/abi/ L5): a name a local socket is bound to, with no
+ * contents of its own. FIFOs and devices are still refused - a FIFO here would
+ * need a pipe behind its name, which nothing makes yet. */
+static int tf_op_mknod(void *fs, const char *path, uint32_t mode, vibeos_fs_node_t *out) {
+    uint32_t ino;
+    int r;
+
+    tf_ctx_t cx;
+
+    if ((mode & VIBEOS_S_IFMT) != VIBEOS_S_IFSOCK) {
+        return -VIBEOS_EPERM;
+    }
+    tf_ctx_fill(T, &cx, 2u);
+    T->lock();
+    r = tf_make(T, path, VIBEOS_S_IFSOCK | (mode & 07777u), &ino, &cx);
+    if (r == 0) {
+        tf_fill(T, ino, out);
+    }
+    T->unlock();
+    tf_ctx_drain(T, &cx);
+    return r;
+}
+
 static int tf_op_rmdir(void *fs, const char *path) {
     uint32_t dir, ino, len;
     const char *name;
@@ -1097,6 +1120,7 @@ static const vibeos_fs_ops_t g_tmpfs_ops = {
     .write_at = tf_op_write_at,
     .truncate = tf_op_truncate,
     .create = tf_op_create,
+    .mknod = tf_op_mknod,
     .rmdir = tf_op_rmdir,
     .rename = tf_op_rename,
     .link = tf_op_link,

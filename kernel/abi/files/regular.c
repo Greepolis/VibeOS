@@ -482,6 +482,10 @@ vibeos_file_t *vibeos_open_path(const vibeos_path_t *w, uint32_t flags, uint32_t
             *err = -VIBEOS_ELOOP;   /* O_NOFOLLOW met a link */
             return 0;
         }
+        if ((node.mode & VIBEOS_S_IFMT) == VIBEOS_S_IFSOCK) {
+            *err = -VIBEOS_ENXIO;   /* a socket's name is connected to, not opened */
+            return 0;
+        }
         if (node.is_dir && (wants_write || (flags & VIBEOS_O_CREAT))) {
             *err = -VIBEOS_EISDIR;
             return 0;

@@ -405,13 +405,16 @@ static long linux_mknod_at(uint64_t dirfd, uint64_t path_uptr, uint64_t mode) {
     if (w.exists) {
         return -VIBEOS_EEXIST;
     }
-    if (type != 0u && type != VIBEOS_S_IFREG) {
+    if (type != 0u && type != VIBEOS_S_IFREG && type != VIBEOS_S_IFSOCK) {
         return -VIBEOS_EPERM;
     }
     if ((r = linux_may_add(&w)) != 0) {
         return r;
     }
-    r = vibeos_fs_create(w.mnt, w.tail, (uint32_t)mode & 07777u & ~linux_umask(), &node);
+    /* A socket node is the filesystem's to keep, if it can (docs/abi/ L5). */
+    r = type == VIBEOS_S_IFSOCK
+            ? vibeos_fs_mknod(w.mnt, w.tail, VIBEOS_S_IFSOCK | ((uint32_t)mode & 07777u & ~linux_umask()), &node)
+            : vibeos_fs_create(w.mnt, w.tail, (uint32_t)mode & 07777u & ~linux_umask(), &node);
     if (r == 0) {
         linux_own_new(&w);
     }
