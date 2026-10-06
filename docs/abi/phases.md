@@ -2022,6 +2022,90 @@ events, each a file type with a `ready` and a pipe's way of waiting, so `poll`,
   `sched_getaffinity`, L6) and outlasts a boot, so it is in
   `tests/corpus/ltp-hangs.txt` beside timerfd_settime02. Six boots, all clean.
 
+**Step 7 (2026-10-05): done - the programs.** `tests/corpus/run-l4.sh`, staged
+as `/corpus/progs.sh` and run by the boot's shell before the corpus:
+
+- **`tail -f`** follows a file another command appends to - it sleeps and
+  looks again, which needed nothing new.
+- **BusyBox `httpd`** serves a page from `/tmp/www`, and the boot gate fetches
+  it from the host through a port QEMU forwards (`hostfwd`, its own pair of
+  ports per parallel run, checked free before QEMU starts); the gate asserts on
+  the bytes that came back.
+- **`nc`** both ways: to the host's echo server, and listening for a line the
+  gate makes up and sends.
+
+What they needed, measured with strace on Linux before any of it was written:
+two of L5's calls, taken as far as these programs go. **`setsockopt`** accepts
+SO_REUSEADDR (what binding here does anyway) and SO_KEEPALIVE (no probe is
+sent); anything else is ENOPROTOOPT, partial in the registry with L5 named.
+**`shutdown`** half-closes: SHUT_WR sends the FIN and the socket still reads,
+a send after it is EPIPE with SIGPIPE, SHUT_RD ends reads once the queue is
+empty, and a close after a SHUT_WR lets the exchange finish instead of freeing
+the slot under the peer's last FIN.
+
+Three defects the programs found, none in a call the step wrote:
+
+- **The stack's flush could loop for ever with the network lock held.** It
+  counted what was left to send as `snd_una + tx_len - snd_nxt`, unsigned; a
+  FIN takes a sequence number and no byte, so once the peer had acknowledged
+  the data and not yet the FIN the count was minus one - four billion - and the
+  core sent the buffer's neighbours until the machine was stopped, every other
+  core queued on the lock. A `close` with data in flight could always have done
+  it; nc, which writes and shuts down at once, did it every time. The FIN is
+  now queued behind the data and sent by the flush, which never counts below
+  zero. Found by the wedge report naming `tcp_flush` on one core and
+  `vibeos_sockfile_stable` waiting on another.
+- **A wait on a socket heard no signal.** accept, the reads and connect looked
+  again every tick and never asked whether a signal needed acting on, so an
+  httpd parked in accept could not be killed, and the machine - which leaves
+  userland only when every user task has ended - never did. They stop for a
+  signal now (accept and the reads restart under SA_RESTART, connect is EINTR),
+  and a socket that may not block does not wait.
+- **The host held a port.** A forward to a port somebody holds makes QEMU exit
+  at once, which read as "QEMU exited before serial connection"; the gate says
+  `INFRA:` and the port now, probing it as QEMU binds it (with SO_REUSEADDR),
+  so that a port in TIME_WAIT is not mistaken for a port in use.
+
+- **Sabotage**: `net-inet-shutdown.txt` (4; the first is run under `timeout`,
+  because the defect it restores is a hang), `abi-socket-wait.txt` (2), and the
+  host tests for the handlers; at boot, `l4-programs-boot.txt` breaks each
+  program's half of an exchange in the script (5, one per reason the gate can
+  give: `tail_f_did_not_follow`, `httpd_not_served`, `nc_out_no_answer`,
+  `nc_in_not_received`, `l4_programs_did_not_finish`). Two went NOT RED,
+  correctly, and are written down in their case files rather than kept: "the
+  FIN goes ahead of unsent data" - this stack sends every byte at once and
+  leaves data unsent only while ARP is pending, which an established
+  connection never is - and refusing SO_REUSEADDR in the kernel, which BusyBox
+  sets through a helper that ignores the answer. The first run of the boot
+  cases also found the gate's own port probe wrong: it bound without
+  SO_REUSEADDR, so a forwarded port the previous boot had just closed - in
+  TIME_WAIT on QEMU's side - read as taken, and three of the five cases went red
+  for `INFRA:` instead of their reason. The probe binds as QEMU does now, and
+  those three were run again.
+
+**L4 is closed (2026-10-06).** LTP for the whole phase - `tests/corpus/ltp-l4.txt`
+and the three clock calls L2 handed over, 85 tests: 83 ran, two left out on
+purpose (timerfd_settime02, inotify09, both fuzzy-sync races that need L6's
+`sched_getaffinity`). 58 passed. Two were this phase's and are fixed: inotify10
+reads a directory's record and its child's in one instance and wanted the
+parent's first, and adjtimex03 wanted adjtime()'s bit (0x8000) without
+ADJ_OFFSET refused as EINVAL before the privilege is asked; both
+were run again after, with the inotify tests they touch. The rest, by owner:
+
+- **L5**: `socketpair` and AF_UNIX sockets (epoll_pwait01 to 06); `listen` on a
+  socket nobody bound, which Linux binds to a port of its own (epoll_wait05).
+- **By decision**: setting the clock (adjtimex01, clock_adjtime01 and 02,
+  settimeofday01 - refused, phase R, as clock_settime).
+- **Elsewhere**: `capget` (settimeofday02, L9); a time namespace (timerfd04);
+  `F_SETPIPE_SZ` (epoll_wait06); `mkfifo` in a temporary directory
+  (select01, L1's `mknod` gap); libaio (eventfd06) and a loop device
+  (inotify03, 07, 08) that the run does not stage.
+- **Open in inotify itself**: inotify06 writes the limits in
+  `/proc/sys/fs/inotify`, which are read-only here; inotify12 reads an
+  instance's watches from `/proc/self/fdinfo`, which does not list them; and
+  inotify11, which opens files as fast as another process deletes them, was
+  killed at LTP's timeout - not looked into.
+
 ### L5. Sockets (11, plus `readv`/`writev` on sockets)
 
 The rest of the BSD API (`sendmsg`/`recvmsg`, `shutdown`, `getsockname`,

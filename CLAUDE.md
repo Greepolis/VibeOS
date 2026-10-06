@@ -195,7 +195,24 @@ transmit into every core parked in `hw_spin_lock` behind it. The wedge
 report showed exactly that: one core in the driver, three queued.
 
 When adding a lock around something that already waited, look at what the wait
-costs now that others are behind it. The bound is two million now - still orders
+costs now that others are behind it.
+
+**A sequence number is not a byte.** The TCP flush counted what was left to
+send as `snd_una + tx_len - snd_nxt`, unsigned - and a FIN takes a sequence
+number with no byte behind it. Once the peer had acknowledged the data and not
+yet the FIN, the count was minus one, four billion, and the flush sent the
+buffer's neighbours for ever holding the network lock. A `close` with data in
+flight could always have done it; nothing did until BusyBox nc, which writes
+and shuts down in the same breath (L4 step 7). The wedge report named it
+outright: one core in `tcp_flush`, the others queued on the lock. Where a
+difference of unsigned counters can go below zero, compare before subtracting.
+
+**A wait that hears no signal is a process nobody can stop.** The socket waits
+looked again every tick and never asked whether a signal needed acting on, so
+an httpd parked in `accept` could not be killed - and the machine leaves
+userland only once every user task has ended, so the boot that started it
+never finished. Every new wait loop asks `ks_signal_interrupts` and honours
+O_NONBLOCK, the way the pipe's and poll's do. The bound is two million now - still orders
 of magnitude of headroom, and a failed frame instead of a failed machine.
 
 **Section banners in `arch_hw.c` describe where somebody stopped
