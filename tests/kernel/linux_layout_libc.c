@@ -34,7 +34,37 @@ static const struct { const char *name; size_t off, size; } g_dirent64[] = {
     F(d_ino), F(d_off), F(d_reclen), F(d_type), F(d_name),
 };
 
+#define SF(st, f) { #st, #f, offsetof(struct st, f), sizeof(((struct st *)0)->f) }
+#define SS(st) { #st, "", 0, sizeof(struct st) }
+
+static const struct { const char *st, *name; size_t off, size; } g_sfields[] = {
+    SS(msghdr), SF(msghdr, msg_name), SF(msghdr, msg_namelen), SF(msghdr, msg_iov),
+    SF(msghdr, msg_iovlen), SF(msghdr, msg_control), SF(msghdr, msg_controllen), SF(msghdr, msg_flags),
+    SS(mmsghdr), SF(mmsghdr, msg_hdr), SF(mmsghdr, msg_len),
+    SS(cmsghdr), SF(cmsghdr, cmsg_len), SF(cmsghdr, cmsg_level), SF(cmsghdr, cmsg_type),
+    SS(ucred), SF(ucred, pid), SF(ucred, uid), SF(ucred, gid),
+    SS(linger), SF(linger, l_onoff), SF(linger, l_linger),
+};
+
 static const struct { const char *name; long long value; } g_consts[] = {
+    { "AF_UNSPEC", AF_UNSPEC },
+    { "AF_UNIX", AF_UNIX },
+    { "SOCK_RAW", SOCK_RAW },
+    { "SOCK_SEQPACKET", SOCK_SEQPACKET },
+    { "SOCK_NONBLOCK", SOCK_NONBLOCK },
+    { "SOCK_CLOEXEC", SOCK_CLOEXEC },
+    { "MSG_OOB", MSG_OOB },
+    { "MSG_PEEK", MSG_PEEK },
+    { "MSG_CTRUNC", MSG_CTRUNC },
+    { "MSG_TRUNC", MSG_TRUNC },
+    { "MSG_DONTWAIT", MSG_DONTWAIT },
+    { "MSG_WAITALL", MSG_WAITALL },
+    { "MSG_ERRQUEUE", MSG_ERRQUEUE },
+    { "MSG_NOSIGNAL", MSG_NOSIGNAL },
+    { "MSG_WAITFORONE", MSG_WAITFORONE },
+    { "MSG_CMSG_CLOEXEC", MSG_CMSG_CLOEXEC },
+    { "SCM_RIGHTS", SCM_RIGHTS },
+    { "SCM_CREDENTIALS", SCM_CREDENTIALS },
     { "AF_INET", AF_INET },
     { "SOCK_STREAM", SOCK_STREAM },
     { "SOCK_DGRAM", SOCK_DGRAM },
@@ -101,7 +131,24 @@ int linux_libc_const(const char *name, long long *value) {
     return -1;
 }
 
+int linux_libc_sfield(const char *st, const char *field, size_t *off, size_t *size) {
+    size_t i;
+    for (i = 0; i < sizeof(g_sfields) / sizeof(g_sfields[0]); i++) {
+        if (strcmp(g_sfields[i].st, st) == 0 && strcmp(g_sfields[i].name, field) == 0) {
+            *off = g_sfields[i].off;
+            *size = g_sfields[i].size;
+            return 0;
+        }
+    }
+    return -1;
+}
+
 #else
+
+int linux_libc_sfield(const char *st, const char *field, size_t *off, size_t *size) {
+    (void)st; (void)field; (void)off; (void)size;
+    return -1;
+}
 
 long linux_host_getdents(unsigned char *buf, unsigned long cap) {
     (void)buf; (void)cap;

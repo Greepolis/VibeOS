@@ -18,11 +18,7 @@
 
 ### a socket that may not block waits anyway
 --- old
-    if (f->flags & VIBEOS_O_NONBLOCK) {
+    if ((f->flags & VIBEOS_O_NONBLOCK) || (msg_flags & VIBEOS_MSG_DONTWAIT)) {
         return -VIBEOS_EAGAIN;
     }
-    if (ks_current() >= 0 && ks_signal_interrupts(ks_current())) {
-        return cut;
 +++ new
-    if (ks_current() >= 0 && ks_signal_interrupts(ks_current())) {
-        return cut;

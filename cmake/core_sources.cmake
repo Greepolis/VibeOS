@@ -143,6 +143,8 @@ set(VIBEOS_ABI_FILES_SOURCES
     kernel/abi/files/timerfd.c
     kernel/abi/files/regular.c
     kernel/abi/files/socket.c
+    kernel/abi/files/sockopt.c
+    kernel/abi/files/unixsock.c
 )
 
 # The Linux syscall personality. Portable since docs/abi/ A2: it reaches the

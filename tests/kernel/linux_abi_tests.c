@@ -801,6 +801,7 @@ static void t_fork_inherits_cwd(void) {
 /* ---- L1 step 5: names and metadata -------------------------------------------------- */
 
 #define SYS5(nr, a, b, c, d, e) sys((nr), (a), (b), (c), (d), (e), 0, 0)
+#define SYS6(nr, a, b, c, d, e, g) sys((nr), (a), (b), (c), (d), (e), (g), 0)
 #define CWD ((uint64_t)(uint32_t)-100)
 #define NOID ((uint64_t)(uint32_t)-1)
 
@@ -2847,6 +2848,412 @@ static void t_inotify_ltp(void) {
 }
 
 /* ---- L4 step 7: setsockopt and shutdown, as far as httpd and nc go -------------- */
+/* ---- L5 step 1: the BSD calls on IP sockets -------------------------------------- */
+
+/* A struct sockaddr_in at `u` for `ip`:`port`, host order in, network order out. */
+static void put_sin(uint64_t u, uint32_t ip, uint16_t port) {
+    uint8_t *s = (uint8_t *)kf_uptr(u);
+
+    memset(s, 0, 16);
+    s[0] = 2;
+    s[2] = (uint8_t)(port >> 8); s[3] = (uint8_t)port;
+    s[4] = (uint8_t)(ip >> 24); s[5] = (uint8_t)(ip >> 16); s[6] = (uint8_t)(ip >> 8); s[7] = (uint8_t)ip;
+}
+
+static uint16_t sin_port(uint64_t u) {
+    const uint8_t *s = (const uint8_t *)kf_uptr(u);
+    return (uint16_t)((s[2] << 8) | s[3]);
+}
+
+static void t_sock_bsd(void) {
+    int me = fresh(88);   /* first: it empties the user arena the allocations below come from */
+    uint64_t sa = kf_ualloc(16), out = kf_ualloc(32), lenp = kf_ualloc(4), val = kf_ualloc(16), buf = kf_ualloc(64);
+    uint64_t mh = kf_ualloc(sizeof(linux_msghdr_t)), iov = kf_ualloc(32), vec = kf_ualloc(2 * sizeof(linux_mmsghdr_t));
+    int32_t *len = (int32_t *)kf_uptr(lenp), *v = (int32_t *)kf_uptr(val);
+    long u1, u2, t1, t2, l;
+
+    (void)me;
+    kf_net_up(0x0A00020Fu, 0x0A000202u);
+    expect(SYS3(41, 2, 2 | 0x800 | 0x80000 /* SOCK_NONBLOCK|SOCK_CLOEXEC */, 0) >= 0 &&
+           SYS3(41, 2, 1, 17 /* UDP for a stream */) == -VIBEOS_EPROTONOSUPPORT &&
+           SYS3(41, 2, 1 | 0x10000, 0) == -VIBEOS_EINVAL && SYS3(41, 2, 5 /* SEQPACKET */, 0) == -VIBEOS_ESOCKTNOSUPPORT,
+           "socket: the type's flags; a protocol of the wrong kind; an unknown flag; a type IP has not");
+
+    /* bind: the length, the family, a port nobody else holds, once. */
+    u1 = SYS3(41, 2, 2, 0);
+    u2 = SYS3(41, 2, 2, 0);
+    put_sin(sa, 0, 5000);
+    expect(SYS3(49, (uint64_t)u1, sa, 8) == -VIBEOS_EINVAL && SYS3(49, (uint64_t)u1, sa, 16) == 0 &&
+           SYS3(49, (uint64_t)u1, sa, 16) == -VIBEOS_EINVAL && SYS3(49, (uint64_t)u2, sa, 16) == -VIBEOS_EADDRINUSE,
+           "bind: a short address EINVAL; bound once; again EINVAL; another on the port EADDRINUSE");
+    put_sin(sa, 0x01020304u, 5001);
+    expect(SYS3(49, (uint64_t)u2, sa, 16) == -VIBEOS_EADDRNOTAVAIL, "an address this machine does not have");
+    put_sin(sa, 0, 0);
+    *len = 16;
+    expect(SYS3(49, (uint64_t)u2, sa, 16) == 0 && SYS3(51, (uint64_t)u2, out, lenp) == 0 && *len == 16 &&
+           sin_port(out) >= 49152u, "port 0 is one of the stack's own, and getsockname says which");
+    *len = 4;
+    expect(SYS3(51, (uint64_t)u1, out, lenp) == 0 && *len == 16, "a short length gets what fits, and the real one");
+    expect(SYS3(52, (uint64_t)u1, out, lenp) == -VIBEOS_ENOTCONN, "getpeername of a socket with no peer");
+
+    /* listen binds what nobody bound (L4's epoll_wait05). */
+    l = SYS3(41, 2, 1, 0);
+    *len = 16;
+    expect(SYS2(50, (uint64_t)l, 4) == 0 && SYS3(51, (uint64_t)l, out, lenp) == 0 && sin_port(out) >= 49152u &&
+           SYS2(50, (uint64_t)u1, 4) == -VIBEOS_EOPNOTSUPP,
+           "listen on an unbound stream picks a port; a datagram socket does not listen");
+    expect(SYS4(288, (uint64_t)l, 0, 0, 1) == -VIBEOS_EINVAL, "accept4: an unknown flag EINVAL");
+
+    /* Options, as Linux reports them. */
+    *len = 4;
+    expect(SYS5(55, (uint64_t)u1, 1, 3 /* SO_TYPE */, val, lenp) == 0 && *v == 2 && *len == 4,
+           "SO_TYPE of a datagram socket is SOCK_DGRAM");
+    *len = 4;
+    expect(SYS5(55, (uint64_t)l, 1, 30 /* SO_ACCEPTCONN */, val, lenp) == 0 && *v == 1, "a listener says so");
+    *v = 1000;
+    *len = 4;
+    expect(SYS5(54, (uint64_t)u1, 1, 8 /* SO_RCVBUF */, val, 4) == 0 && SYS5(55, (uint64_t)u1, 1, 8, val, lenp) == 0 &&
+           *v == 2304, "SO_RCVBUF is never below its floor");
+    *v = 5000;
+    *len = 4;
+    expect(SYS5(54, (uint64_t)u1, 1, 7 /* SO_SNDBUF */, val, 4) == 0 && SYS5(55, (uint64_t)u1, 1, 7, val, lenp) == 0 &&
+           *v == 10000, "SO_SNDBUF is doubled, for the kernel's bookkeeping, as Linux reports it");
+    *len = 4;
+    expect(SYS5(55, (uint64_t)u1, 1, 39 /* SO_DOMAIN */, val, lenp) == 0 && *v == 2 &&
+           SYS5(55, (uint64_t)u1, 1, 38 /* SO_PROTOCOL */, val, lenp) == 0 && *v == 17, "SO_DOMAIN and SO_PROTOCOL");
+    v[0] = 1; v[1] = 7;
+    *len = 8;
+    expect(SYS5(54, (uint64_t)u1, 1, 13 /* SO_LINGER */, val, 8) == 0 && SYS5(55, (uint64_t)u1, 1, 13, val, lenp) == 0 &&
+           v[0] == 1 && v[1] == 7 && *len == 8, "SO_LINGER round trip");
+    *len = -1;
+    expect(SYS5(55, (uint64_t)u1, 1, 3, val, lenp) == -VIBEOS_EINVAL && SYS5(54, (uint64_t)u1, 1, 3, val, 4) == -VIBEOS_ENOPROTOOPT &&
+           SYS5(54, (uint64_t)u1, 1, 2, val, 2) == -VIBEOS_EINVAL && SYS5(55, (uint64_t)u1, 6, 1, val, lenp) == -VIBEOS_EINVAL,
+           "a negative length EINVAL; SO_TYPE cannot be set; a short value EINVAL");
+    *len = 4;
+    expect(SYS5(55, (uint64_t)u1, 6, 1 /* TCP_NODELAY */, val, lenp) == -VIBEOS_EOPNOTSUPP &&
+           SYS5(54, (uint64_t)u1, 6, 1, val, 4) == -VIBEOS_ENOPROTOOPT,
+           "TCP_NODELAY is not a datagram socket's: IP asked for a level it has not - EOPNOTSUPP to get, ENOPROTOOPT to set");
+    {
+        int64_t *tv = (int64_t *)kf_uptr(val);
+
+        tv[0] = 0; tv[1] = 2000000;   /* 2 s, past the microsecond count */
+        expect(SYS5(54, (uint64_t)u1, 1, 20 /* SO_RCVTIMEO */, val, 16) == -VIBEOS_EDOM, "a timeout's usec past a second is EDOM");
+        tv[0] = 0; tv[1] = 50000;     /* 50 ms */
+        expect(SYS5(54, (uint64_t)u1, 1, 20, val, 16) == 0, "SO_RCVTIMEO 50 ms");
+        {
+            uint64_t t0 = ks_ticks();
+            kf_outcome_t how = KF_RETURNED;
+            long n = sys(45, (uint64_t)u1, buf, 64, 0, 0, 0, &how);
+
+            expect(how == KF_RETURNED && n == -VIBEOS_EAGAIN && ks_ticks() - t0 >= 5u * ks_hz() / 100u,
+                   "a receive with nothing to read gives up after the timeout with EAGAIN");
+        }
+    }
+
+    /* A datagram: PEEK leaves it, TRUNC says its length, the sender is named. */
+    kf_net_deliver_udp(0x0A000202u, 9999, 5000, "datagram!", 9);
+    *len = 16;
+    expect(SYS6(45, (uint64_t)u1, buf, 4, 2 /* MSG_PEEK */, out, lenp) == 4 && sin_port(out) == 9999 &&
+           SYS6(45, (uint64_t)u1, buf, 4, 0x20 /* MSG_TRUNC */, 0, 0) == 9 &&
+           SYS6(45, (uint64_t)u1, buf, 4, 0x40, 0, 0) == -VIBEOS_EAGAIN,
+           "MSG_PEEK reads and leaves; MSG_TRUNC says the whole length; then it is gone");
+    kf_net_deliver_udp(0x0A000202u, 9999, 5000, "two parts", 9);
+    {
+        linux_msghdr_t *h = (linux_msghdr_t *)kf_uptr(mh);
+        uint64_t *io = (uint64_t *)kf_uptr(iov);
+
+        memset(h, 0, sizeof(*h));
+        io[0] = buf; io[1] = 3; io[2] = buf + 32; io[3] = 3;
+        h->msg_name = out;
+        h->msg_namelen = 16;
+        h->msg_iov = iov;
+        h->msg_iovlen = 2;
+        expect(SYS3(47, (uint64_t)u1, mh, 0) == 6 && memcmp(kf_uptr(buf), "two", 3) == 0 &&
+               memcmp(kf_uptr(buf + 32), " pa", 3) == 0 && (h->msg_flags & 0x20 /* MSG_TRUNC */) &&
+               h->msg_namelen == 16 && sin_port(out) == 9999,
+               "recvmsg scatters, says MSG_TRUNC, and names the sender");
+        put_sin(out, 0x0A000202u, 7);
+        memcpy(kf_uptr(buf), "abcdef", 6);
+        h->msg_flags = 0;
+        {
+            uint32_t before = kf_net_udp_sent(0), last = 0;
+
+            expect(SYS3(46, (uint64_t)u1, mh, 0) == 6 && kf_net_udp_sent(&last) == before + 1u && last == 6u,
+                   "sendmsg gathers two iovecs into one datagram to the address it names");
+        }
+        /* sendmmsg: two messages, each length written beside it. */
+        {
+            linux_mmsghdr_t *mm = (linux_mmsghdr_t *)kf_uptr(vec);
+            uint32_t before = kf_net_udp_sent(0);
+
+            memset(mm, 0, 2 * sizeof(*mm));
+            mm[0].msg_hdr = *h;
+            mm[1].msg_hdr = *h;
+            mm[1].msg_hdr.msg_iovlen = 1;
+            expect(SYS4(307, (uint64_t)u1, vec, 2, 0) == 2 && mm[0].msg_len == 6u && mm[1].msg_len == 3u &&
+                   kf_net_udp_sent(0) == before + 2u, "sendmmsg sends both and says each one's length");
+        }
+    }
+    t1 = SYS3(41, 2, 1, 0);
+    t2 = SYS3(41, 2, 1, 0);
+    ks_id(me)->sig_pending = 0;
+    expect(SYS3(44, (uint64_t)t1, buf, 1) == -VIBEOS_EPIPE && (ks_id(me)->sig_pending & (1ull << 13)),
+           "a send on a stream nobody connected is EPIPE, with SIGPIPE");
+    ks_id(me)->sig_pending = 0;
+    expect(sys(44, (uint64_t)t2, buf, 1, 0x4000 /* MSG_NOSIGNAL */, 0, 0, 0) == -VIBEOS_EPIPE &&
+           (ks_id(me)->sig_pending & (1ull << 13)) == 0,
+           "a send on a stream nobody connected is EPIPE, and MSG_NOSIGNAL raises nothing");
+    /* The orders LTP's run found, each checked against Linux first. */
+    expect(SYS3(51, (uint64_t)u1, out, 0) == -VIBEOS_EFAULT, "getsockname with no length is EFAULT");
+    *len = 16;
+    expect(SYS3(43, (uint64_t)t1, 0x10, lenp) == -VIBEOS_EINVAL && SYS3(43, (uint64_t)u1, 0, 0) == -VIBEOS_EOPNOTSUPP,
+           "accept on a stream that does not listen is EINVAL before its bad buffer; on a datagram socket EOPNOTSUPP");
+    {
+        uint64_t *io = (uint64_t *)kf_uptr(iov);
+
+        io[0] = buf; io[1] = ~0ull;
+        expect(SYS3(19, (uint64_t)t1, iov, 1) == -VIBEOS_EINVAL && SYS3(20, (uint64_t)t1, iov, 1) == -VIBEOS_EINVAL,
+               "readv and writev: a length negative as a size is EINVAL");
+    }
+    *v = 4096;
+    *len = 4;
+    expect(SYS5(54, (uint64_t)u1, 1, 32 /* SO_SNDBUFFORCE */, val, 4) == 0 &&
+           SYS5(55, (uint64_t)u1, 1, 32, val, lenp) == -VIBEOS_ENOPROTOOPT,
+           "SO_SNDBUFFORCE: the superuser sets it, nobody reads it");
+    expect(kf_lock_imbalance() == 0, "the BSD calls released every lock they took");
+}
+
+/* ---- L5: loopback -------------------------------------------------------------------- */
+
+/* A process talking to itself over TCP and UDP through 127.0.0.1, as every
+ * LTP socket test does. The packets wait for the stack's poll, which the fake's
+ * wait runs as the machine's tick does. */
+static void t_loopback(void) {
+    int me = fresh(90);   /* first: it empties the user arena the allocations below come from */
+    uint64_t sa = kf_ualloc(16), out = kf_ualloc(16), lenp = kf_ualloc(4), buf = kf_ualloc(64);
+    int32_t *len = (int32_t *)kf_uptr(lenp);
+    const uint8_t *o = (const uint8_t *)kf_uptr(out);
+    long l, c, a, u1, u2;
+
+    (void)me;
+    kf_net_up(0x0A00020Fu, 0x0A000202u);
+    l = SYS3(41, 2, 1, 0);
+    put_sin(sa, 0x7F000001u, 6000);
+    expect(SYS3(49, (uint64_t)l, sa, 16) == 0 && SYS2(50, (uint64_t)l, 4) == 0, "a listener on 127.0.0.1");
+    c = SYS3(41, 2, 1, 0);
+    expect(SYS3(42, (uint64_t)c, sa, 16) == 0, "connect to it completes the handshake over loopback");
+    *len = 16;
+    a = SYS3(43, (uint64_t)l, out, lenp);
+    expect(a >= 0 && *len == 16 && o[4] == 127 && o[5] == 0 && o[6] == 0 && o[7] == 1,
+           "accept takes it, from 127.0.0.1");
+    expect(SYS3(1, (uint64_t)c, ustr("loop"), 4) == 4 && SYS3(0, (uint64_t)a, buf, 64) == 4 &&
+           memcmp(kf_uptr(buf), "loop", 4) == 0, "bytes cross a loopback connection");
+    *len = 16;
+    expect(SYS3(51, (uint64_t)c, out, lenp) == 0 && o[4] == 127 && o[7] == 1,
+           "the client's own name is 127.0.0.1, where its packets leave from");
+    put_sin(sa, 0x7F000001u, 6001);
+    {
+        /* At once, not after the SYN's retries ran out - which also ends as
+         * ECONNREFUSED, so the time is what tells a reset from a timeout. */
+        uint64_t t0 = ks_ticks();
+
+        expect(SYS3(42, (uint64_t)SYS3(41, 2, 1, 0), sa, 16) == -VIBEOS_ECONNREFUSED && ks_ticks() - t0 < 10u,
+               "a port nobody listens on answers with a reset: ECONNREFUSED, at once");
+    }
+    put_sin(sa, 0, 6000);
+    expect(SYS3(42, (uint64_t)SYS3(41, 2, 1, 0), sa, 16) == 0, "0.0.0.0 as a destination is this machine");
+
+    u1 = SYS3(41, 2, 2, 0);
+    u2 = SYS3(41, 2, 2, 0);
+    put_sin(sa, 0x7F000001u, 6002);
+    expect(SYS3(49, (uint64_t)u1, sa, 16) == 0 && SYS6(44, (uint64_t)u2, ustr("dgram"), 5, 0, sa, 16) == 5,
+           "a datagram to 127.0.0.1");
+    *len = 16;
+    expect(SYS6(45, (uint64_t)u1, buf, 64, 0, out, lenp) == 5 && o[4] == 127 && o[7] == 1,
+           "arrives, from 127.0.0.1");
+    /* A half-closed connection keeps its slot until its owner closes it: nc -l
+     * shuts its side at once and reads what the peer sends, and if that came
+     * to TIME_WAIT more than four seconds before the read, the stack used to
+     * reclaim the slot under the open descriptor (sock_fd_aba, data lost). */
+    {
+        uint64_t ts = kf_ualloc(16);
+        int64_t *t = (int64_t *)kf_uptr(ts);
+        uint64_t aba = ks_net()->sock_fd_aba;
+
+        expect(SYS2(48, (uint64_t)c, 1 /* SHUT_WR */) == 0 && SYS3(0, (uint64_t)a, buf, 64) == 0,
+               "the client's SHUT_WR is the server's end of the stream");
+        expect(SYS3(1, (uint64_t)a, ustr("late"), 4) == 4 && SYS1(3, (uint64_t)a) == 0,
+               "the server answers and closes");
+        t[0] = 6; t[1] = 0;
+        (void)SYS2(35, ts, 0);   /* six seconds: past the reclaim deadline */
+        expect(SYS3(0, (uint64_t)c, buf, 64) == 4 && memcmp(kf_uptr(buf), "late", 4) == 0 &&
+               SYS3(0, (uint64_t)c, buf, 64) == 0 && ks_net()->sock_fd_aba == aba,
+               "and the half-closed client still reads it long after TIME_WAIT: the slot waits for close");
+        expect(SYS1(3, (uint64_t)c) == 0, "whose close lets it go");
+    }
+    expect(kf_lock_imbalance() == 0, "loopback released every lock it took");
+}
+
+/* ---- L5 steps 2 and 3: local sockets ------------------------------------------------ */
+
+static void put_sun(uint64_t u, const char *path, uint32_t n) {
+    uint8_t *s = (uint8_t *)kf_uptr(u);
+
+    memset(s, 0, 110);
+    s[0] = 1;
+    memcpy(s + 2, path, n);
+}
+
+static void t_unix(void) {
+    int me = fresh(89);   /* first: it empties the user arena the allocations below come from */
+    uint64_t sv = kf_ualloc(8), buf = kf_ualloc(64), sa = kf_ualloc(110), out = kf_ualloc(110), lenp = kf_ualloc(4);
+    uint64_t pf = kf_ualloc(sizeof(linux_pollfd_t)), val = kf_ualloc(16), mh = kf_ualloc(sizeof(linux_msghdr_t));
+    uint64_t iov = kf_ualloc(16), ctl = kf_ualloc(64), pipe = kf_ualloc(8);
+    int32_t *p = (int32_t *)kf_uptr(sv), *len = (int32_t *)kf_uptr(lenp);
+    linux_pollfd_t *q = (linux_pollfd_t *)kf_uptr(pf);
+    long srv, cli, acc, d1, d2, r;
+    kf_outcome_t how = KF_RETURNED;
+
+    /* A stream pair: bytes each way, the end, poll. */
+    expect(SYS4(53, 1, 1, 0, sv) == 0 && SYS3(1, (uint64_t)p[0], ustr("ping"), 4) == 4 &&
+           SYS3(0, (uint64_t)p[1], buf, 64) == 4 && memcmp(kf_uptr(buf), "ping", 4) == 0,
+           "socketpair: what one end writes the other reads");
+    *len = 16;
+    expect(SYS3(1, (uint64_t)p[0], ustr("y"), 1) == 1 && SYS6(45, (uint64_t)p[1], buf, 64, 0x2000 /* MSG_ERRQUEUE */, 0, 0) == -VIBEOS_EAGAIN &&
+           SYS6(45, (uint64_t)p[1], buf, 64, 0, 0x10, lenp) == 1 && *len == 0,
+           "MSG_ERRQUEUE finds nothing; a stream's recvfrom writes no source, so a bad one is no error");
+    *len = -1;
+    expect(SYS3(1, (uint64_t)p[0], ustr("z"), 1) == 1 && SYS6(45, (uint64_t)p[1], buf, 64, 0, out, lenp) == -VIBEOS_EINVAL,
+           "but a negative length is EINVAL, a stream's too (LTP's recvfrom01)");
+    (void)SYS3(0, (uint64_t)p[1], buf, 64);
+    q->fd = p[1]; q->events = 1 | 4; q->revents = 0;
+    expect(SYS3(7, pf, 1, 0) == 1 && q->revents == 4, "nothing to read, room to write");
+    (void)sys(0, (uint64_t)p[1], buf, 64, 0, 0, 0, &how);
+    expect(how == KF_BLOCKED, "a read with nothing there waits");
+    /* The outcome too: an abandoned wait comes back as 0, which is also what
+     * the end of a stream reads as (the first version of this check passed with
+     * the peer never told). */
+    expect(SYS2(48, (uint64_t)p[0], 1 /* SHUT_WR */) == 0 && sys(0, (uint64_t)p[1], buf, 64, 0, 0, 0, &how) == 0 &&
+           how == KF_RETURNED, "the writer's SHUT_WR is the reader's end of the stream");
+    *len = 110;
+    expect(SYS3(52, (uint64_t)p[0], out, lenp) == 0 && *len == 2, "a pair's peer is unnamed: the family alone");
+    {
+        int32_t *c = (int32_t *)kf_uptr(val);
+
+        *len = 12;
+        expect(SYS5(55, (uint64_t)p[0], 1, 17 /* SO_PEERCRED */, val, lenp) == 0 && *len == 12 &&
+               c[0] == 89 && c[1] == 0 && c[2] == 0, "SO_PEERCRED of a pair is the caller");
+    }
+    expect(SYS4(53, 2, 1, 0, sv) == -VIBEOS_EOPNOTSUPP, "an IP socket has no pair");
+    *len = 4;
+    expect(SYS5(55, (uint64_t)p[0], 6, 1, val, lenp) == -VIBEOS_EOPNOTSUPP &&
+           SYS5(54, (uint64_t)p[0], 6, 1, val, 4) == -VIBEOS_EOPNOTSUPP,
+           "a local socket has no level but SOL_SOCKET: EOPNOTSUPP both ways");
+
+    /* A datagram pair keeps messages whole. */
+    expect(SYS4(53, 1, 2, 0, sv) == 0 && SYS3(1, (uint64_t)p[0], ustr("one"), 3) == 3 &&
+           SYS3(1, (uint64_t)p[0], ustr("three"), 5) == 5 && SYS3(0, (uint64_t)p[1], buf, 64) == 3 &&
+           SYS6(45, (uint64_t)p[1], buf, 2, 0x20 /* MSG_TRUNC */, 0, 0) == 5 &&
+           SYS6(45, (uint64_t)p[1], buf, 64, 0x40, 0, 0) == -VIBEOS_EAGAIN,
+           "datagrams: one read is one message, a short buffer cuts it, MSG_TRUNC says its length");
+
+    /* A named listener in /tmp: bind makes the node, connect and accept. */
+    srv = SYS3(41, 1, 1, 0);
+    put_sun(sa, "/tmp/ux.sock", 12);
+    expect(SYS3(49, (uint64_t)srv, sa, 2 + 12 + 1) == 0 && tmp_mode("/tmp/ux.sock") >> 12 == 0xCu,
+           "bind on a path makes a socket node");
+    expect(SYS2(2, ustr("/tmp/ux.sock"), 0) == -VIBEOS_ENXIO, "which is connected to, not opened");
+    d1 = SYS3(41, 1, 1, 0);
+    expect(SYS3(49, (uint64_t)d1, sa, 15) == -VIBEOS_EADDRINUSE && SYS3(49, (uint64_t)srv, sa, 15) == -VIBEOS_EINVAL,
+           "the name taken is EADDRINUSE; a bound socket binds no more");
+    cli = SYS3(41, 1, 1, 0);
+    expect(SYS3(42, (uint64_t)cli, sa, 15) == -VIBEOS_ECONNREFUSED, "nobody listening is ECONNREFUSED");
+    expect(SYS2(50, (uint64_t)srv, 2) == 0 && SYS3(42, (uint64_t)cli, sa, 15) == 0, "listen, then connect");
+    *len = 110;
+    acc = SYS4(288, (uint64_t)srv, out, lenp, 0x800);
+    expect(acc >= 0 && *len == 2 && SYS3(1, (uint64_t)cli, ustr("hi"), 2) == 2 && SYS3(0, (uint64_t)acc, buf, 64) == 2,
+           "accept4 takes the connection, the client unnamed, and bytes cross");
+    *len = 110;
+    expect(SYS3(52, (uint64_t)cli, out, lenp) == 0 && *len == 15 && memcmp((char *)kf_uptr(out) + 2, "/tmp/ux.sock", 12) == 0,
+           "the client's peer is the listener's path");
+    expect(SYS3(0, (uint64_t)acc, buf, 64) == -VIBEOS_EAGAIN, "accept4's SOCK_NONBLOCK");
+    put_sun(sa, "/tmp/none.sock", 14);
+    expect(SYS3(42, (uint64_t)d1, sa, 17) == -VIBEOS_ENOENT, "a path that is not there is ENOENT");
+
+    /* The abstract namespace. */
+    d1 = SYS3(41, 1, 2, 0);
+    d2 = SYS3(41, 1, 2, 0);
+    put_sun(sa, "\0abstract", 9);
+    expect(SYS3(49, (uint64_t)d1, sa, 11) == 0 && SYS6(44, (uint64_t)d2, ustr("hey"), 3, 0, sa, 11) == 3,
+           "an abstract name is bound and sent to");
+    *len = 110;
+    r = SYS6(45, (uint64_t)d1, buf, 64, 0, out, lenp);
+    expect(r == 3 && *len == 0, "and the datagram arrives, from an unnamed sender: a name of length 0");
+    put_sun(sa, "", 0);
+    *len = 110;
+    expect(SYS3(49, (uint64_t)d2, sa, 2) == 0 && SYS3(51, (uint64_t)d2, out, lenp) == 0 && *len == 8 &&
+           ((uint8_t *)kf_uptr(out))[2] == 0, "binding no name autobinds five hex digits in the abstract namespace");
+
+    /* SCM_RIGHTS: a pipe's read end passed, and read through. */
+    expect(SYS4(53, 1, 1, 0, sv) == 0 && SYS2(293, pipe, 0) == 0, "a pair and a pipe");
+    {
+        linux_msghdr_t *h = (linux_msghdr_t *)kf_uptr(mh);
+        uint64_t *io = (uint64_t *)kf_uptr(iov);
+        linux_cmsghdr_t *c = (linux_cmsghdr_t *)kf_uptr(ctl);
+        int32_t *pp = (int32_t *)kf_uptr(pipe);
+        long got;
+
+        memset(h, 0, sizeof(*h));
+        memcpy(kf_uptr(buf), "x", 1);
+        io[0] = buf; io[1] = 1;
+        h->msg_iov = iov;
+        h->msg_iovlen = 1;
+        c->cmsg_len = sizeof(*c) + 4;
+        c->cmsg_level = 1;
+        c->cmsg_type = 1;
+        *(int32_t *)((uint8_t *)kf_uptr(ctl) + sizeof(*c)) = pp[0];
+        h->msg_control = ctl;
+        h->msg_controllen = 24;
+        expect(SYS3(46, (uint64_t)p[0], mh, 0) == 1, "sendmsg with SCM_RIGHTS");
+        (void)SYS1(3, (uint64_t)pp[0]);   /* the sender's descriptor goes; the description travels */
+        memset(kf_uptr(ctl), 0, 64);
+        h->msg_controllen = 64;
+        h->msg_flags = 0;
+        got = SYS3(47, (uint64_t)p[1], mh, 0x40000000 /* MSG_CMSG_CLOEXEC */);
+        {
+            int32_t fd = *(int32_t *)((uint8_t *)kf_uptr(ctl) + sizeof(*c));
+
+            /* The number is the lowest free - the sender's own, which it closed. */
+            expect(got == 1 && c->cmsg_level == 1 && c->cmsg_type == 1 && c->cmsg_len == sizeof(*c) + 4 &&
+                   h->msg_controllen == 24 && fd >= 0,
+                   "recvmsg installs the passed description in the receiver's table");
+            expect(SYS3(1, (uint64_t)pp[1], ustr("through"), 7) == 7 && SYS3(0, (uint64_t)fd, buf, 64) == 7 &&
+                   memcmp(kf_uptr(buf), "through", 7) == 0, "and reading it reads the pipe");
+        }
+        /* Rights with no room for them: given back, MSG_CTRUNC. */
+        h->msg_control = ctl;
+        h->msg_controllen = 24;
+        c->cmsg_len = sizeof(*c) + 4;
+        c->cmsg_level = 1;
+        c->cmsg_type = 1;
+        *(int32_t *)((uint8_t *)kf_uptr(ctl) + sizeof(*c)) = pp[1];
+        expect(SYS3(46, (uint64_t)p[0], mh, 0) == 1, "rights again");
+        h->msg_control = 0;
+        h->msg_controllen = 0;
+        h->msg_flags = 0;
+        expect(SYS3(47, (uint64_t)p[1], mh, 0) == 1 && (h->msg_flags & 0x8 /* MSG_CTRUNC */),
+               "a receiver with no control buffer: MSG_CTRUNC");
+        c->cmsg_level = 1;
+        c->cmsg_type = 1;
+        *(int32_t *)((uint8_t *)kf_uptr(ctl) + sizeof(*c)) = 77;
+        h->msg_control = ctl;
+        h->msg_controllen = 24;
+        expect(SYS3(46, (uint64_t)p[0], mh, 0) == -VIBEOS_EBADF, "a descriptor that is not open is EBADF");
+    }
+    (void)me;
+    expect(kf_lock_imbalance() == 0, "the local sockets released every lock they took");
+}
+
 static void t_sock_halfclose(void) {
     int me = fresh(86);   /* first: it empties the user arena the allocations below come from */
     uint64_t one = kf_ualloc(4);
@@ -2863,7 +3270,7 @@ static void t_sock_halfclose(void) {
            sys(54, (uint64_t)s, 1, 2, 0x10, 4, 0, 0) == -VIBEOS_EFAULT &&
            sys(54, 99, 1, 2, one, 4, 0, 0) == -VIBEOS_EBADF &&
            sys(54, (uint64_t)SYS2(290, 0, 0), 1, 2, one, 4, 0, 0) == -VIBEOS_ENOTSOCK &&
-           sys(54, (uint64_t)s, 1, 7 /* SO_SNDBUF */, one, 4, 0, 0) == -VIBEOS_ENOPROTOOPT,
+           sys(54, (uint64_t)s, 1, 1234, one, 4, 0, 0) == -VIBEOS_ENOPROTOOPT,
            "a short value EINVAL, a bad one EFAULT, no descriptor EBADF, not a socket ENOTSOCK, another option ENOPROTOOPT");
     expect(SYS2(48, (uint64_t)s, 1 /* SHUT_WR */) == -VIBEOS_ENOTCONN && SYS2(48, (uint64_t)s, 3) == -VIBEOS_EINVAL &&
            SYS2(48, 99, 1) == -VIBEOS_EBADF,
@@ -3025,7 +3432,7 @@ static void t_ltp_l1(void) {
            "fallocate past the largest offset is EFBIG even when it keeps the size");
 
     /* A socket of a family there is none of. */
-    expect(SYS3(41, 1 /* AF_UNIX */, 1, 0) == -VIBEOS_EAFNOSUPPORT, "a local socket is EAFNOSUPPORT");
+    expect(SYS3(41, 10 /* AF_INET6 */, 1, 0) == -VIBEOS_EAFNOSUPPORT, "an IPv6 socket is EAFNOSUPPORT");
 
     /* fcntl11: F_GETLK names the first lock in the way, by position. */
     expect(lock_op(fd, 6 /* F_SETLK */, 1 /* F_WRLCK */, 10, 5, 0) == 0 &&
@@ -4707,6 +5114,9 @@ int test_linux_handlers(void) {
     t_epoll();
     t_inotify();
     t_sock_halfclose();
+    t_sock_bsd();
+    t_loopback();
+    t_unix();
     t_inotify_ltp();
     t_futex_shared();
     t_clone3_checks();
@@ -4875,13 +5285,13 @@ int test_linux_gaps(void) {
         s[0] = 2; s[1] = 0; s[2] = 0x10; s[3] = 0x92;   /* AF_INET, port 4242 */
         fd = SYS2(41, 2, 2);                              /* UDP */
         expect(fd >= 3, "a UDP socket");
-        expect(SYS2(49, (uint64_t)fd, sa) == 0, "bound to 4242");
+        expect(SYS3(49, (uint64_t)fd, sa, 16) == 0, "bound to 4242");
         kf_net_deliver_udp(0x0A000202u, 9999, 4242, "helloworld", 10);
         v[0] = b1; v[1] = 5; v[2] = b2; v[3] = 5;
         r = sys(19, (uint64_t)fd, iov, 2, 0, 0, 0, &how);
-        gap(19, how == KF_RETURNED && r == 10 &&
-                memcmp(kf_uptr(b1), "hello", 5) == 0 && memcmp(kf_uptr(b2), "world", 5) == 0,
-            "readv scatters one datagram");
+        expect(how == KF_RETURNED && r == 10 &&
+               memcmp(kf_uptr(b1), "hello", 5) == 0 && memcmp(kf_uptr(b2), "world", 5) == 0,
+               "readv scatters one datagram (L5: one receive over the vector)");
 
         s[2] = 0x27; s[3] = 0x0F;                          /* the peer's 9999 */
         s[4] = 10; s[5] = 0; s[6] = 2; s[7] = 2;
@@ -4891,8 +5301,8 @@ int test_linux_gaps(void) {
             memcpy(kf_uptr(b1), "hello", 5);
             memcpy(kf_uptr(b2), "world", 5);
             r = (c == 0) ? sys(20, (uint64_t)fd, iov, 2, 0, 0, 0, &how) : c;
-            gap(20, c == 0 && r == 10 && kf_net_udp_sent(&last) == sent_before + 1u && last == 10u,
-                "writev on a connected UDP socket sends one datagram");
+            expect(c == 0 && r == 10 && kf_net_udp_sent(&last) == sent_before + 1u && last == 10u,
+                   "writev on a connected UDP socket sends one datagram");
         }
     }
 
@@ -5083,16 +5493,37 @@ int test_linux_gaps(void) {
         expect(SYS0(219) == -VIBEOS_EINTR, "restart_syscall with nothing to restart is EINTR, as Linux's");
     }
 
-    /* setsockopt (54), L5: two options, as httpd and nc set them. */
+    /* setsockopt and getsockopt (54, 55), L5: SOL_SOCKET's options and
+     * TCP_NODELAY, no IP-level one. */
     {
-        uint64_t one = kf_ualloc(4);
+        uint64_t one = kf_ualloc(4), len = kf_ualloc(4);
         long s;
 
         *(int32_t *)kf_uptr(one) = 1;
+        *(int32_t *)kf_uptr(len) = 4;
         kf_net_up(0x0A00020Fu, 0x0A000202u);
         s = SYS2(41, 2, 1);
-        gap(54, s >= 0 && sys(54, (uint64_t)s, 6 /* IPPROTO_TCP */, 1 /* TCP_NODELAY */, one, 4, 0, 0) == 0,
-            "setsockopt sets TCP_NODELAY");
+        gap(54, s >= 0 && sys(54, (uint64_t)s, 0 /* IPPROTO_IP */, 2 /* IP_TTL */, one, 4, 0, 0) == 0,
+            "setsockopt sets IP_TTL");
+        gap(55, s >= 0 && sys(55, (uint64_t)s, 0, 2 /* IP_TTL */, one, len, 0, 0) == 0,
+            "getsockopt reads IP_TTL");
+    }
+
+    /* sendmsg and recvmsg (46, 47), L5: more than a page of iovecs, which
+     * Linux takes up to 1024 of. */
+    {
+        uint64_t sv = kf_ualloc(8), iov = kf_ualloc(300 * 16), mh = kf_ualloc(sizeof(linux_msghdr_t));
+        linux_msghdr_t *h = (linux_msghdr_t *)kf_uptr(mh);
+        int32_t *p = (int32_t *)kf_uptr(sv);
+
+        memset(kf_uptr(iov), 0, 300 * 16);
+        memset(h, 0, sizeof(*h));
+        h->msg_iov = iov;
+        h->msg_iovlen = 300;
+        gap(46, SYS4(53, 1 /* AF_UNIX */, 1, 0, sv) == 0 && SYS3(46, (uint64_t)p[0], mh, 0) == 0,
+            "sendmsg takes 300 iovecs");
+        gap(47, SYS3(47, (uint64_t)p[1], mh, 0x40 /* MSG_DONTWAIT */) != -VIBEOS_EMSGSIZE,
+            "recvmsg takes 300 iovecs");
     }
 
     /* rseq (334), R: ENOSYS by decision - the library takes its fallback. */

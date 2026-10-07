@@ -382,12 +382,95 @@ static long linux_writev_gathered(vibeos_file_t *f, uint64_t iov_uptr, uint64_t 
     return r;
 }
 
+/* readv and writev on a socket (docs/abi/ L5): the vector as one message - one
+ * receive, one send - as Linux makes them. Element by element, a read would wait
+ * in the second element for data the first was not given. *did is 0 for a
+ * descriptor that is not a socket, or a vector longer than a page of iovecs,
+ * which the element-by-element path then takes. */
+static long linux_socket_vec_of(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt, int write, int *did) {
+    vibeos_file_t *f = linux_file_get(fd);
+    vibeos_uiov_t *iov;
+    uint64_t i;
+    long r;
+
+    *did = 0;
+    if (!f) {
+        return 0;
+    }
+    if (!f->ops->sockops || iovcnt * sizeof(vibeos_uiov_t) > 4096u) {
+        vibeos_file_put(f);
+        return 0;
+    }
+    *did = 1;
+    if (!(iov = (vibeos_uiov_t *)ks_page_alloc())) {
+        vibeos_file_put(f);
+        return -VIBEOS_ENOMEM;
+    }
+    r = 0;
+    for (i = 0; i < iovcnt && r == 0; i++) {
+        linux_iovec_t v;
+
+        if (vibeos_uaccess_copy(&v, (const void *)(uintptr_t)(iov_uptr + i * sizeof(v)), sizeof(v)) != 0 ||
+            (v.iov_len != 0u && !linux_user_ok(v.iov_base, v.iov_len, !write))) {
+            r = -VIBEOS_EFAULT;
+        }
+        iov[i].base = v.iov_base;
+        iov[i].len = v.iov_len;
+    }
+    if (r == 0) {
+        r = linux_socket_vec(f, iov, (uint32_t)iovcnt, write);
+    }
+    ks_page_free(iov, "socket iovecs");
+    vibeos_file_put(f);
+    return r;
+}
+
+/* The vector as Linux takes it before any byte moves (LTP's readv02 and
+ * writev01): the descriptor first, then every element's length - one that is
+ * negative as a size, or a sum past the largest, is EINVAL, whatever the
+ * bases are; a base is only judged when its element is reached. */
+static long linux_iov_lengths(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt) {
+    vibeos_file_t *f = linux_file_get(fd);
+    uint64_t i, sum = 0;
+
+    if (!f) {
+        return -VIBEOS_EBADF;
+    }
+    vibeos_file_put(f);
+    for (i = 0; i < iovcnt; i++) {
+        linux_iovec_t v;
+
+        if (vibeos_uaccess_copy(&v, (const void *)(uintptr_t)(iov_uptr + i * sizeof(v)), sizeof(v)) != 0) {
+            return -VIBEOS_EFAULT;
+        }
+        if ((int64_t)v.iov_len < 0 || (sum += v.iov_len) > (uint64_t)INT64_MAX) {
+            return -VIBEOS_EINVAL;
+        }
+    }
+    return 0;
+}
+
 static long linux_sys_writev(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt) {
     long total = 0;
     uint64_t i;
 
     if (iovcnt > 1024u) {
         return -VIBEOS_EINVAL;   /* Linux caps this at UIO_MAXIOV */
+    }
+    {
+        long r = linux_iov_lengths(fd, iov_uptr, iovcnt);
+
+        if (r != 0) {
+            return r;
+        }
+    }
+    {
+        int did;
+        long r = linux_socket_vec_of(fd, iov_uptr, iovcnt, 1, &did);
+
+        if (did) {
+            return r;
+        }
     }
     {
         vibeos_file_t *f = linux_file_get(fd);
@@ -436,6 +519,21 @@ static long linux_sys_readv(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt) {
 
     if (iovcnt > 1024u) {
         return -VIBEOS_EINVAL;
+    }
+    {
+        long r = linux_iov_lengths(fd, iov_uptr, iovcnt);
+
+        if (r != 0) {
+            return r;
+        }
+    }
+    {
+        int did;
+        long r = linux_socket_vec_of(fd, iov_uptr, iovcnt, 0, &did);
+
+        if (did) {
+            return r;
+        }
     }
     for (i = 0; i < iovcnt; i++) {
         linux_iovec_t v;
@@ -1918,8 +2016,10 @@ static long linux_sys_ioctl(uint64_t fd, uint64_t req, uint64_t arg) {
                 v = (int32_t)vibeos_pipe_pending(f->pipe);
             } else if (f->ops == &linux_fops_inotify) {
                 v = (int32_t)linux_inotify_pending(f);
+            } else if (f->ops->sockops) {
+                v = (int32_t)linux_socket_nread(f);   /* the type's count (L5) */
             } else {
-                r = -VIBEOS_ENOTTY;   /* a socket's count is the network's to give (L5) */
+                r = -VIBEOS_ENOTTY;
                 break;
             }
             r = !linux_ioctl_arg(arg, sizeof(v), 1) ||

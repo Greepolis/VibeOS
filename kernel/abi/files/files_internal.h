@@ -13,6 +13,7 @@
 #include "vibeos/pipe.h"
 #include "vibeos/vfs.h"
 #include "vibeos/inet.h"
+#include "vibeos/sockops.h"
 #include "vibeos/abi_linux.h"   /* the kernel's errno values and signal numbers */
 
 #endif

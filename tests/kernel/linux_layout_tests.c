@@ -56,6 +56,9 @@ int test_linux_layout(void) {
 #include <linux/utsname.h>
 #include <linux/sysinfo.h>
 #include <linux/in.h>
+#include <linux/un.h>
+#include <linux/tcp.h>
+#include <asm/socket.h>
 #include <linux/uio.h>
 #include <linux/resource.h>
 #include <linux/errno.h>
@@ -149,6 +152,33 @@ static void libc_const(long long ours, const char *theirs, const char *what) {
     expect(linux_libc_const(theirs, &v) == 0 && v == ours, what);
 }
 #define LIBC_CONST(ours, theirs) libc_const((long long)(ours), theirs, #ours " is the C library's " theirs)
+
+/* One of the C library's socket structures (docs/abi/ L5): a field, the size,
+ * padding it leaves unnamed (ours ends where its next field starts), and a
+ * last field of ours that runs to the end of its structure. */
+static void libc_sfield(size_t off, size_t size, const char *st, const char *field, int how,
+                        const char *what) {
+    size_t loff = 0, lsize = 0, eoff = 0, esize = 0;
+    int ok;
+
+    if (how == 0) {
+        ok = linux_libc_sfield(st, field, &loff, &lsize) == 0 && off == loff && size == lsize;
+    } else if (how == 1) {
+        ok = linux_libc_sfield(st, "", &eoff, &esize) == 0 && size == esize;
+    } else if (how == 2) {
+        ok = linux_libc_sfield(st, field, &loff, &lsize) == 0 && off + size == loff;
+    } else {
+        ok = linux_libc_sfield(st, "", &eoff, &esize) == 0 && off + size == esize;
+    }
+    expect(ok, what);
+}
+#define LIBC_SFIELD(ours, st, f) \
+    libc_sfield(offsetof(ours, f), sizeof(((ours *)0)->f), #st, #f, 0, #ours "." #f " is struct " #st "'s")
+#define LIBC_SIZE(ours, st) libc_sfield(0, sizeof(ours), #st, "", 1, "sizeof " #ours " is struct " #st "'s")
+#define LIBC_SPAD(ours, f, st, next) \
+    libc_sfield(offsetof(ours, f), sizeof(((ours *)0)->f), #st, #next, 2, #ours "." #f " ends where " #next " starts")
+#define LIBC_STAIL(ours, st, f) \
+    libc_sfield(offsetof(ours, f), sizeof(((ours *)0)->f), #st, "", 3, #ours "." #f " runs to the end of struct " #st)
 
 /* struct linux_dirent, the record of the getdents call before getdents64, is
  * declared by nobody: Linux keeps it to itself and no C library has used the
@@ -666,6 +696,21 @@ int test_linux_layout(void) {
     CONST(VIBEOS_ENOTSOCK, ENOTSOCK);
     CONST(VIBEOS_ENOPROTOOPT, ENOPROTOOPT);
     CONST(VIBEOS_ENOTCONN, ENOTCONN);
+    CONST(VIBEOS_EDESTADDRREQ, EDESTADDRREQ);
+    CONST(VIBEOS_EMSGSIZE, EMSGSIZE);
+    CONST(VIBEOS_EPROTOTYPE, EPROTOTYPE);
+    CONST(VIBEOS_EPROTONOSUPPORT, EPROTONOSUPPORT);
+    CONST(VIBEOS_ESOCKTNOSUPPORT, ESOCKTNOSUPPORT);
+    CONST(VIBEOS_EADDRINUSE, EADDRINUSE);
+    CONST(VIBEOS_EADDRNOTAVAIL, EADDRNOTAVAIL);
+    CONST(VIBEOS_ENETUNREACH, ENETUNREACH);
+    CONST(VIBEOS_ECONNABORTED, ECONNABORTED);
+    CONST(VIBEOS_ECONNRESET, ECONNRESET);
+    CONST(VIBEOS_ENOBUFS, ENOBUFS);
+    CONST(VIBEOS_EISCONN, EISCONN);
+    CONST(VIBEOS_ECONNREFUSED, ECONNREFUSED);
+    CONST(VIBEOS_EALREADY, EALREADY);
+    CONST(VIBEOS_EINPROGRESS, EINPROGRESS);
 
     /* ---- signals and their dispositions ---- */
     CONST(VIBEOS_SIGHUP, SIGHUP);
@@ -972,6 +1017,79 @@ int test_linux_layout(void) {
     LIBC_CONST(LINUX_SOL_SOCKET, "SOL_SOCKET");
     LIBC_CONST(LINUX_SO_REUSEADDR, "SO_REUSEADDR");
     LIBC_CONST(LINUX_SO_KEEPALIVE, "SO_KEEPALIVE");
+    LIBC_CONST(LINUX_AF_UNSPEC, "AF_UNSPEC");
+    LIBC_CONST(LINUX_AF_UNIX, "AF_UNIX");
+    LIBC_CONST(LINUX_SOCK_RAW, "SOCK_RAW");
+    LIBC_CONST(LINUX_SOCK_SEQPACKET, "SOCK_SEQPACKET");
+    LIBC_CONST(LINUX_SOCK_NONBLOCK, "SOCK_NONBLOCK");
+    LIBC_CONST(LINUX_SOCK_CLOEXEC, "SOCK_CLOEXEC");
+    LIBC_CONST(LINUX_MSG_OOB, "MSG_OOB");
+    LIBC_CONST(LINUX_MSG_PEEK, "MSG_PEEK");
+    LIBC_CONST(LINUX_MSG_CTRUNC, "MSG_CTRUNC");
+    LIBC_CONST(LINUX_MSG_TRUNC, "MSG_TRUNC");
+    LIBC_CONST(LINUX_MSG_DONTWAIT, "MSG_DONTWAIT");
+    LIBC_CONST(LINUX_MSG_ERRQUEUE, "MSG_ERRQUEUE");
+    LIBC_CONST(LINUX_MSG_WAITALL, "MSG_WAITALL");
+    LIBC_CONST(LINUX_MSG_NOSIGNAL, "MSG_NOSIGNAL");
+    LIBC_CONST(LINUX_MSG_WAITFORONE, "MSG_WAITFORONE");
+    LIBC_CONST(LINUX_MSG_CMSG_CLOEXEC, "MSG_CMSG_CLOEXEC");
+    LIBC_CONST(LINUX_SCM_RIGHTS, "SCM_RIGHTS");
+    LIBC_CONST(LINUX_SCM_CREDENTIALS, "SCM_CREDENTIALS");
+    CONST(LINUX_UIO_MAXIOV, UIO_MAXIOV);
+    CONST(LINUX_SO_DEBUG, SO_DEBUG);
+    CONST(LINUX_SO_TYPE, SO_TYPE);
+    CONST(LINUX_SO_ERROR, SO_ERROR);
+    CONST(LINUX_SO_DONTROUTE, SO_DONTROUTE);
+    CONST(LINUX_SO_BROADCAST, SO_BROADCAST);
+    CONST(LINUX_SO_SNDBUF, SO_SNDBUF);
+    CONST(LINUX_SO_RCVBUF, SO_RCVBUF);
+    CONST(LINUX_SO_SNDBUFFORCE, SO_SNDBUFFORCE);
+    CONST(LINUX_SO_RCVBUFFORCE, SO_RCVBUFFORCE);
+    CONST(LINUX_SO_OOBINLINE, SO_OOBINLINE);
+    CONST(LINUX_SO_LINGER, SO_LINGER);
+    CONST(LINUX_SO_REUSEPORT, SO_REUSEPORT);
+    CONST(LINUX_SO_PASSCRED, SO_PASSCRED);
+    CONST(LINUX_SO_PEERCRED, SO_PEERCRED);
+    CONST(LINUX_SO_RCVLOWAT, SO_RCVLOWAT);
+    CONST(LINUX_SO_RCVTIMEO_OLD, SO_RCVTIMEO_OLD);
+    CONST(LINUX_SO_SNDTIMEO_OLD, SO_SNDTIMEO_OLD);
+    CONST(LINUX_SO_ACCEPTCONN, SO_ACCEPTCONN);
+    CONST(LINUX_SO_PROTOCOL, SO_PROTOCOL);
+    CONST(LINUX_SO_DOMAIN, SO_DOMAIN);
+    CONST(LINUX_IPPROTO_IP, IPPROTO_IP);
+    CONST(LINUX_IPPROTO_TCP, IPPROTO_TCP);
+    CONST(LINUX_IPPROTO_UDP, IPPROTO_UDP);
+    CONST(LINUX_TCP_NODELAY, TCP_NODELAY);
+    CONST(VIBEOS_EDOM, EDOM);
+    CONST(LINUX_UNIX_PATH_MAX, UNIX_PATH_MAX);
+    SIZE(linux_sockaddr_un_t, struct sockaddr_un);
+    FIELD(linux_sockaddr_un_t, struct sockaddr_un, sun_family);
+    FIELD(linux_sockaddr_un_t, struct sockaddr_un, sun_path);
+    LIBC_SIZE(linux_msghdr_t, msghdr);
+    LIBC_SFIELD(linux_msghdr_t, msghdr, msg_name);
+    LIBC_SFIELD(linux_msghdr_t, msghdr, msg_namelen);
+    LIBC_SFIELD(linux_msghdr_t, msghdr, msg_iov);
+    LIBC_SFIELD(linux_msghdr_t, msghdr, msg_iovlen);
+    LIBC_SFIELD(linux_msghdr_t, msghdr, msg_control);
+    LIBC_SFIELD(linux_msghdr_t, msghdr, msg_controllen);
+    LIBC_SFIELD(linux_msghdr_t, msghdr, msg_flags);
+    LIBC_SPAD(linux_msghdr_t, pad0, msghdr, msg_iov);
+    LIBC_STAIL(linux_msghdr_t, msghdr, pad1);
+    LIBC_SIZE(linux_mmsghdr_t, mmsghdr);
+    LIBC_SFIELD(linux_mmsghdr_t, mmsghdr, msg_hdr);
+    LIBC_SFIELD(linux_mmsghdr_t, mmsghdr, msg_len);
+    LIBC_STAIL(linux_mmsghdr_t, mmsghdr, pad0);
+    LIBC_SIZE(linux_cmsghdr_t, cmsghdr);
+    LIBC_SFIELD(linux_cmsghdr_t, cmsghdr, cmsg_len);
+    LIBC_SFIELD(linux_cmsghdr_t, cmsghdr, cmsg_level);
+    LIBC_SFIELD(linux_cmsghdr_t, cmsghdr, cmsg_type);
+    LIBC_SIZE(linux_ucred_t, ucred);
+    LIBC_SFIELD(linux_ucred_t, ucred, pid);
+    LIBC_SFIELD(linux_ucred_t, ucred, uid);
+    LIBC_SFIELD(linux_ucred_t, ucred, gid);
+    LIBC_SIZE(linux_linger_t, linger);
+    LIBC_SFIELD(linux_linger_t, linger, l_onoff);
+    LIBC_SFIELD(linux_linger_t, linger, l_linger);
 
     if (!g_fail) {
         printf("  linux_layout: %d comparisons against the host's Linux headers\n", g_checked);

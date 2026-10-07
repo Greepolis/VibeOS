@@ -310,6 +310,9 @@ static long src_fd_name(const vibeos_file_t *f, char *buf, uint32_t cap) {
     } else if (f->ops == &vibeos_fops_socket) {
         kind = "socket:[";
         id = (uint64_t)(uint32_t)f->sock;
+    } else if (f->ops == &vibeos_fops_unix) {
+        kind = "socket:[";
+        id = 0x30000u + (uint64_t)(uint32_t)f->ux;   /* what fstat says its inode is */
     } else if (f->ops == &vibeos_fops_console) {
         return src_copy(buf, cap, "/dev/console");
     } else {

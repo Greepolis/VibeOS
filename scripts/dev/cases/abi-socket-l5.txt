@@ -1,0 +1,30 @@
+# The IP socket type's send and receive (kernel/abi/files/socket.c, docs/abi/
+# L5 step 1), proved by t_sock_bsd in tests/kernel/linux_abi_tests.c.
+#
+#  1. MSG_NOSIGNAL is not heard. Expect "and MSG_NOSIGNAL raises nothing".
+#  2. a broken stream raises no SIGPIPE. Expect "a send on a stream nobody
+#     connected is EPIPE, with SIGPIPE".
+#  3. SO_RCVTIMEO is not a deadline. Expect "a receive with nothing to read
+#     gives up after the timeout" - the fake abandons the wait as blocked.
+#
+# Target source: kernel/abi/files/socket.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/files/socket.c scripts/dev/cases/abi-socket-l5.txt
+
+### MSG_NOSIGNAL is not heard
+--- old
+    if (!(msg_flags & VIBEOS_MSG_NOSIGNAL) && ks_current() >= 0) {
++++ new
+    if (ks_current() >= 0) {
+
+### a broken stream raises no SIGPIPE
+--- old
+        (void)ks_signal_raise(ks_current(), VIBEOS_SIGPIPE);
++++ new
+        (void)msg_flags;
+
+### SO_RCVTIMEO is not a deadline
+--- old
+    if (deadline != 0u && ks_ticks() >= deadline) {
+        return -VIBEOS_EAGAIN;
+    }
++++ new

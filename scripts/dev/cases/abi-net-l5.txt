@@ -1,0 +1,89 @@
+# The Linux socket calls (kernel/abi/linux/net.c, docs/abi/ L5), proved by
+# t_sock_bsd and t_unix in tests/kernel/linux_abi_tests.c.
+#
+#  1. rights with no room are given back silently. Expect "a receiver with no
+#     control buffer: MSG_CTRUNC".
+#  2. a right that is not open is skipped. Expect "a descriptor that is not open
+#     is EBADF".
+#  3. accept4's SOCK_NONBLOCK is ignored. Expect "accept4's SOCK_NONBLOCK".
+#  4. every refused option is ENOPROTOOPT. Expect "IP asked for a level it has
+#     not - EOPNOTSUPP to get" (LTP's getsockopt01).
+#  5. accept judges the buffer before asking whether the socket listens.
+#     Expect "accept on a stream that does not listen is EINVAL before its bad
+#     buffer" (LTP's accept01).
+#  6. getsockname takes a null length. Expect "getsockname with no length is
+#     EFAULT". NOT RED the first time, and not for the test's sake: the anchor
+#     matched the same condition in linux_sa_out first, so the case broke a
+#     different line; it carries the comment after it now.
+#  7. MSG_ERRQUEUE reads the ordinary queue; 8. a stream's recvfrom judges a
+#     source it never writes. Expect "MSG_ERRQUEUE finds nothing; a stream's
+#     recvfrom writes no source" (LTP's recv01 and recvfrom01).
+#
+# Target source: kernel/abi/linux/net.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/net.c scripts/dev/cases/abi-net-l5.txt
+
+### rights with no room are given back silently
+--- old
+            vibeos_file_put(m->rights[i]);
+            m->flags |= VIBEOS_MSG_CTRUNC;
+            continue;
++++ new
+            vibeos_file_put(m->rights[i]);
+            continue;
+
+### a right that is not open is skipped
+--- old
+                if (!(g = linux_file_get((uint64_t)(uint32_t)fd))) {
+                    return -VIBEOS_EBADF;
+                }
++++ new
+                if (!(g = linux_file_get((uint64_t)(uint32_t)fd))) {
+                    continue;
+                }
+
+### accept4's SOCK_NONBLOCK is ignored
+--- old
+    if (flags & LINUX_SOCK_NONBLOCK) {
+        child->flags |= VIBEOS_O_NONBLOCK;
+    }
++++ new
+
+### every refused option is ENOPROTOOPT
+--- old
+    if (level == (int)LINUX_SOL_SOCKET) {
+        return -VIBEOS_ENOPROTOOPT;
+    }
+    if (f->sk_family == VIBEOS_SA_UNIX) {
++++ new
+    if (1) {
+        return -VIBEOS_ENOPROTOOPT;
+    }
+    if (f->sk_family == VIBEOS_SA_UNIX) {
+
+### accept judges the buffer before asking whether the socket listens
+--- old
+        if (f->sk_type == VIBEOS_SOCK_STREAM &&
++++ new
+        if (0 &&
+
+### getsockname takes a null length
+--- old
+    if (addr == 0u || lenp == 0u) {
+        /* Linux writes the name and its length; a null pointer takes neither
++++ new
+    if (addr == 0u) {
+        /* Linux writes the name and its length; a null pointer takes neither
+
+### MSG_ERRQUEUE reads the ordinary queue
+--- old
+    if (flags & LINUX_MSG_ERRQUEUE) {
+        vibeos_file_put(f);
+        return -VIBEOS_EAGAIN;   /* nor anything in an error queue (LTP's recv01) */
+    }
++++ new
+
+### a stream's recvfrom judges a source it never writes
+--- old
+        if (f->sk_type == VIBEOS_SOCK_DGRAM && alen > 0 && !linux_user_ok(addr, (uint64_t)alen, 1)) {
++++ new
+        if (alen > 0 && !linux_user_ok(addr, (uint64_t)alen, 1)) {

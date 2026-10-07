@@ -680,6 +680,98 @@ typedef struct {
 #define LINUX_SO_KEEPALIVE 9u
 #define LINUX_SOCK_DGRAM  2u
 
+/* The rest of the BSD API (docs/abi/ L5): families, the type's flags, a send's
+ * and a receive's flags, control messages, and what UIO_MAXIOV says. */
+#define LINUX_AF_UNSPEC        0u
+#define LINUX_AF_UNIX          1u
+#define LINUX_SOCK_RAW         3u
+#define LINUX_SOCK_SEQPACKET   5u
+#define LINUX_SOCK_NONBLOCK    0x00000800u
+#define LINUX_SOCK_CLOEXEC     0x00080000u
+#define LINUX_MSG_OOB          0x00000001u
+#define LINUX_MSG_PEEK         0x00000002u
+#define LINUX_MSG_CTRUNC       0x00000008u
+#define LINUX_MSG_TRUNC        0x00000020u
+#define LINUX_MSG_DONTWAIT     0x00000040u
+#define LINUX_MSG_WAITALL      0x00000100u
+#define LINUX_MSG_ERRQUEUE     0x00002000u
+#define LINUX_MSG_NOSIGNAL     0x00004000u
+#define LINUX_MSG_WAITFORONE   0x00010000u
+#define LINUX_MSG_CMSG_CLOEXEC 0x40000000u
+#define LINUX_SCM_RIGHTS       1
+#define LINUX_SCM_CREDENTIALS  2
+#define LINUX_UIO_MAXIOV       1024u
+
+/* Socket options (asm-generic/socket.h, linux/in.h, linux/tcp.h). */
+#define LINUX_SO_DEBUG         1
+#define LINUX_SO_TYPE          3
+#define LINUX_SO_ERROR         4
+#define LINUX_SO_DONTROUTE     5
+#define LINUX_SO_BROADCAST     6
+#define LINUX_SO_SNDBUF        7
+#define LINUX_SO_RCVBUF        8
+#define LINUX_SO_SNDBUFFORCE   32
+#define LINUX_SO_RCVBUFFORCE   33
+#define LINUX_SO_OOBINLINE     10
+#define LINUX_SO_LINGER        13
+#define LINUX_SO_REUSEPORT     15
+#define LINUX_SO_PASSCRED      16
+#define LINUX_SO_PEERCRED      17
+#define LINUX_SO_RCVLOWAT      18
+#define LINUX_SO_RCVTIMEO_OLD  20
+#define LINUX_SO_SNDTIMEO_OLD  21
+#define LINUX_SO_ACCEPTCONN    30
+#define LINUX_SO_PROTOCOL      38
+#define LINUX_SO_DOMAIN        39
+#define LINUX_IPPROTO_IP       0
+#define LINUX_IPPROTO_TCP      6
+#define LINUX_IPPROTO_UDP      17
+#define LINUX_TCP_NODELAY      1
+
+/* struct sockaddr_un (linux/un.h). */
+#define LINUX_UNIX_PATH_MAX 108u
+typedef struct {
+    uint16_t sun_family;
+    char sun_path[LINUX_UNIX_PATH_MAX];
+} linux_sockaddr_un_t;
+
+/* struct msghdr and struct mmsghdr (the C library's; the kernel's
+ * user_msghdr is the same bytes), struct cmsghdr, struct ucred, struct linger. */
+typedef struct {
+    uint64_t msg_name;
+    uint32_t msg_namelen;
+    uint32_t pad0;
+    uint64_t msg_iov;
+    uint64_t msg_iovlen;
+    uint64_t msg_control;
+    uint64_t msg_controllen;
+    int32_t msg_flags;
+    int32_t pad1;
+} linux_msghdr_t;
+
+typedef struct {
+    linux_msghdr_t msg_hdr;
+    uint32_t msg_len;
+    uint32_t pad0;
+} linux_mmsghdr_t;
+
+typedef struct {
+    uint64_t cmsg_len;
+    int32_t cmsg_level;
+    int32_t cmsg_type;
+} linux_cmsghdr_t;
+
+typedef struct {
+    int32_t pid;
+    uint32_t uid;
+    uint32_t gid;
+} linux_ucred_t;
+
+typedef struct {
+    int32_t l_onoff;
+    int32_t l_linger;
+} linux_linger_t;
+
 /* wait4 options (linux/wait.h). The last three are Linux's __WNOTHREAD,
  * __WALL and __WCLONE; a leading double underscore is the C library's. */
 #define LINUX_WNOHANG    0x00000001u

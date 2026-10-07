@@ -35,6 +35,7 @@ static void file_clear(vibeos_file_t *f) {
     f->gen = gen;
     f->pipe = -1;
     f->sock = -1;
+    f->ux = -1;
 }
 
 void vibeos_file_reset(void) {

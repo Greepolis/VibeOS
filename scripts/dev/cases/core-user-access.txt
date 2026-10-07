@@ -6,7 +6,8 @@
 # demand, so the check is the gate: it holds the mechanism, and these cases hold
 # the check. Each puts back one of the shapes the review found.
 #
-#  1. accept()'s address written through a raw pointer again (net.c);
+#  1. accept()'s address written through a raw pointer again (net.c; since L5
+#     every socket call writes through linux_net_out, so that is where it goes);
 #  2. read() of a file handing the user's buffer to the filesystem again (fs.c);
 #  3. uname's fields written into the user's buffer directly (misc.c).
 #
@@ -17,16 +18,21 @@
 
 ### a socket address is written through a raw pointer
 --- old
-    return vibeos_uaccess_copy((void *)(uintptr_t)uptr, &a, sizeof(a)) == 0 ? 0 : -1;
+    if (!linux_user_ok(uptr, len, 1) || vibeos_uaccess_copy((void *)(uintptr_t)uptr, k, len) != 0) {
+        return -VIBEOS_EFAULT;
+    }
 +++ new
+    if (!linux_user_ok(uptr, len, 1)) {
+        return -VIBEOS_EFAULT;
+    }
     {
         uint8_t *u = (uint8_t *)(uintptr_t)uptr;
-        const uint8_t *from = (const uint8_t *)&a;
-        for (k = 0; k < sizeof(a); k++) {
-            u[k] = from[k];
+        const uint8_t *from = (const uint8_t *)k;
+        uint64_t i;
+        for (i = 0; i < len; i++) {
+            u[i] = from[i];
         }
     }
-    return 0;
 
 ### read() hands the user's buffer to the filesystem
 --- old

@@ -94,21 +94,21 @@ int vibeos_files_std_console(vibeos_fdtable_t *t);
  * closed under it, not a successor in its slot (M-020). Its index, or -1. */
 int vibeos_sockfile_stable(const vibeos_file_t *f);
 
-/* Sockets. A new one of `kind` (VIBEOS_INET_SOCK_*) owned by process `owner`;
- * the calls that wait - connect, accept, recvfrom - wait here, with the socket's
- * tenancy re-checked on every pass, so a personality only translates addresses.
- * Byte counts, 0, or a negated errno. accept hands back a new description. */
+/* Sockets. A new IP one of `kind` (VIBEOS_INET_SOCK_*) owned by process `owner`,
+ * or -EAFNOSUPPORT, -ENOBUFS, -ENFILE in *err. What it does is its type's
+ * sockops (vibeos/sockops.h): the calls that wait - connect, accept, the reads -
+ * wait there, with the socket's tenancy re-checked on every pass, so a
+ * personality only translates addresses. */
 vibeos_file_t *vibeos_sockfile_create(int kind, uint32_t owner, long *err);
-long vibeos_sockfile_bind(vibeos_file_t *f, uint16_t port);
-long vibeos_sockfile_listen(vibeos_file_t *f);
-long vibeos_sockfile_shutdown(vibeos_file_t *f, int how);
-long vibeos_sockfile_connect(vibeos_file_t *f, uint32_t ip, uint16_t port);
-long vibeos_sockfile_accept(vibeos_file_t *f, uint32_t owner, vibeos_file_t **child,
-                            uint32_t *ip, uint16_t *port);
-long vibeos_sockfile_sendto(vibeos_file_t *f, uint64_t buf, uint64_t len,
-                            uint32_t ip, uint16_t port);
-long vibeos_sockfile_recvfrom(vibeos_file_t *f, uint64_t buf, uint64_t len,
-                              uint32_t *ip, uint16_t *port);
+
+/* Local sockets (unixsock.c, docs/abi/ L5): a new one of `type`
+ * (VIBEOS_SOCK_STREAM or _DGRAM) with description flags `flags`, or two
+ * connected to each other. A pathname a personality binds or connects to is
+ * absolute, and for a bind the personality has made its socket node. */
+extern const vibeos_file_ops_t vibeos_fops_unix;
+vibeos_file_t *vibeos_unix_create(int type, uint32_t flags, long *err);
+long vibeos_unix_pair(int type, uint32_t flags, vibeos_file_t **a, vibeos_file_t **b);
+void vibeos_unix_reset(void);
 
 /* A regular file's buffered bytes are committed when its last descriptor goes,
  * and whatever caches a file's contents must forget it then - the exec staging

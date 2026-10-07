@@ -86,13 +86,13 @@ def main():
     layout = strip_comments(read(LAYOUT))
 
     compared_fields = set()
-    for m in re.finditer(r"\b(?:FIELD2?|TAIL|HOST_FIELD|LIBC_FIELD|LIBC_OFFSET)\(\s*(\w+)\s*,\s*(?:[^,()]+,\s*)?(\w+)", test):
+    for m in re.finditer(r"\b(?:FIELD2?|TAIL|HOST_FIELD|LIBC_FIELD|LIBC_OFFSET|LIBC_SFIELD|LIBC_STAIL)\(\s*(\w+)\s*,\s*(?:[^,()]+,\s*)?(\w+)", test):
         compared_fields.add((m.group(1), m.group(2)))
     # PAD(ours, field, theirs, next): padding Linux leaves unnamed, compared by
     # where Linux's next field starts.
-    for m in re.finditer(r"\bPAD\(\s*(\w+)\s*,\s*(\w+)\s*,", test):
+    for m in re.finditer(r"\b(?:PAD|LIBC_SPAD)\(\s*(\w+)\s*,\s*(\w+)\s*,", test):
         compared_fields.add((m.group(1), m.group(2)))
-    sized = set(re.findall(r"\bSIZE\(\s*(\w+)\s*,", test))
+    sized = set(re.findall(r"\b(?:SIZE|LIBC_SIZE)\(\s*(\w+)\s*,", test))
     compared_consts = set(re.findall(r"\b(?:CONST|LIBC_CONST)\(\s*(\w+)\s*,", test))
 
     nfields = 0

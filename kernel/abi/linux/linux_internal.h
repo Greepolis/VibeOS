@@ -18,6 +18,7 @@
 #include "vibeos/procstate.h"
 #include "vibeos/fdtable.h"
 #include "vibeos/fileops.h"
+#include "vibeos/sockops.h"
 #include "vibeos/filelock.h"
 #include "vibeos/tty.h"
 #include "vibeos/linux_layout.h"
@@ -56,6 +57,11 @@ uint64_t linux_cpu_slot(int slot);
 /* What a description can do now, in Linux's poll bits, for `events` - with the
  * hangup and the error whether asked or not (poll.c, docs/abi/ L4). */
 uint32_t linux_revents(vibeos_file_t *f, uint32_t events);
+
+/* Sockets for the file calls (net.c, docs/abi/ L5): FIONREAD's count, and
+ * readv and writev as one receive or send over the vector. */
+long linux_socket_nread(vibeos_file_t *f);
+long linux_socket_vec(vibeos_file_t *f, const vibeos_uiov_t *iov, uint32_t n, int write);
 
 /* A signalfd's type (events.c): its records are Linux's layout. */
 extern const vibeos_file_ops_t linux_fops_signalfd;

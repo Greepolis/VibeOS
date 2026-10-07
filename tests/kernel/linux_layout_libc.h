@@ -13,4 +13,8 @@ long linux_host_getdents(unsigned char *buf, unsigned long cap);
 
 int linux_libc_const(const char *name, long long *value);
 
+/* A field of one of the C library's socket structures (msghdr, mmsghdr,
+ * cmsghdr, ucred, linger), or with field "" the structure's size. */
+int linux_libc_sfield(const char *st, const char *field, size_t *off, size_t *size);
+
 #endif

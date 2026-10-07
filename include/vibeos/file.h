@@ -135,6 +135,8 @@ typedef struct vibeos_file_ops {
      * vibeos_fs_ops_t.share_page, whose answers these are. A type without the
      * entry has no pages to share. */
     int (*share_page)(vibeos_file_t *f, uint64_t off, void **page);
+    /* A socket: what its calls do (vibeos/sockops.h, docs/abi/ L5). */
+    const struct vibeos_sock_ops *sockops;
 } vibeos_file_ops_t;
 
 struct vibeos_file {
@@ -152,6 +154,20 @@ struct vibeos_file {
     /* socket: its index and the tenancy it was opened on (M-020) */
     int sock;
     uint32_t sock_gen;
+    /* Any socket's options as a program set them (docs/abi/ L5): which kind
+     * and family, VIBEOS_SKF_* bits, a pending error, the buffer sizes it
+     * asked for, the linger seconds, and how long a receive or a send may wait
+     * in ticks (0: for ever). A local socket's index in unixsock.c's table. */
+    int sk_type;
+    uint32_t sk_family;
+    uint32_t sk_flags;
+    int32_t sk_err;
+    uint32_t sk_rcvbuf;
+    uint32_t sk_sndbuf;
+    int32_t sk_linger;
+    uint64_t sk_rcvtimeo;
+    uint64_t sk_sndtimeo;
+    int ux;
     /* regular file or directory: which mount, and the absolute path - the
      * part inside the mount starts at path + tail (docs/abi/ A4) */
     vibeos_fsmount_t *mnt;

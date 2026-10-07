@@ -1,7 +1,7 @@
 # M-020: a socket syscall that waits re-verifies its socket after every wake
 # (kernel/abi/linux/net.c), proved by check-net-stable.py.
 #
-#  1. recvfrom stops re-verifying - the state an external review found it in on
+#  1. recvfrom (recvmsg since L5) stops re-verifying - the state an external review found it in on
 #     2026-09-24, a phase after the tracker called M-020 fixed: expect
 #     "vibeos_sockfile_recvfrom waits holding a description and never calls
 #     vibeos_sockfile_stable" (the waits moved to kernel/abi/files/socket.c in A3);
@@ -18,14 +18,10 @@
 ### recvfrom stops re-verifying its socket
 --- old
         if ((sock = vibeos_sockfile_stable(f)) < 0) {
-            return -VIBEOS_EBADF;
+            return got ? (long)got : -VIBEOS_EBADF;
         }
-        ks_lock(ks_net_lock(), __func__);
-        n = vibeos_inet_recvfrom(ks_net(), sock, g_bounce,
 +++ new
         sock = f->sock;
-        ks_lock(ks_net_lock(), __func__);
-        n = vibeos_inet_recvfrom(ks_net(), sock, g_bounce,
 
 ### accept stops re-verifying its socket
 --- old

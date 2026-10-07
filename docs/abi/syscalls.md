@@ -9,9 +9,9 @@ the registry, not this page; `check.sh` fails while the two differ.
 
 | State | Count | What the kernel answers |
 | --- | --- | --- |
-| done | 188 | through its row |
-| partial | 34 | through its row, with the gap named |
-| missing | 67 | ENOSYS, and the boot gate fails naming the number |
+| done | 196 | through its row |
+| partial | 35 | through its row, with the gap named |
+| missing | 58 | ENOSYS, and the boot gate fails naming the number |
 | deferred | 50 | ENOSYS, and the boot gate fails naming the number |
 | refused | 34 | its errno, counted as refused - expected, never a failure |
 
@@ -23,7 +23,7 @@ Without a row, by phase:
 | L2 - processes, credentials, time | 0 |
 | L3 - memory | 0 |
 | L4 - event loops | 0 |
-| L5 - sockets | 9 |
+| L5 - sockets | 0 |
 | L6 - threads and scheduling | 20 |
 | L7 - IPC | 21 |
 | L8 - system administration | 11 |
@@ -55,8 +55,8 @@ calls, outside the Linux number space, are listed last.
 | 16 | `ioctl` | partial | L1 | - | `fs.c` | the console's modes, size and process group, the random devices' entropy count, and the descriptor requests; ISIG, VTIME and the other terminal requests (TCFLSH, TIOCSCTTY, ...) are not honoured |
 | 17 | `pread64` | done | - | - | `fs.c` |  |
 | 18 | `pwrite64` | done | - | - | `fs.c` |  |
-| 19 | `readv` | partial | L5 | - | `fs.c` | files and the console; no socket scatter |
-| 20 | `writev` | partial | L5 | - | `fs.c` | files and the console; no socket gather |
+| 19 | `readv` | done | - | - | `fs.c` |  |
+| 20 | `writev` | done | - | - | `fs.c` |  |
 | 21 | `access` | done | - | - | `names.c` |  |
 | 22 | `pipe` | done | - | - | `fs.c` |  |
 | 23 | `select` | done | - | - | `poll.c` |  |
@@ -82,16 +82,16 @@ calls, outside the Linux number space, are listed last.
 | 43 | `accept` | done | - | - | `net.c` |  |
 | 44 | `sendto` | done | - | - | `net.c` |  |
 | 45 | `recvfrom` | done | - | - | `net.c` |  |
-| 46 | `sendmsg` | missing | L5 | ENOSYS |  | and AF_UNIX sockets |
-| 47 | `recvmsg` | missing | L5 | ENOSYS |  | and AF_UNIX sockets |
+| 46 | `sendmsg` | partial | L5 | - | `net.c` | SCM_CREDENTIALS is read past and never delivered; more than 256 iovecs is EMSGSIZE |
+| 47 | `recvmsg` | partial | L5 | - | `net.c` | SCM_CREDENTIALS is never delivered; more than 256 iovecs is EMSGSIZE |
 | 48 | `shutdown` | done | - | - | `net.c` |  |
 | 49 | `bind` | done | - | - | `net.c` |  |
 | 50 | `listen` | done | - | - | `net.c` |  |
-| 51 | `getsockname` | missing | L5 | ENOSYS |  | and AF_UNIX sockets |
-| 52 | `getpeername` | missing | L5 | ENOSYS |  | and AF_UNIX sockets |
-| 53 | `socketpair` | missing | L5 | ENOSYS |  | and AF_UNIX sockets |
-| 54 | `setsockopt` | partial | L5 | - | `net.c` | SO_REUSEADDR and SO_KEEPALIVE only, as httpd and nc set them; anything else ENOPROTOOPT |
-| 55 | `getsockopt` | missing | L5 | ENOSYS |  | and AF_UNIX sockets |
+| 51 | `getsockname` | done | - | - | `net.c` |  |
+| 52 | `getpeername` | done | - | - | `net.c` |  |
+| 53 | `socketpair` | done | - | - | `net.c` |  |
+| 54 | `setsockopt` | partial | L5 | - | `net.c` | SOL_SOCKET's options and TCP_NODELAY; IP-level options are ENOPROTOOPT |
+| 55 | `getsockopt` | partial | L5 | - | `net.c` | SOL_SOCKET's options and TCP_NODELAY; IP-level options are ENOPROTOOPT |
 | 56 | `clone` | partial | L6 | - | `proc.c` | thread and fork shapes; vfork-like sharing refused |
 | 57 | `fork` | done | - | - | `proc.c` |  |
 | 58 | `vfork` | done | - | - | `proc.c` |  |
@@ -324,7 +324,7 @@ calls, outside the Linux number space, are listed last.
 | 285 | `fallocate` | partial | L1 | - | `fs.c` | the size is guaranteed, not the space; only mode 0 and KEEP_SIZE |
 | 286 | `timerfd_settime` | done | - | - | `events.c` |  |
 | 287 | `timerfd_gettime` | done | - | - | `events.c` |  |
-| 288 | `accept4` | missing | L5 | ENOSYS |  | and AF_UNIX sockets |
+| 288 | `accept4` | done | - | - | `net.c` |  |
 | 289 | `signalfd4` | done | - | - | `events.c` |  |
 | 290 | `eventfd2` | done | - | - | `events.c` |  |
 | 291 | `epoll_create1` | done | - | - | `epoll.c` |  |
@@ -335,7 +335,7 @@ calls, outside the Linux number space, are listed last.
 | 296 | `pwritev` | done | - | - | `fs.c` |  |
 | 297 | `rt_tgsigqueueinfo` | partial | L2 | - | `sig.c` | as rt_sigqueueinfo: one pending instance per signal |
 | 298 | `perf_event_open` | refused | R | ENOSYS |  | no performance-counter interface: a facility this kernel does not have |
-| 299 | `recvmmsg` | missing | L5 | ENOSYS |  | and AF_UNIX sockets |
+| 299 | `recvmmsg` | done | - | - | `net.c` |  |
 | 300 | `fanotify_init` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
 | 301 | `fanotify_mark` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
 | 302 | `prlimit64` | partial | L2 | - | `limits.c` | as setrlimit |
@@ -343,7 +343,7 @@ calls, outside the Linux number space, are listed last.
 | 304 | `open_by_handle_at` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
 | 305 | `clock_adjtime` | partial | R | - | `timer.c` | reads the realtime clock's state; setting it is refused, EPERM, as clock_settime is |
 | 306 | `syncfs` | done | - | - | `fs.c` |  |
-| 307 | `sendmmsg` | missing | L5 | ENOSYS |  | and AF_UNIX sockets |
+| 307 | `sendmmsg` | done | - | - | `net.c` |  |
 | 308 | `setns` | deferred | D | ENOSYS |  | namespaces: after the credential model |
 | 309 | `getcpu` | missing | L6 | ENOSYS |  |  |
 | 310 | `process_vm_readv` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
