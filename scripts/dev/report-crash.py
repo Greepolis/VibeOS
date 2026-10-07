@@ -62,10 +62,24 @@ EXPECTED_CRASHERS = (
 )
 
 
+# Deliberate faults inside programs whose other crashes are real, so named by
+# the program and the address it stores to. The ABI self-test (user/prog/hello.c,
+# check_stack_grows) forks a child that stores into the one page below the
+# stack's region, which must stay unmapped: the child is killed by SIGSEGV on
+# every boot, and that is the test passing. It reached the collector on
+# 2026-10-07 from a nightly that failed for another reason.
+EXPECTED_FAULTS = (
+    ("SELFTEST.ELF", 0x8000200800),
+)
+
+
 def is_expected(crash):
     if crash.get("stress"):
         return False   # a failed stress round is never deliberate
-    return any(name in crash["exe"] for name in EXPECTED_CRASHERS)
+    if any(name in crash["exe"] for name in EXPECTED_CRASHERS):
+        return True
+    return any(name in crash["exe"] and crash.get("fault_addr") == addr
+               for name, addr in EXPECTED_FAULTS)
 
 
 
@@ -97,11 +111,13 @@ def parse_crashes(text):
         exe, body = m.group(2), m.group(3)
         vec = re.search(r"vector=0x([0-9a-f]+)", body)
         rip = re.search(r"rip=0x([0-9a-f]+)", body)
+        addr = re.search(r"fault_addr=0x([0-9a-f]+)", body)
         for c in crashes:
             if c["exe"] == exe and not c["dump"]:
                 c["dump"] = body.strip()
                 c["vector"] = int(vec.group(1), 16) if vec else None
                 c["rip"] = int(rip.group(1), 16) if rip else None
+                c["fault_addr"] = int(addr.group(1), 16) if addr else None
                 break
 
     # A failed stress round is not a crash, and is the most actionable report
