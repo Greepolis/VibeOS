@@ -304,10 +304,15 @@ static void in_release(vibeos_file_t *f) {
     for (i = 0; i < IN_INSTANCES; i++) {
         used += g_in[i].file != 0;
     }
-    ks_unlock(&g_in_lock);
+    /* Under the lock, as inotify_init1 turns it on: decided here and done
+     * after unlocking, an init1 on another core could create an instance and
+     * turn notification on in between, and this would then turn it off under
+     * a live instance that never heard of another file again (external
+     * review, 2026-10-07). */
     if (used == 0u) {
         vibeos_fs_set_notify(0);   /* nothing listens: the file layer stops asking */
     }
+    ks_unlock(&g_in_lock);
 }
 
 /* How many bytes a read would hand out now: FIONREAD's answer (fs.c). */
@@ -381,8 +386,10 @@ static long linux_sys_inotify_init1(uint64_t flags) {
         return -VIBEOS_ENFILE;
     }
     f->ev_index = (int)i;
+    ks_lock(&g_in_lock, __func__);
     __atomic_store_n(&g_in[i].file, f, __ATOMIC_RELEASE);
-    vibeos_fs_set_notify(in_notify);
+    vibeos_fs_set_notify(in_notify);   /* with the instance, under the lock: see in_release */
+    ks_unlock(&g_in_lock);
     return linux_fd_install(f, (flags & LINUX_IN_CLOEXEC) ? VIBEOS_FD_CLOEXEC : 0u, 0);
 }
 
