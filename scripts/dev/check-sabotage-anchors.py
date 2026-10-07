@@ -65,6 +65,11 @@ CASES = os.path.join(ROOT, "scripts", "dev", "cases")
 # Today's measurement. Each is a debt, not a permission.
 BASELINE_UNRESOLVED = 0
 BASELINE_NO_TARGET = 0    # every case file names its target: the exact check applies everywhere
+# An anchor found twice in one target: sabotage.py replaces the first, which may
+# not be the line the case is about - and the case then goes NOT RED for the
+# wrong reason, or red for one. Found in L5, where "getsockname takes a null
+# length" broke the same condition in linux_sa_out instead.
+BASELINE_AMBIGUOUS = 7     # the first measurement (2026-10-06); --list names them
 
 
 def read(path):
@@ -125,7 +130,7 @@ def targets_of(text):
 
 def main():
     listing = "--list" in sys.argv
-    unresolved, no_target = [], []
+    unresolved, no_target, ambiguous = [], [], []
     tree = [None]
     checked = 0
     for name in sorted(os.listdir(CASES)):
@@ -160,6 +165,8 @@ def main():
             checked += 1
             if not old.strip() or old not in blob:
                 unresolved.append((name, label))
+            elif any(s.count(old) > 1 for s in sources):
+                ambiguous.append((name, label))
 
     if listing:
         for n in no_target:
@@ -167,15 +174,21 @@ def main():
     if unresolved:
         for n, label in unresolved:
             print("  %s: anchor not found - '%s' tests nothing" % (n, label))
-    bad = len(unresolved) > BASELINE_UNRESOLVED or len(no_target) > BASELINE_NO_TARGET
+    if listing or len(ambiguous) > BASELINE_AMBIGUOUS:
+        for n, label in ambiguous:
+            print("  %s: anchor found more than once - '%s' breaks the first" % (n, label))
+    bad = (len(unresolved) > BASELINE_UNRESOLVED or len(no_target) > BASELINE_NO_TARGET or
+           len(ambiguous) > BASELINE_AMBIGUOUS)
     if bad:
         print("      A case whose code moved needs its anchor re-pointed at the "
-              "new file, in the same change as the move.")
-        print("sabotage-anchors=FAIL unresolved=%d/%d no_target=%d/%d"
-              % (len(unresolved), BASELINE_UNRESOLVED, len(no_target), BASELINE_NO_TARGET))
+              "new file, in the same change as the move; an anchor that is not "
+              "unique needs a line of context that is.")
+        print("sabotage-anchors=FAIL unresolved=%d/%d no_target=%d/%d ambiguous=%d/%d"
+              % (len(unresolved), BASELINE_UNRESOLVED, len(no_target), BASELINE_NO_TARGET,
+                 len(ambiguous), BASELINE_AMBIGUOUS))
         return 1
-    print("sabotage-anchors=ok cases=%d unresolved=%d no_target=%d"
-          % (checked, len(unresolved), len(no_target)))
+    print("sabotage-anchors=ok cases=%d unresolved=%d no_target=%d ambiguous=%d"
+          % (checked, len(unresolved), len(no_target), len(ambiguous)))
     return 0
 
 
