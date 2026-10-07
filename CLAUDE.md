@@ -1384,6 +1384,21 @@ to a page that was on disk, and the answer to all four was "nothing" - found in
 the first hour of a load that sent pages there. When something new can happen
 to a page table entry, list every operation that walks one.
 
+**A program that talks to itself needs a loopback, and nothing had asked.**
+The stack served the host and the boot's programs for a year and never had
+127.0.0.1: a SYN to it went to the gateway and the retries ended as
+ECONNREFUSED, which reads as a socket defect in whichever call the test was
+about. Ten of L5's sixty-four LTP tests failed through that one absence. A
+loopback packet waits for the timer's poll rather than being delivered inside
+the send, because the sender is half-way through changing the socket the
+answer is matched against.
+
+**A sabotage anchor that occurs twice breaks the first occurrence.**
+`sabotage.py` replaces once, so "getsockname takes a null length" broke the
+same condition in a helper above it and went NOT RED with the test right.
+`check-sabotage-anchors.py` counts anchors found more than once in their
+target; give such an anchor a line of context.
+
 ## Verification that exists
 
 The boot gate (`scripts/qemu-cli-smoke-linux.py`) asserts state, not markers:

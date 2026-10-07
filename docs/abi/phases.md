@@ -2150,6 +2150,123 @@ Four steps:
    resolver at boot, a client and a server over a Unix socket; and LTP for
    the phase.
 
+**Steps 1 to 3 (2026-10-06).** A socket is a description whose type carries a
+second table, `vibeos_sock_ops_t` (`include/vibeos/sockops.h`): bind, listen,
+connect, accept, sendmsg, recvmsg, shutdown, the names and the options, in
+neutral terms - an address is `vibeos_sockaddr_t`, a message `vibeos_msg_t`
+with its vector, its flags and the descriptions it carries. Two types fill it:
+IP (`kernel/abi/files/socket.c`, over the stack) and local
+(`kernel/abi/files/unixsock.c`). The Linux handlers (`kernel/abi/linux/net.c`)
+only translate: sockaddr, msghdr, cmsg and mmsghdr in and out, through two
+helpers that judge each user range before it is copied. The options every
+socket keeps alike - the buffer sizes, doubled as Linux reports them, the
+timeouts, SO_LINGER, the flags - live in the description
+(`kernel/abi/files/sockopt.c`); a type answers only its own (SO_ACCEPTCONN,
+SO_ERROR, SO_PEERCRED, FIONREAD's count).
+
+- **The stack** learned what the calls ask of it: a bind to an address and a
+  port nobody holds (EADDRINUSE, SO_REUSEADDR as Linux has it for TCP and
+  UDP), an ephemeral port for port 0 and for a `listen` nobody bound, a
+  connected UDP peer, MSG_PEEK and a datagram's whole length for MSG_TRUNC,
+  and the names of both ends. The ten-second EIO of a `recv` went: a receive
+  waits as long as Linux's, or SO_RCVTIMEO.
+- **Local sockets** are a table of endpoints, each with a page of ring. A
+  stream is bytes; a datagram keeps its length and its sender's name in the
+  ring with it. A name is a node in the filesystem - `bind` makes one with
+  the new `mknod` operation, tmpfs has socket nodes, and opening one is ENXIO
+  - or a run of bytes in the abstract namespace; binding no name autobinds
+  five hex digits there, as Linux does. SO_PEERCRED is who connected, or who
+  listened.
+- **SCM_RIGHTS** carries A3's counted descriptions. The sender's references
+  travel with the message, tied to its place in the ring so a stream read
+  stops at the byte they came with; the receiver installs what its control
+  buffer has room for (MSG_CMSG_CLOEXEC honoured) and gives the rest back,
+  with MSG_CTRUNC. Nothing is put under the socket table's lock: a
+  description's last reference may be another local socket's, whose release
+  takes that lock.
+- **readv and writev** on a socket are one receive or one send over the
+  vector, not one per element - a datagram is not cut into pieces.
+
+One thing found by running the step's program on Linux first: a datagram from
+a sender with no name arrives with a name of length **0**, not the bare family
+`getpeername` returns. Both the host test and the program had assumed the
+family.
+
+- **Sabotage**: `net-l5-inet.txt` (3), `abi-sockopt.txt` (2),
+  `abi-unixsock.txt` (4), `abi-net-l5.txt` (3), `abi-socket-l5.txt` (3), and
+  the anchors of four older case files moved with the code they test. One
+  went NOT RED - SHUT_WR not told to the peer - because the fake kernel hands
+  back an abandoned wait as 0, the very value the end of a stream reads as;
+  the check asks for the outcome now and the case goes red. One more was seen
+  before it ran: the buffer-size check set 1000, whose double is under the
+  floor too, so "not doubled" could not have shown; a second check sets 5000.
+
+**Step 4 (2026-10-06): the programs.** `tests/corpus/run-l5.sh`, staged as
+`/corpus/progs5.sh`, runs at boot after L4's: BusyBox `wget` fetches a page from
+the host - a token the gate makes up for each run, so nothing but a fetch can
+print it (`wget_not_fetched`; the first boot of a run only, as the echo) - a
+lookup through musl's `getaddrinfo` goes to QEMU's resolver at 10.0.2.3 and
+from there to the host's (`dns_not_resolved`; asked only when the host can
+resolve the name itself, otherwise the verdict says `dns_absent`), and
+`SOCKETS.ELF` (`tests/linux/musl_sockets.c`, written and run on Linux first)
+checks the step's calls from ring 3, a Unix-socket server and client in two
+processes with a pipe passed back among them (`sockets_l5_failed`). The volume
+gained `/etc/hosts` and `/etc/resolv.conf`. All three worked on the first boot.
+
+LTP for the phase - `tests/corpus/ltp-l5.txt` and the seven epoll tests L4
+handed over, 64 - first measured **26 passed**. Half of what failed was one
+thing: **there was no loopback**. Every LTP socket test talks to itself through
+127.0.0.1, and the stack sent that to the gateway; a SYN nobody answered came
+back as ECONNREFUSED after the retries. The stack has one now: a packet for
+127.0.0.0/8 or for the machine's own address waits in a ring of sixteen and the
+next poll - the timer's - feeds it to the input path, never at once, because
+the sender is in the middle of changing the socket the answer is matched
+against. 127.0.0.0/8 from the wire is a martian and dropped, and a SYN to a
+port nobody listens on is answered with a reset, so a refusal is immediate
+rather than a timeout. The rest were orders of refusal, each checked against
+Linux before it was changed: getsockopt at a level a socket has not is
+EOPNOTSUPP (setsockopt's is ENOPROTOOPT); accept on a socket that does not
+listen is EINVAL before its buffer is looked at; getsockname with no length is
+EFAULT; a vector length negative as a size is EINVAL before any base is judged
+(readv and writev on anything); MSG_ERRQUEUE finds nothing; a stream's
+recvfrom never writes a source, so a bad one is no error, though a negative
+length still is EINVAL; SO_SNDBUFFORCE and SO_RCVBUFFORCE are the superuser's.
+After: **44 passed** (40 in the full run, then recv01, recvmsg01, sendmmsg01 and
+recvfrom01 run again after the last of these), 1 failed, 13 broken, 6 not
+applicable. What is left, by owner:
+
+- **Elsewhere**: network namespaces (`unshare`, eight tests), SysV semaphores
+  (sendmsg02), `ip`/`ifconfig` (sendmsg01), IPv6, SCTP and RDS, `O_PATH`
+  (accept03, L1's open), two CPUs as `sched_getaffinity` counts them (writev03,
+  L6), kTLS and multicast options (setsockopt10, accept02).
+- **Open here**: send02 opens a thousand connections in a row and needs
+  MSG_MORE to hold data back - this stack sends at once and keeps a closed
+  connection's slot four seconds, so the table of sixteen runs out first;
+  recvmmsg01 is killed by SIGSEGV in its main process, not looked into.
+
+The step's six boots found one more, older than the phase: **a half-closed
+connection lost its slot under an open descriptor.** A connection that reached
+TIME_WAIT armed the stack's four-second reclaim whether or not its owner had
+closed it, and one shut for writing with `shutdown` gets there with the
+descriptor open and the peer's last bytes unread. BusyBox `nc -l` does exactly
+that; under three boots at once it read more than four seconds late, read
+nothing, and the call counted `sock_fd_aba=2` - L4's nc check had been green on
+timing. The reclaim waits for the owner's close now, in TIME_WAIT and after
+LAST_ACK alike, and `t_loopback` holds a half-closed client six seconds before
+it reads.
+
+- **Sabotage**: `l5-programs-boot.txt` (4 at boot, one per reason, all red);
+  loopback and the reset in `net-l5-inet.txt` (the reset's went NOT RED first:
+  the retries running out also ends as ECONNREFUSED, so the check asks how long
+  it took), the orders in `abi-net-l5.txt` and `abi-iov-lengths.txt`. One more
+  NOT RED had nothing to do with its test: the anchor of "getsockname takes a
+  null length" also matched the same condition in `linux_sa_out`, which comes
+  first, and `sabotage.py` breaks the first. `check-sabotage-anchors.py` now
+  counts anchors found twice in their target; seven older ones are, and the
+  count may only go down.
+
+**L5 is closed (2026-10-06).**
+
 ### L6. Threads and scheduling (20, plus `futex` and `clone` finished)
 
 The rest of `futex` (requeue, wake-op, the `futex2` calls; priority inheritance
