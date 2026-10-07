@@ -78,6 +78,15 @@ jobs:
       - name: Run Host Tests
         run: ctest --test-dir build --output-on-failure
 
+      # The repository's own checks - layering, user access, Linux layouts,
+      # sabotage anchors, the checks on the checks. They ran only from a
+      # developer's check.sh, so a change that broke one merged green (external
+      # review, 2026-10-07). Same file check.sh calls; once, since none of them
+      # depends on the compiler.
+      - name: Repository Checks
+        if: matrix.compiler == 'gcc' && matrix.build_type == 'Release'
+        run: bash scripts/dev/static-checks.sh build
+
       - name: Build Boot Artifacts
         run: cmake --build build --target vibeos_image
 

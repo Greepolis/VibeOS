@@ -41,88 +41,9 @@ do_build() {
     # the number was already noise. The clang counter below has always filtered
     # this; the two disagreed, and the noisier one is the one people saw first.
     echo "warnings=$(grep 'warning:' /tmp/vibeos-build.log | grep -vc 'build-id\|unused-command-line-argument')"
-    # A deliberate fault planted to test the panic path once got committed,
-    # because removing it was a separate step that a change of plan skipped.
-    # Verifying a crash handler means planting crashes, so this will be done
-    # again; the check costs nothing and the mistake costs a boot that dies on
-    # purpose in everybody's build.
-    # The memory manager's layering, checked by the build rather than by
-    # review. The property it guards - one place decides what an address space
-    # owns - is the whole of phase P2, and it is the kind that erodes one
-    # reasonable-looking line at a time.
-    bash scripts/dev/check-mm-layering.sh | tail -1
-    # Two checks about the checks.
-    #
-    # This kernel's detectors have been wrong more often than the code they
-    # watch, and the two most expensive shapes are both greppable: an assertion
-    # nobody ever proved can fire, and a counter nothing ever increments.
-    # VIBEOS_BLK_TIMEOUT was both at once - defined, printed, asserted, and
-    # produced by no driver - and it took reading the source to notice.
-    python3 scripts/dev/check-assertions-covered.py | tail -1
-    python3 scripts/dev/check-counters-produced.py | tail -1
-    # And the axis neither of those two covers: a counter that carries the word
-    # MUSTBEZERO - which means "the gate fails if this is not zero" - and that
-    # the gate never reads. The GUI's guard canary was in that state for the
-    # whole of C0, printed every boot, green by construction.
-    python3 scripts/dev/check-mustbezero-asserted.py | tail -1
-    # And one about the tests: every module gets an intensive nightly run.
-    python3 scripts/dev/check-nightly-coverage.py | tail -1
-    # Which of the portable kernel's functions nothing reaches.
-    #
-    # Written two days before it was wired in here, and unwired for both of
-    # them - which is this project's most repeated defect committed inside the
-    # plan that names it. A check nothing runs and a check that passes are the
-    # same thing from outside.
-    python3 scripts/dev/check-reachable.py | tail -1
-    # No decision rests on the reverse map alone. It is best effort by design -
-    # a finite node pool, and no list at all for a frame outside its region -
-    # and that is safe only because every consumer cross-checks against
-    # vibeos_frame_owners. An external review found the ignored return value
-    # and asked what depends on the map being complete; this is the answer,
-    # made checkable.
-    python3 scripts/dev/check-rmap-crosscheck.py | tail -1
-    # Every security check has one call site, and a second one is noticed.
-    python3 scripts/dev/check-chokepoints.py | tail -1
-    # Every operation runs exactly the checks it declares (C4): a check declared
-    # and not run, run and not declared, or an operation no case dispatches.
-    python3 scripts/dev/check-syscall-checks.py | tail -1
-    # The published table of every Linux syscall is the registry's, not a copy
-    # that drifted from what the kernel answers (docs/abi/, phase A1).
-    python3 scripts/dev/make-syscall-table.py --check | tail -1
-    # Every sabotage case still has an anchor to break. Moving code breaks them
-    # silently; this finds it the same day.
-    python3 scripts/dev/check-sabotage-anchors.py | tail -1
-    # The seven parts of a module, for the four parts a script can judge. The
-    # must-be-zero part is deliberately absent: it is C2's, which adds the
-    # counters before the check that demands them, so this does not ship red
-    # against thirty modules the way check-mm-layering.sh once did.
-    python3 scripts/dev/check-subsystem.py "$d" | tail -1
-    # How many existing files an extension costs. docs/core/ calls this the
-    # plan's real progress metric, and it is here because line count was the
-    # stated criterion twice and failed twice - a number you cannot satisfy by
-    # moving code. Its first run contradicted the table it was written to
-    # enforce, which is the best thing a new check can do.
-    python3 scripts/dev/check-blast-radius.py | tail -1
-    # C5: one definition of what a task is, and a ratchet on how far the arch layer
-    # still reaches into it.
-    python3 scripts/dev/check-task-identity.py | tail -1
-    # User memory only through the fault-safe copy (M-050..M-052): the same
-    # race-to-panic had been fixed one site at a time, and one review found
-    # eight more. A rule nothing enforces is found again by the next reviewer.
-    python3 scripts/dev/check-user-access.py | tail -1
-    # Every socket call that waits re-verifies its socket (M-020): the fix
-    # reached three of four sites and the fourth was found by a reviewer.
-    python3 scripts/dev/check-net-stable.py | tail -1
-    # docs/abi/ A2: a syscall personality reaches the kernel only through
-    # vibeos/ksvc.h, and both implementations of it define every service.
-    python3 scripts/dev/check-abi-layering.py | tail -1
-    # docs/abi/ A5: every Linux layout and number the kernel declares is
-    # compared with Linux's own headers by linux_layout_tests.c.
-    python3 scripts/dev/check-linux-layout.py | tail -1
-    if grep -rn 'TEMPORARY' kernel/ --include=*.c > /dev/null 2>&1; then
-        echo "LEFTOVER-DEBUG-CODE:"
-        grep -rn 'TEMPORARY' kernel/ --include=*.c | head -3
-    fi
+    # The checks that read the tree rather than run it. They live in their own
+    # file so that the CI runs the same list (external review, 2026-10-07).
+    bash scripts/dev/static-checks.sh "$d"
 }
 
 do_tests() {
