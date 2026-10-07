@@ -147,6 +147,17 @@ int test_fat(void) {
     g_clock = 0;
     vibeos_fs_set_clock(t_now);
     expect(fresh(SECTORS) == 0, "a volume formatted and mounted");
+    {
+        /* A boot sector that claims more than its partition is refused: its
+         * last sectors would be the next partition's, and the driver writes
+         * (external review, 2026-10-07). */
+        vibeos_fsmount_t m2;
+        uint64_t before = vibeos_fat_out_of_volume();
+
+        expect(vibeos_fat_fs_driver()->mount(&m2, &g_bc, FIRST, SECTORS - 8u, 0) != 0,
+               "a volume whose boot sector claims more than its partition is not mounted");
+        expect(vibeos_fat_out_of_volume() == before, "and nothing was asked for outside a volume");
+    }
     for (i = 0; i < sizeof(big); i++) {
         big[i] = (uint8_t)(i * 11u + 7u);
     }

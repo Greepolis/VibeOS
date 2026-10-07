@@ -47,8 +47,13 @@ void vibeos_fat_cache_stats(uint64_t *hits, uint64_t *misses,
                             uint64_t *evictions, uint64_t *evict_failed);
 
 /* Mount a second FAT volume, from a device the caller names. An opaque handle,
- * or null. */
-void *vibeos_fat_mount_volume(vibeos_blockcache_t *bc, uint32_t first_lba);
+ * or null. `sectors` is the partition's length, 0 if unknown: a boot sector
+ * that claims more than its partition is refused, and nothing outside it is
+ * read or written. */
+void *vibeos_fat_mount_volume(vibeos_blockcache_t *bc, uint32_t first_lba, uint64_t sectors);
+
+/* Sectors refused because they lay outside the mounted volume. */
+uint64_t vibeos_fat_out_of_volume(void);
 
 /* Forget every volume but the boot one. For tests. */
 void vibeos_fat_forget_volumes(void);

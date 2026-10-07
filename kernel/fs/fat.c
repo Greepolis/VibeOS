@@ -94,6 +94,11 @@ static fat_fs_t g_volumes[FAT_MAX_VOLUMES];
 static uint32_t g_volume_count;
 static fat_fs_t *g_fat_cur = &g_volumes[0];
 
+/* Sectors asked for outside the mounted volume, refused (fat_sector_ok). Zero
+ * on any honest volume; a crafted one moves it. */
+static uint64_t g_fat_out_of_volume;
+uint64_t vibeos_fat_out_of_volume(void) { return g_fat_out_of_volume; }
+
 /* Make `vol` the one the next operation acts on; null means the boot volume.
  * Called with the lock held, always.
  *
@@ -203,8 +208,26 @@ static vibeos_blockcache_t *fat_cache(void) {
     return g_bc_ready ? &g_bc : 0;
 }
 
+/* Is `lba` inside the mounted volume? Every read and write asks, so no
+ * arithmetic from a boot sector, a table or a directory - however it was built -
+ * can reach a sector of the neighbouring partition. The volume is what the BPB
+ * says, and the mount has already refused a BPB larger than its partition.
+ * Before the geometry is known (the MBR, the BPB itself) there is nothing to
+ * hold a sector against. Writes were unbounded until the external review of
+ * 2026-10-07; reads were H-029's follow-up. */
+static int fat_sector_ok(uint64_t lba) {
+    if (!g_fat_cur || g_fat_cur->part_sectors == 0u) {
+        return 1;
+    }
+    return lba >= g_fat_cur->part_lba && lba - g_fat_cur->part_lba < g_fat_cur->part_sectors;
+}
+
 static int fat_sector_read(uint64_t lba, void *buf) {
     vibeos_blockcache_t *bc = fat_cache();
+    if (!fat_sector_ok(lba)) {
+        g_fat_out_of_volume++;
+        return -1;
+    }
     if (!bc) {
         return boot_read(lba, buf);
     }
@@ -213,6 +236,10 @@ static int fat_sector_read(uint64_t lba, void *buf) {
 
 static int fat_sector_write(uint64_t lba, const void *buf) {
     vibeos_blockcache_t *bc = fat_cache();
+    if (!fat_sector_ok(lba)) {
+        g_fat_out_of_volume++;
+        return -1;
+    }
     if (!bc) {
         return boot_write(lba, buf);
     }
@@ -316,7 +343,7 @@ static const uint8_t *fat_table_sector(uint32_t lba) {
  * unchanged.
  */
 static int fat_mount_on(fat_fs_t *vol, vibeos_blockcache_t *bc,
-                        uint32_t at_lba) {
+                        uint32_t at_lba, uint64_t part_len) {
     uint32_t part_lba = at_lba;
     uint16_t reserved, bytes_per_sec;
     uint32_t total_sectors, root_dir_sectors;
@@ -324,6 +351,7 @@ static int fat_mount_on(fat_fs_t *vol, vibeos_blockcache_t *bc,
     g_fat_cur = vol;
     g_fat_cur->mounted = 0;
     g_fat_cur->cache = bc;
+    g_fat_cur->part_sectors = 0;   /* no bound until this volume's is known */
 
     /* Before the first read below, and invalidating on a remount: a cache that
      * outlived a mount would answer for a volume that is no longer there.
@@ -345,6 +373,7 @@ static int fat_mount_on(fat_fs_t *vol, vibeos_blockcache_t *bc,
             const uint8_t *pe = &g_secbuf[446];
             if (pe[4] != 0 && rd32(&pe[8]) != 0) {
                 part_lba = rd32(&pe[8]);
+                part_len = rd32(&pe[12]);
             }
         }
     }
@@ -382,6 +411,13 @@ static int fat_mount_on(fat_fs_t *vol, vibeos_blockcache_t *bc,
     g_fat_cur->root_lba = g_fat_cur->fat_lba + 2u * g_fat_cur->sectors_per_fat;         /* FAT16 root */
     g_fat_cur->data_lba = g_fat_cur->root_lba + root_dir_sectors;                  /* first data */
     if (total_sectors <= g_fat_cur->data_lba - part_lba) {
+        return -1;
+    }
+    /* A boot sector that claims more sectors than its partition has would
+     * have the driver read and write the next one's (external review,
+     * 2026-10-07): refused, not trimmed - a volume that lies about its size
+     * lies about where its data is too. */
+    if (part_len != 0u && total_sectors > part_len) {
         return -1;
     }
     g_fat_cur->part_sectors = total_sectors;
@@ -2437,7 +2473,7 @@ int vibeos_fat_mount(void) {
     fs_lock();
     /* Volume 0 is the boot volume, always. Everything above still reaches this
      * driver through the no-argument entry points, and they operate on it. */
-    r = fat_mount_on(&g_volumes[0], 0, 0u);
+    r = fat_mount_on(&g_volumes[0], 0, 0u, 0u);   /* the MBR names the length */
     if (r == 0 && g_volume_count == 0u) {
         g_volume_count = 1u;
     }
@@ -2452,7 +2488,7 @@ int vibeos_fat_mount(void) {
  * from it before doing anything, under the same lock.
  */
 void *vibeos_fat_mount_volume(vibeos_blockcache_t *bc,
-                                     uint32_t first_lba) {
+                                     uint32_t first_lba, uint64_t sectors) {
     fat_fs_t *vol;
     int r;
 
@@ -2470,7 +2506,7 @@ void *vibeos_fat_mount_volume(vibeos_blockcache_t *bc,
         return 0;
     }
     vol = &g_volumes[g_volume_count];
-    r = fat_mount_on(vol, bc, first_lba);
+    r = fat_mount_on(vol, bc, first_lba, sectors);
     if (r != 0) {
         /* Left out of the count, so a failed mount does not consume a slot and
          * does not leave a half-built volume something could select. */
@@ -2934,13 +2970,12 @@ static int fat_scan_mount(vibeos_fsmount_t *out, vibeos_blockcache_t *cache,
                           uint64_t first_lba, uint64_t sectors, void *state) {
     void *vol;
 
-    (void)sectors;   /* FAT reads its own geometry and keeps its own volumes */
     (void)state;
 
     if (first_lba == 0ull) {
         return fat_vfs_mount_boot(out);
     }
-    vol = vibeos_fat_mount_volume(cache, (uint32_t)first_lba);
+    vol = vibeos_fat_mount_volume(cache, (uint32_t)first_lba, sectors);
     if (!vol) {
         return -1;
     }
