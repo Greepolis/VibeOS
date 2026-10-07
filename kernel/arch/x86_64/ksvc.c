@@ -518,7 +518,15 @@ uint64_t ks_fpu_size(void) { return 512u; }
 
 int ks_fpu_save(uint64_t uaddr) {
     unsigned char area[512] __attribute__((aligned(16)));
+    uint32_t k;
 
+    /* FXSAVE leaves bytes 464-511 (software's) and the reserved ones it does
+     * not define as it found them, and here they are this kernel stack's old
+     * contents - pointers among them - copied into every signal frame a
+     * program can read (external review, 2026-10-07). Cleared first. */
+    for (k = 0; k < sizeof(area); k++) {
+        ((volatile unsigned char *)area)[k] = 0;
+    }
     __asm__ __volatile__("fxsave (%0)" :: "r"(area) : "memory");
     return vibeos_uaccess_copy((void *)(uintptr_t)uaddr, area, sizeof(area)) == 0 ? 0 : -1;
 }

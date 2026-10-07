@@ -100,10 +100,20 @@ static void on_segv(int sig, siginfo_t *si, void *ctx) {
     uc->uc_mcontext.gregs[REG_RIP] = (greg_t)(uintptr_t)fault_resume;
 }
 
-static volatile int g_info_signo, g_info_code, g_info_pid, g_info_value;
+static volatile int g_info_signo, g_info_code, g_info_pid, g_info_value, g_fx_stale;
 
 static void on_info(int sig, siginfo_t *si, void *ctx) {
-    (void)ctx;
+    const ucontext_t *uc = (const ucontext_t *)ctx;
+    const unsigned char *fx = (const unsigned char *)uc->uc_mcontext.fpregs;
+    int k;
+
+    /* The FXSAVE area's reserved bytes, 416 to 463, are zero on Linux. They
+     * were this kernel's old stack contents until the area was cleared before
+     * FXSAVE (external review, 2026-10-07). */
+    g_fx_stale = 0;
+    for (k = 416; fx && k < 464; k++) {
+        g_fx_stale |= fx[k];
+    }
     g_info_signo = sig;
     g_info_code = si->si_code;
     g_info_pid = si->si_pid;
@@ -187,6 +197,10 @@ static int l2_checks(void) {
             g_info_code != SI_QUEUE || g_info_value != 7 || g_info_pid != getpid()) {
             printf("SIG_FAIL: sigqueue: signo=%d code=%d value=%d pid=%d\n",
                    g_info_signo, g_info_code, g_info_value, g_info_pid);
+            ok = 0;
+        }
+        if (g_fx_stale) {
+            printf("SIG_FAIL: the frame's FXSAVE area carries bytes nobody wrote\n");
             ok = 0;
         }
     }

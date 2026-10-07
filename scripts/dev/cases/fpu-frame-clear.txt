@@ -1,0 +1,20 @@
+# The signal frame's FXSAVE area carries no stale kernel stack (external
+# review 2026-10-07): ks_fpu_save clears its buffer before FXSAVE, and
+# SIGNAL.ELF (tests/linux/musl_signal.c) checks the reserved bytes 416-463 of
+# the frame are zero, as on Linux.
+#
+#  1. the area is not cleared. Expect signal_l2_checks_failed - SIGNAL.ELF's
+#     "the frame's FXSAVE area carries bytes nobody wrote".
+#
+# A boot case: the arch layer is not built into the host tests.
+#
+# Target source: kernel/arch/x86_64/ksvc.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/arch/x86_64/ksvc.c scripts/dev/cases/fpu-frame-clear.txt
+
+### the area is not cleared
+--- old
+    for (k = 0; k < sizeof(area); k++) {
+        ((volatile unsigned char *)area)[k] = 0;
+    }
++++ new
+    (void)k;
