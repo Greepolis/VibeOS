@@ -94,7 +94,8 @@ typedef struct vibeos_image {
  * the five defects that copying produced. */
 typedef struct vibeos_procstate {
     volatile uint32_t refs;      /* tasks pointing here; 0 means free        */
-    volatile uint32_t mm_busy;   /* one address-space mutation at a time:     */
+    volatile uint32_t mm_busy;   /* one address-space mutation at a time; the */
+                                 /* holder's task slot plus one, 0 when free:  */
                                  /* brk, and fork's walk of this process      */
     uint64_t brk_cur;            /* current program break                    */
     volatile uint64_t mmap_cur;  /* next anonymous address, claimed by CAS   */

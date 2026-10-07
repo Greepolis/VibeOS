@@ -994,9 +994,43 @@ static int kf_faults(const void *p, uint64_t n) {
     return g_fault_len && a < g_fault_base + g_fault_len && a + n > g_fault_base;
 }
 
+/* A copy to or from user memory made while the caller holds its own
+ * address-space lock. On the machine such a store can fault into a path that
+ * takes that lock - a stack page not yet grown - and retry for ever (mincore,
+ * external review 2026-10-07). Here nothing faults, so the rule is counted
+ * instead and the tests require zero. */
+static uint32_t g_uaccess_under_mm;
+uint32_t kf_uaccess_under_mm(void) { return g_uaccess_under_mm; }
+
+/* Could a store here fault? A page of the mapped window that is present cannot
+ * - mmap fills the pages it has just mapped from the file, under the lock, and
+ * that is safe - but one that is not, or the arena, which stands for memory
+ * nobody's tables describe (a program's stack among it), can. */
+static int kf_could_fault(uint64_t va, uint64_t len) {
+    uint64_t p;
+
+    if (kf_in_user(va, len)) {
+        return 1;
+    }
+    if (!kf_mm_va(va) || g_cur < 0 || !g_t[g_cur].has_as) {
+        return 0;
+    }
+    for (p = va & ~0xFFFull; p < va + len; p += 4096ull) {
+        uint64_t *e = vibeos_vmspace_entry(&g_t[g_cur].as, p);
+        if (!e || !(*e & KF_PTE_PRESENT)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int vibeos_uaccess_copy(void *dst, const void *src, uint64_t len) {
     uint64_t d = (uint64_t)(uintptr_t)dst, s = (uint64_t)(uintptr_t)src, done = 0;
 
+    if (g_cur >= 0 && g_t[g_cur].ps && g_t[g_cur].ps->mm_busy && len != 0u &&
+        (kf_could_fault(d, len) || kf_could_fault(s, len))) {
+        g_uaccess_under_mm++;
+    }
     if (kf_faults(dst, len) || kf_faults(src, len)) {
         return -1;
     }

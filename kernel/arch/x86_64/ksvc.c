@@ -151,7 +151,11 @@ void ks_mm_lock(vibeos_procstate_t *ps) {
     __asm__ __volatile__("pushfq; popq %0" : "=r"(rflags));
     for (;;) {
         uint32_t zero = 0;
-        if (__atomic_compare_exchange_n(&ps->mm_busy, &zero, 1u, 0,
+        /* The holder's slot plus one, not just "busy": a fault that finds the
+         * lock held by the very task that faulted is a store to user memory
+         * made under it, which no amount of retrying ends (hw_stack_grow). */
+        uint32_t me = (uint32_t)(hw_current_task() + 1);
+        if (__atomic_compare_exchange_n(&ps->mm_busy, &zero, me ? me : 1u, 0,
                                         __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
             if (rflags & 0x200ull) {
                 __asm__ __volatile__("sti" ::: "memory");

@@ -2471,8 +2471,16 @@ static int hw_stack_grow(hw_task_t *t, uint64_t fault_va) {
     if (!ps || !hw_stack_may_reach(page_va)) {
         return 0;
     }
-    if (!__atomic_compare_exchange_n(&ps->mm_busy, &zero, 1u, 0,
+    if (!__atomic_compare_exchange_n(&ps->mm_busy, &zero, (uint32_t)(g_current_task + 1), 0,
                                      __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+        /* Held by this task itself (ks_mm_lock records the holder's slot plus
+         * one, as this claim does): a handler stored to user memory under
+         * ks_mm_lock, and "fault again" would loop for ever with interrupts
+         * off - mincore did, until the external review of 2026-10-07. Stop
+         * with the reason instead. */
+        if (zero == (uint32_t)(g_current_task + 1)) {
+            hw_panic("stack fault under this task's own mm lock: a user store made while holding it");
+        }
         return 1;   /* somebody is changing this address space: fault again */
     }
     region = vibeos_vma_find(&ps->vmas, page_va);

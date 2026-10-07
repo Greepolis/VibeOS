@@ -1,0 +1,28 @@
+# No store to user memory under the caller's own mm lock (external review
+# 2026-10-07, finding 2: mincore), proved by the fake's count of copies that
+# could fault made with the lock held (kf_uaccess_under_mm), which t_memory_calls and
+# the end of the Linux suite require to be zero.
+#
+#  1. mincore stores its vector under the lock again. Expect "mincore writes a
+#     byte a page, and no more - after letting go of the mm lock" and "no
+#     handler copied to or from user memory under its mm lock".
+#
+# On the machine such a store into a stack page not yet grown looped for ever:
+# hw_stack_grow found the lock busy and asked for the fault again. It panics
+# with the reason now when the holder is the faulting task itself; that guard
+# is not exercised here - nothing left in the tree reaches it.
+#
+# Target source: kernel/abi/linux/mm.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/mm.c scripts/dev/cases/abi-mm-uaccess.txt
+
+### mincore stores its vector under the lock again
+--- old
+        ks_mm_unlock(ps);
+        if (r == 0 && vibeos_uaccess_copy((void *)(uintptr_t)(vec_uptr + done), out, n) != 0) {
+            r = -VIBEOS_EFAULT;
+        }
++++ new
+        if (r == 0 && vibeos_uaccess_copy((void *)(uintptr_t)(vec_uptr + done), out, n) != 0) {
+            r = -VIBEOS_EFAULT;
+        }
+        ks_mm_unlock(ps);

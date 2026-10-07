@@ -4797,8 +4797,13 @@ static void t_memory_calls(void) {
 
     /* mincore */
     vp[0] = vp[1] = vp[2] = 9;
-    expect(SYS3(27, (uint64_t)m, 8192, vec) == 0 && vp[0] == 1 && vp[1] == 1 && vp[2] == 9,
-           "mincore writes a byte a page, and no more");
+    {
+        uint32_t under = kf_uaccess_under_mm();
+
+        expect(SYS3(27, (uint64_t)m, 8192, vec) == 0 && vp[0] == 1 && vp[1] == 1 && vp[2] == 9 &&
+               kf_uaccess_under_mm() == under,
+               "mincore writes a byte a page, and no more - after letting go of the mm lock");
+    }
     v = ks_vm(parent);
     expect(vibeos_vmspace_swap_out(&v, (uint64_t)m + 4096u, 7u) == 0 && SYS3(27, (uint64_t)m, 8192, vec) == 0 &&
            vp[0] == 1 && vp[1] == 0, "a page in swap is mapped and not in memory");
@@ -5136,6 +5141,8 @@ int test_linux_handlers(void) {
     t_clone3_checks();
     t_sleep();
     t_ltp_l1();
+    /* Over every handler the suite ran, not only mincore's. */
+    expect(kf_uaccess_under_mm() == 0, "no handler copied to or from user memory under its mm lock");
     return g_fail ? -1 : 0;
 }
 

@@ -637,23 +637,28 @@ static long linux_sys_mincore(uint64_t addr, uint64_t len, uint64_t vec_uptr) {
     if (pages != 0u && !linux_user_ok(vec_uptr, pages, 1)) {
         return -VIBEOS_EFAULT;
     }
-    ks_mm_lock(ps);
-    v = ks_vm(me);
-    if (!linux_regions_cover(ps, addr, end)) {
-        r = -VIBEOS_ENOMEM;
-    }
+    /* A chunk is looked at under the mm lock and stored after it is released.
+     * The store can fault - on a stack page not yet grown, a page in swap - and
+     * the fault takes that same lock: under it, hw_stack_grow found the lock
+     * busy (held by this task) and asked for the fault to be retried, for ever,
+     * with interrupts off in the syscall (external review, 2026-10-07). */
     for (va = addr; r == 0 && va < end;) {
         uint32_t n = 0;
 
-        for (; n < sizeof(out) && va < end; n++, va += 4096ull) {
+        ks_mm_lock(ps);
+        v = ks_vm(me);
+        if (!linux_regions_cover(ps, va, end)) {
+            r = -VIBEOS_ENOMEM;
+        }
+        for (; r == 0 && n < sizeof(out) && va < end; n++, va += 4096ull) {
             out[n] = vibeos_vmspace_resident(&v, va) == 1 ? 1u : 0u;
         }
-        if (vibeos_uaccess_copy((void *)(uintptr_t)(vec_uptr + done), out, n) != 0) {
+        ks_mm_unlock(ps);
+        if (r == 0 && vibeos_uaccess_copy((void *)(uintptr_t)(vec_uptr + done), out, n) != 0) {
             r = -VIBEOS_EFAULT;
         }
         done += n;
     }
-    ks_mm_unlock(ps);
     return r;
 }
 
