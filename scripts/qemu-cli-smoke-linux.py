@@ -333,6 +333,78 @@ def start_echo_server(stop_event, state):
     return t
 
 
+# The host's HTTP server for BusyBox wget (docs/abi/ L5 step 4). The guest
+# dials 10.0.2.2:7778, which slirp hands to the host's loopback - the echo's
+# arrangement, with the echo's limit: one run at a time, so runs with an id
+# do without it.
+WGET_PORT = 7778
+# The name the guest's DNS check resolves; "" when the host cannot, decided at
+# staging (host_dns_name).
+L5_DNS_NAME = ""
+
+
+def host_dns_name():
+    """A name for the guest to resolve, if the host can resolve it: the guest's
+    resolver is QEMU's, which asks the host's, so a host that cannot is a
+    machine without a network, not a guest that failed."""
+    name = os.environ.get("VIBEOS_SMOKE_DNS_NAME", "example.com")
+    try:
+        socket.setdefaulttimeout(5)
+        if any(ai[0] == socket.AF_INET for ai in socket.getaddrinfo(name, 80)):
+            return name
+    except OSError:
+        pass
+    finally:
+        socket.setdefaulttimeout(None)
+    return ""
+
+
+def start_http_server(stop_event, state):
+    """Answer every request with this run's page: a token made up here, so the
+    guest can only print it by having fetched it."""
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        srv.bind(("127.0.0.1", WGET_PORT))
+    except OSError as exc:
+        srv.close()
+        raise RuntimeError(
+            f"INFRA: wget port {WGET_PORT} unavailable ({exc}); "
+            "another smoke run is probably still active") from exc
+    srv.listen(4)
+    srv.settimeout(0.5)
+
+    def serve():
+        while not stop_event.is_set():
+            try:
+                conn, _ = srv.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            conn.settimeout(5)
+            try:
+                req = b""
+                while b"\r\n\r\n" not in req and len(req) < 8192:
+                    chunk = conn.recv(4096)
+                    if not chunk:
+                        break
+                    req += chunk
+                state["requests"].append(req.split(b"\r\n", 1)[0].decode("latin-1"))
+                body = (state["token"] + "\n").encode()
+                conn.sendall(b"HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n"
+                             b"Content-Length: %d\r\n\r\n" % len(body) + body)
+            except OSError:
+                pass
+            finally:
+                conn.close()
+        srv.close()
+
+    t = threading.Thread(target=serve, daemon=True)
+    t.start()
+    return t
+
+
 def drive_guest_programs(text, state):
     """The host's half of the event loops' programs (docs/abi/ L4 step 7):
     once the guest says its httpd is up, fetch the page; once its nc listens,
@@ -891,6 +963,17 @@ def stage_corpus(efi_root, build_dir):
     with open(tmp, "wb") as f:
         f.write(progs)
     os.replace(tmp, os.path.join(dst, "progs.sh"))
+    # The sockets' programs (docs/abi/ L5 step 4), with the name the DNS check
+    # asks for - only if the host can resolve it, so that a machine without a
+    # network says dns_absent rather than failing the guest for it.
+    global L5_DNS_NAME
+    L5_DNS_NAME = host_dns_name()
+    with open(os.path.join(root, "tests", "corpus", "run-l5.sh"), "rb") as f:
+        progs = f.read().replace(b"\r\n", b"\n").replace(b"@L5_DNS_NAME@", L5_DNS_NAME.encode())
+    tmp = os.path.join(dst, "progs5.sh.%d.tmp" % os.getpid())
+    with open(tmp, "wb") as f:
+        f.write(progs)
+    os.replace(tmp, os.path.join(dst, "progs5.sh"))
     staged = []
     for name in CORPUS_PROGRAMS:
         src = os.path.join(build_dir, "corpus", name)
@@ -1038,6 +1121,7 @@ def main():
     echo_stop = threading.Event()
     echo_state = {"connections": 0, "received": 0}
     echo_thread = None
+    wget_thread = None
     infra = False
     corpus_absent = []
     last_guest_phase = "boot"
@@ -1049,6 +1133,8 @@ def main():
     try:
         echo_thread = None if SKIP_ECHO else start_echo_server(echo_stop,
                                                                 echo_state)
+        wget_state = {"requests": [], "token": "L5P_PAGE_%d" % random.randrange(10**8, 10**9)}
+        wget_thread = None if SKIP_ECHO else start_http_server(echo_stop, wget_state)
         progs_state = {"http_started": False, "nc_started": False, "http": None, "nc": None,
                        "nc_token": "L4P_NCIN_%d" % random.randrange(10**8, 10**9)}
         # QEMU refuses a forward to a port somebody holds and exits with one
@@ -3164,6 +3250,26 @@ def main():
                 if not SKIP_ECHO and "L4P_NCOUT_SAW ECHO:L4P_NCOUT_9" not in text:
                     problems.append("nc_out_no_answer")
 
+            # docs/abi/ L5: the sockets. SOCKETS.ELF's checks, a Unix-socket
+            # server and client among them, read off its own line; BusyBox
+            # wget read off the page this run made up; the DNS answer read off
+            # what the resolver said, when the host could ask at all.
+            sockets_elf = os.path.join(efi_root, "EFI", "BOOT", "SOCKETS.ELF")
+            if os.path.exists(sockets_elf) and os.path.exists(busybox):
+                print("[QEMU-CLI] sockets: wget requests=%r dns=%r"
+                      % (wget_state["requests"][:3], L5_DNS_NAME or "absent"))
+                if "L5P_DONE_45" not in text:
+                    problems.append("l5_programs_did_not_finish")
+                if not re.search(r"write\(ring3\): SOCKETS_OK: ", text) or "L5P_SOCKETS_RC 0" not in text:
+                    problems.append("sockets_l5_failed")
+                if not SKIP_ECHO and "L5P_WGET_SAW " + wget_state["token"] not in text:
+                    problems.append("wget_not_fetched")
+                if L5_DNS_NAME:
+                    m = re.search(r"SOCK_RESOLVED " + re.escape(L5_DNS_NAME)
+                                  + r" (\d+)\.(\d+)\.(\d+)\.(\d+)", text)
+                    if not m or not all(int(x) < 256 for x in m.groups()) or m.group(1) in ("0", "127"):
+                        problems.append("dns_not_resolved")
+
             # The graphical shell, to the extent a serial log can speak for
             # it: the console has to have reached the on-screen terminal. Only
             # checked when a desktop came up at all, since a build without a
@@ -3446,6 +3552,9 @@ def main():
                 # Said in the verdict, not left to be noticed: these workloads
                 # were skipped because their programs were not built.
                 reason += " corpus_absent=" + "+".join(corpus_absent)
+            if ESP == "image" and not L5_DNS_NAME:
+                # A skip that is allowed is printed where the result is read.
+                reason += " dns_absent"
 
     except Exception as exc:
         reason = str(exc)
@@ -3461,6 +3570,8 @@ def main():
         echo_stop.set()
         if echo_thread is not None:
             echo_thread.join(timeout=2)
+        if wget_thread is not None:
+            wget_thread.join(timeout=2)
         if os.path.exists(err_log_path):
             with open(err_log_path, "rb") as fp:
                 err_text = fp.read().decode("utf-8", errors="replace")

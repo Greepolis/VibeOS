@@ -1,0 +1,40 @@
+# The sockets' programs at boot (docs/abi/ L5 step 4): tests/corpus/run-l5.sh
+# run as /corpus/progs5.sh, and the gate's reading of what came back.
+#
+#  1. wget asks the wrong port. Expect wget_not_fetched - the page is one the
+#     gate made up for this run, so nothing but a fetch can print it.
+#  2. SOCKETS.ELF is not run. Expect sockets_l5_failed.
+#  3. the lookup asks for a name nobody has. Expect dns_not_resolved (needs a
+#     host that resolves; otherwise the verdict says dns_absent and the case
+#     cannot tell).
+#  4. the script stops before its last line. Expect l5_programs_did_not_finish.
+#
+# A run with an id has no host server, so case 1 needs run 0 (verify-boot.sh).
+#
+# Target source: tests/corpus/run-l5.sh
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py tests/corpus/run-l5.sh scripts/dev/cases/l5-programs-boot.txt
+
+### wget asks the wrong port
+--- old
+http://10.0.2.2:7778/l5
++++ new
+http://10.0.2.2:7779/l5
+
+### SOCKETS.ELF is not run
+--- old
+/EFI/BOOT/SOCKETS.ELF
+echo "L5P_SOCKETS_RC $?"
++++ new
+echo "L5P_SOCKETS_RC $?"
+
+### the lookup asks for a name nobody has
+--- old
+    timeout 15 /EFI/BOOT/SOCKETS.ELF resolve "$N"
++++ new
+    timeout 15 /EFI/BOOT/SOCKETS.ELF resolve "$N.invalid"
+
+### the script stops before its last line
+--- old
+echo "L5P_DONE_$((5*9))"
++++ new
+exit 0

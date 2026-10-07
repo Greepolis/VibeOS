@@ -280,6 +280,11 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                    * the last three. Before the corpus, whose
                                    * LTP tests can take the rest of a boot. */
                                   "sh /corpus/progs.sh\n"
+                                  /* The sockets' programs (docs/abi/ L5
+                                   * step 4): SOCKETS.ELF's checks, BusyBox
+                                   * wget against the host, a DNS lookup
+                                   * through the C library. */
+                                  "sh /corpus/progs5.sh\n"
                                   "sh /corpus/run.sh\n"
                                   /* The last thing the self-test says. The boot
                                    * harness waits for this before driving the

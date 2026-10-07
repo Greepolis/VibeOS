@@ -474,6 +474,18 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         )
         add_custom_target(vibeos_musl_events ALL DEPENDS "${VIBEOS_EVENTS_BIN}")
 
+        # The sockets (docs/abi/ L5): local and IP, run by /corpus/progs5.sh.
+        set(VIBEOS_SOCKETS_SRC "${CMAKE_CURRENT_SOURCE_DIR}/tests/linux/musl_sockets.c")
+        set(VIBEOS_SOCKETS_BIN "${CMAKE_BINARY_DIR}/musl_sockets")
+        add_custom_command(
+            OUTPUT "${VIBEOS_SOCKETS_BIN}"
+            COMMAND "${VIBEOS_MUSL_GCC}" -static -O2 -o "${VIBEOS_SOCKETS_BIN}" "${VIBEOS_SOCKETS_SRC}"
+            DEPENDS "${VIBEOS_SOCKETS_SRC}"
+            COMMENT "Building the sockets test as a static Linux binary"
+            VERBATIM
+        )
+        add_custom_target(vibeos_musl_sockets ALL DEPENDS "${VIBEOS_SOCKETS_BIN}")
+
         # A position-independent executable. Same compiler, same library, one
         # linker flag apart - which is the point: the difference under test is
         # the loading, not the program.

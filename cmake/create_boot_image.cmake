@@ -221,6 +221,19 @@ nogroup:x:65533:
 nobody:x:65534:
 ")
 
+# /etc/hosts and /etc/resolv.conf (docs/abi/ L5 step 4): what a C library's
+# getaddrinfo reads before it asks anybody. Without resolv.conf musl asks
+# 127.0.0.1, where nothing answers; 10.0.2.3 is QEMU's user network's resolver,
+# which asks the host's. "vibeos-host" is the host as the guest sees it, so a
+# program can name it without a DNS server.
+file(WRITE "${EFI_ROOT_DIR}/etc/hosts"
+"127.0.0.1 localhost
+10.0.2.2 vibeos-host
+")
+file(WRITE "${EFI_ROOT_DIR}/etc/resolv.conf"
+"nameserver 10.0.2.3
+")
+
 # Threads, through the library's own pthread implementation: one created and
 # joined, then four at once contending for a mutex.
 set(THR_ELF "${CMAKE_BINARY_DIR}/musl_threads")
@@ -278,6 +291,12 @@ set(EVENTS_ELF "${CMAKE_BINARY_DIR}/musl_events")
 if(EXISTS "${EVENTS_ELF}")
     file(COPY_FILE "${EVENTS_ELF}" "${EFI_BOOT_DIR}/EVENTS.ELF" ONLY_IF_DIFFERENT)
     message(STATUS "EFI media includes the event-loop test: EFI/BOOT/EVENTS.ELF")
+endif()
+
+set(SOCKETS_ELF "${CMAKE_BINARY_DIR}/musl_sockets")
+if(EXISTS "${SOCKETS_ELF}")
+    file(COPY_FILE "${SOCKETS_ELF}" "${EFI_BOOT_DIR}/SOCKETS.ELF" ONLY_IF_DIFFERENT)
+    message(STATUS "EFI media includes the sockets test: EFI/BOOT/SOCKETS.ELF")
 endif()
 
 # Keep legacy kernel-as-image artifact for direct-loader probes.
