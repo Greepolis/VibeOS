@@ -73,7 +73,10 @@ jobs:
       security-events: write
       contents: read
     container:
-      image: semgrep/semgrep
+      # Pinned by digest, like every action here: an unpinned image is code
+      # this job runs with security-events: write, chosen by whoever pushed
+      # "latest" last (external review, 2026-10-07). 1.178.0 was latest then.
+      image: semgrep/semgrep:1.178.0@sha256:32e459968daabe7ab86968184a29109b9564aa00392401156f9788452b42786b
 
     steps:
       - name: Checkout
