@@ -1,0 +1,28 @@
+# A vector's count read as wide as its handler reads it (kernel/abi/abi.c,
+# VIBEOS_PTR_LEN32; external review 2026-10-07, finding 1), proved by t_epoll
+# in tests/kernel/linux_abi_tests.c.
+#
+#  1. the engine ignores the width. Expect "epoll_wait: a maxevents with high
+#     bits set is the int it is, and its array is judged" - the event is
+#     written into the test's stand-in for kernel memory.
+#  2. epoll_wait's row declares a 64-bit count again. Expect the same.
+#
+# Case 2 is last on purpose: sabotage.py keeps the blank line that ends a case
+# in its replacement, and an extra newline after a row ending in a backslash
+# breaks the macro - the case read "did not compile" until it moved here.
+#
+# Case 1 is in abi.c, case 2 in epoll.c; run the file against each.
+# Target source: kernel/abi/abi.c, kernel/abi/linux/epoll.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py <one of them> scripts/dev/cases/abi-ptr-len32.txt
+
+### the engine ignores the width
+--- old
+            if (d->flags & VIBEOS_PTR_LEN32) {
++++ new
+            if (0) {
+
+### epoll_wait's row declares a 64-bit count again
+--- old
+    X(232, epoll_wait,    EPOLL, PTRS(OUT_VEC32(1, 2, sizeof(linux_epoll_event_t), EP_WAIT_MAX)), ep_wait(ARG(0), ARG(1), ARG(2), ep_ms(ARG(3)), 0, 0)) \
++++ new
+    X(232, epoll_wait,    EPOLL, PTRS(OUT_VEC(1, 2, sizeof(linux_epoll_event_t), EP_WAIT_MAX)), ep_wait(ARG(0), ARG(1), ARG(2), ep_ms(ARG(3)), 0, 0)) \

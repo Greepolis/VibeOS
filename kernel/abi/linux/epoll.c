@@ -492,8 +492,8 @@ static long linux_sys_epoll_pwait2(uint64_t epfd, uint64_t events, uint64_t max,
     X(213, epoll_create,  EPOLL, NOPTR, linux_sys_epoll_create(ARG(0))) \
     X(291, epoll_create1, EPOLL, NOPTR, linux_sys_epoll_create1(ARG(0))) \
     X(233, epoll_ctl,     EPOLL, NOPTR, linux_sys_epoll_ctl(ARG(0), ARG(1), ARG(2), ARG(3))) \
-    X(232, epoll_wait,    EPOLL, PTRS(OUT_VEC(1, 2, sizeof(linux_epoll_event_t), EP_WAIT_MAX)), ep_wait(ARG(0), ARG(1), ARG(2), ep_ms(ARG(3)), 0, 0)) \
-    X(281, epoll_pwait,   EPOLL, PTRS(OUT_VEC(1, 2, sizeof(linux_epoll_event_t), EP_WAIT_MAX)), linux_sys_epoll_pwait(ARG(0), ARG(1), ARG(2), ARG(3), ARG(4), ARG(5))) \
-    X(441, epoll_pwait2,  EPOLL, PTRS(IN_OPT(3, sizeof(linux_timespec_t)), OUT_VEC(1, 2, sizeof(linux_epoll_event_t), EP_WAIT_MAX)), linux_sys_epoll_pwait2(ARG(0), ARG(1), ARG(2), ARG(3), ARG(4), ARG(5)))
+    X(232, epoll_wait,    EPOLL, PTRS(OUT_VEC32(1, 2, sizeof(linux_epoll_event_t), EP_WAIT_MAX)), ep_wait(ARG(0), ARG(1), ARG(2), ep_ms(ARG(3)), 0, 0)) \
+    X(281, epoll_pwait,   EPOLL, PTRS(OUT_VEC32(1, 2, sizeof(linux_epoll_event_t), EP_WAIT_MAX)), linux_sys_epoll_pwait(ARG(0), ARG(1), ARG(2), ARG(3), ARG(4), ARG(5))) \
+    X(441, epoll_pwait2,  EPOLL, PTRS(IN_OPT(3, sizeof(linux_timespec_t)), OUT_VEC32(1, 2, sizeof(linux_epoll_event_t), EP_WAIT_MAX)), linux_sys_epoll_pwait2(ARG(0), ARG(1), ARG(2), ARG(3), ARG(4), ARG(5)))
 
 LINUX_DEFINE_SYSCALLS(epoll, LINUX_EPOLL_SYSCALLS)

@@ -2570,6 +2570,20 @@ static void t_epoll(void) {
     expect(CTL(1, reg, 1, 0) == -VIBEOS_EPERM && CTL(1, ep, 1, 0) == -VIBEOS_EINVAL &&
            CTL(1, 99, 1, 0) == -VIBEOS_EBADF && SYS4(233, (uint64_t)reg, 1, (uint64_t)f[0], ctlu) == -VIBEOS_EINVAL,
            "a regular file is EPERM, the epoll itself EINVAL, a closed number EBADF, a non-epoll EINVAL");
+    {
+        /* maxevents is an int: 0x1_0000_0001 is 1 to the handler, and must be 1
+         * to the row's check too. Read at 64 bits it was over the cap, the
+         * array went unjudged, and an event was written into kernel memory -
+         * a static of this test stands for it: the fake's copy writes it as
+         * the machine's would, and its range check refuses it (review,
+         * 2026-10-07). */
+        static uint8_t kernel_mem[64];
+
+        memset(kernel_mem, 0x5A, sizeof(kernel_mem));
+        expect(SYS4(232, (uint64_t)ep, (uint64_t)(uintptr_t)kernel_mem, 0x100000001ull, 0) == -VIBEOS_EFAULT &&
+               kernel_mem[0] == 0x5A && kernel_mem[11] == 0x5A,
+               "epoll_wait: a maxevents with high bits set is the int it is, and its array is judged");
+    }
     expect(SYS4(232, (uint64_t)ep, evu, 0, 0) == -VIBEOS_EINVAL && SYS4(232, (uint64_t)reg, evu, 1, 0) == -VIBEOS_EINVAL &&
            SYS1(213, 0) == -VIBEOS_EINVAL && SYS1(291, 1) == -VIBEOS_EINVAL && SYS1(213, 1) >= 0,
            "maxevents 0, waiting on a non-epoll, a size of 0, an unknown flag: EINVAL");

@@ -274,6 +274,11 @@ typedef long (*vibeos_handler_t)(const vibeos_call_t *call);
 #define VIBEOS_PTR_LIVE  1u    /* the slot is used (an all-zero slot is not) */
 #define VIBEOS_PTR_WRITE 2u    /* the kernel writes it; otherwise it only reads */
 #define VIBEOS_PTR_OPT   4u    /* a null pointer is allowed and is not checked */
+/* The count of a vector is a C int: read as the handler reads it, the low 32
+ * bits signed. Read at 64 bits, 0x1_0000_0001 was over the cap - so the range
+ * went unjudged - while epoll_wait's handler saw 1 and wrote an event to a
+ * pointer nobody had checked (external review, 2026-10-07). */
+#define VIBEOS_PTR_LEN32 8u
 
 typedef struct vibeos_ptr {
     uint8_t arg;

@@ -54,6 +54,8 @@
 #define IN_BUF(a, la)          PTR_(a, 0, (la) + 1, 1, 0, 0, 0)
 #define IN_VEC(a, la, scale, cp) PTR_(a, 0, (la) + 1, scale, cp, 0, 0)
 #define OUT_VEC(a, la, scale, cp) PTR_(a, VIBEOS_PTR_WRITE, (la) + 1, scale, cp, 0, 0)
+/* The same, for a count the handler reads as an int (VIBEOS_PTR_LEN32). */
+#define OUT_VEC32(a, la, scale, cp) PTR_(a, VIBEOS_PTR_WRITE | VIBEOS_PTR_LEN32, (la) + 1, scale, cp, 0, 0)
 #define OUT_IF(wa, wv, a, n)   PTR_(a, VIBEOS_PTR_WRITE, 0, n, 0, (wa) + 1, wv)
 #define IN_IF(wa, wv, a, n)    PTR_(a, 0, 0, n, 0, (wa) + 1, wv)
 /* Applies when (argument wa & mask) == wv, and refuses with `e` instead of EFAULT. */

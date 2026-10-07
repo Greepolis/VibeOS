@@ -51,6 +51,11 @@ long vibeos_abi_check_pointers(const vibeos_row_t *row, const vibeos_call_t *cal
         }
         if (d->len_arg) {
             uint64_t n = call->a[d->len_arg - 1u];
+            if (d->flags & VIBEOS_PTR_LEN32) {
+                int32_t c = (int32_t)(uint32_t)n;
+
+                n = c < 0 ? ~0ull : (uint64_t)c;   /* negative: the handler's EINVAL */
+            }
             if (n == 0u || (d->cap && n > d->cap)) {
                 continue;
             }
