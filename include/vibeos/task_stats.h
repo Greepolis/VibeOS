@@ -35,6 +35,14 @@ typedef struct vibeos_task_stats {
      * on any boot that exited a task, because a deferred free that silently
      * never happens is a leak that looks exactly like a fix. */
     uint64_t dead_kstacks_freed;
+    /* Exits that finished on another core than they began on: preempted in
+     * one of the windows exit runs with interrupts open, and resumed
+     * elsewhere. Legal, and why exit asks which core it is on again before it
+     * picks a successor: keeping the first answer would run the first core's
+     * idle task, already running there, and park its own stack on a core that
+     * would free it from under it (2026-10-07). Reported, not must-be-zero:
+     * it says whether the window is ever used - twelve boots said no. */
+    uint64_t exit_migrated;
 
     /* The three that must be zero, and are asserted by the boot gate.
      *

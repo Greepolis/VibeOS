@@ -1271,6 +1271,24 @@ void hw_task_exit(uint64_t code) {
             vibeos_task_stats()->exit_switch_irq_on++;
         }
     }
+    /* Which core this is, asked again now that nothing can move the task. The
+     * answer taken at the top is the core the exit began on, and the windows
+     * above with interrupts open - ks_mm_lock's spin, a task killed out of a
+     * `sti; hlt` wait - let a timer preempt it and another core resume it.
+     * Kept, this core would pick the *first* core's idle task, which is
+     * RUNNING there - two cores on one idle stack - overwrite that core's
+     * current_task, and park this task's kernel stack on a core that would
+     * free it while this one still stands on it. Written for the
+     * `ILLEGAL from=running to=running by=hw_task_exit` seen one boot in six;
+     * twelve boots after it never moved exit_migrated, so whether the window
+     * is ever used, and whether it was that defect, is not shown. */
+    if (hw_this_cpu() != cpu) {
+        vibeos_task_stats()->exit_migrated++;
+        cpu = hw_this_cpu();
+    }
+    if (dying >= 0 && cpu->current_task != dying) {
+        hw_panic("exit: this core is not running the task that is exiting");
+    }
     hw_spin_lock_named(&g_sched_lock, __func__);
     next = hw_pick_next(cpu);
     if (next < 0) {
@@ -1282,6 +1300,39 @@ void hw_task_exit(uint64_t code) {
         for (;;) {
             __asm__ __volatile__("hlt");
         }
+    }
+    /* The successor already RUNNING is the illegal transition seen one boot
+     * in six (2026-09-11, 2026-10-07), always on an idle task. Re-reading the
+     * core above did not change how often a boot sees it, as far as twelve
+     * boots can say, and exit_migrated stayed zero in all of them - so the
+     * cause is not known. Say who was running it when it happens, in one
+     * line: this core, every core's current and idle task, and the
+     * successor's on_cpu. */
+    if (hw_slot_state(next) == HW_TASK_RUNNING) {
+        uint32_t c;
+
+        vibeos_x86_64_serial_lock();
+        vibeos_x86_64_serial_puts("[SCHED] exit: successor already RUNNING next=0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)next);
+        vibeos_x86_64_serial_puts(" on_cpu=0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)g_tasks[next].on_cpu);
+        vibeos_x86_64_serial_puts(" here=0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)cpu->index);
+        vibeos_x86_64_serial_puts(" dying=0x");
+        vibeos_x86_64_serial_print_hex((uint64_t)(uint32_t)dying);
+        for (c = 0; c < VIBEOS_HW_MAX_CPUS; c++) {
+            if (!g_cpus[c].online) {
+                continue;
+            }
+            vibeos_x86_64_serial_puts(" cpu");
+            vibeos_x86_64_serial_print_hex((uint64_t)c);
+            vibeos_x86_64_serial_puts("_cur=0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)(uint32_t)g_cpus[c].current_task);
+            vibeos_x86_64_serial_puts("_idle=0x");
+            vibeos_x86_64_serial_print_hex((uint64_t)(uint32_t)g_cpus[c].idle_task);
+        }
+        vibeos_x86_64_serial_puts("\n");
+        vibeos_x86_64_serial_unlock();
     }
     if (dying >= 0) {
         g_tasks[dying].on_cpu = 0;
