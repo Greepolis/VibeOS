@@ -286,11 +286,18 @@ static long linux_sys_futex(uint64_t addr, uint64_t op, uint64_t val, uint64_t u
                     vibeos_uaccess_copy(&ts, (const void *)(uintptr_t)utimeout, sizeof(ts)) != 0) {
                     return -VIBEOS_EFAULT;
                 }
-                if (ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= 1000000000) {
-                    return -VIBEOS_EINVAL;
+                /* Through the one conversion that saturates: tv_sec * hz in
+                 * 64 bits wrapped for a huge timeout, which then ended almost
+                 * at once instead of all but never (external review,
+                 * 2026-10-07). */
+                {
+                    int64_t t = linux_ticks_of(&ts);
+
+                    if (t < 0) {
+                        return -VIBEOS_EINVAL;
+                    }
+                    ticks = (uint64_t)t;
                 }
-                ticks = (uint64_t)ts.tv_sec * ks_hz() +
-                        ((uint64_t)ts.tv_nsec * ks_hz() + 999999999u) / 1000000000u;
                 deadline = ks_ticks() + (ticks ? ticks : 1u);
             }
             if ((r = linux_futex_key(addr, op, &kps, &key)) != 0) {

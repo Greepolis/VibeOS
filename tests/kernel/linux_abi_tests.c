@@ -1093,6 +1093,11 @@ static void t_metadata(void) {
     ts[0].tv_nsec = LINUX_UTIME_OMIT; ts[1].tv_nsec = LINUX_UTIME_OMIT;
     expect(SYS4(280, CWD, ustr("/tmp/m"), uts, 0) == 0 && tmp_stat("/tmp/m", 1, &st) == 0 && st.st_mtime == 300u,
            "both omitted changes nothing");
+    ts[0].tv_nsec = LINUX_UTIME_OMIT;
+    ts[1].tv_sec = 0x4000000000000000ll; ts[1].tv_nsec = 0;
+    expect(SYS4(280, CWD, ustr("/tmp/m"), uts, 0) == 0 && tmp_stat("/tmp/m", 1, &st) == 0 &&
+           st.st_mtime == (int64_t)(~0ull / 1000000000ull),
+           "a time past what is stored is held at the last one, not wrapped to an earlier one");
     ts[0].tv_sec = 1; ts[0].tv_nsec = 1000000000;
     expect(SYS4(280, CWD, ustr("/tmp/m"), uts, 0) == -VIBEOS_EINVAL, "a nanosecond field out of range is EINVAL");
     ts[0].tv_sec = 11; ts[0].tv_nsec = 0; ts[1].tv_sec = 12; ts[1].tv_nsec = 0;
@@ -3424,6 +3429,17 @@ static void t_futex_shared(void) {
     ((int64_t *)kf_uptr(ts))[0] = 0;
     ((int64_t *)kf_uptr(ts))[1] = 50000000;   /* 50 ms */
     expect(sys(202, wa + 8u, 128, 5, ts, 0, 0, 0) == -VIBEOS_ETIMEDOUT, "a wait with a timeout nobody ends is ETIMEDOUT");
+    {
+        /* 2^62 seconds times the tick rate wrapped in 64 bits to a deadline
+         * already passed: the wait ended at once (external review). */
+        kf_outcome_t how = KF_RETURNED;
+
+        ((int64_t *)kf_uptr(ts))[0] = 0x4000000000000000ll;
+        ((int64_t *)kf_uptr(ts))[1] = 0;
+        (void)sys(202, wa + 8u, 128, 5, ts, 0, 0, &how);
+        expect(how == KF_BLOCKED, "a timeout of 2^62 seconds waits, and does not wrap to none");
+    }
+    ((int64_t *)kf_uptr(ts))[0] = 0;
     ((int64_t *)kf_uptr(ts))[1] = 1000000000;
     expect(sys(202, wa + 8u, 128, 5, ts, 0, 0, 0) == -VIBEOS_EINVAL, "and a timeout that is not one is EINVAL");
     kf_share_page(-1, 0, 0);

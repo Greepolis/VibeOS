@@ -626,6 +626,16 @@ static long linux_times_walked(const vibeos_path_t *w, const linux_when_t *a, co
     return vibeos_fs_setattr(w->mnt, linux_tail(w), &attr);
 }
 
+/* A time as nanoseconds since 1970, held at the largest this kernel stores
+ * (the year 2554) rather than wrapped: a tv_sec past it multiplied by 10^9 in 64
+ * bits used to land on some other, earlier time (external review, 2026-10-07). */
+static uint64_t linux_ns_of(int64_t sec, uint64_t ns) {
+    if ((uint64_t)sec > (~0ull - ns) / 1000000000ull) {
+        return ~0ull;
+    }
+    return (uint64_t)sec * 1000000000ull + ns;
+}
+
 /* utimensat(dirfd, path, times, flags): both times to the nanosecond, each of
  * which may be "now" or "leave it". No times at all is both now; no path at all
  * is `dirfd` itself, which is how futimens is spelled. */
@@ -660,7 +670,7 @@ static long linux_sys_utimensat(uint64_t dirfd, uint64_t path_uptr, uint64_t tim
                 return -VIBEOS_EINVAL;
             }
             when[i].now = 0;
-            when[i].ns = (uint64_t)ts[i].tv_sec * 1000000000ull + (uint64_t)ts[i].tv_nsec;
+            when[i].ns = linux_ns_of(ts[i].tv_sec, (uint64_t)ts[i].tv_nsec);
         }
     }
     if (path_uptr == 0u) {
@@ -692,7 +702,7 @@ static long linux_utimes_at(uint64_t dirfd, uint64_t path_uptr, uint64_t times_u
                 return -VIBEOS_EINVAL;
             }
             when[i].now = 0;
-            when[i].ns = (uint64_t)tv[i].tv_sec * 1000000000ull + (uint64_t)tv[i].tv_usec * 1000ull;
+            when[i].ns = linux_ns_of(tv[i].tv_sec, (uint64_t)tv[i].tv_usec * 1000ull);
         }
     }
     r = linux_walk_at(dirfd, path_uptr, 0u, &w);
