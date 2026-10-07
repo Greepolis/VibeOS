@@ -75,8 +75,15 @@ for f in $files; do
     fi
 done
 rm -f "$out"
+# Without arguments, a run over a handful of files is a find that stopped
+# matching, not a clean tree (external review, 2026-10-07).
+nfiles=$(echo "$files" | wc -w)
+if [ $# -eq 0 ] && [ "$nfiles" -lt 80 ]; then
+    echo "clang-analyze=FAIL reason=scanned_too_little files=$nfiles floor=80"
+    exit 1
+fi
 if [ "$n" -eq 0 ]; then
-    echo "clang-analyze=ok files=$(echo "$files" | wc -w)"
+    echo "clang-analyze=ok files=$nfiles"
     exit 0
 fi
 echo "clang-analyze=FAIL findings=$n"

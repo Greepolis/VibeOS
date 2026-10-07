@@ -84,6 +84,10 @@ def arch_globals():
     return names
 
 
+MIN_SERVICES = 90
+MIN_FILES = 28
+
+
 def main():
     bad = []
     files = 0
@@ -118,6 +122,12 @@ def main():
         for b in bad:
             print("  " + b)
         print("abi-layering=FAIL problems=%d" % len(bad))
+        return 1
+    # Zero services or zero files would be a check that read nothing and found
+    # nothing wrong with it (external review, 2026-10-07).
+    if len(decl) < MIN_SERVICES or files < MIN_FILES:
+        print("abi-layering=FAIL reason=scanned_too_little services=%d files=%d floor=%d/%d"
+              % (len(decl), files, MIN_SERVICES, MIN_FILES))
         return 1
     print("abi-layering=ok services=%d files=%d" % (len(decl), files))
     return 0

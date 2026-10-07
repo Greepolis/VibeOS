@@ -80,6 +80,10 @@ def structs(text):
     return out
 
 
+MIN_STRUCTS = 35
+MIN_CONSTANTS = 400
+
+
 def main():
     bad = []
     test = strip_comments(read(TEST))
@@ -130,6 +134,12 @@ def main():
         for b in bad:
             print("  " + b)
         print("linux-layout=FAIL problems=%d" % len(bad))
+        return 1
+    # A parser that stopped matching the header would read no structures and
+    # find every one of them compared (external review, 2026-10-07).
+    if len(table) < MIN_STRUCTS or nconsts < MIN_CONSTANTS:
+        print("linux-layout=FAIL reason=scanned_too_little structs=%d constants=%d floor=%d/%d"
+              % (len(table), nconsts, MIN_STRUCTS, MIN_CONSTANTS))
         return 1
     print("linux-layout=ok structs=%d fields=%d constants=%d" % (len(table), nfields, nconsts))
     return 0

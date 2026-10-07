@@ -67,6 +67,9 @@ EXCEPT = {
 }
 
 
+MIN_CASTS = 120
+
+
 def main():
     listing = "--list" in sys.argv
     bad = []
@@ -94,6 +97,14 @@ def main():
         print("  user pointer outside the fault-safe copy: " + b)
     if bad:
         print("user-access=FAIL raw=%d casts=%d" % (len(bad), seen))
+        return 1
+    # A scan that found nothing to judge is not a pass. The scope of this check
+    # has already stopped matching the code once (A3 moved most of its sites
+    # out of the directory it watched); a floor turns the next such move into a
+    # failure instead of a quieter ok (external review, 2026-10-07). Raise it
+    # as the code grows; lower it only as a decision.
+    if seen < MIN_CASTS:
+        print("user-access=FAIL reason=scanned_too_little casts=%d floor=%d" % (seen, MIN_CASTS))
         return 1
     print("user-access=ok casts=%d" % seen)
     return 0
