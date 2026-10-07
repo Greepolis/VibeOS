@@ -893,6 +893,14 @@ static int pf_static_entry(const vibeos_procfs_t *pf, const char *path, uint32_t
     return -1;
 }
 
+/* The `index`th name in a directory, as the file layer asks for them one at a
+ * time. Four kinds of directory, and each counts differently: the root is the
+ * static tree, then "self" and "mounts", then one entry a process, found by
+ * walking the pids from the bottom each time (nothing is cached, so a process
+ * that ends between two calls is simply not listed); a process's directory is
+ * the fixed table g_pid_files; task/ walks its threads and fd/ its open
+ * descriptors the same way. Walking from the start is quadratic in a long
+ * listing and is fine at this machine's thirty-two slots. */
 static int pf_list(void *fs, const char *path, uint32_t index, char *name, uint32_t cap,
                    uint64_t *out_size, int *out_is_dir) {
     const vibeos_procfs_t *pf = (const vibeos_procfs_t *)fs;

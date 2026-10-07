@@ -923,7 +923,7 @@ static long linux_sys_recvmsg(uint64_t fd, uint64_t mh_uptr, uint64_t flags) {
  * after that ends it with the count so far, as Linux does. recvmmsg's timeout is
  * looked at between messages, and MSG_WAITFORONE stops waiting after the first. */
 static long linux_sys_mmsg(uint64_t fd, uint64_t vec, uint64_t vlen, uint64_t flags, uint64_t ts_uptr, int recv) {
-    uint64_t n = vlen > LINUX_UIO_MAXIOV ? LINUX_UIO_MAXIOV : vlen, i;
+    uint64_t n = vlen > LINUX_UIO_MAXIOV ? LINUX_UIO_MAXIOV : vlen, i, done = 0;
     uint64_t deadline = 0;
     long r = 0;
     vibeos_file_t *f = linux_socket_get(fd, &r);
@@ -962,14 +962,14 @@ static long linux_sys_mmsg(uint64_t fd, uint64_t vec, uint64_t vlen, uint64_t fl
             r = -VIBEOS_EFAULT;
             break;
         }
+        done = i + 1u;
         if (deadline != 0u && ks_ticks() >= deadline) {
-            i++;
             break;
         }
     }
     vibeos_file_put(f);
-    if (i != 0u) {
-        return (long)i;
+    if (done != 0u) {
+        return (long)done;
     }
     return r;
 }

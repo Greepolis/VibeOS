@@ -543,6 +543,14 @@ static long ux_epipe(uint32_t flags) {
 static uint8_t g_ux_stage[UX_RING];
 static vibeos_lock_t g_ux_stage_lock;
 
+/* A send, in two shapes. A datagram goes whole or not at all: it waits until
+ * its receiver's ring has room for the frame - length, sender's name, bytes -
+ * and is refused outright if it could never fit. A stream sends what the
+ * peer has room for and returns once anything went, as Linux's short send
+ * does; it waits only for the first byte to fit. Either way the bytes are
+ * staged out of user memory before the table's lock is taken (a copy may
+ * fault, and the lock masks the timer), and rights ride with the first byte
+ * of their message: the reader is handed them when it reaches that byte. */
 static long ux_sendmsg(vibeos_file_t *f, vibeos_msg_t *m) {
     uint64_t total = ux_total(m), sent = 0;
     uint32_t give = m->nrights, i;
@@ -552,6 +560,9 @@ static long ux_sendmsg(vibeos_file_t *f, vibeos_msg_t *m) {
         vibeos_fsmount_t *mnt = 0;
         uint64_t node = 0;
 
+        /* The frame with the longest name a sender can have must fit the
+         * ring, or this message could never be delivered and the wait below
+         * would be for ever. */
         if (total + UX_DGRAM_HDR + VIBEOS_SA_PATH_MAX > UX_RING) {
             return -VIBEOS_EMSGSIZE;
         }
@@ -574,6 +585,9 @@ static long ux_sendmsg(vibeos_file_t *f, vibeos_msg_t *m) {
                 r = -VIBEOS_EBADF;
                 goto dgram_out;
             }
+            /* The receiver: the name given, looked up again on every pass
+             * because the socket bound to it can go while this waits; else
+             * the connected peer. */
             if (m->addr && m->addr->family == VIBEOS_SA_UNIX && m->addr->path_len != 0u) {
                 ti = ux_find(m->addr, mnt, node, -1);
             } else if (u->connected) {
@@ -1079,6 +1093,15 @@ long vibeos_unix_pair(int type, uint32_t flags, vibeos_file_t **a, vibeos_file_t
     ks_lock(&g_ux_lock, __func__);
     ua = ux_of(*a);
     ub = ux_of(*b);
+    if (!ua || !ub) {
+        /* Not reachable while the caller holds both new descriptions, which
+         * it does; asked anyway, as every other caller of ux_of asks. */
+        ks_unlock(&g_ux_lock);
+        vibeos_file_put(*a);
+        vibeos_file_put(*b);
+        *a = *b = 0;
+        return -VIBEOS_EBADF;
+    }
     ua->peer = (*b)->ux;
     ua->peer_gen = ub->gen;
     ub->peer = (*a)->ux;
