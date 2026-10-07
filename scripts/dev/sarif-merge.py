@@ -28,12 +28,23 @@ def relative(uri):
 
 
 def clean(node):
-    """Drop table indexes and make every artifact URI repository-relative."""
+    """Drop table indexes, make every artifact URI repository-relative, and
+    give every region lines code scanning accepts. clang writes a code flow's
+    region with endLine 0 when the step has no extent, and the upload refuses
+    the whole file for it - which is how the first finding in months failed to
+    reach code scanning at all (2026-10-07)."""
     if isinstance(node, dict):
         if "uri" in node and isinstance(node["uri"], str):
             node["uri"] = relative(node["uri"])
             node.pop("index", None)
         node.pop("ruleIndex", None)
+        region = node.get("region")
+        if isinstance(region, dict):
+            start = region.get("startLine")
+            if not isinstance(start, int) or start < 1:
+                region["startLine"] = start = 1
+            if "endLine" in region and (not isinstance(region["endLine"], int) or region["endLine"] < start):
+                region["endLine"] = start
         for v in node.values():
             clean(v)
     elif isinstance(node, list):
@@ -84,7 +95,11 @@ def main():
                     continue
                 results.append(r)
     if merged is None:
-        merged = {"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "clang"}}, "results": []}]}
+        # Nothing was read: the analyzer did not run, or wrote nothing. An
+        # empty run uploaded would read as "no findings" and close every open
+        # alert (external review, 2026-10-07) - so it is a failure instead.
+        print("sarif-merge: no SARIF run in %s - the analyzer wrote nothing; refusing an empty upload" % src)
+        return 1
     merged["runs"][0]["tool"]["driver"]["rules"] = [rules[k] for k in sorted(rules, key=str)]
     merged["runs"][0]["results"] = results
     with open(out, "w", encoding="utf-8", newline="\n") as f:
