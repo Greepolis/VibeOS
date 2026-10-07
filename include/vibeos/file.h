@@ -145,6 +145,9 @@ struct vibeos_file {
     const vibeos_file_ops_t *ops;
     uint32_t flags;               /* VIBEOS_O_*, less O_CLOEXEC               */
     uint64_t pos;                 /* shared by every descriptor naming it     */
+    volatile uint32_t pos_busy;   /* a call is using pos: read, write, seek of
+                                   * a regular file take it in turn, as
+                                   * Linux's f_pos_lock has them             */
     /* pipe end */
     int pipe;
     int pipe_write;

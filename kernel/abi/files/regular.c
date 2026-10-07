@@ -97,10 +97,37 @@ static long regular_pread(vibeos_file_t *f, uint64_t buf, uint64_t len, uint64_t
     return done > 0u ? (long)done : n;
 }
 
+/* The offset is the description's, and every descriptor naming it shares it -
+ * a dup, a fork, every thread of a process. Two reads through it at once each
+ * read at the same offset and each moved it on: the same bytes twice and an
+ * advance lost (external review, 2026-10-07). A call that uses the offset
+ * takes it in turn, as Linux's f_pos_lock makes them. Not a spinlock: the call
+ * holding it does I/O, so a waiter gives up its core and looks again. */
+static void pos_take(vibeos_file_t *f) {
+    for (;;) {
+        uint32_t zero = 0;
+
+        if (__atomic_compare_exchange_n(&f->pos_busy, &zero, 1u, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+            return;
+        }
+        ks_wait_tick();
+    }
+}
+
+static void pos_give(vibeos_file_t *f) {
+    __atomic_store_n(&f->pos_busy, 0u, __ATOMIC_RELEASE);
+}
+
 static long regular_read(vibeos_file_t *f, uint64_t buf, uint64_t len) {
-    long n = regular_pread(f, buf, len, f->pos);
+    long n;
+
+    pos_take(f);
+    n = regular_pread(f, buf, len, f->pos);
     if (n > 0) {
         f->pos += (uint64_t)n;
+    }
+    pos_give(f);
+    if (n > 0) {
         file_notify(f, VIBEOS_FSN_ACCESS);
     }
     return n;
@@ -230,10 +257,14 @@ static long regular_write(vibeos_file_t *f, uint64_t buf, uint64_t len) {
     /* O_APPEND: every write goes to the end as it is now, whoever else has
      * written since - which is what makes two processes appending to one log
      * interleave lines rather than overwrite each other. */
+    pos_take(f);
     at = (f->flags & VIBEOS_O_APPEND) ? regular_size(f) : f->pos;
     w = regular_pwrite_direct(f, buf, len, at);
     if (w > 0) {
         f->pos = at + (uint64_t)w;
+    }
+    pos_give(f);
+    if (w > 0) {
         file_notify(f, VIBEOS_FSN_MODIFY);
     }
     return w;
@@ -241,18 +272,23 @@ static long regular_write(vibeos_file_t *f, uint64_t buf, uint64_t len) {
 
 static long regular_seek(vibeos_file_t *f, int64_t off, int whence) {
     int64_t base;
+    long r;
 
+    pos_take(f);
     switch (whence) {
         case VIBEOS_SEEK_SET: base = 0; break;
         case VIBEOS_SEEK_CUR: base = (int64_t)f->pos; break;
         case VIBEOS_SEEK_END: base = (int64_t)regular_size(f); break;
-        default: return -VIBEOS_EINVAL;
+        default: pos_give(f); return -VIBEOS_EINVAL;
     }
     if ((off > 0 && base > INT64_MAX - off) || base + off < 0) {
+        pos_give(f);
         return -VIBEOS_EINVAL;   /* Linux refuses a negative result */
     }
     f->pos = (uint64_t)(base + off);
-    return (long)f->pos;
+    r = (long)f->pos;
+    pos_give(f);
+    return r;
 }
 
 /* The mode matters more than it looks: a libc decides how to buffer a stream from

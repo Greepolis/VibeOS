@@ -310,6 +310,22 @@ static void t_dup_shares_offset(void) {
     expect(SYS3(8, (uint64_t)b, 0, 1) == 4, "and reports the shared position");
     expect(SYS1(3, (uint64_t)a) == 0 && SYS3(0, (uint64_t)b, buf, 8) == 2,
            "closing one leaves the other open, with the offset");
+    {
+        /* A call using the shared offset takes it in turn: while another holds
+         * it, a read, a write and a seek wait (external review, 2026-10-07). */
+        vibeos_file_t *f = vibeos_fdtable_get(&ks_ps(ks_current())->files, (int)b);
+        kf_outcome_t r1 = KF_RETURNED, r2 = KF_RETURNED;
+
+        expect(f != 0, "the description behind the descriptor");
+        if (f) {
+            f->pos_busy = 1u;
+            (void)sys(0, (uint64_t)b, buf, 1, 0, 0, 0, &r1);
+            (void)sys(8, (uint64_t)b, 0, 0, 0, 0, 0, &r2);
+            f->pos_busy = 0u;
+            expect(r1 == KF_BLOCKED && r2 == KF_BLOCKED && SYS3(8, (uint64_t)b, 0, 0) == 0,
+                   "a read and a seek wait while another call holds the offset, and go when it is given back");
+        }
+    }
 }
 
 /* A program opens two hundred files. The table held four. */
