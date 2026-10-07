@@ -2669,6 +2669,28 @@ static void t_epoll(void) {
         expect(built && SYS4(233, (uint64_t)top, 1, (uint64_t)chain[4], ctlu) == -VIBEOS_ELOOP &&
                SYS4(233, (uint64_t)chain[0], 1, (uint64_t)under, ctlu) == -VIBEOS_ELOOP,
                "a chain of five epolls is built; a sixth, above or below, is ELOOP");
+        {
+            /* The bottom of the chain watches six pipes and only the last has
+             * a byte: readiness has to climb five levels, each asking its
+             * entries a few at a time (EP_READY_LOOK), past five that say no.
+             * Six because the test's descriptors have nearly filled the fake's
+             * table by now (EMFILE at the seventh pipe). */
+            uint64_t pp = kf_ualloc(8);
+            int32_t *q = (int32_t *)kf_uptr(pp);
+            uint32_t k;
+            int ok = 1;
+
+            for (k = 0; k < 6u; k++) {
+                ok &= SYS2(293, pp, 0) == 0;
+                ctl->events = 1;   /* EPOLLIN */
+                ok &= SYS4(233, (uint64_t)chain[0], 1, (uint64_t)q[0], ctlu) == 0;
+            }
+            expect(ok && SYS4(232, (uint64_t)chain[4], evu, 8, 0) == 0,
+                   "six pipes at the bottom of the chain, and nothing ready five levels up");
+            (void)SYS3(1, (uint64_t)q[1], ustr("x"), 1);   /* the sixth pipe's writer */
+            expect(SYS4(232, (uint64_t)chain[4], evu, 8, 0) == 1,
+                   "a byte in the sixth pipe - past the first look's four - makes the top ready");
+        }
         for (i = 0; i < 5u; i++) {
             (void)SYS1(3, (uint64_t)chain[i]);
         }

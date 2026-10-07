@@ -1,0 +1,24 @@
+# ep_ready recurses through nested epolls with a small snapshot (EP_READY_LOOK;
+# external review 2026-10-07, finding 4), proved by t_epoll in
+# tests/kernel/linux_abi_tests.c and by a static assertion.
+#
+#  1. ep_ready looks at its first few entries only. Expect "a byte in the sixth
+#     pipe - past the first look's four - makes the top ready": the small
+#     snapshot has to be walked, not just taken.
+#
+# The stack itself cannot be seen from the host, whose stack is megabytes.
+# What holds it is the _Static_assert beside EP_READY_LOOK: putting it back to
+# EP_LOOK's 64 stops the build, which was checked by hand - sabotage.py scores
+# a case that does not compile as proving nothing, so it is not a case here.
+#
+# Target source: kernel/abi/linux/epoll.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/epoll.c scripts/dev/cases/abi-epoll-stack.txt
+
+### ep_ready looks at its first few entries only
+--- old
+    while (from < EP_MAX && r == 0) {
+        n = ep_snapshot(ep, from, s, EP_READY_LOOK, &from);
++++ new
+    while (from < EP_MAX && r == 0) {
+        n = ep_snapshot(ep, from, s, EP_READY_LOOK, &from);
+        from = EP_MAX;

@@ -67,14 +67,26 @@ typedef struct {
  * Bounded so that a look is a stack array, not an allocation. */
 #define EP_LOOK 64u
 
-/* Take a reference to each armed entry of `ep`, from `from` on, under the lock.
- * A description whose last reference is going is skipped: its entry is about to
- * be removed by the release hook, which is waiting for this lock. */
-static uint32_t ep_snapshot(vibeos_file_t *ep, uint32_t from, linux_ep_snap_t *out, uint32_t *next) {
+/* How many entries ep_ready takes at a time. It is the one that recurses - an
+ * epoll inside an epoll asks its own entries through linux_revents, down to
+ * EP_DEPTH levels - and with EP_LOOK's 2.5 KiB a level, five levels were
+ * twelve kilobytes on an eight-kilobyte kernel stack with no guard page below
+ * it (external review, 2026-10-07). It only answers yes or no, so a few at a
+ * time cost it nothing but turns of the loop. */
+#define EP_READY_LOOK 4u
+_Static_assert(EP_DEPTH * EP_READY_LOOK * sizeof(linux_ep_snap_t) <= 1024u,
+               "ep_ready recurses EP_DEPTH deep: its snapshot must stay small");
+
+/* Take a reference to each armed entry of `ep`, from `from` on, under the lock,
+ * at most `cap` of them. A description whose last reference is going is
+ * skipped: its entry is about to be removed by the release hook, which is
+ * waiting for this lock. */
+static uint32_t ep_snapshot(vibeos_file_t *ep, uint32_t from, linux_ep_snap_t *out, uint32_t cap,
+                            uint32_t *next) {
     uint32_t n = 0, i;
 
     ks_lock(&g_ep_lock, __func__);
-    for (i = from; i < EP_MAX && n < EP_LOOK; i++) {
+    for (i = from; i < EP_MAX && n < cap; i++) {
         linux_ep_entry_t *e = &g_ep[i];
 
         if (e->owner != ep || !e->armed || !vibeos_file_try_get(e->file)) {
@@ -104,11 +116,11 @@ static uint32_t ep_judge(const linux_ep_snap_t *s, uint32_t *now) {
 
 /* An epoll is readable while one of its entries would be reported. */
 static uint32_t ep_ready(vibeos_file_t *ep) {
-    linux_ep_snap_t s[EP_LOOK];
+    linux_ep_snap_t s[EP_READY_LOOK];
     uint32_t from = 0, n, i, now, r = 0;
 
     while (from < EP_MAX && r == 0) {
-        n = ep_snapshot(ep, from, s, &from);
+        n = ep_snapshot(ep, from, s, EP_READY_LOOK, &from);
         for (i = 0; i < n; i++) {
             if (r == 0 && ep_judge(&s[i], &now) != 0) {
                 r = VIBEOS_READY_IN;
@@ -363,7 +375,7 @@ static long ep_look(void *ctx) {
     long fault = 0;
 
     while (from < EP_MAX && got < w->max) {
-        n = ep_snapshot(w->ep, from, s, &from);
+        n = ep_snapshot(w->ep, from, s, EP_LOOK, &from);
         for (i = 0; i < n; i++) {
             uint32_t now = 0, rep = 0;
             int fired = 0, judged = got < w->max;
