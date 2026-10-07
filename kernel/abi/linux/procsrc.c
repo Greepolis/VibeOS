@@ -474,7 +474,42 @@ static uint64_t src_uptime_ms(void) {
     return ks_ticks() * 1000u / ks_hz();
 }
 
+/* May the caller look inside process `pid` - its maps, where its links point?
+ * Linux's ptrace_may_access with the filesystem credentials, as procfs asks
+ * it: the superuser may; anybody else only if their filesystem ids are each of
+ * the target's real, effective and saved ids, for the user and the group. Until
+ * the external review of 2026-10-07 every process could read every other's
+ * maps, working directory and executable. */
+static int src_may_inspect(uint32_t pid) {
+    vibeos_cred_t me;
+    vibeos_cred_t them;
+    vibeos_procstate_t *ps;
+    int s;
+
+    linux_cred(&me);
+    if (me.euid == 0u) {
+        return 0;
+    }
+    ks_lock(ks_sched_lock(), __func__);
+    s = src_owner(pid);
+    ps = s >= 0 ? src_ps_get(s) : 0;
+    ks_unlock(ks_sched_lock());
+    if (!ps) {
+        return -VIBEOS_ESRCH;
+    }
+    ks_lock(&ps->files_lock, __func__);
+    them = ps->cred;
+    ks_unlock(&ps->files_lock);
+    ks_procstate_put(ps);
+    if (them.uid != me.fsuid || them.euid != me.fsuid || them.suid != me.fsuid ||
+        them.gid != me.fsgid || them.egid != me.fsgid || them.sgid != me.fsgid) {
+        return -VIBEOS_EACCES;
+    }
+    return 0;
+}
+
 void linux_procfs_bind(vibeos_procfs_t *pf) {
+    pf->may_inspect = src_may_inspect;
     pf->self = src_self;
     pf->proc = src_proc;
     pf->next_pid = src_next_pid;

@@ -128,6 +128,10 @@ typedef struct {
     int (*next_fd)(uint32_t pid, uint32_t from, uint32_t *fd);
     /* Its `index`th region, in address order: 0, or negative past the last. */
     int (*map)(uint32_t pid, uint32_t index, vibeos_procfs_map_t *out);
+    /* Whether the caller may look inside process `pid` - its maps and where
+     * its links point: 0, or a negated errno (EACCES). Null lets everybody,
+     * which is what a machine with one user and no source of credentials is. */
+    int (*may_inspect)(uint32_t pid);
 } vibeos_procfs_t;
 
 /* The operations, for vibeos_fs_mount. */

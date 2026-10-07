@@ -489,21 +489,22 @@ typedef struct {
     uint32_t mode;
     uint32_t link;            /* VIBEOS_PROCFS_LINK_*, for a link */
     void (*text)(const vibeos_procfs_t *pf, const vibeos_procfs_proc_t *p, pf_out_t *o);
+    uint32_t inspect;         /* 1: only for who may look inside (may_inspect) */
 } pf_pid_entry_t;
 
 static const pf_pid_entry_t g_pid_files[] = {
-    {"cmdline", PF_E_FILE, 0444u, 0, pf_p_cmdline},
-    {"comm", PF_E_FILE, 0644u, 0, pf_p_comm},
-    {"cwd", PF_E_LINK, 0777u, VIBEOS_PROCFS_LINK_CWD, 0},
-    {"exe", PF_E_LINK, 0777u, VIBEOS_PROCFS_LINK_EXE, 0},
-    {"fd", PF_E_DIR, 0500u, 0, 0},
-    {"maps", PF_E_FILE, 0444u, 0, pf_p_maps},
-    {"mounts", PF_E_FILE, 0444u, 0, pf_p_mounts},
-    {"root", PF_E_LINK, 0777u, VIBEOS_PROCFS_LINK_ROOT, 0},
-    {"stat", PF_E_FILE, 0444u, 0, pf_p_stat},
-    {"statm", PF_E_FILE, 0444u, 0, pf_p_statm},
-    {"status", PF_E_FILE, 0444u, 0, pf_p_status},
-    {"task", PF_E_TASKS, 0555u, 0, 0},
+    {"cmdline", PF_E_FILE, 0444u, 0, pf_p_cmdline, 0},
+    {"comm", PF_E_FILE, 0644u, 0, pf_p_comm, 0},
+    {"cwd", PF_E_LINK, 0777u, VIBEOS_PROCFS_LINK_CWD, 0, 1},
+    {"exe", PF_E_LINK, 0777u, VIBEOS_PROCFS_LINK_EXE, 0, 1},
+    {"fd", PF_E_DIR, 0500u, 0, 0, 0},
+    {"maps", PF_E_FILE, 0444u, 0, pf_p_maps, 1},
+    {"mounts", PF_E_FILE, 0444u, 0, pf_p_mounts, 0},
+    {"root", PF_E_LINK, 0777u, VIBEOS_PROCFS_LINK_ROOT, 0, 1},
+    {"stat", PF_E_FILE, 0444u, 0, pf_p_stat, 0},
+    {"statm", PF_E_FILE, 0444u, 0, pf_p_statm, 0},
+    {"status", PF_E_FILE, 0444u, 0, pf_p_status, 0},
+    {"task", PF_E_TASKS, 0555u, 0, 0, 0},
 };
 #define PF_PID_FILES ((uint32_t)(sizeof(g_pid_files) / sizeof(g_pid_files[0])))
 
@@ -790,6 +791,13 @@ static long pf_read_at(void *fs, const vibeos_fs_node_t *node, uint64_t off, voi
         if (w.arg >= PF_PID_FILES || !pf->proc || pf->proc(w.pid, &w.p) != 0) {
             return -VIBEOS_ESRCH;   /* the process ended after the file was opened */
         }
+        if (g_pid_files[w.arg].inspect && pf->may_inspect) {
+            int deny = pf->may_inspect(w.pid);
+
+            if (deny != 0) {
+                return deny;   /* another user's maps: Linux's EACCES */
+            }
+        }
     } else if (w.kind != PF_K_FILE || w.arg >= PF_FILES) {
         return -VIBEOS_EINVAL;
     }
@@ -826,8 +834,14 @@ static long pf_readlink(void *fs, const char *path, char *buf, uint32_t cap) {
             if (g_pid_files[w.arg].type != PF_E_LINK || !pf->link) {
                 return -VIBEOS_EINVAL;
             }
+            if (g_pid_files[w.arg].inspect && pf->may_inspect && (r = pf->may_inspect(w.pid)) != 0) {
+                return r;   /* where another user's process stands, and what it runs */
+            }
             return pf->link(w.pid, g_pid_files[w.arg].link, 0, buf, cap);
         case PF_K_FD:
+            if (pf->may_inspect && (r = pf->may_inspect(w.pid)) != 0) {
+                return r;
+            }
             return pf->link ? pf->link(w.pid, VIBEOS_PROCFS_LINK_FD, w.arg, buf, cap) : -VIBEOS_EINVAL;
         default:
             return -VIBEOS_EINVAL;

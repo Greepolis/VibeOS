@@ -2307,6 +2307,26 @@ static void t_procdev(void) {
         expect(n > 7 && total == n && memcmp(whole, pieces, (size_t)n) == 0,
                "a /proc file read a few bytes at a time is the file read whole");
     }
+    {
+        /* Another user's process is not looked inside: its maps and where
+         * its links point are EACCES, as Linux's ptrace check answers; the
+         * caller's own are not (external review, 2026-10-07). */
+        vibeos_cred_t saved = ks_ps(slot)->cred;
+        vibeos_cred_t *c = &ks_ps(slot)->cred;
+
+        c->uid = c->euid = c->suid = c->fsuid = 1000u;
+        c->gid = c->egid = c->sgid = c->fsgid = 1000u;
+        fd = SYS2(2, ustr("/proc/171/maps"), 0);
+        expect(fd >= 0 && SYS3(0, (uint64_t)fd, b, 64) == -VIBEOS_EACCES &&
+               link_of("/proc/171/cwd", text) == -VIBEOS_EACCES &&
+               link_of("/proc/171/exe", text) == -VIBEOS_EACCES,
+               "another user's maps, cwd and exe are EACCES");
+        (void)SYS1(3, (uint64_t)fd);
+        expect(link_of("/proc/self/exe", text) == 9 && read_whole("/proc/171/status", text, sizeof(text)) > 0,
+               "while its own exe is read, and anyone's status");
+        *c = saved;
+    }
+    (void)other;
 }
 
 /* ---- L4 step 1: poll, ppoll, select and pselect6 on one engine --------------------------- */
