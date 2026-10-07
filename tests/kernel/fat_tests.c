@@ -339,6 +339,19 @@ int test_fat(void) {
     expect(vibeos_fs_unlink(&g_m, "fill") == 0 && free_clusters() == f0 - 1u,
            "unlinking the file gives back every cluster it took - the pad keeps its one");
     expect(wr("more", 0, "x", 1) == 1, "and there is room again");
+    {
+        /* An empty file written past all the room left: the writer takes the
+         * free clusters for a short write, finds the start beyond them, and
+         * says ENOSPC - and used to leave them taken by nothing (external
+         * review, 2026-10-07). Clusters are one sector here. */
+        uint64_t left = free_clusters();
+
+        expect(mk("late") == 0 && left > 0u && left != ~0ull &&
+               wr("late", (left + 3u) * 512u, "y", 1) == -VIBEOS_ENOSPC && free_clusters() == left,
+               "a write that starts past the room left is ENOSPC, and every cluster it took is free again");
+        expect(node("late", &n) == 0 && n.size == 0u, "and the file is as empty as it was");
+        expect(vibeos_fs_unlink(&g_m, "late") == 0, "which goes");
+    }
     /* A name that goes gives back every slot it took - the long-name entries
      * as well as the short one. The root cannot grow, so three hundred names
      * of three slots each, one at a time, only fit if each is wholly returned. */

@@ -55,6 +55,7 @@
     if (off > e->size) {
         r = fat_chain_put(e->cluster, e->size, 0, (uint32_t)(off - e->size));
         if (r != 0) {
+            fat_chain_undo(e, cluster0, have0);
             return r;
         }
     }

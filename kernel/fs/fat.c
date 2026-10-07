@@ -1868,10 +1868,34 @@ static int fat_resize(fat_ent_t *e, uint32_t size) {
     return fat_ent_store(e);
 }
 
+/* Give back what a failed write grew: a chain of `have` clusters again - none,
+ * for a file that had none. A cluster taken and then left neither in a chain
+ * nor free is lost to the volume, and the chain of a file that had clusters
+ * would have been longer than its size (external review, 2026-10-07). */
+static void fat_chain_undo(fat_ent_t *e, uint32_t cluster0, uint32_t have) {
+    if (have == 0u) {
+        if (e->cluster >= 2u && e->cluster != cluster0) {
+            fat_free_chain(e->cluster);
+        }
+        e->cluster = cluster0;
+        return;
+    }
+    {
+        uint32_t last = fat_chain_at(e->cluster, have - 1u);
+        uint32_t rest = fat_get_entry(last);
+
+        if (rest >= 2u && !fat_chain_end(rest) &&
+            fat_set_entry(last, g_fat_cur->is_fat32 ? 0x0FFFFFFFu : 0xFFFFu) == 0) {
+            fat_free_chain(rest);
+        }
+    }
+}
+
 /* Write into a file where it stands. Bytes written, or a negated errno. */
 static long fat_write_at(fat_ent_t *e, uint64_t off, const void *buf, uint32_t len) {
     uint32_t cb = fat_cluster_bytes();
     uint32_t have = (e->cluster >= 2u) ? fat_chain_count(e->cluster) : 0u;
+    const uint32_t have0 = have, cluster0 = e->cluster;
     uint64_t end = off + len;
     uint32_t need;
     int r;
@@ -1897,6 +1921,7 @@ static long fat_write_at(fat_ent_t *e, uint64_t off, const void *buf, uint32_t l
             }
             room = (uint64_t)have * cb;
             if (off >= room) {
+                fat_chain_undo(e, cluster0, have0);
                 return -VIBEOS_ENOSPC;
             }
             len = (uint32_t)(room - off);
@@ -1910,11 +1935,13 @@ static long fat_write_at(fat_ent_t *e, uint64_t off, const void *buf, uint32_t l
     if (off > e->size) {
         r = fat_chain_put(e->cluster, e->size, 0, (uint32_t)(off - e->size));
         if (r != 0) {
+            fat_chain_undo(e, cluster0, have0);
             return r;
         }
     }
     r = fat_chain_put(e->cluster, (uint32_t)off, (const uint8_t *)buf, len);
     if (r != 0) {
+        fat_chain_undo(e, cluster0, have0);
         return r;
     }
     if (end > e->size) {
