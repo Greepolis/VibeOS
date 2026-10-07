@@ -886,6 +886,11 @@ void kf_cpu(uint32_t ticks, int user) {
 void ks_idle(void) {
     g_ticks_v++;
     vibeos_ptimer_tick(g_ticks_v, kf_ptimer_fire);
+    /* The machine's tick pumps the stack (hw_net_pump); loopback packets are
+     * delivered there and nowhere else. */
+    if (g_net_is_up) {
+        vibeos_inet_poll(&g_net_v, g_ticks_v * 10u);
+    }
     if (++g_idles > 5000u) {
         kf_escape(KF_BLOCKED);
     }

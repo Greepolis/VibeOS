@@ -28,6 +28,7 @@
 #define VIBEOS_INET_OOO_SLOTS 4u     /* out-of-order TCP segments held per socket */
 #define VIBEOS_INET_TCP_MSS 1024u
 #define VIBEOS_INET_DNS_PENDING 4u   /* concurrent DNS queries                    */
+#define VIBEOS_INET_LOOP_SLOTS 16u   /* loopback packets waiting for the next poll */
 
 /* How long a closing connection is kept before its slot is reclaimed. Real
  * TIME_WAIT is 2*MSL; a minimal stack on a virtual link uses a short, bounded
@@ -246,6 +247,20 @@ typedef struct vibeos_inet {
     uint64_t secret[2];
 
     uint8_t scratch[VIBEOS_INET_MTU];
+
+    /* Loopback (docs/abi/ L5): a packet for 127.0.0.0/8 or for this machine's
+     * own address never reaches the device. It waits here, whole, and the
+     * next vibeos_inet_poll feeds it to the input path - not at once, because
+     * the sender is in the middle of changing the very socket a reply would be
+     * matched against (connect sends its SYN before it is SYN_SENT's to
+     * answer). A full ring drops, as a wire would, and TCP sends again. */
+    uint32_t loop_head, loop_count;
+    uint64_t loop_frames, loop_dropped;
+    struct {
+        uint16_t len;
+        uint8_t pkt[VIBEOS_INET_MTU];
+    } loop[VIBEOS_INET_LOOP_SLOTS];
+    uint8_t loop_rx[VIBEOS_INET_MTU];
 } vibeos_inet_t;
 
 /* ---- lifecycle ---------------------------------------------------------- */

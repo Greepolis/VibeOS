@@ -361,6 +361,36 @@ static uint32_t next_hop(const vibeos_inet_t *net, uint32_t dst) {
     return (net->gateway != 0u) ? net->gateway : dst;
 }
 
+/* Loopback (docs/abi/ L5): 127.0.0.0/8, and this machine's own address. Every
+ * program that talks to itself over TCP - and LTP's socket tests all do -
+ * connects to one of these, and without this the SYN went to the gateway and
+ * the answer was ECONNREFUSED. */
+static int is_loopback(const vibeos_inet_t *net, uint32_t dst) {
+    return (dst >> 24) == 127u || (net->ip != 0u && dst == net->ip);
+}
+
+/* The address a packet to `dst` leaves from: 127.0.0.1 for the loopback
+ * network, as Linux chooses it, and the interface's otherwise. */
+static uint32_t src_for(const vibeos_inet_t *net, uint32_t dst) {
+    return (dst >> 24) == 127u ? 0x7F000001u : net->ip;
+}
+
+/* A loopback packet waits for the next poll (see vibeos_inet_t's ring). */
+static int loop_queue(vibeos_inet_t *net, const uint8_t *ip, uint32_t len) {
+    uint32_t slot;
+
+    if (net->loop_count >= VIBEOS_INET_LOOP_SLOTS) {
+        net->loop_dropped++;
+        return 0;   /* lost, as on a wire; TCP sends it again */
+    }
+    slot = (net->loop_head + net->loop_count) % VIBEOS_INET_LOOP_SLOTS;
+    bcopy_n(net->loop[slot].pkt, ip, len);
+    net->loop[slot].len = (uint16_t)len;
+    net->loop_count++;
+    net->loop_frames++;
+    return 0;
+}
+
 /* ---- IPv4 output --------------------------------------------------------- */
 
 /* Build an IPv4 packet in the scratch buffer and transmit it. The payload must
@@ -402,6 +432,9 @@ static int ip_send_from(vibeos_inet_t *net, uint32_t src, uint32_t dst, uint8_t 
     wr32(ip + 16, dst);
     wr16(ip + 10, vibeos_inet_checksum(ip, IP_HDR));
 
+    if (is_loopback(net, dst)) {
+        return loop_queue(net, ip, total);
+    }
     if (dst == 0xFFFFFFFFu) {
         mac = g_broadcast_mac;
     } else {
@@ -654,9 +687,10 @@ int vibeos_inet_names(const vibeos_inet_t *net, int sock, uint32_t *lip, uint16_
                                           : (s->state != VIBEOS_TCP_CLOSED && s->state != VIBEOS_TCP_LISTEN &&
                                              s->state != VIBEOS_TCP_SYN_SENT);
     *lport = s->local_port;
-    /* A connected socket is on this machine's address whatever it was bound to. */
-    *lip = (peer || (s->type == VIBEOS_INET_SOCK_TCP && s->state == VIBEOS_TCP_SYN_SENT)) ? net->ip
-                                                                                          : s->local_ip;
+    /* A connected socket is on the address its packets leave from, whatever it
+     * was bound to: 127.0.0.1 for the loopback network. */
+    *lip = (peer || (s->type == VIBEOS_INET_SOCK_TCP && s->state == VIBEOS_TCP_SYN_SENT))
+               ? src_for(net, s->remote_ip) : s->local_ip;
     *rip = peer ? s->remote_ip : 0u;
     *rport = peer ? s->remote_port : 0u;
     return peer;
@@ -754,7 +788,7 @@ static int udp_send_from(vibeos_inet_t *net, uint32_t src, uint32_t dst,
 
 static int udp_send(vibeos_inet_t *net, uint32_t dst, uint16_t sport, uint16_t dport,
                     const uint8_t *data, uint32_t len) {
-    return udp_send_from(net, net->ip, dst, sport, dport, data, len);
+    return udp_send_from(net, src_for(net, dst), dst, sport, dport, data, len);
 }
 
 long vibeos_inet_sendto(vibeos_inet_t *net, int sock, const void *buf, uint32_t len,
@@ -776,6 +810,8 @@ long vibeos_inet_sendto(vibeos_inet_t *net, int sock, const void *buf, uint32_t 
         }
         ip = s->remote_ip;
         port = s->remote_port;
+    } else if (ip == 0u) {
+        ip = 0x7F000001u;   /* as connect: "any" is this machine */
     }
     r = udp_send(net, ip, s->local_port, port, (const uint8_t *)buf, len);
     if (r != 0) {
@@ -1444,8 +1480,8 @@ static int tcp_send_seg(vibeos_inet_t *net, vibeos_inet_socket_t *s, uint8_t fla
     for (i = 0; i < dlen; i++) {
         t[20 + i] = data[i];
     }
-    wr16(t + 16, l4_checksum(net->ip, s->remote_ip, IP_PROTO_TCP, t, 20u + dlen));
-    return ip_send_from(net, net->ip, s->remote_ip, IP_PROTO_TCP,
+    wr16(t + 16, l4_checksum(src_for(net, s->remote_ip), s->remote_ip, IP_PROTO_TCP, t, 20u + dlen));
+    return ip_send_from(net, src_for(net, s->remote_ip), s->remote_ip, IP_PROTO_TCP,
                         s->local_port, s->remote_port, 20u + dlen);
 }
 
@@ -1501,6 +1537,9 @@ int vibeos_inet_connect(vibeos_inet_t *net, int sock, uint32_t ip, uint16_t port
     vibeos_inet_socket_t *s = sock_at(net, sock);
     if (!s) {
         return -VIBEOS_INET_EINVAL;
+    }
+    if (ip == 0u) {
+        ip = 0x7F000001u;   /* Linux: "any" as a destination is this machine */
     }
     if (s->local_port == 0u) {
         if ((s->local_port = ephemeral_free(net, s)) == 0u) {
@@ -1956,6 +1995,22 @@ static void tcp_input(vibeos_inet_t *net, uint32_t src, uint32_t dst,
     s = tcp_lookup(net, src, sport, dport, &idx);
     if (!s) {
         net->rx_dropped++;
+        /* A SYN to a port nobody listens on is answered with a reset, so the
+         * caller hears ECONNREFUSED at once instead of retrying to its
+         * timeout - which on loopback (L5) is the only answer there is. */
+        if ((flags & TCP_SYN) && !(flags & (TCP_RST | TCP_ACK))) {
+            uint8_t *r = net->scratch + ETH_HDR + IP_HDR;
+            uint32_t from = (dst >> 24) == 127u ? dst : net->ip;
+
+            bzero_n(r, 20u);
+            wr16(r + 0, dport);
+            wr16(r + 2, sport);
+            wr32(r + 8, seq + 1u);
+            r[12] = 0x50;
+            r[13] = TCP_RST | TCP_ACK;
+            wr16(r + 16, l4_checksum(from, src, IP_PROTO_TCP, r, 20u));
+            (void)ip_send_from(net, from, src, IP_PROTO_TCP, dport, sport, 20u);
+        }
         return;
     }
     if (flags & TCP_RST) {
@@ -2158,7 +2213,7 @@ static void arp_input(vibeos_inet_t *net, const uint8_t *a, uint32_t len) {
     }
 }
 
-static void ip_input(vibeos_inet_t *net, const uint8_t *ip, uint32_t len) {
+static void ip_input(vibeos_inet_t *net, const uint8_t *ip, uint32_t len, int looped) {
     uint32_t hdr, total, src, dst;
     const uint8_t *payload;
     uint32_t plen;
@@ -2186,7 +2241,13 @@ static void ip_input(vibeos_inet_t *net, const uint8_t *ip, uint32_t len) {
 
     /* Accept our address, broadcast, and anything while we have no lease yet
      * (a DHCP reply is addressed to an IP we do not own yet). */
-    if (net->ip != 0u && dst != net->ip && dst != 0xFFFFFFFFu &&
+    /* The loopback network exists only on this side of the device: a packet
+     * from the wire claiming it is a martian, and is dropped. */
+    if (!looped && ((src >> 24) == 127u || (dst >> 24) == 127u)) {
+        net->rx_dropped++;
+        return;
+    }
+    if (net->ip != 0u && dst != net->ip && dst != 0xFFFFFFFFu && (dst >> 24) != 127u &&
         (net->netmask == 0u || dst != (net->ip | ~net->netmask))) {
         return;
     }
@@ -2233,7 +2294,7 @@ int vibeos_inet_input(vibeos_inet_t *net, const void *frame, uint32_t len) {
         return 0;
     }
     if (type == ETH_TYPE_IP) {
-        ip_input(net, f + ETH_HDR, len - ETH_HDR);
+        ip_input(net, f + ETH_HDR, len - ETH_HDR, 0);
         return 0;
     }
     net->rx_dropped++;
@@ -2249,6 +2310,22 @@ void vibeos_inet_poll(vibeos_inet_t *net, uint64_t now_ms) {
         return;
     }
     net->now_ms = now_ms;
+
+    /* Loopback: what was sent to this machine since the last poll, and what
+     * that provokes, up to a bound - each packet copied out of its slot first,
+     * because the answer it provokes takes a slot of its own. */
+    {
+        uint32_t budget = 4u * VIBEOS_INET_LOOP_SLOTS;
+
+        while (net->loop_count != 0u && budget-- != 0u) {
+            uint32_t len = net->loop[net->loop_head].len;
+
+            bcopy_n(net->loop_rx, net->loop[net->loop_head].pkt, len);
+            net->loop_head = (net->loop_head + 1u) % VIBEOS_INET_LOOP_SLOTS;
+            net->loop_count--;
+            ip_input(net, net->loop_rx, len, 1);
+        }
+    }
 
     if (net->policy) {
         (void)vibeos_net_policy_expire_flows(net->policy, now_ms, 60000ull);
