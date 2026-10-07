@@ -7,6 +7,15 @@
 #     leaves".
 #  3. a datagram's whole length is the part that was copied. Expect "MSG_PEEK
 #     reads and leaves; MSG_TRUNC says the whole length".
+#  4. loopback goes to the device. Expect "connect to it completes the
+#     handshake over loopback" (t_loopback).
+#  5. a SYN to a closed port is dropped without a reset. Expect "a port nobody
+#     listens on answers with a reset: ECONNREFUSED, at once". NOT RED the
+#     first time: the SYN's retries running out also ends as ECONNREFUSED, so
+#     the check asks how long it took now.
+#  6. TIME_WAIT reclaims the slot of a descriptor still open. Expect "the
+#     half-closed client still reads it long after TIME_WAIT" - found by a
+#     parallel boot in which nc -l read nothing and sock_fd_aba was 2.
 #
 # Target source: kernel/net/inet.c
 # Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/net/inet.c scripts/dev/cases/net-l5-inet.txt
@@ -32,3 +41,24 @@
             *full_len = dlen;
 +++ new
             *full_len = copied;
+
+### loopback goes to the device
+--- old
+    if (is_loopback(net, dst)) {
+        return loop_queue(net, ip, total);
+    }
++++ new
+
+### a SYN to a closed port is dropped without a reset
+--- old
+        if ((flags & TCP_SYN) && !(flags & (TCP_RST | TCP_ACK))) {
++++ new
+        if (0) {
+
+### TIME_WAIT reclaims the slot of a descriptor still open
+--- old
+            if (s->closed) {
+                s->close_deadline_ms = net->now_ms + VIBEOS_INET_TIME_WAIT_MS;
+            }
++++ new
+            s->close_deadline_ms = net->now_ms + VIBEOS_INET_TIME_WAIT_MS;

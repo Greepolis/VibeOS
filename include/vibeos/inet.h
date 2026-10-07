@@ -100,6 +100,8 @@ typedef struct vibeos_inet_socket {
     uint8_t fin_sent;
     uint8_t fin_received;
     uint8_t fin_queued;      /* nothing more to send: the FIN follows the data */
+    uint8_t closed;          /* its owner let go (vibeos_inet_close): the slot may
+                              * be reclaimed once the exchange ends, not before */
     uint8_t shut_rd;         /* shutdown(SHUT_RD): reads end once rx is empty  */
     uint8_t bound;           /* a port is this socket's: bind, listen, connect, a send */
     uint8_t reuse;           /* SO_REUSEADDR: another may bind the port unless listening */

@@ -1719,6 +1719,7 @@ int vibeos_inet_close(vibeos_inet_t *net, int sock) {
     if (!s) {
         return -VIBEOS_INET_EINVAL;
     }
+    s->closed = 1;
     /* Shut for writing already: its FIN is queued or out and the exchange
      * finishes on its own. Freed here, the slot would answer the peer's last
      * FIN with a reset. Reclaimed by the deadline instead, as a close's is. */
@@ -2114,7 +2115,11 @@ static void tcp_input(vibeos_inet_t *net, uint32_t src, uint32_t dst,
         case VIBEOS_TCP_LAST_ACK:
             if ((flags & TCP_ACK) && ack == s->snd_nxt) {
                 s->state = VIBEOS_TCP_CLOSED;
-                s->used = 0;
+                /* Freed only if its owner has let go; a shutdown that got here
+                 * is freed by the close still to come (see TIME_WAIT). */
+                if (s->closed) {
+                    s->used = 0;
+                }
                 return;
             }
             break;
@@ -2148,8 +2153,15 @@ static void tcp_input(vibeos_inet_t *net, uint32_t src, uint32_t dst,
         } else if (s->state == VIBEOS_TCP_FIN_WAIT_2 || s->state == VIBEOS_TCP_FIN_WAIT_1) {
             s->state = VIBEOS_TCP_TIME_WAIT;
             /* Nothing else will arrive for this connection: arm reclamation so
-             * the slot cannot be held forever. */
-            s->close_deadline_ms = net->now_ms + VIBEOS_INET_TIME_WAIT_MS;
+             * the slot cannot be held forever - once its owner has closed it.
+             * A shutdown(SHUT_WR) reaches here with the descriptor still open
+             * and the peer's last bytes still unread, and reclaiming it then
+             * lost them under the reader: BusyBox nc -l, slow under three
+             * parallel boots, read nothing and the call counted sock_fd_aba
+             * (L5). vibeos_inet_close arms the deadline for one that is. */
+            if (s->closed) {
+                s->close_deadline_ms = net->now_ms + VIBEOS_INET_TIME_WAIT_MS;
+            }
         }
     }
 
