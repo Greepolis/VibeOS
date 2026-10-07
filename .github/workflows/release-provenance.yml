@@ -36,7 +36,12 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y ninja-build qemu-utils xorriso ovmf
+          # The same set the boot-gated jobs install. Without musl-tools,
+          # busybox-static and mtools the build quietly leaves out the Linux
+          # programs, BusyBox and the FAT image they are tested with, so the
+          # signed image was not the image CI booted (external review,
+          # 2026-10-07). Keep this line equal to filesystem-runtime.yml's.
+          sudo apt-get install -y qemu-system-x86 qemu-utils ninja-build build-essential clang ovmf xorriso musl-tools busybox-static ntfs-3g exfatprogs mtools
 
       - name: Build the kernel image
         run: |
