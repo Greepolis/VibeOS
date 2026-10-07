@@ -123,10 +123,9 @@
 
 ### mremap leaves the old range described
 --- old
-        linux_unmap_range(me, ps, old, old + old_len);
-        (void)vibeos_vma_insert(&ps->vmas, base, new_len, region_prot, kind, 0, 0);
+            if (linux_unmap_range(me, ps, old, old + old_len) == 0) {
 +++ new
-        (void)vibeos_vma_insert(&ps->vmas, base, new_len, region_prot, kind, 0, 0);
+            if (1) {
 
 ### mremap takes a range across two mappings
 --- old

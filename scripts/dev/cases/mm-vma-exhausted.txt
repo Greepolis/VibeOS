@@ -1,0 +1,40 @@
+# An address space whose region descriptors run out stays described (external
+# review 2026-10-07): mmap and munmap answer ENOMEM and change nothing, proved
+# by t_memory_calls in tests/kernel/linux_abi_tests.c, which empties the pool
+# with a list of its own.
+#
+#  1. mmap ignores a region that could not be recorded. Expect "with no region
+#     descriptor left, mmap is ENOMEM and maps nothing".
+#  2. munmap unmaps whatever the region list said. Expect "and munmap of a
+#     region's middle is ENOMEM and unmaps nothing".
+#  3. the region list says 0 for a split it could not make. Expect the same.
+#
+# The brk, mremap and exec sites follow the same rule and have no case of
+# their own; the pool is shared, so the two above stand for them.
+#
+# Cases 1 and 2 are in mm.c, case 3 in vma.c; run the file against each.
+# Target source: kernel/abi/linux/mm.c, kernel/mm/vma.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py <one of them> scripts/dev/cases/mm-vma-exhausted.txt
+
+### mmap ignores a region that could not be recorded
+--- old
+                          0, 0) != 0) {
+        r = -VIBEOS_ENOMEM;
+    }
++++ new
+                          0, 0) != 0) {
+    }
+
+### munmap unmaps whatever the region list said
+--- old
+    if (vibeos_vma_remove(&ps->vmas, addr, end - addr) == VIBEOS_VMA_REFUSED) {
+        return -VIBEOS_ENOMEM;
+    }
++++ new
+    (void)vibeos_vma_remove(&ps->vmas, addr, end - addr);
+
+### the region list says 0 for a split it could not make
+--- old
+                return VIBEOS_VMA_REFUSED;
++++ new
+                return removed;

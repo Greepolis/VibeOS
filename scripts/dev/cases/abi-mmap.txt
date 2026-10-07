@@ -37,7 +37,9 @@
 ### MAP_FIXED leaves what was there
 --- old
         } else {
-            linux_unmap_range(me, ps, addr, addr + bytes);
+            if ((r = linux_unmap_range(me, ps, addr, addr + bytes)) != 0) {
+                return r;
+            }
         }
 +++ new
         }

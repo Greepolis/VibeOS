@@ -505,11 +505,15 @@ int hw_proc_create(hw_proc_t *p, hw_procstate_t *ps,
      * two megabytes of which four pages exist yet. The page fault asks this
      * region whether an untouched address below is the stack's to take
      * (hw_stack_grow). */
-    (void)vibeos_vma_insert(&ps->vmas, VIBEOS_HW_USER_STACK_FLOOR,
-                            VIBEOS_HW_USER_STACK_TOP - VIBEOS_HW_USER_STACK_FLOOR,
-                            (vibeos_prot_t)(VIBEOS_PROT_READ | VIBEOS_PROT_WRITE |
-                                            VIBEOS_PROT_USER),
-                            VIBEOS_BACKING_ANON, 0, 0);
+    if (vibeos_vma_insert(&ps->vmas, VIBEOS_HW_USER_STACK_FLOOR,
+                          VIBEOS_HW_USER_STACK_TOP - VIBEOS_HW_USER_STACK_FLOOR,
+                          (vibeos_prot_t)(VIBEOS_PROT_READ | VIBEOS_PROT_WRITE |
+                                          VIBEOS_PROT_USER),
+                          VIBEOS_BACKING_ANON, 0, 0) != 0) {
+        /* No region, no stack that grows - and munmap, mprotect and fork
+         * decide by regions (external review, 2026-10-07). */
+        { rc = hw_exec_refuse(VIBEOS_EXEC_NO_MEMORY, path, "stack_region"); goto fail; }
+    }
 
     /* Fill the topmost stack page with the startup block. The page is still
      * identity-mapped for the kernel, so it is written here through its

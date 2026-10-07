@@ -14,9 +14,9 @@
 
 ### mmap does not set the ceiling
 --- old
-                                ? (vibeos_prot_t)(access | VIBEOS_PROT_NOWRITE) : access,
+                              ? (vibeos_prot_t)(access | VIBEOS_PROT_NOWRITE) : access,
 +++ new
-                                ? access : access,
+                              ? access : access,
 
 ### mprotect does not ask for it
 --- old

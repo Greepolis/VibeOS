@@ -72,12 +72,24 @@ static long linux_sys_brk_locked(int me, vibeos_procstate_t *ps, uint64_t addr) 
         if (ks_map_user_pages(me, ps->brk_cur, pages) != 0) {
             return -VIBEOS_ENOMEM;
         }
-        (void)vibeos_vma_insert(&ps->vmas, ps->brk_cur,
-                                new_brk - ps->brk_cur,
-                                (vibeos_prot_t)(VIBEOS_PROT_READ |
-                                                VIBEOS_PROT_WRITE |
-                                                VIBEOS_PROT_USER),
-                                VIBEOS_BACKING_ANON, 0, 0);
+        /* No region recorded, no growth: the pages go again and the break
+         * stays where it was, as Linux answers a brk it cannot honour - not
+         * pages mapped that no region describes (external review, 2026-10-07). */
+        if (vibeos_vma_insert(&ps->vmas, ps->brk_cur,
+                              new_brk - ps->brk_cur,
+                              (vibeos_prot_t)(VIBEOS_PROT_READ |
+                                              VIBEOS_PROT_WRITE |
+                                              VIBEOS_PROT_USER),
+                              VIBEOS_BACKING_ANON, 0, 0) != 0) {
+            vibeos_vmspace_t v = ks_vm(me);
+            uint64_t va;
+
+            for (va = ps->brk_cur; va < new_brk; va += 4096ull) {
+                (void)vibeos_vmspace_unmap(&v, va);
+            }
+            ks_tlb_drain();
+            return (long)ps->brk_cur;
+        }
     } else if (new_brk < ps->brk_cur) {
         /* Shrinking used to remove the region and stop there.
          *
@@ -95,7 +107,9 @@ static long linux_sys_brk_locked(int me, vibeos_procstate_t *ps, uint64_t addr) 
         uint64_t va;
         vibeos_vmspace_t v = ks_vm(me);
 
-        (void)vibeos_vma_remove(&ps->vmas, new_brk, ps->brk_cur - new_brk);
+        if (vibeos_vma_remove(&ps->vmas, new_brk, ps->brk_cur - new_brk) == VIBEOS_VMA_REFUSED) {
+            return (long)ps->brk_cur;   /* nothing changed: see linux_unmap_range */
+        }
         for (va = new_brk; va < ps->brk_cur; va += 4096ull) {
             (void)vibeos_vmspace_unmap(&v, va);
         }
@@ -150,11 +164,17 @@ static vibeos_prot_t linux_prot_of(uint64_t prot) {
  * nothing is described after it has stopped existing, then the pages. munmap's
  * body, and what a mapping at a fixed address does to whatever was there. Under
  * the mm lock. */
-static void linux_unmap_range(int me, vibeos_procstate_t *ps, uint64_t addr, uint64_t end) {
+static long linux_unmap_range(int me, vibeos_procstate_t *ps, uint64_t addr, uint64_t end) {
     vibeos_vmspace_t v = ks_vm(me);
     uint64_t va;
 
-    (void)vibeos_vma_remove(&ps->vmas, addr, end - addr);
+    /* The middle of a region needs a descriptor to split it with, and the
+     * pool can be empty: then nothing is unmapped and the caller says ENOMEM,
+     * as Linux does past its map count. Unmapping anyway left the pages gone
+     * and a region still describing them. */
+    if (vibeos_vma_remove(&ps->vmas, addr, end - addr) == VIBEOS_VMA_REFUSED) {
+        return -VIBEOS_ENOMEM;
+    }
     for (va = addr; va < end; va += 4096ull) {
         /* One call, and it is the last page-table write that lived outside
          * kernel/mm/vmspace.c.
@@ -202,6 +222,7 @@ static void linux_unmap_range(int me, vibeos_procstate_t *ps, uint64_t addr, uin
      * Drained here as well as on the timer so a machine doing nothing but
      * unmapping still gives frames back. */
     ks_tlb_drain();
+    return 0;
 }
 
 /* mmap(addr, len, prot, flags, fd, offset).
@@ -275,7 +296,9 @@ static long linux_mmap_locked(int me, vibeos_procstate_t *ps, uint64_t addr, uin
                 return -VIBEOS_EEXIST;
             }
         } else {
-            linux_unmap_range(me, ps, addr, addr + bytes);
+            if ((r = linux_unmap_range(me, ps, addr, addr + bytes)) != 0) {
+                return r;
+            }
         }
         base = addr;
     } else {
@@ -324,6 +347,30 @@ static long linux_mmap_locked(int me, vibeos_procstate_t *ps, uint64_t addr, uin
             break;
         }
     }
+    /* The region says what the mapping is, so that what comes after can ask:
+     * anonymous memory of the process's own, a file's bytes in pages of its
+     * own, or memory it shares - anonymous or a file's. The stack does not
+     * grow into anything but the first, madvise discards only the first, and
+     * mremap grows only the first. Its protection is the access alone -
+     * "shared" is not something mprotect changes.
+     *
+     * A shared mapping of a file the descriptor may not write is never
+     * writable: its stores would be the file's. mmap refuses PROT_WRITE for it
+     * above; the region carries the ceiling so mprotect refuses it too.
+     *
+     * And a region that could not be recorded - the pool of them is finite -
+     * is a failed mmap, rolled back like any other. Its result was thrown
+     * away, and pages stayed mapped that no region described, which munmap,
+     * mprotect and fork all decide by (external review, 2026-10-07). */
+    if (r == 0 &&
+        vibeos_vma_insert(&ps->vmas, base, bytes,
+                          (shared && f && (f->flags & VIBEOS_O_ACCMODE) != VIBEOS_O_RDWR)
+                              ? (vibeos_prot_t)(access | VIBEOS_PROT_NOWRITE) : access,
+                          shared ? VIBEOS_BACKING_SHARED
+                                 : f ? VIBEOS_BACKING_FILE : VIBEOS_BACKING_ANON,
+                          0, 0) != 0) {
+        r = -VIBEOS_ENOMEM;
+    }
     if (r != 0) {
         /* Roll back what was mapped. Two leaks lived here, and in the
          * ordinary-malloc path there was no rollback at all (M-002's fix went
@@ -338,21 +385,6 @@ static long linux_mmap_locked(int me, vibeos_procstate_t *ps, uint64_t addr, uin
         ks_tlb_drain();
         return r;
     }
-    /* The region says what the mapping is, so that what comes after can ask:
-     * anonymous memory of the process's own, a file's bytes in pages of its
-     * own, or memory it shares - anonymous or a file's. The stack does not
-     * grow into anything but the first, madvise discards only the first, and
-     * mremap grows only the first. Its protection is the access alone -
-     * "shared" is not something mprotect changes. */
-    /* A shared mapping of a file the descriptor may not write is never
-     * writable: its stores would be the file's. mmap refuses PROT_WRITE for it
-     * above; the region carries the ceiling so mprotect refuses it too. */
-    (void)vibeos_vma_insert(&ps->vmas, base, bytes,
-                            (shared && f && (f->flags & VIBEOS_O_ACCMODE) != VIBEOS_O_RDWR)
-                                ? (vibeos_prot_t)(access | VIBEOS_PROT_NOWRITE) : access,
-                            shared ? VIBEOS_BACKING_SHARED
-                                   : f ? VIBEOS_BACKING_FILE : VIBEOS_BACKING_ANON,
-                            0, 0);
     if (f && !shared && want != fill) {
         for (i = 0; i < pages; i++) {
             (void)vibeos_vmspace_protect(&v, base + i * 4096ull, want);
@@ -792,7 +824,11 @@ static long linux_mremap_locked(int me, vibeos_procstate_t *ps, uint64_t old, ui
     if (!(flags & LINUX_MREMAP_FIXED)) {
         if (new_len <= old_len) {
             if (new_len < old_len) {
-                linux_unmap_range(me, ps, old + new_len, old + old_len);
+                long u = linux_unmap_range(me, ps, old + new_len, old + old_len);
+
+                if (u != 0) {
+                    return u;
+                }
             }
             return (long)old;
         }
@@ -804,15 +840,20 @@ static long linux_mremap_locked(int me, vibeos_procstate_t *ps, uint64_t old, ui
             !linux_region_in(ps, old + old_len, new_len - old_len)) {
             for (i = old_len; i < new_len; i += 4096ull) {
                 if (ks_map_anon(me, old + i, prot) != 0) {
-                    for (; i > old_len; i -= 4096ull) {
-                        (void)vibeos_vmspace_unmap(&v, old + i - 4096ull);
-                    }
-                    ks_tlb_drain();
-                    return -VIBEOS_ENOMEM;
+                    break;
                 }
             }
-            (void)vibeos_vma_insert(&ps->vmas, old + old_len, new_len - old_len, reg->prot, kind, 0, 0);
-            return (long)old;
+            /* The growth described, or the growth undone: an unrecorded
+             * region is a failed mremap like an unmapped page is. */
+            if (i == new_len &&
+                vibeos_vma_insert(&ps->vmas, old + old_len, new_len - old_len, reg->prot, kind, 0, 0) == 0) {
+                return (long)old;
+            }
+            for (; i > old_len; i -= 4096ull) {
+                (void)vibeos_vmspace_unmap(&v, old + i - 4096ull);
+            }
+            ks_tlb_drain();
+            return -VIBEOS_ENOMEM;
         }
         if (!(flags & LINUX_MREMAP_MAYMOVE)) {
             return -VIBEOS_ENOMEM;
@@ -832,7 +873,13 @@ static long linux_mremap_locked(int me, vibeos_procstate_t *ps, uint64_t old, ui
         if (new_len > old_len && kind != VIBEOS_BACKING_ANON) {
             return -VIBEOS_ENOMEM;
         }
-        linux_unmap_range(me, ps, new_addr, new_addr + new_len);
+        {
+            long u = linux_unmap_range(me, ps, new_addr, new_addr + new_len);
+
+            if (u != 0) {
+                return u;
+            }
+        }
         base = new_addr;
     }
     /* Move what is kept, then make what is new. A failure puts every page
@@ -849,25 +896,30 @@ static long linux_mremap_locked(int me, vibeos_procstate_t *ps, uint64_t old, ui
             break;
         }
     }
-    if (moved < keep || i < new_len) {
-        for (i = keep; i < new_len; i += 4096ull) {
-            (void)vibeos_vmspace_unmap(&v, base + i);
-        }
-        for (; moved > 0u; moved -= 4096ull) {
-            (void)vibeos_vmspace_move(&v, base + moved - 4096ull, old + moved - 4096ull);
-        }
-        ks_tlb_drain();
-        return -VIBEOS_ENOMEM;
-    }
-    /* The regions follow the pages: the old range stops being described, with
-     * whatever of it was not kept unmapped, and the new one is. */
-    {
+    /* The regions follow the pages: the new range is described, then the old
+     * one stops being, with whatever of it was not kept unmapped. Either can
+     * fail on an empty pool of descriptors, and both results used to be
+     * thrown away - pages with no region, or a region over pages that had
+     * moved (external review, 2026-10-07). A failure of either puts the pages
+     * back and says ENOMEM. */
+    if (moved == keep && i == new_len) {
         const vibeos_prot_t region_prot = reg->prot;
 
-        linux_unmap_range(me, ps, old, old + old_len);
-        (void)vibeos_vma_insert(&ps->vmas, base, new_len, region_prot, kind, 0, 0);
+        if (vibeos_vma_insert(&ps->vmas, base, new_len, region_prot, kind, 0, 0) == 0) {
+            if (linux_unmap_range(me, ps, old, old + old_len) == 0) {
+                return (long)base;
+            }
+            (void)vibeos_vma_remove(&ps->vmas, base, new_len);
+        }
     }
-    return (long)base;
+    for (i = keep; i < new_len; i += 4096ull) {
+        (void)vibeos_vmspace_unmap(&v, base + i);
+    }
+    for (; moved > 0u; moved -= 4096ull) {
+        (void)vibeos_vmspace_move(&v, base + moved - 4096ull, old + moved - 4096ull);
+    }
+    ks_tlb_drain();
+    return -VIBEOS_ENOMEM;
 }
 
 static long linux_sys_mremap(uint64_t old, uint64_t old_len, uint64_t new_len, uint64_t flags,
@@ -1030,9 +1082,12 @@ static long linux_sys_munmap(uint64_t addr, uint64_t len) {
      * currently does, and asking *them* what to release is what let munmap free
      * frames that belonged to somebody else. */
     ks_mm_lock(ks_ps(me));
-    linux_unmap_range(me, ks_ps(me), addr, end);
-    ks_mm_unlock(ks_ps(me));
-    return 0;
+    {
+        long r = linux_unmap_range(me, ks_ps(me), addr, end);
+
+        ks_mm_unlock(ks_ps(me));
+        return r;
+    }
 }
 
 /* Describe the page backing one address of the caller's own address space.

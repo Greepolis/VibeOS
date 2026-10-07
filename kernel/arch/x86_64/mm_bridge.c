@@ -1856,11 +1856,14 @@ int hw_map_elf_image(vibeos_hw_aspace_t *as, vibeos_vma_list_t *vmas,
                 if (rc != 0) {
                     return -1;
                 }
-                if (vmas) {
-                    (void)vibeos_vma_insert(vmas, va, 4096ull,
-                                            (vibeos_prot_t)(VIBEOS_PROT_READ |
-                                                            VIBEOS_PROT_USER),
-                                            VIBEOS_BACKING_FILE, file_id, foff);
+                /* A page no region describes is refused as an exec that ran
+                 * out of memory: the caller takes the image down (external
+                 * review, 2026-10-07). */
+                if (vmas && vibeos_vma_insert(vmas, va, 4096ull,
+                                              (vibeos_prot_t)(VIBEOS_PROT_READ |
+                                                              VIBEOS_PROT_USER),
+                                              VIBEOS_BACKING_FILE, file_id, foff) != 0) {
+                    return -1;
                 }
                 vibeos_exec_stats()->pages_from_cache++;
                 continue;
@@ -1916,8 +1919,9 @@ int hw_map_elf_image(vibeos_hw_aspace_t *as, vibeos_vma_list_t *vmas,
             if (flags & VIBEOS_ELF_W) {
                 rp = (vibeos_prot_t)(rp | VIBEOS_PROT_WRITE);
             }
-            (void)vibeos_vma_insert(vmas, va, 4096ull, rp,
-                                    VIBEOS_BACKING_ANON, 0, 0);
+            if (vibeos_vma_insert(vmas, va, 4096ull, rp, VIBEOS_BACKING_ANON, 0, 0) != 0) {
+                return -1;   /* as above */
+            }
         }
     }
     return 0;

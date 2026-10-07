@@ -4965,6 +4965,34 @@ static void t_memory_calls(void) {
         expect(SYS3(10, pv, 4096, 3) == 0, "and makes the private one writable: its stores stay in the process");
         (void)SYS1(3, (uint64_t)ro);
     }
+
+    /* The pool of region descriptors runs out: mmap and munmap say ENOMEM and
+     * leave the address space as it was, where they used to map pages no
+     * region described or unmap pages a region went on describing (external
+     * review, 2026-10-07). The pool is emptied by a list of this test's own,
+     * one page every other page so nothing merges. */
+    {
+        static vibeos_vma_list_t hog;
+        vibeos_vmspace_t vs;
+        uint64_t three = (uint64_t)MMAP(0x31000000ull, 3u * 4096u, 3, 0x22 | 0x10 /* MAP_FIXED */, -1, 0), a;
+        int full = 0;
+
+        memset(&hog, 0, sizeof(hog));
+        for (a = 0x100000000ull; !full; a += 8192u) {
+            full = vibeos_vma_insert(&hog, a, 4096u, VIBEOS_PROT_READ, VIBEOS_BACKING_ANON, 0, 0) != 0;
+        }
+        vs = ks_vm(ks_current());
+        expect(three == 0x31000000ull &&
+               MMAP(0x30000000ull, 4096u, 1, 0x22 | 0x10, -1, 0) == -VIBEOS_ENOMEM &&
+               !vibeos_vmspace_mapped(&vs, 0x30000000ull),
+               "with no region descriptor left, mmap is ENOMEM and maps nothing");
+        expect(SYS2(11, three + 4096u, 4096) == -VIBEOS_ENOMEM && vibeos_vmspace_mapped(&vs, three + 4096u),
+               "and munmap of a region's middle is ENOMEM and unmaps nothing");
+        vibeos_vma_clear(&hog);
+        expect(SYS2(11, three + 4096u, 4096) == 0 && !vibeos_vmspace_mapped(&vs, three + 4096u),
+               "with descriptors again, the same munmap goes through");
+        (void)SYS2(11, three, 3u * 4096u);
+    }
     expect(kf_lock_imbalance() == 0, "the memory calls released every lock they took");
 }
 

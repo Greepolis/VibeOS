@@ -87,8 +87,13 @@ vibeos_vma_t *vibeos_vma_find(vibeos_vma_list_t *list, uint64_t va);
  * The partial case is the one that matters and the one a page-table walk got
  * wrong: unmapping the middle of a region leaves two, and unmapping the front
  * or back leaves one with different bounds. Returns the number of bytes
- * actually removed, which is not `len` when the range has holes.
+ * actually removed, which is not `len` when the range has holes - or
+ * VIBEOS_VMA_REFUSED, with nothing changed, when the middle of a region was
+ * asked for and no descriptor was left to split it with. That used to answer
+ * 0, the same as "nothing there", and the caller unmapped the pages of a
+ * region that went on describing them (external review, 2026-10-07).
  */
+#define VIBEOS_VMA_REFUSED (~0ull)
 uint64_t vibeos_vma_remove(vibeos_vma_list_t *list, uint64_t base, uint64_t len);
 
 /* Change the protection of [base, base+len), splitting as needed. Returns 0, or

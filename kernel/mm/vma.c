@@ -277,7 +277,11 @@ uint64_t vibeos_vma_remove_locked(vibeos_vma_list_t *list, uint64_t base, uint64
         if (cur->base < base && cur_end > end) {
             vibeos_vma_t *hi = vma_split(list, cur, end);
             if (!hi) {
-                return removed;   /* out of descriptors; stop, do not corrupt */
+                /* Out of descriptors. Nothing has been changed - a region
+                 * containing the range on both sides is the only one the
+                 * range touches - so say so, rather than "0 bytes", which
+                 * reads as a range nothing described. */
+                return VIBEOS_VMA_REFUSED;
             }
             cur->len = base - cur->base;
             removed += len;
