@@ -344,7 +344,12 @@ static long linux_mmap_locked(int me, vibeos_procstate_t *ps, uint64_t addr, uin
      * grow into anything but the first, madvise discards only the first, and
      * mremap grows only the first. Its protection is the access alone -
      * "shared" is not something mprotect changes. */
-    (void)vibeos_vma_insert(&ps->vmas, base, bytes, access,
+    /* A shared mapping of a file the descriptor may not write is never
+     * writable: its stores would be the file's. mmap refuses PROT_WRITE for it
+     * above; the region carries the ceiling so mprotect refuses it too. */
+    (void)vibeos_vma_insert(&ps->vmas, base, bytes,
+                            (shared && f && (f->flags & VIBEOS_O_ACCMODE) != VIBEOS_O_RDWR)
+                                ? (vibeos_prot_t)(access | VIBEOS_PROT_NOWRITE) : access,
                             shared ? VIBEOS_BACKING_SHARED
                                    : f ? VIBEOS_BACKING_FILE : VIBEOS_BACKING_ANON,
                             0, 0);
@@ -943,6 +948,24 @@ static long linux_sys_mprotect(uint64_t addr, uint64_t len, uint64_t prot) {
                        "mprotect refused: page not mapped");
                 rc = -VIBEOS_EFAULT;
                 break;
+            }
+        }
+
+        /* Write to a region that may never be writable - a shared mapping of
+         * a file opened read-only - is EACCES, as Linux says it, before
+         * anything changes. */
+        if (rc == 0 && (prot & LINUX_PROT_WRITE)) {
+            for (va = addr; va < end;) {
+                const vibeos_vma_t *reg = vibeos_vma_find(&ks_ps(me)->vmas, va);
+
+                if (!reg) {
+                    break;   /* a hole: the list refuses the call below */
+                }
+                if (reg->prot & VIBEOS_PROT_NOWRITE) {
+                    rc = -VIBEOS_EACCES;
+                    break;
+                }
+                va = reg->base + reg->len;
             }
         }
 

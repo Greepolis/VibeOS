@@ -4921,6 +4921,28 @@ static void t_memory_calls(void) {
     expect(SYS2(319, ustr("x"), 4) == -VIBEOS_EINVAL && SYS2(319, name, 0) == -VIBEOS_EINVAL &&
            SYS2(319, 0x7000000000ull, 0) == -VIBEOS_EFAULT && SYS2(319, ustr(""), 2 /* ALLOW_SEALING */) >= 0,
            "memfd_create refuses an unknown flag, a name too long and a name that is nobody's");
+
+    /* A shared mapping of a file opened read-only stays read-only: mmap refuses
+     * PROT_WRITE for it, and mprotect must too, or the process writes a file it
+     * could only read (external review, 2026-10-07). A private one may. */
+    {
+        long w = SYS3(2, ustr("/tmp/ro"), 0x42 /* O_CREAT|O_RDWR */, 0644), ro;
+        uint64_t sh, pv;
+
+        expect(w >= 0 && SYS2(77, (uint64_t)w, 8192) == 0 && SYS1(3, (uint64_t)w) == 0 &&
+               (ro = SYS2(2, ustr("/tmp/ro"), 0 /* O_RDONLY */)) >= 0, "a file, opened read-only");
+        sh = (uint64_t)MMAP(0, 8192, 1 /* PROT_READ */, MAP_SH, ro, 0);
+        pv = (uint64_t)MMAP(0, 4096, 1, 2 /* MAP_PRIVATE */, ro, 0);
+        expect((long)sh > 0 && (long)pv > 0 && MMAP(0, 4096, 3, MAP_SH, ro, 0) == -VIBEOS_EACCES,
+               "mapped shared and private; shared and writable is refused");
+        expect(SYS3(10, sh, 8192, 3 /* PROT_READ|PROT_WRITE */) == -VIBEOS_EACCES &&
+               SYS3(10, sh + 4096u, 4096, 3) == -VIBEOS_EACCES &&
+               SYS3(10, sh, 4096, 0 /* PROT_NONE */) == 0 && SYS3(10, sh, 4096, 3) == -VIBEOS_EACCES &&
+               SYS3(10, sh, 4096, 1) == 0,
+               "mprotect will not make the shared one writable, whole or in part, before or after a change");
+        expect(SYS3(10, pv, 4096, 3) == 0, "and makes the private one writable: its stores stay in the process");
+        (void)SYS1(3, (uint64_t)ro);
+    }
     expect(kf_lock_imbalance() == 0, "the memory calls released every lock they took");
 }
 

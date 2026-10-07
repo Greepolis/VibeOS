@@ -311,6 +311,7 @@ uint64_t vibeos_vma_remove_locked(vibeos_vma_list_t *list, uint64_t base, uint64
 int vibeos_vma_protect_locked(vibeos_vma_list_t *list, uint64_t base, uint64_t len,
                        vibeos_prot_t prot) {
     vibeos_vma_t *prev = 0, *cur;
+    vibeos_prot_t want;
     uint64_t end, covered = 0;
 
     if (!list || len == 0u) {
@@ -347,7 +348,10 @@ int vibeos_vma_protect_locked(vibeos_vma_list_t *list, uint64_t base, uint64_t l
             cur = cur->next;
             continue;
         }
-        if (cur->prot == prot) {
+        /* The ceiling stays: what may never be writable is not made so by
+         * changing what it is now (VIBEOS_PROT_NOWRITE). */
+        want = (vibeos_prot_t)(prot | (cur->prot & VIBEOS_PROT_NOWRITE));
+        if (cur->prot == want) {
             prev = cur;
             cur = cur->next;
             continue;
@@ -365,7 +369,7 @@ int vibeos_vma_protect_locked(vibeos_vma_list_t *list, uint64_t base, uint64_t l
                 return -1;
             }
         }
-        cur->prot = prot;
+        cur->prot = want;
         {
             vibeos_vma_t *next = cur->next;
             vma_try_merge(list, prev, cur);

@@ -196,7 +196,10 @@ vibeos_vmspace_t ks_vm(int slot) { return hw_vm(&g_tasks[slot].proc.as); }
 static uint64_t ks_leaf_of(vibeos_prot_t prot) {
     uint64_t leaf = PTE_PRESENT;
 
-    if ((prot & ~VIBEOS_PROT_SHARED) != VIBEOS_PROT_NONE) {
+    /* The two marks that are not access rights say nothing about whether the
+     * page is reachable: a PROT_NONE region with the NOWRITE ceiling is still
+     * a guard. */
+    if ((prot & ~(VIBEOS_PROT_SHARED | VIBEOS_PROT_NOWRITE)) != VIBEOS_PROT_NONE) {
         leaf |= PTE_USER;
         if (prot & VIBEOS_PROT_WRITE) {
             leaf |= PTE_WRITE;

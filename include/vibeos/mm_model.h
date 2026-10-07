@@ -93,7 +93,14 @@ typedef enum vibeos_prot {
      * with it the child maps the same frame as the parent does, writable if the
      * parent's is, and a store by either is seen by both (docs/abi/ L3). Asked
      * for when the page is mapped; a later change of protection leaves it. */
-    VIBEOS_PROT_SHARED = 1u << 4
+    VIBEOS_PROT_SHARED = 1u << 4,
+    /* Not an access right either: a ceiling. A region that may never be made
+     * writable - a shared mapping of a file opened without write access, whose
+     * stores would be the file's. Kept by the region list across every change
+     * of protection, and asked by mprotect before it grants PROT_WRITE: mmap
+     * refused a writable shared mapping of a read-only descriptor, and mprotect
+     * then made one writable on request (external review, 2026-10-07). */
+    VIBEOS_PROT_NOWRITE = 1u << 5
 } vibeos_prot_t;
 
 /* ---- L2: regions (P3) ---------------------------------------------------- */

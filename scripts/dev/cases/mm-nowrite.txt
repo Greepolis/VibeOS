@@ -1,0 +1,31 @@
+# A shared mapping of a file opened read-only is never made writable
+# (VIBEOS_PROT_NOWRITE; external review 2026-10-07, finding 3), proved by
+# t_memory_calls in tests/kernel/linux_abi_tests.c.
+#
+#  1. mmap does not set the ceiling. Expect "mprotect will not make the shared
+#     one writable".
+#  2. mprotect does not ask for it. Expect the same.
+#  3. the region list drops it on a change of protection. Expect the same -
+#     the check "before or after a change": PROT_NONE and back.
+#
+# Cases 1 and 2 are in mm.c, case 3 in vma.c; run the file against each.
+# Target source: kernel/abi/linux/mm.c, kernel/mm/vma.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py <one of them> scripts/dev/cases/mm-nowrite.txt
+
+### mmap does not set the ceiling
+--- old
+                                ? (vibeos_prot_t)(access | VIBEOS_PROT_NOWRITE) : access,
++++ new
+                                ? access : access,
+
+### mprotect does not ask for it
+--- old
+                if (reg->prot & VIBEOS_PROT_NOWRITE) {
++++ new
+                if (0) {
+
+### the region list drops it on a change of protection
+--- old
+        want = (vibeos_prot_t)(prot | (cur->prot & VIBEOS_PROT_NOWRITE));
++++ new
+        want = prot;
