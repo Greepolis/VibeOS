@@ -119,9 +119,23 @@ int test_filelock(void) {
     expect(vibeos_flk_count() == 2u && held(B, EX, 0, 9) == 1, "dropping an owner leaves everyone else's");
     vibeos_flk_reset();
 
-    /* A full table refuses before it changes anything. */
+    /* No process holds more than its share (external review, 2026-10-07):
+     * a lock that would take it past is ENOLCK, an unlock never is, and the
+     * next process still locks. */
+    for (i = 0; set(C, EX, (uint64_t)i * 10u, (uint64_t)i * 10u + 4u) == 0; i++) {
+    }
+    expect(i > 0u && i < VIBEOS_FLK_PER_PROCESS && vibeos_flk_count() == i,
+           "one process stops below its share of the lock table");
+    expect(set(C, UN, 0, 4) == 0 && set(B, EX, 100000, 100004) == 0,
+           "and still unlocks, and another process still locks");
+    vibeos_flk_reset();
+
+    /* A full table refuses before it changes anything. Filled by several
+     * processes, since none may hold more than its share; the first lock is
+     * A's, the one the split below cuts. */
     for (i = 0; i < VIBEOS_FLK_MAX - 1u; i++) {
-        (void)set(A, (i & 1u) ? SH : EX, (uint64_t)i * 10u, (uint64_t)i * 10u + 4u);
+        (void)set(i == 0u ? A : 0x100u + i / (VIBEOS_FLK_PER_PROCESS / 2u), (i & 1u) ? SH : EX,
+                  (uint64_t)i * 10u, (uint64_t)i * 10u + 4u);
     }
     expect(vibeos_flk_count() == VIBEOS_FLK_MAX - 1u, "the table one short of full");
     expect(set(A, UN, 2, 2) == -VIBEOS_ENOLCK && vibeos_flk_count() == VIBEOS_FLK_MAX - 1u &&

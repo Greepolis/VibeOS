@@ -33,6 +33,7 @@
 #include <stdint.h>
 
 #define VIBEOS_FLK_MAX 256u       /* locks, all files and owners together */
+#define VIBEOS_FLK_PER_PROCESS (VIBEOS_FLK_MAX / 4u)   /* the most one process holds */
 #define VIBEOS_FLK_WAITERS 32u
 
 #define VIBEOS_FLK_UNLOCK 0u

@@ -1,0 +1,14 @@
+# No process holds more than its share of the record-lock table (external
+# review 2026-10-07), proved by tests/kernel/filelock_tests.c.
+#
+#  1. a process may take the whole table. Expect "one process stops below its
+#     share of the lock table".
+#
+# Target source: kernel/fs/filelock.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/fs/filelock.c scripts/dev/cases/fs-flk-share.txt
+
+### a process may take the whole table
+--- old
+        if (mine + 2u > VIBEOS_FLK_PER_PROCESS) {
++++ new
+        if (0) {

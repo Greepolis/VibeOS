@@ -147,6 +147,21 @@ int vibeos_flk_set(uint32_t space, const void *fs, uint64_t node, uint64_t owner
         unlock();
         return -VIBEOS_ENOLCK;
     }
+    /* And no process holds more than a quarter of the table: one locking
+     * ranges in a loop took all of it, and every other process's lock was
+     * ENOLCK (external review, 2026-10-07). An unlock is never refused for
+     * this - it gives back as often as it takes. */
+    if (type != VIBEOS_FLK_UNLOCK) {
+        uint32_t mine = 0;
+
+        for (i = 0; i < VIBEOS_FLK_MAX; i++) {
+            mine += g_flk[i].used && g_flk[i].pid == pid;
+        }
+        if (mine + 2u > VIBEOS_FLK_PER_PROCESS) {
+            unlock();
+            return -VIBEOS_ENOLCK;
+        }
+    }
     /* Cut [start, end] out of whatever the owner holds on this file. Its locks
      * are disjoint, so at most one of them reaches past both ends. */
     for (i = 0; i < VIBEOS_FLK_MAX; i++) {
