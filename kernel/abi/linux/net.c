@@ -658,6 +658,14 @@ static long linux_msg_iov(const linux_msghdr_t *mh, vibeos_uiov_t *small, vibeos
     if (n > LINUX_UIO_MAXIOV) {
         return -VIBEOS_EMSGSIZE;
     }
+    if (n * sizeof(vibeos_uiov_t) == 0u) {
+        /* Nothing to read. Said here, on the byte count the copy below is
+         * given, rather than left to that copy - which returns at once for 0:
+         * clang's analyzer does not follow n to n * 16, so it took "n is not 0"
+         * and "the copy read nothing" together and called iov[0] garbage. */
+        *out = iov;
+        return 0;
+    }
     if (n > LINUX_MSG_IOV_SMALL) {
         if (n * sizeof(vibeos_uiov_t) > 4096u) {
             return -VIBEOS_EMSGSIZE;
