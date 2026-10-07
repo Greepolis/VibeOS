@@ -26,6 +26,9 @@
  * holds that lock. The order is: this lock never encloses another. */
 
 #define VIBEOS_PTIMER_MAX 128u
+/* The most POSIX timers one process may hold: a quarter of the table, so that
+ * no process takes every timer there is. */
+#define VIBEOS_PTIMER_PER_PROCESS (VIBEOS_PTIMER_MAX / 4u)
 
 typedef enum {
     VIBEOS_PCLOCK_REAL = 0,

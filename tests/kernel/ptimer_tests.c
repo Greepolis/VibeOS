@@ -183,21 +183,35 @@ int test_ptimer(void) {
     vibeos_ptimer_tick(1000, record);
     expect(g_nfires == 0u, "and nothing of a process that is gone fires");
 
-    /* A full table is a refusal, not an overwrite. */
+    /* A full table is a refusal, not an overwrite. Filled by several
+     * processes, since none may take more than its share. */
     vibeos_ptimer_reset();
     for (i = 0; i < VIBEOS_PTIMER_MAX; i++) {
-        (void)vibeos_ptimer_create(40, VIBEOS_PCLOCK_REAL, VIBEOS_PTIMER_SIGNAL, 0, 0, 14, 0, &a);
+        (void)vibeos_ptimer_create(100u + i / VIBEOS_PTIMER_PER_PROCESS, VIBEOS_PCLOCK_REAL,
+                                   VIBEOS_PTIMER_SIGNAL, 0, 0, 14, 0, &a);
     }
     expect(vibeos_ptimer_create(41, VIBEOS_PCLOCK_REAL, VIBEOS_PTIMER_SIGNAL, 0, 0, 14, 0, &a) == -1 &&
            vibeos_ptimer_set(41, VIBEOS_PTIMER_ITIMER(0), 5, 0, 0, 0, &left, &iv) == -1,
            "a full table refuses a new timer and a new interval timer");
 
+    /* One process's share, and no more (external review, 2026-10-07). */
+    vibeos_ptimer_reset();
+    for (i = 0; i < VIBEOS_PTIMER_PER_PROCESS; i++) {
+        (void)vibeos_ptimer_create(60, VIBEOS_PCLOCK_REAL, VIBEOS_PTIMER_SIGNAL, 0, 0, 14, 0, &a);
+    }
+    expect(vibeos_ptimer_create(60, VIBEOS_PCLOCK_REAL, VIBEOS_PTIMER_SIGNAL, 0, 0, 14, 0, &a) == -1 &&
+           vibeos_ptimer_set(60, VIBEOS_PTIMER_ITIMER(0), 5, 0, 0, 0, &left, &iv) == 0 &&
+           vibeos_ptimer_create(61, VIBEOS_PCLOCK_REAL, VIBEOS_PTIMER_SIGNAL, 0, 0, 14, 0, &a) == 0,
+           "a process stops at its share of POSIX timers, keeps its interval timers, and others go on");
+
     /* More timers due at once than one tick fires: the rest a tick later. */
     vibeos_ptimer_reset();
     clear();
     for (i = 0; i < 40u; i++) {
-        (void)vibeos_ptimer_create(50, VIBEOS_PCLOCK_REAL, VIBEOS_PTIMER_SIGNAL, 0, 0, 14, 0, &a);
-        (void)vibeos_ptimer_set(50, a, 1, 0, 0, 0, &left, &iv);
+        uint32_t who = 50u + i / VIBEOS_PTIMER_PER_PROCESS;
+
+        (void)vibeos_ptimer_create(who, VIBEOS_PCLOCK_REAL, VIBEOS_PTIMER_SIGNAL, 0, 0, 14, 0, &a);
+        (void)vibeos_ptimer_set(who, a, 1, 0, 0, 0, &left, &iv);
     }
     vibeos_ptimer_tick(2, record);
     t = g_nfires;

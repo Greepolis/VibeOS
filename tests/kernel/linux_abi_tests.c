@@ -33,6 +33,7 @@
 #include "vibeos/vmspace.h"
 #include "vibeos/mbz.h"
 #include "vibeos/random.h"
+#include "vibeos/ptimer.h"
 
 int test_linux_handlers(void);
 int test_linux_gaps(void);
@@ -4173,6 +4174,26 @@ static void t_timers(void) {
     ev->sigev_notify = LINUX_SIGEV_SIGNAL;
     ev->sigev_signo = 65;
     expect(SYS3(222, LINUX_CLOCK_MONOTONIC, sev, idp) == -VIBEOS_EINVAL, "so is a signal that does not exist");
+    {
+        /* No process takes the whole table: past its share, timer_create is
+         * EAGAIN for it and not for the next (external review, 2026-10-07). */
+        uint32_t made = 0;
+        int32_t ids[VIBEOS_PTIMER_MAX];
+        int other = kf_spawn(406, 406);
+
+        while (made < VIBEOS_PTIMER_MAX && SYS3(222, LINUX_CLOCK_MONOTONIC, 0, idp) == 0) {
+            ids[made++] = *id;
+        }
+        expect(SYS3(222, LINUX_CLOCK_MONOTONIC, 0, idp) == -VIBEOS_EAGAIN && made < VIBEOS_PTIMER_MAX,
+               "one process's timers stop at its share of the table");
+        kf_set_current(other);
+        expect(SYS3(222, LINUX_CLOCK_MONOTONIC, 0, idp) == 0, "and another process can still make one");
+        (void)SYS1(226, (uint64_t)*id);
+        kf_set_current(me);
+        while (made > 0u) {
+            (void)SYS1(226, (uint64_t)(uint32_t)ids[--made]);   /* only this block's: the rest are used below */
+        }
+    }
     expect(SYS3(222, 99, 0, idp) == -VIBEOS_EINVAL && SYS3(222, LINUX_CLOCK_MONOTONIC_RAW, 0, idp) == -VIBEOS_EINVAL,
            "a clock it does not know, and one Linux keeps no timers on, are EINVAL");
     sp->it_value.tv_nsec = 1000000000;

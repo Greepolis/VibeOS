@@ -112,6 +112,22 @@ int vibeos_ptimer_create(uint32_t tgid, uint32_t clock, uint32_t notify, uint32_
     while (find(tgid, id)) {
         id++;
     }
+    /* No process takes more than its share of the table: one that created
+     * timers in a loop used to take all of it, and every other process's
+     * timer_create failed (external review, 2026-10-07). Linux bounds the same
+     * thing per user with RLIMIT_SIGPENDING. The interval timers and alarm
+     * have ids below zero and are not counted: they are a process's own three. */
+    {
+        uint32_t i, mine = 0;
+
+        for (i = 0; i < VIBEOS_PTIMER_MAX; i++) {
+            mine += g_pt[i].used && g_pt[i].tgid == tgid && g_pt[i].id >= 0;
+        }
+        if (mine >= VIBEOS_PTIMER_PER_PROCESS) {
+            unlock();
+            return -1;
+        }
+    }
     e = take_free();
     if (!e) {
         unlock();
