@@ -32,9 +32,12 @@
 #define VIBEOS_RLIM_CPU     0u    /* CPU seconds: SIGXCPU at soft, SIGKILL at hard */
 #define VIBEOS_RLIM_FSIZE   1u    /* largest file a write may make: SIGXFSZ, EFBIG */
 #define VIBEOS_RLIM_DATA    2u    /* the heap brk may grow                          */
+#define VIBEOS_RLIM_STACK   3u    /* how far the stack may grow from its top        */
 #define VIBEOS_RLIM_RSS     5u    /* kept and reported: /proc's rsslim              */
 #define VIBEOS_RLIM_NPROC   6u    /* tasks one user may have                         */
 #define VIBEOS_RLIM_NOFILE  7u    /* descriptors: the table's own limit             */
+#define VIBEOS_RLIM_MEMLOCK 8u    /* bytes a process may lock, unless it is root   */
+#define VIBEOS_RLIM_AS      9u    /* bytes of address space it may describe         */
 #define VIBEOS_RLIM_NICE    13u   /* how far an unprivileged process may lower nice */
 #define VIBEOS_RLIM_COUNT   16u
 #define VIBEOS_RLIM_INFINITY 0xFFFFFFFFFFFFFFFFull

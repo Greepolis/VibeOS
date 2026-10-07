@@ -29,9 +29,7 @@
 --- old
     if (n > 0) {
         f->pos += (uint64_t)n;
-        file_notify(f, VIBEOS_FSN_ACCESS);
     }
+    pos_give(f);
 +++ new
-    if (n > 0) {
-        file_notify(f, VIBEOS_FSN_ACCESS);
-    }
+    pos_give(f);

@@ -162,9 +162,9 @@
 
 ### utimes takes microseconds for nanoseconds
 --- old
-            when[i].ns = (uint64_t)tv[i].tv_sec * 1000000000ull + (uint64_t)tv[i].tv_usec * 1000ull;
+            when[i].ns = linux_ns_of(tv[i].tv_sec, (uint64_t)tv[i].tv_usec * 1000ull);
 +++ new
-            when[i].ns = (uint64_t)tv[i].tv_sec * 1000000000ull + (uint64_t)tv[i].tv_usec;
+            when[i].ns = linux_ns_of(tv[i].tv_sec, (uint64_t)tv[i].tv_usec);
 
 ### utime sets the access time from the modification time
 --- old

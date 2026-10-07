@@ -2475,6 +2475,13 @@ static int hw_stack_grow(hw_task_t *t, uint64_t fault_va) {
     if (!ps || !hw_stack_may_reach(page_va)) {
         return 0;
     }
+    /* RLIMIT_STACK: the stack grows no further from its top than the limit
+     * says - kept and reported, and never asked, until the external review of
+     * 2026-10-07. Past it the fault is the program's, a SIGSEGV, as on Linux. */
+    if (ps->rlim_cur[VIBEOS_RLIM_STACK] != VIBEOS_RLIM_INFINITY &&
+        VIBEOS_HW_USER_STACK_TOP - page_va > ps->rlim_cur[VIBEOS_RLIM_STACK]) {
+        return 0;
+    }
     if (!__atomic_compare_exchange_n(&ps->mm_busy, &zero, (uint32_t)(g_current_task + 1), 0,
                                      __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
         /* Held by this task itself (ks_mm_lock records the holder's slot plus

@@ -5094,6 +5094,37 @@ static void t_memory_calls(void) {
                "with descriptors again, the same munmap goes through");
         (void)SYS2(11, three, 3u * 4096u);
     }
+
+    /* RLIMIT_AS and RLIMIT_MEMLOCK are asked, not only kept (external review,
+     * 2026-10-07). */
+    {
+        vibeos_procstate_t *ps = ks_ps(ks_current());
+        const vibeos_vma_t *r;
+        uint64_t total = 0, one;
+        vibeos_cred_t saved = ps->cred;
+
+        for (r = ps->vmas.head; r; r = r->next) {
+            total += r->len;
+        }
+        ps->rlim_cur[VIBEOS_RLIM_AS] = total + 2u * 4096u;
+        expect(MMAP(0, 4u * 4096u, 3, 0x22, -1, 0) == -VIBEOS_ENOMEM &&
+               (long)(one = (uint64_t)MMAP(0, 4096u, 3, 0x22, -1, 0)) > 0,
+               "RLIMIT_AS: a mapping past it is ENOMEM, one inside it is made");
+        ps->rlim_cur[VIBEOS_RLIM_AS] = VIBEOS_RLIM_INFINITY;
+        ps->cred.euid = 1000u;
+        ps->rlim_cur[VIBEOS_RLIM_MEMLOCK] = 4096u;
+        {
+            uint64_t two = (uint64_t)MMAP(0, 2u * 4096u, 3, 0x22, -1, 0);
+
+            expect((long)two > 0 && SYS2(149, two, 2u * 4096u) == -VIBEOS_ENOMEM && SYS2(149, two, 4096u) == 0,
+                   "RLIMIT_MEMLOCK: two pages past a one-page limit is ENOMEM, one is locked");
+            (void)SYS2(150, two, 2u * 4096u);
+            (void)SYS2(11, two, 2u * 4096u);
+        }
+        ps->rlim_cur[VIBEOS_RLIM_MEMLOCK] = VIBEOS_RLIM_INFINITY;
+        ps->cred = saved;
+        (void)SYS2(11, one, 4096u);
+    }
     expect(kf_lock_imbalance() == 0, "the memory calls released every lock they took");
 }
 
@@ -5593,23 +5624,30 @@ int test_linux_gaps(void) {
         gap(202, r == 0, "FUTEX_CMP_REQUEUE");
     }
 
-    /* setrlimit (160) and prlimit64 (302), L2: RLIMIT_AS is kept, not
-     * enforced - a mapping larger than it still succeeds. */
+    /* setrlimit (160) and prlimit64 (302), L2: RLIMIT_SIGPENDING is kept, not
+     * enforced - a second queued signal past a limit of one is still queued.
+     * (RLIMIT_AS was this gap until the external review of 2026-10-07 had it
+     * enforced, with MEMLOCK and STACK.) */
     {
-        uint64_t nl;
+        uint64_t nl, qi;
         uint32_t n;
+        int self;
         for (n = 160; n <= 302; n += 142) {
-            fresh(73);
+            self = fresh(73);
             nl = kf_ualloc(16);
-            ((uint64_t *)kf_uptr(nl))[0] = 1ull << 20;
-            ((uint64_t *)kf_uptr(nl))[1] = 1ull << 20;
+            qi = kf_ualloc(128);
+            ((uint64_t *)kf_uptr(nl))[0] = 1;
+            ((uint64_t *)kf_uptr(nl))[1] = 1;
             if (n == 160) {
-                (void)SYS2(160, LINUX_RLIMIT_AS, nl);
+                (void)SYS2(160, LINUX_RLIMIT_SIGPENDING, nl);
             } else {
-                (void)SYS4(302, 0, LINUX_RLIMIT_AS, nl, 0);
+                (void)SYS4(302, 0, LINUX_RLIMIT_SIGPENDING, nl, 0);
             }
-            r = sys(9, 0, 4ull << 20, 3, 0x22, (uint64_t)-1, 0, 0);
-            gap(n, r < 0, "a mapping larger than RLIMIT_AS is refused");
+            ((linux_siginfo_t *)kf_uptr(qi))->si_code = LINUX_SI_QUEUE;
+            ks_id(self)->sig_blocked = 1ull << 34;
+            (void)SYS3(129, 73, 34, qi);
+            r = SYS3(129, 73, 34, qi);
+            gap(n, r == -VIBEOS_EAGAIN, "a queued signal past RLIMIT_SIGPENDING is EAGAIN");
         }
     }
 

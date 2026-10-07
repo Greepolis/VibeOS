@@ -102,6 +102,14 @@ static void on_segv(int sig, siginfo_t *si, void *ctx) {
 
 static volatile int g_info_signo, g_info_code, g_info_pid, g_info_value, g_fx_stale;
 
+/* The RLIMIT_STACK child's SIGSEGV, taken on the alternate stack: the fault is
+ * the proof, and a handler keeps it from being a third ring-3 kill the boot
+ * gate would have to excuse. */
+static void on_stack_limit(int sig) {
+    (void)sig;
+    _exit(43);
+}
+
 static void on_info(int sig, siginfo_t *si, void *ctx) {
     const ucontext_t *uc = (const ucontext_t *)ctx;
     const unsigned char *fx = (const unsigned char *)uc->uc_mcontext.fpregs;
@@ -789,6 +797,37 @@ static int process_checks(void) {
                 ok = 0;
             }
         }
+    }
+
+    /* RLIMIT_STACK is a bound on the stack's growth: a child that lowers it to
+     * 64 KiB and reaches 256 KiB down gets SIGSEGV (external review,
+     * 2026-10-07: the limit was kept and never asked). It takes the signal on
+     * its alternate stack, as a program that survives overflow must, because
+     * an unhandled one is a ring-3 kill and the gate counts those exactly. */
+    c = fork();
+    if (c == 0) {
+        struct rlimit rl = { 64 * 1024, 64 * 1024 };
+        struct sigaction sa;
+        stack_t ss;
+        volatile char *deep;
+
+        ss.ss_sp = g_alt;
+        ss.ss_size = sizeof(g_alt);
+        ss.ss_flags = 0;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = on_stack_limit;
+        sa.sa_flags = SA_ONSTACK;
+        if (sigaltstack(&ss, NULL) != 0 || sigaction(SIGSEGV, &sa, NULL) != 0 ||
+            setrlimit(RLIMIT_STACK, &rl) != 0) {
+            _exit(7);
+        }
+        deep = (volatile char *)((unsigned long)&rl - 256ul * 1024ul);
+        *deep = 1;
+        _exit(0);   /* only if the stack grew past its limit */
+    }
+    if (waitpid(c, &status, 0) != c || !WIFEXITED(status) || WEXITSTATUS(status) != 43) {
+        printf("SIG_FAIL: RLIMIT_STACK did not stop the stack: status=%x\n", status);
+        ok = 0;
     }
 
     /* clone3, as a fork with CLONE_PIDFD. */

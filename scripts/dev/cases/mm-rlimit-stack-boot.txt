@@ -1,0 +1,16 @@
+# RLIMIT_STACK bounds the stack's growth (external review 2026-10-07), proved
+# by SIGNAL.ELF (tests/linux/musl_signal.c): a child lowers the limit to 64 KiB,
+# reaches 256 KiB down, and must be killed by SIGSEGV.
+#
+#  1. the stack grows past its limit. Expect process_calls_failed.
+#
+# A boot case: the stack grows in the architecture's page fault.
+#
+# Target source: kernel/arch/x86_64/mm_bridge.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/arch/x86_64/mm_bridge.c scripts/dev/cases/mm-rlimit-stack-boot.txt
+
+### the stack grows past its limit
+--- old
+        VIBEOS_HW_USER_STACK_TOP - page_va > ps->rlim_cur[VIBEOS_RLIM_STACK]) {
++++ new
+        0) {

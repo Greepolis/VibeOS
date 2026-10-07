@@ -196,7 +196,7 @@ calls, outside the Linux number space, are listed last.
 | 157 | `prctl` | done | - | - | `proc.c` |  |
 | 158 | `arch_prctl` | done | - | - | `proc.c` |  |
 | 159 | `adjtimex` | partial | R | - | `timer.c` | reads the clock's state; setting it is refused, EPERM, as clock_settime is |
-| 160 | `setrlimit` | partial | L2 | - | `limits.c` | NOFILE, FSIZE, DATA, NPROC and CPU are enforced; the rest are kept and reported |
+| 160 | `setrlimit` | partial | L2 | - | `limits.c` | NOFILE, FSIZE, DATA, NPROC, CPU, AS, MEMLOCK and STACK are enforced; the rest are kept and reported |
 | 161 | `chroot` | missing | L8 | ENOSYS |  |  |
 | 162 | `sync` | done | - | - | `fs.c` |  |
 | 163 | `acct` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |

@@ -12,10 +12,12 @@
 
 ### a write is not told
 --- old
-        f->pos = at + (uint64_t)w;
+    pos_give(f);
+    if (w > 0) {
         file_notify(f, VIBEOS_FSN_MODIFY);
+    }
 +++ new
-        f->pos = at + (uint64_t)w;
+    pos_give(f);
 
 ### a close is always a close-nowrite
 --- old

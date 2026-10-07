@@ -186,7 +186,7 @@ SYSCALL(156, _sysctl,                 REFUSED,  R,     ENOSYS, "removed or never
 SYSCALL(157, prctl,                   DONE,     NONE,  NONE,   "")
 SYSCALL(158, arch_prctl,              DONE,     NONE,  NONE,   "")
 SYSCALL(159, adjtimex,                PARTIAL,  R,     NONE,   "reads the clock's state; setting it is refused, EPERM, as clock_settime is")
-SYSCALL(160, setrlimit,               PARTIAL,  L2,    NONE,   "NOFILE, FSIZE, DATA, NPROC and CPU are enforced; the rest are kept and reported")
+SYSCALL(160, setrlimit,               PARTIAL,  L2,    NONE,   "NOFILE, FSIZE, DATA, NPROC, CPU, AS, MEMLOCK and STACK are enforced; the rest are kept and reported")
 SYSCALL(161, chroot,                  MISSING,  L8,    ENOSYS, "")
 SYSCALL(162, sync,                    DONE,     NONE,  NONE,   "")
 SYSCALL(163, acct,                    DEFERRED, D,     ENOSYS, "no program in the corpus asks; revisit when one does")

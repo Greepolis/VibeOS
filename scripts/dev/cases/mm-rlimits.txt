@@ -1,0 +1,26 @@
+# RLIMIT_AS and RLIMIT_MEMLOCK are asked, not only kept (external review
+# 2026-10-07), proved by t_memory_calls in tests/kernel/linux_abi_tests.c.
+#
+#  1. mmap does not ask RLIMIT_AS. Expect "RLIMIT_AS: a mapping past it is
+#     ENOMEM".
+#  2. mlock does not ask RLIMIT_MEMLOCK. Expect "RLIMIT_MEMLOCK: two pages past
+#     a one-page limit is ENOMEM".
+#
+# RLIMIT_STACK is the architecture's (hw_stack_grow) and has a boot case,
+# mm-rlimit-stack-boot.txt.
+#
+# Target source: kernel/abi/linux/mm.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/mm.c scripts/dev/cases/mm-rlimits.txt
+
+### mmap does not ask RLIMIT_AS
+--- old
+    if (!linux_as_room(ps, bytes)) {
+        return -VIBEOS_ENOMEM;   /* RLIMIT_AS, as Linux answers it */
+    }
++++ new
+
+### mlock does not ask RLIMIT_MEMLOCK
+--- old
+            if (locked * 4096ull > ps->rlim_cur[VIBEOS_RLIM_MEMLOCK]) {
++++ new
+            if (0) {

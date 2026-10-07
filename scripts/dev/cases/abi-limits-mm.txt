@@ -9,6 +9,6 @@
 
 ### brk grows the heap past RLIMIT_DATA
 --- old
-    if (new_brk > ps->brk_cur && new_brk - ks_heap_base() > ps->rlim_cur[LINUX_RLIMIT_DATA]) {
+    if (new_brk > ps->brk_cur && (new_brk - ks_heap_base() > ps->rlim_cur[LINUX_RLIMIT_DATA] ||
 +++ new
-    if (0) {
+    if (new_brk > ps->brk_cur && (0 ||

@@ -24,6 +24,22 @@ static vibeos_vma_t *linux_region_in(vibeos_procstate_t *ps, uint64_t base, uint
 static int linux_regions_cover(vibeos_procstate_t *ps, uint64_t addr, uint64_t end);
 static long linux_lock_range(int me, vibeos_procstate_t *ps, uint64_t addr, uint64_t end, int on);
 
+/* RLIMIT_AS: may `more` bytes be added to what the process's regions describe?
+ * The limit was kept and reported and never asked (external review,
+ * 2026-10-07). Under the mm lock. */
+static int linux_as_room(const vibeos_procstate_t *ps, uint64_t more) {
+    const vibeos_vma_t *v;
+    uint64_t total = more;
+
+    if (ps->rlim_cur[VIBEOS_RLIM_AS] == VIBEOS_RLIM_INFINITY) {
+        return 1;
+    }
+    for (v = ps->vmas.head; v; v = v->next) {
+        total += v->len;
+    }
+    return total <= ps->rlim_cur[VIBEOS_RLIM_AS];
+}
+
 /* Address space for `pages` that nothing occupies, or 0. Under the mm lock.
  *
  * The arena is a cursor that only moves up, which was the whole of it while
@@ -64,8 +80,9 @@ static long linux_sys_brk_locked(int me, vibeos_procstate_t *ps, uint64_t addr) 
     new_brk = (addr + 0xFFFull) & ~0xFFFull;
     /* RLIMIT_DATA (L2 step 4): the heap may not grow past it. A refused brk
      * answers with the break as it was, which is how Linux says no. */
-    if (new_brk > ps->brk_cur && new_brk - ks_heap_base() > ps->rlim_cur[LINUX_RLIMIT_DATA]) {
-        return (long)ps->brk_cur;
+    if (new_brk > ps->brk_cur && (new_brk - ks_heap_base() > ps->rlim_cur[LINUX_RLIMIT_DATA] ||
+                                  !linux_as_room(ps, new_brk - ps->brk_cur))) {
+        return (long)ps->brk_cur;   /* RLIMIT_DATA, and RLIMIT_AS since 2026-10-07 */
     }
     if (new_brk > ps->brk_cur) {
         pages = (new_brk - ps->brk_cur) / 4096ull;
@@ -309,6 +326,9 @@ static long linux_mmap_locked(int me, vibeos_procstate_t *ps, uint64_t addr, uin
         if (base == 0u) {
             return -VIBEOS_ENOMEM;
         }
+    }
+    if (!linux_as_room(ps, bytes)) {
+        return -VIBEOS_ENOMEM;   /* RLIMIT_AS, as Linux answers it */
     }
     for (i = 0; f && shared && i < pages && r == 0; i++) {
         /* The file's own page, which comes held: the mapping takes a reference
@@ -707,6 +727,30 @@ static long linux_lock_range(int me, vibeos_procstate_t *ps, uint64_t addr, uint
     if (!linux_regions_cover(ps, addr, end)) {
         return -VIBEOS_ENOMEM;
     }
+    /* RLIMIT_MEMLOCK, for everybody but the superuser - Linux's CAP_IPC_LOCK.
+     * The pages locked already, everywhere, and the ones this would add:
+     * kept and never asked until the external review of 2026-10-07. */
+    if (on && ps->rlim_cur[VIBEOS_RLIM_MEMLOCK] != VIBEOS_RLIM_INFINITY) {
+        vibeos_cred_t c;
+
+        linux_cred(&c);
+        if (c.euid != 0u) {
+            const vibeos_vma_t *reg;
+            uint64_t locked = 0;
+
+            for (reg = ps->vmas.head; reg; reg = reg->next) {
+                for (va = reg->base; va < reg->base + reg->len; va += 4096ull) {
+                    const uint64_t *e = vibeos_vmspace_entry(&v, va);
+                    int here = e && (*e & VIBEOS_PTE_LOCKED);
+
+                    locked += here || (va >= addr && va < end && vibeos_vmspace_mapped(&v, va));
+                }
+            }
+            if (locked * 4096ull > ps->rlim_cur[VIBEOS_RLIM_MEMLOCK]) {
+                return ps->rlim_cur[VIBEOS_RLIM_MEMLOCK] == 0u ? -VIBEOS_EPERM : -VIBEOS_ENOMEM;
+            }
+        }
+    }
     for (va = addr; va < end; va += 4096ull) {
         if (vibeos_vmspace_set_locked(&v, va, on) < 0) {
             return -VIBEOS_EAGAIN;   /* a page in swap that could not be brought back */
@@ -818,6 +862,9 @@ static long linux_mremap_locked(int me, vibeos_procstate_t *ps, uint64_t old, ui
     }
     kind = reg->backing;
     prot = reg->prot;
+    if (new_len > old_len && !linux_as_room(ps, new_len - old_len)) {
+        return -VIBEOS_ENOMEM;   /* RLIMIT_AS: what it grows by is more address space */
+    }
     if (kind == VIBEOS_BACKING_SHARED) {
         prot = (vibeos_prot_t)(prot | VIBEOS_PROT_SHARED);
     }
