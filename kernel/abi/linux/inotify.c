@@ -20,6 +20,11 @@
 #define IN_INSTANCES 8u
 #define IN_QUEUE 32u         /* events an instance holds before IN_Q_OVERFLOW */
 #define IN_WATCHES 128u      /* in every instance together */
+/* What one process may hold of each: a quarter, so that no process takes
+ * every instance or every watch there is (external review, 2026-10-07).
+ * Linux bounds them per user with max_user_instances and max_user_watches. */
+#define IN_INSTANCES_EACH (IN_INSTANCES / 4u)
+#define IN_WATCHES_EACH (IN_WATCHES / 4u)
 #define IN_NAME 256u
 
 typedef struct {
@@ -35,6 +40,7 @@ typedef struct {
     uint32_t head, count;
     int overflowed;          /* the overflow record is queued: nothing more until it is read */
     int32_t next_wd;
+    uint32_t owner;          /* the process that made it, for the share above */
 } linux_in_instance_t;
 
 typedef struct {
@@ -368,9 +374,21 @@ static long linux_sys_inotify_init1(uint64_t flags) {
     /* The instance first, held by a mark until its description exists: a
      * description that failed to get one would have nothing to release. */
     ks_lock(&g_in_lock, __func__);
+    {
+        uint32_t k, mine = 0, me = ks_id(ks_current())->tgid;
+
+        for (k = 0; k < IN_INSTANCES; k++) {
+            mine += g_in[k].file != 0 && g_in[k].owner == me;
+        }
+        if (mine >= IN_INSTANCES_EACH) {
+            ks_unlock(&g_in_lock);
+            return -VIBEOS_EMFILE;   /* this process's share, as max_user_instances */
+        }
+    }
     for (i = 0; i < IN_INSTANCES && g_in[i].file != 0; i++) {
     }
     if (i < IN_INSTANCES) {
+        g_in[i].owner = ks_id(ks_current())->tgid;
         g_in[i].file = IN_CLAIMED;
         g_in[i].head = 0;
         g_in[i].count = 0;
@@ -459,6 +477,18 @@ static long linux_sys_inotify_add_watch(uint64_t fd, uint64_t upath, uint64_t ma
         }
         if (x->inst < 0 && free_at < 0) {
             free_at = (int)i;
+        }
+    }
+    if (i == IN_WATCHES && free_at >= 0) {
+        /* A new watch counts against the share of the process that made the
+         * instance - the one whose table it is. */
+        uint32_t k, mine = 0, owner = g_in[f->ev_index].owner;
+
+        for (k = 0; k < IN_WATCHES; k++) {
+            mine += g_inw[k].inst >= 0 && g_in[g_inw[k].inst].owner == owner;
+        }
+        if (mine >= IN_WATCHES_EACH) {
+            free_at = -1;   /* ENOSPC, as past max_user_watches */
         }
     }
     if (i == IN_WATCHES && free_at >= 0) {

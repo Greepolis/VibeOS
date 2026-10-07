@@ -2923,6 +2923,34 @@ static void t_inotify_ltp(void) {
            strcmp(text, "31\n") == 0,
            "/proc/sys/fs/inotify/max_queued_events: what a queue holds before its overflow record");
     (void)SYS1(3, (uint64_t)in);
+    {
+        /* A process's share of instances and of watches (external review,
+         * 2026-10-07): past it EMFILE and ENOSPC, as Linux's per-user limits
+         * answer, and another process still gets its own. */
+        long i1 = SYS1(294, 0), i2 = SYS1(294, 0), i3, w = 0, other_in;
+        char p[32];
+        uint32_t k, made = 0;
+        int other = kf_spawn(407, 407);
+
+        i3 = SYS1(294, 0);
+        expect(i1 >= 0 && i2 >= 0 && i3 == -VIBEOS_EMFILE, "a third instance is past one process's share: EMFILE");
+        (void)SYS2(83, ustr("/tmp/iw"), 0755);
+        for (k = 0; k < 40u && w >= 0; k++) {
+            snprintf(p, sizeof(p), "/tmp/iw/%u", k);
+            (void)SYS1(3, (uint64_t)tmp_open(p, 0x41, 0644));
+            w = SYS3(254, (uint64_t)i1, ustr(p), 0x4);
+            made += w >= 0;
+        }
+        expect(w == -VIBEOS_ENOSPC && made > 0u && made < 40u, "and watches stop at its share: ENOSPC");
+        kf_set_current(other);
+        other_in = SYS1(294, 0);
+        expect(other_in >= 0 && SYS3(254, (uint64_t)other_in, ustr("/tmp/iw/0"), 0x4) >= 0,
+               "while another process makes an instance and a watch of its own");
+        (void)SYS1(3, (uint64_t)other_in);
+        kf_set_current(me);
+        (void)SYS1(3, (uint64_t)i1);
+        (void)SYS1(3, (uint64_t)i2);
+    }
 }
 
 /* ---- L4 step 7: setsockopt and shutdown, as far as httpd and nc go -------------- */

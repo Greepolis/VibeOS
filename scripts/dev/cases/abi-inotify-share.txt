@@ -1,0 +1,23 @@
+# No process takes more than its share of inotify's instances or watches
+# (external review 2026-10-07), proved by t_inotify_ltp in
+# tests/kernel/linux_abi_tests.c.
+#
+#  1. a process may take every instance. Expect "a third instance is past one
+#     process's share: EMFILE".
+#  2. a process may take every watch. Expect "and watches stop at its share:
+#     ENOSPC".
+#
+# Target source: kernel/abi/linux/inotify.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/inotify.c scripts/dev/cases/abi-inotify-share.txt
+
+### a process may take every instance
+--- old
+        if (mine >= IN_INSTANCES_EACH) {
++++ new
+        if (0) {
+
+### a process may take every watch
+--- old
+        if (mine >= IN_WATCHES_EACH) {
++++ new
+        if (0) {
