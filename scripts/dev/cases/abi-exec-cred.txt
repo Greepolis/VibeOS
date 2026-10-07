@@ -1,0 +1,17 @@
+# An exec makes the saved and filesystem ids the effective ones (external
+# review 2026-10-07), proved by SIGNAL.ELF (tests/linux/musl_signal.c): a child
+# of root moves its effective id to nobody keeping root saved, execs BusyBox's
+# grep on /proc/self/status, and the Uid line must read 0 65534 65534 65534.
+#
+#  1. exec carries the ids over unchanged. Expect process_calls_failed.
+#
+# A boot case: no host test runs an execve to the end.
+#
+# Target source: kernel/abi/linux/proc.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/proc.c scripts/dev/cases/abi-exec-cred.txt
+
+### exec carries the ids over unchanged
+--- old
+            nps->cred.suid = nps->cred.fsuid = nps->cred.euid;
+            nps->cred.sgid = nps->cred.fsgid = nps->cred.egid;
++++ new

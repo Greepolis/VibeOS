@@ -1247,6 +1247,14 @@ static long linux_sys_execve(ks_regs_t *frame, uint64_t dirfd, uint64_t path_upt
              * it: one boot in six, root's shell was the self-test's user 1000
              * and could not create a file. */
             nps->cred = ops->cred;
+            /* And the saved and filesystem ids become the effective ones, as
+             * Linux's execve sets them. Carried over unchanged, a program that
+             * had dropped root into its saved id and then exec'd something
+             * else handed that program root to take back with setuid
+             * (external review, 2026-10-07). This kernel honours no set-user-ID
+             * bit, so the effective ids themselves do not change. */
+            nps->cred.suid = nps->cred.fsuid = nps->cred.euid;
+            nps->cred.sgid = nps->cred.fsgid = nps->cred.egid;
             nps->cpu_children = ops->cpu_children;   /* times() survives exec too */
             {
                 uint32_t lim;   /* limits and personality too (L2 step 4) */

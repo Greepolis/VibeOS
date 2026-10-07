@@ -754,6 +754,43 @@ static int process_checks(void) {
         ok = 0;
     }
 
+    /* An exec makes the saved and filesystem ids the effective one: a root
+     * that moved to nobody and kept root in its saved id hands the next
+     * program nobody, not root to take back (external review, 2026-10-07). */
+    {
+        int pp[2];
+        char line[128];
+        ssize_t got = 0, n;
+
+        if (getuid() == 0 && pipe(pp) == 0) {
+            c = fork();
+            if (c == 0) {
+                static char *const argv[] = { "grep", "^Uid:", "/proc/self/status", 0 };
+                static char *const envp[] = { 0 };
+
+                dup2(pp[1], 1);
+                close(pp[0]);
+                if (setresuid(0, 65534, 0) != 0) {
+                    _exit(7);
+                }
+                execve("/EFI/BOOT/BUSYBOX.ELF", argv, envp);
+                _exit(9);
+            }
+            close(pp[1]);
+            while (got < (ssize_t)sizeof(line) - 1 &&
+                   (n = read(pp[0], line + got, sizeof(line) - 1 - (size_t)got)) > 0) {
+                got += n;
+            }
+            close(pp[0]);
+            line[got > 0 ? got : 0] = 0;
+            waitpid(c, &status, 0);
+            if (strncmp(line, "Uid:\t0\t65534\t65534\t65534", 24) != 0) {
+                printf("SIG_FAIL: exec kept a saved id: %s\n", line);
+                ok = 0;
+            }
+        }
+    }
+
     /* clone3, as a fork with CLONE_PIDFD. */
     {
         struct k_clone_args a;
