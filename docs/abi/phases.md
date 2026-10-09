@@ -2276,6 +2276,92 @@ mapped onto the scheduler's classes, `membarrier`, `getcpu`.
 **Programs:** glibc's pthread test programs, a thread-pool workload across four
 cores; LTP's futex and sched cases.
 
+**The plan (2026-10-09).** Measured first: `tests/corpus/ltp-l6.txt`, the
+phase's 59 tests from `ltp-list.py L6` and the eight of clone3, close_range,
+sched_yield and set_robust_list, which earlier phases own. On the parent
+(`8c6d6c1`) 16 of 67 pass. Thirty-four end in TCONF because the call is
+missing - the whole `sched_*` family, `getcpu`, `ioprio`, `membarrier`,
+`get_robust_list`, `futex_waitv` - and two more because `futex` answers ENOSYS
+to the bitset and requeue operations. The rest: futex_wake02, futex_wake03 and
+futex_cmp_requeue01 cannot create the threads and processes they ask for on a
+table of 32 slots; clone's vfork (clone05), CLONE_PARENT (clone08) and one
+flag combination (clone02) are refused; clone04 dies of SIGSEGV;
+set_robust_list accepts a length that is not its structure's.
+
+Four steps:
+
+1. **The rest of futex**: WAIT_BITSET and WAKE_BITSET with their absolute
+   timeouts on either clock, REQUEUE and CMP_REQUEUE, WAKE_OP; the futex2
+   calls (`futex_wait`, `futex_wake`, `futex_requeue`, `futex_waitv`); robust
+   lists - `set_robust_list` checking its length, `get_robust_list`, and the
+   list walked at a thread's exit, every lock it held marked OWNER_DIED and
+   one waiter woken. Priority inheritance only if a program asks for it.
+2. **Scheduling**: the `sched_*` calls over the scheduler's classes and
+   weights - SCHED_OTHER and SCHED_BATCH in NORMAL, SCHED_IDLE at the
+   smallest weight, SCHED_FIFO and SCHED_RR in a real-time class between the
+   kernel's and NORMAL, ordered by priority; `sched_setaffinity` and
+   `getaffinity` over the mask the picker already honours; `getcpu`;
+   `sched_rr_get_interval` from the class's quantum; `ioprio_set` and `get`
+   kept and reported; `membarrier`.
+3. **clone, finished**: CLONE_VFORK, CLONE_PARENT, the flags clone02 and
+   clone04 use, `close_range`'s UNSHARE in a process with threads, and a task
+   table large enough for what the tests and the thread pool create.
+4. **The programs**: glibc's pthread programs and a thread pool across four
+   cores, at boot and against Linux.
+
+**Step 1 (2026-10-09): futex, finished.** Every operation but priority
+inheritance, in `kernel/abi/linux/futex.c`:
+
+- **A sleeper on several words.** A waiter's table entry points at its
+  sleeper's first, the leader, where "woken" and "by which word" are kept, so
+  `futex_waitv` is the same wait as FUTEX_WAIT with more entries, and a wake
+  that matches any of them counts once. Enqueueing compares every word under
+  one hold of the lock, as a single wait always did; the sleep is a separate
+  step that needs only the leader, so a 128-word vector is keyed into static
+  arrays and released before the wait. The table is 512 entries
+  (`LINUX_FUTEX_TABLE`, renamed from `LINUX_FUTEX_WAITERS`, which is a bit in
+  a lock word to Linux).
+- **Bitsets, requeue, WAKE_OP.** A waiter keeps its bitset and a wake reaches
+  only those it shares a bit with. Requeue rekeys entries in place - a moved
+  waiter sleeps on, woken by the second word. WAKE_OP changes its second word
+  with a real compare-exchange on user memory: `vibeos_uaccess_cmpxchg32`
+  (uaccess.S), one `lock cmpxchg` with the copy's recovery point, behind
+  `ks_user_cmpxchg32`. A read and a later write would lose another thread's
+  atomic in between.
+- **Absolute timeouts** (WAIT_BITSET, futex2) are ticks since boot, which is
+  what every clock here counts, CLOCK_REALTIME included.
+- **Robust lists.** `set_robust_list` checks its length, `get_robust_list`
+  answers for a thread the caller could read, and exit walks the list before it
+  clears the join word: a lock word still naming the thread is marked
+  OWNER_DIED, its waiters bit kept, one waiter woken. Bounded by Linux's 2048.
+  The head is a field of the task's identity, set by fork, clone and exec - and
+  by the boot-time spawn, which had never cleared `clear_child_tid` either.
+- **Found by LTP**: futex_waitv01 - a vector word at address 0 was read, not
+  refused. The copy survives a page that went away but does not ask whose it
+  is, and a Linux program's null page is the kernel's, present. Every word the
+  kernel reads to compare is judged first now.
+- **Tests**: `t_futex_l6` in the handlers' host tests, and two stages of
+  THREADS.ELF at boot: C6_ROBUST (a child process ends holding a shared
+  robust mutex; the parent's lock is EOWNERDEAD) and C6_COND (a broadcast
+  releases four waiters).
+- **Sabotage**: `futex-l6.txt` 9 of 9 red; `futex-l6-boot.txt` red
+  (`robust_lock_not_released_at_exit`). Two first versions proved nothing and
+  were rebuilt: WAKE_OP's "wakes nobody when the comparison fails" had nobody
+  waiting, and C6_ROBUST's thread returned through musl's pthread_exit, which
+  walks the list in user space - the stage passed with the kernel's walk
+  removed. Ending the thread by the raw exit call instead corrupted musl's
+  thread-list lock and hung the boot; a child process is the arrangement in
+  which only the kernel can release the lock. `futex-l6-cond-boot.txt` records
+  why C6_COND has no case: a requeue that moves nobody went NOT RED, so the
+  stage does not depend on it.
+- **LTP**: 21 of 67 (16 before): futex_cmp_requeue02, futex_wait_bitset01,
+  futex_waitv01 and 02, get_robust_list01. What is left is steps 2 and 3, the
+  32-slot task table (futex_wake02 and 03, futex_cmp_requeue01), and SysV
+  shared memory (futex_waitv03, L7).
+- **Validation**: check.sh green, 6 of 6 boots. Three boots in parallel wedged
+  once in the reclaim load while the host ran a game; one boot alone passed,
+  and the six after it, with the host idle.
+
 ### L7. IPC (21)
 
 System V shared memory, semaphores and message queues; POSIX message queues;
