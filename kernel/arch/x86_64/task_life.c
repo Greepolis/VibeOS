@@ -46,39 +46,123 @@ static int hw_streq_n(const char *a, const char *b) {
     return 1;
 }
 
-/* The identity of a path, or 0 if it cannot be given one. Ids start at 1
- * because the cache uses 0 to mark an empty slot. */
-static uint32_t hw_file_id(const char *path) {
+/* The page cache's file identities (M-081).
+ *
+ * An identity is a slot in g_cached_files, named by its index plus one because
+ * the cache uses 0 for an empty slot. Three things were wrong with the table
+ * this replaces, and only the first was on record:
+ *
+ *  - It never gave an identity back, so the 513th distinct program of a boot
+ *    was read uncached, and one larger than the staging buffer did not start.
+ *    The least recently looked-up identity is reused now. What still names an
+ *    old identity after that is harmless: an image's pages are mapped when it
+ *    is loaded and hold their own frame references, nothing faults a page in
+ *    through a region's backing_id, and the regions use it only to decide
+ *    whether two neighbours can merge. What is not harmless is reusing one a
+ *    load is still reading, so an identity looked up among the last
+ *    HW_FILE_ID_RECENT is never taken: a load looks up at most two (program and
+ *    interpreter) before it has mapped them.
+ *  - It had no lock. Linux exec runs under its own lock and boot-time spawns
+ *    under none, so two cores could append to it at once - a layer serialised
+ *    by accident, as CLAUDE.md puts it, for the fifth time.
+ *  - It was keyed by path alone and remembered the node it first saw. A file
+ *    replaced at the same path - written, or deleted and created again - kept
+ *    the old file's pages in the cache, and the next exec of that path ran the
+ *    old program. The node is looked up every time now, and a different one
+ *    (identity, size, change times) drops the pages before the identity is
+ *    handed out. A rewrite that keeps size and FAT's two-second times is not
+ *    seen; that is written down, not solved.
+ *
+ * A path that does not fit the table's key is not given an identity: it was
+ * truncated, and two long paths sharing their first 63 bytes shared a file. */
+#define HW_FILE_ID_RECENT 16u
+
+static hw_lock_t g_file_id_lock;
+static uint64_t g_file_id_clock;
+
+static int hw_same_file(const vibeos_fs_node_t *a, const vibeos_fs_node_t *b) {
+    return a->id == b->id && a->size == b->size &&
+           a->mtime_ns == b->mtime_ns && a->ctime_ns == b->ctime_ns;
+}
+
+static void hw_file_id_fill(uint32_t slot, const char *path, const vibeos_fs_node_t *node) {
     uint32_t i;
+
+    for (i = 0; path[i]; i++) {
+        g_cached_files[slot].path[i] = path[i];
+    }
+    g_cached_files[slot].path[i] = 0;
+    g_cached_files[slot].node = *node;
+}
+
+static uint32_t hw_file_id(const char *path) {
     vibeos_fs_node_t node;
+    uint32_t i, id = 0, len = 0;
+    int stale = 0;
 
     if (!path) {
         return 0;
     }
+    while (path[len]) {
+        len++;
+    }
+    if (len >= sizeof(g_cached_files[0].path)) {
+        return 0;
+    }
+    /* Outside the lock: a lookup reads the disk. */
+    if (vibeos_fs_lookup(&g_rootfs, path, &node) != 0 || node.is_dir) {
+        return 0;
+    }
+    hw_spin_lock_named(&g_file_id_lock, __func__);
     for (i = 0; i < g_cached_file_count; i++) {
         if (hw_streq_n(g_cached_files[i].path, path)) {
-            return i + 1u;
+            id = i + 1u;
+            break;
         }
     }
-    if (g_cached_file_count >= VIBEOS_HW_CACHE_FILES) {
-        /* Out of identities: read uncached rather than guess - which works
-         * only for a file that fits the staging buffer. Said, because what the
-         * caller reports for the others is "not found" (M-081). */
+    if (id != 0u) {
+        if (!hw_same_file(&g_cached_files[id - 1u].node, &node)) {
+            g_cached_files[id - 1u].node = node;
+            stale = 1;
+            vibeos_exec_stats()->file_ids_replaced++;
+        }
+    } else if (g_cached_file_count < VIBEOS_HW_CACHE_FILES) {
+        hw_file_id_fill(g_cached_file_count, path, &node);
+        id = ++g_cached_file_count;
+    } else {
+        uint32_t victim = 0;
+
+        for (i = 1; i < VIBEOS_HW_CACHE_FILES; i++) {
+            if (g_cached_files[i].used < g_cached_files[victim].used) {
+                victim = i;
+            }
+        }
+        if (g_file_id_clock - g_cached_files[victim].used >= HW_FILE_ID_RECENT) {
+            hw_file_id_fill(victim, path, &node);
+            id = victim + 1u;
+            stale = 1;
+            vibeos_exec_stats()->file_ids_reused++;
+        }
+    }
+    if (id != 0u) {
+        g_cached_files[id - 1u].used = ++g_file_id_clock;
+        /* Under the lock: between handing out the identity and dropping its
+         * pages, another core looking the same path up would hit the old
+         * file's. */
+        if (stale) {
+            vibeos_cache_forget(id);
+        }
+    }
+    hw_spin_unlock(&g_file_id_lock);
+    if (id == 0u) {
+        /* Every identity was looked up in the last few loads: read uncached,
+         * which works only for a file that fits the staging buffer. Said,
+         * because what the caller reports for the others is "not found". */
         hw_log(VIBEOS_LOG_WARN, 47u, (uint64_t)VIBEOS_HW_CACHE_FILES, 0,
-               "no file identity left for the page cache: this file is read uncached "
+               "no file identity free for the page cache: this file is read uncached "
                "(a0 = identities)");
-        return 0;
     }
-    if (vibeos_fs_lookup(&g_rootfs, path, &node) != 0) {
-        return 0;
-    }
-    for (i = 0; i + 1u < sizeof(g_cached_files[0].path) && path[i]; i++) {
-        g_cached_files[g_cached_file_count].path[i] = path[i];
-    }
-    g_cached_files[g_cached_file_count].path[i] = 0;
-    g_cached_files[g_cached_file_count].node = node;
-    g_cached_file_count++;
-    return g_cached_file_count;
+    return id;
 }
 
 /* Read a whole file, a page at a time, through the cache.

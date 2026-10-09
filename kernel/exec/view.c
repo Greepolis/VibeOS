@@ -33,6 +33,10 @@ void vibeos_exec_print_stats(void) {
      * rather than under a sentence somebody wrote once. */
     vibeos_x86_64_serial_puts(" MUSTBEZERO cache_audit_changed=0x");
     vibeos_x86_64_serial_print_hex(s->cache_audit_changed);
+    vibeos_x86_64_serial_puts(" file_ids_reused=0x");
+    vibeos_x86_64_serial_print_hex(s->file_ids_reused);
+    vibeos_x86_64_serial_puts(" file_ids_replaced=0x");
+    vibeos_x86_64_serial_print_hex(s->file_ids_replaced);
     /* The refusals are announced, not just appended.
      *
      * The gate matched them with a bare `name=0x...` pattern, which worked

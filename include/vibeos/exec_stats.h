@@ -69,6 +69,14 @@ typedef struct vibeos_exec_stats {
      * somewhere far from the write. The gate asserts changed == 0. */
     uint64_t cache_audit_checked;
     uint64_t cache_audit_changed;
+
+    /* The page cache's file identities (M-081): taken back from the least
+     * recently used file once the table was full, and dropped because the
+     * file at a path was no longer the one the identity was given for.
+     * Printed so a boot that reused one says so; the table is large enough
+     * that an ordinary boot reuses none. */
+    uint64_t file_ids_reused;
+    uint64_t file_ids_replaced;
 } vibeos_exec_stats_t;
 
 vibeos_exec_stats_t *vibeos_exec_stats(void);

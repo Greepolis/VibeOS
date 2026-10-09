@@ -559,13 +559,14 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
  * thirty-third program a boot ran did not start if it was larger than that,
  * and execve said "not found" about a file that was on the disk. A boot runs
  * about twenty programs; a run of LTP tests is a different program every few
- * seconds. Five hundred and twelve is room, not a fix: the table still never
- * gives an identity back, because a live process's regions name theirs and
- * nothing counts who does. Running out is at least said now. */
+ * seconds. Five hundred and twelve is room; since then the least recently
+ * used identity is also given back (hw_file_id in task_life.c says why that
+ * is safe). */
 #define VIBEOS_HW_CACHE_FILES 512u
 typedef struct {
     char path[64];
     vibeos_fs_node_t node;
+    uint64_t used;      /* when it was last looked up, on hw_file_id's clock */
 } hw_cached_file_t;
 /* A second, much smaller user window down in the first GiB.
  *
