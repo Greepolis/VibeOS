@@ -18,6 +18,9 @@ jobs:
   linux-build-test:
     name: Linux ${{ matrix.compiler }} / ${{ matrix.build_type }}
     runs-on: ubuntu-latest
+    # Ten minutes is the slowest job's normal run. Without a bound a hung step
+    # holds the run for GitHub's six hours, as one did (2026-10-07).
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -54,6 +57,10 @@ jobs:
             ctest --test-dir build-asan --output-on-failure
 
       - name: Install Dependencies
+        # A mirror that stops answering held the clang Debug job here for six
+        # hours, until GitHub cancelled the whole run (2026-10-07). It takes
+        # under two minutes when it works.
+        timeout-minutes: 15
         run: |
           sudo apt-get update
           # musl-tools builds the unmodified static Linux binary the boot gate
