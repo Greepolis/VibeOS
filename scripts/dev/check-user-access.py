@@ -70,6 +70,27 @@ EXCEPT = {
 MIN_CASTS = 120
 
 
+def safe_spans(code):
+    """The argument lists of the fault-safe calls on a line, as (start, end).
+
+    A cast counts as handed to the copy only if it sits inside one. Matching
+    the call's name anywhere on the line passed a raw cast that merely shared
+    a line with a copy (external review, 2026-10-07). A call whose closing
+    parenthesis is on a later line runs to the end of this one."""
+    spans = []
+    for name in SAFE:
+        at = code.find(name)
+        while at >= 0:
+            i = at + len(name)
+            depth = 1
+            while i < len(code) and depth:
+                depth += {"(": 1, ")": -1}.get(code[i], 0)
+                i += 1
+            spans.append((at, i))
+            at = code.find(name, at + 1)
+    return spans
+
+
 def main():
     listing = "--list" in sys.argv
     bad = []
@@ -83,10 +104,12 @@ def main():
             lines = fh.read().splitlines()
         for no, line in enumerate(lines, 1):
             code = line.split("//")[0]
-            if not CAST.search(code):
+            casts = list(CAST.finditer(code))
+            if not casts:
                 continue
             seen += 1
-            if any(s in code for s in SAFE):
+            spans = safe_spans(code)
+            if all(any(a <= m.start() < b for a, b in spans) for m in casts):
                 continue
             if any(sub in code for sub, _ in EXCEPT.get(name, ())):
                 if listing:
