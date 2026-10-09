@@ -273,8 +273,12 @@ w_time() {
     awk '{ print $1, ($2 ~ /^[0-9]+\.[0-9][0-9]$/ ? "a number" : $2) }' t.txt
     time -p sh -c 'exit 5' 2> t.txt
     echo "time passes the code on: $?"
-    # CPU time, which time reads from the rusage wait4 hands back.
-    time -p sh -c 'i=0; while [ $i -lt 10000 ]; do i=$((i + 1)); done' 2> t.txt
+    # CPU time, which time reads from the rusage wait4 hands back. Bounded by
+    # the clock, not by a count: ten thousand iterations took under five
+    # milliseconds on a CI runner, time -p printed 0.00 twice, and the nightly
+    # said Linux had changed its answer (2026-10-08). Two seconds of work is
+    # more than a hundredth on any machine, the guest's TCG included.
+    time -p sh -c 's=$(date +%s); while [ $(( $(date +%s) - s )) -lt 2 ]; do :; done' 2> t.txt
     awk '$1 == "user" { u = $2 } $1 == "sys" { s = $2 } END { print (u + s > 0 ? "it ran for a while" : "no CPU time: " u " " s) }' t.txt
 }
 
