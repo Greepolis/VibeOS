@@ -1065,6 +1065,28 @@ static long tf_op_readlink(void *fs, const char *path, char *buf, uint32_t cap) 
     return r;
 }
 
+/* Under the lock. */
+static void tf_setattr_ino(vibeos_tmpfs_t *t, uint32_t ino, const vibeos_fs_attr_t *a) {
+    vibeos_tmpfs_inode_t *in = &t->inode[ino];
+
+    if (a->valid & VIBEOS_ATTR_MODE) {
+        in->mode = (in->mode & VIBEOS_S_IFMT) | (a->mode & 07777u);
+    }
+    if (a->valid & VIBEOS_ATTR_UID) {
+        in->uid = a->uid;
+    }
+    if (a->valid & VIBEOS_ATTR_GID) {
+        in->gid = a->gid;
+    }
+    if (a->valid & VIBEOS_ATTR_ATIME) {
+        in->atime_ns = a->atime_ns;
+    }
+    if (a->valid & VIBEOS_ATTR_MTIME) {
+        in->mtime_ns = a->mtime_ns;
+    }
+    in->ctime_ns = vibeos_fs_now_ns();
+}
+
 static int tf_op_setattr(void *fs, const char *path, const vibeos_fs_attr_t *a) {
     uint32_t ino;
     int r;
@@ -1072,27 +1094,40 @@ static int tf_op_setattr(void *fs, const char *path, const vibeos_fs_attr_t *a) 
     T->lock();
     r = tf_resolve(T, path, &ino);
     if (r == 0) {
-        vibeos_tmpfs_inode_t *in = &T->inode[ino];
-        if (a->valid & VIBEOS_ATTR_MODE) {
-            in->mode = (in->mode & VIBEOS_S_IFMT) | (a->mode & 07777u);
-        }
-        if (a->valid & VIBEOS_ATTR_UID) {
-            in->uid = a->uid;
-        }
-        if (a->valid & VIBEOS_ATTR_GID) {
-            in->gid = a->gid;
-        }
-        if (a->valid & VIBEOS_ATTR_ATIME) {
-            in->atime_ns = a->atime_ns;
-        }
-        if (a->valid & VIBEOS_ATTR_MTIME) {
-            in->mtime_ns = a->mtime_ns;
-        }
-        in->ctime_ns = vibeos_fs_now_ns();
+        tf_setattr_ino(T, ino, a);
     }
     T->unlock();
     return r;
 }
+
+/* By the node's id, which carries the inode's generation: a descriptor whose
+ * file is gone is told so rather than handed the slot's next tenant. */
+static int tf_op_getattr(void *fs, const vibeos_fs_node_t *node, vibeos_fs_node_t *out) {
+    uint32_t ino;
+    int r;
+
+    T->lock();
+    r = tf_from_id(T, node->id, &ino);
+    if (r == 0) {
+        tf_fill(T, ino, out);
+    }
+    T->unlock();
+    return r;
+}
+
+static int tf_op_setattr_node(void *fs, const vibeos_fs_node_t *node, const vibeos_fs_attr_t *a) {
+    uint32_t ino;
+    int r;
+
+    T->lock();
+    r = tf_from_id(T, node->id, &ino);
+    if (r == 0) {
+        tf_setattr_ino(T, ino, a);
+    }
+    T->unlock();
+    return r;
+}
+
 
 static int tf_op_statfs(void *fs, vibeos_fs_statfs_t *out) {
     T->lock();
@@ -1127,6 +1162,8 @@ static const vibeos_fs_ops_t g_tmpfs_ops = {
     .symlink = tf_op_symlink,
     .readlink = tf_op_readlink,
     .setattr = tf_op_setattr,
+    .getattr = tf_op_getattr,
+    .setattr_node = tf_op_setattr_node,
     .statfs = tf_op_statfs,
     .share_page = tf_op_share_page,
 };

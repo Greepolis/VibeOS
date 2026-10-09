@@ -52,6 +52,10 @@ typedef struct {
     vibeos_fs_node_t node;        /* valid when `exists`                      */
     int exists;
     int trailing_slash;           /* the caller wrote "name/"                 */
+    /* `node` is a descriptor's own file, asked of the filesystem by node
+     * rather than found at `path` (M-080): a change goes to the node, which
+     * the name may no longer reach. Never set by the walk. */
+    int by_node;
 } vibeos_path_t;
 
 #define VIBEOS_PATH_NOFOLLOW 0x1u /* a last component that is a link is the answer */

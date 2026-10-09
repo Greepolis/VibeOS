@@ -4667,22 +4667,51 @@ static void t_fork_snapshot_and_groups(void) {
     ks_ps(parent)->brk_cur = brk0;
     ks_ps(parent)->mmap_cur = cur0;
 
-    /* M-080: a descriptor whose path now names another file does not act on
-     * that file. */
+    /* M-080: a call on a descriptor acts on the descriptor's file, wherever
+     * its name has gone - as Linux does - on a filesystem that can be asked by
+     * node (tmpfs). It used to walk the name: fchmod changed a new file made
+     * at the old path, and then refused it with ESTALE. */
     {
         linux_stat_t st;
+        uint64_t sb = kf_ualloc(sizeof(linux_stat_t));
+        uint64_t fsb = kf_ualloc(120);
         long fd = tmp_open("/tmp/id-a", 0x42, 0644);
 
         expect(fd >= 0 && SYS2(82, ustr("/tmp/id-a"), ustr("/tmp/id-b")) == 0 &&
-               SYS2(91, (uint64_t)fd, 0600) == -VIBEOS_ENOENT,
-               "fchmod after the file was renamed away finds nothing at its path");
+               SYS2(91, (uint64_t)fd, 0600) == 0 &&
+               tmp_stat("/tmp/id-b", 1, &st) == 0 && (st.st_mode & 0777u) == 0600u,
+               "fchmod after the file was renamed changes it under its new name");
         expect(SYS1(3, (uint64_t)tmp_open("/tmp/id-a", 0x42, 0644)) == 0 &&
-               SYS2(91, (uint64_t)fd, 0600) == -VIBEOS_ESTALE &&
-               tmp_stat("/tmp/id-a", 1, &st) == 0 && (st.st_mode & 0777u) == 0644u,
-               "and a new file at that path is not the descriptor's: ESTALE, and it is left alone");
-        expect(SYS2(82, ustr("/tmp/id-b"), ustr("/tmp/id-a")) == 0 && SYS2(91, (uint64_t)fd, 0600) == 0 &&
-               tmp_stat("/tmp/id-a", 1, &st) == 0 && (st.st_mode & 0777u) == 0600u,
-               "back at its path, the descriptor's file is the one changed");
+               SYS2(91, (uint64_t)fd, 0640) == 0 &&
+               tmp_stat("/tmp/id-a", 1, &st) == 0 && (st.st_mode & 0777u) == 0644u &&
+               tmp_stat("/tmp/id-b", 1, &st) == 0 && (st.st_mode & 0777u) == 0640u,
+               "and a new file at the old name is left alone: the descriptor's file is the one changed");
+        expect(SYS2(5, (uint64_t)fd, sb) == 0 &&
+               (((linux_stat_t *)kf_uptr(sb))->st_mode & 0777u) == 0640u,
+               "fstat reports the descriptor's file, not the one now at its old name");
+        expect(SYS2(138, (uint64_t)fd, fsb) == 0, "fstatfs needs only the descriptor's mount");
+        expect(SYS1(87, ustr("/tmp/id-b")) == 0 && SYS2(91, (uint64_t)fd, 0600) == -VIBEOS_ENOENT,
+               "a file whose last name is gone cannot be asked for: ENOENT, not somebody else's");
+        (void)SYS1(3, (uint64_t)fd);
+        (void)SYS1(87, ustr("/tmp/id-a"));
+    }
+
+    /* And a filesystem that cannot be asked by node - the fake's root, the
+     * least capable one here - still walks the name, and refuses a different
+     * file there with ESTALE rather than acting on it. The slot the first file
+     * held is taken by another before the name is made again, so the new file
+     * has another node. */
+    {
+        long fd = SYS3(2, ustr("/fid-x"), 0x42, 0644);
+
+        expect(fd >= 0 && SYS1(87, ustr("/fid-x")) == 0 &&
+               SYS1(3, (uint64_t)SYS3(2, ustr("/fid-y"), 0x42, 0644)) == 0 &&
+               SYS1(3, (uint64_t)SYS3(2, ustr("/fid-x"), 0x42, 0644)) == 0 &&
+               SYS2(91, (uint64_t)fd, 0600) == -VIBEOS_ESTALE,
+               "without a node to ask, another file at the descriptor's name is ESTALE");
+        (void)SYS1(3, (uint64_t)fd);
+        (void)SYS1(87, ustr("/fid-x"));
+        (void)SYS1(87, ustr("/fid-y"));
     }
 
     /* M-079: a group is joined only if somebody leads it. */

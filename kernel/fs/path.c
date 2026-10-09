@@ -165,6 +165,7 @@ int vibeos_path_walk_as(const char *root, const char *base, const char *path, ui
     out->mnt = 0;
     out->tail = out->path;
     out->trailing_slash = 0;
+    out->by_node = 0;
     for (plen = 0; path[plen]; plen++) {
     }
     if (plen >= VIBEOS_PATH_MAX) {

@@ -382,6 +382,40 @@ int vibeos_fs_setattr(vibeos_fsmount_t *mnt, const char *path, const vibeos_fs_a
     return r;
 }
 
+int vibeos_fs_getattr(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, vibeos_fs_node_t *out) {
+    int r;
+
+    if (!vibeos_fs_is_mounted(mnt) || !node || !out) {
+        return -VIBEOS_EINVAL;
+    }
+    if (!mnt->ops->getattr) {
+        return -VIBEOS_ENOSYS;
+    }
+    fs_node_clear(out);
+    r = mnt->ops->getattr(mnt->fs, node, out);
+    if (r == 0) {
+        fs_node_complete(out);
+    }
+    return r;
+}
+
+int vibeos_fs_setattr_node(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, const char *path,
+                           const vibeos_fs_attr_t *attr) {
+    int r;
+
+    if (!vibeos_fs_is_mounted(mnt) || !node || !attr) {
+        return -VIBEOS_EINVAL;
+    }
+    if (!mnt->ops->setattr_node) {
+        return -VIBEOS_ENOSYS;
+    }
+    r = mnt->ops->setattr_node(mnt->fs, node, attr);
+    if (r == 0 && path) {
+        vibeos_fs_notify(mnt, path, node->id, VIBEOS_FSN_ATTRIB, 0, node->is_dir);
+    }
+    return r;
+}
+
 int vibeos_fs_statfs(vibeos_fsmount_t *mnt, vibeos_fs_statfs_t *out) {
     uint8_t *p = (uint8_t *)out;
     uint32_t i;

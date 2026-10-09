@@ -2840,25 +2840,83 @@ static int fat_op_rename(void *fs, const char *from, const char *to, uint32_t fl
  * write permission as its read-only bit. It has no owners - one that is not
  * root's is refused, root's is what every file already has - and no access
  * time worth the write. */
+/* Whether FAT can take the change at all: it has no owners. */
+static int fat_attr_ok(const vibeos_fs_attr_t *a) {
+    return !(((a->valid & VIBEOS_ATTR_UID) && a->uid != 0u) ||
+             ((a->valid & VIBEOS_ATTR_GID) && a->gid != 0u));
+}
+
+/* Under the lock, on an entry already loaded. */
+static int fat_setattr_ent(fat_ent_t *e, const vibeos_fs_attr_t *a) {
+    if (!(a->valid & (VIBEOS_ATTR_MODE | VIBEOS_ATTR_MTIME))) {
+        return 0;
+    }
+    if ((a->valid & VIBEOS_ATTR_MODE) && (e->attr & 0x10u) == 0u) {
+        e->attr = (uint8_t)((e->attr & ~0x01u) | ((a->mode & 0222u) ? 0u : 0x01u));
+    }
+    if (a->valid & VIBEOS_ATTR_MTIME) {
+        fat_time_from_ns(a->mtime_ns, &e->date, &e->time);
+    }
+    return fat_ent_store(e);
+}
+
 static int fat_op_setattr(void *fs, const char *path, const vibeos_fs_attr_t *a) {
     fat_ent_t e;
     int is_root = 0, r;
 
-    if (((a->valid & VIBEOS_ATTR_UID) && a->uid != 0u) ||
-        ((a->valid & VIBEOS_ATTR_GID) && a->gid != 0u)) {
+    if (!fat_attr_ok(a)) {
         return -VIBEOS_EPERM;
     }
     fs_lock();
     fat_select(fs);
     r = fat_path_ent(path, &e, &is_root);
-    if (r == 0 && !is_root && (a->valid & (VIBEOS_ATTR_MODE | VIBEOS_ATTR_MTIME))) {
-        if ((a->valid & VIBEOS_ATTR_MODE) && (e.attr & 0x10u) == 0u) {
-            e.attr = (uint8_t)((e.attr & ~0x01u) | ((a->mode & 0222u) ? 0u : 0x01u));
-        }
-        if (a->valid & VIBEOS_ATTR_MTIME) {
-            fat_time_from_ns(a->mtime_ns, &e.date, &e.time);
-        }
-        r = fat_ent_store(&e);
+    if (r == 0 && !is_root) {
+        r = fat_setattr_ent(&e, a);
+    }
+    fs_unlock();
+    return r;
+}
+
+/* By node (M-080). A FAT node is where its directory entry sits, so this is as
+ * good as that: a file renamed to another slot is not found, and one created
+ * in a slot a deleted file left is taken for it - FAT has no inode to tell
+ * them apart, and the entry is all there is. The root has no entry; its id
+ * is 0. */
+static int fat_op_getattr(void *fs, const vibeos_fs_node_t *node, vibeos_fs_node_t *out) {
+    fat_ent_t e;
+    int r;
+
+    if (node->id == 0u) {
+        out->id = 0;
+        out->size = 0;
+        out->is_dir = 1;
+        return 0;
+    }
+    fs_lock();
+    fat_select(fs);
+    r = g_fat_cur->mounted ? fat_ent_load(node->id, &e) : -VIBEOS_ENOENT;
+    if (r == 0) {
+        fat_node_fill(&e, out);
+    }
+    fs_unlock();
+    return r;
+}
+
+static int fat_op_setattr_node(void *fs, const vibeos_fs_node_t *node, const vibeos_fs_attr_t *a) {
+    fat_ent_t e;
+    int r;
+
+    if (!fat_attr_ok(a)) {
+        return -VIBEOS_EPERM;
+    }
+    if (node->id == 0u) {
+        return 0;   /* the root, which has no entry to change */
+    }
+    fs_lock();
+    fat_select(fs);
+    r = fat_ent_load(node->id, &e);
+    if (r == 0) {
+        r = fat_setattr_ent(&e, a);
     }
     fs_unlock();
     return r;
@@ -2909,6 +2967,8 @@ static const vibeos_fs_ops_t g_fat_ops = {
     .rmdir = fat_op_rmdir,
     .rename = fat_op_rename,
     .setattr = fat_op_setattr,
+    .getattr = fat_op_getattr,
+    .setattr_node = fat_op_setattr_node,
     .statfs = fat_op_statfs,
     .sync = fat_op_sync,
 };

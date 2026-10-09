@@ -302,6 +302,24 @@ int test_fat(void) {
     expect(vibeos_fs_setattr(&g_m, "f", &a) == -VIBEOS_EPERM, "an owner FAT cannot record is EPERM");
     a.uid = 0;
     expect(vibeos_fs_setattr(&g_m, "f", &a) == 0, "root's, which every file already has, is accepted");
+    /* By node (M-080): what a call on a descriptor asks, the name aside. */
+    {
+        vibeos_fs_node_t held, got;
+
+        expect(node("f", &held) == 0 && vibeos_fs_getattr(&g_m, &held, &got) == 0 &&
+               got.id == held.id && got.size == held.size && (got.mode & 0222u) == 0u,
+               "getattr by node answers what lookup by name does");
+        a.valid = VIBEOS_ATTR_MODE;
+        a.mode = 0644u;
+        expect(vibeos_fs_setattr_node(&g_m, &held, "f", &a) == 0 && node("f", &n) == 0 &&
+               (n.mode & 0222u) != 0u, "setattr by node clears the read-only bit");
+        expect(mk("gone") == 0 && node("gone", &got) == 0 && vibeos_fs_unlink(&g_m, "gone") == 0 &&
+               vibeos_fs_getattr(&g_m, &got, &n) == -VIBEOS_ENOENT &&
+               vibeos_fs_setattr_node(&g_m, &got, "gone", &a) == -VIBEOS_ENOENT,
+               "a deleted file's node is ENOENT to both, not whatever the slot holds next");
+        held.id = 0;
+        expect(vibeos_fs_getattr(&g_m, &held, &n) == 0 && n.is_dir, "the root's node is a directory");
+    }
     g_clock = 1700000000ull * 1000000000ull;
     expect(wr("e1", 0, "t", 1) == 1 && node("e1", &n) == 0 &&
            n.mtime_ns / 1000000000ull / 2u == 1700000000ull / 2u, "a write stamps the time, to FAT's two seconds");

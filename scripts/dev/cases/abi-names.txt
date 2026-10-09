@@ -178,12 +178,11 @@
 +++ new
     k.f_flags = 0;
 
-### fstatfs of a pipe is EINVAL
+### fstatfs of a pipe asks a filesystem it does not have
 --- old
-    if (r == -VIBEOS_EINVAL) {
-        return -VIBEOS_ENOSYS;
-    }
+    r = f->mnt ? linux_statfs_mnt(f->mnt, ubuf) : -VIBEOS_ENOSYS;
 +++ new
+    r = linux_statfs_mnt(f->mnt, ubuf);
 
 ### mknod does not apply the umask
 --- old

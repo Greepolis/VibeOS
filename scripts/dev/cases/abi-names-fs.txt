@@ -45,9 +45,11 @@
         vibeos_file_put(f);
         return -VIBEOS_EINVAL;
     }
-    r = vibeos_path_walk("/", "/", f->path, VIBEOS_PATH_NOFOLLOW, w);
+    {
+        vibeos_fs_node_t held;
 +++ new
-    r = vibeos_path_walk("/", "/", f->path, VIBEOS_PATH_NOFOLLOW, w);
+    {
+        vibeos_fs_node_t held;
 
 ### AT_EMPTY_PATH is not honoured
 --- old

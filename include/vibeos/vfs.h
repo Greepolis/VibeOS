@@ -155,6 +155,13 @@ typedef struct {
     /* A symbolic link's contents, not terminated; bytes copied. */
     long (*readlink)(void *fs, const char *path, char *buf, uint32_t cap);
     int (*setattr)(void *fs, const char *path, const vibeos_fs_attr_t *attr);
+    /* The same two questions asked of a node rather than a name (M-080): what
+     * a call on a descriptor needs, because the name the description was
+     * opened by may since name another file, or nothing. -ENOENT for a node
+     * that is gone. Optional; without them a descriptor's call walks its path
+     * and refuses a different node with ESTALE. */
+    int (*getattr)(void *fs, const vibeos_fs_node_t *node, vibeos_fs_node_t *out);
+    int (*setattr_node)(void *fs, const vibeos_fs_node_t *node, const vibeos_fs_attr_t *attr);
     int (*statfs)(void *fs, vibeos_fs_statfs_t *out);
     /* Everything written is on the medium when this returns. */
     int (*sync)(void *fs);
@@ -232,6 +239,11 @@ int vibeos_fs_symlink(vibeos_fsmount_t *mnt, const char *target, const char *pat
 /* -EINVAL when the filesystem has no symbolic links: nothing on it is one. */
 long vibeos_fs_readlink(vibeos_fsmount_t *mnt, const char *path, char *buf, uint32_t cap);
 int vibeos_fs_setattr(vibeos_fsmount_t *mnt, const char *path, const vibeos_fs_attr_t *attr);
+/* By node (M-080). -ENOSYS when the filesystem cannot be asked by node, so the
+ * caller can fall back to its path. `path` is only what a listener is told. */
+int vibeos_fs_getattr(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, vibeos_fs_node_t *out);
+int vibeos_fs_setattr_node(vibeos_fsmount_t *mnt, const vibeos_fs_node_t *node, const char *path,
+                           const vibeos_fs_attr_t *attr);
 /* A driver without statfs is described from what the wrapper knows: its
  * writability and nothing else. */
 int vibeos_fs_statfs(vibeos_fsmount_t *mnt, vibeos_fs_statfs_t *out);

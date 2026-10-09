@@ -25,6 +25,15 @@ static const char *linux_tail(const vibeos_path_t *w) {
     return *w->tail ? w->tail : "/";
 }
 
+/* A change of attributes, to the node a descriptor holds when the walk came
+ * from one (M-080), to the name otherwise. */
+static long linux_setattr_walked(const vibeos_path_t *w, const vibeos_fs_attr_t *attr) {
+    if (w->by_node) {
+        return vibeos_fs_setattr_node(w->mnt, &w->node, linux_tail(w), attr);
+    }
+    return vibeos_fs_setattr(w->mnt, linux_tail(w), attr);
+}
+
 static int linux_same_path(const char *a, const char *b) {
     while (*a && *a == *b) {
         a++;
@@ -507,7 +516,7 @@ static long linux_chmod_walked(const vibeos_path_t *w, uint64_t mode) {
     }
     attr.valid = VIBEOS_ATTR_MODE;
     attr.mode = (uint32_t)mode & 07777u;
-    return vibeos_fs_setattr(w->mnt, linux_tail(w), &attr);
+    return linux_setattr_walked(w, &attr);
 }
 
 static long linux_chmod_at(uint64_t dirfd, uint64_t path_uptr, uint64_t mode, uint64_t flags) {
@@ -569,7 +578,7 @@ static long linux_chown_walked(const vibeos_path_t *w, uint64_t uid, uint64_t gi
             attr.mode = (mode & 07777u) & ~drop;
         }
     }
-    return vibeos_fs_setattr(w->mnt, linux_tail(w), &attr);
+    return linux_setattr_walked(w, &attr);
 }
 
 static long linux_chown_at(uint64_t dirfd, uint64_t path_uptr, uint64_t uid, uint64_t gid,
@@ -623,7 +632,7 @@ static long linux_times_walked(const vibeos_path_t *w, const linux_when_t *a, co
         !(a->now && m->now && linux_may(&w->node, VIBEOS_MAY_WRITE) == 0)) {
         return a->now && m->now ? -VIBEOS_EACCES : -VIBEOS_EPERM;
     }
-    return vibeos_fs_setattr(w->mnt, linux_tail(w), &attr);
+    return linux_setattr_walked(w, &attr);
 }
 
 /* A time as nanoseconds since 1970, held at the largest this kernel stores
@@ -736,12 +745,12 @@ static long linux_sys_utime(uint64_t path_uptr, uint64_t times_uptr) {
 
 /* ---- statfs -------------------------------------------------------------------------- */
 
-static long linux_statfs_walked(const vibeos_path_t *w, uint64_t ubuf) {
+static long linux_statfs_mnt(vibeos_fsmount_t *mnt, uint64_t ubuf) {
     vibeos_fs_statfs_t s;
     linux_statfs_t k;
     uint8_t *raw = (uint8_t *)&k;
     uint32_t i;
-    int r = vibeos_fs_statfs(w->mnt, &s);
+    int r = vibeos_fs_statfs(mnt, &s);
 
     if (r != 0) {
         return r;
@@ -757,7 +766,7 @@ static long linux_statfs_walked(const vibeos_path_t *w, uint64_t ubuf) {
     k.f_bavail = (int64_t)s.blocks_free;   /* nothing is held back for root */
     k.f_files = (int64_t)s.files;
     k.f_ffree = (int64_t)s.files_free;
-    k.f_fsid[0] = (int32_t)linux_dev_of(w->mnt);
+    k.f_fsid[0] = (int32_t)linux_dev_of(mnt);
     k.f_namelen = (int64_t)s.name_max;
     k.f_flags = s.read_only ? LINUX_ST_RDONLY : 0;
     if (vibeos_uaccess_copy((void *)(uintptr_t)ubuf, &k, sizeof(k)) != 0) {
@@ -773,17 +782,21 @@ static long linux_sys_statfs(uint64_t path_uptr, uint64_t ubuf) {
     vibeos_path_t w;
     long r = linux_walk_at(LINUX_CWD, path_uptr, 0u, &w);
 
-    return r != 0 ? r : linux_statfs_walked(&w, ubuf);
+    return r != 0 ? r : linux_statfs_mnt(w.mnt, ubuf);
 }
 
+/* The description's mount, and nothing else: which file it is does not matter,
+ * so neither does where its name now leads (M-080). */
 static long linux_sys_fstatfs(uint64_t fd, uint64_t ubuf) {
-    vibeos_path_t w;
-    long r = linux_walk_fd(fd, &w);
+    vibeos_file_t *f = linux_file_get(fd);
+    long r;
 
-    if (r == -VIBEOS_EINVAL) {
-        return -VIBEOS_ENOSYS;
+    if (!f) {
+        return -VIBEOS_EBADF;
     }
-    return r != 0 ? r : linux_statfs_walked(&w, ubuf);
+    r = f->mnt ? linux_statfs_mnt(f->mnt, ubuf) : -VIBEOS_ENOSYS;
+    vibeos_file_put(f);
+    return r;
 }
 
 /* ---- extended attributes --------------------------------------------------------------

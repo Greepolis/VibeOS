@@ -1,0 +1,31 @@
+# M-080: FAT answers attribute questions by node, which is where the file's
+# directory entry sits. Host test: the "attributes" block of
+# tests/kernel/fat_tests.c.
+#
+#  1. setattr by node changes nothing. Expect "setattr by node clears the
+#     read-only bit".
+#  2. a deleted file's slot is read as if it still held the file. Expect "a
+#     deleted file's node is ENOENT to both".
+#
+# Target source: kernel/fs/fat.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/fs/fat.c scripts/dev/cases/fs-fat-node.txt
+
+### setattr by node changes nothing
+--- old
+    r = fat_ent_load(node->id, &e);
+    if (r == 0) {
+        r = fat_setattr_ent(&e, a);
+    }
++++ new
+    r = fat_ent_load(node->id, &e);
+
+### a deleted file's slot is read as if it still held the file
+--- old
+    r = g_fat_cur->mounted ? fat_ent_load(node->id, &e) : -VIBEOS_ENOENT;
+    if (r == 0) {
+        fat_node_fill(&e, out);
+    }
++++ new
+    r = 0;
+    (void)e;
+    out->id = node->id;

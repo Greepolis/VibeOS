@@ -298,11 +298,20 @@ static long regular_seek(vibeos_file_t *f, int64_t off, int whence) {
  *
  * Asked of the filesystem again (L1): owner, mode and times change under an
  * open file - chmod, a write through another description - and the node the
- * description was opened on is a snapshot. */
+ * description was opened on is a snapshot.
+ *
+ * Asked of the node, where the filesystem can be (M-080): the name it was
+ * opened by may since name another file, and fstat answered with that one's
+ * owner, mode and size. The name is asked only of a filesystem that cannot be
+ * asked otherwise. */
 static int regular_stat(vibeos_file_t *f, vibeos_file_stat_t *out) {
-    vibeos_fs_node_t node;
+    vibeos_fs_node_t node, held = node_of(f);
+    int r = vibeos_fs_getattr(f->mnt, &held, &node);
 
-    if (vibeos_fs_lookup(f->mnt, tail_of(f), &node) == 0) {
+    if (r == -VIBEOS_ENOSYS) {
+        r = vibeos_fs_lookup(f->mnt, tail_of(f), &node);
+    }
+    if (r == 0) {
         vibeos_file_stat_from_node(out, &node);
     } else {
         vibeos_file_stat_clear(out);

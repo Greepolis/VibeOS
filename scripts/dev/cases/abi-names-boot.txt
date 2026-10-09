@@ -13,7 +13,7 @@
 ### chmod reports success and changes nothing
 --- old
     attr.mode = (uint32_t)mode & 07777u;
-    return vibeos_fs_setattr(w->mnt, linux_tail(w), &attr);
+    return linux_setattr_walked(w, &attr);
 +++ new
     attr.mode = (uint32_t)mode & 07777u;
     return 0;

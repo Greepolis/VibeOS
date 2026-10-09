@@ -237,15 +237,20 @@ long linux_walk_at(uint64_t dirfd, uint64_t upath, uint32_t flags, vibeos_path_t
  *
  * The gap is the one a path for an identity always has: after a rename the
  * description's path names nothing, or something else. Nothing is ENOENT, as
- * it was. Something else is refused (M-080): open /a, rename it away, make a
+ * it was. Something else was refused (M-080): open /a, rename it away, make a
  * new /a, and fchmod on the old descriptor changed the *new* file - the wrong
  * object, through a descriptor that still looked valid, with no race needed.
- * The walk's answer is compared with the node the description was opened on,
- * and a different one is ESTALE. That is a refusal where Linux would act on
- * the renamed file, and it is only as good as the filesystem's node numbers:
- * tmpfs's carry a generation, FAT's are a directory slot, and a new file in
- * the old one's slot is not told apart. Operating on the node itself needs the
- * filesystems to take one for setattr; until then, wrong is not an answer. */
+ *
+ * A filesystem that can be asked by node is asked by node now: the answer is
+ * the description's own file wherever it has been renamed to, as Linux's is,
+ * and `by_node` sends a change there rather than to the name. -ENOENT from
+ * that question is a file that is gone, which Linux would still act on and
+ * this cannot: there is nothing left to ask. A filesystem without the
+ * question has its path walked as before, and a different node there is
+ * ESTALE - a refusal, which is better than the wrong file. Both are only as
+ * good as the filesystem's node numbers: tmpfs's carry a generation; FAT's
+ * are a directory slot, so a file renamed elsewhere is not found and a new
+ * file in the old one's slot is taken for it. */
 long linux_walk_fd(uint64_t fd, vibeos_path_t *w) {
     vibeos_file_t *f;
     long r;
@@ -265,6 +270,32 @@ long linux_walk_fd(uint64_t fd, vibeos_path_t *w) {
     if (!f->mnt) {
         vibeos_file_put(f);
         return -VIBEOS_EINVAL;
+    }
+    {
+        vibeos_fs_node_t held;
+        uint32_t i;
+
+        held.id = f->node;
+        held.size = f->size;
+        held.is_dir = f->isdir;
+        r = vibeos_fs_getattr(f->mnt, &held, &w->node);
+        if (r != -VIBEOS_ENOSYS) {
+            if (r == 0) {
+                for (i = 0; f->path[i] && i + 1u < sizeof(w->path); i++) {
+                    w->path[i] = f->path[i];
+                }
+                w->path[i] = 0;
+                w->mnt = f->mnt;
+                w->tail = w->path + (f->tail < i ? f->tail : i);
+                w->exists = 1;
+                w->trailing_slash = 0;
+                w->by_node = 1;
+            } else if (r != -VIBEOS_EIO) {
+                r = -VIBEOS_ENOENT;
+            }
+            vibeos_file_put(f);
+            return r;
+        }
     }
     r = vibeos_path_walk("/", "/", f->path, VIBEOS_PATH_NOFOLLOW, w);
     if (r == 0 && w->exists && (w->mnt != f->mnt || w->node.id != f->node)) {
