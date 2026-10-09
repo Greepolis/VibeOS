@@ -1324,6 +1324,19 @@ uint64_t ks_fpu_size(void) { return 512u; }
 int ks_fpu_save(uint64_t uaddr) {
     return vibeos_uaccess_copy((void *)(uintptr_t)uaddr, g_kf_fpu, sizeof(g_kf_fpu)) == 0 ? 0 : -1;
 }
+/* One thread runs at a time here, so a read and a write are the exchange. */
+int ks_user_cmpxchg32(uint64_t uaddr, uint32_t *expected, uint32_t desired) {
+    uint32_t cur;
+
+    if ((uaddr & 3u) != 0u || vibeos_uaccess_copy(&cur, (const void *)(uintptr_t)uaddr, 4u) != 0) {
+        return -1;
+    }
+    if (cur == *expected && vibeos_uaccess_copy((void *)(uintptr_t)uaddr, &desired, 4u) != 0) {
+        return -1;
+    }
+    *expected = cur;
+    return 0;
+}
 int ks_fpu_restore(uint64_t uaddr) {
     unsigned char area[512];
     if (vibeos_uaccess_copy(area, (const void *)(uintptr_t)uaddr, sizeof(area)) != 0) {

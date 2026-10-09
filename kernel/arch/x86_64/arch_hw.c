@@ -386,6 +386,8 @@ int hw_user_range_ok(uint64_t va, uint64_t len, int need_write);
 extern const char vibeos_uaccess_copy_begin[];
 extern const char vibeos_uaccess_copy_end[];
 extern void vibeos_uaccess_copy_fixup(void);
+extern const char vibeos_uaccess_atomic_begin[];
+extern const char vibeos_uaccess_atomic_end[];
 static uint64_t g_uaccess_recovered;
 
 /* Load the shared GDT on this CPU, install its private TSS, and point GS.base
@@ -917,8 +919,10 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
          * only from ring 0, and only on a user address - a kernel address
          * faulting there is a kernel bug and still panics below. */
         if ((frame->cs & 3u) == 0u &&
-            frame->rip >= (uint64_t)(uintptr_t)vibeos_uaccess_copy_begin &&
-            frame->rip < (uint64_t)(uintptr_t)vibeos_uaccess_copy_end &&
+            ((frame->rip >= (uint64_t)(uintptr_t)vibeos_uaccess_copy_begin &&
+              frame->rip < (uint64_t)(uintptr_t)vibeos_uaccess_copy_end) ||
+             (frame->rip >= (uint64_t)(uintptr_t)vibeos_uaccess_atomic_begin &&
+              frame->rip < (uint64_t)(uintptr_t)vibeos_uaccess_atomic_end)) &&
             hw_user_addr_ok(fault_address)) {
             g_uaccess_recovered++;
             frame->rip = (uint64_t)(uintptr_t)&vibeos_uaccess_copy_fixup;

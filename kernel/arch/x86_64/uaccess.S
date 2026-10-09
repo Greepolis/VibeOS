@@ -40,4 +40,26 @@ vibeos_uaccess_copy_fixup:
     movl $-1, %eax
     ret
 
+/* int vibeos_uaccess_cmpxchg32(uint32_t *uaddr, uint32_t *expected, uint32_t desired);
+ *
+ * One atomic compare-exchange on a user word (docs/abi/ L6: futex's WAKE_OP
+ * and the robust list at a thread's exit both change a word other threads
+ * change with their own atomics, so a read and a later write would lose
+ * theirs). 0 with *expected holding the word as it was - equal to what was
+ * passed when the exchange happened - or -1 if the word was not there. The
+ * same recovery point as the copy: the one instruction that touches the user
+ * side lies between its own begin and end, and nothing is pushed. */
+    .globl vibeos_uaccess_cmpxchg32
+    .type vibeos_uaccess_cmpxchg32, @function
+vibeos_uaccess_cmpxchg32:
+    movl (%rsi), %eax
+    .globl vibeos_uaccess_atomic_begin
+vibeos_uaccess_atomic_begin:
+    lock cmpxchgl %edx, (%rdi)
+    .globl vibeos_uaccess_atomic_end
+vibeos_uaccess_atomic_end:
+    movl %eax, (%rsi)
+    xorl %eax, %eax
+    ret
+
     .section .note.GNU-stack,"",@progbits

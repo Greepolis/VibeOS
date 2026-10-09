@@ -531,6 +531,16 @@ int ks_fpu_save(uint64_t uaddr) {
     return vibeos_uaccess_copy((void *)(uintptr_t)uaddr, area, sizeof(area)) == 0 ? 0 : -1;
 }
 
+/* The word is the caller's to have judged, through linux_user_ok, as for the
+ * copy: the range check has one call site (check-chokepoints.py). What this
+ * adds is surviving the word going away between that and the exchange. */
+int ks_user_cmpxchg32(uint64_t uaddr, uint32_t *expected, uint32_t desired) {
+    if ((uaddr & 3u) != 0u) {
+        return -1;
+    }
+    return vibeos_uaccess_cmpxchg32((uint32_t *)(uintptr_t)uaddr, expected, desired);
+}
+
 int ks_fpu_restore(uint64_t uaddr) {
     unsigned char area[512] __attribute__((aligned(16)));
     uint32_t mxcsr;

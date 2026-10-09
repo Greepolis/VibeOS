@@ -217,6 +217,13 @@ int ks_regs_set(ks_regs_t *frame, const vibeos_uregs_t *in);
  * the memory was not there, or the state read back would fault the CPU. A
  * handler that uses SSE - memcpy does - would otherwise hand the interrupted
  * code back registers it never wrote. */
+/* One atomic compare-exchange on a 4-byte user word: 0 with *expected set to
+ * what the word held (the exchange happened if that equals what was passed),
+ * or -1 when the word could not be reached. Fault-tolerant, like the copy:
+ * user memory can go between any check and the access (docs/abi/ L6). And,
+ * like the copy, it does not judge the address: the caller asks ks_user_ok
+ * (through its personality's helper) first. */
+int ks_user_cmpxchg32(uint64_t uaddr, uint32_t *expected, uint32_t desired);
 uint64_t ks_fpu_size(void);
 int ks_fpu_save(uint64_t uaddr);
 int ks_fpu_restore(uint64_t uaddr);

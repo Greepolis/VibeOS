@@ -261,6 +261,7 @@ void hw_task_exit(uint64_t code);
  * faulted - which a sibling thread's munmap can cause at any moment after the
  * range was validated (H-003, H-010). */
 int vibeos_uaccess_copy(void *dst, const void *src, uint64_t len);
+int vibeos_uaccess_cmpxchg32(uint32_t *uaddr, uint32_t *expected, uint32_t desired);
 
 /* ---- the seam with io_bringup.c ------------------------------------------
  *
