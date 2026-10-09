@@ -137,7 +137,13 @@ w_mkdir_rm() {
 }
 
 w_pipeline() {
-    yes | head -n 1000 | wc -l
+    # yes's own complaint is not part of the answer. Three nightlies running
+    # this on Linux (2026-10-02 to 04) printed "yes: Broken pipe" - yes got
+    # EPIPE instead of dying of SIGPIPE when head left - and read that line as
+    # Linux answering differently. Not reproduced here, with SIGPIPE ignored by
+    # bash or by Python; the line is dropped because it says nothing about the
+    # kernel either way, not because the cause is known.
+    yes 2>/dev/null | head -n 1000 | wc -l
     seq 1 100 | sort -rn | head -n 3
 }
 
