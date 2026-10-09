@@ -1,0 +1,85 @@
+# The rest of futex (docs/abi/ L6 step 1): bitsets, requeue, WAKE_OP, the
+# futex2 calls and robust lists. Host tests: t_futex_l6 in
+# tests/kernel/linux_abi_tests.c.
+#
+#  1. a wake ignores the waiter's bitset. Expect "a wake for bit 2 does not
+#     wake a waiter on bit 1".
+#  2. requeue wakes and moves nobody further. Expect "it is on the second".
+#  3. CMP_REQUEUE does not compare. Expect "CMP_REQUEUE on a word that moved
+#     is EAGAIN".
+#  4. WAKE_OP wakes the second word whatever the comparison said. Expect "and
+#     sets it, waking nobody, when the comparison fails".
+#  5. a sleeper on several words is woken once per word. Expect "it counts
+#     once".
+#  6. a dead owner's lock is left naming it. Expect "a's exit marks its lock
+#     OWNER_DIED".
+#  7. another thread's lock is marked too. Expect "a lock another thread holds
+#     is left alone".
+#  8. set_robust_list takes any length. Expect "set_robust_list with a wrong
+#     length is EINVAL".
+#  9. a waited word is read without being judged. Expect "a word at address 0
+#     is EFAULT".
+#
+# Boot: futex-l6-boot.txt.
+#
+# Target source: kernel/abi/linux/futex.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/futex.c scripts/dev/cases/futex-l6.txt
+
+### a wake ignores the waiter's bitset
+--- old
+        if (!w->used || w->addr != key || w->ps != ps || (w->bitset & mask) == 0u) {
++++ new
+        if (!w->used || w->addr != key || w->ps != ps) {
+
+### requeue moves nobody
+--- old
+        w->addr = k2;
+        w->ps = ps2;
++++ new
+        (void)k2;
+        (void)ps2;
+
+### CMP_REQUEUE does not compare
+--- old
+        if (cur != expected) {
+            ks_unlock(&g_futex_lock);
+            return -VIBEOS_EAGAIN;
+        }
++++ new
+
+### WAKE_OP wakes the second word whatever the comparison said
+--- old
+    if (pass) {
++++ new
+    if (1) {
+
+### a sleeper on several words is woken once per word
+--- old
+    if (ks_seq(w->task) != w->seq || l->woken) {
++++ new
+    if (ks_seq(w->task) != w->seq) {
+
+### a dead owner's lock is left naming it
+--- old
+        want = (seen & LINUX_FUTEX_WAITERS) | LINUX_FUTEX_OWNER_DIED;
++++ new
+        want = seen;
+
+### another thread's lock is marked too
+--- old
+        if ((seen & LINUX_FUTEX_TID_MASK) != tid) {
++++ new
+        if (0) {
+
+### set_robust_list takes any length
+--- old
+    if (len != sizeof(linux_robust_list_head_t)) {
++++ new
+    if (0) {
+
+### a waited word is read without being judged
+--- old
+        if (!linux_user_ok(words[i].addr, 4u, 0) ||
+            vibeos_uaccess_copy(&cur, (const void *)(uintptr_t)words[i].addr, 4u) != 0) {
++++ new
+        if (vibeos_uaccess_copy(&cur, (const void *)(uintptr_t)words[i].addr, 4u) != 0) {

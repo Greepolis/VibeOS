@@ -1204,6 +1204,11 @@ int hw_task_spawn_user(const unsigned char *elf, uint64_t len,
         g_tasks[i].id.exit_signal = 0;
         g_tasks[i].id.sig_pending = 0;
         g_tasks[i].id.sig_blocked = 0;
+        /* The two words exit writes into user memory: the last tenant's would
+         * be written into this program's (docs/abi/ L6, found adding the
+         * second; the first had been left as the slot had it all along). */
+        g_tasks[i].id.clear_child_tid = 0;
+        g_tasks[i].id.robust_head = 0;
         for (sg = 0; sg < VIBEOS_HW_NSIG; sg++) {
             g_tasks[i].ps->sig_handler[sg] = SIG_DFL_ADDR;
             g_tasks[i].ps->sig_restorer[sg] = 0;
@@ -1318,6 +1323,12 @@ void hw_task_exit(uint64_t code) {
      *
      * The word lives in the dying task's address space, so it can only be
      * written while that space is still the one loaded. */
+    /* The robust locks it still holds first (docs/abi/ L6), in the same
+     * address space for the same reason: Linux walks the list before it
+     * clears the join word, so a joiner that wakes finds the locks marked. */
+    if (dying >= 0 && g_tasks[dying].id.is_user) {
+        linux_futex_exit_robust(dying);
+    }
     if (dying >= 0 && g_tasks[dying].id.clear_child_tid != 0u) {
         uint64_t addr = g_tasks[dying].id.clear_child_tid;
         uint32_t why = HW_RANGE_OK;

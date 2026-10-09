@@ -18,11 +18,11 @@
 
 ### futex wait sleeps without checking the value first
 --- old
-    if (cur != expected) {
-        ks_unlock(&g_futex_lock);
+        if (cur != words[i].expected) {
+            ks_unlock(&g_futex_lock);
 +++ new
-    if (0) {
-        ks_unlock(&g_futex_lock);
+        if (0) {
+            ks_unlock(&g_futex_lock);
 
 ### mprotect leaves a reserved page unreachable from ring 3
 --- old

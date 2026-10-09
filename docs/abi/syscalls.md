@@ -9,9 +9,9 @@ the registry, not this page; `check.sh` fails while the two differ.
 
 | State | Count | What the kernel answers |
 | --- | --- | --- |
-| done | 196 | through its row |
+| done | 201 | through its row |
 | partial | 35 | through its row, with the gap named |
-| missing | 58 | ENOSYS, and the boot gate fails naming the number |
+| missing | 53 | ENOSYS, and the boot gate fails naming the number |
 | deferred | 50 | ENOSYS, and the boot gate fails naming the number |
 | refused | 34 | its errno, counted as refused - expected, never a failure |
 
@@ -24,7 +24,7 @@ Without a row, by phase:
 | L3 - memory | 0 |
 | L4 - event loops | 0 |
 | L5 - sockets | 0 |
-| L6 - threads and scheduling | 20 |
+| L6 - threads and scheduling | 15 |
 | L7 - IPC | 21 |
 | L8 - system administration | 11 |
 | L9 - security | 6 |
@@ -238,7 +238,7 @@ calls, outside the Linux number space, are listed last.
 | 199 | `fremovexattr` | done | - | - | `names.c` |  |
 | 200 | `tkill` | done | - | - | `sig.c` |  |
 | 201 | `time` | done | - | - | `misc.c` |  |
-| 202 | `futex` | partial | L6 | - | `futex.c` | WAIT (with a timeout) and WAKE, private or shared; no requeue, wake_op, bitset or PI |
+| 202 | `futex` | partial | L6 | - | `futex.c` | every operation but priority inheritance, which is ENOSYS: no program here asks for it |
 | 203 | `sched_setaffinity` | missing | L6 | ENOSYS |  |  |
 | 204 | `sched_getaffinity` | missing | L6 | ENOSYS |  |  |
 | 205 | `set_thread_area` | refused | R | ENOSYS |  | i386 thread storage; x86-64 programs use arch_prctl |
@@ -309,8 +309,8 @@ calls, outside the Linux number space, are listed last.
 | 270 | `pselect6` | done | - | - | `poll.c` |  |
 | 271 | `ppoll` | done | - | - | `poll.c` |  |
 | 272 | `unshare` | deferred | D | ENOSYS |  | namespaces: after the credential model |
-| 273 | `set_robust_list` | done | - | - | `proc.c` |  |
-| 274 | `get_robust_list` | missing | L6 | ENOSYS |  |  |
+| 273 | `set_robust_list` | done | - | - | `futex.c` |  |
+| 274 | `get_robust_list` | done | - | - | `futex.c` |  |
 | 275 | `splice` | missing | L7 | ENOSYS |  |  |
 | 276 | `tee` | missing | L7 | ENOSYS |  |  |
 | 277 | `sync_file_range` | done | - | - | `fs.c` |  |
@@ -396,14 +396,14 @@ calls, outside the Linux number space, are listed last.
 | 446 | `landlock_restrict_self` | missing | L9 | ENOSYS |  | the security goals of docs/vision.md |
 | 447 | `memfd_secret` | refused | R | ENOSYS |  | no secret memory areas |
 | 448 | `process_mrelease` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
-| 449 | `futex_waitv` | missing | L6 | ENOSYS |  |  |
+| 449 | `futex_waitv` | done | - | - | `futex.c` |  |
 | 450 | `set_mempolicy_home_node` | deferred | D | ENOSYS |  | NUMA: one node here |
 | 451 | `cachestat` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
 | 452 | `fchmodat2` | done | - | - | `names.c` |  |
 | 453 | `map_shadow_stack` | refused | R | ENOSYS |  | no shadow stacks |
-| 454 | `futex_wake` | missing | L6 | ENOSYS |  |  |
-| 455 | `futex_wait` | missing | L6 | ENOSYS |  |  |
-| 456 | `futex_requeue` | missing | L6 | ENOSYS |  |  |
+| 454 | `futex_wake` | done | - | - | `futex.c` |  |
+| 455 | `futex_wait` | done | - | - | `futex.c` |  |
+| 456 | `futex_requeue` | done | - | - | `futex.c` |  |
 | 457 | `statmount` | deferred | D | ENOSYS |  | the new mount API: after L8 |
 | 458 | `listmount` | deferred | D | ENOSYS |  | the new mount API: after L8 |
 | 459 | `lsm_get_self_attr` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |

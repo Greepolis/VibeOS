@@ -32,10 +32,10 @@
 
 ### the last row is deleted although the syscall is listed as implemented
 --- old
-    X(273, set_robust_list,  SET_ROBUST_LIST, NOPTR, 0) \
+    X(231, exit_group,       EXIT_GROUP,      NOPTR, linux_sys_exit_group(ARG(0))) \
     X(334, rseq,             RSEQ,            NOPTR, -VIBEOS_ENOSYS)
 +++ new
-    X(273, set_robust_list,  SET_ROBUST_LIST, NOPTR, 0)
+    X(231, exit_group,       EXIT_GROUP,      NOPTR, linux_sys_exit_group(ARG(0)))
 
 ### execve's row no longer calls anything that validates user memory
 --- old

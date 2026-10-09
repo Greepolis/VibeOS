@@ -181,6 +181,7 @@
     /* synchronisation and time */ \
     X(FUTEX,           "futex",           VIBEOS_CHECK_USER_MEMORY) \
     X(SET_ROBUST_LIST, "set_robust_list", VIBEOS_CHECK_NONE) \
+    X(GET_ROBUST_LIST, "get_robust_list", VIBEOS_CHECK_USER_MEMORY) \
     X(RSEQ,            "rseq",            VIBEOS_CHECK_NONE) \
     X(CLOCK_GETTIME,   "clock_gettime",   VIBEOS_CHECK_USER_MEMORY) \
     X(TIME,            "time",            VIBEOS_CHECK_USER_MEMORY) \

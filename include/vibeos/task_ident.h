@@ -38,6 +38,10 @@ typedef struct vibeos_task {
     uint64_t exit_code;
     uint32_t exit_signal;
     uint64_t clear_child_tid;   /* CLONE_CHILD_CLEARTID: zeroed and woken at exit */
+    /* set_robust_list's head (docs/abi/ L6): walked at exit, every lock the
+     * thread still holds marked OWNER_DIED. A thread's own; nobody inherits
+     * it, and an exec forgets it - fork, clone and exec all set it. */
+    uint64_t robust_head;
 
     char comm[16];   /* prctl(PR_SET_NAME); always NUL-terminated */
 

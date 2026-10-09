@@ -19,7 +19,7 @@
 
 ### the private flag is ignored
 --- old
-    if (me < 0 || (op & LINUX_FUTEX_PRIVATE_FLAG)) {
+    if (me < 0 || private_word) {
 +++ new
     if (me < 0) {
 

@@ -50,10 +50,17 @@ void linux_locks_exit(uint32_t tgid);
  * fills the machine's facts and asks this for the rest. */
 void linux_procfs_bind(vibeos_procfs_t *pf);
 
-/* Futexes (futex.c): exit wakes whoever joins the thread. One waiter per task at
- * most, so the table is sized by the task table, which the architecture asserts. */
-#define LINUX_FUTEX_WAITERS 32u
+/* Futexes (futex.c): exit wakes whoever joins the thread. A task waits on one
+ * word, or on up to 128 at once with futex_waitv (docs/abi/ L6), so the table
+ * is at least the task table - which the architecture asserts - and room for
+ * a few vectors besides. Not Linux's FUTEX_WAITERS, which is a bit in a lock
+ * word; the two names were one until L6 needed both. */
+#define LINUX_FUTEX_TABLE 512u
 long linux_futex_wake(const vibeos_procstate_t *ps, uint64_t addr, uint32_t count);
+/* A thread is ending: every robust lock it held is marked OWNER_DIED and one
+ * waiter on each woken (set_robust_list). Called by exit while the thread's
+ * address space is still the one loaded, before the join word is cleared. */
+void linux_futex_exit_robust(int slot);
 
 /* Counters the boot's [ABI] MUSTBEZERO line reports. */
 extern volatile uint64_t g_abi_unimplemented;

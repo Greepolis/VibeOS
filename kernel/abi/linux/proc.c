@@ -172,6 +172,7 @@ static long linux_fork(const ks_regs_t *frame, uint32_t exit_sig) {
     child->signal_stopped = 0;
     child->is_thread = 0;
     child->clear_child_tid = 0;
+    child->robust_head = 0;   /* the child's C library registers its own */
     /* Open descriptors are inherited. This is not a refinement: a shell builds
      * a pipeline by creating the pipe, forking, and having the child move an
      * inherited end onto its standard output. Without inheritance the child has
@@ -351,6 +352,7 @@ static long linux_sys_clone_thread(const ks_regs_t *frame,
     child->exit_signal = 0;
 
     child->clear_child_tid = (flags & LINUX_CLONE_CHILD_CLEARTID) ? ctid : 0;
+    child->robust_head = 0;
 
     /* Descriptors are shared, not copied: the table is in the process state
      * the thread has just taken a reference to. It used to be copied here, so
@@ -1300,6 +1302,11 @@ static long linux_sys_execve(ks_regs_t *frame, uint64_t dirfd, uint64_t path_upt
          * true of every exec, not only a threaded one. A C library sets it
          * again at startup if it wants it. */
         t->clear_child_tid = 0;
+        /* The robust list too, and for the same reason: it is in the old
+         * image's memory. Linux walks it before it lets go of that memory;
+         * here it is forgotten, which leaves a lock the thread held across
+         * an exec without its OWNER_DIED - written down, not solved. */
+        t->robust_head = 0;
         /* The new image is loaded, and the old address space goes - but only
          * if nobody else is running in there.
          *
@@ -1907,8 +1914,7 @@ static long linux_sys_clone(const vibeos_call_t *c) {
  *   rseq     an optimisation with a mandatory fallback: ENOSYS makes the libc take
  *            the fallback, where claiming success would make it run a fast path
  *            this kernel does not implement.
- *   set_robust_list  walked only when a thread dies holding a robust mutex; no
- *            such thing exists here, so there is nothing to walk. */
+ *   set_robust_list  is futex.c's since docs/abi/ L6, which walks the list. */
 #define LINUX_PROC_SYSCALLS(X) \
     X(24,  sched_yield,      YIELD,           NOPTR, linux_sys_yield()) \
     X(39,  getpid,           GETPID,          NOPTR, linux_sys_getpid()) \
@@ -1948,7 +1954,6 @@ static long linux_sys_clone(const vibeos_call_t *c) {
     X(186, gettid,           GETTID,          NOPTR, linux_sys_gettid()) \
     X(218, set_tid_address,  SET_TID_ADDRESS, NOPTR, linux_sys_set_tid_address(ARG(0))) \
     X(231, exit_group,       EXIT_GROUP,      NOPTR, linux_sys_exit_group(ARG(0))) \
-    X(273, set_robust_list,  SET_ROBUST_LIST, NOPTR, 0) \
     X(334, rseq,             RSEQ,            NOPTR, -VIBEOS_ENOSYS)
 
 LINUX_DEFINE_SYSCALLS(proc, LINUX_PROC_SYSCALLS)

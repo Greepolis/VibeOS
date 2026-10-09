@@ -3490,6 +3490,187 @@ static void t_futex_shared(void) {
     kf_share_page(-1, 0, 0);
 }
 
+/* The rest of futex (docs/abi/ L6 step 1). Two processes on one shared page,
+ * as t_futex_shared, so that a word is the same word to both: a blocked wait
+ * stays in the table here, and the other process's calls act on it. */
+static void t_futex_l6(void) {
+    uint64_t wa, wb, ts, vec, rh, rl;
+    kf_outcome_t out;
+    int a, b;
+
+    a = fresh(190);
+    b = kf_spawn(191, 191);
+    wa = (kf_ualloc(8192) + 4095u) & ~4095ull;
+    wb = (kf_ualloc(8192) + 4095u) & ~4095ull;
+    kf_share_page(a, wa, 78u);
+    kf_share_page(b, wb, 78u);
+    /* The fake keys a shared page by its frame, and each process still has
+     * its own copy of the bytes: a word is set in both views, and read in
+     * the view of whoever last changed it. */
+#define SETW(off, v) (*(uint32_t *)kf_uptr(wa + (off)) = *(uint32_t *)kf_uptr(wb + (off)) = (v))
+#define WA(off) (*(uint32_t *)kf_uptr(wa + (off)))
+#define WB(off) (*(uint32_t *)kf_uptr(wb + (off)))
+
+    /* Bitsets: a wake reaches only waiters whose bits it shares. */
+    SETW(0, 1u);
+    kf_set_current(a);
+    out = KF_RETURNED;
+    (void)sys(202, wa, 9 /* WAIT_BITSET */, 1, 0, 0, 0x2, &out);
+    expect(out == KF_BLOCKED, "a waits on bit 1");
+    kf_set_current(b);
+    expect(sys(202, wb, 10 /* WAKE_BITSET */, 1, 0, 0, 0x4, 0) == 0,
+           "a wake for bit 2 does not wake a waiter on bit 1");
+    expect(sys(202, wb, 10, 1, 0, 0, 0x6, 0) == 1, "one that shares a bit does");
+    expect(sys(202, wb, 10, 1, 0, 0, 0, 0) == -VIBEOS_EINVAL, "an empty bitset is EINVAL");
+    kf_set_current(a);
+    expect(sys(202, wa, 9, 1, 0, 0, 0, 0) == -VIBEOS_EINVAL, "for a wait too");
+    ts = kf_ualloc(16);
+    ((int64_t *)kf_uptr(ts))[0] = 0;
+    ((int64_t *)kf_uptr(ts))[1] = 0;
+    expect(sys(202, wa, 9, 1, ts, 0, 0xFFFFFFFFu, 0) == -VIBEOS_ETIMEDOUT,
+           "WAIT_BITSET's timeout is absolute: a time already past ends the wait at once");
+    expect(sys(202, wa, 3 /* REQUEUE */ | 256 /* CLOCK_REALTIME */, 0, 0, wa + 4u, 0, 0) == -VIBEOS_ENOSYS,
+           "CLOCK_REALTIME on an operation with no timeout is ENOSYS");
+    expect(sys(202, wa + 1u, 1, 1, 0, 0, 0, 0) == -VIBEOS_EINVAL, "a word that is not aligned is EINVAL");
+
+    /* Requeue: one woken, the other moved, and the moved one is woken by the
+     * second word. */
+    SETW(0, 7u);
+    kf_set_current(a);
+    out = KF_RETURNED;
+    (void)sys(202, wa, 0, 7, 0, 0, 0, &out);
+    kf_set_current(b);
+    out = KF_RETURNED;
+    (void)sys(202, wb, 0, 7, 0, 0, 0, &out);
+    expect(sys(202, wb, 4 /* CMP_REQUEUE */, 1, 1, wb + 4u, 8, 0) == -VIBEOS_EAGAIN,
+           "CMP_REQUEUE on a word that moved is EAGAIN, and nothing moves");
+    expect(sys(202, wb, 4, 1, 1, wb + 4u, 7, 0) == 2, "CMP_REQUEUE wakes one and moves one, and counts both");
+    expect(SYS3(202, wb, 1, 1) == 0, "the moved waiter is no longer on the first word");
+    expect(SYS3(202, wb + 4u, 1, 1) == 1, "it is on the second");
+    expect(sys(202, wb, 3, (uint64_t)-1, 0, wb + 4u, 0, 0) == -VIBEOS_EINVAL,
+           "a negative count is EINVAL");
+
+    /* WAKE_OP: the second word changed atomically, and its old value decides
+     * whether its waiters are woken too. */
+    SETW(0, 3u);
+    SETW(4, 5u);
+    kf_set_current(a);
+    out = KF_RETURNED;
+    (void)sys(202, wa + 4u, 0, 5, 0, 0, 0, &out);
+    kf_set_current(b);
+    /* op ADD 2, compare old == 5 */
+    expect(sys(202, wb, 5 /* WAKE_OP */, 1, 1, wb + 4u,
+               (1u << 28) | (0u << 24) | (2u << 12) | 5u, 0) == 1 && WB(4) == 7u,
+           "WAKE_OP adds to the second word and wakes its waiter when the old value passes");
+    /* With somebody waiting on the second word this time: a failed comparison
+     * that woke nobody because nobody was there would prove nothing (the
+     * first version of this test, which a sabotage walked through). */
+    SETW(4, 7u);
+    kf_set_current(a);
+    out = KF_RETURNED;
+    (void)sys(202, wa + 4u, 0, 7, 0, 0, 0, &out);
+    kf_set_current(b);
+    expect(out == KF_BLOCKED &&
+           sys(202, wb, 5, 1, 1, wb + 4u, (0u << 28) | (1u << 24) | (9u << 12) | 7u, 0) == 0 &&
+           WB(4) == 9u, "and sets it, waking nobody, when the comparison fails");
+    expect(SYS3(202, wb + 4u, 1, 1) == 1, "the waiter on the second word was left waiting");
+    expect(sys(202, wb, 5, 1, 1, wb + 4u, (8u << 28) | (0u << 24) | (3u << 12), 0) == 0 &&
+           WB(4) == 8u, "OPARG_SHIFT makes the argument a bit");
+    expect(sys(202, wb, 5, 1, 1, wb + 4u, (5u << 28), 0) == -VIBEOS_ENOSYS, "an operation past XOR is ENOSYS");
+
+    /* futex2: flags per word, absolute timeouts, a vector. */
+    SETW(0, 1u);
+    kf_set_current(a);
+    expect(sys(454, wa, 1, 1, 0x02 | 0x04, 0, 0, 0) == -VIBEOS_EINVAL, "FUTEX2_NUMA is EINVAL");
+    expect(sys(454, wa, 1, 1, 0x01, 0, 0, 0) == -VIBEOS_EINVAL, "a size other than 32 bits is EINVAL");
+    expect(sys(455, wa, 2, 1, 0x02, 0, 1, 0) == -VIBEOS_EAGAIN, "futex_wait on a moved word is EAGAIN");
+    expect(sys(455, wa, 1, 1, 0x02, ts, 9, 0) == -VIBEOS_EINVAL,
+           "futex_wait's clock is MONOTONIC or REALTIME");
+    expect(sys(455, wa, 1, 1, 0x02, ts, 1, 0) == -VIBEOS_ETIMEDOUT, "with an absolute timeout");
+    vec = kf_ualloc(2 * sizeof(linux_futex_waitv_t));
+    {
+        linux_futex_waitv_t *v = (linux_futex_waitv_t *)kf_uptr(vec);
+
+        SETW(8, 4u);
+        v[0].val = 1; v[0].uaddr = wa; v[0].flags = 0x02;
+        v[1].val = 4; v[1].uaddr = wa + 8u; v[1].flags = 0x02;
+        out = KF_RETURNED;
+        (void)sys(449, vec, 2, 0, 0, 1, 0, &out);
+        expect(out == KF_BLOCKED, "futex_waitv waits on two words");
+        kf_set_current(b);
+        expect(sys(454, wb + 8u, 0xFFFFFFFFu, 8, 0x02, 0, 0, 0) == 1,
+               "a wake on the second word wakes it");
+        expect(sys(454, wb, 0xFFFFFFFFu, 8, 0x02, 0, 0, 0) == 0,
+               "and the first word has no waiter left: it counts once");
+        kf_set_current(a);
+        v[1].val = 5;
+        expect(sys(449, vec, 2, 0, 0, 1, 0, 0) == -VIBEOS_EAGAIN, "a moved word in the vector is EAGAIN");
+        v[1].__reserved = 1;
+        expect(sys(449, vec, 2, 0, 0, 1, 0, 0) == -VIBEOS_EINVAL, "a reserved field set is EINVAL");
+        expect(sys(449, vec, 129, 0, 0, 1, 0, 0) == -VIBEOS_EINVAL, "more than 128 words is EINVAL");
+        {
+            /* A word the program may not read - on the machine, its null page,
+             * which is the kernel's and present (LTP's futex_waitv01). A static
+             * of this test stands for it: the fake's copy reads it as the
+             * machine's would, and only the range check refuses it. */
+            static uint32_t kernel_word = 4u;
+
+            v[1].__reserved = 0;
+            v[1].uaddr = (uint64_t)(uintptr_t)&kernel_word;
+            v[1].flags = 0x02 | 128;   /* private: the key asks nothing of the address */
+            expect(sys(449, vec, 2, 0, 0, 1, 0, 0) == -VIBEOS_EFAULT,
+                   "a word at address 0 is EFAULT, not read: judged before it is compared");
+            v[1].uaddr = wa + 8u;
+            v[1].flags = 0x02;
+        }
+        v[1].__reserved = 0;
+        v[1].val = 4;
+        SETW(0, 1u);
+        expect(sys(456, vec, 0, 0, 1, 0, 0, 0) == 0, "futex_requeue with nobody waiting moves nobody");
+    }
+
+    /* Robust lists: the length is the structure's; a dying thread's lock
+     * word is marked OWNER_DIED and a waiter woken. */
+    kf_set_current(a);
+    rh = wa + 64u;
+    expect(SYS2(273, rh, 16) == -VIBEOS_EINVAL, "set_robust_list with a wrong length is EINVAL");
+    expect(SYS2(273, rh, sizeof(linux_robust_list_head_t)) == 0, "and with its own, accepted");
+    rl = kf_ualloc(16);
+    expect(SYS3(274, 0, rl, rl + 8u) == 0 && *(uint64_t *)kf_uptr(rl) == rh &&
+           *(uint64_t *)kf_uptr(rl + 8u) == sizeof(linux_robust_list_head_t),
+           "get_robust_list hands it back with its length");
+    expect(SYS3(274, 999, rl, rl + 8u) == -VIBEOS_ESRCH, "a thread that does not exist is ESRCH");
+    {
+        linux_robust_list_head_t *h = (linux_robust_list_head_t *)kf_uptr(rh);
+        uint64_t entry = wa + 128u;
+
+        h->next = entry;
+        h->futex_offset = 8;
+        h->list_op_pending = 0;
+        *(uint64_t *)kf_uptr(entry) = rh;   /* the list ends at its head */
+        SETW(136, 190u | LINUX_FUTEX_WAITERS);
+        kf_set_current(b);
+        out = KF_RETURNED;
+        (void)sys(202, wb + 136u, 0, 190u | LINUX_FUTEX_WAITERS, 0, 0, 0, &out);
+        expect(out == KF_BLOCKED, "b waits on a lock a holds");
+        kf_set_current(a);
+        linux_futex_exit_robust(a);
+        expect(WA(136) == (LINUX_FUTEX_WAITERS | LINUX_FUTEX_OWNER_DIED),
+               "a's exit marks its lock OWNER_DIED and keeps the waiters bit");
+        expect(vibeos_task_state((uint32_t)b) == VIBEOS_TASK_READY, "and wakes the waiter");
+        expect(ks_id(a)->robust_head == 0u, "the list is walked once");
+        SETW(136, 555u);
+        h->next = entry;
+        ks_id(a)->robust_head = rh;
+        linux_futex_exit_robust(a);
+        expect(WA(136) == 555u, "a lock another thread holds is left alone");
+    }
+#undef SETW
+#undef WA
+#undef WB
+    kf_share_page(-1, 0, 0);
+}
+
 /* ---- what LTP's L1 tests found (L3 step 3) --------------------------------------------- */
 
 static void t_ltp_l1(void) {
@@ -5371,6 +5552,7 @@ int test_linux_handlers(void) {
     t_unix();
     t_inotify_ltp();
     t_futex_shared();
+    t_futex_l6();
     t_clone3_checks();
     t_sleep();
     t_ltp_l1();
@@ -5644,13 +5826,15 @@ int test_linux_gaps(void) {
         }
     }
 
-    /* futex (202), L6: FUTEX_CMP_REQUEUE with nobody waiting requeues nobody. */
+    /* futex (202), L6: priority inheritance. FUTEX_LOCK_PI on a free word takes
+     * it, on Linux; here the PI operations are ENOSYS. (FUTEX_CMP_REQUEUE was
+     * this gap until L6 step 1.) */
     {
         uint64_t w = 0;
         fresh(70);
         w = kf_ualloc(8);
-        r = sys(202, w, 4 /* FUTEX_CMP_REQUEUE */, 1, 1, w + 4u, 0, 0);
-        gap(202, r == 0, "FUTEX_CMP_REQUEUE");
+        r = sys(202, w, 6 /* FUTEX_LOCK_PI */, 0, 0, 0, 0, 0);
+        gap(202, r == 0, "FUTEX_LOCK_PI");
     }
 
     /* setrlimit (160) and prlimit64 (302), L2: RLIMIT_SIGPENDING is kept, not

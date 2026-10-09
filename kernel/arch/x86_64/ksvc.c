@@ -13,7 +13,7 @@
 #include "vibeos/sched_policy.h"
 #include "arch_hw_internal.h"
 
-_Static_assert(VIBEOS_HW_MAX_TASKS <= LINUX_FUTEX_WAITERS,
+_Static_assert(VIBEOS_HW_MAX_TASKS <= LINUX_FUTEX_TABLE,
                "the futex table holds one waiter per task");
 
 static vibeos_x86_64_isr_frame_t *hw_regs(ks_regs_t *r) {

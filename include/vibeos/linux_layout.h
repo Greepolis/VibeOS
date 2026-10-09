@@ -552,6 +552,53 @@ typedef struct {
 /* Not set: the word may be shared between processes, and is named by what it
  * is rather than where the caller maps it. */
 #define LINUX_FUTEX_PRIVATE_FLAG 128
+/* The rest (docs/abi/ L6). */
+#define LINUX_FUTEX_REQUEUE      3
+#define LINUX_FUTEX_CMP_REQUEUE  4
+#define LINUX_FUTEX_WAKE_OP      5
+#define LINUX_FUTEX_WAIT_BITSET  9
+#define LINUX_FUTEX_WAKE_BITSET  10
+#define LINUX_FUTEX_CLOCK_REALTIME 256
+#define LINUX_FUTEX_BITSET_MATCH_ANY 0xffffffffu
+/* A robust lock word: the owner's tid, and two marks above it. */
+#define LINUX_FUTEX_WAITERS      0x80000000u
+#define LINUX_FUTEX_OWNER_DIED   0x40000000u
+#define LINUX_FUTEX_TID_MASK     0x3fffffffu
+#define LINUX_ROBUST_LIST_LIMIT  2048
+/* WAKE_OP's operation and comparison, packed into val3. */
+#define LINUX_FUTEX_OP_SET       0
+#define LINUX_FUTEX_OP_ADD       1
+#define LINUX_FUTEX_OP_OR        2
+#define LINUX_FUTEX_OP_ANDN      3
+#define LINUX_FUTEX_OP_XOR       4
+#define LINUX_FUTEX_OP_OPARG_SHIFT 8
+#define LINUX_FUTEX_OP_CMP_EQ    0
+#define LINUX_FUTEX_OP_CMP_NE    1
+#define LINUX_FUTEX_OP_CMP_LT    2
+#define LINUX_FUTEX_OP_CMP_LE    3
+#define LINUX_FUTEX_OP_CMP_GT    4
+#define LINUX_FUTEX_OP_CMP_GE    5
+/* futex2 (futex_wait, futex_wake, futex_requeue, futex_waitv). */
+#define LINUX_FUTEX2_SIZE_U32    0x02
+#define LINUX_FUTEX2_SIZE_MASK   0x03
+#define LINUX_FUTEX2_NUMA        0x04
+#define LINUX_FUTEX2_PRIVATE     128
+#define LINUX_FUTEX_WAITV_MAX    128
+
+typedef struct {
+    uint64_t val;
+    uint64_t uaddr;
+    uint32_t flags;
+    uint32_t __reserved;
+} linux_futex_waitv_t;
+
+/* set_robust_list's head: the list, where in each entry the lock word is, and
+ * the entry being added or removed when the thread died. */
+typedef struct {
+    uint64_t next;
+    int64_t futex_offset;
+    uint64_t list_op_pending;
+} linux_robust_list_head_t;
 
 /* mmap protection and flags (asm-generic/mman-common.h). */
 #define LINUX_PROT_NONE     0x0

@@ -12,9 +12,9 @@
 
 ### futex's timeout multiplied in 64 bits again
 --- old
-                    ticks = (uint64_t)t;
+        *deadline = ks_ticks() + (t ? (uint64_t)t : 1u);
 +++ new
-                    ticks = (uint64_t)ts.tv_sec * ks_hz() + (uint64_t)(t & 0);
+        *deadline = ks_ticks() + (uint64_t)ts.tv_sec * ks_hz() + 1u;
 
 ### utimensat's time multiplied in 64 bits again
 --- old
