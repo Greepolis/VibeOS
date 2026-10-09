@@ -1,0 +1,14 @@
+# docs/abi/ L6 step 1 at boot: a condition variable's broadcast releases every
+# waiter (THREADS.ELF, stage C6_COND).
+#
+# No case is run here, and that is a finding rather than an omission. The
+# obvious one - FUTEX_REQUEUE moving nobody - went NOT RED (2026-10-09): the
+# stage passed, so musl's broadcast, as this stage drives it, does not depend
+# on the requeue. (An earlier run of it had wedged; that boot carried a test
+# defect since fixed - a thread ending by the raw exit call, which corrupted
+# musl's thread-list lock - and was not the requeue.) The requeue is proved
+# by the host tests (futex-l6.txt, case 2) and by LTP's futex_cmp_requeue02.
+# The stage stays as what it is: a broadcast that must release four waiters,
+# whatever the C library uses to do it.
+#
+# Target source: kernel/abi/linux/futex.c

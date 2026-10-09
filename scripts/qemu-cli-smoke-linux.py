@@ -3405,7 +3405,13 @@ def main():
                         ("C5_EXEC", "thread_exec_left_siblings_or_identity",
                          "threads_c5_exec_did_not_report"),
                         ("C5_FILES", "thread_descriptors_not_shared",
-                         "threads_c5_files_did_not_report")):
+                         "threads_c5_files_did_not_report"),
+                        # docs/abi/ L6: a robust lock its owner died holding,
+                        # and a broadcast handed on with FUTEX_REQUEUE.
+                        ("C6_ROBUST", "robust_lock_not_released_at_exit",
+                         "threads_c6_robust_did_not_report"),
+                        ("C6_COND", "cond_broadcast_left_waiters",
+                         "threads_c6_cond_did_not_report")):
                     if f"THREADS_{stage}_OK" in text:
                         continue
                     if f"THREADS_{stage}_FAIL" in text:

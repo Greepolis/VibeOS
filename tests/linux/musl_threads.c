@@ -44,6 +44,7 @@
  * bounded: this program is one line of a sequential boot script, and a hang
  * here would read as every command after it having failed.
  */
+#include <errno.h>
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
@@ -290,6 +291,32 @@ static void *exec_worker(void *arg)
     (void)arg;
     execv(args[0], args);
     return (void *)1L;   /* only if execv failed */
+}
+
+/* C6_COND: wait for the broadcast, at most ten seconds. */
+static pthread_mutex_t g_cond_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_cond = PTHREAD_COND_INITIALIZER;
+static int g_cond_ready, g_cond_go, g_cond_done;
+
+static void *cond_worker(void *arg)
+{
+    struct timespec until;
+
+    (void)arg;
+    clock_gettime(CLOCK_REALTIME, &until);
+    until.tv_sec += 10;
+    pthread_mutex_lock(&g_cond_mutex);
+    g_cond_ready++;
+    while (!g_cond_go) {
+        if (pthread_cond_timedwait(&g_cond, &g_cond_mutex, &until) != 0) {
+            break;
+        }
+    }
+    if (g_cond_go) {
+        g_cond_done++;
+    }
+    pthread_mutex_unlock(&g_cond_mutex);
+    return 0;
 }
 
 int main(int argc, char **argv)
@@ -659,6 +686,94 @@ int main(int argc, char **argv)
             syscall(SYS_exit_group, 7);
         }
         report_child_bounded("C5_EXEC", pid, 23, 10);
+    }
+
+    /* C6_ROBUST (docs/abi/ L6). A child process takes a process-shared
+     * robust mutex in a MAP_SHARED page and ends holding it. The kernel walks
+     * the list the C library registered with set_robust_list, marks the lock
+     * OWNER_DIED and wakes a waiter, so the parent's next lock returns
+     * EOWNERDEAD.
+     *
+     * A process and not a thread, and ended by _exit: a thread that returns
+     * goes through musl's pthread_exit, which walks the list in user space and
+     * marks the lock itself - the stage passed with the kernel's walk
+     * sabotaged away - and a thread that calls the exit system call itself
+     * skips musl's own bookkeeping and corrupts its thread-list lock, which
+     * hung the boot. A process that ends never runs the library's walk, and
+     * leaves nothing of its library behind. A timed lock, so that a kernel
+     * that never walks the list fails the stage in five seconds. */
+    {
+        pthread_mutex_t *robust = mmap(0, 4096, PROT_READ | PROT_WRITE,
+                                       MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+        pthread_mutexattr_t ma;
+        struct timespec until;
+        int r, status = 0;
+        pid_t pid;
+
+        if (robust == MAP_FAILED) {
+            printf("THREADS_C6_ROBUST_FAIL: mmap\n");
+        } else {
+            pthread_mutexattr_init(&ma);
+            pthread_mutexattr_setrobust(&ma, PTHREAD_MUTEX_ROBUST);
+            pthread_mutexattr_setpshared(&ma, PTHREAD_PROCESS_SHARED);
+            pthread_mutex_init(robust, &ma);
+            pid = fork();
+            if (pid == 0) {
+                pthread_mutex_lock(robust);
+                _exit(0);
+            }
+            if (pid < 0 || waitpid(pid, &status, 0) != pid) {
+                printf("THREADS_C6_ROBUST_FAIL: fork or wait\n");
+            } else {
+                clock_gettime(CLOCK_REALTIME, &until);
+                until.tv_sec += 5;
+                r = pthread_mutex_timedlock(robust, &until);
+                if (r == EOWNERDEAD) {
+                    pthread_mutex_consistent(robust);
+                    pthread_mutex_unlock(robust);
+                    printf("THREADS_C6_ROBUST_OK\n");
+                } else {
+                    printf("THREADS_C6_ROBUST_FAIL: locking after the owner died returned %d\n", r);
+                }
+            }
+        }
+        fflush(stdout);
+    }
+
+    /* C6_COND. Four threads wait on one condition variable and a broadcast
+     * must release every one: the C library hands waiters from the condition
+     * to the mutex with FUTEX_REQUEUE, which was ENOSYS until L6. Bounded by a
+     * timed wait, so a waiter that is never woken fails rather than hangs. */
+    {
+        pthread_t ct[4];
+        int i, ok = 1;
+
+        g_cond_ready = 0;
+        g_cond_go = 0;
+        g_cond_done = 0;
+        for (i = 0; i < 4; i++) {
+            if (pthread_create(&ct[i], 0, cond_worker, 0) != 0) {
+                ok = 0;
+            }
+        }
+        pthread_mutex_lock(&g_cond_mutex);
+        while (g_cond_ready < 4) {
+            pthread_mutex_unlock(&g_cond_mutex);
+            sched_yield();
+            pthread_mutex_lock(&g_cond_mutex);
+        }
+        g_cond_go = 1;
+        pthread_cond_broadcast(&g_cond);
+        pthread_mutex_unlock(&g_cond_mutex);
+        for (i = 0; i < 4; i++) {
+            (void)pthread_join(ct[i], 0);
+        }
+        if (!ok || g_cond_done != 4) {
+            printf("THREADS_C6_COND_FAIL: %d of 4 waiters were released by the broadcast\n", g_cond_done);
+        } else {
+            printf("THREADS_C6_COND_OK\n");
+        }
+        fflush(stdout);
     }
     return 0;
 }
