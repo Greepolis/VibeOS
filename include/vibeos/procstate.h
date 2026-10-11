@@ -161,6 +161,10 @@ typedef struct vibeos_procstate {
     uint64_t rlim_cur[VIBEOS_RLIM_COUNT];
     uint64_t rlim_max[VIBEOS_RLIM_COUNT];
     uint32_t personality;
+    /* membarrier's registrations (docs/abi/ L6 step 2): the commands a
+     * process said it will use, as Linux keeps them with its memory. A child
+     * starts with none and an exec forgets them - both start a new state. */
+    uint32_t membarrier_reg;
 } vibeos_procstate_t;
 
 #endif

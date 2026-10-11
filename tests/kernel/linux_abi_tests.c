@@ -3671,6 +3671,172 @@ static void t_futex_l6(void) {
     kf_share_page(-1, 0, 0);
 }
 
+/* Scheduling (docs/abi/ L6 step 2): policies over the scheduler's classes,
+ * affinity, getcpu, I/O priorities and membarrier. */
+static void t_sched_l6(void) {
+    uint64_t prm = kf_ualloc(4), ts = kf_ualloc(16), at = kf_ualloc(64), mask = kf_ualloc(16);
+    uint64_t c = kf_ualloc(8);
+    linux_sched_attr_t *a = (linux_sched_attr_t *)kf_uptr(at);
+    vibeos_procstate_t *ps;
+    int me, child;
+    long pid;
+
+#define PRIO(v) (*(int32_t *)kf_uptr(prm) = (v), prm)
+    me = fresh(200);
+    ps = ks_ps(me);
+    expect(SYS1(146, LINUX_SCHED_FIFO) == 99 && SYS1(147, LINUX_SCHED_RR) == 1 &&
+           SYS1(146, LINUX_SCHED_NORMAL) == 0 && SYS1(147, LINUX_SCHED_IDLE) == 0 &&
+           SYS1(146, 42) == -VIBEOS_EINVAL, "the priority range per policy, and EINVAL for none");
+    expect(SYS1(145, 0) == LINUX_SCHED_NORMAL, "a task starts SCHED_OTHER");
+    expect(SYS3(144, 0, LINUX_SCHED_FIFO, PRIO(10)) == 0 && SYS1(145, 0) == LINUX_SCHED_FIFO &&
+           ks_task_class(me) == VIBEOS_SCHED_REALTIME && ks_task_rt_prio(me) == 10u,
+           "SCHED_FIFO 10 is the REALTIME class at priority 10");
+    *(int32_t *)kf_uptr(prm) = 0;
+    expect(SYS2(143, 0, prm) == 0 && *(int32_t *)kf_uptr(prm) == 10, "getparam reads it back");
+    expect(SYS2(148, 0, ts) == 0 && ((int64_t *)kf_uptr(ts))[0] == 0 && ((int64_t *)kf_uptr(ts))[1] == 0,
+           "a FIFO thread has no slice");
+    expect(SYS3(144, 0, LINUX_SCHED_RR, PRIO(5)) == 0 && SYS2(148, 0, ts) == 0 &&
+           ((int64_t *)kf_uptr(ts))[1] == 100000000, "an RR one has 100 ms");
+    expect(SYS3(144, 0, LINUX_SCHED_FIFO, PRIO(0)) == -VIBEOS_EINVAL &&
+           SYS3(144, 0, LINUX_SCHED_NORMAL, PRIO(5)) == -VIBEOS_EINVAL &&
+           SYS3(144, 0, 42, PRIO(0)) == -VIBEOS_EINVAL && SYS3(144, 0, LINUX_SCHED_FIFO, 0) == -VIBEOS_EINVAL &&
+           SYS3(144, (uint64_t)-1, LINUX_SCHED_FIFO, PRIO(5)) == -VIBEOS_EINVAL,
+           "a priority outside the policy's range, no policy, no parameter, a negative id: EINVAL");
+    expect(SYS3(144, 9999, LINUX_SCHED_FIFO, PRIO(5)) == -VIBEOS_ESRCH && SYS1(145, 9999) == -VIBEOS_ESRCH,
+           "nobody by that id: ESRCH");
+    expect(SYS2(142, 0, PRIO(7)) == 0 && SYS1(145, 0) == LINUX_SCHED_RR && ks_task_rt_prio(me) == 7u,
+           "setparam keeps the policy and changes the priority");
+    expect(SYS3(144, 0, LINUX_SCHED_IDLE, PRIO(0)) == 0 && SYS1(145, 0) == LINUX_SCHED_IDLE &&
+           ks_task_class(me) == VIBEOS_SCHED_NORMAL, "SCHED_IDLE is reported, and scheduled as NORMAL");
+
+    /* A child gets its parent's policy - unless the parent asked for
+     * reset-on-fork, which makes a real-time child SCHED_OTHER. */
+    (void)SYS3(144, 0, LINUX_SCHED_RR, PRIO(9));
+    pid = SYS0(57);
+    child = slot_of_pid(pid);
+    expect(pid > 0 && child >= 0 && ks_id(child)->sched_policy == LINUX_SCHED_RR &&
+           ks_task_class(child) == VIBEOS_SCHED_REALTIME && ks_task_rt_prio(child) == 9u,
+           "a forked child is SCHED_RR 9, as its parent");
+    kf_set_current(me);
+    expect(SYS3(144, 0, LINUX_SCHED_RR | LINUX_SCHED_RESET_ON_FORK, PRIO(9)) == 0 &&
+           SYS1(145, 0) == (long)(LINUX_SCHED_RR | LINUX_SCHED_RESET_ON_FORK),
+           "reset-on-fork is kept and reported with the policy");
+    pid = SYS0(57);
+    child = slot_of_pid(pid);
+    expect(pid > 0 && child >= 0 && ks_id(child)->sched_policy == LINUX_SCHED_NORMAL &&
+           ks_task_class(child) == VIBEOS_SCHED_NORMAL && !ks_id(child)->sched_reset_on_fork,
+           "with reset-on-fork the child is SCHED_OTHER, and the flag does not pass on");
+    kf_set_current(me);
+
+    /* Not the superuser: a real-time priority only up to RLIMIT_RTPRIO, and
+     * reset-on-fork cannot be taken off. */
+    ps->cred.euid = 1000u;
+    expect(SYS3(144, 0, LINUX_SCHED_RR, PRIO(9)) == -VIBEOS_EPERM,
+           "an unprivileged caller cannot take reset-on-fork off");
+    (void)ks_task_set_class(me, VIBEOS_SCHED_NORMAL, 0);
+    ks_id(me)->sched_policy = LINUX_SCHED_NORMAL;
+    ks_id(me)->sched_reset_on_fork = 0;
+    expect(SYS3(144, 0, LINUX_SCHED_FIFO, PRIO(1)) == -VIBEOS_EPERM,
+           "an unprivileged caller with no RLIMIT_RTPRIO cannot go real-time");
+    ps->rlim_cur[LINUX_RLIMIT_RTPRIO] = 20u;
+    expect(SYS3(144, 0, LINUX_SCHED_FIFO, PRIO(20)) == 0 && SYS3(144, 0, LINUX_SCHED_FIFO, PRIO(21)) == -VIBEOS_EPERM,
+           "up to its RLIMIT_RTPRIO and no further");
+    {
+        /* Linux judges the priority before it asks who may change whom, so
+         * a priority that is no priority is EINVAL even for a task the caller
+         * may not touch. The scheduler would refuse it as well, later: only
+         * the order tells the handler's check apart. */
+        int other = kf_spawn(201, 201);
+
+        ks_ps(other)->cred.uid = ks_ps(other)->cred.euid = 2000u;
+        expect(SYS3(144, 201, LINUX_SCHED_FIFO, PRIO(0)) == -VIBEOS_EINVAL &&
+               SYS3(144, 201, LINUX_SCHED_FIFO, PRIO(5)) == -VIBEOS_EPERM,
+               "another user's task: a bad priority is EINVAL first, a good one EPERM");
+    }
+    ps->cred.euid = 0u;
+
+    /* sched_setattr and sched_getattr, and the sizes of a growing structure. */
+    memset(a, 0, 64);
+    a->size = 0;
+    a->sched_policy = LINUX_SCHED_RR;
+    a->sched_priority = 3;
+    expect(SYS3(314, 0, at, 0) == 0 && ks_task_rt_prio(me) == 3u, "size 0 is the first version");
+    a->size = 40;
+    expect(SYS3(314, 0, at, 0) == -VIBEOS_E2BIG && a->size == sizeof(linux_sched_attr_t),
+           "a size below the first version is E2BIG, with the size this kernel knows written back");
+    a->size = 64;
+    ((uint8_t *)a)[60] = 1;
+    expect(SYS3(314, 0, at, 0) == -VIBEOS_E2BIG, "a larger structure with something set past what is known is E2BIG");
+    ((uint8_t *)a)[60] = 0;
+    a->size = 64;
+    expect(SYS3(314, 0, at, 0) == 0, "and with only zeros past it, fine");
+    a->sched_flags = LINUX_SCHED_FLAG_UTIL_CLAMP_MIN;
+    expect(SYS3(314, 0, at, 0) == -VIBEOS_EOPNOTSUPP, "utilisation clamping is not supported");
+    a->sched_flags = 0;
+    expect(SYS3(314, 0, at, 1) == -VIBEOS_EINVAL, "flags are EINVAL");
+    a->sched_policy = LINUX_SCHED_NORMAL;
+    a->sched_priority = 0;
+    a->sched_nice = 5;
+    expect(SYS3(314, 0, at, 0) == 0 && ks_task_nice(me) == 5 && ks_task_class(me) == VIBEOS_SCHED_NORMAL,
+           "SCHED_OTHER through setattr sets its nice");
+    memset(a, 0xEE, 64);
+    expect(SYS4(315, 0, at, 48, 0) == 0 && a->size == 48u && a->sched_policy == LINUX_SCHED_NORMAL &&
+           a->sched_nice == 5 && ((uint8_t *)a)[48] == 0xEEu,
+           "getattr writes as much as the caller asked for, and says how much");
+    expect(SYS4(315, 0, at, 47, 0) == -VIBEOS_EINVAL && SYS4(315, 0, at, 64, 1) == -VIBEOS_EINVAL &&
+           SYS4(315, 9999, at, 64, 0) == -VIBEOS_ESRCH, "a size below the first version, flags, nobody");
+
+    /* Affinity: Linux's mask is eight bytes here, and a task allowed
+     * everywhere reports every core online. */
+    expect(SYS3(204, 0, 4, mask) == -VIBEOS_EINVAL, "a mask shorter than Linux's is EINVAL");
+    expect(SYS3(204, 0, 16, mask) == 8 && *(uint64_t *)kf_uptr(mask) == 0xFull,
+           "getaffinity answers eight bytes, every core online");
+    *(uint64_t *)kf_uptr(mask) = 0x2u;
+    expect(SYS3(203, 0, 8, mask) == 0 && ks_task_affinity(me) == 0x2u &&
+           SYS3(204, 0, 8, mask) == 8 && *(uint64_t *)kf_uptr(mask) == 0x2ull,
+           "a task pinned to core 1 says so");
+    *(uint64_t *)kf_uptr(mask) = 0x30u;
+    expect(SYS3(203, 0, 8, mask) == -VIBEOS_EINVAL, "a mask of cores that are not online is EINVAL");
+    *(uint64_t *)kf_uptr(mask) = 0xFu;
+    expect(SYS3(203, 0, 8, mask) == 0 && ks_task_affinity(me) == 0u, "all of them is anywhere");
+    expect(SYS3(203, (uint64_t)-1, 8, mask) == -VIBEOS_ESRCH, "a negative id is ESRCH, as Linux looks it up");
+    *(uint32_t *)kf_uptr(c) = 77u;
+    expect(SYS2(309, c, 0) == 0 && *(uint32_t *)kf_uptr(c) == 0u, "getcpu says which core");
+
+    /* I/O priorities: kept, reported, refused as Linux refuses them. */
+    expect(SYS2(252, LINUX_IOPRIO_WHO_PROCESS, 0) == 0,
+           "a task that set none reports NONE (LTP's ioprio_set02)");
+    expect(SYS3(251, LINUX_IOPRIO_WHO_PROCESS, 0, (LINUX_IOPRIO_CLASS_BE << 13) | 3u) == 0 &&
+           SYS2(252, LINUX_IOPRIO_WHO_PROCESS, 0) == (long)((LINUX_IOPRIO_CLASS_BE << 13) | 3u),
+           "a best-effort level set is the level read back");
+    expect(SYS3(251, LINUX_IOPRIO_WHO_PROCESS, 0, (LINUX_IOPRIO_CLASS_BE << 13) | 8u) == -VIBEOS_EINVAL &&
+           SYS3(251, LINUX_IOPRIO_WHO_PROCESS, 0, 5u << 13) == -VIBEOS_EINVAL &&
+           SYS3(251, 0, 0, LINUX_IOPRIO_CLASS_IDLE << 13) == -VIBEOS_EINVAL,
+           "a level past seven, a class Linux does not have, a who it does not have: EINVAL");
+    ps->cred.euid = 1000u;
+    expect(SYS3(251, LINUX_IOPRIO_WHO_PROCESS, 0, LINUX_IOPRIO_CLASS_RT << 13) == -VIBEOS_EPERM,
+           "the real-time class is the superuser's");
+    ps->cred.euid = 0u;
+    expect(SYS3(251, LINUX_IOPRIO_WHO_PROCESS, 9999, LINUX_IOPRIO_CLASS_IDLE << 13) == -VIBEOS_ESRCH,
+           "nobody by that id: ESRCH");
+
+    /* membarrier. */
+    expect(SYS3(324, LINUX_MEMBARRIER_CMD_QUERY, 0, 0) == 0x7F, "QUERY says every command but RSEQ's");
+    expect(SYS3(324, LINUX_MEMBARRIER_CMD_PRIVATE_EXPEDITED, 0, 0) == -VIBEOS_EPERM,
+           "the private expedited barrier before registering is EPERM");
+    expect(SYS3(324, LINUX_MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED, 0, 0) == 0 &&
+           SYS3(324, LINUX_MEMBARRIER_CMD_PRIVATE_EXPEDITED, 0, 0) == 0 && kf_membarriers(0) == 1u,
+           "after it, a barrier on the cores running this process");
+    expect(SYS3(324, LINUX_MEMBARRIER_CMD_GLOBAL, 0, 0) == 0 && kf_membarriers(1) == 1u,
+           "GLOBAL is a barrier on every core running a program");
+    expect(SYS3(324, LINUX_MEMBARRIER_CMD_GET_REGISTRATIONS, 0, 0) ==
+               (long)LINUX_MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED,
+           "and the registrations are reported");
+    expect(SYS3(324, LINUX_MEMBARRIER_CMD_QUERY, 1, 0) == -VIBEOS_EINVAL &&
+           SYS3(324, 1u << 7, 0, 0) == -VIBEOS_EINVAL, "flags, and RSEQ's command, are EINVAL");
+#undef PRIO
+}
+
 /* ---- what LTP's L1 tests found (L3 step 3) --------------------------------------------- */
 
 static void t_ltp_l1(void) {
@@ -5558,6 +5724,7 @@ int test_linux_handlers(void) {
     t_inotify_ltp();
     t_futex_shared();
     t_futex_l6();
+    t_sched_l6();
     t_clone3_checks();
     t_sleep();
     t_ltp_l1();
@@ -5840,6 +6007,23 @@ int test_linux_gaps(void) {
         w = kf_ualloc(8);
         r = sys(202, w, 6 /* FUTEX_LOCK_PI */, 0, 0, 0, 0, 0);
         gap(202, r == 0, "FUTEX_LOCK_PI");
+    }
+
+    /* sched_setattr (314), L6: SCHED_DEADLINE, which Linux admits for the
+     * superuser with a runtime, deadline and period that fit; here it is
+     * EINVAL - there is no admission control to decide it by. */
+    {
+        uint64_t at = kf_ualloc(sizeof(linux_sched_attr_t));
+        linux_sched_attr_t *a = (linux_sched_attr_t *)kf_uptr(at);
+
+        fresh(71);
+        memset(a, 0, sizeof(*a));
+        a->size = sizeof(*a);
+        a->sched_policy = LINUX_SCHED_DEADLINE;
+        a->sched_runtime = 10000000ull;
+        a->sched_deadline = 30000000ull;
+        a->sched_period = 30000000ull;
+        gap(314, SYS3(314, 0, at, 0) == 0, "SCHED_DEADLINE");
     }
 
     /* setrlimit (160) and prlimit64 (302), L2: RLIMIT_SIGPENDING is kept, not

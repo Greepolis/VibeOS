@@ -158,6 +158,7 @@ set(VIBEOS_LINUX_ABI_SOURCES
     kernel/abi/linux/fs.c
     kernel/abi/linux/names.c
     kernel/abi/linux/futex.c
+    kernel/abi/linux/sched.c
     kernel/abi/linux/misc.c
     kernel/abi/linux/mm.c
     kernel/abi/linux/proc.c

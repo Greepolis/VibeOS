@@ -34,6 +34,7 @@ void linux_procstate_defaults(vibeos_procstate_t *ps) {
     ps->rlim_cur[LINUX_RLIMIT_NICE] = ps->rlim_max[LINUX_RLIMIT_NICE] = 0;
     ps->rlim_cur[LINUX_RLIMIT_RTPRIO] = ps->rlim_max[LINUX_RLIMIT_RTPRIO] = 0;
     ps->personality = 0;
+    ps->membarrier_reg = 0;
 }
 
 /* RLIMIT_CPU as two timers on the process's CPU time: SIGXCPU when the soft

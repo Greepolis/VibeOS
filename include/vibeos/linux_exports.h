@@ -61,6 +61,9 @@ long linux_futex_wake(const vibeos_procstate_t *ps, uint64_t addr, uint32_t coun
  * waiter on each woken (set_robust_list). Called by exit while the thread's
  * address space is still the one loaded, before the join word is cleared. */
 void linux_futex_exit_robust(int slot);
+/* A new task's scheduling, from the task that made it (sched.c): policy,
+ * priority, nice, affinity and I/O priority, with reset-on-fork honoured. */
+void linux_sched_inherit(int child, int parent);
 
 /* Counters the boot's [ABI] MUSTBEZERO line reports. */
 extern volatile uint64_t g_abi_unimplemented;

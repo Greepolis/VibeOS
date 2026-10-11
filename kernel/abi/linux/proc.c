@@ -153,7 +153,7 @@ static long linux_fork(const ks_regs_t *frame, uint32_t exit_sig) {
             cps->rlim_max[LINUX_RLIMIT_CPU] != VIBEOS_RLIM_INFINITY) {
             linux_rlimit_cpu_arm(child->tgid, cps, 0);
         }
-        (void)ks_task_set_nice(idx, ks_task_nice(me));   /* and its parent's nice */
+        linux_sched_inherit(idx, me);   /* and its parent's nice, policy and affinity (L6) */
     }
     /* Resume exactly where the parent is - including the vector registers and
      * the TLS base the copied image expects - except that fork() returns 0 in
@@ -346,7 +346,7 @@ static long linux_sys_clone_thread(const ks_regs_t *frame,
     child->is_thread = 1;
     child->cpu_base = linux_cpu_slot(idx);
     child->start_tick = ks_ticks();
-    (void)ks_task_set_nice(idx, ks_task_nice(me));   /* a thread starts at its creator's nice */
+    linux_sched_inherit(idx, me);   /* a thread starts with its creator's scheduling */
     child->is_user = 1;
     child->exit_code = 0;
     child->exit_signal = 0;

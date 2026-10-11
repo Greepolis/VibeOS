@@ -23,6 +23,6 @@
 
 ### nor its nice
 --- old
-        (void)ks_task_set_nice(idx, ks_task_nice(me));   /* and its parent's nice */
+        linux_sched_inherit(idx, me);   /* and its parent's nice, policy and affinity (L6) */
 +++ new
         (void)0;

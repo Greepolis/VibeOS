@@ -262,6 +262,9 @@ void hw_task_exit(uint64_t code);
  * range was validated (H-003, H-010). */
 int vibeos_uaccess_copy(void *dst, const void *src, uint64_t len);
 int vibeos_uaccess_cmpxchg32(uint32_t *uaddr, uint32_t *expected, uint32_t desired);
+/* membarrier's barrier: the shootdown IPI to the cores running this address
+ * space, or to every core running a user one (mm_bridge.c). */
+void hw_membarrier(int global);
 
 /* ---- the seam with io_bringup.c ------------------------------------------
  *

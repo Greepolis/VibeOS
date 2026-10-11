@@ -9,9 +9,9 @@ the registry, not this page; `check.sh` fails while the two differ.
 
 | State | Count | What the kernel answers |
 | --- | --- | --- |
-| done | 201 | through its row |
-| partial | 35 | through its row, with the gap named |
-| missing | 53 | ENOSYS, and the boot gate fails naming the number |
+| done | 215 | through its row |
+| partial | 36 | through its row, with the gap named |
+| missing | 38 | ENOSYS, and the boot gate fails naming the number |
 | deferred | 50 | ENOSYS, and the boot gate fails naming the number |
 | refused | 34 | its errno, counted as refused - expected, never a failure |
 
@@ -24,7 +24,7 @@ Without a row, by phase:
 | L3 - memory | 0 |
 | L4 - event loops | 0 |
 | L5 - sockets | 0 |
-| L6 - threads and scheduling | 15 |
+| L6 - threads and scheduling | 0 |
 | L7 - IPC | 21 |
 | L8 - system administration | 11 |
 | L9 - security | 6 |
@@ -178,13 +178,13 @@ calls, outside the Linux number space, are listed last.
 | 139 | `sysfs` | refused | R | ENOSYS |  | removed or never implemented by Linux itself |
 | 140 | `getpriority` | done | - | - | `limits.c` |  |
 | 141 | `setpriority` | done | - | - | `limits.c` |  |
-| 142 | `sched_setparam` | missing | L6 | ENOSYS |  |  |
-| 143 | `sched_getparam` | missing | L6 | ENOSYS |  |  |
-| 144 | `sched_setscheduler` | missing | L6 | ENOSYS |  |  |
-| 145 | `sched_getscheduler` | missing | L6 | ENOSYS |  |  |
-| 146 | `sched_get_priority_max` | missing | L6 | ENOSYS |  |  |
-| 147 | `sched_get_priority_min` | missing | L6 | ENOSYS |  |  |
-| 148 | `sched_rr_get_interval` | missing | L6 | ENOSYS |  |  |
+| 142 | `sched_setparam` | done | - | - | `sched.c` |  |
+| 143 | `sched_getparam` | done | - | - | `sched.c` |  |
+| 144 | `sched_setscheduler` | done | - | - | `sched.c` |  |
+| 145 | `sched_getscheduler` | done | - | - | `sched.c` |  |
+| 146 | `sched_get_priority_max` | done | - | - | `sched.c` |  |
+| 147 | `sched_get_priority_min` | done | - | - | `sched.c` |  |
+| 148 | `sched_rr_get_interval` | done | - | - | `sched.c` |  |
 | 149 | `mlock` | done | - | - | `mm.c` |  |
 | 150 | `munlock` | done | - | - | `mm.c` |  |
 | 151 | `mlockall` | partial | L3 | - | `mm.c` | MCL_FUTURE is accepted and a mapping made afterwards is not locked |
@@ -239,8 +239,8 @@ calls, outside the Linux number space, are listed last.
 | 200 | `tkill` | done | - | - | `sig.c` |  |
 | 201 | `time` | done | - | - | `misc.c` |  |
 | 202 | `futex` | partial | L6 | - | `futex.c` | every operation but priority inheritance, which is ENOSYS: no program here asks for it |
-| 203 | `sched_setaffinity` | missing | L6 | ENOSYS |  |  |
-| 204 | `sched_getaffinity` | missing | L6 | ENOSYS |  |  |
+| 203 | `sched_setaffinity` | done | - | - | `sched.c` |  |
+| 204 | `sched_getaffinity` | done | - | - | `sched.c` |  |
 | 205 | `set_thread_area` | refused | R | ENOSYS |  | i386 thread storage; x86-64 programs use arch_prctl |
 | 206 | `io_setup` | deferred | D | ENOSYS |  | legacy AIO: ENOSYS, and libcs fall back to threads |
 | 207 | `io_destroy` | deferred | D | ENOSYS |  | legacy AIO: ENOSYS, and libcs fall back to threads |
@@ -287,8 +287,8 @@ calls, outside the Linux number space, are listed last.
 | 248 | `add_key` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
 | 249 | `request_key` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
 | 250 | `keyctl` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
-| 251 | `ioprio_set` | missing | L6 | ENOSYS |  |  |
-| 252 | `ioprio_get` | missing | L6 | ENOSYS |  |  |
+| 251 | `ioprio_set` | done | - | - | `sched.c` |  |
+| 252 | `ioprio_get` | done | - | - | `sched.c` |  |
 | 253 | `inotify_init` | done | - | - | `inotify.c` |  |
 | 254 | `inotify_add_watch` | done | - | - | `inotify.c` |  |
 | 255 | `inotify_rm_watch` | done | - | - | `inotify.c` |  |
@@ -345,13 +345,13 @@ calls, outside the Linux number space, are listed last.
 | 306 | `syncfs` | done | - | - | `fs.c` |  |
 | 307 | `sendmmsg` | done | - | - | `net.c` |  |
 | 308 | `setns` | deferred | D | ENOSYS |  | namespaces: after the credential model |
-| 309 | `getcpu` | missing | L6 | ENOSYS |  |  |
+| 309 | `getcpu` | done | - | - | `sched.c` |  |
 | 310 | `process_vm_readv` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
 | 311 | `process_vm_writev` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
 | 312 | `kcmp` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
 | 313 | `finit_module` | refused | R | EPERM |  | no loadable modules: code enters this kernel only by being built into it |
-| 314 | `sched_setattr` | missing | L6 | ENOSYS |  |  |
-| 315 | `sched_getattr` | missing | L6 | ENOSYS |  |  |
+| 314 | `sched_setattr` | partial | L6 | - | `sched.c` | SCHED_DEADLINE is EINVAL: no admission control here |
+| 315 | `sched_getattr` | done | - | - | `sched.c` |  |
 | 316 | `renameat2` | partial | L1 | - | `names.c` | RENAME_EXCHANGE and RENAME_WHITEOUT refused |
 | 317 | `seccomp` | missing | L9 | ENOSYS |  | the security goals of docs/vision.md |
 | 318 | `getrandom` | done | - | - | `misc.c` |  |
@@ -360,7 +360,7 @@ calls, outside the Linux number space, are listed last.
 | 321 | `bpf` | refused | R | ENOSYS |  | no in-kernel bytecode: a facility this kernel does not have |
 | 322 | `execveat` | done | - | - | `proc.c` |  |
 | 323 | `userfaultfd` | refused | R | ENOSYS |  | no user-space fault handling: a facility this kernel does not have |
-| 324 | `membarrier` | missing | L6 | ENOSYS |  |  |
+| 324 | `membarrier` | done | - | - | `sched.c` |  |
 | 325 | `mlock2` | done | - | - | `mm.c` |  |
 | 326 | `copy_file_range` | done | - | - | `fs.c` |  |
 | 327 | `preadv2` | partial | L1 | - | `fs.c` | RWF_ flags refused |

@@ -21,6 +21,7 @@
 #if defined(__linux__)
 
 #include <dirent.h>
+#include <sched.h>
 #include <fcntl.h>
 #include <sys/syscall.h>
 #include <sys/socket.h>
@@ -44,6 +45,7 @@ static const struct { const char *st, *name; size_t off, size; } g_sfields[] = {
     SS(cmsghdr), SF(cmsghdr, cmsg_len), SF(cmsghdr, cmsg_level), SF(cmsghdr, cmsg_type),
     SS(ucred), SF(ucred, pid), SF(ucred, uid), SF(ucred, gid),
     SS(linger), SF(linger, l_onoff), SF(linger, l_linger),
+    SS(sched_param), SF(sched_param, sched_priority),
 };
 
 static const struct { const char *name; long long value; } g_consts[] = {

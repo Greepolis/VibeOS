@@ -2252,6 +2252,35 @@ uint64_t *hw_pte_lookup(vibeos_hw_aspace_t *as, uint64_t va) {
     }
 }
 
+/* membarrier (docs/abi/ L6 step 2). What a barrier on another core needs is
+ * that the core take an interrupt, which serialises it: everything it did
+ * before is visible after, and nothing it does after was moved before. The
+ * shootdown already sends exactly that and waits for the answer, to the cores
+ * running one address space - the caller's for the private command, and each
+ * address space some other core is running for the global one. A TLB flush on
+ * the way costs those cores a refill and nothing else. A core inside a system
+ * call answers on its way back to ring 3, which is before the program's next
+ * instruction - the point the barrier is about. */
+void hw_membarrier(int global) {
+    uint32_t i, me = hw_this_cpu()->index;
+
+    if (!global) {
+        hw_tlb_shootdown(hw_read_cr3());
+        return;
+    }
+    for (i = 0; i < VIBEOS_HW_MAX_CPUS; i++) {
+        uint64_t cr3;
+
+        if (i == me || !g_cpus[i].online) {
+            continue;
+        }
+        cr3 = __atomic_load_n(&g_cpus[i].loaded_cr3, __ATOMIC_ACQUIRE) & ~0xFFFull;
+        if (cr3 != 0u && cr3 != ((uint64_t)(uintptr_t)g_pml4 & ~0xFFFull)) {
+            hw_tlb_shootdown(cr3);
+        }
+    }
+}
+
 /* Drop one page from the TLB. Changing a PTE without this leaves the old
  * translation cached, so a revoked write permission is not actually revoked
  * until something else happens to flush it. */

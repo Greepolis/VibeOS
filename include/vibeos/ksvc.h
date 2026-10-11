@@ -49,6 +49,7 @@
 #include "vibeos/pageinfo.h"
 #include "vibeos/exec_stats.h"
 #include "vibeos/siginfo.h"
+#include "vibeos/sched_policy.h"
 
 /* A saved user register state: the trap frame a syscall arrived with. Opaque
  * here; only the functions below that name it read or write it. */
@@ -77,6 +78,21 @@ int ks_task_by_tid(uint32_t tid);
 /* A task's nice, -20..19: the scheduler's weight (L2 step 4). */
 int ks_task_nice(int slot);
 int ks_task_set_nice(int slot, int nice);
+/* Its class and, in REALTIME, its priority (docs/abi/ L6 step 2), as the
+ * scheduler's policy keeps them: set_class refuses what the policy refuses.
+ * Under ks_sched_lock, as the picker reads them. */
+int ks_task_set_class(int slot, vibeos_sched_class_t cls, uint32_t rt_prio);
+vibeos_sched_class_t ks_task_class(int slot);
+uint32_t ks_task_rt_prio(int slot);
+uint32_t ks_class_quantum(vibeos_sched_class_t cls);   /* in ticks */
+/* The cores a task may run on, a bit per core; 0 is anywhere. */
+uint32_t ks_task_affinity(int slot);
+int ks_task_set_affinity(int slot, uint32_t mask);
+uint32_t ks_cpus_online_mask(void);
+/* A memory barrier on other cores (membarrier): every core running the
+ * caller's address space, or with `global` every core running any user
+ * space, has taken an interrupt - which serialises it - when this returns. */
+void ks_membarrier(int global);
 int ks_task_alloc_for_user(const char *what);  /* a RESERVED slot, or negative */
 void ks_task_release(int slot);
 uint32_t ks_next_pid(void);

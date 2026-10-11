@@ -600,6 +600,60 @@ typedef struct {
     uint64_t list_op_pending;
 } linux_robust_list_head_t;
 
+/* Scheduling (linux/sched.h, linux/sched/types.h; docs/abi/ L6 step 2). */
+#define LINUX_SCHED_NORMAL   0u
+#define LINUX_SCHED_FIFO     1u
+#define LINUX_SCHED_RR       2u
+#define LINUX_SCHED_BATCH    3u
+#define LINUX_SCHED_IDLE     5u
+#define LINUX_SCHED_DEADLINE 6u
+#define LINUX_SCHED_RESET_ON_FORK 0x40000000u
+#define LINUX_SCHED_FLAG_RESET_ON_FORK  0x01u
+#define LINUX_SCHED_FLAG_KEEP_POLICY    0x08u
+#define LINUX_SCHED_FLAG_KEEP_PARAMS    0x10u
+#define LINUX_SCHED_FLAG_UTIL_CLAMP_MIN 0x20u
+#define LINUX_SCHED_FLAG_UTIL_CLAMP_MAX 0x40u
+#define LINUX_SCHED_FLAG_ALL            0x7Fu
+#define LINUX_SCHED_ATTR_SIZE_VER0 48u
+
+typedef struct {
+    int32_t sched_priority;
+} linux_sched_param_t;
+
+typedef struct {
+    uint32_t size;
+    uint32_t sched_policy;
+    uint64_t sched_flags;
+    int32_t sched_nice;
+    uint32_t sched_priority;
+    uint64_t sched_runtime;
+    uint64_t sched_deadline;
+    uint64_t sched_period;
+    uint32_t sched_util_min;
+    uint32_t sched_util_max;
+} linux_sched_attr_t;
+
+/* I/O priorities (linux/ioprio.h). */
+#define LINUX_IOPRIO_CLASS_SHIFT 13u
+#define LINUX_IOPRIO_CLASS_NONE  0u
+#define LINUX_IOPRIO_CLASS_RT    1u
+#define LINUX_IOPRIO_CLASS_BE    2u
+#define LINUX_IOPRIO_CLASS_IDLE  3u
+#define LINUX_IOPRIO_WHO_PROCESS 1u
+#define LINUX_IOPRIO_WHO_PGRP    2u
+#define LINUX_IOPRIO_WHO_USER    3u
+
+/* membarrier (linux/membarrier.h). */
+#define LINUX_MEMBARRIER_CMD_QUERY                                0u
+#define LINUX_MEMBARRIER_CMD_GLOBAL                               (1u << 0)
+#define LINUX_MEMBARRIER_CMD_GLOBAL_EXPEDITED                     (1u << 1)
+#define LINUX_MEMBARRIER_CMD_REGISTER_GLOBAL_EXPEDITED            (1u << 2)
+#define LINUX_MEMBARRIER_CMD_PRIVATE_EXPEDITED                    (1u << 3)
+#define LINUX_MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED           (1u << 4)
+#define LINUX_MEMBARRIER_CMD_PRIVATE_EXPEDITED_SYNC_CORE          (1u << 5)
+#define LINUX_MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED_SYNC_CORE (1u << 6)
+#define LINUX_MEMBARRIER_CMD_GET_REGISTRATIONS                    (1u << 9)
+
 /* mmap protection and flags (asm-generic/mman-common.h). */
 #define LINUX_PROT_NONE     0x0
 #define LINUX_PROT_WRITE    0x2

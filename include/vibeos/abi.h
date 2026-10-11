@@ -67,6 +67,13 @@
     X(GETRUSAGE,       "getrusage",       VIBEOS_CHECK_USER_MEMORY) \
     X(GETPRIORITY,     "getpriority",     VIBEOS_CHECK_NONE) \
     X(SETPRIORITY,     "setpriority",     VIBEOS_CHECK_NONE) \
+    X(SCHED_SET,       "sched_set",       VIBEOS_CHECK_USER_MEMORY) \
+    X(SCHED_GET,       "sched_get",       VIBEOS_CHECK_USER_MEMORY) \
+    X(SCHED_POLICY,    "sched_policy",    VIBEOS_CHECK_NONE) \
+    X(AFFINITY,        "affinity",        VIBEOS_CHECK_USER_MEMORY) \
+    X(GETCPU,          "getcpu",          VIBEOS_CHECK_USER_MEMORY) \
+    X(IOPRIO,          "ioprio",          VIBEOS_CHECK_NONE) \
+    X(MEMBARRIER,      "membarrier",      VIBEOS_CHECK_NONE) \
     X(PERSONALITY,     "personality",     VIBEOS_CHECK_NONE) \
     X(IDENTITY_GET,    "identity_get",    VIBEOS_CHECK_USER_MEMORY) \
     X(IDENTITY_SET,    "identity_set",    VIBEOS_CHECK_USER_MEMORY) \

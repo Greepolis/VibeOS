@@ -1,0 +1,79 @@
+# Scheduling for programs (docs/abi/ L6 step 2): policies, affinity, I/O
+# priorities and membarrier. Host tests: t_sched_l6 in
+# tests/kernel/linux_abi_tests.c.
+#
+#  1. a real-time priority outside 1-99 is taken. Expect "another user's task:
+#     a bad priority is EINVAL first". The scheduler refuses such a priority
+#     too, later, so only the order of the errors shows the handler's check.
+#  2. RLIMIT_RTPRIO is not asked. Expect "an unprivileged caller with no
+#     RLIMIT_RTPRIO cannot go real-time".
+#  3. reset-on-fork is ignored by a child. Expect "with reset-on-fork the
+#     child is SCHED_OTHER".
+#  4. a mask of cores that are not online is taken. Expect "a mask of cores
+#     that are not online is EINVAL".
+#  5. the real-time I/O class is anybody's. Expect "the real-time class is the
+#     superuser's".
+#  6. the private expedited barrier needs no registration. Expect "the private
+#     expedited barrier before registering is EPERM".
+#  7. what a larger sched_attr carries past the known fields is ignored.
+#     Expect "a larger structure with something set past what is known is
+#     E2BIG".
+#  8. an I/O level past seven is taken. Expect "a level past seven".
+#
+# The policy's own half (classes and priorities) is sched-l6-policy.txt.
+#
+# Target source: kernel/abi/linux/sched.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/sched.c scripts/dev/cases/sched-l6.txt
+
+### a real-time priority outside 1-99 is taken
+--- old
+    if (sched_is_rt(policy) ? (prio < 1u || prio > 99u) : prio != 0u) {
++++ new
+    if (0) {
+
+### RLIMIT_RTPRIO is not asked
+--- old
+        if (sched_is_rt(policy) && prio > ks_task_rt_prio(t) && (uint64_t)prio > rtlim) {
++++ new
+        if (0 && rtlim) {
+
+### reset-on-fork is ignored by a child
+--- old
+    if (p->sched_reset_on_fork) {
++++ new
+    if (0) {
+
+### a mask of cores that are not online is taken
+--- old
+    mask &= ks_cpus_online_mask();
+    if (mask == 0u) {
++++ new
+    if (mask == 0u) {
+
+### the real-time I/O class is anybody's
+--- old
+            if (me.euid != 0u) {
+                return -VIBEOS_EPERM;
+            }
+            /* fallthrough */
++++ new
+            (void)me;
+            /* fallthrough */
+
+### the private expedited barrier needs no registration
+--- old
+            if (!(ps->membarrier_reg & LINUX_MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED)) {
++++ new
+            if (0) {
+
+### what a larger sched_attr carries past the known fields is ignored
+--- old
+        if (c != 0u) {
++++ new
+        if (0) {
+
+### an I/O level past seven is taken
+--- old
+            return level >= 8u ? -VIBEOS_EINVAL : 0;
++++ new
+            return 0;

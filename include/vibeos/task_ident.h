@@ -42,6 +42,13 @@ typedef struct vibeos_task {
      * thread still holds marked OWNER_DIED. A thread's own; nobody inherits
      * it, and an exec forgets it - fork, clone and exec all set it. */
     uint64_t robust_head;
+    /* What a program asked of the scheduler (docs/abi/ L6 step 2), in its
+     * personality's words: the policy as Linux numbers it, whether a child
+     * gets it, and the I/O priority. The class and the real-time priority
+     * the policy maps to are the scheduler's (sched_policy.c). */
+    uint8_t sched_policy;
+    uint8_t sched_reset_on_fork;
+    uint16_t ioprio;
 
     char comm[16];   /* prctl(PR_SET_NAME); always NUL-terminated */
 

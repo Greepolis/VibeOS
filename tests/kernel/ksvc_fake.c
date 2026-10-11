@@ -539,9 +539,12 @@ static void kf_procfs_mem(vibeos_procfs_mem_t *out) {
 }
 static int g_tmpfs_live;
 
+static void kf_sched_reset(void);   /* below, beside the arrays it clears */
+
 void kf_reset(void) {
     uint32_t i;
 
+    kf_sched_reset();
     memset(g_t, 0, sizeof(g_t));
     /* The previous test's tables hold pages and descriptions: release them before
      * forgetting the process states, or every reset leaks what they held. */
@@ -903,6 +906,38 @@ int ks_signal_interrupts(int slot) {
 }
 int ks_signal_raise(int slot, uint32_t sig) {
     return ks_signal_send(slot, sig, 0);
+}
+/* Class, real-time priority and affinity, refused as the machine's policy
+ * refuses them (kernel/sched/sched_policy.c). Four cores online. */
+static uint8_t g_kf_cls[KF_SLOTS];
+static uint8_t g_kf_rt[KF_SLOTS];
+static uint32_t g_kf_aff[KF_SLOTS];
+static uint32_t g_kf_membarriers[2];
+int ks_task_set_class(int slot, vibeos_sched_class_t cls, uint32_t rt_prio) {
+    if (slot < 0 || slot >= (int)KF_SLOTS || cls == VIBEOS_SCHED_KERNEL ||
+        (uint32_t)cls >= (uint32_t)VIBEOS_SCHED_CLASS_COUNT ||
+        (cls == VIBEOS_SCHED_REALTIME ? (rt_prio < 1u || rt_prio > 99u) : rt_prio != 0u)) {
+        return -1;
+    }
+    g_kf_cls[slot] = (uint8_t)cls;
+    g_kf_rt[slot] = (uint8_t)rt_prio;
+    return 0;
+}
+vibeos_sched_class_t ks_task_class(int slot) {
+    return g_kf_cls[slot] ? (vibeos_sched_class_t)g_kf_cls[slot] : VIBEOS_SCHED_NORMAL;
+}
+uint32_t ks_task_rt_prio(int slot) { return g_kf_rt[slot]; }
+uint32_t ks_class_quantum(vibeos_sched_class_t cls) { return vibeos_sched_policy_quantum(cls); }
+uint32_t ks_task_affinity(int slot) { return g_kf_aff[slot]; }
+int ks_task_set_affinity(int slot, uint32_t mask) { g_kf_aff[slot] = mask; return 0; }
+uint32_t ks_cpus_online_mask(void) { return 0xFu; }
+void ks_membarrier(int global) { g_kf_membarriers[global ? 1 : 0]++; }
+uint32_t kf_membarriers(int global) { return g_kf_membarriers[global ? 1 : 0]; }
+static void kf_sched_reset(void) {
+    memset(g_kf_cls, 0, sizeof(g_kf_cls));
+    memset(g_kf_rt, 0, sizeof(g_kf_rt));
+    memset(g_kf_aff, 0, sizeof(g_kf_aff));
+    memset(g_kf_membarriers, 0, sizeof(g_kf_membarriers));
 }
 /* The scheduler's nice, per slot, as the machine's policy keeps it. */
 int ks_task_nice(int slot) { return g_nice[slot]; }

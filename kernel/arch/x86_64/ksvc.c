@@ -92,6 +92,27 @@ int ks_signal_interrupts(int slot) { return hw_signal_interrupts(slot); }
 int ks_signal_raise(int slot, uint32_t sig) { return hw_signal_raise(slot, sig); }
 int ks_task_nice(int slot) { return vibeos_sched_policy_nice((uint32_t)slot); }
 int ks_task_set_nice(int slot, int nice) { return vibeos_sched_policy_set_nice((uint32_t)slot, nice); }
+int ks_task_set_class(int slot, vibeos_sched_class_t cls, uint32_t rt_prio) {
+    return vibeos_sched_policy_set_class((uint32_t)slot, cls, rt_prio);
+}
+vibeos_sched_class_t ks_task_class(int slot) { return vibeos_sched_policy_class((uint32_t)slot); }
+uint32_t ks_task_rt_prio(int slot) { return vibeos_sched_policy_rt_prio((uint32_t)slot); }
+uint32_t ks_class_quantum(vibeos_sched_class_t cls) { return vibeos_sched_policy_quantum(cls); }
+uint32_t ks_task_affinity(int slot) { return vibeos_sched_policy_affinity((uint32_t)slot); }
+int ks_task_set_affinity(int slot, uint32_t mask) {
+    return vibeos_sched_policy_set_affinity((uint32_t)slot, mask);
+}
+uint32_t ks_cpus_online_mask(void) {
+    uint32_t i, m = 0;
+
+    for (i = 0; i < VIBEOS_HW_MAX_CPUS; i++) {
+        if (g_cpus[i].online) {
+            m |= 1u << i;
+        }
+    }
+    return m;
+}
+void ks_membarrier(int global) { hw_membarrier(global); }
 int ks_signal_send(int slot, uint32_t sig, const vibeos_siginfo_t *info) { return hw_signal_send(slot, sig, info); }
 int ks_signal_take(int slot, uint32_t sig, vibeos_siginfo_t *out) { return hw_signal_take(slot, sig, out); }
 int ks_signal_default_kills(uint32_t sig) { return hw_signal_default_kills(sig); }

@@ -65,6 +65,9 @@ int test_linux_layout(void) {
 #include <linux/fcntl.h>
 #include <linux/fs.h>
 #include <linux/futex.h>
+#include <linux/sched/types.h>
+#include <linux/ioprio.h>
+#include <linux/membarrier.h>
 #include <linux/prctl.h>
 #include <linux/sched.h>
 #include <linux/wait.h>
@@ -1037,6 +1040,49 @@ int test_linux_layout(void) {
     CONST(LINUX_FUTEX2_NUMA, FUTEX2_NUMA);
     CONST(LINUX_FUTEX2_PRIVATE, FUTEX2_PRIVATE);
     CONST(LINUX_FUTEX_WAITV_MAX, FUTEX_WAITV_MAX);
+    CONST(LINUX_SCHED_NORMAL, SCHED_NORMAL);
+    CONST(LINUX_SCHED_FIFO, SCHED_FIFO);
+    CONST(LINUX_SCHED_RR, SCHED_RR);
+    CONST(LINUX_SCHED_BATCH, SCHED_BATCH);
+    CONST(LINUX_SCHED_IDLE, SCHED_IDLE);
+    CONST(LINUX_SCHED_DEADLINE, SCHED_DEADLINE);
+    CONST(LINUX_SCHED_RESET_ON_FORK, SCHED_RESET_ON_FORK);
+    CONST(LINUX_SCHED_FLAG_RESET_ON_FORK, SCHED_FLAG_RESET_ON_FORK);
+    CONST(LINUX_SCHED_FLAG_KEEP_POLICY, SCHED_FLAG_KEEP_POLICY);
+    CONST(LINUX_SCHED_FLAG_KEEP_PARAMS, SCHED_FLAG_KEEP_PARAMS);
+    CONST(LINUX_SCHED_FLAG_UTIL_CLAMP_MIN, SCHED_FLAG_UTIL_CLAMP_MIN);
+    CONST(LINUX_SCHED_FLAG_UTIL_CLAMP_MAX, SCHED_FLAG_UTIL_CLAMP_MAX);
+    CONST(LINUX_SCHED_FLAG_ALL, SCHED_FLAG_ALL);
+    CONST(LINUX_SCHED_ATTR_SIZE_VER0, SCHED_ATTR_SIZE_VER0);
+    SIZE(linux_sched_attr_t, struct sched_attr);
+    FIELD(linux_sched_attr_t, struct sched_attr, size);
+    FIELD(linux_sched_attr_t, struct sched_attr, sched_policy);
+    FIELD(linux_sched_attr_t, struct sched_attr, sched_flags);
+    FIELD(linux_sched_attr_t, struct sched_attr, sched_nice);
+    FIELD(linux_sched_attr_t, struct sched_attr, sched_priority);
+    FIELD(linux_sched_attr_t, struct sched_attr, sched_runtime);
+    FIELD(linux_sched_attr_t, struct sched_attr, sched_deadline);
+    FIELD(linux_sched_attr_t, struct sched_attr, sched_period);
+    FIELD(linux_sched_attr_t, struct sched_attr, sched_util_min);
+    FIELD(linux_sched_attr_t, struct sched_attr, sched_util_max);
+    CONST(LINUX_IOPRIO_CLASS_SHIFT, IOPRIO_CLASS_SHIFT);
+    CONST(LINUX_IOPRIO_CLASS_NONE, IOPRIO_CLASS_NONE);
+    CONST(LINUX_IOPRIO_CLASS_RT, IOPRIO_CLASS_RT);
+    CONST(LINUX_IOPRIO_CLASS_BE, IOPRIO_CLASS_BE);
+    CONST(LINUX_IOPRIO_CLASS_IDLE, IOPRIO_CLASS_IDLE);
+    CONST(LINUX_IOPRIO_WHO_PROCESS, IOPRIO_WHO_PROCESS);
+    CONST(LINUX_IOPRIO_WHO_PGRP, IOPRIO_WHO_PGRP);
+    CONST(LINUX_IOPRIO_WHO_USER, IOPRIO_WHO_USER);
+    CONST(LINUX_MEMBARRIER_CMD_QUERY, MEMBARRIER_CMD_QUERY);
+    CONST(LINUX_MEMBARRIER_CMD_GLOBAL, MEMBARRIER_CMD_GLOBAL);
+    CONST(LINUX_MEMBARRIER_CMD_GLOBAL_EXPEDITED, MEMBARRIER_CMD_GLOBAL_EXPEDITED);
+    CONST(LINUX_MEMBARRIER_CMD_REGISTER_GLOBAL_EXPEDITED, MEMBARRIER_CMD_REGISTER_GLOBAL_EXPEDITED);
+    CONST(LINUX_MEMBARRIER_CMD_PRIVATE_EXPEDITED, MEMBARRIER_CMD_PRIVATE_EXPEDITED);
+    CONST(LINUX_MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED, MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED);
+    CONST(LINUX_MEMBARRIER_CMD_PRIVATE_EXPEDITED_SYNC_CORE, MEMBARRIER_CMD_PRIVATE_EXPEDITED_SYNC_CORE);
+    CONST(LINUX_MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED_SYNC_CORE,
+          MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED_SYNC_CORE);
+    CONST(LINUX_MEMBARRIER_CMD_GET_REGISTRATIONS, MEMBARRIER_CMD_GET_REGISTRATIONS);
     SIZE(linux_futex_waitv_t, struct futex_waitv);
     FIELD(linux_futex_waitv_t, struct futex_waitv, val);
     FIELD(linux_futex_waitv_t, struct futex_waitv, uaddr);
@@ -1105,6 +1151,9 @@ int test_linux_layout(void) {
     SIZE(linux_sockaddr_un_t, struct sockaddr_un);
     FIELD(linux_sockaddr_un_t, struct sockaddr_un, sun_family);
     FIELD(linux_sockaddr_un_t, struct sockaddr_un, sun_path);
+    /* sched_param is the C library's: uapi stopped exporting it (L6). */
+    LIBC_SIZE(linux_sched_param_t, sched_param);
+    LIBC_SFIELD(linux_sched_param_t, sched_param, sched_priority);
     LIBC_SIZE(linux_msghdr_t, msghdr);
     LIBC_SFIELD(linux_msghdr_t, msghdr, msg_name);
     LIBC_SFIELD(linux_msghdr_t, msghdr, msg_namelen);
