@@ -937,6 +937,8 @@ static int pf_list(void *fs, const char *path, uint32_t index, char *name, uint3
     while (*path == '/') {
         path++;
     }
+    /* The root, and the static tree under it: the static entries first, then
+     * "self" and "mounts", then a directory for each process. */
     if (w.kind == PF_K_DIR) {
         if (pf_static_entry(pf, path, index, name, cap, out_size, out_is_dir) == 0) {
             return 0;
@@ -959,6 +961,9 @@ static int pf_list(void *fs, const char *path, uint32_t index, char *name, uint3
             uint32_t pid = 0;
             pf_out_t o = {name, cap - 1u, 0, 0};
 
+            /* The process directories are numbered after the fixed names:
+             * walk the pids from the bottom, one step for each index past
+             * them. */
             for (k = n + 2u; k <= index; k++) {
                 pid = pf->next_pid ? pf->next_pid(pid) : 0u;
                 if (pid == 0u) {
@@ -973,6 +978,7 @@ static int pf_list(void *fs, const char *path, uint32_t index, char *name, uint3
             return 0;
         }
     }
+    /* A process's own directory: the fixed table of its files. */
     if (w.kind == PF_K_PID) {
         if (index >= PF_PID_FILES) {
             return -1;
@@ -987,6 +993,7 @@ static int pf_list(void *fs, const char *path, uint32_t index, char *name, uint3
         }
         return 0;
     }
+    /* task/: one directory for each thread of the process. */
     if (w.kind == PF_K_ENTRY && g_pid_files[w.arg].type == PF_E_TASKS) {
         uint32_t tid = 0, tgid = w.p.tgid ? w.p.tgid : w.p.pid;
         pf_out_t o = {name, cap - 1u, 0, 0};
@@ -1004,6 +1011,8 @@ static int pf_list(void *fs, const char *path, uint32_t index, char *name, uint3
         }
         return 0;
     }
+    /* fd/: one link for each open descriptor, found from the one after the
+     * last, so a descriptor closed meanwhile is skipped rather than repeated. */
     if (w.kind == PF_K_ENTRY && g_pid_files[w.arg].type == PF_E_DIR) {
         uint32_t fd = 0, at = 0;
         pf_out_t o = {name, cap - 1u, 0, 0};
@@ -1018,7 +1027,7 @@ static int pf_list(void *fs, const char *path, uint32_t index, char *name, uint3
         name[o.len < cap - 1u ? o.len : cap - 1u] = 0;
         return 0;
     }
-    return -VIBEOS_ENOTDIR;
+    return -VIBEOS_ENOTDIR;   /* a file, not a directory: nothing to list */
 }
 
 static int pf_statfs(void *fs, vibeos_fs_statfs_t *out) {
