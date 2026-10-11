@@ -3415,7 +3415,10 @@ def main():
                         # L6 step 2: a thread pinned to core 1 runs there,
                         # membarrier's IPIs come back, SCHED_FIFO reads back.
                         ("C6_SCHED", "sched_affinity_membarrier_or_policy_failed",
-                         "threads_c6_sched_did_not_report")):
+                         "threads_c6_sched_did_not_report"),
+                        # L6 step 3: CLONE_VM|CLONE_VFORK, and posix_spawn on it.
+                        ("C6_VFORK", "vfork_did_not_share_or_wait",
+                         "threads_c6_vfork_did_not_report")):
                     if f"THREADS_{stage}_OK" in text:
                         continue
                     if f"THREADS_{stage}_FAIL" in text:

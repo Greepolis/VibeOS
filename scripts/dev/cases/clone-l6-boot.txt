@@ -1,0 +1,31 @@
+# clone's process forms at boot (THREADS.ELF, stage C6_VFORK): a
+# CLONE_VM|CLONE_VFORK child stores into the parent's memory before clone
+# returns, and posix_spawn - musl's, built on that clone - runs a program.
+#
+#  1. the parent does not wait for a vfork child. Expect
+#     vfork_did_not_share_or_wait.
+#  2. CLONE_VM copies instead of sharing. Same expectation.
+#
+# Not a case: exec not ending the wait. The program a vfork child execs here
+# ends at once, and its end retires the slot, which ends the wait as well -
+# only slower. A sabotage of it would go NOT RED for that reason.
+#
+# Target source: kernel/abi/linux/proc.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/proc.c scripts/dev/cases/clone-l6-boot.txt
+
+### the parent does not wait for a vfork child
+--- old
+        if (flags & LINUX_CLONE_VFORK) {
+            while (ks_seq(idx) == seq && ks_id(idx)->in_vfork &&
++++ new
+        if (0) {
+            while (ks_seq(idx) == seq && ks_id(idx)->in_vfork &&
+
+### CLONE_VM copies instead of sharing
+--- old
+    if (share) {
+        ks_share_aspace(idx, me);
+    } else if (ks_fork_aspace(idx, me) != 0) {
++++ new
+    share = 0;
+    if (ks_fork_aspace(idx, me) != 0) {

@@ -48,6 +48,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <sched.h>
+#include <spawn.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
@@ -292,6 +293,23 @@ static void *exec_worker(void *arg)
     (void)arg;
     execv(args[0], args);
     return (void *)1L;   /* only if execv failed */
+}
+
+/* C6_VFORK: runs on the parent's memory, on a stack of its own, yields a few
+ * times so that a parent that did not wait would get there first, stores,
+ * and ends. */
+static volatile int g_vfork_seen;
+
+static int vfork_child(void *arg)
+{
+    int i;
+
+    (void)arg;
+    for (i = 0; i < 20; i++) {
+        sched_yield();
+    }
+    g_vfork_seen = 1;
+    _exit(7);
 }
 
 /* C6_SCHED: a thread that keeps running while membarrier's barriers go out,
@@ -808,6 +826,48 @@ int main(int argc, char **argv)
             _exit(31);
         }
         report_child_bounded("C6_SCHED", pid, 31, 15);
+    }
+
+    /* C6_VFORK (docs/abi/ L6 step 3). A child made with CLONE_VM|CLONE_VFORK
+     * runs on this process's memory while this thread waits: what it stores
+     * is here when clone returns, because clone did not return before it
+     * ended. Then posix_spawn, which musl builds on exactly that clone and
+     * which was ENOSYS until this step: this program again, as the exec
+     * probe, whose answer is 23. */
+    {
+        static char vfork_stack[16384] __attribute__((aligned(16)));
+        char *const args[] = { (char *)"EFI/BOOT/THREADS.ELF", (char *)"exec-probe", 0 };
+        int status = 0, ok = 1;
+        pid_t pid;
+
+        g_vfork_seen = 0;
+        pid = clone(vfork_child, vfork_stack + sizeof(vfork_stack),
+                    CLONE_VM | CLONE_VFORK | SIGCHLD, 0);
+        if (pid < 0) {
+            printf("THREADS_C6_VFORK_FAIL: clone with CLONE_VM|CLONE_VFORK: errno %d\n", errno);
+            ok = 0;
+        } else if (g_vfork_seen != 1) {
+            printf("THREADS_C6_VFORK_FAIL: clone returned before the child's store (%d)\n", g_vfork_seen);
+            ok = 0;
+        } else if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status) || WEXITSTATUS(status) != 7) {
+            printf("THREADS_C6_VFORK_FAIL: the vfork child ended with 0x%x\n", status);
+            ok = 0;
+        }
+        if (ok) {
+            int r = posix_spawn(&pid, args[0], 0, 0, args, 0);
+
+            if (r != 0) {
+                printf("THREADS_C6_VFORK_FAIL: posix_spawn returned %d\n", r);
+                ok = 0;
+            } else if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status) || WEXITSTATUS(status) != 23) {
+                printf("THREADS_C6_VFORK_FAIL: the spawned program ended with 0x%x\n", status);
+                ok = 0;
+            }
+        }
+        if (ok) {
+            printf("THREADS_C6_VFORK_OK\n");
+        }
+        fflush(stdout);
     }
 
     /* C6_COND. Four threads wait on one condition variable and a broadcast
