@@ -4388,14 +4388,14 @@ static void t_timers(void) {
          * EAGAIN for it and not for the next (external review, 2026-10-07). */
         uint32_t made = 0;
         int32_t ids[VIBEOS_PTIMER_MAX];
-        int other = kf_spawn(406, 406);
+        int peer = kf_spawn(406, 406);
 
         while (made < VIBEOS_PTIMER_MAX && SYS3(222, LINUX_CLOCK_MONOTONIC, 0, idp) == 0) {
             ids[made++] = *id;
         }
         expect(SYS3(222, LINUX_CLOCK_MONOTONIC, 0, idp) == -VIBEOS_EAGAIN && made < VIBEOS_PTIMER_MAX,
                "one process's timers stop at its share of the table");
-        kf_set_current(other);
+        kf_set_current(peer);
         expect(SYS3(222, LINUX_CLOCK_MONOTONIC, 0, idp) == 0, "and another process can still make one");
         (void)SYS1(226, (uint64_t)*id);
         kf_set_current(me);
@@ -5309,12 +5309,17 @@ static void t_memory_calls(void) {
      * 2026-10-07). */
     {
         vibeos_procstate_t *ps = ks_ps(ks_current());
-        const vibeos_vma_t *r;
+        const vibeos_vma_t *reg;
         uint64_t total = 0, one;
-        vibeos_cred_t saved = ps->cred;
+        vibeos_cred_t saved;
 
-        for (r = ps->vmas.head; r; r = r->next) {
-            total += r->len;
+        if (!ps) {
+            expect(0, "the RLIMIT test's process has a state");
+            return;
+        }
+        saved = ps->cred;
+        for (reg = ps->vmas.head; reg; reg = reg->next) {
+            total += reg->len;
         }
         ps->rlim_cur[VIBEOS_RLIM_AS] = total + 2u * 4096u;
         expect(MMAP(0, 4u * 4096u, 3, 0x22, -1, 0) == -VIBEOS_ENOMEM &&
