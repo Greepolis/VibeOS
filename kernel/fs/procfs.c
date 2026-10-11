@@ -914,7 +914,7 @@ static int pf_static_entry(const vibeos_procfs_t *pf, const char *path, uint32_t
  * that ends between two calls is simply not listed); a process's directory is
  * the fixed table g_pid_files; task/ walks its threads and fd/ its open
  * descriptors the same way. Walking from the start is quadratic in a long
- * listing and is fine at this machine's thirty-two slots. */
+ * listing and is fine at this machine's sixty-four slots. */
 static int pf_list(void *fs, const char *path, uint32_t index, char *name, uint32_t cap,
                    uint64_t *out_size, int *out_is_dir) {
     const vibeos_procfs_t *pf = (const vibeos_procfs_t *)fs;

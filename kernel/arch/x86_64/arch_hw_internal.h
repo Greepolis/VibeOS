@@ -88,7 +88,13 @@
 #define VIBEOS_HW_TIMER_HZ 100u
 #define VIBEOS_HW_NET_TIMEOUT_TICKS (VIBEOS_HW_TIMER_HZ * 10u)   /* 10 seconds */
 
-#define VIBEOS_HW_MAX_TASKS 32  /* kernel + user processes + one idle task per CPU */
+/* Kernel + user processes + one idle task per CPU. 64 since docs/abi/ L6
+ * step 3, from 32: a program with a few dozen threads, or a test with that many
+ * children, ran out. 64 is where it stops for now - the scheduler's runnable
+ * sets are 64-bit masks (sched_policy.c, task_switch.c asserts it) - and LTP's
+ * futex_wake02 (55 threads), futex_wake03 (55 children) and
+ * futex_cmp_requeue01 (100 waiters) still ask for more. */
+#define VIBEOS_HW_MAX_TASKS 64
 #define VIBEOS_HW_MAX_FDS ((int)VIBEOS_FD_SLOTS)
 #define VIBEOS_HW_NSIG VIBEOS_NSIG
 /* The pending/blocked masks are uint64_t keyed by signal number, so bit 63
