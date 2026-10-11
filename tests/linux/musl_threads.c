@@ -44,6 +44,7 @@
  * bounded: this program is one line of a sequential boot script, and a hang
  * here would read as every command after it having failed.
  */
+#define _GNU_SOURCE   /* CPU_SET, sched_getcpu (C6_SCHED) */
 #include <errno.h>
 #include <pthread.h>
 #include <sched.h>
@@ -291,6 +292,18 @@ static void *exec_worker(void *arg)
     (void)arg;
     execv(args[0], args);
     return (void *)1L;   /* only if execv failed */
+}
+
+/* C6_SCHED: a thread that keeps running while membarrier's barriers go out,
+ * so there is another core of this process for them to reach. */
+static volatile int g_spin_stop;
+
+static void *spin_worker(void *arg)
+{
+    (void)arg;
+    while (!g_spin_stop) {
+    }
+    return 0;
 }
 
 /* C6_COND: wait for the broadcast, at most ten seconds. */
@@ -738,6 +751,63 @@ int main(int argc, char **argv)
             }
         }
         fflush(stdout);
+    }
+
+    /* C6_SCHED (docs/abi/ L6 step 2). What only the machine can say: a thread
+     * pinned to core 1 ends up on core 1 - the pickers honour the mask - and
+     * membarrier's barriers, which are IPIs to other cores, come back while
+     * another thread of this process is running. And a real-time policy set
+     * is the policy read back. In a child, so that pinning and SCHED_FIFO
+     * change nothing for the stages after it. Bounded by time throughout. */
+    {
+        pid_t pid = fork();
+
+        if (pid == 0) {
+            cpu_set_t set;
+            struct sched_param sp;
+            struct timespec t0;
+            pthread_t spin;
+            int cpu = -1;
+
+            CPU_ZERO(&set);
+            CPU_SET(1, &set);
+            if (sched_setaffinity(0, sizeof(set), &set) != 0) {
+                _exit(10);
+            }
+            clock_gettime(CLOCK_MONOTONIC, &t0);
+            while (elapsed_ms(&t0) < 3000L && (cpu = sched_getcpu()) != 1) {
+                sched_yield();
+            }
+            if (cpu != 1) {
+                _exit(11);   /* pinned to core 1 and still not on it */
+            }
+            CPU_ZERO(&set);
+            if (sched_getaffinity(0, sizeof(set), &set) != 0 || !CPU_ISSET(1, &set) || CPU_COUNT(&set) != 1) {
+                _exit(12);
+            }
+            g_spin_stop = 0;
+            if (pthread_create(&spin, 0, spin_worker, 0) != 0) {
+                _exit(13);
+            }
+            if (syscall(SYS_membarrier, 1 << 4 /* REGISTER_PRIVATE_EXPEDITED */, 0, 0) != 0 ||
+                syscall(SYS_membarrier, 1 << 3 /* PRIVATE_EXPEDITED */, 0, 0) != 0 ||
+                syscall(SYS_membarrier, 1 << 0 /* GLOBAL */, 0, 0) != 0) {
+                _exit(14);
+            }
+            g_spin_stop = 1;
+            pthread_join(spin, 0);
+            /* The system calls themselves: musl's sched_setscheduler and
+             * sched_getscheduler return ENOSYS on purpose (Linux's policy is
+             * a thread's and POSIX's a process's), which the first version of
+             * this stage measured instead of the kernel. */
+            sp.sched_priority = 10;
+            if (syscall(SYS_sched_setscheduler, 0, SCHED_FIFO, &sp) != 0 ||
+                syscall(SYS_sched_getscheduler, 0) != SCHED_FIFO) {
+                _exit(15);
+            }
+            _exit(31);
+        }
+        report_child_bounded("C6_SCHED", pid, 31, 15);
     }
 
     /* C6_COND. Four threads wait on one condition variable and a broadcast

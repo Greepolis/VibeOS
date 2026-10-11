@@ -3411,7 +3411,11 @@ def main():
                         ("C6_ROBUST", "robust_lock_not_released_at_exit",
                          "threads_c6_robust_did_not_report"),
                         ("C6_COND", "cond_broadcast_left_waiters",
-                         "threads_c6_cond_did_not_report")):
+                         "threads_c6_cond_did_not_report"),
+                        # L6 step 2: a thread pinned to core 1 runs there,
+                        # membarrier's IPIs come back, SCHED_FIFO reads back.
+                        ("C6_SCHED", "sched_affinity_membarrier_or_policy_failed",
+                         "threads_c6_sched_did_not_report")):
                     if f"THREADS_{stage}_OK" in text:
                         continue
                     if f"THREADS_{stage}_FAIL" in text:

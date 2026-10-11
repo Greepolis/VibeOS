@@ -1,0 +1,22 @@
+# docs/abi/ L6 step 2 at boot (THREADS.ELF, stage C6_SCHED): a thread pinned
+# to core 1 must end up running on core 1, membarrier's barriers must come
+# back while another thread runs, and SCHED_FIFO must read back.
+#
+#  1. sched_setaffinity answers 0 and pins nothing. Expect
+#     sched_affinity_membarrier_or_policy_failed.
+#
+# Not a case: a membarrier that sends no IPI. The barrier's effect - another
+# core serialised - is not something a program can observe in a boot's time,
+# so a sabotage of it would go NOT RED for a reason that says nothing about
+# the test; it is the shootdown's, whose acknowledgements the gate already
+# counts (tlb_acks against tlb_shootdowns).
+#
+# Target source: kernel/abi/linux/sched.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/sched.c scripts/dev/cases/sched-l6-boot.txt
+
+### sched_setaffinity answers 0 and pins nothing
+--- old
+    err = ks_task_set_affinity(t, mask == ks_cpus_online_mask() ? 0u : (uint32_t)mask) == 0
+              ? 0 : -VIBEOS_EINVAL;
++++ new
+    err = 0;
