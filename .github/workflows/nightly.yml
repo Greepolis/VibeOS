@@ -86,7 +86,7 @@ jobs:
           set -uo pipefail
           python3 scripts/dev/report-crash.py serial-attempt-*.log --post || true
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
           name: nightly-boot-logs
@@ -148,7 +148,7 @@ jobs:
       - name: Did the loss grow with the work?
         run: python3 scripts/dev/soak-report.py soak-low.log soak-high.log
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
           name: nightly-soak-logs
@@ -521,7 +521,7 @@ jobs:
           ./build-fuzz/fuzz_inet_input fuzz-corpus \
             -max_total_time=900 -max_len=1514 -print_final_stats=1
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: failure()
         with:
           name: fuzz-crash
@@ -592,7 +592,7 @@ jobs:
           grep -o '^reason=.*' qemu-cli-summary.txt
           grep -q cli_and_network_verified qemu-cli-summary.txt
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
           name: corpus-boot-log
@@ -601,7 +601,7 @@ jobs:
             qemu-cli-summary.txt
           if-no-files-found: warn
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
           name: corpus-needs
