@@ -2403,6 +2403,41 @@ scheduler's policy:
   musl it is built against writes to a NULL stack before the call.
 - **Validation**: check.sh green, 6 of 6 boots, 30 torture seeds.
 
+**Step 3 (2026-10-11): clone, finished.**
+
+- **A process on its parent's memory.** CLONE_VM without CLONE_THREAD was
+  ENOSYS, and with it musl's and glibc's posix_spawn, which are built on
+  CLONE_VM|CLONE_VFORK. Such a child now gets a process state of its own - its
+  descriptors, handlers and identity copied as fork copies them - and the
+  parent's page tables rather than a copy (`ks_share_aspace`), with a copy of
+  the region list to fault and unmap by. Nothing new was needed to keep the
+  tables alive: exit already keeps an address space another task is running
+  in, and exec already leaves it to whoever is. What this does not do:
+  CLONE_FILES, CLONE_FS and CLONE_SIGHAND between two processes copy rather
+  than share (the registry's note, and a gap test), and a child that maps or
+  unmaps while its parent runs leaves the parent's region list behind - a
+  vfork parent is not running, which is what this is for.
+- **CLONE_VFORK** keeps the calling thread in clone until the child execs
+  (`in_vfork`, cleared by exec) or ends. **CLONE_PARENT** gives the child the
+  caller's parent. A forking clone writes its tid words too: the parent's
+  where it says, the child's into the child's own copy before it runs
+  (`ks_poke_u32`, through the child's tables, breaking copy-on-write as its
+  first store would), and keeps CHILD_CLEARTID. The stack and SETTLS clone is
+  given are the child's. CLONE_SIGHAND without CLONE_VM is EINVAL, as Linux.
+- **The task table** is 64 slots, from 32 - as far as the scheduler's 64-bit
+  runnable masks go. LTP's futex_wake02, futex_wake03 and futex_cmp_requeue01
+  ask for 55 threads, 55 children and 100 waiters, and still do not fit.
+- **At boot**: THREADS.ELF's C6_VFORK - a CLONE_VM|CLONE_VFORK child stores
+  into its parent's memory before clone returns, and musl's posix_spawn runs
+  this program again as its exec probe.
+- **Sabotage**: `clone-l6.txt` 5 of 5, `clone-l6-boot.txt` 2 of 2. The host
+  test of shared memory went NOT RED first: the fake's kf_ualloc arena is in
+  nobody's page tables, so a store there is seen by every task whether memory
+  is shared or not; the test now stores through the child's tables and reads
+  through the parent's.
+- **LTP**: 53 of 67. clone02, clone05 and clone08 pass.
+- **Validation**: check.sh green, 6 of 6 boots.
+
 ### L7. IPC (21)
 
 System V shared memory, semaphores and message queues; POSIX message queues;
