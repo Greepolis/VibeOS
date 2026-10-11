@@ -31,11 +31,18 @@
  * IDLE is a class rather than a flag so an idle task competes by the same rule
  * as everything else instead of needing a special case in the picker. */
 typedef enum vibeos_sched_class {
-    VIBEOS_SCHED_KERNEL = 0,   /* the kernel's own tasks             */
-    VIBEOS_SCHED_NORMAL = 1,   /* everything a user runs             */
-    VIBEOS_SCHED_IDLE   = 2,   /* only when nothing else is runnable */
+    VIBEOS_SCHED_KERNEL   = 0, /* the kernel's own tasks             */
+    /* A program that asked for real-time scheduling (docs/abi/ L6: Linux's
+     * SCHED_FIFO and SCHED_RR). Above every NORMAL task and below the
+     * kernel's, and within itself ordered by a priority, 1 to 99, before
+     * virtual time. */
+    VIBEOS_SCHED_REALTIME = 1,
+    VIBEOS_SCHED_NORMAL   = 2, /* everything a user runs             */
+    VIBEOS_SCHED_IDLE     = 3, /* only when nothing else is runnable */
     VIBEOS_SCHED_CLASS_COUNT
 } vibeos_sched_class_t;
+
+#define VIBEOS_SCHED_RT_PRIO_MAX 99u
 
 /* nice, as Linux spells it: lower is more favourable. */
 #define VIBEOS_NICE_MIN (-20)
@@ -71,6 +78,16 @@ vibeos_sched_class_t vibeos_sched_policy_class(uint32_t slot);
 /* Does a runnable slot outrank `current` by class? See sched_policy.c. */
 int vibeos_sched_policy_should_preempt(uint32_t cpu, int current, uint64_t runnable);
 int vibeos_sched_policy_set_affinity(uint32_t slot, uint32_t cpu_mask);
+uint32_t vibeos_sched_policy_affinity(uint32_t slot);
+
+/* Move an admitted slot to another class, with a priority inside it (0 for
+ * every class but REALTIME, 1 to VIBEOS_SCHED_RT_PRIO_MAX for it). Its virtual
+ * time starts again at the new class's floor, as an admission's does: a slot
+ * carrying a small number into a busy class would have it to itself. 0, or -1
+ * for a slot the policy does not know, a class it does not have, a priority
+ * out of range, or KERNEL, which a program cannot ask for. */
+int vibeos_sched_policy_set_class(uint32_t slot, vibeos_sched_class_t cls, uint32_t rt_prio);
+uint32_t vibeos_sched_policy_rt_prio(uint32_t slot);
 
 /* Charge `ticks` of CPU to a slot. Weighted: a favourable nice makes a tick
  * count for less, which is the whole of the fairness rule.

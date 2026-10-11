@@ -1,0 +1,45 @@
+# The REALTIME class (docs/abi/ L6 step 2) in the scheduler's policy. Host
+# tests: test_sched_policy (tests/kernel/sched_policy_tests.c); the torture
+# (sched_torture.c) for case 1 as well, run by hand with
+# build-gcc-Release/vibeos_sched_torture <seed> 20000.
+#
+#  1. inside REALTIME, priority does not order the pick. Expect "a higher
+#     real-time priority runs first".
+#  2. a higher real-time priority does not preempt a lower one. Expect "a
+#     higher real-time priority preempts a lower one".
+#  3. a slot changing class keeps the virtual time it ran up. Expect "a slot
+#     leaving REALTIME starts at NORMAL's floor".
+#  4. the policy takes a priority out of range. Expect "a priority outside 1-99
+#     for REALTIME".
+#
+# Target source: kernel/sched/sched_policy.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/sched/sched_policy.c scripts/dev/cases/sched-l6-policy.txt
+
+### inside REALTIME, priority does not order the pick
+--- old
+        if (g_task[i].rt_prio != g_task[best].rt_prio) {
+            if (g_task[i].rt_prio > g_task[best].rt_prio) {
+                best = (int)i;
+            }
+            continue;
+        }
++++ new
+
+### a higher real-time priority does not preempt a lower one
+--- old
+            slot_ok((uint32_t)current) && g_task[i].rt_prio > g_task[current].rt_prio) {
++++ new
+            slot_ok((uint32_t)current) && 0) {
+
+### a slot changing class keeps the virtual time it ran up
+--- old
+        g_task[slot].vruntime = class_floor((uint8_t)cls);
++++ new
+        (void)class_floor((uint8_t)cls);
+
+### the policy takes a priority out of range
+--- old
+    if (cls == VIBEOS_SCHED_REALTIME ? (rt_prio < 1u || rt_prio > VIBEOS_SCHED_RT_PRIO_MAX)
+                                     : rt_prio != 0u) {
++++ new
+    if (0) {

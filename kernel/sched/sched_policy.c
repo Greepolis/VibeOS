@@ -16,6 +16,7 @@ typedef struct {
     uint8_t cls;
     uint8_t present;
     int8_t nice;
+    uint8_t rt_prio;        /* REALTIME's order inside the class; 0 elsewhere */
 } policy_task_t;
 
 static policy_task_t g_task[VIBEOS_SCHED_MAX_SLOTS];
@@ -66,6 +67,9 @@ uint32_t vibeos_sched_policy_quantum(vibeos_sched_class_t cls) {
         /* Short: a kernel task is expected to finish or block quickly, and
          * holding a core while it does not is worse than switching. */
         case VIBEOS_SCHED_KERNEL: return 2u;
+        /* Linux's SCHED_RR slice is 100 ms; sched_rr_get_interval reports
+         * this one, so it is Linux's number at 100 Hz. */
+        case VIBEOS_SCHED_REALTIME: return 10u;
         /* Long enough that the switch is not most of the work. At 100 Hz this
          * is 50 ms, which is a scheduling decision and now says so. */
         case VIBEOS_SCHED_NORMAL: return 5u;
@@ -148,8 +152,34 @@ int vibeos_sched_policy_admit(uint32_t slot, vibeos_sched_class_t cls, int nice,
     g_task[slot].weight = g_weight[nice - VIBEOS_NICE_MIN];
     g_task[slot].cpu_mask = cpu_mask;
     g_task[slot].vruntime = floor;
+    g_task[slot].rt_prio = 0;
     g_task[slot].present = 1;
     return 0;
+}
+
+int vibeos_sched_policy_set_class(uint32_t slot, vibeos_sched_class_t cls, uint32_t rt_prio) {
+    if (!slot_ok(slot) || cls == VIBEOS_SCHED_KERNEL ||
+        (uint32_t)cls >= (uint32_t)VIBEOS_SCHED_CLASS_COUNT) {
+        return -1;
+    }
+    if (cls == VIBEOS_SCHED_REALTIME ? (rt_prio < 1u || rt_prio > VIBEOS_SCHED_RT_PRIO_MAX)
+                                     : rt_prio != 0u) {
+        return -1;
+    }
+    if (g_task[slot].cls != (uint8_t)cls) {
+        /* Taken out of the old class before the floor of the new one is
+         * read, so that the floor is the others'. */
+        g_task[slot].present = 0;
+        g_task[slot].vruntime = class_floor((uint8_t)cls);
+        g_task[slot].cls = (uint8_t)cls;
+        g_task[slot].present = 1;
+    }
+    g_task[slot].rt_prio = (uint8_t)rt_prio;
+    return 0;
+}
+
+uint32_t vibeos_sched_policy_rt_prio(uint32_t slot) {
+    return slot_ok(slot) ? g_task[slot].rt_prio : 0u;
 }
 
 void vibeos_sched_policy_forget(uint32_t slot) {
@@ -191,6 +221,10 @@ int vibeos_sched_policy_set_affinity(uint32_t slot, uint32_t cpu_mask) {
     }
     g_task[slot].cpu_mask = cpu_mask;
     return 0;
+}
+
+uint32_t vibeos_sched_policy_affinity(uint32_t slot) {
+    return slot_ok(slot) ? g_task[slot].cpu_mask : 0u;
 }
 
 void vibeos_sched_policy_charge(uint32_t slot, uint64_t ticks) {
@@ -247,6 +281,14 @@ int vibeos_sched_policy_pick(uint32_t cpu, uint64_t runnable) {
          * bound below is stated per class rather than across the machine. */
         if (g_task[i].cls != g_task[best].cls) {
             if (g_task[i].cls < g_task[best].cls) {
+                best = (int)i;
+            }
+            continue;
+        }
+        /* Inside REALTIME a higher priority runs first, as absolutely as a
+         * class does; virtual time only orders equals. */
+        if (g_task[i].rt_prio != g_task[best].rt_prio) {
+            if (g_task[i].rt_prio > g_task[best].rt_prio) {
                 best = (int)i;
             }
             continue;
@@ -318,6 +360,12 @@ int vibeos_sched_policy_should_preempt(uint32_t cpu, int current, uint64_t runna
             continue;
         }
         if (g_task[i].cls < mine) {
+            return 1;
+        }
+        /* And a real-time task of a higher priority, for the same reason: a
+         * priority that waits for a slice boundary is not one. */
+        if (g_task[i].cls == mine && mine == (uint8_t)VIBEOS_SCHED_REALTIME &&
+            slot_ok((uint32_t)current) && g_task[i].rt_prio > g_task[current].rt_prio) {
             return 1;
         }
     }

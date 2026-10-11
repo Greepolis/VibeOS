@@ -51,6 +51,7 @@
  * that shares an idea with the thing it checks stops being independent. */
 static int      m_admitted[SLOTS];
 static int      m_class[SLOTS];
+static unsigned m_rt[SLOTS];      /* REALTIME's priority (docs/abi/ L6), 0 elsewhere */
 static int      m_nice[SLOTS];
 static uint32_t m_mask[SLOTS];
 static uint64_t m_charged[SLOTS];
@@ -87,7 +88,7 @@ static int fail(const char *what, unsigned round, int a, int b) {
 
 /* Everything the model can say about a pick, checked in one place. */
 static int check_pick(unsigned round, uint32_t cpu, uint64_t runnable, int got) {
-    unsigned i;
+    unsigned i, top = 0;
     int any = 0, best = VIBEOS_SCHED_CLASS_COUNT;
 
     for (i = 0; i < SLOTS; i++) {
@@ -126,6 +127,17 @@ static int check_pick(unsigned round, uint32_t cpu, uint64_t runnable, int got) 
         /* The one that matters: a lower class ran while a higher one waited. */
         return fail("class_dominance_broken", round, m_class[got], best);
     }
+    /* Inside REALTIME, a priority is a class of its own: nothing of a lower
+     * one runs while a higher one waits. */
+    for (i = 0; i < SLOTS; i++) {
+        if ((runnable & (1ull << i)) && m_admitted[i] && m_class[i] == best &&
+            (m_mask[i] == 0u || (m_mask[i] & (1u << cpu))) && m_rt[i] > top) {
+            top = m_rt[i];
+        }
+    }
+    if (m_rt[got] != top) {
+        return fail("rt_priority_inverted", round, (int)m_rt[got], (int)top);
+    }
     return 0;
 }
 
@@ -149,6 +161,7 @@ int main(int argc, char **argv) {
     }
     memset(m_admitted, 0, sizeof(m_admitted));
     memset(m_class, 0, sizeof(m_class));
+    memset(m_rt, 0, sizeof(m_rt));
     memset(m_nice, 0, sizeof(m_nice));
     memset(m_mask, 0, sizeof(m_mask));
     memset(m_charged, 0, sizeof(m_charged));
@@ -159,7 +172,7 @@ int main(int argc, char **argv) {
         uint32_t slot = (uint32_t)(r % SLOTS);
         uint32_t cpu = (uint32_t)((r >> 8) % CPUS);
 
-        switch ((r >> 16) % 6ull) {
+        switch ((r >> 16) % 7ull) {
             case 0: {   /* admit */
                 int cls = (int)((r >> 24) % (uint64_t)VIBEOS_SCHED_CLASS_COUNT);
                 int nice = (int)((r >> 32) % 40ull) - 20;
@@ -174,6 +187,7 @@ int main(int argc, char **argv) {
                     m_stable[slot] = m_admitted[slot] ? 0 : 1;
                     m_admitted[slot] = 1;
                     m_class[slot] = cls;
+                    m_rt[slot] = 0;
                     m_nice[slot] = nice;
                     m_mask[slot] = mask;
                     m_charged[slot] = 0;
@@ -204,6 +218,31 @@ int main(int argc, char **argv) {
                 if (vibeos_sched_policy_set_affinity(slot, mask) == 0 &&
                     m_admitted[slot]) {
                     m_mask[slot] = mask;
+                }
+                break;
+            }
+            case 5: {   /* change class: a program asking for SCHED_FIFO and back */
+                int cls = 1 + (int)((r >> 24) % (uint64_t)(VIBEOS_SCHED_CLASS_COUNT - 1));
+                unsigned prio = (cls == VIBEOS_SCHED_REALTIME)
+                              ? 1u + (unsigned)((r >> 32) % VIBEOS_SCHED_RT_PRIO_MAX) : 0u;
+                /* Now and then an argument the policy must refuse, and the
+                 * model must then not move. */
+                if (((r >> 48) % 8ull) == 0ull) {
+                    prio = (cls == VIBEOS_SCHED_REALTIME) ? 0u : 7u;
+                }
+                if (vibeos_sched_policy_set_class(slot, (vibeos_sched_class_t)cls, prio) == 0) {
+                    if (!m_admitted[slot]) {
+                        return fail("set_class_accepted_an_unknown_slot", round, (int)slot, cls);
+                    }
+                    if (m_class[slot] != cls) {
+                        m_stable[slot] = 0;   /* its clock started again */
+                        m_charged[slot] = 0;
+                    }
+                    m_class[slot] = cls;
+                    m_rt[slot] = prio;
+                } else if (m_admitted[slot] && ((cls == VIBEOS_SCHED_REALTIME) ? (prio >= 1u && prio <= 99u)
+                                                                             : prio == 0u)) {
+                    return fail("set_class_refused_a_valid_change", round, (int)slot, cls);
                 }
                 break;
             }

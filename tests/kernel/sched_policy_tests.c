@@ -236,5 +236,56 @@ int test_sched_policy(void) {
     expect(vibeos_sched_policy_should_preempt(0, 6, 1ull << 1) == 1,
            "an unadmitted slot (NORMAL) was not preempted by KERNEL");
 
+    /* ---- REALTIME (docs/abi/ L6 step 2) ------------------------------------ *
+     *
+     * Linux's SCHED_FIFO and SCHED_RR: above every NORMAL task, below the
+     * kernel's, and inside the class ordered by a priority before anything
+     * else. */
+    if (!expect(vibeos_sched_policy_init(SLOTS) == 0, "re-init for REALTIME")) { return -1; }
+    (void)vibeos_sched_policy_admit(0, VIBEOS_SCHED_NORMAL, -20, 0);
+    (void)vibeos_sched_policy_admit(1, VIBEOS_SCHED_NORMAL, 19, 0);
+    (void)vibeos_sched_policy_admit(2, VIBEOS_SCHED_NORMAL, 0, 0);
+    (void)vibeos_sched_policy_admit(3, VIBEOS_SCHED_KERNEL, 0, 0);
+    expect(vibeos_sched_policy_set_class(1, VIBEOS_SCHED_REALTIME, 0) != 0 &&
+           vibeos_sched_policy_set_class(1, VIBEOS_SCHED_REALTIME, 100) != 0 &&
+           vibeos_sched_policy_set_class(1, VIBEOS_SCHED_NORMAL, 5) != 0,
+           "a priority outside 1-99 for REALTIME, or any for another class, is refused");
+    expect(vibeos_sched_policy_set_class(1, VIBEOS_SCHED_KERNEL, 0) != 0,
+           "a program cannot ask for the kernel's class");
+    expect(vibeos_sched_policy_set_class(9, VIBEOS_SCHED_REALTIME, 5) != 0,
+           "a slot the policy does not know is refused");
+    expect(vibeos_sched_policy_set_class(1, VIBEOS_SCHED_REALTIME, 5) == 0 &&
+           vibeos_sched_policy_class(1) == VIBEOS_SCHED_REALTIME && vibeos_sched_policy_rt_prio(1) == 5u,
+           "a slot moves to REALTIME with its priority");
+    expect(vibeos_sched_policy_pick(0, 0x7ull) == 1,
+           "a REALTIME task runs before NORMAL ones, whatever their nice");
+    expect(vibeos_sched_policy_pick(0, 0xFull) == 3, "and after the kernel's");
+    expect(vibeos_sched_policy_set_class(2, VIBEOS_SCHED_REALTIME, 50) == 0 &&
+           vibeos_sched_policy_pick(0, 0x7ull) == 2,
+           "a higher real-time priority runs first");
+    vibeos_sched_policy_charge(2, 100000ull);
+    expect(vibeos_sched_policy_pick(0, 0x7ull) == 2,
+           "however much it has run: a priority is not a weight");
+    expect(vibeos_sched_policy_should_preempt(0, 1, 1ull << 2) == 1,
+           "a higher real-time priority preempts a lower one");
+    expect(vibeos_sched_policy_should_preempt(0, 2, 1ull << 1) == 0,
+           "a lower one does not preempt a higher one");
+    expect(vibeos_sched_policy_should_preempt(0, 0, 1ull << 1) == 1,
+           "REALTIME preempts NORMAL");
+    expect(vibeos_sched_policy_quantum(VIBEOS_SCHED_REALTIME) == 10u,
+           "the REALTIME slice is SCHED_RR's 100 ms");
+    {
+        /* Back to NORMAL: its virtual time starts at the class's floor - slot
+         * 0's, the one NORMAL slot left - not at whatever it carried, so it
+         * neither owns the class nor is shut out of it. */
+        vibeos_sched_policy_charge(0, 500ull);
+        expect(vibeos_sched_policy_set_class(2, VIBEOS_SCHED_NORMAL, 0) == 0 &&
+               vibeos_sched_policy_rt_prio(2) == 0u &&
+               vibeos_sched_policy_vruntime(2) == vibeos_sched_policy_vruntime(0),
+               "a slot leaving REALTIME starts at NORMAL's floor, not at what it ran up");
+    }
+    expect(vibeos_sched_policy_set_affinity(1, 0x4u) == 0 && vibeos_sched_policy_affinity(1) == 0x4u,
+           "the affinity set is the affinity read back");
+
     return g_fail ? -1 : 0;
 }
