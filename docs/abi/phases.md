@@ -2362,6 +2362,47 @@ inheritance, in `kernel/abi/linux/futex.c`:
   once in the reclaim load while the host ran a game; one boot alone passed,
   and the six after it, with the host idle.
 
+**Step 2 (2026-10-11): scheduling.** `kernel/abi/linux/sched.c`, over the
+scheduler's policy:
+
+- **A REALTIME class** in `sched_policy.c`, between the kernel's and NORMAL,
+  with a priority 1-99 that orders the pick before virtual time and preempts a
+  lower one at once. Moving a slot between classes starts its virtual time at
+  the new class's floor, as an admission does. The torture's model learned it
+  (`rt_priority_inverted`, and a seventh operation that changes class); with
+  the priority order removed it fails 40 seeds of 40.
+- **The policies**: SCHED_FIFO and SCHED_RR are REALTIME, SCHED_OTHER and
+  SCHED_BATCH NORMAL, SCHED_IDLE NORMAL too - the IDLE class is the cores'
+  idle tasks, behind which a program could starve. FIFO is time-sliced like
+  RR. The policy, reset-on-fork and the I/O priority are the task identity's;
+  `linux_sched_inherit` hands them to a fork or a thread, with reset-on-fork
+  honoured. RLIMIT_RTPRIO bounds an unprivileged caller. SCHED_DEADLINE is
+  EINVAL - no admission control to decide it by - which is sched_setattr01's
+  and sched_getattr01's failure.
+- **Affinity, getcpu**: over the mask the pickers already honoured. A caller
+  that unpins itself from its core is off it when the call returns, as on
+  Linux (LTP's getcpu01 asks at once).
+- **ioprio**: kept and reported per thread, refused as LTP expects - a data
+  field of 8 is EINVAL, whatever newer kernels call its upper bits; NONE reads
+  back as NONE.
+- **membarrier**: every command but RSEQ's, the barrier being the shootdown
+  IPI to the cores running the address space (or each one running a user
+  space, for GLOBAL), which is an interrupt and so serialises them.
+- **At boot**: THREADS.ELF's C6_SCHED pins a child to core 1 and requires it
+  to run there, sends membarrier's barriers with another thread spinning, and
+  reads SCHED_FIFO back - through the system calls, because musl's
+  sched_setscheduler is ENOSYS on purpose (the first version measured that).
+- **Sabotage**: `sched-l6.txt` 8 of 8, `sched-l6-policy.txt` 4 of 4,
+  `sched-l6-boot.txt` red. The priority-range check went NOT RED first: the
+  policy refuses the same priorities later, so only the order of the errors
+  (EINVAL before EPERM, for another user's task) shows the handler's check.
+- **LTP**: 48 of 67, then getcpu01 and ioprio_set02 fixed. Left: clone (step
+  3), the task table (futex_wake02, 03, futex_cmp_requeue01), SCHED_DEADLINE,
+  and what is not this phase's - SysV shared memory (L7), capget (L9),
+  cgroups, a loop device, /proc/sys. clone04 dies of SIGSEGV on Linux too: the
+  musl it is built against writes to a NULL stack before the call.
+- **Validation**: check.sh green, 6 of 6 boots, 30 torture seeds.
+
 ### L7. IPC (21)
 
 System V shared memory, semaphores and message queues; POSIX message queues;
