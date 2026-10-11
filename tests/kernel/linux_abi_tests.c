@@ -3837,6 +3837,68 @@ static void t_sched_l6(void) {
 #undef PRIO
 }
 
+/* clone's process forms (docs/abi/ L6 step 3). CLONE_VFORK is the boot's to
+ * prove: its parent waits for a child that runs, which the fake never does. */
+static void t_clone_l6(void) {
+    uint64_t ptid = kf_ualloc(4), ctid = kf_ualloc(4), word = kf_ualloc(4);
+    int me, child;
+    long pid;
+
+    me = fresh(210);
+    ks_id(me)->ppid = 1u;
+    /* A mapped page, read and written through each task's own tables: the
+     * arena kf_ualloc hands out is nobody's tables, and a store there is seen
+     * by every task whether memory is shared or copied - the first version of
+     * this test, which a sabotage walked through. */
+    word = (uint64_t)MMAP(0, 4096, 3, MAP_PRIV_ANON, -1, 0);
+    pid = sys(56, LINUX_CLONE_VM | 17u, 0x7000u, 0, 0, 0, 0, 0);
+    child = slot_of_pid(pid);
+    expect(pid > 0 && child >= 0 && ks_ps(child) != ks_ps(me) && ks_id(child)->tgid == (uint32_t)pid &&
+           ks_id(child)->ppid == 210u,
+           "CLONE_VM without CLONE_THREAD is a process of its own, the caller's child");
+    expect(child >= 0 && kf_user_sp(child) == 0x7000u, "on the stack clone was given");
+    {
+        uint32_t seen = 0;
+
+        (void)ks_poke_u32(child, word, 9u);   /* a store through the child's tables */
+        (void)kf_peek(word, &seen, 4u);       /* read through the parent's */
+        expect(child >= 0 && seen == 9u, "and on the parent's memory: what it stores, the parent reads");
+    }
+
+    pid = sys(56, LINUX_CLONE_PARENT | 17u, 0, 0, 0, 0, 0, 0);
+    child = slot_of_pid(pid);
+    expect(pid > 0 && child >= 0 && ks_id(child)->ppid == 1u,
+           "CLONE_PARENT makes the caller's parent the child's");
+
+    /* The child's word on a mapped page, so that parent and child each have
+     * their own copy of it after the fork: kf_ualloc's arena is nobody's
+     * tables, and would show one store to both. */
+    ctid = (uint64_t)MMAP(0, 4096, 3, MAP_PRIV_ANON, -1, 0);
+    *(uint32_t *)kf_uptr(ptid) = 0;
+    pid = sys(56, LINUX_CLONE_PARENT_SETTID | LINUX_CLONE_CHILD_SETTID | LINUX_CLONE_CHILD_CLEARTID | 17u,
+              0, ptid, ctid, 0, 0, 0);
+    child = slot_of_pid(pid);
+    expect(pid > 0 && *(uint32_t *)kf_uptr(ptid) == (uint32_t)pid,
+           "PARENT_SETTID writes the child's id where the parent said");
+    {
+        uint32_t mine = 77u;
+
+        (void)kf_peek(ctid, &mine, 4u);
+        expect((long)ctid > 0 && mine == 0u, "and CHILD_SETTID does not write it into the parent's copy");
+    }
+    if (child >= 0) {
+        uint32_t seen = 0;
+
+        kf_set_current(child);
+        (void)kf_peek(ctid, &seen, 4u);
+        kf_set_current(me);
+        expect(seen == (uint32_t)pid && ks_id(child)->clear_child_tid == ctid,
+               "but into the child's, and CHILD_CLEARTID is the child's join word");
+    }
+    expect(sys(56, LINUX_CLONE_SIGHAND | 17u, 0, 0, 0, 0, 0, 0) == -VIBEOS_EINVAL,
+           "CLONE_SIGHAND without CLONE_VM is EINVAL");
+}
+
 /* ---- what LTP's L1 tests found (L3 step 3) --------------------------------------------- */
 
 static void t_ltp_l1(void) {
@@ -5725,6 +5787,7 @@ int test_linux_handlers(void) {
     t_futex_shared();
     t_futex_l6();
     t_sched_l6();
+    t_clone_l6();
     t_clone3_checks();
     t_sleep();
     t_ltp_l1();
@@ -5940,11 +6003,6 @@ int test_linux_gaps(void) {
             "fallocate punching a hole");
     }
 
-    /* clone (56), L6: vfork-like sharing - CLONE_VM|CLONE_VFORK|SIGCHLD - makes a child. */
-    fresh(65);
-    r = sys(56, 0x4111u, 0, 0, 0, 0, 0, &how);
-    gap(56, how == KF_RETURNED && r > 0, "clone(CLONE_VM|CLONE_VFORK) creates a child");
-
     /* uname (63), L8: sethostname changes what uname reports. */
     {
         uint64_t u = 0;
@@ -6068,15 +6126,33 @@ int test_linux_gaps(void) {
         gap(247, ((linux_siginfo_t *)kf_uptr(info))->pid == (int32_t)pid, "waitid(WSTOPPED) reports a stopped child");
     }
 
-    /* clone3 (435), L2: no process that shares its parent's memory. */
+    /* clone (56) and clone3 (435), L6: a process on its parent's memory
+     * (CLONE_VM without CLONE_THREAD) has a descriptor table of its own even
+     * with CLONE_FILES - and its own handlers whatever CLONE_SIGHAND says.
+     * Linux shares them. A file the child opens is not the parent's. */
     {
         uint64_t args;
-        fresh(78);
+        long pid, fd;
+        int parent, child;
+
+        parent = fresh(78);
+        pid = SYS1(56, LINUX_CLONE_VM | LINUX_CLONE_FILES | 17u);
+        child = slot_of_pid(pid);
+        kf_set_current(child);
+        fd = tmp_open("/tmp/clone-files", 0x42, 0644);
+        kf_set_current(parent);
+        gap(56, pid > 0 && fd >= 0 && SYS2(72, (uint64_t)fd, 1 /* F_GETFD */) >= 0,
+            "CLONE_FILES shares the descriptor table between two processes");
         args = kf_ualloc(sizeof(linux_clone_args_t));
-        ((linux_clone_args_t *)kf_uptr(args))->flags = LINUX_CLONE_VM;
+        ((linux_clone_args_t *)kf_uptr(args))->flags = LINUX_CLONE_VM | LINUX_CLONE_FILES;
         ((linux_clone_args_t *)kf_uptr(args))->exit_signal = 17;
-        gap(435, SYS2(435, args, sizeof(linux_clone_args_t)) != -VIBEOS_ENOSYS,
-            "clone3 with CLONE_VM and no CLONE_THREAD makes a process");
+        pid = SYS2(435, args, sizeof(linux_clone_args_t));
+        child = slot_of_pid(pid);
+        kf_set_current(child);
+        fd = tmp_open("/tmp/clone3-files", 0x42, 0644);
+        kf_set_current(parent);
+        gap(435, pid > 0 && fd >= 0 && SYS2(72, (uint64_t)fd, 1) >= 0,
+            "clone3's CLONE_FILES shares the descriptor table between two processes");
     }
 
     /* getrusage (98), L2: no resident-set high-water mark. */

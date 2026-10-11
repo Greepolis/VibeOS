@@ -1,0 +1,54 @@
+# clone's process forms (docs/abi/ L6 step 3). Host tests: t_clone_l6 in
+# tests/kernel/linux_abi_tests.c.
+#
+#  1. CLONE_VM copies the parent's memory instead of sharing it. Expect "what
+#     it stores, the parent reads".
+#  2. CLONE_PARENT is ignored. Expect "CLONE_PARENT makes the caller's parent
+#     the child's".
+#  3. CHILD_SETTID is written into the parent's copy. Expect "CHILD_SETTID
+#     does not write it into the parent's copy".
+#  4. the stack clone was given is ignored. Expect "on the stack clone was
+#     given".
+#  5. CLONE_SIGHAND without CLONE_VM is taken. Expect "CLONE_SIGHAND without
+#     CLONE_VM is EINVAL".
+#
+# Boot: clone-l6-boot.txt (CLONE_VFORK's wait, and the sharing on the machine).
+#
+# Target source: kernel/abi/linux/proc.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/proc.c scripts/dev/cases/clone-l6.txt
+
+### CLONE_VM copies the parent's memory instead of sharing it
+--- old
+    if (share) {
+        ks_share_aspace(idx, me);
+    } else if (ks_fork_aspace(idx, me) != 0) {
++++ new
+    share = 0;
+    if (ks_fork_aspace(idx, me) != 0) {
+
+### CLONE_PARENT is ignored
+--- old
+    child->ppid = (flags & LINUX_CLONE_PARENT) ? parent->ppid : parent->tgid;
++++ new
+    child->ppid = parent->tgid;
+
+### CHILD_SETTID is written into the parent's copy
+--- old
+        (void)ks_poke_u32(idx, ctid, child->pid);
++++ new
+        (void)vibeos_uaccess_copy((void *)(uintptr_t)ctid, &child->pid, 4u);
+
+### the stack clone was given is ignored
+--- old
+        ks_set_user_sp(idx, stack);
++++ new
+        (void)stack;
+
+### CLONE_SIGHAND without CLONE_VM is taken
+--- old
+    if ((flags & LINUX_CLONE_SIGHAND) && !(flags & LINUX_CLONE_VM)) {
+        return -VIBEOS_EINVAL;
+    }
+    if ((flags & LINUX_CSIGNAL) > VIBEOS_SIG_MAX) {
++++ new
+    if ((flags & LINUX_CSIGNAL) > VIBEOS_SIG_MAX) {

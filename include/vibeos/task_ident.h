@@ -46,6 +46,10 @@ typedef struct vibeos_task {
      * personality's words: the policy as Linux numbers it, whether a child
      * gets it, and the I/O priority. The class and the real-time priority
      * the policy maps to are the scheduler's (sched_policy.c). */
+    /* A CLONE_VFORK child that has not yet exec'd: its parent waits while
+     * this is set (docs/abi/ L6 step 3). Cleared by exec; an exit ends the
+     * wait by itself. */
+    uint8_t in_vfork;
     uint8_t sched_policy;
     uint8_t sched_reset_on_fork;
     uint16_t ioprio;

@@ -38,7 +38,7 @@
 /* X(ID, "name", checks). The order is the enum order; ids are not ABI. */
 #define VIBEOS_OP_LIST(X) \
     /* processes */ \
-    X(FORK,            "fork",            VIBEOS_CHECK_TASK_GUARD) \
+    X(FORK,            "fork",            VIBEOS_CHECK_TASK_GUARD | VIBEOS_CHECK_USER_MEMORY) \
     X(THREAD_CREATE,   "thread_create",   VIBEOS_CHECK_TASK_GUARD | VIBEOS_CHECK_USER_MEMORY) \
     X(EXEC,            "exec",            VIBEOS_CHECK_USER_MEMORY) \
     X(EXIT,            "exit",            VIBEOS_CHECK_USER_MEMORY) \

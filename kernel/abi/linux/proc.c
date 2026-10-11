@@ -34,7 +34,27 @@ static int linux_exec_cache_hit(const char *path) {
  * at the same instruction with a 0 return value. `exit_sig` is what its parent
  * is sent when it ends - SIGCHLD from fork, whatever clone and clone3 were
  * told, 0 for nothing. */
-static long linux_fork(const ks_regs_t *frame, uint32_t exit_sig) {
+/* An unwound fork's address space: a copy is freed, the parent's is only let
+ * go of. */
+static void linux_fork_unwind_aspace(int idx, int shared) {
+    if (shared) {
+        ks_unshare_aspace(idx);
+    } else {
+        ks_drop_aspace(idx);
+    }
+}
+
+/* A process made by fork or by a clone that is not a thread (docs/abi/ L6
+ * step 3 for the clone flags). `flags` is clone's: CLONE_VM runs the child on
+ * the parent's page tables instead of a copy - with a process state of its
+ * own, so its descriptors, signal handlers and identity are its own, and a
+ * copy of the region list to fault and unmap by; CLONE_VFORK keeps the parent
+ * here until the child execs or ends; CLONE_PARENT gives the child the
+ * caller's parent; the tid words are written where they ask. `stack` and `tls`
+ * are the child's when nonzero (or SETTLS). */
+static long linux_fork_ex(const ks_regs_t *frame, uint32_t exit_sig, uint64_t flags,
+                          uint64_t stack, uint64_t ptid, uint64_t ctid, uint64_t tls) {
+    int share = (flags & LINUX_CLONE_VM) != 0u;
     vibeos_task_t *parent, *child;
     vibeos_procstate_t *pps, *cps;
     int me, idx;
@@ -86,19 +106,21 @@ static long linux_fork(const ks_regs_t *frame, uint32_t exit_sig) {
      * once converted, mmap/munmap/mprotect) mutates. Held so fork sees one
      * consistent state, not a walk racing a half-finished mapping. */
     ks_mm_lock(pps);
-    if (ks_fork_aspace(idx, me) != 0) {
+    if (share) {
+        ks_share_aspace(idx, me);
+    } else if (ks_fork_aspace(idx, me) != 0) {
         /* Give the tables back before the slot is published as reusable.
          * Publishing first leaves an address space nothing will ever free -
          * the next tenant overwrites the pointer - and it leaves a FREE slot
          * naming live tables, which is a question the sharing test skips. */
         ks_mm_unlock(pps);
-        ks_drop_aspace(idx);
+        linux_fork_unwind_aspace(idx, share);
         (void)ks_set_state(idx, VIBEOS_TASK_FREE, __func__);
         return -VIBEOS_ENOMEM;
     }
     if (ks_alloc_kstack(idx) != 0) {
         ks_mm_unlock(pps);
-        ks_drop_aspace(idx);
+        linux_fork_unwind_aspace(idx, share);
         (void)ks_set_state(idx, VIBEOS_TASK_FREE, __func__);
         return -VIBEOS_ENOMEM;
     }
@@ -112,7 +134,7 @@ static long linux_fork(const ks_regs_t *frame, uint32_t exit_sig) {
         ks_mm_unlock(pps);
         ks_procstate_put(cps);
         ks_set_ps(idx, 0);
-        ks_drop_aspace(idx);
+        linux_fork_unwind_aspace(idx, share);
         (void)ks_set_state(idx, VIBEOS_TASK_FREE, __func__);
         return -VIBEOS_ENOMEM;
     }
@@ -159,6 +181,12 @@ static long linux_fork(const ks_regs_t *frame, uint32_t exit_sig) {
      * the TLS base the copied image expects - except that fork() returns 0 in
      * the child. */
     ks_fork_regs(idx, me, frame);
+    if (stack != 0u) {
+        ks_set_user_sp(idx, stack);
+    }
+    if (flags & LINUX_CLONE_SETTLS) {
+        ks_tls_set(idx, tls);
+    }
     child->pid = ks_next_pid();
     ks_log(VIBEOS_LOG_DEBUG, 44u, (uint64_t)parent->pid, (uint64_t)child->pid,
            "fork produced a child (a0 = parent, a1 = child)");
@@ -166,13 +194,16 @@ static long linux_fork(const ks_regs_t *frame, uint32_t exit_sig) {
      * parent is the *group*, not the thread that happened to call fork:
      * wait() is a process relationship. */
     child->tgid = child->pid;
-    child->ppid = parent->tgid;
+    /* CLONE_PARENT: a sibling of the caller rather than its child - what a
+     * process that wants its helper reaped by its own parent asks for. */
+    child->ppid = (flags & LINUX_CLONE_PARENT) ? parent->ppid : parent->tgid;
     child->pgid = parent->pgid;
     child->sid = parent->sid;
     child->signal_stopped = 0;
     child->is_thread = 0;
-    child->clear_child_tid = 0;
+    child->clear_child_tid = (flags & LINUX_CLONE_CHILD_CLEARTID) ? ctid : 0;
     child->robust_head = 0;   /* the child's C library registers its own */
+    child->in_vfork = (flags & LINUX_CLONE_VFORK) ? 1u : 0u;
     /* Open descriptors are inherited. This is not a refinement: a shell builds
      * a pipeline by creating the pipe, forking, and having the child move an
      * inherited end onto its standard output. Without inheritance the child has
@@ -184,7 +215,7 @@ static long linux_fork(const ks_regs_t *frame, uint32_t exit_sig) {
     if (linux_fds_copy(cps, pps) != 0) {
         ks_procstate_put(cps);
         ks_set_ps(idx, 0);
-        ks_drop_aspace(idx);
+        linux_fork_unwind_aspace(idx, share);
         (void)ks_set_state(idx, VIBEOS_TASK_FREE, __func__);
         return -VIBEOS_ENOMEM;
     }
@@ -235,9 +266,43 @@ static long linux_fork(const ks_regs_t *frame, uint32_t exit_sig) {
         ks_con_unlock();
         ks_panic("two owners filled one task slot");
     }
-    (void)ks_set_state(idx, VIBEOS_TASK_READY, __func__);
-    ks_mark_ready(idx, "fork");
-    return (long)child->pid;
+    /* The tid words, before the child can run: its own in its own memory -
+     * in a copy, through its tables, breaking the page's sharing as its first
+     * store would - and the parent's in the parent's. A word that cannot be
+     * written is skipped, as Linux skips it. */
+    if ((flags & LINUX_CLONE_CHILD_SETTID) && linux_user_ok(ctid, 4u, 1)) {
+        (void)ks_poke_u32(idx, ctid, child->pid);
+    }
+    if ((flags & LINUX_CLONE_PARENT_SETTID) && linux_user_ok(ptid, 4u, 1)) {
+        uint32_t tid = child->pid;
+        (void)vibeos_uaccess_copy((void *)(uintptr_t)ptid, &tid, 4u);
+    }
+    {
+        long pid = (long)child->pid;
+        uint32_t seq = ks_seq(idx);
+
+        (void)ks_set_state(idx, VIBEOS_TASK_READY, __func__);
+        ks_mark_ready(idx, "fork");
+        /* CLONE_VFORK: this thread waits until the child has exec'd or ended,
+         * which is what lets the child use the parent's memory and stack in
+         * the meantime. Each tick it looks again - the child's exec clears
+         * the mark, its end retires the slot. A signal that must be acted on
+         * ends the wait, as Linux's is killable. */
+        if (flags & LINUX_CLONE_VFORK) {
+            while (ks_seq(idx) == seq && ks_id(idx)->in_vfork &&
+                   vibeos_task_state((uint32_t)idx) != VIBEOS_TASK_ZOMBIE &&
+                   vibeos_task_state((uint32_t)idx) != VIBEOS_TASK_FREE &&
+                   !ks_signal_interrupts(me)) {
+                ks_wait_tick();
+            }
+        }
+        return pid;
+    }
+}
+
+/* What fork, vfork and the plain forms of clone were before L6. */
+static long linux_fork(const ks_regs_t *frame, uint32_t exit_sig) {
+    return linux_fork_ex(frame, exit_sig, 0, 0, 0, 0, 0);
 }
 
 static long linux_sys_fork(const ks_regs_t *frame) {
@@ -1302,6 +1367,7 @@ static long linux_sys_execve(ks_regs_t *frame, uint64_t dirfd, uint64_t path_upt
          * true of every exec, not only a threaded one. A C library sets it
          * again at startup if it wants it. */
         t->clear_child_tid = 0;
+        t->in_vfork = 0;   /* a vfork parent waiting on this exec goes on */
         /* The robust list too, and for the same reason: it is in the old
          * image's memory. Linux walks it before it lets go of that memory;
          * here it is forgotten, which leaves a lock the thread held across
@@ -1849,15 +1915,12 @@ static long linux_sys_clone3(const vibeos_call_t *c) {
         }
         return linux_sys_clone_thread(FRAME, a.flags, top, a.parent_tid, a.child_tid, a.tls);
     }
-    if (a.flags & LINUX_CLONE_VM) {
-        return -VIBEOS_ENOSYS;   /* vfork-like sharing: not supported, as clone */
-    }
     /* Where the pidfd goes is judged before there is a child, as Linux writes
      * it before its point of no return: EFAULT, and nothing made (clone302). */
     if ((a.flags & LINUX_CLONE_PIDFD) && !linux_user_ok(a.pidfd, sizeof(int), 1)) {
         return -VIBEOS_EFAULT;
     }
-    r = linux_fork(FRAME, (uint32_t)a.exit_signal);
+    r = linux_fork_ex(FRAME, (uint32_t)a.exit_signal, a.flags, top, a.parent_tid, a.child_tid, a.tls);
     if (r > 0 && (a.flags & LINUX_CLONE_PIDFD)) {
         /* The child exists and nobody can have reaped it: its parent is here. */
         vibeos_file_t *f;
@@ -1891,13 +1954,17 @@ static long linux_sys_clone(const vibeos_call_t *c) {
         }
         return linux_sys_clone_thread(FRAME, ARG(0), ARG(1), ARG(2), ARG(3), ARG(4));
     }
-    if ((flags & LINUX_CLONE_VM) != 0u) {
-        return -VIBEOS_ENOSYS;   /* vfork-like sharing: not supported */
+    /* Linux's own refusal: handlers shared between two address spaces would
+     * name code at addresses only one of them has. */
+    if ((flags & LINUX_CLONE_SIGHAND) && !(flags & LINUX_CLONE_VM)) {
+        return -VIBEOS_EINVAL;
     }
     if ((flags & LINUX_CSIGNAL) > VIBEOS_SIG_MAX) {
         return -VIBEOS_EINVAL;
     }
-    return linux_fork(FRAME, (uint32_t)(flags & LINUX_CSIGNAL));
+    /* x86-64's clone: flags, stack, parent_tid, child_tid, tls. */
+    return linux_fork_ex(FRAME, (uint32_t)(flags & LINUX_CSIGNAL), flags, ARG(1), ARG(2), ARG(3),
+                         ARG(4));
 }
 
 /* ---- the syscalls this file implements ---------------------------------------

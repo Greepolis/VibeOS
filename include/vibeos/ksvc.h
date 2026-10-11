@@ -180,7 +180,19 @@ uint64_t ks_stack_bytes(void);
  * registers. A thread shares the address space and takes only the last two. */
 vibeos_procstate_t *ks_procstate_new(void);
 void ks_procstate_put(vibeos_procstate_t *ps);
-int ks_fork_aspace(int child, int parent);        /* 0, or -1 with nothing kept */
+int ks_fork_aspace(int child, int parent);
+/* CLONE_VM without CLONE_THREAD (docs/abi/ L6 step 3): the child runs on the
+ * parent's page tables rather than a copy of them, and lets go of them
+ * without freeing anything if it is unwound before it ran. */
+void ks_share_aspace(int child, int parent);
+void ks_unshare_aspace(int slot);
+/* Where a new task's user stack starts, when its creator said (clone's
+ * stack argument). */
+void ks_set_user_sp(int slot, uint64_t sp);
+/* Store a 32-bit word into another task's memory, breaking copy-on-write in
+ * its view if it must - CLONE_CHILD_SETTID for a forked child, written before
+ * the child first runs. 0, or -1 if the word is not there. */
+int ks_poke_u32(int slot, uint64_t va, uint32_t val);        /* 0, or -1 with nothing kept */
 void ks_drop_aspace(int slot);
 int ks_alloc_kstack(int slot);                    /* 0, or -1                   */
 void ks_fork_regs(int child, int parent, const ks_regs_t *frame);

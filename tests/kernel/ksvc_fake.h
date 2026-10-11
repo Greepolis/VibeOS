@@ -61,6 +61,8 @@ void kf_share_page(int slot, uint64_t va, uint64_t frame);
 void kf_set_current(int slot);
 /* How many membarrier barriers the Linux layer asked for, private or global. */
 uint32_t kf_membarriers(int global);
+/* The user stack a new task was told to start on (clone's stack argument). */
+uint64_t kf_user_sp(int slot);
 
 /* User memory. kf_ualloc hands out user addresses in the arena (zeroed). */
 uint64_t kf_ualloc(uint64_t len);

@@ -294,6 +294,8 @@ typedef struct {
 #define LINUX_CLONE_FS             0x00000200u
 #define LINUX_CLONE_FILES          0x00000400u
 #define LINUX_CLONE_SIGHAND        0x00000800u
+#define LINUX_CLONE_VFORK          0x00004000u
+#define LINUX_CLONE_PARENT         0x00008000u
 #define LINUX_CLONE_THREAD         0x00010000u
 #define LINUX_CLONE_SYSVSEM        0x00040000u
 #define LINUX_CLONE_SETTLS         0x00080000u

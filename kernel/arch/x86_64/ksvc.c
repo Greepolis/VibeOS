@@ -358,6 +358,44 @@ int ks_fork_aspace(int child, int parent) {
     return 0;
 }
 
+void ks_share_aspace(int child, int parent) {
+    g_tasks[child].proc.as = g_tasks[parent].proc.as;
+}
+
+void ks_unshare_aspace(int slot) {
+    g_tasks[slot].proc.as.pml4 = 0;   /* not freed: it is the parent's */
+}
+
+void ks_set_user_sp(int slot, uint64_t sp) {
+    g_tasks[slot].ctx.rsp = sp;
+}
+
+/* The child has not run yet and nothing else uses its tables, so its view of
+ * the page is resolved here - a copy-on-write page becomes its own copy, as
+ * the child's first store would make it - and the word is stored through the
+ * identity map into the frame that view now names. */
+int ks_poke_u32(int slot, uint64_t va, uint32_t val) {
+    vibeos_vmspace_t v = ks_vm(slot);
+    uint64_t *e;
+
+    /* The address is the caller's to have judged (linux_user_ok, against the
+     * parent's identical view): the range check has one call site. What is
+     * asked here is only the child's own entry, and that it is the user's -
+     * a Linux program's low window lies over the kernel's identity map. */
+    if ((va & 3u) != 0u) {
+        return -1;
+    }
+    e = vibeos_vmspace_entry(&v, va);
+    if (!e || !(*e & PTE_PRESENT) || !(*e & PTE_WRITE) || !(*e & PTE_USER)) {
+        if (vibeos_vmspace_fault(&v, va, 1) != 1 || !(e = vibeos_vmspace_entry(&v, va)) ||
+            !(*e & PTE_PRESENT) || !(*e & PTE_WRITE) || !(*e & PTE_USER)) {
+            return -1;
+        }
+    }
+    *(volatile uint32_t *)(uintptr_t)((*e & 0x000FFFFFFFFFF000ull) | (va & 0xFFFull)) = val;
+    return 0;
+}
+
 void ks_drop_aspace(int slot) {
     hw_aspace_destroy_why(&g_tasks[slot].proc.as, "fork_failed");
 }

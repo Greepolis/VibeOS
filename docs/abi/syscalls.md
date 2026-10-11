@@ -92,7 +92,7 @@ calls, outside the Linux number space, are listed last.
 | 53 | `socketpair` | done | - | - | `net.c` |  |
 | 54 | `setsockopt` | partial | L5 | - | `net.c` | SOL_SOCKET's options and TCP_NODELAY; IP-level options are ENOPROTOOPT |
 | 55 | `getsockopt` | partial | L5 | - | `net.c` | SOL_SOCKET's options and TCP_NODELAY; IP-level options are ENOPROTOOPT |
-| 56 | `clone` | partial | L6 | - | `proc.c` | thread and fork shapes; vfork-like sharing refused |
+| 56 | `clone` | partial | L6 | - | `proc.c` | a CLONE_VM process shares memory; FILES, FS and SIGHAND without THREAD are copied, not shared |
 | 57 | `fork` | done | - | - | `proc.c` |  |
 | 58 | `vfork` | done | - | - | `proc.c` |  |
 | 59 | `execve` | done | - | - | `proc.c` |  |
@@ -382,7 +382,7 @@ calls, outside the Linux number space, are listed last.
 | 432 | `fsmount` | deferred | D | ENOSYS |  | the new mount API: after L8 |
 | 433 | `fspick` | deferred | D | ENOSYS |  | the new mount API: after L8 |
 | 434 | `pidfd_open` | done | - | - | `sig.c` |  |
-| 435 | `clone3` | partial | L2 | - | `proc.c` | as clone: no CLONE_VM process, no set_tid, no cgroup |
+| 435 | `clone3` | partial | L2 | - | `proc.c` | as clone; no set_tid, no cgroup |
 | 436 | `close_range` | partial | L6 | - | `fs.c` | CLOSE_RANGE_UNSHARE in a process with threads refused: a thread cannot hold a table of its own |
 | 437 | `openat2` | partial | L1 | - | `names.c` | resolve: only NO_MAGICLINKS; BENEATH, IN_ROOT, NO_XDEV and NO_SYMLINKS answer ENOSYS |
 | 438 | `pidfd_getfd` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |

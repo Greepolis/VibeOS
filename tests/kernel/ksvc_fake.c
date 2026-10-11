@@ -40,6 +40,7 @@ typedef struct {
     const char *ready_by;
     vibeos_vmspace_t as;          /* its address space (docs/abi/ L3) */
     int has_as;
+    uint64_t user_sp;   /* what ks_set_user_sp asked a new task to start on */
 } kf_task_t;
 
 #define KF_PROCS 16u
@@ -1256,6 +1257,22 @@ int ks_fork_aspace(int child, int parent) {
         return -1;
     }
     return 0;
+}
+void ks_share_aspace(int child, int parent) {
+    g_t[child].as = g_t[parent].as;
+    g_t[child].has_as = g_t[parent].has_as;
+}
+void ks_unshare_aspace(int slot) { g_t[slot].has_as = 0; }
+void ks_set_user_sp(int slot, uint64_t sp) { g_t[slot].user_sp = sp; }
+uint64_t kf_user_sp(int slot) { return g_t[slot].user_sp; }
+/* Through the child's own tables, as the machine's does. */
+int ks_poke_u32(int slot, uint64_t va, uint32_t val) {
+    int saved = g_cur, r;
+
+    g_cur = slot;
+    r = vibeos_uaccess_copy((void *)(uintptr_t)va, &val, 4u);
+    g_cur = saved;
+    return r;
 }
 void ks_drop_aspace(int slot) {
     if (g_t[slot].has_as) {
