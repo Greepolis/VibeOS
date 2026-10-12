@@ -16,11 +16,11 @@ come out ready.
 
 | | |
 | --- | --- |
-| Workloads | 25, of which ready: 23 |
-| Distinct syscalls asked for | 80 |
-| ... done | 67 |
-| ... partial | 11: `clone`, `futex`, `ioctl`, `mmap`, `prlimit64`, `readv`, `rseq`, `setgid`, `setuid`, `uname`, `writev` |
-| ... missing or deferred | 2 |
+| Workloads | 25, of which ready: 25 |
+| Distinct syscalls asked for | 85 |
+| ... done | 78 |
+| ... partial | 7: `clone`, `futex`, `ioctl`, `mmap`, `prlimit64`, `rseq`, `uname` |
+| ... missing or deferred | 0 |
 | ... refused (answered by decision) | 0 |
 
 ## Without a full answer, by phase - the order to write them in
@@ -29,13 +29,7 @@ come out ready.
 | --- | --- | --- | --- |
 | L1 - files and paths | `ioctl` | partial | 20: bb-disk, bb-find-grep, bb-grep-r, bb-identity, bb-ls, bb-metadata, bb-pipeline, bb-ps, bb-sh-script, bb-tar, bb-time, lua-script, musl-dynamic, musl-hello, musl-pie, musl-signal, musl-tfork, musl-threads, sqlite-file, sqlite-memory |
 | L2 - processes, credentials, time | `prlimit64` | partial | 16: bb-cp-mv-rm, bb-dd, bb-disk, bb-find-grep, bb-grep-r, bb-identity, bb-ls, bb-metadata, bb-mkdir-rm, bb-pipeline, bb-ps, bb-sed-inplace, bb-sh-script, bb-tar, bb-text, bb-time |
-| L2 - processes, credentials, time | `setgid` | partial | 16: bb-cp-mv-rm, bb-dd, bb-disk, bb-find-grep, bb-grep-r, bb-identity, bb-ls, bb-metadata, bb-mkdir-rm, bb-pipeline, bb-ps, bb-sed-inplace, bb-sh-script, bb-tar, bb-text, bb-time |
-| L2 - processes, credentials, time | `setuid` | partial | 16: bb-cp-mv-rm, bb-dd, bb-disk, bb-find-grep, bb-grep-r, bb-identity, bb-ls, bb-metadata, bb-mkdir-rm, bb-pipeline, bb-ps, bb-sed-inplace, bb-sh-script, bb-tar, bb-text, bb-time |
-| L2 - processes, credentials, time | `alarm` | missing | 1: bb-time |
-| L2 - processes, credentials, time | `getgroups` | missing | 1: bb-identity |
 | L3 - memory | `mmap` | partial | 8: bb-dd, lua-script, musl-dynamic, musl-hello, musl-tfork, musl-threads, sqlite-file, sqlite-memory |
-| L5 - sockets | `writev` | partial | 9: lua-script, musl-dynamic, musl-hello, musl-pie, musl-signal, musl-tfork, musl-threads, sqlite-file, sqlite-memory |
-| L5 - sockets | `readv` | partial | 1: lua-script |
 | L6 - threads and scheduling | `clone` | partial | 13: bb-cp-mv-rm, bb-disk, bb-find-grep, bb-identity, bb-metadata, bb-mkdir-rm, bb-pipeline, bb-sh-script, bb-tar, bb-text, bb-time, musl-tfork, musl-threads |
 | L6 - threads and scheduling | `futex` | partial | 2: musl-tfork, musl-threads |
 | L8 - system administration | `uname` | partial | 11: bb-cp-mv-rm, bb-disk, bb-find-grep, bb-identity, bb-metadata, bb-mkdir-rm, bb-pipeline, bb-sh-script, bb-tar, bb-text, bb-time |
@@ -45,31 +39,31 @@ come out ready.
 
 | Workload | Asks for | Done | Partial | Missing |
 | --- | --- | --- | --- | --- |
-| `bb-cp-mv-rm` | 40 | 34 | `clone` `prlimit64` `rseq` `setgid` `setuid` `uname` | - |
-| `bb-dd` | 24 | 19 | `mmap` `prlimit64` `rseq` `setgid` `setuid` | - |
-| `bb-disk` | 32 | 25 | `clone` `ioctl` `prlimit64` `rseq` `setgid` `setuid` `uname` | - |
-| `bb-find-grep` | 34 | 27 | `clone` `ioctl` `prlimit64` `rseq` `setgid` `setuid` `uname` | - |
-| `bb-grep-r` | 24 | 19 | `ioctl` `prlimit64` `rseq` `setgid` `setuid` | - |
-| `bb-identity` | 33 | 25 | `clone` `ioctl` `prlimit64` `rseq` `setgid` `setuid` `uname` | `getgroups` |
-| `bb-ls` | 26 | 21 | `ioctl` `prlimit64` `rseq` `setgid` `setuid` | - |
-| `bb-metadata` | 35 | 28 | `clone` `ioctl` `prlimit64` `rseq` `setgid` `setuid` `uname` | - |
-| `bb-mkdir-rm` | 32 | 26 | `clone` `prlimit64` `rseq` `setgid` `setuid` `uname` | - |
-| `bb-pipeline` | 32 | 25 | `clone` `ioctl` `prlimit64` `rseq` `setgid` `setuid` `uname` | - |
-| `bb-ps` | 24 | 19 | `ioctl` `prlimit64` `rseq` `setgid` `setuid` | - |
-| `bb-sed-inplace` | 26 | 22 | `prlimit64` `rseq` `setgid` `setuid` | - |
-| `bb-sh-script` | 34 | 27 | `clone` `ioctl` `prlimit64` `rseq` `setgid` `setuid` `uname` | - |
-| `bb-tar` | 41 | 34 | `clone` `ioctl` `prlimit64` `rseq` `setgid` `setuid` `uname` | - |
-| `bb-text` | 32 | 26 | `clone` `prlimit64` `rseq` `setgid` `setuid` `uname` | - |
-| `bb-time` | 37 | 29 | `clone` `ioctl` `prlimit64` `rseq` `setgid` `setuid` `uname` | `alarm` |
-| `lua-script` | 16 | 12 | `ioctl` `mmap` `readv` `writev` | - |
-| `musl-dynamic` | 9 | 6 | `ioctl` `mmap` `writev` | - |
-| `musl-hello` | 9 | 6 | `ioctl` `mmap` `writev` | - |
-| `musl-pie` | 6 | 4 | `ioctl` `writev` | - |
-| `musl-signal` | 7 | 5 | `ioctl` `writev` | - |
-| `musl-tfork` | 16 | 11 | `clone` `futex` `ioctl` `mmap` `writev` | - |
-| `musl-threads` | 25 | 20 | `clone` `futex` `ioctl` `mmap` `writev` | - |
-| `sqlite-file` | 27 | 24 | `ioctl` `mmap` `writev` | - |
-| `sqlite-memory` | 18 | 15 | `ioctl` `mmap` `writev` | - |
+| `bb-cp-mv-rm` | 40 | 36 | `clone` `prlimit64` `rseq` `uname` | - |
+| `bb-dd` | 24 | 21 | `mmap` `prlimit64` `rseq` | - |
+| `bb-disk` | 32 | 27 | `clone` `ioctl` `prlimit64` `rseq` `uname` | - |
+| `bb-find-grep` | 34 | 29 | `clone` `ioctl` `prlimit64` `rseq` `uname` | - |
+| `bb-grep-r` | 24 | 21 | `ioctl` `prlimit64` `rseq` | - |
+| `bb-identity` | 33 | 28 | `clone` `ioctl` `prlimit64` `rseq` `uname` | - |
+| `bb-ls` | 26 | 23 | `ioctl` `prlimit64` `rseq` | - |
+| `bb-metadata` | 35 | 30 | `clone` `ioctl` `prlimit64` `rseq` `uname` | - |
+| `bb-mkdir-rm` | 32 | 28 | `clone` `prlimit64` `rseq` `uname` | - |
+| `bb-pipeline` | 32 | 27 | `clone` `ioctl` `prlimit64` `rseq` `uname` | - |
+| `bb-ps` | 24 | 21 | `ioctl` `prlimit64` `rseq` | - |
+| `bb-sed-inplace` | 26 | 24 | `prlimit64` `rseq` | - |
+| `bb-sh-script` | 34 | 29 | `clone` `ioctl` `prlimit64` `rseq` `uname` | - |
+| `bb-tar` | 41 | 36 | `clone` `ioctl` `prlimit64` `rseq` `uname` | - |
+| `bb-text` | 32 | 28 | `clone` `prlimit64` `rseq` `uname` | - |
+| `bb-time` | 37 | 32 | `clone` `ioctl` `prlimit64` `rseq` `uname` | - |
+| `lua-script` | 16 | 14 | `ioctl` `mmap` | - |
+| `musl-dynamic` | 9 | 7 | `ioctl` `mmap` | - |
+| `musl-hello` | 9 | 7 | `ioctl` `mmap` | - |
+| `musl-pie` | 6 | 5 | `ioctl` | - |
+| `musl-signal` | 7 | 6 | `ioctl` | - |
+| `musl-tfork` | 16 | 12 | `clone` `futex` `ioctl` `mmap` | - |
+| `musl-threads` | 33 | 29 | `clone` `futex` `ioctl` `mmap` | - |
+| `sqlite-file` | 27 | 25 | `ioctl` `mmap` | - |
+| `sqlite-memory` | 18 | 16 | `ioctl` `mmap` | - |
 
 ## The LTP oracle
 
@@ -83,18 +77,18 @@ that starts with no syscall's (for example `abort01`, `cacheflush01`, `confstr01
 
 | Phase | Syscalls in the phase | with LTP tests | tests |
 | --- | --- | --- | --- |
-| done | 132 | 125 | 575 |
+| done | 215 | 200 | 817 |
 | L1 - files and paths | 8 | 8 | 71 |
-| L2 - processes, credentials, time | 48 | 45 | 181 |
+| L2 - processes, credentials, time | 10 | 9 | 41 |
 | L3 - memory | 5 | 5 | 47 |
-| L4 - event loops | 21 | 16 | 50 |
-| L5 - sockets | 13 | 13 | 36 |
-| L6 - threads and scheduling | 23 | 22 | 61 |
+| L4 - event loops | 0 | 0 | 0 |
+| L5 - sockets | 4 | 4 | 18 |
+| L6 - threads and scheduling | 4 | 4 | 16 |
 | L7 - IPC | 21 | 19 | 81 |
 | L8 - system administration | 12 | 12 | 36 |
 | L9 - security | 6 | 3 | 7 |
 | D - deferred | 50 | 39 | 144 |
-| R - refused by decision | 34 | 13 | 42 |
+| R - refused by decision | 38 | 17 | 53 |
 
 ## System files the corpus opens
 
