@@ -246,6 +246,56 @@ long vibeos_pipe_write(int slot, const void *src, uint64_t len, vibeos_pipe_copy
     return (long)written;
 }
 
+/* As vibeos_pipe_read, but the bytes stay where they are: what tee copies, and
+ * what splice looks at before it knows how much the other side will take
+ * (docs/abi/ L7 step 5). Taking them afterwards is a read of the same count. */
+long vibeos_pipe_peek(int slot, void *dst, uint64_t len, vibeos_pipe_copy_fn copy,
+                      vibeos_pipe_status_t *status) {
+    pipe_t *p;
+    uint64_t copied = 0;
+    uint32_t head, left;
+    vibeos_pipe_status_t st = VIBEOS_PIPE_OK;
+
+    lock();
+    p = pipe_at(slot);
+    if (!p) {
+        unlock();
+        if (status) {
+            *status = VIBEOS_PIPE_FAULT;
+        }
+        return 0;
+    }
+    head = p->head;
+    left = p->count;
+    while (copied < len && left > 0u) {
+        uint64_t run = VIBEOS_PIPE_BYTES - head;
+        if (run > left) {
+            run = left;
+        }
+        if (run > len - copied) {
+            run = len - copied;
+        }
+        if (copy((uint8_t *)dst + copied, &p->buf[head], run) != 0) {
+            st = VIBEOS_PIPE_FAULT;
+            break;
+        }
+        copied += run;
+        head = (uint32_t)((head + run) % VIBEOS_PIPE_BYTES);
+        left -= (uint32_t)run;
+    }
+    if (copied == 0u && st == VIBEOS_PIPE_OK) {
+        st = p->writers == 0u ? VIBEOS_PIPE_EOF : VIBEOS_PIPE_EMPTY;
+    }
+    if (copied > 0u) {
+        st = VIBEOS_PIPE_OK;
+    }
+    unlock();
+    if (status) {
+        *status = st;
+    }
+    return (long)copied;
+}
+
 uint32_t vibeos_pipe_in_use(void) {
     uint32_t i, n = 0;
 

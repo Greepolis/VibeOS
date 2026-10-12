@@ -67,6 +67,10 @@ long vibeos_pipe_write(int slot, const void *src, uint64_t len, vibeos_pipe_copy
                        vibeos_pipe_status_t *status);
 
 /* How many pipes exist, and the ends counted for one - for the tests and the view. */
+/* vibeos_pipe_read without taking the bytes: tee, and splice before it knows how
+ * much the other side will take (docs/abi/ L7). */
+long vibeos_pipe_peek(int slot, void *dst, uint64_t len, vibeos_pipe_copy_fn copy,
+                      vibeos_pipe_status_t *status);
 uint32_t vibeos_pipe_in_use(void);
 /* Bytes waiting to be read, for whoever asks whether a read would wait. */
 uint32_t vibeos_pipe_pending(int slot);

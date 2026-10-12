@@ -102,6 +102,16 @@ int test_pipe(void) {
                 memcmp(in + VIBEOS_PIPE_BYTES - 100, out + 200, 100) == 0,
                 "bytes come out in the order they went in across the wrap")) { return -1; }
 
+    /* ---- peek: copied, and left where it was (docs/abi/ L7) ---------------------- */
+    (void)vibeos_pipe_write(a, out, 12, t_copy, &st);
+    n = vibeos_pipe_peek(a, in, 5, t_copy, &st);
+    if (!expect(n == 5 && memcmp(in, out, 5) == 0 && vibeos_pipe_pending(a) == 12u,
+                "a peek copies the front and takes nothing")) { return -1; }
+    n = vibeos_pipe_read(a, in, 100, t_copy, &st);
+    if (!expect(n == 12 && memcmp(in, out, 12) == 0, "a read after it gets the same bytes")) { return -1; }
+    n = vibeos_pipe_peek(a, in, 5, t_copy, &st);
+    if (!expect(n == 0 && st == VIBEOS_PIPE_EMPTY, "a peek at an empty pipe with a writer is EMPTY")) { return -1; }
+
     /* ---- a fault in the copy ---------------------------------------------------- */
     g_fail_after = 0;
     n = vibeos_pipe_write(a, out, 8, t_copy, &st);
