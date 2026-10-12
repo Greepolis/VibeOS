@@ -915,8 +915,9 @@ int vibeos_kmain(vibeos_kernel_t *kernel, const vibeos_boot_info_t *boot_info) {
          * boot green with the defect exactly as it was. That is the same
          * argument that put tlb_shootdowns under the gate.
          *
-         * overflow is the residual gap: the quarantine was full, so the frame
-         * was leaked (H-015) - safe, and memory the boot never gets back.
+         * overflow counts frames that found the quarantine full: they are
+         * released after a shootdown has made every core holding the space
+         * flush (docs/abi/ L6 step 4) - they used to be leaked (H-015).
          *
          * immediate is every frame no other core could reach, released without
          * parking (M-061). */

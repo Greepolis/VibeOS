@@ -355,7 +355,8 @@ void hw_write_cr3(uint64_t pml4_phys) {
  * sibling thread on another core, and waits only on the cores that had the
  * space.
  *
- * On overflow the frame is leaked, not released (H-015) - see hw_tlbq_put. */
+ * On overflow the cores that hold the space are made to flush at once, and the
+ * frame is released after them - see hw_tlbq_place. */
 #define HW_TLBQ_SLOTS 512u
 
 /* A core that had nothing of this space loaded when the frame was parked: it
@@ -389,7 +390,7 @@ static hw_tlbq_entry_t g_tlbq[HW_TLBQ_SLOTS];
 static volatile uint64_t g_tlbq_live;
 static uint64_t g_tlbq_deferred;      /* frames that took the safe path */
 static uint64_t g_tlbq_released;      /* frames the drain has since freed */
-static uint64_t g_tlbq_overflow;      /* frames freed at once, gap still open */
+static uint64_t g_tlbq_overflow;      /* frames that found it full: released after a shootdown */
 static uint64_t g_tlbq_live_peak;
 static uint64_t g_tlbq_immediate;     /* frames no other core could reach */
 
@@ -483,7 +484,7 @@ static int hw_tlbq_other_holders(uint64_t root, uint64_t gen[VIBEOS_HW_MAX_CPUS]
 
 /* Release `phys`, unmapped from `root`, as soon as that is safe. Returns 0 if
  * it was released at once, 1 if parked, -1 if the quarantine was full and it
- * was leaked. Counts nothing: hw_tlbq_put counts what munmap did, and the boot
+ * was released after a shootdown. Counts nothing: hw_tlbq_put counts what munmap did, and the boot
  * self-test calls this directly so its two frames are not mistaken for
  * munmap's. */
 static int hw_tlbq_place(uint64_t root, uint64_t phys) {
@@ -522,18 +523,28 @@ static int hw_tlbq_place(uint64_t root, uint64_t phys) {
     }
     hw_spin_unlock(&g_tlbq_lock);
 
-    /* On overflow the frame is leaked, not released (H-015). The old code called
-     * vibeos_frame_put here - the racy release the quarantine exists to replace:
-     * another core can still hold a stale TLB entry for this page, so recycling
-     * it now is a use-after-free. A frame never reclaimed is never handed out,
-     * so leaking is safe in every caller context regardless of the cr3 loaded.
-     * The count above (g_tlbq_overflow) is the measure of it, and the boot gate
-     * asserts it is zero - so normal operation loses nothing, and only an
-     * adversarial munmap of more than HW_TLBQ_SLOTS not-yet-quiescent pages
-     * reaches this, losing memory rather than corrupting it. Since M-061 that
-     * takes a burst of munmap by a process with a sibling thread running on
-     * another core - a single-threaded process never parks anything. */
-    return placed ? 1 : -1;
+    /* Full. This used to leak the frame (H-015): releasing it at once is the
+     * racy release the quarantine exists to replace, and a frame never handed
+     * out again cannot be written through a stale entry. That was safe, and
+     * it was unbounded: glibc gives a finished thread's stack back with
+     * madvise(MADV_DONTNEED) over all of it but the last pages - two thousand
+     * pages of an eight-megabyte stack, unmapped while the process's other
+     * threads run on other cores - and a pool of four threads lost fourteen
+     * hundred frames, every boot (docs/abi/ L6 step 4).
+     *
+     * What the quarantine waits for - every core holding this space to have
+     * flushed - can be had now instead of waited for: the shootdown sends that
+     * flush and returns only once each of them has done it (it stops the
+     * machine rather than return early). After it nobody can hold a
+     * translation of this frame, so it is released here; and every frame
+     * parked for this space is quiescent too, so the drain makes room. */
+    if (!placed) {
+        hw_tlb_shootdown(root);
+        (void)vibeos_frame_put(phys);
+        hw_tlbq_drain();
+        return -1;
+    }
+    return 1;
 }
 
 static void hw_tlbq_put(uint64_t root, uint64_t phys) {
@@ -611,12 +622,12 @@ void hw_tlbq_selftest(void) {
     vibeos_x86_64_serial_lock();
     vibeos_x86_64_serial_puts("[MM] TLBQ_SELFTEST held=");
     vibeos_x86_64_serial_puts(held == 1 ? "parked" : held == 0 ? "released" :
-                              held == -1 ? "leaked" : "unavailable");
+                              held == -1 ? "flushed" : "unavailable");
     vibeos_x86_64_serial_puts(" drained=");
     vibeos_x86_64_serial_puts(drained ? "1" : "0");
     vibeos_x86_64_serial_puts(" unheld=");
     vibeos_x86_64_serial_puts(unheld == 0 ? "released" : unheld == 1 ? "parked" :
-                              unheld == -1 ? "leaked" : "unavailable");
+                              unheld == -1 ? "flushed" : "unavailable");
     vibeos_x86_64_serial_puts("\n");
     vibeos_x86_64_serial_unlock();
 }
