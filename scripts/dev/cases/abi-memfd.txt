@@ -22,6 +22,6 @@
 
 ### MFD_CLOEXEC is not applied
 --- old
-            return linux_fd_install(f, (flags & LINUX_MFD_CLOEXEC) ? VIBEOS_FD_CLOEXEC : 0u, 0);
+    return linux_fd_install(f, (flags & LINUX_MFD_CLOEXEC) ? VIBEOS_FD_CLOEXEC : 0u, 0);
 +++ new
-            return linux_fd_install(f, 0u, 0);
+    return linux_fd_install(f, 0u, 0);

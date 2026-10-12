@@ -3686,6 +3686,437 @@ static void t_futex_l6(void) {
 
 /* Scheduling (docs/abi/ L6 step 2): policies over the scheduler's classes,
  * affinity, getcpu, I/O priorities and membarrier. */
+/* ---- System V message queues (docs/abi/ L7 step 1) ---------------------------------- */
+
+/* A message for msgsnd: its type, then its text. */
+static uint64_t msg_of(int64_t type, const char *text) {
+    uint64_t m = kf_ualloc(8u + 64u);
+
+    memcpy(kf_uptr(m), &type, 8u);
+    memcpy((char *)kf_uptr(m) + 8, text, strlen(text));
+    return m;
+}
+
+/* Write `text` to a file under /proc: the bytes written, or the error. */
+static long proc_write(const char *path, const char *text) {
+    long fd = SYS2(2, ustr(path), 1), n;
+
+    if (fd < 0) {
+        return fd;
+    }
+    n = SYS3(1, (uint64_t)fd, ustr(text), strlen(text));
+    (void)SYS1(3, (uint64_t)fd);
+    return n;
+}
+
+static void t_ipc_msg(void) {
+    uint64_t rb = kf_ualloc(8u + 64u), ds = kf_ualloc(sizeof(linux_msqid64_ds_t));
+    uint64_t mi = kf_ualloc(sizeof(linux_msginfo_t));
+    const linux_msqid64_ds_t *st = (const linux_msqid64_ds_t *)kf_uptr(ds);
+    const linux_msginfo_t *info = (const linux_msginfo_t *)kf_uptr(mi);
+    const int64_t *rtype = (const int64_t *)kf_uptr(rb);
+    const char *rtext = (const char *)kf_uptr(rb) + 8;
+    char text[512];
+    long a, b, c, q, k;
+    int me;
+
+    me = fresh(300);
+    /* Numbers are handed out cyclically, as Linux's since 5.4: a queue removed
+     * and made again gets the next number, not its old one. */
+    a = SYS2(68, LINUX_IPC_PRIVATE, 0600);
+    b = SYS2(68, LINUX_IPC_PRIVATE, 0600);
+    expect(a == 0 && b == 1, "the first two queues are 0 and 1");
+    expect(SYS3(71, (uint64_t)a, LINUX_IPC_RMID, 0) == 0, "IPC_RMID removes one");
+    c = SYS2(68, LINUX_IPC_PRIVATE, 0600);
+    expect(c == 2, "the next is 2, not the 0 that was given back");
+    expect(SYS3(71, (uint64_t)a, LINUX_IPC_STAT, ds) == -VIBEOS_EINVAL,
+           "a removed queue's number names nothing");
+
+    /* By key: made, found, refused when it must be new, ENOENT when not there. */
+    q = SYS2(68, 1234, LINUX_IPC_CREAT | 0640);
+    expect(q >= 0 && SYS2(68, 1234, 0) == q && SYS2(68, 1234, LINUX_IPC_CREAT) == q,
+           "a key finds its queue");
+    expect(SYS2(68, 1234, LINUX_IPC_CREAT | LINUX_IPC_EXCL) == -VIBEOS_EEXIST &&
+           SYS2(68, 999, 0) == -VIBEOS_ENOENT, "IPC_EXCL refuses one that exists, and a missing key is ENOENT");
+
+    /* Selection by type: the first of a type, anything but a type, the lowest
+     * at or below a bound. */
+    expect(SYS4(69, (uint64_t)q, msg_of(5, "hello"), 5, 0) == 0 &&
+           SYS4(69, (uint64_t)q, msg_of(3, "abc"), 3, 0) == 0 &&
+           SYS4(69, (uint64_t)q, msg_of(7, "x"), 1, 0) == 0, "three messages go in");
+    expect(SYS3(71, (uint64_t)q, LINUX_IPC_STAT, ds) == 0 && st->msg_qnum == 3u && st->msg_cbytes == 9u &&
+           st->msg_lspid == 300 && st->msg_qbytes == 16384u && st->msg_perm.key == 1234 &&
+           st->msg_perm.mode == 0640u && st->msg_perm.uid == 0u, "IPC_STAT counts them and says who sent last");
+    expect(SYS5(70, (uint64_t)q, rb, 64, (uint64_t)(int64_t)-6, 0) == 3 && *rtype == 3 &&
+           memcmp(rtext, "abc", 3) == 0, "a negative type takes the lowest type at or below it");
+    expect(SYS5(70, (uint64_t)q, rb, 64, 7, LINUX_MSG_EXCEPT) == 5 && *rtype == 5 &&
+           memcmp(rtext, "hello", 5) == 0, "MSG_EXCEPT takes the first of any other type");
+    expect(SYS5(70, (uint64_t)q, rb, 0, 0, 0) == -VIBEOS_E2BIG &&
+           SYS3(71, (uint64_t)q, LINUX_IPC_STAT, ds) == 0 && st->msg_qnum == 1u,
+           "a message longer than the buffer is E2BIG, and it stays");
+    expect(SYS5(70, (uint64_t)q, rb, 0, 0, LINUX_MSG_NOERROR) == 0 && *rtype == 7 &&
+           SYS3(71, (uint64_t)q, LINUX_IPC_STAT, ds) == 0 && st->msg_qnum == 0u && st->msg_lrpid == 300,
+           "MSG_NOERROR cuts it and takes it");
+    expect(SYS5(70, (uint64_t)q, rb, 64, 0, LINUX_IPC_NOWAIT) == -VIBEOS_ENOMSG,
+           "nothing there and IPC_NOWAIT: ENOMSG");
+
+    /* MSG_COPY: by position, without taking it, and only without waiting. */
+    (void)SYS4(69, (uint64_t)q, msg_of(9, "one"), 3, 0);
+    (void)SYS4(69, (uint64_t)q, msg_of(9, "two"), 3, 0);
+    expect(SYS5(70, (uint64_t)q, rb, 64, 1, LINUX_MSG_COPY | LINUX_IPC_NOWAIT) == 3 &&
+           memcmp(rtext, "two", 3) == 0 && SYS3(71, (uint64_t)q, LINUX_IPC_STAT, ds) == 0 && st->msg_qnum == 2u,
+           "MSG_COPY copies the message at a position and leaves it");
+    expect(SYS5(70, (uint64_t)q, rb, 64, 2, LINUX_MSG_COPY | LINUX_IPC_NOWAIT) == -VIBEOS_ENOMSG &&
+           SYS5(70, (uint64_t)q, rb, 64, 0, LINUX_MSG_COPY) == -VIBEOS_EINVAL,
+           "MSG_COPY past the last is ENOMSG, and without IPC_NOWAIT EINVAL");
+    (void)SYS5(70, (uint64_t)q, rb, 64, 0, 0);
+    (void)SYS5(70, (uint64_t)q, rb, 64, 0, 0);
+
+    /* A full queue: msg_qbytes lowered, then a message that does not fit. */
+    ((linux_msqid64_ds_t *)kf_uptr(ds))->msg_qbytes = 10u;
+    expect(SYS3(71, (uint64_t)q, LINUX_IPC_SET, ds) == 0 && SYS3(71, (uint64_t)q, LINUX_IPC_STAT, ds) == 0 &&
+           st->msg_qbytes == 10u, "IPC_SET lowers msg_qbytes");
+    expect(SYS4(69, (uint64_t)q, msg_of(1, "12345678"), 8, LINUX_IPC_NOWAIT) == 0 &&
+           SYS4(69, (uint64_t)q, msg_of(1, "12345678"), 8, LINUX_IPC_NOWAIT) == -VIBEOS_EAGAIN,
+           "a message that does not fit, with IPC_NOWAIT: EAGAIN");
+
+    /* What msgsnd refuses before it looks for the queue, and a buffer that is
+     * not there. A message taken off for a buffer that faults is lost, as on
+     * Linux, which copies after the unlink too. */
+    expect(SYS4(69, (uint64_t)q, msg_of(0, "x"), 1, 0) == -VIBEOS_EINVAL &&
+           SYS4(69, (uint64_t)q, msg_of(1, "x"), 8192u + 1u, 0) == -VIBEOS_EINVAL &&
+           SYS4(69, 77777, msg_of(1, "x"), 1, 0) == -VIBEOS_EINVAL,
+           "a type below 1, a size over msgmax, a number that names nothing: EINVAL");
+    expect(SYS4(69, (uint64_t)q, 8, 1, 0) == -VIBEOS_EFAULT, "msgsnd from a bad address: EFAULT");
+    expect(SYS5(70, (uint64_t)q, 8, 64, 0, 0) == -VIBEOS_EFAULT &&
+           SYS3(71, (uint64_t)q, LINUX_IPC_STAT, ds) == 0 && st->msg_qnum == 0u,
+           "msgrcv into a bad address: EFAULT, and the message is gone");
+
+    /* Somebody else: no permission bits for others, not the owner. */
+    ks_ps(me)->cred.euid = 1000u;
+    ks_ps(me)->cred.egid = ks_ps(me)->cred.fsgid = 1000u;
+    expect(SYS4(69, (uint64_t)q, msg_of(1, "x"), 1, 0) == -VIBEOS_EACCES &&
+           SYS3(71, (uint64_t)q, LINUX_IPC_STAT, ds) == -VIBEOS_EACCES &&
+           SYS3(71, (uint64_t)q, LINUX_IPC_RMID, 0) == -VIBEOS_EPERM &&
+           SYS2(68, 1234, 0400) == -VIBEOS_EACCES,
+           "another user: no access is EACCES, removing is EPERM");
+    ks_ps(me)->cred.egid = 0u;
+    ks_ps(me)->cred.fsgid = 0u;
+    expect(SYS3(71, (uint64_t)q, LINUX_IPC_STAT, ds) == 0 &&
+           SYS4(69, (uint64_t)q, msg_of(1, "x"), 1, 0) == -VIBEOS_EACCES,
+           "in the group: the group's bits, read and not write");
+    ks_ps(me)->cred.euid = 0u;
+
+    /* The *_STAT forms take an index and answer with the number; the INFO
+     * forms answer with the highest index in use. */
+    expect(SYS3(71, (uint64_t)(q & 32767), LINUX_MSG_STAT, ds) == q && st->msg_perm.key == 1234,
+           "MSG_STAT by index answers with the queue's number");
+    expect(SYS3(71, 0, LINUX_MSG_INFO, mi) == (q & 32767) && info->msgpool == 3 && info->msgmax == 8192u,
+           "MSG_INFO: the highest index, and the queues in use");
+    expect(SYS3(71, 0, LINUX_IPC_INFO, mi) >= 0 && info->msgmni == 32 &&
+           info->msgmnb == 16384u, "IPC_INFO: the limits");
+    expect(SYS3(71, (uint64_t)q, 42, ds) == -VIBEOS_EINVAL &&
+           SYS3(71, (uint64_t)q, LINUX_IPC_STAT | LINUX_IPC_64, ds) == -VIBEOS_EINVAL,
+           "an unknown command, IPC_64 included: EINVAL, as Linux on x86-64");
+
+    /* /proc: one line a queue under a header, and the two tunables a program
+     * writes - the limit, and the number the next queue is to have. */
+    k = read_whole("/proc/sysvipc/msg", text, sizeof(text));
+    expect(k > 0 && strncmp(text, "       key      msqid perms", 27) == 0 && strstr(text, "      1234") &&
+           strstr(text, "  640 "), "/proc/sysvipc/msg lists the queues in Linux's columns");
+    expect(proc_write("/proc/sys/kernel/msg_next_id", "4097\n") == 5 && SYS2(68, LINUX_IPC_PRIVATE, 0600) == 4097,
+           "msg_next_id: the next queue has that number");
+    k = read_whole("/proc/sys/kernel/msg_next_id", text, sizeof(text));
+    expect(k == 3 && memcmp(text, "-1\n", 3) == 0, "and the setting is used up");
+    expect(proc_write("/proc/sys/kernel/msgmni", "5\n") == 2 && SYS2(68, LINUX_IPC_PRIVATE, 0600) >= 0 &&
+           SYS2(68, LINUX_IPC_PRIVATE, 0600) == -VIBEOS_ENOSPC, "msgmni lowered: the next one past it is ENOSPC");
+    expect(proc_write("/proc/sys/kernel/msgmni", "x") == -VIBEOS_EINVAL &&
+           proc_write("/proc/sys/kernel/msgmax", "1") == -VIBEOS_EIO,
+           "a value that is not a number is EINVAL; a file that is not a tunable refuses with EIO");
+    k = read_whole("/proc/sys/kernel/msgmni", text, sizeof(text));
+    expect(k == 2 && memcmp(text, "5\n", 2) == 0, "msgmni reads back what was written");
+    expect(SYS3(2, ustr("/proc/newfile"), 0x41, 0644) == -VIBEOS_ENOENT, "nothing is made in /proc: ENOENT");
+}
+
+/* ---- System V semaphores (docs/abi/ L7 step 2) ---------------------------------------- */
+
+/* A list of operations for semop: (num, op, flags) triples. */
+static uint64_t sops_of(uint32_t n, const int16_t *triples) {
+    uint64_t u = kf_ualloc(6u * n);
+    linux_sembuf_t *b = (linux_sembuf_t *)kf_uptr(u);
+    uint32_t i;
+
+    for (i = 0; i < n; i++) {
+        b[i].sem_num = (uint16_t)triples[3 * i];
+        b[i].sem_op = triples[3 * i + 1];
+        b[i].sem_flg = triples[3 * i + 2];
+    }
+    return u;
+}
+
+static void t_ipc_sem(void) {
+    uint64_t ds = kf_ualloc(sizeof(linux_semid64_ds_t)), vals = kf_ualloc(64), si = kf_ualloc(sizeof(linux_seminfo_t));
+    const linux_semid64_ds_t *st = (const linux_semid64_ds_t *)kf_uptr(ds);
+    uint16_t *v = (uint16_t *)kf_uptr(vals);
+    char text[512];
+    long s, k;
+    int me;
+
+    me = fresh(400);
+    expect(SYS3(64, LINUX_IPC_PRIVATE, 251u, 0600) == -VIBEOS_EINVAL &&
+           SYS3(64, LINUX_IPC_PRIVATE, (uint64_t)-1, 0600) == -VIBEOS_EINVAL &&
+           SYS3(64, LINUX_IPC_PRIVATE, 0, 0600) == -VIBEOS_EINVAL,
+           "a set of more than SEMMSL, of a negative count, or a new one of none: EINVAL");
+    s = SYS3(64, 77, 3, LINUX_IPC_CREAT | 0600);
+    expect(s >= 0 && SYS3(64, 77, 2, 0) == s && SYS3(64, 77, 4, 0) == -VIBEOS_EINVAL,
+           "found by key with as many or fewer, EINVAL for more than it has");
+    expect(SYS4(66, (uint64_t)s, 0, LINUX_IPC_STAT, ds) == 0 && st->sem_nsems == 3u && st->sem_otime == 0,
+           "IPC_STAT: three semaphores, never operated on");
+
+    /* All or nothing: the second operation would wait, so the first does not happen. */
+    {
+        static const int16_t up0[] = {0, 2, 0};
+        static const int16_t both[] = {0, -1, 0, 1, -1, LINUX_IPC_NOWAIT};
+
+        expect(SYS3(65, (uint64_t)s, sops_of(1, up0), 1) == 0 && SYS4(66, (uint64_t)s, 0, LINUX_GETVAL, 0) == 2 &&
+               SYS4(66, (uint64_t)s, 0, LINUX_GETPID, 0) == 400, "semop adds, and says who did it");
+        expect(SYS3(65, (uint64_t)s, sops_of(2, both), 2) == -VIBEOS_EAGAIN &&
+               SYS4(66, (uint64_t)s, 0, LINUX_GETVAL, 0) == 2, "a list that would wait does none of itself");
+    }
+    {
+        static const int16_t zero[] = {1, 0, LINUX_IPC_NOWAIT};
+        static const int16_t big[] = {0, 32767, 0};
+        static const int16_t far[] = {9, 1, 0};
+        static const int16_t undo[] = {2, 5, LINUX_SEM_UNDO};
+
+        expect(SYS3(65, (uint64_t)s, sops_of(1, zero), 1) == 0, "waiting for zero on a zero passes at once");
+        expect(SYS3(65, (uint64_t)s, sops_of(1, big), 1) == -VIBEOS_ERANGE, "past SEMVMX: ERANGE");
+        expect(SYS3(65, (uint64_t)s, sops_of(1, far), 1) == -VIBEOS_EFBIG, "a semaphore the set does not have: EFBIG");
+        expect(SYS3(65, (uint64_t)s, sops_of(1, zero), 0) == -VIBEOS_EINVAL &&
+               SYS3(65, (uint64_t)s, sops_of(1, zero), 501u) == -VIBEOS_E2BIG &&
+               SYS3(65, (uint64_t)s, 8, 1) == -VIBEOS_EFAULT, "no operations EINVAL, too many E2BIG, a bad list EFAULT");
+
+        /* SEM_UNDO: what the process changed comes back off when it ends. */
+        expect(SYS3(65, (uint64_t)s, sops_of(1, undo), 1) == 0 && SYS4(66, (uint64_t)s, 2, LINUX_GETVAL, 0) == 5,
+               "an undoable increase");
+        linux_ipc_exit(400);
+        expect(SYS4(66, (uint64_t)s, 2, LINUX_GETVAL, 0) == 0, "and the process's end takes it back");
+    }
+
+    /* SETVAL, SETALL, GETALL, and what they refuse. */
+    expect(SYS4(66, (uint64_t)s, 1, LINUX_SETVAL, 7) == 0 && SYS4(66, (uint64_t)s, 1, LINUX_GETVAL, 0) == 7,
+           "SETVAL sets one");
+    expect(SYS4(66, (uint64_t)s, 1, LINUX_SETVAL, 40000) == -VIBEOS_ERANGE &&
+           SYS4(66, (uint64_t)s, 5, LINUX_SETVAL, 1) == -VIBEOS_EINVAL &&
+           SYS4(66, (uint64_t)s, 5, LINUX_GETVAL, 0) == -VIBEOS_EINVAL,
+           "a value past SEMVMX is ERANGE, a semaphore past the set EINVAL");
+    v[0] = 1;
+    v[1] = 2;
+    v[2] = 3;
+    expect(SYS4(66, (uint64_t)s, 0, LINUX_SETALL, vals) == 0, "SETALL");
+    v[0] = v[1] = v[2] = 0;
+    expect(SYS4(66, (uint64_t)s, 0, LINUX_GETALL, vals) == 0 && v[0] == 1 && v[1] == 2 && v[2] == 3,
+           "GETALL reads them back");
+    expect(SYS4(66, (uint64_t)s, 0, LINUX_GETNCNT, 0) == 0 && SYS4(66, (uint64_t)s, 0, LINUX_GETZCNT, 0) == 0,
+           "nobody waits");
+    expect(SYS4(66, 0, 0, LINUX_SEM_INFO, si) >= 0 && ((linux_seminfo_t *)kf_uptr(si))->semusz == 1 &&
+           ((linux_seminfo_t *)kf_uptr(si))->semaem == 3, "SEM_INFO: one set, three semaphores");
+    expect(SYS4(66, 0, 0, LINUX_IPC_INFO, si) >= 0 && ((linux_seminfo_t *)kf_uptr(si))->semmsl == 250,
+           "IPC_INFO: the limits");
+
+    /* Another user, and removal. */
+    ks_ps(me)->cred.euid = 1000u;
+    ks_ps(me)->cred.egid = ks_ps(me)->cred.fsgid = 1000u;
+    expect(SYS4(66, (uint64_t)s, 0, LINUX_GETVAL, 0) == -VIBEOS_EACCES &&
+           SYS4(66, (uint64_t)s, 0, LINUX_IPC_RMID, 0) == -VIBEOS_EPERM, "another user: EACCES, and EPERM to remove");
+    ks_ps(me)->cred.euid = 0u;
+    k = read_whole("/proc/sysvipc/sem", text, sizeof(text));
+    expect(k > 0 && strstr(text, "        77") && strstr(text, "  600 "), "/proc/sysvipc/sem lists the set");
+    k = read_whole("/proc/sys/kernel/sem", text, sizeof(text));
+    expect(k > 0 && strncmp(text, "250\t8000\t500\t32\n", 16) == 0, "/proc/sys/kernel/sem: SEMMSL SEMMNS SEMOPM SEMMNI");
+    expect(SYS4(66, (uint64_t)s, 0, LINUX_IPC_RMID, 0) == 0 && SYS4(66, (uint64_t)s, 0, LINUX_GETVAL, 0) == -VIBEOS_EINVAL,
+           "removed, its number names nothing");
+}
+
+/* ---- System V shared memory (docs/abi/ L7 step 3) ---------------------------------------- */
+
+static void t_ipc_shm(void) {
+    uint64_t ds = kf_ualloc(sizeof(linux_shmid64_ds_t)), info = kf_ualloc(sizeof(linux_shm_info_t));
+    const linux_shmid64_ds_t *st = (const linux_shmid64_ds_t *)kf_uptr(ds);
+    long m, a, b, k;
+    char text[1024];
+    int me;
+
+    me = fresh(500);
+    expect(SYS3(29, LINUX_IPC_PRIVATE, 0, 0600) == -VIBEOS_EINVAL, "a segment of nothing: EINVAL");
+    m = SYS3(29, 88, 6000, LINUX_IPC_CREAT | 0600);
+    expect(m >= 0 && SYS3(29, 88, 7000, 0) == -VIBEOS_EINVAL && SYS3(29, 88, 100, 0) == m,
+           "by key: more than it has is EINVAL, less finds it");
+    a = SYS3(30, (uint64_t)m, 0, 0);
+    b = SYS3(30, (uint64_t)m, 0, 0);
+    expect(a > 0 && b > 0 && a != b, "two attachments, at two addresses");
+    {
+        uint32_t w = 0x5eedf00du, got = 0;
+
+        (void)kf_poke((uint64_t)a + 5000u, &w, 4u);
+        (void)kf_peek((uint64_t)b + 5000u, &got, 4u);
+        expect(got == 0x5eedf00du,
+               "a store through one is seen through the other: one segment, two mappings");
+    }
+    expect(SYS3(31, (uint64_t)m, LINUX_IPC_STAT, ds) == 0 && st->shm_nattch == 2u && st->shm_segsz == 6000u &&
+           st->shm_cpid == 500 && st->shm_lpid == 500, "IPC_STAT: two attached, the size asked for");
+    expect(SYS1(67, (uint64_t)b) == 0 && SYS3(31, (uint64_t)m, LINUX_IPC_STAT, ds) == 0 && st->shm_nattch == 1u,
+           "shmdt takes one away");
+    expect(SYS1(67, (uint64_t)b) == -VIBEOS_EINVAL && SYS1(67, (uint64_t)a + 4096u) == -VIBEOS_EINVAL,
+           "shmdt where no attachment starts: EINVAL");
+    expect(SYS3(30, (uint64_t)m, (uint64_t)a + 1u, 0) == -VIBEOS_EINVAL &&
+           SYS3(30, (uint64_t)m, (uint64_t)a, 0) == -VIBEOS_EINVAL,
+           "an unaligned address without SHM_RND, and one that is taken, without SHM_REMAP: EINVAL");
+    expect(SYS3(30, (uint64_t)m, 0, LINUX_SHM_REMAP) == -VIBEOS_EINVAL, "SHM_REMAP with no address: EINVAL");
+
+    /* A fork's child has the attachment too. */
+    {
+        long pid = SYS0(57);
+
+        expect(pid > 0 && SYS3(31, (uint64_t)m, LINUX_IPC_STAT, ds) == 0 && st->shm_nattch == 2u,
+               "a forked child's copy of the attachment is counted");
+        kf_set_current(me);
+    }
+
+    /* IPC_RMID while attached: marked, private, kept until nobody has it. */
+    expect(SYS3(31, (uint64_t)m, LINUX_IPC_RMID, 0) == 0 && SYS3(31, (uint64_t)m, LINUX_IPC_STAT, ds) == 0 &&
+           (st->shm_perm.mode & LINUX_SHM_DEST) && st->shm_perm.key == LINUX_IPC_PRIVATE,
+           "removed while attached: SHM_DEST, and its key is gone");
+    expect(SYS3(29, 88, 100, 0) == -VIBEOS_ENOENT, "its key finds nothing");
+    k = read_whole("/proc/sysvipc/shm", text, sizeof(text));
+    expect(k > 0 && strstr(text, "  1600 ") && strstr(text, "                  6000"),
+           "/proc/sysvipc/shm shows it with SHM_DEST in its mode");
+    expect(SYS3(31, 0, LINUX_SHM_INFO, info) >= 0 && ((linux_shm_info_t *)kf_uptr(info))->used_ids == 1 &&
+           ((linux_shm_info_t *)kf_uptr(info))->shm_tot == 2u, "SHM_INFO: one segment, two pages");
+
+    /* The limits a program writes. */
+    expect(proc_write("/proc/sys/kernel/shmmax", "8192\n") == 5 &&
+           SYS3(29, LINUX_IPC_PRIVATE, 8193, 0600) == -VIBEOS_EINVAL && SYS3(29, LINUX_IPC_PRIVATE, 8192, 0600) >= 0,
+           "shmmax lowered: one byte past it is EINVAL");
+    expect(SYS3(29, LINUX_IPC_PRIVATE, 4096, LINUX_SHM_HUGETLB | LINUX_IPC_CREAT | 0600) == -VIBEOS_ENOMEM,
+           "SHM_HUGETLB: no huge pages to give");
+    ks_ps(me)->cred.euid = 1000u;
+    expect(SYS3(29, LINUX_IPC_PRIVATE, 4096, LINUX_SHM_HUGETLB | LINUX_IPC_CREAT | 0600) == -VIBEOS_EPERM,
+           "and not the superuser's to ask: EPERM");
+    ks_ps(me)->cred.euid = 0u;
+}
+
+/* ---- POSIX message queues (docs/abi/ L7 step 4) ---------------------------------------- */
+
+static void t_mqueue(void) {
+    uint64_t at = kf_ualloc(sizeof(linux_mq_attr_t)), buf = kf_ualloc(8192), prio = kf_ualloc(4);
+    linux_mq_attr_t *a = (linux_mq_attr_t *)kf_uptr(at);
+    char text[128];
+    long q, r, n;
+    int me;
+
+    me = fresh(600);
+    expect(SYS4(240, ustr(""), 0x42, 0600, 0) == -VIBEOS_ENOENT &&
+           SYS4(240, ustr("a/b"), 0x42, 0600, 0) == -VIBEOS_EACCES &&
+           SYS4(240, ustr("none"), 0, 0, 0) == -VIBEOS_ENOENT, "names as Linux judges them in mqueue's directory");
+    q = SYS4(240, ustr("vq"), 0x42, 0600, 0);
+    expect(q >= 0 && SYS3(245, (uint64_t)q, 0, at) == 0 && a->mq_maxmsg == 10 && a->mq_msgsize == 8192 &&
+           a->mq_curmsgs == 0, "a queue with the defaults");
+    expect(SYS4(240, ustr("vq"), 0xC2, 0600, 0) == -VIBEOS_EEXIST, "O_CREAT | O_EXCL on one that exists: EEXIST");
+
+    /* By priority, highest first; in order of arrival within one. */
+    expect(SYS5(242, (uint64_t)q, ustr("low"), 3, 1, 0) == 0 && SYS5(242, (uint64_t)q, ustr("high"), 4, 9, 0) == 0 &&
+           SYS5(242, (uint64_t)q, ustr("low2"), 4, 1, 0) == 0, "three sent");
+    r = SYS5(243, (uint64_t)q, buf, 8192, prio, 0);
+    expect(r == 4 && memcmp(kf_uptr(buf), "high", 4) == 0 && *(uint32_t *)kf_uptr(prio) == 9u, "the highest first");
+    r = SYS5(243, (uint64_t)q, buf, 8192, prio, 0);
+    n = SYS5(243, (uint64_t)q, kf_ualloc(8192), 8192, 0, 0);
+    expect(r == 3 && memcmp(kf_uptr(buf), "low", 3) == 0 && n == 4, "then the rest in order of arrival");
+    expect(SYS5(243, (uint64_t)q, buf, 100, 0, 0) == -VIBEOS_EMSGSIZE &&
+           SYS5(242, (uint64_t)q, buf, 9000, 0, 0) == -VIBEOS_EMSGSIZE &&
+           SYS5(242, (uint64_t)q, buf, 1, 40000, 0) == -VIBEOS_EINVAL,
+           "a buffer smaller than mq_msgsize, a message larger: EMSGSIZE; a priority past MQ_PRIO_MAX: EINVAL");
+    a->mq_flags = VIBEOS_O_NONBLOCK;
+    expect(SYS3(245, (uint64_t)q, at, 0) == 0 && SYS5(243, (uint64_t)q, buf, 8192, 0, 0) == -VIBEOS_EAGAIN,
+           "O_NONBLOCK by mq_setattr: an empty queue is EAGAIN");
+    r = SYS3(0, (uint64_t)q, buf, 80);
+    memcpy(text, kf_uptr(buf), 80);
+    text[r > 0 ? r : 0] = 0;
+    expect(r > 0 && strncmp(text, "QSIZE:0          NOTIFY:0     SIGNO:0     NOTIFY_PID:0", 52) == 0,
+           "reading the queue says what /dev/mqueue would");
+
+    /* A notification, once, and only one process's. */
+    {
+        uint64_t ev = kf_ualloc(sizeof(linux_sigevent_t));
+        linux_sigevent_t *e = (linux_sigevent_t *)kf_uptr(ev);
+
+        memset(e, 0, sizeof(*e));
+        e->sigev_notify = LINUX_SIGEV_SIGNAL;
+        e->sigev_signo = 10;
+        expect(SYS2(244, (uint64_t)q, ev) == 0 && SYS2(244, (uint64_t)q, ev) == -VIBEOS_EBUSY,
+               "mq_notify registers once; a second is EBUSY");
+        e->sigev_notify = LINUX_SIGEV_THREAD;
+        expect(SYS2(244, (uint64_t)q, 0) == 0 && SYS2(244, (uint64_t)q, ev) == -VIBEOS_EINVAL,
+               "taken back with null; SIGEV_THREAD needs netlink, which is not here");
+    }
+
+    /* The limit on queues, for anybody but the superuser. */
+    expect(proc_write("/proc/sys/fs/mqueue/queues_max", "1\n") == 2, "queues_max lowered to 1");
+    ks_ps(me)->cred.euid = ks_ps(me)->cred.fsuid = 1000u;
+    expect(SYS4(240, ustr("vq2"), 0x42, 0600, 0) == -VIBEOS_ENOSPC, "another queue past it: ENOSPC");
+    expect(SYS4(240, ustr("vq"), 0x2, 0, 0) == -VIBEOS_EACCES && SYS1(241, ustr("vq")) == -VIBEOS_EACCES,
+           "root's 0600 queue: no access, and not ours to unlink");
+    ks_ps(me)->cred.euid = ks_ps(me)->cred.fsuid = 0u;
+    expect(SYS1(241, ustr("vq")) == 0 && SYS1(241, ustr("vq")) == -VIBEOS_ENOENT &&
+           SYS5(242, (uint64_t)q, ustr("x"), 1, 0, 0) == 0, "unlinked: the name goes, the open queue stays");
+}
+
+/* ---- splice, tee, vmsplice (docs/abi/ L7 step 5) ---------------------------------------- */
+
+static void t_splice(void) {
+    uint64_t fds = kf_ualloc(8), fds2 = kf_ualloc(8), buf = kf_ualloc(64), off = kf_ualloc(8), iov = kf_ualloc(32);
+    int32_t *p = (int32_t *)kf_uptr(fds), *p2 = (int32_t *)kf_uptr(fds2);
+    long file, n;
+
+    (void)fresh(700);
+    expect(SYS2(22, fds, 0) == 0 && SYS2(22, fds2, 0) == 0, "two pipes");
+    file = SYS3(2, ustr("/tmp/spl"), 0x42, 0644);
+    expect(SYS3(1, (uint64_t)file, ustr("0123456789"), 10) == 10, "a file of ten bytes");
+
+    /* File to pipe, from an offset the call keeps. */
+    *(uint64_t *)kf_uptr(off) = 2;
+    n = SYS6(275, (uint64_t)file, off, (uint64_t)p[1], 0, 5, 0);
+    expect(n == 5 && *(uint64_t *)kf_uptr(off) == 7u, "file to pipe: five bytes, and the offset moves");
+    /* tee copies and leaves them. */
+    n = SYS4(276, (uint64_t)p[0], (uint64_t)p2[1], 64, 0);
+    expect(n == 5 && SYS3(0, (uint64_t)p2[0], buf, 64) == 5 && memcmp(kf_uptr(buf), "23456", 5) == 0,
+           "tee: the other pipe has them");
+    /* Pipe to file at an offset: the bytes the first pipe kept. */
+    *(uint64_t *)kf_uptr(off) = 0;
+    n = SYS6(275, (uint64_t)p[0], 0, (uint64_t)file, off, 64, 0);
+    expect(n == 5 && SYS4(17, (uint64_t)file, buf, 10, 0) == 10 && memcmp(kf_uptr(buf), "2345656789", 10) == 0,
+           "pipe to file: written at the offset, and the pipe is empty after");
+    expect(SYS6(275, (uint64_t)p[0], 0, (uint64_t)file, 0, 64, LINUX_SPLICE_F_NONBLOCK) == -VIBEOS_EAGAIN,
+           "an empty pipe with SPLICE_F_NONBLOCK: EAGAIN");
+    expect(SYS6(275, (uint64_t)file, 0, (uint64_t)file, 0, 4, 0) == -VIBEOS_EINVAL &&
+           SYS6(275, (uint64_t)p[0], off, (uint64_t)file, 0, 4, 0) == -VIBEOS_ESPIPE &&
+           SYS6(275, (uint64_t)p[0], 0, (uint64_t)p2[1], 0, 4, 0x100) == -VIBEOS_EINVAL &&
+           SYS4(276, (uint64_t)p[0], (uint64_t)p[1], 4, 0) == -VIBEOS_EINVAL,
+           "no pipe, an offset on a pipe, an unknown flag, tee to itself: EINVAL, ESPIPE");
+
+    /* vmsplice: memory into the pipe, and back out. */
+    ((uint64_t *)kf_uptr(iov))[0] = ustr("abc");
+    ((uint64_t *)kf_uptr(iov))[1] = 3;
+    ((uint64_t *)kf_uptr(iov))[2] = ustr("def");
+    ((uint64_t *)kf_uptr(iov))[3] = 3;
+    expect(SYS4(278, (uint64_t)p[1], iov, 2, 0) == 6, "vmsplice into the pipe: both elements");
+    ((uint64_t *)kf_uptr(iov))[0] = buf;
+    ((uint64_t *)kf_uptr(iov))[1] = 64;
+    expect(SYS4(278, (uint64_t)p[0], iov, 1, 0) == 6 && memcmp(kf_uptr(buf), "abcdef", 6) == 0,
+           "vmsplice from the read end: into memory");
+    expect(SYS4(278, (uint64_t)file, iov, 1, 0) == -VIBEOS_EBADF, "vmsplice on a file: EBADF");
+}
+
 static void t_sched_l6(void) {
     uint64_t prm = kf_ualloc(4), ts = kf_ualloc(16), at = kf_ualloc(64), mask = kf_ualloc(16);
     uint64_t c = kf_ualloc(8);
@@ -5800,6 +6231,11 @@ int test_linux_handlers(void) {
     t_futex_shared();
     t_futex_l6();
     t_sched_l6();
+    t_ipc_msg();
+    t_ipc_sem();
+    t_ipc_shm();
+    t_mqueue();
+    t_splice();
     t_clone_l6();
     t_clone3_checks();
     t_sleep();

@@ -18,11 +18,11 @@
 
 ### mmap ignores a region that could not be recorded
 --- old
-                          0, 0) != 0) {
+                          tag, 0) != 0) {
         r = -VIBEOS_ENOMEM;
     }
 +++ new
-                          0, 0) != 0) {
+                          tag, 0) != 0) {
     }
 
 ### munmap unmaps whatever the region list said

@@ -77,14 +77,14 @@ that starts with no syscall's (for example `abort01`, `cacheflush01`, `confstr01
 
 | Phase | Syscalls in the phase | with LTP tests | tests |
 | --- | --- | --- | --- |
-| done | 215 | 200 | 817 |
+| done | 236 | 219 | 898 |
 | L1 - files and paths | 8 | 8 | 71 |
 | L2 - processes, credentials, time | 10 | 9 | 41 |
 | L3 - memory | 5 | 5 | 47 |
 | L4 - event loops | 0 | 0 | 0 |
 | L5 - sockets | 4 | 4 | 18 |
 | L6 - threads and scheduling | 4 | 4 | 16 |
-| L7 - IPC | 21 | 19 | 81 |
+| L7 - IPC | 0 | 0 | 0 |
 | L8 - system administration | 12 | 12 | 36 |
 | L9 - security | 6 | 3 | 7 |
 | D - deferred | 50 | 39 | 144 |

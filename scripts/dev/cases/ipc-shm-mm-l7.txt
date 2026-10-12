@@ -1,0 +1,34 @@
+# System V shared memory's mappings (docs/abi/ L7 step 3): an attachment's
+# regions carry the segment's tag, and the attach count is read off every
+# process's regions. Host tests: t_ipc_shm in tests/kernel/linux_abi_tests.c.
+#
+#  1. the attach count reads only the caller's regions. Expect "a forked
+#     child's copy of the attachment is counted".
+#  2. shmdt unmaps nothing. Expect "shmdt takes one away".
+#  3. an attachment's address may overlap what is there. Expect "one that is
+#     taken, without SHM_REMAP: EINVAL".
+#
+# Target source: kernel/abi/linux/mm.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/mm.c scripts/dev/cases/ipc-shm-mm-l7.txt
+
+### the attach count reads only the caller's regions
+--- old
+        if (ps && k == n && (ps = linux_ps_hold((int)i)) != 0) {
++++ new
+        if (ps && k == n && (int)i == ks_current() && (ps = linux_ps_hold((int)i)) != 0) {
+
+### shmdt unmaps nothing
+--- old
+    r = linux_unmap_range(me, ps, addr, end);
+    ks_mm_unlock(ps);
+    return r < 0 ? r : (long)tag;
++++ new
+    r = 0;
+    ks_mm_unlock(ps);
+    return r < 0 ? r : (long)tag;
+
+### an attachment's address may overlap what is there
+--- old
+        flags |= remap ? LINUX_MAP_FIXED : LINUX_MAP_FIXED_NOREPLACE;
++++ new
+        flags |= LINUX_MAP_FIXED;

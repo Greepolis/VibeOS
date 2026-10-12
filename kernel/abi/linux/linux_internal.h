@@ -171,4 +171,126 @@ void linux_paths_moved(const char *from, const char *to);
  * cannot disagree. */
 #define VIBEOS_LINUX_RELEASE "6.1.0-vibeos"
 
+#include "vibeos/procfs.h"
+
+/* System V IPC (ipc.c, docs/abi/ L7): what message queues, semaphores and
+ * shared memory share. An object's number is Linux's, `seq << 15 | index`;
+ * LINUX_IPC_SLOTS is how many of each kind this kernel keeps, and the index
+ * cycles over at least LINUX_IPC_CYCLE as Linux's does. Everything that reads
+ * or changes a table runs under linux_ipc_lock. */
+#define LINUX_IPC_SLOTS     32u
+#define LINUX_IPC_INDEXES   32768u     /* IPCMNI: an index is below it */
+#define LINUX_IPC_CYCLE     64u        /* Linux's ipc_min_cycle */
+#define LINUX_IPC_SEQ_SHIFT 15u
+#define LINUX_IPC_SEQ_MAX   65535u     /* INT_MAX >> 15: the sequence wraps below it */
+
+typedef struct {
+    uint8_t used;
+    uint32_t id;
+    int32_t key;
+    uint32_t uid, gid, cuid, cgid;
+    uint32_t mode;       /* the nine permission bits, and the kind's own above them */
+    int64_t ctime;
+} linux_ipc_obj_t;
+
+typedef struct {
+    uint32_t seq;        /* the sequence the next number carries */
+    int32_t next_id;     /* msg_next_id and its kin: the number asked for, or -1 */
+    uint32_t max;        /* msgmni and its kin, as written; the table is the cap */
+    int32_t last_idx;    /* the index handed out last, -1 for none */
+} linux_ipc_ns_t;
+
+typedef void (*linux_ipc_put_t)(void *o, const char *s, uint32_t n);
+
+void linux_ipc_lock(void);
+void linux_ipc_unlock(void);
+int64_t linux_ipc_now(void);
+/* A control call's structure, judged and copied: 0, or -1 for EFAULT. */
+int linux_ipc_out(uint64_t uptr, const void *src, uint32_t len);
+int linux_ipc_in(void *dst, uint64_t uptr, uint32_t len);
+/* The slot holding `key` (never IPC_PRIVATE's), or -1. */
+int linux_ipc_lookup(const linux_ipc_obj_t *tab, uint32_t n, int32_t key);
+/* A new object's slot, its number and its owner filled in; -ENOSPC. */
+long linux_ipc_new(linux_ipc_ns_t *ns, linux_ipc_obj_t *tab, uint32_t n, int32_t key, uint64_t flg,
+                   const vibeos_cred_t *c);
+/* The slot an object's number names, or by its index (the *_STAT commands); -EINVAL. */
+int linux_ipc_slot(const linux_ipc_obj_t *tab, uint32_t n, uint64_t id);
+int linux_ipc_index(const linux_ipc_obj_t *tab, uint32_t n, uint64_t index);
+/* May the caller have the access `flg`'s permission bits ask for: -EACCES. */
+long linux_ipc_may(const linux_ipc_obj_t *o, uint32_t flg, const vibeos_cred_t *c);
+/* Is the caller its owner, its creator or the superuser: -EPERM. */
+long linux_ipc_owner(const linux_ipc_obj_t *o, const vibeos_cred_t *c);
+void linux_ipc_perm_out(const linux_ipc_obj_t *o, linux_ipc64_perm_t *p);
+void linux_ipc_set(linux_ipc_obj_t *o, const linux_ipc64_perm_t *p);
+uint32_t linux_ipc_live(const linux_ipc_obj_t *tab, uint32_t n);
+long linux_ipc_max_index(const linux_ipc_obj_t *tab, uint32_t n);
+void linux_ipc_proc_msg(linux_ipc_put_t put, void *o);
+/* /proc's listings and the numbers in them (ipc.c, sem.c, shm.c). */
+void linux_ipc_putn(linux_ipc_put_t put, void *o, int64_t v, uint32_t width, uint32_t base);
+void linux_ipc_puts(linux_ipc_put_t put, void *o, const char *s);
+void linux_ipc_proc_sem(linux_ipc_put_t put, void *o);
+void linux_ipc_proc_semlimits(linux_ipc_put_t put, void *o);
+void linux_ipc_proc_shm(linux_ipc_put_t put, void *o);
+const vibeos_procfs_extra_t *linux_ipc_proc_files(uint32_t *count);
+void linux_ipc_reset(void);
+void linux_ipc_sem_reset(void);
+void linux_ipc_shm_reset(void);
+
+/* What this kernel keeps of each kind. A message queue's text is stored in
+ * full, so msgmnb and msgmax are its sizes, and Linux's defaults; a set's
+ * semaphores likewise. SEMMSL is 250, Linux's old default and what every
+ * program that sizes a set by it was written against, and SEMOPM 500 fits a
+ * page of sembufs. */
+#define LINUX_MSGMAX 8192u
+#define LINUX_MSGMNB 16384u
+#define LINUX_SEMMSL 250u
+#define LINUX_SEMMNS (LINUX_SEMMSL * LINUX_IPC_SLOTS)
+#define LINUX_SEMOPM 500u
+#define LINUX_SEMVMX 32767
+#define LINUX_SEMAEM 32767
+#define LINUX_SHM_ALIGN 4096u   /* SHMLBA on x86-64: a page */
+
+linux_ipc_ns_t *linux_ipc_sem_ns(void);
+linux_ipc_ns_t *linux_ipc_shm_ns(void);
+void linux_ipc_shmmax_text(linux_ipc_put_t put, void *o);
+int linux_ipc_shmmax_write(const char *buf, uint32_t len);
+void linux_ipc_shmall_text(linux_ipc_put_t put, void *o);
+int linux_ipc_shmall_write(const char *buf, uint32_t len);
+
+/* shm's mappings (mm.c): an attachment mapped shared from the segment's file,
+ * its regions tagged with the segment's number plus one; the attachment that
+ * starts at `addr` unmapped, answering with its tag; and how many attachments
+ * of a tag every process has between them. */
+long linux_shm_map(vibeos_file_t *f, uint64_t addr, uint64_t len, int ro, int exec, int remap,
+                   uint32_t tag);
+long linux_shm_unmap(uint64_t addr);
+uint32_t linux_shm_attached(uint32_t tag);
+
+/* A process's state, held for reading after the scheduler's lock is let go
+ * (procsrc.c): 0 if the slot has none or it is being let go. Under the
+ * scheduler's lock; given back with ks_procstate_put. */
+vibeos_procstate_t *linux_ps_hold(int slot);
+
+/* A file on /tmp that is gone with its last reference, under a name that
+ * starts with `stem` (fs.c): what memfd_create and shmget make. */
+vibeos_file_t *linux_hidden_file(const char *stem, long *err);
+int linux_ipc_parse(const char *buf, uint32_t len, int64_t *out);
+void linux_mq_reset(void);
+/* POSIX message queues (mqueue.c): a queue's description, and the tunables
+ * under /proc/sys/fs/mqueue. */
+extern const vibeos_file_ops_t linux_fops_mqueue;
+#define LINUX_MQ_TUNABLE_DECL(name) \
+    void linux_mq_##name##_text(linux_ipc_put_t put, void *o); \
+    int linux_mq_##name##_write(const char *buf, uint32_t len);
+LINUX_MQ_TUNABLE_DECL(msg_max)
+LINUX_MQ_TUNABLE_DECL(msgsize_max)
+LINUX_MQ_TUNABLE_DECL(msg_default)
+LINUX_MQ_TUNABLE_DECL(msgsize_default)
+LINUX_MQ_TUNABLE_DECL(queues_max)
+
+/* splice (splice.c): which flags exist, and readv or writev for vmsplice (fs.c). */
+#define LINUX_SPLICE_F_KNOWN (LINUX_SPLICE_F_MOVE | LINUX_SPLICE_F_NONBLOCK | LINUX_SPLICE_F_MORE | \
+                              LINUX_SPLICE_F_GIFT)
+long linux_vec_io(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt, int write);
+
 #endif

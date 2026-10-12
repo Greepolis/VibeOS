@@ -45,6 +45,16 @@ extern const vibeos_row_t linux_futex_rows[];
 extern const uint32_t linux_futex_row_count;
 extern const vibeos_row_t linux_sched_rows[];
 extern const uint32_t linux_sched_row_count;
+extern const vibeos_row_t linux_ipc_rows[];
+extern const uint32_t linux_ipc_row_count;
+extern const vibeos_row_t linux_sem_rows[];
+extern const uint32_t linux_sem_row_count;
+extern const vibeos_row_t linux_shm_rows[];
+extern const uint32_t linux_shm_row_count;
+extern const vibeos_row_t linux_mq_rows[];
+extern const uint32_t linux_mq_row_count;
+extern const vibeos_row_t linux_splice_rows[];
+extern const uint32_t linux_splice_row_count;
 extern const vibeos_row_t linux_timer_rows[];
 extern const uint32_t linux_timer_row_count;
 extern const vibeos_row_t linux_limits_rows[];
@@ -72,6 +82,11 @@ static const struct {
     { "net",  linux_net_rows,  &linux_net_row_count },
     { "futex", linux_futex_rows, &linux_futex_row_count },
     { "sched", linux_sched_rows, &linux_sched_row_count },
+    { "ipc", linux_ipc_rows, &linux_ipc_row_count },
+    { "sem", linux_sem_rows, &linux_sem_row_count },
+    { "shm", linux_shm_rows, &linux_shm_row_count },
+    { "mq", linux_mq_rows, &linux_mq_row_count },
+    { "splice", linux_splice_rows, &linux_splice_row_count },
     { "timer", linux_timer_rows, &linux_timer_row_count },
     { "limits", linux_limits_rows, &linux_limits_row_count },
     { "poll", linux_poll_rows, &linux_poll_row_count },
@@ -101,6 +116,8 @@ void vibeos_linux_abi_init(void) {
     vibeos_files_on_write_back(linux_exec_cache_drop);
     linux_epoll_init();
     linux_inotify_init();
+    linux_ipc_reset();
+    linux_mq_reset();
     vibeos_unix_reset();
     vibeos_abi_linux_reset();
     for (i = 0; i < (uint32_t)(sizeof(g_tables) / sizeof(g_tables[0])); i++) {

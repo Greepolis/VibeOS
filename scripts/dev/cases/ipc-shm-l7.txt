@@ -1,0 +1,46 @@
+# System V shared memory (docs/abi/ L7 step 3). Host tests: t_ipc_shm in
+# tests/kernel/linux_abi_tests.c. The mapping half - the tag on an
+# attachment's regions, which the attach count and shmdt read - is in
+# ipc-shm-mm-l7.txt.
+#
+#  1. IPC_RMID leaves the key findable. Expect "its key finds nothing".
+#  2. a removed segment is not marked SHM_DEST. Expect "removed while
+#     attached".
+#  3. shmmax is not consulted. Expect "shmmax lowered".
+#  4. SHM_HUGETLB is anybody's to ask for. Expect "and not the superuser's to
+#     ask: EPERM".
+#  5. a segment is found by key whatever size is asked for. Expect "by key:
+#     more than it has is EINVAL".
+#
+# Target source: kernel/abi/linux/shm.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/shm.c scripts/dev/cases/ipc-shm-l7.txt
+
+### IPC_RMID leaves the key findable
+--- old
+                g_shm_obj[s].key = LINUX_IPC_PRIVATE;   /* nobody finds it by its key again */
++++ new
+                (void)0;
+
+### a removed segment is not marked SHM_DEST
+--- old
+                g_shm_obj[s].mode |= LINUX_SHM_DEST;
++++ new
+                (void)0;
+
+### shmmax is not consulted
+--- old
+    if (size < 1u || size > g_shmmax) {
++++ new
+    if (size < 1u) {
+
+### SHM_HUGETLB is anybody's to ask for
+--- old
+            return c.euid == 0u ? -VIBEOS_ENOMEM : -VIBEOS_EPERM;
++++ new
+            return -VIBEOS_ENOMEM;
+
+### a segment is found by key whatever size is asked for
+--- old
+        } else if (size > g_shm[s].size) {
++++ new
+        } else if (0) {

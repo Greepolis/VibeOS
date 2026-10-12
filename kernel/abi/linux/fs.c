@@ -773,13 +773,49 @@ long linux_sys_openat(uint64_t dirfd, uint64_t path_uptr, uint64_t flags, uint64
  * seals to add (fcntl refuses F_ADD_SEALS), which the registry names. */
 static uint32_t g_memfd_seq;
 
-static long linux_sys_memfd_create(uint64_t name_uptr, uint64_t flags) {
-    char label[LINUX_MFD_NAME_MAX + 2u];
-    char path[40] = "/tmp/.memfd-";
+/* A file on /tmp nothing will find, gone with its last reference: a name of
+ * `stem` and a number, tried until one is free. */
+vibeos_file_t *linux_hidden_file(const char *stem, long *err) {
+    char path[40];
     vibeos_path_t w;
     vibeos_file_t *f;
     uint32_t seq, n, k, tries;
-    long err = -VIBEOS_EEXIST;
+
+    *err = -VIBEOS_EEXIST;
+    for (tries = 0; tries < 8u && *err == -VIBEOS_EEXIST; tries++) {
+        char digits[10];
+
+        for (n = 0; stem[n] && n < 24u; n++) {
+            path[n] = stem[n];
+        }
+        seq = __sync_add_and_fetch(&g_memfd_seq, 1u);
+        for (k = 0; k == 0u || seq != 0u; seq /= 10u) {
+            digits[k++] = (char)('0' + seq % 10u);
+        }
+        while (k > 0u) {
+            path[n++] = digits[--k];
+        }
+        path[n] = 0;
+        *err = vibeos_path_walk("/", "/", path,
+                                vibeos_open_walk_flags(VIBEOS_O_CREAT | VIBEOS_O_EXCL | VIBEOS_O_RDWR), &w);
+        if (*err != 0) {
+            return 0;
+        }
+        f = vibeos_open_path(&w, VIBEOS_O_CREAT | VIBEOS_O_EXCL | VIBEOS_O_RDWR, 0600u, err);
+        if (f) {
+            f->unlink_on_release = 1;
+            *err = 0;
+            return f;
+        }
+    }
+    return 0;
+}
+
+static long linux_sys_memfd_create(uint64_t name_uptr, uint64_t flags) {
+    char label[LINUX_MFD_NAME_MAX + 2u];
+    vibeos_file_t *f;
+    uint32_t n;
+    long err;
 
     if (ks_current() < 0 || !ks_id(ks_current())->is_user) {
         return -VIBEOS_EINVAL;
@@ -795,29 +831,10 @@ static long linux_sys_memfd_create(uint64_t name_uptr, uint64_t flags) {
     if (n > LINUX_MFD_NAME_MAX) {
         return -VIBEOS_EINVAL;
     }
-    for (tries = 0; tries < 8u && err == -VIBEOS_EEXIST; tries++) {
-        char digits[10];
-
-        seq = __sync_add_and_fetch(&g_memfd_seq, 1u);
-        for (n = 12, k = 0; k == 0u || seq != 0u; seq /= 10u) {
-            digits[k++] = (char)('0' + seq % 10u);
-        }
-        while (k > 0u) {
-            path[n++] = digits[--k];
-        }
-        path[n] = 0;
-        err = vibeos_path_walk("/", "/", path,
-                               vibeos_open_walk_flags(VIBEOS_O_CREAT | VIBEOS_O_EXCL | VIBEOS_O_RDWR), &w);
-        if (err != 0) {
-            return err;
-        }
-        f = vibeos_open_path(&w, VIBEOS_O_CREAT | VIBEOS_O_EXCL | VIBEOS_O_RDWR, 0600u, &err);
-        if (f) {
-            f->unlink_on_release = 1;
-            return linux_fd_install(f, (flags & LINUX_MFD_CLOEXEC) ? VIBEOS_FD_CLOEXEC : 0u, 0);
-        }
+    if (!(f = linux_hidden_file("/tmp/.memfd-", &err))) {
+        return err;
     }
-    return err;
+    return linux_fd_install(f, (flags & LINUX_MFD_CLOEXEC) ? VIBEOS_FD_CLOEXEC : 0u, 0);
 }
 
 static long linux_sys_open(uint64_t path_uptr, uint64_t flags, uint64_t mode) {
@@ -934,6 +951,12 @@ static long linux_rw_vec_at(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt, uin
 
 static long linux_sys_readv(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt);
 static long linux_sys_writev(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt);
+
+/* vmsplice's two directions (splice.c, docs/abi/ L7): on this kernel's pipe,
+ * readv and writev. */
+long linux_vec_io(uint64_t fd, uint64_t iov_uptr, uint64_t iovcnt, int write) {
+    return write ? linux_sys_writev(fd, iov_uptr, iovcnt) : linux_sys_readv(fd, iov_uptr, iovcnt);
+}
 
 static long linux_sys_preadv2(uint64_t fd, uint64_t iov, uint64_t cnt, uint64_t off, uint64_t flags) {
     if (flags != 0u) {

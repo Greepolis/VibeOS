@@ -9,9 +9,9 @@ the registry, not this page; `check.sh` fails while the two differ.
 
 | State | Count | What the kernel answers |
 | --- | --- | --- |
-| done | 215 | through its row |
+| done | 236 | through its row |
 | partial | 36 | through its row, with the gap named |
-| missing | 38 | ENOSYS, and the boot gate fails naming the number |
+| missing | 17 | ENOSYS, and the boot gate fails naming the number |
 | deferred | 50 | ENOSYS, and the boot gate fails naming the number |
 | refused | 34 | its errno, counted as refused - expected, never a failure |
 
@@ -25,7 +25,7 @@ Without a row, by phase:
 | L4 - event loops | 0 |
 | L5 - sockets | 0 |
 | L6 - threads and scheduling | 0 |
-| L7 - IPC | 21 |
+| L7 - IPC | 0 |
 | L8 - system administration | 11 |
 | L9 - security | 6 |
 | D - deferred | 50 |
@@ -65,9 +65,9 @@ calls, outside the Linux number space, are listed last.
 | 26 | `msync` | done | - | - | `mm.c` |  |
 | 27 | `mincore` | done | - | - | `mm.c` |  |
 | 28 | `madvise` | partial | L3 | - | `mm.c` | MADV_DONTNEED leaves a private page of a file as the program left it, where Linux shows the file again |
-| 29 | `shmget` | missing | L7 | ENOSYS |  |  |
-| 30 | `shmat` | missing | L7 | ENOSYS |  |  |
-| 31 | `shmctl` | missing | L7 | ENOSYS |  |  |
+| 29 | `shmget` | done | - | - | `shm.c` |  |
+| 30 | `shmat` | done | - | - | `shm.c` |  |
+| 31 | `shmctl` | done | - | - | `shm.c` |  |
 | 32 | `dup` | done | - | - | `fs.c` |  |
 | 33 | `dup2` | done | - | - | `fs.c` |  |
 | 34 | `pause` | done | - | - | `sig.c` |  |
@@ -100,14 +100,14 @@ calls, outside the Linux number space, are listed last.
 | 61 | `wait4` | done | - | - | `proc.c` |  |
 | 62 | `kill` | done | - | - | `sig.c` |  |
 | 63 | `uname` | partial | L8 | - | `misc.c` | fixed answer |
-| 64 | `semget` | missing | L7 | ENOSYS |  |  |
-| 65 | `semop` | missing | L7 | ENOSYS |  |  |
-| 66 | `semctl` | missing | L7 | ENOSYS |  |  |
-| 67 | `shmdt` | missing | L7 | ENOSYS |  |  |
-| 68 | `msgget` | missing | L7 | ENOSYS |  |  |
-| 69 | `msgsnd` | missing | L7 | ENOSYS |  |  |
-| 70 | `msgrcv` | missing | L7 | ENOSYS |  |  |
-| 71 | `msgctl` | missing | L7 | ENOSYS |  |  |
+| 64 | `semget` | done | - | - | `sem.c` |  |
+| 65 | `semop` | done | - | - | `sem.c` |  |
+| 66 | `semctl` | done | - | - | `sem.c` |  |
+| 67 | `shmdt` | done | - | - | `shm.c` |  |
+| 68 | `msgget` | done | - | - | `ipc.c` |  |
+| 69 | `msgsnd` | done | - | - | `ipc.c` |  |
+| 70 | `msgrcv` | done | - | - | `ipc.c` |  |
+| 71 | `msgctl` | done | - | - | `ipc.c` |  |
 | 72 | `fcntl` | done | - | - | `fs.c` |  |
 | 73 | `flock` | done | - | - | `fs.c` |  |
 | 74 | `fsync` | done | - | - | `fs.c` |  |
@@ -256,7 +256,7 @@ calls, outside the Linux number space, are listed last.
 | 217 | `getdents64` | done | - | - | `fs.c` |  |
 | 218 | `set_tid_address` | done | - | - | `proc.c` |  |
 | 219 | `restart_syscall` | done | - | - | `timer.c` |  |
-| 220 | `semtimedop` | missing | L7 | ENOSYS |  |  |
+| 220 | `semtimedop` | done | - | - | `sem.c` |  |
 | 221 | `fadvise64` | done | - | - | `fs.c` |  |
 | 222 | `timer_create` | done | - | - | `timer.c` |  |
 | 223 | `timer_settime` | done | - | - | `timer.c` |  |
@@ -276,12 +276,12 @@ calls, outside the Linux number space, are listed last.
 | 237 | `mbind` | deferred | D | ENOSYS |  | NUMA: one node here |
 | 238 | `set_mempolicy` | deferred | D | ENOSYS |  | NUMA: one node here |
 | 239 | `get_mempolicy` | deferred | D | ENOSYS |  | NUMA: one node here |
-| 240 | `mq_open` | missing | L7 | ENOSYS |  |  |
-| 241 | `mq_unlink` | missing | L7 | ENOSYS |  |  |
-| 242 | `mq_timedsend` | missing | L7 | ENOSYS |  |  |
-| 243 | `mq_timedreceive` | missing | L7 | ENOSYS |  |  |
-| 244 | `mq_notify` | missing | L7 | ENOSYS |  |  |
-| 245 | `mq_getsetattr` | missing | L7 | ENOSYS |  |  |
+| 240 | `mq_open` | done | - | - | `mqueue.c` |  |
+| 241 | `mq_unlink` | done | - | - | `mqueue.c` |  |
+| 242 | `mq_timedsend` | done | - | - | `mqueue.c` |  |
+| 243 | `mq_timedreceive` | done | - | - | `mqueue.c` |  |
+| 244 | `mq_notify` | done | - | - | `mqueue.c` |  |
+| 245 | `mq_getsetattr` | done | - | - | `mqueue.c` |  |
 | 246 | `kexec_load` | refused | R | EPERM |  | no kexec: the machine is booted by the bootloader, not by itself |
 | 247 | `waitid` | partial | L2 | - | `proc.c` | stopped and continued children are never reported |
 | 248 | `add_key` | deferred | D | ENOSYS |  | no program in the corpus asks; revisit when one does |
@@ -311,10 +311,10 @@ calls, outside the Linux number space, are listed last.
 | 272 | `unshare` | deferred | D | ENOSYS |  | namespaces: after the credential model |
 | 273 | `set_robust_list` | done | - | - | `futex.c` |  |
 | 274 | `get_robust_list` | done | - | - | `futex.c` |  |
-| 275 | `splice` | missing | L7 | ENOSYS |  |  |
-| 276 | `tee` | missing | L7 | ENOSYS |  |  |
+| 275 | `splice` | done | - | - | `splice.c` |  |
+| 276 | `tee` | done | - | - | `splice.c` |  |
 | 277 | `sync_file_range` | done | - | - | `fs.c` |  |
-| 278 | `vmsplice` | missing | L7 | ENOSYS |  |  |
+| 278 | `vmsplice` | done | - | - | `splice.c` |  |
 | 279 | `move_pages` | deferred | D | ENOSYS |  | NUMA: one node here |
 | 280 | `utimensat` | done | - | - | `names.c` |  |
 | 281 | `epoll_pwait` | done | - | - | `epoll.c` |  |

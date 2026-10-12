@@ -57,7 +57,9 @@ const vibeos_sys_entry_t *vibeos_linux_syscall_at(uint32_t index) {
 
 #define LINUX_LOW_NUMBERS 512u    /* every Linux number implemented is below this */
 #define LINUX_HIGH_MAX 8u         /* VibeOS's own calls, outside the Linux number space */
-#define LINUX_TABLES_MAX 16u
+/* One a file of rows. 16 until L7 brought the count to 20: the refusal is a
+ * panic at boot, and in the host tests a panic outside any call. */
+#define LINUX_TABLES_MAX 32u
 
 static const vibeos_row_t *g_by_nr[LINUX_LOW_NUMBERS];
 static const vibeos_row_t *g_high[LINUX_HIGH_MAX];

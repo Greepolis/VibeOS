@@ -658,6 +658,7 @@ typedef struct {
 
 /* mmap protection and flags (asm-generic/mman-common.h). */
 #define LINUX_PROT_NONE     0x0
+#define LINUX_PROT_READ     0x1
 #define LINUX_PROT_WRITE    0x2
 #define LINUX_PROT_EXEC     0x4
 #define LINUX_MAP_SHARED    0x01
@@ -1029,5 +1030,176 @@ typedef struct {
     int64_t ru_nvcsw;
     int64_t ru_nivcsw;
 } linux_rusage_t;
+
+/* System V IPC (linux/ipc.h, msg.h, sem.h, shm.h; docs/abi/ L7). x86-64 has
+ * only the 64-bit structures: the C libraries pass a command without IPC_64,
+ * and Linux, which has no older layout here to tell it from, refuses the bit
+ * like any other unknown command. The limits this kernel keeps are its own and
+ * live with the handlers (linux_internal.h); these are Linux's numbers. */
+#define LINUX_IPC_PRIVATE 0
+#define LINUX_IPC_CREAT   01000
+#define LINUX_IPC_EXCL    02000
+#define LINUX_IPC_NOWAIT  04000
+#define LINUX_IPC_RMID    0
+#define LINUX_IPC_SET     1
+#define LINUX_IPC_STAT    2
+#define LINUX_IPC_INFO    3
+#define LINUX_IPC_64      0x0100
+
+typedef struct {
+    int32_t key;
+    uint32_t uid;
+    uint32_t gid;
+    uint32_t cuid;
+    uint32_t cgid;
+    uint32_t mode;
+    uint16_t seq;
+    uint16_t pad2;
+    uint64_t unused1;
+    uint64_t unused2;
+} linux_ipc64_perm_t;
+
+#define LINUX_MSG_STAT     11
+#define LINUX_MSG_INFO     12
+#define LINUX_MSG_STAT_ANY 13
+#define LINUX_MSG_NOERROR  010000
+#define LINUX_MSG_EXCEPT   020000
+#define LINUX_MSG_COPY     040000
+
+typedef struct {
+    linux_ipc64_perm_t msg_perm;
+    int64_t msg_stime;
+    int64_t msg_rtime;
+    int64_t msg_ctime;
+    uint64_t msg_cbytes;
+    uint64_t msg_qnum;
+    uint64_t msg_qbytes;
+    int32_t msg_lspid;
+    int32_t msg_lrpid;
+    uint64_t unused4;
+    uint64_t unused5;
+} linux_msqid64_ds_t;
+
+typedef struct {
+    int32_t msgpool;
+    int32_t msgmap;
+    int32_t msgmax;
+    int32_t msgmnb;
+    int32_t msgmni;
+    int32_t msgssz;
+    int32_t msgtql;
+    uint16_t msgseg;
+} linux_msginfo_t;
+
+#define LINUX_GETPID       11
+#define LINUX_GETVAL       12
+#define LINUX_GETALL       13
+#define LINUX_GETNCNT      14
+#define LINUX_GETZCNT      15
+#define LINUX_SETVAL       16
+#define LINUX_SETALL       17
+#define LINUX_SEM_STAT     18
+#define LINUX_SEM_INFO     19
+#define LINUX_SEM_STAT_ANY 20
+#define LINUX_SEM_UNDO     0x1000
+
+typedef struct {
+    uint16_t sem_num;
+    int16_t sem_op;
+    int16_t sem_flg;
+} linux_sembuf_t;
+
+typedef struct {
+    linux_ipc64_perm_t sem_perm;
+    int64_t sem_otime;
+    uint64_t unused1;
+    int64_t sem_ctime;
+    uint64_t unused2;
+    uint64_t sem_nsems;
+    uint64_t unused3;
+    uint64_t unused4;
+} linux_semid64_ds_t;
+
+typedef struct {
+    int32_t semmap;
+    int32_t semmni;
+    int32_t semmns;
+    int32_t semmnu;
+    int32_t semmsl;
+    int32_t semopm;
+    int32_t semume;
+    int32_t semusz;
+    int32_t semvmx;
+    int32_t semaem;
+} linux_seminfo_t;
+
+#define LINUX_SHM_RDONLY    010000
+#define LINUX_SHM_RND       020000
+#define LINUX_SHM_REMAP     040000
+#define LINUX_SHM_EXEC      0100000
+#define LINUX_SHM_HUGETLB   04000
+#define LINUX_SHM_NORESERVE 010000
+#define LINUX_SHM_LOCK      11
+#define LINUX_SHM_UNLOCK    12
+#define LINUX_SHM_STAT      13
+#define LINUX_SHM_INFO      14
+#define LINUX_SHM_STAT_ANY  15
+/* The kernel's own bits above the permissions, as IPC_STAT reports them
+ * (glibc's sys/shm.h names them; uapi does not). */
+#define LINUX_SHM_DEST      01000
+#define LINUX_SHM_LOCKED    02000
+
+typedef struct {
+    linux_ipc64_perm_t shm_perm;
+    uint64_t shm_segsz;
+    int64_t shm_atime;
+    int64_t shm_dtime;
+    int64_t shm_ctime;
+    int32_t shm_cpid;
+    int32_t shm_lpid;
+    uint64_t shm_nattch;
+    uint64_t unused4;
+    uint64_t unused5;
+} linux_shmid64_ds_t;
+
+typedef struct {
+    uint64_t shmmax;
+    uint64_t shmmin;
+    uint64_t shmmni;
+    uint64_t shmseg;
+    uint64_t shmall;
+    uint64_t unused1;
+    uint64_t unused2;
+    uint64_t unused3;
+    uint64_t unused4;
+} linux_shminfo64_t;
+
+typedef struct {
+    int32_t used_ids;
+    uint64_t shm_tot;
+    uint64_t shm_rss;
+    uint64_t shm_swp;
+    uint64_t swap_attempts;
+    uint64_t swap_successes;
+} linux_shm_info_t;
+
+/* POSIX message queues (linux/mqueue.h; docs/abi/ L7 step 4): a queue's
+ * attributes, the priority bound, and the code a notification carries. */
+typedef struct {
+    int64_t mq_flags;
+    int64_t mq_maxmsg;
+    int64_t mq_msgsize;
+    int64_t mq_curmsgs;
+    int64_t reserved[4];
+} linux_mq_attr_t;
+
+#define LINUX_MQ_PRIO_MAX 32768
+#define LINUX_SI_MESGQ    (-3)
+
+/* splice's flags (glibc's fcntl.h; uapi does not export them). */
+#define LINUX_SPLICE_F_MOVE     1
+#define LINUX_SPLICE_F_NONBLOCK 2
+#define LINUX_SPLICE_F_MORE     4
+#define LINUX_SPLICE_F_GIFT     8
 
 #endif

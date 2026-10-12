@@ -1,0 +1,55 @@
+# System V semaphores (docs/abi/ L7 step 2). Host tests: t_ipc_sem in
+# tests/kernel/linux_abi_tests.c.
+#
+#  1. a list is applied up to the operation that would wait. Expect "a list
+#     that would wait does none of itself".
+#  2. SEM_UNDO's adjustment is not given back at exit. Expect "and the
+#     process's end takes it back".
+#  3. SEMVMX is not a ceiling for semop. Expect "past SEMVMX: ERANGE".
+#  4. a semaphore past the set is taken. Expect "a semaphore the set does not
+#     have: EFBIG".
+#  5. SETVAL takes any value. Expect "a value past SEMVMX is ERANGE".
+#
+# Target source: kernel/abi/linux/sem.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/sem.c scripts/dev/cases/ipc-sem-l7.txt
+
+### a list is applied up to the operation that would wait
+--- old
+        if (v < 0) {
+            *at = i;
++++ new
+        if (v < 0) {
+            uint32_t k;
+
+            for (k = 0; k < i; k++) {
+                set->sem[m->ops[k].sem_num].val = val[m->ops[k].sem_num];
+            }
+            *at = i;
+
+### SEM_UNDO's adjustment is not given back at exit
+--- old
+            g_sem[s].sem[u->num].val = (uint16_t)(v < 0 ? 0 : v > LINUX_SEMVMX ? LINUX_SEMVMX : v);
++++ new
+            (void)v;
+
+### SEMVMX is not a ceiling for semop
+--- old
+        if (v > LINUX_SEMVMX) {
+            return -VIBEOS_ERANGE;
+        }
++++ new
+        if (0) {
+            return -VIBEOS_ERANGE;
+        }
+
+### a semaphore past the set is taken
+--- old
+        if (ops[i].sem_num >= g_sem[s].nsems) {
++++ new
+        if (0) {
+
+### SETVAL takes any value
+--- old
+            if (v < 0 || v > LINUX_SEMVMX) {
++++ new
+            if (v < 0) {

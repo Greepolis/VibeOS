@@ -1276,6 +1276,8 @@ void hw_task_exit(uint64_t code) {
      * task is retired, while the table is still reachable through it. */
     if (dying >= 0 && g_tasks[dying].ps != 0 && linux_files_leave(g_tasks[dying].ps)) {
         linux_locks_exit(g_tasks[dying].id.tgid);
+        /* And its System V semaphore adjustments, SEM_UNDO's (L7). */
+        linux_ipc_exit(g_tasks[dying].id.tgid);
         /* And its timers (L2 step 3): a timer that outlived its process would
          * fire into whoever has its pid next. */
         vibeos_ptimer_exit(g_tasks[dying].id.tgid);

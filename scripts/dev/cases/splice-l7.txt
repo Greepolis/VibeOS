@@ -1,0 +1,41 @@
+# splice, tee and vmsplice (docs/abi/ L7 step 5). Host tests: t_splice in
+# tests/kernel/linux_abi_tests.c; the pipe's peek is in pipe_tests.c.
+#
+#  1. tee takes the bytes it copies. Expect "pipe to file: written at the
+#     offset, and the pipe is empty after" - which then has nothing to write.
+#  2. a file's offset is not moved. Expect "file to pipe: five bytes, and the
+#     offset moves".
+#  3. SPLICE_F_NONBLOCK waits. Expect "an empty pipe with SPLICE_F_NONBLOCK:
+#     EAGAIN" (the host's fake would report the wait as a block).
+#  4. an offset on a pipe is ignored. Expect "an offset on a pipe".
+#
+# Target source: kernel/abi/linux/splice.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/splice.c scripts/dev/cases/splice-l7.txt
+
+### tee takes the bytes it copies
+--- old
+        n = vibeos_pipe_peek(in->pipe, page, len < room ? len : room, splice_kcopy, &st);
++++ new
+        n = vibeos_pipe_read(in->pipe, page, len < room ? len : room, splice_kcopy, &st);
+
+### a file's offset is not moved
+--- old
+        if (r > 0 && off) {
+            *off += (uint64_t)r;
+        }
++++ new
+        if (r > 0 && off) {
+            (void)0;
+        }
+
+### SPLICE_F_NONBLOCK waits
+--- old
+        nonblock = (flags & LINUX_SPLICE_F_NONBLOCK) != 0u;
++++ new
+        nonblock = 0;
+
+### an offset on a pipe is ignored
+--- old
+    } else if (is_pipe(in) ? off_in_uptr != 0u : off_out_uptr != 0u) {
++++ new
+    } else if (0) {

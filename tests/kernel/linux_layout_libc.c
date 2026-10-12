@@ -26,6 +26,7 @@
 #include <sys/syscall.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/shm.h>
 #include <sys/statvfs.h>
 #include <unistd.h>
 
@@ -69,6 +70,12 @@ static const struct { const char *name; long long value; } g_consts[] = {
     { "SCM_CREDENTIALS", SCM_CREDENTIALS },
     { "AF_INET", AF_INET },
     { "SOCK_STREAM", SOCK_STREAM },
+    { "SHM_DEST", SHM_DEST },
+    { "SHM_LOCKED", SHM_LOCKED },
+    { "SPLICE_F_MOVE", SPLICE_F_MOVE },
+    { "SPLICE_F_NONBLOCK", SPLICE_F_NONBLOCK },
+    { "SPLICE_F_MORE", SPLICE_F_MORE },
+    { "SPLICE_F_GIFT", SPLICE_F_GIFT },
     { "SOCK_DGRAM", SOCK_DGRAM },
     { "SHUT_RD", SHUT_RD },
     { "SHUT_WR", SHUT_WR },

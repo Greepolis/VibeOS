@@ -1,0 +1,285 @@
+/* splice, tee and vmsplice (docs/abi/ L7 step 5): moving bytes into, out of
+ * and between pipes without a trip through the program.
+ *
+ * Linux moves page references; this kernel's pipe is a ring of bytes, so it
+ * copies through a kernel page - which a program cannot tell from the other,
+ * except by speed. What it can tell is what happens when the far side takes
+ * less than was offered, and the answer here is Linux's: nothing is lost. The
+ * bytes are looked at in the pipe (vibeos_pipe_peek), written, and only as
+ * many as were written are taken.
+ *
+ * SPLICE_F_NONBLOCK makes the pipe side not wait, whatever the descriptor's
+ * own O_NONBLOCK says; the file side waits as it always would. */
+
+#include "linux_internal.h"
+
+static int splice_kcopy(void *dst, const void *src, uint64_t n) {
+    uint8_t *d = (uint8_t *)dst;
+    const uint8_t *s = (const uint8_t *)src;
+
+    while (n-- > 0u) {
+        *d++ = *s++;
+    }
+    return 0;
+}
+
+static int is_pipe(const vibeos_file_t *f) {
+    return f->ops == &vibeos_fops_pipe;
+}
+
+typedef struct {
+    vibeos_file_t *in;        /* a pipe's read end */
+    vibeos_file_t *out;       /* a pipe's write end, for tee and pipe to pipe */
+    int nonblock;
+} splice_wait_t;
+
+/* Ready when the input pipe has bytes or can never have more, and - when the
+ * output is a pipe - when there is room in it or nobody to read it. */
+static long splice_look(void *ctx) {
+    splice_wait_t *w = (splice_wait_t *)ctx;
+    int ready_in = 1, ready_out = 1;
+
+    if (w->in) {
+        ready_in = vibeos_pipe_pending(w->in->pipe) > 0u || vibeos_pipe_writers(w->in->pipe) == 0u;
+    }
+    if (w->out) {
+        ready_out = vibeos_pipe_pending(w->out->pipe) < VIBEOS_PIPE_BYTES ||
+                    vibeos_pipe_readers(w->out->pipe) == 0u;
+    }
+    if (ready_in && ready_out) {
+        return 1;
+    }
+    return w->nonblock ? -VIBEOS_EAGAIN : 0;
+}
+
+static long splice_wait(vibeos_file_t *in, vibeos_file_t *out, int nonblock) {
+    splice_wait_t w;
+    long r;
+
+    w.in = in;
+    w.out = out;
+    w.nonblock = nonblock;
+    r = linux_wait_ready(splice_look, &w, -1, 0);
+    return r == 1 ? 0 : r;
+}
+
+/* From a pipe to anything that writes: look, write, take what was written. */
+static long splice_from_pipe(vibeos_file_t *in, vibeos_file_t *out, uint64_t *off, uint64_t len,
+                             int nonblock) {
+    uint8_t *page;
+    vibeos_pipe_status_t st;
+    long n, put, r;
+
+    if ((r = splice_wait(in, is_pipe(out) ? out : 0, nonblock)) != 0) {
+        return r;
+    }
+    if (!(page = (uint8_t *)ks_page_alloc())) {
+        return -VIBEOS_ENOMEM;
+    }
+    n = vibeos_pipe_peek(in->pipe, page, len > 4096u ? 4096u : len, splice_kcopy, &st);
+    if (n == 0) {
+        ks_page_free(page, "splice bounce");
+        return 0;   /* end of file: every writer has gone */
+    }
+    if (off) {
+        put = out->ops->pwrite ? out->ops->pwrite(out, (uint64_t)(uintptr_t)page, (uint64_t)n, *off)
+                               : -VIBEOS_EINVAL;
+    } else {
+        put = out->ops->write ? out->ops->write(out, (uint64_t)(uintptr_t)page, (uint64_t)n) : -VIBEOS_EINVAL;
+    }
+    if (put > 0) {
+        (void)vibeos_pipe_read(in->pipe, page, (uint64_t)put, splice_kcopy, &st);
+        ks_wake_waiters();   /* a writer to the input may have room now */
+        if (off) {
+            *off += (uint64_t)put;
+        }
+    }
+    ks_page_free(page, "splice bounce");
+    return put;
+}
+
+/* Into a pipe from anything that reads: no more than there is room for, so the
+ * pipe's write never has to wait for what was already read. */
+static long splice_to_pipe(vibeos_file_t *in, uint64_t *off, vibeos_file_t *out, uint64_t len,
+                           int nonblock) {
+    uint8_t *page;
+    uint64_t room;
+    long got, r;
+
+    if ((r = splice_wait(0, out, nonblock)) != 0) {
+        return r;
+    }
+    if (vibeos_pipe_readers(out->pipe) == 0u) {
+        (void)ks_signal_raise(ks_current(), VIBEOS_SIGPIPE);
+        return -VIBEOS_EPIPE;
+    }
+    room = VIBEOS_PIPE_BYTES - vibeos_pipe_pending(out->pipe);
+    if (len > room) {
+        len = room;
+    }
+    if (!(page = (uint8_t *)ks_page_alloc())) {
+        return -VIBEOS_ENOMEM;
+    }
+    if (off) {
+        got = in->ops->pread ? in->ops->pread(in, (uint64_t)(uintptr_t)page, len, *off) : -VIBEOS_EINVAL;
+    } else {
+        got = in->ops->read ? in->ops->read(in, (uint64_t)(uintptr_t)page, len) : -VIBEOS_EINVAL;
+    }
+    if (got > 0) {
+        r = out->ops->write(out, (uint64_t)(uintptr_t)page, (uint64_t)got);
+        if (r > 0 && off) {
+            *off += (uint64_t)r;
+        }
+        got = r;
+    }
+    ks_page_free(page, "splice bounce");
+    return got;
+}
+
+static long linux_sys_splice(uint64_t fd_in, uint64_t off_in_uptr, uint64_t fd_out, uint64_t off_out_uptr,
+                             uint64_t len, uint64_t flags) {
+    vibeos_file_t *in, *out;
+    uint64_t off = 0;
+    int nonblock;
+    long r = 0;
+
+    if (flags & ~(uint64_t)LINUX_SPLICE_F_KNOWN) {
+        return -VIBEOS_EINVAL;
+    }
+    in = linux_file_get(fd_in);
+    out = linux_file_get(fd_out);
+    if (!in || !out || (in->flags & VIBEOS_O_ACCMODE) == VIBEOS_O_WRONLY ||
+        (out->flags & VIBEOS_O_ACCMODE) == VIBEOS_O_RDONLY) {
+        r = -VIBEOS_EBADF;
+    } else if (!is_pipe(in) && !is_pipe(out)) {
+        r = -VIBEOS_EINVAL;   /* one side has to be a pipe */
+    } else if (is_pipe(in) && is_pipe(out)) {
+        if (off_in_uptr != 0u || off_out_uptr != 0u) {
+            r = -VIBEOS_ESPIPE;
+        } else if (in->pipe == out->pipe) {
+            r = -VIBEOS_EINVAL;
+        }
+    } else if (is_pipe(in) ? off_in_uptr != 0u : off_out_uptr != 0u) {
+        r = -VIBEOS_ESPIPE;   /* a pipe has no position to start from */
+    } else if (!is_pipe(out) && (out->flags & VIBEOS_O_APPEND)) {
+        r = -VIBEOS_EINVAL;
+    }
+    if (r == 0 && (is_pipe(in) ? off_out_uptr : off_in_uptr) != 0u) {
+        uint64_t u = is_pipe(in) ? off_out_uptr : off_in_uptr;
+        vibeos_file_t *side = is_pipe(in) ? out : in;
+
+        if (side->ops != &vibeos_fops_regular) {
+            r = -VIBEOS_ESPIPE;   /* only a file has offsets */
+        } else if (linux_ipc_in(&off, u, 8u) != 0) {
+            r = -VIBEOS_EFAULT;
+        } else if ((int64_t)off < 0) {
+            r = -VIBEOS_EINVAL;
+        }
+    }
+    if (r == 0 && len != 0u) {
+        const int has_off = (is_pipe(in) ? off_out_uptr : off_in_uptr) != 0u;
+
+        nonblock = (flags & LINUX_SPLICE_F_NONBLOCK) != 0u;
+        if (is_pipe(in)) {
+            nonblock |= (in->flags & VIBEOS_O_NONBLOCK) != 0u;
+            r = splice_from_pipe(in, out, has_off ? &off : 0, len, nonblock);
+        } else {
+            nonblock |= (out->flags & VIBEOS_O_NONBLOCK) != 0u;
+            r = splice_to_pipe(in, has_off ? &off : 0, out, len, nonblock);
+        }
+        if (r >= 0 && has_off && linux_ipc_out(is_pipe(in) ? off_out_uptr : off_in_uptr, &off, 8u) != 0) {
+            r = -VIBEOS_EFAULT;
+        }
+    }
+    if (in) {
+        vibeos_file_put(in);
+    }
+    if (out) {
+        vibeos_file_put(out);
+    }
+    return r;
+}
+
+/* tee: the bytes of one pipe copied into another, and left where they were. */
+static long linux_sys_tee(uint64_t fd_in, uint64_t fd_out, uint64_t len, uint64_t flags) {
+    vibeos_file_t *in, *out;
+    vibeos_pipe_status_t st;
+    uint8_t *page = 0;
+    uint64_t room;
+    long r = 0, n;
+
+    if (flags & ~(uint64_t)LINUX_SPLICE_F_KNOWN) {
+        return -VIBEOS_EINVAL;
+    }
+    in = linux_file_get(fd_in);
+    out = linux_file_get(fd_out);
+    if (!in || !out || (in->flags & VIBEOS_O_ACCMODE) == VIBEOS_O_WRONLY ||
+        (out->flags & VIBEOS_O_ACCMODE) == VIBEOS_O_RDONLY) {
+        r = -VIBEOS_EBADF;
+    } else if (!is_pipe(in) || !is_pipe(out) || in->pipe == out->pipe) {
+        r = -VIBEOS_EINVAL;
+    }
+    if (r == 0 && len != 0u) {
+        r = splice_wait(in, out, (flags & LINUX_SPLICE_F_NONBLOCK) != 0u ||
+                                 ((in->flags | out->flags) & VIBEOS_O_NONBLOCK) != 0u);
+    }
+    if (r == 0 && len != 0u && !(page = (uint8_t *)ks_page_alloc())) {
+        r = -VIBEOS_ENOMEM;
+    }
+    if (page) {
+        room = VIBEOS_PIPE_BYTES - vibeos_pipe_pending(out->pipe);
+        n = vibeos_pipe_peek(in->pipe, page, len < room ? len : room, splice_kcopy, &st);
+        r = n > 0 ? out->ops->write(out, (uint64_t)(uintptr_t)page, (uint64_t)n) : 0;
+        ks_page_free(page, "tee bounce");
+    }
+    if (in) {
+        vibeos_file_put(in);
+    }
+    if (out) {
+        vibeos_file_put(out);
+    }
+    return r;
+}
+
+/* vmsplice: a program's memory into a pipe, or a pipe into it. This kernel's
+ * pipe holds bytes, not pages, so it is writev or readv on the pipe - with
+ * SPLICE_F_NONBLOCK answering for the pipe end's O_NONBLOCK. SPLICE_F_GIFT
+ * gives Linux pages to keep; here the bytes are copied and the pages stay the
+ * program's, which is what a gift that was not taken looks like. */
+static long linux_sys_vmsplice(uint64_t fd, uint64_t iov_uptr, uint64_t nr, uint64_t flags) {
+    vibeos_file_t *f;
+    long r = 0;
+    int write;
+
+    if (flags & ~(uint64_t)LINUX_SPLICE_F_KNOWN) {
+        return -VIBEOS_EINVAL;
+    }
+    if (!(f = linux_file_get(fd))) {
+        return -VIBEOS_EBADF;
+    }
+    if (!is_pipe(f)) {
+        r = -VIBEOS_EBADF;
+    }
+    write = f->pipe_write;
+    if (r == 0 && (flags & LINUX_SPLICE_F_NONBLOCK)) {
+        splice_wait_t w;
+
+        w.in = write ? 0 : f;
+        w.out = write ? f : 0;
+        w.nonblock = 1;
+        r = splice_look(&w) == 1 ? 0 : -VIBEOS_EAGAIN;
+    }
+    vibeos_file_put(f);
+    if (r != 0 || nr == 0u) {
+        return r;
+    }
+    return linux_vec_io(fd, iov_uptr, nr, write);
+}
+
+/* ---- the syscalls this file implements --------------------------------------- */
+#define LINUX_SPLICE_SYSCALLS(X) \
+    X(275, splice,   SPLICE, NOPTR, linux_sys_splice(ARG(0), ARG(1), ARG(2), ARG(3), ARG(4), ARG(5))) \
+    X(276, tee,      SPLICE, NOPTR, linux_sys_tee(ARG(0), ARG(1), ARG(2), ARG(3))) \
+    X(278, vmsplice, SPLICE, PTRS(IN_VEC(1, 2, 16, 1024)), linux_sys_vmsplice(ARG(0), ARG(1), ARG(2), ARG(3)))
+
+LINUX_DEFINE_SYSCALLS(splice, LINUX_SPLICE_SYSCALLS)

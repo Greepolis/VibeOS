@@ -291,7 +291,7 @@ static long linux_unmap_range(int me, vibeos_procstate_t *ps, uint64_t addr, uin
  * Runs under the process's mm lock, so a fork cloning the tables and the region
  * list, or a sibling's brk or munmap, cannot see it half-built. */
 static long linux_mmap_locked(int me, vibeos_procstate_t *ps, uint64_t addr, uint64_t len,
-                              uint64_t prot, uint64_t flags, vibeos_file_t *f, uint64_t off) {
+                              uint64_t prot, uint64_t flags, vibeos_file_t *f, uint64_t off, uint32_t tag) {
     const int shared = (flags & LINUX_MAP_TYPE) != LINUX_MAP_PRIVATE;
     const vibeos_prot_t access = linux_prot_of(prot);
     const vibeos_prot_t want = shared ? (vibeos_prot_t)(access | VIBEOS_PROT_SHARED) : access;
@@ -388,7 +388,7 @@ static long linux_mmap_locked(int me, vibeos_procstate_t *ps, uint64_t addr, uin
                               ? (vibeos_prot_t)(access | VIBEOS_PROT_NOWRITE) : access,
                           shared ? VIBEOS_BACKING_SHARED
                                  : f ? VIBEOS_BACKING_FILE : VIBEOS_BACKING_ANON,
-                          0, 0) != 0) {
+                          tag, 0) != 0) {
         r = -VIBEOS_ENOMEM;
     }
     if (r != 0) {
@@ -491,7 +491,7 @@ static long linux_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot, uint64_t 
         }
     }
     ks_mm_lock(ps);
-    r = linux_mmap_locked(ks_current(), ps, addr, len, prot, flags, f, off);
+    r = linux_mmap_locked(ks_current(), ps, addr, len, prot, flags, f, off, 0);
     if (r > 0 && (flags & LINUX_MAP_LOCKED)) {
         /* MAP_LOCKED: mlock, said at the time of the mapping. Linux does not
          * fail the mmap when the lock cannot be had, and neither does this. */
@@ -950,9 +950,13 @@ static long linux_mremap_locked(int me, vibeos_procstate_t *ps, uint64_t old, ui
      * moved (external review, 2026-10-07). A failure of either puts the pages
      * back and says ENOMEM. */
     if (moved == keep && i == new_len) {
+        /* What the region is goes with it: a System V attachment moved by
+         * mremap is still that segment's (docs/abi/ L7). */
         const vibeos_prot_t region_prot = reg->prot;
+        const uint32_t region_id = reg->backing_id;
+        const uint64_t region_off = reg->backing_offset + (old - reg->base);
 
-        if (vibeos_vma_insert(&ps->vmas, base, new_len, region_prot, kind, 0, 0) == 0) {
+        if (vibeos_vma_insert(&ps->vmas, base, new_len, region_prot, kind, region_id, region_off) == 0) {
             if (linux_unmap_range(me, ps, old, old + old_len) == 0) {
                 return (long)base;
             }
@@ -1170,6 +1174,112 @@ static long linux_sys_pageinfo(uint64_t va, uint64_t out_uptr) {
         return -VIBEOS_EFAULT;
     }
     return 0;
+}
+
+/* ---- System V shared memory's mappings (shm.c, docs/abi/ L7 step 3) ----------------
+ *
+ * An attachment is a shared mapping of the segment's file, and its region
+ * carries the segment's tag (its number plus one) in backing_id - which no
+ * other shared region uses, so the region neither merges with a neighbour that
+ * is not the same attachment nor is found as one. Each region of it says how
+ * far into the segment it starts, so the start of an attachment is the region
+ * whose offset is 0 - which is what shmdt is handed, and what the attach count
+ * counts. */
+
+long linux_shm_map(vibeos_file_t *f, uint64_t addr, uint64_t len, int ro, int exec, int remap,
+                   uint32_t tag) {
+    const int me = ks_current();
+    vibeos_procstate_t *ps = me >= 0 ? ks_ps(me) : 0;
+    uint64_t prot = LINUX_PROT_READ | (ro ? 0u : LINUX_PROT_WRITE) | (exec ? LINUX_PROT_EXEC : 0u);
+    uint64_t flags = LINUX_MAP_SHARED;
+    long r;
+
+    if (!ps) {
+        return -VIBEOS_EINVAL;
+    }
+    if (addr != 0u) {
+        flags |= remap ? LINUX_MAP_FIXED : LINUX_MAP_FIXED_NOREPLACE;
+    }
+    ks_mm_lock(ps);
+    r = linux_mmap_locked(me, ps, addr, len, prot, flags, f, 0, tag);
+    if (r > 0 && ro) {
+        /* SHM_RDONLY is a ceiling, as a read-only descriptor's is: mprotect
+         * may not make it writable (EACCES). */
+        vibeos_vma_t *v;
+
+        for (v = ps->vmas.head; v; v = v->next) {
+            if (v->base == (uint64_t)r && v->backing_id == tag) {
+                v->prot = (vibeos_prot_t)(v->prot | VIBEOS_PROT_NOWRITE);
+            }
+        }
+    }
+    ks_mm_unlock(ps);
+    /* An address that overlaps what is there, without SHM_REMAP, is EINVAL
+     * to shmat - the EEXIST is mmap's word for it. */
+    return r == -VIBEOS_EEXIST ? -VIBEOS_EINVAL : r;
+}
+
+long linux_shm_unmap(uint64_t addr) {
+    const int me = ks_current();
+    vibeos_procstate_t *ps = me >= 0 ? ks_ps(me) : 0;
+    const vibeos_vma_t *v;
+    uint64_t end = addr;
+    uint32_t tag = 0;
+    long r;
+
+    if (!ps) {
+        return -VIBEOS_EINVAL;
+    }
+    ks_mm_lock(ps);
+    for (v = ps->vmas.head; v; v = v->next) {
+        if (v->base == addr && v->backing == VIBEOS_BACKING_SHARED && v->backing_id != 0u &&
+            v->backing_offset == 0u) {
+            tag = v->backing_id;
+        }
+        /* The attachment's regions in order: the same tag, each starting as
+         * far into the segment as it is from the start. */
+        if (tag != 0u && v->base == end && v->backing_id == tag && v->backing_offset == end - addr) {
+            end = v->base + v->len;
+        }
+    }
+    if (tag == 0u) {
+        ks_mm_unlock(ps);
+        return -VIBEOS_EINVAL;   /* no attachment starts there */
+    }
+    r = linux_unmap_range(me, ps, addr, end);
+    ks_mm_unlock(ps);
+    return r < 0 ? r : (long)tag;
+}
+
+uint32_t linux_shm_attached(uint32_t tag) {
+    vibeos_procstate_t *held[64];
+    uint32_t n = 0, i, k, count = 0, slots = ks_slots();
+
+    /* Every process's state once, held so that an exit cannot take it while
+     * its regions are read - a thread shares its process's, and a CLONE_VM
+     * process has its own list. */
+    ks_lock(ks_sched_lock(), __func__);
+    for (i = 0; i < slots && n < 64u; i++) {
+        vibeos_procstate_t *ps = ks_ps((int)i);
+
+        for (k = 0; ps && k < n && held[k] != ps; k++) {
+        }
+        if (ps && k == n && (ps = linux_ps_hold((int)i)) != 0) {
+            held[n++] = ps;
+        }
+    }
+    ks_unlock(ks_sched_lock());
+    for (k = 0; k < n; k++) {
+        const vibeos_vma_t *v;
+
+        ks_mm_lock(held[k]);
+        for (v = held[k]->vmas.head; v; v = v->next) {
+            count += v->backing == VIBEOS_BACKING_SHARED && v->backing_id == tag && v->backing_offset == 0u;
+        }
+        ks_mm_unlock(held[k]);
+        ks_procstate_put(held[k]);
+    }
+    return count;
 }
 
 /* ---- the syscalls this file implements --------------------------------------- */

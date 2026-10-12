@@ -74,6 +74,14 @@
     X(GETCPU,          "getcpu",          VIBEOS_CHECK_USER_MEMORY) \
     X(IOPRIO,          "ioprio",          VIBEOS_CHECK_NONE) \
     X(MEMBARRIER,      "membarrier",      VIBEOS_CHECK_NONE) \
+    X(IPC_GET,         "ipc_get",         VIBEOS_CHECK_NONE) \
+    X(IPC_SEND,        "ipc_send",        VIBEOS_CHECK_USER_MEMORY) \
+    X(IPC_RECV,        "ipc_recv",        VIBEOS_CHECK_USER_MEMORY) \
+    X(IPC_CTL,         "ipc_ctl",         VIBEOS_CHECK_USER_MEMORY) \
+    X(SHM_MAP,         "shm_map",         VIBEOS_CHECK_NONE) \
+    X(MQ_OPEN,         "mq_open",         VIBEOS_CHECK_USER_MEMORY) \
+    X(MQ_IO,           "mq_io",           VIBEOS_CHECK_USER_MEMORY) \
+    X(SPLICE,          "splice",          VIBEOS_CHECK_USER_MEMORY) \
     X(PERSONALITY,     "personality",     VIBEOS_CHECK_NONE) \
     X(IDENTITY_GET,    "identity_get",    VIBEOS_CHECK_USER_MEMORY) \
     X(IDENTITY_SET,    "identity_set",    VIBEOS_CHECK_USER_MEMORY) \

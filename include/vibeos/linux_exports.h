@@ -45,6 +45,8 @@ void linux_procstate_defaults(vibeos_procstate_t *ps);
 int linux_files_leave(vibeos_procstate_t *ps);
 /* A process has ended: the record locks it held end with it (L1 step 6). */
 void linux_locks_exit(uint32_t tgid);
+/* And its System V semaphore adjustments are added back (sem.c, L7). */
+void linux_ipc_exit(uint32_t tgid);
 
 /* What /proc says about processes (procsrc.c, L2 step 6): the mount's owner
  * fills the machine's facts and asks this for the rest. */

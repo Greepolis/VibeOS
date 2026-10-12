@@ -1,0 +1,60 @@
+# System V message queues and what the three kinds share (docs/abi/ L7 step 1).
+# Host tests: t_ipc_msg in tests/kernel/linux_abi_tests.c.
+#
+#  1. numbers are handed out from the lowest free index. Expect "the next is 2,
+#     not the 0 that was given back".
+#  2. a negative type takes the first message at or below it, not the lowest.
+#     Expect "a negative type takes the lowest type at or below it".
+#  3. a message longer than the buffer is cut without MSG_NOERROR. Expect "a
+#     message longer than the buffer is E2BIG".
+#  4. the group's bits are never consulted. Expect "in the group: the group's
+#     bits".
+#  5. msg_next_id is not used up. Expect "and the setting is used up".
+#  6. msgmni is not the limit. Expect "msgmni lowered".
+#  7. a STAT by index answers 0. Expect "MSG_STAT by index answers with the
+#     queue's number".
+#
+# Target source: kernel/abi/linux/ipc.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/ipc.c scripts/dev/cases/ipc-msg-l7.txt
+
+### numbers are handed out from the lowest free index
+--- old
+        idx = ipc_free_index(tab, n, (uint32_t)(ns->last_idx + 1), LINUX_IPC_CYCLE);
++++ new
+        idx = ipc_free_index(tab, n, 0u, LINUX_IPC_CYCLE);
+
+### a negative type takes the first message at or below it, not the lowest
+--- old
+        } else if (t <= -type && (best < 0 || t < q->rec[best].type)) {
++++ new
+        } else if (t <= -type && best < 0) {
+
+### a message longer than the buffer is cut without MSG_NOERROR
+--- old
+        if (!(m->flg & LINUX_MSG_NOERROR)) {
++++ new
+        if (0) {
+
+### the group's bits are never consulted
+--- old
+    } else if (vibeos_cred_in_group(c, o->gid, 0) || vibeos_cred_in_group(c, o->cgid, 0)) {
++++ new
+    } else if (0) {
+
+### msg_next_id is not used up
+--- old
+        ns->next_id = -1;   /* one object, as Linux: the setting is used up */
++++ new
+        (void)0;
+
+### msgmni is not the limit
+--- old
+    uint32_t i, live = 0, limit = ns->max < n ? ns->max : n;
++++ new
+    uint32_t i, live = 0, limit = n;
+
+### a STAT by index answers 0
+--- old
+                r = VIBEOS_ARG_INT(cmd) == LINUX_IPC_STAT ? 0 : (long)g_msg_obj[s].id;
++++ new
+                r = 0;

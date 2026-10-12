@@ -80,8 +80,8 @@ static int src_owner(uint32_t id) {
 
 /* A reference to a slot's process state, if it still has one with a reference
  * left to share; under the scheduler's lock. Given back with
- * ks_procstate_put. */
-static vibeos_procstate_t *src_ps_get(int slot) {
+ * ks_procstate_put. Shared with shm.c, which counts attachments the same way. */
+vibeos_procstate_t *linux_ps_hold(int slot) {
     vibeos_procstate_t *ps = ks_ps(slot);
     uint32_t r;
 
@@ -162,7 +162,7 @@ static int src_proc(uint32_t pid, vibeos_procfs_proc_t *out) {
     }
     /* The thread's own reference: they share one state, and a leader that has
      * ended has let go of its pointer to it while its threads have not. */
-    ps = src_ps_get(ts);
+    ps = linux_ps_hold(ts);
     ks_unlock(ks_sched_lock());
 
     nice = ks_task_nice(ts);
@@ -362,7 +362,7 @@ static long src_link(uint32_t pid, uint32_t which, uint32_t fd, char *buf, uint3
         ks_unlock(ks_sched_lock());
         return i ? src_copy(buf, cap, path) : -VIBEOS_ENOENT;
     }
-    ps = s >= 0 ? src_ps_get(s) : 0;
+    ps = s >= 0 ? linux_ps_hold(s) : 0;
     ks_unlock(ks_sched_lock());
     if (!ps) {
         return -VIBEOS_ENOENT;
@@ -388,7 +388,7 @@ static int src_next_fd(uint32_t pid, uint32_t from, uint32_t *fd) {
 
     ks_lock(ks_sched_lock(), __func__);
     s = src_owner(pid);
-    ps = s >= 0 ? src_ps_get(s) : 0;
+    ps = s >= 0 ? linux_ps_hold(s) : 0;
     ks_unlock(ks_sched_lock());
     if (!ps) {
         return -1;
@@ -419,7 +419,7 @@ static int src_map(uint32_t pid, uint32_t index, vibeos_procfs_map_t *out) {
     if (s >= 0) {
         sp = ks_image(s)->user_sp;
     }
-    ps = s >= 0 ? src_ps_get(s) : 0;
+    ps = s >= 0 ? linux_ps_hold(s) : 0;
     ks_unlock(ks_sched_lock());
     if (!ps) {
         return -1;
@@ -492,7 +492,7 @@ static int src_may_inspect(uint32_t pid) {
     }
     ks_lock(ks_sched_lock(), __func__);
     s = src_owner(pid);
-    ps = s >= 0 ? src_ps_get(s) : 0;
+    ps = s >= 0 ? linux_ps_hold(s) : 0;
     ks_unlock(ks_sched_lock());
     if (!ps) {
         return -VIBEOS_ESRCH;
@@ -521,5 +521,6 @@ void linux_procfs_bind(vibeos_procfs_t *pf) {
     pf->uptime_ms = src_uptime_ms;
     pf->entropy_avail = linux_entropy_avail;
     linux_inotify_limits(&pf->inotify_queued, &pf->inotify_instances, &pf->inotify_watches);
+    pf->extra = linux_ipc_proc_files(&pf->extras);
     pf->version = "Linux version " VIBEOS_LINUX_RELEASE " (vibeos@vibeos) (gcc) #1 SMP PREEMPT";
 }
