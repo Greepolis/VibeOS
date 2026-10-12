@@ -2511,6 +2511,114 @@ System V shared memory, semaphores and message queues; POSIX message queues;
 
 **Programs:** LTP's ipc cases; a producer and consumer over SysV shared memory.
 
+**The plan (2026-10-12).** Measured first: `tests/corpus/ltp-l7.txt`, the
+phase's 81 tests from `ltp-list.py L7`. On the parent (L6's close) none of
+the 81 passes: every one of the 21 calls answers ENOSYS. What the tests ask
+for besides the calls is a /proc that LTP's IPC library reads and writes -
+`/proc/sysvipc/{msg,sem,shm}` counted line by line, `msgmni`, `shmmax`,
+`msg_next_id` and `/proc/sys/fs/mqueue/queues_max` written and read back - so
+/proc grows its first writable files.
+
+Six steps:
+
+1. **What the three kinds share, and message queues** (`ipc.c`): Linux's
+   numbering, ipcperms and the owner rule, the `*_STAT` and `*_INFO`
+   commands, the four msg calls; /proc's owner files.
+2. **Semaphores** (`sem.c`): semop whole or not at all, semtimedop, SEM_UNDO.
+3. **Shared memory** (`shm.c`): segments as unnamed tmpfs files, attachments
+   as shared mappings.
+4. **POSIX message queues** (`mqueue.c`).
+5. **splice, tee, vmsplice** (`splice.c`).
+6. **The programs**: a producer and consumer over SysV shared memory and
+   semaphores, with a round trip through each kind of queue, in the corpus.
+
+The calls are new and touch nothing that runs today, so steps 1 to 5 were
+written together and validated as one run; step 6 had its own.
+
+**Steps 1 to 5 (2026-10-12): the calls.** In five files under
+`kernel/abi/linux/`, over one lock (`linux_ipc_lock`), nothing slow under
+it - a message's text is copied through kernel pages outside it.
+
+- **Numbers are Linux's**: `seq << 15 | index`, the index handed out
+  cyclically over at least 64 as Linux's idr has since 5.4 (a queue removed
+  and made again gets the next number, 1 2 3 rather than 1 2 1, checked
+  against WSL's kernel), and the sequence moving on when the cycle restarts.
+  `msg_next_id`, `sem_next_id` and `shm_next_id` ask for a number; the next
+  free index at or above it is given, and the setting is used up. Thirty-two
+  objects of each kind are kept, and msgmni, semmni and shmmni say so.
+- **Permissions** are ipcperms - owner or creator, group or creator's group,
+  others; the superuser passes - and removing or changing belongs to owner,
+  creator and superuser.
+- **Message queues**: by type, the lowest at or below a bound, MSG_EXCEPT,
+  MSG_NOERROR, MSG_COPY by position; a message taken for a buffer that
+  faults is lost, as on Linux, which copies after the unlink too.
+- **Semaphores**: sets of up to 250; semop tries the list on a copy and
+  changes the set only if nothing would wait; a waiter is counted on the one
+  semaphore that stopped it; SEM_UNDO is kept per process and added back when
+  its last thread leaves (`linux_ipc_exit`, from exit), SETVAL and SETALL
+  clearing everybody's adjustment as Linux does.
+- **Shared memory**: a segment is a /tmp file nothing names, made as
+  memfd_create's is (`linux_hidden_file`); an attachment is a shared mapping
+  of it whose regions carry the segment's number plus one in `backing_id`.
+  **The attach count is not kept**: it is read off every process's regions
+  when asked (`linux_shm_attached`), because fork copies a region, exit and
+  exec drop them and munmap can take one, and a counter beside them would be
+  one more field each of those paths had to remember. IPC_RMID while
+  attached marks SHM_DEST and makes the key private; the segment goes at the
+  next shm call after its last detach. mremap carries the tag.
+- **POSIX queues**: a descriptor type; messages by priority, each a header
+  page and pages of text the sender allocates, so a queue the superuser
+  makes past the defaults costs only what is in it; mq_notify by signal -
+  SIGEV_THREAD is a netlink socket's to deliver, and there is none.
+- **splice and tee** go through a kernel page and look into the pipe before
+  they take from it (`vibeos_pipe_peek`), so a destination that takes less
+  loses nothing.
+- **/proc** takes files from its owner (`vibeos_procfs_extra_t`) with their
+  text and, for a tunable, what a write does. Writing follows Linux for the
+  superuser: any file opens for writing, a non-tunable refuses the write with
+  EIO, a name /proc does not have is ENOENT; the mount reads rw.
+- **The registry took sixteen tables of rows** and refused a seventeenth
+  with a panic at boot - in the host tests, a panic outside any call and a
+  wall of unrelated failures. It takes 32.
+
+Host tests: `t_ipc_msg`, `t_ipc_sem`, `t_ipc_shm`, `t_mqueue`, `t_splice`;
+the layout of every structure compared with uapi. Sabotage: `ipc-msg-l7`,
+`ipc-sem-l7`, `ipc-shm-l7`, `ipc-shm-mm-l7`, `mqueue-l7`, `splice-l7` - 30
+cases, all red. Validation: check.sh green, boots 6 of 6, LTP 61 of 81.
+
+**Step 6 (2026-10-12): the programs.** `tests/corpus/sysvipc.c` - a
+producer and a consumer over a sixteen-slot ring in a segment, three
+semaphores guarding it (SEM_UNDO on the ring's), then five messages through a
+SysV queue by type and four through a POSIX queue by priority - under musl
+statically and glibc dynamically, run by `/corpus/run.sh` and compared with
+what Linux printed. The phase's LTP run found one defect of its own: vmsplice into a pipe was
+writev, which waits until every byte is in, where Linux puts in what fits
+and returns the count - vmsplice01 offers 128 KiB to a pipe it drains
+itself, and waited for ever. And F_GETPIPE_SZ answers the pipe's capacity.
+Validation: check.sh green, LTP 64 of 81; boots 5 of 6, the failure L6's
+(below).
+
+**L7 is closed (2026-10-12).** LTP: 64 of 81 from 0. What is left,
+and why: mq_notify01 and mq_notify03 use SIGEV_THREAD, which needs netlink;
+mq_open01 expects EINVAL for an empty name, which glibc says and the kernel
+- Linux's too, under musl - answers ENOENT; msgctl05, semctl08 and shmctl06
+need the 32-bit time_high fields x86-64 does not have; shmctl05 needs
+remap_file_pages (deferred); shmget02 reads the kernel's .config; splice06
+needs pipe-max-size, splice07 userfaultfd, splice08 and splice09 Linux 6.7.
+Two gaps are this kernel's and not this phase's: **a pipe holds 4 KiB**,
+where Linux's holds 64 (splice04, splice05 and vmsplice03 write more than
+that before they read), and **a sleep lasts at least a tick**, so
+semop04's two thousand microsecond sleeps take twenty seconds and its
+timeout ends it. shmctl01's twenty children are refused
+by fork with EAGAIN, which is not yet explained: the task table is 64.
+
+**Open, and not L7's: C6_SCHED, once in about eighteen boots.** A child of
+THREADS.ELF pinned to core 1 was still not on it after three seconds of
+sched_yield (exit 11), with nothing else in the log - no fault, no wedge,
+the next stages green. Every boot since L6 step 2 had passed it. The stage
+now prints the core it was on, how long it waited and the mask the kernel
+reports, so the next failure says where to look.
+
 ### L8. System administration (11, plus `uname` finished)
 
 `mount`/`umount2` over the mount table, `chroot`, `pivot_root`, `reboot`,
