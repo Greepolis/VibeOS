@@ -97,19 +97,45 @@ else
     rc=1
 fi
 
-# ---- glibc itself: the loader and the libraries the two programs name ----
+# ---- the thread pool (docs/abi/ L6 step 4): this project's own program ----
+# tests/corpus/threadpool.c, against musl statically and against glibc
+# dynamically, like the two above: two C libraries' threads - their condition
+# variables, barriers, semaphores, cancellation and TLS - on one kernel.
+if musl-gcc -O2 -static tests/corpus/threadpool.c -o "$OUT/threadpool" -lpthread > "$OUT/threadpool.log" 2>&1; then
+    echo "corpus-build: threadpool ok"
+else
+    echo "corpus-build: threadpool FAILED (see $OUT/threadpool.log)"; rc=1
+fi
+if gcc -O2 -pthread tests/corpus/threadpool.c -o "$OUT/threadpool-glibc" >> "$OUT/threadpool.log" 2>&1; then
+    echo "corpus-build: threadpool-glibc ok"
+else
+    echo "corpus-build: threadpool-glibc FAILED (see $OUT/threadpool.log)"; rc=1
+fi
+
+# ---- glibc itself: the loader and the libraries the programs name ----
 # Copied from this host, at the paths the programs ask for them by, into a tree
 # the boot gate lays over the boot volume: <build>/corpus/glibc/lib64/... and
 # .../lib/x86_64-linux-gnu/.... Whatever `ldd` lists, so a host whose glibc
 # splits its libraries differently still stages what its binaries need.
 rm -rf "$OUT/glibc"
-for p in sqlite3-glibc lua-glibc; do
+for p in sqlite3-glibc lua-glibc threadpool-glibc; do
     [ -x "$OUT/$p" ] || continue
     for lib in $(ldd "$OUT/$p" | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^\//) print $i }'); do
         mkdir -p "$OUT/glibc$(dirname "$lib")"
         cp -L "$lib" "$OUT/glibc$lib"
     done
 done
+# And what glibc opens for itself rather than links: pthread_cancel unwinds the
+# cancelled thread through libgcc_s, loaded with dlopen the first time - so ldd
+# does not list it, and without it glibc aborts the program instead (found by
+# the thread pool, L6 step 4).
+if [ -d "$OUT/glibc" ]; then
+    g=$(gcc -print-file-name=libgcc_s.so.1)
+    case "$g" in
+        /*) mkdir -p "$OUT/glibc/lib/x86_64-linux-gnu" && cp -L "$g" "$OUT/glibc/lib/x86_64-linux-gnu/libgcc_s.so.1" ;;
+        *) echo "corpus-build: libgcc_s.so.1 not found; glibc's pthread_cancel will abort"; rc=1 ;;
+    esac
+fi
 [ -d "$OUT/glibc" ] && echo "corpus-build: glibc $(find "$OUT/glibc" -type f | wc -l) files: $(cd "$OUT/glibc" && find . -type f | sort | tr '\n' ' ')"
 
 # ---- LTP: the syscall tests that build against musl ----

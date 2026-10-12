@@ -195,6 +195,19 @@ w_glibc_lua() {
     "$C/lua-glibc" -e 'local t = {} for i = 1, 1000 do t[i] = i * i end print(#t, t[1000]) local f = io.open("y.txt", "w") f:write("hi") f:close() print(io.open("y.txt"):read("a")) print(string.format("%.3f %5d %s", math.pi, 42, "x")) print(os.time() > 0) os.remove("y.txt")'
 }
 
+# A pool of four workers, a barrier, semaphores, TLS and a cancelled wait
+# (docs/abi/ L6 step 4), under both C libraries. Its output depends on
+# nothing but the kernel doing what Linux does: fixed work, fixed answers.
+w_threadpool() {
+    [ -x "$C/threadpool" ] || { echo absent; return 0; }
+    "$C/threadpool"
+}
+
+w_threadpool_glibc() {
+    [ -x "$C/threadpool-glibc" ] || { echo absent; return 0; }
+    "$C/threadpool-glibc"
+}
+
 w_sqlite_wal_mmap() {
     [ -x "$C/sqlite3" ] || { echo absent; return 0; }
     "$C/sqlite3" w.sqlite 'pragma journal_mode=wal; pragma mmap_size=1048576; create table t(a integer primary key, b text); with recursive n(i) as (select 1 union all select i + 1 from n where i < 400) insert into t(b) select "row " || i from n; select count(*), sum(a), max(b) from t;'
@@ -373,6 +386,8 @@ run lua-script w_lua_script
 run glibc-sqlite w_glibc_sqlite
 run glibc-lua w_glibc_lua
 run sqlite-wal-mmap w_sqlite_wal_mmap
+run threadpool w_threadpool
+run threadpool-glibc w_threadpool_glibc
 run bb-trap w_trap
 run bb-kill-wait w_children
 run bb-timeout w_timeout

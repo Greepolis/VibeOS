@@ -121,6 +121,18 @@ C:sqlite-wal-mmap: dir
 C:sqlite-wal-mmap: note.txt
 C:sqlite-wal-mmap: w.sqlite
 C:sqlite-wal-mmap: rc=0
+C:threadpool: pool: 200 jobs by 4 workers, checksum 58f930a1e6a6b200
+C:threadpool: barrier: 3 rounds of 4, all arrived: yes
+C:threadpool: semaphores: 1000 items through 8 slots, sum 500500
+C:threadpool: tls: 101 102 103 104, main's still 100, once ran 1 time(s)
+C:threadpool: cancel: a thread in pthread_cond_wait ends cancelled, its cleanup ran: yes
+C:threadpool: rc=0
+C:threadpool-glibc: pool: 200 jobs by 4 workers, checksum 58f930a1e6a6b200
+C:threadpool-glibc: barrier: 3 rounds of 4, all arrived: yes
+C:threadpool-glibc: semaphores: 1000 items through 8 slots, sum 500500
+C:threadpool-glibc: tls: 101 102 103 104, main's still 100, once ran 1 time(s)
+C:threadpool-glibc: cancel: a thread in pthread_cond_wait ends cancelled, its cleanup ran: yes
+C:threadpool-glibc: rc=0
 C:bb-trap: caught USR1
 C:bb-trap: after it
 C:bb-trap: trap -- 'echo caught USR1' USR1
