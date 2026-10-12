@@ -812,7 +812,23 @@ int main(int argc, char **argv)
                 sched_yield();
             }
             if (cpu != 1) {
-                _exit(11);   /* pinned to core 1 and still not on it */
+                /* Pinned to core 1 and still not on it. Seen once in about
+                 * eighteen boots (docs/abi/ L7's validation) with nothing else
+                 * in the log, so say where it was, for how long, and what
+                 * the kernel says its mask is: "11" alone could not be
+                 * followed anywhere. */
+                char line[128];
+                cpu_set_t now;
+                int n;
+
+                CPU_ZERO(&now);
+                (void)sched_getaffinity(0, sizeof(now), &now);
+                n = snprintf(line, sizeof(line), "THREADS_C6_SCHED_DIAG cpu=%d after_ms=%ld mask_has_1=%d count=%d\n",
+                             cpu, elapsed_ms(&t0), CPU_ISSET(1, &now) ? 1 : 0, CPU_COUNT(&now));
+                if (n > 0) {
+                    (void)write(1, line, (size_t)n);
+                }
+                _exit(11);
             }
             CPU_ZERO(&set);
             if (sched_getaffinity(0, sizeof(set), &set) != 0 || !CPU_ISSET(1, &set) || CPU_COUNT(&set) != 1) {
