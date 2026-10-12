@@ -2438,6 +2438,72 @@ scheduler's policy:
 - **LTP**: 53 of 67. clone02, clone05 and clone08 pass.
 - **Validation**: check.sh green, 6 of 6 boots.
 
+**Step 4 (2026-10-12): the programs.** `tests/corpus/threadpool.c` - a pool of
+four workers on a queue, a barrier, bounded semaphores, thread-local storage
+and pthread_once, and a cancelled pthread_cond_wait - is built by
+`corpus-build.sh` against musl statically and against glibc dynamically, run
+by the corpus in the guest and on Linux, and compared line for line
+(`l1-expected.txt`, refreshed with `corpus-expect.sh`). Its answers depend on
+nothing but the kernel: fixed work, fixed results, no core counts. musl's ran
+first time. glibc's found three defects, none in a call this phase wrote:
+
+- **A fatal signal ended one thread.** The default action of a signal that
+  kills, a ring-3 fault and a forged signal frame all ended the thread that
+  took them, where Linux ends the process. glibc's abort in the thread being
+  cancelled (libgcc_s, which pthread_cancel loads with dlopen, was not on the
+  volume) killed the main thread and left the cancelled one blocked in a
+  futex; the machine, which leaves userland only once every user task has
+  ended, never finished the boot. Every fatal end now goes through
+  `hw_task_kill_group`, exit_group's mechanism with the signal kept as every
+  thread's status. A sibling killed by a thread's exec is the exception
+  (`exec_killed`): the first boot after the change failed THREADS_C5_EXEC,
+  because that sibling's SIGKILL began a group kill that ended the exec'ing
+  thread too. THREADS.ELF's C6_ABORT is the stage: a child aborts with a
+  thread waiting, and nothing may answer to its pid afterwards.
+- **The TLB quarantine leaked when full.** A frame unmapped while another core
+  runs the same address space is parked until that core has flushed, in 512
+  slots, and a frame that found them full was leaked by design (H-015).
+  glibc gives a finished thread's stack back with madvise(MADV_DONTNEED) over
+  two thousand pages, so a pool of four threads lost about fourteen hundred
+  frames a boot (`userland_frames_lost`). Bisected by program - musl clean,
+  glibc not - then by section of the program, then read off `tlbq_overflow`.
+  A full quarantine now has the cores holding the space flush through the
+  shootdown, releases the frame, and drains.
+- **The mm lock's waiters did not answer a flush.** The first boot with that
+  fix wedged: the holder of the mm lock, in madvise, waited in the shootdown
+  for two sibling threads that were spinning for the same lock, whose
+  one-instruction interrupt window QEMU's TCG never took the IPI in. The
+  spinlocks already answered a flush themselves; `ks_mm_lock` does now too.
+  fork's shootdown under the same lock had the same exposure.
+- **And libgcc_s.so.1** is staged with glibc's libraries, since ldd does not
+  list what is opened with dlopen.
+- **Sabotage**: `kill-group-boot.txt`, `exec-kill-boot.txt`,
+  `tlbq-full-boot.txt`, `mm-lock-flush-boot.txt`; `ring3-fault.txt`
+  re-anchored; `t_sigreturn_forged` asserts the group kill on the host.
+  All four go red for their own reason on an idle host.
+- **Validation**: check.sh green; boots 6 of 6. A first run of the same
+  binary measured 0 of 6 - every boot wedged with cores in the disk drivers
+  during the reclaim load, one ran out of time still printing - on a host
+  running a game and, for two minutes, a recursive grep over the build tree.
+  Read as the host's because it was the signature recorded the last time,
+  and confirmed by running again with the host idle, not by the count.
+- **And the nightly's corpus check**, red since step 1: each C6 stage made
+  THREADS.ELF ask for calls its checked-in needs did not list. They are
+  measured again (`corpus-measure.sh`) and `docs/abi/corpus.md` rewritten. A
+  boot program that gains a stage changes what the corpus says it needs, and
+  only the nightly compares the two.
+
+**L6 is closed (2026-10-12).** LTP: 53 of 67 from 16. What is left, and why:
+futex_wake02, futex_wake03 and futex_cmp_requeue01 need more than 64 tasks
+(the runnable masks are 64-bit); sched_setattr01 and sched_getattr01 use
+SCHED_DEADLINE, refused for want of admission control; clone04 fails on Linux
+too (its musl writes to a NULL stack before the call); and futex_waitv03
+(SysV shared memory, L7), clone304 (unshare), clone09 (/proc/sys),
+close_range01 (a loop device), clone11 and sched_setscheduler04 (capget, L9),
+clone303 (cgroup v2) and futex_wake04 (hugetlbfs) are other phases' or not
+this kernel's. A CLONE_VM process shares memory but copies CLONE_FILES, FS and
+SIGHAND (the registry's note).
+
 ### L7. IPC (21)
 
 System V shared memory, semaphores and message queues; POSIX message queues;
