@@ -114,6 +114,9 @@ typedef struct vibeos_procstate {
     volatile uint32_t exit_group_claimed;
     volatile uint32_t exit_group;
     uint64_t exit_group_code;
+    /* The signal that ended the group, or 0 for exit_group: what every thread
+     * leaves as its wait status (docs/abi/ L6 step 4). */
+    uint32_t exit_group_signal;
     /* Open files: the table (fd 3 up) and what 0, 1 and 2 are redirected to.
      * The process's, like everything above: every thread of it sees one table,
      * which is what CLONE_FILES means and what a C library asks for. Each

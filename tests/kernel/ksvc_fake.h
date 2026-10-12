@@ -63,6 +63,8 @@ void kf_set_current(int slot);
 uint32_t kf_membarriers(int global);
 /* The user stack a new task was told to start on (clone's stack argument). */
 uint64_t kf_user_sp(int slot);
+/* The signal the last whole-process kill carried, and forget it (0: none). */
+uint32_t kf_kill_group_signal(void);
 
 /* User memory. kf_ualloc hands out user addresses in the arena (zeroed). */
 uint64_t kf_ualloc(uint64_t len);

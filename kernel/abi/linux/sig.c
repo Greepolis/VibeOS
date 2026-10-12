@@ -439,8 +439,8 @@ static long linux_sys_rt_sigreturn(ks_regs_t *frame) {
     return (long)ks_regs_ret(frame);
 
 bad:
-    t->exit_signal = VIBEOS_SIGSEGV;
-    ks_task_exit(128ull + VIBEOS_SIGSEGV);
+    (void)t;
+    ks_task_kill_group(VIBEOS_SIGSEGV);   /* the process, as every fatal end (L6) */
     return 0;
 }
 

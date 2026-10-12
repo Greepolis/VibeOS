@@ -813,6 +813,19 @@ void ks_task_release(int slot) { (void)vibeos_task_transition((uint32_t)slot, VI
 uint32_t ks_next_pid(void) { return g_next_pid_v++; }
 void ks_task_exit(uint64_t code) { g_exit_code_v = code; kf_escape(KF_EXITED); }
 void ks_task_exit_group(uint64_t code) { g_exit_code_v = code; kf_escape(KF_EXITED); }
+/* Counted, so a test can tell a process killed whole from a thread that
+ * ended alone - which is all the fake can show of a group. */
+static uint32_t g_kill_group_sig;
+void ks_task_kill_group(uint32_t sig) {
+    g_kill_group_sig = sig;
+    g_exit_code_v = 128ull + sig;
+    kf_escape(KF_EXITED);
+}
+uint32_t kf_kill_group_signal(void) {
+    uint32_t s = g_kill_group_sig;
+    g_kill_group_sig = 0;
+    return s;
+}
 
 void ks_lock(vibeos_lock_t *l, const char *fn) { (void)fn; l->locked++; g_lock_depth++; }
 void ks_unlock(vibeos_lock_t *l) {

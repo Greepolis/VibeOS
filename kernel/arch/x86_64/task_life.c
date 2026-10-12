@@ -711,6 +711,7 @@ hw_procstate_t *hw_procstate_new(void) {
         __atomic_store_n(&ps->exit_group_claimed, 0u, __ATOMIC_RELEASE);
         __atomic_store_n(&ps->exit_group, 0u, __ATOMIC_RELEASE);
         ps->exit_group_code = 0;
+        ps->exit_group_signal = 0;
         /* The slot is recycled: a process starts with no files, not with the
          * previous tenant's. */
         vibeos_fdtable_init(&ps->files);
@@ -1835,25 +1836,36 @@ int hw_signal_take(int task_index, uint32_t sig, vibeos_siginfo_t *out) {
  * said the lock could not be held because hw_signal_raise reaches
  * hw_task_set_state; that function takes no lock, and hw_schedule calls it
  * under this one. */
-void hw_task_exit_group(uint64_t code) {
+/* The whole process ends with `code` - or, with `sig`, killed by that signal:
+ * a fatal signal ends every thread of a process on Linux, not the one that
+ * took it. It used to end only that one (docs/abi/ L6 step 4): glibc's abort
+ * in a cancelled thread killed the main thread and left the cancelled one
+ * blocked in a futex for ever, and the machine, which leaves userland only
+ * once every user task has ended, never finished the boot. */
+static void hw_task_exit_group_as(uint64_t code, uint32_t sig) {
     int me = g_current_task;
     hw_procstate_t *ps;
     uint32_t zero = 0;
     int i;
 
     if (me < 0 || (ps = g_tasks[me].ps) == 0) {
+        if (me >= 0) {
+            g_tasks[me].id.exit_signal = sig;
+        }
         hw_task_exit(code);
         return;
     }
     if (__atomic_compare_exchange_n(&ps->exit_group_claimed, &zero, 1u, 0,
                                     __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
         ps->exit_group_code = code;
+        ps->exit_group_signal = sig;
         __atomic_store_n(&ps->exit_group, 1u, __ATOMIC_RELEASE);
     } else {
         while (__atomic_load_n(&ps->exit_group, __ATOMIC_ACQUIRE) == 0u) {
             __asm__ __volatile__("pause" ::: "memory");
         }
         code = ps->exit_group_code;
+        sig = ps->exit_group_signal;
     }
     hw_spin_lock_named(&g_sched_lock, __func__);
     for (i = 0; i < VIBEOS_HW_MAX_TASKS; i++) {
@@ -1864,8 +1876,16 @@ void hw_task_exit_group(uint64_t code) {
         }
     }
     hw_spin_unlock(&g_sched_lock);
-    g_tasks[me].id.exit_signal = 0;
+    g_tasks[me].id.exit_signal = sig;
     hw_task_exit(code);
+}
+
+void hw_task_exit_group(uint64_t code) {
+    hw_task_exit_group_as(code, 0u);
+}
+
+void hw_task_kill_group(uint32_t sig) {
+    hw_task_exit_group_as(128ull + sig, sig);
 }
 
 /* Find a task by thread-group id: kill(pid) names a process, and any of its
@@ -2196,8 +2216,9 @@ void hw_fault_kill_current_user(const vibeos_x86_64_isr_frame_t *frame,
         vibeos_x86_64_serial_unlock();
     }
 
-    g_tasks[g_current_task].id.exit_signal = sig;
-    hw_task_exit(128ull + sig);   /* switches away; does not return */
+    /* The process, not the thread: a fault Linux answers with a fatal
+     * signal ends every thread of it (L6 step 4). */
+    hw_task_kill_group(sig);   /* switches away; does not return */
 }
 
 static hw_lock_t g_crash_lock;

@@ -1211,6 +1211,7 @@ static long linux_sys_execve(ks_regs_t *frame, uint64_t dirfd, uint64_t path_upt
                 vibeos_task_state((uint32_t)(i)) != VIBEOS_TASK_FREE &&
                 vibeos_task_state((uint32_t)(i)) != VIBEOS_TASK_SETUP &&
                 vibeos_task_state((uint32_t)(i)) != VIBEOS_TASK_ZOMBIE) {
+                ks_id(i)->exec_killed = 1;   /* this thread alone, not the group */
                 (void)ks_signal_raise(i, VIBEOS_SIGKILL);
             }
         }

@@ -51,6 +51,7 @@
 #include <spawn.h>
 #include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
@@ -320,6 +321,20 @@ static void *spin_worker(void *arg)
 {
     (void)arg;
     while (!g_spin_stop) {
+    }
+    return 0;
+}
+
+/* C6_ABORT: a thread that waits for something that never comes. */
+static pthread_mutex_t g_never_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_never = PTHREAD_COND_INITIALIZER;
+
+static void *waits_on_nothing(void *arg)
+{
+    (void)arg;
+    pthread_mutex_lock(&g_never_lock);
+    for (;;) {
+        pthread_cond_wait(&g_never, &g_never_lock);
     }
     return 0;
 }
@@ -866,6 +881,54 @@ int main(int argc, char **argv)
         }
         if (ok) {
             printf("THREADS_C6_VFORK_OK\n");
+        }
+        fflush(stdout);
+    }
+
+    /* C6_ABORT (docs/abi/ L6 step 4). A process whose main thread aborts
+     * while another thread waits in pthread_cond_wait ends - all of it: the
+     * parent sees SIGABRT, and afterwards nothing answers to the pid. A fatal
+     * signal used to end only the thread that took it; glibc's abort in a
+     * cancelled thread left the other one blocked for ever, and the boot,
+     * which ends only when every user task has, never did. kill(pid, 0) is
+     * what tells a gone process from a reaped leader with a thread left. */
+    {
+        pid_t pid = fork();
+
+        if (pid == 0) {
+            pthread_t w;
+
+            if (pthread_create(&w, 0, waits_on_nothing, 0) != 0) {
+                _exit(3);
+            }
+            sched_yield();
+            abort();
+        }
+        if (pid < 0) {
+            printf("THREADS_C6_ABORT_FAIL: fork\n");
+        } else {
+            struct timespec t0;
+            int status = 0, n;
+            pid_t got = 0;
+
+            clock_gettime(CLOCK_MONOTONIC, &t0);
+            while (elapsed_ms(&t0) < 10000L && (got = waitpid(pid, &status, WNOHANG)) == 0) {
+                sched_yield();
+            }
+            for (n = 0; n < 50 && kill(pid, 0) == 0; n++) {
+                sched_yield();   /* the last thread is on its way out */
+            }
+            if (got != pid) {
+                printf("THREADS_C6_ABORT_FAIL: the aborted process never ended\n");
+                (void)kill(pid, SIGKILL);
+            } else if (!WIFSIGNALED(status) || WTERMSIG(status) != SIGABRT) {
+                printf("THREADS_C6_ABORT_FAIL: it ended with 0x%x, not SIGABRT\n", status);
+            } else if (kill(pid, 0) == 0) {
+                printf("THREADS_C6_ABORT_FAIL: a thread of it outlived the process\n");
+                (void)kill(pid, SIGKILL);
+            } else {
+                printf("THREADS_C6_ABORT_OK\n");
+            }
         }
         fflush(stdout);
     }

@@ -541,6 +541,7 @@ int hw_signal_send(int task_index, uint32_t sig, const vibeos_siginfo_t *info);
 int hw_task_hold_while_stopped(void);
 int hw_signal_take(int task_index, uint32_t sig, vibeos_siginfo_t *out);
 void hw_task_exit_group(uint64_t code);
+void hw_task_kill_group(uint32_t sig);   /* the process, killed by `sig` */
 int hw_task_by_pid(uint32_t pid);
 int hw_task_by_tid(uint32_t tid);
 int hw_user_addr_ok(uint64_t va);

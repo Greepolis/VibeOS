@@ -66,6 +66,7 @@ void ks_task_release(int slot) { hw_task_release(slot); }
 uint32_t ks_next_pid(void) { return (uint32_t)__sync_fetch_and_add(&g_next_pid, 1u); }
 void ks_task_exit(uint64_t code) { hw_task_exit(code); }
 void ks_task_exit_group(uint64_t code) { hw_task_exit_group(code); }
+void ks_task_kill_group(uint32_t sig) { hw_task_kill_group(sig); }
 
 /* ---- locks and waiting ---------------------------------------------------------- */
 

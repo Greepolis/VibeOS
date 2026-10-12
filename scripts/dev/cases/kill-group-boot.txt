@@ -1,0 +1,23 @@
+# A fatal signal ends the process, not the thread (docs/abi/ L6 step 4),
+# proved by THREADS.ELF's C6_ABORT: a child whose main thread aborts while
+# another waits in pthread_cond_wait must leave nothing behind.
+#
+#  1. the default action of a fatal signal ends only the thread that took it.
+#     Expect fatal_signal_left_a_thread.
+#
+# The ring-3 fault's half is ring3-fault.txt's second case; the forged
+# sigreturn frame's is asserted by t_sigreturn_forged on the host.
+#
+# Target source: kernel/abi/linux/signal.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/signal.c scripts/dev/cases/kill-group-boot.txt
+
+### the default action of a fatal signal ends only the thread that took it
+--- old
+            if (ks_signal_default_kills(sig)) {
+                ks_task_kill_group(sig);   /* does not return */
+            }
++++ new
+            if (ks_signal_default_kills(sig)) {
+                t->exit_signal = sig;
+                ks_task_exit(128ull + sig);
+            }

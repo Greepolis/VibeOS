@@ -193,9 +193,12 @@ static void t_sigreturn_forged(void) {
     junk = kf_ualloc(256);
     memset(kf_uptr(junk), 0x41, 256);
     kf_next_sp(junk);
+    (void)kf_kill_group_signal();
     (void)sys(15, 0, 0, 0, 0, 0, 0, &how);
     expect(how == KF_EXITED && kf_exit_code() == 128u + 11u,
            "a forged signal frame ends the task with SIGSEGV");
+    expect(kf_kill_group_signal() == 11u,
+           "and the whole process, not the thread: a fatal signal ends every thread (L6 step 4)");
     kf_next_sp(0x1000);
     (void)sys(15, 0, 0, 0, 0, 0, 0, &how);
     expect(how == KF_EXITED && kf_exit_code() == 128u + 11u,

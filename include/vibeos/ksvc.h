@@ -98,6 +98,9 @@ void ks_task_release(int slot);
 uint32_t ks_next_pid(void);
 void ks_task_exit(uint64_t code);              /* does not return              */
 void ks_task_exit_group(uint64_t code);        /* does not return              */
+/* The whole process killed by `sig`: every thread ends, and each leaves the
+ * signal as its wait status. Does not return. */
+void ks_task_kill_group(uint32_t sig);
 
 /* ---- locks and waiting --------------------------------------------------------
  *

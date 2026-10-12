@@ -233,12 +233,21 @@ int linux_signal_deliver(ks_regs_t *frame) {
                  * that died here as "killed by 9" would report exactly what an
                  * exit_group built from SIGKILL alone reports - and Linux
                  * reports the group's code. */
-                t->exit_signal = 0;
+                t->exit_signal = ps->exit_group_signal;   /* 0 for exit_group itself */
                 ks_task_exit(ps->exit_group_code);   /* does not return */
             }
-            if (ks_signal_default_kills(sig)) {
-                t->exit_signal = sig;
+            /* A sibling's exec ends this thread and no other: the exec'ing
+             * thread is of the same process, and a group kill from here
+             * would end it too - the exec failed with EINTR, and its process
+             * never ended (THREADS_C5_EXEC, the first boot of L6 step 4). */
+            if (sig == VIBEOS_SIGKILL && t->exec_killed) {
+                t->exit_signal = sig;   /* as before L6: a thread reports nothing anyway */
                 ks_task_exit(128ull + sig);   /* does not return */
+            }
+            /* The process, not this thread: a fatal signal ends every thread
+             * of it, as on Linux (L6 step 4) - see hw_task_kill_group. */
+            if (ks_signal_default_kills(sig)) {
+                ks_task_kill_group(sig);   /* does not return */
             }
             continue;   /* default is to ignore it */
         }
@@ -268,7 +277,7 @@ int linux_signal_deliver(ks_regs_t *frame) {
      * handler that returns would jump to whatever was on the stack. Checked
      * first, before the stack is touched. */
     if ((flags & VIBEOS_SA_RESTORER) == 0u || ps->sig_restorer[sig] == 0u) {
-        ks_task_exit(128ull + sig);
+        ks_task_kill_group(sig);   /* the process, as every fatal end (L6) */
         return 0;
     }
     if (restart && (flags & VIBEOS_SA_RESTART)) {
@@ -298,8 +307,7 @@ int linux_signal_deliver(ks_regs_t *frame) {
     /* No usable stack to deliver on: a program cannot be asked to handle that,
      * so it takes SIGSEGV, as Linux does. */
     if (!linux_user_ok(base, (fp + ks_fpu_size()) - base, 1)) {
-        t->exit_signal = VIBEOS_SIGSEGV;
-        ks_task_exit(128ull + VIBEOS_SIGSEGV);
+        ks_task_kill_group(VIBEOS_SIGSEGV);   /* the process, as every fatal end (L6) */
         return 0;
     }
 
@@ -347,8 +355,7 @@ int linux_signal_deliver(ks_regs_t *frame) {
             vibeos_uaccess_copy((void *)(uintptr_t)base, &ret, sizeof(ret)) != 0 ||
             vibeos_uaccess_copy((void *)(uintptr_t)(base + 8ull), &uc, sizeof(uc)) != 0 ||
             vibeos_uaccess_copy((void *)(uintptr_t)(base + 8ull + sizeof(uc)), &info, sizeof(info)) != 0) {
-            t->exit_signal = VIBEOS_SIGSEGV;
-            ks_task_exit(128ull + VIBEOS_SIGSEGV);
+            ks_task_kill_group(VIBEOS_SIGSEGV);   /* the process, as every fatal end (L6) */
             return 0;
         }
     }
