@@ -199,6 +199,14 @@ void ks_mm_lock(vibeos_procstate_t *ps) {
          * acquisition and the mutation run with interrupts as the caller had
          * them. */
         __asm__ __volatile__("sti; pause; cli" ::: "memory");
+        /* And answer the flush without the interrupt, as the spin locks do
+         * (hw_spin_lock_named). A one-instruction window is not one the
+         * interrupt is sure to land in: under QEMU's TCG an interrupt is taken
+         * between translated blocks, and the window opens and closes inside
+         * one. Two threads of a process that ran madvise into the TLB
+         * quarantine's shootdown spun here for ever while the holder waited
+         * for exactly their flush (docs/abi/ L6 step 4). */
+        hw_tlb_service_flush();
         if (++spins > 200000000ull) {
             hw_panic("mm lock held too long: a mutation did not release it");
         }
