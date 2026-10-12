@@ -2033,9 +2033,19 @@ static void t_procfs(void) {
     expect(sys(262, (uint64_t)(uint32_t)-100, ustr("/proc/meminfo"), (st = kf_ualloc(144)), 0, 0, 0, 0) == 0 &&
            (memcpy(&sb, kf_uptr(st), sizeof(sb)), sb.st_size == n) &&
            sb.st_mode == (VIBEOS_S_IFREG | 0444u), "its size is what a read returns, and it is read-only");
-    expect(SYS3(2, ustr("/proc/meminfo"), 1, 0) == -VIBEOS_EROFS &&
-           SYS3(2, ustr("/proc/new"), 0x41, 0644) == -VIBEOS_EROFS,
-           "nothing under /proc is written or made");
+    {
+        /* As Linux for the superuser: the file opens for writing and the write
+         * is refused (EIO); a new name is not there (ENOENT). Only a tunable
+         * takes a write (docs/abi/ L7). */
+        long wfd = SYS3(2, ustr("/proc/meminfo"), 1, 0);
+
+        expect(wfd >= 0 && SYS3(1, (uint64_t)wfd, ustr("1"), 1) == -VIBEOS_EIO &&
+               SYS3(2, ustr("/proc/new"), 0x41, 0644) == -VIBEOS_ENOENT,
+               "nothing under /proc is written or made");
+        if (wfd >= 0) {
+            (void)SYS1(3, (uint64_t)wfd);
+        }
+    }
     expect(SYS2(2, ustr("/proc/nothing"), 0) == -VIBEOS_ENOENT, "a name it does not have is ENOENT");
     fd = SYS2(2, ustr("/proc/sys/kernel/pid_max"), 0);
     n = fd >= 0 ? SYS3(0, (uint64_t)fd, buf, 599) : -1;
@@ -2242,7 +2252,7 @@ static void t_procdev(void) {
 
     /* The machine's files. */
     n = read_whole("/proc/mounts", text, sizeof(text));
-    expect(n > 0 && strstr(text, "tmpfs /tmp tmpfs rw 0 0\n") && strstr(text, "proc /proc proc ro 0 0\n") &&
+    expect(n > 0 && strstr(text, "tmpfs /tmp tmpfs rw 0 0\n") && strstr(text, "proc /proc proc rw 0 0\n") &&
            strstr(text, "devtmpfs /dev devtmpfs ro 0 0\n"),
            "/proc/mounts (a link to self/mounts) lists every mount as Linux does");
     n = read_whole("/proc/cpuinfo", text, sizeof(text));

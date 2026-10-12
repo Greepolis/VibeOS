@@ -290,6 +290,37 @@ static const pf_file_t g_files[] = {
 };
 #define PF_FILES ((uint32_t)(sizeof(g_files) / sizeof(g_files[0])))
 
+/* The owner's files come after the fixed ones (docs/abi/ L7: sysvipc/ and the
+ * IPC tunables under sys/kernel/), in one numbering, so that every walk over
+ * the tree - a lookup, a listing, a read - finds them as it finds the others. */
+static uint32_t pf_files(const vibeos_procfs_t *pf) {
+    return PF_FILES + (pf->extra ? pf->extras : 0u);
+}
+
+static const char *pf_path(const vibeos_procfs_t *pf, uint32_t i) {
+    return i < PF_FILES ? g_files[i].path : pf->extra[i - PF_FILES].path;
+}
+
+static void pf_put(void *o, const char *s, uint32_t n) {
+    while (n-- > 0u) {
+        pf_char((pf_out_t *)o, *s++);
+    }
+}
+
+static void pf_text(const vibeos_procfs_t *pf, uint32_t i, pf_out_t *o) {
+    if (i < PF_FILES) {
+        g_files[i].text(pf, o);
+    } else {
+        pf->extra[i - PF_FILES].text(pf_put, o);
+    }
+}
+
+/* A file a write reaches: an owner's file that says what writing it does. */
+static const vibeos_procfs_extra_t *pf_tunable(const vibeos_procfs_t *pf, uint32_t i) {
+    return (i >= PF_FILES && i < pf_files(pf) && pf->extra[i - PF_FILES].write)
+               ? &pf->extra[i - PF_FILES] : 0;
+}
+
 /* ---- the files that are about a process --------------------------------------------- */
 
 static void pf_p_stat(const vibeos_procfs_t *pf, const vibeos_procfs_proc_t *p, pf_out_t *o) {
@@ -532,8 +563,8 @@ typedef struct {
  * because a file's path runs through it. `path` names a directory when it is
  * empty or is the start of some file's path up to a slash; this returns how
  * much of that file's path it covers, slash included (0 for the root), or -1. */
-static int pf_dir_prefix(const char *path, uint32_t file) {
-    const char *f = g_files[file].path;
+static int pf_dir_prefix(const vibeos_procfs_t *pf, const char *path, uint32_t file) {
+    const char *f = pf_path(pf, file);
     uint32_t i = 0;
 
     if (*path == 0) {
@@ -686,15 +717,15 @@ static int pf_parse(const vibeos_procfs_t *pf, const char *path, pf_where_t *w) 
         w->kind = PF_K_MOUNTS;
         return 0;
     }
-    for (i = 0; i < PF_FILES; i++) {
-        if (pf_same(path, g_files[i].path)) {
+    for (i = 0; i < pf_files(pf); i++) {
+        if (pf_same(path, pf_path(pf, i))) {
             w->kind = PF_K_FILE;
             w->arg = i;
             return 0;
         }
     }
-    for (i = 0; i < PF_FILES; i++) {
-        if (pf_dir_prefix(path, i) >= 0) {
+    for (i = 0; i < pf_files(pf); i++) {
+        if (pf_dir_prefix(pf, path, i) >= 0) {
             return 0;   /* a directory of the static tree */
         }
     }
@@ -704,8 +735,8 @@ static int pf_parse(const vibeos_procfs_t *pf, const char *path, pf_where_t *w) 
 /* The text of a file the parse found, through `o`; -ESRCH if its process has
  * gone since. */
 static int pf_generate(const vibeos_procfs_t *pf, pf_where_t *w, pf_out_t *o) {
-    if (w->kind == PF_K_FILE && w->arg < PF_FILES) {
-        g_files[w->arg].text(pf, o);
+    if (w->kind == PF_K_FILE && w->arg < pf_files(pf)) {
+        pf_text(pf, w->arg, o);
         return 0;
     }
     if (w->kind == PF_K_ENTRY && g_pid_files[w->arg].type == PF_E_FILE) {
@@ -747,7 +778,7 @@ static int pf_lookup(void *fs, const char *path, vibeos_fs_node_t *out) {
             pf_out_t o = {0, 0, 0, 0};
             (void)pf_generate(pf, &w, &o);
             out->size = o.len;
-            out->mode = VIBEOS_S_IFREG | 0444u;
+            out->mode = VIBEOS_S_IFREG | (pf_tunable(pf, w.arg) ? 0644u : 0444u);
             break;
         }
         case PF_K_SELF:
@@ -798,7 +829,7 @@ static long pf_read_at(void *fs, const vibeos_fs_node_t *node, uint64_t off, voi
                 return deny;   /* another user's maps: Linux's EACCES */
             }
         }
-    } else if (w.kind != PF_K_FILE || w.arg >= PF_FILES) {
+    } else if (w.kind != PF_K_FILE || w.arg >= pf_files(pf)) {
         return -VIBEOS_EINVAL;
     }
     o.buf = (char *)buf;
@@ -866,8 +897,8 @@ static int pf_static_entry(const vibeos_procfs_t *pf, const char *path, uint32_t
                            uint32_t cap, uint64_t *out_size, int *out_is_dir) {
     uint32_t i, seen = 0;
 
-    for (i = 0; i < PF_FILES; i++) {
-        int at = pf_dir_prefix(path, i);
+    for (i = 0; i < pf_files(pf); i++) {
+        int at = pf_dir_prefix(pf, path, i);
         const char *c;
         uint32_t len = 0, j, k;
         int dup = 0;
@@ -875,14 +906,14 @@ static int pf_static_entry(const vibeos_procfs_t *pf, const char *path, uint32_t
         if (at < 0) {
             continue;
         }
-        c = g_files[i].path + at;
+        c = pf_path(pf, i) + at;
         while (c[len] && c[len] != '/') {
             len++;
         }
         for (j = 0; j < i && !dup; j++) {
-            int at2 = pf_dir_prefix(path, j);
+            int at2 = pf_dir_prefix(pf, path, j);
             if (at2 == at) {
-                const char *d = g_files[j].path + at2;
+                const char *d = pf_path(pf, j) + at2;
                 for (k = 0; k < len && d[k] == c[k]; k++) {
                 }
                 dup = k == len && (d[len] == 0 || d[len] == '/');
@@ -898,7 +929,7 @@ static int pf_static_entry(const vibeos_procfs_t *pf, const char *path, uint32_t
         if (out_size) {
             pf_out_t o = {0, 0, 0, 0};
             if (c[len] != '/') {
-                g_files[i].text(pf, &o);
+                pf_text(pf, i, &o);
             }
             *out_size = o.len;
         }
@@ -1030,6 +1061,50 @@ static int pf_list(void *fs, const char *path, uint32_t index, char *name, uint3
     return -VIBEOS_ENOTDIR;   /* a file, not a directory: nothing to list */
 }
 
+/* Writing (docs/abi/ L7). A tunable takes what is written as its new value;
+ * any other file opens for writing, as Linux's do for the superuser, and
+ * refuses the write itself with EIO. A write of nothing is the open asking
+ * whether the file can be written at all, and the answer is yes. */
+static long pf_write_at(void *fs, const vibeos_fs_node_t *node, uint64_t off, const void *buf,
+                        uint32_t len) {
+    const vibeos_procfs_t *pf = (const vibeos_procfs_t *)fs;
+    const uint32_t kind = (uint32_t)(node->id & 0xffu), arg = (uint32_t)((node->id >> 8) & 0xffffffu);
+    const vibeos_procfs_extra_t *t = kind == PF_K_FILE ? pf_tunable(pf, arg) : 0;
+    int r;
+
+    (void)off;   /* a tunable is its whole text, wherever the write lands */
+    if (kind == PF_K_DIR || kind == PF_K_PID) {
+        return -VIBEOS_EISDIR;
+    }
+    if (len == 0u) {
+        return 0;
+    }
+    if (!t) {
+        return -VIBEOS_EIO;
+    }
+    r = t->write((const char *)buf, len);
+    return r < 0 ? r : (long)len;
+}
+
+/* O_TRUNC on a file here changes nothing: a tunable is replaced by the write
+ * that follows, and nothing else can be written. */
+static int pf_truncate(void *fs, const vibeos_fs_node_t *node, uint64_t size) {
+    (void)fs;
+    (void)node;
+    (void)size;
+    return 0;
+}
+
+/* Nothing is made in /proc: a name it does not have is not there, as Linux
+ * says, rather than a filesystem that cannot write. */
+static int pf_create(void *fs, const char *path, uint32_t mode, vibeos_fs_node_t *out) {
+    (void)fs;
+    (void)path;
+    (void)mode;
+    (void)out;
+    return -VIBEOS_ENOENT;
+}
+
 static int pf_statfs(void *fs, vibeos_fs_statfs_t *out) {
     (void)fs;
     out->magic = 0x9fa0u;   /* PROC_SUPER_MAGIC */
@@ -1046,6 +1121,9 @@ static int pf_statfs(void *fs, vibeos_fs_statfs_t *out) {
 static const vibeos_fs_ops_t g_procfs_ops = {
     .lookup = pf_lookup,
     .read_at = pf_read_at,
+    .write_at = pf_write_at,
+    .truncate = pf_truncate,
+    .create = pf_create,
     .list = pf_list,
     .readlink = pf_readlink,
     .statfs = pf_statfs,

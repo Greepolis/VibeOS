@@ -92,6 +92,16 @@ typedef struct {
     const char *flags;            /* Linux's names for the feature bits */
 } vibeos_procfs_cpu_t;
 
+/* A file the mount's owner supplies whole (docs/abi/ L7): a path under /proc,
+ * its text through `put`, and for a tunable what writing it does - 0, or a
+ * negated errno for a value it refuses. A null `write` is a file nobody
+ * writes, as the fixed ones are. */
+typedef struct vibeos_procfs_extra {
+    const char *path;
+    void (*text)(void (*put)(void *o, const char *s, uint32_t n), void *o);
+    int (*write)(const char *buf, uint32_t len);
+} vibeos_procfs_extra_t;
+
 /* The filesystem's state, which is who knows the numbers: the caller's to
  * declare and fill, and passed to vibeos_fs_mount as `fs`. Any entry may be
  * null: a null `mem` reports zeros, a null `proc` a machine with no processes,
@@ -132,6 +142,10 @@ typedef struct {
      * its links point: 0, or a negated errno (EACCES). Null lets everybody,
      * which is what a machine with one user and no source of credentials is. */
     int (*may_inspect)(uint32_t pid);
+    /* The owner's own files, after the fixed ones: System V IPC's listings
+     * and tunables, and POSIX queues' (docs/abi/ L7). May be null. */
+    const vibeos_procfs_extra_t *extra;
+    uint32_t extras;
 } vibeos_procfs_t;
 
 /* The operations, for vibeos_fs_mount. */
