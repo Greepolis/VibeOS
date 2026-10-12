@@ -208,6 +208,19 @@ w_threadpool_glibc() {
     "$C/threadpool-glibc"
 }
 
+# A producer and a consumer over System V shared memory and semaphores, and a
+# round trip through a SysV and a POSIX message queue (docs/abi/ L7 step 6),
+# under both C libraries. Every line is what arrived, so it is Linux's too.
+w_sysvipc() {
+    [ -x "$C/sysvipc" ] || { echo absent; return 0; }
+    "$C/sysvipc"
+}
+
+w_sysvipc_glibc() {
+    [ -x "$C/sysvipc-glibc" ] || { echo absent; return 0; }
+    "$C/sysvipc-glibc"
+}
+
 w_sqlite_wal_mmap() {
     [ -x "$C/sqlite3" ] || { echo absent; return 0; }
     "$C/sqlite3" w.sqlite 'pragma journal_mode=wal; pragma mmap_size=1048576; create table t(a integer primary key, b text); with recursive n(i) as (select 1 union all select i + 1 from n where i < 400) insert into t(b) select "row " || i from n; select count(*), sum(a), max(b) from t;'
@@ -388,6 +401,8 @@ run glibc-lua w_glibc_lua
 run sqlite-wal-mmap w_sqlite_wal_mmap
 run threadpool w_threadpool
 run threadpool-glibc w_threadpool_glibc
+run sysvipc w_sysvipc
+run sysvipc-glibc w_sysvipc_glibc
 run bb-trap w_trap
 run bb-kill-wait w_children
 run bb-timeout w_timeout

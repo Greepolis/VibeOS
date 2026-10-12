@@ -133,6 +133,24 @@ C:threadpool-glibc: semaphores: 1000 items through 8 slots, sum 500500
 C:threadpool-glibc: tls: 101 102 103 104, main's still 100, once ran 1 time(s)
 C:threadpool-glibc: cancel: a thread in pthread_cond_wait ends cancelled, its cleanup ran: yes
 C:threadpool-glibc: rc=0
+C:sysvipc: ring: 2000 items through 16 slots, sum 2668667000, as sent
+C:sysvipc: ring: attached 1 after the producer left
+C:sysvipc: ring: semaphores free=16 full=0 ring=1
+C:sysvipc: sysv queue: received 1 2 3 5 4
+C:sysvipc: sysv queue: empty now is ENOMSG
+C:sysvipc: posix queue: received priorities 3 2 1 0
+C:sysvipc: posix queue: maxmsg 8 msgsize 64 curmsgs 0
+C:sysvipc: posix queue: unlink ok
+C:sysvipc: rc=0
+C:sysvipc-glibc: ring: 2000 items through 16 slots, sum 2668667000, as sent
+C:sysvipc-glibc: ring: attached 1 after the producer left
+C:sysvipc-glibc: ring: semaphores free=16 full=0 ring=1
+C:sysvipc-glibc: sysv queue: received 1 2 3 5 4
+C:sysvipc-glibc: sysv queue: empty now is ENOMSG
+C:sysvipc-glibc: posix queue: received priorities 3 2 1 0
+C:sysvipc-glibc: posix queue: maxmsg 8 msgsize 64 curmsgs 0
+C:sysvipc-glibc: posix queue: unlink ok
+C:sysvipc-glibc: rc=0
 C:bb-trap: caught USR1
 C:bb-trap: after it
 C:bb-trap: trap -- 'echo caught USR1' USR1

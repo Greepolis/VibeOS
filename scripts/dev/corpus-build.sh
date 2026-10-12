@@ -112,13 +112,28 @@ else
     echo "corpus-build: threadpool-glibc FAILED (see $OUT/threadpool.log)"; rc=1
 fi
 
+# ---- System V IPC and POSIX queues (docs/abi/ L7 step 6) ----
+# tests/corpus/sysvipc.c: a producer and a consumer over a shared segment and
+# three semaphores, then a round trip through each kind of message queue -
+# under both C libraries, as the thread pool is.
+if musl-gcc -O2 -static tests/corpus/sysvipc.c -o "$OUT/sysvipc" > "$OUT/sysvipc.log" 2>&1; then
+    echo "corpus-build: sysvipc ok"
+else
+    echo "corpus-build: sysvipc FAILED (see $OUT/sysvipc.log)"; rc=1
+fi
+if gcc -O2 tests/corpus/sysvipc.c -o "$OUT/sysvipc-glibc" >> "$OUT/sysvipc.log" 2>&1; then
+    echo "corpus-build: sysvipc-glibc ok"
+else
+    echo "corpus-build: sysvipc-glibc FAILED (see $OUT/sysvipc.log)"; rc=1
+fi
+
 # ---- glibc itself: the loader and the libraries the programs name ----
 # Copied from this host, at the paths the programs ask for them by, into a tree
 # the boot gate lays over the boot volume: <build>/corpus/glibc/lib64/... and
 # .../lib/x86_64-linux-gnu/.... Whatever `ldd` lists, so a host whose glibc
 # splits its libraries differently still stages what its binaries need.
 rm -rf "$OUT/glibc"
-for p in sqlite3-glibc lua-glibc threadpool-glibc; do
+for p in sqlite3-glibc lua-glibc threadpool-glibc sysvipc-glibc; do
     [ -x "$OUT/$p" ] || continue
     for lib in $(ldd "$OUT/$p" | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^\//) print $i }'); do
         mkdir -p "$OUT/glibc$(dirname "$lib")"
