@@ -486,6 +486,7 @@ typedef struct {
 #define LINUX_F_SETLK          6
 #define LINUX_F_SETLKW         7
 #define LINUX_F_DUPFD_CLOEXEC  1030
+#define LINUX_F_GETPIPE_SZ     1032
 #define LINUX_F_OFD_GETLK      36
 #define LINUX_F_OFD_SETLK      37
 #define LINUX_F_OFD_SETLKW     38

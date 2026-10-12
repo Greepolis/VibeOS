@@ -34,6 +34,7 @@
 #include "vibeos/mbz.h"
 #include "vibeos/random.h"
 #include "vibeos/ptimer.h"
+#include "vibeos/pipe.h"
 
 int test_linux_handlers(void);
 int test_linux_gaps(void);
@@ -4115,6 +4116,18 @@ static void t_splice(void) {
     expect(SYS4(278, (uint64_t)p[0], iov, 1, 0) == 6 && memcmp(kf_uptr(buf), "abcdef", 6) == 0,
            "vmsplice from the read end: into memory");
     expect(SYS4(278, (uint64_t)file, iov, 1, 0) == -VIBEOS_EBADF, "vmsplice on a file: EBADF");
+
+    /* More than the pipe holds: what fits, and a short count, as Linux - not a
+     * wait for the rest (LTP's vmsplice01). The capacity is what F_GETPIPE_SZ
+     * says. */
+    expect(SYS3(72, (uint64_t)p[1], LINUX_F_GETPIPE_SZ, 0) == (long)VIBEOS_PIPE_BYTES &&
+           SYS3(72, (uint64_t)file, LINUX_F_GETPIPE_SZ, 0) == -VIBEOS_EBADF,
+           "F_GETPIPE_SZ: a pipe's capacity; EBADF for anything else");
+    ((uint64_t *)kf_uptr(iov))[0] = kf_ualloc(VIBEOS_PIPE_BYTES + 1000u);
+    ((uint64_t *)kf_uptr(iov))[1] = VIBEOS_PIPE_BYTES + 1000u;
+    expect(SYS4(278, (uint64_t)p[1], iov, 1, 0) == (long)VIBEOS_PIPE_BYTES &&
+           SYS4(278, (uint64_t)p[1], iov, 1, LINUX_SPLICE_F_NONBLOCK) == -VIBEOS_EAGAIN,
+           "vmsplice of more than fits: what fits; then, full, SPLICE_F_NONBLOCK is EAGAIN");
 }
 
 static void t_sched_l6(void) {

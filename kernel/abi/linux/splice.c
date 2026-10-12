@@ -241,9 +241,57 @@ static long linux_sys_tee(uint64_t fd_in, uint64_t fd_out, uint64_t len, uint64_
     return r;
 }
 
+/* Memory into a pipe as Linux's vmsplice puts it: once there is room, as much
+ * as fits, and no more - a short count rather than a wait for the rest, which
+ * writev's would be. A program that offers 128 KiB to a pipe it will empty
+ * itself (LTP's vmsplice01) is told what went in and drains it; waiting for
+ * all of it would wait for ever. */
+static long vmsplice_in(vibeos_file_t *f, uint64_t iov_uptr, uint64_t nr, int nonblock) {
+    uint64_t i, total = 0;
+    long r;
+
+    if (nr > 1024u) {
+        return -VIBEOS_EINVAL;   /* UIO_MAXIOV, as writev */
+    }
+    if ((r = splice_wait(0, f, nonblock || (f->flags & VIBEOS_O_NONBLOCK) != 0u)) != 0) {
+        return r;
+    }
+    for (i = 0; i < nr; i++) {
+        linux_iovec_t v;
+        uint64_t room = VIBEOS_PIPE_BYTES - vibeos_pipe_pending(f->pipe);
+        long n;
+
+        if (vibeos_uaccess_copy(&v, (const void *)(uintptr_t)(iov_uptr + i * sizeof(v)), sizeof(v)) != 0) {
+            return total > 0u ? (long)total : -VIBEOS_EFAULT;
+        }
+        if (v.iov_len == 0u) {
+            continue;
+        }
+        if (room == 0u) {
+            break;
+        }
+        if (v.iov_len > room) {
+            v.iov_len = room;
+        }
+        if (!linux_user_ok(v.iov_base, v.iov_len, 0)) {
+            return total > 0u ? (long)total : -VIBEOS_EFAULT;
+        }
+        n = f->ops->write(f, v.iov_base, v.iov_len);
+        if (n <= 0) {
+            return total > 0u ? (long)total : n;
+        }
+        total += (uint64_t)n;
+        if ((uint64_t)n < v.iov_len) {
+            break;
+        }
+    }
+    return (long)total;
+}
+
 /* vmsplice: a program's memory into a pipe, or a pipe into it. This kernel's
- * pipe holds bytes, not pages, so it is writev or readv on the pipe - with
- * SPLICE_F_NONBLOCK answering for the pipe end's O_NONBLOCK. SPLICE_F_GIFT
+ * pipe holds bytes, not pages, so out of the pipe it is readv, and into it
+ * vmsplice_in - what fits, once there is room - with SPLICE_F_NONBLOCK
+ * answering for the pipe end's O_NONBLOCK in both. SPLICE_F_GIFT
  * gives Linux pages to keep; here the bytes are copied and the pages stay the
  * program's, which is what a gift that was not taken looks like. */
 static long linux_sys_vmsplice(uint64_t fd, uint64_t iov_uptr, uint64_t nr, uint64_t flags) {
@@ -269,11 +317,13 @@ static long linux_sys_vmsplice(uint64_t fd, uint64_t iov_uptr, uint64_t nr, uint
         w.nonblock = 1;
         r = splice_look(&w) == 1 ? 0 : -VIBEOS_EAGAIN;
     }
-    vibeos_file_put(f);
-    if (r != 0 || nr == 0u) {
-        return r;
+    if (r != 0 || nr == 0u || !write) {
+        vibeos_file_put(f);
+        return (r != 0 || nr == 0u) ? r : linux_vec_io(fd, iov_uptr, nr, 0);
     }
-    return linux_vec_io(fd, iov_uptr, nr, write);
+    r = vmsplice_in(f, iov_uptr, nr, (flags & LINUX_SPLICE_F_NONBLOCK) != 0u);
+    vibeos_file_put(f);
+    return r;
 }
 
 /* ---- the syscalls this file implements --------------------------------------- */

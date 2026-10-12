@@ -1675,6 +1675,16 @@ static long linux_sys_fcntl(uint64_t fd, uint64_t cmd, uint64_t arg) {
             f->flags = (f->flags & ~LINUX_SETFL_MASK) | ((uint32_t)arg & LINUX_SETFL_MASK);
             vibeos_file_put(f);
             return 0;
+        case LINUX_F_GETPIPE_SZ:
+            /* How much a pipe holds - which here is fixed, and says so; a
+             * program that sizes its writes by it (LTP's splice02,
+             * vmsplice04) then writes what fits (docs/abi/ L7). */
+            if (!(f = linux_file_get(fd))) {
+                return -VIBEOS_EBADF;
+            }
+            r = f->ops == &vibeos_fops_pipe ? (long)VIBEOS_PIPE_BYTES : -VIBEOS_EBADF;
+            vibeos_file_put(f);
+            return r;
         case LINUX_F_GETLK:
         case LINUX_F_SETLK:
         case LINUX_F_SETLKW:
