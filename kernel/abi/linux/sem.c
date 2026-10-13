@@ -205,10 +205,15 @@ static void sem_uncount(sem_op_t *m) {
  * was changed; 1 if operation *at would have to wait; a negated errno. */
 static long sem_try(int s, sem_op_t *m, uint32_t *at) {
     linux_semset_t *set = &g_sem[s];
+    /* The set's size read once: the copy is filled to it here and written back
+     * to it at the end, with calls between that write the undo table - and the
+     * analyzer, rightly, will not assume a global they could reach is the same
+     * on both sides (clang's core.uninitialized.Assign on the write-back). */
+    const uint32_t nsems = set->nsems < LINUX_SEMMSL ? set->nsems : LINUX_SEMMSL;
     uint16_t val[LINUX_SEMMSL];
     uint32_t i;
 
-    for (i = 0; i < set->nsems; i++) {
+    for (i = 0; i < nsems; i++) {
         val[i] = set->sem[i].val;
     }
     for (i = 0; i < m->n; i++) {
@@ -256,7 +261,7 @@ static long sem_try(int s, sem_op_t *m, uint32_t *at) {
         }
         set->sem[op->sem_num].pid = m->tgid;   /* Linux's sempid: a wait for zero sets it too */
     }
-    for (i = 0; i < set->nsems; i++) {
+    for (i = 0; i < nsems; i++) {
         set->sem[i].val = val[i];
     }
     set->otime = linux_ipc_now();
