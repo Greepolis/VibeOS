@@ -103,6 +103,9 @@ uint32_t ks_task_affinity(int slot) { return vibeos_sched_policy_affinity((uint3
 int ks_task_set_affinity(int slot, uint32_t mask) {
     return vibeos_sched_policy_set_affinity((uint32_t)slot, mask);
 }
+int ks_cpu_running(uint32_t cpu) {
+    return cpu < VIBEOS_HW_MAX_CPUS && g_cpus[cpu].online ? g_cpus[cpu].current_task : -1;
+}
 uint32_t ks_cpus_online_mask(void) {
     uint32_t i, m = 0;
 

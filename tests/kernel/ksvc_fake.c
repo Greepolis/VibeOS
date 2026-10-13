@@ -945,6 +945,7 @@ uint32_t ks_class_quantum(vibeos_sched_class_t cls) { return vibeos_sched_policy
 uint32_t ks_task_affinity(int slot) { return g_kf_aff[slot]; }
 int ks_task_set_affinity(int slot, uint32_t mask) { g_kf_aff[slot] = mask; return 0; }
 uint32_t ks_cpus_online_mask(void) { return 0xFu; }
+int ks_cpu_running(uint32_t cpu) { return cpu == 0u ? g_cur : -1; }
 void ks_membarrier(int global) { g_kf_membarriers[global ? 1 : 0]++; }
 uint32_t kf_membarriers(int global) { return g_kf_membarriers[global ? 1 : 0]; }
 static void kf_sched_reset(void) {

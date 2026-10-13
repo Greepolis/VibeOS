@@ -358,6 +358,41 @@ static long linux_sys_sched_setaffinity(uint64_t pid, uint64_t len, uint64_t uma
         for (ticks = 0; ticks < 100u && !(mask & (1ull << ks_cpu_id())); ticks++) {
             ks_idle();
         }
+        if (!(mask & (1ull << ks_cpu_id()))) {
+            /* A second and still not there. THREADS.ELF's C6_SCHED saw a child
+             * pinned to core 1 miss it for three seconds, once in about
+             * eighteen boots, with nothing else in the log (docs/abi/ L7). Say
+             * what each allowed core was running - its slot, pid and class -
+             * in one line each: whatever kept this task off is on one of them.
+             *
+             * What it has said so far (2026-10-12/13, about thirty boots): the
+             * allowed core running another user task, NORMAL or IDLE class,
+             * on most boots - so the task was released here at the end of its
+             * slice and waited in that core's queue behind a busy boot's other
+             * work. A latency, then, and open, not a refusal (the review
+             * tracker's "Found internally"). INFO, not WARN: it is evidence on
+             * every boot, and a boot must not fail for a wait the call already
+             * bounds. */
+            uint64_t a0[4], a1[4];
+            uint32_t cpu, n = 0, i;
+
+            /* Read under the scheduler's lock, said after it: the log takes the
+             * console's, and that one is not to be taken inside this one. */
+            ks_lock(ks_sched_lock(), __func__);
+            for (cpu = 0; cpu < 32u && n < 4u; cpu++) {
+                if (mask & (1ull << cpu)) {
+                    int s = ks_cpu_running(cpu);
+
+                    a0[n] = ((uint64_t)cpu << 32) | (uint32_t)s;
+                    a1[n++] = s >= 0 ? (((uint64_t)ks_task_class(s) << 32) | ks_id(s)->pid) : ~0ull;
+                }
+            }
+            ks_unlock(ks_sched_lock());
+            for (i = 0; i < n; i++) {
+                ks_log(VIBEOS_LOG_INFO, 63u, a0[i], a1[i],
+                       "sched_setaffinity: still off the allowed core; a0=cpu<<32|slot it runs, a1=class<<32|pid");
+            }
+        }
     }
     return err;
 }

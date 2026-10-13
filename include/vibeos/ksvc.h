@@ -89,6 +89,9 @@ uint32_t ks_class_quantum(vibeos_sched_class_t cls);   /* in ticks */
 uint32_t ks_task_affinity(int slot);
 int ks_task_set_affinity(int slot, uint32_t mask);
 uint32_t ks_cpus_online_mask(void);
+/* The slot core `cpu` is running now - its idle task when it has nothing - or -1:
+ * for a diagnostic that has to say what kept a task off a core. */
+int ks_cpu_running(uint32_t cpu);
 /* A memory barrier on other cores (membarrier): every core running the
  * caller's address space, or with `global` every core running any user
  * space, has taken an interrupt - which serialises it - when this returns. */
