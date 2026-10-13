@@ -7,3 +7,7 @@
 sqlite | https://www.sqlite.org/2026/sqlite-amalgamation-3530400.zip | 1e71ddf93849c6a6ecf58b827c0692073d2dd7ee40196158068f7b29f422e87d
 lua | https://www.lua.org/ftp/lua-5.4.9.tar.gz | 2335b6c582a52654f94612bf10d2f4672805d05329aa6568b1d8cd9e5c6fb8e6
 ltp | https://github.com/linux-test-project/ltp/releases/download/20260529/ltp-full-20260529.tar.xz | 685d83c6e370ac09201fb79593412f868fe031ee2890e204b5727fedcf51fb47
+# Wine's conformance tests, the NT personality's oracle (docs/abi/windows.md). 9.0 is
+# what Ubuntu 24.04 packages as wine64, the reference that answers them. Pinned on
+# first use, 2026-10-13: WineHQ signs with PGP and publishes no digest.
+wine | https://dl.winehq.org/wine/source/9.0/wine-9.0.tar.xz | 7cfd090a5395f5b76d95bb5defac8a312c8de4c070c1163b8b58da38330ca6ee
