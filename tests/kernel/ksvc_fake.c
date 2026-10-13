@@ -503,6 +503,8 @@ static void kf_procstate_init(vibeos_procstate_t *ps) {
 }
 
 static void kf_pipe_lock(void) {}
+static void *kf_pipe_page(void) { return malloc(4096); }
+static void kf_pipe_page_free(void *page) { free(page); }
 static void kf_pipe_unlock(void) {}
 
 static void *kf_fd_page(void) { return malloc(4096); }
@@ -599,6 +601,7 @@ void kf_reset(void) {
     g_fg_pgid = 0;
     kf_share_page(-1, 0, 0);
     vibeos_pipe_set_lock(kf_pipe_lock, kf_pipe_unlock);
+    vibeos_pipe_set_pages(kf_pipe_page, kf_pipe_page_free);
     vibeos_fs_unmount(&g_root);
     (void)vibeos_fs_mount(&g_root, &g_kf_fs_ops, 0, "kf");
     /* Paths go through the mount table since docs/abi/ A4, as in the kernel. */

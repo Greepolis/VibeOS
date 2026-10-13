@@ -104,7 +104,7 @@ static uint32_t pipe_ready(vibeos_file_t *f) {
     uint32_t pending = vibeos_pipe_pending(f->pipe);
 
     if (f->pipe_write) {
-        uint32_t r = pending < VIBEOS_PIPE_BYTES ? VIBEOS_READY_OUT : 0u;
+        uint32_t r = pending < vibeos_pipe_capacity(f->pipe) ? VIBEOS_READY_OUT : 0u;
         /* No reader: a write fails at once with EPIPE, which is an error to
          * poll (POLLERR, as Linux's pipe_poll says), not a hangup. */
         return vibeos_pipe_readers(f->pipe) == 0u ? (r | VIBEOS_READY_OUT | VIBEOS_READY_ERR) : r;
@@ -142,7 +142,7 @@ int vibeos_open_pipe(uint32_t flags, vibeos_file_t **rd, vibeos_file_t **wr) {
 
     *rd = *wr = 0;
     if (slot < 0) {
-        return -VIBEOS_EMFILE;
+        return slot == -2 ? -VIBEOS_ENOMEM : -VIBEOS_EMFILE;   /* its pages, or a slot */
     }
     r = vibeos_file_alloc(&vibeos_fops_pipe, VIBEOS_O_RDONLY | (flags & VIBEOS_O_NONBLOCK));
     w = r ? vibeos_file_alloc(&vibeos_fops_pipe, VIBEOS_O_WRONLY | (flags & VIBEOS_O_NONBLOCK)) : 0;

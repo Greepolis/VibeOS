@@ -1,6 +1,7 @@
 /* Host tests for the pipe module (C5). Each check names the defect it stands for. */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "vibeos/mbz.h"
@@ -45,6 +46,9 @@ static int expect(int cond, const char *what) {
     return cond;
 }
 
+static void *t_page(void) { return malloc(4096); }
+static void t_page_free(void *page) { free(page); }
+
 int test_pipe(void) {
     vibeos_pipe_status_t st;
     static uint8_t out[VIBEOS_PIPE_BYTES + 64];
@@ -57,6 +61,7 @@ int test_pipe(void) {
     g_locks = g_unlocks = g_held = g_bad_nesting = 0;
     g_fail_after = -1;
     vibeos_pipe_set_lock(t_lock, t_unlock);
+    vibeos_pipe_set_pages(t_page, t_page_free);
     vibeos_pipe_reset();
     base_under = vibeos_mbz_count(VIBEOS_MBZ_PIPE_END_UNDERFLOW);
     base_bad = vibeos_mbz_count(VIBEOS_MBZ_PIPE_BAD_SLOT);
@@ -104,13 +109,38 @@ int test_pipe(void) {
 
     /* ---- peek: copied, and left where it was (docs/abi/ L7) ---------------------- */
     (void)vibeos_pipe_write(a, out, 12, t_copy, &st);
-    n = vibeos_pipe_peek(a, in, 5, t_copy, &st);
+    n = vibeos_pipe_peek(a, 0, in, 5, t_copy, &st);
     if (!expect(n == 5 && memcmp(in, out, 5) == 0 && vibeos_pipe_pending(a) == 12u,
                 "a peek copies the front and takes nothing")) { return -1; }
+    n = vibeos_pipe_peek(a, 7, in, 100, t_copy, &st);
+    if (!expect(n == 5 && memcmp(in, out + 7, 5) == 0, "a peek from seven bytes in gets the rest")) { return -1; }
     n = vibeos_pipe_read(a, in, 100, t_copy, &st);
     if (!expect(n == 12 && memcmp(in, out, 12) == 0, "a read after it gets the same bytes")) { return -1; }
-    n = vibeos_pipe_peek(a, in, 5, t_copy, &st);
+    n = vibeos_pipe_peek(a, 0, in, 5, t_copy, &st);
     if (!expect(n == 0 && st == VIBEOS_PIPE_EMPTY, "a peek at an empty pipe with a writer is EMPTY")) { return -1; }
+
+    /* ---- a size of its own (F_SETPIPE_SZ, docs/abi/ L7) -------------------------- */
+    vibeos_pipe_release_end(a, 0);
+    vibeos_pipe_release_end(a, 1);
+    a = vibeos_pipe_create();   /* a fresh ring: its head is at 0, so the wrap below is certain */
+    if (!expect(vibeos_pipe_capacity(a) == VIBEOS_PIPE_BYTES, "a new pipe holds VIBEOS_PIPE_BYTES")) { return -1; }
+    /* Bytes that wrap the ring's end - ten before it, thirty after - so the move
+     * to the new ring has to take two runs and put them back in order. */
+    (void)vibeos_pipe_write(a, out, VIBEOS_PIPE_BYTES - 10, t_copy, &st);
+    (void)vibeos_pipe_read(a, in, VIBEOS_PIPE_BYTES - 20, t_copy, &st);
+    (void)vibeos_pipe_write(a, out + 100, 30, t_copy, &st);
+    if (!expect(vibeos_pipe_resize(a, 5000) == 8192 && vibeos_pipe_capacity(a) == 8192u,
+                "a size is rounded up to a power of two pages")) { return -1; }
+    n = vibeos_pipe_read(a, in, 100, t_copy, &st);
+    if (!expect(n == 40 && memcmp(in, out + VIBEOS_PIPE_BYTES - 20, 10) == 0 && memcmp(in + 10, out + 100, 30) == 0,
+                "what it held comes out in order after the resize")) { return -1; }
+    (void)vibeos_pipe_write(a, out, 8192, t_copy, &st);
+    if (!expect(vibeos_pipe_resize(a, 4096) == -1 && vibeos_pipe_capacity(a) == 8192u,
+                "a size smaller than what it holds is refused (EBUSY), and nothing changes")) { return -1; }
+    if (!expect(vibeos_pipe_resize(a, VIBEOS_PIPE_MAX_BYTES + 1u) == -3, "past the largest: refused")) { return -1; }
+    n = vibeos_pipe_read(a, in, 8192, t_copy, &st);
+    if (!expect(n == 8192 && memcmp(in, out, 8192) == 0 && vibeos_pipe_resize(a, VIBEOS_PIPE_BYTES) == (long)VIBEOS_PIPE_BYTES,
+                "and back to its first size")) { return -1; }
 
     /* ---- a fault in the copy ---------------------------------------------------- */
     g_fail_after = 0;

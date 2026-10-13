@@ -43,7 +43,7 @@ static long splice_look(void *ctx) {
         ready_in = vibeos_pipe_pending(w->in->pipe) > 0u || vibeos_pipe_writers(w->in->pipe) == 0u;
     }
     if (w->out) {
-        ready_out = vibeos_pipe_pending(w->out->pipe) < VIBEOS_PIPE_BYTES ||
+        ready_out = vibeos_pipe_pending(w->out->pipe) < vibeos_pipe_capacity(w->out->pipe) ||
                     vibeos_pipe_readers(w->out->pipe) == 0u;
     }
     if (ready_in && ready_out) {
@@ -63,12 +63,17 @@ static long splice_wait(vibeos_file_t *in, vibeos_file_t *out, int nonblock) {
     return r == 1 ? 0 : r;
 }
 
-/* From a pipe to anything that writes: look, write, take what was written. */
+/* From a pipe to anything that writes: look, write, take what was written - a
+ * page at a time, for as long as the pipe has bytes, the call has length left
+ * and the far side takes all it is given. Linux moves everything the pipe holds
+ * up to `len` in one call, and a program that splices exactly what it put in
+ * (LTP's vmsplice01, 64 KiB at a time) counts on it. Only the first look waits. */
 static long splice_from_pipe(vibeos_file_t *in, vibeos_file_t *out, uint64_t *off, uint64_t len,
                              int nonblock) {
     uint8_t *page;
     vibeos_pipe_status_t st;
-    long n, put, r;
+    uint64_t done = 0;
+    long r;
 
     if ((r = splice_wait(in, is_pipe(out) ? out : 0, nonblock)) != 0) {
         return r;
@@ -76,35 +81,64 @@ static long splice_from_pipe(vibeos_file_t *in, vibeos_file_t *out, uint64_t *of
     if (!(page = (uint8_t *)ks_page_alloc())) {
         return -VIBEOS_ENOMEM;
     }
-    n = vibeos_pipe_peek(in->pipe, page, len > 4096u ? 4096u : len, splice_kcopy, &st);
-    if (n == 0) {
-        ks_page_free(page, "splice bounce");
-        return 0;   /* end of file: every writer has gone */
-    }
-    if (off) {
-        put = out->ops->pwrite ? out->ops->pwrite(out, (uint64_t)(uintptr_t)page, (uint64_t)n, *off)
-                               : -VIBEOS_EINVAL;
-    } else {
-        put = out->ops->write ? out->ops->write(out, (uint64_t)(uintptr_t)page, (uint64_t)n) : -VIBEOS_EINVAL;
-    }
-    if (put > 0) {
+    while (done < len) {
+        uint64_t want = len - done > 4096u ? 4096u : len - done;
+        long n, put;
+
+        if (is_pipe(out)) {
+            /* Into a pipe, no more than it has room for: its write must not
+             * wait with bytes this call has already looked at. */
+            uint64_t room = vibeos_pipe_capacity(out->pipe) - vibeos_pipe_pending(out->pipe);
+
+            if (room == 0u) {
+                break;
+            }
+            if (want > room) {
+                want = room;
+            }
+        }
+        n = vibeos_pipe_peek(in->pipe, 0, page, want, splice_kcopy, &st);
+        if (n == 0) {
+            break;   /* empty, or end of file: every writer has gone */
+        }
+        if (off) {
+            put = out->ops->pwrite ? out->ops->pwrite(out, (uint64_t)(uintptr_t)page, (uint64_t)n, *off)
+                                   : -VIBEOS_EINVAL;
+        } else {
+            put = out->ops->write ? out->ops->write(out, (uint64_t)(uintptr_t)page, (uint64_t)n)
+                                  : -VIBEOS_EINVAL;
+        }
+        if (put <= 0) {
+            if (done == 0u) {
+                done = 0;
+                r = put;
+            }
+            break;
+        }
         (void)vibeos_pipe_read(in->pipe, page, (uint64_t)put, splice_kcopy, &st);
         ks_wake_waiters();   /* a writer to the input may have room now */
         if (off) {
             *off += (uint64_t)put;
         }
+        done += (uint64_t)put;
+        if (put < n) {
+            break;   /* the far side took less: stop where it stopped */
+        }
     }
     ks_page_free(page, "splice bounce");
-    return put;
+    return done > 0u ? (long)done : r;
 }
 
-/* Into a pipe from anything that reads: no more than there is room for, so the
- * pipe's write never has to wait for what was already read. */
+/* Into a pipe from anything that reads, a page at a time and never more than
+ * the pipe has room for, so its write never waits for what was already read.
+ * From a file it goes on while the file has bytes; from anything else - a
+ * socket - once, because a second read would wait for data the first call
+ * was not asked to wait for. */
 static long splice_to_pipe(vibeos_file_t *in, uint64_t *off, vibeos_file_t *out, uint64_t len,
                            int nonblock) {
     uint8_t *page;
-    uint64_t room;
-    long got, r;
+    uint64_t done = 0;
+    long r;
 
     if ((r = splice_wait(0, out, nonblock)) != 0) {
         return r;
@@ -113,27 +147,51 @@ static long splice_to_pipe(vibeos_file_t *in, uint64_t *off, vibeos_file_t *out,
         (void)ks_signal_raise(ks_current(), VIBEOS_SIGPIPE);
         return -VIBEOS_EPIPE;
     }
-    room = VIBEOS_PIPE_BYTES - vibeos_pipe_pending(out->pipe);
-    if (len > room) {
-        len = room;
-    }
     if (!(page = (uint8_t *)ks_page_alloc())) {
         return -VIBEOS_ENOMEM;
     }
-    if (off) {
-        got = in->ops->pread ? in->ops->pread(in, (uint64_t)(uintptr_t)page, len, *off) : -VIBEOS_EINVAL;
-    } else {
-        got = in->ops->read ? in->ops->read(in, (uint64_t)(uintptr_t)page, len) : -VIBEOS_EINVAL;
-    }
-    if (got > 0) {
-        r = out->ops->write(out, (uint64_t)(uintptr_t)page, (uint64_t)got);
-        if (r > 0 && off) {
-            *off += (uint64_t)r;
+    while (done < len) {
+        uint64_t room = vibeos_pipe_capacity(out->pipe) - vibeos_pipe_pending(out->pipe);
+        uint64_t want = len - done;
+        long got, put;
+
+        if (want > room) {
+            want = room;
         }
-        got = r;
+        if (want > 4096u) {
+            want = 4096u;   /* the bounce is one page */
+        }
+        if (want == 0u) {
+            break;
+        }
+        if (off) {
+            got = in->ops->pread ? in->ops->pread(in, (uint64_t)(uintptr_t)page, want, *off) : -VIBEOS_EINVAL;
+        } else {
+            got = in->ops->read ? in->ops->read(in, (uint64_t)(uintptr_t)page, want) : -VIBEOS_EINVAL;
+        }
+        if (got <= 0) {
+            if (done == 0u) {
+                r = got;
+            }
+            break;
+        }
+        put = out->ops->write(out, (uint64_t)(uintptr_t)page, (uint64_t)got);
+        if (put <= 0) {
+            if (done == 0u) {
+                r = put;
+            }
+            break;
+        }
+        if (off) {
+            *off += (uint64_t)put;
+        }
+        done += (uint64_t)put;
+        if (put < got || (uint64_t)got < want || in->ops != &vibeos_fops_regular) {
+            break;
+        }
     }
     ks_page_free(page, "splice bounce");
-    return got;
+    return done > 0u ? (long)done : r;
 }
 
 static long linux_sys_splice(uint64_t fd_in, uint64_t off_in_uptr, uint64_t fd_out, uint64_t off_out_uptr,
@@ -227,9 +285,35 @@ static long linux_sys_tee(uint64_t fd_in, uint64_t fd_out, uint64_t len, uint64_
         r = -VIBEOS_ENOMEM;
     }
     if (page) {
-        room = VIBEOS_PIPE_BYTES - vibeos_pipe_pending(out->pipe);
-        n = vibeos_pipe_peek(in->pipe, page, len < room ? len : room, splice_kcopy, &st);
-        r = n > 0 ? out->ops->write(out, (uint64_t)(uintptr_t)page, (uint64_t)n) : 0;
+        /* A page at a time, each looked at further into the input, as much as
+         * the input holds, the output has room for and the call asked for. */
+        uint64_t done = 0;
+
+        room = vibeos_pipe_capacity(out->pipe) - vibeos_pipe_pending(out->pipe);
+        if (len > room) {
+            len = room;
+        }
+        while (done < len) {
+            long put;
+
+            n = vibeos_pipe_peek(in->pipe, done, page, len - done > 4096u ? 4096u : len - done, splice_kcopy, &st);
+            if (n <= 0) {
+                break;
+            }
+            put = out->ops->write(out, (uint64_t)(uintptr_t)page, (uint64_t)n);
+            if (put <= 0) {
+                if (done == 0u) {
+                    done = 0;
+                    r = put;
+                }
+                break;
+            }
+            done += (uint64_t)put;
+            if (put < n) {
+                break;
+            }
+        }
+        r = done > 0u ? (long)done : r;
         ks_page_free(page, "tee bounce");
     }
     if (in) {
@@ -258,7 +342,7 @@ static long vmsplice_in(vibeos_file_t *f, uint64_t iov_uptr, uint64_t nr, int no
     }
     for (i = 0; i < nr; i++) {
         linux_iovec_t v;
-        uint64_t room = VIBEOS_PIPE_BYTES - vibeos_pipe_pending(f->pipe);
+        uint64_t room = vibeos_pipe_capacity(f->pipe) - vibeos_pipe_pending(f->pipe);
         long n;
 
         if (vibeos_uaccess_copy(&v, (const void *)(uintptr_t)(iov_uptr + i * sizeof(v)), sizeof(v)) != 0) {

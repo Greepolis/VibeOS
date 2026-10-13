@@ -4174,6 +4174,33 @@ static void t_splice(void) {
     expect(SYS4(278, (uint64_t)p[1], iov, 1, 0) == (long)VIBEOS_PIPE_BYTES &&
            SYS4(278, (uint64_t)p[1], iov, 1, LINUX_SPLICE_F_NONBLOCK) == -VIBEOS_EAGAIN,
            "vmsplice of more than fits: what fits; then, full, SPLICE_F_NONBLOCK is EAGAIN");
+    expect(SYS3(72, (uint64_t)p[1], LINUX_F_SETPIPE_SZ, 4096) == -VIBEOS_EBUSY &&
+           SYS3(72, (uint64_t)p[1], LINUX_F_SETPIPE_SZ, 100000) == 131072 &&
+           SYS3(72, (uint64_t)p[0], LINUX_F_GETPIPE_SZ, 0) == 131072,
+           "F_SETPIPE_SZ: smaller than it holds is EBUSY; a size rounds up to a power of two pages, for both ends");
+    ks_ps(ks_current())->cred.euid = 1000u;
+    expect(SYS3(72, (uint64_t)p[1], LINUX_F_SETPIPE_SZ, VIBEOS_PIPE_MAX_BYTES + 1u) == -VIBEOS_EPERM,
+           "past pipe-max-size, somebody else: EPERM");
+    ks_ps(ks_current())->cred.euid = 0u;
+
+    /* More than a page, in one call each: Linux moves what the pipe holds up to
+     * the length, and LTP's vmsplice01 splices exactly what it put in. The
+     * bounce is one page, so this is the loop's. */
+    {
+        uint64_t big = kf_ualloc(9000), fds3 = kf_ualloc(8), fds4 = kf_ualloc(8);
+        int32_t *p3 = (int32_t *)kf_uptr(fds3), *p4 = (int32_t *)kf_uptr(fds4);
+        long f2 = SYS3(2, ustr("/tmp/spl2"), 0x42, 0644);
+
+        memset(kf_uptr(big), 'z', 9000);
+        expect(SYS2(22, fds3, 0) == 0 && SYS2(22, fds4, 0) == 0 &&
+               SYS3(1, (uint64_t)p3[1], big, 9000) == 9000, "two more pipes, nine thousand bytes in one");
+        *(uint64_t *)kf_uptr(off) = 0;
+        expect(SYS4(276, (uint64_t)p3[0], (uint64_t)p4[1], 9000, 0) == 9000 &&
+               SYS6(275, (uint64_t)p3[0], 0, (uint64_t)f2, off, 9000, 0) == 9000 &&
+               *(uint64_t *)kf_uptr(off) == 9000u &&
+               SYS6(275, (uint64_t)p3[0], 0, (uint64_t)f2, 0, 10, LINUX_SPLICE_F_NONBLOCK) == -VIBEOS_EAGAIN,
+               "splice and tee of more than a page move all of it");
+    }
 }
 
 static void t_sched_l6(void) {

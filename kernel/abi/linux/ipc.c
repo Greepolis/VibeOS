@@ -908,6 +908,12 @@ static int ipc_sem_next_id_write(const char *buf, uint32_t len) {
     return ipc_set_next_id(linux_ipc_sem_ns(), buf, len);
 }
 
+/* /proc/sys/fs/pipe-max-size: the largest a pipe may become, Linux's default -
+ * read-only, because it is also the most this kernel keeps for one. */
+static void ipc_pipe_max_text(linux_ipc_put_t put, void *o) {
+    ipc_put_value(put, o, VIBEOS_PIPE_MAX_BYTES);
+}
+
 static const vibeos_procfs_extra_t g_ipc_files[] = {
     {"sysvipc/msg", linux_ipc_proc_msg, 0},
     {"sysvipc/sem", linux_ipc_proc_sem, 0},
@@ -927,6 +933,7 @@ static const vibeos_procfs_extra_t g_ipc_files[] = {
     {"sys/fs/mqueue/msgsize_default", linux_mq_msgsize_default_text, linux_mq_msgsize_default_write},
     {"sys/fs/mqueue/msgsize_max", linux_mq_msgsize_max_text, linux_mq_msgsize_max_write},
     {"sys/fs/mqueue/queues_max", linux_mq_queues_max_text, linux_mq_queues_max_write},
+    {"sys/fs/pipe-max-size", ipc_pipe_max_text, 0},
 };
 
 const vibeos_procfs_extra_t *linux_ipc_proc_files(uint32_t *count) {

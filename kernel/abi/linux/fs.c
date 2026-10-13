@@ -1702,13 +1702,31 @@ static long linux_sys_fcntl(uint64_t fd, uint64_t cmd, uint64_t arg) {
             vibeos_file_put(f);
             return 0;
         case LINUX_F_GETPIPE_SZ:
-            /* How much a pipe holds - which here is fixed, and says so; a
-             * program that sizes its writes by it (LTP's splice02,
-             * vmsplice04) then writes what fits (docs/abi/ L7). */
+        case LINUX_F_SETPIPE_SZ:
+            /* How much a pipe holds, and a new size for it (docs/abi/ L7):
+             * rounded up to a power of two pages, as Linux rounds it; past
+             * pipe-max-size only for the superuser, and past what this kernel
+             * keeps for nobody (ENOMEM); smaller than what it holds is EBUSY. */
             if (!(f = linux_file_get(fd))) {
                 return -VIBEOS_EBADF;
             }
-            r = f->ops == &vibeos_fops_pipe ? (long)VIBEOS_PIPE_BYTES : -VIBEOS_EBADF;
+            if (f->ops != &vibeos_fops_pipe) {
+                r = -VIBEOS_EBADF;
+            } else if (VIBEOS_ARG_INT(cmd) == LINUX_F_GETPIPE_SZ) {
+                r = (long)vibeos_pipe_capacity(f->pipe);
+            } else if ((int64_t)(int32_t)(uint32_t)arg <= 0 && (uint32_t)arg != 0u) {
+                r = -VIBEOS_EINVAL;
+            } else {
+                vibeos_cred_t c;
+
+                linux_cred(&c);
+                if ((uint32_t)arg > VIBEOS_PIPE_MAX_BYTES) {
+                    r = c.euid == 0u ? -VIBEOS_ENOMEM : -VIBEOS_EPERM;
+                } else {
+                    r = vibeos_pipe_resize(f->pipe, (uint32_t)arg);
+                    r = r == -1 ? -VIBEOS_EBUSY : r == -2 ? -VIBEOS_ENOMEM : r < 0 ? -VIBEOS_EINVAL : r;
+                }
+            }
             vibeos_file_put(f);
             return r;
         case LINUX_F_GETLK:

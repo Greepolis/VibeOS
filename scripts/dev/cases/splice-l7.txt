@@ -10,25 +10,46 @@
 #  4. an offset on a pipe is ignored. Expect "an offset on a pipe".
 #  5. vmsplice waits to put in all of it. Expect "vmsplice of more than fits"
 #     (the fake reports the wait as a block).
+#  6. splice stops after one page. Expect "splice and tee of more than a page
+#     move all of it".
 #
 # Target source: kernel/abi/linux/splice.c
 # Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/splice.c scripts/dev/cases/splice-l7.txt
 
 ### tee takes the bytes it copies
 --- old
-        n = vibeos_pipe_peek(in->pipe, page, len < room ? len : room, splice_kcopy, &st);
+            n = vibeos_pipe_peek(in->pipe, done, page, len - done > 4096u ? 4096u : len - done, splice_kcopy, &st);
 +++ new
-        n = vibeos_pipe_read(in->pipe, page, len < room ? len : room, splice_kcopy, &st);
+            n = vibeos_pipe_read(in->pipe, page, len - done > 4096u ? 4096u : len - done, splice_kcopy, &st);
 
 ### a file's offset is not moved
 --- old
-        if (r > 0 && off) {
-            *off += (uint64_t)r;
+        put = out->ops->write(out, (uint64_t)(uintptr_t)page, (uint64_t)got);
+        if (put <= 0) {
+            if (done == 0u) {
+                r = put;
+            }
+            break;
+        }
+        if (off) {
+            *off += (uint64_t)put;
         }
 +++ new
-        if (r > 0 && off) {
-            (void)0;
+        put = out->ops->write(out, (uint64_t)(uintptr_t)page, (uint64_t)got);
+        if (put <= 0) {
+            if (done == 0u) {
+                r = put;
+            }
+            break;
         }
+
+### splice stops after one page
+--- old
+        if (put < n) {
+            break;   /* the far side took less: stop where it stopped */
+        }
++++ new
+        break;
 
 ### SPLICE_F_NONBLOCK waits
 --- old

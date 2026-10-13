@@ -25,28 +25,12 @@
 ### a pipe is freed as soon as either end is gone
 --- old
         if (p->readers == 0u && p->writers == 0u) {
-            p->used = 0;
-            p->count = 0;
-            p->head = 0;
-            p->tail = 0;
+            pipe_retire(p);
         }
-    }
-    unlock();
-}
-
-long vibeos_pipe_read(
 +++ new
         if (p->readers == 0u || p->writers == 0u) {
-            p->used = 0;
-            p->count = 0;
-            p->head = 0;
-            p->tail = 0;
+            pipe_retire(p);
         }
-    }
-    unlock();
-}
-
-long vibeos_pipe_read(
 
 ### releasing an end that is not held is clamped instead of counted
 --- old

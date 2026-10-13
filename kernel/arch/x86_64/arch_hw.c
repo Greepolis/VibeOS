@@ -1226,6 +1226,15 @@ static void hw_pipe_unlock(void) {
     hw_spin_unlock(&g_pipe_lock);
 }
 
+/* A pipe's ring is pages (docs/abi/ L7: 64 KiB, as Linux's). */
+static void *hw_pipe_page(void) {
+    return hw_alloc_page();
+}
+
+static void hw_pipe_page_free(void *page) {
+    hw_free_page_why(page, "pipe ring");
+}
+
 /* Open file descriptions (docs/abi/ A3) lock themselves with their own lock:
  * a release that runs a pipe end's give-back takes the pipes' lock, so sharing
  * one would deadlock on the first close of a pipe. */
@@ -1352,6 +1361,7 @@ static void hw_random_init(void) {
 
 void hw_pipe_init(void) {
     vibeos_pipe_set_lock(hw_pipe_lock, hw_pipe_unlock);
+    vibeos_pipe_set_pages(hw_pipe_page, hw_pipe_page_free);
     vibeos_pipe_reset();
     vibeos_file_set_lock(hw_file_lock, hw_file_unlock);
     vibeos_file_reset();
