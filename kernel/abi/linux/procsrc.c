@@ -151,7 +151,14 @@ static int src_proc(uint32_t pid, vibeos_procfs_proc_t *out) {
      * watched for that, by reading this file, was running for as long as it
      * looked - LTP's futex_wait03 waited out its timeout (L2 step 6's run). */
     stopped = th->signal_stopped != 0u;
-    running = vibeos_task_state((uint32_t)ts) != VIBEOS_TASK_ZOMBIE && !th->sleeping;
+    /* And a waiter with a signal it will take is not waiting any more: Linux
+     * wakes it when the signal is sent, so it is R until it sleeps again. Read
+     * off the sleeping flag alone, it was S from the send until it next ran -
+     * and LTP's shmctl01, which signals twenty children in pause() and waits
+     * for each to show S again before it counts their attachments, counted
+     * three (docs/abi/ L7). */
+    running = vibeos_task_state((uint32_t)ts) != VIBEOS_TASK_ZOMBIE &&
+              (!th->sleeping || (th->sig_pending & ~th->sig_blocked) != 0u);
     out->threads = threads;
     if (threads == 0u) {
         out->state = 'Z';

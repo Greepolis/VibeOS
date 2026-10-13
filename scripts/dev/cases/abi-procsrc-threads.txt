@@ -22,7 +22,15 @@
 
 ### a process's state is any running thread's
 --- old
-    running = vibeos_task_state((uint32_t)ts) != VIBEOS_TASK_ZOMBIE && !th->sleeping;
+    running = vibeos_task_state((uint32_t)ts) != VIBEOS_TASK_ZOMBIE &&
+              (!th->sleeping || (th->sig_pending & ~th->sig_blocked) != 0u);
 +++ new
-    running = vibeos_task_state((uint32_t)ts) != VIBEOS_TASK_ZOMBIE && !th->sleeping;
+    running = vibeos_task_state((uint32_t)ts) != VIBEOS_TASK_ZOMBIE &&
+              (!th->sleeping || (th->sig_pending & ~th->sig_blocked) != 0u);
     running |= me >= 0 && ks_id(me)->tgid == t->tgid && !ks_id(me)->sleeping;
+
+### a waiter woken by a signal still shows S
+--- old
+              (!th->sleeping || (th->sig_pending & ~th->sig_blocked) != 0u);
++++ new
+              !th->sleeping;

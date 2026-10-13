@@ -2209,6 +2209,17 @@ static void t_procdev(void) {
         kf_set_current(th);
         expect(read_whole("/proc/170/stat", text, sizeof(text)) > 0 && strncmp(text, "170 (prog) S ", 13) == 0,
                "a process whose leader waits is S, while another of its threads runs");
+        /* A waiter with a signal it will take has been woken, and Linux says R
+         * until it sleeps again: LTP's shmctl01 signals children in pause() and
+         * waits for each to show S before it counts (docs/abi/ L7). A blocked
+         * signal wakes nobody. */
+        ks_id(slot)->sig_pending |= 1ull << VIBEOS_SIGUSR1;
+        expect(read_whole("/proc/170/stat", text, sizeof(text)) > 0 && strncmp(text, "170 (prog) R ", 13) == 0,
+               "a waiter with a signal pending that it will take is R");
+        ks_id(slot)->sig_blocked |= 1ull << VIBEOS_SIGUSR1;
+        expect(read_whole("/proc/170/stat", text, sizeof(text)) > 0 && strncmp(text, "170 (prog) S ", 13) == 0,
+               "and with that signal blocked it is still S");
+        ks_id(slot)->sig_pending = ks_id(slot)->sig_blocked = 0;
         expect(read_whole("/proc/170/task/175/stat", text, sizeof(text)) > 0 && strncmp(text, "175 (", 5) == 0 &&
                strstr(text, ") R ") && read_whole("/proc/170/task/170/stat", text, sizeof(text)) > 0 &&
                strncmp(text, "170 (prog) S ", 13) == 0,
