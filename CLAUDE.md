@@ -407,6 +407,15 @@ with an id skips the TCP echo and nothing else; `repeat-boot.sh` is still the
 full gate. For sabotage cases aimed at the host tests,
 `verify-host-quick.sh` is three seconds where `verify-host.sh` is nine.
 
+**A sabotage that hangs the suite left the suite running.** `sabotage.py`
+scored such a case HUNG and moved on, and the timeout killed the verifier's
+shell but not the test binary under it. Two of them spun at full speed for an
+afternoon, and every boot measured meanwhile - a parent commit's baseline too -
+wedged or ran out of time and was read for an hour as a kernel defect. The
+verifier runs in a process group of its own now and the group is killed. Before
+blaming a boot count on the code, `ps` the WSL side: `uptime` there said a load
+of eight on an idle desktop.
+
 **A slow boot is the host's until shown otherwise.** A boot alone takes about
 ninety seconds. One took nearly four minutes and was written down as "the boot
 has become slower", with a limit raised to match - while a recursive grep over

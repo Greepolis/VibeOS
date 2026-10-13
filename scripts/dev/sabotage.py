@@ -28,8 +28,34 @@ so being killed by a timeout is not a hypothetical.
 
 import os
 import shlex
+import signal
 import subprocess
 import sys
+
+
+def run_bounded(argv, timeout):
+    """subprocess.run(argv, capture_output=True, text=True, timeout=timeout), but
+    a timeout ends everything the command started, not only the command.
+
+    subprocess.run kills the process it ran and nothing below it. The verifier
+    is a shell script that runs the test binary, so a sabotage that hung the
+    suite left the binary spinning after the case was scored HUNG - two of them
+    held two of eight cores for an afternoon on 2026-10-13, and every boot
+    measured meanwhile (a parent commit's baseline among them) wedged or ran out
+    of time, and was read for an hour as a defect in the kernel. The command
+    gets a session of its own and the whole group is killed."""
+    p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                         start_new_session=True)
+    try:
+        out, err = p.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        p.communicate()
+        raise
+    return subprocess.CompletedProcess(argv, p.returncode, out, err)
 
 
 def parse_cases(text):
@@ -88,8 +114,7 @@ def build_and_test(build_dir, verify=None):
             # Split as a shell would split it, and run without one: the
             # command is "bash scripts/dev/verify-host.sh <dir>" or the like,
             # and nothing in it needs a shell to interpret.
-            r = subprocess.run(shlex.split(verify), capture_output=True,
-                               text=True, timeout=300)
+            r = run_bounded(shlex.split(verify), 300)
             if r.returncode == 0:
                 return 'pass', r.stdout
             # A verifier that could not build has not scored the case. Without
@@ -100,8 +125,7 @@ def build_and_test(build_dir, verify=None):
             if 'BUILD_FAILED' in r.stdout or 'BUILD_FAILED' in r.stderr:
                 return 'nobuild', ''
             return 'red', r.stdout.strip()
-        r = subprocess.run(["./%s/vibeos_kernel_tests" % build_dir],
-                           capture_output=True, text=True, timeout=120)
+        r = run_bounded(["./%s/vibeos_kernel_tests" % build_dir], 120)
     except subprocess.TimeoutExpired:
         return 'hung', ''
     if r.returncode == 0:
