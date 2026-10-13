@@ -26,7 +26,7 @@ cells this table used to carry, moved there verbatim on 2026-09-29.
 | Diagnostics & Observability | In progress: runtime detectors, a must-be-zero registry and a persistent log disk, all gated; the checks are themselves checked (anchors, assertions covered, counters produced). | [diagnostics.md](implementation_progress/diagnostics.md) |
 | Init System | In progress: native init is PID 1 and supervises a service manifest - start, stop, bounded restart, and a crash the kernel survives. | [init_system.md](implementation_progress/init_system.md) |
 | Linux Compatibility | In progress: static, PIE and dynamically linked musl binaries run and are gated - BusyBox, a shell, threads, signals, sockets. | [linux_compatibility.md](implementation_progress/linux_compatibility.md) |
-| Windows Compatibility | Not started (a two-entry translation table, no runtime). | [windows_compatibility.md](implementation_progress/windows_compatibility.md) |
+| Windows Compatibility | W0 done (2026-10-13): the NT personality is planned in [abi/windows.md](abi/windows.md) - our own `ntdll.dll` over a second table of rows on `ksvc.h`, a portable object manager in the kernel, Wine 9.0's `ntdll` and `kernel32` conformance tests as the oracle. The 237 NT services are each given a step in [abi/nt-services.md](abi/nt-services.md); the 58 tests are built and Wine's answers recorded (52 clean, 6 not, each explained). Nothing runs on VibeOS yet; next is W1, the PE loader. | [windows_compatibility.md](implementation_progress/windows_compatibility.md) |
 | macOS Compatibility | Not started (same, and deliberately dormant). | [macos_compatibility.md](implementation_progress/macos_compatibility.md) |
 
 ## Notes

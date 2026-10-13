@@ -1,7 +1,20 @@
 # Windows Compatibility Progress
 
-Status: Not started (a two-entry translation table, no runtime)
-Last review: 2026-08-27
+Status: W0 done - planned, the oracle answered; nothing runs on VibeOS yet
+Last review: 2026-10-13
+
+## The plan (2026-10-13)
+
+[../abi/windows.md](../abi/windows.md). The decision this file used to say came
+first is made: an NT personality in the kernel, beside Linux's and over the same
+services interface, with our own `ntdll.dll` above it (written from scratch, built
+with mingw-w64), handles and objects in a portable object manager in the kernel,
+and Wine's own conformance tests as the oracle. Steps W0-W7: the oracle, the PE
+loader, objects and waits, memory, files, threads and exceptions, processes, then
+`kernel32` as the tests ask.
+
+The two-entry table below is not part of it and goes when W1's loader lands: its
+syscall numbers are a Windows build's, which the plan does not use.
 
 ## What exists
 
@@ -42,14 +55,13 @@ Wine is the reference for the size of this, and it is not a syscall table.
 
 ## Pending
 
-- Everything above. No part of it is in progress.
-- A decision that comes first: whether Windows compatibility is a subsystem
-  runtime in user space (the architecture's stated intent) or is deferred until
-  the native system is further along. The roadmap has M15 as a *console*
-  compatibility milestone, which is a far narrower promise than this file's
-  title, and that narrowing is deliberate.
+- W0 is done: the 58 tests of `ntdll` and `kernel32` built by Wine's own build
+  system (`scripts/dev/winetest-build.sh`), run under Wine 9.0 on the host
+  (`winetest-run-host.sh`), the answers in `tests/corpus/winetest-wine9.txt`;
+  every NT service listed with its step in
+  [../abi/nt-services.md](../abi/nt-services.md).
+- W1 onwards: as the plan lists them.
 
 ## Next checkpoint
 
-- None scheduled. M15 (Windows console compatibility) is the first commitment
-  that touches this area, and it is not started.
+- W1: a PE program of ours prints "hello" through our own `ntdll`.

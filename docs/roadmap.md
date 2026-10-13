@@ -27,6 +27,8 @@ administration), in this order:
 
 1. **The Windows system calls** - the second personality, over the same
    `include/vibeos/ksvc.h` every Linux handler reaches the kernel through.
+   Planned in [abi/windows.md](abi/windows.md): our own `ntdll`, an object
+   manager in the kernel, Wine's conformance tests as the oracle.
 2. **The filesystem's hierarchy** - what lives where, from the boot volume to
    `/tmp`, `/proc` and `/dev`, decided rather than accumulated.
 3. **The user interface** - designed, not grown from the boot console.
