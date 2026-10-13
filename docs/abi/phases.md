@@ -2605,19 +2605,31 @@ mq_open01 expects EINVAL for an empty name, which glibc says and the kernel
 need the 32-bit time_high fields x86-64 does not have; shmctl05 needs
 remap_file_pages (deferred); shmget02 reads the kernel's .config; splice06
 needs pipe-max-size, splice07 userfaultfd, splice08 and splice09 Linux 6.7.
-Two gaps are this kernel's and not this phase's: **a pipe holds 4 KiB**,
-where Linux's holds 64 (splice04, splice05 and vmsplice03 write more than
-that before they read), and **a sleep lasts at least a tick**, so
-semop04's two thousand microsecond sleeps take twenty seconds and its
-timeout ends it. shmctl01's twenty children are refused
-by fork with EAGAIN, which is not yet explained: the task table is 64.
+Two gaps were this kernel's and not this phase's, and both were closed the
+next day. **A pipe held 4 KiB** where Linux's holds 64: it is a ring of pages
+now, 64 KiB, resizable with F_SETPIPE_SZ up to /proc/sys/fs/pipe-max-size, with
+64 pipes where there were 8 - and splice and tee, which read through a one-page
+bounce, had been bounding each read by the pipe's free room alone, which with a
+64 KiB pipe would have written past the page; they move a page at a time now,
+and all the pipe holds up to the length asked, as Linux does (vmsplice01). And
+**shmctl01's fork** was refused by a per-task ceiling of eight children
+(`too-many-children`), raised to half the table; its count of attachments was
+then three of twenty, because /proc showed a child woken by a signal still as
+S - a waiter with a signal it will take is R now, as on Linux. LTP after
+both: 67 of 81. Left of the two: **a sleep lasts at least a tick**, so
+semop04's two thousand microsecond sleeps take twenty seconds and its timeout
+ends it; and splice05 (pipe to socket) still times out.
 
-**Open, and not L7's: C6_SCHED, once in about eighteen boots.** A child of
+**Open, and not L7's: C6_SCHED, about one boot in eighteen.** A child of
 THREADS.ELF pinned to core 1 was still not on it after three seconds of
-sched_yield (exit 11), with nothing else in the log - no fault, no wedge,
-the next stages green. Every boot since L6 step 2 had passed it. The stage
-now prints the core it was on, how long it waited and the mask the kernel
-reports, so the next failure says where to look.
+sched_yield (exit 11). sched_setaffinity now says, when a second has passed
+and the caller is still off its allowed cores, what each of those cores is
+running (an INFO line, code 63). Over some thirty boots it has said: another
+user task, NORMAL or IDLE class, on most of them - so the caller was released
+at the end of its slice and waited in a busy core's queue. A latency, and
+open; the review tracker carries it. A first "fix" that changed the wait from
+ks_idle to ks_wait_tick was based on a wrong premise - both halt the core and
+neither schedules, the tick does - and was taken back.
 
 ### L8. System administration (11, plus `uname` finished)
 
@@ -2664,6 +2676,14 @@ L1 needs A3 and A4. L3 is what unlocks glibc, so it comes before L6, whose
 target programs are glibc's. L4 needs A3's file types. L5's `SCM_RIGHTS` needs
 A3's descriptions. L9 needs L2's credentials. L7 and L8 are the least entangled
 and can move if a program asks earlier.
+
+**L8 waits (decided 2026-10-12, after L7).** System administration is the last
+of a sequence the project's owner set, because what it administers has to be
+defined first: the Windows system calls (the second personality over
+`vibeos/ksvc.h`), the filesystem's hierarchy, the user interface, the whole of
+security (of which L9 is the Linux-facing part), the applications that will
+manage the system, and the rest of networking - then L8. The order is recorded
+in [../roadmap.md](../roadmap.md).
 
 ## Where the refactor started from
 

@@ -20,6 +20,24 @@ boundary between any of them.
 | 4 | Syscalls and the Linux ABI | [docs/abi/](abi/README.md) | Planned 2026-09-29: every one of the 373 numbers assigned, and the refactor underneath first |
 | 5 | Network and pipes | sketched below | Least entangled with memory and lifetime; least urgent |
 
+## After the Linux ABI's L7 (decided 2026-10-12)
+
+L1 to L7 of [docs/abi/](abi/phases.md) are closed. Before L8 (system
+administration), in this order:
+
+1. **The Windows system calls** - the second personality, over the same
+   `include/vibeos/ksvc.h` every Linux handler reaches the kernel through.
+2. **The filesystem's hierarchy** - what lives where, from the boot volume to
+   `/tmp`, `/proc` and `/dev`, decided rather than accumulated.
+3. **The user interface** - designed, not grown from the boot console.
+4. **Security, all of it** - isolation, privilege, sandboxing; L9's
+   capabilities, seccomp and Landlock are its Linux-facing part.
+5. **The applications that manage the system.**
+6. **The rest of networking.**
+7. **System administration (L8)**, last, once what it administers is defined.
+
+Each gets its plan when it is next, for the reason the next section gives.
+
 ## Why 4 and 5 are sketched and not planned
 
 A plan written for work that starts in a month is a prediction, not a design.
