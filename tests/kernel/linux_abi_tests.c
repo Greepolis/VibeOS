@@ -3363,6 +3363,41 @@ static void t_unix(void) {
         h->msg_flags = 0;
         expect(SYS3(47, (uint64_t)p[1], mh, 0) == 1 && (h->msg_flags & 0x8 /* MSG_CTRUNC */),
                "a receiver with no control buffer: MSG_CTRUNC");
+        /* M-099: a control buffer that is not there. The rights were installed
+         * and the copy failed after, so they sat in the table under numbers
+         * nobody was told. EFAULT now, and the lowest free number is the one it
+         * was: nothing was left behind. */
+        {
+            long lowest = SYS1(32, 0);   /* dup: the lowest free number */
+
+            (void)SYS1(3, (uint64_t)lowest);
+            c->cmsg_len = sizeof(*c) + 4;
+            c->cmsg_level = 1;
+            c->cmsg_type = 1;
+            *(int32_t *)((uint8_t *)kf_uptr(ctl) + sizeof(*c)) = pp[1];
+            h->msg_control = ctl;
+            h->msg_controllen = 24;
+            expect(SYS3(46, (uint64_t)p[0], mh, 0) == 1, "rights once more");
+            h->msg_control = 8;   /* no user memory there */
+            h->msg_controllen = 24;
+            expect(SYS3(47, (uint64_t)p[1], mh, 0) == -VIBEOS_EFAULT && SYS1(32, 0) == lowest,
+                   "a control buffer that is not there: EFAULT, and no descriptor left in the table");
+            (void)SYS1(3, (uint64_t)lowest);
+            /* And one that was there when it was judged and is not when it is
+             * written - a sibling's munmap in between (kf_fault): the
+             * descriptors already installed are taken back. */
+            h->msg_control = ctl;
+            c->cmsg_len = sizeof(*c) + 4;
+            c->cmsg_level = 1;
+            c->cmsg_type = 1;
+            *(int32_t *)((uint8_t *)kf_uptr(ctl) + sizeof(*c)) = pp[1];
+            expect(SYS3(46, (uint64_t)p[0], mh, 0) == 1, "rights a last time");
+            kf_fault(ctl, 64);
+            expect(SYS3(47, (uint64_t)p[1], mh, 0) == -VIBEOS_EFAULT && SYS1(32, 0) == lowest,
+                   "a control buffer gone between the judgement and the copy: the installed descriptors are taken back");
+            kf_fault(0, 0);
+            (void)SYS1(3, (uint64_t)lowest);
+        }
         c->cmsg_level = 1;
         c->cmsg_type = 1;
         *(int32_t *)((uint8_t *)kf_uptr(ctl) + sizeof(*c)) = 77;

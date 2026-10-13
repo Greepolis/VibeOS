@@ -139,6 +139,32 @@ long linux_fd_close(uint64_t fd) {
     return 0;
 }
 
+/* Take back a descriptor this call installed and could not hand over (M-099):
+ * only if `fd` still names the same description - the same object in the same
+ * tenancy, `gen` - because between the install and now a sibling thread may
+ * have closed the number and opened something else under it. 0 if it was taken
+ * back, -EBADF if it had already gone. The reference is let go after the lock,
+ * as every close's is. */
+long linux_fd_withdraw(uint64_t fd, const vibeos_file_t *f, uint32_t gen) {
+    vibeos_procstate_t *ps = linux_cur_ps();
+    vibeos_file_t *got = 0;
+
+    if (!ps) {
+        return -VIBEOS_EBADF;
+    }
+    ks_lock(&ps->files_lock, __func__);
+    if (vibeos_fdtable_get(&ps->files, fd) == f && f->gen == gen) {
+        got = vibeos_fdtable_remove(&ps->files, fd);
+    }
+    ks_unlock(&ps->files_lock);
+    if (!got) {
+        return -VIBEOS_EBADF;
+    }
+    linux_locks_on_close(got);
+    vibeos_file_put(got);
+    return 0;
+}
+
 /* ---- paths -----------------------------------------------------------------------
  *
  * Every call that takes a path makes it absolute here first (docs/abi/ A4):

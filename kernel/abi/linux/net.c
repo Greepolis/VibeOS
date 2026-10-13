@@ -754,7 +754,9 @@ static long linux_msg_rights_out(const linux_msghdr_t *mh, vibeos_msg_t *m, uint
     uint8_t buf[sizeof(linux_cmsghdr_t) + VIBEOS_MSG_RIGHTS_MAX * sizeof(int32_t)];
     linux_cmsghdr_t *c = (linux_cmsghdr_t *)(void *)buf;
     uint64_t room = mh->msg_control ? mh->msg_controllen : 0u, fit;
-    uint32_t i, n = 0;
+    const vibeos_file_t *mine[VIBEOS_MSG_RIGHTS_MAX];
+    uint32_t gen[VIBEOS_MSG_RIGHTS_MAX];
+    uint32_t i, n = 0, want;
     long r = 0;
 
     *used = 0;
@@ -762,6 +764,19 @@ static long linux_msg_rights_out(const linux_msghdr_t *mh, vibeos_msg_t *m, uint
         return 0;
     }
     fit = room >= sizeof(linux_cmsghdr_t) ? (room - sizeof(linux_cmsghdr_t)) / sizeof(int32_t) : 0u;
+    want = m->nrights < fit ? m->nrights : (uint32_t)fit;
+    /* The control buffer is judged before a single descriptor is installed
+     * (M-099): installed first and found unwritable after, they sat in the
+     * process's table under numbers nobody was told - a descriptor leaked for
+     * every one sent, until the table was full. The rights a buffer that is not
+     * there cannot receive are let go, as those past `fit` always were. */
+    if (want > 0u && !linux_user_ok(mh->msg_control, sizeof(linux_cmsghdr_t) + want * sizeof(int32_t), 1)) {
+        for (i = 0; i < m->nrights; i++) {
+            vibeos_file_put(m->rights[i]);
+        }
+        m->nrights = 0;
+        return -VIBEOS_EFAULT;
+    }
     for (i = 0; i < m->nrights; i++) {
         long fd;
 
@@ -770,6 +785,8 @@ static long linux_msg_rights_out(const linux_msghdr_t *mh, vibeos_msg_t *m, uint
             m->flags |= VIBEOS_MSG_CTRUNC;
             continue;
         }
+        mine[n] = m->rights[i];
+        gen[n] = m->rights[i]->gen;
         fd = linux_fd_install(m->rights[i], cloexec, 0);   /* takes the reference over */
         if (fd < 0) {
             m->flags |= VIBEOS_MSG_CTRUNC;
@@ -786,6 +803,17 @@ static long linux_msg_rights_out(const linux_msghdr_t *mh, vibeos_msg_t *m, uint
     c->cmsg_level = (int32_t)LINUX_SOL_SOCKET;
     c->cmsg_type = LINUX_SCM_RIGHTS;
     r = linux_net_out(mh->msg_control, buf, c->cmsg_len);
+    if (r != 0) {
+        /* Judged writable a moment ago and not now: a sibling thread unmapped
+         * it. The descriptors this call installed are taken back - each only if
+         * its number still names what was put there. */
+        for (i = 0; i < n; i++) {
+            (void)linux_fd_withdraw((uint64_t)(uint32_t)*(int32_t *)(void *)(buf + sizeof(linux_cmsghdr_t) +
+                                                                       i * sizeof(int32_t)),
+                                    mine[i], gen[i]);
+        }
+        return r;
+    }
     *used = (c->cmsg_len + 7u) & ~(uint64_t)7u;
     if (*used > room) {
         *used = room;
@@ -854,25 +882,26 @@ static long linux_recvmsg_one(vibeos_file_t *f, uint64_t mh_uptr, linux_msghdr_t
         linux_msg_rights_put(&m);
         goto out;
     }
-    if (linux_msg_rights_out(mh, &m, (flags & LINUX_MSG_CMSG_CLOEXEC) ? VIBEOS_FD_CLOEXEC : 0u, &used) != 0) {
-        r = -VIBEOS_EFAULT;
-        goto out;
-    }
     /* The name, the control length used and the flags go back into the
-     * caller's msghdr, which Linux writes as a value-result. */
+     * caller's msghdr, which Linux writes as a value-result. The name first:
+     * a call that failed on it after the descriptors were installed left them
+     * in the table under numbers nobody was told (M-099); what it receives
+     * now is let go with the message. */
     if (mh->msg_name != 0u && a.family != VIBEOS_SA_NONE) {
         uint64_t lenp = mh_uptr + offsetof(linux_msghdr_t, msg_namelen);
 
-        if (linux_sa_out(mh->msg_name, lenp, &a) != 0) {
-            r = -VIBEOS_EFAULT;
-            goto out;
-        }
-        if (linux_net_in(&mh->msg_namelen, lenp, sizeof(mh->msg_namelen)) != 0) {
+        if (linux_sa_out(mh->msg_name, lenp, &a) != 0 ||
+            linux_net_in(&mh->msg_namelen, lenp, sizeof(mh->msg_namelen)) != 0) {
+            linux_msg_rights_put(&m);
             r = -VIBEOS_EFAULT;
             goto out;
         }
     } else {
         mh->msg_namelen = 0;
+    }
+    if (linux_msg_rights_out(mh, &m, (flags & LINUX_MSG_CMSG_CLOEXEC) ? VIBEOS_FD_CLOEXEC : 0u, &used) != 0) {
+        r = -VIBEOS_EFAULT;
+        goto out;
     }
     mh->msg_controllen = used;
     mh->msg_flags = (int32_t)linux_msg_flags_out(m.flags);

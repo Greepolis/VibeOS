@@ -1,0 +1,28 @@
+# Received descriptors that could not be handed over (M-099). Host test: the
+# SCM_RIGHTS part of t_unix in tests/kernel/linux_abi_tests.c, "a control
+# buffer that is not there".
+#
+#  1. the control buffer is not judged before the descriptors are installed.
+#     NOT RED, and correctly: the copy then fails, and case 2's withdrawal
+#     takes them back. The judgement is what keeps the ordinary bad pointer
+#     from installing anything at all; the withdrawal is what makes it safe.
+#  2. a copy that fails after the install takes nothing back. Expect "the
+#     installed descriptors are taken back": kf_fault makes the buffer pass the
+#     judgement and fault in the copy, as a sibling's munmap between the two
+#     would.
+#
+# Target source: kernel/abi/linux/net.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/linux/net.c scripts/dev/cases/scm-rights-out.txt
+
+### the control buffer is not judged before the descriptors are installed
+--- old
+    if (want > 0u && !linux_user_ok(mh->msg_control, sizeof(linux_cmsghdr_t) + want * sizeof(int32_t), 1)) {
++++ new
+    if (0) {
+
+### a copy that fails after the install takes nothing back
+--- old
+            (void)linux_fd_withdraw((uint64_t)(uint32_t)*(int32_t *)(void *)(buf + sizeof(linux_cmsghdr_t) +
++++ new
+            (void)sizeof((uint64_t)(uint32_t)*(int32_t *)(void *)(buf + sizeof(linux_cmsghdr_t) +
+

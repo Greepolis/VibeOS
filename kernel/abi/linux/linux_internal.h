@@ -123,6 +123,8 @@ void linux_exec_cache_drop(void);
 vibeos_file_t *linux_file_get(uint64_t fd);
 long linux_fd_install(vibeos_file_t *f, uint32_t fdflags, uint32_t min);
 long linux_fd_close(uint64_t fd);
+/* A descriptor taken back if it still names `f` in tenancy `gen` (M-099). */
+long linux_fd_withdraw(uint64_t fd, const vibeos_file_t *f, uint32_t gen);
 
 /* A path argument walked (fs.c, docs/abi/ A4 and L1): relative to the directory
  * `dirfd` names, or the working directory for LINUX_AT_FDCWD, never above the root,
