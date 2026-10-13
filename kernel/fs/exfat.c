@@ -10,6 +10,7 @@
 #include "vibeos/storage.h"
 #include "vibeos/exfat.h"
 #include "vibeos/mbz.h"
+#include "vibeos/abi_linux.h"
 
 static uint16_t rd16(const uint8_t *p) {
     return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
@@ -116,6 +117,12 @@ static uint32_t exfat_nth_cluster(vibeos_exfat_t *fs, uint32_t first, int contig
         }
         return first + index;
     }
+    /* A chain has at most as many links as the volume has clusters; an index
+     * past that can only be reached round a cycle (M-098). */
+    if (index >= fs->cluster_count) {
+        vibeos_mbz_hit(VIBEOS_MBZ_EXFAT_BAD_METADATA, index);
+        return 0;
+    }
     for (i = 0; i < index; i++) {
         c = exfat_next_cluster(fs, c);
         if (c == 0u) {
@@ -123,6 +130,62 @@ static uint32_t exfat_nth_cluster(vibeos_exfat_t *fs, uint32_t first, int contig
         }
     }
     return c;
+}
+
+/* Following a directory's chain one link at a time, and knowing when it has
+ * gone round (M-098). A directory with no end-of-directory entry was read until
+ * its chain ended - so a chain that looped back on itself, 50 to 51 to 50, was
+ * read for ever, each turn walked again from the first cluster. Brent's cycle
+ * check finds a loop in about as many steps as the loop is long; the volume's
+ * cluster count bounds whatever it does not. */
+typedef struct {
+    uint32_t c;          /* the cluster being read                      */
+    uint32_t steps;      /* links followed                              */
+    uint32_t mark;       /* a cluster remembered, Brent's tortoise      */
+    uint32_t power;      /* when the tortoise moves next                */
+    uint32_t since;      /* links since it last moved                   */
+} exfat_walk_t;
+
+static void exfat_walk_start(exfat_walk_t *w, uint32_t first) {
+    w->c = first;
+    w->steps = 0;
+    w->mark = first;
+    w->power = 1;
+    w->since = 0;
+}
+
+/* The next cluster of the chain: 1 and w->c, 0 at its end, -1 for a chain that
+ * loops or is longer than the volume - metadata nobody can trust. */
+static int exfat_walk_next(vibeos_exfat_t *fs, exfat_walk_t *w, int contiguous) {
+    uint32_t next;
+
+    if (++w->steps >= fs->cluster_count) {
+        vibeos_mbz_hit(VIBEOS_MBZ_EXFAT_BAD_METADATA, w->c);
+        return -1;
+    }
+    if (contiguous) {
+        next = w->c + 1u;
+        if (next < 2u || next - 2u >= fs->cluster_count) {
+            return 0;
+        }
+        w->c = next;
+        return 1;
+    }
+    next = exfat_next_cluster(fs, w->c);
+    if (next == 0u) {
+        return 0;
+    }
+    if (next == w->mark) {
+        vibeos_mbz_hit(VIBEOS_MBZ_EXFAT_BAD_METADATA, next);
+        return -1;   /* round to a cluster already read: a loop */
+    }
+    if (++w->since == w->power) {
+        w->mark = next;
+        w->power <<= 1;
+        w->since = 0;
+    }
+    w->c = next;
+    return 1;
 }
 
 int vibeos_exfat_mount(vibeos_exfat_t *fs, vibeos_blockcache_t *cache,
@@ -184,19 +247,27 @@ typedef struct {
 } exfat_dirent_t;
 
 /* Walk a directory's clusters, decoding entry sets. Returns 1 when the entry
- * at `want_index` was decoded, or when `want_name` matched. */
+ * at `want_index` was decoded, or when `want_name` matched; 0 when the
+ * directory ended first; -1 when its chain loops or outruns the volume. */
 static int exfat_dir_scan(vibeos_exfat_t *fs, uint32_t dir_cluster, int dir_contig,
                           const char *want_name, uint32_t want_name_len,
                           uint32_t want_index, exfat_dirent_t *out) {
     uint8_t cluster[EXFAT_MAX_CLUSTER_BYTES];
-    uint32_t ci = 0, seen = 0;
+    uint32_t seen = 0;
+    exfat_walk_t walk;
+    int more = 1;
 
+    if (dir_contig && (dir_cluster < 2u || dir_cluster - 2u >= fs->cluster_count)) {
+        vibeos_mbz_hit(VIBEOS_MBZ_EXFAT_BAD_METADATA, dir_cluster);
+        return -1;
+    }
+    exfat_walk_start(&walk, dir_cluster);
     for (;;) {
-        uint32_t c = exfat_nth_cluster(fs, dir_cluster, dir_contig, ci);
+        uint32_t c = walk.c;
         uint32_t off;
 
-        if (c == 0u || exfat_read_cluster(fs, c, cluster) != 0) {
-            return 0;
+        if (more <= 0 || exfat_read_cluster(fs, c, cluster) != 0) {
+            return more < 0 ? -1 : 0;
         }
         for (off = 0; off + 32u <= fs->cluster_bytes; off += 32u) {
             const uint8_t *e = cluster + off;
@@ -271,7 +342,7 @@ static int exfat_dir_scan(vibeos_exfat_t *fs, uint32_t dir_cluster, int dir_cont
         next:
             continue;
         }
-        ci++;
+        more = exfat_walk_next(fs, &walk, dir_contig);
     }
 }
 
@@ -300,8 +371,10 @@ static int exfat_resolve(vibeos_exfat_t *fs, const char *path, exfat_dirent_t *o
             if (!is_dir) {
                 return -1;
             }
-            if (exfat_dir_scan(fs, cluster, contig, path + start, seg, 0, out) != 1) {
-                return -1;
+            int found = exfat_dir_scan(fs, cluster, contig, path + start, seg, 0, out);
+
+            if (found != 1) {
+                return found < 0 ? -2 : -1;   /* -2: the volume's metadata is bad */
             }
             cluster = out->first_cluster;
             contig = out->contiguous;
@@ -323,8 +396,13 @@ static int exfat_op_lookup(void *fsv, const char *path, vibeos_fs_node_t *out) {
     vibeos_exfat_t *fs = (vibeos_exfat_t *)fsv;
     exfat_dirent_t ent;
 
-    if (!fs || !fs->mounted || exfat_resolve(fs, path, &ent) != 0) {
+    int r;
+
+    if (!fs || !fs->mounted) {
         return -1;
+    }
+    if ((r = exfat_resolve(fs, path, &ent)) != 0) {
+        return r == -2 ? -VIBEOS_EIO : -1;
     }
     out->id = EXFAT_ID(ent.first_cluster, ent.contiguous);
     out->size = ent.size;
@@ -390,11 +468,16 @@ static int exfat_op_list(void *fsv, const char *path, uint32_t index, char *name
     if (!fs || !fs->mounted || name_cap == 0u) {
         return -1;
     }
-    if (exfat_resolve(fs, path, &dir) != 0 || !dir.is_dir) {
-        return -1;
-    }
-    if (exfat_dir_scan(fs, dir.first_cluster, dir.contiguous, 0, 0, index, &ent) != 1) {
-        return -1;
+    {
+        int r = exfat_resolve(fs, path, &dir);
+
+        if (r != 0 || !dir.is_dir) {
+            return r == -2 ? -VIBEOS_EIO : -1;
+        }
+        r = exfat_dir_scan(fs, dir.first_cluster, dir.contiguous, 0, 0, index, &ent);
+        if (r != 1) {
+            return r < 0 ? -VIBEOS_EIO : -1;
+        }
     }
     for (i = 0; i + 1u < name_cap && ent.name[i]; i++) {
         name[i] = ent.name[i];

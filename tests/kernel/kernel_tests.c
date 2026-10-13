@@ -7536,8 +7536,11 @@ static void xf_build(void) {
     memset(xf_cluster(40), 0x77, 10u);
 }
 
+static uint32_t g_xf_reads;   /* sectors read from the device: M-098's measure */
+
 static int xf_dev_read(void *ctx, uint64_t lba, void *buf) {
     (void)ctx;
+    g_xf_reads++;
     if (lba >= XF_SECTORS) {
         return -1;
     }
@@ -7651,6 +7654,74 @@ static int test_exfat_cluster_arithmetic_bounds(void) {
         }
     }
     return 0;
+}
+
+/* M-098: a directory whose chain loops back on itself, with no end-of-directory
+ * entry in it, was scanned for ever - the scan stopped only at an end marker or
+ * at a chain that ended. The root here holds one chained directory, LOOP, whose
+ * clusters 50 and 51 point at each other and hold nothing but deleted entries.
+ * Looking a name up in it, and listing it, must end - with an error, and with
+ * the bad metadata counted - instead of going round. A two-cluster loop and a
+ * longer one that comes back to its second cluster, so that a check that only
+ * compares a cluster with the first is not enough. */
+static int xf_cycle_case(const uint32_t *chain, uint32_t n, uint32_t back_to) {
+    vibeos_exfat_t fs;
+    vibeos_blockcache_t bc;
+    vibeos_blockdev_t dev;
+    vibeos_fsmount_t mnt;
+    vibeos_fs_node_t node;
+    uint64_t before;
+    uint32_t i, off;
+    char name[32];
+
+    if (xf_mount(&fs, &bc, &dev) != 0 ||
+        vibeos_fs_mount(&mnt, vibeos_exfat_ops(), &fs, "exfat") != 0) {
+        return -1;
+    }
+    memset(xf_cluster(2), 0, VIBEOS_BLOCK_SIZE);
+    (void)xf_entry(xf_cluster(2), "LOOP", chain[0], 0u, 1, 0);
+    for (i = 0; i < n; i++) {
+        uint8_t *c = xf_cluster(chain[i]);
+
+        for (off = 0; off < VIBEOS_BLOCK_SIZE; off += 32u) {
+            c[off] = 0x05u;   /* a deleted entry: neither a file nor the end */
+        }
+        xf_fat_set(chain[i], i + 1u < n ? chain[i + 1u] : back_to);
+    }
+    before = vibeos_mbz_count(VIBEOS_MBZ_EXFAT_BAD_METADATA);
+    g_xf_reads = 0;
+    /* EIO, the volume's fault - not ENOENT, which says the name is not there
+     * and so trusts the directory it has just found to be broken. */
+    if (vibeos_fs_lookup(&mnt, "/loop/anything", &node) != -VIBEOS_EIO) {
+        return -1;
+    }
+    if (vibeos_fs_list(&mnt, "/loop", 0, name, sizeof(name), 0, 0) != -VIBEOS_EIO) {
+        return -1;
+    }
+    if (vibeos_mbz_count(VIBEOS_MBZ_EXFAT_BAD_METADATA) == before) {
+        return -1;   /* ended, but without saying the volume is bad */
+    }
+    /* And ended because the loop was seen, not because the walk ran out of
+     * volume: a hundred clusters here, and the cycle check closes a loop of
+     * two or four in a few links. The volume bound alone would read about a
+     * hundred clusters for each call - and a real volume has millions. */
+    if (g_xf_reads > 64u) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_exfat_cyclic_directory(void) {
+    static const uint32_t two[] = {50u, 51u};
+    /* Twelve, more than the block cache's eight slots: each turn of the loop
+     * then reads the device again, which is what lets the read count tell a
+     * loop that was seen from a walk that merely ran out of volume. */
+    static const uint32_t twelve[] = {50u, 51u, 52u, 53u, 54u, 55u, 56u, 57u, 58u, 59u, 60u, 61u};
+
+    if (xf_cycle_case(two, 2u, 50u) != 0) {
+        return -1;
+    }
+    return xf_cycle_case(twelve, 12u, 51u);
 }
 
 static int test_exfat_lookup_and_read(void) {
@@ -9890,6 +9961,7 @@ int main(void) {
     RUN_TEST(test_iso_list);
     RUN_TEST(test_iso_refusals);
     RUN_TEST(test_exfat_lookup_and_read);
+    RUN_TEST(test_exfat_cyclic_directory);
     RUN_TEST(test_exfat_list);
     RUN_TEST(test_exfat_refusals);
     RUN_TEST(test_exfat_cluster_arithmetic_bounds);

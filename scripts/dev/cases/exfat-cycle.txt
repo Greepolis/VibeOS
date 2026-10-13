@@ -1,0 +1,63 @@
+# A directory whose cluster chain loops (M-098). Host test:
+# test_exfat_cyclic_directory in tests/kernel/kernel_tests.c.
+#
+#  1. the cycle is not looked for. Expect the test to fail on its read count:
+#     the volume bound still ends the walk, a hundred clusters later.
+#  2. neither the cycle nor the volume bound is looked for. Expect the suite to
+#     hang - which is the defect: a scan that never ends.
+#  3. a broken chain is reported as the end of the directory. Expect the test
+#     to fail on EIO: ENOENT trusts a directory that was just found broken.
+#
+# The volume bound on its own (the cycle check removed and the bound kept) is
+# case 1; the bound removed and the cycle check kept is not a case, because no
+# chain longer than the volume can exist without a loop, which the cycle check
+# then finds. The bound is defence in depth, labelled as such in the source.
+#
+# Target source: kernel/fs/exfat.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/fs/exfat.c scripts/dev/cases/exfat-cycle.txt
+
+### the cycle is not looked for
+--- old
+    if (next == w->mark) {
++++ new
+    if (0) {
+
+### neither the cycle nor the volume bound is looked for
+--- old
+    if (++w->steps >= fs->cluster_count) {
+        vibeos_mbz_hit(VIBEOS_MBZ_EXFAT_BAD_METADATA, w->c);
+        return -1;
+    }
+    if (contiguous) {
+        next = w->c + 1u;
+        if (next < 2u || next - 2u >= fs->cluster_count) {
+            return 0;
+        }
+        w->c = next;
+        return 1;
+    }
+    next = exfat_next_cluster(fs, w->c);
+    if (next == 0u) {
+        return 0;
+    }
+    if (next == w->mark) {
++++ new
+    if (contiguous) {
+        next = w->c + 1u;
+        if (next < 2u || next - 2u >= fs->cluster_count) {
+            return 0;
+        }
+        w->c = next;
+        return 1;
+    }
+    next = exfat_next_cluster(fs, w->c);
+    if (next == 0u) {
+        return 0;
+    }
+    if (0) {
+
+### a broken chain is reported as the end of the directory
+--- old
+            return more < 0 ? -1 : 0;
++++ new
+            return 0;
