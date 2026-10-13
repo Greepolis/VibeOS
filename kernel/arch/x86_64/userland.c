@@ -335,15 +335,17 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
      * to the current count silently refused three quarters of the ticks while
      * balancing perfectly. */
     (void)vibeos_account_init((uint32_t)VIBEOS_HW_MAX_TASKS, VIBEOS_HW_MAX_CPUS);
-    /* Four slots held back, and eight children to any one task.
+    /* Four slots held back, and half the table's children to any one task.
      *
      * Four is one per core, which is the smallest reserve that lets every core
-     * still start something. Eight is comfortably more than anything in this
-     * boot forks - the shell's deepest pipeline is three - so the limit binds
-     * on a bomb and on nothing else. Both are numbers chosen rather than
-     * discovered, and if a workload ever needs more the place to argue about it
-     * is here. */
-    (void)vibeos_forkguard_init((uint32_t)VIBEOS_HW_MAX_TASKS, 4u, 8u);
+     * still start something. The ceiling was eight - "comfortably more than
+     * anything in this boot forks" - until LTP's shmctl01 forked twenty
+     * children and was refused at the ninth (docs/abi/ L7): a workload that
+     * needed more, as this comment said one might. Linux has no such ceiling,
+     * only RLIMIT_NPROC per user; this one stays because the reserve alone
+     * lets a bomb take every slot above it. Half the table still refuses
+     * svc-bomb's sixty-four long before the floor. */
+    (void)vibeos_forkguard_init((uint32_t)VIBEOS_HW_MAX_TASKS, 4u, (uint32_t)VIBEOS_HW_MAX_TASKS / 2u);
 
     /* The user-access recovery, exercised on every boot (H-003, H-010).
      *
