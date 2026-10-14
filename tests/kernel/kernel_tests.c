@@ -1539,10 +1539,9 @@ static int test_compat_runtime(void) {
     if (vibeos_compat_translate_syscall(&rt, VIBEOS_COMPAT_TARGET_LINUX, 39, &native_id) != 0 || native_id == 0) {
         return -1;
     }
-    if (vibeos_compat_enable(&rt, VIBEOS_COMPAT_TARGET_WINDOWS, 1) != 0) {
-        return -1;
-    }
-    if (vibeos_compat_translate_syscall(&rt, VIBEOS_COMPAT_TARGET_WINDOWS, 0xC0u, &native_id) != 0 || native_id != 10u) {
+    /* 2 was the Windows placeholder; the NT personality replaced it, and the
+     * number is refused rather than meaning anything. */
+    if (vibeos_compat_enable(&rt, (vibeos_compat_target_t)2, 1) == 0) {
         return -1;
     }
     if (vibeos_compat_enable(&rt, VIBEOS_COMPAT_TARGET_MACOS, 1) != 0) {
@@ -1554,7 +1553,7 @@ static int test_compat_runtime(void) {
     if (vibeos_compat_stats(&rt, &translated, &denied) != 0) {
         return -1;
     }
-    if (translated != 3 || denied < 1) {
+    if (translated != 2 || denied < 1) {
         return -1;
     }
     return 0;

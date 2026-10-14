@@ -6,7 +6,6 @@ int vibeos_compat_init(vibeos_compat_runtime_t *rt) {
     }
     rt->initialized = 1;
     rt->linux_enabled = 0;
-    rt->windows_enabled = 0;
     rt->macos_enabled = 0;
     rt->translated_syscalls = 0;
     rt->denied_syscalls = 0;
@@ -20,9 +19,6 @@ int vibeos_compat_enable(vibeos_compat_runtime_t *rt, vibeos_compat_target_t tar
     switch (target) {
         case VIBEOS_COMPAT_TARGET_LINUX:
             rt->linux_enabled = enabled ? 1u : 0u;
-            return 0;
-        case VIBEOS_COMPAT_TARGET_WINDOWS:
-            rt->windows_enabled = enabled ? 1u : 0u;
             return 0;
         case VIBEOS_COMPAT_TARGET_MACOS:
             rt->macos_enabled = enabled ? 1u : 0u;
@@ -39,8 +35,6 @@ int vibeos_compat_translate_syscall(vibeos_compat_runtime_t *rt, vibeos_compat_t
     switch (target) {
         case VIBEOS_COMPAT_TARGET_LINUX:
             return vibeos_linux_translate_syscall(rt, foreign_syscall, out_native_syscall);
-        case VIBEOS_COMPAT_TARGET_WINDOWS:
-            return vibeos_windows_translate_syscall(rt, foreign_syscall, out_native_syscall);
         case VIBEOS_COMPAT_TARGET_MACOS:
             return vibeos_macos_translate_syscall(rt, foreign_syscall, out_native_syscall);
         default:

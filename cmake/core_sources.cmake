@@ -97,7 +97,6 @@ set(VIBEOS_USER_CORE_SOURCES
     user/net/socket.c
     user/compat/compat_runtime.c
     user/compat/linux/linux_compat.c
-    user/compat/windows/windows_compat.c
     user/compat/macos/macos_compat.c
     user/lib/user_api.c
     boot/bootloader_core.c
