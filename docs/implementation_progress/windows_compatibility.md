@@ -1,7 +1,7 @@
 # Windows Compatibility Progress
 
-Status: W0 done - planned, the oracle answered; nothing runs on VibeOS yet
-Last review: 2026-10-13
+Status: W1 done - a PE program runs on our ntdll
+Last review: 2026-10-14
 
 ## The plan (2026-10-13)
 
@@ -13,45 +13,22 @@ and Wine's own conformance tests as the oracle. Steps W0-W7: the oracle, the PE
 loader, objects and waits, memory, files, threads and exceptions, processes, then
 `kernel32` as the tests ask.
 
-The two-entry table below is not part of it and goes when W1's loader lands: its
-syscall numbers are a Windows build's, which the plan does not use.
+## What exists (W1, 2026-10-14)
 
-## What exists
+- `kernel/core/pe.c`: the PE32+ parser, its answer in the ELF mapper's segment
+  form; `tests/kernel/pe_tests.c` against an image mingw-w64 linked.
+- `kernel/abi/nt_services.def`, `kernel/abi/abi_nt.c`, `kernel/abi/nt/`: every
+  NT service, the registry, the dispatcher, and NtTerminateProcess,
+  NtWriteFile, NtQueryInformationProcess, NtQuerySystemInformation,
+  NtQuerySystemTime and NtQueryPerformanceCounter; `tests/kernel/nt_abi_tests.c`.
+- `kernel/arch/x86_64/pe_load.c` and the `swapgs` entry and exit paths in
+  `isr.S`: exec of a PE image, and a `%gs` base per task.
+- `user/win/ntdll` and `user/win/hello`: our ntdll and the first Windows
+  program, staged at `/win` on the boot volume.
 
-`user/compat/windows/windows_compat.c`, twenty-four lines. It is a function
-that maps a foreign syscall number to a native one, and it knows two of them:
-
-| Foreign | Mapped to |
-| --- | --- |
-| `0x26` NtOpenFile | handle-alloc placeholder |
-| `0xC0` NtCreateUserProcess | process-spawn placeholder |
-
-Anything else increments a denied counter and returns an error. The targets are
-placeholders by their own comments, not implementations. Nothing calls this at
-runtime: the kernel enables only the Linux target in the compatibility runtime
-at boot.
-
-This file is tracked here so it stops reading as progress. It is a shape that
-records an intention, and the honest status of Windows compatibility is that it
-has not been started.
-
-## What "started" would require
-
-Listed because the gap between the table above and a running program is easy to
-underestimate:
-
-- **PE/COFF loading.** A different executable format from ELF, with imports
-  resolved by name through an import address table.
-- **The NT syscall surface**, which is undocumented, versioned, and not the API
-  applications are written against. Practical Windows compatibility targets
-  Win32 - `kernel32`, `user32`, `ntdll` - which means implementing libraries,
-  not a syscall table.
-- **A registry, a Win32 object namespace, and handle semantics** that do not map
-  onto file descriptors.
-- **A path model** with drive letters, backslashes and case-insensitive but
-  case-preserving names.
-
-Wine is the reference for the size of this, and it is not a syscall table.
+The old placeholder - `user/compat/windows/windows_compat.c`, a function that
+mapped two of a Windows build's syscall numbers onto nothing - is removed now
+that a loader exists, as this file said it would be.
 
 ## Pending
 
@@ -60,8 +37,10 @@ Wine is the reference for the size of this, and it is not a syscall table.
   (`winetest-run-host.sh`), the answers in `tests/corpus/winetest-wine9.txt`;
   every NT service listed with its step in
   [../abi/nt-services.md](../abi/nt-services.md).
-- W1 onwards: as the plan lists them.
+- W1 is done: see [../abi/windows.md](../abi/windows.md), "W1".
+- W2 onwards: as the plan lists them.
 
 ## Next checkpoint
 
-- W1: a PE program of ours prints "hello" through our own `ntdll`.
+- W2: base relocation, stub `user32` and `advapi32`, then the object manager -
+  the first of Wine's tests (`ntdll:om`, `ntdll:sync`, `kernel32:sync`) run.

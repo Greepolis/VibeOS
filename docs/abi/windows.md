@@ -125,3 +125,65 @@ failures outnumber its summaries incomplete - taking the last line, as the first
 version did, reported `kernel32:virtual` as a child's "0 failures".
 
 W0 is done. Next: W1, the loader and a program of ours that prints "hello".
+
+## W1 (2026-10-14): done
+
+A PE program built by mingw-w64 runs on our own `ntdll`, from a boot's shell
+like any program: `/win/hello.exe` checks its TEB through `%gs`, its PEB, and
+each W1 service, and prints `NT_HELLO_OK` through `NtWriteFile`. The gate
+requires the line.
+
+What it took, in the order it was built:
+
+1. **A `%gs` for each task** (`0d83e8e`). The kernel kept its per-CPU block in
+   GS.base for good and never ran `swapgs`; a Windows program reaches its TEB
+   through `%gs`. Every entry swaps when GS.base is not inside the kernel image
+   - deciding by GS.base, not the saved CS, so an `iretq` that faults after the
+   exit's swap still finds the kernel's block - and every exit to ring 3 swaps
+   back with interrupts off. Linux's `ARCH_SET_GS` works on top of it.
+2. **A PE32+ parser** (`f2c598d`, `kernel/core/pe.c`) that describes an image in
+   the ELF parser's segment form, so the architecture places it with the mapper
+   it has. Tested against an image mingw-w64 linked, compared with what mingw's
+   `objdump` says of it.
+3. **The NT personality**: `kernel/abi/nt_services.def` (all 237 services, the
+   number being the line), a registry checked against the rows at boot in both
+   directions, a dispatcher that reads Windows' convention - four arguments in
+   `r10`, `rdx`, `r8`, `r9`, the rest from the caller's stack at `+0x28`,
+   judged before they are read - and the six W1 services. A service with no row
+   is `STATUS_NOT_IMPLEMENTED`, counted and named on the console; the gate
+   allows exactly one, the probe `hello.exe` asks for on purpose.
+4. **Loading**: exec of a file that starts `MZ` maps the program below the
+   stack, `/win/ntdll.dll` above the heap, and five pages for the PEB, the
+   process parameters and the TEB just below the mapping area; binds the task to
+   the NT personality; and starts the thread at ntdll's entry with the PEB in
+   `rcx` and the TEB as its `%gs`. Our ntdll resolves the program's imports
+   against its own exports and calls its entry.
+5. **Our ntdll** (`user/win/ntdll`): one stub per service, generated from the
+   same `.def` the kernel is checked against, and `layout_check.c`, which holds
+   `include/vibeos/nt_layout.h` against mingw-w64's `winternl.h` and `winnt.h`
+   at every build.
+
+Decisions W1 made that later steps inherit, each said where it is made:
+
+- **A handle is a descriptor** for now: `(fd + 1) * 4`, so the standard handles
+  are 4, 8 and 12. W2's object manager decides whether NT handles get a table
+  of their own or share the descriptor table, which already holds typed,
+  counted objects.
+- **No relocation**: an image is placed where its header says, inside the
+  window it is allowed, or refused (`pe_needs_relocation`). Wine's test
+  executables are linked at `0x140000000` and need it, so it is W2's first
+  piece of work, before a single test runs.
+- **`/win`** is where the DLL and the program live, provisionally: the
+  filesystem's hierarchy is the roadmap's next item.
+- **One process, one thread**: `NtTerminateProcess` and
+  `NtQueryInformationProcess` answer for the caller only; the parent of an NT
+  program is a Linux one, so the kernel builds the process parameters itself
+  from `argv` until W6's `NtCreateUserProcess`.
+
+Measured: host tests (`nt_abi_tests.c`, `pe_tests.c`), sabotage on the host
+(`core-pe.txt` 8/8, `nt-dispatch.txt`, `nt-services.txt`, `nt-start.txt` 13/13)
+and at boot (`arch-gs-boot.txt` 2/2, `nt-hello-boot.txt` 1/1), check, six boots.
+
+Next: W2 - base relocation, stub `user32` and `advapi32` for the tests' imports,
+then the object manager, handles and waits, measured by `ntdll:om`,
+`ntdll:sync` and `kernel32:sync`.
