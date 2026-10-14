@@ -155,6 +155,9 @@ static const char abi_refused[] = "abi: a refused syscall did not return its reg
 static const char abi_nx[] = "abi: PROT_EXEC is not enforced (page executable without it)\n";
 static const char tls_kept[] = "tls survived context switches\n";
 static const char tls_lost[] = "abi: %fs lost across a context switch\n";
+static const char gs_kept[] = "gs survived context switches\n";
+static const char gs_lost[] = "abi: %gs lost across a context switch\n";
+static const char abi_gs[] = "abi: arch_prctl or %gs broken\n";
 static const char sse_kept[] = "sse survived context switches\n";
 static const char sse_lost[] = "abi: xmm lost across a context switch\n";
 static const char self_path[] = "/EFI/BOOT/SELFTEST.ELF";
@@ -165,6 +168,10 @@ static const char iov_b[] = "ec\n";
  * self-pointer every x86-64 C runtime stores there, which is what makes
  * "%fs:0" mean "the address of my own thread state". */
 static unsigned long tcb[16];
+/* The same for %gs, which a Windows program reaches its TEB through and the
+ * kernel swaps since docs/abi/windows.md W1. Its own block, so that %fs and %gs
+ * reading back the same address cannot be a register read twice. */
+static unsigned long gs_block[16];
 
 struct abi_iovec { const void *base; unsigned long len; };
 
@@ -199,6 +206,26 @@ static const char *check_linux_abi(void) {
     /* A base outside user memory must be refused - it would fault in ring 0. */
     if (user_syscall3(SYS_arch_prctl, 0x1002, 0x1000, 0) == 0) {
         return abi_fs;
+    }
+    /* %gs, by the same rules (W1). Read through the segment, as a TEB is. */
+    gs_block[0] = (unsigned long)(void *)gs_block;
+    if (user_syscall3(SYS_arch_prctl, 0x1001 /*ARCH_SET_GS*/,
+                      (long)(unsigned long)gs_block, 0) != 0) {
+        return abi_gs;
+    }
+    __asm__ __volatile__("movq %%gs:0, %0" : "=r"(self));
+    if (self != (unsigned long)(void *)gs_block) {
+        return abi_gs;
+    }
+    if (user_syscall3(SYS_arch_prctl, 0x1004 /*ARCH_GET_GS*/,
+                      (long)(unsigned long)&got, 0) != 0 ||
+        got != (unsigned long)(void *)gs_block) {
+        return abi_gs;
+    }
+    /* Where the kernel is linked: the base its entry would take for its own
+     * block, so refused. */
+    if (user_syscall3(SYS_arch_prctl, 0x1001, 0x4000000, 0) == 0) {
+        return abi_gs;
     }
 
     /* A number no kernel implements must come back as -ENOSYS (38): it is what a
@@ -881,6 +908,17 @@ int vibeos_main(int argc, char **argv, char **envp) {
         } else {
             user_syscall3(SYS_write, 1, (long)(unsigned long)tls_lost,
                           sizeof(tls_lost) - 1);
+        }
+        /* And %gs, which the kernel now swaps on every entry and exit and
+         * reloads on every switch: the shell ran with a base of zero meanwhile,
+         * so a switch that forgot to reload it would leave that here. */
+        __asm__ __volatile__("movq %%gs:0, %0" : "=r"(self_again));
+        if (self_again == (unsigned long)(void *)gs_block) {
+            user_syscall3(SYS_write, 1, (long)(unsigned long)gs_kept,
+                          sizeof(gs_kept) - 1);
+        } else {
+            user_syscall3(SYS_write, 1, (long)(unsigned long)gs_lost,
+                          sizeof(gs_lost) - 1);
         }
     }
 

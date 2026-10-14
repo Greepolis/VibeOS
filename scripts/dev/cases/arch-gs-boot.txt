@@ -1,0 +1,28 @@
+# A program's own %gs (docs/abi/windows.md W1), put back.
+#
+#  1. the context switch does not reload the task's %gs: the self-test's base
+#     is lost to whichever program ran on the core meanwhile (the shell, with
+#     zero), and %gs:0 then reads the null page. Expect gs_lost_across_switch,
+#     or the self-test killed on that read.
+#  2. the same for %fs, the line the gate printed and never asserted until W1.
+#     Expect tls_lost_across_switch - or, as the first run went (2026-10-14),
+#     a wedge before the self-test is done: every musl program keeps its thread
+#     pointer in %fs, and the first switch hands each one another's.
+#
+# First run, 2026-10-14: 1 red with gs_lost_across_switch and the self-test's
+# fault on the null page; 2 red as guest_wedged.
+#
+# Target source: kernel/arch/x86_64/task_switch.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py kernel/arch/x86_64/task_switch.c scripts/dev/cases/arch-gs-boot.txt
+
+### the switch forgets the task's %gs (gs_lost_across_switch)
+--- old
+        hw_wrmsr(MSR_KERNEL_GS_BASE, g_tasks[idx].gs_base);
++++ new
+        (void)0;
+
+### the switch forgets the task's %fs (tls_lost_across_switch)
+--- old
+        hw_wrmsr(MSR_FS_BASE, g_tasks[idx].fs_base);
++++ new
+        (void)0;

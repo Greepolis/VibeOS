@@ -267,6 +267,12 @@ void ks_regs_enter_handler(ks_regs_t *frame, uint64_t handler, uint64_t sp,
                            uint64_t a0, uint64_t a1, uint64_t a2);
 uint64_t ks_tls_get(int slot);
 void ks_tls_set(int slot, uint64_t base);
+/* The task's %gs base: Linux's ARCH_SET_GS, and the TEB an NT thread finds
+ * through %gs (docs/abi/windows.md W1). */
+uint64_t ks_gs_get(int slot);
+/* 0, or -1 for a base that is neither 0 nor a user address: the kernel's entry
+ * decides whose %gs is loaded by whether it points into the kernel. */
+int ks_gs_set(int slot, uint64_t base);
 
 /* ---- devices ----------------------------------------------------------------------- */
 

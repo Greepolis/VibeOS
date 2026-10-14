@@ -169,6 +169,11 @@ typedef struct {
      * every switch: leaving the previous task's value loaded would let one
      * program read and write another's thread-local state. */
     uint64_t fs_base;
+    /* %gs base the same way (docs/abi/windows.md W1): a Windows program reaches
+     * its TEB through %gs, and Linux's ARCH_SET_GS sets it. Lives in
+     * MSR_KERNEL_GS_BASE while the kernel runs, and swapgs puts it in place on
+     * the way back to ring 3. */
+    uint64_t gs_base;
     uint64_t kstack_base;  /* for reclamation on exit */
     uint32_t kstack_pages;
     /* Open files are the process's: ps->files (hw_procstate_t). */
@@ -328,9 +333,12 @@ struct tss64 {
  * and written by the `syscall` trampoline in isr.S at fixed offsets 0 and 8 -
  * do not reorder them.
  *
- * GS.base is programmed once per CPU and never swapped: user code cannot change
- * it (CR4.FSGSBASE stays clear and ring-3 programs never load %gs), so the
- * kernel entry paths can rely on it without a swapgs dance. */
+ * GS.base holds this block whenever the kernel runs, and the task's own %gs
+ * base whenever ring 3 does: every path into the kernel swapgs's when GS.base
+ * is not inside the kernel image, and every path back to ring 3 swapgs's
+ * before iretq (isr.S). It used to be programmed once and never swapped, which
+ * held for as long as no program needed %gs - and a Windows program reaches its
+ * TEB through it (docs/abi/windows.md W1). */
 typedef struct hw_cpu {
     uint64_t syscall_kstack_top;  /* offset 0  - isr.S loads rsp from here */
     uint64_t user_saved_rsp;      /* offset 8  - isr.S stashes the user rsp */
@@ -452,6 +460,9 @@ typedef struct {
  * %fs on x86-64 - errno, the stack guard, locale - so this MSR is per task,
  * not per CPU, and has to be reloaded on every context switch. */
 #define MSR_FS_BASE 0xC0000100u
+/* The task's %gs base while the kernel runs; swapgs exchanges it with GS.base,
+ * which holds this core's hw_cpu_t in ring 0 (isr.S). */
+#define MSR_KERNEL_GS_BASE 0xC0000102u
 /* User address-space layout (all inside the process's own PML4 slot):
  *   [USER_BASE ..]            program image (linked address)
  *   [.. USER_STACK_TOP]       stack (grows down)

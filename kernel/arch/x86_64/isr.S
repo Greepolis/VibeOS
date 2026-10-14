@@ -127,6 +127,24 @@ vibeos_isr_common:
     push %r14
     push %r15
 
+    /* Which %gs is loaded: this core's block, or the interrupted program's.
+     *
+     * Decided by GS.base itself, not by the saved CS. The two disagree in
+     * exactly the windows that matter: an iretq to ring 3 that faults after
+     * the exit path has already swapgs'd arrives with CS = kernel and the
+     * program's %gs, and so would an NMI between `syscall` and its swapgs.
+     * The block is in the kernel image's .bss; a program's base never is -
+     * arch_prctl and the NT loader give only user addresses. */
+    mov $0xC0000101, %ecx   /* MSR_GS_BASE */
+    rdmsr
+    shl $32, %rdx
+    or %rax, %rdx
+    cmp $__kernel_image_start, %rdx
+    jb 1f
+    cmp $__kernel_image_end, %rdx
+    jb 2f
+1:  swapgs
+2:
     mov %rsp, %rdi          /* arg0 = pointer to saved frame */
     mov %rsp, %rax          /* remember unaligned rsp        */
     and $~15, %rsp          /* 16-byte align for SysV call   */
@@ -156,7 +174,16 @@ vibeos_isr_common:
     pop %rax
 
     add $16, %rsp           /* discard vector + error_code */
-    iretq
+    /* Back to ring 3 with the program's %gs; to ring 0 with ours. The frame
+     * decides, because the scheduler may have rewritten it to another task's -
+     * and interrupts stay off from here to the iretq, which restores them from
+     * the frame: one arriving after the swapgs would find the program's %gs
+     * with CS still the kernel's. */
+    cli
+    testb $3, 8(%rsp)       /* the CS we are about to return to */
+    jz 3f
+    swapgs
+3:  iretq
 
 /* void vibeos_x86_64_ring3_enter(uint64_t user_rip /rdi/, uint64_t user_rsp /rsi/)
  * Save a setjmp-style kernel context, then iretq down to ring 3. The matching
@@ -186,6 +213,8 @@ vibeos_x86_64_ring3_enter:
     mov $0x1b, %cx
     mov %cx, %ds
     mov %cx, %es
+    cli                      /* nothing between the swap and the iretq */
+    swapgs                   /* ring 3 gets the task's %gs */
     iretq                    /* -> ring 3 */
 
 /* void vibeos_x86_64_ring3_resume(void) - restore the saved kernel context. */
@@ -215,6 +244,10 @@ vibeos_x86_64_ring3_resume:
  * user rsp (offset 8). See hw_cpu_t in arch_hw.c. */
     .global vibeos_x86_64_syscall_entry
 vibeos_x86_64_syscall_entry:
+    /* `syscall` comes only from ring 3, so %gs is the program's: always swap.
+     * SFMASK has cleared IF, so nothing can arrive before this line but an
+     * NMI, and isr_common decides by GS.base for that reason. */
+    swapgs
     mov %rsp, %gs:8
     mov %gs:0, %rsp
 
@@ -263,7 +296,13 @@ vibeos_x86_64_syscall_entry:
     pop %rbx
     pop %rax
     add $16, %rsp            /* discard vector + error_code */
-    iretq                    /* -> ring 3 using the frame we built */
+    /* As isr_common's exit: the frame may be another task's by now, kernel or
+     * user, and the dispatcher may have turned interrupts on. */
+    cli
+    testb $3, 8(%rsp)
+    jz 1f
+    swapgs
+1:  iretq                    /* -> ring 3 using the frame we built */
 
 /* void vibeos_x86_64_sched_start(vibeos_x86_64_isr_frame_t *first /rdi/)
  * Save a setjmp-style kernel context (so ring3_resume can return to the caller
@@ -296,7 +335,11 @@ vibeos_x86_64_task_enter:
     pushq 0x98(%rax)         /* rflags */
     pushq 0x90(%rax)         /* cs     */
     pushq 0x88(%rax)         /* rip    */
-    mov 0x00(%rax), %r15
+    cli
+    testb $3, 8(%rsp)        /* entering ring 3: the task's %gs */
+    jz 1f
+    swapgs
+1:  mov 0x00(%rax), %r15
     mov 0x08(%rax), %r14
     mov 0x10(%rax), %r13
     mov 0x18(%rax), %r12

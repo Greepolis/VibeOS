@@ -83,6 +83,27 @@ static void t_identity(void) {
     expect(SYS0(102) == 0 && SYS0(104) == 0, "one identity, root");
 }
 
+/* arch_prctl's %gs (docs/abi/windows.md W1). Refused for as long as %gs held the
+ * core's block for good; the kernel swaps it now, so a program may set its own -
+ * and only to a user address, because the kernel's entry tells its own %gs from
+ * a program's by whether it points into the kernel. */
+static void t_arch_prctl_gs(void) {
+    int me = fresh(43);
+    uint64_t tcb = kf_ualloc(64);
+    uint64_t out = kf_ualloc(8);
+
+    expect(SYS2(158, LINUX_ARCH_SET_GS, tcb) == 0, "ARCH_SET_GS takes a user address");
+    expect(ks_gs_get(me) == tcb, "and it is the task's %gs");
+    expect(SYS2(158, LINUX_ARCH_GET_GS, out) == 0 &&
+           *(uint64_t *)kf_uptr(out) == tcb, "ARCH_GET_GS reads it back");
+    expect(SYS2(158, LINUX_ARCH_SET_GS, 0x1000u) == -VIBEOS_EPERM &&
+           ks_gs_get(me) == tcb, "a base outside user memory is refused and changes nothing");
+    expect(SYS2(158, LINUX_ARCH_GET_GS, 0x1000u) == -VIBEOS_EFAULT,
+           "ARCH_GET_GS to a bad pointer is EFAULT");
+    expect(SYS2(158, LINUX_ARCH_SET_GS, 0) == 0 && ks_gs_get(me) == 0,
+           "zero is a base a program may ask for");
+}
+
 static void t_pipe_round_trip(void) {
     uint64_t fds, buf, in;
     int32_t *f;
@@ -6256,6 +6277,7 @@ static void t_credentials(void) {
 int test_linux_handlers(void) {
     g_fail = 0;
     t_identity();
+    t_arch_prctl_gs();
     t_pipe_round_trip();
     t_dup2_redirects_stdout();
     t_write_console();

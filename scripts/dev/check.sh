@@ -88,7 +88,7 @@ do_smoke() {
     # rather than the whole budget.
     python3 scripts/qemu-cli-smoke-linux.py "$d" 300 > /dev/null 2>&1
     grep -o '^reason=.*' qemu-cli-summary.txt
-    grep -aoE 'auxv ok|auxv wrong|linux abi ok[^\r]*|abi: [^\r]*|tls survived[^\r]*|tls lost[^\r]*|MUSL_OK[^\r]*|MUSL_ARGS[^\r]*|unimplemented Linux syscall nr=0x[0-9a-f]*' \
+    grep -aoE 'auxv ok|auxv wrong|linux abi ok[^\r]*|abi: [^\r]*|tls survived[^\r]*|tls lost[^\r]*|gs survived[^\r]*|MUSL_OK[^\r]*|MUSL_ARGS[^\r]*|unimplemented Linux syscall nr=0x[0-9a-f]*' \
         qemu-cli-serial.log | sort -u
 }
 

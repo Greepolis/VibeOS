@@ -37,6 +37,7 @@ typedef struct {
     vibeos_image_t img;
     uint32_t seq;
     uint64_t tls;
+    uint64_t gs;
     const char *ready_by;
     vibeos_vmspace_t as;          /* its address space (docs/abi/ L3) */
     int has_as;
@@ -1302,11 +1303,13 @@ void ks_fork_regs(int child, int parent, const ks_regs_t *frame) {
     (void)frame;
     g_t[child].img = g_t[parent].img;
     g_t[child].tls = g_t[parent].tls;
+    g_t[child].gs = g_t[parent].gs;
 }
 void ks_thread_regs(int child, int parent, const ks_regs_t *frame, uint64_t stack, uint64_t tls) {
     (void)frame; (void)stack;
     g_t[child].img = g_t[parent].img;
     g_t[child].tls = tls;
+    g_t[child].gs = g_t[parent].gs;
 }
 
 static uint8_t g_exec_buf[4096];
@@ -1335,6 +1338,7 @@ void ks_image_drop(vibeos_image_t *img, const char *why) { (void)img; (void)why;
 void ks_exec_switch(int slot, const vibeos_image_t *img) { g_t[slot].img = *img; }
 void ks_exec_regs(int slot, ks_regs_t *frame, uint64_t entry, uint64_t sp) {
     g_t[slot].tls = 0;
+    g_t[slot].gs = 0;
     memset(frame, 0, sizeof(*frame));
     frame->ip = entry;
     frame->sp = sp;
@@ -1428,6 +1432,14 @@ void ks_regs_enter_handler(ks_regs_t *frame, uint64_t handler, uint64_t sp,
 }
 uint64_t ks_tls_get(int slot) { return g_t[slot].tls; }
 void ks_tls_set(int slot, uint64_t base) { g_t[slot].tls = base; }
+uint64_t ks_gs_get(int slot) { return g_t[slot].gs; }
+int ks_gs_set(int slot, uint64_t base) {
+    if (base != 0u && !ks_user_addr_ok(base)) {
+        return -1;
+    }
+    g_t[slot].gs = base;
+    return 0;
+}
 
 vibeos_inet_t *ks_net(void) { return g_net_is_up ? &g_net_v : 0; }
 vibeos_lock_t *ks_net_lock(void) { return &g_net_lock_v; }

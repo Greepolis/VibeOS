@@ -1775,10 +1775,22 @@ static long linux_sys_arch_prctl(uint64_t code, uint64_t addr) {
             }
             return 0;
         case LINUX_ARCH_SET_GS:
+            /* Refused while %gs held this core's block for good; the kernel
+             * swaps it now (docs/abi/windows.md W1), and the base is the
+             * task's, refused by the same rule as %fs. */
+            if (ks_gs_set(me, addr) != 0) {
+                return -VIBEOS_EPERM;
+            }
+            return 0;
         case LINUX_ARCH_GET_GS:
-            /* %gs holds this CPU's per-CPU block. Handing it to a program
-             * would let ring 3 relocate the kernel's own state. */
-            return -VIBEOS_EPERM;
+            {
+                uint64_t base = ks_gs_get(me);
+                if (vibeos_uaccess_copy((void *)(uintptr_t)addr, &base,
+                                        sizeof(base)) != 0) {
+                    return -VIBEOS_EFAULT;
+                }
+            }
+            return 0;
         default:
             return -VIBEOS_EINVAL;
     }
@@ -2018,7 +2030,7 @@ static long linux_sys_clone(const vibeos_call_t *c) {
     X(124, getsid,           GETSID,          NOPTR, linux_sys_getsid(ARG(0))) \
     X(121, getpgid,          GETPGID,         NOPTR, linux_sys_getpgid(ARG(0))) \
     X(157, prctl,            PRCTL,           PTRS(IN_IF(0, LINUX_PR_SET_NAME, 1, 16), OUT_IF(0, LINUX_PR_GET_NAME, 1, 16)), linux_sys_prctl(ARG(0), ARG(1))) \
-    X(158, arch_prctl,       ARCH_PRCTL,      PTRS(OUT_IF(0, LINUX_ARCH_GET_FS, 1, 8)), linux_sys_arch_prctl(ARG(0), ARG(1))) \
+    X(158, arch_prctl,       ARCH_PRCTL,      PTRS(OUT_IF(0, LINUX_ARCH_GET_FS, 1, 8), OUT_IF(0, LINUX_ARCH_GET_GS, 1, 8)), linux_sys_arch_prctl(ARG(0), ARG(1))) \
     X(186, gettid,           GETTID,          NOPTR, linux_sys_gettid()) \
     X(218, set_tid_address,  SET_TID_ADDRESS, NOPTR, linux_sys_set_tid_address(ARG(0))) \
     X(231, exit_group,       EXIT_GROUP,      NOPTR, linux_sys_exit_group(ARG(0))) \

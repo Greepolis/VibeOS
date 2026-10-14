@@ -449,6 +449,7 @@ void ks_fork_regs(int child, int parent, const ks_regs_t *frame) {
     }
     c->ctx.rax = 0;               /* ... but fork() returns 0 in the child */
     c->fs_base = p->fs_base;      /* the copied image expects its TLS */
+    c->gs_base = p->gs_base;      /* and its %gs                      */
 }
 
 void ks_thread_regs(int child, int parent, const ks_regs_t *frame,
@@ -472,6 +473,9 @@ void ks_thread_regs(int child, int parent, const ks_regs_t *frame,
      * each believe is theirs. */
     hw_fpu_init_area(c->fpu);
     c->fs_base = tls;
+    /* Linux's clone sets only %fs; %gs is the creator's, as on Linux. An NT
+     * thread gets its own TEB from the NT side (W5). */
+    c->gs_base = p->gs_base;
 }
 
 uint8_t *ks_exec_buffer(uint32_t *cap) {
@@ -524,6 +528,8 @@ void ks_exec_regs(int slot, ks_regs_t *regs, uint64_t entry, uint64_t sp) {
      * space without passing through the scheduler's restore. */
     g_tasks[slot].fs_base = 0;
     hw_wrmsr(MSR_FS_BASE, 0);
+    g_tasks[slot].gs_base = 0;
+    hw_wrmsr(MSR_KERNEL_GS_BASE, 0);   /* the task's, while the kernel runs */
     frame->rip = entry;
     frame->cs = VIBEOS_HW_USER_CODE_SEL;
     frame->rflags = 0x202;
@@ -655,6 +661,26 @@ uint64_t ks_tls_get(int slot) { return g_tasks[slot].fs_base; }
 void ks_tls_set(int slot, uint64_t base) {
     g_tasks[slot].fs_base = base;
     hw_wrmsr(MSR_FS_BASE, base);
+}
+
+uint64_t ks_gs_get(int slot) { return g_tasks[slot].gs_base; }
+
+/* %gs base for the calling task (ARCH_SET_GS; the NT loader's TEB). Into the
+ * MSR that holds it while the kernel runs - GS.base is this core's block until
+ * the swapgs on the way out.
+ *
+ * Refused here, not only by the callers, for anything but a user address: the
+ * kernel's entry decides whose %gs is loaded by whether GS.base points into the
+ * kernel image (isr.S), so a base inside it would make an entry from ring 3
+ * skip its swapgs and take the program's choice of address for this core's
+ * block. A non-canonical one would fault on the wrmsr, in ring 0. */
+int ks_gs_set(int slot, uint64_t base) {
+    if (base != 0u && !hw_user_addr_ok(base)) {
+        return -1;
+    }
+    g_tasks[slot].gs_base = base;
+    hw_wrmsr(MSR_KERNEL_GS_BASE, base);
+    return 0;
 }
 
 /* ---- devices ------------------------------------------------------------------------- */

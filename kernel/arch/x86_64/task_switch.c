@@ -624,6 +624,10 @@ void hw_task_load_cpu_state(int idx) {
     hw_set_kernel_stack(g_tasks[idx].kstack_top);
     if (g_tasks[idx].id.is_user) {
         hw_wrmsr(MSR_FS_BASE, g_tasks[idx].fs_base);
+        /* The kernel's %gs is loaded now; the task's waits in the other MSR
+         * for the swapgs on the way out (isr.S). Left unwritten, the next
+         * program would run with the last one's TEB. */
+        hw_wrmsr(MSR_KERNEL_GS_BASE, g_tasks[idx].gs_base);
     }
 }
 

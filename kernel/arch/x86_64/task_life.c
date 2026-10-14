@@ -1200,6 +1200,7 @@ int hw_task_spawn_user(const unsigned char *elf, uint64_t len,
      * be cleared explicitly. A stale TLS base would point the new program at
      * a dead process's thread state. */
     g_tasks[i].fs_base = 0;
+    g_tasks[i].gs_base = 0;
     {
         uint32_t sg;
         g_tasks[i].id.exit_signal = 0;

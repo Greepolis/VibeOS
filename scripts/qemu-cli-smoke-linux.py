@@ -3483,6 +3483,15 @@ def main():
             # not a check.
             if "linux abi ok" not in text:
                 problems.append("linux_abi_selftest_failed")
+            # %fs and %gs kept across the context switches the self-test has
+            # been through by the time it asks. Both lines were printed and
+            # neither asserted until docs/abi/windows.md W1, when the kernel
+            # began swapping %gs - which a switch that forgot to reload would
+            # leave holding another program's base.
+            if "tls survived context switches" not in text:
+                problems.append("tls_lost_across_switch")
+            if "gs survived context switches" not in text:
+                problems.append("gs_lost_across_switch")
             # File locks between two processes (L1 step 6), which the same
             # program checks from ring 3 and says in a line of its own: nothing
             # else the boot runs takes a lock.

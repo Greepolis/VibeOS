@@ -445,14 +445,16 @@ void hw_load_gdt(uint32_t cpu_index) {
     __asm__ __volatile__("ltr %0" : : "r"(VIBEOS_HW_TSS_SEL_FOR(cpu_index)));
 
     /* GS.base -> this CPU's block. Must come after the %gs selector load above,
-     * which resets the base to zero. IA32_KERNEL_GS_BASE gets the same value so
-     * a stray swapgs cannot desynchronize the two. */
+     * which resets the base to zero. IA32_KERNEL_GS_BASE is what ring 3 will
+     * get at its first swapgs: nothing, until a task's own base is loaded by the
+     * context switch. It used to hold this block too, "so a stray swapgs cannot
+     * desynchronize the two" - there was no swapgs then; now every entry swaps
+     * by GS.base and every exit by the frame (isr.S). */
     {
         uint64_t v = (uint64_t)(uintptr_t)cpu;
         __asm__ __volatile__("wrmsr" : : "c"(0xC0000101u), "a"((uint32_t)v),
                              "d"((uint32_t)(v >> 32)));
-        __asm__ __volatile__("wrmsr" : : "c"(0xC0000102u), "a"((uint32_t)v),
-                             "d"((uint32_t)(v >> 32)));
+        __asm__ __volatile__("wrmsr" : : "c"(0xC0000102u), "a"(0u), "d"(0u));
     }
 }
 
