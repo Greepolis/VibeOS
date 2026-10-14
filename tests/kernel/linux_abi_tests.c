@@ -4235,6 +4235,10 @@ static void t_sched_l6(void) {
 #define PRIO(v) (*(int32_t *)kf_uptr(prm) = (v), prm)
     me = fresh(200);
     ps = ks_ps(me);
+    if (!ps) {
+        expect(0, "a fresh task has a process");
+        return;
+    }
     expect(SYS1(146, LINUX_SCHED_FIFO) == 99 && SYS1(147, LINUX_SCHED_RR) == 1 &&
            SYS1(146, LINUX_SCHED_NORMAL) == 0 && SYS1(147, LINUX_SCHED_IDLE) == 0 &&
            SYS1(146, 42) == -VIBEOS_EINVAL, "the priority range per policy, and EINVAL for none");

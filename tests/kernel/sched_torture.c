@@ -240,7 +240,10 @@ int main(int argc, char **argv) {
                     }
                     m_class[slot] = cls;
                     m_rt[slot] = prio;
-                } else if (m_admitted[slot] && ((cls == VIBEOS_SCHED_REALTIME) ? (prio >= 1u && prio <= 99u)
+                } else if (m_admitted[slot] &&
+                           /* prio is drawn at most VIBEOS_SCHED_RT_PRIO_MAX, so the
+                            * upper bound needs no test (code scanning #267). */
+                           ((cls == VIBEOS_SCHED_REALTIME) ? (prio >= 1u)
                                                                              : prio == 0u)) {
                     return fail("set_class_refused_a_valid_change", round, (int)slot, cls);
                 }

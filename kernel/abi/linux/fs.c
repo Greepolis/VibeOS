@@ -811,7 +811,9 @@ vibeos_file_t *linux_hidden_file(const char *stem, long *err) {
     for (tries = 0; tries < 8u && *err == -VIBEOS_EEXIST; tries++) {
         char digits[10];
 
-        for (n = 0; stem[n] && n < 24u; n++) {
+        /* The bound before the byte: a stem of 24 or more is cut there
+         * without reading past it (code scanning #278). */
+        for (n = 0; n < 24u && stem[n]; n++) {
             path[n] = stem[n];
         }
         seq = __sync_add_and_fetch(&g_memfd_seq, 1u);

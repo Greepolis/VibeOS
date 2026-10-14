@@ -131,6 +131,7 @@ int test_fdtable(void) {
 
     /* ---- dup shares an offset --------------------------------------------------- */
     g = vibeos_file_alloc(&g_ops, 0);
+    if (!expect(g != 0, "a description to share")) { return -1; }
     fd = vibeos_fdtable_install(&a, g, 0, 0);
     vibeos_file_get(g);
     if (!expect(vibeos_fdtable_install_at(&a, 250, g, 0, &old) == 0, "dup2 onto a free number")) { return -1; }
