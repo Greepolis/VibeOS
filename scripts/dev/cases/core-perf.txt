@@ -34,8 +34,8 @@
 ### the syscall dispatch is timed with an order-of-magnitude spin on the path
 --- old
     uint64_t t0 = hw_tsc();
-    long result = vibeos_x86_64_linux_syscall(frame, frame->rax, frame->rdi,
+    long result = vibeos_x86_64_syscall_any(frame);
 +++ new
     uint64_t t0 = hw_tsc();
     { volatile uint64_t _perf_sab = 0; while (_perf_sab < 20000ull) { _perf_sab++; } }
-    long result = vibeos_x86_64_linux_syscall(frame, frame->rax, frame->rdi,
+    long result = vibeos_x86_64_syscall_any(frame);

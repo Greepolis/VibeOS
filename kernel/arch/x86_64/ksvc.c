@@ -11,6 +11,7 @@
  * docs/abi/phases.md, A2. */
 
 #include "vibeos/sched_policy.h"
+#include "vibeos/abi_nt.h"
 #include "arch_hw_internal.h"
 
 _Static_assert(VIBEOS_HW_MAX_TASKS <= LINUX_FUTEX_TABLE,
@@ -39,6 +40,34 @@ long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
     a[4] = frame->r8;
     a[5] = frame->r9;
     return linux_syscall((struct ks_regs *)(void *)frame, nr, a);
+}
+
+/* The NT convention (docs/abi/windows.md W1): the number in eax, the first four
+ * arguments in r10 (our ntdll's stub moved rcx there, as Windows' does), rdx,
+ * r8 and r9, the rest on the stack where the dispatcher reads them. */
+static long vibeos_x86_64_nt_syscall(vibeos_x86_64_isr_frame_t *frame) {
+    uint64_t a[6];
+
+    a[0] = frame->r10;
+    a[1] = frame->rdx;
+    a[2] = frame->r8;
+    a[3] = frame->r9;
+    a[4] = 0;
+    a[5] = 0;
+    return nt_syscall((struct ks_regs *)(void *)frame, (uint64_t)(uint32_t)frame->rax, a);
+}
+
+/* Bound at exec, read here: a task speaks one personality at a time, and the
+ * one it was given decides how its registers are read. Both entries - the
+ * `syscall` instruction and int 0x80 - ask, so neither is a way into the other
+ * personality's table. */
+long vibeos_x86_64_syscall_any(vibeos_x86_64_isr_frame_t *frame) {
+    int cur = hw_current_task();
+
+    if (cur >= 0 && g_tasks[cur].abi == vibeos_abi_nt()) {
+        return vibeos_x86_64_nt_syscall(frame);
+    }
+    return vibeos_x86_64_linux_syscall(frame, frame->rax, frame->rdi, frame->rsi, frame->rdx);
 }
 
 /* ---- tasks ------------------------------------------------------------------ */
@@ -502,6 +531,9 @@ void ks_exec_switch(int slot, const vibeos_image_t *img) {
     int shared;
 
     t->proc = *img;
+    /* The personality goes with the image: a PE program speaks NT from its
+     * first instruction, and an ELF one exec'd from it Linux again. */
+    t->abi = img->abi ? img->abi : vibeos_abi_linux();
     t->cr3 = hw_proc_cr3(&t->proc);
     t->cr3_set_by = "execve";
     hw_write_cr3(t->cr3);
@@ -528,13 +560,17 @@ void ks_exec_regs(int slot, ks_regs_t *regs, uint64_t entry, uint64_t sp) {
      * space without passing through the scheduler's restore. */
     g_tasks[slot].fs_base = 0;
     hw_wrmsr(MSR_FS_BASE, 0);
-    g_tasks[slot].gs_base = 0;
-    hw_wrmsr(MSR_KERNEL_GS_BASE, 0);   /* the task's, while the kernel runs */
+    /* %gs is the image's: zero for an ELF one, the TEB for an NT one. */
+    g_tasks[slot].gs_base = g_tasks[slot].proc.gs_base;
+    hw_wrmsr(MSR_KERNEL_GS_BASE, g_tasks[slot].gs_base);   /* the task's, while the kernel runs */
     frame->rip = entry;
     frame->cs = VIBEOS_HW_USER_CODE_SEL;
     frame->rflags = 0x202;
     frame->rsp = sp;
     frame->ss = VIBEOS_HW_USER_DATA_SEL;
+    /* An NT image's first thread starts in our ntdll with the PEB in its first
+     * argument; an ELF one finds everything on its stack and this is zero. */
+    frame->rcx = g_tasks[slot].proc.start_arg;
 }
 
 /* ---- registers ------------------------------------------------------------------------ */

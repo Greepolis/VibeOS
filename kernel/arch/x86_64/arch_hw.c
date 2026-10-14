@@ -32,6 +32,7 @@
 #include "vibeos/random.h"
 #include "vibeos/abi.h"
 #include "vibeos/abi_linux.h"
+#include "vibeos/abi_nt.h"
 #include "vibeos/ceildiv.h"
 #include "vibeos/blkdev.h"
 #include "vibeos/io_stats.h"
@@ -749,7 +750,7 @@ void vibeos_x86_64_isr_handler(vibeos_x86_64_isr_frame_t *frame) {
 
     /* Software syscall gate (int 0x80), Linux argument order. */
     if (frame->vector == 0x80u) {
-        frame->rax = (uint64_t)vibeos_x86_64_linux_syscall(frame, frame->rax, frame->rdi, frame->rsi, frame->rdx);
+        frame->rax = (uint64_t)vibeos_x86_64_syscall_any(frame);
         return;
     }
 
@@ -1428,8 +1429,7 @@ void vibeos_x86_64_syscall_dispatch(vibeos_x86_64_isr_frame_t *frame) {
      * the refactor will change is the *dispatch* - the classify/marshal step an
      * ABI translator adds - and measuring only the handler would miss it. */
     uint64_t t0 = hw_tsc();
-    long result = vibeos_x86_64_linux_syscall(frame, frame->rax, frame->rdi,
-                                              frame->rsi, frame->rdx);
+    long result = vibeos_x86_64_syscall_any(frame);
     hw_perf_add(&g_perf_syscall, t0);
     /* rt_sigreturn has already rewritten the whole frame, including rax, to
      * the state the handler interrupted. Overwriting it with a return value
@@ -1606,6 +1606,8 @@ void vibeos_x86_64_hw_early_init(const vibeos_boot_info_t *boot_info) {
     hw_pipe_init();
     hw_mount_table_init();
     vibeos_linux_abi_init();
+    /* And the NT personality's (docs/abi/windows.md W1), by the same rules. */
+    vibeos_nt_abi_init();
 
     /* SSE on, explicitly, on this core too.
      *

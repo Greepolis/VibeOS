@@ -108,6 +108,7 @@ ELSEWHERE = {
     "sched/lifetime": "use_after_publish",        # teardown steps out of order
     "abi/abi": "abi_unimplemented_syscall_nr",      # a number that classifies to NONE
     "abi/abi_linux": "abi_unimplemented_syscall_nr",
+    "abi/abi_nt": "nt_unimplemented_service",       # an NT service asked for that no step wrote (W1)
     "mm/backing": "cache_audit_changed",          # a cached page that no longer matches its file
 }
 

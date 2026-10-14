@@ -176,6 +176,18 @@ if(EXISTS "${PIE_ELF}")
     message(STATUS "EFI media includes a position-independent Linux binary: EFI/BOOT/PIE.ELF")
 endif()
 
+# The NT personality's DLL and the first Windows program (docs/abi/windows.md
+# W1), under /win - a provisional place: where Windows' files live is the
+# filesystem hierarchy's decision, the roadmap's next item.
+set(WIN_NTDLL "${CMAKE_BINARY_DIR}/win/ntdll.dll")
+set(WIN_HELLO "${CMAKE_BINARY_DIR}/win/hello.exe")
+if(EXISTS "${WIN_NTDLL}" AND EXISTS "${WIN_HELLO}")
+    file(MAKE_DIRECTORY "${EFI_ROOT_DIR}/win")
+    file(COPY_FILE "${WIN_NTDLL}" "${EFI_ROOT_DIR}/win/ntdll.dll" ONLY_IF_DIFFERENT)
+    file(COPY_FILE "${WIN_HELLO}" "${EFI_ROOT_DIR}/win/hello.exe" ONLY_IF_DIFFERENT)
+    message(STATUS "EFI media includes the NT personality: /win/ntdll.dll and /win/hello.exe")
+endif()
+
 # The dynamically linked one, plus the interpreter it names. Both are needed:
 # a dynamic executable without its loader is a file the kernel can parse and
 # refuse, which tests nothing about loading.

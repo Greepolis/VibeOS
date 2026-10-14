@@ -207,6 +207,7 @@ set(VIBEOS_ARCH_X86_64_SOURCES
     kernel/arch/x86_64/smp.c
     kernel/arch/x86_64/io_bringup.c
     kernel/arch/x86_64/ksvc.c
+    kernel/arch/x86_64/pe_load.c
     ${VIBEOS_LINUX_ABI_SOURCES}
     ${VIBEOS_NT_ABI_SOURCES}
     kernel/arch/x86_64/apic.c

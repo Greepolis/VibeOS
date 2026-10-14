@@ -835,6 +835,54 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         )
     endif()
 
+    # The NT personality's user side (docs/abi/windows.md W1): our ntdll, built
+    # from the same service list the kernel's table is checked against, and the
+    # first Windows program, both PE32+ images from mingw-w64. Optional as
+    # musl-gcc is: without the cross compiler the media lacks /win and the gate
+    # says nt_absent rather than passing quietly.
+    find_program(VIBEOS_MINGW_GCC x86_64-w64-mingw32-gcc)
+    if(VIBEOS_MINGW_GCC)
+        set(VIBEOS_WIN_DIR "${CMAKE_BINARY_DIR}/win")
+        set(VIBEOS_WIN_SRC "${CMAKE_CURRENT_SOURCE_DIR}/user/win")
+        set(VIBEOS_WIN_FLAGS -O2 -nostdlib -ffreestanding -fno-stack-protector
+            -fno-asynchronous-unwind-tables -mno-red-zone -Wall -Werror
+            -I${CMAKE_CURRENT_SOURCE_DIR}/include -I${VIBEOS_WIN_SRC}/include
+            -I${CMAKE_CURRENT_SOURCE_DIR}/kernel/abi)
+        # ntdll.dll at its own base, its entry the process start, and the import
+        # library programs link against. layout_check.c holds nt_layout.h against
+        # mingw-w64's headers and contributes nothing but the check.
+        add_custom_command(
+            OUTPUT "${VIBEOS_WIN_DIR}/ntdll.dll" "${VIBEOS_WIN_DIR}/libntdll.a"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${VIBEOS_WIN_DIR}"
+            COMMAND "${VIBEOS_MINGW_GCC}" ${VIBEOS_WIN_FLAGS} -fsyntax-only
+                    "${VIBEOS_WIN_SRC}/ntdll/layout_check.c"
+            COMMAND "${VIBEOS_MINGW_GCC}" ${VIBEOS_WIN_FLAGS} -shared
+                    -o "${VIBEOS_WIN_DIR}/ntdll.dll"
+                    "${VIBEOS_WIN_SRC}/ntdll/stubs.S" "${VIBEOS_WIN_SRC}/ntdll/start.c"
+                    -e vibeos_nt_process_start -Wl,--image-base=0x8002000000
+                    -Wl,--out-implib=${VIBEOS_WIN_DIR}/libntdll.a
+            DEPENDS "${VIBEOS_WIN_SRC}/ntdll/stubs.S" "${VIBEOS_WIN_SRC}/ntdll/start.c"
+                    "${VIBEOS_WIN_SRC}/ntdll/layout_check.c"
+                    "${VIBEOS_WIN_SRC}/include/vibeos_ntdll.h"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/include/vibeos/nt_layout.h"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/kernel/abi/nt_services.def"
+            COMMENT "Building our ntdll.dll with mingw-w64"
+            VERBATIM
+        )
+        add_custom_command(
+            OUTPUT "${VIBEOS_WIN_DIR}/hello.exe"
+            COMMAND "${VIBEOS_MINGW_GCC}" ${VIBEOS_WIN_FLAGS}
+                    -o "${VIBEOS_WIN_DIR}/hello.exe" "${VIBEOS_WIN_SRC}/hello/hello.c"
+                    -L${VIBEOS_WIN_DIR} -lntdll -e nt_hello_start
+                    -Wl,--image-base=0x8000000000
+            DEPENDS "${VIBEOS_WIN_SRC}/hello/hello.c" "${VIBEOS_WIN_DIR}/libntdll.a"
+            COMMENT "Building the first Windows program with mingw-w64"
+            VERBATIM
+        )
+        add_custom_target(vibeos_win ALL
+            DEPENDS "${VIBEOS_WIN_DIR}/ntdll.dll" "${VIBEOS_WIN_DIR}/hello.exe")
+    endif()
+
     # Build EFI media layout in artifacts/efi_root with BOOTX64.EFI + kernel payload.
     add_custom_target(vibeos_boot_image
         COMMAND ${CMAKE_COMMAND} -E echo "Creating EFI media layout..."
@@ -844,6 +892,9 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
         DEPENDS vibeos_kernel_elf vibeos_bootloader_efi vibeos_user_hello vibeos_user_init vibeos_user_task vibeos_user_sh vibeos_user_net
         COMMENT "Generating bootable kernel image"
     )
+    if(TARGET vibeos_win)
+        add_dependencies(vibeos_boot_image vibeos_win)
+    endif()
     
     # Consolidated target: build all boot artifacts
     add_custom_target(vibeos_image ALL DEPENDS vibeos_boot_image vibeos_kernel_elf vibeos_bootloader_efi)

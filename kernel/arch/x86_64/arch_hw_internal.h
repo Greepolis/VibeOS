@@ -558,6 +558,29 @@ int hw_task_by_tid(uint32_t tid);
 int hw_user_addr_ok(uint64_t va);
 long vibeos_x86_64_linux_syscall(vibeos_x86_64_isr_frame_t *frame,
                                  uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3);
+/* A system call from ring 3, to whichever personality the task speaks (ksvc.c). */
+long vibeos_x86_64_syscall_any(vibeos_x86_64_isr_frame_t *frame);
+
+/* ---- NT program images (pe_load.c, docs/abi/windows.md W1) -------------------
+ *
+ * hw_proc_create's two halves for a PE image: the program and our ntdll mapped,
+ * then the PEB, the parameters and the TEB built and mapped once the stack is
+ * there. Each returns 0, or hw_exec_refuse's -1 having said why; the caller's
+ * unwinding takes down whatever was mapped. */
+int hw_pe_map_images(hw_proc_t *p, hw_procstate_t *ps, const unsigned char *hdr,
+                     uint64_t len, uint64_t staged, const char *path, uint32_t file_id,
+                     uint64_t *exe_base);
+int hw_pe_start_blocks(hw_proc_t *p, hw_procstate_t *ps, uint64_t exe_base,
+                       const char *const *argv, const char *path);
+/* Where a PE program may be placed: below the stack's guard page. */
+#define VIBEOS_HW_PE_EXE_END (VIBEOS_HW_USER_STACK_FLOOR - 4096ull)
+/* Where our ntdll may be: above the heap's start, below the mapping area. */
+#define VIBEOS_HW_PE_DLL_BASE (VIBEOS_HW_USER_BASE + 0x01000000ull)
+/* The PEB, the parameters and the TEB: five pages just below the mapping area. */
+#define VIBEOS_HW_NT_BLOCK (VIBEOS_HW_USER_MMAP_BASE - 0x00010000ull)
+/* Where the NT personality's DLL is on the boot volume. Provisional: the
+ * filesystem's hierarchy is the roadmap's next item, and it decides. */
+#define VIBEOS_HW_NTDLL_PATH "/win/ntdll.dll"
 
 /* ---- shared with the task lifecycle (task_life.c) ---------------------------
  *

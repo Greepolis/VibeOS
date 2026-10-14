@@ -3547,6 +3547,28 @@ def main():
                 elif "MUSL_ARGS: argc=1" not in text:
                     problems.append("linux_binary_got_wrong_argv")
 
+            # The NT personality (docs/abi/windows.md W1): a PE program on our
+            # ntdll. NT_HELLO_OK is printed only if every answer it checked was
+            # right - the TEB through %gs, the PEB, each W1 service - and a
+            # failure prints which. The one unimplemented service it asks for
+            # on purpose is the only one a healthy boot may name, as syscall
+            # 1999 is on the Linux side; any other is a program asking for a
+            # step nobody has written.
+            nt_absent = False
+            hello_exe = os.path.join(efi_root, "win", "hello.exe")
+            if os.path.exists(hello_exe):
+                if "NT_HELLO_OK" not in text:
+                    failed = re.search(r"NT_HELLO_FAIL (\w+)", text)
+                    problems.append("nt_program_did_not_run" +
+                                    ("=" + failed.group(1) if failed else ""))
+                asked = re.findall(r"unimplemented NT service nr=0x[0-9a-f]+ (\w+)", text)
+                if "NtYieldExecution" not in asked:
+                    problems.append("nt_probe_not_counted")
+                for name in sorted(set(asked) - {"NtYieldExecution"}):
+                    problems.append("nt_unimplemented_service=" + name)
+            else:
+                nt_absent = True
+
             if problems:
                 reason = "invariant_failed:" + ",".join(problems)
                 raise RuntimeError(reason)
@@ -3581,6 +3603,9 @@ def main():
             if ESP == "image" and not L5_DNS_NAME:
                 # A skip that is allowed is printed where the result is read.
                 reason += " dns_absent"
+            if nt_absent:
+                # No mingw-w64, no Windows program: said, as corpus_absent is.
+                reason += " nt_absent"
 
     except Exception as exc:
         reason = str(exc)

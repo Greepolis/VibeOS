@@ -175,6 +175,12 @@ static void hw_sched_bringup(const vibeos_boot_info_t *boot_info) {
                                   "EFI/BOOT/TFORK.ELF\n"
                                   "EFI/BOOT/SIGNAL.ELF\n"
                                   "EFI/BOOT/EVENTS.ELF\n"
+                                  /* The NT personality's first program
+                                   * (docs/abi/windows.md W1): a PE image,
+                                   * exec'd by this Linux-ABI shell like any
+                                   * other, which speaks NT from its first
+                                   * instruction. */
+                                  "/win/hello.exe\n"
                                   /* The reclaim load, alone: the commands here
                                    * run one at a time. It holds the machine at
                                    * its low watermark, where every other

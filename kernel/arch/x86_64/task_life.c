@@ -7,6 +7,7 @@
 
 #include "arch_hw_internal.h"
 #include "vibeos/crash.h"
+#include "vibeos/pe.h"
 
 #define VIBEOS_HW_KERNEL_DS 0x10u
 
@@ -332,6 +333,7 @@ int hw_proc_create(hw_proc_t *p, hw_procstate_t *ps,
     uint8_t at_random[16];
     uint8_t *top_page = 0;
     uint32_t i;
+    uint64_t pe_exe_base = 0;
 
     /* Before anything else, and it is not tidiness.
      *
@@ -356,6 +358,11 @@ int hw_proc_create(hw_proc_t *p, hw_procstate_t *ps,
      * and "every caller must remember to clear a field" is the kind of rule
      * that holds until somebody adds a caller. */
     p->interp_base = 0;
+    /* The same rule for what an NT image adds (docs/abi/windows.md W1): an ELF
+     * image speaks Linux and starts with nothing in rcx or %gs. */
+    p->abi = 0;
+    p->start_arg = 0;
+    p->gs_base = 0;
     /* The arguments, for /proc/<pid>/cmdline (L2 step 6), here for the same
      * reason: as many whole ones as fit, the one that does not cut, each
      * ended by a NUL - which is what a program reading cmdline looks for. */
@@ -371,6 +378,16 @@ int hw_proc_create(hw_proc_t *p, hw_procstate_t *ps,
 
     if (hw_aspace_create(&p->as) != 0) {
         return hw_exec_refuse(VIBEOS_EXEC_NO_ASPACE, path, "aspace_create");
+    }
+    /* A PE image is a Windows program (docs/abi/windows.md W1): the program
+     * and our ntdll instead of a program and its interpreter, and the PEB and
+     * TEB instead of the startup block on the stack. The address space, the
+     * stack and the unwinding on failure are the same. */
+    if (vibeos_pe_is_pe(elf, len < staged ? len : staged)) {
+        if (hw_pe_map_images(p, ps, elf, len, staged, path, file_id, &pe_exe_base) != 0) {
+            goto fail;
+        }
+        goto stack;
     }
     /* The portable parser validates the file and describes it; this loop just
      * places it. Working a page at a time is what makes a page shared between
@@ -567,6 +584,7 @@ int hw_proc_create(hw_proc_t *p, hw_procstate_t *ps,
         vibeos_x86_64_serial_puts("\n");
         vibeos_x86_64_serial_unlock();
     }
+stack:
     for (i = 0; i < VIBEOS_HW_USER_STACK_PAGES; i++) {
         void *page = hw_alloc_page();
         /* Named apart from the image-loading loop's `va` above: two different
@@ -599,6 +617,18 @@ int hw_proc_create(hw_proc_t *p, hw_procstate_t *ps,
         { rc = hw_exec_refuse(VIBEOS_EXEC_NO_MEMORY, path, "stack_region"); goto fail; }
     }
 
+    if (p->abi) {
+        /* The NT image's first thread is entered as a function: the slot it
+         * would return to and the space above it are zero. */
+        for (i = 4096u - 0x40u; i < 4096u; i++) {
+            top_page[i] = 0;
+        }
+        if (hw_pe_start_blocks(p, ps, pe_exe_base, argv, path) != 0) {
+            goto fail;
+        }
+        goto layout;
+    }
+
     /* Fill the topmost stack page with the startup block. The page is still
      * identity-mapped for the kernel, so it is written here through its
      * physical address while the builder computes every pointer it stores in
@@ -626,6 +656,7 @@ int hw_proc_create(hw_proc_t *p, hw_procstate_t *ps,
         /* Arguments too large for the stack we mapped. */
         { rc = hw_exec_refuse(VIBEOS_EXEC_ARGS_TOO_LARGE, path, "build_stack"); goto fail; }
     }
+layout:
     ps->brk_cur = VIBEOS_HW_USER_HEAP_BASE;
     __atomic_store_n(&ps->mmap_cur, VIBEOS_HW_USER_MMAP_BASE, __ATOMIC_RELEASE);
     /* The denominator. A count of refusals with nothing to compare it against
@@ -654,6 +685,9 @@ fail:
     p->entry = 0;
     p->user_sp = 0;
     p->interp_base = 0;
+    p->abi = 0;
+    p->start_arg = 0;
+    p->gs_base = 0;
     return rc;
 }
 
