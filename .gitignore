@@ -64,6 +64,7 @@ build-fuzz/
 qemu-cli-summary-*.txt
 qemu-cli-serial-*.log
 qemu-cli-err-*.log
+qemu-cli-gate*.out
 wedge-serial*.log
 SUMMARY.md
 build-asan/

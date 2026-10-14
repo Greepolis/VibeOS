@@ -38,12 +38,22 @@ echo "booting $n times, $par at a time, ${budget}s budget each"
 
 run_one() {
     local id="$1"
-    VIBEOS_SMOKE_ID="$id" python3 scripts/qemu-cli-smoke-linux.py "$d" "$budget" \
-        > /dev/null 2>&1
     local sfx=""
     [ "$id" != "0" ] && sfx="-$id"
+    # The last run's verdict for this id is moved aside first, not left to be
+    # read. A gate that died before writing one - output thrown away, as it
+    # was - left the previous day's summary in place, and this script reported
+    # that day's failure, log and all, as a boot of today's kernel (W1,
+    # 2026-10-14: a "boot 5" whose log was from the 13th and whose kernel had
+    # never heard of the program it was supposedly missing). The gate's own
+    # output is kept beside its log for the same reason.
+    [ -f "qemu-cli-summary${sfx}.txt" ] && mv -f "qemu-cli-summary${sfx}.txt" "qemu-cli-summary${sfx}.prev.txt"
+    [ -f "qemu-cli-serial${sfx}.log" ] && mv -f "qemu-cli-serial${sfx}.log" "qemu-cli-serial${sfx}.prev.log"
+    VIBEOS_SMOKE_ID="$id" python3 scripts/qemu-cli-smoke-linux.py "$d" "$budget" \
+        > "qemu-cli-gate${sfx}.out" 2>&1
     local r
     r=$(grep -o '^reason=.*' "qemu-cli-summary${sfx}.txt" 2>/dev/null | head -1)
+    [ -z "$r" ] && r="reason=gate_wrote_no_verdict (see qemu-cli-gate${sfx}.out)"
     case "$r" in
         *cli_and_network_verified*) echo "boot $id: pass" ;;
         *) echo "boot $id: FAIL $r"
