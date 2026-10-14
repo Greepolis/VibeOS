@@ -9565,6 +9565,7 @@ int test_loader(void);
 int test_account(void);
 int test_sched_policy(void);
 int test_forkguard(void);
+int test_pe(void);          /* pe_tests.c: the PE32+ parser (docs/abi/windows.md W1) */
 
 /* M-037: st_blocks is ceil(size / 512) and must not wrap for a size a volume
  * can declare. The old (size + 511) / 512 gave 0 at UINT64_MAX. */
@@ -9940,6 +9941,7 @@ int main(void) {
     RUN_TEST(test_account);
     RUN_TEST(test_sched_policy);
     RUN_TEST(test_forkguard);
+    RUN_TEST(test_pe);
     RUN_TEST(test_pmm);
     RUN_TEST(test_pmm_reserve);
     RUN_TEST(test_blockcache_hits);

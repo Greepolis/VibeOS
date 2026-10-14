@@ -22,7 +22,10 @@
 
 #include <stdint.h>
 
-#define VIBEOS_ELF_MAX_SEGMENTS 8u
+/* Sixteen since docs/abi/windows.md W1: a PE image is described in this form
+ * too (vibeos/pe.h), one segment for its headers and one per section, and a
+ * mingw-w64 executable has nine or ten sections where an ELF has four loads. */
+#define VIBEOS_ELF_MAX_SEGMENTS 16u
 #define VIBEOS_ELF_PAGE_SIZE 4096u
 
 /* Long enough for every interpreter path in practice - the usual one,

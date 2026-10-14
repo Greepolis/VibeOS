@@ -201,6 +201,7 @@ if(VIBEOS_BUILD_TESTS)
         tests/kernel/account_tests.c
         tests/kernel/sched_policy_tests.c
         tests/kernel/forkguard_tests.c
+        tests/kernel/pe_tests.c
         # The Linux personality, on the services' host implementation (A2).
         tests/kernel/linux_abi_tests.c
         tests/kernel/ksvc_fake.c
@@ -211,6 +212,35 @@ if(VIBEOS_BUILD_TESTS)
     )
     target_link_libraries(vibeos_kernel_tests PRIVATE vibeos_kernel_core vibeos_user_core vibeos_tls)
     target_include_directories(vibeos_kernel_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+    # A PE32+ image mingw-w64 linked, and what mingw's objdump says of it, for the
+    # PE parser's test (docs/abi/windows.md W1): the artefact and the description
+    # neither the parser nor its test wrote. Optional like musl-gcc; the test
+    # prints that it is absent rather than passing quietly.
+    find_program(VIBEOS_MINGW_GCC x86_64-w64-mingw32-gcc)
+    find_program(VIBEOS_MINGW_OBJDUMP x86_64-w64-mingw32-objdump)
+    if(VIBEOS_MINGW_GCC AND VIBEOS_MINGW_OBJDUMP)
+        set(VIBEOS_PE_FX_DIR "${CMAKE_BINARY_DIR}/pe_fixture")
+        set(VIBEOS_PE_FX_SRC "${CMAKE_CURRENT_SOURCE_DIR}/tests/win/pe_fixture.c")
+        add_custom_command(
+            OUTPUT "${VIBEOS_PE_FX_DIR}/pe_fixture.exe" "${VIBEOS_PE_FX_DIR}/pe_fixture.h.txt"
+                   "${VIBEOS_PE_FX_DIR}/pe_fixture.p.txt"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${VIBEOS_PE_FX_DIR}"
+            COMMAND "${VIBEOS_MINGW_GCC}" -O1 -nostdlib -ffreestanding -e fixture_start
+                    -Wl,--image-base=0x8000000000 -o "${VIBEOS_PE_FX_DIR}/pe_fixture.exe"
+                    "${VIBEOS_PE_FX_SRC}"
+            COMMAND "${VIBEOS_MINGW_OBJDUMP}" -h "${VIBEOS_PE_FX_DIR}/pe_fixture.exe"
+                    > "${VIBEOS_PE_FX_DIR}/pe_fixture.h.txt"
+            COMMAND "${VIBEOS_MINGW_OBJDUMP}" -p "${VIBEOS_PE_FX_DIR}/pe_fixture.exe"
+                    > "${VIBEOS_PE_FX_DIR}/pe_fixture.p.txt"
+            DEPENDS "${VIBEOS_PE_FX_SRC}"
+            COMMENT "Building a PE32+ image with mingw-w64 for the PE parser's test"
+        )
+        add_custom_target(vibeos_pe_fixture DEPENDS "${VIBEOS_PE_FX_DIR}/pe_fixture.exe")
+        add_dependencies(vibeos_kernel_tests vibeos_pe_fixture)
+        target_compile_definitions(vibeos_kernel_tests PRIVATE
+            VIBEOS_PE_FIXTURE_DIR="${VIBEOS_PE_FX_DIR}")
+    endif()
     add_test(NAME vibeos-kernel-host COMMAND vibeos_kernel_tests)
 
     # Randomised torture for the memory manager, checked against a reference

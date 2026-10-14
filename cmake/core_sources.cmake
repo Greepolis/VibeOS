@@ -42,6 +42,7 @@ set(VIBEOS_KERNEL_CORE_SOURCES
     kernel/mm/usage.c
     kernel/core/kmain.c
     kernel/core/elf.c
+    kernel/core/pe.c
     kernel/fs/fat_chain.c
     kernel/fs/blockcache.c
     kernel/fs/vfs.c

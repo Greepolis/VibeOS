@@ -41,6 +41,7 @@ typedef enum {
     VIBEOS_MBZ_PTIMER_ORPHAN,       /* a timer fired for a process that no longer exists (L2)      */
     VIBEOS_MBZ_SCHED_ADMIT_REFUSED, /* a task admitted past the scheduler policy's table (L2)       */
     VIBEOS_MBZ_RANDOM_UNLOCKED,     /* the random pool was used with no lock registered (L2)       */
+    VIBEOS_MBZ_PE_MALFORMED,        /* a structurally impossible PE image (docs/abi/windows.md W1) */
     VIBEOS_MBZ_COUNT
 } vibeos_mbz_id_t;
 

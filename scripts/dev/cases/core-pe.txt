@@ -1,0 +1,57 @@
+# The PE32+ parser (kernel/core/pe.c, docs/abi/windows.md W1), broken one rule
+# at a time. Each is caught by tests/kernel/pe_tests.c on the host; the mingw
+# image compared with objdump is what catches the size and permission cases on a
+# real linker's output, not only on the images the test writes itself.
+#
+# Target source: kernel/core/pe.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/core/pe.c scripts/dev/cases/core-pe.txt build-gcc-Release
+
+### overlapping sections are accepted
+--- old
+        if ((va & (section_align - 1u)) != 0u || va < last_end) {
++++ new
+        if ((va & (section_align - 1u)) != 0u) {
+
+### an image outside the caller's window is accepted (and would be mapped there)
+--- old
+    if (out->image_base < min_allowed || image_end > end_allowed) {
++++ new
+    if (out->image_base < min_allowed) {
+
+### the padded raw size is mapped as file data instead of the virtual size
+--- old
+        filesz = raw < memsz ? raw : memsz;
++++ new
+        filesz = raw;
+
+### every section is executable
+--- old
+        if (ch & PE_SCN_EXECUTE) {
++++ new
+        if (ch & PE_SCN_EXECUTE || 1) {
+
+### raw data past the end of the file is accepted
+--- old
+            (!add_ok(raw_at, filesz, &raw_end) || raw_end > file_len)) {
++++ new
+            (!add_ok(raw_at, filesz, &raw_end))) {
+
+### an entry point outside the image is accepted
+--- old
+        if (entry_rva >= out->image_size) {
++++ new
+        if (entry_rva > 0xFFFFFFFFu) {
+
+### the headers are not mapped
+--- old
+    L->count = 1;
+    last_end = out->headers_size;
++++ new
+    L->count = 0;
+    last_end = out->headers_size;
+
+### a malformed image is not counted as must-be-zero
+--- old
+        vibeos_mbz_hit(VIBEOS_MBZ_PE_MALFORMED, (uint64_t)rc);
++++ new
+        (void)rc;
