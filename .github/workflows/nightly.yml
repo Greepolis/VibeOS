@@ -40,7 +40,7 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-x86 qemu-utils ninja-build build-essential ovmf musl-tools busybox-static ntfs-3g exfatprogs mtools
+          sudo apt-get install -y qemu-system-x86 qemu-utils ninja-build build-essential ovmf musl-tools busybox-static ntfs-3g exfatprogs mtools gcc-mingw-w64-x86-64
 
       - name: Build
         run: |
@@ -108,7 +108,7 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-x86 qemu-utils ninja-build build-essential ovmf musl-tools busybox-static ntfs-3g exfatprogs mtools
+          sudo apt-get install -y qemu-system-x86 qemu-utils ninja-build build-essential ovmf musl-tools busybox-static ntfs-3g exfatprogs mtools gcc-mingw-w64-x86-64
 
       # Two boots at two round counts, because one figure cannot tell a fixed
       # startup cost from a per-round leak - and those are the same number with

@@ -42,7 +42,7 @@ jobs:
           # programs, BusyBox and the FAT image they are tested with, so the
           # signed image was not the image CI booted (external review,
           # 2026-10-07). Keep this line equal to filesystem-runtime.yml's.
-          sudo apt-get install -y qemu-system-x86 qemu-utils ninja-build build-essential clang ovmf xorriso musl-tools busybox-static ntfs-3g exfatprogs mtools
+          sudo apt-get install -y qemu-system-x86 qemu-utils ninja-build build-essential clang ovmf xorriso musl-tools busybox-static ntfs-3g exfatprogs mtools gcc-mingw-w64-x86-64
 
       - name: Build the kernel image
         run: |
