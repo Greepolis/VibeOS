@@ -88,6 +88,16 @@ typedef struct vibeos_image {
      * cannot reach into it to change what it says. */
     char cmdline[256];
     uint32_t cmdline_len;
+    /* The personality the image speaks, which exec binds to the task: 0 is
+     * Linux, the ABI every ELF program here is built for; a PE image is NT's
+     * (docs/abi/windows.md W1). And what an NT image's first thread starts
+     * with: the PEB in its first argument register, the TEB as its %gs base.
+     * All three are zero for an ELF image - cleared by the function that builds
+     * an image, as interp_base is, because a field written on one path and read
+     * on all of them leaks whatever was there. */
+    const struct vibeos_abi *abi;
+    uint64_t start_arg;
+    uint64_t gs_base;
 } vibeos_image_t;
 
 /* What belongs to a process rather than to one of its threads.

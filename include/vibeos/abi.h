@@ -253,8 +253,14 @@ const vibeos_op_entry_t *vibeos_op_entry(vibeos_op_id_t id);
  * and the trapframe for the few calls that need the whole register state (fork
  * copies it, execve rewrites it, sigreturn restores it). The frame is opaque here
  * - this header is portable - and the architecture's handlers cast it back. */
+/* Sixteen since docs/abi/windows.md W1: Linux passes six, an NT service takes up
+ * to fourteen - four in registers, the rest on the caller's stack, gathered by
+ * that personality's dispatcher before the row runs. A Linux call leaves the
+ * rest zero. */
+#define VIBEOS_CALL_ARGS 16u
+
 typedef struct vibeos_call {
-    uint64_t a[6];
+    uint64_t a[VIBEOS_CALL_ARGS];
     void *frame;
 } vibeos_call_t;
 

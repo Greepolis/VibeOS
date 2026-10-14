@@ -1,0 +1,139 @@
+#ifndef VIBEOS_NT_LAYOUT_H
+#define VIBEOS_NT_LAYOUT_H
+
+/* The NT structures the kernel writes and our own ntdll reads, at Windows'
+ * offsets (docs/abi/windows.md W1) - the counterpart of linux_layout.h.
+ *
+ * Offsets, not structures, for the blocks a program finds in its own memory
+ * (TEB, PEB, process parameters): the kernel builds them a byte at a time into
+ * pages it is about to map, and our ntdll reads the fields it needs through
+ * these numbers too, so there is one statement of where each field is. They
+ * are x64's. What says they are right is not this file: user/win/ntdll checks
+ * each against mingw-w64's own winternl.h and winnt.h when it is built, the
+ * artefact neither side here wrote.
+ *
+ * Freestanding: included by the kernel and by code mingw-w64 compiles. */
+
+#include <stdint.h>
+
+/* ---- status codes ---------------------------------------------------------------- */
+
+#define VIBEOS_STATUS_SUCCESS                0x00000000u
+#define VIBEOS_STATUS_UNSUCCESSFUL           0xC0000001u
+#define VIBEOS_STATUS_NOT_IMPLEMENTED        0xC0000002u
+#define VIBEOS_STATUS_INVALID_INFO_CLASS     0xC0000003u
+#define VIBEOS_STATUS_INFO_LENGTH_MISMATCH   0xC0000004u
+#define VIBEOS_STATUS_ACCESS_VIOLATION       0xC0000005u
+#define VIBEOS_STATUS_INVALID_HANDLE         0xC0000008u
+#define VIBEOS_STATUS_INVALID_PARAMETER      0xC000000Du
+#define VIBEOS_STATUS_ACCESS_DENIED          0xC0000022u
+#define VIBEOS_STATUS_OBJECT_TYPE_MISMATCH   0xC0000024u
+#define VIBEOS_STATUS_DLL_NOT_FOUND          0xC0000135u
+#define VIBEOS_STATUS_ENTRYPOINT_NOT_FOUND   0xC0000139u
+#define VIBEOS_STATUS_PIPE_BROKEN            0xC000014Bu
+#define VIBEOS_STATUS_NO_MEMORY              0xC0000017u
+#define VIBEOS_STATUS_INVALID_IMAGE_FORMAT   0xC000007Bu
+#define VIBEOS_STATUS_PROCEDURE_NOT_FOUND    0xC000007Au
+
+/* The pseudo-handles every Windows program names itself by. */
+#define VIBEOS_NT_CURRENT_PROCESS ((uint64_t)-1)
+#define VIBEOS_NT_CURRENT_THREAD  ((uint64_t)-2)
+
+/* ---- TEB ------------------------------------------------------------------------- *
+ * Reached through %gs: gs:[0x30] is the TEB's own address, gs:[0x60] the PEB's. */
+#define VIBEOS_TEB_EXCEPTION_LIST   0x000u
+#define VIBEOS_TEB_STACK_BASE       0x008u
+#define VIBEOS_TEB_STACK_LIMIT      0x010u
+#define VIBEOS_TEB_SELF             0x030u
+#define VIBEOS_TEB_CLIENT_PROCESS   0x040u   /* ClientId.UniqueProcess       */
+#define VIBEOS_TEB_CLIENT_THREAD    0x048u   /* ClientId.UniqueThread        */
+#define VIBEOS_TEB_TLS_POINTER      0x058u   /* ThreadLocalStoragePointer    */
+#define VIBEOS_TEB_PEB              0x060u
+#define VIBEOS_TEB_LAST_ERROR       0x068u
+#define VIBEOS_TEB_SIZE             0x1838u  /* x64's TEB; we map two pages  */
+
+/* ---- PEB ------------------------------------------------------------------------- */
+#define VIBEOS_PEB_BEING_DEBUGGED   0x002u
+#define VIBEOS_PEB_IMAGE_BASE       0x010u
+#define VIBEOS_PEB_LDR              0x018u
+#define VIBEOS_PEB_PROCESS_PARAMS   0x020u
+#define VIBEOS_PEB_PROCESS_HEAP     0x030u
+#define VIBEOS_PEB_NUMBER_OF_PROCESSORS 0x0B8u
+#define VIBEOS_PEB_OS_MAJOR         0x118u
+#define VIBEOS_PEB_OS_MINOR         0x11Cu
+#define VIBEOS_PEB_OS_BUILD         0x120u
+#define VIBEOS_PEB_OS_PLATFORM      0x124u
+#define VIBEOS_PEB_SESSION_ID       0x2C0u
+#define VIBEOS_PEB_SIZE             0x7C8u
+
+/* ---- RTL_USER_PROCESS_PARAMETERS ------------------------------------------------- */
+#define VIBEOS_RUPP_MAXIMUM_LENGTH  0x000u
+#define VIBEOS_RUPP_LENGTH          0x004u
+#define VIBEOS_RUPP_FLAGS           0x008u   /* 1: normalised, pointers absolute */
+#define VIBEOS_RUPP_CONSOLE_HANDLE  0x010u
+#define VIBEOS_RUPP_STD_INPUT       0x020u
+#define VIBEOS_RUPP_STD_OUTPUT      0x028u
+#define VIBEOS_RUPP_STD_ERROR       0x030u
+#define VIBEOS_RUPP_CURDIR_PATH     0x038u   /* UNICODE_STRING                   */
+#define VIBEOS_RUPP_CURDIR_HANDLE   0x048u
+#define VIBEOS_RUPP_DLL_PATH        0x050u   /* UNICODE_STRING                   */
+#define VIBEOS_RUPP_IMAGE_PATH      0x060u   /* UNICODE_STRING                   */
+#define VIBEOS_RUPP_COMMAND_LINE    0x070u   /* UNICODE_STRING                   */
+#define VIBEOS_RUPP_ENVIRONMENT     0x080u
+#define VIBEOS_RUPP_SIZE            0x400u   /* the fields, padded; strings follow */
+#define VIBEOS_RUPP_FLAG_NORMALIZED 0x1u
+
+/* UNICODE_STRING on x64: Length and MaximumLength in bytes, then the pointer. */
+#define VIBEOS_USTR_LENGTH          0x0u
+#define VIBEOS_USTR_MAXIMUM         0x2u
+#define VIBEOS_USTR_BUFFER          0x8u
+#define VIBEOS_USTR_SIZE            0x10u
+
+/* ---- the services' structures ----------------------------------------------------- */
+
+/* IO_STATUS_BLOCK: the status (or a pointer, unioned), then Information. */
+typedef struct {
+    uint64_t status;      /* NTSTATUS in the low 32 bits */
+    uint64_t information;
+} vibeos_nt_iosb_t;
+
+/* PROCESS_BASIC_INFORMATION, ProcessBasicInformation (class 0). */
+typedef struct {
+    uint64_t exit_status;
+    uint64_t peb;
+    uint64_t affinity_mask;
+    uint64_t base_priority;
+    uint64_t unique_process_id;
+    uint64_t inherited_from_pid;
+} vibeos_nt_process_basic_t;
+
+#define VIBEOS_NT_PROCESS_BASIC_INFORMATION 0u
+
+/* SYSTEM_BASIC_INFORMATION, SystemBasicInformation (class 0). */
+typedef struct {
+    uint32_t reserved;
+    uint32_t timer_resolution;        /* in 100 ns */
+    uint32_t page_size;
+    uint32_t physical_pages;
+    uint32_t lowest_physical_page;
+    uint32_t highest_physical_page;
+    uint32_t allocation_granularity;
+    uint32_t pad;
+    uint64_t minimum_user_address;
+    uint64_t maximum_user_address;
+    uint64_t active_processors_mask;
+    uint8_t  processors;
+    uint8_t  pad2[7];
+} vibeos_nt_system_basic_t;
+
+#define VIBEOS_NT_SYSTEM_BASIC_INFORMATION 0u
+
+/* 100-ns intervals between 1601-01-01 and 1970-01-01: Windows counts from the
+ * first, the kernel's clock from the second. */
+#define VIBEOS_NT_EPOCH_DELTA 116444736000000000ull
+
+/* The frequency NtQueryPerformanceCounter reports: Windows' own on current
+ * machines, and the clock's unit, 100 ns. */
+#define VIBEOS_NT_PERF_FREQUENCY 10000000ull
+
+#endif

@@ -180,6 +180,18 @@ set(VIBEOS_LINUX_ABI_SOURCES
     ${VIBEOS_ABI_FILES_SOURCES}
 )
 
+# The NT personality (docs/abi/windows.md W1), portable for the same reason as
+# Linux's: the image links it against the architecture's services, the host
+# tests against the fake.
+set(VIBEOS_NT_ABI_SOURCES
+    kernel/abi/abi_nt.c
+    kernel/abi/nt/dispatch.c
+    kernel/abi/nt/process.c
+    kernel/abi/nt/file.c
+    kernel/abi/nt/system.c
+    kernel/abi/nt/start.c
+)
+
 # The freestanding half of the kernel image: hardware bring-up that host tests
 # never link. Kept here for the same reason as the lists above - it was written
 # out by hand in CMakeLists.txt, which made it a second place to remember, and
@@ -196,6 +208,7 @@ set(VIBEOS_ARCH_X86_64_SOURCES
     kernel/arch/x86_64/io_bringup.c
     kernel/arch/x86_64/ksvc.c
     ${VIBEOS_LINUX_ABI_SOURCES}
+    ${VIBEOS_NT_ABI_SOURCES}
     kernel/arch/x86_64/apic.c
     kernel/arch/x86_64/blk.c
     kernel/arch/x86_64/ahci.c

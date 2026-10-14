@@ -69,7 +69,8 @@ CHOKEPOINTS = {
         "reach. A second call is a handler that decided for itself what a valid "
         "pointer is."),
     "ks_user_ok": (
-        3,   # definition, its declaration in vibeos/ksvc.h, and linux_user_ok's call
+        4,   # definition, its declaration in vibeos/ksvc.h, linux_user_ok's call, and
+             # nt_user_ok's: the NT personality's one door (docs/abi/windows.md W1)
         "the same door, one level up: the kernel service a personality judges a "
         "user range with. One caller per personality - Linux's is linux_user_ok. "
         "A handler calling it directly is a handler that skipped the dispatcher's "

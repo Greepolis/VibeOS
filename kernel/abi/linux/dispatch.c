@@ -168,8 +168,8 @@ long linux_syscall(struct ks_regs *frame, uint64_t nr, const uint64_t a[6]) {
 
         uint32_t i;
 
-        for (i = 0; i < 6u; i++) {
-            call.a[i] = a[i];
+        for (i = 0; i < VIBEOS_CALL_ARGS; i++) {
+            call.a[i] = i < 6u ? a[i] : 0u;   /* six, and nothing left over */
         }
         call.frame = frame;
         {

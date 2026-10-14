@@ -1,0 +1,35 @@
+# The NT dispatcher (kernel/abi/nt/dispatch.c, docs/abi/windows.md W1), broken
+# one rule at a time; caught by tests/kernel/nt_abi_tests.c on the host.
+#
+# Target source: kernel/abi/nt/dispatch.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/nt/dispatch.c scripts/dev/cases/nt-dispatch.txt build-gcc-Release
+
+### the arguments on the caller's stack are read without being judged
+--- old
+        if (s->args > VIBEOS_CALL_ARGS || !nt_user_ok(at, len, 0) ||
++++ new
+        if (s->args > VIBEOS_CALL_ARGS ||
+
+### the stack arguments are read from the frame's stack pointer, not past the shadow space
+--- old
+        uint64_t at = ks_regs_sp(frame) + 0x28u;
++++ new
+        uint64_t at = ks_regs_sp(frame) + 0x20u;
+
+### a row's pointer descriptors are not checked
+--- old
+    if (vibeos_abi_check_pointers(row, &call, nt_user_ok, 1) != 0) {
++++ new
+    if (0) {
+
+### a refused service is counted as unimplemented news
+--- old
+        if (s->state == VIBEOS_NT_REFUSED) {
++++ new
+        if (s->state == VIBEOS_NT_REFUSED && 0) {
+
+### an unimplemented service is not named on the console
+--- old
+        ks_con_puts(s->name);
++++ new
+        ks_con_puts("");

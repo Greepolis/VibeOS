@@ -1,0 +1,30 @@
+# The W1 services (kernel/abi/nt/file.c, process.c, system.c, start.c and the
+# registry, docs/abi/windows.md W1), broken one rule at a time; caught by
+# tests/kernel/nt_abi_tests.c on the host. One target per run.
+#
+# Target source: kernel/abi/nt/file.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/nt/file.c scripts/dev/cases/nt-services.txt build-gcc-Release
+
+### NtWriteFile reads its ULONG length as 64 bits
+--- old
+      nt_write_file(ARG(0), ARG(1), ARG(2), ARG(3), ARG(4), ARG(5), NT_ARG32(6), ARG(7)))
++++ new
+      nt_write_file(ARG(0), ARG(1), ARG(2), ARG(3), ARG(4), ARG(5), ARG(6), ARG(7)))
+
+### a handle that is not a multiple of four is taken as one
+--- old
+    if (me < 0 || handle == 0u || (handle & 3u) != 0u || handle / 4u > (uint64_t)VIBEOS_FD_MAX) {
++++ new
+    if (me < 0 || handle == 0u || handle / 4u > (uint64_t)VIBEOS_FD_MAX) {
+
+### an offset is ignored instead of refused
+--- old
+    if (event != 0u || apc != 0u || offset != 0u) {
++++ new
+    if (event != 0u || apc != 0u) {
+
+### the status block reports nothing written
+--- old
+    iosb.information = n < 0 ? 0u : (uint64_t)n;
++++ new
+    iosb.information = 0u;

@@ -209,6 +209,9 @@ if(VIBEOS_BUILD_TESTS)
         tests/kernel/linux_layout_tests.c
         tests/kernel/linux_layout_libc.c
         ${VIBEOS_LINUX_ABI_SOURCES}
+        # The NT personality, on the same fake (docs/abi/windows.md W1).
+        tests/kernel/nt_abi_tests.c
+        ${VIBEOS_NT_ABI_SOURCES}
     )
     target_link_libraries(vibeos_kernel_tests PRIVATE vibeos_kernel_core vibeos_user_core vibeos_tls)
     target_include_directories(vibeos_kernel_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
