@@ -227,3 +227,48 @@ Order: relocation; the object manager's core (types, `NtClose`,
 `NtDuplicateObject`, the namespace); `NtOpenFile` and image sections; ntdll's
 loader; events, mutants, semaphores and the waits; then `ntdll:om` and
 `ntdll:sync` run.
+
+### Done: base relocation (`8cdb675`)
+
+`hello.exe` is linked at `0x140000000` and every boot moves it to
+`USER_BASE + 8 MiB`; the kernel's log says `moved from 0x140000000`.
+
+### Done: the object manager's core, events and waits (`f8dfd6f`)
+
+`NtClose`, `NtDuplicateObject`, events and both waits, on the descriptor table
+with access masks and a flat namespace of whole paths. Host-tested, 19 sabotage
+cases red; no Windows program uses them at boot yet.
+
+### Done: msvcrt.dll
+
+Wine's test executables import their C runtime from `msvcrt.dll`, so VibeOS
+ships one, written from the C standard and Microsoft's documentation and never
+from another implementation: `user/win/msvcrt`, a freestanding x64 DLL
+exporting exactly the 74 names the tests import (`msvcrt.def`), importing only
+`NtWriteFile`, `NtTerminateProcess` and `NtQuerySystemTime` from our `ntdll`.
+It is not loaded by anything yet.
+
+- **The logic is portable C** (`crt_core.c`, `uint16_t` for a wide character,
+  `int32_t` for msvcrt's `long`) that mingw-w64 builds into the DLL and the
+  host builds into `vibeos_msvcrt_tests`; `msvcrt.c` is the Windows part -
+  the exported names, the three standard streams (`__iob_func` returns an array
+  whose element size is checked against mingw's `struct _iobuf`), the heap's
+  16 MiB arena in `.bss`, the command line from the PEB.
+- **msvcrt's printf, not C99's**: `%ld` is 32 bits, `%I64d`/`%Id` exist, `%p` is
+  sixteen upper-case digits, `%n` is refused, exponents have three digits, a tie
+  rounds away from zero, infinities are `1.#INF`, and `_vsnprintf` returns -1 for
+  a truncated result and writes no NUL then. Where it agrees with C99 it is held
+  against glibc's `snprintf` (about 5,950 generated cases per seed, the seed
+  printed; floating point is expanded exactly and rounded once, which is the
+  only way to agree at every precision).
+- **Absent services are answered as a runtime with nothing behind it would**:
+  no files until W4 (`fopen` fails, `fgets` finds nothing), no environment
+  block (`getenv` finds nothing), no locking until W5 (the heap, `strtok`'s
+  position and the generator's seed are statics).
+- **Measured**: `vibeos_msvcrt_tests` (3.2 million checks), a layout check
+  against mingw-w64's headers at every build, `check-msvcrt-exports.py`
+  (exports equal the `.def`, imports are `ntdll.dll` alone), and sabotage
+  (`cases/win-msvcrt.txt`, 20 of 20 red).
+
+Not done: running it. The DLL has not been executed on VibeOS; what runs on
+the host is its core, not the glue in `msvcrt.c`.

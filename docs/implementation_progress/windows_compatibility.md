@@ -38,6 +38,9 @@ that a loader exists, as this file said it would be.
   every NT service listed with its step in
   [../abi/nt-services.md](../abi/nt-services.md).
 - W1 is done: see [../abi/windows.md](../abi/windows.md), "W1".
+- W2 has begun: our own `msvcrt.dll` (`user/win/msvcrt`) is built and tested -
+  see [../abi/windows.md](../abi/windows.md), "W2: msvcrt". Nothing loads it
+  yet; the loader that maps DLLs from disk is the next piece.
 - W2 onwards: as the plan lists them.
 
 ## Next checkpoint

@@ -306,6 +306,33 @@ if(VIBEOS_BUILD_TESTS)
     target_include_directories(vibeos_filelock_torture PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     add_test(NAME vibeos-filelock-torture COMMAND vibeos_filelock_torture 1 3000)
 
+    # msvcrt.dll's portable core (docs/abi/windows.md W2) on the host: printf
+    # held against glibc's and against msvcrt's documented differences, the heap
+    # against a model, the argv rules against Microsoft's own examples. The DLL
+    # is built from the same crt_core.c by mingw-w64 (vibeos_win, below). A
+    # failure prints the seed; pass it back as the first argument to replay.
+    # Unix hosts only: the comparison is with glibc, and the harness leans on
+    # signals and aligned_alloc that the Windows CI job's mingw does not have.
+    if(UNIX)
+        add_executable(vibeos_msvcrt_tests
+            tests/win/msvcrt_tests.c
+            user/win/msvcrt/crt_core.c
+        )
+        target_include_directories(vibeos_msvcrt_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/user/win/msvcrt)
+        # The core's own memcpy and memset must not become calls to themselves:
+        # gcc spells that -fno-tree-loop-distribute-patterns, which clang - the
+        # CI's other compiler - rejects outright; clang's nearest is
+        # -fno-builtin.
+        target_compile_options(vibeos_msvcrt_tests PRIVATE -Wall -Wextra)
+        if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+            target_compile_options(vibeos_msvcrt_tests PRIVATE -fno-tree-loop-distribute-patterns)
+        else()
+            target_compile_options(vibeos_msvcrt_tests PRIVATE -fno-builtin)
+        endif()
+        target_link_libraries(vibeos_msvcrt_tests PRIVATE m)
+        add_test(NAME vibeos-msvcrt-host COMMAND vibeos_msvcrt_tests)
+    endif()
+
     # The FAT writer on a volume mformat made, for mdir and mcopy to read back
     # (scripts/dev/verify-fat-mtools.sh): the artefact neither side of the host
     # tests controls.
@@ -870,6 +897,31 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
             COMMENT "Building our ntdll.dll with mingw-w64"
             VERBATIM
         )
+        # msvcrt.dll: the C runtime Wine's tests import (W2), at its own base. The
+        # core is the file the host tests compile too. -fno-tree-loop-distribute-
+        # patterns keeps gcc from turning memcpy's loop into a call to memcpy,
+        # which is this DLL's own export; -fno-math-errno lets sqrt be one
+        # instruction instead of a call to a function that is not here.
+        # layout_check.c is compiled hosted: it needs mingw-w64's float.h and
+        # stdio.h, which -ffreestanding would hide.
+        add_custom_command(
+            OUTPUT "${VIBEOS_WIN_DIR}/msvcrt.dll"
+            COMMAND "${VIBEOS_MINGW_GCC}" -O2 -Wall -Werror -fsyntax-only
+                    "${VIBEOS_WIN_SRC}/msvcrt/layout_check.c"
+            COMMAND "${VIBEOS_MINGW_GCC}" ${VIBEOS_WIN_FLAGS}
+                    -fno-tree-loop-distribute-patterns -fno-math-errno -shared
+                    -o "${VIBEOS_WIN_DIR}/msvcrt.dll"
+                    "${VIBEOS_WIN_SRC}/msvcrt/msvcrt.c" "${VIBEOS_WIN_SRC}/msvcrt/crt_core.c"
+                    "${VIBEOS_WIN_SRC}/msvcrt/msvcrt.def"
+                    -e vibeos_msvcrt_entry -Wl,--image-base=0x8004000000
+                    -L${VIBEOS_WIN_DIR} -lntdll
+            DEPENDS "${VIBEOS_WIN_SRC}/msvcrt/msvcrt.c" "${VIBEOS_WIN_SRC}/msvcrt/crt_core.c"
+                    "${VIBEOS_WIN_SRC}/msvcrt/crt_core.h" "${VIBEOS_WIN_SRC}/msvcrt/crt_file.h"
+                    "${VIBEOS_WIN_SRC}/msvcrt/layout_check.c" "${VIBEOS_WIN_SRC}/msvcrt/msvcrt.def"
+                    "${VIBEOS_WIN_SRC}/include/vibeos_ntdll.h" "${VIBEOS_WIN_DIR}/libntdll.a"
+            COMMENT "Building our msvcrt.dll with mingw-w64"
+            VERBATIM
+        )
         add_custom_command(
             OUTPUT "${VIBEOS_WIN_DIR}/hello.exe"
             COMMAND "${VIBEOS_MINGW_GCC}" ${VIBEOS_WIN_FLAGS}
@@ -881,7 +933,16 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
             VERBATIM
         )
         add_custom_target(vibeos_win ALL
-            DEPENDS "${VIBEOS_WIN_DIR}/ntdll.dll" "${VIBEOS_WIN_DIR}/hello.exe")
+            DEPENDS "${VIBEOS_WIN_DIR}/ntdll.dll" "${VIBEOS_WIN_DIR}/msvcrt.dll"
+                    "${VIBEOS_WIN_DIR}/hello.exe")
+        find_program(VIBEOS_MINGW_OBJDUMP_WIN x86_64-w64-mingw32-objdump)
+        if(VIBEOS_BUILD_TESTS AND VIBEOS_MINGW_OBJDUMP_WIN AND Python3_EXECUTABLE)
+            add_test(NAME vibeos-msvcrt-exports
+                COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_CURRENT_SOURCE_DIR}/scripts/dev/check-msvcrt-exports.py
+                        "${VIBEOS_WIN_DIR}/msvcrt.dll" "${VIBEOS_WIN_SRC}/msvcrt/msvcrt.def"
+                        "${VIBEOS_MINGW_OBJDUMP_WIN}")
+        endif()
     endif()
 
     # Build EFI media layout in artifacts/efi_root with BOOTX64.EFI + kernel payload.
