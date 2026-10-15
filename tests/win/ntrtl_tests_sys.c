@@ -205,6 +205,9 @@ static void t_image_synthetic(void) {
     CHECK(RtlImageDirectoryEntryToData(g_img, 1, 1, &sz) == g_img + 0x1100 && sz == 0x30,
           "a PE32 image keeps its directories 16 bytes earlier, and is read there");
     CHECK(RtlImageDirectoryEntryToData(g_img, 0, 3, &sz) == g_img + 0x810, "also as a file");
+    put32(g_img + 0x80 + 24 + 92, 3);
+    CHECK(RtlImageDirectoryEntryToData(g_img, 1, 3, &sz) == 0 && RtlImageDirectoryEntryToData(g_img, 1, 2, &sz) != 0,
+          "a PE32 image's NumberOfRvaAndSizes is read at its own offset and bounds the directories");
     put16(g_img + 0x80 + 24, 0x1234);
     CHECK(RtlImageDirectoryEntryToData(g_img, 1, 1, &sz) == 0, "an optional header of an unknown kind has none");
 }
