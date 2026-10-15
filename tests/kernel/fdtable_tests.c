@@ -129,6 +129,26 @@ int test_fdtable(void) {
     vibeos_file_put(f);
     g_refuse_pages = 0;
 
+    /* ---- an NT handle's access mask (docs/abi/windows.md W2) --------------------- */
+    {
+        vibeos_file_t *h = vibeos_file_alloc(&g_ops, 0);
+        int n;
+
+        if (!expect(h != 0, "a description for a handle")) { return -1; }
+        n = vibeos_fdtable_install(&a, h, 0, 0);
+        if (!expect(n >= 0 && vibeos_fdtable_access(&a, (uint64_t)n) == 0u &&
+                    vibeos_fdtable_set_access(&a, (uint64_t)n, 0x1F0003u) == 0 &&
+                    vibeos_fdtable_access(&a, (uint64_t)n) == 0x1F0003u,
+                    "an entry carries the access it was given")) { return -1; }
+        vibeos_file_get(h);
+        if (!expect(vibeos_fdtable_remove(&a, (uint64_t)n) == h &&
+                    vibeos_fdtable_install(&a, h, 0, 0) == n &&
+                    vibeos_fdtable_access(&a, (uint64_t)n) == 0u,
+                    "a number used again grants nothing its last tenant had")) { return -1; }
+        vibeos_file_put(vibeos_fdtable_remove(&a, (uint64_t)n));
+        vibeos_file_put(h);
+    }
+
     /* ---- dup shares an offset --------------------------------------------------- */
     g = vibeos_file_alloc(&g_ops, 0);
     if (!expect(g != 0, "a description to share")) { return -1; }

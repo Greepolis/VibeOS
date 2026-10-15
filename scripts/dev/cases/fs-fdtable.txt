@@ -41,7 +41,7 @@
         for (i = 0; i < VIBEOS_FD_PER_PAGE; i++) {
             p[i].file = 0;
             p[i].flags = 0;
-            p[i].reserved = 0;
+            p[i].access = 0;
         }
 +++ new
 
@@ -57,3 +57,8 @@
             if (e->file && (e->flags & VIBEOS_FD_CLOEXEC)) {
 +++ new
             if (e->file) {
+
+### a number used again keeps its last tenant's access mask (W2)
+--- old
+        e->access = 0;   /* a new entry grants nothing until it is told what */
++++ new

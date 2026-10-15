@@ -1,0 +1,53 @@
+# Events and the waits (kernel/abi/nt/sync.c, docs/abi/windows.md W2), broken
+# one rule at a time; caught by tests/kernel/nt_abi_tests.c on the host.
+#
+# Target source: kernel/abi/nt/sync.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/nt/sync.c scripts/dev/cases/nt-sync.txt build-gcc-Release
+
+### a synchronization event is not reset by the wait it satisfies
+--- old
+        o->u.ev.state = 0;   /* auto-reset: one waiter takes it */
++++ new
+        (void)o;
+
+### wait-any reports the first index, not the one signalled
+--- old
+                    result = NT_STATUS((ab ? VIBEOS_STATUS_ABANDONED_WAIT_0
+                                           : VIBEOS_STATUS_WAIT_0) + i);
++++ new
+                    result = NT_STATUS((ab ? VIBEOS_STATUS_ABANDONED_WAIT_0
+                                           : VIBEOS_STATUS_WAIT_0));
+
+### wait-all settles for the first signalled object
+--- old
+            for (i = 0; i < n && signaled_now(o[i], tid, pulses[i]); i++) {
+            }
+            if (i == n) {
++++ new
+            for (i = 0; i < n && signaled_now(o[i], tid, pulses[i]); i++) {
+            }
+            if (i >= 1u) {
+
+### a timeout never ends the wait
+--- old
+        if (!forever && ks_ticks() >= deadline) {
++++ new
+        if (!forever && ks_ticks() >= deadline + 100000u) {
+
+### naming one object twice in wait-all is accepted
+--- old
+                    st = VIBEOS_STATUS_INVALID_PARAMETER_MIX;
++++ new
+                    st = VIBEOS_STATUS_SUCCESS;
+
+### an existing named event is reinitialised by a second create
+--- old
+    if (!existed && !open_only && init) {
++++ new
+    if (!open_only && init) {
+
+### a wait needs no SYNCHRONIZE
+--- old
+        st = nt_handle_ref(handles[i], 0, VIBEOS_SYNCHRONIZE, &f[i], 0);
++++ new
+        st = nt_handle_ref(handles[i], 0, 0, &f[i], 0);

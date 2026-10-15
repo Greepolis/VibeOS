@@ -36,6 +36,7 @@ static void file_clear(vibeos_file_t *f) {
     f->pipe = -1;
     f->sock = -1;
     f->ux = -1;
+    f->nt_ob = -1;   /* 0 is a slot of the NT object table, not "none" */
 }
 
 void vibeos_file_reset(void) {

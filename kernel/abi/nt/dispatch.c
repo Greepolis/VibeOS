@@ -18,6 +18,10 @@ extern const vibeos_row_t nt_file_rows[];
 extern const uint32_t nt_file_row_count;
 extern const vibeos_row_t nt_system_rows[];
 extern const uint32_t nt_system_row_count;
+extern const vibeos_row_t nt_object_rows[];
+extern const uint32_t nt_object_row_count;
+extern const vibeos_row_t nt_sync_rows[];
+extern const uint32_t nt_sync_row_count;
 
 static const struct {
     const vibeos_row_t *rows;
@@ -26,6 +30,8 @@ static const struct {
     { nt_process_rows, &nt_process_row_count },
     { nt_file_rows, &nt_file_row_count },
     { nt_system_rows, &nt_system_row_count },
+    { nt_object_rows, &nt_object_row_count },
+    { nt_sync_rows, &nt_sync_row_count },
 };
 
 int nt_user_ok(uint64_t base, uint64_t len, int write) {
@@ -40,6 +46,7 @@ void vibeos_nt_abi_init(void) {
     uint32_t i;
 
     vibeos_abi_nt_reset();
+    nt_ob_reset();
     for (i = 0; i < (uint32_t)(sizeof(g_tables) / sizeof(g_tables[0])); i++) {
         if (vibeos_abi_nt_register(g_tables[i].rows, *g_tables[i].count) != 0) {
             ks_log(VIBEOS_LOG_ERROR, 64u, i, 0,

@@ -43,7 +43,11 @@
 typedef struct vibeos_fdent {
     vibeos_file_t *file;
     uint32_t flags;
-    uint32_t reserved;
+    /* What this entry may do to its description, when it is an NT handle
+     * (docs/abi/windows.md W2): Windows keeps the access mask on the handle,
+     * not the object, so two handles to one event can differ. Zero for a
+     * Linux descriptor, which asks the file's own mode instead. */
+    uint32_t access;
 } vibeos_fdent_t;
 
 typedef struct vibeos_fdtable {
@@ -77,6 +81,11 @@ int vibeos_fdtable_install(vibeos_fdtable_t *t, vibeos_file_t *f, uint32_t flags
  * VIBEOS_FDT_BADFD / VIBEOS_FDT_NOMEM. */
 int vibeos_fdtable_install_at(vibeos_fdtable_t *t, uint64_t fd, vibeos_file_t *f,
                               uint32_t flags, vibeos_file_t **old);
+
+/* An entry's access mask (0 for an empty entry), and setting it: 0, or
+ * VIBEOS_FDT_BADFD for an empty one. */
+uint32_t vibeos_fdtable_access(const vibeos_fdtable_t *t, uint64_t fd);
+int vibeos_fdtable_set_access(vibeos_fdtable_t *t, uint64_t fd, uint32_t access);
 
 /* Take `fd` out of the table; its description (the caller's reference now), or 0. */
 vibeos_file_t *vibeos_fdtable_remove(vibeos_fdtable_t *t, uint64_t fd);

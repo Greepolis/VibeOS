@@ -1,0 +1,51 @@
+# The NT object manager's core (kernel/abi/nt/object.c, docs/abi/windows.md W2),
+# broken one rule at a time; caught by tests/kernel/nt_abi_tests.c on the host.
+#
+# Target source: kernel/abi/nt/object.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/nt/object.c scripts/dev/cases/nt-object.txt build-gcc-Release
+
+### a handle's access mask is not checked
+--- old
+    if ((access & need) != need) {
++++ new
+    if (0) {
+
+### a handle is not checked for its object's type
+--- old
+    if (ops && f->ops != ops) {
++++ new
+    if (0) {
+
+### a name is compared with case ignored even when nobody asked
+--- old
+        if (n->insensitive || o->name_ci) {
++++ new
+        if (1) {
+
+### creating an existing name makes a second object
+--- old
+        named = find_named(name);
+        if (named >= 0) {
++++ new
+        named = find_named(name);
+        if (named >= 0 && 0) {
+
+### a released object keeps its name
+--- old
+        g_ob[f->nt_ob].used = 0;
+        g_ob[f->nt_ob].file = 0;
++++ new
+        g_ob[f->nt_ob].file = g_ob[f->nt_ob].file;
+
+### DUPLICATE_SAME_ACCESS is ignored
+--- old
+        uint32_t access = (options & VIBEOS_DUPLICATE_SAME_ACCESS)
+                              ? granted : nt_map_access(f->ops, (uint32_t)want);
++++ new
+        uint32_t access = nt_map_access(f->ops, (uint32_t)want);
+
+### GENERIC_ALL grants nothing
+--- old
+    if (want & (VIBEOS_GENERIC_ALL | VIBEOS_MAXIMUM_ALLOWED)) {
++++ new
+    if (want & VIBEOS_MAXIMUM_ALLOWED) {
