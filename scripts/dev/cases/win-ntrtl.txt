@@ -169,9 +169,9 @@ int32_t RtlCompareUnicodeString(
 
 ### the dotted quad ending an IPv6 address is read leniently
 --- old
-            if (ng > 6 || v4_scan(s + p, 1, &e, b) != 0) {
+            if (v4_scan(s + p, 1, &e, b) != 0) {
 +++ new
-            if (ng > 6 || v4_scan(s + p, 0, &e, b) != 0) {
+            if (v4_scan(s + p, 0, &e, b) != 0) {
 
 # ==== handle.c ====
 

@@ -9,7 +9,11 @@
 
 #include <stddef.h>
 
+/* GCC's spelling; clang has no such pass to switch off here and warns on the
+ * pragma, and ntdll is built by mingw-w64's gcc anyway. */
+#if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC optimize("no-tree-loop-distribute-patterns")
+#endif
 
 void *memset(void *d, int c, size_t n) {
     unsigned char *p = (unsigned char *)d;

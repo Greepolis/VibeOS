@@ -188,9 +188,13 @@ static int v6_scan(const vibeos_wchar_t *s, size_t *end, uint8_t out[16]) {
         if (s[q] == '.') {
             /* The last 32 bits written as an IPv4 address; always strict. */
             uint8_t b[4];
-            size_t e;
+            size_t e = 0;
 
-            if (ng > 6 || v4_scan(s + p, 1, &e, b) != 0) {
+            if (ng > 6) {
+                *end = p;
+                return -1;
+            }
+            if (v4_scan(s + p, 1, &e, b) != 0) {
                 *end = p + e;
                 return -1;
             }
