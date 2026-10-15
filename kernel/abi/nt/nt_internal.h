@@ -55,4 +55,93 @@ uint64_t nt_handle_of_fd(uint32_t fd);
 /* An errno a file operation answered, as the NTSTATUS Windows gives for it. */
 uint32_t nt_status_of_errno(long err);
 
+/* ---- the object manager (object.c, W2) --------------------------------------------- */
+
+#define NT_OB_MAX 256u
+#define NT_NAME_MAX 128u   /* characters of a whole path; more is refused */
+
+struct nt_ob;
+
+/* An NT object type: a description type's operations carry one. */
+typedef struct vibeos_nt_type {
+    const char *name;            /* "Event", as NtQueryObject names it        */
+    uint32_t all_access;         /* what GENERIC_ALL and MAXIMUM_ALLOWED give */
+    uint32_t generic_read;
+    uint32_t generic_write;
+    uint32_t generic_execute;
+    /* Waiting, under the object lock: is it signalled for thread `tid`, and
+     * what acquiring it costs. Null for a type nobody waits on. */
+    int (*signaled)(struct nt_ob *o, uint32_t tid);
+    uint32_t (*acquire)(struct nt_ob *o, uint32_t tid);   /* a WAIT_0 or ABANDONED_WAIT_0 offset */
+} nt_type_t;
+
+/* One object's state. The description is the object; this is what it holds. */
+typedef struct nt_ob {
+    uint32_t used;
+    vibeos_file_t *file;          /* no reference: the description owns the slot */
+    uint16_t name[NT_NAME_MAX];
+    uint32_t name_len;            /* characters; 0 for an unnamed object         */
+    uint32_t name_ci;
+    uint32_t waiters;             /* threads in a wait naming it now             */
+    union {
+        struct {
+            uint32_t kind;        /* VIBEOS_NT_NOTIFICATION_EVENT or _SYNCHRONIZATION_ */
+            int32_t state;
+            uint32_t pulses;      /* every NtPulseEvent: a waiter that saw it begin
+                                   * and end while it waited is satisfied by it    */
+        } ev;
+        struct {
+            uint32_t owner;       /* thread id, 0 when free                     */
+            uint32_t count;       /* recursion                                   */
+            uint32_t abandoned;
+        } mu;
+        struct {
+            int32_t count;
+            int32_t max;
+        } sem;
+    } u;
+} nt_ob_t;
+
+typedef struct {
+    uint16_t chars[NT_NAME_MAX];
+    uint32_t len;
+    int insensitive;
+} nt_name_t;
+
+void nt_ob_lock(void);
+void nt_ob_unlock(void);
+void nt_ob_reset(void);
+nt_ob_t *nt_ob_of(const vibeos_file_t *f);
+void nt_ob_release(vibeos_file_t *f);   /* a type's release */
+
+/* OBJECT_ATTRIBUTES from a program: the name and the attributes. A status. */
+uint32_t nt_read_attributes(uint64_t oa, nt_name_t *out, uint32_t *attributes);
+/* A new object of `ops`'s type, or - for a name that exists - the one there,
+ * with OBJECT_NAME_EXISTS; the reference is the caller's. */
+uint32_t nt_ob_create(const vibeos_file_ops_t *ops, const nt_name_t *name, uint32_t attributes,
+                      vibeos_file_t **out, int *existed);
+uint32_t nt_ob_open(const vibeos_file_ops_t *ops, const nt_name_t *name, vibeos_file_t **out);
+/* What `want` grants of `ops`'s type: the generic rights mapped onto its own. */
+uint32_t nt_map_access(const vibeos_file_ops_t *ops, uint32_t want);
+/* A handle for `f`, taking over the caller's reference (released on failure). */
+uint32_t nt_handle_install(vibeos_file_t *f, uint32_t access, uint32_t attributes,
+                           uint64_t *handle);
+/* The description `h` names - of `ops`'s type, if not null - and the handle's
+ * granted rights, which must include `need`. The reference is the caller's. */
+uint32_t nt_handle_ref(uint64_t h, const vibeos_file_ops_t *ops, uint32_t need,
+                       vibeos_file_t **out, uint32_t *granted);
+uint32_t nt_close_handle(uint64_t h);
+
+/* ---- creating objects and waiting on them (sync.c) ---------------------------------- */
+
+/* NtCreate<type> and NtOpen<type>'s shared part. `init` sets a new object's
+ * state from `args`; an existing named object keeps its own. */
+long nt_create_common(const vibeos_file_ops_t *ops, uint64_t handle_u, uint32_t want,
+                      uint64_t oa, int open_only,
+                      void (*init)(nt_ob_t *o, const uint64_t *args), const uint64_t *args);
+/* Wait for `n` handles - all, or any - until the timeout (a user pointer to an
+ * NT time, 0 for none). An NTSTATUS. */
+long nt_wait(uint32_t n, const uint64_t *handles, int all, uint64_t timeout_u);
+extern const vibeos_file_ops_t g_nt_event_ops;
+
 #endif

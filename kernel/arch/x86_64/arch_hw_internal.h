@@ -575,7 +575,12 @@ int hw_pe_start_blocks(hw_proc_t *p, hw_procstate_t *ps, uint64_t exe_base,
 /* Where a PE program may be placed: below the stack's guard page. */
 #define VIBEOS_HW_PE_EXE_END (VIBEOS_HW_USER_STACK_FLOOR - 4096ull)
 /* Where our ntdll may be: above the heap's start, below the mapping area. */
-#define VIBEOS_HW_PE_DLL_BASE (VIBEOS_HW_USER_BASE + 0x01000000ull)
+#define VIBEOS_HW_PE_DLL_BASE (VIBEOS_HW_USER_BASE + 0x02000000ull)
+/* Where a program that cannot be where it asks is moved to (W2): above where a
+ * Linux process's heap would start - an NT process has no brk - and below our
+ * ntdll, twenty-four megabytes. Wine's test programs ask for 0x140000000, which
+ * is not a user address here, and are eight and thirteen megabytes. */
+#define VIBEOS_HW_PE_EXE_MOVED (VIBEOS_HW_USER_BASE + 0x00800000ull)
 /* The PEB, the parameters and the TEB: five pages just below the mapping area. */
 #define VIBEOS_HW_NT_BLOCK (VIBEOS_HW_USER_MMAP_BASE - 0x00010000ull)
 /* Where the NT personality's DLL is on the boot volume. Provisional: the
@@ -693,9 +698,18 @@ extern uint32_t g_interp_elf_cap;
 extern hw_cached_file_t g_cached_files[VIBEOS_HW_CACHE_FILES];
 extern uint32_t g_cached_file_count;
 int hw_elf_read_cached(void *ctx, uint64_t off, uint32_t len, void *buf);
+/* A PE image placed away from its base (docs/abi/windows.md W2): what each
+ * page needs moving by, applied as it is filled. Null for every image that is
+ * where it asked to be. */
+struct vibeos_pe_image;
+typedef struct {
+    const struct vibeos_pe_image *pe;
+    const uint8_t *relocs;
+    uint32_t len;
+} hw_reloc_t;
 int hw_map_elf_image(vibeos_hw_aspace_t *as, vibeos_vma_list_t *vmas,
                             const vibeos_elf_image_t *img, const void *elf,
-                            uint32_t file_id, uint64_t file_len);
+                            uint32_t file_id, uint64_t file_len, const hw_reloc_t *reloc);
 void hw_seed_at_random(uint8_t out[16]);
 void hw_drain_dead_kstack(void);
 extern vibeos_service_supervisor_t g_runtime_supervisor;

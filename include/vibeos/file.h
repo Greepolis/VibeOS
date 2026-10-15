@@ -137,6 +137,9 @@ typedef struct vibeos_file_ops {
     int (*share_page)(vibeos_file_t *f, uint64_t off, void **page);
     /* A socket: what its calls do (vibeos/sockops.h, docs/abi/ L5). */
     const struct vibeos_sock_ops *sockops;
+    /* An NT object type: its name, its access rights and what waiting on it
+     * means (kernel/abi/nt/nt_internal.h, docs/abi/windows.md W2). */
+    const struct vibeos_nt_type *nt_type;
 } vibeos_file_ops_t;
 
 struct vibeos_file {
@@ -198,6 +201,10 @@ struct vibeos_file {
     uint64_t tfd_count;
     uint64_t sig_mask;
     int ev_index;
+    /* An NT object - event, mutant, semaphore, section (docs/abi/windows.md
+     * W2): its slot in kernel/abi/nt/object.c's table. The description is the
+     * object; handles to it are descriptors naming it. */
+    int nt_ob;
 };
 
 void vibeos_file_set_lock(void (*lock)(void), void (*unlock)(void));

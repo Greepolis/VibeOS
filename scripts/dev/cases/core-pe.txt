@@ -55,3 +55,27 @@
         vibeos_mbz_hit(VIBEOS_MBZ_PE_MALFORMED, (uint64_t)rc);
 +++ new
         (void)rc;
+
+### a relocation is read but the distance is not added
+--- old
+        value = rd64(v) + (uint64_t)pe->delta;
++++ new
+        value = rd64(v);
+
+### the tail of a value that starts on the page before is left unmoved
+--- old
+        if (block_va == page_va || block_va + VIBEOS_ELF_PAGE_SIZE == page_va) {
++++ new
+        if (block_va == page_va) {
+
+### a 32-bit image's relocation type is accepted
+--- old
+            if (type != PE_REL_DIR64 || (uint64_t)page + off + 8u > pe->image_size) {
++++ new
+            if ((uint64_t)page + off + 8u > pe->image_size) {
+
+### an image with its relocations stripped is moved anyway
+--- old
+            (out->characteristics & VIBEOS_PE_FILE_RELOCS_STRIPPED) ||
++++ new
+            0 ||

@@ -23,6 +23,7 @@
 #include "vibeos/elf.h"
 #include "vibeos/services.h"
 #include "vibeos/exec_stats.h"
+#include "vibeos/pe.h"
 #include "arch_hw_internal.h"
 #include "vibeos/account.h"
 #include "vibeos/forkguard.h"
@@ -1784,14 +1785,41 @@ int hw_elf_read_cached(void *ctx, uint64_t off, uint32_t len, void *buf) {
     return 0;
 }
 
+/* The staged bytes as a reader, for a relocation that has to read its value
+ * when the file has no cache identity. */
+typedef struct {
+    const uint8_t *b;
+    uint64_t len;
+} hw_mem_reader_t;
+
+static int hw_read_mem(void *ctx, uint64_t off, uint32_t len, void *buf) {
+    const hw_mem_reader_t *r = (const hw_mem_reader_t *)ctx;
+    uint32_t i;
+
+    if (off + (uint64_t)len > r->len) {
+        return -1;
+    }
+    for (i = 0; i < len; i++) {
+        ((uint8_t *)buf)[i] = r->b[off + i];
+    }
+    return 0;
+}
+
 int hw_map_elf_image(vibeos_hw_aspace_t *as, vibeos_vma_list_t *vmas,
                             const vibeos_elf_image_t *img, const void *elf,
-                            uint32_t file_id, uint64_t file_len) {
+                            uint32_t file_id, uint64_t file_len, const hw_reloc_t *reloc) {
     uint64_t va;
     hw_elf_cache_reader_t reader;
+    hw_mem_reader_t mem;
+    /* An image that moved is patched page by page, so no page of it may be
+     * the cache's own: a relocation written into a shared page would be
+     * written into the file, for every process that maps it next. */
+    int moved = reloc && reloc->pe && reloc->pe->delta != 0;
 
     reader.file_id = file_id;
     reader.file_len = file_len;
+    mem.b = (const uint8_t *)elf;
+    mem.len = file_len;
 
     for (va = img->min_vaddr; va < img->end_vaddr; va += 4096ull) {
         uint32_t flags = vibeos_elf_page_flags(img, va);
@@ -1846,7 +1874,7 @@ int hw_map_elf_image(vibeos_hw_aspace_t *as, vibeos_vma_list_t *vmas,
          * left is the mapping itself - aliasing, a reference, or a lifetime -
          * and that is where the next attempt should start rather than at the
          * top. */
-        if (file_id != 0u && !(flags & VIBEOS_ELF_W)) {
+        if (file_id != 0u && !(flags & VIBEOS_ELF_W) && !moved) {
             uint64_t foff = 0;
             uint64_t phys = 0;
 
@@ -1904,6 +1932,12 @@ int hw_map_elf_image(vibeos_hw_aspace_t *as, vibeos_vma_list_t *vmas,
                                      va, page);
         } else {
             vibeos_elf_fill_page(img, elf, va, page);
+        }
+        if (moved) {
+            vibeos_pe_relocate_page(reloc->pe, reloc->relocs, reloc->len,
+                                    file_id != 0u ? hw_elf_read_cached : hw_read_mem,
+                                    file_id != 0u ? (void *)&reader : (void *)&mem,
+                                    va, page);
         }
         vibeos_exec_stats()->pages_copied++;
         if (va < VIBEOS_HW_IDENTITY_LIMIT) {

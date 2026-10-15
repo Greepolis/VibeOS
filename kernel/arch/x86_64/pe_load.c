@@ -6,26 +6,41 @@
  * that thread in ntdll. Linking the program against its DLLs is ntdll's work,
  * in user mode (user/win/ntdll/start.c).
  *
- * Both images are placed where their headers ask, by the same page-at-a-time
- * mapper ELF images go through - the PE parser describes them in its segment
- * form. An image that would need relocating is refused by name: base
- * relocation is the loader's next step, and placing an image without applying
- * its relocations would start a program whose every absolute address is wrong. */
+ * Both images are placed by the same page-at-a-time mapper ELF images go
+ * through - the PE parser describes them in its segment form. Where its header
+ * asks, if that is inside the window it is allowed; otherwise, since W2,
+ * somewhere it can be, with its base relocations applied as each page is
+ * filled (vibeos_pe_relocate_page). An image that cannot move - relocations
+ * stripped - is still refused by name. */
 
 #include "vibeos/pe.h"
 #include "vibeos/abi_nt.h"
 #include "vibeos/exec_stats.h"
 #include "arch_hw_internal.h"
 
+/* The base-relocation directory of the image being mapped, read whole: an exec
+ * holds g_exec_lock, so this is one exec's at a time. Wine's test programs
+ * carry five kilobytes; a DLL that needs more is refused by name rather than
+ * half relocated. */
+#define HW_PE_RELOC_MAX 65536u
+static uint8_t g_pe_relocs[HW_PE_RELOC_MAX];
+
 /* Map one PE image from `buf` (its first `window` bytes staged) and the page
- * cache identity `id` for the rest. 0, or the refusal's -1. */
+ * cache identity `id` for the rest: at its own base if that lies in [lo, hi),
+ * else at `moved` (0: nowhere else) inside [moved, moved_hi). 0, or the
+ * refusal's -1. */
 static int hw_pe_map_one(hw_proc_t *p, hw_procstate_t *ps, const unsigned char *buf,
                          uint64_t window, uint64_t len, uint32_t id, uint64_t lo, uint64_t hi,
+                         uint64_t moved, uint64_t moved_hi,
                          int want_dll, const char *path, vibeos_pe_image_t *pe) {
     int rc = vibeos_pe_parse(buf, window, len, lo, hi, pe);
+    hw_reloc_t reloc;
 
+    if (rc == VIBEOS_PE_ERANGE && moved != 0u) {
+        rc = vibeos_pe_parse_at(buf, window, len, moved, moved, moved_hi, pe);
+    }
     if (rc == VIBEOS_PE_ERANGE) {
-        return hw_exec_refuse(VIBEOS_EXEC_BAD_WINDOW, path, "pe_needs_relocation");
+        return hw_exec_refuse(VIBEOS_EXEC_BAD_WINDOW, path, "pe_cannot_be_placed");
     }
     if (rc != VIBEOS_PE_OK) {
         return hw_exec_refuse(VIBEOS_EXEC_BAD_HEADER, path, "pe_parse");
@@ -40,7 +55,33 @@ static int hw_pe_map_one(hw_proc_t *p, hw_procstate_t *ps, const unsigned char *
     if (id == 0u && len > window) {
         return hw_exec_refuse(VIBEOS_EXEC_NO_STAGING, path, "pe_past_window");
     }
-    if (hw_map_elf_image(&p->as, &ps->vmas, &pe->layout, buf, id, len) != 0) {
+    reloc.pe = pe;
+    reloc.relocs = g_pe_relocs;
+    reloc.len = 0;
+    if (pe->delta != 0) {
+        /* The directory, out of the image as the file supplies it - through
+         * the cache, or the staged bytes - then checked once, so the per-page
+         * work trusts it. */
+        hw_elf_cache_reader_t cr;
+        uint32_t size = pe->dir_size[VIBEOS_PE_DIR_BASERELOC];
+        uint64_t at = pe->image_base + pe->dir_rva[VIBEOS_PE_DIR_BASERELOC];
+
+        if (size > HW_PE_RELOC_MAX) {
+            return hw_exec_refuse(VIBEOS_EXEC_NO_STAGING, path, "pe_relocs_too_large");
+        }
+        cr.file_id = id;
+        cr.file_len = len;
+        if (id != 0u) {
+            vibeos_pe_read_image(pe, hw_elf_read_cached, &cr, at, g_pe_relocs, size);
+        } else {
+            vibeos_pe_read_image_mem(pe, buf, len, at, g_pe_relocs, size);
+        }
+        if (vibeos_pe_check_relocs(pe, g_pe_relocs, size) != VIBEOS_PE_OK) {
+            return hw_exec_refuse(VIBEOS_EXEC_BAD_HEADER, path, "pe_relocs");
+        }
+        reloc.len = size;
+    }
+    if (hw_map_elf_image(&p->as, &ps->vmas, &pe->layout, buf, id, len, &reloc) != 0) {
         return hw_exec_refuse(VIBEOS_EXEC_NO_MEMORY, path, "pe_map");
     }
     return 0;
@@ -58,7 +99,8 @@ int hw_pe_map_images(hw_proc_t *p, hw_procstate_t *ps, const unsigned char *hdr,
     ps->vmas.head = 0;
     ps->vmas.count = 0;
     if (hw_pe_map_one(p, ps, hdr, len < staged ? len : staged, len, file_id,
-                      VIBEOS_HW_USER_BASE, VIBEOS_HW_PE_EXE_END, 0, path, &exe) != 0) {
+                      VIBEOS_HW_USER_BASE, VIBEOS_HW_PE_EXE_END,
+                      VIBEOS_HW_PE_EXE_MOVED, VIBEOS_HW_PE_DLL_BASE, 0, path, &exe) != 0) {
         return -1;
     }
     /* Our ntdll, through the interpreter's staging buffer: an exec holds
@@ -72,8 +114,8 @@ int hw_pe_map_images(hw_proc_t *p, hw_procstate_t *ps, const unsigned char *hdr,
     }
     if (hw_pe_map_one(p, ps, g_interp_elf,
                       (uint64_t)n < g_interp_elf_cap ? (uint64_t)n : g_interp_elf_cap,
-                      (uint64_t)n, dll_id, VIBEOS_HW_PE_DLL_BASE, VIBEOS_HW_NT_BLOCK, 1,
-                      VIBEOS_HW_NTDLL_PATH, &dll) != 0) {
+                      (uint64_t)n, dll_id, VIBEOS_HW_PE_DLL_BASE, VIBEOS_HW_NT_BLOCK,
+                      0u, 0u, 1, VIBEOS_HW_NTDLL_PATH, &dll) != 0) {
         return -1;
     }
     /* The first thread starts in ntdll, which links the program and calls its
@@ -87,6 +129,10 @@ int hw_pe_map_images(hw_proc_t *p, hw_procstate_t *ps, const unsigned char *hdr,
     vibeos_x86_64_serial_puts(path && path[0] ? path : "-");
     vibeos_x86_64_serial_puts(" at 0x");
     vibeos_x86_64_serial_print_hex(exe.image_base);
+    if (exe.delta != 0) {
+        vibeos_x86_64_serial_puts(" moved from 0x");
+        vibeos_x86_64_serial_print_hex(exe.preferred_base);
+    }
     vibeos_x86_64_serial_puts(" ntdll at 0x");
     vibeos_x86_64_serial_print_hex(dll.image_base);
     vibeos_x86_64_serial_puts("\n");

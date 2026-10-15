@@ -1,0 +1,188 @@
+# msvcrt.dll's portable core (user/win/msvcrt/crt_core.c, docs/abi/windows.md W2),
+# caught by tests/win/msvcrt_tests.c on the host. Each case is a behaviour a
+# program built against msvcrt depends on and the C standard (or glibc, which
+# the tests compare against) says differently or says nothing about.
+#
+# Target source: user/win/msvcrt/crt_core.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-msvcrt.sh build-msvcrt" python3 scripts/dev/sabotage.py user/win/msvcrt/crt_core.c scripts/dev/cases/win-msvcrt.txt build-msvcrt
+#
+# verify-host-quick.sh builds the kernel tests, which do not contain this file;
+# verify-msvcrt.sh builds vibeos_msvcrt_tests.
+
+### _vsnprintf calls an exact fit truncated (msvcrt returns the count, C99 agrees; the sabotage is the C99-only mistake the other way)
+--- old
+    n = vc_format(&m.base, fmt, 0, ap);
+    if (n > count) {
+        return -1;
+    }
++++ new
+    n = vc_format(&m.base, fmt, 0, ap);
+    if (n >= count) {
+        return -1;
+    }
+
+### _vsnprintf returns the length it would have needed (C99) instead of -1 (msvcrt)
+--- old
+    n = vc_format(&m.base, fmt, 0, ap);
+    if (n > count) {
+        return -1;
+    }
++++ new
+    n = vc_format(&m.base, fmt, 0, ap);
+    if (n > count) {
+        return (int)n;
+    }
+
+### %ld reads eight bytes (msvcrt's long is 32 bits)
+--- old
+            int is64 = (lcount >= 2) || big || ptr_sized;
++++ new
+            int is64 = (lcount >= 1) || big || ptr_sized;
+
+### %I64d reads four bytes
+--- old
+                    big = 1;
+                    i += 2;
++++ new
+                    i += 2;
+
+### an odd run of backslashes before a quote toggles the quoting instead of escaping the quote
+--- old
+                    if (count & 1u) {
+                        arg_byte(&a, '"');
++++ new
+                    if (!(count & 1u)) {
+                        arg_byte(&a, '"');
+
+### backslashes before a quote are not halved
+--- old
+                    for (k = 0; k < count / 2; k++) {
++++ new
+                    for (k = 0; k < count; k++) {
+
+### free does not merge with the block before it
+--- old
+    if (b->psize) {
+        blk *pv = prev_blk(b);
++++ new
+    if (0) {
+        blk *pv = prev_blk(b);
+
+### free does not merge with the block after it
+--- old
+    if (!(nx->size & HEAP_USED)) {
+        list_remove(h, (fblk *)nx);
+        b->size += bsize(nx);
+    }
++++ new
+    if (0) {
+        list_remove(h, (fblk *)nx);
+        b->size += bsize(nx);
+    }
+
+### realloc copies half of what it moves
+--- old
+    vc_memcpy(q, p, old);
++++ new
+    vc_memcpy(q, p, old / 2);
+
+### realloc grows in place over a neighbour that is in use
+--- old
+        if (!(nx->size & HEAP_USED) && bsize(b) + bsize(nx) >= need) {
++++ new
+        if (bsize(b) + bsize(nx) >= need) {
+
+### blocks are 8-byte aligned, not 16
+--- old
+    size_t need = (n + 16u + 15u) & ~(size_t)15;
++++ new
+    size_t need = (n + 16u + 7u) & ~(size_t)7;
+
+### a tie rounds to the lower digit (glibc rounds to even, msvcrt away from zero)
+--- old
+    up = dig[keep] >= '5';
++++ new
+    up = dig[keep] > '5';
+
+### the exponent has two digits (msvcrt's has three)
+--- old
+    while (k < 3) {
++++ new
+    while (k < 2) {
+
+### %p prints eight digits
+--- old
+                p.prec = 16;
++++ new
+                p.prec = 8;
+
+### %n writes through its pointer
+--- old
+                (void)va_arg(ap, void *);
++++ new
+                *va_arg(ap, int *) = (int)s->total;
+
+### a wide character above 0x7f is truncated to a byte instead of becoming '?'
+--- old
+        return (!out_wide && ch >= 0x80u) ? (uint16_t)'?' : (uint16_t)ch;
++++ new
+        return (!out_wide) ? (uint16_t)(ch & 0xFFu) : (uint16_t)ch;
+
+### strtol does not clamp (msvcrt's long is 32 bits)
+--- old
+        r = (ovf || m > 0x7FFFFFFFu) ? INT32_MAX : (int32_t)m;
++++ new
+        r = (int32_t)m;
+
+### the generator's increment is off by one
+--- old
+    *seed = *seed * 214013u + 2531011u;
++++ new
+    *seed = *seed * 214013u + 2531012u;
+
+### a rounding carry out of the leading digit does not lengthen %f's integer part (9.99 to 10)
+--- old
+        if (round_digits(dig, &n, intlen + (int)p)) {
+            intlen++;
+        }
++++ new
+        if (round_digits(dig, &n, intlen + (int)p)) {
+        }
+
+### acos(-1) is not pi
+--- old
+    if (x == -1.0) {
+        return VC_PI;
++++ new
+    if (x == -1.0) {
+        return VC_PI_2;
+
+# Run on 2026-10-15: all twenty red, the suite built and passing before the first
+# and after the last. What caught them:
+#  - the two _vsnprintf cases: test_truncation (exact fit; and the -1);
+#  - %ld / %I64d: the documented printf cases, which pass eight-byte arguments to
+#    the 32-bit and 64-bit spellings. glibc cannot see these - on the host its
+#    %ld is 64 bits - which is why they are written from msvcrt's documentation;
+#  - the two argv cases: Microsoft's own `a\\\"b c d` and `a\\\\"b c" d e`;
+#  - the two coalescing cases: the alignment loop's "freed everything, one block
+#    again" check and the six free orders of three neighbours;
+#  - realloc half-copy: the soak, which refills and verifies every block; the
+#    in-place-over-a-used-neighbour case: the one that puts a 30000-byte block
+#    after the one being grown (with a small neighbour the sabotaged condition is
+#    still false for lack of room, and the case went NOT RED until it was bigger);
+#  - ties, three-digit exponent, %p, %n, '?', strtol, rand, acos: one documented
+#    expectation each (the glibc comparison cannot see a tie, which it leaves
+#    out, nor the exponent, which it normalises);
+#  - the rounding carry (9.99 to 10): documented expectations only. It went
+#    NOT RED first - the glibc generator almost never makes a value just under a
+#    power of ten - so such values were added to the generator, and then the
+#    first one found a real difference: glibc's %#g drops the digits a carry
+#    adds ("1.e+06" for 999999.5), where the standard and msvcrt keep them;
+#    those cases are left out of the comparison and written out by hand instead.
+#  - 8-byte alignment: red by CRASH, not by a check. Block sizes that are not
+#    multiples of 16 lose their low bits to the in-use flag's mask, the heap's
+#    own bookkeeping corrupts on the first such block, and the test binary dies
+#    in test_heap_cases - which its signal handler names ("FAIL crash in ..."),
+#    because a run that ends in "core dumped" cannot say which check it was on.
+#    The 16-byte check itself (the alignment loop) is therefore only reached by
+#    a heap that survives being misaligned.

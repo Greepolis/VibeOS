@@ -54,7 +54,7 @@ static vibeos_fdent_t *slot_make(vibeos_fdtable_t *t, uint64_t fd) {
         for (i = 0; i < VIBEOS_FD_PER_PAGE; i++) {
             p[i].file = 0;
             p[i].flags = 0;
-            p[i].reserved = 0;
+            p[i].access = 0;
         }
         t->page[pg] = p;
     }
@@ -80,6 +80,20 @@ int vibeos_fdtable_set_flags(vibeos_fdtable_t *t, uint64_t fd, uint32_t flags) {
     return 0;
 }
 
+uint32_t vibeos_fdtable_access(const vibeos_fdtable_t *t, uint64_t fd) {
+    vibeos_fdent_t *e = slot(t, fd);
+    return (e && e->file) ? e->access : 0u;
+}
+
+int vibeos_fdtable_set_access(vibeos_fdtable_t *t, uint64_t fd, uint32_t access) {
+    vibeos_fdent_t *e = slot(t, fd);
+    if (!e || !e->file) {
+        return VIBEOS_FDT_BADFD;
+    }
+    e->access = access;
+    return 0;
+}
+
 int vibeos_fdtable_install(vibeos_fdtable_t *t, vibeos_file_t *f, uint32_t flags,
                            uint32_t min) {
     uint32_t fd;
@@ -100,6 +114,7 @@ int vibeos_fdtable_install(vibeos_fdtable_t *t, vibeos_file_t *f, uint32_t flags
         }
         e->file = f;
         e->flags = flags;
+        e->access = 0;   /* a new entry grants nothing until it is told what */
         t->open++;
         return (int)fd;
     }
@@ -129,6 +144,7 @@ int vibeos_fdtable_install_at(vibeos_fdtable_t *t, uint64_t fd, vibeos_file_t *f
     }
     e->file = f;
     e->flags = flags;
+    e->access = 0;
     return 0;
 }
 
@@ -171,6 +187,7 @@ int vibeos_fdtable_copy(vibeos_fdtable_t *dst, const vibeos_fdtable_t *src) {
             vibeos_file_get(s->file);
             d->file = s->file;
             d->flags = s->flags;
+            d->access = s->access;   /* a handle keeps its rights across fork */
             dst->open++;
         }
     }

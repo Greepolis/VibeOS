@@ -187,3 +187,88 @@ and at boot (`arch-gs-boot.txt` 2/2, `nt-hello-boot.txt` 1/1), check, six boots.
 Next: W2 - base relocation, stub `user32` and `advapi32` for the tests' imports,
 then the object manager, handles and waits, measured by `ntdll:om`,
 `ntdll:sync` and `kernel32:sync`.
+
+## W2 (2026-10-15): planned, in progress
+
+What W0's measurement says W2 has to be. Wine's `ntdll_test.exe` is an
+eight-megabyte image linked at `0x140000000`, and it imports 318 functions
+from five DLLs - 141 from `kernel32`, 113 from `ntdll` (most of them `Rtl*`,
+not system calls), 44 from `msvcrt`, 13 from `advapi32`, 7 from `user32`;
+`kernel32_test.exe` imports 612. So before the first test can run, three things
+the plan placed later have to come first:
+
+1. **Base relocation.** `0x140000000` is no user address here. The kernel
+   places an image it cannot put where it asks at `USER_BASE + 8 MiB` (an NT
+   process has no `brk`) and applies its relocations as each page is filled -
+   one `.reloc` block per page, a value straddling two pages read from the file
+   and written in halves. Tested against mingw's own image and `objdump`'s list
+   of its relocations; `hello.exe` is linked at mingw's default base, so every
+   boot relocates it.
+2. **Loading DLLs from disk.** On Windows that is ntdll's loader calling
+   `NtOpenFile`, `NtCreateSection(SEC_IMAGE)` and `NtMapViewOfSection` - so a
+   minimal form of each comes forward from W3 and W4, and the image mapping is
+   the kernel's, relocation included.
+3. **DLLs that load before they are complete.** A missing export is bound to a
+   stub that, when called, prints `unimplemented: kernel32.CreateFileA` and ends
+   the process. The tests then say which function to write next, as LTP did for
+   Linux. `msvcrt.dll` - formatting, strings, a heap, `argv` - is written in
+   full now, being the test harness's own runtime.
+
+**Handles are descriptors** (decided here; W1 left it open). An NT handle
+names an entry of the process's existing descriptor table, `(fd + 1) * 4`;
+the entry's spare 32 bits hold the handle's access mask. Events, mutants,
+semaphores and sections become description types, as eventfd and pidfd already
+are, with an NT extension to their operations: whether the object is signalled
+for a waiter, and what acquiring it does. Reference counting, closing, fork and
+the wait machinery are then the ones seven phases of Linux work have tested,
+not a second set; named objects are a namespace of names onto descriptions.
+
+Order: relocation; the object manager's core (types, `NtClose`,
+`NtDuplicateObject`, the namespace); `NtOpenFile` and image sections; ntdll's
+loader; events, mutants, semaphores and the waits; then `ntdll:om` and
+`ntdll:sync` run.
+
+### Done: base relocation (`8cdb675`)
+
+`hello.exe` is linked at `0x140000000` and every boot moves it to
+`USER_BASE + 8 MiB`; the kernel's log says `moved from 0x140000000`.
+
+### Done: the object manager's core, events and waits (`f8dfd6f`)
+
+`NtClose`, `NtDuplicateObject`, events and both waits, on the descriptor table
+with access masks and a flat namespace of whole paths. Host-tested, 19 sabotage
+cases red; no Windows program uses them at boot yet.
+
+### Done: msvcrt.dll
+
+Wine's test executables import their C runtime from `msvcrt.dll`, so VibeOS
+ships one, written from the C standard and Microsoft's documentation and never
+from another implementation: `user/win/msvcrt`, a freestanding x64 DLL
+exporting exactly the 74 names the tests import (`msvcrt.def`), importing only
+`NtWriteFile`, `NtTerminateProcess` and `NtQuerySystemTime` from our `ntdll`.
+It is not loaded by anything yet.
+
+- **The logic is portable C** (`crt_core.c`, `uint16_t` for a wide character,
+  `int32_t` for msvcrt's `long`) that mingw-w64 builds into the DLL and the
+  host builds into `vibeos_msvcrt_tests`; `msvcrt.c` is the Windows part -
+  the exported names, the three standard streams (`__iob_func` returns an array
+  whose element size is checked against mingw's `struct _iobuf`), the heap's
+  16 MiB arena in `.bss`, the command line from the PEB.
+- **msvcrt's printf, not C99's**: `%ld` is 32 bits, `%I64d`/`%Id` exist, `%p` is
+  sixteen upper-case digits, `%n` is refused, exponents have three digits, a tie
+  rounds away from zero, infinities are `1.#INF`, and `_vsnprintf` returns -1 for
+  a truncated result and writes no NUL then. Where it agrees with C99 it is held
+  against glibc's `snprintf` (about 5,950 generated cases per seed, the seed
+  printed; floating point is expanded exactly and rounded once, which is the
+  only way to agree at every precision).
+- **Absent services are answered as a runtime with nothing behind it would**:
+  no files until W4 (`fopen` fails, `fgets` finds nothing), no environment
+  block (`getenv` finds nothing), no locking until W5 (the heap, `strtok`'s
+  position and the generator's seed are statics).
+- **Measured**: `vibeos_msvcrt_tests` (3.2 million checks), a layout check
+  against mingw-w64's headers at every build, `check-msvcrt-exports.py`
+  (exports equal the `.def`, imports are `ntdll.dll` alone), and sabotage
+  (`cases/win-msvcrt.txt`, 20 of 20 red).
+
+Not done: running it. The DLL has not been executed on VibeOS; what runs on
+the host is its core, not the glue in `msvcrt.c`.

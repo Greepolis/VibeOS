@@ -15,7 +15,11 @@
  *  - the performance counter runs at the frequency it says.
  *  - SystemBasicInformation says a page is 4096 bytes and there is a processor.
  *  - a service no step has written answers STATUS_NOT_IMPLEMENTED, as Linux's
- *    syscall 1999 answers ENOSYS: the count the boot reports is seen moving. */
+ *    syscall 1999 answers ENOSYS: the count the boot reports is seen moving.
+ *  - an absolute address the linker wrote into read-only data points where the
+ *    code says the object is: the program is linked at mingw's default base,
+ *    0x140000000 - Wine's test programs' too - which is no user address here,
+ *    so the kernel moves it and applies its base relocations (W2). */
 
 #include "vibeos_ntdll.h"
 
@@ -42,6 +46,11 @@ static int fail(const char *line) {
     return 1;
 }
 
+static int g_target;
+/* Written by the linker as an absolute address; right only once relocated.
+ * volatile, so the compiler reads it rather than folding the comparison. */
+static int *const volatile g_target_ptr = &g_target;
+
 int nt_hello_start(void) {
     uint64_t teb = vibeos_nt_teb();
     uint64_t peb;
@@ -54,6 +63,9 @@ int nt_hello_start(void) {
 
     if (teb == 0u || vibeos_nt_rd64(teb + VIBEOS_TEB_SELF) != teb) {
         return fail("NT_HELLO_FAIL teb\n");
+    }
+    if (g_target_ptr != &g_target) {
+        return fail("NT_HELLO_FAIL relocation\n");
     }
     peb = vibeos_nt_rd64(teb + VIBEOS_TEB_PEB);
     if (peb == 0u || vibeos_nt_rd64(peb + VIBEOS_PEB_PROCESS_PARAMS) == 0u) {

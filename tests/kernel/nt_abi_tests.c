@@ -71,7 +71,7 @@ static void t_registry(void) {
     expect(VIBEOS_NT_SERVICES == 237, "237 services, as Wine 9.0 has them");
     expect(vibeos_nt_service(VIBEOS_NT_SERVICES) == 0, "past the table is no service");
     expect(vibeos_abi_nt_register(past, 1u) != 0, "a row past the table is refused");
-    expect(vibeos_abi_nt()->lookup(VIBEOS_NT_NR_NtClose) == 0, "a MISSING service has no row");
+    expect(vibeos_abi_nt()->lookup(VIBEOS_NT_NR_NtAddAtom) == 0, "a MISSING service has no row");
 }
 
 static void t_dispatch_refusals(void) {
@@ -82,10 +82,10 @@ static void t_dispatch_refusals(void) {
     ref = g_nt_refused;
     expect(nt(VIBEOS_NT_SERVICES + 5u, 0, 0, 0, 0, 0) == ST(VIBEOS_STATUS_INVALID_SYSTEM_SERVICE),
            "a number past the table names no service");
-    expect(nt(VIBEOS_NT_NR_NtClose, 4, 0, 0, 0, 0) == ST(VIBEOS_STATUS_NOT_IMPLEMENTED) &&
-           g_nt_unimplemented == un + 1u && g_nt_last_nr == (uint64_t)VIBEOS_NT_NR_NtClose &&
+    expect(nt(VIBEOS_NT_NR_NtAddAtom, 4, 0, 0, 0, 0) == ST(VIBEOS_STATUS_NOT_IMPLEMENTED) &&
+           g_nt_unimplemented == un + 1u && g_nt_last_nr == (uint64_t)VIBEOS_NT_NR_NtAddAtom &&
            strstr(kf_console(), "unimplemented NT service") &&
-           strstr(kf_console(), "NtClose"),
+           strstr(kf_console(), "NtAddAtom"),
            "a service not written yet is NOT_IMPLEMENTED, counted and named");
     expect(nt(VIBEOS_NT_NR_NtLoadDriver, 0, 0, 0, 0, 0) == ST(VIBEOS_STATUS_NOT_IMPLEMENTED) &&
            g_nt_refused == ref + 1u && g_nt_unimplemented == un + 1u,
@@ -233,6 +233,191 @@ static void t_system(void) {
                ST(VIBEOS_STATUS_INVALID_INFO_CLASS), "a class W1 does not answer");
 }
 
+/* ---- the object manager (W2) ---------------------------------------------------------- */
+
+/* OBJECT_ATTRIBUTES in user memory naming `ascii`, or with no name for null. */
+static uint64_t oattr(const char *ascii, uint32_t attributes) {
+    uint64_t oa = kf_ualloc(VIBEOS_OA_SIZE);
+    uint8_t *p = (uint8_t *)kf_uptr(oa);
+
+    *(uint32_t *)(p + VIBEOS_OA_LENGTH) = VIBEOS_OA_SIZE;
+    *(uint32_t *)(p + VIBEOS_OA_ATTRIBUTES) = attributes;
+    if (ascii) {
+        uint32_t n = (uint32_t)strlen(ascii), i;
+        uint64_t us = kf_ualloc(VIBEOS_USTR_SIZE), buf = kf_ualloc(2u * n + 2u);
+        uint8_t *u = (uint8_t *)kf_uptr(us);
+        uint16_t *w = (uint16_t *)kf_uptr(buf);
+
+        for (i = 0; i < n; i++) {
+            w[i] = (uint8_t)ascii[i];
+        }
+        *(uint16_t *)(u + VIBEOS_USTR_LENGTH) = (uint16_t)(2u * n);
+        *(uint16_t *)(u + VIBEOS_USTR_MAXIMUM) = (uint16_t)(2u * n + 2u);
+        *(uint64_t *)(u + VIBEOS_USTR_BUFFER) = buf;
+        *(uint64_t *)(p + VIBEOS_OA_OBJECT_NAME) = us;
+    }
+    return oa;
+}
+
+static const uint64_t g_zero5 = 0;
+
+/* NtCreateEvent's fifth argument (InitialState) is on the stack. */
+static long create_event(uint64_t *h, uint32_t access, uint64_t oa, uint32_t type, int initial) {
+    uint64_t out = kf_ualloc(8), arg = (uint64_t)(initial ? 1u : 0u) | 0xAB00u;
+    long r;
+
+    kf_next_sp(stack_args(&arg, 1));
+    r = nt(VIBEOS_NT_NR_NtCreateEvent, out, 0xFFFFFFFF00000000ull | access, oa,
+           0xFFFFFFFF00000000ull | type, 0);
+    *h = *(uint64_t *)kf_uptr(out);
+    return r;
+}
+
+static int32_t event_state(uint64_t h) {
+    uint64_t buf = kf_ualloc(8);
+    kf_next_sp(stack_args(&g_zero5, 1));
+    if (nt(VIBEOS_NT_NR_NtQueryEvent, h, 0, buf, 8, 0) != ST(VIBEOS_STATUS_SUCCESS)) {
+        return -99;
+    }
+    return ((const vibeos_nt_event_basic_t *)kf_uptr(buf))->event_state;
+}
+
+static long wait1(uint64_t h, int64_t timeout) {
+    uint64_t t = kf_ualloc(8);
+    *(int64_t *)kf_uptr(t) = timeout;
+    return nt(VIBEOS_NT_NR_NtWaitForSingleObject, h, 0, t, 0, 0);
+}
+
+static long waitn(const uint64_t *hs, uint32_t n, int all, int64_t timeout) {
+    uint64_t arr = kf_ualloc(8u * n), t = kf_ualloc(8);
+    uint64_t tptr = t;
+
+    memcpy(kf_uptr(arr), hs, 8u * n);
+    *(int64_t *)kf_uptr(t) = timeout;
+    kf_next_sp(stack_args(&tptr, 1));
+    return nt(VIBEOS_NT_NR_NtWaitForMultipleObjects, n, arr, all ? 0 : 1, 0, 0);
+}
+
+static void t_events(void) {
+    uint64_t a, b, h[2];
+    kf_outcome_t how;
+
+    fresh(40);
+    expect(create_event(&a, VIBEOS_EVENT_ALL_ACCESS, oattr(0, 0), VIBEOS_NT_SYNCHRONIZATION_EVENT,
+                        0) == ST(VIBEOS_STATUS_SUCCESS) && a >= 16u && (a & 3u) == 0u,
+           "an unnamed event: a handle past the standard ones, a multiple of four");
+    expect(event_state(a) == 0, "it starts as asked: not signalled");
+    expect(wait1(a, 0) == ST(VIBEOS_STATUS_TIMEOUT), "a zero timeout on an unsignalled event");
+    expect(nt(VIBEOS_NT_NR_NtSetEvent, a, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+           event_state(a) == 1, "set");
+    expect(wait1(a, 0) == ST(VIBEOS_STATUS_WAIT_0) && event_state(a) == 0,
+           "a synchronization event is taken by the wait it satisfies");
+    expect(wait1(a, -10000000) == ST(VIBEOS_STATUS_TIMEOUT),
+           "a relative timeout ends the wait when it runs out");
+
+    expect(create_event(&b, VIBEOS_EVENT_ALL_ACCESS, 0, VIBEOS_NT_NOTIFICATION_EVENT, 1) ==
+               ST(VIBEOS_STATUS_SUCCESS), "a notification event, signalled, without attributes");
+    expect(wait1(b, 0) == ST(VIBEOS_STATUS_WAIT_0) && wait1(b, 0) == ST(VIBEOS_STATUS_WAIT_0),
+           "a notification event satisfies every wait until reset");
+    h[0] = a;
+    h[1] = b;
+    expect(waitn(h, 2, 0, 0) == ST(VIBEOS_STATUS_WAIT_0 + 1u), "any: the index of the one signalled");
+    expect(waitn(h, 2, 1, 0) == ST(VIBEOS_STATUS_TIMEOUT), "all: one unsignalled is a timeout");
+    h[0] = b;
+    h[1] = a;
+    expect(waitn(h, 2, 1, 0) == ST(VIBEOS_STATUS_TIMEOUT) && event_state(b) == 1,
+           "all: the first signalled is not enough, and nothing is acquired");
+    h[0] = a;
+    h[1] = b;
+    (void)nt(VIBEOS_NT_NR_NtSetEvent, a, 0, 0, 0, 0);
+    expect(waitn(h, 2, 1, 0) == ST(VIBEOS_STATUS_WAIT_0) && event_state(a) == 0 &&
+               event_state(b) == 1, "all: both acquired at once, each as its type says");
+    h[1] = a;
+    expect(waitn(h, 2, 1, 0) == ST(0xC0000030u), "all, naming one object twice, is refused");
+    expect(nt(VIBEOS_NT_NR_NtResetEvent, b, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+           nt(VIBEOS_NT_NR_NtPulseEvent, b, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+           event_state(b) == 0, "a pulse with nobody waiting leaves the event reset");
+    (void)wait1(a, -1);   /* reset again; nothing */
+    (void)nt(VIBEOS_NT_NR_NtWaitForSingleObject, a, 0, 0, 0, &how);
+    expect(how == KF_BLOCKED, "no timeout on an event nobody will set waits for ever");
+}
+
+static void t_handles_and_names(void) {
+    uint64_t a, b, c, out = kf_ualloc(8), oa;
+    long r;
+
+    fresh(41);
+    expect(create_event(&a, VIBEOS_EVENT_QUERY_STATE, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+           nt(VIBEOS_NT_NR_NtSetEvent, a, 0, 0, 0, 0) == ST(VIBEOS_STATUS_ACCESS_DENIED),
+           "a handle without EVENT_MODIFY_STATE cannot set");
+    expect(wait1(a, 0) == ST(VIBEOS_STATUS_ACCESS_DENIED), "nor wait, without SYNCHRONIZE");
+    expect(event_state(a) == 0, "but can query: it was granted that");
+    expect(nt(VIBEOS_NT_NR_NtSetEvent, 8, 0, 0, 0, 0) == ST(VIBEOS_STATUS_OBJECT_TYPE_MISMATCH),
+           "the console's handle is not an event");
+
+    /* Duplicating: the same object, the rights asked for or the same ones. */
+    kf_next_sp(stack_args((const uint64_t[3]){ VIBEOS_EVENT_ALL_ACCESS, 0, VIBEOS_DUPLICATE_SAME_ACCESS }, 3));
+    expect(nt(VIBEOS_NT_NR_NtDuplicateObject, VIBEOS_NT_CURRENT_PROCESS, a,
+              VIBEOS_NT_CURRENT_PROCESS, out, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+           *(uint64_t *)kf_uptr(out) != a &&
+           nt(VIBEOS_NT_NR_NtSetEvent, *(uint64_t *)kf_uptr(out), 0, 0, 0, 0) ==
+               ST(VIBEOS_STATUS_ACCESS_DENIED), "SAME_ACCESS copies the rights, not more");
+    kf_next_sp(stack_args((const uint64_t[3]){ VIBEOS_GENERIC_ALL, 0, VIBEOS_DUPLICATE_CLOSE_SOURCE }, 3));
+    expect(nt(VIBEOS_NT_NR_NtDuplicateObject, VIBEOS_NT_CURRENT_PROCESS, a,
+              VIBEOS_NT_CURRENT_PROCESS, out, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+           nt(VIBEOS_NT_NR_NtSetEvent, *(uint64_t *)kf_uptr(out), 0, 0, 0, 0) ==
+               ST(VIBEOS_STATUS_SUCCESS) &&
+           nt(VIBEOS_NT_NR_NtClose, a, 0, 0, 0, 0) == ST(VIBEOS_STATUS_INVALID_HANDLE),
+           "GENERIC_ALL maps to all of an event's rights, and CLOSE_SOURCE closed the source");
+    expect(nt(VIBEOS_NT_NR_NtClose, VIBEOS_NT_CURRENT_PROCESS, 0, 0, 0, 0) ==
+               ST(VIBEOS_STATUS_SUCCESS), "closing the process's pseudo-handle closes nothing");
+    expect(nt(VIBEOS_NT_NR_NtClose, 6, 0, 0, 0, 0) == ST(VIBEOS_STATUS_INVALID_HANDLE),
+           "a handle that is not a multiple of four");
+
+    /* Names. */
+    oa = oattr("\\BaseNamedObjects\\vibe", VIBEOS_OBJ_CASE_INSENSITIVE);
+    expect(create_event(&b, VIBEOS_EVENT_ALL_ACCESS, oa, VIBEOS_NT_NOTIFICATION_EVENT, 0) ==
+               ST(VIBEOS_STATUS_SUCCESS), "a named event");
+    r = create_event(&c, VIBEOS_EVENT_ALL_ACCESS, oattr("\\BaseNamedObjects\\VIBE",
+                                                        VIBEOS_OBJ_CASE_INSENSITIVE),
+                     VIBEOS_NT_SYNCHRONIZATION_EVENT, 1);
+    expect(r == ST(VIBEOS_STATUS_OBJECT_NAME_EXISTS) && c != b,
+           "creating it again opens it, says it existed, and is another handle");
+    (void)nt(VIBEOS_NT_NR_NtSetEvent, c, 0, 0, 0, 0);
+    expect(event_state(b) == 1 && wait1(c, 0) == ST(VIBEOS_STATUS_WAIT_0) && event_state(b) == 1,
+           "one object: set through one handle, seen through the other - still a notification event");
+    expect(nt(VIBEOS_NT_NR_NtOpenEvent, out, VIBEOS_EVENT_ALL_ACCESS,
+              oattr("\\BaseNamedObjects\\vibe", 0), 0, 0) == ST(VIBEOS_STATUS_SUCCESS),
+           "opened by its name");
+    expect(nt(VIBEOS_NT_NR_NtOpenEvent, out, VIBEOS_EVENT_ALL_ACCESS,
+              oattr("\\BaseNamedObjects\\nobody", 0), 0, 0) ==
+               ST(VIBEOS_STATUS_OBJECT_NAME_NOT_FOUND), "a name nothing has");
+    expect(nt(VIBEOS_NT_NR_NtOpenEvent, out, VIBEOS_EVENT_ALL_ACCESS, oattr("relative", 0), 0, 0) ==
+               ST(VIBEOS_STATUS_OBJECT_PATH_SYNTAX_BAD), "a name that is not a path");
+    (void)nt(VIBEOS_NT_NR_NtClose, *(uint64_t *)kf_uptr(out), 0, 0, 0, 0);
+    (void)nt(VIBEOS_NT_NR_NtClose, b, 0, 0, 0, 0);
+    expect(nt(VIBEOS_NT_NR_NtOpenEvent, out, VIBEOS_EVENT_ALL_ACCESS,
+              oattr("\\BaseNamedObjects\\vibe", 0), 0, 0) == ST(VIBEOS_STATUS_SUCCESS),
+           "a name lives while any handle does");
+    (void)nt(VIBEOS_NT_NR_NtClose, *(uint64_t *)kf_uptr(out), 0, 0, 0, 0);
+    (void)nt(VIBEOS_NT_NR_NtClose, c, 0, 0, 0, 0);
+    expect(nt(VIBEOS_NT_NR_NtOpenEvent, out, VIBEOS_EVENT_ALL_ACCESS,
+              oattr("\\BaseNamedObjects\\vibe", 0), 0, 0) ==
+               ST(VIBEOS_STATUS_OBJECT_NAME_NOT_FOUND), "and goes with the last");
+
+    /* Case: a name made without OBJ_CASE_INSENSITIVE, asked for in another
+     * case by a caller that did not ask for it either, is another name. */
+    expect(create_event(&b, VIBEOS_EVENT_ALL_ACCESS, oattr("\\BaseNamedObjects\\Exact", 0),
+                        0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+           nt(VIBEOS_NT_NR_NtOpenEvent, out, VIBEOS_EVENT_ALL_ACCESS,
+              oattr("\\BaseNamedObjects\\EXACT", 0), 0, 0) ==
+               ST(VIBEOS_STATUS_OBJECT_NAME_NOT_FOUND) &&
+           nt(VIBEOS_NT_NR_NtOpenEvent, out, VIBEOS_EVENT_ALL_ACCESS,
+              oattr("\\BaseNamedObjects\\EXACT", VIBEOS_OBJ_CASE_INSENSITIVE), 0, 0) ==
+               ST(VIBEOS_STATUS_SUCCESS),
+           "case matters unless somebody asked for it not to");
+}
+
 static uint16_t rd16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
 static uint64_t rd64(const uint8_t *p) {
     uint64_t v = 0;
@@ -325,5 +510,7 @@ int test_nt_abi(void) {
     t_process();
     t_system();
     t_blocks();
+    t_events();
+    t_handles_and_names();
     return g_fail ? -1 : 0;
 }

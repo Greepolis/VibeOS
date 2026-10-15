@@ -35,6 +35,71 @@
 #define VIBEOS_STATUS_INVALID_IMAGE_FORMAT   0xC000007Bu
 #define VIBEOS_STATUS_PROCEDURE_NOT_FOUND    0xC000007Au
 
+/* Objects and waits (W2). The first two are successes - an NTSTATUS below
+ * 0x80000000 - which a caller tests with NT_SUCCESS, not against zero. */
+#define VIBEOS_STATUS_WAIT_0                 0x00000000u   /* + the index satisfied   */
+#define VIBEOS_STATUS_ABANDONED_WAIT_0       0x00000080u
+#define VIBEOS_STATUS_USER_APC               0x000000C0u
+#define VIBEOS_STATUS_ALERTED                0x00000101u
+#define VIBEOS_STATUS_TIMEOUT                0x00000102u
+#define VIBEOS_STATUS_OBJECT_NAME_EXISTS     0x40000000u
+#define VIBEOS_STATUS_OBJECT_NAME_INVALID    0xC0000033u
+#define VIBEOS_STATUS_OBJECT_NAME_NOT_FOUND  0xC0000034u
+#define VIBEOS_STATUS_OBJECT_NAME_COLLISION  0xC0000035u
+#define VIBEOS_STATUS_OBJECT_PATH_NOT_FOUND  0xC000003Au
+#define VIBEOS_STATUS_OBJECT_PATH_SYNTAX_BAD 0xC000003Bu
+#define VIBEOS_STATUS_MUTANT_NOT_OWNED       0xC0000046u
+#define VIBEOS_STATUS_SEMAPHORE_LIMIT_EXCEEDED 0xC0000047u
+#define VIBEOS_STATUS_INSUFFICIENT_RESOURCES 0xC000009Au
+#define VIBEOS_STATUS_HANDLE_NOT_CLOSABLE    0xC0000235u
+#define VIBEOS_STATUS_BUFFER_TOO_SMALL       0xC0000023u
+
+/* OBJECT_ATTRIBUTES on x64: 48 bytes. */
+#define VIBEOS_OA_LENGTH          0x00u
+#define VIBEOS_OA_ROOT_DIRECTORY  0x08u
+#define VIBEOS_OA_OBJECT_NAME     0x10u   /* PUNICODE_STRING */
+#define VIBEOS_OA_ATTRIBUTES      0x18u
+#define VIBEOS_OA_SECURITY        0x20u
+#define VIBEOS_OA_QOS             0x28u
+#define VIBEOS_OA_SIZE            0x30u
+
+#define VIBEOS_OBJ_INHERIT          0x00000002u
+#define VIBEOS_OBJ_PERMANENT        0x00000010u
+#define VIBEOS_OBJ_EXCLUSIVE        0x00000020u
+#define VIBEOS_OBJ_CASE_INSENSITIVE 0x00000040u
+#define VIBEOS_OBJ_OPENIF           0x00000080u
+#define VIBEOS_OBJ_VALID_ATTRIBUTES 0x00001FF2u
+
+/* Access rights: the standard ones, the generic ones each type maps onto its
+ * own, and the types' own. */
+#define VIBEOS_DELETE               0x00010000u
+#define VIBEOS_READ_CONTROL         0x00020000u
+#define VIBEOS_SYNCHRONIZE          0x00100000u
+#define VIBEOS_STANDARD_RIGHTS_REQUIRED 0x000F0000u
+#define VIBEOS_MAXIMUM_ALLOWED      0x02000000u
+#define VIBEOS_GENERIC_READ         0x80000000u
+#define VIBEOS_GENERIC_WRITE        0x40000000u
+#define VIBEOS_GENERIC_EXECUTE      0x20000000u
+#define VIBEOS_GENERIC_ALL          0x10000000u
+#define VIBEOS_EVENT_QUERY_STATE    0x0001u
+#define VIBEOS_EVENT_MODIFY_STATE   0x0002u
+#define VIBEOS_EVENT_ALL_ACCESS     0x001F0003u
+
+/* NtDuplicateObject's options. */
+#define VIBEOS_DUPLICATE_CLOSE_SOURCE 0x1u
+#define VIBEOS_DUPLICATE_SAME_ACCESS  0x2u
+
+/* EVENT_TYPE, and EventBasicInformation (class 0): the type, then the state. */
+#define VIBEOS_NT_NOTIFICATION_EVENT    0u
+#define VIBEOS_NT_SYNCHRONIZATION_EVENT 1u
+typedef struct {
+    uint32_t event_type;
+    int32_t event_state;
+} vibeos_nt_event_basic_t;
+
+/* How many handles one wait may name: MAXIMUM_WAIT_OBJECTS. */
+#define VIBEOS_NT_MAX_WAIT_OBJECTS 64u
+
 /* The pseudo-handles every Windows program names itself by. */
 #define VIBEOS_NT_CURRENT_PROCESS ((uint64_t)-1)
 #define VIBEOS_NT_CURRENT_THREAD  ((uint64_t)-2)
