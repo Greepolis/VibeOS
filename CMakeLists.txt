@@ -257,6 +257,30 @@ if(VIBEOS_BUILD_TESTS)
     endif()
     add_test(NAME vibeos-kernel-host COMMAND vibeos_kernel_tests)
 
+    # The Rtl runtime of our ntdll (docs/abi/windows.md W2), compiled for the host
+    # from the same files the DLL is built from, behind the five hooks
+    # tests/win/ntrtl_host.c answers. -Wall -Werror as ntdll is: a warning the DLL
+    # would refuse is refused here too. The PE fixture is the image RtlImageNtHeader
+    # and RtlImageDirectoryEntryToData are checked against, with objdump's account
+    # of it; absent without mingw-w64, and the test says so.
+    add_executable(vibeos_ntrtl_tests
+        tests/win/ntrtl_tests.c
+        tests/win/ntrtl_tests_ip.c
+        tests/win/ntrtl_tests_sys.c
+        tests/win/ntrtl_host.c
+        ${VIBEOS_NTRTL_CORE})
+    target_include_directories(vibeos_ntrtl_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/user/win/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/user/win/ntdll/rtl)
+    target_compile_options(vibeos_ntrtl_tests PRIVATE -Wall -Werror -fno-builtin)
+    if(TARGET vibeos_pe_fixture)
+        add_dependencies(vibeos_ntrtl_tests vibeos_pe_fixture)
+        target_compile_definitions(vibeos_ntrtl_tests PRIVATE
+            VIBEOS_PE_FIXTURE_DIR="${VIBEOS_PE_FX_DIR}")
+    endif()
+    add_test(NAME vibeos-ntrtl-host COMMAND vibeos_ntrtl_tests)
+
     # Randomised torture for the memory manager, checked against a reference
     # model kept in plain arrays. Its own executable rather than a test case
     # because it takes a seed and a round count: the nightly runs many seeds
