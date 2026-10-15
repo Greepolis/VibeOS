@@ -187,6 +187,14 @@ if(EXISTS "${WIN_NTDLL}" AND EXISTS "${WIN_HELLO}")
     file(COPY_FILE "${WIN_HELLO}" "${EFI_ROOT_DIR}/win/hello.exe" ONLY_IF_DIFFERENT)
     message(STATUS "EFI media includes the NT personality: /win/ntdll.dll and /win/hello.exe")
 endif()
+# Our C runtime (W2), beside ntdll. Nothing loads it before the loader learns
+# to load DLLs from disk, so its presence changes no boot.
+set(WIN_MSVCRT "${CMAKE_BINARY_DIR}/win/msvcrt.dll")
+if(EXISTS "${WIN_MSVCRT}")
+    file(MAKE_DIRECTORY "${EFI_ROOT_DIR}/win")
+    file(COPY_FILE "${WIN_MSVCRT}" "${EFI_ROOT_DIR}/win/msvcrt.dll" ONLY_IF_DIFFERENT)
+    message(STATUS "EFI media includes our C runtime: /win/msvcrt.dll")
+endif()
 
 # The dynamically linked one, plus the interpreter it names. Both are needed:
 # a dynamic executable without its loader is a file the kernel can parse and
