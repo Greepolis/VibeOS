@@ -187,3 +187,43 @@ and at boot (`arch-gs-boot.txt` 2/2, `nt-hello-boot.txt` 1/1), check, six boots.
 Next: W2 - base relocation, stub `user32` and `advapi32` for the tests' imports,
 then the object manager, handles and waits, measured by `ntdll:om`,
 `ntdll:sync` and `kernel32:sync`.
+
+## W2 (2026-10-15): planned, in progress
+
+What W0's measurement says W2 has to be. Wine's `ntdll_test.exe` is an
+eight-megabyte image linked at `0x140000000`, and it imports 318 functions
+from five DLLs - 141 from `kernel32`, 113 from `ntdll` (most of them `Rtl*`,
+not system calls), 44 from `msvcrt`, 13 from `advapi32`, 7 from `user32`;
+`kernel32_test.exe` imports 612. So before the first test can run, three things
+the plan placed later have to come first:
+
+1. **Base relocation.** `0x140000000` is no user address here. The kernel
+   places an image it cannot put where it asks at `USER_BASE + 8 MiB` (an NT
+   process has no `brk`) and applies its relocations as each page is filled -
+   one `.reloc` block per page, a value straddling two pages read from the file
+   and written in halves. Tested against mingw's own image and `objdump`'s list
+   of its relocations; `hello.exe` is linked at mingw's default base, so every
+   boot relocates it.
+2. **Loading DLLs from disk.** On Windows that is ntdll's loader calling
+   `NtOpenFile`, `NtCreateSection(SEC_IMAGE)` and `NtMapViewOfSection` - so a
+   minimal form of each comes forward from W3 and W4, and the image mapping is
+   the kernel's, relocation included.
+3. **DLLs that load before they are complete.** A missing export is bound to a
+   stub that, when called, prints `unimplemented: kernel32.CreateFileA` and ends
+   the process. The tests then say which function to write next, as LTP did for
+   Linux. `msvcrt.dll` - formatting, strings, a heap, `argv` - is written in
+   full now, being the test harness's own runtime.
+
+**Handles are descriptors** (decided here; W1 left it open). An NT handle
+names an entry of the process's existing descriptor table, `(fd + 1) * 4`;
+the entry's spare 32 bits hold the handle's access mask. Events, mutants,
+semaphores and sections become description types, as eventfd and pidfd already
+are, with an NT extension to their operations: whether the object is signalled
+for a waiter, and what acquiring it does. Reference counting, closing, fork and
+the wait machinery are then the ones seven phases of Linux work have tested,
+not a second set; named objects are a namespace of names onto descriptions.
+
+Order: relocation; the object manager's core (types, `NtClose`,
+`NtDuplicateObject`, the namespace); `NtOpenFile` and image sections; ntdll's
+loader; events, mutants, semaphores and the waits; then `ntdll:om` and
+`ntdll:sync` run.
