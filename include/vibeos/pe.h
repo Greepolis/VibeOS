@@ -57,8 +57,10 @@ enum {
     VIBEOS_PE_EALIGN = 7        /* sections aligned below a page              */
 };
 
-typedef struct {
-    uint64_t image_base;        /* where the file asks to be, and is put       */
+typedef struct vibeos_pe_image {
+    uint64_t image_base;        /* where the image is put                      */
+    uint64_t preferred_base;    /* where the file asked to be                  */
+    int64_t delta;              /* image_base - preferred_base: 0, or relocated */
     uint64_t image_size;        /* SizeOfImage                                 */
     uint64_t entry;             /* absolute; 0 when the file names none        */
     uint32_t headers_size;      /* SizeOfHeaders                               */
@@ -89,6 +91,46 @@ uint64_t vibeos_pe_header_extent(const void *hdr, uint64_t hdr_len);
 int vibeos_pe_parse(const void *hdr, uint64_t hdr_len, uint64_t file_len,
                     uint64_t min_allowed, uint64_t end_allowed,
                     vibeos_pe_image_t *out);
+
+/* The same, placed at `base` instead of where the file asks (W2): every address
+ * in the answer - layout, entry - is `base`'s, and `delta` says by how much the
+ * image moved. ERANGE if it does not fit [min_allowed, end_allowed) there, or if
+ * it cannot move at all: its relocations stripped, or none to apply. The
+ * relocations themselves are applied as its pages are filled
+ * (vibeos_pe_relocate_page), because that is the only moment the kernel holds
+ * each page privately. */
+int vibeos_pe_parse_at(const void *hdr, uint64_t hdr_len, uint64_t file_len,
+                       uint64_t base, uint64_t min_allowed, uint64_t end_allowed,
+                       vibeos_pe_image_t *out);
+
+/* The base-relocation directory, read whole by the caller from the image (its
+ * RVA and size are dir_rva/dir_size[VIBEOS_PE_DIR_BASERELOC]), checked once:
+ * blocks that tile it exactly, each for a page inside the image, every entry
+ * ABSOLUTE or DIR64 - the only kinds a PE32+ linker writes - and every DIR64
+ * target's eight bytes inside the image. 0, or VIBEOS_PE_EMALFORMED. */
+int vibeos_pe_check_relocs(const vibeos_pe_image_t *pe, const uint8_t *relocs,
+                           uint32_t len);
+
+/* Apply `pe->delta` to the page at `page_va`, just filled from the file into
+ * `page`: every DIR64 entry whose eight bytes touch this page, including the
+ * tail of one that starts on the page before. Each value is read from the file
+ * through `read` - not from the page - so an entry straddling two pages comes
+ * out right whichever is filled first. Relocations already checked by
+ * vibeos_pe_check_relocs. */
+void vibeos_pe_relocate_page(const vibeos_pe_image_t *pe, const uint8_t *relocs,
+                             uint32_t len, vibeos_elf_read_fn read, void *ctx,
+                             uint64_t page_va, uint8_t *page);
+
+/* `n` bytes of the image at `va` as the file supplies them - zero where no
+ * section's file part reaches - through `read`, or from a file held whole in
+ * memory. What a loader reads a directory out of before the image is mapped. */
+void vibeos_pe_read_image(const vibeos_pe_image_t *pe, vibeos_elf_read_fn read, void *ctx,
+                          uint64_t va, uint8_t *out, uint32_t n);
+void vibeos_pe_read_image_mem(const vibeos_pe_image_t *pe, const void *file, uint64_t len,
+                              uint64_t va, uint8_t *out, uint32_t n);
+
+/* IMAGE_FILE_RELOCS_STRIPPED: the image can only be where it asks to be. */
+#define VIBEOS_PE_FILE_RELOCS_STRIPPED 0x0001u
 
 /* A file is a PE image if it starts "MZ"; the ELF magic is checked first by
  * whoever has both, so this is only the question of which parser to ask. */

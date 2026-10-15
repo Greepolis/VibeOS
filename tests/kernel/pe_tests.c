@@ -229,6 +229,161 @@ static void t_refusals(void) {
            "VirtualSize 0 is the raw size; a section with no permission is readable");
 }
 
+/* ---- base relocation (W2) ----------------------------------------------------------- */
+
+typedef struct {
+    const uint8_t *b;
+    uint64_t len;
+} t_mem_t;
+
+static int t_mem_read(void *ctx, uint64_t off, uint32_t len, void *buf) {
+    const t_mem_t *m = (const t_mem_t *)ctx;
+
+    if (off + len > m->len) {
+        return -1;
+    }
+    memcpy(buf, m->b + off, len);
+    return 0;
+}
+
+/* The image `pe` describes, a page at a time as the kernel fills it, with its
+ * relocations applied; into `out`, which spans the image. */
+static void t_fill_image(const vibeos_pe_image_t *pe, const uint8_t *file, uint64_t flen,
+                         const uint8_t *rel, uint32_t rlen, uint8_t *out) {
+    t_mem_t m;
+    uint64_t va;
+
+    m.b = file;
+    m.len = flen;
+    for (va = pe->layout.min_vaddr; va < pe->layout.end_vaddr; va += 4096u) {
+        uint8_t *page = out + (va - pe->layout.min_vaddr);
+        vibeos_elf_fill_page_via(&pe->layout, t_mem_read, &m, va, page);
+        vibeos_pe_relocate_page(pe, rel, rlen, t_mem_read, &m, va, page);
+    }
+}
+
+static uint64_t t_rd64(const uint8_t *p) {
+    uint64_t v = 0;
+    int i;
+    for (i = 7; i >= 0; i--) {
+        v = (v << 8) | p[i];
+    }
+    return v;
+}
+
+/* A .reloc section at 0x3000 of this file's image: the page at RVA 0x2000 has
+ * a value at 0x10, one that straddles into the next page at 0xFFC, and an
+ * ABSOLUTE pad. */
+static uint8_t g_rel_file[0xA00];
+
+static uint32_t t_build_reloc_image(void) {
+    t_sec_t s[2];
+    uint8_t *d, *r;
+    uint32_t rlen;
+
+    s[0] = g_two[0];
+    s[1].vsize = 0x2000u;   /* .data: two pages, the second all zero tail */
+    s[1].va = 0x2000u;
+    s[1].raw = 0x400u;
+    s[1].raw_at = 0x400u;
+    s[1].ch = 0xC0000040u;
+    t_build(s, 2);
+    memset(g_rel_file, 0, sizeof(g_rel_file));
+    memcpy(g_rel_file, g_img, 0x800u);
+    w32(g_rel_file + T_OPT + 56, 0x5000u);   /* the image now ends after .reloc */
+    d = g_rel_file + 0x400u;
+    w64(d + 0x10u, T_BASE + 0x1000u);        /* a pointer to .text */
+    w64(d + 0x3F0u, 0x1122334455667788ull);  /* listed: moves                  */
+    w64(d + 0x3F8u, 0x0102030405060708ull);  /* not listed: must be left alone */
+    /* The directory, appended to the file and named by the header. Its
+     * section is not in the table: the parser does not need it mapped. */
+    r = g_rel_file + 0x800u;
+    w32(r, 0x2000u);
+    w32(r + 4, 8u + 3u * 2u + 2u);          /* three entries and a pad */
+    w16(r + 8, (10u << 12) | 0x010u);
+    w16(r + 10, (10u << 12) | 0x3F0u);       /* a value at the end of the raw part */
+    w16(r + 12, (10u << 12) | 0xFFCu);       /* straddles into the next page */
+    w16(r + 14, 0);                          /* ABSOLUTE */
+    rlen = 16u;
+    w32(g_rel_file + T_OPT + 112 + 8 * VIBEOS_PE_DIR_BASERELOC, 0x4000u);
+    w32(g_rel_file + T_OPT + 112 + 8 * VIBEOS_PE_DIR_BASERELOC + 4, rlen);
+    return rlen;
+}
+
+static void t_relocation(void) {
+    static uint8_t img[0x5000], ref[0x5000];
+    vibeos_pe_image_t pe, at;
+    const uint8_t *rel;
+    uint32_t rlen = t_build_reloc_image();
+    /* Past four gigabytes, so the distance changes the high half of every
+     * value too: the half of a straddling value that lies on the next page is
+     * then something a missed tail would leave visibly wrong. */
+    const uint64_t to = T_BASE + 0x100800000ull;
+    const int64_t delta = (int64_t)(to - T_BASE);
+    uint8_t bad[16];
+
+    rel = g_rel_file + 0x800u;
+    expect(vibeos_pe_parse(g_rel_file, sizeof(g_rel_file), sizeof(g_rel_file), 0x400000u,
+                           0x10000000000ull, &pe) == VIBEOS_PE_OK && pe.delta == 0 &&
+           pe.preferred_base == T_BASE, "at its own base the image does not move");
+    expect(vibeos_pe_parse_at(g_rel_file, sizeof(g_rel_file), sizeof(g_rel_file), to, 0x400000u,
+                              0x10000000000ull, &at) == VIBEOS_PE_OK &&
+           at.image_base == to && at.delta == delta && at.preferred_base == T_BASE &&
+           at.entry == to + 0x1000u && at.layout.seg[1].vaddr == to + 0x1000u &&
+           at.layout.min_vaddr == to, "placed elsewhere, every address is the new base's");
+    expect(vibeos_pe_check_relocs(&at, rel, rlen) == VIBEOS_PE_OK, "a linker's relocations check");
+
+    t_fill_image(&pe, g_rel_file, sizeof(g_rel_file), rel, rlen, ref);
+    t_fill_image(&at, g_rel_file, sizeof(g_rel_file), rel, rlen, img);
+    expect(t_rd64(img + 0x2010u) == to + 0x1000u, "a pointer moves with the image");
+    expect(t_rd64(img + 0x23F0u) == 0x1122334455667788ull + (uint64_t)delta,
+           "a value at the end of the file's part moves");
+    expect(t_rd64(img + 0x2FFCu) == (uint64_t)delta,
+           "a value straddling two pages - the second all .bss - moves, both halves");
+    expect(t_rd64(ref + 0x2FFCu) == 0u && t_rd64(ref + 0x2010u) == T_BASE + 0x1000u,
+           "at its own base nothing is touched");
+    {
+        uint32_t k, other = 0;
+        for (k = 0; k < sizeof(img); k++) {
+            int inside = (k >= 0x2010u && k < 0x2018u) || (k >= 0x23F0u && k < 0x23F8u) ||
+                         (k >= 0x2FFCu && k < 0x3004u);
+            other += !inside && img[k] != ref[k];
+        }
+        expect(other == 0u, "nothing but the listed values changes");
+    }
+
+    /* What no PE32+ linker writes. */
+    memcpy(bad, rel, rlen);
+    w16(bad + 8, (3u << 12) | 0x10u);   /* HIGHLOW: a 32-bit image's */
+    expect(vibeos_pe_check_relocs(&at, bad, rlen) == VIBEOS_PE_EMALFORMED, "a HIGHLOW entry");
+    memcpy(bad, rel, rlen);
+    w32(bad + 4, 64u);
+    expect(vibeos_pe_check_relocs(&at, bad, rlen) == VIBEOS_PE_EMALFORMED,
+           "a block longer than the directory");
+    memcpy(bad, rel, rlen);
+    w32(bad, 0x5000u);
+    expect(vibeos_pe_check_relocs(&at, bad, rlen) == VIBEOS_PE_EMALFORMED,
+           "a block for a page outside the image");
+    memcpy(bad, rel, rlen);
+    w32(bad, 0x4000u);
+    w16(bad + 8, (10u << 12) | 0xFFCu);
+    expect(vibeos_pe_check_relocs(&at, bad, rlen) == VIBEOS_PE_EMALFORMED,
+           "a value whose eight bytes run past the image's end");
+    memcpy(bad, rel, rlen);
+    w32(bad, 0x2010u);
+    expect(vibeos_pe_check_relocs(&at, bad, rlen) == VIBEOS_PE_EMALFORMED,
+           "a block for an address that is not a page");
+
+    /* An image that cannot move is refused somewhere else, not placed there. */
+    w16(g_rel_file + 0x56, 0x0023u);   /* RELOCS_STRIPPED */
+    expect(vibeos_pe_parse_at(g_rel_file, sizeof(g_rel_file), sizeof(g_rel_file), to, 0x400000u,
+                              0x10000000000ull, &at) == VIBEOS_PE_ERANGE,
+           "relocations stripped: it can only be where it asks");
+    t_build(g_two, 2);
+    expect(vibeos_pe_parse_at(g_img, T_FILE, T_FILE, to, 0x400000u, 0x10000000000ull, &at) ==
+               VIBEOS_PE_ERANGE, "no relocation directory: it cannot be moved either");
+}
+
 /* ---- mingw-w64's image, against mingw-w64's objdump ------------------------------ */
 
 #ifdef VIBEOS_PE_FIXTURE_DIR
@@ -322,6 +477,54 @@ static void t_mingw(void) {
         }
     }
     expect(listed >= 4u, "objdump listed the fixture's sections");
+
+    /* Moved, every value objdump says the linker listed - and nothing else -
+     * changes by exactly the distance moved. */
+    {
+        vibeos_pe_image_t at;
+        static uint8_t ref[0x40000], img[0x40000];
+        uint64_t rva = pe.dir_rva[VIBEOS_PE_DIR_BASERELOC], k;
+        uint32_t rlen = pe.dir_size[VIBEOS_PE_DIR_BASERELOC];
+        static uint8_t rel[4096];
+        const uint64_t to = pe.image_base + 0x800000u;
+        uint32_t dir64 = 0, moved = 0, other = 0;
+        const char *r;
+
+        expect(rlen != 0u && rlen <= sizeof(rel) && pe.image_size <= sizeof(img),
+               "the fixture has a relocation directory");
+        if (rlen == 0u || rlen > sizeof(rel) || pe.image_size > sizeof(img)) {
+            goto done;
+        }
+        /* The directory, read out of the image as the kernel will. */
+        t_fill_image(&pe, exe, (uint64_t)elen, 0, 0, ref);
+        memcpy(rel, ref + rva, rlen);
+        expect(vibeos_pe_parse_at(exe, (uint64_t)elen, (uint64_t)elen, to, 0x400000u,
+                                  0x10000000000ull, &at) == VIBEOS_PE_OK &&
+               vibeos_pe_check_relocs(&at, rel, rlen) == VIBEOS_PE_OK,
+               "mingw's image moves, and its relocations check");
+        t_fill_image(&at, exe, (uint64_t)elen, rel, rlen, img);
+        for (r = strstr(p, "\treloc"); r; r = strstr(r + 1, "\treloc")) {
+            unsigned idx, off;
+            unsigned long long where;
+            char kind[16];
+
+            if (sscanf(r, "\treloc %u offset %x [%llx] %15s", &idx, &off, &where, kind) != 4 ||
+                strcmp(kind, "DIR64") != 0) {
+                continue;
+            }
+            dir64++;
+            moved += t_rd64(img + where) == t_rd64(ref + where) + (uint64_t)at.delta;
+            memset(img + where, 0, 8);
+            memset(ref + where, 0, 8);
+        }
+        for (k = 0; k < pe.image_size; k++) {
+            other += img[k] != ref[k];
+        }
+        expect(dir64 >= 3u && moved == dir64,
+               "every DIR64 objdump lists moved by exactly the distance");
+        expect(other == 0u, "and no other byte of the image changed");
+    }
+done:
     expect(matched == listed && pe.layout.count == listed + 1u,
            "every section objdump lists, at its address, size, offset and permissions");
     free(exe);
@@ -335,6 +538,7 @@ int test_pe(void) {
     t_good();
     t_fill();
     t_refusals();
+    t_relocation();
 #ifdef VIBEOS_PE_FIXTURE_DIR
     t_mingw();
 #else

@@ -93,7 +93,7 @@ uint64_t vibeos_pe_header_extent(const void *hdr, uint64_t hdr_len) {
 }
 
 static int pe_parse_inner(const uint8_t *b, uint64_t hdr_len, uint64_t file_len,
-                          uint64_t min_allowed, uint64_t end_allowed,
+                          uint64_t place, uint64_t min_allowed, uint64_t end_allowed,
                           vibeos_pe_image_t *out) {
     uint64_t at, coff, opt, sect, extent, end, image_end;
     uint32_t opt_size, section_align, i;
@@ -160,6 +160,23 @@ static int pe_parse_inner(const uint8_t *b, uint64_t hdr_len, uint64_t file_len,
     if (!add_ok(out->image_base, out->image_size, &end) || !page_up(end, &image_end)) {
         return VIBEOS_PE_EMALFORMED;
     }
+    /* Somewhere else, if the caller says where: the same span, moved. Only an
+     * image that can be moved - its relocations kept, and some to apply - and
+     * only to a page boundary, which is all a PE relocation can express. */
+    out->preferred_base = out->image_base;
+    if (place != 0u && place != out->image_base) {
+        if ((place & (VIBEOS_ELF_PAGE_SIZE - 1u)) != 0u ||
+            (out->characteristics & VIBEOS_PE_FILE_RELOCS_STRIPPED) ||
+            out->dirs <= VIBEOS_PE_DIR_BASERELOC ||
+            out->dir_size[VIBEOS_PE_DIR_BASERELOC] == 0u) {
+            return VIBEOS_PE_ERANGE;
+        }
+        out->image_base = place;
+        if (!add_ok(place, out->image_size, &end) || !page_up(end, &image_end)) {
+            return VIBEOS_PE_EMALFORMED;
+        }
+    }
+    out->delta = (int64_t)(out->image_base - out->preferred_base);
     if (out->image_base < min_allowed || image_end > end_allowed) {
         return VIBEOS_PE_ERANGE;
     }
@@ -248,9 +265,9 @@ static int pe_parse_inner(const uint8_t *b, uint64_t hdr_len, uint64_t file_len,
     return VIBEOS_PE_OK;
 }
 
-int vibeos_pe_parse(const void *hdr, uint64_t hdr_len, uint64_t file_len,
-                    uint64_t min_allowed, uint64_t end_allowed,
-                    vibeos_pe_image_t *out) {
+static int pe_parse_placed(const void *hdr, uint64_t hdr_len, uint64_t file_len,
+                           uint64_t place, uint64_t min_allowed, uint64_t end_allowed,
+                           vibeos_pe_image_t *out) {
     uint32_t i;
     int rc;
 
@@ -260,7 +277,7 @@ int vibeos_pe_parse(const void *hdr, uint64_t hdr_len, uint64_t file_len,
     for (i = 0; i < (uint32_t)sizeof(*out); i++) {
         ((uint8_t *)(void *)out)[i] = 0;
     }
-    rc = pe_parse_inner((const uint8_t *)hdr, hdr_len, file_len, min_allowed,
+    rc = pe_parse_inner((const uint8_t *)hdr, hdr_len, file_len, place, min_allowed,
                         end_allowed, out);
     /* A file no linker produced, as against the wrong kind of file: the boot's
      * media holds none, so the boot asserts the count is zero (vibeos/mbz.h). */
@@ -271,4 +288,170 @@ int vibeos_pe_parse(const void *hdr, uint64_t hdr_len, uint64_t file_len,
         out->layout.count = 0;
     }
     return rc;
+}
+
+int vibeos_pe_parse(const void *hdr, uint64_t hdr_len, uint64_t file_len,
+                    uint64_t min_allowed, uint64_t end_allowed,
+                    vibeos_pe_image_t *out) {
+    return pe_parse_placed(hdr, hdr_len, file_len, 0u, min_allowed, end_allowed, out);
+}
+
+int vibeos_pe_parse_at(const void *hdr, uint64_t hdr_len, uint64_t file_len,
+                       uint64_t base, uint64_t min_allowed, uint64_t end_allowed,
+                       vibeos_pe_image_t *out) {
+    if (base == 0u) {
+        return VIBEOS_PE_ERANGE;   /* nowhere is not a place */
+    }
+    return pe_parse_placed(hdr, hdr_len, file_len, base, min_allowed, end_allowed, out);
+}
+
+/* ---- base relocation ------------------------------------------------------------
+ *
+ * The directory is a run of blocks, one per page that has anything to fix: the
+ * page's RVA, the block's size in bytes (header included), then 16-bit
+ * entries - a type in the top four bits, the offset in the page below. A PE32+
+ * image needs two types: ABSOLUTE, padding that keeps a block a multiple of
+ * four bytes, and DIR64, a 64-bit address to move by delta. Anything else is a
+ * 32-bit image's, or no linker's. */
+
+#define PE_REL_ABSOLUTE 0u
+#define PE_REL_DIR64 10u
+
+int vibeos_pe_check_relocs(const vibeos_pe_image_t *pe, const uint8_t *relocs,
+                           uint32_t len) {
+    uint32_t at = 0;
+
+    if (!pe || (!relocs && len != 0u)) {
+        return VIBEOS_PE_EMALFORMED;
+    }
+    while (at < len) {
+        uint32_t page, size, i;
+
+        if (len - at < 8u) {
+            return VIBEOS_PE_EMALFORMED;
+        }
+        page = rd32(relocs + at);
+        size = rd32(relocs + at + 4u);
+        if (size < 8u || size > len - at || (size & 1u) != 0u ||
+            (page & (VIBEOS_ELF_PAGE_SIZE - 1u)) != 0u || page >= pe->image_size) {
+            return VIBEOS_PE_EMALFORMED;
+        }
+        for (i = 8u; i < size; i += 2u) {
+            uint16_t e = rd16(relocs + at + i);
+            uint32_t type = (uint32_t)e >> 12, off = (uint32_t)e & 0xFFFu;
+
+            if (type == PE_REL_ABSOLUTE) {
+                continue;
+            }
+            /* The eight bytes it moves must be the image's. */
+            if (type != PE_REL_DIR64 || (uint64_t)page + off + 8u > pe->image_size) {
+                return VIBEOS_PE_EMALFORMED;
+            }
+        }
+        at += size;
+    }
+    return VIBEOS_PE_OK;
+}
+
+/* `n` bytes of the image as the file supplies them at `va`: zero where no
+ * segment's file part reaches, as the page fill makes them. */
+void vibeos_pe_read_image(const vibeos_pe_image_t *pe, vibeos_elf_read_fn read, void *ctx,
+                          uint64_t va, uint8_t *out, uint32_t n) {
+    uint32_t k, i;
+
+    for (k = 0; k < n; k++) {
+        out[k] = 0;
+    }
+    for (i = 0; i < pe->layout.count; i++) {
+        const vibeos_elf_segment_t *s = &pe->layout.seg[i];
+        uint64_t from = va > s->vaddr ? va : s->vaddr;
+        uint64_t to = va + n < s->vaddr + s->filesz ? va + n : s->vaddr + s->filesz;
+
+        if (from < to) {
+            (void)read(ctx, s->file_off + (from - s->vaddr), (uint32_t)(to - from),
+                       out + (from - va));
+        }
+    }
+}
+
+typedef struct {
+    const uint8_t *b;
+    uint64_t len;
+} pe_mem_t;
+
+static int pe_read_mem(void *ctx, uint64_t off, uint32_t len, void *buf) {
+    const pe_mem_t *m = (const pe_mem_t *)ctx;
+    uint32_t i;
+
+    if (off + (uint64_t)len > m->len) {
+        return -1;
+    }
+    for (i = 0; i < len; i++) {
+        ((uint8_t *)buf)[i] = m->b[off + i];
+    }
+    return 0;
+}
+
+void vibeos_pe_read_image_mem(const vibeos_pe_image_t *pe, const void *file, uint64_t len,
+                              uint64_t va, uint8_t *out, uint32_t n) {
+    pe_mem_t m;
+
+    m.b = (const uint8_t *)file;
+    m.len = len;
+    vibeos_pe_read_image(pe, pe_read_mem, &m, va, out, n);
+}
+
+/* One block's entries against one page: each DIR64 value whose eight bytes
+ * overlap [page_va, page_va + 4096), moved by delta, and only the overlapping
+ * bytes written. */
+static void pe_relocate_block(const vibeos_pe_image_t *pe, const uint8_t *blk, uint32_t size,
+                              vibeos_elf_read_fn read, void *ctx, uint64_t page_va,
+                              uint8_t *page) {
+    uint64_t block_va = pe->image_base + rd32(blk);
+    uint32_t i;
+
+    for (i = 8u; i < size; i += 2u) {
+        uint16_t e = rd16(blk + i);
+        uint64_t at = block_va + ((uint32_t)e & 0xFFFu);
+        uint8_t v[8];
+        uint64_t value;
+        uint32_t k;
+
+        if (((uint32_t)e >> 12) != PE_REL_DIR64 || at + 8u <= page_va ||
+            at >= page_va + VIBEOS_ELF_PAGE_SIZE) {
+            continue;
+        }
+        vibeos_pe_read_image(pe, read, ctx, at, v, 8u);
+        value = rd64(v) + (uint64_t)pe->delta;
+        for (k = 0; k < 8u; k++) {
+            uint64_t b = at + k;
+            if (b >= page_va && b < page_va + VIBEOS_ELF_PAGE_SIZE) {
+                page[b - page_va] = (uint8_t)(value >> (8u * k));
+            }
+        }
+    }
+}
+
+void vibeos_pe_relocate_page(const vibeos_pe_image_t *pe, const uint8_t *relocs,
+                             uint32_t len, vibeos_elf_read_fn read, void *ctx,
+                             uint64_t page_va, uint8_t *page) {
+    uint32_t at = 0;
+
+    if (!pe || pe->delta == 0 || !relocs || !read || !page) {
+        return;
+    }
+    while (at + 8u <= len) {
+        uint32_t size = rd32(relocs + at + 4u);
+        uint64_t block_va = pe->image_base + rd32(relocs + at);
+
+        if (size < 8u || size > len - at) {
+            return;   /* checked already; never trusted further than that */
+        }
+        /* This page's block, and the one before it for an entry that starts
+         * on the previous page and ends on this one. */
+        if (block_va == page_va || block_va + VIBEOS_ELF_PAGE_SIZE == page_va) {
+            pe_relocate_block(pe, relocs + at, size, read, ctx, page_va, page);
+        }
+        at += size;
+    }
 }

@@ -506,7 +506,7 @@ int hw_proc_create(hw_proc_t *p, hw_procstate_t *ps,
      * is how the dynamic loader reported "RELRO protection failed". */
     ps->vmas.head = 0;
     ps->vmas.count = 0;
-    if (hw_map_elf_image(&p->as, &ps->vmas, &img, elf, file_id, len) != 0) {
+    if (hw_map_elf_image(&p->as, &ps->vmas, &img, elf, file_id, len, 0) != 0) {
         { rc = hw_exec_refuse(VIBEOS_EXEC_NO_MEMORY, path, "map_image"); goto fail; }
     }
     p->entry = img.entry;
@@ -558,7 +558,7 @@ int hw_proc_create(hw_proc_t *p, hw_procstate_t *ps,
             { rc = hw_exec_refuse(VIBEOS_EXEC_INTERP_CHAIN, img.interp, "interp_chain"); goto fail; }
         }
         if (hw_map_elf_image(&p->as, &ps->vmas, &interp, g_interp_elf,
-                             interp_id, (uint64_t)n) != 0) {
+                             interp_id, (uint64_t)n, 0) != 0) {
             { rc = hw_exec_refuse(VIBEOS_EXEC_NO_MEMORY, img.interp, "map_interp"); goto fail; }
         }
 

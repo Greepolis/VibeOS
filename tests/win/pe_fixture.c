@@ -9,8 +9,12 @@
 int fixture_counter = 3;
 volatile char fixture_bss[20000];
 const char fixture_text[] = "read-only data of the PE fixture";
+/* Absolute addresses, in writable and in read-only data: what base relocation
+ * exists to move (docs/abi/windows.md W2). The linker records each in .reloc. */
+int *fixture_ptr = &fixture_counter;
+const char *const fixture_strs[2] = { fixture_text, fixture_text + 5 };
 
 int fixture_start(void) {
     fixture_bss[5] = (char)fixture_counter;
-    return fixture_bss[5] + fixture_text[0];
+    return fixture_bss[5] + fixture_text[0] + *fixture_ptr + fixture_strs[1][0];
 }

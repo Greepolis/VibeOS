@@ -230,7 +230,8 @@ if(VIBEOS_BUILD_TESTS)
                    "${VIBEOS_PE_FX_DIR}/pe_fixture.p.txt"
             COMMAND ${CMAKE_COMMAND} -E make_directory "${VIBEOS_PE_FX_DIR}"
             COMMAND "${VIBEOS_MINGW_GCC}" -O1 -nostdlib -ffreestanding -e fixture_start
-                    -Wl,--image-base=0x8000000000 -o "${VIBEOS_PE_FX_DIR}/pe_fixture.exe"
+                    -Wl,--image-base=0x8000000000 -Wl,--dynamicbase
+                    -o "${VIBEOS_PE_FX_DIR}/pe_fixture.exe"
                     "${VIBEOS_PE_FX_SRC}"
             COMMAND "${VIBEOS_MINGW_OBJDUMP}" -h "${VIBEOS_PE_FX_DIR}/pe_fixture.exe"
                     > "${VIBEOS_PE_FX_DIR}/pe_fixture.h.txt"
@@ -874,7 +875,7 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
             COMMAND "${VIBEOS_MINGW_GCC}" ${VIBEOS_WIN_FLAGS}
                     -o "${VIBEOS_WIN_DIR}/hello.exe" "${VIBEOS_WIN_SRC}/hello/hello.c"
                     -L${VIBEOS_WIN_DIR} -lntdll -e nt_hello_start
-                    -Wl,--image-base=0x8000000000
+                    -Wl,--dynamicbase
             DEPENDS "${VIBEOS_WIN_SRC}/hello/hello.c" "${VIBEOS_WIN_DIR}/libntdll.a"
             COMMENT "Building the first Windows program with mingw-w64"
             VERBATIM
