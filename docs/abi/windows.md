@@ -187,3 +187,37 @@ and at boot (`arch-gs-boot.txt` 2/2, `nt-hello-boot.txt` 1/1), check, six boots.
 Next: W2 - base relocation, stub `user32` and `advapi32` for the tests' imports,
 then the object manager, handles and waits, measured by `ntdll:om`,
 `ntdll:sync` and `kernel32:sync`.
+
+## W2: msvcrt (2026-10-15, first piece)
+
+Wine's test executables import their C runtime from `msvcrt.dll`, so VibeOS
+ships one, written from the C standard and Microsoft's documentation and never
+from another implementation: `user/win/msvcrt`, a freestanding x64 DLL
+exporting exactly the 74 names the tests import (`msvcrt.def`), importing only
+`NtWriteFile`, `NtTerminateProcess` and `NtQuerySystemTime` from our `ntdll`.
+It is not loaded by anything yet.
+
+- **The logic is portable C** (`crt_core.c`, `uint16_t` for a wide character,
+  `int32_t` for msvcrt's `long`) that mingw-w64 builds into the DLL and the
+  host builds into `vibeos_msvcrt_tests`; `msvcrt.c` is the Windows part -
+  the exported names, the three standard streams (`__iob_func` returns an array
+  whose element size is checked against mingw's `struct _iobuf`), the heap's
+  16 MiB arena in `.bss`, the command line from the PEB.
+- **msvcrt's printf, not C99's**: `%ld` is 32 bits, `%I64d`/`%Id` exist, `%p` is
+  sixteen upper-case digits, `%n` is refused, exponents have three digits, a tie
+  rounds away from zero, infinities are `1.#INF`, and `_vsnprintf` returns -1 for
+  a truncated result and writes no NUL then. Where it agrees with C99 it is held
+  against glibc's `snprintf` (about 5,950 generated cases per seed, the seed
+  printed; floating point is expanded exactly and rounded once, which is the
+  only way to agree at every precision).
+- **Absent services are answered as a runtime with nothing behind it would**:
+  no files until W4 (`fopen` fails, `fgets` finds nothing), no environment
+  block (`getenv` finds nothing), no locking until W5 (the heap, `strtok`'s
+  position and the generator's seed are statics).
+- **Measured**: `vibeos_msvcrt_tests` (3.2 million checks), a layout check
+  against mingw-w64's headers at every build, `check-msvcrt-exports.py`
+  (exports equal the `.def`, imports are `ntdll.dll` alone), and sabotage
+  (`cases/win-msvcrt.txt`, 20 of 20 red).
+
+Not done: running it. The DLL has not been executed on VibeOS; what runs on
+the host is its core, not the glue in `msvcrt.c`.
