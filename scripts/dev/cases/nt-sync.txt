@@ -63,3 +63,9 @@
     if (n > o->u.sem.max - o->u.sem.count) {
 +++ new
     if (0) {
+
+### a delay returns after one tick, whatever it was asked for
+--- old
+    } while (ks_ticks() < deadline);
++++ new
+    } while (0 && ks_ticks() < deadline);

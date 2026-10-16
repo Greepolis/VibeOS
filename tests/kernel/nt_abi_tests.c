@@ -450,6 +450,23 @@ static void t_semaphores(void) {
                ST(VIBEOS_STATUS_INVALID_PARAMETER), "a release of none is refused");
 }
 
+/* Sleep: a relative interval passes on the clock before the call returns. */
+static void t_delay(void) {
+    uint64_t t = kf_ualloc(8), before;
+
+    fresh(53);
+    *(int64_t *)kf_uptr(t) = -1500000;   /* 150 ms, 15 ticks at 100 Hz */
+    before = ks_ticks();
+    expect(nt(VIBEOS_NT_NR_NtDelayExecution, 0, t, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               ks_ticks() - before >= 15u, "a delay of 150 ms lets 15 ticks pass");
+    *(int64_t *)kf_uptr(t) = 0;
+    before = ks_ticks();
+    expect(nt(VIBEOS_NT_NR_NtDelayExecution, 0, t, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               ks_ticks() - before <= 1u, "a delay of zero gives up a tick and no more");
+    expect(nt(VIBEOS_NT_NR_NtDelayExecution, 0, 0, 0, 0, 0) == ST(VIBEOS_STATUS_ACCESS_VIOLATION),
+           "no interval is a bad pointer");
+}
+
 static void t_handles_and_names(void) {
     uint64_t a, b, c, out = kf_ualloc(8), oa;
     long r;
@@ -722,6 +739,7 @@ int test_nt_abi(void) {
     t_events();
     t_mutants();
     t_semaphores();
+    t_delay();
     t_handles_and_names();
     t_sections();
     return g_fail ? -1 : 0;

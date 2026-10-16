@@ -596,6 +596,30 @@ long nt_wait(uint32_t n, const uint64_t *handles, int all, uint64_t timeout_u) {
     return result;
 }
 
+/* NtDelayExecution(Alertable, DelayInterval): Sleep. The interval is an NT
+ * time - relative when negative - and zero gives the processor up for a tick,
+ * as a wait does. Like the waits, a signal that needs acting on ends it early;
+ * there are no APCs until W5. */
+static long nt_delay_execution(uint64_t alertable, uint64_t interval_u) {
+    int64_t t;
+    int forever;
+    uint64_t deadline;
+    int me = ks_current();
+
+    (void)alertable;
+    if (vibeos_uaccess_copy(&t, (const void *)(uintptr_t)interval_u, sizeof(t)) != 0) {
+        return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
+    }
+    deadline = wait_deadline(t, &forever, 0);
+    do {
+        if (me >= 0 && ks_signal_interrupts(me)) {
+            return NT_STATUS(VIBEOS_STATUS_USER_APC);
+        }
+        ks_wait_tick();
+    } while (ks_ticks() < deadline);
+    return NT_STATUS(VIBEOS_STATUS_SUCCESS);
+}
+
 /* NtWaitForSingleObject(Handle, Alertable, Timeout). Alertable waits wait the
  * same: there are no APCs until W5. */
 static long nt_wait_single(uint64_t h, uint64_t alertable, uint64_t timeout) {
@@ -658,6 +682,8 @@ static long nt_wait_multiple(uint64_t count, uint64_t handles_u, uint64_t type,
     X(VIBEOS_NT_NR_NtQuerySemaphore, NtQuerySemaphore, EVENTFD, \
       PTRS(NT_OUT_BUF(2, 3), OUT_OPT(4, 4)), \
       nt_query_semaphore(ARG(0), NT_ARG32(1), ARG(2), NT_ARG32(3), ARG(4))) \
+    X(VIBEOS_NT_NR_NtDelayExecution, NtDelayExecution, NANOSLEEP, PTRS(IN(1, 8)), \
+      nt_delay_execution(ARG(0), ARG(1))) \
     X(VIBEOS_NT_NR_NtWaitForSingleObject, NtWaitForSingleObject, FUTEX, PTRS(IN_OPT(2, 8)), \
       nt_wait_single(ARG(0), ARG(1), ARG(2))) \
     X(VIBEOS_NT_NR_NtWaitForMultipleObjects, NtWaitForMultipleObjects, FUTEX, \
