@@ -915,6 +915,12 @@ CORPUS_PROGRAMS = ("sqlite3", "lua", "sqlite3-glibc", "lua-glibc", "threadpool",
 # printed as "C:ltp: <test> rc=<n>"; nothing here asserts on them - the boot's
 # verdict is the workloads' - and ltp-run.sh reads the codes out of the log.
 LTP_TESTS = os.environ.get("VIBEOS_SMOKE_LTP", "").split()
+# Wine's conformance tests, as "<dll>:<test>" (scripts/dev/winetest-run.sh sets
+# this; docs/abi/windows.md W2): the executables winetest-build.sh made, staged
+# at /win beside our DLLs and run like the LTP tests, each one's last lines and
+# exit code - its failure count - printed as "C:wt: <dll:test> rc=<n>". Nothing
+# here asserts on them either.
+WINETESTS = os.environ.get("VIBEOS_SMOKE_WINETEST", "").split()
 
 
 def stage_corpus(efi_root, build_dir):
@@ -950,6 +956,29 @@ def stage_corpus(efi_root, build_dir):
             b'done\n'
             b'cd /\n'
             b'echo "C:done: '))
+    # A test executable a previous run staged and this one did not ask for is
+    # taken off again: they are eight and thirteen megabytes, and an ordinary
+    # boot has no use for them.
+    win_dir = os.path.join(efi_root, "win")
+    wanted = {"%s_test.exe" % t.split(":", 1)[0] for t in WINETESTS}
+    if os.path.isdir(win_dir):
+        for name in os.listdir(win_dir):
+            if name.endswith("_test.exe") and name not in wanted:
+                os.remove(os.path.join(win_dir, name))
+    if WINETESTS:
+        for dll in sorted({t.split(":", 1)[0] for t in WINETESTS}):
+            exe = "%s_test.exe" % dll
+            shutil.copyfile(os.path.join(build_dir, "winetest", exe),
+                            os.path.join(efi_root, "win", exe))
+        lines = b""
+        for t in WINETESTS:
+            dll, test = t.split(":", 1)
+            lines += (b'/win/' + dll.encode() + b'_test.exe ' + test.encode() +
+                      b' > /tmp/wt.out 2>&1\n'
+                      b'rc=$?\n'
+                      b'tail -n 40 /tmp/wt.out | sed "s/^/C:wt-' + t.encode() + b': /"\n'
+                      b'echo "C:wt: ' + t.encode() + b' rc=$rc"\n')
+        script = script.replace(b'echo "C:done: ', lines + b'echo "C:done: ')
     # Written beside and renamed over: several boots stage the same directory
     # at once (scripts/dev/boots.sh), and another run building its image must
     # read the whole file or the previous whole file, never one being written.
@@ -1095,10 +1124,20 @@ def main():
         stage_corpus(efi_root, build_dir)
         # As for QEMU below: the paths are the build directory this script was
         # told to boot, and the call is a list, with no shell.
+        # Sized to what is on it, not a fixed 96 MB: the content passed 80 MB in
+        # W2, Wine's test programs add seventeen, and an image that does not fit
+        # is refused by its builder - which used to stop this script before it
+        # wrote a verdict, leaving the last run's verdict, log and image for the
+        # caller to read as this one's. FAT16 here reaches 128 MB.
+        content = 0
+        for d, _, names in os.walk(efi_root):
+            for n in names:
+                content += (os.path.getsize(os.path.join(d, n)) + 2047) // 2048 * 2048
+        esp_mb = max(96, min(127, content // (1024 * 1024) + 16))
         subprocess.run([sys.executable,  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
                         os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                      "make_esp_image.py"),
-                        efi_root, esp_img, "96"],
+                        efi_root, esp_img, str(esp_mb)],
                        check=True, stdout=subprocess.DEVNULL)
         esp_drive = f"if=none,id=esp,format=raw,file={esp_img}"
     elif ESP == "vvfat":
