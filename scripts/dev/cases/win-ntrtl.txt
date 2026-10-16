@@ -1,0 +1,353 @@
+# The Rtl runtime of our ntdll (user/win/ntdll/rtl/, docs/abi/windows.md W2), broken
+# one rule at a time. Each is caught by tests/win/ntrtl_tests*.c on the host,
+# which compiles the same files ntdll.dll is built from.
+#
+# One source file per run; sabotage.py reports the cases that belong to the other
+# files as "anchor not found", which is expected here and not a defect. The
+# sections below are marked with the file they break.
+#
+# Target source: user/win/ntdll/rtl/heap.c; user/win/ntdll/rtl/string.c; user/win/ntdll/rtl/unicode.c; user/win/ntdll/rtl/misc.c; user/win/ntdll/rtl/ip.c; user/win/ntdll/rtl/handle.c; user/win/ntdll/rtl/image.c; user/win/ntdll/rtl/env.c; user/win/ntdll/rtl/critsec.c; user/win/ntdll/rtl/path.c; user/win/ntdll/rtl/printf.c; user/win/ntdll/rtl/dbgprint.c
+# Run: for f in heap string unicode misc ip handle image env critsec path printf dbgprint; do SABOTAGE_VERIFY="bash scripts/dev/verify-ntrtl.sh build-gcc-Release" python3 scripts/dev/sabotage.py user/win/ntdll/rtl/$f.c scripts/dev/cases/win-ntrtl.txt build-gcc-Release; done
+
+# ==== heap.c ====
+
+### a free block is not merged with the one before it
+--- old
+    if (prev && (uint8_t *)prev + prev->h.size == (uint8_t *)blk) {
++++ new
+    if (0 && prev && (uint8_t *)prev + prev->h.size == (uint8_t *)blk) {
+
+### a block is not rounded up to 16 bytes
+--- old
+    need = ((size + 15u) & ~(size_t)15u) + HDR;
++++ new
+    need = size + HDR;
+
+### a large free block is handed out whole instead of split
+--- old
+        if (cur->h.size - need >= MIN_BLK) {
++++ new
+        if (0) {
+
+# ==== string.c ====
+
+### RtlInitUnicodeString does not cap a very long string
+--- old
+    if (n > 0xFFFCu) {
+        n = 0xFFFCu;
++++ new
+    if (n > 0xFFFEu) {
+        n = 0xFFFEu;
+
+### the duplicate's MaximumLength leaves out the terminator
+--- old
+        size += 2u;
++++ new
+        size += 0u;
+
+### the case-insensitive string comparison does not fold its first operand
+--- old
+            x = vibeos_rtl_upcase_ansi(x);
++++ new
+            x = x;
+
+### RtlDuplicateUnicodeString accepts flags it does not define
+--- old
+    if ((flags & ~3u) != 0 || !src || !dest) {
++++ new
+    if (!src || !dest) {
+
+### RtlFreeUnicodeString leaves the string describing freed memory
+--- old
+        memset(str, 0, sizeof(*str));
++++ new
+        (void)str;
+
+### a string and its own prefix differ by one byte too many in length
+--- old
+    return (int32_t)a->Length - (int32_t)b->Length;
+}
+
+int32_t RtlCompareUnicodeString(
++++ new
+    return (int32_t)a->Length - (int32_t)b->Length + 1;
+}
+
+int32_t RtlCompareUnicodeString(
+
+# ==== unicode.c ====
+
+### the division sign is upper-cased with the Latin-1 letters
+--- old
+    if (c >= 0xE0 && c <= 0xFE && c != 0xF7) {
+        return (vibeos_wchar_t)(c - 0x20);
++++ new
+    if (c >= 0xE0 && c <= 0xFE) {
+        return (vibeos_wchar_t)(c - 0x20);
+
+### 0x80 of Windows-1252 is not the euro sign
+--- old
+    0x20AC, 0x0081, 0x201A,
++++ new
+    0x0080, 0x0081, 0x201A,
+
+### the destination of RtlMultiByteToUnicodeN is counted in characters, not bytes
+--- old
+    n = dest_size / 2u;
++++ new
+    n = dest_size;
+
+### y diaeresis stays as it is in the ANSI upper-casing
+--- old
+    case 0xFF: return 0x9F;
++++ new
+    case 0xFF: return 0xFF;
+
+# ==== misc.c ====
+
+### CRC-32 uses another polynomial
+--- old
+        crc = (crc >> 1) ^ (0xEDB88320u & (uint32_t)-(int32_t)(crc & 1u));
++++ new
+        crc = (crc >> 1) ^ (0xEDB88321u & (uint32_t)-(int32_t)(crc & 1u));
+
+### RtlUniform's product wraps at 32 bits
+--- old
+    uint64_t v = (uint64_t)*seed * 0x7FFFFFEDull + 0x7FFFFFC3ull;
++++ new
+    uint64_t v = (uint32_t)((uint64_t)*seed * 0x7FFFFFEDull + 0x7FFFFFC3ull);
+
+### RtlCompareMemoryUlong looks at a trailing partial word
+--- old
+    size_t i, words = length / 4u;
++++ new
+    size_t i, words = (length + 3u) / 4u;
+
+### RtlRandom picks its slot with the wrong scale
+--- old
+    pos = (uint32_t)(((uint64_t)g_rand_last * 128u) / 0x7FFFFFFFull);
++++ new
+    pos = (uint32_t)(((uint64_t)g_rand_last * 64u) / 0x7FFFFFFFull);
+
+### RtlComputeCrc32 hashes one byte too many
+--- old
+    for (i = 0; i < length; i++) {
++++ new
+    for (i = 0; i <= length; i++) {
+
+# ==== ip.c ====
+
+### strict IPv4 parsing accepts fewer than four parts
+--- old
+    if (strict && n != 4) {
++++ new
+    if (0) {
+
+### a tie between two zero runs is broken towards the later one
+--- old
+            if (cur_len > best_len) {
++++ new
+            if (cur_len >= best_len) {
+
+### a leading zero does not make an IPv4 part octal
+--- old
+                base = 8;
++++ new
+                base = 10;
+
+### "::" may appear twice in an IPv6 address
+--- old
+            if (gap >= 0) {
++++ new
+            if (0) {
+
+### an IPv4-mapped IPv6 address is printed in hex
+--- old
+    mapped = g[0] == 0 && g[1] == 0 && g[2] == 0 && g[3] == 0 && g[4] == 0 && g[5] == 0xFFFF;
++++ new
+    mapped = 0;
+
+### the dotted quad ending an IPv6 address is read leniently
+--- old
+            if (v4_scan(s + p, 1, &e, b) != 0) {
++++ new
+            if (v4_scan(s + p, 0, &e, b) != 0) {
+
+# ==== handle.c ====
+
+### an entry nobody marked allocated can be freed
+--- old
+    if (!is_valid(table, handle)) {
++++ new
+    if (0) {
+
+### a freed entry keeps its contents
+--- old
+    memset(handle, 0, table->HandleSize);
++++ new
+    (void)table->HandleSize;
+
+### every entry of the table counts as allocated
+--- old
+    return ((uintptr_t)h->Next & VIBEOS_RTL_HANDLE_ALLOCATED) != 0;
++++ new
+    return 1;
+
+# ==== image.c ====
+
+### an e_lfanew beyond 256 MiB is followed
+--- old
+    if (lfanew >= 0x10000000u) {
++++ new
+    if (0) {
+
+### an image read from a file has its RVAs taken as offsets
+--- old
+    if (mapped) {
+        return (void *)(uintptr_t)(b + rva);
++++ new
+    if (1) {
+        return (void *)(uintptr_t)(b + rva);
+
+### NumberOfRvaAndSizes no longer bounds the directories
+--- old
+    if (directory_entry >= count || directory_entry >= 16u) {
++++ new
+    if (directory_entry >= count + 16u) {
+
+### a PE32 image's directory count is read at the PE32+ offset
+--- old
+        count = rd32(opt + 92);
++++ new
+        count = rd32(opt + 108);
+
+# ==== env.c ====
+
+### variable names are compared with case
+--- old
+        if (RtlUpcaseUnicodeChar(entry[i]) != RtlUpcaseUnicodeChar(name[i])) {
++++ new
+        if (entry[i] != name[i]) {
+
+### a value that fills the buffer exactly is reported too big
+--- old
+            if (value->MaximumLength < bytes) {
++++ new
+            if (value->MaximumLength <= bytes) {
+
+### deleting a variable that is not there reports success
+--- old
+    if (!found && !value) {
++++ new
+    if (0) {
+
+### a name that begins with '=' is cut at that '='
+--- old
+    size_t i = s[0] == '=' ? 1u : 0u;
++++ new
+    size_t i = 0u;
+
+### the reported length is one character short
+--- old
+            size_t bytes = (entry_len - (size_t)eq - 1u) * sizeof(vibeos_wchar_t);
++++ new
+            size_t bytes = (entry_len - (size_t)eq) * sizeof(vibeos_wchar_t);
+
+# ==== critsec.c ====
+
+### a second thread is granted a section another thread holds
+--- old
+    if (cs->OwningThread == me) {
++++ new
+    if (1) {
+
+### the last leave does not clear the owner
+--- old
+    cs->OwningThread = 0;
+    cs->LockCount--;
++++ new
+    cs->LockCount--;
+
+### a new section is born held
+--- old
+    cs->LockCount = -1;
+    cs->RecursionCount = 0;
++++ new
+    cs->LockCount = 0;
+    cs->RecursionCount = 0;
+
+# ==== path.c ====
+
+### ".." is kept as a component
+--- old
+        if (len == 2 && in[s] == '.' && in[s + 1] == '.') {
++++ new
+        if (0) {
+
+### forward slashes are not separators
+--- old
+        if (abs[i] == '/') {
++++ new
+        if (0) {
+
+### a UNC name loses a character of its prefix
+--- old
+        out_len += 6;
++++ new
+        out_len += 5;
+
+### the UNC prefix is spelled wrong
+--- old
+{'\\', '?', '?', '\\', 'U', 'N', 'C', '\\'};
++++ new
+{'\\', '?', '?', '\\', 'U', 'N', 'X', '\\'};
+
+# ==== printf.c ====
+
+### %p prints eight digits
+--- old
+                prec = 16;
++++ new
+                prec = 8;
+
+### octal prints in decimal
+--- old
+                base = conv == 'o' ? 8u : (conv == 'u' ? 10u : 16u);
++++ new
+                base = conv == 'o' ? 10u : (conv == 'u' ? 10u : 16u);
+
+### a negative number loses its sign
+--- old
+                neg = s < 0;
++++ new
+                neg = 0;
+
+### a precision does not limit a string
+--- old
+                while (s[n] && (prec < 0 || (long)n < prec)) {
+                    n++;
+                }
+                field(&o, "", 0, s, n, left, 0, width);
++++ new
+                while (s[n]) {
+                    n++;
+                }
+                field(&o, "", 0, s, n, left, 0, width);
+
+# ==== dbgprint.c ====
+
+### a message is not cut at 512 bytes
+--- old
+\#define DBG_MAX 512u
++++ new
+\#define DBG_MAX 1024u
+
+### the prefix of vDbgPrintExWithPrefix is dropped
+--- old
+    if (prefix) {
++++ new
+    if (0) {
+
+# Every case above turns the host tests red; the files they break are the ones
+# named in the "Target source" line, and anchors are checked against all of them
+# by check-sabotage-anchors.py.

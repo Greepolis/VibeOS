@@ -158,6 +158,17 @@ if(VIBEOS_BUILD_FUZZERS)
     target_link_options(fuzz_inet_input PRIVATE -fsanitize=fuzzer,address,undefined)
 endif()
 
+# The Rtl runtime of our ntdll (docs/abi/windows.md W2): the files that are
+# compiled both into ntdll.dll and, for the tests, into a host executable. The
+# platform hooks (platform_win.c) and the memory routines a -nostdlib DLL needs
+# (mem.c) belong to the DLL alone.
+set(VIBEOS_NTRTL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/user/win/ntdll/rtl")
+set(VIBEOS_NTRTL_CORE
+    ${VIBEOS_NTRTL_DIR}/heap.c ${VIBEOS_NTRTL_DIR}/string.c ${VIBEOS_NTRTL_DIR}/unicode.c
+    ${VIBEOS_NTRTL_DIR}/misc.c ${VIBEOS_NTRTL_DIR}/critsec.c ${VIBEOS_NTRTL_DIR}/ip.c
+    ${VIBEOS_NTRTL_DIR}/handle.c ${VIBEOS_NTRTL_DIR}/image.c ${VIBEOS_NTRTL_DIR}/env.c
+    ${VIBEOS_NTRTL_DIR}/path.c ${VIBEOS_NTRTL_DIR}/printf.c ${VIBEOS_NTRTL_DIR}/dbgprint.c)
+
 if(VIBEOS_BUILD_TESTS)
     enable_testing()
 
@@ -246,6 +257,30 @@ if(VIBEOS_BUILD_TESTS)
             VIBEOS_PE_FIXTURE_DIR="${VIBEOS_PE_FX_DIR}")
     endif()
     add_test(NAME vibeos-kernel-host COMMAND vibeos_kernel_tests)
+
+    # The Rtl runtime of our ntdll (docs/abi/windows.md W2), compiled for the host
+    # from the same files the DLL is built from, behind the five hooks
+    # tests/win/ntrtl_host.c answers. -Wall -Werror as ntdll is: a warning the DLL
+    # would refuse is refused here too. The PE fixture is the image RtlImageNtHeader
+    # and RtlImageDirectoryEntryToData are checked against, with objdump's account
+    # of it; absent without mingw-w64, and the test says so.
+    add_executable(vibeos_ntrtl_tests
+        tests/win/ntrtl_tests.c
+        tests/win/ntrtl_tests_ip.c
+        tests/win/ntrtl_tests_sys.c
+        tests/win/ntrtl_host.c
+        ${VIBEOS_NTRTL_CORE})
+    target_include_directories(vibeos_ntrtl_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/user/win/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/user/win/ntdll/rtl)
+    target_compile_options(vibeos_ntrtl_tests PRIVATE -Wall -Werror -fno-builtin)
+    if(TARGET vibeos_pe_fixture)
+        add_dependencies(vibeos_ntrtl_tests vibeos_pe_fixture)
+        target_compile_definitions(vibeos_ntrtl_tests PRIVATE
+            VIBEOS_PE_FIXTURE_DIR="${VIBEOS_PE_FX_DIR}")
+    endif()
+    add_test(NAME vibeos-ntrtl-host COMMAND vibeos_ntrtl_tests)
 
     # Randomised torture for the memory manager, checked against a reference
     # model kept in plain arrays. Its own executable rather than a test case
@@ -884,13 +919,21 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
             COMMAND ${CMAKE_COMMAND} -E make_directory "${VIBEOS_WIN_DIR}"
             COMMAND "${VIBEOS_MINGW_GCC}" ${VIBEOS_WIN_FLAGS} -fsyntax-only
                     "${VIBEOS_WIN_SRC}/ntdll/layout_check.c"
+            COMMAND "${VIBEOS_MINGW_GCC}" ${VIBEOS_WIN_FLAGS} -fsyntax-only
+                    "${VIBEOS_NTRTL_DIR}/layout_check.c"
             COMMAND "${VIBEOS_MINGW_GCC}" ${VIBEOS_WIN_FLAGS} -shared
                     -o "${VIBEOS_WIN_DIR}/ntdll.dll"
                     "${VIBEOS_WIN_SRC}/ntdll/stubs.S" "${VIBEOS_WIN_SRC}/ntdll/start.c"
+                    ${VIBEOS_NTRTL_CORE} "${VIBEOS_NTRTL_DIR}/platform_win.c"
+                    "${VIBEOS_NTRTL_DIR}/mem.c"
                     -e vibeos_nt_process_start -Wl,--image-base=0x8002000000
                     -Wl,--out-implib=${VIBEOS_WIN_DIR}/libntdll.a
             DEPENDS "${VIBEOS_WIN_SRC}/ntdll/stubs.S" "${VIBEOS_WIN_SRC}/ntdll/start.c"
                     "${VIBEOS_WIN_SRC}/ntdll/layout_check.c"
+                    ${VIBEOS_NTRTL_CORE} "${VIBEOS_NTRTL_DIR}/platform_win.c"
+                    "${VIBEOS_NTRTL_DIR}/mem.c" "${VIBEOS_NTRTL_DIR}/layout_check.c"
+                    "${VIBEOS_NTRTL_DIR}/rtl_internal.h"
+                    "${VIBEOS_WIN_SRC}/include/vibeos_ntrtl.h"
                     "${VIBEOS_WIN_SRC}/include/vibeos_ntdll.h"
                     "${CMAKE_CURRENT_SOURCE_DIR}/include/vibeos/nt_layout.h"
                     "${CMAKE_CURRENT_SOURCE_DIR}/kernel/abi/nt_services.def"

@@ -11,7 +11,10 @@
 
 #include <stdint.h>
 
+#include <stdarg.h>
+
 #include "vibeos/nt_layout.h"
+#include "vibeos_ntrtl.h"
 
 typedef uint32_t NTSTATUS_T;
 
@@ -20,6 +23,18 @@ typedef uint32_t NTSTATUS_T;
 #define NT_IMPORT
 #else
 #define NT_IMPORT __declspec(dllimport)
+#endif
+
+/* The Rtl functions are written in C, so unlike the stubs they are exported by
+ * name here and not by a .drectve; x64 decorates nothing, so the export is the
+ * Windows name. The same sources are compiled on the Linux host for the Rtl
+ * tests, where there are no DLLs and the macro is empty. */
+#ifndef _WIN32
+#define RTL_API
+#elif defined(VIBEOS_BUILDING_NTDLL)
+#define RTL_API __declspec(dllexport)
+#else
+#define RTL_API __declspec(dllimport)
 #endif
 
 NT_IMPORT NTSTATUS_T NtTerminateProcess(uint64_t process, NTSTATUS_T status);
@@ -39,6 +54,70 @@ NT_IMPORT NTSTATUS_T NtYieldExecution(void);
 /* W2's; declared so a sabotage case can make hello.exe ask a service nobody
  * wrote and watch the gate name it (scripts/dev/cases/nt-hello-boot.txt). */
 NT_IMPORT NTSTATUS_T NtClose(uint64_t handle);
+
+/* ---- the Rtl runtime (user/win/ntdll/rtl/, docs/abi/windows.md W2) -------------------
+ * Windows' prototypes, with the structures under our own names (vibeos_ntrtl.h). */
+RTL_API void RtlInitString(vibeos_astring_t *dest, const char *src);
+RTL_API void RtlInitUnicodeString(vibeos_ustring_t *dest, const vibeos_wchar_t *src);
+RTL_API vibeos_boolean_t RtlCreateUnicodeString(vibeos_ustring_t *dest, const vibeos_wchar_t *src);
+RTL_API void RtlFreeUnicodeString(vibeos_ustring_t *str);
+RTL_API vibeos_ntstatus_t RtlDuplicateUnicodeString(uint32_t flags, const vibeos_ustring_t *src,
+                                                    vibeos_ustring_t *dest);
+RTL_API int32_t RtlCompareString(const vibeos_astring_t *a, const vibeos_astring_t *b,
+                                 vibeos_boolean_t case_insensitive);
+RTL_API int32_t RtlCompareUnicodeString(const vibeos_ustring_t *a, const vibeos_ustring_t *b,
+                                        vibeos_boolean_t case_insensitive);
+RTL_API void RtlUpperString(vibeos_astring_t *dest, const vibeos_astring_t *src);
+RTL_API vibeos_wchar_t RtlUpcaseUnicodeChar(vibeos_wchar_t c);
+RTL_API vibeos_wchar_t RtlAnsiCharToUnicodeChar(unsigned char **src);
+RTL_API vibeos_ntstatus_t RtlMultiByteToUnicodeN(vibeos_wchar_t *dest, uint32_t dest_size,
+                                                 uint32_t *result_size, const char *src,
+                                                 uint32_t src_size);
+RTL_API size_t RtlCompareMemoryUlong(const void *src, size_t length, uint32_t pattern);
+RTL_API uint32_t RtlComputeCrc32(uint32_t initial, const uint8_t *buf, int32_t length);
+RTL_API uint32_t RtlRandom(uint32_t *seed);
+RTL_API uint32_t RtlUniform(uint32_t *seed);
+RTL_API char *RtlIpv4AddressToStringA(const vibeos_in_addr_t *addr, char *str);
+RTL_API vibeos_ntstatus_t RtlIpv4StringToAddressA(const char *str, vibeos_boolean_t strict,
+                                                  const char **terminator, vibeos_in_addr_t *addr);
+RTL_API char *RtlIpv6AddressToStringA(const vibeos_in6_addr_t *addr, char *str);
+RTL_API vibeos_ntstatus_t RtlIpv6StringToAddressA(const char *str, const char **terminator,
+                                                  vibeos_in6_addr_t *addr);
+RTL_API vibeos_ntstatus_t RtlIpv6StringToAddressW(const vibeos_wchar_t *str,
+                                                  const vibeos_wchar_t **terminator,
+                                                  vibeos_in6_addr_t *addr);
+RTL_API void RtlInitializeHandleTable(uint32_t max_handle_count, uint32_t handle_size,
+                                      vibeos_rtl_handle_table_t *table);
+RTL_API vibeos_rtl_handle_t *RtlAllocateHandle(vibeos_rtl_handle_table_t *table, uint32_t *index);
+RTL_API vibeos_boolean_t RtlFreeHandle(vibeos_rtl_handle_table_t *table, vibeos_rtl_handle_t *handle);
+RTL_API vibeos_boolean_t RtlIsValidIndexHandle(const vibeos_rtl_handle_table_t *table, uint32_t index,
+                                               vibeos_rtl_handle_t **handle);
+RTL_API vibeos_ntstatus_t RtlDestroyHandleTable(vibeos_rtl_handle_table_t *table);
+RTL_API vibeos_image_nt_headers64_t *RtlImageNtHeader(void *base);
+RTL_API void *RtlImageDirectoryEntryToData(void *base, vibeos_boolean_t mapped_as_image,
+                                           uint16_t directory_entry, uint32_t *size);
+RTL_API vibeos_ntstatus_t RtlCreateEnvironment(vibeos_boolean_t inherit, vibeos_wchar_t **environment);
+RTL_API vibeos_ntstatus_t RtlDestroyEnvironment(void *environment);
+RTL_API void RtlSetCurrentEnvironment(void *environment, void **previous);
+RTL_API vibeos_ntstatus_t RtlSetEnvironmentVariable(vibeos_wchar_t **environment,
+                                                    const vibeos_ustring_t *name,
+                                                    const vibeos_ustring_t *value);
+RTL_API vibeos_ntstatus_t RtlQueryEnvironmentVariable_U(vibeos_wchar_t *environment,
+                                                        const vibeos_ustring_t *name,
+                                                        vibeos_ustring_t *value);
+RTL_API vibeos_ntstatus_t RtlInitializeCriticalSection(vibeos_rtl_critical_section_t *cs);
+RTL_API vibeos_ntstatus_t RtlDeleteCriticalSection(vibeos_rtl_critical_section_t *cs);
+RTL_API vibeos_ntstatus_t RtlEnterCriticalSection(vibeos_rtl_critical_section_t *cs);
+RTL_API vibeos_ntstatus_t RtlLeaveCriticalSection(vibeos_rtl_critical_section_t *cs);
+RTL_API vibeos_boolean_t RtlDosPathNameToNtPathName_U(const vibeos_wchar_t *dos_name,
+                                                      vibeos_ustring_t *nt_name,
+                                                      vibeos_wchar_t **file_part,
+                                                      vibeos_rtl_relative_name_u_t *relative);
+RTL_API uint32_t DbgPrint(const char *format, ...);
+RTL_API uint32_t DbgPrintEx(uint32_t component, uint32_t level, const char *format, ...);
+RTL_API uint32_t vDbgPrintEx(uint32_t component, uint32_t level, const char *format, va_list args);
+RTL_API uint32_t vDbgPrintExWithPrefix(const char *prefix, uint32_t component, uint32_t level,
+                                       const char *format, va_list args);
 
 /* The TEB, through %gs, as every Windows program reaches it. */
 static inline uint64_t vibeos_nt_teb(void) {
