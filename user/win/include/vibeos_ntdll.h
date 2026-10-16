@@ -86,6 +86,11 @@ RTL_API vibeos_ntstatus_t RtlMultiByteToUnicodeN(vibeos_wchar_t *dest, uint32_t 
 RTL_API size_t RtlCompareMemoryUlong(const void *src, size_t length, uint32_t pattern);
 RTL_API uint32_t RtlComputeCrc32(uint32_t initial, const uint8_t *buf, int32_t length);
 RTL_API uint32_t RtlRandom(uint32_t *seed);
+RTL_API uint32_t RtlNtStatusToDosError(vibeos_ntstatus_t status);
+RTL_API void *RtlAllocateHeap(void *heap, uint32_t flags, size_t size);
+RTL_API vibeos_boolean_t RtlFreeHeap(void *heap, uint32_t flags, void *p);
+RTL_API void *RtlReAllocateHeap(void *heap, uint32_t flags, void *p, size_t size);
+RTL_API size_t RtlSizeHeap(void *heap, uint32_t flags, const void *p);
 RTL_API uint32_t RtlUniform(uint32_t *seed);
 RTL_API char *RtlIpv4AddressToStringA(const vibeos_in_addr_t *addr, char *str);
 RTL_API vibeos_ntstatus_t RtlIpv4StringToAddressA(const char *str, vibeos_boolean_t strict,

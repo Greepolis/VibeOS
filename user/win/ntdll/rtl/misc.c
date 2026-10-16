@@ -83,3 +83,70 @@ uint32_t RtlRandom(uint32_t *seed) {
     g_rand_table[pos] = RtlUniform(seed);
     return g_rand_last;
 }
+
+/* ---- NTSTATUS to Win32 error ---------------------------------------------------------
+ * What kernel32 sets as the last error after a service fails. The pairs are
+ * the ones Wine's conformance test (ntdll/tests/error.c) checks on Windows, for
+ * the statuses this kernel answers; one not listed is ERROR_MR_MID_NOT_FOUND,
+ * which is what Windows says of a status nobody mapped. */
+static const uint32_t g_dos_errors[][2] = {
+    { 0x00000000u, 0u },      /* SUCCESS                 */
+    { 0x00000103u, 997u },    /* PENDING: ERROR_IO_PENDING */
+    { 0x40000000u, 698u },    /* OBJECT_NAME_EXISTS: ERROR_OBJECT_NAME_EXISTS */
+    { 0x80000005u, 234u },    /* BUFFER_OVERFLOW: ERROR_MORE_DATA */
+    { 0xC0000001u, 31u },     /* UNSUCCESSFUL: ERROR_GEN_FAILURE */
+    { 0xC0000002u, 1u },      /* NOT_IMPLEMENTED: ERROR_INVALID_FUNCTION */
+    { 0xC0000003u, 87u },     /* INVALID_INFO_CLASS: ERROR_INVALID_PARAMETER */
+    { 0xC0000004u, 24u },     /* INFO_LENGTH_MISMATCH: ERROR_BAD_LENGTH */
+    { 0xC0000005u, 998u },    /* ACCESS_VIOLATION: ERROR_NOACCESS */
+    { 0xC0000008u, 6u },      /* INVALID_HANDLE */
+    { 0xC000000Du, 87u },     /* INVALID_PARAMETER */
+    { 0xC000000Fu, 2u },      /* NO_SUCH_FILE: ERROR_FILE_NOT_FOUND */
+    { 0xC0000011u, 38u },     /* END_OF_FILE: ERROR_HANDLE_EOF */
+    { 0xC0000017u, 8u },      /* NO_MEMORY: ERROR_NOT_ENOUGH_MEMORY */
+    { 0xC0000022u, 5u },      /* ACCESS_DENIED */
+    { 0xC0000023u, 122u },    /* BUFFER_TOO_SMALL: ERROR_INSUFFICIENT_BUFFER */
+    { 0xC0000024u, 6u },      /* OBJECT_TYPE_MISMATCH: ERROR_INVALID_HANDLE */
+    { 0xC0000030u, 87u },     /* INVALID_PARAMETER_MIX */
+    { 0xC0000033u, 123u },    /* OBJECT_NAME_INVALID: ERROR_INVALID_NAME */
+    { 0xC0000034u, 2u },      /* OBJECT_NAME_NOT_FOUND: ERROR_FILE_NOT_FOUND */
+    { 0xC0000035u, 183u },    /* OBJECT_NAME_COLLISION: ERROR_ALREADY_EXISTS */
+    { 0xC000003Au, 3u },      /* OBJECT_PATH_NOT_FOUND: ERROR_PATH_NOT_FOUND */
+    { 0xC000003Bu, 161u },    /* OBJECT_PATH_SYNTAX_BAD: ERROR_BAD_PATHNAME */
+    { 0xC0000043u, 32u },     /* SHARING_VIOLATION */
+    { 0xC0000046u, 288u },    /* MUTANT_NOT_OWNED: ERROR_NOT_OWNER */
+    { 0xC0000047u, 298u },    /* SEMAPHORE_LIMIT_EXCEEDED: ERROR_TOO_MANY_POSTS */
+    { 0xC000007Au, 127u },    /* PROCEDURE_NOT_FOUND: ERROR_PROC_NOT_FOUND */
+    { 0xC000007Bu, 193u },    /* INVALID_IMAGE_FORMAT: ERROR_BAD_EXE_FORMAT */
+    { 0xC000009Au, 1450u },   /* INSUFFICIENT_RESOURCES: ERROR_NO_SYSTEM_RESOURCES */
+    { 0xC00000BAu, 5u },      /* FILE_IS_A_DIRECTORY: ERROR_ACCESS_DENIED */
+    { 0xC00000BBu, 50u },     /* NOT_SUPPORTED */
+    { 0xC0000101u, 145u },    /* DIRECTORY_NOT_EMPTY: ERROR_DIR_NOT_EMPTY */
+    { 0xC0000103u, 267u },    /* NOT_A_DIRECTORY: ERROR_DIRECTORY */
+    { 0xC0000135u, 126u },    /* DLL_NOT_FOUND: ERROR_MOD_NOT_FOUND */
+    { 0xC0000139u, 127u },    /* ENTRYPOINT_NOT_FOUND: ERROR_PROC_NOT_FOUND */
+    { 0xC000014Bu, 109u },    /* PIPE_BROKEN: ERROR_BROKEN_PIPE */
+    { 0xC0000235u, 6u },      /* HANDLE_NOT_CLOSABLE: ERROR_INVALID_HANDLE */
+};
+
+uint32_t RtlNtStatusToDosError(vibeos_ntstatus_t status) {
+    uint32_t s = (uint32_t)status, i;
+
+    /* Zero and a customer status (bit 29) are returned as they are; 0xD... is
+     * 0xC...; facility 1 and 7 carry the Win32 error in the low word. */
+    if (s == 0u || (s & 0x20000000u)) {
+        return s;
+    }
+    if ((s & 0xF0000000u) == 0xD0000000u) {
+        s &= ~0x10000000u;
+    }
+    if ((s >> 16) == 0xC001u || (s >> 16) == 0x8007u || (s >> 16) == 0xC007u) {
+        return s & 0xFFFFu;
+    }
+    for (i = 0; i < sizeof(g_dos_errors) / sizeof(g_dos_errors[0]); i++) {
+        if (g_dos_errors[i][0] == s) {
+            return g_dos_errors[i][1];
+        }
+    }
+    return 317u;   /* ERROR_MR_MID_NOT_FOUND */
+}

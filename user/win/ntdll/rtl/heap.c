@@ -15,8 +15,12 @@
 
 #define HDR      16u
 #define MIN_BLK  32u
-#define M_ALLOC  0x41425255524C4F43ull   /* "COLRURBA": any value that is unlikely by accident */
+#define M_ALLOC  0x41425255524C4F00ull   /* any value that is unlikely by accident */
 #define M_FREE   0x45454552464C4F43ull
+/* An allocated block's magic carries in its low byte how many payload bytes
+ * past the request it has - under MIN_BLK + 16, so a byte holds it - which is
+ * how RtlSizeHeap answers with the size that was asked for, as Windows does. */
+#define M_MASK   (~(uint64_t)0xFF)
 
 typedef struct blk {
     size_t   size;     /* the whole block, header included */
@@ -43,7 +47,7 @@ static void heap_init(void) {
 
 void *vibeos_rtl_alloc(size_t size) {
     freeblk_t *prev = 0, *cur;
-    size_t need;
+    size_t need, asked = size;
 
     if (!g_ready) {
         heap_init();
@@ -80,7 +84,7 @@ void *vibeos_rtl_alloc(size_t size) {
         } else {
             g_free = cur->next;
         }
-        cur->h.magic = M_ALLOC;
+        cur->h.magic = M_ALLOC | (uint64_t)(cur->h.size - HDR - asked);
         return (uint8_t *)cur + HDR;
     }
     return 0;
@@ -95,7 +99,7 @@ void vibeos_rtl_free(void *p) {
         return;                           /* not ours, or nothing allocated yet */
     }
     blk = (freeblk_t *)(b - HDR);
-    if (blk->h.magic != M_ALLOC) {
+    if ((blk->h.magic & M_MASK) != M_ALLOC) {
         return;                           /* a double free, or an interior pointer */
     }
     blk->h.magic = M_FREE;
@@ -118,6 +122,102 @@ void vibeos_rtl_free(void *p) {
         prev->next = blk->next;
         blk->h.magic = 0;
     }
+}
+
+size_t vibeos_rtl_size(const void *p) {
+    const uint8_t *b = (const uint8_t *)p;
+    const blk_t *blk;
+
+    if (!g_ready || b < g_arena + HDR || b >= g_arena + VIBEOS_RTL_ARENA_SIZE ||
+        (((uintptr_t)b) & 15u) != 0) {
+        return (size_t)-1;
+    }
+    blk = (const blk_t *)(b - HDR);
+    if ((blk->magic & M_MASK) != M_ALLOC) {
+        return (size_t)-1;
+    }
+    return blk->size - HDR - (size_t)(blk->magic & 0xFFu);
+}
+
+/* ---- Windows' heap functions, on the arena ------------------------------------------
+ * One heap, the process's: PEB->ProcessHeap names it (start.c) and every handle
+ * is taken to mean it. HeapCreate is W3's, with memory of its own to give. */
+
+#define HEAP_ZERO_MEMORY           0x00000008u
+#define HEAP_REALLOC_IN_PLACE_ONLY 0x00000010u
+
+void *vibeos_rtl_process_heap(void) {
+    return g_arena;
+}
+
+RTL_API void *RtlAllocateHeap(void *heap, uint32_t flags, size_t size) {
+    void *p;
+
+    (void)heap;
+    p = vibeos_rtl_alloc(size);
+    if (p && (flags & HEAP_ZERO_MEMORY)) {
+        memset(p, 0, size);
+    }
+    return p;
+}
+
+RTL_API vibeos_boolean_t RtlFreeHeap(void *heap, uint32_t flags, void *p) {
+    (void)heap;
+    (void)flags;
+    if (!p) {
+        return 1;                         /* freeing nothing succeeds */
+    }
+    if (vibeos_rtl_size(p) == (size_t)-1) {
+        return 0;
+    }
+    vibeos_rtl_free(p);
+    return 1;
+}
+
+RTL_API size_t RtlSizeHeap(void *heap, uint32_t flags, const void *p) {
+    (void)heap;
+    (void)flags;
+    return vibeos_rtl_size(p);
+}
+
+/* A new block and a copy, or - with HEAP_REALLOC_IN_PLACE_ONLY - the same block
+ * if the size fits what it already has, and nothing otherwise. Bytes past the
+ * old size are zero when the caller asked for HEAP_ZERO_MEMORY. */
+RTL_API void *RtlReAllocateHeap(void *heap, uint32_t flags, void *p, size_t size) {
+    size_t old;
+    void *n;
+
+    if (!p) {
+        return 0;
+    }
+    old = vibeos_rtl_size(p);
+    if (old == (size_t)-1) {
+        return 0;
+    }
+    if (flags & HEAP_REALLOC_IN_PLACE_ONLY) {
+        blk_t *blk = (blk_t *)((uint8_t *)p - HDR);
+
+        /* Shrinking by more than the magic's byte can say would need the
+         * block split; refused instead, which the flag allows. */
+        if (size > blk->size - HDR || blk->size - HDR - size > 0xFFu) {
+            return 0;
+        }
+        if ((flags & HEAP_ZERO_MEMORY) && size > old) {
+            memset((uint8_t *)p + old, 0, size - old);
+        }
+        blk->magic = M_ALLOC | (uint64_t)(blk->size - HDR - size);
+        return p;
+    }
+    n = RtlAllocateHeap(heap, flags & ~HEAP_ZERO_MEMORY, size);
+    if (!n) {
+        return 0;
+    }
+    memcpy(n, p, old < size ? old : size);
+    if ((flags & HEAP_ZERO_MEMORY) && size > old) {
+        memset((uint8_t *)n + old, 0, size - old);
+    }
+    vibeos_rtl_free(p);
+    return n;
 }
 
 void vibeos_rtl_heap_stats(size_t *free_bytes, size_t *largest, size_t *blocks) {

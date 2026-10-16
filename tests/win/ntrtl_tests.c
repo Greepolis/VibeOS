@@ -86,6 +86,75 @@ static void t_heap(void) {
     CHECK(full == VIBEOS_RTL_ARENA_SIZE && blocks == 1, "freed in an interleaved order, it coalesces fully");
 }
 
+/* HeapAlloc's family: Microsoft documents that HeapSize answers the size that
+ * was requested, that HEAP_ZERO_MEMORY zeroes, and that HeapReAlloc keeps the
+ * contents up to the smaller size. */
+static void t_heap_api(void) {
+    void *h = vibeos_rtl_process_heap();
+    size_t full, blocks;
+    uint8_t *a, *b, *z;
+    int i, zero = 1;
+
+    a = RtlAllocateHeap(h, 0, 0);
+    CHECK(a && RtlSizeHeap(h, 0, a) == 0, "a zero-byte block is a block, of size zero");
+    CHECK(RtlFreeHeap(h, 0, a), "and is freed");
+    for (i = 1; i < 70; i++) {
+        a = RtlAllocateHeap(h, 0, (size_t)i);
+        if (!a || RtlSizeHeap(h, 0, a) != (size_t)i) {
+            break;
+        }
+        RtlFreeHeap(h, 0, a);
+    }
+    CHECK(i == 70, "HeapSize is the size asked for, whatever the rounding (failed at %d)", i);
+    z = RtlAllocateHeap(h, 0, 200);
+    memset(z, 0xEE, 200);
+    RtlFreeHeap(h, 0, z);
+    z = RtlAllocateHeap(h, 0x8u /* HEAP_ZERO_MEMORY */, 200);
+    for (i = 0; i < 200; i++) {
+        zero &= z[i] == 0;
+    }
+    CHECK(zero, "HEAP_ZERO_MEMORY on a block that held 0xEE");
+    for (i = 0; i < 200; i++) {
+        z[i] = (uint8_t)i;
+    }
+    b = RtlReAllocateHeap(h, 0x8u, z, 300);
+    zero = 1;
+    for (i = 0; i < 200; i++) {
+        zero &= b[i] == (uint8_t)i;
+    }
+    for (; i < 300; i++) {
+        zero &= b[i] == 0;
+    }
+    CHECK(b && RtlSizeHeap(h, 0, b) == 300 && zero,
+          "a reallocation keeps the contents and zeroes the growth when asked");
+    CHECK(RtlReAllocateHeap(h, 0x10u /* IN_PLACE_ONLY */, b, 4000) == 0,
+          "in place only: growth past the block is refused");
+    CHECK(RtlReAllocateHeap(h, 0x10u, b, 290) == b && RtlSizeHeap(h, 0, b) == 290,
+          "in place only: a shrink is the same block, its new size");
+    CHECK(!RtlFreeHeap(h, 0, b + 16) && RtlSizeHeap(h, 0, b + 16) == (size_t)-1,
+          "an interior pointer is refused and not freed");
+    CHECK(RtlFreeHeap(h, 0, b) && !RtlFreeHeap(h, 0, b), "a double free is refused");
+    CHECK(RtlFreeHeap(h, 0, 0), "freeing null succeeds");
+    vibeos_rtl_heap_stats(&full, 0, &blocks);
+    CHECK(full == VIBEOS_RTL_ARENA_SIZE && blocks == 1, "everything came back");
+}
+
+/* The pairs Wine's ntdll/tests/error.c checks on Windows. */
+static void t_dos_error(void) {
+    CHECK(RtlNtStatusToDosError(0) == 0, "success is no error");
+    CHECK(RtlNtStatusToDosError((int32_t)0xC0000046u) == 288u, "MUTANT_NOT_OWNED: ERROR_NOT_OWNER");
+    CHECK(RtlNtStatusToDosError((int32_t)0xC0000034u) == 2u,
+          "OBJECT_NAME_NOT_FOUND: ERROR_FILE_NOT_FOUND");
+    CHECK(RtlNtStatusToDosError(0x40000000) == 698u,
+          "OBJECT_NAME_EXISTS: ERROR_OBJECT_NAME_EXISTS");
+    CHECK(RtlNtStatusToDosError((int32_t)0xD0000008u) == 6u, "0xD... is 0xC...");
+    CHECK(RtlNtStatusToDosError((int32_t)0xC0070005u) == 5u, "facility 7: the low word");
+    CHECK(RtlNtStatusToDosError((int32_t)0xE0001234u) == 0xE0001234u,
+          "a customer status is itself");
+    CHECK(RtlNtStatusToDosError((int32_t)0xC0FFEEEEu) == 317u,
+          "an unmapped status: ERROR_MR_MID_NOT_FOUND");
+}
+
 /* ---- STRING, UNICODE_STRING ------------------------------------------------------------- */
 
 static void t_init(void) {
@@ -477,6 +546,8 @@ static void t_random(void) {
 int main(void) {
     setvbuf(stdout, 0, _IONBF, 0);
     t_heap();
+    t_heap_api();
+    t_dos_error();
     t_init();
     t_create_free();
     t_duplicate();

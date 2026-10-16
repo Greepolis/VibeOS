@@ -27,6 +27,10 @@ void vibeos_rtl_free(void *p);
 /* Bytes free, the largest free block and the number of free blocks - for the
  * tests, which assert that everything allocated can be given back. */
 void vibeos_rtl_heap_stats(size_t *free_bytes, size_t *largest, size_t *blocks);
+/* The size a block was asked for, or (size_t)-1 if the pointer is not one of
+ * ours; and the arena's address, which is the process heap's handle. */
+size_t vibeos_rtl_size(const void *p);
+void *vibeos_rtl_process_heap(void);
 /* 512 KiB, not the 4 MiB it was written with: the arena is ntdll's .bss, and
  * the kernel fills every page of an image when it maps it, so every NT process
  * paid a thousand frames for it before running a line. W3's
