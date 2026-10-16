@@ -1,0 +1,57 @@
+; What our kernel32.dll exports (docs/abi/windows.md W2): every name must be
+; defined in kernel32.c. A program importing anything else is bound to one of
+; ntdll's named stubs and says which when it calls it.
+LIBRARY kernel32.dll
+EXPORTS
+CloseHandle
+CreateEventA
+CreateEventW
+CreateMutexA
+CreateMutexW
+CreateSemaphoreA
+CreateSemaphoreW
+DuplicateHandle
+ExitProcess
+GetCurrentProcess
+GetCurrentProcessId
+GetCurrentThread
+GetCurrentThreadId
+GetEnvironmentVariableA
+GetEnvironmentVariableW
+GetErrorMode
+GetLastError
+GetModuleHandleA
+GetModuleHandleW
+GetProcAddress
+GetProcessHeap
+GetStdHandle
+GetTickCount
+GetTickCount64
+HeapAlloc
+HeapFree
+HeapReAlloc
+HeapSize
+HeapValidate
+OpenEventA
+OpenEventW
+OpenMutexA
+OpenMutexW
+PulseEvent
+ReleaseMutex
+ReleaseSemaphore
+ResetEvent
+SetErrorMode
+SetEvent
+SetLastError
+SetUnhandledExceptionFilter
+Sleep
+SleepEx
+TlsAlloc
+TlsFree
+TlsGetValue
+TlsSetValue
+WaitForMultipleObjects
+WaitForMultipleObjectsEx
+WaitForSingleObject
+WaitForSingleObjectEx
+WriteFile

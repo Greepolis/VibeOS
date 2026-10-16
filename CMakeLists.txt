@@ -975,10 +975,26 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
             COMMENT "Building the first Windows program with mingw-w64"
             VERBATIM
         )
-        # kernel32, user32 and advapi32 as placeholders that load and export
-        # nothing (W2): every import from them binds to one of ntdll's named
-        # stubs, so a program runs until the first it calls, and says which.
-        foreach(VIBEOS_PH kernel32 user32 advapi32)
+        # kernel32.dll (W2): the Win32 calls as Nt calls, written in the order
+        # Wine's tests reach them. Its exports are kernel32.def's, checked against
+        # the built DLL as msvcrt's are.
+        add_custom_command(
+            OUTPUT "${VIBEOS_WIN_DIR}/kernel32.dll"
+            COMMAND "${VIBEOS_MINGW_GCC}" ${VIBEOS_WIN_FLAGS} -shared
+                    -o "${VIBEOS_WIN_DIR}/kernel32.dll"
+                    "${VIBEOS_WIN_SRC}/kernel32/kernel32.c" "${VIBEOS_WIN_SRC}/kernel32/kernel32.def"
+                    -e vibeos_kernel32_main -Wl,--image-base=0x8006000000
+                    -L${VIBEOS_WIN_DIR} -lntdll
+            DEPENDS "${VIBEOS_WIN_SRC}/kernel32/kernel32.c" "${VIBEOS_WIN_SRC}/kernel32/kernel32.def"
+                    "${VIBEOS_WIN_SRC}/include/vibeos_ntdll.h" "${VIBEOS_WIN_DIR}/libntdll.a"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/include/vibeos/nt_layout.h"
+            COMMENT "Building our kernel32.dll with mingw-w64"
+            VERBATIM
+        )
+        # user32 and advapi32 as placeholders that load and export nothing (W2):
+        # every import from them binds to one of ntdll's named stubs, so a
+        # program runs until the first it calls, and says which.
+        foreach(VIBEOS_PH user32 advapi32)
             add_custom_command(
                 OUTPUT "${VIBEOS_WIN_DIR}/${VIBEOS_PH}.dll"
                 COMMAND "${VIBEOS_MINGW_GCC}" ${VIBEOS_WIN_FLAGS} -shared
@@ -1015,6 +1031,11 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
                 COMMAND ${Python3_EXECUTABLE}
                         ${CMAKE_CURRENT_SOURCE_DIR}/scripts/dev/check-msvcrt-exports.py
                         "${VIBEOS_WIN_DIR}/msvcrt.dll" "${VIBEOS_WIN_SRC}/msvcrt/msvcrt.def"
+                        "${VIBEOS_MINGW_OBJDUMP_WIN}")
+            add_test(NAME vibeos-kernel32-exports
+                COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_CURRENT_SOURCE_DIR}/scripts/dev/check-msvcrt-exports.py
+                        "${VIBEOS_WIN_DIR}/kernel32.dll" "${VIBEOS_WIN_SRC}/kernel32/kernel32.def"
                         "${VIBEOS_MINGW_OBJDUMP_WIN}")
         endif()
     endif()
