@@ -84,8 +84,9 @@ static void t_handles(void) {
     CHECK(RtlAllocateHandle(&t, &idx) == 0, "entries too small to chain are refused");
     RtlInitializeHandleTable(0, 16, &t);
     CHECK(RtlAllocateHandle(&t, &idx) == 0, "a table of no entries gives none");
-    /* More entries than one commit run, in a table too big to be full at once. */
-    RtlInitializeHandleTable(100000, 16, &t);
+    /* More entries than one commit run, in a table too big to be full at once -
+     * and small enough to be reserved from the arena, which is 512 KiB. */
+    RtlInitializeHandleTable(20000, 16, &t);
     for (i = 0; i < 1000; i++) {
         got = RtlAllocateHandle(&t, &idx);
         if (!got || idx != i) {

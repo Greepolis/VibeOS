@@ -52,7 +52,7 @@ do_tests() {
     # detail above it is easy to filter away by accident - and was. Several
     # sessions reported "host tests green" while test_kmain had been failing,
     # for want of one greppable word in a fixed place.
-    local k=0 b=0 t=0
+    local k=0 b=0 t=0 c=0
     "./$d/vibeos_kernel_tests" | tail -2 || k=1
     "./$d/vibeos_kernel_tests" >/dev/null 2>&1 || k=1
     "./$d/vibeos_bootloader_tests" | tail -1 || b=1
@@ -70,14 +70,19 @@ do_tests() {
     # The FAT writer against somebody else's reader (docs/abi/ L1 step 4): the
     # host tests format their own volume, so they can only say the writer and
     # the reader agree with each other. Skips, and says so, without mtools.
+    # Everything registered with ctest, which is what CI runs. The two above are
+    # named because their tail is the detail worth seeing; the rest were run by
+    # CI alone, and the Rtl tests failed from the commit that cut their arena from
+    # 4 MiB to 512 KiB, with every local check.sh green.
+    ctest --test-dir "$d" >/dev/null 2>&1 || c=1
     local fm
     fm="$(bash scripts/dev/verify-fat-mtools.sh "$d" | tail -1)"
     echo "$fm"
     case "$fm" in fat-mtools=ok*|fat-mtools=skip*) ;; *) t=1 ;; esac
-    if [ "$k" -eq 0 ] && [ "$b" -eq 0 ] && [ "$t" -eq 0 ]; then
+    if [ "$k" -eq 0 ] && [ "$b" -eq 0 ] && [ "$t" -eq 0 ] && [ "$c" -eq 0 ]; then
         echo "host-tests=pass"
     else
-        echo "host-tests=FAIL kernel=$k bootloader=$b torture=$t"
+        echo "host-tests=FAIL kernel=$k bootloader=$b torture=$t ctest=$c"
     fi
 }
 
