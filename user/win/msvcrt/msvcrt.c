@@ -239,10 +239,13 @@ int sscanf(const char *s, const char *fmt, ...) {
 
 /* ---- the heap ------------------------------------------------------------ */
 
-/* 16 MiB in the DLL's own .bss: it costs the file nothing, and the pages do not
- * exist until a program touches them. NtAllocateVirtualMemory (W3) is what
- * makes it grow; until then this is all the memory a program has. */
-static uint8_t g_arena[16u << 20] __attribute__((aligned(16)));
+/* 2 MiB in the DLL's own .bss. It costs the file nothing, but not the process:
+ * the kernel fills every page of an image when it maps it, so 16 MiB here - the
+ * first size - was 4096 frames for every Windows program before it ran a line.
+ * On Windows the pages would not exist until touched; here they do until the
+ * mapper learns to leave .bss to the fault, and NtAllocateVirtualMemory (W3)
+ * is what makes the heap grow. */
+static uint8_t g_arena[2u << 20] __attribute__((aligned(16)));
 static vc_heap g_heap;
 
 static vc_heap *heap(void) {
