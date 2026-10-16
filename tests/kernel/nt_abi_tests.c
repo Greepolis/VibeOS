@@ -342,6 +342,114 @@ static void t_events(void) {
     expect(how == KF_BLOCKED, "no timeout on an event nobody will set waits for ever");
 }
 
+static long create_mutant(uint64_t *h, uint64_t oa, int owned) {
+    uint64_t out = kf_ualloc(8);
+    long r = nt(VIBEOS_NT_NR_NtCreateMutant, out, 0xFFFFFFFF00000000ull | VIBEOS_MUTANT_ALL_ACCESS,
+                oa, (owned ? 1u : 0u) | 0xAB00u, 0);   /* a BOOLEAN: the low byte */
+    *h = *(uint64_t *)kf_uptr(out);
+    return r;
+}
+
+/* MutantBasicInformation, or -99 if the query failed; *owned set from it. */
+static int32_t mutant_count(uint64_t h, int *owned) {
+    uint64_t buf = kf_ualloc(8);
+    const vibeos_nt_mutant_basic_t *m = (const vibeos_nt_mutant_basic_t *)kf_uptr(buf);
+
+    kf_next_sp(stack_args(&g_zero5, 1));
+    if (nt(VIBEOS_NT_NR_NtQueryMutant, h, 0, buf, 8, 0) != ST(VIBEOS_STATUS_SUCCESS)) {
+        return -99;
+    }
+    *owned = m->owned_by_caller;
+    return m->current_count;
+}
+
+static long release_mutant(uint64_t h, int32_t *prev) {
+    uint64_t p = kf_ualloc(4);
+    long r = nt(VIBEOS_NT_NR_NtReleaseMutant, h, p, 0, 0, 0);
+    *prev = *(int32_t *)kf_uptr(p);
+    return r;
+}
+
+static void t_mutants(void) {
+    uint64_t m, other;
+    int32_t prev = 7;
+    int owned = 0;
+    int a;
+
+    a = fresh(50);
+    expect(create_mutant(&m, oattr("\\BaseNamedObjects\\mu", 0), 1) == ST(VIBEOS_STATUS_SUCCESS),
+           "a named mutant, owned by its creator");
+    expect(mutant_count(m, &owned) == 0 && owned == 1, "held once: count 0, owned by the caller");
+    expect(wait1(m, 0) == ST(VIBEOS_STATUS_WAIT_0) && mutant_count(m, &owned) == -1,
+           "the owner takes it again without waiting: count -1");
+    expect(release_mutant(m, &prev) == ST(VIBEOS_STATUS_SUCCESS) && prev == -1,
+           "a release reports the count before it");
+    expect(release_mutant(m, &prev) == ST(VIBEOS_STATUS_SUCCESS) && prev == 0 &&
+               mutant_count(m, &owned) == 1 && owned == 0, "released as often as taken: free");
+    expect(release_mutant(m, &prev) == ST(VIBEOS_STATUS_MUTANT_NOT_OWNED),
+           "a free mutant cannot be released");
+    expect(wait1(m, 0) == ST(VIBEOS_STATUS_WAIT_0) && mutant_count(m, &owned) == 0 && owned == 1,
+           "a wait on a free mutant takes it");
+
+    /* Another process, the same name: a different owner. */
+    kf_set_current(kf_spawn(51, 51));
+    expect(nt(VIBEOS_NT_NR_NtOpenMutant, kf_ualloc(8), VIBEOS_MUTANT_ALL_ACCESS,
+              oattr("\\BaseNamedObjects\\mu", 0), 0, 0) == ST(VIBEOS_STATUS_SUCCESS),
+           "opened by name from another process");
+    expect(create_mutant(&other, oattr("\\BaseNamedObjects\\mu", 0), 1) ==
+               ST(VIBEOS_STATUS_OBJECT_NAME_EXISTS) && mutant_count(other, &owned) == 0 &&
+               owned == 0, "created again by name: the existing one, its owner unchanged");
+    expect(wait1(other, 0) == ST(VIBEOS_STATUS_TIMEOUT), "held by somebody else: the wait times out");
+    expect(release_mutant(other, &prev) == ST(VIBEOS_STATUS_MUTANT_NOT_OWNED),
+           "only the owner releases");
+    kf_set_current(a);
+    expect(release_mutant(m, &prev) == ST(VIBEOS_STATUS_SUCCESS), "the owner releases it");
+}
+
+static long create_semaphore(uint64_t *h, int32_t initial, int32_t maximum) {
+    uint64_t out = kf_ualloc(8), arg = 0xFFFFFFFF00000000ull | (uint32_t)maximum;
+    long r;
+
+    kf_next_sp(stack_args(&arg, 1));
+    r = nt(VIBEOS_NT_NR_NtCreateSemaphore, out, VIBEOS_SEMAPHORE_ALL_ACCESS, 0,
+           0xFFFFFFFF00000000ull | (uint32_t)initial, 0);
+    *h = *(uint64_t *)kf_uptr(out);
+    return r;
+}
+
+static int32_t semaphore_count(uint64_t h) {
+    uint64_t buf = kf_ualloc(8);
+
+    kf_next_sp(stack_args(&g_zero5, 1));
+    if (nt(VIBEOS_NT_NR_NtQuerySemaphore, h, 0, buf, 8, 0) != ST(VIBEOS_STATUS_SUCCESS)) {
+        return -99;
+    }
+    return ((const vibeos_nt_semaphore_basic_t *)kf_uptr(buf))->current_count;
+}
+
+static void t_semaphores(void) {
+    uint64_t s, prev = kf_ualloc(4);
+
+    fresh(52);
+    expect(create_semaphore(&s, 3, 2) == ST(VIBEOS_STATUS_INVALID_PARAMETER),
+           "an initial count above the maximum is refused");
+    expect(create_semaphore(&s, 0, 0) == ST(VIBEOS_STATUS_INVALID_PARAMETER),
+           "a maximum of zero is refused");
+    expect(create_semaphore(&s, 1, 2) == ST(VIBEOS_STATUS_SUCCESS) && semaphore_count(s) == 1,
+           "one of two");
+    expect(wait1(s, 0) == ST(VIBEOS_STATUS_WAIT_0) && semaphore_count(s) == 0,
+           "a wait takes one");
+    expect(wait1(s, 0) == ST(VIBEOS_STATUS_TIMEOUT), "none left: the wait times out");
+    expect(nt(VIBEOS_NT_NR_NtReleaseSemaphore, s, 0xFFFFFFFF00000003ull, prev, 0, 0) ==
+               ST(VIBEOS_STATUS_SEMAPHORE_LIMIT_EXCEEDED) && semaphore_count(s) == 0,
+           "a release past the maximum is refused and changes nothing");
+    expect(nt(VIBEOS_NT_NR_NtReleaseSemaphore, s, 2, prev, 0, 0) == ST(VIBEOS_STATUS_SUCCESS) &&
+               *(int32_t *)kf_uptr(prev) == 0 && semaphore_count(s) == 2,
+           "a release up to the maximum, reporting the count before it");
+    expect(nt(VIBEOS_NT_NR_NtReleaseSemaphore, s, 0, prev, 0, 0) ==
+               ST(VIBEOS_STATUS_INVALID_PARAMETER), "a release of none is refused");
+}
+
 static void t_handles_and_names(void) {
     uint64_t a, b, c, out = kf_ualloc(8), oa;
     long r;
@@ -612,6 +720,8 @@ int test_nt_abi(void) {
     t_system();
     t_blocks();
     t_events();
+    t_mutants();
+    t_semaphores();
     t_handles_and_names();
     t_sections();
     return g_fail ? -1 : 0;

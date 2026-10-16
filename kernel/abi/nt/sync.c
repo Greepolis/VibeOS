@@ -1,8 +1,8 @@
-/* NT personality: events and the waits (docs/abi/windows.md W2).
+/* NT personality: events, mutants, semaphores and the waits (docs/abi/windows.md W2).
  *
  * An event is the simplest object that can be waited on, which is why it comes
  * with the object manager's core: it is how the core is tested. Mutants and
- * semaphores follow with the same wait.
+ * semaphores share its wait.
  *
  * The wait looks at its objects once a tick, as the Linux layer's waits do;
  * an object that becomes signalled is seen within a tick. What it cannot see
@@ -202,6 +202,247 @@ static long nt_query_event(uint64_t h, uint64_t cls, uint64_t buf, uint64_t len,
     return NT_STATUS(VIBEOS_STATUS_SUCCESS);
 }
 
+/* ---- mutants ----------------------------------------------------------------------------
+ *
+ * A mutex in NT's word: owned by a thread, taken again by the same thread as
+ * many times as it likes, released as many times. "Abandoned" - its owner
+ * ended holding it - needs the exit path to say so, which is W5's with
+ * threads; the state and the status it gives a waiter are here already. */
+
+
+static int mutant_signaled(nt_ob_t *o, uint32_t tid) {
+    return o->u.mu.owner == 0u || o->u.mu.owner == tid;
+}
+
+static uint32_t mutant_acquire(nt_ob_t *o, uint32_t tid) {
+    uint32_t abandoned = o->u.mu.abandoned;
+
+    o->u.mu.owner = tid;
+    o->u.mu.count++;
+    o->u.mu.abandoned = 0;
+    return abandoned;
+}
+
+static const nt_type_t g_mutant_type = {
+    "Mutant",
+    VIBEOS_MUTANT_ALL_ACCESS,
+    VIBEOS_READ_CONTROL | VIBEOS_MUTANT_QUERY_STATE,
+    VIBEOS_READ_CONTROL,
+    VIBEOS_READ_CONTROL | VIBEOS_SYNCHRONIZE,
+    mutant_signaled,
+    mutant_acquire,
+};
+
+const vibeos_file_ops_t g_nt_mutant_ops = {
+    .name = "nt-mutant",
+    .release = nt_ob_release,
+    .nt_type = &g_mutant_type,
+};
+
+static void mutant_init(nt_ob_t *o, const void *ctx) {
+    const uint32_t *owner = (const uint32_t *)ctx;   /* the creator, or 0 */
+    o->u.mu.owner = *owner;
+    o->u.mu.count = *owner ? 1u : 0u;
+}
+
+static uint32_t my_tid(void) {
+    int me = ks_current();
+    return me >= 0 ? ks_id(me)->pid : 0u;
+}
+
+/* NtCreateMutant(MutantHandle, DesiredAccess, ObjectAttributes, InitialOwner). */
+static long nt_create_mutant(uint64_t out, uint64_t want, uint64_t oa, uint64_t initial) {
+    uint32_t owner = (uint8_t)initial ? my_tid() : 0u;
+    return nt_create_common(&g_nt_mutant_ops, out, (uint32_t)want, oa, 0, mutant_init, &owner);
+}
+
+static long nt_open_mutant(uint64_t out, uint64_t want, uint64_t oa) {
+    return nt_create_common(&g_nt_mutant_ops, out, (uint32_t)want, oa, 1, 0, 0);
+}
+
+/* NtReleaseMutant(Mutant, PreviousCount): only by its owner. The count it
+ * reports is the mutant's signal state before the release, as Windows keeps
+ * it - 1 free, 0 held once, -1 held twice - not the recursion. */
+static long nt_release_mutant(uint64_t h, uint64_t prev_u) {
+    vibeos_file_t *f;
+    nt_ob_t *o;
+    int32_t prev;
+    uint32_t st = nt_handle_ref(h, &g_nt_mutant_ops, 0, &f, 0);
+
+    if (st != VIBEOS_STATUS_SUCCESS) {
+        return NT_STATUS(st);
+    }
+    nt_ob_lock();
+    o = nt_ob_of(f);
+    if (o->u.mu.owner != my_tid() || o->u.mu.count == 0u) {
+        nt_ob_unlock();
+        vibeos_file_put(f);
+        return NT_STATUS(VIBEOS_STATUS_MUTANT_NOT_OWNED);
+    }
+    prev = 1 - (int32_t)o->u.mu.count;
+    if (--o->u.mu.count == 0u) {
+        o->u.mu.owner = 0;
+    }
+    nt_ob_unlock();
+    vibeos_file_put(f);
+    if (prev_u != 0u && vibeos_uaccess_copy((void *)(uintptr_t)prev_u, &prev, sizeof(prev)) != 0) {
+        return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
+    }
+    return NT_STATUS(VIBEOS_STATUS_SUCCESS);
+}
+
+/* NtQueryMutant(Mutant, Class, Buffer, Length, ReturnLength):
+ * MutantBasicInformation - the signal state, whether the caller owns it,
+ * whether it was abandoned. */
+static long nt_query_mutant(uint64_t h, uint64_t cls, uint64_t buf, uint64_t len, uint64_t ret) {
+    vibeos_file_t *f;
+    nt_ob_t *o;
+    vibeos_nt_mutant_basic_t info = {0};
+    uint32_t got = (uint32_t)sizeof(info), st;
+
+    if ((uint32_t)cls != 0u) {
+        return NT_STATUS(VIBEOS_STATUS_INVALID_INFO_CLASS);
+    }
+    if ((uint32_t)len != sizeof(info)) {
+        return NT_STATUS(VIBEOS_STATUS_INFO_LENGTH_MISMATCH);
+    }
+    st = nt_handle_ref(h, &g_nt_mutant_ops, VIBEOS_MUTANT_QUERY_STATE, &f, 0);
+    if (st != VIBEOS_STATUS_SUCCESS) {
+        return NT_STATUS(st);
+    }
+    nt_ob_lock();
+    o = nt_ob_of(f);
+    info.current_count = 1 - (int32_t)o->u.mu.count;
+    info.owned_by_caller = o->u.mu.owner != 0u && o->u.mu.owner == my_tid();
+    info.abandoned_state = o->u.mu.abandoned ? 1u : 0u;
+    nt_ob_unlock();
+    vibeos_file_put(f);
+    if (vibeos_uaccess_copy((void *)(uintptr_t)buf, &info, sizeof(info)) != 0 ||
+        (ret != 0u && vibeos_uaccess_copy((void *)(uintptr_t)ret, &got, sizeof(got)) != 0)) {
+        return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
+    }
+    return NT_STATUS(VIBEOS_STATUS_SUCCESS);
+}
+
+/* ---- semaphores ------------------------------------------------------------------------- */
+
+
+static int semaphore_signaled(nt_ob_t *o, uint32_t tid) {
+    (void)tid;
+    return o->u.sem.count > 0;
+}
+
+static uint32_t semaphore_acquire(nt_ob_t *o, uint32_t tid) {
+    (void)tid;
+    o->u.sem.count--;
+    return 0;
+}
+
+static const nt_type_t g_semaphore_type = {
+    "Semaphore",
+    VIBEOS_SEMAPHORE_ALL_ACCESS,
+    VIBEOS_READ_CONTROL | VIBEOS_SEMAPHORE_QUERY_STATE,
+    VIBEOS_READ_CONTROL | VIBEOS_SEMAPHORE_MODIFY_STATE,
+    VIBEOS_READ_CONTROL | VIBEOS_SYNCHRONIZE,
+    semaphore_signaled,
+    semaphore_acquire,
+};
+
+const vibeos_file_ops_t g_nt_semaphore_ops = {
+    .name = "nt-semaphore",
+    .release = nt_ob_release,
+    .nt_type = &g_semaphore_type,
+};
+
+static void semaphore_init(nt_ob_t *o, const void *ctx) {
+    const int32_t *v = (const int32_t *)ctx;
+    o->u.sem.count = v[0];
+    o->u.sem.max = v[1];
+}
+
+/* NtCreateSemaphore(SemaphoreHandle, DesiredAccess, ObjectAttributes,
+ * InitialCount, MaximumCount): a maximum of at least one, an initial count
+ * between zero and it. */
+static long nt_create_semaphore(uint64_t out, uint64_t want, uint64_t oa, uint64_t initial,
+                                uint64_t maximum) {
+    int32_t v[2];
+
+    v[0] = (int32_t)(uint32_t)initial;
+    v[1] = (int32_t)(uint32_t)maximum;
+    if (v[1] <= 0 || v[0] < 0 || v[0] > v[1]) {
+        return NT_STATUS(VIBEOS_STATUS_INVALID_PARAMETER);
+    }
+    return nt_create_common(&g_nt_semaphore_ops, out, (uint32_t)want, oa, 0, semaphore_init, v);
+}
+
+static long nt_open_semaphore(uint64_t out, uint64_t want, uint64_t oa) {
+    return nt_create_common(&g_nt_semaphore_ops, out, (uint32_t)want, oa, 1, 0, 0);
+}
+
+/* NtReleaseSemaphore(Semaphore, ReleaseCount, PreviousCount): past the maximum
+ * is refused and changes nothing. */
+static long nt_release_semaphore(uint64_t h, uint64_t count, uint64_t prev_u) {
+    vibeos_file_t *f;
+    nt_ob_t *o;
+    int32_t n = (int32_t)(uint32_t)count, prev;
+    uint32_t st;
+
+    if (n <= 0) {
+        return NT_STATUS(VIBEOS_STATUS_INVALID_PARAMETER);
+    }
+    st = nt_handle_ref(h, &g_nt_semaphore_ops, VIBEOS_SEMAPHORE_MODIFY_STATE, &f, 0);
+    if (st != VIBEOS_STATUS_SUCCESS) {
+        return NT_STATUS(st);
+    }
+    nt_ob_lock();
+    o = nt_ob_of(f);
+    prev = o->u.sem.count;
+    if (n > o->u.sem.max - o->u.sem.count) {
+        nt_ob_unlock();
+        vibeos_file_put(f);
+        return NT_STATUS(VIBEOS_STATUS_SEMAPHORE_LIMIT_EXCEEDED);
+    }
+    o->u.sem.count += n;
+    nt_ob_unlock();
+    vibeos_file_put(f);
+    if (prev_u != 0u && vibeos_uaccess_copy((void *)(uintptr_t)prev_u, &prev, sizeof(prev)) != 0) {
+        return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
+    }
+    return NT_STATUS(VIBEOS_STATUS_SUCCESS);
+}
+
+/* NtQuerySemaphore(Semaphore, Class, Buffer, Length, ReturnLength):
+ * SemaphoreBasicInformation - the count and the maximum. */
+static long nt_query_semaphore(uint64_t h, uint64_t cls, uint64_t buf, uint64_t len,
+                               uint64_t ret) {
+    vibeos_file_t *f;
+    nt_ob_t *o;
+    vibeos_nt_semaphore_basic_t info;
+    uint32_t got = (uint32_t)sizeof(info), st;
+
+    if ((uint32_t)cls != 0u) {
+        return NT_STATUS(VIBEOS_STATUS_INVALID_INFO_CLASS);
+    }
+    if ((uint32_t)len != sizeof(info)) {
+        return NT_STATUS(VIBEOS_STATUS_INFO_LENGTH_MISMATCH);
+    }
+    st = nt_handle_ref(h, &g_nt_semaphore_ops, VIBEOS_SEMAPHORE_QUERY_STATE, &f, 0);
+    if (st != VIBEOS_STATUS_SUCCESS) {
+        return NT_STATUS(st);
+    }
+    nt_ob_lock();
+    o = nt_ob_of(f);
+    info.current_count = o->u.sem.count;
+    info.maximum_count = o->u.sem.max;
+    nt_ob_unlock();
+    vibeos_file_put(f);
+    if (vibeos_uaccess_copy((void *)(uintptr_t)buf, &info, sizeof(info)) != 0 ||
+        (ret != 0u && vibeos_uaccess_copy((void *)(uintptr_t)ret, &got, sizeof(got)) != 0)) {
+        return NT_STATUS(VIBEOS_STATUS_ACCESS_VIOLATION);
+    }
+    return NT_STATUS(VIBEOS_STATUS_SUCCESS);
+}
+
 /* ---- the waits ---------------------------------------------------------------------- */
 
 #define VIBEOS_STATUS_INVALID_PARAMETER_1   0xC00000EFu
@@ -244,7 +485,7 @@ long nt_wait(uint32_t n, const uint64_t *handles, int all, uint64_t timeout_u) {
     uint32_t pulses[VIBEOS_NT_MAX_WAIT_OBJECTS];
     uint32_t i, got = 0, st = VIBEOS_STATUS_SUCCESS;
     int me = ks_current();
-    uint32_t tid = me >= 0 ? ks_id(me)->pid : 0u;
+    uint32_t tid = my_tid();
     int64_t t = 0;
     int forever;
     uint64_t deadline;
@@ -399,6 +640,24 @@ static long nt_wait_multiple(uint64_t count, uint64_t handles_u, uint64_t type,
     X(VIBEOS_NT_NR_NtQueryEvent, NtQueryEvent, EVENTFD, \
       PTRS(NT_OUT_BUF(2, 3), OUT_OPT(4, 4)), \
       nt_query_event(ARG(0), NT_ARG32(1), ARG(2), NT_ARG32(3), ARG(4))) \
+    X(VIBEOS_NT_NR_NtCreateMutant, NtCreateMutant, EVENTFD, PTRS(OUT(0, 8)), \
+      nt_create_mutant(ARG(0), NT_ARG32(1), ARG(2), ARG(3))) \
+    X(VIBEOS_NT_NR_NtOpenMutant, NtOpenMutant, EVENTFD, PTRS(OUT(0, 8)), \
+      nt_open_mutant(ARG(0), NT_ARG32(1), ARG(2))) \
+    X(VIBEOS_NT_NR_NtReleaseMutant, NtReleaseMutant, EVENTFD, PTRS(OUT_OPT(1, 4)), \
+      nt_release_mutant(ARG(0), ARG(1))) \
+    X(VIBEOS_NT_NR_NtQueryMutant, NtQueryMutant, EVENTFD, \
+      PTRS(NT_OUT_BUF(2, 3), OUT_OPT(4, 4)), \
+      nt_query_mutant(ARG(0), NT_ARG32(1), ARG(2), NT_ARG32(3), ARG(4))) \
+    X(VIBEOS_NT_NR_NtCreateSemaphore, NtCreateSemaphore, EVENTFD, PTRS(OUT(0, 8)), \
+      nt_create_semaphore(ARG(0), NT_ARG32(1), ARG(2), NT_ARG32(3), NT_ARG32(4))) \
+    X(VIBEOS_NT_NR_NtOpenSemaphore, NtOpenSemaphore, EVENTFD, PTRS(OUT(0, 8)), \
+      nt_open_semaphore(ARG(0), NT_ARG32(1), ARG(2))) \
+    X(VIBEOS_NT_NR_NtReleaseSemaphore, NtReleaseSemaphore, EVENTFD, PTRS(OUT_OPT(2, 4)), \
+      nt_release_semaphore(ARG(0), NT_ARG32(1), ARG(2))) \
+    X(VIBEOS_NT_NR_NtQuerySemaphore, NtQuerySemaphore, EVENTFD, \
+      PTRS(NT_OUT_BUF(2, 3), OUT_OPT(4, 4)), \
+      nt_query_semaphore(ARG(0), NT_ARG32(1), ARG(2), NT_ARG32(3), ARG(4))) \
     X(VIBEOS_NT_NR_NtWaitForSingleObject, NtWaitForSingleObject, FUTEX, PTRS(IN_OPT(2, 8)), \
       nt_wait_single(ARG(0), ARG(1), ARG(2))) \
     X(VIBEOS_NT_NR_NtWaitForMultipleObjects, NtWaitForMultipleObjects, FUTEX, \

@@ -97,6 +97,25 @@ typedef struct {
     int32_t event_state;
 } vibeos_nt_event_basic_t;
 
+/* Mutant and semaphore rights, and their basic information (class 0 each).
+ * A mutant's "count" is its signal state: 1 free, 0 held once, -n held n+1
+ * times. */
+#define VIBEOS_MUTANT_QUERY_STATE     0x0001u
+#define VIBEOS_MUTANT_ALL_ACCESS      0x001F0001u
+#define VIBEOS_SEMAPHORE_QUERY_STATE  0x0001u
+#define VIBEOS_SEMAPHORE_MODIFY_STATE 0x0002u
+#define VIBEOS_SEMAPHORE_ALL_ACCESS   0x001F0003u
+typedef struct {
+    int32_t current_count;
+    uint8_t owned_by_caller;
+    uint8_t abandoned_state;
+    uint8_t pad[2];
+} vibeos_nt_mutant_basic_t;
+typedef struct {
+    int32_t current_count;
+    int32_t maximum_count;
+} vibeos_nt_semaphore_basic_t;
+
 /* How many handles one wait may name: MAXIMUM_WAIT_OBJECTS. */
 #define VIBEOS_NT_MAX_WAIT_OBJECTS 64u
 

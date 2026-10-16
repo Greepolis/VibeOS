@@ -1,4 +1,4 @@
-# Events and the waits (kernel/abi/nt/sync.c, docs/abi/windows.md W2), broken
+# Events, mutants, semaphores and the waits (kernel/abi/nt/sync.c, docs/abi/windows.md W2), broken
 # one rule at a time; caught by tests/kernel/nt_abi_tests.c on the host.
 #
 # Target source: kernel/abi/nt/sync.c
@@ -51,3 +51,15 @@
         st = nt_handle_ref(handles[i], 0, VIBEOS_SYNCHRONIZE, &f[i], 0);
 +++ new
         st = nt_handle_ref(handles[i], 0, 0, &f[i], 0);
+
+### a mutant is released by whoever holds a handle, not only its owner
+--- old
+    if (o->u.mu.owner != my_tid() || o->u.mu.count == 0u) {
++++ new
+    if (o->u.mu.count == 0u) {
+
+### a semaphore is released past its maximum
+--- old
+    if (n > o->u.sem.max - o->u.sem.count) {
++++ new
+    if (0) {
