@@ -82,3 +82,4 @@ argv-hunt/
 # Rebuilt by the boot gate on every run (make_esp_image.py).
 qemu-cli-esp.img
 qemu-cli-esp-*.img
+qemu-cli-*.prev.*
