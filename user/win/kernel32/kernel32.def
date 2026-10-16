@@ -12,6 +12,7 @@ CreateSemaphoreA
 CreateSemaphoreW
 DuplicateHandle
 ExitProcess
+FreeLibrary
 GetCurrentProcess
 GetCurrentProcessId
 GetCurrentThread
@@ -32,6 +33,10 @@ HeapFree
 HeapReAlloc
 HeapSize
 HeapValidate
+IsBadStringPtrA
+IsBadStringPtrW
+LoadLibraryA
+LoadLibraryW
 OpenEventA
 OpenEventW
 OpenMutexA

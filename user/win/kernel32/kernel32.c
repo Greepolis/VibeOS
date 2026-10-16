@@ -102,19 +102,42 @@ static uint32_t wlen(const uint16_t *s) {
 }
 
 /* ---- named objects -------------------------------------------------------------------------
- * A Win32 name is an object in \BaseNamedObjects. Windows puts that directory
- * under the session (\Sessions\1\BaseNamedObjects); the object manager here has
- * one flat namespace and no sessions yet, so the name is the whole path. */
+ * A Win32 name is an object in the session's BaseNamedObjects,
+ * \Sessions\<n>\BaseNamedObjects with n from the PEB - the path Wine's tests
+ * build to find what kernel32 made. The object manager has one flat namespace
+ * of whole paths and no directory objects yet, so it is spelled out here
+ * rather than opened as a root directory, as Windows' kernel32 does. */
 
 #define NAME_CHARS 260u
 
 typedef struct {
     uint8_t oa[VIBEOS_OA_SIZE];
     uint8_t us[VIBEOS_USTR_SIZE];
-    uint16_t path[NAME_CHARS + 20u];
+    uint16_t path[NAME_CHARS + 40u];   /* behind \Sessions\<n>\BaseNamedObjects\ */
 } named_t;
 
-static const char g_base[] = "\\BaseNamedObjects\\";
+/* "\Sessions\<n>\BaseNamedObjects\" into `out`; its length. */
+static uint32_t base_named_objects(uint16_t *out) {
+    static const char head[] = "\\Sessions\\", tail[] = "\\BaseNamedObjects\\";
+    uint32_t session = (uint32_t)vibeos_nt_rd64(peb() + VIBEOS_PEB_SESSION_ID);
+    char digits[10];
+    uint32_t i, k = 0, d = 0;
+
+    for (i = 0; head[i]; i++) {
+        out[k++] = (uint8_t)head[i];
+    }
+    do {
+        digits[d++] = (char)('0' + session % 10u);
+        session /= 10u;
+    } while (session);
+    while (d) {
+        out[k++] = (uint8_t)digits[--d];
+    }
+    for (i = 0; tail[i]; i++) {
+        out[k++] = (uint8_t)tail[i];
+    }
+    return k;
+}
 
 /* OBJECT_ATTRIBUTES for `name` (null: an unnamed object). Returns 0 and sets
  * the last error if the name is too long. */
@@ -134,9 +157,7 @@ static void *attributes_w(named_t *n, const uint16_t *name, int inherit, int ope
         set_error(ERROR_FILENAME_EXCED_RANGE);
         return 0;
     }
-    for (i = 0; g_base[i]; i++) {
-        n->path[k++] = (uint8_t)g_base[i];
-    }
+    k = base_named_objects(n->path);
     for (i = 0; name[i]; i++) {
         n->path[k++] = name[i];
     }
@@ -500,6 +521,77 @@ void *GetProcAddress(uint64_t module, const char *name) {
         return 0;
     }
     return at;
+}
+
+uint64_t LoadLibraryW(const uint16_t *name) {
+    vibeos_ustring_t us;
+    void *h = 0;
+    NTSTATUS_T st;
+
+    if (!name) {
+        set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    us.Length = (uint16_t)(wlen(name) * 2u);
+    us.MaximumLength = us.Length;
+    us.Buffer = (vibeos_wchar_t *)name;
+    st = LdrLoadDll(0, 0, &us, &h);
+    return failed(st) ? (uint64_t)fail(st) : (uint64_t)(uintptr_t)h;
+}
+
+uint64_t LoadLibraryA(const char *name) {
+    uint16_t w[NAME_CHARS];
+
+    if (!name) {
+        set_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    if (widen(name, w, NAME_CHARS) < 0) {
+        set_error(ERROR_FILENAME_EXCED_RANGE);
+        return 0;
+    }
+    return LoadLibraryW(w);
+}
+
+/* The loader never unloads: a DLL stays for the life of the process, and
+ * freeing it succeeds and changes nothing. */
+BOOL32 FreeLibrary(uint64_t module) {
+    if (!module) {
+        set_error(ERROR_INVALID_HANDLE);
+        return 0;
+    }
+    return 1;
+}
+
+/* Whether `max` characters at `s` - or up to its terminator - can be read.
+ * Windows answers by catching the fault, and there is no exception dispatch
+ * until W5: so what is answered here is the part that needs none - a null
+ * pointer, or one in the first 64 KiB that nothing maps, is bad - and any
+ * other string is read. A bad pointer elsewhere therefore ends the process
+ * with its fault instead of being answered TRUE: a wrong answer that is loud,
+ * never one that is quiet. */
+BOOL32 IsBadStringPtrA(const char *str, uintptr_t max) {
+    const volatile char *s = str;   /* read, not optimised away */
+    uintptr_t i;
+
+    if ((uintptr_t)s < 0x10000u) {
+        return max != 0u;
+    }
+    for (i = 0; i < max && s[i]; i++) {
+    }
+    return 0;
+}
+
+BOOL32 IsBadStringPtrW(const uint16_t *str, uintptr_t max) {
+    const volatile uint16_t *s = str;
+    uintptr_t i;
+
+    if ((uintptr_t)s < 0x10000u) {
+        return max != 0u;
+    }
+    for (i = 0; i < max && s[i]; i++) {
+    }
+    return 0;
 }
 
 /* ---- the heap ------------------------------------------------------------------------------ */

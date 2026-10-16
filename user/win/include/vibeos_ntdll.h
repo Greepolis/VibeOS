@@ -116,6 +116,8 @@ RTL_API uint32_t RtlNtStatusToDosError(vibeos_ntstatus_t status);
 /* The loader's answers to GetModuleHandle and GetProcAddress (ntdll/start.c). */
 RTL_API NTSTATUS_T LdrGetDllHandle(const uint16_t *path, const uint32_t *flags,
                                    const vibeos_ustring_t *name, void **handle);
+RTL_API NTSTATUS_T LdrLoadDll(const uint16_t *path, const uint32_t *flags,
+                              const vibeos_ustring_t *name, void **handle);
 RTL_API NTSTATUS_T LdrGetProcedureAddress(void *module, const vibeos_astring_t *name,
                                           uint32_t ordinal, void **address);
 RTL_API void *RtlAllocateHeap(void *heap, uint32_t flags, size_t size);

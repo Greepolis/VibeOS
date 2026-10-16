@@ -224,8 +224,10 @@ static uint64_t find_module(const char *name) {
 
 static void resolve_imports(uint64_t base);
 
-/* Bring `name` in from \??\C:\win\, or end the process saying it is not there. */
-static uint64_t load_dll(const char *name) {
+/* Bring `name` in from \??\C:\win\, or end the process saying it is
+ * not there - unless the caller can take an answer: LoadLibrary is told no, with
+ * STATUS_DLL_NOT_FOUND, where an import the program cannot run without ends it. */
+static uint64_t load_dll(const char *name, int optional) {
     static const char dir[] = "\\??\\C:\\win\\";
     uint16_t path[128];
     uint8_t us[VIBEOS_USTR_SIZE], oa[VIBEOS_OA_SIZE];
@@ -262,6 +264,9 @@ static uint64_t load_dll(const char *name) {
      * loader opens an image. */
     st = NtOpenFile(&file, 0x00100021u, oa, &iosb, 1u, 0x20u);
     if (st != VIBEOS_STATUS_SUCCESS) {
+        if (optional) {
+            return 0;
+        }
         give_up(name, "(no such DLL)", VIBEOS_STATUS_DLL_NOT_FOUND);
     }
     st = NtCreateSection(&section, 0x000F001Fu, 0, 0, 0x02u /* PAGE_READONLY */,
@@ -307,7 +312,7 @@ static void resolve_imports(uint64_t base) {
         const char *dll = (const char *)(uintptr_t)(base + rd32(d + 12u));
         uint64_t lookup = base + (rd32(d) ? rd32(d) : rd32(d + 16u));
         uint64_t iat = base + rd32(d + 16u);
-        uint64_t from = load_dll(dll);
+        uint64_t from = load_dll(dll, 0);
 
         for (;; lookup += 8u, iat += 8u) {
             uint64_t thunk = vibeos_nt_rd64(lookup);
@@ -334,10 +339,10 @@ static void resolve_imports(uint64_t base) {
  * to skip that way - and only an import the program cannot run without is
  * bound to one. */
 
-/* The module a name means: the last path component, ".dll" understood when
- * there is no extension, compared without case. */
-static uint64_t module_by_wide(const uint16_t *s, uint32_t n) {
-    char name[64];
+/* A wide module name as the loader keeps names: the last path component,
+ * ASCII, ".dll" understood when there is no extension (find_module compares
+ * without case). 0 if it cannot be one of ours. */
+static int module_name(const uint16_t *s, uint32_t n, char *name, uint32_t cap) {
     uint32_t i, start = 0, k = 0;
     int dot = 0;
 
@@ -346,9 +351,12 @@ static uint64_t module_by_wide(const uint16_t *s, uint32_t n) {
             start = i + 1u;
         }
     }
-    for (i = start; i < n && k < sizeof(name) - 5u; i++) {
-        if (s[i] > 0x7Fu) {
-            return 0;                     /* no module of ours has such a name */
+    if (start == n || n - start + 5u > cap) {
+        return 0;
+    }
+    for (i = start; i < n; i++) {
+        if (s[i] > 0x7Fu || s[i] == 0) {
+            return 0;
         }
         name[k++] = (char)s[i];
         dot = s[i] == '.' ? 1 : dot;
@@ -360,7 +368,35 @@ static uint64_t module_by_wide(const uint16_t *s, uint32_t n) {
         name[k++] = 'l';
     }
     name[k] = 0;
-    return find_module(name);
+    return 1;
+}
+
+static uint64_t module_by_wide(const uint16_t *s, uint32_t n) {
+    char name[64];
+
+    return module_name(s, n, name, sizeof(name)) ? find_module(name) : 0;
+}
+
+/* LdrLoadDll(SearchPath, Flags, DllName, BaseAddress): LoadLibrary. Every DLL
+ * of ours is in C:\win, so the search path is not consulted. Nothing is ever
+ * unloaded; a second load is the module already there. */
+NTSTATUS_T LdrLoadDll(const uint16_t *path, const uint32_t *flags, const vibeos_ustring_t *name,
+                      void **handle) {
+    char n[64];
+    uint64_t base;
+
+    (void)path;
+    (void)flags;
+    if (!name || !handle) {
+        return VIBEOS_STATUS_INVALID_PARAMETER;
+    }
+    *handle = 0;
+    if (!module_name(name->Buffer, name->Length / 2u, n, sizeof(n))) {
+        return VIBEOS_STATUS_DLL_NOT_FOUND;
+    }
+    base = load_dll(n, 1);
+    *handle = (void *)(uintptr_t)base;
+    return base ? VIBEOS_STATUS_SUCCESS : VIBEOS_STATUS_DLL_NOT_FOUND;
 }
 
 /* LdrGetDllHandle(DllPath, DllCharacteristics, DllName, DllHandle). */
