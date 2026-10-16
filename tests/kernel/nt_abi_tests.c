@@ -713,8 +713,9 @@ static void t_blocks(void) {
            "the TEB: itself, the PEB, the stack, who it is");
     expect(rd64(peb + VIBEOS_PEB_IMAGE_BASE) == s.image_base &&
            rd64(peb + VIBEOS_PEB_PROCESS_PARAMS) == base + VIBEOS_NT_BLOCK_PARAMS &&
-           rd16(peb + VIBEOS_PEB_OS_BUILD) == 19045u,
-           "the PEB: the program, the parameters, Windows 10");
+           rd16(peb + VIBEOS_PEB_OS_BUILD) == 19045u &&
+           rd16(peb + VIBEOS_PEB_SESSION_ID) == 1u && rd16(peb + VIBEOS_PEB_SESSION_ID + 2u) == 0u,
+           "the PEB: the program, the parameters, Windows 10, session 1");
     expect(rd64(rupp + VIBEOS_RUPP_STD_INPUT) == 4u && rd64(rupp + VIBEOS_RUPP_STD_OUTPUT) == 8u &&
            rd64(rupp + VIBEOS_RUPP_STD_ERROR) == 12u, "the standard handles");
     expect(ustr_is(pages, base, VIBEOS_NT_BLOCK_PARAMS + VIBEOS_RUPP_IMAGE_PATH, "/win/hello.exe"),

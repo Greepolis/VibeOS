@@ -165,6 +165,11 @@ int vibeos_nt_build_blocks(uint8_t *const pages[VIBEOS_NT_BLOCK_PAGES], uint64_t
     put32(&b, peb + VIBEOS_PEB_OS_MINOR, 0u);
     put16(&b, peb + VIBEOS_PEB_OS_BUILD, 19045u);
     put32(&b, peb + VIBEOS_PEB_OS_PLATFORM, 2u);   /* VER_PLATFORM_WIN32_NT */
+    /* Session 1, an interactive user's, as Wine gives every process: the
+     * session is where a program's named objects live
+     * (\Sessions\1\BaseNamedObjects), and Wine's tests build that path from
+     * this field. Session 0 is the services'. */
+    put32(&b, peb + VIBEOS_PEB_SESSION_ID, 1u);
 
     /* The TEB: its own address at 0x30, which is what gs:[0x30] reads, the
      * stack it runs on, who it is, and the PEB. */
