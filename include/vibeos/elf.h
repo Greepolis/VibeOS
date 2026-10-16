@@ -22,10 +22,11 @@
 
 #include <stdint.h>
 
-/* Sixteen since docs/abi/windows.md W1: a PE image is described in this form
- * too (vibeos/pe.h), one segment for its headers and one per section, and a
- * mingw-w64 executable has nine or ten sections where an ELF has four loads. */
-#define VIBEOS_ELF_MAX_SEGMENTS 16u
+/* Twenty-four since docs/abi/windows.md W2: a PE image is described in this
+ * form too (vibeos/pe.h), one segment for its headers and one per section, and
+ * Wine's test programs have seventeen sections, their debug information among
+ * them, where an ELF has four loads. Sixteen (W1) refused them at exec. */
+#define VIBEOS_ELF_MAX_SEGMENTS 24u
 #define VIBEOS_ELF_PAGE_SIZE 4096u
 
 /* Long enough for every interpreter path in practice - the usual one,

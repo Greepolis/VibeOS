@@ -44,7 +44,8 @@ static int hw_pe_map_one(hw_proc_t *p, hw_procstate_t *ps, const unsigned char *
         return hw_exec_refuse(VIBEOS_EXEC_BAD_WINDOW, path, "pe_cannot_be_placed");
     }
     if (rc != VIBEOS_PE_OK) {
-        return hw_exec_refuse(VIBEOS_EXEC_BAD_HEADER, path, "pe_parse");
+        return hw_exec_refuse(VIBEOS_EXEC_BAD_HEADER, path,
+                              rc == VIBEOS_PE_ETOOMANY ? "pe_too_many_sections" : "pe_parse");
     }
     if (!!(pe->characteristics & VIBEOS_PE_FILE_DLL) != want_dll || pe->entry == 0u) {
         return hw_exec_refuse(VIBEOS_EXEC_BAD_HEADER, path,

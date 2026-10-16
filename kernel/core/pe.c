@@ -281,8 +281,11 @@ static int pe_parse_placed(const void *hdr, uint64_t hdr_len, uint64_t file_len,
     rc = pe_parse_inner((const uint8_t *)hdr, hdr_len, file_len, place, min_allowed,
                         end_allowed, out);
     /* A file no linker produced, as against the wrong kind of file: the boot's
-     * media holds none, so the boot asserts the count is zero (vibeos/mbz.h). */
-    if (rc == VIBEOS_PE_EMALFORMED || rc == VIBEOS_PE_ETOOMANY) {
+     * media holds none, so the boot asserts the count is zero (vibeos/mbz.h).
+     * More sections than an image holds is not that - it is a limit of this
+     * kernel's, which Wine's test programs reached in W2 - and is refused by
+     * name without being counted. */
+    if (rc == VIBEOS_PE_EMALFORMED) {
         vibeos_mbz_hit(VIBEOS_MBZ_PE_MALFORMED, (uint64_t)rc);
     }
     if (rc != VIBEOS_PE_OK) {
