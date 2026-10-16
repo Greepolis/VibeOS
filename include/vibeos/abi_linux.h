@@ -17,6 +17,7 @@
 #define VIBEOS_EIO     5
 #define VIBEOS_ENXIO   6
 #define VIBEOS_E2BIG   7
+#define VIBEOS_ENOEXEC 8
 #define VIBEOS_EBADF   9
 #define VIBEOS_ECHILD 10
 #define VIBEOS_EAGAIN 11

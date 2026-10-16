@@ -701,6 +701,14 @@ void ks_tls_set(int slot, uint64_t base) {
 
 uint64_t ks_gs_get(int slot) { return g_tasks[slot].gs_base; }
 
+/* PE images (docs/abi/windows.md W2): the loader's work is in pe_load.c. */
+int ks_pe_probe(const char *path, uint64_t *image_size) {
+    return hw_pe_probe(path, image_size);
+}
+int ks_map_pe_image(int slot, const char *path, uint64_t *base, uint64_t *size) {
+    return hw_map_pe_image(slot, path, base, size);
+}
+
 /* %gs base for the calling task (ARCH_SET_GS; the NT loader's TEB). Into the
  * MSR that holds it while the kernel runs - GS.base is this core's block until
  * the swapgs on the way out.

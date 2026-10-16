@@ -32,7 +32,8 @@ static uint8_t g_pe_relocs[HW_PE_RELOC_MAX];
 static int hw_pe_map_one(hw_proc_t *p, hw_procstate_t *ps, const unsigned char *buf,
                          uint64_t window, uint64_t len, uint32_t id, uint64_t lo, uint64_t hi,
                          uint64_t moved, uint64_t moved_hi,
-                         int want_dll, const char *path, vibeos_pe_image_t *pe) {
+                         int want_dll, const char *path, vibeos_pe_image_t *pe,
+                         uint8_t *relocs) {
     int rc = vibeos_pe_parse(buf, window, len, lo, hi, pe);
     hw_reloc_t reloc;
 
@@ -56,7 +57,7 @@ static int hw_pe_map_one(hw_proc_t *p, hw_procstate_t *ps, const unsigned char *
         return hw_exec_refuse(VIBEOS_EXEC_NO_STAGING, path, "pe_past_window");
     }
     reloc.pe = pe;
-    reloc.relocs = g_pe_relocs;
+    reloc.relocs = relocs;
     reloc.len = 0;
     if (pe->delta != 0) {
         /* The directory, out of the image as the file supplies it - through
@@ -72,11 +73,11 @@ static int hw_pe_map_one(hw_proc_t *p, hw_procstate_t *ps, const unsigned char *
         cr.file_id = id;
         cr.file_len = len;
         if (id != 0u) {
-            vibeos_pe_read_image(pe, hw_elf_read_cached, &cr, at, g_pe_relocs, size);
+            vibeos_pe_read_image(pe, hw_elf_read_cached, &cr, at, relocs, size);
         } else {
-            vibeos_pe_read_image_mem(pe, buf, len, at, g_pe_relocs, size);
+            vibeos_pe_read_image_mem(pe, buf, len, at, relocs, size);
         }
-        if (vibeos_pe_check_relocs(pe, g_pe_relocs, size) != VIBEOS_PE_OK) {
+        if (vibeos_pe_check_relocs(pe, relocs, size) != VIBEOS_PE_OK) {
             return hw_exec_refuse(VIBEOS_EXEC_BAD_HEADER, path, "pe_relocs");
         }
         reloc.len = size;
@@ -100,7 +101,8 @@ int hw_pe_map_images(hw_proc_t *p, hw_procstate_t *ps, const unsigned char *hdr,
     ps->vmas.count = 0;
     if (hw_pe_map_one(p, ps, hdr, len < staged ? len : staged, len, file_id,
                       VIBEOS_HW_USER_BASE, VIBEOS_HW_PE_EXE_END,
-                      VIBEOS_HW_PE_EXE_MOVED, VIBEOS_HW_PE_DLL_BASE, 0, path, &exe) != 0) {
+                      VIBEOS_HW_PE_EXE_MOVED, VIBEOS_HW_PE_DLL_BASE, 0, path, &exe,
+                      g_pe_relocs) != 0) {
         return -1;
     }
     /* Our ntdll, through the interpreter's staging buffer: an exec holds
@@ -115,7 +117,7 @@ int hw_pe_map_images(hw_proc_t *p, hw_procstate_t *ps, const unsigned char *hdr,
     if (hw_pe_map_one(p, ps, g_interp_elf,
                       (uint64_t)n < g_interp_elf_cap ? (uint64_t)n : g_interp_elf_cap,
                       (uint64_t)n, dll_id, VIBEOS_HW_PE_DLL_BASE, VIBEOS_HW_NT_BLOCK,
-                      0u, 0u, 1, VIBEOS_HW_NTDLL_PATH, &dll) != 0) {
+                      0u, 0u, 1, VIBEOS_HW_NTDLL_PATH, &dll, g_pe_relocs) != 0) {
         return -1;
     }
     /* The first thread starts in ntdll, which links the program and calls its
@@ -206,4 +208,122 @@ int hw_pe_start_blocks(hw_proc_t *p, hw_procstate_t *ps, uint64_t exe_base,
      * Windows' convention has every call. */
     p->user_sp = VIBEOS_HW_USER_STACK_TOP - 0x38u;
     return 0;
+}
+
+/* ---- an image mapped into a running process (NtMapViewOfSection, W2) ----------------
+ *
+ * The same placing and relocating as exec's, into the calling process's own
+ * address space, with buffers of its own: exec's are g_exec_lock's, which a
+ * system call of another personality does not hold. A preemptible lock, since
+ * reading an image goes to the disk. */
+
+#define HW_NTMAP_WINDOW 65536u
+static vibeos_lock_t g_ntmap_lock;
+static uint8_t *g_ntmap_hdr;
+static uint8_t g_ntmap_relocs[HW_PE_RELOC_MAX];
+
+/* Is [base, base + len) clear of every region the process has? The list is
+ * sorted and never overlaps, so one pass answers. */
+static int hw_range_free(const vibeos_vma_list_t *l, uint64_t base, uint64_t len) {
+    const vibeos_vma_t *v;
+
+    for (v = l->head; v; v = v->next) {
+        if (v->base < base + len && base < v->base + v->len) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* The image's headers into the staging buffer: its length, and its cache
+ * identity in *id; or a negated errno. Under g_ntmap_lock. */
+static long hw_ntmap_read(const char *path, uint32_t *id) {
+    long n;
+
+    if (!g_ntmap_hdr) {
+        g_ntmap_hdr = (uint8_t *)hw_alloc_pages_contig(HW_NTMAP_WINDOW / 4096u);
+        if (!g_ntmap_hdr) {
+            return -VIBEOS_ENOMEM;
+        }
+    }
+    n = hw_read_file_cached(path, g_ntmap_hdr, HW_NTMAP_WINDOW, id);
+    return n > 0 ? n : -VIBEOS_ENOENT;
+}
+
+int hw_pe_probe(const char *path, uint64_t *image_size) {
+    vibeos_pe_image_t pe;
+    uint32_t id = 0;
+    long n;
+    int rc = 0;
+
+    ks_lock_preemptible(&g_ntmap_lock);
+    n = hw_ntmap_read(path, &id);
+    if (n < 0) {
+        rc = (int)n;
+    } else if (vibeos_pe_parse(g_ntmap_hdr, (uint64_t)n < HW_NTMAP_WINDOW ? (uint64_t)n
+                                                                         : HW_NTMAP_WINDOW,
+                               (uint64_t)n, 0, ~0ull, &pe) != VIBEOS_PE_OK) {
+        rc = -VIBEOS_ENOEXEC;
+    } else {
+        *image_size = pe.layout.image_span;
+    }
+    ks_unlock_preemptible(&g_ntmap_lock);
+    return rc;
+}
+
+int hw_map_pe_image(int slot, const char *path, uint64_t *base, uint64_t *size) {
+    hw_task_t *t = &g_tasks[slot];
+    hw_procstate_t *ps = t->ps;
+    vibeos_pe_image_t pe;
+    uint32_t id = 0;
+    uint64_t window, place = 0, b;
+    long n;
+    int rc;
+
+    if (!ps) {
+        return -VIBEOS_EINVAL;
+    }
+    ks_lock_preemptible(&g_ntmap_lock);
+    n = hw_ntmap_read(path, &id);
+    if (n < 0) {
+        ks_unlock_preemptible(&g_ntmap_lock);
+        return (int)n;
+    }
+    window = (uint64_t)n < HW_NTMAP_WINDOW ? (uint64_t)n : HW_NTMAP_WINDOW;
+    if (vibeos_pe_parse(g_ntmap_hdr, window, (uint64_t)n, 0, ~0ull, &pe) != VIBEOS_PE_OK) {
+        ks_unlock_preemptible(&g_ntmap_lock);
+        return -VIBEOS_ENOEXEC;
+    }
+    ks_mm_lock(ps);
+    /* Where it asks, if that is inside the DLLs' window and free; otherwise the
+     * lowest free place there, at the 64 KiB granularity Windows allocates at. */
+    if (pe.preferred_base >= VIBEOS_HW_PE_DLL_BASE &&
+        pe.preferred_base + pe.layout.image_span <= VIBEOS_HW_NT_BLOCK &&
+        hw_range_free(&ps->vmas, pe.preferred_base, pe.layout.image_span)) {
+        place = pe.preferred_base;
+    }
+    for (b = VIBEOS_HW_PE_DLL_BASE; place == 0u && b + pe.layout.image_span <= VIBEOS_HW_NT_BLOCK;
+         b += 0x10000u) {
+        if (hw_range_free(&ps->vmas, b, pe.layout.image_span)) {
+            place = b;
+        }
+    }
+    if (place == 0u) {
+        ks_mm_unlock(ps);
+        ks_unlock_preemptible(&g_ntmap_lock);
+        return -VIBEOS_ENOMEM;
+    }
+    rc = hw_pe_map_one(&t->proc, ps, g_ntmap_hdr, window, (uint64_t)n, id,
+                       place, place + pe.layout.image_span, place,
+                       place + pe.layout.image_span,
+                       (pe.characteristics & VIBEOS_PE_FILE_DLL) ? 1 : 0, path, &pe,
+                       g_ntmap_relocs);
+    ks_mm_unlock(ps);
+    ks_unlock_preemptible(&g_ntmap_lock);
+    if (rc != 0) {
+        return -VIBEOS_ENOEXEC;
+    }
+    *base = pe.image_base;
+    *size = pe.layout.image_span;
+    return pe.delta != 0 ? 1 : 0;
 }

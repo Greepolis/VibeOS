@@ -56,7 +56,7 @@ static long put_handle(uint64_t uptr, uint64_t h) {
  * existing one, whose state is its own. */
 long nt_create_common(const vibeos_file_ops_t *ops, uint64_t handle_u, uint32_t want,
                       uint64_t oa, int open_only,
-                      void (*init)(nt_ob_t *o, const uint64_t *args), const uint64_t *args) {
+                      void (*init)(nt_ob_t *o, const void *ctx), const void *ctx) {
     nt_name_t name;
     uint32_t attributes = 0, st, done;
     vibeos_file_t *f = 0;
@@ -82,7 +82,7 @@ long nt_create_common(const vibeos_file_ops_t *ops, uint64_t handle_u, uint32_t 
     }
     if (!existed && !open_only && init) {
         nt_ob_lock();
-        init(nt_ob_of(f), args);
+        init(nt_ob_of(f), ctx);
         nt_ob_unlock();
     }
     st = nt_handle_install(f, nt_map_access(ops, want), attributes, &h);
@@ -97,7 +97,8 @@ long nt_create_common(const vibeos_file_ops_t *ops, uint64_t handle_u, uint32_t 
     return NT_STATUS(done);
 }
 
-static void event_init(nt_ob_t *o, const uint64_t *args) {
+static void event_init(nt_ob_t *o, const void *ctx) {
+    const uint64_t *args = (const uint64_t *)ctx;
     o->u.ev.kind = (uint32_t)args[0];
     o->u.ev.state = args[1] ? 1 : 0;
 }

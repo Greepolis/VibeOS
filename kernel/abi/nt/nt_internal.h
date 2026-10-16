@@ -99,6 +99,10 @@ typedef struct nt_ob {
             int32_t count;
             int32_t max;
         } sem;
+        struct {
+            vibeos_file_t *file;  /* a reference: the image's file             */
+            uint64_t image_size;
+        } sec;
     } u;
 } nt_ob_t;
 
@@ -123,6 +127,9 @@ uint32_t nt_ob_create(const vibeos_file_ops_t *ops, const nt_name_t *name, uint3
 uint32_t nt_ob_open(const vibeos_file_ops_t *ops, const nt_name_t *name, vibeos_file_t **out);
 /* What `want` grants of `ops`'s type: the generic rights mapped onto its own. */
 uint32_t nt_map_access(const vibeos_file_ops_t *ops, uint32_t want);
+uint32_t nt_map_access_with(const nt_type_t *t, uint32_t want);
+/* An NT path - "\??\C:\..." - as the VFS path it names. A status. */
+uint32_t nt_vfs_path(const nt_name_t *n, char *out, uint32_t cap);
 /* A handle for `f`, taking over the caller's reference (released on failure). */
 uint32_t nt_handle_install(vibeos_file_t *f, uint32_t access, uint32_t attributes,
                            uint64_t *handle);
@@ -138,7 +145,7 @@ uint32_t nt_close_handle(uint64_t h);
  * state from `args`; an existing named object keeps its own. */
 long nt_create_common(const vibeos_file_ops_t *ops, uint64_t handle_u, uint32_t want,
                       uint64_t oa, int open_only,
-                      void (*init)(nt_ob_t *o, const uint64_t *args), const uint64_t *args);
+                      void (*init)(nt_ob_t *o, const void *ctx), const void *ctx);
 /* Wait for `n` handles - all, or any - until the timeout (a user pointer to an
  * NT time, 0 for none). An NTSTATUS. */
 long nt_wait(uint32_t n, const uint64_t *handles, int all, uint64_t timeout_u);

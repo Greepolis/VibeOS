@@ -1,0 +1,32 @@
+# NtOpenFile and NT paths onto the VFS (kernel/abi/nt/file.c,
+# docs/abi/windows.md W2); caught by tests/kernel/nt_abi_tests.c on the host.
+#
+# Target source: kernel/abi/nt/file.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/nt/file.c scripts/dev/cases/nt-openfile.txt build-gcc-Release
+
+### a path without the \??\ prefix is taken as one
+--- old
+            return VIBEOS_STATUS_OBJECT_PATH_SYNTAX_BAD;
++++ new
+            break;
+
+### every drive is C:
+--- old
+    if ((n->chars[4] != 'C' && n->chars[4] != 'c') || n->chars[5] != ':') {
++++ new
+    if (n->chars[5] != ':') {
+
+### a file asked for writing is opened to read
+--- old
+        return NT_STATUS(VIBEOS_STATUS_NOT_IMPLEMENTED);
+    }
+    rc = vibeos_path_walk(
++++ new
+    }
+    rc = vibeos_path_walk(
+
+### a missing file is not "not found"
+--- old
+        case VIBEOS_ENOENT:  return VIBEOS_STATUS_OBJECT_NAME_NOT_FOUND;
++++ new
+        case VIBEOS_ENOENT:  return VIBEOS_STATUS_UNSUCCESSFUL;

@@ -1,0 +1,36 @@
+# Image sections (kernel/abi/nt/section.c, docs/abi/windows.md W2), broken one
+# rule at a time; caught by tests/kernel/nt_abi_tests.c on the host. NtOpenFile's
+# path rules are in nt-openfile.txt, whose target is file.c.
+#
+# Target source: kernel/abi/nt/section.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py kernel/abi/nt/section.c scripts/dev/cases/nt-section.txt build-gcc-Release
+
+### an image section is made over a file that is no image
+--- old
+    pr = ks_pe_probe(file->path, &size);
++++ new
+    pr = 0;
+
+### a data section is answered with an image
+--- old
+    if (!(attributes & NT_SEC_IMAGE) || file_h == 0u) {
++++ new
+    if (file_h == 0u) {
+
+### the console is taken for a file to map
+--- old
+    if (file->ops->nt_type || file->path[0] != '/') {
++++ new
+    if (file->ops->nt_type) {
+
+### a view is mapped into a process the caller only named
+--- old
+    if (process != VIBEOS_NT_CURRENT_PROCESS) {
++++ new
+    if (0) {
+
+### a moved image is reported as mapped at its base
+--- old
+    return NT_STATUS(rc ? NT_STATUS_IMAGE_NOT_AT_BASE : VIBEOS_STATUS_SUCCESS);
++++ new
+    return NT_STATUS(VIBEOS_STATUS_SUCCESS);

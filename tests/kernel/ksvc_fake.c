@@ -10,6 +10,7 @@
 #include "vibeos/account.h"
 #include "vibeos/mbz.h"
 #include "ksvc_fake.h"
+#include "vibeos/pe.h"
 #include "vibeos/filelock.h"
 #include "vibeos/tty.h"
 #include "vibeos/frame.h"
@@ -180,7 +181,9 @@ static uint32_t g_fg_pgid;
 
 typedef struct {
     char path[64];
-    uint8_t data[512];
+    /* Eight kilobytes since W2: room for a small PE image mingw linked
+     * (tests/win/pe_fixture.c), which the NT section tests map. */
+    uint8_t data[8192];
     uint32_t len;
     int is_dir;
     int used;
@@ -1322,6 +1325,58 @@ long ks_read_file_cached(const char *path, void *buf, uint32_t cap, uint32_t *ou
     }
     return kf_fs_read_at(0, &n, 0, buf, cap);
 }
+/* PE images (W2): parsed from the fake's filesystem like the machine parses
+ * them, and "mapped" by remembering where - the fake has no page tables for an
+ * image. Where it goes is the machine's rule in miniature: where it asks if that
+ * is above KF_PE_DLL_BASE, otherwise at the next free place there. */
+#define KF_PE_DLL_BASE 0x8002000000ull
+static uint8_t g_kf_pe[1u << 18];
+static uint64_t g_kf_pe_next = KF_PE_DLL_BASE + 0x01000000ull;
+
+static long kf_pe_read(const char *path, vibeos_pe_image_t *pe) {
+    vibeos_fs_node_t n;
+    long len;
+
+    if (kf_fs_lookup(0, path, &n) != 0) {
+        return -VIBEOS_ENOENT;
+    }
+    len = kf_fs_read_at(0, &n, 0, g_kf_pe, sizeof(g_kf_pe));
+    if (len <= 0 || vibeos_pe_parse(g_kf_pe, (uint64_t)len, (uint64_t)len, 0, ~0ull, pe) !=
+                        VIBEOS_PE_OK) {
+        return -VIBEOS_ENOEXEC;
+    }
+    return len;
+}
+
+int ks_pe_probe(const char *path, uint64_t *image_size) {
+    vibeos_pe_image_t pe;
+    long n = kf_pe_read(path, &pe);
+
+    if (n < 0) {
+        return (int)n;
+    }
+    *image_size = pe.layout.image_span;
+    return 0;
+}
+
+int ks_map_pe_image(int slot, const char *path, uint64_t *base, uint64_t *size) {
+    vibeos_pe_image_t pe;
+    long n = kf_pe_read(path, &pe);
+
+    (void)slot;
+    if (n < 0) {
+        return (int)n;
+    }
+    *size = pe.layout.image_span;
+    if (pe.preferred_base >= KF_PE_DLL_BASE && pe.preferred_base < g_kf_pe_next - 0x01000000ull) {
+        *base = pe.preferred_base;
+        return 0;
+    }
+    *base = g_kf_pe_next;
+    g_kf_pe_next += (pe.layout.image_span + 0xFFFFu) & ~0xFFFFull;
+    return 1;
+}
+
 int ks_exec_refuse(vibeos_exec_fail_t why, const char *path, const char *detail) {
     (void)why; (void)path; (void)detail;
     return -VIBEOS_ENOENT;

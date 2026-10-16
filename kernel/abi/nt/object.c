@@ -262,7 +262,10 @@ uint32_t nt_ob_open(const vibeos_file_ops_t *ops, const nt_name_t *name, vibeos_
 /* ---- access ------------------------------------------------------------------------ */
 
 uint32_t nt_map_access(const vibeos_file_ops_t *ops, uint32_t want) {
-    const nt_type_t *t = ops ? ops->nt_type : 0;
+    return nt_map_access_with(ops ? ops->nt_type : 0, want);
+}
+
+uint32_t nt_map_access_with(const nt_type_t *t, uint32_t want) {
     uint32_t all = t ? t->all_access : VIBEOS_STANDARD_RIGHTS_REQUIRED | VIBEOS_SYNCHRONIZE;
     uint32_t got = want & ~(VIBEOS_GENERIC_READ | VIBEOS_GENERIC_WRITE | VIBEOS_GENERIC_EXECUTE |
                             VIBEOS_GENERIC_ALL | VIBEOS_MAXIMUM_ALLOWED);
@@ -345,6 +348,13 @@ uint32_t nt_handle_ref(uint64_t h, const vibeos_file_ops_t *ops, uint32_t need,
     if (ops && f->ops != ops) {
         vibeos_file_put(f);
         return VIBEOS_STATUS_OBJECT_TYPE_MISMATCH;
+    }
+    /* A descriptor the Linux side installed - a Windows program's standard
+     * handles, inherited from its shell - carries no mask: its rights are the
+     * ones its open mode gives, FILE_GENERIC_READ and FILE_GENERIC_WRITE. */
+    if (access == 0u && !f->ops->nt_type) {
+        uint32_t mode = f->flags & 3u;   /* O_RDONLY 0, O_WRONLY 1, O_RDWR 2 */
+        access = (mode != 1u ? 0x00120089u : 0u) | (mode != 0u ? 0x00120116u : 0u);
     }
     if ((access & need) != need) {
         vibeos_file_put(f);

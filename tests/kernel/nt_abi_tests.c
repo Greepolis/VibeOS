@@ -418,6 +418,107 @@ static void t_handles_and_names(void) {
            "case matters unless somebody asked for it not to");
 }
 
+/* ---- files and image sections (W2) ----------------------------------------------- */
+
+static long open_file(uint64_t *h, uint32_t access, const char *nt_path) {
+    uint64_t out = kf_ualloc(8), iosb = kf_ualloc(16);
+    uint64_t rest[2] = { 7u, 0x20u };   /* share access, open options */
+    long r;
+
+    kf_next_sp(stack_args(rest, 2));
+    r = nt(VIBEOS_NT_NR_NtOpenFile, out, access, oattr(nt_path, VIBEOS_OBJ_CASE_INSENSITIVE),
+           iosb, 0);
+    *h = *(uint64_t *)kf_uptr(out);
+    return r;
+}
+
+static long create_section(uint64_t *h, uint32_t attributes, uint64_t file) {
+    uint64_t out = kf_ualloc(8);
+    uint64_t rest[3] = { 0x02u /* PAGE_READONLY */, attributes, file };
+    long r;
+
+    kf_next_sp(stack_args(rest, 3));
+    r = nt(VIBEOS_NT_NR_NtCreateSection, out, 0x000F001Fu, 0, 0, 0);
+    *h = *(uint64_t *)kf_uptr(out);
+    return r;
+}
+
+static long map_view(uint64_t sec, uint64_t process, uint64_t *base, uint64_t *size) {
+    uint64_t b = kf_ualloc(8), s = kf_ualloc(8);
+    uint64_t rest[6] = { 0, 0, s, 1, 0, 0x02u };
+
+    *(uint64_t *)kf_uptr(b) = 0;
+    kf_next_sp(stack_args(rest, 6));
+    {
+        long r = nt(VIBEOS_NT_NR_NtMapViewOfSection, sec, process, b, 0, 0);
+        *base = *(uint64_t *)kf_uptr(b);
+        *size = *(uint64_t *)kf_uptr(s);
+        return r;
+    }
+}
+
+static void t_sections(void) {
+    uint64_t fh, sh, base = 0, size = 0;
+
+    fresh(42);
+    kf_fs_add("/win", 0, 0, 1);
+    kf_fs_add("/win/text.txt", "not an image", 12, 0);
+    expect(open_file(&fh, 0x00120089u, "\\??\\C:\\win\\nothing.dll") ==
+               ST(VIBEOS_STATUS_OBJECT_NAME_NOT_FOUND), "a file that is not there");
+    expect(open_file(&fh, 0x00120089u, "\\??\\D:\\win\\text.txt") ==
+               ST(VIBEOS_STATUS_OBJECT_PATH_NOT_FOUND), "a drive that is not there");
+    expect(open_file(&fh, 0x00120089u, "C:\\win\\text.txt") ==
+               ST(VIBEOS_STATUS_OBJECT_PATH_SYNTAX_BAD), "a DOS path is not an NT path");
+    expect(open_file(&fh, 0x00120089u, "\\BaseNamedObjects\\text.txt") ==
+               ST(VIBEOS_STATUS_OBJECT_PATH_SYNTAX_BAD),
+           "an NT path outside \\??\\ names no file W2 can open");
+    expect(open_file(&fh, VIBEOS_GENERIC_WRITE, "\\??\\C:\\win\\text.txt") ==
+               ST(VIBEOS_STATUS_NOT_IMPLEMENTED), "writing is W4's: refused, not opened read-only");
+    expect(open_file(&fh, 0x00120089u, "\\??\\C:\\win\\text.txt") == ST(VIBEOS_STATUS_SUCCESS) &&
+           fh >= 16u, "a file opened to read, by its NT path");
+    expect(create_section(&sh, 0x08000000u /* SEC_COMMIT */, fh) ==
+               ST(VIBEOS_STATUS_NOT_IMPLEMENTED), "a data section is W3's");
+    expect(create_section(&sh, 0x01000000u, fh) == ST(VIBEOS_STATUS_INVALID_IMAGE_FORMAT),
+           "an image section of a file that is no image is refused at creation");
+    expect(create_section(&sh, 0x01000000u, 8) == ST(VIBEOS_STATUS_OBJECT_TYPE_MISMATCH),
+           "the console is not a file to map");
+#ifdef VIBEOS_PE_FIXTURE_DIR
+    {
+        char path[512];
+        FILE *f;
+        static uint8_t img[1u << 17];
+        size_t n;
+
+        snprintf(path, sizeof(path), "%s/pe_fixture.exe", VIBEOS_PE_FIXTURE_DIR);
+        f = fopen(path, "rb");
+        n = f ? fread(img, 1, sizeof(img), f) : 0;
+        if (f) {
+            fclose(f);
+        }
+        expect(n > 0u, "the mingw fixture is there to map");
+        kf_fs_add("/win/fx.dll", img, (uint32_t)n, 0);
+        {
+            long ro = open_file(&fh, 0x00120089u, "\\??\\C:\\win\\fx.dll");
+            long rc = create_section(&sh, 0x01000000u, fh);
+            if (ro != ST(VIBEOS_STATUS_SUCCESS) || rc != ST(VIBEOS_STATUS_SUCCESS)) {
+                printf("nt_abi: open %lx section %lx (fixture %zu bytes)\n", ro, rc, n);
+            }
+            expect(ro == ST(VIBEOS_STATUS_SUCCESS) && rc == ST(VIBEOS_STATUS_SUCCESS),
+                   "an image section over mingw's image");
+        }
+        expect(nt(VIBEOS_NT_NR_NtClose, fh, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS),
+               "the file's handle can go: the section holds the file");
+        expect(map_view(sh, VIBEOS_NT_CURRENT_PROCESS, &base, &size) == ST(0x40000003u) &&
+                   base >= 0x8003000000ull && size >= 0x6000u && (base & 0xFFFFu) == 0u,
+               "mapped where it can be, said moved, at a 64 KiB boundary");
+        expect(map_view(sh, 4, &base, &size) == ST(VIBEOS_STATUS_INVALID_HANDLE),
+               "into another process: W6's");
+        expect(nt(VIBEOS_NT_NR_NtClose, sh, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS),
+               "and the section closes");
+    }
+#endif
+}
+
 static uint16_t rd16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
 static uint64_t rd64(const uint8_t *p) {
     uint64_t v = 0;
@@ -512,5 +613,6 @@ int test_nt_abi(void) {
     t_blocks();
     t_events();
     t_handles_and_names();
+    t_sections();
     return g_fail ? -1 : 0;
 }

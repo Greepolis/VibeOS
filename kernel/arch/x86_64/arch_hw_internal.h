@@ -572,6 +572,10 @@ int hw_pe_map_images(hw_proc_t *p, hw_procstate_t *ps, const unsigned char *hdr,
                      uint64_t *exe_base);
 int hw_pe_start_blocks(hw_proc_t *p, hw_procstate_t *ps, uint64_t exe_base,
                        const char *const *argv, const char *path);
+/* An image probed, and one mapped into a running process (W2): ks_pe_probe and
+ * ks_map_pe_image's work. */
+int hw_pe_probe(const char *path, uint64_t *image_size);
+int hw_map_pe_image(int slot, const char *path, uint64_t *base, uint64_t *size);
 /* Where a PE program may be placed: below the stack's guard page. */
 #define VIBEOS_HW_PE_EXE_END (VIBEOS_HW_USER_STACK_FLOOR - 4096ull)
 /* Where our ntdll may be: above the heap's start, below the mapping area. */
