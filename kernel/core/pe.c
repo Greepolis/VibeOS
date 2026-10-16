@@ -165,10 +165,11 @@ static int pe_parse_inner(const uint8_t *b, uint64_t hdr_len, uint64_t file_len,
      * only to a page boundary, which is all a PE relocation can express. */
     out->preferred_base = out->image_base;
     if (place != 0u && place != out->image_base) {
+        /* What decides is the flag, as on Windows: an image whose relocations
+         * were not stripped and that has none to apply - a DLL with no
+         * absolute address in it - moves with nothing to fix. */
         if ((place & (VIBEOS_ELF_PAGE_SIZE - 1u)) != 0u ||
-            (out->characteristics & VIBEOS_PE_FILE_RELOCS_STRIPPED) ||
-            out->dirs <= VIBEOS_PE_DIR_BASERELOC ||
-            out->dir_size[VIBEOS_PE_DIR_BASERELOC] == 0u) {
+            (out->characteristics & VIBEOS_PE_FILE_RELOCS_STRIPPED)) {
             return VIBEOS_PE_ERANGE;
         }
         out->image_base = place;

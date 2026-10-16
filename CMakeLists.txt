@@ -969,15 +969,46 @@ if(VIBEOS_BUILD_KERNEL_IMAGE)
             OUTPUT "${VIBEOS_WIN_DIR}/hello.exe"
             COMMAND "${VIBEOS_MINGW_GCC}" ${VIBEOS_WIN_FLAGS}
                     -o "${VIBEOS_WIN_DIR}/hello.exe" "${VIBEOS_WIN_SRC}/hello/hello.c"
-                    -L${VIBEOS_WIN_DIR} -lntdll -e nt_hello_start
+                    -L${VIBEOS_WIN_DIR} -lntdll -l:libmsvcrt.a -e nt_hello_start
                     -Wl,--dynamicbase
             DEPENDS "${VIBEOS_WIN_SRC}/hello/hello.c" "${VIBEOS_WIN_DIR}/libntdll.a"
             COMMENT "Building the first Windows program with mingw-w64"
             VERBATIM
         )
+        # kernel32, user32 and advapi32 as placeholders that load and export
+        # nothing (W2): every import from them binds to one of ntdll's named
+        # stubs, so a program runs until the first it calls, and says which.
+        foreach(VIBEOS_PH kernel32 user32 advapi32)
+            add_custom_command(
+                OUTPUT "${VIBEOS_WIN_DIR}/${VIBEOS_PH}.dll"
+                COMMAND "${VIBEOS_MINGW_GCC}" ${VIBEOS_WIN_FLAGS} -shared
+                        -o "${VIBEOS_WIN_DIR}/${VIBEOS_PH}.dll"
+                        "${VIBEOS_WIN_SRC}/placeholder/placeholder.c"
+                        -e vibeos_placeholder_main -Wl,--dynamicbase
+                DEPENDS "${VIBEOS_WIN_SRC}/placeholder/placeholder.c"
+                COMMENT "Building the placeholder ${VIBEOS_PH}.dll"
+                VERBATIM
+            )
+        endforeach()
+        # What calling a function nobody wrote looks like (W2). mingw's import
+        # libraries by file name: ld for PE also links against a DLL, and
+        # -lkernel32 found the placeholder kernel32.dll in this directory first -
+        # which exports nothing, so the link failed on every import.
+        add_custom_command(
+            OUTPUT "${VIBEOS_WIN_DIR}/stubcall.exe"
+            COMMAND "${VIBEOS_MINGW_GCC}" ${VIBEOS_WIN_FLAGS}
+                    -o "${VIBEOS_WIN_DIR}/stubcall.exe" "${VIBEOS_WIN_SRC}/stubcall/stubcall.c"
+                    -L${VIBEOS_WIN_DIR} -lntdll -l:libmsvcrt.a -l:libkernel32.a -e nt_stubcall_start
+                    -Wl,--dynamicbase
+            DEPENDS "${VIBEOS_WIN_SRC}/stubcall/stubcall.c" "${VIBEOS_WIN_DIR}/libntdll.a"
+            COMMENT "Building stubcall.exe with mingw-w64"
+            VERBATIM
+        )
         add_custom_target(vibeos_win ALL
             DEPENDS "${VIBEOS_WIN_DIR}/ntdll.dll" "${VIBEOS_WIN_DIR}/msvcrt.dll"
-                    "${VIBEOS_WIN_DIR}/hello.exe")
+                    "${VIBEOS_WIN_DIR}/hello.exe" "${VIBEOS_WIN_DIR}/stubcall.exe"
+                    "${VIBEOS_WIN_DIR}/kernel32.dll" "${VIBEOS_WIN_DIR}/user32.dll"
+                    "${VIBEOS_WIN_DIR}/advapi32.dll")
         find_program(VIBEOS_MINGW_OBJDUMP_WIN x86_64-w64-mingw32-objdump)
         if(VIBEOS_BUILD_TESTS AND VIBEOS_MINGW_OBJDUMP_WIN AND Python3_EXECUTABLE)
             add_test(NAME vibeos-msvcrt-exports

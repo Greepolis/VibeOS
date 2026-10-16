@@ -27,3 +27,21 @@ name: ; \
     .text ;
 
 #include "nt_services.def"
+
+/* The stubs ntdll's loader binds a missing import to (start.c, W2): stub k is
+ * at vibeos_nt_stub_table + 16 * k and calls vibeos_nt_unimplemented(k), which
+ * names the import it stands for and ends the process. Reached by the
+ * program's own call through its import table, so the stack is a callee's and
+ * a jump is all it takes; k is the first argument, in ecx. Sixteen bytes each,
+ * whatever the jump assembles to, so the loader can find stub k by arithmetic. */
+    .text
+    .p2align 4
+    .globl vibeos_nt_stub_table
+vibeos_nt_stub_table:
+    .set vibeos_stub_k, 0
+    .rept 2048
+    .p2align 4
+    mov $vibeos_stub_k, %ecx
+    jmp vibeos_nt_unimplemented
+    .set vibeos_stub_k, vibeos_stub_k + 1
+    .endr

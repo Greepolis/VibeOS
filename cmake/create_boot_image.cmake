@@ -195,6 +195,15 @@ if(EXISTS "${WIN_MSVCRT}")
     file(COPY_FILE "${WIN_MSVCRT}" "${EFI_ROOT_DIR}/win/msvcrt.dll" ONLY_IF_DIFFERENT)
     message(STATUS "EFI media includes our C runtime: /win/msvcrt.dll")
 endif()
+# The placeholders for the DLLs not written yet, and the program that calls
+# into one (W2).
+foreach(WIN_EXTRA kernel32.dll user32.dll advapi32.dll stubcall.exe)
+    if(EXISTS "${CMAKE_BINARY_DIR}/win/${WIN_EXTRA}")
+        file(MAKE_DIRECTORY "${EFI_ROOT_DIR}/win")
+        file(COPY_FILE "${CMAKE_BINARY_DIR}/win/${WIN_EXTRA}" "${EFI_ROOT_DIR}/win/${WIN_EXTRA}"
+             ONLY_IF_DIFFERENT)
+    endif()
+endforeach()
 
 # The dynamically linked one, plus the interpreter it names. Both are needed:
 # a dynamic executable without its loader is a file the kernel can parse and

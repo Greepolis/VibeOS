@@ -54,6 +54,16 @@ NT_IMPORT NTSTATUS_T NtYieldExecution(void);
 /* W2's; declared so a sabotage case can make hello.exe ask a service nobody
  * wrote and watch the gate name it (scripts/dev/cases/nt-hello-boot.txt). */
 NT_IMPORT NTSTATUS_T NtClose(uint64_t handle);
+/* What ntdll's loader brings a DLL in with (W2). */
+NT_IMPORT NTSTATUS_T NtOpenFile(uint64_t *file, uint32_t access, void *attributes,
+                                vibeos_nt_iosb_t *iosb, uint32_t share, uint32_t options);
+NT_IMPORT NTSTATUS_T NtCreateSection(uint64_t *section, uint32_t access, void *attributes,
+                                     int64_t *max_size, uint32_t protection,
+                                     uint32_t allocation, uint64_t file);
+NT_IMPORT NTSTATUS_T NtMapViewOfSection(uint64_t section, uint64_t process, uint64_t *base,
+                                        uint64_t zero_bits, uint64_t commit, int64_t *offset,
+                                        uint64_t *size, uint32_t inherit, uint32_t allocation,
+                                        uint32_t protection);
 
 /* ---- the Rtl runtime (user/win/ntdll/rtl/, docs/abi/windows.md W2) -------------------
  * Windows' prototypes, with the structures under our own names (vibeos_ntrtl.h). */

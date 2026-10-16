@@ -76,6 +76,6 @@
 
 ### an image with its relocations stripped is moved anyway
 --- old
-            (out->characteristics & VIBEOS_PE_FILE_RELOCS_STRIPPED) ||
+            (out->characteristics & VIBEOS_PE_FILE_RELOCS_STRIPPED)) {
 +++ new
-            0 ||
+            0) {

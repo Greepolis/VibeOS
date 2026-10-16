@@ -381,7 +381,9 @@ static void t_relocation(void) {
            "relocations stripped: it can only be where it asks");
     t_build(g_two, 2);
     expect(vibeos_pe_parse_at(g_img, T_FILE, T_FILE, to, 0x400000u, 0x10000000000ull, &at) ==
-               VIBEOS_PE_ERANGE, "no relocation directory: it cannot be moved either");
+               VIBEOS_PE_OK && at.delta == delta &&
+               vibeos_pe_check_relocs(&at, 0, 0) == VIBEOS_PE_OK,
+           "no relocation directory and none stripped: it moves, with nothing to fix");
 }
 
 /* ---- mingw-w64's image, against mingw-w64's objdump ------------------------------ */

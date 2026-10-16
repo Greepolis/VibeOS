@@ -3566,6 +3566,19 @@ def main():
                     problems.append("nt_probe_not_counted")
                 for name in sorted(set(asked) - {"NtYieldExecution"}):
                     problems.append("nt_unimplemented_service=" + name)
+                # A DLL loaded from the disk (W2): our msvcrt, linked by our
+                # ntdll's loader and called.
+                if "NT_DLL_OK: msvcrt printf 42 loaded" not in text:
+                    problems.append("nt_dll_not_loaded")
+            stubcall = os.path.join(efi_root, "win", "stubcall.exe")
+            if os.path.exists(stubcall):
+                # A function no DLL exports is bound to a stub that names it
+                # and ends the program - and it does end there.
+                if not re.search(r"unimplemented: kernel32\.dll\.GetTickCount", text,
+                                 re.IGNORECASE):
+                    problems.append("nt_stub_did_not_name_the_import")
+                if "NT_STUBCALL_RETURNED" in text:
+                    problems.append("nt_stub_returned")
             else:
                 nt_absent = True
 

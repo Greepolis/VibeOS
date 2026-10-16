@@ -46,6 +46,9 @@ static int fail(const char *line) {
     return 1;
 }
 
+/* From our msvcrt.dll, which ntdll's loader brings in from /win (W2). */
+__declspec(dllimport) int printf(const char *format, ...);
+
 static int g_target;
 /* Written by the linker as an absolute address; right only once relocated.
  * volatile, so the compiler reads it rather than folding the comparison. */
@@ -107,5 +110,8 @@ int nt_hello_start(void) {
             return fail("NT_HELLO_FAIL write_file\n");
         }
     }
+    /* A second DLL, loaded from the disk, linked and initialised: its printf
+     * formats and writes through the same NtWriteFile. */
+    printf("NT_DLL_OK: msvcrt printf %d %s\n", 42, "loaded");
     return 0;
 }

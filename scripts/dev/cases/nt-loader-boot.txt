@@ -1,0 +1,36 @@
+# Our ntdll's loader at boot (user/win/ntdll/start.c, docs/abi/windows.md W2):
+# what the gate asserts of /win/hello.exe's DLL and /win/stubcall.exe, put back.
+#
+#  1. a missing export is bound to nothing instead of a named stub: stubcall.exe
+#     calls address 0 and is killed without a word. Expect
+#     nt_stub_did_not_name_the_import.
+#  2. the stub names the import and returns instead of ending the process.
+#     Expect nt_stub_returned.
+#  3. a DLL's imports are left unbound: msvcrt's own calls into ntdll jump into
+#     its import table's raw contents and hello.exe never prints through it.
+#     Expect nt_dll_not_loaded.
+#
+# Target source: user/win/ntdll/start.c
+# Run: SABOTAGE_VERIFY="bash scripts/dev/verify-boot.sh" python3 scripts/dev/sabotage.py user/win/ntdll/start.c scripts/dev/cases/nt-loader-boot.txt
+
+### a missing export is bound to nothing (nt_stub_did_not_name_the_import)
+--- old
+            *(volatile uint64_t *)(uintptr_t)iat = at ? at : stub_for(dll, fn);
++++ new
+            *(volatile uint64_t *)(uintptr_t)iat = at ? at : (stub_for(dll, fn) & 0u);
+
+### the stub returns to its caller (nt_stub_returned)
+--- old
+void vibeos_nt_unimplemented(uint32_t k) {
+    if (k < g_stubs) {
++++ new
+void vibeos_nt_unimplemented(uint32_t k) {
+    if (k < g_stubs) {
+        return;
+
+### a DLL's own imports are never bound (nt_dll_not_loaded)
+--- old
+    add_module(name, base);
+    resolve_imports(base);
++++ new
+    add_module(name, base);
