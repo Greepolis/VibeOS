@@ -65,6 +65,32 @@ NT_IMPORT NTSTATUS_T NtMapViewOfSection(uint64_t section, uint64_t process, uint
                                         uint64_t *size, uint32_t inherit, uint32_t allocation,
                                         uint32_t protection);
 
+/* What kernel32 is written on (W2): the synchronisation objects, the waits and
+ * Sleep. */
+NT_IMPORT NTSTATUS_T NtCreateEvent(uint64_t *event, uint32_t access, void *attributes,
+                                   uint32_t type, uint8_t initial);
+NT_IMPORT NTSTATUS_T NtOpenEvent(uint64_t *event, uint32_t access, void *attributes);
+NT_IMPORT NTSTATUS_T NtSetEvent(uint64_t event, int32_t *previous);
+NT_IMPORT NTSTATUS_T NtResetEvent(uint64_t event, int32_t *previous);
+NT_IMPORT NTSTATUS_T NtPulseEvent(uint64_t event, int32_t *previous);
+NT_IMPORT NTSTATUS_T NtCreateMutant(uint64_t *mutant, uint32_t access, void *attributes,
+                                    uint8_t initial_owner);
+NT_IMPORT NTSTATUS_T NtOpenMutant(uint64_t *mutant, uint32_t access, void *attributes);
+NT_IMPORT NTSTATUS_T NtReleaseMutant(uint64_t mutant, int32_t *previous);
+NT_IMPORT NTSTATUS_T NtCreateSemaphore(uint64_t *semaphore, uint32_t access, void *attributes,
+                                       int32_t initial, int32_t maximum);
+NT_IMPORT NTSTATUS_T NtOpenSemaphore(uint64_t *semaphore, uint32_t access, void *attributes);
+NT_IMPORT NTSTATUS_T NtReleaseSemaphore(uint64_t semaphore, int32_t count, int32_t *previous);
+NT_IMPORT NTSTATUS_T NtWaitForSingleObject(uint64_t handle, uint8_t alertable,
+                                           const int64_t *timeout);
+NT_IMPORT NTSTATUS_T NtWaitForMultipleObjects(uint32_t count, const uint64_t *handles,
+                                              uint32_t wait_type, uint8_t alertable,
+                                              const int64_t *timeout);
+NT_IMPORT NTSTATUS_T NtDelayExecution(uint8_t alertable, const int64_t *interval);
+NT_IMPORT NTSTATUS_T NtDuplicateObject(uint64_t source_process, uint64_t source,
+                                       uint64_t target_process, uint64_t *target,
+                                       uint32_t access, uint32_t attributes, uint32_t options);
+
 /* ---- the Rtl runtime (user/win/ntdll/rtl/, docs/abi/windows.md W2) -------------------
  * Windows' prototypes, with the structures under our own names (vibeos_ntrtl.h). */
 RTL_API void RtlInitString(vibeos_astring_t *dest, const char *src);
@@ -87,6 +113,11 @@ RTL_API size_t RtlCompareMemoryUlong(const void *src, size_t length, uint32_t pa
 RTL_API uint32_t RtlComputeCrc32(uint32_t initial, const uint8_t *buf, int32_t length);
 RTL_API uint32_t RtlRandom(uint32_t *seed);
 RTL_API uint32_t RtlNtStatusToDosError(vibeos_ntstatus_t status);
+/* The loader's answers to GetModuleHandle and GetProcAddress (ntdll/start.c). */
+RTL_API NTSTATUS_T LdrGetDllHandle(const uint16_t *path, const uint32_t *flags,
+                                   const vibeos_ustring_t *name, void **handle);
+RTL_API NTSTATUS_T LdrGetProcedureAddress(void *module, const vibeos_astring_t *name,
+                                          uint32_t ordinal, void **address);
 RTL_API void *RtlAllocateHeap(void *heap, uint32_t flags, size_t size);
 RTL_API vibeos_boolean_t RtlFreeHeap(void *heap, uint32_t flags, void *p);
 RTL_API void *RtlReAllocateHeap(void *heap, uint32_t flags, void *p, size_t size);

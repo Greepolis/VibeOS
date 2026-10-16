@@ -134,6 +134,8 @@ typedef struct {
 #define VIBEOS_TEB_TLS_POINTER      0x058u   /* ThreadLocalStoragePointer    */
 #define VIBEOS_TEB_PEB              0x060u
 #define VIBEOS_TEB_LAST_ERROR       0x068u
+#define VIBEOS_TEB_TLS_SLOTS        0x1480u  /* TlsSlots[64]: TlsAlloc's   */
+#define VIBEOS_TEB_TLS_SLOT_COUNT   64u
 #define VIBEOS_TEB_SIZE             0x1838u  /* x64's TEB; we map two pages  */
 
 /* ---- PEB ------------------------------------------------------------------------- */

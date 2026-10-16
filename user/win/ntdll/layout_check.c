@@ -22,6 +22,8 @@ SAME(VIBEOS_TEB_STACK_BASE, offsetof(NT_TIB, StackBase));
 SAME(VIBEOS_TEB_STACK_LIMIT, offsetof(NT_TIB, StackLimit));
 SAME(VIBEOS_TEB_SELF, offsetof(NT_TIB, Self));
 SAME(VIBEOS_TEB_PEB, offsetof(TEB, ProcessEnvironmentBlock));
+SAME(VIBEOS_TEB_TLS_SLOTS, offsetof(TEB, TlsSlots));
+SAME(VIBEOS_TEB_TLS_SLOT_COUNT, sizeof(((TEB *)0)->TlsSlots) / sizeof(void *));
 
 SAME(VIBEOS_PEB_BEING_DEBUGGED, offsetof(PEB, BeingDebugged));
 SAME(VIBEOS_PEB_IMAGE_BASE, offsetof(PEB, Reserved3) + sizeof(void *));

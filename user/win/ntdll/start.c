@@ -31,6 +31,8 @@
 
 /* Supplied by the linker: the address this image was mapped at. */
 extern const uint8_t __ImageBase[];
+/* rtl/heap.c: the process heap's handle, the arena. */
+void *vibeos_rtl_process_heap(void);
 
 static uint16_t rd16(uint64_t a) { return *(const volatile uint16_t *)(uintptr_t)a; }
 static uint32_t rd32(uint64_t a) { return *(const volatile uint32_t *)(uintptr_t)a; }
@@ -325,12 +327,126 @@ static void resolve_imports(uint64_t base) {
     }
 }
 
+/* ---- what kernel32 asks the loader ----------------------------------------------------
+ * GetModuleHandle and GetProcAddress are these two, as on Windows. A function
+ * that is not exported is STATUS_PROCEDURE_NOT_FOUND here, never a stub: a
+ * program asking by name is asking whether it exists - Wine's tests decide what
+ * to skip that way - and only an import the program cannot run without is
+ * bound to one. */
+
+/* The module a name means: the last path component, ".dll" understood when
+ * there is no extension, compared without case. */
+static uint64_t module_by_wide(const uint16_t *s, uint32_t n) {
+    char name[64];
+    uint32_t i, start = 0, k = 0;
+    int dot = 0;
+
+    for (i = 0; i < n; i++) {
+        if (s[i] == '\\' || s[i] == '/') {
+            start = i + 1u;
+        }
+    }
+    for (i = start; i < n && k < sizeof(name) - 5u; i++) {
+        if (s[i] > 0x7Fu) {
+            return 0;                     /* no module of ours has such a name */
+        }
+        name[k++] = (char)s[i];
+        dot = s[i] == '.' ? 1 : dot;
+    }
+    if (!dot) {
+        name[k++] = '.';
+        name[k++] = 'd';
+        name[k++] = 'l';
+        name[k++] = 'l';
+    }
+    name[k] = 0;
+    return find_module(name);
+}
+
+/* LdrGetDllHandle(DllPath, DllCharacteristics, DllName, DllHandle). */
+NTSTATUS_T LdrGetDllHandle(const uint16_t *path, const uint32_t *flags,
+                           const vibeos_ustring_t *name, void **handle) {
+    uint64_t base;
+
+    (void)path;
+    (void)flags;
+    if (!name || !handle) {
+        return VIBEOS_STATUS_INVALID_PARAMETER;
+    }
+    base = module_by_wide(name->Buffer, name->Length / 2u);
+    *handle = (void *)(uintptr_t)base;
+    return base ? VIBEOS_STATUS_SUCCESS : VIBEOS_STATUS_DLL_NOT_FOUND;
+}
+
+static int is_module(uint64_t base) {
+    uint32_t i;
+    for (i = 0; i < g_mods; i++) {
+        if (g_mod[i].base == base) {
+            return 1;
+        }
+    }
+    return base == vibeos_nt_rd64(vibeos_nt_rd64(vibeos_nt_teb() + VIBEOS_TEB_PEB) +
+                                  VIBEOS_PEB_IMAGE_BASE);
+}
+
+/* LdrGetProcedureAddress(Module, Name, Ordinal, Address): by name if Name is
+ * given, by ordinal otherwise. An address inside the export directory is a
+ * forwarder - a string, not code - and none of our DLLs has one, so it is
+ * refused rather than handed out as a function. */
+NTSTATUS_T LdrGetProcedureAddress(void *module,
+                                  const vibeos_astring_t *name,
+                                  uint32_t ordinal, void **address) {
+    uint64_t base = (uint64_t)(uintptr_t)module, at = 0;
+    uint32_t size = 0, rva;
+    char buf[256];
+    uint32_t i;
+
+    if (!address) {
+        return VIBEOS_STATUS_INVALID_PARAMETER;
+    }
+    *address = 0;
+    if (!base || !is_module(base)) {
+        return VIBEOS_STATUS_DLL_NOT_FOUND;
+    }
+    rva = pe_dir(base, 0u, &size);
+    if (rva == 0u) {
+        return VIBEOS_STATUS_PROCEDURE_NOT_FOUND;
+    }
+    if (name && name->Buffer) {
+        /* The ANSI_STRING need not end in a zero; pe_export wants one. */
+        if (name->Length >= sizeof(buf)) {
+            return VIBEOS_STATUS_PROCEDURE_NOT_FOUND;
+        }
+        for (i = 0; i < name->Length; i++) {
+            buf[i] = name->Buffer[i];
+        }
+        buf[i] = 0;
+        at = pe_export(base, buf);
+    } else {
+        uint64_t dir = base + rva;
+        uint32_t first = rd32(dir + 16u), count = rd32(dir + 20u);   /* Base, NumberOfFunctions */
+
+        if (ordinal >= first && ordinal - first < count) {
+            uint32_t f = rd32(base + rd32(dir + 28u) + (ordinal - first) * 4u);
+            at = f ? base + f : 0;
+        }
+    }
+    if (!at || (at >= base + rva && at < base + rva + size)) {
+        return VIBEOS_STATUS_PROCEDURE_NOT_FOUND;
+    }
+    *address = (void *)(uintptr_t)at;
+    return VIBEOS_STATUS_SUCCESS;
+}
+
 /* The entry the kernel starts the first thread at, with the PEB in rcx. */
 __attribute__((noreturn)) void vibeos_nt_process_start(uint64_t peb) {
     uint64_t exe = vibeos_nt_rd64(peb + VIBEOS_PEB_IMAGE_BASE);
     uint32_t entry_rva = pe_entry_rva(exe);
     NTSTATUS_T st;
 
+    /* GetProcessHeap reads the PEB, inline in every program's own code. */
+    *(volatile uint64_t *)(uintptr_t)(peb + VIBEOS_PEB_PROCESS_HEAP) =
+        (uint64_t)(uintptr_t)vibeos_rtl_process_heap();
     add_module("ntdll.dll", (uint64_t)(uintptr_t)__ImageBase);
     resolve_imports(exe);
     if (entry_rva == 0u) {
