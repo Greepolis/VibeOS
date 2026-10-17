@@ -3,6 +3,12 @@
 > Design intent, written before the code. What is actually built, and how,
 > is in [io/](io/README.md) and [implementation_progress/filesystem_layer.md](implementation_progress/filesystem_layer.md).
 
+The production-oriented namespace, directory tree, mount policy, compatibility
+mapping and staged migration are specified in
+[filesystem-design/](filesystem-design/README.md). That design does not change
+the current boot layout or mark the storage layer complete; it deliberately
+separates the target hierarchy from the FAT-root bring-up environment.
+
 ## Goals
 
 - modern reliability and integrity model
