@@ -213,6 +213,10 @@ static void t_image_synthetic(void) {
     CHECK(RtlImageDirectoryEntryToData(g_img, 1, 1, &sz) == 0, "an optional header of an unknown kind has none");
 }
 
+#ifdef VIBEOS_PE_FIXTURE_DIR
+/* Only with the fixture: without mingw-w64 there is nothing to read, and the
+ * function would be defined and unused - an error under -Werror, which is how
+ * every CI job without mingw failed to build this file. */
 static uint8_t *slurp(const char *name, size_t *len) {
     char path[512];
     FILE *f;
@@ -237,6 +241,7 @@ static uint8_t *slurp(const char *name, size_t *len) {
     fclose(f);
     return b;
 }
+#endif
 
 /* The same functions on an image mingw-w64's linker wrote, with objdump's account
  * of it - the directories' RVAs and sizes from -p, the sections' addresses and
