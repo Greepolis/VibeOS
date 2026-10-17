@@ -7,16 +7,15 @@ tokens from [interaction-and-visual-system.md](interaction-and-visual-system.md)
 The mockups are SVG source so they remain resolution-independent and reviewable
 in Git.
 
-## 1. Default desktop and overlapping windows
+## 1. Default desktop, system panel and taskbar
 
 ![VibeOS desktop with terminal and file manager windows](mockups/desktop-shell.svg)
 
-The top panel is the single persistent system rail. Workspaces sit in its
-center; status and session actions are grouped at the right. A Files window
-behind the focused Terminal demonstrates ordinary overlap and z-order. The
-active title bar uses VibeOS blue; the inactive one stays legible without
-looking disabled. The wallpaper uses quiet, large geometric planes rather than
-a flat fill or animated effect. There is no permanent second dock.
+The top panel owns workspace and system status; the persistent bottom taskbar
+owns app launching and running-window state. They are separate surfaces with
+non-overlapping responsibilities, not duplicate docks. A Files window behind
+the focused Terminal demonstrates ordinary overlap and z-order. The wallpaper
+uses quiet, large geometric planes rather than a flat fill or animated effect.
 
 ## 2. File manager window
 
@@ -37,7 +36,25 @@ discoverable without color. Quick settings is a separate anchored popover with
 text labels and clear unavailable states; icons alone never encode a critical
 state. These are overlays, not permanently competing bars.
 
-## 4. Dialog, focus and notification states
+## 4. Full Settings control panel
+
+![VibeOS full Settings control panel with category navigation and display controls](mockups/settings-control-panel.svg)
+
+This is the full Settings application, not the quick-settings popover. A
+category rail remains stable while the detail page changes. Display changes
+include a visible current mode and a bounded confirmation/revert flow; settings
+that are unsupported are never shown as successful controls.
+
+## 5. CLI-only session
+
+![VibeOS text-only CLI session without desktop chrome](mockups/cli-only.svg)
+
+CLI-only is a first-class recovery/session mode: no compositor, windows,
+taskbar, or graphical apps are started. The text shell shows session state,
+system health and actionable recovery commands. This mockup defines a target,
+not a claim that the session selector or GUI-failure fallback is implemented.
+
+## 6. Dialog, focus and notification states
 
 ![VibeOS confirmation dialog, focus treatment and notification examples](mockups/interaction-states.svg)
 
@@ -46,7 +63,7 @@ destructive action. The notification is non-modal and does not steal focus. An
 error variant gives a concrete next step. Modal scope is limited to its parent
 window so unrelated system recovery is never blocked.
 
-## 5. Session lock concept (approval required)
+## 7. Session lock concept (approval required)
 
 ![Proposed VibeOS session-lock screen concept](mockups/session-lock-concept.svg)
 
@@ -61,6 +78,7 @@ requirements and the session policy are approved and implemented.
 | Element | 1x target | Notes |
 | --- | ---: | --- |
 | Top panel | 40 px | Persistent; controls centered vertically |
+| Bottom taskbar | 56 px | Persistent; launcher, pinned/running apps and show-desktop |
 | Window titlebar | 36 px | App identity, title and three window actions |
 | Window corner radius | 8 px | Keep shadows shallow and nonessential |
 | Primary button | 40 px high | Minimum 40x40 hit region; visible focus ring |
@@ -96,9 +114,9 @@ window controls.
    desktop client, using the same layout primitives that real apps use.
 2. Define the palette, spacing, typography, radius, elevation and focus tokens
    once in `libvibeui`; components consume tokens rather than local hex values.
-3. Keep panel, titlebar, list row, menu, dialog, notification and focus states
-   as separate reusable components with hover, pressed, disabled, selected,
-   focused and error variants.
+3. Keep system panel, taskbar, taskbar item, titlebar, list row, menu, dialog,
+   notification and focus states as separate reusable components with hover,
+   pressed, disabled, selected, focused and error variants.
 4. Preserve the proportions and hierarchy shown here, but adapt content to
    translations and scale. Never encode exact English text as fixed-width
    geometry.

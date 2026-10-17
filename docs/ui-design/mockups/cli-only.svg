@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900" role="img" aria-labelledby="title desc">
+  <title id="title">VibeOS CLI-only session concept</title>
+  <desc id="desc">A full-screen text session with no compositor, windows, pointer or taskbar, showing system status, recovery guidance and a native shell prompt.</desc>
+  <rect width="1440" height="900" fill="#101820"/><rect width="1440" height="4" fill="#3A6EA5"/><rect y="4" width="1440" height="52" fill="#17232D"/><path d="M0 55H1440" stroke="#34434C"/>
+  <g font-family="IBM Plex Mono, monospace"><rect x="48" y="17" width="28" height="26" rx="6" fill="#3A6EA5"/><path d="M55 37V25l7-5 7 5v12h-4v-6h-5v6Z" fill="#FFF"/><text x="91" y="36" fill="#EAF0F2" font-size="15" font-weight="600">VibeOS CLI session</text><text x="312" y="36" fill="#91A5B3" font-size="12">tty1</text><rect x="1245" y="16" width="147" height="28" rx="7" fill="#263847" stroke="#45657A"/><circle cx="1262" cy="30" r="4" fill="#60B887"/><text x="1274" y="34" fill="#D9E2E7" font-size="11">CLI ONLY</text><text x="1345" y="34" fill="#91A5B3" font-size="10">User</text></g>
+  <g font-family="IBM Plex Mono, monospace" font-size="14">
+    <text x="64" y="105" fill="#91A5B3">VibeOS 0.1  |  text session  |  graphics services not started</text>
+    <text x="64" y="142" fill="#60B887">[ OK ]</text><text x="126" y="142" fill="#D9E2E7">Kernel initialized</text><text x="438" y="142" fill="#91A5B3">4 CPUs online</text>
+    <text x="64" y="168" fill="#60B887">[ OK ]</text><text x="126" y="168" fill="#D9E2E7">Root filesystem mounted</text><text x="438" y="168" fill="#91A5B3">mode: read-write</text>
+    <text x="64" y="194" fill="#60B887">[ OK ]</text><text x="126" y="194" fill="#D9E2E7">Service supervisor ready</text><text x="438" y="194" fill="#91A5B3">session: cli</text>
+    <path d="M64 218h1312" stroke="#34434C"/>
+    <rect x="64" y="238" width="1312" height="76" rx="7" fill="#17232D" stroke="#34434C"/><text x="84" y="265" fill="#F3B33D" font-size="12" font-weight="600">CLI-only mode</text><text x="84" y="289" fill="#D9E2E7" font-size="12">The graphical compositor and desktop apps are not running. Serial recovery remains available when configured.</text>
+    <text x="64" y="359" fill="#F3B33D">User@vibeos:~$ help</text>
+    <text x="64" y="391" fill="#D9E2E7">help                 Show commands available in this build</text>
+    <text x="64" y="417" fill="#D9E2E7">status               Show system, storage and service health</text>
+    <text x="64" y="443" fill="#D9E2E7">log                  Review recent system events</text>
+    <text x="64" y="469" fill="#D9E2E7">service list|restart Inspect or recover a supervised service</text>
+    <text x="64" y="495" fill="#D9E2E7">shutdown             Stop the system safely</text>
+    <text x="64" y="534" fill="#F3B33D">User@vibeos:~$ status</text>
+    <text x="64" y="566" fill="#D9E2E7">Session       CLI-only</text><text x="420" y="566" fill="#D9E2E7">Display       not initialized</text>
+    <text x="64" y="592" fill="#D9E2E7">Kernel        running</text><text x="420" y="592" fill="#D9E2E7">Network       connected</text>
+    <text x="64" y="618" fill="#D9E2E7">Storage       mounted</text><text x="420" y="618" fill="#D9E2E7">Services      5 running, 0 failed</text>
+    <text x="64" y="657" fill="#91A5B3">Recovery: inspect `log`; retry Desktop only after display service reports ready.</text>
+    <text x="64" y="710" fill="#F3B33D">User@vibeos:~$</text><rect x="224" y="694" width="9" height="20" fill="#D9E2E7" opacity=".9"/>
+  </g>
+  <path d="M48 844H1392" stroke="#34434C"/><text x="48" y="872" fill="#74858F" font-family="IBM Plex Mono, monospace" font-size="11">TTY1  |  UTF-8  |  keyboard input active</text><text x="1050" y="872" fill="#74858F" font-family="IBM Plex Mono, monospace" font-size="11">Illustrative target; command availability depends on shipped services</text>
+</svg>

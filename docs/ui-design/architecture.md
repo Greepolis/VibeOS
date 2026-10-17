@@ -15,10 +15,17 @@ device host or kernel display/input boundary
   v
 platform hardware
 
-session manager -> starts displayd and user apps, owns session policy
-init/service manager -> supervises session manager and displayd
+session manager -> Desktop: displayd + GUI apps | CLI-only: native shell on TTY
+init/service manager -> supervises session manager and mode-specific services
 serial/TTY path --------------------------> independent recovery console
 ```
+
+The session manager selects exactly one interactive mode from boot/session
+policy. CLI-only must not start `displayd`, the taskbar or GUI clients. In
+Desktop mode, a bounded compositor restart policy falls back to a readable TTY
+recovery session instead of looping or leaving a blank display. Serial recovery
+is independent of both modes. The user-visible selector and automatic fallback
+are design targets until implemented and runtime-tested.
 
 The current `kernel/io/gui.c` renderer is a bring-up implementation. First
 extract and test its rendering semantics; then move desktop policy and
@@ -32,8 +39,8 @@ windowing must not call kernel drawing functions from applications.
 | --- | --- | --- |
 | Kernel/display backend | framebuffer mapping or present operation, mode metadata, device lifetime, access checks | Window policy, application menus, widget toolkit, user identity UI |
 | Input backend/host | hardware probing, raw scan/HID decoding, hotplug, normalized events, device capabilities | Window focus, application shortcuts, text field behavior |
-| `displayd` | surfaces, composition, windows, focus, workspaces, pointer routing, desktop shell | Filesystem authority, arbitrary syscall policy, application credentials |
-| Session manager | login/session lifecycle, lock/idle/power policy, session-owned services | Pixel composition and per-widget rendering |
+| `displayd` | surfaces, composition, windows, focus, workspaces, pointer routing, launcher and taskbar | Filesystem authority, arbitrary syscall policy, application credentials |
+| Session manager | login/session lifecycle, Desktop/CLI-only selection, lock/idle/power policy, mode-specific services | Pixel composition and per-widget rendering |
 | `libvibeui` | client protocol, widgets, accessibility semantics, drawing helpers | Direct framebuffer or global input access |
 | Applications | their own content, declared actions, preferences/data in allowed paths | Another client's buffers, global keyboard capture, privileged device access |
 
@@ -175,8 +182,10 @@ Core first-party apps for the first useful desktop:
   graphical views may attach to one session only with explicit session policy.
 - **Files:** navigate, list, copy/move/delete with confirmation for destructive
   actions, mount visibility, and clear read-only/error states.
-- **Settings:** display scale/resolution (only available modes), input repeat,
-  theme/accessibility options, network status and session controls.
+- **Settings:** searchable category-based control panel for display scale and
+  resolution (only available modes), input, accessibility, network, storage,
+  users/sessions, updates and system information. Quick settings remains a
+  separate compact popover.
 - **Launcher/task switcher:** discover installed applications from trusted
   manifests, not by executing every file found in a writable directory.
 - **System monitor/log viewer:** read-only, permission-aware service/process

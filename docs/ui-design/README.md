@@ -40,15 +40,17 @@ limitations.
 | --- | --- |
 | [architecture.md](architecture.md) | Components, IPC, surfaces, ownership, lifecycle and security boundaries |
 | [interaction-and-visual-system.md](interaction-and-visual-system.md) | Product behavior, visual language, keyboard/pointer UX and accessibility |
-| [visual-mockups.md](visual-mockups.md) | Drawn desktop, window, file-manager, launcher and dialog screens |
+| [visual-mockups.md](visual-mockups.md) | Drawn desktop/taskbar, file manager, launcher, full Settings, CLI-only and dialog screens |
 | [implementation-phases.md](implementation-phases.md) | Sequenced work, dependencies, tests and release acceptance |
 
 ## Visual Preview
 
-![VibeOS desktop concept with overlapping Terminal and Files windows](mockups/desktop-shell.svg)
+![VibeOS desktop concept with overlapping Terminal and Files windows and a persistent taskbar](mockups/desktop-shell.svg)
 
 This is a design target, not a capture of the current kernel-side desktop. The
-complete screen set and implementation notes are in [visual-mockups.md](visual-mockups.md).
+desktop has a top system panel and a distinct persistent bottom taskbar. The
+complete screen set, full Settings panel and CLI-only mode are in
+[visual-mockups.md](visual-mockups.md).
 
 ## Product requirements
 

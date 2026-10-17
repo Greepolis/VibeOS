@@ -49,13 +49,34 @@ transparent glass effects on the software framebuffer path.
 
 - Height: 40 logical pixels at 1x; content is vertically centered and never
   overlaps notches/edge constraints if those appear on future hardware.
-- Left: VibeOS launcher button and active application/workspace context.
-- Center: workspace switcher and running-app indicators; no tiny status glyphs
-  as the only control.
+- Left: VibeOS identity and active application/workspace context. The launcher
+  is available from the bottom taskbar and the `Super` shortcut.
+- Center: workspace switcher; application launch/running state belongs to the
+  taskbar, not this panel.
 - Right: clock, network/power/audio status and session menu. Each item has a
   text-accessible name, tooltip/accessible label and explicit failure state.
 - The panel stays above ordinary windows. Full-screen windows may hide it only
   through an explicit user-approved mode; keyboard shortcuts restore it.
+
+### Persistent bottom taskbar
+
+- Height: 56 logical pixels at 1x, anchored to the bottom edge and kept
+  separate from the 40 px system panel. Reserve its geometry; ordinary windows
+  do not extend underneath it unless explicitly maximized/full-screen.
+- Left-to-right order: application-grid button, pinned launchers, separator,
+  running application/window buttons, flexible space, and a `Show desktop`
+  control at the trailing edge. Keep the visual weight compact and avoid a
+  second clock/network tray here.
+- Pinned and running states are distinct: pinned apps remain when closed;
+  running apps show a dot and accessible `Running` state; the active app has a
+  filled surface plus a focus marker, not color alone. Multiple windows group
+  by app and open a keyboard-navigable window list.
+- Clicking a pinned app launches or activates it. Clicking the active running
+  app minimizes it; clicking an inactive app activates its last focused window.
+  Context actions include pin/unpin and close only when supported by the app.
+- The taskbar never steals keyboard focus merely because a window is focused
+  or a pointer crosses it. Keyboard traversal, tooltips and accessible names
+  expose every action; minimum hit targets follow the accessibility scale.
 
 ### Workspace and launcher
 
@@ -64,11 +85,76 @@ transparent glass effects on the software framebuffer path.
   focus history.
 - The launcher opens a searchable application grid with keyboard focus placed
   in search, recently used trusted apps and a visible system/settings section.
-- A bottom task shelf is transient and appears on launcher/task-switcher use or
-  an edge gesture later; do not permanently add a second bar to compete with the
-  top panel.
+- Activating `Settings` from the launcher or taskbar opens the full Settings
+  application. Quick settings remains a small status-panel popover and links to
+  the relevant full Settings page; it is not a substitute for that application.
 - First boot opens a Welcome/Help view and one terminal window, not a wall of
   diagnostic windows. QEMU tests may select a deterministic test scene.
+
+### Full Settings application
+
+- Provide a dedicated, searchable Settings window with a persistent category
+  navigation rail and one detail page at a time. Initial categories: Display,
+  Appearance, Input, Accessibility, Network, Storage, Users & Sessions,
+  Updates, and About. Hide unavailable controls or mark them clearly as
+  unavailable; never imply a change succeeded when its service is absent.
+- Each setting has a visible label, current value, reset/default behavior and
+  keyboard semantics. Changes with safe live preview apply immediately; risky
+  display-mode changes use a bounded confirmation/revert timer. Destructive or
+  security-sensitive changes require an explicit confirmation and authorization.
+- Settings are per-user unless the control is explicitly system-wide. Show
+  scope and required privilege before mutation, persist atomically, and report
+  service errors with a retry/recovery path. Avoid an Apply button for routine
+  reversible settings; use explicit Save only for grouped transactions that
+  cannot be safely applied incrementally.
+- The display page exposes detected mode, scale, orientation only when
+  supported, and a safe revert path. Accessibility settings are reachable
+  before login/session start where the platform permits.
+
+| Category | Initial page contract |
+| --- | --- |
+| Display | Detected outputs/modes, scale, supported orientation, temporary test and automatic revert; never offer an unreported mode. |
+| Appearance | Wallpaper, accent and supported theme tokens; preview is reversible and respects reduced-motion/high-contrast overrides. |
+| Input | Keyboard layout/repeat and pointer speed/handedness only when the backend reports support; provide a recovery path if input becomes unusable. |
+| Accessibility | UI/text scale, high contrast, reduced motion and pointer visibility/size; screen-reader controls appear only when a compatible service exists. |
+| Network | Interface/link/address and DNS status; configuration is capability-gated and reports disconnected, applying, failed and connected states. |
+| Storage | Volumes, capacity, read-only/error state and safe eject where supported; destructive format/repair actions require elevated confirmation. |
+| Users & Sessions | User/session overview, authentication and startup mode; privileged changes require re-authentication and audit records. |
+| Updates | Installed version, signature/verification state, available update and restart/rollback status; hide update actions until a trusted updater exists. |
+| About | OS/build identity, architecture, licenses, hardware summary and exportable diagnostics with secrets removed. |
+
+Search indexes category names and setting labels, respects the caller's
+permissions, and opens the owning category with focus on the matched control.
+Links from quick settings deep-link to the corresponding full page without
+creating a second source of truth.
+
+### Graphical and CLI-only session modes
+
+- Offer two explicit session modes: `Desktop` and `CLI only`. The choice is a
+  session/boot policy, not a shell command or a claim that both modes already
+  exist. Keep Desktop as the normal proposed default once the graphical session
+  is qualified; allow a boot-menu/configuration choice for CLI-only recovery.
+- CLI-only starts the native shell on a text TTY and does not start the
+  compositor, desktop shell, taskbar, or graphical apps. Kernel, storage,
+  network and service-management components remain governed by their normal
+  policies. Serial console mirroring remains available when configured.
+- If framebuffer initialization or the compositor repeatedly fails, enter a
+  readable text recovery session with a reason code and log correlation ID.
+  Never show a blank screen or repeatedly restart the failed GUI. Do not claim
+  automatic switching back to Desktop until the session manager can probe and
+  restart it safely.
+- Proposed restart guard for review: at most three `displayd` starts within
+  60 seconds, with bounded backoff; then stop graphical retries and enter CLI
+  recovery. A user-requested retry or an approved reboot policy may reattempt
+  Desktop. The final threshold belongs in service policy, not UI code.
+- When supported, `Ctrl+Alt+F1` selects the primary text TTY and a separate
+  approved key chord can return to the graphical session. The exact chord,
+  authentication behavior and whether switching is enabled are implementation
+  gates; serial access is independent of this GUI key path.
+- The CLI-only screen uses the same typography/contrast tokens for readable
+  status, but has no simulated windows, pointer, taskbar or graphical chrome.
+  It must support keyboard-only startup, login/session policy, shell help,
+  status, logs, service recovery and a documented shutdown path.
 
 ### Window frame and states
 
@@ -95,6 +181,8 @@ Keyboard is the reliable primary navigation path:
 | Action | Proposed shortcut | Behavior |
 | --- | --- | --- |
 | Open launcher | `Super` | Search/apps menu; focus starts in search |
+| Focus taskbar | `Super+T` | Move focus to taskbar; exact binding is an approval gate |
+| Show desktop | `Super+D` | Minimize/restore ordinary windows; taskbar button equivalent |
 | Switch apps | `Alt+Tab` | Cycle visible windows, release Alt to activate |
 | Close active window | `Alt+F4` | Request close; app owns unsaved prompt |
 | Maximize/restore | `Super+Up` | Toggle active window maximize |
