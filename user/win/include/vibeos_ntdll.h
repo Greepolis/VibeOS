@@ -86,6 +86,16 @@ NT_IMPORT NTSTATUS_T NtWaitForSingleObject(uint64_t handle, uint8_t alertable,
 NT_IMPORT NTSTATUS_T NtWaitForMultipleObjects(uint32_t count, const uint64_t *handles,
                                               uint32_t wait_type, uint8_t alertable,
                                               const int64_t *timeout);
+/* Written over before the kernel has them (W2): until W4 and W5 they answer
+ * STATUS_NOT_IMPLEMENTED, counted, and a program is told the call failed. */
+NT_IMPORT NTSTATUS_T NtCreateFile(uint64_t *file, uint32_t access, void *attributes,
+                                  vibeos_nt_iosb_t *iosb, int64_t *allocation, uint32_t file_attributes,
+                                  uint32_t share, uint32_t disposition, uint32_t options, void *ea,
+                                  uint32_t ea_length);
+NT_IMPORT NTSTATUS_T NtCreateThreadEx(uint64_t *thread, uint32_t access, void *attributes,
+                                      uint64_t process, void *start, void *param, uint32_t flags,
+                                      uint64_t zero_bits, uint64_t stack_size, uint64_t max_stack,
+                                      void *attribute_list);
 NT_IMPORT NTSTATUS_T NtDelayExecution(uint8_t alertable, const int64_t *interval);
 NT_IMPORT NTSTATUS_T NtDuplicateObject(uint64_t source_process, uint64_t source,
                                        uint64_t target_process, uint64_t *target,

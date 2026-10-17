@@ -398,6 +398,96 @@ BOOL32 WriteFile(uint64_t h, const void *buf, uint32_t len, uint32_t *written, v
     return 1;
 }
 
+/* ---- written ahead of the kernel -----------------------------------------------------------
+ * Files are W4's and threads W5's, and Wine's tests for W2 reach both early -
+ * ntdll:om a named pipe in its third test, the sync tests a thread in their
+ * second. So these are written now, over services the kernel answers
+ * STATUS_NOT_IMPLEMENTED and counts: the program is told the call failed and
+ * the test goes on, its failures named, as an unassigned Linux number answered
+ * ENOSYS. Each becomes real when its service does, and nothing here changes. */
+
+/* CreateFile's creation disposition as NtCreateFile's. */
+static uint32_t nt_disposition(uint32_t d) {
+    switch (d) {
+        case 1u: return 2u;   /* CREATE_NEW: FILE_CREATE              */
+        case 2u: return 5u;   /* CREATE_ALWAYS: FILE_OVERWRITE_IF     */
+        case 3u: return 1u;   /* OPEN_EXISTING: FILE_OPEN             */
+        case 4u: return 3u;   /* OPEN_ALWAYS: FILE_OPEN_IF            */
+        case 5u: return 4u;   /* TRUNCATE_EXISTING: FILE_OVERWRITE    */
+        default: return 0xFFFFFFFFu;
+    }
+}
+
+uint64_t CreateFileW(const uint16_t *name, uint32_t access, uint32_t share, const void *sa,
+                     uint32_t disposition, uint32_t flags, uint64_t template_file) {
+    named_t n;
+    vibeos_ustring_t nt_name;
+    vibeos_nt_iosb_t iosb;
+    uint64_t h = 0;
+    uint32_t d = nt_disposition(disposition), options = 0x40u;   /* FILE_NON_DIRECTORY_FILE */
+    NTSTATUS_T st;
+
+    (void)template_file;
+    if (!name || d == 0xFFFFFFFFu) {
+        set_error(!name ? 3u /* ERROR_PATH_NOT_FOUND */ : ERROR_INVALID_PARAMETER);
+        return INVALID_HANDLE;
+    }
+    if (!RtlDosPathNameToNtPathName_U(name, &nt_name, 0, 0)) {
+        set_error(3u);
+        return INVALID_HANDLE;
+    }
+    if (!(flags & 0x40000000u)) {
+        options |= 0x20u;     /* not FILE_FLAG_OVERLAPPED: FILE_SYNCHRONOUS_IO_NONALERT */
+    }
+    if (flags & 0x04000000u) {
+        options |= 0x1000u;   /* FILE_FLAG_DELETE_ON_CLOSE */
+    }
+    (void)attributes_w(&n, 0, inherits(sa), 0);
+    *(uint64_t *)(n.oa + VIBEOS_OA_OBJECT_NAME) = (uint64_t)(uintptr_t)&nt_name;
+    *(uint32_t *)(n.oa + VIBEOS_OA_ATTRIBUTES) |= VIBEOS_OBJ_CASE_INSENSITIVE;
+    st = NtCreateFile(&h, access | VIBEOS_SYNCHRONIZE | 0x80u /* FILE_READ_ATTRIBUTES */, n.oa,
+                      &iosb, 0, flags & 0xFFFFu, share, d, options, 0, 0);
+    RtlFreeUnicodeString(&nt_name);
+    if (failed(st)) {
+        fail(st);
+        return INVALID_HANDLE;
+    }
+    /* OPEN_ALWAYS and CREATE_ALWAYS say whether the file was there already. */
+    set_error((disposition == 2u || disposition == 4u) && iosb.information != 2u /* FILE_CREATED */
+                  ? ERROR_ALREADY_EXISTS : 0u);
+    return h;
+}
+
+uint64_t CreateFileA(const char *name, uint32_t access, uint32_t share, const void *sa,
+                     uint32_t disposition, uint32_t flags, uint64_t template_file) {
+    uint16_t w[NAME_CHARS];
+
+    if (!name || widen(name, w, NAME_CHARS) < 0) {
+        set_error(!name ? 3u : ERROR_FILENAME_EXCED_RANGE);
+        return INVALID_HANDLE;
+    }
+    return CreateFileW(w, access, share, sa, disposition, flags, template_file);
+}
+
+uint64_t CreateThread(const void *sa, size_t stack, void *start, void *param, uint32_t flags,
+                      uint32_t *tid) {
+    named_t n;
+    uint64_t h = 0;
+    NTSTATUS_T st;
+
+    (void)attributes_w(&n, 0, inherits(sa), 0);
+    st = NtCreateThreadEx(&h, 0x001FFFFFu /* THREAD_ALL_ACCESS */, n.oa, VIBEOS_NT_CURRENT_PROCESS,
+                          start, param, (flags & 4u) ? 1u : 0u /* CREATE_SUSPENDED */, 0,
+                          (flags & 0x10000u) ? 0 : stack, (flags & 0x10000u) ? stack : 0, 0);
+    if (failed(st)) {
+        return (uint64_t)fail(st);
+    }
+    if (tid) {
+        *tid = 0;   /* the thread's id comes with W5's NtQueryInformationThread */
+    }
+    return h;
+}
+
 /* ---- waiting and sleeping ------------------------------------------------------------- */
 
 /* Milliseconds as an NT interval: relative, so negative; INFINITE is none. */
