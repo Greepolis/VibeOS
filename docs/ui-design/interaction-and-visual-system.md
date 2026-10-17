@@ -1,9 +1,11 @@
 # Interaction and Visual System
 
-This document defines the intended user-visible desktop. It is a specification
-for the implementing agent and design review, not a screenshot of a finished
-product. Preserve the existing VibeOS blue/graphite identity while replacing
-the one-window bring-up layout with a cohesive workspace.
+See [visual-mockups.md](visual-mockups.md) for drawn screen compositions and
+component states. This document defines the intended user-visible desktop. It
+is a specification for the implementing agent and design review, not a
+screenshot of a finished product. Preserve the existing VibeOS blue/graphite
+identity while replacing the one-window bring-up layout with a cohesive
+workspace.
 
 ## 1. Product feel
 
@@ -45,7 +47,7 @@ transparent glass effects on the software framebuffer path.
 
 ### Persistent top panel
 
-- Height: 32 logical pixels at 1x; content is vertically centered and never
+- Height: 40 logical pixels at 1x; content is vertically centered and never
   overlaps notches/edge constraints if those appear on future hardware.
 - Left: VibeOS launcher button and active application/workspace context.
 - Center: workspace switcher and running-app indicators; no tiny status glyphs
@@ -70,7 +72,7 @@ transparent glass effects on the software framebuffer path.
 
 ### Window frame and states
 
-- Standard window: 32 px titlebar, readable title and app identity, explicit
+- Standard window: 36 px titlebar, readable title and app identity, explicit
   minimize/maximize/close controls at the trailing edge, visible resize affordance
   on hover/focus. Close is visually dangerous only on hover/press, not a large
   red billboard at rest.
