@@ -1,7 +1,7 @@
 # Windows Compatibility Progress
 
-Status: W1 done - a PE program runs on our ntdll
-Last review: 2026-10-14
+Status: W2 done - Wine's own tests run on our ntdll, msvcrt and kernel32
+Last review: 2026-10-17
 
 ## The plan (2026-10-13)
 
@@ -13,37 +13,36 @@ and Wine's own conformance tests as the oracle. Steps W0-W7: the oracle, the PE
 loader, objects and waits, memory, files, threads and exceptions, processes, then
 `kernel32` as the tests ask.
 
-## What exists (W1, 2026-10-14)
+## What exists (W2, 2026-10-17)
 
-- `kernel/core/pe.c`: the PE32+ parser, its answer in the ELF mapper's segment
-  form; `tests/kernel/pe_tests.c` against an image mingw-w64 linked.
+- `kernel/core/pe.c`: the PE32+ parser and relocation, its answer in the ELF
+  mapper's segment form; `tests/kernel/pe_tests.c` against an image mingw-w64
+  linked.
 - `kernel/abi/nt_services.def`, `kernel/abi/abi_nt.c`, `kernel/abi/nt/`: every
-  NT service, the registry, the dispatcher, and NtTerminateProcess,
-  NtWriteFile, NtQueryInformationProcess, NtQuerySystemInformation,
-  NtQuerySystemTime and NtQueryPerformanceCounter; `tests/kernel/nt_abi_tests.c`.
-- `kernel/arch/x86_64/pe_load.c` and the `swapgs` entry and exit paths in
-  `isr.S`: exec of a PE image, and a `%gs` base per task.
-- `user/win/ntdll` and `user/win/hello`: our ntdll and the first Windows
-  program, staged at `/win` on the boot volume.
+  NT service, the registry and the dispatcher; the object manager (handles are
+  descriptors with access masks, a flat namespace of whole paths), events,
+  mutants, semaphores, both waits, `NtDelayExecution`, `NtOpenFile` and image
+  sections; `tests/kernel/nt_abi_tests.c`.
+- `kernel/arch/x86_64/pe_load.c` and the `swapgs` paths in `isr.S`: exec of a PE
+  image, moved when it cannot be placed where it asks, DLL views, and a `%gs`
+  base per task.
+- `user/win/ntdll`: the system call stubs, the loader (DLLs from `C:\win`,
+  `DllMain`, named stubs for what no DLL exports, `Ldr*` for kernel32), and the
+  Rtl runtime, host-tested in `tests/win/ntrtl_tests.c`.
+- `user/win/msvcrt` and `user/win/kernel32`: the C runtime Wine's tests import,
+  and kernel32 as far as the tests reach before W3. `user32` and `advapi32` are
+  still placeholders that export nothing.
+- `scripts/dev/winetest-run.sh`: Wine's tests on VibeOS, against Wine's answers.
 
-The old placeholder - `user/compat/windows/windows_compat.c`, a function that
-mapped two of a Windows build's syscall numbers onto nothing - is removed now
-that a loader exists, as this file said it would be.
+## Where the oracle stands
 
-## Pending
-
-- W0 is done: the 58 tests of `ntdll` and `kernel32` built by Wine's own build
-  system (`scripts/dev/winetest-build.sh`), run under Wine 9.0 on the host
-  (`winetest-run-host.sh`), the answers in `tests/corpus/winetest-wine9.txt`;
-  every NT service listed with its step in
-  [../abi/nt-services.md](../abi/nt-services.md).
-- W1 is done: see [../abi/windows.md](../abi/windows.md), "W1".
-- W2 has begun: our own `msvcrt.dll` (`user/win/msvcrt`) is built and tested -
-  see [../abi/windows.md](../abi/windows.md), "W2: msvcrt". Nothing loads it
-  yet; the loader that maps DLLs from disk is the next piece.
-- W2 onwards: as the plan lists them.
+`ntdll:om`, `ntdll:sync` and `kernel32:sync` run and report their failures,
+and each ends at something W5 provides (threads, timers, keyed events) - see
+[../abi/windows.md](../abi/windows.md), "What the oracle says at the end of
+W2".
 
 ## Next checkpoint
 
-- W2: base relocation, stub `user32` and `advapi32`, then the object manager -
-  the first of Wine's tests (`ntdll:om`, `ntdll:sync`, `kernel32:sync`) run.
+- W3: memory - `NtAllocateVirtualMemory` and its family, lazy `.bss`, a heap
+  that grows - measured by `ntdll:virtual` and `kernel32:virtual`. It also
+  removes the memory pressure under which the winetest boots met M-070.

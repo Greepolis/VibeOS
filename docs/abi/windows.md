@@ -188,7 +188,7 @@ Next: W2 - base relocation, stub `user32` and `advapi32` for the tests' imports,
 then the object manager, handles and waits, measured by `ntdll:om`,
 `ntdll:sync` and `kernel32:sync`.
 
-## W2 (2026-10-15): planned, in progress
+## W2 (2026-10-15 to 2026-10-17): done
 
 What W0's measurement says W2 has to be. Wine's `ntdll_test.exe` is an
 eight-megabyte image linked at `0x140000000`, and it imports 318 functions
@@ -270,5 +270,88 @@ It is not loaded by anything yet.
   (exports equal the `.def`, imports are `ntdll.dll` alone), and sabotage
   (`cases/win-msvcrt.txt`, 20 of 20 red).
 
-Not done: running it. The DLL has not been executed on VibeOS; what runs on
-the host is its core, not the glue in `msvcrt.c`.
+It runs: every Windows program at boot and every Wine test loads it (below).
+
+### Done: image sections and ntdll's loader (`326cbfc`, `46a98a4`, `042f560`)
+
+`NtOpenFile` maps `\??\C:\` onto the VFS root; `NtCreateSection(SEC_IMAGE)` and
+`NtMapViewOfSection` place an image in the DLL window at 64 KiB granularity and
+relocate it, answering `STATUS_IMAGE_NOT_AT_BASE` when it moved. ntdll's loader
+brings DLLs in with them, depth first, runs `DllMain`, and binds an import no DLL
+exports to one of 2048 stubs that prints `unimplemented: <dll>.<function>` and
+ends the process. `stubcall.exe` calls one (`Beep`, which kernel32 will never
+have) and the gate asserts the line. Wine's executables have seventeen sections,
+so the image layout holds 24.
+
+### Done: mutants, semaphores, Sleep (`45c97bc`, `a21935f`)
+
+On the events' wait: a mutant is its owner's to take again and to release, its
+count the signal state Windows reports; a semaphore refuses a release past its
+maximum. `NtDelayExecution` waits on the same clock. Abandonment has its state and
+status; the exit path that sets it is W5's.
+
+### Done: our kernel32 (`3923ba0`, `ca080c1`, `395ae7c`)
+
+`user/win/kernel32` replaces the placeholder: the Win32 calls as Nt calls -
+named objects under `\Sessions\<n>\BaseNamedObjects` (the PEB says session 1, as
+Wine's does), the waits in milliseconds, Sleep, the tick count, `GetModuleHandle`,
+`GetProcAddress` and `LoadLibrary` through ntdll's `Ldr*`, the process heap
+(`RtlAllocateHeap` and its family, on the Rtl arena), the TEB's 64 TLS slots, the
+environment, the standard handles, `WriteFile`. Every failure sets the last error
+through `RtlNtStatusToDosError`, whose pairs are the ones Wine's `error.c` checks
+on Windows. Exports are `kernel32.def`'s, checked against the built DLL.
+
+**Written ahead of the kernel, on purpose.** Wine's tests for W2 reach files and
+threads early - `ntdll:om` a named pipe in its third test, both sync tests a thread
+in their second - and a stub ends the test there. So `CreateFile` and
+`CreateThread` exist now over `NtCreateFile` (W4) and `NtCreateThreadEx` (W5),
+which the kernel answers `STATUS_NOT_IMPLEMENTED` and counts: the test is told the
+call failed and goes on, its failures named, as a Linux program was told ENOSYS.
+This is the rule for the steps after W2 as well: a kernel32 function may be written
+before its service, never instead of it.
+
+### What the oracle says at the end of W2
+
+`scripts/dev/winetest-run.sh build-gcc-Release ntdll:om ntdll:sync kernel32:sync`
+(2026-10-17):
+
+| Test | Wine on Linux | VibeOS | Where it ends |
+|---|---|---|---|
+| `ntdll:om` | 7,347 tests, 0 failures | at least 38 failures | `CreateWaitableTimerA` (a timer object: W5's) |
+| `ntdll:sync` | 250 tests, 0 failures | at least 39 failures | a segmentation fault after the keyed-event tests (keyed events: W5's) |
+| `kernel32:sync` | 354,502 tests, 0 failures | at least 1 failure | `TerminateThread` (W5) |
+
+The counts are lower bounds: the gate keeps the last forty lines of each test,
+and a test that ends at a stub prints no summary. None of them finishes, and
+none can in W2: each reaches threads, timers or keyed
+events, which are W5's. What W2 promised - handles, events, mutants, semaphores,
+the waits - is what they now exercise, and the failures they report before the
+end are the work list for W5 together with the functions the stubs name.
+`ntdll:rtlstr` runs far past W2's scope and reports `RtlDuplicateUnicodeString`
+wrong for flags 2 and 3, then calls an Rtl function our ntdll does not export.
+
+**What these boots also showed.** One winetest boot wedged after the tests, in
+the corpus shell, with `SWAP_IN_FAILED` on a garbage slot and two
+`SWAP_DOUBLE_RELEASE`: the open swap defect M-070
+([review_findings_tracker.md](../implementation_progress/review_findings_tracker.md)),
+not something W2 wrote. The NT processes make it likelier: an image's `.bss` is
+filled when it is mapped, so `ntdll_test.exe` and its DLLs cost about ten
+megabytes each before a line runs, and reclaim swaps under that. Lazy `.bss` and a
+heap that grows are W3's, and W3 is where the pressure goes away. Evidence in
+`.boot-evidence/w2-winetest/`.
+
+### Closing W2
+
+- CI: two defects that every CI job saw and no local check did - the Rtl host
+  tests did not build without mingw-w64 (`41c2188`), and `stubcall.exe` called a
+  function kernel32 had meanwhile been given (`0646d09`). check.sh ran neither
+  path: it now runs the whole of ctest (`2a63723`), and the stub's function is one
+  kernel32 is never going to have.
+- Sabotage: host cases red for mutants, semaphores, delay, the heap functions and
+  the status mapping; `nt-loader-boot.txt` run again after kernel32 - the stub
+  returning goes red as named, unbound DLL imports red on the crash they cause, a
+  missing export bound to address 0 hangs the boot instead of naming the fault.
+- Boots: `check.sh all` green; `boots.sh` 6 runs, 5 clean and one in which the
+  gate died before booting - three gates on one `efi_root` each taking the
+  previous winetest run's executables off, two of them the same file. Fixed in
+  the gate, then 6 of 6 with those executables put back on purpose.
