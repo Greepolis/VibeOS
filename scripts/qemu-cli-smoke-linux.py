@@ -3613,7 +3613,7 @@ def main():
             if os.path.exists(stubcall):
                 # A function no DLL exports is bound to a stub that names it
                 # and ends the program - and it does end there.
-                if not re.search(r"unimplemented: kernel32\.dll\.GetTickCount", text,
+                if not re.search(r"unimplemented: kernel32\.dll\.Beep", text,
                                  re.IGNORECASE):
                     problems.append("nt_stub_did_not_name_the_import")
                 if "NT_STUBCALL_RETURNED" in text:
