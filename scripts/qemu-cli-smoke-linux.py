@@ -958,13 +958,18 @@ def stage_corpus(efi_root, build_dir):
             b'echo "C:done: '))
     # A test executable a previous run staged and this one did not ask for is
     # taken off again: they are eight and thirteen megabytes, and an ordinary
-    # boot has no use for them.
+    # boot has no use for them. boots.sh runs three gates on one efi_root, so
+    # another may take the same file off first: that is done, not an error -
+    # the gate once died here before writing a verdict.
     win_dir = os.path.join(efi_root, "win")
     wanted = {"%s_test.exe" % t.split(":", 1)[0] for t in WINETESTS}
     if os.path.isdir(win_dir):
         for name in os.listdir(win_dir):
             if name.endswith("_test.exe") and name not in wanted:
-                os.remove(os.path.join(win_dir, name))
+                try:
+                    os.remove(os.path.join(win_dir, name))
+                except FileNotFoundError:
+                    pass
     if WINETESTS:
         for dll in sorted({t.split(":", 1)[0] for t in WINETESTS}):
             exe = "%s_test.exe" % dll
