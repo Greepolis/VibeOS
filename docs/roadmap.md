@@ -38,7 +38,12 @@ administration), in this order:
 6. **The rest of networking.**
 7. **System administration (L8)**, last, once what it administers is defined.
 
-Each gets its plan when it is next, for the reason the next section gives.
+Implementation sequencing is refined when a subsystem is next, for the reason
+the following section gives. By maintainer request on 2026-10-17, the filesystem
+namespace and desktop/UI architecture have been designed ahead of their
+implementation slot: see [filesystem-design/](filesystem-design/README.md) and
+[ui-design/](ui-design/README.md). This is planning-only work; it does not
+reorder the active runtime milestones or authorize a format/ABI freeze.
 
 ## Why 4 and 5 are sketched and not planned
 
