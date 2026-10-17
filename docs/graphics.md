@@ -1,5 +1,11 @@
 # Graphics
 
+> This file records the existing framebuffer desktop and its current
+> verification limits. The target desktop/window-system architecture, visual
+> language, UX requirements and implementation stages are specified in
+> [ui-design/](ui-design/README.md). The target is not yet implemented merely
+> because the current kernel desktop draws a terminal window.
+
 What exists on screen, how it gets there, and - the part worth stating plainly
 - how little of it any gate would catch if it broke.
 

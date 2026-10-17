@@ -50,6 +50,11 @@ GUI is not part of the earliest milestones, but the architecture should anticipa
 - sandbox-friendly application model
 - remote and virtual display support
 
+The detailed desktop architecture, interaction/visual specification, security
+boundaries and staged implementation plan are in [ui-design/](ui-design/README.md).
+The current framebuffer desktop is a bring-up surface, not the production
+window-system target; see [graphics.md](graphics.md) for its verified scope.
+
 ## Developer experience priorities
 
 - cross-toolchain support
