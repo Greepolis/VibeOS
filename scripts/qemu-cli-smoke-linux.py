@@ -1608,8 +1608,12 @@ def main():
             # "action=PANIC" is the trap model's recommendation, not what
             # happened: a ring-3 fault is now classified that way and then
             # survived. What says the machine actually stopped is hw_panic's
-            # own output, so that is what this asserts on.
-            if "FATAL" in text:
+            # own output, so that is what this asserts on - this boot's: the
+            # log sink's line quotes the previous boot's last record, and a
+            # panic there is the last run's, which made the next boot of the
+            # same id fail for it.
+            if any("FATAL" in ln and "LOGSINK result=" not in ln
+                   for ln in text.splitlines()):
                 problems.append("panic")
 
             # The supervisor's view of that same crash. A service killed by a
