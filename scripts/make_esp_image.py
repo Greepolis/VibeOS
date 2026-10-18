@@ -173,6 +173,12 @@ def add_tree(builder, src_dir):
         child_entries = []
         for name in sorted(os.listdir(path)):
             full = os.path.join(path, name)
+            # A file being staged: the boot gate writes "<name>.<pid>.tmp" and
+            # renames it, and boots.sh runs three gates on one tree, so another
+            # gate's half-written file can be listed here and gone by the open.
+            # It belongs on nobody's image.
+            if name.endswith(".tmp"):
+                continue
             if os.path.isdir(full):
                 dir_cluster = builder.next_cluster
                 builder.next_cluster += 1  # reserve now for '.'/'..' back-refs

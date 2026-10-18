@@ -1134,10 +1134,18 @@ def main():
         # is refused by its builder - which used to stop this script before it
         # wrote a verdict, leaving the last run's verdict, log and image for the
         # caller to read as this one's. FAT16 here reaches 128 MB.
+        # Another gate's staging file (".tmp", renamed when complete) is left
+        # out, as the image builder leaves it out: boots.sh runs three gates on
+        # one tree, and one of them died here on a file the next had renamed.
         content = 0
         for d, _, names in os.walk(efi_root):
             for n in names:
-                content += (os.path.getsize(os.path.join(d, n)) + 2047) // 2048 * 2048
+                if n.endswith(".tmp"):
+                    continue
+                try:
+                    content += (os.path.getsize(os.path.join(d, n)) + 2047) // 2048 * 2048
+                except FileNotFoundError:
+                    pass
         esp_mb = max(96, min(127, content // (1024 * 1024) + 16))
         subprocess.run([sys.executable,  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
                         os.path.join(os.path.dirname(os.path.abspath(__file__)),
