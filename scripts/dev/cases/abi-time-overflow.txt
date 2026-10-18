@@ -5,8 +5,11 @@
 #     seconds waits, and does not wrap to none".
 #  2. utimensat's time multiplied in 64 bits again. Expect "a time past what
 #     is stored is held at the last one".
+#  3. utime's time multiplied in 64 bits (2026-10-18: M-095's fix went through
+#     utimensat and utimes and missed utime). Expect "utime holds a time past
+#     what is stored".
 #
-# Case 1 is in futex.c, case 2 in names.c; run the file against each.
+# Case 1 is in futex.c, cases 2 and 3 in names.c; run the file against each.
 # Target source: kernel/abi/linux/futex.c, kernel/abi/linux/names.c
 # Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host-quick.sh" python3 scripts/dev/sabotage.py <one of them> scripts/dev/cases/abi-time-overflow.txt
 
@@ -22,3 +25,9 @@
         return ~0ull;
     }
 +++ new
+
+### utime's time multiplied in 64 bits (M-095, the call its fix missed)
+--- old
+        when[1].ns = linux_ns_of(ut.modtime, 0);
++++ new
+        when[1].ns = (uint64_t)ut.modtime * 1000000000ull;

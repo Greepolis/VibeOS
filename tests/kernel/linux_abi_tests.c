@@ -1155,6 +1155,10 @@ static void t_metadata(void) {
     ut->actime = 400; ut->modtime = 500;
     expect(SYS2(132, ustr("/tmp/m"), uts) == 0 && tmp_stat("/tmp/m", 1, &st) == 0 &&
            st.st_atime == 400u && st.st_mtime == 500u && st.st_mtime_nsec == 0u, "utime sets them to the second");
+    ut->modtime = 0x4000000000000000ll;
+    expect(SYS2(132, ustr("/tmp/m"), uts) == 0 && tmp_stat("/tmp/m", 1, &st) == 0 &&
+               st.st_mtime == (int64_t)(~0ull / 1000000000ull),
+           "utime holds a time past what is stored at the last one too (M-095)");
     tv[0].tv_sec = 1; tv[0].tv_usec = 999999; tv[1].tv_sec = 2; tv[1].tv_usec = 0;
     expect(SYS2(235, ustr("/tmp/m"), uts) == 0 && tmp_stat("/tmp/m", 1, &st) == 0 &&
            st.st_atime == 1u && st.st_atime_nsec == 999999000u && st.st_mtime == 2u,

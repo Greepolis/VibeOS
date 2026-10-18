@@ -736,8 +736,8 @@ static long linux_sys_utime(uint64_t path_uptr, uint64_t times_uptr) {
             return -VIBEOS_EINVAL;
         }
         when[0].now = when[1].now = 0;
-        when[0].ns = (uint64_t)ut.actime * 1000000000ull;
-        when[1].ns = (uint64_t)ut.modtime * 1000000000ull;
+        when[0].ns = linux_ns_of(ut.actime, 0);   /* held, not wrapped: M-095 */
+        when[1].ns = linux_ns_of(ut.modtime, 0);
     }
     r = linux_walk_at(LINUX_CWD, path_uptr, 0u, &w);
     return r != 0 ? r : linux_times_walked(&w, &when[0], &when[1]);
