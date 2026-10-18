@@ -5874,6 +5874,40 @@ static uint64_t entry_of(int slot, uint64_t va) {
     return e ? *e : 0u;
 }
 
+/* MADV_POPULATE_READ and _WRITE (M-103), answered as Linux 5.15 answers them:
+ * a page shared copy-on-write after a fork becomes the process's own and
+ * writable, its contents kept; a region the access would be refused in is
+ * EINVAL. A process of its own, because the fork shares every page it has. */
+static void t_madvise_populate(void) {
+    uint8_t x = 'A';
+    long pm, ro, pn, pid;
+    int parent, child2;
+
+    parent = fresh(202);
+    pm = MMAP(0, 8192, 3, MAP_PRIV_ANON, -1, 0);
+    (void)kf_poke((uint64_t)pm, &x, 1);
+    pid = SYS0(57);
+    child2 = slot_of_pid(pid);
+    kf_set_current(parent);
+    expect(!(entry_of(parent, (uint64_t)pm) & 2u) &&
+               (entry_of(parent, (uint64_t)pm) & PTE_FRAME) == (entry_of(child2, (uint64_t)pm) & PTE_FRAME),
+           "after a fork the page is one frame, read-only to both");
+    expect(SYS3(28, (uint64_t)pm, 8192, 22 /* MADV_POPULATE_READ */) == 0 &&
+               !(entry_of(parent, (uint64_t)pm) & 2u),
+           "MADV_POPULATE_READ leaves a shared page shared");
+    expect(SYS3(28, (uint64_t)pm, 8192, 23 /* MADV_POPULATE_WRITE */) == 0 &&
+               (entry_of(parent, (uint64_t)pm) & 2u) &&
+               (entry_of(parent, (uint64_t)pm) & PTE_FRAME) != (entry_of(child2, (uint64_t)pm) & PTE_FRAME) &&
+               mem_is((uint64_t)pm, 'A', 1),
+           "MADV_POPULATE_WRITE makes it the process's own copy, writable, with what it held");
+    ro = MMAP(0, 4096, 1, MAP_PRIV_ANON, -1, 0);
+    pn = MMAP(0, 4096, 0, MAP_PRIV_ANON, -1, 0);
+    expect(SYS3(28, (uint64_t)ro, 4096, 22) == 0 && SYS3(28, (uint64_t)ro, 4096, 23) == -VIBEOS_EINVAL &&
+               SYS3(28, (uint64_t)pn, 4096, 22) == -VIBEOS_EINVAL &&
+               SYS3(28, (uint64_t)pn, 4096, 23) == -VIBEOS_EINVAL,
+           "populating for an access the region refuses is EINVAL");
+}
+
 static void t_memory_calls(void) {
     uint64_t vec, name, buf;
     uint8_t x = 'A', y = 0, *vp;
@@ -6331,6 +6365,7 @@ int test_linux_handlers(void) {
     t_mmap_files();
     t_mmap_shared();
     t_memory_calls();
+    t_madvise_populate();
     t_credentials();
     t_fork_snapshot_and_groups();
     t_procfs();

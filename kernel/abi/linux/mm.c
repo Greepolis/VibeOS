@@ -602,7 +602,7 @@ static long linux_sys_madvise(uint64_t addr, uint64_t len, uint64_t advice) {
     vibeos_vmspace_t v;
     uint64_t va, end;
     long r = 0;
-    int me, discard = 0;
+    int me, discard = 0, populate = 0;
 
     if (!(ps = linux_mm_caller(&me))) {
         return -VIBEOS_EINVAL;
@@ -614,7 +614,9 @@ static long linux_sys_madvise(uint64_t addr, uint64_t len, uint64_t advice) {
         case LINUX_MADV_NORMAL: case LINUX_MADV_RANDOM: case LINUX_MADV_SEQUENTIAL:
         case LINUX_MADV_WILLNEED: case LINUX_MADV_DONTDUMP: case LINUX_MADV_DODUMP:
         case LINUX_MADV_COLD: case LINUX_MADV_PAGEOUT:
+            break;
         case LINUX_MADV_POPULATE_READ: case LINUX_MADV_POPULATE_WRITE:
+            populate = 1;
             break;
         case LINUX_MADV_DONTNEED: case LINUX_MADV_FREE:
             discard = 1;
@@ -630,6 +632,33 @@ static long linux_sys_madvise(uint64_t addr, uint64_t len, uint64_t advice) {
     v = ks_vm(me);
     if (!linux_regions_cover(ps, addr, end)) {
         r = -VIBEOS_ENOMEM;
+    }
+    /* MADV_POPULATE_READ and _WRITE: every page there now, as an access would
+     * make it - brought back from swap, and for a write the process's own copy.
+     * They were accepted and did nothing (M-103), and a program that asks for
+     * them asks so that the access later does not fault. A region the access
+     * itself would be refused in is EINVAL first, as Linux answers; a page
+     * nothing maps yet inside a region - the stack's growth area - is mapped,
+     * as touching it would. */
+    for (va = addr; populate && r == 0 && va < end; va += 4096ull) {
+        const vibeos_vma_t *reg = vibeos_vma_find(&ps->vmas, va);
+
+        if (!reg || !(reg->prot & VIBEOS_PROT_READ) ||
+            (advice == LINUX_MADV_POPULATE_WRITE &&
+             (!(reg->prot & VIBEOS_PROT_WRITE) || (reg->prot & VIBEOS_PROT_NOWRITE)))) {
+            r = -VIBEOS_EINVAL;
+        }
+    }
+    for (va = addr; populate && r == 0 && va < end; va += 4096ull) {
+        const vibeos_vma_t *reg = vibeos_vma_find(&ps->vmas, va);
+        int got = vibeos_vmspace_populate(&v, va, advice == LINUX_MADV_POPULATE_WRITE);
+
+        if (got == 1 && reg && reg->backing == VIBEOS_BACKING_ANON) {
+            got = ks_map_anon(me, va, reg->prot) == 0 ? 0 : -1;
+        }
+        if (got < 0) {
+            r = -VIBEOS_EFAULT;   /* what Linux says when populating failed */
+        }
     }
     for (va = addr; discard && r == 0 && va < end; va += 4096ull) {
         const vibeos_vma_t *reg = vibeos_vma_find(&ps->vmas, va);

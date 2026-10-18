@@ -17,6 +17,9 @@
 # 12. mremap leaves the old range described
 # 13. mremap takes a range across two mappings
 # 14. a shared mapping grows with private pages
+# 15. MADV_POPULATE_WRITE populates a region it may not write (M-103).
+#     Expect "populating for an access the region refuses is EINVAL"
+#     (t_madvise_populate).
 #
 # Target source: kernel/abi/linux/mm.c
 # Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/linux/mm.c scripts/dev/cases/abi-mem4.txt
@@ -71,13 +74,9 @@
     if (!linux_regions_cover(ps, addr, end)) {
         r = -VIBEOS_ENOMEM;
     }
-    for (va = addr; discard && r == 0 && va < end; va += 4096ull) {
-        const vibeos_vma_t *reg = vibeos_vma_find(&ps->vmas, va);
-        const uint64_t *e = vibeos_vmspace_entry(&v, va);
+    /* MADV_POPULATE_READ and _WRITE: every page there now, as an access would
 +++ new
-    for (va = addr; discard && r == 0 && va < end; va += 4096ull) {
-        const vibeos_vma_t *reg = vibeos_vma_find(&ps->vmas, va);
-        const uint64_t *e = vibeos_vmspace_entry(&v, va);
+    /* MADV_POPULATE_READ and _WRITE: every page there now, as an access would
 
 ### mincore calls a page in swap resident
 --- old
@@ -145,3 +144,9 @@
         /* Room after it: grow where it stands. */
 +++ new
         /* Room after it: grow where it stands. */
+
+### MADV_POPULATE_WRITE populates a region it may not write (M-103)
+--- old
+            (advice == LINUX_MADV_POPULATE_WRITE &&
++++ new
+            (0 &&

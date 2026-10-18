@@ -1371,6 +1371,27 @@ static uint64_t *resident_entry(vibeos_vmspace_t *as, uint64_t va, int *failed) 
     }
 }
 
+int vibeos_vmspace_populate(vibeos_vmspace_t *as, uint64_t va, int write) {
+    uint64_t *pte;
+    int failed;
+
+    vm_op("populate");
+    if (!g_ready || !as || !as->root) {
+        return -1;
+    }
+    pte = resident_entry(as, va, &failed);
+    if (!pte) {
+        return failed ? -1 : 1;
+    }
+    /* A page shared copy-on-write is made this process's own, as a store to
+     * it would: the copy-on-write fault, which says whether it did. */
+    if (write && !(__atomic_load_n(pte, __ATOMIC_ACQUIRE) & PTE_WRITE) &&
+        vibeos_vmspace_fault(as, va, 1) != 1) {
+        return -1;
+    }
+    return 0;
+}
+
 int vibeos_vmspace_set_locked(vibeos_vmspace_t *as, uint64_t va, int locked) {
     vm_op("mlock");
     if (!g_ready || !as || !as->root) {

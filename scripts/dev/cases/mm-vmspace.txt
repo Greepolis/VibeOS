@@ -136,3 +136,9 @@
     if ((entry & PTE_COW_BIT) == 0u || (entry & VIBEOS_PTE_OWNED) == 0u) {
 +++ new
     if ((entry & VIBEOS_PTE_OWNED) == 0u) {
+
+### populate for writing leaves a copy-on-write share shared (M-103; expect, from linux_abi_tests.c, "MADV_POPULATE_WRITE makes it the process's own copy")
+--- old
+    if (write && !(__atomic_load_n(pte, __ATOMIC_ACQUIRE) & PTE_WRITE) &&
++++ new
+    if (0 && write && !(__atomic_load_n(pte, __ATOMIC_ACQUIRE) & PTE_WRITE) &&

@@ -423,6 +423,12 @@ int vibeos_vmspace_resident(vibeos_vmspace_t *as, uint64_t va);
  * brought back. */
 int vibeos_vmspace_set_locked(vibeos_vmspace_t *as, uint64_t va, int locked);
 
+/* The page at `va` in memory - brought back from swap if it was there - and,
+ * with `write`, the process's own and writable, a copy-on-write share broken as
+ * a store would break it. MADV_POPULATE_READ and _WRITE. 0, 1 when nothing is
+ * mapped there, -1 when the page could not be brought back or copied. */
+int vibeos_vmspace_populate(vibeos_vmspace_t *as, uint64_t va, int write);
+
 /* Move the mapping at `from` to `to`, whole: the same frame, the same access
  * and marks, the same reference - nothing is copied and no count changes.
  * `to` must be unmapped. This is mremap.
