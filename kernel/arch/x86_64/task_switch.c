@@ -91,6 +91,7 @@ uint64_t hw_alloc_kstack(uint64_t *out_base, uint32_t *out_pages) {
     if (!p) {
         return 0;
     }
+    *(volatile uint64_t *)(void *)p = VIBEOS_HW_KSTACK_CANARY;
     if (out_base) {
         *out_base = (uint64_t)(uintptr_t)p;
     }
@@ -98,6 +99,36 @@ uint64_t hw_alloc_kstack(uint64_t *out_base, uint32_t *out_pages) {
         *out_pages = pages;
     }
     return (uint64_t)(uintptr_t)p + size;
+}
+
+/* Eight kilobytes and no guard page: the exec of a Windows program went past
+ * the base in the gcc Debug build, whose frames are unoptimised - two PE image
+ * descriptions on the stack of hw_pe_map_images, under hw_proc_create's and
+ * execve's - and the overflow wrote into the next frame. CI saw a description
+ * table read back as poison, a jump into .bss and lost frames: three symptoms,
+ * one cause, none of them near it. Checked every tick for the task the core is
+ * running, so an overflow is named within a tick of happening and by the task
+ * that did it. */
+void hw_kstack_check(int slot) {
+    uint64_t base;
+
+    if (slot < 0 || slot >= VIBEOS_HW_MAX_TASKS) {
+        return;
+    }
+    base = g_tasks[slot].kstack_base;
+    if (base == 0u || *(volatile const uint64_t *)(uintptr_t)base == VIBEOS_HW_KSTACK_CANARY) {
+        return;
+    }
+    vibeos_x86_64_serial_lock();
+    vibeos_x86_64_serial_puts("[KSTACK] overflow slot=0x");
+    vibeos_x86_64_serial_print_hex((uint64_t)slot);
+    vibeos_x86_64_serial_puts(" pid=0x");
+    vibeos_x86_64_serial_print_hex(hw_task_pid_of(&g_tasks[slot]));
+    vibeos_x86_64_serial_puts(" base=0x");
+    vibeos_x86_64_serial_print_hex(base);
+    vibeos_x86_64_serial_puts("\n");
+    vibeos_x86_64_serial_unlock();
+    hw_panic("kernel stack overflow: a task ran past the base of its kernel stack");
 }
 
 static void hw_free_kstack_pages(uint64_t base, uint32_t pages) {
@@ -742,6 +773,7 @@ void hw_schedule(vibeos_x86_64_isr_frame_t *frame) {
     if (!g_sched_running) {
         return;
     }
+    hw_kstack_check(cpu->current_task);
 
     /* A stack left behind by a task that exited on this core. Safe here for
      * the reason the whole mechanism exists: this core is running on the

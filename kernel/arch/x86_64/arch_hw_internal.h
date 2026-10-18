@@ -527,6 +527,12 @@ uint64_t hw_proc_cr3(const hw_proc_t *p);
 void hw_pipe_init(void);
 void hw_mount_table_init(void);
 uint64_t hw_alloc_kstack(uint64_t *out_base, uint32_t *out_pages);
+/* The word at the base of every kernel stack, and the check that it is still
+ * there (task_switch.c): a stack has no guard page below it, so running past
+ * its base writes into whatever frame is next - a description table, a page
+ * table, another task's stack - and the damage surfaces far away. */
+#define VIBEOS_HW_KSTACK_CANARY 0x4B53544B43414E59ull   /* "YNACKTSK" */
+void hw_kstack_check(int slot);
 hw_procstate_t *hw_procstate_new(void);
 void hw_procstate_put(hw_procstate_t *ps);
 extern uint32_t g_next_pid;
