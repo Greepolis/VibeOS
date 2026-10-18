@@ -36,9 +36,9 @@
 
 ### FIONBIO never turns it off
 --- old
-                f->flags = v ? (f->flags | VIBEOS_O_NONBLOCK) : (f->flags & ~VIBEOS_O_NONBLOCK);
+                (void)vibeos_file_change_flags(f, VIBEOS_O_NONBLOCK, v ? VIBEOS_O_NONBLOCK : 0u);
 +++ new
-                f->flags |= VIBEOS_O_NONBLOCK;
+                (void)vibeos_file_change_flags(f, 0u, VIBEOS_O_NONBLOCK);
 
 ### FIONREAD says a pipe is empty
 --- old

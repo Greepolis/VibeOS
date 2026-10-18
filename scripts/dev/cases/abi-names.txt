@@ -168,9 +168,9 @@
 
 ### utime sets the access time from the modification time
 --- old
-        when[0].ns = (uint64_t)ut.actime * 1000000000ull;
+        when[0].ns = linux_ns_of(ut.actime, 0);   /* held, not wrapped: M-095 */
 +++ new
-        when[0].ns = (uint64_t)ut.modtime * 1000000000ull;
+        when[0].ns = linux_ns_of(ut.modtime, 0);
 
 ### statfs never says read-only
 --- old
