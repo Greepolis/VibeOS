@@ -1,0 +1,4 @@
+# Every path is the maintainer's. With the main-branch ruleset requiring a code
+# owner's review, a pull request from anyone else - Dependabot included - is
+# merged only after the maintainer has approved it.
+* @Greepolis
