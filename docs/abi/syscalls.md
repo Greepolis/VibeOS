@@ -9,8 +9,8 @@ the registry, not this page; `check.sh` fails while the two differ.
 
 | State | Count | What the kernel answers |
 | --- | --- | --- |
-| done | 236 | through its row |
-| partial | 36 | through its row, with the gap named |
+| done | 237 | through its row |
+| partial | 35 | through its row, with the gap named |
 | missing | 17 | ENOSYS, and the boot gate fails naming the number |
 | deferred | 50 | ENOSYS, and the boot gate fails naming the number |
 | refused | 34 | its errno, counted as refused - expected, never a failure |
@@ -187,7 +187,7 @@ calls, outside the Linux number space, are listed last.
 | 148 | `sched_rr_get_interval` | done | - | - | `sched.c` |  |
 | 149 | `mlock` | done | - | - | `mm.c` |  |
 | 150 | `munlock` | done | - | - | `mm.c` |  |
-| 151 | `mlockall` | partial | L3 | - | `mm.c` | MCL_FUTURE is accepted and a mapping made afterwards is not locked |
+| 151 | `mlockall` | done | - | - | `mm.c` |  |
 | 152 | `munlockall` | done | - | - | `mm.c` |  |
 | 153 | `vhangup` | missing | L8 | ENOSYS |  |  |
 | 154 | `modify_ldt` | refused | R | ENOSYS |  | no LDT: 64-bit programs do not use one |

@@ -178,6 +178,10 @@ typedef struct vibeos_procstate {
      * process said it will use, as Linux keeps them with its memory. A child
      * starts with none and an exec forgets them - both start a new state. */
     uint32_t membarrier_reg;
+    /* mlockall(MCL_FUTURE) (M-104): every mapping made from now on is locked
+     * as it is made. Not inherited by a child and forgotten by exec, as on
+     * Linux. Under the mm lock. */
+    uint32_t mlock_future;
 } vibeos_procstate_t;
 
 #endif

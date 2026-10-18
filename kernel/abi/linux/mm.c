@@ -23,6 +23,7 @@ static vibeos_vma_t *linux_region_in(vibeos_procstate_t *ps, uint64_t base, uint
  * compiles as an implicit declaration and fails three hundred lines later. */
 static int linux_regions_cover(vibeos_procstate_t *ps, uint64_t addr, uint64_t end);
 static long linux_lock_range(int me, vibeos_procstate_t *ps, uint64_t addr, uint64_t end, int on);
+static long linux_unmap_range(int me, vibeos_procstate_t *ps, uint64_t addr, uint64_t end);
 
 /* RLIMIT_AS: may `more` bytes be added to what the process's regions describe?
  * The limit was kept and reported and never asked (external review,
@@ -105,6 +106,14 @@ static long linux_sys_brk_locked(int me, vibeos_procstate_t *ps, uint64_t addr) 
                 (void)vibeos_vmspace_unmap(&v, va);
             }
             ks_tlb_drain();
+            return (long)ps->brk_cur;
+        }
+        /* Under mlockall(MCL_FUTURE) the growth is locked as it is made, or it
+         * is not made: past RLIMIT_MEMLOCK the break stays where it was
+         * (M-104). */
+        if (ps->mlock_future &&
+            linux_lock_range(me, ps, ps->brk_cur, new_brk, 1) != 0) {
+            (void)linux_unmap_range(me, ps, ps->brk_cur, new_brk);
             return (long)ps->brk_cur;
         }
     } else if (new_brk < ps->brk_cur) {
@@ -497,6 +506,14 @@ static long linux_sys_mmap(uint64_t addr, uint64_t len, uint64_t prot, uint64_t 
          * fail the mmap when the lock cannot be had, and neither does this. */
         (void)linux_lock_range(ks_current(), ps, (uint64_t)r,
                                (uint64_t)r + ((len + 0xFFFull) & ~0xFFFull), 1);
+    } else if (r > 0 && ps->mlock_future &&
+               linux_lock_range(ks_current(), ps, (uint64_t)r,
+                                (uint64_t)r + ((len + 0xFFFull) & ~0xFFFull), 1) != 0) {
+        /* mlockall(MCL_FUTURE): a mapping that cannot be locked is not made.
+         * Linux says EAGAIN (M-104). */
+        (void)linux_unmap_range(ks_current(), ps, (uint64_t)r,
+                                (uint64_t)r + ((len + 0xFFFull) & ~0xFFFull));
+        r = -VIBEOS_EAGAIN;
     }
     ks_mm_unlock(ps);
     if (f) {
@@ -831,9 +848,12 @@ static long linux_sys_mlock2(uint64_t addr, uint64_t len, uint64_t flags) {
     return linux_mlock(addr, len, 1);
 }
 
-/* mlockall and munlockall: every mapping the process has. MCL_FUTURE - and
- * everything it maps from now on - is accepted and not kept: a mapping made
- * after the call is not locked, which is the gap the registry names. */
+/* mlockall and munlockall: every mapping the process has, and with
+ * MCL_FUTURE every one it makes from now on - mmap, brk, mremap and the stack
+ * as it grows lock their new pages as they are made, refusing a mapping
+ * RLIMIT_MEMLOCK cannot hold (M-104; it used to be accepted and not kept).
+ * munlockall ends both. MCL_ONFAULT - lock each page when it is first touched -
+ * is the same thing here, where a mapped page already exists. */
 static long linux_lock_all(int on) {
     vibeos_procstate_t *ps;
     vibeos_vma_t *reg;
@@ -851,15 +871,44 @@ static long linux_lock_all(int on) {
     return r;
 }
 
+/* MCL_FUTURE recorded, under the mm lock its readers hold. */
+static long linux_lock_future(uint32_t on) {
+    vibeos_procstate_t *ps;
+    int me;
+
+    if (!(ps = linux_mm_caller(&me))) {
+        return -VIBEOS_EINVAL;
+    }
+    ks_mm_lock(ps);
+    ps->mlock_future = on;
+    ks_mm_unlock(ps);
+    return 0;
+}
+
 static long linux_sys_mlockall(uint64_t flags) {
+    long r = 0;
+
     if (flags == 0u || (flags & ~(uint64_t)(LINUX_MCL_CURRENT | LINUX_MCL_FUTURE | LINUX_MCL_ONFAULT)) ||
         flags == LINUX_MCL_ONFAULT) {
         return -VIBEOS_EINVAL;
     }
-    return (flags & LINUX_MCL_CURRENT) ? linux_lock_all(1) : 0;
+    if (flags & LINUX_MCL_CURRENT) {
+        r = linux_lock_all(1);
+    }
+    if (r == 0 && (flags & LINUX_MCL_FUTURE)) {
+        r = linux_lock_future(1u);
+    }
+    return r;
 }
 
-static long linux_sys_munlockall(void) { return linux_lock_all(0); }
+static long linux_sys_munlockall(void) {
+    long r = linux_lock_all(0);
+
+    if (r == 0) {
+        r = linux_lock_future(0u);
+    }
+    return r;
+}
 
 /* mremap(old, old_len, new_len, flags, new_addr): change a mapping's size, and
  * its address if it has to move.
@@ -923,6 +972,13 @@ static long linux_mremap_locked(int me, vibeos_procstate_t *ps, uint64_t old, ui
              * region is a failed mremap like an unmapped page is. */
             if (i == new_len &&
                 vibeos_vma_insert(&ps->vmas, old + old_len, new_len - old_len, reg->prot, kind, 0, 0) == 0) {
+                /* Locked like any new mapping under MCL_FUTURE, or given back
+                 * (M-104). */
+                if (ps->mlock_future &&
+                    linux_lock_range(me, ps, old + old_len, old + new_len, 1) != 0) {
+                    (void)linux_unmap_range(me, ps, old + old_len, old + new_len);
+                    return -VIBEOS_EAGAIN;
+                }
                 return (long)old;
             }
             for (; i > old_len; i -= 4096ull) {
@@ -987,6 +1043,13 @@ static long linux_mremap_locked(int me, vibeos_procstate_t *ps, uint64_t old, ui
 
         if (vibeos_vma_insert(&ps->vmas, base, new_len, region_prot, kind, region_id, region_off) == 0) {
             if (linux_unmap_range(me, ps, old, old + old_len) == 0) {
+                /* The moved pages kept their marks; what the move grew by is
+                 * locked under MCL_FUTURE. The old mapping is gone by now, so a
+                 * lock that cannot be had leaves the growth unlocked rather
+                 * than undoing a move that has happened (M-104). */
+                if (ps->mlock_future && new_len > old_len) {
+                    (void)linux_lock_range(me, ps, base + old_len, base + new_len, 1);
+                }
                 return (long)base;
             }
             (void)vibeos_vma_remove(&ps->vmas, base, new_len);

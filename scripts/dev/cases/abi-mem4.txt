@@ -20,6 +20,16 @@
 # 15. MADV_POPULATE_WRITE populates a region it may not write (M-103).
 #     Expect "populating for an access the region refuses is EINVAL"
 #     (t_madvise_populate).
+# 16. mlockall forgets MCL_FUTURE (M-104). Expect "a mapping made afterwards
+#     is locked" (t_mlockall_future).
+# 17. brk grows unlocked under MCL_FUTURE. Expect "and so is the heap".
+# 18. mmap keeps a mapping MCL_FUTURE could not lock. Expect "a mapping
+#     RLIMIT_MEMLOCK cannot hold is EAGAIN, and not made".
+#     Not a case: a child inheriting MCL_FUTURE. The field is cleared in
+#     linux_procstate_defaults, which the machine's new process state calls;
+#     the fake kernel memsets its process states, so removing the clear would
+#     pass every host test - the fake's memset is CLAUDE.md's warning about
+#     this exact shape.
 #
 # Target source: kernel/abi/linux/mm.c
 # Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/linux/mm.c scripts/dev/cases/abi-mem4.txt
@@ -150,3 +160,24 @@
             (advice == LINUX_MADV_POPULATE_WRITE &&
 +++ new
             (0 &&
+
+### mlockall forgets MCL_FUTURE (M-104)
+--- old
+    ps->mlock_future = on;
++++ new
+    ps->mlock_future = 0u * on;
+
+### brk grows unlocked under MCL_FUTURE (M-104)
+--- old
+        if (ps->mlock_future &&
+            linux_lock_range(me, ps, ps->brk_cur, new_brk, 1) != 0) {
++++ new
+        if (0 && ps->mlock_future &&
+            linux_lock_range(me, ps, ps->brk_cur, new_brk, 1) != 0) {
+
+### mmap keeps a mapping MCL_FUTURE could not lock (M-104)
+--- old
+        r = -VIBEOS_EAGAIN;
+    }
++++ new
+    }

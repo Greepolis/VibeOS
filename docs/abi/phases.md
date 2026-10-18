@@ -1665,8 +1665,10 @@ anything below was fixed: 113 passed. The last: 131 passed, 10 failed, 177 broke
   carries a mark in its entry (`VIBEOS_PTE_LOCKED`, bit 54) and page-out
   refuses it; a page in swap is brought back when it is locked. The copy a
   write fault makes, a change of protection and a move keep the mark; a fork
-  does not hand it to the child. **Gap**: `MCL_FUTURE` is accepted and a
-  mapping made afterwards is not locked.
+  does not hand it to the child. `MCL_FUTURE` is kept: mmap, brk, mremap and
+  the stack as it grows lock their new pages as they are made, and a mapping
+  RLIMIT_MEMLOCK cannot hold is refused (until 2026-10-18 it was accepted and
+  not kept - M-104).
 - **`mremap`.** Shrinks; grows where it stands when the address space after it
   is free; moves when it is not and `MREMAP_MAYMOVE` allows, or to the address
   `MREMAP_FIXED` names. A move takes each entry out of the old address and puts

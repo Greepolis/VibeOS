@@ -2580,6 +2580,12 @@ static int hw_stack_grow(hw_task_t *t, uint64_t fault_va) {
                         PTE_PRESENT | PTE_WRITE | PTE_USER | PTE_NX) == 0) {
             vibeos_mm_stats()->stack_grown++;
             done = 1;
+            /* mlockall(MCL_FUTURE) covers the stack as it grows (M-104). Not
+             * against RLIMIT_MEMLOCK: a fault has no caller to refuse, and a
+             * page the program needs to keep running is not withheld for it. */
+            if (ps->mlock_future) {
+                (void)vibeos_vmspace_set_locked(&sv, page_va, 1);
+            }
         }
         hw_page_put((uint64_t)(uintptr_t)page);   /* the mapping owns it, or nobody does */
     }

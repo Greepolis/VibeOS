@@ -5908,6 +5908,52 @@ static void t_madvise_populate(void) {
            "populating for an access the region refuses is EINVAL");
 }
 
+/* mlockall(MCL_FUTURE) (M-104): what is mapped afterwards is locked as it is
+ * made - mmap, brk, mremap's growth - and a mapping RLIMIT_MEMLOCK cannot hold
+ * is not made; munlockall ends it, and a child does not inherit it. */
+static void t_mlockall_future(void) {
+    long at, big, brk0, brk1, pid;
+    uint32_t regions;
+    int me = fresh(203), child;
+
+    expect(SYS1(151, 2 /* MCL_FUTURE */) == 0, "mlockall(MCL_FUTURE) alone");
+    at = MMAP(0, 4096, 3, MAP_PRIV_ANON, -1, 0);
+    expect(at > 0 && (entry_of(me, (uint64_t)at) & VIBEOS_PTE_LOCKED),
+           "a mapping made afterwards is locked");
+    brk0 = SYS1(12, 0);
+    brk1 = SYS1(12, (uint64_t)brk0 + 8192u);
+    expect(brk1 == brk0 + 8192 && (entry_of(me, (uint64_t)brk0) & VIBEOS_PTE_LOCKED),
+           "and so is the heap as it grows");
+    expect(SYS5(25, (uint64_t)at, 4096, 8192, 0, 0) == at &&
+               (entry_of(me, (uint64_t)at + 4096u) & VIBEOS_PTE_LOCKED),
+           "and what mremap grows a mapping by");
+    {
+        /* The limit binds everybody but the superuser: a megabyte, then root
+         * given up. */
+        uint64_t rl = kf_ualloc(16);
+
+        ((uint64_t *)kf_uptr(rl))[0] = 1ull << 20;
+        ((uint64_t *)kf_uptr(rl))[1] = 1ull << 20;
+        expect(SYS2(160, LINUX_RLIMIT_MEMLOCK, rl) == 0 && SYS1(105, 1000) == 0,
+               "RLIMIT_MEMLOCK of a megabyte, and not root");
+    }
+    regions = ks_ps(me)->vmas.count;
+    big = MMAP(0, 2ull << 20, 3, MAP_PRIV_ANON, -1, 0);
+    expect(big == -VIBEOS_EAGAIN && ks_ps(me)->vmas.count == regions,
+           "a mapping RLIMIT_MEMLOCK cannot hold is EAGAIN, and not made");
+    pid = SYS0(57);
+    child = slot_of_pid(pid);
+    kf_set_current(child);
+    at = MMAP(0, 4096, 3, MAP_PRIV_ANON, -1, 0);
+    expect(at > 0 && !(entry_of(child, (uint64_t)at) & VIBEOS_PTE_LOCKED),
+           "a child does not inherit MCL_FUTURE");
+    kf_set_current(me);
+    expect(SYS0(152) == 0, "munlockall");
+    at = MMAP(0, 4096, 3, MAP_PRIV_ANON, -1, 0);
+    expect(at > 0 && !(entry_of(me, (uint64_t)at) & VIBEOS_PTE_LOCKED),
+           "and after munlockall a mapping is not locked");
+}
+
 static void t_memory_calls(void) {
     uint64_t vec, name, buf;
     uint8_t x = 'A', y = 0, *vp;
@@ -6366,6 +6412,7 @@ int test_linux_handlers(void) {
     t_mmap_shared();
     t_memory_calls();
     t_madvise_populate();
+    t_mlockall_future();
     t_credentials();
     t_fork_snapshot_and_groups();
     t_procfs();
@@ -6504,19 +6551,6 @@ int test_linux_gaps(void) {
         (void)SYS3(28, (uint64_t)at, 4096, 4);
         (void)kf_peek((uint64_t)at, &c, 1);
         gap(28, at > 0 && c == 'f', "MADV_DONTNEED on a private page of a file brings the file back");
-    }
-
-    /* mlockall (151), L3: MCL_FUTURE locks what is mapped afterwards. */
-    {
-        int me = fresh(64);
-        vibeos_vmspace_t as;
-        uint64_t *e;
-        long at;
-        r = SYS1(151, 3 /* CURRENT|FUTURE */);
-        at = sys(9, 0, 4096, 3, 0x22, (uint64_t)-1, 0, 0);
-        as = ks_vm(me);
-        e = vibeos_vmspace_entry(&as, (uint64_t)at);
-        gap(151, r == 0 && e && (*e & VIBEOS_PTE_LOCKED), "mlockall(MCL_FUTURE) locking a later mapping");
     }
 
     /* memfd_create (319), L3: seals. */
