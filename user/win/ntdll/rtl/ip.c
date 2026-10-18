@@ -354,17 +354,20 @@ char *RtlIpv6AddressToStringA(const vibeos_in6_addr_t *addr, char *str) {
     if (best_len < 2) {
         best = -1;
     }
-    for (i = 0; i < (mapped ? 6 : 8); i++) {
+    /* A while loop: the longest run of zero groups is skipped in one step. */
+    i = 0;
+    while (i < (mapped ? 6 : 8)) {
         if (i == best) {
             *str++ = ':';
             *str++ = ':';
-            i += best_len - 1;
+            i += best_len;
             continue;
         }
         if (i > 0 && !(best >= 0 && i == best + best_len)) {
             *str++ = ':';
         }
         str = put_hex(str, g[i]);
+        i++;
     }
     if (mapped) {
         vibeos_in_addr_t v4;

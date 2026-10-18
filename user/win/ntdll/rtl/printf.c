@@ -71,24 +71,25 @@ size_t vibeos_rtl_vsnprintf(char *buf, size_t cap, const char *fmt, va_list ap) 
     if (cap == 0) {
         return 0;
     }
-    for (; *fmt; fmt++) {
+    while (*fmt) {
         int left = 0, plus = 0, space = 0, alt = 0, zero = 0;
         long width = 0, prec = -1;
         int lenmod = 0;          /* 0 int, 1 hh, 2 h, 3 l, 4 64-bit, 5 w */
         char conv;
 
         if (*fmt != '%') {
-            put(&o, *fmt);
+            put(&o, *fmt++);
             continue;
         }
         fmt++;
-        for (;; fmt++) {
+        for (;;) {
             if (*fmt == '-') left = 1;
             else if (*fmt == '+') plus = 1;
             else if (*fmt == ' ') space = 1;
             else if (*fmt == '#') alt = 1;
             else if (*fmt == '0') zero = 1;
             else break;
+            fmt++;
         }
         if (*fmt == '*') {
             width = va_arg(ap, int);
@@ -114,7 +115,7 @@ size_t vibeos_rtl_vsnprintf(char *buf, size_t cap, const char *fmt, va_list ap) 
                 }
             }
         }
-        for (;; fmt++) {
+        for (;;) {
             if (*fmt == 'h') lenmod = lenmod == 2 ? 1 : 2;
             else if (*fmt == 'l') lenmod = lenmod == 3 ? 4 : 3;
             else if (*fmt == 'w') lenmod = 5;
@@ -125,11 +126,13 @@ size_t vibeos_rtl_vsnprintf(char *buf, size_t cap, const char *fmt, va_list ap) 
                 else if (fmt[1] == '3' && fmt[2] == '2') { lenmod = 0; fmt += 2; }
                 else lenmod = 4;
             } else break;
+            fmt++;
         }
         conv = *fmt;
         if (!conv) {
             break;
         }
+        fmt++;
         if (prec >= 0) {
             zero = 0;            /* a precision turns the 0 flag off for integers */
         }

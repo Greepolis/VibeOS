@@ -833,6 +833,8 @@ static int dec_expand(double v, char *dig, int *intlen) {
     x.d = v;
     ex = (int)((x.u >> 52) & 0x7FFu);
     mant = x.u & 0xFFFFFFFFFFFFFull;
+    /* A subnormal has no implicit leading bit and the smallest exponent; a
+     * normal number has both. */
     if (ex == 0) {
         ex = 1;
     } else {
@@ -845,6 +847,9 @@ static int dec_expand(double v, char *dig, int *intlen) {
         *intlen = 1;
         return 1;
     }
+    /* An integer: mant shifted left by ex, as a big number in 32-bit limbs
+     * (2^1024 needs 33), divided by 10^9 repeatedly - each remainder is nine
+     * digits, least significant first. */
     if (ex >= 0) {
         uint32_t limb[36];
         char rev[400];
@@ -878,6 +883,7 @@ static int dec_expand(double v, char *dig, int *intlen) {
                 break;
             }
         }
+        /* The last group was padded to nine digits: its leading zeros go. */
         while (rn > 1 && rev[rn - 1] == '0') {
             rn--;
         }
@@ -887,6 +893,9 @@ static int dec_expand(double v, char *dig, int *intlen) {
         *intlen = n;
         return n;
     }
+    /* A fraction: the integer part from the bits above the binary point, then
+     * the bits below it multiplied by ten until nothing is left - which
+     * happens, because v is a multiple of 2^-1074. */
     {
         int s = -ex, i;
         uint64_t ip = s < 64 ? mant >> s : 0;
@@ -1439,6 +1448,9 @@ static double pow10_int(int e) {
     return neg ? 1.0 / r : r;
 }
 
+/* sscanf as msvcrt has it: the return is the number of assignments, or EOF
+ * when the input ran out before the first conversion - which is why running
+ * out (input_failure) and a mismatch (done) are two exits, not one. */
 int vc_vsscanf(const char *s, const char *f, va_list ap) {
     const char *start = s;
     int assigned = 0, nconv = 0;
@@ -1448,6 +1460,7 @@ int vc_vsscanf(const char *s, const char *f, va_list ap) {
         long width = 0;
         int conv;
 
+        /* White space in the format matches any amount of it, none included. */
         if (is_space((uint8_t)*f)) {
             while (is_space((uint8_t)*f)) f++;
             while (is_space((uint8_t)*s)) s++;
@@ -1460,6 +1473,8 @@ int vc_vsscanf(const char *s, const char *f, va_list ap) {
             f++;
             continue;
         }
+        /* A directive: assignment suppression, width, then msvcrt's size
+         * prefixes - I64 and I32 included - and the conversion. */
         f++;
         if (*f == '*') {
             suppress = 1;
@@ -1492,6 +1507,7 @@ int vc_vsscanf(const char *s, const char *f, va_list ap) {
             s++;
             break;
         case 'n':
+            /* Characters consumed so far; not counted as an assignment. */
             if (!suppress) {
                 *va_arg(ap, int *) = (int)(s - start);
             }
@@ -1509,6 +1525,8 @@ int vc_vsscanf(const char *s, const char *f, va_list ap) {
                 s++;
                 left--;
             }
+            /* "0x" is a prefix only if a hex digit follows it and the width
+             * leaves room; otherwise the 0 is the number. */
             if ((base == 0 || base == 16) && s[0] == '0' && (s[1] == 'x' || s[1] == 'X') && left > 2 &&
                 digit_value((uint8_t)s[2]) < 16) {
                 s += 2;

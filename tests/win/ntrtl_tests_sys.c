@@ -269,6 +269,8 @@ static void t_image_mingw(void) {
         return;
     }
     memset(dir, 0, sizeof(dir));
+    /* objdump -h: one line per section - index, name, size, VMA, LMA, file
+     * offset - and continuation lines of flags, which do not parse. */
     for (line = strtok_r(htxt, "\n", &save); line; line = strtok_r(0, "\n", &save)) {
         int idx;
         char name[32];
@@ -281,6 +283,8 @@ static void t_image_mingw(void) {
             nsec++;
         }
     }
+    /* objdump -p: the optional header's fields by name, and the data
+     * directory as "Entry <n> <rva> <size>". */
     for (line = strtok_r(ptxt, "\n", &save); line; line = strtok_r(0, "\n", &save)) {
         unsigned long long v;
         unsigned e, sz;
@@ -317,6 +321,9 @@ static void t_image_mingw(void) {
             memcpy(mapped + sec[i].rva, file + sec[i].off, (size_t)sec[i].size);
         }
     }
+    /* Each directory asked of the file as it lies on disk and of the image as
+     * mapped: two addresses objdump's numbers predict, and the same bytes at
+     * both. */
     for (i = 0; i < 16; i++) {
         uint32_t sz = 0xDEAD;
         void *flat = RtlImageDirectoryEntryToData(file, 0, (uint16_t)i, &sz);
@@ -625,6 +632,9 @@ typedef struct {
     const char *file;      /* the file part, or NULL if there is none */
 } pathcase_t;
 
+/* RtlDosPathNameToNtPathName_U over a table of DOS paths, each with the
+ * current directory it is resolved against: the NT path, the file part, and
+ * the heap given back. */
 static void t_paths(void) {
     static const pathcase_t cases[] = {
         {"C:\\Dir\\Sub", "C:\\x", "\\??\\C:\\x", "x"},
@@ -686,6 +696,8 @@ static void t_paths(void) {
         vibeos_boolean_t ok;
 
         set_cwd(c->cwd);
+        /* Filled with garbage first: an output the function forgets to set
+         * must not pass for one it set to zero. */
         memset(&nt, 0xEE, sizeof(nt));
         memset(&rel, 0xFF, sizeof(rel));
         ok = RtlDosPathNameToNtPathName_U(wide(in, c->dos), &nt, &fp, &rel);
@@ -699,6 +711,7 @@ static void t_paths(void) {
         }
         CHECK(ws_is(nt.Buffer, nt.Length / 2u, c->nt), "\"%s\" (cwd %s) -> expected \"%s\", got length %u first %04x",
               c->dos, c->cwd ? c->cwd : "none", c->nt, nt.Length, nt.Buffer[0]);
+        /* The check above says which case; this says what came back instead. */
         if (!ws_is(nt.Buffer, nt.Length / 2u, c->nt)) {
             char got[300];
             size_t k;

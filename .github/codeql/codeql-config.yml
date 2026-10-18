@@ -14,3 +14,16 @@ query-filters:
       # alternative the rule suggests - splitting it up or going table-driven -
       # would restructure the central syscall path for a style note, on code
       # that every user-space call passes through. Not worth the risk.
+  - exclude:
+      id: cpp/unused-static-function
+  - exclude:
+      id: cpp/unused-static-variable
+      # Both cannot see through the X-macro tables every syscall handler is
+      # reached by (VIBEOS_DEFINE_SYSCALLS): a handler is called through a
+      # function pointer in a table, so the handler, its helpers and the
+      # statics only they read are "unreachable". The alerts of this shape
+      # (#257, #258, #263, #269-#276, #285 among them) were each checked by
+      # hand and dismissed as false positives before this exclusion; none was
+      # a defect. The real case - a static nobody uses - is what
+      # -Wunused-function and -Wunused-variable report, and check.sh prints
+      # the gcc and clang warning counts, which are held at zero.

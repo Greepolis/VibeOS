@@ -568,6 +568,9 @@ static long create_section(uint64_t *h, uint32_t attributes, uint64_t file) {
     return r;
 }
 
+#ifdef VIBEOS_PE_FIXTURE_DIR
+/* Only the fixture's part of t_sections maps a view: without mingw-w64 there is
+ * no image to map, and the helper would be defined for nothing. */
 static long map_view(uint64_t sec, uint64_t process, uint64_t *base, uint64_t *size) {
     uint64_t b = kf_ualloc(8), s = kf_ualloc(8);
     uint64_t rest[6] = { 0, 0, s, 1, 0, 0x02u };
@@ -581,9 +584,10 @@ static long map_view(uint64_t sec, uint64_t process, uint64_t *base, uint64_t *s
         return r;
     }
 }
+#endif
 
 static void t_sections(void) {
-    uint64_t fh, sh, base = 0, size = 0;
+    uint64_t fh, sh;
 
     fresh(42);
     kf_fs_add("/win", 0, 0, 1);
@@ -609,6 +613,7 @@ static void t_sections(void) {
            "the console is not a file to map");
 #ifdef VIBEOS_PE_FIXTURE_DIR
     {
+        uint64_t base = 0, size = 0;
         char path[512];
         FILE *f;
         static uint8_t img[1u << 17];

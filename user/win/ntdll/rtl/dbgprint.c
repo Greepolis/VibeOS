@@ -21,7 +21,7 @@ uint32_t vDbgPrintExWithPrefix(const char *prefix, uint32_t component, uint32_t 
     (void)component;
     (void)level;
     if (prefix) {
-        while (prefix[n] && n < DBG_MAX - 1u) {
+        while (n < DBG_MAX - 1u && prefix[n]) {
             buf[n] = prefix[n];
             n++;
         }

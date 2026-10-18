@@ -37,7 +37,9 @@ def main():
         return 2
     dll, deffile = sys.argv[1], sys.argv[2]
     objdump = sys.argv[3] if len(sys.argv) > 3 else 'x86_64-w64-mingw32-objdump'
-    out = subprocess.run([objdump, '-p', dll], capture_output=True, text=True, check=True).stdout
+    # The objdump and the DLL are CMake's arguments to a ctest, passed as a list: no
+    # shell, and nothing a user supplies.
+    out = subprocess.run([objdump, '-p', dll], capture_output=True, text=True, check=True).stdout  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
 
     wanted = def_names(deffile)
     problems = []

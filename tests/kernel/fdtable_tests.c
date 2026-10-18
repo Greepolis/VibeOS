@@ -132,7 +132,6 @@ int test_fdtable(void) {
     /* ---- an NT handle's access mask (docs/abi/windows.md W2) --------------------- */
     {
         vibeos_file_t *h = vibeos_file_alloc(&g_ops, 0);
-        int n;
 
         if (!expect(h != 0, "a description for a handle")) { return -1; }
         n = vibeos_fdtable_install(&a, h, 0, 0);

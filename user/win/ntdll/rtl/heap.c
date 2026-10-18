@@ -98,7 +98,10 @@ void vibeos_rtl_free(void *p) {
         (((uintptr_t)b) & 15u) != 0) {
         return;                           /* not ours, or nothing allocated yet */
     }
-    blk = (freeblk_t *)(b - HDR);
+    /* The block from the arena and an offset, not from the caller's pointer:
+     * the range check above says they are the same address, and what goes on
+     * the free list is then the arena's own memory by construction. */
+    blk = (freeblk_t *)(g_arena + (size_t)(b - g_arena) - HDR);
     if ((blk->h.magic & M_MASK) != M_ALLOC) {
         return;                           /* a double free, or an interior pointer */
     }
