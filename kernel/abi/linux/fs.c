@@ -1706,7 +1706,7 @@ static long linux_sys_fcntl(uint64_t fd, uint64_t cmd, uint64_t arg) {
             }
             /* The description's, so every descriptor naming it sees the change:
              * that is what makes O_NONBLOCK on a dup'd pipe end mean anything. */
-            f->flags = (f->flags & ~LINUX_SETFL_MASK) | ((uint32_t)arg & LINUX_SETFL_MASK);
+            (void)vibeos_file_change_flags(f, LINUX_SETFL_MASK, (uint32_t)arg & LINUX_SETFL_MASK);
             vibeos_file_put(f);
             return 0;
         case LINUX_F_GETPIPE_SZ:
@@ -2115,7 +2115,7 @@ static long linux_sys_ioctl(uint64_t fd, uint64_t req, uint64_t arg) {
                 r = -VIBEOS_EFAULT;
             } else {
                 /* The description's flag, as F_SETFL sets it. */
-                f->flags = v ? (f->flags | VIBEOS_O_NONBLOCK) : (f->flags & ~VIBEOS_O_NONBLOCK);
+                (void)vibeos_file_change_flags(f, VIBEOS_O_NONBLOCK, v ? VIBEOS_O_NONBLOCK : 0u);
                 r = 0;
             }
             break;

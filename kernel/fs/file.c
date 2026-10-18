@@ -82,6 +82,20 @@ void vibeos_file_get(vibeos_file_t *f) {
     }
 }
 
+uint32_t vibeos_file_change_flags(vibeos_file_t *f, uint32_t clear, uint32_t set) {
+    uint32_t old, want;
+
+    if (!f) {
+        return 0;
+    }
+    old = __atomic_load_n(&f->flags, __ATOMIC_ACQUIRE);
+    do {
+        want = (old & ~clear) | set;
+    } while (!__atomic_compare_exchange_n(&f->flags, &old, want, 0, __ATOMIC_ACQ_REL,
+                                          __ATOMIC_ACQUIRE));
+    return old;
+}
+
 void vibeos_file_paths_moved(const char *from, const char *to) {
     uint32_t i;
 

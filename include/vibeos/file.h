@@ -217,6 +217,13 @@ vibeos_file_t *vibeos_file_alloc(const vibeos_file_ops_t *ops, uint32_t flags);
 /* One more reference - a descriptor duplicated, a table copied at fork. */
 void vibeos_file_get(vibeos_file_t *f);
 
+/* Clear the `clear` bits of a description's flags and set the `set` bits, in
+ * one compare-exchange; the old flags. Every change after creation goes through
+ * here: F_SETFL and FIONBIO each read the word and wrote it back whole, so two
+ * of them at once on one description - two threads, or two processes sharing
+ * it - lost one update (M-101). */
+uint32_t vibeos_file_change_flags(vibeos_file_t *f, uint32_t clear, uint32_t set);
+
 /* One fewer. The last runs ops->release, then frees the slot. A put with no
  * reference to give back is counted (VIBEOS_MBZ_FILE_PUT_UNDERFLOW), not clamped:
  * it is a descriptor released twice, and clamping would hide the second owner. */

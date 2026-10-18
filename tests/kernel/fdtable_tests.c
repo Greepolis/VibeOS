@@ -129,6 +129,25 @@ int test_fdtable(void) {
     vibeos_file_put(f);
     g_refuse_pages = 0;
 
+    /* ---- a description's flags change in one step (M-101) ------------------------- */
+    {
+        vibeos_file_t *d = vibeos_file_alloc(&g_ops, VIBEOS_O_RDWR | VIBEOS_O_APPEND);
+
+        if (!expect(d != 0, "a description for its flags")) { return -1; }
+        if (!expect(vibeos_file_change_flags(d, 0u, VIBEOS_O_NONBLOCK) ==
+                        (VIBEOS_O_RDWR | VIBEOS_O_APPEND) &&
+                    d->flags == (VIBEOS_O_RDWR | VIBEOS_O_APPEND | VIBEOS_O_NONBLOCK),
+                    "a change sets its bits, returns the flags before it, and keeps the rest")) {
+            return -1;
+        }
+        if (!expect(vibeos_file_change_flags(d, VIBEOS_O_APPEND, 0u) != 0u &&
+                    d->flags == (VIBEOS_O_RDWR | VIBEOS_O_NONBLOCK),
+                    "and clears only the bits it was given")) {
+            return -1;
+        }
+        vibeos_file_put(d);
+    }
+
     /* ---- an NT handle's access mask (docs/abi/windows.md W2) --------------------- */
     {
         vibeos_file_t *h = vibeos_file_alloc(&g_ops, 0);
