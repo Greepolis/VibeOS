@@ -14,6 +14,9 @@
 #     see - recorded as unverifiable here, like AHCI's hardware-only cases.
 #  7. umask keeps bits above 0777. Expect "umask returns the one before, and
 #     keeps permission bits only". NOT RED until the test set a bit above them.
+#  8. copy_file_range sums an offset and the length (M-102). Expect "an overlap
+#     is EINVAL however long the length". NOT RED with the source at 0: the
+#     wrapped end still came out above it; the test puts it at 100.
 #
 # Target source: kernel/abi/linux/fs.c
 # Run: SABOTAGE_VERIFY="bash scripts/dev/verify-host.sh build-gcc-Release" python3 scripts/dev/sabotage.py kernel/abi/linux/fs.c scripts/dev/cases/abi-file-calls.txt
@@ -34,9 +37,9 @@
 
 ### copy_file_range copies a range onto itself
 --- old
-        if (in->mnt == out->mnt && in->node == out->node && a < b + len && b < a + len) {
+        if (in->mnt == out->mnt && in->node == out->node && a < b_end && b < a_end) {
 +++ new
-        if (0 && a < b) {
+        if (0 && a < b_end && b < a_end) {
 
 ### fallocate sets the size it was given
 --- old
@@ -57,3 +60,9 @@ static long linux_sys_preadv2(uint64_t fd, uint64_t iov, uint64_t cnt, uint64_t 
     ps->umask = (uint32_t)mask & 0777u;
 +++ new
     ps->umask = (uint32_t)mask;
+
+### copy_file_range sums an offset and the length (M-102)
+--- old
+        uint64_t b_end = len > ~0ull - b ? ~0ull : b + len;
++++ new
+        uint64_t b_end = b + len;

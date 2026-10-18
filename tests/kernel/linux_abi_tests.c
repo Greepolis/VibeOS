@@ -762,6 +762,11 @@ static void t_kernel_copies(void) {
     *(uint64_t *)kf_uptr(off2) = 10;
     expect(sys(326, (uint64_t)in, off, (uint64_t)in, off2, 20, 0, 0) == -VIBEOS_EINVAL,
            "a range copied onto itself is EINVAL");
+    *(uint64_t *)kf_uptr(off) = 100;   /* off_out + len wraps below this */
+    *(uint64_t *)kf_uptr(off2) = 10;
+    expect(sys(326, (uint64_t)in, off, (uint64_t)in, off2, ~0ull - 5u, 0, 0) == -VIBEOS_EINVAL &&
+               tmp_size("/tmp/src") == 6000u,
+           "an overlap is EINVAL however long the length: its end does not wrap (M-102)");
     expect(sys(326, (uint64_t)in, off, (uint64_t)out, off2, 20, 1, 0) == -VIBEOS_EINVAL,
            "a flag is EINVAL");
     expect(sys(326, (uint64_t)in, off, (uint64_t)pw, 0, 20, 0, 0) == -VIBEOS_EINVAL,

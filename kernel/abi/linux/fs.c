@@ -1290,7 +1290,13 @@ static long linux_sys_copy_file_range(uint64_t in_fd, uint64_t in_uptr, uint64_t
     }
     if (r == 0) {
         uint64_t a = in_uptr ? ioff : in->pos, b = out_uptr ? ooff : out->pos;
-        if (in->mnt == out->mnt && in->node == out->node && a < b + len && b < a + len) {
+        /* Each range's end held at the largest offset rather than summed: a
+         * huge len wrapped b + len to a small number, the overlap test came
+         * out false and a file was copied onto itself (M-102). Linux cuts len
+         * to what the source holds first, so it never meets the sum. */
+        uint64_t a_end = len > ~0ull - a ? ~0ull : a + len;
+        uint64_t b_end = len > ~0ull - b ? ~0ull : b + len;
+        if (in->mnt == out->mnt && in->node == out->node && a < b_end && b < a_end) {
             r = -VIBEOS_EINVAL;
         }
     }

@@ -165,6 +165,21 @@ Static reading in four areas: four high findings and thirteen medium.
 | M-098 | M | exFAT: a directory whose FAT chain loops, with no end-of-directory entry in it, was scanned for ever - `exfat_dir_scan` walked each cluster again from the first through `exfat_nth_cluster` and stopped only at an end marker or a chain that ended | **fixed** `1a6fda4` | the scan follows the chain one link at a time with Brent's cycle check, bounded by the volume's cluster count; `exfat_nth_cluster` refuses an index past it; a broken chain is EIO and `exfat_bad_metadata`, not ENOENT. `test_exfat_cyclic_directory` (a loop of two and one of twelve, past the block cache, with a read count); `exfat-cycle.txt` 3 cases, red (the one without either check hangs) |
 | M-099 | M | recvmsg: SCM_RIGHTS descriptors were installed before the control buffer was written, and a failed copy left them in the table under numbers nobody was told | **fixed** `8a05bb1` | the buffer is judged before anything is installed; a copy that fails after (a sibling's munmap) takes back each descriptor that still names what was put there (`linux_fd_withdraw`, by description and tenancy); the sender's name is written before the rights. t_unix: a bad buffer and one that faults between judgement and copy, the lowest free descriptor unchanged after both; `scm-rights-out.txt`, the withdrawal red, the judgement alone NOT RED and why |
 
+## Eleventh review (2026-10-18)
+
+The review's R10-1 and its M-101 are one finding, kept as M-101. Two claims
+were checked and are not findings: M-096's rollback is in the paths named,
+and utimensat goes through M-095's saturating conversion - the overflow it
+describes is in `utime`, which M-095's fix missed (below, under M-095).
+
+| ID | Sev | Finding | Status | Evidence / next step |
+|---|---|---|---|---|
+| M-100 | M | clone with CLONE_VM and without CLONE_THREAD: page tables shared, region lists and locks separate | **to verify** | reachability, synchronisation and the address space's lifetime first; refuse the combination or share the structures |
+| M-101 | M | F_SETFL and FIONBIO each rewrite `f->flags` whole: two at once on one description lose one update (R10-1 is the same finding) | **open** | |
+| M-102 | M | copy_file_range's overlap test summed an offset and the length, so a huge length wrapped the end and a file was copied onto itself | **fixed** (2026-10-18) | each end is held at the largest offset instead of summed; the host test puts the source above the destination, where the wrapped end landed below it. `abi-file-calls.txt` case 8 red (NOT RED with the source at 0: the wrapped end still came out above it), and case 3's anchor moved with the line |
+| M-103 | M | madvise accepted MADV_POPULATE_READ and _WRITE and populated nothing | **open** | |
+| M-104 | M | mlockall(MCL_FUTURE) was accepted and later mappings were not locked | **open** | |
+
 ## Found internally while verifying the above
 
 | What | Status | Evidence / next step |
