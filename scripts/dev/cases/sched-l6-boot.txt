@@ -16,7 +16,7 @@
 
 ### sched_setaffinity answers 0 and pins nothing
 --- old
-    err = ks_task_set_affinity(t, mask == ks_cpus_online_mask() ? 0u : (uint32_t)mask) == 0
-              ? 0 : -VIBEOS_EINVAL;
+        err = ks_task_set_affinity(t, mask == ks_cpus_online_mask() ? 0u : (uint32_t)mask) == 0
+                  ? 0 : -VIBEOS_EINVAL;
 +++ new
-    err = 0;
+        err = 0;
