@@ -7,6 +7,7 @@
 #include "nt_internal.h"
 #include "vibeos/path.h"
 #include "vibeos/fileops.h"
+#include "vibeos/cred.h"
 
 vibeos_file_t *nt_file_get(uint64_t handle) {
     vibeos_procstate_t *ps;
@@ -26,6 +27,22 @@ vibeos_file_t *nt_file_get(uint64_t handle) {
     vibeos_file_get(f);
     ks_unlock(&ps->files_lock);
     return f;
+}
+
+/* Who is asking: the process's credentials, which a Windows program has as a
+ * Linux one does (docs/abi/ L2), read under the lock that guards them. Root
+ * for a task with no process state - the kernel itself. */
+static void nt_cred(vibeos_cred_t *out) {
+    int me = ks_current();
+    vibeos_procstate_t *ps = me >= 0 ? ks_ps(me) : 0;
+
+    if (!ps) {
+        vibeos_cred_root(out);
+        return;
+    }
+    ks_lock(&ps->files_lock, __func__);
+    *out = ps->cred;
+    ks_unlock(&ps->files_lock);
 }
 
 uint64_t nt_handle_of_fd(uint32_t fd) {
@@ -138,6 +155,7 @@ static uint32_t nt_status_of_open(long err) {
 #define NT_FILE_WRITE_DATA     0x0002u
 #define NT_FILE_APPEND_DATA    0x0004u
 #define NT_FILE_WRITE_EA       0x0010u
+#define NT_FILE_EXECUTE        0x0020u
 #define NT_FILE_WRITE_ATTRIBUTES 0x0100u
 #define NT_FILE_ALL_ACCESS     0x001F01FFu
 #define NT_FILE_OPENED         1u
@@ -156,6 +174,7 @@ static long nt_open_file(uint64_t out, uint64_t want, uint64_t oa, uint64_t iosb
     uint32_t attributes = 0, st, access;
     char path[VIBEOS_FILE_PATH];
     vibeos_path_t w;
+    vibeos_cred_t who;
     vibeos_file_t *f;
     vibeos_nt_iosb_t iosb;
     long err = 0;
@@ -182,9 +201,19 @@ static long nt_open_file(uint64_t out, uint64_t want, uint64_t oa, uint64_t iosb
                   NT_FILE_WRITE_EA | NT_FILE_WRITE_ATTRIBUTES | VIBEOS_DELETE)) {
         return NT_STATUS(VIBEOS_STATUS_NOT_IMPLEMENTED);
     }
-    rc = vibeos_path_walk("/", "/", path, vibeos_open_walk_flags(VIBEOS_O_RDONLY), &w);
+    /* Walked and opened as the caller, as openat is: search permission on
+     * every directory, read permission on the file, and execute permission
+     * when FILE_EXECUTE is asked - the loader asks it. Walked by the kernel
+     * for itself it was a way to learn whether any path existed, and to map a
+     * program its owner had kept to themselves (M-105). */
+    nt_cred(&who);
+    rc = vibeos_path_walk_as("/", "/", path, vibeos_open_walk_flags(VIBEOS_O_RDONLY), &who, &w);
     if (rc != 0) {
         return NT_STATUS(nt_status_of_open(rc));
+    }
+    if (vibeos_cred_may(&who, 0, w.node.mode, w.node.uid, w.node.gid,
+                        VIBEOS_MAY_READ | (((uint32_t)want & NT_FILE_EXECUTE) ? VIBEOS_MAY_EXEC : 0u)) != 0) {
+        return NT_STATUS(VIBEOS_STATUS_ACCESS_DENIED);
     }
     f = vibeos_open_path(&w, VIBEOS_O_RDONLY, 0, &err);
     if (!f) {

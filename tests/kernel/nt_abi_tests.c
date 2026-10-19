@@ -557,6 +557,41 @@ static long open_file(uint64_t *h, uint32_t access, const char *nt_path) {
     return r;
 }
 
+/* A Linux call, from the NT tests: to make files with owners and modes, which
+ * NtCreateFile (W4) cannot yet. */
+static long lsys(uint64_t nr, uint64_t a0, uint64_t a1, uint64_t a2) {
+    return kf_call(linux_syscall, nr, a0, a1, a2, 0, 0, 0, 0);
+}
+
+static uint64_t lstr(const char *s) {
+    uint64_t u = kf_ualloc((uint32_t)strlen(s) + 1u);
+    memcpy(kf_uptr(u), s, strlen(s) + 1u);
+    return u;
+}
+
+/* NtOpenFile asks who is asking, as openat does (M-105). */
+static void t_open_file_permissions(void) {
+    uint64_t fh = 0;
+    int me = fresh(44);
+
+    expect(lsys(83 /* mkdir */, lstr("/tmp/sealed"), 0700, 0) == 0 &&
+               lsys(85 /* creat */, lstr("/tmp/mine"), 0600, 0) >= 0 &&
+               lsys(85, lstr("/tmp/open"), 0644, 0) >= 0,
+           "root makes a closed directory, a private file and a readable one");
+    ks_ps(me)->cred.euid = ks_ps(me)->cred.fsuid = 1000u;
+    ks_ps(me)->cred.egid = ks_ps(me)->cred.fsgid = 1000u;
+    expect(open_file(&fh, 0x00120089u, "\\??\\C:\\tmp\\open") == ST(VIBEOS_STATUS_SUCCESS),
+           "another user opens what everybody may read");
+    expect(open_file(&fh, 0x00120089u, "\\??\\C:\\tmp\\mine") == ST(VIBEOS_STATUS_ACCESS_DENIED),
+           "but not root's 0600 file");
+    expect(open_file(&fh, 0x00120089u, "\\??\\C:\\tmp\\sealed\\anything") ==
+               ST(VIBEOS_STATUS_ACCESS_DENIED),
+           "nor a path through a directory it may not search: not even whether it exists");
+    expect(open_file(&fh, 0x001200A9u /* + FILE_EXECUTE */, "\\??\\C:\\tmp\\open") ==
+               ST(VIBEOS_STATUS_ACCESS_DENIED),
+           "and FILE_EXECUTE asks for execute permission, which 0644 does not give");
+}
+
 static long create_section(uint64_t *h, uint32_t attributes, uint64_t file) {
     uint64_t out = kf_ualloc(8);
     uint64_t rest[3] = { 0x02u /* PAGE_READONLY */, attributes, file };
@@ -748,5 +783,6 @@ int test_nt_abi(void) {
     t_delay();
     t_handles_and_names();
     t_sections();
+    t_open_file_permissions();
     return g_fail ? -1 : 0;
 }
