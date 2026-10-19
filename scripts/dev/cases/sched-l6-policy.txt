@@ -43,3 +43,9 @@
                                      : rt_prio != 0u) {
 +++ new
     if (0) {
+
+### a task moved to new cores keeps the time it ran up (C6_SCHED's latency)
+--- old
+    if (found && mine > lowest) {
++++ new
+    if (0 && found && mine > lowest) {

@@ -804,9 +804,16 @@ void hw_schedule(vibeos_x86_64_isr_frame_t *frame) {
     if (cpu->slice_left > 0u) {
         int c = cpu->current_task;
 
+        /* A task whose affinity no longer includes this core gives it up at the
+         * next tick rather than at the end of its slice: until this core lets
+         * it go, no core it may run on can take it (THREADS' C6_SCHED, which
+         * pins a thread to core 1 and waits for it there). */
+        uint32_t aff = c >= 0 && c < VIBEOS_HW_MAX_TASKS ? vibeos_sched_policy_affinity((uint32_t)c) : 0u;
+
         if (c >= 0 && c < VIBEOS_HW_MAX_TASKS && !g_tasks[c].id.is_idle &&
             vibeos_task_state((uint32_t)c) == VIBEOS_TASK_RUNNING &&
-            !hw_higher_class_runnable(cpu, c)) {
+            !hw_higher_class_runnable(cpu, c) &&
+            (aff == 0u || (aff & (1u << (uint32_t)cpu->index)))) {
             cpu->slice_left--;
             return;
         }

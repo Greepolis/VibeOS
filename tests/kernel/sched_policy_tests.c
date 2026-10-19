@@ -287,5 +287,32 @@ int test_sched_policy(void) {
     expect(vibeos_sched_policy_set_affinity(1, 0x4u) == 0 && vibeos_sched_policy_affinity(1) == 0x4u,
            "the affinity set is the affinity read back");
 
+    /* ---- a task moved to new cores is placed with them -------------------- */
+    if (!expect(vibeos_sched_policy_init(SLOTS) == 0, "re-init for placement")) { return -1; }
+    (void)vibeos_sched_policy_admit(0, VIBEOS_SCHED_NORMAL, 0, 0);
+    (void)vibeos_sched_policy_admit(1, VIBEOS_SCHED_NORMAL, 0, 0);
+    (void)vibeos_sched_policy_admit(2, VIBEOS_SCHED_NORMAL, 0, 1u << 3);   /* elsewhere */
+    vibeos_sched_policy_charge(0, 900ull);   /* the one being moved: it has run a lot */
+    vibeos_sched_policy_charge(1, 100ull);
+    (void)vibeos_sched_policy_set_affinity(0, 1u << 1);
+    expect(vibeos_sched_policy_pick(1, 0x3ull) == 1,
+           "pinned to core 1 with more run than the others, it waits behind them there");
+    vibeos_sched_policy_place(0, 1u << 1, 0x7ull);
+    expect(vibeos_sched_policy_vruntime(0) == vibeos_sched_policy_vruntime(1) &&
+               vibeos_sched_policy_pick(1, 0x3ull) == 0,
+           "placed, it starts at the lowest of what core 1 may run, and is picked there");
+    vibeos_sched_policy_charge(0, 10ull);
+    {
+        uint64_t before = vibeos_sched_policy_vruntime(0);
+
+        vibeos_sched_policy_place(0, 1u << 1, 0x1ull);
+        expect(vibeos_sched_policy_vruntime(0) == before,
+               "with nobody else runnable there, nothing to be placed against: unchanged");
+        vibeos_sched_policy_charge(1, 1000ull);
+        vibeos_sched_policy_place(0, 1u << 1, 0x3ull);
+        expect(vibeos_sched_policy_vruntime(0) == before,
+               "and a placement never raises a task's time");
+    }
+
     return g_fail ? -1 : 0;
 }

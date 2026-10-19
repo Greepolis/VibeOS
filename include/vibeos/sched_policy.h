@@ -78,6 +78,17 @@ vibeos_sched_class_t vibeos_sched_policy_class(uint32_t slot);
 /* Does a runnable slot outrank `current` by class? See sched_policy.c. */
 int vibeos_sched_policy_should_preempt(uint32_t cpu, int current, uint64_t runnable);
 int vibeos_sched_policy_set_affinity(uint32_t slot, uint32_t cpu_mask);
+
+/* A task moved to cores it is not on: its virtual time taken down to the
+ * lowest of the runnable tasks of its class those cores may run, if it is
+ * above it - never raised. Linux does the same when it migrates a task,
+ * placing it at the destination queue's minimum. With one virtual clock for
+ * the machine, a task that had run more than the tasks the new cores were
+ * running waited behind every one of them, and the other cores could not take
+ * it: THREADS' C6_SCHED pinned a thread to core 1 and it was still elsewhere
+ * three seconds later, on a loaded host. Called by the arch only when the task
+ * is not already on an allowed core, so calling it in a loop gains nothing. */
+void vibeos_sched_policy_place(uint32_t slot, uint32_t cpu_mask, uint64_t runnable);
 uint32_t vibeos_sched_policy_affinity(uint32_t slot);
 
 /* Move an admitted slot to another class, with a priority inside it (0 for

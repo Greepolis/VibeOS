@@ -223,6 +223,32 @@ int vibeos_sched_policy_set_affinity(uint32_t slot, uint32_t cpu_mask) {
     return 0;
 }
 
+void vibeos_sched_policy_place(uint32_t slot, uint32_t cpu_mask, uint64_t runnable) {
+    uint64_t lowest = 0, mine;
+    uint32_t i;
+    int found = 0;
+
+    if (!slot_ok(slot) || cpu_mask == 0u) {
+        return;
+    }
+    for (i = 0; i < g_slots; i++) {
+        uint32_t theirs = g_task[i].cpu_mask;
+
+        if (i == slot || (runnable & (1ull << i)) == 0ull || !g_task[i].present ||
+            g_task[i].cls != g_task[slot].cls || (theirs != 0u && (theirs & cpu_mask) == 0u)) {
+            continue;
+        }
+        if (!found || g_task[i].vruntime < lowest) {
+            lowest = g_task[i].vruntime;
+            found = 1;
+        }
+    }
+    mine = __atomic_load_n(&g_task[slot].vruntime, __ATOMIC_RELAXED);
+    if (found && mine > lowest) {
+        __atomic_store_n(&g_task[slot].vruntime, lowest, __ATOMIC_RELAXED);
+    }
+}
+
 uint32_t vibeos_sched_policy_affinity(uint32_t slot) {
     return slot_ok(slot) ? g_task[slot].cpu_mask : 0u;
 }

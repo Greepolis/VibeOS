@@ -130,7 +130,42 @@ uint32_t ks_task_rt_prio(int slot) { return vibeos_sched_policy_rt_prio((uint32_
 uint32_t ks_class_quantum(vibeos_sched_class_t cls) { return vibeos_sched_policy_quantum(cls); }
 uint32_t ks_task_affinity(int slot) { return vibeos_sched_policy_affinity((uint32_t)slot); }
 int ks_task_set_affinity(int slot, uint32_t mask) {
-    return vibeos_sched_policy_set_affinity((uint32_t)slot, mask);
+    uint64_t runnable = 0;
+    uint32_t i;
+    int r = vibeos_sched_policy_set_affinity((uint32_t)slot, mask);
+
+    /* Not on a core it may now use: placed with the tasks those cores run, as
+     * Linux places a migrated task (vibeos_sched_policy_place). A task already
+     * on an allowed core is left alone, so a program cannot buy priority by
+     * setting its affinity in a loop. Under the scheduler's lock, as the
+     * caller holds it. */
+    if (r != 0 || mask == 0u) {
+        return r;
+    }
+    for (i = 0; i < VIBEOS_HW_MAX_CPUS; i++) {
+        if (g_cpus[i].online && g_cpus[i].current_task == slot && (mask & (1u << i))) {
+            return r;
+        }
+    }
+    for (i = 0; i < (uint32_t)VIBEOS_HW_MAX_TASKS; i++) {
+        if (hw_task_runnable(0, i, 0u)) {
+            runnable |= 1ull << i;
+        }
+    }
+    /* And whatever those cores are running now: it is what the task will meet
+     * when their slices end. Left out, the placement was against the waiting
+     * tasks only, and a busy task on core 1 with less run than any of them
+     * kept beating it there - the first version of this, on a loaded host. */
+    for (i = 0; i < VIBEOS_HW_MAX_CPUS; i++) {
+        int c = g_cpus[i].current_task;
+
+        if (g_cpus[i].online && (mask & (1u << i)) && c >= 0 && c != slot &&
+            !g_tasks[c].id.is_idle) {
+            runnable |= 1ull << (uint32_t)c;
+        }
+    }
+    vibeos_sched_policy_place((uint32_t)slot, mask, runnable);
+    return r;
 }
 int ks_cpu_running(uint32_t cpu) {
     return cpu < VIBEOS_HW_MAX_CPUS && g_cpus[cpu].online ? g_cpus[cpu].current_task : -1;
