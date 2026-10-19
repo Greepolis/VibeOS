@@ -3583,6 +3583,40 @@ static void t_futex_shared(void) {
 /* The rest of futex (docs/abi/ L6 step 1). Two processes on one shared page,
  * as t_futex_shared, so that a word is the same word to both: a blocked wait
  * stays in the table here, and the other process's calls act on it. */
+/* No process waits on more than a quarter of the futex table (M-110): two
+ * threads of one process, each in a futex_waitv of 100 words, would hold 200
+ * of the 512 entries - the second is refused, and another process's wait of
+ * the same size is not. */
+static void t_futex_share(void) {
+    uint64_t w = (kf_ualloc(8192) + 4095u) & ~4095ull, vec = kf_ualloc(100u * sizeof(linux_futex_waitv_t));
+    linux_futex_waitv_t *v = (linux_futex_waitv_t *)kf_uptr(vec);
+    kf_outcome_t out = KF_RETURNED;
+    int a, b, c;
+    uint32_t i;
+
+    a = fresh(930);
+    b = kf_spawn(931, 931);
+    ks_id(b)->tgid = 930u;   /* a thread of a's process, as far as the share asks */
+    c = kf_spawn(940, 940);
+    *(uint32_t *)kf_uptr(w) = 3u;
+    for (i = 0; i < 100u; i++) {
+        v[i].val = 3u;
+        v[i].uaddr = w;
+        v[i].flags = 0x02;   /* FUTEX2_SIZE_U32 */
+        v[i].__reserved = 0;
+    }
+    (void)sys(449, vec, 100, 0, 0, 1, 0, &out);
+    expect(out == KF_BLOCKED, "a thread waits on 100 words");
+    kf_set_current(b);
+    expect(sys(449, vec, 100, 0, 0, 1, 0, 0) == -VIBEOS_ENOMEM,
+           "a second thread of its process cannot wait on 100 more: past a quarter of the table");
+    kf_set_current(c);
+    out = KF_RETURNED;
+    (void)sys(449, vec, 100, 0, 0, 1, 0, &out);
+    expect(out == KF_BLOCKED, "another process can");
+    kf_set_current(a);
+}
+
 static void t_futex_l6(void) {
     uint64_t wa, wb, ts, vec, rh, rl;
     kf_outcome_t out;
@@ -6491,6 +6525,7 @@ int test_linux_handlers(void) {
     t_inotify_ltp();
     t_futex_shared();
     t_futex_l6();
+    t_futex_share();
     t_sched_l6();
     t_ipc_msg();
     t_ipc_sem();

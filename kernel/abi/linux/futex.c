@@ -75,6 +75,9 @@ typedef struct {
 
 static linux_futex_waiter_t g_futex_waiters[LINUX_FUTEX_TABLE];
 
+/* The most entries one process may hold: a quarter of the table (M-110). */
+#define LINUX_FUTEX_PER_PROCESS (LINUX_FUTEX_TABLE / 4u)
+
 static vibeos_lock_t g_futex_lock;
 
 /* Under g_futex_lock: a slot nobody holds - free, or held by an enqueuer
@@ -245,6 +248,21 @@ static long futex_enqueue(const futex_word_t *words, uint32_t n, uint32_t bitset
     if (k < n) {
         ks_unlock(&g_futex_lock);
         return -VIBEOS_ENOMEM;
+    }
+    /* And no process past a quarter of the table: one process's threads in
+     * futex_waitv - 128 words a wait - used to be able to take every entry,
+     * and every other process's futex wait failed (M-110, as M-092). A waiter
+     * is its task's process's while the task is still the one that enqueued. */
+    {
+        uint32_t tgid = ks_id(me)->tgid, mine = 0;
+
+        for (i = 0; i < LINUX_FUTEX_TABLE; i++) {
+            mine += !futex_slot_free(i) && ks_id(g_futex_waiters[i].task)->tgid == tgid;
+        }
+        if (mine + n > LINUX_FUTEX_PER_PROCESS) {
+            ks_unlock(&g_futex_lock);
+            return -VIBEOS_ENOMEM;
+        }
     }
     for (i = 0, k = 0; i < LINUX_FUTEX_TABLE && k < n; i++) {
         linux_futex_waiter_t *w = &g_futex_waiters[i];
