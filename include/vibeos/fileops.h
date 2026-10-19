@@ -79,8 +79,10 @@ uint32_t vibeos_open_walk_flags(uint32_t flags);
 vibeos_file_t *vibeos_open_path(const vibeos_path_t *w, uint32_t flags, uint32_t mode,
                                 long *err);
 
-/* A new pipe: its read end and its write end, one reference each. 0 or -EMFILE. */
-int vibeos_open_pipe(uint32_t flags, vibeos_file_t **rd, vibeos_file_t **wr);
+/* A new pipe made by process `owner` (0: the kernel): its read end and its
+ * write end, one reference each. 0, -EMFILE past the process's share of the
+ * pipes, -ENFILE when there are none, -ENOMEM. */
+int vibeos_open_pipe(uint32_t flags, uint32_t owner, vibeos_file_t **rd, vibeos_file_t **wr);
 
 /* A description for a socket the network stack already made; its tenancy is
  * taken now, so a later wait can tell the socket from a successor (M-020). */

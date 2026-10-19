@@ -136,13 +136,15 @@ const vibeos_file_ops_t vibeos_fops_pipe = {
     .ready = pipe_ready,
 };
 
-int vibeos_open_pipe(uint32_t flags, vibeos_file_t **rd, vibeos_file_t **wr) {
-    int slot = vibeos_pipe_create();   /* one reader, one writer */
+int vibeos_open_pipe(uint32_t flags, uint32_t owner, vibeos_file_t **rd, vibeos_file_t **wr) {
+    int slot = vibeos_pipe_create_for(owner);   /* one reader, one writer */
     vibeos_file_t *r, *w;
 
     *rd = *wr = 0;
     if (slot < 0) {
-        return slot == -2 ? -VIBEOS_ENOMEM : -VIBEOS_EMFILE;   /* its pages, or a slot */
+        /* Its pages; the process's share (as Linux says when a process has
+         * reached its own limit); or the machine's table. */
+        return slot == -2 ? -VIBEOS_ENOMEM : slot == -3 ? -VIBEOS_EMFILE : -VIBEOS_ENFILE;
     }
     r = vibeos_file_alloc(&vibeos_fops_pipe, VIBEOS_O_RDONLY | (flags & VIBEOS_O_NONBLOCK));
     w = r ? vibeos_file_alloc(&vibeos_fops_pipe, VIBEOS_O_WRONLY | (flags & VIBEOS_O_NONBLOCK)) : 0;

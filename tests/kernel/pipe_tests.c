@@ -78,6 +78,15 @@ int test_pipe(void) {
     vibeos_pipe_reset();
     if (!expect(vibeos_pipe_in_use() == 0u, "reset frees everything")) { return -1; }
 
+    /* A process's share (M-110): a quarter of the table, then -3 for it and
+     * not for the next process. */
+    for (i = 0; i < (int)VIBEOS_PIPE_PER_PROCESS; i++) {
+        if (vibeos_pipe_create_for(7u) < 0) { printf("FAIL:pipe share create failed at %d\n", i); return -1; }
+    }
+    if (!expect(vibeos_pipe_create_for(7u) == -3 && vibeos_pipe_create_for(8u) >= 0,
+                "a process stops at its share of the pipes, and the next does not")) { return -1; }
+    vibeos_pipe_reset();
+
     a = vibeos_pipe_create();
     if (!expect(vibeos_pipe_readers(a) == 1u && vibeos_pipe_writers(a) == 1u, "a new pipe has one reader and one writer")) { return -1; }
 

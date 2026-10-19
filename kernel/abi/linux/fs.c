@@ -1387,7 +1387,7 @@ static long linux_sys_pipe2(uint64_t fds_uptr, uint64_t flags) {
     if (flags & ~(uint64_t)(VIBEOS_O_CLOEXEC | VIBEOS_O_NONBLOCK)) {
         return -VIBEOS_EINVAL;
     }
-    r = vibeos_open_pipe((uint32_t)flags, &rd, &wr);
+    r = vibeos_open_pipe((uint32_t)flags, ks_id(ks_current())->tgid, &rd, &wr);
     if (r != 0) {
         return r;
     }

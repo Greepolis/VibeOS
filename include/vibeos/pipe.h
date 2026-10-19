@@ -62,6 +62,12 @@ void vibeos_pipe_reset(void);   /* boot and tests: every pipe free */
 /* Create a pipe with one reader and one writer, VIBEOS_PIPE_BYTES long; its slot,
  * -1 when none is free, -2 when its pages could not be had. */
 int vibeos_pipe_create(void);
+/* The same, made by process `owner`, who may hold no more than a quarter of the
+ * table: -3 past that. One process making pipes in a loop used to take all 64,
+ * and every other process's pipe() failed (M-110, as M-092 for timers). 0 is
+ * the kernel's, and has no share. */
+#define VIBEOS_PIPE_PER_PROCESS (VIBEOS_PIPE_MAX / 4u)
+int vibeos_pipe_create_for(uint32_t owner);
 /* Give back a pipe that was created and never handed to a descriptor. */
 void vibeos_pipe_abandon(int slot);
 

@@ -20,6 +20,7 @@ typedef struct {
     uint32_t head;      /* next byte to read  */
     uint32_t tail;      /* next byte to write */
     uint32_t count;     /* bytes currently held */
+    uint32_t owner;     /* the process that made it, for its share; 0: the kernel */
     uint8_t *page[VIBEOS_PIPE_PAGES];
 } pipe_t;
 
@@ -108,15 +109,27 @@ static pipe_t *pipe_at(int slot) {
 }
 
 int vibeos_pipe_create(void) {
+    return vibeos_pipe_create_for(0u);
+}
+
+int vibeos_pipe_create_for(uint32_t owner) {
     uint8_t *pages[VIBEOS_PIPE_BYTES / PIPE_PAGE];
     const uint32_t n = VIBEOS_PIPE_BYTES / PIPE_PAGE;
-    uint32_t i, k;
+    uint32_t i, k, mine = 0;
     int slot = -1;
 
     if (pages_alloc(pages, n) != 0) {
         return -2;
     }
     lock();
+    for (i = 0; owner != 0u && i < VIBEOS_PIPE_MAX; i++) {
+        mine += g_pipes[i].used && g_pipes[i].owner == owner;
+    }
+    if (mine >= VIBEOS_PIPE_PER_PROCESS) {
+        unlock();
+        pages_free(pages, n);
+        return -3;
+    }
     for (i = 0; i < VIBEOS_PIPE_MAX; i++) {
         if (!g_pipes[i].used) {
             pipe_t *p = &g_pipes[i];
@@ -125,6 +138,7 @@ int vibeos_pipe_create(void) {
             p->readers = 1;
             p->writers = 1;
             p->head = p->tail = p->count = 0;
+            p->owner = owner;
             p->cap = VIBEOS_PIPE_BYTES;
             for (k = 0; k < n; k++) {
                 p->page[k] = pages[k];
