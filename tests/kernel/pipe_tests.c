@@ -134,7 +134,12 @@ int test_pipe(void) {
     n = vibeos_pipe_read(a, in, 100, t_copy, &st);
     if (!expect(n == 40 && memcmp(in, out + VIBEOS_PIPE_BYTES - 20, 10) == 0 && memcmp(in + 10, out + 100, 30) == 0,
                 "what it held comes out in order after the resize")) { return -1; }
+    if (!expect(vibeos_pipe_room(a) == 8192u, "room: the size less what it holds")) { return -1; }
+    (void)vibeos_pipe_write(a, out, 100, t_copy, &st);
+    if (!expect(vibeos_pipe_room(a) == 8092u, "and less again after a write (M-111)")) { return -1; }
+    (void)vibeos_pipe_read(a, in, 100, t_copy, &st);
     (void)vibeos_pipe_write(a, out, 8192, t_copy, &st);
+    if (!expect(vibeos_pipe_room(a) == 0u, "a full pipe has no room, not a wrapped number")) { return -1; }
     if (!expect(vibeos_pipe_resize(a, 4096) == -1 && vibeos_pipe_capacity(a) == 8192u,
                 "a size smaller than what it holds is refused (EBUSY), and nothing changes")) { return -1; }
     if (!expect(vibeos_pipe_resize(a, VIBEOS_PIPE_MAX_BYTES + 1u) == -3, "past the largest: refused")) { return -1; }

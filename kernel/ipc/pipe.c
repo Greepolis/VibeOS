@@ -540,6 +540,18 @@ uint32_t vibeos_pipe_pending(int slot) {
     return n;
 }
 
+uint32_t vibeos_pipe_room(int slot) {
+    uint32_t n = 0;
+
+    lock();
+    if (slot >= 0 && (uint32_t)slot < VIBEOS_PIPE_MAX && g_pipes[slot].used &&
+        g_pipes[slot].cap > g_pipes[slot].count) {
+        n = g_pipes[slot].cap - g_pipes[slot].count;
+    }
+    unlock();
+    return n;
+}
+
 uint32_t vibeos_pipe_writers(int slot) {
     uint32_t n = 0;
 

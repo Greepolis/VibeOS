@@ -94,6 +94,10 @@ long vibeos_pipe_resize(int slot, uint64_t bytes);
 uint32_t vibeos_pipe_in_use(void);
 /* Bytes waiting to be read, for whoever asks whether a read would wait. */
 uint32_t vibeos_pipe_pending(int slot);
+/* Room for more, the size less what it holds, read under one hold of the lock:
+ * the two read apart could be from either side of an F_SETPIPE_SZ that shrank
+ * the pipe, and their difference then wrapped (M-111). */
+uint32_t vibeos_pipe_room(int slot);
 uint32_t vibeos_pipe_readers(int slot);
 uint32_t vibeos_pipe_writers(int slot);
 

@@ -88,7 +88,7 @@ static long splice_from_pipe(vibeos_file_t *in, vibeos_file_t *out, uint64_t *of
         if (is_pipe(out)) {
             /* Into a pipe, no more than it has room for: its write must not
              * wait with bytes this call has already looked at. */
-            uint64_t room = vibeos_pipe_capacity(out->pipe) - vibeos_pipe_pending(out->pipe);
+            uint64_t room = vibeos_pipe_room(out->pipe);   /* one look: M-111 */
 
             if (room == 0u) {
                 break;
@@ -151,7 +151,7 @@ static long splice_to_pipe(vibeos_file_t *in, uint64_t *off, vibeos_file_t *out,
         return -VIBEOS_ENOMEM;
     }
     while (done < len) {
-        uint64_t room = vibeos_pipe_capacity(out->pipe) - vibeos_pipe_pending(out->pipe);
+        uint64_t room = vibeos_pipe_room(out->pipe);   /* one look: M-111 */
         uint64_t want = len - done;
         long got, put;
 
@@ -289,7 +289,7 @@ static long linux_sys_tee(uint64_t fd_in, uint64_t fd_out, uint64_t len, uint64_
          * the input holds, the output has room for and the call asked for. */
         uint64_t done = 0;
 
-        room = vibeos_pipe_capacity(out->pipe) - vibeos_pipe_pending(out->pipe);
+        room = vibeos_pipe_room(out->pipe);   /* one look: M-111 */
         if (len > room) {
             len = room;
         }
@@ -342,7 +342,7 @@ static long vmsplice_in(vibeos_file_t *f, uint64_t iov_uptr, uint64_t nr, int no
     }
     for (i = 0; i < nr; i++) {
         linux_iovec_t v;
-        uint64_t room = vibeos_pipe_capacity(f->pipe) - vibeos_pipe_pending(f->pipe);
+        uint64_t room = vibeos_pipe_room(f->pipe);   /* one look: M-111 */
         long n;
 
         if (vibeos_uaccess_copy(&v, (const void *)(uintptr_t)(iov_uptr + i * sizeof(v)), sizeof(v)) != 0) {
