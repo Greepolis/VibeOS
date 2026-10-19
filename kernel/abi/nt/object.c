@@ -167,8 +167,8 @@ uint32_t nt_ob_create(const vibeos_file_ops_t *ops, const nt_name_t *name, uint3
                       vibeos_file_t **out, int *existed,
                       void (*init)(nt_ob_t *o, const void *ctx), const void *ctx) {
     vibeos_file_t *f;
-    int slot = -1, named;
-    uint32_t i;
+    int slot = -1, named, me = ks_current();
+    uint32_t i, creator = me >= 0 ? ks_id(me)->tgid : 0u;
 
     *out = 0;
     *existed = 0;
@@ -195,10 +195,18 @@ uint32_t nt_ob_create(const vibeos_file_ops_t *ops, const nt_name_t *name, uint3
             return VIBEOS_STATUS_OBJECT_NAME_EXISTS;
         }
     }
-    for (i = 0; i < NT_OB_MAX; i++) {
-        if (!g_ob[i].used) {
-            slot = (int)i;
-            break;
+    {
+        uint32_t mine = 0;
+
+        for (i = 0; i < NT_OB_MAX; i++) {
+            if (!g_ob[i].used && slot < 0) {
+                slot = (int)i;
+            }
+            mine += g_ob[i].used && g_ob[i].owner == creator;
+        }
+        if (creator != 0u && mine >= NT_OB_PER_PROCESS) {
+            nt_ob_unlock();
+            return VIBEOS_STATUS_QUOTA_EXCEEDED;   /* its share (M-110) */
         }
     }
     if (slot < 0) {
@@ -217,6 +225,7 @@ uint32_t nt_ob_create(const vibeos_file_ops_t *ops, const nt_name_t *name, uint3
             raw[i] = 0;   /* the slot's last tenant leaves nothing behind */
         }
         o->used = 1;
+        o->owner = creator;
         o->file = f;
         o->name_ci = (attributes & VIBEOS_OBJ_CASE_INSENSITIVE) ? 1u : 0u;
         if (name) {

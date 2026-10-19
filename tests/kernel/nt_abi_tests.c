@@ -569,6 +569,27 @@ static uint64_t lstr(const char *s) {
     return u;
 }
 
+/* No process makes more than a quarter of the object table (M-110). */
+static void t_object_share(void) {
+    uint64_t h = 0;
+    uint32_t i;
+    long r = ST(VIBEOS_STATUS_SUCCESS);
+    int me = fresh(45), other;
+
+    for (i = 0; i < 64u && r == ST(VIBEOS_STATUS_SUCCESS); i++) {
+        r = create_event(&h, VIBEOS_EVENT_ALL_ACCESS, 0, VIBEOS_NT_NOTIFICATION_EVENT, 0);
+    }
+    expect(r == ST(VIBEOS_STATUS_SUCCESS), "a process makes 64 events");
+    expect(create_event(&h, VIBEOS_EVENT_ALL_ACCESS, 0, VIBEOS_NT_NOTIFICATION_EVENT, 0) ==
+               ST(VIBEOS_STATUS_QUOTA_EXCEEDED),
+           "a 65th is past its share: STATUS_QUOTA_EXCEEDED");
+    other = kf_spawn(46, 46);
+    kf_set_current(other);
+    expect(create_event(&h, VIBEOS_EVENT_ALL_ACCESS, 0, VIBEOS_NT_NOTIFICATION_EVENT, 0) ==
+               ST(VIBEOS_STATUS_SUCCESS), "and another process is not refused for it");
+    kf_set_current(me);
+}
+
 /* NtOpenFile asks who is asking, as openat does (M-105). */
 static void t_open_file_permissions(void) {
     uint64_t fh = 0;
@@ -805,5 +826,6 @@ int test_nt_abi(void) {
     t_handles_and_names();
     t_sections();
     t_open_file_permissions();
+    t_object_share();
     return g_fail ? -1 : 0;
 }

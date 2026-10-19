@@ -62,3 +62,9 @@
             nt_ob_unlock();
             *out = have;
             *existed = 1;
+
+### a process may make every object there is (M-110)
+--- old
+        if (creator != 0u && mine >= NT_OB_PER_PROCESS) {
++++ new
+        if (0 && mine >= NT_OB_PER_PROCESS) {

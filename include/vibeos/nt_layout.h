@@ -54,6 +54,7 @@
 #define VIBEOS_STATUS_HANDLE_NOT_CLOSABLE    0xC0000235u
 #define VIBEOS_STATUS_BUFFER_TOO_SMALL       0xC0000023u
 #define VIBEOS_STATUS_FILE_RENAMED           0xC00000D5u   /* Wine's ntstatus.h; not in mingw-w64's */
+#define VIBEOS_STATUS_QUOTA_EXCEEDED         0xC0000044u
 
 /* OBJECT_ATTRIBUTES on x64: 48 bytes. */
 #define VIBEOS_OA_LENGTH          0x00u

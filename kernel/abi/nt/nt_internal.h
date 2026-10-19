@@ -58,6 +58,10 @@ uint32_t nt_status_of_errno(long err);
 /* ---- the object manager (object.c, W2) --------------------------------------------- */
 
 #define NT_OB_MAX 256u
+/* The most objects one process may have made and still have alive: a quarter of
+ * the table, as M-092 bounds the timers - one process making events in a loop
+ * took all 256 and every other process's NtCreate failed (M-110). */
+#define NT_OB_PER_PROCESS (NT_OB_MAX / 4u)
 #define NT_NAME_MAX 128u   /* characters of a whole path; more is refused */
 
 struct nt_ob;
@@ -78,6 +82,7 @@ typedef struct vibeos_nt_type {
 /* One object's state. The description is the object; this is what it holds. */
 typedef struct nt_ob {
     uint32_t used;
+    uint32_t owner;               /* the process that made it, for its share     */
     vibeos_file_t *file;          /* no reference: the description owns the slot */
     uint16_t name[NT_NAME_MAX];
     uint32_t name_len;            /* characters; 0 for an unnamed object         */
