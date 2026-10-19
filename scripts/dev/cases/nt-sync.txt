@@ -40,12 +40,6 @@
 +++ new
                     st = VIBEOS_STATUS_SUCCESS;
 
-### an existing named event is reinitialised by a second create
---- old
-    if (!existed && !open_only && init) {
-+++ new
-    if (!open_only && init) {
-
 ### a wait needs no SYNCHRONIZE
 --- old
         st = nt_handle_ref(handles[i], 0, VIBEOS_SYNCHRONIZE, &f[i], 0);

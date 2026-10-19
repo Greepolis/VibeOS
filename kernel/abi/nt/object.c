@@ -164,7 +164,8 @@ uint32_t nt_read_attributes(uint64_t oa, nt_name_t *out, uint32_t *attributes) {
 /* ---- creating and opening ---------------------------------------------------------- */
 
 uint32_t nt_ob_create(const vibeos_file_ops_t *ops, const nt_name_t *name, uint32_t attributes,
-                      vibeos_file_t **out, int *existed) {
+                      vibeos_file_t **out, int *existed,
+                      void (*init)(nt_ob_t *o, const void *ctx), const void *ctx) {
     vibeos_file_t *f;
     int slot = -1, named;
     uint32_t i;
@@ -223,6 +224,12 @@ uint32_t nt_ob_create(const vibeos_file_ops_t *ops, const nt_name_t *name, uint3
                 o->name[i] = name->chars[i];
             }
             o->name_len = name->len;
+        }
+        /* Its state before the lock goes, which is when the name is there for
+         * anybody to open: a mutant created owned was, for a moment, a free
+         * one another process could take (M-115). */
+        if (init) {
+            init(o, ctx);
         }
     }
     f->nt_ob = slot;

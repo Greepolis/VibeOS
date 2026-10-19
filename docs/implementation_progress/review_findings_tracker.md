@@ -198,7 +198,7 @@ again itself.
 | M-112 | L | `mq_getsetattr` rewrites `f->flags` whole: the sibling of M-101 | **fixed** (2026-10-19) | through `vibeos_file_change_flags`, the old flags taken from the same step. Every write of a description's flags after its creation now goes through that function (grep: the only other is the allocation). Not a case, for M-101's reason: the host tests have no threads |
 | M-113 | L | (agent) `shmget` looks a key up twice without checking permissions again | **to verify** | |
 | M-114 | L | (agent, uncertain) `linux_shm_attached` counts regions at offset 0: a munmap of a segment's head may miscount | **to verify** | |
-| M-115 | L | (agent) NT mutant: owned and published before it is initialised | **to verify** | |
+| M-115 | L | (agent) NT mutant: owned and published before it is initialised | **confirmed and fixed** (2026-10-19) | `nt_ob_create` published the named slot and released the lock; `nt_create_common` then took it again to set the state, so for that moment a mutant created owned was a free one any process could open and take. The state is set inside `nt_ob_create`, under the lock that publishes it. The race itself is not a case (no threads on the host); "an existing object is reinitialised" moved to `nt-object.txt` with the code and is red |
 | M-116 | L | (agent) `sched_target` turns a pid into a slot with no sequence check | **to verify** | |
 
 ## Found internally while verifying the above

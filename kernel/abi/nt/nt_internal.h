@@ -123,7 +123,8 @@ uint32_t nt_read_attributes(uint64_t oa, nt_name_t *out, uint32_t *attributes);
 /* A new object of `ops`'s type, or - for a name that exists - the one there,
  * with OBJECT_NAME_EXISTS; the reference is the caller's. */
 uint32_t nt_ob_create(const vibeos_file_ops_t *ops, const nt_name_t *name, uint32_t attributes,
-                      vibeos_file_t **out, int *existed);
+                      vibeos_file_t **out, int *existed,
+                      void (*init)(struct nt_ob *o, const void *ctx), const void *ctx);
 uint32_t nt_ob_open(const vibeos_file_ops_t *ops, const nt_name_t *name, vibeos_file_t **out);
 /* What `want` grants of `ops`'s type: the generic rights mapped onto its own. */
 uint32_t nt_map_access(const vibeos_file_ops_t *ops, uint32_t want);

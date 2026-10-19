@@ -71,7 +71,7 @@ long nt_create_common(const vibeos_file_ops_t *ops, uint64_t handle_u, uint32_t 
         st = nt_ob_open(ops, &name, &f);
         done = st;
     } else {
-        st = nt_ob_create(ops, name.len ? &name : 0, attributes, &f, &existed);
+        st = nt_ob_create(ops, name.len ? &name : 0, attributes, &f, &existed, init, ctx);
         done = st;
         if (st == VIBEOS_STATUS_OBJECT_NAME_EXISTS) {
             st = VIBEOS_STATUS_SUCCESS;
@@ -79,11 +79,6 @@ long nt_create_common(const vibeos_file_ops_t *ops, uint64_t handle_u, uint32_t 
     }
     if (st != VIBEOS_STATUS_SUCCESS) {
         return NT_STATUS(st);
-    }
-    if (!existed && !open_only && init) {
-        nt_ob_lock();
-        init(nt_ob_of(f), ctx);
-        nt_ob_unlock();
     }
     st = nt_handle_install(f, nt_map_access(ops, want), attributes, &h);
     if (st != VIBEOS_STATUS_SUCCESS) {

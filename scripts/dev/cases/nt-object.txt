@@ -49,3 +49,16 @@
     if (want & (VIBEOS_GENERIC_ALL | VIBEOS_MAXIMUM_ALLOWED)) {
 +++ new
     if (want & VIBEOS_MAXIMUM_ALLOWED) {
+
+### an existing named object is reinitialised by a second create (moved from nt-sync.txt with the init, M-115)
+--- old
+            nt_ob_unlock();
+            *out = have;
+            *existed = 1;
++++ new
+            if (init) {
+                init(&g_ob[named], ctx);
+            }
+            nt_ob_unlock();
+            *out = have;
+            *existed = 1;
