@@ -82,6 +82,21 @@ void vibeos_file_get(vibeos_file_t *f) {
     }
 }
 
+int vibeos_file_still_at_path(const vibeos_file_t *f) {
+    vibeos_fsmount_t *m = 0;
+    const char *tail = 0;
+    vibeos_fs_node_t node;
+
+    if (!f || !f->mnt || f->path[0] != '/' || vibeos_fs_resolve(f->path, &m, &tail) != 0 ||
+        m != f->mnt) {
+        return 0;
+    }
+    while (*tail == '/') {
+        tail++;
+    }
+    return vibeos_fs_lookup(m, tail, &node) == 0 && node.id == f->node;
+}
+
 uint32_t vibeos_file_change_flags(vibeos_file_t *f, uint32_t clear, uint32_t set) {
     uint32_t old, want;
 

@@ -224,6 +224,13 @@ void vibeos_file_get(vibeos_file_t *f);
  * it - lost one update (M-101). */
 uint32_t vibeos_file_change_flags(vibeos_file_t *f, uint32_t clear, uint32_t set);
 
+/* Does the description's path still name the file it was opened on - the same
+ * mount, the same node? 1 or 0. For a caller that has to go back to a file by
+ * its path (the PE mapper reads images by path): a rename between the open and
+ * that read would hand it a different file from the one opened and checked
+ * (M-106). */
+int vibeos_file_still_at_path(const vibeos_file_t *f);
+
 /* One fewer. The last runs ops->release, then frees the slot. A put with no
  * reference to give back is counted (VIBEOS_MBZ_FILE_PUT_UNDERFLOW), not clamped:
  * it is a descriptor released twice, and clamping would hide the second owner. */

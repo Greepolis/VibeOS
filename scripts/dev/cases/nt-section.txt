@@ -34,3 +34,19 @@
     return NT_STATUS(rc ? NT_STATUS_IMAGE_NOT_AT_BASE : VIBEOS_STATUS_SUCCESS);
 +++ new
     return NT_STATUS(VIBEOS_STATUS_SUCCESS);
+
+### a view is mapped from whatever the name now names (M-106)
+--- old
+     * that knows files by node rather than by name. */
+    if (!vibeos_file_still_at_path(file)) {
++++ new
+     * that knows files by node rather than by name. */
+    if (0) {
+
+### a section is made from whatever the name now names (M-106)
+--- old
+     * of another file (M-106). Asked again at every map, below. */
+    if (!vibeos_file_still_at_path(file)) {
++++ new
+     * of another file (M-106). Asked again at every map, below. */
+    if (0) {

@@ -101,6 +101,13 @@ static long nt_create_section(uint64_t out, uint64_t want, uint64_t oa, uint64_t
         vibeos_file_put(file);
         return NT_STATUS(VIBEOS_STATUS_ACCESS_DENIED);
     }
+    /* The kernel reads an image by its path, so the path has to name the file
+     * the handle holds - a rename since the open would have the section made
+     * of another file (M-106). Asked again at every map, below. */
+    if (!vibeos_file_still_at_path(file)) {
+        vibeos_file_put(file);
+        return NT_STATUS(VIBEOS_STATUS_FILE_RENAMED);
+    }
     pr = ks_pe_probe(file->path, &size);
     if (pr != 0) {
         vibeos_file_put(file);
@@ -152,6 +159,16 @@ static long nt_map_view_of_section(uint64_t sec_h, uint64_t process, uint64_t ba
     if (!file || me < 0) {
         vibeos_file_put(file);
         return NT_STATUS(VIBEOS_STATUS_INVALID_HANDLE);
+    }
+    /* The same question as at creation, and here it matters most: a section
+     * can be held for ever before it is mapped, and a file renamed over its
+     * name meanwhile would be the one mapped (M-106). What remains is the
+     * moment between this look and the mapper's own lookup, inside one call;
+     * mapping from the description itself closes that, with a page cache
+     * that knows files by node rather than by name. */
+    if (!vibeos_file_still_at_path(file)) {
+        vibeos_file_put(file);
+        return NT_STATUS(VIBEOS_STATUS_FILE_RENAMED);
     }
     rc = ks_map_pe_image(me, file->path, &base, &size);
     vibeos_file_put(file);

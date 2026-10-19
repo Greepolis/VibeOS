@@ -680,6 +680,27 @@ static void t_sections(void) {
                "into another process: W6's");
         expect(nt(VIBEOS_NT_NR_NtClose, sh, 0, 0, 0, 0) == ST(VIBEOS_STATUS_SUCCESS),
                "and the section closes");
+
+        /* Another file at the name between the section and the map (M-106):
+         * the kernel reads images by path, and must not read that one. The old
+         * file goes, something else takes its slot, and a new file is put at
+         * the name - a different node behind the same path. */
+        {
+            uint64_t fh2 = 0, sh2 = 0, fh3 = 0, sh3 = 0;
+
+            expect(open_file(&fh2, 0x00120089u, "\\??\\C:\\win\\fx.dll") == ST(VIBEOS_STATUS_SUCCESS) &&
+                       create_section(&sh2, 0x01000000u, fh2) == ST(VIBEOS_STATUS_SUCCESS) &&
+                       open_file(&fh3, 0x00120089u, "\\??\\C:\\win\\fx.dll") == ST(VIBEOS_STATUS_SUCCESS),
+                   "a section of the image, and a second handle to it");
+            expect(lsys(87 /* unlink */, lstr("/win/fx.dll"), 0, 0) == 0, "the image is unlinked");
+            kf_fs_add("/win/filler", "x", 1, 0);
+            kf_fs_add("/win/fx.dll", img, (uint32_t)n, 0);
+            expect(map_view(sh2, VIBEOS_NT_CURRENT_PROCESS, &base, &size) ==
+                       ST(VIBEOS_STATUS_FILE_RENAMED),
+                   "a section whose name now names another file is not mapped from it");
+            expect(create_section(&sh3, 0x01000000u, fh3) == ST(VIBEOS_STATUS_FILE_RENAMED),
+                   "nor is a section made of it through a handle to the old one");
+        }
     }
 #endif
 }
