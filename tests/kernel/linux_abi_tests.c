@@ -4137,6 +4137,14 @@ static void t_mqueue(void) {
                "taken back with null; SIGEV_THREAD needs netlink, which is not here");
     }
 
+    /* A message holds at most 500 pages, so no limit may promise more (H-035):
+     * a tunable of 16 MiB let a send write page pointers past the header. */
+    expect(proc_write("/proc/sys/fs/mqueue/msgsize_max", "16777216\n") == -VIBEOS_EINVAL &&
+               proc_write("/proc/sys/fs/mqueue/msgsize_default", "2048001\n") == -VIBEOS_EINVAL &&
+               proc_write("/proc/sys/fs/mqueue/msgsize_max", "2048000\n") == 8,
+           "msgsize_max and _default stop at what a message can hold");
+    (void)proc_write("/proc/sys/fs/mqueue/msgsize_max", "8192\n");
+
     /* The limit on queues, for anybody but the superuser. */
     expect(proc_write("/proc/sys/fs/mqueue/queues_max", "1\n") == 2, "queues_max lowered to 1");
     ks_ps(me)->cred.euid = ks_ps(me)->cred.fsuid = 1000u;

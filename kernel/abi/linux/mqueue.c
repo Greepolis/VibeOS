@@ -26,6 +26,11 @@
 #define LINUX_MQ_QUEUES   32u
 #define LINUX_MQ_NAME_MAX 255u
 #define LINUX_MQ_TEXT_PAGES 500u    /* pointers a header page holds: 2 MB a message */
+/* The largest message this queue can hold, and so the most any limit on one
+ * may say: Linux's own hard limit is 16 MiB, but a message here is a header
+ * page and LINUX_MQ_TEXT_PAGES pages of text. The two tunables took 16 MiB, and
+ * mq_timedsend then wrote page pointers past the header's array (H-035). */
+#define LINUX_MQ_MSGSIZE_CAP ((int64_t)LINUX_MQ_TEXT_PAGES * 4096)
 #define LINUX_MQ_HARD_MSGMAX 65536
 
 typedef struct linux_mq_msg {
@@ -310,7 +315,7 @@ static long linux_sys_mq_open(uint64_t name_uptr, uint64_t oflag, uint64_t mode,
                 r = -VIBEOS_EINVAL;
             } else if (c.euid != 0u ? (maxmsg > g_mq_msg_max || msgsize > g_mq_msgsize_max)
                                     : (maxmsg > LINUX_MQ_HARD_MSGMAX ||
-                                       msgsize > (int64_t)LINUX_MQ_TEXT_PAGES * 4096)) {
+                                       msgsize > LINUX_MQ_MSGSIZE_CAP)) {
                 r = -VIBEOS_EINVAL;
             }
         }
@@ -541,6 +546,13 @@ static long linux_sys_mq_timedsend(uint64_t fd, uint64_t uptr, uint64_t len, uin
         for (i = 0; r == 0 && i * 4096ull < len; i++) {
             uint64_t chunk = len - i * 4096ull > 4096u ? 4096u : len - i * 4096ull;
 
+            /* Held by the limits on msgsize; said again where the array is
+             * written, so that a limit that drifts is a refusal here and not a
+             * store past the header (H-035). */
+            if (i >= LINUX_MQ_TEXT_PAGES) {
+                r = -VIBEOS_EMSGSIZE;
+                break;
+            }
             if (!(s.m->page[i] = (uint8_t *)ks_page_alloc())) {
                 r = -VIBEOS_ENOMEM;
                 break;
@@ -770,9 +782,9 @@ static int mq_set(int64_t *where, int64_t lo, int64_t hi, const char *buf, uint3
     }
 
 MQ_TUNABLE(msg_max, g_mq_msg_max, 1, LINUX_MQ_HARD_MSGMAX)
-MQ_TUNABLE(msgsize_max, g_mq_msgsize_max, 128, 16777216)
+MQ_TUNABLE(msgsize_max, g_mq_msgsize_max, 128, LINUX_MQ_MSGSIZE_CAP)
 MQ_TUNABLE(msg_default, g_mq_msg_default, 1, LINUX_MQ_HARD_MSGMAX)
-MQ_TUNABLE(msgsize_default, g_mq_msgsize_default, 128, 16777216)
+MQ_TUNABLE(msgsize_default, g_mq_msgsize_default, 128, LINUX_MQ_MSGSIZE_CAP)
 MQ_TUNABLE(queues_max, g_mq_queues_max, 0, 0x7fffffff)
 
 /* Forgotten, not released: see linux_ipc_shm_reset. */

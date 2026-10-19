@@ -180,6 +180,27 @@ describes is in `utime`, which M-095's fix missed (below, under M-095).
 | M-103 | M | madvise accepted MADV_POPULATE_READ and _WRITE and populated nothing | **fixed** (2026-10-18) | `vibeos_vmspace_populate` brings each page back from swap and, for a write, breaks a copy-on-write share as a store would; a region the access is refused in is EINVAL, a hole ENOMEM, a failure EFAULT - Linux 5.15's answers, probed on the host. `abi-mem4.txt` case 15 and `mm-vmspace.txt`'s populate case red |
 | M-104 | M | mlockall(MCL_FUTURE) was accepted and later mappings were not locked | **fixed** (2026-10-18) | `ps->mlock_future`, cleared in `linux_procstate_defaults` (new, fork and exec all pass there); mmap (EAGAIN past RLIMIT_MEMLOCK), brk, mremap and the stack's growth lock their new pages; munlockall ends it. Registry row 151 DONE. `abi-mem4.txt` cases 16-18 red; inheritance across fork is not a case, the fake kernel memsets its process states |
 
+## Twelfth review (2026-10-19, of HEAD d02273e)
+
+"(agent)" marks a finding the review took from a sub-agent and did not read
+again itself.
+
+| ID | Sev | Finding | Status | Evidence / next step |
+|---|---|---|---|---|
+| H-035 | H | mq_timedsend wrote page pointers past a message header's 500-entry array: `msgsize_max` and `msgsize_default` took up to 16 MiB, a non-root queue is bounded only by them, and the send loop had no bound of its own | **fixed** (2026-10-19) | Both tunables, and queue creation for root, stop at `LINUX_MQ_MSGSIZE_CAP` (500 pages, what a message holds); the send loop refuses an index past the array as well. `mqueue-l7.txt` case red |
+| M-105 | M | NtOpenFile opens with the kernel's authority: no `linux_may` as openat asks, no search permission on the walk - an existence oracle for any path, and a 0600 PE of another user can be mapped | **open** | |
+| M-106 | M | NtMapViewOfSection maps the section's file by path again, so a rename between NtCreateSection and the map maps a different file from the one opened and checked | **open** | |
+| M-107 | M | `hw_stack_grow`'s "fault again" return does not serve a pending TLB shootdown: the same shape b39c801 fixed in `ks_mm_lock` | **open** | |
+| M-108 | M | Kernel stacks have no guard page; the canary (`hw_kstack_check`) sees an overflow after the damage and only if the base word is written | **open - a decision** | |
+| M-109 | L | `msgctl(IPC_INFO/MSG_INFO)` copied `linux_msginfo_t` uninitialised: two padding bytes of kernel stack to the program | **open** | |
+| M-110 | L | (agent) Global tables with no per-process quota: 256 NT objects, 512 futex waiters (futex_waitv up to 128 a wait), 64 pipes of up to 1 MiB each, `g_undo[512]`; M-092 covered timers, locks and inotify | **to verify** | |
+| M-111 | L | (agent) splice: peek, write and read in three holds of `g_pipe_lock`; `room = capacity - pending` can wrap after F_SETPIPE_SZ shrinks a pipe | **to verify** | |
+| M-112 | L | `mq_getsetattr` rewrites `f->flags` whole: the sibling of M-101 | **open** | |
+| M-113 | L | (agent) `shmget` looks a key up twice without checking permissions again | **to verify** | |
+| M-114 | L | (agent, uncertain) `linux_shm_attached` counts regions at offset 0: a munmap of a segment's head may miscount | **to verify** | |
+| M-115 | L | (agent) NT mutant: owned and published before it is initialised | **to verify** | |
+| M-116 | L | (agent) `sched_target` turns a pid into a slot with no sequence check | **to verify** | |
+
 ## Found internally while verifying the above
 
 | What | Status | Evidence / next step |

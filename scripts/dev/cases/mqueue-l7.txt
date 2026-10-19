@@ -45,3 +45,9 @@
     } else if (c.fsuid != 0u && c.fsuid != g_mq[q].uid) {
 +++ new
     } else if (0) {
+
+### msgsize_max takes more than a message can hold (H-035)
+--- old
+MQ_TUNABLE(msgsize_max, g_mq_msgsize_max, 128, LINUX_MQ_MSGSIZE_CAP)
++++ new
+MQ_TUNABLE(msgsize_max, g_mq_msgsize_max, 128, 16777216)
